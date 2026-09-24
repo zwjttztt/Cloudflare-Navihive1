@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { NavigationClient } from "./API/client";
 import { MockNavigationClient } from "./API/mock";
-import { Site, Group, ExportData, WebDavConfig, normalizeImportData } from "./API/http";
+import { Site, Group, ExportData, BootstrapData, WebDavConfig, normalizeImportData } from "./API/http";
 import { GroupWithSites } from "./types";
 import ThemeToggle from "./components/ThemeToggle";
 import GroupCard from "./components/GroupCard";
@@ -204,48 +204,29 @@ function App() {
     };
 
     // 检查认证状态
+    // 优化点：不再单独发一次 checkAuthStatus 请求，直接拉 bootstrap
+    // —— 拿得到数据即已登录，401 就是未登录/令牌失效，整个启动过程只花 1 次请求
     const checkAuthStatus = async () => {
         try {
             setIsAuthChecking(true);
-            console.log("开始检查认证状态...");
 
-            // 尝试进行API调用，检查是否需要认证
-            const result = await api.checkAuthStatus();
-            console.log("认证检查结果:", result);
+            const ok = await fetchData();
 
-            if (!result) {
-                // 未认证，需要登录
-                console.log("未认证，设置需要登录状态");
-
-                // 如果有token但无效，清除它
-                if (api.isLoggedIn()) {
-                    console.log("清除无效token");
-                    api.logout();
-                }
-
-                // 直接更新状态，确保先设置认证状态再结束检查
-                setIsAuthenticated(false);
-                setIsAuthRequired(true);
-            } else {
-                // 直接更新认证状态
+            if (ok) {
                 setIsAuthenticated(true);
                 setIsAuthRequired(false);
-
-                // 如果已经登录或不需要认证，继续加载数据
-                console.log("已认证，开始加载数据");
-                await fetchData();
-                await fetchConfigs();
+            } else if (!api.isLoggedIn()) {
+                // 本地没有可用令牌
+                setIsAuthenticated(false);
+                setIsAuthRequired(true);
             }
         } catch (error) {
             console.error("认证检查失败:", error);
-            // 如果返回401，说明需要认证
             if (error instanceof Error && error.message.includes("认证")) {
-                console.log("检测到认证错误，设置需要登录状态");
                 setIsAuthenticated(false);
                 setIsAuthRequired(true);
             }
         } finally {
-            console.log("认证检查完成");
             setIsAuthChecking(false);
         }
     };
@@ -264,9 +245,8 @@ function App() {
                 setIsAuthenticated(true);
                 setIsAuthRequired(false);
                 setLoginError(null);
-                // 加载数据
+                // 加载数据（一次 bootstrap 请求）
                 await fetchData();
-                await fetchConfigs();
             } else {
                 // 登录失败：账号或密码不对
                 const message = result?.message || "用户名或密码错误";
@@ -299,31 +279,50 @@ function App() {
     };
 
     // 加载配置（WebDAV 配置单独存放，避免被写进备份文件）
-    const fetchConfigs = async () => {
-        try {
-            const configsData = await api.getConfigs();
+    const applyConfigs = (configsData: Record<string, string> | null | undefined) => {
+        const nextConfigs: Record<string, string> = { ...DEFAULT_CONFIGS };
+        const nextWebdav: WebDavConfig = { ...DEFAULT_WEBDAV_CONFIG };
 
-            const nextConfigs: Record<string, string> = { ...DEFAULT_CONFIGS };
-            const nextWebdav: WebDavConfig = { ...DEFAULT_WEBDAV_CONFIG };
-
-            Object.entries(configsData || {}).forEach(([key, value]) => {
-                if (key.startsWith(WEBDAV_CONFIG_PREFIX)) {
-                    const field = key.slice(WEBDAV_CONFIG_PREFIX.length);
-                    if (field === "url" || field === "username" || field === "password" || field === "path") {
-                        nextWebdav[field] = value;
-                    }
-                } else {
-                    nextConfigs[key] = value;
+        Object.entries(configsData || {}).forEach(([key, value]) => {
+            if (key.startsWith(WEBDAV_CONFIG_PREFIX)) {
+                const field = key.slice(WEBDAV_CONFIG_PREFIX.length);
+                if (field === "url" || field === "username" || field === "password" || field === "path") {
+                    nextWebdav[field] = value;
                 }
-            });
+            } else {
+                nextConfigs[key] = value;
+            }
+        });
 
-            setConfigs(nextConfigs);
-            setTempConfigs({ ...nextConfigs });
-            setWebdavConfig(nextWebdav);
-        } catch (error) {
-            console.error("加载配置失败:", error);
-            // 使用默认配置
+        setConfigs(nextConfigs);
+        setTempConfigs({ ...nextConfigs });
+        setWebdavConfig(nextWebdav);
+    };
+
+    // 把一次 bootstrap 拉回的数据合并进本地状态
+    const applyRemoteData = (data: BootstrapData) => {
+        const sitesByGroup = new Map<number, Site[]>();
+        for (const site of data.sites || []) {
+            const list = sitesByGroup.get(site.group_id);
+            if (list) {
+                list.push(site);
+            } else {
+                sitesByGroup.set(site.group_id, [site]);
+            }
         }
+
+        const nextGroups: GroupWithSites[] = (data.groups || [])
+            .filter(group => group.id !== undefined)
+            .map(group => ({
+                ...group,
+                id: group.id as number,
+                sites: (sitesByGroup.get(group.id as number) || []).sort(
+                    (a, b) => (a.order_num ?? 0) - (b.order_num ?? 0)
+                ),
+            }));
+
+        setGroups(nextGroups);
+        applyConfigs(data.configs);
     };
 
     useEffect(() => {
@@ -403,47 +402,84 @@ function App() {
         setSnackbarOpen(false);
     };
 
-    const fetchData = async () => {
-        try {
+    // 拉取全量数据：一次 bootstrap 请求搞定（原来要 1 次分组 + 每个分组一次站点 + 1 次配置）
+    // silent=true 时不显示全屏 loading、不弹错误提示，用于修改后的后台同步
+    const fetchData = async ({ silent = false }: { silent?: boolean } = {}): Promise<boolean> => {
+        if (!silent) {
             setLoading(true);
             setError(null);
-            const groupsData = await api.getGroups();
+        }
 
-            // 获取每个分组的站点并确保id存在
-            const groupsWithSites = await Promise.all(
-                groupsData
-                    .filter(group => group.id !== undefined) // 过滤掉没有id的分组
-                    .map(async group => {
-                        const sites = await api.getSites(group.id);
-                        return {
-                            ...group,
-                            id: group.id as number, // 确保id不为undefined
-                            sites,
-                        } as GroupWithSites;
-                    })
-            );
-
-            setGroups(groupsWithSites);
+        try {
+            const data = await api.bootstrap();
+            applyRemoteData(data);
+            return true;
         } catch (error) {
-            console.error("加载数据失败:", error);
-            handleError("加载数据失败: " + (error instanceof Error ? error.message : "未知错误"));
+            const message = error instanceof Error ? error.message : "未知错误";
+            console.error("加载数据失败:", message);
+
+            if (!silent) {
+                handleError("加载数据失败: " + message);
+            }
 
             // 如果因为认证问题导致加载失败，处理认证状态
-            if (error instanceof Error && error.message.includes("认证")) {
+            if (message.includes("认证") || message.includes("401")) {
+                api.logout();
                 setIsAuthRequired(true);
                 setIsAuthenticated(false);
             }
+            return false;
         } finally {
-            setLoading(false);
+            if (!silent) {
+                setLoading(false);
+            }
         }
+    };
+
+    // 修改后的后台静默同步：界面先按本地状态立即更新，再悄悄拉一次最新数据，全程不出现加载转圈
+    const syncInBackground = () => {
+        void fetchData({ silent: true });
+    };
+
+    // ---- 本地状态更新（避免每次修改都整页重新加载） ----
+    const upsertSiteLocally = (site: Site) => {
+        setGroups(prev =>
+            prev.map(group => {
+                const exists = group.sites.some(item => item.id === site.id);
+
+                if (group.id === site.group_id) {
+                    const sites = exists
+                        ? group.sites.map(item => (item.id === site.id ? { ...item, ...site } : item))
+                        : [...group.sites, site];
+                    return {
+                        ...group,
+                        sites: sites.sort((a, b) => (a.order_num ?? 0) - (b.order_num ?? 0)),
+                    };
+                }
+
+                // 站点被移动到了其他分组：从原分组移除
+                if (exists) {
+                    return { ...group, sites: group.sites.filter(item => item.id !== site.id) };
+                }
+                return group;
+            })
+        );
+    };
+
+    const removeSiteLocally = (siteId: number) => {
+        setGroups(prev =>
+            prev.map(group => ({ ...group, sites: group.sites.filter(item => item.id !== siteId) }))
+        );
     };
 
     // 更新站点
     const handleSiteUpdate = async (updatedSite: Site) => {
         try {
             if (updatedSite.id) {
-                await api.updateSite(updatedSite.id, updatedSite);
-                await fetchData(); // 重新加载数据
+                const saved = await api.updateSite(updatedSite.id, updatedSite);
+                // 就地更新本地状态，界面即时生效，不再整页重新加载
+                upsertSiteLocally(saved && saved.id !== undefined ? saved : updatedSite);
+                syncInBackground();
             }
         } catch (error) {
             console.error("更新站点失败:", error);
@@ -455,7 +491,8 @@ function App() {
     const handleSiteDelete = async (siteId: number) => {
         try {
             await api.deleteSite(siteId);
-            await fetchData(); // 重新加载数据
+            removeSiteLocally(siteId);
+            syncInBackground();
         } catch (error) {
             console.error("删除站点失败:", error);
             handleError("删除站点失败: " + (error as Error).message);
@@ -477,8 +514,8 @@ function App() {
 
             if (result) {
                 console.log("分组排序更新成功");
-                // 重新获取最新数据
-                await fetchData();
+                // 排序结果已在本地生效，后台静默同步即可，不再整页转圈
+                syncInBackground();
             } else {
                 throw new Error("分组排序更新失败");
             }
@@ -507,8 +544,8 @@ function App() {
 
             if (result) {
                 console.log("站点排序更新成功");
-                // 重新获取最新数据
-                await fetchData();
+                // 排序结果已在本地生效，后台静默同步即可
+                syncInBackground();
             } else {
                 throw new Error("站点排序更新失败");
             }
@@ -662,7 +699,7 @@ function App() {
                 if (!ok) throw new Error("更新分组失败");
             }
 
-            await fetchData();
+            syncInBackground();
             setSortMode(SortMode.None);
             setCurrentSortingGroupId(null);
         } catch (error) {
@@ -695,8 +732,12 @@ function App() {
                 return;
             }
 
-            await api.createGroup(newGroup as Group);
-            await fetchData(); // 重新加载数据
+            const created = await api.createGroup(newGroup as Group);
+            // 服务端返回新建分组，直接追加到本地列表，无需重新加载
+            if (created && created.id !== undefined) {
+                setGroups(prev => [...prev, { ...created, id: created.id as number, sites: [] }]);
+            }
+            syncInBackground();
             handleCloseAddGroup();
             setNewGroup({ name: "", order_num: 0 }); // 重置表单
         } catch (error) {
@@ -743,8 +784,12 @@ function App() {
                 return;
             }
 
-            await api.createSite(newSite as Site);
-            await fetchData(); // 重新加载数据
+            const created = await api.createSite(newSite as Site);
+            // 服务端返回新建站点，直接插入本地列表，界面立即出现新卡片
+            if (created && created.id !== undefined) {
+                upsertSiteLocally(created);
+            }
+            syncInBackground();
             handleCloseAddSite();
         } catch (error) {
             console.error("创建站点失败:", error);
@@ -771,12 +816,9 @@ function App() {
 
     const handleSaveConfig = async () => {
         try {
-            // 保存所有配置
-            for (const [key, value] of Object.entries(tempConfigs)) {
-                if (configs[key] !== value) {
-                    await api.setConfig(key, value);
-                }
-            }
+            // 只提交有变化的配置，并并行写入，避免逐条等待
+            const changed = Object.entries(tempConfigs).filter(([key, value]) => configs[key] !== value);
+            await Promise.all(changed.map(([key, value]) => api.setConfig(key, value)));
 
             // 更新配置状态
             setConfigs({ ...tempConfigs });
@@ -898,8 +940,8 @@ function App() {
                 }
             }
 
+            // 恢复/导入是低频重操作，这里同步刷新一次（一次 bootstrap 请求）
             await fetchData();
-            await fetchConfigs();
         } catch (error) {
             console.error("导入数据失败:", error);
             handleError("导入数据失败: " + (error instanceof Error ? error.message : "未知错误"));
@@ -959,7 +1001,10 @@ function App() {
         try {
             if (updatedGroup.id) {
                 await api.updateGroup(updatedGroup.id, updatedGroup);
-                await fetchData(); // 重新加载数据
+                setGroups(prev =>
+                    prev.map(group => (group.id === updatedGroup.id ? { ...group, ...updatedGroup } : group))
+                );
+                syncInBackground();
             }
         } catch (error) {
             console.error("更新分组失败:", error);
@@ -971,7 +1016,8 @@ function App() {
     const handleGroupDelete = async (groupId: number) => {
         try {
             await api.deleteGroup(groupId);
-            await fetchData(); // 重新加载数据
+            setGroups(prev => prev.filter(group => group.id !== groupId));
+            syncInBackground();
         } catch (error) {
             console.error("删除分组失败:", error);
             handleError("删除分组失败: " + (error as Error).message);

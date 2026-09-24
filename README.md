@@ -125,6 +125,12 @@ pnpm deploy     # 部署到 Cloudflare Workers
 
 **如何更新？** 拉取本项目最新代码后重新构建并 `pnpm deploy`。
 
+## ⚡ 性能说明
+
+首屏与刷新都只走 **一次** `GET /api/bootstrap` 请求（服务端用 `db.batch` 把分组、站点、配置三条查询合并为一次 D1 往返），不再像早期版本那样「先查分组、再逐个分组查站点」。数据库结构迁移结果缓存在 Worker 模块作用域，同一 isolate 内只执行一次，不会每个请求都跑 DDL。
+
+界面上新增/编辑/删除、拖拽排序等操作都**先就地更新本地状态**，随后静默拉一次最新数据，因此不会出现每次修改都整页转圈等待的情况。静态资源侧另有 `public/_headers`，对带哈希指纹的 `/assets/*` 启用长期强缓存。
+
 ## 🗂️ 项目结构
 
 ```
@@ -134,7 +140,7 @@ pnpm deploy     # 部署到 Cloudflare Workers
 │   ├── components/        # React 组件（卡片、弹窗、备份窗口等）
 │   ├── utils/clipboard.ts # 一键复制工具
 │   └── App.tsx            # 主应用
-├── public/                # 静态资源
+├── public/                # 静态资源（含 _headers 缓存规则）
 ├── init_table.sql         # 数据库初始化脚本（含示例数据）
 ├── wrangler.jsonc         # Cloudflare 配置
 ├── pnpm-workspace.yaml    # pnpm 构建脚本许可

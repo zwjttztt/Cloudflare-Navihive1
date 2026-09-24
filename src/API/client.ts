@@ -3,6 +3,7 @@ import {
     Site,
     LoginResponse,
     ExportData,
+    BootstrapData,
     WebDavConfig,
     WebDavFile,
     WebDavResult,
@@ -127,6 +128,11 @@ export class NavigationClient {
     // 分组相关API
     async getGroups(): Promise<Group[]> {
         return this.request("groups");
+    }
+
+    // 首屏 / 刷新：一次请求取回分组 + 站点 + 配置（替代 N+1 次请求）
+    async bootstrap(): Promise<BootstrapData> {
+        return this.request("bootstrap");
     }
 
     async getGroup(id: number): Promise<Group> {

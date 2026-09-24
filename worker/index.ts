@@ -77,11 +77,17 @@ export default {
                     }
                 }
 
-                // 确保数据库结构是最新的（例如补齐站点账号密码字段）
+                // 确保数据库结构是最新的（迁移结果缓存在模块作用域，同一 isolate 内只执行一次）
                 await api.migrate();
 
                 // 路由匹配
-                if (path === "groups" && method === "GET") {
+                if (path === "bootstrap" && method === "GET") {
+                    // 一次请求返回分组 + 站点 + 配置，供前端首屏与刷新使用
+                    const data = await api.getBootstrap();
+                    return Response.json(data, {
+                        headers: { "Cache-Control": "no-store" },
+                    });
+                } else if (path === "groups" && method === "GET") {
                     const groups = await api.getGroups();
                     return Response.json(groups);
                 } else if (path.startsWith("groups/") && method === "GET") {

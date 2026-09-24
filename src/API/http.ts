@@ -95,6 +95,13 @@ export interface ExportData {
     exportDate: string;
 }
 
+// 首屏/刷新一次性返回的数据（分组 + 平铺的站点 + 配置）
+export interface BootstrapData {
+    groups: Group[];
+    sites: Site[];
+    configs: Record<string, string>;
+}
+
 // 新增用户登录接口
 export interface LoginRequest {
     username: string;
@@ -107,6 +114,11 @@ export interface LoginResponse {
     message?: string;
 }
 
+// 数据库迁移只需在每个 Worker isolate 中执行一次。
+// 注意：NavigationAPI 是每个请求 new 出来的，实例字段无法跨请求复用，
+// 之前迁移挂在实例上导致「每个请求都跑一遍 DDL」，这是接口变慢的主因，所以缓存放在模块作用域。
+let migrationPromise: Promise<void> | null = null;
+
 // API 类
 export class NavigationAPI {
     private db: D1Database;
@@ -114,8 +126,6 @@ export class NavigationAPI {
     private username: string;
     private password: string;
     private secret: string;
-    // 迁移只需要在每个 Worker 实例中执行一次
-    private migrationPromise: Promise<void> | null = null;
 
     constructor(env: Env) {
         this.db = env.DB;
@@ -148,31 +158,90 @@ export class NavigationAPI {
     }
 
     async migrate(): Promise<void> {
-        if (!this.migrationPromise) {
-            this.migrationPromise = this.runMigrations().catch(error => {
+        if (!migrationPromise) {
+            migrationPromise = this.runMigrations().catch(error => {
                 console.error("数据库迁移失败:", error);
+                // 失败后清空缓存，允许下一个请求重试，避免一次偶发错误导致表结构永久缺失
+                migrationPromise = null;
             });
         }
-        return this.migrationPromise;
+        return migrationPromise;
     }
 
-    private async runMigrations(): Promise<void> {
-        const statements = [
-            // 保证表结构存在（新建的 D1 库即使没访问过 /api/init 也能直接用）
-            `CREATE TABLE IF NOT EXISTS groups (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, order_num INTEGER NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`,
-            `CREATE TABLE IF NOT EXISTS sites (id INTEGER PRIMARY KEY AUTOINCREMENT, group_id INTEGER NOT NULL, name TEXT NOT NULL, url TEXT NOT NULL, icon TEXT, description TEXT, notes TEXT, username TEXT, password TEXT, order_num INTEGER NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE);`,
-            `CREATE TABLE IF NOT EXISTS configs (key TEXT PRIMARY KEY, value TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`,
-            // 旧库补齐站点凭据字段
-            "ALTER TABLE sites ADD COLUMN username TEXT",
-            "ALTER TABLE sites ADD COLUMN password TEXT",
-        ];
+    // 建表 SQL（幂等）
+    private static readonly CREATE_STATEMENTS = [
+        // 保证表结构存在（新建的 D1 库即使没访问过 /api/init 也能直接用）
+        `CREATE TABLE IF NOT EXISTS groups (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, order_num INTEGER NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`,
+        `CREATE TABLE IF NOT EXISTS sites (id INTEGER PRIMARY KEY AUTOINCREMENT, group_id INTEGER NOT NULL, name TEXT NOT NULL, url TEXT NOT NULL, icon TEXT, description TEXT, notes TEXT, username TEXT, password TEXT, order_num INTEGER NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE);`,
+        `CREATE TABLE IF NOT EXISTS configs (key TEXT PRIMARY KEY, value TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`,
+    ];
 
-        for (const sql of statements) {
-            try {
-                await this.db.exec(sql);
-            } catch {
-                // 字段已存在或表尚未创建，忽略即可
+    private async runMigrations(): Promise<void> {
+        // 1) 建表：合并成一次 batch，只花一次 D1 往返（原来是 3 次 exec 串行）
+        try {
+            await this.db.batch(NavigationAPI.CREATE_STATEMENTS.map(sql => this.db.prepare(sql)));
+        } catch (error) {
+            // batch 失败时退回逐条执行，保证结构一定可用
+            console.error("批量建表失败，回退逐条执行:", error);
+            for (const sql of NavigationAPI.CREATE_STATEMENTS) {
+                try {
+                    await this.db.exec(sql);
+                } catch {
+                    // 忽略
+                }
             }
+        }
+
+        // 2) 旧库补齐站点凭据字段：先读表结构，确实缺列时才发 ALTER
+        const missingColumns = await this.findMissingSiteColumns();
+        if (missingColumns.length === 0) return;
+
+        try {
+            await this.db.batch(
+                missingColumns.map(column => this.db.prepare(`ALTER TABLE sites ADD COLUMN ${column} TEXT`))
+            );
+        } catch {
+            // 部分列已存在会让整批失败，逐条补一次即可
+            for (const column of missingColumns) {
+                try {
+                    await this.db.exec(`ALTER TABLE sites ADD COLUMN ${column} TEXT`);
+                } catch {
+                    // 列已存在，忽略
+                }
+            }
+        }
+    }
+
+    // 读取 sites 表已有列，返回缺失的凭据列（无法读取时按「都缺」处理，交给 ALTER 自行兼容）
+    private async findMissingSiteColumns(): Promise<string[]> {
+        const credentials = ["username", "password"];
+        try {
+            const result = await this.db
+                .prepare("SELECT name FROM pragma_table_info('sites')")
+                .all<{ name: string }>();
+            const columns = new Set((result.results || []).map(row => row.name));
+            // 表都还不存在时不用 ALTER，建表语句里已经包含这两列
+            if (columns.size === 0) return [];
+            return credentials.filter(column => !columns.has(column));
+        } catch {
+            return credentials;
+        }
+    }
+
+    // 结构异常（缺表 / 缺列）时重跑一次迁移再重试。
+    // 迁移结果虽然缓存，但遇到 D1 里结构被回退或首次迁移被跳过的情况仍能自愈，代价只有出错时的一次重试。
+    private async withSchemaRetry<T>(run: () => Promise<T>): Promise<T> {
+        try {
+            return await run();
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            if (!/no such (column|table)/i.test(message)) {
+                throw error;
+            }
+            console.warn("检测到数据库结构异常，重新执行迁移后重试:", message);
+            migrationPromise = null;
+            await this.migrate();
+            return await run();
         }
     }
 
@@ -275,12 +344,47 @@ export class NavigationAPI {
 
     // 分组相关 API
     async getGroups(): Promise<Group[]> {
+        await this.migrate();
+        return this.withSchemaRetry(() => this.queryGroups());
+    }
+
+    private async queryGroups(): Promise<Group[]> {
         const result = await this.db
             .prepare(
                 "SELECT id, name, order_num, created_at, updated_at FROM groups ORDER BY order_num"
             )
             .all<Group>();
         return result.results || [];
+    }
+
+    // 首屏 / 刷新：一次请求取回全部分组、站点与配置。
+    // 用 db.batch 把 3 条查询合并为一次 D1 往返，替代原先「1 次分组 + 每个分组一次站点」的 N+1 请求。
+    async getBootstrap(): Promise<BootstrapData> {
+        await this.migrate();
+        return this.withSchemaRetry(() => this.queryBootstrap());
+    }
+
+    private async queryBootstrap(): Promise<BootstrapData> {
+        const [groupsResult, sitesResult, configsResult] = await this.db.batch<unknown>([
+            this.db.prepare(
+                "SELECT id, name, order_num, created_at, updated_at FROM groups ORDER BY order_num"
+            ),
+            this.db.prepare(
+                "SELECT id, group_id, name, url, icon, description, notes, username, password, order_num, created_at, updated_at FROM sites ORDER BY order_num"
+            ),
+            this.db.prepare("SELECT key, value FROM configs"),
+        ]);
+
+        const configs: Record<string, string> = {};
+        for (const row of (configsResult.results || []) as Config[]) {
+            configs[row.key] = row.value;
+        }
+
+        return {
+            groups: (groupsResult.results || []) as Group[],
+            sites: (sitesResult.results || []) as Site[],
+            configs,
+        };
     }
 
     async getGroup(id: number): Promise<Group | null> {
@@ -345,7 +449,10 @@ export class NavigationAPI {
     // 网站相关 API
     async getSites(groupId?: number): Promise<Site[]> {
         await this.migrate();
+        return this.withSchemaRetry(() => this.querySites(groupId));
+    }
 
+    private async querySites(groupId?: number): Promise<Site[]> {
         let query =
             "SELECT id, group_id, name, url, icon, description, notes, username, password, order_num, created_at, updated_at FROM sites";
         const params: (string | number)[] = [];
@@ -366,7 +473,10 @@ export class NavigationAPI {
 
     async getSite(id: number): Promise<Site | null> {
         await this.migrate();
+        return this.withSchemaRetry(() => this.querySite(id));
+    }
 
+    private async querySite(id: number): Promise<Site | null> {
         const result = await this.db
             .prepare(
                 "SELECT id, group_id, name, url, icon, description, notes, username, password, order_num, created_at, updated_at FROM sites WHERE id = ?"
@@ -377,6 +487,11 @@ export class NavigationAPI {
     }
 
     async createSite(site: Site): Promise<Site> {
+        await this.migrate();
+        return this.withSchemaRetry(() => this.insertSite(site));
+    }
+
+    private async insertSite(site: Site): Promise<Site> {
         const result = await this.db
             .prepare(
                 `
@@ -405,6 +520,11 @@ export class NavigationAPI {
     }
 
     async updateSite(id: number, site: Partial<Site>): Promise<Site | null> {
+        await this.migrate();
+        return this.withSchemaRetry(() => this.updateSiteRow(id, site));
+    }
+
+    private async updateSiteRow(id: number, site: Partial<Site>): Promise<Site | null> {
         // 使用参数化查询，避免SQL注入
         const updates: string[] = ["updated_at = CURRENT_TIMESTAMP"];
         const params: (string | number)[] = [];
@@ -473,12 +593,20 @@ export class NavigationAPI {
     }
 
     async deleteSite(id: number): Promise<boolean> {
-        const result = await this.db.prepare("DELETE FROM sites WHERE id = ?").bind(id).run();
-        return result.success;
+        await this.migrate();
+        return this.withSchemaRetry(async () => {
+            const result = await this.db.prepare("DELETE FROM sites WHERE id = ?").bind(id).run();
+            return result.success;
+        });
     }
 
     // 配置相关API
     async getConfigs(): Promise<Record<string, string>> {
+        await this.migrate();
+        return this.withSchemaRetry(() => this.queryConfigs());
+    }
+
+    private async queryConfigs(): Promise<Record<string, string>> {
         const result = await this.db.prepare("SELECT key, value FROM configs").all<Config>();
 
         // 将结果转换为键值对对象
