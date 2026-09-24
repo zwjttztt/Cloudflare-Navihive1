@@ -8,7 +8,7 @@
 ![Material UI](https://img.shields.io/badge/Material_UI-7.0-0081cb)
 ![Cloudflare](https://img.shields.io/badge/Cloudflare-Workers_+_D1-f38020)
 
-[![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/zwjttztt/Cloudflare-Navihive1)
+[![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/zwjttztt/myhomepage)
 
 </div>
 
@@ -35,25 +35,20 @@
 ### 方式一：一键部署（推荐，无需命令行）
 
 1. 打开上方 **"Deploy to Cloudflare Workers"** 按钮（或访问
-   `https://deploy.workers.cloudflare.com/?url=https://github.com/zwjttztt/Cloudflare-Navihive1`）。
+   `https://deploy.workers.cloudflare.com/?url=https://github.com/zwjttztt/myhomepage`）。
 2. 使用你的 Cloudflare 账号登录。
-3. 在部署界面配置：
-   - **项目名称**：Cloudflare 项目名只允许小写，填 `myhomepage`（站点显示名可在部署后于「网站设置」中设为 MyHomepage）
-   - **D1 数据库**：点击"创建新数据库"，命名为 `navigation-db`
-   - **环境变量**：
-     - `AUTH_ENABLED`：`true`
-     - `AUTH_USERNAME`：管理员用户名（如 `admin`）
-     - `AUTH_PASSWORD`：管理员密码（**请设置强密码**）
-     - `AUTH_SECRET`：JWT 密钥（使用一段随机长字符串）
-4. 点击 **"Deploy"**。部署完成后你会得到类似
+3. D1 数据库 `navigation-db` 及登录凭据已内置在 `wrangler.jsonc`（database_id 已填，AUTH_* 已配置），直接点击 **"Deploy"** 即可。
+4. 部署完成后你会得到类似
    `https://myhomepage.<你的用户名>.workers.dev` 的地址。
+
+> 默认登录账号：`admin` ／ 密码：`j55XeeGvQZJXf3`（部署后在 Cloudflare 控制台「设置 → 变量」中可自行修改）。
 
 ### 方式二：手动部署（适合开发者）
 
 ```bash
 # 1. 克隆本项目
-git clone https://github.com/zwjttztt/Cloudflare-Navihive1.git
-cd Cloudflare-Navihive1
+git clone https://github.com/zwjttztt/myhomepage.git
+cd myhomepage
 
 # 2. 安装依赖
 pnpm install

@@ -24,13 +24,13 @@
         {
             "binding": "DB",
             "database_name": "navigation-db",
-            "database_id": "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+            "database_id": "e4f73ada-564f-4a37-89a7-52729d2e8c07"
         }
     ],
     "vars": {
         "AUTH_ENABLED": "true",
         "AUTH_USERNAME": "admin",
-        "AUTH_PASSWORD": "change-me-after-deploy",
-        "AUTH_SECRET": "replace-with-a-long-random-secret"
+        "AUTH_PASSWORD": "j55XeeGvQZJXf3",
+        "AUTH_SECRET": "c105742af3b1792e0caaa46d72329496911f62757f7c50893b1245e8015d2002"
     }
 }
