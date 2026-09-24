@@ -1,4 +1,12 @@
-import { Group, Site, LoginResponse, ExportData } from "./http";
+import {
+    Group,
+    Site,
+    LoginResponse,
+    ExportData,
+    WebDavConfig,
+    WebDavFile,
+    WebDavResult,
+} from "./http";
 
 // 模拟数据
 const mockGroups: Group[] = [
@@ -328,6 +336,34 @@ export class MockNavigationClient {
         };
     }
     
+    // ============ WebDAV 备份（模拟环境不支持，仅返回提示） ============
+    async webdavTest(_config: Partial<WebDavConfig> = {}): Promise<WebDavResult> {
+        return { success: false, message: "模拟环境不支持 WebDAV，请使用真实 API（设置 VITE_USE_REAL_API=true）" };
+    }
+
+    async webdavUpload(
+        _config: Partial<WebDavConfig> = {},
+        _data?: ExportData,
+        _filename?: string
+    ): Promise<WebDavResult<{ filename: string; size: number }>> {
+        return { success: false, message: "模拟环境不支持 WebDAV 备份" };
+    }
+
+    async webdavList(_config: Partial<WebDavConfig> = {}): Promise<WebDavResult<WebDavFile[]>> {
+        return { success: false, message: "模拟环境不支持 WebDAV 备份", data: [] };
+    }
+
+    async webdavDownload(
+        _filename: string,
+        _config: Partial<WebDavConfig> = {}
+    ): Promise<WebDavResult<ExportData>> {
+        return { success: false, message: "模拟环境不支持 WebDAV 备份" };
+    }
+
+    async webdavDelete(_filename: string, _config: Partial<WebDavConfig> = {}): Promise<WebDavResult> {
+        return { success: false, message: "模拟环境不支持 WebDAV 备份" };
+    }
+
     // 数据导入
     async importData(data: ExportData): Promise<boolean> {
         await new Promise(resolve => setTimeout(resolve, 500));

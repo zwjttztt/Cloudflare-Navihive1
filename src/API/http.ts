@@ -48,9 +48,34 @@ export interface Site {
     icon: string;
     description: string;
     notes: string;
+    // 站点登录凭据（可选，保存在数据库中，备份时会一起导出）
+    username?: string;
+    password?: string;
     order_num: number;
     created_at?: string;
     updated_at?: string;
+}
+
+// WebDAV 备份配置
+export interface WebDavConfig {
+    url: string;
+    username: string;
+    password: string;
+    path: string;
+}
+
+// WebDAV 远端备份文件信息
+export interface WebDavFile {
+    name: string;
+    size: number;
+    lastModified: string;
+}
+
+// WebDAV 操作通用返回
+export interface WebDavResult<T = unknown> {
+    success: boolean;
+    message?: string;
+    data?: T;
 }
 
 // 新增配置接口
@@ -89,6 +114,8 @@ export class NavigationAPI {
     private username: string;
     private password: string;
     private secret: string;
+    // 迁移只需要在每个 Worker 实例中执行一次
+    private migrationPromise: Promise<void> | null = null;
 
     constructor(env: Env) {
         this.db = env.DB;
@@ -129,10 +156,37 @@ export class NavigationAPI {
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );`);
 
+        // 补齐站点凭据字段（历史数据库升级用）
+        await this.runMigrations();
+
         // 设置初始化标志
         await this.setConfig("DB_INITIALIZED", "true");
 
         return { success: true, alreadyInitialized: false };
+    }
+
+    async migrate(): Promise<void> {
+        if (!this.migrationPromise) {
+            this.migrationPromise = this.runMigrations().catch(error => {
+                console.error("数据库迁移失败:", error);
+            });
+        }
+        return this.migrationPromise;
+    }
+
+    private async runMigrations(): Promise<void> {
+        const statements = [
+            "ALTER TABLE sites ADD COLUMN username TEXT",
+            "ALTER TABLE sites ADD COLUMN password TEXT",
+        ];
+
+        for (const sql of statements) {
+            try {
+                await this.db.exec(sql);
+            } catch {
+                // 字段已存在或表尚未创建，忽略即可
+            }
+        }
     }
 
     // 验证用户登录
@@ -303,8 +357,10 @@ export class NavigationAPI {
 
     // 网站相关 API
     async getSites(groupId?: number): Promise<Site[]> {
+        await this.migrate();
+
         let query =
-            "SELECT id, group_id, name, url, icon, description, notes, order_num, created_at, updated_at FROM sites";
+            "SELECT id, group_id, name, url, icon, description, notes, username, password, order_num, created_at, updated_at FROM sites";
         const params: (string | number)[] = [];
 
         if (groupId !== undefined) {
@@ -322,9 +378,11 @@ export class NavigationAPI {
     }
 
     async getSite(id: number): Promise<Site | null> {
+        await this.migrate();
+
         const result = await this.db
             .prepare(
-                "SELECT id, group_id, name, url, icon, description, notes, order_num, created_at, updated_at FROM sites WHERE id = ?"
+                "SELECT id, group_id, name, url, icon, description, notes, username, password, order_num, created_at, updated_at FROM sites WHERE id = ?"
             )
             .bind(id)
             .first<Site>();
@@ -335,9 +393,9 @@ export class NavigationAPI {
         const result = await this.db
             .prepare(
                 `
-      INSERT INTO sites (group_id, name, url, icon, description, notes, order_num) 
-      VALUES (?, ?, ?, ?, ?, ?, ?) 
-      RETURNING id, group_id, name, url, icon, description, notes, order_num, created_at, updated_at
+      INSERT INTO sites (group_id, name, url, icon, description, notes, username, password, order_num) 
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) 
+      RETURNING id, group_id, name, url, icon, description, notes, username, password, order_num, created_at, updated_at
     `
             )
             .bind(
@@ -347,6 +405,8 @@ export class NavigationAPI {
                 site.icon || "",
                 site.description || "",
                 site.notes || "",
+                site.username || "",
+                site.password || "",
                 site.order_num
             )
             .all<Site>();
@@ -393,6 +453,16 @@ export class NavigationAPI {
             params.push(site.notes);
         }
 
+        if (site.username !== undefined) {
+            updates.push("username = ?");
+            params.push(site.username);
+        }
+
+        if (site.password !== undefined) {
+            updates.push("password = ?");
+            params.push(site.password);
+        }
+
         if (site.order_num !== undefined) {
             updates.push("order_num = ?");
             params.push(site.order_num);
@@ -401,7 +471,7 @@ export class NavigationAPI {
         // 构建安全的参数化查询
         const query = `UPDATE sites SET ${updates.join(
             ", "
-        )} WHERE id = ? RETURNING id, group_id, name, url, icon, description, notes, order_num, created_at, updated_at`;
+        )} WHERE id = ? RETURNING id, group_id, name, url, icon, description, notes, username, password, order_num, created_at, updated_at`;
         params.push(id);
 
         const result = await this.db
@@ -506,59 +576,78 @@ export class NavigationAPI {
         // 获取所有分组
         const groups = await this.getGroups();
 
-        // 获取所有站点
+        // 获取所有站点（包含账号密码等凭据）
         const sites = await this.getSites();
 
-        // 获取所有配置
-        const configs = await this.getConfigs();
+        // 获取所有配置（WebDAV 凭据属于隐私信息，不写入备份文件）
+        const allConfigs = await this.getConfigs();
+        const configs: Record<string, string> = {};
+        for (const [key, value] of Object.entries(allConfigs)) {
+            if (!key.startsWith("webdav.")) {
+                configs[key] = value;
+            }
+        }
 
         return {
             groups,
             sites,
             configs,
-            version: "1.0", // 数据版本号，便于后续兼容性处理
+            version: EXPORT_VERSION,
             exportDate: new Date().toISOString(),
         };
     }
 
-    // 导入所有数据
+    // 导入所有数据（覆盖式恢复，尽量保留原有ID）
     async importData(data: ExportData): Promise<boolean> {
         try {
-            // 使用事务确保数据完整性
+            await this.migrate();
+
+            const normalized = normalizeImportData(data);
+
             // 清空现有数据
             await this.db.exec("DELETE FROM sites");
             await this.db.exec("DELETE FROM groups");
 
-            // 导入分组数据
-            for (const group of data.groups) {
-                await this.createGroup({
-                    name: group.name,
-                    order_num: group.order_num,
-                });
+            // 导入分组数据（保留原ID，保证站点归属关系不变）
+            for (const group of normalized.groups) {
+                if (group.id !== undefined) {
+                    await this.db
+                        .prepare("INSERT INTO groups (id, name, order_num) VALUES (?, ?, ?)")
+                        .bind(group.id, group.name, group.order_num || 0)
+                        .run();
+                } else {
+                    await this.createGroup(group);
+                }
             }
 
-            // 获取新创建的分组，用于映射ID
-            const newGroups = await this.getGroups();
-            const groupMap = new Map<number, number>();
-
-            // 创建旧ID到新ID的映射
-            data.groups.forEach((oldGroup, index) => {
-                if (oldGroup.id && index < newGroups.length) {
-                    groupMap.set(oldGroup.id, newGroups[index].id as number);
+            // 导入站点数据（含账号密码）
+            for (const site of normalized.sites) {
+                if (site.id !== undefined) {
+                    await this.db
+                        .prepare(
+                            `INSERT INTO sites (id, group_id, name, url, icon, description, notes, username, password, order_num)
+                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+                        )
+                        .bind(
+                            site.id,
+                            site.group_id,
+                            site.name,
+                            site.url,
+                            site.icon || "",
+                            site.description || "",
+                            site.notes || "",
+                            site.username || "",
+                            site.password || "",
+                            site.order_num || 0
+                        )
+                        .run();
+                } else {
+                    await this.createSite(site);
                 }
-            });
-
-            // 导入站点数据，更新分组ID
-            for (const site of data.sites) {
-                const newGroupId = groupMap.get(site.group_id) || site.group_id;
-                await this.createSite({
-                    ...site,
-                    group_id: newGroupId,
-                });
             }
 
             // 导入配置数据
-            for (const [key, value] of Object.entries(data.configs)) {
+            for (const [key, value] of Object.entries(normalized.configs || {})) {
                 if (key !== "DB_INITIALIZED") {
                     // 跳过数据库初始化标志
                     await this.setConfig(key, value);
@@ -571,6 +660,56 @@ export class NavigationAPI {
             return false;
         }
     }
+}
+
+// 备份文件格式版本号
+export const EXPORT_VERSION = "1.1";
+
+// 兼容多种备份格式：
+// 1) 标准格式 { groups, sites, configs }
+// 2) 旧格式   { groups: [{ ...group, sites: [...] }], configs }
+export function normalizeImportData(data: ExportData | Record<string, unknown>): ExportData {
+    const raw = (data || {}) as {
+        groups?: (Group & { sites?: Site[] })[];
+        sites?: Site[];
+        configs?: Record<string, string>;
+        version?: string;
+        exportDate?: string;
+    };
+
+    const rawGroups = Array.isArray(raw.groups) ? raw.groups : [];
+    const groups: Group[] = [];
+    const nestedSites: Site[] = [];
+
+    rawGroups.forEach((group, index) => {
+        groups.push({
+            id: group.id,
+            name: group.name,
+            order_num: typeof group.order_num === "number" ? group.order_num : index,
+            created_at: group.created_at,
+            updated_at: group.updated_at,
+        });
+
+        if (Array.isArray(group.sites)) {
+            group.sites.forEach((site, siteIndex) => {
+                nestedSites.push({
+                    ...site,
+                    group_id: typeof site.group_id === "number" ? site.group_id : (group.id ?? 0),
+                    order_num: typeof site.order_num === "number" ? site.order_num : siteIndex,
+                });
+            });
+        }
+    });
+
+    const flatSites = Array.isArray(raw.sites) ? raw.sites : [];
+
+    return {
+        groups,
+        sites: flatSites.length > 0 ? flatSites : nestedSites,
+        configs: raw.configs && typeof raw.configs === "object" ? raw.configs : {},
+        version: raw.version || EXPORT_VERSION,
+        exportDate: raw.exportDate || new Date().toISOString(),
+    };
 }
 
 // 创建 API 辅助函数

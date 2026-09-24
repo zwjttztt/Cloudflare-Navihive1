@@ -21,11 +21,17 @@ import {
     Avatar,
     useTheme,
     SelectChangeEvent,
+    InputAdornment,
+    Tooltip,
 } from "@mui/material";
 import CloseIcon from "@mui/icons-material/Close";
 import DeleteIcon from "@mui/icons-material/Delete";
 import SaveIcon from "@mui/icons-material/Save";
 import CancelIcon from "@mui/icons-material/Cancel";
+import ContentCopyIcon from "@mui/icons-material/ContentCopy";
+import VisibilityIcon from "@mui/icons-material/Visibility";
+import VisibilityOffIcon from "@mui/icons-material/VisibilityOff";
+import { copyToClipboard } from "../utils/clipboard";
 
 interface SiteSettingsModalProps {
     site: Site;
@@ -51,11 +57,43 @@ export default function SiteSettingsModal({
         icon: site.icon || "",
         description: site.description || "",
         notes: site.notes || "",
+        username: site.username || "",
+        password: site.password || "",
         group_id: String(site.group_id),
     });
 
     // 用于预览图标
     const [iconPreview, setIconPreview] = useState<string | null>(site.icon || null);
+
+    // 密码是否明文显示
+    const [showPassword, setShowPassword] = useState(false);
+    // 复制成功提示（"" | "username" | "password"）
+    const [copiedField, setCopiedField] = useState<"" | "username" | "password">("");
+
+    // 一键复制账号或密码
+    const handleCopy = async (field: "username" | "password") => {
+        const value = formData[field];
+        if (!value) return;
+
+        const ok = await copyToClipboard(value);
+        if (ok) {
+            setCopiedField(field);
+            window.setTimeout(() => setCopiedField(""), 1500);
+        }
+    };
+
+    const copyButton = (field: "username" | "password", label: string) => (
+        <Tooltip title={copiedField === field ? "已复制" : label} open={copiedField === field || undefined}>
+            <IconButton
+                size='small'
+                onClick={() => handleCopy(field)}
+                disabled={!formData[field]}
+                aria-label={label}
+            >
+                <ContentCopyIcon fontSize='small' />
+            </IconButton>
+        </Tooltip>
+    );
 
     // 处理表单字段变化
     const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
@@ -137,7 +175,7 @@ export default function SiteSettingsModal({
             open={true}
             onClose={onClose}
             fullWidth
-            maxWidth='sm'
+            maxWidth='md'
             PaperProps={{
                 sx: {
                     borderRadius: 2,
@@ -299,6 +337,75 @@ export default function SiteSettingsModal({
                             variant='outlined'
                             size='small'
                         />
+
+                        <Divider />
+
+                        {/* 登录凭据：账号 / 密码 + 一键复制 */}
+                        <Box>
+                            <Typography variant='subtitle2' fontWeight='600' gutterBottom>
+                                登录凭据
+                            </Typography>
+                            <Typography variant='caption' color='text.secondary' display='block' sx={{ mb: 1.5 }}>
+                                保存后可随时一键复制；凭据会随备份文件一起导出，请妥善保管备份。
+                            </Typography>
+                            <Stack
+                                direction={{ xs: "column", sm: "row" }}
+                                spacing={2}
+                                sx={{ gap: { xs: 2, sm: 2 } }}
+                            >
+                                <TextField
+                                    id='username'
+                                    name='username'
+                                    label='账号'
+                                    fullWidth
+                                    value={formData.username || ""}
+                                    onChange={handleChange}
+                                    placeholder='登录用户名 / 邮箱 / 手机号'
+                                    variant='outlined'
+                                    size='small'
+                                    autoComplete='off'
+                                    InputProps={{
+                                        endAdornment: (
+                                            <InputAdornment position='end'>
+                                                {copyButton("username", "复制账号")}
+                                            </InputAdornment>
+                                        ),
+                                    }}
+                                />
+                                <TextField
+                                    id='password'
+                                    name='password'
+                                    label='密码'
+                                    fullWidth
+                                    type={showPassword ? "text" : "password"}
+                                    value={formData.password || ""}
+                                    onChange={handleChange}
+                                    placeholder='登录密码'
+                                    variant='outlined'
+                                    size='small'
+                                    autoComplete='new-password'
+                                    InputProps={{
+                                        endAdornment: (
+                                            <InputAdornment position='end'>
+                                                <IconButton
+                                                    size='small'
+                                                    onClick={() => setShowPassword(prev => !prev)}
+                                                    aria-label={showPassword ? "隐藏密码" : "显示密码"}
+                                                    edge={formData.password ? undefined : "end"}
+                                                >
+                                                    {showPassword ? (
+                                                        <VisibilityOffIcon fontSize='small' />
+                                                    ) : (
+                                                        <VisibilityIcon fontSize='small' />
+                                                    )}
+                                                </IconButton>
+                                                {copyButton("password", "复制密码")}
+                                            </InputAdornment>
+                                        ),
+                                    }}
+                                />
+                            </Stack>
+                        </Box>
                     </Stack>
                 </DialogContent>
 

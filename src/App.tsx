@@ -1,11 +1,12 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { NavigationClient } from "./API/client";
 import { MockNavigationClient } from "./API/mock";
-import { Site, Group } from "./API/http";
+import { Site, Group, ExportData, WebDavConfig, normalizeImportData } from "./API/http";
 import { GroupWithSites } from "./types";
 import ThemeToggle from "./components/ThemeToggle";
 import GroupCard from "./components/GroupCard";
 import LoginForm from "./components/LoginForm";
+import BackupDialog from "./components/BackupDialog";
 import "./App.css";
 import {
     DndContext,
@@ -61,6 +62,7 @@ import FileUploadIcon from "@mui/icons-material/FileUpload";
 import FileDownloadIcon from "@mui/icons-material/FileDownload";
 import LogoutIcon from "@mui/icons-material/Logout";
 import MenuIcon from "@mui/icons-material/Menu";
+import BackupIcon from "@mui/icons-material/Backup";
 
 // 根据环境选择使用真实API还是模拟API
 const isDevEnvironment = import.meta.env.DEV;
@@ -84,6 +86,17 @@ const DEFAULT_CONFIGS = {
     "site.name": "MyHomepage",
     "site.customCss": "",
 };
+
+// WebDAV 备份默认配置（保存在服务端 configs 表中，不会写入备份文件）
+const DEFAULT_WEBDAV_CONFIG: WebDavConfig = {
+    url: "",
+    username: "",
+    password: "",
+    path: "navihive-backup",
+};
+
+// WebDAV 配置在 configs 表中的键名前缀
+const WEBDAV_CONFIG_PREFIX = "webdav.";
 
 function App() {
     // 主题模式状态
@@ -132,6 +145,9 @@ function App() {
     const [openConfig, setOpenConfig] = useState(false);
     const [tempConfigs, setTempConfigs] = useState<Record<string, string>>(DEFAULT_CONFIGS);
 
+    // WebDAV 备份配置
+    const [webdavConfig, setWebdavConfig] = useState<WebDavConfig>(DEFAULT_WEBDAV_CONFIG);
+
     // 配置传感器，支持鼠标、触摸和键盘操作
     const sensors = useSensors(
         useSensor(PointerSensor, {
@@ -169,15 +185,14 @@ function App() {
     const [menuAnchorEl, setMenuAnchorEl] = useState<null | HTMLElement>(null);
     const openMenu = Boolean(menuAnchorEl);
 
-    // 新增导入对话框状态
-    const [openImport, setOpenImport] = useState(false);
-    const [importFile, setImportFile] = useState<File | null>(null);
-    const [importError, setImportError] = useState<string | null>(null);
-    const [importLoading, setImportLoading] = useState(false);
+    // 备份/恢复对话框状态
+    const [openBackup, setOpenBackup] = useState(false);
+    const [backupTab, setBackupTab] = useState(0);
 
     // 错误提示框状态
     const [snackbarOpen, setSnackbarOpen] = useState(false);
     const [snackbarMessage, setSnackbarMessage] = useState("");
+    const [snackbarSeverity, setSnackbarSeverity] = useState<"success" | "error" | "info">("error");
 
     // 菜单打开关闭
     const handleMenuOpen = (event: React.MouseEvent<HTMLButtonElement>) => {
@@ -279,18 +294,28 @@ function App() {
         setError("已退出登录，请重新登录");
     };
 
-    // 加载配置
+    // 加载配置（WebDAV 配置单独存放，避免被写进备份文件）
     const fetchConfigs = async () => {
         try {
             const configsData = await api.getConfigs();
-            setConfigs({
-                ...DEFAULT_CONFIGS,
-                ...configsData,
+
+            const nextConfigs: Record<string, string> = { ...DEFAULT_CONFIGS };
+            const nextWebdav: WebDavConfig = { ...DEFAULT_WEBDAV_CONFIG };
+
+            Object.entries(configsData || {}).forEach(([key, value]) => {
+                if (key.startsWith(WEBDAV_CONFIG_PREFIX)) {
+                    const field = key.slice(WEBDAV_CONFIG_PREFIX.length);
+                    if (field === "url" || field === "username" || field === "password" || field === "path") {
+                        nextWebdav[field] = value;
+                    }
+                } else {
+                    nextConfigs[key] = value;
+                }
             });
-            setTempConfigs({
-                ...DEFAULT_CONFIGS,
-                ...configsData,
-            });
+
+            setConfigs(nextConfigs);
+            setTempConfigs({ ...nextConfigs });
+            setWebdavConfig(nextWebdav);
         } catch (error) {
             console.error("加载配置失败:", error);
             // 使用默认配置
@@ -356,10 +381,16 @@ function App() {
         }
     }, [darkMode]);
 
+    // 统一提示函数
+    const notify = (message: string, severity: "success" | "error" | "info" = "info") => {
+        setSnackbarMessage(message);
+        setSnackbarSeverity(severity);
+        setSnackbarOpen(true);
+    };
+
     // 处理错误的函数
     const handleError = (errorMessage: string) => {
-        setSnackbarMessage(errorMessage);
-        setSnackbarOpen(true);
+        notify(errorMessage, "error");
         console.error(errorMessage);
     };
 
@@ -752,136 +783,123 @@ function App() {
         }
     };
 
-    // 处理导出数据
-    const handleExportData = async () => {
-        try {
-            setLoading(true);
-            const exportData = {
-                groups: groups.map(group => ({
-                    id: group.id,
-                    name: group.name,
-                    order_num: group.order_num,
-                    sites: group.sites,
-                })),
-                configs: configs,
-            };
+    // 打开备份对话框（0=备份，1=恢复）
+    const handleOpenBackup = (tab = 0) => {
+        setBackupTab(tab);
+        setOpenBackup(true);
+        handleMenuClose();
+    };
 
-            // 创建并下载JSON文件
-            const dataStr = JSON.stringify(exportData, null, 2);
-            const dataUri = "data:application/json;charset=utf-8," + encodeURIComponent(dataStr);
+    const handleCloseBackup = () => {
+        setOpenBackup(false);
+    };
+
+    // 构造完整备份数据（分组 + 站点（含账号密码）+ 网站配置）
+    const buildExportData = (): ExportData => {
+        const exportConfigs: Record<string, string> = {};
+        Object.entries(configs).forEach(([key, value]) => {
+            // WebDAV 凭据属于隐私信息，不写入备份文件
+            if (!key.startsWith(WEBDAV_CONFIG_PREFIX)) {
+                exportConfigs[key] = value;
+            }
+        });
+
+        return {
+            groups: groups.map(group => ({
+                id: group.id,
+                name: group.name,
+                order_num: group.order_num,
+            })),
+            sites: groups.flatMap(group => group.sites.map(site => ({ ...site }))),
+            configs: exportConfigs,
+            version: "1.1",
+            exportDate: new Date().toISOString(),
+        };
+    };
+
+    // 备份到本地：下载 JSON 文件
+    const handleDownloadLocal = () => {
+        try {
+            const dataStr = JSON.stringify(buildExportData(), null, 2);
+            const blob = new Blob([dataStr], { type: "application/json;charset=utf-8" });
+            const url = URL.createObjectURL(blob);
 
             const exportFileName = `导航站备份_${new Date().toISOString().slice(0, 10)}.json`;
 
             const linkElement = document.createElement("a");
-            linkElement.setAttribute("href", dataUri);
+            linkElement.setAttribute("href", url);
             linkElement.setAttribute("download", exportFileName);
+            document.body.appendChild(linkElement);
             linkElement.click();
+            document.body.removeChild(linkElement);
+            window.setTimeout(() => URL.revokeObjectURL(url), 1000);
         } catch (error) {
             console.error("导出数据失败:", error);
             handleError("导出数据失败: " + (error instanceof Error ? error.message : "未知错误"));
-        } finally {
-            setLoading(false);
         }
     };
 
-    // 处理导入对话框
-    const handleOpenImport = () => {
-        setImportFile(null);
-        setImportError(null);
-        setOpenImport(true);
-        handleMenuClose();
-    };
-
-    const handleCloseImport = () => {
-        setOpenImport(false);
-    };
-
-    // 处理文件选择
-    const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-        if (e.target.files && e.target.files.length > 0) {
-            setImportFile(e.target.files[0]);
-            setImportError(null);
-        }
-    };
-
-    // 处理导入数据
-    const handleImportData = async () => {
-        if (!importFile) {
-            handleError("请选择要导入的文件");
-            return;
-        }
-
+    // 保存 WebDAV 配置到服务端
+    const handleSaveWebdavConfig = async (config: WebDavConfig) => {
         try {
-            setImportLoading(true);
-            setImportError(null);
+            await api.setConfig(`${WEBDAV_CONFIG_PREFIX}url`, config.url);
+            await api.setConfig(`${WEBDAV_CONFIG_PREFIX}username`, config.username);
+            await api.setConfig(`${WEBDAV_CONFIG_PREFIX}password`, config.password);
+            await api.setConfig(`${WEBDAV_CONFIG_PREFIX}path`, config.path || DEFAULT_WEBDAV_CONFIG.path);
+            setWebdavConfig(config);
+        } catch (error) {
+            console.error("保存 WebDAV 配置失败:", error);
+            handleError("保存 WebDAV 配置失败: " + (error instanceof Error ? error.message : "未知错误"));
+            throw error;
+        }
+    };
 
-            const fileReader = new FileReader();
-            fileReader.readAsText(importFile, "UTF-8");
+    // 导入/恢复数据：overwrite=true 覆盖恢复（服务端整体导入），false 合并追加
+    const handleImportBackup = async (data: ExportData, overwrite: boolean) => {
+        try {
+            const normalized = normalizeImportData(data);
 
-            fileReader.onload = async e => {
-                try {
-                    if (!e.target?.result) {
-                        throw new Error("读取文件失败");
-                    }
-
-                    const importData = JSON.parse(e.target.result as string);
-
-                    // 验证导入数据格式
-                    if (!importData.groups || !Array.isArray(importData.groups)) {
-                        throw new Error("导入文件格式错误：缺少分组数据");
-                    }
-
-                    // 导入分组和站点
-                    // 这里简化处理，实际应用中可能需要更复杂的导入逻辑
-                    for (const group of importData.groups) {
-                        // 创建分组
-                        const createdGroup = await api.createGroup({
-                            name: group.name,
-                            order_num: group.order_num,
-                        } as Group);
-
-                        // 创建站点
-                        if (group.sites && Array.isArray(group.sites)) {
-                            for (const site of group.sites) {
-                                await api.createSite({
-                                    ...site,
-                                    group_id: createdGroup.id,
-                                    id: undefined, // 不传入id，让数据库自动生成新id
-                                } as Site);
-                            }
-                        }
-                    }
-
-                    // 导入配置
-                    if (importData.configs) {
-                        for (const [key, value] of Object.entries(importData.configs)) {
-                            await api.setConfig(key, value as string);
-                        }
-                    }
-
-                    // 刷新数据
-                    await fetchData();
-                    await fetchConfigs();
-                    handleCloseImport();
-                } catch (error) {
-                    console.error("解析导入数据失败:", error);
-                    handleError(
-                        "解析导入数据失败: " + (error instanceof Error ? error.message : "未知错误")
-                    );
-                } finally {
-                    setImportLoading(false);
+            if (overwrite) {
+                const ok = await api.importData(normalized);
+                if (!ok) {
+                    throw new Error("服务端导入失败");
                 }
-            };
+            } else {
+                // 合并导入：新建分组并记录新旧ID映射，再追加站点
+                const groupIdMap = new Map<number, number>();
 
-            fileReader.onerror = () => {
-                handleError("读取文件失败");
-                setImportLoading(false);
-            };
+                for (const group of normalized.groups) {
+                    const created = await api.createGroup({
+                        name: group.name,
+                        order_num: group.order_num ?? 0,
+                    } as Group);
+
+                    if (group.id !== undefined && created && created.id !== undefined) {
+                        groupIdMap.set(group.id, created.id);
+                    }
+                }
+
+                for (const site of normalized.sites) {
+                    await api.createSite({
+                        ...site,
+                        id: undefined,
+                        group_id: groupIdMap.get(site.group_id) ?? site.group_id,
+                    } as Site);
+                }
+
+                for (const [key, value] of Object.entries(normalized.configs || {})) {
+                    if (key !== "DB_INITIALIZED") {
+                        await api.setConfig(key, value);
+                    }
+                }
+            }
+
+            await fetchData();
+            await fetchConfigs();
         } catch (error) {
             console.error("导入数据失败:", error);
             handleError("导入数据失败: " + (error instanceof Error ? error.message : "未知错误"));
-        } finally {
-            setImportLoading(false);
+            throw error;
         }
     };
 
@@ -969,7 +987,7 @@ function App() {
             >
                 <Alert
                     onClose={handleCloseSnackbar}
-                    severity='error'
+                    severity={snackbarSeverity}
                     variant='filled'
                     sx={{ width: "100%" }}
                 >
@@ -1086,6 +1104,20 @@ function App() {
                                     </Button>
 
                                     <Button
+                                        variant='contained'
+                                        color='secondary'
+                                        startIcon={<BackupIcon />}
+                                        onClick={() => handleOpenBackup(0)}
+                                        size="small"
+                                        sx={{ 
+                                            minWidth: 'auto',
+                                            fontSize: { xs: '0.75rem', sm: '0.875rem' }
+                                        }}
+                                    >
+                                        备份
+                                    </Button>
+
+                                    <Button
                                         variant='outlined'
                                         color='primary'
                                         startIcon={<MenuIcon />}
@@ -1123,13 +1155,13 @@ function App() {
                                             <ListItemText>网站设置</ListItemText>
                                         </MenuItem>
                                         <Divider />
-                                        <MenuItem onClick={handleExportData}>
+                                        <MenuItem onClick={() => handleOpenBackup(0)}>
                                             <ListItemIcon>
                                                 <FileDownloadIcon fontSize='small' />
                                             </ListItemIcon>
                                             <ListItemText>导出数据</ListItemText>
                                         </MenuItem>
-                                        <MenuItem onClick={handleOpenImport}>
+                                        <MenuItem onClick={() => handleOpenBackup(1)}>
                                             <ListItemIcon>
                                                 <FileUploadIcon fontSize='small' />
                                             </ListItemIcon>
@@ -1493,85 +1525,19 @@ function App() {
                         </DialogActions>
                     </Dialog>
 
-                    {/* 导入数据对话框 */}
-                    <Dialog 
-                        open={openImport} 
-                        onClose={handleCloseImport} 
-                        maxWidth='sm' 
-                        fullWidth
-                        PaperProps={{
-                            sx: {
-                                m: { xs: 2, sm: 'auto' },
-                                width: { xs: 'calc(100% - 32px)', sm: 'auto' }
-                            }
-                        }}
-                    >
-                        <DialogTitle>
-                            导入数据
-                            <IconButton
-                                aria-label='close'
-                                onClick={handleCloseImport}
-                                sx={{
-                                    position: "absolute",
-                                    right: 8,
-                                    top: 8,
-                                }}
-                            >
-                                <CloseIcon />
-                            </IconButton>
-                        </DialogTitle>
-                        <DialogContent>
-                            <DialogContentText sx={{ mb: 2 }}>
-                                请选择要导入的JSON文件，导入将覆盖现有数据。
-                            </DialogContentText>
-                            <Box sx={{ mb: 2 }}>
-                                <Button
-                                    variant='outlined'
-                                    component='label'
-                                    startIcon={<FileUploadIcon />}
-                                    sx={{ mb: 2 }}
-                                >
-                                    选择文件
-                                    <input
-                                        type='file'
-                                        hidden
-                                        accept='.json'
-                                        onChange={handleFileSelect}
-                                    />
-                                </Button>
-                                {importFile && (
-                                    <Typography variant='body2' sx={{ mt: 1 }}>
-                                        已选择: {importFile.name}
-                                    </Typography>
-                                )}
-                            </Box>
-                            {importError && (
-                                <Alert severity='error' sx={{ mb: 2 }}>
-                                    {importError}
-                                </Alert>
-                            )}
-                        </DialogContent>
-                        <DialogActions sx={{ px: 3, pb: 3 }}>
-                            <Button onClick={handleCloseImport} variant='outlined'>
-                                取消
-                            </Button>
-                            <Button
-                                onClick={handleImportData}
-                                variant='contained'
-                                color='primary'
-                                disabled={!importFile || importLoading}
-                                startIcon={
-                                    importLoading ? (
-                                        <CircularProgress size={20} />
-                                    ) : (
-                                        <FileUploadIcon />
-                                    )
-                                }
-                            >
-                                {importLoading ? "导入中..." : "导入"}
-                            </Button>
-                        </DialogActions>
-                    </Dialog>
+                    {/* 数据备份与恢复对话框 */}
+                    <BackupDialog
+                        open={openBackup}
+                        initialTab={backupTab}
+                        client={api}
+                        webdavConfig={webdavConfig}
+                        onSaveWebdavConfig={handleSaveWebdavConfig}
+                        onBuildExportData={buildExportData}
+                        onDownloadLocal={handleDownloadLocal}
+                        onImportData={handleImportBackup}
+                        onNotify={notify}
+                        onClose={handleCloseBackup}
+                    />
 
                 </Container>
             </Box>
