@@ -24,13 +24,13 @@
         {
             "binding": "DB",
             "database_name": "navigation-db",
-            "database_id": "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+            "database_id": "***REMOVED***"
         }
     ],
     "vars": {
         "AUTH_ENABLED": "true",
         "AUTH_USERNAME": "admin",
-        "AUTH_PASSWORD": "change-me-after-deploy",
-        "AUTH_SECRET": "replace-with-a-long-random-secret"
+        "AUTH_PASSWORD": "***REMOVED***",
+        "AUTH_SECRET": "***REMOVED***"
     }
 }
