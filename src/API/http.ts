@@ -138,26 +138,8 @@ export class NavigationAPI {
             // 如果发生错误，可能是配置表不存在，继续初始化
         }
 
-        // 先创建groups表
-        await this.db.exec(
-            `CREATE TABLE IF NOT EXISTS groups (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, order_num INTEGER NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`
-        );
-
-        // 再创建sites表
-        await this.db.exec(
-            `CREATE TABLE IF NOT EXISTS sites (id INTEGER PRIMARY KEY AUTOINCREMENT, group_id INTEGER NOT NULL, name TEXT NOT NULL, url TEXT NOT NULL, icon TEXT, description TEXT, notes TEXT, order_num INTEGER NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE);`
-        );
-
-        // 创建全局配置表
-        await this.db.exec(`CREATE TABLE IF NOT EXISTS configs (
-            key TEXT PRIMARY KEY,
-            value TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );`);
-
-        // 补齐站点凭据字段（历史数据库升级用）
-        await this.runMigrations();
+        // 建表并补齐字段（幂等，重复执行无副作用）
+        await this.migrate();
 
         // 设置初始化标志
         await this.setConfig("DB_INITIALIZED", "true");
@@ -176,6 +158,11 @@ export class NavigationAPI {
 
     private async runMigrations(): Promise<void> {
         const statements = [
+            // 保证表结构存在（新建的 D1 库即使没访问过 /api/init 也能直接用）
+            `CREATE TABLE IF NOT EXISTS groups (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, order_num INTEGER NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`,
+            `CREATE TABLE IF NOT EXISTS sites (id INTEGER PRIMARY KEY AUTOINCREMENT, group_id INTEGER NOT NULL, name TEXT NOT NULL, url TEXT NOT NULL, icon TEXT, description TEXT, notes TEXT, username TEXT, password TEXT, order_num INTEGER NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE);`,
+            `CREATE TABLE IF NOT EXISTS configs (key TEXT PRIMARY KEY, value TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`,
+            // 旧库补齐站点凭据字段
             "ALTER TABLE sites ADD COLUMN username TEXT",
             "ALTER TABLE sites ADD COLUMN password TEXT",
         ];
