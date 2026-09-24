@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { NavigationClient } from "./API/client";
 import { MockNavigationClient } from "./API/mock";
 import { Site, Group } from "./API/http";
@@ -16,6 +16,7 @@ import {
     useSensor,
     useSensors,
     DragEndEvent,
+    DragOverEvent,
 } from "@dnd-kit/core";
 import {
     arrayMove,
@@ -33,7 +34,6 @@ import {
     CircularProgress,
     Alert,
     Stack,
-    Paper,
     createTheme,
     ThemeProvider,
     CssBaseline,
@@ -54,7 +54,6 @@ import {
 import SortIcon from "@mui/icons-material/Sort";
 import SaveIcon from "@mui/icons-material/Save";
 import CancelIcon from "@mui/icons-material/Cancel";
-import GitHubIcon from "@mui/icons-material/GitHub";
 import AddIcon from "@mui/icons-material/Add";
 import CloseIcon from "@mui/icons-material/Close";
 import SettingsIcon from "@mui/icons-material/Settings";
@@ -81,8 +80,8 @@ enum SortMode {
 
 // 默认配置
 const DEFAULT_CONFIGS = {
-    "site.title": "导航站",
-    "site.name": "导航站",
+    "site.title": "MyHomepage",
+    "site.name": "MyHomepage",
     "site.customCss": "",
 };
 
@@ -118,6 +117,8 @@ function App() {
     const [error, setError] = useState<string | null>(null);
     const [sortMode, setSortMode] = useState<SortMode>(SortMode.None);
     const [currentSortingGroupId, setCurrentSortingGroupId] = useState<number | null>(null);
+    // 记录进入站点排序时每个站点所属的原始分组，用于保存时识别跨组移动
+    const siteOriginalGroupRef = useRef<Map<number, number>>(new Map());
 
     // 新增认证状态
     const [isAuthChecking, setIsAuthChecking] = useState(true);
@@ -497,6 +498,14 @@ function App() {
         console.log("开始站点排序");
         setSortMode(SortMode.SiteSort);
         setCurrentSortingGroupId(groupId);
+        // 记录每个站点当前的原始分组，用于保存时识别跨组移动
+        const map = new Map<number, number>();
+        groups.forEach(g => {
+            g.sites.forEach(s => {
+                if (s.id !== undefined) map.set(s.id, g.id as number);
+            });
+        });
+        siteOriginalGroupRef.current = map;
     };
 
     // 取消排序
@@ -518,6 +527,112 @@ function App() {
             if (oldIndex !== -1 && newIndex !== -1) {
                 setGroups(arrayMove(groups, oldIndex, newIndex));
             }
+        }
+    };
+
+    // 站点跨分组拖拽：同一分组内重排，跨分组则把卡片移动到目标分组
+    const moveSiteAcrossGroups = (activeId: string, overId: string) => {
+        if (!overId || activeId === overId) return;
+        if (!activeId.startsWith("site-")) return;
+
+        const activeSiteId = Number(activeId.slice("site-".length));
+        const overSiteId = overId.startsWith("site-") ? Number(overId.slice("site-".length)) : undefined;
+        const overGroupId = overId.startsWith("group-") ? Number(overId.slice("group-".length)) : undefined;
+
+        setGroups(prev => {
+            const activeContainerIdx = prev.findIndex(g => g.sites.some(s => s.id === activeSiteId));
+            if (activeContainerIdx === -1) return prev;
+
+            let overContainerIdx: number;
+            let overIndex: number;
+            if (overSiteId !== undefined) {
+                overContainerIdx = prev.findIndex(g => g.sites.some(s => s.id === overSiteId));
+                if (overContainerIdx === -1) return prev;
+                overIndex = prev[overContainerIdx].sites.findIndex(s => s.id === overSiteId);
+                if (overIndex === -1) return prev;
+            } else if (overGroupId !== undefined) {
+                overContainerIdx = prev.findIndex(g => g.id === overGroupId);
+                if (overContainerIdx === -1) return prev;
+                overIndex = prev[overContainerIdx].sites.length;
+            } else {
+                return prev;
+            }
+
+            const moved = prev[activeContainerIdx].sites.find(s => s.id === activeSiteId);
+            if (!moved) return prev;
+
+            const next = prev.map(g => ({ ...g, sites: [...g.sites] }));
+
+            // 同一分组内重排
+            if (activeContainerIdx === overContainerIdx) {
+                const c = activeContainerIdx;
+                const oldIndex = next[c].sites.findIndex(s => s.id === activeSiteId);
+                const newIndex = Math.min(overIndex, next[c].sites.length - 1);
+                next[c] = { ...next[c], sites: arrayMove(next[c].sites, oldIndex, newIndex) };
+                return next;
+            }
+
+            // 跨分组移动：先移除，再插入目标分组，并更新 group_id
+            const movedSite = { ...moved, group_id: prev[overContainerIdx].id as number };
+            next[activeContainerIdx] = {
+                ...next[activeContainerIdx],
+                sites: next[activeContainerIdx].sites.filter(s => s.id !== activeSiteId),
+            };
+            const target = next[overContainerIdx].sites;
+            const insertIdx = Math.min(overIndex, target.length);
+            next[overContainerIdx] = {
+                ...next[overContainerIdx],
+                sites: [...target.slice(0, insertIdx), movedSite, ...target.slice(insertIdx)],
+            };
+            return next;
+        });
+    };
+
+    const handleSiteSortDragOver = (event: DragOverEvent) => {
+        const { active, over } = event;
+        if (!over) return;
+        moveSiteAcrossGroups(String(active.id), String(over.id));
+    };
+
+    const handleSiteSortDragEnd = (event: DragEndEvent) => {
+        const { active, over } = event;
+        if (!over) return;
+        moveSiteAcrossGroups(String(active.id), String(over.id));
+    };
+
+    // 保存站点排序（支持跨分组移动）
+    const handleSaveSiteSort = async () => {
+        try {
+            const orders: { id: number; order_num: number }[] = [];
+            const groupChanges: Site[] = [];
+            groups.forEach(g => {
+                g.sites.forEach((site, idx) => {
+                    orders.push({ id: site.id as number, order_num: idx });
+                    const orig = siteOriginalGroupRef.current.get(site.id as number);
+                    if (orig !== undefined && orig !== g.id) {
+                        groupChanges.push({ ...site, group_id: g.id, order_num: idx });
+                    }
+                });
+            });
+
+            if (orders.length > 0) {
+                const ok = await api.updateSiteOrder(orders);
+                if (!ok) throw new Error("更新排序失败");
+            }
+            for (const sc of groupChanges) {
+                const ok = await api.updateSite(sc.id as number, {
+                    group_id: sc.group_id,
+                    order_num: sc.order_num,
+                });
+                if (!ok) throw new Error("更新分组失败");
+            }
+
+            await fetchData();
+            setSortMode(SortMode.None);
+            setCurrentSortingGroupId(null);
+        } catch (error) {
+            console.error("保存站点排序失败:", error);
+            handleError("保存站点排序失败: " + (error as Error).message);
         }
     };
 
@@ -925,6 +1040,21 @@ function App() {
                                             保存分组顺序
                                         </Button>
                                     )}
+                                    {sortMode === SortMode.SiteSort && (
+                                        <Button
+                                            variant='contained'
+                                            color='primary'
+                                            startIcon={<SaveIcon />}
+                                            onClick={handleSaveSiteSort}
+                                            size="small"
+                                            sx={{ 
+                                                minWidth: 'auto',
+                                                fontSize: { xs: '0.75rem', sm: '0.875rem' }
+                                            }}
+                                        >
+                                            保存
+                                        </Button>
+                                    )}
                                     <Button
                                         variant='outlined'
                                         color='inherit'
@@ -1073,6 +1203,32 @@ function App() {
                                             ))}
                                         </Stack>
                                     </SortableContext>
+                                </DndContext>
+                            ) : sortMode === SortMode.SiteSort ? (
+                                <DndContext
+                                    sensors={sensors}
+                                    collisionDetection={closestCenter}
+                                    onDragOver={handleSiteSortDragOver}
+                                    onDragEnd={handleSiteSortDragEnd}
+                                >
+                                    <Stack spacing={5}>
+                                        {groups.map(group => (
+                                            <GroupCard
+                                                key={`group-${group.id}`}
+                                                group={group}
+                                                sortMode="SiteSort"
+                                                currentSortingGroupId={null}
+                                                globalSiteSort
+                                                onUpdate={handleSiteUpdate}
+                                                onDelete={handleSiteDelete}
+                                                onSaveSiteOrder={handleSaveSiteOrder}
+                                                onStartSiteSort={startSiteSort}
+                                                onAddSite={handleOpenAddSite}
+                                                onUpdateGroup={handleGroupUpdate}
+                                                onDeleteGroup={handleGroupDelete}
+                                            />
+                                        ))}
+                                    </Stack>
                                 </DndContext>
                             ) : (
                                 <Stack spacing={5}>
@@ -1417,40 +1573,6 @@ function App() {
                         </DialogActions>
                     </Dialog>
 
-                    {/* GitHub角标 - 在移动端调整位置 */}
-                    <Box
-                        sx={{
-                            position: "fixed",
-                            bottom: { xs: 8, sm: 16 },
-                            right: { xs: 8, sm: 16 },
-                            zIndex: 10,
-                        }}
-                    >
-                        <Paper
-                            component='a'
-                            href='https://github.com/zqq-nuli/Navihive'
-                            target='_blank'
-                            rel='noopener noreferrer'
-                            elevation={2}
-                            sx={{
-                                display: "flex",
-                                alignItems: "center",
-                                p: 1,
-                                borderRadius: 10,
-                                bgcolor: "background.paper",
-                                color: "text.secondary",
-                                transition: "all 0.3s ease-in-out",
-                                "&:hover": {
-                                    bgcolor: "action.hover",
-                                    color: "text.primary",
-                                    boxShadow: 4,
-                                },
-                                textDecoration: "none",
-                            }}
-                        >
-                            <GitHubIcon />
-                        </Paper>
-                    </Box>
                 </Container>
             </Box>
         </ThemeProvider>
