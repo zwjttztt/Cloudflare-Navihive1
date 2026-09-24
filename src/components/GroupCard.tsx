@@ -12,6 +12,7 @@ import {
     useSensor,
     useSensors,
     DragEndEvent,
+    useDroppable,
 } from "@dnd-kit/core";
 import {
     arrayMove,
@@ -32,6 +33,7 @@ interface GroupCardProps {
     index?: number; // 用于Draggable的索引，仅在分组排序模式下需要
     sortMode: "None" | "GroupSort" | "SiteSort";
     currentSortingGroupId: number | null;
+    globalSiteSort?: boolean; // 是否为跨分组站点排序模式（由父级统一 DndContext 驱动）
     onUpdate: (updatedSite: Site) => void;
     onDelete: (siteId: number) => void;
     onSaveSiteOrder: (groupId: number, sites: Site[]) => void;
@@ -45,6 +47,7 @@ const GroupCard: React.FC<GroupCardProps> = ({
     group,
     sortMode,
     currentSortingGroupId,
+    globalSiteSort = false,
     onUpdate,
     onDelete,
     onSaveSiteOrder,
@@ -57,6 +60,12 @@ const GroupCard: React.FC<GroupCardProps> = ({
     const [sites, setSites] = useState<Site[]>(group.sites);
     // 添加编辑弹窗的状态
     const [editDialogOpen, setEditDialogOpen] = useState(false);
+
+    // 分组作为跨组拖拽的放置容器
+    const { setNodeRef: setGroupDropRef, isOver: isGroupOver } = useDroppable({
+        id: `group-${group.id}`,
+        data: { type: "group" },
+    });
 
     // 配置传感器，支持鼠标、触摸和键盘操作
     const sensors = useSensors(
@@ -121,6 +130,70 @@ const GroupCard: React.FC<GroupCardProps> = ({
 
     // 渲染站点卡片区域
     const renderSites = () => {
+        // 跨分组排序模式：由父级统一 DndContext 驱动，所有分组的卡片都可拖拽
+        if (globalSiteSort) {
+            return (
+                <Box ref={setGroupDropRef} sx={{ width: "100%" }}>
+                    <SortableContext
+                        items={group.sites.map((site, idx) => `site-${site.id || idx}`)}
+                        strategy={horizontalListSortingStrategy}
+                    >
+                        <Box
+                            sx={{
+                                display: "flex",
+                                flexWrap: "wrap",
+                                margin: -1, // 抵消内部padding，确保边缘对齐
+                                minHeight: 72,
+                                borderRadius: 3,
+                                border: "1.5px dashed",
+                                borderColor: isGroupOver ? "primary.main" : "transparent",
+                                bgcolor: isGroupOver ? "action.hover" : "transparent",
+                                transition: "all 0.2s ease",
+                            }}
+                        >
+                            {group.sites.map((site, idx) => (
+                                <Box
+                                    key={site.id || idx}
+                                    sx={{
+                                        width: {
+                                            xs: "50%",
+                                            sm: "50%",
+                                            md: "25%",
+                                            lg: "25%",
+                                            xl: "25%",
+                                        },
+                                        padding: 1, // 内部间距，更均匀的分布
+                                        boxSizing: "border-box", // 确保padding不影响宽度计算
+                                    }}
+                                >
+                                    <SiteCard
+                                        site={site}
+                                        onUpdate={onUpdate}
+                                        onDelete={onDelete}
+                                        isEditMode={true}
+                                        index={idx}
+                                    />
+                                </Box>
+                            ))}
+                            {group.sites.length === 0 && (
+                                <Box
+                                    width='100%'
+                                    display='flex'
+                                    justifyContent='center'
+                                    alignItems='center'
+                                    minHeight={72}
+                                >
+                                    <Typography variant='body2' color='text.secondary'>
+                                        空分组，可将其他分组的卡片拖到这里
+                                    </Typography>
+                                </Box>
+                            )}
+                        </Box>
+                    </SortableContext>
+                </Box>
+            );
+        }
+
         // 使用本地状态中的站点数据
         const sitesToRender = isCurrentEditingGroup ? sites : group.sites;
 
@@ -254,6 +327,16 @@ const GroupCard: React.FC<GroupCardProps> = ({
                 >
                     {group.name}
                 </Typography>
+
+                {globalSiteSort && (
+                    <Typography
+                        variant='caption'
+                        color='text.secondary'
+                        sx={{ display: { xs: 'none', sm: 'inline' }, alignSelf: 'center' }}
+                    >
+                        可拖拽卡片到其他分组
+                    </Typography>
+                )}
 
                 <Box 
                     sx={{ 
