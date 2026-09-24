@@ -83,9 +83,11 @@ export class NavigationClient {
         });
 
         if (response.status === 401) {
+            // 带上服务端给出的具体原因（未登录 / 令牌无效 / 已过期），方便排查
+            const reason = await response.text().catch(() => "");
             // 清除无效令牌
             this.clearToken();
-            throw new Error("认证已过期或无效，请重新登录");
+            throw new Error(reason ? `认证失败：${reason}` : "认证已过期或无效，请重新登录");
         }
 
         if (!response.ok) {

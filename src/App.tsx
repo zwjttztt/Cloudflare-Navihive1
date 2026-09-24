@@ -256,20 +256,24 @@ function App() {
             setLoginLoading(true);
             setLoginError(null);
 
-            // 调用登录接口
-            const success = await api.login(username, password);
+            // 调用登录接口（返回的是 LoginResponse 对象，必须判断 success 字段）
+            const result = await api.login(username, password);
 
-            if (success) {
+            if (result && result.success) {
                 // 登录成功
                 setIsAuthenticated(true);
                 setIsAuthRequired(false);
+                setLoginError(null);
                 // 加载数据
                 await fetchData();
                 await fetchConfigs();
             } else {
-                // 登录失败
-                handleError("用户名或密码错误");
+                // 登录失败：账号或密码不对
+                const message = result?.message || "用户名或密码错误";
+                setLoginError(message);
+                handleError(message);
                 setIsAuthenticated(false);
+                setIsAuthRequired(true);
             }
         } catch (error) {
             console.error("登录失败:", error);
