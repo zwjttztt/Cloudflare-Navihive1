@@ -3,6 +3,8 @@ import { NavigationClient } from "./API/client";
 import { MockNavigationClient } from "./API/mock";
 import { Site, Group, ExportData, BootstrapData, WebDavConfig, normalizeImportData } from "./API/http";
 import { GroupWithSites } from "./types";
+import { AppConfigProvider } from "./context/AppConfigContext";
+import { DEFAULT_ICON_API, resolveIconApiUrl } from "./utils/iconApi";
 import ThemeToggle from "./components/ThemeToggle";
 import GroupCard from "./components/GroupCard";
 import LoginForm from "./components/LoginForm";
@@ -51,6 +53,8 @@ import {
     ListItemIcon,
     ListItemText,
     Snackbar,
+    Slider,
+    Tooltip,
 } from "@mui/material";
 import SortIcon from "@mui/icons-material/Sort";
 import SaveIcon from "@mui/icons-material/Save";
@@ -62,7 +66,7 @@ import FileUploadIcon from "@mui/icons-material/FileUpload";
 import FileDownloadIcon from "@mui/icons-material/FileDownload";
 import LogoutIcon from "@mui/icons-material/Logout";
 import MenuIcon from "@mui/icons-material/Menu";
-import BackupIcon from "@mui/icons-material/Backup";
+import AutoFixHighIcon from "@mui/icons-material/AutoFixHigh";
 
 // 根据环境选择使用真实API还是模拟API
 const isDevEnvironment = import.meta.env.DEV;
@@ -85,6 +89,11 @@ const DEFAULT_CONFIGS = {
     "site.title": "MyHomepage",
     "site.name": "MyHomepage",
     "site.customCss": "",
+    // 一键获取图标所用的 API 模板，{domain} 会被替换成站点域名
+    "site.iconApi": DEFAULT_ICON_API,
+    // 背景图片与蒙版透明度（0~1，越大背景图越清晰）
+    "site.backgroundImage": "",
+    "site.backgroundMaskOpacity": "0.15",
 };
 
 // WebDAV 备份默认配置（保存在服务端 configs 表中，不会写入备份文件）
@@ -177,6 +186,8 @@ function App() {
         icon: "",
         description: "",
         notes: "",
+        username: "",
+        password: "",
         order_num: 0,
         group_id: 0,
     });
@@ -441,6 +452,23 @@ function App() {
         void fetchData({ silent: true });
     };
 
+    // 保存有新改动时刷新页面，确保看到的是服务端最新数据
+    // （首屏现在是单次 bootstrap 请求，重载很快）
+    const reloadPage = () => {
+        window.setTimeout(() => window.location.reload(), 150);
+    };
+
+    // 两个站点是否存在实际差异（没改动就不必刷新）
+    const sitesDiffer = (a: Site, b: Site): boolean =>
+        a.name !== b.name ||
+        a.url !== b.url ||
+        (a.icon || "") !== (b.icon || "") ||
+        (a.description || "") !== (b.description || "") ||
+        (a.notes || "") !== (b.notes || "") ||
+        (a.username || "") !== (b.username || "") ||
+        (a.password || "") !== (b.password || "") ||
+        a.group_id !== b.group_id;
+
     // ---- 本地状态更新（避免每次修改都整页重新加载） ----
     const upsertSiteLocally = (site: Site) => {
         setGroups(prev =>
@@ -475,10 +503,22 @@ function App() {
     // 更新站点
     const handleSiteUpdate = async (updatedSite: Site) => {
         try {
-            if (updatedSite.id) {
-                const saved = await api.updateSite(updatedSite.id, updatedSite);
-                // 就地更新本地状态，界面即时生效，不再整页重新加载
-                upsertSiteLocally(saved && saved.id !== undefined ? saved : updatedSite);
+            if (!updatedSite.id) return;
+
+            // 先判断是否真的有修改：没改就别刷新页面
+            const current = groups
+                .flatMap(group => group.sites)
+                .find(item => item.id === updatedSite.id);
+            const changed = !current || sitesDiffer(current, updatedSite);
+
+            const saved = await api.updateSite(updatedSite.id, updatedSite);
+            // 就地更新本地状态，界面即时生效
+            upsertSiteLocally(saved && saved.id !== undefined ? saved : updatedSite);
+
+            if (changed) {
+                // 有修改：保存完成后刷新页面，展示最新数据
+                reloadPage();
+            } else {
                 syncInBackground();
             }
         } catch (error) {
@@ -759,6 +799,8 @@ function App() {
             icon: "",
             description: "",
             notes: "",
+            username: "",
+            password: "",
             group_id: groupId,
             order_num: maxOrderNum,
         });
@@ -777,6 +819,17 @@ function App() {
         });
     };
 
+    // 新增站点时：按配置的图标 API 一键生成图标 URL
+    const handleFetchNewSiteIcon = () => {
+        const resolved = resolveIconApiUrl(configs["site.iconApi"], newSite.url || "");
+        if (!resolved) {
+            handleError("请先填写有效的站点URL，再获取图标");
+            return;
+        }
+        setNewSite(prev => ({ ...prev, icon: resolved }));
+        notify("已根据站点链接生成图标URL", "success");
+    };
+
     const handleCreateSite = async () => {
         try {
             if (!newSite.name || !newSite.url) {
@@ -789,8 +842,9 @@ function App() {
             if (created && created.id !== undefined) {
                 upsertSiteLocally(created);
             }
-            syncInBackground();
             handleCloseAddSite();
+            // 新增卡片后刷新页面，确保新卡片落在正确位置
+            reloadPage();
         } catch (error) {
             console.error("创建站点失败:", error);
             handleError("创建站点失败: " + (error as Error).message);
@@ -814,6 +868,15 @@ function App() {
         });
     };
 
+    // 背景蒙版透明度滑块
+    const handleConfigSliderChange = (_event: Event, value: number | number[]) => {
+        const next = Array.isArray(value) ? value[0] : value;
+        setTempConfigs(prev => ({
+            ...prev,
+            "site.backgroundMaskOpacity": String(next),
+        }));
+    };
+
     const handleSaveConfig = async () => {
         try {
             // 只提交有变化的配置，并并行写入，避免逐条等待
@@ -823,6 +886,11 @@ function App() {
             // 更新配置状态
             setConfigs({ ...tempConfigs });
             handleCloseConfig();
+
+            if (changed.length > 0) {
+                // 设置确实有改动：刷新页面让标题、背景图等全部生效
+                reloadPage();
+            }
         } catch (error) {
             console.error("保存配置失败:", error);
             handleError("保存配置失败: " + (error as Error).message);
@@ -1024,8 +1092,25 @@ function App() {
         }
     };
 
+    // ---- 背景图片相关（来自「网站设置」） ----
+    const backgroundImageUrl = (configs["site.backgroundImage"] || "").trim();
+    const hasBackgroundImage = backgroundImageUrl.length > 0;
+    // 滑块值越大 → 图片越清晰 → 蒙版越淡，所以蒙版不透明度取 1 - 滑块值
+    const backgroundSliderValue = Math.min(
+        1,
+        Math.max(0, Number(configs["site.backgroundMaskOpacity"]) || 0)
+    );
+    const backgroundMaskOpacity = 1 - backgroundSliderValue;
+
     return (
-        <ThemeProvider theme={theme}>
+        <AppConfigProvider
+            value={{
+                iconApi: configs["site.iconApi"] || "",
+                backgroundImage: backgroundImageUrl,
+                backgroundMaskOpacity: configs["site.backgroundMaskOpacity"] || "0.15",
+            }}
+        >
+            <ThemeProvider theme={theme}>
             <CssBaseline />
 
             {/* 错误提示 Snackbar */}
@@ -1045,12 +1130,38 @@ function App() {
                 </Alert>
             </Snackbar>
 
+            {/* 背景图片层：固定铺满视口，用蒙版压暗以保证内容可读 */}
+            {hasBackgroundImage && (
+                <Box
+                    aria-hidden
+                    sx={{
+                        position: "fixed",
+                        inset: 0,
+                        zIndex: 0,
+                        pointerEvents: "none",
+                        backgroundImage: `url("${backgroundImageUrl.replace(/"/g, '\\"')}")`,
+                        backgroundSize: "cover",
+                        backgroundPosition: "center",
+                        backgroundRepeat: "no-repeat",
+                        "&::after": {
+                            content: '""',
+                            position: "absolute",
+                            inset: 0,
+                            bgcolor: "background.default",
+                            opacity: backgroundMaskOpacity,
+                        },
+                    }}
+                />
+            )}
+
             <Box
                 sx={{
                     minHeight: "100vh",
-                    bgcolor: "background.default",
+                    bgcolor: hasBackgroundImage ? "transparent" : "background.default",
                     color: "text.primary",
                     transition: "all 0.3s ease-in-out",
+                    position: "relative",
+                    zIndex: 1,
                 }}
             >
                 <Container
@@ -1151,20 +1262,6 @@ function App() {
                                         }}
                                     >
                                         新增分组
-                                    </Button>
-
-                                    <Button
-                                        variant='contained'
-                                        color='secondary'
-                                        startIcon={<BackupIcon />}
-                                        onClick={() => handleOpenBackup(0)}
-                                        size="small"
-                                        sx={{ 
-                                            minWidth: 'auto',
-                                            fontSize: { xs: '0.75rem', sm: '0.875rem' }
-                                        }}
-                                    >
-                                        备份
                                     </Button>
 
                                     <Button
@@ -1448,17 +1545,32 @@ function App() {
                                         />
                                     </Box>
                                 </Box>
-                                <TextField
-                                    margin='dense'
-                                    id='site-icon'
-                                    name='icon'
-                                    label='图标URL'
-                                    type='url'
-                                    fullWidth
-                                    variant='outlined'
-                                    value={newSite.icon}
-                                    onChange={handleSiteInputChange}
-                                />
+                                <Box sx={{ display: 'flex', gap: 1, alignItems: 'flex-start' }}>
+                                    <TextField
+                                        margin='dense'
+                                        id='site-icon'
+                                        name='icon'
+                                        label='图标URL'
+                                        type='url'
+                                        fullWidth
+                                        variant='outlined'
+                                        value={newSite.icon}
+                                        onChange={handleSiteInputChange}
+                                        placeholder='点右侧按钮按站点链接自动获取'
+                                    />
+                                    <Tooltip title='根据站点链接一键获取图标URL'>
+                                        <span>
+                                            <IconButton
+                                                onClick={handleFetchNewSiteIcon}
+                                                disabled={!newSite.url}
+                                                aria-label='根据站点链接获取图标URL'
+                                                sx={{ mt: 1 }}
+                                            >
+                                                <AutoFixHighIcon />
+                                            </IconButton>
+                                        </span>
+                                    </Tooltip>
+                                </Box>
                                 <TextField
                                     margin='dense'
                                     id='site-description'
@@ -1470,6 +1582,38 @@ function App() {
                                     value={newSite.description}
                                     onChange={handleSiteInputChange}
                                 />
+                                <Box sx={{ display: 'flex', gap: 2, flexDirection: { xs: 'column', sm: 'row' } }}>
+                                    <Box sx={{ flex: 1 }}>
+                                        <TextField
+                                            margin='dense'
+                                            id='site-username'
+                                            name='username'
+                                            label='网站账号'
+                                            type='text'
+                                            fullWidth
+                                            variant='outlined'
+                                            value={newSite.username || ""}
+                                            onChange={handleSiteInputChange}
+                                            autoComplete='off'
+                                            placeholder='登录用户名 / 邮箱（可留空）'
+                                        />
+                                    </Box>
+                                    <Box sx={{ flex: 1 }}>
+                                        <TextField
+                                            margin='dense'
+                                            id='site-password'
+                                            name='password'
+                                            label='网站密码'
+                                            type='text'
+                                            fullWidth
+                                            variant='outlined'
+                                            value={newSite.password || ""}
+                                            onChange={handleSiteInputChange}
+                                            autoComplete='off'
+                                            placeholder='登录密码（可留空）'
+                                        />
+                                    </Box>
+                                </Box>
                                 <TextField
                                     margin='dense'
                                     id='site-notes'
@@ -1526,7 +1670,7 @@ function App() {
                             <DialogContentText sx={{ mb: 2 }}>
                                 配置网站的基本信息和外观
                             </DialogContentText>
-                            <Stack spacing={2}>
+                            <Stack spacing={2.5}>
                                 <TextField
                                     margin='dense'
                                     id='site-title'
@@ -1549,6 +1693,67 @@ function App() {
                                     value={tempConfigs["site.name"]}
                                     onChange={handleConfigInputChange}
                                 />
+
+                                {/* 获取图标 API 设置 */}
+                                <Box>
+                                    <Typography variant='subtitle1' fontWeight='600' sx={{ mb: 1 }}>
+                                        获取图标API设置
+                                    </Typography>
+                                    <TextField
+                                        margin='dense'
+                                        id='site-icon-api'
+                                        name='site.iconApi'
+                                        label='获取图标API URL'
+                                        type='text'
+                                        fullWidth
+                                        variant='outlined'
+                                        value={tempConfigs["site.iconApi"]}
+                                        onChange={handleConfigInputChange}
+                                        placeholder={DEFAULT_ICON_API}
+                                        helperText='输入获取图标API的地址，使用 {domain} 作为域名占位符（例如 https://www.faviconextractor.com/favicon/{domain}?larger=true）'
+                                    />
+                                </Box>
+
+                                {/* 背景图片设置 */}
+                                <Box>
+                                    <Typography variant='subtitle1' fontWeight='600' sx={{ mb: 1 }}>
+                                        背景图片设置
+                                    </Typography>
+                                    <TextField
+                                        margin='dense'
+                                        id='site-background-image'
+                                        name='site.backgroundImage'
+                                        label='背景图片URL'
+                                        type='text'
+                                        fullWidth
+                                        variant='outlined'
+                                        value={tempConfigs["site.backgroundImage"]}
+                                        onChange={handleConfigInputChange}
+                                        placeholder='https://example.com/background.jpg'
+                                        helperText='输入图片URL，留空则不使用背景图片'
+                                    />
+                                    <Box sx={{ mt: 2 }}>
+                                        <Typography variant='body2' color='text.secondary'>
+                                            背景蒙版透明度:{" "}
+                                            {Number(tempConfigs["site.backgroundMaskOpacity"]) || 0}
+                                        </Typography>
+                                        <Slider
+                                            value={
+                                                Number(tempConfigs["site.backgroundMaskOpacity"]) || 0
+                                            }
+                                            min={0}
+                                            max={1}
+                                            step={0.01}
+                                            onChange={handleConfigSliderChange}
+                                            aria-label='背景蒙版透明度'
+                                            valueLabelDisplay='auto'
+                                        />
+                                        <Typography variant='caption' color='text.secondary'>
+                                            值越大，背景图片越清晰，内容可能越难看清
+                                        </Typography>
+                                    </Box>
+                                </Box>
+
                                 <TextField
                                     margin='dense'
                                     id='site-custom-css'
@@ -1592,6 +1797,7 @@ function App() {
                 </Container>
             </Box>
         </ThemeProvider>
+        </AppConfigProvider>
     );
 }
 
