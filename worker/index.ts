@@ -77,6 +77,9 @@ export default {
                     }
                 }
 
+                // 确保数据库结构是最新的（例如补齐站点账号密码字段）
+                await api.migrate();
+
                 // 路由匹配
                 if (path === "groups" && method === "GET") {
                     const groups = await api.getGroups();
@@ -212,6 +215,26 @@ export default {
                                 { status: 400 }
                             );
                         }
+                    }
+
+                    if (data.username !== undefined && typeof data.username !== "string") {
+                        return Response.json(
+                            {
+                                success: false,
+                                message: "账号必须是字符串",
+                            },
+                            { status: 400 }
+                        );
+                    }
+
+                    if (data.password !== undefined && typeof data.password !== "string") {
+                        return Response.json(
+                            {
+                                success: false,
+                                message: "密码必须是字符串",
+                            },
+                            { status: 400 }
+                        );
                     }
 
                     const result = await api.updateSite(id, data);
@@ -351,14 +374,11 @@ export default {
                 else if (path === "import" && method === "POST") {
                     const data = (await request.json()) as ExportData;
 
-                    // 验证导入数据
+                    // 验证导入数据（站点允许嵌套在分组中，兼容旧版备份格式）
                     if (
                         !data.groups ||
                         !Array.isArray(data.groups) ||
-                        !data.sites ||
-                        !Array.isArray(data.sites) ||
-                        !data.configs ||
-                        typeof data.configs !== "object"
+                        (data.configs !== undefined && typeof data.configs !== "object")
                     ) {
                         return Response.json(
                             {
@@ -371,6 +391,37 @@ export default {
 
                     const result = await api.importData(data as ExportData);
                     return Response.json({ success: result });
+                }
+
+                // ============ WebDAV 备份相关路由（由 Worker 代理，避免浏览器跨域限制） ============
+                else if (path === "webdav/test" && method === "POST") {
+                    const config = await resolveWebDavConfig(api, request);
+                    const result = await webdavTest(config);
+                    return Response.json(result);
+                } else if (path === "webdav/upload" && method === "POST") {
+                    const body = (await safeJson(request)) as {
+                        filename?: string;
+                        data?: ExportData;
+                    };
+                    const config = await resolveWebDavConfig(api, request, body);
+                    const payload = body.data ?? (await api.exportData());
+                    const filename = body.filename || buildBackupFileName();
+                    const result = await webdavUpload(config, filename, payload);
+                    return Response.json(result);
+                } else if (path === "webdav/list" && method === "POST") {
+                    const config = await resolveWebDavConfig(api, request);
+                    const result = await webdavList(config);
+                    return Response.json(result);
+                } else if (path === "webdav/download" && method === "POST") {
+                    const body = (await safeJson(request)) as { filename?: string };
+                    const config = await resolveWebDavConfig(api, request, body);
+                    const result = await webdavDownload(config, body.filename || "");
+                    return Response.json(result);
+                } else if (path === "webdav/delete" && method === "POST") {
+                    const body = (await safeJson(request)) as { filename?: string };
+                    const config = await resolveWebDavConfig(api, request, body);
+                    const result = await webdavDelete(config, body.filename || "");
+                    return Response.json(result);
                 }
 
                 // 默认返回404
@@ -414,6 +465,8 @@ interface SiteInput {
     icon?: string;
     description?: string;
     notes?: string;
+    username?: string;
+    password?: string;
     order_num?: number;
 }
 
@@ -533,6 +586,22 @@ function validateSite(data: SiteInput): {
                 : "";
     }
 
+    // 验证站点账号 (可选)
+    if (data.username !== undefined) {
+        sanitizedData.username =
+            typeof data.username === "string"
+                ? data.username.trim().slice(0, 200) // 限制长度
+                : "";
+    }
+
+    // 验证站点密码 (可选)
+    if (data.password !== undefined) {
+        sanitizedData.password =
+            typeof data.password === "string"
+                ? data.password.slice(0, 500) // 限制长度，密码不做 trim，避免误改
+                : "";
+    }
+
     // 验证排序号
     if (data.order_num === undefined || typeof data.order_num !== "number") {
         errors.push("排序号必须是数字");
@@ -545,6 +614,310 @@ function validateSite(data: SiteInput): {
         errors,
         sanitizedData: errors.length === 0 ? (sanitizedData as Site) : undefined,
     };
+}
+
+// ============ WebDAV 备份相关工具函数 ============
+// 说明：WebDAV 服务大多不返回 CORS 头，浏览器直连会被拦截，
+// 因此所有 WebDAV 请求都由 Worker 代为发起。
+
+const DEFAULT_WEBDAV_PATH = "navihive-backup";
+
+interface WebDavConfig {
+    url: string;
+    username: string;
+    password: string;
+    path: string;
+}
+
+interface WebDavFile {
+    name: string;
+    size: number;
+    lastModified: string;
+}
+
+interface WebDavResult<T = unknown> {
+    success: boolean;
+    message?: string;
+    data?: T;
+}
+
+function errorMessage(error: unknown, fallback: string): string {
+    return error instanceof Error ? error.message || fallback : fallback;
+}
+
+// 安全地读取请求体（无 body 时返回空对象）
+async function safeJson(request: Request): Promise<Record<string, unknown>> {
+    try {
+        const body = (await request.json()) as unknown;
+        return body && typeof body === "object" ? (body as Record<string, unknown>) : {};
+    } catch {
+        return {};
+    }
+}
+
+// 优先使用请求中传入的配置，缺失时回落到数据库中保存的配置
+async function resolveWebDavConfig(
+    api: NavigationAPI,
+    request: Request,
+    body?: Record<string, unknown>
+): Promise<WebDavConfig> {
+    const payload = body ?? (await safeJson(request));
+
+    const readConfig = async (key: string): Promise<string> => {
+        try {
+            return (await api.getConfig(key)) || "";
+        } catch {
+            return "";
+        }
+    };
+
+    const pick = (value: unknown, fallback: string): string =>
+        typeof value === "string" && value.trim() !== "" ? value.trim() : fallback;
+
+    return {
+        url: pick(payload.url, await readConfig("webdav.url")),
+        username: pick(payload.username, await readConfig("webdav.username")),
+        password: pick(payload.password, await readConfig("webdav.password")),
+        path: pick(payload.path, await readConfig("webdav.path")) || DEFAULT_WEBDAV_PATH,
+    };
+}
+
+// 支持中文密码的 Base64 编码
+function base64Encode(input: string): string {
+    const bytes = new TextEncoder().encode(input);
+    let binary = "";
+    for (let i = 0; i < bytes.length; i++) {
+        binary += String.fromCharCode(bytes[i]);
+    }
+    return btoa(binary);
+}
+
+function buildWebDavFolderUrl(config: WebDavConfig): string {
+    const base = (config.url || "").trim().replace(/\/+$/, "");
+    if (!base) {
+        throw new Error("请先填写 WebDAV 服务器地址");
+    }
+    if (!/^https?:\/\//i.test(base)) {
+        throw new Error("WebDAV 服务器地址必须以 http:// 或 https:// 开头");
+    }
+
+    const folder = (config.path || DEFAULT_WEBDAV_PATH).trim().replace(/^\/+|\/+$/g, "");
+    return folder ? `${base}/${folder}/` : `${base}/`;
+}
+
+function buildWebDavFileUrl(folderUrl: string, filename: string): string {
+    return `${folderUrl}${encodeURIComponent(filename)}`;
+}
+
+function buildBackupFileName(): string {
+    const now = new Date();
+    const pad = (value: number) => String(value).padStart(2, "0");
+    const stamp =
+        `${now.getUTCFullYear()}${pad(now.getUTCMonth() + 1)}${pad(now.getUTCDate())}` +
+        `-${pad(now.getUTCHours())}${pad(now.getUTCMinutes())}${pad(now.getUTCSeconds())}`;
+    return `navihive-backup-${stamp}.json`;
+}
+
+async function davFetch(
+    url: string,
+    method: string,
+    config: WebDavConfig,
+    body?: string,
+    extraHeaders?: Record<string, string>
+): Promise<Response> {
+    const headers: Record<string, string> = { ...(extraHeaders || {}) };
+
+    if (config.username) {
+        headers["Authorization"] = `Basic ${base64Encode(`${config.username}:${config.password}`)}`;
+    }
+
+    return fetch(url, {
+        method,
+        headers,
+        body: body ?? undefined,
+    });
+}
+
+// 逐级创建备份目录（已存在时服务器返回 405，忽略即可）
+async function ensureWebDavFolder(config: WebDavConfig, folderUrl: string): Promise<void> {
+    const base = (config.url || "").trim().replace(/\/+$/, "");
+    const relative = folderUrl.slice(base.length).replace(/^\/+|\/+$/g, "");
+    if (!relative) return;
+
+    let current = base;
+    for (const segment of relative.split("/").filter(Boolean)) {
+        current = `${current}/${encodeURIComponent(segment)}`;
+        try {
+            await davFetch(`${current}/`, "MKCOL", config);
+        } catch {
+            // 目录已存在或无权创建，交由后续写入结果体现
+        }
+    }
+}
+
+// 解析 PROPFIND 返回的 XML 文件列表
+function parseWebDavList(xml: string): WebDavFile[] {
+    const files: WebDavFile[] = [];
+    const blocks = xml.match(/<[A-Za-z0-9]*:?response\b[\s\S]*?<\/[A-Za-z0-9]*:?response>/gi) || [];
+
+    for (const block of blocks) {
+        const isCollection = /<[A-Za-z0-9]*:?collection\s*\/?>/i.test(block);
+        if (isCollection) continue;
+
+        const hrefMatch = block.match(/<[A-Za-z0-9]*:?href\b[^>]*>([\s\S]*?)<\/[A-Za-z0-9]*:?href>/i);
+        if (!hrefMatch) continue;
+
+        let name = hrefMatch[1].trim();
+        try {
+            name = decodeURIComponent(name);
+        } catch {
+            // 保持原始值
+        }
+        name = name.replace(/\/+$/, "").split("/").pop() || name;
+
+        const sizeMatch = block.match(/<[A-Za-z0-9]*:?getcontentlength\b[^>]*>([\s\S]*?)</i);
+        const modifiedMatch = block.match(/<[A-Za-z0-9]*:?getlastmodified\b[^>]*>([\s\S]*?)</i);
+
+        files.push({
+            name,
+            size: sizeMatch ? Number(sizeMatch[1].trim()) || 0 : 0,
+            lastModified: modifiedMatch ? modifiedMatch[1].trim() : "",
+        });
+    }
+
+    return files.sort((a, b) => {
+        const timeA = Date.parse(a.lastModified || "") || 0;
+        const timeB = Date.parse(b.lastModified || "") || 0;
+        return timeB - timeA;
+    });
+}
+
+// 测试 WebDAV 连接
+async function webdavTest(config: WebDavConfig): Promise<WebDavResult> {
+    try {
+        const folderUrl = buildWebDavFolderUrl(config);
+        let response = await davFetch(folderUrl, "PROPFIND", config, undefined, { Depth: "0" });
+
+        if (response.status === 404 || response.status === 409) {
+            await ensureWebDavFolder(config, folderUrl);
+            response = await davFetch(folderUrl, "PROPFIND", config, undefined, { Depth: "0" });
+        }
+
+        if (response.ok) {
+            return { success: true, message: "连接成功，备份目录可用" };
+        }
+        if (response.status === 401 || response.status === 403) {
+            return { success: false, message: "认证失败，请检查 WebDAV 账号或应用密码" };
+        }
+        return { success: false, message: `连接失败：HTTP ${response.status}` };
+    } catch (error) {
+        return { success: false, message: errorMessage(error, "连接失败") };
+    }
+}
+
+// 上传备份文件
+async function webdavUpload(
+    config: WebDavConfig,
+    filename: string,
+    data: ExportData
+): Promise<WebDavResult<{ filename: string; size: number }>> {
+    try {
+        const folderUrl = buildWebDavFolderUrl(config);
+        await ensureWebDavFolder(config, folderUrl);
+
+        const content = JSON.stringify(data, null, 2);
+        const response = await davFetch(buildWebDavFileUrl(folderUrl, filename), "PUT", config, content, {
+            "Content-Type": "application/json; charset=utf-8",
+        });
+
+        if (response.ok) {
+            return {
+                success: true,
+                message: `已备份到 WebDAV：${filename}`,
+                data: { filename, size: content.length },
+            };
+        }
+        if (response.status === 401 || response.status === 403) {
+            return { success: false, message: "认证失败，请检查 WebDAV 账号或应用密码" };
+        }
+
+        const detail = await response.text().catch(() => "");
+        return { success: false, message: `备份失败：HTTP ${response.status} ${detail.slice(0, 120)}` };
+    } catch (error) {
+        return { success: false, message: errorMessage(error, "备份失败") };
+    }
+}
+
+// 列出远端备份文件
+async function webdavList(config: WebDavConfig): Promise<WebDavResult<WebDavFile[]>> {
+    try {
+        const folderUrl = buildWebDavFolderUrl(config);
+        let response = await davFetch(folderUrl, "PROPFIND", config, undefined, { Depth: "1" });
+
+        if (response.status === 404) {
+            await ensureWebDavFolder(config, folderUrl);
+            response = await davFetch(folderUrl, "PROPFIND", config, undefined, { Depth: "1" });
+        }
+
+        if (!response.ok) {
+            if (response.status === 401 || response.status === 403) {
+                return { success: false, message: "认证失败，请检查 WebDAV 账号或应用密码" };
+            }
+            return { success: false, message: `获取备份列表失败：HTTP ${response.status}` };
+        }
+
+        const xml = await response.text();
+        const files = parseWebDavList(xml).filter(file => file.name.toLowerCase().endsWith(".json"));
+
+        return { success: true, data: files };
+    } catch (error) {
+        return { success: false, message: errorMessage(error, "获取备份列表失败") };
+    }
+}
+
+// 下载指定的远端备份
+async function webdavDownload(config: WebDavConfig, filename: string): Promise<WebDavResult<ExportData>> {
+    try {
+        if (!filename) {
+            return { success: false, message: "未指定备份文件" };
+        }
+
+        const folderUrl = buildWebDavFolderUrl(config);
+        const response = await davFetch(buildWebDavFileUrl(folderUrl, filename), "GET", config);
+
+        if (!response.ok) {
+            if (response.status === 401 || response.status === 403) {
+                return { success: false, message: "认证失败，请检查 WebDAV 账号或应用密码" };
+            }
+            return { success: false, message: `下载备份失败：HTTP ${response.status}` };
+        }
+
+        const text = (await response.text()).replace(/^\uFEFF/, "");
+        const data = JSON.parse(text) as ExportData;
+
+        return { success: true, data, message: filename };
+    } catch (error) {
+        return { success: false, message: errorMessage(error, "下载备份失败") };
+    }
+}
+
+// 删除指定的远端备份
+async function webdavDelete(config: WebDavConfig, filename: string): Promise<WebDavResult> {
+    try {
+        if (!filename) {
+            return { success: false, message: "未指定备份文件" };
+        }
+
+        const folderUrl = buildWebDavFolderUrl(config);
+        const response = await davFetch(buildWebDavFileUrl(folderUrl, filename), "DELETE", config);
+
+        if (response.ok || response.status === 404) {
+            return { success: true, message: `已删除 ${filename}` };
+        }
+        return { success: false, message: `删除失败：HTTP ${response.status}` };
+    } catch (error) {
+        return { success: false, message: errorMessage(error, "删除失败") };
+    }
 }
 
 function validateConfig(data: ConfigInput): { valid: boolean; errors?: string[] } {

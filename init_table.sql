@@ -6,6 +6,12 @@
 --
 -- 脚本会：1) 建表  2) 写入初始化标志  3) 插入示例导航数据
 -- 示例数据仅供演示，可在登录后手动删除或直接修改。
+--
+-- 升级提示：如果你在「站点账号密码」功能上线前已经初始化过数据库，
+-- Worker 会在首次请求时自动执行下面的迁移语句补上 username / password 两列，
+-- 无需手动处理；如需手动执行，请逐条运行（重复运行会报 duplicate column 错误，可忽略）：
+--   ALTER TABLE sites ADD COLUMN username TEXT;
+--   ALTER TABLE sites ADD COLUMN password TEXT;
 -- =============================================================
 
 -- 1. 创建分组表
@@ -17,7 +23,7 @@ CREATE TABLE IF NOT EXISTS groups (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- 2. 创建站点表
+-- 2. 创建站点表（含站点登录凭据字段 username / password）
 CREATE TABLE IF NOT EXISTS sites (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     group_id INTEGER NOT NULL,
@@ -26,6 +32,8 @@ CREATE TABLE IF NOT EXISTS sites (
     icon TEXT,
     description TEXT,
     notes TEXT,
+    username TEXT,
+    password TEXT,
     order_num INTEGER NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,

@@ -1,4 +1,12 @@
-import { Group, Site, LoginResponse, ExportData } from "./http";
+import {
+    Group,
+    Site,
+    LoginResponse,
+    ExportData,
+    WebDavConfig,
+    WebDavFile,
+    WebDavResult,
+} from "./http";
 
 export class NavigationClient {
     private baseUrl: string;
@@ -233,5 +241,50 @@ export class NavigationClient {
             body: JSON.stringify(data),
         });
         return response.success;
+    }
+
+    // ============ WebDAV 备份（Worker 代理） ============
+    // 传入的 config 可只填部分字段，缺失的字段会使用服务端已保存的配置
+
+    async webdavTest(config: Partial<WebDavConfig> = {}): Promise<WebDavResult> {
+        return this.request("webdav/test", {
+            method: "POST",
+            body: JSON.stringify(config),
+        });
+    }
+
+    async webdavUpload(
+        config: Partial<WebDavConfig> = {},
+        data?: ExportData,
+        filename?: string
+    ): Promise<WebDavResult<{ filename: string; size: number }>> {
+        return this.request("webdav/upload", {
+            method: "POST",
+            body: JSON.stringify({ ...config, filename, data }),
+        });
+    }
+
+    async webdavList(config: Partial<WebDavConfig> = {}): Promise<WebDavResult<WebDavFile[]>> {
+        return this.request("webdav/list", {
+            method: "POST",
+            body: JSON.stringify(config),
+        });
+    }
+
+    async webdavDownload(
+        filename: string,
+        config: Partial<WebDavConfig> = {}
+    ): Promise<WebDavResult<ExportData>> {
+        return this.request("webdav/download", {
+            method: "POST",
+            body: JSON.stringify({ ...config, filename }),
+        });
+    }
+
+    async webdavDelete(filename: string, config: Partial<WebDavConfig> = {}): Promise<WebDavResult> {
+        return this.request("webdav/delete", {
+            method: "POST",
+            body: JSON.stringify({ ...config, filename }),
+        });
     }
 }
