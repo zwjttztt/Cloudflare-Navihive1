@@ -1,0 +1,5 @@
+# pnpm 允许执行安装脚本的依赖
+# esbuild 需要下载平台二进制；workerd 用于 wrangler 本地运行与部署
+allowBuilds:
+  esbuild: true
+  workerd: true

@@ -17,7 +17,7 @@
 ## ✨ 特性
 
 - 📚 **分组管理** — 将网站按类别整理成分组（如：常用工具、开发、学习、娱乐）
-- 🔄 **拖拽排序** — 直观地调整分组和网站的排列顺序
+- 🔄 **拖拽排序** — 直观地调整分组和网站的排列顺序（网站卡片支持跨分组拖拽）
 - 🔐 **用户认证** — 内置登录系统，保护你的导航数据
 - 🌓 **暗色/亮色模式** — 随时切换主题
 - 📱 **响应式设计** — 完美适配桌面和移动设备
@@ -38,7 +38,7 @@
    `https://deploy.workers.cloudflare.com/?url=https://github.com/zwjttztt/Cloudflare-Navihive1`）。
 2. 使用你的 Cloudflare 账号登录。
 3. 在部署界面配置：
-   - **项目名称**：给你的导航站起个名字（如 `my-navihive`）
+   - **项目名称**：Cloudflare 项目名只允许小写，填 `myhomepage`（站点显示名可在部署后于「网站设置」中设为 MyHomepage）
    - **D1 数据库**：点击"创建新数据库"，命名为 `navigation-db`
    - **环境变量**：
      - `AUTH_ENABLED`：`true`
@@ -46,7 +46,7 @@
      - `AUTH_PASSWORD`：管理员密码（**请设置强密码**）
      - `AUTH_SECRET`：JWT 密钥（使用一段随机长字符串）
 4. 点击 **"Deploy"**。部署完成后你会得到类似
-   `https://my-navihive.<你的用户名>.workers.dev` 的地址。
+   `https://myhomepage.<你的用户名>.workers.dev` 的地址。
 
 ### 方式二：手动部署（适合开发者）
 
@@ -87,8 +87,8 @@ pnpm deploy     # 部署到 Cloudflare Workers
 
 访问你的导航站首页 → 使用上面设置的管理员账号密码登录 → 即可：
 - 添加/编辑/删除分组和网站
-- 点击"编辑排序"拖拽调整顺序
-- 在"网站设置"中修改站点标题、名称与自定义 CSS
+- 点击"排序"后拖拽调整顺序，并支持将网站卡片拖到其他分组（跨组移动）
+- 在"网站设置"中修改站点标题、名称与自定义 CSS（默认显示名 MyHomepage）
 - 在"数据"中导出备份或导入恢复
 
 ## 🌐 绑定自定义域名（可选）
@@ -117,6 +117,7 @@ pnpm deploy     # 部署到 Cloudflare Workers
 ├── public/                # 静态资源
 ├── init_table.sql         # 数据库初始化脚本（含示例数据）
 ├── wrangler.jsonc         # Cloudflare 配置
+├── pnpm-workspace.yaml    # pnpm 构建脚本许可
 ├── package.json
 └── vite.config.ts
 ```
