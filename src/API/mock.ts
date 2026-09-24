@@ -3,6 +3,7 @@ import {
     Site,
     LoginResponse,
     ExportData,
+    BootstrapData,
     WebDavConfig,
     WebDavFile,
     WebDavResult,
@@ -187,6 +188,16 @@ export class MockNavigationClient {
         // 模拟网络延迟
         await new Promise(resolve => setTimeout(resolve, 200));
         return [...mockGroups];
+    }
+
+    // 首屏 / 刷新：与真实客户端保持一致，一次返回全部数据
+    async bootstrap(): Promise<BootstrapData> {
+        await new Promise(resolve => setTimeout(resolve, 200));
+        return {
+            groups: [...mockGroups],
+            sites: [...mockSites],
+            configs: { ...mockConfigs },
+        };
     }
 
     async getGroup(id: number): Promise<Group | null> {
