@@ -31,7 +31,10 @@ import CancelIcon from "@mui/icons-material/Cancel";
 import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import VisibilityIcon from "@mui/icons-material/Visibility";
 import VisibilityOffIcon from "@mui/icons-material/VisibilityOff";
+import AutoFixHighIcon from "@mui/icons-material/AutoFixHigh";
 import { copyToClipboard } from "../utils/clipboard";
+import { resolveIconApiUrl } from "../utils/iconApi";
+import { useAppConfig } from "../context/AppConfigContext";
 
 interface SiteSettingsModalProps {
     site: Site;
@@ -49,6 +52,8 @@ export default function SiteSettingsModal({
     groups = [],
 }: SiteSettingsModalProps) {
     const theme = useTheme();
+    // 全局「网站设置」里的获取图标 API 模板
+    const { iconApi } = useAppConfig();
 
     // 存储字符串形式的group_id，与Material-UI的Select兼容
     const [formData, setFormData] = useState({
@@ -69,6 +74,23 @@ export default function SiteSettingsModal({
     const [showPassword, setShowPassword] = useState(false);
     // 复制成功提示（"" | "username" | "password"）
     const [copiedField, setCopiedField] = useState<"" | "username" | "password">("");
+    // 一键获取图标的结果提示
+    const [iconFetchMessage, setIconFetchMessage] = useState("");
+
+    // 一键根据「网站链接」生成图标 URL
+    const handleFetchIcon = () => {
+        const resolved = resolveIconApiUrl(iconApi, formData.url);
+        if (!resolved) {
+            setIconFetchMessage("请先填写有效的网站链接");
+            window.setTimeout(() => setIconFetchMessage(""), 2000);
+            return;
+        }
+
+        setFormData(prev => ({ ...prev, icon: resolved }));
+        setIconPreview(resolved);
+        setIconFetchMessage("已获取图标URL");
+        window.setTimeout(() => setIconFetchMessage(""), 2000);
+    };
 
     // 一键复制账号或密码
     const handleCopy = async (field: "username" | "password") => {
@@ -119,12 +141,9 @@ export default function SiteSettingsModal({
             // 检查URL格式
             try {
                 new URL(url);
-                // 检查是否是常见图片格式
-                return (
-                    /\.(jpeg|jpg|gif|png|svg|webp|ico)(\?.*)?$/i.test(url) ||
-                    /^https?:\/\/.*\/favicon\.(ico|png)(\?.*)?$/i.test(url) ||
-                    /^data:image\//i.test(url)
-                );
+                // 只要是 http(s) 或 data:image 就允许预览
+                // （favicon 服务类的地址常常没有文件扩展名，加载失败时 onError 会自动清掉预览）
+                return /^https?:\/\//i.test(url) || /^data:image\//i.test(url);
             } catch {
                 return false;
             }
@@ -283,8 +302,41 @@ export default function SiteSettingsModal({
                                     placeholder='https://example.com/icon.png'
                                     variant='outlined'
                                     size='small'
+                                    InputProps={{
+                                        endAdornment: (
+                                            <InputAdornment position='end'>
+                                                <Tooltip
+                                                    title={
+                                                        iconFetchMessage ||
+                                                        "根据网站链接一键获取图标URL"
+                                                    }
+                                                    open={iconFetchMessage ? true : undefined}
+                                                >
+                                                    <span>
+                                                        <IconButton
+                                                            size='small'
+                                                            edge='end'
+                                                            onClick={handleFetchIcon}
+                                                            disabled={!formData.url}
+                                                            aria-label='根据网站链接获取图标URL'
+                                                        >
+                                                            <AutoFixHighIcon fontSize='small' />
+                                                        </IconButton>
+                                                    </span>
+                                                </Tooltip>
+                                            </InputAdornment>
+                                        ),
+                                    }}
                                 />
                             </Box>
+                            <Typography
+                                variant='caption'
+                                color='text.secondary'
+                                display='block'
+                                sx={{ mt: 0.5 }}
+                            >
+                                点右侧魔棒按钮，会按「网站设置 → 获取图标API」里的模板自动填充
+                            </Typography>
                         </Box>
 
                         {/* 分组选择 */}
