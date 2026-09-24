@@ -1,10 +1,16 @@
 /**
- * For more details on how to configure Wrangler, refer to:
- * https://developers.cloudflare.com/workers/wrangler/configuration/
+ * Cloudflare Workers 配置文件 —— 个人导航站 (NaviHive)
+ *
+ * 部署前请修改：
+ *   1. "name"          项目名（将显示在 https://<name>.<用户名>.workers.dev）
+ *   2. database_id     你的 D1 数据库 ID（使用一键部署流程会自动创建，可跳过）
+ *   3. vars 中的认证信息（务必改成自己的账号密码与随机密钥）
+ *
+ * 详见仓库 README.md 的部署指南。
  */
 {
     "$schema": "node_modules/wrangler/config-schema.json",
-    "name": "navihive",
+    "name": "my-navihive",
     "main": "worker/index.ts",
     "compatibility_date": "2025-04-05",
     "assets": {
@@ -13,18 +19,18 @@
     "observability": {
         "enabled": true
     },
-    // D1数据库绑定
+    // D1 数据库绑定
     "d1_databases": [
         {
             "binding": "DB",
             "database_name": "navigation-db",
-            "database_id": "b923e576-f41c-4822-8ff1-7943dfb3f747"
+            "database_id": "REPLACE_WITH_YOUR_D1_DATABASE_ID"
         }
     ],
     "vars": {
         "AUTH_ENABLED": "true",
-        "AUTH_USERNAME": "linuxdo",
-        "AUTH_PASSWORD": "linuxdo",
-        "AUTH_SECRET": "linuxdo"
+        "AUTH_USERNAME": "admin",
+        "AUTH_PASSWORD": "change-me-after-deploy",
+        "AUTH_SECRET": "replace-with-a-long-random-secret"
     }
 }
