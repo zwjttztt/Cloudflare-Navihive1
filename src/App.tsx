@@ -7,6 +7,7 @@ import { AppConfigProvider } from "./context/AppConfigContext";
 import { DEFAULT_ICON_API, resolveIconApiUrl } from "./utils/iconApi";
 import ThemeToggle from "./components/ThemeToggle";
 import GroupCard from "./components/GroupCard";
+import EditGroupDialog from "./components/EditGroupDialog";
 import LoginForm from "./components/LoginForm";
 import BackupDialog from "./components/BackupDialog";
 import "./App.css";
@@ -187,7 +188,6 @@ function App() {
     // 新增状态管理
     const [openAddGroup, setOpenAddGroup] = useState(false);
     const [openAddSite, setOpenAddSite] = useState(false);
-    const [newGroup, setNewGroup] = useState<Partial<Group>>({ name: "", order_num: 0 });
     const [newSite, setNewSite] = useState<Partial<Site>>({
         name: "",
         url: "",
@@ -553,23 +553,21 @@ function App() {
     // 保存分组排序
     const handleSaveGroupOrder = async () => {
         try {
-            console.log("保存分组顺序", groups);
             // 构造需要更新的分组顺序数据
             const groupOrders = groups.map((group, index) => ({
-                id: group.id as number, // 断言id为number类型
+                id: group.id as number,
                 order_num: index,
             }));
 
-            // 调用API更新分组顺序
+            // 一次批量请求写入全部顺序
             const result = await api.updateGroupOrder(groupOrders);
 
-            if (result) {
-                console.log("分组排序更新成功");
-                // 排序结果已在本地生效，后台静默同步即可，不再整页转圈
-                syncInBackground();
-            } else {
+            if (!result) {
                 throw new Error("分组排序更新失败");
             }
+
+            // 本地顺序就是拖拽后的结果，补一下 order_num 即可，不再多发一次全量刷新请求
+            setGroups(prev => prev.map((group, index) => ({ ...group, order_num: index })));
 
             setSortMode(SortMode.None);
             setCurrentSortingGroupId(null);
@@ -582,24 +580,33 @@ function App() {
     // 保存站点排序
     const handleSaveSiteOrder = async (groupId: number, sites: Site[]) => {
         try {
-            console.log("保存站点排序", groupId, sites);
-
             // 构造需要更新的站点顺序数据
             const siteOrders = sites.map((site, index) => ({
                 id: site.id as number,
                 order_num: index,
             }));
 
-            // 调用API更新站点顺序
+            // 一次批量请求写入全部顺序
             const result = await api.updateSiteOrder(siteOrders);
 
-            if (result) {
-                console.log("站点排序更新成功");
-                // 排序结果已在本地生效，后台静默同步即可
-                syncInBackground();
-            } else {
+            if (!result) {
                 throw new Error("站点排序更新失败");
             }
+
+            // 本地即服务端结果，补齐 order_num，不再多发全量刷新请求
+            setGroups(prev =>
+                prev.map(group =>
+                    group.id === groupId
+                        ? {
+                              ...group,
+                              sites: group.sites.map(site => {
+                                  const idx = sites.findIndex(item => item.id === site.id);
+                                  return idx === -1 ? site : { ...site, order_num: idx };
+                              }),
+                          }
+                        : group
+                )
+            );
 
             setSortMode(SortMode.None);
             setCurrentSortingGroupId(null);
@@ -611,6 +618,9 @@ function App() {
 
     // 启动分组排序
     const startGroupSort = () => {
+        // 必须先关掉「更多选项」菜单：进入排序模式后该按钮会被卸载，
+        // 菜单失去 anchor 元素就会跑到页面左上角
+        handleMenuClose();
         console.log("开始分组排序");
         setSortMode(SortMode.GroupSort);
         setCurrentSortingGroupId(null);
@@ -684,18 +694,23 @@ function App() {
             const moved = prev[activeContainerIdx].sites.find(s => s.id === activeSiteId);
             if (!moved) return prev;
 
-            const next = prev.map(g => ({ ...g, sites: [...g.sites] }));
-
             // 同一分组内重排
             if (activeContainerIdx === overContainerIdx) {
                 const c = activeContainerIdx;
-                const oldIndex = next[c].sites.findIndex(s => s.id === activeSiteId);
-                const newIndex = Math.min(overIndex, next[c].sites.length - 1);
+                const siteList = prev[c].sites;
+                const oldIndex = siteList.findIndex(s => s.id === activeSiteId);
+                const newIndex = Math.min(overIndex, siteList.length - 1);
+                // 位置没变化就直接返回原状态：拖拽时的 dragOver 会高频触发，
+                // 每次都用新数组会让所有卡片重渲染，这里是拖拽卡顿的主要来源之一
+                if (oldIndex === -1 || oldIndex === newIndex) return prev;
+
+                const next = prev.map(g => ({ ...g, sites: [...g.sites] }));
                 next[c] = { ...next[c], sites: arrayMove(next[c].sites, oldIndex, newIndex) };
                 return next;
             }
 
             // 跨分组移动：先移除，再插入目标分组，并更新 group_id
+            const next = prev.map(g => ({ ...g, sites: [...g.sites] }));
             const movedSite = { ...moved, group_id: prev[overContainerIdx].id as number };
             next[activeContainerIdx] = {
                 ...next[activeContainerIdx],
@@ -724,17 +739,21 @@ function App() {
     };
 
     // 保存站点排序（支持跨分组移动）
+    // 顺序调整 + 跨组移动合并成「一次」批量请求：
+    // 原来是「1 次排序 + 每移动一张卡片一次串行更新请求」，卡片多时保存会明显变慢。
     const handleSaveSiteSort = async () => {
         try {
-            const orders: { id: number; order_num: number }[] = [];
-            const groupChanges: Site[] = [];
+            const orders: { id: number; order_num: number; group_id?: number }[] = [];
+            const original = siteOriginalGroupRef.current;
+
             groups.forEach(g => {
                 g.sites.forEach((site, idx) => {
-                    orders.push({ id: site.id as number, order_num: idx });
-                    const orig = siteOriginalGroupRef.current.get(site.id as number);
-                    if (orig !== undefined && orig !== g.id) {
-                        groupChanges.push({ ...site, group_id: g.id, order_num: idx });
-                    }
+                    const id = site.id as number;
+                    const fromGroup = original.get(id);
+                    const moved = fromGroup !== undefined && fromGroup !== g.id;
+                    orders.push(
+                        moved ? { id, order_num: idx, group_id: g.id as number } : { id, order_num: idx }
+                    );
                 });
             });
 
@@ -742,15 +761,20 @@ function App() {
                 const ok = await api.updateSiteOrder(orders);
                 if (!ok) throw new Error("更新排序失败");
             }
-            for (const sc of groupChanges) {
-                const ok = await api.updateSite(sc.id as number, {
-                    group_id: sc.group_id,
-                    order_num: sc.order_num,
-                });
-                if (!ok) throw new Error("更新分组失败");
-            }
 
-            syncInBackground();
+            // 本地补齐 order_num / group_id，与服务端保持一致，无需再拉一次全量数据
+            const orderMap = new Map(orders.map(item => [item.id, item]));
+            setGroups(prev =>
+                prev.map(g => ({
+                    ...g,
+                    sites: g.sites.map(site => {
+                        const item = orderMap.get(site.id as number);
+                        if (!item) return site;
+                        return { ...site, order_num: item.order_num, group_id: g.id as number };
+                    }),
+                }))
+            );
+
             setSortMode(SortMode.None);
             setCurrentSortingGroupId(null);
         } catch (error) {
@@ -761,7 +785,7 @@ function App() {
 
     // 新增分组相关函数
     const handleOpenAddGroup = () => {
-        setNewGroup({ name: "", order_num: groups.length });
+        handleMenuClose();
         setOpenAddGroup(true);
     };
 
@@ -769,28 +793,24 @@ function App() {
         setOpenAddGroup(false);
     };
 
-    const handleGroupInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-        setNewGroup({
-            ...newGroup,
-            [e.target.name]: e.target.value,
-        });
-    };
-
-    const handleCreateGroup = async () => {
+    const handleCreateGroup = async (name: string) => {
         try {
-            if (!newGroup.name) {
+            const groupName = (name || "").trim();
+            if (!groupName) {
                 handleError("分组名称不能为空");
                 return;
             }
 
-            const created = await api.createGroup(newGroup as Group);
+            const created = await api.createGroup({
+                name: groupName,
+                order_num: groups.length,
+            } as Group);
             // 服务端返回新建分组，直接追加到本地列表，无需重新加载
             if (created && created.id !== undefined) {
                 setGroups(prev => [...prev, { ...created, id: created.id as number, sites: [] }]);
             }
             syncInBackground();
             handleCloseAddGroup();
-            setNewGroup({ name: "", order_num: 0 }); // 重置表单
         } catch (error) {
             console.error("创建分组失败:", error);
             handleError("创建分组失败: " + (error as Error).message);
@@ -826,9 +846,22 @@ function App() {
     };
 
     const handleSiteInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-        setNewSite({
-            ...newSite,
-            [e.target.name]: e.target.value,
+        const { name, value } = e.target;
+
+        setNewSite(prev => {
+            const next: Partial<Site> = { ...prev, [name]: value };
+
+            // 填「站点URL」时自动按「获取图标API」生成图标URL。
+            // 只有图标为空、或图标仍是自动生成的值时才覆盖，用户手填过的图标不会被冲掉。
+            if (name === "url") {
+                const autoIcon = resolveIconApiUrl(configs["site.iconApi"], value);
+                const prevAutoIcon = resolveIconApiUrl(configs["site.iconApi"], prev.url || "");
+                if (!prev.icon || prev.icon === prevAutoIcon) {
+                    next.icon = autoIcon;
+                }
+            }
+
+            return next;
         });
     };
 
@@ -866,6 +899,7 @@ function App() {
 
     // 配置相关函数
     const handleOpenConfig = () => {
+        handleMenuClose();
         setTempConfigs({ ...configs });
         // 管理员凭据每次打开都重新填，避免误存上一次的输入
         setAuthUsername("");
@@ -1328,7 +1362,8 @@ function App() {
                                     <Menu
                                         id='navigation-menu'
                                         anchorEl={menuAnchorEl}
-                                        open={openMenu}
+                                        // 排序模式里「更多选项」按钮会被卸载，anchor 失效时菜单会飘到左上角，这里直接不渲染
+                                        open={openMenu && sortMode === SortMode.None}
                                         onClose={handleMenuClose}
                                         MenuListProps={{
                                             "aria-labelledby": "navigation-button",
@@ -1478,58 +1513,14 @@ function App() {
                         </Box>
                     )}
 
-                    {/* 新增分组对话框 */}
-                    <Dialog
+                    {/* 新增分组对话框（与「编辑分组」共用同一套样式与尺寸） */}
+                    <EditGroupDialog
                         open={openAddGroup}
+                        group={null}
+                        mode='create'
                         onClose={handleCloseAddGroup}
-                        maxWidth='sm'
-                        fullWidth
-                        PaperProps={{
-                            sx: {
-                                m: { xs: 2, sm: 'auto' },
-                                width: { xs: 'calc(100% - 32px)', sm: 'auto' }
-                            }
-                        }}
-                    >
-                        <DialogTitle>
-                            新增分组
-                            <IconButton
-                                aria-label='close'
-                                onClick={handleCloseAddGroup}
-                                sx={{
-                                    position: "absolute",
-                                    right: 8,
-                                    top: 8,
-                                }}
-                            >
-                                <CloseIcon />
-                            </IconButton>
-                        </DialogTitle>
-                        <DialogContent>
-                            <DialogContentText sx={{ mb: 2 }}>请输入新分组的信息</DialogContentText>
-                            <TextField
-                                autoFocus
-                                margin='dense'
-                                id='group-name'
-                                name='name'
-                                label='分组名称'
-                                type='text'
-                                fullWidth
-                                variant='outlined'
-                                value={newGroup.name}
-                                onChange={handleGroupInputChange}
-                                sx={{ mb: 2 }}
-                            />
-                        </DialogContent>
-                        <DialogActions sx={{ px: 3, pb: 3 }}>
-                            <Button onClick={handleCloseAddGroup} variant='outlined'>
-                                取消
-                            </Button>
-                            <Button onClick={handleCreateGroup} variant='contained' color='primary'>
-                                创建
-                            </Button>
-                        </DialogActions>
-                    </Dialog>
+                        onSave={group => handleCreateGroup(group.name)}
+                    />
 
                     {/* 新增站点对话框 */}
                     <Dialog 
@@ -1601,7 +1592,7 @@ function App() {
                                         variant='outlined'
                                         value={newSite.icon}
                                         onChange={handleSiteInputChange}
-                                        placeholder='点右侧按钮按站点链接自动获取'
+                                        placeholder='填好站点URL后自动生成，也可点右侧按钮重新获取'
                                     />
                                     <Tooltip title='根据网站链接一键获取图标URL'>
                                         <span>

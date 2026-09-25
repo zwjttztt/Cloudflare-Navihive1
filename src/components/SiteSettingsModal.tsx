@@ -56,19 +56,25 @@ export default function SiteSettingsModal({
     const { iconApi } = useAppConfig();
 
     // 存储字符串形式的group_id，与Material-UI的Select兼容
-    const [formData, setFormData] = useState({
-        name: site.name,
-        url: site.url,
-        icon: site.icon || "",
-        description: site.description || "",
-        notes: site.notes || "",
-        username: site.username || "",
-        password: site.password || "",
-        group_id: String(site.group_id),
+    const [formData, setFormData] = useState(() => {
+        // 打开设置时若还没有图标，就先按「网站链接 + 获取图标API」自动补一个
+        const initialIcon = site.icon || resolveIconApiUrl(iconApi, site.url || "");
+        return {
+            name: site.name,
+            url: site.url,
+            icon: initialIcon,
+            description: site.description || "",
+            notes: site.notes || "",
+            username: site.username || "",
+            password: site.password || "",
+            group_id: String(site.group_id),
+        };
     });
 
     // 用于预览图标
-    const [iconPreview, setIconPreview] = useState<string | null>(site.icon || null);
+    const [iconPreview, setIconPreview] = useState<string | null>(
+        site.icon || resolveIconApiUrl(iconApi, site.url || "") || null
+    );
 
     // 密码是否明文显示
     const [showPassword, setShowPassword] = useState(false);
@@ -129,6 +135,23 @@ export default function SiteSettingsModal({
             ...prev,
             group_id: e.target.value,
         }));
+    };
+
+    // 修改「网站链接」时，自动按图标 API 模板同步图标 URL。
+    // 只有图标为空、或图标仍是自动生成的值时才覆盖，用户手动填过的图标不会被冲掉。
+    const handleUrlChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const value = e.target.value;
+        const autoIcon = resolveIconApiUrl(iconApi, value);
+        const prevAutoIcon = resolveIconApiUrl(iconApi, formData.url);
+        const canAutoFill = !formData.icon || formData.icon === prevAutoIcon;
+
+        if (!canAutoFill) {
+            setFormData(prev => ({ ...prev, url: value }));
+            return;
+        }
+
+        setFormData(prev => ({ ...prev, url: value, icon: autoIcon }));
+        setIconPreview(autoIcon || null);
     };
 
     // 处理图标上传或URL输入
@@ -252,11 +275,12 @@ export default function SiteSettingsModal({
                             required
                             fullWidth
                             value={formData.url || ""}
-                            onChange={handleChange}
+                            onChange={handleUrlChange}
                             placeholder='https://example.com'
                             variant='outlined'
                             size='small'
                             type='url'
+                            helperText='填写后会自动按「网站设置 → 获取图标API」生成图标URL'
                         />
 
                         {/* 网站图标 */}
@@ -335,7 +359,7 @@ export default function SiteSettingsModal({
                                 display='block'
                                 sx={{ mt: 0.5 }}
                             >
-                                点右侧魔棒按钮，会按「网站设置 → 获取图标API」里的模板自动填充
+                                修改网站链接时会自动更新；手动改过图标后需点右侧魔棒按钮重新获取
                             </Typography>
                         </Box>
 

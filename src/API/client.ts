@@ -241,7 +241,10 @@ export class NavigationClient {
         return response.success;
     }
 
-    async updateSiteOrder(siteOrders: { id: number; order_num: number }[]): Promise<boolean> {
+    // 批量更新站点排序（可同时修改分组，一次请求完成）
+    async updateSiteOrder(
+        siteOrders: { id: number; order_num: number; group_id?: number }[]
+    ): Promise<boolean> {
         const response = await this.request("site-orders", {
             method: "PUT",
             body: JSON.stringify(siteOrders),

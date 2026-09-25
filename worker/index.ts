@@ -289,7 +289,12 @@ export default {
                     const result = await api.updateGroupOrder(data);
                     return Response.json({ success: result });
                 } else if (path === "site-orders" && method === "PUT") {
-                    const data = (await request.json()) as Array<{ id: number; order_num: number }>;
+                    // 支持一次提交「顺序 + 所属分组」，拖拽跨组移动不必再逐个请求
+                    const data = (await request.json()) as Array<{
+                        id: number;
+                        order_num: number;
+                        group_id?: number;
+                    }>;
 
                     // 验证排序数据
                     if (!Array.isArray(data)) {
@@ -313,6 +318,16 @@ export default {
                                 {
                                     success: false,
                                     message: "排序数据格式无效，每个项目必须包含id和order_num",
+                                },
+                                { status: 400 }
+                            );
+                        }
+
+                        if (item.group_id !== undefined && typeof item.group_id !== "number") {
+                            return Response.json(
+                                {
+                                    success: false,
+                                    message: "分组ID必须是数字",
                                 },
                                 { status: 400 }
                             );
