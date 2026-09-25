@@ -193,6 +193,16 @@ mark.nav-hl {
     pointer-events: auto;
 }
 
+/* 网站设置按钮：悬停或聚焦时才浮出（已挪到链接外面，避免 a 里嵌按钮） */
+.nav-settings-btn {
+    opacity: 0;
+}
+.nav-card-in:hover .nav-settings-btn,
+.nav-card-in:focus-within .nav-settings-btn,
+.nav-settings-btn:focus-visible {
+    opacity: 1;
+}
+
 /* 列表视图里快捷操作常显，省去悬停这一步 */
 .nav-card-actions-always {
     opacity: 1;
