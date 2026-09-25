@@ -68,3 +68,112 @@
         scrollbar-color: var(--scrollbar-thumb) transparent;
     }
 }
+
+/* ============================================================
+   美化基建
+   - 字体栈、卡片入场动画、毛玻璃变量、关键词高亮、吸顶辅助
+   - 亮/暗两套取值都跟着 .dark 类切换
+   ============================================================ */
+
+:root {
+    --font-sans: Inter, "Inter var", "Segoe UI", system-ui, -apple-system,
+        "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+
+    /* 毛玻璃（浅色） */
+    --glass-bg: rgba(255, 255, 255, 0.66);
+    --glass-bg-hover: rgba(255, 255, 255, 0.82);
+    --glass-border: rgba(255, 255, 255, 0.6);
+    --glass-shadow: 0 4px 16px rgba(15, 23, 42, 0.08);
+    --glass-shadow-hover: 0 14px 32px rgba(15, 23, 42, 0.16);
+    --glass-blur: 14px;
+    --glass-highlight: rgba(15, 23, 42, 0.08);
+}
+
+.dark {
+    --glass-bg: rgba(23, 27, 38, 0.58);
+    --glass-bg-hover: rgba(30, 35, 48, 0.72);
+    --glass-border: rgba(255, 255, 255, 0.12);
+    --glass-shadow: 0 4px 16px rgba(0, 0, 0, 0.42);
+    --glass-shadow-hover: 0 14px 32px rgba(0, 0, 0, 0.6);
+    --glass-highlight: rgba(255, 255, 255, 0.16);
+}
+
+html,
+body {
+    font-family: var(--font-sans);
+}
+
+/* 页面标题淡入 */
+@keyframes navFadeUp {
+    from {
+        opacity: 0;
+        transform: translateY(8px);
+    }
+    to {
+        opacity: 1;
+        transform: none;
+    }
+}
+
+/* 卡片入场：淡入 + 轻微上浮 */
+@keyframes navCardIn {
+    from {
+        opacity: 0;
+        transform: translateY(10px) scale(0.985);
+    }
+    to {
+        opacity: 1;
+        transform: none;
+    }
+}
+
+/* 背景光晕缓慢漂移 */
+@keyframes navAurora {
+    0%,
+    100% {
+        transform: translate3d(0, 0, 0) scale(1);
+    }
+    50% {
+        transform: translate3d(3%, -3%, 0) scale(1.08);
+    }
+}
+
+.nav-fade-up {
+    animation: navFadeUp 0.45s ease both;
+}
+
+.nav-card-in {
+    animation: navCardIn 0.42s cubic-bezier(0.22, 0.61, 0.36, 1) both;
+}
+
+.nav-aurora {
+    animation: navAurora 26s ease-in-out infinite;
+}
+
+/* 分组标题吸顶（内容从下方滑过时保持可读） */
+.nav-sticky {
+    position: sticky;
+    top: 8px;
+    z-index: 3;
+}
+
+/* 搜索命中高亮 */
+mark.nav-hl {
+    background: rgba(25, 118, 210, 0.22);
+    color: inherit;
+    border-radius: 3px;
+    padding: 0 1px;
+}
+
+.dark mark.nav-hl {
+    background: rgba(144, 202, 249, 0.28);
+}
+
+/* 尊重「减少动态效果」偏好：关掉装饰性动画（不动功能性过渡） */
+@media (prefers-reduced-motion: reduce) {
+    .nav-card-in,
+    .nav-fade-up,
+    .nav-aurora {
+        animation: none !important;
+    }
+}
