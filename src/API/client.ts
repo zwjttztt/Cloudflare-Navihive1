@@ -220,6 +220,18 @@ export class NavigationClient {
         return response.success;
     }
 
+    // 修改管理员账号密码（保存在数据库中，重新部署不会被覆盖）
+    async updateAuthCredentials(
+        username: string,
+        password: string,
+        currentPassword: string
+    ): Promise<{ success: boolean; message?: string }> {
+        return this.request("auth/credentials", {
+            method: "PUT",
+            body: JSON.stringify({ username, password, currentPassword }),
+        });
+    }
+
     // 批量更新排序
     async updateGroupOrder(groupOrders: { id: number; order_num: number }[]): Promise<boolean> {
         const response = await this.request("group-orders", {

@@ -55,6 +55,7 @@ import {
     Snackbar,
     Slider,
     Tooltip,
+    InputAdornment,
 } from "@mui/material";
 import SortIcon from "@mui/icons-material/Sort";
 import SaveIcon from "@mui/icons-material/Save";
@@ -67,6 +68,8 @@ import FileDownloadIcon from "@mui/icons-material/FileDownload";
 import LogoutIcon from "@mui/icons-material/Logout";
 import MenuIcon from "@mui/icons-material/Menu";
 import AutoFixHighIcon from "@mui/icons-material/AutoFixHigh";
+import VisibilityIcon from "@mui/icons-material/Visibility";
+import VisibilityOffIcon from "@mui/icons-material/VisibilityOff";
 
 // 根据环境选择使用真实API还是模拟API
 const isDevEnvironment = import.meta.env.DEV;
@@ -157,6 +160,11 @@ function App() {
     // WebDAV 备份配置
     const [webdavConfig, setWebdavConfig] = useState<WebDavConfig>(DEFAULT_WEBDAV_CONFIG);
 
+    // 管理员账号密码修改（不写入 configs，走独立的 auth/credentials 接口）
+    const [authUsername, setAuthUsername] = useState("");
+    const [authCurrentPassword, setAuthCurrentPassword] = useState("");
+    const [authNewPassword, setAuthNewPassword] = useState("");
+
     // 配置传感器，支持鼠标、触摸和键盘操作
     const sensors = useSensors(
         useSensor(PointerSensor, {
@@ -199,6 +207,9 @@ function App() {
     // 备份/恢复对话框状态
     const [openBackup, setOpenBackup] = useState(false);
     const [backupTab, setBackupTab] = useState(0);
+
+    // 新增卡片时是否明文显示密码
+    const [showNewSitePassword, setShowNewSitePassword] = useState(false);
 
     // 错误提示框状态
     const [snackbarOpen, setSnackbarOpen] = useState(false);
@@ -805,6 +816,8 @@ function App() {
             order_num: maxOrderNum,
         });
 
+        // 每次打开都从「密码隐藏」状态开始
+        setShowNewSitePassword(false);
         setOpenAddSite(true);
     };
 
@@ -854,7 +867,27 @@ function App() {
     // 配置相关函数
     const handleOpenConfig = () => {
         setTempConfigs({ ...configs });
+        // 管理员凭据每次打开都重新填，避免误存上一次的输入
+        setAuthUsername("");
+        setAuthCurrentPassword("");
+        setAuthNewPassword("");
         setOpenConfig(true);
+    };
+
+    // 修改管理员账号密码：需要验证当前密码，空白字段表示保持不变
+    const submitAuthCredentials = async (): Promise<boolean> => {
+        const username = authUsername.trim();
+        if (!username && !authNewPassword && !authCurrentPassword) {
+            return false; // 没填任何内容 → 不修改
+        }
+        if (!authCurrentPassword) {
+            throw new Error("修改管理员账号或密码时，必须先填写当前密码");
+        }
+        const result = await api.updateAuthCredentials(username, authNewPassword, authCurrentPassword);
+        if (!result.success) {
+            throw new Error(result.message || "修改管理员凭据失败");
+        }
+        return true;
     };
 
     const handleCloseConfig = () => {
@@ -883,9 +916,21 @@ function App() {
             const changed = Object.entries(tempConfigs).filter(([key, value]) => configs[key] !== value);
             await Promise.all(changed.map(([key, value]) => api.setConfig(key, value)));
 
+            // 管理员凭据单独提交（失败会中断，不会把新密码悄悄丢掉）
+            const authChanged = await submitAuthCredentials();
+
             // 更新配置状态
             setConfigs({ ...tempConfigs });
+            setAuthUsername("");
+            setAuthCurrentPassword("");
+            setAuthNewPassword("");
             handleCloseConfig();
+
+            if (authChanged) {
+                notify("管理员凭据已更新，下次登录请使用新账号密码", "success");
+                reloadPage();
+                return;
+            }
 
             if (changed.length > 0) {
                 // 设置确实有改动：刷新页面让标题、背景图等全部生效
@@ -1558,12 +1603,12 @@ function App() {
                                         onChange={handleSiteInputChange}
                                         placeholder='点右侧按钮按站点链接自动获取'
                                     />
-                                    <Tooltip title='根据站点链接一键获取图标URL'>
+                                    <Tooltip title='根据网站链接一键获取图标URL'>
                                         <span>
                                             <IconButton
                                                 onClick={handleFetchNewSiteIcon}
                                                 disabled={!newSite.url}
-                                                aria-label='根据站点链接获取图标URL'
+                                                aria-label='根据网站链接获取图标URL'
                                                 sx={{ mt: 1 }}
                                             >
                                                 <AutoFixHighIcon />
@@ -1604,13 +1649,37 @@ function App() {
                                             id='site-password'
                                             name='password'
                                             label='网站密码'
-                                            type='text'
+                                            type={showNewSitePassword ? "text" : "password"}
                                             fullWidth
                                             variant='outlined'
                                             value={newSite.password || ""}
                                             onChange={handleSiteInputChange}
-                                            autoComplete='off'
+                                            autoComplete='new-password'
                                             placeholder='登录密码（可留空）'
+                                            InputProps={{
+                                                endAdornment: (
+                                                    <InputAdornment position='end'>
+                                                        <IconButton
+                                                            size='small'
+                                                            edge='end'
+                                                            onClick={() =>
+                                                                setShowNewSitePassword(prev => !prev)
+                                                            }
+                                                            aria-label={
+                                                                showNewSitePassword
+                                                                    ? "隐藏密码"
+                                                                    : "显示密码"
+                                                            }
+                                                        >
+                                                            {showNewSitePassword ? (
+                                                                <VisibilityOffIcon fontSize='small' />
+                                                            ) : (
+                                                                <VisibilityIcon fontSize='small' />
+                                                            )}
+                                                        </IconButton>
+                                                    </InputAdornment>
+                                                ),
+                                            }}
                                         />
                                     </Box>
                                 </Box>
@@ -1752,6 +1821,49 @@ function App() {
                                             值越大，背景图片越清晰，内容可能越难看清
                                         </Typography>
                                     </Box>
+                                </Box>
+
+                                {/* 管理员账号与密码 */}
+                                <Box>
+                                    <Typography variant='subtitle1' fontWeight='600' sx={{ mb: 1 }}>
+                                        管理员账号与密码
+                                    </Typography>
+                                    <Typography variant='caption' color='text.secondary' sx={{ display: "block", mb: 1 }}>
+                                        凭据保存在数据库中，只有第一次部署才会使用默认账号密码，之后重新部署不会覆盖；留空表示不修改。
+                                    </Typography>
+                                    <TextField
+                                        margin='dense'
+                                        id='auth-username'
+                                        label='管理员账号'
+                                        type='text'
+                                        fullWidth
+                                        variant='outlined'
+                                        value={authUsername}
+                                        onChange={e => setAuthUsername(e.target.value)}
+                                        placeholder='留空则不修改账号'
+                                    />
+                                    <TextField
+                                        margin='dense'
+                                        id='auth-current-password'
+                                        label='当前密码'
+                                        type='password'
+                                        fullWidth
+                                        variant='outlined'
+                                        value={authCurrentPassword}
+                                        onChange={e => setAuthCurrentPassword(e.target.value)}
+                                        placeholder='修改账号或密码时必须填写'
+                                    />
+                                    <TextField
+                                        margin='dense'
+                                        id='auth-new-password'
+                                        label='新密码'
+                                        type='password'
+                                        fullWidth
+                                        variant='outlined'
+                                        value={authNewPassword}
+                                        onChange={e => setAuthNewPassword(e.target.value)}
+                                        placeholder='留空则不修改密码'
+                                    />
                                 </Box>
 
                                 <TextField

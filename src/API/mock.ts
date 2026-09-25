@@ -335,6 +335,16 @@ export class MockNavigationClient {
         return false;
     }
 
+    // 修改管理员账号密码（模拟环境仅返回成功）
+    async updateAuthCredentials(
+        _username: string,
+        _password: string,
+        _currentPassword: string
+    ): Promise<{ success: boolean; message?: string }> {
+        await new Promise(resolve => setTimeout(resolve, 200));
+        return { success: true, message: "模拟环境未真正修改管理员凭据" };
+    }
+
     // 数据导出
     async exportData(): Promise<ExportData> {
         await new Promise(resolve => setTimeout(resolve, 200));

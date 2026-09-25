@@ -119,19 +119,54 @@ export interface LoginResponse {
 // 之前迁移挂在实例上导致「每个请求都跑一遍 DDL」，这是接口变慢的主因，所以缓存放在模块作用域。
 let migrationPromise: Promise<void> | null = null;
 
+/**
+ * 管理员凭据保存在数据库的 configs 表里（键：auth.username / auth.password）。
+ * wrangler vars 里的 AUTH_USERNAME / AUTH_PASSWORD 只当作「第一次部署」的默认种子：
+ * 首次用到时写入数据库，之后就以数据库为准，
+ * 这样反复重新部署（哪怕改了 vars）都不会把已经生效的账号密码改回去。
+ */
+export const AUTH_USERNAME_KEY = "auth.username";
+export const AUTH_PASSWORD_KEY = "auth.password";
+
+// 敏感配置：不参与备份文件的导入导出（管理员 / WebDAV 凭据）
+const SECRET_CONFIG_PREFIXES = ["auth.", "webdav."];
+
+// 判断某个配置键是否属于敏感信息
+export function isSecretConfigKey(key: string): boolean {
+    return SECRET_CONFIG_PREFIXES.some(prefix => key.startsWith(prefix));
+}
+
+// 管理员凭据额外连正常的配置读取都不返回，避免出现「拿到配置就等于拿到密码」。
+// 注意：WebDAV 凭据要照常下发，前端「备份」弹窗靠它回填已保存的配置。
+export function isAuthConfigKey(key: string): boolean {
+    return key.startsWith("auth.");
+}
+
+// 去掉敏感配置后再返回（用于写入备份文件）
+export function stripSecretConfigs(configs: Record<string, string>): Record<string, string> {
+    const safe: Record<string, string> = {};
+    for (const [key, value] of Object.entries(configs)) {
+        if (!isSecretConfigKey(key)) {
+            safe[key] = value;
+        }
+    }
+    return safe;
+}
+
 // API 类
 export class NavigationAPI {
     private db: D1Database;
     private authEnabled: boolean;
-    private username: string;
-    private password: string;
+    // 来自 wrangler vars 的默认账号密码，仅在数据库里还没有凭据时用作种子
+    private seedUsername: string;
+    private seedPassword: string;
     private secret: string;
 
     constructor(env: Env) {
         this.db = env.DB;
         this.authEnabled = env.AUTH_ENABLED === "true";
-        this.username = env.AUTH_USERNAME || "";
-        this.password = env.AUTH_PASSWORD || "";
+        this.seedUsername = env.AUTH_USERNAME || "";
+        this.seedPassword = env.AUTH_PASSWORD || "";
         this.secret = env.AUTH_SECRET || "默认密钥，建议在生产环境中设置";
     }
 
@@ -245,6 +280,52 @@ export class NavigationAPI {
         }
     }
 
+    /**
+     * 读取生效中的管理员凭据。
+     * 数据库中已存在 → 直接用它（重新部署不再改变）；
+     * 数据库中没有 → 说明是第一次部署，把 wrangler vars 里的默认值固化到数据库。
+     */
+    async getAuthCredentials(): Promise<{ username: string; password: string }> {
+        await this.migrate();
+        try {
+            return await this.withSchemaRetry(() => this.readAuthCredentials());
+        } catch (error) {
+            console.error("读取管理员凭据失败，回退到环境变量:", error);
+            return { username: this.seedUsername, password: this.seedPassword };
+        }
+    }
+
+    private async readAuthCredentials(): Promise<{ username: string; password: string }> {
+        const [userRow, passRow] = await this.db.batch<{ value: string }>([
+            this.db.prepare("SELECT value FROM configs WHERE key = ?").bind(AUTH_USERNAME_KEY),
+            this.db.prepare("SELECT value FROM configs WHERE key = ?").bind(AUTH_PASSWORD_KEY),
+        ]);
+
+        const storedUsername = (userRow.results || [])[0]?.value;
+        const storedPassword = (passRow.results || [])[0]?.value;
+
+        // 两个值都在 → 以数据库为准，后续部署不再改动
+        if (storedUsername && storedPassword) {
+            return { username: storedUsername, password: storedPassword };
+        }
+
+        // 没有配置环境变量时不写库（否则会把空账号密码固化下来）
+        if (!this.seedUsername && !this.seedPassword) {
+            return { username: this.seedUsername, password: this.seedPassword };
+        }
+
+        // 第一次部署：把环境变量里的默认值写进数据库，之后就一直用它
+        await this.updateAuthCredentials(this.seedUsername, this.seedPassword);
+        return { username: this.seedUsername, password: this.seedPassword };
+    }
+
+    // 更新管理员凭据（写入数据库后立即生效）
+    async updateAuthCredentials(username: string, password: string): Promise<boolean> {
+        const okUser = await this.setConfig(AUTH_USERNAME_KEY, username);
+        const okPass = await this.setConfig(AUTH_PASSWORD_KEY, password);
+        return okUser && okPass;
+    }
+
     // 验证用户登录
     async login(loginRequest: LoginRequest): Promise<LoginResponse> {
         // 如果未启用身份验证，直接返回成功
@@ -256,8 +337,11 @@ export class NavigationAPI {
             };
         }
 
+        // 凭据以数据库为准：首次部署才会用到 wrangler vars 里的默认值
+        const credentials = await this.getAuthCredentials();
+
         // 验证用户名和密码
-        if (loginRequest.username === this.username && loginRequest.password === this.password) {
+        if (loginRequest.username === credentials.username && loginRequest.password === credentials.password) {
             // 生成JWT令牌
             const token = await this.generateToken({ username: loginRequest.username });
             return {
@@ -377,6 +461,8 @@ export class NavigationAPI {
 
         const configs: Record<string, string> = {};
         for (const row of (configsResult.results || []) as Config[]) {
+            // 管理员凭据不下发到浏览器，避免出现「拿到配置就等于拿到密码」
+            if (isAuthConfigKey(row.key)) continue;
             configs[row.key] = row.value;
         }
 
@@ -609,9 +695,10 @@ export class NavigationAPI {
     private async queryConfigs(): Promise<Record<string, string>> {
         const result = await this.db.prepare("SELECT key, value FROM configs").all<Config>();
 
-        // 将结果转换为键值对对象
+        // 将结果转换为键值对对象（管理员凭据永远不返回）
         const configs: Record<string, string> = {};
         for (const config of result.results || []) {
+            if (isAuthConfigKey(config.key)) continue;
             configs[config.key] = config.value;
         }
 
@@ -694,14 +781,8 @@ export class NavigationAPI {
         // 获取所有站点（包含账号密码等凭据）
         const sites = await this.getSites();
 
-        // 获取所有配置（WebDAV 凭据属于隐私信息，不写入备份文件）
-        const allConfigs = await this.getConfigs();
-        const configs: Record<string, string> = {};
-        for (const [key, value] of Object.entries(allConfigs)) {
-            if (!key.startsWith("webdav.")) {
-                configs[key] = value;
-            }
-        }
+        // 获取所有配置（管理员与 WebDAV 凭据属于隐私信息，不写入备份文件）
+        const configs = stripSecretConfigs(await this.getConfigs());
 
         return {
             groups,
@@ -763,10 +844,15 @@ export class NavigationAPI {
 
             // 导入配置数据
             for (const [key, value] of Object.entries(normalized.configs || {})) {
-                if (key !== "DB_INITIALIZED") {
+                if (key === "DB_INITIALIZED") {
                     // 跳过数据库初始化标志
-                    await this.setConfig(key, value);
+                    continue;
                 }
+                if (isSecretConfigKey(key)) {
+                    // 恢复备份不覆盖管理员账号密码和 WebDAV 凭据
+                    continue;
+                }
+                await this.setConfig(key, value);
             }
 
             return true;

@@ -53,7 +53,9 @@
 4. 部署完成后你会得到类似  
    `https://myhomepage.<你的用户名>.workers.dev` 的地址。
 
-> 默认登录账号：`admin` ／ 密码：`j55XeeGvQZJXf3`（部署后在 Cloudflare 控制台「设置 → 变量」中可自行修改）。
+> 默认登录账号：`admin` ／ 密码：`j55XeeGvQZJXf3`。  
+> 这套凭据只在**第一次部署**时生效：首次登录会写入 D1 的 `configs` 表，之后就以数据库为准，重新部署不会再改动。  
+> 建议在登录后立刻到「网站设置 → 管理员账号与密码」改成自己的账号密码。
 
 ### 方式二：手动部署（适合开发者）
 
@@ -139,7 +141,14 @@ pnpm deploy     # 部署到 Cloudflare Workers
 
 ## 🔧 常见问题
 
-**忘记管理员密码？** 在 Cloudflare 控制台 → 项目 → 设置 → 环境变量中修改 `AUTH_PASSWORD` 并重新部署即可。
+**忘记管理员密码？** 凭据保存在 D1 的 `configs` 表里，改这两行即可（无需重新部署）：
+
+```bash
+wrangler d1 execute navigation-db --command "UPDATE configs SET value='新密码' WHERE key='auth.password'"
+wrangler d1 execute navigation-db --command "UPDATE configs SET value='新账号' WHERE key='auth.username'"
+```
+
+还没改过密码的站点，也可以登录后到「网站设置 → 管理员账号与密码」修改（需填写当前密码），改动立即生效且不会被后续部署覆盖。
 
 **想关闭登录？** 将 `AUTH_ENABLED` 设为 `false`，任何访问者都可浏览与编辑（不建议公开站点使用）。
 
