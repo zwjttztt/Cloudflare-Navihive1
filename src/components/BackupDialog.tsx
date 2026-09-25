@@ -284,12 +284,12 @@ export default function BackupDialog({
     };
 
     const renderBackupTab = () => (
-        <Stack spacing={3} sx={{ mt: 1 }}>
+        <Stack spacing={2} sx={{ mt: 0.5 }}>
             <Box>
                 <Typography variant='subtitle1' fontWeight='600' gutterBottom>
                     备份到本地
                 </Typography>
-                <Typography variant='body2' color='text.secondary' sx={{ mb: 1.5 }}>
+                <Typography variant='body2' color='text.secondary' sx={{ mb: 1 }}>
                     把当前所有分组、站点（含账号密码）与网站设置导出为一个 JSON 文件保存到本机。
                 </Typography>
                 <Button
@@ -310,11 +310,11 @@ export default function BackupDialog({
                 <Typography variant='subtitle1' fontWeight='600' gutterBottom>
                     备份到 WebDAV
                 </Typography>
-                <Typography variant='body2' color='text.secondary' sx={{ mb: 1.5 }}>
+                <Typography variant='body2' color='text.secondary' sx={{ mb: 1 }}>
                     支持坚果云、Nextcloud、ownCloud、群晖等 WebDAV 服务。配置会保存在服务器，备份由服务端代理上传。
                 </Typography>
 
-                <Stack spacing={2}>
+                <Stack spacing={1.5}>
                     <TextField
                         label='WebDAV 地址'
                         placeholder='https://dav.jianguoyun.com/dav/'
@@ -426,7 +426,7 @@ export default function BackupDialog({
     );
 
     const renderRestoreTab = () => (
-        <Stack spacing={3} sx={{ mt: 1 }}>
+        <Stack spacing={2} sx={{ mt: 0.5 }}>
             <FormControlLabel
                 control={
                     <Switch checked={overwrite} onChange={e => setOverwrite(e.target.checked)} color='primary' />
@@ -599,11 +599,11 @@ export default function BackupDialog({
                 <Tab label='恢复 / 导入' />
             </Tabs>
 
-            <DialogContent sx={{ pt: 2 }}>
+            <DialogContent sx={{ pt: 1.5 }}>
                 {tab === 0 ? renderBackupTab() : renderRestoreTab()}
             </DialogContent>
 
-            <DialogActions sx={{ px: 3, pb: 3, pt: 1 }}>
+            <DialogActions sx={{ px: 2, pb: 2, pt: 1 }}>
                 <Chip
                     size='small'
                     variant='outlined'
