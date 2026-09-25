@@ -528,6 +528,8 @@ interface Env {
 interface LoginInput {
     username?: string;
     password?: string;
+    /** 勾选「记住我」时签发 30 天令牌 */
+    remember?: boolean;
 }
 
 interface GroupInput {

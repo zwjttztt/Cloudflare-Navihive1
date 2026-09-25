@@ -37,14 +37,14 @@ export class NavigationClient {
     }
 
     // 登录API
-    async login(username: string, password: string): Promise<LoginResponse> {
+    async login(username: string, password: string, remember = false): Promise<LoginResponse> {
         try {
             const response = await fetch(`${this.baseUrl}/login`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
                 },
-                body: JSON.stringify({ username, password })
+                body: JSON.stringify({ username, password, remember })
             });
 
             const data = await response.json();

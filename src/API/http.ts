@@ -106,6 +106,8 @@ export interface BootstrapData {
 export interface LoginRequest {
     username: string;
     password: string;
+    /** 勾选「记住我」时签发更长期限的令牌（1 个月），实现免登录 */
+    remember?: boolean;
 }
 
 export interface LoginResponse {
@@ -127,6 +129,10 @@ let migrationPromise: Promise<void> | null = null;
  */
 export const AUTH_USERNAME_KEY = "auth.username";
 export const AUTH_PASSWORD_KEY = "auth.password";
+
+// 令牌有效期（秒）：普通登录 1 天；勾选「记住账号密码」后 30 天，实现「一个月内免登录」
+export const DEFAULT_TOKEN_TTL = 24 * 60 * 60;
+export const REMEMBER_TOKEN_TTL = 30 * 24 * 60 * 60;
 
 // 敏感配置：不参与备份文件的导入导出（管理员 / WebDAV 凭据）
 const SECRET_CONFIG_PREFIXES = ["auth.", "webdav."];
@@ -328,11 +334,14 @@ export class NavigationAPI {
 
     // 验证用户登录
     async login(loginRequest: LoginRequest): Promise<LoginResponse> {
+        // 令牌有效期：普通登录 1 天；勾选「记住我」则是 30 天，实现「一个月内免登录」
+        const ttlSeconds = loginRequest.remember ? REMEMBER_TOKEN_TTL : DEFAULT_TOKEN_TTL;
+
         // 如果未启用身份验证，直接返回成功
         if (!this.authEnabled) {
             return {
                 success: true,
-                token: await this.generateToken({ username: "guest" }),
+                token: await this.generateToken({ username: "guest" }, ttlSeconds),
                 message: "身份验证未启用，默认登录成功",
             };
         }
@@ -343,7 +352,7 @@ export class NavigationAPI {
         // 验证用户名和密码
         if (loginRequest.username === credentials.username && loginRequest.password === credentials.password) {
             // 生成JWT令牌
-            const token = await this.generateToken({ username: loginRequest.username });
+            const token = await this.generateToken({ username: loginRequest.username }, ttlSeconds);
             return {
                 success: true,
                 token,
@@ -391,11 +400,14 @@ export class NavigationAPI {
     }
 
     // 生成JWT令牌
-    private async generateToken(payload: Record<string, unknown>): Promise<string> {
+    private async generateToken(
+        payload: Record<string, unknown>,
+        ttlSeconds: number = DEFAULT_TOKEN_TTL
+    ): Promise<string> {
         // 准备payload
         const tokenPayload = {
             ...payload,
-            exp: Math.floor(Date.now() / 1000) + 24 * 60 * 60, // 24小时过期
+            exp: Math.floor(Date.now() / 1000) + ttlSeconds,
             iat: Math.floor(Date.now() / 1000),
         };
 

@@ -149,7 +149,7 @@ export class MockNavigationClient {
     }
 
     // 登录API
-    async login(username: string, password: string): Promise<LoginResponse> {
+    async login(username: string, password: string, _remember = false): Promise<LoginResponse> {
         await new Promise(resolve => setTimeout(resolve, 500));
         console.log(username, password);
         // 模拟登录验证逻辑 - 在Mock环境中任何账号密码都能登录
