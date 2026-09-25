@@ -28,29 +28,17 @@ import AddIcon from "@mui/icons-material/Add";
 import EditIcon from "@mui/icons-material/Edit";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import ExpandLessIcon from "@mui/icons-material/ExpandLess";
-import LayersOutlinedIcon from "@mui/icons-material/LayersOutlined";
+import EmptyArt from "./EmptyArt";
 import { useUIPrefs } from "../context/UIPrefsContext";
+import {
+    COLLAPSED_EVENT,
+    readCollapsedGroupIds,
+    writeCollapsedGroupIds,
+} from "../utils/collapse";
+import { dayBucketOf, recentLabelOf, type DayBucket } from "../utils/time";
 
-// 分组展开/收起状态存在本地，刷新后保持原样
-const COLLAPSED_GROUPS_KEY = "navihive:collapsedGroups";
-
-const readCollapsedGroupIds = (): string[] => {
-    try {
-        const raw = localStorage.getItem(COLLAPSED_GROUPS_KEY);
-        const parsed = raw ? JSON.parse(raw) : [];
-        return Array.isArray(parsed) ? parsed.map(String) : [];
-    } catch {
-        return [];
-    }
-};
-
-const writeCollapsedGroupIds = (ids: string[]) => {
-    try {
-        localStorage.setItem(COLLAPSED_GROUPS_KEY, JSON.stringify(ids));
-    } catch {
-        // 隐私模式等场景下写入失败，忽略即可
-    }
-};
+// 虚拟「最近访问」分组的 id（本地统计出来，不存在于数据库）
+const RECENT_GROUP_ID = -1;
 
 // 更新组件属性接口
 interface GroupCardProps {
@@ -90,7 +78,7 @@ const GroupCard: React.FC<GroupCardProps> = ({
     accentColor = "",
     onAccentChange,
 }) => {
-    const { viewMode, density } = useUIPrefs();
+    const { viewMode, density, visits } = useUIPrefs();
     const isCompact = density === "compact";
     // 列表视图下卡片挨得更紧，分组内间距同步收一档
     const gridGap = viewMode === "list" ? (isCompact ? -0.25 : 0) : isCompact ? -0.5 : -1;
@@ -108,9 +96,17 @@ const GroupCard: React.FC<GroupCardProps> = ({
         setSites(group.sites);
     }, [group.sites]);
 
-    // 分组本身变化时同步一次收起状态
+    // 分组本身变化时同步一次收起状态；同时监听「全部折叠/展开」广播与跨标签页改动
     useEffect(() => {
-        setCollapsed(readCollapsedGroupIds().includes(String(group.id)));
+        const sync = () =>
+            setCollapsed(readCollapsedGroupIds().includes(String(group.id)));
+        sync();
+        window.addEventListener(COLLAPSED_EVENT, sync);
+        window.addEventListener("storage", sync);
+        return () => {
+            window.removeEventListener(COLLAPSED_EVENT, sync);
+            window.removeEventListener("storage", sync);
+        };
     }, [group.id]);
 
     // 懒加载：分组切换或版式变化时回到第一批
@@ -228,6 +224,18 @@ const GroupCard: React.FC<GroupCardProps> = ({
     const isVirtualGroup = typeof group.id === "number" && group.id < 0;
     /** 是否可以显示添加卡片 / 排序 / 编辑分组这些管理入口 */
     const canManageGroup = !isVirtualGroup;
+
+    // 卡片外层容器宽度：列表一行一个，图标墙排得更密，紧凑密度只收内边距
+    const cardBoxSx = {
+        width:
+            viewMode === "list"
+                ? "100%"
+                : viewMode === "wall"
+                  ? { xs: "33.33%", sm: "25%", md: "16.66%", lg: "12.5%", xl: "10%" }
+                  : { xs: "50%", sm: "33.33%", md: "25%", lg: "25%", xl: "20%" },
+        padding: isCompact ? 0.5 : 1, // 内部间距，更均匀的分布
+        boxSizing: "border-box" as const, // 确保padding不影响宽度计算
+    };
 
     // 渲染站点卡片区域
     const renderSites = () => {
@@ -375,7 +383,7 @@ const GroupCard: React.FC<GroupCardProps> = ({
                         color: "text.secondary",
                     }}
                 >
-                    <LayersOutlinedIcon color='inherit' />
+                    <EmptyArt variant={searchQuery ? "search" : "group"} size={104} />
                     <Typography variant='body2'>
                         {searchQuery ? "本组没有匹配的网站" : "这个分组还没有卡片"}
                     </Typography>
@@ -386,6 +394,62 @@ const GroupCard: React.FC<GroupCardProps> = ({
                               ? "点击右上角「添加卡片」放入第一个网站"
                               : "这个分组暂未放入网站"}
                     </Typography>
+                </Box>
+            );
+        }
+
+        // 「最近访问」虚拟分组：按 今天 / 昨天 / 更早 分三小节，比一条扁平长列表更好扫读
+        if (group.id === RECENT_GROUP_ID) {
+            const buckets: Record<DayBucket, Site[]> = {
+                today: [],
+                yesterday: [],
+                earlier: [],
+            };
+            for (const site of sitesToRender) {
+                const stat = visits[String(site.id)];
+                buckets[dayBucketOf(stat?.last ?? 0)].push(site);
+            }
+
+            const sections: { key: DayBucket; title: string }[] = [
+                { key: "today", title: "今天" },
+                { key: "yesterday", title: "昨天" },
+                { key: "earlier", title: "更早" },
+            ];
+
+            return (
+                <Box>
+                    {sections.map(section =>
+                        buckets[section.key].length === 0 ? null : (
+                            <Box
+                                key={section.key}
+                                sx={{ mb: 2.5, "&:last-of-type": { mb: 0 } }}
+                            >
+                                <Box className='nav-subsection-title'>{section.title}</Box>
+                                <Box
+                                    sx={{
+                                        display: viewMode === "list" ? "block" : "flex",
+                                        flexWrap: "wrap",
+                                        margin: gridGap,
+                                    }}
+                                >
+                                    {buckets[section.key].map(site => (
+                                        <Box key={site.id} sx={cardBoxSx}>
+                                            <SiteCard
+                                                site={site}
+                                                onUpdate={onUpdate}
+                                                onDelete={onDelete}
+                                                isEditMode={false}
+                                                highlight={searchQuery}
+                                                recentLabel={recentLabelOf(
+                                                    visits[String(site.id)]?.last ?? 0
+                                                )}
+                                            />
+                                        </Box>
+                                    ))}
+                                </Box>
+                            </Box>
+                        )
+                    )}
                 </Box>
             );
         }
@@ -403,32 +467,7 @@ const GroupCard: React.FC<GroupCardProps> = ({
                 }}
             >
                 {visibleSites.map((site, idx) => (
-                    <Box
-                        key={site.id}
-                        sx={{
-                            // 列表一行一个；图标墙排得更密；紧凑密度再收一档间距
-                            width:
-                                viewMode === "list"
-                                    ? "100%"
-                                    : viewMode === "wall"
-                                      ? {
-                                            xs: "33.33%",
-                                            sm: "25%",
-                                            md: "16.66%",
-                                            lg: "12.5%",
-                                            xl: "10%",
-                                        }
-                                      : {
-                                            xs: "50%",
-                                            sm: "33.33%",
-                                            md: "25%",
-                                            lg: "25%",
-                                            xl: "20%",
-                                        },
-                            padding: isCompact ? 0.5 : 1, // 内部间距，更均匀的分布
-                            boxSizing: "border-box", // 确保padding不影响宽度计算
-                        }}
-                    >
+                    <Box key={site.id} sx={cardBoxSx}>
                         <SiteCard
                             site={site}
                             onUpdate={onUpdate}

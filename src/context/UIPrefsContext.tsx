@@ -21,7 +21,17 @@ export type FontScale = "compact" | "normal" | "large";
 export interface VisitStat {
     count: number;
     last: number; // 最近访问时间戳（ms）
+    /** 按天累计的访问次数，键为本地日期 YYYY-MM-DD。老数据没有这个字段，读取时兜底成空对象 */
+    days?: Record<string, number>;
 }
+
+/** 本地日期键：YYYY-MM-DD（用本机时区，避免跨天算错） */
+export const dayKey = (ts: number = Date.now()): string => {
+    const d = new Date(ts);
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${d.getFullYear()}-${m}-${day}`;
+};
 
 /** 圆角风格对应的像素值，写进 CSS 变量 --card-radius */
 export const RADIUS_PX: Record<RadiusStyle, string> = {
@@ -54,6 +64,10 @@ interface UIPrefsValue {
     /** 判定为失效的站点链接 -> 失效时间戳 */
     deadLinks: Record<string, number>;
     setDeadLinks: (next: Record<string, number>) => void;
+    /** 最近搜索过的关键词（本机，最新在前） */
+    searchHistory: string[];
+    pushSearchHistory: (term: string) => void;
+    clearSearchHistory: () => void;
 }
 
 const VIEW_KEY = "navihive:viewMode";
@@ -62,6 +76,9 @@ const FAVORITES_KEY = "navihive:favoritesEnabled";
 const VISITS_KEY = "navihive:visits";
 const RADIUS_KEY = "navihive:radius";
 const FONT_SCALE_KEY = "navihive:fontScale";
+const SEARCH_HISTORY_KEY = "navihive:searchHistory";
+/** 搜索历史最多留几条，够用又不至于把面板撑长 */
+const SEARCH_HISTORY_MAX = 8;
 
 const readString = (key: string, fallback: string): string => {
     try {
@@ -81,12 +98,29 @@ const readVisits = (): Record<string, VisitStat> => {
         for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
             const stat = v as Partial<VisitStat>;
             if (typeof stat?.count === "number" && typeof stat?.last === "number") {
-                clean[k] = { count: stat.count, last: stat.last };
+                // days 是后加的字段：老数据没有，只保留合法的数字值
+                const days: Record<string, number> = {};
+                if (stat.days && typeof stat.days === "object") {
+                    for (const [dk, dv] of Object.entries(stat.days)) {
+                        if (typeof dv === "number" && dv > 0) days[dk] = dv;
+                    }
+                }
+                clean[k] = { count: stat.count, last: stat.last, days };
             }
         }
         return clean;
     } catch {
         return {};
+    }
+};
+
+const readSearchHistory = (): string[] => {
+    try {
+        const raw = localStorage.getItem(SEARCH_HISTORY_KEY);
+        const parsed = raw ? JSON.parse(raw) : [];
+        return Array.isArray(parsed) ? parsed.filter(t => typeof t === "string").slice(0, SEARCH_HISTORY_MAX) : [];
+    } catch {
+        return [];
     }
 };
 
@@ -114,6 +148,9 @@ const defaultValue: UIPrefsValue = {
     setFontScale: () => {},
     deadLinks: {},
     setDeadLinks: () => {},
+    searchHistory: [],
+    pushSearchHistory: () => {},
+    clearSearchHistory: () => {},
 };
 
 export const UIPrefsContext = createContext<UIPrefsValue>(defaultValue);
@@ -144,6 +181,7 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
     const [deadLinks, setDeadLinks] = useState<Record<string, number>>(() =>
         readDeadLinks()
     );
+    const [searchHistory, setSearchHistory] = useState<string[]>(readSearchHistory);
 
     const setViewMode = useCallback((mode: ViewMode) => {
         setViewModeState(mode);
@@ -165,9 +203,15 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
         setVisits(prev => {
             const key = String(siteId);
             const old = prev[key];
+            const today = dayKey();
             const next = {
                 ...prev,
-                [key]: { count: (old?.count ?? 0) + 1, last: Date.now() },
+                [key]: {
+                    count: (old?.count ?? 0) + 1,
+                    last: Date.now(),
+                    // 顺带记一笔「今天访问了几次」，供访问热力图使用
+                    days: { ...(old?.days ?? {}), [today]: (old?.days?.[today] ?? 0) + 1 },
+                },
             };
             try {
                 localStorage.setItem(VISITS_KEY, JSON.stringify(next));
@@ -176,6 +220,25 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
             }
             return next;
         });
+    }, []);
+
+    const pushSearchHistory = useCallback((term: string) => {
+        const trimmed = term.trim();
+        if (!trimmed) return;
+        setSearchHistory(prev => {
+            const next = [trimmed, ...prev.filter(t => t !== trimmed)].slice(0, SEARCH_HISTORY_MAX);
+            write(SEARCH_HISTORY_KEY, JSON.stringify(next));
+            return next;
+        });
+    }, []);
+
+    const clearSearchHistory = useCallback(() => {
+        setSearchHistory([]);
+        try {
+            localStorage.removeItem(SEARCH_HISTORY_KEY);
+        } catch {
+            // 忽略
+        }
     }, []);
 
     const setRadius = useCallback((next: RadiusStyle) => {
@@ -215,6 +278,8 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
             } else if (e.key === FONT_SCALE_KEY) {
                 const v = e.newValue ?? "normal";
                 setFontScaleState(v === "compact" || v === "large" ? v : "normal");
+            } else if (e.key === SEARCH_HISTORY_KEY) {
+                setSearchHistory(readSearchHistory());
             }
         };
         window.addEventListener("storage", onStorage);
@@ -238,6 +303,9 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
             setFontScale,
             deadLinks,
             setDeadLinks,
+            searchHistory,
+            pushSearchHistory,
+            clearSearchHistory,
         }),
         [
             viewMode,
@@ -254,6 +322,9 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
             fontScale,
             setFontScale,
             deadLinks,
+            searchHistory,
+            pushSearchHistory,
+            clearSearchHistory,
         ]
     );
 
