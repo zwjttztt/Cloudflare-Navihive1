@@ -9,8 +9,12 @@ import {
     Typography,
     Box,
     Alert,
+    Tooltip,
 } from "@mui/material";
+import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import { Group } from "../API/http";
+import { useNotify } from "../context/NotifyContext";
+import { copyToClipboard } from "../utils/clipboard";
 
 interface EditGroupDialogProps {
     open: boolean;
@@ -48,8 +52,11 @@ const EditGroupDialog: React.FC<EditGroupDialogProps> = ({
     color = "",
     onColorChange,
 }) => {
+    const notify = useNotify();
     const [name, setName] = useState("");
     const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+    /** 点提示里的分组名复制后短暂显示「已复制」，复制失败则提示手动输入 */
+    const [copiedTick, setCopiedTick] = useState(false);
     // 二次确认：必须手打一遍分组名称才允许删除，避免误点
     const [deleteConfirmText, setDeleteConfirmText] = useState("");
     const isCreate = mode === "create";
@@ -63,6 +70,7 @@ const EditGroupDialog: React.FC<EditGroupDialogProps> = ({
         setName(isCreate ? "" : groupName ?? "");
         setShowDeleteConfirm(false);
         setDeleteConfirmText("");
+        setCopiedTick(false);
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [open, groupId, isCreate]);
 
@@ -91,6 +99,19 @@ const EditGroupDialog: React.FC<EditGroupDialogProps> = ({
             // 确认删除
             onDelete?.(group.id!);
         }
+    };
+
+    /** 点提示里的分组名：一键复制，方便直接粘贴进上面的输入框 */
+    const handleCopyGroupName = async () => {
+        if (!group?.name) return;
+        const ok = await copyToClipboard(group.name);
+        if (!ok) {
+            notify("复制失败，请手动输入分组名称", "error");
+            return;
+        }
+        setCopiedTick(true);
+        notify(`已复制分组名称「${group.name}」`, "success", 1600);
+        window.setTimeout(() => setCopiedTick(false), 1800);
     };
 
     return (
@@ -160,9 +181,53 @@ const EditGroupDialog: React.FC<EditGroupDialogProps> = ({
                         </Typography>
                         <Typography
                             variant='body2'
-                            sx={{ mt: 1.5, fontWeight: 600 }}
+                            sx={{ mt: 1.5, fontWeight: 600, display: "flex", alignItems: "center", flexWrap: "wrap", gap: 0.5 }}
                         >
-                            请输入分组名称「{group.name}」以确认删除
+                            请输入分组名称「
+                            <Tooltip title='点击复制分组名称'>
+                                <Box
+                                    component='span'
+                                    role='button'
+                                    tabIndex={0}
+                                    aria-label={`复制分组名称 ${group.name}`}
+                                    onClick={handleCopyGroupName}
+                                    onKeyDown={e => {
+                                        if (e.key === "Enter" || e.key === " ") {
+                                            e.preventDefault();
+                                            handleCopyGroupName();
+                                        }
+                                    }}
+                                    sx={{
+                                        display: "inline-flex",
+                                        alignItems: "center",
+                                        gap: 0.5,
+                                        px: 0.75,
+                                        py: 0.15,
+                                        borderRadius: "8px",
+                                        cursor: "pointer",
+                                        userSelect: "all",
+                                        border: "1px dashed",
+                                        borderColor: "currentColor",
+                                        transition: "background-color .18s ease",
+                                        "&:hover, &:focus-visible": {
+                                            bgcolor: "action.selected",
+                                        },
+                                    }}
+                                >
+                                    {group.name}
+                                    <ContentCopyIcon sx={{ fontSize: 13 }} />
+                                </Box>
+                            </Tooltip>
+                            」以确认删除
+                            {copiedTick && (
+                                <Typography
+                                    component='span'
+                                    variant='caption'
+                                    sx={{ ml: 0.5, color: "success.main" }}
+                                >
+                                    已复制
+                                </Typography>
+                            )}
                         </Typography>
                         <TextField
                             fullWidth
@@ -204,6 +269,7 @@ const EditGroupDialog: React.FC<EditGroupDialogProps> = ({
                             onClick={() => {
                                 setShowDeleteConfirm(false);
                                 setDeleteConfirmText("");
+                                setCopiedTick(false);
                             }}
                             color='inherit'
                         >
