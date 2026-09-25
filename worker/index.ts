@@ -326,12 +326,29 @@ export default {
                 else if (path === "configs" && method === "GET") {
                     const configs = await api.getConfigs();
                     return Response.json(configs);
-                } else if (path.startsWith("configs/") && method === "GET") {
+                }                 else if (path.startsWith("configs/") && method === "GET") {
                     const key = path.substring("configs/".length);
+                    // 管理员凭据不允许读取
+                    if (key.startsWith("auth.")) {
+                        return Response.json(
+                            { error: "管理员凭据不可读取" },
+                            { status: 403 }
+                        );
+                    }
                     const value = await api.getConfig(key);
                     return Response.json({ key, value });
                 } else if (path.startsWith("configs/") && method === "PUT") {
                     const key = path.substring("configs/".length);
+                    // 管理员凭据只能通过 /api/auth/credentials 修改（需要校验当前密码）
+                    if (key.startsWith("auth.")) {
+                        return Response.json(
+                            {
+                                success: false,
+                                message: "管理员凭据请通过「网站设置 - 管理员账号与密码」修改",
+                            },
+                            { status: 403 }
+                        );
+                    }
                     const data = (await request.json()) as ConfigInput;
 
                     // 验证配置数据
@@ -361,8 +378,47 @@ export default {
                     return Response.json({ success: result });
                 } else if (path.startsWith("configs/") && method === "DELETE") {
                     const key = path.substring("configs/".length);
+                    // 不允许删除管理员凭据，避免悄悄退化回默认密码
+                    if (key.startsWith("auth.")) {
+                        return Response.json({ success: false }, { status: 403 });
+                    }
                     const result = await api.deleteConfig(key);
                     return Response.json({ success: result });
+                }
+
+                // 修改管理员账号密码（保存在数据库中，重新部署不会被覆盖）
+                else if (path === "auth/credentials" && method === "PUT") {
+                    const data = (await request.json()) as AuthCredentialsInput;
+
+                    const username = typeof data.username === "string" ? data.username.trim() : "";
+                    const password = typeof data.password === "string" ? data.password : "";
+                    const currentPassword =
+                        typeof data.currentPassword === "string" ? data.currentPassword : "";
+
+                    if (!username && !password) {
+                        return Response.json(
+                            { success: false, message: "请填写新的管理员账号或新密码" },
+                            { status: 400 }
+                        );
+                    }
+
+                    const current = await api.getAuthCredentials();
+                    if (currentPassword !== current.password) {
+                        return Response.json(
+                            { success: false, message: "当前密码不正确" },
+                            { status: 403 }
+                        );
+                    }
+
+                    // 留空的字段表示保持不变
+                    const result = await api.updateAuthCredentials(
+                        username || current.username,
+                        password || current.password
+                    );
+                    return Response.json({
+                        success: result,
+                        message: result ? "管理员凭据已更新，请牢记新账号密码" : "保存管理员凭据失败",
+                    });
                 }
 
                 // 数据导出路由
@@ -478,6 +534,13 @@ interface SiteInput {
 
 interface ConfigInput {
     value?: string;
+}
+
+// 修改管理员凭据的请求体
+interface AuthCredentialsInput {
+    username?: string;
+    password?: string;
+    currentPassword?: string;
 }
 
 // 输入验证函数
