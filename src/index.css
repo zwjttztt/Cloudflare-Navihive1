@@ -303,3 +303,154 @@ mark.nav-hl {
         animation: none !important;
     }
 }
+
+/* ============================================================
+   第二轮美化
+   - 顶部滚动进度条、头部时钟、搜索历史、时间分区小标题
+   - 访问热力图、空状态插画、卡片图标悬停微动效
+   ============================================================ */
+
+/* 顶部滚动进度条：贴在最上方，跟随主色 */
+.nav-scroll-progress {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 3px;
+    z-index: 9999;
+    pointer-events: none;
+    background: transparent;
+}
+.nav-scroll-progress > span {
+    display: block;
+    height: 100%;
+    width: 0;
+    border-radius: 0 999px 999px 0;
+    background: linear-gradient(
+        90deg,
+        color-mix(in srgb, var(--accent) 55%, transparent),
+        var(--accent)
+    );
+    box-shadow: 0 0 10px color-mix(in srgb, var(--accent) 55%, transparent);
+    transition: width 0.12s linear, opacity 0.25s ease;
+}
+.nav-scroll-progress[data-idle="true"] > span {
+    opacity: 0;
+}
+
+/* 头部时钟：等宽数字避免秒数跳动时宽度抖动 */
+.nav-clock {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    line-height: 1.1;
+    user-select: none;
+}
+.nav-clock-time {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum";
+    letter-spacing: 0.02em;
+    font-weight: 600;
+    color: var(--accent);
+}
+
+/* 搜索历史：无输入时在搜索框下方列出最近搜过的词 */
+.nav-search-history {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 10px 12px;
+}
+.nav-history-chip {
+    cursor: pointer;
+    border: 1px solid var(--glass-border);
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-size: 12px;
+    padding: 2px 9px;
+    border-radius: 999px;
+    transition: background-color 0.18s ease, border-color 0.18s ease;
+}
+.nav-history-chip:hover {
+    background: color-mix(in srgb, var(--accent) 16%, transparent);
+    border-color: color-mix(in srgb, var(--accent) 34%, transparent);
+}
+
+/* 时间分区小标题（今天 / 昨天 / 更早） */
+.nav-subsection-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 2px 0 10px;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    color: color-mix(in srgb, var(--group-accent) 88%, currentColor);
+}
+.nav-subsection-title::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: linear-gradient(
+        90deg,
+        color-mix(in srgb, var(--group-accent) 42%, transparent),
+        transparent
+    );
+}
+
+/* 卡片上的相对时间标签（仅在「最近访问」分区里出现） */
+.nav-recent-label {
+    display: inline-flex;
+    align-items: center;
+    height: 17px;
+    padding: 0 6px;
+    border-radius: 9px;
+    font-size: 11px;
+    line-height: 17px;
+    color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent) 24%, transparent);
+}
+
+/* 访问热力图：8 周 × 7 天的小方格 */
+.nav-heat-grid {
+    display: grid;
+    grid-auto-flow: column;
+    grid-template-rows: repeat(7, 13px);
+    gap: 3px;
+}
+.nav-heat-cell {
+    width: 13px;
+    height: 13px;
+    border-radius: 3px;
+    background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.nav-heat-cell[data-level="1"] {
+    background: color-mix(in srgb, var(--accent) 28%, transparent);
+}
+.nav-heat-cell[data-level="2"] {
+    background: color-mix(in srgb, var(--accent) 48%, transparent);
+}
+.nav-heat-cell[data-level="3"] {
+    background: color-mix(in srgb, var(--accent) 70%, transparent);
+}
+.nav-heat-cell[data-level="4"] {
+    background: var(--accent);
+}
+
+/* 空状态插画 */
+.nav-empty-art {
+    color: color-mix(in srgb, var(--accent) 62%, transparent);
+}
+
+/* 卡片图标悬停微动效：轻轻上浮 + 放大，给静态页面一点反馈 */
+.nav-card-icon {
+    transition: transform 0.22s cubic-bezier(0.22, 0.61, 0.36, 1),
+        filter 0.22s ease;
+}
+.nav-card-in:hover .nav-card-icon {
+    transform: translateY(-2px) scale(1.07);
+    filter: drop-shadow(0 4px 8px color-mix(in srgb, var(--accent) 30%, transparent));
+}
+

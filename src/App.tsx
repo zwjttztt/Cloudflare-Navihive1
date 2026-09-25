@@ -11,6 +11,11 @@ import GroupNavRail from "./components/GroupNavRail";
 import MobileTabBar from "./components/MobileTabBar";
 import CommandPalette, { CommandItem } from "./components/CommandPalette";
 import BookmarkImportDialog from "./components/BookmarkImportDialog";
+import ScrollProgress from "./components/ScrollProgress";
+import HeaderClock from "./components/HeaderClock";
+import VisitsDialog from "./components/VisitsDialog";
+import EmptyArt from "./components/EmptyArt";
+import { readCollapsedGroupIds, setAllCollapsed } from "./utils/collapse";
 import { probeLinks } from "./utils/linkHealth";
 import { ParsedBookmarkGroup } from "./utils/bookmarks";
 import { DEFAULT_ICON_API, resolveIconApiUrl } from "./utils/iconApi";
@@ -91,7 +96,6 @@ import AutoFixHighIcon from "@mui/icons-material/AutoFixHigh";
 import VisibilityIcon from "@mui/icons-material/Visibility";
 import VisibilityOffIcon from "@mui/icons-material/VisibilityOff";
 import SearchIcon from "@mui/icons-material/Search";
-import SearchOffIcon from "@mui/icons-material/SearchOff";
 import ViewModuleIcon from "@mui/icons-material/ViewModule";
 import ViewListIcon from "@mui/icons-material/ViewList";
 import ViewCompactIcon from "@mui/icons-material/ViewCompact";
@@ -101,6 +105,9 @@ import StarIcon from "@mui/icons-material/Star";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import BookmarkAddedIcon from "@mui/icons-material/BookmarkAdded";
 import LinkOffIcon from "@mui/icons-material/LinkOff";
+import UnfoldMoreIcon from "@mui/icons-material/UnfoldMore";
+import UnfoldLessIcon from "@mui/icons-material/UnfoldLess";
+import InsightsIcon from "@mui/icons-material/Insights";
 
 // 根据环境选择使用真实API还是模拟API
 const isDevEnvironment = import.meta.env.DEV;
@@ -363,10 +370,15 @@ function App() {
         fontScale,
         setFontScale,
         setDeadLinks,
+        searchHistory,
+        pushSearchHistory,
+        clearSearchHistory,
     } = useUIPrefs();
 
     // 命令面板（Ctrl / Cmd + K）
     const [commandOpen, setCommandOpen] = useState(false);
+    // 访问统计弹窗（热力图 + Top5）
+    const [openVisits, setOpenVisits] = useState(false);
     // 浏览器书签导入
     const [bookmarkOpen, setBookmarkOpen] = useState(false);
     // 分组锚点导航：当前视口里的分组
@@ -1516,31 +1528,40 @@ function App() {
     }, [filteredGroups, query]);
 
     const dropdownOpen = query.length > 0 && searchFocused && flatResults.length > 0;
+    // 没有输入但曾经搜过：把历史关键词亮出来，点一下就能接着搜
+    const historyOpen = searchFocused && query.length === 0 && searchHistory.length > 0;
 
     // 打开下拉面板里的某一项（用户主动选择，直接前台打开）
     const openResult = (site: Site) => {
         setSearchFocused(false);
+        // 从搜索面板打开的，把这次关键词记进搜索历史
+        if (searchQuery.trim()) pushSearchHistory(searchQuery);
         if (site.url) {
             window.open(site.url, "_blank", "noopener,noreferrer");
         }
     };
 
-    // 「常用」分组：按点击次数排序，次数相同则最近访问优先
+    // 点历史关键词：回填到搜索框并保持聚焦，方便直接回车打开
+    const applyHistoryTerm = (term: string) => {
+        setSearchQuery(term);
+        setActiveResult(0);
+        setSearchFocused(true);
+        searchInputRef.current?.focus();
+    };
+
+    // 「最近访问」虚拟分组：按最近访问时间倒序（组内还会按 今天 / 昨天 / 更早 分小节）
     const favoritesGroup = useMemo(() => {
         const scored = groups
             .flatMap(group => group.sites)
             .map(site => ({ site, stat: visits[String(site.id)] }))
             .filter(item => item.stat && item.stat.count > 0)
-            .sort(
-                (a, b) =>
-                    b.stat!.count - a.stat!.count || b.stat!.last - a.stat!.last
-            )
-            .slice(0, 8)
+            .sort((a, b) => b.stat!.last - a.stat!.last || b.stat!.count - a.stat!.count)
+            .slice(0, 9)
             .map(item => item.site);
 
         return {
             id: -1,
-            name: "常用",
+            name: "最近访问",
             order_num: -1,
             sites: scored,
         } as GroupWithSites;
@@ -1645,6 +1666,23 @@ function App() {
         [groups, configs, notify, fetchData]
     );
 
+    // ---- 一键全部折叠 / 展开 ----
+    // 直接读 localStorage 现算：菜单每次打开都会重渲染，所以拿到的永远是最新状态
+    const collapseIds = new Set(readCollapsedGroupIds());
+    const realGroups = groups.filter(g => typeof g.id === "number" && g.id > 0);
+    const allGroupsCollapsed =
+        realGroups.length > 0 && realGroups.every(g => collapseIds.has(String(g.id)));
+
+    const toggleCollapseAll = useCallback(() => {
+        const next = !allGroupsCollapsed; // true = 折叠全部
+        setAllCollapsed(
+            realGroups.map(g => g.id),
+            next
+        );
+        notify(next ? "已折叠全部分组" : "已展开全部分组", "success");
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [allGroupsCollapsed, groups, notify]);
+
     // 命令面板：站点跳转 + 常用操作，键盘党不用摸鼠标
     const commands = useMemo<CommandItem[]>(() => {
         const siteCommands: CommandItem[] = groups
@@ -1697,7 +1735,7 @@ function App() {
             },
             {
                 id: "cmd-favorites",
-                label: favoritesEnabled ? "关闭常用置前" : "开启常用置前",
+                label: favoritesEnabled ? "关闭最近访问置前" : "开启最近访问置前",
                 section: "显示",
                 run: () => setFavoritesEnabled(!favoritesEnabled),
             },
@@ -1744,6 +1782,18 @@ function App() {
                 run: () => void runLinkCheck(),
             },
             {
+                id: "cmd-visits",
+                label: "查看访问统计",
+                section: "显示",
+                run: () => setOpenVisits(true),
+            },
+            {
+                id: "cmd-collapse-all",
+                label: allGroupsCollapsed ? "展开全部分组" : "折叠全部分组",
+                section: "显示",
+                run: () => toggleCollapseAll(),
+            },
+            {
                 id: "cmd-clear-visits",
                 label: "清除访问记录",
                 section: "操作",
@@ -1772,6 +1822,8 @@ function App() {
         clearVisits,
         notify,
         recordVisit,
+        allGroupsCollapsed,
+        toggleCollapseAll,
     ]);
 
     // 方向键在卡片之间移动焦点（按几何位置找同行/同列的邻居）
@@ -2008,6 +2060,9 @@ function App() {
             <ThemeProvider theme={theme}>
             <CssBaseline />
 
+            {/* 顶部滚动进度条：固定贴在最上方，纯装饰 */}
+            <ScrollProgress />
+
             {/* 错误/成功提示 Snackbar：顶部居中，成功类短暂停留、错误类停留更久 */}
             <Snackbar
                 open={snackbarOpen}
@@ -2198,7 +2253,7 @@ function App() {
 
                                 {/* 搜索结果下拉面板：↑↓ 选择，Enter 直接打开 */}
                                 <Popper
-                                    open={dropdownOpen}
+                                    open={dropdownOpen || historyOpen}
                                     anchorEl={searchAnchor}
                                     placement='bottom-start'
                                     sx={{ zIndex: (t) => t.zIndex.modal, width: 320 }}
@@ -2216,6 +2271,7 @@ function App() {
                                             WebkitBackdropFilter: "blur(12px)",
                                         }}
                                     >
+                                        {query.length > 0 ? (
                                         <List dense sx={{ py: 0.5 }}>
                                             {flatResults.map((item, idx) => (
                                                 <ListItemButton
@@ -2246,6 +2302,47 @@ function App() {
                                                 </ListItemButton>
                                             ))}
                                         </List>
+                                        ) : (
+                                            <Box>
+                                                <Box
+                                                    sx={{
+                                                        display: "flex",
+                                                        alignItems: "center",
+                                                        px: 1.5,
+                                                        pt: 1.25,
+                                                        pb: 0,
+                                                    }}
+                                                >
+                                                    <Typography
+                                                        variant='caption'
+                                                        color='text.secondary'
+                                                        sx={{ flex: 1, fontWeight: 600 }}
+                                                    >
+                                                        最近搜索
+                                                    </Typography>
+                                                    <Button
+                                                        size='small'
+                                                        color='inherit'
+                                                        onClick={clearSearchHistory}
+                                                        sx={{ minWidth: 0, fontSize: 11 }}
+                                                    >
+                                                        清空
+                                                    </Button>
+                                                </Box>
+                                                <Box className='nav-search-history'>
+                                                    {searchHistory.map(term => (
+                                                        <button
+                                                            key={term}
+                                                            type='button'
+                                                            className='nav-history-chip'
+                                                            onClick={() => applyHistoryTerm(term)}
+                                                        >
+                                                            {term}
+                                                        </button>
+                                                    ))}
+                                                </Box>
+                                            </Box>
+                                        )}
                                     </Paper>
                                 </Popper>
                                 </Box>
@@ -2344,6 +2441,23 @@ function App() {
                                             </ListItemIcon>
                                             <ListItemText>编辑排序</ListItemText>
                                         </MenuItem>
+                                        <MenuItem
+                                            onClick={() => {
+                                                handleMenuClose();
+                                                toggleCollapseAll();
+                                            }}
+                                        >
+                                            <ListItemIcon>
+                                                {allGroupsCollapsed ? (
+                                                    <UnfoldMoreIcon fontSize='small' />
+                                                ) : (
+                                                    <UnfoldLessIcon fontSize='small' />
+                                                )}
+                                            </ListItemIcon>
+                                            <ListItemText>
+                                                {allGroupsCollapsed ? "展开全部分组" : "折叠全部分组"}
+                                            </ListItemText>
+                                        </MenuItem>
                                         <MenuItem onClick={handleOpenConfig}>
                                             <ListItemIcon>
                                                 <SettingsIcon fontSize='small' />
@@ -2366,8 +2480,19 @@ function App() {
                                                 />
                                             </ListItemIcon>
                                             <ListItemText>
-                                                {favoritesEnabled ? "取消常用置前" : "常用置前"}
+                                                {favoritesEnabled ? "取消最近访问置前" : "最近访问置前"}
                                             </ListItemText>
+                                        </MenuItem>
+                                        <MenuItem
+                                            onClick={() => {
+                                                handleMenuClose();
+                                                setOpenVisits(true);
+                                            }}
+                                        >
+                                            <ListItemIcon>
+                                                <InsightsIcon fontSize='small' />
+                                            </ListItemIcon>
+                                            <ListItemText>访问统计</ListItemText>
                                         </MenuItem>
                                         <MenuItem
                                             onClick={() => {
@@ -2500,6 +2625,7 @@ function App() {
                                 </>
                             )}
 
+                            <HeaderClock />
                             <ThemeToggle mode={themeMode} onToggle={toggleTheme} />
                         </Stack>
                     </Box>
@@ -2669,7 +2795,7 @@ function App() {
                                         borderColor: "divider",
                                     }}
                                 >
-                                    <SearchOffIcon sx={{ fontSize: 40, color: "text.disabled" }} />
+                                    <EmptyArt variant={query ? "search" : "empty"} size={132} />
                                     <Typography variant='subtitle1' fontWeight='600'>
                                         {query ? "没有找到匹配的网站" : "还没有任何分组"}
                                     </Typography>
@@ -3270,6 +3396,23 @@ function App() {
                             </Button>
                         </DialogActions>
                     </Dialog>
+
+                    {/* 访问统计：本机热力图 + Top5 */}
+                    <VisitsDialog
+                        open={openVisits}
+                        onClose={() => setOpenVisits(false)}
+                        nameOf={id => {
+                            for (const group of groups) {
+                                const hit = group.sites.find(s => String(s.id) === id);
+                                if (hit) return hit.name || hit.url || `#${id}`;
+                            }
+                            return `已删除的网站 #${id}`;
+                        }}
+                        onClear={() => {
+                            clearVisits();
+                            notify("已清除访问记录", "success");
+                        }}
+                    />
 
                     {/* 数据备份与恢复对话框 */}
                     <BackupDialog

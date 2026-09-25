@@ -45,6 +45,8 @@ interface SiteCardProps {
     index?: number;
     /** 搜索关键词，命中片段会高亮 */
     highlight?: string;
+    /** 「最近访问」分组里显示相对时间，例如「今天 14:05」 */
+    recentLabel?: string;
 }
 
 // 图标取不到时，按站点名哈希出一个稳定的配色，避免所有占位块长得一模一样
@@ -124,6 +126,7 @@ const SiteCard = memo(function SiteCard({
     isEditMode = false,
     index = 0,
     highlight = "",
+    recentLabel = "",
 }: SiteCardProps) {
     const theme = useTheme();
     const { thumbApi, iconApi } = useAppConfig();
@@ -384,6 +387,7 @@ const SiteCard = memo(function SiteCard({
 
     const renderBadges = () => (
         <>
+            {recentLabel && <Box className='nav-recent-label'>{recentLabel}</Box>}
             {visitCount >= 3 && (
                 <Tooltip title={`本机访问过 ${visitCount} 次`}>
                     <Box

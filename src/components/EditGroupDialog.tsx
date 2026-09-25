@@ -9,7 +9,6 @@ import {
     Typography,
     Box,
     Alert,
-    Tooltip,
 } from "@mui/material";
 import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import { Group } from "../API/http";
@@ -184,40 +183,39 @@ const EditGroupDialog: React.FC<EditGroupDialogProps> = ({
                             sx={{ mt: 1.5, fontWeight: 600, display: "flex", alignItems: "center", flexWrap: "wrap", gap: 0.5 }}
                         >
                             请输入分组名称「
-                            <Tooltip title='点击复制分组名称'>
-                                <Box
-                                    component='span'
-                                    role='button'
-                                    tabIndex={0}
-                                    aria-label={`复制分组名称 ${group.name}`}
-                                    onClick={handleCopyGroupName}
-                                    onKeyDown={e => {
-                                        if (e.key === "Enter" || e.key === " ") {
-                                            e.preventDefault();
-                                            handleCopyGroupName();
-                                        }
-                                    }}
-                                    sx={{
-                                        display: "inline-flex",
-                                        alignItems: "center",
-                                        gap: 0.5,
-                                        px: 0.75,
-                                        py: 0.15,
-                                        borderRadius: "8px",
-                                        cursor: "pointer",
-                                        userSelect: "all",
-                                        border: "1px dashed",
-                                        borderColor: "currentColor",
-                                        transition: "background-color .18s ease",
-                                        "&:hover, &:focus-visible": {
-                                            bgcolor: "action.selected",
-                                        },
-                                    }}
-                                >
-                                    {group.name}
-                                    <ContentCopyIcon sx={{ fontSize: 13 }} />
-                                </Box>
-                            </Tooltip>
+                            {/* 悬停不再弹提示词，靠虚线框 + 复制图标自解释 */}
+                            <Box
+                                component='span'
+                                role='button'
+                                tabIndex={0}
+                                aria-label={`复制分组名称 ${group.name}`}
+                                onClick={handleCopyGroupName}
+                                onKeyDown={e => {
+                                    if (e.key === "Enter" || e.key === " ") {
+                                        e.preventDefault();
+                                        handleCopyGroupName();
+                                    }
+                                }}
+                                sx={{
+                                    display: "inline-flex",
+                                    alignItems: "center",
+                                    gap: 0.5,
+                                    px: 0.75,
+                                    py: 0.15,
+                                    borderRadius: "8px",
+                                    cursor: "pointer",
+                                    userSelect: "all",
+                                    border: "1px dashed",
+                                    borderColor: "currentColor",
+                                    transition: "background-color .18s ease",
+                                    "&:hover, &:focus-visible": {
+                                        bgcolor: "action.selected",
+                                    },
+                                }}
+                            >
+                                {group.name}
+                                <ContentCopyIcon sx={{ fontSize: 13 }} />
+                            </Box>
                             」以确认删除
                             {copiedTick && (
                                 <Typography
