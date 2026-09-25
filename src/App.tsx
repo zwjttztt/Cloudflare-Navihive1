@@ -5,7 +5,14 @@ import { Site, Group, ExportData, BootstrapData, WebDavConfig, normalizeImportDa
 import { GroupWithSites } from "./types";
 import { AppConfigProvider } from "./context/AppConfigContext";
 import { NotifyContext } from "./context/NotifyContext";
-import { useUIPrefs } from "./context/UIPrefsContext";
+import { useUIPrefs, RADIUS_PX } from "./context/UIPrefsContext";
+import SiteCard from "./components/SiteCard";
+import GroupNavRail from "./components/GroupNavRail";
+import MobileTabBar from "./components/MobileTabBar";
+import CommandPalette, { CommandItem } from "./components/CommandPalette";
+import BookmarkImportDialog from "./components/BookmarkImportDialog";
+import { probeLinks } from "./utils/linkHealth";
+import { ParsedBookmarkGroup } from "./utils/bookmarks";
 import PendingOpensBar from "./components/PendingOpensBar";
 import { DEFAULT_ICON_API, resolveIconApiUrl } from "./utils/iconApi";
 import { saveRememberedLogin, clearRememberedLogin } from "./utils/rememberedLogin";
@@ -25,6 +32,8 @@ import {
     useSensors,
     DragEndEvent,
     DragOverEvent,
+    DragStartEvent,
+    DragOverlay,
 } from "@dnd-kit/core";
 import {
     arrayMove,
@@ -91,6 +100,8 @@ import DensityMediumIcon from "@mui/icons-material/DensityMedium";
 import DensitySmallIcon from "@mui/icons-material/DensitySmall";
 import StarIcon from "@mui/icons-material/Star";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
+import BookmarkAddedIcon from "@mui/icons-material/BookmarkAdded";
+import LinkOffIcon from "@mui/icons-material/LinkOff";
 
 // 根据环境选择使用真实API还是模拟API
 const isDevEnvironment = import.meta.env.DEV;
@@ -341,8 +352,81 @@ function App() {
         favoritesEnabled,
         setFavoritesEnabled,
         visits,
+        recordVisit,
         clearVisits,
+        radius,
+        setRadius,
+        fontScale,
+        setFontScale,
+        setDeadLinks,
     } = useUIPrefs();
+
+    // 命令面板（Ctrl / Cmd + K）
+    const [commandOpen, setCommandOpen] = useState(false);
+    // 浏览器书签导入
+    const [bookmarkOpen, setBookmarkOpen] = useState(false);
+    // 分组锚点导航：当前视口里的分组
+    const [activeGroupId, setActiveGroupId] = useState<number | null>(null);
+    // 向下滚动后头部收紧，让出更多内容空间
+    const [headerCompact, setHeaderCompact] = useState(false);
+    // 移动端「分组」菜单的锚点
+    const [mobileGroupsAnchor, setMobileGroupsAnchor] = useState<HTMLElement | null>(
+        null
+    );
+
+    // 滚动：更新头部收缩状态 + 当前分组高亮
+    useEffect(() => {
+        let raf = 0;
+        let lastY = window.scrollY;
+
+        const update = () => {
+            raf = 0;
+            const y = window.scrollY;
+            // 往下滚且已经离开顶部一段距离才收紧，避免刚滚一点就跳
+            setHeaderCompact(y > 90 && y > lastY + 2);
+            lastY = y;
+
+            const nodes = document.querySelectorAll<HTMLElement>("[data-group-anchor]");
+            if (nodes.length === 0) return;
+            const line = 160; // 视口上「当前位置」的判定线
+            let current: number | null = null;
+            nodes.forEach(node => {
+                const rect = node.getBoundingClientRect();
+                if (rect.top <= line) {
+                    current = Number(node.dataset.groupAnchor);
+                }
+            });
+            if (current === null) {
+                const first = nodes[0];
+                if (first) current = Number(first.dataset.groupAnchor);
+            }
+            setActiveGroupId(current);
+        };
+
+        const onScroll = () => {
+            if (raf) return;
+            raf = window.requestAnimationFrame(update);
+        };
+
+        window.addEventListener("scroll", onScroll, { passive: true });
+        update();
+        return () => {
+            window.removeEventListener("scroll", onScroll);
+            if (raf) window.cancelAnimationFrame(raf);
+        };
+    }, [loading, groups.length]);
+
+    // Ctrl / Cmd + K 打开命令面板（「/」聚焦搜索框的快捷键在下面那个全局监听里）
+    useEffect(() => {
+        const onKey = (e: KeyboardEvent) => {
+            if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+                e.preventDefault();
+                setCommandOpen(true);
+            }
+        };
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
+    }, []);
 
     // 菜单打开关闭
     const handleMenuOpen = (event: React.MouseEvent<HTMLButtonElement>) => {
@@ -986,6 +1070,17 @@ function App() {
         [moveSiteAcrossGroups]
     );
 
+    // 拖拽视觉反馈：被拖起的卡片用浮层跟着指针走，原位留半透明占位
+    const [draggingSite, setDraggingSite] = useState<Site | null>(null);
+    const handleSiteDragStart = useCallback((event: DragStartEvent) => {
+        const id = String(event.active.id);
+        if (!id.startsWith("site-")) return;
+        const siteId = Number(id.slice(5));
+        const found = groupsRef.current.flatMap(g => g.sites).find(s => s.id === siteId);
+        setDraggingSite(found ?? null);
+    }, []);
+    const handleSiteDragCancel = useCallback(() => setDraggingSite(null), []);
+
     // 保存站点排序（支持跨分组移动）
     // 顺序调整 + 跨组移动合并成「一次」批量请求：
     // 原来是「1 次排序 + 每移动一张卡片一次串行更新请求」，卡片多时保存会明显变慢。
@@ -1453,6 +1548,218 @@ function App() {
         return [{ ...favoritesGroup, sites: favSites }, ...filteredGroups];
     }, [filteredGroups, favoritesGroup, favoritesEnabled, query]);
 
+    // 分组锚点跳转：左侧导航条与移动端「分组」菜单共用
+    const jumpToGroup = useCallback((groupId: number) => {
+        setMobileGroupsAnchor(null);
+        const node = document.getElementById(`group-anchor-${groupId}`);
+        if (!node) return;
+        const top = node.getBoundingClientRect().top + window.scrollY - 96;
+        window.scrollTo({ top, behavior: "smooth" });
+    }, []);
+
+    // 分组强调色：存成 group.color.<id> 配置，不动数据表结构
+    const handleGroupAccentChange = useCallback(
+        async (groupId: number, color: string) => {
+            const key = `group.color.${groupId}`;
+            setConfigs(prev => ({ ...prev, [key]: color }));
+            try {
+                await api.setConfig(key, color);
+                notify(color ? "分组颜色已更新" : "已恢复为全局主色", "success");
+            } catch {
+                notify("分组颜色保存失败", "error");
+            }
+        },
+        [notify]
+    );
+
+    // 失效链接检测：结果存本机，卡片上标灰点
+    const runLinkCheck = useCallback(async () => {
+        const urls = Array.from(
+            new Set(
+                groups
+                    .flatMap(g => g.sites.map(s => (s.url || "").trim()))
+                    .filter(Boolean)
+            )
+        );
+        if (urls.length === 0) {
+            notify("还没有可以检测的链接", "info");
+            return;
+        }
+        notify(`开始检测 ${urls.length} 个链接…`, "info");
+        const map = await probeLinks(urls, 5);
+        setDeadLinks(map);
+        const dead = Object.keys(map).length;
+        notify(
+            dead ? `检测完成，${dead} 个链接疑似失效` : "检测完成，所有链接都能访问",
+            dead ? "info" : "success"
+        );
+    }, [groups, notify, setDeadLinks]);
+
+    // 书签导入：同名文件夹复用已有分组，其余新建
+    const importBookmarks = useCallback(
+        async (parsed: ParsedBookmarkGroup[]) => {
+            let created = 0;
+            const iconTemplate = (configs["site.iconApi"] || "").trim();
+
+            for (const folder of parsed) {
+                let target = groups.find(g => g.name === folder.folder);
+                if (!target) {
+                    const saved = await api.createGroup({
+                        name: folder.folder,
+                        order_num: groups.length + created,
+                    } as Group);
+                    target = { ...saved, sites: [] } as GroupWithSites;
+                }
+                const baseOrder = target.sites?.length ?? 0;
+                for (const [idx, item] of folder.items.entries()) {
+                    await api.createSite({
+                        name: item.title.slice(0, 60),
+                        url: item.url,
+                        icon: resolveIconApiUrl(iconTemplate, item.url),
+                        description: "",
+                        group_id: target.id,
+                        order_num: baseOrder + idx,
+                    } as Site);
+                    created += 1;
+                }
+            }
+
+            await fetchData({ silent: true });
+            notify(`已导入 ${created} 个网站`, "success");
+            return created;
+        },
+        [groups, configs, notify, fetchData]
+    );
+
+    // 命令面板：站点跳转 + 常用操作，键盘党不用摸鼠标
+    const commands = useMemo<CommandItem[]>(() => {
+        const siteCommands: CommandItem[] = groups
+            .flatMap(group =>
+                group.sites.map(site => ({
+                    id: `cmd-site-${group.id}-${site.id}`,
+                    label: site.name || site.url || "未命名",
+                    hint: group.name,
+                    section: "打开网站",
+                    keywords: `${site.url || ""} ${site.description || ""}`,
+                    iconUrl: site.icon,
+                    run: () => {
+                        recordVisit(site.id);
+                        if (site.url) window.open(site.url, "_blank", "noopener");
+                    },
+                }))
+            )
+            .slice(0, 120);
+
+        const actionCommands: CommandItem[] = [
+            {
+                id: "cmd-view-card",
+                label: "切换到卡片视图",
+                section: "显示",
+                run: () => setViewMode("card"),
+            },
+            {
+                id: "cmd-view-list",
+                label: "切换到列表视图",
+                section: "显示",
+                run: () => setViewMode("list"),
+            },
+            {
+                id: "cmd-view-wall",
+                label: "切换到图标墙视图",
+                section: "显示",
+                run: () => setViewMode("wall"),
+            },
+            {
+                id: "cmd-density",
+                label: density === "compact" ? "切换到舒适密度" : "切换到紧凑密度",
+                section: "显示",
+                run: () => setDensity(density === "compact" ? "comfortable" : "compact"),
+            },
+            {
+                id: "cmd-theme",
+                label: "切换主题（浅色 / 深色 / 跟随系统）",
+                section: "显示",
+                run: () => toggleTheme(),
+            },
+            {
+                id: "cmd-favorites",
+                label: favoritesEnabled ? "关闭常用置前" : "开启常用置前",
+                section: "显示",
+                run: () => setFavoritesEnabled(!favoritesEnabled),
+            },
+            {
+                id: "cmd-add-group",
+                label: "新增分组",
+                section: "操作",
+                run: () => handleOpenAddGroup(),
+            },
+            {
+                id: "cmd-group-sort",
+                label: "进入编辑排序",
+                section: "操作",
+                run: () => startGroupSort(),
+            },
+            {
+                id: "cmd-config",
+                label: "打开网站设置",
+                section: "操作",
+                run: () => handleOpenConfig(),
+            },
+            {
+                id: "cmd-export",
+                label: "导出数据",
+                section: "操作",
+                run: () => handleOpenBackup(0),
+            },
+            {
+                id: "cmd-import",
+                label: "导入数据",
+                section: "操作",
+                run: () => handleOpenBackup(1),
+            },
+            {
+                id: "cmd-bookmarks",
+                label: "导入浏览器书签",
+                section: "操作",
+                run: () => setBookmarkOpen(true),
+            },
+            {
+                id: "cmd-link-check",
+                label: "检测失效链接",
+                section: "操作",
+                run: () => void runLinkCheck(),
+            },
+            {
+                id: "cmd-clear-visits",
+                label: "清除访问记录",
+                section: "操作",
+                run: () => {
+                    clearVisits();
+                    notify("已清除访问记录", "success");
+                },
+            },
+        ];
+
+        return [...siteCommands, ...actionCommands];
+    }, [
+        groups,
+        viewMode,
+        density,
+        favoritesEnabled,
+        toggleTheme,
+        setViewMode,
+        setDensity,
+        setFavoritesEnabled,
+        handleOpenAddGroup,
+        startGroupSort,
+        handleOpenConfig,
+        handleOpenBackup,
+        runLinkCheck,
+        clearVisits,
+        notify,
+        recordVisit,
+    ]);
+
     // 方向键在卡片之间移动焦点（按几何位置找同行/同列的邻居）
     const focusCardByDirection = (dir: "left" | "right" | "up" | "down") => {
         const cards = Array.from(
@@ -1751,6 +2058,9 @@ function App() {
             />
 
             <Box
+                className='nav-root'
+                data-font-scale={fontScale}
+                style={{ ["--card-radius" as string]: RADIUS_PX[radius] }}
                 sx={{
                     minHeight: "100vh",
                     bgcolor: hasBackgroundImage ? "transparent" : "background.default",
@@ -1765,16 +2075,34 @@ function App() {
                     sx={{
                         py: 4,
                         px: { xs: 2, sm: 3, md: 4 },
+                        // 手机端给底部导航条留出空间
+                        pb: { xs: 11, md: 4 },
                     }}
                 >
+                    {/* 分组锚点导航：分组多了直接跳，不用一路滚 */}
+                    {!loading && sortMode === SortMode.None && (
+                        <GroupNavRail
+                            groups={displayedGroups.map(g => ({
+                                id: g.id,
+                                name: g.name,
+                                count: g.sites.length,
+                            }))}
+                            activeId={activeGroupId}
+                            onJump={jumpToGroup}
+                        />
+                    )}
                     <Box
+                        className={headerCompact ? "nav-header-compact" : undefined}
                         sx={{
                             display: "flex",
                             justifyContent: "space-between",
                             alignItems: "center",
-                            mb: 5,
+                            mb: headerCompact ? 2.5 : 5,
                             flexDirection: { xs: "column", sm: "row" },
-                            gap: { xs: 2, sm: 0 }
+                            gap: { xs: 2, sm: 0 },
+                            // 向下滚动后收掉一点高度，内容区往上顶
+                            pt: headerCompact ? 0 : 0.5,
+                            transition: "margin .25s ease",
                         }}
                     >
                         <Typography
@@ -1783,8 +2111,11 @@ function App() {
                             fontWeight='bold'
                             color='text.primary'
                             sx={{ 
-                                fontSize: { xs: '1.75rem', sm: '2.125rem', md: '3rem' },
-                                textAlign: { xs: 'center', sm: 'left' }
+                                fontSize: headerCompact
+                                    ? { xs: '1.25rem', sm: '1.5rem', md: '1.9rem' }
+                                    : { xs: '1.75rem', sm: '2.125rem', md: '3rem' },
+                                textAlign: { xs: 'center', sm: 'left' },
+                                transition: 'font-size .25s ease',
                             }}
                         >
                             {configs["site.name"]}
@@ -1837,8 +2168,14 @@ function App() {
                                         ) : null,
                                     }}
                                     sx={{
-                                        width: { xs: "100%", sm: 180, md: 220 },
-                                        bgcolor: "var(--glass-bg)",
+                                        // 头部收紧时搜索框也收一档，和标题保持同步
+                                        width: headerCompact
+                                            ? { xs: "100%", sm: 140, md: 170 }
+                                            : { xs: "100%", sm: 180, md: 220 },
+                                        bgcolor: headerCompact
+                                            ? "var(--glass-bg-hover)"
+                                            : "var(--glass-bg)",
+                                        transition: "width .25s ease",
                                         backdropFilter: "blur(10px)",
                                         WebkitBackdropFilter: "blur(10px)",
                                         "& .MuiOutlinedInput-root": { borderRadius: "14px" },
@@ -2042,6 +2379,28 @@ function App() {
                                             </ListItemIcon>
                                             <ListItemText>导入数据</ListItemText>
                                         </MenuItem>
+                                        <MenuItem
+                                            onClick={() => {
+                                                handleMenuClose();
+                                                setBookmarkOpen(true);
+                                            }}
+                                        >
+                                            <ListItemIcon>
+                                                <BookmarkAddedIcon fontSize='small' />
+                                            </ListItemIcon>
+                                            <ListItemText>导入浏览器书签</ListItemText>
+                                        </MenuItem>
+                                        <MenuItem
+                                            onClick={() => {
+                                                handleMenuClose();
+                                                void runLinkCheck();
+                                            }}
+                                        >
+                                            <ListItemIcon>
+                                                <LinkOffIcon fontSize='small' />
+                                            </ListItemIcon>
+                                            <ListItemText>检测失效链接</ListItemText>
+                                        </MenuItem>
                                         {isAuthenticated && (
                                             <>
                                                 <Divider />
@@ -2218,8 +2577,10 @@ function App() {
                                 <DndContext
                                     sensors={sensors}
                                     collisionDetection={closestCenter}
+                                    onDragStart={handleSiteDragStart}
                                     onDragOver={handleSiteSortDragOver}
                                     onDragEnd={handleSiteSortDragEnd}
+                                    onDragCancel={handleSiteDragCancel}
                                 >
                                     <Stack spacing={5}>
                                         {groups.map(group => (
@@ -2239,6 +2600,23 @@ function App() {
                                             />
                                         ))}
                                     </Stack>
+
+                                    {/* 跟随指针的拖拽浮层：比原位卡片略大、略微倾斜 */}
+                                    <DragOverlay dropAnimation={null}>
+                                        {draggingSite && (
+                                            <Box
+                                                className='nav-drag-overlay'
+                                                sx={{ width: 200, pointerEvents: "none" }}
+                                            >
+                                                <SiteCard
+                                                    site={draggingSite}
+                                                    onUpdate={handleSiteUpdate}
+                                                    onDelete={handleSiteDelete}
+                                                    isEditMode
+                                                />
+                                            </Box>
+                                        )}
+                                    </DragOverlay>
                                 </DndContext>
                             ) : displayedGroups.length > 0 ? (
                                 <Stack spacing={density === "compact" ? 3 : 5}>
@@ -2258,6 +2636,8 @@ function App() {
                                             onUpdateGroup={handleGroupUpdate}
                                             onDeleteGroup={handleGroupDelete}
                                             searchQuery={query}
+                                            accentColor={configs[`group.color.${group.id}`]}
+                                            onAccentChange={handleGroupAccentChange}
                                         />
                                     ))}
                                 </Stack>
@@ -2612,6 +2992,62 @@ function App() {
                                     </Typography>
                                 </Box>
 
+                                {/* 外观：圆角风格与字号档位，只影响本机显示 */}
+                                <Box>
+                                    <Typography variant='subtitle1' fontWeight='600' sx={{ mb: 1 }}>
+                                        外观风格
+                                    </Typography>
+                                    <Box sx={{ display: "flex", flexDirection: "column", gap: 1.5 }}>
+                                        <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
+                                            <Typography variant='body2' sx={{ minWidth: 56 }}>
+                                                圆角
+                                            </Typography>
+                                            <ToggleButtonGroup
+                                                size='small'
+                                                exclusive
+                                                value={radius}
+                                                onChange={(_e, value) => value && setRadius(value)}
+                                                aria-label='圆角风格'
+                                            >
+                                                <ToggleButton value='soft' aria-label='圆润圆角'>
+                                                    圆润
+                                                </ToggleButton>
+                                                <ToggleButton value='standard' aria-label='标准圆角'>
+                                                    标准
+                                                </ToggleButton>
+                                                <ToggleButton value='sharp' aria-label='锐利圆角'>
+                                                    锐利
+                                                </ToggleButton>
+                                            </ToggleButtonGroup>
+                                        </Box>
+                                        <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
+                                            <Typography variant='body2' sx={{ minWidth: 56 }}>
+                                                字号
+                                            </Typography>
+                                            <ToggleButtonGroup
+                                                size='small'
+                                                exclusive
+                                                value={fontScale}
+                                                onChange={(_e, value) => value && setFontScale(value)}
+                                                aria-label='字号档位'
+                                            >
+                                                <ToggleButton value='compact' aria-label='紧凑字号'>
+                                                    紧凑
+                                                </ToggleButton>
+                                                <ToggleButton value='normal' aria-label='标准字号'>
+                                                    标准
+                                                </ToggleButton>
+                                                <ToggleButton value='large' aria-label='宽松字号'>
+                                                    宽松
+                                                </ToggleButton>
+                                            </ToggleButtonGroup>
+                                        </Box>
+                                    </Box>
+                                    <Typography variant='caption' color='text.secondary'>
+                                        这两项只存在本机，换设备或换浏览器不会跟随。
+                                    </Typography>
+                                </Box>
+
                                 {/* 获取图标 API 设置 */}
                                 <Box>
                                     <Typography variant='subtitle1' fontWeight='600' sx={{ mb: 1 }}>
@@ -2835,7 +3271,53 @@ function App() {
 
                 </Container>
 
-                {/* 待打开队列：点卡片按钮只入队，页面不动；攒够了在这里一键打开 */}
+                {/* 手机端底部导航：搜索 / 分组 / 新增 / 更多 */}
+                <MobileTabBar
+                    onSearch={() => {
+                        searchInputRef.current?.focus();
+                        window.scrollTo({ top: 0, behavior: "smooth" });
+                    }}
+                    onGroups={event => setMobileGroupsAnchor(event.currentTarget)}
+                    onAdd={handleOpenAddGroup}
+                    onMore={event => handleMenuOpen(event as React.MouseEvent<HTMLButtonElement>)}
+                    badge={displayedGroups.length}
+                />
+
+                {/* 移动端「分组」菜单：列出所有分组，点一下跳过去 */}
+                <Menu
+                    anchorEl={mobileGroupsAnchor}
+                    open={Boolean(mobileGroupsAnchor)}
+                    onClose={() => setMobileGroupsAnchor(null)}
+                    anchorOrigin={{ vertical: "top", horizontal: "center" }}
+                    transformOrigin={{ vertical: "bottom", horizontal: "center" }}
+                    slotProps={{ paper: { sx: { minWidth: 180, borderRadius: "14px" } } }}
+                >
+                    {displayedGroups.map(group => (
+                        <MenuItem
+                            key={group.id}
+                            onClick={() => jumpToGroup(group.id)}
+                            selected={group.id === activeGroupId}
+                        >
+                            <ListItemText primary={group.name} secondary={`${group.sites.length} 个`} />
+                        </MenuItem>
+                    ))}
+                </Menu>
+
+                {/* 命令面板：Ctrl / Cmd + K */}
+                <CommandPalette
+                    open={commandOpen}
+                    onClose={() => setCommandOpen(false)}
+                    commands={commands}
+                />
+
+                {/* 浏览器书签批量导入 */}
+                <BookmarkImportDialog
+                    open={bookmarkOpen}
+                    onClose={() => setBookmarkOpen(false)}
+                    onImport={importBookmarks}
+                />
+
+                {/* 待打开队列：右键菜单入队后在这里一键打开 */}
                 <PendingOpensBar />
             </Box>
         </ThemeProvider>

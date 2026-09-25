@@ -1,4 +1,4 @@
-import React, { useEffect, useState, memo } from "react";
+import React, { useEffect, useRef, useState, memo } from "react";
 import { Site, Group } from "../API/http";
 import SiteCard from "./SiteCard";
 import { GroupWithSites } from "../types";
@@ -67,7 +67,12 @@ interface GroupCardProps {
     onUpdateGroup?: (group: Group) => void; // 更新分组的回调函数
     onDeleteGroup?: (groupId: number) => void; // 删除分组的回调函数
     searchQuery?: string; // 搜索关键词，命中片段在卡片里高亮
+    accentColor?: string; // 分组强调色（留空则用全局主色）
+    onAccentChange?: (groupId: number, color: string) => void;
 }
+
+// 卡片多的分组先渲染一批，滚到底再补，避免一次铺几百张卡拖慢首屏
+const PAGE_SIZE = 40;
 
 const GroupCard: React.FC<GroupCardProps> = ({
     group,
@@ -82,6 +87,8 @@ const GroupCard: React.FC<GroupCardProps> = ({
     onUpdateGroup,
     onDeleteGroup,
     searchQuery = "",
+    accentColor = "",
+    onAccentChange,
 }) => {
     const { viewMode, density } = useUIPrefs();
     const isCompact = density === "compact";
@@ -106,6 +113,13 @@ const GroupCard: React.FC<GroupCardProps> = ({
         setCollapsed(readCollapsedGroupIds().includes(String(group.id)));
     }, [group.id]);
 
+    // 懒加载：分组切换或版式变化时回到第一批
+    const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+    const sentinelRef = useRef<HTMLDivElement | null>(null);
+    useEffect(() => {
+        setVisibleCount(PAGE_SIZE);
+    }, [group.id, viewMode, density]);
+
     const toggleCollapsed = () => {
         const key = String(group.id);
         const ids = new Set(readCollapsedGroupIds());
@@ -120,6 +134,27 @@ const GroupCard: React.FC<GroupCardProps> = ({
 
     // 排序模式下强制展开，否则卡片被收起就没法拖拽了
     const isCollapsed = collapsed && sortMode === "None";
+
+    // 普通模式下先渲染前 40 个，剩下的等滚动到哨兵再补
+    const hasMoreSites = group.sites.length > visibleCount && sortMode === "None";
+
+    // 哨兵进入视口就再补一批
+    useEffect(() => {
+        if (!hasMoreSites || isCollapsed) return;
+        const el = sentinelRef.current;
+        if (!el || typeof IntersectionObserver === "undefined") return;
+
+        const io = new IntersectionObserver(
+            entries => {
+                if (entries.some(e => e.isIntersecting)) {
+                    setVisibleCount(c => c + PAGE_SIZE);
+                }
+            },
+            { rootMargin: "240px" }
+        );
+        io.observe(el);
+        return () => io.disconnect();
+    }, [hasMoreSites, isCollapsed, visibleCount]);
 
     // 分组作为跨组拖拽的放置容器
     const { setNodeRef: setGroupDropRef, isOver: isGroupOver } = useDroppable({
@@ -213,6 +248,10 @@ const GroupCard: React.FC<GroupCardProps> = ({
                                 borderColor: isGroupOver ? "primary.main" : "transparent",
                                 bgcolor: isGroupOver ? "action.hover" : "transparent",
                                 transition: "all 0.2s ease",
+                                // 拖拽经过时给出明确的放置提示
+                                boxShadow: isGroupOver
+                                    ? "0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent)"
+                                    : "none",
                             }}
                         >
                             {group.sites.map((site, idx) => (
@@ -347,6 +386,10 @@ const GroupCard: React.FC<GroupCardProps> = ({
             );
         }
 
+        // 卡片特别多的分组：只渲染当前这一批，剩的等滚动到哨兵再补
+        const visibleSites = sitesToRender.slice(0, visibleCount);
+        const hasMore = sitesToRender.length > visibleCount;
+
         return (
             <Box
                 sx={{
@@ -355,7 +398,7 @@ const GroupCard: React.FC<GroupCardProps> = ({
                     margin: gridGap, // 抵消内部padding，确保边缘对齐
                 }}
             >
-                {sitesToRender.map((site, idx) => (
+                {visibleSites.map((site, idx) => (
                     <Box
                         key={site.id}
                         sx={{
@@ -392,6 +435,20 @@ const GroupCard: React.FC<GroupCardProps> = ({
                         />
                     </Box>
                 ))}
+                {hasMore && (
+                    <Box
+                        ref={sentinelRef}
+                        sx={{
+                            width: "100%",
+                            py: 1.5,
+                            textAlign: "center",
+                            color: "text.secondary",
+                            fontSize: 12,
+                        }}
+                    >
+                        继续滚动加载剩余 {sitesToRender.length - visibleCount} 个…
+                    </Box>
+                )}
             </Box>
         );
     };
@@ -405,9 +462,12 @@ const GroupCard: React.FC<GroupCardProps> = ({
     return (
         <Paper
             elevation={0}
+            id={`group-anchor-${group.id}`}
+            data-group-anchor={group.id}
             className='nav-group-panel'
+            style={{ ["--group-accent" as string]: accentColor || undefined }}
             sx={{
-                borderRadius: "22px",
+                borderRadius: "var(--card-radius)",
                 p: { xs: 2, sm: 3 },
                 // 与卡片同源的毛玻璃，只是更淡一层，形成「面板 → 卡片」的层次
                 background: "var(--glass-panel-bg)",
@@ -449,6 +509,16 @@ const GroupCard: React.FC<GroupCardProps> = ({
                         gap: 0.5,
                     }}
                 >
+                    {/* 分组强调色条：没单独设色时用全局主色 */}
+                    <Box
+                        sx={{
+                            width: 3,
+                            height: 20,
+                            borderRadius: "3px",
+                            bgcolor: "var(--group-accent)",
+                            flexShrink: 0,
+                        }}
+                    />
                     <Tooltip title={isCollapsed ? "展开分组" : "收起分组"}>
                         <IconButton
                             size='small'
@@ -580,6 +650,12 @@ const GroupCard: React.FC<GroupCardProps> = ({
                     onClose={() => setEditDialogOpen(false)}
                     onSave={handleUpdateGroup}
                     onDelete={handleDeleteGroup}
+                    color={accentColor}
+                    onColorChange={
+                        onAccentChange
+                            ? next => onAccentChange(group.id!, next)
+                            : undefined
+                    }
                 />
             )}
         </Paper>
