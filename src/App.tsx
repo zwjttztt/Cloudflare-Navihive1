@@ -226,6 +226,7 @@ function App() {
     const [snackbarOpen, setSnackbarOpen] = useState(false);
     const [snackbarMessage, setSnackbarMessage] = useState("");
     const [snackbarSeverity, setSnackbarSeverity] = useState<"success" | "error" | "info">("error");
+    const [snackbarDuration, setSnackbarDuration] = useState(6000);
 
     // 菜单打开关闭
     const handleMenuOpen = (event: React.MouseEvent<HTMLButtonElement>) => {
@@ -457,10 +458,12 @@ function App() {
     }, [darkMode]);
 
     // 统一提示函数（引用稳定，便于被 memo 的子组件复用）
+    // duration 可选：成功/信息类默认短暂停留 2.2s，错误类默认 6s（便于阅读），传入则覆盖
     const notify = useCallback(
-        (message: string, severity: "success" | "error" | "info" = "info") => {
+        (message: string, severity: "success" | "error" | "info" = "info", duration?: number) => {
             setSnackbarMessage(message);
             setSnackbarSeverity(severity);
+            setSnackbarDuration(duration ?? (severity === "error" ? 6000 : 2200));
             setSnackbarOpen(true);
         },
         []
@@ -1065,7 +1068,7 @@ function App() {
 
             if (authChanged) {
                 // 旧令牌仍然有效，当前会话不受影响，只是下次登录要用新账号密码
-                notify("管理员凭据已更新，下次登录请使用新账号密码", "success");
+                notify("管理员凭据已更新，下次登录请使用新账号密码", "success", 4000);
             } else if (changed.length > 0) {
                 notify("设置已保存", "success");
             }
@@ -1289,12 +1292,13 @@ function App() {
             <ThemeProvider theme={theme}>
             <CssBaseline />
 
-            {/* 错误提示 Snackbar */}
+            {/* 错误/成功提示 Snackbar：顶部居中，成功类短暂停留、错误类停留更久 */}
             <Snackbar
                 open={snackbarOpen}
-                autoHideDuration={6000}
+                autoHideDuration={snackbarDuration}
                 onClose={handleCloseSnackbar}
                 anchorOrigin={{ vertical: "top", horizontal: "center" }}
+                key={snackbarMessage + snackbarSeverity + snackbarDuration}
             >
                 <Alert
                     onClose={handleCloseSnackbar}
