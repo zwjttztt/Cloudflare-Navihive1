@@ -5,6 +5,7 @@ import { Site, Group, ExportData, BootstrapData, WebDavConfig, normalizeImportDa
 import { GroupWithSites } from "./types";
 import { AppConfigProvider } from "./context/AppConfigContext";
 import { DEFAULT_ICON_API, resolveIconApiUrl } from "./utils/iconApi";
+import { saveRememberedLogin, clearRememberedLogin } from "./utils/rememberedLogin";
 import ThemeToggle from "./components/ThemeToggle";
 import GroupCard from "./components/GroupCard";
 import EditGroupDialog from "./components/EditGroupDialog";
@@ -254,15 +255,21 @@ function App() {
     };
 
     // 登录功能
-    const handleLogin = async (username: string, password: string) => {
+    const handleLogin = async (username: string, password: string, remember = false) => {
         try {
             setLoginLoading(true);
             setLoginError(null);
 
             // 调用登录接口（返回的是 LoginResponse 对象，必须判断 success 字段）
-            const result = await api.login(username, password);
+            const result = await api.login(username, password, remember);
 
             if (result && result.success) {
+                // 「记住账号密码」：勾选则保存到本地供下次回填，未勾选则清除
+                if (remember) {
+                    saveRememberedLogin({ username, password });
+                } else {
+                    clearRememberedLogin();
+                }
                 // 登录成功
                 setIsAuthenticated(true);
                 setIsAuthRequired(false);

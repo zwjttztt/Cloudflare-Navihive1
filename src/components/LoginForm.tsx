@@ -1,9 +1,21 @@
-import React, { useState } from "react";
-import { TextField, Button, Typography, Box, CircularProgress, Alert, Paper } from "@mui/material";
+import React, { useEffect, useState } from "react";
+import {
+    TextField,
+    Button,
+    Typography,
+    Box,
+    CircularProgress,
+    Alert,
+    Paper,
+    FormControlLabel,
+    Checkbox,
+} from "@mui/material";
 import LockOutlinedIcon from "@mui/icons-material/LockOutlined";
+import { readRememberedLogin } from "../utils/rememberedLogin";
 
 interface LoginFormProps {
-    onLogin: (username: string, password: string) => void;
+    /** 提交登录；remember 为是否勾选「记住账号密码」 */
+    onLogin: (username: string, password: string, remember: boolean) => void;
     loading?: boolean;
     error?: string | null;
 }
@@ -11,10 +23,21 @@ interface LoginFormProps {
 const LoginForm: React.FC<LoginFormProps> = ({ onLogin, loading = false, error = null }) => {
     const [username, setUsername] = useState("");
     const [password, setPassword] = useState("");
+    const [remember, setRemember] = useState(false);
+
+    // 打开登录页时回填上次记住的账号密码
+    useEffect(() => {
+        const saved = readRememberedLogin();
+        if (saved) {
+            setUsername(saved.username);
+            setPassword(saved.password);
+            setRemember(true);
+        }
+    }, []);
 
     const handleSubmit = (e: React.FormEvent) => {
         e.preventDefault();
-        onLogin(username, password);
+        onLogin(username, password, remember);
     };
 
     return (
@@ -98,8 +121,22 @@ const LoginForm: React.FC<LoginFormProps> = ({ onLogin, loading = false, error =
                         value={password}
                         onChange={e => setPassword(e.target.value)}
                         disabled={loading}
-                        sx={{ mb: 3 }}
+                        sx={{ mb: 1 }}
                     />
+
+                    <FormControlLabel
+                        control={
+                            <Checkbox
+                                checked={remember}
+                                onChange={e => setRemember(e.target.checked)}
+                                disabled={loading}
+                                inputProps={{ "aria-label": "记住账号密码" }}
+                            />
+                        }
+                        label='记住账号密码（一个月内免登录）'
+                        sx={{ mb: 2, "& .MuiFormControlLabel-label": { fontSize: "0.875rem" } }}
+                    />
+
                     <Button
                         type='submit'
                         fullWidth
@@ -109,8 +146,7 @@ const LoginForm: React.FC<LoginFormProps> = ({ onLogin, loading = false, error =
                         size='large'
                         sx={{
                             py: 1.5,
-                            mt: 2,
-                            mb: 2,
+                            mt: 1,
                             borderRadius: 2,
                         }}
                     >
