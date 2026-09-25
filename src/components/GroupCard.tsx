@@ -383,16 +383,22 @@ const GroupCard: React.FC<GroupCardProps> = ({
     // 正常模式或站点排序模式下渲染完整的分组卡片
     return (
         <Paper
-            elevation={sortMode === "None" ? 2 : 3}
+            elevation={0}
+            className='nav-group-panel'
             sx={{
                 borderRadius: "22px",
                 p: { xs: 2, sm: 3 },
+                // 与卡片同源的毛玻璃，只是更淡一层，形成「面板 → 卡片」的层次
+                background: "var(--glass-panel-bg)",
+                backdropFilter: "blur(var(--glass-blur)) saturate(1.3)",
+                WebkitBackdropFilter: "blur(var(--glass-blur)) saturate(1.3)",
+                border: "1px solid var(--glass-panel-border)",
+                boxShadow: "var(--glass-shadow)",
                 transition: "all 0.3s ease-in-out",
-                border: "1px solid transparent",
                 "&:hover": {
-                    boxShadow: sortMode === "None" ? 6 : 3,
-                    borderColor: "divider",
-                    transform: sortMode === "None" ? "scale(1.01)" : "none",
+                    boxShadow: "var(--glass-shadow-hover)",
+                    borderColor: (theme) => theme.palette.primary.main,
+                    transform: sortMode === "None" ? "scale(1.005)" : "none",
                 },
             }}
         >

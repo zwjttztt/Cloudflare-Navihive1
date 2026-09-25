@@ -87,6 +87,13 @@
     --glass-shadow-hover: 0 14px 32px rgba(15, 23, 42, 0.16);
     --glass-blur: 14px;
     --glass-highlight: rgba(15, 23, 42, 0.08);
+
+    /* 分组面板：比卡片更淡的一层玻璃，形成「面板 → 卡片」两级层次 */
+    --glass-panel-bg: rgba(255, 255, 255, 0.42);
+    --glass-panel-border: rgba(255, 255, 255, 0.55);
+
+    /* 自定义主色（默认即 MUI 亮色主题的 primary） */
+    --accent: #1976d2;
 }
 
 .dark {
@@ -96,6 +103,11 @@
     --glass-shadow: 0 4px 16px rgba(0, 0, 0, 0.42);
     --glass-shadow-hover: 0 14px 32px rgba(0, 0, 0, 0.6);
     --glass-highlight: rgba(255, 255, 255, 0.16);
+
+    --glass-panel-bg: rgba(23, 27, 38, 0.34);
+    --glass-panel-border: rgba(255, 255, 255, 0.1);
+
+    --accent: #90caf9;
 }
 
 html,
@@ -157,16 +169,28 @@ body {
     z-index: 3;
 }
 
-/* 搜索命中高亮 */
+/* 搜索命中高亮：跟随自定义主色 */
 mark.nav-hl {
-    background: rgba(25, 118, 210, 0.22);
+    background: color-mix(in srgb, var(--accent) 24%, transparent);
     color: inherit;
     border-radius: 3px;
     padding: 0 1px;
 }
 
-.dark mark.nav-hl {
-    background: rgba(144, 202, 249, 0.28);
+/* 卡片悬停快捷操作条：默认隐藏，悬停/聚焦时浮出 */
+.nav-card-actions {
+    opacity: 0;
+    transform: translateY(4px);
+    transition: opacity 0.18s ease, transform 0.18s ease;
+    pointer-events: none;
+}
+
+.nav-card-in:hover .nav-card-actions,
+.nav-card-in:focus-within .nav-card-actions,
+.nav-card-actions:focus-within {
+    opacity: 1;
+    transform: none;
+    pointer-events: auto;
 }
 
 /* 尊重「减少动态效果」偏好：关掉装饰性动画（不动功能性过渡） */
