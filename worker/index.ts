@@ -38,6 +38,42 @@ export default {
                     return Response.json(result);
                 }
 
+                // 用应急重置码重设密码 - 不需要验证（忘了密码才用得到，本身就是登录页的入口）
+                if (path === "auth/reset" && method === "POST") {
+                    const data = (await request.json()) as ResetInput;
+
+                    const code = typeof data.code === "string" ? data.code.trim() : "";
+                    const newPassword = typeof data.newPassword === "string" ? data.newPassword : "";
+                    const newUsername =
+                        typeof data.newUsername === "string" ? data.newUsername.trim() : "";
+
+                    if (!code || !newPassword) {
+                        return Response.json(
+                            { success: false, message: "请填写应急重置码和新密码" },
+                            { status: 400 }
+                        );
+                    }
+
+                    const clientKey =
+                        request.headers.get("CF-Connecting-IP") ||
+                        request.headers.get("X-Forwarded-For") ||
+                        "unknown";
+
+                    const result = await api.redeemResetCode(
+                        code,
+                        newUsername,
+                        newPassword,
+                        clientKey
+                    );
+                    return Response.json(result, { status: result.success ? 200 : 400 });
+                }
+
+                // 应急重置码是否已配置 - 不需要验证
+                // 只返回一个布尔值，不下发码本身；登录页要在未登录时就知道该不该显示这个入口
+                if (path === "auth/reset-code" && method === "GET") {
+                    return Response.json({ configured: api.hasResetCode() });
+                }
+
                 // 初始化数据库接口 - 不需要验证
                 if (path === "init" && method === "GET") {
                     const initResult = await api.initDB();
@@ -522,6 +558,7 @@ interface Env {
     AUTH_USERNAME?: string;
     AUTH_PASSWORD?: string;
     AUTH_SECRET?: string;
+    AUTH_RESET_CODE?: string;
 }
 
 // 验证用接口
@@ -530,6 +567,12 @@ interface LoginInput {
     password?: string;
     /** 勾选「记住我」时签发 30 天令牌 */
     remember?: boolean;
+}
+
+interface ResetInput {
+    code?: string;
+    newPassword?: string;
+    newUsername?: string;
 }
 
 interface GroupInput {

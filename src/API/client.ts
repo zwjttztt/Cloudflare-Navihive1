@@ -232,6 +232,39 @@ export class NavigationClient {
         });
     }
 
+    // 应急重置码是否已配置（只返回布尔值）
+    async getResetCodeStatus(): Promise<{ configured: boolean }> {
+        return this.request("auth/reset-code");
+    }
+
+    /**
+     * 用应急重置码重设密码。
+     * 这个接口失败时会返回 400 + 具体的 message，所以不能走会抛异常的 request，
+     * 否则前端只能看到「API错误: 400」而拿不到「重置码不正确」这类提示。
+     */
+    async resetPasswordWithCode(
+        code: string,
+        newPassword: string,
+        newUsername?: string
+    ): Promise<{ success: boolean; message?: string }> {
+        try {
+            const response = await fetch(`${this.baseUrl}/auth/reset`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ code, newPassword, newUsername: newUsername || "" }),
+            });
+
+            const data = await response.json().catch(() => ({ success: false }));
+            if (!response.ok && !data.message) {
+                return { success: false, message: "重置密码失败，请稍后再试" };
+            }
+            return data;
+        } catch (error) {
+            console.error("重置密码失败:", error);
+            return { success: false, message: "重置密码请求失败，请检查网络连接" };
+        }
+    }
+
     // 批量更新排序
     async updateGroupOrder(groupOrders: { id: number; order_num: number }[]): Promise<boolean> {
         const response = await this.request("group-orders", {

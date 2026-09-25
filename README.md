@@ -144,14 +144,27 @@ pnpm deploy     # 部署到 Cloudflare Workers
 
 ## 🔧 常见问题
 
-**忘记管理员密码？** 凭据保存在 D1 的 `configs` 表里，改这两行即可（无需重新部署）：
+**忘记管理员密码？** 三种方式，任选其一：
 
-```bash
-wrangler d1 execute navigation-db --command "UPDATE configs SET value='新密码' WHERE key='auth.password'"
-wrangler d1 execute navigation-db --command "UPDATE configs SET value='新账号' WHERE key='auth.username'"
-```
+1. **应急重置码（推荐，不用进数据库）**：先在 Cloudflare 设一个重置码（存为加密的 secret，不会明文写进配置文件）：
 
-还没改过密码的站点，也可以登录后到「网站设置 → 管理员账号与密码」修改（需填写当前密码），改动立即生效且不会被后续部署覆盖。
+   ```bash
+   wrangler secret put AUTH_RESET_CODE
+   # 接着输入你想设的重置码，例如 MyReset2026
+   ```
+
+   之后登录页点「忘记密码？用应急重置码找回」，填入这个码和新的密码即可立即重设。想换码就再执行一次上面的命令。
+
+2. **直接改 D1**（不需要重置码时）：凭据保存在 D1 的 `configs` 表里，改这两行即可（无需重新部署）：
+
+   ```bash
+   wrangler d1 execute navigation-db --command "UPDATE configs SET value='新密码' WHERE key='auth.password'"
+   wrangler d1 execute navigation-db --command "UPDATE configs SET value='新账号' WHERE key='auth.username'"
+   ```
+
+3. **登录后修改**：到「网站设置 → 管理员账号与密码」修改（需填写当前密码），改动立即生效且不会被后续部署覆盖。
+
+> 应急重置码只保存在 Cloudflare 的环境变量里，不下发到前端、不写入数据库和备份文件。同一 IP 10 分钟内连续输错 10 次会被临时拒绝，防止暴力猜码。
 
 **想关闭登录？** 将 `AUTH_ENABLED` 设为 `false`，任何访问者都可浏览与编辑（不建议公开站点使用）。
 
