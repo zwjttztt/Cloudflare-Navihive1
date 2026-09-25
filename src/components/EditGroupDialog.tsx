@@ -21,7 +21,22 @@ interface EditGroupDialogProps {
     onSave: (group: Group) => void;
     /** 仅编辑模式需要：删除分组回调 */
     onDelete?: (groupId: number) => void;
+    /** 分组强调色（空表示跟随全局主色） */
+    color?: string;
+    onColorChange?: (color: string) => void;
 }
+
+// 分组色板：挑了几组和主色区分度高的颜色，避免分组之间看着都一样
+const GROUP_COLORS = [
+    "#1976d2",
+    "#7F77DD",
+    "#1D9E75",
+    "#D85A30",
+    "#D4537E",
+    "#BA7517",
+    "#639922",
+    "#888780",
+];
 
 const EditGroupDialog: React.FC<EditGroupDialogProps> = ({
     open,
@@ -30,6 +45,8 @@ const EditGroupDialog: React.FC<EditGroupDialogProps> = ({
     onClose,
     onSave,
     onDelete,
+    color = "",
+    onColorChange,
 }) => {
     const [name, setName] = useState("");
     const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
@@ -82,6 +99,49 @@ const EditGroupDialog: React.FC<EditGroupDialogProps> = ({
                         autoFocus
                     />
                 </Box>
+
+                {onColorChange && (
+                    <Box sx={{ mb: 1 }}>
+                        <Typography variant='body2' color='text.secondary' sx={{ mb: 1 }}>
+                            分组颜色
+                        </Typography>
+                        <Box sx={{ display: "flex", gap: 1, flexWrap: "wrap" }}>
+                            {GROUP_COLORS.map(c => (
+                                <Box
+                                    key={c}
+                                    component='button'
+                                    type='button'
+                                    aria-label={`分组颜色 ${c}`}
+                                    onClick={() => onColorChange(c)}
+                                    sx={{
+                                        width: 26,
+                                        height: 26,
+                                        p: 0,
+                                        cursor: "pointer",
+                                        borderRadius: "50%",
+                                        bgcolor: c,
+                                        border: "2px solid",
+                                        borderColor:
+                                            color.toLowerCase() === c.toLowerCase()
+                                                ? "text.primary"
+                                                : "transparent",
+                                        boxShadow: "0 1px 4px rgba(15,23,42,0.18)",
+                                        transition: "transform .15s ease",
+                                        "&:hover": { transform: "scale(1.08)" },
+                                    }}
+                                />
+                            ))}
+                            <Button
+                                size='small'
+                                variant='text'
+                                onClick={() => onColorChange("")}
+                                sx={{ minWidth: 0, fontSize: 12 }}
+                            >
+                                跟随主色
+                            </Button>
+                        </Box>
+                    </Box>
+                )}
 
                 {showDeleteConfirm && group && (
                     <Alert severity='warning' sx={{ mt: 2 }}>

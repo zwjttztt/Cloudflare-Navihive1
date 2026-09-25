@@ -9,14 +9,33 @@ import {
     useMemo,
     useState,
 } from "react";
+import { readDeadLinks } from "../utils/linkHealth";
 
 export type ViewMode = "card" | "list" | "wall";
 export type Density = "comfortable" | "compact";
+/** 圆角风格：圆润 / 标准 / 锐利 */
+export type RadiusStyle = "soft" | "standard" | "sharp";
+/** 字号档位：紧凑 / 标准 / 宽松 */
+export type FontScale = "compact" | "normal" | "large";
 
 export interface VisitStat {
     count: number;
     last: number; // 最近访问时间戳（ms）
 }
+
+/** 圆角风格对应的像素值，写进 CSS 变量 --card-radius */
+export const RADIUS_PX: Record<RadiusStyle, string> = {
+    soft: "22px",
+    standard: "14px",
+    sharp: "6px",
+};
+
+/** 字号档位对应的缩放系数，写进 CSS 变量 --font-scale */
+export const FONT_SCALE_VALUE: Record<FontScale, string> = {
+    compact: "0.94",
+    normal: "1",
+    large: "1.07",
+};
 
 interface UIPrefsValue {
     viewMode: ViewMode;
@@ -28,12 +47,21 @@ interface UIPrefsValue {
     visits: Record<string, VisitStat>;
     recordVisit: (siteId?: number) => void;
     clearVisits: () => void;
+    radius: RadiusStyle;
+    setRadius: (radius: RadiusStyle) => void;
+    fontScale: FontScale;
+    setFontScale: (scale: FontScale) => void;
+    /** 判定为失效的站点链接 -> 失效时间戳 */
+    deadLinks: Record<string, number>;
+    setDeadLinks: (next: Record<string, number>) => void;
 }
 
 const VIEW_KEY = "navihive:viewMode";
 const DENSITY_KEY = "navihive:density";
 const FAVORITES_KEY = "navihive:favoritesEnabled";
 const VISITS_KEY = "navihive:visits";
+const RADIUS_KEY = "navihive:radius";
+const FONT_SCALE_KEY = "navihive:fontScale";
 
 const readString = (key: string, fallback: string): string => {
     try {
@@ -80,6 +108,12 @@ const defaultValue: UIPrefsValue = {
     visits: {},
     recordVisit: () => {},
     clearVisits: () => {},
+    radius: "soft",
+    setRadius: () => {},
+    fontScale: "normal",
+    setFontScale: () => {},
+    deadLinks: {},
+    setDeadLinks: () => {},
 };
 
 export const UIPrefsContext = createContext<UIPrefsValue>(defaultValue);
@@ -98,6 +132,18 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
         () => readString(FAVORITES_KEY, "1") !== "0"
     );
     const [visits, setVisits] = useState<Record<string, VisitStat>>(readVisits);
+    const [radius, setRadiusState] = useState<RadiusStyle>(() => {
+        const v = readString(RADIUS_KEY, "soft");
+        return v === "standard" || v === "sharp" ? v : "soft";
+    });
+    const [fontScale, setFontScaleState] = useState<FontScale>(() => {
+        const v = readString(FONT_SCALE_KEY, "normal");
+        return v === "compact" || v === "large" ? v : "normal";
+    });
+    // 失效链接存在 linkHealth 的 localStorage 里，这里只是为了让卡片能响应变化
+    const [deadLinks, setDeadLinks] = useState<Record<string, number>>(() =>
+        readDeadLinks()
+    );
 
     const setViewMode = useCallback((mode: ViewMode) => {
         setViewModeState(mode);
@@ -132,6 +178,16 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
         });
     }, []);
 
+    const setRadius = useCallback((next: RadiusStyle) => {
+        setRadiusState(next);
+        write(RADIUS_KEY, next);
+    }, []);
+
+    const setFontScale = useCallback((next: FontScale) => {
+        setFontScaleState(next);
+        write(FONT_SCALE_KEY, next);
+    }, []);
+
     const clearVisits = useCallback(() => {
         setVisits({});
         try {
@@ -153,6 +209,12 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
                 setFavoritesState((e.newValue ?? "1") !== "0");
             } else if (e.key === VISITS_KEY) {
                 setVisits(readVisits());
+            } else if (e.key === RADIUS_KEY) {
+                const v = e.newValue ?? "soft";
+                setRadiusState(v === "standard" || v === "sharp" ? v : "soft");
+            } else if (e.key === FONT_SCALE_KEY) {
+                const v = e.newValue ?? "normal";
+                setFontScaleState(v === "compact" || v === "large" ? v : "normal");
             }
         };
         window.addEventListener("storage", onStorage);
@@ -170,6 +232,12 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
             visits,
             recordVisit,
             clearVisits,
+            radius,
+            setRadius,
+            fontScale,
+            setFontScale,
+            deadLinks,
+            setDeadLinks,
         }),
         [
             viewMode,
@@ -181,6 +249,11 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
             visits,
             recordVisit,
             clearVisits,
+            radius,
+            setRadius,
+            fontScale,
+            setFontScale,
+            deadLinks,
         ]
     );
 

@@ -1,5 +1,5 @@
 // src/components/SiteCard.tsx
-import { useState, useEffect, memo } from "react";
+import { useState, useEffect, useMemo, memo } from "react";
 import { Site } from "../API/http";
 import SiteSettingsModal from "./SiteSettingsModal";
 import { useSortable } from "@dnd-kit/sortable";
@@ -36,6 +36,7 @@ import { useNotify } from "../context/NotifyContext";
 import { useUIPrefs } from "../context/UIPrefsContext";
 import { useOpenQueue } from "../context/OpenQueueContext";
 import { resolveIconApiUrl } from "../utils/iconApi";
+import { iconCandidates, readIconRecord, writeIconRecord } from "../utils/iconCache";
 
 interface SiteCardProps {
     site: Site;
@@ -126,9 +127,9 @@ const SiteCard = memo(function SiteCard({
     highlight = "",
 }: SiteCardProps) {
     const theme = useTheme();
-    const { thumbApi } = useAppConfig();
+    const { thumbApi, iconApi } = useAppConfig();
     const notify = useNotify();
-    const { viewMode, density, recordVisit } = useUIPrefs();
+    const { viewMode, density, recordVisit, visits, deadLinks } = useUIPrefs();
     const { enqueue, queue } = useOpenQueue();
     const [showSettings, setShowSettings] = useState(false);
     // 右键菜单的锚点位置（null 表示未打开）
@@ -139,10 +140,19 @@ const SiteCard = memo(function SiteCard({
     const isWall = viewMode === "wall" && !isEditMode;
     const isCompact = density === "compact";
 
-    const [iconError, setIconError] = useState(!site.icon);
+    // 图标候选源：自带图标 → 图标 API → 根目录 favicon → 公共 favicon 服务，
+    // 哪个先加载成功用哪个，失败的会记进本地缓存，下次直接跳过
+    const iconSources = useMemo(
+        () => iconCandidates(site, iconApi),
+        [site.icon, site.url, iconApi]
+    );
+    const [iconIdx, setIconIdx] = useState(0);
     const [imageLoaded, setImageLoaded] = useState(false);
     const [thumbError, setThumbError] = useState(false);
     const [thumbLoaded, setThumbLoaded] = useState(false);
+
+    const iconError = iconIdx >= iconSources.length;
+    const currentIcon = iconSources[iconIdx] ?? "";
 
     // 缩略图：仅在「网站设置」里配了模板时才启用，避免默认请求第三方服务
     const thumbUrl = thumbApi.trim() ? resolveIconApiUrl(thumbApi, site.url || "") : "";
@@ -155,11 +165,27 @@ const SiteCard = memo(function SiteCard({
     }, [thumbUrl]);
 
     // 图标地址变化时重置加载状态：
-    // 免刷新即时更新后，若图标由空改为有值，需要重新尝试加载，否则会一直显示首字母占位
+    // 免刷新即时更新后，若图标由空改为有值，需要重新尝试加载，否则会一直显示首字母占位。
+    // 同时查一遍本地缓存，把已知加载不出来的源直接跳过去。
     useEffect(() => {
-        setIconError(!site.icon);
+        let cancelled = false;
         setImageLoaded(false);
-    }, [site.icon]);
+        setIconIdx(0);
+
+        (async () => {
+            for (let i = 0; i < iconSources.length; i++) {
+                const record = await readIconRecord(iconSources[i]);
+                if (record && !record.ok) continue; // 这个源以前失败过，跳过
+                if (!cancelled) setIconIdx(i);
+                return;
+            }
+            if (!cancelled) setIconIdx(iconSources.length); // 全部源都失败过
+        })();
+
+        return () => {
+            cancelled = true;
+        };
+    }, [iconSources]);
 
     // 使用dnd-kit的useSortable hook
     const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
@@ -267,19 +293,22 @@ const SiteCard = memo(function SiteCard({
     const hasUsername = Boolean(site.username);
     const hasPassword = Boolean(site.password);
 
-    // 处理图标加载错误
+    // 处理图标加载错误：记下这个源不可用，换下一个候选
     const handleIconError = () => {
-        setIconError(true);
+        if (currentIcon) void writeIconRecord(currentIcon, false);
+        setIconIdx(i => i + 1);
+        setImageLoaded(false);
     };
 
-    // 处理图片加载完成
+    // 处理图片加载完成：记下这个源可用
     const handleImageLoad = () => {
+        if (currentIcon) void writeIconRecord(currentIcon, true);
         setImageLoaded(true);
     };
 
     // 图标：加载失败或没有地址时，退化成按名称哈希配色的首字母块
     const renderAvatar = (mr: number | string = 1.5, size = 36) => {
-        if (!iconError && site.icon) {
+        if (!iconError && currentIcon) {
             return (
                 <Box
                     className='nav-card-icon'
@@ -315,7 +344,7 @@ const SiteCard = memo(function SiteCard({
                     <Fade in={imageLoaded} timeout={400}>
                         <Box
                             component='img'
-                            src={site.icon}
+                            src={currentIcon}
                             alt={site.name}
                             loading='lazy'
                             decoding='async'
@@ -359,21 +388,56 @@ const SiteCard = memo(function SiteCard({
         );
     };
 
+    // 访问次数（本机统计）与失效标记
+    const visitCount = site.id != null ? visits[String(site.id)]?.count ?? 0 : 0;
+    const isDead = Boolean(site.url && deadLinks[site.url]);
+
+    const renderBadges = () => (
+        <>
+            {visitCount >= 3 && (
+                <Tooltip title={`本机访问过 ${visitCount} 次`}>
+                    <Box
+                        className='nav-visit-badge'
+                        data-hot={visitCount >= 10 ? "true" : "false"}
+                    >
+                        {visitCount > 999 ? "999+" : visitCount}
+                    </Box>
+                </Tooltip>
+            )}
+            {isDead && (
+                <Tooltip title='链接可能已失效（点右键 → 复制链接确认）'>
+                    <Box className='nav-dead-dot' />
+                </Tooltip>
+            )}
+        </>
+    );
+
     // 标题
     const renderTitle = () => (
-        <Typography
-            className='nav-card-title'
-            variant={isWall ? "caption" : "subtitle1"}
-            fontWeight='medium'
-            noWrap
-            title={site.name}
+        <Box
             sx={{
-                fontSize: { xs: "0.875rem", sm: "1rem" },
-                transition: "color .2s ease",
+                display: "flex",
+                alignItems: "center",
+                gap: 0.75,
+                minWidth: 0,
+                flexShrink: 1,
             }}
         >
-            <Highlighted text={site.name} query={highlight} />
-        </Typography>
+            <Typography
+                className='nav-card-title'
+                variant={isWall ? "caption" : "subtitle1"}
+                fontWeight='medium'
+                noWrap
+                title={site.name}
+                sx={{
+                    fontSize: { xs: "0.875rem", sm: "1rem" },
+                    transition: "color .2s ease",
+                }}
+            >
+                <Highlighted text={site.name} query={highlight} />
+            </Typography>
+            {renderBadges()}
+        </Box>
     );
 
     // 描述
@@ -554,7 +618,7 @@ const SiteCard = memo(function SiteCard({
         height: "100%",
         display: "flex",
         flexDirection: "column" as const,
-        borderRadius: "18px",
+        borderRadius: "var(--card-radius)",
         overflow: "hidden",
         position: "relative" as const,
         border: "1px solid var(--glass-border)",
@@ -585,6 +649,7 @@ const SiteCard = memo(function SiteCard({
         <Box
             className='nav-card-in'
             data-nav-card={isEditMode ? undefined : "true"}
+            data-dragging={isDragging ? "true" : "false"}
             data-site-id={site.id}
             tabIndex={isEditMode ? undefined : 0}
             onKeyDown={handleKeyDown}
@@ -594,7 +659,7 @@ const SiteCard = memo(function SiteCard({
             sx={{
                 height: "100%",
                 position: "relative",
-                borderRadius: "18px",
+                borderRadius: "var(--card-radius)",
             }}
             style={{ animationDelay: `${Math.min(index, 12) * 35}ms` }}
         >
