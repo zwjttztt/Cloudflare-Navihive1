@@ -173,21 +173,46 @@ const SiteCard = memo(function SiteCard({
         setShowSettings(false);
     };
 
-    // 在新标签页「后台」打开：新页面不抢焦点，当前导航页保持在看的位置，
+    // 在新标签页「后台」打开：新页面不抢焦点，当前导航页保持在原处，
     // 这样可以连着点开好几个站点，回头再逐个处理。
+    //
+    // 关键点：window.open() 在 Chrome 里一定会把新标签切到前台，
+    // 之后 win.blur() / window.focus() 都压不住（实测无效），所以这里换成
+    // 浏览器原生的「中键点击链接」路径 —— 中键点击 <a target="_blank"> 本身就是
+    // 后台打开语义，不会动当前页面的焦点，也不会导航当前页。
     const openInBackground = (url: string) => {
         if (!url) return;
 
-        // 带时长的极短生命周期参数会让部分浏览器忽略，这里只用标准写法 + noopener
-        const win = window.open(url, "_blank", "noopener,noreferrer");
+        try {
+            const a = document.createElement("a");
+            a.href = url;
+            a.target = "_blank";
+            a.rel = "noopener noreferrer";
+            a.style.display = "none";
+            document.body.appendChild(a);
+            a.dispatchEvent(
+                new MouseEvent("click", {
+                    bubbles: true,
+                    cancelable: true,
+                    view: window,
+                    button: 1, // 中键 = 后台打开
+                    buttons: 4, // 中键处于按下状态
+                })
+            );
+            document.body.removeChild(a);
+            return;
+        } catch {
+            // 合成事件被环境限制时，退回到 window.open（功能不丢，只是会切焦点）
+        }
 
+        const win = window.open(url, "_blank", "noopener,noreferrer");
         if (win) {
             try {
-                win.blur(); // 多数浏览器开新标签会顺手切过去，这里把它挪回后台
+                win.blur();
             } catch {
-                // 跨域窗口不允许操作时忽略，属于正常情况
+                // 跨域窗口不允许操作时忽略
             }
-            window.focus(); // 把焦点抢回当前页面
+            window.focus();
         }
     };
 
