@@ -71,10 +71,6 @@ interface GroupCardProps {
     onAccentChange?: (groupId: number, color: string) => void;
 }
 
-// 「常用工具」是初始化数据里的分组，保持干净：不给它「添加卡片 / 排序 / 编辑分组」入口，
-// 避免误改后没法从界面恢复（分组名即锁定键，改回原名即可恢复入口）
-const LOCKED_GROUP_NAMES = ["常用工具"];
-
 // 卡片多的分组先渲染一批，滚到底再补，避免一次铺几百张卡拖慢首屏
 const PAGE_SIZE = 40;
 
@@ -228,11 +224,10 @@ const GroupCard: React.FC<GroupCardProps> = ({
     const isCurrentEditingGroup = sortMode === "SiteSort" && currentSortingGroupId === group.id;
 
     // 「常用」是本地统计出来的虚拟分组（id < 0），不给它增删改的入口，
-    // 否则会往不存在的 group_id 里塞卡片；「常用工具」按需求也保持不可管理
+    // 否则会往不存在的 group_id 里塞卡片
     const isVirtualGroup = typeof group.id === "number" && group.id < 0;
-    const isLockedGroup = LOCKED_GROUP_NAMES.includes(group.name);
     /** 是否可以显示添加卡片 / 排序 / 编辑分组这些管理入口 */
-    const canManageGroup = !isVirtualGroup && !isLockedGroup;
+    const canManageGroup = !isVirtualGroup;
 
     // 渲染站点卡片区域
     const renderSites = () => {
@@ -651,7 +646,7 @@ const GroupCard: React.FC<GroupCardProps> = ({
                 {renderSites()}
             </Collapse>
 
-            {/* 编辑分组弹窗（固定分组不给入口） */}
+            {/* 编辑分组弹窗 */}
             {onUpdateGroup && onDeleteGroup && canManageGroup && (
                 <EditGroupDialog
                     open={editDialogOpen}
