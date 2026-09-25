@@ -15,6 +15,11 @@ import {
     Box,
     Fade,
     Tooltip,
+    Menu,
+    MenuItem,
+    ListItemIcon,
+    ListItemText,
+    Divider,
     useTheme,
     alpha,
 } from "@mui/material";
@@ -24,39 +29,13 @@ import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import LinkIcon from "@mui/icons-material/Link";
 import PersonIcon from "@mui/icons-material/Person";
 import KeyIcon from "@mui/icons-material/Key";
+import EditIcon from "@mui/icons-material/Edit";
+import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import { useAppConfig } from "../context/AppConfigContext";
 import { useNotify } from "../context/NotifyContext";
+import { useUIPrefs } from "../context/UIPrefsContext";
+import { useOpenQueue } from "../context/OpenQueueContext";
 import { resolveIconApiUrl } from "../utils/iconApi";
-
-/** 复制文本：优先用异步剪贴板 API，失败或无权限时降级到选中 + execCommand */
-const copyText = async (text: string): Promise<boolean> => {
-    if (!text) return false;
-
-    try {
-        if (navigator.clipboard && window.isSecureContext) {
-            await navigator.clipboard.writeText(text);
-            return true;
-        }
-    } catch {
-        // 被浏览器策略拒绝时继续走降级方案
-    }
-
-    try {
-        const ta = document.createElement("textarea");
-        ta.value = text;
-        ta.setAttribute("readonly", "");
-        ta.style.position = "fixed";
-        ta.style.top = "-1000px";
-        ta.style.opacity = "0";
-        document.body.appendChild(ta);
-        ta.select();
-        const ok = document.execCommand("copy");
-        document.body.removeChild(ta);
-        return ok;
-    } catch {
-        return false;
-    }
-};
 
 interface SiteCardProps {
     site: Site;
@@ -89,6 +68,36 @@ const toneForName = (name: string) => {
     return AVATAR_TONES[Math.abs(hash) % AVATAR_TONES.length];
 };
 
+/** 复制文本：优先用异步剪贴板 API，失败或无权限时降级到选中 + execCommand */
+const copyText = async (text: string): Promise<boolean> => {
+    if (!text) return false;
+
+    try {
+        if (navigator.clipboard && window.isSecureContext) {
+            await navigator.clipboard.writeText(text);
+            return true;
+        }
+    } catch {
+        // 被浏览器策略拒绝时继续走降级方案
+    }
+
+    try {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.setAttribute("readonly", "");
+        ta.style.position = "fixed";
+        ta.style.top = "-1000px";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        const ok = document.execCommand("copy");
+        document.body.removeChild(ta);
+        return ok;
+    } catch {
+        return false;
+    }
+};
+
 // 把命中的关键词片段包成 <mark>，未命中时原样输出
 function Highlighted({ text, query }: { text: string; query?: string }) {
     if (!query) return <>{text}</>;
@@ -119,7 +128,17 @@ const SiteCard = memo(function SiteCard({
     const theme = useTheme();
     const { thumbApi } = useAppConfig();
     const notify = useNotify();
+    const { viewMode, density, recordVisit } = useUIPrefs();
+    const { enqueue, queue } = useOpenQueue();
     const [showSettings, setShowSettings] = useState(false);
+    // 右键菜单的锚点位置（null 表示未打开）
+    const [menuPos, setMenuPos] = useState<{ left: number; top: number } | null>(null);
+
+    // 版式与密度：编辑模式始终用标准卡片，避免拖拽时尺寸乱跳
+    const isList = viewMode === "list" && !isEditMode;
+    const isWall = viewMode === "wall" && !isEditMode;
+    const isCompact = density === "compact";
+
     const [iconError, setIconError] = useState(!site.icon);
     const [imageLoaded, setImageLoaded] = useState(false);
     const [thumbError, setThumbError] = useState(false);
@@ -127,7 +146,7 @@ const SiteCard = memo(function SiteCard({
 
     // 缩略图：仅在「网站设置」里配了模板时才启用，避免默认请求第三方服务
     const thumbUrl = thumbApi.trim() ? resolveIconApiUrl(thumbApi, site.url || "") : "";
-    const useThumb = Boolean(thumbUrl) && !thumbError;
+    const useThumb = Boolean(thumbUrl) && !thumbError && !isList && !isWall;
 
     // 缩略图地址变化时重置加载状态
     useEffect(() => {
@@ -173,52 +192,10 @@ const SiteCard = memo(function SiteCard({
         setShowSettings(false);
     };
 
-    // 在新标签页「后台」打开：新页面不抢焦点，当前导航页保持在原处，
-    // 这样可以连着点开好几个站点，回头再逐个处理。
-    //
-    // 关键点：window.open() 在 Chrome 里一定会把新标签切到前台，
-    // 之后 win.blur() / window.focus() 都压不住（实测无效），所以这里换成
-    // 浏览器原生的「中键点击链接」路径 —— 中键点击 <a target="_blank"> 本身就是
-    // 后台打开语义，不会动当前页面的焦点，也不会导航当前页。
-    const openInBackground = (url: string) => {
-        if (!url) return;
-
-        try {
-            const a = document.createElement("a");
-            a.href = url;
-            a.target = "_blank";
-            a.rel = "noopener noreferrer";
-            a.style.display = "none";
-            document.body.appendChild(a);
-            a.dispatchEvent(
-                new MouseEvent("click", {
-                    bubbles: true,
-                    cancelable: true,
-                    view: window,
-                    button: 1, // 中键 = 后台打开
-                    buttons: 4, // 中键处于按下状态
-                })
-            );
-            document.body.removeChild(a);
-            return;
-        } catch {
-            // 合成事件被环境限制时，退回到 window.open（功能不丢，只是会切焦点）
-        }
-
-        const win = window.open(url, "_blank", "noopener,noreferrer");
-        if (win) {
-            try {
-                win.blur();
-            } catch {
-                // 跨域窗口不允许操作时忽略
-            }
-            window.focus();
-        }
-    };
-
     // 处理卡片点击
     const handleCardClick = () => {
         if (!isEditMode && site.url) {
+            recordVisit(site.id);
             window.open(site.url, "_blank");
         }
     };
@@ -239,11 +216,53 @@ const SiteCard = memo(function SiteCard({
         notify(ok ? `${label}已复制` : `复制失败，请手动复制`, ok ? "success" : "error");
     };
 
-    // 快捷「打开」：后台标签打开，不打断当前浏览
-    const handleQuickOpen = (e: React.MouseEvent) => {
+    // 「加入待打开」：只入队不跳转，当前页保持原样
+    const handleQueueOpen = (e: React.MouseEvent) => {
         e.stopPropagation();
         e.preventDefault();
-        openInBackground(site.url || "");
+        if (!site.url) return;
+        const alreadyQueued = queue.some(item => item.id === site.id);
+        enqueue({ id: site.id!, name: site.name, url: site.url });
+        recordVisit(site.id);
+        notify(
+            alreadyQueued ? `${site.name} 已在待打开列表` : `已加入待打开（${queue.length + 1}）`,
+            "info"
+        );
+    };
+
+    // 右键菜单
+    const handleContextMenu = (e: React.MouseEvent) => {
+        if (isEditMode) return;
+        e.preventDefault();
+        setMenuPos({ left: e.clientX, top: e.clientY });
+    };
+
+    const closeMenu = () => setMenuPos(null);
+
+    const handleMenuOpen = () => {
+        closeMenu();
+        recordVisit(site.id);
+        window.open(site.url || "", "_blank");
+    };
+
+    const handleMenuQueue = () => {
+        closeMenu();
+        if (!site.url) return;
+        enqueue({ id: site.id!, name: site.name, url: site.url });
+        recordVisit(site.id);
+        notify(`已加入待打开（${queue.length + 1}）`, "info");
+    };
+
+    const handleMenuEdit = () => {
+        closeMenu();
+        setShowSettings(true);
+    };
+
+    const handleMenuDelete = () => {
+        closeMenu();
+        if (site.id != null) {
+            onDelete(site.id);
+        }
     };
 
     // 只在真的存了账号/密码时才显示对应按钮
@@ -261,15 +280,15 @@ const SiteCard = memo(function SiteCard({
     };
 
     // 图标：加载失败或没有地址时，退化成按名称哈希配色的首字母块
-    const renderAvatar = () => {
+    const renderAvatar = (mr: number | string = 1.5, size = 36) => {
         if (!iconError && site.icon) {
             return (
                 <Box
                     className='nav-card-icon'
                     position='relative'
-                    mr={1.5}
-                    width={36}
-                    height={36}
+                    mr={mr}
+                    width={size}
+                    height={size}
                     flexShrink={0}
                     sx={{
                         // 统一底板：浅色 logo 有边框托底不至于「消失」，深色 logo 也不会糊在一起
@@ -286,8 +305,8 @@ const SiteCard = memo(function SiteCard({
                 >
                     <Skeleton
                         variant='rounded'
-                        width={24}
-                        height={24}
+                        width={size - 12}
+                        height={size - 12}
                         sx={{
                             display: !imageLoaded ? "block" : "none",
                             position: "absolute",
@@ -303,8 +322,8 @@ const SiteCard = memo(function SiteCard({
                             loading='lazy'
                             decoding='async'
                             sx={{
-                                width: 24,
-                                height: 24,
+                                width: size - 12,
+                                height: size - 12,
                                 borderRadius: "6px",
                                 objectFit: "contain",
                             }}
@@ -320,16 +339,16 @@ const SiteCard = memo(function SiteCard({
             <Box
                 className='nav-card-icon'
                 sx={{
-                    width: 36,
-                    height: 36,
-                    mr: 1.5,
+                    width: size,
+                    height: size,
+                    mr: mr,
                     borderRadius: 1.5,
                     flexShrink: 0,
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "center",
                     fontWeight: 600,
-                    fontSize: 15,
+                    fontSize: size > 40 ? 20 : 15,
                     bgcolor: alpha(isDark ? tone.soft : tone.strong, isDark ? 0.22 : 0.12),
                     color: isDark ? tone.soft : tone.strong,
                     border: "1px solid",
@@ -346,7 +365,7 @@ const SiteCard = memo(function SiteCard({
     const renderTitle = () => (
         <Typography
             className='nav-card-title'
-            variant='subtitle1'
+            variant={isWall ? "caption" : "subtitle1"}
             fontWeight='medium'
             noWrap
             title={site.name}
@@ -366,7 +385,7 @@ const SiteCard = memo(function SiteCard({
             color='text.secondary'
             sx={{
                 display: "-webkit-box",
-                WebkitLineClamp: useThumb ? 2 : 3,
+                WebkitLineClamp: isCompact ? 2 : useThumb ? 2 : 3,
                 WebkitBoxOrient: "vertical",
                 overflow: "hidden",
                 flexGrow: 1,
@@ -377,7 +396,7 @@ const SiteCard = memo(function SiteCard({
         </Typography>
     );
 
-    // 键盘可达：回车/空格也能打开链接
+    // 键盘可达：卡片聚焦后回车/空格打开链接（方向键由 App 统一处理）
     const handleKeyDown = (e: React.KeyboardEvent) => {
         if (isEditMode) return;
         if (e.key === "Enter" || e.key === " ") {
@@ -427,7 +446,82 @@ const SiteCard = memo(function SiteCard({
         );
     };
 
-    // 毛玻璃 + 悬停微交互的外壳样式，两种模式共用
+    // 悬停快捷操作条：加入待打开 / 复制链接 / 复制账号 / 复制密码
+    // always=true 时（列表视图）常显，否则悬停才浮出
+    const renderQuickActions = (always: boolean) => (
+        <Box
+            className={
+                always ? "nav-card-actions nav-card-actions-always" : "nav-card-actions"
+            }
+            sx={{
+                position: "absolute",
+                right: 8,
+                ...(always
+                    ? { top: "50%", transform: "translateY(-50%)" }
+                    : { bottom: 8 }),
+                display: "flex",
+                alignItems: "center",
+                gap: 0.25,
+                p: 0.35,
+                borderRadius: "12px",
+                bgcolor: "var(--glass-bg-hover)",
+                border: "1px solid var(--glass-border)",
+                backdropFilter: "blur(8px)",
+                WebkitBackdropFilter: "blur(8px)",
+                boxShadow: "0 2px 10px rgba(15,23,42,0.14)",
+                zIndex: 2,
+            }}
+        >
+            {site.url && (
+                <Tooltip title='加入待打开（不打断当前页）'>
+                    <IconButton
+                        size='small'
+                        aria-label='加入待打开'
+                        onClick={handleQueueOpen}
+                        sx={{ p: 0.6 }}
+                    >
+                        <OpenInNewIcon sx={{ fontSize: 16 }} />
+                    </IconButton>
+                </Tooltip>
+            )}
+            <Tooltip title='复制链接'>
+                <IconButton
+                    size='small'
+                    aria-label='复制链接'
+                    onClick={e => handleQuickCopy(e, "链接", site.url)}
+                    sx={{ p: 0.6 }}
+                >
+                    <LinkIcon sx={{ fontSize: 16 }} />
+                </IconButton>
+            </Tooltip>
+            {hasUsername && (
+                <Tooltip title='复制账号'>
+                    <IconButton
+                        size='small'
+                        aria-label='复制账号'
+                        onClick={e => handleQuickCopy(e, "账号", site.username)}
+                        sx={{ p: 0.6 }}
+                    >
+                        <PersonIcon sx={{ fontSize: 16 }} />
+                    </IconButton>
+                </Tooltip>
+            )}
+            {hasPassword && (
+                <Tooltip title='复制密码'>
+                    <IconButton
+                        size='small'
+                        aria-label='复制密码'
+                        onClick={e => handleQuickCopy(e, "密码", site.password)}
+                        sx={{ p: 0.6 }}
+                    >
+                        <KeyIcon sx={{ fontSize: 16 }} />
+                    </IconButton>
+                </Tooltip>
+            )}
+        </Box>
+    );
+
+    // 毛玻璃 + 悬停微交互的外壳样式，各版式共用
     const cardSx = {
         height: "100%",
         display: "flex",
@@ -445,7 +539,7 @@ const SiteCard = memo(function SiteCard({
         "&:hover": isEditMode
             ? {}
             : {
-                  transform: "translateY(-6px)",
+                  transform: isList ? "translateX(3px)" : "translateY(-6px)",
                   boxShadow: "var(--glass-shadow-hover)",
                   background: "var(--glass-bg-hover)",
                   borderColor: alpha(theme.palette.primary.main, 0.35),
@@ -462,9 +556,15 @@ const SiteCard = memo(function SiteCard({
     const cardContent = (
         <Box
             className='nav-card-in'
+            data-nav-card={isEditMode ? undefined : "true"}
+            data-site-id={site.id}
+            tabIndex={isEditMode ? undefined : 0}
+            onKeyDown={handleKeyDown}
+            onContextMenu={handleContextMenu}
             sx={{
                 height: "100%",
                 position: "relative",
+                borderRadius: "18px",
             }}
             style={{ animationDelay: `${Math.min(index, 12) * 35}ms` }}
         >
@@ -491,6 +591,63 @@ const SiteCard = memo(function SiteCard({
                         {/* 描述 */}
                         {renderDescription()}
                     </Box>
+                ) : isList ? (
+                    // 紧凑列表：一行一个站点，一屏能看几十个
+                    <Box
+                        onClick={handleCardClick}
+                        sx={{
+                            height: "100%",
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 1.5,
+                            px: 1.5,
+                            py: isCompact ? 0.5 : 1,
+                            cursor: "pointer",
+                        }}
+                    >
+                        {renderAvatar(0, isCompact ? 28 : 36)}
+                        <Box sx={{ minWidth: 0, flexGrow: 1 }}>
+                            {renderTitle()}
+                            {!isCompact && (
+                                <Typography
+                                    variant='caption'
+                                    color='text.secondary'
+                                    noWrap
+                                    sx={{ display: "block" }}
+                                >
+                                    <Highlighted
+                                        text={site.description || site.url || ""}
+                                        query={highlight}
+                                    />
+                                </Typography>
+                            )}
+                        </Box>
+                    </Box>
+                ) : isWall ? (
+                    // 图标墙：只留图标 + 名字，密度最高
+                    <CardActionArea
+                        onClick={handleCardClick}
+                        sx={{ height: "100%" }}
+                    >
+                        <Box
+                            sx={{
+                                p: isCompact ? 1 : 1.5,
+                                display: "flex",
+                                flexDirection: "column",
+                                alignItems: "center",
+                                gap: 0.75,
+                            }}
+                        >
+                            {renderAvatar(0, isCompact ? 40 : 48)}
+                            <Typography
+                                variant='caption'
+                                noWrap
+                                sx={{ maxWidth: "100%", fontSize: isCompact ? 10 : 12 }}
+                            >
+                                <Highlighted text={site.name} query={highlight} />
+                            </Typography>
+                        </Box>
+                    </CardActionArea>
                 ) : (
                     <CardActionArea
                         onClick={handleCardClick}
@@ -510,12 +667,12 @@ const SiteCard = memo(function SiteCard({
                                 flexGrow: 1,
                                 display: "flex",
                                 flexDirection: "column",
-                                p: { xs: 1.5, sm: 2 },
-                                "&:last-child": { pb: { xs: 1.5, sm: 2 } },
+                                p: isCompact ? 1.25 : { xs: 1.5, sm: 2 },
+                                "&:last-child": { pb: isCompact ? 1.25 : { xs: 1.5, sm: 2 } },
                             }}
                         >
                             {/* 图标和名称 */}
-                            <Box display='flex' alignItems='center' mb={1}>
+                            <Box display='flex' alignItems='center' mb={isCompact ? 0.5 : 1}>
                                 {renderAvatar()}
                                 {renderTitle()}
                             </Box>
@@ -551,76 +708,68 @@ const SiteCard = memo(function SiteCard({
                 )}
             </Card>
 
-            {/* 悬停快捷操作条：打开 / 复制链接 / 复制账号 / 复制密码（有凭据才显示） */}
-            {!isEditMode && (
-                <Box
-                    className='nav-card-actions'
-                    sx={{
-                        position: "absolute",
-                        right: 8,
-                        bottom: 8,
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 0.25,
-                        p: 0.35,
-                        borderRadius: "12px",
-                        bgcolor: "var(--glass-bg-hover)",
-                        border: "1px solid var(--glass-border)",
-                        backdropFilter: "blur(8px)",
-                        WebkitBackdropFilter: "blur(8px)",
-                        boxShadow: "0 2px 10px rgba(15,23,42,0.14)",
-                        zIndex: 2,
-                    }}
-                >
-                    {site.url && (
-                        <Tooltip title='在后台标签打开'>
-                            <IconButton
-                                size='small'
-                                aria-label='在后台标签打开'
-                                onClick={handleQuickOpen}
-                                sx={{ p: 0.6 }}
-                            >
-                                <OpenInNewIcon sx={{ fontSize: 16 }} />
-                            </IconButton>
-                        </Tooltip>
-                    )}
-                    <Tooltip title='复制链接'>
-                        <IconButton
-                            size='small'
-                            aria-label='复制链接'
-                            onClick={e => handleQuickCopy(e, "链接", site.url)}
-                            sx={{ p: 0.6 }}
-                        >
-                            <LinkIcon sx={{ fontSize: 16 }} />
-                        </IconButton>
-                    </Tooltip>
-                    {hasUsername && (
-                        <Tooltip title='复制账号'>
-                            <IconButton
-                                size='small'
-                                aria-label='复制账号'
-                                onClick={e => handleQuickCopy(e, "账号", site.username)}
-                                sx={{ p: 0.6 }}
-                            >
-                                <PersonIcon sx={{ fontSize: 16 }} />
-                            </IconButton>
-                        </Tooltip>
-                    )}
-                    {hasPassword && (
-                        <Tooltip title='复制密码'>
-                            <IconButton
-                                size='small'
-                                aria-label='复制密码'
-                                onClick={e => handleQuickCopy(e, "密码", site.password)}
-                                sx={{ p: 0.6 }}
-                            >
-                                <KeyIcon sx={{ fontSize: 16 }} />
-                            </IconButton>
-                        </Tooltip>
-                    )}
-                </Box>
-            )}
+            {/* 快捷操作条 */}
+            {!isEditMode && renderQuickActions(isList)}
         </Box>
+    );
+
+    // 右键菜单（与卡片本体共用一套打开/复制/编辑/删除动作）
+    const contextMenu = (
+        <Menu
+            open={menuPos !== null}
+            onClose={closeMenu}
+            anchorReference='anchorPosition'
+            anchorPosition={menuPos ? { top: menuPos.top, left: menuPos.left } : undefined}
+            slotProps={{ paper: { sx: { minWidth: 190, borderRadius: "14px" } } }}
+        >
+            <MenuItem onClick={handleMenuOpen} disabled={!site.url}>
+                <ListItemIcon>
+                    <OpenInNewIcon fontSize='small' />
+                </ListItemIcon>
+                <ListItemText>新标签打开</ListItemText>
+            </MenuItem>
+            <MenuItem onClick={handleMenuQueue} disabled={!site.url}>
+                <ListItemIcon>
+                    <LinkIcon fontSize='small' />
+                </ListItemIcon>
+                <ListItemText>加入待打开</ListItemText>
+            </MenuItem>
+            <MenuItem onClick={e => handleQuickCopy(e, "链接", site.url)} disabled={!site.url}>
+                <ListItemIcon>
+                    <LinkIcon fontSize='small' />
+                </ListItemIcon>
+                <ListItemText>复制链接</ListItemText>
+            </MenuItem>
+            {hasUsername && (
+                <MenuItem onClick={e => handleQuickCopy(e, "账号", site.username)}>
+                    <ListItemIcon>
+                        <PersonIcon fontSize='small' />
+                    </ListItemIcon>
+                    <ListItemText>复制账号</ListItemText>
+                </MenuItem>
+            )}
+            {hasPassword && (
+                <MenuItem onClick={e => handleQuickCopy(e, "密码", site.password)}>
+                    <ListItemIcon>
+                        <KeyIcon fontSize='small' />
+                    </ListItemIcon>
+                    <ListItemText>复制密码</ListItemText>
+                </MenuItem>
+            )}
+            <Divider />
+            <MenuItem onClick={handleMenuEdit}>
+                <ListItemIcon>
+                    <EditIcon fontSize='small' />
+                </ListItemIcon>
+                <ListItemText>编辑</ListItemText>
+            </MenuItem>
+            <MenuItem onClick={handleMenuDelete} sx={{ color: "error.main" }}>
+                <ListItemIcon>
+                    <DeleteOutlineIcon fontSize='small' color='error' />
+                </ListItemIcon>
+                <ListItemText>删除</ListItemText>
+            </MenuItem>
+        </Menu>
     );
 
     if (isEditMode) {
@@ -645,6 +794,7 @@ const SiteCard = memo(function SiteCard({
     return (
         <>
             {cardContent}
+            {contextMenu}
 
             {showSettings && (
                 <SiteSettingsModal

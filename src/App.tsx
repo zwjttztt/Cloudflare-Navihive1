@@ -5,6 +5,8 @@ import { Site, Group, ExportData, BootstrapData, WebDavConfig, normalizeImportDa
 import { GroupWithSites } from "./types";
 import { AppConfigProvider } from "./context/AppConfigContext";
 import { NotifyContext } from "./context/NotifyContext";
+import { useUIPrefs } from "./context/UIPrefsContext";
+import PendingOpensBar from "./components/PendingOpensBar";
 import { DEFAULT_ICON_API, resolveIconApiUrl } from "./utils/iconApi";
 import { saveRememberedLogin, clearRememberedLogin } from "./utils/rememberedLogin";
 import ThemeToggle from "./components/ThemeToggle";
@@ -60,6 +62,12 @@ import {
     Tooltip,
     InputAdornment,
     Skeleton,
+    ToggleButton,
+    ToggleButtonGroup,
+    Popper,
+    Paper,
+    List,
+    ListItemButton,
 } from "@mui/material";
 import SortIcon from "@mui/icons-material/Sort";
 import SaveIcon from "@mui/icons-material/Save";
@@ -76,6 +84,13 @@ import VisibilityIcon from "@mui/icons-material/Visibility";
 import VisibilityOffIcon from "@mui/icons-material/VisibilityOff";
 import SearchIcon from "@mui/icons-material/Search";
 import SearchOffIcon from "@mui/icons-material/SearchOff";
+import ViewModuleIcon from "@mui/icons-material/ViewModule";
+import ViewListIcon from "@mui/icons-material/ViewList";
+import ViewCompactIcon from "@mui/icons-material/ViewCompact";
+import DensityMediumIcon from "@mui/icons-material/DensityMedium";
+import DensitySmallIcon from "@mui/icons-material/DensitySmall";
+import StarIcon from "@mui/icons-material/Star";
+import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 
 // 根据环境选择使用真实API还是模拟API
 const isDevEnvironment = import.meta.env.DEV;
@@ -107,7 +122,22 @@ const DEFAULT_CONFIGS = {
     "site.thumbApi": "",
     // 自定义主色（#rrggbb），留空表示跟随默认主题色
     "site.primaryColor": "",
+    // 毛玻璃模糊强度（px，0~24），留空表示用默认 14
+    "site.glassBlur": "",
 };
+
+// 内置壁纸预设：既可以是渐变（直接作为 CSS background-image），也可以留空表示不用
+const WALLPAPER_PRESETS = [
+    { label: "晨雾", value: "linear-gradient(135deg,#e0eafc 0%,#cfdef3 100%)" },
+    { label: "暮色", value: "linear-gradient(135deg,#ff9a9e 0%,#fad0c4 55%,#fad0c4 100%)" },
+    { label: "极光", value: "linear-gradient(135deg,#0f2027 0%,#203a43 45%,#2c5364 100%)" },
+    { label: "森林", value: "linear-gradient(135deg,#134e5e 0%,#71b280 100%)" },
+    { label: "紫夜", value: "linear-gradient(135deg,#42275a 0%,#734b6d 100%)" },
+    { label: "砂丘", value: "linear-gradient(135deg,#f6d365 0%,#fda085 100%)" },
+];
+
+// 判断一个背景值是不是 CSS 渐变（渐变可以直接当 background-image 用，图片要包 url()）
+const isCssGradient = (value: string) => /^\s*(linear|radial|conic)-gradient\(/i.test(value);
 
 // 取色器预设色：覆盖蓝/青/绿/橙/红/紫/靛/灰几种常用取向
 const PRESET_ACCENTS = [
@@ -132,20 +162,42 @@ const DEFAULT_WEBDAV_CONFIG: WebDavConfig = {
 // WebDAV 配置在 configs 表中的键名前缀
 const WEBDAV_CONFIG_PREFIX = "webdav.";
 
-function App() {
-    // 主题模式状态
-    const [darkMode, setDarkMode] = useState(() => {
-        const savedTheme = localStorage.getItem("theme");
-        if (savedTheme) {
-            return savedTheme === "dark";
-        }
-        return window.matchMedia("(prefers-color-scheme: dark)").matches;
-    });
+// 主题模式：浅色 / 深色 / 跟随系统
+type ThemeMode = "light" | "dark" | "system";
 
-    // 切换主题的回调函数
+function App() {
+    // 主题模式状态（默认跟随系统；老用户存过的 light/dark 依然兼容）
+    const [themeMode, setThemeMode] = useState<ThemeMode>(() => {
+        const saved = localStorage.getItem("theme");
+        return saved === "light" || saved === "dark" || saved === "system" ? saved : "system";
+    });
+    // 系统当前的深浅偏好
+    const [systemDark, setSystemDark] = useState(() =>
+        window.matchMedia("(prefers-color-scheme: dark)").matches
+    );
+
+    useEffect(() => {
+        const mq = window.matchMedia("(prefers-color-scheme: dark)");
+        const onChange = (e: MediaQueryListEvent) => setSystemDark(e.matches);
+        mq.addEventListener("change", onChange);
+        return () => mq.removeEventListener("change", onChange);
+    }, []);
+
+    const darkMode = themeMode === "system" ? systemDark : themeMode === "dark";
+
+    // 切换主题：每一档点下去都要有可见变化
+    // 浅色 → 深色 → 跟随系统（系统深时则先给浅色，保证「点一下就有反应」）
     const toggleTheme = () => {
-        setDarkMode(!darkMode);
-        localStorage.setItem("theme", !darkMode ? "dark" : "light");
+        const next: ThemeMode =
+            themeMode === "light"
+                ? "dark"
+                : themeMode === "dark"
+                  ? "system"
+                  : systemDark
+                    ? "light"
+                    : "dark";
+        setThemeMode(next);
+        localStorage.setItem("theme", next);
     };
 
     const [groups, setGroups] = useState<GroupWithSites[]>([]);
@@ -273,6 +325,24 @@ function App() {
     // 搜索关键词：普通浏览模式下即时筛选卡片
     const [searchQuery, setSearchQuery] = useState("");
     const searchInputRef = useRef<HTMLInputElement>(null);
+    // 搜索结果下拉面板：是否聚焦 + 当前高亮项
+    const [searchFocused, setSearchFocused] = useState(false);
+    const [activeResult, setActiveResult] = useState(0);
+    // 下拉面板的锚点：必须用 state 存，ref.current 的变化不会触发重渲染，Popper 会拿不到 anchor
+    const [searchAnchor, setSearchAnchor] = useState<HTMLDivElement | null>(null);
+    const searchPanelRef = useRef<HTMLDivElement>(null);
+
+    // 本机显示偏好与访问统计
+    const {
+        viewMode,
+        setViewMode,
+        density,
+        setDensity,
+        favoritesEnabled,
+        setFavoritesEnabled,
+        visits,
+        clearVisits,
+    } = useUIPrefs();
 
     // 菜单打开关闭
     const handleMenuOpen = (event: React.MouseEvent<HTMLButtonElement>) => {
@@ -513,6 +583,18 @@ function App() {
             root.style.removeProperty("--accent");
         }
     }, [accent]);
+
+    // 毛玻璃强度：0 表示关掉模糊（纯半透明），留空/非法值用默认 14px
+    // 注意 Number("") === 0，所以必须先排除空字符串，否则默认配置会被算成「关闭模糊」
+    const glassBlurRaw = configs["site.glassBlur"];
+    const glassBlurParsed = Number(glassBlurRaw);
+    const glassBlur =
+        glassBlurRaw === undefined || glassBlurRaw === "" || !Number.isFinite(glassBlurParsed)
+            ? 14
+            : Math.min(24, Math.max(0, glassBlurParsed));
+    useEffect(() => {
+        document.documentElement.style.setProperty("--glass-blur", `${glassBlur}px`);
+    }, [glassBlur]);
 
     // 统一提示函数（引用稳定，便于被 memo 的子组件复用）
     // duration 可选：成功/信息类默认短暂停留 2.2s，错误类默认 6s（便于阅读），传入则覆盖
@@ -1116,6 +1198,19 @@ function App() {
         }));
     };
 
+    // 毛玻璃强度：临时值为空/非法时按默认 14 显示
+    const tempGlassBlur = (() => {
+        const raw = tempConfigs["site.glassBlur"];
+        const n = Number(raw);
+        if (raw === undefined || raw === "" || !Number.isFinite(n)) return 14;
+        return Math.min(24, Math.max(0, n));
+    })();
+
+    const handleGlassBlurChange = (_event: Event, value: number | number[]) => {
+        const next = Array.isArray(value) ? value[0] : value;
+        setTempConfigs(prev => ({ ...prev, "site.glassBlur": String(next) }));
+    };
+
     const handleSaveConfig = async () => {
         try {
             // 只提交有变化的配置，并并行写入，避免逐条等待
@@ -1297,7 +1392,154 @@ function App() {
             .filter(group => group.sites.length > 0);
     }, [groups, query]);
 
-    // 「/」快速聚焦搜索框，搜索框内按 Esc 清空
+    // 下拉面板的扁平结果：跨分组取前 8 条，够用又不至于太长
+    const flatResults = useMemo(() => {
+        if (!query) return [];
+        const items: { site: Site; groupName: string }[] = [];
+        for (const group of filteredGroups) {
+            for (const site of group.sites) {
+                items.push({ site, groupName: group.name });
+                if (items.length >= 8) break;
+            }
+            if (items.length >= 8) break;
+        }
+        return items;
+    }, [filteredGroups, query]);
+
+    const dropdownOpen = query.length > 0 && searchFocused && flatResults.length > 0;
+
+    // 打开下拉面板里的某一项（用户主动选择，直接前台打开）
+    const openResult = (site: Site) => {
+        setSearchFocused(false);
+        if (site.url) {
+            window.open(site.url, "_blank", "noopener,noreferrer");
+        }
+    };
+
+    // 「常用」分组：按点击次数排序，次数相同则最近访问优先
+    const favoritesGroup = useMemo(() => {
+        const scored = groups
+            .flatMap(group => group.sites)
+            .map(site => ({ site, stat: visits[String(site.id)] }))
+            .filter(item => item.stat && item.stat.count > 0)
+            .sort(
+                (a, b) =>
+                    b.stat!.count - a.stat!.count || b.stat!.last - a.stat!.last
+            )
+            .slice(0, 8)
+            .map(item => item.site);
+
+        return {
+            id: -1,
+            name: "常用",
+            order_num: -1,
+            sites: scored,
+        } as GroupWithSites;
+    }, [groups, visits]);
+
+    // 真正渲染的分组列表：常用置前（排序模式与关闭时不插）
+    const displayedGroups = useMemo(() => {
+        if (!favoritesEnabled || favoritesGroup.sites.length === 0) return filteredGroups;
+
+        const favSites = query
+            ? favoritesGroup.sites.filter(site =>
+                  `${site.name || ""} ${site.description || ""} ${site.url || ""}`
+                      .toLowerCase()
+                      .includes(query)
+              )
+            : favoritesGroup.sites;
+
+        if (favSites.length === 0) return filteredGroups;
+        return [{ ...favoritesGroup, sites: favSites }, ...filteredGroups];
+    }, [filteredGroups, favoritesGroup, favoritesEnabled, query]);
+
+    // 方向键在卡片之间移动焦点（按几何位置找同行/同列的邻居）
+    const focusCardByDirection = (dir: "left" | "right" | "up" | "down") => {
+        const cards = Array.from(
+            document.querySelectorAll<HTMLElement>('[data-nav-card="true"]')
+        );
+        if (cards.length === 0) return;
+
+        const active = document.activeElement as HTMLElement | null;
+        const current =
+            active && active.getAttribute("data-nav-card") === "true" ? active : null;
+
+        if (!current) {
+            cards[0].focus();
+            return;
+        }
+
+        const rect = current.getBoundingClientRect();
+        const cx = (rect.left + rect.right) / 2;
+        const cy = (rect.top + rect.bottom) / 2;
+
+        if (dir === "left" || dir === "right") {
+            const sameRow = cards.filter(card => {
+                if (card === current) return false;
+                const r = card.getBoundingClientRect();
+                return Math.abs((r.top + r.bottom) / 2 - cy) < 16;
+            });
+            if (sameRow.length === 0) return;
+            const target =
+                dir === "right"
+                    ? sameRow
+                          .filter(card => card.getBoundingClientRect().left > cx)
+                          .sort(
+                              (a, b) =>
+                                  a.getBoundingClientRect().left -
+                                  b.getBoundingClientRect().left
+                          )[0]
+                    : sameRow
+                          .filter(card => card.getBoundingClientRect().right < cx)
+                          .sort(
+                              (a, b) =>
+                                  b.getBoundingClientRect().right -
+                                  a.getBoundingClientRect().right
+                          )[0];
+            (target || current).focus();
+            return;
+        }
+
+        const sameColumn = cards.filter(card => {
+            if (card === current) return false;
+            const r = card.getBoundingClientRect();
+            return Math.abs((r.left + r.right) / 2 - cx) < 24;
+        });
+        if (sameColumn.length === 0) return;
+        const target =
+            dir === "down"
+                ? sameColumn
+                      .filter(card => card.getBoundingClientRect().top > cy)
+                      .sort(
+                          (a, b) =>
+                              a.getBoundingClientRect().top - b.getBoundingClientRect().top
+                      )[0]
+                : sameColumn
+                      .filter(card => card.getBoundingClientRect().bottom < cy)
+                      .sort(
+                          (a, b) =>
+                              b.getBoundingClientRect().bottom -
+                              a.getBoundingClientRect().bottom
+                      )[0];
+        (target || current).focus();
+    };
+
+    // 点击搜索框与结果面板以外的地方才收起面板。
+    // （不用 onBlur：点结果项时 mousedown 会先让输入框失焦，面板还没等到 click 就卸载了）
+    useEffect(() => {
+        const onMouseDown = (e: MouseEvent) => {
+            const target = e.target as Node | null;
+            if (!target) return;
+            if (searchAnchor && searchAnchor.contains(target)) return;
+            if (searchPanelRef.current && searchPanelRef.current.contains(target)) return;
+            setSearchFocused(false);
+        };
+
+        document.addEventListener("mousedown", onMouseDown);
+        return () => document.removeEventListener("mousedown", onMouseDown);
+    }, [searchAnchor]);
+
+    // 「/」快速聚焦搜索框、方向键导航、搜索框内的上下键与回车
     useEffect(() => {
         const onKeyDown = (e: KeyboardEvent) => {
             const target = e.target as HTMLElement | null;
@@ -1310,15 +1552,58 @@ function App() {
             if (e.key === "/" && !isTyping) {
                 e.preventDefault();
                 searchInputRef.current?.focus();
-            } else if (e.key === "Escape" && target === searchInputRef.current) {
-                setSearchQuery("");
-                searchInputRef.current?.blur();
+                return;
+            }
+
+            // 搜索框内：↑↓ 选结果，Enter 打开，Esc 清空
+            if (target === searchInputRef.current) {
+                if (e.key === "ArrowDown" && flatResults.length > 0) {
+                    e.preventDefault();
+                    setActiveResult(prev => (prev + 1) % flatResults.length);
+                    return;
+                }
+                if (e.key === "ArrowUp" && flatResults.length > 0) {
+                    e.preventDefault();
+                    setActiveResult(prev =>
+                        prev <= 0 ? flatResults.length - 1 : prev - 1
+                    );
+                    return;
+                }
+                if (e.key === "Enter" && flatResults.length > 0) {
+                    e.preventDefault();
+                    const picked = flatResults[activeResult] || flatResults[0];
+                    if (picked) openResult(picked.site);
+                    return;
+                }
+                if (e.key === "Escape") {
+                    setSearchQuery("");
+                    setSearchFocused(false);
+                    searchInputRef.current?.blur();
+                    return;
+                }
+                return;
+            }
+
+            // 其它位置：方向键在卡片之间移动焦点
+            if (isTyping) return;
+            if (e.key === "ArrowRight") {
+                focusCardByDirection("right");
+                e.preventDefault();
+            } else if (e.key === "ArrowLeft") {
+                focusCardByDirection("left");
+                e.preventDefault();
+            } else if (e.key === "ArrowDown") {
+                focusCardByDirection("down");
+                e.preventDefault();
+            } else if (e.key === "ArrowUp") {
+                focusCardByDirection("up");
+                e.preventDefault();
             }
         };
 
         window.addEventListener("keydown", onKeyDown);
         return () => window.removeEventListener("keydown", onKeyDown);
-    }, []);
+    }, [flatResults, activeResult]);
 
     // context value 记忆化：只有相关配置真正变化时才通知消费方，避免无谓重渲染
     const appConfigValue = useMemo(
@@ -1429,7 +1714,10 @@ function App() {
                         inset: 0,
                         zIndex: 0,
                         pointerEvents: "none",
-                        backgroundImage: `url("${backgroundImageUrl.replace(/"/g, '\\"')}")`,
+                        // 预设壁纸存的是 CSS 渐变，可以直接当 background-image；普通图片才包 url()
+                        backgroundImage: isCssGradient(backgroundImageUrl)
+                            ? backgroundImageUrl
+                            : `url("${backgroundImageUrl.replace(/"/g, '\\"')}")`,
                         backgroundSize: "cover",
                         backgroundPosition: "center",
                         backgroundRepeat: "no-repeat",
@@ -1510,12 +1798,19 @@ function App() {
                             flexWrap="wrap"
                             sx={{ gap: { xs: 1, sm: 2 }, py: { xs: 1, sm: 0 } }}
                         >
-                            {/* 搜索框：位于操作按钮左侧，输入即时筛选，按 / 聚焦、Esc 清空 */}
+                            {/* 搜索框：位于操作按钮左侧，输入即时筛选并弹出结果面板 */}
                             {sortMode === SortMode.None && (
+                                <Box ref={setSearchAnchor} sx={{ position: "relative" }}>
                                 <TextField
                                     inputRef={searchInputRef}
                                     value={searchQuery}
-                                    onChange={e => setSearchQuery(e.target.value)}
+                                    onChange={e => {
+                                        setSearchQuery(e.target.value);
+                                        setActiveResult(0);
+                                        // 输入即展开面板（不只依赖 onFocus，避免程序化赋值时面板不出现）
+                                        setSearchFocused(true);
+                                    }}
+                                    onFocus={() => setSearchFocused(true)}
                                     placeholder='搜索网站（按 /）'
                                     inputProps={{ "aria-label": "搜索网站" }}
                                     size='small'
@@ -1549,6 +1844,60 @@ function App() {
                                         "& .MuiOutlinedInput-root": { borderRadius: "14px" },
                                     }}
                                 />
+
+                                {/* 搜索结果下拉面板：↑↓ 选择，Enter 直接打开 */}
+                                <Popper
+                                    open={dropdownOpen}
+                                    anchorEl={searchAnchor}
+                                    placement='bottom-start'
+                                    sx={{ zIndex: (t) => t.zIndex.modal, width: 320 }}
+                                >
+                                    <Paper
+                                        ref={searchPanelRef}
+                                        elevation={6}
+                                        sx={{
+                                            mt: 0.5,
+                                            borderRadius: "16px",
+                                            overflow: "hidden",
+                                            border: "1px solid var(--glass-border)",
+                                            bgcolor: "var(--glass-bg-hover)",
+                                            backdropFilter: "blur(12px)",
+                                            WebkitBackdropFilter: "blur(12px)",
+                                        }}
+                                    >
+                                        <List dense sx={{ py: 0.5 }}>
+                                            {flatResults.map((item, idx) => (
+                                                <ListItemButton
+                                                    key={`${item.groupName}-${item.site.id ?? idx}`}
+                                                    selected={idx === activeResult}
+                                                    onMouseEnter={() => setActiveResult(idx)}
+                                                    onClick={() => openResult(item.site)}
+                                                    sx={{ borderRadius: "12px", mx: 0.5 }}
+                                                >
+                                                    <ListItemIcon sx={{ minWidth: 32 }}>
+                                                        {item.site.icon ? (
+                                                            <Box
+                                                                component='img'
+                                                                src={item.site.icon}
+                                                                alt=''
+                                                                sx={{ width: 18, height: 18, objectFit: "contain" }}
+                                                            />
+                                                        ) : (
+                                                            <SearchIcon fontSize='small' />
+                                                        )}
+                                                    </ListItemIcon>
+                                                    <ListItemText
+                                                        primary={item.site.name}
+                                                        secondary={item.groupName}
+                                                        primaryTypographyProps={{ noWrap: true }}
+                                                        secondaryTypographyProps={{ noWrap: true, fontSize: 11 }}
+                                                    />
+                                                </ListItemButton>
+                                            ))}
+                                        </List>
+                                    </Paper>
+                                </Popper>
+                                </Box>
                             )}
                             {sortMode !== SortMode.None ? (
                                 <>
@@ -1650,6 +1999,36 @@ function App() {
                                             </ListItemIcon>
                                             <ListItemText>网站设置</ListItemText>
                                         </MenuItem>
+                                        <MenuItem
+                                            onClick={() =>
+                                                setFavoritesEnabled(!favoritesEnabled)
+                                            }
+                                        >
+                                            <ListItemIcon>
+                                                <StarIcon
+                                                    fontSize='small'
+                                                    color={
+                                                        favoritesEnabled
+                                                            ? "primary"
+                                                            : "inherit"
+                                                    }
+                                                />
+                                            </ListItemIcon>
+                                            <ListItemText>
+                                                {favoritesEnabled ? "取消常用置前" : "常用置前"}
+                                            </ListItemText>
+                                        </MenuItem>
+                                        <MenuItem
+                                            onClick={() => {
+                                                clearVisits();
+                                                notify("已清除访问记录", "success");
+                                            }}
+                                        >
+                                            <ListItemIcon>
+                                                <DeleteOutlineIcon fontSize='small' />
+                                            </ListItemIcon>
+                                            <ListItemText>清除访问记录</ListItemText>
+                                        </MenuItem>
                                         <Divider />
                                         <MenuItem onClick={() => handleOpenBackup(0)}>
                                             <ListItemIcon>
@@ -1680,7 +2059,75 @@ function App() {
                                     </Menu>
                                 </>
                             )}
-                            <ThemeToggle darkMode={darkMode} onToggle={toggleTheme} />
+                            {/* 视图版式与显示密度：只影响本机显示，不写入服务器 */}
+                            {sortMode === SortMode.None && (
+                                <>
+                                    <ToggleButtonGroup
+                                        size='small'
+                                        exclusive
+                                        value={viewMode}
+                                        onChange={(_e, value) => value && setViewMode(value)}
+                                        aria-label='视图切换'
+                                        sx={{
+                                            bgcolor: "var(--glass-bg)",
+                                            borderRadius: "14px",
+                                            "& .MuiToggleButton-root": {
+                                                border: 0,
+                                                px: 1,
+                                                py: 0.4,
+                                                borderRadius: "12px",
+                                            },
+                                        }}
+                                    >
+                                        <ToggleButton value='card' aria-label='卡片视图'>
+                                            <Tooltip title='卡片视图'>
+                                                <ViewModuleIcon fontSize='small' />
+                                            </Tooltip>
+                                        </ToggleButton>
+                                        <ToggleButton value='list' aria-label='列表视图'>
+                                            <Tooltip title='紧凑列表'>
+                                                <ViewListIcon fontSize='small' />
+                                            </Tooltip>
+                                        </ToggleButton>
+                                        <ToggleButton value='wall' aria-label='图标墙视图'>
+                                            <Tooltip title='图标墙'>
+                                                <ViewCompactIcon fontSize='small' />
+                                            </Tooltip>
+                                        </ToggleButton>
+                                    </ToggleButtonGroup>
+
+                                    <ToggleButtonGroup
+                                        size='small'
+                                        exclusive
+                                        value={density}
+                                        onChange={(_e, value) => value && setDensity(value)}
+                                        aria-label='显示密度'
+                                        sx={{
+                                            bgcolor: "var(--glass-bg)",
+                                            borderRadius: "14px",
+                                            "& .MuiToggleButton-root": {
+                                                border: 0,
+                                                px: 1,
+                                                py: 0.4,
+                                                borderRadius: "12px",
+                                            },
+                                        }}
+                                    >
+                                        <ToggleButton value='comfortable' aria-label='舒适密度'>
+                                            <Tooltip title='舒适'>
+                                                <DensityMediumIcon fontSize='small' />
+                                            </Tooltip>
+                                        </ToggleButton>
+                                        <ToggleButton value='compact' aria-label='紧凑密度'>
+                                            <Tooltip title='紧凑'>
+                                                <DensitySmallIcon fontSize='small' />
+                                            </Tooltip>
+                                        </ToggleButton>
+                                    </ToggleButtonGroup>
+                                </>
+                            )}
+
+                            <ThemeToggle mode={themeMode} onToggle={toggleTheme} />
                         </Stack>
                     </Box>
 
@@ -1793,9 +2240,9 @@ function App() {
                                         ))}
                                     </Stack>
                                 </DndContext>
-                            ) : filteredGroups.length > 0 ? (
-                                <Stack spacing={5}>
-                                    {filteredGroups.map(group => (
+                            ) : displayedGroups.length > 0 ? (
+                                <Stack spacing={density === "compact" ? 3 : 5}>
+                                    {displayedGroups.map(group => (
                                         <GroupCard
                                             key={`group-${group.id}`}
                                             group={group}
@@ -2210,6 +2657,39 @@ function App() {
                                     <Typography variant='subtitle1' fontWeight='600' sx={{ mb: 1 }}>
                                         背景图片设置
                                     </Typography>
+                                    {/* 内置壁纸预设：点一下即用，也可以自己在下面填图片 URL */}
+                                    <Box sx={{ display: "flex", gap: 1, flexWrap: "wrap", mb: 1.5 }}>
+                                        {WALLPAPER_PRESETS.map(preset => {
+                                            const picked =
+                                                (tempConfigs["site.backgroundImage"] || "") ===
+                                                preset.value;
+                                            return (
+                                                <Tooltip key={preset.label} title={preset.label}>
+                                                    <IconButton
+                                                        size='small'
+                                                        aria-label={`使用壁纸 ${preset.label}`}
+                                                        onClick={() =>
+                                                            setTempConfigs(prev => ({
+                                                                ...prev,
+                                                                "site.backgroundImage":
+                                                                    picked ? "" : preset.value,
+                                                            }))
+                                                        }
+                                                        sx={{
+                                                            width: 34,
+                                                            height: 34,
+                                                            background: preset.value,
+                                                            border: "2px solid",
+                                                            borderColor: picked
+                                                                ? "text.primary"
+                                                                : "transparent",
+                                                            "&:hover": { background: preset.value },
+                                                        }}
+                                                    />
+                                                </Tooltip>
+                                            );
+                                        })}
+                                    </Box>
                                     <TextField
                                         margin='dense'
                                         id='site-background-image'
@@ -2221,7 +2701,7 @@ function App() {
                                         value={tempConfigs["site.backgroundImage"]}
                                         onChange={handleConfigInputChange}
                                         placeholder='https://example.com/background.jpg'
-                                        helperText='输入图片URL，留空则不使用背景图片'
+                                        helperText='输入图片URL，留空则不使用背景图片（也可以直接用上面的预设壁纸）'
                                     />
                                     <Box sx={{ mt: 2 }}>
                                         <Typography variant='body2' color='text.secondary'>
@@ -2243,6 +2723,28 @@ function App() {
                                             值越大，背景图片越清晰，内容可能越难看清
                                         </Typography>
                                     </Box>
+                                </Box>
+
+                                {/* 毛玻璃强度 */}
+                                <Box>
+                                    <Typography variant='subtitle1' fontWeight='600' sx={{ mb: 1 }}>
+                                        毛玻璃强度
+                                    </Typography>
+                                    <Typography variant='body2' color='text.secondary'>
+                                        模糊半径: {tempGlassBlur}px（0 = 完全不模糊）
+                                    </Typography>
+                                    <Slider
+                                        value={tempGlassBlur}
+                                        min={0}
+                                        max={24}
+                                        step={1}
+                                        onChange={handleGlassBlurChange}
+                                        aria-label='毛玻璃强度'
+                                        valueLabelDisplay='auto'
+                                    />
+                                    <Typography variant='caption' color='text.secondary'>
+                                        数值越大越朦胧。内容看不清时调小，或直接拖到 0 关掉模糊。
+                                    </Typography>
                                 </Box>
 
                                 {/* 管理员账号与密码 */}
@@ -2332,6 +2834,9 @@ function App() {
                     />
 
                 </Container>
+
+                {/* 待打开队列：点卡片按钮只入队，页面不动；攒够了在这里一键打开 */}
+                <PendingOpensBar />
             </Box>
         </ThemeProvider>
          </NotifyContext.Provider>
