@@ -33,6 +33,13 @@
             "database_id": "e4f73ada-564f-4a37-89a7-52729d2e8c07"
         }
     ],
+    // 每周一 UTC 02:00（北京时间 10:00）自动备份一次到 WebDAV。
+    // 开关在页面「备份与恢复 → 每周自动备份」，需要重新部署才会应用这里的改动。
+    "triggers": {
+        "crons": [
+            "0 2 * * 1"
+        ]
+    },
     "vars": {
         // 忘记密码时的应急重置码，别写在 vars 里（会明文进 Git），用命令存成加密的 secret：
         //   wrangler secret put AUTH_RESET_CODE

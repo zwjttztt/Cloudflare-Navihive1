@@ -517,9 +517,14 @@ export default {
                         data?: ExportData;
                     };
                     const config = await resolveWebDavConfig(api, request, body);
-                    const payload = body.data ?? (await api.exportData());
-                    const filename = body.filename || buildBackupFileName();
-                    const result = await webdavUpload(config, filename, payload);
+                    // 上传成功后会顺带删掉上一次的备份，只保留最新一份
+                    const stored = await readAllConfigs(api);
+                    const result = await runWebDavBackup(
+                        api,
+                        config,
+                        stored["webdav.lastBackup"] || "",
+                        body.data
+                    );
                     return Response.json(result);
                 } else if (path === "webdav/list" && method === "POST") {
                     const config = await resolveWebDavConfig(api, request);
@@ -548,6 +553,40 @@ export default {
 
         // 非API路由默认返回404
         return new Response("Not Found", { status: 404 });
+    },
+
+    /**
+     * 每周定时备份（由 wrangler.jsonc 的 triggers.crons 触发）。
+     * 只有开启了「每周自动备份」且 WebDAV 已配置时才会真正执行。
+     */
+    async scheduled(_controller: unknown, env: Env): Promise<void> {
+        try {
+            const api = new NavigationAPI(env);
+            const stored = await readAllConfigs(api);
+
+            if (stored["webdav.autoBackup"] === "false") {
+                return;
+            }
+
+            const config = configFromStored(stored);
+            if (!config.url) {
+                console.log("定时备份跳过：尚未配置 WebDAV");
+                return;
+            }
+
+            const result = await runWebDavBackup(
+                api,
+                config,
+                stored["webdav.lastBackup"] || ""
+            );
+            console.log(
+                result.success
+                    ? `定时备份完成：${result.data?.filename}`
+                    : `定时备份失败：${result.message}`
+            );
+        } catch (error) {
+            console.error("定时备份异常:", error);
+        }
     },
 } satisfies ExportedHandler;
 
@@ -792,23 +831,94 @@ async function resolveWebDavConfig(
 ): Promise<WebDavConfig> {
     const payload = body ?? (await safeJson(request));
 
-    const readConfig = async (key: string): Promise<string> => {
-        try {
-            return (await api.getConfig(key)) || "";
-        } catch {
-            return "";
-        }
-    };
+    // 一次读回全部配置（原来要查四次，每次都是一次 D1 往返）
+    let stored: Record<string, string> = {};
+    try {
+        stored = await api.getConfigs();
+    } catch {
+        stored = {};
+    }
 
     const pick = (value: unknown, fallback: string): string =>
         typeof value === "string" && value.trim() !== "" ? value.trim() : fallback;
 
     return {
-        url: pick(payload.url, await readConfig("webdav.url")),
-        username: pick(payload.username, await readConfig("webdav.username")),
-        password: pick(payload.password, await readConfig("webdav.password")),
-        path: pick(payload.path, await readConfig("webdav.path")) || DEFAULT_WEBDAV_PATH,
+        url: pick(payload.url, stored["webdav.url"] || ""),
+        username: pick(payload.username, stored["webdav.username"] || ""),
+        password: pick(payload.password, stored["webdav.password"] || ""),
+        path: pick(payload.path, stored["webdav.path"] || "") || DEFAULT_WEBDAV_PATH,
     };
+}
+
+// 读取全部配置（供备份流程复用，避免重复查询）
+async function readAllConfigs(api: NavigationAPI): Promise<Record<string, string>> {
+    try {
+        return await api.getConfigs();
+    } catch {
+        return {};
+    }
+}
+
+function configFromStored(stored: Record<string, string>): WebDavConfig {
+    return {
+        url: stored["webdav.url"] || "",
+        username: stored["webdav.username"] || "",
+        password: stored["webdav.password"] || "",
+        path: stored["webdav.path"] || DEFAULT_WEBDAV_PATH,
+    };
+}
+
+/**
+ * 执行一次完整备份：导出 → 压缩上传 → 删掉上一次的备份 → 记录本次文件名。
+ * 手动备份和每周定时备份都走这里，行为保持一致。
+ */
+async function runWebDavBackup(
+    api: NavigationAPI,
+    config: WebDavConfig,
+    previousFilename: string,
+    data?: ExportData
+): Promise<WebDavResult<{ filename: string; size: number }>> {
+    const payload = data ?? (await api.exportData());
+    const filename = buildBackupFileName();
+
+    const result = await webdavUpload(config, filename, payload);
+    if (!result.success) return result;
+
+    // 只保留最新一份：删掉上一次的备份（删不掉也不算备份失败）
+    await prunePreviousBackup(config, filename, previousFilename);
+
+    try {
+        await api.setConfig("webdav.lastBackup", filename);
+        await api.setConfig("webdav.lastBackupAt", new Date().toISOString());
+    } catch (error) {
+        console.error("记录备份状态失败:", error);
+    }
+
+    return result;
+}
+
+// 删除上一次的备份文件；没有记录时列目录兜底，清掉除本次以外的所有备份
+async function prunePreviousBackup(
+    config: WebDavConfig,
+    keepFilename: string,
+    previousFilename?: string
+): Promise<void> {
+    try {
+        if (previousFilename && previousFilename !== keepFilename) {
+            await webdavDelete(config, previousFilename);
+            return;
+        }
+
+        const list = await webdavList(config);
+        for (const file of list.data || []) {
+            if (file.name !== keepFilename) {
+                await webdavDelete(config, file.name);
+            }
+        }
+    } catch (error) {
+        // 清理失败不影响本次备份结果
+        console.error("清理旧备份失败:", error);
+    }
 }
 
 // 支持中文密码的 Base64 编码
@@ -843,15 +953,31 @@ function buildBackupFileName(): string {
     const pad = (value: number) => String(value).padStart(2, "0");
     const stamp =
         `${now.getUTCFullYear()}${pad(now.getUTCMonth() + 1)}${pad(now.getUTCDate())}` +
-        `-${pad(now.getUTCHours())}${pad(now.getUTCMinutes())}${pad(now.getUTCSeconds())}`;
-    return `navihive-backup-${stamp}.json`;
+        `-${pad(now.getUTCHours())}${pad(now.getUTCMinutes())}${pad(now.getUTCSeconds())}` +
+        // 带毫秒：同一秒内连续备份也不会重名，避免新备份把旧的覆盖掉
+        `-${String(now.getUTCMilliseconds()).padStart(3, "0")}`;
+    // 备份内容用 gzip 压缩后再上传，体积通常只有原来的十分之一
+    return `navihive-backup-${stamp}.json.gz`;
+}
+
+// gzip 压缩（Workers 运行时原生支持 CompressionStream）
+async function gzipBytes(input: string): Promise<Uint8Array> {
+    const stream = new Blob([input]).stream().pipeThrough(new CompressionStream("gzip"));
+    const buffer = await new Response(stream).arrayBuffer();
+    return new Uint8Array(buffer);
+}
+
+// gzip 解压：读取旧的压缩备份时用到
+async function gunzipToString(bytes: ArrayBuffer): Promise<string> {
+    const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"));
+    return await new Response(stream).text();
 }
 
 async function davFetch(
     url: string,
     method: string,
     config: WebDavConfig,
-    body?: string,
+    body?: string | Uint8Array,
     extraHeaders?: Record<string, string>
 ): Promise<Response> {
     const headers: Record<string, string> = { ...(extraHeaders || {}) };
@@ -952,18 +1078,36 @@ async function webdavUpload(
 ): Promise<WebDavResult<{ filename: string; size: number }>> {
     try {
         const folderUrl = buildWebDavFolderUrl(config);
-        await ensureWebDavFolder(config, folderUrl);
 
-        const content = JSON.stringify(data, null, 2);
-        const response = await davFetch(buildWebDavFileUrl(folderUrl, filename), "PUT", config, content, {
-            "Content-Type": "application/json; charset=utf-8",
-        });
+        // 不缩进 + gzip：比原来的「带缩进明文 JSON」小一个数量级，上传快得多
+        const body = await gzipBytes(JSON.stringify(data));
+        const putHeaders = { "Content-Type": "application/gzip" };
+
+        let response = await davFetch(
+            buildWebDavFileUrl(folderUrl, filename),
+            "PUT",
+            config,
+            body,
+            putHeaders
+        );
+
+        // 目录不存在时才补建，避免每次备份都先发一次 PROPFIND 预检
+        if (response.status === 404 || response.status === 409) {
+            await ensureWebDavFolder(config, folderUrl);
+            response = await davFetch(
+                buildWebDavFileUrl(folderUrl, filename),
+                "PUT",
+                config,
+                body,
+                putHeaders
+            );
+        }
 
         if (response.ok) {
             return {
                 success: true,
                 message: `已备份到 WebDAV：${filename}`,
-                data: { filename, size: content.length },
+                data: { filename, size: body.byteLength },
             };
         }
         if (response.status === 401 || response.status === 403) {
@@ -996,7 +1140,10 @@ async function webdavList(config: WebDavConfig): Promise<WebDavResult<WebDavFile
         }
 
         const xml = await response.text();
-        const files = parseWebDavList(xml).filter(file => file.name.toLowerCase().endsWith(".json"));
+        // 兼容压缩备份（.json.gz）与早期明文备份（.json）
+        const files = parseWebDavList(xml).filter(file =>
+            /\.json(\.gz)?$/i.test(file.name)
+        );
 
         return { success: true, data: files };
     } catch (error) {
@@ -1021,7 +1168,11 @@ async function webdavDownload(config: WebDavConfig, filename: string): Promise<W
             return { success: false, message: `下载备份失败：HTTP ${response.status}` };
         }
 
-        const text = (await response.text()).replace(/^\uFEFF/, "");
+        // 压缩备份（.gz）先解压，明文备份（.json）直接读，两种格式都能恢复
+        const raw = filename.toLowerCase().endsWith(".gz")
+            ? await gunzipToString(await response.arrayBuffer())
+            : await response.text();
+        const text = raw.replace(/^\uFEFF/, "");
         const data = JSON.parse(text) as ExportData;
 
         return { success: true, data, message: filename };
@@ -1060,8 +1211,10 @@ function validateConfig(data: ConfigInput): { valid: boolean; errors?: string[] 
 }
 
 // 声明ExportedHandler类型
+// scheduled 是「每周自动备份」的定时入口，由 wrangler.jsonc 的 triggers.crons 触发
 interface ExportedHandler {
     fetch(request: Request, env: Env, ctx?: ExecutionContext): Response | Promise<Response>;
+    scheduled?(controller: unknown, env: Env, ctx?: ExecutionContext): void | Promise<void>;
 }
 
 // 声明Cloudflare Workers的执行上下文类型

@@ -1091,6 +1091,20 @@ function App() {
         }
     };
 
+    // 每周自动备份开关（存在服务器，定时备份由 Worker 的 Cron 触发）
+    const handleToggleAutoBackup = async (enabled: boolean) => {
+        try {
+            await api.setConfig(`${WEBDAV_CONFIG_PREFIX}autoBackup`, enabled ? "true" : "false");
+            setConfigs(prev => ({
+                ...prev,
+                [`${WEBDAV_CONFIG_PREFIX}autoBackup`]: enabled ? "true" : "false",
+            }));
+        } catch (error) {
+            console.error("保存自动备份设置失败:", error);
+            handleError("保存自动备份设置失败: " + (error instanceof Error ? error.message : "未知错误"));
+        }
+    };
+
     // 导入/恢复数据：overwrite=true 覆盖恢复（服务端整体导入），false 合并追加
     const handleImportBackup = async (data: ExportData, overwrite: boolean) => {
         try {
@@ -1942,6 +1956,9 @@ function App() {
                         client={api}
                         webdavConfig={webdavConfig}
                         onSaveWebdavConfig={handleSaveWebdavConfig}
+                        autoBackup={configs[`${WEBDAV_CONFIG_PREFIX}autoBackup`] !== "false"}
+                        lastBackupAt={configs[`${WEBDAV_CONFIG_PREFIX}lastBackupAt`] || ""}
+                        onToggleAutoBackup={handleToggleAutoBackup}
                         onBuildExportData={buildExportData}
                         onDownloadLocal={handleDownloadLocal}
                         onImportData={handleImportBackup}
