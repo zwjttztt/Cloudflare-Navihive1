@@ -173,6 +173,24 @@ const SiteCard = memo(function SiteCard({
         setShowSettings(false);
     };
 
+    // 在新标签页「后台」打开：新页面不抢焦点，当前导航页保持在看的位置，
+    // 这样可以连着点开好几个站点，回头再逐个处理。
+    const openInBackground = (url: string) => {
+        if (!url) return;
+
+        // 带时长的极短生命周期参数会让部分浏览器忽略，这里只用标准写法 + noopener
+        const win = window.open(url, "_blank", "noopener,noreferrer");
+
+        if (win) {
+            try {
+                win.blur(); // 多数浏览器开新标签会顺手切过去，这里把它挪回后台
+            } catch {
+                // 跨域窗口不允许操作时忽略，属于正常情况
+            }
+            window.focus(); // 把焦点抢回当前页面
+        }
+    };
+
     // 处理卡片点击
     const handleCardClick = () => {
         if (!isEditMode && site.url) {
@@ -196,13 +214,11 @@ const SiteCard = memo(function SiteCard({
         notify(ok ? `${label}已复制` : `复制失败，请手动复制`, ok ? "success" : "error");
     };
 
-    // 快捷「打开」：与点击卡片行为一致
+    // 快捷「打开」：后台标签打开，不打断当前浏览
     const handleQuickOpen = (e: React.MouseEvent) => {
         e.stopPropagation();
         e.preventDefault();
-        if (site.url) {
-            window.open(site.url, "_blank");
-        }
+        openInBackground(site.url || "");
     };
 
     // 只在真的存了账号/密码时才显示对应按钮
@@ -532,10 +548,10 @@ const SiteCard = memo(function SiteCard({
                     }}
                 >
                     {site.url && (
-                        <Tooltip title='打开网站'>
+                        <Tooltip title='在后台标签打开'>
                             <IconButton
                                 size='small'
-                                aria-label='打开网站'
+                                aria-label='在后台标签打开'
                                 onClick={handleQuickOpen}
                                 sx={{ p: 0.6 }}
                             >
