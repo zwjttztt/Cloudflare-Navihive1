@@ -192,12 +192,24 @@ const SiteCard = memo(function SiteCard({
         setShowSettings(false);
     };
 
-    // 处理卡片点击
+    // 处理卡片点击：卡片本体是真实的 <a target="_blank">，
+    // 左键交给浏览器原生打开（中键则自动后台打开），这里只记录访问次数
     const handleCardClick = () => {
         if (!isEditMode && site.url) {
             recordVisit(site.id);
-            window.open(site.url, "_blank");
         }
+    };
+
+    // 鼠标中键点击 = 后台打开新标签页（浏览器原生行为，当前页不会被切走）
+    const handleAuxClick = (e: React.MouseEvent) => {
+        if (isEditMode || e.button !== 1 || !site.url) return;
+        recordVisit(site.id);
+    };
+
+    // 中键按下时屏蔽默认行为（Windows Chrome 的自动滚动），但不影响打开链接
+    const handleMouseDown = (e: React.MouseEvent) => {
+        if (isEditMode || e.button !== 1) return;
+        e.preventDefault();
     };
 
     // 悬停快捷操作：复制类操作统一走顶部提示反馈
@@ -214,20 +226,6 @@ const SiteCard = memo(function SiteCard({
         }
         const ok = await copyText(value);
         notify(ok ? `${label}已复制` : `复制失败，请手动复制`, ok ? "success" : "error");
-    };
-
-    // 「加入待打开」：只入队不跳转，当前页保持原样
-    const handleQueueOpen = (e: React.MouseEvent) => {
-        e.stopPropagation();
-        e.preventDefault();
-        if (!site.url) return;
-        const alreadyQueued = queue.some(item => item.id === site.id);
-        enqueue({ id: site.id!, name: site.name, url: site.url });
-        recordVisit(site.id);
-        notify(
-            alreadyQueued ? `${site.name} 已在待打开列表` : `已加入待打开（${queue.length + 1}）`,
-            "info"
-        );
     };
 
     // 右键菜单
@@ -400,10 +398,51 @@ const SiteCard = memo(function SiteCard({
     const handleKeyDown = (e: React.KeyboardEvent) => {
         if (isEditMode) return;
         if (e.key === "Enter" || e.key === " ") {
-            e.preventDefault();
-            handleCardClick();
+            e.preventDefault(); // 焦点在卡片外壳上，不会触发 <a> 的原生导航，这里手动打开
+            if (!site.url) return;
+            recordVisit(site.id);
+            window.open(site.url, "_blank");
         }
     };
+
+    // 网站设置按钮：放在 <a> 外面（a 里不能嵌交互元素），靠绝对定位回到右上角
+    const renderSettingsButton = () =>
+        !isEditMode &&
+        !isList &&
+        !isWall && (
+            <IconButton
+                className='nav-settings-btn'
+                size='small'
+                sx={{
+                    position: "absolute",
+                    top: 8,
+                    right: 8,
+                    bgcolor: "var(--glass-bg-hover)",
+                    backdropFilter: "blur(6px)",
+                    opacity: 0,
+                    transition: "opacity .2s, background-color .2s",
+                    zIndex: 2,
+                    "&:hover": {
+                        bgcolor: "action.selected",
+                    },
+                }}
+                onClick={handleSettingsClick}
+                aria-label='网站设置'
+            >
+                <SettingsIcon fontSize='small' />
+            </IconButton>
+        );
+
+    // 卡片本体做成真实的 <a>：左键普通新标签，中键由浏览器原生后台打开（不切走当前页）
+    const linkProps = site.url
+        ? {
+              component: "a" as const,
+              href: site.url,
+              target: "_blank",
+              rel: "noopener",
+              tabIndex: -1,
+          }
+        : {};
 
     // 缩略图区块（加载失败时整块不渲染，回到只有图标的紧凑版式）
     const renderThumbnail = () => {
@@ -446,7 +485,8 @@ const SiteCard = memo(function SiteCard({
         );
     };
 
-    // 悬停快捷操作条：加入待打开 / 复制链接 / 复制账号 / 复制密码
+    // 悬停快捷操作条：复制链接 / 复制账号 / 复制密码
+    // （打开动作已交给卡片本体：左键普通新标签，中键后台打开）
     // always=true 时（列表视图）常显，否则悬停才浮出
     const renderQuickActions = (always: boolean) => (
         <Box
@@ -472,18 +512,6 @@ const SiteCard = memo(function SiteCard({
                 zIndex: 2,
             }}
         >
-            {site.url && (
-                <Tooltip title='加入待打开（不打断当前页）'>
-                    <IconButton
-                        size='small'
-                        aria-label='加入待打开'
-                        onClick={handleQueueOpen}
-                        sx={{ p: 0.6 }}
-                    >
-                        <OpenInNewIcon sx={{ fontSize: 16 }} />
-                    </IconButton>
-                </Tooltip>
-            )}
             <Tooltip title='复制链接'>
                 <IconButton
                     size='small'
@@ -560,6 +588,8 @@ const SiteCard = memo(function SiteCard({
             data-site-id={site.id}
             tabIndex={isEditMode ? undefined : 0}
             onKeyDown={handleKeyDown}
+            onAuxClick={handleAuxClick}
+            onMouseDown={handleMouseDown}
             onContextMenu={handleContextMenu}
             sx={{
                 height: "100%",
@@ -594,6 +624,7 @@ const SiteCard = memo(function SiteCard({
                 ) : isList ? (
                     // 紧凑列表：一行一个站点，一屏能看几十个
                     <Box
+                        {...linkProps}
                         onClick={handleCardClick}
                         sx={{
                             height: "100%",
@@ -603,6 +634,8 @@ const SiteCard = memo(function SiteCard({
                             px: 1.5,
                             py: isCompact ? 0.5 : 1,
                             cursor: "pointer",
+                            textDecoration: "none",
+                            color: "inherit",
                         }}
                     >
                         {renderAvatar(0, isCompact ? 28 : 36)}
@@ -626,8 +659,9 @@ const SiteCard = memo(function SiteCard({
                 ) : isWall ? (
                     // 图标墙：只留图标 + 名字，密度最高
                     <CardActionArea
+                        {...linkProps}
                         onClick={handleCardClick}
-                        sx={{ height: "100%" }}
+                        sx={{ height: "100%", textDecoration: "none", color: "inherit" }}
                     >
                         <Box
                             sx={{
@@ -650,14 +684,16 @@ const SiteCard = memo(function SiteCard({
                     </CardActionArea>
                 ) : (
                     <CardActionArea
+                        {...linkProps}
                         onClick={handleCardClick}
-                        onKeyDown={handleKeyDown}
                         sx={{
                             height: "100%",
                             display: "flex",
                             flexDirection: "column",
                             alignItems: "stretch",
                             justifyContent: "flex-start",
+                            textDecoration: "none",
+                            color: "inherit",
                         }}
                     >
                         {renderThumbnail()}
@@ -679,34 +715,13 @@ const SiteCard = memo(function SiteCard({
 
                             {/* 描述 */}
                             {renderDescription()}
-
-                            {/* 设置按钮 */}
-                            <IconButton
-                                size='small'
-                                sx={{
-                                    position: "absolute",
-                                    top: 8,
-                                    right: 8,
-                                    bgcolor: "var(--glass-bg-hover)",
-                                    backdropFilter: "blur(6px)",
-                                    opacity: 0,
-                                    transition: "opacity .2s, background-color .2s",
-                                    "&:hover": {
-                                        bgcolor: "action.selected",
-                                    },
-                                    ".MuiCardActionArea-root:hover &": {
-                                        opacity: 1,
-                                    },
-                                }}
-                                onClick={handleSettingsClick}
-                                aria-label='网站设置'
-                            >
-                                <SettingsIcon fontSize='small' />
-                            </IconButton>
                         </CardContent>
                     </CardActionArea>
                 )}
             </Card>
+
+            {/* 网站设置按钮（放在链接外面，避免 a 里嵌交互元素） */}
+            {renderSettingsButton()}
 
             {/* 快捷操作条 */}
             {!isEditMode && renderQuickActions(isList)}
@@ -722,6 +737,19 @@ const SiteCard = memo(function SiteCard({
             anchorPosition={menuPos ? { top: menuPos.top, left: menuPos.left } : undefined}
             slotProps={{ paper: { sx: { minWidth: 190, borderRadius: "14px" } } }}
         >
+            <Box
+                sx={{
+                    px: 2,
+                    py: 0.75,
+                    fontSize: 12,
+                    color: "text.secondary",
+                    maxWidth: 210,
+                    lineHeight: 1.5,
+                }}
+            >
+                鼠标中键点击卡片：后台打开，不切走当前页
+            </Box>
+            <Divider />
             <MenuItem onClick={handleMenuOpen} disabled={!site.url}>
                 <ListItemIcon>
                     <OpenInNewIcon fontSize='small' />
