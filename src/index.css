@@ -193,6 +193,20 @@ mark.nav-hl {
     pointer-events: auto;
 }
 
+/* 列表视图里快捷操作常显，省去悬停这一步 */
+.nav-card-actions-always {
+    opacity: 1;
+    transform: translateY(-50%) !important;
+    pointer-events: auto;
+}
+
+/* 键盘导航：卡片聚焦时给出清晰的焦点环 */
+[data-nav-card]:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+    border-radius: 20px;
+}
+
 /* 尊重「减少动态效果」偏好：关掉装饰性动画（不动功能性过渡） */
 @media (prefers-reduced-motion: reduce) {
     .nav-card-in,

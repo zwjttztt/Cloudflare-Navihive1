@@ -1,0 +1,20 @@
+{
+    "name": "导航站 Navihive",
+    "short_name": "导航站",
+    "description": "个人导航站，整理和分享您喜爱的网站链接",
+    "start_url": "/",
+    "scope": "/",
+    "display": "standalone",
+    "orientation": "any",
+    "background_color": "#ffffff",
+    "theme_color": "#1976d2",
+    "lang": "zh-CN",
+    "icons": [
+        {
+            "src": "/vite.svg",
+            "sizes": "any",
+            "type": "image/svg+xml",
+            "purpose": "any"
+        }
+    ]
+}

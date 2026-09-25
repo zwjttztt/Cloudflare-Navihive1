@@ -1,20 +1,39 @@
 // src/components/ThemeToggle.tsx
+// 三档循环：浅色 → 深色 → 跟随系统 → 浅色
 import { IconButton, Tooltip } from "@mui/material";
-import Brightness4Icon from "@mui/icons-material/Brightness4";
-import Brightness7Icon from "@mui/icons-material/Brightness7";
+import LightModeIcon from "@mui/icons-material/LightMode";
+import DarkModeIcon from "@mui/icons-material/DarkMode";
+import SettingsBrightnessIcon from "@mui/icons-material/SettingsBrightness";
+
+type ThemeMode = "light" | "dark" | "system";
 
 interface ThemeToggleProps {
-    darkMode: boolean;
+    mode: ThemeMode;
     onToggle: () => void;
 }
 
-export default function ThemeToggle({ darkMode, onToggle }: ThemeToggleProps) {
+const LABEL: Record<ThemeMode, string> = {
+    light: "浅色",
+    dark: "深色",
+    system: "跟随系统",
+};
+
+const NEXT: Record<ThemeMode, string> = {
+    light: "深色",
+    dark: "跟随系统",
+    system: "浅色",
+};
+
+export default function ThemeToggle({ mode, onToggle }: ThemeToggleProps) {
+    const Icon =
+        mode === "light" ? LightModeIcon : mode === "dark" ? DarkModeIcon : SettingsBrightnessIcon;
+
     return (
-        <Tooltip title={darkMode ? "切换到浅色模式" : "切换到深色模式"}>
+        <Tooltip title={`当前${LABEL[mode]} · 点击切到${NEXT[mode]}`}>
             <IconButton
                 onClick={onToggle}
                 color='inherit'
-                aria-label='切换主题'
+                aria-label={`主题：${LABEL[mode]}`}
                 sx={{
                     p: 1.5,
                     borderRadius: "50%",
@@ -26,7 +45,7 @@ export default function ThemeToggle({ darkMode, onToggle }: ThemeToggleProps) {
                     },
                 }}
             >
-                {darkMode ? <Brightness7Icon /> : <Brightness4Icon />}
+                <Icon />
             </IconButton>
         </Tooltip>
     );

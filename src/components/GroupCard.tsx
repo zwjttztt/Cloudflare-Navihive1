@@ -29,6 +29,7 @@ import EditIcon from "@mui/icons-material/Edit";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import ExpandLessIcon from "@mui/icons-material/ExpandLess";
 import LayersOutlinedIcon from "@mui/icons-material/LayersOutlined";
+import { useUIPrefs } from "../context/UIPrefsContext";
 
 // 分组展开/收起状态存在本地，刷新后保持原样
 const COLLAPSED_GROUPS_KEY = "navihive:collapsedGroups";
@@ -82,6 +83,10 @@ const GroupCard: React.FC<GroupCardProps> = ({
     onDeleteGroup,
     searchQuery = "",
 }) => {
+    const { viewMode, density } = useUIPrefs();
+    const isCompact = density === "compact";
+    // 列表视图下卡片挨得更紧，分组内间距同步收一档
+    const gridGap = viewMode === "list" ? (isCompact ? -0.25 : 0) : isCompact ? -0.5 : -1;
     // 添加本地状态来管理站点排序
     const [sites, setSites] = useState<Site[]>(group.sites);
     // 添加编辑弹窗的状态
@@ -182,6 +187,10 @@ const GroupCard: React.FC<GroupCardProps> = ({
 
     // 判断是否为当前正在编辑的分组
     const isCurrentEditingGroup = sortMode === "SiteSort" && currentSortingGroupId === group.id;
+
+    // 「常用」是本地统计出来的虚拟分组（id < 0），不给它增删改的入口，
+    // 否则会往不存在的 group_id 里塞卡片
+    const isVirtualGroup = typeof group.id === "number" && group.id < 0;
 
     // 渲染站点卡片区域
     const renderSites = () => {
@@ -341,23 +350,35 @@ const GroupCard: React.FC<GroupCardProps> = ({
         return (
             <Box
                 sx={{
-                    display: "flex",
+                    display: viewMode === "list" ? "block" : "flex",
                     flexWrap: "wrap",
-                    margin: -1, // 抵消内部padding，确保边缘对齐
+                    margin: gridGap, // 抵消内部padding，确保边缘对齐
                 }}
             >
                 {sitesToRender.map((site, idx) => (
                     <Box
                         key={site.id}
                         sx={{
-                            width: {
-                                xs: "50%",
-                                sm: "33.33%",
-                                md: "25%",
-                                lg: "25%",
-                                xl: "20%",
-                            },
-                            padding: 1, // 内部间距，更均匀的分布
+                            // 列表一行一个；图标墙排得更密；紧凑密度再收一档间距
+                            width:
+                                viewMode === "list"
+                                    ? "100%"
+                                    : viewMode === "wall"
+                                      ? {
+                                            xs: "33.33%",
+                                            sm: "25%",
+                                            md: "16.66%",
+                                            lg: "12.5%",
+                                            xl: "10%",
+                                        }
+                                      : {
+                                            xs: "50%",
+                                            sm: "33.33%",
+                                            md: "25%",
+                                            lg: "25%",
+                                            xl: "20%",
+                                        },
+                            padding: isCompact ? 0.5 : 1, // 内部间距，更均匀的分布
                             boxSizing: "border-box", // 确保padding不影响宽度计算
                         }}
                     >
@@ -496,7 +517,7 @@ const GroupCard: React.FC<GroupCardProps> = ({
                             保存顺序
                         </Button>
                     ) : (
-                        sortMode === "None" && (
+                        sortMode === "None" && !isVirtualGroup && (
                             <>
                                 {onAddSite && (
                                     <Button
