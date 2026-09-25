@@ -14,14 +14,49 @@ import {
     IconButton,
     Box,
     Fade,
+    Tooltip,
     useTheme,
     alpha,
 } from "@mui/material";
 import SettingsIcon from "@mui/icons-material/Settings";
 import DragIndicatorIcon from "@mui/icons-material/DragIndicator";
-import LanguageIcon from "@mui/icons-material/Language";
+import OpenInNewIcon from "@mui/icons-material/OpenInNew";
+import LinkIcon from "@mui/icons-material/Link";
+import PersonIcon from "@mui/icons-material/Person";
+import KeyIcon from "@mui/icons-material/Key";
 import { useAppConfig } from "../context/AppConfigContext";
+import { useNotify } from "../context/NotifyContext";
 import { resolveIconApiUrl } from "../utils/iconApi";
+
+/** 复制文本：优先用异步剪贴板 API，失败或无权限时降级到选中 + execCommand */
+const copyText = async (text: string): Promise<boolean> => {
+    if (!text) return false;
+
+    try {
+        if (navigator.clipboard && window.isSecureContext) {
+            await navigator.clipboard.writeText(text);
+            return true;
+        }
+    } catch {
+        // 被浏览器策略拒绝时继续走降级方案
+    }
+
+    try {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.setAttribute("readonly", "");
+        ta.style.position = "fixed";
+        ta.style.top = "-1000px";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        const ok = document.execCommand("copy");
+        document.body.removeChild(ta);
+        return ok;
+    } catch {
+        return false;
+    }
+};
 
 interface SiteCardProps {
     site: Site;
@@ -83,6 +118,7 @@ const SiteCard = memo(function SiteCard({
 }: SiteCardProps) {
     const theme = useTheme();
     const { thumbApi } = useAppConfig();
+    const notify = useNotify();
     const [showSettings, setShowSettings] = useState(false);
     const [iconError, setIconError] = useState(!site.icon);
     const [imageLoaded, setImageLoaded] = useState(false);
@@ -144,6 +180,35 @@ const SiteCard = memo(function SiteCard({
         }
     };
 
+    // 悬停快捷操作：复制类操作统一走顶部提示反馈
+    const handleQuickCopy = async (
+        e: React.MouseEvent,
+        label: string,
+        value?: string
+    ) => {
+        e.stopPropagation(); // 不要把点击冒泡给 CardActionArea，否则会顺带打开网页
+        e.preventDefault();
+        if (!value) {
+            notify(`没有可复制的${label}`, "info");
+            return;
+        }
+        const ok = await copyText(value);
+        notify(ok ? `${label}已复制` : `复制失败，请手动复制`, ok ? "success" : "error");
+    };
+
+    // 快捷「打开」：与点击卡片行为一致
+    const handleQuickOpen = (e: React.MouseEvent) => {
+        e.stopPropagation();
+        e.preventDefault();
+        if (site.url) {
+            window.open(site.url, "_blank");
+        }
+    };
+
+    // 只在真的存了账号/密码时才显示对应按钮
+    const hasUsername = Boolean(site.username);
+    const hasPassword = Boolean(site.password);
+
     // 处理图标加载错误
     const handleIconError = () => {
         setIconError(true);
@@ -166,16 +231,27 @@ const SiteCard = memo(function SiteCard({
                     height={36}
                     flexShrink={0}
                     sx={{
+                        // 统一底板：浅色 logo 有边框托底不至于「消失」，深色 logo 也不会糊在一起
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        borderRadius: "11px",
+                        bgcolor: isDark ? "rgba(255,255,255,0.09)" : "rgba(255,255,255,0.94)",
+                        border: "1px solid",
+                        borderColor: isDark ? "rgba(255,255,255,0.14)" : "rgba(15,23,42,0.09)",
+                        boxShadow: isDark ? "none" : "0 1px 3px rgba(15,23,42,0.08)",
                         transition: "transform .22s cubic-bezier(.22,.61,.36,1)",
                     }}
                 >
                     <Skeleton
                         variant='rounded'
-                        width={36}
-                        height={36}
+                        width={24}
+                        height={24}
                         sx={{
                             display: !imageLoaded ? "block" : "none",
                             position: "absolute",
+                            inset: 0,
+                            margin: "auto",
                         }}
                     />
                     <Fade in={imageLoaded} timeout={400}>
@@ -186,10 +262,10 @@ const SiteCard = memo(function SiteCard({
                             loading='lazy'
                             decoding='async'
                             sx={{
-                                width: 36,
-                                height: 36,
-                                borderRadius: 1.5,
-                                objectFit: "cover",
+                                width: 24,
+                                height: 24,
+                                borderRadius: "6px",
+                                objectFit: "contain",
                             }}
                             onError={handleIconError}
                             onLoad={handleImageLoad}
@@ -434,24 +510,74 @@ const SiteCard = memo(function SiteCard({
                 )}
             </Card>
 
-            {/* 链接提示：悬停时右下角浮出一个小地球 */}
-            {!isEditMode && site.url && (
-                <LanguageIcon
-                    className='nav-card-link-hint'
+            {/* 悬停快捷操作条：打开 / 复制链接 / 复制账号 / 复制密码（有凭据才显示） */}
+            {!isEditMode && (
+                <Box
+                    className='nav-card-actions'
                     sx={{
                         position: "absolute",
-                        right: 10,
-                        bottom: 10,
-                        fontSize: 16,
-                        color: "text.disabled",
-                        opacity: 0,
-                        transition: "opacity .2s ease",
-                        pointerEvents: "none",
-                        ".nav-card-in:hover &": {
-                            opacity: 0.75,
-                        },
+                        right: 8,
+                        bottom: 8,
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 0.25,
+                        p: 0.35,
+                        borderRadius: "12px",
+                        bgcolor: "var(--glass-bg-hover)",
+                        border: "1px solid var(--glass-border)",
+                        backdropFilter: "blur(8px)",
+                        WebkitBackdropFilter: "blur(8px)",
+                        boxShadow: "0 2px 10px rgba(15,23,42,0.14)",
+                        zIndex: 2,
                     }}
-                />
+                >
+                    {site.url && (
+                        <Tooltip title='打开网站'>
+                            <IconButton
+                                size='small'
+                                aria-label='打开网站'
+                                onClick={handleQuickOpen}
+                                sx={{ p: 0.6 }}
+                            >
+                                <OpenInNewIcon sx={{ fontSize: 16 }} />
+                            </IconButton>
+                        </Tooltip>
+                    )}
+                    <Tooltip title='复制链接'>
+                        <IconButton
+                            size='small'
+                            aria-label='复制链接'
+                            onClick={e => handleQuickCopy(e, "链接", site.url)}
+                            sx={{ p: 0.6 }}
+                        >
+                            <LinkIcon sx={{ fontSize: 16 }} />
+                        </IconButton>
+                    </Tooltip>
+                    {hasUsername && (
+                        <Tooltip title='复制账号'>
+                            <IconButton
+                                size='small'
+                                aria-label='复制账号'
+                                onClick={e => handleQuickCopy(e, "账号", site.username)}
+                                sx={{ p: 0.6 }}
+                            >
+                                <PersonIcon sx={{ fontSize: 16 }} />
+                            </IconButton>
+                        </Tooltip>
+                    )}
+                    {hasPassword && (
+                        <Tooltip title='复制密码'>
+                            <IconButton
+                                size='small'
+                                aria-label='复制密码'
+                                onClick={e => handleQuickCopy(e, "密码", site.password)}
+                                sx={{ p: 0.6 }}
+                            >
+                                <KeyIcon sx={{ fontSize: 16 }} />
+                            </IconButton>
+                        </Tooltip>
+                    )}
+                </Box>
             )}
         </Box>
     );

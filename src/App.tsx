@@ -4,6 +4,7 @@ import { MockNavigationClient } from "./API/mock";
 import { Site, Group, ExportData, BootstrapData, WebDavConfig, normalizeImportData } from "./API/http";
 import { GroupWithSites } from "./types";
 import { AppConfigProvider } from "./context/AppConfigContext";
+import { NotifyContext } from "./context/NotifyContext";
 import { DEFAULT_ICON_API, resolveIconApiUrl } from "./utils/iconApi";
 import { saveRememberedLogin, clearRememberedLogin } from "./utils/rememberedLogin";
 import ThemeToggle from "./components/ThemeToggle";
@@ -104,7 +105,21 @@ const DEFAULT_CONFIGS = {
     "site.backgroundMaskOpacity": "0.15",
     // 站点缩略图 API 模板（{url} / {domain} / {origin} 会被替换），留空表示不启用缩略图
     "site.thumbApi": "",
+    // 自定义主色（#rrggbb），留空表示跟随默认主题色
+    "site.primaryColor": "",
 };
+
+// 取色器预设色：覆盖蓝/青/绿/橙/红/紫/靛/灰几种常用取向
+const PRESET_ACCENTS = [
+    "#1976d2",
+    "#00838f",
+    "#2e7d32",
+    "#ed6c02",
+    "#c62828",
+    "#7b1fa2",
+    "#5c6bc0",
+    "#455a64",
+];
 
 // WebDAV 备份默认配置（保存在服务端 configs 表中，不会写入备份文件）
 const DEFAULT_WEBDAV_CONFIG: WebDavConfig = {
@@ -126,31 +141,6 @@ function App() {
         }
         return window.matchMedia("(prefers-color-scheme: dark)").matches;
     });
-
-    // 创建Material UI主题
-    const theme = useMemo(
-        () =>
-            createTheme({
-                palette: {
-                    mode: darkMode ? "dark" : "light",
-                },
-                typography: {
-                    // 跟随全局字体栈（index.css 的 --font-sans）
-                    fontFamily: 'var(--font-sans)',
-                    h1: { fontWeight: 700, letterSpacing: "-0.02em" },
-                    h2: { fontWeight: 600, letterSpacing: "-0.01em" },
-                    h3: { fontWeight: 700, letterSpacing: "-0.02em" },
-                    h4: { fontWeight: 600 },
-                    h5: { fontWeight: 600 },
-                    button: { fontWeight: 500, textTransform: "none" },
-                },
-                shape: {
-                    // 统一放大圆角，观感更柔和
-                    borderRadius: 14,
-                },
-            }),
-        [darkMode]
-    );
 
     // 切换主题的回调函数
     const toggleTheme = () => {
@@ -187,6 +177,40 @@ function App() {
     const [configs, setConfigs] = useState<Record<string, string>>(DEFAULT_CONFIGS);
     const [openConfig, setOpenConfig] = useState(false);
     const [tempConfigs, setTempConfigs] = useState<Record<string, string>>(DEFAULT_CONFIGS);
+
+    // 设置弹窗里选色时的即时预览值（不落库，关闭弹窗即回滚）
+    const [accentPreview, setAccentPreview] = useState<string | null>(null);
+
+    // 自定义主色：只有合法的 #rgb / #rrggbb 才采用，避免脏数据把主题搞坏
+    const accentRaw = (accentPreview ?? (configs["site.primaryColor"] || "")).trim();
+    const accent = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(accentRaw) ? accentRaw : "";
+
+    // 创建Material UI主题（放在 configs 之后，才能读到自定义主色）
+    const theme = useMemo(
+        () =>
+            createTheme({
+                palette: {
+                    mode: darkMode ? "dark" : "light",
+                    // 未设置主色时保持默认（亮/暗各一套，暗色下自动换成更亮的蓝）
+                    ...(accent ? { primary: { main: accent } } : {}),
+                },
+                typography: {
+                    // 跟随全局字体栈（index.css 的 --font-sans）
+                    fontFamily: 'var(--font-sans)',
+                    h1: { fontWeight: 700, letterSpacing: "-0.02em" },
+                    h2: { fontWeight: 600, letterSpacing: "-0.01em" },
+                    h3: { fontWeight: 700, letterSpacing: "-0.02em" },
+                    h4: { fontWeight: 600 },
+                    h5: { fontWeight: 600 },
+                    button: { fontWeight: 500, textTransform: "none" },
+                },
+                shape: {
+                    // 统一放大圆角，观感更柔和
+                    borderRadius: 14,
+                },
+            }),
+        [darkMode, accent]
+    );
 
     // WebDAV 备份配置
     const [webdavConfig, setWebdavConfig] = useState<WebDavConfig>(DEFAULT_WEBDAV_CONFIG);
@@ -478,6 +502,17 @@ function App() {
             document.documentElement.classList.remove("dark");
         }
     }, [darkMode]);
+
+    // 把主色同步成 CSS 变量，供原生 CSS（如搜索高亮）跟随主题
+    useEffect(() => {
+        const root = document.documentElement;
+        if (accent) {
+            root.style.setProperty("--accent", accent);
+        } else {
+            // 清空后回退到 index.css 里亮/暗各自的默认值
+            root.style.removeProperty("--accent");
+        }
+    }, [accent]);
 
     // 统一提示函数（引用稳定，便于被 memo 的子组件复用）
     // duration 可选：成功/信息类默认短暂停留 2.2s，错误类默认 6s（便于阅读），传入则覆盖
@@ -1055,6 +1090,14 @@ function App() {
 
     const handleCloseConfig = () => {
         setOpenConfig(false);
+        // 未保存的话，把预览的主色回滚掉
+        setAccentPreview(null);
+    };
+
+    // 选色：同时写入临时配置（供保存）与预览值（即时生效）
+    const pickAccent = (value: string) => {
+        setTempConfigs(prev => ({ ...prev, "site.primaryColor": value }));
+        setAccentPreview(value);
     };
 
     const handleConfigInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1084,6 +1127,8 @@ function App() {
 
             // 更新配置状态：标题 / 背景图 / 自定义 CSS 都由 React 响应式生效，无需刷新页面
             setConfigs({ ...tempConfigs });
+            // 正式保存后撤掉预览，改由已保存的配置驱动主题
+            setAccentPreview(null);
             setAuthUsername("");
             setAuthCurrentPassword("");
             setAuthNewPassword("");
@@ -1353,6 +1398,7 @@ function App() {
 
     return (
         <AppConfigProvider value={appConfigValue}>
+         <NotifyContext.Provider value={notify}>
             <ThemeProvider theme={theme}>
             <CssBaseline />
 
@@ -2047,6 +2093,78 @@ function App() {
                                     onChange={handleConfigInputChange}
                                 />
 
+                                {/* 主题配色：预设色 + 取色器，实时预览后点保存生效 */}
+                                <Box>
+                                    <Typography variant='subtitle1' fontWeight='600' sx={{ mb: 1 }}>
+                                        主题配色
+                                    </Typography>
+                                    <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
+                                        {PRESET_ACCENTS.map(color => {
+                                            const picked =
+                                                (tempConfigs["site.primaryColor"] || "").toLowerCase() ===
+                                                color.toLowerCase();
+                                            return (
+                                                <IconButton
+                                                    key={color}
+                                                    size='small'
+                                                    aria-label={`使用配色 ${color}`}
+                                                    aria-pressed={picked}
+                                                    onClick={() => pickAccent(color)}
+                                                    sx={{
+                                                        width: 26,
+                                                        height: 26,
+                                                        minWidth: 26,
+                                                        bgcolor: color,
+                                                        border: "2px solid",
+                                                        borderColor: picked ? "text.primary" : "transparent",
+                                                        boxShadow: picked
+                                                            ? `0 0 0 2px ${color}55`
+                                                            : "0 1px 3px rgba(15,23,42,0.18)",
+                                                        "&:hover": { bgcolor: color },
+                                                    }}
+                                                />
+                                            );
+                                        })}
+
+                                        {/* 原生取色器：可任选任意颜色 */}
+                                        <Box
+                                            component='input'
+                                            type='color'
+                                            name='site.primaryColor'
+                                            aria-label='自定义主色'
+                                            value={
+                                                /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(
+                                                    tempConfigs["site.primaryColor"] || ""
+                                                )
+                                                    ? tempConfigs["site.primaryColor"]
+                                                    : "#1976d2"
+                                            }
+                                            onChange={e => pickAccent(e.target.value)}
+                                            sx={{
+                                                width: 34,
+                                                height: 26,
+                                                p: 0,
+                                                cursor: "pointer",
+                                                bgcolor: "transparent",
+                                                border: "1px solid",
+                                                borderColor: "divider",
+                                                borderRadius: 1,
+                                            }}
+                                        />
+
+                                        <Button
+                                            size='small'
+                                            variant='text'
+                                            onClick={() => pickAccent("")}
+                                        >
+                                            恢复默认
+                                        </Button>
+                                    </Box>
+                                    <Typography variant='caption' color='text.secondary'>
+                                        影响按钮、链接高亮、焦点环与卡片悬停色。留空则跟随默认蓝色（暗色模式自动切换）。
+                                    </Typography>
+                                </Box>
+
                                 {/* 获取图标 API 设置 */}
                                 <Box>
                                     <Typography variant='subtitle1' fontWeight='600' sx={{ mb: 1 }}>
@@ -2216,6 +2334,7 @@ function App() {
                 </Container>
             </Box>
         </ThemeProvider>
+         </NotifyContext.Provider>
         </AppConfigProvider>
     );
 }
