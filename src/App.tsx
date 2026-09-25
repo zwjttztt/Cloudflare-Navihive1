@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { NavigationClient } from "./API/client";
 import { MockNavigationClient } from "./API/mock";
 import { Site, Group, ExportData, BootstrapData, WebDavConfig, normalizeImportData } from "./API/http";
@@ -146,6 +146,12 @@ function App() {
     const [currentSortingGroupId, setCurrentSortingGroupId] = useState<number | null>(null);
     // 记录进入站点排序时每个站点所属的原始分组，用于保存时识别跨组移动
     const siteOriginalGroupRef = useRef<Map<number, number>>(new Map());
+    // 用 ref 镜像最新的 groups：事件回调可以保持稳定引用（配合 memo 减少无谓重渲染）
+    const groupsRef = useRef<GroupWithSites[]>([]);
+
+    useEffect(() => {
+        groupsRef.current = groups;
+    }, [groups]);
 
     // 新增认证状态
     const [isAuthChecking, setIsAuthChecking] = useState(true);
@@ -450,18 +456,24 @@ function App() {
         }
     }, [darkMode]);
 
-    // 统一提示函数
-    const notify = (message: string, severity: "success" | "error" | "info" = "info") => {
-        setSnackbarMessage(message);
-        setSnackbarSeverity(severity);
-        setSnackbarOpen(true);
-    };
+    // 统一提示函数（引用稳定，便于被 memo 的子组件复用）
+    const notify = useCallback(
+        (message: string, severity: "success" | "error" | "info" = "info") => {
+            setSnackbarMessage(message);
+            setSnackbarSeverity(severity);
+            setSnackbarOpen(true);
+        },
+        []
+    );
 
     // 处理错误的函数
-    const handleError = (errorMessage: string) => {
-        notify(errorMessage, "error");
-        console.error(errorMessage);
-    };
+    const handleError = useCallback(
+        (errorMessage: string) => {
+            notify(errorMessage, "error");
+            console.error(errorMessage);
+        },
+        [notify]
+    );
 
     // 关闭错误提示框
     const handleCloseSnackbar = () => {
@@ -502,103 +514,143 @@ function App() {
         }
     };
 
-    // 修改后的后台静默同步：界面先按本地状态立即更新，再悄悄拉一次最新数据，全程不出现加载转圈
-    const syncInBackground = () => {
-        void fetchData({ silent: true });
-    };
-
-    // 保存有新改动时刷新页面，确保看到的是服务端最新数据
-    // （首屏现在是单次 bootstrap 请求，重载很快）
-    const reloadPage = () => {
-        window.setTimeout(() => window.location.reload(), 150);
-    };
-
-    // 两个站点是否存在实际差异（没改动就不必刷新）
-    const sitesDiffer = (a: Site, b: Site): boolean =>
-        a.name !== b.name ||
-        a.url !== b.url ||
-        (a.icon || "") !== (b.icon || "") ||
-        (a.description || "") !== (b.description || "") ||
-        (a.notes || "") !== (b.notes || "") ||
-        (a.username || "") !== (b.username || "") ||
-        (a.password || "") !== (b.password || "") ||
-        a.group_id !== b.group_id;
-
     // ---- 本地状态更新（避免每次修改都整页重新加载） ----
-    const upsertSiteLocally = (site: Site) => {
-        setGroups(prev =>
-            prev.map(group => {
-                const exists = group.sites.some(item => item.id === site.id);
+    // 关键：只重建真正受影响的分组对象，其它分组保持原引用，
+    // 这样被 memo 的 GroupCard / SiteCard 不会因为无关改动而重渲染。
+    const upsertSiteLocally = useCallback((site: Site) => {
+        setGroups(prev => {
+            const targetIdx = prev.findIndex(g => g.id === site.group_id);
+            const fromIdx = prev.findIndex(g => g.sites.some(item => item.id === site.id));
+            // 跨分组移动：目标分组与来源分组不同
+            const moved = fromIdx !== -1 && fromIdx !== targetIdx;
 
-                if (group.id === site.group_id) {
+            let nextSite = site;
+            if (moved && targetIdx !== -1) {
+                // 移动过来的卡片排到目标分组末尾，避免沿用旧分组的 order_num 导致乱序
+                const maxOrder = prev[targetIdx].sites.reduce(
+                    (max, item) => Math.max(max, item.order_num ?? 0),
+                    -1
+                );
+                nextSite = { ...site, order_num: maxOrder + 1 };
+            }
+
+            let changed = false;
+            const next = prev.map((group, idx) => {
+                if (idx === targetIdx) {
+                    const exists = group.sites.some(item => item.id === nextSite.id);
                     const sites = exists
-                        ? group.sites.map(item => (item.id === site.id ? { ...item, ...site } : item))
-                        : [...group.sites, site];
+                        ? group.sites.map(item =>
+                              item.id === nextSite.id ? { ...item, ...nextSite } : item
+                          )
+                        : [...group.sites, nextSite];
+                    changed = true;
                     return {
                         ...group,
-                        sites: sites.sort((a, b) => (a.order_num ?? 0) - (b.order_num ?? 0)),
+                        sites: [...sites].sort((a, b) => (a.order_num ?? 0) - (b.order_num ?? 0)),
                     };
                 }
 
                 // 站点被移动到了其他分组：从原分组移除
-                if (exists) {
+                if (moved && idx === fromIdx) {
+                    changed = true;
                     return { ...group, sites: group.sites.filter(item => item.id !== site.id) };
                 }
+
                 return group;
-            })
-        );
-    };
+            });
 
-    const removeSiteLocally = (siteId: number) => {
-        setGroups(prev =>
-            prev.map(group => ({ ...group, sites: group.sites.filter(item => item.id !== siteId) }))
-        );
-    };
+            return changed ? next : prev;
+        });
+    }, []);
 
-    // 更新站点
-    const handleSiteUpdate = async (updatedSite: Site) => {
-        try {
-            if (!updatedSite.id) return;
+    const removeSiteLocally = useCallback((siteId: number) => {
+        setGroups(prev => {
+            let changed = false;
+            const next = prev.map(group => {
+                if (!group.sites.some(item => item.id === siteId)) return group;
+                changed = true;
+                return { ...group, sites: group.sites.filter(item => item.id !== siteId) };
+            });
+            return changed ? next : prev;
+        });
+    }, []);
 
-            // 先判断是否真的有修改：没改就别刷新页面
-            const current = groups
-                .flatMap(group => group.sites)
-                .find(item => item.id === updatedSite.id);
-            const changed = !current || sitesDiffer(current, updatedSite);
+    // 更新站点：保存成功后直接用（本地这份 + 服务端回显）更新本地状态，界面即时生效，不再刷新页面
+    const handleSiteUpdate = useCallback(
+        async (updatedSite: Site) => {
+            try {
+                if (!updatedSite.id) return;
 
-            const saved = await api.updateSite(updatedSite.id, updatedSite);
-            // 就地更新本地状态，界面即时生效
-            upsertSiteLocally(saved && saved.id !== undefined ? saved : updatedSite);
-
-            if (changed) {
-                // 有修改：保存完成后刷新页面，展示最新数据
-                reloadPage();
-            } else {
-                syncInBackground();
+                const saved = await api.updateSite(updatedSite.id, updatedSite);
+                // id 以本地这份为准，避免个别后端实现回显的 id 不准确
+                upsertSiteLocally({ ...updatedSite, ...(saved || {}), id: updatedSite.id });
+            } catch (error) {
+                console.error("更新站点失败:", error);
+                handleError("更新站点失败: " + (error as Error).message);
             }
-        } catch (error) {
-            console.error("更新站点失败:", error);
-            handleError("更新站点失败: " + (error as Error).message);
-        }
-    };
+        },
+        [upsertSiteLocally, handleError]
+    );
 
     // 删除站点
-    const handleSiteDelete = async (siteId: number) => {
-        try {
-            await api.deleteSite(siteId);
-            removeSiteLocally(siteId);
-            syncInBackground();
-        } catch (error) {
-            console.error("删除站点失败:", error);
-            handleError("删除站点失败: " + (error as Error).message);
-        }
-    };
+    const handleSiteDelete = useCallback(
+        async (siteId: number) => {
+            try {
+                await api.deleteSite(siteId);
+                removeSiteLocally(siteId);
+            } catch (error) {
+                console.error("删除站点失败:", error);
+                handleError("删除站点失败: " + (error as Error).message);
+            }
+        },
+        [removeSiteLocally, handleError]
+    );
+
+    // 更新分组（引用稳定，配合 GroupCard 的 memo 减少重渲染）
+    const handleGroupUpdate = useCallback(
+        async (updatedGroup: Group) => {
+            try {
+                if (updatedGroup.id) {
+                    const saved = await api.updateGroup(updatedGroup.id, updatedGroup);
+                    const nextGroup = saved && saved.id !== undefined ? saved : updatedGroup;
+                    setGroups(prev => {
+                        const idx = prev.findIndex(group => group.id === updatedGroup.id);
+                        if (idx === -1) return prev;
+                        const next = [...prev];
+                        next[idx] = { ...prev[idx], ...nextGroup };
+                        return next;
+                    });
+                }
+            } catch (error) {
+                console.error("更新分组失败:", error);
+                handleError("更新分组失败: " + (error as Error).message);
+            }
+        },
+        [handleError]
+    );
+
+    // 删除分组
+    const handleGroupDelete = useCallback(
+        async (groupId: number) => {
+            try {
+                await api.deleteGroup(groupId);
+                setGroups(prev => {
+                    const next = prev.filter(group => group.id !== groupId);
+                    return next.length === prev.length ? prev : next;
+                });
+            } catch (error) {
+                console.error("删除分组失败:", error);
+                handleError("删除分组失败: " + (error as Error).message);
+            }
+        },
+        [handleError]
+    );
 
     // 保存分组排序
     const handleSaveGroupOrder = async () => {
         try {
             // 构造需要更新的分组顺序数据
-            const groupOrders = groups.map((group, index) => ({
+            const groupOrders = groupsRef.current.map((group, index) => ({
                 id: group.id as number,
                 order_num: index,
             }));
@@ -621,94 +673,98 @@ function App() {
         }
     };
 
-    // 保存站点排序
-    const handleSaveSiteOrder = async (groupId: number, sites: Site[]) => {
-        try {
-            // 构造需要更新的站点顺序数据
-            const siteOrders = sites.map((site, index) => ({
-                id: site.id as number,
-                order_num: index,
-            }));
+    // 保存站点排序（单组保存）
+    const handleSaveSiteOrder = useCallback(
+        async (groupId: number, sites: Site[]) => {
+            try {
+                // 构造需要更新的站点顺序数据
+                const siteOrders = sites.map((site, index) => ({
+                    id: site.id as number,
+                    order_num: index,
+                }));
 
-            // 一次批量请求写入全部顺序
-            const result = await api.updateSiteOrder(siteOrders);
+                // 一次批量请求写入全部顺序
+                const result = await api.updateSiteOrder(siteOrders);
 
-            if (!result) {
-                throw new Error("站点排序更新失败");
+                if (!result) {
+                    throw new Error("站点排序更新失败");
+                }
+
+                // 本地即服务端结果，补齐 order_num；只重建这一个分组，其它分组保持原引用
+                const orderMap = new Map(siteOrders.map(item => [item.id, item.order_num]));
+                setGroups(prev => {
+                    const idx = prev.findIndex(g => g.id === groupId);
+                    if (idx === -1) return prev;
+                    const next = [...prev];
+                    next[idx] = {
+                        ...prev[idx],
+                        sites: prev[idx].sites
+                            .map(site => {
+                                const order = orderMap.get(site.id as number);
+                                return order === undefined ? site : { ...site, order_num: order };
+                            })
+                            .sort((a, b) => (a.order_num ?? 0) - (b.order_num ?? 0)),
+                    };
+                    return next;
+                });
+
+                setSortMode(SortMode.None);
+                setCurrentSortingGroupId(null);
+            } catch (error) {
+                console.error("更新站点排序失败:", error);
+                handleError("更新站点排序失败: " + (error as Error).message);
             }
-
-            // 本地即服务端结果，补齐 order_num，不再多发全量刷新请求
-            setGroups(prev =>
-                prev.map(group =>
-                    group.id === groupId
-                        ? {
-                              ...group,
-                              sites: group.sites.map(site => {
-                                  const idx = sites.findIndex(item => item.id === site.id);
-                                  return idx === -1 ? site : { ...site, order_num: idx };
-                              }),
-                          }
-                        : group
-                )
-            );
-
-            setSortMode(SortMode.None);
-            setCurrentSortingGroupId(null);
-        } catch (error) {
-            console.error("更新站点排序失败:", error);
-            handleError("更新站点排序失败: " + (error as Error).message);
-        }
-    };
+        },
+        [handleError]
+    );
 
     // 启动分组排序
-    const startGroupSort = () => {
+    const startGroupSort = useCallback(() => {
         // 必须先关掉「更多选项」菜单：进入排序模式后该按钮会被卸载，
         // 菜单失去 anchor 元素就会跑到页面左上角
         handleMenuClose();
-        console.log("开始分组排序");
         setSortMode(SortMode.GroupSort);
         setCurrentSortingGroupId(null);
-    };
+    }, []);
 
     // 启动站点排序
-    const startSiteSort = (groupId: number) => {
-        console.log("开始站点排序");
+    const startSiteSort = useCallback((groupId: number) => {
         setSortMode(SortMode.SiteSort);
         setCurrentSortingGroupId(groupId);
         // 记录每个站点当前的原始分组，用于保存时识别跨组移动
         const map = new Map<number, number>();
-        groups.forEach(g => {
+        groupsRef.current.forEach(g => {
             g.sites.forEach(s => {
                 if (s.id !== undefined) map.set(s.id, g.id as number);
             });
         });
         siteOriginalGroupRef.current = map;
-    };
+    }, []);
 
     // 取消排序
-    const cancelSort = () => {
+    const cancelSort = useCallback(() => {
         setSortMode(SortMode.None);
         setCurrentSortingGroupId(null);
-    };
+    }, []);
 
     // 处理拖拽结束事件
-    const handleDragEnd = (event: DragEndEvent) => {
+    const handleDragEnd = useCallback((event: DragEndEvent) => {
         const { active, over } = event;
 
-        if (!over) return;
+        if (!over || active.id === over.id) return;
 
-        if (active.id !== over.id) {
-            const oldIndex = groups.findIndex(group => group.id.toString() === active.id);
-            const newIndex = groups.findIndex(group => group.id.toString() === over.id);
+        setGroups(prev => {
+            const oldIndex = prev.findIndex(group => group.id.toString() === active.id);
+            const newIndex = prev.findIndex(group => group.id.toString() === over.id);
 
-            if (oldIndex !== -1 && newIndex !== -1) {
-                setGroups(arrayMove(groups, oldIndex, newIndex));
-            }
-        }
-    };
+            if (oldIndex === -1 || newIndex === -1) return prev;
+            return arrayMove(prev, oldIndex, newIndex);
+        });
+    }, []);
 
     // 站点跨分组拖拽：同一分组内重排，跨分组则把卡片移动到目标分组
-    const moveSiteAcrossGroups = (activeId: string, overId: string) => {
+    // 注意：只重建受影响的分组对象，其它分组保持原引用，避免拖拽时全量卡片重渲染
+    const moveSiteAcrossGroups = useCallback((activeId: string, overId: string) => {
         if (!overId || activeId === overId) return;
         if (!activeId.startsWith("site-")) return;
 
@@ -738,59 +794,64 @@ function App() {
             const moved = prev[activeContainerIdx].sites.find(s => s.id === activeSiteId);
             if (!moved) return prev;
 
-            // 同一分组内重排
+            // 同一分组内重排：只克隆这一个分组
             if (activeContainerIdx === overContainerIdx) {
                 const c = activeContainerIdx;
                 const siteList = prev[c].sites;
                 const oldIndex = siteList.findIndex(s => s.id === activeSiteId);
                 const newIndex = Math.min(overIndex, siteList.length - 1);
-                // 位置没变化就直接返回原状态：拖拽时的 dragOver 会高频触发，
-                // 每次都用新数组会让所有卡片重渲染，这里是拖拽卡顿的主要来源之一
+                // 位置没变化就直接返回原状态：拖拽时的 dragOver 会高频触发
                 if (oldIndex === -1 || oldIndex === newIndex) return prev;
 
-                const next = prev.map(g => ({ ...g, sites: [...g.sites] }));
-                next[c] = { ...next[c], sites: arrayMove(next[c].sites, oldIndex, newIndex) };
+                const next = [...prev];
+                next[c] = { ...prev[c], sites: arrayMove(siteList, oldIndex, newIndex) };
                 return next;
             }
 
-            // 跨分组移动：先移除，再插入目标分组，并更新 group_id
-            const next = prev.map(g => ({ ...g, sites: [...g.sites] }));
+            // 跨分组移动：只改来源分组和目标分组两个对象
+            const next = [...prev];
             const movedSite = { ...moved, group_id: prev[overContainerIdx].id as number };
             next[activeContainerIdx] = {
-                ...next[activeContainerIdx],
-                sites: next[activeContainerIdx].sites.filter(s => s.id !== activeSiteId),
+                ...prev[activeContainerIdx],
+                sites: prev[activeContainerIdx].sites.filter(s => s.id !== activeSiteId),
             };
-            const target = next[overContainerIdx].sites;
+            const target = prev[overContainerIdx].sites;
             const insertIdx = Math.min(overIndex, target.length);
             next[overContainerIdx] = {
-                ...next[overContainerIdx],
+                ...prev[overContainerIdx],
                 sites: [...target.slice(0, insertIdx), movedSite, ...target.slice(insertIdx)],
             };
             return next;
         });
-    };
+    }, []);
 
-    const handleSiteSortDragOver = (event: DragOverEvent) => {
-        const { active, over } = event;
-        if (!over) return;
-        moveSiteAcrossGroups(String(active.id), String(over.id));
-    };
+    const handleSiteSortDragOver = useCallback(
+        (event: DragOverEvent) => {
+            const { active, over } = event;
+            if (!over) return;
+            moveSiteAcrossGroups(String(active.id), String(over.id));
+        },
+        [moveSiteAcrossGroups]
+    );
 
-    const handleSiteSortDragEnd = (event: DragEndEvent) => {
-        const { active, over } = event;
-        if (!over) return;
-        moveSiteAcrossGroups(String(active.id), String(over.id));
-    };
+    const handleSiteSortDragEnd = useCallback(
+        (event: DragEndEvent) => {
+            const { active, over } = event;
+            if (!over) return;
+            moveSiteAcrossGroups(String(active.id), String(over.id));
+        },
+        [moveSiteAcrossGroups]
+    );
 
     // 保存站点排序（支持跨分组移动）
     // 顺序调整 + 跨组移动合并成「一次」批量请求：
     // 原来是「1 次排序 + 每移动一张卡片一次串行更新请求」，卡片多时保存会明显变慢。
-    const handleSaveSiteSort = async () => {
+    const handleSaveSiteSort = useCallback(async () => {
         try {
             const orders: { id: number; order_num: number; group_id?: number }[] = [];
             const original = siteOriginalGroupRef.current;
 
-            groups.forEach(g => {
+            groupsRef.current.forEach(g => {
                 g.sites.forEach((site, idx) => {
                     const id = site.id as number;
                     const fromGroup = original.get(id);
@@ -825,7 +886,7 @@ function App() {
             console.error("保存站点排序失败:", error);
             handleError("保存站点排序失败: " + (error as Error).message);
         }
-    };
+    }, [handleError]);
 
     // 新增分组相关函数
     const handleOpenAddGroup = () => {
@@ -847,13 +908,12 @@ function App() {
 
             const created = await api.createGroup({
                 name: groupName,
-                order_num: groups.length,
+                order_num: groupsRef.current.length,
             } as Group);
             // 服务端返回新建分组，直接追加到本地列表，无需重新加载
             if (created && created.id !== undefined) {
                 setGroups(prev => [...prev, { ...created, id: created.id as number, sites: [] }]);
             }
-            syncInBackground();
             handleCloseAddGroup();
         } catch (error) {
             console.error("创建分组失败:", error);
@@ -862,8 +922,8 @@ function App() {
     };
 
     // 新增站点相关函数
-    const handleOpenAddSite = (groupId: number) => {
-        const group = groups.find(g => g.id === groupId);
+    const handleOpenAddSite = useCallback((groupId: number) => {
+        const group = groupsRef.current.find(g => g.id === groupId);
         const maxOrderNum = group?.sites.length
             ? Math.max(...group.sites.map(s => s.order_num)) + 1
             : 0;
@@ -883,7 +943,7 @@ function App() {
         // 每次打开都从「密码隐藏」状态开始
         setShowNewSitePassword(false);
         setOpenAddSite(true);
-    };
+    }, []);
 
     const handleCloseAddSite = () => {
         setOpenAddSite(false);
@@ -928,13 +988,12 @@ function App() {
             }
 
             const created = await api.createSite(newSite as Site);
-            // 服务端返回新建站点，直接插入本地列表，界面立即出现新卡片
+            // 服务端返回新建站点，直接插入本地列表，界面立即出现新卡片（无需刷新页面）
             if (created && created.id !== undefined) {
                 upsertSiteLocally(created);
             }
             handleCloseAddSite();
-            // 新增卡片后刷新页面，确保新卡片落在正确位置
-            reloadPage();
+            notify("卡片已添加", "success");
         } catch (error) {
             console.error("创建站点失败:", error);
             handleError("创建站点失败: " + (error as Error).message);
@@ -997,7 +1056,7 @@ function App() {
             // 管理员凭据单独提交（失败会中断，不会把新密码悄悄丢掉）
             const authChanged = await submitAuthCredentials();
 
-            // 更新配置状态
+            // 更新配置状态：标题 / 背景图 / 自定义 CSS 都由 React 响应式生效，无需刷新页面
             setConfigs({ ...tempConfigs });
             setAuthUsername("");
             setAuthCurrentPassword("");
@@ -1005,14 +1064,10 @@ function App() {
             handleCloseConfig();
 
             if (authChanged) {
+                // 旧令牌仍然有效，当前会话不受影响，只是下次登录要用新账号密码
                 notify("管理员凭据已更新，下次登录请使用新账号密码", "success");
-                reloadPage();
-                return;
-            }
-
-            if (changed.length > 0) {
-                // 设置确实有改动：刷新页面让标题、背景图等全部生效
-                reloadPage();
+            } else if (changed.length > 0) {
+                notify("设置已保存", "success");
             }
         } catch (error) {
             console.error("保存配置失败:", error);
@@ -1154,6 +1209,16 @@ function App() {
         }
     };
 
+    // context value 记忆化：只有相关配置真正变化时才通知消费方，避免无谓重渲染
+    const appConfigValue = useMemo(
+        () => ({
+            iconApi: configs["site.iconApi"] || "",
+            backgroundImage: (configs["site.backgroundImage"] || "").trim(),
+            backgroundMaskOpacity: configs["site.backgroundMaskOpacity"] || "0.15",
+        }),
+        [configs]
+    );
+
     // 渲染登录页面
     const renderLoginForm = () => {
         return (
@@ -1209,34 +1274,6 @@ function App() {
         );
     }
 
-    // 更新分组
-    const handleGroupUpdate = async (updatedGroup: Group) => {
-        try {
-            if (updatedGroup.id) {
-                await api.updateGroup(updatedGroup.id, updatedGroup);
-                setGroups(prev =>
-                    prev.map(group => (group.id === updatedGroup.id ? { ...group, ...updatedGroup } : group))
-                );
-                syncInBackground();
-            }
-        } catch (error) {
-            console.error("更新分组失败:", error);
-            handleError("更新分组失败: " + (error as Error).message);
-        }
-    };
-
-    // 删除分组
-    const handleGroupDelete = async (groupId: number) => {
-        try {
-            await api.deleteGroup(groupId);
-            setGroups(prev => prev.filter(group => group.id !== groupId));
-            syncInBackground();
-        } catch (error) {
-            console.error("删除分组失败:", error);
-            handleError("删除分组失败: " + (error as Error).message);
-        }
-    };
-
     // ---- 背景图片相关（来自「网站设置」） ----
     const backgroundImageUrl = (configs["site.backgroundImage"] || "").trim();
     const hasBackgroundImage = backgroundImageUrl.length > 0;
@@ -1248,13 +1285,7 @@ function App() {
     const backgroundMaskOpacity = 1 - backgroundSliderValue;
 
     return (
-        <AppConfigProvider
-            value={{
-                iconApi: configs["site.iconApi"] || "",
-                backgroundImage: backgroundImageUrl,
-                backgroundMaskOpacity: configs["site.backgroundMaskOpacity"] || "0.15",
-            }}
-        >
+        <AppConfigProvider value={appConfigValue}>
             <ThemeProvider theme={theme}>
             <CssBaseline />
 

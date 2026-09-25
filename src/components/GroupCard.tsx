@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, memo } from "react";
 import { Site, Group } from "../API/http";
 import SiteCard from "./SiteCard";
 import { GroupWithSites } from "../types";
@@ -87,6 +87,11 @@ const GroupCard: React.FC<GroupCardProps> = ({
     const [collapsed, setCollapsed] = useState(() =>
         readCollapsedGroupIds().includes(String(group.id))
     );
+
+    // 父级站点数据变化时同步本地列表（免刷新即时更新后，进入排序模式要拿到最新数据）
+    useEffect(() => {
+        setSites(group.sites);
+    }, [group.sites]);
 
     // 分组本身变化时同步一次收起状态
     useEffect(() => {
@@ -510,4 +515,6 @@ const GroupCard: React.FC<GroupCardProps> = ({
     );
 };
 
-export default GroupCard;
+// 用 memo 包一层：父级 App 的无关状态变化（Snackbar、主题、对话框等）不再触发所有分组重渲染。
+// 生效前提是父级传入的回调都用 useCallback 保持了稳定引用。
+export default memo(GroupCard);
