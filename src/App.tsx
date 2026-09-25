@@ -1464,6 +1464,46 @@ function App() {
                             flexWrap="wrap"
                             sx={{ gap: { xs: 1, sm: 2 }, py: { xs: 1, sm: 0 } }}
                         >
+                            {/* 搜索框：位于操作按钮左侧，输入即时筛选，按 / 聚焦、Esc 清空 */}
+                            {sortMode === SortMode.None && (
+                                <TextField
+                                    inputRef={searchInputRef}
+                                    value={searchQuery}
+                                    onChange={e => setSearchQuery(e.target.value)}
+                                    placeholder='搜索网站（按 /）'
+                                    inputProps={{ "aria-label": "搜索网站" }}
+                                    size='small'
+                                    variant='outlined'
+                                    InputProps={{
+                                        startAdornment: (
+                                            <InputAdornment position='start'>
+                                                <SearchIcon fontSize='small' />
+                                            </InputAdornment>
+                                        ),
+                                        endAdornment: searchQuery ? (
+                                            <InputAdornment position='end'>
+                                                <IconButton
+                                                    size='small'
+                                                    aria-label='清空搜索'
+                                                    onClick={() => {
+                                                        setSearchQuery("");
+                                                        searchInputRef.current?.focus();
+                                                    }}
+                                                >
+                                                    <CloseIcon fontSize='small' />
+                                                </IconButton>
+                                            </InputAdornment>
+                                        ) : null,
+                                    }}
+                                    sx={{
+                                        width: { xs: "100%", sm: 180, md: 220 },
+                                        bgcolor: "var(--glass-bg)",
+                                        backdropFilter: "blur(10px)",
+                                        WebkitBackdropFilter: "blur(10px)",
+                                        "& .MuiOutlinedInput-root": { borderRadius: "14px" },
+                                    }}
+                                />
+                            )}
                             {sortMode !== SortMode.None ? (
                                 <>
                                     {sortMode === SortMode.GroupSort && (
@@ -1598,60 +1638,17 @@ function App() {
                         </Stack>
                     </Box>
 
-                    {/* 搜索框：输入即时筛选卡片，按 / 快速聚焦，Esc 清空 */}
-                    {sortMode === SortMode.None && (
-                        <Box sx={{ mb: 4 }}>
-                            <TextField
-                                inputRef={searchInputRef}
-                                value={searchQuery}
-                                onChange={e => setSearchQuery(e.target.value)}
-                                placeholder='搜索网站名称、描述或链接（按 / 快速聚焦）'
-                                inputProps={{ "aria-label": "搜索网站" }}
-                                fullWidth
-                                size='small'
-                                variant='outlined'
-                                InputProps={{
-                                    startAdornment: (
-                                        <InputAdornment position='start'>
-                                            <SearchIcon fontSize='small' />
-                                        </InputAdornment>
-                                    ),
-                                    endAdornment: searchQuery ? (
-                                        <InputAdornment position='end'>
-                                            <IconButton
-                                                size='small'
-                                                aria-label='清空搜索'
-                                                onClick={() => {
-                                                    setSearchQuery("");
-                                                    searchInputRef.current?.focus();
-                                                }}
-                                            >
-                                                <CloseIcon fontSize='small' />
-                                            </IconButton>
-                                        </InputAdornment>
-                                    ) : null,
-                                }}
-                                sx={{
-                                    maxWidth: 520,
-                                    bgcolor: "var(--glass-bg)",
-                                    backdropFilter: "blur(10px)",
-                                    WebkitBackdropFilter: "blur(10px)",
-                                    borderRadius: 2,
-                                    "& .MuiOutlinedInput-root": { borderRadius: "14px" },
-                                }}
-                            />
-                            {query && (
-                                <Typography
-                                    variant='caption'
-                                    color='text.secondary'
-                                    sx={{ mt: 1, display: "block" }}
-                                >
-                                    找到{" "}
-                                    {filteredGroups.reduce((sum, g) => sum + g.sites.length, 0)}{" "}
-                                    个匹配的网站
-                                </Typography>
-                            )}
-                        </Box>
+                    {/* 搜索结果计数：搜索框在上方标题栏里，这里只保留一行轻提示 */}
+                    {sortMode === SortMode.None && query && (
+                        <Typography
+                            variant='caption'
+                            color='text.secondary'
+                            sx={{ display: "block", mt: -3, mb: 3 }}
+                        >
+                            找到{" "}
+                            {filteredGroups.reduce((sum, g) => sum + g.sites.length, 0)}{" "}
+                            个匹配的网站
+                        </Typography>
                     )}
 
                     {loading && (
