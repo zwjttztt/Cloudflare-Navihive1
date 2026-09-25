@@ -217,7 +217,7 @@ export default function SiteSettingsModal({
             open={true}
             onClose={onClose}
             fullWidth
-            maxWidth='md'
+            maxWidth='sm'
             PaperProps={{
                 sx: {
                     borderRadius: 2,
@@ -230,8 +230,8 @@ export default function SiteSettingsModal({
                     display: "flex",
                     justifyContent: "space-between",
                     alignItems: "center",
-                    padding: 2,
-                    pb: 1.5,
+                    padding: 1.5,
+                    pb: 1,
                 }}
             >
                 <Typography variant='h6' component='div' fontWeight='600'>
@@ -251,8 +251,16 @@ export default function SiteSettingsModal({
             <Divider />
 
             <form onSubmit={handleSubmit}>
-                <DialogContent sx={{ pt: 2 }}>
-                    <Stack spacing={2.5}>
+                <DialogContent
+                    sx={{
+                        pt: 1.5,
+                        // 整体收紧，避免出现上下滚动
+                        "& .MuiInputBase-input": { fontSize: 14 },
+                        "& .MuiInputLabel-root": { fontSize: 14 },
+                        "& .MuiFormHelperText-root": { fontSize: 12 },
+                    }}
+                >
+                    <Stack spacing={1.25}>
                         {/* 网站名称 */}
                         <TextField
                             id='name'
@@ -281,6 +289,7 @@ export default function SiteSettingsModal({
                             size='small'
                             type='url'
                             helperText='填写后会自动按「网站设置 → 获取图标API」生成图标URL'
+                            sx={{ "& .MuiFormHelperText-root": { fontSize: 12, mt: 0.3 } }}
                         />
 
                         {/* 网站图标 */}
@@ -293,7 +302,7 @@ export default function SiteSettingsModal({
                                     <Avatar
                                         src={iconPreview}
                                         alt={formData.name || "Icon Preview"}
-                                        sx={{ width: 40, height: 40, borderRadius: 1.5 }}
+                                        sx={{ width: 36, height: 36, borderRadius: 1.5 }}
                                         imgProps={{
                                             onError: handleIconError,
                                             style: { objectFit: "cover" },
@@ -303,8 +312,8 @@ export default function SiteSettingsModal({
                                 ) : (
                                     <Avatar
                                         sx={{
-                                            width: 40,
-                                            height: 40,
+                                            width: 36,
+                                            height: 36,
                                             borderRadius: 1.5,
                                             bgcolor: "primary.light",
                                             color: "primary.main",
@@ -357,7 +366,7 @@ export default function SiteSettingsModal({
                                 variant='caption'
                                 color='text.secondary'
                                 display='block'
-                                sx={{ mt: 0.5 }}
+                                sx={{ mt: 0.25 }}
                             >
                                 修改网站链接时会自动更新；手动改过图标后需点右侧魔棒按钮重新获取
                             </Typography>
@@ -405,7 +414,7 @@ export default function SiteSettingsModal({
                             name='notes'
                             label='备注'
                             multiline
-                            rows={3}
+                            rows={2}
                             fullWidth
                             value={formData.notes || ""}
                             onChange={handleChange}
@@ -421,13 +430,13 @@ export default function SiteSettingsModal({
                             <Typography variant='subtitle2' fontWeight='600' gutterBottom>
                                 登录凭据
                             </Typography>
-                            <Typography variant='caption' color='text.secondary' display='block' sx={{ mb: 1.5 }}>
+                            <Typography variant='caption' color='text.secondary' display='block' sx={{ mb: 1 }}>
                                 保存后可随时一键复制；凭据会随备份文件一起导出，请妥善保管备份。
                             </Typography>
                             <Stack
                                 direction={{ xs: "column", sm: "row" }}
-                                spacing={2}
-                                sx={{ gap: { xs: 2, sm: 2 } }}
+                                spacing={1.5}
+                                sx={{ gap: { xs: 1.5, sm: 1.5 } }}
                             >
                                 <TextField
                                     id='username'
@@ -485,7 +494,7 @@ export default function SiteSettingsModal({
                     </Stack>
                 </DialogContent>
 
-                <DialogActions sx={{ px: 3, pb: 3, pt: 1, justifyContent: "space-between" }}>
+                <DialogActions sx={{ px: 2, pb: 2, pt: 0.5, justifyContent: "space-between" }}>
                     <Button
                         onClick={confirmDelete}
                         color='error'
