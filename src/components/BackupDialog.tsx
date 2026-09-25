@@ -43,6 +43,11 @@ interface BackupDialogProps {
     client: NavigationClient | MockNavigationClient;
     webdavConfig: WebDavConfig;
     onSaveWebdavConfig: (config: WebDavConfig) => Promise<void>;
+    /** 是否开启每周自动备份 */
+    autoBackup?: boolean;
+    /** 上一次备份的时间（ISO 字符串） */
+    lastBackupAt?: string;
+    onToggleAutoBackup?: (enabled: boolean) => Promise<void>;
     onBuildExportData: () => ExportData;
     onDownloadLocal: () => void;
     onImportData: (data: ExportData, overwrite: boolean) => Promise<void>;
@@ -75,6 +80,9 @@ export default function BackupDialog({
     client,
     webdavConfig,
     onSaveWebdavConfig,
+    autoBackup = true,
+    lastBackupAt = "",
+    onToggleAutoBackup,
     onBuildExportData,
     onDownloadLocal,
     onImportData,
@@ -343,8 +351,26 @@ export default function BackupDialog({
                         onChange={handleConfigChange("path")}
                         size='small'
                         fullWidth
-                        helperText='目录不存在时会自动创建'
+                        helperText='目录不存在时会自动创建；每次备份后只保留最新一份'
                     />
+
+                    <Box>
+                        <FormControlLabel
+                            control={
+                                <Switch
+                                    id='webdav-auto-backup'
+                                    checked={autoBackup}
+                                    onChange={e => onToggleAutoBackup?.(e.target.checked)}
+                                    inputProps={{ "aria-label": "每周自动备份" }}
+                                />
+                            }
+                            label='每周自动备份一次'
+                        />
+                        <Typography variant='caption' color='text.secondary' display='block'>
+                            每周一上午 10:00（北京时间）自动备份，备份内容经过压缩，上传后自动删除上一次的备份。
+                            {lastBackupAt ? ` 上次备份：${formatTime(lastBackupAt)}` : " 还没有备份记录。"}
+                        </Typography>
+                    </Box>
 
                     {testResult && (
                         <Alert severity={testResult.success ? "success" : "error"} icon={testResult.success ? <CheckCircleIcon fontSize='inherit' /> : undefined}>

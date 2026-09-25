@@ -892,21 +892,47 @@ export class NavigationAPI {
 
     // 导出所有数据
     async exportData(): Promise<ExportData> {
-        // 获取所有分组
-        const groups = await this.getGroups();
-
-        // 获取所有站点（包含账号密码等凭据）
-        const sites = await this.getSites();
-
-        // 获取所有配置（管理员与 WebDAV 凭据属于隐私信息，不写入备份文件）
-        const configs = stripSecretConfigs(await this.getConfigs());
+        await this.migrate();
+        // 一次 batch 取回分组 + 站点 + 配置，只花一次 D1 往返（原来是三次）
+        const { groups, sites, configs } = await this.withSchemaRetry(() =>
+            this.queryExportBundle()
+        );
 
         return {
             groups,
             sites,
-            configs,
+            configs: stripSecretConfigs(configs),
             version: EXPORT_VERSION,
             exportDate: new Date().toISOString(),
+        };
+    }
+
+    private async queryExportBundle(): Promise<{
+        groups: Group[];
+        sites: Site[];
+        configs: Record<string, string>;
+    }> {
+        const [groupResult, siteResult, configResult] = await this.db.batch<Group | Site | Config>([
+            this.db.prepare(
+                "SELECT id, name, order_num, created_at, updated_at FROM groups ORDER BY order_num"
+            ),
+            this.db.prepare(
+                "SELECT id, group_id, name, url, icon, description, notes, username, password, order_num, created_at, updated_at FROM sites ORDER BY order_num"
+            ),
+            this.db.prepare("SELECT key, value FROM configs"),
+        ]);
+
+        const configs: Record<string, string> = {};
+        for (const row of (configResult.results || []) as Config[]) {
+            // 管理员凭据永远不进备份文件（WebDAV 凭据这里先取出，稍后由 stripSecretConfigs 剔除）
+            if (isAuthConfigKey(row.key)) continue;
+            configs[row.key] = row.value;
+        }
+
+        return {
+            groups: (groupResult.results || []) as Group[],
+            sites: (siteResult.results || []) as Site[],
+            configs,
         };
     }
 
