@@ -6,6 +6,8 @@ import { createContext, useContext } from "react";
 export interface AppConfigContextValue {
     /** 图标 API 模板，含 {domain} 占位符 */
     iconApi: string;
+    /** 站点缩略图 API 模板，留空表示不启用缩略图 */
+    thumbApi: string;
     /** 背景图片 URL，空字符串表示不使用 */
     backgroundImage: string;
     /** 背景蒙版透明度 0~1 */
@@ -14,6 +16,7 @@ export interface AppConfigContextValue {
 
 const defaultValue: AppConfigContextValue = {
     iconApi: "",
+    thumbApi: "",
     backgroundImage: "",
     backgroundMaskOpacity: "0.15",
 };

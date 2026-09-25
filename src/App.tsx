@@ -58,6 +58,7 @@ import {
     Slider,
     Tooltip,
     InputAdornment,
+    Skeleton,
 } from "@mui/material";
 import SortIcon from "@mui/icons-material/Sort";
 import SaveIcon from "@mui/icons-material/Save";
@@ -72,6 +73,8 @@ import MenuIcon from "@mui/icons-material/Menu";
 import AutoFixHighIcon from "@mui/icons-material/AutoFixHigh";
 import VisibilityIcon from "@mui/icons-material/Visibility";
 import VisibilityOffIcon from "@mui/icons-material/VisibilityOff";
+import SearchIcon from "@mui/icons-material/Search";
+import SearchOffIcon from "@mui/icons-material/SearchOff";
 
 // 根据环境选择使用真实API还是模拟API
 const isDevEnvironment = import.meta.env.DEV;
@@ -99,6 +102,8 @@ const DEFAULT_CONFIGS = {
     // 背景图片与蒙版透明度（0~1，越大背景图越清晰）
     "site.backgroundImage": "",
     "site.backgroundMaskOpacity": "0.15",
+    // 站点缩略图 API 模板（{url} / {domain} / {origin} 会被替换），留空表示不启用缩略图
+    "site.thumbApi": "",
 };
 
 // WebDAV 备份默认配置（保存在服务端 configs 表中，不会写入备份文件）
@@ -128,6 +133,20 @@ function App() {
             createTheme({
                 palette: {
                     mode: darkMode ? "dark" : "light",
+                },
+                typography: {
+                    // 跟随全局字体栈（index.css 的 --font-sans）
+                    fontFamily: 'var(--font-sans)',
+                    h1: { fontWeight: 700, letterSpacing: "-0.02em" },
+                    h2: { fontWeight: 600, letterSpacing: "-0.01em" },
+                    h3: { fontWeight: 700, letterSpacing: "-0.02em" },
+                    h4: { fontWeight: 600 },
+                    h5: { fontWeight: 600 },
+                    button: { fontWeight: 500, textTransform: "none" },
+                },
+                shape: {
+                    // 统一放大圆角，观感更柔和
+                    borderRadius: 14,
                 },
             }),
         [darkMode]
@@ -227,6 +246,9 @@ function App() {
     const [snackbarMessage, setSnackbarMessage] = useState("");
     const [snackbarSeverity, setSnackbarSeverity] = useState<"success" | "error" | "info">("error");
     const [snackbarDuration, setSnackbarDuration] = useState(6000);
+    // 搜索关键词：普通浏览模式下即时筛选卡片
+    const [searchQuery, setSearchQuery] = useState("");
+    const searchInputRef = useRef<HTMLInputElement>(null);
 
     // 菜单打开关闭
     const handleMenuOpen = (event: React.MouseEvent<HTMLButtonElement>) => {
@@ -1213,10 +1235,51 @@ function App() {
         }
     };
 
+    // 按关键词筛选：命中名称 / 描述 / 链接的卡片会被保留，分组名命中则整组保留
+    const query = searchQuery.trim().toLowerCase();
+    const filteredGroups = useMemo(() => {
+        if (!query) return groups;
+
+        return groups
+            .map(group => {
+                if (group.name.toLowerCase().includes(query)) return group;
+                const sites = group.sites.filter(site => {
+                    const haystack = `${site.name || ""} ${site.description || ""} ${site.url || ""}`;
+                    return haystack.toLowerCase().includes(query);
+                });
+                return { ...group, sites };
+            })
+            .filter(group => group.sites.length > 0);
+    }, [groups, query]);
+
+    // 「/」快速聚焦搜索框，搜索框内按 Esc 清空
+    useEffect(() => {
+        const onKeyDown = (e: KeyboardEvent) => {
+            const target = e.target as HTMLElement | null;
+            const isTyping =
+                !!target &&
+                (target.tagName === "INPUT" ||
+                    target.tagName === "TEXTAREA" ||
+                    target.isContentEditable);
+
+            if (e.key === "/" && !isTyping) {
+                e.preventDefault();
+                searchInputRef.current?.focus();
+            } else if (e.key === "Escape" && target === searchInputRef.current) {
+                setSearchQuery("");
+                searchInputRef.current?.blur();
+            }
+        };
+
+        window.addEventListener("keydown", onKeyDown);
+        return () => window.removeEventListener("keydown", onKeyDown);
+    }, []);
+
     // context value 记忆化：只有相关配置真正变化时才通知消费方，避免无谓重渲染
     const appConfigValue = useMemo(
         () => ({
             iconApi: configs["site.iconApi"] || "",
+            thumbApi: (configs["site.thumbApi"] || "").trim(),
             backgroundImage: (configs["site.backgroundImage"] || "").trim(),
             backgroundMaskOpacity: configs["site.backgroundMaskOpacity"] || "0.15",
         }),
@@ -1334,6 +1397,24 @@ function App() {
                     }}
                 />
             )}
+
+            {/* 动态背景：缓慢漂移的柔光光晕，纯装饰、不拦截点击 */}
+            <Box
+                aria-hidden
+                className='nav-aurora'
+                sx={{
+                    position: "fixed",
+                    inset: "-12%",
+                    zIndex: 0,
+                    pointerEvents: "none",
+                    filter: "blur(48px)",
+                    opacity: hasBackgroundImage ? 0.35 : 0.55,
+                    background: darkMode
+                        ? "radial-gradient(38% 44% at 18% 22%, rgba(63,94,206,.45) 0%, transparent 62%), radial-gradient(34% 40% at 82% 28%, rgba(126,63,206,.38) 0%, transparent 60%), radial-gradient(40% 46% at 62% 86%, rgba(20,120,140,.34) 0%, transparent 62%)"
+                        : "radial-gradient(38% 44% at 18% 22%, rgba(88,140,255,.24) 0%, transparent 62%), radial-gradient(34% 40% at 82% 28%, rgba(196,120,255,.20) 0%, transparent 60%), radial-gradient(40% 46% at 62% 86%, rgba(80,200,220,.18) 0%, transparent 62%)",
+                    transition: "opacity .4s ease",
+                }}
+            />
 
             <Box
                 sx={{
@@ -1517,17 +1598,95 @@ function App() {
                         </Stack>
                     </Box>
 
-                    {loading && (
-                        <Box
-                            sx={{
-                                display: "flex",
-                                justifyContent: "center",
-                                alignItems: "center",
-                                height: "200px",
-                            }}
-                        >
-                            <CircularProgress size={60} thickness={4} />
+                    {/* 搜索框：输入即时筛选卡片，按 / 快速聚焦，Esc 清空 */}
+                    {sortMode === SortMode.None && (
+                        <Box sx={{ mb: 4 }}>
+                            <TextField
+                                inputRef={searchInputRef}
+                                value={searchQuery}
+                                onChange={e => setSearchQuery(e.target.value)}
+                                placeholder='搜索网站名称、描述或链接（按 / 快速聚焦）'
+                                inputProps={{ "aria-label": "搜索网站" }}
+                                fullWidth
+                                size='small'
+                                variant='outlined'
+                                InputProps={{
+                                    startAdornment: (
+                                        <InputAdornment position='start'>
+                                            <SearchIcon fontSize='small' />
+                                        </InputAdornment>
+                                    ),
+                                    endAdornment: searchQuery ? (
+                                        <InputAdornment position='end'>
+                                            <IconButton
+                                                size='small'
+                                                aria-label='清空搜索'
+                                                onClick={() => {
+                                                    setSearchQuery("");
+                                                    searchInputRef.current?.focus();
+                                                }}
+                                            >
+                                                <CloseIcon fontSize='small' />
+                                            </IconButton>
+                                        </InputAdornment>
+                                    ) : null,
+                                }}
+                                sx={{
+                                    maxWidth: 520,
+                                    bgcolor: "var(--glass-bg)",
+                                    backdropFilter: "blur(10px)",
+                                    WebkitBackdropFilter: "blur(10px)",
+                                    borderRadius: 2,
+                                    "& .MuiOutlinedInput-root": { borderRadius: "14px" },
+                                }}
+                            />
+                            {query && (
+                                <Typography
+                                    variant='caption'
+                                    color='text.secondary'
+                                    sx={{ mt: 1, display: "block" }}
+                                >
+                                    找到{" "}
+                                    {filteredGroups.reduce((sum, g) => sum + g.sites.length, 0)}{" "}
+                                    个匹配的网站
+                                </Typography>
+                            )}
                         </Box>
+                    )}
+
+                    {loading && (
+                        <Stack spacing={5}>
+                            {[0, 1].map(section => (
+                                <Box key={section}>
+                                    <Skeleton
+                                        variant='rounded'
+                                        width={180}
+                                        height={32}
+                                        sx={{ mb: 2.5 }}
+                                    />
+                                    <Box sx={{ display: "flex", flexWrap: "wrap", margin: -1 }}>
+                                        {[0, 1, 2, 3, 4].map(i => (
+                                            <Box
+                                                key={i}
+                                                sx={{
+                                                    width: {
+                                                        xs: "50%",
+                                                        sm: "33.33%",
+                                                        md: "25%",
+                                                        lg: "25%",
+                                                        xl: "20%",
+                                                    },
+                                                    padding: 1,
+                                                    boxSizing: "border-box",
+                                                }}
+                                            >
+                                                <Skeleton variant='rounded' height={104} />
+                                            </Box>
+                                        ))}
+                                    </Box>
+                                </Box>
+                            ))}
+                        </Stack>
                     )}
 
                     {!loading && !error && (
@@ -1591,9 +1750,9 @@ function App() {
                                         ))}
                                     </Stack>
                                 </DndContext>
-                            ) : (
+                            ) : filteredGroups.length > 0 ? (
                                 <Stack spacing={5}>
-                                    {groups.map(group => (
+                                    {filteredGroups.map(group => (
                                         <GroupCard
                                             key={`group-${group.id}`}
                                             group={group}
@@ -1608,9 +1767,44 @@ function App() {
                                             onAddSite={handleOpenAddSite}
                                             onUpdateGroup={handleGroupUpdate}
                                             onDeleteGroup={handleGroupDelete}
+                                            searchQuery={query}
                                         />
                                     ))}
                                 </Stack>
+                            ) : (
+                                <Box
+                                    sx={{
+                                        py: 8,
+                                        display: "flex",
+                                        flexDirection: "column",
+                                        alignItems: "center",
+                                        gap: 1.5,
+                                        textAlign: "center",
+                                        borderRadius: "18px",
+                                        border: "1.5px dashed",
+                                        borderColor: "divider",
+                                    }}
+                                >
+                                    <SearchOffIcon sx={{ fontSize: 40, color: "text.disabled" }} />
+                                    <Typography variant='subtitle1' fontWeight='600'>
+                                        {query ? "没有找到匹配的网站" : "还没有任何分组"}
+                                    </Typography>
+                                    <Typography variant='body2' color='text.secondary'>
+                                        {query
+                                            ? `换个关键词试试，或清空搜索框查看全部网站`
+                                            : "点击左上角「新增分组」开始搭建你的导航页"}
+                                    </Typography>
+                                    {query && (
+                                        <Button
+                                            variant='outlined'
+                                            size='small'
+                                            sx={{ mt: 1 }}
+                                            onClick={() => setSearchQuery("")}
+                                        >
+                                            清空搜索
+                                        </Button>
+                                    )}
+                                </Box>
                             )}
                         </Box>
                     )}
@@ -1873,6 +2067,26 @@ function App() {
                                         onChange={handleConfigInputChange}
                                         placeholder={DEFAULT_ICON_API}
                                         helperText='输入获取图标API的地址，使用 {domain} 作为域名占位符（例如 https://www.faviconextractor.com/favicon/{domain}?larger=true）'
+                                    />
+                                </Box>
+
+                                {/* 站点缩略图设置 */}
+                                <Box>
+                                    <Typography variant='subtitle1' fontWeight='600' sx={{ mb: 1 }}>
+                                        站点缩略图设置
+                                    </Typography>
+                                    <TextField
+                                        margin='dense'
+                                        id='site-thumb-api'
+                                        name='site.thumbApi'
+                                        label='缩略图API URL'
+                                        type='text'
+                                        fullWidth
+                                        variant='outlined'
+                                        value={tempConfigs["site.thumbApi"] || ""}
+                                        onChange={handleConfigInputChange}
+                                        placeholder='https://example.com/shot?url={url}'
+                                        helperText='留空则不显示缩略图。可用占位符：{url} 完整链接、{domain} 域名、{origin} 协议+域名'
                                     />
                                 </Box>
 

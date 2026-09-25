@@ -28,6 +28,7 @@ import AddIcon from "@mui/icons-material/Add";
 import EditIcon from "@mui/icons-material/Edit";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import ExpandLessIcon from "@mui/icons-material/ExpandLess";
+import LayersOutlinedIcon from "@mui/icons-material/LayersOutlined";
 
 // 分组展开/收起状态存在本地，刷新后保持原样
 const COLLAPSED_GROUPS_KEY = "navihive:collapsedGroups";
@@ -64,6 +65,7 @@ interface GroupCardProps {
     onAddSite?: (groupId: number) => void; // 新增添加卡片的可选回调函数
     onUpdateGroup?: (group: Group) => void; // 更新分组的回调函数
     onDeleteGroup?: (groupId: number) => void; // 删除分组的回调函数
+    searchQuery?: string; // 搜索关键词，命中片段在卡片里高亮
 }
 
 const GroupCard: React.FC<GroupCardProps> = ({
@@ -78,6 +80,7 @@ const GroupCard: React.FC<GroupCardProps> = ({
     onAddSite,
     onUpdateGroup,
     onDeleteGroup,
+    searchQuery = "",
 }) => {
     // 添加本地状态来管理站点排序
     const [sites, setSites] = useState<Site[]>(group.sites);
@@ -306,6 +309,35 @@ const GroupCard: React.FC<GroupCardProps> = ({
         }
 
         // 普通模式下的渲染
+        // 普通模式下整组没有卡片：给一个引导性的空状态，而不是留一片空白
+        if (sitesToRender.length === 0) {
+            return (
+                <Box
+                    sx={{
+                        py: 4,
+                        display: "flex",
+                        flexDirection: "column",
+                        alignItems: "center",
+                        gap: 1,
+                        borderRadius: "18px",
+                        border: "1.5px dashed",
+                        borderColor: "divider",
+                        color: "text.secondary",
+                    }}
+                >
+                    <LayersOutlinedIcon color='inherit' />
+                    <Typography variant='body2'>
+                        {searchQuery ? "本组没有匹配的网站" : "这个分组还没有卡片"}
+                    </Typography>
+                    <Typography variant='caption' color='text.secondary'>
+                        {searchQuery
+                            ? "试试换个关键词，或清空搜索框"
+                            : "点击右上角「添加卡片」放入第一个网站"}
+                    </Typography>
+                </Box>
+            );
+        }
+
         return (
             <Box
                 sx={{
@@ -314,14 +346,14 @@ const GroupCard: React.FC<GroupCardProps> = ({
                     margin: -1, // 抵消内部padding，确保边缘对齐
                 }}
             >
-                {sitesToRender.map(site => (
+                {sitesToRender.map((site, idx) => (
                     <Box
                         key={site.id}
                         sx={{
                             width: {
-                                xs: "100%",
-                                sm: "50%",
-                                md: "33.33%",
+                                xs: "50%",
+                                sm: "33.33%",
+                                md: "25%",
                                 lg: "25%",
                                 xl: "20%",
                             },
@@ -334,6 +366,8 @@ const GroupCard: React.FC<GroupCardProps> = ({
                             onUpdate={onUpdate}
                             onDelete={onDelete}
                             isEditMode={false}
+                            index={idx}
+                            highlight={searchQuery}
                         />
                     </Box>
                 ))}
@@ -351,7 +385,7 @@ const GroupCard: React.FC<GroupCardProps> = ({
         <Paper
             elevation={sortMode === "None" ? 2 : 3}
             sx={{
-                borderRadius: 4,
+                borderRadius: "22px",
                 p: { xs: 2, sm: 3 },
                 transition: "all 0.3s ease-in-out",
                 border: "1px solid transparent",
@@ -369,6 +403,16 @@ const GroupCard: React.FC<GroupCardProps> = ({
                 alignItems={{ xs: 'flex-start', sm: 'center' }} 
                 mb={isCollapsed ? 0 : 2.5}
                 gap={1}
+                className='nav-sticky'
+                sx={{
+                    py: 1,
+                    px: 1,
+                    mx: -1,
+                    borderRadius: 2,
+                    bgcolor: "var(--glass-bg)",
+                    backdropFilter: "blur(10px)",
+                    WebkitBackdropFilter: "blur(10px)",
+                }}
             >
                 <Box
                     sx={{
