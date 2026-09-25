@@ -350,6 +350,21 @@ export class MockNavigationClient {
         return { success: true, message: "模拟环境未真正修改管理员凭据" };
     }
 
+    // 应急重置码是否已配置（模拟环境默认当作已配置，方便调试界面）
+    async getResetCodeStatus(): Promise<{ configured: boolean }> {
+        return { configured: true };
+    }
+
+    // 用应急重置码重设密码（模拟环境仅返回成功）
+    async resetPasswordWithCode(
+        _code: string,
+        _newPassword: string,
+        _newUsername?: string
+    ): Promise<{ success: boolean; message?: string }> {
+        await new Promise(resolve => setTimeout(resolve, 300));
+        return { success: true, message: "模拟环境未真正修改管理员凭据" };
+    }
+
     // 数据导出
     async exportData(): Promise<ExportData> {
         await new Promise(resolve => setTimeout(resolve, 200));

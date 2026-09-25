@@ -34,6 +34,9 @@
         }
     ],
     "vars": {
+        // 忘记密码时的应急重置码，别写在 vars 里（会明文进 Git），用命令存成加密的 secret：
+        //   wrangler secret put AUTH_RESET_CODE
+        // 设置后登录页会出现「忘记密码？用应急重置码找回」，填入该码即可重设管理员密码。
         "AUTH_ENABLED": "true",
         "AUTH_USERNAME": "admin",
         "AUTH_PASSWORD": "j55XeeGvQZJXf3",
