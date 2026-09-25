@@ -393,42 +393,33 @@ export default function SiteSettingsModal({
                             </FormControl>
                         )}
 
-                        {/* 网站描述（单行窄栏）与备注并排，多余空间给备注 */}
-                        <Box
-                            sx={{
-                                display: "flex",
-                                gap: 1.5,
-                                flexDirection: { xs: "column", sm: "row" },
-                                alignItems: "flex-start",
-                            }}
-                        >
-                            <TextField
-                                id='description'
-                                name='description'
-                                label='网站描述'
-                                fullWidth
-                                value={formData.description || ""}
-                                onChange={handleChange}
-                                placeholder='简短的网站描述'
-                                variant='outlined'
-                                size='small'
-                                sx={{ flex: { xs: "unset", sm: 1 } }}
-                            />
-                            <TextField
-                                id='notes'
-                                name='notes'
-                                label='备注'
-                                multiline
-                                rows={2}
-                                fullWidth
-                                value={formData.notes || ""}
-                                onChange={handleChange}
-                                placeholder='可选的私人备注'
-                                variant='outlined'
-                                size='small'
-                                sx={{ flex: { xs: "unset", sm: 2 } }}
-                            />
-                        </Box>
+                        {/* 网站描述：单行，长度与网站名称一致 */}
+                        <TextField
+                            id='description'
+                            name='description'
+                            label='网站描述'
+                            fullWidth
+                            value={formData.description || ""}
+                            onChange={handleChange}
+                            placeholder='简短的网站描述'
+                            variant='outlined'
+                            size='small'
+                        />
+
+                        {/* 备注：放在网站描述下方 */}
+                        <TextField
+                            id='notes'
+                            name='notes'
+                            label='备注'
+                            multiline
+                            rows={2}
+                            fullWidth
+                            value={formData.notes || ""}
+                            onChange={handleChange}
+                            placeholder='可选的私人备注'
+                            variant='outlined'
+                            size='small'
+                        />
 
                         <Divider />
 
