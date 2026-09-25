@@ -50,6 +50,8 @@ const EditGroupDialog: React.FC<EditGroupDialogProps> = ({
 }) => {
     const [name, setName] = useState("");
     const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+    // 二次确认：必须手打一遍分组名称才允许删除，避免误点
+    const [deleteConfirmText, setDeleteConfirmText] = useState("");
     const isCreate = mode === "create";
     const groupId = group?.id;
     const groupName = group?.name;
@@ -60,6 +62,7 @@ const EditGroupDialog: React.FC<EditGroupDialogProps> = ({
         if (!open) return;
         setName(isCreate ? "" : groupName ?? "");
         setShowDeleteConfirm(false);
+        setDeleteConfirmText("");
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [open, groupId, isCreate]);
 
@@ -73,13 +76,18 @@ const EditGroupDialog: React.FC<EditGroupDialogProps> = ({
         } as Group);
     };
 
+    /** 输入的分组名和实际名称一致时才解锁「确认删除」 */
+    const deleteConfirmOk =
+        !!group && deleteConfirmText.trim() === (group.name ?? "").trim();
+
     const handleDelete = () => {
         if (!group) return;
 
         if (!showDeleteConfirm) {
             // 显示删除确认
             setShowDeleteConfirm(true);
-        } else {
+            setDeleteConfirmText("");
+        } else if (deleteConfirmOk) {
             // 确认删除
             onDelete?.(group.id!);
         }
@@ -150,6 +158,23 @@ const EditGroupDialog: React.FC<EditGroupDialogProps> = ({
                             <strong>删除此分组将同时删除该分组下的所有网站。</strong>
                             此操作无法撤销。
                         </Typography>
+                        <Typography
+                            variant='body2'
+                            sx={{ mt: 1.5, fontWeight: 600 }}
+                        >
+                            请输入分组名称「{group.name}」以确认删除
+                        </Typography>
+                        <TextField
+                            fullWidth
+                            size='small'
+                            autoFocus
+                            value={deleteConfirmText}
+                            onChange={e => setDeleteConfirmText(e.target.value)}
+                            placeholder={group.name}
+                            error={deleteConfirmText.length > 0 && !deleteConfirmOk}
+                            inputProps={{ "aria-label": "输入分组名称确认删除" }}
+                            sx={{ mt: 1, "& .MuiOutlinedInput-root": { bgcolor: "background.paper" } }}
+                        />
                     </Alert>
                 )}
             </DialogContent>
@@ -175,10 +200,21 @@ const EditGroupDialog: React.FC<EditGroupDialogProps> = ({
                     </>
                 ) : (
                     <>
-                        <Button onClick={() => setShowDeleteConfirm(false)} color='inherit'>
+                        <Button
+                            onClick={() => {
+                                setShowDeleteConfirm(false);
+                                setDeleteConfirmText("");
+                            }}
+                            color='inherit'
+                        >
                             取消
                         </Button>
-                        <Button onClick={handleDelete} color='error' variant='contained'>
+                        <Button
+                            onClick={handleDelete}
+                            color='error'
+                            variant='contained'
+                            disabled={!deleteConfirmOk}
+                        >
                             确认删除
                         </Button>
                     </>
