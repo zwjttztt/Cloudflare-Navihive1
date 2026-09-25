@@ -1,5 +1,5 @@
 // src/components/SiteCard.tsx
-import { useState, memo } from "react";
+import { useState, useEffect, memo } from "react";
 import { Site } from "../API/http";
 import SiteSettingsModal from "./SiteSettingsModal";
 import { useSortable } from "@dnd-kit/sortable";
@@ -37,6 +37,13 @@ const SiteCard = memo(function SiteCard({
     const [showSettings, setShowSettings] = useState(false);
     const [iconError, setIconError] = useState(!site.icon);
     const [imageLoaded, setImageLoaded] = useState(false);
+
+    // 图标地址变化时重置加载状态：
+    // 免刷新即时更新后，若图标由空改为有值，需要重新尝试加载，否则会一直显示首字母占位
+    useEffect(() => {
+        setIconError(!site.icon);
+        setImageLoaded(false);
+    }, [site.icon]);
 
     // 使用dnd-kit的useSortable hook
     const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
@@ -236,6 +243,8 @@ const SiteCard = memo(function SiteCard({
                                                 component='img'
                                                 src={site.icon}
                                                 alt={site.name}
+                                                loading='lazy'
+                                                decoding='async'
                                                 sx={{
                                                     width: 32,
                                                     height: 32,
