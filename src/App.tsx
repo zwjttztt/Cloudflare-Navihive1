@@ -13,7 +13,6 @@ import CommandPalette, { CommandItem } from "./components/CommandPalette";
 import BookmarkImportDialog from "./components/BookmarkImportDialog";
 import { probeLinks } from "./utils/linkHealth";
 import { ParsedBookmarkGroup } from "./utils/bookmarks";
-import PendingOpensBar from "./components/PendingOpensBar";
 import { DEFAULT_ICON_API, resolveIconApiUrl } from "./utils/iconApi";
 import { saveRememberedLogin, clearRememberedLogin } from "./utils/rememberedLogin";
 import ThemeToggle from "./components/ThemeToggle";
@@ -3336,9 +3335,6 @@ function App() {
                     onClose={() => setBookmarkOpen(false)}
                     onImport={importBookmarks}
                 />
-
-                {/* 待打开队列：右键菜单入队后在这里一键打开 */}
-                <PendingOpensBar />
             </Box>
         </ThemeProvider>
          </NotifyContext.Provider>
