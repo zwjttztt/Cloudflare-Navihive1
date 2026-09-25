@@ -757,20 +757,43 @@ export class NavigationAPI {
             .catch(() => false);
     }
 
-    async updateSiteOrder(siteOrders: { id: number; order_num: number }[]): Promise<boolean> {
-        // 使用事务确保所有更新一起成功或失败
-        return await this.db
-            .batch(
-                siteOrders.map(item =>
-                    this.db
-                        .prepare(
-                            "UPDATE sites SET order_num = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
-                        )
-                        .bind(item.order_num, item.id)
-                )
-            )
-            .then(() => true)
-            .catch(() => false);
+    /**
+     * 批量更新站点排序。
+     * item 里带 group_id 时同时把卡片移动到新分组 —— 这样「排序 + 跨组移动」
+     * 只需要一次请求、一次 D1 batch 就能写完，不必逐张卡片发请求。
+     */
+    async updateSiteOrder(
+        siteOrders: { id: number; order_num: number; group_id?: number }[]
+    ): Promise<boolean> {
+        if (siteOrders.length === 0) return true;
+        await this.migrate();
+
+        const buildStatement = (item: { id: number; order_num: number; group_id?: number }) =>
+            item.group_id === undefined
+                ? this.db
+                      .prepare(
+                          "UPDATE sites SET order_num = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+                      )
+                      .bind(item.order_num, item.id)
+                : this.db
+                      .prepare(
+                          "UPDATE sites SET order_num = ?, group_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+                      )
+                      .bind(item.order_num, item.group_id, item.id);
+
+        // D1 单次 batch 的语句条数有上限，站点多的时候分批提交，避免整批失败
+        const CHUNK_SIZE = 100;
+
+        try {
+            for (let i = 0; i < siteOrders.length; i += CHUNK_SIZE) {
+                const chunk = siteOrders.slice(i, i + CHUNK_SIZE);
+                await this.db.batch(chunk.map(buildStatement));
+            }
+            return true;
+        } catch (error) {
+            console.error("批量更新站点排序失败:", error);
+            return false;
+        }
     }
 
     // 导出所有数据

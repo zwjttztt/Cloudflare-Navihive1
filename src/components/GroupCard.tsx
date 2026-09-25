@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { Site, Group } from "../API/http";
 import SiteCard from "./SiteCard";
 import { GroupWithSites } from "../types";
@@ -21,11 +21,34 @@ import {
     horizontalListSortingStrategy,
 } from "@dnd-kit/sortable";
 // 引入Material UI组件
-import { Paper, Typography, Button, Box, IconButton, Tooltip } from "@mui/material";
+import { Paper, Typography, Button, Box, IconButton, Tooltip, Collapse } from "@mui/material";
 import SortIcon from "@mui/icons-material/Sort";
 import SaveIcon from "@mui/icons-material/Save";
 import AddIcon from "@mui/icons-material/Add";
 import EditIcon from "@mui/icons-material/Edit";
+import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
+import ExpandLessIcon from "@mui/icons-material/ExpandLess";
+
+// 分组展开/收起状态存在本地，刷新后保持原样
+const COLLAPSED_GROUPS_KEY = "navihive:collapsedGroups";
+
+const readCollapsedGroupIds = (): string[] => {
+    try {
+        const raw = localStorage.getItem(COLLAPSED_GROUPS_KEY);
+        const parsed = raw ? JSON.parse(raw) : [];
+        return Array.isArray(parsed) ? parsed.map(String) : [];
+    } catch {
+        return [];
+    }
+};
+
+const writeCollapsedGroupIds = (ids: string[]) => {
+    try {
+        localStorage.setItem(COLLAPSED_GROUPS_KEY, JSON.stringify(ids));
+    } catch {
+        // 隐私模式等场景下写入失败，忽略即可
+    }
+};
 
 // 更新组件属性接口
 interface GroupCardProps {
@@ -60,6 +83,30 @@ const GroupCard: React.FC<GroupCardProps> = ({
     const [sites, setSites] = useState<Site[]>(group.sites);
     // 添加编辑弹窗的状态
     const [editDialogOpen, setEditDialogOpen] = useState(false);
+    // 分组是否收起（记录在 localStorage）
+    const [collapsed, setCollapsed] = useState(() =>
+        readCollapsedGroupIds().includes(String(group.id))
+    );
+
+    // 分组本身变化时同步一次收起状态
+    useEffect(() => {
+        setCollapsed(readCollapsedGroupIds().includes(String(group.id)));
+    }, [group.id]);
+
+    const toggleCollapsed = () => {
+        const key = String(group.id);
+        const ids = new Set(readCollapsedGroupIds());
+        if (ids.has(key)) {
+            ids.delete(key);
+        } else {
+            ids.add(key);
+        }
+        writeCollapsedGroupIds([...ids]);
+        setCollapsed(ids.has(key));
+    };
+
+    // 排序模式下强制展开，否则卡片被收起就没法拖拽了
+    const isCollapsed = collapsed && sortMode === "None";
 
     // 分组作为跨组拖拽的放置容器
     const { setNodeRef: setGroupDropRef, isOver: isGroupOver } = useDroppable({
@@ -315,18 +362,49 @@ const GroupCard: React.FC<GroupCardProps> = ({
                 flexDirection={{ xs: 'column', sm: 'row' }}
                 justifyContent='space-between' 
                 alignItems={{ xs: 'flex-start', sm: 'center' }} 
-                mb={2.5}
+                mb={isCollapsed ? 0 : 2.5}
                 gap={1}
             >
-                <Typography 
-                    variant='h5' 
-                    component='h2' 
-                    fontWeight='600' 
-                    color='text.primary'
-                    sx={{ mb: { xs: 1, sm: 0 } }}
+                <Box
+                    sx={{
+                        display: "flex",
+                        alignItems: "center",
+                        flexWrap: "wrap",
+                        gap: 0.5,
+                    }}
                 >
-                    {group.name}
-                </Typography>
+                    <Tooltip title={isCollapsed ? "展开分组" : "收起分组"}>
+                        <IconButton
+                            size='small'
+                            onClick={toggleCollapsed}
+                            aria-label={isCollapsed ? "展开分组" : "收起分组"}
+                            aria-expanded={!isCollapsed}
+                            sx={{ ml: -0.5 }}
+                        >
+                            {isCollapsed ? (
+                                <ExpandMoreIcon fontSize='small' />
+                            ) : (
+                                <ExpandLessIcon fontSize='small' />
+                            )}
+                        </IconButton>
+                    </Tooltip>
+                    <Typography
+                        variant='h5'
+                        component='h2'
+                        fontWeight='600'
+                        color='text.primary'
+                        sx={{ mb: { xs: 1, sm: 0 } }}
+                    >
+                        {group.name}
+                    </Typography>
+                    <Typography
+                        variant='body2'
+                        color='text.secondary'
+                        sx={{ ml: 0.5, mb: { xs: 1, sm: 0 } }}
+                    >
+                        ({group.sites.length})
+                    </Typography>
+                </Box>
 
                 {globalSiteSort && (
                     <Typography
@@ -400,6 +478,7 @@ const GroupCard: React.FC<GroupCardProps> = ({
                                             color="primary" 
                                             onClick={handleEditClick}
                                             size="small"
+                                            aria-label="编辑分组"
                                             sx={{ alignSelf: 'center' }}
                                         >
                                             <EditIcon />
@@ -412,8 +491,10 @@ const GroupCard: React.FC<GroupCardProps> = ({
                 </Box>
             </Box>
 
-            {/* 站点卡片区域 */}
-            {renderSites()}
+            {/* 站点卡片区域（收起时隐藏） */}
+            <Collapse in={!isCollapsed} timeout={250} unmountOnExit={false}>
+                {renderSites()}
+            </Collapse>
 
             {/* 编辑分组弹窗 */}
             {onUpdateGroup && onDeleteGroup && (

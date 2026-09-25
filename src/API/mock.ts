@@ -298,12 +298,17 @@ export class MockNavigationClient {
         return true;
     }
 
-    async updateSiteOrder(siteOrders: { id: number; order_num: number }[]): Promise<boolean> {
+    async updateSiteOrder(
+        siteOrders: { id: number; order_num: number; group_id?: number }[]
+    ): Promise<boolean> {
         await new Promise(resolve => setTimeout(resolve, 200));
         for (const order of siteOrders) {
             const index = mockSites.findIndex(s => s.id === order.id);
             if (index !== -1) {
                 mockSites[index].order_num = order.order_num;
+                if (order.group_id !== undefined) {
+                    mockSites[index].group_id = order.group_id;
+                }
             }
         }
         return true;
