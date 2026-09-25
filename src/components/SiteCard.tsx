@@ -34,7 +34,6 @@ import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import { useAppConfig } from "../context/AppConfigContext";
 import { useNotify } from "../context/NotifyContext";
 import { useUIPrefs } from "../context/UIPrefsContext";
-import { useOpenQueue } from "../context/OpenQueueContext";
 import { resolveIconApiUrl } from "../utils/iconApi";
 import { iconCandidates, readIconRecord, writeIconRecord } from "../utils/iconCache";
 
@@ -130,7 +129,6 @@ const SiteCard = memo(function SiteCard({
     const { thumbApi, iconApi } = useAppConfig();
     const notify = useNotify();
     const { viewMode, density, recordVisit, visits, deadLinks } = useUIPrefs();
-    const { enqueue, queue } = useOpenQueue();
     const [showSettings, setShowSettings] = useState(false);
     // 右键菜单的锚点位置（null 表示未打开）
     const [menuPos, setMenuPos] = useState<{ left: number; top: number } | null>(null);
@@ -267,14 +265,6 @@ const SiteCard = memo(function SiteCard({
         closeMenu();
         recordVisit(site.id);
         window.open(site.url || "", "_blank");
-    };
-
-    const handleMenuQueue = () => {
-        closeMenu();
-        if (!site.url) return;
-        enqueue({ id: site.id!, name: site.name, url: site.url });
-        recordVisit(site.id);
-        notify(`已加入待打开（${queue.length + 1}）`, "info");
     };
 
     const handleMenuEdit = () => {
@@ -802,30 +792,11 @@ const SiteCard = memo(function SiteCard({
             anchorPosition={menuPos ? { top: menuPos.top, left: menuPos.left } : undefined}
             slotProps={{ paper: { sx: { minWidth: 190, borderRadius: "14px" } } }}
         >
-            <Box
-                sx={{
-                    px: 2,
-                    py: 0.75,
-                    fontSize: 12,
-                    color: "text.secondary",
-                    maxWidth: 210,
-                    lineHeight: 1.5,
-                }}
-            >
-                鼠标中键点击卡片：后台打开，不切走当前页
-            </Box>
-            <Divider />
             <MenuItem onClick={handleMenuOpen} disabled={!site.url}>
                 <ListItemIcon>
                     <OpenInNewIcon fontSize='small' />
                 </ListItemIcon>
                 <ListItemText>新标签打开</ListItemText>
-            </MenuItem>
-            <MenuItem onClick={handleMenuQueue} disabled={!site.url}>
-                <ListItemIcon>
-                    <LinkIcon fontSize='small' />
-                </ListItemIcon>
-                <ListItemText>加入待打开</ListItemText>
             </MenuItem>
             <MenuItem onClick={e => handleQuickCopy(e, "链接", site.url)} disabled={!site.url}>
                 <ListItemIcon>

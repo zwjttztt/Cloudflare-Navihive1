@@ -1,6 +1,7 @@
 // src/components/SiteSettingsModal.tsx
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Site, Group } from "../API/http";
+import ConfirmDialog from "./ConfirmDialog";
 // Material UI 导入
 import {
     Dialog,
@@ -55,21 +56,33 @@ export default function SiteSettingsModal({
     // 全局「网站设置」里的获取图标 API 模板
     const { iconApi } = useAppConfig();
 
-    // 存储字符串形式的group_id，与Material-UI的Select兼容
-    const [formData, setFormData] = useState(() => {
+    // 打开设置时的初始表单值：用来判断「有没有真的改过」，没改就静默关闭
+    const buildInitialForm = () => {
         // 打开设置时若还没有图标，就先按「网站链接 + 获取图标API」自动补一个
         const initialIcon = site.icon || resolveIconApiUrl(iconApi, site.url || "");
         return {
-            name: site.name,
-            url: site.url,
-            icon: initialIcon,
+            name: site.name || "",
+            url: site.url || "",
+            icon: initialIcon || "",
             description: site.description || "",
             notes: site.notes || "",
             username: site.username || "",
             password: site.password || "",
             group_id: String(site.group_id),
         };
-    });
+    };
+
+    // 存储字符串形式的group_id，与Material-UI的Select兼容
+    const [formData, setFormData] = useState(buildInitialForm);
+
+    // 初始快照只取第一次渲染的值，之后不再变
+    const initialRef = useRef<ReturnType<typeof buildInitialForm> | null>(null);
+    if (!initialRef.current) initialRef.current = { ...formData };
+
+    // 有没有实际改动（含图标被自动补齐这类隐式变化）
+    const isDirty = (Object.keys(formData) as (keyof typeof formData)[]).some(
+        key => formData[key] !== initialRef.current![key]
+    );
 
     // 用于预览图标
     const [iconPreview, setIconPreview] = useState<string | null>(
@@ -190,6 +203,12 @@ export default function SiteSettingsModal({
         e.preventDefault();
         e.stopPropagation();
 
+        // 没有任何改动：不写库、不弹「卡片已更新」，直接关掉
+        if (!isDirty) {
+            onClose();
+            return;
+        }
+
         // 更新网站信息，将group_id转为数字
         onUpdate({
             ...site,
@@ -200,13 +219,21 @@ export default function SiteSettingsModal({
         onClose();
     };
 
-    // 确认删除
-    const confirmDelete = (e: React.MouseEvent) => {
+    // 删除确认弹窗是否可见
+    const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
+
+    // 点「删除」先弹站内确认框（替代浏览器原生 confirm）
+    const handleDeleteClick = (e: React.MouseEvent) => {
         e.stopPropagation();
-        if (window.confirm("确定要删除这个网站吗？此操作不可恢复。")) {
-            onDelete(site.id!);
-            onClose();
-        }
+        setConfirmDeleteOpen(true);
+    };
+
+    // 确认删除
+    const handleConfirmDelete = () => {
+        setConfirmDeleteOpen(false);
+        if (site.id == null) return;
+        onDelete(site.id);
+        onClose();
     };
 
     // 计算首字母图标
@@ -494,7 +521,7 @@ export default function SiteSettingsModal({
 
                 <DialogActions sx={{ px: 2, pb: 2, pt: 0.5, justifyContent: "space-between" }}>
                     <Button
-                        onClick={confirmDelete}
+                        onClick={handleDeleteClick}
                         color='error'
                         variant='contained'
                         startIcon={<DeleteIcon />}
@@ -523,6 +550,19 @@ export default function SiteSettingsModal({
                     </Box>
                 </DialogActions>
             </form>
+
+            {/* 删除确认：站内统一样式的确认弹窗（不再是浏览器原生 confirm） */}
+            <ConfirmDialog
+                open={confirmDeleteOpen}
+                title='删除这个网站？'
+                description={`删除后「${
+                    formData.name || site.name || "这个网站"
+                }」将无法恢复，保存的账号密码也会一并删除。`}
+                confirmText='删除'
+                danger
+                onConfirm={handleConfirmDelete}
+                onClose={() => setConfirmDeleteOpen(false)}
+            />
         </Dialog>
     );
 }

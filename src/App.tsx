@@ -328,6 +328,11 @@ function App() {
     // 新增卡片时是否明文显示密码
     const [showNewSitePassword, setShowNewSitePassword] = useState(false);
 
+    // 正在创建站点：按钮置灰 + 防止连点创建出多张卡片
+    const [creatingSite, setCreatingSite] = useState(false);
+    // setState 要等下一次渲染才生效，连点两下时用 ref 同步兜住
+    const creatingSiteRef = useRef(false);
+
     // 错误提示框状态
     const [snackbarOpen, setSnackbarOpen] = useState(false);
     const [snackbarMessage, setSnackbarMessage] = useState("");
@@ -1178,8 +1183,10 @@ function App() {
             order_num: maxOrderNum,
         });
 
-        // 每次打开都从「密码隐藏」状态开始
+        // 每次打开都从「密码隐藏」状态开始，并清掉上一次的提交锁
         setShowNewSitePassword(false);
+        creatingSiteRef.current = false;
+        setCreatingSite(false);
         setOpenAddSite(true);
     }, []);
 
@@ -1219,6 +1226,11 @@ function App() {
     };
 
     const handleCreateSite = async () => {
+        // 连点「创建」只提交一次，避免创建出多张重复卡片
+        if (creatingSiteRef.current) return;
+        creatingSiteRef.current = true;
+        setCreatingSite(true);
+
         try {
             if (!newSite.name || !newSite.url) {
                 handleError("站点名称和URL不能为空");
@@ -1235,6 +1247,9 @@ function App() {
         } catch (error) {
             console.error("创建站点失败:", error);
             handleError("创建站点失败: " + (error as Error).message);
+        } finally {
+            creatingSiteRef.current = false;
+            setCreatingSite(false);
         }
     };
 
@@ -2859,8 +2874,13 @@ function App() {
                             <Button onClick={handleCloseAddSite} variant='outlined'>
                                 取消
                             </Button>
-                            <Button onClick={handleCreateSite} variant='contained' color='primary'>
-                                创建
+                            <Button
+                                onClick={handleCreateSite}
+                                variant='contained'
+                                color='primary'
+                                disabled={creatingSite}
+                            >
+                                {creatingSite ? "创建中…" : "创建"}
                             </Button>
                         </DialogActions>
                     </Dialog>
