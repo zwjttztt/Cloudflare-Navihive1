@@ -587,12 +587,13 @@ function App() {
                 const saved = await api.updateSite(updatedSite.id, updatedSite);
                 // id 以本地这份为准，避免个别后端实现回显的 id 不准确
                 upsertSiteLocally({ ...updatedSite, ...(saved || {}), id: updatedSite.id });
+                notify("卡片已更新", "success");
             } catch (error) {
                 console.error("更新站点失败:", error);
                 handleError("更新站点失败: " + (error as Error).message);
             }
         },
-        [upsertSiteLocally, handleError]
+        [upsertSiteLocally, handleError, notify]
     );
 
     // 删除站点
