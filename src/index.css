@@ -431,9 +431,16 @@ mark.nav-hl {
     transform: scale(0.94);
 }
 
-/* 顶部提示条上的「撤销」按钮：和提示文案区分开 */
+/* 顶部提示条上的「撤销」按钮：用主色 + 淡底色，和左侧文案区分开，一眼能看出可点 */
 .nav-snackbar-action {
     text-transform: none;
+    color: var(--accent);
+    border-radius: 9px;
+    padding-left: 8px;
+    padding-right: 8px;
+}
+.nav-snackbar-action:hover {
+    background-color: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
 /* MUI 默认给动作区留了 padding-top:4px + align-items:flex-start，
@@ -517,6 +524,34 @@ mark.nav-hl {
     transition: background-color 0.18s ease, color 0.18s ease, transform 0.18s ease;
 }
 .nav-tag-bar .MuiChip-root:active {
+    transform: scale(0.94);
+}
+
+/* 「网站设置」里标签输入框右侧的快捷候选：虚线描边，点一下就加进标签框 */
+.nav-tag-suggest-label {
+    font-size: 11px;
+    line-height: 1;
+    color: var(--text-muted, #94a3b8);
+    margin-right: 2px;
+}
+.nav-tag-suggest.MuiChip-root {
+    height: 22px;
+    font-size: 12px;
+    border-style: dashed;
+    border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+    color: color-mix(in srgb, var(--accent) 88%, transparent);
+    transition: background-color 0.18s ease, transform 0.18s ease, border-color 0.18s ease;
+}
+.nav-tag-suggest.MuiChip-root .MuiChip-label {
+    padding-left: 8px;
+    padding-right: 8px;
+}
+.nav-tag-suggest.MuiChip-root:hover {
+    background-color: color-mix(in srgb, var(--accent) 14%, transparent);
+    border-color: var(--accent);
+    transform: translateY(-1px);
+}
+.nav-tag-suggest.MuiChip-root:active {
     transform: scale(0.94);
 }
 

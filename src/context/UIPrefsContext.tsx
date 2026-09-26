@@ -10,6 +10,7 @@ import {
     useState,
 } from "react";
 import { readDeadLinks } from "../utils/linkHealth";
+import type { LocalPrefsBackup } from "../API/http";
 
 export type ViewMode = "card" | "list" | "wall";
 export type Density = "comfortable" | "compact";
@@ -84,6 +85,11 @@ interface UIPrefsValue {
     /** 左侧分组栏是否收起 */
     railCollapsed: boolean;
     setRailCollapsed: (collapsed: boolean) => void;
+    /**
+     * 从备份文件恢复星标与标签（它们只存 localStorage，备份里由前端附带）。
+     * replace = 覆盖恢复，merge = 追加导入取并集。
+     */
+    restoreLocalPrefs: (prefs: LocalPrefsBackup | undefined, mode: "replace" | "merge") => void;
 }
 
 const VIEW_KEY = "navihive:viewMode";
@@ -207,6 +213,7 @@ const defaultValue: UIPrefsValue = {
     allTags: [],
     railCollapsed: false,
     setRailCollapsed: () => {},
+    restoreLocalPrefs: () => {},
 };
 
 export const UIPrefsContext = createContext<UIPrefsValue>(defaultValue);
@@ -396,6 +403,47 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
         }
     }, []);
 
+    /**
+     * 从备份文件恢复星标与标签。
+     * replace：覆盖恢复（备份里是什么就是什么）；
+     * merge：追加导入，和本机已有的取并集。
+     */
+    const restoreLocalPrefs = useCallback(
+        (prefs: LocalPrefsBackup | undefined, mode: "replace" | "merge") => {
+            const incomingStarred = Array.isArray(prefs?.starred)
+                ? prefs!.starred!.filter(id => typeof id === "number" && Number.isFinite(id))
+                : [];
+            const incomingTags =
+                prefs?.tags && typeof prefs.tags === "object" ? prefs.tags : {};
+
+            setStarred(prev => {
+                const set = new Set<number>(mode === "replace" ? [] : prev);
+                incomingStarred.forEach(id => set.add(id));
+                const next = [...set];
+                write(STARRED_KEY, JSON.stringify(next));
+                return next;
+            });
+
+            setTags(prev => {
+                const next: Record<string, string[]> = mode === "replace" ? {} : { ...prev };
+                for (const [siteId, list] of Object.entries(incomingTags)) {
+                    if (!Array.isArray(list)) continue;
+                    const clean = list
+                        .filter(t => typeof t === "string" && t.trim().length > 0)
+                        .map(t => t.trim());
+                    const merged =
+                        mode === "replace"
+                            ? Array.from(new Set(clean))
+                            : Array.from(new Set([...(next[siteId] ?? []), ...clean]));
+                    if (merged.length > 0) next[siteId] = merged;
+                }
+                write(TAGS_KEY, JSON.stringify(next));
+                return next;
+            });
+        },
+        []
+    );
+
     // 多标签页之间同步偏好
     useEffect(() => {
         const onStorage = (e: StorageEvent) => {
@@ -458,6 +506,7 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
             allTags,
             railCollapsed,
             setRailCollapsed,
+            restoreLocalPrefs,
         }),
         [
             viewMode,
@@ -487,6 +536,7 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
             allTags,
             railCollapsed,
             setRailCollapsed,
+            restoreLocalPrefs,
         ]
     );
 
