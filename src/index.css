@@ -436,6 +436,19 @@ mark.nav-hl {
     text-transform: none;
 }
 
+/* MUI 默认给动作区留了 padding-top:4px + align-items:flex-start，
+   会让「撤销」比左边的文案整体低一截，这里改成和文案同一条中线对齐 */
+.nav-snackbar .MuiAlert-action {
+    align-items: center;
+    padding: 0 0 0 14px;
+    margin-right: -4px;
+}
+.nav-snackbar .MuiAlert-action .MuiButton-root {
+    padding-top: 3px;
+    padding-bottom: 3px;
+    line-height: 1.4;
+}
+
 /* 分组面板滚进视口时轻轻浮上来（只在能观察到时触发，元素默认是正常显示） */
 @keyframes navReveal {
     from {

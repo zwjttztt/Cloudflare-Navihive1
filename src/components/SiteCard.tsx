@@ -680,26 +680,6 @@ const SiteCard = memo(function SiteCard({
                 zIndex: 2,
             }}
         >
-            <Tooltip title={starred ? "取消星标" : "加星标（分组内置顶）"}>
-                <IconButton
-                    className='nav-quick-star'
-                    size='small'
-                    aria-label={starred ? "取消星标" : "加星标"}
-                    aria-pressed={starred}
-                    onClick={e => {
-                        e.stopPropagation();
-                        e.preventDefault();
-                        toggleStar(site.id);
-                    }}
-                    sx={{ p: 0.6, color: starred ? "var(--accent)" : "inherit" }}
-                >
-                    {starred ? (
-                        <StarIcon sx={{ fontSize: 16 }} />
-                    ) : (
-                        <StarBorderIcon sx={{ fontSize: 16 }} />
-                    )}
-                </IconButton>
-            </Tooltip>
             <Tooltip title='复制链接'>
                 <IconButton
                     size='small'
