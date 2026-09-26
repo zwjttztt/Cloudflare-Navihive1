@@ -296,7 +296,9 @@ export default function SiteSettingsModal({
                     justifyContent: "space-between",
                     alignItems: "center",
                     gap: 1,
-                    padding: 1.5,
+                    // 左右内边距和内容区（DialogContent 默认 24px）对齐，标题与下面字段同一竖直基准线
+                    px: 3,
+                    pt: 2,
                     pb: 1,
                 }}
             >
@@ -336,7 +338,8 @@ export default function SiteSettingsModal({
             <form onSubmit={handleSubmit}>
                 <DialogContent
                     sx={{
-                        pt: 1.5,
+                        pt: 2,
+                        pb: 1,
                         // 整体收紧，避免出现上下滚动
                         "& .MuiInputBase-input": { fontSize: 14 },
                         "& .MuiInputLabel-root": { fontSize: 14 },
@@ -373,76 +376,74 @@ export default function SiteSettingsModal({
                             type='url'
                         />
 
-                        {/* 网站图标 */}
-                        <Box>
-                            <Typography variant='body2' color='text.secondary' gutterBottom>
-                                图标 URL
-                            </Typography>
-                            <Box sx={{ display: "flex", gap: 1.5, alignItems: "center" }}>
-                                {iconPreview ? (
-                                    <Avatar
-                                        src={iconPreview}
-                                        alt={formData.name || "Icon Preview"}
-                                        sx={{ width: 36, height: 36, borderRadius: 1.5 }}
-                                        imgProps={{
-                                            onError: handleIconError,
-                                            style: { objectFit: "cover" },
-                                        }}
-                                        variant='rounded'
-                                    />
-                                ) : (
-                                    <Avatar
-                                        sx={{
-                                            width: 36,
-                                            height: 36,
-                                            borderRadius: 1.5,
-                                            bgcolor: "primary.light",
-                                            color: "primary.main",
-                                            border: "1px solid",
-                                            borderColor: "primary.main",
-                                        }}
-                                        variant='rounded'
-                                    >
-                                        {fallbackIcon}
-                                    </Avatar>
-                                )}
-
-                                <TextField
-                                    id='icon'
-                                    name='icon'
-                                    fullWidth
-                                    value={formData.icon || ""}
-                                    onChange={handleIconChange}
-                                    placeholder='https://example.com/icon.png'
-                                    variant='outlined'
-                                    size='small'
-                                    InputProps={{
-                                        endAdornment: (
-                                            <InputAdornment position='end'>
-                                                <Tooltip
-                                                    title={
-                                                        iconFetchMessage ||
-                                                        "根据网站链接一键获取图标URL"
-                                                    }
-                                                    open={iconFetchMessage ? true : undefined}
-                                                >
-                                                    <span>
-                                                        <IconButton
-                                                            size='small'
-                                                            edge='end'
-                                                            onClick={handleFetchIcon}
-                                                            disabled={!formData.url}
-                                                            aria-label='根据网站链接获取图标URL'
-                                                        >
-                                                            <AutoFixHighIcon fontSize='small' />
-                                                        </IconButton>
-                                                    </span>
-                                                </Tooltip>
-                                            </InputAdornment>
-                                        ),
+                        {/* 网站图标：原来的「图标 URL」小标题直接做成输入框的浮动 label，省一整行 */}
+                        <Box sx={{ display: "flex", gap: 1.25, alignItems: "center" }}>
+                            {iconPreview ? (
+                                <Avatar
+                                    src={iconPreview}
+                                    alt={formData.name || "Icon Preview"}
+                                    sx={{ width: 34, height: 34, borderRadius: 1.5, flexShrink: 0 }}
+                                    imgProps={{
+                                        onError: handleIconError,
+                                        style: { objectFit: "cover" },
                                     }}
+                                    variant='rounded'
                                 />
-                            </Box>
+                            ) : (
+                                <Avatar
+                                    sx={{
+                                        width: 34,
+                                        height: 34,
+                                        borderRadius: 1.5,
+                                        flexShrink: 0,
+                                        bgcolor: "primary.light",
+                                        color: "primary.main",
+                                        border: "1px solid",
+                                        borderColor: "primary.main",
+                                    }}
+                                    variant='rounded'
+                                >
+                                    {fallbackIcon}
+                                </Avatar>
+                            )}
+
+                            <TextField
+                                id='icon'
+                                name='icon'
+                                label='图标 URL'
+                                InputLabelProps={{ shrink: true }}
+                                fullWidth
+                                value={formData.icon || ""}
+                                onChange={handleIconChange}
+                                placeholder='https://example.com/icon.png'
+                                variant='outlined'
+                                size='small'
+                                InputProps={{
+                                    endAdornment: (
+                                        <InputAdornment position='end'>
+                                            <Tooltip
+                                                title={
+                                                    iconFetchMessage ||
+                                                    "根据网站链接一键获取图标URL"
+                                                }
+                                                open={iconFetchMessage ? true : undefined}
+                                            >
+                                                <span>
+                                                    <IconButton
+                                                        size='small'
+                                                        edge='end'
+                                                        onClick={handleFetchIcon}
+                                                        disabled={!formData.url}
+                                                        aria-label='根据网站链接获取图标URL'
+                                                    >
+                                                        <AutoFixHighIcon fontSize='small' />
+                                                    </IconButton>
+                                                </span>
+                                            </Tooltip>
+                                        </InputAdornment>
+                                    ),
+                                }}
+                            />
                         </Box>
 
                         {/* 分组选择 */}
@@ -466,11 +467,8 @@ export default function SiteSettingsModal({
                             </FormControl>
                         )}
 
-                        {/* 标签：只用来筛选；星标入口在标题右上角 */}
+                        {/* 标签：标题同样做成输入框的浮动 label；右边是已加标签 + 现有/推荐候选 */}
                         <Box>
-                            <Typography variant='body2' color='text.secondary' gutterBottom>
-                                标签
-                            </Typography>
                             <Box
                                 sx={{
                                     display: "flex",
@@ -479,20 +477,6 @@ export default function SiteSettingsModal({
                                     alignItems: "center",
                                 }}
                             >
-                                {siteTags.map(tag => (
-                                    <Chip
-                                        key={tag}
-                                        label={tag}
-                                        size='small'
-                                        variant='outlined'
-                                        onDelete={() =>
-                                            setSiteTags(
-                                                site.id as number,
-                                                siteTags.filter(item => item !== tag)
-                                            )
-                                        }
-                                    />
-                                ))}
                                 <TextField
                                     value={tagInput}
                                     onChange={e => setTagInput(e.target.value)}
@@ -503,11 +487,29 @@ export default function SiteSettingsModal({
                                         }
                                     }}
                                     onBlur={commitTag}
-                                    placeholder='添加标签'
+                                    label='标签'
+                                    InputLabelProps={{ shrink: true }}
+                                    placeholder='输入后回车'
                                     size='small'
                                     inputProps={{ "aria-label": "添加标签" }}
-                                    sx={{ width: 120, "& .MuiInputBase-input": { fontSize: 13 } }}
+                                    sx={{ width: 128, "& .MuiInputBase-input": { fontSize: 13 } }}
                                 />
+
+                                {siteTags.map(tag => (
+                                    <Chip
+                                        key={tag}
+                                        label={tag}
+                                        size='small'
+                                        variant='outlined'
+                                        className='nav-tag-added'
+                                        onDelete={() =>
+                                            setSiteTags(
+                                                site.id as number,
+                                                siteTags.filter(item => item !== tag)
+                                            )
+                                        }
+                                    />
+                                ))}
 
                                 {/* 输入框右侧：现有标签 / 推荐标签，点一下就加进标签框 */}
                                 {existingSuggestions.length > 0 && (
@@ -566,9 +568,9 @@ export default function SiteSettingsModal({
                                 variant='caption'
                                 color='text.secondary'
                                 display='block'
-                                sx={{ mt: 0.25 }}
+                                sx={{ mt: 0.5 }}
                             >
-                                回车即可加标签（可一次输入多个，用逗号分隔），也可以直接点右侧的现有/推荐标签；标签会随备份文件一起导出。
+                                回车即可加标签（可一次输入多个，用逗号分隔），也可以直接点右侧的现有/推荐标签。
                             </Typography>
                         </Box>
 
@@ -602,14 +604,29 @@ export default function SiteSettingsModal({
 
                         <Divider />
 
-                        {/* 登录凭据：账号 / 密码 + 一键复制 */}
+                        {/* 登录凭据：账号 / 密码 + 一键复制；说明文字挪到标题右侧，不再单独占一行 */}
                         <Box>
-                            <Typography variant='subtitle2' fontWeight='600' gutterBottom>
-                                登录凭据
-                            </Typography>
-                            <Typography variant='caption' color='text.secondary' display='block' sx={{ mb: 1 }}>
-                                保存后可随时一键复制；凭据会随备份文件一起导出，请妥善保管备份。
-                            </Typography>
+                            <Box
+                                sx={{
+                                    display: "flex",
+                                    alignItems: "baseline",
+                                    justifyContent: "space-between",
+                                    gap: 1,
+                                    flexWrap: "wrap",
+                                    mb: 1,
+                                }}
+                            >
+                                <Typography variant='subtitle2' fontWeight='600'>
+                                    登录凭据
+                                </Typography>
+                                <Typography
+                                    variant='caption'
+                                    color='text.secondary'
+                                    sx={{ textAlign: "right", flex: "1 1 auto" }}
+                                >
+                                    保存后可随时一键复制；凭据会随备份文件一起导出，请妥善保管备份。
+                                </Typography>
+                            </Box>
                             <Stack
                                 direction={{ xs: "column", sm: "row" }}
                                 spacing={1.5}
@@ -671,7 +688,7 @@ export default function SiteSettingsModal({
                     </Stack>
                 </DialogContent>
 
-                <DialogActions sx={{ px: 2, pb: 2, pt: 0.5, justifyContent: "space-between" }}>
+                <DialogActions sx={{ px: 3, pb: 2.5, pt: 1, justifyContent: "space-between" }}>
                     <Button
                         onClick={handleDeleteClick}
                         color='error'
