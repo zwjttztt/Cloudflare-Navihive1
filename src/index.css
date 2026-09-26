@@ -116,6 +116,34 @@
     --accent: #90caf9;
 }
 
+/* 关闭毛玻璃（更多选项 → 特效开关）：
+   这里不只是把模糊半径调成 0 —— 只要 backdrop-filter 还在（哪怕是 blur(0)），
+   浏览器依然要为该元素单独合成一层、每帧重新采样背后的画面，
+   滚动时这一步最贵，也最容易在圆角边缘漏出一圈暗边。
+   所以关的时候直接把 backdrop-filter 摘掉，同时把底色换成接近不透明的版本，
+   观感上还是「卡片浮在背景上」，只是不再实时取样。 */
+html.nav-no-glass {
+    --glass-bg: rgba(255, 255, 255, 0.88);
+    --glass-bg-hover: rgba(255, 255, 255, 0.95);
+    --glass-border: rgba(255, 255, 255, 0.9);
+    --glass-panel-bg: rgba(255, 255, 255, 0.78);
+    --glass-panel-border: rgba(255, 255, 255, 0.9);
+}
+html.nav-no-glass.dark {
+    --glass-bg: rgba(23, 27, 38, 0.9);
+    --glass-bg-hover: rgba(30, 35, 48, 0.95);
+    --glass-border: rgba(255, 255, 255, 0.14);
+    --glass-panel-bg: rgba(23, 27, 38, 0.84);
+    --glass-panel-border: rgba(255, 255, 255, 0.12);
+}
+/* 伪元素上也能写 backdrop-filter，一并关掉 */
+html.nav-no-glass *,
+html.nav-no-glass *::before,
+html.nav-no-glass *::after {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+}
+
 html,
 body {
     font-family: var(--font-sans);
@@ -512,8 +540,13 @@ mark.nav-hl {
         transform: none;
     }
 }
+/* 用 backwards 而不是 both：面板本身带 backdrop-filter，animation-fill-mode: both
+   会让它在动画结束后依然「挂着」一条 opacity/transform 动画，浏览器就一直把它
+   按独立合成层渲染（毛玻璃在合成层上重采样，圆角边缘会渗出暗边），
+   而且动画状态还会压住 :hover 的 transform。backwards 播完即归还样式控制权。
+   另外 JS 侧在 animationend 里会把 class 摘掉，双保险。 */
 .nav-group-panel.nav-reveal-in {
-    animation: navReveal 0.5s cubic-bezier(0.22, 0.61, 0.36, 1) both;
+    animation: navReveal 0.5s cubic-bezier(0.22, 0.61, 0.36, 1) backwards;
 }
 
 /* 星标按钮：加星后常显，点下去有一下「弹」的反馈 */
@@ -670,8 +703,10 @@ mark.nav-hl {
         transform: translate(-50%, 0);
     }
 }
+/* 同理用 backwards：批量条本身也是毛玻璃，动画一直挂着会一直占一个合成层。
+   这里安全，因为条子自己的 sx 已经写了 transform: translateX(-50%) 来居中。 */
 .nav-bulk-bar {
-    animation: navBulkIn 0.28s cubic-bezier(0.22, 0.61, 0.36, 1) both;
+    animation: navBulkIn 0.28s cubic-bezier(0.22, 0.61, 0.36, 1) backwards;
 }
 
 /* 左侧分组栏：宽度变化走过渡，收起后是一根只留圆点的窄条 */

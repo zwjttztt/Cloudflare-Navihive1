@@ -72,6 +72,9 @@ interface SettingsDialogProps {
     onFontScaleChange: (value: FontScale) => void;
     glassBlur: number;
     onGlassBlurChange: (event: Event, value: number | number[]) => void;
+    /** 毛玻璃总开关（本机偏好）：关掉后模糊滑块不再有任何效果，界面得说明清楚 */
+    glassEffects: boolean;
+    onGlassEffectsChange: (enabled: boolean) => void;
     auth: SettingsAuthDraft;
     onAuthChange: (field: keyof SettingsAuthDraft, value: string) => void;
     /** 正在保存：按钮禁用 + 文案变化，避免连点重复提交 */
@@ -96,6 +99,8 @@ export default function SettingsDialog({
     onFontScaleChange,
     glassBlur,
     onGlassBlurChange,
+    glassEffects,
+    onGlassEffectsChange,
     auth,
     onAuthChange,
     saving = false,
@@ -408,11 +413,26 @@ export default function SettingsDialog({
                         </Box>
                     </Box>
 
-                    {/* 毛玻璃强度 */}
+                    {/* 毛玻璃：总开关 + 模糊强度 */}
                     <Box>
-                        <Typography variant='subtitle1' fontWeight='600' sx={{ mb: 1 }}>
-                            毛玻璃强度
-                        </Typography>
+                        <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 1 }}>
+                            <Typography variant='subtitle1' fontWeight='600'>
+                                毛玻璃特效
+                            </Typography>
+                            <Box sx={{ flex: 1 }} />
+                            <FormControlLabel
+                                control={
+                                    <Switch
+                                        checked={glassEffects}
+                                        size='small'
+                                        onChange={e => onGlassEffectsChange(e.target.checked)}
+                                        inputProps={{ "aria-label": "毛玻璃特效" }}
+                                    />
+                                }
+                                label={glassEffects ? "开" : "关"}
+                                sx={{ mr: 0 }}
+                            />
+                        </Box>
                         <Typography variant='body2' color='text.secondary'>
                             模糊半径: {glassBlur}px（0 = 完全不模糊）
                         </Typography>
@@ -424,9 +444,12 @@ export default function SettingsDialog({
                             onChange={onGlassBlurChange}
                             aria-label='毛玻璃强度'
                             valueLabelDisplay='auto'
+                            disabled={!glassEffects}
                         />
                         <Typography variant='caption' color='text.secondary'>
-                            数值越大越朦胧。内容看不清时调小，或直接拖到 0 关掉模糊。
+                            {glassEffects
+                                ? "数值越大越朦胧。内容看不清时调小，或直接拖到 0 关掉模糊。"
+                                : "特效已关闭：不再实时模糊背后的画面，滚动更省，也不会在圆角边缘露出暗边。滑块只在开启时生效。"}
                         </Typography>
                     </Box>
 
