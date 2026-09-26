@@ -43,8 +43,65 @@ export default {
                         );
                     }
 
+                    // 还在锁定期就直接回绝，并告诉还要等多久
+                    const guard = await readLoginGuard(api);
+                    const now = Date.now();
+                    if (guard.until > now) {
+                        const waitSec = Math.ceil((guard.until - now) / 1000);
+                        return Response.json(
+                            {
+                                success: false,
+                                message: `登录尝试过于频繁，请 ${waitSec} 秒后再试`,
+                            },
+                            { status: 429, headers: { "Retry-After": String(waitSec) } }
+                        );
+                    }
+
                     const result = await api.login(loginData as LoginRequest);
-                    return Response.json(result);
+
+                    if (result.success) {
+                        // 登录成功就清零，别让之前的手滑一直累积
+                        if (guard.count > 0) await writeLoginGuard(api, { count: 0, until: 0 });
+                        return Response.json(result);
+                    }
+
+                    const count = guard.count + 1;
+                    const over = count - LOGIN_FREE_ATTEMPTS;
+                    const until =
+                        over > 0
+                            ? now +
+                              Math.min(
+                                  LOGIN_BASE_LOCK_MS * Math.pow(2, over - 1),
+                                  LOGIN_MAX_LOCK_MS
+                              )
+                            : 0;
+                    await writeLoginGuard(api, { count, until });
+
+                    // 三种状态文案要分清楚：还能试几次 / 这是最后一次 / 已经锁了。
+                    // （之前按「剩余次数」判断，第 5 次还没真锁上却说「已暂时锁定」）
+                    const left = LOGIN_FREE_ATTEMPTS - count;
+                    let message = result.message;
+                    let status = 401;
+                    if (until > 0) {
+                        const waitSec = Math.ceil((until - now) / 1000);
+                        message = `${result.message}，尝试次数过多，请 ${waitSec} 秒后再试`;
+                        status = 429;
+                    } else if (left > 0) {
+                        message = `${result.message}（还可尝试 ${left} 次）`;
+                    } else {
+                        message = `${result.message}，已达尝试上限，再失败一次将被临时锁定`;
+                    }
+
+                    return Response.json(
+                        { ...result, message },
+                        {
+                            status,
+                            headers:
+                                status === 429
+                                    ? { "Retry-After": String(Math.ceil((until - now) / 1000)) }
+                                    : undefined,
+                        }
+                    );
                 }
 
                 // 用应急重置码重设密码 - 不需要验证（忘了密码才用得到，本身就是登录页的入口）
@@ -711,6 +768,44 @@ function validateLogin(data: LoginInput): { valid: boolean; errors?: string[] } 
     }
 
     return { valid: errors.length === 0, errors };
+}
+
+// ============ 登录失败限速 ============
+// 连续输错会越等越久，避免密码被无限次猜。
+// 计数存在 configs 表的 auth.loginGuard 里 —— auth. 前缀既不返回给前端、也不进备份文件。
+const LOGIN_GUARD_KEY = "auth.loginGuard";
+// 前 5 次给手滑留余地，之后每次等待时间翻倍
+const LOGIN_FREE_ATTEMPTS = 5;
+const LOGIN_BASE_LOCK_MS = 60_000; // 第 6 次起锁 1 分钟
+const LOGIN_MAX_LOCK_MS = 30 * 60_000; // 最多 30 分钟
+
+interface LoginGuard {
+    count: number;
+    /** 解锁时刻（毫秒时间戳）；0 表示当前不在锁定期 */
+    until: number;
+}
+
+async function readLoginGuard(api: NavigationAPI): Promise<LoginGuard> {
+    try {
+        const raw = await api.getConfig(LOGIN_GUARD_KEY);
+        if (!raw) return { count: 0, until: 0 };
+        const parsed = JSON.parse(raw) as Partial<LoginGuard>;
+        return {
+            count: typeof parsed.count === "number" && parsed.count > 0 ? parsed.count : 0,
+            until: typeof parsed.until === "number" && parsed.until > 0 ? parsed.until : 0,
+        };
+    } catch {
+        // 读不出来就当没在锁定期：不能因为存储异常把正常用户挡在门外
+        return { count: 0, until: 0 };
+    }
+}
+
+async function writeLoginGuard(api: NavigationAPI, guard: LoginGuard): Promise<void> {
+    try {
+        await api.setConfig(LOGIN_GUARD_KEY, JSON.stringify(guard));
+    } catch {
+        // 写失败只影响限速强度，不影响登录本身
+    }
 }
 
 function validateGroup(data: GroupInput): {
