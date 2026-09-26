@@ -2232,14 +2232,18 @@ function App() {
     };
 
     // 每周自动备份开关（存在服务器，定时备份由 Worker 的 Cron 触发）
+    // 注意顺序：先翻转本地状态，再发请求。Switch 是受控组件，如果等 await 回来才
+    // setConfigs，从点下去到界面响应之间整整隔一个网络往返 —— 那就是「点一下卡一下」的来源。
+    // 请求失败再回滚成原值。
     const handleToggleAutoBackup = async (enabled: boolean) => {
+        const key = `${WEBDAV_CONFIG_PREFIX}autoBackup`;
+        const previous = configs[key] ?? "true";
+        const next = enabled ? "true" : "false";
+        setConfigs(prev => ({ ...prev, [key]: next }));
         try {
-            await api.setConfig(`${WEBDAV_CONFIG_PREFIX}autoBackup`, enabled ? "true" : "false");
-            setConfigs(prev => ({
-                ...prev,
-                [`${WEBDAV_CONFIG_PREFIX}autoBackup`]: enabled ? "true" : "false",
-            }));
+            await api.setConfig(key, next);
         } catch (error) {
+            setConfigs(prev => ({ ...prev, [key]: previous }));
             console.error("保存自动备份设置失败:", error);
             handleError("保存自动备份设置失败: " + (error instanceof Error ? error.message : "未知错误"));
         }
@@ -2248,21 +2252,20 @@ function App() {
     /**
      * 开/关「备份文件带上网站登录凭据」。
      * 存服务端配置（不是本机偏好），这样 Worker 里的每周定时备份也读得到同一个开关。
+     * 同样是乐观更新：开关先动、提示先弹，写库失败再回滚。
      */
     const handleToggleIncludeCredentials = async (enabled: boolean) => {
+        const previous = configs[BACKUP_CREDENTIALS_CONFIG] ?? "true";
+        const next = enabled ? "true" : "false";
+        setConfigs(prev => ({ ...prev, [BACKUP_CREDENTIALS_CONFIG]: next }));
+        notify(
+            enabled ? "以后的备份会带上网站账号密码" : "以后的备份不再包含网站账号密码",
+            "info"
+        );
         try {
-            await api.setConfig(BACKUP_CREDENTIALS_CONFIG, enabled ? "true" : "false");
-            setConfigs(prev => ({
-                ...prev,
-                [BACKUP_CREDENTIALS_CONFIG]: enabled ? "true" : "false",
-            }));
-            notify(
-                enabled
-                    ? "以后的备份会带上网站账号密码"
-                    : "以后的备份不再包含网站账号密码",
-                "info"
-            );
+            await api.setConfig(BACKUP_CREDENTIALS_CONFIG, next);
         } catch (error) {
+            setConfigs(prev => ({ ...prev, [BACKUP_CREDENTIALS_CONFIG]: previous }));
             console.error("保存备份设置失败:", error);
             handleError(
                 "保存备份设置失败: " + (error instanceof Error ? error.message : "未知错误")
