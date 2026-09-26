@@ -542,8 +542,10 @@ const SiteCard = memo(function SiteCard({
                     position: "absolute",
                     top: 8,
                     right: 8,
-                    minWidth: 32,
-                    minHeight: 32,
+                    // 跟着右下角那条缩一档（32 → 28）：卡角上三个浮层控件尺寸拉齐，
+                    // 紧凑密度下给下面的快捷条腾出竖直空间。小屏仍保 36px 好点。
+                    minWidth: { xs: 36, sm: 28 },
+                    minHeight: { xs: 36, sm: 28 },
                     p: 0,
                     bgcolor: "var(--glass-bg-hover)",
                     backdropFilter: "blur(6px)",
@@ -570,12 +572,14 @@ const SiteCard = memo(function SiteCard({
         notify(`已把「${site.name || site.url}」标记为可访问`, "success");
     };
 
-    // 星标按钮：加星后常显（并在分组里置顶），未加星时悬停才浮出
+    // 星标按钮：加星后常显（并在分组里置顶），未加星时悬停才浮出。
+    // 位置从左上角挪到右上角、紧挨「网站设置」左侧（right = 8 边距 + 28 按钮 + 6 间隙），
+    // 两个都是本机操作、放一排更好找；左上角也腾出来只留给多选勾选标记。
     const renderStarButton = () =>
         !isEditMode &&
         !isList &&
         !isWall &&
-        // 多选模式下左上角让给勾选标记，避免两个圆形叠在一起
+        // 多选模式下不显示（那里用右上角的星标徽标表示状态，避免两个星标打架）
         !selectMode && (
             <IconButton
                 className='nav-star-btn'
@@ -591,12 +595,14 @@ const SiteCard = memo(function SiteCard({
                 sx={{
                     position: "absolute",
                     top: 8,
-                    left: 8,
-                    // 原来 p 0.4 只有 21px，比 WCAG 2.5.8 的 24px 底线还小。
+                    // 右边距 8 + 设置按钮宽度 + 6 间隙：小屏按钮是 36，所以跟着换档，
+                    // 写死 42 的话小屏上会跟设置按钮压掉 2px
+                    right: { xs: 50, sm: 42 },
+                    // 原来是 p 0.4 只有 21px，比 WCAG 2.5.8 的 24px 底线还小。
                     // 靠 padding 推尺寸在 MUI 里不稳（size='small' 会插一脚），
-                    // 直接给死最小尺寸 + 内容居中
-                    minWidth: 32,
-                    minHeight: 32,
+                    // 直接给死尺寸 + 内容居中；28 与右边设置按钮对齐，卡角三个浮层控件同尺寸
+                    minWidth: { xs: 36, sm: 28 },
+                    minHeight: { xs: 36, sm: 28 },
                     p: 0,
                     color: starred ? "var(--accent)" : "text.secondary",
                     bgcolor: "var(--glass-bg-hover)",
@@ -769,10 +775,14 @@ const SiteCard = memo(function SiteCard({
                     : { bottom: 8 }),
                 display: "flex",
                 alignItems: "center",
-                // 按钮本身放大到 ~30px 后，把按钮间距收一点，整条不至于占满卡片下沿
-                gap: 0.1,
-                p: 0.35,
-                borderRadius: "12px",
+                // 这一条原来按 32px 按钮 + 2.8px 内边距做，整条 39.6px：
+                // 舒适密度（卡高 98）还留得住，紧凑密度（卡高 82）就直接顶到
+                // 右上角的设置按钮上（实测重叠 1.6px），列表视图里更是比 38px 的行还高。
+                // 收到 26px + 2px 内边距 = 整条 30px，各版式都留得出空隙，
+                // 同时仍高于 WCAG 2.5.8 的 24px 底线（小屏上另给 32px 保触控）。
+                gap: 0,
+                p: 0.25,
+                borderRadius: "10px",
                 bgcolor: "var(--glass-bg-hover)",
                 border: "1px solid var(--glass-border)",
                 backdropFilter: "blur(8px)",
@@ -786,7 +796,7 @@ const SiteCard = memo(function SiteCard({
                     size='small'
                     aria-label='复制链接'
                     onClick={e => handleQuickCopy(e, "链接", site.url)}
-                    sx={{ minWidth: 32, minHeight: 32, p: 0 }}
+                    sx={{ minWidth: { xs: 32, sm: 26 }, minHeight: { xs: 32, sm: 26 }, p: 0 }}
                 >
                     <LinkIcon sx={{ fontSize: 16 }} />
                 </IconButton>
@@ -797,7 +807,7 @@ const SiteCard = memo(function SiteCard({
                         size='small'
                         aria-label='复制账号'
                         onClick={e => handleQuickCopy(e, "账号", site.username)}
-                        sx={{ minWidth: 32, minHeight: 32, p: 0 }}
+                        sx={{ minWidth: { xs: 32, sm: 26 }, minHeight: { xs: 32, sm: 26 }, p: 0 }}
                     >
                         <PersonIcon sx={{ fontSize: 16 }} />
                     </IconButton>
@@ -809,7 +819,7 @@ const SiteCard = memo(function SiteCard({
                         size='small'
                         aria-label='复制密码'
                         onClick={e => handleQuickCopy(e, "密码", site.password)}
-                        sx={{ minWidth: 32, minHeight: 32, p: 0 }}
+                        sx={{ minWidth: { xs: 32, sm: 26 }, minHeight: { xs: 32, sm: 26 }, p: 0 }}
                     >
                         <KeyIcon sx={{ fontSize: 16 }} />
                     </IconButton>

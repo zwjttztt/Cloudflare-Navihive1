@@ -41,7 +41,10 @@ const railItemSx = {
     borderRadius: "10px",
     cursor: "pointer",
     textAlign: "left",
-    transition: "all .18s ease",
+    // 只过渡会真的变的这几个属性。写 transition: all 会把 outline-offset 也拉进补间：
+    // 下面那条「环向内收」的规则一变，环就从中途的 +2px 慢慢挪到 -2px，
+    // 过渡期间它还在容器外面，正好被滚动容器的 overflow 剪掉。
+    transition: "background-color .18s ease, color .18s ease, border-color .18s ease",
     "&:hover": {
         bgcolor: "var(--glass-bg-hover)",
         color: "text.primary",
@@ -131,7 +134,8 @@ export default function GroupNavRail({
                                     border: "1px solid transparent",
                                     cursor: "pointer",
                                     flexShrink: 0,
-                                    transition: "all .18s ease",
+                                    // 同上：别用 all，否则焦点环会跟着 outline-offset 一起补间
+                                    transition: "opacity .18s ease, transform .18s ease, background-color .18s ease",
                                     transform: active ? "scale(1.35)" : "scale(1)",
                                     bgcolor: tone,
                                     opacity: active ? 1 : 0.45,

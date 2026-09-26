@@ -103,7 +103,9 @@ export default function MobileTabBar({
                         cursor: "pointer",
                         bgcolor: item.active ? "action.selected" : "transparent",
                         color: item.active ? "var(--accent)" : "text.secondary",
-                        transition: "all .18s ease",
+                        // 显式列出属性：写 all 会连 outline-offset 一起补间，
+                        // 焦点环在中途还落在容器外面，容易被底部栏的边缘剪掉
+                        transition: "background-color .18s ease, color .18s ease",
                         "&:hover": { bgcolor: "action.hover", color: "text.primary" },
                     }}
                 >
