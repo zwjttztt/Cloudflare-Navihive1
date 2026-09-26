@@ -555,6 +555,15 @@ mark.nav-hl {
     transform: scale(0.94);
 }
 
+/* 网站设置里「已经加上的标签」：主色淡底，和右侧虚线的候选一眼区分开 */
+.nav-settings-dialog .nav-tag-added.MuiChip-root {
+    height: 24px;
+    font-size: 12px;
+    background-color: color-mix(in srgb, var(--accent) 12%, transparent);
+    border-color: color-mix(in srgb, var(--accent) 42%, transparent);
+    color: color-mix(in srgb, var(--accent) 92%, transparent);
+}
+
 /* 标签筛选栏末尾的「管理」入口 */
 .nav-tag-bar .nav-tag-manage.MuiChip-root .MuiChip-icon {
     font-size: 15px;
