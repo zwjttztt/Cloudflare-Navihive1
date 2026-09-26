@@ -318,10 +318,24 @@ export default function BackupDialog({
     const renderBackupTab = () => (
         <Stack spacing={1.5} sx={{ mt: 0.5, flex: 1, minHeight: 0 }}>
             <Box>
-                <Typography variant='subtitle2' fontWeight='600' gutterBottom>
-                    备份到本地
-                </Typography>
-                <Typography variant='caption' color='text.secondary' sx={{ display: "block", mb: 1 }}>
+                {/* 主按钮跟标题平齐：这块的操作就一个，放在区块底部反而要往下找 */}
+                <Stack direction='row' alignItems='center' justifyContent='space-between' spacing={1}>
+                    <Typography variant='subtitle2' fontWeight='600'>
+                        备份到本地
+                    </Typography>
+                    <Button
+                        size='small'
+                        variant='contained'
+                        startIcon={<DownloadIcon />}
+                        onClick={() => {
+                            onDownloadLocal();
+                            onNotify("备份文件已开始下载", "success");
+                        }}
+                    >
+                        下载备份文件
+                    </Button>
+                </Stack>
+                <Typography variant='caption' color='text.secondary' sx={{ display: "block", mt: 0.5, mb: 1 }}>
                     导出分组、站点、网站设置，以及本机的星标与标签。
                 </Typography>
 
@@ -363,16 +377,6 @@ export default function BackupDialog({
                             : "导出、上传、定时备份都不带网站的账号密码，恢复后需手动补填。"}
                     </Typography>
                 </Box>
-                <Button
-                    variant='contained'
-                    startIcon={<DownloadIcon />}
-                    onClick={() => {
-                        onDownloadLocal();
-                        onNotify("备份文件已开始下载", "success");
-                    }}
-                >
-                    下载备份文件
-                </Button>
             </Box>
 
             <Divider />
