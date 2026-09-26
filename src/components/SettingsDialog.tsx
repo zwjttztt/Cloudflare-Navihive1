@@ -82,6 +82,12 @@ interface SettingsDialogProps {
     /** 拼音搜索（本机偏好，打开即生效，不需要点保存） */
     pinyinSearch: boolean;
     onPinyinSearchChange: (enabled: boolean) => void;
+    /** 失效检测结果同步到服务端（打开即生效，不需要点保存） */
+    syncHealth: boolean;
+    onSyncHealthChange: (enabled: boolean) => void;
+    /** 星标 / 标签同步到服务端（同上） */
+    syncPrefs: boolean;
+    onSyncPrefsChange: (enabled: boolean) => void;
 }
 
 export default function SettingsDialog({
@@ -106,6 +112,10 @@ export default function SettingsDialog({
     saving = false,
     pinyinSearch,
     onPinyinSearchChange,
+    syncHealth,
+    onSyncHealthChange,
+    syncPrefs,
+    onSyncPrefsChange,
 }: SettingsDialogProps) {
     return (
         <Dialog
@@ -450,6 +460,63 @@ export default function SettingsDialog({
                             {glassEffects
                                 ? "数值越大越朦胧。内容看不清时调小，或直接拖到 0 关掉模糊。"
                                 : "特效已关闭：不再实时模糊背后的画面，滚动更省，也不会在圆角边缘露出暗边。滑块只在开启时生效。"}
+                        </Typography>
+                    </Box>
+
+                    {/* 多端同步：两项都是可选，默认关（关着的时候数据只在本机，不上传） */}
+                    <Box>
+                        <Typography variant='subtitle1' fontWeight='600' sx={{ mb: 0.5 }}>
+                            多端同步
+                        </Typography>
+                        <Typography
+                            variant='caption'
+                            color='text.secondary'
+                            sx={{ display: "block", mb: 1 }}
+                        >
+                            默认关闭，数据只留在这台设备的浏览器里。打开后会写进服务端数据库，
+                            换设备 / 换浏览器都能直接看到。开关即时生效，不用点保存。
+                        </Typography>
+
+                        <FormControlLabel
+                            control={
+                                <Switch
+                                    checked={syncHealth}
+                                    size='small'
+                                    onChange={e => onSyncHealthChange(e.target.checked)}
+                                    inputProps={{ "aria-label": "同步失效检测结果" }}
+                                />
+                            }
+                            label='失效检测结果'
+                            sx={{ display: "flex", mr: 0 }}
+                        />
+                        <Typography
+                            variant='caption'
+                            color='text.secondary'
+                            sx={{ display: "block", ml: 6, mb: 1 }}
+                        >
+                            记住哪些链接探测失败过（含「标记为可访问」的白名单），
+                            换设备后不用把整库链接重测一遍。
+                        </Typography>
+
+                        <FormControlLabel
+                            control={
+                                <Switch
+                                    checked={syncPrefs}
+                                    size='small'
+                                    onChange={e => onSyncPrefsChange(e.target.checked)}
+                                    inputProps={{ "aria-label": "同步星标与标签" }}
+                                />
+                            }
+                            label='星标与标签'
+                            sx={{ display: "flex", mr: 0 }}
+                        />
+                        <Typography
+                            variant='caption'
+                            color='text.secondary'
+                            sx={{ display: "block", ml: 6 }}
+                        >
+                            这两项按设计只存本机，清掉浏览器数据就没了。打开同步后可以找回来，
+                            多台设备之间也会取并集合并。
                         </Typography>
                     </Box>
 

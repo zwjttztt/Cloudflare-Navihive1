@@ -1,5 +1,6 @@
 // src/api/http.ts
 // 不使用外部JWT库，改为内置的crypto API
+import { normalizeUrl } from "../utils/url";
 
 // 定义D1数据库类型
 interface D1Database {
@@ -107,6 +108,14 @@ export interface ExportData {
     localPrefs?: LocalPrefsBackup;
 }
 
+/** 站点元信息（/api/meta 抓回来的：新增卡片时一键补全用） */
+export interface SiteMeta {
+    title: string;
+    description: string;
+    image: string;
+    icon: string;
+}
+
 // 首屏/刷新一次性返回的数据（分组 + 平铺的站点 + 配置）
 export interface BootstrapData {
     groups: Group[];
@@ -150,6 +159,29 @@ export const REMEMBER_TOKEN_TTL = 30 * 24 * 60 * 60;
 const SECRET_CONFIG_PREFIXES = ["auth.", "webdav."];
 
 /**
+ * 同样不进备份文件、但必须整键匹配的几个配置。
+ * 不能写进上面的前缀表：`link.health` 作为前缀会把 `link.healthSync` 一起匹配掉，
+ * 那个开关是要跟着备份走的（换了设备也保持原样）。
+ *
+ * - link.health / pref.starred / pref.tags 都是「服务端镜像」：
+ *   星标标签在备份里有专门的 localPrefs 字段承载，重复带一份只会让人看不懂；
+ *   失效记录则是可重测的临时数据，没必要让备份文件胖一圈。
+ */
+const SECRET_CONFIG_KEYS = ["link.health", "pref.starred", "pref.tags"];
+
+/**
+ * 「备份文件里要不要带上网站登录凭据」的配置键。
+ * 存服务端而不是只放前端，是为了让每周的定时备份（跑在 Worker 的 cron 里）也遵守同一个开关。
+ * 默认带上（保持老行为），只有显式写成 "false" 才抹掉。
+ */
+export const BACKUP_CREDENTIALS_CONFIG = "backup.includeCredentials";
+
+/** 去掉每个站点的账号密码，其它字段原样保留 */
+export function stripSiteCredentials(sites: Site[]): Site[] {
+    return sites.map(site => ({ ...site, username: "", password: "" }));
+}
+
+/**
  * 应急重置码（找回密码）相关。
  * 码本身来自部署环境变量 AUTH_RESET_CODE，推荐用 `wrangler secret put` 存，
  * 服务端只比对、绝不下发给前端，也不落到数据库。
@@ -182,7 +214,10 @@ function resetCodeEqual(input: string, expected: string): boolean {
 
 // 判断某个配置键是否属于敏感信息
 export function isSecretConfigKey(key: string): boolean {
-    return SECRET_CONFIG_PREFIXES.some(prefix => key.startsWith(prefix));
+    return (
+        SECRET_CONFIG_PREFIXES.some(prefix => key.startsWith(prefix)) ||
+        SECRET_CONFIG_KEYS.includes(key)
+    );
 }
 
 // 管理员凭据额外连正常的配置读取都不返回，避免出现「拿到配置就等于拿到密码」。
@@ -936,9 +971,13 @@ export class NavigationAPI {
             this.queryExportBundle()
         );
 
+        const withCreds = configs[BACKUP_CREDENTIALS_CONFIG] !== "false";
+
         return {
             groups,
-            sites,
+            // 关掉「备份含登录凭据」时把账号密码抹掉：备份文件是明文 JSON，
+            // 又会被 WebDAV 同步到网盘，凭据一旦进去就等于跟着走了
+            sites: withCreds ? sites : stripSiteCredentials(sites),
             configs: stripSecretConfigs(configs),
             version: EXPORT_VERSION,
             exportDate: new Date().toISOString(),
@@ -1086,9 +1125,17 @@ export function normalizeImportData(data: ExportData | Record<string, unknown>):
 
     const flatSites = Array.isArray(raw.sites) ? raw.sites : [];
 
+    // 导入这条路径完全绕开表单校验：备份文件可能被手改过、也可能是很老的版本。
+    // 入库前统一规范化（补 https:// / 挡危险协议）；规范化不过的直接把链接清空，
+    // 卡片会退化成「没有链接」，而不是「点一下执行脚本」。
+    const sites = (flatSites.length > 0 ? flatSites : nestedSites).map(site => {
+        const result = normalizeUrl(site.url || "");
+        return result.ok ? { ...site, url: result.url } : { ...site, url: "" };
+    });
+
     return {
         groups,
-        sites: flatSites.length > 0 ? flatSites : nestedSites,
+        sites,
         configs: raw.configs && typeof raw.configs === "object" ? raw.configs : {},
         version: raw.version || EXPORT_VERSION,
         exportDate: raw.exportDate || new Date().toISOString(),

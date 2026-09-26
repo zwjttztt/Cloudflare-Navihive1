@@ -4,6 +4,7 @@ import {
     LoginResponse,
     ExportData,
     BootstrapData,
+    SiteMeta,
     WebDavConfig,
     WebDavFile,
     WebDavResult,
@@ -409,6 +410,17 @@ export class MockNavigationClient {
 
     async webdavDelete(_filename: string, _config: Partial<WebDavConfig> = {}): Promise<WebDavResult> {
         return { success: false, message: "模拟环境不支持 WebDAV 备份" };
+    }
+
+    // 站点元信息抓取：模拟环境不发真实请求，给一份占位数据
+    async getSiteMeta(url: string): Promise<SiteMeta> {
+        let host = "";
+        try {
+            host = new URL(url).hostname.replace(/^www\./, "");
+        } catch {
+            host = url;
+        }
+        return { title: host || "示例站点", description: "", image: "", icon: "" };
     }
 
     // 数据导入

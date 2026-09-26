@@ -4,6 +4,7 @@ import {
     LoginResponse,
     ExportData,
     BootstrapData,
+    SiteMeta,
     WebDavConfig,
     WebDavFile,
     WebDavResult,
@@ -354,5 +355,25 @@ export class NavigationClient {
             method: "POST",
             body: JSON.stringify({ ...config, filename }),
         });
+    }
+
+    /**
+     * 抓目标站点的标题 / 描述 / 图标（新增卡片时一键补全）。
+     * 这里不走通用 request()：meta 接口失败时会带一句人能看懂的原因
+     * （站点拒绝了 / 超时 / 网址不合法），直接抛给调用方展示。
+     */
+    async getSiteMeta(url: string): Promise<SiteMeta> {
+        const headers: Record<string, string> = {};
+        if (this.token) headers["Authorization"] = `Bearer ${this.token}`;
+
+        const response = await fetch(
+            `${this.baseUrl}/meta?url=${encodeURIComponent(url)}`,
+            { headers }
+        );
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            throw new Error(data?.error || `抓取失败（${response.status}）`);
+        }
+        return data as SiteMeta;
     }
 }

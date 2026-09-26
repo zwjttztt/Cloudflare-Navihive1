@@ -1,5 +1,32 @@
 # 静态资源响应头（Cloudflare Workers 静态资源会读取本文件）
-# 目的：减少重复访问时的校验开销，加快页面加载。
+# 分两块：全站安全头（/*）+ 各路径缓存策略。
+# 注意：规则按顺序生效，同名头后面覆盖前面，所以安全头放在最前面。
+
+# ---------------------------------------------------------------------------
+# 全站安全头
+# ---------------------------------------------------------------------------
+/*
+  # 内容安全策略。几条关键取舍：
+  # - style 必须留 'unsafe-inline'：MUI 用的是 emotion，样式是运行时插 <style> 的，
+  #   不留这条整个界面会裸奔（去掉后所有组件失去样式）。
+  # - script 不需要 'unsafe-inline'：入口是 <script type="module" src>，没有内联脚本。
+  # - img / connect 放开 https:：图标 API 和 WebDAV 备份都是用户自己配的第三方 https 地址。
+  # - object-src 'none' + base-uri 'self' 挡插件和 <base> 劫持；form-action 'self' 挡表单外投。
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' https:; media-src 'self' https:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; frame-src 'none'; worker-src 'self'; manifest-src 'self'
+  # 别让浏览器去猜 MIME 类型（把 txt 当 js 执行那一类问题）
+  X-Content-Type-Options: nosniff
+  # 老的点击劫持防护；现代浏览器看 CSP 的 frame-ancestors，两条一起给，兼容旧客户端
+  X-Frame-Options: DENY
+  # 跳外链时只带源、不带完整路径
+  Referrer-Policy: strict-origin-when-cross-origin
+  # 这个站点用不到定位 / 摄像头 / 麦克风，直接关掉
+  Permissions-Policy: geolocation=(), camera=(), microphone=(), payment=(), usb=()
+  # 跨源窗口隔离。打开外链用的是 target=_blank + noopener，本来就不持对方引用，加上无害
+  Cross-Origin-Opener-Policy: same-origin
+
+# ---------------------------------------------------------------------------
+# 缓存策略
+# ---------------------------------------------------------------------------
 
 # Vite 产物带内容哈希，可长期强缓存，浏览器不再回源校验
 /assets/*
@@ -10,6 +37,10 @@
   Cache-Control: public, max-age=0, must-revalidate
 
 /index.html
+  Cache-Control: public, max-age=0, must-revalidate
+
+# Service Worker 不能强缓存，否则发新版后老客户端拿不到新壳子
+/sw.js
   Cache-Control: public, max-age=0, must-revalidate
 
 # 图标与清单：很少变，缓存久一点
