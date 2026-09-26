@@ -213,6 +213,24 @@ export async function cacheIconBlob(url: string): Promise<void> {
     }
 }
 
+/** 图标代理地址的前缀：第三方图标从这里转一圈变成同源响应 */
+const ICON_PROXY = "/api/icon?u=";
+
+/**
+ * 第三方图标统一走本站 /api/icon 代理转一手。
+ *
+ * 为什么要转：跨域图片的响应是 opaque 的，前端 fetch 不到内容，
+ * IndexedDB 里也就存不下 blob；转过一手之后是同源资源，
+ * cacheIconBlob 能把它存下来，二次打开这块是零网络请求。
+ * 已经是同源的（比如用户自己填的相对路径）不用多绕一圈。
+ */
+const proxied = (url: string): string => {
+    if (!url) return url;
+    if (isSameOrigin(url)) return url;
+    if (url.startsWith("/")) return url;
+    return `${ICON_PROXY}${encodeURIComponent(url)}`;
+};
+
 /**
  * 图标候选源：按「越靠前越可信」排序，前一个加载不出来就换下一个。
  * 顺序：站点自带图标 → 配置的图标 API → 站点根目录 favicon → 公共 favicon 服务
@@ -224,7 +242,7 @@ export function iconCandidates(
     const list: string[] = [];
     const push = (v?: string) => {
         const value = (v || "").trim();
-        if (value && !list.includes(value)) list.push(value);
+        if (value && !list.includes(value)) list.push(proxied(value));
     };
 
     push(site.icon);
@@ -239,11 +257,11 @@ export function iconCandidates(
  * 光是排队等 favicon 超时就能把首屏拖慢好几秒。
  */
 export function iconFallbackCandidates(site: { url?: string }): string[] {
-    const list: string[] = [];
+    const raw: string[] = [];
     const domain = getDomainFromUrl(site.url || "");
     if (domain) {
-        list.push(`https://${domain}/favicon.ico`);
-        list.push(`https://www.google.com/s2/favicons?domain=${domain}&sz=64`);
+        raw.push(`https://${domain}/favicon.ico`);
+        raw.push(`https://www.google.com/s2/favicons?domain=${domain}&sz=64`);
     }
-    return list;
+    return raw.map(proxied);
 }
