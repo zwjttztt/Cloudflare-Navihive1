@@ -35,7 +35,8 @@ const railItemSx = {
     minWidth: 0,
     maxWidth: 148,
     px: 1,
-    py: 0.6,
+    // 高度给到 32px 以上：原来 py 0.6 只有 28px，比 WCAG 建议的点击尺寸还小
+    py: 0.85,
     border: "1px solid transparent",
     borderRadius: "10px",
     cursor: "pointer",
@@ -63,6 +64,7 @@ export default function GroupNavRail({
     if (railCollapsed) {
         return (
             <Box
+                component='nav'
                 className='nav-group-rail'
                 data-collapsed='true'
                 aria-label='分组快速跳转（已收起）'
@@ -149,6 +151,7 @@ export default function GroupNavRail({
     return (
         <Box
             className='nav-group-rail'
+            component='nav'
             data-collapsed='false'
             aria-label='分组快速跳转'
             sx={{

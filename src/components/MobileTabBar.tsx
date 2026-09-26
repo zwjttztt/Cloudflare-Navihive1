@@ -60,6 +60,8 @@ export default function MobileTabBar({
 
     return (
         <Paper
+            component='nav'
+            aria-label='主导航'
             className='nav-mobile-tabbar'
             elevation={0}
             sx={{
