@@ -3545,174 +3545,241 @@ function App() {
                         onSave={group => handleCreateGroup(group.name)}
                     />
 
-                    {/* 新增站点对话框 */}
-                    <Dialog 
-                        open={openAddSite} 
-                        onClose={handleCloseAddSite} 
-                        maxWidth='md' 
-                        fullWidth
-                        PaperProps={{
-                            sx: {
-                                m: { xs: 2, sm: 'auto' },
-                                width: { xs: 'calc(100% - 32px)', sm: 'auto' }
-                            }
-                        }}
-                    >
-                        <DialogTitle>
-                            新增站点
+                    {/* 新增站点对话框：字段顺序与「网站设置」对齐
+                        （名称 → 链接 → 图标 → 描述 → 备注 → 分隔线 → 登录凭据），宽度也统一成 600px */}
+                    <Dialog open={openAddSite} onClose={handleCloseAddSite} maxWidth='sm' fullWidth>
+                        <DialogTitle
+                            sx={{
+                                display: "flex",
+                                justifyContent: "space-between",
+                                alignItems: "center",
+                                gap: 1,
+                                px: 3,
+                                pt: 2,
+                                pb: 1,
+                            }}
+                        >
+                            <Typography variant='h6' component='div' fontWeight='600'>
+                                新增站点
+                            </Typography>
                             <IconButton
-                                aria-label='close'
+                                color='inherit'
                                 onClick={handleCloseAddSite}
-                                sx={{
-                                    position: "absolute",
-                                    right: 8,
-                                    top: 8,
-                                }}
+                                aria-label='关闭'
+                                size='small'
                             >
                                 <CloseIcon />
                             </IconButton>
                         </DialogTitle>
-                        <DialogContent>
-                            <DialogContentText sx={{ mb: 2 }}>请输入新站点的信息</DialogContentText>
-                            <Stack spacing={2}>
-                                <Box sx={{ display: 'flex', gap: 2, flexDirection: { xs: 'column', sm: 'row' } }}>
+
+                        <Divider />
+
+                        <DialogContent
+                            sx={{
+                                pt: 2,
+                                pb: 1,
+                                // 整体收紧，避免出现上下滚动
+                                "& .MuiInputBase-input": { fontSize: 14 },
+                                "& .MuiInputLabel-root": { fontSize: 14 },
+                                "& .MuiFormHelperText-root": { fontSize: 12 },
+                            }}
+                        >
+                            <Stack spacing={1.5}>
+                                {/* 站点名称 + 站点 URL：最核心的两项并排，一眼就能填完 */}
+                                <Box
+                                    sx={{
+                                        display: "flex",
+                                        gap: 1.5,
+                                        flexDirection: { xs: "column", sm: "row" },
+                                    }}
+                                >
                                     <Box sx={{ flex: 1 }}>
                                         <TextField
                                             autoFocus
-                                            margin='dense'
                                             id='site-name'
                                             name='name'
                                             label='站点名称'
-                                            type='text'
+                                            required
                                             fullWidth
+                                            size='small'
+                                            type='text'
                                             variant='outlined'
+                                            placeholder='给它起个名字'
                                             value={newSite.name}
                                             onChange={handleSiteInputChange}
                                         />
                                     </Box>
                                     <Box sx={{ flex: 1 }}>
                                         <TextField
-                                            margin='dense'
                                             id='site-url'
                                             name='url'
                                             label='站点URL'
-                                            type='url'
+                                            required
                                             fullWidth
+                                            size='small'
+                                            type='url'
                                             variant='outlined'
+                                            placeholder='https://example.com'
                                             value={newSite.url}
                                             onChange={handleSiteInputChange}
                                         />
                                     </Box>
                                 </Box>
-                                <Box sx={{ display: 'flex', gap: 1, alignItems: 'flex-start' }}>
-                                    <TextField
-                                        margin='dense'
-                                        id='site-icon'
-                                        name='icon'
-                                        label='图标URL'
-                                        type='url'
-                                        fullWidth
-                                        variant='outlined'
-                                        value={newSite.icon}
-                                        onChange={handleSiteInputChange}
-                                        placeholder='填好站点URL后自动生成，也可点右侧按钮重新获取'
-                                    />
-                                    <Tooltip title='根据网站链接一键获取图标URL'>
-                                        <span>
-                                            <IconButton
-                                                onClick={handleFetchNewSiteIcon}
-                                                disabled={!newSite.url}
-                                                aria-label='根据网站链接获取图标URL'
-                                                sx={{ mt: 1 }}
-                                            >
-                                                <AutoFixHighIcon />
-                                            </IconButton>
-                                        </span>
-                                    </Tooltip>
-                                </Box>
+
+                                {/* 图标 URL：紧跟站点 URL（它由链接推导而来），魔棒按钮放进输入框内，不再悬在外面 */}
                                 <TextField
-                                    margin='dense'
-                                    id='site-description'
-                                    name='description'
-                                    label='站点描述'
-                                    type='text'
+                                    id='site-icon'
+                                    name='icon'
+                                    label='图标URL'
+                                    InputLabelProps={{ shrink: true }}
                                     fullWidth
+                                    size='small'
+                                    type='url'
                                     variant='outlined'
-                                    value={newSite.description}
+                                    placeholder='填好站点URL后自动生成'
+                                    value={newSite.icon}
                                     onChange={handleSiteInputChange}
-                                />
-                                <Box sx={{ display: 'flex', gap: 2, flexDirection: { xs: 'column', sm: 'row' } }}>
-                                    <Box sx={{ flex: 1 }}>
-                                        <TextField
-                                            margin='dense'
-                                            id='site-username'
-                                            name='username'
-                                            label='网站账号'
-                                            type='text'
-                                            fullWidth
-                                            variant='outlined'
-                                            value={newSite.username || ""}
-                                            onChange={handleSiteInputChange}
-                                            autoComplete='off'
-                                            placeholder='登录用户名 / 邮箱（可留空）'
-                                        />
-                                    </Box>
-                                    <Box sx={{ flex: 1 }}>
-                                        <TextField
-                                            margin='dense'
-                                            id='site-password'
-                                            name='password'
-                                            label='网站密码'
-                                            type={showNewSitePassword ? "text" : "password"}
-                                            fullWidth
-                                            variant='outlined'
-                                            value={newSite.password || ""}
-                                            onChange={handleSiteInputChange}
-                                            autoComplete='new-password'
-                                            placeholder='登录密码（可留空）'
-                                            InputProps={{
-                                                endAdornment: (
-                                                    <InputAdornment position='end'>
+                                    InputProps={{
+                                        endAdornment: (
+                                            <InputAdornment position='end'>
+                                                <Tooltip title='根据网站链接一键获取图标URL'>
+                                                    <span>
                                                         <IconButton
                                                             size='small'
                                                             edge='end'
-                                                            onClick={() =>
-                                                                setShowNewSitePassword(prev => !prev)
-                                                            }
-                                                            aria-label={
-                                                                showNewSitePassword
-                                                                    ? "隐藏密码"
-                                                                    : "显示密码"
-                                                            }
+                                                            onClick={handleFetchNewSiteIcon}
+                                                            disabled={!newSite.url}
+                                                            aria-label='根据网站链接获取图标URL'
                                                         >
-                                                            {showNewSitePassword ? (
-                                                                <VisibilityOffIcon fontSize='small' />
-                                                            ) : (
-                                                                <VisibilityIcon fontSize='small' />
-                                                            )}
+                                                            <AutoFixHighIcon fontSize='small' />
                                                         </IconButton>
-                                                    </InputAdornment>
-                                                ),
-                                            }}
-                                        />
-                                    </Box>
-                                </Box>
+                                                    </span>
+                                                </Tooltip>
+                                            </InputAdornment>
+                                        ),
+                                    }}
+                                />
+
+                                {/* 站点描述 + 备注：两块说明文字挨在一起 */}
                                 <TextField
-                                    margin='dense'
+                                    id='site-description'
+                                    name='description'
+                                    label='站点描述'
+                                    fullWidth
+                                    size='small'
+                                    type='text'
+                                    variant='outlined'
+                                    placeholder='一句话说明这个网站是干什么的'
+                                    value={newSite.description}
+                                    onChange={handleSiteInputChange}
+                                />
+
+                                <TextField
                                     id='site-notes'
                                     name='notes'
                                     label='备注'
-                                    type='text'
                                     fullWidth
+                                    size='small'
                                     multiline
                                     rows={2}
                                     variant='outlined'
+                                    placeholder='可选的私人备注'
                                     value={newSite.notes}
                                     onChange={handleSiteInputChange}
                                 />
+
+                                <Divider />
+
+                                {/* 登录凭据：可留空，所以放在最后 */}
+                                <Box>
+                                    <Box
+                                        sx={{
+                                            display: "flex",
+                                            alignItems: "baseline",
+                                            justifyContent: "space-between",
+                                            gap: 1,
+                                            flexWrap: "wrap",
+                                            mb: 1,
+                                        }}
+                                    >
+                                        <Typography variant='subtitle2' fontWeight='600'>
+                                            登录凭据
+                                        </Typography>
+                                        <Typography
+                                            variant='caption'
+                                            color='text.secondary'
+                                            sx={{ textAlign: "right", flex: "1 1 auto" }}
+                                        >
+                                            可留空，保存后能在卡片上一键复制。
+                                        </Typography>
+                                    </Box>
+                                    <Box
+                                        sx={{
+                                            display: "flex",
+                                            gap: 1.5,
+                                            flexDirection: { xs: "column", sm: "row" },
+                                        }}
+                                    >
+                                        <Box sx={{ flex: 1 }}>
+                                            <TextField
+                                                id='site-username'
+                                                name='username'
+                                                label='网站账号'
+                                                fullWidth
+                                                size='small'
+                                                type='text'
+                                                variant='outlined'
+                                                placeholder='登录用户名 / 邮箱（可留空）'
+                                                value={newSite.username || ""}
+                                                onChange={handleSiteInputChange}
+                                                autoComplete='off'
+                                            />
+                                        </Box>
+                                        <Box sx={{ flex: 1 }}>
+                                            <TextField
+                                                id='site-password'
+                                                name='password'
+                                                label='网站密码'
+                                                fullWidth
+                                                size='small'
+                                                type={showNewSitePassword ? "text" : "password"}
+                                                variant='outlined'
+                                                placeholder='登录密码（可留空）'
+                                                value={newSite.password || ""}
+                                                onChange={handleSiteInputChange}
+                                                autoComplete='new-password'
+                                                InputProps={{
+                                                    endAdornment: (
+                                                        <InputAdornment position='end'>
+                                                            <IconButton
+                                                                size='small'
+                                                                edge='end'
+                                                                onClick={() =>
+                                                                    setShowNewSitePassword(prev => !prev)
+                                                                }
+                                                                aria-label={
+                                                                    showNewSitePassword
+                                                                        ? "隐藏密码"
+                                                                        : "显示密码"
+                                                                }
+                                                            >
+                                                                {showNewSitePassword ? (
+                                                                    <VisibilityOffIcon fontSize='small' />
+                                                                ) : (
+                                                                    <VisibilityIcon fontSize='small' />
+                                                                )}
+                                                            </IconButton>
+                                                        </InputAdornment>
+                                                    ),
+                                                }}
+                                            />
+                                        </Box>
+                                    </Box>
+                                </Box>
                             </Stack>
                         </DialogContent>
-                        <DialogActions sx={{ px: 3, pb: 3 }}>
+
+                        <DialogActions sx={{ px: 3, pb: 2.5, pt: 1, gap: 1.5 }}>
                             <Button onClick={handleCloseAddSite} variant='outlined'>
                                 取消
                             </Button>
