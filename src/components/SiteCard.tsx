@@ -543,9 +543,10 @@ const SiteCard = memo(function SiteCard({
                     top: 8,
                     right: 8,
                     // 跟着右下角那条缩一档（32 → 28）：卡角上三个浮层控件尺寸拉齐，
-                    // 紧凑密度下给下面的快捷条腾出竖直空间。小屏仍保 36px 好点。
-                    minWidth: { xs: 36, sm: 28 },
-                    minHeight: { xs: 36, sm: 28 },
+                    // 紧凑密度下给下面的快捷条腾出竖直空间。小屏给 32（它上面的快捷条也是 32），
+                    // 本来写 36 时窄屏只剩 1.1px 间隙，稍微长一点儿的描述就会碰上。
+                    minWidth: { xs: 32, sm: 28 },
+                    minHeight: { xs: 32, sm: 28 },
                     p: 0,
                     bgcolor: "var(--glass-bg-hover)",
                     backdropFilter: "blur(6px)",
@@ -595,14 +596,14 @@ const SiteCard = memo(function SiteCard({
                 sx={{
                     position: "absolute",
                     top: 8,
-                    // 右边距 8 + 设置按钮宽度 + 6 间隙：小屏按钮是 36，所以跟着换档，
-                    // 写死 42 的话小屏上会跟设置按钮压掉 2px
-                    right: { xs: 50, sm: 42 },
+                    // 右边距 8 + 设置按钮宽度 + 6 间隙：小屏按钮是 32，所以跟着换档，
+                    // 写死 42 的话小屏上会跟设置按钮压掉
+                    right: { xs: 46, sm: 42 },
                     // 原来是 p 0.4 只有 21px，比 WCAG 2.5.8 的 24px 底线还小。
                     // 靠 padding 推尺寸在 MUI 里不稳（size='small' 会插一脚），
                     // 直接给死尺寸 + 内容居中；28 与右边设置按钮对齐，卡角三个浮层控件同尺寸
-                    minWidth: { xs: 36, sm: 28 },
-                    minHeight: { xs: 36, sm: 28 },
+                    minWidth: { xs: 32, sm: 28 },
+                    minHeight: { xs: 32, sm: 28 },
                     p: 0,
                     color: starred ? "var(--accent)" : "text.secondary",
                     bgcolor: "var(--glass-bg-hover)",
