@@ -30,12 +30,12 @@ import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import ExpandLessIcon from "@mui/icons-material/ExpandLess";
 import EmptyArt from "./EmptyArt";
 import { useUIPrefs } from "../context/UIPrefsContext";
+import DeleteSweepIcon from "@mui/icons-material/DeleteSweep";
 import {
     COLLAPSED_EVENT,
     readCollapsedGroupIds,
     writeCollapsedGroupIds,
 } from "../utils/collapse";
-import { dayBucketOf, recentVisitCount, type DayBucket } from "../utils/time";
 
 // 虚拟「最近访问」分组的 id（本地统计出来，不存在于数据库）
 const RECENT_GROUP_ID = -1;
@@ -78,7 +78,12 @@ const GroupCard: React.FC<GroupCardProps> = ({
     accentColor = "",
     onAccentChange,
 }) => {
-    const { viewMode, density, visits } = useUIPrefs();
+    const { viewMode, density, clearVisits } = useUIPrefs();
+
+    /** 一键清空「最近访问」：清掉本机访问统计，分组随之消失（不弹提示，肉眼可见） */
+    const handleClearRecent = () => {
+        clearVisits();
+    };
     const isCompact = density === "compact";
     // 列表视图下卡片挨得更紧，分组内间距同步收一档
     const gridGap = viewMode === "list" ? (isCompact ? -0.25 : 0) : isCompact ? -0.5 : -1;
@@ -240,7 +245,8 @@ const GroupCard: React.FC<GroupCardProps> = ({
     // 渲染站点卡片区域
     const renderSites = () => {
         // 跨分组排序模式：由父级统一 DndContext 驱动，所有分组的卡片都可拖拽
-        if (globalSiteSort) {
+        // （「最近访问」是本地统计的虚拟分组，永远排除在外：既不能移入也不能移出）
+        if (globalSiteSort && !isVirtualGroup) {
             return (
                 <Box ref={setGroupDropRef} sx={{ width: "100%" }}>
                     <SortableContext
@@ -398,63 +404,28 @@ const GroupCard: React.FC<GroupCardProps> = ({
             );
         }
 
-        // 「最近访问」虚拟分组：7 天内点开次数最多的前 10 个，
-        // 组内再按 今天 / 昨天 / 更早 分三小节，每节内部按点击次数排序
+        // 「最近访问」虚拟分组：由 App 按 7 天内点击次数倒序取好前 10 个，
+        // 这里保持原顺序平铺，不再分「今天 / 昨天 / 更早」小节
         if (group.id === RECENT_GROUP_ID) {
-            const buckets: Record<DayBucket, Site[]> = {
-                today: [],
-                yesterday: [],
-                earlier: [],
-            };
-            for (const site of sitesToRender) {
-                const stat = visits[String(site.id)];
-                buckets[dayBucketOf(stat?.last ?? 0)].push(site);
-            }
-            for (const key of Object.keys(buckets) as DayBucket[]) {
-                buckets[key].sort(
-                    (a, b) =>
-                        recentVisitCount(visits[String(b.id)]) -
-                        recentVisitCount(visits[String(a.id)])
-                );
-            }
-
-            const sections: { key: DayBucket; title: string }[] = [
-                { key: "today", title: "今天" },
-                { key: "yesterday", title: "昨天" },
-                { key: "earlier", title: "更早" },
-            ];
-
             return (
-                <Box>
-                    {sections.map(section =>
-                        buckets[section.key].length === 0 ? null : (
-                            <Box
-                                key={section.key}
-                                sx={{ mb: 2.5, "&:last-of-type": { mb: 0 } }}
-                            >
-                                <Box className='nav-subsection-title'>{section.title}</Box>
-                                <Box
-                                    sx={{
-                                        display: viewMode === "list" ? "block" : "flex",
-                                        flexWrap: "wrap",
-                                        margin: gridGap,
-                                    }}
-                                >
-                                    {buckets[section.key].map(site => (
-                                        <Box key={site.id} sx={cardBoxSx}>
-                                            <SiteCard
-                                                site={site}
-                                                onUpdate={onUpdate}
-                                                onDelete={onDelete}
-                                                isEditMode={false}
-                                                highlight={searchQuery}
-                                            />
-                                        </Box>
-                                    ))}
-                                </Box>
-                            </Box>
-                        )
-                    )}
+                <Box
+                    sx={{
+                        display: viewMode === "list" ? "block" : "flex",
+                        flexWrap: "wrap",
+                        margin: gridGap,
+                    }}
+                >
+                    {sitesToRender.map(site => (
+                        <Box key={site.id} sx={cardBoxSx}>
+                            <SiteCard
+                                site={site}
+                                onUpdate={onUpdate}
+                                onDelete={onDelete}
+                                isEditMode={false}
+                                highlight={searchQuery}
+                            />
+                        </Box>
+                    ))}
                 </Box>
             );
         }
@@ -543,10 +514,11 @@ const GroupCard: React.FC<GroupCardProps> = ({
                     py: 1,
                     px: 1,
                     mx: -1,
-                    borderRadius: 2,
-                    bgcolor: "var(--glass-bg)",
-                    backdropFilter: "blur(10px)",
-                    WebkitBackdropFilter: "blur(10px)",
+                    // 与分组面板同色：这里只负责「卡片滑过时把背后糊掉」，
+                    // 不再额外垫一层比面板更白的底色
+                    bgcolor: "transparent",
+                    backdropFilter: "blur(8px)",
+                    WebkitBackdropFilter: "blur(8px)",
                 }}
             >
                 <Box
@@ -620,7 +592,22 @@ const GroupCard: React.FC<GroupCardProps> = ({
                         justifyContent: { xs: 'flex-start', sm: 'flex-end' }
                     }}
                 >
-                    {isCurrentEditingGroup ? (
+                    {/* 「最近访问」是本地统计出来的名单，只给一个一键清空 */}
+                    {sortMode === "None" && group.id === RECENT_GROUP_ID ? (
+                        <Button
+                            variant='outlined'
+                            color='inherit'
+                            size='small'
+                            startIcon={<DeleteSweepIcon />}
+                            onClick={handleClearRecent}
+                            sx={{
+                                minWidth: "auto",
+                                fontSize: { xs: "0.75rem", sm: "0.875rem" },
+                            }}
+                        >
+                            清空
+                        </Button>
+                    ) : isCurrentEditingGroup ? (
                         <Button
                             variant='contained'
                             color='primary'

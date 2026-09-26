@@ -1,20 +1,9 @@
 // src/utils/time.ts
-// 「最近访问」分组的时间分区与统计窗口用到的日期工具。
-export type DayBucket = "today" | "yesterday" | "earlier";
+// 「最近访问」分组的统计窗口用到的日期工具。
 
 const startOfDay = (ts: number) => {
     const d = new Date(ts);
     return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
-};
-
-/** 把时间戳归到「今天 / 昨天 / 更早」三档 */
-export const dayBucketOf = (ts: number): DayBucket => {
-    if (!ts) return "earlier";
-    const today = startOfDay(Date.now());
-    const day = startOfDay(ts);
-    if (day >= today) return "today";
-    if (day >= today - 86400000) return "yesterday";
-    return "earlier";
 };
 
 /** 「最近访问」分组只看最近这么多天的点击 */

@@ -1680,9 +1680,9 @@ function App() {
             realGroups.map(g => g.id),
             next
         );
-        notify(next ? "已折叠全部分组" : "已展开全部分组", "success");
+        // 折叠 / 展开是即时可见的操作，不再弹提示打扰
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [allGroupsCollapsed, groups, notify]);
+    }, [allGroupsCollapsed, groups]);
 
     // 命令面板：站点跳转 + 常用操作，键盘党不用摸鼠标
     const commands = useMemo<CommandItem[]>(() => {
@@ -1800,7 +1800,7 @@ function App() {
                 section: "操作",
                 run: () => {
                     clearVisits();
-                    notify("已清除访问记录", "success");
+                    // 清除访问记录不弹提示：「最近访问」分组会当场消失，本身就是反馈
                 },
             },
         ];
@@ -2242,13 +2242,18 @@ function App() {
                                         width: headerCompact
                                             ? { xs: "100%", sm: 140, md: 170 }
                                             : { xs: "100%", sm: 180, md: 220 },
-                                        bgcolor: headerCompact
-                                            ? "var(--glass-bg-hover)"
-                                            : "var(--glass-bg)",
                                         transition: "width .25s ease",
-                                        backdropFilter: "blur(10px)",
-                                        WebkitBackdropFilter: "blur(10px)",
-                                        "& .MuiOutlinedInput-root": { borderRadius: "14px" },
+                                        // 毛玻璃底色必须和圆角一起挂在输入框本体上：
+                                        // 放在外层 FormControl 上会在圆角外面露出一块直角白底
+                                        "& .MuiOutlinedInput-root": {
+                                            borderRadius: "14px",
+                                            bgcolor: headerCompact
+                                                ? "var(--glass-bg-hover)"
+                                                : "var(--glass-bg)",
+                                            backdropFilter: "blur(10px)",
+                                            WebkitBackdropFilter: "blur(10px)",
+                                            transition: "background-color .25s ease",
+                                        },
                                     }}
                                 />
 
@@ -2498,7 +2503,7 @@ function App() {
                                         <MenuItem
                                             onClick={() => {
                                                 clearVisits();
-                                                notify("已清除访问记录", "success");
+                                                // 清除访问记录不弹提示：「最近访问」分组会当场消失，本身就是反馈
                                             }}
                                         >
                                             <ListItemIcon>
@@ -3411,7 +3416,7 @@ function App() {
                         }}
                         onClear={() => {
                             clearVisits();
-                            notify("已清除访问记录", "success");
+                            // 清除访问记录不弹提示：「最近访问」分组会当场消失，本身就是反馈
                         }}
                     />
 
