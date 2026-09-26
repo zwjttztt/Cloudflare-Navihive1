@@ -152,6 +152,41 @@ body {
     border-radius: 6px;
 }
 
+/* 「跳到网站列表」：键盘用户的第一站。
+   平时移到视口外藏起来（不能用 display:none —— 那样连 Tab 都收不到），
+   被聚焦时滑回左上角。读屏软件无论显隐都能读到它。 */
+.nav-skip-link {
+    position: fixed;
+    top: 8px;
+    left: 8px;
+    z-index: 2000;
+    padding: 10px 16px;
+    font-size: 14px;
+    font-weight: 500;
+    line-height: 1;
+    text-decoration: none;
+    color: #fff;
+    background: var(--accent);
+    border-radius: 10px;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+    transform: translateY(-220%);
+    transition: transform 0.18s ease;
+}
+
+html.dark .nav-skip-link {
+    color: #0b1220;
+}
+
+.nav-skip-link:focus {
+    transform: translateY(0);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .nav-skip-link {
+        transition: none;
+    }
+}
+
 /* 卡片这类自定义容器本身有圆角，焦点环跟着圆角走才不显得生硬 */
 .nav-card-in:focus-visible {
     border-radius: var(--card-radius);
@@ -723,5 +758,73 @@ mark.nav-hl {
 .nav-card-in:hover .nav-card-icon {
     transform: translateY(-2px) scale(1.07);
     filter: drop-shadow(0 4px 8px color-mix(in srgb, var(--accent) 30%, transparent));
+}
+
+/* ============================================================
+   打印：只留分组与站点清单
+   屏幕上那些靠 hover / 合成层实现的东西（毛玻璃、阴影、悬浮按钮、
+   背景光晕）印到纸上一律变成灰块或者干脆消失，这里统一处理掉。
+   ============================================================ */
+@media print {
+    /* 顶栏（搜索、视图切换）、锚点栏、底部导航、悬浮控件、弹窗：不进纸面 */
+    header,
+    .nav-aurora,
+    .nav-skip-link,
+    .nav-scroll-progress,
+    .nav-back-to-top,
+    .nav-group-rail,
+    .nav-mobile-tabbar,
+    .nav-card-actions,
+    .nav-settings-btn,
+    .nav-star-btn,
+    .nav-select-mark,
+    .nav-star-badge,
+    .MuiModal-root,
+    .MuiSnackbar-root,
+    .MuiMenu-root,
+    .MuiPopper-root,
+    .MuiTooltip-popper {
+        display: none !important;
+    }
+
+    html,
+    body,
+    .nav-root {
+        background: #fff !important;
+        color: #000 !important;
+    }
+
+    /* 半透明底 + 模糊 + 投影在纸上没有意义，去掉还省一次重绘 */
+    *,
+    *::before,
+    *::after {
+        backdrop-filter: none !important;
+        -webkit-backdrop-filter: none !important;
+        box-shadow: none !important;
+        text-shadow: none !important;
+    }
+
+    /* 面板与卡片：拆掉毛玻璃底色和描边，免得整片印成灰色 */
+    .nav-group-panel,
+    .nav-card-in {
+        background: transparent !important;
+        border-color: transparent !important;
+    }
+
+    /* 卡片别被切到两页去 */
+    .nav-card-in {
+        break-inside: avoid;
+        page-break-inside: avoid;
+    }
+
+    /* 纸上点不动链接，把地址跟在卡片后面，方便照着敲 */
+    .MuiCardActionArea-root::after {
+        content: " " attr(href);
+        display: block;
+        font-size: 10px;
+        line-height: 1.3;
+        color: #555;
+        word-break: break-all;
+    }
 }
 

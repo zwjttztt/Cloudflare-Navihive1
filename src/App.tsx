@@ -319,6 +319,20 @@ function App() {
                     borderRadius: 14,
                 },
                 components: {
+                    // 键盘焦点环：index.css 里那条全局 :focus-visible 只对原生元素管用，
+                    // MUI 组件的样式是运行时由 emotion 注入的，排在意料之外的位置把它压掉了 ——
+                    // 实测 Tab 到搜索框 / 更多选项 / 视图切换时，computed outline 与 boxShadow 全是 none，
+                    // 键盘用户过了左侧分组栏就彻底看不到自己在哪。这里按组件补回来。
+                    MuiButtonBase: {
+                        styleOverrides: {
+                            root: {
+                                "&:focus-visible": {
+                                    outline: "2px solid var(--accent)",
+                                    outlineOffset: 2,
+                                },
+                            },
+                        },
+                    },
                     // 所有弹窗默认走同一套毛玻璃面板：半透明底 + 模糊 + 细边框 + 柔和投影，
                     // 单个弹窗自己写了 paper sx 的话会覆盖这里（比如确认弹窗、命令面板）
                     MuiDialog: {
@@ -369,6 +383,17 @@ function App() {
                             root: {
                                 "@media (max-width:600px)": {
                                     "& .MuiInputBase-input": { padding: "10px 12px" },
+                                },
+                                // 输入框的焦点落在内部的 input 上，外层 root 自己不匹配
+                                // :focus-visible，所以要用 :has 往上找；键盘聚焦时补一圈轮廓，
+                                // 跟按钮保持一致（鼠标点击不会触发 :focus-visible，不会平白多一个框）
+                                "&:has(.MuiInputBase-input:focus-visible)": {
+                                    outline: "2px solid var(--accent)",
+                                    outlineOffset: 2,
+                                },
+                                "&:focus-visible": {
+                                    outline: "2px solid var(--accent)",
+                                    outlineOffset: 2,
                                 },
                             },
                         },
@@ -3126,13 +3151,25 @@ function App() {
                     zIndex: 1,
                 }}
             >
+                {/* 键盘 / 读屏用户的第一站：一次 Tab 就能跳过分组导航与顶栏直达网站列表。
+                    平时视觉隐藏，只有被键盘聚焦时才浮到左上角。 */}
+                <Box component='a' href='#main-content' className='nav-skip-link'>
+                    跳到网站列表
+                </Box>
+
                 <Container
+                    component='main'
+                    id='main-content'
+                    tabIndex={-1}
+                    aria-label='网站列表'
                     maxWidth='lg'
                     sx={{
                         py: 4,
                         px: { xs: 2, sm: 3, md: 4 },
                         // 手机端给底部导航条留出空间
                         pb: { xs: 11, md: 4 },
+                        // 跳转链接把焦点送到这里时别画一圈突兀的框
+                        "&:focus": { outline: "none" },
                     }}
                 >
                     {/* 分组锚点导航：分组多了直接跳，不用一路滚 */}
@@ -3150,6 +3187,7 @@ function App() {
                         />
                     )}
                     <Box
+                        component='header'
                         className={headerCompact ? "nav-header-compact" : undefined}
                         sx={{
                             display: "flex",

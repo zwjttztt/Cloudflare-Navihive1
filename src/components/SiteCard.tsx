@@ -542,6 +542,9 @@ const SiteCard = memo(function SiteCard({
                     position: "absolute",
                     top: 8,
                     right: 8,
+                    minWidth: 32,
+                    minHeight: 32,
+                    p: 0,
                     bgcolor: "var(--glass-bg-hover)",
                     backdropFilter: "blur(6px)",
                     opacity: 0,
@@ -589,7 +592,12 @@ const SiteCard = memo(function SiteCard({
                     position: "absolute",
                     top: 8,
                     left: 8,
-                    p: 0.4,
+                    // 原来 p 0.4 只有 21px，比 WCAG 2.5.8 的 24px 底线还小。
+                    // 靠 padding 推尺寸在 MUI 里不稳（size='small' 会插一脚），
+                    // 直接给死最小尺寸 + 内容居中
+                    minWidth: 32,
+                    minHeight: 32,
+                    p: 0,
                     color: starred ? "var(--accent)" : "text.secondary",
                     bgcolor: "var(--glass-bg-hover)",
                     backdropFilter: "blur(6px)",
@@ -761,7 +769,8 @@ const SiteCard = memo(function SiteCard({
                     : { bottom: 8 }),
                 display: "flex",
                 alignItems: "center",
-                gap: 0.25,
+                // 按钮本身放大到 ~30px 后，把按钮间距收一点，整条不至于占满卡片下沿
+                gap: 0.1,
                 p: 0.35,
                 borderRadius: "12px",
                 bgcolor: "var(--glass-bg-hover)",
@@ -777,7 +786,7 @@ const SiteCard = memo(function SiteCard({
                     size='small'
                     aria-label='复制链接'
                     onClick={e => handleQuickCopy(e, "链接", site.url)}
-                    sx={{ p: 0.6 }}
+                    sx={{ minWidth: 32, minHeight: 32, p: 0 }}
                 >
                     <LinkIcon sx={{ fontSize: 16 }} />
                 </IconButton>
@@ -788,7 +797,7 @@ const SiteCard = memo(function SiteCard({
                         size='small'
                         aria-label='复制账号'
                         onClick={e => handleQuickCopy(e, "账号", site.username)}
-                        sx={{ p: 0.6 }}
+                        sx={{ minWidth: 32, minHeight: 32, p: 0 }}
                     >
                         <PersonIcon sx={{ fontSize: 16 }} />
                     </IconButton>
@@ -800,7 +809,7 @@ const SiteCard = memo(function SiteCard({
                         size='small'
                         aria-label='复制密码'
                         onClick={e => handleQuickCopy(e, "密码", site.password)}
-                        sx={{ p: 0.6 }}
+                        sx={{ minWidth: 32, minHeight: 32, p: 0 }}
                     >
                         <KeyIcon sx={{ fontSize: 16 }} />
                     </IconButton>

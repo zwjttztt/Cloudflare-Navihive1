@@ -12,9 +12,15 @@
 /index.html
   Cache-Control: public, max-age=0, must-revalidate
 
-# 图标变化不频繁，缓存一天
-/vite.ico
+# 图标与清单：很少变，缓存久一点
+/favicon.svg
   Cache-Control: public, max-age=86400
 
-/vite.svg
+/favicon.ico
+  Cache-Control: public, max-age=86400
+
+/icons/*
+  Cache-Control: public, max-age=604800
+
+/manifest.webmanifest
   Cache-Control: public, max-age=86400

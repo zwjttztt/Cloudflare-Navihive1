@@ -619,7 +619,8 @@ const GroupCard: React.FC<GroupCardProps> = ({
                             onClick={toggleCollapsed}
                             aria-label={isCollapsed ? "展开分组" : "收起分组"}
                             aria-expanded={!isCollapsed}
-                            sx={{ ml: -0.5 }}
+                            // 6 + 20 + 6 = 32px，small 默认的 5px 内边距只有 30
+                            sx={{ ml: -0.5, p: 0.75 }}
                         >
                             {isCollapsed ? (
                                 <ExpandMoreIcon fontSize='small' />

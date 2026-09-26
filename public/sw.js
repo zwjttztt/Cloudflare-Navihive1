@@ -3,8 +3,14 @@
 //   - 页面导航：网络优先，离线时回退到缓存的首页（保证断网也能打开壳）
 //   - 静态资源（js/css/图片/字体）：缓存优先，后台静默更新
 //   - /api/*：一律走网络，不缓存，避免看到过期数据
-const CACHE = "navihive-shell-v2";
-const APP_SHELL = ["/", "/index.html", "/manifest.webmanifest", "/vite.svg"];
+const CACHE = "navihive-shell-v3";
+const APP_SHELL = [
+    "/",
+    "/index.html",
+    "/manifest.webmanifest",
+    "/favicon.svg",
+    "/icons/icon-192.png",
+];
 // 构建时生成的产物清单（precache-manifest.json），首屏要用的 JS/CSS 全在里面
 const PRECACHE_MANIFEST = "/precache-manifest.json";
 
