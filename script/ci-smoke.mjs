@@ -427,6 +427,65 @@ for (let i = 0; i < 12; i++) {
 }
 check("Tab 到搜索框时有焦点环", sawSearchRing && !focusRingLost, focusRingLost || "");
 
+// 5b) 带 label 的输入框不能画外圈焦点环：
+//     outlined 的 label 骑在上边框线上，整圈的轮廓在那一段没有缺口、必然横穿文字
+//     （用户看到的「分组名称四个字与边框重叠」）。这类输入框的焦点指示由 MUI 的
+//     「边框 1px 灰 → 2px 主色」承担，这里同时守住「没有环」和「仍有可见指示」两件事。
+const groupBtn = await evaluate(`(() => {
+  const b = [...document.querySelectorAll('button')].find(el => el.innerText.includes('新增分组'));
+  if (!b) return null;
+  const r = b.getBoundingClientRect();
+  return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+})()`);
+if (!groupBtn) {
+    check("找得到「新增分组」按钮", false, "顶栏按钮缺失");
+} else {
+    // 必须用真实鼠标事件：element.click() 不触发 :focus-visible，测不到聚焦态
+    for (const type of ["mousePressed", "mouseReleased"]) {
+        await send("Input.dispatchMouseEvent", {
+            type,
+            x: groupBtn.x,
+            y: groupBtn.y,
+            button: "left",
+            clickCount: 1,
+        });
+        await sleep(60);
+    }
+    await sleep(900);
+    const field = await evaluate(`(() => {
+      const fc = document.querySelector('.MuiDialog-paper .MuiFormControl-root:has(> .MuiInputLabel-root)');
+      if (!fc) return { error: '对话框里没有带 label 的输入框' };
+      const root = fc.querySelector('.MuiInputBase-root');
+      const outline = fc.querySelector('.MuiOutlinedInput-notchedOutline');
+      const cs = getComputedStyle(root);
+      return {
+        label: fc.querySelector('.MuiInputLabel-root')?.innerText,
+        focusVisible: !!document.activeElement && document.activeElement.matches(':focus-visible'),
+        outlineStyle: cs.outlineStyle,
+        // MUI 内建的聚焦指示：边框加粗到 2px 并换成主色
+        ringWidth: getComputedStyle(outline).borderTopWidth,
+        ringColor: getComputedStyle(outline).borderTopColor,
+      };
+    })()`);
+    check(
+        "带 label 的输入框不画外圈环（环会横穿骑在边框上的 label）",
+        field?.outlineStyle === "none",
+        JSON.stringify(field)
+    );
+    check(
+        "带 label 的输入框聚焦时仍有可见指示（边框加粗变主色）",
+        field?.ringWidth === "2px",
+        JSON.stringify(field)
+    );
+    // 关掉对话框，别影响后面的用例
+    await evaluate(`(() => {
+      const btn = [...document.querySelectorAll('.MuiDialog-paper button')].find(b => b.innerText.trim() === '取消');
+      if (btn) btn.click();
+      return !!btn;
+    })()`);
+    await sleep(600);
+}
+
 // 6) 控制台不能有 error（CSP 拦资源、图标 404 都会在这里现形）
 const realErrors = consoleErrors.filter(
     e => !e.includes("favicon") && !e.includes("Failed to load resource: net::ERR")
