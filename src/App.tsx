@@ -19,6 +19,11 @@ import { readCollapsedGroupIds, setAllCollapsed } from "./utils/collapse";
 import { probeLinks } from "./utils/linkHealth";
 import { ParsedBookmarkGroup } from "./utils/bookmarks";
 import { DEFAULT_ICON_API, resolveIconApiUrl } from "./utils/iconApi";
+import { matchesGroupQuery, matchesSiteQuery } from "./utils/search";
+import {
+    RECENT_GROUP_SIZE,
+    recentVisitCount,
+} from "./utils/time";
 import { saveRememberedLogin, clearRememberedLogin } from "./utils/rememberedLogin";
 import ThemeToggle from "./components/ThemeToggle";
 import GroupCard from "./components/GroupCard";
@@ -1496,18 +1501,15 @@ function App() {
         }
     };
 
-    // 按关键词筛选：命中名称 / 描述 / 链接的卡片会被保留，分组名命中则整组保留
+    // 按关键词筛选：命中「网站名称 / 网站链接 / 网站描述」的卡片会被保留，分组名命中则整组保留
     const query = searchQuery.trim().toLowerCase();
     const filteredGroups = useMemo(() => {
         if (!query) return groups;
 
         return groups
             .map(group => {
-                if (group.name.toLowerCase().includes(query)) return group;
-                const sites = group.sites.filter(site => {
-                    const haystack = `${site.name || ""} ${site.description || ""} ${site.url || ""}`;
-                    return haystack.toLowerCase().includes(query);
-                });
+                if (matchesGroupQuery(group.name, query)) return group;
+                const sites = group.sites.filter(site => matchesSiteQuery(site, query));
                 return { ...group, sites };
             })
             .filter(group => group.sites.length > 0);
@@ -1549,14 +1551,17 @@ function App() {
         searchInputRef.current?.focus();
     };
 
-    // 「最近访问」虚拟分组：按最近访问时间倒序（组内还会按 今天 / 昨天 / 更早 分小节）
+    // 「最近访问」虚拟分组：7 天内点开过、且点开次数最多的前 10 个网站
     const favoritesGroup = useMemo(() => {
         const scored = groups
             .flatMap(group => group.sites)
-            .map(site => ({ site, stat: visits[String(site.id)] }))
-            .filter(item => item.stat && item.stat.count > 0)
-            .sort((a, b) => b.stat!.last - a.stat!.last || b.stat!.count - a.stat!.count)
-            .slice(0, 9)
+            .map(site => {
+                const stat = visits[String(site.id)];
+                return { site, stat, count: recentVisitCount(stat) };
+            })
+            .filter(item => item.count > 0)
+            .sort((a, b) => b.count - a.count || (b.stat?.last ?? 0) - (a.stat?.last ?? 0))
+            .slice(0, RECENT_GROUP_SIZE)
             .map(item => item.site);
 
         return {
@@ -1572,11 +1577,7 @@ function App() {
         if (!favoritesEnabled || favoritesGroup.sites.length === 0) return filteredGroups;
 
         const favSites = query
-            ? favoritesGroup.sites.filter(site =>
-                  `${site.name || ""} ${site.description || ""} ${site.url || ""}`
-                      .toLowerCase()
-                      .includes(query)
-              )
+            ? favoritesGroup.sites.filter(site => matchesSiteQuery(site, query))
             : favoritesGroup.sites;
 
         if (favSites.length === 0) return filteredGroups;

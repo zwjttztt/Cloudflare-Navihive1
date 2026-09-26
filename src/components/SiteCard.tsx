@@ -45,8 +45,6 @@ interface SiteCardProps {
     index?: number;
     /** 搜索关键词，命中片段会高亮 */
     highlight?: string;
-    /** 「最近访问」分组里显示相对时间，例如「今天 14:05」 */
-    recentLabel?: string;
 }
 
 // 图标取不到时，按站点名哈希出一个稳定的配色，避免所有占位块长得一模一样
@@ -126,12 +124,11 @@ const SiteCard = memo(function SiteCard({
     isEditMode = false,
     index = 0,
     highlight = "",
-    recentLabel = "",
 }: SiteCardProps) {
     const theme = useTheme();
     const { thumbApi, iconApi } = useAppConfig();
     const notify = useNotify();
-    const { viewMode, density, recordVisit, visits, deadLinks } = useUIPrefs();
+    const { viewMode, density, recordVisit, deadLinks } = useUIPrefs();
     const [showSettings, setShowSettings] = useState(false);
     // 右键菜单的锚点位置（null 表示未打开）
     const [menuPos, setMenuPos] = useState<{ left: number; top: number } | null>(null);
@@ -381,23 +378,11 @@ const SiteCard = memo(function SiteCard({
         );
     };
 
-    // 访问次数（本机统计）与失效标记
-    const visitCount = site.id != null ? visits[String(site.id)]?.count ?? 0 : 0;
+    // 失效标记（打开时间与点击次数不再展示，避免卡片右侧信息过载）
     const isDead = Boolean(site.url && deadLinks[site.url]);
 
     const renderBadges = () => (
         <>
-            {recentLabel && <Box className='nav-recent-label'>{recentLabel}</Box>}
-            {visitCount >= 3 && (
-                <Tooltip title={`本机访问过 ${visitCount} 次`}>
-                    <Box
-                        className='nav-visit-badge'
-                        data-hot={visitCount >= 10 ? "true" : "false"}
-                    >
-                        {visitCount > 999 ? "999+" : visitCount}
-                    </Box>
-                </Tooltip>
-            )}
             {isDead && (
                 <Tooltip title='链接可能已失效（点右键 → 复制链接确认）'>
                     <Box className='nav-dead-dot' />
@@ -625,7 +610,6 @@ const SiteCard = memo(function SiteCard({
         "&:hover": isEditMode
             ? {}
             : {
-                  transform: isList ? "translateX(3px)" : "translateY(-6px)",
                   boxShadow: "var(--glass-shadow-hover)",
                   background: "var(--glass-bg-hover)",
                   borderColor: alpha(theme.palette.primary.main, 0.35),
@@ -646,6 +630,7 @@ const SiteCard = memo(function SiteCard({
             data-dragging={isDragging ? "true" : "false"}
             data-site-id={site.id}
             tabIndex={isEditMode ? undefined : 0}
+            data-hover-lift={isEditMode ? undefined : ""}
             onKeyDown={handleKeyDown}
             onAuxClick={handleAuxClick}
             onMouseDown={handleMouseDown}
@@ -655,7 +640,10 @@ const SiteCard = memo(function SiteCard({
                 position: "relative",
                 borderRadius: "var(--card-radius)",
             }}
-            style={{ animationDelay: `${Math.min(index, 12) * 35}ms` }}
+            style={{
+                animationDelay: `${Math.min(index, 12) * 35}ms`,
+                ["--nav-hover-lift" as string]: isList ? "translateX(3px)" : "translateY(-6px)",
+            }}
         >
             <Card sx={cardSx}>
                 {isEditMode ? (

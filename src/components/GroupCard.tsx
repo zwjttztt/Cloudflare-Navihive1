@@ -35,7 +35,7 @@ import {
     readCollapsedGroupIds,
     writeCollapsedGroupIds,
 } from "../utils/collapse";
-import { dayBucketOf, recentLabelOf, type DayBucket } from "../utils/time";
+import { dayBucketOf, recentVisitCount, type DayBucket } from "../utils/time";
 
 // 虚拟「最近访问」分组的 id（本地统计出来，不存在于数据库）
 const RECENT_GROUP_ID = -1;
@@ -128,8 +128,8 @@ const GroupCard: React.FC<GroupCardProps> = ({
         setCollapsed(ids.has(key));
     };
 
-    // 排序模式下强制展开，否则卡片被收起就没法拖拽了
-    const isCollapsed = collapsed && sortMode === "None";
+    // 排序模式与搜索时都强制展开：卡片被收起就没法拖拽 / 看不到搜到的结果
+    const isCollapsed = collapsed && sortMode === "None" && !searchQuery.trim();
 
     // 普通模式下先渲染前 40 个，剩下的等滚动到哨兵再补
     const hasMoreSites = group.sites.length > visibleCount && sortMode === "None";
@@ -398,7 +398,8 @@ const GroupCard: React.FC<GroupCardProps> = ({
             );
         }
 
-        // 「最近访问」虚拟分组：按 今天 / 昨天 / 更早 分三小节，比一条扁平长列表更好扫读
+        // 「最近访问」虚拟分组：7 天内点开次数最多的前 10 个，
+        // 组内再按 今天 / 昨天 / 更早 分三小节，每节内部按点击次数排序
         if (group.id === RECENT_GROUP_ID) {
             const buckets: Record<DayBucket, Site[]> = {
                 today: [],
@@ -408,6 +409,13 @@ const GroupCard: React.FC<GroupCardProps> = ({
             for (const site of sitesToRender) {
                 const stat = visits[String(site.id)];
                 buckets[dayBucketOf(stat?.last ?? 0)].push(site);
+            }
+            for (const key of Object.keys(buckets) as DayBucket[]) {
+                buckets[key].sort(
+                    (a, b) =>
+                        recentVisitCount(visits[String(b.id)]) -
+                        recentVisitCount(visits[String(a.id)])
+                );
             }
 
             const sections: { key: DayBucket; title: string }[] = [
@@ -440,9 +448,6 @@ const GroupCard: React.FC<GroupCardProps> = ({
                                                 onDelete={onDelete}
                                                 isEditMode={false}
                                                 highlight={searchQuery}
-                                                recentLabel={recentLabelOf(
-                                                    visits[String(site.id)]?.last ?? 0
-                                                )}
                                             />
                                         </Box>
                                     ))}

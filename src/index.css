@@ -160,8 +160,19 @@ body {
     animation: navFadeUp 0.45s ease both;
 }
 
+/* 入场动画用 backwards：
+   延迟期间先保持隐藏（避免闪一下），动画结束回到基础样式，
+   这样悬停的抬升 transform 才不会被动画的 fill 状态压住 */
 .nav-card-in {
-    animation: navCardIn 0.42s cubic-bezier(0.22, 0.61, 0.36, 1) both;
+    animation: navCardIn 0.42s cubic-bezier(0.22, 0.61, 0.36, 1) backwards;
+}
+
+/* 悬停抬升放在外层容器上：卡片本体 + 右上角设置按钮 + 右下角快捷条会一起动 */
+.nav-card-in[data-hover-lift] {
+    transition: transform 0.22s cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+.nav-card-in[data-hover-lift]:hover {
+    transform: var(--nav-hover-lift, translateY(-6px));
 }
 
 .nav-aurora {
@@ -245,25 +256,6 @@ mark.nav-hl {
 .nav-drop-hint {
     border-color: var(--accent) !important;
     background: color-mix(in srgb, var(--accent) 10%, transparent);
-}
-
-/* 常访问徽章：访问越多颜色越重 */
-.nav-visit-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 2px;
-    padding: 0 5px;
-    height: 17px;
-    border-radius: 9px;
-    font-size: 11px;
-    line-height: 17px;
-    font-weight: 500;
-    background: color-mix(in srgb, var(--accent) 16%, transparent);
-    color: var(--accent);
-    border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
-}
-.nav-visit-badge[data-hot="true"] {
-    background: color-mix(in srgb, var(--accent) 32%, transparent);
 }
 
 /* 失效链接角标 */
@@ -397,20 +389,6 @@ mark.nav-hl {
         color-mix(in srgb, var(--group-accent) 42%, transparent),
         transparent
     );
-}
-
-/* 卡片上的相对时间标签（仅在「最近访问」分区里出现） */
-.nav-recent-label {
-    display: inline-flex;
-    align-items: center;
-    height: 17px;
-    padding: 0 6px;
-    border-radius: 9px;
-    font-size: 11px;
-    line-height: 17px;
-    color: var(--accent);
-    background: color-mix(in srgb, var(--accent) 12%, transparent);
-    border: 1px solid color-mix(in srgb, var(--accent) 24%, transparent);
 }
 
 /* 访问热力图：8 周 × 7 天的小方格 */
