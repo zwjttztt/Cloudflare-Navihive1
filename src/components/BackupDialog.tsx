@@ -51,6 +51,14 @@ interface BackupDialogProps {
     onBuildExportData: () => ExportData;
     onDownloadLocal: () => void;
     onImportData: (data: ExportData, overwrite: boolean) => Promise<void>;
+    /**
+     * 导入前先弹一次差异预览，返回用户确认后真正要导入的数据；
+     * 返回 null 表示用户在预览里取消了。不传则直接导入（老行为）。
+     */
+    onRequestImportPreview?: (
+        data: ExportData,
+        overwrite: boolean
+    ) => Promise<ExportData | null>;
     onNotify: (message: string, severity?: "success" | "error" | "info") => void;
     onClose: () => void;
 }
@@ -86,6 +94,7 @@ export default function BackupDialog({
     onBuildExportData,
     onDownloadLocal,
     onImportData,
+    onRequestImportPreview,
     onNotify,
     onClose,
 }: BackupDialogProps) {
@@ -234,6 +243,10 @@ export default function BackupDialog({
         reader.readAsText(file, "UTF-8");
     };
 
+    // 导入前先过一遍差异预览：用户可以在预览里挑要导入哪些，取消则返回 null
+    const resolveImportData = async (data: ExportData, overwriteMode: boolean) =>
+        onRequestImportPreview ? await onRequestImportPreview(data, overwriteMode) : data;
+
     // 从本地文件恢复
     const handleRestoreLocal = async () => {
         if (!localData) {
@@ -242,7 +255,9 @@ export default function BackupDialog({
         }
         setRestoring(true);
         try {
-            await onImportData(localData, overwrite);
+            const finalData = await resolveImportData(localData, overwrite);
+            if (!finalData) return; // 用户在预览里点了取消
+            await onImportData(finalData, overwrite);
             onNotify("已从本地备份恢复数据", "success");
             onClose();
         } catch (error) {
@@ -265,7 +280,9 @@ export default function BackupDialog({
                 onNotify(result.message || "下载备份失败", "error");
                 return;
             }
-            await onImportData(result.data, overwrite);
+            const finalData = await resolveImportData(result.data, overwrite);
+            if (!finalData) return; // 用户在预览里点了取消
+            await onImportData(finalData, overwrite);
             onNotify(`已从 ${selectedRemote} 恢复数据`, "success");
             onClose();
         } catch (error) {

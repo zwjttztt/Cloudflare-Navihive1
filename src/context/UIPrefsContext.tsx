@@ -55,6 +55,9 @@ interface UIPrefsValue {
     setDensity: (density: Density) => void;
     favoritesEnabled: boolean;
     setFavoritesEnabled: (enabled: boolean) => void;
+    /** 拼音搜索：默认关，打开后可以用「bd」搜到「百度」（词典按需加载） */
+    pinyinSearch: boolean;
+    setPinyinSearch: (enabled: boolean) => void;
     visits: Record<string, VisitStat>;
     recordVisit: (siteId?: number) => void;
     clearVisits: () => void;
@@ -108,6 +111,7 @@ const SEARCH_HISTORY_KEY = "navihive:searchHistory";
 const STARRED_KEY = "navihive:starred";
 const TAGS_KEY = "navihive:tags";
 const RAIL_COLLAPSED_KEY = "navihive:railCollapsed";
+const PINYIN_KEY = "navihive:pinyinSearch";
 /** 搜索历史最多留几条，够用又不至于把面板撑长 */
 const SEARCH_HISTORY_MAX = 8;
 
@@ -196,6 +200,8 @@ const defaultValue: UIPrefsValue = {
     density: "comfortable",
     setDensity: () => {},
     favoritesEnabled: true,
+    pinyinSearch: false,
+    setPinyinSearch: () => {},
     setFavoritesEnabled: () => {},
     visits: {},
     recordVisit: () => {},
@@ -240,6 +246,10 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
     const [favoritesEnabled, setFavoritesState] = useState<boolean>(
         () => readString(FAVORITES_KEY, "1") !== "0"
     );
+    // 拼音搜索默认关闭：词典是按需加载的，不打开就不进包
+    const [pinyinSearch, setPinyinState] = useState<boolean>(
+        () => readString(PINYIN_KEY, "0") === "1"
+    );
     const [visits, setVisits] = useState<Record<string, VisitStat>>(readVisits);
     const [radius, setRadiusState] = useState<RadiusStyle>(() => {
         const v = readString(RADIUS_KEY, "soft");
@@ -273,6 +283,11 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
     const setFavoritesEnabled = useCallback((enabled: boolean) => {
         setFavoritesState(enabled);
         write(FAVORITES_KEY, enabled ? "1" : "0");
+    }, []);
+
+    const setPinyinSearch = useCallback((enabled: boolean) => {
+        setPinyinState(enabled);
+        write(PINYIN_KEY, enabled ? "1" : "0");
     }, []);
 
     const recordVisit = useCallback((siteId?: number) => {
@@ -519,6 +534,8 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
                 setDensityState(e.newValue === "compact" ? "compact" : "comfortable");
             } else if (e.key === FAVORITES_KEY) {
                 setFavoritesState((e.newValue ?? "1") !== "0");
+            } else if (e.key === PINYIN_KEY) {
+                setPinyinState((e.newValue ?? "0") === "1");
             } else if (e.key === VISITS_KEY) {
                 setVisits(readVisits());
             } else if (e.key === RADIUS_KEY) {
@@ -549,6 +566,8 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
             setDensity,
             favoritesEnabled,
             setFavoritesEnabled,
+            pinyinSearch,
+            setPinyinSearch,
             visits,
             recordVisit,
             clearVisits,
@@ -583,6 +602,8 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
             setDensity,
             favoritesEnabled,
             setFavoritesEnabled,
+            pinyinSearch,
+            setPinyinSearch,
             visits,
             recordVisit,
             clearVisits,

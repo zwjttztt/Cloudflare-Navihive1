@@ -23,6 +23,8 @@ interface ConfirmDialogProps {
     cancelText?: string;
     /** true 时确认按钮用错误色（删除类操作） */
     danger?: boolean;
+    /** 第三个按钮（放在「取消」左边），用于「跳到那张卡片」这类辅助动作 */
+    extraAction?: { label: string; onClick: () => void };
     onConfirm: () => void;
     onClose: () => void;
 }
@@ -34,6 +36,7 @@ export default function ConfirmDialog({
     confirmText = "确定",
     cancelText = "取消",
     danger = false,
+    extraAction,
     onConfirm,
     onClose,
 }: ConfirmDialogProps) {
@@ -112,6 +115,11 @@ export default function ConfirmDialog({
             </DialogContent>
 
             <DialogActions sx={{ px: 2, pb: 2, pt: 0.5, gap: 1 }}>
+                {extraAction && (
+                    <Button onClick={extraAction.onClick} variant='text' size='small'>
+                        {extraAction.label}
+                    </Button>
+                )}
                 <Button onClick={onClose} variant='outlined' color='inherit' size='small'>
                     {cancelText}
                 </Button>

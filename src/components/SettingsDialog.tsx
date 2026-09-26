@@ -13,7 +13,9 @@ import {
     DialogTitle,
     IconButton,
     Slider,
+    FormControlLabel,
     Stack,
+    Switch,
     TextField,
     ToggleButton,
     ToggleButtonGroup,
@@ -72,6 +74,9 @@ interface SettingsDialogProps {
     onGlassBlurChange: (event: Event, value: number | number[]) => void;
     auth: SettingsAuthDraft;
     onAuthChange: (field: keyof SettingsAuthDraft, value: string) => void;
+    /** 拼音搜索（本机偏好，打开即生效，不需要点保存） */
+    pinyinSearch: boolean;
+    onPinyinSearchChange: (enabled: boolean) => void;
 }
 
 export default function SettingsDialog({
@@ -91,6 +96,8 @@ export default function SettingsDialog({
     onGlassBlurChange,
     auth,
     onAuthChange,
+    pinyinSearch,
+    onPinyinSearchChange,
 }: SettingsDialogProps) {
     return (
         <Dialog
@@ -264,6 +271,26 @@ export default function SettingsDialog({
                         </Box>
                         <Typography variant='caption' color='text.secondary'>
                             这两项只存在本机，换设备或换浏览器不会跟随。
+                        </Typography>
+                    </Box>
+
+                    {/* 拼音搜索：默认关，打开后才加载词典 */}
+                    <Box>
+                        <Typography variant='subtitle1' fontWeight='600' sx={{ mb: 0.5 }}>
+                            搜索设置
+                        </Typography>
+                        <FormControlLabel
+                            control={
+                                <Switch
+                                    checked={pinyinSearch}
+                                    onChange={e => onPinyinSearchChange(e.target.checked)}
+                                    size='small'
+                                />
+                            }
+                            label='拼音搜索'
+                        />
+                        <Typography variant='caption' color='text.secondary' sx={{ display: "block" }}>
+                            开启后可以用首字母搜中文站点（例如「bd」命中「百度」），词典约 28KB，按需加载。
                         </Typography>
                     </Box>
 

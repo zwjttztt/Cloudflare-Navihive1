@@ -35,11 +35,20 @@ import PersonIcon from "@mui/icons-material/Person";
 import KeyIcon from "@mui/icons-material/Key";
 import EditIcon from "@mui/icons-material/Edit";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
+import MoreVertIcon from "@mui/icons-material/MoreVert";
+import LinkOffIcon from "@mui/icons-material/LinkOff";
 import { useAppConfig } from "../context/AppConfigContext";
 import { useNotify } from "../context/NotifyContext";
 import { useUIPrefs } from "../context/UIPrefsContext";
 import { resolveIconApiUrl } from "../utils/iconApi";
-import { iconCandidates, readIconRecord, writeIconRecord } from "../utils/iconCache";
+import {
+    cacheIconBlob,
+    iconCandidates,
+    readIconObjectUrl,
+    readIconRecord,
+    writeIconRecord,
+} from "../utils/iconCache";
+import { markLinkAlive } from "../utils/linkHealth";
 
 interface SiteCardProps {
     site: Site;
@@ -139,7 +148,7 @@ const SiteCard = memo(function SiteCard({
     const theme = useTheme();
     const { thumbApi, iconApi } = useAppConfig();
     const notify = useNotify();
-    const { viewMode, density, recordVisit, deadLinks, isStarred, toggleStar, tags } =
+    const { viewMode, density, recordVisit, deadLinks, setDeadLinks, isStarred, toggleStar, tags } =
         useUIPrefs();
     // 星标与标签都存本机（UIPrefs），和访问记录、折叠状态一样不进数据库
     const starred = isStarred(site.id);
@@ -166,6 +175,20 @@ const SiteCard = memo(function SiteCard({
 
     const iconError = iconIdx >= iconSources.length;
     const currentIcon = iconSources[iconIdx] ?? "";
+
+    // 图标本体缓存：命中本地 blob 时直接用 objectURL，弱网 / 离线重开也能立刻显示
+    const [iconObjectUrl, setIconObjectUrl] = useState<string | null>(null);
+    useEffect(() => {
+        let cancelled = false;
+        setIconObjectUrl(null);
+        if (!currentIcon) return;
+        void readIconObjectUrl(currentIcon).then(cached => {
+            if (!cancelled && cached) setIconObjectUrl(cached);
+        });
+        return () => {
+            cancelled = true;
+        };
+    }, [currentIcon]);
 
     // 缩略图：仅在「网站设置」里配了模板时才启用，避免默认请求第三方服务
     const thumbUrl = thumbApi.trim() ? resolveIconApiUrl(thumbApi, site.url || "") : "";
@@ -315,9 +338,12 @@ const SiteCard = memo(function SiteCard({
         setImageLoaded(false);
     };
 
-    // 处理图片加载完成：记下这个源可用
+    // 处理图片加载完成：记下这个源可用，并把图标本体存一份到本地（弱网/离线时直接命中）
     const handleImageLoad = () => {
-        if (currentIcon) void writeIconRecord(currentIcon, true);
+        if (currentIcon) {
+            void writeIconRecord(currentIcon, true);
+            void cacheIconBlob(currentIcon);
+        }
         setImageLoaded(true);
     };
 
@@ -359,7 +385,7 @@ const SiteCard = memo(function SiteCard({
                     <Fade in={imageLoaded} timeout={400}>
                         <Box
                             component='img'
-                            src={currentIcon}
+                            src={iconObjectUrl || currentIcon}
                             alt={site.name}
                             loading='lazy'
                             decoding='async'
@@ -471,6 +497,14 @@ const SiteCard = memo(function SiteCard({
     // 键盘可达：卡片聚焦后回车/空格打开链接（方向键由 App 统一处理）
     const handleKeyDown = (e: React.KeyboardEvent) => {
         if (isEditMode) return;
+        // 菜单键（或 Shift+F10）在光标元素的右下角打开右键菜单，
+        // 让只用键盘的人也能拿到原来只有鼠标右键才有的那些操作
+        if (e.key === "ContextMenu" || (e.shiftKey && e.key === "F10")) {
+            e.preventDefault();
+            const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+            setMenuPos({ left: rect.left + 12, top: rect.bottom - 8 });
+            return;
+        }
         // 多选模式下回车/空格同样是「勾选」
         if (selectMode) {
             if (e.key === "Enter" || e.key === " ") {
@@ -514,6 +548,51 @@ const SiteCard = memo(function SiteCard({
                 <SettingsIcon fontSize='small' />
             </IconButton>
         );
+
+    // 「更多」按钮：把只有鼠标右键才能唤出的菜单，也给键盘和触屏用户一个显式入口
+    const handleMoreClick = (e: React.MouseEvent) => {
+        e.stopPropagation();
+        e.preventDefault();
+        const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+        setMenuPos({ left: rect.left - 160, top: rect.bottom + 4 });
+    };
+
+    const renderMoreButton = () =>
+        !isEditMode &&
+        !isList &&
+        !isWall && (
+            <IconButton
+                className='nav-settings-btn nav-more-btn'
+                size='small'
+                sx={{
+                    position: "absolute",
+                    top: 8,
+                    right: 40,
+                    bgcolor: "var(--glass-bg-hover)",
+                    backdropFilter: "blur(6px)",
+                    opacity: 0,
+                    transition: "opacity .2s, background-color .2s",
+                    zIndex: 2,
+                    "&:hover": {
+                        bgcolor: "action.selected",
+                    },
+                }}
+                onClick={handleMoreClick}
+                aria-label='更多操作'
+                aria-haspopup='menu'
+            >
+                <MoreVertIcon fontSize='small' />
+            </IconButton>
+        );
+
+    // 这张卡片被判成失效链接时，右键菜单里给一条纠偏入口：
+    // 标记后写入白名单，之后的批量检测会直接跳过它
+    const handleMarkAlive = () => {
+        closeMenu();
+        if (!site.url) return;
+        setDeadLinks(markLinkAlive(site.url));
+        notify(`已把「${site.name || site.url}」标记为可访问`, "success");
+    };
 
     // 星标按钮：加星后常显（并在分组里置顶），未加星时悬停才浮出
     const renderStarButton = () =>
@@ -941,6 +1020,9 @@ const SiteCard = memo(function SiteCard({
             {/* 网站设置按钮（放在链接外面，避免 a 里嵌交互元素） */}
             {!selectMode && renderSettingsButton()}
 
+            {/* 更多操作：与右键菜单同一套动作，给键盘 / 触屏一个显式入口 */}
+            {!selectMode && renderMoreButton()}
+
             {/* 星标与多选勾选都浮在卡片上，不进链接内部 */}
             {renderStarButton()}
             {renderSelectMark()}
@@ -959,6 +1041,7 @@ const SiteCard = memo(function SiteCard({
             anchorReference='anchorPosition'
             anchorPosition={menuPos ? { top: menuPos.top, left: menuPos.left } : undefined}
             slotProps={{ paper: { sx: { minWidth: 190, borderRadius: "14px" } } }}
+            aria-label={`${site.name || "卡片"}操作菜单`}
         >
             <MenuItem onClick={handleMenuOpen} disabled={!site.url}>
                 <ListItemIcon>
@@ -1001,6 +1084,14 @@ const SiteCard = memo(function SiteCard({
                         <KeyIcon fontSize='small' />
                     </ListItemIcon>
                     <ListItemText>复制密码</ListItemText>
+                </MenuItem>
+            )}
+            {isDead && (
+                <MenuItem onClick={handleMarkAlive}>
+                    <ListItemIcon>
+                        <LinkOffIcon fontSize='small' />
+                    </ListItemIcon>
+                    <ListItemText>标记为可访问</ListItemText>
                 </MenuItem>
             )}
             <Divider />
