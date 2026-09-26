@@ -569,7 +569,11 @@ const GroupCard: React.FC<GroupCardProps> = ({
                 WebkitBackdropFilter: "blur(var(--glass-blur)) saturate(1.3)",
                 border: "1px solid var(--glass-panel-border)",
                 boxShadow: "var(--glass-shadow)",
-                transition: "all 0.3s ease-in-out",
+                // backdrop-filter 单独钉成 0s：这个属性一旦参与补间，浏览器就得逐帧
+                // 重新采样面板背后的像素，圆角边界采样补不齐会透出一圈暗边（像「外圈变黑」）。
+                // 其余属性照旧走 all 的 0.3s；CSS 过渡里同名属性以最后一条为准。
+                transition:
+                    "all 0.3s ease-in-out, backdrop-filter 0s, -webkit-backdrop-filter 0s",
                 "&:hover": {
                     boxShadow: "var(--glass-shadow-hover)",
                     borderColor: (theme) => theme.palette.primary.main,
