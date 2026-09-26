@@ -280,39 +280,43 @@ export default function BulkActionBar({
                 <DialogTitle sx={{ fontSize: 16, fontWeight: 600, pb: 0.5 }}>
                     给 {count} 个网站打标签
                 </DialogTitle>
-                <DialogContent sx={{ pt: 1 }}>
-                    <TextField
-                        autoFocus
-                        size='small'
-                        fullWidth
-                        label='标签（逗号分隔可一次加多个）'
-                        value={tagInput}
-                        onChange={e => setTagInput(e.target.value)}
-                        onKeyDown={e => {
-                            if (e.key === "Enter") {
-                                e.preventDefault();
-                                submitTags();
-                            }
-                        }}
-                    />
-                    {allTags.length > 0 && (
-                        <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.75, mt: 1.5 }}>
-                            {allTags.map(tag => {
-                                const picked = pickedTags.includes(tag);
-                                return (
-                                    <Chip
-                                        key={tag}
-                                        label={tag}
-                                        size='small'
-                                        variant={picked ? "filled" : "outlined"}
-                                        color={picked ? "primary" : "default"}
-                                        icon={picked ? <CheckCircleIcon /> : undefined}
-                                        onClick={() => togglePicked(tag)}
-                                    />
-                                );
-                            })}
-                        </Box>
-                    )}
+                <DialogContent sx={{ pt: 0 }}>
+                    {/* MUI 会把「标题 + 内容」相邻时的内容区上内边距归零，
+                        浮起的 label 需要往上探出约 9px，这里补一层上内边距免得被裁 */}
+                    <Box sx={{ pt: 1.5 }}>
+                        <TextField
+                            autoFocus
+                            size='small'
+                            fullWidth
+                            label='标签（逗号分隔可一次加多个）'
+                            value={tagInput}
+                            onChange={e => setTagInput(e.target.value)}
+                            onKeyDown={e => {
+                                if (e.key === "Enter") {
+                                    e.preventDefault();
+                                    submitTags();
+                                }
+                            }}
+                        />
+                        {allTags.length > 0 && (
+                            <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.75, mt: 1.5 }}>
+                                {allTags.map(tag => {
+                                    const picked = pickedTags.includes(tag);
+                                    return (
+                                        <Chip
+                                            key={tag}
+                                            label={tag}
+                                            size='small'
+                                            variant={picked ? "filled" : "outlined"}
+                                            color={picked ? "primary" : "default"}
+                                            icon={picked ? <CheckCircleIcon /> : undefined}
+                                            onClick={() => togglePicked(tag)}
+                                        />
+                                    );
+                                })}
+                            </Box>
+                        )}
+                    </Box>
                 </DialogContent>
                 <DialogActions sx={{ px: 2, pb: 2, pt: 0.5, gap: 1 }}>
                     <Button size='small' color='inherit' variant='outlined' onClick={() => setTagOpen(false)}>

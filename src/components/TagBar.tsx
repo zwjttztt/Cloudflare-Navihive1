@@ -5,6 +5,7 @@ import { Box, Chip, Tooltip } from "@mui/material";
 import StarIcon from "@mui/icons-material/Star";
 import StarBorderIcon from "@mui/icons-material/StarBorder";
 import ClearIcon from "@mui/icons-material/Clear";
+import TuneIcon from "@mui/icons-material/Tune";
 
 interface TagBarProps {
     /** 全部用过的标签名 */
@@ -15,6 +16,8 @@ interface TagBarProps {
     /** 「只看星标」是否开启 */
     starFilter: boolean;
     onToggleStarFilter: () => void;
+    /** 打开「标签管理」弹窗 */
+    onManageTags: () => void;
 }
 
 export default function TagBar({
@@ -24,6 +27,7 @@ export default function TagBar({
     onClearTags,
     starFilter,
     onToggleStarFilter,
+    onManageTags,
 }: TagBarProps) {
     const hasFilter = starFilter || activeTags.length > 0;
 
@@ -86,6 +90,19 @@ export default function TagBar({
                     />
                 </Tooltip>
             )}
+
+            {/* 标签管理入口：集中在弹窗里删标签（删除即从所有卡片摘掉） */}
+            <Tooltip title='管理标签'>
+                <Chip
+                    icon={<TuneIcon />}
+                    label='管理'
+                    size='small'
+                    variant='outlined'
+                    onClick={onManageTags}
+                    className='nav-tag-manage'
+                    sx={{ ml: "auto", color: "text.secondary", borderStyle: "dashed" }}
+                />
+            </Tooltip>
         </Box>
     );
 }

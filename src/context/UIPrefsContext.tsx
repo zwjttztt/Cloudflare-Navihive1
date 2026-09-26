@@ -80,8 +80,14 @@ interface UIPrefsValue {
     setSiteTags: (siteId: number, tags: string[]) => void;
     /** 给一批站点追加标签（已存在的不会重复） */
     addTagsToMany: (siteIds: number[], tags: string[]) => void;
+    /** 删除某个标签：所有卡片都不再带它（标签管理用） */
+    removeTagFromAll: (tag: string) => void;
+    /** 卡片被删除时，把它们的本机标签 / 星标一起清掉，避免留下点不出来的孤儿标签 */
+    forgetSites: (siteIds: number[]) => void;
     /** 全部用过的标签名（按使用次数排序，供筛选栏展示） */
     allTags: string[];
+    /** 每个标签被多少张卡片使用（标签管理展示用） */
+    tagCounts: Record<string, number>;
     /** 左侧分组栏是否收起 */
     railCollapsed: boolean;
     setRailCollapsed: (collapsed: boolean) => void;
@@ -210,7 +216,10 @@ const defaultValue: UIPrefsValue = {
     tags: {},
     setSiteTags: () => {},
     addTagsToMany: () => {},
+    removeTagFromAll: () => {},
+    forgetSites: () => {},
     allTags: [],
+    tagCounts: {},
     railCollapsed: false,
     setRailCollapsed: () => {},
     restoreLocalPrefs: () => {},
@@ -368,16 +377,72 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
         });
     }, []);
 
-    // 全部标签名：按被使用的站点数排序，标签栏里越常用的越靠前
-    const allTags = useMemo(() => {
-        const counter = new Map<string, number>();
+    // 标签管理：把一个标签从所有卡片上摘掉（某张卡摘空后连键一起删）
+    const removeTagFromAll = useCallback((tag: string) => {
+        const want = tag.trim();
+        if (!want) return;
+        setTags(prev => {
+            let changed = false;
+            const next: Record<string, string[]> = {};
+            for (const [key, list] of Object.entries(prev)) {
+                if (!list.includes(want)) {
+                    next[key] = list;
+                    continue;
+                }
+                changed = true;
+                const filtered = list.filter(t => t !== want);
+                if (filtered.length > 0) next[key] = filtered;
+            }
+            if (!changed) return prev;
+            write(TAGS_KEY, JSON.stringify(next));
+            return next;
+        });
+    }, []);
+
+    // 卡片被删除：它的标签与星标已经没有宿主，一并清掉，避免标签栏出现点不出来的标签
+    const forgetSites = useCallback((siteIds: number[]) => {
+        if (siteIds.length === 0) return;
+        const keys = new Set(siteIds.map(String));
+
+        setTags(prev => {
+            let changed = false;
+            const next = { ...prev };
+            for (const key of keys) {
+                if (key in next) {
+                    delete next[key];
+                    changed = true;
+                }
+            }
+            if (!changed) return prev;
+            write(TAGS_KEY, JSON.stringify(next));
+            return next;
+        });
+
+        setStarred(prev => {
+            const next = prev.filter(id => !siteIds.includes(id));
+            if (next.length === prev.length) return prev;
+            write(STARRED_KEY, JSON.stringify(next));
+            return next;
+        });
+    }, []);
+
+    // 标签统计：每个标签被几张卡片用着，标签栏排序与标签管理都靠它
+    const tagCounts = useMemo(() => {
+        const counter: Record<string, number> = {};
         for (const list of Object.values(tags)) {
-            for (const tag of list) counter.set(tag, (counter.get(tag) ?? 0) + 1);
+            for (const tag of list) counter[tag] = (counter[tag] ?? 0) + 1;
         }
-        return [...counter.entries()]
-            .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-            .map(([tag]) => tag);
+        return counter;
     }, [tags]);
+
+    // 全部标签名：按被使用的站点数排序，标签栏里越常用的越靠前
+    const allTags = useMemo(
+        () =>
+            Object.entries(tagCounts)
+                .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+                .map(([tag]) => tag),
+        [tagCounts]
+    );
 
     const setRailCollapsed = useCallback((collapsed: boolean) => {
         setRailCollapsedState(collapsed);
@@ -503,7 +568,10 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
             tags,
             setSiteTags,
             addTagsToMany,
+            removeTagFromAll,
+            forgetSites,
             allTags,
+            tagCounts,
             railCollapsed,
             setRailCollapsed,
             restoreLocalPrefs,
@@ -533,7 +601,10 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
             tags,
             setSiteTags,
             addTagsToMany,
+            removeTagFromAll,
+            forgetSites,
             allTags,
+            tagCounts,
             railCollapsed,
             setRailCollapsed,
             restoreLocalPrefs,
