@@ -391,7 +391,11 @@ const SiteCard = memo(function SiteCard({
                     justifyContent: "center",
                     fontWeight: 600,
                     fontSize: size > 40 ? 20 : 15,
-                    bgcolor: alpha(isDark ? tone.soft : tone.strong, isDark ? 0.22 : 0.12),
+                    // 图标取不到时用站点名首字母顶上，底色做成同色系渐变，比纯色块耐看
+                    background: `linear-gradient(135deg, ${alpha(
+                        isDark ? tone.soft : tone.strong,
+                        isDark ? 0.34 : 0.2
+                    )} 0%, ${alpha(isDark ? tone.strong : tone.soft, isDark ? 0.16 : 0.08)} 100%)`,
                     color: isDark ? tone.soft : tone.strong,
                     border: "1px solid",
                     borderColor: alpha(isDark ? tone.soft : tone.strong, isDark ? 0.3 : 0.22),
@@ -410,7 +414,9 @@ const SiteCard = memo(function SiteCard({
         <>
             {isDead && (
                 <Tooltip title='链接可能已失效（点右键 → 复制链接确认）'>
-                    <Box className='nav-dead-dot' />
+                    <Box className='nav-dead-dot' aria-label='链接可能已失效'>
+                        失效
+                    </Box>
                 </Tooltip>
             )}
         </>
@@ -577,6 +583,40 @@ const SiteCard = memo(function SiteCard({
                     <CheckCircleIcon sx={{ fontSize: 20 }} />
                 ) : (
                     <RadioButtonUncheckedIcon sx={{ fontSize: 20 }} />
+                )}
+            </Box>
+        );
+
+    // 多选模式下的星标徽标：只展示状态、不响应点击（点击要留给勾选卡片）。
+    // 已加星 = 主色实心星 + 淡主色底；未加星 = 极淡的描边星，让「有没有星」一眼可读。
+    const renderStarBadge = () =>
+        selectMode && (
+            <Box
+                className='nav-star-badge'
+                data-starred={starred ? "true" : "false"}
+                title={starred ? "已加星标" : "未加星标"}
+                sx={{
+                    position: "absolute",
+                    top: 8,
+                    right: 8,
+                    width: 22,
+                    height: 22,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    borderRadius: "50%",
+                    zIndex: 3,
+                    pointerEvents: "none",
+                    color: starred ? "var(--accent)" : "text.disabled",
+                    bgcolor: starred ? "var(--glass-bg-hover)" : "rgba(127,127,127,0.12)",
+                    boxShadow: starred ? "0 1px 6px rgba(15,23,42,0.18)" : "none",
+                    opacity: starred ? 1 : 0.55,
+                }}
+            >
+                {starred ? (
+                    <StarIcon sx={{ fontSize: 15 }} />
+                ) : (
+                    <StarBorderIcon sx={{ fontSize: 15 }} />
                 )}
             </Box>
         );
@@ -904,6 +944,7 @@ const SiteCard = memo(function SiteCard({
             {/* 星标与多选勾选都浮在卡片上，不进链接内部 */}
             {renderStarButton()}
             {renderSelectMark()}
+            {renderStarBadge()}
 
             {/* 快捷操作条 */}
             {!isEditMode && !selectMode && renderQuickActions(isList)}
