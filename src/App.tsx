@@ -15,7 +15,7 @@ import ScrollProgress from "./components/ScrollProgress";
 import HeaderClock from "./components/HeaderClock";
 import VisitsDialog from "./components/VisitsDialog";
 import EmptyArt from "./components/EmptyArt";
-import { readCollapsedGroupIds, setAllCollapsed } from "./utils/collapse";
+import { COLLAPSED_EVENT, readCollapsedGroupIds, setAllCollapsed } from "./utils/collapse";
 import { probeLinks } from "./utils/linkHealth";
 import { ParsedBookmarkGroup } from "./utils/bookmarks";
 import { DEFAULT_ICON_API, resolveIconApiUrl } from "./utils/iconApi";
@@ -110,8 +110,6 @@ import StarIcon from "@mui/icons-material/Star";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import BookmarkAddedIcon from "@mui/icons-material/BookmarkAdded";
 import LinkOffIcon from "@mui/icons-material/LinkOff";
-import UnfoldMoreIcon from "@mui/icons-material/UnfoldMore";
-import UnfoldLessIcon from "@mui/icons-material/UnfoldLess";
 import InsightsIcon from "@mui/icons-material/Insights";
 
 // 根据环境选择使用真实API还是模拟API
@@ -186,6 +184,26 @@ const WEBDAV_CONFIG_PREFIX = "webdav.";
 
 // 主题模式：浅色 / 深色 / 跟随系统
 type ThemeMode = "light" | "dark" | "system";
+
+// ---- 顶部工具栏的统一尺寸 ----
+// 之前搜索框（40px）比按钮（32px）高一截，一行里高矮不齐；现在统一成一个高度、一个圆角。
+const HEADER_CONTROL_H = 36;
+const HEADER_RADIUS = "14px";
+// 搜索框 / 按钮 / 胶囊共用：高度对齐 + 圆角一致
+const headerControlSx = {
+    minWidth: "auto",
+    height: HEADER_CONTROL_H,
+    borderRadius: HEADER_RADIUS,
+    fontSize: { xs: "0.75rem", sm: "0.875rem" },
+};
+// 逻辑分组之间的竖向分隔线（搜索 | 操作 | 显示 | 时钟）
+const headerDividerSx = {
+    width: "1px",
+    alignSelf: "stretch",
+    my: 0.75,
+    bgcolor: "var(--glass-border)",
+    flexShrink: 0,
+};
 
 function App() {
     // 主题模式状态（默认跟随系统；老用户存过的 light/dark 依然兼容）
@@ -1668,11 +1686,27 @@ function App() {
     );
 
     // ---- 一键全部折叠 / 展开 ----
-    // 直接读 localStorage 现算：菜单每次打开都会重渲染，所以拿到的永远是最新状态
-    const collapseIds = new Set(readCollapsedGroupIds());
-    const realGroups = groups.filter(g => typeof g.id === "number" && g.id > 0);
+    // 收起状态存在 localStorage（和 GroupCard 共用），这里再跟一份 state：
+    // 左侧分组栏的开关要能立刻换成「展开全部」，所以必须随事件同步，不能只现算
+    const realGroups = useMemo(
+        () => groups.filter(g => typeof g.id === "number" && g.id > 0),
+        [groups]
+    );
+    const [collapsedIds, setCollapsedIds] = useState<string[]>(() => readCollapsedGroupIds());
+
+    useEffect(() => {
+        const sync = () => setCollapsedIds(readCollapsedGroupIds());
+        // 本页写入走自定义事件，其他标签页写入走 storage
+        window.addEventListener(COLLAPSED_EVENT, sync);
+        window.addEventListener("storage", sync);
+        return () => {
+            window.removeEventListener(COLLAPSED_EVENT, sync);
+            window.removeEventListener("storage", sync);
+        };
+    }, []);
+
     const allGroupsCollapsed =
-        realGroups.length > 0 && realGroups.every(g => collapseIds.has(String(g.id)));
+        realGroups.length > 0 && realGroups.every(g => collapsedIds.includes(String(g.id)));
 
     const toggleCollapseAll = useCallback(() => {
         const next = !allGroupsCollapsed; // true = 折叠全部
@@ -1681,8 +1715,7 @@ function App() {
             next
         );
         // 折叠 / 展开是即时可见的操作，不再弹提示打扰
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [allGroupsCollapsed, groups]);
+    }, [allGroupsCollapsed, realGroups]);
 
     // 命令面板：站点跳转 + 常用操作，键盘党不用摸鼠标
     const commands = useMemo<CommandItem[]>(() => {
@@ -2159,6 +2192,8 @@ function App() {
                             }))}
                             activeId={activeGroupId}
                             onJump={jumpToGroup}
+                            allCollapsed={allGroupsCollapsed}
+                            onToggleCollapseAll={toggleCollapseAll}
                         />
                     )}
                     <Box
@@ -2192,12 +2227,13 @@ function App() {
                         </Typography>
                         <Stack 
                             direction={{ xs: 'row', sm: 'row' }} 
-                            spacing={{ xs: 1, sm: 2 }} 
+                            spacing={{ xs: 1, sm: 1.5 }} 
                             alignItems="center"
                             width={{ xs: '100%', sm: 'auto' }}
                             justifyContent={{ xs: 'center', sm: 'flex-end' }}
                             flexWrap="wrap"
-                            sx={{ gap: { xs: 1, sm: 2 }, py: { xs: 1, sm: 0 } }}
+                            useFlexGap
+                            sx={{ rowGap: 1.5, py: { xs: 1, sm: 0 } }}
                         >
                             {/* 搜索框：位于操作按钮左侧，输入即时筛选并弹出结果面板 */}
                             {sortMode === SortMode.None && (
@@ -2240,12 +2276,13 @@ function App() {
                                     sx={{
                                         // 头部收紧时搜索框也收一档，和标题保持同步
                                         width: headerCompact
-                                            ? { xs: "100%", sm: 140, md: 170 }
-                                            : { xs: "100%", sm: 180, md: 220 },
+                                            ? { xs: "100%", sm: 150, md: 175 }
+                                            : { xs: "100%", sm: 190, md: 230 },
                                         transition: "width .25s ease",
                                         // 毛玻璃底色必须和圆角一起挂在输入框本体上：
                                         // 放在外层 FormControl 上会在圆角外面露出一块直角白底
                                         "& .MuiOutlinedInput-root": {
+                                            height: HEADER_CONTROL_H,
                                             borderRadius: "14px",
                                             bgcolor: headerCompact
                                                 ? "var(--glass-bg-hover)"
@@ -2353,6 +2390,10 @@ function App() {
                                 </Popper>
                                 </Box>
                             )}
+                            {/* 搜索是「找东西」，右侧是「改数据 / 改显示」，中间用竖线分开 */}
+                            {sortMode === SortMode.None && (
+                                <Box aria-hidden sx={headerDividerSx} className='nav-header-divider' />
+                            )}
                             {sortMode !== SortMode.None ? (
                                 <>
                                     {sortMode === SortMode.GroupSort && (
@@ -2362,10 +2403,7 @@ function App() {
                                             startIcon={<SaveIcon />}
                                             onClick={handleSaveGroupOrder}
                                             size="small"
-                                            sx={{ 
-                                                minWidth: 'auto',
-                                                fontSize: { xs: '0.75rem', sm: '0.875rem' }
-                                            }}
+                                            sx={headerControlSx}
                                         >
                                             保存分组顺序
                                         </Button>
@@ -2377,10 +2415,7 @@ function App() {
                                             startIcon={<SaveIcon />}
                                             onClick={handleSaveSiteSort}
                                             size="small"
-                                            sx={{ 
-                                                minWidth: 'auto',
-                                                fontSize: { xs: '0.75rem', sm: '0.875rem' }
-                                            }}
+                                            sx={headerControlSx}
                                         >
                                             保存
                                         </Button>
@@ -2391,10 +2426,7 @@ function App() {
                                         startIcon={<CancelIcon />}
                                         onClick={cancelSort}
                                         size="small"
-                                        sx={{ 
-                                            minWidth: 'auto',
-                                            fontSize: { xs: '0.75rem', sm: '0.875rem' }
-                                        }}
+                                        sx={headerControlSx}
                                     >
                                         取消编辑
                                     </Button>
@@ -2407,10 +2439,7 @@ function App() {
                                         startIcon={<AddIcon />}
                                         onClick={handleOpenAddGroup}
                                         size="small"
-                                        sx={{ 
-                                            minWidth: 'auto',
-                                            fontSize: { xs: '0.75rem', sm: '0.875rem' }
-                                        }}
+                                        sx={headerControlSx}
                                     >
                                         新增分组
                                     </Button>
@@ -2424,10 +2453,7 @@ function App() {
                                         aria-haspopup='true'
                                         aria-expanded={openMenu ? "true" : undefined}
                                         size="small"
-                                        sx={{ 
-                                            minWidth: 'auto',
-                                            fontSize: { xs: '0.75rem', sm: '0.875rem' }
-                                        }}
+                                        sx={headerControlSx}
                                     >
                                         更多选项
                                     </Button>
@@ -2446,23 +2472,6 @@ function App() {
                                                 <SortIcon fontSize='small' />
                                             </ListItemIcon>
                                             <ListItemText>编辑排序</ListItemText>
-                                        </MenuItem>
-                                        <MenuItem
-                                            onClick={() => {
-                                                handleMenuClose();
-                                                toggleCollapseAll();
-                                            }}
-                                        >
-                                            <ListItemIcon>
-                                                {allGroupsCollapsed ? (
-                                                    <UnfoldMoreIcon fontSize='small' />
-                                                ) : (
-                                                    <UnfoldLessIcon fontSize='small' />
-                                                )}
-                                            </ListItemIcon>
-                                            <ListItemText>
-                                                {allGroupsCollapsed ? "展开全部分组" : "折叠全部分组"}
-                                            </ListItemText>
                                         </MenuItem>
                                         <MenuItem onClick={handleOpenConfig}>
                                             <ListItemIcon>
@@ -2563,74 +2572,104 @@ function App() {
                                     </Menu>
                                 </>
                             )}
-                            {/* 视图版式与显示密度：只影响本机显示，不写入服务器 */}
+                            {/* 操作按钮与显示控制之间再分一次组 */}
+                            {sortMode === SortMode.None && (
+                                <Box aria-hidden sx={headerDividerSx} className='nav-header-divider' />
+                            )}
+                            {/* 显示控制：视图版式 + 显示密度合成一块玻璃胶囊，中间一条细线分开
+                                （原来是两块外形一模一样的独立胶囊，并排放着像重复按钮） */}
                             {sortMode === SortMode.None && (
                                 <>
-                                    <ToggleButtonGroup
-                                        size='small'
-                                        exclusive
-                                        value={viewMode}
-                                        onChange={(_e, value) => value && setViewMode(value)}
-                                        aria-label='视图切换'
+                                    <Box
+                                        className='nav-display-pill'
                                         sx={{
+                                            display: "flex",
+                                            alignItems: "center",
+                                            height: HEADER_CONTROL_H,
+                                            p: "2px",
+                                            gap: "2px",
+                                            borderRadius: HEADER_RADIUS,
                                             bgcolor: "var(--glass-bg)",
-                                            borderRadius: "14px",
-                                            "& .MuiToggleButton-root": {
-                                                border: 0,
-                                                px: 1,
-                                                py: 0.4,
-                                                borderRadius: "12px",
-                                            },
+                                            border: "1px solid var(--glass-border)",
+                                            backdropFilter: "blur(10px)",
+                                            WebkitBackdropFilter: "blur(10px)",
+                                            flexShrink: 0,
                                         }}
                                     >
-                                        <ToggleButton value='card' aria-label='卡片视图'>
-                                            <Tooltip title='卡片视图'>
-                                                <ViewModuleIcon fontSize='small' />
-                                            </Tooltip>
-                                        </ToggleButton>
-                                        <ToggleButton value='list' aria-label='列表视图'>
-                                            <Tooltip title='紧凑列表'>
-                                                <ViewListIcon fontSize='small' />
-                                            </Tooltip>
-                                        </ToggleButton>
-                                        <ToggleButton value='wall' aria-label='图标墙视图'>
-                                            <Tooltip title='图标墙'>
-                                                <ViewCompactIcon fontSize='small' />
-                                            </Tooltip>
-                                        </ToggleButton>
-                                    </ToggleButtonGroup>
+                                        <ToggleButtonGroup
+                                            size='small'
+                                            exclusive
+                                            value={viewMode}
+                                            onChange={(_e, value) => value && setViewMode(value)}
+                                            aria-label='视图切换'
+                                            sx={{
+                                                "& .MuiToggleButton-root": {
+                                                    border: 0,
+                                                    height: HEADER_CONTROL_H - 4,
+                                                    px: 1,
+                                                    borderRadius: "11px",
+                                                },
+                                            }}
+                                        >
+                                            <ToggleButton value='card' aria-label='卡片视图'>
+                                                <Tooltip title='卡片视图'>
+                                                    <ViewModuleIcon fontSize='small' />
+                                                </Tooltip>
+                                            </ToggleButton>
+                                            <ToggleButton value='list' aria-label='列表视图'>
+                                                <Tooltip title='紧凑列表'>
+                                                    <ViewListIcon fontSize='small' />
+                                                </Tooltip>
+                                            </ToggleButton>
+                                            <ToggleButton value='wall' aria-label='图标墙视图'>
+                                                <Tooltip title='图标墙'>
+                                                    <ViewCompactIcon fontSize='small' />
+                                                </Tooltip>
+                                            </ToggleButton>
+                                        </ToggleButtonGroup>
 
-                                    <ToggleButtonGroup
-                                        size='small'
-                                        exclusive
-                                        value={density}
-                                        onChange={(_e, value) => value && setDensity(value)}
-                                        aria-label='显示密度'
-                                        sx={{
-                                            bgcolor: "var(--glass-bg)",
-                                            borderRadius: "14px",
-                                            "& .MuiToggleButton-root": {
-                                                border: 0,
-                                                px: 1,
-                                                py: 0.4,
-                                                borderRadius: "12px",
-                                            },
-                                        }}
-                                    >
-                                        <ToggleButton value='comfortable' aria-label='舒适密度'>
-                                            <Tooltip title='舒适'>
-                                                <DensityMediumIcon fontSize='small' />
-                                            </Tooltip>
-                                        </ToggleButton>
-                                        <ToggleButton value='compact' aria-label='紧凑密度'>
-                                            <Tooltip title='紧凑'>
-                                                <DensitySmallIcon fontSize='small' />
-                                            </Tooltip>
-                                        </ToggleButton>
-                                    </ToggleButtonGroup>
+                                        <Box
+                                            aria-hidden
+                                            sx={{
+                                                width: "1px",
+                                                height: 18,
+                                                bgcolor: "var(--glass-border)",
+                                                flexShrink: 0,
+                                            }}
+                                        />
+
+                                        <ToggleButtonGroup
+                                            size='small'
+                                            exclusive
+                                            value={density}
+                                            onChange={(_e, value) => value && setDensity(value)}
+                                            aria-label='显示密度'
+                                            sx={{
+                                                "& .MuiToggleButton-root": {
+                                                    border: 0,
+                                                    height: HEADER_CONTROL_H - 4,
+                                                    px: 1,
+                                                    borderRadius: "11px",
+                                                },
+                                            }}
+                                        >
+                                            <ToggleButton value='comfortable' aria-label='舒适密度'>
+                                                <Tooltip title='舒适'>
+                                                    <DensityMediumIcon fontSize='small' />
+                                                </Tooltip>
+                                            </ToggleButton>
+                                            <ToggleButton value='compact' aria-label='紧凑密度'>
+                                                <Tooltip title='紧凑'>
+                                                    <DensitySmallIcon fontSize='small' />
+                                                </Tooltip>
+                                            </ToggleButton>
+                                        </ToggleButtonGroup>
+                                    </Box>
                                 </>
                             )}
 
+                            {/* 时钟与主题切换归成「状态区」，和左侧操作按钮用竖线隔开 */}
+                            <Box aria-hidden sx={headerDividerSx} className='nav-header-divider' />
                             <HeaderClock />
                             <ThemeToggle mode={themeMode} onToggle={toggleTheme} />
                         </Stack>

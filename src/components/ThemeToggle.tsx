@@ -35,7 +35,11 @@ export default function ThemeToggle({ mode, onToggle }: ThemeToggleProps) {
                 color='inherit'
                 aria-label={`主题：${LABEL[mode]}`}
                 sx={{
-                    p: 1.5,
+                    // 和顶部工具栏其它控件统一成 36px，一行里高矮一致
+                    width: 36,
+                    height: 36,
+                    p: 0,
+                    flexShrink: 0,
                     borderRadius: "50%",
                     bgcolor: "background.paper",
                     boxShadow: 1,
@@ -45,7 +49,7 @@ export default function ThemeToggle({ mode, onToggle }: ThemeToggleProps) {
                     },
                 }}
             >
-                <Icon />
+                <Icon sx={{ fontSize: 20 }} />
             </IconButton>
         </Tooltip>
     );
