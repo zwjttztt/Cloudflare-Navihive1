@@ -1,0 +1,58 @@
+# 持续集成：类型检查 → 纯函数单测 → 构建 → 浏览器冒烟。
+#
+# 冒烟用的是 script/ci-smoke.mjs —— 零依赖、只需要一个已装好的 Chrome，
+# 所以直接借 ubuntu runner 自带的 google-chrome，不用装 playwright/puppeteer。
+#
+# 本地等价命令：npm run ci
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# 同一分支上的新提交把旧的跑批取消掉，省 runner
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # 仓库里没有提交 lockfile（本机装包用的是 --no-package-lock），
+      # 所以这里用 install 而不是 ci；--legacy-peer-deps 是为了绕开 MUI 7 的 peer 依赖告警
+      - name: 安装依赖
+        run: npm install --no-package-lock --legacy-peer-deps
+
+      - name: 类型检查
+        run: npm run typecheck
+
+      - name: 纯函数单测
+        run: npm run test
+
+      - name: 构建
+        run: npm run build
+
+      # ubuntu-latest 预装了 google-chrome，ci-smoke.mjs 会自己找到它；
+      # 万一某天镜像里没有了，这一步会明确报「没找到 Chrome」而不是静默跳过
+      - name: 浏览器冒烟
+        run: npm run smoke
+
+      - name: 失败时留一份截图/日志
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-smoke-logs
+          path: |
+            dist/
+          retention-days: 5

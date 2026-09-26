@@ -60,11 +60,12 @@ export default function ImportPreviewDialog({
     );
 
     const [selected, setSelected] = useState<Set<string>>(new Set());
-    // 备份数据换了就重新按默认规则勾一遍（默认：新增 + 更新）
+    // 备份数据换了就重新按默认规则勾一遍：
+    // 合并导入默认「新增 + 更新」，覆盖恢复默认全选（见 defaultSelection 的说明）
     const [seededFor, setSeededFor] = useState<ExportData | null>(null);
     if (diff && data && seededFor !== data) {
         setSeededFor(data);
-        setSelected(defaultSelection(diff));
+        setSelected(defaultSelection(diff, overwrite));
     }
 
     if (!data || !diff) return null;

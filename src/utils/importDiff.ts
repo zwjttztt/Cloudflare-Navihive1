@@ -146,15 +146,26 @@ export function computeImportDiff(
     return { groupEntries, siteEntries, removedGroups, removedSites, counts };
 }
 
-/** 默认勾选：新增和更新（无变化的也默认带上，用户想精简再自己取消） */
-export function defaultSelection(diff: ImportDiff): Set<string> {
+/**
+ * 默认勾选。
+ *
+ * 合并导入：只勾新增和更新 —— 无变化的条目导进去也是白导一遍，默认不勾更清爽。
+ * 覆盖恢复：**必须全选**。覆盖的语义是「以这份备份为准」，没勾的条目会被当成
+ * 「不在备份里」清掉；如果沿用合并那套默认值，用户什么都没动就会丢掉所有
+ * 名字没变过的分组和卡片。
+ */
+export function defaultSelection(diff: ImportDiff, overwrite = false): Set<string> {
+    const all = [...diff.groupEntries, ...diff.siteEntries];
+
+    if (overwrite) return new Set(all.map(entry => entry.key));
+
     const selected = new Set<string>();
-    for (const entry of [...diff.groupEntries, ...diff.siteEntries]) {
+    for (const entry of all) {
         if (entry.status !== "unchanged") selected.add(entry.key);
     }
     // 一个都不勾选时反而容易让人以为出错了，全选一遍更直观
     if (selected.size === 0) {
-        for (const entry of [...diff.groupEntries, ...diff.siteEntries]) selected.add(entry.key);
+        for (const entry of all) selected.add(entry.key);
     }
     return selected;
 }
@@ -168,6 +179,12 @@ export function applyImportSelection(
     const groupKeys = new Set(
         diff.groupEntries.filter(entry => selected.has(entry.key)).map(entry => entry.key)
     );
+    // 只有「将要新建的分组」才需要连带约束：没勾它，里面的卡片就没有落脚的地方。
+    // 已存在的分组不能被当成拦路虎 —— 合并导入时，一张挂在老分组下、内容有改动的卡片
+    // 是完全可以直接写进那个老分组的，之前会被这里连带丢掉。
+    const addedGroupKeys = new Set(
+        diff.groupEntries.filter(entry => entry.status === "added").map(entry => entry.key)
+    );
 
     const groups = (data.groups ?? []).filter(
         (_group, index) => groupKeys.has(diff.groupEntries[index]?.key ?? "")
@@ -175,8 +192,9 @@ export function applyImportSelection(
     const sites = (data.sites ?? []).filter((_site, index) => {
         const entry = diff.siteEntries[index];
         if (!entry || !selected.has(entry.key)) return false;
-        // 所属分组没被勾选，这张卡片也不导入（不然会落到不存在的分组里）
-        if (entry.groupKey && !groupKeys.has(entry.groupKey)) return false;
+        if (entry.groupKey && addedGroupKeys.has(entry.groupKey) && !groupKeys.has(entry.groupKey)) {
+            return false;
+        }
         return true;
     });
 

@@ -39,6 +39,7 @@ import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import LinkOffIcon from "@mui/icons-material/LinkOff";
 import { useAppConfig } from "../context/AppConfigContext";
 import { useNotify } from "../context/NotifyContext";
+import { isSafeHttpUrl } from "../utils/url";
 import { useUIPrefs } from "../context/UIPrefsContext";
 import { resolveIconApiUrl } from "../utils/iconApi";
 import {
@@ -709,12 +710,15 @@ const SiteCard = memo(function SiteCard({
     };
 
     // 卡片本体做成真实的 <a>：左键普通新标签，中键由浏览器原生后台打开（不切走当前页）
-    const linkProps = site.url
+    // 兜底：库里的链接理论上都在保存/导入时规范化过了，但历史数据或手动改库可能混进奇怪的值，
+    // 出 href 前再确认一次是 http(s)，否则干脆不给链接（宁可不能点，也不能点一下执行脚本）
+    const linkProps = site.url && isSafeHttpUrl(site.url)
         ? {
               component: "a" as const,
               href: site.url,
               target: "_blank",
-              rel: "noopener",
+              // noreferrer 顺手也加上：外链不该带上本站地址
+              rel: "noopener noreferrer",
               tabIndex: -1,
           }
         : {};

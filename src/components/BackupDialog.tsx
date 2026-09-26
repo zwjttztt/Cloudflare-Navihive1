@@ -61,6 +61,9 @@ interface BackupDialogProps {
     ) => Promise<ExportData | null>;
     onNotify: (message: string, severity?: "success" | "error" | "info") => void;
     onClose: () => void;
+    /** 备份文件里是否带上网站的账号密码（默认带；关掉后本地下载、WebDAV 上传、每周定时备份都不带） */
+    includeCredentials: boolean;
+    onIncludeCredentialsChange: (enabled: boolean) => void;
 }
 
 // 人类可读的文件大小
@@ -97,6 +100,8 @@ export default function BackupDialog({
     onRequestImportPreview,
     onNotify,
     onClose,
+    includeCredentials,
+    onIncludeCredentialsChange,
 }: BackupDialogProps) {
     const theme = useTheme();
 
@@ -317,8 +322,46 @@ export default function BackupDialog({
                     备份到本地
                 </Typography>
                 <Typography variant='body2' color='text.secondary' sx={{ mb: 1 }}>
-                    把当前所有分组、站点（含账号密码）、网站设置，以及本机的星标与标签导出为一个 JSON 文件保存到本机。
+                    把当前所有分组、站点、网站设置，以及本机的星标与标签导出为一个 JSON 文件保存到本机。
                 </Typography>
+
+                {/* 凭据开关：三处导出（本地下载 / WebDAV 上传 / 每周定时备份）共用同一个设置 */}
+                <Box
+                    sx={{
+                        mb: 1.5,
+                        p: 1.25,
+                        borderRadius: 2,
+                        border: 1,
+                        // 带凭据是「有风险」的状态，边框用警告色提示一下
+                        borderColor: includeCredentials ? "warning.main" : "divider",
+                    }}
+                >
+                    <FormControlLabel
+                        control={
+                            <Switch
+                                checked={includeCredentials}
+                                size='small'
+                                onChange={e => onIncludeCredentialsChange(e.target.checked)}
+                                inputProps={{ "aria-label": "备份包含网站登录凭据" }}
+                            />
+                        }
+                        label={
+                            <Typography variant='body2'>
+                                备份包含网站登录凭据（账号 / 密码）
+                            </Typography>
+                        }
+                        sx={{ display: "flex", mr: 0 }}
+                    />
+                    <Typography
+                        variant='caption'
+                        color={includeCredentials ? "warning.dark" : "text.secondary"}
+                        sx={{ display: "block", ml: 6 }}
+                    >
+                        {includeCredentials
+                            ? "备份文件是明文 JSON，开启每周自动备份时还会同步到你的网盘。请确认网盘账号本身是可信的，或者关掉这个开关。"
+                            : "已关闭：导出 / 上传 / 定时备份都不会带上网站的账号密码，恢复后需要手动补填。"}
+                    </Typography>
+                </Box>
                 <Button
                     variant='contained'
                     startIcon={<DownloadIcon />}

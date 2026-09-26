@@ -12,6 +12,22 @@ import {
 import { readDeadLinks } from "../utils/linkHealth";
 import type { LocalPrefsBackup } from "../API/http";
 
+/**
+ * 星标 / 标签变化时通知外部（App 用它做防抖上传到服务端）。
+ * 不注册就是纯本机行为，跟开同步之前完全一致。
+ */
+let prefsChangeListener: (() => void) | null = null;
+export function onLocalPrefsChange(listener: (() => void) | null) {
+    prefsChangeListener = listener;
+}
+const emitPrefsChange = () => {
+    try {
+        prefsChangeListener?.();
+    } catch {
+        // 上传失败不该影响本机使用
+    }
+};
+
 export type ViewMode = "card" | "list" | "wall";
 export type Density = "comfortable" | "compact";
 /** 圆角风格：圆润 / 标准 / 锐利 */
@@ -102,6 +118,14 @@ interface UIPrefsValue {
      * replace = 覆盖恢复，merge = 追加导入取并集。
      */
     restoreLocalPrefs: (prefs: LocalPrefsBackup | undefined, mode: "replace" | "merge") => void;
+    /**
+     * 星标 / 标签是否同步到服务端（默认关）。
+     * 关着的时候它们只在本机 localStorage 里，清缓存就没了；开了之后换设备也能看到。
+     */
+    prefSync: boolean;
+    setPrefSync: (enabled: boolean) => void;
+    /** 合并服务端下发的星标 / 标签（取并集，不会减掉本机已有的） */
+    mergeRemotePrefs: (starred: number[], tags: Record<string, string[]>) => void;
 }
 
 const VIEW_KEY = "navihive:viewMode";
@@ -116,6 +140,7 @@ const TAGS_KEY = "navihive:tags";
 const RAIL_COLLAPSED_KEY = "navihive:railCollapsed";
 const PINYIN_KEY = "navihive:pinyinSearch";
 const GLASS_KEY = "navihive:glassEffects";
+const PREF_SYNC_KEY = "navihive:prefSync";
 /** 搜索历史最多留几条，够用又不至于把面板撑长 */
 const SEARCH_HISTORY_MAX = 8;
 
@@ -235,6 +260,9 @@ const defaultValue: UIPrefsValue = {
     railCollapsed: false,
     setRailCollapsed: () => {},
     restoreLocalPrefs: () => {},
+    prefSync: false,
+    setPrefSync: () => {},
+    mergeRemotePrefs: () => {},
 };
 
 export const UIPrefsContext = createContext<UIPrefsValue>(defaultValue);
@@ -279,6 +307,65 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
     const [railCollapsed, setRailCollapsedState] = useState<boolean>(
         () => readString(RAIL_COLLAPSED_KEY, "0") === "1"
     );
+    // 星标 / 标签是否同步到服务端。开关本身也只存本机：它决定的是「这份数据要不要外传」
+    const [prefSync, setPrefSyncState] = useState<boolean>(
+        () => readString(PREF_SYNC_KEY, "0") === "1"
+    );
+
+    const setPrefSync = useCallback((enabled: boolean) => {
+        setPrefSyncState(enabled);
+        write(PREF_SYNC_KEY, enabled ? "1" : "0");
+    }, []);
+
+    /** 合并服务端下发的星标 / 标签：取并集，绝不减掉本机已有的 */
+    const mergeRemotePrefs = useCallback(
+        (incomingStarred: number[], incomingTags: Record<string, string[]>) => {
+            const cleanStarred = (Array.isArray(incomingStarred) ? incomingStarred : []).filter(
+                id => typeof id === "number" && Number.isFinite(id)
+            );
+            if (cleanStarred.length > 0) {
+                setStarred(prev => {
+                    const next = [...new Set([...prev, ...cleanStarred])];
+                    write(STARRED_KEY, JSON.stringify(next));
+                    return next;
+                });
+            }
+
+            if (incomingTags && typeof incomingTags === "object") {
+                setTags(prev => {
+                    const next: Record<string, string[]> = { ...prev };
+                    let changed = false;
+                    for (const [siteId, list] of Object.entries(incomingTags)) {
+                        if (!Array.isArray(list)) continue;
+                        const clean = [
+                            ...new Set(
+                                list
+                                    .filter(t => typeof t === "string" && t.trim().length > 0)
+                                    .map(t => t.trim())
+                            ),
+                        ];
+                        if (clean.length === 0) continue;
+                        const merged = [...new Set([...(next[siteId] ?? []), ...clean])];
+                        if (merged.length !== (next[siteId] ?? []).length) {
+                            next[siteId] = merged;
+                            changed = true;
+                        }
+                    }
+                    if (!changed) return prev;
+                    write(TAGS_KEY, JSON.stringify(next));
+                    return next;
+                });
+            }
+        },
+        []
+    );
+
+    // 星标 / 标签一变就通知外部（App 用它做防抖上传）。
+    // 挂在这里而不是每个 setter 里调用，是因为改动的入口太多（批量加星、标签管理、导入……），
+    // 监听这两个 state 才能一个不漏。
+    useEffect(() => {
+        emitPrefsChange();
+    }, [starred, tags]);
 
     const setViewMode = useCallback((mode: ViewMode) => {
         setViewModeState(mode);
@@ -611,6 +698,9 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
             railCollapsed,
             setRailCollapsed,
             restoreLocalPrefs,
+            prefSync,
+            setPrefSync,
+            mergeRemotePrefs,
         }),
         [
             viewMode,
@@ -648,6 +738,9 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
             railCollapsed,
             setRailCollapsed,
             restoreLocalPrefs,
+            prefSync,
+            setPrefSync,
+            mergeRemotePrefs,
         ]
     );
 
