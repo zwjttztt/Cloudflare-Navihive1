@@ -10,11 +10,20 @@ import {
 } from "react";
 import { NavigationClient } from "./API/client";
 import { MockNavigationClient } from "./API/mock";
-import { Site, Group, ExportData, BootstrapData, WebDavConfig, normalizeImportData } from "./API/http";
+import {
+    Site,
+    Group,
+    ExportData,
+    BootstrapData,
+    WebDavConfig,
+    BACKUP_CREDENTIALS_CONFIG,
+    isSecretConfigKey,
+    normalizeImportData,
+} from "./API/http";
 import { GroupWithSites } from "./types";
 import { AppConfigProvider } from "./context/AppConfigContext";
 import { NotifyContext } from "./context/NotifyContext";
-import { useUIPrefs, RADIUS_PX } from "./context/UIPrefsContext";
+import { useUIPrefs, RADIUS_PX, onLocalPrefsChange } from "./context/UIPrefsContext";
 import SiteCard from "./components/SiteCard";
 import GroupNavRail from "./components/GroupNavRail";
 import MobileTabBar from "./components/MobileTabBar";
@@ -25,10 +34,17 @@ const BookmarkImportDialog = lazy(() => import("./components/BookmarkImportDialo
 import ScrollProgress from "./components/ScrollProgress";
 import BackToTop from "./components/BackToTop";
 import OfflineBanner from "./components/OfflineBanner";
-import InstallDesktopIcon from "@mui/icons-material/InstallDesktop";
 import { usePwaInstall } from "./hooks/usePwaInstall";
 import { useHistoryStack } from "./hooks/useHistoryStack";
 import { useNotify } from "./hooks/useNotify";
+import {
+    SortMode,
+    headerDividerSx,
+} from "./constants";
+import HeaderSearchBox from "./components/HeaderSearchBox";
+import HeaderActions from "./components/HeaderActions";
+import MoreMenu from "./components/MoreMenu";
+import DisplayControls from "./components/DisplayControls";
 const SettingsDialog = lazy(() => import("./components/SettingsDialog"));
 const ImportPreviewDialog = lazy(() => import("./components/ImportPreviewDialog"));
 import HeaderClock from "./components/HeaderClock";
@@ -37,10 +53,18 @@ import EmptyArt from "./components/EmptyArt";
 import { COLLAPSED_EVENT, readCollapsedGroupIds, setAllCollapsed } from "./utils/collapse";
 import { DuplicateHit, findDuplicateSite } from "./utils/duplicate";
 import { loadPinyinMatcher } from "./utils/pinyin";
-import { FRESH_WINDOW_MS, probeLinks } from "./utils/linkHealth";
+import {
+    FRESH_WINDOW_MS,
+    exportLinkHealth,
+    mergeLinkHealth,
+    onLinkHealthChange,
+    probeLinks,
+    readDeadLinks,
+} from "./utils/linkHealth";
 import { clearBootstrapCache, readBootstrapCache, writeBootstrapCache } from "./utils/firstPaintCache";
 import { ParsedBookmarkGroup } from "./utils/bookmarks";
 import { DEFAULT_ICON_API, resolveIconApiUrl } from "./utils/iconApi";
+import { normalizeFailureText, normalizeUrl } from "./utils/url";
 import { groupAccent } from "./utils/groupColor";
 import { matchesGroupQuery, matchesSiteQuery } from "./utils/search";
 import {
@@ -95,56 +119,25 @@ import {
     Menu,
     MenuItem,
     Divider,
-    ListItemIcon,
     ListItemText,
     Snackbar,
     Tooltip,
     InputAdornment,
     Skeleton,
-    ToggleButton,
-    ToggleButtonGroup,
-    Popper,
-    Paper,
-    List,
-    ListItemButton,
-    Switch,
 } from "@mui/material";
-import SortIcon from "@mui/icons-material/Sort";
-import SaveIcon from "@mui/icons-material/Save";
-import CancelIcon from "@mui/icons-material/Cancel";
-import AddIcon from "@mui/icons-material/Add";
 import CloseIcon from "@mui/icons-material/Close";
-import SettingsIcon from "@mui/icons-material/Settings";
-import FileUploadIcon from "@mui/icons-material/FileUpload";
-import FileDownloadIcon from "@mui/icons-material/FileDownload";
-import LogoutIcon from "@mui/icons-material/Logout";
-import MenuIcon from "@mui/icons-material/Menu";
 import AutoFixHighIcon from "@mui/icons-material/AutoFixHigh";
+import CloudDownloadIcon from "@mui/icons-material/CloudDownload";
 import VisibilityIcon from "@mui/icons-material/Visibility";
 import VisibilityOffIcon from "@mui/icons-material/VisibilityOff";
-import SearchIcon from "@mui/icons-material/Search";
-import ViewModuleIcon from "@mui/icons-material/ViewModule";
-import ViewListIcon from "@mui/icons-material/ViewList";
-import ViewCompactIcon from "@mui/icons-material/ViewCompact";
-import DensityMediumIcon from "@mui/icons-material/DensityMedium";
-import DensitySmallIcon from "@mui/icons-material/DensitySmall";
-import StarIcon from "@mui/icons-material/Star";
-import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
-import BookmarkAddedIcon from "@mui/icons-material/BookmarkAdded";
-import LinkOffIcon from "@mui/icons-material/LinkOff";
-import InsightsIcon from "@mui/icons-material/Insights";
-import CheckBoxIcon from "@mui/icons-material/CheckBox";
-import CheckBoxOutlineBlankIcon from "@mui/icons-material/CheckBoxOutlineBlank";
-import StarBorderIcon from "@mui/icons-material/StarBorder";
 import CheckCircleRoundedIcon from "@mui/icons-material/CheckCircleRounded";
-import BlurOnIcon from "@mui/icons-material/BlurOn";
-import BlurOffIcon from "@mui/icons-material/BlurOff";
 import InfoRoundedIcon from "@mui/icons-material/InfoRounded";
 import ErrorOutlineRoundedIcon from "@mui/icons-material/ErrorOutlineRounded";
 import { alpha } from "@mui/material/styles";
 import BulkActionBar from "./components/BulkActionBar";
 import TagBar from "./components/TagBar";
 const TagManagerDialog = lazy(() => import("./components/TagManagerDialog"));
+const ShortcutsDialog = lazy(() => import("./components/ShortcutsDialog"));
 import ConfirmDialog from "./components/ConfirmDialog";
 
 // 根据环境选择使用真实API还是模拟API
@@ -156,17 +149,13 @@ const api =
         ? new MockNavigationClient()
         : new NavigationClient(isDevEnvironment ? "http://localhost:8788/api" : "/api");
 
-// 排序模式枚举
-enum SortMode {
-    None, // 不排序
-    GroupSort, // 分组排序
-    SiteSort, // 站点排序
-}
-
 // 默认配置
 const DEFAULT_CONFIGS = {
-    "site.title": "MyHomepage",
-    "site.name": "MyHomepage",
+    // 原来这里是脚手架的 "MyHomepage"：数据库里还没存过 site.title 时，
+    // 应用一挂载就会把 <title> 从 index.html 里的「Navihive 导航站」改成它。
+    // 用户没配过标题的话，看到的就是这个莫名其妙的名字，统一改成站点自己的名字。
+    "site.title": "Navihive 导航站",
+    "site.name": "Navihive",
     "site.customCss": "",
     // 一键获取图标所用的 API 模板，{domain} 会被替换成站点域名
     "site.iconApi": DEFAULT_ICON_API,
@@ -197,29 +186,22 @@ const DEFAULT_WEBDAV_CONFIG: WebDavConfig = {
 // WebDAV 配置在 configs 表中的键名前缀
 const WEBDAV_CONFIG_PREFIX = "webdav.";
 
+// ---- 可选的多端同步（都存服务端 configs，默认关）----
+// 失效检测结果：换设备不用重测一遍
+const LINK_HEALTH_CONFIG = "link.health";
+const LINK_HEALTH_SYNC_CONFIG = "link.healthSync";
+// 本机偏好（星标 / 标签）：清了缓存也不至于全丢
+const PREF_SYNC_CONFIG = "pref.sync";
+const PREF_STARRED_CONFIG = "pref.starred";
+const PREF_TAGS_CONFIG = "pref.tags";
+/** 改动后多久推一次：拖星标、连续打标签时不该每个动作都发一个请求 */
+const SYNC_DEBOUNCE_MS = 1500;
+
 // 主题模式：浅色 / 深色 / 跟随系统
 type ThemeMode = "light" | "dark" | "system";
 
 // ---- 顶部工具栏的统一尺寸 ----
 // 之前搜索框（40px）比按钮（32px）高一截，一行里高矮不齐；现在统一成一个高度、一个圆角。
-const HEADER_CONTROL_H = 36;
-const HEADER_RADIUS = "14px";
-// 搜索框 / 按钮 / 胶囊共用：高度对齐 + 圆角一致
-const headerControlSx = {
-    minWidth: "auto",
-    height: HEADER_CONTROL_H,
-    borderRadius: HEADER_RADIUS,
-    fontSize: { xs: "0.75rem", sm: "0.875rem" },
-};
-// 逻辑分组之间的竖向分隔线（搜索 | 操作 | 显示 | 时钟）
-const headerDividerSx = {
-    width: "1px",
-    alignSelf: "stretch",
-    my: 0.75,
-    bgcolor: "var(--glass-border)",
-    flexShrink: 0,
-};
-
 function App() {
     // 主题模式状态（默认跟随系统；老用户存过的 light/dark 依然兼容）
     const [themeMode, setThemeMode] = useState<ThemeMode>(() => {
@@ -468,8 +450,10 @@ function App() {
 
     // 正在创建站点：按钮置灰 + 防止连点创建出多张卡片
     const [creatingSite, setCreatingSite] = useState(false);
+    const [fetchingMeta, setFetchingMeta] = useState(false);
     // setState 要等下一次渲染才生效，连点两下时用 ref 同步兜住
     const creatingSiteRef = useRef(false);
+    const fetchingMetaRef = useRef(false);
 
     // 全局提示条：状态与 notify 都挪进了 useNotify（App 只负责渲染 <Snackbar />）
     const {
@@ -528,6 +512,9 @@ function App() {
         pinyinSearch,
         setPinyinSearch,
         restoreLocalPrefs,
+        prefSync,
+        setPrefSync,
+        mergeRemotePrefs,
     } = useUIPrefs();
 
     // 导入预览：备份恢复前先摊开差异让用户挑，确认/取消都通过 promise 回传给备份弹窗
@@ -589,6 +576,8 @@ function App() {
     const [commandOpen, setCommandOpen] = useState(false);
     // 访问统计弹窗（热力图 + Top5）
     const [openVisits, setOpenVisits] = useState(false);
+    // 快捷键说明表（按 ? 打开）
+    const [openShortcuts, setOpenShortcuts] = useState(false);
     // 浏览器书签导入
     const [bookmarkOpen, setBookmarkOpen] = useState(false);
     // 分组锚点导航：当前视口里的分组
@@ -825,7 +814,82 @@ function App() {
 
         setGroups(nextGroups);
         applyConfigs(data.configs);
+
+        // ---- 可选的多端同步：把服务端那份合并回本机 ----
+        // 都是「取并集 / 取较新」，所以重复合并不会丢数据，也不怕和上传打架
+        const incoming = data.configs || {};
+
+        if (incoming[LINK_HEALTH_SYNC_CONFIG] === "true" && incoming[LINK_HEALTH_CONFIG]) {
+            try {
+                mergeLinkHealth(JSON.parse(incoming[LINK_HEALTH_CONFIG]));
+                setDeadLinks(readDeadLinks());
+            } catch {
+                // 云端那份坏了就当没有，不影响本机
+            }
+        }
+
+        if (incoming[PREF_SYNC_CONFIG] === "true") {
+            try {
+                const remoteStarred = JSON.parse(incoming[PREF_STARRED_CONFIG] || "[]");
+                const remoteTags = JSON.parse(incoming[PREF_TAGS_CONFIG] || "{}");
+                mergeRemotePrefs(remoteStarred, remoteTags);
+            } catch {
+                // 同上
+            }
+        }
     };
+
+    // ---- 云端同步：上传（防抖 + 内容没变就不发）----
+    // 只负责「本机 → 服务端」这一半；合并在 applyRemoteData 里做。
+    // 上传失败一律静默：同步是锦上添花，不能让网络问题干扰正常使用。
+    const lastHealthPushRef = useRef("");
+    useEffect(() => {
+        if (configs[LINK_HEALTH_SYNC_CONFIG] !== "true") {
+            onLinkHealthChange(null);
+            return;
+        }
+        let timer: number | undefined;
+        onLinkHealthChange(() => {
+            if (timer) window.clearTimeout(timer);
+            timer = window.setTimeout(() => {
+                const payload = JSON.stringify(exportLinkHealth());
+                if (payload === lastHealthPushRef.current) return;
+                lastHealthPushRef.current = payload;
+                void api.setConfig(LINK_HEALTH_CONFIG, payload).catch(() => {});
+            }, SYNC_DEBOUNCE_MS);
+        });
+        return () => {
+            onLinkHealthChange(null);
+            if (timer) window.clearTimeout(timer);
+        };
+    }, [configs[LINK_HEALTH_SYNC_CONFIG]]);
+
+    const lastPrefPushRef = useRef("");
+    useEffect(() => {
+        if (!prefSync) {
+            onLocalPrefsChange(null);
+            return;
+        }
+        let timer: number | undefined;
+        const push = () => {
+            if (timer) window.clearTimeout(timer);
+            timer = window.setTimeout(() => {
+                const payload = JSON.stringify({ starred, tags });
+                // 打开同步时星标/标签刚合并过一轮，内容一样就不必再写一次库
+                if (payload === lastPrefPushRef.current) return;
+                lastPrefPushRef.current = payload;
+                void Promise.all([
+                    api.setConfig(PREF_STARRED_CONFIG, JSON.stringify(starred)),
+                    api.setConfig(PREF_TAGS_CONFIG, JSON.stringify(tags)),
+                ]).catch(() => {});
+            }, SYNC_DEBOUNCE_MS);
+        };
+        onLocalPrefsChange(push);
+        return () => {
+            onLocalPrefsChange(null);
+            if (timer) window.clearTimeout(timer);
+        };
+    }, [prefSync, starred, tags]);
 
     useEffect(() => {
         // 先用上一次的快照把界面画出来（已登录才有意义，未登录要直接走登录页），
@@ -1104,7 +1168,15 @@ function App() {
 
     // 更新站点：保存成功后直接用（本地这份 + 服务端回显）更新本地状态，界面即时生效，不再刷新页面
     const handleSiteUpdate = useCallback(
-        async (updatedSite: Site) => {
+        async (siteInput: Site) => {
+            // 网址规范化：不写协议时补 https://，javascript: 之类的伪协议直接挡掉
+            // （编辑站点这条路径同样不走 type=url 校验，见 utils/url.ts 的说明）
+            const urlCheck = normalizeUrl(siteInput.url || "");
+            if (!urlCheck.ok) {
+                handleError(normalizeFailureText(urlCheck.reason));
+                return;
+            }
+            const updatedSite: Site = { ...siteInput, url: urlCheck.url };
             if (!updatedSite.id) return;
 
             const doUpdate = async () => {
@@ -1865,6 +1937,44 @@ function App() {
         });
     };
 
+    // 新增站点时：让服务端去抓目标页面的标题 / 描述，一键补全
+    // （浏览器直接 fetch 第三方页面会被 CORS 挡住，所以走 worker 的 /api/meta）
+    const handleFetchNewSiteMeta = async () => {
+        if (fetchingMetaRef.current) return;
+
+        const target = normalizeUrl(newSite.url || "");
+        if (!target.ok) {
+            handleError(normalizeFailureText(target.reason));
+            return;
+        }
+
+        fetchingMetaRef.current = true;
+        setFetchingMeta(true);
+        try {
+            const meta = await api.getSiteMeta(target.url);
+            setNewSite(prev => ({
+                ...prev,
+                // 顺手把规范化后的网址写回输入框，用户填的 baidu.com 会立刻变成 https://baidu.com
+                url: target.url,
+                name: prev.name || meta.title || "",
+                description: prev.description || meta.description || "",
+                icon:
+                    prev.icon ||
+                    meta.icon ||
+                    resolveIconApiUrl(configs["site.iconApi"], target.url),
+            }));
+            notify(
+                meta.title ? "已抓取站点名称与描述" : "这个站点没给标题，手动填一下吧",
+                meta.title ? "success" : "info"
+            );
+        } catch (error) {
+            handleError("抓取站点信息失败：" + (error as Error).message);
+        } finally {
+            fetchingMetaRef.current = false;
+            setFetchingMeta(false);
+        }
+    };
+
     // 新增站点时：按配置的图标 API 一键生成图标 URL
     const handleFetchNewSiteIcon = () => {
         const resolved = resolveIconApiUrl(configs["site.iconApi"], newSite.url || "");
@@ -1893,9 +2003,20 @@ function App() {
             return;
         }
 
+        // 网址规范化：补上 https://、挡掉 javascript: 这类危险协议。
+        // <input type="url"> 拦得住 baidu.com 却放行 javascript:alert(1)（实测 Chrome 行为），
+        // 而卡片是 href={site.url} 直出的，所以入库前必须自己过一道。
+        const urlCheck = normalizeUrl(newSite.url || "");
+        if (!urlCheck.ok) {
+            handleError(normalizeFailureText(urlCheck.reason));
+            release();
+            return;
+        }
+        const siteToCreate = { ...newSite, url: urlCheck.url } as Site;
+
         const doCreate = async () => {
             try {
-                const created = await api.createSite(newSite as Site);
+                const created = await api.createSite(siteToCreate);
                 // 服务端返回新建站点，直接插入本地列表，界面立即出现新卡片（无需刷新页面）
                 if (created && created.id !== undefined) {
                     upsertSiteLocally(created);
@@ -1911,7 +2032,7 @@ function App() {
         };
 
         // 同一条链接已经加过就先问一句，用户确认「仍然添加」才真的写库
-        if (!guardDuplicate(newSite.url, undefined, doCreate)) release();
+        if (!guardDuplicate(siteToCreate.url, undefined, doCreate)) release();
     };
 
     // 配置相关函数
@@ -2039,8 +2160,9 @@ function App() {
     const buildExportData = (): ExportData => {
         const exportConfigs: Record<string, string> = {};
         Object.entries(configs).forEach(([key, value]) => {
-            // WebDAV 凭据属于隐私信息，不写入备份文件
-            if (!key.startsWith(WEBDAV_CONFIG_PREFIX)) {
+            // 敏感配置（WebDAV 凭据）和「服务端镜像」类的大块数据（失效记录、星标标签）
+            // 都不写进备份文件，规则统一在 isSecretConfigKey 里维护
+            if (!isSecretConfigKey(key)) {
                 exportConfigs[key] = value;
             }
         });
@@ -2051,7 +2173,16 @@ function App() {
                 name: group.name,
                 order_num: group.order_num,
             })),
-            sites: groups.flatMap(group => group.sites.map(site => ({ ...site }))),
+            sites: groups.flatMap(group =>
+                group.sites.map(site => ({
+                    ...site,
+                    // 与后端 /api/export、每周定时备份用同一个开关：
+                    // 关掉之后导出文件里不带网站账号密码
+                    ...(configs[BACKUP_CREDENTIALS_CONFIG] === "false"
+                        ? { username: "", password: "" }
+                        : {}),
+                }))
+            ),
             configs: exportConfigs,
             version: "1.2",
             exportDate: new Date().toISOString(),
@@ -2111,6 +2242,94 @@ function App() {
         } catch (error) {
             console.error("保存自动备份设置失败:", error);
             handleError("保存自动备份设置失败: " + (error instanceof Error ? error.message : "未知错误"));
+        }
+    };
+
+    /**
+     * 开/关「备份文件带上网站登录凭据」。
+     * 存服务端配置（不是本机偏好），这样 Worker 里的每周定时备份也读得到同一个开关。
+     */
+    const handleToggleIncludeCredentials = async (enabled: boolean) => {
+        try {
+            await api.setConfig(BACKUP_CREDENTIALS_CONFIG, enabled ? "true" : "false");
+            setConfigs(prev => ({
+                ...prev,
+                [BACKUP_CREDENTIALS_CONFIG]: enabled ? "true" : "false",
+            }));
+            notify(
+                enabled
+                    ? "以后的备份会带上网站账号密码"
+                    : "以后的备份不再包含网站账号密码",
+                "info"
+            );
+        } catch (error) {
+            console.error("保存备份设置失败:", error);
+            handleError(
+                "保存备份设置失败: " + (error instanceof Error ? error.message : "未知错误")
+            );
+        }
+    };
+
+    /**
+     * 开/关「失效检测结果同步到服务端」。
+     * 打开时顺手把本机这份推一次，否则要等到下次探测才有内容上去。
+     * 关掉不动服务端已经存的那份：下次再打开还能接着用（也方便误关后恢复）。
+     */
+    const handleToggleLinkHealthSync = async (enabled: boolean) => {
+        try {
+            const payload = JSON.stringify(exportLinkHealth());
+            await api.setConfig(LINK_HEALTH_SYNC_CONFIG, enabled ? "true" : "false");
+            setConfigs(prev => ({
+                ...prev,
+                [LINK_HEALTH_SYNC_CONFIG]: enabled ? "true" : "false",
+            }));
+            if (enabled) {
+                await api.setConfig(LINK_HEALTH_CONFIG, payload);
+                lastHealthPushRef.current = payload;
+                notify("失效检测结果已同步到服务端", "success");
+            } else {
+                notify("已停止同步失效检测结果（服务端那份先留着）", "info");
+            }
+        } catch (error) {
+            console.error("保存同步设置失败:", error);
+            handleError(
+                "保存同步设置失败: " + (error instanceof Error ? error.message : "未知错误")
+            );
+        }
+    };
+
+    /**
+     * 开/关「星标与标签同步到服务端」。
+     * 这两样本机是唯一来源，所以打开时先推一份上去，避免另一台设备看到的还是空的。
+     */
+    const handleTogglePrefSync = async (enabled: boolean) => {
+        if (!enabled) {
+            setPrefSync(false);
+            try {
+                await api.setConfig(PREF_SYNC_CONFIG, "false");
+            } catch {
+                // 关同步失败不用打扰用户，本机已经不再上传了
+            }
+            notify("已停止同步星标与标签", "info");
+            return;
+        }
+
+        try {
+            const payload = JSON.stringify({ starred, tags });
+            await api.setConfig(PREF_SYNC_CONFIG, "true");
+            await Promise.all([
+                api.setConfig(PREF_STARRED_CONFIG, JSON.stringify(starred)),
+                api.setConfig(PREF_TAGS_CONFIG, JSON.stringify(tags)),
+            ]);
+            // 记一下刚推的内容，免得开关打开后立刻又原样推一次
+            lastPrefPushRef.current = payload;
+            setPrefSync(true);
+            notify("星标与标签已同步到服务端", "success");
+        } catch (error) {
+            console.error("保存同步设置失败:", error);
+            handleError(
+                "保存同步设置失败: " + (error instanceof Error ? error.message : "未知错误")
+            );
         }
     };
 
@@ -2285,6 +2504,15 @@ function App() {
                 : visibleGroups,
         [visibleGroups, searchTruncated]
     );
+    // 「当前分组」：左侧栏选中的那个；没选中就取第一个可见分组。
+    // 数字键 1~9 打开的就是这个分组里的第 N 张卡片。
+    const currentGroupSites = useMemo(() => {
+        if (renderGroups.length === 0) return [] as Site[];
+        const picked =
+            activeGroupId != null ? renderGroups.find(g => g.id === activeGroupId) : undefined;
+        return (picked ?? renderGroups[0]).sites;
+    }, [renderGroups, activeGroupId]);
+
     // 卡片很多时整体关掉入场动画：几百张同时跑 transform 动画，
     // 合成开销比动画本身还贵，视觉上也看不出「依次浮现」了
     const ENTRY_ANIMATION_LIMIT = 60;
@@ -2600,6 +2828,12 @@ function App() {
                 run: () => setGlassEffects(!glassEffects),
             },
             {
+                id: "cmd-shortcuts",
+                label: "键盘快捷键",
+                section: "帮助",
+                run: () => setOpenShortcuts(true),
+            },
+            {
                 id: "cmd-add-group",
                 label: "新增分组",
                 section: "操作",
@@ -2862,6 +3096,40 @@ function App() {
 
             // 其它位置：方向键在卡片之间移动焦点
             if (isTyping) return;
+
+            // 有弹窗 / 菜单开着的时候，下面这些「直接动手」的快捷键一律不响应，
+            // 免得在设置弹窗里按个 1 就把某个网站打开了
+            const overlayOpen = !!document.querySelector(
+                ".MuiModal-root, .MuiMenu-root, .MuiPopover-root"
+            );
+
+            // ? 打开快捷键说明表（Shift + /）
+            if (e.key === "?" && !overlayOpen && !e.metaKey && !e.ctrlKey) {
+                e.preventDefault();
+                setOpenShortcuts(true);
+                return;
+            }
+
+            // 1~9：搜索状态下打开第 N 条结果，否则打开当前分组第 N 张卡片。
+            // 这是最省事的一条路 —— 不用先把鼠标挪过去，敲个数字就跳走了
+            if (!overlayOpen && !e.metaKey && !e.ctrlKey && !e.altKey && /^[1-9]$/.test(e.key)) {
+                const index = Number(e.key) - 1;
+                if (searchQuery.trim() && flatResults.length > 0) {
+                    const picked = flatResults[index];
+                    if (picked) {
+                        e.preventDefault();
+                        openResult(picked.site);
+                    }
+                    return;
+                }
+                const target = currentGroupSites[index];
+                if (target) {
+                    e.preventDefault();
+                    openResult(target);
+                }
+                return;
+            }
+
             if (e.key === "ArrowRight") {
                 focusCardByDirection("right");
                 e.preventDefault();
@@ -2879,7 +3147,7 @@ function App() {
 
         window.addEventListener("keydown", onKeyDown);
         return () => window.removeEventListener("keydown", onKeyDown);
-    }, [flatResults, activeResult, runUndo, runRedo]);
+    }, [flatResults, activeResult, runUndo, runRedo, searchQuery, currentGroupSites]);
 
     // context value 记忆化：只有相关配置真正变化时才通知消费方，避免无谓重渲染
     const appConfigValue = useMemo(
@@ -3228,385 +3496,63 @@ function App() {
                         >
                             {/* 搜索框：位于操作按钮左侧，输入即时筛选并弹出结果面板 */}
                             {sortMode === SortMode.None && (
-                                <Box ref={setSearchAnchor} sx={{ position: "relative" }}>
-                                <TextField
-                                    inputRef={searchInputRef}
-                                    value={searchQuery}
-                                    onChange={e => {
-                                        setSearchQuery(e.target.value);
-                                        setActiveResult(0);
-                                        // 输入即展开面板（不只依赖 onFocus，避免程序化赋值时面板不出现）
-                                        setSearchFocused(true);
-                                    }}
-                                    onFocus={() => setSearchFocused(true)}
-                                    placeholder='搜索网站（按 /）'
-                                    inputProps={{ "aria-label": "搜索网站" }}
-                                    size='small'
-                                    variant='outlined'
-                                    InputProps={{
-                                        startAdornment: (
-                                            <InputAdornment position='start'>
-                                                <SearchIcon fontSize='small' />
-                                            </InputAdornment>
-                                        ),
-                                        endAdornment: searchQuery ? (
-                                            <InputAdornment position='end'>
-                                                <IconButton
-                                                    size='small'
-                                                    aria-label='清空搜索'
-                                                    onClick={() => {
-                                                        setSearchQuery("");
-                                                        searchInputRef.current?.focus();
-                                                    }}
-                                                >
-                                                    <CloseIcon fontSize='small' />
-                                                </IconButton>
-                                            </InputAdornment>
-                                        ) : null,
-                                    }}
-                                    sx={{
-                                        // 头部收紧时搜索框也收一档，和标题保持同步
-                                        width: headerCompact
-                                            ? { xs: "100%", sm: 150, md: 175 }
-                                            : { xs: "100%", sm: 190, md: 230 },
-                                        transition: "width .25s ease",
-                                        // 毛玻璃底色必须和圆角一起挂在输入框本体上：
-                                        // 放在外层 FormControl 上会在圆角外面露出一块直角白底
-                                        "& .MuiOutlinedInput-root": {
-                                            height: HEADER_CONTROL_H,
-                                            borderRadius: "14px",
-                                            bgcolor: headerCompact
-                                                ? "var(--glass-bg-hover)"
-                                                : "var(--glass-bg)",
-                                            backdropFilter: "blur(10px)",
-                                            WebkitBackdropFilter: "blur(10px)",
-                                            transition: "background-color .25s ease",
-                                        },
-                                    }}
+                                <HeaderSearchBox
+                                    searchInputRef={searchInputRef}
+                                    searchPanelRef={searchPanelRef}
+                                    searchQuery={searchQuery}
+                                    setSearchQuery={setSearchQuery}
+                                    setActiveResult={setActiveResult}
+                                    setSearchFocused={setSearchFocused}
+                                    searchAnchor={searchAnchor}
+                                    setSearchAnchor={setSearchAnchor}
+                                    dropdownOpen={dropdownOpen}
+                                    historyOpen={historyOpen}
+                                    query={query}
+                                    results={flatResults}
+                                    activeResult={activeResult}
+                                    openResult={openResult}
+                                    searchHistory={searchHistory}
+                                    applyHistoryTerm={applyHistoryTerm}
+                                    clearSearchHistory={clearSearchHistory}
+                                    headerCompact={headerCompact}
                                 />
-
-                                {/* 搜索结果下拉面板：↑↓ 选择，Enter 直接打开 */}
-                                <Popper
-                                    open={dropdownOpen || historyOpen}
-                                    anchorEl={searchAnchor}
-                                    placement='bottom-start'
-                                    sx={{ zIndex: (t) => t.zIndex.modal, width: 320 }}
-                                >
-                                    <Paper
-                                        ref={searchPanelRef}
-                                        elevation={6}
-                                        sx={{
-                                            mt: 0.5,
-                                            borderRadius: "16px",
-                                            overflow: "hidden",
-                                            border: "1px solid var(--glass-border)",
-                                            bgcolor: "var(--glass-bg-hover)",
-                                            backdropFilter: "blur(12px)",
-                                            WebkitBackdropFilter: "blur(12px)",
-                                        }}
-                                    >
-                                        {query.length > 0 ? (
-                                        <List dense sx={{ py: 0.5 }}>
-                                            {flatResults.map((item, idx) => (
-                                                <ListItemButton
-                                                    key={`${item.groupName}-${item.site.id ?? idx}`}
-                                                    selected={idx === activeResult}
-                                                    onMouseEnter={() => setActiveResult(idx)}
-                                                    onClick={() => openResult(item.site)}
-                                                    sx={{ borderRadius: "12px", mx: 0.5 }}
-                                                >
-                                                    <ListItemIcon sx={{ minWidth: 32 }}>
-                                                        {item.site.icon ? (
-                                                            <Box
-                                                                component='img'
-                                                                src={item.site.icon}
-                                                                alt=''
-                                                                sx={{ width: 18, height: 18, objectFit: "contain" }}
-                                                            />
-                                                        ) : (
-                                                            <SearchIcon fontSize='small' />
-                                                        )}
-                                                    </ListItemIcon>
-                                                    <ListItemText
-                                                        primary={item.site.name}
-                                                        secondary={item.groupName}
-                                                        primaryTypographyProps={{ noWrap: true }}
-                                                        secondaryTypographyProps={{ noWrap: true, fontSize: 11 }}
-                                                    />
-                                                </ListItemButton>
-                                            ))}
-                                        </List>
-                                        ) : (
-                                            <Box>
-                                                <Box
-                                                    sx={{
-                                                        display: "flex",
-                                                        alignItems: "center",
-                                                        px: 1.5,
-                                                        pt: 1.25,
-                                                        pb: 0,
-                                                    }}
-                                                >
-                                                    <Typography
-                                                        variant='caption'
-                                                        color='text.secondary'
-                                                        sx={{ flex: 1, fontWeight: 600 }}
-                                                    >
-                                                        最近搜索
-                                                    </Typography>
-                                                    <Button
-                                                        size='small'
-                                                        color='inherit'
-                                                        onClick={clearSearchHistory}
-                                                        sx={{ minWidth: 0, fontSize: 11 }}
-                                                    >
-                                                        清空
-                                                    </Button>
-                                                </Box>
-                                                <Box className='nav-search-history'>
-                                                    {searchHistory.map(term => (
-                                                        <button
-                                                            key={term}
-                                                            type='button'
-                                                            className='nav-history-chip'
-                                                            onClick={() => applyHistoryTerm(term)}
-                                                        >
-                                                            {term}
-                                                        </button>
-                                                    ))}
-                                                </Box>
-                                            </Box>
-                                        )}
-                                    </Paper>
-                                </Popper>
-                                </Box>
                             )}
                             {/* 搜索是「找东西」，右侧是「改数据 / 改显示」，中间用竖线分开 */}
                             {sortMode === SortMode.None && (
                                 <Box aria-hidden sx={headerDividerSx} className='nav-header-divider' />
                             )}
-                            {sortMode !== SortMode.None ? (
-                                <>
-                                    {sortMode === SortMode.GroupSort && (
-                                        <Button
-                                            variant='contained'
-                                            color='primary'
-                                            startIcon={<SaveIcon />}
-                                            onClick={handleSaveGroupOrder}
-                                            size="small"
-                                            sx={headerControlSx}
-                                        >
-                                            保存分组顺序
-                                        </Button>
-                                    )}
-                                    {sortMode === SortMode.SiteSort && (
-                                        <Button
-                                            variant='contained'
-                                            color='primary'
-                                            startIcon={<SaveIcon />}
-                                            onClick={handleSaveSiteSort}
-                                            size="small"
-                                            sx={headerControlSx}
-                                        >
-                                            保存
-                                        </Button>
-                                    )}
-                                    <Button
-                                        variant='outlined'
-                                        color='inherit'
-                                        startIcon={<CancelIcon />}
-                                        onClick={cancelSort}
-                                        size="small"
-                                        sx={headerControlSx}
-                                    >
-                                        取消编辑
-                                    </Button>
-                                </>
-                            ) : (
-                                <>
-                                    <Button
-                                        variant='contained'
-                                        color='primary'
-                                        startIcon={<AddIcon />}
-                                        onClick={handleOpenAddGroup}
-                                        size="small"
-                                        sx={headerControlSx}
-                                    >
-                                        新增分组
-                                    </Button>
-
-                                    <Button
-                                        variant='outlined'
-                                        color='primary'
-                                        startIcon={<MenuIcon />}
-                                        onClick={handleMenuOpen}
-                                        aria-controls={openMenu ? "navigation-menu" : undefined}
-                                        aria-haspopup='true'
-                                        aria-expanded={openMenu ? "true" : undefined}
-                                        size="small"
-                                        sx={headerControlSx}
-                                    >
-                                        更多选项
-                                    </Button>
-                                    <Menu
-                                        id='navigation-menu'
+                            <HeaderActions
+                                sortMode={sortMode}
+                                onSaveGroupOrder={handleSaveGroupOrder}
+                                onSaveSiteSort={handleSaveSiteSort}
+                                onCancelSort={cancelSort}
+                                onOpenAddGroup={handleOpenAddGroup}
+                                onMenuOpen={handleMenuOpen}
+                                menuOpen={openMenu}
+                                menu={
+                                    <MoreMenu
                                         anchorEl={menuAnchorEl}
-                                        // 排序模式里「更多选项」按钮会被卸载，anchor 失效时菜单会飘到左上角，这里直接不渲染
                                         open={openMenu && sortMode === SortMode.None}
                                         onClose={handleMenuClose}
-                                        MenuListProps={{
-                                            "aria-labelledby": "navigation-button",
-                                        }}
-                                    >
-                                        {/* 菜单顺序：常用配置 → 浏览偏好 → 数据管理 → 有破坏性的操作沉底，
-                                            中间用分隔线分组，找东西不用整列扫一遍 */}
-                                        <MenuItem onClick={handleOpenConfig}>
-                                            <ListItemIcon>
-                                                <SettingsIcon fontSize='small' />
-                                            </ListItemIcon>
-                                            <ListItemText>网站设置</ListItemText>
-                                        </MenuItem>
-                                        <MenuItem onClick={startGroupSort}>
-                                            <ListItemIcon>
-                                                <SortIcon fontSize='small' />
-                                            </ListItemIcon>
-                                            <ListItemText>编辑排序</ListItemText>
-                                        </MenuItem>
-                                        <Divider />
-                                        {/* 毛玻璃特效：一个就地开关，点了马上生效。
-                                            关掉时负责独有合成层 + 每帧背景采样的 backdrop-filter 会被整站摘掉，
-                                            滚动更省，也不会再出现圆角边缘那一圈暗边。 */}
-                                        <MenuItem
-                                            onClick={() => setGlassEffects(!glassEffects)}
-                                            aria-label='毛玻璃特效'
-                                        >
-                                            <ListItemIcon>
-                                                {glassEffects ? (
-                                                    <BlurOnIcon
-                                                        fontSize='small'
-                                                        color='primary'
-                                                    />
-                                                ) : (
-                                                    <BlurOffIcon fontSize='small' />
-                                                )}
-                                            </ListItemIcon>
-                                            <ListItemText>毛玻璃特效</ListItemText>
-                                            <Switch
-                                                checked={glassEffects}
-                                                size='small'
-                                                onChange={e => setGlassEffects(e.target.checked)}
-                                                // 挡掉冒泡，否则点开关会同时触发菜单项的 onClick，切两下等于没切
-                                                onClick={e => e.stopPropagation()}
-                                                inputProps={{ "aria-label": "毛玻璃特效" }}
-                                            />
-                                        </MenuItem>
-                                        {/* 装到桌面：只有浏览器真的给了安装事件时才出现
-                                            （Chrome/Edge 认为用户用得够多才会抛 beforeinstallprompt） */}
-                                        {canInstall && (
-                                            <MenuItem
-                                                onClick={() => {
-                                                    handleMenuClose();
-                                                    void handleInstallApp();
-                                                }}
-                                            >
-                                                <ListItemIcon>
-                                                    <InstallDesktopIcon fontSize='small' />
-                                                </ListItemIcon>
-                                                <ListItemText>安装到桌面</ListItemText>
-                                            </MenuItem>
-                                        )}
-                                        <MenuItem
-                                            onClick={() =>
-                                                setFavoritesEnabled(!favoritesEnabled)
-                                            }
-                                        >
-                                            <ListItemIcon>
-                                                <StarIcon
-                                                    fontSize='small'
-                                                    color={
-                                                        favoritesEnabled
-                                                            ? "primary"
-                                                            : "inherit"
-                                                    }
-                                                />
-                                            </ListItemIcon>
-                                            <ListItemText>
-                                                {favoritesEnabled ? "取消最近访问置前" : "最近访问置前"}
-                                            </ListItemText>
-                                        </MenuItem>
-                                        <MenuItem
-                                            onClick={() => {
-                                                handleMenuClose();
-                                                setOpenVisits(true);
-                                            }}
-                                        >
-                                            <ListItemIcon>
-                                                <InsightsIcon fontSize='small' />
-                                            </ListItemIcon>
-                                            <ListItemText>访问统计</ListItemText>
-                                        </MenuItem>
-                                        <Divider />
-                                        <MenuItem onClick={() => handleOpenBackup(0)}>
-                                            <ListItemIcon>
-                                                <FileDownloadIcon fontSize='small' />
-                                            </ListItemIcon>
-                                            <ListItemText>导出数据</ListItemText>
-                                        </MenuItem>
-                                        <MenuItem onClick={() => handleOpenBackup(1)}>
-                                            <ListItemIcon>
-                                                <FileUploadIcon fontSize='small' />
-                                            </ListItemIcon>
-                                            <ListItemText>导入数据</ListItemText>
-                                        </MenuItem>
-                                        <MenuItem
-                                            onClick={() => {
-                                                handleMenuClose();
-                                                setBookmarkOpen(true);
-                                            }}
-                                        >
-                                            <ListItemIcon>
-                                                <BookmarkAddedIcon fontSize='small' />
-                                            </ListItemIcon>
-                                            <ListItemText>导入浏览器书签</ListItemText>
-                                        </MenuItem>
-                                        <MenuItem
-                                            onClick={() => {
-                                                handleMenuClose();
-                                                void runLinkCheck();
-                                            }}
-                                        >
-                                            <ListItemIcon>
-                                                <LinkOffIcon fontSize='small' />
-                                            </ListItemIcon>
-                                            <ListItemText>检测失效链接</ListItemText>
-                                        </MenuItem>
-                                        <Divider />
-                                        <MenuItem
-                                            onClick={() => {
-                                                clearVisits();
-                                                // 清除访问记录不弹提示：「最近访问」分组会当场消失，本身就是反馈
-                                            }}
-                                            sx={{ color: "text.secondary" }}
-                                        >
-                                            <ListItemIcon sx={{ color: "text.secondary" }}>
-                                                <DeleteOutlineIcon fontSize='small' />
-                                            </ListItemIcon>
-                                            <ListItemText>清除访问记录</ListItemText>
-                                        </MenuItem>
-                                        {isAuthenticated && (
-                                            <MenuItem
-                                                onClick={handleLogout}
-                                                sx={{ color: "error.main" }}
-                                            >
-                                                <ListItemIcon sx={{ color: "error.main" }}>
-                                                    <LogoutIcon fontSize='small' />
-                                                </ListItemIcon>
-                                                <ListItemText>退出登录</ListItemText>
-                                            </MenuItem>
-                                        )}
-                                    </Menu>
-                                </>
-                            )}
+                                        onOpenConfig={handleOpenConfig}
+                                        onStartGroupSort={startGroupSort}
+                                        glassEffects={glassEffects}
+                                        onGlassEffectsChange={setGlassEffects}
+                                        canInstall={canInstall}
+                                        onInstallApp={() => void handleInstallApp()}
+                                        favoritesEnabled={favoritesEnabled}
+                                        onFavoritesEnabledChange={setFavoritesEnabled}
+                                        onOpenVisits={() => setOpenVisits(true)}
+                                        onOpenShortcuts={() => setOpenShortcuts(true)}
+                                        onOpenBackup={handleOpenBackup}
+                                        onOpenBookmark={() => setBookmarkOpen(true)}
+                                        onRunLinkCheck={() => void runLinkCheck()}
+                                        onClearVisits={clearVisits}
+                                        isAuthenticated={isAuthenticated}
+                                        onLogout={handleLogout}
+                                    />
+                                }
+                            />
                             {/* 操作按钮与显示控制之间再分一次组 */}
                             {sortMode === SortMode.None && (
                                 <Box aria-hidden sx={headerDividerSx} className='nav-header-divider' />
@@ -3615,167 +3561,17 @@ function App() {
                                 （原来是两块外形一模一样的独立胶囊，并排放着像重复按钮） */}
                             {sortMode === SortMode.None && (
                                 <>
-                                    <Box
-                                        className='nav-display-pill'
-                                        sx={{
-                                            display: "flex",
-                                            alignItems: "center",
-                                            height: HEADER_CONTROL_H,
-                                            p: "2px",
-                                            gap: "2px",
-                                            borderRadius: HEADER_RADIUS,
-                                            bgcolor: "var(--glass-bg)",
-                                            border: "1px solid var(--glass-border)",
-                                            backdropFilter: "blur(10px)",
-                                            WebkitBackdropFilter: "blur(10px)",
-                                            flexShrink: 0,
-                                        }}
-                                    >
-                                        <ToggleButtonGroup
-                                            size='small'
-                                            exclusive
-                                            value={viewMode}
-                                            onChange={(_e, value) => value && setViewMode(value)}
-                                            aria-label='视图切换'
-                                            sx={{
-                                                "& .MuiToggleButton-root": {
-                                                    border: 0,
-                                                    height: HEADER_CONTROL_H - 4,
-                                                    px: 1,
-                                                    borderRadius: "11px",
-                                                },
-                                            }}
-                                        >
-                                            <ToggleButton value='card' aria-label='卡片视图'>
-                                                <Tooltip title='卡片视图'>
-                                                    <ViewModuleIcon fontSize='small' />
-                                                </Tooltip>
-                                            </ToggleButton>
-                                            <ToggleButton value='list' aria-label='列表视图'>
-                                                <Tooltip title='紧凑列表'>
-                                                    <ViewListIcon fontSize='small' />
-                                                </Tooltip>
-                                            </ToggleButton>
-                                            <ToggleButton value='wall' aria-label='图标墙视图'>
-                                                <Tooltip title='图标墙'>
-                                                    <ViewCompactIcon fontSize='small' />
-                                                </Tooltip>
-                                            </ToggleButton>
-                                        </ToggleButtonGroup>
-
-                                        <Box
-                                            aria-hidden
-                                            sx={{
-                                                width: "1px",
-                                                height: 18,
-                                                bgcolor: "var(--glass-border)",
-                                                flexShrink: 0,
-                                            }}
-                                        />
-
-                                        <ToggleButtonGroup
-                                            size='small'
-                                            exclusive
-                                            value={density}
-                                            onChange={(_e, value) => value && setDensity(value)}
-                                            aria-label='显示密度'
-                                            sx={{
-                                                "& .MuiToggleButton-root": {
-                                                    border: 0,
-                                                    height: HEADER_CONTROL_H - 4,
-                                                    px: 1,
-                                                    borderRadius: "11px",
-                                                },
-                                            }}
-                                        >
-                                            <ToggleButton value='comfortable' aria-label='舒适密度'>
-                                                <Tooltip title='舒适'>
-                                                    <DensityMediumIcon fontSize='small' />
-                                                </Tooltip>
-                                            </ToggleButton>
-                                            <ToggleButton value='compact' aria-label='紧凑密度'>
-                                                <Tooltip title='紧凑'>
-                                                    <DensitySmallIcon fontSize='small' />
-                                                </Tooltip>
-                                            </ToggleButton>
-                                        </ToggleButtonGroup>
-
-                                        <Box
-                                            aria-hidden
-                                            sx={{
-                                                width: "1px",
-                                                height: 18,
-                                                bgcolor: "var(--glass-border)",
-                                                flexShrink: 0,
-                                            }}
-                                        />
-
-                                        {/* 批量多选：紧挨「只看星标」左边，和视图/密度同一条胶囊 */}
-                                        <Tooltip title={multiSelect ? "退出多选" : "批量多选"}>
-                                            <IconButton
-                                                className='nav-multiselect-btn'
-                                                data-active={multiSelect ? "true" : "false"}
-                                                aria-label={
-                                                    multiSelect ? "退出多选模式" : "进入多选模式"
-                                                }
-                                                aria-pressed={multiSelect}
-                                                color={multiSelect ? "primary" : "default"}
-                                                onClick={() =>
-                                                    multiSelect
-                                                        ? exitMultiSelect()
-                                                        : setMultiSelect(true)
-                                                }
-                                                sx={{
-                                                    width: HEADER_CONTROL_H - 4,
-                                                    height: HEADER_CONTROL_H - 4,
-                                                    borderRadius: "11px",
-                                                    flexShrink: 0,
-                                                    bgcolor: multiSelect
-                                                        ? "var(--glass-bg-hover)"
-                                                        : "transparent",
-                                                }}
-                                            >
-                                                {multiSelect ? (
-                                                    <CheckBoxIcon fontSize='small' />
-                                                ) : (
-                                                    <CheckBoxOutlineBlankIcon fontSize='small' />
-                                                )}
-                                            </IconButton>
-                                        </Tooltip>
-
-                                        {/* 「只看星标」：和视图/密度同一条胶囊，开着的星星是实心的 */}
-                                        <ToggleButtonGroup
-                                            size='small'
-                                            exclusive
-                                            value={starFilter ? "star" : ""}
-                                            onChange={(_e, value) => setStarFilter(Boolean(value))}
-                                            aria-label='只看星标'
-                                            sx={{
-                                                "& .MuiToggleButton-root": {
-                                                    border: 0,
-                                                    height: HEADER_CONTROL_H - 4,
-                                                    px: 1,
-                                                    borderRadius: "11px",
-                                                },
-                                            }}
-                                        >
-                                            <ToggleButton
-                                                value='star'
-                                                aria-label='只看星标'
-                                                className='nav-star-filter'
-                                                data-active={starFilter ? "true" : "false"}
-                                                selected={starFilter}
-                                            >
-                                                <Tooltip title='只看星标'>
-                                                    {starFilter ? (
-                                                        <StarIcon fontSize='small' />
-                                                    ) : (
-                                                        <StarBorderIcon fontSize='small' />
-                                                    )}
-                                                </Tooltip>
-                                            </ToggleButton>
-                                        </ToggleButtonGroup>
-                                    </Box>
+                                    <DisplayControls
+                                        viewMode={viewMode}
+                                        setViewMode={setViewMode}
+                                        density={density}
+                                        setDensity={setDensity}
+                                        multiSelect={multiSelect}
+                                        setMultiSelect={setMultiSelect}
+                                        exitMultiSelect={exitMultiSelect}
+                                        starFilter={starFilter}
+                                        setStarFilter={setStarFilter}
+                                    />
                                 </>
                             )}
 
@@ -4104,6 +3900,36 @@ function App() {
                                             placeholder='https://example.com'
                                             value={newSite.url}
                                             onChange={handleSiteInputChange}
+                                            InputProps={{
+                                                endAdornment: (
+                                                    <InputAdornment position='end'>
+                                                        <Tooltip title='抓取这个网站的标题和描述'>
+                                                            <span>
+                                                                <IconButton
+                                                                    size='small'
+                                                                    edge='end'
+                                                                    onClick={
+                                                                        handleFetchNewSiteMeta
+                                                                    }
+                                                                    disabled={
+                                                                        !newSite.url ||
+                                                                        fetchingMeta
+                                                                    }
+                                                                    aria-label='抓取站点标题和描述'
+                                                                >
+                                                                    {fetchingMeta ? (
+                                                                        <CircularProgress
+                                                                            size={16}
+                                                                        />
+                                                                    ) : (
+                                                                        <CloudDownloadIcon fontSize='small' />
+                                                                    )}
+                                                                </IconButton>
+                                                            </span>
+                                                        </Tooltip>
+                                                    </InputAdornment>
+                                                ),
+                                            }}
                                         />
                                     </Box>
                                 </Box>
@@ -4304,6 +4130,10 @@ function App() {
                         }}
                         pinyinSearch={pinyinSearch}
                         onPinyinSearchChange={setPinyinSearch}
+                        syncHealth={configs[LINK_HEALTH_SYNC_CONFIG] === "true"}
+                        onSyncHealthChange={handleToggleLinkHealthSync}
+                        syncPrefs={prefSync}
+                        onSyncPrefsChange={handleTogglePrefSync}
                         onAuthChange={(field, value) => {
                             if (field === "username") setAuthUsername(value);
                             else if (field === "currentPassword") setAuthCurrentPassword(value);
@@ -4348,8 +4178,18 @@ function App() {
                         onRequestImportPreview={requestImportPreview}
                         onNotify={notify}
                         onClose={handleCloseBackup}
+                        includeCredentials={configs[BACKUP_CREDENTIALS_CONFIG] !== "false"}
+                        onIncludeCredentialsChange={handleToggleIncludeCredentials}
                     />
                     </Suspense>
+
+                {/* 快捷键说明表：按 ? 或从「更多选项」菜单打开 */}
+                <Suspense fallback={null}>
+                <ShortcutsDialog
+                    open={openShortcuts}
+                    onClose={() => setOpenShortcuts(false)}
+                />
+                </Suspense>
 
                 {/* 导入预览：恢复前先给用户看差异，勾选后才会真的写库 */}
                 <Suspense fallback={null}>
