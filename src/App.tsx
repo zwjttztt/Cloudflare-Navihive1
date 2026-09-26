@@ -121,6 +121,7 @@ import ErrorOutlineRoundedIcon from "@mui/icons-material/ErrorOutlineRounded";
 import { alpha } from "@mui/material/styles";
 import BulkActionBar from "./components/BulkActionBar";
 import TagBar from "./components/TagBar";
+import TagManagerDialog from "./components/TagManagerDialog";
 import ConfirmDialog from "./components/ConfirmDialog";
 
 // 根据环境选择使用真实API还是模拟API
@@ -431,8 +432,12 @@ function App() {
         starred,
         setStarredMany,
         tags,
+        setSiteTags,
         addTagsToMany,
+        removeTagFromAll,
+        forgetSites,
         allTags,
+        tagCounts,
         railCollapsed,
         setRailCollapsed,
         restoreLocalPrefs,
@@ -446,6 +451,8 @@ function App() {
     // 筛选：只看星标 + 标签（可多选，取交集）
     const [starFilter, setStarFilter] = useState(false);
     const [activeTags, setActiveTags] = useState<string[]>([]);
+    // 「标签管理」弹窗是否打开
+    const [tagManagerOpen, setTagManagerOpen] = useState(false);
 
     // 退出多选模式时顺手清掉勾选，避免下次进来还残留上一次的选择
     const exitMultiSelect = useCallback(() => {
@@ -933,9 +940,14 @@ function App() {
             const snapshot = groupsRef.current
                 .flatMap(group => group.sites)
                 .find(site => site.id === siteId);
+            // 本机标签/星标先留一份快照：删除时要清掉它们，撤销时再挂到新卡片上
+            const snapshotTags = tags[String(siteId)] ?? [];
+            const wasStarred = starred.includes(siteId);
             try {
                 await api.deleteSite(siteId);
                 removeSiteLocally(siteId);
+                // 卡片没了，它的标签/星标也就没有宿主，一并清掉，避免标签栏残留点不出来的标签
+                forgetSites([siteId]);
                 if (!snapshot) return;
 
                 notify(`已删除「${snapshot.name || "该网站"}」`, "info", 8000, {
@@ -948,6 +960,11 @@ function App() {
                             } as Site);
                             if (created && created.id !== undefined) {
                                 upsertSiteLocally(created);
+                                // 撤销是「原样恢复」，把标签与星标也挂回新 id 上
+                                if (snapshotTags.length > 0) {
+                                    setSiteTags(created.id, snapshotTags);
+                                }
+                                if (wasStarred) setStarredMany([created.id], true);
                             }
                             notify("已恢复", "success");
                         } catch (error) {
@@ -961,7 +978,17 @@ function App() {
                 handleError("删除站点失败: " + (error as Error).message);
             }
         },
-        [removeSiteLocally, upsertSiteLocally, handleError, notify]
+        [
+            removeSiteLocally,
+            upsertSiteLocally,
+            handleError,
+            notify,
+            tags,
+            starred,
+            forgetSites,
+            setSiteTags,
+            setStarredMany,
+        ]
     );
 
     // 批量删除站点（多选模式）：一次删完，同样给一次撤销机会
@@ -974,9 +1001,20 @@ function App() {
 
             if (snapshots.length === 0) return;
 
+            // 本机标签/星标快照（按站点 id），删除时清掉、撤销时挂回新 id
+            const prefsMap = new Map<number, { tags: string[]; starred: boolean }>();
+            snapshots.forEach(site => {
+                const id = site.id as number;
+                prefsMap.set(id, {
+                    tags: tags[String(id)] ?? [],
+                    starred: starred.includes(id),
+                });
+            });
+
             try {
                 await Promise.all(snapshots.map(site => api.deleteSite(site.id as number)));
                 snapshots.forEach(site => removeSiteLocally(site.id as number));
+                forgetSites(snapshots.map(site => site.id as number));
 
                 notify(`已删除 ${snapshots.length} 个网站`, "info", 8000, {
                     label: "撤销",
@@ -993,6 +1031,13 @@ function App() {
                                 } as Site);
                                 if (created && created.id !== undefined) {
                                     upsertSiteLocally(created);
+                                    const prefs = prefsMap.get(site.id as number);
+                                    if (prefs) {
+                                        if (prefs.tags.length > 0) {
+                                            setSiteTags(created.id, prefs.tags);
+                                        }
+                                        if (prefs.starred) setStarredMany([created.id], true);
+                                    }
                                 }
                             }
                             notify(`已恢复 ${ordered.length} 个网站`, "success");
@@ -1007,7 +1052,17 @@ function App() {
                 handleError("批量删除站点失败: " + (error as Error).message);
             }
         },
-        [removeSiteLocally, upsertSiteLocally, handleError, notify]
+        [
+            removeSiteLocally,
+            upsertSiteLocally,
+            handleError,
+            notify,
+            tags,
+            starred,
+            forgetSites,
+            setSiteTags,
+            setStarredMany,
+        ]
     );
 
     // ---- 批量操作（多选模式） ----
@@ -1031,6 +1086,30 @@ function App() {
             notify(`已给 ${selectedIds.length} 个网站加上标签：${next.join("、")}`, "success");
         },
         [selectedIds, addTagsToMany, exitMultiSelect, notify]
+    );
+
+    // 标签管理：删除一个标签 = 从所有卡片上摘掉它，并给一次撤销机会
+    const deleteTagWithUndo = useCallback(
+        (tag: string) => {
+            const affected = Object.entries(tags)
+                .filter(([, list]) => list.includes(tag))
+                .map(([siteId]) => Number(siteId))
+                .filter(id => Number.isFinite(id));
+            if (affected.length === 0) return;
+
+            removeTagFromAll(tag);
+            // 这个标签正在被筛选时，顺手把筛选条件也去掉，免得筛出一片空白
+            setActiveTags(prev => prev.filter(t => t !== tag));
+
+            notify(`已删除标签「${tag}」（${affected.length} 个网站）`, "info", 8000, {
+                label: "撤销",
+                onClick: () => {
+                    addTagsToMany(affected, [tag]);
+                    notify(`已恢复标签「${tag}」`, "success");
+                },
+            });
+        },
+        [tags, removeTagFromAll, addTagsToMany, notify]
     );
 
     // 批量移动到分组：一次批量请求改 group_id + order_num，本地同步搬运卡片
@@ -1125,12 +1204,25 @@ function App() {
     const handleGroupDelete = useCallback(
         async (groupId: number) => {
             const snapshot = groupsRef.current.find(group => group.id === groupId);
+            // 分组里的卡片会跟着一起删，它们的本机标签/星标也先留一份快照
+            const sitePrefs = new Map<number, { tags: string[]; starred: boolean }>();
+            if (snapshot) {
+                snapshot.sites.forEach(site => {
+                    const id = site.id as number;
+                    sitePrefs.set(id, {
+                        tags: tags[String(id)] ?? [],
+                        starred: starred.includes(id),
+                    });
+                });
+            }
             try {
                 await api.deleteGroup(groupId);
                 setGroups(prev => {
                     const next = prev.filter(group => group.id !== groupId);
                     return next.length === prev.length ? prev : next;
                 });
+                // 组内卡片的标签/星标随卡片一起清掉，避免孤儿标签残留在标签栏
+                if (snapshot) forgetSites(snapshot.sites.map(site => site.id as number));
                 if (!snapshot) return;
 
                 notify(
@@ -1161,6 +1253,15 @@ function App() {
                                     } as Site);
                                     if (createdSite && createdSite.id !== undefined) {
                                         restored.push(createdSite);
+                                        const prefs = sitePrefs.get(site.id as number);
+                                        if (prefs) {
+                                            if (prefs.tags.length > 0) {
+                                                setSiteTags(createdSite.id, prefs.tags);
+                                            }
+                                            if (prefs.starred) {
+                                                setStarredMany([createdSite.id], true);
+                                            }
+                                        }
                                     }
                                 }
 
@@ -1182,7 +1283,15 @@ function App() {
                 handleError("删除分组失败: " + (error as Error).message);
             }
         },
-        [handleError, notify]
+        [
+            handleError,
+            notify,
+            tags,
+            starred,
+            forgetSites,
+            setSiteTags,
+            setStarredMany,
+        ]
     );
 
     // 保存分组排序
@@ -3232,6 +3341,7 @@ function App() {
                             onClearTags={() => setActiveTags([])}
                             starFilter={starFilter}
                             onToggleStarFilter={() => setStarFilter(prev => !prev)}
+                            onManageTags={() => setTagManagerOpen(true)}
                         />
                     )}
 
@@ -4116,6 +4226,15 @@ function App() {
                     danger
                     onConfirm={bulkDelete}
                     onClose={() => setBulkDeleteOpen(false)}
+                />
+
+                {/* 标签管理：集中删标签，删掉即从所有卡片上摘掉 */}
+                <TagManagerDialog
+                    open={tagManagerOpen}
+                    tags={allTags}
+                    counts={tagCounts}
+                    onDeleteTag={deleteTagWithUndo}
+                    onClose={() => setTagManagerOpen(false)}
                 />
             </Box>
         </ThemeProvider>

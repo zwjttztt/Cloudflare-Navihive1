@@ -555,6 +555,31 @@ mark.nav-hl {
     transform: scale(0.94);
 }
 
+/* 标签筛选栏末尾的「管理」入口 */
+.nav-tag-bar .nav-tag-manage.MuiChip-root .MuiChip-icon {
+    font-size: 15px;
+}
+.nav-tag-bar .nav-tag-manage.MuiChip-root:hover {
+    color: var(--accent);
+    border-color: var(--accent);
+}
+
+/* 标签管理弹窗：一行一个标签，右侧是删除按钮 */
+.nav-tag-manager-row {
+    transition: background-color 0.18s ease, border-color 0.18s ease;
+}
+.nav-tag-manager-row:hover {
+    border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+.nav-tag-manager-row .nav-tag-manager-del {
+    opacity: 0.7;
+    transition: opacity 0.18s ease, color 0.18s ease;
+}
+.nav-tag-manager-row:hover .nav-tag-manager-del,
+.nav-tag-manager-row .nav-tag-manager-del:focus-visible {
+    opacity: 1;
+}
+
 /* 批量多选：选中的卡片描一圈主色边框并轻轻抬起 */
 .nav-card-in[data-selected="true"] > .MuiCard-root {
     border-color: var(--accent) !important;
