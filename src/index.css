@@ -369,27 +369,6 @@ mark.nav-hl {
     border-color: color-mix(in srgb, var(--accent) 34%, transparent);
 }
 
-/* 时间分区小标题（今天 / 昨天 / 更早） */
-.nav-subsection-title {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin: 2px 0 10px;
-    font-size: 12px;
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    color: color-mix(in srgb, var(--group-accent) 88%, currentColor);
-}
-.nav-subsection-title::after {
-    content: "";
-    flex: 1;
-    height: 1px;
-    background: linear-gradient(
-        90deg,
-        color-mix(in srgb, var(--group-accent) 42%, transparent),
-        transparent
-    );
-}
 
 /* 访问热力图：8 周 × 7 天的小方格 */
 .nav-heat-grid {
