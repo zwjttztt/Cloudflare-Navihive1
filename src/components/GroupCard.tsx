@@ -619,7 +619,7 @@ const GroupCard: React.FC<GroupCardProps> = ({
                     {sortMode === "None" && group.id === RECENT_GROUP_ID ? (
                         <Button
                             variant='outlined'
-                            color='inherit'
+                            color='primary'
                             size='small'
                             startIcon={<DeleteSweepIcon />}
                             onClick={handleClearRecent}

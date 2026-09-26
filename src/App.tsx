@@ -2800,39 +2800,6 @@ function App() {
                                         新增分组
                                     </Button>
 
-                                    {/* 批量多选：进入后点卡片是勾选，底部浮出批量操作条 */}
-                                    <Tooltip title={multiSelect ? "退出多选" : "批量多选"}>
-                                        <IconButton
-                                            className='nav-multiselect-btn'
-                                            data-active={multiSelect ? "true" : "false"}
-                                            aria-label={multiSelect ? "退出多选模式" : "进入多选模式"}
-                                            aria-pressed={multiSelect}
-                                            color={multiSelect ? "primary" : "default"}
-                                            onClick={() =>
-                                                multiSelect ? exitMultiSelect() : setMultiSelect(true)
-                                            }
-                                            sx={{
-                                                width: HEADER_CONTROL_H,
-                                                height: HEADER_CONTROL_H,
-                                                borderRadius: HEADER_RADIUS,
-                                                border: "1px solid var(--glass-border)",
-                                                bgcolor: multiSelect
-                                                    ? "var(--glass-bg-hover)"
-                                                    : "var(--glass-bg)",
-                                                backdropFilter: "blur(10px)",
-                                                WebkitBackdropFilter: "blur(10px)",
-                                                flexShrink: 0,
-                                                transition: "background-color .2s ease, color .2s ease",
-                                            }}
-                                        >
-                                            {multiSelect ? (
-                                                <CheckBoxIcon fontSize='small' />
-                                            ) : (
-                                                <CheckBoxOutlineBlankIcon fontSize='small' />
-                                            )}
-                                        </IconButton>
-                                    </Tooltip>
-
                                     <Button
                                         variant='outlined'
                                         color='primary'
@@ -2856,18 +2823,21 @@ function App() {
                                             "aria-labelledby": "navigation-button",
                                         }}
                                     >
-                                        <MenuItem onClick={startGroupSort}>
-                                            <ListItemIcon>
-                                                <SortIcon fontSize='small' />
-                                            </ListItemIcon>
-                                            <ListItemText>编辑排序</ListItemText>
-                                        </MenuItem>
+                                        {/* 菜单顺序：常用配置 → 浏览偏好 → 数据管理 → 有破坏性的操作沉底，
+                                            中间用分隔线分组，找东西不用整列扫一遍 */}
                                         <MenuItem onClick={handleOpenConfig}>
                                             <ListItemIcon>
                                                 <SettingsIcon fontSize='small' />
                                             </ListItemIcon>
                                             <ListItemText>网站设置</ListItemText>
                                         </MenuItem>
+                                        <MenuItem onClick={startGroupSort}>
+                                            <ListItemIcon>
+                                                <SortIcon fontSize='small' />
+                                            </ListItemIcon>
+                                            <ListItemText>编辑排序</ListItemText>
+                                        </MenuItem>
+                                        <Divider />
                                         <MenuItem
                                             onClick={() =>
                                                 setFavoritesEnabled(!favoritesEnabled)
@@ -2897,17 +2867,6 @@ function App() {
                                                 <InsightsIcon fontSize='small' />
                                             </ListItemIcon>
                                             <ListItemText>访问统计</ListItemText>
-                                        </MenuItem>
-                                        <MenuItem
-                                            onClick={() => {
-                                                clearVisits();
-                                                // 清除访问记录不弹提示：「最近访问」分组会当场消失，本身就是反馈
-                                            }}
-                                        >
-                                            <ListItemIcon>
-                                                <DeleteOutlineIcon fontSize='small' />
-                                            </ListItemIcon>
-                                            <ListItemText>清除访问记录</ListItemText>
                                         </MenuItem>
                                         <Divider />
                                         <MenuItem onClick={() => handleOpenBackup(0)}>
@@ -2944,19 +2903,29 @@ function App() {
                                             </ListItemIcon>
                                             <ListItemText>检测失效链接</ListItemText>
                                         </MenuItem>
+                                        <Divider />
+                                        <MenuItem
+                                            onClick={() => {
+                                                clearVisits();
+                                                // 清除访问记录不弹提示：「最近访问」分组会当场消失，本身就是反馈
+                                            }}
+                                            sx={{ color: "text.secondary" }}
+                                        >
+                                            <ListItemIcon sx={{ color: "text.secondary" }}>
+                                                <DeleteOutlineIcon fontSize='small' />
+                                            </ListItemIcon>
+                                            <ListItemText>清除访问记录</ListItemText>
+                                        </MenuItem>
                                         {isAuthenticated && (
-                                            <>
-                                                <Divider />
-                                                <MenuItem
-                                                    onClick={handleLogout}
-                                                    sx={{ color: "error.main" }}
-                                                >
-                                                    <ListItemIcon sx={{ color: "error.main" }}>
-                                                        <LogoutIcon fontSize='small' />
-                                                    </ListItemIcon>
-                                                    <ListItemText>退出登录</ListItemText>
-                                                </MenuItem>
-                                            </>
+                                            <MenuItem
+                                                onClick={handleLogout}
+                                                sx={{ color: "error.main" }}
+                                            >
+                                                <ListItemIcon sx={{ color: "error.main" }}>
+                                                    <LogoutIcon fontSize='small' />
+                                                </ListItemIcon>
+                                                <ListItemText>退出登录</ListItemText>
+                                            </MenuItem>
                                         )}
                                     </Menu>
                                 </>
@@ -3063,6 +3032,39 @@ function App() {
                                                 flexShrink: 0,
                                             }}
                                         />
+
+                                        {/* 批量多选：紧挨「只看星标」左边，和视图/密度同一条胶囊 */}
+                                        <Tooltip title={multiSelect ? "退出多选" : "批量多选"}>
+                                            <IconButton
+                                                className='nav-multiselect-btn'
+                                                data-active={multiSelect ? "true" : "false"}
+                                                aria-label={
+                                                    multiSelect ? "退出多选模式" : "进入多选模式"
+                                                }
+                                                aria-pressed={multiSelect}
+                                                color={multiSelect ? "primary" : "default"}
+                                                onClick={() =>
+                                                    multiSelect
+                                                        ? exitMultiSelect()
+                                                        : setMultiSelect(true)
+                                                }
+                                                sx={{
+                                                    width: HEADER_CONTROL_H - 4,
+                                                    height: HEADER_CONTROL_H - 4,
+                                                    borderRadius: "11px",
+                                                    flexShrink: 0,
+                                                    bgcolor: multiSelect
+                                                        ? "var(--glass-bg-hover)"
+                                                        : "transparent",
+                                                }}
+                                            >
+                                                {multiSelect ? (
+                                                    <CheckBoxIcon fontSize='small' />
+                                                ) : (
+                                                    <CheckBoxOutlineBlankIcon fontSize='small' />
+                                                )}
+                                            </IconButton>
+                                        </Tooltip>
 
                                         {/* 「只看星标」：和视图/密度同一条胶囊，开着的星星是实心的 */}
                                         <ToggleButtonGroup

@@ -81,6 +81,12 @@ export default function GroupNavRail({
                     backdropFilter: "blur(12px) saturate(1.4)",
                     WebkitBackdropFilter: "blur(12px) saturate(1.4)",
                     boxShadow: "var(--glass-shadow)",
+                    // 收起态只有圆点，宽度给够 + 横向不滚动：
+                    // 只写 overflowY:auto 时 overflow-x 会被算成 auto，
+                    // 竖排滚动条一出现就会挤出一条横向滚动条
+                    width: 46,
+                    minWidth: 46,
+                    overflowX: "hidden",
                     overflowY: "auto",
                     scrollbarWidth: "thin",
                 }}
@@ -167,6 +173,7 @@ export default function GroupNavRail({
                     display: "flex",
                     flexDirection: "column",
                     gap: 0.5,
+                    overflowX: "hidden",
                     overflowY: "auto",
                     maxHeight: "60vh",
                     scrollbarWidth: "thin",
