@@ -244,14 +244,20 @@ const EditGroupDialog: React.FC<EditGroupDialogProps> = ({
             <DialogActions>
                 {!showDeleteConfirm ? (
                     <>
-                        <Button onClick={onClose} color='inherit'>
-                            取消
-                        </Button>
                         {!isCreate && onDelete && (
-                            <Button onClick={handleDelete} color='error' variant='outlined'>
+                            // 删除是破坏性操作，拎到最左边和「取消 / 保存」拉开距离，降低误点概率
+                            <Button
+                                onClick={handleDelete}
+                                color='error'
+                                variant='outlined'
+                                sx={{ mr: "auto" }}
+                            >
                                 删除
                             </Button>
                         )}
+                        <Button onClick={onClose} color='inherit'>
+                            取消
+                        </Button>
                         <Button
                             onClick={handleSave}
                             color='primary'
