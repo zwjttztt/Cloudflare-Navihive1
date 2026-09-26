@@ -103,6 +103,7 @@ import {
     Paper,
     List,
     ListItemButton,
+    Switch,
 } from "@mui/material";
 import SortIcon from "@mui/icons-material/Sort";
 import SaveIcon from "@mui/icons-material/Save";
@@ -132,6 +133,8 @@ import CheckBoxIcon from "@mui/icons-material/CheckBox";
 import CheckBoxOutlineBlankIcon from "@mui/icons-material/CheckBoxOutlineBlank";
 import StarBorderIcon from "@mui/icons-material/StarBorder";
 import CheckCircleRoundedIcon from "@mui/icons-material/CheckCircleRounded";
+import BlurOnIcon from "@mui/icons-material/BlurOn";
+import BlurOffIcon from "@mui/icons-material/BlurOff";
 import InfoRoundedIcon from "@mui/icons-material/InfoRounded";
 import ErrorOutlineRoundedIcon from "@mui/icons-material/ErrorOutlineRounded";
 import { alpha } from "@mui/material/styles";
@@ -417,10 +420,12 @@ function App() {
         setViewMode,
         density,
         setDensity,
-        favoritesEnabled,
-        setFavoritesEnabled,
-        visits,
-        recordVisit,
+    favoritesEnabled,
+    setFavoritesEnabled,
+    glassEffects,
+    setGlassEffects,
+    visits,
+    recordVisit,
         clearVisits,
         radius,
         setRadius,
@@ -836,29 +841,13 @@ function App() {
         document.documentElement.style.setProperty("--glass-blur", `${glassBlur}px`);
     }, [glassBlur]);
 
-    // 滚动时临时把毛玻璃调淡：滚动过程中每一层毛玻璃都要重新合成一遍，
-    // 卡片一多这一步最吃帧。停手 200ms 后恢复成用户设定的强度。
+    // 毛玻璃总开关：打开时保持上面的 --glass-blur；关掉时给根节点挂 .nav-no-glass，
+    // 由 index.css 统一摘掉 backdrop-filter 并换成接近不透明的底色。
+    // 之前这里做的是「滚动时把模糊降到 1/3」——实测收益有限，但每次滚动都会让所有毛玻璃层
+    // 重新采样背景，边缘反而更容易露出黑边，所以回退了，改成让用户自己决定要不要这层特效。
     useEffect(() => {
-        if (glassBlur <= 6) return; // 本来就够淡，没必要再动
-        const root = document.documentElement;
-        const reduced = Math.max(4, Math.round(glassBlur / 3));
-        let timer: number | undefined;
-
-        const onScroll = () => {
-            root.style.setProperty("--glass-blur", `${reduced}px`);
-            if (timer) window.clearTimeout(timer);
-            timer = window.setTimeout(() => {
-                root.style.setProperty("--glass-blur", `${glassBlur}px`);
-            }, 200);
-        };
-
-        window.addEventListener("scroll", onScroll, { passive: true });
-        return () => {
-            window.removeEventListener("scroll", onScroll);
-            if (timer) window.clearTimeout(timer);
-            root.style.setProperty("--glass-blur", `${glassBlur}px`);
-        };
-    }, [glassBlur]);
+        document.documentElement.classList.toggle("nav-no-glass", !glassEffects);
+    }, [glassEffects]);
 
     // 统一提示函数（引用稳定，便于被 memo 的子组件复用）
     // duration 可选：成功/信息类默认短暂停留 2.2s，错误类默认 6s（便于阅读），传入则覆盖
@@ -2274,8 +2263,16 @@ function App() {
             entries => {
                 entries.forEach(entry => {
                     if (!entry.isIntersecting) return;
-                    entry.target.classList.add("nav-reveal-in");
-                    io.unobserve(entry.target);
+                    const target = entry.target as HTMLElement;
+                    target.classList.add("nav-reveal-in");
+                    // 播完就把 class 摘掉：面板带毛玻璃，只要还挂着动画，浏览器就会
+                    // 一直把它当独立合成层处理（边缘容易渗出暗边），也会压住 :hover。
+                    target.addEventListener(
+                        "animationend",
+                        () => target.classList.remove("nav-reveal-in"),
+                        { once: true }
+                    );
+                    io.unobserve(target);
                 });
             },
             { rootMargin: "0px 0px -32px 0px" }
@@ -2472,6 +2469,12 @@ function App() {
                 run: () => setFavoritesEnabled(!favoritesEnabled),
             },
             {
+                id: "cmd-glass",
+                label: glassEffects ? "关闭毛玻璃特效" : "开启毛玻璃特效",
+                section: "显示",
+                run: () => setGlassEffects(!glassEffects),
+            },
+            {
                 id: "cmd-add-group",
                 label: "新增分组",
                 section: "操作",
@@ -2564,6 +2567,8 @@ function App() {
         setViewMode,
         setDensity,
         setFavoritesEnabled,
+        glassEffects,
+        setGlassEffects,
         handleOpenAddGroup,
         startGroupSort,
         handleOpenConfig,
@@ -3310,6 +3315,33 @@ function App() {
                                             <ListItemText>编辑排序</ListItemText>
                                         </MenuItem>
                                         <Divider />
+                                        {/* 毛玻璃特效：一个就地开关，点了马上生效。
+                                            关掉时负责独有合成层 + 每帧背景采样的 backdrop-filter 会被整站摘掉，
+                                            滚动更省，也不会再出现圆角边缘那一圈暗边。 */}
+                                        <MenuItem
+                                            onClick={() => setGlassEffects(!glassEffects)}
+                                            aria-label='毛玻璃特效'
+                                        >
+                                            <ListItemIcon>
+                                                {glassEffects ? (
+                                                    <BlurOnIcon
+                                                        fontSize='small'
+                                                        color='primary'
+                                                    />
+                                                ) : (
+                                                    <BlurOffIcon fontSize='small' />
+                                                )}
+                                            </ListItemIcon>
+                                            <ListItemText>毛玻璃特效</ListItemText>
+                                            <Switch
+                                                checked={glassEffects}
+                                                size='small'
+                                                onChange={e => setGlassEffects(e.target.checked)}
+                                                // 挡掉冒泡，否则点开关会同时触发菜单项的 onClick，切两下等于没切
+                                                onClick={e => e.stopPropagation()}
+                                                inputProps={{ "aria-label": "毛玻璃特效" }}
+                                            />
+                                        </MenuItem>
                                         <MenuItem
                                             onClick={() =>
                                                 setFavoritesEnabled(!favoritesEnabled)
@@ -4089,6 +4121,8 @@ function App() {
                         onFontScaleChange={setFontScale}
                         glassBlur={tempGlassBlur}
                         onGlassBlurChange={handleGlassBlurChange}
+                        glassEffects={glassEffects}
+                        onGlassEffectsChange={setGlassEffects}
                         saving={savingConfig}
                         auth={{
                             username: authUsername,

@@ -58,6 +58,9 @@ interface UIPrefsValue {
     /** 拼音搜索：默认关，打开后可以用「bd」搜到「百度」（词典按需加载） */
     pinyinSearch: boolean;
     setPinyinSearch: (enabled: boolean) => void;
+    /** 毛玻璃特效：关掉后全站不再用 backdrop-filter，改用接近不透明的底色（本机偏好） */
+    glassEffects: boolean;
+    setGlassEffects: (enabled: boolean) => void;
     visits: Record<string, VisitStat>;
     recordVisit: (siteId?: number) => void;
     clearVisits: () => void;
@@ -112,6 +115,7 @@ const STARRED_KEY = "navihive:starred";
 const TAGS_KEY = "navihive:tags";
 const RAIL_COLLAPSED_KEY = "navihive:railCollapsed";
 const PINYIN_KEY = "navihive:pinyinSearch";
+const GLASS_KEY = "navihive:glassEffects";
 /** 搜索历史最多留几条，够用又不至于把面板撑长 */
 const SEARCH_HISTORY_MAX = 8;
 
@@ -202,6 +206,8 @@ const defaultValue: UIPrefsValue = {
     favoritesEnabled: true,
     pinyinSearch: false,
     setPinyinSearch: () => {},
+    glassEffects: true,
+    setGlassEffects: () => {},
     setFavoritesEnabled: () => {},
     visits: {},
     recordVisit: () => {},
@@ -250,6 +256,10 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
     const [pinyinSearch, setPinyinState] = useState<boolean>(
         () => readString(PINYIN_KEY, "0") === "1"
     );
+    // 毛玻璃默认开：关掉只是「换一种更省的合成方式」，本机偏好，不进数据库
+    const [glassEffects, setGlassState] = useState<boolean>(
+        () => readString(GLASS_KEY, "1") !== "0"
+    );
     const [visits, setVisits] = useState<Record<string, VisitStat>>(readVisits);
     const [radius, setRadiusState] = useState<RadiusStyle>(() => {
         const v = readString(RADIUS_KEY, "soft");
@@ -288,6 +298,11 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
     const setPinyinSearch = useCallback((enabled: boolean) => {
         setPinyinState(enabled);
         write(PINYIN_KEY, enabled ? "1" : "0");
+    }, []);
+
+    const setGlassEffects = useCallback((enabled: boolean) => {
+        setGlassState(enabled);
+        write(GLASS_KEY, enabled ? "1" : "0");
     }, []);
 
     const recordVisit = useCallback((siteId?: number) => {
@@ -568,6 +583,8 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
             setFavoritesEnabled,
             pinyinSearch,
             setPinyinSearch,
+            glassEffects,
+            setGlassEffects,
             visits,
             recordVisit,
             clearVisits,
@@ -604,6 +621,8 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
             setFavoritesEnabled,
             pinyinSearch,
             setPinyinSearch,
+            glassEffects,
+            setGlassEffects,
             visits,
             recordVisit,
             clearVisits,
