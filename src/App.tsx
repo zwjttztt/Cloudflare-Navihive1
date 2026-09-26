@@ -377,6 +377,16 @@ function App() {
                                     outline: "2px solid var(--accent)",
                                     outlineOffset: 2,
                                 },
+                                // 例外：**带 label 的输入框一律不画外圈轮廓**。
+                                // outlined 的 label 骑在上边框线上，而整圈的轮廓在 label 那一段
+                                // 没有缺口，必然横穿文字 —— 这就是「分组名称四个字与边框重叠」。
+                                // 这类输入框的焦点指示交给 MUI 自带的「边框 1px 灰 → 2px 主色」。
+                                // label 是 InputBase 在 FormControl 里的**前一个兄弟**，
+                                // CSS 选不到前驱，所以从父级 :has 反向排除。
+                                // 特异性 (0,3,0) 高于上面两条，稳赢。
+                                ".MuiFormControl-root:has(> .MuiInputLabel-root) &": {
+                                    outline: "none",
+                                },
                             },
                         },
                     },
