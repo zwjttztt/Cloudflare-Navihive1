@@ -37,6 +37,10 @@ import {
     writeCollapsedGroupIds,
 } from "../utils/collapse";
 
+/** 卡片视图的列宽：普通渲染 / 单组编辑 / 跨组排序三种分支必须用同一个值，
+ *  否则一点「编辑排序」列数就变了（900px 段 3→2 列、1536px 段 5→4 列），整屏卡片会跳一下。 */
+const CARD_VIEW_WIDTH = { xs: "50%", sm: "33.33%", md: "25%", lg: "25%", xl: "20%" } as const;
+
 // 虚拟「最近访问」分组的 id（本地统计出来，不存在于数据库）
 const RECENT_GROUP_ID = -1;
 
@@ -291,7 +295,7 @@ const GroupCard: React.FC<GroupCardProps> = ({
                 ? "100%"
                 : viewMode === "wall"
                   ? { xs: "33.33%", sm: "25%", md: "16.66%", lg: "12.5%", xl: "10%" }
-                  : { xs: "50%", sm: "33.33%", md: "25%", lg: "25%", xl: "20%" },
+                  : CARD_VIEW_WIDTH,
         padding: isCompact ? 0.5 : 1, // 内部间距，更均匀的分布
         boxSizing: "border-box" as const, // 确保padding不影响宽度计算
     };
@@ -328,14 +332,10 @@ const GroupCard: React.FC<GroupCardProps> = ({
                                 <Box
                                     key={site.id || idx}
                                     sx={{
-                                        width: {
-                                            xs: "50%",
-                                            sm: "50%",
-                                            md: "25%",
-                                            lg: "25%",
-                                            xl: "25%",
-                                        },
-                                        padding: 1, // 内部间距，更均匀的分布
+                                        // 列宽必须和普通模式保持一致（GroupCard 顶部的 cardItemSx）：
+                                        // 否则一点「编辑排序」列数就变（3→2 列 / 5→4 列），卡片会整体跳一下
+                                        width: CARD_VIEW_WIDTH,
+                                        padding: isCompact ? 0.5 : 1, // 内部间距，更均匀的分布
                                         boxSizing: "border-box", // 确保padding不影响宽度计算
                                     }}
                                 >
@@ -399,14 +399,8 @@ const GroupCard: React.FC<GroupCardProps> = ({
                                     <Box
                                         key={site.id || idx}
                                         sx={{
-                                            width: {
-                                                xs: "50%",
-                                                sm: "50%",
-                                                md: "25%",
-                                                lg: "25%",
-                                                xl: "25%",
-                                            },
-                                            padding: 1, // 内部间距，更均匀的分布
+                                            width: CARD_VIEW_WIDTH,
+                                            padding: isCompact ? 0.5 : 1, // 内部间距，更均匀的分布
                                             boxSizing: "border-box", // 确保padding不影响宽度计算
                                         }}
                                     >
