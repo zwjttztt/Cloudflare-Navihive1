@@ -2,9 +2,13 @@
 // 分组锚点导航条：分组一多时不用一路往下滚，点一下直接跳到对应分组，
 // 滚动时当前分组会自动高亮。窄屏隐藏（那里用底部导航栏的「分组」入口）。
 // 面板底部挂了「折叠 / 展开全部分组」开关：和分组列表放一起，比藏进「更多选项」更好找。
-import { Box, Divider, Tooltip, Typography } from "@mui/material";
+// 整条可以收成一根窄条（只留分组圆点），把空间还给内容区，收起状态记在本机。
+import { Box, Divider, Tooltip, Typography, IconButton } from "@mui/material";
 import UnfoldLessIcon from "@mui/icons-material/UnfoldLess";
 import UnfoldMoreIcon from "@mui/icons-material/UnfoldMore";
+import ChevronLeftIcon from "@mui/icons-material/ChevronLeft";
+import ChevronRightIcon from "@mui/icons-material/ChevronRight";
+import { useUIPrefs } from "../context/UIPrefsContext";
 
 export interface RailGroup {
     id: number;
@@ -21,6 +25,26 @@ interface GroupNavRailProps {
     onToggleCollapseAll: () => void;
 }
 
+const railItemSx = {
+    display: "flex",
+    alignItems: "center",
+    gap: 0.75,
+    width: "100%",
+    minWidth: 0,
+    maxWidth: 148,
+    px: 1,
+    py: 0.6,
+    border: "1px solid transparent",
+    borderRadius: "10px",
+    cursor: "pointer",
+    textAlign: "left",
+    transition: "all .18s ease",
+    "&:hover": {
+        bgcolor: "var(--glass-bg-hover)",
+        color: "text.primary",
+    },
+} as const;
+
 export default function GroupNavRail({
     groups,
     activeId,
@@ -28,11 +52,93 @@ export default function GroupNavRail({
     allCollapsed,
     onToggleCollapseAll,
 }: GroupNavRailProps) {
+    const { railCollapsed, setRailCollapsed } = useUIPrefs();
+
     if (groups.length < 2) return null;
+
+    // 收起态：一根窄条，只剩分组圆点，点圆点照样跳转
+    if (railCollapsed) {
+        return (
+            <Box
+                className='nav-group-rail'
+                data-collapsed='true'
+                aria-label='分组快速跳转（已收起）'
+                sx={{
+                    position: "fixed",
+                    left: 10,
+                    top: "50%",
+                    transform: "translateY(-50%)",
+                    zIndex: (t) => t.zIndex.appBar - 1,
+                    display: { xs: "none", lg: "flex" },
+                    flexDirection: "column",
+                    alignItems: "center",
+                    gap: 0.5,
+                    p: 0.5,
+                    maxHeight: "74vh",
+                    borderRadius: "16px",
+                    bgcolor: "var(--glass-bg)",
+                    border: "1px solid var(--glass-border)",
+                    backdropFilter: "blur(12px) saturate(1.4)",
+                    WebkitBackdropFilter: "blur(12px) saturate(1.4)",
+                    boxShadow: "var(--glass-shadow)",
+                    overflowY: "auto",
+                    scrollbarWidth: "thin",
+                }}
+            >
+                <Tooltip title='展开分组栏' placement='right'>
+                    <IconButton
+                        size='small'
+                        className='nav-rail-collapse-btn'
+                        aria-label='展开分组栏'
+                        aria-expanded={false}
+                        onClick={() => setRailCollapsed(false)}
+                        sx={{ color: "text.secondary" }}
+                    >
+                        <ChevronRightIcon sx={{ fontSize: 18 }} />
+                    </IconButton>
+                </Tooltip>
+
+                {groups.map(group => {
+                    const active = group.id === activeId;
+                    return (
+                        <Tooltip key={group.id} title={group.name} placement='right'>
+                            <Box
+                                component='button'
+                                type='button'
+                                onClick={() => onJump(group.id)}
+                                aria-current={active ? "true" : undefined}
+                                className='nav-rail-dot'
+                                data-active={active ? "true" : "false"}
+                                aria-label={group.name}
+                                sx={{
+                                    width: 10,
+                                    height: 10,
+                                    p: 0,
+                                    my: 0.25,
+                                    borderRadius: "50%",
+                                    border: "1px solid transparent",
+                                    cursor: "pointer",
+                                    flexShrink: 0,
+                                    transition: "all .18s ease",
+                                    transform: active ? "scale(1.35)" : "scale(1)",
+                                    bgcolor: active ? "var(--accent)" : "text.disabled",
+                                    "&:hover": {
+                                        bgcolor: "var(--accent)",
+                                        transform: "scale(1.35)",
+                                    },
+                                }}
+                            />
+                        </Tooltip>
+                    );
+                })}
+            </Box>
+        );
+    }
 
     return (
         <Box
             className='nav-group-rail'
+            data-collapsed='false'
             aria-label='分组快速跳转'
             sx={{
                 position: "fixed",
@@ -78,26 +184,10 @@ export default function GroupNavRail({
                                 className='nav-rail-item'
                                 data-active={active ? "true" : "false"}
                                 sx={{
-                                    display: "flex",
-                                    alignItems: "center",
-                                    gap: 0.75,
-                                    width: "100%",
-                                    minWidth: 0,
-                                    maxWidth: 148,
-                                    px: 1,
-                                    py: 0.6,
-                                    border: "1px solid transparent",
-                                    borderRadius: "10px",
-                                    cursor: "pointer",
-                                    textAlign: "left",
+                                    ...railItemSx,
                                     bgcolor: active ? "var(--glass-bg-hover)" : "transparent",
                                     borderColor: active ? "var(--accent)" : "transparent",
                                     color: active ? "primary.main" : "text.secondary",
-                                    transition: "all .18s ease",
-                                    "&:hover": {
-                                        bgcolor: "var(--glass-bg-hover)",
-                                        color: "text.primary",
-                                    },
                                 }}
                             >
                                 <Box
@@ -135,25 +225,9 @@ export default function GroupNavRail({
                     aria-label={allCollapsed ? "展开全部分组" : "折叠全部分组"}
                     aria-pressed={allCollapsed}
                     sx={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 0.75,
-                        width: "100%",
-                        minWidth: 0,
-                        maxWidth: 148,
-                        px: 1,
-                        py: 0.6,
-                        border: "1px solid transparent",
-                        borderRadius: "10px",
-                        cursor: "pointer",
-                        textAlign: "left",
+                        ...railItemSx,
                         bgcolor: "transparent",
                         color: "text.secondary",
-                        transition: "all .18s ease",
-                        "&:hover": {
-                            bgcolor: "var(--glass-bg-hover)",
-                            color: "text.primary",
-                        },
                     }}
                 >
                     {allCollapsed ? (
@@ -167,6 +241,32 @@ export default function GroupNavRail({
                         sx={{ fontSize: 12, lineHeight: 1.4 }}
                     >
                         {allCollapsed ? "展开全部" : "折叠全部"}
+                    </Typography>
+                </Box>
+            </Tooltip>
+
+            {/* 收起整条导航：让内容区更宽 */}
+            <Tooltip title='收起分组栏' placement='right'>
+                <Box
+                    component='button'
+                    type='button'
+                    onClick={() => setRailCollapsed(true)}
+                    className='nav-rail-collapse-btn'
+                    aria-label='收起分组栏'
+                    aria-expanded
+                    sx={{
+                        ...railItemSx,
+                        bgcolor: "transparent",
+                        color: "text.secondary",
+                    }}
+                >
+                    <ChevronLeftIcon sx={{ fontSize: 16, flexShrink: 0 }} />
+                    <Typography
+                        variant='caption'
+                        noWrap
+                        sx={{ fontSize: 12, lineHeight: 1.4 }}
+                    >
+                        收起
                     </Typography>
                 </Box>
             </Tooltip>

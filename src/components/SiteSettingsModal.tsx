@@ -24,7 +24,11 @@ import {
     SelectChangeEvent,
     InputAdornment,
     Tooltip,
+    Chip,
 } from "@mui/material";
+import StarIcon from "@mui/icons-material/Star";
+import StarBorderIcon from "@mui/icons-material/StarBorder";
+import { useUIPrefs } from "../context/UIPrefsContext";
 import CloseIcon from "@mui/icons-material/Close";
 import DeleteIcon from "@mui/icons-material/Delete";
 import SaveIcon from "@mui/icons-material/Save";
@@ -55,6 +59,20 @@ export default function SiteSettingsModal({
     const theme = useTheme();
     // 全局「网站设置」里的获取图标 API 模板
     const { iconApi } = useAppConfig();
+    // 星标与标签存本机（和访问记录一样不进数据库），改完即时生效
+    const { isStarred, toggleStar, tags, setSiteTags } = useUIPrefs();
+    const starred = isStarred(site.id);
+    const siteTags = tags[String(site.id)] ?? [];
+    const [tagInput, setTagInput] = useState("");
+
+    // 回车或逗号即确认：标签写进本机偏好，不需要点「保存」
+    const commitTag = () => {
+        const value = tagInput.trim().replace(/[,，]$/, "");
+        if (!value) return;
+        const next = Array.from(new Set([...siteTags, ...value.split(/[,，]/).map(t => t.trim()).filter(Boolean)]));
+        setSiteTags(site.id as number, next);
+        setTagInput("");
+    };
 
     // 打开设置时的初始表单值：用来判断「有没有真的改过」，没改就静默关闭
     const buildInitialForm = () => {
@@ -419,6 +437,74 @@ export default function SiteSettingsModal({
                                 </Select>
                             </FormControl>
                         )}
+
+                        {/* 星标 + 标签：星标让卡片在分组里置顶，标签用来筛选 */}
+                        <Box>
+                            <Typography variant='body2' color='text.secondary' gutterBottom>
+                                星标与标签
+                            </Typography>
+                            <Box
+                                sx={{
+                                    display: "flex",
+                                    flexWrap: "wrap",
+                                    gap: 0.75,
+                                    alignItems: "center",
+                                }}
+                            >
+                                <Chip
+                                    icon={
+                                        starred ? (
+                                            <StarIcon />
+                                        ) : (
+                                            <StarBorderIcon />
+                                        )
+                                    }
+                                    label={starred ? "已加星标" : "加星标置顶"}
+                                    size='small'
+                                    variant={starred ? "filled" : "outlined"}
+                                    color={starred ? "primary" : "default"}
+                                    onClick={() => toggleStar(site.id)}
+                                    className='nav-settings-star'
+                                />
+                                {siteTags.map(tag => (
+                                    <Chip
+                                        key={tag}
+                                        label={tag}
+                                        size='small'
+                                        variant='outlined'
+                                        onDelete={() =>
+                                            setSiteTags(
+                                                site.id as number,
+                                                siteTags.filter(item => item !== tag)
+                                            )
+                                        }
+                                    />
+                                ))}
+                                <TextField
+                                    value={tagInput}
+                                    onChange={e => setTagInput(e.target.value)}
+                                    onKeyDown={e => {
+                                        if (e.key === "Enter" || e.key === ",") {
+                                            e.preventDefault();
+                                            commitTag();
+                                        }
+                                    }}
+                                    onBlur={commitTag}
+                                    placeholder='添加标签'
+                                    size='small'
+                                    inputProps={{ "aria-label": "添加标签" }}
+                                    sx={{ width: 120, "& .MuiInputBase-input": { fontSize: 13 } }}
+                                />
+                            </Box>
+                            <Typography
+                                variant='caption'
+                                color='text.secondary'
+                                display='block'
+                                sx={{ mt: 0.25 }}
+                            >
+                                回车即可加标签（可一次输入多个，用逗号分隔）；星标与标签只存在本机，不随备份导出。
+                            </Typography>
+                        </Box>
 
                         {/* 网站描述：单行，长度与网站名称一致 */}
                         <TextField

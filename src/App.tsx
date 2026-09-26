@@ -5,6 +5,7 @@ import { Site, Group, ExportData, BootstrapData, WebDavConfig, normalizeImportDa
 import { GroupWithSites } from "./types";
 import { AppConfigProvider } from "./context/AppConfigContext";
 import { NotifyContext } from "./context/NotifyContext";
+import type { NotifyAction } from "./context/NotifyContext";
 import { useUIPrefs, RADIUS_PX } from "./context/UIPrefsContext";
 import SiteCard from "./components/SiteCard";
 import GroupNavRail from "./components/GroupNavRail";
@@ -111,6 +112,12 @@ import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import BookmarkAddedIcon from "@mui/icons-material/BookmarkAdded";
 import LinkOffIcon from "@mui/icons-material/LinkOff";
 import InsightsIcon from "@mui/icons-material/Insights";
+import CheckBoxIcon from "@mui/icons-material/CheckBox";
+import CheckBoxOutlineBlankIcon from "@mui/icons-material/CheckBoxOutlineBlank";
+import StarBorderIcon from "@mui/icons-material/StarBorder";
+import BulkActionBar from "./components/BulkActionBar";
+import TagBar from "./components/TagBar";
+import ConfirmDialog from "./components/ConfirmDialog";
 
 // 根据环境选择使用真实API还是模拟API
 const isDevEnvironment = import.meta.env.DEV;
@@ -367,6 +374,8 @@ function App() {
     const [snackbarMessage, setSnackbarMessage] = useState("");
     const [snackbarSeverity, setSnackbarSeverity] = useState<"success" | "error" | "info">("error");
     const [snackbarDuration, setSnackbarDuration] = useState(6000);
+    // 提示条上的操作按钮（删除后点「撤销」把卡片/分组恢复回来）
+    const [snackbarAction, setSnackbarAction] = useState<NotifyAction | null>(null);
     // 搜索关键词：普通浏览模式下即时筛选卡片
     const [searchQuery, setSearchQuery] = useState("");
     const searchInputRef = useRef<HTMLInputElement>(null);
@@ -396,7 +405,35 @@ function App() {
         searchHistory,
         pushSearchHistory,
         clearSearchHistory,
+        starred,
+        setStarredMany,
+        tags,
+        addTagsToMany,
+        allTags,
+        railCollapsed,
+        setRailCollapsed,
     } = useUIPrefs();
+
+    // 批量多选：进入后点卡片是「勾选」而不是打开网页
+    const [multiSelect, setMultiSelect] = useState(false);
+    const [selectedIds, setSelectedIds] = useState<number[]>([]);
+    // 批量删除前的确认弹窗
+    const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
+    // 筛选：只看星标 + 标签（可多选，取交集）
+    const [starFilter, setStarFilter] = useState(false);
+    const [activeTags, setActiveTags] = useState<string[]>([]);
+
+    // 退出多选模式时顺手清掉勾选，避免下次进来还残留上一次的选择
+    const exitMultiSelect = useCallback(() => {
+        setMultiSelect(false);
+        setSelectedIds([]);
+    }, []);
+
+    const toggleSelect = useCallback((siteId: number) => {
+        setSelectedIds(prev =>
+            prev.includes(siteId) ? prev.filter(id => id !== siteId) : [...prev, siteId]
+        );
+    }, []);
 
     // 命令面板（Ctrl / Cmd + K）
     const [commandOpen, setCommandOpen] = useState(false);
@@ -721,11 +758,18 @@ function App() {
 
     // 统一提示函数（引用稳定，便于被 memo 的子组件复用）
     // duration 可选：成功/信息类默认短暂停留 2.2s，错误类默认 6s（便于阅读），传入则覆盖
+    // action 可选：在提示条上挂一个操作按钮（删除后的「撤销」就靠它）
     const notify = useCallback(
-        (message: string, severity: "success" | "error" | "info" = "info", duration?: number) => {
+        (
+            message: string,
+            severity: "success" | "error" | "info" = "info",
+            duration?: number,
+            action?: NotifyAction
+        ) => {
             setSnackbarMessage(message);
             setSnackbarSeverity(severity);
             setSnackbarDuration(duration ?? (severity === "error" ? 6000 : 2200));
+            setSnackbarAction(action ?? null);
             setSnackbarOpen(true);
         },
         []
@@ -858,19 +902,177 @@ function App() {
         [upsertSiteLocally, handleError, notify]
     );
 
-    // 删除站点
+    // 删除站点：删完给一条带「撤销」的提示，8 秒内点一下就能把卡片原样建回来
+    // （服务端删掉的行拿不回原 id，所以撤销走「按快照重新创建」，name/url/图标/位置都还原）
     const handleSiteDelete = useCallback(
         async (siteId: number) => {
+            const snapshot = groupsRef.current
+                .flatMap(group => group.sites)
+                .find(site => site.id === siteId);
             try {
                 await api.deleteSite(siteId);
                 removeSiteLocally(siteId);
+                if (!snapshot) return;
+
+                notify(`已删除「${snapshot.name || "该网站"}」`, "info", 8000, {
+                    label: "撤销",
+                    onClick: async () => {
+                        try {
+                            const created = await api.createSite({
+                                ...snapshot,
+                                id: undefined,
+                            } as Site);
+                            if (created && created.id !== undefined) {
+                                upsertSiteLocally(created);
+                            }
+                            notify("已恢复", "success");
+                        } catch (error) {
+                            console.error("恢复站点失败:", error);
+                            handleError("恢复站点失败: " + (error as Error).message);
+                        }
+                    },
+                });
             } catch (error) {
                 console.error("删除站点失败:", error);
                 handleError("删除站点失败: " + (error as Error).message);
             }
         },
-        [removeSiteLocally, handleError]
+        [removeSiteLocally, upsertSiteLocally, handleError, notify]
     );
+
+    // 批量删除站点（多选模式）：一次删完，同样给一次撤销机会
+    const handleSitesDelete = useCallback(
+        async (siteIds: number[]) => {
+            if (siteIds.length === 0) return;
+            const snapshots = groupsRef.current
+                .flatMap(group => group.sites)
+                .filter(site => site.id !== undefined && siteIds.includes(site.id));
+
+            if (snapshots.length === 0) return;
+
+            try {
+                await Promise.all(snapshots.map(site => api.deleteSite(site.id as number)));
+                snapshots.forEach(site => removeSiteLocally(site.id as number));
+
+                notify(`已删除 ${snapshots.length} 个网站`, "info", 8000, {
+                    label: "撤销",
+                    onClick: async () => {
+                        try {
+                            // 按原 order_num 从小到大重建，位置尽量还原
+                            const ordered = [...snapshots].sort(
+                                (a, b) => (a.order_num ?? 0) - (b.order_num ?? 0)
+                            );
+                            for (const site of ordered) {
+                                const created = await api.createSite({
+                                    ...site,
+                                    id: undefined,
+                                } as Site);
+                                if (created && created.id !== undefined) {
+                                    upsertSiteLocally(created);
+                                }
+                            }
+                            notify(`已恢复 ${ordered.length} 个网站`, "success");
+                        } catch (error) {
+                            console.error("批量恢复站点失败:", error);
+                            handleError("恢复站点失败: " + (error as Error).message);
+                        }
+                    },
+                });
+            } catch (error) {
+                console.error("批量删除站点失败:", error);
+                handleError("批量删除站点失败: " + (error as Error).message);
+            }
+        },
+        [removeSiteLocally, upsertSiteLocally, handleError, notify]
+    );
+
+    // ---- 批量操作（多选模式） ----
+    // 加星 / 取消加星：只改本机偏好，不碰数据库，改完立刻可见
+    const bulkStar = useCallback(
+        (next: boolean) => {
+            if (selectedIds.length === 0) return;
+            setStarredMany(selectedIds, next);
+            exitMultiSelect();
+            notify(next ? `已给 ${selectedIds.length} 个网站加星标` : `已取消 ${selectedIds.length} 个网站的星标`, "success");
+        },
+        [selectedIds, setStarredMany, exitMultiSelect, notify]
+    );
+
+    // 批量打标签：追加式，不会覆盖已有标签
+    const bulkTag = useCallback(
+        (next: string[]) => {
+            if (selectedIds.length === 0) return;
+            addTagsToMany(selectedIds, next);
+            exitMultiSelect();
+            notify(`已给 ${selectedIds.length} 个网站加上标签：${next.join("、")}`, "success");
+        },
+        [selectedIds, addTagsToMany, exitMultiSelect, notify]
+    );
+
+    // 批量移动到分组：一次批量请求改 group_id + order_num，本地同步搬运卡片
+    const bulkMove = useCallback(
+        async (groupId: number) => {
+            if (selectedIds.length === 0) return;
+            const target = groupsRef.current.find(group => group.id === groupId);
+            if (!target) return;
+
+            const maxOrder = target.sites.reduce(
+                (max, site) => Math.max(max, site.order_num ?? 0),
+                -1
+            );
+            const orders = selectedIds.map((id, idx) => ({
+                id,
+                order_num: maxOrder + 1 + idx,
+                group_id: groupId,
+            }));
+
+            try {
+                const ok = await api.updateSiteOrder(orders);
+                if (!ok) throw new Error("服务端移动失败");
+
+                setGroups(prev => {
+                    const moving = prev
+                        .flatMap(group => group.sites)
+                        .filter(site => site.id !== undefined && selectedIds.includes(site.id))
+                        .map((site, idx) => ({
+                            ...site,
+                            group_id: groupId,
+                            order_num: maxOrder + 1 + idx,
+                        }));
+
+                    return prev.map(group => {
+                        const kept = group.sites.filter(
+                            site => !selectedIds.includes(site.id as number)
+                        );
+                        if (group.id === groupId) {
+                            return {
+                                ...group,
+                                sites: [...kept, ...moving].sort(
+                                    (a, b) => (a.order_num ?? 0) - (b.order_num ?? 0)
+                                ),
+                            };
+                        }
+                        return kept.length === group.sites.length ? group : { ...group, sites: kept };
+                    });
+                });
+
+                exitMultiSelect();
+                notify(`已移动 ${orders.length} 个网站到「${target.name}」`, "success");
+            } catch (error) {
+                console.error("批量移动站点失败:", error);
+                handleError("批量移动站点失败: " + (error as Error).message);
+            }
+        },
+        [selectedIds, exitMultiSelect, handleError, notify]
+    );
+
+    // 批量删除：走和单张卡片同一套「删除后可撤销」流程
+    const bulkDelete = useCallback(async () => {
+        const ids = [...selectedIds];
+        setBulkDeleteOpen(false);
+        setSelectedIds([]);
+        await handleSitesDelete(ids);
+    }, [selectedIds, handleSitesDelete]);
 
     // 更新分组（引用稳定，配合 GroupCard 的 memo 减少重渲染）
     const handleGroupUpdate = useCallback(
@@ -895,21 +1097,68 @@ function App() {
         [handleError]
     );
 
-    // 删除分组
+    // 删除分组：连同组内卡片一起删，所以撤销要把「分组 + 卡片」整组重建回来
     const handleGroupDelete = useCallback(
         async (groupId: number) => {
+            const snapshot = groupsRef.current.find(group => group.id === groupId);
             try {
                 await api.deleteGroup(groupId);
                 setGroups(prev => {
                     const next = prev.filter(group => group.id !== groupId);
                     return next.length === prev.length ? prev : next;
                 });
+                if (!snapshot) return;
+
+                notify(
+                    `已删除分组「${snapshot.name}」${snapshot.sites.length ? `及 ${snapshot.sites.length} 张卡片` : ""}`,
+                    "info",
+                    8000,
+                    {
+                        label: "撤销",
+                        onClick: async () => {
+                            try {
+                                const created = await api.createGroup({
+                                    name: snapshot.name,
+                                    order_num: snapshot.order_num ?? 0,
+                                } as Group);
+                                const newId = created?.id;
+                                if (newId === undefined) throw new Error("重建分组失败");
+
+                                // 卡片按原顺序重建，分组位置也按 order_num 插回原处
+                                const restored: Site[] = [];
+                                const ordered = [...snapshot.sites].sort(
+                                    (a, b) => (a.order_num ?? 0) - (b.order_num ?? 0)
+                                );
+                                for (const site of ordered) {
+                                    const createdSite = await api.createSite({
+                                        ...site,
+                                        id: undefined,
+                                        group_id: newId,
+                                    } as Site);
+                                    if (createdSite && createdSite.id !== undefined) {
+                                        restored.push(createdSite);
+                                    }
+                                }
+
+                                setGroups(prev =>
+                                    [...prev, { ...created, id: newId, sites: restored }].sort(
+                                        (a, b) => (a.order_num ?? 0) - (b.order_num ?? 0)
+                                    )
+                                );
+                                notify(`已恢复分组「${snapshot.name}」`, "success");
+                            } catch (error) {
+                                console.error("恢复分组失败:", error);
+                                handleError("恢复分组失败: " + (error as Error).message);
+                            }
+                        },
+                    }
+                );
             } catch (error) {
                 console.error("删除分组失败:", error);
                 handleError("删除分组失败: " + (error as Error).message);
             }
         },
-        [handleError]
+        [handleError, notify]
     );
 
     // 保存分组排序
@@ -1533,6 +1782,38 @@ function App() {
             .filter(group => group.sites.length > 0);
     }, [groups, query]);
 
+    // 星标 / 标签筛选：在搜索结果之上再叠一层。
+    // 标签取交集（同时带「工具」「AI」两个标签才命中），星标是独立的开关。
+    const matchFilters = useCallback(
+        (site: Site) => {
+            if (starFilter && !starred.includes(site.id as number)) return false;
+            if (activeTags.length === 0) return true;
+            const own = tags[String(site.id)] ?? [];
+            return activeTags.every(tag => own.includes(tag));
+        },
+        [starFilter, starred, activeTags, tags]
+    );
+
+    const visibleGroups = useMemo(() => {
+        if (!starFilter && activeTags.length === 0) return filteredGroups;
+        return filteredGroups
+            .map(group => ({ ...group, sites: group.sites.filter(matchFilters) }))
+            .filter(group => group.sites.length > 0);
+    }, [filteredGroups, starFilter, activeTags, matchFilters]);
+
+    // 点标签：多选取交集，再点一次取消
+    const toggleActiveTag = useCallback((tag: string) => {
+        setActiveTags(prev =>
+            prev.includes(tag) ? prev.filter(item => item !== tag) : [...prev, tag]
+        );
+    }, []);
+
+    // 筛选生效时页面里还剩多少张卡片（搜索结果计数要用）
+    const matchedCount = useMemo(
+        () => visibleGroups.reduce((sum, group) => sum + group.sites.length, 0),
+        [visibleGroups]
+    );
+
     // 下拉面板的扁平结果：跨分组取前 8 条，够用又不至于太长
     const flatResults = useMemo(() => {
         if (!query) return [];
@@ -1592,15 +1873,39 @@ function App() {
 
     // 真正渲染的分组列表：常用置前（排序模式与关闭时不插）
     const displayedGroups = useMemo(() => {
-        if (!favoritesEnabled || favoritesGroup.sites.length === 0) return filteredGroups;
+        if (!favoritesEnabled || favoritesGroup.sites.length === 0) return visibleGroups;
 
-        const favSites = query
-            ? favoritesGroup.sites.filter(site => matchesSiteQuery(site, query))
-            : favoritesGroup.sites;
+        const favSites = favoritesGroup.sites.filter(
+            site => matchFilters(site) && (!query || matchesSiteQuery(site, query))
+        );
 
-        if (favSites.length === 0) return filteredGroups;
-        return [{ ...favoritesGroup, sites: favSites }, ...filteredGroups];
-    }, [filteredGroups, favoritesGroup, favoritesEnabled, query]);
+        if (favSites.length === 0) return visibleGroups;
+        return [{ ...favoritesGroup, sites: favSites }, ...visibleGroups];
+    }, [visibleGroups, favoritesGroup, favoritesEnabled, query, matchFilters]);
+
+    // 分组面板滚进视口时播一次「渐显上浮」（只播一次，来回滚动不会反复闪）。
+    // 元素默认就是正常显示，动画靠 JS 加 class 触发，IntersectionObserver 不可用时完全不受影响。
+    useEffect(() => {
+        if (loading || sortMode !== SortMode.None) return;
+        if (typeof IntersectionObserver === "undefined") return;
+
+        const io = new IntersectionObserver(
+            entries => {
+                entries.forEach(entry => {
+                    if (!entry.isIntersecting) return;
+                    entry.target.classList.add("nav-reveal-in");
+                    io.unobserve(entry.target);
+                });
+            },
+            { rootMargin: "0px 0px -32px 0px" }
+        );
+
+        document
+            .querySelectorAll<HTMLElement>(".nav-group-panel")
+            .forEach(node => io.observe(node));
+
+        return () => io.disconnect();
+    }, [loading, sortMode, displayedGroups.length]);
 
     // 分组锚点跳转：左侧导航条与移动端「分组」菜单共用
     const jumpToGroup = useCallback((groupId: number) => {
@@ -1828,6 +2133,24 @@ function App() {
                 run: () => toggleCollapseAll(),
             },
             {
+                id: "cmd-multiselect",
+                label: multiSelect ? "退出批量多选" : "批量多选",
+                section: "操作",
+                run: () => (multiSelect ? exitMultiSelect() : setMultiSelect(true)),
+            },
+            {
+                id: "cmd-star-filter",
+                label: starFilter ? "取消只看星标" : "只看星标",
+                section: "显示",
+                run: () => setStarFilter(!starFilter),
+            },
+            {
+                id: "cmd-rail",
+                label: railCollapsed ? "展开左侧分组栏" : "收起左侧分组栏",
+                section: "显示",
+                run: () => setRailCollapsed(!railCollapsed),
+            },
+            {
                 id: "cmd-clear-visits",
                 label: "清除访问记录",
                 section: "操作",
@@ -1858,6 +2181,11 @@ function App() {
         recordVisit,
         allGroupsCollapsed,
         toggleCollapseAll,
+        multiSelect,
+        exitMultiSelect,
+        starFilter,
+        railCollapsed,
+        setRailCollapsed,
     ]);
 
     // 方向键在卡片之间移动焦点（按几何位置找同行/同列的邻居）
@@ -2109,7 +2437,35 @@ function App() {
                     onClose={handleCloseSnackbar}
                     severity={snackbarSeverity}
                     variant='filled'
-                    sx={{ width: "100%" }}
+                    className='nav-snackbar'
+                    sx={{ width: "100%", alignItems: "center" }}
+                    action={
+                        snackbarAction ? (
+                            <>
+                                <Button
+                                    className='nav-snackbar-action'
+                                    color='inherit'
+                                    size='small'
+                                    onClick={() => {
+                                        const run = snackbarAction.onClick;
+                                        setSnackbarOpen(false);
+                                        run();
+                                    }}
+                                    sx={{ fontWeight: 700, whiteSpace: "nowrap" }}
+                                >
+                                    {snackbarAction.label}
+                                </Button>
+                                <IconButton
+                                    size='small'
+                                    color='inherit'
+                                    aria-label='关闭提示'
+                                    onClick={handleCloseSnackbar}
+                                >
+                                    <CloseIcon fontSize='small' />
+                                </IconButton>
+                            </>
+                        ) : undefined
+                    }
                 >
                     {snackbarMessage}
                 </Alert>
@@ -2444,6 +2800,39 @@ function App() {
                                         新增分组
                                     </Button>
 
+                                    {/* 批量多选：进入后点卡片是勾选，底部浮出批量操作条 */}
+                                    <Tooltip title={multiSelect ? "退出多选" : "批量多选"}>
+                                        <IconButton
+                                            className='nav-multiselect-btn'
+                                            data-active={multiSelect ? "true" : "false"}
+                                            aria-label={multiSelect ? "退出多选模式" : "进入多选模式"}
+                                            aria-pressed={multiSelect}
+                                            color={multiSelect ? "primary" : "default"}
+                                            onClick={() =>
+                                                multiSelect ? exitMultiSelect() : setMultiSelect(true)
+                                            }
+                                            sx={{
+                                                width: HEADER_CONTROL_H,
+                                                height: HEADER_CONTROL_H,
+                                                borderRadius: HEADER_RADIUS,
+                                                border: "1px solid var(--glass-border)",
+                                                bgcolor: multiSelect
+                                                    ? "var(--glass-bg-hover)"
+                                                    : "var(--glass-bg)",
+                                                backdropFilter: "blur(10px)",
+                                                WebkitBackdropFilter: "blur(10px)",
+                                                flexShrink: 0,
+                                                transition: "background-color .2s ease, color .2s ease",
+                                            }}
+                                        >
+                                            {multiSelect ? (
+                                                <CheckBoxIcon fontSize='small' />
+                                            ) : (
+                                                <CheckBoxOutlineBlankIcon fontSize='small' />
+                                            )}
+                                        </IconButton>
+                                    </Tooltip>
+
                                     <Button
                                         variant='outlined'
                                         color='primary'
@@ -2664,6 +3053,49 @@ function App() {
                                                 </Tooltip>
                                             </ToggleButton>
                                         </ToggleButtonGroup>
+
+                                        <Box
+                                            aria-hidden
+                                            sx={{
+                                                width: "1px",
+                                                height: 18,
+                                                bgcolor: "var(--glass-border)",
+                                                flexShrink: 0,
+                                            }}
+                                        />
+
+                                        {/* 「只看星标」：和视图/密度同一条胶囊，开着的星星是实心的 */}
+                                        <ToggleButtonGroup
+                                            size='small'
+                                            exclusive
+                                            value={starFilter ? "star" : ""}
+                                            onChange={(_e, value) => setStarFilter(Boolean(value))}
+                                            aria-label='只看星标'
+                                            sx={{
+                                                "& .MuiToggleButton-root": {
+                                                    border: 0,
+                                                    height: HEADER_CONTROL_H - 4,
+                                                    px: 1,
+                                                    borderRadius: "11px",
+                                                },
+                                            }}
+                                        >
+                                            <ToggleButton
+                                                value='star'
+                                                aria-label='只看星标'
+                                                className='nav-star-filter'
+                                                data-active={starFilter ? "true" : "false"}
+                                                selected={starFilter}
+                                            >
+                                                <Tooltip title='只看星标'>
+                                                    {starFilter ? (
+                                                        <StarIcon fontSize='small' />
+                                                    ) : (
+                                                        <StarBorderIcon fontSize='small' />
+                                                    )}
+                                                </Tooltip>
+                                            </ToggleButton>
+                                        </ToggleButtonGroup>
                                     </Box>
                                 </>
                             )}
@@ -2675,18 +3107,29 @@ function App() {
                         </Stack>
                     </Box>
 
-                    {/* 搜索结果计数：搜索框在上方标题栏里，这里只保留一行轻提示 */}
-                    {sortMode === SortMode.None && query && (
-                        <Typography
-                            variant='caption'
-                            color='text.secondary'
-                            sx={{ display: "block", mt: -3, mb: 3 }}
-                        >
-                            找到{" "}
-                            {filteredGroups.reduce((sum, g) => sum + g.sites.length, 0)}{" "}
-                            个匹配的网站
-                        </Typography>
+                    {/* 标签筛选栏：有用过的标签才出现，点一下只看带这个标签的网站 */}
+                    {sortMode === SortMode.None && !loading && allTags.length > 0 && (
+                        <TagBar
+                            tags={allTags}
+                            activeTags={activeTags}
+                            onToggleTag={toggleActiveTag}
+                            onClearTags={() => setActiveTags([])}
+                            starFilter={starFilter}
+                            onToggleStarFilter={() => setStarFilter(prev => !prev)}
+                        />
                     )}
+
+                    {/* 结果计数：搜索框在上方标题栏里，这里只保留一行轻提示 */}
+                    {sortMode === SortMode.None &&
+                        (query || starFilter || activeTags.length > 0) && (
+                            <Typography
+                                variant='caption'
+                                color='text.secondary'
+                                sx={{ display: "block", mt: -2, mb: 3 }}
+                            >
+                                找到 {matchedCount} 个匹配的网站
+                            </Typography>
+                        )}
 
                     {loading && (
                         <Stack spacing={5}>
@@ -2823,6 +3266,9 @@ function App() {
                                             searchQuery={query}
                                             accentColor={configs[`group.color.${group.id}`]}
                                             onAccentChange={handleGroupAccentChange}
+                                            selectMode={multiSelect}
+                                            selectedIds={selectedIds}
+                                            onToggleSelect={toggleSelect}
                                         />
                                     ))}
                                 </Stack>
@@ -3522,6 +3968,38 @@ function App() {
                     open={bookmarkOpen}
                     onClose={() => setBookmarkOpen(false)}
                     onImport={importBookmarks}
+                />
+
+                {/* 批量多选：底部操作条（删除 / 星标 / 标签 / 移动分组） */}
+                {multiSelect && sortMode === SortMode.None && (
+                    <BulkActionBar
+                        count={selectedIds.length}
+                        groups={groups.map(group => ({
+                            id: group.id,
+                            name: group.name,
+                        }))}
+                        allTags={allTags}
+                        onStar={bulkStar}
+                        onTag={bulkTag}
+                        onMove={bulkMove}
+                        onDelete={() => {
+                            if (selectedIds.length === 0) return;
+                            setBulkDeleteOpen(true);
+                        }}
+                        onClearSelection={() => setSelectedIds([])}
+                        onExit={exitMultiSelect}
+                    />
+                )}
+
+                {/* 批量删除确认：删完同样可以在提示条上点「撤销」 */}
+                <ConfirmDialog
+                    open={bulkDeleteOpen}
+                    title={`删除选中的 ${selectedIds.length} 个网站？`}
+                    description='删除后可在提示条上点「撤销」恢复；保存的账号密码会一并删除。'
+                    confirmText='删除'
+                    danger
+                    onConfirm={bulkDelete}
+                    onClose={() => setBulkDeleteOpen(false)}
                 />
             </Box>
         </ThemeProvider>

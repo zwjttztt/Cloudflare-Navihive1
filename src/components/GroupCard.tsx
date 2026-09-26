@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, memo } from "react";
+import React, { useEffect, useMemo, useRef, useState, memo } from "react";
 import { Site, Group } from "../API/http";
 import SiteCard from "./SiteCard";
 import { GroupWithSites } from "../types";
@@ -57,6 +57,10 @@ interface GroupCardProps {
     searchQuery?: string; // 搜索关键词，命中片段在卡片里高亮
     accentColor?: string; // 分组强调色（留空则用全局主色）
     onAccentChange?: (groupId: number, color: string) => void;
+    /** 批量多选模式：点卡片变成勾选 */
+    selectMode?: boolean;
+    selectedIds?: number[];
+    onToggleSelect?: (siteId: number) => void;
 }
 
 // 卡片多的分组先渲染一批，滚到底再补，避免一次铺几百张卡拖慢首屏
@@ -77,8 +81,12 @@ const GroupCard: React.FC<GroupCardProps> = ({
     searchQuery = "",
     accentColor = "",
     onAccentChange,
+    selectMode = false,
+    selectedIds,
+    onToggleSelect,
 }) => {
-    const { viewMode, density, clearVisits } = useUIPrefs();
+    const { viewMode, density, clearVisits, isStarred, starred } = useUIPrefs();
+    const selectedSet = useMemo(() => new Set(selectedIds ?? []), [selectedIds]);
 
     /** 一键清空「最近访问」：清掉本机访问统计，分组随之消失（不弹提示，肉眼可见） */
     const handleClearRecent = () => {
@@ -100,6 +108,21 @@ const GroupCard: React.FC<GroupCardProps> = ({
     useEffect(() => {
         setSites(group.sites);
     }, [group.sites]);
+
+    // 「最近访问」是本地统计出来的虚拟分组（id < 0），不给它增删改的入口，
+    // 否则会往不存在的 group_id 里塞卡片
+    const isVirtualGroup = typeof group.id === "number" && group.id < 0;
+    /** 是否可以显示添加卡片 / 排序 / 编辑分组这些管理入口 */
+    const canManageGroup = !isVirtualGroup;
+
+    // 加了星标的卡片排到分组最前面（排序模式 / 拖拽中 / 虚拟分组保持原顺序，免得手一抖顺序就乱）
+    const orderedSites = useMemo(() => {
+        if (sortMode !== "None" || globalSiteSort || isVirtualGroup) return group.sites;
+        const stars = group.sites.filter(site => isStarred(site.id));
+        if (stars.length === 0) return group.sites;
+        const rest = group.sites.filter(site => !isStarred(site.id));
+        return [...stars, ...rest];
+    }, [group.sites, sortMode, globalSiteSort, isVirtualGroup, starred]);
 
     // 分组本身变化时同步一次收起状态；同时监听「全部折叠/展开」广播与跨标签页改动
     useEffect(() => {
@@ -224,12 +247,6 @@ const GroupCard: React.FC<GroupCardProps> = ({
     // 判断是否为当前正在编辑的分组
     const isCurrentEditingGroup = sortMode === "SiteSort" && currentSortingGroupId === group.id;
 
-    // 「常用」是本地统计出来的虚拟分组（id < 0），不给它增删改的入口，
-    // 否则会往不存在的 group_id 里塞卡片
-    const isVirtualGroup = typeof group.id === "number" && group.id < 0;
-    /** 是否可以显示添加卡片 / 排序 / 编辑分组这些管理入口 */
-    const canManageGroup = !isVirtualGroup;
-
     // 卡片外层容器宽度：列表一行一个，图标墙排得更密，紧凑密度只收内边距
     const cardBoxSx = {
         width:
@@ -313,8 +330,8 @@ const GroupCard: React.FC<GroupCardProps> = ({
             );
         }
 
-        // 使用本地状态中的站点数据
-        const sitesToRender = isCurrentEditingGroup ? sites : group.sites;
+        // 使用本地状态中的站点数据（普通模式下顺带把星标卡片提上来）
+        const sitesToRender = isCurrentEditingGroup ? sites : orderedSites;
 
         // 如果当前不是正在编辑的分组且处于站点排序模式，不显示站点
         if (!isCurrentEditingGroup && sortMode === "SiteSort") {
@@ -423,6 +440,9 @@ const GroupCard: React.FC<GroupCardProps> = ({
                                 onDelete={onDelete}
                                 isEditMode={false}
                                 highlight={searchQuery}
+                                selectMode={selectMode}
+                                selected={selectedSet.has(site.id as number)}
+                                onToggleSelect={onToggleSelect}
                             />
                         </Box>
                     ))}
@@ -451,6 +471,9 @@ const GroupCard: React.FC<GroupCardProps> = ({
                             isEditMode={false}
                             index={idx}
                             highlight={searchQuery}
+                            selectMode={selectMode}
+                            selected={selectedSet.has(site.id as number)}
+                            onToggleSelect={onToggleSelect}
                         />
                     </Box>
                 ))}
@@ -621,8 +644,36 @@ const GroupCard: React.FC<GroupCardProps> = ({
                         >
                             保存顺序
                         </Button>
+                    ) : selectMode && canManageGroup ? (
+                        <Button
+                            variant='outlined'
+                            color='primary'
+                            size='small'
+                            className='nav-select-group-btn'
+                            onClick={() => {
+                                const ids = orderedSites
+                                    .map(site => site.id)
+                                    .filter((id): id is number => typeof id === "number");
+                                const allSelected =
+                                    ids.length > 0 && ids.every(id => selectedSet.has(id));
+                                ids.forEach(id => {
+                                    if (allSelected === selectedSet.has(id)) {
+                                        onToggleSelect?.(id);
+                                    }
+                                });
+                            }}
+                            sx={{
+                                minWidth: "auto",
+                                fontSize: { xs: "0.75rem", sm: "0.875rem" },
+                            }}
+                        >
+                            {orderedSites.length > 0 &&
+                            orderedSites.every(site => selectedSet.has(site.id as number))
+                                ? "取消本组"
+                                : "全选本组"}
+                        </Button>
                     ) : (
-                        sortMode === "None" && canManageGroup && (
+                        sortMode === "None" && canManageGroup && !selectMode && (
                             <>
                                 {onAddSite && (
                                     <Button

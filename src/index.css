@@ -291,8 +291,15 @@ mark.nav-hl {
 @media (prefers-reduced-motion: reduce) {
     .nav-card-in,
     .nav-fade-up,
-    .nav-aurora {
+    .nav-aurora,
+    .nav-group-panel.nav-reveal-in,
+    .nav-bulk-bar,
+    .nav-select-mark[data-selected="true"],
+    .nav-star-btn[data-starred="true"] .MuiSvgIcon-root {
         animation: none !important;
+    }
+    .MuiButtonBase-root:not(.MuiCardActionArea-root):active:not(:disabled) {
+        transform: none;
     }
 }
 
@@ -408,6 +415,147 @@ mark.nav-hl {
 /* 空状态插画 */
 .nav-empty-art {
     color: color-mix(in srgb, var(--accent) 62%, transparent);
+}
+
+/* ============================================================
+   第三轮：动效细化 + 星标 / 标签 / 批量多选
+   ============================================================ */
+
+/* 统一的按压反馈：按钮、图标按钮被按下时缩一点点，手感更实。
+   卡片本体（CardActionArea）排除在外 —— 点开网页时整张卡缩一下会很突兀 */
+.MuiButtonBase-root:not(.MuiCardActionArea-root) {
+    transition: transform 0.12s cubic-bezier(0.22, 0.61, 0.36, 1),
+        background-color 0.2s ease, color 0.2s ease;
+}
+.MuiButtonBase-root:not(.MuiCardActionArea-root):active:not(:disabled) {
+    transform: scale(0.94);
+}
+
+/* 顶部提示条上的「撤销」按钮：和提示文案区分开 */
+.nav-snackbar-action {
+    text-transform: none;
+}
+
+/* 分组面板滚进视口时轻轻浮上来（只在能观察到时触发，元素默认是正常显示） */
+@keyframes navReveal {
+    from {
+        opacity: 0.35;
+        transform: translateY(14px);
+    }
+    to {
+        opacity: 1;
+        transform: none;
+    }
+}
+.nav-group-panel.nav-reveal-in {
+    animation: navReveal 0.5s cubic-bezier(0.22, 0.61, 0.36, 1) both;
+}
+
+/* 星标按钮：加星后常显，点下去有一下「弹」的反馈 */
+@keyframes navStarPop {
+    0% {
+        transform: scale(1);
+    }
+    45% {
+        transform: scale(1.35) rotate(-12deg);
+    }
+    100% {
+        transform: scale(1);
+    }
+}
+/* 未加星时只做「悬停才浮出」：透明期间连点击一起关掉，
+   免得卡片左上角有一块看不见但会误触的区域 */
+.nav-star-btn[data-starred="true"] {
+    opacity: 1;
+}
+.nav-star-btn[data-starred="true"] .MuiSvgIcon-root {
+    animation: navStarPop 0.36s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+.nav-star-btn[data-starred="false"] {
+    opacity: 0;
+    transform: scale(0.9);
+    pointer-events: none;
+}
+.nav-card-in:hover .nav-star-btn[data-starred="false"],
+.nav-card-in:focus-within .nav-star-btn[data-starred="false"],
+.nav-star-btn[data-starred="false"]:focus-visible {
+    opacity: 1;
+    transform: scale(1);
+    pointer-events: auto;
+}
+
+/* 卡片上的标签小标：只做展示，不抢点击 */
+.nav-tag-chip {
+    font-size: 10.5px;
+    line-height: 1.6;
+    padding: 0 7px;
+    border-radius: 999px;
+    color: color-mix(in srgb, var(--accent) 78%, currentColor);
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent);
+    white-space: nowrap;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* 标签筛选栏：chip 之间留一点呼吸，选中态用主色 */
+.nav-tag-bar .MuiChip-root {
+    transition: background-color 0.18s ease, color 0.18s ease, transform 0.18s ease;
+}
+.nav-tag-bar .MuiChip-root:active {
+    transform: scale(0.94);
+}
+
+/* 批量多选：选中的卡片描一圈主色边框并轻轻抬起 */
+.nav-card-in[data-selected="true"] > .MuiCard-root {
+    border-color: var(--accent) !important;
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 30%, transparent);
+}
+.nav-card-in[data-select-mode="true"] {
+    cursor: pointer;
+}
+.nav-card-in[data-select-mode="true"]:hover > .MuiCard-root {
+    background: var(--glass-bg-hover);
+}
+@keyframes navMarkIn {
+    from {
+        opacity: 0;
+        transform: scale(0.4);
+    }
+    to {
+        opacity: 1;
+        transform: scale(1);
+    }
+}
+.nav-select-mark[data-selected="true"] {
+    animation: navMarkIn 0.24s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+/* 底部批量操作条：从下方滑入 */
+@keyframes navBulkIn {
+    from {
+        opacity: 0;
+        transform: translate(-50%, 24px);
+    }
+    to {
+        opacity: 1;
+        transform: translate(-50%, 0);
+    }
+}
+.nav-bulk-bar {
+    animation: navBulkIn 0.28s cubic-bezier(0.22, 0.61, 0.36, 1) both;
+}
+
+/* 左侧分组栏：宽度变化走过渡，收起后是一根只留圆点的窄条 */
+.nav-group-rail {
+    transition: width 0.22s ease, padding 0.22s ease;
+}
+.nav-group-rail[data-collapsed="true"] {
+    width: 34px;
+}
+.nav-rail-dot {
+    transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1), background-color 0.2s ease;
 }
 
 /* 卡片图标悬停微动效：轻轻上浮 + 放大，给静态页面一点反馈 */
