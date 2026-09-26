@@ -230,11 +230,20 @@ export function iconCandidates(
     push(site.icon);
     push(resolveIconApiUrl(iconApi, site.url || ""));
 
+    return list;
+}
+
+/**
+ * 兜底图标源：只有前面两个主源都加载不出来时才用。
+ * 拆出来是为了避免每张卡片一上来就排 4 个请求 —— 几百张卡片时，
+ * 光是排队等 favicon 超时就能把首屏拖慢好几秒。
+ */
+export function iconFallbackCandidates(site: { url?: string }): string[] {
+    const list: string[] = [];
     const domain = getDomainFromUrl(site.url || "");
     if (domain) {
-        push(`https://${domain}/favicon.ico`);
-        push(`https://www.google.com/s2/favicons?domain=${domain}&sz=64`);
+        list.push(`https://${domain}/favicon.ico`);
+        list.push(`https://www.google.com/s2/favicons?domain=${domain}&sz=64`);
     }
-
     return list;
 }

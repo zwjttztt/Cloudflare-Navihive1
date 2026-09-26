@@ -328,6 +328,11 @@ mark.nav-hl {
 }
 
 /* 尊重「减少动态效果」偏好：关掉装饰性动画（不动功能性过渡） */
+/* 卡片很多时整体停掉入场动画：几百张一起跑 transform，合成开销比动画本身还贵 */
+.nav-static-entry .nav-card-in {
+    animation: none;
+}
+
 @media (prefers-reduced-motion: reduce) {
     .nav-card-in,
     .nav-fade-up,

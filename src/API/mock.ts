@@ -331,6 +331,12 @@ export class MockNavigationClient {
         return true;
     }
 
+    async setConfigs(entries: Record<string, string>): Promise<boolean> {
+        await new Promise(resolve => setTimeout(resolve, 200));
+        Object.assign(mockConfigs, entries);
+        return true;
+    }
+
     async deleteConfig(key: string): Promise<boolean> {
         await new Promise(resolve => setTimeout(resolve, 200));
         if (key in mockConfigs) {

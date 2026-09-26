@@ -1,7 +1,8 @@
 // src/components/SiteCard.tsx
-import { useState, useEffect, useMemo, memo } from "react";
+import { useState, useEffect, useMemo, memo, lazy, Suspense } from "react";
 import { Site } from "../API/http";
-import SiteSettingsModal from "./SiteSettingsModal";
+// 卡片设置弹窗按需加载：只有点开某一张卡片时才需要它
+const SiteSettingsModal = lazy(() => import("./SiteSettingsModal"));
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 // 引入Material UI组件
@@ -44,6 +45,7 @@ import { resolveIconApiUrl } from "../utils/iconApi";
 import {
     cacheIconBlob,
     iconCandidates,
+    iconFallbackCandidates,
     readIconObjectUrl,
     readIconRecord,
     writeIconRecord,
@@ -164,9 +166,13 @@ const SiteCard = memo(function SiteCard({
 
     // 图标候选源：自带图标 → 图标 API → 根目录 favicon → 公共 favicon 服务，
     // 哪个先加载成功用哪个，失败的会记进本地缓存，下次直接跳过
+    const primaryIcons = useMemo(() => iconCandidates(site, iconApi), [site.icon, site.url, iconApi]);
+    // 兜底源（站点自己的 favicon.ico / 公共图标服务）只在主源全失败后才追加，
+    // 平时每张卡片最多 2 个请求，几百张卡片也不会一上来就排出上千个
+    const [fallbackAdded, setFallbackAdded] = useState(false);
     const iconSources = useMemo(
-        () => iconCandidates(site, iconApi),
-        [site.icon, site.url, iconApi]
+        () => (fallbackAdded ? [...primaryIcons, ...iconFallbackCandidates(site)] : primaryIcons),
+        [primaryIcons, fallbackAdded, site.url]
     );
     const [iconIdx, setIconIdx] = useState(0);
     const [imageLoaded, setImageLoaded] = useState(false);
@@ -206,22 +212,23 @@ const SiteCard = memo(function SiteCard({
     useEffect(() => {
         let cancelled = false;
         setImageLoaded(false);
+        setFallbackAdded(false);
         setIconIdx(0);
 
         (async () => {
-            for (let i = 0; i < iconSources.length; i++) {
-                const record = await readIconRecord(iconSources[i]);
+            for (let i = 0; i < primaryIcons.length; i++) {
+                const record = await readIconRecord(primaryIcons[i]);
                 if (record && !record.ok) continue; // 这个源以前失败过，跳过
                 if (!cancelled) setIconIdx(i);
                 return;
             }
-            if (!cancelled) setIconIdx(iconSources.length); // 全部源都失败过
+            if (!cancelled) setIconIdx(primaryIcons.length); // 主源都失败过，等加载时再补兜底源
         })();
 
         return () => {
             cancelled = true;
         };
-    }, [iconSources]);
+    }, [primaryIcons]);
 
     // 使用dnd-kit的useSortable hook
     const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
@@ -334,8 +341,11 @@ const SiteCard = memo(function SiteCard({
     // 处理图标加载错误：记下这个源不可用，换下一个候选
     const handleIconError = () => {
         if (currentIcon) void writeIconRecord(currentIcon, false);
-        setIconIdx(i => i + 1);
         setImageLoaded(false);
+        const next = iconIdx + 1;
+        // 主源全部失败：这时才把兜底源接上来，继续从第一个兜底源开始试
+        if (next >= iconSources.length && !fallbackAdded) setFallbackAdded(true);
+        setIconIdx(next);
     };
 
     // 处理图片加载完成：记下这个源可用，并把图标本体存一份到本地（弱网/离线时直接命中）
@@ -1118,12 +1128,14 @@ const SiteCard = memo(function SiteCard({
                 </div>
 
                 {showSettings && (
+                    <Suspense fallback={null}>
                     <SiteSettingsModal
                         site={site}
                         onUpdate={onUpdate}
                         onDelete={onDelete}
                         onClose={handleCloseSettings}
                     />
+                    </Suspense>
                 )}
             </>
         );
@@ -1135,12 +1147,14 @@ const SiteCard = memo(function SiteCard({
             {contextMenu}
 
             {showSettings && (
+                <Suspense fallback={null}>
                 <SiteSettingsModal
                     site={site}
                     onUpdate={onUpdate}
                     onDelete={onDelete}
                     onClose={handleCloseSettings}
                 />
+                </Suspense>
             )}
         </>
     );

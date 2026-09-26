@@ -839,6 +839,33 @@ export class NavigationAPI {
         }
     }
 
+    /**
+     * 批量写入配置：保存网站设置时可能一次改十几项，
+     * 逐条写就是十几个网络往返 + 十几次 D1 调用，这里用 batch 一次做完。
+     */
+    async setConfigs(entries: Record<string, string>): Promise<boolean> {
+        try {
+            const list = Object.entries(entries).filter(([, value]) => value !== undefined);
+            if (list.length === 0) return true;
+
+            const statements = list.map(([key, value]) =>
+                this.db
+                    .prepare(
+                        `INSERT INTO configs (key, value, updated_at)
+                        VALUES (?, ?, CURRENT_TIMESTAMP)
+                        ON CONFLICT(key)
+                        DO UPDATE SET value = ?, updated_at = CURRENT_TIMESTAMP`
+                    )
+                    .bind(key, value, value)
+            );
+            const results = await this.db.batch<unknown>(statements);
+            return results.every(result => result.success);
+        } catch (error) {
+            console.error("批量设置配置失败:", error);
+            return false;
+        }
+    }
+
     async deleteConfig(key: string): Promise<boolean> {
         const result = await this.db.prepare("DELETE FROM configs WHERE key = ?").bind(key).run();
 

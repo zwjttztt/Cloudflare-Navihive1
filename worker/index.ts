@@ -377,6 +377,40 @@ export default {
                 else if (path === "configs" && method === "GET") {
                     const configs = await api.getConfigs();
                     return Response.json(configs);
+                }
+                // 批量写入配置：保存网站设置时一次请求搞定，省掉 N 个网络往返
+                else if (path === "configs/batch" && method === "POST") {
+                    const data = (await request.json()) as { configs?: Record<string, string> };
+                    const entries = Object.entries(data.configs || {});
+
+                    if (entries.length === 0) {
+                        return Response.json({ success: true, saved: 0 });
+                    }
+
+                    // 管理员凭据同样不允许在这里改（要走校验当前密码的专用接口）
+                    const blocked = entries.find(([key]) => key.startsWith("auth."));
+                    if (blocked) {
+                        return Response.json(
+                            {
+                                success: false,
+                                message: "管理员凭据请通过「网站设置 - 管理员账号与密码」修改",
+                            },
+                            { status: 403 }
+                        );
+                    }
+
+                    const bad = entries.find(
+                        ([, value]) => typeof value !== "string" || value === undefined
+                    );
+                    if (bad) {
+                        return Response.json(
+                            { success: false, message: `配置项 ${bad[0]} 的值不合法` },
+                            { status: 400 }
+                        );
+                    }
+
+                    const result = await api.setConfigs(Object.fromEntries(entries));
+                    return Response.json({ success: result, saved: entries.length });
                 }                 else if (path.startsWith("configs/") && method === "GET") {
                     const key = path.substring("configs/".length);
                     // 管理员凭据不允许读取

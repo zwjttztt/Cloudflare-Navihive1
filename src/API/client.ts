@@ -196,6 +196,18 @@ export class NavigationClient {
         return this.request("configs");
     }
 
+    /**
+     * 批量写入配置：保存网站设置时一次请求搞定，
+     * 不用为每一项各发一个请求（改十项就是十个 RTT）。
+     */
+    async setConfigs(configs: Record<string, string>): Promise<boolean> {
+        const result = await this.request("configs/batch", {
+            method: "POST",
+            body: JSON.stringify({ configs }),
+        });
+        return result?.success !== false;
+    }
+
     async getConfig(key: string): Promise<string | null> {
         try {
             const response = await this.request(`configs/${key}`);
