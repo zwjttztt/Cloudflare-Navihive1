@@ -29,12 +29,20 @@ export default function HeaderClock() {
         <Box
             className='nav-clock'
             aria-label={`当前时间 ${time} ${date} ${week}`}
-            sx={{ display: { xs: "none", md: "flex" }, mr: 0.5 }}
+            sx={{ display: { xs: "none", md: "flex" }, flexShrink: 0 }}
         >
-            <Typography className='nav-clock-time' sx={{ fontSize: 20 }}>
+            {/* 行高必须显式给死：MUI 默认行高会撑到 39px，比工具栏还高，日期那行会被裁掉 */}
+            <Typography
+                className='nav-clock-time'
+                sx={{ fontSize: 17, lineHeight: 1.15 }}
+            >
                 {time}
             </Typography>
-            <Typography variant='caption' color='text.secondary' sx={{ fontSize: 11 }}>
+            <Typography
+                className='nav-clock-date'
+                sx={{ fontSize: 11, lineHeight: 1.15, color: "text.secondary" }}
+                noWrap
+            >
                 {date} {week}
             </Typography>
         </Box>

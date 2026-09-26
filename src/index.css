@@ -334,8 +334,11 @@ mark.nav-hl {
 .nav-clock {
     display: flex;
     flex-direction: column;
+    justify-content: center;
     align-items: flex-end;
-    line-height: 1.1;
+    /* 和工具栏其它控件同高，整行才能对齐 */
+    height: 36px;
+    line-height: 1.15;
     user-select: none;
 }
 .nav-clock-time {
@@ -344,6 +347,12 @@ mark.nav-hl {
     letter-spacing: 0.02em;
     font-weight: 600;
     color: var(--accent);
+}
+
+/* 顶部工具栏里的竖向分隔线：把「搜索 / 操作 / 显示 / 状态」分成几块 */
+.nav-header-divider {
+    align-self: stretch;
+    flex-shrink: 0;
 }
 
 /* 搜索历史：无输入时在搜索框下方列出最近搜过的词 */
