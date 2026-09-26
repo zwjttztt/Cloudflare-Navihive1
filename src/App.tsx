@@ -14,7 +14,6 @@ import { Site, Group, ExportData, BootstrapData, WebDavConfig, normalizeImportDa
 import { GroupWithSites } from "./types";
 import { AppConfigProvider } from "./context/AppConfigContext";
 import { NotifyContext } from "./context/NotifyContext";
-import type { NotifyAction } from "./context/NotifyContext";
 import { useUIPrefs, RADIUS_PX } from "./context/UIPrefsContext";
 import SiteCard from "./components/SiteCard";
 import GroupNavRail from "./components/GroupNavRail";
@@ -25,6 +24,11 @@ const CommandPalette = lazy(() => import("./components/CommandPalette"));
 const BookmarkImportDialog = lazy(() => import("./components/BookmarkImportDialog"));
 import ScrollProgress from "./components/ScrollProgress";
 import BackToTop from "./components/BackToTop";
+import OfflineBanner from "./components/OfflineBanner";
+import InstallDesktopIcon from "@mui/icons-material/InstallDesktop";
+import { usePwaInstall } from "./hooks/usePwaInstall";
+import { useHistoryStack } from "./hooks/useHistoryStack";
+import { useNotify } from "./hooks/useNotify";
 const SettingsDialog = lazy(() => import("./components/SettingsDialog"));
 const ImportPreviewDialog = lazy(() => import("./components/ImportPreviewDialog"));
 import HeaderClock from "./components/HeaderClock";
@@ -329,7 +333,54 @@ function App() {
                                     theme.palette.mode === "dark"
                                         ? "rgba(23,27,38,0.94)"
                                         : "rgba(255,255,255,0.94)",
+                                // 小屏别贴边
+                                "@media (max-width:600px)": { margin: 12 },
                             }),
+                        },
+                    },
+                    // 移动端触控尺寸：以前写在 App.css 里用 !important 全站强压
+                    // （button/a/[role=button] padding 12px + min-height 36px），
+                    // 结果是连左侧分组栏、卡片右上角的图标按钮都被撑成 32×36 的长方形。
+                    // 改成按组件在断点里给尺寸后，组件自己写的 sx 优先级更高、可以覆盖，
+                    // 只有没特别声明的按钮才拿到这套保底尺寸。
+                    MuiButton: {
+                        styleOverrides: {
+                            root: {
+                                "@media (max-width:600px)": {
+                                    minHeight: 36,
+                                    paddingInline: 12,
+                                },
+                            },
+                        },
+                    },
+                    MuiIconButton: {
+                        styleOverrides: {
+                            root: {
+                                "@media (max-width:600px)": {
+                                    padding: 6,
+                                    minWidth: 36,
+                                    minHeight: 36,
+                                },
+                            },
+                        },
+                    },
+                    MuiInputBase: {
+                        styleOverrides: {
+                            root: {
+                                "@media (max-width:600px)": {
+                                    "& .MuiInputBase-input": { padding: "10px 12px" },
+                                },
+                            },
+                        },
+                    },
+                    MuiDivider: {
+                        styleOverrides: {
+                            root: { "@media (max-width:600px)": { margin: "8px 0" } },
+                        },
+                    },
+                    MuiMenu: {
+                        styleOverrides: {
+                            paper: { "@media (max-width:600px)": { minWidth: 200 } },
                         },
                     },
                 },
@@ -395,15 +446,17 @@ function App() {
     // setState 要等下一次渲染才生效，连点两下时用 ref 同步兜住
     const creatingSiteRef = useRef(false);
 
-    // 错误提示框状态
-    const [snackbarOpen, setSnackbarOpen] = useState(false);
-    const [snackbarMessage, setSnackbarMessage] = useState("");
-    const [snackbarSeverity, setSnackbarSeverity] = useState<"success" | "error" | "info">("error");
-    const [snackbarDuration, setSnackbarDuration] = useState(6000);
-    // 提示条上的操作按钮（删除后点「撤销」把卡片/分组恢复回来）
-    const [snackbarAction, setSnackbarAction] = useState<NotifyAction | null>(null);
-    // 读屏专用：提示条会自动消失，这里留一份纯文本供屏幕阅读器播报
-    const [liveMessage, setLiveMessage] = useState("");
+    // 全局提示条：状态与 notify 都挪进了 useNotify（App 只负责渲染 <Snackbar />）
+    const {
+        notify,
+        close: handleCloseSnackbar,
+        open: snackbarOpen,
+        message: snackbarMessage,
+        severity: snackbarSeverity,
+        duration: snackbarDuration,
+        action: snackbarAction,
+        liveMessage,
+    } = useNotify();
     // 搜索关键词：普通浏览模式下即时筛选卡片
     const [searchQuery, setSearchQuery] = useState("");
     const searchInputRef = useRef<HTMLInputElement>(null);
@@ -640,7 +693,7 @@ function App() {
                 setIsAuthRequired(false);
                 setLoginError(null);
                 // 关掉可能残留的全局提示（比如上一次输错密码时弹出的「用户名或密码错误」）
-                setSnackbarOpen(false);
+                handleCloseSnackbar();
                 // 加载数据（一次 bootstrap 请求）
                 await fetchData();
             } else {
@@ -670,7 +723,7 @@ function App() {
 
             if (result?.success) {
                 setResetError(null);
-                setSnackbarOpen(false);
+                handleCloseSnackbar();
                 notify(result.message || "密码已重置，请使用新密码登录", "success");
                 // 回到登录页，并把刚设的新密码清掉旧的「记住账号密码」
                 clearRememberedLogin();
@@ -852,28 +905,6 @@ function App() {
     // 统一提示函数（引用稳定，便于被 memo 的子组件复用）
     // duration 可选：成功/信息类默认短暂停留 2.2s，错误类默认 6s（便于阅读），传入则覆盖
     // action 可选：在提示条上挂一个操作按钮（删除后的「撤销」就靠它）
-    const notify = useCallback(
-        (
-            message: string,
-            severity: "success" | "error" | "info" = "info",
-            duration?: number,
-            action?: NotifyAction
-        ) => {
-            setSnackbarMessage(message);
-            setSnackbarSeverity(severity);
-            setSnackbarDuration(duration ?? (severity === "error" ? 6000 : 2200));
-            setSnackbarAction(action ?? null);
-            setSnackbarOpen(true);
-            // 读屏播报完就把文本清掉：这个区域视觉上不可见，但 innerText 里能捞到，
-            // 留着会让「页面上还有没有某条提示」这类判断失真
-            setLiveMessage(message);
-            window.setTimeout(() => {
-                setLiveMessage(prev => (prev === message ? "" : prev));
-            }, 1500);
-        },
-        []
-    );
-
     // 处理错误的函数
     const handleError = useCallback(
         (errorMessage: string) => {
@@ -883,10 +914,35 @@ function App() {
         [notify]
     );
 
-    // 关闭错误提示框
-    const handleCloseSnackbar = () => {
-        setSnackbarOpen(false);
-    };
+    // PWA：把浏览器给的安装机会存下来，用户点「安装到桌面」时才弹原生安装框
+    const { canInstall, promptInstall } = usePwaInstall();
+    const handleInstallApp = useCallback(async () => {
+        const accepted = await promptInstall();
+        notify(accepted ? "已装到桌面，下次从桌面图标打开就行" : "已取消安装", accepted ? "success" : "info");
+    }, [promptInstall, notify]);
+
+    // ---- 撤销 / 重做 ----
+    // 每个破坏性操作做完就往栈里压一条「怎么把自己倒回去」的记录，
+    // 提示条上的「撤销」按钮和 Ctrl+Z 走同一份逻辑，所以能连续撤好几步。
+    const { push: pushHistory, undo: undoHistory, redo: redoHistory, canUndo, canRedo } =
+        useHistoryStack();
+    const runUndo = useCallback(async () => {
+        if (!undoHistory) return;
+        try {
+            const label = await undoHistory();
+            notify(label ? `已撤销：${label}` : "没有可撤销的操作", label ? "success" : "info");
+        } catch {
+            notify("撤销失败", "error");
+        }
+    }, [undoHistory, notify]);
+    const runRedo = useCallback(async () => {
+        try {
+            const label = await redoHistory();
+            notify(label ? `已重做：${label}` : "没有可重做的操作", label ? "success" : "info");
+        } catch {
+            notify("重做失败", "error");
+        }
+    }, [redoHistory, notify]);
 
     // 拉取全量数据：一次 bootstrap 请求搞定（原来要 1 次分组 + 每个分组一次站点 + 1 次配置）
     // silent=true 时不显示全屏 loading、不弹错误提示，用于修改后的后台同步
@@ -1074,28 +1130,36 @@ function App() {
                 forgetSites([siteId]);
                 if (!snapshot) return;
 
+                // 恢复：删掉不是立即删除，这里留一条「按快照重建」的路径，
+                // 提示条上的「撤销」和 Ctrl+Z 都走它。
+                const restored: { id?: number } = {};
+                const restore = async () => {
+                    const created = await api.createSite({
+                        ...snapshot,
+                        id: undefined,
+                    } as Site);
+                    if (!created || created.id === undefined) throw new Error("重建站点失败");
+                    upsertSiteLocally(created);
+                    // 撤销是「原样恢复」，把标签与星标也挂回新 id 上
+                    if (snapshotTags.length > 0) setSiteTags(created.id, snapshotTags);
+                    if (wasStarred) setStarredMany([created.id], true);
+                    restored.id = created.id;
+                };
+                const removeAgain = async () => {
+                    if (restored.id === undefined) return;
+                    const id = restored.id;
+                    restored.id = undefined;
+                    await api.deleteSite(id);
+                    removeSiteLocally(id);
+                    forgetSites([id]);
+                };
+
+                const label = `删除「${snapshot.name || "该网站"}」`;
+                // 压进操作栈后，即使提示条已经消失，Ctrl+Z 还能把卡片找回来
+                pushHistory({ label, undo: restore, redo: removeAgain });
                 notify(`已删除「${snapshot.name || "该网站"}」`, "info", 8000, {
                     label: "撤销",
-                    onClick: async () => {
-                        try {
-                            const created = await api.createSite({
-                                ...snapshot,
-                                id: undefined,
-                            } as Site);
-                            if (created && created.id !== undefined) {
-                                upsertSiteLocally(created);
-                                // 撤销是「原样恢复」，把标签与星标也挂回新 id 上
-                                if (snapshotTags.length > 0) {
-                                    setSiteTags(created.id, snapshotTags);
-                                }
-                                if (wasStarred) setStarredMany([created.id], true);
-                            }
-                            notify("已恢复", "success");
-                        } catch (error) {
-                            console.error("恢复站点失败:", error);
-                            handleError("恢复站点失败: " + (error as Error).message);
-                        }
-                    },
+                    onClick: () => void runUndo(),
                 });
             } catch (error) {
                 console.error("删除站点失败:", error);
@@ -1112,6 +1176,8 @@ function App() {
             forgetSites,
             setSiteTags,
             setStarredMany,
+            pushHistory,
+            runUndo,
         ]
     );
 
@@ -1140,36 +1206,43 @@ function App() {
                 snapshots.forEach(site => removeSiteLocally(site.id as number));
                 forgetSites(snapshots.map(site => site.id as number));
 
+                const restoredIds: number[] = [];
+                const restore = async () => {
+                    // 按原 order_num 从小到大重建，位置尽量还原
+                    const ordered = [...snapshots].sort(
+                        (a, b) => (a.order_num ?? 0) - (b.order_num ?? 0)
+                    );
+                    restoredIds.length = 0;
+                    for (const site of ordered) {
+                        const created = await api.createSite({
+                            ...site,
+                            id: undefined,
+                        } as Site);
+                        if (created && created.id !== undefined) {
+                            upsertSiteLocally(created);
+                            restoredIds.push(created.id);
+                            const prefs = prefsMap.get(site.id as number);
+                            if (prefs) {
+                                if (prefs.tags.length > 0) setSiteTags(created.id, prefs.tags);
+                                if (prefs.starred) setStarredMany([created.id], true);
+                            }
+                        }
+                    }
+                };
+                const removeAgain = async () => {
+                    const ids = [...restoredIds];
+                    restoredIds.length = 0;
+                    if (ids.length === 0) return;
+                    await Promise.all(ids.map(id => api.deleteSite(id)));
+                    ids.forEach(id => removeSiteLocally(id));
+                    forgetSites(ids);
+                };
+
+                const label = `删除 ${snapshots.length} 个网站`;
+                pushHistory({ label, undo: restore, redo: removeAgain });
                 notify(`已删除 ${snapshots.length} 个网站`, "info", 8000, {
                     label: "撤销",
-                    onClick: async () => {
-                        try {
-                            // 按原 order_num 从小到大重建，位置尽量还原
-                            const ordered = [...snapshots].sort(
-                                (a, b) => (a.order_num ?? 0) - (b.order_num ?? 0)
-                            );
-                            for (const site of ordered) {
-                                const created = await api.createSite({
-                                    ...site,
-                                    id: undefined,
-                                } as Site);
-                                if (created && created.id !== undefined) {
-                                    upsertSiteLocally(created);
-                                    const prefs = prefsMap.get(site.id as number);
-                                    if (prefs) {
-                                        if (prefs.tags.length > 0) {
-                                            setSiteTags(created.id, prefs.tags);
-                                        }
-                                        if (prefs.starred) setStarredMany([created.id], true);
-                                    }
-                                }
-                            }
-                            notify(`已恢复 ${ordered.length} 个网站`, "success");
-                        } catch (error) {
-                            console.error("批量恢复站点失败:", error);
-                            handleError("恢复站点失败: " + (error as Error).message);
-                        }
-                    },
+                    onClick: () => void runUndo(),
                 });
             } catch (error) {
                 console.error("批量删除站点失败:", error);
@@ -1186,6 +1259,8 @@ function App() {
             forgetSites,
             setSiteTags,
             setStarredMany,
+            pushHistory,
+            runUndo,
         ]
     );
 
@@ -1348,57 +1423,67 @@ function App() {
                 if (snapshot) forgetSites(snapshot.sites.map(site => site.id as number));
                 if (!snapshot) return;
 
+                const restoredGroupId: { id?: number } = {};
+                const restoredSiteIds: number[] = [];
+                const restore = async () => {
+                    const created = await api.createGroup({
+                        name: snapshot.name,
+                        order_num: snapshot.order_num ?? 0,
+                    } as Group);
+                    const newId = created?.id;
+                    if (newId === undefined) throw new Error("重建分组失败");
+                    restoredGroupId.id = newId;
+
+                    // 卡片按原顺序重建，分组位置也按 order_num 插回原处
+                    const restored: Site[] = [];
+                    const ordered = [...snapshot.sites].sort(
+                        (a, b) => (a.order_num ?? 0) - (b.order_num ?? 0)
+                    );
+                    restoredSiteIds.length = 0;
+                    for (const site of ordered) {
+                        const createdSite = await api.createSite({
+                            ...site,
+                            id: undefined,
+                            group_id: newId,
+                        } as Site);
+                        if (createdSite && createdSite.id !== undefined) {
+                            restored.push(createdSite);
+                            restoredSiteIds.push(createdSite.id);
+                            const prefs = sitePrefs.get(site.id as number);
+                            if (prefs) {
+                                if (prefs.tags.length > 0) setSiteTags(createdSite.id, prefs.tags);
+                                if (prefs.starred) setStarredMany([createdSite.id], true);
+                            }
+                        }
+                    }
+
+                    setGroups(prev =>
+                        [...prev, { ...created, id: newId, sites: restored }].sort(
+                            (a, b) => (a.order_num ?? 0) - (b.order_num ?? 0)
+                        )
+                    );
+                };
+                const removeAgain = async () => {
+                    const groupIdToRemove = restoredGroupId.id;
+                    restoredGroupId.id = undefined;
+                    if (groupIdToRemove === undefined) return;
+                    await api.deleteGroup(groupIdToRemove);
+                    setGroups(prev => prev.filter(g => g.id !== groupIdToRemove));
+                    if (restoredSiteIds.length) {
+                        forgetSites([...restoredSiteIds]);
+                        restoredSiteIds.length = 0;
+                    }
+                };
+
+                const label = `删除分组「${snapshot.name}」`;
+                pushHistory({ label, undo: restore, redo: removeAgain });
                 notify(
                     `已删除分组「${snapshot.name}」${snapshot.sites.length ? `及 ${snapshot.sites.length} 张卡片` : ""}`,
                     "info",
                     8000,
                     {
                         label: "撤销",
-                        onClick: async () => {
-                            try {
-                                const created = await api.createGroup({
-                                    name: snapshot.name,
-                                    order_num: snapshot.order_num ?? 0,
-                                } as Group);
-                                const newId = created?.id;
-                                if (newId === undefined) throw new Error("重建分组失败");
-
-                                // 卡片按原顺序重建，分组位置也按 order_num 插回原处
-                                const restored: Site[] = [];
-                                const ordered = [...snapshot.sites].sort(
-                                    (a, b) => (a.order_num ?? 0) - (b.order_num ?? 0)
-                                );
-                                for (const site of ordered) {
-                                    const createdSite = await api.createSite({
-                                        ...site,
-                                        id: undefined,
-                                        group_id: newId,
-                                    } as Site);
-                                    if (createdSite && createdSite.id !== undefined) {
-                                        restored.push(createdSite);
-                                        const prefs = sitePrefs.get(site.id as number);
-                                        if (prefs) {
-                                            if (prefs.tags.length > 0) {
-                                                setSiteTags(createdSite.id, prefs.tags);
-                                            }
-                                            if (prefs.starred) {
-                                                setStarredMany([createdSite.id], true);
-                                            }
-                                        }
-                                    }
-                                }
-
-                                setGroups(prev =>
-                                    [...prev, { ...created, id: newId, sites: restored }].sort(
-                                        (a, b) => (a.order_num ?? 0) - (b.order_num ?? 0)
-                                    )
-                                );
-                                notify(`已恢复分组「${snapshot.name}」`, "success");
-                            } catch (error) {
-                                console.error("恢复分组失败:", error);
-                                handleError("恢复分组失败: " + (error as Error).message);
-                            }
-                        },
+                        onClick: () => void runUndo(),
                     }
                 );
             } catch (error) {
@@ -1414,6 +1499,8 @@ function App() {
             forgetSites,
             setSiteTags,
             setStarredMany,
+            pushHistory,
+            runUndo,
         ]
     );
 
@@ -2432,6 +2519,19 @@ function App() {
             .slice(0, 120);
 
         const actionCommands: CommandItem[] = [
+            // 撤销 / 重做放在最前面：删完卡片想反悔时，Ctrl+K 之后一眼就能看到
+            {
+                id: "cmd-undo",
+                label: canUndo ? "撤销上一步" : "撤销上一步（暂无可撤销）",
+                section: "撤销",
+                run: () => void runUndo(),
+            },
+            {
+                id: "cmd-redo",
+                label: canRedo ? "重做" : "重做（暂无可重做）",
+                section: "撤销",
+                run: () => void runRedo(),
+            },
             {
                 id: "cmd-view-card",
                 label: "切换到卡片视图",
@@ -2569,6 +2669,10 @@ function App() {
         setFavoritesEnabled,
         glassEffects,
         setGlassEffects,
+        canUndo,
+        canRedo,
+        runUndo,
+        runRedo,
         handleOpenAddGroup,
         startGroupSort,
         handleOpenConfig,
@@ -2688,6 +2792,20 @@ function App() {
                 return;
             }
 
+            // Ctrl / Cmd + Z 撤销、Ctrl+Shift+Z（或 Ctrl+Y）重做。
+            // 正在输入时不能拦：输入框里的 Ctrl+Z 是「撤销我刚打的字」，那是浏览器自己的事。
+            if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z" && !isTyping) {
+                e.preventDefault();
+                if (e.shiftKey) void runRedo();
+                else void runUndo();
+                return;
+            }
+            if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "y" && !isTyping) {
+                e.preventDefault();
+                void runRedo();
+                return;
+            }
+
             // 搜索框内：↑↓ 选结果，Enter 打开，Esc 清空
             if (target === searchInputRef.current) {
                 if (e.key === "ArrowDown" && flatResults.length > 0) {
@@ -2736,7 +2854,7 @@ function App() {
 
         window.addEventListener("keydown", onKeyDown);
         return () => window.removeEventListener("keydown", onKeyDown);
-    }, [flatResults, activeResult]);
+    }, [flatResults, activeResult, runUndo, runRedo]);
 
     // context value 记忆化：只有相关配置真正变化时才通知消费方，避免无谓重渲染
     const appConfigValue = useMemo(
@@ -2822,6 +2940,8 @@ function App() {
 
             {/* 顶部滚动进度条：固定贴在最上方，纯装饰 */}
             <ScrollProgress />
+            {/* 断网 / 恢复的浮动提示 */}
+            <OfflineBanner />
 
             {/* 回到顶部：滚过一屏才出现 */}
             <BackToTop />
@@ -2925,7 +3045,7 @@ function App() {
                                     size='small'
                                     onClick={() => {
                                         const run = snackbarAction.onClick;
-                                        setSnackbarOpen(false);
+                                        handleCloseSnackbar();
                                         run();
                                     }}
                                     sx={{ fontWeight: 700, whiteSpace: "nowrap" }}
@@ -3342,6 +3462,21 @@ function App() {
                                                 inputProps={{ "aria-label": "毛玻璃特效" }}
                                             />
                                         </MenuItem>
+                                        {/* 装到桌面：只有浏览器真的给了安装事件时才出现
+                                            （Chrome/Edge 认为用户用得够多才会抛 beforeinstallprompt） */}
+                                        {canInstall && (
+                                            <MenuItem
+                                                onClick={() => {
+                                                    handleMenuClose();
+                                                    void handleInstallApp();
+                                                }}
+                                            >
+                                                <ListItemIcon>
+                                                    <InstallDesktopIcon fontSize='small' />
+                                                </ListItemIcon>
+                                                <ListItemText>安装到桌面</ListItemText>
+                                            </MenuItem>
+                                        )}
                                         <MenuItem
                                             onClick={() =>
                                                 setFavoritesEnabled(!favoritesEnabled)
