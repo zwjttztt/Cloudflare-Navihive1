@@ -295,20 +295,23 @@ mark.nav-hl {
     pointer-events: none;
 }
 
+/* 这里曾经写过 .nav-card-in:focus-within，是个坑：
+   卡片本体是 <a>，鼠标点一下就把焦点留在卡片里了（哪怕立刻移到别处），
+   于是整组浮层常驻不消失；点过设置按钮后更是会一直亮着。
+   改成只看「浮层自己里面的按钮有没有被键盘聚焦」（:has(:focus-visible)），
+   鼠标点击不会触发 :focus-visible，所以点完就散。 */
 .nav-card-in:hover .nav-card-actions,
-.nav-card-in:focus-within .nav-card-actions,
-.nav-card-actions:focus-within {
+.nav-card-actions:has(:focus-visible) {
     opacity: 1;
     transform: none;
     pointer-events: auto;
 }
 
-/* 网站设置按钮：悬停或聚焦时才浮出（已挪到链接外面，避免 a 里嵌按钮） */
+/* 网站设置按钮：悬停时被键盘聚焦时才浮出（已挪到链接外面，避免 a 里嵌按钮） */
 .nav-settings-btn {
     opacity: 0;
 }
 .nav-card-in:hover .nav-settings-btn,
-.nav-card-in:focus-within .nav-settings-btn,
 .nav-settings-btn:focus-visible {
     opacity: 1;
 }
@@ -616,12 +619,30 @@ mark.nav-hl {
     transform: scale(0.9);
     pointer-events: none;
 }
+/* 同样不用 :focus-within（会跟着卡片里残留的鼠标焦点一直显形） */
 .nav-card-in:hover .nav-star-btn[data-starred="false"],
-.nav-card-in:focus-within .nav-star-btn[data-starred="false"],
 .nav-star-btn[data-starred="false"]:focus-visible {
     opacity: 1;
     transform: scale(1);
     pointer-events: auto;
+}
+
+/* 触屏设备没有「悬停」这回事，靠 hover 浮出的按钮等于点不到 —— 直接常显。
+   只影响 hover:none 的设备，鼠标环境完全不受影响。 */
+@media (hover: none) {
+    .nav-card-actions {
+        opacity: 1;
+        transform: none;
+        pointer-events: auto;
+    }
+    .nav-settings-btn {
+        opacity: 1;
+    }
+    .nav-star-btn[data-starred="false"] {
+        opacity: 1;
+        transform: scale(1);
+        pointer-events: auto;
+    }
 }
 
 /* 卡片上的标签小标：只做展示，不抢点击 */
