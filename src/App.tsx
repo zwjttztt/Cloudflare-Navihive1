@@ -22,11 +22,14 @@ import BookmarkImportDialog from "./components/BookmarkImportDialog";
 import ScrollProgress from "./components/ScrollProgress";
 import BackToTop from "./components/BackToTop";
 import SettingsDialog from "./components/SettingsDialog";
+import ImportPreviewDialog from "./components/ImportPreviewDialog";
 import HeaderClock from "./components/HeaderClock";
 import VisitsDialog from "./components/VisitsDialog";
 import EmptyArt from "./components/EmptyArt";
 import { COLLAPSED_EVENT, readCollapsedGroupIds, setAllCollapsed } from "./utils/collapse";
-import { probeLinks } from "./utils/linkHealth";
+import { DuplicateHit, findDuplicateSite } from "./utils/duplicate";
+import { loadPinyinMatcher } from "./utils/pinyin";
+import { FRESH_WINDOW_MS, probeLinks } from "./utils/linkHealth";
 import { ParsedBookmarkGroup } from "./utils/bookmarks";
 import { DEFAULT_ICON_API, resolveIconApiUrl } from "./utils/iconApi";
 import { groupAccent } from "./utils/groupColor";
@@ -388,6 +391,8 @@ function App() {
     const [snackbarDuration, setSnackbarDuration] = useState(6000);
     // 提示条上的操作按钮（删除后点「撤销」把卡片/分组恢复回来）
     const [snackbarAction, setSnackbarAction] = useState<NotifyAction | null>(null);
+    // 读屏专用：提示条会自动消失，这里留一份纯文本供屏幕阅读器播报
+    const [liveMessage, setLiveMessage] = useState("");
     // 搜索关键词：普通浏览模式下即时筛选卡片
     const [searchQuery, setSearchQuery] = useState("");
     const searchInputRef = useRef<HTMLInputElement>(null);
@@ -429,14 +434,46 @@ function App() {
         tagCounts,
         railCollapsed,
         setRailCollapsed,
+        pinyinSearch,
+        setPinyinSearch,
         restoreLocalPrefs,
     } = useUIPrefs();
+
+    // 导入预览：备份恢复前先摊开差异让用户挑，确认/取消都通过 promise 回传给备份弹窗
+    const [importPreview, setImportPreview] = useState<{
+        data: ExportData;
+        overwrite: boolean;
+    } | null>(null);
+    const importPreviewResolve = useRef<((result: ExportData | null) => void) | null>(null);
+
+    // 拼音搜索：开关打开后才按需加载词典（约 28KB 的独立 chunk），加载完刷新一次筛选
+    const [pinyinReady, setPinyinReady] = useState(false);
+    useEffect(() => {
+        if (!pinyinSearch) {
+            setPinyinReady(false);
+            return;
+        }
+        let cancelled = false;
+        void loadPinyinMatcher().then(() => {
+            if (!cancelled) setPinyinReady(true);
+        });
+        return () => {
+            cancelled = true;
+        };
+    }, [pinyinSearch]);
+    const usePinyin = pinyinSearch && pinyinReady;
 
     // 批量多选：进入后点卡片是「勾选」而不是打开网页
     const [multiSelect, setMultiSelect] = useState(false);
     const [selectedIds, setSelectedIds] = useState<number[]>([]);
     // 批量删除前的确认弹窗
     const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
+    // 重复网址确认：撞车时先问一句，run 是用户确认后真正要执行的动作
+    const [dupPrompt, setDupPrompt] = useState<{
+        url: string;
+        hit: DuplicateHit;
+        run: () => void | Promise<void>;
+    } | null>(null);
     // 筛选：只看星标 + 标签（可多选，取交集）
     const [starFilter, setStarFilter] = useState(false);
     const [activeTags, setActiveTags] = useState<string[]>([]);
@@ -793,6 +830,12 @@ function App() {
             setSnackbarDuration(duration ?? (severity === "error" ? 6000 : 2200));
             setSnackbarAction(action ?? null);
             setSnackbarOpen(true);
+            // 读屏播报完就把文本清掉：这个区域视觉上不可见，但 innerText 里能捞到，
+            // 留着会让「页面上还有没有某条提示」这类判断失真
+            setLiveMessage(message);
+            window.setTimeout(() => {
+                setLiveMessage(prev => (prev === message ? "" : prev));
+            }, 1500);
         },
         []
     );
@@ -906,22 +949,63 @@ function App() {
         });
     }, []);
 
+    /** 滚到某张卡片并闪一下轮廓（重复链接提示里的「跳到那张」用） */
+    const jumpToSite = useCallback((siteId?: number) => {
+        if (siteId == null) return;
+        requestAnimationFrame(() => {
+            const el = document.querySelector<HTMLElement>(`[data-site-id="${siteId}"]`);
+            if (!el) return;
+            el.scrollIntoView({ behavior: "smooth", block: "center" });
+            const prevOutline = el.style.outline;
+            const prevOffset = el.style.outlineOffset;
+            el.style.outline = "2px solid var(--accent)";
+            el.style.outlineOffset = "3px";
+            window.setTimeout(() => {
+                el.style.outline = prevOutline;
+                el.style.outlineOffset = prevOffset;
+            }, 1800);
+        });
+    }, []);
+
+    /**
+     * 重复网址守卫：新增 / 改链接时先看这张链接是不是已经有了。
+     * 没撞车就直接执行 run；撞了先弹确认，用户点「仍然添加」才继续。
+     * 返回 true 表示已经直接执行。
+     */
+    const guardDuplicate = useCallback(
+        (url: string | undefined, excludeId: number | undefined, run: () => void | Promise<void>) => {
+            const hit = findDuplicateSite(groupsRef.current, url, excludeId);
+            if (!hit) {
+                void run();
+                return true;
+            }
+            setDupPrompt({ url: url || "", hit, run });
+            return false;
+        },
+        []
+    );
+
     // 更新站点：保存成功后直接用（本地这份 + 服务端回显）更新本地状态，界面即时生效，不再刷新页面
     const handleSiteUpdate = useCallback(
         async (updatedSite: Site) => {
-            try {
-                if (!updatedSite.id) return;
+            if (!updatedSite.id) return;
 
-                const saved = await api.updateSite(updatedSite.id, updatedSite);
-                // id 以本地这份为准，避免个别后端实现回显的 id 不准确
-                upsertSiteLocally({ ...updatedSite, ...(saved || {}), id: updatedSite.id });
-                notify("卡片已更新", "success");
-            } catch (error) {
-                console.error("更新站点失败:", error);
-                handleError("更新站点失败: " + (error as Error).message);
-            }
+            const doUpdate = async () => {
+                try {
+                    const saved = await api.updateSite(updatedSite.id as number, updatedSite);
+                    // id 以本地这份为准，避免个别后端实现回显的 id 不准确
+                    upsertSiteLocally({ ...updatedSite, ...(saved || {}), id: updatedSite.id });
+                    notify("卡片已更新", "success");
+                } catch (error) {
+                    console.error("更新站点失败:", error);
+                    handleError("更新站点失败: " + (error as Error).message);
+                }
+            };
+
+            // 改完链接后跟别张卡片撞了，也先确认一次再写库
+            guardDuplicate(updatedSite.url, updatedSite.id, doUpdate);
         },
-        [upsertSiteLocally, handleError, notify]
+        [upsertSiteLocally, handleError, notify, guardDuplicate]
     );
 
     // 删除站点：删完给一条带「撤销」的提示，8 秒内点一下就能把卡片原样建回来
@@ -1637,26 +1721,36 @@ function App() {
         creatingSiteRef.current = true;
         setCreatingSite(true);
 
-        try {
-            if (!newSite.name || !newSite.url) {
-                handleError("站点名称和URL不能为空");
-                return;
-            }
-
-            const created = await api.createSite(newSite as Site);
-            // 服务端返回新建站点，直接插入本地列表，界面立即出现新卡片（无需刷新页面）
-            if (created && created.id !== undefined) {
-                upsertSiteLocally(created);
-            }
-            handleCloseAddSite();
-            notify("卡片已添加", "success");
-        } catch (error) {
-            console.error("创建站点失败:", error);
-            handleError("创建站点失败: " + (error as Error).message);
-        } finally {
+        const release = () => {
             creatingSiteRef.current = false;
             setCreatingSite(false);
+        };
+
+        if (!newSite.name || !newSite.url) {
+            handleError("站点名称和URL不能为空");
+            release();
+            return;
         }
+
+        const doCreate = async () => {
+            try {
+                const created = await api.createSite(newSite as Site);
+                // 服务端返回新建站点，直接插入本地列表，界面立即出现新卡片（无需刷新页面）
+                if (created && created.id !== undefined) {
+                    upsertSiteLocally(created);
+                }
+                handleCloseAddSite();
+                notify("卡片已添加", "success");
+            } catch (error) {
+                console.error("创建站点失败:", error);
+                handleError("创建站点失败: " + (error as Error).message);
+            } finally {
+                release();
+            }
+        };
+
+        // 同一条链接已经加过就先问一句，用户确认「仍然添加」才真的写库
+        if (!guardDuplicate(newSite.url, undefined, doCreate)) release();
     };
 
     // 配置相关函数
@@ -1847,6 +1941,24 @@ function App() {
         }
     };
 
+    // 导入前的差异预览：弹出预览框，等用户确认（返回裁剪后的数据）或取消（返回 null）
+    const requestImportPreview = useCallback(
+        (data: ExportData, overwrite: boolean) => {
+            setImportPreview({ data, overwrite });
+            return new Promise<ExportData | null>(resolve => {
+                importPreviewResolve.current = resolve;
+            });
+        },
+        []
+    );
+
+    const closeImportPreview = useCallback((result: ExportData | null) => {
+        setImportPreview(null);
+        const resolve = importPreviewResolve.current;
+        importPreviewResolve.current = null;
+        resolve?.(result);
+    }, []);
+
     // 导入/恢复数据：overwrite=true 覆盖恢复（服务端整体导入），false 合并追加
     const handleImportBackup = async (data: ExportData, overwrite: boolean) => {
         try {
@@ -1933,12 +2045,12 @@ function App() {
 
         return groups
             .map(group => {
-                if (matchesGroupQuery(group.name, query)) return group;
-                const sites = group.sites.filter(site => matchesSiteQuery(site, query));
+                if (matchesGroupQuery(group.name, query, usePinyin)) return group;
+                const sites = group.sites.filter(site => matchesSiteQuery(site, query, usePinyin));
                 return { ...group, sites };
             })
             .filter(group => group.sites.length > 0);
-    }, [groups, query]);
+    }, [groups, query, usePinyin]);
 
     // 星标 / 标签筛选：在搜索结果之上再叠一层。
     // 标签取交集（同时带「工具」「AI」两个标签才命中），星标是独立的开关。
@@ -2046,12 +2158,13 @@ function App() {
         if (!favoritesEnabled || favoritesGroup.sites.length === 0) return visibleGroups;
 
         const favSites = favoritesGroup.sites.filter(
-            site => matchFilters(site) && (!query || matchesSiteQuery(site, query))
+            site =>
+                matchFilters(site) && (!query || matchesSiteQuery(site, query, usePinyin))
         );
 
         if (favSites.length === 0) return visibleGroups;
         return [{ ...favoritesGroup, sites: favSites }, ...visibleGroups];
-    }, [visibleGroups, favoritesGroup, favoritesEnabled, query, matchFilters]);
+    }, [visibleGroups, favoritesGroup, favoritesEnabled, query, matchFilters, usePinyin]);
 
     // 分组面板滚进视口时播一次「渐显上浮」（只播一次，来回滚动不会反复闪）。
     // 元素默认就是正常显示，动画靠 JS 加 class 触发，IntersectionObserver 不可用时完全不受影响。
@@ -2115,11 +2228,18 @@ function App() {
             return;
         }
         notify(`开始检测 ${urls.length} 个链接…`, "info");
-        const map = await probeLinks(urls, 5);
-        setDeadLinks(map);
-        const dead = Object.keys(map).length;
+        // 增量检测：7 天内探测过、或用户手动标记过「能访问」的链接直接跳过，
+        // 同一域名也只探一次，避免每次都得等上几分钟
+        const result = await probeLinks(urls, { concurrency: 5, skipFreshMs: FRESH_WINDOW_MS });
+        setDeadLinks(result.dead);
+        const dead = Object.keys(result.dead).length;
+        const skipNote = result.skipped
+            ? `（${result.skipped} 个近期检测过，已跳过）`
+            : "";
         notify(
-            dead ? `检测完成，${dead} 个链接疑似失效` : "检测完成，所有链接都能访问",
+            dead
+                ? `检测完成，${dead} 个链接疑似失效${skipNote}`
+                : `检测完成，所有链接都能访问${skipNote}`,
             dead ? "info" : "success",
             undefined,
             // 有可疑链接时给个快捷入口，省得自己一张张翻
@@ -2602,6 +2722,26 @@ function App() {
 
             {/* 回到顶部：滚过一屏才出现 */}
             <BackToTop />
+
+            {/* 读屏播报区：视觉上不可见，但每次提示都会同步到这里（aria-live） */}
+            <Box
+                role='status'
+                aria-live='polite'
+                aria-atomic='true'
+                sx={{
+                    position: "absolute",
+                    width: 1,
+                    height: 1,
+                    m: -1,
+                    p: 0,
+                    border: 0,
+                    overflow: "hidden",
+                    whiteSpace: "nowrap",
+                    clip: "rect(0 0 0 0)",
+                }}
+            >
+                {liveMessage}
+            </Box>
 
             {/* 错误/成功提示 Snackbar：顶部居中，成功类短暂停留、错误类停留更久 */}
             <Snackbar
@@ -3849,6 +3989,8 @@ function App() {
                             currentPassword: authCurrentPassword,
                             newPassword: authNewPassword,
                         }}
+                        pinyinSearch={pinyinSearch}
+                        onPinyinSearchChange={setPinyinSearch}
                         onAuthChange={(field, value) => {
                             if (field === "username") setAuthUsername(value);
                             else if (field === "currentPassword") setAuthCurrentPassword(value);
@@ -3886,9 +4028,20 @@ function App() {
                         onBuildExportData={buildExportData}
                         onDownloadLocal={handleDownloadLocal}
                         onImportData={handleImportBackup}
+                        onRequestImportPreview={requestImportPreview}
                         onNotify={notify}
                         onClose={handleCloseBackup}
                     />
+
+                {/* 导入预览：恢复前先给用户看差异，勾选后才会真的写库 */}
+                <ImportPreviewDialog
+                    open={importPreview !== null}
+                    data={importPreview?.data ?? null}
+                    overwrite={importPreview?.overwrite ?? false}
+                    current={groups}
+                    onCancel={() => closeImportPreview(null)}
+                    onConfirm={data => closeImportPreview(data)}
+                />
 
                 </Container>
 
@@ -3901,6 +4054,8 @@ function App() {
                     onGroups={event => setMobileGroupsAnchor(event.currentTarget)}
                     onAdd={handleOpenAddGroup}
                     onMore={event => handleMenuOpen(event as React.MouseEvent<HTMLButtonElement>)}
+                    onToggleStar={() => setStarFilter(!starFilter)}
+                    starActive={starFilter}
                     badge={displayedGroups.length}
                 />
 
@@ -3960,6 +4115,37 @@ function App() {
                 )}
 
                 {/* 批量删除确认：删完同样可以在提示条上点「撤销」 */}
+                {/* 重复网址确认：同一条链接已经加过，先确认再写库 */}
+                <ConfirmDialog
+                    open={dupPrompt !== null}
+                    title='这个链接已经加过了'
+                    description={
+                        dupPrompt
+                            ? `「${dupPrompt.hit.groupName}」里已有一张同链接的卡片：${dupPrompt.hit.site.name || dupPrompt.hit.site.url}。重复保存后，删的时候容易漏删。`
+                            : ""
+                    }
+                    confirmText='仍然添加'
+                    cancelText='取消'
+                    extraAction={
+                        dupPrompt?.hit.site.id != null
+                            ? {
+                                  label: "跳到那张",
+                                  onClick: () => {
+                                      const id = dupPrompt.hit.site.id as number;
+                                      setDupPrompt(null);
+                                      jumpToSite(id);
+                                  },
+                              }
+                            : undefined
+                    }
+                    onConfirm={() => {
+                        const run = dupPrompt?.run;
+                        setDupPrompt(null);
+                        if (run) void run();
+                    }}
+                    onClose={() => setDupPrompt(null)}
+                />
+
                 <ConfirmDialog
                     open={bulkDeleteOpen}
                     title={`删除选中的 ${selectedIds.length} 个网站？`}

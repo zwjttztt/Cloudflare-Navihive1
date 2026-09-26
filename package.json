@@ -24,6 +24,7 @@
         "@mui/material": "^7.0.1",
         "@tailwindcss/vite": "^4.1.2",
         "dnd-kit": "^0.0.2",
+        "pinyin-match": "^1.2.10",
         "react": "^19.0.0",
         "react-dom": "^19.0.0",
         "tailwindcss": "^4.1.2"

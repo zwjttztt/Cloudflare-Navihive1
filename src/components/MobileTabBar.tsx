@@ -7,12 +7,17 @@ import SearchIcon from "@mui/icons-material/Search";
 import DashboardIcon from "@mui/icons-material/Dashboard";
 import AddCircleOutlineIcon from "@mui/icons-material/AddCircleOutline";
 import MoreHorizIcon from "@mui/icons-material/MoreHoriz";
+import StarIcon from "@mui/icons-material/Star";
+import StarBorderIcon from "@mui/icons-material/StarBorder";
 
 interface MobileTabBarProps {
     onSearch: () => void;
     onGroups: (event: React.MouseEvent<HTMLElement>) => void;
     onAdd: () => void;
     onMore: (event: React.MouseEvent<HTMLElement>) => void;
+    /** 切换「只看星标」（窄屏上顶栏那颗胶囊要滚到顶才点得到，这里补一个） */
+    onToggleStar?: () => void;
+    starActive?: boolean;
     badge?: number;
 }
 
@@ -21,6 +26,8 @@ export default function MobileTabBar({
     onGroups,
     onAdd,
     onMore,
+    onToggleStar,
+    starActive = false,
     badge = 0,
 }: MobileTabBarProps) {
     const items: {
@@ -28,10 +35,26 @@ export default function MobileTabBar({
         label: string;
         icon: React.ReactNode;
         onClick: (event: React.MouseEvent<HTMLElement>) => void;
+        active?: boolean;
     }[] = [
         { key: "search", label: "搜索", icon: <SearchIcon fontSize='small' />, onClick: onSearch },
         { key: "groups", label: "分组", icon: <DashboardIcon fontSize='small' />, onClick: onGroups },
         { key: "add", label: "新增", icon: <AddCircleOutlineIcon fontSize='small' />, onClick: onAdd },
+        ...(onToggleStar
+            ? [
+                  {
+                      key: "star",
+                      label: starActive ? "星标中" : "星标",
+                      icon: starActive ? (
+                          <StarIcon fontSize='small' />
+                      ) : (
+                          <StarBorderIcon fontSize='small' />
+                      ),
+                      onClick: () => onToggleStar(),
+                      active: starActive,
+                  },
+              ]
+            : []),
         { key: "more", label: "更多", icon: <MoreHorizIcon fontSize='small' />, onClick: onMore },
     ];
 
@@ -65,6 +88,7 @@ export default function MobileTabBar({
                     type='button'
                     onClick={item.onClick}
                     aria-label={item.label}
+                    aria-pressed={item.active ? true : undefined}
                     sx={{
                         flex: 1,
                         display: "flex",
@@ -75,8 +99,8 @@ export default function MobileTabBar({
                         border: 0,
                         borderRadius: "14px",
                         cursor: "pointer",
-                        bgcolor: "transparent",
-                        color: "text.secondary",
+                        bgcolor: item.active ? "action.selected" : "transparent",
+                        color: item.active ? "var(--accent)" : "text.secondary",
                         transition: "all .18s ease",
                         "&:hover": { bgcolor: "action.hover", color: "text.primary" },
                     }}

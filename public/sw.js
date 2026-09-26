@@ -72,7 +72,9 @@ self.addEventListener("fetch", event => {
                 }
                 return fetch(req)
                     .then(res => {
-                        if (res && res.ok) {
+                        // 跨域图标是 no-cors 请求，响应是 opaque（status 0、ok=false），
+                        // 这类响应照样能存进 Cache Storage，断网时也能取回来用
+                        if (res && (res.ok || res.type === "opaque")) {
                             const copy = res.clone();
                             caches.open(CACHE).then(cache => cache.put(req, copy));
                         }

@@ -1,4 +1,5 @@
 import { Site } from "../API/http";
+import { matchesByPinyin } from "./pinyin";
 
 /**
  * 搜索用的文本归一化：
@@ -25,7 +26,11 @@ export const siteSearchText = (site: Site): string =>
  * 卡片是否命中关键词。
  * 支持多词：所有词都出现才算命中（例如「云设 示例」）。
  */
-export const matchesSiteQuery = (site: Site, rawQuery: string): boolean => {
+export const matchesSiteQuery = (
+    site: Site,
+    rawQuery: string,
+    usePinyin = false
+): boolean => {
     const query = normalizeSearchText(rawQuery);
     if (!query) return true;
 
@@ -33,15 +38,23 @@ export const matchesSiteQuery = (site: Site, rawQuery: string): boolean => {
     if (haystack.includes(query)) return true;
 
     const terms = query.split(" ").filter(Boolean);
-    return terms.length > 1 && terms.every(term => haystack.includes(term));
+    if (terms.length > 1 && terms.every(term => haystack.includes(term))) return true;
+
+    // 拼音兜底：只对站点名做（链接/描述里塞拼音没有意义，还容易误命中）
+    return usePinyin && matchesByPinyin(site.name || "", rawQuery.trim());
 };
 
 /** 分组名是否命中关键词（同样做归一化，允许 "常用 工具" 这种输入） */
-export const matchesGroupQuery = (groupName: string, rawQuery: string): boolean => {
+export const matchesGroupQuery = (
+    groupName: string,
+    rawQuery: string,
+    usePinyin = false
+): boolean => {
     const query = normalizeSearchText(rawQuery);
     if (!query) return true;
     const haystack = normalizeSearchText(groupName);
     if (haystack.includes(query)) return true;
     const terms = query.split(" ").filter(Boolean);
-    return terms.length > 1 && terms.every(term => haystack.includes(term));
+    if (terms.length > 1 && terms.every(term => haystack.includes(term))) return true;
+    return usePinyin && matchesByPinyin(groupName || "", rawQuery.trim());
 };
