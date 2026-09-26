@@ -36,7 +36,6 @@ import PersonIcon from "@mui/icons-material/Person";
 import KeyIcon from "@mui/icons-material/Key";
 import EditIcon from "@mui/icons-material/Edit";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
-import MoreVertIcon from "@mui/icons-material/MoreVert";
 import LinkOffIcon from "@mui/icons-material/LinkOff";
 import { useAppConfig } from "../context/AppConfigContext";
 import { useNotify } from "../context/NotifyContext";
@@ -559,42 +558,6 @@ const SiteCard = memo(function SiteCard({
             </IconButton>
         );
 
-    // 「更多」按钮：把只有鼠标右键才能唤出的菜单，也给键盘和触屏用户一个显式入口
-    const handleMoreClick = (e: React.MouseEvent) => {
-        e.stopPropagation();
-        e.preventDefault();
-        const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-        setMenuPos({ left: rect.left - 160, top: rect.bottom + 4 });
-    };
-
-    const renderMoreButton = () =>
-        !isEditMode &&
-        !isList &&
-        !isWall && (
-            <IconButton
-                className='nav-settings-btn nav-more-btn'
-                size='small'
-                sx={{
-                    position: "absolute",
-                    top: 8,
-                    right: 40,
-                    bgcolor: "var(--glass-bg-hover)",
-                    backdropFilter: "blur(6px)",
-                    opacity: 0,
-                    transition: "opacity .2s, background-color .2s",
-                    zIndex: 2,
-                    "&:hover": {
-                        bgcolor: "action.selected",
-                    },
-                }}
-                onClick={handleMoreClick}
-                aria-label='更多操作'
-                aria-haspopup='menu'
-            >
-                <MoreVertIcon fontSize='small' />
-            </IconButton>
-        );
-
     // 这张卡片被判成失效链接时，右键菜单里给一条纠偏入口：
     // 标记后写入白名单，之后的批量检测会直接跳过它
     const handleMarkAlive = () => {
@@ -1029,9 +992,6 @@ const SiteCard = memo(function SiteCard({
 
             {/* 网站设置按钮（放在链接外面，避免 a 里嵌交互元素） */}
             {!selectMode && renderSettingsButton()}
-
-            {/* 更多操作：与右键菜单同一套动作，给键盘 / 触屏一个显式入口 */}
-            {!selectMode && renderMoreButton()}
 
             {/* 星标与多选勾选都浮在卡片上，不进链接内部 */}
             {renderStarButton()}

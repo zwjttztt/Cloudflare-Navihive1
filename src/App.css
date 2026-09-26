@@ -1,9 +1,3 @@
-.duration-0 {
-    --tw-duration: 0ms;
-    transition-duration: 0ms;
-    transition-delay: 0ms;
-}
-
 /* 优化拖拽体验 */
 [data-dnd-draggable-context="true"] {
     transition: none !important;
@@ -20,60 +14,31 @@
     contain: layout;
 }
 
-/* 移动端适配样式 */
+/* 移动端只保留两条「页面级」规则：
+   MUI 组件的触控尺寸（按钮最小高、图标按钮内边距、输入框内边距、菜单最小宽、
+   弹窗留白、分割线间距）已经搬进 App.tsx 的 createTheme -> components.xxx.styleOverrides，
+   组件自己写的 sx 优先级更高，可以按需覆盖，不会再被全局 !important 强压成 32×36 的长方形。 */
 @media (max-width: 600px) {
   body {
     overflow-x: hidden;
   }
-  
-  /* 改善触摸体验的样式 */
-  button, 
-  [role="button"],
-  a {
-    padding: 6px 12px !important;
+
+  /* 只有没挂 class 的原生 button / a 才需要兜底触控尺寸
+     （MUI 组件和 .nav-* 自定义元素都带 class，走各自的设定） */
+  button:not([class]),
+  [role="button"]:not([class]),
+  a:not([class]) {
+    padding: 6px 12px;
     min-height: 36px;
   }
-  
-  /* 按钮图标大小调整 */
-  .MuiButton-startIcon > *:nth-of-type(1),
-  .MuiButton-endIcon > *:nth-of-type(1) {
-    font-size: 18px !important;
-  }
-  
-  /* 图标按钮样式调整 */
-  .MuiIconButton-root {
-    padding: 6px !important;
-  }
-
-  /* 移动端更清晰的分割线 */
-  .MuiDivider-root {
-    margin: 8px 0 !important;
-  }
-  
-  /* 确保移动端对话框不会过于接近屏幕边缘 */
-  .MuiDialog-paper {
-    margin: 12px !important;
-  }
-  
-  /* 移动端菜单更宽 */
-  .MuiMenu-paper {
-    min-width: 200px !important;
-  }
-
-  /* 移动端表单元素更容易点击 */
-  .MuiInputBase-input {
-    padding: 10px 12px !important;
-  }
 }
 
-/* 暗黑模式增强 */
-.dark .MuiPaper-root {
-  background-color: #1e1e1e;
-}
-
-.dark .MuiCard-root {
-  background-color: #262626;
-}
+/* 暗色不再用全局选择器写死底色：
+   以前这里写过 `.dark .MuiPaper-root { background-color:#1e1e1e }` 之类的规则，
+   两个类的选择器压过了组件 sx 生成的单类样式，于是暗色下所有 Paper / Card / 弹窗
+   都被强制不透明——index.css 里那套 --glass-* 底色全部失效，观感上完全没有玻璃感，
+   但 backdrop-filter 还在跑，等于白付一份合成开销。现在改为让组件自己的 sx 生效，
+   底色统一走 index.css 里的 --glass-*（暗色一套 rgba(23,27,38,0.xx)）。 */
 
 /* 增强可访问性 */
 @media (prefers-reduced-motion: reduce) {
