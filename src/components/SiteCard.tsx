@@ -24,6 +24,10 @@ import {
     alpha,
 } from "@mui/material";
 import SettingsIcon from "@mui/icons-material/Settings";
+import StarIcon from "@mui/icons-material/Star";
+import StarBorderIcon from "@mui/icons-material/StarBorder";
+import CheckCircleIcon from "@mui/icons-material/CheckCircle";
+import RadioButtonUncheckedIcon from "@mui/icons-material/RadioButtonUnchecked";
 import DragIndicatorIcon from "@mui/icons-material/DragIndicator";
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import LinkIcon from "@mui/icons-material/Link";
@@ -45,6 +49,10 @@ interface SiteCardProps {
     index?: number;
     /** 搜索关键词，命中片段会高亮 */
     highlight?: string;
+    /** 批量多选模式：点卡片变成勾选，不再打开网页 */
+    selectMode?: boolean;
+    selected?: boolean;
+    onToggleSelect?: (siteId: number) => void;
 }
 
 // 图标取不到时，按站点名哈希出一个稳定的配色，避免所有占位块长得一模一样
@@ -124,11 +132,18 @@ const SiteCard = memo(function SiteCard({
     isEditMode = false,
     index = 0,
     highlight = "",
+    selectMode = false,
+    selected = false,
+    onToggleSelect,
 }: SiteCardProps) {
     const theme = useTheme();
     const { thumbApi, iconApi } = useAppConfig();
     const notify = useNotify();
-    const { viewMode, density, recordVisit, deadLinks } = useUIPrefs();
+    const { viewMode, density, recordVisit, deadLinks, isStarred, toggleStar, tags } =
+        useUIPrefs();
+    // 星标与标签都存本机（UIPrefs），和访问记录、折叠状态一样不进数据库
+    const starred = isStarred(site.id);
+    const siteTags = tags[String(site.id)] ?? [];
     const [showSettings, setShowSettings] = useState(false);
     // 右键菜单的锚点位置（null 表示未打开）
     const [menuPos, setMenuPos] = useState<{ left: number; top: number } | null>(null);
@@ -219,14 +234,24 @@ const SiteCard = memo(function SiteCard({
     // 处理卡片点击：卡片本体是真实的 <a target="_blank">，
     // 左键交给浏览器原生打开（中键则自动后台打开），这里只记录访问次数
     const handleCardClick = () => {
+        // 多选模式下点卡片是「勾选」，不会被当成打开网页
+        if (selectMode) return;
         if (!isEditMode && site.url) {
             recordVisit(site.id);
         }
     };
 
+    // 多选模式：点卡片任意位置切换勾选（在事件冒泡到默认导航前拦下来）
+    const handleShellClick = (e: React.MouseEvent) => {
+        if (!selectMode || isEditMode) return;
+        e.preventDefault();
+        if (site.id != null) onToggleSelect?.(site.id);
+    };
+
     // 鼠标中键点击 = 后台打开新标签页（浏览器原生行为，当前页不会被切走）
     const handleAuxClick = (e: React.MouseEvent) => {
-        if (isEditMode || e.button !== 1 || !site.url) return;
+        if (isEditMode || selectMode) return;
+        if (e.button !== 1 || !site.url) return;
         recordVisit(site.id);
     };
 
@@ -440,6 +465,14 @@ const SiteCard = memo(function SiteCard({
     // 键盘可达：卡片聚焦后回车/空格打开链接（方向键由 App 统一处理）
     const handleKeyDown = (e: React.KeyboardEvent) => {
         if (isEditMode) return;
+        // 多选模式下回车/空格同样是「勾选」
+        if (selectMode) {
+            if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                if (site.id != null) onToggleSelect?.(site.id);
+            }
+            return;
+        }
         if (e.key === "Enter" || e.key === " ") {
             e.preventDefault(); // 焦点在卡片外壳上，不会触发 <a> 的原生导航，这里手动打开
             if (!site.url) return;
@@ -475,6 +508,98 @@ const SiteCard = memo(function SiteCard({
                 <SettingsIcon fontSize='small' />
             </IconButton>
         );
+
+    // 星标按钮：加星后常显（并在分组里置顶），未加星时悬停才浮出
+    const renderStarButton = () =>
+        !isEditMode &&
+        !isList &&
+        !isWall &&
+        // 多选模式下左上角让给勾选标记，避免两个圆形叠在一起
+        !selectMode && (
+            <IconButton
+                className='nav-star-btn'
+                data-starred={starred ? "true" : "false"}
+                size='small'
+                aria-label={starred ? "取消星标" : "加星标"}
+                aria-pressed={starred}
+                onClick={e => {
+                    e.stopPropagation();
+                    e.preventDefault();
+                    toggleStar(site.id);
+                }}
+                sx={{
+                    position: "absolute",
+                    top: 8,
+                    left: 8,
+                    p: 0.4,
+                    color: starred ? "var(--accent)" : "text.secondary",
+                    bgcolor: "var(--glass-bg-hover)",
+                    backdropFilter: "blur(6px)",
+                    WebkitBackdropFilter: "blur(6px)",
+                    transition: "opacity .2s, transform .2s, background-color .2s",
+                    zIndex: 2,
+                    "&:hover": { bgcolor: "action.selected" },
+                }}
+            >
+                {starred ? (
+                    <StarIcon className='nav-star-icon' sx={{ fontSize: 17 }} />
+                ) : (
+                    <StarBorderIcon sx={{ fontSize: 17 }} />
+                )}
+            </IconButton>
+        );
+
+    // 多选勾选标记：直接画在卡片左上角，比塞一个真复选框更轻，也不会抢走点击
+    const renderSelectMark = () =>
+        selectMode && (
+            <Box
+                className='nav-select-mark'
+                data-selected={selected ? "true" : "false"}
+                aria-hidden
+                sx={{
+                    position: "absolute",
+                    top: 8,
+                    left: 8,
+                    width: 22,
+                    height: 22,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    borderRadius: "50%",
+                    zIndex: 3,
+                    color: selected ? "var(--accent)" : "text.disabled",
+                    bgcolor: selected ? "background.paper" : "rgba(127,127,127,0.16)",
+                    boxShadow: selected ? "0 1px 6px rgba(15,23,42,0.2)" : "none",
+                    transition: "all .18s cubic-bezier(.22,.61,.36,1)",
+                }}
+            >
+                {selected ? (
+                    <CheckCircleIcon sx={{ fontSize: 20 }} />
+                ) : (
+                    <RadioButtonUncheckedIcon sx={{ fontSize: 20 }} />
+                )}
+            </Box>
+        );
+
+    // 卡片上的标签：只做展示（不抢点击），多了折叠成 +N
+    const renderTagChips = () => {
+        if (isEditMode || isWall || siteTags.length === 0) return null;
+        const shown = siteTags.slice(0, isList ? 1 : 2);
+        const rest = siteTags.length - shown.length;
+        return (
+            <Box
+                className='nav-card-tags'
+                sx={{ display: "flex", flexWrap: "wrap", gap: 0.5, mt: 0.75 }}
+            >
+                {shown.map(tag => (
+                    <Box key={tag} className='nav-tag-chip'>
+                        {tag}
+                    </Box>
+                ))}
+                {rest > 0 && <Box className='nav-tag-chip'>+{rest}</Box>}
+            </Box>
+        );
+    };
 
     // 卡片本体做成真实的 <a>：左键普通新标签，中键由浏览器原生后台打开（不切走当前页）
     const linkProps = site.url
@@ -555,6 +680,26 @@ const SiteCard = memo(function SiteCard({
                 zIndex: 2,
             }}
         >
+            <Tooltip title={starred ? "取消星标" : "加星标（分组内置顶）"}>
+                <IconButton
+                    className='nav-quick-star'
+                    size='small'
+                    aria-label={starred ? "取消星标" : "加星标"}
+                    aria-pressed={starred}
+                    onClick={e => {
+                        e.stopPropagation();
+                        e.preventDefault();
+                        toggleStar(site.id);
+                    }}
+                    sx={{ p: 0.6, color: starred ? "var(--accent)" : "inherit" }}
+                >
+                    {starred ? (
+                        <StarIcon sx={{ fontSize: 16 }} />
+                    ) : (
+                        <StarBorderIcon sx={{ fontSize: 16 }} />
+                    )}
+                </IconButton>
+            </Tooltip>
             <Tooltip title='复制链接'>
                 <IconButton
                     size='small'
@@ -630,8 +775,11 @@ const SiteCard = memo(function SiteCard({
             data-dragging={isDragging ? "true" : "false"}
             data-site-id={site.id}
             tabIndex={isEditMode ? undefined : 0}
-            data-hover-lift={isEditMode ? undefined : ""}
+            data-hover-lift={isEditMode || selectMode ? undefined : ""}
+            data-select-mode={selectMode ? "true" : "false"}
+            data-selected={selected ? "true" : "false"}
             onKeyDown={handleKeyDown}
+            onClick={handleShellClick}
             onAuxClick={handleAuxClick}
             onMouseDown={handleMouseDown}
             onContextMenu={handleContextMenu}
@@ -688,6 +836,7 @@ const SiteCard = memo(function SiteCard({
                         {renderAvatar(0, isCompact ? 28 : 36)}
                         <Box sx={{ minWidth: 0, flexGrow: 1 }}>
                             {renderTitle()}
+                            {renderTagChips()}
                             {!isCompact && (
                                 <Typography
                                     variant='caption'
@@ -762,16 +911,22 @@ const SiteCard = memo(function SiteCard({
 
                             {/* 描述 */}
                             {renderDescription()}
+                            {/* 标签 */}
+                            {renderTagChips()}
                         </CardContent>
                     </CardActionArea>
                 )}
             </Card>
 
             {/* 网站设置按钮（放在链接外面，避免 a 里嵌交互元素） */}
-            {renderSettingsButton()}
+            {!selectMode && renderSettingsButton()}
+
+            {/* 星标与多选勾选都浮在卡片上，不进链接内部 */}
+            {renderStarButton()}
+            {renderSelectMark()}
 
             {/* 快捷操作条 */}
-            {!isEditMode && renderQuickActions(isList)}
+            {!isEditMode && !selectMode && renderQuickActions(isList)}
         </Box>
     );
 
@@ -789,6 +944,21 @@ const SiteCard = memo(function SiteCard({
                     <OpenInNewIcon fontSize='small' />
                 </ListItemIcon>
                 <ListItemText>新标签打开</ListItemText>
+            </MenuItem>
+            <MenuItem
+                onClick={() => {
+                    closeMenu();
+                    toggleStar(site.id);
+                }}
+            >
+                <ListItemIcon>
+                    {starred ? (
+                        <StarIcon fontSize='small' sx={{ color: "var(--accent)" }} />
+                    ) : (
+                        <StarBorderIcon fontSize='small' />
+                    )}
+                </ListItemIcon>
+                <ListItemText>{starred ? "取消星标" : "加星标置顶"}</ListItemText>
             </MenuItem>
             <MenuItem onClick={e => handleQuickCopy(e, "链接", site.url)} disabled={!site.url}>
                 <ListItemIcon>

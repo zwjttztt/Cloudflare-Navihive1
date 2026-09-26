@@ -68,6 +68,22 @@ interface UIPrefsValue {
     searchHistory: string[];
     pushSearchHistory: (term: string) => void;
     clearSearchHistory: () => void;
+    /** 加了星标的站点 id（本机偏好，星标卡片会在分组里置顶） */
+    starred: number[];
+    isStarred: (siteId?: number) => boolean;
+    toggleStar: (siteId?: number) => void;
+    /** 批量加星 / 取消加星 */
+    setStarredMany: (siteIds: number[], starred: boolean) => void;
+    /** 站点标签：站点 id -> 标签名数组（本机偏好，不进数据库） */
+    tags: Record<string, string[]>;
+    setSiteTags: (siteId: number, tags: string[]) => void;
+    /** 给一批站点追加标签（已存在的不会重复） */
+    addTagsToMany: (siteIds: number[], tags: string[]) => void;
+    /** 全部用过的标签名（按使用次数排序，供筛选栏展示） */
+    allTags: string[];
+    /** 左侧分组栏是否收起 */
+    railCollapsed: boolean;
+    setRailCollapsed: (collapsed: boolean) => void;
 }
 
 const VIEW_KEY = "navihive:viewMode";
@@ -77,6 +93,9 @@ const VISITS_KEY = "navihive:visits";
 const RADIUS_KEY = "navihive:radius";
 const FONT_SCALE_KEY = "navihive:fontScale";
 const SEARCH_HISTORY_KEY = "navihive:searchHistory";
+const STARRED_KEY = "navihive:starred";
+const TAGS_KEY = "navihive:tags";
+const RAIL_COLLAPSED_KEY = "navihive:railCollapsed";
 /** 搜索历史最多留几条，够用又不至于把面板撑长 */
 const SEARCH_HISTORY_MAX = 8;
 
@@ -124,6 +143,33 @@ const readSearchHistory = (): string[] => {
     }
 };
 
+/** 星标名单：过滤掉非数字脏数据，保证 Set/查询不会崩 */
+const readStarred = (): number[] => {
+    try {
+        const parsed = JSON.parse(localStorage.getItem(STARRED_KEY) || "[]");
+        return Array.isArray(parsed) ? parsed.filter(id => typeof id === "number") : [];
+    } catch {
+        return [];
+    }
+};
+
+/** 标签表：{ [siteId]: string[] }，脏数据一律丢掉 */
+const readTags = (): Record<string, string[]> => {
+    try {
+        const parsed = JSON.parse(localStorage.getItem(TAGS_KEY) || "{}");
+        if (!parsed || typeof parsed !== "object") return {};
+        const clean: Record<string, string[]> = {};
+        for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+            if (!Array.isArray(value)) continue;
+            const list = value.filter(t => typeof t === "string" && t.trim().length > 0);
+            if (list.length > 0) clean[key] = list;
+        }
+        return clean;
+    } catch {
+        return {};
+    }
+};
+
 const write = (key: string, value: string) => {
     try {
         localStorage.setItem(key, value);
@@ -151,6 +197,16 @@ const defaultValue: UIPrefsValue = {
     searchHistory: [],
     pushSearchHistory: () => {},
     clearSearchHistory: () => {},
+    starred: [],
+    isStarred: () => false,
+    toggleStar: () => {},
+    setStarredMany: () => {},
+    tags: {},
+    setSiteTags: () => {},
+    addTagsToMany: () => {},
+    allTags: [],
+    railCollapsed: false,
+    setRailCollapsed: () => {},
 };
 
 export const UIPrefsContext = createContext<UIPrefsValue>(defaultValue);
@@ -182,6 +238,11 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
         readDeadLinks()
     );
     const [searchHistory, setSearchHistory] = useState<string[]>(readSearchHistory);
+    const [starred, setStarred] = useState<number[]>(readStarred);
+    const [tags, setTags] = useState<Record<string, string[]>>(readTags);
+    const [railCollapsed, setRailCollapsedState] = useState<boolean>(
+        () => readString(RAIL_COLLAPSED_KEY, "0") === "1"
+    );
 
     const setViewMode = useCallback((mode: ViewMode) => {
         setViewModeState(mode);
@@ -241,6 +302,81 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
         }
     }, []);
 
+    // 星标查询每次渲染要跑很多次（每张卡片一次），先转成 Set 再判断
+    const starredSet = useMemo(() => new Set(starred), [starred]);
+    const isStarred = useCallback(
+        (siteId?: number) => (siteId ? starredSet.has(siteId) : false),
+        [starredSet]
+    );
+
+    const toggleStar = useCallback((siteId?: number) => {
+        if (!siteId) return;
+        setStarred(prev => {
+            const has = prev.includes(siteId);
+            const next = has ? prev.filter(id => id !== siteId) : [...prev, siteId];
+            write(STARRED_KEY, JSON.stringify(next));
+            return next;
+        });
+    }, []);
+
+    const setStarredMany = useCallback((siteIds: number[], starred: boolean) => {
+        if (siteIds.length === 0) return;
+        setStarred(prev => {
+            const set = new Set(prev);
+            siteIds.forEach(id => (starred ? set.add(id) : set.delete(id)));
+            const next = [...set];
+            write(STARRED_KEY, JSON.stringify(next));
+            return next;
+        });
+    }, []);
+
+    const setSiteTags = useCallback((siteId: number, nextTags: string[]) => {
+        setTags(prev => {
+            const clean = Array.from(
+                new Set(nextTags.map(t => t.trim()).filter(Boolean))
+            );
+            const next = { ...prev };
+            if (clean.length > 0) {
+                next[String(siteId)] = clean;
+            } else {
+                delete next[String(siteId)];
+            }
+            write(TAGS_KEY, JSON.stringify(next));
+            return next;
+        });
+    }, []);
+
+    const addTagsToMany = useCallback((siteIds: number[], addTags: string[]) => {
+        const wanted = Array.from(new Set(addTags.map(t => t.trim()).filter(Boolean)));
+        if (siteIds.length === 0 || wanted.length === 0) return;
+        setTags(prev => {
+            const next = { ...prev };
+            siteIds.forEach(id => {
+                const key = String(id);
+                const merged = Array.from(new Set([...(next[key] ?? []), ...wanted]));
+                next[key] = merged;
+            });
+            write(TAGS_KEY, JSON.stringify(next));
+            return next;
+        });
+    }, []);
+
+    // 全部标签名：按被使用的站点数排序，标签栏里越常用的越靠前
+    const allTags = useMemo(() => {
+        const counter = new Map<string, number>();
+        for (const list of Object.values(tags)) {
+            for (const tag of list) counter.set(tag, (counter.get(tag) ?? 0) + 1);
+        }
+        return [...counter.entries()]
+            .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+            .map(([tag]) => tag);
+    }, [tags]);
+
+    const setRailCollapsed = useCallback((collapsed: boolean) => {
+        setRailCollapsedState(collapsed);
+        write(RAIL_COLLAPSED_KEY, collapsed ? "1" : "0");
+    }, []);
+
     const setRadius = useCallback((next: RadiusStyle) => {
         setRadiusState(next);
         write(RADIUS_KEY, next);
@@ -280,6 +416,12 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
                 setFontScaleState(v === "compact" || v === "large" ? v : "normal");
             } else if (e.key === SEARCH_HISTORY_KEY) {
                 setSearchHistory(readSearchHistory());
+            } else if (e.key === STARRED_KEY) {
+                setStarred(readStarred());
+            } else if (e.key === TAGS_KEY) {
+                setTags(readTags());
+            } else if (e.key === RAIL_COLLAPSED_KEY) {
+                setRailCollapsedState((e.newValue ?? "0") === "1");
             }
         };
         window.addEventListener("storage", onStorage);
@@ -306,6 +448,16 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
             searchHistory,
             pushSearchHistory,
             clearSearchHistory,
+            starred,
+            isStarred,
+            toggleStar,
+            setStarredMany,
+            tags,
+            setSiteTags,
+            addTagsToMany,
+            allTags,
+            railCollapsed,
+            setRailCollapsed,
         }),
         [
             viewMode,
@@ -325,6 +477,16 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
             searchHistory,
             pushSearchHistory,
             clearSearchHistory,
+            starred,
+            isStarred,
+            toggleStar,
+            setStarredMany,
+            tags,
+            setSiteTags,
+            addTagsToMany,
+            allTags,
+            railCollapsed,
+            setRailCollapsed,
         ]
     );
 
