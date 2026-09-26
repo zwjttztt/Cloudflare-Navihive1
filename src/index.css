@@ -628,21 +628,23 @@ mark.nav-hl {
 }
 
 /* 触屏设备没有「悬停」这回事，靠 hover 浮出的按钮等于点不到 —— 直接常显。
-   只影响 hover:none 的设备，鼠标环境完全不受影响。 */
-@media (hover: none) {
-    .nav-card-actions {
-        opacity: 1;
-        transform: none;
-        pointer-events: auto;
-    }
-    .nav-settings-btn {
-        opacity: 1;
-    }
-    .nav-star-btn[data-starred="false"] {
-        opacity: 1;
-        transform: scale(1);
-        pointer-events: auto;
-    }
+   判据不用 `@media (hover: none)`：无头浏览器 / 无输入设备的容器里 Chrome 会把自己报成
+   hover:none（CI 上就翻过车，桌面端被误判成触屏、浮层常显）。改由 src/utils/device.ts
+   在启动时判断，把 .nav-touch 挂到 <html> 上。
+   选择器两段（0,2,0），顺带压过组件 sx 注入的单类样式 —— 之前设置按钮在 sx 里写了
+   opacity:0，结果只有快捷条常显、它自己永远不显，就是这么来的。 */
+html.nav-touch .nav-card-actions {
+    opacity: 1;
+    transform: none;
+    pointer-events: auto;
+}
+html.nav-touch .nav-settings-btn {
+    opacity: 1;
+}
+html.nav-touch .nav-star-btn[data-starred="false"] {
+    opacity: 1;
+    transform: scale(1);
+    pointer-events: auto;
 }
 
 /* 卡片上的标签小标：只做展示，不抢点击 */

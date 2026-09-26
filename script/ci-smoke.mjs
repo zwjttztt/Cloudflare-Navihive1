@@ -303,6 +303,11 @@ await send("Page.addScriptToEvaluateOnNewDocument", {
     source: `try { localStorage.setItem('auth_token', 'ci-token'); } catch (e) {}`,
 });
 
+// 这里本来想用 Emulation.setEmulatedMedia 把媒体特性钉成「有鼠标的桌面」，实测没用：
+// CDP 改不动 hover / pointer，只有 setTouchEmulationEnabled 会连带把它们变成 none / coarse
+// （见 harness/media-probe.mjs 的探针输出）。所以「桌面」和「触屏」两种环境，靠下面
+// 第 4 步的自然状态、以及最后那步显式开触摸模拟来分别覆盖。
+
 await send("Page.navigate", { url: `http://127.0.0.1:${PORT}/?t=${Date.now()}` });
 await sleep(3000);
 
@@ -350,13 +355,28 @@ const cardBox = await evaluate(`(() => {
 const overlay = () =>
     evaluate(`(() => {
       const c = document.querySelector('.nav-card-in');
-      if (!c) return null;
-      const g = s => { const el = c.querySelector(s); return el ? +getComputedStyle(el).opacity : null; };
-      return { bar: g('.nav-card-actions'), settings: g('.nav-settings-btn') };
+      const g = sel => { const el = c && c.querySelector(sel); return el ? +getComputedStyle(el).opacity : null; };
+      return {
+        // 排除列表视图那条本来就常显的（.nav-card-actions-always），否则量到的是它
+        bar: g('.nav-card-actions:not(.nav-card-actions-always)'),
+        settings: g('.nav-settings-btn'),
+        star: g('.nav-star-btn[data-starred="false"]'),
+        touch: document.documentElement.classList.contains('nav-touch'),
+        // 诊断：CI 上真的红了时，一眼看出是「被判成触屏」还是「cascade 被别人压住」
+        media: matchMedia('(hover: none)').matches ? 'hover:none' : 'hover:hover',
+        mtp: navigator.maxTouchPoints,
+      };
     })()`);
 
 const overlayBefore = await overlay();
-check("鼠标不在卡片上时浮层是隐形的", overlayBefore?.bar === 0, JSON.stringify(overlayBefore));
+check(
+    "鼠标不在卡片上时浮层是隐形的",
+    overlayBefore?.bar === 0 &&
+        overlayBefore?.settings === 0 &&
+        overlayBefore?.star === 0 &&
+        overlayBefore?.touch === false,
+    JSON.stringify(overlayBefore)
+);
 if (cardBox) {
     await send("Input.dispatchMouseEvent", {
         type: "mouseMoved",
@@ -412,6 +432,25 @@ const realErrors = consoleErrors.filter(
     e => !e.includes("favicon") && !e.includes("Failed to load resource: net::ERR")
 );
 check("页面无控制台 error", realErrors.length === 0, realErrors.slice(0, 3).join(" | "));
+
+// 7) 触屏兜底：手机上根本没有「悬停」，靠 hover 浮出的按钮等于点不到，浮层必须常显。
+//    这里守住两条血泪教训：
+//    - 一旦判成触屏，快捷条 / 设置按钮 / 未加星的星标必须**一起**常显。设置按钮曾经在
+//      组件里写死内联透明度，而 sx 是 emotion 运行时注入、排在 index.css 之后，
+//      于是只有快捷条亮起来 —— CI 报的 {"bar":1,"settings":0} 就是它；
+//    - 判定不能只看「指针能不能悬停」：无头浏览器 / 没有输入设备的容器也这么报。
+//      上面第 4 步跑的恰好就是那种环境（CI 天然 hover:none 且没有触摸点），
+//      那里断言了 touch=false、浮层隐形；这里再补一条真触屏。
+await send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
+await send("Page.reload", { ignoreCache: false });
+await sleep(3000);
+const onTouch = await overlay();
+check(
+    "触屏上浮层常显（快捷条 + 设置按钮 + 未加星的星标）",
+    onTouch?.touch === true && onTouch?.bar === 1 && onTouch?.settings === 1 && onTouch?.star === 1,
+    JSON.stringify(onTouch)
+);
+await send("Emulation.setTouchEmulationEnabled", { enabled: false });
 
 console.log(`\n${fails === 0 ? "全部通过" : fails + " 条失败"}`);
 cleanup();

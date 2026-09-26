@@ -551,7 +551,10 @@ const SiteCard = memo(function SiteCard({
                     p: 0,
                     bgcolor: "var(--glass-bg-hover)",
                     backdropFilter: "blur(6px)",
-                    opacity: 0,
+                    // 注意：透明度不写在这里。sx 是 emotion 运行时注入的，会排在 index.css 之后，
+                    // 同特异性下压过 CSS 的规则 —— 曾经这里写 opacity:0，导致触屏常显那套规则
+                    // 只点亮了快捷条、设置按钮永远不显（CI 上就是这么红的）。统一交给 CSS 类管：
+                    // 基础 0 / 悬停 1 / html.nav-touch 下 1
                     transition: "opacity .2s, background-color .2s",
                     zIndex: 2,
                     "&:hover": {
