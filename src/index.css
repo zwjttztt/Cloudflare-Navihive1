@@ -192,6 +192,18 @@ html.dark .nav-skip-link {
     border-radius: var(--card-radius);
 }
 
+/* 左侧分组栏的条目活在一个 overflow:hidden/auto 的滚动容器里（.nav-rail-list），
+   而上面的环是「外扩 2px」画的，会被容器边缘直接剪掉 ——
+   实测 Tab 到分组条目时左右各被切 3px、首尾条目上下再各切 3px，
+   屏幕上只剩一条断掉的边，等于看不到焦点在哪。
+   这里把环改成向内收：环画在边框里侧，容器怎么裁都裁不到它。
+   （选择器要比上面那条全局 :focus-visible 更具体，否则被它压回来。） */
+.nav-group-rail .nav-rail-item:focus-visible,
+.nav-group-rail .nav-rail-toggle:focus-visible,
+.nav-group-rail .nav-rail-collapse-btn:focus-visible {
+    outline-offset: -2px;
+}
+
 /* 页面标题淡入 */
 @keyframes navFadeUp {
     from {
@@ -592,7 +604,7 @@ mark.nav-hl {
     }
 }
 /* 未加星时只做「悬停才浮出」：透明期间连点击一起关掉，
-   免得卡片左上角有一块看不见但会误触的区域 */
+   免得卡片右上角有一块看不见但会误触的区域 */
 .nav-star-btn[data-starred="true"] {
     opacity: 1;
 }
