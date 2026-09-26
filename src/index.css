@@ -121,6 +121,19 @@ body {
     font-family: var(--font-sans);
 }
 
+/* 键盘导航时给出清晰的焦点环。用 :focus-visible 而不是 :focus，
+   这样鼠标点击不会留下一个突兀的框，只有 Tab / 方向键走位时才出现。 */
+:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: 6px;
+}
+
+/* 卡片这类自定义容器本身有圆角，焦点环跟着圆角走才不显得生硬 */
+.nav-card-in:focus-visible {
+    border-radius: var(--card-radius);
+}
+
 /* 页面标题淡入 */
 @keyframes navFadeUp {
     from {
@@ -165,6 +178,16 @@ body {
    这样悬停的抬升 transform 才不会被动画的 fill 状态压住 */
 .nav-card-in {
     animation: navCardIn 0.42s cubic-bezier(0.22, 0.61, 0.36, 1) backwards;
+    /* 隔离每张卡片的布局：某张卡片内部变化不会把整页拖进重排。
+       这里刻意不加 paint —— 快捷条会探出卡片边界，加了会被裁掉。 */
+    contain: layout style;
+}
+
+/* 长列表渲染优化：滚出视口的分组整块跳过渲染，滚动条高度按 420px 估算占位。
+   只在非排序模式启用，因为拖拽排序要实时量所有卡片的位置，跳过渲染会让落点算错。 */
+.nav-group-panel[data-sort-mode="None"] {
+    content-visibility: auto;
+    contain-intrinsic-size: auto 420px;
 }
 
 /* 悬停抬升放在外层容器上：卡片本体 + 右上角设置按钮 + 右下角快捷条会一起动 */
@@ -259,12 +282,29 @@ mark.nav-hl {
 }
 
 /* 失效链接角标 */
+/* 分组强调色：有自定义色时用自定义，没有则按分组 id 自动分配 */
+.nav-group-accent-bar {
+    background: var(--group-accent);
+    transition: background-color 0.22s ease;
+}
+
+/* 失效标记：原来只是个灰点，看不出是「坏了」，改成带文字的小标签 */
 .nav-dead-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: #9e9e9e;
-    box-shadow: 0 0 0 2px color-mix(in srgb, #9e9e9e 26%, transparent);
+    flex-shrink: 0;
+    padding: 1px 5px;
+    border-radius: 6px;
+    font-size: 11px;
+    line-height: 1.5;
+    font-weight: 500;
+    color: #b3261e;
+    background: color-mix(in srgb, #b3261e 12%, transparent);
+    border: 1px solid color-mix(in srgb, #b3261e 32%, transparent);
+}
+
+.dark .nav-dead-dot {
+    color: #ff9a90;
+    background: color-mix(in srgb, #ff9a90 14%, transparent);
+    border-color: color-mix(in srgb, #ff9a90 34%, transparent);
 }
 
 /* 分组锚点导航条 */

@@ -6,6 +6,7 @@ import StarIcon from "@mui/icons-material/Star";
 import StarBorderIcon from "@mui/icons-material/StarBorder";
 import ClearIcon from "@mui/icons-material/Clear";
 import TuneIcon from "@mui/icons-material/Tune";
+import BrokenImageIcon from "@mui/icons-material/BrokenImage";
 
 interface TagBarProps {
     /** 全部用过的标签名 */
@@ -16,6 +17,11 @@ interface TagBarProps {
     /** 「只看星标」是否开启 */
     starFilter: boolean;
     onToggleStarFilter: () => void;
+    /** 检出失效的链接数量；为 0 时不显示「只看失效」入口 */
+    deadCount: number;
+    /** 「只看失效」是否开启 */
+    deadOnly: boolean;
+    onToggleDeadOnly: () => void;
     /** 打开「标签管理」弹窗 */
     onManageTags: () => void;
 }
@@ -27,15 +33,21 @@ export default function TagBar({
     onClearTags,
     starFilter,
     onToggleStarFilter,
+    deadCount,
+    deadOnly,
+    onToggleDeadOnly,
     onManageTags,
 }: TagBarProps) {
-    const hasFilter = starFilter || activeTags.length > 0;
+    const hasFilter = starFilter || deadOnly || activeTags.length > 0;
 
-    if (tags.length === 0) return null;
+    // 既没标签也没筛出失效链接、且没开星标筛选时，这条栏就没东西可放
+    if (tags.length === 0 && deadCount === 0 && !starFilter) return null;
 
     return (
         <Box
             className='nav-tag-bar'
+            role='group'
+            aria-label='筛选'
             data-has-filter={hasFilter ? "true" : "false"}
             sx={{
                 display: "flex",
@@ -57,6 +69,21 @@ export default function TagBar({
                 data-active={starFilter ? "true" : "false"}
                 sx={{ fontWeight: 600 }}
             />
+
+            {deadCount > 0 && (
+                <Tooltip title='只显示检测出问题的链接'>
+                    <Chip
+                        icon={<BrokenImageIcon />}
+                        label={`只看失效 ${deadCount}`}
+                        size='small'
+                        variant={deadOnly ? "filled" : "outlined"}
+                        color={deadOnly ? "error" : "default"}
+                        onClick={onToggleDeadOnly}
+                        className='nav-tag-filter'
+                        data-active={deadOnly ? "true" : "false"}
+                    />
+                </Tooltip>
+            )}
 
             {tags.map(tag => {
                 const active = activeTags.includes(tag);
@@ -83,6 +110,7 @@ export default function TagBar({
                         variant='outlined'
                         onClick={() => {
                             if (starFilter) onToggleStarFilter();
+                            if (deadOnly) onToggleDeadOnly();
                             onClearTags();
                         }}
                         className='nav-tag-clear'

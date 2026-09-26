@@ -25,7 +25,6 @@ import LabelIcon from "@mui/icons-material/Label";
 import DriveFileMoveIcon from "@mui/icons-material/DriveFileMove";
 import CloseIcon from "@mui/icons-material/Close";
 import CheckCircleIcon from "@mui/icons-material/CheckCircle";
-import RadioButtonUncheckedIcon from "@mui/icons-material/RadioButtonUnchecked";
 
 export interface BulkGroupOption {
     id: number;
@@ -41,8 +40,8 @@ interface BulkActionBarProps {
     onTag: (tags: string[]) => void;
     onMove: (groupId: number) => void;
     onDelete: () => void;
-    /** 清空勾选（仍留在多选模式） */
-    onClearSelection: () => void;
+    /** 完成：取消全部勾选并退出多选模式（批量操作后不再自动退出，由这里收尾） */
+    onFinish: () => void;
     /** 退出多选模式 */
     onExit: () => void;
 }
@@ -55,7 +54,7 @@ export default function BulkActionBar({
     onTag,
     onMove,
     onDelete,
-    onClearSelection,
+    onFinish,
     onExit,
 }: BulkActionBarProps) {
     // 打标签的小弹窗
@@ -214,13 +213,19 @@ export default function BulkActionBar({
 
                 <Button
                     size='small'
-                    color='inherit'
-                    onClick={onClearSelection}
-                    className='nav-bulk-clear'
-                    startIcon={<RadioButtonUncheckedIcon />}
-                    sx={{ minWidth: "auto", whiteSpace: "nowrap" }}
+                    variant='contained'
+                    disableElevation
+                    onClick={onFinish}
+                    className='nav-bulk-finish'
+                    startIcon={<CheckCircleIcon />}
+                    sx={{
+                        minWidth: "auto",
+                        whiteSpace: "nowrap",
+                        borderRadius: "999px",
+                        px: 1.5,
+                    }}
                 >
-                    清空
+                    完成
                 </Button>
                 <IconButton
                     size='small'

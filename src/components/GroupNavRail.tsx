@@ -4,6 +4,8 @@
 // 面板底部挂了「折叠 / 展开全部分组」开关：和分组列表放一起，比藏进「更多选项」更好找。
 // 整条可以收成一根窄条（只留分组圆点），把空间还给内容区，收起状态记在本机。
 import { Box, Divider, Tooltip, Typography, IconButton } from "@mui/material";
+import { useTheme } from "@mui/material/styles";
+import { groupAccent } from "../utils/groupColor";
 import UnfoldLessIcon from "@mui/icons-material/UnfoldLess";
 import UnfoldMoreIcon from "@mui/icons-material/UnfoldMore";
 import ChevronLeftIcon from "@mui/icons-material/ChevronLeft";
@@ -53,6 +55,7 @@ export default function GroupNavRail({
     onToggleCollapseAll,
 }: GroupNavRailProps) {
     const { railCollapsed, setRailCollapsed } = useUIPrefs();
+    const mode = useTheme().palette.mode;
 
     if (groups.length < 2) return null;
 
@@ -106,6 +109,7 @@ export default function GroupNavRail({
 
                 {groups.map(group => {
                     const active = group.id === activeId;
+                    const tone = groupAccent(group.id, mode);
                     return (
                         <Tooltip key={group.id} title={group.name} placement='right'>
                             <Box
@@ -127,9 +131,10 @@ export default function GroupNavRail({
                                     flexShrink: 0,
                                     transition: "all .18s ease",
                                     transform: active ? "scale(1.35)" : "scale(1)",
-                                    bgcolor: active ? "var(--accent)" : "text.disabled",
+                                    bgcolor: tone,
+                                    opacity: active ? 1 : 0.45,
                                     "&:hover": {
-                                        bgcolor: "var(--accent)",
+                                        opacity: 1,
                                         transform: "scale(1.35)",
                                     },
                                 }}
@@ -181,6 +186,8 @@ export default function GroupNavRail({
             >
                 {groups.map(group => {
                     const active = group.id === activeId;
+                    // 每个分组一个稳定的颜色，扫一眼就能分清自己在哪一组
+                    const tone = groupAccent(group.id, mode);
                     return (
                         <Tooltip key={group.id} title={group.name} placement='right'>
                             <Box
@@ -190,20 +197,23 @@ export default function GroupNavRail({
                                 aria-current={active ? "true" : undefined}
                                 className='nav-rail-item'
                                 data-active={active ? "true" : "false"}
+                                style={{ ["--group-accent" as string]: tone }}
                                 sx={{
                                     ...railItemSx,
                                     bgcolor: active ? "var(--glass-bg-hover)" : "transparent",
-                                    borderColor: active ? "var(--accent)" : "transparent",
-                                    color: active ? "primary.main" : "text.secondary",
+                                    borderColor: active ? tone : "transparent",
+                                    color: active ? tone : "text.secondary",
                                 }}
                             >
                                 <Box
+                                    className='nav-rail-dot-mini'
                                     sx={{
                                         width: 6,
                                         height: 6,
                                         borderRadius: "50%",
                                         flexShrink: 0,
-                                        bgcolor: active ? "var(--accent)" : "text.disabled",
+                                        bgcolor: tone,
+                                        opacity: active ? 1 : 0.45,
                                     }}
                                 />
                                 <Typography

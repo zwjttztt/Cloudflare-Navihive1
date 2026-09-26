@@ -1,4 +1,11 @@
-import { useState, useEffect, useMemo, useRef, useCallback } from "react";
+import {
+    useState,
+    useEffect,
+    useMemo,
+    useRef,
+    useCallback,
+    useDeferredValue,
+} from "react";
 import { NavigationClient } from "./API/client";
 import { MockNavigationClient } from "./API/mock";
 import { Site, Group, ExportData, BootstrapData, WebDavConfig, normalizeImportData } from "./API/http";
@@ -13,6 +20,8 @@ import MobileTabBar from "./components/MobileTabBar";
 import CommandPalette, { CommandItem } from "./components/CommandPalette";
 import BookmarkImportDialog from "./components/BookmarkImportDialog";
 import ScrollProgress from "./components/ScrollProgress";
+import BackToTop from "./components/BackToTop";
+import SettingsDialog from "./components/SettingsDialog";
 import HeaderClock from "./components/HeaderClock";
 import VisitsDialog from "./components/VisitsDialog";
 import EmptyArt from "./components/EmptyArt";
@@ -20,6 +29,7 @@ import { COLLAPSED_EVENT, readCollapsedGroupIds, setAllCollapsed } from "./utils
 import { probeLinks } from "./utils/linkHealth";
 import { ParsedBookmarkGroup } from "./utils/bookmarks";
 import { DEFAULT_ICON_API, resolveIconApiUrl } from "./utils/iconApi";
+import { groupAccent } from "./utils/groupColor";
 import { matchesGroupQuery, matchesSiteQuery } from "./utils/search";
 import {
     RECENT_GROUP_SIZE,
@@ -68,7 +78,6 @@ import {
     Dialog,
     DialogActions,
     DialogContent,
-    DialogContentText,
     DialogTitle,
     IconButton,
     Menu,
@@ -77,7 +86,6 @@ import {
     ListItemIcon,
     ListItemText,
     Snackbar,
-    Slider,
     Tooltip,
     InputAdornment,
     Skeleton,
@@ -158,30 +166,10 @@ const DEFAULT_CONFIGS = {
     "site.glassBlur": "",
 };
 
-// 内置壁纸预设：既可以是渐变（直接作为 CSS background-image），也可以留空表示不用
-const WALLPAPER_PRESETS = [
-    { label: "晨雾", value: "linear-gradient(135deg,#e0eafc 0%,#cfdef3 100%)" },
-    { label: "暮色", value: "linear-gradient(135deg,#ff9a9e 0%,#fad0c4 55%,#fad0c4 100%)" },
-    { label: "极光", value: "linear-gradient(135deg,#0f2027 0%,#203a43 45%,#2c5364 100%)" },
-    { label: "森林", value: "linear-gradient(135deg,#134e5e 0%,#71b280 100%)" },
-    { label: "紫夜", value: "linear-gradient(135deg,#42275a 0%,#734b6d 100%)" },
-    { label: "砂丘", value: "linear-gradient(135deg,#f6d365 0%,#fda085 100%)" },
-];
 
 // 判断一个背景值是不是 CSS 渐变（渐变可以直接当 background-image 用，图片要包 url()）
 const isCssGradient = (value: string) => /^\s*(linear|radial|conic)-gradient\(/i.test(value);
 
-// 取色器预设色：覆盖蓝/青/绿/橙/红/紫/靛/灰几种常用取向
-const PRESET_ACCENTS = [
-    "#1976d2",
-    "#00838f",
-    "#2e7d32",
-    "#ed6c02",
-    "#c62828",
-    "#7b1fa2",
-    "#5c6bc0",
-    "#455a64",
-];
 
 // WebDAV 备份默认配置（保存在服务端 configs 表中，不会写入备份文件）
 const DEFAULT_WEBDAV_CONFIG: WebDavConfig = {
@@ -425,6 +413,7 @@ function App() {
         setRadius,
         fontScale,
         setFontScale,
+        deadLinks,
         setDeadLinks,
         searchHistory,
         pushSearchHistory,
@@ -453,6 +442,8 @@ function App() {
     const [activeTags, setActiveTags] = useState<string[]>([]);
     // 「标签管理」弹窗是否打开
     const [tagManagerOpen, setTagManagerOpen] = useState(false);
+    // 「只看失效」：失效检测跑完后可以一键把可疑链接筛出来
+    const [deadOnly, setDeadOnly] = useState(false);
 
     // 退出多选模式时顺手清掉勾选，避免下次进来还残留上一次的选择
     const exitMultiSelect = useCallback(() => {
@@ -1066,26 +1057,25 @@ function App() {
     );
 
     // ---- 批量操作（多选模式） ----
-    // 加星 / 取消加星：只改本机偏好，不碰数据库，改完立刻可见
+    // 加星 / 取消加星：只改本机偏好，不碰数据库，改完立刻可见。
+    // 批量操作后保留勾选，方便接着做下一个动作，收尾交给底部「完成」按钮。
     const bulkStar = useCallback(
         (next: boolean) => {
             if (selectedIds.length === 0) return;
             setStarredMany(selectedIds, next);
-            exitMultiSelect();
             notify(next ? `已给 ${selectedIds.length} 个网站加星标` : `已取消 ${selectedIds.length} 个网站的星标`, "success");
         },
-        [selectedIds, setStarredMany, exitMultiSelect, notify]
+        [selectedIds, setStarredMany, notify]
     );
 
-    // 批量打标签：追加式，不会覆盖已有标签
+    // 批量打标签：追加式，不会覆盖已有标签，同样保留勾选
     const bulkTag = useCallback(
         (next: string[]) => {
             if (selectedIds.length === 0) return;
             addTagsToMany(selectedIds, next);
-            exitMultiSelect();
             notify(`已给 ${selectedIds.length} 个网站加上标签：${next.join("、")}`, "success");
         },
-        [selectedIds, addTagsToMany, exitMultiSelect, notify]
+        [selectedIds, addTagsToMany, notify]
     );
 
     // 标签管理：删除一个标签 = 从所有卡片上摘掉它，并给一次撤销机会
@@ -1159,14 +1149,14 @@ function App() {
                     });
                 });
 
-                exitMultiSelect();
+                // 移动后也保留勾选：卡片已经搬到新分组，选中态跟着走
                 notify(`已移动 ${orders.length} 个网站到「${target.name}」`, "success");
             } catch (error) {
                 console.error("批量移动站点失败:", error);
                 handleError("批量移动站点失败: " + (error as Error).message);
             }
         },
-        [selectedIds, exitMultiSelect, handleError, notify]
+        [selectedIds, handleError, notify]
     );
 
     // 批量删除：走和单张卡片同一套「删除后可撤销」流程
@@ -1935,8 +1925,9 @@ function App() {
         }
     };
 
-    // 按关键词筛选：命中「网站名称 / 网站链接 / 网站描述」的卡片会被保留，分组名命中则整组保留
-    const query = searchQuery.trim().toLowerCase();
+    // 按关键词筛选：命中「网站名称 / 网站链接 / 网站描述」的卡片会被保留，分组名命中则整组保留。
+    // 用 useDeferredValue 把过滤推迟到空闲帧：输入框始终跟手，卡片多的时候也不会边打边卡。
+    const query = useDeferredValue(searchQuery.trim().toLowerCase());
     const filteredGroups = useMemo(() => {
         if (!query) return groups;
 
@@ -1954,19 +1945,28 @@ function App() {
     const matchFilters = useCallback(
         (site: Site) => {
             if (starFilter && !starred.includes(site.id as number)) return false;
+            // 「只看失效」：只留检测出问题的那些链接
+            if (deadOnly && !deadLinks[site.url ?? ""]) return false;
             if (activeTags.length === 0) return true;
             const own = tags[String(site.id)] ?? [];
             return activeTags.every(tag => own.includes(tag));
         },
-        [starFilter, starred, activeTags, tags]
+        [starFilter, starred, deadOnly, deadLinks, activeTags, tags]
     );
 
     const visibleGroups = useMemo(() => {
-        if (!starFilter && activeTags.length === 0) return filteredGroups;
+        if (!starFilter && !deadOnly && activeTags.length === 0) return filteredGroups;
         return filteredGroups
             .map(group => ({ ...group, sites: group.sites.filter(matchFilters) }))
             .filter(group => group.sites.length > 0);
-    }, [filteredGroups, starFilter, activeTags, matchFilters]);
+    }, [filteredGroups, starFilter, deadOnly, activeTags, matchFilters]);
+
+    // 一次性清掉星标 / 失效 / 标签三档筛选（空状态里的「清除筛选」用）
+    const clearAllFilters = useCallback(() => {
+        setStarFilter(false);
+        setDeadOnly(false);
+        setActiveTags([]);
+    }, []);
 
     // 点标签：多选取交集，再点一次取消
     const toggleActiveTag = useCallback((tag: string) => {
@@ -1974,6 +1974,9 @@ function App() {
             prev.includes(tag) ? prev.filter(item => item !== tag) : [...prev, tag]
         );
     }, []);
+
+    // 检出失效的链接条数：决定是否显示「只看失效」入口
+    const deadCount = Object.keys(deadLinks).length;
 
     // 筛选生效时页面里还剩多少张卡片（搜索结果计数要用）
     const matchedCount = useMemo(
@@ -2117,7 +2120,12 @@ function App() {
         const dead = Object.keys(map).length;
         notify(
             dead ? `检测完成，${dead} 个链接疑似失效` : "检测完成，所有链接都能访问",
-            dead ? "info" : "success"
+            dead ? "info" : "success",
+            undefined,
+            // 有可疑链接时给个快捷入口，省得自己一张张翻
+            dead
+                ? { label: "只看失效", onClick: () => setDeadOnly(true) }
+                : undefined
         );
     }, [groups, notify, setDeadLinks]);
 
@@ -2591,6 +2599,9 @@ function App() {
 
             {/* 顶部滚动进度条：固定贴在最上方，纯装饰 */}
             <ScrollProgress />
+
+            {/* 回到顶部：滚过一屏才出现 */}
+            <BackToTop />
 
             {/* 错误/成功提示 Snackbar：顶部居中，成功类短暂停留、错误类停留更久 */}
             <Snackbar
@@ -3332,22 +3343,27 @@ function App() {
                         </Stack>
                     </Box>
 
-                    {/* 标签筛选栏：有用过的标签才出现，点一下只看带这个标签的网站 */}
-                    {sortMode === SortMode.None && !loading && allTags.length > 0 && (
-                        <TagBar
-                            tags={allTags}
-                            activeTags={activeTags}
-                            onToggleTag={toggleActiveTag}
-                            onClearTags={() => setActiveTags([])}
-                            starFilter={starFilter}
-                            onToggleStarFilter={() => setStarFilter(prev => !prev)}
-                            onManageTags={() => setTagManagerOpen(true)}
-                        />
-                    )}
+                    {/* 标签筛选栏：有用过的标签、或检出失效链接时才出现 */}
+                    {sortMode === SortMode.None &&
+                        !loading &&
+                        (allTags.length > 0 || deadCount > 0 || starFilter) && (
+                            <TagBar
+                                tags={allTags}
+                                activeTags={activeTags}
+                                onToggleTag={toggleActiveTag}
+                                onClearTags={() => setActiveTags([])}
+                                starFilter={starFilter}
+                                onToggleStarFilter={() => setStarFilter(prev => !prev)}
+                                deadCount={deadCount}
+                                deadOnly={deadOnly}
+                                onToggleDeadOnly={() => setDeadOnly(prev => !prev)}
+                                onManageTags={() => setTagManagerOpen(true)}
+                            />
+                        )}
 
                     {/* 结果计数：搜索框在上方标题栏里，这里只保留一行轻提示 */}
                     {sortMode === SortMode.None &&
-                        (query || starFilter || activeTags.length > 0) && (
+                        (query || starFilter || deadOnly || activeTags.length > 0) && (
                             <Typography
                                 variant='caption'
                                 color='text.secondary'
@@ -3441,6 +3457,7 @@ function App() {
                                             <GroupCard
                                                 key={`group-${group.id}`}
                                                 group={group}
+                                                accentColor={groupAccent(group.id, darkMode ? "dark" : "light")}
                                                 sortMode="SiteSort"
                                                 currentSortingGroupId={null}
                                                 globalSiteSort
@@ -3490,7 +3507,10 @@ function App() {
                                             onUpdateGroup={handleGroupUpdate}
                                             onDeleteGroup={handleGroupDelete}
                                             searchQuery={query}
-                                            accentColor={configs[`group.color.${group.id}`]}
+                                            accentColor={
+                                                configs[`group.color.${group.id}`] ||
+                                                groupAccent(group.id, darkMode ? "dark" : "light")
+                                            }
                                             onAccentChange={handleGroupAccentChange}
                                             selectMode={multiSelect}
                                             selectedIds={selectedIds}
@@ -3521,16 +3541,29 @@ function App() {
                                             ? `换个关键词试试，或清空搜索框查看全部网站`
                                             : "点击左上角「新增分组」开始搭建你的导航页"}
                                     </Typography>
-                                    {query && (
-                                        <Button
-                                            variant='outlined'
-                                            size='small'
-                                            sx={{ mt: 1 }}
-                                            onClick={() => setSearchQuery("")}
-                                        >
-                                            清空搜索
-                                        </Button>
-                                    )}
+                                    {/* 空状态也要有出路：能搜就给「清空搜索」，筛没了就给「清除筛选」 */}
+                                    <Stack direction='row' spacing={1} sx={{ mt: 1 }}>
+                                        {query && (
+                                            <Button
+                                                variant='outlined'
+                                                size='small'
+                                                onClick={() => setSearchQuery("")}
+                                                className='nav-empty-clear-search'
+                                            >
+                                                清空搜索
+                                            </Button>
+                                        )}
+                                        {(starFilter || deadOnly || activeTags.length > 0) && (
+                                            <Button
+                                                variant='outlined'
+                                                size='small'
+                                                onClick={clearAllFilters}
+                                                className='nav-empty-clear-filter'
+                                            >
+                                                清除筛选
+                                            </Button>
+                                        )}
+                                    </Stack>
                                 </Box>
                             )}
                         </Box>
@@ -3795,391 +3828,33 @@ function App() {
                     </Dialog>
 
                     {/* 网站配置对话框 */}
-                    <Dialog 
-                        open={openConfig} 
-                        onClose={handleCloseConfig} 
-                        maxWidth='md' 
-                        fullWidth
-                        PaperProps={{
-                            sx: {
-                                m: { xs: 2, sm: 'auto' },
-                                width: { xs: 'calc(100% - 32px)', sm: 'auto' }
-                            }
+                    {/* 全站设置：这一块原来内联在 App 里，抽成 SettingsDialog 单独维护 */}
+                    <SettingsDialog
+                        open={openConfig}
+                        onClose={handleCloseConfig}
+                        onSave={handleSaveConfig}
+                        tempConfigs={tempConfigs}
+                        setTempConfigs={setTempConfigs}
+                        onConfigInputChange={handleConfigInputChange}
+                        onMaskOpacityChange={handleConfigSliderChange}
+                        onPickAccent={pickAccent}
+                        radius={radius}
+                        onRadiusChange={setRadius}
+                        fontScale={fontScale}
+                        onFontScaleChange={setFontScale}
+                        glassBlur={tempGlassBlur}
+                        onGlassBlurChange={handleGlassBlurChange}
+                        auth={{
+                            username: authUsername,
+                            currentPassword: authCurrentPassword,
+                            newPassword: authNewPassword,
                         }}
-                    >
-                        <DialogTitle>
-                            网站设置
-                            <IconButton
-                                aria-label='close'
-                                onClick={handleCloseConfig}
-                                sx={{
-                                    position: "absolute",
-                                    right: 8,
-                                    top: 8,
-                                }}
-                            >
-                                <CloseIcon />
-                            </IconButton>
-                        </DialogTitle>
-                        <DialogContent>
-                            <DialogContentText sx={{ mb: 2 }}>
-                                配置网站的基本信息和外观
-                            </DialogContentText>
-                            <Stack spacing={2.5}>
-                                <TextField
-                                    margin='dense'
-                                    id='site-title'
-                                    name='site.title'
-                                    label='网站标题 (浏览器标签)'
-                                    type='text'
-                                    fullWidth
-                                    variant='outlined'
-                                    value={tempConfigs["site.title"]}
-                                    onChange={handleConfigInputChange}
-                                />
-                                <TextField
-                                    margin='dense'
-                                    id='site-name'
-                                    name='site.name'
-                                    label='网站名称 (显示在页面中)'
-                                    type='text'
-                                    fullWidth
-                                    variant='outlined'
-                                    value={tempConfigs["site.name"]}
-                                    onChange={handleConfigInputChange}
-                                />
-
-                                {/* 主题配色：预设色 + 取色器，实时预览后点保存生效 */}
-                                <Box>
-                                    <Typography variant='subtitle1' fontWeight='600' sx={{ mb: 1 }}>
-                                        主题配色
-                                    </Typography>
-                                    <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
-                                        {PRESET_ACCENTS.map(color => {
-                                            const picked =
-                                                (tempConfigs["site.primaryColor"] || "").toLowerCase() ===
-                                                color.toLowerCase();
-                                            return (
-                                                <IconButton
-                                                    key={color}
-                                                    size='small'
-                                                    aria-label={`使用配色 ${color}`}
-                                                    aria-pressed={picked}
-                                                    onClick={() => pickAccent(color)}
-                                                    sx={{
-                                                        width: 26,
-                                                        height: 26,
-                                                        minWidth: 26,
-                                                        bgcolor: color,
-                                                        border: "2px solid",
-                                                        borderColor: picked ? "text.primary" : "transparent",
-                                                        boxShadow: picked
-                                                            ? `0 0 0 2px ${color}55`
-                                                            : "0 1px 3px rgba(15,23,42,0.18)",
-                                                        "&:hover": { bgcolor: color },
-                                                    }}
-                                                />
-                                            );
-                                        })}
-
-                                        {/* 原生取色器：可任选任意颜色 */}
-                                        <Box
-                                            component='input'
-                                            type='color'
-                                            name='site.primaryColor'
-                                            aria-label='自定义主色'
-                                            value={
-                                                /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(
-                                                    tempConfigs["site.primaryColor"] || ""
-                                                )
-                                                    ? tempConfigs["site.primaryColor"]
-                                                    : "#1976d2"
-                                            }
-                                            onChange={e => pickAccent(e.target.value)}
-                                            sx={{
-                                                width: 34,
-                                                height: 26,
-                                                p: 0,
-                                                cursor: "pointer",
-                                                bgcolor: "transparent",
-                                                border: "1px solid",
-                                                borderColor: "divider",
-                                                borderRadius: 1,
-                                            }}
-                                        />
-
-                                        <Button
-                                            size='small'
-                                            variant='text'
-                                            onClick={() => pickAccent("")}
-                                        >
-                                            恢复默认
-                                        </Button>
-                                    </Box>
-                                    <Typography variant='caption' color='text.secondary'>
-                                        影响按钮、链接高亮、焦点环与卡片悬停色。留空则跟随默认蓝色（暗色模式自动切换）。
-                                    </Typography>
-                                </Box>
-
-                                {/* 外观：圆角风格与字号档位，只影响本机显示 */}
-                                <Box>
-                                    <Typography variant='subtitle1' fontWeight='600' sx={{ mb: 1 }}>
-                                        外观风格
-                                    </Typography>
-                                    <Box sx={{ display: "flex", flexDirection: "column", gap: 1.5 }}>
-                                        <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
-                                            <Typography variant='body2' sx={{ minWidth: 56 }}>
-                                                圆角
-                                            </Typography>
-                                            <ToggleButtonGroup
-                                                size='small'
-                                                exclusive
-                                                value={radius}
-                                                onChange={(_e, value) => value && setRadius(value)}
-                                                aria-label='圆角风格'
-                                            >
-                                                <ToggleButton value='soft' aria-label='圆润圆角'>
-                                                    圆润
-                                                </ToggleButton>
-                                                <ToggleButton value='standard' aria-label='标准圆角'>
-                                                    标准
-                                                </ToggleButton>
-                                                <ToggleButton value='sharp' aria-label='锐利圆角'>
-                                                    锐利
-                                                </ToggleButton>
-                                            </ToggleButtonGroup>
-                                        </Box>
-                                        <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
-                                            <Typography variant='body2' sx={{ minWidth: 56 }}>
-                                                字号
-                                            </Typography>
-                                            <ToggleButtonGroup
-                                                size='small'
-                                                exclusive
-                                                value={fontScale}
-                                                onChange={(_e, value) => value && setFontScale(value)}
-                                                aria-label='字号档位'
-                                            >
-                                                <ToggleButton value='compact' aria-label='紧凑字号'>
-                                                    紧凑
-                                                </ToggleButton>
-                                                <ToggleButton value='normal' aria-label='标准字号'>
-                                                    标准
-                                                </ToggleButton>
-                                                <ToggleButton value='large' aria-label='宽松字号'>
-                                                    宽松
-                                                </ToggleButton>
-                                            </ToggleButtonGroup>
-                                        </Box>
-                                    </Box>
-                                    <Typography variant='caption' color='text.secondary'>
-                                        这两项只存在本机，换设备或换浏览器不会跟随。
-                                    </Typography>
-                                </Box>
-
-                                {/* 获取图标 API 设置 */}
-                                <Box>
-                                    <Typography variant='subtitle1' fontWeight='600' sx={{ mb: 1 }}>
-                                        获取图标API设置
-                                    </Typography>
-                                    <TextField
-                                        margin='dense'
-                                        id='site-icon-api'
-                                        name='site.iconApi'
-                                        label='获取图标API URL'
-                                        type='text'
-                                        fullWidth
-                                        variant='outlined'
-                                        value={tempConfigs["site.iconApi"]}
-                                        onChange={handleConfigInputChange}
-                                        placeholder={DEFAULT_ICON_API}
-                                        helperText='输入获取图标API的地址，使用 {domain} 作为域名占位符（例如 https://www.faviconextractor.com/favicon/{domain}?larger=true）'
-                                    />
-                                </Box>
-
-                                {/* 站点缩略图设置 */}
-                                <Box>
-                                    <Typography variant='subtitle1' fontWeight='600' sx={{ mb: 1 }}>
-                                        站点缩略图设置
-                                    </Typography>
-                                    <TextField
-                                        margin='dense'
-                                        id='site-thumb-api'
-                                        name='site.thumbApi'
-                                        label='缩略图API URL'
-                                        type='text'
-                                        fullWidth
-                                        variant='outlined'
-                                        value={tempConfigs["site.thumbApi"] || ""}
-                                        onChange={handleConfigInputChange}
-                                        placeholder='https://example.com/shot?url={url}'
-                                        helperText='留空则不显示缩略图。可用占位符：{url} 完整链接、{domain} 域名、{origin} 协议+域名'
-                                    />
-                                </Box>
-
-                                {/* 背景图片设置 */}
-                                <Box>
-                                    <Typography variant='subtitle1' fontWeight='600' sx={{ mb: 1 }}>
-                                        背景图片设置
-                                    </Typography>
-                                    {/* 内置壁纸预设：点一下即用，也可以自己在下面填图片 URL */}
-                                    <Box sx={{ display: "flex", gap: 1, flexWrap: "wrap", mb: 1.5 }}>
-                                        {WALLPAPER_PRESETS.map(preset => {
-                                            const picked =
-                                                (tempConfigs["site.backgroundImage"] || "") ===
-                                                preset.value;
-                                            return (
-                                                <Tooltip key={preset.label} title={preset.label}>
-                                                    <IconButton
-                                                        size='small'
-                                                        aria-label={`使用壁纸 ${preset.label}`}
-                                                        onClick={() =>
-                                                            setTempConfigs(prev => ({
-                                                                ...prev,
-                                                                "site.backgroundImage":
-                                                                    picked ? "" : preset.value,
-                                                            }))
-                                                        }
-                                                        sx={{
-                                                            width: 34,
-                                                            height: 34,
-                                                            background: preset.value,
-                                                            border: "2px solid",
-                                                            borderColor: picked
-                                                                ? "text.primary"
-                                                                : "transparent",
-                                                            "&:hover": { background: preset.value },
-                                                        }}
-                                                    />
-                                                </Tooltip>
-                                            );
-                                        })}
-                                    </Box>
-                                    <TextField
-                                        margin='dense'
-                                        id='site-background-image'
-                                        name='site.backgroundImage'
-                                        label='背景图片URL'
-                                        type='text'
-                                        fullWidth
-                                        variant='outlined'
-                                        value={tempConfigs["site.backgroundImage"]}
-                                        onChange={handleConfigInputChange}
-                                        placeholder='https://example.com/background.jpg'
-                                        helperText='输入图片URL，留空则不使用背景图片（也可以直接用上面的预设壁纸）'
-                                    />
-                                    <Box sx={{ mt: 2 }}>
-                                        <Typography variant='body2' color='text.secondary'>
-                                            背景蒙版透明度:{" "}
-                                            {Number(tempConfigs["site.backgroundMaskOpacity"]) || 0}
-                                        </Typography>
-                                        <Slider
-                                            value={
-                                                Number(tempConfigs["site.backgroundMaskOpacity"]) || 0
-                                            }
-                                            min={0}
-                                            max={1}
-                                            step={0.01}
-                                            onChange={handleConfigSliderChange}
-                                            aria-label='背景蒙版透明度'
-                                            valueLabelDisplay='auto'
-                                        />
-                                        <Typography variant='caption' color='text.secondary'>
-                                            值越大，背景图片越清晰，内容可能越难看清
-                                        </Typography>
-                                    </Box>
-                                </Box>
-
-                                {/* 毛玻璃强度 */}
-                                <Box>
-                                    <Typography variant='subtitle1' fontWeight='600' sx={{ mb: 1 }}>
-                                        毛玻璃强度
-                                    </Typography>
-                                    <Typography variant='body2' color='text.secondary'>
-                                        模糊半径: {tempGlassBlur}px（0 = 完全不模糊）
-                                    </Typography>
-                                    <Slider
-                                        value={tempGlassBlur}
-                                        min={0}
-                                        max={24}
-                                        step={1}
-                                        onChange={handleGlassBlurChange}
-                                        aria-label='毛玻璃强度'
-                                        valueLabelDisplay='auto'
-                                    />
-                                    <Typography variant='caption' color='text.secondary'>
-                                        数值越大越朦胧。内容看不清时调小，或直接拖到 0 关掉模糊。
-                                    </Typography>
-                                </Box>
-
-                                {/* 管理员账号与密码 */}
-                                <Box>
-                                    <Typography variant='subtitle1' fontWeight='600' sx={{ mb: 1 }}>
-                                        管理员账号与密码
-                                    </Typography>
-                                    <Typography variant='caption' color='text.secondary' sx={{ display: "block", mb: 1 }}>
-                                        凭据保存在数据库中，只有第一次部署才会使用默认账号密码，之后重新部署不会覆盖；留空表示不修改。
-                                    </Typography>
-                                    <TextField
-                                        margin='dense'
-                                        id='auth-username'
-                                        label='管理员账号'
-                                        type='text'
-                                        fullWidth
-                                        variant='outlined'
-                                        value={authUsername}
-                                        onChange={e => setAuthUsername(e.target.value)}
-                                        placeholder='留空则不修改账号'
-                                    />
-                                    <TextField
-                                        margin='dense'
-                                        id='auth-current-password'
-                                        label='当前密码'
-                                        type='password'
-                                        fullWidth
-                                        variant='outlined'
-                                        value={authCurrentPassword}
-                                        onChange={e => setAuthCurrentPassword(e.target.value)}
-                                        placeholder='修改账号或密码时必须填写'
-                                    />
-                                    <TextField
-                                        margin='dense'
-                                        id='auth-new-password'
-                                        label='新密码'
-                                        type='password'
-                                        fullWidth
-                                        variant='outlined'
-                                        value={authNewPassword}
-                                        onChange={e => setAuthNewPassword(e.target.value)}
-                                        placeholder='留空则不修改密码'
-                                    />
-                                </Box>
-
-                                <TextField
-                                    margin='dense'
-                                    id='site-custom-css'
-                                    name='site.customCss'
-                                    label='自定义CSS'
-                                    type='text'
-                                    fullWidth
-                                    multiline
-                                    rows={6}
-                                    variant='outlined'
-                                    value={tempConfigs["site.customCss"]}
-                                    onChange={handleConfigInputChange}
-                                    placeholder='/* 自定义样式 */\nbody { }'
-                                />
-                            </Stack>
-                        </DialogContent>
-                        <DialogActions sx={{ px: 3, pb: 3 }}>
-                            <Button onClick={handleCloseConfig} variant='outlined'>
-                                取消
-                            </Button>
-                            <Button onClick={handleSaveConfig} variant='contained' color='primary'>
-                                保存设置
-                            </Button>
-                        </DialogActions>
-                    </Dialog>
+                        onAuthChange={(field, value) => {
+                            if (field === "username") setAuthUsername(value);
+                            else if (field === "currentPassword") setAuthCurrentPassword(value);
+                            else setAuthNewPassword(value);
+                        }}
+                    />
 
                     {/* 访问统计：本机热力图 + Top5 */}
                     <VisitsDialog
@@ -4279,7 +3954,7 @@ function App() {
                             if (selectedIds.length === 0) return;
                             setBulkDeleteOpen(true);
                         }}
-                        onClearSelection={() => setSelectedIds([])}
+                        onFinish={exitMultiSelect}
                         onExit={exitMultiSelect}
                     />
                 )}

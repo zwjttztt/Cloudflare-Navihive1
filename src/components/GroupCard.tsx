@@ -414,9 +414,22 @@ const GroupCard: React.FC<GroupCardProps> = ({
                         {searchQuery
                             ? "试试换个关键词，或清空搜索框"
                             : canManageGroup
-                              ? "点击右上角「添加卡片」放入第一个网站"
+                              ? "放入第一个网站，这个分组就有内容了"
                               : "这个分组暂未放入网站"}
                     </Typography>
+                    {/* 空分组直接给个入口，不用先去右上角找按钮 */}
+                    {!searchQuery && canManageGroup && onAddSite && (
+                        <Button
+                            size='small'
+                            variant='outlined'
+                            startIcon={<AddIcon />}
+                            onClick={() => onAddSite(group.id!)}
+                            sx={{ mt: 0.5 }}
+                            className='nav-empty-add-site'
+                        >
+                            添加卡片
+                        </Button>
+                    )}
                 </Box>
             );
         }
@@ -507,6 +520,7 @@ const GroupCard: React.FC<GroupCardProps> = ({
             id={`group-anchor-${group.id}`}
             data-group-anchor={group.id}
             className='nav-group-panel'
+            data-sort-mode={sortMode}
             style={{ ["--group-accent" as string]: accentColor || undefined }}
             sx={{
                 borderRadius: "var(--card-radius)",
@@ -552,8 +566,9 @@ const GroupCard: React.FC<GroupCardProps> = ({
                         gap: 0.5,
                     }}
                 >
-                    {/* 分组强调色条：没单独设色时用全局主色 */}
+                    {/* 分组强调色条：没单独设色时按分组 id 自动给一个稳定色 */}
                     <Box
+                        className='nav-group-accent-bar'
                         sx={{
                             width: 3,
                             height: 20,

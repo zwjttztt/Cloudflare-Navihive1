@@ -48,6 +48,7 @@ export default function SortableGroupItem({ id, group }: SortableGroupItemProps)
             }}
             {...attributes}
             {...listeners}
+            aria-label={`拖动调整分组「${group.name}」的顺序`}
         >
             <Box
                 sx={{
