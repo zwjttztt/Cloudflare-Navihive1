@@ -316,20 +316,20 @@ export default function BackupDialog({
     };
 
     const renderBackupTab = () => (
-        <Stack spacing={2} sx={{ mt: 0.5 }}>
+        <Stack spacing={1.5} sx={{ mt: 0.5, flex: 1, minHeight: 0 }}>
             <Box>
-                <Typography variant='subtitle1' fontWeight='600' gutterBottom>
+                <Typography variant='subtitle2' fontWeight='600' gutterBottom>
                     备份到本地
                 </Typography>
-                <Typography variant='body2' color='text.secondary' sx={{ mb: 1 }}>
-                    把当前所有分组、站点、网站设置，以及本机的星标与标签导出为一个 JSON 文件保存到本机。
+                <Typography variant='caption' color='text.secondary' sx={{ display: "block", mb: 1 }}>
+                    导出分组、站点、网站设置，以及本机的星标与标签。
                 </Typography>
 
                 {/* 凭据开关：三处导出（本地下载 / WebDAV 上传 / 每周定时备份）共用同一个设置 */}
                 <Box
                     sx={{
-                        mb: 1.5,
-                        p: 1.25,
+                        mb: 1,
+                        p: 1,
                         borderRadius: 2,
                         border: 1,
                         // 带凭据是「有风险」的状态，边框用警告色提示一下
@@ -342,7 +342,7 @@ export default function BackupDialog({
                                 checked={includeCredentials}
                                 size='small'
                                 onChange={e => onIncludeCredentialsChange(e.target.checked)}
-                                inputProps={{ "aria-label": "备份包含网站登录凭据" }}
+                                slotProps={{ input: { "aria-label": "备份包含网站登录凭据" } }}
                             />
                         }
                         label={
@@ -352,14 +352,15 @@ export default function BackupDialog({
                         }
                         sx={{ display: "flex", mr: 0 }}
                     />
+                    {/* 两态文案长短不同，占位固定成两行 —— 否则每点一次开关，弹窗高度就跳一下 */}
                     <Typography
                         variant='caption'
                         color={includeCredentials ? "warning.dark" : "text.secondary"}
-                        sx={{ display: "block", ml: 6 }}
+                        sx={{ display: "block", ml: 5.5, minHeight: 32 }}
                     >
                         {includeCredentials
-                            ? "备份文件是明文 JSON，开启每周自动备份时还会同步到你的网盘。请确认网盘账号本身是可信的，或者关掉这个开关。"
-                            : "已关闭：导出 / 上传 / 定时备份都不会带上网站的账号密码，恢复后需要手动补填。"}
+                            ? "备份是明文 JSON，自动备份还会同步到网盘，请确认网盘账号本身可信。"
+                            : "导出、上传、定时备份都不带网站的账号密码，恢复后需手动补填。"}
                     </Typography>
                 </Box>
                 <Button
@@ -377,14 +378,14 @@ export default function BackupDialog({
             <Divider />
 
             <Box>
-                <Typography variant='subtitle1' fontWeight='600' gutterBottom>
+                <Typography variant='subtitle2' fontWeight='600' gutterBottom>
                     备份到 WebDAV
                 </Typography>
-                <Typography variant='body2' color='text.secondary' sx={{ mb: 1 }}>
-                    支持坚果云、Nextcloud、ownCloud、群晖等 WebDAV 服务。配置会保存在服务器，备份由服务端代理上传。
+                <Typography variant='caption' color='text.secondary' sx={{ display: "block", mb: 1 }}>
+                    支持坚果云、Nextcloud、ownCloud、群晖等；配置存在服务器，备份由服务端代理上传。
                 </Typography>
 
-                <Stack spacing={1.5}>
+                <Stack spacing={1.25}>
                     <TextField
                         label='WebDAV 地址'
                         placeholder='https://dav.jianguoyun.com/dav/'
@@ -429,15 +430,16 @@ export default function BackupDialog({
                             control={
                                 <Switch
                                     id='webdav-auto-backup'
+                                    size='small'
                                     checked={autoBackup}
                                     onChange={e => onToggleAutoBackup?.(e.target.checked)}
-                                    inputProps={{ "aria-label": "每周自动备份" }}
+                                    slotProps={{ input: { "aria-label": "每周自动备份" } }}
                                 />
                             }
                             label='每周自动备份一次'
                         />
-                        <Typography variant='caption' color='text.secondary' display='block'>
-                            每周一上午 10:00（北京时间）自动备份，备份内容经过压缩，上传后自动删除上一次的备份。
+                        <Typography variant='caption' color='text.secondary' display='block' sx={{ minHeight: 32 }}>
+                            每周一上午 10:00（北京时间）自动备份，上传后自动删除上一次的备份。
                             {lastBackupAt ? ` 上次备份：${formatTime(lastBackupAt)}` : " 还没有备份记录。"}
                         </Typography>
                     </Box>
@@ -496,10 +498,15 @@ export default function BackupDialog({
     );
 
     const renderRestoreTab = () => (
-        <Stack spacing={2} sx={{ mt: 0.5 }}>
+        <Stack spacing={1.5} sx={{ mt: 0.5, flex: 1, minHeight: 0 }}>
             <FormControlLabel
                 control={
-                    <Switch checked={overwrite} onChange={e => setOverwrite(e.target.checked)} color='primary' />
+                    <Switch
+                        checked={overwrite}
+                        onChange={e => setOverwrite(e.target.checked)}
+                        color='primary'
+                        size='small'
+                    />
                 }
                 label={
                     <Box>
@@ -507,7 +514,7 @@ export default function BackupDialog({
                             {overwrite ? "覆盖恢复（清空现有数据后导入）" : "合并导入（保留现有数据并追加）"}
                         </Typography>
                         <Typography variant='caption' color='text.secondary'>
-                            覆盖恢复会保留分组与站点的原有 ID，并连同备份里的星标 / 标签一起还原，推荐用于完整还原备份
+                            保留分组与站点的原有 ID，并连同备份里的星标 / 标签一起还原，推荐用于完整还原备份
                         </Typography>
                     </Box>
                 }
@@ -516,10 +523,10 @@ export default function BackupDialog({
             <Divider />
 
             <Box>
-                <Typography variant='subtitle1' fontWeight='600' gutterBottom>
+                <Typography variant='subtitle2' fontWeight='600' gutterBottom>
                     从本地文件恢复
                 </Typography>
-                <Stack direction={{ xs: "column", sm: "row" }} spacing={2} alignItems={{ sm: "center" }}>
+                <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} alignItems={{ sm: "center" }}>
                     <Button variant='outlined' component='label' startIcon={<UploadFileIcon />}>
                         选择备份文件
                         <input type='file' hidden accept='.json,application/json' onChange={handleFileSelect} />
@@ -547,9 +554,9 @@ export default function BackupDialog({
 
             <Divider />
 
-            <Box>
+            <Box sx={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
                 <Stack direction='row' justifyContent='space-between' alignItems='center' sx={{ mb: 1 }}>
-                    <Typography variant='subtitle1' fontWeight='600'>
+                    <Typography variant='subtitle2' fontWeight='600'>
                         从 WebDAV 恢复
                     </Typography>
                     <Button
@@ -562,65 +569,80 @@ export default function BackupDialog({
                     </Button>
                 </Stack>
 
-                {!config.url && (
-                    <Alert severity='info'>
-                        请先在「备份」标签页填写并测试 WebDAV 配置
-                    </Alert>
-                )}
+                {/* 列表区撑满剩余高度：「恢复」页的内容本来只有「备份」页的一半高，
+                    空态也给这块留位，切标签页、点开关时弹窗高矮才不会跳 */}
+                <Box
+                    sx={{
+                        flex: 1,
+                        minHeight: 0,
+                        display: "flex",
+                        flexDirection: "column",
+                        justifyContent: "center",
+                        p: 1,
+                        borderRadius: 2,
+                        border: "1px solid",
+                        borderColor: "divider",
+                        bgcolor: "background.default",
+                        overflow: "hidden",
+                    }}
+                >
+                    {!config.url && (
+                        <Alert severity='info'>
+                            请先在「备份」标签页填写并测试 WebDAV 配置
+                        </Alert>
+                    )}
 
-                {config.url && remoteFiles.length === 0 && !listLoading && (
-                    <Typography variant='body2' color='text.secondary'>
-                        暂无远端备份，点击「刷新列表」重新获取。
-                    </Typography>
-                )}
+                    {config.url && remoteFiles.length === 0 && !listLoading && (
+                        <Typography variant='body2' color='text.secondary' textAlign='center'>
+                            暂无远端备份，点击「刷新列表」重新获取。
+                        </Typography>
+                    )}
 
-                {remoteFiles.length > 0 && (
-                    <List
-                        dense
-                        sx={{
-                            maxHeight: 240,
-                            overflowY: "auto",
-                            bgcolor: "background.default",
-                            borderRadius: 2,
-                            border: "1px solid",
-                            borderColor: "divider",
-                        }}
-                    >
-                        {remoteFiles.map(file => (
-                            <ListItemButton
-                                key={file.name}
-                                selected={selectedRemote === file.name}
-                                onClick={() => setSelectedRemote(file.name)}
-                                dense
-                            >
-                                <ListItemText
-                                    primary={file.name}
-                                    secondary={
-                                        selectedRemote === file.name
-                                            ? `已选中 · ${formatSize(file.size)} · ${formatTime(file.lastModified)}`
-                                            : `${formatSize(file.size)} · ${formatTime(file.lastModified)}`
-                                    }
-                                />
-                                <IconButton
-                                    edge='end'
-                                    size='small'
-                                    color='error'
-                                    onClick={event => {
-                                        event.stopPropagation();
-                                        handleDeleteRemote(file.name);
-                                    }}
-                                    aria-label={`删除 ${file.name}`}
+                    {remoteFiles.length > 0 && (
+                        <List
+                            dense
+                            sx={{
+                                flex: 1,
+                                minHeight: 0,
+                                overflowY: "auto",
+                            }}
+                        >
+                            {remoteFiles.map(file => (
+                                <ListItemButton
+                                    key={file.name}
+                                    selected={selectedRemote === file.name}
+                                    onClick={() => setSelectedRemote(file.name)}
+                                    dense
                                 >
-                                    <DeleteIcon fontSize='small' />
-                                </IconButton>
-                            </ListItemButton>
-                        ))}
-                    </List>
-                )}
+                                    <ListItemText
+                                        primary={file.name}
+                                        secondary={
+                                            selectedRemote === file.name
+                                                ? `已选中 · ${formatSize(file.size)} · ${formatTime(file.lastModified)}`
+                                                : `${formatSize(file.size)} · ${formatTime(file.lastModified)}`
+                                        }
+                                    />
+                                    <IconButton
+                                        edge='end'
+                                        size='small'
+                                        color='error'
+                                        onClick={event => {
+                                            event.stopPropagation();
+                                            handleDeleteRemote(file.name);
+                                        }}
+                                        aria-label={`删除 ${file.name}`}
+                                    >
+                                        <DeleteIcon fontSize='small' />
+                                    </IconButton>
+                                </ListItemButton>
+                            ))}
+                        </List>
+                    )}
+                </Box>
 
                 {remoteFiles.length > 0 && (
                     <Button
-                        sx={{ mt: 2 }}
+                        sx={{ mt: 1.5 }}
                         variant='contained'
                         onClick={handleRestoreRemote}
                         disabled={!selectedRemote || restoring}
@@ -644,7 +666,9 @@ export default function BackupDialog({
                     borderRadius: 2,
                     backgroundColor: theme.palette.background.paper,
                     m: { xs: 2, sm: "auto" },
-                    width: { xs: "calc(100% - 32px)", sm: "auto" },
+                    // 宽度也要写死：width:auto 时 paper 会跟着内容宽度走，
+                    // 结果切标签页时弹窗宽度会跳（备份页 541 / 恢复页 560 实测）
+                    width: { xs: "calc(100% - 32px)", sm: 600 },
                 },
             }}
         >
@@ -669,7 +693,19 @@ export default function BackupDialog({
                 <Tab label='恢复 / 导入' />
             </Tabs>
 
-            <DialogContent sx={{ pt: 1.5 }}>
+            {/* 内容区高度写死：备份页和恢复页、以及开关两态的高矮都不一样，
+                放着让它自己撑，就会出现「一点开关弹窗跳一下」。固定后超出部分在区内滚动。
+                590 是按「备份」页的自然高度（实测 567）留了点余量定的；
+                「恢复」页内容只有一半高，靠下面那块列表区 flex 撑满，不留大片空白。 */}
+            <DialogContent
+                sx={{
+                    pt: 1.5,
+                    // 590 是「备份」页的自然高度（实测 567）+ 余量；矮屏上用 min() 让位给视口
+                    height: { xs: "58vh", sm: "min(590px, 72vh)" },
+                    display: "flex",
+                    flexDirection: "column",
+                }}
+            >
                 {tab === 0 ? renderBackupTab() : renderRestoreTab()}
             </DialogContent>
 
@@ -677,7 +713,7 @@ export default function BackupDialog({
                 <Chip
                     size='small'
                     variant='outlined'
-                    label='备份包含站点账号密码，请妥善保存'
+                    label={includeCredentials ? "备份含站点账号密码，请妥善保存" : "备份不含账号密码"}
                     sx={{ mr: "auto" }}
                 />
                 <Button onClick={onClose} variant='outlined' color='inherit'>
