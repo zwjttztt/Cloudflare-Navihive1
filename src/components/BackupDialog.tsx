@@ -215,7 +215,17 @@ export default function BackupDialog({
                               0
                           );
                 setLocalData(parsed);
-                onNotify(`已读取备份：${parsed.groups.length} 个分组 / ${siteCount} 个站点`, "info");
+                // 备份里如果带了本机偏好（星标 / 标签），顺带一句话说明，避免用户以为没导进来
+                const localStarCount = parsed.localPrefs?.starred?.length ?? 0;
+                const localTagCount = Object.keys(parsed.localPrefs?.tags ?? {}).length;
+                const extra =
+                    localStarCount || localTagCount
+                        ? `，含 ${localStarCount} 个星标 / ${localTagCount} 个带标签的站点`
+                        : "";
+                onNotify(
+                    `已读取备份：${parsed.groups.length} 个分组 / ${siteCount} 个站点${extra}`,
+                    "info"
+                );
             } catch (error) {
                 setLocalError(error instanceof Error ? error.message : "备份文件解析失败");
             }
@@ -290,7 +300,7 @@ export default function BackupDialog({
                     备份到本地
                 </Typography>
                 <Typography variant='body2' color='text.secondary' sx={{ mb: 1 }}>
-                    把当前所有分组、站点（含账号密码）与网站设置导出为一个 JSON 文件保存到本机。
+                    把当前所有分组、站点（含账号密码）、网站设置，以及本机的星标与标签导出为一个 JSON 文件保存到本机。
                 </Typography>
                 <Button
                     variant='contained'
@@ -437,7 +447,7 @@ export default function BackupDialog({
                             {overwrite ? "覆盖恢复（清空现有数据后导入）" : "合并导入（保留现有数据并追加）"}
                         </Typography>
                         <Typography variant='caption' color='text.secondary'>
-                            覆盖恢复会保留分组与站点的原有 ID，推荐用于完整还原备份
+                            覆盖恢复会保留分组与站点的原有 ID，并连同备份里的星标 / 标签一起还原，推荐用于完整还原备份
                         </Typography>
                     </Box>
                 }

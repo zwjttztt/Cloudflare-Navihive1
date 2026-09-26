@@ -115,6 +115,10 @@ import InsightsIcon from "@mui/icons-material/Insights";
 import CheckBoxIcon from "@mui/icons-material/CheckBox";
 import CheckBoxOutlineBlankIcon from "@mui/icons-material/CheckBoxOutlineBlank";
 import StarBorderIcon from "@mui/icons-material/StarBorder";
+import CheckCircleRoundedIcon from "@mui/icons-material/CheckCircleRounded";
+import InfoRoundedIcon from "@mui/icons-material/InfoRounded";
+import ErrorOutlineRoundedIcon from "@mui/icons-material/ErrorOutlineRounded";
+import { alpha } from "@mui/material/styles";
 import BulkActionBar from "./components/BulkActionBar";
 import TagBar from "./components/TagBar";
 import ConfirmDialog from "./components/ConfirmDialog";
@@ -307,6 +311,25 @@ function App() {
                     // 统一放大圆角，观感更柔和
                     borderRadius: 14,
                 },
+                components: {
+                    // 所有弹窗默认走同一套毛玻璃面板：半透明底 + 模糊 + 细边框 + 柔和投影，
+                    // 单个弹窗自己写了 paper sx 的话会覆盖这里（比如确认弹窗、命令面板）
+                    MuiDialog: {
+                        styleOverrides: {
+                            paper: ({ theme }) => ({
+                                borderRadius: "var(--card-radius)",
+                                backdropFilter: "blur(var(--glass-blur)) saturate(1.4)",
+                                WebkitBackdropFilter: "blur(var(--glass-blur)) saturate(1.4)",
+                                border: "1px solid var(--glass-panel-border)",
+                                boxShadow: "var(--glass-shadow-hover)",
+                                backgroundColor:
+                                    theme.palette.mode === "dark"
+                                        ? "rgba(23,27,38,0.94)"
+                                        : "rgba(255,255,255,0.94)",
+                            }),
+                        },
+                    },
+                },
             }),
         [darkMode, accent]
     );
@@ -412,6 +435,7 @@ function App() {
         allTags,
         railCollapsed,
         setRailCollapsed,
+        restoreLocalPrefs,
     } = useUIPrefs();
 
     // 批量多选：进入后点卡片是「勾选」而不是打开网页
@@ -1645,7 +1669,7 @@ function App() {
         setOpenBackup(false);
     };
 
-    // 构造完整备份数据（分组 + 站点（含账号密码）+ 网站配置）
+    // 构造完整备份数据（分组 + 站点（含账号密码）+ 网站配置 + 本机星标/标签）
     const buildExportData = (): ExportData => {
         const exportConfigs: Record<string, string> = {};
         Object.entries(configs).forEach(([key, value]) => {
@@ -1663,8 +1687,13 @@ function App() {
             })),
             sites: groups.flatMap(group => group.sites.map(site => ({ ...site }))),
             configs: exportConfigs,
-            version: "1.1",
+            version: "1.2",
             exportDate: new Date().toISOString(),
+            // 星标 / 标签只存在本机，数据库里没有对应字段，所以由前端附带进备份文件
+            localPrefs: {
+                starred: [...starred],
+                tags: { ...tags },
+            },
         };
     };
 
@@ -1723,6 +1752,8 @@ function App() {
     const handleImportBackup = async (data: ExportData, overwrite: boolean) => {
         try {
             const normalized = normalizeImportData(data);
+            // 站点 id 映射：覆盖恢复保留原 id，合并导入会拿到新 id，恢复星标/标签时要用
+            const siteIdMap = new Map<number, number>();
 
             if (overwrite) {
                 const ok = await api.importData(normalized);
@@ -1745,11 +1776,15 @@ function App() {
                 }
 
                 for (const site of normalized.sites) {
-                    await api.createSite({
+                    const created = await api.createSite({
                         ...site,
                         id: undefined,
                         group_id: groupIdMap.get(site.group_id) ?? site.group_id,
                     } as Site);
+
+                    if (site.id !== undefined && created && created.id !== undefined) {
+                        siteIdMap.set(site.id, created.id);
+                    }
                 }
 
                 for (const [key, value] of Object.entries(normalized.configs || {})) {
@@ -1757,6 +1792,29 @@ function App() {
                         await api.setConfig(key, value);
                     }
                 }
+            }
+
+            // 把备份里的星标 / 标签写回本机 localStorage：
+            // 覆盖恢复直接照搬（服务端保留了原 id），合并导入按新旧 id 映射翻译一遍
+            const prefs = normalized.localPrefs;
+            if (prefs && (overwrite || siteIdMap.size > 0)) {
+                const remapped = overwrite
+                    ? prefs
+                    : {
+                          starred: (prefs.starred ?? []).map(id => siteIdMap.get(id)).filter(
+                              (id): id is number => typeof id === "number"
+                          ),
+                          tags: Object.entries(prefs.tags ?? {}).reduce<Record<string, string[]>>(
+                              (acc, [siteId, list]) => {
+                                  const mapped = siteIdMap.get(Number(siteId));
+                                  if (typeof mapped === "number") acc[String(mapped)] = list;
+                                  return acc;
+                              },
+                              {}
+                          ),
+                      };
+
+                restoreLocalPrefs(remapped, overwrite ? "replace" : "merge");
             }
 
             // 恢复/导入是低频重操作，这里同步刷新一次（一次 bootstrap 请求）
@@ -2438,7 +2496,63 @@ function App() {
                     severity={snackbarSeverity}
                     variant='filled'
                     className='nav-snackbar'
-                    sx={{ width: "100%", alignItems: "center" }}
+                    data-severity={snackbarSeverity}
+                    iconMapping={{
+                        success: <CheckCircleRoundedIcon fontSize='inherit' />,
+                        info: <InfoRoundedIcon fontSize='inherit' />,
+                        error: <ErrorOutlineRoundedIcon fontSize='inherit' />,
+                    }}
+                    sx={theme => {
+                        // 按严重度取一个「有颜色但不刺眼」的强调色，用于图标与图标底色
+                        const tone =
+                            snackbarSeverity === "success"
+                                ? theme.palette.success.main
+                                : snackbarSeverity === "error"
+                                  ? theme.palette.error.main
+                                  : theme.palette.info.main;
+
+                        return {
+                            width: "100%",
+                            alignItems: "center",
+                            // 和卡片/确认弹窗同一套「毛玻璃 + 圆角 + 细边框 + 柔和投影」，
+                            // 不再用 MUI 默认的实心饱和色块（和整站风格不搭）
+                            minWidth: 260,
+                            px: 1.5,
+                            py: 0.75,
+                            borderRadius: "var(--card-radius)",
+                            color: "text.primary",
+                            backgroundColor:
+                                theme.palette.mode === "dark"
+                                    ? "rgba(23,27,38,0.92)"
+                                    : "rgba(255,255,255,0.92)",
+                            backdropFilter: "blur(var(--glass-blur)) saturate(1.4)",
+                            WebkitBackdropFilter: "blur(var(--glass-blur)) saturate(1.4)",
+                            border: "1px solid var(--glass-panel-border)",
+                            boxShadow: "var(--glass-shadow-hover)",
+                            // 图标做成染色小方块，和确认弹窗标题前的图标同一种观感
+                            "& .MuiAlert-icon": {
+                                width: 28,
+                                height: 28,
+                                mr: 1.25,
+                                p: 0,
+                                borderRadius: "9px",
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "center",
+                                fontSize: 18,
+                                opacity: 1,
+                                color: tone,
+                                backgroundColor: alpha(tone, theme.palette.mode === "dark" ? 0.22 : 0.13),
+                            },
+                            "& .MuiAlert-message": {
+                                fontWeight: 500,
+                                fontSize: 14,
+                                lineHeight: 1.5,
+                                py: 0.5,
+                            },
+                            "& .MuiAlert-action": { color: "text.secondary" },
+                        };
+                    }}
                     action={
                         snackbarAction ? (
                             <>

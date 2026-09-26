@@ -87,6 +87,15 @@ export interface Config {
     updated_at?: string;
 }
 
+// 只存在浏览器本机、但跟着备份文件一起走的偏好（星标站点 + 站点标签）。
+// 它们没有对应的数据库字段，导出/恢复都由前端负责写入 localStorage。
+export interface LocalPrefsBackup {
+    /** 加了星标的站点 id */
+    starred?: number[];
+    /** 站点 id -> 标签名数组（JSON 的键一定是字符串） */
+    tags?: Record<string, string[]>;
+}
+
 // 导出数据接口
 export interface ExportData {
     groups: Group[];
@@ -94,6 +103,8 @@ export interface ExportData {
     configs: Record<string, string>;
     version: string;
     exportDate: string;
+    /** 本机偏好（星标 / 标签），老备份文件里没有这个字段 */
+    localPrefs?: LocalPrefsBackup;
 }
 
 // 首屏/刷新一次性返回的数据（分组 + 平铺的站点 + 配置）
@@ -1007,7 +1018,7 @@ export class NavigationAPI {
 }
 
 // 备份文件格式版本号
-export const EXPORT_VERSION = "1.1";
+export const EXPORT_VERSION = "1.2";
 
 // 兼容多种备份格式：
 // 1) 标准格式 { groups, sites, configs }
@@ -1019,6 +1030,7 @@ export function normalizeImportData(data: ExportData | Record<string, unknown>):
         configs?: Record<string, string>;
         version?: string;
         exportDate?: string;
+        localPrefs?: LocalPrefsBackup;
     };
 
     const rawGroups = Array.isArray(raw.groups) ? raw.groups : [];
@@ -1053,7 +1065,31 @@ export function normalizeImportData(data: ExportData | Record<string, unknown>):
         configs: raw.configs && typeof raw.configs === "object" ? raw.configs : {},
         version: raw.version || EXPORT_VERSION,
         exportDate: raw.exportDate || new Date().toISOString(),
+        // 星标 / 标签这类本机偏好原样透传，交给前端写回 localStorage
+        ...(raw.localPrefs && typeof raw.localPrefs === "object"
+            ? { localPrefs: sanitizeLocalPrefs(raw.localPrefs) }
+            : {}),
     };
+}
+
+/** 备份文件里的本机偏好做一次清洗：只保留数字 id 和字符串标签，脏数据直接丢掉 */
+export function sanitizeLocalPrefs(input: LocalPrefsBackup): LocalPrefsBackup {
+    const starred = Array.isArray(input.starred)
+        ? Array.from(new Set(input.starred.filter(id => typeof id === "number" && Number.isFinite(id))))
+        : [];
+
+    const tags: Record<string, string[]> = {};
+    if (input.tags && typeof input.tags === "object") {
+        for (const [siteId, list] of Object.entries(input.tags)) {
+            if (!Array.isArray(list)) continue;
+            const clean = Array.from(
+                new Set(list.filter(t => typeof t === "string" && t.trim().length > 0).map(t => t.trim()))
+            );
+            if (clean.length > 0) tags[String(siteId)] = clean;
+        }
+    }
+
+    return { starred, tags };
 }
 
 // 创建 API 辅助函数

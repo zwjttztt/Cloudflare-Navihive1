@@ -39,6 +39,7 @@ import VisibilityOffIcon from "@mui/icons-material/VisibilityOff";
 import AutoFixHighIcon from "@mui/icons-material/AutoFixHigh";
 import { copyToClipboard } from "../utils/clipboard";
 import { resolveIconApiUrl } from "../utils/iconApi";
+import { pickExistingTags, pickRecommendedTags } from "../utils/tagSuggest";
 import { useAppConfig } from "../context/AppConfigContext";
 
 interface SiteSettingsModalProps {
@@ -59,18 +60,28 @@ export default function SiteSettingsModal({
     const theme = useTheme();
     // 全局「网站设置」里的获取图标 API 模板
     const { iconApi } = useAppConfig();
-    // 星标与标签存本机（和访问记录一样不进数据库），改完即时生效
-    const { isStarred, toggleStar, tags, setSiteTags } = useUIPrefs();
+    // 星标与标签存本机（不在数据库表里），但会随备份文件一起导出/恢复
+    const { isStarred, toggleStar, tags, setSiteTags, allTags } = useUIPrefs();
     const starred = isStarred(site.id);
     const siteTags = tags[String(site.id)] ?? [];
     const [tagInput, setTagInput] = useState("");
+
+    // 标签输入框右侧的快捷候选（点一下直接加进标签框）
+    const existingSuggestions = pickExistingTags(allTags, siteTags);
+    const recommendedSuggestions = pickRecommendedTags(allTags, siteTags);
+
+    /** 把一个标签直接加到这张卡片上（候选点击 / 回车提交都走这里） */
+    const addTags = (values: string[]) => {
+        const next = Array.from(new Set([...siteTags, ...values]));
+        if (next.length === siteTags.length) return;
+        setSiteTags(site.id as number, next);
+    };
 
     // 回车或逗号即确认：标签写进本机偏好，不需要点「保存」
     const commitTag = () => {
         const value = tagInput.trim().replace(/[,，]$/, "");
         if (!value) return;
-        const next = Array.from(new Set([...siteTags, ...value.split(/[,，]/).map(t => t.trim()).filter(Boolean)]));
-        setSiteTags(site.id as number, next);
+        addTags(value.split(/[,，]/).map(t => t.trim()).filter(Boolean));
         setTagInput("");
     };
 
@@ -264,9 +275,18 @@ export default function SiteSettingsModal({
             fullWidth
             maxWidth='sm'
             PaperProps={{
+                className: "nav-settings-dialog",
                 sx: {
-                    borderRadius: 2,
-                    backgroundColor: theme.palette.background.paper,
+                    // 和确认弹窗/提示条同一套毛玻璃面板，视觉统一
+                    borderRadius: "var(--card-radius)",
+                    backdropFilter: "blur(var(--glass-blur)) saturate(1.4)",
+                    WebkitBackdropFilter: "blur(var(--glass-blur)) saturate(1.4)",
+                    border: "1px solid var(--glass-panel-border)",
+                    boxShadow: "var(--glass-shadow-hover)",
+                    backgroundColor:
+                        theme.palette.mode === "dark"
+                            ? "rgba(23,27,38,0.94)"
+                            : "rgba(255,255,255,0.94)",
                 },
             }}
         >
@@ -275,6 +295,7 @@ export default function SiteSettingsModal({
                     display: "flex",
                     justifyContent: "space-between",
                     alignItems: "center",
+                    gap: 1,
                     padding: 1.5,
                     pb: 1,
                 }}
@@ -282,15 +303,32 @@ export default function SiteSettingsModal({
                 <Typography variant='h6' component='div' fontWeight='600'>
                     网站设置
                 </Typography>
-                <IconButton
-                    edge='end'
-                    color='inherit'
-                    onClick={onClose}
-                    aria-label='关闭'
-                    size='small'
-                >
-                    <CloseIcon />
-                </IconButton>
+                <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
+                    {/* 星标置顶：从表单中部挪到标题右侧，一眼能看到、随手可点 */}
+                    <Chip
+                        icon={
+                            starred ? (
+                                <StarIcon />
+                            ) : (
+                                <StarBorderIcon />
+                            )
+                        }
+                        label={starred ? "已加星标" : "加星标置顶"}
+                        size='small'
+                        variant={starred ? "filled" : "outlined"}
+                        color={starred ? "primary" : "default"}
+                        onClick={() => toggleStar(site.id)}
+                        className='nav-settings-star'
+                    />
+                    <IconButton
+                        color='inherit'
+                        onClick={onClose}
+                        aria-label='关闭'
+                        size='small'
+                    >
+                        <CloseIcon />
+                    </IconButton>
+                </Box>
             </DialogTitle>
 
             <Divider />
@@ -333,8 +371,6 @@ export default function SiteSettingsModal({
                             variant='outlined'
                             size='small'
                             type='url'
-                            helperText='填写后会自动按「网站设置 → 获取图标API」生成图标URL'
-                            sx={{ "& .MuiFormHelperText-root": { fontSize: 12, mt: 0.3 } }}
                         />
 
                         {/* 网站图标 */}
@@ -407,14 +443,6 @@ export default function SiteSettingsModal({
                                     }}
                                 />
                             </Box>
-                            <Typography
-                                variant='caption'
-                                color='text.secondary'
-                                display='block'
-                                sx={{ mt: 0.25 }}
-                            >
-                                修改网站链接时会自动更新；手动改过图标后需点右侧魔棒按钮重新获取
-                            </Typography>
                         </Box>
 
                         {/* 分组选择 */}
@@ -438,10 +466,10 @@ export default function SiteSettingsModal({
                             </FormControl>
                         )}
 
-                        {/* 星标 + 标签：星标让卡片在分组里置顶，标签用来筛选 */}
+                        {/* 标签：只用来筛选；星标入口在标题右上角 */}
                         <Box>
                             <Typography variant='body2' color='text.secondary' gutterBottom>
-                                星标与标签
+                                标签
                             </Typography>
                             <Box
                                 sx={{
@@ -451,21 +479,6 @@ export default function SiteSettingsModal({
                                     alignItems: "center",
                                 }}
                             >
-                                <Chip
-                                    icon={
-                                        starred ? (
-                                            <StarIcon />
-                                        ) : (
-                                            <StarBorderIcon />
-                                        )
-                                    }
-                                    label={starred ? "已加星标" : "加星标置顶"}
-                                    size='small'
-                                    variant={starred ? "filled" : "outlined"}
-                                    color={starred ? "primary" : "default"}
-                                    onClick={() => toggleStar(site.id)}
-                                    className='nav-settings-star'
-                                />
                                 {siteTags.map(tag => (
                                     <Chip
                                         key={tag}
@@ -495,6 +508,59 @@ export default function SiteSettingsModal({
                                     inputProps={{ "aria-label": "添加标签" }}
                                     sx={{ width: 120, "& .MuiInputBase-input": { fontSize: 13 } }}
                                 />
+
+                                {/* 输入框右侧：现有标签 / 推荐标签，点一下就加进标签框 */}
+                                {existingSuggestions.length > 0 && (
+                                    <Box
+                                        className='nav-tag-suggest-group'
+                                        data-kind='existing'
+                                        sx={{
+                                            display: "flex",
+                                            flexWrap: "wrap",
+                                            alignItems: "center",
+                                            gap: 0.5,
+                                        }}
+                                    >
+                                        <span className='nav-tag-suggest-label'>现有</span>
+                                        {existingSuggestions.map(tag => (
+                                            <Chip
+                                                key={tag}
+                                                label={tag}
+                                                size='small'
+                                                variant='outlined'
+                                                className='nav-tag-suggest'
+                                                onClick={() => addTags([tag])}
+                                                aria-label={`添加标签 ${tag}`}
+                                            />
+                                        ))}
+                                    </Box>
+                                )}
+
+                                {recommendedSuggestions.length > 0 && (
+                                    <Box
+                                        className='nav-tag-suggest-group'
+                                        data-kind='recommend'
+                                        sx={{
+                                            display: "flex",
+                                            flexWrap: "wrap",
+                                            alignItems: "center",
+                                            gap: 0.5,
+                                        }}
+                                    >
+                                        <span className='nav-tag-suggest-label'>推荐</span>
+                                        {recommendedSuggestions.map(tag => (
+                                            <Chip
+                                                key={tag}
+                                                label={tag}
+                                                size='small'
+                                                variant='outlined'
+                                                className='nav-tag-suggest'
+                                                onClick={() => addTags([tag])}
+                                                aria-label={`添加推荐标签 ${tag}`}
+                                            />
+                                        ))}
+                                    </Box>
+                                )}
                             </Box>
                             <Typography
                                 variant='caption'
@@ -502,7 +568,7 @@ export default function SiteSettingsModal({
                                 display='block'
                                 sx={{ mt: 0.25 }}
                             >
-                                回车即可加标签（可一次输入多个，用逗号分隔）；星标与标签只存在本机，不随备份导出。
+                                回车即可加标签（可一次输入多个，用逗号分隔），也可以直接点右侧的现有/推荐标签；标签会随备份文件一起导出。
                             </Typography>
                         </Box>
 
