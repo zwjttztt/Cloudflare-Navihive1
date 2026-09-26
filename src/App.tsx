@@ -5,6 +5,8 @@ import {
     useRef,
     useCallback,
     useDeferredValue,
+    lazy,
+    Suspense,
 } from "react";
 import { NavigationClient } from "./API/client";
 import { MockNavigationClient } from "./API/mock";
@@ -17,19 +19,22 @@ import { useUIPrefs, RADIUS_PX } from "./context/UIPrefsContext";
 import SiteCard from "./components/SiteCard";
 import GroupNavRail from "./components/GroupNavRail";
 import MobileTabBar from "./components/MobileTabBar";
-import CommandPalette, { CommandItem } from "./components/CommandPalette";
-import BookmarkImportDialog from "./components/BookmarkImportDialog";
+// 弹窗/面板类组件按需加载：首屏用不到它们，拆出去能让主包小一大截
+import type { CommandItem } from "./components/CommandPalette";
+const CommandPalette = lazy(() => import("./components/CommandPalette"));
+const BookmarkImportDialog = lazy(() => import("./components/BookmarkImportDialog"));
 import ScrollProgress from "./components/ScrollProgress";
 import BackToTop from "./components/BackToTop";
-import SettingsDialog from "./components/SettingsDialog";
-import ImportPreviewDialog from "./components/ImportPreviewDialog";
+const SettingsDialog = lazy(() => import("./components/SettingsDialog"));
+const ImportPreviewDialog = lazy(() => import("./components/ImportPreviewDialog"));
 import HeaderClock from "./components/HeaderClock";
-import VisitsDialog from "./components/VisitsDialog";
+const VisitsDialog = lazy(() => import("./components/VisitsDialog"));
 import EmptyArt from "./components/EmptyArt";
 import { COLLAPSED_EVENT, readCollapsedGroupIds, setAllCollapsed } from "./utils/collapse";
 import { DuplicateHit, findDuplicateSite } from "./utils/duplicate";
 import { loadPinyinMatcher } from "./utils/pinyin";
 import { FRESH_WINDOW_MS, probeLinks } from "./utils/linkHealth";
+import { clearBootstrapCache, readBootstrapCache, writeBootstrapCache } from "./utils/firstPaintCache";
 import { ParsedBookmarkGroup } from "./utils/bookmarks";
 import { DEFAULT_ICON_API, resolveIconApiUrl } from "./utils/iconApi";
 import { groupAccent } from "./utils/groupColor";
@@ -43,7 +48,7 @@ import ThemeToggle from "./components/ThemeToggle";
 import GroupCard from "./components/GroupCard";
 import EditGroupDialog from "./components/EditGroupDialog";
 import LoginForm from "./components/LoginForm";
-import BackupDialog from "./components/BackupDialog";
+const BackupDialog = lazy(() => import("./components/BackupDialog"));
 import "./App.css";
 import {
     DndContext,
@@ -132,7 +137,7 @@ import ErrorOutlineRoundedIcon from "@mui/icons-material/ErrorOutlineRounded";
 import { alpha } from "@mui/material/styles";
 import BulkActionBar from "./components/BulkActionBar";
 import TagBar from "./components/TagBar";
-import TagManagerDialog from "./components/TagManagerDialog";
+const TagManagerDialog = lazy(() => import("./components/TagManagerDialog"));
 import ConfirmDialog from "./components/ConfirmDialog";
 
 // 根据环境选择使用真实API还是模拟API
@@ -275,6 +280,9 @@ function App() {
 
     // 设置弹窗里选色时的即时预览值（不落库，关闭弹窗即回滚）
     const [accentPreview, setAccentPreview] = useState<string | null>(null);
+    // 保存网站设置的防连点守卫（同步 ref 拦同一轮连点，state 用于按钮禁用）
+    const savingConfigRef = useRef(false);
+    const [savingConfig, setSavingConfig] = useState(false);
 
     // 自定义主色：只有合法的 #rgb / #rrggbb 才采用，避免脏数据把主题搞坏
     const accentRaw = (accentPreview ?? (configs["site.primaryColor"] || "")).trim();
@@ -678,6 +686,9 @@ function App() {
         setIsAuthenticated(false);
         setIsAuthRequired(true);
 
+        // 退出登录后这份数据就不该再被渲染出来，清掉首屏缓存
+        clearBootstrapCache();
+
         // 清空数据
         setGroups([]);
         handleMenuClose();
@@ -734,6 +745,16 @@ function App() {
     };
 
     useEffect(() => {
+        // 先用上一次的快照把界面画出来（已登录才有意义，未登录要直接走登录页），
+        // 真正的请求照常发出，回来后再覆盖一次
+        if (api.isLoggedIn()) {
+            const cached = readBootstrapCache();
+            if (cached) {
+                applyRemoteData(cached);
+                setLoading(false);
+            }
+        }
+
         // 检查认证状态
         checkAuthStatus();
 
@@ -815,6 +836,30 @@ function App() {
         document.documentElement.style.setProperty("--glass-blur", `${glassBlur}px`);
     }, [glassBlur]);
 
+    // 滚动时临时把毛玻璃调淡：滚动过程中每一层毛玻璃都要重新合成一遍，
+    // 卡片一多这一步最吃帧。停手 200ms 后恢复成用户设定的强度。
+    useEffect(() => {
+        if (glassBlur <= 6) return; // 本来就够淡，没必要再动
+        const root = document.documentElement;
+        const reduced = Math.max(4, Math.round(glassBlur / 3));
+        let timer: number | undefined;
+
+        const onScroll = () => {
+            root.style.setProperty("--glass-blur", `${reduced}px`);
+            if (timer) window.clearTimeout(timer);
+            timer = window.setTimeout(() => {
+                root.style.setProperty("--glass-blur", `${glassBlur}px`);
+            }, 200);
+        };
+
+        window.addEventListener("scroll", onScroll, { passive: true });
+        return () => {
+            window.removeEventListener("scroll", onScroll);
+            if (timer) window.clearTimeout(timer);
+            root.style.setProperty("--glass-blur", `${glassBlur}px`);
+        };
+    }, [glassBlur]);
+
     // 统一提示函数（引用稳定，便于被 memo 的子组件复用）
     // duration 可选：成功/信息类默认短暂停留 2.2s，错误类默认 6s（便于阅读），传入则覆盖
     // action 可选：在提示条上挂一个操作按钮（删除后的「撤销」就靠它）
@@ -865,6 +910,8 @@ function App() {
         try {
             const data = await api.bootstrap();
             applyRemoteData(data);
+            // 留一份快照，下次打开先用它渲染，不等这个请求回来
+            writeBootstrapCache(data);
             return true;
         } catch (error) {
             const message = error instanceof Error ? error.message : "未知错误";
@@ -991,13 +1038,26 @@ function App() {
             if (!updatedSite.id) return;
 
             const doUpdate = async () => {
+                // 改之前先留一份快照，请求失败时用它把卡片改回去
+                const snapshot =
+                    groupsRef.current
+                        .flatMap(group => group.sites)
+                        .find(site => site.id === updatedSite.id) || null;
+
+                // 乐观更新：不等网络往返就先改本地、弹提示，
+                // 实测一次保存端到端 336ms 里有 311ms 是网络等待，没必要让界面陪着等
+                upsertSiteLocally(updatedSite);
+                notify("卡片已更新", "success");
+
                 try {
                     const saved = await api.updateSite(updatedSite.id as number, updatedSite);
                     // id 以本地这份为准，避免个别后端实现回显的 id 不准确
-                    upsertSiteLocally({ ...updatedSite, ...(saved || {}), id: updatedSite.id });
-                    notify("卡片已更新", "success");
+                    if (saved) {
+                        upsertSiteLocally({ ...updatedSite, ...saved, id: updatedSite.id });
+                    }
                 } catch (error) {
                     console.error("更新站点失败:", error);
+                    if (snapshot) upsertSiteLocally(snapshot);
                     handleError("更新站点失败: " + (error as Error).message);
                 }
             };
@@ -1822,10 +1882,19 @@ function App() {
     };
 
     const handleSaveConfig = async () => {
+        // 防连点：同一轮里连点「保存设置」只提交一次
+        if (savingConfigRef.current) return;
+        savingConfigRef.current = true;
+        setSavingConfig(true);
+
         try {
-            // 只提交有变化的配置，并并行写入，避免逐条等待
+            // 只提交有变化的配置，并且一次请求写完
+            // （原来每项各发一个请求，改十项就是十个网络往返）
             const changed = Object.entries(tempConfigs).filter(([key, value]) => configs[key] !== value);
-            await Promise.all(changed.map(([key, value]) => api.setConfig(key, value)));
+            if (changed.length > 0) {
+                const ok = await api.setConfigs(Object.fromEntries(changed));
+                if (!ok) throw new Error("部分配置写入失败");
+            }
 
             // 管理员凭据单独提交（失败会中断，不会把新密码悄悄丢掉）
             const authChanged = await submitAuthCredentials();
@@ -1848,6 +1917,9 @@ function App() {
         } catch (error) {
             console.error("保存配置失败:", error);
             handleError("保存配置失败: " + (error as Error).message);
+        } finally {
+            savingConfigRef.current = false;
+            setSavingConfig(false);
         }
     };
 
@@ -2096,6 +2168,32 @@ function App() {
         [visibleGroups]
     );
 
+    // 命中太多时先只渲染一部分：几百张卡片一次性铺开会卡住输入（实测一次过滤 ~116ms），
+    // 计数照常按真实命中数显示，只是不把它们全部挂到 DOM 上。
+    const SEARCH_PER_GROUP_LIMIT = 24;
+    const SEARCH_TOTAL_LIMIT = 60;
+    const searchTruncated = query ? matchedCount > SEARCH_TOTAL_LIMIT : false;
+    const renderGroups = useMemo(
+        () =>
+            searchTruncated
+                ? visibleGroups.map(group =>
+                      group.sites.length > SEARCH_PER_GROUP_LIMIT
+                          ? { ...group, sites: group.sites.slice(0, SEARCH_PER_GROUP_LIMIT) }
+                          : group
+                  )
+                : visibleGroups,
+        [visibleGroups, searchTruncated]
+    );
+    // 卡片很多时整体关掉入场动画：几百张同时跑 transform 动画，
+    // 合成开销比动画本身还贵，视觉上也看不出「依次浮现」了
+    const ENTRY_ANIMATION_LIMIT = 60;
+    const reduceEntryAnimation = matchedCount > ENTRY_ANIMATION_LIMIT;
+
+    const renderedCount = useMemo(
+        () => (searchTruncated ? renderGroups.reduce((sum, g) => sum + g.sites.length, 0) : matchedCount),
+        [searchTruncated, renderGroups, matchedCount]
+    );
+
     // 下拉面板的扁平结果：跨分组取前 8 条，够用又不至于太长
     const flatResults = useMemo(() => {
         if (!query) return [];
@@ -2155,15 +2253,15 @@ function App() {
 
     // 真正渲染的分组列表：常用置前（排序模式与关闭时不插）
     const displayedGroups = useMemo(() => {
-        if (!favoritesEnabled || favoritesGroup.sites.length === 0) return visibleGroups;
+        if (!favoritesEnabled || favoritesGroup.sites.length === 0) return renderGroups;
 
         const favSites = favoritesGroup.sites.filter(
             site =>
                 matchFilters(site) && (!query || matchesSiteQuery(site, query, usePinyin))
         );
 
-        if (favSites.length === 0) return visibleGroups;
-        return [{ ...favoritesGroup, sites: favSites }, ...visibleGroups];
+        if (favSites.length === 0) return renderGroups;
+        return [{ ...favoritesGroup, sites: favSites }, ...renderGroups];
     }, [visibleGroups, favoritesGroup, favoritesEnabled, query, matchFilters, usePinyin]);
 
     // 分组面板滚进视口时播一次「渐显上浮」（只播一次，来回滚动不会反复闪）。
@@ -3510,6 +3608,9 @@ function App() {
                                 sx={{ display: "block", mt: -2, mb: 3 }}
                             >
                                 找到 {matchedCount} 个匹配的网站
+                                {searchTruncated
+                                    ? `，先显示前 ${renderedCount} 个，继续输入可以缩小范围`
+                                    : ""}
                             </Typography>
                         )}
 
@@ -3630,7 +3731,10 @@ function App() {
                                     </DragOverlay>
                                 </DndContext>
                             ) : displayedGroups.length > 0 ? (
-                                <Stack spacing={density === "compact" ? 3 : 5}>
+                                <Stack
+                                    spacing={density === "compact" ? 3 : 5}
+                                    className={reduceEntryAnimation ? "nav-static-entry" : undefined}
+                                >
                                     {displayedGroups.map(group => (
                                         <GroupCard
                                             key={`group-${group.id}`}
@@ -3969,6 +4073,7 @@ function App() {
 
                     {/* 网站配置对话框 */}
                     {/* 全站设置：这一块原来内联在 App 里，抽成 SettingsDialog 单独维护 */}
+                    <Suspense fallback={null}>
                     <SettingsDialog
                         open={openConfig}
                         onClose={handleCloseConfig}
@@ -3984,6 +4089,7 @@ function App() {
                         onFontScaleChange={setFontScale}
                         glassBlur={tempGlassBlur}
                         onGlassBlurChange={handleGlassBlurChange}
+                        saving={savingConfig}
                         auth={{
                             username: authUsername,
                             currentPassword: authCurrentPassword,
@@ -3997,8 +4103,10 @@ function App() {
                             else setAuthNewPassword(value);
                         }}
                     />
+                    </Suspense>
 
                     {/* 访问统计：本机热力图 + Top5 */}
+                    <Suspense fallback={null}>
                     <VisitsDialog
                         open={openVisits}
                         onClose={() => setOpenVisits(false)}
@@ -4014,8 +4122,10 @@ function App() {
                             // 清除访问记录不弹提示：「最近访问」分组会当场消失，本身就是反馈
                         }}
                     />
+                    </Suspense>
 
                     {/* 数据备份与恢复对话框 */}
+                    <Suspense fallback={null}>
                     <BackupDialog
                         open={openBackup}
                         initialTab={backupTab}
@@ -4032,8 +4142,10 @@ function App() {
                         onNotify={notify}
                         onClose={handleCloseBackup}
                     />
+                    </Suspense>
 
                 {/* 导入预览：恢复前先给用户看差异，勾选后才会真的写库 */}
+                <Suspense fallback={null}>
                 <ImportPreviewDialog
                     open={importPreview !== null}
                     data={importPreview?.data ?? null}
@@ -4042,6 +4154,7 @@ function App() {
                     onCancel={() => closeImportPreview(null)}
                     onConfirm={data => closeImportPreview(data)}
                 />
+                </Suspense>
 
                 </Container>
 
@@ -4080,18 +4193,22 @@ function App() {
                 </Menu>
 
                 {/* 命令面板：Ctrl / Cmd + K */}
+                <Suspense fallback={null}>
                 <CommandPalette
                     open={commandOpen}
                     onClose={() => setCommandOpen(false)}
                     commands={commands}
                 />
+                </Suspense>
 
                 {/* 浏览器书签批量导入 */}
+                <Suspense fallback={null}>
                 <BookmarkImportDialog
                     open={bookmarkOpen}
                     onClose={() => setBookmarkOpen(false)}
                     onImport={importBookmarks}
                 />
+                </Suspense>
 
                 {/* 批量多选：底部操作条（删除 / 星标 / 标签 / 移动分组） */}
                 {multiSelect && sortMode === SortMode.None && (
@@ -4157,6 +4274,7 @@ function App() {
                 />
 
                 {/* 标签管理：集中删标签，删掉即从所有卡片上摘掉 */}
+                <Suspense fallback={null}>
                 <TagManagerDialog
                     open={tagManagerOpen}
                     tags={allTags}
@@ -4164,6 +4282,7 @@ function App() {
                     onDeleteTag={deleteTagWithUndo}
                     onClose={() => setTagManagerOpen(false)}
                 />
+                </Suspense>
             </Box>
         </ThemeProvider>
          </NotifyContext.Provider>

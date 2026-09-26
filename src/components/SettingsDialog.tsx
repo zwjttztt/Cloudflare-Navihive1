@@ -74,6 +74,8 @@ interface SettingsDialogProps {
     onGlassBlurChange: (event: Event, value: number | number[]) => void;
     auth: SettingsAuthDraft;
     onAuthChange: (field: keyof SettingsAuthDraft, value: string) => void;
+    /** 正在保存：按钮禁用 + 文案变化，避免连点重复提交 */
+    saving?: boolean;
     /** 拼音搜索（本机偏好，打开即生效，不需要点保存） */
     pinyinSearch: boolean;
     onPinyinSearchChange: (enabled: boolean) => void;
@@ -96,6 +98,7 @@ export default function SettingsDialog({
     onGlassBlurChange,
     auth,
     onAuthChange,
+    saving = false,
     pinyinSearch,
     onPinyinSearchChange,
 }: SettingsDialogProps) {
@@ -494,8 +497,8 @@ export default function SettingsDialog({
                 <Button onClick={onClose} variant='outlined'>
                     取消
                 </Button>
-                <Button onClick={onSave} variant='contained' color='primary'>
-                    保存设置
+                <Button onClick={onSave} variant='contained' color='primary' disabled={saving}>
+                    {saving ? "保存中…" : "保存设置"}
                 </Button>
             </DialogActions>
         </Dialog>

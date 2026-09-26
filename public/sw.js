@@ -3,14 +3,29 @@
 //   - 页面导航：网络优先，离线时回退到缓存的首页（保证断网也能打开壳）
 //   - 静态资源（js/css/图片/字体）：缓存优先，后台静默更新
 //   - /api/*：一律走网络，不缓存，避免看到过期数据
-const CACHE = "navihive-shell-v1";
+const CACHE = "navihive-shell-v2";
 const APP_SHELL = ["/", "/index.html", "/manifest.webmanifest", "/vite.svg"];
+// 构建时生成的产物清单（precache-manifest.json），首屏要用的 JS/CSS 全在里面
+const PRECACHE_MANIFEST = "/precache-manifest.json";
 
 self.addEventListener("install", event => {
     event.waitUntil(
         caches
             .open(CACHE)
-            .then(cache => cache.addAll(APP_SHELL))
+            .then(cache =>
+                // 先把壳缓存好，再去拉主资源清单：
+                // 清单取不到（老版本部署）也不影响安装，退回「用到才缓存」的老行为
+                cache.addAll(APP_SHELL).then(() =>
+                    fetch(PRECACHE_MANIFEST)
+                        .then(res => (res.ok ? res.json() : null))
+                        .then(manifest => {
+                            const files = (manifest && manifest.files) || [];
+                            if (!files.length) return;
+                            return cache.addAll(files).catch(() => {});
+                        })
+                        .catch(() => {})
+                )
+            )
             .catch(() => {
                 // 个别资源取不到不影响安装
             })

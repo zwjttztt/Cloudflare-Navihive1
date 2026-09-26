@@ -93,6 +93,43 @@ const GroupCard: React.FC<GroupCardProps> = ({
         clearVisits();
     };
     const isCompact = density === "compact";
+
+    // 分组懒挂载：视口外的分组先不创建卡片（只留占位高度），
+    // content-visibility 只省了布局与绘制，React 元素和 DOM 节点照样是全量建的，
+    // 几百张卡片时那部分开销才是大头。排序模式必须全量渲染，否则拖拽落点会算错。
+    const [sitesMounted, setSitesMounted] = useState(sortMode === "None" ? false : true);
+    const panelRef = useRef<HTMLDivElement | null>(null);
+    useEffect(() => {
+        if (sortMode !== "None") {
+            setSitesMounted(true);
+            return;
+        }
+        const el = panelRef.current;
+        if (!el || typeof IntersectionObserver === "undefined") {
+            setSitesMounted(true);
+            return;
+        }
+        const io = new IntersectionObserver(
+            entries => {
+                if (entries.some(entry => entry.isIntersecting)) {
+                    setSitesMounted(true);
+                    io.disconnect(); // 一旦挂上就不卸载，避免来回滚动反复重建
+                }
+            },
+            { rootMargin: "600px 0px" }
+        );
+        io.observe(el);
+        return () => io.disconnect();
+    }, [sortMode]);
+
+    // 未挂载时的占位高度：按「一行约 3 张、每张约 150px」粗估，
+    // 与 content-visibility 的 contain-intrinsic-size 思路一致，滚动条不会大幅跳动
+    const placeholderHeight = useMemo(() => {
+        const count = group.sites.length || 1;
+        const perRow = viewMode === "list" ? 1 : 3;
+        const cardH = viewMode === "list" ? 64 : isCompact ? 120 : 150;
+        return Math.max(120, Math.ceil(count / perRow) * cardH);
+    }, [group.sites.length, viewMode, isCompact]);
     // 列表视图下卡片挨得更紧，分组内间距同步收一档
     const gridGap = viewMode === "list" ? (isCompact ? -0.25 : 0) : isCompact ? -0.5 : -1;
     // 添加本地状态来管理站点排序
@@ -516,6 +553,7 @@ const GroupCard: React.FC<GroupCardProps> = ({
     // 正常模式或站点排序模式下渲染完整的分组卡片
     return (
         <Paper
+            ref={panelRef}
             elevation={0}
             id={`group-anchor-${group.id}`}
             data-group-anchor={group.id}
@@ -740,7 +778,7 @@ const GroupCard: React.FC<GroupCardProps> = ({
 
             {/* 站点卡片区域（收起时隐藏） */}
             <Collapse in={!isCollapsed} timeout={250} unmountOnExit={false}>
-                {renderSites()}
+                {sitesMounted ? renderSites() : <Box sx={{ height: placeholderHeight }} />}
             </Collapse>
 
             {/* 编辑分组弹窗 */}
