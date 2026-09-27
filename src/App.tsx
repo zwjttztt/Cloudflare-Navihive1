@@ -243,7 +243,19 @@ function App() {
     // 只读数据层切片：分组 / 加载中 / 错误状态与 bootstrap 落地逻辑已抽到 useSites，
     // 配置落地 + 偏好 / 链接健康合并等需要其它 App 层状态的步骤交还给 onRemoteExtras。
     // 用解构保持原局部变量名不变，下面几十处引用无需改动。
-    const { groups, setGroups, loading, setLoading, error, setError, fetchData, applyRemoteData } = useSites({
+    const {
+        groups,
+        setGroups,
+        loading,
+        setLoading,
+        error,
+        setError,
+        fetchData,
+        applyRemoteData,
+        upsertSiteLocally,
+        removeSiteLocally,
+        removeSitesLocally,
+    } = useSites({
         api,
         onRemoteExtras: applyRemoteExtras,
         onError: (msg) => handleError(msg),
@@ -1064,67 +1076,10 @@ function App() {
         });
     }, [notify]);
 
-    // ---- 本地状态更新（避免每次修改都整页重新加载） ----
-    // 关键：只重建真正受影响的分组对象，其它分组保持原引用，
+    // 本地状态更新（upsertSiteLocally / removeSiteLocally / removeSitesLocally）已搬进 useSites，
+    // 数组怎么变这类纯计算在 utils/siteMutations.ts，那里能脱离 React 单测。
+    // 关键点不变：只重建真正受影响的分组对象，其它分组保持原引用，
     // 这样被 memo 的 GroupCard / SiteCard 不会因为无关改动而重渲染。
-    const upsertSiteLocally = useCallback((site: Site) => {
-        setGroups(prev => {
-            const targetIdx = prev.findIndex(g => g.id === site.group_id);
-            const fromIdx = prev.findIndex(g => g.sites.some(item => item.id === site.id));
-            // 跨分组移动：目标分组与来源分组不同
-            const moved = fromIdx !== -1 && fromIdx !== targetIdx;
-
-            let nextSite = site;
-            if (moved && targetIdx !== -1) {
-                // 移动过来的卡片排到目标分组末尾，避免沿用旧分组的 order_num 导致乱序
-                const maxOrder = prev[targetIdx].sites.reduce(
-                    (max, item) => Math.max(max, item.order_num ?? 0),
-                    -1
-                );
-                nextSite = { ...site, order_num: maxOrder + 1 };
-            }
-
-            let changed = false;
-            const next = prev.map((group, idx) => {
-                if (idx === targetIdx) {
-                    const exists = group.sites.some(item => item.id === nextSite.id);
-                    const sites = exists
-                        ? group.sites.map(item =>
-                              item.id === nextSite.id ? { ...item, ...nextSite } : item
-                          )
-                        : [...group.sites, nextSite];
-                    changed = true;
-                    return {
-                        ...group,
-                        sites: [...sites].sort((a, b) => (a.order_num ?? 0) - (b.order_num ?? 0)),
-                    };
-                }
-
-                // 站点被移动到了其他分组：从原分组移除
-                if (moved && idx === fromIdx) {
-                    changed = true;
-                    return { ...group, sites: group.sites.filter(item => item.id !== site.id) };
-                }
-
-                return group;
-            });
-
-            return changed ? next : prev;
-        });
-    }, []);
-
-    const removeSiteLocally = useCallback((siteId: number) => {
-        setGroups(prev => {
-            let changed = false;
-            const next = prev.map(group => {
-                if (!group.sites.some(item => item.id === siteId)) return group;
-                changed = true;
-                return { ...group, sites: group.sites.filter(item => item.id !== siteId) };
-            });
-            return changed ? next : prev;
-        });
-    }, []);
-
     /** 滚到某张卡片并闪一下轮廓（重复链接提示里的「跳到那张」用） */
     const jumpToSite = useCallback((siteId?: number) => {
         if (siteId == null) return;
@@ -1295,7 +1250,7 @@ function App() {
 
             try {
                 await Promise.all(snapshots.map(site => api.deleteSite(site.id as number)));
-                snapshots.forEach(site => removeSiteLocally(site.id as number));
+                removeSitesLocally(snapshots.map(site => site.id as number));
                 forgetSites(snapshots.map(site => site.id as number));
 
                 const restoredIds: number[] = [];
@@ -1326,7 +1281,7 @@ function App() {
                     restoredIds.length = 0;
                     if (ids.length === 0) return;
                     await Promise.all(ids.map(id => api.deleteSite(id)));
-                    ids.forEach(id => removeSiteLocally(id));
+                    removeSitesLocally(ids);
                     forgetSites(ids);
                 };
 
@@ -1342,7 +1297,7 @@ function App() {
             }
         },
         [
-            removeSiteLocally,
+            removeSitesLocally,
             upsertSiteLocally,
             handleError,
             notify,
