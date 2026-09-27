@@ -392,6 +392,13 @@ if (cardBox) {
 }
 
 // 5) 键盘焦点环：真的按 Tab，不用 el.focus()（后者在 headless 里不触发 :focus-visible）
+//
+//    两种焦点指示都算数：
+//      a) 外圈 outline / box-shadow（按钮一类）
+//      b) outlined 输入框的 .MuiOutlinedInput-notchedOutline 边框加粗到 2px 主色
+//    搜索框走的是 b —— 它**不该**再补外圈：那样会和 MUI 自带的聚焦边框叠成两圈
+//    同心环，也就是用户报的「点搜索框有双红圈」。这里必须认 b，否则修好双圈反而
+//    会被判成「焦点环丢了」。
 let sawSearchRing = false;
 let focusRingLost = "";
 for (let i = 0; i < 12; i++) {
@@ -410,17 +417,23 @@ for (let i = 0; i < 12; i++) {
       if (!a) return null;
       const target = a.closest('.MuiInputBase-root') || a;
       const cs = getComputedStyle(target);
+      const notched = target.querySelector('.MuiOutlinedInput-notchedOutline');
       return {
         tag: a.tagName,
         label: a.getAttribute('aria-label') || a.getAttribute('placeholder') || '',
         outline: cs.outlineStyle === 'none' ? 'none' : cs.outlineWidth,
         boxShadow: cs.boxShadow === 'none' ? 'none' : 'yes',
+        // outlined 输入框的聚焦指示：边框加粗到 2px
+        notchedWidth: notched ? getComputedStyle(notched).borderTopWidth : 'none',
+        notchedColor: notched ? getComputedStyle(notched).borderTopColor : 'none',
       };
     })()`);
     if (!ring) continue;
     if (String(ring.label).includes("搜索")) {
         sawSearchRing = true;
-        if (ring.outline === "none" && ring.boxShadow === "none") {
+        const hasOutline = ring.outline !== "none" || ring.boxShadow !== "none";
+        const hasNotched = ring.notchedWidth === "2px";
+        if (!hasOutline && !hasNotched) {
             focusRingLost = "搜索框";
         }
     }
