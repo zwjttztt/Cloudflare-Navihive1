@@ -110,9 +110,10 @@ export default function BackupDialog({
     const [testing, setTesting] = useState(false);
     const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
     const [uploading, setUploading] = useState(false);
-    // WebDAV 操作按钮行（测试连接 / 备份 / 查看远端）。
+    // WebDAV 操作按钮行（测试连接 / 备份）。测试结果 Alert 排在按钮下方。
     // 矮视口（125% 缩放 / 小窗口）下内容区会滚动：点「测试连接」后 Alert 把内容撑高，
-    // 若不主动滚动，Alert 和按钮行都停在内容区折叠线下面，视觉上像跟底部操作区叠在一起。
+    // 若不主动滚动，按钮行和它下面的 Alert 都停在内容区折叠线下面，
+    // 视觉上像跟底部操作区叠在一起。
     const webdavActionsRef = useRef<HTMLDivElement | null>(null);
     useEffect(() => {
         if (!testResult) return;
@@ -489,12 +490,6 @@ export default function BackupDialog({
                         </Typography>
                     </Box>
 
-                    {testResult && (
-                        <Alert severity={testResult.success ? "success" : "error"} icon={testResult.success ? <CheckCircleIcon fontSize='inherit' /> : undefined}>
-                            {testResult.message}
-                        </Alert>
-                    )}
-
                     <Stack
                         ref={webdavActionsRef}
                         direction={{ xs: "column", sm: "row" }}
@@ -518,6 +513,13 @@ export default function BackupDialog({
                             备份到 WebDAV
                         </Button>
                     </Stack>
+
+                    {/* 测试结果放在按钮下方：点完按钮反馈就在手指底下，不用往回找 */}
+                    {testResult && (
+                        <Alert severity={testResult.success ? "success" : "error"} icon={testResult.success ? <CheckCircleIcon fontSize='inherit' /> : undefined}>
+                            {testResult.message}
+                        </Alert>
+                    )}
 
                     {remoteFiles.length > 0 && (
                         <Box>
