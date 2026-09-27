@@ -266,12 +266,56 @@ async function gunzipToString(bytes: ArrayBuffer): Promise<string> {
     return await new Response(stream).text();
 }
 
+/** 测试连接/列目录这类探测请求的超时：卡住比报错更难受，15 秒还没回就当连不上 */
+const DAV_PROBE_TIMEOUT_MS = 15000;
+
+/**
+ * 把 HTTP 状态码翻成「能照着改」的提示（纯函数，单测覆盖）。
+ * 原来只回一句「连接失败：HTTP 405」，用户根本不知道该改地址、改账号还是换协议。
+ */
+export function describeWebDavStatus(status: number): string {
+    if (status === 401 || status === 403) {
+        return "认证失败：请检查账号与密码（坚果云 / 群晖等要用「应用密码」，不是登录密码）";
+    }
+    if (status === 404) {
+        return "备份目录不存在，也没能自动创建：请检查服务器地址是否正确（常见是少了 /dav 之类的路径）";
+    }
+    if (status === 405 || status === 501) {
+        return "该地址不支持 WebDAV（服务器拒绝了 PROPFIND）：多半是地址少了 /dav、/remote.php/dav 之类的路径";
+    }
+    if (status === 409) {
+        return "上级目录不存在，无法自动创建备份目录：请先在网盘里手工建好目录";
+    }
+    if (status === 429) {
+        return "被服务器限流（HTTP 429）：稍等一会儿再试";
+    }
+    if (status >= 500) {
+        return `WebDAV 服务端错误：HTTP ${status}`;
+    }
+    return `连接失败：HTTP ${status}`;
+}
+
+/** 把网络层异常翻成人话：超时、地址不通、内网拦截要能一眼分开 */
+export function describeWebDavError(error: unknown): string {
+    const raw = errorMessage(error, "连接失败");
+    // 地址校验类错误（内网拦截 / 协议不对 / 地址不合法）原文已经说清了原因，原样透传
+    if (/不允许指向内网|必须以 http|不合法/.test(raw)) return raw;
+    if (error instanceof Error && error.name === "TimeoutError") {
+        return `连接超时（${DAV_PROBE_TIMEOUT_MS / 1000} 秒无响应）：请确认地址能从公网访问；内网 NAS 要打开「允许内网地址」`;
+    }
+    if (/fetch failed|Failed to fetch|ENOTFOUND|getaddrinfo|DNS|NetworkError|ECONNREFUSED|certificate/i.test(raw)) {
+        return `连不上服务器（${raw}）：请确认地址正确、端口已开放，且 Cloudflare 能访问到它`;
+    }
+    return raw;
+}
+
 async function davFetch(
     url: string,
     method: string,
     config: WebDavConfig,
     body?: string | Uint8Array,
-    extraHeaders?: Record<string, string>
+    extraHeaders?: Record<string, string>,
+    timeoutMs?: number
 ): Promise<Response> {
     const headers: Record<string, string> = { ...(extraHeaders || {}) };
 
@@ -283,6 +327,8 @@ async function davFetch(
         method,
         headers,
         body: body ?? undefined,
+        // 只给探测请求加超时：备份文件上传体积可能很大，不能被掐断
+        ...(timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
     });
 }
 
@@ -340,26 +386,37 @@ function parseWebDavList(xml: string): WebDavFile[] {
     });
 }
 
-// 测试 WebDAV 连接
+
 export async function webdavTest(config: WebDavConfig): Promise<WebDavResult> {
     try {
         const folderUrl = buildWebDavFolderUrl(config);
-        let response = await davFetch(folderUrl, "PROPFIND", config, undefined, { Depth: "0" });
+        let response = await davFetch(
+            folderUrl,
+            "PROPFIND",
+            config,
+            undefined,
+            { Depth: "0" },
+            DAV_PROBE_TIMEOUT_MS
+        );
 
         if (response.status === 404 || response.status === 409) {
             await ensureWebDavFolder(config, folderUrl);
-            response = await davFetch(folderUrl, "PROPFIND", config, undefined, { Depth: "0" });
+            response = await davFetch(
+                folderUrl,
+                "PROPFIND",
+                config,
+                undefined,
+                { Depth: "0" },
+                DAV_PROBE_TIMEOUT_MS
+            );
         }
 
         if (response.ok) {
             return { success: true, message: "连接成功，备份目录可用" };
         }
-        if (response.status === 401 || response.status === 403) {
-            return { success: false, message: "认证失败，请检查 WebDAV 账号或应用密码" };
-        }
-        return { success: false, message: `连接失败：HTTP ${response.status}` };
+        return { success: false, message: describeWebDavStatus(response.status) };
     } catch (error) {
-        return { success: false, message: errorMessage(error, "连接失败") };
+        return { success: false, message: describeWebDavError(error) };
     }
 }
 

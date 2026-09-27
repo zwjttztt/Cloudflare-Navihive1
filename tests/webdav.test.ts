@@ -12,6 +12,8 @@ import {
     resolveWebDavConfig,
     isAutoBackupFileName,
     selectAutoBackupsToPrune,
+    describeWebDavStatus,
+    describeWebDavError,
 } from "../worker/webdav";
 
 /** 造一份配置：默认关内网豁免，path 走默认值 */
@@ -158,4 +160,40 @@ test("isAutoBackupFileName：只有 auto 前缀算自动备份", () => {
     assert.equal(isAutoBackupFileName("navihive-backup-20260927-100000-000.json.gz"), false);
     assert.equal(isAutoBackupFileName(""), false);
     assert.equal(isAutoBackupFileName("other-file.json.gz"), false);
+});
+
+// ---- 连接失败提示要能照着改 ----
+// 「连接失败：HTTP 405」等于没说：用户分不清该改地址、改账号还是打开内网豁免。
+
+test("401/403 提示去检查应用密码", () => {
+    assert.match(describeWebDavStatus(401), /应用密码/);
+    assert.match(describeWebDavStatus(403), /应用密码/);
+});
+
+test("404/405 指向地址问题（多半少了 WebDAV 路径）", () => {
+    assert.match(describeWebDavStatus(404), /备份目录不存在/);
+    assert.match(describeWebDavStatus(405), /不支持 WebDAV/);
+    assert.match(describeWebDavStatus(501), /不支持 WebDAV/);
+});
+
+test("409 提示先手工建目录，5xx 说清是服务端错误", () => {
+    assert.match(describeWebDavStatus(409), /上级目录不存在/);
+    assert.match(describeWebDavStatus(500), /服务端错误/);
+});
+
+test("未知状态码仍带 HTTP 数字，不吞掉信息", () => {
+    assert.match(describeWebDavStatus(418), /418/);
+});
+
+test("超时与地址不通分开提示", () => {
+    const timeout = new Error("The operation timed out");
+    timeout.name = "TimeoutError";
+    assert.match(describeWebDavError(timeout), /连接超时/);
+    assert.match(describeWebDavError(new Error("fetch failed")), /连不上服务器/);
+});
+
+test("内网拦截等校验类错误原样透传，不被改写成泛泛的『连不上』", () => {
+    const msg = "WebDAV 服务器地址不允许指向内网或本机（如需备份到家庭 NAS，请打开「允许内网地址」）";
+    assert.equal(describeWebDavError(new Error(msg)), msg);
+    assert.match(describeWebDavError(new Error("WebDAV 服务器地址必须以 http:// 或 https:// 开头")), /必须以 http/);
 });
