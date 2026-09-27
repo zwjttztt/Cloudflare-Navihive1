@@ -166,10 +166,12 @@ export default function BackupDialog({
         setTestResult(null);
         try {
             const result = await client.webdavTest(config);
-            setTestResult({ success: !!result.success, message: result.message || (result.success ? "连接成功" : "连接失败") });
+            // 成功时先落库再出提示：保存配置要连发 5 个请求，
+            // 若提示先出、按钮还在转，看起来就像「连上了却卡住」
             if (result.success) {
                 await onSaveWebdavConfig(config);
             }
+            setTestResult({ success: !!result.success, message: result.message || (result.success ? "连接成功" : "连接失败") });
         } catch (error) {
             setTestResult({
                 success: false,
@@ -406,7 +408,7 @@ export default function BackupDialog({
                     备份到 WebDAV
                 </Typography>
                 <Typography variant='caption' color='text.secondary' sx={{ display: "block", mb: 1 }}>
-                    配置存在服务器，由服务端代理上传；目录不存在会自动创建，每次只保留最新一份。
+                    配置存在服务器，由服务端代理上传；目录不存在会自动创建，自动备份只保留最新一份，手动备份全部保留。
                 </Typography>
 
                 <Stack spacing={1}>
@@ -485,7 +487,7 @@ export default function BackupDialog({
                             label='每周自动备份一次'
                         />
                         <Typography variant='caption' color='text.secondary' display='block'>
-                            每周一上午 10:00 自动备份，覆盖上一次。
+                            每周一上午 10:00 自动备份，会替换掉上一次的自动备份；手动备份不会被删除。
                             {lastBackupAt ? ` 上次备份：${formatTime(lastBackupAt)}` : " 还没有备份记录。"}
                         </Typography>
                     </Box>
