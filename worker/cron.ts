@@ -4,36 +4,40 @@
 //   2. 死链巡检 —— 服务端探活站点链接，结果以 max 时间戳合并进 link.health 快照。
 //      开启「失效记录同步」的设备下次拉取时按时间戳合并（src/utils/linkHealth.ts 的
 //      mergeLinkHealth），没开同步的设备不受影响。
+//
+// 判定与合并的纯逻辑都在 ./cronLogic.ts（单测覆盖）；这里只负责「真的发请求、读写 D1」。
+// 巡检/备份只用到 NavigationAPI 的三个读写字，用 SchedulerDB 接口隔离，便于不依赖真实
+// D1 做端到端验证（harness/cron-check.mjs）。生产路径下 makeApi 默认 new NavigationAPI，
+// 行为和拆分前完全一致。
 
-import { NavigationAPI } from "../src/API/http";
+import { NavigationAPI, type Site } from "../src/API/http";
 import type { Env } from "./types";
 import { configFromStored, readAllConfigs, runWebDavBackup } from "./webdav";
+import {
+    HEALTH_KEY,
+    PROBE_TIMEOUT_MS,
+    isAliveHttpStatus,
+    parseSnapshot,
+    selectSweepCandidates,
+    applyProbeResult,
+    trimSnapshot,
+    type LinkHealthSnapshot,
+    type SweepSite,
+} from "./cronLogic";
 
-// Workers 每次调用能发出的 subrequest 数有上限（免费版 50），除去 D1 查询后
-// 一轮最多探这么多站点，超出的留给下一轮 —— 巡检每周跑，多跑几周总会覆盖完。
-const MAX_PROBES_PER_RUN = 30;
-const PROBE_TIMEOUT_MS = 6000;
-/** 探测结果新鲜期：这个窗口内探过的不再重探 */
-const FRESH_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
-
-const HEALTH_KEY = "link.health";
-
-/** 与 src/utils/linkHealth.ts 的 LinkHealthSnapshot 保持一致（服务端只读写，不解释语义） */
-interface LinkHealthSnapshot {
-    v: 1;
-    dead: Record<string, number>;
-    probe: Record<string, number>;
-    white: string[];
+/** 巡检/备份实际只用到的三个读写字，避免过度依赖 NavigationAPI 的全量签名 */
+export interface SchedulerDB {
+    getConfig(key: string): Promise<string | null>;
+    getSites(): Promise<Site[]>;
+    setConfig(key: string, value: string): Promise<boolean>;
 }
 
 /**
  * 每周自动备份：导出 → 压缩上传 → 删旧备份 → 记录文件名。
  * 与页面上的手动备份共用 runWebDavBackup，行为完全一致。
+ * 只有开启「每周自动备份」且 WebDAV 已配置时才执行，否则直接跳过。
  */
-async function runWeeklyBackup(env: Env): Promise<void> {
-    const api = new NavigationAPI(env);
-    const stored = await readAllConfigs(api);
-
+export async function runWeeklyBackup(api: SchedulerDB, stored: Record<string, string>): Promise<void> {
     if (stored["webdav.autoBackup"] === "false") {
         return;
     }
@@ -44,7 +48,7 @@ async function runWeeklyBackup(env: Env): Promise<void> {
         return;
     }
 
-    const result = await runWebDavBackup(api, config, stored["webdav.lastBackup"] || "");
+    const result = await runWebDavBackup(api as unknown as NavigationAPI, config, stored["webdav.lastBackup"] || "");
     console.log(
         result.success
             ? `定时备份完成：${result.data?.filename}`
@@ -54,9 +58,9 @@ async function runWeeklyBackup(env: Env): Promise<void> {
 
 /**
  * 探活单个链接。HEAD 优先（省流量）；服务器不支持 HEAD（405/501）时退回 GET，
- * 拿到响应头立刻 cancel 掉 body，避免整页下载。
+ * 拿到响应头立刻 cancel 掉 body，避免整页下载。死活判定交给 isAliveHttpStatus。
  */
-async function probeUrl(url: string): Promise<boolean> {
+export async function probeUrl(url: string): Promise<boolean> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
     try {
@@ -77,10 +81,7 @@ async function probeUrl(url: string): Promise<boolean> {
                 headers: { Range: "bytes=0-0" },
             });
         }
-        // 404/410 = 资源确实没了；其余 4xx（登录墙/防盗链的 403 等）说明站点还在，算活着；
-        // 5xx 按探测失败处理（与前端「能不能连上」的口径一致）
-        if (res.status === 404 || res.status === 410) return false;
-        return res.status < 400 || res.status < 500;
+        return isAliveHttpStatus(res.status);
     } catch {
         return false;
     } finally {
@@ -92,78 +93,48 @@ async function probeUrl(url: string): Promise<boolean> {
  * 死链巡检：读 link.health 快照，挑「最久没探过」的站点重探一轮，max 时间戳写回。
  * 任何失败都不抛出 —— 巡检失败不能影响同一次触发里的备份。
  */
-async function runLinkSweep(env: Env): Promise<void> {
-    const api = new NavigationAPI(env);
-
-    let snapshot: LinkHealthSnapshot = { v: 1, dead: {}, probe: {}, white: [] };
-    try {
-        const raw = await api.getConfig(HEALTH_KEY);
-        if (raw) {
-            const parsed = JSON.parse(raw) as Partial<LinkHealthSnapshot>;
-            if (parsed && typeof parsed === "object") {
-                snapshot = {
-                    v: 1,
-                    dead: parsed.dead && typeof parsed.dead === "object" ? parsed.dead : {},
-                    probe: parsed.probe && typeof parsed.probe === "object" ? parsed.probe : {},
-                    white: Array.isArray(parsed.white) ? parsed.white : [],
-                };
-            }
-        }
-    } catch {
-        // 读不到就当空快照，从零开始巡
-    }
+export async function runLinkSweep(api: SchedulerDB): Promise<void> {
+    let snapshot: LinkHealthSnapshot = parseSnapshot(await api.getConfig(HEALTH_KEY));
 
     const sites = await api.getSites();
-    const whitelist = new Set(snapshot.white);
     const now = Date.now();
 
-    // 只探：没被手动纠偏、且超出新鲜期的链接；按上次探测时间从旧到新排
-    const candidates = sites
-        .filter(site => {
-            if (!site.url || whitelist.has(site.url)) return false;
-            const last = snapshot.probe[site.url] ?? snapshot.dead[site.url] ?? 0;
-            return now - last >= FRESH_WINDOW_MS;
-        })
-        .sort((a, b) => (snapshot.probe[a.url] ?? 0) - (snapshot.probe[b.url] ?? 0))
-        .slice(0, MAX_PROBES_PER_RUN);
-
+    const candidates = selectSweepCandidates(sites as SweepSite[], snapshot, now);
     if (candidates.length === 0) {
         console.log("死链巡检跳过：没有需要重探的链接");
         return;
     }
 
-    for (const site of candidates) {
-        const alive = await probeUrl(site.url);
-        if (alive) {
-            snapshot.probe[site.url] = now;
-        } else {
-            // max 时间戳合并：不要把客户端更新的探测记录打回去
-            snapshot.dead[site.url] = Math.max(snapshot.dead[site.url] ?? 0, now);
-        }
+    for (const url of candidates) {
+        const alive = await probeUrl(url);
+        snapshot = applyProbeResult(snapshot, url, alive, now);
     }
 
-    // 超长快照裁剪：与前端 MAX_ENTRIES 一致，丢最旧的
-    const trim = (map: Record<string, number>) => {
-        const entries = Object.entries(map).sort((a, b) => b[1] - a[1]);
-        return Object.fromEntries(entries.slice(0, 2000));
-    };
-    snapshot.dead = trim(snapshot.dead);
-    snapshot.probe = trim(snapshot.probe);
+    snapshot = trimSnapshot(snapshot);
 
     await api.setConfig(HEALTH_KEY, JSON.stringify(snapshot));
     console.log(`死链巡检完成：本轮探测 ${candidates.length} 个链接`);
 }
 
-/** cron 入口：备份优先，巡检兜底，互不拖累 */
-export async function runScheduledTasks(env: Env): Promise<void> {
+/**
+ * cron 入口：备份优先，巡检兜底，互不拖累。
+ * makeApi 默认 new NavigationAPI(env)，与拆分前行为一致；验证脚本可注入假实现。
+ */
+export async function runScheduledTasks(
+    env: Env,
+    makeApi: (env: Env) => SchedulerDB = (e) => new NavigationAPI(e)
+): Promise<void> {
     try {
-        await runWeeklyBackup(env);
+        const api = makeApi(env);
+        const stored = await readAllConfigs(api as unknown as NavigationAPI);
+        await runWeeklyBackup(api, stored);
     } catch (error) {
         console.error("定时备份异常:", error);
     }
 
     try {
-        await runLinkSweep(env);
+        const api = makeApi(env);
+        await runLinkSweep(api);
     } catch (error) {
         console.error("死链巡检异常:", error);
     }
