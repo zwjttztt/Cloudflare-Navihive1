@@ -111,7 +111,7 @@ export default function MoreMenu({
                                 onChange={e => onGlassEffectsChange(e.target.checked)}
                                 // 挡掉冒泡，否则点开关会同时触发菜单项的 onClick，切两下等于没切
                                 onClick={e => e.stopPropagation()}
-                                inputProps={{ "aria-label": "毛玻璃特效" }}
+                                slotProps={{ input: { "aria-label": "毛玻璃特效" } }}
                             />
                         </MenuItem>
                         {/* 装到桌面：只有浏览器真的给了安装事件时才出现

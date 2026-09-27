@@ -436,7 +436,7 @@ export default function SettingsDialog({
                                         checked={glassEffects}
                                         size='small'
                                         onChange={e => onGlassEffectsChange(e.target.checked)}
-                                        inputProps={{ "aria-label": "毛玻璃特效" }}
+                                        slotProps={{ input: { "aria-label": "毛玻璃特效" } }}
                                     />
                                 }
                                 label={glassEffects ? "开" : "关"}
@@ -483,7 +483,7 @@ export default function SettingsDialog({
                                     checked={syncHealth}
                                     size='small'
                                     onChange={e => onSyncHealthChange(e.target.checked)}
-                                    inputProps={{ "aria-label": "同步失效检测结果" }}
+                                    slotProps={{ input: { "aria-label": "同步失效检测结果" } }}
                                 />
                             }
                             label='失效检测结果'
@@ -504,7 +504,7 @@ export default function SettingsDialog({
                                     checked={syncPrefs}
                                     size='small'
                                     onChange={e => onSyncPrefsChange(e.target.checked)}
-                                    inputProps={{ "aria-label": "同步星标与标签" }}
+                                    slotProps={{ input: { "aria-label": "同步星标与标签" } }}
                                 />
                             }
                             label='星标与标签'

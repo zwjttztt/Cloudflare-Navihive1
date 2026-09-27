@@ -119,7 +119,7 @@ export default function ImportPreviewDialog({
                 checked={selected.has(entry.key)}
                 onChange={() => toggle(entry.key)}
                 sx={{ p: 0.5 }}
-                inputProps={{ "aria-label": `选择 ${entry.name}` }}
+                slotProps={{ input: { "aria-label": `选择 ${entry.name}` } }}
             />
             <Box sx={{ minWidth: 0, flexGrow: 1 }}>
                 <Typography variant='body2' noWrap>

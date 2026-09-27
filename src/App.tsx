@@ -37,6 +37,8 @@ import OfflineBanner from "./components/OfflineBanner";
 import { usePwaInstall } from "./hooks/usePwaInstall";
 import { useHistoryStack } from "./hooks/useHistoryStack";
 import { useNotify } from "./hooks/useNotify";
+import { wrapMutations, installOnlineListener, type MutationApi } from "./API/offlineQueue";
+import { buildFavoritesGroup, deriveDisplayedGroups } from "./utils/siteView";
 import {
     SortMode,
     headerDividerSx,
@@ -67,10 +69,6 @@ import { DEFAULT_ICON_API, resolveIconApiUrl } from "./utils/iconApi";
 import { normalizeFailureText, normalizeUrl } from "./utils/url";
 import { groupAccent } from "./utils/groupColor";
 import { matchesGroupQuery, matchesSiteQuery } from "./utils/search";
-import {
-    RECENT_GROUP_SIZE,
-    recentVisitCount,
-} from "./utils/time";
 import { saveRememberedLogin, clearRememberedLogin } from "./utils/rememberedLogin";
 import ThemeToggle from "./components/ThemeToggle";
 import GroupCard from "./components/GroupCard";
@@ -148,6 +146,10 @@ const api =
     isDevEnvironment && !useRealApi
         ? new MockNavigationClient()
         : new NavigationClient(isDevEnvironment ? "http://localhost:8788/api" : "/api");
+
+// 离线写入队列：给所有 mutation 方法包一层。离线 / 网络失败时把操作存本地，
+// 恢复连接后由下面的 online 监听自动重放。模块级只跑一次。
+wrapMutations(api as unknown as MutationApi);
 
 // 默认配置
 const DEFAULT_CONFIGS = {
@@ -1007,8 +1009,10 @@ function App() {
     // 处理错误的函数
     const handleError = useCallback(
         (errorMessage: string) => {
-            notify(errorMessage, "error");
-            console.error(errorMessage);
+            // 离线队列已接住的操作：温和不报错，告诉用户会在联网后自动同步即可
+            const isOfflineQueued = errorMessage.includes("离线保存") || errorMessage.includes("OfflineQueued");
+            notify(errorMessage, isOfflineQueued ? "info" : "error");
+            if (!isOfflineQueued) console.error(errorMessage);
         },
         [notify]
     );
@@ -1078,6 +1082,14 @@ function App() {
             }
         }
     };
+
+    // 离线期间入队的写入，恢复连接后自动重放；重放完顺手后台刷新一次本地数据
+    useEffect(() => {
+        installOnlineListener(api as unknown as MutationApi, (done) => {
+            notify(`已恢复连接，自动同步了 ${done} 项离线改动`, "success");
+            fetchData({ silent: true });
+        });
+    }, [notify]);
 
     // ---- 本地状态更新（避免每次修改都整页重新加载） ----
     // 关键：只重建真正受影响的分组对象，其它分组保持原引用，
@@ -2573,38 +2585,25 @@ function App() {
     };
 
     // 「最近访问」虚拟分组：7 天内点开过、且点开次数最多的前 10 个网站
-    const favoritesGroup = useMemo(() => {
-        const scored = groups
-            .flatMap(group => group.sites)
-            .map(site => {
-                const stat = visits[String(site.id)];
-                return { site, stat, count: recentVisitCount(stat) };
-            })
-            .filter(item => item.count > 0)
-            .sort((a, b) => b.count - a.count || (b.stat?.last ?? 0) - (a.stat?.last ?? 0))
-            .slice(0, RECENT_GROUP_SIZE)
-            .map(item => item.site);
-
-        return {
-            id: -1,
-            name: "最近访问",
-            order_num: -1,
-            sites: scored,
-        } as GroupWithSites;
-    }, [groups, visits]);
+    // （纯派生逻辑抽到 utils/siteView.ts，便于单测，不再和 App 绑死）
+    const favoritesGroup = useMemo(
+        () => buildFavoritesGroup(groups, visits),
+        [groups, visits]
+    );
 
     // 真正渲染的分组列表：常用置前（排序模式与关闭时不插）
-    const displayedGroups = useMemo(() => {
-        if (!favoritesEnabled || favoritesGroup.sites.length === 0) return renderGroups;
-
-        const favSites = favoritesGroup.sites.filter(
-            site =>
-                matchFilters(site) && (!query || matchesSiteQuery(site, query, usePinyin))
-        );
-
-        if (favSites.length === 0) return renderGroups;
-        return [{ ...favoritesGroup, sites: favSites }, ...renderGroups];
-    }, [visibleGroups, favoritesGroup, favoritesEnabled, query, matchFilters, usePinyin]);
+    const displayedGroups = useMemo(
+        () =>
+            deriveDisplayedGroups(
+                renderGroups,
+                favoritesEnabled,
+                favoritesGroup,
+                query,
+                matchFilters,
+                usePinyin
+            ),
+        [visibleGroups, favoritesGroup, favoritesEnabled, query, matchFilters, usePinyin]
+    );
 
     // 分组面板滚进视口时播一次「渐显上浮」（只播一次，来回滚动不会反复闪）。
     // 元素默认就是正常显示，动画靠 JS 加 class 触发，IntersectionObserver 不可用时完全不受影响。

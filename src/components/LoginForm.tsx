@@ -259,7 +259,7 @@ const LoginForm: React.FC<LoginFormProps> = ({
                                 checked={remember}
                                 onChange={e => setRemember(e.target.checked)}
                                 disabled={loading}
-                                inputProps={{ "aria-label": "记住账号密码" }}
+                                slotProps={{ input: { "aria-label": "记住账号密码" } }}
                             />
                         }
                         label='记住账号密码（一个月内免登录）'

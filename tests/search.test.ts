@@ -75,6 +75,11 @@ test("urlKey 抹掉协议、www、大小写与末尾斜杠的差异", () => {
     assert.equal(urlKey(null), "");
 });
 
+test("urlKey 保留查询串：不同参数算不同地址，但协议/www 差异仍归一", () => {
+    assert.notEqual(urlKey("https://a.com/p?x=1"), urlKey("https://a.com/p?x=2"));
+    assert.equal(urlKey("https://a.com/p?x=1"), urlKey("https://www.a.com/p?x=1"));
+});
+
 test("查重能找出别的分组里的同链接卡片", () => {
     const groups: GroupWithSites[] = [
         { id: 1, name: "常用工具", order_num: 0, sites: [site({ id: 11, url: "https://a.com" })] },
