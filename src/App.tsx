@@ -335,6 +335,17 @@ function App() {
                     mode: darkMode ? "dark" : "light",
                     // 未设置主色时保持默认（亮/暗各一套，暗色下自动换成更亮的蓝）
                     ...(accent ? { primary: { main: accent } } : {}),
+                    // 次级文字（caption/说明文案）默认 rgba(0,0,0,.6)，在带底色的面板上
+                    // 对比度 4.59 压线 AA（4.5）。各提半档留安全余量，视觉上几乎无差别
+                    // （harness/contrast-audit.mjs 守着这条）
+                    text:
+                        darkMode
+                            ? { secondary: "rgba(255,255,255,0.76)" }
+                            : { secondary: "rgba(0,0,0,0.66)" },
+                    // 凭据警告等 warning.dark 文案：MUI 亮色默认 orange[900]（#e65100）
+                    // 在白底上只有 ~3.8:1，低于 AA(4.5)。main 保持默认只加深 dark，
+                    // 暗色用 MUI 默认（contrast-audit 无不合格）
+                    ...(!darkMode && { warning: { main: "#ed6c02", dark: "#9c4f00" } }),
                 },
                 typography: {
                     // 跟随全局字体栈（index.css 的 --font-sans）
