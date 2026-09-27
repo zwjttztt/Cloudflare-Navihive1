@@ -148,6 +148,19 @@ export async function runWebDavBackup(
     }
 ): Promise<WebDavResult<{ filename: string; size: number }>> {
     const { mode, stored = {}, data, secret } = options;
+
+    // 没有 AUTH_SECRET 时备份文件是不加密的 gzip —— 站点密码会明文落到网盘。
+    // 宁可让这次备份失败并把原因说清楚，也不悄悄上传一份明文存档。
+    // （导出本身不算泄密：备份文件里的敏感配置已经被 stripSecretConfigs 剔除，
+    //  真正会上网盘的是站点账号密码，正是要保的东西）
+    if (!secret) {
+        return {
+            success: false,
+            message:
+                "未配置 AUTH_SECRET，已拒绝上传：没有它备份文件无法加密，站点密码会明文存到网盘。请先执行 wrangler secret put AUTH_SECRET 再备份",
+        };
+    }
+
     const payload = data ?? (await api.exportData());
     const filename = buildBackupFileName(mode);
 

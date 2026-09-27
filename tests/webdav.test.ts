@@ -14,6 +14,7 @@ import {
     selectAutoBackupsToPrune,
     describeWebDavStatus,
     describeWebDavError,
+    runWebDavBackup,
 } from "../worker/webdav";
 
 /** 造一份配置：默认关内网豁免，path 走默认值 */
@@ -196,4 +197,49 @@ test("内网拦截等校验类错误原样透传，不被改写成泛泛的『�
     const msg = "WebDAV 服务器地址不允许指向内网或本机（如需备份到家庭 NAS，请打开「允许内网地址」）";
     assert.equal(describeWebDavError(new Error(msg)), msg);
     assert.match(describeWebDavError(new Error("WebDAV 服务器地址必须以 http:// 或 https:// 开头")), /必须以 http/);
+});
+
+// ---- 没配 AUTH_SECRET 时必须拒绝上传 ----
+// webdavUpload 里是 `secret ? encryptBytes(gz, secret) : gz`：密钥缺失会静默退化成
+// 明文 gzip 上传，站点密码等于裸奔在网盘上。宁可让这次备份失败，也不能悄悄上传明文。
+
+test("没有 AUTH_SECRET：备份失败，且一个字节都不发给网盘", async () => {
+    let fetchCalls = 0;
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+        fetchCalls++;
+        return new Response("{}", { status: 200 });
+    }) as typeof fetch;
+    try {
+        const result = await runWebDavBackup(
+            { exportData: async () => ({ groups: [], sites: [], configs: {} }) } as never,
+            cfg("https://dav.example.com/dav/"),
+            { mode: "manual" }
+        );
+        assert.equal(result.success, false);
+        assert.match(result.message || "", /AUTH_SECRET/);
+        assert.equal(fetchCalls, 0, "没密钥就不该发出任何请求");
+    } finally {
+        globalThis.fetch = realFetch;
+    }
+});
+
+test("有 AUTH_SECRET：照常走到上传（不被上面的拦截误伤）", async () => {
+    let fetchCalls = 0;
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+        fetchCalls++;
+        return new Response("{}", { status: 201 });
+    }) as typeof fetch;
+    try {
+        const result = await runWebDavBackup(
+            { exportData: async () => ({ groups: [], sites: [], configs: {} }) } as never,
+            cfg("https://dav.example.com/dav/"),
+            { mode: "manual", secret: "some-secret", stored: {} }
+        );
+        assert.equal(result.success, true);
+        assert.ok(fetchCalls > 0, "有密钥就该真的发出上传请求");
+    } finally {
+        globalThis.fetch = realFetch;
+    }
 });
