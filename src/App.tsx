@@ -55,6 +55,7 @@ import DisplayControls from "./components/DisplayControls";
 const SettingsDialog = lazy(() => import("./components/SettingsDialog"));
 const ImportPreviewDialog = lazy(() => import("./components/ImportPreviewDialog"));
 import HeaderClock from "./components/HeaderClock";
+import SiteListHeader from "./components/SiteListHeader";
 const VisitsDialog = lazy(() => import("./components/VisitsDialog"));
 import EmptyArt from "./components/EmptyArt";
 import { COLLAPSED_EVENT, readCollapsedGroupIds, setAllCollapsed } from "./utils/collapse";
@@ -3232,111 +3233,73 @@ function App() {
                             onToggleCollapseAll={toggleCollapseAll}
                         />
                     )}
-                    <Box
-                        component='header'
-                        className={headerCompact ? "nav-header-compact" : undefined}
-                        sx={{
-                            display: "flex",
-                            justifyContent: "space-between",
-                            alignItems: "center",
-                            mb: headerCompact ? 2.5 : 5,
-                            flexDirection: { xs: "column", sm: "row" },
-                            gap: { xs: 2, sm: 0 },
-                            // 向下滚动后收掉一点高度，内容区往上顶
-                            pt: headerCompact ? 0 : 0.5,
-                            transition: "margin .25s ease",
-                        }}
-                    >
-                        <Typography
-                            variant='h3'
-                            component='h1'
-                            fontWeight='bold'
-                            color='text.primary'
-                            sx={{ 
-                                fontSize: headerCompact
-                                    ? { xs: '1.25rem', sm: '1.5rem', md: '1.9rem' }
-                                    : { xs: '1.75rem', sm: '2.125rem', md: '3rem' },
-                                textAlign: { xs: 'center', sm: 'left' },
-                                transition: 'font-size .25s ease',
-                            }}
-                        >
-                            {configs["site.name"]}
-                        </Typography>
-                        <Stack 
-                            direction={{ xs: 'row', sm: 'row' }} 
-                            spacing={{ xs: 1, sm: 1.5 }} 
-                            alignItems="center"
-                            width={{ xs: '100%', sm: 'auto' }}
-                            justifyContent={{ xs: 'center', sm: 'flex-end' }}
-                            flexWrap="wrap"
-                            useFlexGap
-                            sx={{ rowGap: 1.5, py: { xs: 1, sm: 0 } }}
-                        >
-                            {/* 搜索框：位于操作按钮左侧，输入即时筛选并弹出结果面板 */}
-                            {sortMode === SortMode.None && (
-                                <HeaderSearchBox
-                                    searchInputRef={searchInputRef}
-                                    searchPanelRef={searchPanelRef}
-                                    searchQuery={searchQuery}
-                                    setSearchQuery={setSearchQuery}
-                                    setActiveResult={setActiveResult}
-                                    setSearchFocused={setSearchFocused}
-                                    searchAnchor={searchAnchor}
-                                    setSearchAnchor={setSearchAnchor}
-                                    dropdownOpen={dropdownOpen}
-                                    historyOpen={historyOpen}
-                                    query={query}
-                                    results={flatResults}
-                                    activeResult={activeResult}
-                                    openResult={openResult}
-                                    searchHistory={searchHistory}
-                                    applyHistoryTerm={applyHistoryTerm}
-                                    clearSearchHistory={clearSearchHistory}
-                                    headerCompact={headerCompact}
-                                />
-                            )}
-                            {/* 搜索是「找东西」，右侧是「改数据 / 改显示」，中间用竖线分开 */}
-                            {sortMode === SortMode.None && (
-                                <Box aria-hidden sx={headerDividerSx} className='nav-header-divider' />
-                            )}
-                            <HeaderActions
-                                sortMode={sortMode}
-                                onSaveGroupOrder={handleSaveGroupOrder}
-                                onSaveSiteSort={handleSaveSiteSort}
-                                onCancelSort={cancelSort}
-                                onOpenAddGroup={handleOpenAddGroup}
-                                onMenuOpen={handleMenuOpen}
-                                menuOpen={openMenu}
-                                menu={
-                                    <MoreMenu
-                                        anchorEl={menuAnchorEl}
-                                        open={openMenu && sortMode === SortMode.None}
-                                        onClose={handleMenuClose}
-                                        onOpenConfig={handleOpenConfig}
-                                        onStartGroupSort={startGroupSort}
-                                        canInstall={canInstall}
-                                        onInstallApp={() => void handleInstallApp()}
-                                        favoritesEnabled={favoritesEnabled}
-                                        onFavoritesEnabledChange={setFavoritesEnabled}
-                                        onOpenVisits={() => setOpenVisits(true)}
-                                        onOpenShortcuts={() => setOpenShortcuts(true)}
-                                        onOpenBackup={handleOpenBackup}
-                                        onOpenBookmark={() => setBookmarkOpen(true)}
-                                        onRunLinkCheck={() => void runLinkCheck()}
-                                        onClearVisits={clearVisits}
-                                        isAuthenticated={isAuthenticated}
-                                        onLogout={handleLogout}
+                    <SiteListHeader
+                        siteName={configs["site.name"]}
+                        headerCompact={headerCompact}
+                        actions={
+                            <>
+                                {sortMode === SortMode.None && (
+                                    <HeaderSearchBox
+                                        searchInputRef={searchInputRef}
+                                        searchPanelRef={searchPanelRef}
+                                        searchQuery={searchQuery}
+                                        setSearchQuery={setSearchQuery}
+                                        setActiveResult={setActiveResult}
+                                        setSearchFocused={setSearchFocused}
+                                        searchAnchor={searchAnchor}
+                                        setSearchAnchor={setSearchAnchor}
+                                        dropdownOpen={dropdownOpen}
+                                        historyOpen={historyOpen}
+                                        query={query}
+                                        results={flatResults}
+                                        activeResult={activeResult}
+                                        openResult={openResult}
+                                        searchHistory={searchHistory}
+                                        applyHistoryTerm={applyHistoryTerm}
+                                        clearSearchHistory={clearSearchHistory}
+                                        headerCompact={headerCompact}
                                     />
-                                }
-                            />
-                            {/* 操作按钮与显示控制之间再分一次组 */}
-                            {sortMode === SortMode.None && (
-                                <Box aria-hidden sx={headerDividerSx} className='nav-header-divider' />
-                            )}
-                            {/* 显示控制：视图版式 + 显示密度合成一块玻璃胶囊，中间一条细线分开
-                                （原来是两块外形一模一样的独立胶囊，并排放着像重复按钮） */}
-                            {sortMode === SortMode.None && (
-                                <>
+                                )}
+                                {/* 搜索是「找东西」，右侧是「改数据 / 改显示」，中间用竖线分开 */}
+                                {sortMode === SortMode.None && (
+                                    <Box aria-hidden sx={headerDividerSx} className='nav-header-divider' />
+                                )}
+                                <HeaderActions
+                                    sortMode={sortMode}
+                                    onSaveGroupOrder={handleSaveGroupOrder}
+                                    onSaveSiteSort={handleSaveSiteSort}
+                                    onCancelSort={cancelSort}
+                                    onOpenAddGroup={handleOpenAddGroup}
+                                    onMenuOpen={handleMenuOpen}
+                                    menuOpen={openMenu}
+                                    menu={
+                                        <MoreMenu
+                                            anchorEl={menuAnchorEl}
+                                            open={openMenu && sortMode === SortMode.None}
+                                            onClose={handleMenuClose}
+                                            onOpenConfig={handleOpenConfig}
+                                            onStartGroupSort={startGroupSort}
+                                            canInstall={canInstall}
+                                            onInstallApp={() => void handleInstallApp()}
+                                            favoritesEnabled={favoritesEnabled}
+                                            onFavoritesEnabledChange={setFavoritesEnabled}
+                                            onOpenVisits={() => setOpenVisits(true)}
+                                            onOpenShortcuts={() => setOpenShortcuts(true)}
+                                            onOpenBackup={handleOpenBackup}
+                                            onOpenBookmark={() => setBookmarkOpen(true)}
+                                            onRunLinkCheck={() => void runLinkCheck()}
+                                            onClearVisits={clearVisits}
+                                            isAuthenticated={isAuthenticated}
+                                            onLogout={handleLogout}
+                                        />
+                                    }
+                                />
+                                {/* 操作按钮与显示控制之间再分一次组 */}
+                                {sortMode === SortMode.None && (
+                                    <Box aria-hidden sx={headerDividerSx} className='nav-header-divider' />
+                                )}
+                                {/* 显示控制：视图版式 + 显示密度合成一块玻璃胶囊，中间一条细线分开 */}
+                                {sortMode === SortMode.None && (
                                     <DisplayControls
                                         viewMode={viewMode}
                                         setViewMode={setViewMode}
@@ -3350,15 +3313,13 @@ function App() {
                                         themeMode={themeMode}
                                         onToggleTheme={toggleTheme}
                                     />
-                                </>
-                            )}
-
-                            {/* 时钟自己归成「状态区」，和左侧操作按钮用竖线隔开。
-                                主题切换原本也在这一区，现已并进上面那条显示胶囊。 */}
-                            <Box aria-hidden sx={headerDividerSx} className='nav-header-divider' />
-                            <HeaderClock />
-                        </Stack>
-                    </Box>
+                                )}
+                                {/* 时钟自己归成「状态区」，和左侧操作按钮用竖线隔开。 */}
+                                <Box aria-hidden sx={headerDividerSx} className='nav-header-divider' />
+                                <HeaderClock />
+                            </>
+                        }
+                    />
 
                     {/* 标签筛选栏：有用过的标签、或检出失效链接时才出现 */}
                     {sortMode === SortMode.None &&
