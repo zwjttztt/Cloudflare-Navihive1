@@ -125,6 +125,7 @@ import {
     Tooltip,
     InputAdornment,
 } from "@mui/material";
+import { encryptBackup } from "./API/crypto";
 import CloseIcon from "@mui/icons-material/Close";
 import AutoFixHighIcon from "@mui/icons-material/AutoFixHigh";
 import CloudDownloadIcon from "@mui/icons-material/CloudDownload";
@@ -2163,14 +2164,26 @@ function App() {
         };
     };
 
-    // 备份到本地：下载 JSON 文件
-    const handleDownloadLocal = () => {
+    // 备份到本地：下载备份文件。传了口令就用它加密后再落盘（明文 JSON 会带着站点
+    // 密码直接躺在磁盘 / 网盘同步目录里），不传则维持原来的明文 JSON（兼容老备份）。
+    const handleDownloadLocal = async (password?: string) => {
         try {
             const dataStr = JSON.stringify(buildExportData(), null, 2);
-            const blob = new Blob([dataStr], { type: "application/json;charset=utf-8" });
-            const url = URL.createObjectURL(blob);
+            const stamp = new Date().toISOString().slice(0, 10);
 
-            const exportFileName = `导航站备份_${new Date().toISOString().slice(0, 10)}.json`;
+            let blob: Blob;
+            let exportFileName: string;
+            if (password) {
+                const bytes = await encryptBackup(new TextEncoder().encode(dataStr), password);
+                blob = new Blob([bytes], { type: "application/octet-stream" });
+                // 换后缀：加密文件已经不是 JSON 了，用 .navihive 免得被当文本打开
+                exportFileName = `导航站备份_${stamp}.navihive`;
+            } else {
+                blob = new Blob([dataStr], { type: "application/json;charset=utf-8" });
+                exportFileName = `导航站备份_${stamp}.json`;
+            }
+
+            const url = URL.createObjectURL(blob);
 
             const linkElement = document.createElement("a");
             linkElement.setAttribute("href", url);

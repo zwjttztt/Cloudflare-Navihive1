@@ -245,6 +245,62 @@ export async function decryptBytes(cipher: Uint8Array, secret: string): Promise<
     return new Uint8Array(await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct));
 }
 
+// ---------------- 备份文件口令加密 ----------------
+// 本地下载 / 离线存档的备份要用用户自己的口令加密：这类文件会落到磁盘、聊天附件、
+// 网盘同步目录，从落盘那一刻起就不在服务端 AUTH_SECRET 的保护范围内了。
+// 因此不能用固定盐的 aesKey（那是服务端密钥派生），这里每次加密换随机盐。
+// 文件格式：MAGIC(13) + salt(16) + IV(12) + 密文
+const BACKUP_MAGIC = "NAVIHIVE-ENC1";
+const BACKUP_SALT_BYTES = 16;
+const BACKUP_IV_BYTES = 12;
+const BACKUP_ITERS = 150_000;
+const BACKUP_HEADER_BYTES = BACKUP_MAGIC.length + BACKUP_SALT_BYTES + BACKUP_IV_BYTES;
+
+/** 按文件头判断是不是口令加密过的备份（明文 JSON / gzip 都认不出来） */
+export function isEncryptedBackup(bytes: Uint8Array): boolean {
+    if (bytes.length < BACKUP_MAGIC.length) return false;
+    for (let i = 0; i < BACKUP_MAGIC.length; i++) {
+        if (bytes[i] !== BACKUP_MAGIC.charCodeAt(i)) return false;
+    }
+    return true;
+}
+
+export async function encryptBackup(plain: Uint8Array, password: string): Promise<Uint8Array> {
+    if (!password) throw new Error("请先设置备份密码");
+    const salt = crypto.getRandomValues(new Uint8Array(BACKUP_SALT_BYTES));
+    const iv = crypto.getRandomValues(new Uint8Array(BACKUP_IV_BYTES));
+    const key = await backupKey(password, salt);
+    const ct = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, plain));
+    const out = new Uint8Array(BACKUP_HEADER_BYTES + ct.byteLength);
+    out.set(enc.encode(BACKUP_MAGIC), 0);
+    out.set(salt, BACKUP_MAGIC.length);
+    out.set(iv, BACKUP_MAGIC.length + BACKUP_SALT_BYTES);
+    out.set(ct, BACKUP_HEADER_BYTES);
+    return out;
+}
+
+export async function decryptBackup(cipher: Uint8Array, password: string): Promise<Uint8Array> {
+    if (!isEncryptedBackup(cipher)) throw new Error("这不是加密的备份文件");
+    const salt = cipher.subarray(BACKUP_MAGIC.length, BACKUP_MAGIC.length + BACKUP_SALT_BYTES);
+    const iv = cipher.subarray(
+        BACKUP_MAGIC.length + BACKUP_SALT_BYTES,
+        BACKUP_HEADER_BYTES
+    );
+    const ct = cipher.subarray(BACKUP_HEADER_BYTES);
+    const key = await backupKey(password, salt);
+    try {
+        return new Uint8Array(await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct));
+    } catch {
+        // AES-GCM 认证失败 = 密码不对或文件被动过，两种情况对用户都是「打不开」
+        throw new Error("备份密码不正确，或备份文件已损坏");
+    }
+}
+
+async function backupKey(password: string, salt: Uint8Array): Promise<CryptoKey> {
+    const raw = await pbkdf2(password, salt, BACKUP_ITERS, 32);
+    return crypto.subtle.importKey("raw", raw, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
+}
+
 // ---------------- 密码强度策略 ----------------
 // 改密 / 重置强制：至少 12 位、不能由同一字符重复组成（挡住 000000000000 这类）。
 // 不引入额外依赖做弱口令字典，长度门槛对个人站足够，之后可接 zxcvbn。

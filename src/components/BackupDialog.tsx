@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from "react";
 import { ExportData, WebDavConfig, WebDavFile } from "../API/http";
 import { NavigationClient } from "../API/client";
 import { MockNavigationClient } from "../API/mock";
+import { decryptBackup, isEncryptedBackup } from "../API/crypto";
 import {
     Dialog,
     DialogTitle,
@@ -52,7 +53,8 @@ interface BackupDialogProps {
     lastBackupAt?: string;
     onToggleAutoBackup?: (enabled: boolean) => Promise<void>;
     onBuildExportData: () => ExportData;
-    onDownloadLocal: () => void;
+    /** 传了口令就用它加密备份文件再下载，不传则下载明文 JSON（兼容老备份） */
+    onDownloadLocal: (password?: string) => void | Promise<void>;
     onImportData: (data: ExportData, overwrite: boolean) => Promise<void>;
     /**
      * 导入前先弹一次差异预览，返回用户确认后真正要导入的数据；
@@ -144,6 +146,15 @@ export default function BackupDialog({
     const [overwrite, setOverwrite] = useState(true);
     // 密码默认遮住，点眼睛才明文显示（仅影响本机显示）
     const [showPassword, setShowPassword] = useState(false);
+    // 本地备份是否用口令加密 + 口令本身（不落盘、不上传，只用于当次下载）
+    const [encryptLocal, setEncryptLocal] = useState(false);
+    const [backupPassword, setBackupPassword] = useState("");
+    const [backupPasswordConfirm, setBackupPasswordConfirm] = useState("");
+    const [showBackupPassword, setShowBackupPassword] = useState(false);
+    // 选中的文件若是加密备份，先把原始字节留着，等用户输入口令再解
+    const [encryptedBytes, setEncryptedBytes] = useState<Uint8Array | null>(null);
+    const [restorePassword, setRestorePassword] = useState("");
+    const [decrypting, setDecrypting] = useState(false);
 
     // 打开时同步外部保存的 WebDAV 配置
     // 注意：不把 webdavConfig 放进依赖，避免保存配置后把连接测试结果清空
@@ -157,6 +168,12 @@ export default function BackupDialog({
             setLocalError(null);
             setSelectedRemote("");
             setShowPassword(false);
+            setEncryptLocal(false);
+            setBackupPassword("");
+            setBackupPasswordConfirm("");
+            setShowBackupPassword(false);
+            setEncryptedBytes(null);
+            setRestorePassword("");
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [open, initialTab]);
@@ -244,50 +261,92 @@ export default function BackupDialog({
         }
     };
 
-    // 选择本地备份文件并解析
+    // 解析好的备份收下 + 统计一下给提示（明文 JSON 与解密后的内容共用这条）
+    const applyParsedBackup = (parsed: ExportData) => {
+        try {
+            if (!parsed.groups || !Array.isArray(parsed.groups)) {
+                throw new Error("备份文件中缺少分组数据");
+            }
+            const siteCount =
+                Array.isArray(parsed.sites) && parsed.sites.length > 0
+                    ? parsed.sites.length
+                    : parsed.groups.reduce(
+                          (sum, group) =>
+                              sum +
+                              (Array.isArray((group as unknown as { sites?: unknown[] }).sites)
+                                  ? ((group as unknown as { sites?: unknown[] }).sites as unknown[]).length
+                                  : 0),
+                          0
+                      );
+            setLocalData(parsed);
+            // 备份里如果带了本机偏好（星标 / 标签），顺带一句话说明，避免用户以为没导进来
+            const localStarCount = parsed.localPrefs?.starred?.length ?? 0;
+            const localTagCount = Object.keys(parsed.localPrefs?.tags ?? {}).length;
+            const extra =
+                localStarCount || localTagCount
+                    ? `，含 ${localStarCount} 个星标 / ${localTagCount} 个带标签的站点`
+                    : "";
+            onNotify(
+                `已读取备份：${parsed.groups.length} 个分组 / ${siteCount} 个站点${extra}`,
+                "info"
+            );
+        } catch (error) {
+            setLocalError(error instanceof Error ? error.message : "备份文件解析失败");
+        }
+    };
+
+    // 选择本地备份文件并解析。
+    // 按字节读而不是按文本：加密备份是二进制（NAVIHIVE-ENC1 开头），readAsText 会先
+    // 把二进制按 UTF-8 解码成乱码，之后就再也分不清它到底是哪种格式了。
     const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files && e.target.files[0];
         setLocalError(null);
         setLocalData(null);
         setLocalFile(file || null);
+        setEncryptedBytes(null);
+        setRestorePassword("");
         if (!file) return;
 
         const reader = new FileReader();
         reader.onload = () => {
+            const bytes = new Uint8Array(reader.result as ArrayBuffer);
+            if (isEncryptedBackup(bytes)) {
+                // 先留着原始字节，等用户输入口令再解
+                setEncryptedBytes(bytes);
+                onNotify("这是加密备份，请输入备份密码后解密", "info");
+                return;
+            }
             try {
-                const parsed = JSON.parse(String(reader.result || "").replace(/^\uFEFF/, "")) as ExportData;
-                if (!parsed.groups || !Array.isArray(parsed.groups)) {
-                    throw new Error("备份文件中缺少分组数据");
-                }
-                const siteCount =
-                    Array.isArray(parsed.sites) && parsed.sites.length > 0
-                        ? parsed.sites.length
-                        : parsed.groups.reduce(
-                              (sum, group) =>
-                                  sum +
-                                  (Array.isArray((group as unknown as { sites?: unknown[] }).sites)
-                                      ? ((group as unknown as { sites?: unknown[] }).sites as unknown[]).length
-                                      : 0),
-                              0
-                          );
-                setLocalData(parsed);
-                // 备份里如果带了本机偏好（星标 / 标签），顺带一句话说明，避免用户以为没导进来
-                const localStarCount = parsed.localPrefs?.starred?.length ?? 0;
-                const localTagCount = Object.keys(parsed.localPrefs?.tags ?? {}).length;
-                const extra =
-                    localStarCount || localTagCount
-                        ? `，含 ${localStarCount} 个星标 / ${localTagCount} 个带标签的站点`
-                        : "";
-                onNotify(
-                    `已读取备份：${parsed.groups.length} 个分组 / ${siteCount} 个站点${extra}`,
-                    "info"
+                applyParsedBackup(
+                    JSON.parse(new TextDecoder().decode(bytes).replace(/^\uFEFF/, "")) as ExportData
                 );
             } catch (error) {
                 setLocalError(error instanceof Error ? error.message : "备份文件解析失败");
             }
         };
         reader.onerror = () => setLocalError("读取文件失败");
-        reader.readAsText(file, "UTF-8");
+        reader.readAsArrayBuffer(file);
+    };
+
+    // 用口令解开加密备份（口令只在本机内存里用一次，不上传也不落盘）
+    const handleDecryptBackup = async () => {
+        if (!encryptedBytes) return;
+        if (!restorePassword) {
+            onNotify("请输入备份密码", "error");
+            return;
+        }
+        setDecrypting(true);
+        setLocalError(null);
+        try {
+            const plain = await decryptBackup(encryptedBytes, restorePassword);
+            applyParsedBackup(
+                JSON.parse(new TextDecoder().decode(plain).replace(/^\uFEFF/, "")) as ExportData
+            );
+        } catch (error) {
+            setLocalError(error instanceof Error ? error.message : "解密失败");
+        } finally {
+            setDecrypting(false);
+        }
     };
 
     // 导入前先过一遍差异预览：用户可以在预览里挑要导入哪些，取消则返回 null
@@ -297,7 +356,10 @@ export default function BackupDialog({
     // 从本地文件恢复
     const handleRestoreLocal = async () => {
         if (!localData) {
-            onNotify("请先选择备份文件", "error");
+            onNotify(
+                encryptedBytes ? "这是加密备份，请先输入密码解密" : "请先选择备份文件",
+                "error"
+            );
             return;
         }
         setRestoring(true);
@@ -383,9 +445,25 @@ export default function BackupDialog({
                         size='small'
                         variant='contained'
                         startIcon={<DownloadIcon />}
-                        onClick={() => {
-                            onDownloadLocal();
-                            onNotify("备份文件已开始下载", "success");
+                        onClick={async () => {
+                            // 口令先在本机校验，不合格就别生成文件（加密文件忘了密码就永远打不开）
+                            if (encryptLocal) {
+                                if (backupPassword.length < 8) {
+                                    onNotify("备份密码至少 8 位", "error");
+                                    return;
+                                }
+                                if (backupPassword !== backupPasswordConfirm) {
+                                    onNotify("两次输入的备份密码不一致", "error");
+                                    return;
+                                }
+                            }
+                            await onDownloadLocal(encryptLocal ? backupPassword : undefined);
+                            onNotify(
+                                encryptLocal
+                                    ? "加密备份已开始下载，请牢记备份密码"
+                                    : "备份文件已开始下载",
+                                "success"
+                            );
                         }}
                     >
                         下载备份文件
@@ -432,10 +510,90 @@ export default function BackupDialog({
                         sx={{ display: "block", ml: 5.5 }}
                     >
                         {includeCredentials
-                            ? "备份是明文 JSON，自动备份还会同步到网盘，请确认网盘账号本身可信。"
+                            ? "本地下载为明文 JSON，上传与定时备份会再加密一层。"
                             : "导出、上传、定时备份都不带网站的账号密码，恢复后需手动补填。"}
                     </Typography>
                 </Box>
+
+                {/* 本地备份加密：明文 JSON 落盘那一刻就带着站点密码，进网盘同步目录
+                    或被随手发出去就等于泄密。默认关闭，所以不套边框容器 ——
+                    它是进阶选项，视觉层级比上面的凭据开关低一档，也省下纵向空间。 */}
+                <Stack direction='row' alignItems='center' spacing={0.5} sx={{ mt: 0.75 }}>
+                    <Switch
+                        checked={encryptLocal}
+                        size='small'
+                        onChange={e => {
+                            setEncryptLocal(e.target.checked);
+                            // 关掉就清空口令，别让密码留在内存里等着被误用
+                            if (!e.target.checked) {
+                                setBackupPassword("");
+                                setBackupPasswordConfirm("");
+                            }
+                        }}
+                        slotProps={{ input: { "aria-label": "用密码加密备份文件" } }}
+                    />
+                    <Typography variant='body2'>用密码加密备份文件（.navihive）</Typography>
+                </Stack>
+                {encryptLocal && (
+                    <>
+                        <Typography
+                            variant='caption'
+                            color='success.dark'
+                            sx={{ display: "block", ml: 5.5, mb: 0.5 }}
+                        >
+                            恢复时要输入这个密码；密码无法找回，请务必牢记。
+                        </Typography>
+                        <Stack
+                            direction={{ xs: "column", sm: "row" }}
+                            spacing={1}
+                            sx={{ ml: 5.5 }}
+                        >
+                            <TextField
+                                id='backup-encrypt-password'
+                                label='备份密码'
+                                type={showBackupPassword ? "text" : "password"}
+                                placeholder='至少 8 位'
+                                size='small'
+                                fullWidth
+                                value={backupPassword}
+                                onChange={e => setBackupPassword(e.target.value)}
+                                autoComplete='new-password'
+                            />
+                            <TextField
+                                id='backup-encrypt-password-confirm'
+                                label='确认备份密码'
+                                type={showBackupPassword ? "text" : "password"}
+                                size='small'
+                                fullWidth
+                                value={backupPasswordConfirm}
+                                onChange={e => setBackupPasswordConfirm(e.target.value)}
+                                autoComplete='new-password'
+                                slotProps={{
+                                    input: {
+                                        endAdornment: (
+                                            <InputAdornment position='end'>
+                                                <IconButton
+                                                    id='backup-toggle-password'
+                                                    size='small'
+                                                    onClick={() =>
+                                                        setShowBackupPassword(prev => !prev)
+                                                    }
+                                                    aria-label='显示备份密码'
+                                                >
+                                                    {showBackupPassword ? (
+                                                        <VisibilityOffIcon fontSize='small' />
+                                                    ) : (
+                                                        <VisibilityIcon fontSize='small' />
+                                                    )}
+                                                </IconButton>
+                                            </InputAdornment>
+                                        ),
+                                    },
+                                }}
+                            />
+                        </Stack>
+                    </>
+                )}
             </Box>
 
             <Divider />
@@ -638,7 +796,12 @@ export default function BackupDialog({
                 <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} alignItems={{ sm: "center" }}>
                     <Button variant='outlined' component='label' startIcon={<UploadFileIcon />}>
                         选择备份文件
-                        <input type='file' hidden accept='.json,application/json' onChange={handleFileSelect} />
+                        <input
+                            type='file'
+                            hidden
+                            accept='.json,.navihive,application/json'
+                            onChange={handleFileSelect}
+                        />
                     </Button>
                     <Button
                         variant='contained'
@@ -653,6 +816,34 @@ export default function BackupDialog({
                     <Typography variant='body2' sx={{ mt: 1 }}>
                         已选择：{localFile.name}
                     </Typography>
+                )}
+                {/* 加密备份：先输口令解开，再走和明文一样的恢复流程 */}
+                {encryptedBytes && !localData && (
+                    <Stack
+                        direction={{ xs: "column", sm: "row" }}
+                        spacing={1}
+                        alignItems={{ sm: "center" }}
+                        sx={{ mt: 1 }}
+                    >
+                        <TextField
+                            id='backup-restore-password'
+                            label='备份密码'
+                            type='password'
+                            size='small'
+                            value={restorePassword}
+                            onChange={e => setRestorePassword(e.target.value)}
+                            autoComplete='off'
+                            sx={{ flex: 1 }}
+                        />
+                        <Button
+                            variant='outlined'
+                            onClick={handleDecryptBackup}
+                            disabled={decrypting}
+                            startIcon={decrypting ? <CircularProgress size={18} /> : undefined}
+                        >
+                            解密
+                        </Button>
+                    </Stack>
                 )}
                 {localError && (
                     <Alert severity='error' sx={{ mt: 1 }}>
@@ -790,7 +981,7 @@ export default function BackupDialog({
                     // 超出屏幕，底部按钮区和页面底栏叠在一起。
                     // 高度写在这里，弹窗在任何视口下上下至少各留 24px，永远不顶满；
                     // 内容区 flex 填剩余高度，内容装不下时在区内滚动。
-                    height: { xs: "auto", sm: "min(720px, calc(100% - 48px))" },
+                    height: { xs: "auto", sm: "min(760px, calc(100% - 48px))" },
                     maxHeight: { sm: "calc(100% - 48px)" },
                 },
             }}

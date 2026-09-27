@@ -12,6 +12,9 @@ import {
     encryptSecret,
     decryptSecret,
     decryptSecretDeep,
+    encryptBackup,
+    decryptBackup,
+    isEncryptedBackup,
     encryptBytes,
     decryptBytes,
     validatePasswordStrength,
@@ -140,4 +143,45 @@ test("换 secret 后旧密文解不开，但新密文正常（缓存按 secret �
     const other = SECRET + "-other";
     assert.equal(await decryptSecret(a, other), "");
     assert.equal(await decryptSecret(await encryptSecret("shared", other), other), "shared");
+});
+
+// ---- 备份文件口令加密 ----
+// 本地下载的备份会落到磁盘 / 网盘同步目录，明文 JSON 带着站点密码等于裸奔。
+// 这类文件必须用用户自己的口令加密，且不能复用服务端固定盐的 aesKey。
+
+const enc = new TextEncoder();
+const dec = new TextDecoder();
+const BACKUP_JSON = JSON.stringify({ groups: [{ id: 1, name: "常用" }], sites: [{ id: 1, password: "p@ss" }] });
+
+test("加密后的备份能被认出来，明文 JSON 不会被误判", async () => {
+    const cipher = await encryptBackup(enc.encode(BACKUP_JSON), "backup-pwd");
+    assert.equal(isEncryptedBackup(cipher), true);
+    assert.equal(isEncryptedBackup(enc.encode(BACKUP_JSON)), false);
+    assert.equal(isEncryptedBackup(enc.encode('{"groups":[]}')), false);
+});
+
+test("正确口令能解回原文", async () => {
+    const cipher = await encryptBackup(enc.encode(BACKUP_JSON), "backup-pwd");
+    assert.equal(dec.decode(await decryptBackup(cipher, "backup-pwd")), BACKUP_JSON);
+});
+
+test("口令错误抛可读懂的错误，不返回乱码", async () => {
+    const cipher = await encryptBackup(enc.encode(BACKUP_JSON), "backup-pwd");
+    await assert.rejects(() => decryptBackup(cipher, "wrong-pwd"), /密码不正确/);
+});
+
+test("拿明文文件去解密会明确报错，而不是当成乱码解", async () => {
+    await assert.rejects(() => decryptBackup(enc.encode(BACKUP_JSON), "x"), /不是加密的备份文件/);
+});
+
+test("空口令直接拒绝加密（加密了却没口令等于把文件锁死）", async () => {
+    await assert.rejects(() => encryptBackup(enc.encode(BACKUP_JSON), ""), /请先设置备份密码/);
+});
+
+test("同一份数据两次加密结果不同（随机盐 + 随机 IV）", async () => {
+    const a = await encryptBackup(enc.encode(BACKUP_JSON), "backup-pwd");
+    const b = await encryptBackup(enc.encode(BACKUP_JSON), "backup-pwd");
+    assert.notEqual(Buffer.from(a).toString("hex"), Buffer.from(b).toString("hex"));
+    // 结果不同但都能解开
+    assert.equal(dec.decode(await decryptBackup(b, "backup-pwd")), BACKUP_JSON);
 });
