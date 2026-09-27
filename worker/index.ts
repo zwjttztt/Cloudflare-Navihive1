@@ -617,7 +617,7 @@ export default {
                     }
 
                     const current = await api.getAuthCredentials();
-                    if (currentPassword !== current.password) {
+                    if (!(await api.verifyCurrentPassword(currentPassword))) {
                         return Response.json(
                             { success: false, message: "当前密码不正确" },
                             { status: 403 }

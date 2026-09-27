@@ -1,6 +1,15 @@
 // src/api/http.ts
 // 不使用外部JWT库，改为内置的crypto API
 import { normalizeUrl } from "../utils/url";
+import {
+    signJwt,
+    verifyJwt,
+    hashPassword,
+    verifyPassword,
+    isHashedPassword,
+    encryptSecret,
+    decryptSecret,
+} from "./crypto";
 
 // 定义D1数据库类型
 interface D1Database {
@@ -150,6 +159,10 @@ let migrationPromise: Promise<void> | null = null;
  */
 export const AUTH_USERNAME_KEY = "auth.username";
 export const AUTH_PASSWORD_KEY = "auth.password";
+// WebDAV 备份凭据：明文落 D1 风险高，写入前用 AUTH_SECRET 派生密钥加密（见 setConfig/queryConfigs）
+export const WEBDAV_PASSWORD_KEY = "webdav.password";
+// 令牌版本：改密 / 重置后 +1，让所有已签发的令牌立即失效（服务端可吊销）
+export const TOKEN_VERSION_KEY = "auth.tokenVersion";
 
 // 令牌有效期（秒）：普通登录 1 天；勾选「记住账号密码」后 30 天，实现「一个月内免登录」
 export const DEFAULT_TOKEN_TTL = 24 * 60 * 60;
@@ -247,6 +260,8 @@ export class NavigationAPI {
     private secret: string;
     // 应急重置码：忘记密码时用它在登录页直接重设密码
     private resetCode: string;
+    // 令牌版本缓存（模块内按 isolate 读一次即可，改密时失效）
+    private tokenVersionCache: number | null = null;
 
     constructor(env: Env) {
         this.db = env.DB;
@@ -406,10 +421,28 @@ export class NavigationAPI {
         return { username: this.seedUsername, password: this.seedPassword };
     }
 
+    // 令牌版本：改密 / 重置后 +1，让所有已签发的令牌立即失效（服务端可吊销）
+    private async getTokenVersion(): Promise<number> {
+        if (this.tokenVersionCache !== null) return this.tokenVersionCache;
+        const raw = await this.getConfig(TOKEN_VERSION_KEY);
+        const v = raw ? Number(raw) : 0;
+        this.tokenVersionCache = Number.isFinite(v) ? v : 0;
+        return this.tokenVersionCache;
+    }
+
+    private async bumpTokenVersion(): Promise<void> {
+        const v = (await this.getTokenVersion()) + 1;
+        this.tokenVersionCache = v;
+        await this.setConfig(TOKEN_VERSION_KEY, String(v));
+    }
+
     // 更新管理员凭据（写入数据库后立即生效）
     async updateAuthCredentials(username: string, password: string): Promise<boolean> {
+        // 密码一律哈希存储，绝不落明文
+        const hashed = await hashPassword(password);
         const okUser = await this.setConfig(AUTH_USERNAME_KEY, username);
-        const okPass = await this.setConfig(AUTH_PASSWORD_KEY, password);
+        const okPass = await this.setConfig(AUTH_PASSWORD_KEY, hashed);
+        await this.bumpTokenVersion();
         return okUser && okPass;
     }
 
@@ -477,9 +510,13 @@ export class NavigationAPI {
         // 凭据以数据库为准：首次部署才会用到 wrangler vars 里的默认值
         const credentials = await this.getAuthCredentials();
 
-        // 验证用户名和密码
-        if (loginRequest.username === credentials.username && loginRequest.password === credentials.password) {
-            // 生成JWT令牌
+        // 验证用户名 + 密码哈希（定时间比较；存量明文会在首次登录后自动升级为哈希）
+        const passwordOk = await verifyPassword(loginRequest.password, credentials.password);
+        if (loginRequest.username === credentials.username && passwordOk) {
+            // 存量明文迁移：登录成功就把明文换成哈希落库
+            if (!isHashedPassword(credentials.password)) {
+                await this.updateAuthCredentials(credentials.username, loginRequest.password);
+            }
             const token = await this.generateToken({ username: loginRequest.username }, ttlSeconds);
             return {
                 success: true,
@@ -501,30 +538,10 @@ export class NavigationAPI {
         if (!this.authEnabled) {
             return { valid: true };
         }
-
-        try {
-            // 解析JWT
-            const [header, payload, signature] = token.split(".");
-            if (!header || !payload || !signature) {
-                throw new Error("无效的Token格式");
-            }
-
-            // 解码payload
-            const decodedPayload = JSON.parse(atob(payload.replace(/-/g, "+").replace(/_/g, "/")));
-
-            // 验证过期时间
-            if (decodedPayload.exp && decodedPayload.exp < Math.floor(Date.now() / 1000)) {
-                throw new Error("Token已过期");
-            }
-
-            // 注意：这个简化版本没有验证签名，仅用于开发/测试
-            // 在生产环境中，应该使用crypto.subtle.verify来验证签名
-
-            return { valid: true, payload: decodedPayload };
-        } catch (error) {
-            console.error("Token验证失败:", error);
-            return { valid: false };
-        }
+        // 现在会真正验签（HMAC-SHA256）+ 校验过期 + 校验令牌版本，
+        // 伪造的 token 直接被拒，改密后旧 token 也立即失效。
+        const tv = await this.getTokenVersion();
+        return verifyJwt(token, this.secret, { tokenVersion: tv });
     }
 
     // 生成JWT令牌
@@ -532,33 +549,21 @@ export class NavigationAPI {
         payload: Record<string, unknown>,
         ttlSeconds: number = DEFAULT_TOKEN_TTL
     ): Promise<string> {
-        // 准备payload
+        // 嵌入令牌版本：改密后所有旧 token（版本偏低）在 verifyToken 处被拒
+        const tv = await this.getTokenVersion();
         const tokenPayload = {
             ...payload,
+            tv,
             exp: Math.floor(Date.now() / 1000) + ttlSeconds,
             iat: Math.floor(Date.now() / 1000),
         };
+        return signJwt(tokenPayload, this.secret);
+    }
 
-        // 创建Header和Payload部分
-        const header = { alg: "HS256", typ: "JWT" };
-        const encodedHeader = btoa(JSON.stringify(header))
-            .replace(/\+/g, "-")
-            .replace(/\//g, "_")
-            .replace(/=+$/, "");
-        const encodedPayload = btoa(JSON.stringify(tokenPayload))
-            .replace(/\+/g, "-")
-            .replace(/\//g, "_")
-            .replace(/=+$/, "");
-
-        // 创建签名（简化版，仅用于开发/测试）
-        // 在生产环境中，应该使用crypto.subtle.sign生成签名
-        const signature = btoa(this.secret + encodedHeader + encodedPayload)
-            .replace(/\+/g, "-")
-            .replace(/\//g, "_")
-            .replace(/=+$/, "");
-
-        // 组合JWT
-        return `${encodedHeader}.${encodedPayload}.${signature}`;
+    // 校验「当前密码」是否正确（auth/credentials 改密时用，避免明文比对）
+    async verifyCurrentPassword(plain: string): Promise<boolean> {
+        const creds = await this.getAuthCredentials();
+        return verifyPassword(plain, creds.password);
     }
 
     // 检查认证是否启用
@@ -839,7 +844,11 @@ export class NavigationAPI {
         const configs: Record<string, string> = {};
         for (const config of result.results || []) {
             if (isAuthConfigKey(config.key)) continue;
-            configs[config.key] = config.value;
+            // webdav.password 落库是密文，读出来解密还原给调用方（含首屏 bootstrap）
+            configs[config.key] =
+                config.key === WEBDAV_PASSWORD_KEY
+                    ? await decryptSecret(config.value, this.secret)
+                    : config.value;
         }
 
         return configs;
@@ -850,12 +859,19 @@ export class NavigationAPI {
             .prepare("SELECT value FROM configs WHERE key = ?")
             .bind(key)
             .first<{ value: string }>();
-
-        return result ? result.value : null;
+        if (!result) return null;
+        // webdav.password 落库前已加密，读取时解密还原（无 secret 时原样返回）
+        if (key === WEBDAV_PASSWORD_KEY) {
+            return await decryptSecret(result.value, this.secret);
+        }
+        return result.value;
     }
 
     async setConfig(key: string, value: string): Promise<boolean> {
         try {
+            // webdav.password 明文落库风险高，写入前用 AUTH_SECRET 派生密钥加密（无 secret 时原样存）
+            const stored =
+                key === WEBDAV_PASSWORD_KEY ? await encryptSecret(value, this.secret) : value;
             // 使用UPSERT语法（SQLite支持）
             const result = await this.db
                 .prepare(
@@ -864,7 +880,7 @@ export class NavigationAPI {
                     ON CONFLICT(key) 
                     DO UPDATE SET value = ?, updated_at = CURRENT_TIMESTAMP`
                 )
-                .bind(key, value, value)
+                .bind(key, stored, stored)
                 .run();
 
             return result.success;
