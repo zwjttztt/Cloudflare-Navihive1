@@ -316,7 +316,7 @@ export default function BackupDialog({
     };
 
     const renderBackupTab = () => (
-        <Stack spacing={1.5} sx={{ mt: 0.5, flex: 1, minHeight: 0 }}>
+        <Stack spacing={1.25} sx={{ mt: 0.5, flex: 1, minHeight: 0 }}>
             <Box>
                 {/* 主按钮跟标题平齐：这块的操作就一个，放在区块底部反而要往下找 */}
                 <Stack direction='row' alignItems='center' justifyContent='space-between' spacing={1}>
@@ -335,7 +335,7 @@ export default function BackupDialog({
                         下载备份文件
                     </Button>
                 </Stack>
-                <Typography variant='caption' color='text.secondary' sx={{ display: "block", mt: 0.5, mb: 1 }}>
+                <Typography variant='caption' color='text.secondary' sx={{ display: "block", mt: 0.25, mb: 0.75 }}>
                     导出分组、站点、网站设置，以及本机的星标与标签。
                 </Typography>
 
@@ -343,7 +343,8 @@ export default function BackupDialog({
                 <Box
                     sx={{
                         mb: 1,
-                        p: 1,
+                        px: 1,
+                        py: 0.75,
                         borderRadius: 2,
                         border: 1,
                         // 带凭据是「有风险」的状态，边框用警告色提示一下
@@ -351,6 +352,7 @@ export default function BackupDialog({
                     }}
                 >
                     <FormControlLabel
+                        sx={{ display: "flex", mr: 0, ml: 0 }}
                         control={
                             <Switch
                                 checked={includeCredentials}
@@ -364,13 +366,14 @@ export default function BackupDialog({
                                 备份包含网站登录凭据（账号 / 密码）
                             </Typography>
                         }
-                        sx={{ display: "flex", mr: 0 }}
                     />
-                    {/* 两态文案长短不同，占位固定成两行 —— 否则每点一次开关，弹窗高度就跳一下 */}
+                    {/* 两态文案长短不同。以前在这里 minHeight 占位防高度跳，
+                        现在弹窗外框高度已写死（见下方 Dialog / DialogContent），
+                        开关两态只会影响内部排布，不会再带得弹窗跳 */}
                     <Typography
                         variant='caption'
                         color={includeCredentials ? "warning.dark" : "text.secondary"}
-                        sx={{ display: "block", ml: 5.5, minHeight: 32 }}
+                        sx={{ display: "block", ml: 5.5 }}
                     >
                         {includeCredentials
                             ? "备份是明文 JSON，自动备份还会同步到网盘，请确认网盘账号本身可信。"
@@ -386,10 +389,10 @@ export default function BackupDialog({
                     备份到 WebDAV
                 </Typography>
                 <Typography variant='caption' color='text.secondary' sx={{ display: "block", mb: 1 }}>
-                    支持坚果云、Nextcloud、ownCloud、群晖等；配置存在服务器，备份由服务端代理上传。
+                    配置存在服务器，由服务端代理上传；目录不存在会自动创建，每次只保留最新一份。
                 </Typography>
 
-                <Stack spacing={1.25}>
+                <Stack spacing={1}>
                     <TextField
                         label='WebDAV 地址'
                         placeholder='https://dav.jianguoyun.com/dav/'
@@ -426,11 +429,11 @@ export default function BackupDialog({
                         onChange={handleConfigChange("path")}
                         size='small'
                         fullWidth
-                        helperText='目录不存在时会自动创建；每次备份后只保留最新一份'
                     />
 
                     <Box>
                         <FormControlLabel
+                            sx={{ ml: 0 }}
                             control={
                                 <Switch
                                     id='webdav-allow-private'
@@ -444,15 +447,15 @@ export default function BackupDialog({
                             }
                             label='允许内网地址'
                         />
-                        {/* 这条文案是静态的（不像自动备份那条会挂「上次备份：xxx」），
-                            所以不用 minHeight 占位防跳，能省一点高度 */}
+                        {/* 一行放得下（sm 宽度），别折行 */}
                         <Typography variant='caption' color='text.secondary' display='block'>
-                            默认关闭：服务端会拒绝指向内网 / 本机的地址。备份到家里 NAS（192.168.x.x、xxx.local）时才需要打开。
+                            默认关闭；备份到内网地址（家庭 NAS 192.168.x.x、xxx.local）时才需要打开。
                         </Typography>
                     </Box>
 
                     <Box>
                         <FormControlLabel
+                            sx={{ ml: 0 }}
                             control={
                                 <Switch
                                     id='webdav-auto-backup'
@@ -464,8 +467,8 @@ export default function BackupDialog({
                             }
                             label='每周自动备份一次'
                         />
-                        <Typography variant='caption' color='text.secondary' display='block' sx={{ minHeight: 32 }}>
-                            每周一上午 10:00（北京时间）自动备份，上传后自动删除上一次的备份。
+                        <Typography variant='caption' color='text.secondary' display='block'>
+                            每周一上午 10:00 自动备份，覆盖上一次。
                             {lastBackupAt ? ` 上次备份：${formatTime(lastBackupAt)}` : " 还没有备份记录。"}
                         </Typography>
                     </Box>
@@ -695,6 +698,13 @@ export default function BackupDialog({
                     // 宽度也要写死：width:auto 时 paper 会跟着内容宽度走，
                     // 结果切标签页时弹窗宽度会跳（备份页 541 / 恢复页 560 实测）
                     width: { xs: "calc(100% - 32px)", sm: 600 },
+                    // 高度写在 paper 层而不是内容层：内容层写死的话，遇到小视口 /
+                    // 系统 125% 缩放（CSS 视口只有 ~830px 高），弹窗整体会顶满甚至
+                    // 超出屏幕，底部按钮区和页面底栏叠在一起。
+                    // 高度写在这里，弹窗在任何视口下上下至少各留 24px，永远不顶满；
+                    // 内容区 flex 填剩余高度，内容装不下时在区内滚动。
+                    height: { xs: "auto", sm: "min(720px, calc(100% - 48px))" },
+                    maxHeight: { sm: "calc(100% - 48px)" },
                 },
             }}
         >
@@ -719,16 +729,17 @@ export default function BackupDialog({
                 <Tab label='恢复 / 导入' />
             </Tabs>
 
-            {/* 内容区高度写死：备份页和恢复页、以及开关两态的高矮都不一样，
-                放着让它自己撑，就会出现「一点开关弹窗跳一下」。固定后超出部分在区内滚动。
-                655 是按「备份」页加了「允许内网地址」开关后的自然高度留的余量；
-                「恢复」页内容只有一半高，靠下面那块列表区 flex 撑满，不留大片空白。
-                再往备份页加控件时，这里的数值要跟着涨，否则内容区会冒出滚动条
-                （本机冒烟有一条「内容不溢出」的断言守着，见 harness/ui-smoke.mjs）。 */}
+            {/* 内容区不再写死高度：sm 以上由弹窗 paper（定高）扣掉标题/标签页/按钮区
+                后 flex 填满；xs 维持 58vh。备份页内容已紧凑化（自然高 ~510），
+                常见视口（CSS 高 ≥ 760px）都装得下、不出滚动条；更矮的视口在区内滚动，
+                弹窗外框依然不会超出屏幕。
+                再往备份页加控件时先跑 harness/backup-dialog-probe.mjs 看自然高度。 */}
             <DialogContent
                 sx={{
-                    pt: 1.5,
-                    height: { xs: "58vh", sm: "min(655px, 72vh)" },
+                    pt: 1,
+                    height: { xs: "58vh" },
+                    flex: 1,
+                    minHeight: 0,
                     display: "flex",
                     flexDirection: "column",
                 }}
@@ -736,7 +747,7 @@ export default function BackupDialog({
                 {tab === 0 ? renderBackupTab() : renderRestoreTab()}
             </DialogContent>
 
-            <DialogActions sx={{ px: 2, pb: 2, pt: 1 }}>
+            <DialogActions sx={{ px: 2, pb: 1.5, pt: 0.75 }}>
                 <Chip
                     size='small'
                     variant='outlined'
