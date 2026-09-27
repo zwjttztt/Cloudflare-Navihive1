@@ -26,14 +26,16 @@ import { NotifyContext } from "./context/NotifyContext";
 import { useUIPrefs, RADIUS_PX, onLocalPrefsChange } from "./context/UIPrefsContext";
 import SiteCard from "./components/SiteCard";
 import GroupNavRail from "./components/GroupNavRail";
-import MobileTabBar from "./components/MobileTabBar";
 // 弹窗/面板类组件按需加载：首屏用不到它们，拆出去能让主包小一大截
+// （命令面板与书签导入已随 OverlayHost 一起搬走，这里只留它们的类型）
 import type { CommandItem } from "./components/CommandPalette";
-const CommandPalette = lazy(() => import("./components/CommandPalette"));
-const BookmarkImportDialog = lazy(() => import("./components/BookmarkImportDialog"));
 import ScrollProgress from "./components/ScrollProgress";
 import BackToTop from "./components/BackToTop";
 import OfflineBanner from "./components/OfflineBanner";
+// 提示条 / 背景装饰 / 浮层挂载点：三段纯渲染的 JSX，从 App 的渲染树里抽出来
+import SnackbarHost from "./components/SnackbarHost";
+import BackgroundLayers from "./components/BackgroundLayers";
+import OverlayHost from "./components/OverlayHost";
 import { usePwaInstall } from "./hooks/usePwaInstall";
 import { useHistoryStack } from "./hooks/useHistoryStack";
 import { useNotify } from "./hooks/useNotify";
@@ -104,7 +106,6 @@ import {
     Box,
     Button,
     CircularProgress,
-    Alert,
     Stack,
     createTheme,
     ThemeProvider,
@@ -115,11 +116,7 @@ import {
     DialogContent,
     DialogTitle,
     IconButton,
-    Menu,
-    MenuItem,
     Divider,
-    ListItemText,
-    Snackbar,
     Tooltip,
     InputAdornment,
     Skeleton,
@@ -129,15 +126,8 @@ import AutoFixHighIcon from "@mui/icons-material/AutoFixHigh";
 import CloudDownloadIcon from "@mui/icons-material/CloudDownload";
 import VisibilityIcon from "@mui/icons-material/Visibility";
 import VisibilityOffIcon from "@mui/icons-material/VisibilityOff";
-import CheckCircleRoundedIcon from "@mui/icons-material/CheckCircleRounded";
-import InfoRoundedIcon from "@mui/icons-material/InfoRounded";
-import ErrorOutlineRoundedIcon from "@mui/icons-material/ErrorOutlineRounded";
-import { alpha } from "@mui/material/styles";
-import BulkActionBar from "./components/BulkActionBar";
 import TagBar from "./components/TagBar";
-const TagManagerDialog = lazy(() => import("./components/TagManagerDialog"));
 const ShortcutsDialog = lazy(() => import("./components/ShortcutsDialog"));
-import ConfirmDialog from "./components/ConfirmDialog";
 
 // 根据环境选择使用真实API还是模拟API
 const isDevEnvironment = import.meta.env.DEV;
@@ -176,8 +166,7 @@ const DEFAULT_CONFIGS = {
 };
 
 
-// 判断一个背景值是不是 CSS 渐变（渐变可以直接当 background-image 用，图片要包 url()）
-const isCssGradient = (value: string) => /^\s*(linear|radial|conic)-gradient\(/i.test(value);
+// 背景值是不是 CSS 渐变的判定已随 BackgroundLayers 一起搬走
 
 
 // WebDAV 备份默认配置（保存在服务端 configs 表中，不会写入备份文件）
@@ -3177,171 +3166,20 @@ function App() {
             {/* 回到顶部：滚过一屏才出现 */}
             <BackToTop />
 
-            {/* 读屏播报区：视觉上不可见，但每次提示都会同步到这里（aria-live） */}
-            <Box
-                role='status'
-                aria-live='polite'
-                aria-atomic='true'
-                sx={{
-                    position: "absolute",
-                    width: 1,
-                    height: 1,
-                    m: -1,
-                    p: 0,
-                    border: 0,
-                    overflow: "hidden",
-                    whiteSpace: "nowrap",
-                    clip: "rect(0 0 0 0)",
-                }}
-            >
-                {liveMessage}
-            </Box>
-
-            {/* 错误/成功提示 Snackbar：顶部居中，成功类短暂停留、错误类停留更久 */}
-            <Snackbar
+            <SnackbarHost
                 open={snackbarOpen}
-                autoHideDuration={snackbarDuration}
+                message={snackbarMessage}
+                severity={snackbarSeverity}
+                duration={snackbarDuration}
+                action={snackbarAction}
+                liveMessage={liveMessage}
                 onClose={handleCloseSnackbar}
-                anchorOrigin={{ vertical: "top", horizontal: "center" }}
-                key={snackbarMessage + snackbarSeverity + snackbarDuration}
-            >
-                <Alert
-                    onClose={handleCloseSnackbar}
-                    severity={snackbarSeverity}
-                    variant='filled'
-                    className='nav-snackbar'
-                    data-severity={snackbarSeverity}
-                    iconMapping={{
-                        success: <CheckCircleRoundedIcon fontSize='inherit' />,
-                        info: <InfoRoundedIcon fontSize='inherit' />,
-                        error: <ErrorOutlineRoundedIcon fontSize='inherit' />,
-                    }}
-                    sx={theme => {
-                        // 按严重度取一个「有颜色但不刺眼」的强调色，用于图标与图标底色
-                        const tone =
-                            snackbarSeverity === "success"
-                                ? theme.palette.success.main
-                                : snackbarSeverity === "error"
-                                  ? theme.palette.error.main
-                                  : theme.palette.info.main;
+            />
 
-                        return {
-                            width: "100%",
-                            alignItems: "center",
-                            // 和卡片/确认弹窗同一套「毛玻璃 + 圆角 + 细边框 + 柔和投影」，
-                            // 不再用 MUI 默认的实心饱和色块（和整站风格不搭）
-                            minWidth: 260,
-                            px: 1.5,
-                            py: 0.75,
-                            borderRadius: "var(--card-radius)",
-                            color: "text.primary",
-                            backgroundColor:
-                                theme.palette.mode === "dark"
-                                    ? "rgba(23,27,38,0.92)"
-                                    : "rgba(255,255,255,0.92)",
-                            backdropFilter: "blur(var(--glass-blur)) saturate(1.4)",
-                            WebkitBackdropFilter: "blur(var(--glass-blur)) saturate(1.4)",
-                            border: "1px solid var(--glass-panel-border)",
-                            boxShadow: "var(--glass-shadow-hover)",
-                            // 图标做成染色小方块，和确认弹窗标题前的图标同一种观感
-                            "& .MuiAlert-icon": {
-                                width: 28,
-                                height: 28,
-                                mr: 1.25,
-                                p: 0,
-                                borderRadius: "9px",
-                                display: "flex",
-                                alignItems: "center",
-                                justifyContent: "center",
-                                fontSize: 18,
-                                opacity: 1,
-                                color: tone,
-                                backgroundColor: alpha(tone, theme.palette.mode === "dark" ? 0.22 : 0.13),
-                            },
-                            "& .MuiAlert-message": {
-                                fontWeight: 500,
-                                fontSize: 14,
-                                lineHeight: 1.5,
-                                py: 0.5,
-                            },
-                            "& .MuiAlert-action": { color: "text.secondary" },
-                        };
-                    }}
-                    action={
-                        snackbarAction ? (
-                            <>
-                                <Button
-                                    className='nav-snackbar-action'
-                                    color='inherit'
-                                    size='small'
-                                    onClick={() => {
-                                        const run = snackbarAction.onClick;
-                                        handleCloseSnackbar();
-                                        run();
-                                    }}
-                                    sx={{ fontWeight: 700, whiteSpace: "nowrap" }}
-                                >
-                                    {snackbarAction.label}
-                                </Button>
-                                <IconButton
-                                    size='small'
-                                    color='inherit'
-                                    aria-label='关闭提示'
-                                    onClick={handleCloseSnackbar}
-                                >
-                                    <CloseIcon fontSize='small' />
-                                </IconButton>
-                            </>
-                        ) : undefined
-                    }
-                >
-                    {snackbarMessage}
-                </Alert>
-            </Snackbar>
-
-            {/* 背景图片层：固定铺满视口，用蒙版压暗以保证内容可读 */}
-            {hasBackgroundImage && (
-                <Box
-                    aria-hidden
-                    sx={{
-                        position: "fixed",
-                        inset: 0,
-                        zIndex: 0,
-                        pointerEvents: "none",
-                        // 预设壁纸存的是 CSS 渐变，可以直接当 background-image；普通图片才包 url()
-                        backgroundImage: isCssGradient(backgroundImageUrl)
-                            ? backgroundImageUrl
-                            : `url("${backgroundImageUrl.replace(/"/g, '\\"')}")`,
-                        backgroundSize: "cover",
-                        backgroundPosition: "center",
-                        backgroundRepeat: "no-repeat",
-                        "&::after": {
-                            content: '""',
-                            position: "absolute",
-                            inset: 0,
-                            bgcolor: "background.default",
-                            opacity: backgroundMaskOpacity,
-                        },
-                    }}
-                />
-            )}
-
-            {/* 动态背景：缓慢漂移的柔光光晕，纯装饰、不拦截点击 */}
-            <Box
-                aria-hidden
-                className='nav-aurora'
-                sx={{
-                    position: "fixed",
-                    inset: "-12%",
-                    zIndex: 0,
-                    pointerEvents: "none",
-                    filter: "blur(48px)",
-                    opacity: hasBackgroundImage ? 0.35 : 0.55,
-                    background: darkMode
-                        ? "radial-gradient(38% 44% at 18% 22%, rgba(63,94,206,.45) 0%, transparent 62%), radial-gradient(34% 40% at 82% 28%, rgba(126,63,206,.38) 0%, transparent 60%), radial-gradient(40% 46% at 62% 86%, rgba(20,120,140,.34) 0%, transparent 62%)"
-                        : "radial-gradient(38% 44% at 18% 22%, rgba(88,140,255,.24) 0%, transparent 62%), radial-gradient(34% 40% at 82% 28%, rgba(196,120,255,.20) 0%, transparent 60%), radial-gradient(40% 46% at 62% 86%, rgba(80,200,220,.18) 0%, transparent 62%)",
-                    transition: "opacity .4s ease",
-                }}
+            <BackgroundLayers
+                imageUrl={backgroundImageUrl}
+                maskOpacity={backgroundMaskOpacity}
+                darkMode={darkMode}
             />
 
             <Box
@@ -4144,130 +3982,72 @@ function App() {
                 </Container>
 
                 {/* 手机端底部导航：搜索 / 分组 / 新增 / 更多 */}
-                <MobileTabBar
-                    onSearch={() => {
-                        searchInputRef.current?.focus();
-                        window.scrollTo({ top: 0, behavior: "smooth" });
+                <OverlayHost
+                    mobile={{
+                        onSearch: () => {
+                            searchInputRef.current?.focus();
+                            window.scrollTo({ top: 0, behavior: "smooth" });
+                        },
+                        onGroups: event => setMobileGroupsAnchor(event.currentTarget),
+                        onAdd: handleOpenAddGroup,
+                        onMore: event =>
+                            handleMenuOpen(event as React.MouseEvent<HTMLButtonElement>),
+                        onToggleStar: () => setStarFilter(!starFilter),
+                        starActive: starFilter,
+                        badge: displayedGroups.length,
+                        groupsAnchor: mobileGroupsAnchor,
+                        onCloseGroups: () => setMobileGroupsAnchor(null),
+                        groups: displayedGroups,
+                        onJumpGroup: jumpToGroup,
+                        activeGroupId: activeGroupId,
                     }}
-                    onGroups={event => setMobileGroupsAnchor(event.currentTarget)}
-                    onAdd={handleOpenAddGroup}
-                    onMore={event => handleMenuOpen(event as React.MouseEvent<HTMLButtonElement>)}
-                    onToggleStar={() => setStarFilter(!starFilter)}
-                    starActive={starFilter}
-                    badge={displayedGroups.length}
-                />
-
-                {/* 移动端「分组」菜单：列出所有分组，点一下跳过去 */}
-                <Menu
-                    anchorEl={mobileGroupsAnchor}
-                    open={Boolean(mobileGroupsAnchor)}
-                    onClose={() => setMobileGroupsAnchor(null)}
-                    anchorOrigin={{ vertical: "top", horizontal: "center" }}
-                    transformOrigin={{ vertical: "bottom", horizontal: "center" }}
-                    slotProps={{ paper: { sx: { minWidth: 180, borderRadius: "14px" } } }}
-                >
-                    {displayedGroups.map(group => (
-                        <MenuItem
-                            key={group.id}
-                            onClick={() => jumpToGroup(group.id)}
-                            selected={group.id === activeGroupId}
-                        >
-                            <ListItemText primary={group.name} secondary={`${group.sites.length} 个`} />
-                        </MenuItem>
-                    ))}
-                </Menu>
-
-                {/* 命令面板：Ctrl / Cmd + K */}
-                <Suspense fallback={null}>
-                <CommandPalette
-                    open={commandOpen}
-                    onClose={() => setCommandOpen(false)}
-                    commands={commands}
-                />
-                </Suspense>
-
-                {/* 浏览器书签批量导入 */}
-                <Suspense fallback={null}>
-                <BookmarkImportDialog
-                    open={bookmarkOpen}
-                    onClose={() => setBookmarkOpen(false)}
-                    onImport={importBookmarks}
-                />
-                </Suspense>
-
-                {/* 批量多选：底部操作条（删除 / 星标 / 标签 / 移动分组） */}
-                {multiSelect && sortMode === SortMode.None && (
-                    <BulkActionBar
-                        count={selectedIds.length}
-                        groups={groups.map(group => ({
-                            id: group.id,
-                            name: group.name,
-                        }))}
-                        allTags={allTags}
-                        onStar={bulkStar}
-                        onTag={bulkTag}
-                        onMove={bulkMove}
-                        onDelete={() => {
+                    commandPalette={{
+                        open: commandOpen,
+                        onClose: () => setCommandOpen(false),
+                        commands: commands,
+                    }}
+                    bookmarkImport={{
+                        open: bookmarkOpen,
+                        onClose: () => setBookmarkOpen(false),
+                        onImport: importBookmarks,
+                    }}
+                    bulkBar={{
+                        visible: multiSelect && sortMode === SortMode.None,
+                        count: selectedIds.length,
+                        groups: groups,
+                        allTags: allTags,
+                        onStar: bulkStar,
+                        onTag: bulkTag,
+                        onMove: bulkMove,
+                        onDelete: () => {
                             if (selectedIds.length === 0) return;
                             setBulkDeleteOpen(true);
-                        }}
-                        onFinish={exitMultiSelect}
-                        onExit={exitMultiSelect}
-                    />
-                )}
-
-                {/* 批量删除确认：删完同样可以在提示条上点「撤销」 */}
-                {/* 重复网址确认：同一条链接已经加过，先确认再写库 */}
-                <ConfirmDialog
-                    open={dupPrompt !== null}
-                    title='这个链接已经加过了'
-                    description={
-                        dupPrompt
-                            ? `「${dupPrompt.hit.groupName}」里已有一张同链接的卡片：${dupPrompt.hit.site.name || dupPrompt.hit.site.url}。重复保存后，删的时候容易漏删。`
-                            : ""
-                    }
-                    confirmText='仍然添加'
-                    cancelText='取消'
-                    extraAction={
-                        dupPrompt?.hit.site.id != null
-                            ? {
-                                  label: "跳到那张",
-                                  onClick: () => {
-                                      const id = dupPrompt.hit.site.id as number;
-                                      setDupPrompt(null);
-                                      jumpToSite(id);
-                                  },
-                              }
-                            : undefined
-                    }
-                    onConfirm={() => {
+                        },
+                        onFinish: exitMultiSelect,
+                        onExit: exitMultiSelect,
+                    }}
+                    dupPrompt={dupPrompt}
+                    onDupConfirm={() => {
                         const run = dupPrompt?.run;
                         setDupPrompt(null);
                         if (run) void run();
                     }}
-                    onClose={() => setDupPrompt(null)}
+                    onDupCancel={() => setDupPrompt(null)}
+                    onJumpToSite={jumpToSite}
+                    bulkDelete={{
+                        open: bulkDeleteOpen,
+                        count: selectedIds.length,
+                        onConfirm: bulkDelete,
+                        onClose: () => setBulkDeleteOpen(false),
+                    }}
+                    tagManager={{
+                        open: tagManagerOpen,
+                        tags: allTags,
+                        counts: tagCounts,
+                        onDeleteTag: deleteTagWithUndo,
+                        onClose: () => setTagManagerOpen(false),
+                    }}
                 />
-
-                <ConfirmDialog
-                    open={bulkDeleteOpen}
-                    title={`删除选中的 ${selectedIds.length} 个网站？`}
-                    description='删除后可在提示条上点「撤销」恢复；保存的账号密码会一并删除。'
-                    confirmText='删除'
-                    danger
-                    onConfirm={bulkDelete}
-                    onClose={() => setBulkDeleteOpen(false)}
-                />
-
-                {/* 标签管理：集中删标签，删掉即从所有卡片上摘掉 */}
-                <Suspense fallback={null}>
-                <TagManagerDialog
-                    open={tagManagerOpen}
-                    tags={allTags}
-                    counts={tagCounts}
-                    onDeleteTag={deleteTagWithUndo}
-                    onClose={() => setTagManagerOpen(false)}
-                />
-                </Suspense>
             </Box>
         </ThemeProvider>
          </NotifyContext.Provider>
