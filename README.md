@@ -100,6 +100,33 @@ pnpm deploy     # 部署到 Cloudflare Workers
 
 > 若你不想用示例数据，可把 `init_table.sql` 中"示例导航数据"部分删掉再运行。
 
+### 部署后必做（安全相关，别跳过）
+
+凭据不再写在 `wrangler.jsonc` 里（那里的明文段已经删掉），改用 Cloudflare 的加密 secret：
+
+```bash
+wrangler secret put AUTH_USERNAME
+wrangler secret put AUTH_PASSWORD
+wrangler secret put AUTH_SECRET      # JWT 签名密钥 + 备份/站点密码加密密钥
+wrangler secret put AUTH_RESET_CODE  # 忘记密码时的应急重置码
+```
+
+> `AUTH_SECRET` 请用全新的随机长串（比如 `openssl rand -base64 32`）。
+> ⚠️ 它同时用于登录令牌签名和备份加密 —— **轮换它会让此前导出的加密备份解不开**，
+> 换过之后请重新备份一次。
+
+部署完在页面上再做两件事：
+
+1. **登录后立刻改一次管理员密码**（网站设置 → 管理员账号与密码）。这一步会把数据库里
+   的旧明文密码升级成 PBKDF2 哈希，同时让所有旧会话失效。
+2. **重新导出一份备份**：旧加密备份是用旧密钥加密的，`AUTH_SECRET` 换过就解不开了。
+
+> 部署后所有已登录设备都需要重新登录一次 —— 旧令牌格式无法验签，这是预期的安全结果，不是故障。
+>
+> 如果你的仓库历史里曾经提交过明文密码（早期版本的 `wrangler.jsonc` 里确实写过），
+> 可以用 [git-filter-repo](https://github.com/newren/git-filter-repo) 的 `--replace-text` 擦一遍。
+> 但擦历史**不能撤回已经泄露的值**，擦完仍要把这些凭据全部重新生成一遍。
+
 ### 使用
 
 访问你的导航站首页 → 使用上面设置的管理员账号密码登录 → 即可：
