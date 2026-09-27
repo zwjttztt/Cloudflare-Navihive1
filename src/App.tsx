@@ -37,7 +37,8 @@ import OfflineBanner from "./components/OfflineBanner";
 import { usePwaInstall } from "./hooks/usePwaInstall";
 import { useHistoryStack } from "./hooks/useHistoryStack";
 import { useNotify } from "./hooks/useNotify";
-import { wrapMutations, installOnlineListener, type MutationApi } from "./API/offlineQueue";
+import { useSites } from "./hooks/useSites";
+import { wrapMutations, installOnlineListener, flushOfflineQueue, pendingCount, type MutationApi } from "./API/offlineQueue";
 import { buildFavoritesGroup, deriveDisplayedGroups } from "./utils/siteView";
 import {
     SortMode,
@@ -63,7 +64,7 @@ import {
     probeLinks,
     readDeadLinks,
 } from "./utils/linkHealth";
-import { clearBootstrapCache, readBootstrapCache, writeBootstrapCache } from "./utils/firstPaintCache";
+import { clearBootstrapCache, readBootstrapCache } from "./utils/firstPaintCache";
 import { ParsedBookmarkGroup } from "./utils/bookmarks";
 import { DEFAULT_ICON_API, resolveIconApiUrl } from "./utils/iconApi";
 import { normalizeFailureText, normalizeUrl } from "./utils/url";
@@ -239,9 +240,49 @@ function App() {
         localStorage.setItem("theme", next);
     };
 
-    const [groups, setGroups] = useState<GroupWithSites[]>([]);
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    // 只读数据层切片：分组 / 加载中 / 错误状态与 bootstrap 落地逻辑已抽到 useSites，
+    // 配置落地 + 偏好 / 链接健康合并等需要其它 App 层状态的步骤交还给 onRemoteExtras。
+    // 用解构保持原局部变量名不变，下面几十处引用无需改动。
+    const { groups, setGroups, loading, setLoading, error, setError, fetchData, applyRemoteData } = useSites({
+        api,
+        onRemoteExtras: applyRemoteExtras,
+        onError: (msg) => handleError(msg),
+        onAuthFail: () => {
+            api.logout();
+            setIsAuthRequired(true);
+            setIsAuthenticated(false);
+        },
+    });
+
+    // bootstrap 里「分组」之外的落地：配置、链接健康、星标 / 标签跨端合并。
+    // 用函数声明（会被提升），这样上面 useSites 调用时就能引用它，而它内部用到的
+    // applyConfigs / setDeadLinks 等虽在更后面定义，调用时才取值，不会触发 TDZ。
+    function applyRemoteExtras(data: BootstrapData) {
+        applyConfigs(data.configs);
+        // ---- 可选的多端同步：把服务端那份合并回本机 ----
+        // 都是「取并集 / 取较新」，所以重复合并不会丢数据，也不怕和上传打架
+        const incoming = data.configs || {};
+
+        if (incoming[LINK_HEALTH_SYNC_CONFIG] === "true" && incoming[LINK_HEALTH_CONFIG]) {
+            try {
+                mergeLinkHealth(JSON.parse(incoming[LINK_HEALTH_CONFIG]));
+                setDeadLinks(readDeadLinks());
+            } catch {
+                // 云端那份坏了就当没有，不影响本机
+            }
+        }
+
+        if (incoming[PREF_SYNC_CONFIG] === "true") {
+            try {
+                const remoteStarred = JSON.parse(incoming[PREF_STARRED_CONFIG] || "[]");
+                const remoteTags = JSON.parse(incoming[PREF_TAGS_CONFIG] || "{}");
+                mergeRemotePrefs(remoteStarred, remoteTags);
+            } catch {
+                // 同上
+            }
+        }
+    }
+
     const [sortMode, setSortMode] = useState<SortMode>(SortMode.None);
     const [currentSortingGroupId, setCurrentSortingGroupId] = useState<number | null>(null);
     // 记录进入站点排序时每个站点所属的原始分组，用于保存时识别跨组移动
@@ -803,56 +844,9 @@ function App() {
     };
 
     // 把一次 bootstrap 拉回的数据合并进本地状态
-    const applyRemoteData = (data: BootstrapData) => {
-        const sitesByGroup = new Map<number, Site[]>();
-        for (const site of data.sites || []) {
-            const list = sitesByGroup.get(site.group_id);
-            if (list) {
-                list.push(site);
-            } else {
-                sitesByGroup.set(site.group_id, [site]);
-            }
-        }
-
-        const nextGroups: GroupWithSites[] = (data.groups || [])
-            .filter(group => group.id !== undefined)
-            .map(group => ({
-                ...group,
-                id: group.id as number,
-                sites: (sitesByGroup.get(group.id as number) || []).sort(
-                    (a, b) => (a.order_num ?? 0) - (b.order_num ?? 0)
-                ),
-            }));
-
-        setGroups(nextGroups);
-        applyConfigs(data.configs);
-
-        // ---- 可选的多端同步：把服务端那份合并回本机 ----
-        // 都是「取并集 / 取较新」，所以重复合并不会丢数据，也不怕和上传打架
-        const incoming = data.configs || {};
-
-        if (incoming[LINK_HEALTH_SYNC_CONFIG] === "true" && incoming[LINK_HEALTH_CONFIG]) {
-            try {
-                mergeLinkHealth(JSON.parse(incoming[LINK_HEALTH_CONFIG]));
-                setDeadLinks(readDeadLinks());
-            } catch {
-                // 云端那份坏了就当没有，不影响本机
-            }
-        }
-
-        if (incoming[PREF_SYNC_CONFIG] === "true") {
-            try {
-                const remoteStarred = JSON.parse(incoming[PREF_STARRED_CONFIG] || "[]");
-                const remoteTags = JSON.parse(incoming[PREF_TAGS_CONFIG] || "{}");
-                mergeRemotePrefs(remoteStarred, remoteTags);
-            } catch {
-                // 同上
-            }
-        }
-    };
-
     // ---- 云端同步：上传（防抖 + 内容没变就不发）----
-    // 只负责「本机 → 服务端」这一半；合并在 applyRemoteData 里做。
+    // 只负责「本机 → 服务端」这一半；合并在 useSites 的 applyRemoteData（分组）与
+    // 本文件的 applyRemoteExtras（配置 / 偏好 / 链接健康）里做。
     // 上传失败一律静默：同步是锦上添花，不能让网络问题干扰正常使用。
     const lastHealthPushRef = useRef("");
     useEffect(() => {
@@ -1049,45 +1043,24 @@ function App() {
 
     // 拉取全量数据：一次 bootstrap 请求搞定（原来要 1 次分组 + 每个分组一次站点 + 1 次配置）
     // silent=true 时不显示全屏 loading、不弹错误提示，用于修改后的后台同步
-    const fetchData = async ({ silent = false }: { silent?: boolean } = {}): Promise<boolean> => {
-        if (!silent) {
-            setLoading(true);
-            setError(null);
-        }
-
-        try {
-            const data = await api.bootstrap();
-            applyRemoteData(data);
-            // 留一份快照，下次打开先用它渲染，不等这个请求回来
-            writeBootstrapCache(data);
-            return true;
-        } catch (error) {
-            const message = error instanceof Error ? error.message : "未知错误";
-            console.error("加载数据失败:", message);
-
-            if (!silent) {
-                handleError("加载数据失败: " + message);
-            }
-
-            // 如果因为认证问题导致加载失败，处理认证状态
-            if (message.includes("认证") || message.includes("401")) {
-                api.logout();
-                setIsAuthRequired(true);
-                setIsAuthenticated(false);
-            }
-            return false;
-        } finally {
-            if (!silent) {
-                setLoading(false);
-            }
-        }
-    };
-
     // 离线期间入队的写入，恢复连接后自动重放；重放完顺手后台刷新一次本地数据
     useEffect(() => {
         installOnlineListener(api as unknown as MutationApi, (done) => {
             notify(`已恢复连接，自动同步了 ${done} 项离线改动`, "success");
             fetchData({ silent: true });
+        });
+    }, [notify]);
+
+    // 启动时就绪：若联网且仍有上次离线排队的改动（典型场景：离线时排队 → 关标签页 →
+    // 联网后重新打开），此刻浏览器已处于 online、不会再触发 online 事件，这里主动重放一次
+    useEffect(() => {
+        if (typeof navigator === "undefined" || !navigator.onLine) return;
+        if (pendingCount() === 0) return;
+        flushOfflineQueue(api as unknown as MutationApi).then(done => {
+            if (done > 0) {
+                notify(`已自动同步 ${done} 项离线改动`, "success");
+                fetchData({ silent: true });
+            }
         });
     }, [notify]);
 

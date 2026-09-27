@@ -1,15 +1,20 @@
 // 断网提示：离线时顶部固定一条提示，恢复后闪一条「已恢复」。
-// 导航站的数据全在云端，离线状态下改东西会失败，不提示的话用户只会觉得「点了没反应」。
+// 注意：离线改动现在会暂存本地（见 src/API/offlineQueue），联网后自动重放，
+// 文案要说明「已暂存、会自动同步」，不能再写「存不到服务器、等恢复再操作一次」。
 import { useEffect, useState } from "react";
 import { Alert, Box } from "@mui/material";
 import CloudOffIcon from "@mui/icons-material/CloudOff";
 import CloudDoneIcon from "@mui/icons-material/CloudDone";
+import { pendingCount, subscribe } from "../API/offlineQueue";
 
 export default function OfflineBanner() {
     const [offline, setOffline] = useState(
         () => typeof navigator !== "undefined" && navigator.onLine === false
     );
     const [justBackOnline, setJustBackOnline] = useState(false);
+    // 离线期间排进队列、等待联网后同步的改动数量（实时订阅，入队/重放/放回都会刷新）
+    const [pending, setPending] = useState(() => pendingCount());
+    useEffect(() => subscribe(() => setPending(pendingCount())), []);
 
     useEffect(() => {
         let timer: number | undefined;
@@ -60,7 +65,7 @@ export default function OfflineBanner() {
                 }}
             >
                 {offline
-                    ? "网络已断开：现在改的内容存不到服务器，等恢复后再操作一次"
+                    ? `网络已断开：改动已暂存本地${pending > 0 ? `（${pending} 项待同步）` : ""}，联网后自动同步`
                     : "网络已恢复"}
             </Alert>
         </Box>

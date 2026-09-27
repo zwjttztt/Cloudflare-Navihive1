@@ -67,10 +67,24 @@ export function isOfflineError(err: unknown): boolean {
     return e.name === "TypeError" || /fetch|network|offline|failed to fetch/i.test(msg);
 }
 
+const listeners = new Set<() => void>();
+function notifyChange() {
+    for (const l of listeners) l();
+}
+
+/** 订阅队列变化，返回取消订阅函数 */
+export function subscribe(cb: () => void): () => void {
+    listeners.add(cb);
+    return () => {
+        listeners.delete(cb);
+    };
+}
+
 /** 离线时把一次失败的操作存进队列 */
 export function enqueueMutation(kind: string, args: unknown[]): void {
     queue.push({ kind, args, ts: Date.now() });
     saveQueue(queue);
+    notifyChange();
 }
 
 /** 待同步数量（顶栏角标用） */
@@ -83,6 +97,7 @@ export function takeAll(): PendingMutation[] {
     const all = queue;
     queue = [];
     saveQueue(queue);
+    notifyChange();
     return all;
 }
 
@@ -90,6 +105,7 @@ export function takeAll(): PendingMutation[] {
 export function requeue(op: PendingMutation): void {
     queue.push(op);
     saveQueue(queue);
+    notifyChange();
 }
 
 /**
