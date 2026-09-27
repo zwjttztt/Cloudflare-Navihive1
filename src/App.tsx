@@ -66,12 +66,12 @@ import {
 } from "./utils/linkHealth";
 import { clearBootstrapCache, readBootstrapCache } from "./utils/firstPaintCache";
 import { ParsedBookmarkGroup } from "./utils/bookmarks";
-import { DEFAULT_ICON_API, DEFAULT_THUMB_API, resolveIconApiUrl } from "./utils/iconApi";
+import { DEFAULT_ICON_API, resolveIconApiUrl } from "./utils/iconApi";
 import { normalizeFailureText, normalizeUrl } from "./utils/url";
 import { groupAccent } from "./utils/groupColor";
 import { matchesGroupQuery, matchesSiteQuery } from "./utils/search";
 import { saveRememberedLogin, clearRememberedLogin } from "./utils/rememberedLogin";
-import ThemeToggle from "./components/ThemeToggle";
+import type { ThemeMode } from "./components/ThemeToggle";
 import GroupCard from "./components/GroupCard";
 import EditGroupDialog from "./components/EditGroupDialog";
 import LoginForm from "./components/LoginForm";
@@ -165,8 +165,10 @@ const DEFAULT_CONFIGS = {
     // 背景图片与蒙版透明度（0~1，越大背景图越清晰）
     "site.backgroundImage": "",
     "site.backgroundMaskOpacity": "0.15",
-    // 站点缩略图 API 模板（{url} / {domain} / {origin} 会被替换），留空表示不启用缩略图
-    "site.thumbApi": DEFAULT_THUMB_API,
+    // 站点缩略图 API 模板（{url} / {domain} / {origin} 会被替换），留空表示不启用缩略图。
+    // 默认留空：缩略图会把每个可见站点的链接交给第三方截图，不该是开箱即用的默认行为。
+    // 想用的人在设置里填（输入框的占位提示就是 DEFAULT_THUMB_API，可直接采用）。
+    "site.thumbApi": "",
     // 自定义主色（#rrggbb），留空表示跟随默认主题色
     "site.primaryColor": "",
     // 毛玻璃模糊强度（px，0~24），留空表示用默认 14
@@ -200,11 +202,9 @@ const PREF_TAGS_CONFIG = "pref.tags";
 /** 改动后多久推一次：拖星标、连续打标签时不该每个动作都发一个请求 */
 const SYNC_DEBOUNCE_MS = 1500;
 
-// 主题模式：浅色 / 深色 / 跟随系统
-type ThemeMode = "light" | "dark" | "system";
-
 // ---- 顶部工具栏的统一尺寸 ----
 // 之前搜索框（40px）比按钮（32px）高一截，一行里高矮不齐；现在统一成一个高度、一个圆角。
+// 主题模式（ThemeMode）定义在 ThemeToggle 里，这里直接引用，避免两处联合类型各写一份。
 function App() {
     // 主题模式状态（默认跟随系统；老用户存过的 light/dark 依然兼容）
     const [themeMode, setThemeMode] = useState<ThemeMode>(() => {
@@ -421,27 +421,13 @@ function App() {
                                 "@media (max-width:600px)": {
                                     "& .MuiInputBase-input": { padding: "10px 12px" },
                                 },
-                                // 输入框的焦点落在内部的 input 上，外层 root 自己不匹配
-                                // :focus-visible，所以要用 :has 往上找；键盘聚焦时补一圈轮廓，
-                                // 跟按钮保持一致（鼠标点击不会触发 :focus-visible，不会平白多一个框）
-                                "&:has(.MuiInputBase-input:focus-visible)": {
-                                    outline: "2px solid var(--accent)",
-                                    outlineOffset: 2,
-                                },
-                                "&:focus-visible": {
-                                    outline: "2px solid var(--accent)",
-                                    outlineOffset: 2,
-                                },
-                                // 例外：**带 label 的输入框一律不画外圈轮廓**。
-                                // outlined 的 label 骑在上边框线上，而整圈的轮廓在 label 那一段
-                                // 没有缺口，必然横穿文字 —— 这就是「分组名称四个字与边框重叠」。
-                                // 这类输入框的焦点指示交给 MUI 自带的「边框 1px 灰 → 2px 主色」。
-                                // label 是 InputBase 在 FormControl 里的**前一个兄弟**，
-                                // CSS 选不到前驱，所以从父级 :has 反向排除。
-                                // 特异性 (0,3,0) 高于上面两条，稳赢。
-                                ".MuiFormControl-root:has(> .MuiInputLabel-root) &": {
-                                    outline: "none",
-                                },
+                                // 输入框**不**补外圈 outline：
+                                // outlined 输入框自己就有聚焦指示（边框 1px 灰 → 2px 主色），
+                                // 之前额外给 root 补一圈 outline 后，两者叠成两道同心环——
+                                // 点一下搜索框就看到「双红圈」。
+                                // 统一交给 MUI 的边框后，任何主题、带不带 label 都只有一圈，
+                                // 顺带也不再需要「带 label 的输入框单独排除 outline」那条例外
+                                // （label 骑在边框线上、外圈横穿文字的问题一并消失）。
                             },
                         },
                     },
@@ -3521,14 +3507,16 @@ function App() {
                                         exitMultiSelect={exitMultiSelect}
                                         starFilter={starFilter}
                                         setStarFilter={setStarFilter}
+                                        themeMode={themeMode}
+                                        onToggleTheme={toggleTheme}
                                     />
                                 </>
                             )}
 
-                            {/* 时钟与主题切换归成「状态区」，和左侧操作按钮用竖线隔开 */}
+                            {/* 时钟自己归成「状态区」，和左侧操作按钮用竖线隔开。
+                                主题切换原本也在这一区，现已并进上面那条显示胶囊。 */}
                             <Box aria-hidden sx={headerDividerSx} className='nav-header-divider' />
                             <HeaderClock />
-                            <ThemeToggle mode={themeMode} onToggle={toggleTheme} />
                         </Stack>
                     </Box>
 

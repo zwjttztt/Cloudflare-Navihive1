@@ -1,5 +1,5 @@
 // src/components/DisplayControls.tsx
-// 顶栏右侧那条玻璃胶囊：视图（卡片/列表/图标墙）+ 密度 + 批量多选 + 只看星标。
+// 顶栏右侧那条玻璃胶囊：视图（卡片/列表/图标墙）+ 密度 + 批量多选 + 只看星标 + 主题切换。
 // 原来内联在 App.tsx 里 161 行。
 import {
     Box,
@@ -19,6 +19,7 @@ import StarIcon from "@mui/icons-material/Star";
 import StarBorderIcon from "@mui/icons-material/StarBorder";
 import type { Density, ViewMode } from "../context/UIPrefsContext";
 import { HEADER_CONTROL_H, HEADER_RADIUS } from "../constants";
+import ThemeToggle, { type ThemeMode } from "./ThemeToggle";
 
 export interface DisplayControlsProps {
     viewMode: ViewMode;
@@ -30,6 +31,9 @@ export interface DisplayControlsProps {
     exitMultiSelect: () => void;
     starFilter: boolean;
     setStarFilter: (enabled: boolean) => void;
+    /** 主题档位（浅色 / 深色 / 跟随系统）；原本是时钟左边一个独立圆按钮，现并进这条胶囊 */
+    themeMode: ThemeMode;
+    onToggleTheme: () => void;
 }
 
 export default function DisplayControls({
@@ -42,6 +46,8 @@ export default function DisplayControls({
     exitMultiSelect,
     starFilter,
     setStarFilter,
+    themeMode,
+    onToggleTheme,
 }: DisplayControlsProps) {
     return (
                     <Box
@@ -204,6 +210,20 @@ export default function DisplayControls({
                                 </Tooltip>
                             </ToggleButton>
                         </ToggleButtonGroup>
+
+                        <Box
+                            aria-hidden
+                            sx={{
+                                width: "1px",
+                                height: 18,
+                                bgcolor: "var(--glass-border)",
+                                flexShrink: 0,
+                            }}
+                        />
+
+                        {/* 主题切换：跟其它显示偏好同类，所以并进这条胶囊，
+                            放在最右侧、紧时钟左边。 */}
+                        <ThemeToggle mode={themeMode} onToggle={onToggleTheme} />
                     </Box>
     );
 }

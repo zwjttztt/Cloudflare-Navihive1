@@ -25,7 +25,7 @@ import {
     Typography,
 } from "@mui/material";
 import CloseIcon from "@mui/icons-material/Close";
-import { DEFAULT_ICON_API } from "../utils/iconApi";
+import { DEFAULT_ICON_API, DEFAULT_THUMB_API } from "../utils/iconApi";
 import type { FontScale, RadiusStyle } from "../context/UIPrefsContext";
 
 // 内置壁纸预设：既可以是渐变（直接作为 CSS background-image），也可以留空表示不用
@@ -569,8 +569,8 @@ export default function SettingsDialog({
                                 variant='outlined'
                                 value={tempConfigs["site.thumbApi"] || ""}
                                 onChange={onConfigInputChange}
-                                placeholder='https://example.com/shot?url={url}'
-                                helperText='留空即关闭缩略图（不再向第三方请求截图）。占位符：{url} 完整链接、{domain} 域名、{origin} 协议+域名'
+                                placeholder={DEFAULT_THUMB_API}
+                                helperText='留空则不显示缩略图（也不向第三方发请求）。占位符：{url} 完整链接、{domain} 域名、{origin} 协议+域名'
                             />
                         </TwoCol>
                     </Section>
