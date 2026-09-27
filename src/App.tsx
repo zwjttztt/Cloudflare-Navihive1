@@ -57,8 +57,9 @@ const SettingsDialog = lazy(() => import("./components/SettingsDialog"));
 const ImportPreviewDialog = lazy(() => import("./components/ImportPreviewDialog"));
 import HeaderClock from "./components/HeaderClock";
 import SiteListHeader from "./components/SiteListHeader";
+import SiteListSkeleton from "./components/SiteListSkeleton";
+import SiteListEmptyState from "./components/SiteListEmptyState";
 const VisitsDialog = lazy(() => import("./components/VisitsDialog"));
-import EmptyArt from "./components/EmptyArt";
 import { COLLAPSED_EVENT, readCollapsedGroupIds, setAllCollapsed } from "./utils/collapse";
 import { findDuplicateSite } from "./utils/duplicate";
 import { loadPinyinMatcher } from "./utils/pinyin";
@@ -123,7 +124,6 @@ import {
     Divider,
     Tooltip,
     InputAdornment,
-    Skeleton,
 } from "@mui/material";
 import CloseIcon from "@mui/icons-material/Close";
 import AutoFixHighIcon from "@mui/icons-material/AutoFixHigh";
@@ -3373,40 +3373,7 @@ function App() {
                             </Typography>
                         )}
 
-                    {loading && (
-                        <Stack spacing={5}>
-                            {[0, 1].map(section => (
-                                <Box key={section}>
-                                    <Skeleton
-                                        variant='rounded'
-                                        width={180}
-                                        height={32}
-                                        sx={{ mb: 2.5 }}
-                                    />
-                                    <Box sx={{ display: "flex", flexWrap: "wrap", margin: -1 }}>
-                                        {[0, 1, 2, 3, 4].map(i => (
-                                            <Box
-                                                key={i}
-                                                sx={{
-                                                    width: {
-                                                        xs: "50%",
-                                                        sm: "33.33%",
-                                                        md: "25%",
-                                                        lg: "25%",
-                                                        xl: "20%",
-                                                    },
-                                                    padding: 1,
-                                                    boxSizing: "border-box",
-                                                }}
-                                            >
-                                                <Skeleton variant='rounded' height={104} />
-                                            </Box>
-                                        ))}
-                                    </Box>
-                                </Box>
-                            ))}
-                        </Stack>
-                    )}
+                    {loading && <SiteListSkeleton />}
 
                     {!loading && !error && (
                         <Box
@@ -3522,52 +3489,14 @@ function App() {
                                     ))}
                                 </Stack>
                             ) : (
-                                <Box
-                                    sx={{
-                                        py: 8,
-                                        display: "flex",
-                                        flexDirection: "column",
-                                        alignItems: "center",
-                                        gap: 1.5,
-                                        textAlign: "center",
-                                        borderRadius: "18px",
-                                        border: "1.5px dashed",
-                                        borderColor: "divider",
-                                    }}
-                                >
-                                    <EmptyArt variant={query ? "search" : "empty"} size={132} />
-                                    <Typography variant='subtitle1' fontWeight='600'>
-                                        {query ? "没有找到匹配的网站" : "还没有任何分组"}
-                                    </Typography>
-                                    <Typography variant='body2' color='text.secondary'>
-                                        {query
-                                            ? `换个关键词试试，或清空搜索框查看全部网站`
-                                            : "点击左上角「新增分组」开始搭建你的导航页"}
-                                    </Typography>
-                                    {/* 空状态也要有出路：能搜就给「清空搜索」，筛没了就给「清除筛选」 */}
-                                    <Stack direction='row' spacing={1} sx={{ mt: 1 }}>
-                                        {query && (
-                                            <Button
-                                                variant='outlined'
-                                                size='small'
-                                                onClick={() => setSearchQuery("")}
-                                                className='nav-empty-clear-search'
-                                            >
-                                                清空搜索
-                                            </Button>
-                                        )}
-                                        {(starFilter || deadOnly || activeTags.length > 0) && (
-                                            <Button
-                                                variant='outlined'
-                                                size='small'
-                                                onClick={clearAllFilters}
-                                                className='nav-empty-clear-filter'
-                                            >
-                                                清除筛选
-                                            </Button>
-                                        )}
-                                    </Stack>
-                                </Box>
+                                <SiteListEmptyState
+                                    query={query}
+                                    hasTagFilter={activeTags.length > 0}
+                                    starFilter={starFilter}
+                                    deadOnly={deadOnly}
+                                    onClearSearch={() => setSearchQuery("")}
+                                    onClearFilters={clearAllFilters}
+                                />
                             )}
                         </Box>
                     )}
