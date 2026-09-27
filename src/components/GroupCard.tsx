@@ -70,6 +70,29 @@ interface GroupCardProps {
 // 卡片多的分组先渲染一批，滚到底再补，避免一次铺几百张卡拖慢首屏
 const PAGE_SIZE = 40;
 
+// ── 挂载调度：把「同一帧里触发的一批挂载/追加」摊到每帧一个 ──
+// 快速滚动时可能同时有多个分组跨进 600px 预挂载圈、或一个分组的哨兵连续
+// 触发追加，若立刻 setState，每组首次渲染的几十张卡会叠成上百毫秒的长任务
+// （perf-probe 实测 300 卡滚动 3s 内 14 个长任务、最长 176ms）。
+// 队列每帧只放行一个，渲染突发被摊平；挂载本身不丢，只是错开几帧。
+const mountTaskQueue: Array<() => void> = [];
+let mountQueueScheduled = false;
+function enqueueMountTask(task: () => void) {
+    mountTaskQueue.push(task);
+    if (mountQueueScheduled) return;
+    mountQueueScheduled = true;
+    const drain = () => {
+        const next = mountTaskQueue.shift();
+        if (next) next();
+        if (mountTaskQueue.length > 0) {
+            requestAnimationFrame(drain);
+        } else {
+            mountQueueScheduled = false;
+        }
+    };
+    requestAnimationFrame(drain);
+}
+
 const GroupCard: React.FC<GroupCardProps> = ({
     group,
     sortMode,
@@ -116,8 +139,9 @@ const GroupCard: React.FC<GroupCardProps> = ({
         const io = new IntersectionObserver(
             entries => {
                 if (entries.some(entry => entry.isIntersecting)) {
-                    setSitesMounted(true);
                     io.disconnect(); // 一旦挂上就不卸载，避免来回滚动反复重建
+                    // 走队列分帧挂载：快速滚动时同帧进圈的分组逐个挂
+                    enqueueMountTask(() => setSitesMounted(true));
                 }
             },
             { rootMargin: "600px 0px" }
@@ -212,7 +236,8 @@ const GroupCard: React.FC<GroupCardProps> = ({
         const io = new IntersectionObserver(
             entries => {
                 if (entries.some(e => e.isIntersecting)) {
-                    setVisibleCount(c => c + PAGE_SIZE);
+                    // 追加也走同一个队列：40 张一批的渲染同样别和别的任务挤在同一帧
+                    enqueueMountTask(() => setVisibleCount(c => c + PAGE_SIZE));
                 }
             },
             { rootMargin: "240px" }
