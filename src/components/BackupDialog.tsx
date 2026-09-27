@@ -16,6 +16,7 @@ import {
     Stack,
     Divider,
     TextField,
+    InputAdornment,
     Tabs,
     Tab,
     Alert,
@@ -36,6 +37,8 @@ import RefreshIcon from "@mui/icons-material/Refresh";
 import DeleteIcon from "@mui/icons-material/Delete";
 import UploadFileIcon from "@mui/icons-material/UploadFile";
 import CheckCircleIcon from "@mui/icons-material/CheckCircle";
+import VisibilityIcon from "@mui/icons-material/Visibility";
+import VisibilityOffIcon from "@mui/icons-material/VisibilityOff";
 
 interface BackupDialogProps {
     open: boolean;
@@ -130,6 +133,8 @@ export default function BackupDialog({
 
     const [remoteFiles, setRemoteFiles] = useState<WebDavFile[]>([]);
     const [listLoading, setListLoading] = useState(false);
+    // 正在删除的远端备份文件名：乐观更新后这条已经从列表里消失，用它防重复点击
+    const [deletingFiles, setDeletingFiles] = useState<Set<string>>(new Set());
     const [selectedRemote, setSelectedRemote] = useState<string>("");
 
     const [localFile, setLocalFile] = useState<File | null>(null);
@@ -137,6 +142,8 @@ export default function BackupDialog({
     const [localError, setLocalError] = useState<string | null>(null);
     const [restoring, setRestoring] = useState(false);
     const [overwrite, setOverwrite] = useState(true);
+    // 密码默认遮住，点眼睛才明文显示（仅影响本机显示）
+    const [showPassword, setShowPassword] = useState(false);
 
     // 打开时同步外部保存的 WebDAV 配置
     // 注意：不把 webdavConfig 放进依赖，避免保存配置后把连接测试结果清空
@@ -149,6 +156,7 @@ export default function BackupDialog({
             setLocalData(null);
             setLocalError(null);
             setSelectedRemote("");
+            setShowPassword(false);
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [open, initialTab]);
@@ -164,22 +172,33 @@ export default function BackupDialog({
     const handleTest = async () => {
         setTesting(true);
         setTestResult(null);
+        let result: Awaited<ReturnType<typeof client.webdavTest>>;
         try {
-            const result = await client.webdavTest(config);
-            // 成功时先落库再出提示：保存配置要连发 5 个请求，
-            // 若提示先出、按钮还在转，看起来就像「连上了却卡住」
-            if (result.success) {
-                await onSaveWebdavConfig(config);
-            }
-            setTestResult({ success: !!result.success, message: result.message || (result.success ? "连接成功" : "连接失败") });
+            result = await client.webdavTest(config);
         } catch (error) {
+            setTesting(false);
             setTestResult({
                 success: false,
                 message: error instanceof Error ? error.message : "连接失败",
             });
-        } finally {
-            setTesting(false);
+            return;
         }
+        // 探测一有结果就停转 + 出结论：保存配置还要写几项（网络慢/离线入队都可能拖住），
+        // 拿它挡着反馈的话，保存一挂起按钮就永远在转，看起来像「连不上」
+        setTesting(false);
+        setTestResult({
+            success: !!result.success,
+            message: result.message || (result.success ? "连接成功" : "连接失败"),
+        });
+        if (!result.success) return;
+        // 配置落库放后台：成了就静默，失败再把提示改成「连上了但没存下」
+        void onSaveWebdavConfig(config).catch(error => {
+            setTestResult({
+                success: false,
+                message:
+                    "连接成功，但保存配置失败：" + (error instanceof Error ? error.message : "未知错误"),
+            });
+        });
     };
 
     // 备份到 WebDAV
@@ -200,14 +219,16 @@ export default function BackupDialog({
         }
     };
 
-    // 加载远端备份列表
-    const loadRemoteFiles = async (cfg: WebDavConfig) => {
-        setListLoading(true);
+    // 加载远端备份列表。silent=true 用于删除后的后台校准：不置 loading、也不弹提示，
+    // 否则连着删几份时界面一直在转圈、提示一条接一条
+    const loadRemoteFiles = async (cfg: WebDavConfig, options?: { silent?: boolean }) => {
+        const silent = options?.silent === true;
+        if (!silent) setListLoading(true);
         try {
             const result = await client.webdavList(cfg);
             if (result.success) {
                 setRemoteFiles(result.data || []);
-                if (!result.data || result.data.length === 0) {
+                if (!silent && (!result.data || result.data.length === 0)) {
                     onNotify("远端暂无备份文件", "info");
                 }
             } else {
@@ -215,9 +236,11 @@ export default function BackupDialog({
                 setRemoteFiles([]);
             }
         } catch (error) {
-            onNotify(error instanceof Error ? error.message : "获取备份列表失败", "error");
+            if (!silent) {
+                onNotify(error instanceof Error ? error.message : "获取备份列表失败", "error");
+            }
         } finally {
-            setListLoading(false);
+            if (!silent) setListLoading(false);
         }
     };
 
@@ -317,20 +340,34 @@ export default function BackupDialog({
     };
 
     // 删除远端备份
+    // 原来是「DELETE 回来 → 再 PROPFIND 重新列一遍目录 → 才更新界面」，
+    // 两个 WebDAV 往返下来界面要卡几秒（中途整个列表还在转圈）。改成乐观更新：
+    // 点下去先从列表里摘掉，删除请求在后台跑，跑完再静默校准一次真实列表。
     const handleDeleteRemote = async (filename: string) => {
-        setListLoading(true);
+        const snapshot = remoteFiles;
+        setRemoteFiles(prev => prev.filter(file => file.name !== filename));
+        if (selectedRemote === filename) setSelectedRemote("");
+        setDeletingFiles(prev => new Set(prev).add(filename));
         try {
             const result = await client.webdavDelete(filename, config);
             if (result.success) {
                 onNotify(result.message || "已删除备份", "success");
-                if (selectedRemote === filename) setSelectedRemote("");
             } else {
+                // 没删成就把这条放回去，别让界面和服务器对不上
                 onNotify(result.message || "删除失败", "error");
+                setRemoteFiles(snapshot);
             }
-            await loadRemoteFiles(config);
         } catch (error) {
             onNotify(error instanceof Error ? error.message : "删除失败", "error");
-            setListLoading(false);
+            setRemoteFiles(snapshot);
+        } finally {
+            setDeletingFiles(prev => {
+                const next = new Set(prev);
+                next.delete(filename);
+                return next;
+            });
+            // 后台校准：silent 模式不置 loading、也不弹「暂无备份」，免得打断连续删除
+            void loadRemoteFiles(config, { silent: true });
         }
     };
 
@@ -432,13 +469,36 @@ export default function BackupDialog({
                         />
                         <TextField
                             label='密码 / 应用密码'
-                            type='password'
+                            type={showPassword ? "text" : "password"}
                             placeholder='建议使用应用专用密码'
                             value={config.password}
                             onChange={handleConfigChange("password")}
                             size='small'
                             fullWidth
                             autoComplete='new-password'
+                            // 应用密码一长串随机字符，粘进去看不到内容很容易粘错；
+                            // 点眼睛就能核对。默认仍然遮住
+                            slotProps={{
+                                input: {
+                                    endAdornment: (
+                                        <InputAdornment position='end'>
+                                            <IconButton
+                                                id='webdav-toggle-password'
+                                                size='small'
+                                                edge='end'
+                                                onClick={() => setShowPassword(prev => !prev)}
+                                                aria-label={showPassword ? "隐藏密码" : "显示密码"}
+                                            >
+                                                {showPassword ? (
+                                                    <VisibilityOffIcon fontSize='small' />
+                                                ) : (
+                                                    <VisibilityIcon fontSize='small' />
+                                                )}
+                                            </IconButton>
+                                        </InputAdornment>
+                                    ),
+                                },
+                            }}
                         />
                     </Stack>
                     <TextField
@@ -675,13 +735,19 @@ export default function BackupDialog({
                                         edge='end'
                                         size='small'
                                         color='error'
+                                        // 删除中的那条已经被移出列表了，这里只是兜底防连点
+                                        disabled={deletingFiles.has(file.name)}
                                         onClick={event => {
                                             event.stopPropagation();
                                             handleDeleteRemote(file.name);
                                         }}
                                         aria-label={`删除 ${file.name}`}
                                     >
-                                        <DeleteIcon fontSize='small' />
+                                        {deletingFiles.has(file.name) ? (
+                                            <CircularProgress size={16} />
+                                        ) : (
+                                            <DeleteIcon fontSize='small' />
+                                        )}
                                     </IconButton>
                                 </ListItemButton>
                             ))}

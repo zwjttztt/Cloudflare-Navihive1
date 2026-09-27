@@ -2188,14 +2188,15 @@ function App() {
     // 保存 WebDAV 配置到服务端
     const handleSaveWebdavConfig = async (config: WebDavConfig) => {
         try {
-            await api.setConfig(`${WEBDAV_CONFIG_PREFIX}url`, config.url);
-            await api.setConfig(`${WEBDAV_CONFIG_PREFIX}username`, config.username);
+            // 原来 5 个 setConfig 串行 = 5 次网络往返，网络慢时能把「连接成功」的反馈一起拖住。
+            // 密码必须单独写（setConfig 会用 AUTH_SECRET 加密，批量接口不会），其余 4 项一次写完。
+            await api.setConfigs({
+                [`${WEBDAV_CONFIG_PREFIX}url`]: config.url,
+                [`${WEBDAV_CONFIG_PREFIX}username`]: config.username,
+                [`${WEBDAV_CONFIG_PREFIX}path`]: config.path || DEFAULT_WEBDAV_CONFIG.path,
+                [`${WEBDAV_CONFIG_PREFIX}allowPrivateNetwork`]: config.allowPrivateNetwork ? "1" : "0",
+            });
             await api.setConfig(`${WEBDAV_CONFIG_PREFIX}password`, config.password);
-            await api.setConfig(`${WEBDAV_CONFIG_PREFIX}path`, config.path || DEFAULT_WEBDAV_CONFIG.path);
-            await api.setConfig(
-                `${WEBDAV_CONFIG_PREFIX}allowPrivateNetwork`,
-                config.allowPrivateNetwork ? "1" : "0"
-            );
             setWebdavConfig(config);
         } catch (error) {
             console.error("保存 WebDAV 配置失败:", error);
