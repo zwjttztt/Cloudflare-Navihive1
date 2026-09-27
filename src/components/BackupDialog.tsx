@@ -1,6 +1,6 @@
 // src/components/BackupDialog.tsx
 // 数据备份与恢复：支持备份到本地文件 / WebDAV，并支持从本地或 WebDAV 恢复
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { ExportData, WebDavConfig, WebDavFile } from "../API/http";
 import { NavigationClient } from "../API/client";
 import { MockNavigationClient } from "../API/mock";
@@ -110,6 +110,16 @@ export default function BackupDialog({
     const [testing, setTesting] = useState(false);
     const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
     const [uploading, setUploading] = useState(false);
+    // WebDAV 操作按钮行（测试连接 / 备份 / 查看远端）。
+    // 矮视口（125% 缩放 / 小窗口）下内容区会滚动：点「测试连接」后 Alert 把内容撑高，
+    // 若不主动滚动，Alert 和按钮行都停在内容区折叠线下面，视觉上像跟底部操作区叠在一起。
+    const webdavActionsRef = useRef<HTMLDivElement | null>(null);
+    useEffect(() => {
+        if (testResult) {
+            // block:'nearest' 只滚必要的距离，把 Alert 连同它下面的按钮行一起带进可视区
+            webdavActionsRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+        }
+    }, [testResult]);
 
     const [remoteFiles, setRemoteFiles] = useState<WebDavFile[]>([]);
     const [listLoading, setListLoading] = useState(false);
@@ -479,7 +489,11 @@ export default function BackupDialog({
                         </Alert>
                     )}
 
-                    <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
+                    <Stack
+                        ref={webdavActionsRef}
+                        direction={{ xs: "column", sm: "row" }}
+                        spacing={2}
+                    >
                         <Button
                             variant='outlined'
                             onClick={handleTest}
