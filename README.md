@@ -49,13 +49,21 @@
 1. 打开上方 **"Deploy to Cloudflare Workers"** 按钮（或访问  
    `https://deploy.workers.cloudflare.com/?url=https://github.com/zwjttztt/myhomepage`）。
 2. 使用你的 Cloudflare 账号登录。
-3. D1 数据库 `navigation-db` 及登录凭据已内置在 `wrangler.jsonc`（database_id 已填，AUTH\_* 已配置），直接点击 **"Deploy"** 即可。
+3. D1 数据库 `navigation-db` 已内置在 `wrangler.jsonc`（database_id 已填）；
+   登录凭据需要你自己先设成 Cloudflare secret（**不要**写进 `wrangler.jsonc`，会明文进 Git）：
+   ```bash
+   wrangler secret put AUTH_USERNAME
+   wrangler secret put AUTH_PASSWORD
+   wrangler secret put AUTH_SECRET
+   wrangler secret put AUTH_RESET_CODE
+   ```
+   然后直接点击 **"Deploy"** 即可。
 4. 部署完成后你会得到类似  
    `https://myhomepage.<你的用户名>.workers.dev` 的地址。
 
-> 默认登录账号：`admin` ／ 密码：`***REMOVED***`。  
+> 管理员账号密码由你上一步 `wrangler secret put` 决定（没有默认值）。  
 > 这套凭据只在**第一次部署**时生效：首次登录会写入 D1 的 `configs` 表，之后就以数据库为准，重新部署不会再改动。  
-> 建议在登录后立刻到「网站设置 → 管理员账号与密码」改成自己的账号密码。
+> 首次登录后会提示改密码（种子凭据来自部署变量，等同半公开），建议立刻改成自己的账号密码。
 
 ### 方式二：手动部署（适合开发者）
 

@@ -30,7 +30,7 @@
         {
             "binding": "DB",
             "database_name": "navigation-db",
-            "database_id": "***REMOVED***"
+            "database_id": "e4f73ada-564f-4a37-89a7-52729d2e8c07"
         }
     ],
     // 每周一 UTC 02:00（北京时间 10:00）自动备份一次到 WebDAV。
