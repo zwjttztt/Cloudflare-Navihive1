@@ -34,9 +34,38 @@ createRoot(document.getElementById("root")!).render(
 );
 
 // PWA：注册 service worker（只在生产构建里注册，避免开发时被缓存干扰）
+//
+// 为什么这里要绕一道 Trusted Types：开了 CSP 的 require-trusted-types-for 之后，Chrome
+// 把 register() 的 scriptURL 也当成 sink，直接传字符串会被拦下 —— 实测报
+// "requires 'TrustedScriptURL' assignment"，SW 注册静默失败，离线能力就没了。
+// 所以建一个只服务于 SW 的策略把这个常量包一下：URL 是硬编码的 "/sw.js"，
+// 不是外部输入，恒等放行不存在注入风险。
+// 不支持 Trusted Types 的浏览器（Firefox / Safari）走 ?? 分支；它们本来也不执行
+// require-trusted-types-for，两边行为一致。
+const SW_URL = "/sw.js";
+
+type TrustedPolicyFactory = {
+    createPolicy: (
+        name: string,
+        rules: { createScriptURL: (url: string) => string }
+    ) => { createScriptURL: (url: string) => unknown };
+};
+
+function swScriptUrl(): unknown {
+    const tt = (window as unknown as { trustedTypes?: TrustedPolicyFactory }).trustedTypes;
+    if (!tt?.createPolicy) return SW_URL;
+    try {
+        return tt.createPolicy("navihive-sw", { createScriptURL: (url: string) => url }).createScriptURL(SW_URL);
+    } catch {
+        // 策略名被占用 / CSP 不允许建策略：回退成字符串，最坏只是没有 TT 保护
+        return SW_URL;
+    }
+}
+
 if ("serviceWorker" in navigator && import.meta.env.PROD) {
     window.addEventListener("load", () => {
-        navigator.serviceWorker.register("/sw.js").catch(() => {
+        // 运行时这里可能是 TrustedScriptURL（Chrome 要求的类型），TS 只认 string，故强转
+        navigator.serviceWorker.register(swScriptUrl() as string).catch(() => {
             // 注册失败不影响正常使用，静默忽略
         });
     });

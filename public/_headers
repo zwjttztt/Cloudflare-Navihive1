@@ -12,9 +12,22 @@
   # - script 不需要 'unsafe-inline'：入口是 <script type="module" src>，没有内联脚本。
   # - img / connect 放开 https:：图标 API 和 WebDAV 备份都是用户自己配的第三方 https 地址。
   # - object-src 'none' + base-uri 'self' 挡插件和 <base> 劫持；form-action 'self' 挡表单外投。
+  # - require-trusted-types-for 'script'：把 innerHTML / outerHTML / insertAdjacentHTML /
+  #   document.write / eval 这些 DOM XSS sink 全部封死——赋值字符串直接抛异常，
+  #   只有 Trusted Types 对象能通过。这里**没有**写 trusted-types 指令，
+  #   意味着连创建策略都不允许（Chrome 默认 deny），所以不存在「自己造个策略绕过」的路子。
+  #   加它之前先扫过全量源码：0 处 innerHTML / eval / new Function / document.write，
+  #   React 与 emotion 走的是 createElement 和 CSSOM，不碰这些 sink。
+  #   ⚠️ 踩过的坑：Chrome 把 ServiceWorkerContainer.register() 的 scriptURL 也算 sink，
+  #   只加 require-trusted-types-for 会让 SW 注册静默失败（控制台报 requires
+  #   'TrustedScriptURL'，离线能力直接没了）。所以下面额外给了 trusted-types navihive-sw
+  #   这一个策略名，main.tsx 里用它把硬编码的 /sw.js 包成 TrustedScriptURL。
+  #   除 SW 之外别再申请策略名——每多一个，TT 的封锁就松一分。
+  #   ⚠️ 本条是 enforce 生效：万一将来引入会碰 sink 的依赖，界面会直接白屏，
+  #   上线前必须跑一遍全量冒烟（stub 会照发 _headers，本地就能测出来）。
   # - report-uri 指向 Worker 的公开路由：真被拦下的资源会上报一条 JSON，
   #   在 Workers 日志里能搜到（worker/csp.ts），据此再决定要不要继续收紧策略。
-  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' https:; media-src 'self' https:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; frame-src 'none'; worker-src 'self'; manifest-src 'self'; report-uri /api/csp-report
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' https:; media-src 'self' https:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; frame-src 'none'; worker-src 'self'; manifest-src 'self'; require-trusted-types-for 'script'; trusted-types navihive-sw; report-uri /api/csp-report
   # 别让浏览器去猜 MIME 类型（把 txt 当 js 执行那一类问题）
   X-Content-Type-Options: nosniff
   # 老的点击劫持防护；现代浏览器看 CSP 的 frame-ancestors，两条一起给，兼容旧客户端
