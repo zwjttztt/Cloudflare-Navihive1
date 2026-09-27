@@ -29,10 +29,10 @@ jobs:
         with:
           node-version: 22
 
-      # 仓库里没有提交 lockfile（本机装包用的是 --no-package-lock），
-      # 所以这里用 install 而不是 ci；--legacy-peer-deps 是为了绕开 MUI 7 的 peer 依赖告警
+      # 仓库已提交 package-lock.json，用 ci 保证依赖树与锁定版本完全一致；
+      # --legacy-peer-deps 是为了绕开 MUI 7 的 peer 依赖告警
       - name: 安装依赖
-        run: npm install --no-package-lock --legacy-peer-deps
+        run: npm ci --legacy-peer-deps
 
       - name: 类型检查
         run: npm run typecheck
