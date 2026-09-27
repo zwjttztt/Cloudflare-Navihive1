@@ -119,33 +119,32 @@ const mockConfigs: Record<string, string> = {
 
 // 模拟API实现
 export class MockNavigationClient {
-    private token: string | null = null;
-
+    // 与真实 client 保持一致：登录态看可读的 session cookie，令牌本身不落 JS
     constructor() {
-        // 从本地存储加载令牌
         if (typeof localStorage !== 'undefined') {
-            this.token = localStorage.getItem('auth_token');
+            localStorage.removeItem('auth_token');
         }
     }
 
     // 检查是否已登录
     isLoggedIn(): boolean {
-        return !!this.token;
+        if (typeof document === 'undefined') return false;
+        return document.cookie
+            .split(';')
+            .some(part => part.trim().startsWith('navihive_session=1'));
     }
 
     // 设置认证令牌
-    setToken(token: string): void {
-        this.token = token;
-        if (typeof localStorage !== 'undefined') {
-            localStorage.setItem('auth_token', token);
+    setToken(_token: string): void {
+        if (typeof document !== 'undefined') {
+            document.cookie = 'navihive_session=1; Path=/; SameSite=Strict';
         }
     }
 
     // 清除认证令牌
     clearToken(): void {
-        this.token = null;
-        if (typeof localStorage !== 'undefined') {
-            localStorage.removeItem('auth_token');
+        if (typeof document !== 'undefined') {
+            document.cookie = 'navihive_session=; Path=/; SameSite=Strict; Max-Age=0';
         }
     }
 
@@ -173,8 +172,8 @@ export class MockNavigationClient {
     async checkAuthStatus(): Promise<boolean> {
         await new Promise(resolve => setTimeout(resolve, 300));
         
-        // 模拟真实环境中的行为：如果有token则认为已认证
-        if (this.token) {
+        // 模拟真实环境中的行为：有登录标记则认为已认证
+        if (this.isLoggedIn()) {
             return true;
         }
         

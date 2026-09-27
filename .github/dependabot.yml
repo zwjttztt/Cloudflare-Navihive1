@@ -1,0 +1,22 @@
+# 依赖安全巡检：每周检查一次 npm 依赖与 GitHub Actions 的版本更新。
+# 出安全告警时 Dependabot 会直接开 PR（并在 PR 里带上 advisory 详情）。
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    # 依赖树很大（MUI/Vite 全家桶），把噪音压一压：
+    # 只开安全相关的 PR + 最多同时 5 个，避免每天被一堆 minor 更新刷屏
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+    commit-message:
+      prefix: "chore(deps)"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "ci"

@@ -757,6 +757,10 @@ function App() {
                 setLoginError(null);
                 // 关掉可能残留的全局提示（比如上一次输错密码时弹出的「用户名或密码错误」）
                 handleCloseSnackbar();
+                // 首次部署的凭据来自部署变量（等同半公开），服务端会拦住其它操作直到改密
+                if (result.mustChangePassword) {
+                    notify("请先到「网站设置 → 管理员账号与密码」修改密码", "info");
+                }
                 // 加载数据（一次 bootstrap 请求）
                 await fetchData();
             } else {

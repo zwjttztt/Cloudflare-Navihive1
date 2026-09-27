@@ -8,33 +8,56 @@ import {
     WebDavConfig,
     WebDavFile,
     WebDavResult,
+    DEFAULT_TOKEN_TTL,
+    REMEMBER_TOKEN_TTL,
 } from "./http";
+
+// 前端只读标记：真正的令牌在 httpOnly cookie 里，JS 拿不到（XSS 偷不走）。
+// 这条 cookie 只表示「已登录」，不含任何凭据。
+const SESSION_COOKIE = "navihive_session";
+
+// 旧版本把令牌存在 localStorage，这里一次性清掉遗留值，避免它留在浏览器里
+function purgeLegacyToken(): void {
+    try {
+        localStorage.removeItem("auth_token");
+    } catch {
+        // localStorage 不可用时忽略
+    }
+}
 
 export class NavigationClient {
     private baseUrl: string;
-    private token: string | null = null;
 
     constructor(baseUrl = "/api") {
         this.baseUrl = baseUrl;
-        // 从本地存储加载令牌
-        this.token = localStorage.getItem('auth_token');
+        purgeLegacyToken();
     }
 
     // 检查是否已登录
     isLoggedIn(): boolean {
-        return !!this.token;
+        if (typeof document === "undefined") return false;
+        return document.cookie
+            .split(";")
+            .some(part => part.trim().startsWith(`${SESSION_COOKIE}=1`));
     }
 
-    // 设置认证令牌
-    setToken(token: string): void {
-        this.token = token;
-        localStorage.setItem('auth_token', token);
+    // 令牌由服务端通过 httpOnly cookie 下发，前端不再接触它。
+    // 这里只补一个可读的登录标记，让刷新后界面立刻知道「已登录」。
+    // 必须带上和服务端一致的 Max-Age，否则会把服务端那条持久 cookie 覆盖成会话 cookie，
+    // 「记住我」勾选了却在关掉浏览器后被登出。
+    setToken(_token: string): void {
+        this.setSessionCookie(DEFAULT_TOKEN_TTL);
     }
 
-    // 清除认证令牌
+    private setSessionCookie(ttlSeconds: number): void {
+        if (typeof document === "undefined") return;
+        document.cookie = `${SESSION_COOKIE}=1; Path=/; SameSite=Strict; Max-Age=${ttlSeconds}`;
+    }
+
+    // 清除本地登录标记（令牌本身由服务端 /api/logout 清掉）
     clearToken(): void {
-        this.token = null;
-        localStorage.removeItem('auth_token');
+        if (typeof document === "undefined") return;
+        document.cookie = `${SESSION_COOKIE}=; Path=/; SameSite=Strict; Max-Age=0`;
     }
 
     // 登录API
@@ -49,11 +72,13 @@ export class NavigationClient {
             });
 
             const data = await response.json();
-            
-            if (data.success && data.token) {
-                this.setToken(data.token);
+
+            // 服务端已通过 httpOnly cookie 下发令牌，响应体里不一定还带 token，
+            // 所以判据是「登录成功」而不是「拿到了 token」
+            if (data.success) {
+                this.setSessionCookie(remember ? REMEMBER_TOKEN_TTL : DEFAULT_TOKEN_TTL);
             }
-            
+
             return data;
         } catch (error) {
             console.error('登录失败:', error);
@@ -64,8 +89,16 @@ export class NavigationClient {
         }
     }
 
-    // 登出
-    logout(): void {
+    // 登出：通知服务端把令牌拉黑（真失效）并清 cookie，再清掉本地登录标记
+    async logout(): Promise<void> {
+        try {
+            await fetch(`${this.baseUrl}/logout`, {
+                method: "POST",
+                credentials: "same-origin",
+            });
+        } catch {
+            // 网络失败也要把本地状态清掉，否则界面一直显示已登录
+        }
         this.clearToken();
     }
 
@@ -73,13 +106,11 @@ export class NavigationClient {
         const headers: Record<string, string> = {
             "Content-Type": "application/json",
         };
-        
-        // 如果有认证令牌，则添加到请求头
-        if (this.token) {
-            headers["Authorization"] = `Bearer ${this.token}`;
-        }
 
+        // 凭据走 httpOnly cookie，由浏览器自动带上（credentials 默认即 same-origin）。
+        // 不再手动塞 Authorization —— 令牌根本不留在 JS 里。
         const response = await fetch(`${this.baseUrl}/${endpoint}`, {
+            credentials: "same-origin",
             headers,
             ...options,
         });
@@ -102,11 +133,11 @@ export class NavigationClient {
     // 检查身份验证状态
     async checkAuthStatus(): Promise<boolean> {
         try {
-            // 如果本地没有令牌，直接返回未认证
-            if (!this.token) {
+            // 本地没有登录标记就直接算未认证（令牌本身在 httpOnly cookie 里，JS 看不到）
+            if (!this.isLoggedIn()) {
                 return false;
             }
-            
+
             // 尝试获取配置，如果成功则表示已认证
             await this.getConfigs();
             return true;
@@ -121,8 +152,8 @@ export class NavigationClient {
                 }
             }
             
-            // 其他错误不影响认证状态，如果有token则认为已认证
-            return !!this.token;
+            // 其他错误不影响认证状态，本地有登录标记就认为已认证
+            return this.isLoggedIn();
         }
     }
 
@@ -363,12 +394,9 @@ export class NavigationClient {
      * （站点拒绝了 / 超时 / 网址不合法），直接抛给调用方展示。
      */
     async getSiteMeta(url: string): Promise<SiteMeta> {
-        const headers: Record<string, string> = {};
-        if (this.token) headers["Authorization"] = `Bearer ${this.token}`;
-
         const response = await fetch(
             `${this.baseUrl}/meta?url=${encodeURIComponent(url)}`,
-            { headers }
+            { credentials: "same-origin" }
         );
         const data = await response.json().catch(() => ({}));
         if (!response.ok) {

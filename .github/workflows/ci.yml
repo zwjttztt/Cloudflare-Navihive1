@@ -34,6 +34,12 @@ jobs:
       - name: 安装依赖
         run: npm ci --legacy-peer-deps
 
+      # 依赖漏洞巡检：只报 high/critical，且不阻断流水线
+      # （历史依赖经常有修不动的间接告警，硬失败只会让人习惯性忽略 CI）。
+      # 真正要修的项由 Dependabot 每周开 PR 跟进（.github/dependabot.yml）。
+      - name: 依赖安全巡检
+        run: npm audit --audit-level=high || true
+
       - name: 类型检查
         run: npm run typecheck
 

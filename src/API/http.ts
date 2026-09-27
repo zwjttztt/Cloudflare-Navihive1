@@ -145,6 +145,8 @@ export interface LoginResponse {
     success: boolean;
     token?: string;
     message?: string;
+    /** 首次部署的种子凭据还没换过：服务端会拦住其它写操作，直到改一次密码 */
+    mustChangePassword?: boolean;
 }
 
 // 数据库迁移只需在每个 Worker isolate 中执行一次。
@@ -164,6 +166,10 @@ export const AUTH_PASSWORD_KEY = "auth.password";
 export const WEBDAV_PASSWORD_KEY = "webdav.password";
 // 令牌版本：改密 / 重置后 +1，让所有已签发的令牌立即失效（服务端可吊销）
 export const TOKEN_VERSION_KEY = "auth.tokenVersion";
+// 单点吊销：退出登录时把该令牌的 jti 记进黑名单，验签通过后还要再查一次
+export const TOKEN_BLACKLIST_KEY = "auth.tokenBlacklist";
+// 首次部署后必须先改一次管理员密码（默认账号/密码来自部署变量，等于半公开）
+export const MUST_CHANGE_PASSWORD_KEY = "auth.mustChangePassword";
 
 // 令牌有效期（秒）：普通登录 1 天；勾选「记住账号密码」后 30 天，实现「一个月内免登录」
 export const DEFAULT_TOKEN_TTL = 24 * 60 * 60;
@@ -312,6 +318,9 @@ export class NavigationAPI {
         `CREATE TABLE IF NOT EXISTS groups (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, order_num INTEGER NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`,
         `CREATE TABLE IF NOT EXISTS sites (id INTEGER PRIMARY KEY AUTOINCREMENT, group_id INTEGER NOT NULL, name TEXT NOT NULL, url TEXT NOT NULL, icon TEXT, description TEXT, notes TEXT, username TEXT, password TEXT, order_num INTEGER NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE);`,
         `CREATE TABLE IF NOT EXISTS configs (key TEXT PRIMARY KEY, value TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`,
+        // 审计日志：登录、改密、重置、删除站点、改备份配置等关键动作留痕，事后能溯源。
+        // 不返回给前端、不进备份（不属于 configs 表）。
+        `CREATE TABLE IF NOT EXISTS audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, action TEXT NOT NULL, actor TEXT, ip TEXT, detail TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`,
     ];
 
     private async runMigrations(): Promise<void> {
@@ -417,9 +426,75 @@ export class NavigationAPI {
             return { username: this.seedUsername, password: this.seedPassword };
         }
 
-        // 第一次部署：把环境变量里的默认值写进数据库，之后就一直用它
+        // 第一次部署：把环境变量里的默认值写进数据库，之后就一直用它。
+        // 同时置「必须改密」——种子凭据来自部署变量，等同于半公开，必须换掉才算安全。
         await this.updateAuthCredentials(this.seedUsername, this.seedPassword);
+        await this.setConfig(MUST_CHANGE_PASSWORD_KEY, "1");
         return { username: this.seedUsername, password: this.seedPassword };
+    }
+
+    // ============ 审计日志 ============
+    // 关键动作留痕（登录成功/失败、改密、重置、删站点、改备份配置）。
+    // 写入失败一律吞掉：审计不能反过来把正常操作搞挂。
+    async writeAudit(action: string, actor: string, ip: string, detail = ""): Promise<void> {
+        try {
+            await this.db
+                .prepare(
+                    "INSERT INTO audit_log (action, actor, ip, detail) VALUES (?, ?, ?, ?)"
+                )
+                .bind(action, actor || "", ip || "", detail || "")
+                .run();
+        } catch (error) {
+            console.error("写入审计日志失败:", error);
+        }
+    }
+
+    // ============ 令牌黑名单（退出登录 = 服务端可吊销） ============
+    // JWT 本身无状态，退出登录只能靠「把这张令牌的 jti 拉黑」来实现真正失效。
+    // 结构是 { jti: 过期秒级时间戳 }，读取时顺手丢掉已过期的条目，避免无限膨胀。
+    private async readBlacklist(): Promise<Record<string, number>> {
+        try {
+            const raw = await this.getConfig(TOKEN_BLACKLIST_KEY);
+            if (!raw) return {};
+            const parsed = JSON.parse(raw) as Record<string, number>;
+            const now = Math.floor(Date.now() / 1000);
+            const alive: Record<string, number> = {};
+            for (const [jti, exp] of Object.entries(parsed)) {
+                if (typeof exp === "number" && exp > now) alive[jti] = exp;
+            }
+            return alive;
+        } catch {
+            return {};
+        }
+    }
+
+    /** 把某张令牌拉黑（退出登录 / 发现令牌泄露时调用） */
+    async blacklistToken(jti: string, exp: number): Promise<void> {
+        if (!jti) return;
+        try {
+            const list = await this.readBlacklist();
+            list[jti] = exp;
+            await this.setConfig(TOKEN_BLACKLIST_KEY, JSON.stringify(list));
+        } catch (error) {
+            console.error("拉黑令牌失败:", error);
+        }
+    }
+
+    private async isTokenBlacklisted(jti: string): Promise<boolean> {
+        if (!jti) return false;
+        const list = await this.readBlacklist();
+        return Object.prototype.hasOwnProperty.call(list, jti);
+    }
+
+    // ============ 首次部署强制改密 ============
+    // 种子凭据来自部署变量（等同半公开），首次部署后必须改一次才算安全。
+    async mustChangePassword(): Promise<boolean> {
+        const raw = await this.getConfig(MUST_CHANGE_PASSWORD_KEY);
+        return raw === "1";
+    }
+
+    private async clearMustChangePassword(): Promise<void> {
+        await this.setConfig(MUST_CHANGE_PASSWORD_KEY, "0");
     }
 
     // 令牌版本：改密 / 重置后 +1，让所有已签发的令牌立即失效（服务端可吊销）
@@ -444,6 +519,8 @@ export class NavigationAPI {
         const okUser = await this.setConfig(AUTH_USERNAME_KEY, username);
         const okPass = await this.setConfig(AUTH_PASSWORD_KEY, hashed);
         await this.bumpTokenVersion();
+        // 已经换成自己的密码了，解除「必须改密」限制
+        await this.clearMustChangePassword();
         return okUser && okPass;
     }
 
@@ -548,7 +625,16 @@ export class NavigationAPI {
         // 现在会真正验签（HMAC-SHA256）+ 校验过期 + 校验令牌版本，
         // 伪造的 token 直接被拒，改密后旧 token 也立即失效。
         const tv = await this.getTokenVersion();
-        return verifyJwt(token, this.secret, { tokenVersion: tv });
+        const result = await verifyJwt(token, this.secret, { tokenVersion: tv });
+
+        // 验签通过还要再查一次黑名单：退出登录过的令牌不能复活
+        if (result.valid) {
+            const jti = typeof result.payload?.jti === "string" ? result.payload.jti : "";
+            if (await this.isTokenBlacklisted(jti)) {
+                return { valid: false };
+            }
+        }
+        return result;
     }
 
     // 生成JWT令牌
@@ -556,12 +642,15 @@ export class NavigationAPI {
         payload: Record<string, unknown>,
         ttlSeconds: number = DEFAULT_TOKEN_TTL
     ): Promise<string> {
-        // 嵌入令牌版本：改密后所有旧 token（版本偏低）在 verifyToken 处被拒
+        // 嵌入令牌版本：改密后所有旧 token（版本偏低）在 verifyToken 处被拒。
+        // jti 是这张令牌的唯一编号，退出登录时按它拉黑 —— 让「登出」真的能让令牌失效。
         const tv = await this.getTokenVersion();
+        const exp = Math.floor(Date.now() / 1000) + ttlSeconds;
         const tokenPayload = {
             ...payload,
             tv,
-            exp: Math.floor(Date.now() / 1000) + ttlSeconds,
+            jti: crypto.randomUUID(),
+            exp,
             iat: Math.floor(Date.now() / 1000),
         };
         return signJwt(tokenPayload, this.secret);
@@ -690,6 +779,19 @@ export class NavigationAPI {
         return this.withSchemaRetry(() => this.querySites(groupId));
     }
 
+    /**
+     * 站点密码在库里是密文，读出来统一解密还原给调用方。
+     * 历史明文（没有 enc$ 前缀）decryptSecret 会原样返回，升级过程无感。
+     */
+    private async decryptSitePassword(site: Site): Promise<Site> {
+        if (!site || !site.password) return site;
+        return { ...site, password: await decryptSecret(site.password, this.secret) };
+    }
+
+    private async decryptSitePasswords(sites: Site[]): Promise<Site[]> {
+        return Promise.all(sites.map(site => this.decryptSitePassword(site)));
+    }
+
     private async querySites(groupId?: number): Promise<Site[]> {
         let query =
             "SELECT id, group_id, name, url, icon, description, notes, username, password, order_num, created_at, updated_at FROM sites";
@@ -706,7 +808,7 @@ export class NavigationAPI {
             .prepare(query)
             .bind(...params)
             .all<Site>();
-        return result.results || [];
+        return this.decryptSitePasswords(result.results || []);
     }
 
     async getSite(id: number): Promise<Site | null> {
@@ -721,7 +823,7 @@ export class NavigationAPI {
             )
             .bind(id)
             .first<Site>();
-        return result;
+        return result ? this.decryptSitePassword(result) : result;
     }
 
     async createSite(site: Site): Promise<Site> {
@@ -746,7 +848,8 @@ export class NavigationAPI {
                 site.description || "",
                 site.notes || "",
                 site.username || "",
-                site.password || "",
+                // 站点登录凭据落库即加密（读出来时解密）
+                await encryptSecret(site.password || "", this.secret),
                 site.order_num
             )
             .all<Site>();
@@ -754,7 +857,8 @@ export class NavigationAPI {
         if (!result.results || result.results.length === 0) {
             throw new Error("创建站点失败");
         }
-        return result.results[0];
+        // RETURNING 取回的是库里的密文，解密后再返回给前端
+        return this.decryptSitePassword(result.results[0]);
     }
 
     async updateSite(id: number, site: Partial<Site>): Promise<Site | null> {
@@ -805,7 +909,8 @@ export class NavigationAPI {
 
         if (site.password !== undefined) {
             updates.push("password = ?");
-            params.push(site.password);
+            // 站点登录凭据落库即加密（读出来时解密），D1 导出/备份泄露也解不出明文
+            params.push(await encryptSecret(site.password, this.secret));
         }
 
         if (site.order_num !== undefined) {
@@ -827,7 +932,8 @@ export class NavigationAPI {
         if (!result.results || result.results.length === 0) {
             return null;
         }
-        return result.results[0];
+        // RETURNING 取回的是库里的密文，解密后再返回给前端
+        return this.decryptSitePassword(result.results[0]);
     }
 
     async deleteSite(id: number): Promise<boolean> {
@@ -1031,7 +1137,8 @@ export class NavigationAPI {
 
         return {
             groups: (groupResult.results || []) as Group[],
-            sites: (siteResult.results || []) as Site[],
+            // 库里是密文，导出前解密成明文 JSON（备份文件整体再由 AES-GCM 加密一次）
+            sites: await this.decryptSitePasswords((siteResult.results || []) as Site[]),
             configs,
         };
     }
@@ -1076,7 +1183,8 @@ export class NavigationAPI {
                             site.description || "",
                             site.notes || "",
                             site.username || "",
-                            site.password || "",
+                            // 备份里是明文，写回 D1 前加密
+                            await encryptSecret(site.password || "", this.secret),
                             site.order_num || 0
                         )
                         .run();

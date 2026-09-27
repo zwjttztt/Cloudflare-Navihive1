@@ -6,6 +6,8 @@
  */
 import {
     NavigationAPI,
+    DEFAULT_TOKEN_TTL,
+    REMEMBER_TOKEN_TTL,
     type ExportData,
     type Group,
     type LoginRequest,
@@ -49,6 +51,71 @@ import {
     webdavList,
     webdavTest,
 } from "./webdav";
+
+// ============ 会话 cookie ============
+// 令牌放 httpOnly cookie，JS 读不到 —— XSS 偷不走令牌（这是 localStorage 存令牌的最大问题）。
+// 另设一个**非** httpOnly 的 navihive_session 只用来给前端判断「是否已登录」，
+// 它不含任何凭据，泄露也无意义。
+const TOKEN_COOKIE = "navihive_token";
+const SESSION_COOKIE = "navihive_session";
+
+/** 取客户端 IP（审计日志用） */
+function clientIp(request: Request): string {
+    return (
+        request.headers.get("CF-Connecting-IP") ||
+        request.headers.get("X-Forwarded-For") ||
+        "unknown"
+    );
+}
+
+/** 从 Cookie 头部里取出指定 cookie */
+function readCookie(request: Request, name: string): string | null {
+    const header = request.headers.get("Cookie");
+    if (!header) return null;
+    for (const part of header.split(";")) {
+        const idx = part.indexOf("=");
+        if (idx < 0) continue;
+        if (part.slice(0, idx).trim() === name) {
+            return decodeURIComponent(part.slice(idx + 1).trim());
+        }
+    }
+    return null;
+}
+
+/** 登录成功时下发的两条 cookie（令牌 httpOnly + 前端可读的登录标记） */
+function sessionCookieHeaders(token: string, ttlSeconds: number, secure: boolean): string[] {
+    const attrs = `Path=/; SameSite=Strict; Max-Age=${ttlSeconds}${secure ? "; Secure" : ""}`;
+    return [
+        `${TOKEN_COOKIE}=${token}; HttpOnly; ${attrs}`,
+        `${SESSION_COOKIE}=1; ${attrs}`,
+    ];
+}
+
+/** 退出登录：两条 cookie 都设成已过期 */
+function expiredCookieHeaders(secure: boolean): string[] {
+    const attrs = `Path=/; SameSite=Strict; Max-Age=0${secure ? "; Secure" : ""}`;
+    return [`${TOKEN_COOKIE}=; HttpOnly; ${attrs}`, `${SESSION_COOKIE}=; ${attrs}`];
+}
+
+/**
+ * 同源校验（CSRF 防护）。
+ * 令牌一改成 cookie，跨站请求就会自动带上它，所以写操作必须确认「确实是本站发起的」。
+ * 有 Origin 就看 Origin；没有就看 Sec-Fetch-Site；两者都没有（老客户端/curl）时放行，
+ * 交给 SameSite=Strict 兜底。
+ */
+function isSameOrigin(request: Request): boolean {
+    const origin = request.headers.get("Origin");
+    if (origin) {
+        try {
+            return new URL(origin).host === new URL(request.url).host;
+        } catch {
+            return false;
+        }
+    }
+    const site = request.headers.get("Sec-Fetch-Site");
+    if (site) return site === "same-origin" || site === "none";
+    return true;
+}
 
 export default {
     async fetch(request: Request, env: Env) {
@@ -108,12 +175,33 @@ export default {
                     }
 
                     const result = await api.login(loginData as LoginRequest);
+                    const ip = clientIp(request);
 
                     if (result.success) {
                         // 登录成功就清零，别让之前的手滑一直累积
                         if (guard.count > 0) await writeLoginGuard(api, { count: 0, until: 0 });
-                        return Response.json(result);
+                        await api.writeAudit("login.success", loginData.username || "", ip);
+
+                        // 令牌只放进 httpOnly cookie，不再回传给 JS（响应体里也不带 token）
+                        const ttl = loginData.remember ? REMEMBER_TOKEN_TTL : DEFAULT_TOKEN_TTL;
+                        const headers = new Headers({ "Cache-Control": "no-store" });
+                        const secure = url.protocol === "https:";
+                        if (result.token) {
+                            for (const cookie of sessionCookieHeaders(result.token, ttl, secure)) {
+                                headers.append("Set-Cookie", cookie);
+                            }
+                        }
+                        return Response.json(
+                            {
+                                success: true,
+                                message: result.message,
+                                mustChangePassword: await api.mustChangePassword(),
+                            },
+                            { headers }
+                        );
                     }
+
+                    await api.writeAudit("login.failed", loginData.username || "", ip);
 
                     const count = guard.count + 1;
                     const over = count - LOGIN_FREE_ATTEMPTS;
@@ -181,6 +269,12 @@ export default {
                         newPassword,
                         clientKey
                     );
+                    await api.writeAudit(
+                        result.success ? "auth.reset" : "auth.reset.failed",
+                        newUsername || "",
+                        clientKey,
+                        result.message
+                    );
                     return Response.json(result, { status: result.success ? 200 : 400 });
                 }
 
@@ -223,12 +317,27 @@ export default {
                 }
 
                 // 验证中间件 - 除登录接口和初始化接口外，所有请求都需要验证
+                // currentJti 记下当前这张令牌的编号，退出登录时按它拉黑
+                let currentJti = "";
+                let currentTokenExp = 0;
                 if (api.isAuthEnabled()) {
-                    // 检查Authorization头部
-                    const authHeader = request.headers.get("Authorization");
+                    // 令牌优先取 httpOnly cookie（浏览器主路径，JS 拿不到）；
+                    // 取不到再退回 Authorization 头，兼容历史客户端与自动化脚本。
+                    const cookieToken = readCookie(request, TOKEN_COOKIE);
+                    let token: string | null = cookieToken;
 
-                    // 如果没有Authorization头部，返回401错误
-                    if (!authHeader) {
+                    if (!token) {
+                        const authHeader = request.headers.get("Authorization");
+                        if (authHeader) {
+                            const [authType, raw] = authHeader.split(" ");
+                            if (authType !== "Bearer" || !raw) {
+                                return new Response("无效的认证信息", { status: 401 });
+                            }
+                            token = raw;
+                        }
+                    }
+
+                    if (!token) {
                         return new Response("请先登录", {
                             status: 401,
                             headers: {
@@ -237,23 +346,54 @@ export default {
                         });
                     }
 
-                    // 提取Token
-                    const [authType, token] = authHeader.split(" ");
-
-                    // 验证Token类型和内容
-                    if (authType !== "Bearer" || !token) {
-                        return new Response("无效的认证信息", { status: 401 });
-                    }
-
-                    // 验证Token有效性 - 改为异步调用
                     const verifyResult = await api.verifyToken(token);
                     if (!verifyResult.valid) {
                         return new Response("认证已过期或无效，请重新登录", { status: 401 });
+                    }
+                    currentJti =
+                        typeof verifyResult.payload?.jti === "string" ? verifyResult.payload.jti : "";
+                    currentTokenExp =
+                        typeof verifyResult.payload?.exp === "number" ? verifyResult.payload.exp : 0;
+
+                    // CSRF：令牌改成 cookie 后跨站请求会自动带上它，
+                    // 所以写操作必须确认是本站发起的（判据见 isSameOrigin 注释）。
+                    if (cookieToken && method !== "GET" && method !== "HEAD" && !isSameOrigin(request)) {
+                        return new Response("跨站请求已被拒绝", { status: 403 });
                     }
                 }
 
                 // 确保数据库结构是最新的（迁移结果缓存在模块作用域，同一 isolate 内只执行一次）
                 await api.migrate();
+
+                // 首次部署强制改密：种子凭据来自部署变量，等同半公开。
+                // 改密 / 重置 / 退出 三个口子必须留着，其余写操作一律拦下。
+                if (
+                    api.isAuthEnabled() &&
+                    method !== "GET" &&
+                    method !== "HEAD" &&
+                    path !== "auth/credentials" &&
+                    path !== "auth/reset" &&
+                    path !== "logout" &&
+                    (await api.mustChangePassword())
+                ) {
+                    return Response.json(
+                        { success: false, message: "请先修改管理员密码后再进行其它操作" },
+                        { status: 403 }
+                    );
+                }
+
+                // 退出登录：把这张令牌拉黑（服务端真正失效）+ 清掉浏览器 cookie
+                if (path === "logout" && method === "POST") {
+                    if (currentJti) {
+                        await api.blacklistToken(currentJti, currentTokenExp);
+                    }
+                    await api.writeAudit("logout", "", clientIp(request));
+                    const headers = new Headers({ "Cache-Control": "no-store" });
+                    for (const cookie of expiredCookieHeaders(url.protocol === "https:")) {
+                        headers.append("Set-Cookie", cookie);
+                    }
+                    return Response.json({ success: true }, { headers });
+                }
 
                 // 抓目标站点的标题 / 描述（新增卡片时一键补全）—— 要鉴权，因为会对外发请求，
                 // 不能让陌生人拿我们的 Worker 当代理使
@@ -446,6 +586,7 @@ export default {
                     }
 
                     const result = await api.deleteSite(id);
+                    await api.writeAudit("site.delete", "", clientIp(request), `站点 ${id}`);
                     return Response.json({ success: result });
                 }
                 // 批量更新排序
@@ -668,6 +809,12 @@ export default {
                     const result = await api.updateAuthCredentials(
                         username || current.username,
                         password || current.password
+                    );
+                    await api.writeAudit(
+                        "auth.credentials",
+                        username || current.username,
+                        clientIp(request),
+                        result ? "管理员凭据已更新" : "更新失败"
                     );
                     return Response.json({
                         success: result,

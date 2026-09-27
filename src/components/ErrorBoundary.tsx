@@ -23,7 +23,9 @@ export function listLocalAppKeys(): string[] {
         if (NAV_PREFIXES.some(p => k.startsWith(p))) keys.push(k);
     }
     // 几个没有前缀但也是本机状态的 key
-    for (const extra of ["theme", "auth_token", "collapsedGroups", "rememberedLogin"]) {
+    // 注意：不再包含 auth_token —— 令牌已改存 httpOnly cookie，旧值会在启动时清掉，
+    // 更不能进错误报告（会被原样上报出去）
+    for (const extra of ["theme", "collapsedGroups", "rememberedLogin"]) {
         if (localStorage.getItem(extra) !== null && !keys.includes(extra)) keys.push(extra);
     }
     return keys;
