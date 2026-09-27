@@ -5,6 +5,13 @@
 export const DEFAULT_ICON_API =
     "https://www.faviconextractor.com/favicon/{domain}?larger=true";
 
+// 默认缩略图 API：不填时用这个。
+// 用 thum.io 的免密钥接口，它能直接吃未经 URL 编码的完整链接（模板里 {url} 是原样替换的）。
+//
+// 提醒：启用缩略图等于把每个站点的链接交给第三方去截图，卡片进入视野时就会发请求。
+// 不想要的话在「网站设置 → 图标与缩略图」里把这一栏清空即可。
+export const DEFAULT_THUMB_API = "https://image.thum.io/get/width/640/crop/400/{url}";
+
 /**
  * 从站点链接中提取域名（含子域，例如 www.example.com）
  * 链接非法时返回空字符串

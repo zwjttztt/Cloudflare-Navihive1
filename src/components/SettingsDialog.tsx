@@ -570,7 +570,7 @@ export default function SettingsDialog({
                                 value={tempConfigs["site.thumbApi"] || ""}
                                 onChange={onConfigInputChange}
                                 placeholder='https://example.com/shot?url={url}'
-                                helperText='留空则不显示缩略图。占位符：{url} 完整链接、{domain} 域名、{origin} 协议+域名'
+                                helperText='留空即关闭缩略图（不再向第三方请求截图）。占位符：{url} 完整链接、{domain} 域名、{origin} 协议+域名'
                             />
                         </TwoCol>
                     </Section>

@@ -66,7 +66,7 @@ import {
 } from "./utils/linkHealth";
 import { clearBootstrapCache, readBootstrapCache } from "./utils/firstPaintCache";
 import { ParsedBookmarkGroup } from "./utils/bookmarks";
-import { DEFAULT_ICON_API, resolveIconApiUrl } from "./utils/iconApi";
+import { DEFAULT_ICON_API, DEFAULT_THUMB_API, resolveIconApiUrl } from "./utils/iconApi";
 import { normalizeFailureText, normalizeUrl } from "./utils/url";
 import { groupAccent } from "./utils/groupColor";
 import { matchesGroupQuery, matchesSiteQuery } from "./utils/search";
@@ -166,7 +166,7 @@ const DEFAULT_CONFIGS = {
     "site.backgroundImage": "",
     "site.backgroundMaskOpacity": "0.15",
     // 站点缩略图 API 模板（{url} / {domain} / {origin} 会被替换），留空表示不启用缩略图
-    "site.thumbApi": "",
+    "site.thumbApi": DEFAULT_THUMB_API,
     // 自定义主色（#rrggbb），留空表示跟随默认主题色
     "site.primaryColor": "",
     // 毛玻璃模糊强度（px，0~24），留空表示用默认 14
@@ -597,11 +597,17 @@ function App() {
             return;
         }
         let cancelled = false;
-        void loadPinyinMatcher().then(() => {
-            if (!cancelled) setPinyinReady(true);
-        });
+        // 词典是 28KB 的独立 chunk，首开还要建索引。等一帧再加载，让开关先画出来——
+        // 否则「点下去到看见开关动」之间会夹着这段工作，观感就是点了卡一下。
+        // （不能改成打开设置弹窗就预加载：那会让从没开过拼音的人也白白下载这个 chunk。）
+        const timer = window.setTimeout(() => {
+            void loadPinyinMatcher().then(() => {
+                if (!cancelled) setPinyinReady(true);
+            });
+        }, 0);
         return () => {
             cancelled = true;
+            window.clearTimeout(timer);
         };
     }, [pinyinSearch]);
     const usePinyin = pinyinSearch && pinyinReady;
@@ -2229,14 +2235,15 @@ function App() {
      * 关掉不动服务端已经存的那份：下次再打开还能接着用（也方便误关后恢复）。
      */
     const handleToggleLinkHealthSync = async (enabled: boolean) => {
+        const next = enabled ? "true" : "false";
+        const rollback = configs[LINK_HEALTH_SYNC_CONFIG] ?? "";
+        // 乐观更新：先拨开关再发请求。原来是 await 完才改状态，等于让用户盯着一个没反应的
+        // 开关等一次网络往返（实测 150ms RTT 下要 188ms 才翻转）。
+        setConfigs(prev => ({ ...prev, [LINK_HEALTH_SYNC_CONFIG]: next }));
         try {
-            const payload = JSON.stringify(exportLinkHealth());
-            await api.setConfig(LINK_HEALTH_SYNC_CONFIG, enabled ? "true" : "false");
-            setConfigs(prev => ({
-                ...prev,
-                [LINK_HEALTH_SYNC_CONFIG]: enabled ? "true" : "false",
-            }));
+            await api.setConfig(LINK_HEALTH_SYNC_CONFIG, next);
             if (enabled) {
+                const payload = JSON.stringify(exportLinkHealth());
                 await api.setConfig(LINK_HEALTH_CONFIG, payload);
                 lastHealthPushRef.current = payload;
                 notify("失效检测结果已同步到服务端", "success");
@@ -2244,6 +2251,8 @@ function App() {
                 notify("已停止同步失效检测结果（服务端那份先留着）", "info");
             }
         } catch (error) {
+            // 没写进去就把开关拨回去，别让界面显示一个不存在的状态
+            setConfigs(prev => ({ ...prev, [LINK_HEALTH_SYNC_CONFIG]: rollback }));
             console.error("保存同步设置失败:", error);
             handleError(
                 "保存同步设置失败: " + (error instanceof Error ? error.message : "未知错误")
@@ -2267,18 +2276,21 @@ function App() {
             return;
         }
 
+        // 乐观更新：打开时本来要连发 3 次配置写入，串行 await 完才拨开关，
+        // 实测 150ms RTT 下要 374ms 才有反馈。先拨开关，三次写入并发发出去。
+        setPrefSync(true);
+        const payload = JSON.stringify({ starred, tags });
         try {
-            const payload = JSON.stringify({ starred, tags });
-            await api.setConfig(PREF_SYNC_CONFIG, "true");
             await Promise.all([
+                api.setConfig(PREF_SYNC_CONFIG, "true"),
                 api.setConfig(PREF_STARRED_CONFIG, JSON.stringify(starred)),
                 api.setConfig(PREF_TAGS_CONFIG, JSON.stringify(tags)),
             ]);
             // 记一下刚推的内容，免得开关打开后立刻又原样推一次
             lastPrefPushRef.current = payload;
-            setPrefSync(true);
             notify("星标与标签已同步到服务端", "success");
         } catch (error) {
+            setPrefSync(false);
             console.error("保存同步设置失败:", error);
             handleError(
                 "保存同步设置失败: " + (error instanceof Error ? error.message : "未知错误")

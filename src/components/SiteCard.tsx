@@ -206,6 +206,15 @@ const SiteCard = memo(function SiteCard({
         setThumbLoaded(false);
     }, [thumbUrl]);
 
+    // 兜底：别让骨架屏无限挂着。
+    // 默认模板指向的是外部截图服务，被限流 / 被网络挡掉时请求可能既不成功也不失败，
+    // onError 一直不触发，卡片上就会留一块灰。超时就当失败处理，回到只有图标的版式。
+    useEffect(() => {
+        if (!useThumb || thumbLoaded) return;
+        const timer = window.setTimeout(() => setThumbError(true), 8000);
+        return () => window.clearTimeout(timer);
+    }, [useThumb, thumbLoaded, thumbUrl]);
+
     // 图标地址变化时重置加载状态：
     // 免刷新即时更新后，若图标由空改为有值，需要重新尝试加载，否则会一直显示首字母占位。
     // 同时查一遍本地缓存，把已知加载不出来的源直接跳过去。
