@@ -14,6 +14,7 @@ import {
     type Site,
 } from "../src/API/http";
 import { handleCspReport } from "./csp";
+import { reportError } from "./errorReport";
 import { runScheduledTasks } from "./cron";
 import { proxyIcon } from "./icon";
 import {
@@ -142,6 +143,11 @@ export default {
                 // 只记录不存储：违规详情进 Workers 日志（observability 已开启）。
                 if (path === "csp-report" && method === "POST") {
                     return await handleCspReport(request);
+                }
+
+                // 客户端错误上报（不鉴权：崩在登录态外的崩溃更不该被挡）
+                if (path === "report-error" && method === "POST") {
+                    return await reportError(request, env);
                 }
 
                 // 登录路由 - 不需要验证

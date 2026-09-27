@@ -1,6 +1,7 @@
 // 渲染兜底：React 组件树里任何一处抛错，默认行为是整棵树被卸载 → 纯白屏。
 // 这里拦住异常，给一个能自助恢复的页面（重载 / 清理本机数据），而不是让人对着白屏发呆。
 import { Component, type ErrorInfo, type ReactNode } from "react";
+import { reportError } from "../utils/errorReporter";
 
 interface Props {
     children: ReactNode;
@@ -62,6 +63,10 @@ export default class ErrorBoundary extends Component<Props, State> {
 
     componentDidCatch(error: Error, info: ErrorInfo) {
         console.error("[navihive] 页面崩溃：", error, info.componentStack);
+        reportError(error, {
+            source: "render",
+            context: { componentStack: info.componentStack },
+        });
         this.setState({ stack: info.componentStack || "" });
     }
 

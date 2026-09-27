@@ -1,3 +1,4 @@
+import { reportError } from "./utils/errorReporter";
 import {
     useState,
     useEffect,
@@ -726,6 +727,7 @@ function App() {
             }
         } catch (error) {
             console.error("认证检查失败:", error);
+            reportError(error, { source: "auth-check" });
             if (error instanceof Error && error.message.includes("认证")) {
                 setIsAuthenticated(false);
                 setIsAuthRequired(true);
@@ -773,6 +775,7 @@ function App() {
             }
         } catch (error) {
             console.error("登录失败:", error);
+            reportError(error, { source: "auth-login" });
             handleError("登录失败: " + (error instanceof Error ? error.message : "未知错误"));
             setIsAuthenticated(false);
         } finally {
@@ -799,6 +802,7 @@ function App() {
             }
         } catch (error) {
             console.error("重置密码失败:", error);
+            reportError(error, { source: "auth-reset" });
             setResetError("重置密码失败: " + (error instanceof Error ? error.message : "未知错误"));
         } finally {
             setResetLoading(false);
@@ -1007,6 +1011,7 @@ function App() {
             const isOfflineQueued = errorMessage.includes("离线保存") || errorMessage.includes("OfflineQueued");
             notify(errorMessage, isOfflineQueued ? "info" : "error");
             if (!isOfflineQueued) console.error(errorMessage);
+            reportError(errorMessage, { source: "save-error" });
         },
         [notify]
     );
@@ -1137,6 +1142,7 @@ function App() {
                     }
                 } catch (error) {
                     console.error("更新站点失败:", error);
+                    reportError(error, { source: "site-update" });
                     if (snapshot) upsertSiteLocally(snapshot);
                     handleError("更新站点失败: " + (error as Error).message);
                 }
@@ -1198,6 +1204,7 @@ function App() {
                 });
             } catch (error) {
                 console.error("删除站点失败:", error);
+                reportError(error, { source: "site-delete" });
                 handleError("删除站点失败: " + (error as Error).message);
             }
         },
@@ -1281,6 +1288,7 @@ function App() {
                 });
             } catch (error) {
                 console.error("批量删除站点失败:", error);
+                reportError(error, { source: "site-bulk-delete" });
                 handleError("批量删除站点失败: " + (error as Error).message);
             }
         },
@@ -1396,6 +1404,7 @@ function App() {
                 notify(`已移动 ${orders.length} 个网站到「${target.name}」`, "success");
             } catch (error) {
                 console.error("批量移动站点失败:", error);
+                reportError(error, { source: "site-bulk-move" });
                 handleError("批量移动站点失败: " + (error as Error).message);
             }
         },
@@ -1427,6 +1436,7 @@ function App() {
                 }
             } catch (error) {
                 console.error("更新分组失败:", error);
+                reportError(error, { source: "group-update" });
                 handleError("更新分组失败: " + (error as Error).message);
             }
         },
@@ -1523,6 +1533,7 @@ function App() {
                 );
             } catch (error) {
                 console.error("删除分组失败:", error);
+                reportError(error, { source: "group-delete" });
                 handleError("删除分组失败: " + (error as Error).message);
             }
         },
@@ -1562,6 +1573,7 @@ function App() {
             setCurrentSortingGroupId(null);
         } catch (error) {
             console.error("更新分组排序失败:", error);
+            reportError(error, { source: "group-reorder" });
             handleError("更新分组排序失败: " + (error as Error).message);
         }
     };
@@ -1605,6 +1617,7 @@ function App() {
                 setCurrentSortingGroupId(null);
             } catch (error) {
                 console.error("更新站点排序失败:", error);
+                reportError(error, { source: "site-reorder" });
                 handleError("更新站点排序失败: " + (error as Error).message);
             }
         },
@@ -1788,6 +1801,7 @@ function App() {
             setCurrentSortingGroupId(null);
         } catch (error) {
             console.error("保存站点排序失败:", error);
+            reportError(error, { source: "site-order-save" });
             handleError("保存站点排序失败: " + (error as Error).message);
         }
     }, [handleError]);
@@ -1821,6 +1835,7 @@ function App() {
             handleCloseAddGroup();
         } catch (error) {
             console.error("创建分组失败:", error);
+            reportError(error, { source: "group-create" });
             handleError("创建分组失败: " + (error as Error).message);
         }
     };
