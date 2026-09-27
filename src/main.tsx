@@ -7,7 +7,9 @@ import ErrorBoundary from "./components/ErrorBoundary";
 import { applyInputModeClass } from "./utils/device";
 // 只引 latin 子集：全量导入会把 cyrillic/greek/vietnamese/math 等 60 多个 @font-face 也打进 CSS，
 // 白白多出 ~70KB 的阻塞样式，而实际只会命中 latin 那几个。
-import "@fontsource/roboto/latin-300.css";
+// 字重只留实际在用的 400/500/700（300 全站零使用；600 由浏览器就近取 700 渲染，
+// 一直是这个行为）。@fontsource 的 src 列表 woff2 在前，现代浏览器永远只下载 woff2，
+// .woff 回退不产生运行时流量，保留。
 import "@fontsource/roboto/latin-400.css";
 import "@fontsource/roboto/latin-500.css";
 import "@fontsource/roboto/latin-700.css";
