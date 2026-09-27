@@ -177,6 +177,31 @@ export async function decryptSecret(cipher: string, secret: string): Promise<str
     }
 }
 
+/**
+ * 反复解密到明文为止（默认最多 3 层）。
+ *
+ * 存在的理由：历史上「读出来没解密就又存回去」会把明文套成密文的密文
+ * （典型是刷新后前端拿到 enc$... 密文、再保存一次）。这种值解开一层还是 enc$ 开头，
+ * 只解一层的话用户看到的仍是一串乱码，还得手动重填。这里循环解到不再是密文为止。
+ * 正常值第一次循环就结束，多出来的开销只有一个字段几次 PBKDF2。
+ */
+export async function decryptSecretDeep(
+    stored: string,
+    secret: string,
+    maxDepth = 3
+): Promise<string> {
+    let value = stored;
+    for (let i = 0; i < maxDepth && isEncrypted(value); i++) {
+        const next = await decryptSecret(value, secret);
+        // 解不开（换了 AUTH_SECRET 等）时 decryptSecret 返回 ""。这时必须回空而不是
+        // 回密文：密文回填进密码框再保存一次就会被加密第二层，越修越糟
+        if (!next) return "";
+        if (next === value) break;
+        value = next;
+    }
+    return value;
+}
+
 async function aesKey(secret: string): Promise<CryptoKey> {
     const raw = await pbkdf2(secret, AES_SALT, AES_ITERS, 32);
     return crypto.subtle.importKey("raw", raw, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);

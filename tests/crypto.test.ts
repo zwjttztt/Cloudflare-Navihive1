@@ -11,6 +11,7 @@ import {
     isHashedPassword,
     encryptSecret,
     decryptSecret,
+    decryptSecretDeep,
     encryptBytes,
     decryptBytes,
     validatePasswordStrength,
@@ -100,4 +101,27 @@ test("validatePasswordStrength 强制最低 12 位且拒绝同字符重复", () 
     const ok = validatePasswordStrength("Kp9$mQ2xLz7!vR");
     assert.equal(ok.ok, true);
     assert.equal(ok.message, "");
+});
+
+// ---- 多重加密的历史脏值要能自愈 ----
+// 曾经「读出来没解密就又存回去」会把明文套成密文的密文，只解一层用户看到的仍是乱码。
+
+test("decryptSecretDeep：明文原样返回（历史明文，无 enc$ 前缀）", async () => {
+    assert.equal(await decryptSecretDeep("plain-pwd", SECRET), "plain-pwd");
+});
+
+test("decryptSecretDeep：正常单层密文解出明文", async () => {
+    const cipher = await encryptSecret("app-pwd-123", SECRET);
+    assert.equal(await decryptSecretDeep(cipher, SECRET), "app-pwd-123");
+});
+
+test("decryptSecretDeep：密文的密文也能解回明文（自愈）", async () => {
+    const once = await encryptSecret("app-pwd-123", SECRET);
+    const twice = await encryptSecret(once, SECRET);
+    assert.equal(await decryptSecretDeep(twice, SECRET), "app-pwd-123");
+});
+
+test("decryptSecretDeep：解不开时返回空，不抛异常也不回乱码", async () => {
+    const cipher = await encryptSecret("app-pwd-123", SECRET);
+    assert.equal(await decryptSecretDeep(cipher, "wrong-secret"), "");
 });

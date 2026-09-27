@@ -9,6 +9,7 @@ import {
     isHashedPassword,
     encryptSecret,
     decryptSecret,
+    decryptSecretDeep,
     validatePasswordStrength,
 } from "./crypto";
 
@@ -710,7 +711,13 @@ export class NavigationAPI {
         for (const row of (configsResult.results || []) as Config[]) {
             // 管理员凭据不下发到浏览器，避免出现「拿到配置就等于拿到密码」
             if (isAuthConfigKey(row.key)) continue;
-            configs[row.key] = row.value;
+            // webdav.password 落库是密文，这里必须和 queryConfigs / getConfig 一样解密还原：
+            // 否则刷新后前端拿到的是 enc$... 密文，回填进密码框，用户再保存一次就变成
+            // 「密文的密文」（测试连接也就永远认证失败）
+            configs[row.key] =
+                row.key === WEBDAV_PASSWORD_KEY
+                    ? await decryptSecretDeep(row.value, this.secret)
+                    : row.value;
         }
 
         return {
@@ -966,7 +973,7 @@ export class NavigationAPI {
             // webdav.password 落库是密文，读出来解密还原给调用方（含首屏 bootstrap）
             configs[config.key] =
                 config.key === WEBDAV_PASSWORD_KEY
-                    ? await decryptSecret(config.value, this.secret)
+                    ? await decryptSecretDeep(config.value, this.secret)
                     : config.value;
         }
 
@@ -981,7 +988,7 @@ export class NavigationAPI {
         if (!result) return null;
         // webdav.password 落库前已加密，读取时解密还原（无 secret 时原样返回）
         if (key === WEBDAV_PASSWORD_KEY) {
-            return await decryptSecret(result.value, this.secret);
+            return await decryptSecretDeep(result.value, this.secret);
         }
         return result.value;
     }
