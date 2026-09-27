@@ -98,28 +98,74 @@ export function configFromStored(stored: Record<string, string>): WebDavConfig {
 }
 
 /**
- * 执行一次完整备份：导出 → 压缩上传 → 删掉上一次的备份 → 记录本次文件名。
- * 手动备份和每周定时备份都走这里，行为保持一致。
+ * 备份来源：手动点「备份到 WebDAV」是 manual，每周定时任务是 auto。
+ * 两者保留策略不同（见 runWebDavBackup），所以文件名也要能区分得出来源。
  */
+export type WebDavBackupMode = "auto" | "manual";
+
+const AUTO_BACKUP_PREFIX = "navihive-backup-auto-";
+const MANUAL_BACKUP_PREFIX = "navihive-backup-";
+
+/** 导出供单测用：自动备份的清理范围必须能被断言，否则「手动备份不会被删」没人拦得住 */
+export function isAutoBackupFileName(filename: string): boolean {
+    return typeof filename === "string" && filename.startsWith(AUTO_BACKUP_PREFIX);
+}
+
+/**
+ * 挑出要清理的自动备份：只动自动备份，手动备份一律保留。
+ * - recorded：上次自动备份的文件名（库里有记录时优先用它，省一次列目录）；
+ * - files：列目录结果，用来兜底清理历史上遗留的自动备份（升级前的文件名带不带
+ *   auto 前缀都可能在，没记录的也要清）；
+ * - keepFilename：本次刚上传的那份，绝不能删。
+ */
+export function selectAutoBackupsToPrune(
+    files: readonly { name: string }[],
+    keepFilename: string,
+    recorded?: string
+): string[] {
+    const targets = new Set<string>();
+    if (recorded && recorded !== keepFilename) {
+        targets.add(recorded);
+    }
+    for (const file of files) {
+        const name = file?.name;
+        if (name && name !== keepFilename && isAutoBackupFileName(name)) {
+            targets.add(name);
+        }
+    }
+    return [...targets];
+}
+
+/** 执行一次完整备份：导出 → 压缩上传 →（仅自动备份）清理上一次自动备份 → 记录文件名。 */
 export async function runWebDavBackup(
     api: NavigationAPI,
     config: WebDavConfig,
-    previousFilename: string,
-    data?: ExportData,
-    secret?: string
+    options: {
+        mode: WebDavBackupMode;
+        stored?: Record<string, string>;
+        data?: ExportData;
+        secret?: string;
+    }
 ): Promise<WebDavResult<{ filename: string; size: number }>> {
+    const { mode, stored = {}, data, secret } = options;
     const payload = data ?? (await api.exportData());
-    const filename = buildBackupFileName();
+    const filename = buildBackupFileName(mode);
 
     const result = await webdavUpload(config, filename, payload, secret);
     if (!result.success) return result;
 
-    // 只保留最新一份：删掉上一次的备份（删不掉也不算备份失败）
-    await prunePreviousBackup(config, filename, previousFilename);
+    // 自动备份只保留最新一份：删掉上一次的自动备份（删不掉也不算备份失败）。
+    // 手动备份一个都不删 —— 用户自己点的备份是「存档」，被定时任务清掉是数据丢失。
+    if (mode === "auto") {
+        await pruneAutoBackups(config, filename, stored["webdav.lastAutoBackup"]);
+    }
 
     try {
         await api.setConfig("webdav.lastBackup", filename);
         await api.setConfig("webdav.lastBackupAt", new Date().toISOString());
+        if (mode === "auto") {
+            await api.setConfig("webdav.lastAutoBackup", filename);
+        }
     } catch (error) {
         console.error("记录备份状态失败:", error);
     }
@@ -127,23 +173,22 @@ export async function runWebDavBackup(
     return result;
 }
 
-// 删除上一次的备份文件；没有记录时列目录兜底，清掉除本次以外的所有备份
-async function prunePreviousBackup(
+// 清理上一次的自动备份：有记录就只删那一份，没记录（老库升级）才列目录兜底
+async function pruneAutoBackups(
     config: WebDavConfig,
     keepFilename: string,
-    previousFilename?: string
+    recordedFilename?: string
 ): Promise<void> {
     try {
-        if (previousFilename && previousFilename !== keepFilename) {
-            await webdavDelete(config, previousFilename);
-            return;
+        let targets: string[] = [];
+        if (recordedFilename && recordedFilename !== keepFilename) {
+            targets = [recordedFilename];
+        } else {
+            const list = await webdavList(config);
+            targets = selectAutoBackupsToPrune(list.data || [], keepFilename, recordedFilename);
         }
-
-        const list = await webdavList(config);
-        for (const file of list.data || []) {
-            if (file.name !== keepFilename) {
-                await webdavDelete(config, file.name);
-            }
+        for (const name of targets) {
+            await webdavDelete(config, name);
         }
     } catch (error) {
         // 清理失败不影响本次备份结果
@@ -194,7 +239,8 @@ function buildWebDavFileUrl(folderUrl: string, filename: string): string {
     return `${folderUrl}${encodeURIComponent(filename)}`;
 }
 
-function buildBackupFileName(): string {
+// 自动备份带 auto 前缀：清理时靠文件名就能区分来源，不会误删手动备份
+function buildBackupFileName(mode: WebDavBackupMode): string {
     const now = new Date();
     const pad = (value: number) => String(value).padStart(2, "0");
     const stamp =
@@ -203,7 +249,8 @@ function buildBackupFileName(): string {
         // 带毫秒：同一秒内连续备份也不会重名，避免新备份把旧的覆盖掉
         `-${String(now.getUTCMilliseconds()).padStart(3, "0")}`;
     // 备份内容用 gzip 压缩后再上传，体积通常只有原来的十分之一
-    return `navihive-backup-${stamp}.json.gz`;
+    const prefix = mode === "auto" ? AUTO_BACKUP_PREFIX : MANUAL_BACKUP_PREFIX;
+    return `${prefix}${stamp}.json.gz`;
 }
 
 // gzip 压缩（Workers 运行时原生支持 CompressionStream）
@@ -394,6 +441,16 @@ export async function webdavList(config: WebDavConfig): Promise<WebDavResult<Web
         const files = parseWebDavList(xml).filter(file =>
             /\.json(\.gz)?$/i.test(file.name)
         );
+
+        // 手动备份会累积多份，而 WebDAV 的返回顺序没有保证 —— 按修改时间倒序，
+        // 保证「最近的远端备份」和列表顶部就是最新那份（时间缺失时退回文件名倒序，
+        // 文件名里带时间戳，顺序同样正确）
+        files.sort((a, b) => {
+            const ta = Date.parse(a.lastModified) || 0;
+            const tb = Date.parse(b.lastModified) || 0;
+            if (ta !== tb) return tb - ta;
+            return b.name < a.name ? -1 : b.name > a.name ? 1 : 0;
+        });
 
         return { success: true, data: files };
     } catch (error) {

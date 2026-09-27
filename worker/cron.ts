@@ -33,8 +33,9 @@ export interface SchedulerDB {
 }
 
 /**
- * 每周自动备份：导出 → 压缩上传 → 删旧备份 → 记录文件名。
- * 与页面上的手动备份共用 runWebDavBackup，行为完全一致。
+ * 每周自动备份：导出 → 压缩上传 → 删掉上一次的自动备份 → 记录文件名。
+ * 与页面上的手动备份共用 runWebDavBackup，但保留策略不同：自动备份只滚动清理
+ * 自己那一份（auto 前缀），手动备份一份都不删。
  * 只有开启「每周自动备份」且 WebDAV 已配置时才执行，否则直接跳过。
  */
 export async function runWeeklyBackup(
@@ -52,13 +53,11 @@ export async function runWeeklyBackup(
         return;
     }
 
-    const result = await runWebDavBackup(
-        api as unknown as NavigationAPI,
-        config,
-        stored["webdav.lastBackup"] || "",
-        undefined,
-        secret
-    );
+    const result = await runWebDavBackup(api as unknown as NavigationAPI, config, {
+        mode: "auto",
+        stored,
+        secret,
+    });
     console.log(
         result.success
             ? `定时备份完成：${result.data?.filename}`

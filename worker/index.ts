@@ -882,15 +882,14 @@ export default {
                         data?: ExportData;
                     };
                     const config = await resolveWebDavConfig(api, request, body);
-                    // 上传成功后会顺带删掉上一次的备份，只保留最新一份
+                    // 手动备份：不删任何已有备份（自动备份才滚动清理自己那一份）
                     const stored = await readAllConfigs(api);
-                    const result = await runWebDavBackup(
-                        api,
-                        config,
-                        stored["webdav.lastBackup"] || "",
-                        body.data,
-                        env.AUTH_SECRET
-                    );
+                    const result = await runWebDavBackup(api, config, {
+                        mode: "manual",
+                        stored,
+                        data: body.data,
+                        secret: env.AUTH_SECRET,
+                    });
                     return Response.json(result);
                 } else if (path === "webdav/list" && method === "POST") {
                     const config = await resolveWebDavConfig(api, request);

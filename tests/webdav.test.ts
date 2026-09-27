@@ -6,7 +6,13 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildWebDavFolderUrl, configFromStored, resolveWebDavConfig } from "../worker/webdav";
+import {
+    buildWebDavFolderUrl,
+    configFromStored,
+    resolveWebDavConfig,
+    isAutoBackupFileName,
+    selectAutoBackupsToPrune,
+} from "../worker/webdav";
 
 /** 造一份配置：默认关内网豁免，path 走默认值 */
 function cfg(url: string, allowPrivateNetwork?: boolean) {
@@ -109,4 +115,47 @@ test("resolveWebDavConfig：两边都没有时默认关", async () => {
     const fakeApi = { getConfigs: async () => ({}) } as never;
     const r = await resolveWebDavConfig(fakeApi, {} as Request, {});
     assert.equal(r.allowPrivateNetwork, false);
+});
+
+// ---- 备份保留策略：自动备份滚动清理自己，手动备份一份都不删 ----
+// 这条不写测试的话，「手动点的备份被定时任务清掉」是静默的数据丢失。
+
+test("自动备份只清理上一次的自动备份，手动备份一律保留", () => {
+    const files = [
+        { name: "navihive-backup-auto-20260920-100000-000.json.gz" },
+        { name: "navihive-backup-20260921-090000-000.json.gz" }, // 手动
+        { name: "navihive-backup-20260922-090000-000.json.gz" }, // 手动
+        { name: "navihive-backup-auto-20260927-100000-000.json.gz" }, // 本次
+    ];
+    const targets = selectAutoBackupsToPrune(files, "navihive-backup-auto-20260927-100000-000.json.gz");
+    assert.deepEqual(targets, ["navihive-backup-auto-20260920-100000-000.json.gz"]);
+});
+
+test("库里有记录时优先删记录的那一份，且不会误删手动备份", () => {
+    const targets = selectAutoBackupsToPrune(
+        [{ name: "navihive-backup-20260921-090000-000.json.gz" }],
+        "navihive-backup-auto-20260927-100000-000.json.gz",
+        "navihive-backup-auto-20260913-100000-000.json.gz"
+    );
+    assert.deepEqual(targets, ["navihive-backup-auto-20260913-100000-000.json.gz"]);
+});
+
+test("本次上传的那份绝不在清理名单里（即使库里记录的就是它）", () => {
+    const keep = "navihive-backup-auto-20260927-100000-000.json.gz";
+    assert.deepEqual(selectAutoBackupsToPrune([{ name: keep }], keep, keep), []);
+});
+
+test("目录里只有手动备份时，自动备份不删任何东西", () => {
+    const files = [
+        { name: "navihive-backup-20260921-090000-000.json.gz" },
+        { name: "navihive-backup-20260922-090000-000.json.gz" },
+    ];
+    assert.deepEqual(selectAutoBackupsToPrune(files, "navihive-backup-auto-20260927-100000-000.json.gz"), []);
+});
+
+test("isAutoBackupFileName：只有 auto 前缀算自动备份", () => {
+    assert.equal(isAutoBackupFileName("navihive-backup-auto-20260927-100000-000.json.gz"), true);
+    assert.equal(isAutoBackupFileName("navihive-backup-20260927-100000-000.json.gz"), false);
+    assert.equal(isAutoBackupFileName(""), false);
+    assert.equal(isAutoBackupFileName("other-file.json.gz"), false);
 });
