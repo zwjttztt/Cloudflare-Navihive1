@@ -299,21 +299,28 @@ export default {
                     }
 
                     const initResult = await api.initDB();
-                    if (initResult.alreadyInitialized) {
-                        return new Response("数据库已经初始化过，无需重复初始化", { status: 200 });
+
+                    // 不论是否已初始化都返回 200 + 同样字段 —— 让扫描器无法区分「未初始化部署」
+                    // 与「已初始化部署」，枚举失败。限速仍然生效（首次计次仍要走完整分支）
+                    if (!initResult.alreadyInitialized) {
+                        // 仅「首次真正初始化」才计次（已初始化分支不计次，避免误锁正常用户）
+                        const initCount = initGuard.count + 1;
+                        const initOver = initCount - INIT_FREE_ATTEMPTS;
+                        const initUntil =
+                            initOver > 0
+                                ? initNow +
+                                  Math.min(INIT_BASE_LOCK_MS * Math.pow(2, initOver - 1), INIT_MAX_LOCK_MS)
+                                : 0;
+                        await writeInitGuard(api, { count: initCount, until: initUntil });
                     }
 
-                    // 仅「首次真正初始化」才计次（已初始化分支已提前返回，不会到这里）
-                    const initCount = initGuard.count + 1;
-                    const initOver = initCount - INIT_FREE_ATTEMPTS;
-                    const initUntil =
-                        initOver > 0
-                            ? initNow +
-                              Math.min(INIT_BASE_LOCK_MS * Math.pow(2, initOver - 1), INIT_MAX_LOCK_MS)
-                            : 0;
-                    await writeInitGuard(api, { count: initCount, until: initUntil });
-
-                    return new Response("数据库初始化成功", { status: 200 });
+                    // 统一响应：调用方拿不到「这台是否已初始化」的信号
+                    return Response.json(
+                        { ok: true, initialized: true },
+                        {
+                            headers: { "Cache-Control": "no-store" },
+                        }
+                    );
                 }
 
                 // 验证中间件 - 除登录接口和初始化接口外，所有请求都需要验证
@@ -825,10 +832,12 @@ export default {
                 // 数据导出路由
                 else if (path === "export" && method === "GET") {
                     const data = await api.exportData();
+                    // 引号包住文件名：RFC 6266 推荐，且文件名带空格/中文时不被截断
                     return Response.json(data, {
                         headers: {
-                            "Content-Disposition": "attachment; filename=navhive-data.json",
+                            "Content-Disposition": 'attachment; filename="navihive-data.json"',
                             "Content-Type": "application/json",
+                            "Cache-Control": "no-store",
                         },
                     });
                 }

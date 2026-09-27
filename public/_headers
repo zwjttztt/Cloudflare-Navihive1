@@ -36,6 +36,13 @@
 # 缓存策略
 # ---------------------------------------------------------------------------
 
+# API 响应一律禁止缓存：含令牌 cookie 的请求结果不能在共享缓存里被复用，
+# 否则下一个用户可能拿到前一个用户的 bootstrap 数据。Vary: Cookie 让 CDN/中间代理按
+# Cookie 区分缓存键，否则带/不带 cookie 会被错误合并
+/api/*
+  Cache-Control: no-store
+  Vary: Cookie
+
 # Vite 产物带内容哈希，可长期强缓存，浏览器不再回源校验
 /assets/*
   Cache-Control: public, max-age=31536000, immutable
