@@ -193,7 +193,11 @@ for (const group of ["pure", "dom"]) {
     );
 }
 
-const child = spawn(process.execPath, ["--test", ...bundles], { stdio: "inherit" });
+// --test-force-exit 是必需的：jsdom 用了 pretendToBeVisual，会一直跑 rAF 循环，
+// 测例跑完事件循环也空不下来（碰到 FileReader 这类异步更明显），不加就永远不退。
+const child = spawn(process.execPath, ["--test", "--test-force-exit", ...bundles], {
+    stdio: "inherit",
+});
 child.on("exit", code => {
     fs.rmSync(OUT_DIR, { recursive: true, force: true });
     process.exit(code ?? 1);
