@@ -8,7 +8,6 @@ import {
     verifyPassword,
     isHashedPassword,
     encryptSecret,
-    decryptSecret,
     decryptSecretDeep,
     validatePasswordStrength,
 } from "./crypto";
@@ -722,7 +721,9 @@ export class NavigationAPI {
 
         return {
             groups: (groupsResult.results || []) as Group[],
-            sites: (sitesResult.results || []) as Site[],
+            // 站点密码同样是密文落库，首屏必须和 querySites / querySite 一样解密还原：
+            // 不解密的话刷新后「复制密码」复制出去的是 enc$...，改站点再保存就变双重加密
+            sites: await this.decryptSitePasswords((sitesResult.results || []) as Site[]),
             configs,
         };
     }
@@ -794,11 +795,12 @@ export class NavigationAPI {
 
     /**
      * 站点密码在库里是密文，读出来统一解密还原给调用方。
-     * 历史明文（没有 enc$ 前缀）decryptSecret 会原样返回，升级过程无感。
+     * 历史明文（没有 enc$ 前缀）会原样返回，升级过程无感。
      */
     private async decryptSitePassword(site: Site): Promise<Site> {
         if (!site || !site.password) return site;
-        return { ...site, password: await decryptSecret(site.password, this.secret) };
+        // 用 Deep 版：已被套成多重加密的历史脏值也能解回明文（首屏拿到密文再保存就会套一层）
+        return { ...site, password: await decryptSecretDeep(site.password, this.secret) };
     }
 
     private async decryptSitePasswords(sites: Site[]): Promise<Site[]> {

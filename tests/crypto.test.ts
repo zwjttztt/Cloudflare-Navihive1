@@ -125,3 +125,19 @@ test("decryptSecretDeep：解不开时返回空，不抛异常也不回乱码", 
     const cipher = await encryptSecret("app-pwd-123", SECRET);
     assert.equal(await decryptSecretDeep(cipher, "wrong-secret"), "");
 });
+
+// ---- 批量加解密：首屏要一次解开所有站点密码，密钥派生不能跟着站点数线性放大 ----
+
+test("批量 40 个值加解密往返一致（aesKey 缓存不串味）", async () => {
+    const plains = Array.from({ length: 40 }, (_, i) => `pwd-${i}-${"x".repeat(i)}`);
+    const ciphers = await Promise.all(plains.map(p => encryptSecret(p, SECRET)));
+    const back = await Promise.all(ciphers.map(c => decryptSecret(c, SECRET)));
+    assert.deepEqual(back, plains);
+});
+
+test("换 secret 后旧密文解不开，但新密文正常（缓存按 secret 隔离）", async () => {
+    const a = await encryptSecret("shared", SECRET);
+    const other = SECRET + "-other";
+    assert.equal(await decryptSecret(a, other), "");
+    assert.equal(await decryptSecret(await encryptSecret("shared", other), other), "shared");
+});

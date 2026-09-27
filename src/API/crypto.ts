@@ -202,7 +202,24 @@ export async function decryptSecretDeep(
     return value;
 }
 
-async function aesKey(secret: string): Promise<CryptoKey> {
+// PBKDF2 派生一次 5 万次迭代。首屏要把每个站点的密码都解一遍，逐个派生同一个密钥
+// 会白白拖慢几十倍：同一个 AUTH_SECRET 的派生结果永远不变，按 secret 缓存即可，
+// 解 N 个字段只派生一次。缓存的是 Promise 而不是结果，并发调用也不会重复派生。
+// 顺带让 decryptSecretDeep 的多层解密（每层都要一次派生）也只付一次代价。
+const aesKeyCache = new Map<string, Promise<CryptoKey>>();
+
+function aesKey(secret: string): Promise<CryptoKey> {
+    let cached = aesKeyCache.get(secret);
+    if (!cached) {
+        cached = deriveAesKey(secret);
+        aesKeyCache.set(secret, cached);
+        // 派生失败别把坏结果永久留在缓存里
+        cached.catch(() => aesKeyCache.delete(secret));
+    }
+    return cached;
+}
+
+async function deriveAesKey(secret: string): Promise<CryptoKey> {
     const raw = await pbkdf2(secret, AES_SALT, AES_ITERS, 32);
     return crypto.subtle.importKey("raw", raw, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
 }
