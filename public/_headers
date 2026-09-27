@@ -12,7 +12,9 @@
   # - script 不需要 'unsafe-inline'：入口是 <script type="module" src>，没有内联脚本。
   # - img / connect 放开 https:：图标 API 和 WebDAV 备份都是用户自己配的第三方 https 地址。
   # - object-src 'none' + base-uri 'self' 挡插件和 <base> 劫持；form-action 'self' 挡表单外投。
-  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' https:; media-src 'self' https:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; frame-src 'none'; worker-src 'self'; manifest-src 'self'
+  # - report-uri 指向 Worker 的公开路由：真被拦下的资源会上报一条 JSON，
+  #   在 Workers 日志里能搜到（worker/csp.ts），据此再决定要不要继续收紧策略。
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' https:; media-src 'self' https:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; frame-src 'none'; worker-src 'self'; manifest-src 'self'; report-uri /api/csp-report
   # 别让浏览器去猜 MIME 类型（把 txt 当 js 执行那一类问题）
   X-Content-Type-Options: nosniff
   # 老的点击劫持防护；现代浏览器看 CSP 的 frame-ancestors，两条一起给，兼容旧客户端
