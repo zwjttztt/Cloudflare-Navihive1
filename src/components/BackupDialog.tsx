@@ -115,9 +115,15 @@ export default function BackupDialog({
     // 若不主动滚动，Alert 和按钮行都停在内容区折叠线下面，视觉上像跟底部操作区叠在一起。
     const webdavActionsRef = useRef<HTMLDivElement | null>(null);
     useEffect(() => {
-        if (testResult) {
-            // block:'nearest' 只滚必要的距离，把 Alert 连同它下面的按钮行一起带进可视区
-            webdavActionsRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+        if (!testResult) return;
+        // 直接滚到滚动区最底部：block:'nearest' 会把按钮底边贴到滚动口边缘，
+        // 看起来还是和底部操作区叠在一起；滚到底则连内容末尾的留白一起带进可视区
+        const el = webdavActionsRef.current;
+        const scroller = el?.closest(".MuiDialogContent-root");
+        if (scroller) {
+            scroller.scrollTo({ top: scroller.scrollHeight, behavior: "smooth" });
+        } else {
+            el?.scrollIntoView({ block: "nearest", behavior: "smooth" });
         }
     }, [testResult]);
 
@@ -326,7 +332,7 @@ export default function BackupDialog({
     };
 
     const renderBackupTab = () => (
-        <Stack spacing={1.25} sx={{ mt: 0.5, flex: 1, minHeight: 0 }}>
+        <Stack spacing={1} sx={{ mt: 0.5, flex: 1, minHeight: 0 }}>
             <Box>
                 {/* 主按钮跟标题平齐：这块的操作就一个，放在区块底部反而要往下找 */}
                 <Stack direction='row' alignItems='center' justifyContent='space-between' spacing={1}>
@@ -511,14 +517,6 @@ export default function BackupDialog({
                         >
                             备份到 WebDAV
                         </Button>
-                        <Button
-                            variant='text'
-                            onClick={() => loadRemoteFiles(config)}
-                            disabled={listLoading || !config.url}
-                            startIcon={listLoading ? <CircularProgress size={18} /> : <CloudDownloadIcon />}
-                        >
-                            查看远端备份
-                        </Button>
                     </Stack>
 
                     {remoteFiles.length > 0 && (
@@ -537,6 +535,10 @@ export default function BackupDialog({
                     )}
                 </Stack>
             </Box>
+            {/* 滚动内容末尾的留白：矮视口下自动滚到底后，按钮行不贴内容区底边。
+                必须是真实元素——容器 padding 会被 flex 溢出吃掉，margin 不计入
+                可滚动区域，只有占位元素能稳定撑出这段空间 */}
+            <Box sx={{ height: 24, flexShrink: 0 }} />
         </Stack>
     );
 
@@ -606,9 +608,9 @@ export default function BackupDialog({
                         size='small'
                         onClick={() => loadRemoteFiles(config)}
                         disabled={listLoading || !config.url}
-                        startIcon={listLoading ? <CircularProgress size={18} /> : <RefreshIcon />}
+                        startIcon={listLoading ? <CircularProgress size={18} /> : <CloudDownloadIcon />}
                     >
-                        刷新列表
+                        查看远端备份
                     </Button>
                 </Stack>
 
@@ -637,7 +639,7 @@ export default function BackupDialog({
 
                     {config.url && remoteFiles.length === 0 && !listLoading && (
                         <Typography variant='body2' color='text.secondary' textAlign='center'>
-                            暂无远端备份，点击「刷新列表」重新获取。
+                            暂无远端备份，点击「查看远端备份」重新获取。
                         </Typography>
                     )}
 
@@ -695,6 +697,7 @@ export default function BackupDialog({
                     </Button>
                 )}
             </Box>
+            <Box sx={{ height: 24, flexShrink: 0 }} />
         </Stack>
     );
 
@@ -761,7 +764,17 @@ export default function BackupDialog({
                 {tab === 0 ? renderBackupTab() : renderRestoreTab()}
             </DialogContent>
 
-            <DialogActions sx={{ px: 2, pb: 1.5, pt: 0.75 }}>
+            {/* 顶部分隔线：内容滚动到底时按钮行离底部只剩几 px，容易和这里
+                的「关闭」行视觉上叠在一起；一条线把两个区域明确隔开 */}
+            <DialogActions
+                sx={{
+                    px: 2,
+                    pb: 1.5,
+                    pt: 1,
+                    borderTop: "1px solid",
+                    borderColor: "divider",
+                }}
+            >
                 <Chip
                     size='small'
                     variant='outlined'
