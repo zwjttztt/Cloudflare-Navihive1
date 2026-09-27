@@ -25,6 +25,12 @@
   Permissions-Policy: geolocation=(), camera=(), microphone=(), payment=(), usb=()
   # 跨源窗口隔离。打开外链用的是 target=_blank + noopener，本来就不持对方引用，加上无害
   Cross-Origin-Opener-Policy: same-origin
+  # 强制 HTTPS：防 SSL stripping / 中间人。includeSubDomains 覆盖子域，preload 进浏览器预加载列表
+  Strict-Transport-Security: max-age=63072000; includeSubDomains; preload
+  # 禁止别的源用 <embed>/<object>/Flash 跨域加载本站资源
+  X-Permitted-Cross-Domain-Policies: none
+  # 默认不允许跨源（<img>/<script> 等）直接读本站响应体，进一步缩小侧信道面
+  Cross-Origin-Resource-Policy: same-origin
 
 # ---------------------------------------------------------------------------
 # 缓存策略

@@ -181,3 +181,37 @@ async function aesKey(secret: string): Promise<CryptoKey> {
     const raw = await pbkdf2(secret, AES_SALT, AES_ITERS, 32);
     return crypto.subtle.importKey("raw", raw, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
 }
+
+// 二进制版（用于备份文件整包加密）：IV(12) + 密文，与 encryptSecret 同套密钥派生。
+export async function encryptBytes(plain: Uint8Array, secret: string): Promise<Uint8Array> {
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const key = await aesKey(secret);
+    const ct = new Uint8Array(
+        await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, plain)
+    );
+    const out = new Uint8Array(12 + ct.byteLength);
+    out.set(iv, 0);
+    out.set(ct, 12);
+    return out;
+}
+
+export async function decryptBytes(cipher: Uint8Array, secret: string): Promise<Uint8Array> {
+    if (cipher.length <= 12) throw new Error("密文过短");
+    const iv = cipher.subarray(0, 12);
+    const ct = cipher.subarray(12);
+    const key = await aesKey(secret);
+    return new Uint8Array(await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct));
+}
+
+// ---------------- 密码强度策略 ----------------
+// 改密 / 重置强制：至少 12 位、不能由同一字符重复组成（挡住 000000000000 这类）。
+// 不引入额外依赖做弱口令字典，长度门槛对个人站足够，之后可接 zxcvbn。
+export function validatePasswordStrength(password: string): { ok: boolean; message: string } {
+    if (password.length < 12) {
+        return { ok: false, message: "密码至少 12 位" };
+    }
+    if (/^(.)\1+$/.test(password)) {
+        return { ok: false, message: "密码不能由同一字符重复组成" };
+    }
+    return { ok: true, message: "" };
+}

@@ -1,7 +1,8 @@
 // worker/webdav.ts
 
 import type { ExportData, NavigationAPI } from "../src/API/http";
-import { errorMessage, safeJson } from "./util";
+import { decryptBytes, encryptBytes } from "../src/API/crypto";
+import { errorMessage, isBlockedHost, safeJson } from "./util";
 
 // ============ WebDAV 备份相关工具函数 ============
 // 说明：WebDAV 服务大多不返回 CORS 头，浏览器直连会被拦截，
@@ -81,12 +82,13 @@ export async function runWebDavBackup(
     api: NavigationAPI,
     config: WebDavConfig,
     previousFilename: string,
-    data?: ExportData
+    data?: ExportData,
+    secret?: string
 ): Promise<WebDavResult<{ filename: string; size: number }>> {
     const payload = data ?? (await api.exportData());
     const filename = buildBackupFileName();
 
-    const result = await webdavUpload(config, filename, payload);
+    const result = await webdavUpload(config, filename, payload, secret);
     if (!result.success) return result;
 
     // 只保留最新一份：删掉上一次的备份（删不掉也不算备份失败）
@@ -143,6 +145,19 @@ function buildWebDavFolderUrl(config: WebDavConfig): string {
     }
     if (!/^https?:\/\//i.test(base)) {
         throw new Error("WebDAV 服务器地址必须以 http:// 或 https:// 开头");
+    }
+
+    // SSRF 防御：WebDAV 地址由管理员配置，但一旦账号被攻破就可能指向内网，
+    // 把 Basic 凭据打到内网服务。Worker 代发请求前先挡掉内网/本机地址（不限制端口，
+    // 自托管 WebDAV 常用非标准端口）。
+    let parsed: URL;
+    try {
+        parsed = new URL(base);
+    } catch {
+        throw new Error("WebDAV 服务器地址不合法");
+    }
+    if (isBlockedHost(parsed.hostname)) {
+        throw new Error("WebDAV 服务器地址不允许指向内网或本机");
     }
 
     const folder = (config.path || DEFAULT_WEBDAV_PATH).trim().replace(/^\/+|\/+$/g, "");
@@ -279,14 +294,18 @@ export async function webdavTest(config: WebDavConfig): Promise<WebDavResult> {
 export async function webdavUpload(
     config: WebDavConfig,
     filename: string,
-    data: ExportData
+    data: ExportData,
+    secret?: string
 ): Promise<WebDavResult<{ filename: string; size: number }>> {
     try {
         const folderUrl = buildWebDavFolderUrl(config);
 
-        // 不缩进 + gzip：比原来的「带缩进明文 JSON」小一个数量级，上传快得多
-        const body = await gzipBytes(JSON.stringify(data));
-        const putHeaders = { "Content-Type": "application/gzip" };
+        // 不缩进 + gzip：比原来的「带缩进明文 JSON」小一个数量级，上传快得多。
+        // 有 AUTH_SECRET 时再套一层 AES-GCM（IV 随机），备份文件落 WebDAV/网盘也是密文，
+        // 丢了盘也解不出站点密码。secret 缺失（未配置）时退化为明文 gzip，不阻断备份。
+        const gz = await gzipBytes(JSON.stringify(data));
+        const body = secret ? await encryptBytes(gz, secret) : gz;
+        const putHeaders = { "Content-Type": secret ? "application/octet-stream" : "application/gzip" };
 
         let response = await davFetch(
             buildWebDavFileUrl(folderUrl, filename),
@@ -357,7 +376,11 @@ export async function webdavList(config: WebDavConfig): Promise<WebDavResult<Web
 }
 
 // 下载指定的远端备份
-export async function webdavDownload(config: WebDavConfig, filename: string): Promise<WebDavResult<ExportData>> {
+export async function webdavDownload(
+    config: WebDavConfig,
+    filename: string,
+    secret?: string
+): Promise<WebDavResult<ExportData>> {
     try {
         if (!filename) {
             return { success: false, message: "未指定备份文件" };
@@ -373,12 +396,32 @@ export async function webdavDownload(config: WebDavConfig, filename: string): Pr
             return { success: false, message: `下载备份失败：HTTP ${response.status}` };
         }
 
-        // 压缩备份（.gz）先解压，明文备份（.json）直接读，两种格式都能恢复
-        const raw = filename.toLowerCase().endsWith(".gz")
-            ? await gunzipToString(await response.arrayBuffer())
-            : await response.text();
-        const text = raw.replace(/^\uFEFF/, "");
-        const data = JSON.parse(text) as ExportData;
+        // 历史明文备份以 gzip 魔数（1f 8b）开头，直接解压；
+        // 加密备份以随机 IV 开头，绝不会是 1f 8b —— 先解密再解压。
+        // 解密失败（密钥不符 / 已轮换 / 仍是旧明文）一律回退按明文 gzip 解，保证旧备份可恢复。
+        const rawBytes = new Uint8Array(await response.arrayBuffer());
+        const isLegacy = rawBytes.length >= 2 && rawBytes[0] === 0x1f && rawBytes[1] === 0x8b;
+
+        let jsonText: string;
+        if (isLegacy) {
+            jsonText = await gunzipToString(rawBytes);
+        } else if (secret) {
+            try {
+                jsonText = await gunzipToString(await decryptBytes(rawBytes, secret));
+            } catch {
+                jsonText = await gunzipToString(rawBytes).catch(() => "");
+            }
+        } else {
+            jsonText = await gunzipToString(rawBytes).catch(() => "");
+        }
+
+        const text = jsonText.replace(/^\uFEFF/, "");
+        let data: ExportData;
+        try {
+            data = JSON.parse(text) as ExportData;
+        } catch {
+            return { success: false, message: "备份文件已损坏或密钥不匹配，无法解析" };
+        }
 
         return { success: true, data, message: filename };
     } catch (error) {

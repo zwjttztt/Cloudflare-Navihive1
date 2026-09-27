@@ -37,7 +37,11 @@ export interface SchedulerDB {
  * 与页面上的手动备份共用 runWebDavBackup，行为完全一致。
  * 只有开启「每周自动备份」且 WebDAV 已配置时才执行，否则直接跳过。
  */
-export async function runWeeklyBackup(api: SchedulerDB, stored: Record<string, string>): Promise<void> {
+export async function runWeeklyBackup(
+    api: SchedulerDB,
+    stored: Record<string, string>,
+    secret?: string
+): Promise<void> {
     if (stored["webdav.autoBackup"] === "false") {
         return;
     }
@@ -48,7 +52,13 @@ export async function runWeeklyBackup(api: SchedulerDB, stored: Record<string, s
         return;
     }
 
-    const result = await runWebDavBackup(api as unknown as NavigationAPI, config, stored["webdav.lastBackup"] || "");
+    const result = await runWebDavBackup(
+        api as unknown as NavigationAPI,
+        config,
+        stored["webdav.lastBackup"] || "",
+        undefined,
+        secret
+    );
     console.log(
         result.success
             ? `定时备份完成：${result.data?.filename}`
@@ -127,7 +137,7 @@ export async function runScheduledTasks(
     try {
         const api = makeApi(env);
         const stored = await readAllConfigs(api as unknown as NavigationAPI);
-        await runWeeklyBackup(api, stored);
+        await runWeeklyBackup(api, stored, env.AUTH_SECRET);
     } catch (error) {
         console.error("定时备份异常:", error);
     }

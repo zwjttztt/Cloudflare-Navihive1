@@ -39,3 +39,33 @@ export async function writeLoginGuard(api: NavigationAPI, guard: LoginGuard): Pr
         // 写失败只影响限速强度，不影响登录本身
     }
 }
+
+// ============ 初始化接口限速 ============
+// /api/init 未鉴权，限频挡掉「反复打接口探测行为」的扫描。
+// 已初始化（alreadyInitialized）的请求不计次 —— 正常回源探测不会被锁。
+export const INIT_GUARD_KEY = "auth.initGuard";
+export const INIT_FREE_ATTEMPTS = 20;
+export const INIT_BASE_LOCK_MS = 30_000; // 第 21 次起锁 30 秒
+export const INIT_MAX_LOCK_MS = 10 * 60_000; // 最多 10 分钟
+
+export async function readInitGuard(api: NavigationAPI): Promise<LoginGuard> {
+    try {
+        const raw = await api.getConfig(INIT_GUARD_KEY);
+        if (!raw) return { count: 0, until: 0 };
+        const parsed = JSON.parse(raw) as Partial<LoginGuard>;
+        return {
+            count: typeof parsed.count === "number" && parsed.count > 0 ? parsed.count : 0,
+            until: typeof parsed.until === "number" && parsed.until > 0 ? parsed.until : 0,
+        };
+    } catch {
+        return { count: 0, until: 0 };
+    }
+}
+
+export async function writeInitGuard(api: NavigationAPI, guard: LoginGuard): Promise<void> {
+    try {
+        await api.setConfig(INIT_GUARD_KEY, JSON.stringify(guard));
+    } catch {
+        // 写失败只影响限速强度
+    }
+}

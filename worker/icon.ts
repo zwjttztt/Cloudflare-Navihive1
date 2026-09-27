@@ -1,5 +1,7 @@
 // worker/icon.ts
 
+import { isBlockedHost } from "./util";
+
 /**
  * 图标代理：把第三方 favicon 抓回来当同源响应发出去。
  *
@@ -9,7 +11,9 @@
  *
  * 安全限制：
  *   - 只接受 http/https，且只允许 80/443（顺手挡掉打内网服务的经典 SSRF）
- *   - 目标主机名解析到内网段的一律拒绝
+ *   - 目标主机名解析到内网段的一律拒绝（meta.ts 共用同一份黑名单）
+ *   - 手动跟随重定向、每一跳重新过黑名单：redirect:"follow" 不会重验目标，
+ *     攻击者可借 302 把 Worker 引到 169.254.169.254 / 内网（SSRF）。上限 4 跳。
  *   - 响应超过 512KB 直接丢掉，避免有人拿它当图床
  */
 export async function proxyIcon(request: Request): Promise<Response> {
@@ -29,33 +33,53 @@ export async function proxyIcon(request: Request): Promise<Response> {
     if (targetUrl.protocol !== "http:" && targetUrl.protocol !== "https:") {
         return new Response("只支持 http/https 图标", { status: 400 });
     }
-
-    // 端口白名单：非标准端口一律拒
     if (targetUrl.port && !["80", "443"].includes(targetUrl.port)) {
         return new Response("不支持的端口", { status: 400 });
     }
-
-    // 内网地址黑名单（Cloudflare Worker 出网仍在我们的 VPC 视角里，挡一道更稳妥）
-    const host = targetUrl.hostname.toLowerCase();
-    const isPrivate =
-        host === "localhost" ||
-        host === "::1" ||
-        host.endsWith(".local") ||
-        /^127\./.test(host) ||
-        /^10\./.test(host) ||
-        /^192\.168\./.test(host) ||
-        /^172\.(1[6-9]|2\d|3[01])\./.test(host) ||
-        /^169\.254\./.test(host) ||
-        /^0\./.test(host);
-    if (isPrivate) return new Response("不允许代理内网地址", { status: 400 });
+    if (isBlockedHost(targetUrl.hostname)) {
+        return new Response("不允许代理内网地址", { status: 400 });
+    }
 
     try {
-        const upstream = await fetch(targetUrl.href, {
-            redirect: "follow",
-            headers: { Accept: "image/*,*/*;q=0.8" },
-        });
+        // 手动跟随重定向，每一跳都重新过内网黑名单：redirect:"follow" 不会重验目标，
+        // 攻击者可借 302 把 Worker 引到 169.254.169.254 / 内网（SSRF）。上限 4 跳防无限循环。
+        const MAX_ICON_REDIRECTS = 4;
+        let current = targetUrl;
+        let upstream: Response | null = null;
+        for (let hop = 0; hop <= MAX_ICON_REDIRECTS; hop++) {
+            if (current.protocol !== "http:" && current.protocol !== "https:") {
+                return new Response("只支持 http/https 图标", { status: 400 });
+            }
+            if (current.port && !["80", "443"].includes(current.port)) {
+                return new Response("不支持的端口", { status: 400 });
+            }
+            if (isBlockedHost(current.hostname)) {
+                return new Response("不允许代理内网地址", { status: 400 });
+            }
 
-        if (!upstream.ok || !upstream.body) {
+            const res = await fetch(current.href, {
+                redirect: "manual",
+                headers: { Accept: "image/*,*/*;q=0.8" },
+            });
+
+            if (res.status >= 300 && res.status < 400) {
+                const loc = res.headers.get("location");
+                if (!loc || hop === MAX_ICON_REDIRECTS) {
+                    return new Response("图标重定向次数过多或被跳板", { status: 502 });
+                }
+                try {
+                    current = new URL(loc, current.href);
+                    continue;
+                } catch {
+                    return new Response("图标重定向地址不合法", { status: 502 });
+                }
+            }
+
+            upstream = res;
+            break;
+        }
+
+        if (!upstream || !upstream.ok || !upstream.body) {
             return new Response("上游取不到图标", { status: 404 });
         }
 

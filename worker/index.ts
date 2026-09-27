@@ -20,6 +20,11 @@ import {
     LOGIN_FREE_ATTEMPTS,
     LOGIN_BASE_LOCK_MS,
     LOGIN_MAX_LOCK_MS,
+    readInitGuard,
+    writeInitGuard,
+    INIT_FREE_ATTEMPTS,
+    INIT_BASE_LOCK_MS,
+    INIT_MAX_LOCK_MS,
 } from "./loginGuard";
 import { fetchSiteMeta } from "./meta";
 import type {
@@ -33,6 +38,7 @@ import type {
     SiteInput,
 } from "./types";
 import { validateConfig, validateGroup, validateLogin, validateSite } from "./validate";
+import { validatePasswordStrength } from "../src/API/crypto";
 import { safeJson, weakEtag } from "./util";
 import {
     readAllConfigs,
@@ -186,10 +192,33 @@ export default {
 
                 // 初始化数据库接口 - 不需要验证
                 if (path === "init" && method === "GET") {
+                    // 未鉴权接口，先过一道限速：挡掉反复打接口探测的扫描。
+                    // 已初始化的请求（正常回源探测）不计次，避免锁正常用户。
+                    const initGuard = await readInitGuard(api);
+                    const initNow = Date.now();
+                    if (initGuard.until > initNow) {
+                        const waitSec = Math.ceil((initGuard.until - initNow) / 1000);
+                        return new Response("初始化请求过于频繁，请稍后再试", {
+                            status: 429,
+                            headers: { "Retry-After": String(waitSec) },
+                        });
+                    }
+
                     const initResult = await api.initDB();
                     if (initResult.alreadyInitialized) {
                         return new Response("数据库已经初始化过，无需重复初始化", { status: 200 });
                     }
+
+                    // 仅「首次真正初始化」才计次（已初始化分支已提前返回，不会到这里）
+                    const initCount = initGuard.count + 1;
+                    const initOver = initCount - INIT_FREE_ATTEMPTS;
+                    const initUntil =
+                        initOver > 0
+                            ? initNow +
+                              Math.min(INIT_BASE_LOCK_MS * Math.pow(2, initOver - 1), INIT_MAX_LOCK_MS)
+                            : 0;
+                    await writeInitGuard(api, { count: initCount, until: initUntil });
+
                     return new Response("数据库初始化成功", { status: 200 });
                 }
 
@@ -616,6 +645,17 @@ export default {
                         );
                     }
 
+                    // 只校验「实际要设的新密码」强度，留空表示不改密码
+                    if (password) {
+                        const strength = validatePasswordStrength(password);
+                        if (!strength.ok) {
+                            return Response.json(
+                                { success: false, message: `密码强度不足：${strength.message}` },
+                                { status: 400 }
+                            );
+                        }
+                    }
+
                     const current = await api.getAuthCredentials();
                     if (!(await api.verifyCurrentPassword(currentPassword))) {
                         return Response.json(
@@ -686,7 +726,8 @@ export default {
                         api,
                         config,
                         stored["webdav.lastBackup"] || "",
-                        body.data
+                        body.data,
+                        env.AUTH_SECRET
                     );
                     return Response.json(result);
                 } else if (path === "webdav/list" && method === "POST") {
@@ -696,7 +737,7 @@ export default {
                 } else if (path === "webdav/download" && method === "POST") {
                     const body = (await safeJson(request)) as { filename?: string };
                     const config = await resolveWebDavConfig(api, request, body);
-                    const result = await webdavDownload(config, body.filename || "");
+                    const result = await webdavDownload(config, body.filename || "", env.AUTH_SECRET);
                     return Response.json(result);
                 } else if (path === "webdav/delete" && method === "POST") {
                     const body = (await safeJson(request)) as { filename?: string };

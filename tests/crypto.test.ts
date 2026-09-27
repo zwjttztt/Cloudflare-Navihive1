@@ -11,6 +11,9 @@ import {
     isHashedPassword,
     encryptSecret,
     decryptSecret,
+    encryptBytes,
+    decryptBytes,
+    validatePasswordStrength,
     constantTimeEqual,
 } from "../src/API/crypto";
 
@@ -78,4 +81,23 @@ test("encryptSecret 空串返回空串；decryptSecret 对明文原样返回", a
 test("constantTimeEqual 长度不同直接 false", () => {
     assert.equal(constantTimeEqual(new Uint8Array([1, 2]), new Uint8Array([1])), false);
     assert.equal(constantTimeEqual(new Uint8Array([1, 2]), new Uint8Array([1, 2])), true);
+});
+
+test("encryptBytes/decryptBytes 往返，且无密钥解不出", async () => {
+    const plain = new TextEncoder().encode(JSON.stringify({ a: 1, sites: [{ pw: "x" }] }));
+    const cipher = await encryptBytes(plain, SECRET);
+    assert.ok(cipher.length > plain.length); // 带 12 字节 IV
+    const back = await decryptBytes(cipher, SECRET);
+    assert.deepEqual([...back], [...plain]);
+
+    // 错误密钥解密应抛错（AES-GCM 认证失败）
+    await assert.rejects(() => decryptBytes(cipher, "wrong-secret"));
+});
+
+test("validatePasswordStrength 强制最低 12 位且拒绝同字符重复", () => {
+    assert.equal(validatePasswordStrength("1234567890").ok, false); // 太短
+    assert.equal(validatePasswordStrength("000000000000").ok, false); // 同字符重复
+    const ok = validatePasswordStrength("Kp9$mQ2xLz7!vR");
+    assert.equal(ok.ok, true);
+    assert.equal(ok.message, "");
 });

@@ -9,6 +9,7 @@ import {
     isHashedPassword,
     encryptSecret,
     decryptSecret,
+    validatePasswordStrength,
 } from "./crypto";
 
 // 定义D1数据库类型
@@ -472,6 +473,12 @@ export class NavigationAPI {
         const newPass = newPassword || "";
         if (!input || !newPass) {
             return { success: false, message: "请填写应急重置码和新密码" };
+        }
+
+        // 重置密码也强制强度策略，避免把管理员账号设成弱口令
+        const strength = validatePasswordStrength(newPass);
+        if (!strength.ok) {
+            return { success: false, message: `密码强度不足：${strength.message}` };
         }
 
         // 限流：短时间内反复猜码直接拒绝

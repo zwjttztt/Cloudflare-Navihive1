@@ -1,28 +1,12 @@
 // worker/meta.ts
 
+import { isBlockedHost } from "./util";
+
 // ============ 站点信息抓取（/api/meta） ============
 
 /** 目标页面最多读多少字符：再往后基本都是脚本和页脚，白占内存 */
 const META_MAX_CHARS = 200_000;
 const META_TIMEOUT_MS = 8000;
-
-/** 内网 / 本机地址黑名单：抓取和图标代理共用一套，别让我们的 Worker 被当跳板 */
-function isBlockedHost(hostname: string): boolean {
-    const host = hostname.toLowerCase();
-    return (
-        host === "localhost" ||
-        host === "::1" ||
-        host.endsWith(".local") ||
-        host.endsWith(".internal") ||
-        /^127\./.test(host) ||
-        /^10\./.test(host) ||
-        /^192\.168\./.test(host) ||
-        /^172\.(1[6-9]|2\d|3[01])\./.test(host) ||
-        /^169\.254\./.test(host) ||
-        /^0\./.test(host) ||
-        /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(host)
-    );
-}
 
 /** 从一个 meta 标签里取 content（属性顺序不固定，两种写法都要认） */
 function metaContent(html: string, attr: string, value: string): string {
