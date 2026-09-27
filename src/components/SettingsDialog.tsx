@@ -1,6 +1,7 @@
 // src/components/SettingsDialog.tsx
-// 全站设置弹窗：标题 / 名称、主题配色、外观风格、图标与缩略图 API、背景、毛玻璃强度、
-// 管理员凭据、自定义 CSS。原来内联在 App.tsx 里，是那个文件最大的一块，抽出来单独维护。
+// 全站设置弹窗。按「基本信息 / 外观 / 背景与毛玻璃 / 图标与缩略图 / 搜索 /
+// 数据同步 / 账户安全 / 高级」分成 8 组：组与组之间用分隔线隔开，组标题左侧有一小段
+// 主色竖条，组内字段按「改动频率 + 语义」排序；短字段在宽屏并排成两列，纵向更紧凑。
 // 所有值都走「临时副本 + 点保存才落库」，所以组件本身不碰 API，只负责渲染和回调。
 import type { ChangeEvent } from "react";
 import {
@@ -11,6 +12,7 @@ import {
     DialogContent,
     DialogContentText,
     DialogTitle,
+    Divider,
     IconButton,
     Slider,
     FormControlLabel,
@@ -90,6 +92,105 @@ interface SettingsDialogProps {
     onSyncPrefsChange: (enabled: boolean) => void;
 }
 
+/** 分组：左侧一小段主色竖条 + 组标题，可选一行组说明；组内字段纵向排布 */
+function Section({
+    title,
+    hint,
+    children,
+}: {
+    title: string;
+    hint?: string;
+    children: React.ReactNode;
+}) {
+    return (
+        <Box>
+            <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                <Box
+                    sx={{
+                        width: 3,
+                        height: 14,
+                        borderRadius: 0.5,
+                        bgcolor: "primary.main",
+                        opacity: 0.75,
+                        flex: "none",
+                    }}
+                />
+                <Typography variant='subtitle2' fontWeight='600'>
+                    {title}
+                </Typography>
+            </Box>
+            {hint ? (
+                <Typography
+                    variant='caption'
+                    color='text.secondary'
+                    sx={{ display: "block", mt: 0.25, ml: "11px" }}
+                >
+                    {hint}
+                </Typography>
+            ) : null}
+            <Stack spacing={1.25} sx={{ mt: 1.25 }}>
+                {children}
+            </Stack>
+        </Box>
+    );
+}
+
+/** 窄屏堆叠、宽屏并排的两列栅格：短字段用它省掉一整行高度 */
+function TwoCol({ children }: { children: React.ReactNode }) {
+    return (
+        <Box
+            sx={{
+                display: "grid",
+                gap: 1.25,
+                gridTemplateColumns: { xs: "1fr", sm: "1fr 1fr" },
+            }}
+        >
+            {children}
+        </Box>
+    );
+}
+
+/** 开关 + 说明的固定组合：说明统一缩进到标签文字下方，视觉上归成一类 */
+function SwitchRow({
+    checked,
+    onChange,
+    label,
+    ariaLabel,
+    caption,
+}: {
+    checked: boolean;
+    onChange: (checked: boolean) => void;
+    label: string;
+    ariaLabel: string;
+    caption?: string;
+}) {
+    return (
+        <Box>
+            <FormControlLabel
+                sx={{ display: "flex", m: 0, minHeight: 26 }}
+                control={
+                    <Switch
+                        checked={checked}
+                        size='small'
+                        onChange={e => onChange(e.target.checked)}
+                        slotProps={{ input: { "aria-label": ariaLabel } }}
+                    />
+                }
+                label={<Typography variant='body2'>{label}</Typography>}
+            />
+            {caption ? (
+                <Typography
+                    variant='caption'
+                    color='text.secondary'
+                    sx={{ display: "block", ml: "42px", mt: -0.25 }}
+                >
+                    {caption}
+                </Typography>
+            ) : null}
+        </Box>
+    );
+}
+
 export default function SettingsDialog({
     open,
     onClose,
@@ -130,7 +231,7 @@ export default function SettingsDialog({
                 },
             }}
         >
-            <DialogTitle>
+            <DialogTitle sx={{ px: 3, pt: 2, pb: 0.5 }}>
                 网站设置
                 <IconButton
                     aria-label='close'
@@ -140,110 +241,141 @@ export default function SettingsDialog({
                     <CloseIcon />
                 </IconButton>
             </DialogTitle>
-            <DialogContent>
-                <DialogContentText sx={{ mb: 2 }}>
-                    配置网站的基本信息和外观
+            <DialogContent
+                sx={{
+                    px: 3,
+                    pt: 1,
+                    pb: 2,
+                    // 说明文字统一收紧：默认 helperText 的行高和上间距太占地方
+                    "& .MuiFormHelperText-root": { mt: 0.5, fontSize: 11.5, lineHeight: 1.5 },
+                    // 滑块默认上下各留一段内边距，压掉一半换密度
+                    "& .MuiSlider-root": { py: 0.75 },
+                }}
+            >
+                <DialogContentText sx={{ mb: 1.5, fontSize: 13.5 }}>
+                    集中管理站点信息、外观风格、图标来源与数据同步。
                 </DialogContentText>
-                <Stack spacing={2.5}>
-                    <TextField
-                        margin='dense'
-                        id='site-title'
-                        name='site.title'
-                        label='网站标题 (浏览器标签)'
-                        type='text'
-                        fullWidth
-                        variant='outlined'
-                        value={tempConfigs["site.title"]}
-                        onChange={onConfigInputChange}
-                    />
-                    <TextField
-                        margin='dense'
-                        id='site-name'
-                        name='site.name'
-                        label='网站名称 (显示在页面中)'
-                        type='text'
-                        fullWidth
-                        variant='outlined'
-                        value={tempConfigs["site.name"]}
-                        onChange={onConfigInputChange}
-                    />
-
-                    {/* 主题配色：预设色 + 取色器，实时预览后点保存生效 */}
-                    <Box>
-                        <Typography variant='subtitle1' fontWeight='600' sx={{ mb: 1 }}>
-                            主题配色
-                        </Typography>
-                        <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
-                            {PRESET_ACCENTS.map(color => {
-                                const picked =
-                                    (tempConfigs["site.primaryColor"] || "").toLowerCase() ===
-                                    color.toLowerCase();
-                                return (
-                                    <IconButton
-                                        key={color}
-                                        size='small'
-                                        aria-label={`使用配色 ${color}`}
-                                        aria-pressed={picked}
-                                        onClick={() => onPickAccent(color)}
-                                        sx={{
-                                            width: 26,
-                                            height: 26,
-                                            minWidth: 26,
-                                            bgcolor: color,
-                                            border: "2px solid",
-                                            borderColor: picked ? "text.primary" : "transparent",
-                                            boxShadow: picked
-                                                ? `0 0 0 2px ${color}55`
-                                                : "0 1px 3px rgba(15,23,42,0.18)",
-                                            "&:hover": { bgcolor: color },
-                                        }}
-                                    />
-                                );
-                            })}
-
-                            {/* 原生取色器：可任选任意颜色 */}
-                            <Box
-                                component='input'
-                                type='color'
-                                name='site.primaryColor'
-                                aria-label='自定义主色'
-                                value={
-                                    /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(
-                                        tempConfigs["site.primaryColor"] || ""
-                                    )
-                                        ? tempConfigs["site.primaryColor"]
-                                        : "#1976d2"
-                                }
-                                onChange={e => onPickAccent(e.target.value)}
-                                sx={{
-                                    width: 34,
-                                    height: 26,
-                                    p: 0,
-                                    cursor: "pointer",
-                                    bgcolor: "transparent",
-                                    border: "1px solid",
-                                    borderColor: "divider",
-                                    borderRadius: 1,
-                                }}
+                <Stack spacing={2} divider={<Divider />}>
+                    {/* 1. 基本信息：最常改，放最上面 */}
+                    <Section title='基本信息'>
+                        <TwoCol>
+                            <TextField
+                                margin='dense'
+                                size='small'
+                                id='site-title'
+                                name='site.title'
+                                label='网站标题 (浏览器标签)'
+                                type='text'
+                                fullWidth
+                                variant='outlined'
+                                value={tempConfigs["site.title"]}
+                                onChange={onConfigInputChange}
                             />
+                            <TextField
+                                margin='dense'
+                                size='small'
+                                id='site-name'
+                                name='site.name'
+                                label='网站名称 (显示在页面中)'
+                                type='text'
+                                fullWidth
+                                variant='outlined'
+                                value={tempConfigs["site.name"]}
+                                onChange={onConfigInputChange}
+                            />
+                        </TwoCol>
+                    </Section>
 
-                            <Button size='small' variant='text' onClick={() => onPickAccent("")}>
-                                恢复默认
-                            </Button>
+                    {/* 2. 外观：配色（随备份走）+ 圆角/字号（只存本机） */}
+                    <Section
+                        title='外观'
+                        hint='配色会随备份同步；圆角与字号只存在这台设备，换设备或换浏览器不跟随。'
+                    >
+                        <Box>
+                            <Box
+                                sx={{
+                                    display: "flex",
+                                    alignItems: "center",
+                                    gap: 1,
+                                    flexWrap: "wrap",
+                                }}
+                            >
+                                {PRESET_ACCENTS.map(color => {
+                                    const picked =
+                                        (tempConfigs["site.primaryColor"] || "").toLowerCase() ===
+                                        color.toLowerCase();
+                                    return (
+                                        <IconButton
+                                            key={color}
+                                            size='small'
+                                            aria-label={`使用配色 ${color}`}
+                                            aria-pressed={picked}
+                                            onClick={() => onPickAccent(color)}
+                                            sx={{
+                                                width: 26,
+                                                height: 26,
+                                                minWidth: 26,
+                                                bgcolor: color,
+                                                border: "2px solid",
+                                                borderColor: picked ? "text.primary" : "transparent",
+                                                boxShadow: picked
+                                                    ? `0 0 0 2px ${color}55`
+                                                    : "0 1px 3px rgba(15,23,42,0.18)",
+                                                "&:hover": { bgcolor: color },
+                                            }}
+                                        />
+                                    );
+                                })}
+
+                                {/* 原生取色器：可任选任意颜色 */}
+                                <Box
+                                    component='input'
+                                    type='color'
+                                    name='site.primaryColor'
+                                    aria-label='自定义主色'
+                                    value={
+                                        /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(
+                                            tempConfigs["site.primaryColor"] || ""
+                                        )
+                                            ? tempConfigs["site.primaryColor"]
+                                            : "#1976d2"
+                                    }
+                                    onChange={e => onPickAccent(e.target.value)}
+                                    sx={{
+                                        width: 34,
+                                        height: 26,
+                                        p: 0,
+                                        cursor: "pointer",
+                                        bgcolor: "transparent",
+                                        border: "1px solid",
+                                        borderColor: "divider",
+                                        borderRadius: 1,
+                                    }}
+                                />
+
+                                <Button size='small' variant='text' onClick={() => onPickAccent("")}>
+                                    恢复默认
+                                </Button>
+                            </Box>
+                            <Typography
+                                variant='caption'
+                                color='text.secondary'
+                                sx={{ display: "block", mt: 0.5 }}
+                            >
+                                影响按钮、链接高亮、焦点环与卡片悬停色；留空则跟随默认蓝色。
+                            </Typography>
                         </Box>
-                        <Typography variant='caption' color='text.secondary'>
-                            影响按钮、链接高亮、焦点环与卡片悬停色。留空则跟随默认蓝色（暗色模式自动切换）。
-                        </Typography>
-                    </Box>
 
-                    {/* 外观：圆角风格与字号档位，只影响本机显示 */}
-                    <Box>
-                        <Typography variant='subtitle1' fontWeight='600' sx={{ mb: 1 }}>
-                            外观风格
-                        </Typography>
-                        <Box sx={{ display: "flex", flexDirection: "column", gap: 1.5 }}>
-                            <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
-                                <Typography variant='body2' sx={{ minWidth: 56 }}>
+                        <TwoCol>
+                            <Box
+                                sx={{
+                                    display: "flex",
+                                    alignItems: "center",
+                                    gap: 1,
+                                    flexWrap: "wrap",
+                                }}
+                            >
+                                <Typography variant='body2' sx={{ minWidth: 40 }}>
                                     圆角
                                 </Typography>
                                 <ToggleButtonGroup
@@ -264,8 +396,15 @@ export default function SettingsDialog({
                                     </ToggleButton>
                                 </ToggleButtonGroup>
                             </Box>
-                            <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
-                                <Typography variant='body2' sx={{ minWidth: 56 }}>
+                            <Box
+                                sx={{
+                                    display: "flex",
+                                    alignItems: "center",
+                                    gap: 1,
+                                    flexWrap: "wrap",
+                                }}
+                            >
+                                <Typography variant='body2' sx={{ minWidth: 40 }}>
                                     字号
                                 </Typography>
                                 <ToggleButtonGroup
@@ -286,79 +425,14 @@ export default function SettingsDialog({
                                     </ToggleButton>
                                 </ToggleButtonGroup>
                             </Box>
-                        </Box>
-                        <Typography variant='caption' color='text.secondary'>
-                            这两项只存在本机，换设备或换浏览器不会跟随。
-                        </Typography>
-                    </Box>
+                        </TwoCol>
+                    </Section>
 
-                    {/* 拼音搜索：默认关，打开后才加载词典 */}
-                    <Box>
-                        <Typography variant='subtitle1' fontWeight='600' sx={{ mb: 0.5 }}>
-                            搜索设置
-                        </Typography>
-                        <FormControlLabel
-                            control={
-                                <Switch
-                                    checked={pinyinSearch}
-                                    onChange={e => onPinyinSearchChange(e.target.checked)}
-                                    size='small'
-                                />
-                            }
-                            label='拼音搜索'
-                        />
-                        <Typography variant='caption' color='text.secondary' sx={{ display: "block" }}>
-                            开启后可以用首字母搜中文站点（例如「bd」命中「百度」），词典约 28KB，按需加载。
-                        </Typography>
-                    </Box>
-
-                    {/* 获取图标 API 设置 */}
-                    <Box>
-                        <Typography variant='subtitle1' fontWeight='600' sx={{ mb: 1 }}>
-                            获取图标API设置
-                        </Typography>
-                        <TextField
-                            margin='dense'
-                            id='site-icon-api'
-                            name='site.iconApi'
-                            label='获取图标API URL'
-                            type='text'
-                            fullWidth
-                            variant='outlined'
-                            value={tempConfigs["site.iconApi"]}
-                            onChange={onConfigInputChange}
-                            placeholder={DEFAULT_ICON_API}
-                            helperText='输入获取图标API的地址，使用 {domain} 作为域名占位符（例如 https://www.faviconextractor.com/favicon/{domain}?larger=true）'
-                        />
-                    </Box>
-
-                    {/* 站点缩略图设置 */}
-                    <Box>
-                        <Typography variant='subtitle1' fontWeight='600' sx={{ mb: 1 }}>
-                            站点缩略图设置
-                        </Typography>
-                        <TextField
-                            margin='dense'
-                            id='site-thumb-api'
-                            name='site.thumbApi'
-                            label='缩略图API URL'
-                            type='text'
-                            fullWidth
-                            variant='outlined'
-                            value={tempConfigs["site.thumbApi"] || ""}
-                            onChange={onConfigInputChange}
-                            placeholder='https://example.com/shot?url={url}'
-                            helperText='留空则不显示缩略图。可用占位符：{url} 完整链接、{domain} 域名、{origin} 协议+域名'
-                        />
-                    </Box>
-
-                    {/* 背景图片设置 */}
-                    <Box>
-                        <Typography variant='subtitle1' fontWeight='600' sx={{ mb: 1 }}>
-                            背景图片设置
-                        </Typography>
+                    {/* 3. 背景与毛玻璃：都属于「背后的画面」，合成一组。
+                        毛玻璃总开关原本在「更多选项」菜单里，菜单变短后移到这里和强度滑块作伴。 */}
+                    <Section title='背景与毛玻璃'>
                         {/* 内置壁纸预设：点一下即用，也可以自己在下面填图片 URL */}
-                        <Box sx={{ display: "flex", gap: 1, flexWrap: "wrap", mb: 1.5 }}>
+                        <Box sx={{ display: "flex", gap: 1, flexWrap: "wrap" }}>
                             {WALLPAPER_PRESETS.map(preset => {
                                 const picked =
                                     (tempConfigs["site.backgroundImage"] || "") === preset.value;
@@ -390,8 +464,10 @@ export default function SettingsDialog({
                                 );
                             })}
                         </Box>
+
                         <TextField
                             margin='dense'
+                            size='small'
                             id='site-background-image'
                             name='site.backgroundImage'
                             label='背景图片URL'
@@ -401,9 +477,10 @@ export default function SettingsDialog({
                             value={tempConfigs["site.backgroundImage"]}
                             onChange={onConfigInputChange}
                             placeholder='https://example.com/background.jpg'
-                            helperText='输入图片URL，留空则不使用背景图片（也可以直接用上面的预设壁纸）'
+                            helperText='留空则不用背景图片，也可以直接点上面的预设壁纸。'
                         />
-                        <Box sx={{ mt: 2 }}>
+
+                        <Box>
                             <Typography variant='body2' color='text.secondary'>
                                 背景蒙版透明度:{" "}
                                 {Number(tempConfigs["site.backgroundMaskOpacity"]) || 0}
@@ -416,124 +493,128 @@ export default function SettingsDialog({
                                 onChange={onMaskOpacityChange}
                                 aria-label='背景蒙版透明度'
                                 valueLabelDisplay='auto'
+                                size='small'
                             />
                             <Typography variant='caption' color='text.secondary'>
-                                值越大，背景图片越清晰，内容可能越难看清
+                                值越大背景图越清晰，内容可能越难看清
                             </Typography>
                         </Box>
-                    </Box>
 
-                    {/* 毛玻璃：总开关 + 模糊强度 */}
-                    <Box>
-                        <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 1 }}>
-                            <Typography variant='subtitle1' fontWeight='600'>
-                                毛玻璃特效
+                        <Box>
+                            <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                                <Typography variant='body2'>毛玻璃特效</Typography>
+                                <Box sx={{ flex: 1 }} />
+                                <FormControlLabel
+                                    control={
+                                        <Switch
+                                            checked={glassEffects}
+                                            size='small'
+                                            onChange={e => onGlassEffectsChange(e.target.checked)}
+                                            slotProps={{ input: { "aria-label": "毛玻璃特效" } }}
+                                        />
+                                    }
+                                    label={
+                                        <Typography variant='body2'>
+                                            {glassEffects ? "开" : "关"}
+                                        </Typography>
+                                    }
+                                    sx={{ m: 0 }}
+                                />
+                            </Box>
+                            <Typography variant='body2' color='text.secondary'>
+                                模糊半径: {glassBlur}px（0 = 完全不模糊）
                             </Typography>
-                            <Box sx={{ flex: 1 }} />
-                            <FormControlLabel
-                                control={
-                                    <Switch
-                                        checked={glassEffects}
-                                        size='small'
-                                        onChange={e => onGlassEffectsChange(e.target.checked)}
-                                        slotProps={{ input: { "aria-label": "毛玻璃特效" } }}
-                                    />
-                                }
-                                label={glassEffects ? "开" : "关"}
-                                sx={{ mr: 0 }}
+                            <Slider
+                                value={glassBlur}
+                                min={0}
+                                max={24}
+                                step={1}
+                                onChange={onGlassBlurChange}
+                                aria-label='毛玻璃强度'
+                                valueLabelDisplay='auto'
+                                size='small'
+                                disabled={!glassEffects}
                             />
+                            <Typography variant='caption' color='text.secondary'>
+                                数值越大越朦胧，看不清内容时调小或拖到 0。关闭总开关后滑块不生效，滚动更省。
+                            </Typography>
                         </Box>
-                        <Typography variant='body2' color='text.secondary'>
-                            模糊半径: {glassBlur}px（0 = 完全不模糊）
-                        </Typography>
-                        <Slider
-                            value={glassBlur}
-                            min={0}
-                            max={24}
-                            step={1}
-                            onChange={onGlassBlurChange}
-                            aria-label='毛玻璃强度'
-                            valueLabelDisplay='auto'
-                            disabled={!glassEffects}
+                    </Section>
+
+                    {/* 4. 图标与缩略图：两个 URL 模板，规则相似，并排放 */}
+                    <Section title='图标与缩略图' hint='两项都支持占位符，留空则回落到默认行为。'>
+                        <TwoCol>
+                            <TextField
+                                margin='dense'
+                                size='small'
+                                id='site-icon-api'
+                                name='site.iconApi'
+                                label='获取图标API URL'
+                                type='text'
+                                fullWidth
+                                variant='outlined'
+                                value={tempConfigs["site.iconApi"]}
+                                onChange={onConfigInputChange}
+                                placeholder={DEFAULT_ICON_API}
+                                helperText='域名字符串用 {domain} 占位，例：https://www.faviconextractor.com/favicon/{domain}'
+                            />
+                            <TextField
+                                margin='dense'
+                                size='small'
+                                id='site-thumb-api'
+                                name='site.thumbApi'
+                                label='缩略图API URL'
+                                type='text'
+                                fullWidth
+                                variant='outlined'
+                                value={tempConfigs["site.thumbApi"] || ""}
+                                onChange={onConfigInputChange}
+                                placeholder='https://example.com/shot?url={url}'
+                                helperText='留空则不显示缩略图。占位符：{url} 完整链接、{domain} 域名、{origin} 协议+域名'
+                            />
+                        </TwoCol>
+                    </Section>
+
+                    {/* 5. 搜索 */}
+                    <Section title='搜索'>
+                        <SwitchRow
+                            checked={pinyinSearch}
+                            onChange={onPinyinSearchChange}
+                            label='拼音搜索'
+                            ariaLabel='拼音搜索'
+                            caption='开启后可用首字母搜中文站点（例如「bd」命中「百度」），词典约 28KB，按需加载。'
                         />
-                        <Typography variant='caption' color='text.secondary'>
-                            {glassEffects
-                                ? "数值越大越朦胧。内容看不清时调小，或直接拖到 0 关掉模糊。"
-                                : "特效已关闭：不再实时模糊背后的画面，滚动更省，也不会在圆角边缘露出暗边。滑块只在开启时生效。"}
-                        </Typography>
-                    </Box>
+                    </Section>
 
-                    {/* 多端同步：两项都是可选，默认关（关着的时候数据只在本机，不上传） */}
-                    <Box>
-                        <Typography variant='subtitle1' fontWeight='600' sx={{ mb: 0.5 }}>
-                            多端同步
-                        </Typography>
-                        <Typography
-                            variant='caption'
-                            color='text.secondary'
-                            sx={{ display: "block", mb: 1 }}
-                        >
-                            默认关闭，数据只留在这台设备的浏览器里。打开后会写进服务端数据库，
-                            换设备 / 换浏览器都能直接看到。开关即时生效，不用点保存。
-                        </Typography>
-
-                        <FormControlLabel
-                            control={
-                                <Switch
-                                    checked={syncHealth}
-                                    size='small'
-                                    onChange={e => onSyncHealthChange(e.target.checked)}
-                                    slotProps={{ input: { "aria-label": "同步失效检测结果" } }}
-                                />
-                            }
+                    {/* 6. 数据同步：两项都是可选，默认关（关着的时候数据只在本机，不上传） */}
+                    <Section
+                        title='数据同步'
+                        hint='默认关闭，数据只留在这台设备的浏览器里；打开后写入服务端数据库，换设备也能看到。开关即时生效，不用点保存。'
+                    >
+                        <SwitchRow
+                            checked={syncHealth}
+                            onChange={onSyncHealthChange}
                             label='失效检测结果'
-                            sx={{ display: "flex", mr: 0 }}
+                            ariaLabel='同步失效检测结果'
+                            caption='记住哪些链接探测失败过（含「标记为可访问」的白名单），换设备后不用整库重测。'
                         />
-                        <Typography
-                            variant='caption'
-                            color='text.secondary'
-                            sx={{ display: "block", ml: 6, mb: 1 }}
-                        >
-                            记住哪些链接探测失败过（含「标记为可访问」的白名单），
-                            换设备后不用把整库链接重测一遍。
-                        </Typography>
-
-                        <FormControlLabel
-                            control={
-                                <Switch
-                                    checked={syncPrefs}
-                                    size='small'
-                                    onChange={e => onSyncPrefsChange(e.target.checked)}
-                                    slotProps={{ input: { "aria-label": "同步星标与标签" } }}
-                                />
-                            }
+                        <SwitchRow
+                            checked={syncPrefs}
+                            onChange={onSyncPrefsChange}
                             label='星标与标签'
-                            sx={{ display: "flex", mr: 0 }}
+                            ariaLabel='同步星标与标签'
+                            caption='这两项按设计只存本机，清掉浏览器数据就没了；打开同步后可找回，多设备之间取并集合并。'
                         />
-                        <Typography
-                            variant='caption'
-                            color='text.secondary'
-                            sx={{ display: "block", ml: 6 }}
-                        >
-                            这两项按设计只存本机，清掉浏览器数据就没了。打开同步后可以找回来，
-                            多台设备之间也会取并集合并。
-                        </Typography>
-                    </Box>
+                    </Section>
 
-                    {/* 管理员账号与密码 */}
-                    <Box>
-                        <Typography variant='subtitle1' fontWeight='600' sx={{ mb: 1 }}>
-                            管理员账号与密码
-                        </Typography>
-                        <Typography
-                            variant='caption'
-                            color='text.secondary'
-                            sx={{ display: "block", mb: 1 }}
-                        >
-                            凭据保存在数据库中，只有第一次部署才会使用默认账号密码，之后重新部署不会覆盖；留空表示不修改。
-                        </Typography>
+                    {/* 7. 账户安全 */}
+                    <Section
+                        title='账户安全'
+                        hint='凭据保存在数据库中，只有第一次部署才会使用默认账号密码，之后重新部署不会覆盖；留空表示不修改。'
+                    >
                         <TextField
                             margin='dense'
+                            size='small'
                             id='auth-username'
                             label='管理员账号'
                             type='text'
@@ -543,47 +624,55 @@ export default function SettingsDialog({
                             onChange={e => onAuthChange("username", e.target.value)}
                             placeholder='留空则不修改账号'
                         />
-                        <TextField
-                            margin='dense'
-                            id='auth-current-password'
-                            label='当前密码'
-                            type='password'
-                            fullWidth
-                            variant='outlined'
-                            value={auth.currentPassword}
-                            onChange={e => onAuthChange("currentPassword", e.target.value)}
-                            placeholder='修改账号或密码时必须填写'
-                        />
-                        <TextField
-                            margin='dense'
-                            id='auth-new-password'
-                            label='新密码'
-                            type='password'
-                            fullWidth
-                            variant='outlined'
-                            value={auth.newPassword}
-                            onChange={e => onAuthChange("newPassword", e.target.value)}
-                            placeholder='留空则不修改密码'
-                        />
-                    </Box>
+                        <TwoCol>
+                            <TextField
+                                margin='dense'
+                                size='small'
+                                id='auth-current-password'
+                                label='当前密码'
+                                type='password'
+                                fullWidth
+                                variant='outlined'
+                                value={auth.currentPassword}
+                                onChange={e => onAuthChange("currentPassword", e.target.value)}
+                                placeholder='修改账号或密码时必填'
+                            />
+                            <TextField
+                                margin='dense'
+                                size='small'
+                                id='auth-new-password'
+                                label='新密码'
+                                type='password'
+                                fullWidth
+                                variant='outlined'
+                                value={auth.newPassword}
+                                onChange={e => onAuthChange("newPassword", e.target.value)}
+                                placeholder='留空则不修改密码'
+                            />
+                        </TwoCol>
+                    </Section>
 
-                    <TextField
-                        margin='dense'
-                        id='site-custom-css'
-                        name='site.customCss'
-                        label='自定义CSS'
-                        type='text'
-                        fullWidth
-                        multiline
-                        rows={6}
-                        variant='outlined'
-                        value={tempConfigs["site.customCss"]}
-                        onChange={onConfigInputChange}
-                        placeholder='/* 自定义样式 */\nbody { }'
-                    />
+                    {/* 8. 高级 */}
+                    <Section title='高级' hint='自定义样式会直接注入页面，写错了可能影响显示。'>
+                        <TextField
+                            margin='dense'
+                            size='small'
+                            id='site-custom-css'
+                            name='site.customCss'
+                            label='自定义CSS'
+                            type='text'
+                            fullWidth
+                            multiline
+                            rows={5}
+                            variant='outlined'
+                            value={tempConfigs["site.customCss"]}
+                            onChange={onConfigInputChange}
+                            placeholder={'/* 自定义样式 */\nbody { }'}
+                        />
+                    </Section>
                 </Stack>
             </DialogContent>
-            <DialogActions sx={{ px: 3, pb: 3 }}>
+            <DialogActions sx={{ px: 3, pb: 3, pt: 1 }}>
                 <Button onClick={onClose} variant='outlined'>
                     取消
                 </Button>

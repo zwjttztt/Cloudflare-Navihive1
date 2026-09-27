@@ -1,11 +1,9 @@
 // src/components/MoreMenu.tsx
 // 顶栏「更多选项」的下拉菜单。原来整块内联在 App.tsx 里（168 行），
 // 拆出来之后 App 只负责把各个动作传进来，菜单本身的排版与分组顺序留在这里。
-import { Menu, MenuItem, ListItemIcon, ListItemText, Divider, Switch } from "@mui/material";
+import { Menu, MenuItem, ListItemIcon, ListItemText, Divider } from "@mui/material";
 import SettingsIcon from "@mui/icons-material/Settings";
 import SortIcon from "@mui/icons-material/Sort";
-import BlurOnIcon from "@mui/icons-material/BlurOn";
-import BlurOffIcon from "@mui/icons-material/BlurOff";
 import InstallDesktopIcon from "@mui/icons-material/InstallDesktop";
 import StarIcon from "@mui/icons-material/Star";
 import InsightsIcon from "@mui/icons-material/Insights";
@@ -23,8 +21,6 @@ export interface MoreMenuProps {
     onClose: () => void;
     onOpenConfig: () => void;
     onStartGroupSort: () => void;
-    glassEffects: boolean;
-    onGlassEffectsChange: (enabled: boolean) => void;
     canInstall: boolean;
     onInstallApp: () => void;
     favoritesEnabled: boolean;
@@ -46,8 +42,6 @@ export default function MoreMenu({
     onClose,
     onOpenConfig,
     onStartGroupSort,
-    glassEffects,
-    onGlassEffectsChange,
     canInstall,
     onInstallApp,
     favoritesEnabled,
@@ -87,33 +81,8 @@ export default function MoreMenu({
                             <ListItemText>编辑排序</ListItemText>
                         </MenuItem>
                         <Divider />
-                        {/* 毛玻璃特效：一个就地开关，点了马上生效。
-                            关掉时负责独有合成层 + 每帧背景采样的 backdrop-filter 会被整站摘掉，
-                            滚动更省，也不会再出现圆角边缘那一圈暗边。 */}
-                        <MenuItem
-                            onClick={() => onGlassEffectsChange(!glassEffects)}
-                            aria-label='毛玻璃特效'
-                        >
-                            <ListItemIcon>
-                                {glassEffects ? (
-                                    <BlurOnIcon
-                                        fontSize='small'
-                                        color='primary'
-                                    />
-                                ) : (
-                                    <BlurOffIcon fontSize='small' />
-                                )}
-                            </ListItemIcon>
-                            <ListItemText>毛玻璃特效</ListItemText>
-                            <Switch
-                                checked={glassEffects}
-                                size='small'
-                                onChange={e => onGlassEffectsChange(e.target.checked)}
-                                // 挡掉冒泡，否则点开关会同时触发菜单项的 onClick，切两下等于没切
-                                onClick={e => e.stopPropagation()}
-                                slotProps={{ input: { "aria-label": "毛玻璃特效" } }}
-                            />
-                        </MenuItem>
+                        {/* 毛玻璃总开关已挪进「网站设置 → 背景与毛玻璃」，跟模糊强度滑块放在一起，
+                            菜单本身也不再需要就地开关。 */}
                         {/* 装到桌面：只有浏览器真的给了安装事件时才出现
                             （Chrome/Edge 认为用户用得够多才会抛 beforeinstallprompt） */}
                         {canInstall && (

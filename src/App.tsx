@@ -3521,8 +3521,6 @@ function App() {
                                         onClose={handleMenuClose}
                                         onOpenConfig={handleOpenConfig}
                                         onStartGroupSort={startGroupSort}
-                                        glassEffects={glassEffects}
-                                        onGlassEffectsChange={setGlassEffects}
                                         canInstall={canInstall}
                                         onInstallApp={() => void handleInstallApp()}
                                         favoritesEnabled={favoritesEnabled}
