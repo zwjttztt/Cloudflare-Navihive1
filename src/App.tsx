@@ -179,6 +179,8 @@ const DEFAULT_WEBDAV_CONFIG: WebDavConfig = {
     username: "",
     password: "",
     path: "navihive-backup",
+    // 默认不允许内网地址：WebDAV 多半是公网网盘，挡内网是白赚的防护
+    allowPrivateNetwork: false,
 };
 
 // WebDAV 配置在 configs 表中的键名前缀
@@ -836,6 +838,9 @@ function App() {
                 const field = key.slice(WEBDAV_CONFIG_PREFIX.length);
                 if (field === "url" || field === "username" || field === "password" || field === "path") {
                     nextWebdav[field] = value;
+                } else if (field === "allowPrivateNetwork") {
+                    // 布尔按项目惯例存 "1"/"0"，不是 "true"/"false"
+                    nextWebdav.allowPrivateNetwork = value === "1";
                 }
             } else {
                 nextConfigs[key] = value;
@@ -2176,6 +2181,10 @@ function App() {
             await api.setConfig(`${WEBDAV_CONFIG_PREFIX}username`, config.username);
             await api.setConfig(`${WEBDAV_CONFIG_PREFIX}password`, config.password);
             await api.setConfig(`${WEBDAV_CONFIG_PREFIX}path`, config.path || DEFAULT_WEBDAV_CONFIG.path);
+            await api.setConfig(
+                `${WEBDAV_CONFIG_PREFIX}allowPrivateNetwork`,
+                config.allowPrivateNetwork ? "1" : "0"
+            );
             setWebdavConfig(config);
         } catch (error) {
             console.error("保存 WebDAV 配置失败:", error);

@@ -15,6 +15,23 @@ export interface WebDavConfig {
     username: string;
     password: string;
     path: string;
+    /**
+     * 允许指向内网 / 本机地址（家里 NAS 的 192.168.x.x、xxx.local 之类）。
+     * 默认关闭：WebDAV 地址由管理员配置，但账号一旦被攻破就可能被改成内网地址，
+     * 让 Worker 把 Basic 凭据打到内网服务上。确实要备份到内网 NAS 时才打开。
+     */
+    allowPrivateNetwork?: boolean;
+}
+
+/** 布尔配置在 configs 表里按项目惯例存 "1"/"0" */
+function parseBoolFlag(value: unknown, fallback = false): boolean {
+    if (typeof value === "boolean") return value;
+    if (typeof value === "string") {
+        const v = value.trim();
+        if (v === "1" || v === "true") return true;
+        if (v === "0" || v === "false" || v === "") return false;
+    }
+    return fallback;
 }
 
 export interface WebDavFile {
@@ -53,6 +70,11 @@ export async function resolveWebDavConfig(
         username: pick(payload.username, stored["webdav.username"] || ""),
         password: pick(payload.password, stored["webdav.password"] || ""),
         path: pick(payload.path, stored["webdav.path"] || "") || DEFAULT_WEBDAV_PATH,
+        // 请求体带就用请求体的（前端开关刚拨的那一下），否则用库里存的
+        allowPrivateNetwork: parseBoolFlag(
+            payload.allowPrivateNetwork,
+            parseBoolFlag(stored["webdav.allowPrivateNetwork"], false)
+        ),
     };
 }
 
@@ -71,6 +93,7 @@ export function configFromStored(stored: Record<string, string>): WebDavConfig {
         username: stored["webdav.username"] || "",
         password: stored["webdav.password"] || "",
         path: stored["webdav.path"] || DEFAULT_WEBDAV_PATH,
+        allowPrivateNetwork: parseBoolFlag(stored["webdav.allowPrivateNetwork"], false),
     };
 }
 
@@ -138,7 +161,9 @@ function base64Encode(input: string): string {
     return btoa(binary);
 }
 
-function buildWebDavFolderUrl(config: WebDavConfig): string {
+// 导出供单测用：内网豁免的判定必须能被断言，不然「默认挡、开了放」这条约束
+// 只能靠人肉记着，改坏了没人拦得住。
+export function buildWebDavFolderUrl(config: WebDavConfig): string {
     const base = (config.url || "").trim().replace(/\/+$/, "");
     if (!base) {
         throw new Error("请先填写 WebDAV 服务器地址");
@@ -156,8 +181,9 @@ function buildWebDavFolderUrl(config: WebDavConfig): string {
     } catch {
         throw new Error("WebDAV 服务器地址不合法");
     }
-    if (isBlockedHost(parsed.hostname)) {
-        throw new Error("WebDAV 服务器地址不允许指向内网或本机");
+    // 开了 allowPrivateNetwork 才放行内网：默认一律挡，改配置也挡得住误操作
+    if (!config.allowPrivateNetwork && isBlockedHost(parsed.hostname)) {
+        throw new Error("WebDAV 服务器地址不允许指向内网或本机（如需备份到家庭 NAS，请打开「允许内网地址」）");
     }
 
     const folder = (config.path || DEFAULT_WEBDAV_PATH).trim().replace(/^\/+|\/+$/g, "");

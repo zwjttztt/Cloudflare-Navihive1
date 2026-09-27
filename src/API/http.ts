@@ -74,6 +74,12 @@ export interface WebDavConfig {
     username: string;
     password: string;
     path: string;
+    /**
+     * 允许 WebDAV 服务器指向内网 / 本机地址（如家里 NAS 的 192.168.x.x、xxx.local）。
+     * 默认关闭 —— Worker 代发请求前会挡掉内网地址，防止账号一旦被攻破就把 Basic 凭据
+     * 打到内网服务上。只有确认 WebDAV 就在自己内网时才打开。
+     */
+    allowPrivateNetwork?: boolean;
 }
 
 // WebDAV 远端备份文件信息

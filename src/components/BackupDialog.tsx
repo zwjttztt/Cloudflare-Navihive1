@@ -433,6 +433,28 @@ export default function BackupDialog({
                         <FormControlLabel
                             control={
                                 <Switch
+                                    id='webdav-allow-private'
+                                    size='small'
+                                    checked={!!config.allowPrivateNetwork}
+                                    onChange={e =>
+                                        setConfig(c => ({ ...c, allowPrivateNetwork: e.target.checked }))
+                                    }
+                                    slotProps={{ input: { "aria-label": "允许内网地址" } }}
+                                />
+                            }
+                            label='允许内网地址'
+                        />
+                        {/* 这条文案是静态的（不像自动备份那条会挂「上次备份：xxx」），
+                            所以不用 minHeight 占位防跳，能省一点高度 */}
+                        <Typography variant='caption' color='text.secondary' display='block'>
+                            默认关闭：服务端会拒绝指向内网 / 本机的地址。备份到家里 NAS（192.168.x.x、xxx.local）时才需要打开。
+                        </Typography>
+                    </Box>
+
+                    <Box>
+                        <FormControlLabel
+                            control={
+                                <Switch
                                     id='webdav-auto-backup'
                                     size='small'
                                     checked={autoBackup}
@@ -699,13 +721,14 @@ export default function BackupDialog({
 
             {/* 内容区高度写死：备份页和恢复页、以及开关两态的高矮都不一样，
                 放着让它自己撑，就会出现「一点开关弹窗跳一下」。固定后超出部分在区内滚动。
-                590 是按「备份」页的自然高度（实测 567）留了点余量定的；
-                「恢复」页内容只有一半高，靠下面那块列表区 flex 撑满，不留大片空白。 */}
+                655 是按「备份」页加了「允许内网地址」开关后的自然高度留的余量；
+                「恢复」页内容只有一半高，靠下面那块列表区 flex 撑满，不留大片空白。
+                再往备份页加控件时，这里的数值要跟着涨，否则内容区会冒出滚动条
+                （本机冒烟有一条「内容不溢出」的断言守着，见 harness/ui-smoke.mjs）。 */}
             <DialogContent
                 sx={{
                     pt: 1.5,
-                    // 590 是「备份」页的自然高度（实测 567）+ 余量；矮屏上用 min() 让位给视口
-                    height: { xs: "58vh", sm: "min(590px, 72vh)" },
+                    height: { xs: "58vh", sm: "min(655px, 72vh)" },
                     display: "flex",
                     flexDirection: "column",
                 }}
