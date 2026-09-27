@@ -40,6 +40,8 @@ import { usePwaInstall } from "./hooks/usePwaInstall";
 import { useHistoryStack } from "./hooks/useHistoryStack";
 import { useNotify } from "./hooks/useNotify";
 import { useSites } from "./hooks/useSites";
+import { useMultiSelect } from "./hooks/useMultiSelect";
+import { useAppDialogs } from "./hooks/useAppDialogs";
 import { wrapMutations, installOnlineListener, flushOfflineQueue, pendingCount, type MutationApi } from "./API/offlineQueue";
 import { buildFavoritesGroup, deriveDisplayedGroups } from "./utils/siteView";
 import {
@@ -56,7 +58,7 @@ import HeaderClock from "./components/HeaderClock";
 const VisitsDialog = lazy(() => import("./components/VisitsDialog"));
 import EmptyArt from "./components/EmptyArt";
 import { COLLAPSED_EVENT, readCollapsedGroupIds, setAllCollapsed } from "./utils/collapse";
-import { DuplicateHit, findDuplicateSite } from "./utils/duplicate";
+import { findDuplicateSite } from "./utils/duplicate";
 import { loadPinyinMatcher } from "./utils/pinyin";
 import {
     FRESH_WINDOW_MS,
@@ -587,45 +589,45 @@ function App() {
     }, [pinyinSearch]);
     const usePinyin = pinyinSearch && pinyinReady;
 
-    // 批量多选：进入后点卡片是「勾选」而不是打开网页
-    const [multiSelect, setMultiSelect] = useState(false);
-    const [selectedIds, setSelectedIds] = useState<number[]>([]);
-    // 批量删除前的确认弹窗
-    const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
-    // 重复网址确认：撞车时先问一句，run 是用户确认后真正要执行的动作
-    const [dupPrompt, setDupPrompt] = useState<{
-        url: string;
-        hit: DuplicateHit;
-        run: () => void | Promise<void>;
-    } | null>(null);
+    // 批量多选：进入后点卡片是「勾选」而不是打开网页。
+    // 状态收进 useMultiSelect；批量动作（星标/标签/移动/删除）仍留在本组件——
+    // 它们各自牵着通知/撤销/分组数据等多个子系统，收进 hook 只会变成上帝 hook。
+    const {
+        multiSelect,
+        selectedIds,
+        bulkDeleteOpen,
+        setMultiSelect,
+        setBulkDeleteOpen,
+        exitMultiSelect,
+        toggleSelect,
+        clearSelection,
+    } = useMultiSelect();
+    // App 级弹窗的开关集中收进 useAppDialogs（命令面板/访问统计/快捷键/
+    // 书签导入/标签管理/重复网址确认），各自的数据与提交逻辑仍留在本组件。
+    const {
+        commandOpen,
+        openVisits,
+        openShortcuts,
+        bookmarkOpen,
+        tagManagerOpen,
+        dupPrompt,
+        setCommandOpen,
+        setOpenVisits,
+        setOpenShortcuts,
+        setBookmarkOpen,
+        setTagManagerOpen,
+        setDupPrompt,
+    } = useAppDialogs();
     // 筛选：只看星标 + 标签（可多选，取交集）
     const [starFilter, setStarFilter] = useState(false);
     const [activeTags, setActiveTags] = useState<string[]>([]);
-    // 「标签管理」弹窗是否打开
-    const [tagManagerOpen, setTagManagerOpen] = useState(false);
+    // 「标签管理」弹窗的开关在 useAppDialogs 里
     // 「只看失效」：失效检测跑完后可以一键把可疑链接筛出来
     const [deadOnly, setDeadOnly] = useState(false);
 
-    // 退出多选模式时顺手清掉勾选，避免下次进来还残留上一次的选择
-    const exitMultiSelect = useCallback(() => {
-        setMultiSelect(false);
-        setSelectedIds([]);
-    }, []);
+    // 退出多选 / 勾选切换的逻辑在 useMultiSelect 里
 
-    const toggleSelect = useCallback((siteId: number) => {
-        setSelectedIds(prev =>
-            prev.includes(siteId) ? prev.filter(id => id !== siteId) : [...prev, siteId]
-        );
-    }, []);
-
-    // 命令面板（Ctrl / Cmd + K）
-    const [commandOpen, setCommandOpen] = useState(false);
-    // 访问统计弹窗（热力图 + Top5）
-    const [openVisits, setOpenVisits] = useState(false);
-    // 快捷键说明表（按 ? 打开）
-    const [openShortcuts, setOpenShortcuts] = useState(false);
-    // 浏览器书签导入
-    const [bookmarkOpen, setBookmarkOpen] = useState(false);
+    // 命令面板 / 访问统计 / 快捷键 / 书签导入的开关在 useAppDialogs 里
     // 分组锚点导航：当前视口里的分组
     const [activeGroupId, setActiveGroupId] = useState<number | null>(null);
     // 向下滚动后头部收紧，让出更多内容空间
@@ -1399,9 +1401,9 @@ function App() {
     const bulkDelete = useCallback(async () => {
         const ids = [...selectedIds];
         setBulkDeleteOpen(false);
-        setSelectedIds([]);
+        clearSelection();
         await handleSitesDelete(ids);
-    }, [selectedIds, handleSitesDelete]);
+    }, [selectedIds, handleSitesDelete, clearSelection]);
 
     // 更新分组（引用稳定，配合 GroupCard 的 memo 减少重渲染）
     const handleGroupUpdate = useCallback(
