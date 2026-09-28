@@ -444,7 +444,7 @@ export default function BackupDialog({
     };
 
     const renderBackupTab = () => (
-        <Stack spacing={1} sx={{ mt: 0.5, flex: 1, minHeight: 0 }}>
+        <Stack spacing={0.75} sx={{ mt: 0.5, flex: 1, minHeight: 0 }}>
             <Box>
                 {/* 主按钮跟标题平齐：这块的操作就一个，放在区块底部反而要往下找 */}
                 <Stack direction='row' alignItems='center' justifyContent='space-between' spacing={1}>
@@ -479,7 +479,7 @@ export default function BackupDialog({
                         下载备份文件
                     </Button>
                 </Stack>
-                <Typography variant='caption' color='text.secondary' sx={{ display: "block", mt: 0.25, mb: 0.75 }}>
+                <Typography variant='caption' color='text.secondary' sx={{ display: "block", mt: 0.25, mb: 0.5 }}>
                     导出分组、站点、网站设置，以及本机的星标与标签。
                 </Typography>
 
@@ -488,7 +488,7 @@ export default function BackupDialog({
                     sx={{
                         mb: 1,
                         px: 1,
-                        py: 0.75,
+                        py: 0.5,
                         borderRadius: 2,
                         border: 1,
                         // 带凭据是「有风险」的状态，边框用警告色提示一下
@@ -612,11 +612,11 @@ export default function BackupDialog({
                 <Typography variant='subtitle2' fontWeight='600' gutterBottom>
                     备份到 WebDAV
                 </Typography>
-                <Typography variant='caption' color='text.secondary' sx={{ display: "block", mb: 1 }}>
+                <Typography variant='caption' color='text.secondary' sx={{ display: "block", mb: 0.75 }}>
                     配置存在服务器，由服务端代理上传；目录不存在会自动创建，自动备份只保留最新一份，手动备份全部保留。
                 </Typography>
 
-                <Stack spacing={1}>
+                <Stack spacing={0.75}>
                     <TextField
                         label='WebDAV 地址'
                         placeholder='https://dav.jianguoyun.com/dav/'
@@ -715,9 +715,8 @@ export default function BackupDialog({
                         }}
                     />
                     <Typography variant='caption' color='text.secondary' display='block' sx={{ mt: -0.5 }}>
-                        设了就用它加密上传（恢复时要填同一个密码，密码无法找回）；留空则明文上传。
-                        手动备份、每周自动备份、从远端恢复都用它，与服务端的 AUTH_SECRET 无关。
-                        点「测试连接并保存」会把它存到服务器。
+                        设了就用它加密上传（恢复时要填同一个密码，无法找回）；留空则明文上传。
+                        手动 / 每周自动 / 远端恢复共用，与服务端的 AUTH_SECRET 无关。
                     </Typography>
 
                     <Box>
@@ -812,7 +811,7 @@ export default function BackupDialog({
             {/* 滚动内容末尾的留白：矮视口下自动滚到底后，按钮行不贴内容区底边。
                 必须是真实元素——容器 padding 会被 flex 溢出吃掉，margin 不计入
                 可滚动区域，只有占位元素能稳定撑出这段空间 */}
-            <Box sx={{ height: 24, flexShrink: 0 }} />
+            <Box sx={{ height: 12, flexShrink: 0 }} />
         </Stack>
     );
 
@@ -1033,7 +1032,10 @@ export default function BackupDialog({
                     // 超出屏幕，底部按钮区和页面底栏叠在一起。
                     // 高度写在这里，弹窗在任何视口下上下至少各留 24px，永远不顶满；
                     // 内容区 flex 填剩余高度，内容装不下时在区内滚动。
-                    height: { xs: "auto", sm: "min(760px, calc(100% - 48px))" },
+                    // 上限取 880：备份页自然高 ~640（含末尾留白），扣掉标题/标签页/
+                    // 按钮行约 166px 后需要 ~806 才装得下，880 让 1000px 左右的常见
+                    // 视口完全不出滚动条；更矮的视口仍在区内滚动，外框不超屏幕。
+                    height: { xs: "auto", sm: "min(880px, calc(100% - 48px))" },
                     maxHeight: { sm: "calc(100% - 48px)" },
                 },
             }}
@@ -1060,9 +1062,10 @@ export default function BackupDialog({
             </Tabs>
 
             {/* 内容区不再写死高度：sm 以上由弹窗 paper（定高）扣掉标题/标签页/按钮区
-                后 flex 填满；xs 维持 58vh。备份页内容已紧凑化（自然高 ~510），
-                常见视口（CSS 高 ≥ 760px）都装得下、不出滚动条；更矮的视口在区内滚动，
-                弹窗外框依然不会超出屏幕。
+                后 flex 填满；xs 维持 58vh。
+                备份页自然高实测 ~640（含末尾留白）：CSS 视口 ≥ 950px 时外框取到 880，
+                扣掉约 166px 的标题/标签/按钮后还有 ~714，整页装得下、不出滚动条；
+                更矮的视口（如 900px 只能给到 852）在区内滚动，外框依然不超屏幕。
                 再往备份页加控件时先跑 harness/backup-dialog-probe.mjs 看自然高度。 */}
             <DialogContent
                 sx={{
