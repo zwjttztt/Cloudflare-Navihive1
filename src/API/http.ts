@@ -338,6 +338,8 @@ export class NavigationAPI {
     private seedUsername: string;
     private seedPassword: string;
     private secret: string;
+    // AUTH_SECRET 是否真正配置：未配置且启用鉴权时 fail-closed（见 verifyToken / generateToken）
+    private secretConfigured: boolean;
     // 恢复公钥（Ed25519 raw，base64url）：仅持公钥，私钥离线保管
     private recoveryPubKey: string;
     // 令牌版本缓存（模块内按 isolate 读一次即可，改密时失效）
@@ -377,7 +379,18 @@ export class NavigationAPI {
         this.authEnabled = env.AUTH_ENABLED === "true";
         this.seedUsername = env.AUTH_USERNAME || "";
         this.seedPassword = env.AUTH_PASSWORD || "";
-        this.secret = env.AUTH_SECRET || "默认密钥，建议在生产环境中设置";
+        // AUTH_SECRET：启用鉴权却没配 → fail-closed（空密钥，令牌签发/校验一律拒绝），
+        // 不再降级到公开的硬编码默认密钥；鉴权关闭时安全边界不存在，用固定串签发 guest 令牌。
+        if (env.AUTH_SECRET) {
+            this.secret = env.AUTH_SECRET;
+            this.secretConfigured = true;
+        } else if (this.authEnabled) {
+            this.secret = "";
+            this.secretConfigured = false;
+        } else {
+            this.secret = "默认密钥，建议在生产环境中设置";
+            this.secretConfigured = false;
+        }
         this.recoveryPubKey = env.AUTH_RECOVERY_PUBLIC_KEY || "";
     }
 
@@ -1106,6 +1119,14 @@ export class NavigationAPI {
             };
         }
 
+        // H1 fail-closed：启用鉴权却没配 AUTH_SECRET，登录无法签发令牌
+        if (this.authEnabled && !this.secretConfigured) {
+            return {
+                success: false,
+                message: "服务器未配置 AUTH_SECRET，无法签发登录令牌，请联系管理员",
+            };
+        }
+
         await this.migrate();
 
         const user = await this.findUserByUsername(loginRequest.username);
@@ -1516,6 +1537,10 @@ export class NavigationAPI {
         if (!this.authEnabled) {
             return { valid: true };
         }
+        // H1 fail-closed：启用鉴权但 AUTH_SECRET 缺失，拒绝一切令牌（避免被公开默认密钥伪造）
+        if (!this.secretConfigured) {
+            return { valid: false };
+        }
         // 现在会真正验签（HMAC-SHA256）+ 校验过期 + 校验令牌版本，
         // 伪造的 token 直接被拒，改密后旧 token 也立即失效。
         const tv = await this.getTokenVersion();
@@ -1536,6 +1561,10 @@ export class NavigationAPI {
         payload: Record<string, unknown>,
         ttlSeconds: number = DEFAULT_TOKEN_TTL
     ): Promise<string> {
+        // H1 fail-closed：启用鉴权却没配 AUTH_SECRET，拒绝签发令牌
+        if (this.authEnabled && !this.secretConfigured) {
+            throw new Error("AUTH_SECRET 未配置，拒绝签发令牌");
+        }
         // 嵌入令牌版本：改密后所有旧 token（版本偏低）在 verifyToken 处被拒。
         // jti 是这张令牌的唯一编号，退出登录时按它拉黑 —— 让「登出」真的能让令牌失效。
         const tv = await this.getTokenVersion();
@@ -2052,16 +2081,23 @@ export class NavigationAPI {
 
             let ok = true;
             if (shared.length > 0) {
-                const statements = shared.map(([key, value]) =>
-                this.db
-                    .prepare(
-                        `INSERT INTO configs (key, value, updated_at)
-                        VALUES (?, ?, CURRENT_TIMESTAMP)
-                        ON CONFLICT(key)
-                        DO UPDATE SET value = ?, updated_at = CURRENT_TIMESTAMP`
-                    )
-                    .bind(key, value, value)
-            );
+                // M2：与单键 setConfig 一致，口令类配置入库前加密，避免认证用户走批写路由把明文落库
+                const statements: D1PreparedStatement[] = [];
+                for (const [key, value] of shared) {
+                    const stored = isEncryptedConfigKey(key)
+                        ? await encryptSecret(value, this.secret)
+                        : value;
+                    statements.push(
+                        this.db
+                            .prepare(
+                                `INSERT INTO configs (key, value, updated_at)
+                                VALUES (?, ?, CURRENT_TIMESTAMP)
+                                ON CONFLICT(key)
+                                DO UPDATE SET value = ?, updated_at = CURRENT_TIMESTAMP`
+                            )
+                            .bind(key, stored, stored)
+                    );
+                }
                 const results = await this.db.batch<unknown>(statements);
                 ok = results.every(result => result.success);
             }
@@ -2156,7 +2192,9 @@ export class NavigationAPI {
             this.queryExportBundle()
         );
 
-        const withCreds = configs[BACKUP_CREDENTIALS_CONFIG] !== "false";
+        // M4：默认不含站点账号密码（明文 JSON 备份会被 WebDAV 同步到网盘，凭据跟着走风险高）。
+        // 只有用户主动开启「备份含登录凭据」（backup.includeCredentials=true）才带。
+        const withCreds = configs[BACKUP_CREDENTIALS_CONFIG] === "true";
 
         return {
             groups,
@@ -2335,10 +2373,13 @@ export function normalizeImportData(data: ExportData | Record<string, unknown>):
     // 导入这条路径完全绕开表单校验：备份文件可能被手改过、也可能是很老的版本。
     // 入库前统一规范化（补 https:// / 挡危险协议）；规范化不过的直接把链接清空，
     // 卡片会退化成「没有链接」，而不是「点一下执行脚本」。
-    const sites = (flatSites.length > 0 ? flatSites : nestedSites).map(site => {
-        const result = normalizeUrl(site.url || "");
-        return result.ok ? { ...site, url: result.url } : { ...site, url: "" };
-    });
+        const sites = (flatSites.length > 0 ? flatSites : nestedSites).map(site => {
+            const result = normalizeUrl(site.url || "");
+            const url = result.ok ? result.url : "";
+            // L1：导入路径绕开表单校验，图标同样挡掉 javascript:/vbscript:/file:/data:text/html 等
+            const icon = sanitizeIconUrl(site.icon || "");
+            return { ...site, url, icon };
+        });
 
     return {
         groups,
@@ -2371,6 +2412,20 @@ export function sanitizeLocalPrefs(input: LocalPrefsBackup): LocalPrefsBackup {
     }
 
     return { starred, tags };
+}
+
+/**
+ * 清洗导入备份里的图标 URL：只放行 http(s) / data:image / 相对路径，
+ * 丢弃 javascript:/vbscript:/file:/data:text/html 等可执行/危险协议。
+ * 图标只作 <img src> 渲染，风险本就低，这里只是和 url 同样做一层规范化。
+ */
+export function sanitizeIconUrl(icon: string): string {
+    const v = (icon || "").trim();
+    if (!v) return "";
+    // 挡掉可执行/危险协议：javascript:/vbscript:/file: 以及 data:text/html（HTML 文档可带脚本）。
+    // 放行 http(s)、data:image（头像 base64）、以及相对路径（/api/icon?... 这类图标代理）。
+    if (/^(javascript|vbscript|file|data:text\/html)/i.test(v)) return "";
+    return v;
 }
 
 // 创建 API 辅助函数

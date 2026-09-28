@@ -2349,9 +2349,9 @@ function App() {
                     ...site,
                     // 与后端 /api/export、每周定时备份用同一个开关：
                     // 关掉之后导出文件里不带网站账号密码
-                    ...(configs[BACKUP_CREDENTIALS_CONFIG] === "false"
-                        ? { username: "", password: "" }
-                        : {}),
+                    ...(configs[BACKUP_CREDENTIALS_CONFIG] === "true"
+                        ? {}
+                        : { username: "", password: "" }),
                 }))
             ),
             configs: exportConfigs,
@@ -2460,7 +2460,7 @@ function App() {
      * 同样是乐观更新：开关先动、提示先弹，写库失败再回滚。
      */
     const handleToggleIncludeCredentials = async (enabled: boolean) => {
-        const previous = configs[BACKUP_CREDENTIALS_CONFIG] ?? "true";
+        const previous = configs[BACKUP_CREDENTIALS_CONFIG] ?? "false";
         const next = enabled ? "true" : "false";
         setConfigs(prev => ({ ...prev, [BACKUP_CREDENTIALS_CONFIG]: next }));
         notify(
@@ -4157,7 +4157,7 @@ function App() {
                         onRequestImportPreview={requestImportPreview}
                         onNotify={notify}
                         onClose={handleCloseBackup}
-                        includeCredentials={configs[BACKUP_CREDENTIALS_CONFIG] !== "false"}
+                        includeCredentials={configs[BACKUP_CREDENTIALS_CONFIG] === "true"}
                         onIncludeCredentialsChange={handleToggleIncludeCredentials}
                     />
                     </Suspense>

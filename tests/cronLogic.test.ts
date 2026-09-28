@@ -198,7 +198,16 @@ function mockFetch(handler: (url: string, init: { method: string }) => { status:
         const u = typeof url === "string" ? url : (url as URL).href;
         const method = (init?.method as string) || "GET";
         calls.push({ url: u, method });
-        return handler(u, { method });
+        const res = await handler(u, { method });
+        const status = res.status;
+        // safeFetch 依赖真实的 Response 形状：ok（2xx）、headers.get（重定向 Location）
+        return {
+            status,
+            ok: status >= 200 && status < 300,
+            headers: { get: () => null },
+            body: null,
+            async cancel() {},
+        } as unknown as Response;
     };
     return {
         calls,

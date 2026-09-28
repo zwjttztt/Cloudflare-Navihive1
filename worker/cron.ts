@@ -13,6 +13,7 @@
 import { NavigationAPI, type Site } from "../src/API/http";
 import type { Env } from "./types";
 import { configFromStored, readAllConfigs, runWebDavBackup } from "./webdav";
+import { safeFetch } from "./safeFetch";
 import {
     HEALTH_KEY,
     PROBE_TIMEOUT_MS,
@@ -86,34 +87,50 @@ export async function runWeeklyBackup(api: SchedulerDB): Promise<void> {
 /**
  * 探活单个链接。HEAD 优先（省流量）；服务器不支持 HEAD（405/501）时退回 GET，
  * 拿到响应头立刻 cancel 掉 body，避免整页下载。死活判定交给 isAliveHttpStatus。
+ *
+ * M3：全程走 safeFetch，而不是裸 fetch + redirect:"follow"。裸 fetch 跟随重定向时
+ * 不会重验目标主机，攻击者可借 302 把 Worker 引到 169.254.169.254 / 内网（SSRF）。
+ * safeFetch 每跳重验 scheme/端口/主机名黑名单、手动跟随重定向（上限 4 跳），
+ * 与 meta / icon / webdav 共用同一套出站安全策略。
  */
 export async function probeUrl(url: string): Promise<boolean> {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
+    let target: URL;
     try {
-        let res = await fetch(url, {
-            method: "HEAD",
-            redirect: "follow",
-            signal: controller.signal,
-            headers: {
-                "User-Agent":
-                    "Mozilla/5.0 (compatible; NavihiveBot/1.0; +https://github.com/zwjttztt/Cloudflare-Navihive1)",
-            },
-        });
-        if (res.status === 405 || res.status === 501) {
-            res = await fetch(url, {
-                method: "GET",
-                redirect: "follow",
-                signal: controller.signal,
-                headers: { Range: "bytes=0-0" },
-            });
-        }
-        return isAliveHttpStatus(res.status);
+        target = new URL(url);
     } catch {
         return false;
-    } finally {
-        clearTimeout(timer);
     }
+
+    const ua = {
+        "User-Agent":
+            "Mozilla/5.0 (compatible; NavihiveBot/1.0; +https://github.com/zwjttztt/Cloudflare-Navihive1)",
+    };
+
+    const head = await safeFetch(target, {
+        timeoutMs: PROBE_TIMEOUT_MS,
+        headers: ua,
+        fetchInit: { method: "HEAD" },
+    });
+    if (head.ok) {
+        return isAliveHttpStatus(head.response.status);
+    }
+    // HEAD 不被支持（405/501）时退回 GET；其它非 2xx 直接按状态码判定死活。
+    if (head.kind === "http" && (head.upstreamStatus === 405 || head.upstreamStatus === 501)) {
+        const get = await safeFetch(target, {
+            timeoutMs: PROBE_TIMEOUT_MS,
+            headers: { ...ua, Range: "bytes=0-0" },
+            fetchInit: { method: "GET" },
+        });
+        if (get.ok) {
+            return isAliveHttpStatus(get.response.status);
+        }
+        if (get.kind === "http") {
+            return isAliveHttpStatus(get.upstreamStatus);
+        }
+        return false;
+    }
+    // blocked / timeout / redirect 跳板：判为死链（宁可误杀，不可 SSRF）
+    return false;
 }
 
 /**
