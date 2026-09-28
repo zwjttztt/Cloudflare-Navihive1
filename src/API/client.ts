@@ -3,6 +3,7 @@ import {
     Site,
     LoginResponse,
     ExportData,
+    ImportResult,
     BootstrapData,
     SiteMeta,
     WebDavConfig,
@@ -237,7 +238,10 @@ export class NavigationClient {
         }
     }
 
-    private async request(endpoint: string, options = {}) {
+    // 默认 any：很多接口的返回形状由调用处声明，逐个写泛型参数纯属噪音；
+    // 需要明确形状的地方（如 importData 的 ImportResult）显式传泛型
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    private async request<T = any>(endpoint: string, options = {}): Promise<T> {
         const headers: Record<string, string> = {
             "Content-Type": "application/json",
         };
@@ -444,13 +448,12 @@ export class NavigationClient {
         return this.request("export");
     }
     
-    // 数据导入
-    async importData(data: ExportData): Promise<boolean> {
-        const response = await this.request("import", {
+    // 数据导入（覆盖式恢复）。回传的新旧 id 映射用来把本机的星标 / 标签翻译到新 id 上
+    async importData(data: ExportData): Promise<ImportResult> {
+        return this.request<ImportResult>("import", {
             method: "POST",
             body: JSON.stringify(data),
         });
-        return response.success;
     }
 
     // ============ WebDAV 备份（Worker 代理） ============

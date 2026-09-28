@@ -1066,8 +1066,9 @@ export default {
                         );
                     }
 
+                    // 导入结果里带新旧 id 映射（前端的星标 / 标签要翻译到新 id 上）
                     const result = await api.importData(data as ExportData);
-                    return Response.json({ success: result });
+                    return Response.json(result);
                 }
 
                 // ============ WebDAV 备份相关路由（由 Worker 代理，避免浏览器跨域限制） ============

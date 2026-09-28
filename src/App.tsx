@@ -18,7 +18,9 @@ import {
     BootstrapData,
     WebDavConfig,
     BACKUP_CREDENTIALS_CONFIG,
+    EXPORT_VERSION,
     isSecretConfigKey,
+    isUserScopedConfigKey,
     normalizeImportData,
 } from "./API/http";
 import type { AccountInfo } from "./API/http";
@@ -2373,12 +2375,16 @@ function App() {
 
     // 构造完整备份数据（分组 + 站点（含账号密码）+ 网站配置 + 本机星标/标签）
     const buildExportData = (): ExportData => {
-        const exportConfigs: Record<string, string> = {};
+        // 全站设置（标题 / 主题 / 背景…）是所有账号共用的，只有站点所有者（或未启用
+        // 登录的单账号部署）才写进备份文件：否则这份备份被别的账号恢复时，会把整站
+        // 外观一起改掉。按账号隔离的那批（webdav.*）属敏感配置，一律不进备份。
+        const mayExportShared = !currentUser || currentUser.role === "owner";
+        const sharedConfigs: Record<string, string> = {};
         Object.entries(configs).forEach(([key, value]) => {
             // 敏感配置（WebDAV 凭据）和「服务端镜像」类的大块数据（失效记录、星标标签）
             // 都不写进备份文件，规则统一在 isSecretConfigKey 里维护
             if (!isSecretConfigKey(key)) {
-                exportConfigs[key] = value;
+                sharedConfigs[key] = value;
             }
         });
 
@@ -2398,8 +2404,9 @@ function App() {
                         : { username: "", password: "" }),
                 }))
             ),
-            configs: exportConfigs,
-            version: "1.2",
+            configs: {},
+            ...(mayExportShared ? { sharedConfigs } : {}),
+            version: EXPORT_VERSION,
             exportDate: new Date().toISOString(),
             // 星标 / 标签只存在本机，数据库里没有对应字段，所以由前端附带进备份文件
             localPrefs: {
@@ -2613,13 +2620,20 @@ function App() {
     const handleImportBackup = async (data: ExportData, overwrite: boolean) => {
         try {
             const normalized = normalizeImportData(data);
-            // 站点 id 映射：覆盖恢复保留原 id，合并导入会拿到新 id，恢复星标/标签时要用
+            // 站点 id 映射：覆盖恢复由服务端重新发号并回传映射，合并导入在下面自己建，
+            // 两种模式都要它来把备份里的星标 / 标签翻译到新 id 上
             const siteIdMap = new Map<number, number>();
+            // 全站共享配置只有所有者（或未启用登录的单账号部署）能改，
+            // 免得普通账号拿别人的备份恢复时把整站外观改掉
+            const mayWriteShared = !currentUser || currentUser.role === "owner";
 
             if (overwrite) {
-                const ok = await api.importData(normalized);
-                if (!ok) {
-                    throw new Error("服务端导入失败");
+                const result = await api.importData(normalized);
+                if (!result.success) {
+                    throw new Error(result.message || "服务端导入失败");
+                }
+                for (const [oldId, newId] of Object.entries(result.siteIdMap || {})) {
+                    siteIdMap.set(Number(oldId), newId);
                 }
             } else {
                 // 合并导入：新建分组并记录新旧ID映射，再追加站点
@@ -2648,32 +2662,40 @@ function App() {
                     }
                 }
 
-                for (const [key, value] of Object.entries(normalized.configs || {})) {
-                    if (key !== "DB_INITIALIZED") {
-                        await api.setConfig(key, value);
-                    }
+                // 老备份的全站设置混在 configs 里，新备份放在 sharedConfigs，
+                // 两边都按「共享键只有所有者能写」过滤一遍
+                const configEntries: [string, string][] = [
+                    ...Object.entries(normalized.configs || {}),
+                    ...Object.entries(normalized.sharedConfigs || {}),
+                ];
+                for (const [key, value] of configEntries) {
+                    if (key === "DB_INITIALIZED") continue;
+                    if (isSecretConfigKey(key)) continue;
+                    if (!isUserScopedConfigKey(key) && !mayWriteShared) continue;
+                    await api.setConfig(key, value);
                 }
             }
 
             // 把备份里的星标 / 标签写回本机 localStorage：
-            // 覆盖恢复直接照搬（服务端保留了原 id），合并导入按新旧 id 映射翻译一遍
+            // 服务端现在会重新发号（不再保留备份里的 id），所以两种模式都按映射翻译一遍。
+            // 老备份/无 id 的备份拿不到映射，就只能照原样写回。
             const prefs = normalized.localPrefs;
-            if (prefs && (overwrite || siteIdMap.size > 0)) {
-                const remapped = overwrite
-                    ? prefs
-                    : {
-                          starred: (prefs.starred ?? []).map(id => siteIdMap.get(id)).filter(
-                              (id): id is number => typeof id === "number"
-                          ),
-                          tags: Object.entries(prefs.tags ?? {}).reduce<Record<string, string[]>>(
-                              (acc, [siteId, list]) => {
+            if (prefs) {
+                const remapped =
+                    siteIdMap.size > 0
+                        ? {
+                              starred: (prefs.starred ?? []).map(id => siteIdMap.get(id)).filter(
+                                  (id): id is number => typeof id === "number"
+                              ),
+                              tags: Object.entries(prefs.tags ?? {}).reduce<
+                                  Record<string, string[]>
+                              >((acc, [siteId, list]) => {
                                   const mapped = siteIdMap.get(Number(siteId));
                                   if (typeof mapped === "number") acc[String(mapped)] = list;
                                   return acc;
-                              },
-                              {}
-                          ),
-                      };
+                              }, {}),
+                          }
+                        : prefs;
 
                 restoreLocalPrefs(remapped, overwrite ? "replace" : "merge");
             }

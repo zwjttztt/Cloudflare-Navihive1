@@ -3,6 +3,7 @@ import {
     Site,
     LoginResponse,
     ExportData,
+    ImportResult,
     BootstrapData,
     SiteMeta,
     WebDavConfig,
@@ -463,33 +464,43 @@ export class MockNavigationClient {
     }
 
     // 数据导入
-    async importData(data: ExportData): Promise<boolean> {
+    async importData(data: ExportData): Promise<ImportResult> {
         await new Promise(resolve => setTimeout(resolve, 500));
-        
+
         try {
             // 清空现有数据
             mockSites.length = 0;
             mockGroups.length = 0;
-            
+
+            // 模拟环境里 id 原地沿用，映射就是「自己映射自己」
+            const groupIdMap: Record<string, number> = {};
+            const siteIdMap: Record<string, number> = {};
+
             // 导入分组数据
             data.groups.forEach(group => {
                 mockGroups.push({...group});
+                if (group.id !== undefined) groupIdMap[String(group.id)] = group.id;
             });
-            
+
             // 导入站点数据
             data.sites.forEach(site => {
                 mockSites.push({...site});
+                if (site.id !== undefined) siteIdMap[String(site.id)] = site.id;
             });
-            
-            // 导入配置数据
-            Object.entries(data.configs).forEach(([key, value]) => {
+
+            // 导入配置数据（共享配置从 1.3 起放在 sharedConfigs，老的还在 configs）
+            const configEntries = [
+                ...Object.entries(data.configs || {}),
+                ...Object.entries(data.sharedConfigs || {}),
+            ];
+            configEntries.forEach(([key, value]) => {
                 mockConfigs[key] = value;
             });
-            
-            return true;
+
+            return { success: true, groupIdMap, siteIdMap };
         } catch (error) {
             console.error("模拟导入数据失败:", error);
-            return false;
+            return { success: false, groupIdMap: {}, siteIdMap: {} };
         }
     }
 }

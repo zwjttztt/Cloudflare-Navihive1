@@ -130,11 +130,31 @@ export interface LocalPrefsBackup {
 export interface ExportData {
     groups: Group[];
     sites: Site[];
+    /**
+     * 跟着「账号」走的配置（目前没有非敏感的按账号配置，所以这里是空的；
+     * webdav.* 属敏感配置，与 auth.* 一样不进备份）。
+     */
     configs: Record<string, string>;
+    /**
+     * 全站共享的配置（标题 / 主题 / 背景…）。
+     * 只有「这份备份有权改全站」时才会写进文件（站点所有者，或未启用登录的单账号部署）。
+     * 老备份没有这个字段 —— 那时候全站设置混在 configs 里，导入时按同一套归属规则判断。
+     */
+    sharedConfigs?: Record<string, string>;
     version: string;
     exportDate: string;
     /** 本机偏好（星标 / 标签），老备份文件里没有这个字段 */
     localPrefs?: LocalPrefsBackup;
+}
+
+/** 导入结果：成功与否 + 新旧 id 映射（前端的星标 / 标签记的是旧 id，要翻译一遍） */
+export interface ImportResult {
+    success: boolean;
+    message?: string;
+    /** 备份里的分组 id -> 库里新分到的 id（JSON 的键一定是字符串） */
+    groupIdMap: Record<string, number>;
+    /** 备份里的站点 id -> 库里新分到的 id */
+    siteIdMap: Record<string, number>;
 }
 
 /** 站点元信息（/api/meta 抓回来的：新增卡片时一键补全用） */
@@ -2521,6 +2541,21 @@ export class NavigationAPI {
         }
     }
 
+    /**
+     * 当前身份能不能动「全站共享配置」（标题 / 主题 / 背景…）。
+     * 只有站点所有者可以；未启用登录（拿不到账号）时是单账号部署，放行。
+     *
+     * 备份的导入导出都按它判断：普通账号导出的备份里不带全站设置，拿别人的备份
+     * 恢复时也不会顺手把整站外观改掉 —— 全站外观是所有人共用的，不该被一个账号的
+     * 恢复操作覆盖。
+     */
+    async canManageSharedConfigs(): Promise<boolean> {
+        const uid = this.currentUserId;
+        if (uid === null) return true;
+        const me = await this.getUserById(uid);
+        return me?.role === "owner";
+    }
+
     // 导出所有数据
     async exportData(): Promise<ExportData> {
         await this.migrate();
@@ -2533,12 +2568,18 @@ export class NavigationAPI {
         // 只有用户主动开启「备份含登录凭据」（backup.includeCredentials=true）才带。
         const withCreds = configs[BACKUP_CREDENTIALS_CONFIG] === "true";
 
+        // 全站设置单独放 sharedConfigs，且只有所有者（或单账号部署）才写进备份文件。
+        // 否则「一个账号导出的备份被另一个账号恢复」会把全站外观改掉。
+        const sharedAllowed = await this.canManageSharedConfigs();
+
         return {
             groups,
             // 关掉「备份含登录凭据」时把账号密码抹掉：备份文件是明文 JSON，
             // 又会被 WebDAV 同步到网盘，凭据一旦进去就等于跟着走了
             sites: withCreds ? sites : stripSiteCredentials(sites),
-            configs: stripSecretConfigs(configs),
+            // 按账号隔离的那批（webdav.* 属敏感配置，已被 stripSecretConfigs 剔除）
+            configs: {},
+            ...(sharedAllowed ? { sharedConfigs: stripSecretConfigs(configs) } : {}),
             version: EXPORT_VERSION,
             exportDate: new Date().toISOString(),
         };
@@ -2582,8 +2623,19 @@ export class NavigationAPI {
         };
     }
 
-    // 导入所有数据（覆盖式恢复，尽量保留原有ID）
-    async importData(data: ExportData): Promise<boolean> {
+    /**
+     * 导入所有数据（覆盖式恢复）。
+     *
+     * 不再保留备份文件里的 id：groups / sites 的 id 是全局 AUTOINCREMENT，别的账号
+     * 很可能早就占着同样的号（owner 先建的分组就是 1、2、3），照原 id 写回去会撞主键，
+     * 整批导入直接失败 ——「A 账号的备份恢复到 B 账号」在过去基本必挂。
+     * 现在一律由数据库重新发号，再把 旧id -> 新id 的映射回传给调用方：前端的星标 /
+     * 标签是按站点 id 存在本机的，不翻译一遍就全丢了。
+     */
+    async importData(data: ExportData): Promise<ImportResult> {
+        const groupIdMap: Record<string, number> = {};
+        const siteIdMap: Record<string, number> = {};
+
         try {
             await this.migrate();
 
@@ -2604,48 +2656,82 @@ export class NavigationAPI {
                     .run();
             }
 
-            // 导入分组数据（保留原ID，保证站点归属关系不变）
+            // 导入分组：id 交给数据库分配，同时记下新旧映射
             for (const group of normalized.groups) {
-                if (group.id !== undefined) {
-                    await this.db
-                        .prepare("INSERT INTO groups (id, name, order_num, user_id) VALUES (?, ?, ?, ?)")
-                        .bind(group.id, group.name, group.order_num || 0, this.currentUserId)
-                        .run();
-                } else {
-                    await this.createGroup(group);
+                const result = await this.db
+                    .prepare(
+                        "INSERT INTO groups (name, order_num, user_id) VALUES (?, ?, ?) RETURNING id"
+                    )
+                    .bind(group.name, group.order_num || 0, this.currentUserId)
+                    .all<{ id: number }>();
+                const newId = result.results?.[0]?.id;
+                if (typeof newId !== "number") {
+                    throw new Error(`分组「${group.name}」写入后拿不到新 id`);
                 }
+                if (group.id !== undefined) groupIdMap[String(group.id)] = newId;
             }
+
+            // 站点指向了备份里不存在的分组（手改过 / 老格式）时兜一个分组出来装它们，
+            // sites.group_id 是 NOT NULL，没有归属就写不进去
+            let orphanGroupId: number | null = null;
 
             // 导入站点数据（含账号密码）
             for (const site of normalized.sites) {
-                if (site.id !== undefined) {
-                    await this.db
-                        .prepare(
-                            `INSERT INTO sites (id, group_id, name, url, icon, description, notes, username, password, order_num, user_id)
-                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-                        )
-                        .bind(
-                            site.id,
-                            site.group_id,
-                            site.name,
-                            site.url,
-                            site.icon || "",
-                            site.description || "",
-                            site.notes || "",
-                            site.username || "",
-                            // 备份里是明文，写回 D1 前加密
-                            await encryptSecret(site.password || "", this.secret),
-                            site.order_num || 0,
-                            this.currentUserId
-                        )
-                        .run();
-                } else {
-                    await this.createSite(site);
+                let groupId =
+                    site.group_id !== undefined && site.group_id !== null
+                        ? groupIdMap[String(site.group_id)]
+                        : undefined;
+
+                if (typeof groupId !== "number") {
+                    if (orphanGroupId === null) {
+                        const created = await this.createGroup({
+                            name: "导入的站点",
+                            order_num: 999999,
+                        } as Group);
+                        if (typeof created?.id !== "number") {
+                            throw new Error("为无归属站点创建兜底分组失败");
+                        }
+                        orphanGroupId = created.id;
+                    }
+                    groupId = orphanGroupId;
                 }
+
+                const result = await this.db
+                    .prepare(
+                        `INSERT INTO sites (group_id, name, url, icon, description, notes, username, password, order_num, user_id)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`
+                    )
+                    .bind(
+                        groupId,
+                        site.name,
+                        site.url,
+                        site.icon || "",
+                        site.description || "",
+                        site.notes || "",
+                        site.username || "",
+                        // 备份里是明文，写回 D1 前加密
+                        await encryptSecret(site.password || "", this.secret),
+                        site.order_num || 0,
+                        this.currentUserId
+                    )
+                    .all<{ id: number }>();
+                const newId = result.results?.[0]?.id;
+                if (typeof newId !== "number") {
+                    throw new Error(`站点「${site.name}」写入后拿不到新 id`);
+                }
+                if (site.id !== undefined) siteIdMap[String(site.id)] = newId;
             }
 
-            // 导入配置数据
-            for (const [key, value] of Object.entries(normalized.configs || {})) {
+            // 导入配置数据。
+            // 老备份的全站设置混在 configs 里，新备份放在 sharedConfigs，两边同规则：
+            // 共享键只有站点所有者（或单账号部署）能写，普通账号恢复时不改全站外观。
+            const mayWriteShared = await this.canManageSharedConfigs();
+            const configEntries: [string, string][] = [
+                ...Object.entries(normalized.configs || {}),
+                ...Object.entries(normalized.sharedConfigs || {}),
+            ];
+
+            for (const [key, value] of configEntries) {
                 if (key === "DB_INITIALIZED") {
                     // 跳过数据库初始化标志
                     continue;
@@ -2654,28 +2740,41 @@ export class NavigationAPI {
                     // 恢复备份不覆盖管理员账号密码和 WebDAV 凭据
                     continue;
                 }
+                if (!isUserScopedConfigKey(key) && !mayWriteShared) {
+                    continue;
+                }
                 await this.setConfig(key, value);
             }
 
-            return true;
+            return { success: true, groupIdMap, siteIdMap };
         } catch (error) {
             console.error("导入数据失败:", error);
-            return false;
+            return {
+                success: false,
+                message: error instanceof Error ? error.message : "导入数据失败",
+                groupIdMap,
+                siteIdMap,
+            };
         }
     }
 }
 
-// 备份文件格式版本号
-export const EXPORT_VERSION = "1.2";
+// 备份文件格式版本号。
+// 1.3：全站共享配置从 configs 拆到 sharedConfigs（且只有所有者导出时才带），
+// 导入不再保留备份里的 id（改由数据库重新发号并回传映射）。
+export const EXPORT_VERSION = "1.3";
 
 // 兼容多种备份格式：
 // 1) 标准格式 { groups, sites, configs }
 // 2) 旧格式   { groups: [{ ...group, sites: [...] }], configs }
+// 1.3 起全站设置挪到 sharedConfigs；老备份没有这个字段，全站设置还混在 configs 里，
+// 导入时按同一套归属规则判断（见 importData）。
 export function normalizeImportData(data: ExportData | Record<string, unknown>): ExportData {
     const raw = (data || {}) as {
         groups?: (Group & { sites?: Site[] })[];
         sites?: Site[];
         configs?: Record<string, string>;
+        sharedConfigs?: Record<string, string>;
         version?: string;
         exportDate?: string;
         localPrefs?: LocalPrefsBackup;
@@ -2722,6 +2821,10 @@ export function normalizeImportData(data: ExportData | Record<string, unknown>):
         groups,
         sites,
         configs: raw.configs && typeof raw.configs === "object" ? raw.configs : {},
+        // 全站共享配置：老备份没有这个字段，导入时那份全站设置从 configs 里按规则挑
+        ...(raw.sharedConfigs && typeof raw.sharedConfigs === "object"
+            ? { sharedConfigs: raw.sharedConfigs }
+            : {}),
         version: raw.version || EXPORT_VERSION,
         exportDate: raw.exportDate || new Date().toISOString(),
         // 星标 / 标签这类本机偏好原样透传，交给前端写回 localStorage

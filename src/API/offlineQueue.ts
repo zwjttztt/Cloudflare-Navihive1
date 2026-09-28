@@ -109,6 +109,19 @@ export function requeue(op: PendingMutation): void {
 }
 
 /**
+ * 判定一次重放是否失败。
+ * 有些方法返回 boolean（false 即失败），有些返回 { success } 对象（对象恒为真，
+ * 得看字段）—— 两种都在这里统一处理。
+ */
+function isFailedResult(res: unknown): boolean {
+    if (res === false || res === null || res === undefined) return true;
+    if (typeof res === "object" && "success" in (res as Record<string, unknown>)) {
+        return !(res as { success?: boolean }).success;
+    }
+    return false;
+}
+
+/**
  * 重放队列：逐个调 api[kind](...args)。返回成功数。
  * 仍失败的操作放回队列，连不上时不会丢。
  */
@@ -125,9 +138,11 @@ export async function flushOfflineQueue(api: MutationApi): Promise<number> {
                 continue;
             }
             const res = await fn.apply(api, op.args);
-            // returnsSuccess 类方法：返回假也视为没成功，放回队列
+            // returnsSuccess 类方法：返回假也视为没成功，放回队列。
+            // 有的方法（importData）返回的是带 success 字段的对象，对象本身恒为真，
+            // 得看里面的 success 才算数。
             const def = MUTATION_METHODS.find(m => m.name === op.kind);
-            if (def?.returnsSuccess && !res) {
+            if (def?.returnsSuccess && isFailedResult(res)) {
                 requeue(op);
                 continue;
             }
