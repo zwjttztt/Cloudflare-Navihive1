@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
     TextField,
     Button,
@@ -48,6 +48,93 @@ interface LoadedKey {
     fileName: string;
 }
 
+/**
+ * 登录页顶上居中的品牌名。
+ * 站点标题存在服务端配置里，而配置接口要登录后才能取，所以这里用部署时的品牌名兜底
+ * （index.html / manifest 里也是同一个名字）。
+ */
+const BRAND_NAME = "Navihive";
+
+/** 图标候选的等待上限：图标 API 卡住时不能让图标一直空着 */
+const ICON_FALLBACK_MS = 3000;
+
+/**
+ * 站点图标候选，按序回落：
+ *   1. 本站自带的 favicon.svg / favicon.ico —— 换域名部署图标自动跟着换，不用改代码；
+ *   2. 默认图标 API 按当前域名抓一份（本地开发时 hostname 是 localhost，抓不到，跳过）；
+ *   3. 都拿不到才回到锁图标。
+ */
+function buildIconCandidates(): string[] {
+    if (typeof window === "undefined") return [];
+    const list = ["/favicon.svg", "/favicon.ico"];
+    const host = window.location.hostname;
+    if (host && !/^(localhost|127\.0\.0\.1|\[::1\])$/i.test(host)) {
+        list.push(`https://www.faviconextractor.com/favicon/${host}?larger=true`);
+    }
+    return list;
+}
+
+/** 顶部居中的站点图标：自动取 favicon，取不到逐级回落，最后才是锁图标 */
+const BrandMark: React.FC = () => {
+    const candidates = useMemo(buildIconCandidates, []);
+    const [index, setIndex] = useState(0);
+    const [loaded, setLoaded] = useState(false);
+
+    // 超时或加载失败都换下一个候选；加载成功就撤掉计时器，别把好图标换掉
+    useEffect(() => {
+        if (loaded || index >= candidates.length) return;
+        const timer = window.setTimeout(() => {
+            setLoaded(false);
+            setIndex(i => i + 1);
+        }, ICON_FALLBACK_MS);
+        return () => window.clearTimeout(timer);
+    }, [index, loaded, candidates.length]);
+
+    const src = candidates[index];
+
+    if (!src) {
+        return (
+            <Box
+                sx={{
+                    width: 64,
+                    height: 64,
+                    borderRadius: 2,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    bgcolor: "primary.main",
+                    color: "common.white",
+                }}
+            >
+                <LockOutlinedIcon fontSize='large' />
+            </Box>
+        );
+    }
+
+    return (
+        <Box
+            component='img'
+            src={src}
+            alt=''
+            onLoad={() => setLoaded(true)}
+            onError={() => {
+                setLoaded(false);
+                setIndex(i => i + 1);
+            }}
+            sx={{
+                width: 64,
+                height: 64,
+                borderRadius: 2,
+                objectFit: "contain",
+                p: 0.5,
+                bgcolor: "background.paper",
+                border: "1px solid",
+                borderColor: "divider",
+            }}
+        />
+    );
+};
+
 const LoginForm: React.FC<LoginFormProps> = ({
     onLogin,
     loading = false,
@@ -62,9 +149,6 @@ const LoginForm: React.FC<LoginFormProps> = ({
 
     // 登录 / 注册 / 恢复账号 三个视图
     const [mode, setMode] = useState<"login" | "register" | "recover">("login");
-    // 恢复方式：上传私钥文件（默认，不用命令行）/ 粘贴令牌（给脚本生成的令牌用）
-    const [recoverWay, setRecoverWay] = useState<"keyfile" | "token">("keyfile");
-    const [token, setToken] = useState("");
     const [loadedKey, setLoadedKey] = useState<LoadedKey | null>(null);
     const [newUsername, setNewUsername] = useState("");
     const [newPassword, setNewPassword] = useState("");
@@ -169,35 +253,11 @@ const LoginForm: React.FC<LoginFormProps> = ({
         }
     };
 
-    const handleTokenSubmit = async (e: React.FormEvent) => {
-        e.preventDefault();
-        if (!token.trim()) {
-            setLocalRecoverError("请粘贴恢复令牌");
-            return;
-        }
-        setLocalRecoverError(null);
-        setRecoverLoading(true);
-        try {
-            const result = await onRecover?.(token.trim());
-            if (result?.success) {
-                resetRecoverForm();
-                setMode("login");
-            } else {
-                setLocalRecoverError(result?.message || "恢复失败，请重试");
-            }
-        } catch (err) {
-            setLocalRecoverError("恢复请求失败：" + (err instanceof Error ? err.message : "未知错误"));
-        } finally {
-            setRecoverLoading(false);
-        }
-    };
-
     const resetRecoverForm = () => {
         setLoadedKey(null);
         setNewUsername("");
         setNewPassword("");
         setConfirmPassword("");
-        setToken("");
         if (fileInputRef.current) fileInputRef.current.value = "";
     };
 
@@ -273,6 +333,21 @@ const LoginForm: React.FC<LoginFormProps> = ({
                 p: { xs: 2, sm: 4 },
             }}
         >
+            {/* 品牌区：图标 + 名字一律居中，三个视图共用 */}
+            <Stack spacing={1} alignItems='center' sx={{ mb: 3, textAlign: "center" }}>
+                <BrandMark />
+                <Typography component='h1' variant='h4' fontWeight='800' letterSpacing={0.5}>
+                    {BRAND_NAME}
+                </Typography>
+                <Typography variant='body2' color='text.secondary'>
+                    {mode === "login"
+                        ? "登录以继续使用导航站"
+                        : mode === "register"
+                          ? "用邀请码注册新账号"
+                          : "用恢复密钥找回账号"}
+                </Typography>
+            </Stack>
+
             <Paper
                 elevation={3}
                 sx={{
@@ -282,38 +357,6 @@ const LoginForm: React.FC<LoginFormProps> = ({
                     maxWidth: { xs: "90%", sm: 400 },
                 }}
             >
-                <Box
-                    sx={{
-                        display: "flex",
-                        flexDirection: "column",
-                        alignItems: "center",
-                        mb: 3,
-                    }}
-                >
-                    <Box
-                        sx={{
-                            mb: 2,
-                            width: 56,
-                            height: 56,
-                            borderRadius: "50%",
-                            display: "flex",
-                            justifyContent: "center",
-                            alignItems: "center",
-                            backgroundColor: "primary.main",
-                            color: "white",
-                        }}
-                    >
-                        <LockOutlinedIcon fontSize='large' />
-                    </Box>
-                    <Typography component='h1' variant='h5' fontWeight='bold' textAlign='center'>
-                        {mode === "login"
-                            ? "导航站登录"
-                            : mode === "register"
-                              ? "用邀请码注册"
-                              : "用恢复密钥找回账号"}
-                    </Typography>
-                </Box>
-
                 {mode === "login" && error && (
                     <Alert severity='error' sx={{ mb: 3 }}>
                         {error}
@@ -421,96 +464,73 @@ const LoginForm: React.FC<LoginFormProps> = ({
                 )}
 
                 {mode === "recover" && (
-                    <Box
-                        component='form'
-                        onSubmit={recoverWay === "keyfile" ? handleKeyFileSubmit : handleTokenSubmit}
-                        sx={{ mt: 1 }}
-                    >
+                    <Box component='form' onSubmit={handleKeyFileSubmit} sx={{ mt: 1 }}>
                         {localRecoverError && (
                             <Alert severity='error' sx={{ mb: 2 }}>
                                 {localRecoverError}
                             </Alert>
                         )}
 
-                        {recoverWay === "keyfile" ? (
-                            <Stack spacing={2}>
-                                <Box>
-                                    <input
-                                        ref={fileInputRef}
-                                        type='file'
-                                        accept='.json,application/json'
-                                        style={{ display: "none" }}
-                                        onChange={e => void handlePickKeyFile(e.target.files?.[0])}
-                                    />
-                                    <Button
-                                        fullWidth
-                                        variant='outlined'
-                                        startIcon={<UploadFileIcon />}
-                                        onClick={() => fileInputRef.current?.click()}
-                                        disabled={recoverLoading}
-                                    >
-                                        {loadedKey ? "重新选择私钥文件" : "选择私钥文件"}
-                                    </Button>
-                                    {loadedKey ? (
-                                        <Chip
-                                            sx={{ mt: 1, maxWidth: "100%" }}
-                                            size='small'
-                                            color='success'
-                                            label={`已载入：${loadedKey.fileName}（${algLabel(loadedKey.alg)}）`}
-                                        />
-                                    ) : (
-                                        <Typography
-                                            variant='caption'
-                                            color='text.secondary'
-                                            sx={{ display: "block", mt: 0.5 }}
-                                        >
-                                            文件名形如 navihive-recovery-key-日期.json
-                                        </Typography>
-                                    )}
-                                </Box>
-
-                                <TextField
+                        <Stack spacing={2}>
+                            <Box>
+                                <input
+                                    ref={fileInputRef}
+                                    type='file'
+                                    accept='.json,application/json'
+                                    style={{ display: "none" }}
+                                    onChange={e => void handlePickKeyFile(e.target.files?.[0])}
+                                />
+                                <Button
                                     fullWidth
-                                    size='small'
-                                    label='新管理员账号'
-                                    value={newUsername}
-                                    onChange={e => setNewUsername(e.target.value)}
+                                    variant='outlined'
+                                    startIcon={<UploadFileIcon />}
+                                    onClick={() => fileInputRef.current?.click()}
                                     disabled={recoverLoading}
-                                    placeholder='留空则只重置密码，不改账号'
-                                />
-                                <PasswordField
-                                    id='recover-new-password'
-                                    label='新密码'
-                                    value={newPassword}
-                                    onChange={e => setNewPassword(e.target.value)}
-                                    disabled={recoverLoading}
-                                    helperText='不限制长度，建议用足够强的密码'
-                                />
-                                <PasswordField
-                                    id='recover-confirm-password'
-                                    label='确认新密码'
-                                    value={confirmPassword}
-                                    onChange={e => setConfirmPassword(e.target.value)}
-                                    disabled={recoverLoading}
-                                />
-                            </Stack>
-                        ) : (
+                                >
+                                    {loadedKey ? "重新选择私钥文件" : "选择私钥文件"}
+                                </Button>
+                                {loadedKey ? (
+                                    <Chip
+                                        sx={{ mt: 1, maxWidth: "100%" }}
+                                        size='small'
+                                        color='success'
+                                        label={`已载入：${loadedKey.fileName}（${algLabel(loadedKey.alg)}）`}
+                                    />
+                                ) : (
+                                    <Typography
+                                        variant='caption'
+                                        color='text.secondary'
+                                        sx={{ display: "block", mt: 0.5 }}
+                                    >
+                                        文件名形如 navihive-recovery-key-日期.json
+                                    </Typography>
+                                )}
+                            </Box>
+
                             <TextField
-                                margin='normal'
-                                required
                                 fullWidth
-                                id='recovery-token'
-                                label='恢复令牌'
-                                name='token'
-                                value={token}
-                                onChange={e => setToken(e.target.value)}
+                                size='small'
+                                label='新管理员账号'
+                                value={newUsername}
+                                onChange={e => setNewUsername(e.target.value)}
                                 disabled={recoverLoading}
-                                multiline
-                                minRows={3}
-                                placeholder='粘贴恢复令牌（JWS）'
-                                sx={{ mb: 2 }}
+                                placeholder='留空则只重置密码，不改账号'
                             />
-                        )}
+                            <PasswordField
+                                id='recover-new-password'
+                                label='新密码'
+                                value={newPassword}
+                                onChange={e => setNewPassword(e.target.value)}
+                                disabled={recoverLoading}
+                            />
+                            <PasswordField
+                                id='recover-confirm-password'
+                                label='确认新密码'
+                                value={confirmPassword}
+                                onChange={e => setConfirmPassword(e.target.value)}
+                                disabled={recoverLoading}
+                            />
+                        </Stack>
 
                         <Button
                             type='submit'
@@ -518,10 +538,7 @@ const LoginForm: React.FC<LoginFormProps> = ({
                             variant='contained'
                             color='primary'
                             disabled={
-                                recoverLoading ||
-                                (recoverWay === "keyfile"
-                                    ? !loadedKey || !newPassword || !confirmPassword
-                                    : !token.trim())
+                                recoverLoading || !loadedKey || !newPassword || !confirmPassword
                             }
                             size='large'
                             sx={{ py: 1.5, borderRadius: 2, mt: 2 }}
@@ -530,21 +547,6 @@ const LoginForm: React.FC<LoginFormProps> = ({
                         </Button>
 
                         <Box sx={{ mt: 2, textAlign: "center" }}>
-                            <Link
-                                component='button'
-                                type='button'
-                                variant='body2'
-                                onClick={() => {
-                                    setRecoverWay(recoverWay === "keyfile" ? "token" : "keyfile");
-                                    setLocalRecoverError(null);
-                                }}
-                                disabled={recoverLoading}
-                                sx={{ display: "block", mb: 1 }}
-                            >
-                                {recoverWay === "keyfile"
-                                    ? "改为粘贴恢复令牌"
-                                    : "改为上传私钥文件"}
-                            </Link>
                             <Link
                                 component='button'
                                 type='button'
