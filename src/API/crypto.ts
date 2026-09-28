@@ -445,6 +445,27 @@ export function peekRecoveryTokenUsername(token: string): string {
     }
 }
 
+/**
+ * 不验签地读一个 JWT payload 字段。
+ *
+ * 只用于「决定验签该用哪套参数」这类无关信任的场景（比如先知道这是哪个账号的令牌，
+ * 才能取它自己的令牌版本号来比对）。任何安全结论都必须由 verifyJwt 得出，
+ * 这里的返回值一律当作不可信输入看待。
+ */
+export function peekJwtClaim(token: string, claim: string): unknown {
+    try {
+        const parts = token.split(".");
+        if (parts.length !== 3) return undefined;
+        const payload = JSON.parse(dec.decode(b64urlDecode(parts[1]))) as Record<
+            string,
+            unknown
+        >;
+        return payload?.[claim];
+    } catch {
+        return undefined;
+    }
+}
+
 export async function verifyRecoveryToken(
     token: string,
     publicKeyB64url: string

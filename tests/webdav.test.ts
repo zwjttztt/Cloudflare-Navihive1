@@ -102,10 +102,26 @@ test("configFromStored：兼容 \"true\"/\"false\" 写法", () => {
 
 // ---- 请求体优先级：前端刚拨的开关要盖过库里的旧值 ----
 
-test("resolveWebDavConfig：请求体带布尔时以请求体为准", async () => {
-    const fakeApi = { getConfigs: async () => ({ "webdav.allowPrivateNetwork": "0" }) } as never;
-    const r = await resolveWebDavConfig(fakeApi, {} as Request, { allowPrivateNetwork: true });
-    assert.equal(r.allowPrivateNetwork, true);
+test("resolveWebDavConfig：数据操作不允许请求体改写目标地址与内网开关", async () => {
+    // SSRF 面：upload / list / download / delete 这类会碰到数据的路由，
+    // 过去接受了请求体里的一整套 url / 账号 / allowPrivateNetwork，
+    // 等于任何登录账号都能临时指定让 Worker 去打哪个地址（包括内网）。
+    // 现在它们只认已保存的配置；唯一例外是备份口令（只用于本地加解密）。
+    const fakeApi = {
+        getConfigs: async () => ({
+            "webdav.url": "https://dav.example.com/dav/",
+            "webdav.username": "keeper",
+            "webdav.allowPrivateNetwork": "0",
+        }),
+    } as never;
+    const r = await resolveWebDavConfig(fakeApi, {} as Request, {
+        url: "http://169.254.169.254/latest/meta-data/",
+        username: "intruder",
+        allowPrivateNetwork: true,
+    });
+    assert.equal(r.url, "https://dav.example.com/dav/");
+    assert.equal(r.username, "keeper");
+    assert.equal(r.allowPrivateNetwork, false);
 });
 
 test("resolveWebDavConfig：请求体没带时回落到库里存的值", async () => {
@@ -118,6 +134,51 @@ test("resolveWebDavConfig：两边都没有时默认关", async () => {
     const fakeApi = { getConfigs: async () => ({}) } as never;
     const r = await resolveWebDavConfig(fakeApi, {} as Request, {});
     assert.equal(r.allowPrivateNetwork, false);
+});
+
+test("resolveWebDavConfig：只有 owner 能用内网地址（普通账号借不到）", async () => {
+    // 内网直连是站点级特权：owner 为了家里 NAS 开的口子，
+    // 不该变成普通账号探测内网的通道
+    const owner = {
+        getConfigs: async () => ({ "webdav.allowPrivateNetwork": "1" }),
+        canManageSharedConfigs: async () => true,
+    } as never;
+    const member = {
+        getConfigs: async () => ({ "webdav.allowPrivateNetwork": "1" }),
+        canManageSharedConfigs: async () => false,
+    } as never;
+
+    assert.equal((await resolveWebDavConfig(owner, {} as Request, {})).allowPrivateNetwork, true);
+    assert.equal((await resolveWebDavConfig(member, {} as Request, {})).allowPrivateNetwork, false);
+});
+
+test("resolveWebDavConfig：test 路由允许临时配置，但内网开关仍要看资格", async () => {
+    // 「填完先试试」必须能用还没保存的地址；开关也允许跟着界面临时拨动，
+    // 但「有没有资格用内网」只认站点所有者，普通账号拨不开关
+    const owner = {
+        getConfigs: async () => ({ "webdav.url": "https://dav.example.com/dav/" }),
+        canManageSharedConfigs: async () => true,
+    } as never;
+    const provisional = await resolveWebDavConfig(
+        owner,
+        {} as Request,
+        { url: "http://192.168.1.10/dav", allowPrivateNetwork: true },
+        { allowBodyOverride: true }
+    );
+    assert.equal(provisional.url, "http://192.168.1.10/dav");
+    assert.equal(provisional.allowPrivateNetwork, true, "owner 临时试内网地址应当放行");
+
+    const member = {
+        getConfigs: async () => ({ "webdav.allowPrivateNetwork": "1" }),
+        canManageSharedConfigs: async () => false,
+    } as never;
+    const denied = await resolveWebDavConfig(
+        member,
+        {} as Request,
+        { allowPrivateNetwork: true },
+        { allowBodyOverride: true }
+    );
+    assert.equal(denied.allowPrivateNetwork, false, "普通账号怎么拨都是关");
 });
 
 // ---- 备份保留策略：自动备份滚动清理自己，手动备份一份都不删 ----

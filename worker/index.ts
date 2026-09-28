@@ -12,6 +12,7 @@ import {
     type Group,
     type LoginRequest,
     type Site,
+    isUserScopedConfigKey,
 } from "../src/API/http";
 import { handleCspReport } from "./csp";
 import { reportError } from "./errorReport";
@@ -20,6 +21,7 @@ import { proxyIcon } from "./icon";
 import {
     readLoginGuard,
     writeLoginGuard,
+    clientBucket,
     LOGIN_FREE_ATTEMPTS,
     LOGIN_BASE_LOCK_MS,
     LOGIN_MAX_LOCK_MS,
@@ -43,7 +45,7 @@ import type {
     SiteInput,
 } from "./types";
 import { validateConfig, validateGroup, validateLogin, validateSite } from "./validate";
-import { safeJson, weakEtag } from "./util";
+import { safeJson, securityHeaders, weakEtag } from "./util";
 import {
     readAllConfigs,
     resolveWebDavConfig,
@@ -60,6 +62,12 @@ import {
 // 它不含任何凭据，泄露也无意义。
 const TOKEN_COOKIE = "navihive_token";
 const SESSION_COOKIE = "navihive_session";
+
+/**
+ * Worker 返回的纯文本响应统一带上安全头。
+ * `_headers` 里那套 CSP / nosniff 只作用于静态资源，Worker 响应得自己加，详见 util.ts。
+ */
+const TEXT_HEADERS = () => securityHeaders({ "Content-Type": "text/plain; charset=utf-8" });
 
 /** 取客户端 IP（审计日志用） */
 function clientIp(request: Request): string {
@@ -179,8 +187,9 @@ export default {
                         );
                     }
 
-                    // 还在锁定期就直接回绝，并告诉还要等多久
-                    const guard = await readLoginGuard(api);
+                    // 还在锁定期就直接回绝，并告诉还要等多久。
+                    // 锁是按来源 IP 分的桶：陌生人乱猜不该把站点主人自己也挡在门外。
+                    const guard = await readLoginGuard(api, clientBucket(request));
                     const now = Date.now();
                     if (guard.until > now) {
                         const waitSec = Math.ceil((guard.until - now) / 1000);
@@ -198,7 +207,8 @@ export default {
 
                     if (result.success) {
                         // 登录成功就清零，别让之前的手滑一直累积
-                        if (guard.count > 0) await writeLoginGuard(api, { count: 0, until: 0 });
+                        if (guard.count > 0)
+                            await writeLoginGuard(api, { count: 0, until: 0 }, clientBucket(request));
                         await api.writeAudit("login.success", loginData.username || "", ip);
 
                         // 令牌只放进 httpOnly cookie，不再回传给 JS（响应体里也不带 token）
@@ -235,7 +245,7 @@ export default {
                                   LOGIN_MAX_LOCK_MS
                               )
                             : 0;
-                    await writeLoginGuard(api, { count, until });
+                    await writeLoginGuard(api, { count, until }, clientBucket(request));
 
                     // 三种状态文案要分清楚：还能试几次 / 这是最后一次 / 已经锁了。
                     // （之前按「剩余次数」判断，第 5 次还没真锁上却说「已暂时锁定」）
@@ -353,7 +363,7 @@ export default {
                 if (path === "init" && method === "GET") {
                     // 未鉴权接口，先过一道限速：挡掉反复打接口探测的扫描。
                     // 已初始化的请求（正常回源探测）不计次，避免锁正常用户。
-                    const initGuard = await readInitGuard(api);
+                    const initGuard = await readInitGuard(api, clientBucket(request));
                     const initNow = Date.now();
                     if (initGuard.until > initNow) {
                         const waitSec = Math.ceil((initGuard.until - initNow) / 1000);
@@ -376,7 +386,11 @@ export default {
                                 ? initNow +
                                   Math.min(INIT_BASE_LOCK_MS * Math.pow(2, initOver - 1), INIT_MAX_LOCK_MS)
                                 : 0;
-                        await writeInitGuard(api, { count: initCount, until: initUntil });
+                        await writeInitGuard(
+                            api,
+                            { count: initCount, until: initUntil },
+                            clientBucket(request)
+                        );
                     }
 
                     // 统一响应：调用方拿不到「这台是否已初始化」的信号
@@ -403,7 +417,10 @@ export default {
                         if (authHeader) {
                             const [authType, raw] = authHeader.split(" ");
                             if (authType !== "Bearer" || !raw) {
-                                return new Response("无效的认证信息", { status: 401 });
+                                return new Response("无效的认证信息", {
+                                    status: 401,
+                                    headers: TEXT_HEADERS(),
+                                });
                             }
                             token = raw;
                         }
@@ -420,7 +437,10 @@ export default {
 
                     const verifyResult = await api.verifyToken(token);
                     if (!verifyResult.valid) {
-                        return new Response("认证已过期或无效，请重新登录", { status: 401 });
+                        return new Response("认证已过期或无效，请重新登录", {
+                            status: 401,
+                            headers: TEXT_HEADERS(),
+                        });
                     }
                     currentJti =
                         typeof verifyResult.payload?.jti === "string" ? verifyResult.payload.jti : "";
@@ -428,8 +448,21 @@ export default {
                         typeof verifyResult.payload?.exp === "number" ? verifyResult.payload.exp : 0;
 
                     // 多账号：把当前账号绑到 API 实例上，之后所有分组/站点读写都只碰它的数据。
-                    // 老令牌（升级前签的）没有 uid 字段，退回「不隔离」的旧行为。
+                    //
+                    // ⚠️ 这里有一条硬约束：老令牌**可能没有 uid 字段**（多账号上线前签的）。
+                    // 一旦 setCurrentUser(null)，scopeSql 就不再加 user_id 条件，
+                    // 这张令牌能看到全站点的数据（含解密后的站点密码）——比普通越权严重得多。
+                    // 所以只要 users 表里已经有账号，缺 uid 的令牌一律拒绝，让它重新登录换一张。
+                    // （签发侧也已在 login 里堵住：users 表非空时不再走 configs 老凭据回落。）
                     const uid = verifyResult.payload?.uid;
+                    if (typeof uid !== "number" && (await api.hasAnyUser())) {
+                        return new Response("登录状态已过期，请重新登录", {
+                            status: 401,
+                            headers: securityHeaders({
+                                "Content-Type": "text/plain; charset=utf-8",
+                            }),
+                        });
+                    }
                     api.setCurrentUser(typeof uid === "number" ? uid : null);
 
                     // 活跃时间：令牌一验过就算在用 —— 「记住我」的人每次回来只是静默恢复，
@@ -442,7 +475,10 @@ export default {
                     // CSRF：令牌改成 cookie 后跨站请求会自动带上它，
                     // 所以写操作必须确认是本站发起的（判据见 isSameOrigin 注释）。
                     if (cookieToken && method !== "GET" && method !== "HEAD" && !isSameOrigin(request)) {
-                        return new Response("跨站请求已被拒绝", { status: 403 });
+                        return new Response("跨站请求已被拒绝", {
+                            status: 403,
+                            headers: TEXT_HEADERS(),
+                        });
                     }
                 }
 
@@ -497,13 +533,23 @@ export default {
                     return Response.json({ username: user.username, role: user.role });
                 }
 
-                // 生成邀请码（已登录用户都能生成，30 分钟有效）
+                // 生成邀请码（站点所有者，30 分钟有效）
+                //
+                // 只放开给 owner：邀请码是唯一的注册入口，普通账号也能随手生成的话，
+                // 一个人就能不断拉人来占资源，而且互相之间不知道谁请谁，事后无从追溯。
                 if (path === "auth/invite" && method === "POST") {
                     const uid = api.getCurrentUserId();
                     if (uid === null) {
                         return Response.json(
                             { success: false, message: "当前站点未启用登录，无法生成邀请码" },
                             { status: 400 }
+                        );
+                    }
+                    const me = await api.getUserById(uid);
+                    if (!me || me.role !== "owner") {
+                        return Response.json(
+                            { success: false, message: "只有站点所有者可以生成邀请码" },
+                            { status: 403 }
                         );
                     }
                     const result = await api.createInvite(uid);
@@ -895,6 +941,20 @@ export default {
                     const data = (await request.json()) as { configs?: Record<string, string> };
                     const entries = Object.entries(data.configs || {});
 
+                    // 全站设置（标题 / 主题 / 背景…）是所有人共用的，只有站点所有者能写。
+                    // 过去只靠前端把入口藏起来，服务端没管 —— 普通账号直接调这个路由就能改。
+                    // 这里提前判掉，好给前端一句能看懂的提示，而不是静默「保存失败」。
+                    const needsShared = entries.some(([key]) => !isUserScopedConfigKey(key));
+                    if (needsShared && !(await api.canManageSharedConfigs())) {
+                        return Response.json(
+                            {
+                                success: false,
+                                message: "全站外观设置只有站点所有者可以修改",
+                            },
+                            { status: 403 }
+                        );
+                    }
+
                     if (entries.length === 0) {
                         return Response.json({ success: true, saved: 0 });
                     }
@@ -946,6 +1006,13 @@ export default {
                             { status: 403 }
                         );
                     }
+                    // 与 configs/batch 同一道门槛：全站设置只有站点所有者能改
+                    if (!isUserScopedConfigKey(key) && !(await api.canManageSharedConfigs())) {
+                        return Response.json(
+                            { success: false, message: "全站外观设置只有站点所有者可以修改" },
+                            { status: 403 }
+                        );
+                    }
                     const data = (await request.json()) as ConfigInput;
 
                     // 验证配置数据
@@ -978,6 +1045,13 @@ export default {
                     // 不允许删除管理员凭据，避免悄悄退化回默认密码
                     if (key.startsWith("auth.")) {
                         return Response.json({ success: false }, { status: 403 });
+                    }
+                    // 删除也是写：全站设置同样只归站点所有者
+                    if (!isUserScopedConfigKey(key) && !(await api.canManageSharedConfigs())) {
+                        return Response.json(
+                            { success: false, message: "全站外观设置只有站点所有者可以修改" },
+                            { status: 403 }
+                        );
                     }
                     const result = await api.deleteConfig(key);
                     return Response.json({ success: result });
@@ -1073,7 +1147,10 @@ export default {
 
                 // ============ WebDAV 备份相关路由（由 Worker 代理，避免浏览器跨域限制） ============
                 else if (path === "webdav/test" && method === "POST") {
-                    const config = await resolveWebDavConfig(api, request);
+                    // 只有这条允许「还没保存的临时配置」——填完想先试试正是它的用途
+                    const config = await resolveWebDavConfig(api, request, undefined, {
+                        allowBodyOverride: true,
+                    });
                     const result = await webdavTest(config);
                     return Response.json(result);
                 } else if (path === "webdav/upload" && method === "POST") {
@@ -1109,16 +1186,25 @@ export default {
                 }
 
                 // 默认返回404
-                return new Response("API路径不存在", { status: 404 });
+                return new Response("API路径不存在", {
+                    status: 404,
+                    headers: TEXT_HEADERS(),
+                });
             } catch (error) {
                 // 安全处理错误，不暴露内部细节
                 console.error(`API错误: ${error instanceof Error ? error.message : "未知错误"}`);
-                return new Response(`处理请求时发生错误`, { status: 500 });
+                return new Response(`处理请求时发生错误`, {
+                    status: 500,
+                    headers: TEXT_HEADERS(),
+                });
             }
         }
 
         // 非API路由默认返回404
-        return new Response("Not Found", { status: 404 });
+        return new Response("Not Found", {
+            status: 404,
+            headers: TEXT_HEADERS(),
+        });
     },
     /**
      * 每周定时任务（由 wrangler.jsonc 的 triggers.crons 触发）。

@@ -13,6 +13,7 @@ import {
     verifyRecoveryToken,
     isValidRecoveryPublicKey,
     peekRecoveryTokenUsername,
+    peekJwtClaim,
     type RecoveryPayload,
 } from "./crypto";
 
@@ -246,8 +247,9 @@ export const WEBDAV_PASSWORD_KEY = "webdav.password";
 export const WEBDAV_BACKUP_PASSWORD_KEY = "webdav.backupPassword";
 // 令牌版本：改密 / 重置后 +1，让所有已签发的令牌立即失效（服务端可吊销）
 export const TOKEN_VERSION_KEY = "auth.tokenVersion";
-// 单点吊销：退出登录时把该令牌的 jti 记进黑名单，验签通过后还要再查一次
-export const TOKEN_BLACKLIST_KEY = "auth.tokenBlacklist";
+// 单点吊销：退出登录时把该令牌的 jti 拉黑，验签通过后还要再查一次。
+// 这里早年是 configs 的 auth.tokenBlacklist（一个 JSON 串），现已换成 token_blacklist 表：
+// 「读-改-写」会被并发登出互相覆盖，让注意事项失效 —— 详见 blacklistToken 的注释。
 // 首次部署后必须先改一次管理员密码（默认账号/密码来自部署变量，等于半公开）
 export const MUST_CHANGE_PASSWORD_KEY = "auth.mustChangePassword";
 // 恢复公钥（找回管理员密码用）：网页端生成密钥对后把公钥存这里，私钥只留在用户本地。
@@ -426,6 +428,10 @@ export class NavigationAPI {
     private recoveryPubKey: string;
     // 令牌版本缓存（模块内按 isolate 读一次即可，改密时失效）
     private tokenVersionCache: number | null = null;
+    /** 每个账号各自的令牌版本缓存，避免每次鉴权都查一次 users 表 */
+    private accountVersionCache = new Map<number, number>();
+    /** users 表里有没有账号：缓存住，决定「能否回落到 configs 老凭据」时每次都要问 */
+    private anyUserCache: boolean | null = null;
     /**
      * 当前请求所属账号。由 Worker 在验签之后 setCurrentUser(id) 注入。
      * 为 null 表示「系统级调用」（未启用鉴权、或定时备份这类没有用户上下文的任务），
@@ -527,6 +533,11 @@ export class NavigationAPI {
         // 每账号一份的配置（WebDAV 备份凭据等）。与 configs 分开存：
         // configs 是全站共享的（标题、背景），塞进去就会被别的账号看到。
         `CREATE TABLE IF NOT EXISTS user_configs (user_id INTEGER NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (user_id, key));`,
+        // 令牌黑名单（退出登录 = 服务端可吊销）。
+        // 以前是 configs 里一个 JSON 字符串：两个请求并发登出会互相覆盖（后写的把前一个
+        // jti 抹掉，那张令牌就又活了），而且每次校验都要把整份 JSON 读出来解析。
+        // 改成一行一条之后插入到 key 冲突时覆盖是幂等的，查也是走主键的单行查询。
+        `CREATE TABLE IF NOT EXISTS token_blacklist (jti TEXT PRIMARY KEY, exp INTEGER NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`,
     ];
 
     private async runMigrations(): Promise<void> {
@@ -569,6 +580,31 @@ export class NavigationAPI {
 
         // 4) 沉睡账号治理：users 表补上「最后活跃 / 状态 / 停用时间」三列
         await this.migrateInactiveColumns();
+
+        // 5) 账号各自的令牌版本：见 bumpTokenVersion 的注释
+        await this.migrateAccountSecurityColumns();
+    }
+
+    /**
+     * users 表补列（幂等）：token_version。
+     *
+     * 令牌版本原本是全站一份（configs.auth.tokenVersion），于是「任一账号改密 / 密钥恢复 /
+     * 注销」都会把所有人的会话一起踢掉 —— 多账号上线后这就成了互相干扰。
+     * 改成每个账号一份后，A 改密只作废 A 的令牌；没有账号上下文时（老令牌、单管理员
+     * configs 凭据）仍然走全站那份，行为不变。
+     */
+    private async migrateAccountSecurityColumns(): Promise<void> {
+        const wanted: { name: string; type: string }[] = [
+            { name: "token_version", type: "INTEGER NOT NULL DEFAULT 0" },
+        ];
+        for (const column of wanted) {
+            if (await this.hasColumn("users", column.name)) continue;
+            try {
+                await this.db.exec(`ALTER TABLE users ADD COLUMN ${column.name} ${column.type}`);
+            } catch {
+                // 并发迁移时列可能已存在，忽略
+            }
+        }
     }
 
     /**
@@ -852,30 +888,21 @@ export class NavigationAPI {
 
     // ============ 令牌黑名单（退出登录 = 服务端可吊销） ============
     // JWT 本身无状态，退出登录只能靠「把这张令牌的 jti 拉黑」来实现真正失效。
-    // 结构是 { jti: 过期秒级时间戳 }，读取时顺手丢掉已过期的条目，避免无限膨胀。
-    private async readBlacklist(): Promise<Record<string, number>> {
-        try {
-            const raw = await this.getConfig(TOKEN_BLACKLIST_KEY);
-            if (!raw) return {};
-            const parsed = JSON.parse(raw) as Record<string, number>;
-            const now = Math.floor(Date.now() / 1000);
-            const alive: Record<string, number> = {};
-            for (const [jti, exp] of Object.entries(parsed)) {
-                if (typeof exp === "number" && exp > now) alive[jti] = exp;
-            }
-            return alive;
-        } catch {
-            return {};
-        }
-    }
+    // 存一张表而不是 configs 里的一个 JSON：并发登出时「读-改-写」会互相覆盖，
+    // 被覆盖掉的那张令牌就能一直用到过期。按 jti 作主键插入则天然幂等。
+    // 过期行由每周定时任务清理（见 cleanupExpiredRows）。
 
     /** 把某张令牌拉黑（退出登录 / 发现令牌泄露时调用） */
     async blacklistToken(jti: string, exp: number): Promise<void> {
         if (!jti) return;
         try {
-            const list = await this.readBlacklist();
-            list[jti] = exp;
-            await this.setConfig(TOKEN_BLACKLIST_KEY, JSON.stringify(list));
+            await this.db
+                .prepare(
+                    `INSERT INTO token_blacklist (jti, exp) VALUES (?, ?)
+                     ON CONFLICT(jti) DO UPDATE SET exp = ?`
+                )
+                .bind(jti, exp, exp)
+                .run();
         } catch (error) {
             console.error("拉黑令牌失败:", error);
         }
@@ -883,8 +910,16 @@ export class NavigationAPI {
 
     private async isTokenBlacklisted(jti: string): Promise<boolean> {
         if (!jti) return false;
-        const list = await this.readBlacklist();
-        return Object.prototype.hasOwnProperty.call(list, jti);
+        try {
+            const row = await this.db
+                .prepare("SELECT jti FROM token_blacklist WHERE jti = ?")
+                .bind(jti)
+                .first<{ jti: string }>();
+            return !!row;
+        } catch {
+            // 表还没建好时不能放行任何令牌：宁可让这一张失效，也不能让登出过的令牌复活
+            return true;
+        }
     }
 
     // ============ 首次部署强制改密 ============
@@ -898,19 +933,64 @@ export class NavigationAPI {
         await this.setConfig(MUST_CHANGE_PASSWORD_KEY, "0");
     }
 
-    // 令牌版本：改密 / 重置后 +1，让所有已签发的令牌立即失效（服务端可吊销）
-    private async getTokenVersion(): Promise<number> {
-        if (this.tokenVersionCache !== null) return this.tokenVersionCache;
-        const raw = await this.getConfig(TOKEN_VERSION_KEY);
-        const v = raw ? Number(raw) : 0;
-        this.tokenVersionCache = Number.isFinite(v) ? v : 0;
-        return this.tokenVersionCache;
+    // 令牌版本：改密 / 重置后 +1，让已签发的令牌立即失效（服务端可吊销）。
+    //
+    // 多账号之前是全站一份（configs.auth.tokenVersion），于是「任何一个账号改密、注销、
+    // 密钥恢复」会把所有人的会话一起踢掉 —— 别人什么都没做就被迫重新登录。
+    // 现在按账号记（users.token_version）：
+    //   - 有账号上下文 → 认自己那一列，改只作废自己的令牌；
+    //   - 没有账号上下文（老令牌 / 还没迁移到 users 的单管理员）→ 仍走全站那份。
+    private async getTokenVersion(uid: number | null = null): Promise<number> {
+        if (uid === null) {
+            if (this.tokenVersionCache !== null) return this.tokenVersionCache;
+            const raw = await this.getConfig(TOKEN_VERSION_KEY);
+            const v = raw ? Number(raw) : 0;
+            this.tokenVersionCache = Number.isFinite(v) ? v : 0;
+            return this.tokenVersionCache;
+        }
+        const cached = this.accountVersionCache.get(uid);
+        if (cached !== undefined) return cached;
+        try {
+            const row = await this.db
+                .prepare("SELECT token_version FROM users WHERE id = ?")
+                .bind(uid)
+                .first<{ token_version: number | null }>();
+            const v = Number(row?.token_version ?? 0);
+            const safe = Number.isFinite(v) ? v : 0;
+            this.accountVersionCache.set(uid, safe);
+            return safe;
+        } catch {
+            // 列还没建好：退回全站那份，别因为迁移时序把所有人卡在门外
+            return this.getTokenVersion(null);
+        }
     }
 
-    private async bumpTokenVersion(): Promise<void> {
-        const v = (await this.getTokenVersion()) + 1;
-        this.tokenVersionCache = v;
-        await this.setConfig(TOKEN_VERSION_KEY, String(v));
+    /**
+     * 令牌版本 +1。传账号 id 就只作废那一个账号的令牌；传 null（或没传）作废全站。
+     */
+    private async bumpTokenVersion(uid: number | null = null): Promise<void> {
+        if (uid === null) {
+            const v = (await this.getTokenVersion(null)) + 1;
+            this.tokenVersionCache = v;
+            await this.setConfig(TOKEN_VERSION_KEY, String(v));
+            return;
+        }
+        const v = (await this.getTokenVersion(uid)) + 1;
+        this.accountVersionCache.set(uid, v);
+        try {
+            await this.db
+                .prepare(
+                    "UPDATE users SET token_version = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+                )
+                .bind(v, uid)
+                .run();
+        } catch (error) {
+            // 按账号 bump 失败时必须兜底 bump 全站版本 —— 宁可多踢一次，也不能让旧令牌继续有效
+            console.error("按账号递增令牌版本失败，退回全局:", error);
+            const g = (await this.getTokenVersion(null)) + 1;
+            this.tokenVersionCache = g;
+            await this.setConfig(TOKEN_VERSION_KEY, String(g));
+        }
     }
 
     // 更新管理员凭据（写入数据库后立即生效）
@@ -1195,7 +1275,9 @@ export class NavigationAPI {
             okUser = name ? await this.setConfig(AUTH_USERNAME_KEY, name) : true;
             okPass = await this.setConfig(AUTH_PASSWORD_KEY, passwordHash);
         }
-        await this.bumpTokenVersion();
+        // 作废 configs 里的旧凭据（用户名一并改掉时尤其重要，见 disableLegacyCredentials）
+        if (target) await this.disableLegacyCredentials();
+        await this.bumpTokenVersion(target?.id ?? null);
         await this.clearMustChangePassword();
         // 记下 jti，过期时间作为兜底清理依据（旧条目不自动删除，但体量极小）
         await this.setConfig(usedKey, String(exp));
@@ -1270,25 +1352,93 @@ export class NavigationAPI {
             };
         }
 
-        // 兼容：users 表里还没有这个账号（例如升级后 owner 尚未迁移成功），
-        // 退回 configs 里那份单管理员凭据再验一次
+        /**
+         * 兼容：users 表里还没有这个账号时用 configs 里那份单管理员凭据再验一次。
+         *
+         * ⚠️ 这条回落过去有两个大坑，现在都被堵上：
+         *   1. 回落签出的令牌只带 `{username}`，**没有 uid**。鉴权中间件看到没有 uid 就
+         *      `setCurrentUser(null)`，而 scopeSql 在 null 时是不加条件的 —— 等于一张令牌
+         *      能看到**所有账号**的站点与解密后的密码。
+         *      现在只要 users 表里有账号就一律不回落；真回落时也必须绑到同名账号的 uid 上。
+         *   2. configs 里那份凭据从不跟着 users 侧改密走：owner 改了账号名 / 改了密码之后，
+         *      旧账号名 + 部署时的种子密码仍然登得进来（种子凭据来自部署变量，等同半公开）。
+         *      现在改密 / 改名会同步把 configs 那份作废（见 disableLegacyCredentials）。
+         */
+        if (await this.hasAnyUser()) {
+            return { success: false, message: "用户名或密码错误" };
+        }
+
         const credentials = await this.getAuthCredentials();
         const passwordOk = await verifyPassword(loginRequest.password, credentials.password);
         if (loginRequest.username === credentials.username && passwordOk) {
             if (!isHashedPassword(credentials.password)) {
                 await this.updateAuthCredentials(credentials.username, loginRequest.password);
             }
-            // 老凭据登录：users 表里同名的那个账号同样算活跃过
+            // 即便 users 表为空也再找一次同名账号：万一存在，令牌必须带上它的 uid
             const legacyUser = await this.findUserByUsername(credentials.username);
-            if (legacyUser) await this.recordActiveLogin(legacyUser.id);
-            const token = await this.generateToken({ username: credentials.username }, ttlSeconds);
-            return { success: true, token, message: "登录成功", username: credentials.username };
+            if (legacyUser) {
+                await this.recordActiveLogin(legacyUser.id);
+                return {
+                    success: true,
+                    token: await this.generateToken(
+                        {
+                            username: legacyUser.username,
+                            uid: legacyUser.id,
+                            role: legacyUser.role,
+                        },
+                        ttlSeconds
+                    ),
+                    message: "登录成功",
+                    username: legacyUser.username,
+                    role: legacyUser.role,
+                };
+            }
+            return {
+                success: true,
+                token: await this.generateToken({ username: credentials.username }, ttlSeconds),
+                message: "登录成功",
+                username: credentials.username,
+            };
         }
 
         return {
             success: false,
             message: "用户名或密码错误",
         };
+    }
+
+    /** users 表里有没有账号：有则不允许再落到 configs 那份老凭据上（见 login 里的注释） */
+    async hasAnyUser(): Promise<boolean> {
+        if (this.anyUserCache !== null) return this.anyUserCache;
+        try {
+            const row = await this.db
+                .prepare("SELECT COUNT(*) AS total FROM users")
+                .first<{ total: number }>();
+            const has = (row?.total ?? 0) > 0;
+            // 只在「有账号」时缓存：注册第一个账号之前要允许反复查
+            if (has) this.anyUserCache = true;
+            return has;
+        } catch {
+            // 表还没建好 = 还没迁移 = 确实没有账号
+            return false;
+        }
+    }
+
+    /**
+     * 把 configs 里那份单管理员凭据作废。
+     *
+     * 多账号之后改密改的是 users 表，configs 里那份（部署种子凭据）会一直留着；
+     * 只要它还在，旧账号名 + 旧密码就仍然是一条能登进来的旁路。每次成功改密 / 改名
+     * 都把它删掉，让「改了密码」这件事真正生效。
+     */
+    private async disableLegacyCredentials(): Promise<void> {
+        try {
+            await this.deleteConfig(AUTH_USERNAME_KEY);
+            await this.deleteConfig(AUTH_PASSWORD_KEY);
+            this.anyUserCache = true; // 走到这一步 users 表里肯定有账号
+        } catch (error) {
+            console.error("清理旧管理员凭据失败:", error);
+        }
     }
 
     // ============ 多账号：用户与邀请码 ============
@@ -1870,7 +2020,11 @@ export class NavigationAPI {
         }
         if (password) await this.setUserPassword(uid, password);
 
-        await this.bumpTokenVersion();
+        // 作废 configs 里那份旧凭据：只要它还留着，部署时的种子账号名 + 种子密码
+        // 就始终是一条绕过多账号体系、直 admin 的旁路（详见 login 里的回落注释）
+        await this.disableLegacyCredentials();
+        // 只作废这个账号自己的会话，别把同站点其它账号一起踢下线
+        await this.bumpTokenVersion(uid);
         await this.clearMustChangePassword();
         return { success: true, message: "凭据已更新" };
     }
@@ -1908,7 +2062,13 @@ export class NavigationAPI {
         }
         // 现在会真正验签（HMAC-SHA256）+ 校验过期 + 校验令牌版本，
         // 伪造的 token 直接被拒，改密后旧 token 也立即失效。
-        const tv = await this.getTokenVersion();
+        //
+        // 版本号按「令牌里的账号」来取：先看 payload 里的 uid —— 未验签的 payload 只读uid
+        // 这一个字段，不做任何信任判断，安全仍然由下面的 verifyJwt 全权负责。
+        const uidFromToken = peekJwtClaim(token, "uid");
+        const tv = await this.getTokenVersion(
+            typeof uidFromToken === "number" ? uidFromToken : null
+        );
         const result = await verifyJwt(token, this.secret, { tokenVersion: tv });
 
         // 验签通过还要再查一次黑名单：退出登录过的令牌不能复活
@@ -1932,7 +2092,9 @@ export class NavigationAPI {
         }
         // 嵌入令牌版本：改密后所有旧 token（版本偏低）在 verifyToken 处被拒。
         // jti 是这张令牌的唯一编号，退出登录时按它拉黑 —— 让「登出」真的能让令牌失效。
-        const tv = await this.getTokenVersion();
+        // 版本认「这张令牌属于哪个账号」的那一列，别人改密不会连坐。
+        const tokenUid = typeof payload.uid === "number" ? payload.uid : null;
+        const tv = await this.getTokenVersion(tokenUid);
         const exp = Math.floor(Date.now() / 1000) + ttlSeconds;
         const tokenPayload = {
             ...payload,
@@ -2404,7 +2566,30 @@ export class NavigationAPI {
         return result.value;
     }
 
+    /**
+     * 当前身份能不能写这个 key。
+     *
+     * 全站共享配置（标题 / 主题 / 背景…）是全站所有人共用的，过去只靠前端藏起来
+     * —— 服务端没管，普通账号直接 PUT /api/configs/<key> 就能改全站外观。
+     * 现在和导出 / 导入走同一套判据（canManageSharedConfigs），服务端这边也把住：
+     *   - user-scoped（webdav.* 这类每人一份的）永远允许，那是自己的东西；
+     *   - auth.* 是服务端内部记账（初始化标记、限速计数、必须改密标记…），
+     *     路由层已禁止外部访问，这里不再重复判角色，免得把自身逻辑卡死；
+     *   - 其余共享键：只有 owner（或未启用登录的单账号部署）能动。
+     */
+    private async canWriteConfigKey(key: string): Promise<boolean> {
+        if (isUserScopedConfigKey(key)) return true;
+        if (isAuthConfigKey(key)) return true;
+        const uid = this.currentUserId;
+        if (uid === null) return true;
+        return this.canManageSharedConfigs();
+    }
+
     async setConfig(key: string, value: string): Promise<boolean> {
+        if (!(await this.canWriteConfigKey(key))) {
+            console.warn(`拒绝非所有者改写全站配置: ${key}`);
+            return false;
+        }
         const uid = this.useUserScope(key);
         if (uid !== null) return this.setUserConfig(uid, key, value);
 
@@ -2444,6 +2629,15 @@ export class NavigationAPI {
             const mine = uid !== null ? list.filter(([key]) => isUserScopedConfigKey(key)) : [];
             const shared = uid !== null ? list.filter(([key]) => !isUserScopedConfigKey(key)) : list;
 
+            // 全站共享配置只有 owner 能动（理由见 canWriteConfigKey）。整批一次判，
+            // 别写下半句才失败 —— 那会留下「改了一半」的状态。
+            for (const [key] of shared) {
+                if (!(await this.canWriteConfigKey(key))) {
+                    console.warn(`拒绝非所有者批量改写全站配置: ${key}`);
+                    return false;
+                }
+            }
+
             let ok = true;
             if (shared.length > 0) {
                 // M2：与单键 setConfig 一致，口令类配置入库前加密，避免认证用户走批写路由把明文落库
@@ -2480,6 +2674,10 @@ export class NavigationAPI {
     }
 
     async deleteConfig(key: string): Promise<boolean> {
+        if (!(await this.canWriteConfigKey(key))) {
+            console.warn(`拒绝非所有者删除全站配置: ${key}`);
+            return false;
+        }
         const uid = this.useUserScope(key);
         if (uid !== null) return this.deleteUserConfig(uid, key);
 
@@ -2519,9 +2717,26 @@ export class NavigationAPI {
         if (siteOrders.length === 0) return true;
         await this.migrate();
 
+        // 跨组移动要先确认「目标分组也是自己的」：
+        // 以前只给 sites 加了 user_id 条件，group_id 却任意填 —— 拖拽时能把卡片塞进
+        // 别人的分组（那之后它既不在自己能看到的分组里，自己也就找不回来了）。
+        // 校验不通过的项只更新排序、不改所属分组。
+        const wantedGroupIds = [
+            ...new Set(
+                siteOrders
+                    .map(item => item.group_id)
+                    .filter((id): id is number => typeof id === "number")
+            ),
+        ];
+        const allowed = await this.filterOwnedGroupIds(wantedGroupIds);
+
         const buildStatement = (item: { id: number; order_num: number; group_id?: number }) => {
             const tail = `${this.scopeSql(true)}`;
-            return item.group_id === undefined
+            const moveTo =
+                item.group_id !== undefined && allowed.has(item.group_id)
+                    ? item.group_id
+                    : undefined;
+            return moveTo === undefined
                 ? this.db
                       .prepare(
                           `UPDATE sites SET order_num = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?${tail}`
@@ -2531,7 +2746,7 @@ export class NavigationAPI {
                       .prepare(
                           `UPDATE sites SET order_num = ?, group_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?${tail}`
                       )
-                      .bind(...this.scopeParams([item.order_num, item.group_id, item.id]));
+                      .bind(...this.scopeParams([item.order_num, moveTo, item.id]));
         };
 
         // D1 单次 batch 的语句条数有上限，站点多的时候分批提交，避免整批失败
@@ -2777,14 +2992,117 @@ export class NavigationAPI {
     }
 
     /** 当前账号（单账号部署则是全部）在某张表里的行 id —— 覆盖恢复时用来清旧数据 */
-    private async listOwnedIds(table: "groups" | "sites"): Promise<number[]> {
-        const result = await this.db
+    private async listOwnedIds(table: "groups" | "sites"): Promise<number[]> {        const result = await this.db
             .prepare(`SELECT id FROM ${table}${this.scopeSql(false)}`)
             .bind(...this.scopeParams([]))
             .all<{ id: number }>();
         return (result.results || [])
             .map(row => row?.id)
             .filter((id): id is number => typeof id === "number");
+    }
+
+    /**
+     * 从候选分组 id 里挑出「属于当前账号」的那些。
+     * 卡片跨组移动时用它确认目标分组也是自己的（见 updateSiteOrder）。
+     */
+    private async filterOwnedGroupIds(ids: readonly number[]): Promise<Set<number>> {
+        if (ids.length === 0) return new Set();
+        const placeholders = ids.map(() => "?").join(",");
+        try {
+            const result = await this.db
+                .prepare(
+                    `SELECT id FROM groups WHERE id IN (${placeholders})${this.scopeSql(true)}`
+                )
+                .bind(...this.scopeParams([...ids]))
+                .all<{ id: number }>();
+            return new Set(
+                (result.results || [])
+                    .map(row => row?.id)
+                    .filter((id): id is number => typeof id === "number")
+            );
+        } catch (error) {
+            console.error("校验分组归属失败:", error);
+            return new Set();
+        }
+    }
+
+    /**
+     * 过期数据清理（每周定时任务调用）。
+     *
+     * 有四类东西只增不减，放久了会把 D1 撑成随时间线性增长的负担：
+     *   - audit_log：登录、改密、删站点…每条一行；
+     *   - token_blacklist：登出过期的令牌（过期后校验已不会再查它）；
+     *   - auth.recoveryJti.*：恢复令牌用过后留的防重放标记（configs 里一行一个 key）；
+     *   - invites：过期 / 已用掉的邀请码。
+     * 行数配额按实际情况保留：审计日志留 90 天够溯源，邀请码留 7 天便于排查。
+     */
+    async cleanupExpiredRows(): Promise<{
+        audit: number;
+        blacklist: number;
+        invites: number;
+        recoveryJti: number;
+    }> {
+        const counts = { audit: 0, blacklist: 0, invites: 0, recoveryJti: 0 };
+        const nowSec = Math.floor(Date.now() / 1000);
+
+        try {
+            const r = await this.db
+                .prepare(
+                    "DELETE FROM audit_log WHERE created_at < datetime('now', '-90 days')"
+                )
+                .run();
+            counts.audit = Number((r.meta as { changes?: number } | undefined)?.changes ?? 0);
+        } catch (error) {
+            console.error("清理审计日志失败:", error);
+        }
+
+        try {
+            const r = await this.db
+                .prepare("DELETE FROM token_blacklist WHERE exp < ?")
+                .bind(nowSec)
+                .run();
+            counts.blacklist = Number((r.meta as { changes?: number } | undefined)?.changes ?? 0);
+        } catch (error) {
+            console.error("清理令牌黑名单失败:", error);
+        }
+
+        try {
+            const r = await this.db
+                .prepare(
+                    "DELETE FROM invites WHERE expires_at < ? OR (used_at IS NOT NULL AND used_at < ?)"
+                )
+                .bind(nowSec - 7 * 24 * 3600, nowSec - 7 * 24 * 3600)
+                .run();
+            counts.invites = Number((r.meta as { changes?: number } | undefined)?.changes ?? 0);
+        } catch (error) {
+            console.error("清理邀请码失败:", error);
+        }
+
+        // 恢复令牌的 jti 标记是 configs 里一行一个 key，只能按前缀挑出来逐个删
+        counts.recoveryJti = await this.deleteExpiredRecoveryMarks(nowSec);
+
+        return counts;
+    }
+
+    private async deleteExpiredRecoveryMarks(nowSec: number): Promise<number> {
+        try {
+            const rows = await this.db
+                .prepare("SELECT key, value FROM configs WHERE key LIKE 'auth.recoveryJti.%'")
+                .all<{ key: string; value: string }>();
+            let removed = 0;
+            for (const row of rows.results || []) {
+                // value 存的就是令牌自带的 exp（秒）：过期后即使重放也通不过验证，标记可以丢掉
+                const exp = Number(row.value);
+                if (!Number.isFinite(exp) || exp < nowSec) {
+                    await this.deleteConfig(row.key);
+                    removed++;
+                }
+            }
+            return removed;
+        } catch (error) {
+            console.error("清理恢复令牌标记失败:", error);
+            return 0;
+        }
     }
 
     /** 按 id 批量删行。D1 单条语句的绑定参数有上限，分片删，避免大站一次删不完 */

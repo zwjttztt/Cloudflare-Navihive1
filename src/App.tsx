@@ -4148,6 +4148,8 @@ function App() {
                         onSyncHealthChange={handleToggleLinkHealthSync}
                         syncPrefs={prefSync}
                         onSyncPrefsChange={handleTogglePrefSync}
+                        // 全站外观是所有人共用的，只有站点所有者能改（服务端同规则）
+                        canEditShared={!currentUser || currentUser.role === "owner"}
                     />
                     </Suspense>
 

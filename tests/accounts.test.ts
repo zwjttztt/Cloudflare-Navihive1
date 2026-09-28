@@ -241,6 +241,28 @@ function makeDb(store: Store) {
                     if (row) row.password_hash = hash;
                     return { success: true };
                 }
+                if (sql.includes("UPDATE users SET token_version")) {
+                    const [version, id] = args as [number, number];
+                    const row = store.users.find(u => u.id === id);
+                    if (row) row.token_version = version;
+                    return { success: true };
+                }
+                // 站点排序 / 跨组移动：UPDATE sites SET ... WHERE id = ? [AND user_id = ?]
+                if (sql.includes("UPDATE sites SET")) {
+                    // 参数顺序见 updateSiteOrder：[...字段, id]（+ 末尾的 user_id）
+                    const id = args[args.length - (sql.includes("user_id = ?") ? 2 : 1)];
+                    const row = store.sites.find(s => s.id === id);
+                    if (row) {
+                        if (sql.includes("order_num = ?")) row.order_num = args[0];
+                        if (sql.includes("group_id = ?")) {
+                            const groupIdx = sql.indexOf("group_id = ?");
+                            const argIdx =
+                                sql.slice(0, groupIdx).split("?").length - 1;
+                            row.group_id = args[argIdx];
+                        }
+                    }
+                    return { success: true };
+                }
                 if (sql.includes("UPDATE users SET recovery_public_key")) {
                     const [value, id] = args as [string, number];
                     const row = store.users.find(u => u.id === id);
@@ -507,6 +529,140 @@ test("改密必须校验当前密码，改完旧密码失效", async () => {
     assert.equal(ok.success, true, ok.message);
     assert.equal(await api.verifyPasswordOfUser(ownerId, "new-password"), true);
     assert.equal(await api.verifyPasswordOfUser(ownerId, "seed-password"), false);
+});
+
+// ============ 以下四条守的是同一轮加固里改动的服务端行为 ============
+
+test("改密后 configs 里那份旧凭据必须作废（否则改名前的种子账号名是永久后门）", async () => {
+    const store = freshStore();
+    resetMigrationCacheForTests();
+    const api = makeApi(store);
+    await api.migrate();
+    const ownerId = store.users[0].id as number;
+    api.setCurrentUser(ownerId);
+    assert.equal(store.configs.has("auth.username"), true, "升级后旧凭据仍躺在 configs 里");
+
+    await api.updateCurrentCredentials("", "BrandNew2026", "seed-password");
+
+    assert.equal(
+        store.configs.has("auth.password"),
+        false,
+        "改完密码必须把 configs 那份删掉：它不会跟着一起改"
+    );
+    assert.equal(store.configs.has("auth.username"), false);
+});
+
+test("改名后，旧账号名 + 旧密码不能再登进来（users 表有账号时禁止回落到 configs）", async () => {
+    const store = freshStore();
+    resetMigrationCacheForTests();
+    const api = makeApi(store);
+    await api.migrate();
+    const ownerId = store.users[0].id as number;
+    api.setCurrentUser(ownerId);
+
+    // owner 把账号名改掉：users 表跟着改，configs 里那份（迁移残留）不会动
+    const renamed = await api.updateCurrentCredentials("keeper", "", "seed-password");
+    assert.equal(renamed.success, true, renamed.message);
+    store.configs.set("auth.username", "root");
+    store.configs.set("auth.password", await hashPassword("seed-password"));
+
+    // 关键：回落那条路径签的令牌不带 uid，一旦放行就是「看得到全站数据」的万能令牌
+    const intruder = await api.login({ username: "root", password: "seed-password" });
+    assert.equal(intruder.success, false, "旧凭据回落必须堵死");
+    // 补一道：即便有人设法签出来，缺 uid 的令牌也不该再签发
+    const legit = await api.login({ username: "keeper", password: "seed-password" });
+    assert.equal(legit.success, true, legit.message);
+    assert.equal(legit.token ? typeof JSON.parse(atob(legit.token.split(".")[1])).uid : "缺失", "number");
+});
+
+test("令牌版本按账号走：A 改密不该把 B 的会话踢掉", async () => {
+    const store = freshStore();
+    resetMigrationCacheForTests();
+    const api = makeApi(store);
+    await api.migrate();
+    const ownerId = store.users[0].id as number;
+    api.setCurrentUser(ownerId);
+
+    const invite = await api.createInvite(ownerId);
+    const bob = await api.registerUser("bob", "password123", invite.code || "");
+    const bobId = bob.user?.id as number;
+
+    // 两人各自登录，拿到带着自己 uid 的令牌
+    api.setCurrentUser(null);
+    const ownerApi = makeApi(store);
+    ownerApi.setCurrentUser(ownerId);
+    const ownerLogin = await makeApi(store).login({ username: "root", password: "seed-password" });
+    const bobLogin = await makeApi(store).login({ username: "bob", password: "password123" });
+    assert.equal(ownerLogin.success, true);
+    assert.equal(bobLogin.success, true);
+
+    // owner 改自己的密码
+    api.setCurrentUser(ownerId);
+    const changed = await api.updateCurrentCredentials("", "OwnerNew2026", "seed-password");
+    assert.equal(changed.success, true, changed.message);
+
+    // owner 的旧令牌必须失效，bob 的仍然有效
+    const api2 = makeApi(store);
+    assert.equal((await api2.verifyToken(ownerLogin.token as string)).valid, false, "改密者本人应登出");
+    assert.equal((await api2.verifyToken(bobLogin.token as string)).valid, true, "别人不该被连坐");
+});
+
+test("全站配置只有 owner 能写；每账号自己的 webdav.* 不受限制", async () => {
+    const store = freshStore();
+    resetMigrationCacheForTests();
+    const api = makeApi(store);
+    await api.migrate();
+    const ownerId = store.users[0].id as number;
+
+    const invite = await api.createInvite(ownerId);
+    const bob = await api.registerUser("bob", "password123", invite.code || "");
+    const bobId = bob.user?.id as number;
+
+    // owner：全站标题能改
+    api.setCurrentUser(ownerId);
+    assert.equal(await api.setConfig("site.title", "我的导航"), true);
+
+    // 普通账号：全站配置不能再写（过去只靠前端藏入口）
+    api.setCurrentUser(bobId);
+    assert.equal(await api.setConfig("site.title", "被劫持的标题"), false);
+    assert.equal(await api.setConfigs({ "site.title": "批量也不行" }), false);
+    assert.equal(await api.deleteConfig("site.title"), false);
+    assert.equal(store.configs.get("site.title"), "我的导航", "原值必须纹丝不动");
+
+    // 但按账号隔离的那批（自己的网盘配置）要照常能写
+    assert.equal(await api.setConfig("webdav.url", "https://dav.bob.example/dav/"), true);
+});
+
+test("卡片跨组移动不能塞进别人的分组", async () => {
+    const store = freshStore();
+    resetMigrationCacheForTests();
+    const api = makeApi(store);
+    await api.migrate();
+    const ownerId = store.users[0].id as number;
+
+    const invite = await api.createInvite(ownerId);
+    const bob = await api.registerUser("bob", "password123", invite.code || "");
+    const bobId = bob.user?.id as number;
+
+    // owner 的分组 + 卡片
+    store.groups.push({ id: 9001, name: "owner 分组", order_num: 1, user_id: ownerId });
+    store.sites.push({
+        id: 8001,
+        group_id: 9001,
+        name: "我的卡片",
+        url: "https://a.example",
+        order_num: 1,
+        user_id: ownerId,
+    });
+    // bob 的分组：owner 拖拽时若被传进来，就是越界移动
+    store.groups.push({ id: 9002, name: "bob 分组", order_num: 1, user_id: bobId });
+
+    api.setCurrentUser(ownerId);
+    await api.updateSiteOrder([{ id: 8001, order_num: 2, group_id: 9002 }]);
+
+    const moved = store.sites.find(s => s.id === 8001) as Row;
+    assert.equal(moved.group_id, 9001, "目标分组不属于自己 → 只排序、不换组");
+    assert.equal(moved.order_num, 2, "排序照常生效");
 });
 
 test("注销账号：数据一起删除；最后一个 owner 不允许注销", async () => {

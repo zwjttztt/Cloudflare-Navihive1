@@ -33,10 +33,25 @@ export function readBootstrapCache(): BootstrapData | null {
     }
 }
 
+/**
+ * 写缓存前先把站点登录凭据剔掉。
+ *
+ * bootstrap 为了让「复制密码」这类操作开箱可用，返回的是**已解密的明文密码**。
+ * 缓存是为了少白屏几百毫秒的临时快照，没必要（也不该）连带把一份明文凭据
+ * 留在 sessionStorage 里 —— 同源的 JS 都能读它，XSS 或恶意扩展一伸手就能拿到全站密码。
+ * 缺的那两个字段几十毫秒后就被真数据覆盖，界面上不会有任何差别。
+ */
+function stripCredentials(data: BootstrapData): BootstrapData {
+    return {
+        ...data,
+        sites: (data.sites || []).map(site => ({ ...site, username: "", password: "" })),
+    };
+}
+
 export function writeBootstrapCache(data: BootstrapData): void {
     try {
         if ((data.sites || []).length > MAX_SITES) return;
-        sessionStorage.setItem(KEY, JSON.stringify({ ts: Date.now(), data }));
+        sessionStorage.setItem(KEY, JSON.stringify({ ts: Date.now(), data: stripCredentials(data) }));
     } catch {
         // 隐私模式/配额不够时静默跳过，不影响正常使用
     }

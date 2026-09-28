@@ -18,10 +18,27 @@ import { NavigationAPI } from "../src/API/http";
 import { isBlockedHost, safeJson } from "./util";
 
 // ============ 限速 ============
-// 不按 IP（CF 连到 origin 时通常带 CF-Connecting-IP，但 D1 不适合做滑动窗口）；
-// 用一个简化的全局计数：每次启动后 worker 实例的"近 N 秒上报次数"。
-// 真正的限速放客户端（src/utils/errorReporter.ts 节流），这里只做硬上限兜底。
+// 这是个**公开**路由：谁都能 POST，而且每次都会往 audit_log 写一行。
+// 没有限速就等于一个「免费帮你刷 D1 行数」的接口，还能把 Workers 日志灌满，
+// 真正的崩溃反而被淹没。
+// 按 IP 做滑动窗口不准确（ Workers 里得存状态），这里先用 isolate 内的窗口计数：
+// 单实例每 10 秒最多接受 MAX_PER_WINDOW 份报告，超了只丢弃、不算错误。
+// 客户端本地本来就有节流（src/utils/errorReporter.ts），这里是兜底的硬上限。
 const MAX_PER_REQUEST_BODY_BYTES = 8 * 1024;
+const WINDOW_MS = 10_000;
+const MAX_PER_WINDOW = 20;
+
+/** isolate 内的滑动窗口计数（进程重启即清零，够挡住批量刷写） */
+const windowStart = { at: 0, count: 0 };
+function withinRateLimit(now: number): boolean {
+    if (now - windowStart.at > WINDOW_MS) {
+        windowStart.at = now;
+        windowStart.count = 0;
+    }
+    if (windowStart.count >= MAX_PER_WINDOW) return false;
+    windowStart.count += 1;
+    return true;
+}
 
 /** 同步清理字符串：去掉换行、控制字符 */
 function cleanStr(value: unknown, maxLen = 2000): string {
@@ -111,6 +128,14 @@ export async function reportError(request: Request, env: Env): Promise<Response>
     const contentLength = Number(request.headers.get("content-length") || "0");
     if (contentLength > MAX_PER_REQUEST_BODY_BYTES) {
         return new Response("payload too large", { status: 413 });
+    }
+
+    // 超窗直接丢弃（静默成功）：刷接口的人不该再从响应里学到任何东西
+    if (!withinRateLimit(Date.now())) {
+        return Response.json(
+            { ok: true, dropped: true },
+            { headers: { "Cache-Control": "no-store" } }
+        );
     }
 
     const raw = await safeJson(request);

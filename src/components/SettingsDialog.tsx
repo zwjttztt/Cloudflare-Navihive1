@@ -5,6 +5,7 @@
 // 所有值都走「临时副本 + 点保存才落库」，所以组件本身不碰 API，只负责渲染和回调。
 import type { ChangeEvent } from "react";
 import {
+    Alert,
     Box,
     Button,
     Dialog,
@@ -82,6 +83,13 @@ interface SettingsDialogProps {
     /** 星标 / 标签同步到服务端（同上） */
     syncPrefs: boolean;
     onSyncPrefsChange: (enabled: boolean) => void;
+    /**
+     * 当前身份能不能改「全站」那部分设置。只有站点所有者：
+     * 标题 / 主题 / 背景是所有人共用的，服务端现已按同一规则拦住，
+     * 这里同步给出提示并禁用保存，省得用户改半天才发现白改。
+     * 不传默认 true（未启用登录的单账号部署没有「别人」可言）。
+     */
+    canEditShared?: boolean;
 }
 
 /** 分组：左侧一小段主色竖条 + 组标题，可选一行组说明；组内字段纵向排布 */
@@ -207,6 +215,7 @@ export default function SettingsDialog({
     onSyncHealthChange,
     syncPrefs,
     onSyncPrefsChange,
+    canEditShared = true,
 }: SettingsDialogProps) {
     return (
         <>
@@ -246,6 +255,12 @@ export default function SettingsDialog({
                 <DialogContentText sx={{ mb: 1.5, fontSize: 13.5 }}>
                     集中管理站点信息、外观风格、图标来源与数据同步。
                 </DialogContentText>
+                {!canEditShared ? (
+                    // 服务端已经拦住了，这里提前说明：否则改一通才发现保存无效，只会更困惑
+                    <Alert severity='info' sx={{ mb: 1.5 }}>
+                        全站外观（标题、主题、背景等）只有站点所有者可以修改，这里仅供查看。
+                    </Alert>
+                ) : null}
                 <Stack spacing={2} divider={<Divider />}>
                     {/* 1. 基本信息：最常改，放最上面 */}
                     <Section title='基本信息'>
@@ -622,7 +637,12 @@ export default function SettingsDialog({
                 <Button onClick={onClose} variant='outlined'>
                     取消
                 </Button>
-                <Button onClick={onSave} variant='contained' color='primary' disabled={saving}>
+                <Button
+                    onClick={onSave}
+                    variant='contained'
+                    color='primary'
+                    disabled={saving || !canEditShared}
+                >
                     {saving ? "保存中…" : "保存设置"}
                 </Button>
             </DialogActions>

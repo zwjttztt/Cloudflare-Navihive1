@@ -176,6 +176,24 @@ export async function runInactiveSweep(api: SchedulerDB): Promise<void> {
 }
 
 /**
+ * 过期数据清理：审计日志、令牌黑名单、用过的恢复令牌标记、过期邀请码。
+ * 这些表 / 键只增不减，不清就一直线性涨。详见 http.ts 的 cleanupExpiredRows。
+ */
+export async function runRetentionCleanup(api: SchedulerDB): Promise<void> {
+    const nav = api as unknown as Partial<NavigationAPI>;
+    if (typeof nav.cleanupExpiredRows !== "function") return;
+    const result = await nav.cleanupExpiredRows();
+    const total =
+        result.audit + result.blacklist + result.invites + result.recoveryJti;
+    if (total > 0) {
+        console.log(
+            `过期数据清理完成：审计 ${result.audit} 条、黑名单 ${result.blacklist} 条、` +
+                `邀请码 ${result.invites} 条、恢复标记 ${result.recoveryJti} 条`
+        );
+    }
+}
+
+/**
  * cron 入口：备份优先，巡检兜底，互不拖累。
  * makeApi 默认 new NavigationAPI(env)，与拆分前行为一致；验证脚本可注入假实现。
  */
@@ -202,5 +220,12 @@ export async function runScheduledTasks(
         await runInactiveSweep(api);
     } catch (error) {
         console.error("沉睡账号扫描异常:", error);
+    }
+
+    try {
+        const api = makeApi(env);
+        await runRetentionCleanup(api);
+    } catch (error) {
+        console.error("过期数据清理异常:", error);
     }
 }

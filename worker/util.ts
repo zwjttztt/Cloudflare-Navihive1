@@ -1,5 +1,25 @@
 // worker/util.ts
-// 与具体业务无关的小工具：错误消息提取、安全的 JSON 读取、弱 ETag。
+// 与具体业务无关的小工具：错误消息提取、安全的 JSON 读取、弱 ETag、响应安全头。
+
+/**
+ * 所有 Worker 响应都该带上的安全头。
+ *
+ * 关键点：`public/_headers` 里那套 CSP / nosniff **只对静态资源生效** —— Worker 用
+ * `new Response()` 返回的响应一个安全头都没有。少了 nosniff 浏览器会按内容猜类型，
+ * 一个 content-type 透传第三方的接口（比如图标代理）就能把任意内容变成同源文档。
+ * 这里不重复静态资源已经配好的 CSP（各接口用途不同，统一塞反而容易打断正常功能），
+ * 只补这些「无论什么响应都成立」的：
+ *   - X-Content-Type-Options: nosniff —— 禁止 MIME 嗅探
+ *   - X-Frame-Options / CSP frame-ancestors —— 不允许被别的站点嵌进 iframe（点击劫持）
+ *   - Referrer-Policy —— 不把本站 URL 泄露给外链
+ */
+export function securityHeaders(extra?: HeadersInit): Headers {
+    const headers = new Headers(extra);
+    headers.set("X-Content-Type-Options", "nosniff");
+    headers.set("X-Frame-Options", "DENY");
+    headers.set("Referrer-Policy", "no-referrer");
+    return headers;
+}
 
 export function errorMessage(error: unknown, fallback: string): string {
     return error instanceof Error ? error.message || fallback : fallback;
