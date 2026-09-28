@@ -8,9 +8,8 @@ import InstallDesktopIcon from "@mui/icons-material/InstallDesktop";
 import StarIcon from "@mui/icons-material/Star";
 import InsightsIcon from "@mui/icons-material/Insights";
 import KeyboardIcon from "@mui/icons-material/Keyboard";
-import FileDownloadIcon from "@mui/icons-material/FileDownload";
-import FileUploadIcon from "@mui/icons-material/FileUpload";
 import BookmarkAddedIcon from "@mui/icons-material/BookmarkAdded";
+import SettingsBackupRestoreIcon from "@mui/icons-material/SettingsBackupRestore";
 import LinkOffIcon from "@mui/icons-material/LinkOff";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import LogoutIcon from "@mui/icons-material/Logout";
@@ -144,17 +143,13 @@ export default function MoreMenu({
                             <ListItemText>键盘快捷键</ListItemText>
                         </MenuItem>
                         <Divider />
+                        {/* 备份与恢复其实是同一件事的两面（导出成文件 / 从文件还原），
+                            合成一个入口，进去再选「备份」还是「恢复 / 导入」 */}
                         <MenuItem onClick={() => onOpenBackup(0)}>
                             <ListItemIcon>
-                                <FileDownloadIcon fontSize='small' />
+                                <SettingsBackupRestoreIcon fontSize='small' />
                             </ListItemIcon>
-                            <ListItemText>导出数据</ListItemText>
-                        </MenuItem>
-                        <MenuItem onClick={() => onOpenBackup(1)}>
-                            <ListItemIcon>
-                                <FileUploadIcon fontSize='small' />
-                            </ListItemIcon>
-                            <ListItemText>导入数据</ListItemText>
+                            <ListItemText>数据备份</ListItemText>
                         </MenuItem>
                         <MenuItem
                             onClick={() => {

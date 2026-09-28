@@ -510,11 +510,11 @@ const LoginForm: React.FC<LoginFormProps> = ({
                             <TextField
                                 fullWidth
                                 size='small'
-                                label='新管理员账号'
+                                label='账号名'
                                 value={newUsername}
                                 onChange={e => setNewUsername(e.target.value)}
                                 disabled={recoverLoading}
-                                placeholder='留空则只重置密码，不改账号'
+                                placeholder='留空则不改账号（按站点所有者重置）'
                             />
                             <PasswordField
                                 id='recover-new-password'

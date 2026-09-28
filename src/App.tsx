@@ -755,6 +755,9 @@ function App() {
                 setCurrentUser({ username: result.username || username, role: "user" });
                 handleCloseSnackbar();
                 await fetchData();
+                // 新账号是干净的：上一个账号生成的邀请码、配置过的恢复密钥都不能跟着带过来
+                setInvite(null);
+                refreshRecoveryStatus();
                 notify("注册成功，已自动登录", "success");
                 return { success: true };
             }
@@ -823,6 +826,18 @@ function App() {
         }
     };
 
+    /**
+     * 重新问一次「当前账号有没有配恢复密钥」。
+     * 公钥是每个账号自己的，换账号（登录 / 注册 / 退出）后必须重新取，
+     * 否则上一个账号的「已配置」会串到新账号的设置页上。
+     */
+    const refreshRecoveryStatus = () => {
+        api
+            .getRecoveryStatus()
+            .then(status => setRecoveryConfigured(status?.configured === true))
+            .catch(() => setRecoveryConfigured(false));
+    };
+
     // 检查认证状态
     // 优化点：不再单独发一次 checkAuthStatus 请求，直接拉 bootstrap
     // —— 拿得到数据即已登录，401 就是未登录/令牌失效，整个启动过程只花 1 次请求
@@ -833,10 +848,7 @@ function App() {
             const ok = await fetchData();
 
             // 顺带确认是否配置了恢复公钥（未登录也能查，失败就当作未配置，不影响登录）
-            api
-                .getRecoveryStatus()
-                .then(status => setRecoveryConfigured(status?.configured === true))
-                .catch(() => setRecoveryConfigured(false));
+            refreshRecoveryStatus();
 
             if (ok) {
                 setIsAuthenticated(true);
@@ -890,6 +902,8 @@ function App() {
                 }
                 // 加载数据（一次 bootstrap 请求）
                 await fetchData();
+                // 换账号了：恢复密钥状态要按新账号重新问一次
+                refreshRecoveryStatus();
             } else {
                 // 登录失败：账号或密码不对
                 // 只在登录表单内提示，不再弹全局 Snackbar——否则提示会残留到下一次成功登录之后
@@ -979,6 +993,12 @@ function App() {
         // 清空数据
         setGroups([]);
         handleMenuClose();
+
+        // 上一个账号的痕迹一并清掉：邀请码是「当前会话刚生成的那枚」，
+        // 换个账号登录后不该还在设置页里露出来；恢复密钥状态同理，下次登录重新问
+        setInvite(null);
+        setCurrentUser(null);
+        setRecoveryConfigured(false);
 
         // 显示提示信息
         setError("已退出登录，请重新登录");
@@ -3008,16 +3028,10 @@ function App() {
                 run: () => handleOpenConfig(),
             },
             {
-                id: "cmd-export",
-                label: "导出数据",
+                id: "cmd-backup",
+                label: "数据备份",
                 section: "操作",
                 run: () => handleOpenBackup(0),
-            },
-            {
-                id: "cmd-import",
-                label: "导入数据",
-                section: "操作",
-                run: () => handleOpenBackup(1),
             },
             {
                 id: "cmd-bookmarks",

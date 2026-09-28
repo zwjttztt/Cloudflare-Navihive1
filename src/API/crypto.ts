@@ -386,6 +386,25 @@ export async function isValidRecoveryPublicKey(publicKeyB64url: string): Promise
     return false;
 }
 
+/**
+ * 只看一眼恢复令牌里的账号名（不验签）。
+ * 多账号下每个账号有自己的恢复公钥，得先知道「这份令牌是给哪个账号的」，
+ * 才知道拿哪一把公钥去验。这里解出来的内容只用于挑公钥，令牌随后仍要完整验签 ——
+ * 把账号名改成别人也过不了验签那一关。
+ */
+export function peekRecoveryTokenUsername(token: string): string {
+    try {
+        const parts = token.split(".");
+        if (parts.length !== 3) return "";
+        const payload = JSON.parse(dec.decode(b64urlDecode(parts[1]))) as {
+            username?: unknown;
+        };
+        return typeof payload?.username === "string" ? payload.username.trim() : "";
+    } catch {
+        return "";
+    }
+}
+
 export async function verifyRecoveryToken(
     token: string,
     publicKeyB64url: string

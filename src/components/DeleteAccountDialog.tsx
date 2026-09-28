@@ -40,7 +40,7 @@ export default function DeleteAccountDialog({
                 </Alert>
                 <Typography variant='body2' color='text.secondary' sx={{ mb: 1.5 }}>
                     {username ? `当前账号：${username}。` : ""}
-                    请先用「导出数据」保存一份备份，再输入当前密码确认注销。
+                    请先用「更多选项 → 数据备份」保存一份备份，再输入当前密码确认注销。
                 </Typography>
                 <PasswordField
                     autoFocus

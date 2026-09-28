@@ -1,6 +1,7 @@
 // src/api/http.ts
 // 不使用外部JWT库，改为内置的crypto API
 import { normalizeUrl } from "../utils/url";
+import { STARTER_GROUPS } from "./starterData";
 import {
     signJwt,
     verifyJwt,
@@ -11,6 +12,7 @@ import {
     decryptSecretDeep,
     verifyRecoveryToken,
     isValidRecoveryPublicKey,
+    peekRecoveryTokenUsername,
 } from "./crypto";
 
 // 定义D1数据库类型
@@ -487,6 +489,44 @@ export class NavigationAPI {
                 }
             }
         }
+
+        // 4) 恢复公钥：老部署里是全站一份，现在改成每个账号一份
+        await this.migrateRecoveryKeyToOwner(ownerId);
+    }
+
+    /**
+     * 把 configs 里那份「全站恢复公钥」搬进 owner 账号。
+     * 搬成功才删掉全局那份 —— 留着会让新账号显示成「恢复密钥（已配置）」，
+     * 可它手里的私钥根本不是自己的，真要找回密码时只会得到「签名不匹配」。
+     */
+    private async migrateRecoveryKeyToOwner(ownerId: number): Promise<void> {
+        try {
+            if (!(await this.hasColumn("users", "recovery_public_key"))) {
+                await this.db.exec("ALTER TABLE users ADD COLUMN recovery_public_key TEXT");
+            }
+        } catch {
+            // 列已存在（并发迁移）或表不存在，忽略
+        }
+
+        try {
+            const legacy = ((await this.getConfig(RECOVERY_PUBLIC_KEY_CONFIG)) || "").trim();
+            if (!legacy) return;
+
+            const row = await this.db
+                .prepare("SELECT recovery_public_key FROM users WHERE id = ?")
+                .bind(ownerId)
+                .first<{ recovery_public_key: string | null }>();
+            // 已经搬过，或 owner 后来自己重新生成过 → 以账号里那份为准
+            if (row?.recovery_public_key) return;
+
+            const updated = await this.db
+                .prepare("UPDATE users SET recovery_public_key = ? WHERE id = ?")
+                .bind(legacy, ownerId)
+                .run();
+            if (updated.success) await this.deleteConfig(RECOVERY_PUBLIC_KEY_CONFIG);
+        } catch (error) {
+            console.error("迁移恢复公钥失败:", error);
+        }
     }
 
     private async hasColumn(table: string, column: string): Promise<boolean> {
@@ -699,17 +739,90 @@ export class NavigationAPI {
     // 用私钥签名的 JWS 令牌重置管理员密码。服务器只验签、不持有私钥，
     // 因此这个公网入口无法被暴力猜解（没有私钥造不出合法 token）。
     /**
-     * 取当前生效的恢复公钥：优先部署变量（wrangler secret），没有再用库里的。
+     * 取当前生效的恢复公钥：优先部署变量（wrangler secret），没有再用当前账号自己的。
      * 之所以支持库里存：网页端生成密钥对后要把公钥交给服务器，而 secret 只能命令行改。
+     *
+     * 多账号下公钥是每个账号一份，**不回落到全站那一份**：
+     * 否则新账号会显示「已配置」，但它根本拿不到对应的私钥。
      */
     async getRecoveryPublicKey(): Promise<string> {
         if (this.recoveryPubKey) return this.recoveryPubKey;
+        const uid = this.currentUserId;
+        if (uid !== null) return this.getRecoveryPublicKeyOfUser(uid);
         const stored = await this.getConfig(RECOVERY_PUBLIC_KEY_CONFIG);
         return stored || "";
     }
 
+    /** 读某个账号自己的恢复公钥（列还没建好时当「没配」处理） */
+    private async getRecoveryPublicKeyOfUser(userId: number): Promise<string> {
+        try {
+            const row = await this.db
+                .prepare("SELECT recovery_public_key FROM users WHERE id = ?")
+                .bind(userId)
+                .first<{ recovery_public_key: string | null }>();
+            return (row?.recovery_public_key || "").trim();
+        } catch {
+            return "";
+        }
+    }
+
+    /** 写某个账号自己的恢复公钥（传空串 = 停用） */
+    private async setRecoveryPublicKeyOfUser(userId: number, key: string): Promise<boolean> {
+        try {
+            const result = await this.db
+                .prepare(
+                    "UPDATE users SET recovery_public_key = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+                )
+                .bind(key, userId)
+                .run();
+            return result.success;
+        } catch (error) {
+            console.error("保存恢复公钥失败:", error);
+            return false;
+        }
+    }
+
+    /**
+     * 挑出该用哪把公钥验这份令牌：部署变量优先；
+     * 令牌里写了账号名就用那个账号的公钥；没写（老令牌）沿用站点所有者那把。
+     */
+    private async resolveRecoveryPublicKey(username: string): Promise<string> {
+        if (this.recoveryPubKey) return this.recoveryPubKey;
+        // configs 里那份是全站一份时代的遗留物；迁移搬进 owner 之后它就会被删掉
+        const legacy = ((await this.getConfig(RECOVERY_PUBLIC_KEY_CONFIG)) || "").trim();
+        const name = (username || "").trim();
+
+        if (name) {
+            const user = await this.findUserByUsername(name);
+            if (!user) return legacy; // 老部署还没把管理员搬进 users 表
+            const own = await this.getRecoveryPublicKeyOfUser(user.id);
+            return own || legacy;
+        }
+
+        const owner = await this.findOwnerUser();
+        if (owner) {
+            const own = await this.getRecoveryPublicKeyOfUser(owner.id);
+            if (own) return own;
+        }
+        return legacy;
+    }
+
     async hasRecoveryKey(): Promise<boolean> {
-        return (await this.getRecoveryPublicKey()).length > 0;
+        if (this.recoveryPubKey) return true;
+        const uid = this.currentUserId;
+        if (uid !== null) return (await this.getRecoveryPublicKeyOfUser(uid)).length > 0;
+        // 登录页还没身份，只回答「这个站点有没有人配过」，不暴露是谁配的
+        try {
+            const row = await this.db
+                .prepare(
+                    "SELECT COUNT(*) AS total FROM users WHERE recovery_public_key IS NOT NULL AND recovery_public_key <> ''"
+                )
+                .first<{ total: number }>();
+            if ((row?.total ?? 0) > 0) return true;
+        } catch {
+            // 列还没建好（迁移未跑），退回全局配置
+        }
+        return ((await this.getConfig(RECOVERY_PUBLIC_KEY_CONFIG)) || "").length > 0;
     }
 
     /**
@@ -723,10 +836,15 @@ export class NavigationAPI {
         clientKey: string = "unknown"
     ): Promise<{ success: boolean; message: string }> {
         const key = (publicKey || "").trim();
+        const uid = this.currentUserId;
 
         // 留空 = 停用密钥恢复
         if (!key) {
-            await this.deleteConfig(RECOVERY_PUBLIC_KEY_CONFIG);
+            if (uid !== null) {
+                await this.setRecoveryPublicKeyOfUser(uid, "");
+            } else {
+                await this.deleteConfig(RECOVERY_PUBLIC_KEY_CONFIG);
+            }
             await this.writeAudit("auth.recoveryKey", "", clientKey, "停用恢复密钥");
             return { success: true, message: "已停用密钥恢复" };
         }
@@ -739,7 +857,14 @@ export class NavigationAPI {
             };
         }
 
-        if (this.authEnabled) {
+        // 必须校验当前密码：否则拿到会话的人可以把自己的公钥塞进来留后门。
+        // 多账号下比的是「当前账号」自己的哈希；没有用户上下文时（旧令牌）才退回全局凭据
+        if (uid !== null) {
+            if (!(await this.verifyPasswordOfUser(uid, currentPassword))) {
+                await this.writeAudit("auth.recoveryKey.failed", "", clientKey, "当前密码不正确");
+                return { success: false, message: "当前密码不正确" };
+            }
+        } else if (this.authEnabled) {
             const creds = await this.getAuthCredentials();
             const ok = await verifyPassword(currentPassword, creds.password);
             if (!ok) {
@@ -753,7 +878,11 @@ export class NavigationAPI {
             return { success: false, message: "恢复公钥格式不合法，请重新生成" };
         }
 
-        const ok = await this.setConfig(RECOVERY_PUBLIC_KEY_CONFIG, key);
+        // 公钥归属当前账号：别人的私钥签不出自己账号能用的令牌
+        const ok =
+            uid !== null
+                ? await this.setRecoveryPublicKeyOfUser(uid, key)
+                : await this.setConfig(RECOVERY_PUBLIC_KEY_CONFIG, key);
         if (!ok) return { success: false, message: "保存恢复公钥失败，请重试" };
 
         await this.writeAudit("auth.recoveryKey", "", clientKey, "更新恢复公钥");
@@ -764,9 +893,17 @@ export class NavigationAPI {
         token: string,
         clientKey: string = "unknown"
     ): Promise<{ success: boolean; message: string }> {
-        const publicKey = await this.getRecoveryPublicKey();
+        // 多账号：每个账号有自己的公钥，先按令牌里的账号名挑出对应的那把
+        // （令牌没写账号名 = 老令牌，沿用站点所有者那把）
+        const tokenUsername = peekRecoveryTokenUsername(token);
+        const publicKey = await this.resolveRecoveryPublicKey(tokenUsername);
         if (!publicKey) {
-            return { success: false, message: "本站点尚未配置恢复公钥，无法用密钥恢复" };
+            return {
+                success: false,
+                message: tokenUsername
+                    ? `账号「${tokenUsername}」尚未配置恢复公钥，无法用密钥恢复`
+                    : "本站点尚未配置恢复公钥，无法用密钥恢复",
+            };
         }
 
         const result = await verifyRecoveryToken(token, publicKey);
@@ -1019,6 +1156,10 @@ export class NavigationAPI {
         }
         if (!created) return { success: false, message: "创建账号失败，请重试" };
 
+        // 默认起手数据放到建号成功之后、消耗邀请码之前：
+        // 就算写数据失败也只是「空账号」，不会把一个用掉的邀请码换来的账号丢掉
+        await this.seedStarterData(created.id);
+
         // 邀请码一次性：并发下靠 used_at IS NULL 保证只有一个请求能标记成功
         const claimed = await this.db
             .prepare("UPDATE invites SET used_by = ?, used_at = ? WHERE code = ? AND used_at IS NULL")
@@ -1033,6 +1174,56 @@ export class NavigationAPI {
         }
 
         return { success: true, message: "注册成功", user: created };
+    }
+
+    /**
+     * 给刚注册的账号塞一套默认分组与卡片。
+     * 失败一律吞掉：起手数据只是「不至于空荡荡」，不能反过来让注册失败
+     *（邀请码已经用掉了，这时候报错等于白白损失一个名额）。
+     */
+    private async seedStarterData(userId: number): Promise<void> {
+        try {
+            const statements: D1PreparedStatement[] = [];
+
+            for (let gi = 0; gi < STARTER_GROUPS.length; gi++) {
+                const group = STARTER_GROUPS[gi];
+                const inserted = await this.db
+                    .prepare(
+                        "INSERT INTO groups (name, order_num, user_id) VALUES (?, ?, ?) RETURNING id"
+                    )
+                    .bind(group.name, gi + 1, userId)
+                    .all<{ id: number }>();
+                const groupId = (inserted.results || [])[0]?.id;
+                if (!groupId) continue;
+
+                for (let si = 0; si < group.sites.length; si++) {
+                    const site = group.sites[si];
+                    statements.push(
+                        this.db
+                            .prepare(
+                                `INSERT INTO sites (group_id, name, url, icon, description, notes, username, password, order_num, user_id)
+                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+                            )
+                            .bind(
+                                groupId,
+                                site.name,
+                                site.url,
+                                "",
+                                site.description,
+                                "",
+                                "",
+                                "",
+                                si + 1,
+                                userId
+                            )
+                    );
+                }
+            }
+
+            if (statements.length > 0) await this.db.batch(statements);
+        } catch (error) {
+            console.error("写入新账号默认数据失败:", error);
+        }
     }
 
     /** 校验邀请码是否还能用（不消耗） */

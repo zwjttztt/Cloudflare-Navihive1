@@ -109,6 +109,23 @@ function makeDb(store: Store) {
             store.groups.push(row);
             return row;
         }
+        if (sql.includes("INSERT INTO sites")) {
+            const row: Row = {
+                id: allocId(),
+                group_id: args[0],
+                name: args[1],
+                url: args[2],
+                icon: args[3] ?? "",
+                description: args[4] ?? "",
+                notes: args[5] ?? "",
+                username: args[6] ?? "",
+                password: args[7] ?? "",
+                order_num: args[8],
+                user_id: args[9] ?? null,
+            };
+            store.sites.push(row);
+            return row;
+        }
         // audit_log 之类不需要回看的表
         return null;
     };
@@ -184,6 +201,12 @@ function makeDb(store: Store) {
                     const [hash, id] = args as [string, number];
                     const row = store.users.find(u => u.id === id);
                     if (row) row.password_hash = hash;
+                    return { success: true };
+                }
+                if (sql.includes("UPDATE users SET recovery_public_key")) {
+                    const [value, id] = args as [string, number];
+                    const row = store.users.find(u => u.id === id);
+                    if (row) row.recovery_public_key = value;
                     return { success: true };
                 }
                 if (sql.includes("UPDATE users SET username")) {
@@ -358,17 +381,75 @@ test("数据隔离：A 账号看不到 B 账号的分组", async () => {
     const registered = await api.registerUser("alice", "password123", invite.code || "");
     const aliceId = registered.user?.id as number;
 
-    // 新账号名下什么都没有
+    // 新账号看不到 owner 的分组，但自带一套默认分组（见下一条用例）
     api.setCurrentUser(aliceId);
-    assert.equal((await api.getGroups()).length, 0);
+    const aliceGroups = await api.getGroups();
+    assert.ok(aliceGroups.length > 0, "新账号自带默认分组");
+    assert.equal(
+        aliceGroups.some(g => g.name === "owner 的分组"),
+        false,
+        "绝不能看到别人的分组"
+    );
     await api.createGroup({ name: "alice 的分组", order_num: 0 });
-    assert.equal((await api.getGroups()).length, 1);
+    assert.equal((await api.getGroups()).length, aliceGroups.length + 1);
 
     // owner 仍然只看得到自己那一个
     api.setCurrentUser(ownerId);
     const ownerGroups = await api.getGroups();
     assert.equal(ownerGroups.length, 1);
     assert.equal(ownerGroups[0].name, "owner 的分组");
+});
+
+test("新注册的账号自带几个默认分组和示例卡片，全部挂在自己名下", async () => {
+    const store = freshStore();
+    resetMigrationCacheForTests();
+    const api = makeApi(store);
+    await api.migrate();
+    const ownerId = store.users[0].id as number;
+    const invite = await api.createInvite(ownerId);
+    const registered = await api.registerUser("alice", "password123", invite.code || "");
+    const aliceId = registered.user?.id as number;
+
+    api.setCurrentUser(aliceId);
+    const groups = await api.getGroups();
+    const sites = await api.getSites();
+
+    assert.ok(groups.length >= 3, `新账号应该有几个默认分组，实际 ${groups.length}`);
+    assert.ok(sites.length > 0, "默认分组里要有示例卡片，不能是空壳");
+    // 每张卡片都得挂在 alice 自己的分组下
+    const ownGroupIds = new Set(groups.map(g => g.id));
+    assert.ok(sites.every(s => ownGroupIds.has(s.group_id)));
+    assert.equal(store.groups.filter(g => g.user_id === aliceId).length, groups.length);
+
+    // owner 那边不受影响（老账号不该被塞一份默认数据）
+    api.setCurrentUser(ownerId);
+    assert.equal((await api.getGroups()).length, 0);
+});
+
+test("恢复公钥按账号隔离：老的全局公钥搬给 owner，新账号显示未配置", async () => {
+    const store = freshStore();
+    resetMigrationCacheForTests();
+    // 升级前：整站只有一份公钥
+    store.configs.set("recovery.publicKey", "legacy-pub-key");
+    const api = makeApi(store);
+    await api.migrate();
+    const ownerId = store.users[0].id as number;
+
+    api.setCurrentUser(ownerId);
+    assert.equal(await api.hasRecoveryKey(), true, "owner 接手升级前那把公钥");
+    assert.equal(await api.getRecoveryPublicKey(), "legacy-pub-key");
+    assert.equal(
+        store.configs.has("recovery.publicKey"),
+        false,
+        "搬完必须删掉全局那份，否则新账号会显示成「已配置」"
+    );
+
+    // 新账号不该看到别人配的密钥
+    const invite = await api.createInvite(ownerId);
+    const registered = await api.registerUser("alice", "password123", invite.code || "");
+    api.setCurrentUser(registered.user?.id as number);
+    assert.equal(await api.hasRecoveryKey(), false);
+    assert.equal(await api.getRecoveryPublicKey(), "");
 });
 
 test("改密必须校验当前密码，改完旧密码失效", async () => {
@@ -410,11 +491,15 @@ test("注销账号：数据一起删除；最后一个 owner 不允许注销", a
     const aliceId = registered.user?.id as number;
     api.setCurrentUser(aliceId);
     await api.createGroup({ name: "alice 的分组", order_num: 0 });
-    assert.equal(store.groups.length, 2);
+    const aliceGroups = store.groups.filter(g => g.user_id === aliceId).length;
+    assert.ok(aliceGroups > 0, "alice 名下应该有分组（默认数据 + 刚建的）");
 
     const removed = await api.deleteAccount(aliceId);
     assert.equal(removed.success, true, removed.message);
     assert.equal(store.users.some(u => u.id === aliceId), false);
+    // alice 的分组（含注册时送的默认分组）一个都不留
+    assert.equal(store.groups.filter(g => g.user_id === aliceId).length, 0);
+    assert.equal(store.sites.filter(s => s.user_id === aliceId).length, 0);
     // 只剩 owner 的分组
     assert.equal(store.groups.length, 1);
     assert.equal(store.groups[0].name, "要被删掉的分组");
