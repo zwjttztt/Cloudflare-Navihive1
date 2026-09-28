@@ -914,16 +914,16 @@ export default function SettingsDialog({
             maxWidth='xs'
             fullWidth
         >
-            <DialogTitle sx={{ pb: 1 }}>验证身份后生成恢复私钥</DialogTitle>
-            <DialogContent>
+            <DialogTitle sx={{ px: 3, pt: 2, pb: 1 }}>验证身份后生成恢复私钥</DialogTitle>
+            <DialogContent sx={{ px: 3, pt: 0.5, pb: 1 }}>
+                {/* 一句说清就行：小屏上弹窗高度有限，文字一多底部按钮会被挤出可视区 */}
                 <DialogContentText variant='body2' sx={{ mb: 2 }}>
-                    私钥等同于重置管理员密码的万能钥匙。为防止有人拿着你的登录会话偷偷换掉恢复公钥，
-                    请先输入<strong>当前管理员密码</strong>。
+                    私钥等同于重置密码的万能钥匙，请输入<strong>当前账号密码</strong>验证身份。
                 </DialogContentText>
                 <PasswordField
                     autoFocus
                     id='recovery-current-password'
-                    label='当前管理员密码'
+                    label='当前账号密码'
                     value={recoveryPwd}
                     onChange={e => setRecoveryPwd(e.target.value)}
                     onKeyDown={e => {
@@ -941,20 +941,33 @@ export default function SettingsDialog({
                     </Typography>
                 ) : null}
             </DialogContent>
-            <DialogActions sx={{ px: 3, pb: 2 }}>
+            {/* 按钮一律 flexWrap + 主按钮在窄屏排前面：
+                弹窗高度不够时（手机上键盘弹起）它们会换行，绝不会被挤出可视区 */}
+            <DialogActions
+                sx={{
+                    px: 3,
+                    pb: 2,
+                    pt: 1,
+                    gap: 1,
+                    flexWrap: "wrap",
+                    "& > :last-child": { ml: { xs: "auto", sm: "8px" } },
+                }}
+            >
                 <Button
                     onClick={() => setRecoveryPwdOpen(false)}
                     variant='outlined'
                     disabled={recoveryBusy}
+                    sx={{ order: { xs: 2, sm: 1 } }}
                 >
                     取消
                 </Button>
                 <Button
                     onClick={() => void submitRecoveryPwd()}
                     variant='contained'
-                    disabled={recoveryBusy}
+                    disabled={recoveryBusy || !recoveryPwd}
+                    sx={{ order: { xs: 1, sm: 2 } }}
                 >
-                    {recoveryBusy ? "生成中…" : "确认并下载私钥"}
+                    {recoveryBusy ? "生成中…" : "确定"}
                 </Button>
             </DialogActions>
         </Dialog>

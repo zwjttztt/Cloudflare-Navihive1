@@ -66,7 +66,7 @@ export function PasswordField({
             fullWidth={fullWidth}
             InputProps={{
                 endAdornment: (
-                    <InputAdornment position='end'>
+                    <InputAdornment position='end' sx={{ mr: 0.5 }}>
                         <IconButton
                             aria-label={visible ? "隐藏密码" : "显示密码"}
                             title={visible ? "隐藏密码" : "显示密码"}
@@ -76,6 +76,16 @@ export function PasswordField({
                             edge='end'
                             size='small'
                             disabled={disabled}
+                            sx={{
+                                // 移动端主题给 IconButton 统一加过 minWidth/minHeight（触控保底尺寸），
+                                // 会把这个小眼睛撑大、和输入框错开一行；这里钉死尺寸，
+                                // 无论屏幕多窄都和输入框同一行居中
+                                p: "4px",
+                                width: 30,
+                                height: 30,
+                                minWidth: 0,
+                                minHeight: 0,
+                            }}
                         >
                             {visible ? (
                                 <VisibilityOffIcon fontSize='small' />
