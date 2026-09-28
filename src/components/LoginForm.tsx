@@ -19,6 +19,7 @@ import { readRememberedLogin } from "../utils/rememberedLogin";
 import { validatePasswordStrength } from "../API/crypto";
 import {
     algLabel,
+    checkWebCryptoSupport,
     parseRecoveryKeyFile,
     signRecoveryToken,
     type RecoveryAlg,
@@ -118,6 +119,12 @@ const LoginForm: React.FC<LoginFormProps> = ({
         }
 
         setLocalRecoverError(null);
+        const notSupported = checkWebCryptoSupport();
+        if (notSupported) {
+            setLocalRecoverError(notSupported);
+            return;
+        }
+
         setRecoverLoading(true);
         try {
             // 新密码在本地算成 PBKDF2 哈希后才进令牌，明文不出浏览器

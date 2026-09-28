@@ -25,6 +25,28 @@ export interface RecoveryKeyFile {
 
 const enc = new TextEncoder();
 
+/**
+ * 检查当前浏览器环境是否能使用 Web Crypto（subtle）。
+ * Web Crypto 只在「安全上下文」可用：HTTPS、localhost/127.0.0.1、file://（部分浏览器）。
+ * 本地开发时如果通过 IP（如 http://192.168.x.x:5173）访问，subtle 会是 undefined。
+ * 返回字符串表示不可用的原因；返回 null 表示可用。
+ */
+export function checkWebCryptoSupport(): string | null {
+    if (typeof crypto === "undefined" || !crypto.subtle) {
+        const protocol = typeof window !== "undefined" ? window.location.protocol : "";
+        const origin = typeof window !== "undefined" ? window.location.origin : "";
+        const secure = typeof window !== "undefined" ? window.isSecureContext : undefined;
+        if (secure === false) {
+            return `当前页面不是安全上下文，无法使用 Web Crypto（当前地址：${origin}）。请改用 https:// 访问，或本地开发时使用 http://localhost/127.0.0.1。`;
+        }
+        if (protocol === "http:" && origin && !origin.includes("localhost") && !origin.includes("127.0.0.1")) {
+            return `当前 HTTP 地址 ${origin} 不支持 Web Crypto；请改用 http://localhost（或 https://）访问。`;
+        }
+        return `当前浏览器环境不支持 Web Crypto（需 HTTPS 或 localhost 访问）。`;
+    }
+    return null;
+}
+
 function b64urlEncode(bytes: Uint8Array): string {
     let bin = "";
     for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);

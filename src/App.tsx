@@ -128,6 +128,7 @@ import {
 import { encryptBackup } from "./API/crypto";
 import {
     algLabel,
+    checkWebCryptoSupport,
     downloadRecoveryKeyFile,
     generateRecoveryKeyPair,
 } from "./utils/recoveryKey";
@@ -834,11 +835,9 @@ function App() {
         currentPassword: string
     ): Promise<{ success: boolean; message?: string }> => {
         try {
-            if (typeof crypto === "undefined" || !crypto.subtle) {
-                return {
-                    success: false,
-                    message: "当前环境不支持 Web Crypto（需 HTTPS 或 localhost 访问）",
-                };
+            const notSupported = checkWebCryptoSupport();
+            if (notSupported) {
+                return { success: false, message: notSupported };
             }
 
             const { alg, publicKey, privateKey } = await generateRecoveryKeyPair();
