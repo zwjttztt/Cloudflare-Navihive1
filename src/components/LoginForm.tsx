@@ -12,9 +12,14 @@ import {
     Link,
     Stack,
     Chip,
+    Divider,
+    InputAdornment,
 } from "@mui/material";
 import LockOutlinedIcon from "@mui/icons-material/LockOutlined";
 import UploadFileIcon from "@mui/icons-material/UploadFile";
+import PersonOutlineIcon from "@mui/icons-material/PersonOutline";
+import PersonAddAltIcon from "@mui/icons-material/PersonAddAlt";
+import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import { readRememberedLogin } from "../utils/rememberedLogin";
 import { PasswordField } from "./PasswordField";
 import {
@@ -75,7 +80,7 @@ function buildIconCandidates(): string[] {
 }
 
 /** 顶部居中的站点图标：自动取 favicon，取不到逐级回落，最后才是锁图标 */
-const BrandMark: React.FC = () => {
+const BrandMark: React.FC<{ size?: number }> = ({ size = 64 }) => {
     const candidates = useMemo(buildIconCandidates, []);
     const [index, setIndex] = useState(0);
     const [loaded, setLoaded] = useState(false);
@@ -96,8 +101,8 @@ const BrandMark: React.FC = () => {
         return (
             <Box
                 sx={{
-                    width: 64,
-                    height: 64,
+                    width: size,
+                    height: size,
                     borderRadius: 2,
                     display: "flex",
                     alignItems: "center",
@@ -122,8 +127,8 @@ const BrandMark: React.FC = () => {
                 setIndex(i => i + 1);
             }}
             sx={{
-                width: 64,
-                height: 64,
+                width: size,
+                height: size,
                 borderRadius: 2,
                 objectFit: "contain",
                 p: 0.5,
@@ -330,13 +335,13 @@ const LoginForm: React.FC<LoginFormProps> = ({
                 alignItems: "center",
                 width: "100%",
                 maxWidth: "100%",
-                p: { xs: 2, sm: 4 },
+                p: { xs: 2, sm: 3 },
             }}
         >
             {/* 品牌区：图标 + 名字一律居中，三个视图共用 */}
-            <Stack spacing={1} alignItems='center' sx={{ mb: 3, textAlign: "center" }}>
-                <BrandMark />
-                <Typography component='h1' variant='h4' fontWeight='800' letterSpacing={0.5}>
+            <Stack spacing={0.75} alignItems='center' sx={{ mb: 2.5, textAlign: "center" }}>
+                <BrandMark size={56} />
+                <Typography component='h1' variant='h5' fontWeight='800' letterSpacing={0.5}>
                     {BRAND_NAME}
                 </Typography>
                 <Typography variant='body2' color='text.secondary'>
@@ -351,10 +356,10 @@ const LoginForm: React.FC<LoginFormProps> = ({
             <Paper
                 elevation={3}
                 sx={{
-                    p: { xs: 3, sm: 4 },
+                    p: { xs: 2.5, sm: 3 },
                     borderRadius: 2,
                     width: "100%",
-                    maxWidth: { xs: "90%", sm: 400 },
+                    maxWidth: { xs: "90%", sm: 380 },
                 }}
             >
                 {mode === "login" && error && (
@@ -364,7 +369,7 @@ const LoginForm: React.FC<LoginFormProps> = ({
                 )}
 
                 {mode === "recover" && (
-                    <Alert severity='info' sx={{ mb: 3 }}>
+                    <Alert severity='info' sx={{ mb: 2 }}>
                         上传在「网站设置 → 账户安全」里下载的恢复私钥，再填新密码即可重置。
                         私钥只在你的浏览器里用来签名，不会上传。
                         {!recoverConfigured && " 当前站点尚未配置恢复公钥。"}
@@ -372,14 +377,14 @@ const LoginForm: React.FC<LoginFormProps> = ({
                 )}
 
                 {mode === "register" && (
-                    <Alert severity='info' sx={{ mb: 3 }}>
+                    <Alert severity='info' sx={{ mb: 2 }}>
                         注册需要一枚邀请码。请让已登录的用户在「网站设置 → 账户安全」里生成，
                         邀请码 30 分钟内有效、只能用一次。
                     </Alert>
                 )}
 
                 {mode === "register" && (
-                    <Box component='form' onSubmit={handleRegisterSubmit} sx={{ mt: 1 }}>
+                    <Box component='form' onSubmit={handleRegisterSubmit}>
                         {regError && (
                             <Alert severity='error' sx={{ mb: 2 }}>
                                 {regError}
@@ -391,7 +396,7 @@ const LoginForm: React.FC<LoginFormProps> = ({
                             </Alert>
                         )}
 
-                        <Stack spacing={2}>
+                        <Stack spacing={1.5}>
                             <TextField
                                 fullWidth
                                 required
@@ -402,6 +407,16 @@ const LoginForm: React.FC<LoginFormProps> = ({
                                 onChange={e => setRegUsername(e.target.value)}
                                 disabled={regLoading}
                                 placeholder='2 - 32 个字符'
+                                InputProps={{
+                                    startAdornment: (
+                                        <InputAdornment position='start'>
+                                            <PersonOutlineIcon
+                                                fontSize='small'
+                                                sx={{ color: "text.disabled" }}
+                                            />
+                                        </InputAdornment>
+                                    ),
+                                }}
                             />
                             <PasswordField
                                 id='register-password'
@@ -444,34 +459,38 @@ const LoginForm: React.FC<LoginFormProps> = ({
                                 !regInvite.trim()
                             }
                             size='large'
-                            sx={{ py: 1.5, borderRadius: 2, mt: 2 }}
+                            sx={{ py: 1.25, borderRadius: 2, mt: 2 }}
                         >
                             {regLoading ? <CircularProgress size={24} color='inherit' /> : "注册并登录"}
                         </Button>
 
                         <Box sx={{ mt: 2, textAlign: "center" }}>
-                            <Link
-                                component='button'
-                                type='button'
-                                variant='body2'
+                            <Button
+                                variant='text'
+                                size='small'
+                                startIcon={<ArrowBackIcon fontSize='small' />}
                                 onClick={switchToLogin}
                                 disabled={regLoading}
+                                sx={{
+                                    color: "text.secondary",
+                                    "&:hover": { color: "primary.main" },
+                                }}
                             >
-                                已有账号？返回登录
-                            </Link>
+                                返回登录
+                            </Button>
                         </Box>
                     </Box>
                 )}
 
                 {mode === "recover" && (
-                    <Box component='form' onSubmit={handleKeyFileSubmit} sx={{ mt: 1 }}>
+                    <Box component='form' onSubmit={handleKeyFileSubmit}>
                         {localRecoverError && (
                             <Alert severity='error' sx={{ mb: 2 }}>
                                 {localRecoverError}
                             </Alert>
                         )}
 
-                        <Stack spacing={2}>
+                        <Stack spacing={1.5}>
                             <Box>
                                 <input
                                     ref={fileInputRef}
@@ -541,107 +560,159 @@ const LoginForm: React.FC<LoginFormProps> = ({
                                 recoverLoading || !loadedKey || !newPassword || !confirmPassword
                             }
                             size='large'
-                            sx={{ py: 1.5, borderRadius: 2, mt: 2 }}
+                            sx={{ py: 1.25, borderRadius: 2, mt: 2 }}
                         >
                             {recoverLoading ? <CircularProgress size={24} color='inherit' /> : "重置密码"}
                         </Button>
 
                         <Box sx={{ mt: 2, textAlign: "center" }}>
-                            <Link
-                                component='button'
-                                type='button'
-                                variant='body2'
+                            <Button
+                                variant='text'
+                                size='small'
+                                startIcon={<ArrowBackIcon fontSize='small' />}
                                 onClick={switchToLogin}
                                 disabled={recoverLoading}
+                                sx={{
+                                    color: "text.secondary",
+                                    "&:hover": { color: "primary.main" },
+                                }}
                             >
                                 返回登录
-                            </Link>
+                            </Button>
                         </Box>
                     </Box>
                 )}
 
                 {mode === "login" && (
-                <Box component='form' onSubmit={handleSubmit} sx={{ mt: 1 }}>
-                    <TextField
-                        margin='normal'
-                        required
-                        fullWidth
-                        id='username'
-                        label='用户名'
-                        name='username'
-                        autoComplete='username'
-                        autoFocus
-                        value={username}
-                        onChange={e => setUsername(e.target.value)}
-                        disabled={loading}
-                        sx={{ mb: 2 }}
-                    />
-                    <PasswordField
-                        id='password'
-                        label='密码'
-                        // 登录页就是要让浏览器填已保存的密码，这里必须是 current-password
-                        autoComplete='current-password'
-                        value={password}
-                        onChange={e => setPassword(e.target.value)}
-                        disabled={loading}
-                        helperText=' '
-                    />
-
-                    <FormControlLabel
-                        control={
-                            <Checkbox
-                                checked={remember}
-                                onChange={e => setRemember(e.target.checked)}
+                    <Box component='form' onSubmit={handleSubmit}>
+                        <Stack spacing={1.5}>
+                            <TextField
+                                required
+                                fullWidth
+                                size='small'
+                                margin='dense'
+                                id='username'
+                                label='账号'
+                                name='username'
+                                autoComplete='username'
+                                autoFocus
+                                value={username}
+                                onChange={e => setUsername(e.target.value)}
                                 disabled={loading}
-                                slotProps={{ input: { "aria-label": "记住账号密码" } }}
+                                // 左侧放个图标，和密码框右侧的眼睛按钮对称，两个框视觉上一样高一样宽
+                                InputProps={{
+                                    startAdornment: (
+                                        <InputAdornment position='start'>
+                                            <PersonOutlineIcon
+                                                fontSize='small'
+                                                sx={{ color: "text.disabled" }}
+                                            />
+                                        </InputAdornment>
+                                    ),
+                                }}
                             />
-                        }
-                        label='记住账号密码（一个月内免登录）'
-                        sx={{ mb: 2, "& .MuiFormControlLabel-label": { fontSize: "0.875rem" } }}
-                    />
+                            <PasswordField
+                                id='password'
+                                label='密码'
+                                // 登录页就是要让浏览器填已保存的密码，这里必须是 current-password
+                                autoComplete='current-password'
+                                value={password}
+                                onChange={e => setPassword(e.target.value)}
+                                disabled={loading}
+                            />
+                        </Stack>
 
-                    <Button
-                        type='submit'
-                        fullWidth
-                        variant='contained'
-                        color='primary'
-                        disabled={loading || !username || !password}
-                        size='large'
-                        sx={{
-                            py: 1.5,
-                            mt: 1,
-                            borderRadius: 2,
-                        }}
-                    >
-                        {loading ? <CircularProgress size={24} color='inherit' /> : "登录"}
-                    </Button>
+                        <Box
+                            sx={{
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "space-between",
+                                flexWrap: "wrap",
+                                gap: 1,
+                                mt: 1,
+                                mb: 2,
+                            }}
+                        >
+                            <FormControlLabel
+                                control={
+                                    <Checkbox
+                                        checked={remember}
+                                        onChange={e => setRemember(e.target.checked)}
+                                        disabled={loading}
+                                        size='small'
+                                        slotProps={{ input: { "aria-label": "记住账号密码" } }}
+                                    />
+                                }
+                                label='记住我（一个月免登录）'
+                                sx={{
+                                    mr: 0,
+                                    "& .MuiFormControlLabel-label": { fontSize: "0.8125rem" },
+                                }}
+                            />
+                            {recoverConfigured && (
+                                <Link
+                                    component='button'
+                                    type='button'
+                                    variant='body2'
+                                    underline='none'
+                                    onClick={switchToRecover}
+                                    disabled={loading}
+                                    sx={{
+                                        color: "text.secondary",
+                                        fontSize: "0.8125rem",
+                                        "&:hover": { color: "primary.main" },
+                                    }}
+                                >
+                                    忘记密码
+                                </Link>
+                            )}
+                        </Box>
 
-                    <Box sx={{ mt: 2, textAlign: "center" }}>
+                        <Button
+                            type='submit'
+                            fullWidth
+                            variant='contained'
+                            color='primary'
+                            disabled={loading || !username || !password}
+                            size='large'
+                            sx={{
+                                py: 1.25,
+                                borderRadius: 2,
+                            }}
+                        >
+                            {loading ? <CircularProgress size={24} color='inherit' /> : "登录"}
+                        </Button>
+
                         {onRegister && (
-                            <Link
-                                component='button'
-                                type='button'
-                                variant='body2'
-                                onClick={switchToRegister}
-                                disabled={loading}
-                                sx={{ display: "block", mb: 1 }}
-                            >
-                                没有账号？用邀请码注册
-                            </Link>
-                        )}
-                        {recoverConfigured && (
-                            <Link
-                                component='button'
-                                type='button'
-                                variant='body2'
-                                onClick={switchToRecover}
-                                disabled={loading}
-                            >
-                                用恢复密钥找回账号
-                            </Link>
+                            <>
+                                <Divider
+                                    sx={{ my: 2, typography: "caption", color: "text.disabled" }}
+                                >
+                                    还没有账号
+                                </Divider>
+                                <Button
+                                    fullWidth
+                                    variant='outlined'
+                                    startIcon={<PersonAddAltIcon fontSize='small' />}
+                                    onClick={switchToRegister}
+                                    disabled={loading}
+                                    sx={{
+                                        py: 1,
+                                        borderRadius: 2,
+                                        color: "text.secondary",
+                                        borderColor: "divider",
+                                        "&:hover": {
+                                            color: "primary.main",
+                                            borderColor: "primary.main",
+                                            bgcolor: "action.hover",
+                                        },
+                                    }}
+                                >
+                                    注册
+                                </Button>
+                            </>
                         )}
                     </Box>
-                </Box>
                 )}
             </Paper>
         </Box>
