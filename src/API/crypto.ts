@@ -314,16 +314,76 @@ export function validatePasswordStrength(password: string): { ok: boolean; messa
     return { ok: true, message: "" };
 }
 
-// ---------------- 恢复密钥 (Ed25519 非对称签名, JWS compact) ----------------
-// 找回管理员密码用非对称方案：服务器只持有公钥(AUTH_RECOVERY_PUBLIC_KEY)，
-// 私钥离线保管，永远不进服务器。管理员用私钥对 {username,passwordHash,exp,jti}
-// 签名成 JWS，服务端用公钥验签即可重置密码 —— 没有私钥造不出合法 token，
-// 所以这个公网「恢复」入口是安全的（不像共享密钥那样能被暴力猜解）。
+// ---------------- 恢复密钥 (非对称签名, JWS compact) ----------------
+// 找回管理员密码用非对称方案：服务器只持有公钥（AUTH_RECOVERY_PUBLIC_KEY 环境变量
+// 或库里的 recovery.publicKey），私钥离线保管，永远不进服务器。管理员用私钥对
+// {username,passwordHash,exp,jti} 签名成 JWS，服务端用公钥验签即可重置密码 ——
+// 没有私钥造不出合法 token，所以这个公网「恢复」入口是安全的。
+//
+// 支持两种算法，由 JWS 头的 alg 决定：
+//   EdDSA = Ed25519（首选，密钥短）；ES256 = ECDSA P-256（老浏览器不支持 Ed25519 时的退路）
+// 公钥统一按 SPKI 容器导入；仅对 32 字节的裸公钥做兼容（早期脚本导出过这种格式）。
+const RECOVERY_ALGS = ["EdDSA", "ES256"] as const;
+
 export interface RecoveryPayload {
     username: string;
     passwordHash: string;
     exp: number; // 秒级过期时间戳
     jti: string; // 一次性 nonce，防重放
+}
+
+/** 按 alg 导入恢复公钥；失败返回 null */
+async function importRecoveryPublicKey(
+    alg: string,
+    publicKeyB64url: string
+): Promise<CryptoKey | null> {
+    let raw: Uint8Array;
+    try {
+        raw = b64urlDecode(publicKeyB64url);
+    } catch {
+        return null;
+    }
+    try {
+        if (alg === "ES256") {
+            return await crypto.subtle.importKey(
+                "spki",
+                raw,
+                { name: "ECDSA", namedCurve: "P-256" },
+                false,
+                ["verify"]
+            );
+        }
+        if (alg === "EdDSA") {
+            // 32 字节 = 早期脚本导出的裸 Ed25519 公钥，其余按 SPKI 解析
+            if (raw.length === 32) {
+                try {
+                    return await crypto.subtle.importKey("raw", raw, { name: "Ed25519" }, false, [
+                        "verify",
+                    ]);
+                } catch {
+                    // 裸公钥导入失败（运行时不支持），继续按 SPKI 试
+                }
+            }
+            return await crypto.subtle.importKey("spki", raw, { name: "Ed25519" }, false, [
+                "verify",
+            ]);
+        }
+        return null;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * 判断一个 base64url 公钥是否是「可用的恢复公钥」，用于写入前的校验：
+ * 免得把一段乱码存进库，等到真要找回密码时才发现用不了。
+ */
+export async function isValidRecoveryPublicKey(publicKeyB64url: string): Promise<boolean> {
+    for (const alg of RECOVERY_ALGS) {
+        const key = await importRecoveryPublicKey(alg, publicKeyB64url);
+        if (key) return true;
+    }
+    return false;
 }
 
 export async function verifyRecoveryToken(
@@ -335,27 +395,28 @@ export async function verifyRecoveryToken(
     const [headerB64, payloadB64, sigB64] = parts;
 
     // 验算法声明
+    let alg = "";
     try {
         const header = JSON.parse(dec.decode(b64urlDecode(headerB64)));
-        if (header.alg !== "EdDSA" || header.typ !== "JWS") return { valid: false };
+        if (header.typ !== "JWS" || !RECOVERY_ALGS.includes(header.alg)) return { valid: false };
+        alg = header.alg;
     } catch {
         return { valid: false };
     }
 
-    // 导入公钥（raw 32 字节）
-    let key: CryptoKey;
-    try {
-        const raw = b64urlDecode(publicKeyB64url);
-        key = await crypto.subtle.importKey("raw", raw, { name: "Ed25519" }, false, ["verify"]);
-    } catch {
-        return { valid: false };
-    }
+    const key = await importRecoveryPublicKey(alg, publicKeyB64url);
+    if (!key) return { valid: false };
 
     const signingInput = enc.encode(`${headerB64}.${payloadB64}`);
     const sig = b64urlDecode(sigB64);
+    // 不同运行时的 WebCrypto 类型定义不一致（Workers / DOM 的验签参数类型名字不同），
+    // 直接从 SubtleCrypto.verify 的签名上取，省得为类型名打补丁
+    const verifyParams = (
+        alg === "ES256" ? { name: "ECDSA", hash: "SHA-256" } : { name: "Ed25519" }
+    ) as unknown as Parameters<SubtleCrypto["verify"]>[0];
     let ok = false;
     try {
-        ok = await crypto.subtle.verify({ name: "Ed25519" }, key, sig, signingInput);
+        ok = await crypto.subtle.verify(verifyParams, key, sig, signingInput);
     } catch {
         ok = false;
     }

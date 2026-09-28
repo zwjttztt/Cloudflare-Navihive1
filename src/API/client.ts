@@ -126,6 +126,31 @@ export class NavigationClient {
         return this.request("auth/recovery-status");
     }
 
+    /**
+     * 保存 / 更换恢复公钥（需登录，且要填当前密码）。
+     * 失败时服务端返回 400 + message，所以走不抛异常的分支，让界面能显示真实原因。
+     */
+    async setRecoveryPublicKey(
+        publicKey: string,
+        currentPassword: string
+    ): Promise<{ success: boolean; message?: string }> {
+        try {
+            const response = await fetch(`${this.baseUrl}/auth/recovery-key`, {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ publicKey, currentPassword }),
+            });
+            const data = await response.json().catch(() => ({ success: false }));
+            if (!response.ok && !data.message) {
+                return { success: false, message: "保存恢复公钥失败，请稍后再试" };
+            }
+            return data;
+        } catch (error) {
+            console.error("保存恢复公钥失败:", error);
+            return { success: false, message: "保存恢复公钥请求失败，请检查网络连接" };
+        }
+    }
+
     private async request(endpoint: string, options = {}) {
         const headers: Record<string, string> = {
             "Content-Type": "application/json",

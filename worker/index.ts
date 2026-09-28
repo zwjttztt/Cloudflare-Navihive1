@@ -38,6 +38,7 @@ import type {
     GroupInput,
     LoginInput,
     RecoveryInput,
+    RecoveryKeyInput,
     SiteInput,
 } from "./types";
 import { validateConfig, validateGroup, validateLogin, validateSite } from "./validate";
@@ -275,7 +276,7 @@ export default {
 
                 // 是否已配置恢复公钥（仅返回布尔，不下发公钥本身）
                 if (path === "auth/recovery-status" && method === "GET") {
-                    return Response.json({ configured: api.hasRecoveryKey() });
+                    return Response.json({ configured: await api.hasRecoveryKey() });
                 }
 
                 // 初始化数据库接口 - 不需要验证
@@ -822,6 +823,23 @@ export default {
                         success: result,
                         message: result ? "管理员凭据已更新，请牢记新账号密码" : "保存管理员凭据失败",
                     });
+                }
+
+                // 保存 / 更换恢复公钥（网页端「生成并下载私钥」时调用）
+                // 必须校验当前密码：否则拿到会话的人能塞进自己的公钥，留一个改密也清不掉的后门。
+                else if (path === "auth/recovery-key" && method === "PUT") {
+                    const data = (await request.json().catch(() => ({}))) as RecoveryKeyInput;
+                    const publicKey =
+                        typeof data.publicKey === "string" ? data.publicKey.trim() : "";
+                    const currentPassword =
+                        typeof data.currentPassword === "string" ? data.currentPassword : "";
+
+                    const result = await api.setRecoveryPublicKey(
+                        publicKey,
+                        currentPassword,
+                        clientIp(request)
+                    );
+                    return Response.json(result, { status: result.success ? 200 : 400 });
                 }
 
                 // 数据导出路由

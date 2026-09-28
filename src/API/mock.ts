@@ -179,6 +179,15 @@ export class MockNavigationClient {
         return { configured: true };
     }
 
+    // 保存恢复公钥（模拟环境仅返回成功，不真的落库）
+    async setRecoveryPublicKey(
+        _publicKey: string,
+        _currentPassword: string
+    ): Promise<{ success: boolean; message?: string }> {
+        await new Promise(resolve => setTimeout(resolve, 200));
+        return { success: true, message: "模拟环境未真正保存恢复公钥" };
+    }
+
     // 检查身份验证状态
     async checkAuthStatus(): Promise<boolean> {
         await new Promise(resolve => setTimeout(resolve, 300));

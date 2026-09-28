@@ -126,6 +126,11 @@ import {
     InputAdornment,
 } from "@mui/material";
 import { encryptBackup } from "./API/crypto";
+import {
+    algLabel,
+    downloadRecoveryKeyFile,
+    generateRecoveryKeyPair,
+} from "./utils/recoveryKey";
 import CloseIcon from "@mui/icons-material/Close";
 import AutoFixHighIcon from "@mui/icons-material/AutoFixHigh";
 import CloudDownloadIcon from "@mui/icons-material/CloudDownload";
@@ -816,6 +821,45 @@ function App() {
             return {
                 success: false,
                 message: "恢复失败：" + (error instanceof Error ? error.message : "未知错误"),
+            };
+        }
+    };
+
+    /**
+     * 生成恢复密钥对（网站设置 → 账户安全）。
+     * 密钥在浏览器里生成：公钥交给服务器保存，私钥直接下载到本地，全程不上传。
+     * 服务端要求校验当前密码，所以这里必须把用户填的当前密码一起传过去。
+     */
+    const handleGenerateRecoveryKey = async (
+        currentPassword: string
+    ): Promise<{ success: boolean; message?: string }> => {
+        try {
+            if (typeof crypto === "undefined" || !crypto.subtle) {
+                return {
+                    success: false,
+                    message: "当前环境不支持 Web Crypto（需 HTTPS 或 localhost 访问）",
+                };
+            }
+
+            const { alg, publicKey, privateKey } = await generateRecoveryKeyPair();
+            const result = await api.setRecoveryPublicKey(publicKey, currentPassword);
+            if (!result?.success) {
+                return { success: false, message: result?.message || "保存恢复公钥失败" };
+            }
+
+            // 公钥落库成功才下载私钥：否则会出现「私钥存了但服务器不认」的情况
+            const filename = downloadRecoveryKeyFile(alg, publicKey, privateKey);
+            setRecoveryConfigured(true);
+            return {
+                success: true,
+                message: `私钥已下载为 ${filename}（${algLabel(alg)}），请离线妥善保管；旧私钥已失效`,
+            };
+        } catch (error) {
+            console.error("生成恢复密钥失败:", error);
+            reportError(error, { source: "auth-recovery-key" });
+            return {
+                success: false,
+                message: "生成恢复密钥失败：" + (error instanceof Error ? error.message : "未知错误"),
             };
         }
     };
@@ -3878,6 +3922,8 @@ function App() {
                             else if (field === "currentPassword") setAuthCurrentPassword(value);
                             else setAuthNewPassword(value);
                         }}
+                        recoveryKeyConfigured={recoveryConfigured}
+                        onGenerateRecoveryKey={handleGenerateRecoveryKey}
                     />
                     </Suspense>
 

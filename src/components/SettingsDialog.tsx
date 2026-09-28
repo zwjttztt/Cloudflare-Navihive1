@@ -4,6 +4,7 @@
 // 主色竖条，组内字段按「改动频率 + 语义」排序；短字段在宽屏并排成两列，纵向更紧凑。
 // 所有值都走「临时副本 + 点保存才落库」，所以组件本身不碰 API，只负责渲染和回调。
 import type { ChangeEvent } from "react";
+import { useState } from "react";
 import {
     Box,
     Button,
@@ -90,6 +91,16 @@ interface SettingsDialogProps {
     /** 星标 / 标签同步到服务端（同上） */
     syncPrefs: boolean;
     onSyncPrefsChange: (enabled: boolean) => void;
+    /** 站点是否已配置恢复公钥（未配置时登录页不会显示「找回账号」入口） */
+    recoveryKeyConfigured?: boolean;
+    /**
+     * 生成恢复密钥对：把公钥交给服务器保存，私钥触发浏览器下载。
+     * 需传当前密码（服务端校验），由父组件负责调用接口，这里只渲染与反馈。
+     */
+    onGenerateRecoveryKey?: (currentPassword: string) => Promise<{
+        success: boolean;
+        message?: string;
+    }>;
 }
 
 /** 分组：左侧一小段主色竖条 + 组标题，可选一行组说明；组内字段纵向排布 */
@@ -217,7 +228,43 @@ export default function SettingsDialog({
     onSyncHealthChange,
     syncPrefs,
     onSyncPrefsChange,
+    recoveryKeyConfigured = false,
+    onGenerateRecoveryKey,
 }: SettingsDialogProps) {
+    // 恢复密钥的生成结果提示（成功/失败都就地反馈，私钥由浏览器直接下载）
+    const [recoveryBusy, setRecoveryBusy] = useState(false);
+    const [recoveryMsg, setRecoveryMsg] = useState<{
+        type: "success" | "error";
+        text: string;
+    } | null>(null);
+
+    const handleGenerateRecoveryKey = async () => {
+        if (!auth.currentPassword) {
+            setRecoveryMsg({ type: "error", text: "请先填写「当前密码」再生成" });
+            return;
+        }
+        setRecoveryBusy(true);
+        setRecoveryMsg(null);
+        try {
+            const result = await onGenerateRecoveryKey?.(auth.currentPassword);
+            setRecoveryMsg(
+                result?.success
+                    ? {
+                          type: "success",
+                          text: result.message || "私钥文件已下载，请离线妥善保管",
+                      }
+                    : { type: "error", text: result?.message || "生成恢复密钥失败" }
+            );
+        } catch (error) {
+            setRecoveryMsg({
+                type: "error",
+                text: "生成恢复密钥失败：" + (error instanceof Error ? error.message : "未知错误"),
+            });
+        } finally {
+            setRecoveryBusy(false);
+        }
+    };
+
     return (
         <Dialog
             open={open}
@@ -650,6 +697,60 @@ export default function SettingsDialog({
                                 placeholder='留空则不修改密码'
                             />
                         </TwoCol>
+
+                        {/* 恢复密钥：忘记密码时用它重置。私钥只在本地生成并下载，服务器只有公钥 */}
+                        <Box sx={{ mt: 0.5 }}>
+                            <Stack
+                                direction={{ xs: "column", sm: "row" }}
+                                spacing={1}
+                                alignItems={{ xs: "stretch", sm: "center" }}
+                                justifyContent='space-between'
+                            >
+                                <Box>
+                                    <Typography variant='body2' fontWeight='600'>
+                                        恢复密钥
+                                        {recoveryKeyConfigured ? "（已配置）" : "（未配置）"}
+                                    </Typography>
+                                    <Typography variant='caption' color='text.secondary'>
+                                        私钥只在你本机生成并下载，服务器只保存公钥；忘记密码时上传私钥即可重置。
+                                    </Typography>
+                                </Box>
+                                <Button
+                                    variant='outlined'
+                                    size='small'
+                                    onClick={() => void handleGenerateRecoveryKey()}
+                                    disabled={recoveryBusy}
+                                    sx={{ flex: "none", whiteSpace: "nowrap" }}
+                                >
+                                    {recoveryBusy
+                                        ? "生成中…"
+                                        : recoveryKeyConfigured
+                                          ? "重新生成并下载私钥"
+                                          : "生成并下载私钥"}
+                                </Button>
+                            </Stack>
+                            {recoveryMsg ? (
+                                <Typography
+                                    variant='caption'
+                                    sx={{ display: "block", mt: 0.5 }}
+                                    color={
+                                        recoveryMsg.type === "success"
+                                            ? "success.main"
+                                            : "error.main"
+                                    }
+                                >
+                                    {recoveryMsg.text}
+                                </Typography>
+                            ) : (
+                                <Typography
+                                    variant='caption'
+                                    color='text.secondary'
+                                    sx={{ display: "block", mt: 0.5 }}
+                                >
+                                    需要先填写上方「当前密码」；重新生成会让此前下载的私钥立即失效。
+                                </Typography>
+                            )}
+                        </Box>
                     </Section>
 
                     {/* 8. 高级 */}

@@ -5,17 +5,22 @@
 // 用法：
 //   1) 生成密钥对（只需一次）
 //      node scripts/recovery-token.mjs generate
-//      → 打印公钥（用于 `wrangler secret put AUTH_RECOVERY_PUBLIC_KEY`）
-//      → 把私钥写到 ./recovery-private.key（请离线保管，等同万能钥匙）
+//      → 打印公钥（用于 `wrangler secret put AUTH_RECOVERY_PUBLIC_KEY`；
+//        更推荐在「网站设置 → 账户安全」里点「生成并下载私钥」，公钥会自动入库）
+//      → 把密钥文件写到 ./recovery-private.key（请离线保管，等同万能钥匙）
 //
 //   2) 忘记密码时，用私钥本地签发一个重置令牌
 //      node scripts/recovery-token.mjs sign \
-//          --username admin --password '新密码至少12位' \
+//          [--username admin] --password '新密码至少12位' \
 //          [--key ./recovery-private.key] [--exp-hours 24] [--jti <可选随机串>]
-//      → 打印 JWS 令牌，粘到登录页「用恢复密钥找回账号」即可重置
+//      → 打印 JWS 令牌，粘到登录页「用恢复密钥找回账号 → 粘贴恢复令牌」即可重置
 //
 // 算法：Ed25519 签名（JWS compact）。密码哈希用与后端完全相同的 PBKDF2-SHA256 /
 // 10 万迭代 / 16 字节盐，所以令牌里的 passwordHash 后端能直接校验。
+//
+// 密钥文件格式（与网页端下载的私钥文件完全一致）：
+//   {"v":1,"alg":"EdDSA","publicKey":"<SPKI base64url>","privateKey":"<PKCS8 base64url>","createdAt":"..."}
+// 旧版「只有一行 base64url PKCS8 私钥」的文件仍然能读。
 
 import { webcrypto as crypto } from "node:crypto";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
@@ -28,7 +33,6 @@ const PBKDF2_ITERS = 100_000;
 const PWD_PREFIX = "pbkdf2$";
 
 const enc = new TextEncoder();
-const dec = new TextDecoder();
 
 function b64url(bytes) {
     return Buffer.from(bytes).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
@@ -79,26 +83,52 @@ function parseArgs(argv) {
     return out;
 }
 
+/** 读私钥文件：新版 JSON 与旧版裸 PKCS8 都认 */
+function readKeyFile(keyFile) {
+    const text = readFileSync(keyFile, "utf8").trim();
+    if (text.startsWith("{")) {
+        const data = JSON.parse(text);
+        if (!data.alg || !data.privateKey) {
+            throw new Error("私钥文件缺少 alg 或 privateKey 字段");
+        }
+        return { alg: data.alg, privateKey: data.privateKey, publicKey: data.publicKey || "" };
+    }
+    if (/^[A-Za-z0-9_-]+$/.test(text)) {
+        return { alg: "EdDSA", privateKey: text, publicKey: "" };
+    }
+    throw new Error("无法识别的私钥文件格式");
+}
+
 async function generate() {
     const kp = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]);
-    const pubRaw = new Uint8Array(await crypto.subtle.exportKey("raw", kp.publicKey));
-    // 私钥用 pkcs8 导出（Node 的 WebCrypto 不支持 raw 私钥导出；公钥仍用 raw，服务端 raw 导入即可）
-    const privRaw = new Uint8Array(await crypto.subtle.exportKey("pkcs8", kp.privateKey));
+    // 公钥走 SPKI、私钥走 PKCS8：两种容器格式 Ed25519 与 ECDSA 都支持，
+    // 网页端生成的是同一套格式，服务端可以统一导入。
+    const pubSpki = new Uint8Array(await crypto.subtle.exportKey("spki", kp.publicKey));
+    const privPkcs8 = new Uint8Array(await crypto.subtle.exportKey("pkcs8", kp.privateKey));
 
     if (existsSync(PRIVATE_KEY_FILE)) {
         console.error(`\n[!] 私钥文件已存在：${PRIVATE_KEY_FILE}`);
         console.error("    如需重新生成，请先手动删除该文件（会令旧令牌全部失效）。");
         process.exit(1);
     }
-    writeFileSync(PRIVATE_KEY_FILE, b64url(privRaw), { mode: 0o600 });
+
+    const keyFile = {
+        v: 1,
+        alg: "EdDSA",
+        publicKey: b64url(pubSpki),
+        privateKey: b64url(privPkcs8),
+        createdAt: new Date().toISOString(),
+    };
+    writeFileSync(PRIVATE_KEY_FILE, JSON.stringify(keyFile, null, 2), { mode: 0o600 });
 
     console.log("\n=== 恢复公钥（复制到 Cloudflare Secret） ===\n");
-    console.log(b64url(pubRaw));
+    console.log(keyFile.publicKey);
     console.log("\n=== 部署命令 ===\n");
     console.log("wrangler secret put AUTH_RECOVERY_PUBLIC_KEY");
-    console.log(`# 然后粘贴上面那串公钥`);
-    console.log("\n=== 私钥已写入（请离线保管，切勿提交到 Git） ===\n");
+    console.log("# 然后粘贴上面那串公钥");
+    console.log("\n=== 密钥已写入（请离线保管，切勿提交到 Git） ===\n");
     console.log(PRIVATE_KEY_FILE);
+    console.log("\n提示：也可以直接在「网站设置 → 账户安全」点「生成并下载私钥」，公钥会自动存进数据库，不用配 secret。");
     console.log("\n生成重置令牌：");
     console.log(`node scripts/recovery-token.mjs sign --username <账号> --password '<新密码>'`);
 }
@@ -107,32 +137,38 @@ async function sign(args) {
     const keyFile = args.key || PRIVATE_KEY_FILE;
     if (!existsSync(keyFile)) {
         console.error(`[!] 找不到私钥文件：${keyFile}`);
-        console.error("    请先运行 `node scripts/recovery-token.mjs generate`");
+        console.error("    请先运行 `node scripts/recovery-token.mjs generate`，或用网页端下载私钥后加 --key 指定");
         process.exit(1);
     }
-    const username = args.username;
+    const username = args.username || "";
     const password = args.password;
-    if (!username || !password) {
-        console.error("[!] 必须提供 --username 和 --password");
+    if (!password) {
+        console.error("[!] 必须提供 --password（--username 可省略，省略则只重置密码不改账号）");
         process.exit(1);
     }
 
-    const privRaw = b64urlToBytes(readFileSync(keyFile, "utf8").trim());
-    const privKey = await crypto.subtle.importKey("pkcs8", privRaw, { name: "Ed25519" }, false, ["sign"]);
+    const { alg, privateKey } = readKeyFile(keyFile);
+    const privKey = await crypto.subtle.importKey(
+        "pkcs8",
+        b64urlToBytes(privateKey),
+        alg === "ES256" ? { name: "ECDSA", namedCurve: "P-256" } : { name: "Ed25519" },
+        false,
+        ["sign"]
+    );
 
     const passwordHash = await hashPassword(password);
     const expHours = Number(args["exp-hours"] || "24");
     const jti = args.jti || b64url(crypto.getRandomValues(new Uint8Array(12)));
     const exp = Math.floor(Date.now() / 1000) + expHours * 3600;
 
-    const header = b64url(enc.encode(JSON.stringify({ alg: "EdDSA", typ: "JWS" })));
+    const header = b64url(enc.encode(JSON.stringify({ alg, typ: "JWS" })));
     const payload = b64url(
         enc.encode(JSON.stringify({ username, passwordHash, exp, jti }))
     );
     const signingInput = enc.encode(`${header}.${payload}`);
-    const sig = new Uint8Array(
-        await crypto.subtle.sign({ name: "Ed25519" }, privKey, signingInput)
-    );
+    const signParams =
+        alg === "ES256" ? { name: "ECDSA", hash: "SHA-256" } : { name: "Ed25519" };
+    const sig = new Uint8Array(await crypto.subtle.sign(signParams, privKey, signingInput));
 
     const token = `${header}.${payload}.${b64url(sig)}`;
 
@@ -140,7 +176,7 @@ async function sign(args) {
         writeFileSync(args.out, token);
         console.log(`\n令牌已写入 ${args.out}（有效期 ${expHours} 小时）`);
     } else {
-        console.log("\n=== 恢复令牌（粘贴到登录页「用恢复密钥找回账号」） ===\n");
+        console.log("\n=== 恢复令牌（粘贴到登录页「用恢复密钥找回账号 → 粘贴恢复令牌」） ===\n");
         console.log(token);
         console.log(`\n（有效期 ${expHours} 小时，一次性使用）`);
     }
@@ -155,10 +191,10 @@ if (cmd === "generate") {
     await sign(args);
 } else {
     console.log(`用法：
-  node scripts/recovery-token.mjs generate              生成 Ed25519 密钥对
+  node scripts/recovery-token.mjs generate              生成密钥对（私钥落 ./recovery-private.key）
   node scripts/recovery-token.mjs sign                 用私钥签发重置令牌
-        --username <账号> --password '<新密码>'
-        [--key <私钥文件>] [--exp-hours 24] [--jti <串>] [--out <文件>]
+        --password '<新密码>' [--username <账号>]
+        [--key <私钥文件，也认网页端下载的 json>] [--exp-hours 24] [--jti <串>] [--out <文件>]
 `);
     process.exit(cmd ? 1 : 0);
 }

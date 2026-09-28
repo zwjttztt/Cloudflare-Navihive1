@@ -10,6 +10,7 @@ import {
     encryptSecret,
     decryptSecretDeep,
     verifyRecoveryToken,
+    isValidRecoveryPublicKey,
 } from "./crypto";
 
 // 定义D1数据库类型
@@ -187,6 +188,9 @@ export const TOKEN_VERSION_KEY = "auth.tokenVersion";
 export const TOKEN_BLACKLIST_KEY = "auth.tokenBlacklist";
 // 首次部署后必须先改一次管理员密码（默认账号/密码来自部署变量，等于半公开）
 export const MUST_CHANGE_PASSWORD_KEY = "auth.mustChangePassword";
+// 恢复公钥（找回管理员密码用）：网页端生成密钥对后把公钥存这里，私钥只留在用户本地。
+// 不用 auth. 前缀——那个前缀的接口一律禁止读写，只能走专用的「校验当前密码」接口。
+export const RECOVERY_PUBLIC_KEY_CONFIG = "recovery.publicKey";
 
 // 令牌有效期（秒）：普通登录 1 天；勾选「记住账号密码」后 30 天，实现「一个月内免登录」
 export const DEFAULT_TOKEN_TTL = 24 * 60 * 60;
@@ -525,19 +529,78 @@ export class NavigationAPI {
     // ============ 密钥恢复（非对称，公钥在服务器、私钥离线） ============
     // 用私钥签名的 JWS 令牌重置管理员密码。服务器只验签、不持有私钥，
     // 因此这个公网入口无法被暴力猜解（没有私钥造不出合法 token）。
-    hasRecoveryKey(): boolean {
-        return this.recoveryPubKey.length > 0;
+    /**
+     * 取当前生效的恢复公钥：优先部署变量（wrangler secret），没有再用库里的。
+     * 之所以支持库里存：网页端生成密钥对后要把公钥交给服务器，而 secret 只能命令行改。
+     */
+    async getRecoveryPublicKey(): Promise<string> {
+        if (this.recoveryPubKey) return this.recoveryPubKey;
+        const stored = await this.getConfig(RECOVERY_PUBLIC_KEY_CONFIG);
+        return stored || "";
+    }
+
+    async hasRecoveryKey(): Promise<boolean> {
+        return (await this.getRecoveryPublicKey()).length > 0;
+    }
+
+    /**
+     * 保存 / 更换恢复公钥（网页端「生成并下载私钥」时调用）。
+     * 必须校验当前密码：否则拿到管理员会话的人可以把自己的公钥塞进来，
+     * 即使管理员改了密码也仍能凭自己的私钥重置 —— 一个持久后门。
+     */
+    async setRecoveryPublicKey(
+        publicKey: string,
+        currentPassword: string,
+        clientKey: string = "unknown"
+    ): Promise<{ success: boolean; message: string }> {
+        const key = (publicKey || "").trim();
+
+        // 留空 = 停用密钥恢复
+        if (!key) {
+            await this.deleteConfig(RECOVERY_PUBLIC_KEY_CONFIG);
+            await this.writeAudit("auth.recoveryKey", "", clientKey, "停用恢复密钥");
+            return { success: true, message: "已停用密钥恢复" };
+        }
+
+        // 部署变量里配了公钥时，库里的值不会生效，改了也是白改
+        if (this.recoveryPubKey) {
+            return {
+                success: false,
+                message: "已通过部署变量 AUTH_RECOVERY_PUBLIC_KEY 配置公钥，如需改用网页生成的密钥请先删除该变量",
+            };
+        }
+
+        if (this.authEnabled) {
+            const creds = await this.getAuthCredentials();
+            const ok = await verifyPassword(currentPassword, creds.password);
+            if (!ok) {
+                await this.writeAudit("auth.recoveryKey.failed", "", clientKey, "当前密码不正确");
+                return { success: false, message: "当前密码不正确" };
+            }
+        }
+
+        // 写入前先试着导入一遍：别把一段乱码存进库，等真要找回密码才发现用不了
+        if (!(await isValidRecoveryPublicKey(key))) {
+            return { success: false, message: "恢复公钥格式不合法，请重新生成" };
+        }
+
+        const ok = await this.setConfig(RECOVERY_PUBLIC_KEY_CONFIG, key);
+        if (!ok) return { success: false, message: "保存恢复公钥失败，请重试" };
+
+        await this.writeAudit("auth.recoveryKey", "", clientKey, "更新恢复公钥");
+        return { success: true, message: "恢复公钥已保存，请妥善保管下载的私钥文件" };
     }
 
     async redeemRecoveryToken(
         token: string,
         clientKey: string = "unknown"
     ): Promise<{ success: boolean; message: string }> {
-        if (!this.hasRecoveryKey()) {
+        const publicKey = await this.getRecoveryPublicKey();
+        if (!publicKey) {
             return { success: false, message: "本站点尚未配置恢复公钥，无法用密钥恢复" };
         }
 
-        const result = await verifyRecoveryToken(token, this.recoveryPubKey);
+        const result = await verifyRecoveryToken(token, publicKey);
         if (!result.valid || !result.payload) {
             await this.writeAudit("auth.recover.failed", "", clientKey, "签名校验失败");
             return { success: false, message: "恢复令牌无效或签名不匹配" };
@@ -556,8 +619,16 @@ export class NavigationAPI {
             return { success: false, message: "恢复令牌已被使用过" };
         }
 
-        // 写入新凭据（passwordHash 已是哈希串，直接存；不经过 hashPassword，管理员已离线算好）
-        const okUser = await this.setConfig(AUTH_USERNAME_KEY, username);
+        // 令牌里带的必须是哈希，不接受明文：
+        // 否则一份被别人捡到的私钥文件能把管理员密码设成弱口令，绕过强度策略
+        if (!isHashedPassword(passwordHash)) {
+            return { success: false, message: "恢复令牌中的密码格式不合法" };
+        }
+
+        // username 留空表示只重置密码、不动账号
+        const okUser = username
+            ? await this.setConfig(AUTH_USERNAME_KEY, username)
+            : true;
         const okPass = await this.setConfig(AUTH_PASSWORD_KEY, passwordHash);
         await this.bumpTokenVersion();
         await this.clearMustChangePassword();
