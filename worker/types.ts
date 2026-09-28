@@ -57,6 +57,15 @@ export interface RecoveryKeyInput {
     publicKey?: string;
     currentPassword?: string;
 }
+
+// 注册新账号的请求体（公开路由，靠邀请码把关）
+export interface RegisterInput {
+    username?: string;
+    password?: string;
+    /** 邀请码：由已登录用户在「网站设置 → 账户安全」生成，30 分钟内有效 */
+    inviteCode?: string;
+    remember?: boolean;
+}
 // 声明ExportedHandler类型
 // scheduled 是「每周自动备份」的定时入口，由 wrangler.jsonc 的 triggers.crons 触发
 // 声明ExportedHandler类型

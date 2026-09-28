@@ -14,6 +14,7 @@ import BookmarkAddedIcon from "@mui/icons-material/BookmarkAdded";
 import LinkOffIcon from "@mui/icons-material/LinkOff";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import LogoutIcon from "@mui/icons-material/Logout";
+import PersonRemoveIcon from "@mui/icons-material/PersonRemove";
 
 export interface MoreMenuProps {
     anchorEl: HTMLElement | null;
@@ -34,6 +35,8 @@ export interface MoreMenuProps {
     onClearVisits: () => void;
     isAuthenticated: boolean;
     onLogout: () => void;
+    /** 注销当前账号：菜单里只负责触发，二次确认由父组件弹 */
+    onDeleteAccount?: () => void;
 }
 
 export default function MoreMenu({
@@ -54,6 +57,7 @@ export default function MoreMenu({
     onClearVisits,
     isAuthenticated,
     onLogout,
+    onDeleteAccount,
 }: MoreMenuProps) {
     return (
                     <Menu
@@ -187,6 +191,17 @@ export default function MoreMenu({
                             </ListItemIcon>
                             <ListItemText>清除访问记录</ListItemText>
                         </MenuItem>
+                        {isAuthenticated && onDeleteAccount && (
+                            <MenuItem
+                                onClick={onDeleteAccount}
+                                sx={{ color: "error.main" }}
+                            >
+                                <ListItemIcon sx={{ color: "error.main" }}>
+                                    <PersonRemoveIcon fontSize='small' />
+                                </ListItemIcon>
+                                <ListItemText>注销账号</ListItemText>
+                            </MenuItem>
+                        )}
                         {isAuthenticated && (
                             <MenuItem
                                 onClick={onLogout}

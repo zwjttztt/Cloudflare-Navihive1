@@ -54,6 +54,8 @@ import HeaderActions from "./components/HeaderActions";
 import MoreMenu from "./components/MoreMenu";
 import DisplayControls from "./components/DisplayControls";
 const SettingsDialog = lazy(() => import("./components/SettingsDialog"));
+// 注销确认弹窗只有点「注销账号」才会用到，懒加载省首屏体积
+const DeleteAccountDialog = lazy(() => import("./components/DeleteAccountDialog"));
 const ImportPreviewDialog = lazy(() => import("./components/ImportPreviewDialog"));
 import HeaderClock from "./components/HeaderClock";
 import SiteListHeader from "./components/SiteListHeader";
@@ -319,6 +321,17 @@ function App() {
     const [loginLoading, setLoginLoading] = useState(false);
     // 是否已配置恢复公钥（未登录也能查，决定是否在登录页显示「用恢复密钥找回账号」）
     const [recoveryConfigured, setRecoveryConfigured] = useState(false);
+    // 当前登录账号（多账号后要能显示「我是谁」）
+    const [currentUser, setCurrentUser] = useState<{
+        username: string;
+        role: "owner" | "user";
+    } | null>(null);
+    // 生成的邀请码（含过期时间），只留在内存里，刷新页面即消失
+    const [invite, setInvite] = useState<{ code: string; expiresAt: number } | null>(null);
+    // 注销账号：二次确认弹窗 + 确认密码
+    const [deleteAccountOpen, setDeleteAccountOpen] = useState(false);
+    const [deleteAccountPassword, setDeleteAccountPassword] = useState("");
+    const [deleteAccountBusy, setDeleteAccountBusy] = useState(false);
 
     // 配置状态
     const [configs, setConfigs] = useState<Record<string, string>>(DEFAULT_CONFIGS);
@@ -723,6 +736,93 @@ function App() {
         setMenuAnchorEl(null);
     };
 
+    /**
+     * 用邀请码注册。成功后服务端已经下发会话 cookie，
+     * 这里直接切进应用、拉一次数据即可，不用再回登录页输一遍。
+     */
+    const handleRegister = async (
+        username: string,
+        password: string,
+        inviteCode: string
+    ): Promise<{ success: boolean; message?: string }> => {
+        try {
+            setLoginLoading(true);
+            setLoginError(null);
+            const result = await api.register(username, password, inviteCode);
+            if (result.success) {
+                setIsAuthenticated(true);
+                setIsAuthRequired(false);
+                setCurrentUser({ username: result.username || username, role: "user" });
+                handleCloseSnackbar();
+                await fetchData();
+                notify("注册成功，已自动登录", "success");
+                return { success: true };
+            }
+            return { success: false, message: result.message || "注册失败" };
+        } catch (error) {
+            console.error("注册失败:", error);
+            return {
+                success: false,
+                message: "注册失败：" + (error instanceof Error ? error.message : "未知错误"),
+            };
+        } finally {
+            setLoginLoading(false);
+        }
+    };
+
+    /** 生成邀请码（30 分钟有效）。只在这个会话里显示，不落库也不缓存。 */
+    const handleCreateInvite = async (): Promise<{
+        success: boolean;
+        message?: string;
+        code?: string;
+        expiresAt?: number;
+    }> => {
+        try {
+            const result = await api.createInvite();
+            if (result.success && result.code) {
+                setInvite({ code: result.code, expiresAt: result.expiresAt || 0 });
+            }
+            return result;
+        } catch (error) {
+            return {
+                success: false,
+                message: "生成邀请码失败：" + (error instanceof Error ? error.message : "未知错误"),
+            };
+        }
+    };
+
+    /** 注销账号：确认密码 → 服务端删号删数据 → 本地回到登录页 */
+    const handleDeleteAccount = async (): Promise<{ success: boolean; message?: string }> => {
+        if (!deleteAccountPassword) {
+            return { success: false, message: "请输入当前密码以确认注销" };
+        }
+        try {
+            setDeleteAccountBusy(true);
+            const result = await api.deleteAccount(deleteAccountPassword);
+            if (result.success) {
+                setDeleteAccountOpen(false);
+                setDeleteAccountPassword("");
+                setInvite(null);
+                // 账号都没了，本地数据必须一起清空，否则会看到上一个账号的残留
+                clearRememberedLogin();
+                setGroups([]);
+                setIsAuthenticated(false);
+                setIsAuthRequired(true);
+                setCurrentUser(null);
+                clearBootstrapCache();
+                setError(result.message || "账号已注销");
+            }
+            return result;
+        } catch (error) {
+            return {
+                success: false,
+                message: "注销失败：" + (error instanceof Error ? error.message : "未知错误"),
+            };
+        } finally {
+            setDeleteAccountBusy(false);
+        }
+    };
+
     // 检查认证状态
     // 优化点：不再单独发一次 checkAuthStatus 请求，直接拉 bootstrap
     // —— 拿得到数据即已登录，401 就是未登录/令牌失效，整个启动过程只花 1 次请求
@@ -741,6 +841,10 @@ function App() {
             if (ok) {
                 setIsAuthenticated(true);
                 setIsAuthRequired(false);
+                // 拿得到数据 = 已登录，顺带把「我是谁」取回来（失败不影响正常使用）
+                api.getMe()
+                    .then(me => setCurrentUser(me))
+                    .catch(() => setCurrentUser(null));
             } else if (!api.isLoggedIn()) {
                 // 本地没有可用令牌
                 setIsAuthenticated(false);
@@ -3230,6 +3334,7 @@ function App() {
                     error={loginError}
                     onRecover={handleRecover}
                     recoverConfigured={recoveryConfigured}
+                    onRegister={handleRegister}
                 />
             </Box>
         );
@@ -3411,6 +3516,11 @@ function App() {
                                             onClearVisits={clearVisits}
                                             isAuthenticated={isAuthenticated}
                                             onLogout={handleLogout}
+                                            onDeleteAccount={() => {
+                                                handleMenuClose();
+                                                setDeleteAccountPassword("");
+                                                setDeleteAccountOpen(true);
+                                            }}
                                         />
                                     }
                                 />
@@ -3929,8 +4039,26 @@ function App() {
                         }}
                         recoveryKeyConfigured={recoveryConfigured}
                         onGenerateRecoveryKey={handleGenerateRecoveryKey}
+                        currentUser={currentUser}
+                        invite={invite}
+                        onCreateInvite={handleCreateInvite}
                     />
                     </Suspense>
+
+                    {/* 注销账号：二次确认 + 当前密码（入口在「更多选项」） */}
+                    <DeleteAccountDialog
+                        open={deleteAccountOpen}
+                        username={currentUser?.username}
+                        busy={deleteAccountBusy}
+                        password={deleteAccountPassword}
+                        onPasswordChange={setDeleteAccountPassword}
+                        onConfirm={() => void handleDeleteAccount()}
+                        onClose={() => {
+                            if (deleteAccountBusy) return;
+                            setDeleteAccountOpen(false);
+                            setDeleteAccountPassword("");
+                        }}
+                    />
 
                     {/* 访问统计：本机热力图 + Top5 */}
                     <Suspense fallback={null}>

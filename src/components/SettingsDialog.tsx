@@ -102,6 +102,17 @@ interface SettingsDialogProps {
         success: boolean;
         message?: string;
     }>;
+    /** 当前登录账号（多账号后界面上要能看出「我是谁」） */
+    currentUser?: { username: string; role: "owner" | "user" } | null;
+    /** 本次会话生成的邀请码（只留在内存，刷新页面后不再显示） */
+    invite?: { code: string; expiresAt: number } | null;
+    /** 生成邀请码：父组件负责调接口，这里只展示结果 */
+    onCreateInvite?: () => Promise<{
+        success: boolean;
+        message?: string;
+        code?: string;
+        expiresAt?: number;
+    }>;
 }
 
 /** 分组：左侧一小段主色竖条 + 组标题，可选一行组说明；组内字段纵向排布 */
@@ -231,6 +242,9 @@ export default function SettingsDialog({
     onSyncPrefsChange,
     recoveryKeyConfigured = false,
     onGenerateRecoveryKey,
+    currentUser,
+    invite,
+    onCreateInvite,
 }: SettingsDialogProps) {
     // 恢复密钥的生成结果提示（成功/失败都就地反馈，私钥由浏览器直接下载）
     const [recoveryBusy, setRecoveryBusy] = useState(false);
@@ -238,6 +252,27 @@ export default function SettingsDialog({
         type: "success" | "error";
         text: string;
     } | null>(null);
+
+    // 邀请码：生成按钮的忙碌态与失败提示（码本身由父组件持有，避免弹窗关掉就丢）
+    const [inviteBusy, setInviteBusy] = useState(false);
+    const [inviteMsg, setInviteMsg] = useState<string | null>(null);
+
+    const handleCreateInvite = async () => {
+        setInviteBusy(true);
+        setInviteMsg(null);
+        try {
+            const result = await onCreateInvite?.();
+            if (!result?.success) {
+                setInviteMsg(result?.message || "生成邀请码失败");
+            }
+        } catch (error) {
+            setInviteMsg(
+                "生成邀请码失败：" + (error instanceof Error ? error.message : "未知错误")
+            );
+        } finally {
+            setInviteBusy(false);
+        }
+    };
 
     // 生成私钥要单独弹窗输入当前密码：不复用「管理员账号与密码」那组输入框。
     // 否则用户只是想改个标题、想下载私钥时被迫先填上方「当前密码」，
@@ -677,6 +712,16 @@ export default function SettingsDialog({
                         title='账户安全'
                         hint='凭据保存在数据库中，只有第一次部署才会使用默认账号密码，之后重新部署不会覆盖；留空表示不修改。这里的输入框不会预填、也不会让浏览器带入已保存的登录账号密码。'
                     >
+                        {currentUser && (
+                            <Typography variant='caption' color='text.secondary'>
+                                当前账号：
+                                <Box component='span' sx={{ fontWeight: 600 }}>
+                                    {currentUser.username}
+                                </Box>
+                                {currentUser.role === "owner" ? "（站点所有者）" : ""}
+                                。每个账号只看到自己的分组与卡片。
+                            </Typography>
+                        )}
                         <TextField
                             margin='dense'
                             size='small'
@@ -762,6 +807,73 @@ export default function SettingsDialog({
                                     点击后会单独弹窗验证当前密码（不会占用上方「当前密码」输入框）；重新生成会让此前下载的私钥立即失效。
                                 </Typography>
                             )}
+                        </Box>
+
+                        {/* 邀请码：给新用户注册用。30 分钟有效、只能用一次，
+                            所以码只在本次会话里显示一次，刷新页面就不再展示（服务端仍记得过期时间） */}
+                        <Box sx={{ mt: 0.5 }}>
+                            <Stack
+                                direction={{ xs: "column", sm: "row" }}
+                                spacing={1}
+                                alignItems={{ xs: "stretch", sm: "center" }}
+                                justifyContent='space-between'
+                            >
+                                <Box>
+                                    <Typography variant='body2' fontWeight='600'>
+                                        邀请码
+                                    </Typography>
+                                    <Typography variant='caption' color='text.secondary'>
+                                        把码发给对方，他就能在登录页注册；30 分钟内有效，只能用一次。
+                                    </Typography>
+                                </Box>
+                                <Button
+                                    variant='outlined'
+                                    size='small'
+                                    onClick={() => void handleCreateInvite()}
+                                    disabled={inviteBusy}
+                                    sx={{ flex: "none", whiteSpace: "nowrap" }}
+                                >
+                                    {inviteBusy ? "生成中…" : "生成邀请码"}
+                                </Button>
+                            </Stack>
+
+                            {invite ? (
+                                <Stack direction='row' spacing={1} alignItems='center' sx={{ mt: 1 }}>
+                                    <Typography
+                                        component='code'
+                                        sx={{
+                                            fontFamily: "monospace",
+                                            fontSize: "1rem",
+                                            letterSpacing: 1,
+                                            fontWeight: 700,
+                                        }}
+                                    >
+                                        {invite.code}
+                                    </Typography>
+                                    <Typography variant='caption' color='text.secondary'>
+                                        {invite.expiresAt
+                                            ? `有效期至 ${new Date(invite.expiresAt * 1000).toLocaleTimeString()}`
+                                            : "30 分钟内有效"}
+                                    </Typography>
+                                    <Button
+                                        size='small'
+                                        onClick={() => void navigator.clipboard?.writeText(invite.code)}
+                                        sx={{ flex: "none" }}
+                                    >
+                                        复制
+                                    </Button>
+                                </Stack>
+                            ) : null}
+
+                            {inviteMsg ? (
+                                <Typography
+                                    variant='caption'
+                                    color='error.main'
+                                    sx={{ display: "block", mt: 0.5 }}
+                                >
+                                    {inviteMsg}
+                                </Typography>
+                            ) : null}
                         </Box>
                     </Section>
 

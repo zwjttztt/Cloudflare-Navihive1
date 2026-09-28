@@ -39,6 +39,7 @@ import type {
     LoginInput,
     RecoveryInput,
     RecoveryKeyInput,
+    RegisterInput,
     SiteInput,
 } from "./types";
 import { validateConfig, validateGroup, validateLogin, validateSite } from "./validate";
@@ -202,6 +203,9 @@ export default {
                                 success: true,
                                 message: result.message,
                                 mustChangePassword: await api.mustChangePassword(),
+                                // 多账号：把账号身份带回去，前端不用再单独问一次
+                                username: result.username,
+                                role: result.role,
                             },
                             { headers }
                         );
@@ -245,6 +249,49 @@ export default {
                                     ? { "Retry-After": String(Math.ceil((until - now) / 1000)) }
                                     : undefined,
                         }
+                    );
+                }
+
+                // 注册：公开路由，唯一的准入门槛是邀请码。
+                // 放在鉴权之前（还没登录才要注册），但必须在邀请码校验上把好关。
+                if (path === "auth/register" && method === "POST") {
+                    const data = (await request.json().catch(() => ({}))) as RegisterInput;
+                    const username = typeof data.username === "string" ? data.username.trim() : "";
+                    const password = typeof data.password === "string" ? data.password : "";
+                    const inviteCode =
+                        typeof data.inviteCode === "string" ? data.inviteCode.trim() : "";
+
+                    // 未启用鉴权的部署不开放注册：整站本来就是公开的，没有「账号」可言
+                    if (!api.isAuthEnabled()) {
+                        return Response.json(
+                            { success: false, message: "当前站点未启用登录，无需注册" },
+                            { status: 400 }
+                        );
+                    }
+
+                    const result = await api.registerUser(username, password, inviteCode);
+                    if (!result.success) {
+                        await api.writeAudit("auth.register.failed", username, clientIp(request), result.message);
+                        return Response.json(result, { status: 400 });
+                    }
+
+                    // 注册成功直接签一张令牌：让用户当场就能用，不用再回登录页输一遍
+                    const uid = result.user?.id ?? 0;
+                    const ttl = data.remember ? REMEMBER_TOKEN_TTL : DEFAULT_TOKEN_TTL;
+                    const token = await api.issueTokenForUser(uid, result.user?.username ?? username, ttl);
+                    const headers = new Headers({ "Cache-Control": "no-store" });
+                    const secure = url.protocol === "https:";
+                    for (const cookie of sessionCookieHeaders(token, ttl, secure)) {
+                        headers.append("Set-Cookie", cookie);
+                    }
+                    await api.writeAudit("auth.register", username, clientIp(request), "注册成功");
+                    return Response.json(
+                        {
+                            success: true,
+                            message: "注册成功",
+                            user: result.user,
+                        },
+                        { headers }
                     );
                 }
 
@@ -356,6 +403,11 @@ export default {
                     currentTokenExp =
                         typeof verifyResult.payload?.exp === "number" ? verifyResult.payload.exp : 0;
 
+                    // 多账号：把当前账号绑到 API 实例上，之后所有分组/站点读写都只碰它的数据。
+                    // 老令牌（升级前签的）没有 uid 字段，退回「不隔离」的旧行为。
+                    const uid = verifyResult.payload?.uid;
+                    api.setCurrentUser(typeof uid === "number" ? uid : null);
+
                     // CSRF：令牌改成 cookie 后跨站请求会自动带上它，
                     // 所以写操作必须确认是本站发起的（判据见 isSameOrigin 注释）。
                     if (cookieToken && method !== "GET" && method !== "HEAD" && !isSameOrigin(request)) {
@@ -395,6 +447,90 @@ export default {
                         headers.append("Set-Cookie", cookie);
                     }
                     return Response.json({ success: true }, { headers });
+                }
+
+                // 当前登录身份（账号名 + 角色）。前端拿它显示「当前账号：xxx」。
+                if (path === "auth/me" && method === "GET") {
+                    const uid = api.getCurrentUserId();
+                    if (uid === null) {
+                        // 未启用鉴权 / 老令牌：没有账号概念，返回一个 guest 身份让界面照常工作
+                        return Response.json({ username: "guest", role: "owner" });
+                    }
+                    const user = await api.getUserById(uid);
+                    if (!user) {
+                        return Response.json(
+                            { success: false, message: "账号不存在或已被注销" },
+                            { status: 401 }
+                        );
+                    }
+                    return Response.json({ username: user.username, role: user.role });
+                }
+
+                // 生成邀请码（已登录用户都能生成，30 分钟有效）
+                if (path === "auth/invite" && method === "POST") {
+                    const uid = api.getCurrentUserId();
+                    if (uid === null) {
+                        return Response.json(
+                            { success: false, message: "当前站点未启用登录，无法生成邀请码" },
+                            { status: 400 }
+                        );
+                    }
+                    const result = await api.createInvite(uid);
+                    await api.writeAudit(
+                        result.success ? "auth.invite" : "auth.invite.failed",
+                        "",
+                        clientIp(request),
+                        result.success ? `邀请码 ${result.code}` : result.message
+                    );
+                    return Response.json(result, { status: result.success ? 200 : 400 });
+                }
+
+                // 注销账号：删掉账号名下所有数据 + 账号本身
+                if (path === "account" && method === "DELETE") {
+                    const body = (await request.json().catch(() => ({}))) as {
+                        currentPassword?: string;
+                    };
+                    const uid = api.getCurrentUserId();
+                    if (uid === null) {
+                        return Response.json(
+                            { success: false, message: "当前站点未启用登录，无法注销账号" },
+                            { status: 400 }
+                        );
+                    }
+                    // 注销不可逆，且会把自己的数据全清掉，所以必须再验一次密码：
+                    // 只凭会话就允许注销，等于捡到一台已登录的电脑就能毁掉整个账号。
+                    const currentPassword =
+                        typeof body.currentPassword === "string" ? body.currentPassword : "";
+                    if (!(await api.verifyPasswordOfUser(uid, currentPassword))) {
+                        await api.writeAudit(
+                            "auth.deleteAccount.failed",
+                            "",
+                            clientIp(request),
+                            "当前密码不正确"
+                        );
+                        return Response.json(
+                            { success: false, message: "当前密码不正确" },
+                            { status: 403 }
+                        );
+                    }
+
+                    const result = await api.deleteAccount(uid);
+                    await api.writeAudit(
+                        result.success ? "auth.deleteAccount" : "auth.deleteAccount.failed",
+                        "",
+                        clientIp(request),
+                        result.message
+                    );
+                    if (result.success) {
+                        // 账号都没了，当前令牌必须一起作废
+                        if (currentJti) await api.blacklistToken(currentJti, currentTokenExp);
+                        const headers = new Headers({ "Cache-Control": "no-store" });
+                        for (const cookie of expiredCookieHeaders(url.protocol === "https:")) {
+                            headers.append("Set-Cookie", cookie);
+                        }
+                        return Response.json(result, { headers });
+                    }
+                    return Response.json(result, { status: 400 });
                 }
 
                 // 抓目标站点的标题 / 描述（新增卡片时一键补全）—— 要鉴权，因为会对外发请求，
@@ -788,29 +924,22 @@ export default {
                         );
                     }
 
-                    const current = await api.getAuthCredentials();
-                    if (!(await api.verifyCurrentPassword(currentPassword))) {
-                        return Response.json(
-                            { success: false, message: "当前密码不正确" },
-                            { status: 403 }
-                        );
-                    }
-
-                    // 留空的字段表示保持不变
-                    const result = await api.updateAuthCredentials(
-                        username || current.username,
-                        password || current.password
-                    );
+                    // 多账号后改的是「当前账号」的凭据：账号名不能和别人撞，密码只写哈希。
+                    // currentPassword 校验放在服务端内部做（那里才知道该跟哪个哈希比）。
+                    const result = await api.updateCurrentCredentials(username, password, currentPassword);
                     await api.writeAudit(
-                        "auth.credentials",
-                        username || current.username,
+                        result.success ? "auth.credentials" : "auth.credentials.failed",
+                        username || "",
                         clientIp(request),
-                        result ? "管理员凭据已更新" : "更新失败"
+                        result.message
                     );
-                    return Response.json({
-                        success: result,
-                        message: result ? "管理员凭据已更新，请牢记新账号密码" : "保存管理员凭据失败",
-                    });
+                    return Response.json(
+                        {
+                            success: result.success,
+                            message: result.message,
+                        },
+                        { status: result.success ? 200 : 403 }
+                    );
                 }
 
                 // 保存 / 更换恢复公钥（网页端「生成并下载私钥」时调用）

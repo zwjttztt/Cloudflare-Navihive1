@@ -102,6 +102,92 @@ export class NavigationClient {
         this.clearToken();
     }
 
+    /**
+     * 用邀请码注册新账号。成功后服务端直接下发会话 cookie，前端不必再走一次登录。
+     * 失败（邀请码无效/过期/已用、账号名重复）都返回 400 + message，这里不抛异常。
+     */
+    async register(
+        username: string,
+        password: string,
+        inviteCode: string,
+        remember = false
+    ): Promise<{ success: boolean; message?: string; username?: string }> {
+        try {
+            const response = await fetch(`${this.baseUrl}/auth/register`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                credentials: "same-origin",
+                body: JSON.stringify({ username, password, inviteCode, remember }),
+            });
+            const data = await response.json().catch(() => ({ success: false }));
+            if (data.success) {
+                this.setSessionCookie(remember ? REMEMBER_TOKEN_TTL : DEFAULT_TOKEN_TTL);
+                return { success: true, message: data.message || "注册成功", username: data.user?.username };
+            }
+            return { success: false, message: data.message || "注册失败，请稍后再试" };
+        } catch (error) {
+            console.error("注册失败:", error);
+            return { success: false, message: "注册请求失败，请检查网络连接" };
+        }
+    }
+
+    /** 生成一枚邀请码（需登录），30 分钟有效 */
+    async createInvite(): Promise<{ success: boolean; message?: string; code?: string; expiresAt?: number }> {
+        try {
+            const response = await fetch(`${this.baseUrl}/auth/invite`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                credentials: "same-origin",
+            });
+            const data = await response.json().catch(() => ({ success: false }));
+            if (!data.success) {
+                return { success: false, message: data.message || "生成邀请码失败，请稍后再试" };
+            }
+            return { success: true, code: data.code, expiresAt: data.expiresAt, message: data.message };
+        } catch (error) {
+            console.error("生成邀请码失败:", error);
+            return { success: false, message: "生成邀请码请求失败，请检查网络连接" };
+        }
+    }
+
+    /** 注销当前账号：账号连同名下数据一起删除，服务端会同时清掉会话 */
+    async deleteAccount(
+        currentPassword: string
+    ): Promise<{ success: boolean; message?: string }> {
+        try {
+            const response = await fetch(`${this.baseUrl}/account`, {
+                method: "DELETE",
+                headers: { "Content-Type": "application/json" },
+                credentials: "same-origin",
+                body: JSON.stringify({ currentPassword }),
+            });
+            const data = await response.json().catch(() => ({ success: false }));
+            if (data.success) this.clearToken();
+            return {
+                success: !!data.success,
+                message: data.message || (data.success ? "账号已注销" : "注销失败，请稍后再试"),
+            };
+        } catch (error) {
+            console.error("注销账号失败:", error);
+            return { success: false, message: "注销请求失败，请检查网络连接" };
+        }
+    }
+
+    /** 当前登录身份（账号名 + 角色） */
+    async getMe(): Promise<{ username: string; role: "owner" | "user" } | null> {
+        try {
+            const response = await fetch(`${this.baseUrl}/auth/me`, {
+                credentials: "same-origin",
+            });
+            if (!response.ok) return null;
+            const data = (await response.json()) as { username?: string; role?: string };
+            if (typeof data.username !== "string") return null;
+            return { username: data.username, role: data.role === "owner" ? "owner" : "user" };
+        } catch {
+            return null;
+        }
+    }
+
     // 用恢复令牌重置管理员密码（无需登录，走公网恢复入口）
     async recoverPassword(token: string): Promise<{ success: boolean; message?: string }> {
         try {

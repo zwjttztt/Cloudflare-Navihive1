@@ -16,6 +16,7 @@ import {
 import LockOutlinedIcon from "@mui/icons-material/LockOutlined";
 import UploadFileIcon from "@mui/icons-material/UploadFile";
 import { readRememberedLogin } from "../utils/rememberedLogin";
+import { PasswordField } from "./PasswordField";
 import {
     algLabel,
     checkWebCryptoSupport,
@@ -32,6 +33,12 @@ interface LoginFormProps {
     /** 提交恢复令牌（由私钥本地签名得到），返回结果由父组件弹提示 */
     onRecover?: (token: string) => Promise<{ success: boolean; message?: string }>;
     recoverConfigured?: boolean;
+    /** 用邀请码注册新账号；不传则不显示注册入口 */
+    onRegister?: (
+        username: string,
+        password: string,
+        inviteCode: string
+    ) => Promise<{ success: boolean; message?: string }>;
 }
 
 /** 已载入的私钥：只留在内存里，既不上传也不进 localStorage */
@@ -47,13 +54,14 @@ const LoginForm: React.FC<LoginFormProps> = ({
     error = null,
     onRecover,
     recoverConfigured = false,
+    onRegister,
 }) => {
     const [username, setUsername] = useState("");
     const [password, setPassword] = useState("");
     const [remember, setRemember] = useState(false);
 
-    // 登录 / 恢复账号 两个视图
-    const [mode, setMode] = useState<"login" | "recover">("login");
+    // 登录 / 注册 / 恢复账号 三个视图
+    const [mode, setMode] = useState<"login" | "register" | "recover">("login");
     // 恢复方式：上传私钥文件（默认，不用命令行）/ 粘贴令牌（给脚本生成的令牌用）
     const [recoverWay, setRecoverWay] = useState<"keyfile" | "token">("keyfile");
     const [token, setToken] = useState("");
@@ -64,6 +72,15 @@ const LoginForm: React.FC<LoginFormProps> = ({
     const [recoverLoading, setRecoverLoading] = useState(false);
     const [localRecoverError, setLocalRecoverError] = useState<string | null>(null);
     const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+    // 注册表单：账号 + 密码 + 邀请码（邀请码由已登录用户在设置里生成，30 分钟有效）
+    const [regUsername, setRegUsername] = useState("");
+    const [regPassword, setRegPassword] = useState("");
+    const [regConfirm, setRegConfirm] = useState("");
+    const [regInvite, setRegInvite] = useState("");
+    const [regLoading, setRegLoading] = useState(false);
+    const [regError, setRegError] = useState<string | null>(null);
+    const [regNotice, setRegNotice] = useState<string | null>(null);
 
     // 打开登录页时回填上次记住的账号密码
     useEffect(() => {
@@ -192,6 +209,57 @@ const LoginForm: React.FC<LoginFormProps> = ({
     const switchToLogin = () => {
         setMode("login");
         setLocalRecoverError(null);
+        setRegError(null);
+    };
+
+    const switchToRegister = () => {
+        setMode("register");
+        setRegError(null);
+        setRegNotice(null);
+    };
+
+    // 注册：邀请码在服务端校验（是否过期 / 是否用过），前端只做基本完整性检查
+    const handleRegisterSubmit = async (e: React.FormEvent) => {
+        e.preventDefault();
+        setRegError(null);
+        setRegNotice(null);
+
+        const username = regUsername.trim();
+        if (username.length < 2) {
+            setRegError("账号名至少 2 个字符");
+            return;
+        }
+        if (!regPassword) {
+            setRegError("请设置密码");
+            return;
+        }
+        if (regPassword !== regConfirm) {
+            setRegError("两次输入的密码不一致");
+            return;
+        }
+        if (!regInvite.trim()) {
+            setRegError("请填写邀请码");
+            return;
+        }
+
+        setRegLoading(true);
+        try {
+            const result = await onRegister?.(username, regPassword, regInvite.trim());
+            if (result?.success) {
+                // 注册成功后父组件会直接进入应用，这里把表单清空即可
+                setRegUsername("");
+                setRegPassword("");
+                setRegConfirm("");
+                setRegInvite("");
+                setMode("login");
+            } else {
+                setRegError(result?.message || "注册失败，请重试");
+            }
+        } catch (err) {
+            setRegError("注册请求失败：" + (err instanceof Error ? err.message : "未知错误"));
+        } finally {
+            setRegLoading(false);
+        }
     };
 
     return (
@@ -238,7 +306,11 @@ const LoginForm: React.FC<LoginFormProps> = ({
                         <LockOutlinedIcon fontSize='large' />
                     </Box>
                     <Typography component='h1' variant='h5' fontWeight='bold' textAlign='center'>
-                        {mode === "login" ? "导航站登录" : "用恢复密钥找回账号"}
+                        {mode === "login"
+                            ? "导航站登录"
+                            : mode === "register"
+                              ? "用邀请码注册"
+                              : "用恢复密钥找回账号"}
                     </Typography>
                 </Box>
 
@@ -254,6 +326,98 @@ const LoginForm: React.FC<LoginFormProps> = ({
                         私钥只在你的浏览器里用来签名，不会上传。
                         {!recoverConfigured && " 当前站点尚未配置恢复公钥。"}
                     </Alert>
+                )}
+
+                {mode === "register" && (
+                    <Alert severity='info' sx={{ mb: 3 }}>
+                        注册需要一枚邀请码。请让已登录的用户在「网站设置 → 账户安全」里生成，
+                        邀请码 30 分钟内有效、只能用一次。
+                    </Alert>
+                )}
+
+                {mode === "register" && (
+                    <Box component='form' onSubmit={handleRegisterSubmit} sx={{ mt: 1 }}>
+                        {regError && (
+                            <Alert severity='error' sx={{ mb: 2 }}>
+                                {regError}
+                            </Alert>
+                        )}
+                        {regNotice && (
+                            <Alert severity='info' sx={{ mb: 2 }}>
+                                {regNotice}
+                            </Alert>
+                        )}
+
+                        <Stack spacing={2}>
+                            <TextField
+                                fullWidth
+                                required
+                                size='small'
+                                label='账号名'
+                                autoComplete='off'
+                                value={regUsername}
+                                onChange={e => setRegUsername(e.target.value)}
+                                disabled={regLoading}
+                                placeholder='2 - 32 个字符'
+                            />
+                            <PasswordField
+                                id='register-password'
+                                label='密码'
+                                value={regPassword}
+                                onChange={e => setRegPassword(e.target.value)}
+                                disabled={regLoading}
+                                placeholder='至少 6 位'
+                            />
+                            <PasswordField
+                                id='register-password-confirm'
+                                label='确认密码'
+                                value={regConfirm}
+                                onChange={e => setRegConfirm(e.target.value)}
+                                disabled={regLoading}
+                            />
+                            <TextField
+                                fullWidth
+                                required
+                                size='small'
+                                label='邀请码'
+                                value={regInvite}
+                                onChange={e => setRegInvite(e.target.value.toUpperCase())}
+                                disabled={regLoading}
+                                placeholder='例如 A2BC3DEF'
+                                helperText='大小写均可，提交时会自动转成大写'
+                            />
+                        </Stack>
+
+                        <Button
+                            type='submit'
+                            fullWidth
+                            variant='contained'
+                            color='primary'
+                            disabled={
+                                regLoading ||
+                                !regUsername.trim() ||
+                                !regPassword ||
+                                !regConfirm ||
+                                !regInvite.trim()
+                            }
+                            size='large'
+                            sx={{ py: 1.5, borderRadius: 2, mt: 2 }}
+                        >
+                            {regLoading ? <CircularProgress size={24} color='inherit' /> : "注册并登录"}
+                        </Button>
+
+                        <Box sx={{ mt: 2, textAlign: "center" }}>
+                            <Link
+                                component='button'
+                                type='button'
+                                variant='body2'
+                                onClick={switchToLogin}
+                                disabled={regLoading}
+                            >
+                                已有账号？返回登录
+                            </Link>
+                        </Box>
+                    </Box>
                 )}
 
                 {mode === "recover" && (
@@ -314,25 +478,17 @@ const LoginForm: React.FC<LoginFormProps> = ({
                                     disabled={recoverLoading}
                                     placeholder='留空则只重置密码，不改账号'
                                 />
-                                <TextField
-                                    fullWidth
-                                    required
-                                    size='small'
-                                    type='password'
+                                <PasswordField
+                                    id='recover-new-password'
                                     label='新密码'
-                                    autoComplete='new-password'
                                     value={newPassword}
                                     onChange={e => setNewPassword(e.target.value)}
                                     disabled={recoverLoading}
                                     helperText='不限制长度，建议用足够强的密码'
                                 />
-                                <TextField
-                                    fullWidth
-                                    required
-                                    size='small'
-                                    type='password'
+                                <PasswordField
+                                    id='recover-confirm-password'
                                     label='确认新密码'
-                                    autoComplete='new-password'
                                     value={confirmPassword}
                                     onChange={e => setConfirmPassword(e.target.value)}
                                     disabled={recoverLoading}
@@ -418,19 +574,15 @@ const LoginForm: React.FC<LoginFormProps> = ({
                         disabled={loading}
                         sx={{ mb: 2 }}
                     />
-                    <TextField
-                        margin='normal'
-                        required
-                        fullWidth
-                        name='password'
-                        label='密码'
-                        type='password'
+                    <PasswordField
                         id='password'
+                        label='密码'
+                        // 登录页就是要让浏览器填已保存的密码，这里必须是 current-password
                         autoComplete='current-password'
                         value={password}
                         onChange={e => setPassword(e.target.value)}
                         disabled={loading}
-                        sx={{ mb: 1 }}
+                        helperText=' '
                     />
 
                     <FormControlLabel
@@ -462,8 +614,20 @@ const LoginForm: React.FC<LoginFormProps> = ({
                         {loading ? <CircularProgress size={24} color='inherit' /> : "登录"}
                     </Button>
 
-                    {recoverConfigured && (
-                        <Box sx={{ mt: 2, textAlign: "center" }}>
+                    <Box sx={{ mt: 2, textAlign: "center" }}>
+                        {onRegister && (
+                            <Link
+                                component='button'
+                                type='button'
+                                variant='body2'
+                                onClick={switchToRegister}
+                                disabled={loading}
+                                sx={{ display: "block", mb: 1 }}
+                            >
+                                没有账号？用邀请码注册
+                            </Link>
+                        )}
+                        {recoverConfigured && (
                             <Link
                                 component='button'
                                 type='button'
@@ -473,8 +637,8 @@ const LoginForm: React.FC<LoginFormProps> = ({
                             >
                                 用恢复密钥找回账号
                             </Link>
-                        </Box>
-                    )}
+                        )}
+                    </Box>
                 </Box>
                 )}
             </Paper>

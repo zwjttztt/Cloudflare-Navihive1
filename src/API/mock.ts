@@ -179,6 +179,41 @@ export class MockNavigationClient {
         return { configured: true };
     }
 
+    // 注册（模拟环境：任何邀请码都接受，只为让界面跑通）
+    async register(
+        username: string,
+        _password: string,
+        _inviteCode: string,
+        _remember = false
+    ): Promise<{ success: boolean; message?: string; username?: string }> {
+        await new Promise(resolve => setTimeout(resolve, 300));
+        this.setToken(btoa(`${username}:${new Date().getTime()}`));
+        return { success: true, message: "注册成功(模拟环境)", username };
+    }
+
+    // 生成邀请码（模拟环境返回固定码，方便调试）
+    async createInvite(): Promise<{ success: boolean; message?: string; code?: string; expiresAt?: number }> {
+        await new Promise(resolve => setTimeout(resolve, 200));
+        return {
+            success: true,
+            code: "MOCKCODE",
+            expiresAt: Math.floor(Date.now() / 1000) + 30 * 60,
+            message: "模拟环境邀请码",
+        };
+    }
+
+    // 注销账号（模拟环境只清登录态，不真删数据）
+    async deleteAccount(_currentPassword: string): Promise<{ success: boolean; message?: string }> {
+        await new Promise(resolve => setTimeout(resolve, 300));
+        this.clearToken();
+        return { success: true, message: "模拟环境未真正注销账号" };
+    }
+
+    // 当前身份（模拟环境固定为 owner）
+    async getMe(): Promise<{ username: string; role: "owner" | "user" } | null> {
+        return { username: "mock", role: "owner" };
+    }
+
     // 保存恢复公钥（模拟环境仅返回成功，不真的落库）
     async setRecoveryPublicKey(
         _publicKey: string,

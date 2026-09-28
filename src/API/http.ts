@@ -163,12 +163,41 @@ export interface LoginResponse {
     message?: string;
     /** 首次部署的种子凭据还没换过：服务端会拦住其它写操作，直到改一次密码 */
     mustChangePassword?: boolean;
+    // 多账号后登录响应带上账号身份，前端不必再发一次请求问「我是谁」
+    username?: string;
+    role?: "owner" | "user";
+}
+
+/** 注册结果：成功时顺带把账号信息回给前端，省掉一次 /auth/me */
+export interface RegisterResult {
+    success: boolean;
+    message: string;
+    user?: UserRecord;
 }
 
 // 数据库迁移只需在每个 Worker isolate 中执行一次。
 // 注意：NavigationAPI 是每个请求 new 出来的，实例字段无法跨请求复用，
 // 之前迁移挂在实例上导致「每个请求都跑一遍 DDL」，这是接口变慢的主因，所以缓存放在模块作用域。
 let migrationPromise: Promise<void> | null = null;
+
+/**
+ * 仅供测试：清掉迁移缓存。
+ * 生产环境每个 isolate 只应迁移一次（缓存是有意为之），但测试里每个用例都要换一套
+ * 全新的内存数据库，不重置的话第二个用例起就永远跑不到建表 / 迁移逻辑。
+ */
+export function resetMigrationCacheForTests(): void {
+    migrationPromise = null;
+}
+
+// 邀请码取自「去掉易混字符」的字母表：没有 0/O、1/I，口头转述也不容易错。
+const INVITE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+
+function randomInviteCode(length = 8): string {
+    const bytes = crypto.getRandomValues(new Uint8Array(length));
+    return Array.from(bytes)
+        .map(byte => INVITE_ALPHABET[byte % INVITE_ALPHABET.length])
+        .join("");
+}
 
 /**
  * 管理员凭据保存在数据库的 configs 表里（键：auth.username / auth.password）。
@@ -195,6 +224,31 @@ export const RECOVERY_PUBLIC_KEY_CONFIG = "recovery.publicKey";
 // 令牌有效期（秒）：普通登录 1 天；勾选「记住账号密码」后 30 天，实现「一个月内免登录」
 export const DEFAULT_TOKEN_TTL = 24 * 60 * 60;
 export const REMEMBER_TOKEN_TTL = 30 * 24 * 60 * 60;
+
+/**
+ * 邀请码有效期：30 分钟。
+ * 注册入口是公开的（否则新用户进不来），所以发码必须短命 ——
+ * 就算码被截获，半小时后也只是一串废字符。
+ */
+export const INVITE_TTL_SECONDS = 30 * 60;
+
+/** 账号记录（不含哈希，只给能下发的字段用） */
+export interface UserRecord {
+    id: number;
+    username: string;
+    /** owner = 站点所有者（首个账号），user = 被邀请进来的普通账号 */
+    role: "owner" | "user";
+    created_at?: string;
+}
+
+/** 邀请码信息（生成后返回给前端展示） */
+export interface InviteInfo {
+    code: string;
+    /** 过期时间（秒级时间戳） */
+    expiresAt: number;
+    /** 有效期秒数，前端用来显示「30 分钟内有效」 */
+    ttlSeconds: number;
+}
 
 // 敏感配置：不参与备份文件的导入导出（管理员 / WebDAV 凭据）
 const SECRET_CONFIG_PREFIXES = ["auth.", "webdav."];
@@ -271,6 +325,35 @@ export class NavigationAPI {
     private recoveryPubKey: string;
     // 令牌版本缓存（模块内按 isolate 读一次即可，改密时失效）
     private tokenVersionCache: number | null = null;
+    /**
+     * 当前请求所属账号。由 Worker 在验签之后 setCurrentUser(id) 注入。
+     * 为 null 表示「系统级调用」（未启用鉴权、或定时备份这类没有用户上下文的任务），
+     * 此时不做数据过滤，保持升级前的行为。
+     */
+    private currentUserId: number | null = null;
+
+    /** 绑定当前账号（Worker 验签通过后调用）。传 null 表示系统级调用。 */
+    setCurrentUser(id: number | null): void {
+        this.currentUserId = id;
+    }
+
+    getCurrentUserId(): number | null {
+        return this.currentUserId;
+    }
+
+    /**
+     * 数据隔离：拼出「只属于当前账号」的 SQL 片段。
+     * 没有用户上下文时返回空串（系统任务照旧看全量数据）。
+     */
+    private scopeSql(hasWhere: boolean): string {
+        if (this.currentUserId === null) return "";
+        return `${hasWhere ? " AND " : " WHERE "}user_id = ?`;
+    }
+
+    /** 配合 scopeSql：把当前账号 id 追加到绑定参数末尾 */
+    private scopeParams<T>(params: T[]): (T | number)[] {
+        return this.currentUserId === null ? params : [...params, this.currentUserId];
+    }
 
     constructor(env: Env) {
         this.db = env.DB;
@@ -323,6 +406,12 @@ export class NavigationAPI {
         // 审计日志：登录、改密、重置、删除站点、改备份配置等关键动作留痕，事后能溯源。
         // 不返回给前端、不进备份（不属于 configs 表）。
         `CREATE TABLE IF NOT EXISTS audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, action TEXT NOT NULL, actor TEXT, ip TEXT, detail TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`,
+        // 账号表：从「单管理员」升级为「多账号」。
+        // 首个账号（owner）就是升级前那套 configs 里的管理员，历史数据全部挂在它名下，
+        // 老部署升上来不会「数据凭空消失」。
+        `CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'user', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`,
+        // 邀请码：已登录用户生成，新用户注册时用掉。时间戳一律存秒，避免 SQLite 时区歧义。
+        `CREATE TABLE IF NOT EXISTS invites (code TEXT PRIMARY KEY, created_by INTEGER, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, used_by INTEGER, used_at INTEGER);`,
     ];
 
     private async runMigrations(): Promise<void> {
@@ -343,21 +432,101 @@ export class NavigationAPI {
 
         // 2) 旧库补齐站点凭据字段：先读表结构，确实缺列时才发 ALTER
         const missingColumns = await this.findMissingSiteColumns();
-        if (missingColumns.length === 0) return;
-
-        try {
-            await this.db.batch(
-                missingColumns.map(column => this.db.prepare(`ALTER TABLE sites ADD COLUMN ${column} TEXT`))
-            );
-        } catch {
-            // 部分列已存在会让整批失败，逐条补一次即可
-            for (const column of missingColumns) {
-                try {
-                    await this.db.exec(`ALTER TABLE sites ADD COLUMN ${column} TEXT`);
-                } catch {
-                    // 列已存在，忽略
+        if (missingColumns.length > 0) {
+            try {
+                await this.db.batch(
+                    missingColumns.map(column => this.db.prepare(`ALTER TABLE sites ADD COLUMN ${column} TEXT`))
+                );
+            } catch {
+                // 部分列已存在会让整批失败，逐条补一次即可
+                for (const column of missingColumns) {
+                    try {
+                        await this.db.exec(`ALTER TABLE sites ADD COLUMN ${column} TEXT`);
+                    } catch {
+                        // 列已存在，忽略
+                    }
                 }
             }
+        }
+
+        // 3) 多账号：分组 / 站点挂上归属账号，再把老数据收归首个账号名下
+        await this.migrateOwnerColumns();
+    }
+
+    /**
+     * 多账号迁移。分三步，全部幂等：
+     *   1. groups / sites 补 user_id 列（老库没有这一列）；
+     *   2. 把 configs 里那份单管理员凭据搬进 users 表，成为 owner；
+     *   3. user_id 为空的历史数据全部归到 owner —— 升级后原账号看到的数据和升级前一模一样。
+     */
+    private async migrateOwnerColumns(): Promise<void> {
+        for (const table of ["groups", "sites"]) {
+            if (await this.hasColumn(table, "user_id")) continue;
+            try {
+                await this.db.exec(`ALTER TABLE ${table} ADD COLUMN user_id INTEGER`);
+            } catch {
+                // 列已存在（并发迁移）或表不存在，忽略
+            }
+        }
+
+        const ownerId = await this.ensureOwnerUser();
+        if (ownerId === null) return;
+
+        const backfill = [
+            this.db.prepare("UPDATE groups SET user_id = ? WHERE user_id IS NULL").bind(ownerId),
+            this.db.prepare("UPDATE sites SET user_id = ? WHERE user_id IS NULL").bind(ownerId),
+        ];
+        try {
+            await this.db.batch(backfill);
+        } catch {
+            for (const statement of backfill) {
+                try {
+                    await statement.run();
+                } catch {
+                    // 忽略
+                }
+            }
+        }
+    }
+
+    private async hasColumn(table: string, column: string): Promise<boolean> {
+        try {
+            const result = await this.db
+                .prepare("SELECT name FROM pragma_table_info(?)")
+                .bind(table)
+                .all<{ name: string }>();
+            return (result.results || []).some(row => row.name === column);
+        } catch {
+            return false;
+        }
+    }
+
+    /**
+     * users 表为空 = 还没升级过：把 configs 里的管理员凭据搬进来当 owner。
+     * 已经搬过就直接返回 owner 的 id。
+     */
+    private async ensureOwnerUser(): Promise<number | null> {
+        try {
+            const existing = await this.db
+                .prepare("SELECT id, username FROM users ORDER BY id LIMIT 1")
+                .first<{ id: number; username: string }>();
+            if (existing?.id) return existing.id;
+
+            const creds = await this.readAuthCredentials();
+            // 没有凭据说明站点还没初始化（连种子账号都没有），等第一次真正写凭据时再建
+            if (!creds.username || !creds.password) return null;
+
+            const hashed = isHashedPassword(creds.password)
+                ? creds.password
+                : await hashPassword(creds.password);
+            const inserted = await this.db
+                .prepare("INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?) RETURNING id")
+                .bind(creds.username, hashed, "owner")
+                .first<{ id: number }>();
+            return inserted?.id ?? null;
+        } catch (error) {
+            console.error("迁移首个账号失败:", error);
+            return null;
         }
     }
 
@@ -625,11 +794,32 @@ export class NavigationAPI {
             return { success: false, message: "恢复令牌中的密码格式不合法" };
         }
 
-        // username 留空表示只重置密码、不动账号
-        const okUser = username
-            ? await this.setConfig(AUTH_USERNAME_KEY, username)
-            : true;
-        const okPass = await this.setConfig(AUTH_PASSWORD_KEY, passwordHash);
+        // username 留空表示只重置密码、不动账号。
+        // 多账号后凭据以 users 表为准：找到同名账号直接改它的哈希；
+        // 找不到（老部署还没迁移出 owner）时才退回写 configs，保证升级前后都能用。
+        const target = username
+            ? await this.findUserByUsername(username)
+            : await this.findOwnerUser();
+
+        let okUser = true;
+        let okPass = true;
+        if (target) {
+            okPass = await this.db
+                .prepare("UPDATE users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+                .bind(passwordHash, target.id)
+                .run()
+                .then(r => r.success);
+            if (username && username !== target.username) {
+                okUser = await this.db
+                    .prepare("UPDATE users SET username = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+                    .bind(username, target.id)
+                    .run()
+                    .then(r => r.success);
+            }
+        } else {
+            okUser = username ? await this.setConfig(AUTH_USERNAME_KEY, username) : true;
+            okPass = await this.setConfig(AUTH_PASSWORD_KEY, passwordHash);
+        }
         await this.bumpTokenVersion();
         await this.clearMustChangePassword();
         // 记下 jti，过期时间作为兜底清理依据（旧条目不自动删除，但体量极小）
@@ -642,7 +832,7 @@ export class NavigationAPI {
         return { success: true, message: "密码已通过恢复密钥重置，请用新密码登录" };
     }
 
-    // 验证用户登录
+    // 验证用户登录（多账号：优先查 users 表，查不到再退回旧的单管理员凭据）
     async login(loginRequest: LoginRequest): Promise<LoginResponse> {
         // 令牌有效期：普通登录 1 天；勾选「记住我」则是 30 天，实现「一个月内免登录」
         const ttlSeconds = loginRequest.remember ? REMEMBER_TOKEN_TTL : DEFAULT_TOKEN_TTL;
@@ -656,28 +846,338 @@ export class NavigationAPI {
             };
         }
 
-        // 凭据以数据库为准：首次部署才会用到 wrangler vars 里的默认值
-        const credentials = await this.getAuthCredentials();
+        await this.migrate();
 
-        // 验证用户名 + 密码哈希（定时间比较；存量明文会在首次登录后自动升级为哈希）
-        const passwordOk = await verifyPassword(loginRequest.password, credentials.password);
-        if (loginRequest.username === credentials.username && passwordOk) {
-            // 存量明文迁移：登录成功就把明文换成哈希落库
-            if (!isHashedPassword(credentials.password)) {
-                await this.updateAuthCredentials(credentials.username, loginRequest.password);
+        const user = await this.findUserByUsername(loginRequest.username);
+        if (user) {
+            // 验证用户名 + 密码哈希（定时间比较；存量明文会在首次登录后自动升级为哈希）
+            const ok = await verifyPassword(loginRequest.password, user.passwordHash);
+            if (!ok) {
+                return { success: false, message: "用户名或密码错误" };
             }
-            const token = await this.generateToken({ username: loginRequest.username }, ttlSeconds);
+            // 存量明文迁移：登录成功就把明文换成哈希落库
+            if (!isHashedPassword(user.passwordHash)) {
+                await this.setUserPassword(user.id, loginRequest.password);
+            }
+            const token = await this.generateToken(
+                { username: user.username, uid: user.id, role: user.role },
+                ttlSeconds
+            );
             return {
                 success: true,
                 token,
                 message: "登录成功",
+                username: user.username,
+                role: user.role,
             };
+        }
+
+        // 兼容：users 表里还没有这个账号（例如升级后 owner 尚未迁移成功），
+        // 退回 configs 里那份单管理员凭据再验一次
+        const credentials = await this.getAuthCredentials();
+        const passwordOk = await verifyPassword(loginRequest.password, credentials.password);
+        if (loginRequest.username === credentials.username && passwordOk) {
+            if (!isHashedPassword(credentials.password)) {
+                await this.updateAuthCredentials(credentials.username, loginRequest.password);
+            }
+            const token = await this.generateToken({ username: credentials.username }, ttlSeconds);
+            return { success: true, token, message: "登录成功", username: credentials.username };
         }
 
         return {
             success: false,
             message: "用户名或密码错误",
         };
+    }
+
+    // ============ 多账号：用户与邀请码 ============
+    /** 按账号名查用户（含哈希，只在服务端内部用） */
+    private async findUserByUsername(
+        username: string
+    ): Promise<{ id: number; username: string; passwordHash: string; role: "owner" | "user" } | null> {
+        try {
+            const row = await this.db
+                .prepare("SELECT id, username, password_hash, role FROM users WHERE username = ?")
+                .bind(username)
+                .first<{ id: number; username: string; password_hash: string; role: string }>();
+            if (!row) return null;
+            return {
+                id: row.id,
+                username: row.username,
+                passwordHash: row.password_hash,
+                role: row.role === "owner" ? "owner" : "user",
+            };
+        } catch {
+            return null;
+        }
+    }
+
+    /** 取首个 owner（恢复密钥默认重置它） */
+    private async findOwnerUser(): Promise<{ id: number; username: string } | null> {
+        try {
+            return await this.db
+                .prepare("SELECT id, username FROM users WHERE role = 'owner' ORDER BY id LIMIT 1")
+                .first<{ id: number; username: string }>();
+        } catch {
+            return null;
+        }
+    }
+
+    /** 给指定账号签一张令牌（注册成功后直接登录，省得再回登录页输一遍） */
+    async issueTokenForUser(
+        uid: number,
+        username: string,
+        ttlSeconds: number = DEFAULT_TOKEN_TTL
+    ): Promise<string> {
+        return this.generateToken({ username, uid }, ttlSeconds);
+    }
+
+    async getUserById(id: number): Promise<UserRecord | null> {
+        try {
+            const row = await this.db
+                .prepare("SELECT id, username, role, created_at FROM users WHERE id = ?")
+                .bind(id)
+                .first<UserRecord>();
+            return row ?? null;
+        } catch {
+            return null;
+        }
+    }
+
+    /** 校验某个账号的密码是否正确（注销账号这类高危操作前再确认一次身份） */
+    async verifyPasswordOfUser(userId: number, plain: string): Promise<boolean> {
+        const user = await this.findUserByIdWithHash(userId);
+        if (!user) return false;
+        return verifyPassword(plain, user.passwordHash);
+    }
+
+    /** 写入账号密码（一律哈希，绝不落明文） */
+    private async setUserPassword(userId: number, plain: string): Promise<boolean> {
+        const hashed = await hashPassword(plain);
+        const result = await this.db
+            .prepare("UPDATE users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+            .bind(hashed, userId)
+            .run();
+        return result.success;
+    }
+
+    /** 还剩几个 owner：最后一个 owner 不允许注销，否则站点无人可管 */
+    private async countOwners(): Promise<number> {
+        try {
+            const row = await this.db
+                .prepare("SELECT COUNT(*) AS total FROM users WHERE role = 'owner'")
+                .first<{ total: number }>();
+            return row?.total ?? 0;
+        } catch {
+            return 0;
+        }
+    }
+
+    /**
+     * 注册新账号。必须带一枚有效邀请码 —— 注册入口是公开的，
+     * 没有邀请码就等于任何人都能建号（邀请码是唯一的准入门槛）。
+     */
+    async registerUser(
+        username: string,
+        password: string,
+        inviteCode: string
+    ): Promise<RegisterResult> {
+        await this.migrate();
+
+        const name = (username || "").trim();
+        if (name.length < 2 || name.length > 32) {
+            return { success: false, message: "账号名长度需在 2 - 32 个字符之间" };
+        }
+        // 账号名不允许斜杠等会干扰展示的字符；空格一律挡掉，避免前后缀混淆
+        if (!/^[^/\s]+$/.test(name)) {
+            return { success: false, message: "账号名不能包含空格或斜杠" };
+        }
+        if (!password || password.length < 6) {
+            return { success: false, message: "密码至少 6 位" };
+        }
+
+        const invite = await this.checkInvite((inviteCode || "").trim().toUpperCase());
+        if (!invite.ok) return { success: false, message: invite.message };
+
+        if (await this.findUserByUsername(name)) {
+            return { success: false, message: "该账号名已被占用" };
+        }
+
+        const hashed = await hashPassword(password);
+        let created: UserRecord | null = null;
+        try {
+            const row = await this.db
+                .prepare(
+                    "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?) RETURNING id, username, role, created_at"
+                )
+                .bind(name, hashed, "user")
+                .first<UserRecord>();
+            created = row ?? null;
+        } catch (error) {
+            console.error("创建账号失败:", error);
+            return { success: false, message: "创建账号失败，请重试" };
+        }
+        if (!created) return { success: false, message: "创建账号失败，请重试" };
+
+        // 邀请码一次性：并发下靠 used_at IS NULL 保证只有一个请求能标记成功
+        const claimed = await this.db
+            .prepare("UPDATE invites SET used_by = ?, used_at = ? WHERE code = ? AND used_at IS NULL")
+            .bind(created.id, Math.floor(Date.now() / 1000), invite.code)
+            .run();
+
+        // 极端并发下码被抢走：账号已建出来，回滚掉更干净
+        const changes = (claimed.meta as { changes?: number } | undefined)?.changes;
+        if (!claimed.success || changes === 0) {
+            await this.db.prepare("DELETE FROM users WHERE id = ?").bind(created.id).run();
+            return { success: false, message: "邀请码已被使用" };
+        }
+
+        return { success: true, message: "注册成功", user: created };
+    }
+
+    /** 校验邀请码是否还能用（不消耗） */
+    private async checkInvite(code: string): Promise<{ ok: boolean; message: string; code: string }> {
+        if (!code) return { ok: false, message: "请填写邀请码", code };
+        try {
+            const row = await this.db
+                .prepare("SELECT code, expires_at, used_at FROM invites WHERE code = ?")
+                .bind(code)
+                .first<{ code: string; expires_at: number; used_at: number | null }>();
+            if (!row) return { ok: false, message: "邀请码无效", code };
+            if (row.used_at) return { ok: false, message: "邀请码已被使用", code };
+            if (row.expires_at < Math.floor(Date.now() / 1000)) {
+                return { ok: false, message: "邀请码已过期（有效期 30 分钟，请重新生成）", code };
+            }
+            return { ok: true, message: "", code: row.code };
+        } catch {
+            return { ok: false, message: "邀请码校验失败，请重试", code };
+        }
+    }
+
+    /** 生成一枚邀请码（已登录用户调用），30 分钟有效 */
+    async createInvite(createdBy: number): Promise<
+        { success: boolean; message: string } & Partial<InviteInfo>
+    > {
+        await this.migrate();
+        const now = Math.floor(Date.now() / 1000);
+        const expiresAt = now + INVITE_TTL_SECONDS;
+
+        // 撞码概率极低，但仍留 5 次重试，撞上就换一串
+        for (let i = 0; i < 5; i++) {
+            const code = randomInviteCode();
+            try {
+                await this.db
+                    .prepare(
+                        "INSERT INTO invites (code, created_by, created_at, expires_at) VALUES (?, ?, ?, ?)"
+                    )
+                    .bind(code, createdBy, now, expiresAt)
+                    .run();
+                return { success: true, message: "邀请码已生成", code, expiresAt, ttlSeconds: INVITE_TTL_SECONDS };
+            } catch {
+                // 撞主键，换一串再来
+            }
+        }
+        return { success: false, message: "生成邀请码失败，请重试" };
+    }
+
+    /**
+     * 注销账号：分组、站点、账号记录全部删除，不留任何残留。
+     * 最后一个 owner 不让注销 —— 否则站点变成没人能管的孤儿。
+     */
+    async deleteAccount(userId: number): Promise<{ success: boolean; message: string }> {
+        const user = await this.getUserById(userId);
+        if (!user) return { success: false, message: "账号不存在" };
+
+        if (user.role === "owner" && (await this.countOwners()) <= 1) {
+            return {
+                success: false,
+                message: "这是最后一个管理员账号，注销后将无人能管理站点；请先用邀请码注册一个新账号再注销",
+            };
+        }
+
+        try {
+            // 站点有 group_id 外键级联，但显式先删更保险（级联依赖 D1 的 foreign_keys 开关）
+            await this.db.batch([
+                this.db.prepare("DELETE FROM sites WHERE user_id = ?").bind(userId),
+                this.db.prepare("DELETE FROM groups WHERE user_id = ?").bind(userId),
+                this.db.prepare("DELETE FROM invites WHERE created_by = ?").bind(userId),
+                this.db.prepare("DELETE FROM users WHERE id = ?").bind(userId),
+            ]);
+        } catch (error) {
+            console.error("注销账号失败:", error);
+            return { success: false, message: "注销账号失败，请重试" };
+        }
+
+        // 令牌版本 +1：账号都没了，已签发的令牌必须一起失效
+        await this.bumpTokenVersion();
+        return { success: true, message: "账号已注销，相关数据已全部删除" };
+    }
+
+    /**
+     * 修改当前账号的账号名 / 密码。必须校验当前密码 ——
+     * 否则拿到会话的人可以顺手改掉密码把主人锁在门外。
+     * 没有用户上下文时（旧令牌 / 未升级）退回 configs 的单管理员逻辑。
+     */
+    async updateCurrentCredentials(
+        username: string,
+        password: string,
+        currentPassword: string
+    ): Promise<{ success: boolean; message: string }> {
+        const uid = this.currentUserId;
+
+        if (uid === null) {
+            const current = await this.getAuthCredentials();
+            if (!(await verifyPassword(currentPassword, current.password))) {
+                return { success: false, message: "当前密码不正确" };
+            }
+            const ok = await this.updateAuthCredentials(
+                username || current.username,
+                password || current.password
+            );
+            return { success: ok, message: ok ? "管理员凭据已更新，请牢记新账号密码" : "保存管理员凭据失败" };
+        }
+
+        const user = await this.findUserByIdWithHash(uid);
+        if (!user) return { success: false, message: "账号不存在" };
+        if (!(await verifyPassword(currentPassword, user.passwordHash))) {
+            return { success: false, message: "当前密码不正确" };
+        }
+
+        if (username && username !== user.username) {
+            if (await this.findUserByUsername(username)) {
+                return { success: false, message: "该账号名已被占用" };
+            }
+            const ok = await this.db
+                .prepare("UPDATE users SET username = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+                .bind(username, uid)
+                .run();
+            if (!ok.success) return { success: false, message: "保存新账号名失败" };
+        }
+        if (password) await this.setUserPassword(uid, password);
+
+        await this.bumpTokenVersion();
+        await this.clearMustChangePassword();
+        return { success: true, message: "凭据已更新" };
+    }
+
+    private async findUserByIdWithHash(
+        id: number
+    ): Promise<{ id: number; username: string; passwordHash: string; role: "owner" | "user" } | null> {
+        try {
+            const row = await this.db
+                .prepare("SELECT id, username, password_hash, role FROM users WHERE id = ?")
+                .bind(id)
+                .first<{ id: number; username: string; password_hash: string; role: string }>();
+            if (!row) return null;
+            return {
+                id: row.id,
+                username: row.username,
+                passwordHash: row.password_hash,
+                role: row.role === "owner" ? "owner" : "user",
+            };
+        } catch {
+            return null;
+        }
     }
 
     // 验证令牌有效性
@@ -739,10 +1239,14 @@ export class NavigationAPI {
     }
 
     private async queryGroups(): Promise<Group[]> {
+        // 多账号：只看自己的分组（系统级调用不带上用户上下文，照旧看全量）
         const result = await this.db
             .prepare(
-                "SELECT id, name, order_num, created_at, updated_at FROM groups ORDER BY order_num"
+                `SELECT id, name, order_num, created_at, updated_at FROM groups${this.scopeSql(
+                    false
+                )} ORDER BY order_num`
             )
+            .bind(...this.scopeParams([]))
             .all<Group>();
         return result.results || [];
     }
@@ -756,12 +1260,20 @@ export class NavigationAPI {
 
     private async queryBootstrap(): Promise<BootstrapData> {
         const [groupsResult, sitesResult, configsResult] = await this.db.batch<unknown>([
-            this.db.prepare(
-                "SELECT id, name, order_num, created_at, updated_at FROM groups ORDER BY order_num"
-            ),
-            this.db.prepare(
-                "SELECT id, group_id, name, url, icon, description, notes, username, password, order_num, created_at, updated_at FROM sites ORDER BY order_num"
-            ),
+            this.db
+                .prepare(
+                    `SELECT id, name, order_num, created_at, updated_at FROM groups${this.scopeSql(
+                        false
+                    )} ORDER BY order_num`
+                )
+                .bind(...this.scopeParams([])),
+            this.db
+                .prepare(
+                    `SELECT id, group_id, name, url, icon, description, notes, username, password, order_num, created_at, updated_at FROM sites${this.scopeSql(
+                        false
+                    )} ORDER BY order_num`
+                )
+                .bind(...this.scopeParams([])),
             this.db.prepare("SELECT key, value FROM configs"),
         ]);
 
@@ -789,8 +1301,12 @@ export class NavigationAPI {
 
     async getGroup(id: number): Promise<Group | null> {
         const result = await this.db
-            .prepare("SELECT id, name, order_num, created_at, updated_at FROM groups WHERE id = ?")
-            .bind(id)
+            .prepare(
+                `SELECT id, name, order_num, created_at, updated_at FROM groups WHERE id = ?${this.scopeSql(
+                    true
+                )}`
+            )
+            .bind(...this.scopeParams([id]))
             .first<Group>();
         return result;
     }
@@ -798,9 +1314,9 @@ export class NavigationAPI {
     async createGroup(group: Group): Promise<Group> {
         const result = await this.db
             .prepare(
-                "INSERT INTO groups (name, order_num) VALUES (?, ?) RETURNING id, name, order_num, created_at, updated_at"
+                "INSERT INTO groups (name, order_num, user_id) VALUES (?, ?, ?) RETURNING id, name, order_num, created_at, updated_at"
             )
-            .bind(group.name, group.order_num)
+            .bind(group.name, group.order_num, this.currentUserId)
             .all<Group>();
         if (!result.results || result.results.length === 0) {
             throw new Error("创建分组失败");
@@ -824,15 +1340,17 @@ export class NavigationAPI {
             params.push(group.order_num);
         }
 
-        // 构建安全的参数化查询
+        // 构建安全的参数化查询（带上归属账号：改不了别人的分组）
         const query = `UPDATE groups SET ${updates.join(
             ", "
-        )} WHERE id = ? RETURNING id, name, order_num, created_at, updated_at`;
+        )} WHERE id = ?${this.scopeSql(
+            true
+        )} RETURNING id, name, order_num, created_at, updated_at`;
         params.push(id);
 
         const result = await this.db
             .prepare(query)
-            .bind(...params)
+            .bind(...this.scopeParams(params))
             .all<Group>();
 
         if (!result.results || result.results.length === 0) {
@@ -842,7 +1360,10 @@ export class NavigationAPI {
     }
 
     async deleteGroup(id: number): Promise<boolean> {
-        const result = await this.db.prepare("DELETE FROM groups WHERE id = ?").bind(id).run();
+        const result = await this.db
+            .prepare(`DELETE FROM groups WHERE id = ?${this.scopeSql(true)}`)
+            .bind(...this.scopeParams([id]))
+            .run();
         return result.success;
     }
 
@@ -876,11 +1397,14 @@ export class NavigationAPI {
             params.push(groupId);
         }
 
+        // 只取属于自己的卡片：否则 A 账号能看到 B 账号的链接与登录凭据
+        query += this.scopeSql(groupId !== undefined);
+
         query += " ORDER BY order_num";
 
         const result = await this.db
             .prepare(query)
-            .bind(...params)
+            .bind(...this.scopeParams(params))
             .all<Site>();
         return this.decryptSitePasswords(result.results || []);
     }
@@ -893,9 +1417,11 @@ export class NavigationAPI {
     private async querySite(id: number): Promise<Site | null> {
         const result = await this.db
             .prepare(
-                "SELECT id, group_id, name, url, icon, description, notes, username, password, order_num, created_at, updated_at FROM sites WHERE id = ?"
+                `SELECT id, group_id, name, url, icon, description, notes, username, password, order_num, created_at, updated_at FROM sites WHERE id = ?${this.scopeSql(
+                    true
+                )}`
             )
-            .bind(id)
+            .bind(...this.scopeParams([id]))
             .first<Site>();
         return result ? this.decryptSitePassword(result) : result;
     }
@@ -909,8 +1435,8 @@ export class NavigationAPI {
         const result = await this.db
             .prepare(
                 `
-      INSERT INTO sites (group_id, name, url, icon, description, notes, username, password, order_num) 
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) 
+      INSERT INTO sites (group_id, name, url, icon, description, notes, username, password, order_num, user_id) 
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) 
       RETURNING id, group_id, name, url, icon, description, notes, username, password, order_num, created_at, updated_at
     `
             )
@@ -924,7 +1450,8 @@ export class NavigationAPI {
                 site.username || "",
                 // 站点登录凭据落库即加密（读出来时解密）
                 await encryptSecret(site.password || "", this.secret),
-                site.order_num
+                site.order_num,
+                this.currentUserId
             )
             .all<Site>();
 
@@ -992,15 +1519,17 @@ export class NavigationAPI {
             params.push(site.order_num);
         }
 
-        // 构建安全的参数化查询
+        // 构建安全的参数化查询（带上归属账号，避免改到别人的卡片）
         const query = `UPDATE sites SET ${updates.join(
             ", "
-        )} WHERE id = ? RETURNING id, group_id, name, url, icon, description, notes, username, password, order_num, created_at, updated_at`;
+        )} WHERE id = ?${this.scopeSql(
+            true
+        )} RETURNING id, group_id, name, url, icon, description, notes, username, password, order_num, created_at, updated_at`;
         params.push(id);
 
         const result = await this.db
             .prepare(query)
-            .bind(...params)
+            .bind(...this.scopeParams(params))
             .all<Site>();
 
         if (!result.results || result.results.length === 0) {
@@ -1013,7 +1542,10 @@ export class NavigationAPI {
     async deleteSite(id: number): Promise<boolean> {
         await this.migrate();
         return this.withSchemaRetry(async () => {
-            const result = await this.db.prepare("DELETE FROM sites WHERE id = ?").bind(id).run();
+            const result = await this.db
+                .prepare(`DELETE FROM sites WHERE id = ?${this.scopeSql(true)}`)
+                .bind(...this.scopeParams([id]))
+                .run();
             return result.success;
         });
     }
@@ -1112,15 +1644,18 @@ export class NavigationAPI {
 
     // 批量更新排序
     async updateGroupOrder(groupOrders: { id: number; order_num: number }[]): Promise<boolean> {
+        if (groupOrders.length === 0) return true;
         // 使用事务确保所有更新一起成功或失败
         return await this.db
             .batch(
                 groupOrders.map(item =>
                     this.db
                         .prepare(
-                            "UPDATE groups SET order_num = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+                            `UPDATE groups SET order_num = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?${this.scopeSql(
+                                true
+                            )}`
                         )
-                        .bind(item.order_num, item.id)
+                        .bind(...this.scopeParams([item.order_num, item.id]))
                 )
             )
             .then(() => true)
@@ -1138,18 +1673,20 @@ export class NavigationAPI {
         if (siteOrders.length === 0) return true;
         await this.migrate();
 
-        const buildStatement = (item: { id: number; order_num: number; group_id?: number }) =>
-            item.group_id === undefined
+        const buildStatement = (item: { id: number; order_num: number; group_id?: number }) => {
+            const tail = `${this.scopeSql(true)}`;
+            return item.group_id === undefined
                 ? this.db
                       .prepare(
-                          "UPDATE sites SET order_num = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+                          `UPDATE sites SET order_num = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?${tail}`
                       )
-                      .bind(item.order_num, item.id)
+                      .bind(...this.scopeParams([item.order_num, item.id]))
                 : this.db
                       .prepare(
-                          "UPDATE sites SET order_num = ?, group_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+                          `UPDATE sites SET order_num = ?, group_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?${tail}`
                       )
-                      .bind(item.order_num, item.group_id, item.id);
+                      .bind(...this.scopeParams([item.order_num, item.group_id, item.id]));
+        };
 
         // D1 单次 batch 的语句条数有上限，站点多的时候分批提交，避免整批失败
         const CHUNK_SIZE = 100;
@@ -1193,12 +1730,20 @@ export class NavigationAPI {
         configs: Record<string, string>;
     }> {
         const [groupResult, siteResult, configResult] = await this.db.batch<Group | Site | Config>([
-            this.db.prepare(
-                "SELECT id, name, order_num, created_at, updated_at FROM groups ORDER BY order_num"
-            ),
-            this.db.prepare(
-                "SELECT id, group_id, name, url, icon, description, notes, username, password, order_num, created_at, updated_at FROM sites ORDER BY order_num"
-            ),
+            this.db
+                .prepare(
+                    `SELECT id, name, order_num, created_at, updated_at FROM groups${this.scopeSql(
+                        false
+                    )} ORDER BY order_num`
+                )
+                .bind(...this.scopeParams([])),
+            this.db
+                .prepare(
+                    `SELECT id, group_id, name, url, icon, description, notes, username, password, order_num, created_at, updated_at FROM sites${this.scopeSql(
+                        false
+                    )} ORDER BY order_num`
+                )
+                .bind(...this.scopeParams([])),
             this.db.prepare("SELECT key, value FROM configs"),
         ]);
 
@@ -1224,16 +1769,27 @@ export class NavigationAPI {
 
             const normalized = normalizeImportData(data);
 
-            // 清空现有数据
-            await this.db.exec("DELETE FROM sites");
-            await this.db.exec("DELETE FROM groups");
+            // 清空现有数据：多账号后只清「当前账号」的，别把别人的数据一起抹了
+            if (this.currentUserId === null) {
+                await this.db.exec("DELETE FROM sites");
+                await this.db.exec("DELETE FROM groups");
+            } else {
+                await this.db
+                    .prepare("DELETE FROM sites WHERE user_id = ?")
+                    .bind(this.currentUserId)
+                    .run();
+                await this.db
+                    .prepare("DELETE FROM groups WHERE user_id = ?")
+                    .bind(this.currentUserId)
+                    .run();
+            }
 
             // 导入分组数据（保留原ID，保证站点归属关系不变）
             for (const group of normalized.groups) {
                 if (group.id !== undefined) {
                     await this.db
-                        .prepare("INSERT INTO groups (id, name, order_num) VALUES (?, ?, ?)")
-                        .bind(group.id, group.name, group.order_num || 0)
+                        .prepare("INSERT INTO groups (id, name, order_num, user_id) VALUES (?, ?, ?, ?)")
+                        .bind(group.id, group.name, group.order_num || 0, this.currentUserId)
                         .run();
                 } else {
                     await this.createGroup(group);
@@ -1245,8 +1801,8 @@ export class NavigationAPI {
                 if (site.id !== undefined) {
                     await this.db
                         .prepare(
-                            `INSERT INTO sites (id, group_id, name, url, icon, description, notes, username, password, order_num)
-                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+                            `INSERT INTO sites (id, group_id, name, url, icon, description, notes, username, password, order_num, user_id)
+                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
                         )
                         .bind(
                             site.id,
@@ -1259,7 +1815,8 @@ export class NavigationAPI {
                             site.username || "",
                             // 备份里是明文，写回 D1 前加密
                             await encryptSecret(site.password || "", this.secret),
-                            site.order_num || 0
+                            site.order_num || 0,
+                            this.currentUserId
                         )
                         .run();
                 } else {
