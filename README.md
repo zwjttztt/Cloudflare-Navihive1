@@ -55,7 +55,6 @@
    wrangler secret put AUTH_USERNAME
    wrangler secret put AUTH_PASSWORD
    wrangler secret put AUTH_SECRET
-   wrangler secret put AUTH_RESET_CODE
    ```
    然后直接点击 **"Deploy"** 即可。
 4. 部署完成后你会得到类似  
@@ -108,7 +107,6 @@ pnpm deploy     # 部署到 Cloudflare Workers
 wrangler secret put AUTH_USERNAME
 wrangler secret put AUTH_PASSWORD
 wrangler secret put AUTH_SECRET      # JWT 签名密钥 + 站点密码 / WebDAV 凭据落库加密密钥
-wrangler secret put AUTH_RESET_CODE  # 忘记密码时的应急重置码
 ```
 
 > `AUTH_SECRET` 请用全新的随机长串（比如 `openssl rand -base64 32`）。
@@ -193,27 +191,31 @@ wrangler secret put AUTH_RESET_CODE  # 忘记密码时的应急重置码
 
 ## 🔧 常见问题
 
-**忘记管理员密码？** 三种方式，任选其一：
+**忘记管理员密码？** 两种方式，任选其一（都不需要登录，也不需要记住「重置码」这类额外密钥）：
 
-1. **应急重置码（推荐，不用进数据库）**：先在 Cloudflare 设一个重置码（存为加密的 secret，不会明文写进配置文件）：
-
-   ```bash
-   wrangler secret put AUTH_RESET_CODE
-   # 接着输入你想设的重置码，例如 MyReset2026
-   ```
-
-   之后登录页点「忘记密码？用应急重置码找回」，填入这个码和新的密码即可立即重设。想换码就再执行一次上面的命令。
-
-2. **直接改 D1**（不需要重置码时）：凭据保存在 D1 的 `configs` 表里，改这两行即可（无需重新部署）：
+1. **用重置脚本（推荐，按正确格式写哈希，不落明文）**：仓库自带 `scripts/reset-admin-password.mjs`，会用和后端完全相同的算法生成密码哈希，并更新 D1、同时让所有已登录会话失效：
 
    ```bash
-   wrangler d1 execute navigation-db --command "UPDATE configs SET value='新密码' WHERE key='auth.password'"
-   wrangler d1 execute navigation-db --command "UPDATE configs SET value='新账号' WHERE key='auth.username'"
+   # 在仓库根目录执行；可加 --username 改账号，不写则只改密码
+   AUTH_ENABLED=true node scripts/reset-admin-password.mjs --password '你的新密码'
+   # 不想把密码写在命令行，可走交互输入：
+   node scripts/reset-admin-password.mjs
+   # 数据库名不是默认的 navigation-db 时用 --db 指定：
+   node scripts/reset-admin-password.mjs --db 你的库名 --username admin --password '你的新密码'
    ```
 
-3. **登录后修改**：到「网站设置 → 管理员账号与密码」修改（需填写当前密码），改动立即生效且不会被后续部署覆盖。
+   > 脚本依赖 `wrangler` 命令行（全局装了或能 `npx wrangler` 即可），走的是你本机已有的 Cloudflare 登录态——本质上就是「你亲自改库」，所以不存在可被外人反复尝试的公开入口。
 
-> 应急重置码只保存在 Cloudflare 的环境变量里，不下发到前端、不写入数据库和备份文件。同一 IP 10 分钟内连续输错 10 次会被临时拒绝，防止暴力猜码。
+2. **直接改 D1**（没有 Node 环境时）：凭据存在 D1 的 `configs` 表里，直接改这两行即可（无需重新部署）。下面的写法会先把密码存成明文，**下次正常登录时后端会自动把它升级成哈希**，所以不必手动算哈希：
+
+   ```bash
+   wrangler d1 execute navigation-db --command "UPDATE configs SET value='你的新密码' WHERE key='auth.password'"
+   wrangler d1 execute navigation-db --command "UPDATE configs SET value='你的新账号' WHERE key='auth.username'"
+   ```
+
+3. **登录后修改**：还能登录时，到「网站设置 → 管理员账号与密码」修改（需填写当前密码），改动立即生效且不会被后续部署覆盖。
+
+> 设计取舍：本项目不再提供「登录页填码找回」这种对公网开放的入口（旧版的 `AUTH_RESET_CODE` 应急重置码已移除）。找回密码一律要求你能操作 Cloudflare / D1——也就是本来就能动部署的人，避免多出一个任何人都能撞的攻击面。
 
 **想关闭登录？** 将 `AUTH_ENABLED` 设为 `false`，任何访问者都可浏览与编辑（不建议公开站点使用）。
 

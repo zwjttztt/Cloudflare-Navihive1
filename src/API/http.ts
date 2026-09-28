@@ -9,7 +9,6 @@ import {
     isHashedPassword,
     encryptSecret,
     decryptSecretDeep,
-    validatePasswordStrength,
 } from "./crypto";
 
 // 定义D1数据库类型
@@ -40,7 +39,6 @@ interface Env {
     AUTH_USERNAME?: string; // 认证用户名
     AUTH_PASSWORD?: string; // 认证密码
     AUTH_SECRET?: string; // JWT密钥
-    AUTH_RESET_CODE?: string; // 应急重置码（忘记密码时用它重设管理员密码）
 }
 
 // 数据类型定义
@@ -219,37 +217,6 @@ export function stripSiteCredentials(sites: Site[]): Site[] {
 }
 
 /**
- * 应急重置码（找回密码）相关。
- * 码本身来自部署环境变量 AUTH_RESET_CODE，推荐用 `wrangler secret put` 存，
- * 服务端只比对、绝不下发给前端，也不落到数据库。
- */
-const RESET_WINDOW_MS = 10 * 60 * 1000;
-const RESET_MAX_ATTEMPTS = 10;
-const resetAttempts = new Map<string, number[]>();
-
-function resetRateLimited(clientKey: string): boolean {
-    const now = Date.now();
-    const recent = (resetAttempts.get(clientKey) || []).filter(t => now - t < RESET_WINDOW_MS);
-    if (recent.length >= RESET_MAX_ATTEMPTS) {
-        resetAttempts.set(clientKey, recent);
-        return true;
-    }
-    recent.push(now);
-    resetAttempts.set(clientKey, recent);
-    return false;
-}
-
-// 逐字符比较，避免通过响应耗时逐位猜码；调用前统一大小写，输入时不区分大小写
-function resetCodeEqual(input: string, expected: string): boolean {
-    if (input.length !== expected.length) return false;
-    let diff = 0;
-    for (let i = 0; i < input.length; i++) {
-        diff |= input.charCodeAt(i) ^ expected.charCodeAt(i);
-    }
-    return diff === 0;
-}
-
-/**
  * 落库前要用 AUTH_SECRET 派生密钥加密的配置键。
  * 两个 WebDAV 凭据都在这里：明文落 D1，导一份库就等于把网盘账号交出去了。
  * 注意：这里只是「静态保护」，备份口令本身不是 AUTH_SECRET —— 备份文件用它自己的
@@ -294,8 +261,6 @@ export class NavigationAPI {
     private seedUsername: string;
     private seedPassword: string;
     private secret: string;
-    // 应急重置码：忘记密码时用它在登录页直接重设密码
-    private resetCode: string;
     // 令牌版本缓存（模块内按 isolate 读一次即可，改密时失效）
     private tokenVersionCache: number | null = null;
 
@@ -305,7 +270,6 @@ export class NavigationAPI {
         this.seedUsername = env.AUTH_USERNAME || "";
         this.seedPassword = env.AUTH_PASSWORD || "";
         this.secret = env.AUTH_SECRET || "默认密钥，建议在生产环境中设置";
-        this.resetCode = (env.AUTH_RESET_CODE || "").trim();
     }
 
     // 初始化数据库表
@@ -551,59 +515,6 @@ export class NavigationAPI {
         // 已经换成自己的密码了，解除「必须改密」限制
         await this.clearMustChangePassword();
         return okUser && okPass;
-    }
-
-    // 是否已配置应急重置码（只告诉前端「配了没有」，不下发码本身）
-    hasResetCode(): boolean {
-        return this.resetCode.length > 0;
-    }
-
-    /**
-     * 用应急重置码重设管理员账号密码（登录页「忘记密码」入口，无需登录即可调用）。
-     * 重置码由部署环境变量提供，忘记密码时只要还能进 Cloudflare 后台就能改。
-     */
-    async redeemResetCode(
-        code: string,
-        newUsername: string,
-        newPassword: string,
-        clientKey: string = "unknown"
-    ): Promise<{ success: boolean; message: string }> {
-        if (!this.hasResetCode()) {
-            return {
-                success: false,
-                message: "尚未配置应急重置码，请先在 Cloudflare 设置 AUTH_RESET_CODE",
-            };
-        }
-
-        const input = (code || "").trim().toUpperCase();
-        const newPass = newPassword || "";
-        if (!input || !newPass) {
-            return { success: false, message: "请填写应急重置码和新密码" };
-        }
-
-        // 重置密码也强制强度策略，避免把管理员账号设成弱口令
-        const strength = validatePasswordStrength(newPass);
-        if (!strength.ok) {
-            return { success: false, message: `密码强度不足：${strength.message}` };
-        }
-
-        // 限流：短时间内反复猜码直接拒绝
-        if (resetRateLimited(clientKey)) {
-            return { success: false, message: "尝试过于频繁，请稍后再试" };
-        }
-
-        if (!resetCodeEqual(input, this.resetCode.toUpperCase())) {
-            return { success: false, message: "应急重置码不正确" };
-        }
-
-        const current = await this.getAuthCredentials();
-        const ok = await this.updateAuthCredentials(newUsername || current.username, newPass);
-        if (!ok) {
-            return { success: false, message: "重置密码失败，请稍后再试" };
-        }
-
-        resetAttempts.delete(clientKey);
-        return { success: true, message: "密码已重置，请使用新密码登录" };
     }
 
     // 验证用户登录

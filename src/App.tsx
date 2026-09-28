@@ -310,10 +310,6 @@ function App() {
     const [isAuthRequired, setIsAuthRequired] = useState(false);
     const [isAuthenticated, setIsAuthenticated] = useState(false);
     const [loginError, setLoginError] = useState<string | null>(null);
-    // 找回密码：用应急重置码重设管理员密码
-    const [resetLoading, setResetLoading] = useState(false);
-    const [resetError, setResetError] = useState<string | null>(null);
-    const [resetConfigured, setResetConfigured] = useState(true);
     const [loginLoading, setLoginLoading] = useState(false);
 
     // 配置状态
@@ -726,12 +722,6 @@ function App() {
         try {
             setIsAuthChecking(true);
 
-            // 顺带确认是否配置了应急重置码（未登录也能查，失败就当作已配置，不影响登录）
-            api
-                .getResetCodeStatus()
-                .then(status => setResetConfigured(status?.configured !== false))
-                .catch(() => setResetConfigured(true));
-
             const ok = await fetchData();
 
             if (ok) {
@@ -797,32 +787,6 @@ function App() {
             setIsAuthenticated(false);
         } finally {
             setLoginLoading(false);
-        }
-    };
-
-    // 用应急重置码重设管理员密码（登录页「忘记密码」入口）
-    const handleResetPassword = async (code: string, newPassword: string) => {
-        try {
-            setResetLoading(true);
-            setResetError(null);
-
-            const result = await api.resetPasswordWithCode(code, newPassword);
-
-            if (result?.success) {
-                setResetError(null);
-                handleCloseSnackbar();
-                notify(result.message || "密码已重置，请使用新密码登录", "success");
-                // 回到登录页，并把刚设的新密码清掉旧的「记住账号密码」
-                clearRememberedLogin();
-            } else {
-                setResetError(result?.message || "重置密码失败，请稍后再试");
-            }
-        } catch (error) {
-            console.error("重置密码失败:", error);
-            reportError(error, { source: "auth-reset" });
-            setResetError("重置密码失败: " + (error instanceof Error ? error.message : "未知错误"));
-        } finally {
-            setResetLoading(false);
         }
     };
 
@@ -3174,10 +3138,6 @@ function App() {
                     onLogin={handleLogin}
                     loading={loginLoading}
                     error={loginError}
-                    onResetPassword={handleResetPassword}
-                    resetLoading={resetLoading}
-                    resetError={resetError}
-                    resetConfigured={resetConfigured}
                 />
             </Box>
         );

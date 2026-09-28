@@ -45,7 +45,6 @@
         //   wrangler secret put AUTH_USERNAME
         //   wrangler secret put AUTH_PASSWORD
         //   wrangler secret put AUTH_SECRET
-        //   wrangler secret put AUTH_RESET_CODE
         // 首次部署前务必先 put AUTH_PASSWORD / AUTH_SECRET；否则数据库里没有管理员凭据，登录页也进不去。
         // 注意：本仓库历史里曾明文提交过这些值，请立即用 wrangler secret put 覆盖，并改掉对应密码；
         //       如要彻底清除历史，用 git filter-repo / BFG 重写提交（需 force-push，谨慎操作）。

@@ -8,7 +8,6 @@ export interface Env {
     AUTH_USERNAME?: string;
     AUTH_PASSWORD?: string;
     AUTH_SECRET?: string;
-    AUTH_RESET_CODE?: string;
 }
 
 // 验证用接口
@@ -17,12 +16,6 @@ export interface LoginInput {
     password?: string;
     /** 勾选「记住我」时签发 30 天令牌 */
     remember?: boolean;
-}
-
-export interface ResetInput {
-    code?: string;
-    newPassword?: string;
-    newUsername?: string;
 }
 
 export interface GroupInput {

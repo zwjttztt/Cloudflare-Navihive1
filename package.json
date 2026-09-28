@@ -13,7 +13,8 @@
         "lint": "eslint .",
         "preview": "npm run build && vite preview",
         "deploy": "npm run build && wrangler deploy",
-        "cf-typegen": "wrangler types"
+        "cf-typegen": "wrangler types",
+        "reset-admin": "node scripts/reset-admin-password.mjs"
     },
     "dependencies": {
         "@cfworker/jwt": "^7.0.4",
