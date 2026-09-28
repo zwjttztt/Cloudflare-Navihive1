@@ -209,6 +209,8 @@ function randomInviteCode(length = 8): string {
  */
 export const AUTH_USERNAME_KEY = "auth.username";
 export const AUTH_PASSWORD_KEY = "auth.password";
+// WebDAV 备份配置键的前缀（url / username / password / backupPassword / path / autoBackup …）
+export const WEBDAV_CONFIG_PREFIX = "webdav.";
 // WebDAV 备份凭据：明文落 D1 风险高，写入前用 AUTH_SECRET 派生密钥加密（见 setConfig/queryConfigs）
 export const WEBDAV_PASSWORD_KEY = "webdav.password";
 // WebDAV 备份口令：与 AUTH_SECRET 无关的独立口令，落库时同样加密（见 ENCRYPTED_CONFIG_KEYS）
@@ -288,6 +290,18 @@ const ENCRYPTED_CONFIG_KEYS = [WEBDAV_PASSWORD_KEY, WEBDAV_BACKUP_PASSWORD_KEY];
 
 function isEncryptedConfigKey(key: string): boolean {
     return ENCRYPTED_CONFIG_KEYS.includes(key);
+}
+
+/**
+ * 每个账号一份的配置（目前是 WebDAV 备份那一整套：地址 / 账号 / 口令 / 目录）。
+ * 存在 user_configs 而不是全局 configs —— 否则 A 账号填的网盘地址和密码，
+ * B 账号一登录就能在「数据备份」里看见，等于把别人的网盘凭据摆在页面上。
+ */
+const USER_SCOPED_CONFIG_PREFIXES = [WEBDAV_CONFIG_PREFIX];
+
+/** 该键是否按账号隔离存储 */
+export function isUserScopedConfigKey(key: string): boolean {
+    return USER_SCOPED_CONFIG_PREFIXES.some(prefix => key.startsWith(prefix));
 }
 
 // 判断某个配置键是否属于敏感信息
@@ -414,6 +428,9 @@ export class NavigationAPI {
         `CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'user', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`,
         // 邀请码：已登录用户生成，新用户注册时用掉。时间戳一律存秒，避免 SQLite 时区歧义。
         `CREATE TABLE IF NOT EXISTS invites (code TEXT PRIMARY KEY, created_by INTEGER, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, used_by INTEGER, used_at INTEGER);`,
+        // 每账号一份的配置（WebDAV 备份凭据等）。与 configs 分开存：
+        // configs 是全站共享的（标题、背景），塞进去就会被别的账号看到。
+        `CREATE TABLE IF NOT EXISTS user_configs (user_id INTEGER NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (user_id, key));`,
     ];
 
     private async runMigrations(): Promise<void> {
@@ -492,6 +509,9 @@ export class NavigationAPI {
 
         // 4) 恢复公钥：老部署里是全站一份，现在改成每个账号一份
         await this.migrateRecoveryKeyToOwner(ownerId);
+
+        // 5) WebDAV 备份配置：老部署里是全站一份，现在改成每个账号一份
+        await this.migrateWebdavConfigToOwner(ownerId);
     }
 
     /**
@@ -526,6 +546,55 @@ export class NavigationAPI {
             if (updated.success) await this.deleteConfig(RECOVERY_PUBLIC_KEY_CONFIG);
         } catch (error) {
             console.error("迁移恢复公钥失败:", error);
+        }
+    }
+
+    /**
+     * 把 configs 里那份「全站 WebDAV 备份配置」搬进 owner 账号。
+     * 不搬的话：老部署里配过网盘的人升级后，新注册的账号一打开「数据备份」就能看到
+     * 别人的网盘地址和账号 —— 搬完顺手删掉全局那份，杜绝残留。
+     * 值在 configs 里已经是密文（口令类），原样搬，不重复加密。
+     */
+    private async migrateWebdavConfigToOwner(ownerId: number): Promise<void> {
+        try {
+            const rows = await this.db
+                .prepare("SELECT key, value FROM configs WHERE key LIKE ?")
+                .bind(`${WEBDAV_CONFIG_PREFIX}%`)
+                .all<{ key: string; value: string }>();
+            const list = rows.results || [];
+            if (list.length === 0) return;
+
+            const statements = list.map(row =>
+                this.db
+                    .prepare(
+                        `INSERT INTO user_configs (user_id, key, value, updated_at)
+                         VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                         ON CONFLICT(user_id, key) DO NOTHING`
+                    )
+                    .bind(ownerId, row.key, row.value)
+            );
+            try {
+                await this.db.batch(statements);
+            } catch {
+                for (const statement of statements) {
+                    try {
+                        await statement.run();
+                    } catch {
+                        // 已存在，忽略
+                    }
+                }
+            }
+
+            // 全局那份删掉：留着就等于给所有账号留了一份「默认网盘」
+            for (const row of list) {
+                try {
+                    await this.deleteConfig(row.key);
+                } catch {
+                    // 忽略
+                }
+            }
+        } catch (error) {
+            console.error("迁移 WebDAV 配置失败:", error);
         }
     }
 
@@ -1081,6 +1150,18 @@ export class NavigationAPI {
         }
     }
 
+    /** 所有账号（定时任务按账号逐个备份时用；只给 id 与账号名） */
+    async listUsers(): Promise<{ id: number; username: string }[]> {
+        try {
+            const result = await this.db
+                .prepare("SELECT id, username FROM users ORDER BY id")
+                .all<{ id: number; username: string }>();
+            return result.results || [];
+        } catch {
+            return [];
+        }
+    }
+
     /** 校验某个账号的密码是否正确（注销账号这类高危操作前再确认一次身份） */
     async verifyPasswordOfUser(userId: number, plain: string): Promise<boolean> {
         const user = await this.findUserByIdWithHash(userId);
@@ -1292,6 +1373,9 @@ export class NavigationAPI {
                 this.db.prepare("DELETE FROM sites WHERE user_id = ?").bind(userId),
                 this.db.prepare("DELETE FROM groups WHERE user_id = ?").bind(userId),
                 this.db.prepare("DELETE FROM invites WHERE created_by = ?").bind(userId),
+                this.db.prepare("DELETE FROM invites WHERE used_by = ?").bind(userId),
+                // 账号自己的配置（WebDAV 网盘地址 / 账号 / 口令）一并清掉，不留残留
+                this.db.prepare("DELETE FROM user_configs WHERE user_id = ?").bind(userId),
                 this.db.prepare("DELETE FROM users WHERE id = ?").bind(userId),
             ]);
         } catch (error) {
@@ -1472,13 +1556,21 @@ export class NavigationAPI {
         for (const row of (configsResult.results || []) as Config[]) {
             // 管理员凭据不下发到浏览器，避免出现「拿到配置就等于拿到密码」
             if (isAuthConfigKey(row.key)) continue;
+            // 按账号存的那批（WebDAV）只认自己那份：全局里有同键（迁移残留）一律不采纳
+            if (this.currentUserId !== null && isUserScopedConfigKey(row.key)) continue;
             // webdav.password / webdav.backupPassword 落库是密文，这里必须和
             // queryConfigs / getConfig 一样解密还原：
             // 否则刷新后前端拿到的是 enc$... 密文，回填进密码框，用户再保存一次就变成
             // 「密文的密文」（测试连接也就永远认证失败，备份也永远解不开）
             configs[row.key] = isEncryptedConfigKey(row.key)
-                    ? await decryptSecretDeep(row.value, this.secret)
-                    : row.value;
+                ? await decryptSecretDeep(row.value, this.secret)
+                : row.value;
+        }
+
+        // 覆盖上当前账号自己的那份（WebDAV 备份配置）
+        if (this.currentUserId !== null) {
+            const own = await this.queryUserConfigs(this.currentUserId);
+            for (const [key, value] of Object.entries(own)) configs[key] = value;
         }
 
         return {
@@ -1748,23 +1840,110 @@ export class NavigationAPI {
     }
 
     private async queryConfigs(): Promise<Record<string, string>> {
+        const uid = this.currentUserId;
         const result = await this.db.prepare("SELECT key, value FROM configs").all<Config>();
 
         // 将结果转换为键值对对象（管理员凭据永远不返回）
         const configs: Record<string, string> = {};
         for (const config of result.results || []) {
             if (isAuthConfigKey(config.key)) continue;
+            // 已登录时，按账号存的那批（WebDAV）只认自己那份：
+            // 全站 configs 里若还有同键（迁移残留），一律不采纳，否则会串号
+            if (uid !== null && isUserScopedConfigKey(config.key)) continue;
             // webdav.password / webdav.backupPassword 落库是密文，读出来解密还原给
             // 调用方（含首屏 bootstrap）
             configs[config.key] = isEncryptedConfigKey(config.key)
-                    ? await decryptSecretDeep(config.value, this.secret)
-                    : config.value;
+                ? await decryptSecretDeep(config.value, this.secret)
+                : config.value;
+        }
+
+        // 覆盖上当前账号自己的那份
+        if (uid !== null) {
+            const own = await this.queryUserConfigs(uid);
+            for (const [key, value] of Object.entries(own)) configs[key] = value;
         }
 
         return configs;
     }
 
+    // ============ 每账号一份的配置（user_configs） ============
+    /** 取某个账号自己的全部私有配置（口令类已解密） */
+    private async queryUserConfigs(userId: number): Promise<Record<string, string>> {
+        try {
+            const result = await this.db
+                .prepare("SELECT key, value FROM user_configs WHERE user_id = ?")
+                .bind(userId)
+                .all<{ key: string; value: string }>();
+            const configs: Record<string, string> = {};
+            for (const row of result.results || []) {
+                configs[row.key] = isEncryptedConfigKey(row.key)
+                    ? await decryptSecretDeep(row.value, this.secret)
+                    : row.value;
+            }
+            return configs;
+        } catch {
+            return {};
+        }
+    }
+
+    private async getUserConfig(userId: number, key: string): Promise<string | null> {
+        try {
+            const row = await this.db
+                .prepare("SELECT value FROM user_configs WHERE user_id = ? AND key = ?")
+                .bind(userId, key)
+                .first<{ value: string }>();
+            if (!row) return null;
+            return isEncryptedConfigKey(key)
+                ? await decryptSecretDeep(row.value, this.secret)
+                : row.value;
+        } catch {
+            return null;
+        }
+    }
+
+    private async setUserConfig(userId: number, key: string, value: string): Promise<boolean> {
+        try {
+            const stored = isEncryptedConfigKey(key)
+                ? await encryptSecret(value, this.secret)
+                : value;
+            const result = await this.db
+                .prepare(
+                    `INSERT INTO user_configs (user_id, key, value, updated_at)
+                     VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                     ON CONFLICT(user_id, key)
+                     DO UPDATE SET value = ?, updated_at = CURRENT_TIMESTAMP`
+                )
+                .bind(userId, key, stored, stored)
+                .run();
+            return result.success;
+        } catch (error) {
+            console.error("设置账号配置失败:", error);
+            return false;
+        }
+    }
+
+    private async deleteUserConfig(userId: number, key: string): Promise<boolean> {
+        try {
+            const result = await this.db
+                .prepare("DELETE FROM user_configs WHERE user_id = ? AND key = ?")
+                .bind(userId, key)
+                .run();
+            return result.success;
+        } catch {
+            return false;
+        }
+    }
+
+    /** 当前请求有没有「按账号存」的上下文：已登录且该键属于隔离范围 */
+    private useUserScope(key: string): number | null {
+        if (this.currentUserId === null) return null;
+        return isUserScopedConfigKey(key) ? this.currentUserId : null;
+    }
+
     async getConfig(key: string): Promise<string | null> {
+        const uid = this.useUserScope(key);
+        if (uid !== null) return this.getUserConfig(uid, key);
+
         const result = await this.db
             .prepare("SELECT value FROM configs WHERE key = ?")
             .bind(key)
@@ -1778,6 +1957,9 @@ export class NavigationAPI {
     }
 
     async setConfig(key: string, value: string): Promise<boolean> {
+        const uid = this.useUserScope(key);
+        if (uid !== null) return this.setUserConfig(uid, key, value);
+
         try {
             // webdav.password / webdav.backupPassword 明文落库风险高，写入前用
             // AUTH_SECRET 派生密钥加密（无 secret 时原样存）
@@ -1809,7 +1991,14 @@ export class NavigationAPI {
             const list = Object.entries(entries).filter(([, value]) => value !== undefined);
             if (list.length === 0) return true;
 
-            const statements = list.map(([key, value]) =>
+            // 按账号隔离的那部分（WebDAV）单独写 user_configs，其余照旧进 configs
+            const uid = this.currentUserId;
+            const mine = uid !== null ? list.filter(([key]) => isUserScopedConfigKey(key)) : [];
+            const shared = uid !== null ? list.filter(([key]) => !isUserScopedConfigKey(key)) : list;
+
+            let ok = true;
+            if (shared.length > 0) {
+                const statements = shared.map(([key, value]) =>
                 this.db
                     .prepare(
                         `INSERT INTO configs (key, value, updated_at)
@@ -1819,8 +2008,16 @@ export class NavigationAPI {
                     )
                     .bind(key, value, value)
             );
-            const results = await this.db.batch<unknown>(statements);
-            return results.every(result => result.success);
+                const results = await this.db.batch<unknown>(statements);
+                ok = results.every(result => result.success);
+            }
+
+            for (const [key, value] of mine) {
+                // 口令类要在 setUserConfig 里加密，这里不能走批量那条路
+                if (!(await this.setUserConfig(uid as number, key, value))) ok = false;
+            }
+
+            return ok;
         } catch (error) {
             console.error("批量设置配置失败:", error);
             return false;
@@ -1828,6 +2025,9 @@ export class NavigationAPI {
     }
 
     async deleteConfig(key: string): Promise<boolean> {
+        const uid = this.useUserScope(key);
+        if (uid !== null) return this.deleteUserConfig(uid, key);
+
         const result = await this.db.prepare("DELETE FROM configs WHERE key = ?").bind(key).run();
 
         return result.success;

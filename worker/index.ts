@@ -84,6 +84,18 @@ function readCookie(request: Request, name: string): string | null {
     return null;
 }
 
+/**
+ * 从 Authorization 头里取出 Bearer 令牌（历史客户端与脚本用）。
+ * 只认 Bearer，其它类型一律当没有，避免把奇怪的凭据喂给验签。
+ */
+function readBearerToken(request: Request): string | null {
+    const header = request.headers.get("Authorization");
+    if (!header) return null;
+    const [type, raw] = header.split(" ");
+    if (type !== "Bearer" || !raw) return null;
+    return raw;
+}
+
 /** 登录成功时下发的两条 cookie（令牌 httpOnly + 前端可读的登录标记） */
 function sessionCookieHeaders(token: string, ttlSeconds: number, secure: boolean): string[] {
     const attrs = `Path=/; SameSite=Strict; Max-Age=${ttlSeconds}${secure ? "; Secure" : ""}`;
@@ -322,6 +334,18 @@ export default {
 
                 // 是否已配置恢复公钥（仅返回布尔，不下发公钥本身）
                 if (path === "auth/recovery-status" && method === "GET") {
+                    // 带令牌时按「当前账号」回答：公钥是每个账号自己的，
+                    // 不认身份就只能回答「这个站点有没有人配过」——那会让新注册的账号
+                    // 也显示成「恢复密钥（已配置）」，可它手里根本没有对应的私钥。
+                    if (api.isAuthEnabled()) {
+                        const rawToken =
+                            readCookie(request, TOKEN_COOKIE) ?? readBearerToken(request);
+                        if (rawToken) {
+                            const verified = await api.verifyToken(rawToken);
+                            const uid = verified.valid ? verified.payload?.uid : undefined;
+                            api.setCurrentUser(typeof uid === "number" ? uid : null);
+                        }
+                    }
                     return Response.json({ configured: await api.hasRecoveryKey() });
                 }
 

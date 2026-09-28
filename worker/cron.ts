@@ -36,35 +36,51 @@ export interface SchedulerDB {
  * 每周自动备份：导出 → 压缩上传 → 删掉上一次的自动备份 → 记录文件名。
  * 与页面上的手动备份共用 runWebDavBackup，但保留策略不同：自动备份只滚动清理
  * 自己那一份（auto 前缀），手动备份一份都不删。
- * 只有开启「每周自动备份」且 WebDAV 已配置时才执行，否则直接跳过。
+ *
+ * WebDAV 配置现在每个账号一份（user_configs），所以这里逐个账号来：
+ * 先把自己绑成「当前账号」，读到的就是它自己的网盘地址 / 账号 / 口令，
+ * 导出的也是它自己的分组与卡片 —— 不会把 A 的数据传进 B 的网盘。
+ * 没配 WebDAV 或关了自动备份的账号直接跳过。
  *
  * 备份口令从库里的配置读（webdav.backupPassword），不用 AUTH_SECRET：
  * 定时任务无人值守，用不了页面上的临时输入；而轮换 AUTH_SECRET 不该让备份解不开。
  */
-export async function runWeeklyBackup(
-    api: SchedulerDB,
-    stored: Record<string, string>
-): Promise<void> {
-    if (stored["webdav.autoBackup"] === "false") {
-        return;
-    }
+export async function runWeeklyBackup(api: SchedulerDB): Promise<void> {
+    const nav = api as unknown as NavigationAPI;
+    const users = await nav.listUsers();
 
-    const config = configFromStored(stored);
-    if (!config.url) {
-        console.log("定时备份跳过：尚未配置 WebDAV");
-        return;
-    }
+    // 没有 users 表数据（极老的库）时退回「按全局配置备份一次」的旧行为
+    const targets: (number | null)[] = users.length > 0 ? users.map(u => u.id) : [null];
 
-    const result = await runWebDavBackup(api as unknown as NavigationAPI, config, {
-        mode: "auto",
-        stored,
-        password: config.backupPassword,
-    });
-    console.log(
-        result.success
-            ? `定时备份完成：${result.data?.filename}`
-            : `定时备份失败：${result.message}`
-    );
+    for (const uid of targets) {
+        try {
+            nav.setCurrentUser(uid);
+            const stored = await readAllConfigs(nav);
+            if (stored["webdav.autoBackup"] === "false") continue;
+
+            const config = configFromStored(stored);
+            if (!config.url) {
+                console.log(`定时备份跳过：账号 ${uid ?? "全局"} 尚未配置 WebDAV`);
+                continue;
+            }
+
+            const result = await runWebDavBackup(nav, config, {
+                mode: "auto",
+                stored,
+                password: config.backupPassword,
+            });
+            console.log(
+                result.success
+                    ? `定时备份完成（账号 ${uid ?? "全局"}）：${result.data?.filename}`
+                    : `定时备份失败（账号 ${uid ?? "全局"}）：${result.message}`
+            );
+        } catch (error) {
+            // 某个账号备份失败不影响其它账号
+            console.error(`账号 ${uid ?? "全局"} 定时备份异常:`, error);
+        } finally {
+            nav.setCurrentUser(null);
+        }
+    }
 }
 
 /**
@@ -137,8 +153,7 @@ export async function runScheduledTasks(
 ): Promise<void> {
     try {
         const api = makeApi(env);
-        const stored = await readAllConfigs(api as unknown as NavigationAPI);
-        await runWeeklyBackup(api, stored);
+        await runWeeklyBackup(api);
     } catch (error) {
         console.error("定时备份异常:", error);
     }

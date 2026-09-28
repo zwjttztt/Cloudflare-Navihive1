@@ -13,7 +13,7 @@ import SettingsBackupRestoreIcon from "@mui/icons-material/SettingsBackupRestore
 import LinkOffIcon from "@mui/icons-material/LinkOff";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import LogoutIcon from "@mui/icons-material/Logout";
-import PersonRemoveIcon from "@mui/icons-material/PersonRemove";
+import ManageAccountsIcon from "@mui/icons-material/ManageAccounts";
 
 export interface MoreMenuProps {
     anchorEl: HTMLElement | null;
@@ -34,8 +34,8 @@ export interface MoreMenuProps {
     onClearVisits: () => void;
     isAuthenticated: boolean;
     onLogout: () => void;
-    /** 注销当前账号：菜单里只负责触发，二次确认由父组件弹 */
-    onDeleteAccount?: () => void;
+    /** 打开「账号管理」（账号密码 / 恢复密钥 / 邀请码 / 注销） */
+    onOpenAccount: () => void;
 }
 
 export default function MoreMenu({
@@ -56,7 +56,7 @@ export default function MoreMenu({
     onClearVisits,
     isAuthenticated,
     onLogout,
-    onDeleteAccount,
+    onOpenAccount,
 }: MoreMenuProps) {
     return (
                     <Menu
@@ -77,6 +77,21 @@ export default function MoreMenu({
                             </ListItemIcon>
                             <ListItemText>网站设置</ListItemText>
                         </MenuItem>
+                        {/* 账号管理：账号密码、恢复密钥、邀请码、注销账号都在这里，
+                            不再混进「网站设置」（那里面管的是站点长什么样） */}
+                        {isAuthenticated && (
+                            <MenuItem
+                                onClick={() => {
+                                    onClose();
+                                    onOpenAccount();
+                                }}
+                            >
+                                <ListItemIcon>
+                                    <ManageAccountsIcon fontSize='small' />
+                                </ListItemIcon>
+                                <ListItemText>账号管理</ListItemText>
+                            </MenuItem>
+                        )}
                         <MenuItem onClick={onStartGroupSort}>
                             <ListItemIcon>
                                 <SortIcon fontSize='small' />
@@ -186,17 +201,6 @@ export default function MoreMenu({
                             </ListItemIcon>
                             <ListItemText>清除访问记录</ListItemText>
                         </MenuItem>
-                        {isAuthenticated && onDeleteAccount && (
-                            <MenuItem
-                                onClick={onDeleteAccount}
-                                sx={{ color: "error.main" }}
-                            >
-                                <ListItemIcon sx={{ color: "error.main" }}>
-                                    <PersonRemoveIcon fontSize='small' />
-                                </ListItemIcon>
-                                <ListItemText>注销账号</ListItemText>
-                            </MenuItem>
-                        )}
                         {isAuthenticated && (
                             <MenuItem
                                 onClick={onLogout}

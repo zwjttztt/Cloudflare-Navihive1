@@ -54,6 +54,8 @@ import HeaderActions from "./components/HeaderActions";
 import MoreMenu from "./components/MoreMenu";
 import DisplayControls from "./components/DisplayControls";
 const SettingsDialog = lazy(() => import("./components/SettingsDialog"));
+// 账号管理（改账号密码 / 恢复密钥 / 邀请码 / 注销）：从「更多选项」进入，懒加载
+const AccountDialog = lazy(() => import("./components/AccountDialog"));
 // 注销确认弹窗只有点「注销账号」才会用到，懒加载省首屏体积
 const DeleteAccountDialog = lazy(() => import("./components/DeleteAccountDialog"));
 const ImportPreviewDialog = lazy(() => import("./components/ImportPreviewDialog"));
@@ -337,6 +339,9 @@ function App() {
     const [configs, setConfigs] = useState<Record<string, string>>(DEFAULT_CONFIGS);
     const [openConfig, setOpenConfig] = useState(false);
     const [tempConfigs, setTempConfigs] = useState<Record<string, string>>(DEFAULT_CONFIGS);
+    // 账号管理弹窗（账号密码 / 恢复密钥 / 邀请码 / 注销）
+    const [openAccount, setOpenAccount] = useState(false);
+    const [savingAuth, setSavingAuth] = useState(false);
 
     // 设置弹窗里选色时的即时预览值（不落库，关闭弹窗即回滚）
     const [accentPreview, setAccentPreview] = useState<string | null>(null);
@@ -898,7 +903,7 @@ function App() {
                 handleCloseSnackbar();
                 // 首次部署的凭据来自部署变量（等同半公开），服务端会拦住其它操作直到改密
                 if (result.mustChangePassword) {
-                    notify("请先到「网站设置 → 管理员账号与密码」修改密码", "info");
+                    notify("请先到「更多选项 → 账号管理」修改密码", "info");
                 }
                 // 加载数据（一次 bootstrap 请求）
                 await fetchData();
@@ -945,7 +950,7 @@ function App() {
     };
 
     /**
-     * 生成恢复密钥对（网站设置 → 账户安全）。
+     * 生成恢复密钥对（更多选项 → 账号管理）。
      * 密钥在浏览器里生成：公钥交给服务器保存，私钥直接下载到本地，全程不上传。
      * 服务端要求校验当前密码，所以这里必须把用户填的当前密码一起传过去。
      */
@@ -2205,6 +2210,35 @@ function App() {
         return true;
     };
 
+    /**
+     * 账号管理里单独保存「账号 / 密码」。
+     * 改完服务端会把令牌版本 +1，当前令牌立刻失效 —— 所以要清掉「记住登录」并踢回登录页，
+     * 否则留在页面里每个请求都是 401。
+     */
+    const handleSaveAuthCredentials = async () => {
+        if (savingAuth) return;
+        setSavingAuth(true);
+        try {
+            const changed = await submitAuthCredentials();
+            if (!changed) {
+                notify("没有需要保存的改动", "info");
+                return;
+            }
+            setAuthUsername("");
+            setAuthCurrentPassword("");
+            setAuthNewPassword("");
+            setOpenAccount(false);
+            clearRememberedLogin(); // 「记住登录」里存的是旧账号密码，留着只会误导
+            handleLogout();
+            setError("账号或密码已更新，请使用新凭据重新登录");
+        } catch (error) {
+            console.error("保存账号密码失败:", error);
+            handleError("保存账号密码失败: " + (error as Error).message);
+        } finally {
+            setSavingAuth(false);
+        }
+    };
+
     const handleCloseConfig = () => {
         setOpenConfig(false);
         // 未保存的话，把预览的主色回滚掉
@@ -2261,9 +2295,6 @@ function App() {
                 if (!ok) throw new Error("部分配置写入失败");
             }
 
-            // 管理员凭据单独提交（失败会中断，不会把新密码悄悄丢掉）
-            const authChanged = await submitAuthCredentials();
-
             // 更新配置状态：标题 / 背景图 / 自定义 CSS 都由 React 响应式生效，无需刷新页面
             setConfigs({ ...tempConfigs });
             // 正式保存后撤掉预览，改由已保存的配置驱动主题
@@ -2273,13 +2304,7 @@ function App() {
             setAuthNewPassword("");
             handleCloseConfig();
 
-            if (authChanged) {
-                // 改完账号或密码，服务端已经把令牌版本 +1，当前这张令牌立刻失效。
-                // 这时留在页面里只会让后续每个请求都 401，所以直接踢回登录页用新凭据重登。
-                clearRememberedLogin(); // 「记住登录」里存的是旧账号密码，留着只会误导
-                handleLogout();
-                setError("管理员账号或密码已更新，请使用新凭据重新登录");
-            } else if (changed.length > 0) {
+            if (changed.length > 0) {
                 notify("设置已保存", "success");
             }
         } catch (error) {
@@ -3028,6 +3053,12 @@ function App() {
                 run: () => handleOpenConfig(),
             },
             {
+                id: "cmd-account",
+                label: "打开账号管理",
+                section: "操作",
+                run: () => setOpenAccount(true),
+            },
+            {
                 id: "cmd-backup",
                 label: "数据备份",
                 section: "操作",
@@ -3517,6 +3548,10 @@ function App() {
                                             open={openMenu && sortMode === SortMode.None}
                                             onClose={handleMenuClose}
                                             onOpenConfig={handleOpenConfig}
+                                            onOpenAccount={() => {
+                                                handleMenuClose();
+                                                setOpenAccount(true);
+                                            }}
                                             onStartGroupSort={startGroupSort}
                                             canInstall={canInstall}
                                             onInstallApp={() => void handleInstallApp()}
@@ -3530,11 +3565,6 @@ function App() {
                                             onClearVisits={clearVisits}
                                             isAuthenticated={isAuthenticated}
                                             onLogout={handleLogout}
-                                            onDeleteAccount={() => {
-                                                handleMenuClose();
-                                                setDeleteAccountPassword("");
-                                                setDeleteAccountOpen(true);
-                                            }}
                                         />
                                     }
                                 />
@@ -4035,27 +4065,44 @@ function App() {
                         glassEffects={glassEffects}
                         onGlassEffectsChange={setGlassEffects}
                         saving={savingConfig}
-                        auth={{
-                            username: authUsername,
-                            currentPassword: authCurrentPassword,
-                            newPassword: authNewPassword,
-                        }}
                         pinyinSearch={pinyinSearch}
                         onPinyinSearchChange={setPinyinSearch}
                         syncHealth={configs[LINK_HEALTH_SYNC_CONFIG] === "true"}
                         onSyncHealthChange={handleToggleLinkHealthSync}
                         syncPrefs={prefSync}
                         onSyncPrefsChange={handleTogglePrefSync}
+                    />
+                    </Suspense>
+
+                    {/* 账号管理：改账号密码 / 恢复密钥 / 邀请码 / 注销账号。
+                        原先「账户安全」混在网站设置里、注销账号又孤零零挂在更多菜单，
+                        现在都收在这里 —— 网站设置只管「站点长什么样」。 */}
+                    <Suspense fallback={null}>
+                    <AccountDialog
+                        open={openAccount}
+                        onClose={() => setOpenAccount(false)}
+                        auth={{
+                            username: authUsername,
+                            currentPassword: authCurrentPassword,
+                            newPassword: authNewPassword,
+                        }}
                         onAuthChange={(field, value) => {
                             if (field === "username") setAuthUsername(value);
                             else if (field === "currentPassword") setAuthCurrentPassword(value);
                             else setAuthNewPassword(value);
                         }}
+                        onSaveAuth={() => void handleSaveAuthCredentials()}
+                        saving={savingAuth}
+                        currentUser={currentUser}
                         recoveryKeyConfigured={recoveryConfigured}
                         onGenerateRecoveryKey={handleGenerateRecoveryKey}
-                        currentUser={currentUser}
                         invite={invite}
                         onCreateInvite={handleCreateInvite}
+                        onDeleteAccount={() => {
+                            handleMenuClose();
+                            setOpenAccount(false);
+                            setDeleteAccountOpen(true);
+                        }}
                     />
                     </Suspense>
 

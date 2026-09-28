@@ -14,14 +14,27 @@ interface Store {
     invites: Row[];
     groups: Row[];
     sites: Row[];
+    /** 每个账号一份的配置（WebDAV 备份那一整套） */
+    userConfigs: Row[];
 }
 
 function makeDb(store: Store) {
     let nextId = 1;
     const allocId = () => nextId++;
 
-    const matchRows = (table: keyof Store, sql: string, args: unknown[]): Row[] => {
-        const rows = store[table] as Row[];
+    const matchRows = (table: string, sql: string, args: unknown[]): Row[] => {
+        // user_configs 是「账号 + 键」双主键，键名单独过滤（getConfig 会带 AND key = ?）
+        if (table === "user_configs") {
+            let list = store.userConfigs;
+            if (sql.includes("WHERE user_id = ?")) {
+                list = list.filter(r => r.user_id === args[0]);
+            }
+            if (sql.includes("AND key = ?")) {
+                list = list.filter(r => r.key === args[1]);
+            }
+            return list;
+        }
+        const rows = store[table as keyof Store] as Row[];
         if (table === "users") {
             if (sql.includes("WHERE username = ?")) {
                 return rows.filter(r => r.username === args[0]);
@@ -126,6 +139,20 @@ function makeDb(store: Store) {
             store.sites.push(row);
             return row;
         }
+        if (sql.includes("INSERT INTO user_configs")) {
+            const [userId, key, value] = args as [number, string, string];
+            const exist = store.userConfigs.find(
+                r => r.user_id === userId && r.key === key
+            );
+            if (exist) {
+                // ON CONFLICT DO NOTHING：保留已有值；DO UPDATE：覆盖
+                if (!sql.includes("DO NOTHING")) exist.value = value;
+                return exist;
+            }
+            const row: Row = { user_id: userId, key, value };
+            store.userConfigs.push(row);
+            return row;
+        }
         // audit_log 之类不需要回看的表
         return null;
     };
@@ -145,7 +172,7 @@ function makeDb(store: Store) {
                     const v = store.configs.get(args[0] as string);
                     return (v === undefined ? null : { value: v }) as T;
                 }
-                for (const table of ["users", "invites", "groups", "sites"] as const) {
+                for (const table of ["users", "invites", "groups", "sites", "user_configs"] as const) {
                     if (sql.includes(`FROM ${table}`)) {
                         const rows = matchRows(table, sql, args);
                         return (rows[0] ?? null) as T;
@@ -162,15 +189,18 @@ function makeDb(store: Store) {
                     return { results: (row ? [row] : []) as T[], success: true };
                 }
                 if (sql.includes("SELECT key, value FROM configs")) {
-                    return {
-                        results: [...store.configs.entries()].map(([key, value]) => ({
-                            key,
-                            value,
-                        })) as T[],
-                        success: true,
-                    };
+                    const all = [...store.configs.entries()].map(([key, value]) => ({
+                        key,
+                        value,
+                    }));
+                    // 迁移里按前缀挑 WebDAV 那批：LIKE 'webdav.%'
+                    const like = sql.includes("key LIKE ?");
+                    const rows = like
+                        ? all.filter(r => r.key.startsWith(String(args[0] || "").replace(/%/g, "")))
+                        : all;
+                    return { results: rows as T[], success: true };
                 }
-                for (const table of ["users", "invites", "groups", "sites"] as const) {
+                for (const table of ["users", "invites", "groups", "sites", "user_configs"] as const) {
                     if (sql.includes(`FROM ${table}`)) {
                         return { results: matchRows(table, sql, args) as T[], success: true };
                     }
@@ -185,6 +215,13 @@ function makeDb(store: Store) {
                 }
                 if (sql.includes("DELETE FROM configs")) {
                     store.configs.delete(args[0] as string);
+                    return { success: true };
+                }
+                if (sql.includes("DELETE FROM user_configs")) {
+                    const [userId, key] = args as [number, string | undefined];
+                    store.userConfigs = store.userConfigs.filter(
+                        r => r.user_id !== userId || (key !== undefined && r.key !== key)
+                    );
                     return { success: true };
                 }
                 if (sql.includes("DELETE FROM users")) {
@@ -285,6 +322,7 @@ function freshStore(): Store {
         invites: [],
         groups: [],
         sites: [],
+        userConfigs: [],
     };
 }
 
@@ -503,4 +541,88 @@ test("注销账号：数据一起删除；最后一个 owner 不允许注销", a
     // 只剩 owner 的分组
     assert.equal(store.groups.length, 1);
     assert.equal(store.groups[0].name, "要被删掉的分组");
+});
+
+test("WebDAV 备份配置按账号隔离：新账号看不到别人填的网盘地址与密码", async () => {
+    const store = freshStore();
+    resetMigrationCacheForTests();
+    const api = makeApi(store);
+    await api.migrate();
+    const ownerId = store.users[0].id as number;
+
+    // owner 配了自己的网盘（地址 / 账号 / 口令 / 备份目录）
+    api.setCurrentUser(ownerId);
+    await api.setConfig("webdav.url", "https://dav.example.com/owner");
+    await api.setConfig("webdav.username", "owner-user");
+    await api.setConfig("webdav.password", "owner-secret");
+    await api.setConfig("webdav.path", "owner-backup");
+
+    const ownerAll = await api.getConfigs();
+    assert.equal(ownerAll["webdav.url"], "https://dav.example.com/owner");
+    assert.equal(ownerAll["webdav.password"], "owner-secret");
+    assert.equal(ownerAll["webdav.path"], "owner-backup");
+
+    // 新注册的账号：一个 WebDAV 键都不该带过来（前端会回落到默认的 navihive-backup）
+    const invite = await api.createInvite(ownerId);
+    const registered = await api.registerUser("alice", "password123", invite.code || "");
+    const aliceId = registered.user?.id as number;
+    api.setCurrentUser(aliceId);
+
+    const aliceAll = await api.getConfigs();
+    for (const key of Object.keys(aliceAll)) {
+        assert.ok(!key.startsWith("webdav."), `新账号不该看到 ${key}`);
+    }
+    assert.equal(await api.getConfig("webdav.url"), null);
+    assert.equal(await api.getConfig("webdav.password"), null);
+    assert.equal(await api.getConfig("webdav.path"), null);
+
+    // 各自保存后互不影响
+    await api.setConfig("webdav.url", "https://dav.example.com/alice");
+    assert.equal(
+        (await api.getConfigs())["webdav.url"],
+        "https://dav.example.com/alice",
+        "alice 应该读到自己那一份"
+    );
+    api.setCurrentUser(ownerId);
+    assert.equal(
+        await api.getConfig("webdav.url"),
+        "https://dav.example.com/owner",
+        "owner 的网盘地址不该被 alice 覆盖"
+    );
+
+    // 清空口令走 deleteConfig，也要只删自己那份
+    api.setCurrentUser(aliceId);
+    await api.deleteConfig("webdav.password");
+    api.setCurrentUser(ownerId);
+    assert.equal(await api.getConfig("webdav.password"), "owner-secret");
+});
+
+test("升级：全站那份 WebDAV 配置自动搬给 owner，且不留全局副本", async () => {
+    const store = freshStore();
+    // 模拟老部署：WebDAV 配置还躺在全站 configs 里
+    store.configs.set("webdav.url", "https://dav.example.com/legacy");
+    store.configs.set("webdav.password", "legacy-secret");
+    store.configs.set("site.title", "全站共享的标题");
+
+    resetMigrationCacheForTests();
+    const api = makeApi(store);
+    await api.migrate();
+    const ownerId = store.users[0].id as number;
+
+    // 全局那份被搬走后删掉：否则新账号会把它当「默认网盘」
+    assert.equal(store.configs.has("webdav.url"), false);
+    assert.equal(store.configs.has("webdav.password"), false);
+    // 全站共享的配置不受影响
+    assert.equal(store.configs.get("site.title"), "全站共享的标题");
+
+    // 搬进 owner 自己的那份
+    api.setCurrentUser(ownerId);
+    assert.equal(await api.getConfig("webdav.url"), "https://dav.example.com/legacy");
+    assert.equal(await api.getConfig("webdav.password"), "legacy-secret");
+
+    // 新账号依然是干净的
+    const invite = await api.createInvite(ownerId);
+    const registered = await api.registerUser("bob", "password123", invite.code || "");
+    api.setCurrentUser(registered.user?.id as number);
+    assert.equal(await api.getConfig("webdav.url"), null);
 });

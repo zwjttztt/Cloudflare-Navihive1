@@ -344,13 +344,6 @@ const LoginForm: React.FC<LoginFormProps> = ({
                 <Typography component='h1' variant='h5' fontWeight='800' letterSpacing={0.5}>
                     {BRAND_NAME}
                 </Typography>
-                <Typography variant='body2' color='text.secondary'>
-                    {mode === "login"
-                        ? "登录以继续使用导航站"
-                        : mode === "register"
-                          ? "用邀请码注册新账号"
-                          : "用恢复密钥找回账号"}
-                </Typography>
             </Stack>
 
             <Paper
@@ -370,7 +363,7 @@ const LoginForm: React.FC<LoginFormProps> = ({
 
                 {mode === "recover" && (
                     <Alert severity='info' sx={{ mb: 2 }}>
-                        上传在「网站设置 → 账户安全」里下载的恢复私钥，再填新密码即可重置。
+                        上传在「更多选项 → 账号管理」里下载的恢复私钥，再填新密码即可重置。
                         私钥只在你的浏览器里用来签名，不会上传。
                         {!recoverConfigured && " 当前站点尚未配置恢复公钥。"}
                     </Alert>
@@ -378,7 +371,7 @@ const LoginForm: React.FC<LoginFormProps> = ({
 
                 {mode === "register" && (
                     <Alert severity='info' sx={{ mb: 2 }}>
-                        注册需要一枚邀请码。请让已登录的用户在「网站设置 → 账户安全」里生成，
+                        注册需要一枚邀请码。请让已登录的用户在「更多选项 → 账号管理」里生成，
                         邀请码 30 分钟内有效、只能用一次。
                     </Alert>
                 )}

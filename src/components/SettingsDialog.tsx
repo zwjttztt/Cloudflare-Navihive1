@@ -1,10 +1,9 @@
 // src/components/SettingsDialog.tsx
 // 全站设置弹窗。按「基本信息 / 外观 / 背景与毛玻璃 / 图标与缩略图 / 搜索 /
-// 数据同步 / 账户安全 / 高级」分成 8 组：组与组之间用分隔线隔开，组标题左侧有一小段
+// 数据同步 / 高级」分组：组与组之间用分隔线隔开，组标题左侧有一小段
 // 主色竖条，组内字段按「改动频率 + 语义」排序；短字段在宽屏并排成两列，纵向更紧凑。
 // 所有值都走「临时副本 + 点保存才落库」，所以组件本身不碰 API，只负责渲染和回调。
 import type { ChangeEvent } from "react";
-import { useState } from "react";
 import {
     Box,
     Button,
@@ -26,7 +25,6 @@ import {
     Typography,
 } from "@mui/material";
 import CloseIcon from "@mui/icons-material/Close";
-import { PasswordField } from "./PasswordField";
 import { DEFAULT_ICON_API, DEFAULT_THUMB_API } from "../utils/iconApi";
 import type { FontScale, RadiusStyle } from "../context/UIPrefsContext";
 
@@ -52,12 +50,6 @@ const PRESET_ACCENTS = [
     "#455a64",
 ];
 
-export interface SettingsAuthDraft {
-    username: string;
-    currentPassword: string;
-    newPassword: string;
-}
-
 interface SettingsDialogProps {
     open: boolean;
     onClose: () => void;
@@ -79,8 +71,6 @@ interface SettingsDialogProps {
     /** 毛玻璃总开关（本机偏好）：关掉后模糊滑块不再有任何效果，界面得说明清楚 */
     glassEffects: boolean;
     onGlassEffectsChange: (enabled: boolean) => void;
-    auth: SettingsAuthDraft;
-    onAuthChange: (field: keyof SettingsAuthDraft, value: string) => void;
     /** 正在保存：按钮禁用 + 文案变化，避免连点重复提交 */
     saving?: boolean;
     /** 拼音搜索（本机偏好，打开即生效，不需要点保存） */
@@ -92,27 +82,6 @@ interface SettingsDialogProps {
     /** 星标 / 标签同步到服务端（同上） */
     syncPrefs: boolean;
     onSyncPrefsChange: (enabled: boolean) => void;
-    /** 站点是否已配置恢复公钥（未配置时登录页不会显示「找回账号」入口） */
-    recoveryKeyConfigured?: boolean;
-    /**
-     * 生成恢复密钥对：把公钥交给服务器保存，私钥触发浏览器下载。
-     * 需传当前密码（服务端校验），由父组件负责调用接口，这里只渲染与反馈。
-     */
-    onGenerateRecoveryKey?: (currentPassword: string) => Promise<{
-        success: boolean;
-        message?: string;
-    }>;
-    /** 当前登录账号（多账号后界面上要能看出「我是谁」） */
-    currentUser?: { username: string; role: "owner" | "user" } | null;
-    /** 本次会话生成的邀请码（只留在内存，刷新页面后不再显示） */
-    invite?: { code: string; expiresAt: number } | null;
-    /** 生成邀请码：父组件负责调接口，这里只展示结果 */
-    onCreateInvite?: () => Promise<{
-        success: boolean;
-        message?: string;
-        code?: string;
-        expiresAt?: number;
-    }>;
 }
 
 /** 分组：左侧一小段主色竖条 + 组标题，可选一行组说明；组内字段纵向排布 */
@@ -231,8 +200,6 @@ export default function SettingsDialog({
     onGlassBlurChange,
     glassEffects,
     onGlassEffectsChange,
-    auth,
-    onAuthChange,
     saving = false,
     pinyinSearch,
     onPinyinSearchChange,
@@ -240,83 +207,7 @@ export default function SettingsDialog({
     onSyncHealthChange,
     syncPrefs,
     onSyncPrefsChange,
-    recoveryKeyConfigured = false,
-    onGenerateRecoveryKey,
-    currentUser,
-    invite,
-    onCreateInvite,
 }: SettingsDialogProps) {
-    // 恢复密钥的生成结果提示（成功/失败都就地反馈，私钥由浏览器直接下载）
-    const [recoveryBusy, setRecoveryBusy] = useState(false);
-    const [recoveryMsg, setRecoveryMsg] = useState<{
-        type: "success" | "error";
-        text: string;
-    } | null>(null);
-
-    // 邀请码：生成按钮的忙碌态与失败提示（码本身由父组件持有，避免弹窗关掉就丢）
-    const [inviteBusy, setInviteBusy] = useState(false);
-    const [inviteMsg, setInviteMsg] = useState<string | null>(null);
-
-    const handleCreateInvite = async () => {
-        setInviteBusy(true);
-        setInviteMsg(null);
-        try {
-            const result = await onCreateInvite?.();
-            if (!result?.success) {
-                setInviteMsg(result?.message || "生成邀请码失败");
-            }
-        } catch (error) {
-            setInviteMsg(
-                "生成邀请码失败：" + (error instanceof Error ? error.message : "未知错误")
-            );
-        } finally {
-            setInviteBusy(false);
-        }
-    };
-
-    // 生成私钥要单独弹窗输入当前密码：不复用「管理员账号与密码」那组输入框。
-    // 否则用户只是想改个标题、想下载私钥时被迫先填上方「当前密码」，
-    // 再点「保存设置」就会因为「只填了当前密码、没填新密码」被服务端判为 400。
-    const [recoveryPwdOpen, setRecoveryPwdOpen] = useState(false);
-    const [recoveryPwd, setRecoveryPwd] = useState("");
-
-    const openRecoveryPwdDialog = () => {
-        setRecoveryPwd("");
-        setRecoveryMsg(null);
-        setRecoveryPwdOpen(true);
-    };
-
-    const submitRecoveryPwd = async () => {
-        if (!recoveryPwd) {
-            setRecoveryMsg({ type: "error", text: "请输入当前管理员密码" });
-            return;
-        }
-        setRecoveryBusy(true);
-        setRecoveryMsg(null);
-        try {
-            const result = await onGenerateRecoveryKey?.(recoveryPwd);
-            setRecoveryMsg(
-                result?.success
-                    ? {
-                          type: "success",
-                          text: result.message || "私钥文件已下载，请离线妥善保管",
-                      }
-                    : { type: "error", text: result?.message || "生成恢复密钥失败" }
-            );
-            if (result?.success) {
-                setRecoveryPwd("");
-                setRecoveryPwdOpen(false);
-            }
-        } catch (error) {
-            setRecoveryMsg({
-                type: "error",
-                text: "生成恢复密钥失败：" + (error instanceof Error ? error.message : "未知错误"),
-            });
-        } finally {
-            setRecoveryBusy(false);
-        }
-    };
-
     return (
         <>
         <Dialog
@@ -707,177 +598,7 @@ export default function SettingsDialog({
                         />
                     </Section>
 
-                    {/* 7. 账户安全 */}
-                    <Section
-                        title='账户安全'
-                        hint='凭据保存在数据库中，只有第一次部署才会使用默认账号密码，之后重新部署不会覆盖；留空表示不修改。这里的输入框不会预填、也不会让浏览器带入已保存的登录账号密码。'
-                    >
-                        {currentUser && (
-                            <Typography variant='caption' color='text.secondary'>
-                                当前账号：
-                                <Box component='span' sx={{ fontWeight: 600 }}>
-                                    {currentUser.username}
-                                </Box>
-                                {currentUser.role === "owner" ? "（站点所有者）" : ""}
-                                。每个账号只看到自己的分组与卡片。
-                            </Typography>
-                        )}
-                        <TextField
-                            margin='dense'
-                            size='small'
-                            id='auth-username'
-                            label='管理员账号'
-                            type='text'
-                            fullWidth
-                            variant='outlined'
-                            value={auth.username}
-                            onChange={e => onAuthChange("username", e.target.value)}
-                            placeholder='留空则不修改账号'
-                            // 关掉自动填充：否则浏览器会把登录时保存的账号直接带进来，
-                            // 让人误以为「账号已经填好了」，保存时其实是在改账号
-                            autoComplete='off'
-                            name='auth-username-field'
-                        />
-                        <TwoCol>
-                            <PasswordField
-                                id='auth-current-password'
-                                label='当前密码'
-                                value={auth.currentPassword}
-                                onChange={e => onAuthChange("currentPassword", e.target.value)}
-                                placeholder='修改账号或密码时必填'
-                            />
-                            <PasswordField
-                                id='auth-new-password'
-                                label='新密码'
-                                value={auth.newPassword}
-                                onChange={e => onAuthChange("newPassword", e.target.value)}
-                                placeholder='留空则不修改密码'
-                            />
-                        </TwoCol>
-
-                        {/* 恢复密钥：忘记密码时用它重置。私钥只在本地生成并下载，服务器只有公钥 */}
-                        <Box sx={{ mt: 0.5 }}>
-                            <Stack
-                                direction={{ xs: "column", sm: "row" }}
-                                spacing={1}
-                                alignItems={{ xs: "stretch", sm: "center" }}
-                                justifyContent='space-between'
-                            >
-                                <Box>
-                                    <Typography variant='body2' fontWeight='600'>
-                                        恢复密钥
-                                        {recoveryKeyConfigured ? "（已配置）" : "（未配置）"}
-                                    </Typography>
-                                    <Typography variant='caption' color='text.secondary'>
-                                        私钥只在你本机生成并下载，服务器只保存公钥；忘记密码时上传私钥即可重置。
-                                    </Typography>
-                                </Box>
-                                <Button
-                                    variant='outlined'
-                                    size='small'
-                                    onClick={openRecoveryPwdDialog}
-                                    disabled={recoveryBusy}
-                                    sx={{ flex: "none", whiteSpace: "nowrap" }}
-                                >
-                                    {recoveryBusy
-                                        ? "生成中…"
-                                        : recoveryKeyConfigured
-                                          ? "重新生成并下载私钥"
-                                          : "生成并下载私钥"}
-                                </Button>
-                            </Stack>
-                            {recoveryMsg ? (
-                                <Typography
-                                    variant='caption'
-                                    sx={{ display: "block", mt: 0.5 }}
-                                    color={
-                                        recoveryMsg.type === "success"
-                                            ? "success.main"
-                                            : "error.main"
-                                    }
-                                >
-                                    {recoveryMsg.text}
-                                </Typography>
-                            ) : (
-                                <Typography
-                                    variant='caption'
-                                    color='text.secondary'
-                                    sx={{ display: "block", mt: 0.5 }}
-                                >
-                                    点击后会单独弹窗验证当前密码（不会占用上方「当前密码」输入框）；重新生成会让此前下载的私钥立即失效。
-                                </Typography>
-                            )}
-                        </Box>
-
-                        {/* 邀请码：给新用户注册用。30 分钟有效、只能用一次，
-                            所以码只在本次会话里显示一次，刷新页面就不再展示（服务端仍记得过期时间） */}
-                        <Box sx={{ mt: 0.5 }}>
-                            <Stack
-                                direction={{ xs: "column", sm: "row" }}
-                                spacing={1}
-                                alignItems={{ xs: "stretch", sm: "center" }}
-                                justifyContent='space-between'
-                            >
-                                <Box>
-                                    <Typography variant='body2' fontWeight='600'>
-                                        邀请码
-                                    </Typography>
-                                    <Typography variant='caption' color='text.secondary'>
-                                        把码发给对方，他就能在登录页注册；30 分钟内有效，只能用一次。
-                                    </Typography>
-                                </Box>
-                                <Button
-                                    variant='outlined'
-                                    size='small'
-                                    onClick={() => void handleCreateInvite()}
-                                    disabled={inviteBusy}
-                                    sx={{ flex: "none", whiteSpace: "nowrap" }}
-                                >
-                                    {inviteBusy ? "生成中…" : "生成邀请码"}
-                                </Button>
-                            </Stack>
-
-                            {invite ? (
-                                <Stack direction='row' spacing={1} alignItems='center' sx={{ mt: 1 }}>
-                                    <Typography
-                                        component='code'
-                                        sx={{
-                                            fontFamily: "monospace",
-                                            fontSize: "1rem",
-                                            letterSpacing: 1,
-                                            fontWeight: 700,
-                                        }}
-                                    >
-                                        {invite.code}
-                                    </Typography>
-                                    <Typography variant='caption' color='text.secondary'>
-                                        {invite.expiresAt
-                                            ? `有效期至 ${new Date(invite.expiresAt * 1000).toLocaleTimeString()}`
-                                            : "30 分钟内有效"}
-                                    </Typography>
-                                    <Button
-                                        size='small'
-                                        onClick={() => void navigator.clipboard?.writeText(invite.code)}
-                                        sx={{ flex: "none" }}
-                                    >
-                                        复制
-                                    </Button>
-                                </Stack>
-                            ) : null}
-
-                            {inviteMsg ? (
-                                <Typography
-                                    variant='caption'
-                                    color='error.main'
-                                    sx={{ display: "block", mt: 0.5 }}
-                                >
-                                    {inviteMsg}
-                                </Typography>
-                            ) : null}
-                        </Box>
-                    </Section>
-
-                    {/* 8. 高级 */}
+                    {/* 7. 高级 */}
                     <Section title='高级' hint='自定义样式会直接注入页面，写错了可能影响显示。'>
                         <TextField
                             margin='dense'
@@ -907,70 +628,6 @@ export default function SettingsDialog({
             </DialogActions>
         </Dialog>
 
-        {/* 生成恢复私钥前确认当前密码：独立弹窗，不占用「管理员账号与密码」那组输入框 */}
-        <Dialog
-            open={recoveryPwdOpen}
-            onClose={() => (recoveryBusy ? undefined : setRecoveryPwdOpen(false))}
-            maxWidth='xs'
-            fullWidth
-        >
-            <DialogTitle sx={{ px: 3, pt: 2, pb: 1 }}>验证身份后生成恢复私钥</DialogTitle>
-            <DialogContent sx={{ px: 3, pt: 0.5, pb: 1 }}>
-                {/* 一句说清就行：小屏上弹窗高度有限，文字一多底部按钮会被挤出可视区 */}
-                <DialogContentText variant='body2' sx={{ mb: 2 }}>
-                    私钥等同于重置密码的万能钥匙，请输入<strong>当前账号密码</strong>验证身份。
-                </DialogContentText>
-                <PasswordField
-                    autoFocus
-                    id='recovery-current-password'
-                    label='当前账号密码'
-                    value={recoveryPwd}
-                    onChange={e => setRecoveryPwd(e.target.value)}
-                    onKeyDown={e => {
-                        if (e.key === "Enter" && !recoveryBusy) void submitRecoveryPwd();
-                    }}
-                    disabled={recoveryBusy}
-                />
-                {recoveryMsg && recoveryPwdOpen ? (
-                    <Typography
-                        variant='caption'
-                        sx={{ display: "block", mt: 1 }}
-                        color={recoveryMsg.type === "success" ? "success.main" : "error.main"}
-                    >
-                        {recoveryMsg.text}
-                    </Typography>
-                ) : null}
-            </DialogContent>
-            {/* 按钮一律 flexWrap + 主按钮在窄屏排前面：
-                弹窗高度不够时（手机上键盘弹起）它们会换行，绝不会被挤出可视区 */}
-            <DialogActions
-                sx={{
-                    px: 3,
-                    pb: 2,
-                    pt: 1,
-                    gap: 1,
-                    flexWrap: "wrap",
-                    "& > :last-child": { ml: { xs: "auto", sm: "8px" } },
-                }}
-            >
-                <Button
-                    onClick={() => setRecoveryPwdOpen(false)}
-                    variant='outlined'
-                    disabled={recoveryBusy}
-                    sx={{ order: { xs: 2, sm: 1 } }}
-                >
-                    取消
-                </Button>
-                <Button
-                    onClick={() => void submitRecoveryPwd()}
-                    variant='contained'
-                    disabled={recoveryBusy || !recoveryPwd}
-                    sx={{ order: { xs: 1, sm: 2 } }}
-                >
-                    {recoveryBusy ? "生成中…" : "确定"}
-                </Button>
-            </DialogActions>
-        </Dialog>
         </>
     );
 }

@@ -62,7 +62,7 @@ export interface RecoveryKeyInput {
 export interface RegisterInput {
     username?: string;
     password?: string;
-    /** 邀请码：由已登录用户在「网站设置 → 账户安全」生成，30 分钟内有效 */
+    /** 邀请码：由已登录用户在「更多选项 → 账号管理」生成，30 分钟内有效 */
     inviteCode?: string;
     remember?: boolean;
 }
