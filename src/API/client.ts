@@ -164,19 +164,27 @@ export class NavigationClient {
             ...options,
         });
 
+        if (response.ok) {
+            return response.json();
+        }
+
+        // 非 2xx：优先解析服务端返回的 message/error，让用户看到具体原因（如「密码强度不足」）
+        let errorPayload: { message?: string; error?: string } = {};
+        try {
+            errorPayload = (await response.json()) as { message?: string; error?: string };
+        } catch {
+            errorPayload = {};
+        }
+        const reason = errorPayload.message || errorPayload.error || "";
+
         if (response.status === 401) {
-            // 带上服务端给出的具体原因（未登录 / 令牌无效 / 已过期），方便排查
-            const reason = await response.text().catch(() => "");
-            // 清除无效令牌
             this.clearToken();
-            throw new Error(reason ? `认证失败：${reason}` : "认证已过期或无效，请重新登录");
+            throw new Error(
+                reason ? `认证失败：${reason}` : "认证已过期或无效，请重新登录"
+            );
         }
 
-        if (!response.ok) {
-            throw new Error(`API错误: ${response.status}`);
-        }
-
-        return response.json();
+        throw new Error(reason ? `${reason} (HTTP ${response.status})` : `API错误: ${response.status}`);
     }
 
     // 检查身份验证状态

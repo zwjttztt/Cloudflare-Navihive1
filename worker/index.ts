@@ -42,7 +42,6 @@ import type {
     SiteInput,
 } from "./types";
 import { validateConfig, validateGroup, validateLogin, validateSite } from "./validate";
-import { validatePasswordStrength } from "../src/API/crypto";
 import { safeJson, weakEtag } from "./util";
 import {
     readAllConfigs,
@@ -787,17 +786,6 @@ export default {
                             { success: false, message: "请填写新的管理员账号或新密码" },
                             { status: 400 }
                         );
-                    }
-
-                    // 只校验「实际要设的新密码」强度，留空表示不改密码
-                    if (password) {
-                        const strength = validatePasswordStrength(password);
-                        if (!strength.ok) {
-                            return Response.json(
-                                { success: false, message: `密码强度不足：${strength.message}` },
-                                { status: 400 }
-                            );
-                        }
                     }
 
                     const current = await api.getAuthCredentials();
