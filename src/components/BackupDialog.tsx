@@ -232,12 +232,8 @@ export default function BackupDialog({
 
     // 备份到 WebDAV
     const handleUpload = async () => {
-        // 口令太短不如不设：加密文件忘了 / 太弱都会变成「备份还在、数据没了」
-        const pwd = config.backupPassword || "";
-        if (pwd.length > 0 && pwd.length < 8) {
-            onNotify("WebDAV 备份密码至少 8 位，或干脆留空（不加密）", "error");
-            return;
-        }
+        // 口令不限长度：备份落到自己网盘上，多长由用户自己权衡（短口令的风险是忘了/被猜到）
+        // 留空 = 不加密，走这条分支也是允许的
         setUploading(true);
         try {
             const result = await client.webdavUpload(config, onBuildExportData());
@@ -476,10 +472,11 @@ export default function BackupDialog({
                         variant='contained'
                         startIcon={<DownloadIcon />}
                         onClick={async () => {
-                            // 口令先在本机校验，不合格就别生成文件（加密文件忘了密码就永远打不开）
+                            // 本机校验只留「填了没」和「两次一致」：口令长度由用户自己定，
+                            // 唯一要挡的是「勾了加密却没给口令」——那会生成一个解不开的文件
                             if (encryptLocal) {
-                                if (backupPassword.length < 8) {
-                                    onNotify("备份密码至少 8 位", "error");
+                                if (backupPassword.length === 0) {
+                                    onNotify("请输入备份密码，或关掉加密开关", "error");
                                     return;
                                 }
                                 if (backupPassword !== backupPasswordConfirm) {
@@ -582,7 +579,6 @@ export default function BackupDialog({
                                 id='backup-encrypt-password'
                                 label='备份密码'
                                 type={showBackupPassword ? "text" : "password"}
-                                placeholder='至少 8 位'
                                 size='small'
                                 fullWidth
                                 value={backupPassword}
