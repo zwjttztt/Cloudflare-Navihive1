@@ -432,6 +432,13 @@ export default {
                     const uid = verifyResult.payload?.uid;
                     api.setCurrentUser(typeof uid === "number" ? uid : null);
 
+                    // 活跃时间：令牌一验过就算在用 —— 「记住我」的人每次回来只是静默恢复，
+                    // 根本不经过登录页，不在这里刷新就会被误判成沉睡账号。
+                    // 内部限频为每天最多写一次，不会每个请求都往 D1 落一行。
+                    if (typeof uid === "number") {
+                        await api.touchLastActive(uid);
+                    }
+
                     // CSRF：令牌改成 cookie 后跨站请求会自动带上它，
                     // 所以写操作必须确认是本站发起的（判据见 isSameOrigin 注释）。
                     if (cookieToken && method !== "GET" && method !== "HEAD" && !isSameOrigin(request)) {
@@ -506,6 +513,50 @@ export default {
                         clientIp(request),
                         result.success ? `邀请码 ${result.code}` : result.message
                     );
+                    return Response.json(result, { status: result.success ? 200 : 400 });
+                }
+
+                // 账号列表（仅 owner）：含每个账号的沉睡治理状态，给「账号管理」里那份清单用。
+                // 普通账号调它会被拒 —— 账号名与活跃时间属于别人的隐私。
+                if (path === "users" && method === "GET") {
+                    const uid = api.getCurrentUserId();
+                    const me = uid !== null ? await api.getUserById(uid) : null;
+                    if (!me || me.role !== "owner") {
+                        return Response.json(
+                            { success: false, message: "仅站点所有者可以查看账号列表" },
+                            { status: 403 }
+                        );
+                    }
+                    const users = await api.listUsers();
+                    return Response.json({ success: true, users });
+                }
+
+                // 改某个账号的状态（仅 owner）：
+                //   active   = 豁免沉睡治理（清停用时间 + 刷新活跃时间，否则转头又被判沉睡）
+                //   disabled = 手动停用
+                if (path.startsWith("users/") && method === "POST") {
+                    const matched = /^users\/(\d+)\/status$/.exec(path);
+                    if (!matched) {
+                        return Response.json({ success: false, message: "路径无效" }, { status: 400 });
+                    }
+                    const uid = api.getCurrentUserId();
+                    if (uid === null) {
+                        return Response.json(
+                            { success: false, message: "当前站点未启用登录，无法管理账号" },
+                            { status: 400 }
+                        );
+                    }
+                    const me = await api.getUserById(uid);
+                    if (!me || me.role !== "owner") {
+                        return Response.json(
+                            { success: false, message: "仅站点所有者可以管理账号" },
+                            { status: 403 }
+                        );
+                    }
+                    const targetId = parseInt(matched[1], 10);
+                    const body = (await request.json().catch(() => ({}))) as { status?: string };
+                    const status = body.status === "disabled" ? "disabled" : "active";
+                    const result = await api.setUserStatus(targetId, status, uid);
                     return Response.json(result, { status: result.success ? 200 : 400 });
                 }
 

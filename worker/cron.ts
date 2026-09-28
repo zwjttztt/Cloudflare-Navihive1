@@ -161,6 +161,21 @@ export async function runLinkSweep(api: SchedulerDB): Promise<void> {
 }
 
 /**
+ * 沉睡账号扫描：长期不登录的账号先停用（数据留着），宽限期满再清除，把 D1 行数还回来。
+ *
+ * 只用到 NavigationAPI 里的方法，不属于 SchedulerDB 那三件套 ——
+ * 验证脚本注入的假实现没有它们，这里探测一下直接跳过，免得污染既有用例。
+ */
+export async function runInactiveSweep(api: SchedulerDB): Promise<void> {
+    const nav = api as unknown as Partial<NavigationAPI>;
+    if (typeof nav.sweepInactiveUsers !== "function") return;
+    const result = await nav.sweepInactiveUsers();
+    if (result.disabled > 0 || result.deleted > 0) {
+        console.log(`沉睡账号扫描完成：停用 ${result.disabled} 个、清除 ${result.deleted} 个`);
+    }
+}
+
+/**
  * cron 入口：备份优先，巡检兜底，互不拖累。
  * makeApi 默认 new NavigationAPI(env)，与拆分前行为一致；验证脚本可注入假实现。
  */
@@ -180,5 +195,12 @@ export async function runScheduledTasks(
         await runLinkSweep(api);
     } catch (error) {
         console.error("死链巡检异常:", error);
+    }
+
+    try {
+        const api = makeApi(env);
+        await runInactiveSweep(api);
+    } catch (error) {
+        console.error("沉睡账号扫描异常:", error);
     }
 }

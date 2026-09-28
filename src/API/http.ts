@@ -226,6 +226,14 @@ export const MUST_CHANGE_PASSWORD_KEY = "auth.mustChangePassword";
 // 不用 auth. 前缀——那个前缀的接口一律禁止读写，只能走专用的「校验当前密码」接口。
 export const RECOVERY_PUBLIC_KEY_CONFIG = "recovery.publicKey";
 
+// 长期未登录账号治理：阈值（天）存进 configs，owner 可在后台改；读取带默认值。
+// disableDays：超过这么久没活跃 -> 置为 disabled（禁止登录，数据保留）。
+// deleteGraceDays：disabled 之后再过这么久 -> 硬删（释放 D1 行数）。owner 永不被治理。
+export const INACTIVE_DISABLE_DAYS_KEY = "inactive.disableDays";
+export const INACTIVE_DELETE_GRACE_DAYS_KEY = "inactive.deleteGraceDays";
+export const INACTIVE_DISABLE_DAYS_DEFAULT = 180;
+export const INACTIVE_DELETE_GRACE_DAYS_DEFAULT = 30;
+
 // 令牌有效期（秒）：普通登录 1 天；勾选「记住账号密码」后 30 天，实现「一个月内免登录」
 export const DEFAULT_TOKEN_TTL = 24 * 60 * 60;
 export const REMEMBER_TOKEN_TTL = 30 * 24 * 60 * 60;
@@ -244,6 +252,52 @@ export interface UserRecord {
     /** owner = 站点所有者（首个账号），user = 被邀请进来的普通账号 */
     role: "owner" | "user";
     created_at?: string;
+}
+
+/** 账号列表项（owner 在「账号管理」里看到的那一列，含沉睡治理状态） */
+export interface AccountInfo {
+    id: number;
+    username: string;
+    role: "owner" | "user";
+    /** active = 正常；disabled = 已因长期未登录被停用（数据仍在，登录会被拒） */
+    status: "active" | "disabled";
+    /** 最后活跃时间（秒级时间戳；null = 从未登录过，用创建时间当锚点） */
+    lastActiveAt: number | null;
+    /** 被停用的时间（秒级时间戳） */
+    disabledAt: number | null;
+    createdAt: number | null;
+    /** 按当前阈值推算：active -> 预计被停用的时间；disabled -> 预计被清除的时间 */
+    willDisableAt: number | null;
+    willDeleteAt: number | null;
+}
+
+/**
+ * 沉睡治理的时间轴推算（纯函数，便于单测，不碰数据库）。
+ * 判定口径：
+ *   - active：以「最后活跃时间」为锚点（从没活跃过就退回创建时间），锚点 + 停用阈值；
+ *   - disabled：以「被停用时间」为锚点，锚点 + 清除宽限期 -> 预计被清除。
+ * 「记住我」静默恢复也会刷新最后活跃时间，所以每天来的人不会被误判沉睡。
+ */
+export function computeInactiveTimeline(
+    base: {
+        status: string;
+        lastActiveAt: number | null;
+        disabledAt: number | null;
+        createdAt: number | null;
+    },
+    disableDays: number,
+    graceDays: number
+): { willDisableAt: number | null; willDeleteAt: number | null } {
+    const day = 24 * 60 * 60;
+    if (base.status === "disabled") {
+        // 已停用：只关心「什么时候会被清除」
+        if (base.disabledAt === null) return { willDisableAt: null, willDeleteAt: null };
+        return { willDisableAt: null, willDeleteAt: base.disabledAt + graceDays * day };
+    }
+    // active：算「什么时候会被停用」
+    const anchor = base.lastActiveAt ?? base.createdAt;
+    if (anchor === null) return { willDisableAt: null, willDeleteAt: null };
+    return { willDisableAt: anchor + disableDays * day, willDeleteAt: null };
 }
 
 /** 邀请码信息（生成后返回给前端展示） */
@@ -484,6 +538,31 @@ export class NavigationAPI {
 
         // 3) 多账号：分组 / 站点挂上归属账号，再把老数据收归首个账号名下
         await this.migrateOwnerColumns();
+
+        // 4) 沉睡账号治理：users 表补上「最后活跃 / 状态 / 停用时间」三列
+        await this.migrateInactiveColumns();
+    }
+
+    /**
+     * users 表补列（幂等，按列是否已经存在决定发不发 ALTER）：
+     *   last_active_at —— 最后活跃时间（秒），「记住我」静默恢复也会刷新；
+     *   status         —— active / disabled，停用的账号登录会被拒但数据保留；
+     *   disabledAt     —— 被停用的时间，清除倒计时的锚点。
+     */
+    private async migrateInactiveColumns(): Promise<void> {
+        const wanted: { name: string; type: string }[] = [
+            { name: "last_active_at", type: "INTEGER" },
+            { name: "status", type: "TEXT NOT NULL DEFAULT 'active'" },
+            { name: "disabled_at", type: "INTEGER" },
+        ];
+        for (const column of wanted) {
+            if (await this.hasColumn("users", column.name)) continue;
+            try {
+                await this.db.exec(`ALTER TABLE users ADD COLUMN ${column.name} ${column.type}`);
+            } catch {
+                // 并发迁移时列可能已存在，忽略
+            }
+        }
     }
 
     /**
@@ -1136,10 +1215,20 @@ export class NavigationAPI {
             if (!ok) {
                 return { success: false, message: "用户名或密码错误" };
             }
+            // 长期未登录被停用的账号不再放行：数据一条没删，
+            // 等 owner 在「账号管理」里重新启用，或本人用恢复密钥找回（那条路走 recover，不受影响）
+            if (user.status === "disabled") {
+                return {
+                    success: false,
+                    message: "该账号因长期未登录已被停用，请联系站点所有者启用",
+                };
+            }
             // 存量明文迁移：登录成功就把明文换成哈希落库
             if (!isHashedPassword(user.passwordHash)) {
                 await this.setUserPassword(user.id, loginRequest.password);
             }
+            // 显式登录 = 确定在用：无条件刷新活跃时间（沉睡治理的锚点）
+            await this.recordActiveLogin(user.id);
             const token = await this.generateToken(
                 { username: user.username, uid: user.id, role: user.role },
                 ttlSeconds
@@ -1161,6 +1250,9 @@ export class NavigationAPI {
             if (!isHashedPassword(credentials.password)) {
                 await this.updateAuthCredentials(credentials.username, loginRequest.password);
             }
+            // 老凭据登录：users 表里同名的那个账号同样算活跃过
+            const legacyUser = await this.findUserByUsername(credentials.username);
+            if (legacyUser) await this.recordActiveLogin(legacyUser.id);
             const token = await this.generateToken({ username: credentials.username }, ttlSeconds);
             return { success: true, token, message: "登录成功", username: credentials.username };
         }
@@ -1175,18 +1267,33 @@ export class NavigationAPI {
     /** 按账号名查用户（含哈希，只在服务端内部用） */
     private async findUserByUsername(
         username: string
-    ): Promise<{ id: number; username: string; passwordHash: string; role: "owner" | "user" } | null> {
+    ): Promise<{
+        id: number;
+        username: string;
+        passwordHash: string;
+        role: "owner" | "user";
+        status: string | null;
+    } | null> {
         try {
             const row = await this.db
-                .prepare("SELECT id, username, password_hash, role FROM users WHERE username = ?")
+                .prepare(
+                    "SELECT id, username, password_hash, role, \"status\" FROM users WHERE username = ?"
+                )
                 .bind(username)
-                .first<{ id: number; username: string; password_hash: string; role: string }>();
+                .first<{
+                    id: number;
+                    username: string;
+                    password_hash: string;
+                    role: string;
+                    status: string | null;
+                }>();
             if (!row) return null;
             return {
                 id: row.id,
                 username: row.username,
                 passwordHash: row.password_hash,
                 role: row.role === "owner" ? "owner" : "user",
+                status: row.status,
             };
         } catch {
             return null;
@@ -1226,14 +1333,244 @@ export class NavigationAPI {
     }
 
     /** 所有账号（定时任务按账号逐个备份时用；只给 id 与账号名） */
-    async listUsers(): Promise<{ id: number; username: string }[]> {
+    /**
+     * 刷新「最后活跃时间」——限频为每天最多写一次，避免每个请求都往 D1 落一行。
+     *
+     * 只要令牌验过（含「记住我」的静默恢复）就算活跃：一个每天来、只是 cookie 还有效
+     * 的人，不该被判成沉睡账号。SQL 里带上 last_active_at 过期条件，没到一天就 0 行变更。
+     */
+    async touchLastActive(uid: number): Promise<void> {
+        const now = Math.floor(Date.now() / 1000);
+        const threshold = now - 24 * 60 * 60;
+        try {
+            await this.db
+                .prepare(
+                    `UPDATE users SET last_active_at = ? WHERE id = ? AND (last_active_at IS NULL OR last_active_at < ?)`
+                )
+                .bind(now, uid, threshold)
+                .run();
+        } catch {
+            // 列缺失 / 表异常都不该影响主流程
+        }
+    }
+
+    /** 显式登录成功：无条件刷新活跃时间（不受每天的限频影响） */
+    private async recordActiveLogin(uid: number): Promise<void> {
+        const now = Math.floor(Date.now() / 1000);
+        try {
+            await this.db
+                .prepare(`UPDATE users SET last_active_at = ? WHERE id = ?`)
+                .bind(now, uid)
+                .run();
+        } catch {
+            // 忽略
+        }
+    }
+
+    /** 账号列表（owner 视角）：含停用状态、最后活跃、距停用/清除的推算时间 */
+    async listUsers(): Promise<AccountInfo[]> {
+        const disableDays = await this.getInactiveDisableDays();
+        const graceDays = await this.getInactiveGraceDays();
         try {
             const result = await this.db
-                .prepare("SELECT id, username FROM users ORDER BY id")
-                .all<{ id: number; username: string }>();
-            return result.results || [];
+                .prepare(
+                    `SELECT id, username, role, "status", last_active_at, disabled_at, created_at FROM users ORDER BY id`
+                )
+                .all<{
+                    id: number;
+                    username: string;
+                    role: string;
+                    status: string | null;
+                    last_active_at: number | null;
+                    disabled_at: number | null;
+                    created_at: string | null;
+                }>();
+            const rows = result.results || [];
+            return rows.map(row => {
+                const status: AccountInfo["status"] = row.status === "disabled" ? "disabled" : "active";
+                // created_at 是 SQLite TIMESTAMP 字符串，换算成秒级时间戳才好看倒计时
+                const parsed = row.created_at ? Date.parse(row.created_at) : NaN;
+                const createdAt = Number.isFinite(parsed) ? Math.floor(parsed / 1000) : null;
+                const timeline = computeInactiveTimeline(
+                    {
+                        status,
+                        lastActiveAt: row.last_active_at,
+                        disabledAt: row.disabled_at,
+                        createdAt,
+                    },
+                    disableDays,
+                    graceDays
+                );
+                return {
+                    id: row.id,
+                    username: row.username,
+                    role: row.role === "owner" ? "owner" : "user",
+                    status,
+                    lastActiveAt: row.last_active_at,
+                    disabledAt: row.disabled_at,
+                    createdAt,
+                    willDisableAt: timeline.willDisableAt,
+                    willDeleteAt: timeline.willDeleteAt,
+                };
+            });
         } catch {
             return [];
+        }
+    }
+
+    /**
+     * owner 手动改某个账号的状态：
+     *   - active   = 豁免：清掉停用时间、并把活跃时间刷成现在（否则立刻又会被判沉睡）；
+     *   - disabled = 手动停用。
+     * 只有 owner 能调；自己不能在这里把自己停用（走「注销账号」那条路）。
+     */
+    async setUserStatus(
+        targetUid: number,
+        status: "active" | "disabled",
+        actorUid: number
+    ): Promise<{ success: boolean; message?: string }> {
+        const actor = await this.findUserByIdWithRole(actorUid);
+        if (!actor || actor.role !== "owner") {
+            return { success: false, message: "仅站点所有者可以管理账号" };
+        }
+        if (targetUid === actorUid && status === "disabled") {
+            return { success: false, message: "不能在这里停用自己的账号，请用「注销账号」" };
+        }
+        const target = await this.findUserByIdWithRole(targetUid);
+        if (!target) {
+            return { success: false, message: "目标账号不存在" };
+        }
+        const now = Math.floor(Date.now() / 1000);
+        try {
+            if (status === "active") {
+                await this.db
+                    .prepare(
+                        `UPDATE users SET "status" = 'active', disabled_at = NULL, last_active_at = ? WHERE id = ?`
+                    )
+                    .bind(now, targetUid)
+                    .run();
+            } else {
+                await this.db
+                    .prepare(`UPDATE users SET "status" = 'disabled', disabled_at = ? WHERE id = ?`)
+                    .bind(now, targetUid)
+                    .run();
+            }
+            await this.writeAudit(
+                `auth.userStatus.${status}`,
+                actor.username,
+                "",
+                `账号 ${target.username} 置为 ${status}`
+            );
+            return { success: true };
+        } catch (error) {
+            return {
+                success: false,
+                message: "更新失败：" + (error instanceof Error ? error.message : "未知错误"),
+            };
+        }
+    }
+
+    /**
+     * 沉睡账号扫描（每周定时任务调用）。两步，都排除 owner（否则站点可能无人可管）：
+     *   1. 停用：active 且「最后活跃（没有就用创建时间）」早于停用阈值 -> 置 disabled；
+     *   2. 清除：disabled 且停用时间早于宽限期阈值 -> 硬删账号及其全部数据
+     *      （user_configs / 它发的或用掉的邀请码 / 它名下的分组与卡片），真正释放 D1 行数。
+     */
+    async sweepInactiveUsers(): Promise<{ disabled: number; deleted: number }> {
+        const disableDays = await this.getInactiveDisableDays();
+        const graceDays = await this.getInactiveGraceDays();
+        const now = Math.floor(Date.now() / 1000);
+        const disableThreshold = now - disableDays * 24 * 60 * 60;
+        const deleteThreshold = now - graceDays * 24 * 60 * 60;
+        let disabled = 0;
+        let deleted = 0;
+
+        try {
+            // 1) 先挑出要停用的 id（顺带拿到精确计数，UPDATE 的返回值拿不到变更行数）
+            const candidates = await this.db
+                .prepare(
+                    `SELECT id FROM users
+                     WHERE role != 'owner' AND "status" = 'active'
+                       AND COALESCE(last_active_at, CAST(strftime('%s', created_at) AS INTEGER)) < ?`
+                )
+                .bind(disableThreshold)
+                .all<{ id: number }>();
+            const ids = candidates.results || [];
+
+            if (ids.length > 0) {
+                const update = await this.db
+                    .prepare(
+                        `UPDATE users
+                         SET "status" = 'disabled', disabled_at = ?
+                         WHERE role != 'owner' AND "status" = 'active'
+                           AND COALESCE(last_active_at, CAST(strftime('%s', created_at) AS INTEGER)) < ?`
+                    )
+                    .bind(now, disableThreshold)
+                    .run();
+                disabled = update.success ? ids.length : 0;
+                for (const { id } of ids) {
+                    await this.writeAudit("auth.inactive.disable", String(id), "", "长期未登录，已停用");
+                }
+            }
+
+            // 2) 宽限期满的直接清除
+            const expired = await this.db
+                .prepare(
+                    `SELECT id FROM users
+                     WHERE role != 'owner' AND "status" = 'disabled'
+                       AND disabled_at IS NOT NULL AND disabled_at < ?`
+                )
+                .bind(deleteThreshold)
+                .all<{ id: number }>();
+
+            for (const { id } of expired.results || []) {
+                const statements = [
+                    this.db.prepare(`DELETE FROM user_configs WHERE user_id = ?`).bind(id),
+                    this.db.prepare(`DELETE FROM invites WHERE created_by = ? OR used_by = ?`).bind(id, id),
+                    this.db.prepare(`DELETE FROM sites WHERE user_id = ?`).bind(id),
+                    this.db.prepare(`DELETE FROM groups WHERE user_id = ?`).bind(id),
+                    this.db.prepare(`DELETE FROM users WHERE id = ?`).bind(id),
+                ];
+                await this.db.batch(statements);
+                deleted++;
+                await this.writeAudit("auth.inactive.delete", String(id), "", "停用宽限期满，已清除");
+            }
+        } catch (error) {
+            console.error("沉睡账号扫描失败:", error);
+        }
+
+        return { disabled, deleted };
+    }
+
+    /** 停用阈值（天）：configs 里没有就用默认 180 */
+    private async getInactiveDisableDays(): Promise<number> {
+        const raw = parseInt((await this.getConfig(INACTIVE_DISABLE_DAYS_KEY)) || "", 10);
+        return Number.isFinite(raw) && raw > 0 ? raw : INACTIVE_DISABLE_DAYS_DEFAULT;
+    }
+
+    /** 清除宽限期（天）：configs 里没有就用默认 30 */
+    private async getInactiveGraceDays(): Promise<number> {
+        const raw = parseInt((await this.getConfig(INACTIVE_DELETE_GRACE_DAYS_KEY)) || "", 10);
+        return Number.isFinite(raw) && raw > 0 ? raw : INACTIVE_DELETE_GRACE_DAYS_DEFAULT;
+    }
+
+    /** 按 id 查账号（带 role，用于 owner 权限判断） */
+    private async findUserByIdWithRole(
+        uid: number
+    ): Promise<{ id: number; username: string; role: "owner" | "user" } | null> {
+        try {
+            const row = await this.db
+                .prepare("SELECT id, username, role FROM users WHERE id = ?")
+                .bind(uid)
+                .first<{ id: number; username: string; role: string }>();
+            if (!row) return null;
+            return {
+                id: row.id,
+                username: row.username,
+                role: row.role === "owner" ? "owner" : "user",
+            };
+        } catch {
+            return null;
         }
     }
 

@@ -21,6 +21,7 @@ import {
     isSecretConfigKey,
     normalizeImportData,
 } from "./API/http";
+import type { AccountInfo } from "./API/http";
 import { GroupWithSites } from "./types";
 import { AppConfigProvider } from "./context/AppConfigContext";
 import { NotifyContext } from "./context/NotifyContext";
@@ -342,6 +343,8 @@ function App() {
     // 账号管理弹窗（账号密码 / 恢复密钥 / 邀请码 / 注销）
     const [openAccount, setOpenAccount] = useState(false);
     const [savingAuth, setSavingAuth] = useState(false);
+    // 账号清单（仅 owner 拿得到）：每个账号的沉睡治理状态，给「账号管理」里那份列表用
+    const [accountList, setAccountList] = useState<AccountInfo[]>([]);
 
     // 设置弹窗里选色时的即时预览值（不落库，关闭弹窗即回滚）
     const [accentPreview, setAccentPreview] = useState<string | null>(null);
@@ -798,6 +801,43 @@ function App() {
             };
         }
     };
+
+    /** 拉账号清单（仅 owner）：打开「账号管理」时调一次，用来看哪些账号快被停用/清除 */
+    const fetchAccountList = useCallback(async () => {
+        if (currentUser?.role !== "owner") return;
+        try {
+            const res = await fetch("/api/users", { credentials: "same-origin" });
+            if (!res.ok) return;
+            const data = (await res.json()) as { success?: boolean; users?: AccountInfo[] };
+            if (data.success) setAccountList(data.users || []);
+        } catch {
+            // 拉不到就当没有：账号管理里那一段直接不显示，不打扰正常功能
+        }
+    }, [currentUser?.role]);
+
+    /** 重新启用某个账号 = 给它豁免沉睡治理（服务端会顺带把活跃时间刷成现在） */
+    const handleExemptUser = useCallback(
+        async (uid: number) => {
+            try {
+                const res = await fetch(`/api/users/${uid}/status`, {
+                    method: "POST",
+                    credentials: "same-origin",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ status: "active" }),
+                });
+                const data = (await res.json()) as { success?: boolean; message?: string };
+                if (data.success) {
+                    notify("已重新启用该账号", "success");
+                    await fetchAccountList();
+                } else {
+                    notify(data.message || "操作失败", "error");
+                }
+            } catch (error) {
+                notify("操作失败：" + (error instanceof Error ? error.message : "未知错误"), "error");
+            }
+        },
+        [fetchAccountList, notify]
+    );
 
     /** 注销账号：确认密码 → 服务端删号删数据 → 本地回到登录页 */
     const handleDeleteAccount = async (): Promise<{ success: boolean; message?: string }> => {
@@ -3060,7 +3100,10 @@ function App() {
                 id: "cmd-account",
                 label: "打开账号管理",
                 section: "操作",
-                run: () => setOpenAccount(true),
+                run: () => {
+                    setOpenAccount(true);
+                    void fetchAccountList();
+                },
             },
             {
                 id: "cmd-backup",
@@ -3555,6 +3598,7 @@ function App() {
                                             onOpenAccount={() => {
                                                 handleMenuClose();
                                                 setOpenAccount(true);
+                                                void fetchAccountList();
                                             }}
                                             onStartGroupSort={startGroupSort}
                                             canInstall={canInstall}
@@ -4102,6 +4146,8 @@ function App() {
                         onGenerateRecoveryKey={handleGenerateRecoveryKey}
                         invite={invite}
                         onCreateInvite={handleCreateInvite}
+                        accounts={accountList}
+                        onExemptUser={uid => void handleExemptUser(uid)}
                         onDeleteAccount={() => {
                             handleMenuClose();
                             setOpenAccount(false);

@@ -27,6 +27,24 @@ import CloseIcon from "@mui/icons-material/Close";
 import VpnKeyIcon from "@mui/icons-material/VpnKey";
 import PersonRemoveIcon from "@mui/icons-material/PersonRemove";
 import { PasswordField } from "./PasswordField";
+import type { AccountInfo } from "../API/http";
+
+/** 距某个时间点还有几天（向上取整；null = 服务端没给推算依据） */
+function daysUntil(ts: number | null): number | null {
+    if (ts === null) return null;
+    const now = Math.floor(Date.now() / 1000);
+    return Math.max(0, Math.ceil((ts - now) / (24 * 60 * 60)));
+}
+
+/** 「最后活跃」的可读描述 */
+function formatLastActive(ts: number | null): string {
+    if (ts === null) return "从未登录";
+    const days = Math.floor((Math.floor(Date.now() / 1000) - ts) / (24 * 60 * 60));
+    if (days <= 0) return "今天";
+    if (days === 1) return "昨天";
+    if (days < 30) return `${days} 天前`;
+    return `${Math.floor(days / 30)} 个月前`;
+}
 
 /** 改账号 / 改密码的输入草稿：留空表示「不改这一项」 */
 export interface AccountAuthDraft {
@@ -66,6 +84,10 @@ interface AccountDialogProps {
     }>;
     /** 注销账号：这里只负责触发，二次确认弹窗由父组件接管 */
     onDeleteAccount?: () => void;
+    /** 账号清单（仅站点所有者能拿到）：每个账号的沉睡治理状态 */
+    accounts?: AccountInfo[];
+    /** 重新启用某个被停用的账号 = 豁免沉睡治理（服务端会顺带刷新活跃时间） */
+    onExemptUser?: (uid: number) => void;
 }
 
 /** 分组：左侧一小段主色竖条 + 组标题，可选一行组说明 */
@@ -139,6 +161,8 @@ export default function AccountDialog({
     invite,
     onCreateInvite,
     onDeleteAccount,
+    accounts,
+    onExemptUser,
 }: AccountDialogProps) {
     // 恢复密钥的生成结果提示（成功/失败都就地反馈，私钥由浏览器直接下载）
     const [recoveryBusy, setRecoveryBusy] = useState(false);
@@ -441,7 +465,72 @@ export default function AccountDialog({
                             ) : null}
                         </Section>
 
-                        {/* 4. 注销：破坏性操作沉底 */}
+                        {/* 4. 账号清单：只有站点所有者看得到 —— 谁快被停用、谁快被清除。
+                            沉睡治理是自动跑的，这里是人工兜底：认出是真人在用的账号就给豁免。 */}
+                        {currentUser?.role === "owner" && accounts && accounts.length > 0 ? (
+                            <Section
+                                title='账号与沉睡治理'
+                                hint='长期不登录的账号会先被停用（数据一条不删），宽限期满后自动清除以释放空间。认出是真人在用的，可以提前豁免。'
+                            >
+                                <Stack spacing={1}>
+                                    {accounts.map(account => {
+                                        const disabled = account.status === "disabled";
+                                        const daysToDisable = daysUntil(account.willDisableAt);
+                                        const daysToDelete = daysUntil(account.willDeleteAt);
+                                        return (
+                                            <Stack
+                                                key={account.id}
+                                                direction={{ xs: "column", sm: "row" }}
+                                                spacing={1}
+                                                alignItems={{ xs: "stretch", sm: "center" }}
+                                                justifyContent='space-between'
+                                                sx={{
+                                                    px: 1.25,
+                                                    py: 1,
+                                                    borderRadius: 1,
+                                                    bgcolor: "action.hover",
+                                                }}
+                                            >
+                                                <Box>
+                                                    <Typography variant='body2' fontWeight='600'>
+                                                        {account.username}
+                                                        {account.role === "owner"
+                                                            ? "（站点所有者）"
+                                                            : ""}
+                                                    </Typography>
+                                                    <Typography
+                                                        variant='caption'
+                                                        color={
+                                                            disabled
+                                                                ? disabled && daysToDelete !== null && daysToDelete <= 7
+                                                                    ? "error.main"
+                                                                    : "warning.main"
+                                                                : "text.secondary"
+                                                        }
+                                                    >
+                                                        {disabled
+                                                            ? `已停用${daysToDelete !== null ? `，约 ${daysToDelete} 天后清除` : "，等待清除"}`
+                                                            : `最近活跃：${formatLastActive(account.lastActiveAt)}${daysToDisable !== null ? ` · 约 ${daysToDisable} 天后停用` : ""}`}
+                                                    </Typography>
+                                                </Box>
+                                                {disabled ? (
+                                                    <Button
+                                                        variant='outlined'
+                                                        size='small'
+                                                        onClick={() => onExemptUser?.(account.id)}
+                                                        sx={{ flex: "none", whiteSpace: "nowrap" }}
+                                                    >
+                                                        重新启用
+                                                    </Button>
+                                                ) : null}
+                                            </Stack>
+                                        );
+                                    })}
+                                </Stack>
+                            </Section>
+                        ) : null}
+
+                        {/* 5. 注销：破坏性操作沉底 */}
                         {onDeleteAccount ? (
                             <Section
                                 title='注销账号'
