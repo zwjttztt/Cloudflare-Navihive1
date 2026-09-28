@@ -1005,6 +1005,10 @@ function App() {
         setCurrentUser(null);
         setRecoveryConfigured(false);
 
+        // 多选模式是 App 本地 state，登出时不卸载组件，不会自动复位——
+        // 不在这里清掉，重登后还会停在「批量多选」态。退出时连勾选一并清空。
+        exitMultiSelect();
+
         // 显示提示信息
         setError("已退出登录，请重新登录");
     };
