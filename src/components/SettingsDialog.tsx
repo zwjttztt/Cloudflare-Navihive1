@@ -238,15 +238,27 @@ export default function SettingsDialog({
         text: string;
     } | null>(null);
 
-    const handleGenerateRecoveryKey = async () => {
-        if (!auth.currentPassword) {
-            setRecoveryMsg({ type: "error", text: "请先填写「当前密码」再生成" });
+    // 生成私钥要单独弹窗输入当前密码：不复用「管理员账号与密码」那组输入框。
+    // 否则用户只是想改个标题、想下载私钥时被迫先填上方「当前密码」，
+    // 再点「保存设置」就会因为「只填了当前密码、没填新密码」被服务端判为 400。
+    const [recoveryPwdOpen, setRecoveryPwdOpen] = useState(false);
+    const [recoveryPwd, setRecoveryPwd] = useState("");
+
+    const openRecoveryPwdDialog = () => {
+        setRecoveryPwd("");
+        setRecoveryMsg(null);
+        setRecoveryPwdOpen(true);
+    };
+
+    const submitRecoveryPwd = async () => {
+        if (!recoveryPwd) {
+            setRecoveryMsg({ type: "error", text: "请输入当前管理员密码" });
             return;
         }
         setRecoveryBusy(true);
         setRecoveryMsg(null);
         try {
-            const result = await onGenerateRecoveryKey?.(auth.currentPassword);
+            const result = await onGenerateRecoveryKey?.(recoveryPwd);
             setRecoveryMsg(
                 result?.success
                     ? {
@@ -255,6 +267,10 @@ export default function SettingsDialog({
                       }
                     : { type: "error", text: result?.message || "生成恢复密钥失败" }
             );
+            if (result?.success) {
+                setRecoveryPwd("");
+                setRecoveryPwdOpen(false);
+            }
         } catch (error) {
             setRecoveryMsg({
                 type: "error",
@@ -266,6 +282,7 @@ export default function SettingsDialog({
     };
 
     return (
+        <>
         <Dialog
             open={open}
             onClose={onClose}
@@ -718,7 +735,7 @@ export default function SettingsDialog({
                                 <Button
                                     variant='outlined'
                                     size='small'
-                                    onClick={() => void handleGenerateRecoveryKey()}
+                                    onClick={openRecoveryPwdDialog}
                                     disabled={recoveryBusy}
                                     sx={{ flex: "none", whiteSpace: "nowrap" }}
                                 >
@@ -747,7 +764,7 @@ export default function SettingsDialog({
                                     color='text.secondary'
                                     sx={{ display: "block", mt: 0.5 }}
                                 >
-                                    需要先填写上方「当前密码」；重新生成会让此前下载的私钥立即失效。
+                                    点击后会单独弹窗验证当前密码（不会占用上方「当前密码」输入框）；重新生成会让此前下载的私钥立即失效。
                                 </Typography>
                             )}
                         </Box>
@@ -782,5 +799,60 @@ export default function SettingsDialog({
                 </Button>
             </DialogActions>
         </Dialog>
+
+        {/* 生成恢复私钥前确认当前密码：独立弹窗，不占用「管理员账号与密码」那组输入框 */}
+        <Dialog
+            open={recoveryPwdOpen}
+            onClose={() => (recoveryBusy ? undefined : setRecoveryPwdOpen(false))}
+            maxWidth='xs'
+            fullWidth
+        >
+            <DialogTitle sx={{ pb: 1 }}>验证身份后生成恢复私钥</DialogTitle>
+            <DialogContent>
+                <DialogContentText variant='body2' sx={{ mb: 2 }}>
+                    私钥等同于重置管理员密码的万能钥匙。为防止有人拿着你的登录会话偷偷换掉恢复公钥，
+                    请先输入<strong>当前管理员密码</strong>。
+                </DialogContentText>
+                <TextField
+                    autoFocus
+                    type='password'
+                    label='当前管理员密码'
+                    value={recoveryPwd}
+                    onChange={e => setRecoveryPwd(e.target.value)}
+                    onKeyDown={e => {
+                        if (e.key === "Enter" && !recoveryBusy) void submitRecoveryPwd();
+                    }}
+                    fullWidth
+                    size='small'
+                    disabled={recoveryBusy}
+                />
+                {recoveryMsg && recoveryPwdOpen ? (
+                    <Typography
+                        variant='caption'
+                        sx={{ display: "block", mt: 1 }}
+                        color={recoveryMsg.type === "success" ? "success.main" : "error.main"}
+                    >
+                        {recoveryMsg.text}
+                    </Typography>
+                ) : null}
+            </DialogContent>
+            <DialogActions sx={{ px: 3, pb: 2 }}>
+                <Button
+                    onClick={() => setRecoveryPwdOpen(false)}
+                    variant='outlined'
+                    disabled={recoveryBusy}
+                >
+                    取消
+                </Button>
+                <Button
+                    onClick={() => void submitRecoveryPwd()}
+                    variant='contained'
+                    disabled={recoveryBusy}
+                >
+                    {recoveryBusy ? "生成中…" : "确认并下载私钥"}
+                </Button>
+            </DialogActions>
+        </Dialog>
+        </>
     );
 }

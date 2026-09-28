@@ -2065,8 +2065,11 @@ function App() {
     // 修改管理员账号密码：需要验证当前密码，空白字段表示保持不变
     const submitAuthCredentials = async (): Promise<boolean> => {
         const username = authUsername.trim();
-        if (!username && !authNewPassword && !authCurrentPassword) {
-            return false; // 没填任何内容 → 不修改
+        // 只有「要改账号」或「要改密码」时才提交。
+        // 注意不能把 authCurrentPassword 算进「有改动」的判断：用户可能只是为了生成恢复私钥
+        // 而填了当前密码，此时点「保存设置」会因为「既没新账号也没新密码」被服务端判成 400。
+        if (!username && !authNewPassword) {
+            return false;
         }
         if (!authCurrentPassword) {
             throw new Error("修改管理员账号或密码时，必须先填写当前密码");

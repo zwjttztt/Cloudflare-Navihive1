@@ -16,7 +16,6 @@ import {
 import LockOutlinedIcon from "@mui/icons-material/LockOutlined";
 import UploadFileIcon from "@mui/icons-material/UploadFile";
 import { readRememberedLogin } from "../utils/rememberedLogin";
-import { validatePasswordStrength } from "../API/crypto";
 import {
     algLabel,
     checkWebCryptoSupport,
@@ -112,11 +111,12 @@ const LoginForm: React.FC<LoginFormProps> = ({
             setLocalRecoverError("两次输入的新密码不一致");
             return;
         }
-        const strength = validatePasswordStrength(newPassword);
-        if (!strength.ok) {
-            setLocalRecoverError(`密码强度不足：${strength.message}`);
+        if (!newPassword) {
+            setLocalRecoverError("请输入新密码");
             return;
         }
+        // 这里不做 12 位强度校验：能用私钥签出合法令牌，本身就已证明持有者身份，
+        // 再卡长度只会让人在找回密码时被自己挡在门外。服务端收到的也已经是哈希值。
 
         setLocalRecoverError(null);
         const notSupported = checkWebCryptoSupport();
@@ -324,7 +324,7 @@ const LoginForm: React.FC<LoginFormProps> = ({
                                     value={newPassword}
                                     onChange={e => setNewPassword(e.target.value)}
                                     disabled={recoverLoading}
-                                    helperText='至少 12 位'
+                                    helperText='不限制长度，建议用足够强的密码'
                                 />
                                 <TextField
                                     fullWidth
