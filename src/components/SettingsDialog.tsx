@@ -26,6 +26,7 @@ import {
     Typography,
 } from "@mui/material";
 import CloseIcon from "@mui/icons-material/Close";
+import { PasswordField } from "./PasswordField";
 import { DEFAULT_ICON_API, DEFAULT_THUMB_API } from "../utils/iconApi";
 import type { FontScale, RadiusStyle } from "../context/UIPrefsContext";
 
@@ -674,7 +675,7 @@ export default function SettingsDialog({
                     {/* 7. 账户安全 */}
                     <Section
                         title='账户安全'
-                        hint='凭据保存在数据库中，只有第一次部署才会使用默认账号密码，之后重新部署不会覆盖；留空表示不修改。'
+                        hint='凭据保存在数据库中，只有第一次部署才会使用默认账号密码，之后重新部署不会覆盖；留空表示不修改。这里的输入框不会预填、也不会让浏览器带入已保存的登录账号密码。'
                     >
                         <TextField
                             margin='dense'
@@ -687,28 +688,22 @@ export default function SettingsDialog({
                             value={auth.username}
                             onChange={e => onAuthChange("username", e.target.value)}
                             placeholder='留空则不修改账号'
+                            // 关掉自动填充：否则浏览器会把登录时保存的账号直接带进来，
+                            // 让人误以为「账号已经填好了」，保存时其实是在改账号
+                            autoComplete='off'
+                            name='auth-username-field'
                         />
                         <TwoCol>
-                            <TextField
-                                margin='dense'
-                                size='small'
+                            <PasswordField
                                 id='auth-current-password'
                                 label='当前密码'
-                                type='password'
-                                fullWidth
-                                variant='outlined'
                                 value={auth.currentPassword}
                                 onChange={e => onAuthChange("currentPassword", e.target.value)}
                                 placeholder='修改账号或密码时必填'
                             />
-                            <TextField
-                                margin='dense'
-                                size='small'
+                            <PasswordField
                                 id='auth-new-password'
                                 label='新密码'
-                                type='password'
-                                fullWidth
-                                variant='outlined'
                                 value={auth.newPassword}
                                 onChange={e => onAuthChange("newPassword", e.target.value)}
                                 placeholder='留空则不修改密码'
@@ -813,17 +808,15 @@ export default function SettingsDialog({
                     私钥等同于重置管理员密码的万能钥匙。为防止有人拿着你的登录会话偷偷换掉恢复公钥，
                     请先输入<strong>当前管理员密码</strong>。
                 </DialogContentText>
-                <TextField
+                <PasswordField
                     autoFocus
-                    type='password'
+                    id='recovery-current-password'
                     label='当前管理员密码'
                     value={recoveryPwd}
                     onChange={e => setRecoveryPwd(e.target.value)}
                     onKeyDown={e => {
                         if (e.key === "Enter" && !recoveryBusy) void submitRecoveryPwd();
                     }}
-                    fullWidth
-                    size='small'
                     disabled={recoveryBusy}
                 />
                 {recoveryMsg && recoveryPwdOpen ? (

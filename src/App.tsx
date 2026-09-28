@@ -2150,8 +2150,11 @@ function App() {
             handleCloseConfig();
 
             if (authChanged) {
-                // 旧令牌仍然有效，当前会话不受影响，只是下次登录要用新账号密码
-                notify("管理员凭据已更新，下次登录请使用新账号密码", "success", 4000);
+                // 改完账号或密码，服务端已经把令牌版本 +1，当前这张令牌立刻失效。
+                // 这时留在页面里只会让后续每个请求都 401，所以直接踢回登录页用新凭据重登。
+                clearRememberedLogin(); // 「记住登录」里存的是旧账号密码，留着只会误导
+                handleLogout();
+                setError("管理员账号或密码已更新，请使用新凭据重新登录");
             } else if (changed.length > 0) {
                 notify("设置已保存", "success");
             }
