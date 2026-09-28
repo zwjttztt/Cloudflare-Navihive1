@@ -266,13 +266,13 @@ const LoginForm: React.FC<LoginFormProps> = ({
     };
 
     /**
-     * 切到「忘记密码」视图：把登录框里已经填的账号带过去，
-     * 免得用户刚输完账号又要重打一遍（多账号下账号名决定用哪把公钥验签）。
+     * 切到「忘记密码」视图：账号名不预填。
+     * 找回靠的是私钥本身（服务端拿全站公钥挨个验，验中哪个账号就重置哪个），
+     * 预填反而会让人以为「必须跟这里填的账号一致」，忘了账号名的人更会被卡住。
      */
     const switchToRecover = () => {
         setMode("recover");
         setLocalRecoverError(null);
-        setNewUsername(prev => (prev ? prev : username.trim()));
     };
 
     const switchToLogin = () => {
@@ -367,7 +367,7 @@ const LoginForm: React.FC<LoginFormProps> = ({
 
                 {mode === "recover" && (
                     <Alert severity='info' sx={{ mb: 2 }}>
-                        上传在「更多选项 → 账号管理」里下载的恢复私钥，再填新密码即可重置该账号的密码。
+                        上传在「更多选项 → 账号管理」里下载的恢复私钥即可重置密码。
                         私钥只在你的浏览器里用来签名，不会上传。
                         {!recoverConfigured && " 当前站点尚未配置恢复公钥，找回多半会失败。"}
                     </Alert>
@@ -526,11 +526,12 @@ const LoginForm: React.FC<LoginFormProps> = ({
                             <TextField
                                 fullWidth
                                 size='small'
-                                label='账号名'
+                                label='账号名（可留空）'
                                 value={newUsername}
                                 onChange={e => setNewUsername(e.target.value)}
                                 disabled={recoverLoading}
-                                placeholder='留空则不改账号（按站点所有者重置）'
+                                placeholder='忘了就留空；填新名字会一并改账号名'
+                                helperText='找回只认私钥：留空则只重置密码；填了新名字就同时把账号名改成它。'
                             />
                             <PasswordField
                                 id='recover-new-password'

@@ -1,10 +1,11 @@
 // tests/accounts.test.ts
-// 多账号：注册（邀请码）、数据隔离、注销。
+// 多账号：注册（邀请码）、数据隔离、注销、按账号隔离的恢复密钥。
 // 这里用一个「够用」的内存 D1 替身：只识别本功能真正用到的那些 SQL，
 // 目的是把服务端的多账号规则钉死（谁能看到谁的数据、邀请码什么时候失效）。
 import test from "node:test";
 import assert from "node:assert/strict";
 import { NavigationAPI, resetMigrationCacheForTests } from "../src/API/http";
+import { hashPassword } from "../src/API/crypto";
 
 type Row = Record<string, unknown>;
 
@@ -625,4 +626,131 @@ test("升级：全站那份 WebDAV 配置自动搬给 owner，且不留全局副
     const registered = await api.registerUser("bob", "password123", invite.code || "");
     api.setCurrentUser(registered.user?.id as number);
     assert.equal(await api.getConfig("webdav.url"), null);
+});
+
+// ---- 恢复密钥：凭私钥找回（账号名可以一起改，也可以干脆不填） ----
+// 找回的前提只有一条：手里握着对应的私钥。账号名只是「顺便」能改的东西，
+// 所以下面几条守的是「忘了账号名也能找回」和「改名不能占别人的名字」。
+
+const enc = new TextEncoder();
+
+function b64urlBytes(bytes: Uint8Array): string {
+    return Buffer.from(bytes)
+        .toString("base64")
+        .replace(/\+/g, "-")
+        .replace(/\//g, "_")
+        .replace(/=+$/, "");
+}
+
+/** 造一对恢复密钥：公钥 SPKI（交给服务器）、私钥 PKCS8（留在本地签名用） */
+async function newRecoveryKeypair() {
+    const kp = (await crypto.subtle.generateKey({ name: "Ed25519" }, true, [
+        "sign",
+        "verify",
+    ])) as CryptoKeyPair;
+    const pub = b64urlBytes(new Uint8Array(await crypto.subtle.exportKey("spki", kp.publicKey)));
+    const privBytes = new Uint8Array(await crypto.subtle.exportKey("pkcs8", kp.privateKey));
+    const privKey = await crypto.subtle.importKey("pkcs8", privBytes, { name: "Ed25519" }, false, [
+        "sign",
+    ]);
+    return { pub, privKey };
+}
+
+/** 本地签一张恢复令牌（JWS compact），与前端 signRecoveryToken 同格式 */
+async function signRecoveryJws(
+    privKey: CryptoKey,
+    payload: Record<string, unknown>
+): Promise<string> {
+    const header = b64urlBytes(enc.encode(JSON.stringify({ alg: "EdDSA", typ: "JWS" })));
+    const body = b64urlBytes(enc.encode(JSON.stringify(payload)));
+    const sig = new Uint8Array(
+        await crypto.subtle.sign(
+            { name: "Ed25519" } as unknown as Parameters<SubtleCrypto["sign"]>[0],
+            privKey,
+            enc.encode(header + "." + body)
+        )
+    );
+    return header + "." + body + "." + b64urlBytes(sig);
+}
+
+function futureExpSec(hours = 1): number {
+    return Math.floor(Date.now() / 1000) + hours * 3600;
+}
+
+/** 起手：owner + 一个注册账号 alice，且 alice 已配好自己的恢复公钥 */
+async function setupAliceWithRecoveryKey() {
+    const store = freshStore();
+    resetMigrationCacheForTests();
+    const api = makeApi(store);
+    await api.migrate();
+    const ownerId = store.users[0].id as number;
+    const invite = await api.createInvite(ownerId);
+    const registered = await api.registerUser("alice", "password123", invite.code || "");
+    const aliceId = registered.user?.id as number;
+
+    const { pub, privKey } = await newRecoveryKeypair();
+    api.setCurrentUser(aliceId);
+    const saved = await api.setRecoveryPublicKey(pub, "password123");
+    assert.equal(saved.success, true, saved.message);
+    // 找回是不带身份的公网入口
+    api.setCurrentUser(null);
+    return { store, api, ownerId, aliceId, privKey };
+}
+
+test("恢复密钥：账号名留空也能找回（私钥认领自己的账号，不动 owner）", async () => {
+    const { api, ownerId, aliceId, privKey } = await setupAliceWithRecoveryKey();
+
+    const token = await signRecoveryJws(privKey, {
+        username: "",
+        passwordHash: await hashPassword("AliceNewPass2026"),
+        exp: futureExpSec(),
+        jti: "forget-name-1",
+    });
+
+    const result = await api.redeemRecoveryToken(token);
+    assert.equal(result.success, true, result.message);
+    assert.match(result.message, /alice/, "成功提示要告诉用户是哪个账号被重置了");
+    assert.equal(await api.verifyPasswordOfUser(aliceId, "AliceNewPass2026"), true);
+    // owner 的密码必须纹丝不动：拿 alice 的私钥绝不能改到别人头上
+    assert.equal(await api.verifyPasswordOfUser(ownerId, "seed-password"), true);
+});
+
+test("恢复密钥：账号名可以和密码一起改", async () => {
+    const { store, api, aliceId, privKey } = await setupAliceWithRecoveryKey();
+
+    const token = await signRecoveryJws(privKey, {
+        username: "alice-new",
+        passwordHash: await hashPassword("AliceRename2026"),
+        exp: futureExpSec(),
+        jti: "rename-1",
+    });
+
+    const result = await api.redeemRecoveryToken(token);
+    assert.equal(result.success, true, result.message);
+    assert.equal(
+        (store.users.find(u => u.id === aliceId) as Row).username,
+        "alice-new",
+        "新账号名要真的落到 users 表上"
+    );
+    assert.equal(await api.verifyPasswordOfUser(aliceId, "AliceRename2026"), true);
+    // 改名后用新账号名能登录
+    const login = await api.login({ username: "alice-new", password: "AliceRename2026" });
+    assert.equal(login.success, true, login.message);
+});
+
+test("恢复密钥：改成别人在用的账号名 → 拒绝，且不动任何凭据", async () => {
+    const { store, api, aliceId, privKey } = await setupAliceWithRecoveryKey();
+
+    const token = await signRecoveryJws(privKey, {
+        username: "root", // owner 的账号名
+        passwordHash: await hashPassword("GrabOwnerName2026"),
+        exp: futureExpSec(),
+        jti: "rename-clash-1",
+    });
+
+    const result = await api.redeemRecoveryToken(token);
+    assert.equal(result.success, false);
+    assert.match(result.message, /已被占用/);
+    assert.equal((store.users.find(u => u.id === aliceId) as Row).username, "alice");
+    assert.equal(await api.verifyPasswordOfUser(aliceId, "password123"), true, "旧密码仍然有效");
 });

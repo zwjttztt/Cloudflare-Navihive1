@@ -13,6 +13,7 @@ import {
     verifyRecoveryToken,
     isValidRecoveryPublicKey,
     peekRecoveryTokenUsername,
+    type RecoveryPayload,
 } from "./crypto";
 
 // 定义D1数据库类型
@@ -852,28 +853,58 @@ export class NavigationAPI {
     }
 
     /**
-     * 挑出该用哪把公钥验这份令牌：部署变量优先；
-     * 令牌里写了账号名就用那个账号的公钥；没写（老令牌）沿用站点所有者那把。
+     * 收集所有可用于验签的恢复公钥（连同它属于哪个账号）。
+     *
+     * 为什么不「只挑账号名指定的那一把」：找回密码的常见情形恰恰是**连账号名都忘了**，
+     * 手里只剩一份私钥文件。此时若死板地按令牌里的账号名找公钥，找不到就回落到
+     * 站点所有者那把 —— 验签必然失败，用户会被自己手里的私钥挡在门外
+     * （报错正是「恢复令牌无效或签名不匹配」）。
+     *
+     * 所以这里把全站已配置的公钥都收上来挨个试：谁的公钥验得过，就说明这份私钥是给谁的，
+     * 重置的也就是那个账号。安全性没有变化 —— 能走到这一步的前提仍然是「握有私钥」。
+     *
+     * @param username 令牌里填的账号名（可能为空 / 拼错），只用来把最可能的那把排在前面
      */
-    private async resolveRecoveryPublicKey(username: string): Promise<string> {
-        if (this.recoveryPubKey) return this.recoveryPubKey;
-        // configs 里那份是全站一份时代的遗留物；迁移搬进 owner 之后它就会被删掉
-        const legacy = ((await this.getConfig(RECOVERY_PUBLIC_KEY_CONFIG)) || "").trim();
-        const name = (username || "").trim();
+    private async collectRecoveryCandidates(
+        username: string
+    ): Promise<{ userId: number | null; publicKey: string }[]> {
+        // 部署变量优先：配了它就只有这一把生效
+        if (this.recoveryPubKey) {
+            return [{ userId: null, publicKey: this.recoveryPubKey }];
+        }
 
+        const list: { userId: number | null; publicKey: string }[] = [];
+        const seen = new Set<string>();
+        const push = (userId: number | null, key: string) => {
+            const trimmed = (key || "").trim();
+            if (!trimmed || seen.has(trimmed)) return;
+            seen.add(trimmed);
+            list.push({ userId, publicKey: trimmed });
+        };
+
+        // 令牌里写了账号名就先试它自己的那把：命中率最高，也省掉一轮遍历
+        const name = (username || "").trim();
         if (name) {
             const user = await this.findUserByUsername(name);
-            if (!user) return legacy; // 老部署还没把管理员搬进 users 表
-            const own = await this.getRecoveryPublicKeyOfUser(user.id);
-            return own || legacy;
+            if (user) push(user.id, await this.getRecoveryPublicKeyOfUser(user.id));
         }
 
-        const owner = await this.findOwnerUser();
-        if (owner) {
-            const own = await this.getRecoveryPublicKeyOfUser(owner.id);
-            if (own) return own;
+        try {
+            const rows = await this.db
+                .prepare(
+                    "SELECT id, recovery_public_key FROM users WHERE recovery_public_key IS NOT NULL AND recovery_public_key <> ''"
+                )
+                .all<{ id: number; recovery_public_key: string | null }>();
+            for (const row of rows.results || []) {
+                push(row.id, row.recovery_public_key || "");
+            }
+        } catch {
+            // 列还没建好（迁移未跑）：只剩全局那份能用
         }
-        return legacy;
+
+        // 最后才是 configs 里那份全站一份时代的遗留物
+        push(null, (await this.getConfig(RECOVERY_PUBLIC_KEY_CONFIG)) || "");
+        return list;
     }
 
     async hasRecoveryKey(): Promise<boolean> {
@@ -962,11 +993,11 @@ export class NavigationAPI {
         token: string,
         clientKey: string = "unknown"
     ): Promise<{ success: boolean; message: string }> {
-        // 多账号：每个账号有自己的公钥，先按令牌里的账号名挑出对应的那把
-        // （令牌没写账号名 = 老令牌，沿用站点所有者那把）
+        // 多账号：每个账号有自己的公钥，先把「可能是给谁的」都收上来挨个试，
+        // 验得过才算数 —— 这样连账号名都忘了的人，单凭私钥也能找回自己的账号。
         const tokenUsername = peekRecoveryTokenUsername(token);
-        const publicKey = await this.resolveRecoveryPublicKey(tokenUsername);
-        if (!publicKey) {
+        const candidates = await this.collectRecoveryCandidates(tokenUsername);
+        if (candidates.length === 0) {
             return {
                 success: false,
                 message: tokenUsername
@@ -975,13 +1006,23 @@ export class NavigationAPI {
             };
         }
 
-        const result = await verifyRecoveryToken(token, publicKey);
-        if (!result.valid || !result.payload) {
+        // 挨个试：谁的公钥验得过，这份私钥就是给谁的
+        let holder: { userId: number | null } | null = null;
+        let verified: { payload: RecoveryPayload } | null = null;
+        for (const candidate of candidates) {
+            const result = await verifyRecoveryToken(token, candidate.publicKey);
+            if (result.valid && result.payload) {
+                holder = candidate;
+                verified = result as { payload: RecoveryPayload };
+                break;
+            }
+        }
+        if (!holder || !verified) {
             await this.writeAudit("auth.recover.failed", "", clientKey, "签名校验失败");
             return { success: false, message: "恢复令牌无效或签名不匹配" };
         }
 
-        const { username, passwordHash, exp, jti } = result.payload;
+        const { username, passwordHash, exp, jti } = verified.payload;
 
         // 过期（token 自带 exp，不依赖外部状态）
         if (typeof exp === "number" && exp < Math.floor(Date.now() / 1000)) {
@@ -1000,30 +1041,38 @@ export class NavigationAPI {
             return { success: false, message: "恢复令牌中的密码格式不合法" };
         }
 
-        // username 留空表示只重置密码、不动账号。
-        // 多账号后凭据以 users 表为准：找到同名账号直接改它的哈希；
-        // 找不到（老部署还没迁移出 owner）时才退回写 configs，保证升级前后都能用。
-        const target = username
-            ? await this.findUserByUsername(username)
-            : await this.findOwnerUser();
+        // 目标账号 = 私钥所属的那个账号（不再靠账号名去猜）：
+        // 只有当命中的是单账号时代遗留的全局公钥（userId 为 null）时，才回落到 owner / configs。
+        const name = (username || "").trim();
+        const target =
+            holder.userId !== null
+                ? await this.getUserById(holder.userId)
+                : await this.findOwnerUser();
 
         let okUser = true;
         let okPass = true;
         if (target) {
+            // 账号名可以和密码一起改：连账号名都忘了的人填一个新名字即可，
+            // 留空表示只重置密码、账号名不动。改名前先查重，别把别人的名字占了。
+            if (name && name !== target.username) {
+                const clash = await this.findUserByUsername(name);
+                if (clash && clash.id !== target.id) {
+                    return { success: false, message: `账号名「${name}」已被占用，请换一个` };
+                }
+                okUser = await this.db
+                    .prepare("UPDATE users SET username = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+                    .bind(name, target.id)
+                    .run()
+                    .then(r => r.success);
+            }
             okPass = await this.db
                 .prepare("UPDATE users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
                 .bind(passwordHash, target.id)
                 .run()
                 .then(r => r.success);
-            if (username && username !== target.username) {
-                okUser = await this.db
-                    .prepare("UPDATE users SET username = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
-                    .bind(username, target.id)
-                    .run()
-                    .then(r => r.success);
-            }
         } else {
-            okUser = username ? await this.setConfig(AUTH_USERNAME_KEY, username) : true;
+            // 老部署：users 表里还没有账号，凭据仍在 configs
+            okUser = name ? await this.setConfig(AUTH_USERNAME_KEY, name) : true;
             okPass = await this.setConfig(AUTH_PASSWORD_KEY, passwordHash);
         }
         await this.bumpTokenVersion();
@@ -1031,11 +1080,16 @@ export class NavigationAPI {
         // 记下 jti，过期时间作为兜底清理依据（旧条目不自动删除，但体量极小）
         await this.setConfig(usedKey, String(exp));
 
-        await this.writeAudit("auth.recover", username, clientKey, "密钥恢复成功");
+        await this.writeAudit("auth.recover", name || target?.username || "", clientKey, "密钥恢复成功");
         if (!okUser || !okPass) {
             return { success: false, message: "恢复成功但写入凭据失败，请重试" };
         }
-        return { success: true, message: "密码已通过恢复密钥重置，请用新密码登录" };
+        // 把最终账号名回给用户：忘了账号名的人正是靠这一句知道自己该用哪个账号登录
+        const finalName = name || target?.username || "管理员";
+        return {
+            success: true,
+            message: `账号「${finalName}」的密码已重置，请用新密码登录`,
+        };
     }
 
     // 验证用户登录（多账号：优先查 users 表，查不到再退回旧的单管理员凭据）
