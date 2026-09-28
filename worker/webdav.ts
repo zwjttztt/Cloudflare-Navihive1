@@ -57,6 +57,8 @@ export interface WebDavResult<T = unknown> {
     success: boolean;
     message?: string;
     data?: T;
+    /** 见 src/API/http.ts 的同名字段：encrypted / badPassword 时前端会弹口令输入框 */
+    code?: "encrypted" | "badPassword";
 }
 
 // 优先使用请求中传入的配置，缺失时回落到数据库中保存的配置
@@ -569,13 +571,20 @@ export async function webdavDownload(
             if (!password) {
                 return {
                     success: false,
-                    message: "这份备份是口令加密的，请先在「备份」标签页填写备份密码再恢复",
+                    code: "encrypted",
+                    // 备份可能是别的账号传上去的（网盘地址/口令每个账号各存一份），
+                    // 所以这里不能只让用户去「备份」页改配置 —— 前端会就地在恢复区弹口令框
+                    message: "这份备份是口令加密的，请输入备份密码后再恢复",
                 };
             }
             try {
                 jsonText = await gunzipToString(await decryptBackup(rawBytes, password));
             } catch (error) {
-                return { success: false, message: errorMessage(error, "备份密码不正确，或备份文件已损坏") };
+                return {
+                    success: false,
+                    code: "badPassword",
+                    message: errorMessage(error, "备份密码不正确，或备份文件已损坏"),
+                };
             }
         } else if (rawBytes.length >= 2 && rawBytes[0] === 0x1f && rawBytes[1] === 0x8b) {
             jsonText = await gunzipToString(rawBytes).catch(() => "");

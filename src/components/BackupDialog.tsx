@@ -158,6 +158,11 @@ export default function BackupDialog({
     const [encryptedBytes, setEncryptedBytes] = useState<Uint8Array | null>(null);
     const [restorePassword, setRestorePassword] = useState("");
     const [decrypting, setDecrypting] = useState(false);
+    // 远端（WebDAV）备份的解密口令：网盘地址和备份口令都是每个账号各存一份，
+    // 拿 A 账号传的备份到 B 账号恢复时，B 这边根本存着口令，只能就地输入
+    const [remotePassword, setRemotePassword] = useState("");
+    const [needsRemotePassword, setNeedsRemotePassword] = useState(false);
+    const [remoteError, setRemoteError] = useState<string | null>(null);
 
     // 打开时同步外部保存的 WebDAV 配置
     // 注意：不把 webdavConfig 放进依赖，避免保存配置后把连接测试结果清空
@@ -177,6 +182,9 @@ export default function BackupDialog({
             setShowBackupPassword(false);
             setEncryptedBytes(null);
             setRestorePassword("");
+            setRemotePassword("");
+            setNeedsRemotePassword(false);
+            setRemoteError(null);
             setShowWebdavBackupPassword(false);
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -393,9 +401,21 @@ export default function BackupDialog({
             return;
         }
         setRestoring(true);
+        setRemoteError(null);
         try {
-            const result = await client.webdavDownload(selectedRemote, config);
+            // 口令只用于这一次下载，不写进配置：恢复别人的备份不该把
+            // 口令顺手存进本账号的网盘设置里
+            const result = await client.webdavDownload(selectedRemote, {
+                ...config,
+                ...(remotePassword ? { backupPassword: remotePassword } : {}),
+            });
             if (!result.success || !result.data) {
+                // 加密备份 / 口令不对：就地弹口令框让用户补一次，别只丢一句「下载失败」
+                if (result.code === "encrypted" || result.code === "badPassword") {
+                    setNeedsRemotePassword(true);
+                    setRemoteError(result.message || "这份备份需要备份密码");
+                    return;
+                }
                 onNotify(result.message || "下载备份失败", "error");
                 return;
             }
@@ -938,8 +958,15 @@ export default function BackupDialog({
                     }}
                 >
                     {!config.url && (
-                        <Alert severity='info'>
-                            请先在「备份」标签页填写并测试 WebDAV 配置
+                        <Alert
+                            severity='info'
+                            action={
+                                <Button color='inherit' size='small' onClick={() => setTab(0)}>
+                                    去填写
+                                </Button>
+                            }
+                        >
+                            网盘配置按账号各自保存：本账号还没填过，请先在「备份」标签页填写并测试 WebDAV 配置
                         </Alert>
                     )}
 
@@ -996,6 +1023,34 @@ export default function BackupDialog({
                         </List>
                     )}
                 </Box>
+
+                {needsRemotePassword && (
+                    <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ mt: 1 }}>
+                        <TextField
+                            id='backup-remote-restore-password'
+                            label='备份密码'
+                            type='password'
+                            size='small'
+                            value={remotePassword}
+                            onChange={e => setRemotePassword(e.target.value)}
+                            autoComplete='off'
+                            sx={{ flex: 1 }}
+                        />
+                        <Button
+                            variant='outlined'
+                            onClick={handleRestoreRemote}
+                            disabled={!remotePassword || restoring}
+                        >
+                            解密并恢复
+                        </Button>
+                    </Stack>
+                )}
+
+                {remoteError && (
+                    <Alert severity='error' sx={{ mt: 1 }}>
+                        {remoteError}
+                    </Alert>
+                )}
 
                 {remoteFiles.length > 0 && (
                     <Button

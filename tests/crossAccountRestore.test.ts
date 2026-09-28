@@ -36,6 +36,8 @@ class MockD1 {
     users = new Map<number, { username: string; role: string }>();
     /** 记录导入时实际写进去的归属，用来验证「归导入者」 */
     written: { table: string; id: number; user_id: number }[] = [];
+    /** 注入写入失败：站点名等于它就抛错，用来验证「导入失败不该清掉现有数据」 */
+    failSiteName: string | null = null;
 
     private nextGroupId = 1;
     private nextSiteId = 1;
@@ -58,6 +60,9 @@ class MockD1 {
         if (s.startsWith("INSERT INTO sites")) {
             // INSERT INTO sites (group_id, name, url, icon, description, notes,
             //   username, password, order_num, user_id) VALUES (...10 个) RETURNING id
+            if (this.failSiteName !== null && String(args[1]) === this.failSiteName) {
+                throw new Error("模拟站点写入失败");
+            }
             const id = this.nextSiteId++;
             const groupId = Number(args[0]);
             const userId = Number(args[9]);
@@ -71,7 +76,7 @@ class MockD1 {
         return null;
     }
 
-    private select(sql: string): unknown[] {
+    private select(sql: string, args: unknown[] = []): unknown[] {
         const s = this.normalize(sql);
         if (s === "SELECT key, value FROM configs") {
             return [...this.configs.entries()].map(([key, value]) => ({ key, value }));
@@ -83,7 +88,41 @@ class MockD1 {
         if (s.startsWith("SELECT id, group_id") && s.includes("FROM sites")) {
             return this.sites.map(x => ({ ...x }));
         }
+        // 覆盖恢复前先记下「当前账号已有行的 id」：只认自己账号的行
+        if (s.startsWith("SELECT id FROM groups")) {
+            const uid = this.userIdOf(s, args);
+            return this.groups
+                .filter(g => uid === null || g.user_id === uid)
+                .map(g => ({ id: g.id }));
+        }
+        if (s.startsWith("SELECT id FROM sites")) {
+            const uid = this.userIdOf(s, args);
+            return this.sites
+                .filter((x: SiteRow) => uid === null || x.user_id === uid)
+                .map((x: SiteRow) => ({ id: x.id }));
+        }
         return [];
+    }
+
+    /** 从「SELECT id FROM x WHERE user_id = ?」里取出账号 id；没有 WHERE 就是全量（单账号部署） */
+    private userIdOf(normalizedSql: string, args: unknown[]): number | null {
+        if (!normalizedSql.includes("user_id = ?")) return null;
+        return Number(args[args.length - 1]);
+    }
+
+    /** DELETE FROM x WHERE id IN (?, ?, ...)：覆盖恢复成功后清旧数据用 */
+    private removeByIds(sql: string, args: unknown[]): boolean {
+        const s = this.normalize(sql);
+        const ids = args.map(Number);
+        if (s.startsWith("DELETE FROM groups WHERE id IN")) {
+            this.groups = this.groups.filter(g => !ids.includes(g.id));
+            return true;
+        }
+        if (s.startsWith("DELETE FROM sites WHERE id IN")) {
+            this.sites = this.sites.filter((x: SiteRow) => !ids.includes(x.id));
+            return true;
+        }
+        return false;
     }
 
     private firstRow(sql: string, args: unknown[]): unknown | null {
@@ -110,6 +149,7 @@ class MockD1 {
             async run() {
                 const s = self.normalize(sql);
                 if (s.startsWith("INSERT")) self.insert(sql, args);
+                else if (s.startsWith("DELETE")) self.removeByIds(sql, args);
                 return { success: true };
             },
             async all() {
@@ -118,7 +158,7 @@ class MockD1 {
                     const id = self.insert(sql, args);
                     return { results: id === null ? [] : [{ id }], success: true };
                 }
-                return { results: self.select(sql), success: true };
+                return { results: self.select(sql, args), success: true };
             },
             async first() {
                 return self.firstRow(sql, args);
@@ -273,6 +313,67 @@ test("owner 恢复备份才会带全站设置", async () => {
 
     assert.equal(result.success, true);
     assert.equal(db.configs.get("site.title"), "备份里的站名", "owner 恢复应还原全站标题");
+});
+
+// 覆盖恢复曾经是「先清空当前账号，再逐条写入备份」，中途任何一步失败都会让数据
+// 凭空消失 —— 恢复失败反而比不恢复更糟。现在改成先整批写、成功后再清旧的，
+// 失败时只回滚本次新建的行。
+test("导入中途失败：现有数据一条都不能少（新写入的行要回滚）", async () => {
+    const db = new MockD1();
+    // 本账号（uid=2）已有的数据
+    db.groups.push({ id: 5, user_id: 2, name: "我的分组" });
+    db.sites.push({ id: 7, group_id: 5, user_id: 2, name: "我的站点" });
+    // 让第二张卡片写不进去，模拟「导入进行到一半炸了」
+    db.failSiteName = "写不进去的站点";
+
+    const api = apiWith(db, 2);
+    const result = await api.importData({
+        groups: [{ id: 1, name: "备份分组", order_num: 0 }],
+        sites: [
+            { id: 10, group_id: 1, name: "能写进去的站点", url: "https://a.com", order_num: 0 },
+            { id: 11, group_id: 1, name: "写不进去的站点", url: "https://b.com", order_num: 1 },
+        ],
+        configs: {},
+        version: "1.3",
+        exportDate: new Date().toISOString(),
+    });
+
+    assert.equal(result.success, false, "这次导入应该失败");
+    // 核心断言：旧数据还在
+    assert.ok(
+        db.groups.some(g => g.id === 5 && g.name === "我的分组"),
+        "导入失败不该清掉现有分组"
+    );
+    assert.ok(
+        db.sites.some(s => s.id === 7 && s.name === "我的站点"),
+        "导入失败不该清掉现有站点"
+    );
+    // 本次新建的行要清掉，不能留一半脏数据在页面上
+    assert.ok(
+        !db.groups.some(g => g.name === "备份分组"),
+        "失败后应回滚本次新建的分组"
+    );
+    assert.ok(
+        !db.sites.some(s => s.name === "能写进去的站点"),
+        "失败后应回滚本次已经写进去的站点"
+    );
+});
+
+test("覆盖恢复成功：备份就位后才清掉旧数据", async () => {
+    const db = new MockD1();
+    db.groups.push({ id: 5, user_id: 2, name: "旧分组" });
+    db.sites.push({ id: 7, group_id: 5, user_id: 2, name: "旧站点" });
+    // 另一个账号的数据不能被顺手清掉
+    db.groups.push({ id: 8, user_id: 1, name: "别人的分组" });
+
+    const api = apiWith(db, 2);
+    const result = await api.importData(backup);
+
+    assert.equal(result.success, true);
+    assert.ok(!db.groups.some(g => g.id === 5), "旧分组应已被覆盖");
+    assert.ok(!db.sites.some(s => s.id === 7), "旧站点应已被覆盖");
+    assert.equal(db.groups.filter(g => g.user_id === 2).length, 2, "新数据应为备份里的两个分组");
+    assert.ok(db.groups.some(g => g.id === 8 && g.user_id === 1), "别的账号的数据不受影响");
 });
 
 test("导出：普通账号的备份里不带全站设置，owner 的才带", async () => {

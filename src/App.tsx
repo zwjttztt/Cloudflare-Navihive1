@@ -2627,6 +2627,13 @@ function App() {
             // 免得普通账号拿别人的备份恢复时把整站外观改掉
             const mayWriteShared = !currentUser || currentUser.role === "owner";
 
+            // 空备份当成失败处理：覆盖恢复的语义是「以这份备份为准」，拿一份没有分组
+            // 也没有卡片的备份去覆盖，等于把账号清空 —— 多半是文件选错了 / 解析没成功。
+            // 宁可报错让人重选，也不要「恢复成功」后一片空白。
+            if (normalized.groups.length === 0 && normalized.sites.length === 0) {
+                throw new Error("这份备份里没有任何分组或卡片，已取消导入（现有数据未改动）");
+            }
+
             if (overwrite) {
                 const result = await api.importData(normalized);
                 if (!result.success) {

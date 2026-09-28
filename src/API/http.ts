@@ -102,11 +102,19 @@ export interface WebDavFile {
     lastModified: string;
 }
 
+/**
+ * WebDAV 失败原因代码。
+ * 「口令加密」「口令不对」都靠它区分：备份文件是别的账号传的、或本账号没存过备份口令时，
+ * 前端要能弹出口令输入框，而不是笼统报一句「下载失败」让人不知道下一步该干嘛。
+ */
+export type WebDavErrorCode = "encrypted" | "badPassword";
+
 // WebDAV 操作通用返回
 export interface WebDavResult<T = unknown> {
     success: boolean;
     message?: string;
     data?: T;
+    code?: WebDavErrorCode;
 }
 
 // 新增配置接口
@@ -2631,30 +2639,29 @@ export class NavigationAPI {
      * 整批导入直接失败 ——「A 账号的备份恢复到 B 账号」在过去基本必挂。
      * 现在一律由数据库重新发号，再把 旧id -> 新id 的映射回传给调用方：前端的星标 /
      * 标签是按站点 id 存在本机的，不翻译一遍就全丢了。
+     *
+     * 写入顺序刻意是「先 INSERT 备份内容，成功之后才 DELETE 旧数据」：
+     * 过去是先把当前账号的数据清空再逐条写入，中途任何一步报错（某条数据写不进去、
+     * 配置写入失败、连接断了…）都会让这个账号的数据凭空消失 —— 恢复失败反而比不
+     * 恢复更糟，用户连「回退」的机会都没有。现在旧数据全程不动，失败了只把本次
+     * 新建的行清掉就回到原样（D1 没有跨语句事务可用，只能靠这个顺序保底）。
      */
     async importData(data: ExportData): Promise<ImportResult> {
         const groupIdMap: Record<string, number> = {};
         const siteIdMap: Record<string, number> = {};
+        // 本次新写进去的行 id：失败时靠它们回滚（旧数据一步都没动过，删掉这些就回到原样）
+        const createdGroupIds: number[] = [];
+        const createdSiteIds: number[] = [];
 
         try {
             await this.migrate();
 
             const normalized = normalizeImportData(data);
 
-            // 清空现有数据：多账号后只清「当前账号」的，别把别人的数据一起抹了
-            if (this.currentUserId === null) {
-                await this.db.exec("DELETE FROM sites");
-                await this.db.exec("DELETE FROM groups");
-            } else {
-                await this.db
-                    .prepare("DELETE FROM sites WHERE user_id = ?")
-                    .bind(this.currentUserId)
-                    .run();
-                await this.db
-                    .prepare("DELETE FROM groups WHERE user_id = ?")
-                    .bind(this.currentUserId)
-                    .run();
-            }
+            // 先记下现有数据的 id：等新数据全部写成功之后再删它们。
+            // 多账号后只清「当前账号」的，别把别人的数据一起抹了
+            const oldSiteIds = await this.listOwnedIds("sites");
+            const oldGroupIds = await this.listOwnedIds("groups");
 
             // 导入分组：id 交给数据库分配，同时记下新旧映射
             for (const group of normalized.groups) {
@@ -2668,6 +2675,7 @@ export class NavigationAPI {
                 if (typeof newId !== "number") {
                     throw new Error(`分组「${group.name}」写入后拿不到新 id`);
                 }
+                createdGroupIds.push(newId);
                 if (group.id !== undefined) groupIdMap[String(group.id)] = newId;
             }
 
@@ -2692,6 +2700,7 @@ export class NavigationAPI {
                             throw new Error("为无归属站点创建兜底分组失败");
                         }
                         orphanGroupId = created.id;
+                        createdGroupIds.push(orphanGroupId);
                     }
                     groupId = orphanGroupId;
                 }
@@ -2719,6 +2728,7 @@ export class NavigationAPI {
                 if (typeof newId !== "number") {
                     throw new Error(`站点「${site.name}」写入后拿不到新 id`);
                 }
+                createdSiteIds.push(newId);
                 if (site.id !== undefined) siteIdMap[String(site.id)] = newId;
             }
 
@@ -2746,15 +2756,61 @@ export class NavigationAPI {
                 await this.setConfig(key, value);
             }
 
+            // 走到这里说明新数据已经整批就位，这才清掉旧数据：
+            // 站点先删（挂在分组下），分组后删
+            await this.deleteRowsByIds("sites", oldSiteIds);
+            await this.deleteRowsByIds("groups", oldGroupIds);
+
             return { success: true, groupIdMap, siteIdMap };
         } catch (error) {
             console.error("导入数据失败:", error);
+            // 回滚：只删本次新建的行。旧数据全程没被碰过，删掉这些就回到导入前的样子。
+            // 回滚本身再出错也不能把异常抛出去（用户更该看到的是「为什么导入失败」）
+            await this.rollbackCreatedRows(createdSiteIds, createdGroupIds);
             return {
                 success: false,
                 message: error instanceof Error ? error.message : "导入数据失败",
                 groupIdMap,
                 siteIdMap,
             };
+        }
+    }
+
+    /** 当前账号（单账号部署则是全部）在某张表里的行 id —— 覆盖恢复时用来清旧数据 */
+    private async listOwnedIds(table: "groups" | "sites"): Promise<number[]> {
+        const result = await this.db
+            .prepare(`SELECT id FROM ${table}${this.scopeSql(false)}`)
+            .bind(...this.scopeParams([]))
+            .all<{ id: number }>();
+        return (result.results || [])
+            .map(row => row?.id)
+            .filter((id): id is number => typeof id === "number");
+    }
+
+    /** 按 id 批量删行。D1 单条语句的绑定参数有上限，分片删，避免大站一次删不完 */
+    private async deleteRowsByIds(
+        table: "groups" | "sites",
+        ids: readonly number[]
+    ): Promise<void> {
+        if (ids.length === 0) return;
+        const CHUNK = 100;
+        for (let offset = 0; offset < ids.length; offset += CHUNK) {
+            const chunk = ids.slice(offset, offset + CHUNK);
+            const placeholders = chunk.map(() => "?").join(",");
+            await this.db
+                .prepare(`DELETE FROM ${table} WHERE id IN (${placeholders})`)
+                .bind(...chunk)
+                .run();
+        }
+    }
+
+    /** 导入失败后的回滚：删掉本次新建的行，旧数据原样保留 */
+    private async rollbackCreatedRows(siteIds: number[], groupIds: number[]): Promise<void> {
+        try {
+            await this.deleteRowsByIds("sites", siteIds);
+            await this.deleteRowsByIds("groups", groupIds);
+        } catch (error) {
+            console.error("导入失败后回滚新建数据失败:", error);
         }
     }
 }
