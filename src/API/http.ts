@@ -75,6 +75,15 @@ export interface WebDavConfig {
     password: string;
     path: string;
     /**
+     * 备份文件的加密口令（可选，留空 = 不加密）。
+     *
+     * 刻意不用 AUTH_SECRET 当备份密钥：AUTH_SECRET 是 JWT 签名密钥，轮换它会让此前
+     * 所有备份一起变成解不开的废文件；而备份一旦传到网盘，本来就不在服务端密钥的
+     * 保护范围内。用用户自己的口令，换服务端密钥不影响历史备份。
+     * 落库时和 webdav.password 一样加密（只是静态保护，密钥本身仍由用户掌握）。
+     */
+    backupPassword?: string;
+    /**
      * 允许 WebDAV 服务器指向内网 / 本机地址（如家里 NAS 的 192.168.x.x、xxx.local）。
      * 默认关闭 —— Worker 代发请求前会挡掉内网地址，防止账号一旦被攻破就把 Basic 凭据
      * 打到内网服务上。只有确认 WebDAV 就在自己内网时才打开。
@@ -170,6 +179,8 @@ export const AUTH_USERNAME_KEY = "auth.username";
 export const AUTH_PASSWORD_KEY = "auth.password";
 // WebDAV 备份凭据：明文落 D1 风险高，写入前用 AUTH_SECRET 派生密钥加密（见 setConfig/queryConfigs）
 export const WEBDAV_PASSWORD_KEY = "webdav.password";
+// WebDAV 备份口令：与 AUTH_SECRET 无关的独立口令，落库时同样加密（见 ENCRYPTED_CONFIG_KEYS）
+export const WEBDAV_BACKUP_PASSWORD_KEY = "webdav.backupPassword";
 // 令牌版本：改密 / 重置后 +1，让所有已签发的令牌立即失效（服务端可吊销）
 export const TOKEN_VERSION_KEY = "auth.tokenVersion";
 // 单点吊销：退出登录时把该令牌的 jti 记进黑名单，验签通过后还要再查一次
@@ -236,6 +247,18 @@ function resetCodeEqual(input: string, expected: string): boolean {
         diff |= input.charCodeAt(i) ^ expected.charCodeAt(i);
     }
     return diff === 0;
+}
+
+/**
+ * 落库前要用 AUTH_SECRET 派生密钥加密的配置键。
+ * 两个 WebDAV 凭据都在这里：明文落 D1，导一份库就等于把网盘账号交出去了。
+ * 注意：这里只是「静态保护」，备份口令本身不是 AUTH_SECRET —— 备份文件用它自己的
+ * 口令加密，换 AUTH_SECRET 不影响已有备份能不能解开。
+ */
+const ENCRYPTED_CONFIG_KEYS = [WEBDAV_PASSWORD_KEY, WEBDAV_BACKUP_PASSWORD_KEY];
+
+function isEncryptedConfigKey(key: string): boolean {
+    return ENCRYPTED_CONFIG_KEYS.includes(key);
 }
 
 // 判断某个配置键是否属于敏感信息
@@ -710,11 +733,11 @@ export class NavigationAPI {
         for (const row of (configsResult.results || []) as Config[]) {
             // 管理员凭据不下发到浏览器，避免出现「拿到配置就等于拿到密码」
             if (isAuthConfigKey(row.key)) continue;
-            // webdav.password 落库是密文，这里必须和 queryConfigs / getConfig 一样解密还原：
+            // webdav.password / webdav.backupPassword 落库是密文，这里必须和
+            // queryConfigs / getConfig 一样解密还原：
             // 否则刷新后前端拿到的是 enc$... 密文，回填进密码框，用户再保存一次就变成
-            // 「密文的密文」（测试连接也就永远认证失败）
-            configs[row.key] =
-                row.key === WEBDAV_PASSWORD_KEY
+            // 「密文的密文」（测试连接也就永远认证失败，备份也永远解不开）
+            configs[row.key] = isEncryptedConfigKey(row.key)
                     ? await decryptSecretDeep(row.value, this.secret)
                     : row.value;
         }
@@ -972,9 +995,9 @@ export class NavigationAPI {
         const configs: Record<string, string> = {};
         for (const config of result.results || []) {
             if (isAuthConfigKey(config.key)) continue;
-            // webdav.password 落库是密文，读出来解密还原给调用方（含首屏 bootstrap）
-            configs[config.key] =
-                config.key === WEBDAV_PASSWORD_KEY
+            // webdav.password / webdav.backupPassword 落库是密文，读出来解密还原给
+            // 调用方（含首屏 bootstrap）
+            configs[config.key] = isEncryptedConfigKey(config.key)
                     ? await decryptSecretDeep(config.value, this.secret)
                     : config.value;
         }
@@ -988,8 +1011,8 @@ export class NavigationAPI {
             .bind(key)
             .first<{ value: string }>();
         if (!result) return null;
-        // webdav.password 落库前已加密，读取时解密还原（无 secret 时原样返回）
-        if (key === WEBDAV_PASSWORD_KEY) {
+        // webdav.password / webdav.backupPassword 落库前已加密，读取时解密还原
+        if (isEncryptedConfigKey(key)) {
             return await decryptSecretDeep(result.value, this.secret);
         }
         return result.value;
@@ -997,9 +1020,9 @@ export class NavigationAPI {
 
     async setConfig(key: string, value: string): Promise<boolean> {
         try {
-            // webdav.password 明文落库风险高，写入前用 AUTH_SECRET 派生密钥加密（无 secret 时原样存）
-            const stored =
-                key === WEBDAV_PASSWORD_KEY ? await encryptSecret(value, this.secret) : value;
+            // webdav.password / webdav.backupPassword 明文落库风险高，写入前用
+            // AUTH_SECRET 派生密钥加密（无 secret 时原样存）
+            const stored = isEncryptedConfigKey(key) ? await encryptSecret(value, this.secret) : value;
             // 使用UPSERT语法（SQLite支持）
             const result = await this.db
                 .prepare(

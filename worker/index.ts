@@ -884,11 +884,12 @@ export default {
                     const config = await resolveWebDavConfig(api, request, body);
                     // 手动备份：不删任何已有备份（自动备份才滚动清理自己那一份）
                     const stored = await readAllConfigs(api);
+                    // 备份口令来自配置（请求体优先，其次库里存的），与 AUTH_SECRET 无关
                     const result = await runWebDavBackup(api, config, {
                         mode: "manual",
                         stored,
                         data: body.data,
-                        secret: env.AUTH_SECRET,
+                        password: config.backupPassword,
                     });
                     return Response.json(result);
                 } else if (path === "webdav/list" && method === "POST") {
@@ -898,7 +899,7 @@ export default {
                 } else if (path === "webdav/download" && method === "POST") {
                     const body = (await safeJson(request)) as { filename?: string };
                     const config = await resolveWebDavConfig(api, request, body);
-                    const result = await webdavDownload(config, body.filename || "", env.AUTH_SECRET);
+                    const result = await webdavDownload(config, body.filename || "", config.backupPassword);
                     return Response.json(result);
                 } else if (path === "webdav/delete" && method === "POST") {
                     const body = (await safeJson(request)) as { filename?: string };

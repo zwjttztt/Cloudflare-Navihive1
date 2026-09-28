@@ -107,19 +107,24 @@ pnpm deploy     # 部署到 Cloudflare Workers
 ```bash
 wrangler secret put AUTH_USERNAME
 wrangler secret put AUTH_PASSWORD
-wrangler secret put AUTH_SECRET      # JWT 签名密钥 + 备份/站点密码加密密钥
+wrangler secret put AUTH_SECRET      # JWT 签名密钥 + 站点密码 / WebDAV 凭据落库加密密钥
 wrangler secret put AUTH_RESET_CODE  # 忘记密码时的应急重置码
 ```
 
 > `AUTH_SECRET` 请用全新的随机长串（比如 `openssl rand -base64 32`）。
-> ⚠️ 它同时用于登录令牌签名和备份加密 —— **轮换它会让此前导出的加密备份解不开**，
-> 换过之后请重新备份一次。
+> 它负责登录令牌签名，以及站点密码、WebDAV 凭据在数据库里的静态加密。
+> **它不再参与备份文件加密** —— 备份用的是你自己在页面上设的「备份密码」（见下），
+> 所以轮换 `AUTH_SECRET` 不会影响已有备份能不能解开。
 
 部署完在页面上再做两件事：
 
 1. **登录后立刻改一次管理员密码**（网站设置 → 管理员账号与密码）。这一步会把数据库里
    的旧明文密码升级成 PBKDF2 哈希，同时让所有旧会话失效。
-2. **重新导出一份备份**：旧加密备份是用旧密钥加密的，`AUTH_SECRET` 换过就解不开了。
+2. **给备份设一个密码**（数据备份 → WebDAV 备份密码）。备份文件落到网盘/磁盘后就不在
+   服务端密钥的保护范围内了，用自己的口令加密，换 `AUTH_SECRET` 也不影响它。
+
+> ⚠️ 在此之前（用 `AUTH_SECRET` 加密备份的旧版本）导出的加密备份，现在已无法用服务端
+> 密钥解开 —— 备份加密已与 `AUTH_SECRET` 解耦。请重新备份一份。
 
 > 部署后所有已登录设备都需要重新登录一次 —— 旧令牌格式无法验签，这是预期的安全结果，不是故障。
 >

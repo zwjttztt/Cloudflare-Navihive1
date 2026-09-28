@@ -1,12 +1,16 @@
 // worker/webdav.ts
 
 import type { ExportData, NavigationAPI } from "../src/API/http";
-import { decryptBytes, encryptBytes } from "../src/API/crypto";
+import { decryptBackup, encryptBackup, isEncryptedBackup } from "../src/API/crypto";
 import { errorMessage, isBlockedHost, safeJson } from "./util";
 
 // ============ WebDAV 备份相关工具函数 ============
 // 说明：WebDAV 服务大多不返回 CORS 头，浏览器直连会被拦截，
 // 因此所有 WebDAV 请求都由 Worker 代为发起。
+//
+// 备份加密用的是用户自己设的「备份密码」（见 backupPassword），与 AUTH_SECRET 无关：
+// AUTH_SECRET 是服务端 JWT 签名密钥，轮换它会让所有旧备份瞬间解不开；
+// 备份文件飞出服务端落到网盘上，本就不该由服务端密钥护着。
 
 const DEFAULT_WEBDAV_PATH = "navihive-backup";
 
@@ -15,6 +19,15 @@ export interface WebDavConfig {
     username: string;
     password: string;
     path: string;
+    /**
+     * 备份文件的加密口令（可选）。
+     *
+     * 刻意与 AUTH_SECRET 无关：AUTH_SECRET 是服务端 JWT 签名密钥，轮换一次就把此前
+     * 所有备份变成废文件。备份一旦传到网盘就不在服务端的保护范围内了，该由用户
+     * 自己的口令护着（和本地加密备份同一套 NAVIHIVE-ENC1 格式）。
+     * 留空 = 不加密，仍然是 gzip 压缩后上传（能备份，只是文件里是明文）。
+     */
+    backupPassword?: string;
     /**
      * 允许指向内网 / 本机地址（家里 NAS 的 192.168.x.x、xxx.local 之类）。
      * 默认关闭：WebDAV 地址由管理员配置，但账号一旦被攻破就可能被改成内网地址，
@@ -64,12 +77,16 @@ export async function resolveWebDavConfig(
 
     const pick = (value: unknown, fallback: string): string =>
         typeof value === "string" && value.trim() !== "" ? value.trim() : fallback;
+    // 口令不能 trim：首尾空格可能是用户有意敲的，trim 掉会导致「自己设的密码解不开自己的备份」
+    const pickRaw = (value: unknown, fallback: string): string =>
+        typeof value === "string" && value !== "" ? value : fallback;
 
     return {
         url: pick(payload.url, stored["webdav.url"] || ""),
         username: pick(payload.username, stored["webdav.username"] || ""),
         password: pick(payload.password, stored["webdav.password"] || ""),
         path: pick(payload.path, stored["webdav.path"] || "") || DEFAULT_WEBDAV_PATH,
+        backupPassword: pickRaw(payload.backupPassword, stored["webdav.backupPassword"] || ""),
         // 请求体带就用请求体的（前端开关刚拨的那一下），否则用库里存的
         allowPrivateNetwork: parseBoolFlag(
             payload.allowPrivateNetwork,
@@ -93,6 +110,7 @@ export function configFromStored(stored: Record<string, string>): WebDavConfig {
         username: stored["webdav.username"] || "",
         password: stored["webdav.password"] || "",
         path: stored["webdav.path"] || DEFAULT_WEBDAV_PATH,
+        backupPassword: stored["webdav.backupPassword"] || "",
         allowPrivateNetwork: parseBoolFlag(stored["webdav.allowPrivateNetwork"], false),
     };
 }
@@ -144,27 +162,18 @@ export async function runWebDavBackup(
         mode: WebDavBackupMode;
         stored?: Record<string, string>;
         data?: ExportData;
-        secret?: string;
+        /** 备份口令；不传时回落到 config.backupPassword。留空 = 不加密上传 */
+        password?: string;
     }
 ): Promise<WebDavResult<{ filename: string; size: number }>> {
-    const { mode, stored = {}, data, secret } = options;
-
-    // 没有 AUTH_SECRET 时备份文件是不加密的 gzip —— 站点密码会明文落到网盘。
-    // 宁可让这次备份失败并把原因说清楚，也不悄悄上传一份明文存档。
-    // （导出本身不算泄密：备份文件里的敏感配置已经被 stripSecretConfigs 剔除，
-    //  真正会上网盘的是站点账号密码，正是要保的东西）
-    if (!secret) {
-        return {
-            success: false,
-            message:
-                "未配置 AUTH_SECRET，已拒绝上传：没有它备份文件无法加密，站点密码会明文存到网盘。请先执行 wrangler secret put AUTH_SECRET 再备份",
-        };
-    }
+    const { mode, stored = {}, data } = options;
+    // 备份口令与 AUTH_SECRET 无关：没设口令只是「不加密」，照样能备份，不再拦着不让传
+    const password = options.password ?? config.backupPassword ?? "";
 
     const payload = data ?? (await api.exportData());
     const filename = buildBackupFileName(mode);
 
-    const result = await webdavUpload(config, filename, payload, secret);
+    const result = await webdavUpload(config, filename, payload, password);
     if (!result.success) return result;
 
     // 自动备份只保留最新一份：删掉上一次的自动备份（删不掉也不算备份失败）。
@@ -438,17 +447,17 @@ export async function webdavUpload(
     config: WebDavConfig,
     filename: string,
     data: ExportData,
-    secret?: string
+    password: string = config.backupPassword ?? ""
 ): Promise<WebDavResult<{ filename: string; size: number }>> {
     try {
         const folderUrl = buildWebDavFolderUrl(config);
 
         // 不缩进 + gzip：比原来的「带缩进明文 JSON」小一个数量级，上传快得多。
-        // 有 AUTH_SECRET 时再套一层 AES-GCM（IV 随机），备份文件落 WebDAV/网盘也是密文，
-        // 丢了盘也解不出站点密码。secret 缺失（未配置）时退化为明文 gzip，不阻断备份。
+        // 设了备份口令再套一层口令加密（NAVIHIVE-ENC1，PBKDF2 随机盐），备份文件
+        // 落到网盘上也是密文。没设口令就退化为明文 gzip —— 能备份，只是不加密。
         const gz = await gzipBytes(JSON.stringify(data));
-        const body = secret ? await encryptBytes(gz, secret) : gz;
-        const putHeaders = { "Content-Type": secret ? "application/octet-stream" : "application/gzip" };
+        const body = password ? await encryptBackup(gz, password) : gz;
+        const putHeaders = { "Content-Type": password ? "application/octet-stream" : "application/gzip" };
 
         let response = await davFetch(
             buildWebDavFileUrl(folderUrl, filename),
@@ -532,7 +541,7 @@ export async function webdavList(config: WebDavConfig): Promise<WebDavResult<Web
 export async function webdavDownload(
     config: WebDavConfig,
     filename: string,
-    secret?: string
+    password: string = config.backupPassword ?? ""
 ): Promise<WebDavResult<ExportData>> {
     try {
         if (!filename) {
@@ -549,23 +558,29 @@ export async function webdavDownload(
             return { success: false, message: `下载备份失败：HTTP ${response.status}` };
         }
 
-        // 历史明文备份以 gzip 魔数（1f 8b）开头，直接解压；
-        // 加密备份以随机 IV 开头，绝不会是 1f 8b —— 先解密再解压。
-        // 解密失败（密钥不符 / 已轮换 / 仍是旧明文）一律回退按明文 gzip 解，保证旧备份可恢复。
+        // 按文件头判断格式，兼容历史备份：
+        // - NAVIHIVE-ENC1 开头：口令加密备份（当前默认，用备份密码解，与 AUTH_SECRET 无关）；
+        // - 1f 8b 开头：早期明文 gzip 备份，直接解压；
+        // - 其余：再按明文 JSON 试一次（更早期的未压缩备份），都失败就按旧格式报错。
         const rawBytes = new Uint8Array(await response.arrayBuffer());
-        const isLegacy = rawBytes.length >= 2 && rawBytes[0] === 0x1f && rawBytes[1] === 0x8b;
 
         let jsonText: string;
-        if (isLegacy) {
-            jsonText = await gunzipToString(rawBytes);
-        } else if (secret) {
-            try {
-                jsonText = await gunzipToString(await decryptBytes(rawBytes, secret));
-            } catch {
-                jsonText = await gunzipToString(rawBytes).catch(() => "");
+        if (isEncryptedBackup(rawBytes)) {
+            if (!password) {
+                return {
+                    success: false,
+                    message: "这份备份是口令加密的，请先在「备份」标签页填写备份密码再恢复",
+                };
             }
-        } else {
+            try {
+                jsonText = await gunzipToString(await decryptBackup(rawBytes, password));
+            } catch (error) {
+                return { success: false, message: errorMessage(error, "备份密码不正确，或备份文件已损坏") };
+            }
+        } else if (rawBytes.length >= 2 && rawBytes[0] === 0x1f && rawBytes[1] === 0x8b) {
             jsonText = await gunzipToString(rawBytes).catch(() => "");
+        } else {
+            jsonText = new TextDecoder().decode(rawBytes);
         }
 
         const text = jsonText.replace(/^\uFEFF/, "");
@@ -573,7 +588,14 @@ export async function webdavDownload(
         try {
             data = JSON.parse(text) as ExportData;
         } catch {
-            return { success: false, message: "备份文件已损坏或密钥不匹配，无法解析" };
+            // 走到这里的只有一种常见情况：旧版本用 AUTH_SECRET 加密的备份。那份密钥
+            // 已经和备份解耦，服务端不再用它解密，只能请用户重新备份一份。
+            return {
+                success: false,
+                message: password
+                    ? "备份文件已损坏或口令不匹配，无法解析"
+                    : "这份备份是用旧版服务端密钥（AUTH_SECRET）加密的，现已与备份解耦：请用备份密码重新备份一次",
+            };
         }
 
         return { success: true, data, message: filename };

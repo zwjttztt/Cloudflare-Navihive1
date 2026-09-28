@@ -180,6 +180,9 @@ const DEFAULT_WEBDAV_CONFIG: WebDavConfig = {
     username: "",
     password: "",
     path: "navihive-backup",
+    // 备份口令：空 = 不加密上传（明文 gzip）。设了之后上传/恢复都用这个口令，
+    // 与 AUTH_SECRET 无关
+    backupPassword: "",
     // 默认不允许内网地址：WebDAV 多半是公网网盘，挡内网是白赚的防护
     allowPrivateNetwork: false,
 };
@@ -848,7 +851,13 @@ function App() {
         Object.entries(configsData || {}).forEach(([key, value]) => {
             if (key.startsWith(WEBDAV_CONFIG_PREFIX)) {
                 const field = key.slice(WEBDAV_CONFIG_PREFIX.length);
-                if (field === "url" || field === "username" || field === "password" || field === "path") {
+                if (
+                    field === "url" ||
+                    field === "username" ||
+                    field === "password" ||
+                    field === "backupPassword" ||
+                    field === "path"
+                ) {
                     nextWebdav[field] = value;
                 } else if (field === "allowPrivateNetwork") {
                     // 布尔按项目惯例存 "1"/"0"，不是 "true"/"false"
@@ -2202,7 +2211,8 @@ function App() {
     const handleSaveWebdavConfig = async (config: WebDavConfig) => {
         try {
             // 原来 5 个 setConfig 串行 = 5 次网络往返，网络慢时能把「连接成功」的反馈一起拖住。
-            // 密码必须单独写（setConfig 会用 AUTH_SECRET 加密，批量接口不会），其余 4 项一次写完。
+            // 两个口令必须单独写（setConfig 会用 AUTH_SECRET 加密落库，批量接口不会），
+            // 其余 4 项一次写完。
             await api.setConfigs({
                 [`${WEBDAV_CONFIG_PREFIX}url`]: config.url,
                 [`${WEBDAV_CONFIG_PREFIX}username`]: config.username,
@@ -2210,6 +2220,11 @@ function App() {
                 [`${WEBDAV_CONFIG_PREFIX}allowPrivateNetwork`]: config.allowPrivateNetwork ? "1" : "0",
             });
             await api.setConfig(`${WEBDAV_CONFIG_PREFIX}password`, config.password);
+            // 备份口令单独存（落库加密），定时备份与恢复都靠它，与 AUTH_SECRET 无关
+            await api.setConfig(
+                `${WEBDAV_CONFIG_PREFIX}backupPassword`,
+                config.backupPassword || ""
+            );
             setWebdavConfig(config);
         } catch (error) {
             console.error("保存 WebDAV 配置失败:", error);

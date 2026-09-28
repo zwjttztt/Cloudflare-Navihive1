@@ -151,6 +151,9 @@ export default function BackupDialog({
     const [backupPassword, setBackupPassword] = useState("");
     const [backupPasswordConfirm, setBackupPasswordConfirm] = useState("");
     const [showBackupPassword, setShowBackupPassword] = useState(false);
+    // WebDAV 备份口令（可选）：设了就加密上传，存服务器供定时备份与恢复复用；
+    // 与 AUTH_SECRET 无关，换服务端密钥不影响已有备份
+    const [showWebdavBackupPassword, setShowWebdavBackupPassword] = useState(false);
     // 选中的文件若是加密备份，先把原始字节留着，等用户输入口令再解
     const [encryptedBytes, setEncryptedBytes] = useState<Uint8Array | null>(null);
     const [restorePassword, setRestorePassword] = useState("");
@@ -174,6 +177,7 @@ export default function BackupDialog({
             setShowBackupPassword(false);
             setEncryptedBytes(null);
             setRestorePassword("");
+            setShowWebdavBackupPassword(false);
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [open, initialTab]);
@@ -220,6 +224,12 @@ export default function BackupDialog({
 
     // 备份到 WebDAV
     const handleUpload = async () => {
+        // 口令太短不如不设：加密文件忘了 / 太弱都会变成「备份还在、数据没了」
+        const pwd = config.backupPassword || "";
+        if (pwd.length > 0 && pwd.length < 8) {
+            onNotify("WebDAV 备份密码至少 8 位，或干脆留空（不加密）", "error");
+            return;
+        }
         setUploading(true);
         try {
             const result = await client.webdavUpload(config, onBuildExportData());
@@ -667,6 +677,48 @@ export default function BackupDialog({
                         size='small'
                         fullWidth
                     />
+
+                    {/* 备份口令：独立的加密密钥，不用服务端的 AUTH_SECRET ——
+                        轮换 AUTH_SECRET 不该让此前所有备份变成解不开的废文件 */}
+                    <TextField
+                        id='webdav-backup-password'
+                        label='备份密码（可选）'
+                        type={showWebdavBackupPassword ? "text" : "password"}
+                        placeholder='留空则备份不加密'
+                        value={config.backupPassword || ""}
+                        onChange={handleConfigChange("backupPassword")}
+                        size='small'
+                        fullWidth
+                        autoComplete='new-password'
+                        slotProps={{
+                            input: {
+                                endAdornment: (
+                                    <InputAdornment position='end'>
+                                        <IconButton
+                                            id='webdav-toggle-backup-password'
+                                            size='small'
+                                            edge='end'
+                                            onClick={() => setShowWebdavBackupPassword(prev => !prev)}
+                                            aria-label={
+                                                showWebdavBackupPassword ? "隐藏备份密码" : "显示备份密码"
+                                            }
+                                        >
+                                            {showWebdavBackupPassword ? (
+                                                <VisibilityOffIcon fontSize='small' />
+                                            ) : (
+                                                <VisibilityIcon fontSize='small' />
+                                            )}
+                                        </IconButton>
+                                    </InputAdornment>
+                                ),
+                            },
+                        }}
+                    />
+                    <Typography variant='caption' color='text.secondary' display='block' sx={{ mt: -0.5 }}>
+                        设了就用它加密上传（恢复时要填同一个密码，密码无法找回）；留空则明文上传。
+                        手动备份、每周自动备份、从远端恢复都用它，与服务端的 AUTH_SECRET 无关。
+                        点「测试连接并保存」会把它存到服务器。
+                    </Typography>
 
                     <Box>
                         <FormControlLabel

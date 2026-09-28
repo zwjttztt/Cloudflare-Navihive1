@@ -199,47 +199,76 @@ test("内网拦截等校验类错误原样透传，不被改写成泛泛的『�
     assert.match(describeWebDavError(new Error("WebDAV 服务器地址必须以 http:// 或 https:// 开头")), /必须以 http/);
 });
 
-// ---- 没配 AUTH_SECRET 时必须拒绝上传 ----
-// webdavUpload 里是 `secret ? encryptBytes(gz, secret) : gz`：密钥缺失会静默退化成
-// 明文 gzip 上传，站点密码等于裸奔在网盘上。宁可让这次备份失败，也不能悄悄上传明文。
+// ---- 备份口令与 AUTH_SECRET 解耦 ----
+// 备份加密用的是用户自己的口令，不是服务端 AUTH_SECRET：
+// 轮换 AUTH_SECRET 不该让此前所有备份变成解不开的废文件；
+// 没设口令也只是「不加密」，照样能备份（原来是直接拒绝上传，等于没配密钥就备份不了）。
 
-test("没有 AUTH_SECRET：备份失败，且一个字节都不发给网盘", async () => {
+test("没设备份口令：照常上传（明文 gzip），不再拦着不让备份", async () => {
     let fetchCalls = 0;
+    let sentBody: Uint8Array | undefined;
     const realFetch = globalThis.fetch;
-    globalThis.fetch = (async () => {
+    globalThis.fetch = (async (_url: string, init?: RequestInit) => {
         fetchCalls++;
-        return new Response("{}", { status: 200 });
-    }) as typeof fetch;
-    try {
-        const result = await runWebDavBackup(
-            { exportData: async () => ({ groups: [], sites: [], configs: {} }) } as never,
-            cfg("https://dav.example.com/dav/"),
-            { mode: "manual" }
-        );
-        assert.equal(result.success, false);
-        assert.match(result.message || "", /AUTH_SECRET/);
-        assert.equal(fetchCalls, 0, "没密钥就不该发出任何请求");
-    } finally {
-        globalThis.fetch = realFetch;
-    }
-});
-
-test("有 AUTH_SECRET：照常走到上传（不被上面的拦截误伤）", async () => {
-    let fetchCalls = 0;
-    const realFetch = globalThis.fetch;
-    globalThis.fetch = (async () => {
-        fetchCalls++;
+        sentBody = init?.body as Uint8Array | undefined;
         return new Response("{}", { status: 201 });
     }) as typeof fetch;
     try {
         const result = await runWebDavBackup(
             { exportData: async () => ({ groups: [], sites: [], configs: {} }) } as never,
             cfg("https://dav.example.com/dav/"),
-            { mode: "manual", secret: "some-secret", stored: {} }
+            { mode: "manual", stored: {} }
         );
-        assert.equal(result.success, true);
-        assert.ok(fetchCalls > 0, "有密钥就该真的发出上传请求");
+        assert.equal(result.success, true, "没口令也要能备份");
+        assert.ok(fetchCalls > 0, "没口令也该真的发出上传请求");
+        // 明文 gzip：以 1f 8b 开头，绝不能是口令加密头
+        assert.deepEqual([...(sentBody as Uint8Array).subarray(0, 2)], [0x1f, 0x8b]);
     } finally {
         globalThis.fetch = realFetch;
     }
+});
+
+test("设备份口令：上传的是口令加密文件（NAVIHIVE-ENC1 头），且不依赖 AUTH_SECRET", async () => {
+    let fetchCalls = 0;
+    let sentBody: Uint8Array | undefined;
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+        fetchCalls++;
+        sentBody = init?.body as Uint8Array | undefined;
+        return new Response("{}", { status: 201 });
+    }) as typeof fetch;
+    try {
+        const result = await runWebDavBackup(
+            { exportData: async () => ({ groups: [], sites: [], configs: {} }) } as never,
+            cfg("https://dav.example.com/dav/"),
+            { mode: "manual", password: "my-backup-pass", stored: {} }
+        );
+        assert.equal(result.success, true);
+        assert.ok(fetchCalls > 0, "有口令就该真的发出上传请求");
+        assert.equal(
+            new TextDecoder().decode((sentBody as Uint8Array).subarray(0, 13)),
+            "NAVIHIVE-ENC1"
+        );
+    } finally {
+        globalThis.fetch = realFetch;
+    }
+});
+
+// 定时备份无人值守，只能读库里存的口令：configFromStored 必须把它带出来，
+// 否则每周自动备份会静默退化成明文上传。
+
+test("configFromStored：库里存的备份口令要传给定时备份", () => {
+    assert.equal(
+        configFromStored({ "webdav.backupPassword": "weekly-pass" }).backupPassword,
+        "weekly-pass"
+    );
+    assert.equal(configFromStored({}).backupPassword, "");
+});
+
+test("resolveWebDavConfig：备份口令不 trim（首尾空格是用户有意敲的）", async () => {
+    const fakeApi = {
+        getConfigs: async () => ({ "webdav.backupPassword": "  spaced  " }),
+    } as never;
+    const r = await resolveWebDavConfig(fakeApi, {} as Request, {});
+    assert.equal(r.backupPassword, "  spaced  ");
 });

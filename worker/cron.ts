@@ -37,11 +37,13 @@ export interface SchedulerDB {
  * 与页面上的手动备份共用 runWebDavBackup，但保留策略不同：自动备份只滚动清理
  * 自己那一份（auto 前缀），手动备份一份都不删。
  * 只有开启「每周自动备份」且 WebDAV 已配置时才执行，否则直接跳过。
+ *
+ * 备份口令从库里的配置读（webdav.backupPassword），不用 AUTH_SECRET：
+ * 定时任务无人值守，用不了页面上的临时输入；而轮换 AUTH_SECRET 不该让备份解不开。
  */
 export async function runWeeklyBackup(
     api: SchedulerDB,
-    stored: Record<string, string>,
-    secret?: string
+    stored: Record<string, string>
 ): Promise<void> {
     if (stored["webdav.autoBackup"] === "false") {
         return;
@@ -56,7 +58,7 @@ export async function runWeeklyBackup(
     const result = await runWebDavBackup(api as unknown as NavigationAPI, config, {
         mode: "auto",
         stored,
-        secret,
+        password: config.backupPassword,
     });
     console.log(
         result.success
@@ -136,7 +138,7 @@ export async function runScheduledTasks(
     try {
         const api = makeApi(env);
         const stored = await readAllConfigs(api as unknown as NavigationAPI);
-        await runWeeklyBackup(api, stored, env.AUTH_SECRET);
+        await runWeeklyBackup(api, stored);
     } catch (error) {
         console.error("定时备份异常:", error);
     }
