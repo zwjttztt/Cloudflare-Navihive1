@@ -9,7 +9,6 @@ import {
     Paper,
     FormControlLabel,
     Checkbox,
-    Link,
     Stack,
     Chip,
     Divider,
@@ -266,9 +265,14 @@ const LoginForm: React.FC<LoginFormProps> = ({
         if (fileInputRef.current) fileInputRef.current.value = "";
     };
 
+    /**
+     * 切到「忘记密码」视图：把登录框里已经填的账号带过去，
+     * 免得用户刚输完账号又要重打一遍（多账号下账号名决定用哪把公钥验签）。
+     */
     const switchToRecover = () => {
         setMode("recover");
         setLocalRecoverError(null);
+        setNewUsername(prev => (prev ? prev : username.trim()));
     };
 
     const switchToLogin = () => {
@@ -363,9 +367,9 @@ const LoginForm: React.FC<LoginFormProps> = ({
 
                 {mode === "recover" && (
                     <Alert severity='info' sx={{ mb: 2 }}>
-                        上传在「更多选项 → 账号管理」里下载的恢复私钥，再填新密码即可重置。
+                        上传在「更多选项 → 账号管理」里下载的恢复私钥，再填新密码即可重置该账号的密码。
                         私钥只在你的浏览器里用来签名，不会上传。
-                        {!recoverConfigured && " 当前站点尚未配置恢复公钥。"}
+                        {!recoverConfigured && " 当前站点尚未配置恢复公钥，找回多半会失败。"}
                     </Alert>
                 )}
 
@@ -642,23 +646,29 @@ const LoginForm: React.FC<LoginFormProps> = ({
                                     "& .MuiFormControlLabel-label": { fontSize: "0.8125rem" },
                                 }}
                             />
-                            {recoverConfigured && (
-                                <Link
-                                    component='button'
-                                    type='button'
-                                    variant='body2'
-                                    underline='none'
-                                    onClick={switchToRecover}
-                                    disabled={loading}
-                                    sx={{
-                                        color: "text.secondary",
-                                        fontSize: "0.8125rem",
-                                        "&:hover": { color: "primary.main" },
-                                    }}
-                                >
-                                    忘记密码
-                                </Link>
-                            )}
+                            {/* 一直显示：能不能真的找回取决于手里有没有私钥，
+                                不该由站点「有没有人配过」来决定按不按钮看得见 */}
+                            <Button
+                                variant='text'
+                                size='small'
+                                onClick={switchToRecover}
+                                disabled={loading}
+                                sx={{
+                                    minWidth: 0,
+                                    px: 1,
+                                    py: 0.25,
+                                    borderRadius: 1.5,
+                                    color: "text.secondary",
+                                    fontSize: "0.8125rem",
+                                    textTransform: "none",
+                                    "&:hover": {
+                                        color: "primary.main",
+                                        bgcolor: "action.hover",
+                                    },
+                                }}
+                            >
+                                忘记密码
+                            </Button>
                         </Box>
 
                         <Button
