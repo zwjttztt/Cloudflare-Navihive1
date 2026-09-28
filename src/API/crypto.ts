@@ -249,27 +249,46 @@ export async function decryptBytes(cipher: Uint8Array, secret: string): Promise<
 // 本地下载 / 离线存档的备份要用用户自己的口令加密：这类文件会落到磁盘、聊天附件、
 // 网盘同步目录，从落盘那一刻起就不在服务端 AUTH_SECRET 的保护范围内了。
 // 因此不能用固定盐的 aesKey（那是服务端密钥派生），这里每次加密换随机盐。
-// 文件格式：MAGIC(13) + salt(16) + IV(12) + 密文
-const BACKUP_MAGIC = "NAVIHIVE-ENC1";
+// 文件格式：MAGIC(13) + salt(16) + IV(12) + 密文，迭代数编在 MAGIC 的版本号里：
+// - NAVIHIVE-ENC1：15 万次（历史格式）。浏览器解得动，但 Cloudflare Workers 的
+//   PBKDF2 迭代上限是 10 万次 —— WebDAV 的上传/下载都由 Worker 代劳，Worker 侧
+//   一解密就抛「Pbkdf2 failed: iteration counts above 100000」，线上真踩过。
+// - NAVIHIVE-ENC2：10 万次。浏览器与 Workers 都支持，**新加密一律用它**。
+//   两个 MAGIC 长度相同，文件头布局完全一致，只是迭代数不同。
+const BACKUP_MAGIC_V1 = "NAVIHIVE-ENC1";
+const BACKUP_MAGIC_V2 = "NAVIHIVE-ENC2";
+const BACKUP_MAGIC = BACKUP_MAGIC_V2;
 const BACKUP_SALT_BYTES = 16;
 const BACKUP_IV_BYTES = 12;
-const BACKUP_ITERS = 150_000;
+const BACKUP_ITERS_V1 = 150_000;
+// Workers 的 PBKDF2 上限是 100000（「above 100000 are not supported」），顶格取
+const BACKUP_ITERS = 100_000;
 const BACKUP_HEADER_BYTES = BACKUP_MAGIC.length + BACKUP_SALT_BYTES + BACKUP_IV_BYTES;
+
+/** 读出文件头魔数；既不是 ENC1 也不是 ENC2 时返回 null */
+function backupMagicVersion(bytes: Uint8Array): "v1" | "v2" | null {
+    const matches = (magic: string) => {
+        if (bytes.length < magic.length) return false;
+        for (let i = 0; i < magic.length; i++) {
+            if (bytes[i] !== magic.charCodeAt(i)) return false;
+        }
+        return true;
+    };
+    if (matches(BACKUP_MAGIC_V1)) return "v1";
+    if (matches(BACKUP_MAGIC_V2)) return "v2";
+    return null;
+}
 
 /** 按文件头判断是不是口令加密过的备份（明文 JSON / gzip 都认不出来） */
 export function isEncryptedBackup(bytes: Uint8Array): boolean {
-    if (bytes.length < BACKUP_MAGIC.length) return false;
-    for (let i = 0; i < BACKUP_MAGIC.length; i++) {
-        if (bytes[i] !== BACKUP_MAGIC.charCodeAt(i)) return false;
-    }
-    return true;
+    return backupMagicVersion(bytes) !== null;
 }
 
 export async function encryptBackup(plain: Uint8Array, password: string): Promise<Uint8Array> {
     if (!password) throw new Error("请先设置备份密码");
     const salt = crypto.getRandomValues(new Uint8Array(BACKUP_SALT_BYTES));
     const iv = crypto.getRandomValues(new Uint8Array(BACKUP_IV_BYTES));
-    const key = await backupKey(password, salt);
+    const key = await backupKey(password, salt, BACKUP_ITERS);
     const ct = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, plain));
     const out = new Uint8Array(BACKUP_HEADER_BYTES + ct.byteLength);
     out.set(enc.encode(BACKUP_MAGIC), 0);
@@ -280,14 +299,31 @@ export async function encryptBackup(plain: Uint8Array, password: string): Promis
 }
 
 export async function decryptBackup(cipher: Uint8Array, password: string): Promise<Uint8Array> {
-    if (!isEncryptedBackup(cipher)) throw new Error("这不是加密的备份文件");
+    const version = backupMagicVersion(cipher);
+    if (!version) throw new Error("这不是加密的备份文件");
+    const iters = version === "v1" ? BACKUP_ITERS_V1 : BACKUP_ITERS;
     const salt = cipher.subarray(BACKUP_MAGIC.length, BACKUP_MAGIC.length + BACKUP_SALT_BYTES);
     const iv = cipher.subarray(
         BACKUP_MAGIC.length + BACKUP_SALT_BYTES,
         BACKUP_HEADER_BYTES
     );
     const ct = cipher.subarray(BACKUP_HEADER_BYTES);
-    const key = await backupKey(password, salt);
+    let key: CryptoKey;
+    try {
+        key = await backupKey(password, salt, iters);
+    } catch (error) {
+        // 只有旧版 15 万次迭代会在 Workers 上撞 PBKDF2 上限：给一句能照着做的提示，
+        // 而不是让「Pbkdf2 failed: iteration counts...」这种原文直接糊在用户脸上
+        if (
+            iters > BACKUP_ITERS &&
+            /pbkdf2|iteration/i.test(error instanceof Error ? error.message : String(error))
+        ) {
+            throw new Error(
+                "这份备份是旧版加密格式，当前运行环境不支持它的迭代次数：请把文件下载到本地，用「从本地文件恢复」并输入备份密码"
+            );
+        }
+        throw error;
+    }
     try {
         return new Uint8Array(await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct));
     } catch {
@@ -296,8 +332,12 @@ export async function decryptBackup(cipher: Uint8Array, password: string): Promi
     }
 }
 
-async function backupKey(password: string, salt: Uint8Array): Promise<CryptoKey> {
-    const raw = await pbkdf2(password, salt, BACKUP_ITERS, 32);
+async function backupKey(
+    password: string,
+    salt: Uint8Array,
+    iterations: number
+): Promise<CryptoKey> {
+    const raw = await pbkdf2(password, salt, iterations, 32);
     return crypto.subtle.importKey("raw", raw, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
 }
 

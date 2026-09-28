@@ -185,3 +185,41 @@ test("同一份数据两次加密结果不同（随机盐 + 随机 IV）", async
     // 结果不同但都能解开
     assert.equal(dec.decode(await decryptBackup(b, "backup-pwd")), BACKUP_JSON);
 });
+
+// Cloudflare Workers 的 PBKDF2 迭代上限是 10 万次：ENC1 的 15 万次在 Worker 侧
+// （WebDAV 上传/下载都由它代劳）会直接抛「Pbkdf2 failed」。新加密一律用 ENC2。
+test("新加密走 ENC2 头（10 万次迭代，Workers 也支持）", async () => {
+    const cipher = await encryptBackup(enc.encode(BACKUP_JSON), "backup-pwd");
+    assert.equal(dec.decode(cipher.subarray(0, 13)), "NAVIHIVE-ENC2");
+    assert.equal(isEncryptedBackup(cipher), true);
+    assert.equal(dec.decode(await decryptBackup(cipher, "backup-pwd")), BACKUP_JSON);
+});
+
+/** 手工按旧版 ENC1 格式（15 万次迭代）造一份备份，验证新代码仍能解开历史文件 */
+async function encryptLegacyV1(plain: Uint8Array, password: string): Promise<Uint8Array> {
+    const salt = crypto.getRandomValues(new Uint8Array(16));
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const raw = await crypto.subtle.deriveBits(
+        { name: "PBKDF2", salt, iterations: 150_000, hash: "SHA-256" },
+        await crypto.subtle.importKey("raw", enc.encode(password), { name: "PBKDF2" }, false, [
+            "deriveBits",
+        ]),
+        256
+    );
+    const key = await crypto.subtle.importKey("raw", raw, { name: "AES-GCM" }, false, ["encrypt"]);
+    const ct = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, plain));
+    const out = new Uint8Array(13 + 16 + 12 + ct.byteLength);
+    out.set(enc.encode("NAVIHIVE-ENC1"), 0);
+    out.set(salt, 13);
+    out.set(iv, 29);
+    out.set(ct, 41);
+    return out;
+}
+
+test("旧版 ENC1（15 万次迭代）备份仍能解开（本地恢复场景）", async () => {
+    const legacy = await encryptLegacyV1(enc.encode(BACKUP_JSON), "old-pass");
+    assert.equal(dec.decode(legacy.subarray(0, 13)), "NAVIHIVE-ENC1");
+    assert.equal(isEncryptedBackup(legacy), true, "旧格式也要被认成加密备份");
+    assert.equal(dec.decode(await decryptBackup(legacy, "old-pass")), BACKUP_JSON);
+    await assert.rejects(() => decryptBackup(legacy, "wrong-pass"), /密码不正确/);
+});

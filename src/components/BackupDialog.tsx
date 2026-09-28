@@ -314,7 +314,7 @@ export default function BackupDialog({
     };
 
     // 选择本地备份文件并解析。
-    // 按字节读而不是按文本：加密备份是二进制（NAVIHIVE-ENC1 开头），readAsText 会先
+    // 按字节读而不是按文本：加密备份是二进制（NAVIHIVE-ENC1/ENC2 开头），readAsText 会先
     // 把二进制按 UTF-8 解码成乱码，之后就再也分不清它到底是哪种格式了。
     const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files && e.target.files[0];

@@ -228,7 +228,7 @@ test("没设备份口令：照常上传（明文 gzip），不再拦着不让备
     }
 });
 
-test("设备份口令：上传的是口令加密文件（NAVIHIVE-ENC1 头），且不依赖 AUTH_SECRET", async () => {
+test("设备份口令：上传的是口令加密文件（NAVIHIVE-ENC2 头，Workers 能算得动），且不依赖 AUTH_SECRET", async () => {
     let fetchCalls = 0;
     let sentBody: Uint8Array | undefined;
     const realFetch = globalThis.fetch;
@@ -247,7 +247,7 @@ test("设备份口令：上传的是口令加密文件（NAVIHIVE-ENC1 头），
         assert.ok(fetchCalls > 0, "有口令就该真的发出上传请求");
         assert.equal(
             new TextDecoder().decode((sentBody as Uint8Array).subarray(0, 13)),
-            "NAVIHIVE-ENC1"
+            "NAVIHIVE-ENC2"
         );
     } finally {
         globalThis.fetch = realFetch;
