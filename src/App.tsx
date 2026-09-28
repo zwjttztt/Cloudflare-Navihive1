@@ -311,6 +311,8 @@ function App() {
     const [isAuthenticated, setIsAuthenticated] = useState(false);
     const [loginError, setLoginError] = useState<string | null>(null);
     const [loginLoading, setLoginLoading] = useState(false);
+    // 是否已配置恢复公钥（未登录也能查，决定是否在登录页显示「用恢复密钥找回账号」）
+    const [recoveryConfigured, setRecoveryConfigured] = useState(false);
 
     // 配置状态
     const [configs, setConfigs] = useState<Record<string, string>>(DEFAULT_CONFIGS);
@@ -724,6 +726,12 @@ function App() {
 
             const ok = await fetchData();
 
+            // 顺带确认是否配置了恢复公钥（未登录也能查，失败就当作未配置，不影响登录）
+            api
+                .getRecoveryStatus()
+                .then(status => setRecoveryConfigured(status?.configured === true))
+                .catch(() => setRecoveryConfigured(false));
+
             if (ok) {
                 setIsAuthenticated(true);
                 setIsAuthRequired(false);
@@ -787,6 +795,28 @@ function App() {
             setIsAuthenticated(false);
         } finally {
             setLoginLoading(false);
+        }
+    };
+
+    // 用恢复令牌重置管理员密码（登录页「用恢复密钥找回账号」入口）
+    const handleRecover = async (
+        token: string
+    ): Promise<{ success: boolean; message?: string }> => {
+        try {
+            const result = await api.recoverPassword(token);
+            if (result?.success) {
+                handleCloseSnackbar();
+                notify(result.message || "密码已重置，请用新密码登录", "success");
+                clearRememberedLogin();
+            }
+            return result;
+        } catch (error) {
+            console.error("恢复密码失败:", error);
+            reportError(error, { source: "auth-recover" });
+            return {
+                success: false,
+                message: "恢复失败：" + (error instanceof Error ? error.message : "未知错误"),
+            };
         }
     };
 
@@ -2183,12 +2213,23 @@ function App() {
                 [`${WEBDAV_CONFIG_PREFIX}path`]: config.path || DEFAULT_WEBDAV_CONFIG.path,
                 [`${WEBDAV_CONFIG_PREFIX}allowPrivateNetwork`]: config.allowPrivateNetwork ? "1" : "0",
             });
-            await api.setConfig(`${WEBDAV_CONFIG_PREFIX}password`, config.password);
+            // 两个口令都「写了才存、清空就删」：
+            // worker 的 configs/{key} PUT 会拒绝空值（validateConfig 要求 value 非空），
+            // 写空串会直接 400 —— 而备份口令是可选的，留空才是常态，所以清空必须走 DELETE。
+            if (config.password) {
+                await api.setConfig(`${WEBDAV_CONFIG_PREFIX}password`, config.password);
+            } else {
+                await api.deleteConfig(`${WEBDAV_CONFIG_PREFIX}password`);
+            }
             // 备份口令单独存（落库加密），定时备份与恢复都靠它，与 AUTH_SECRET 无关
-            await api.setConfig(
-                `${WEBDAV_CONFIG_PREFIX}backupPassword`,
-                config.backupPassword || ""
-            );
+            if (config.backupPassword) {
+                await api.setConfig(
+                    `${WEBDAV_CONFIG_PREFIX}backupPassword`,
+                    config.backupPassword
+                );
+            } else {
+                await api.deleteConfig(`${WEBDAV_CONFIG_PREFIX}backupPassword`);
+            }
             setWebdavConfig(config);
         } catch (error) {
             console.error("保存 WebDAV 配置失败:", error);
@@ -3138,6 +3179,8 @@ function App() {
                     onLogin={handleLogin}
                     loading={loginLoading}
                     error={loginError}
+                    onRecover={handleRecover}
+                    recoverConfigured={recoveryConfigured}
                 />
             </Box>
         );

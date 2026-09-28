@@ -102,6 +102,30 @@ export class NavigationClient {
         this.clearToken();
     }
 
+    // 用恢复令牌重置管理员密码（无需登录，走公网恢复入口）
+    async recoverPassword(token: string): Promise<{ success: boolean; message?: string }> {
+        try {
+            const response = await fetch(`${this.baseUrl}/auth/recover`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ token }),
+            });
+            const data = await response.json().catch(() => ({ success: false }));
+            if (!response.ok && !data.message) {
+                return { success: false, message: "恢复失败，请稍后再试" };
+            }
+            return data;
+        } catch (error) {
+            console.error("恢复密码失败:", error);
+            return { success: false, message: "恢复请求失败，请检查网络连接" };
+        }
+    }
+
+    // 是否已配置恢复公钥（仅返回布尔）
+    async getRecoveryStatus(): Promise<{ configured: boolean }> {
+        return this.request("auth/recovery-status");
+    }
+
     private async request(endpoint: string, options = {}) {
         const headers: Record<string, string> = {
             "Content-Type": "application/json",

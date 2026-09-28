@@ -313,3 +313,68 @@ export function validatePasswordStrength(password: string): { ok: boolean; messa
     }
     return { ok: true, message: "" };
 }
+
+// ---------------- 恢复密钥 (Ed25519 非对称签名, JWS compact) ----------------
+// 找回管理员密码用非对称方案：服务器只持有公钥(AUTH_RECOVERY_PUBLIC_KEY)，
+// 私钥离线保管，永远不进服务器。管理员用私钥对 {username,passwordHash,exp,jti}
+// 签名成 JWS，服务端用公钥验签即可重置密码 —— 没有私钥造不出合法 token，
+// 所以这个公网「恢复」入口是安全的（不像共享密钥那样能被暴力猜解）。
+export interface RecoveryPayload {
+    username: string;
+    passwordHash: string;
+    exp: number; // 秒级过期时间戳
+    jti: string; // 一次性 nonce，防重放
+}
+
+export async function verifyRecoveryToken(
+    token: string,
+    publicKeyB64url: string
+): Promise<{ valid: boolean; payload?: RecoveryPayload }> {
+    const parts = token.split(".");
+    if (parts.length !== 3) return { valid: false };
+    const [headerB64, payloadB64, sigB64] = parts;
+
+    // 验算法声明
+    try {
+        const header = JSON.parse(dec.decode(b64urlDecode(headerB64)));
+        if (header.alg !== "EdDSA" || header.typ !== "JWS") return { valid: false };
+    } catch {
+        return { valid: false };
+    }
+
+    // 导入公钥（raw 32 字节）
+    let key: CryptoKey;
+    try {
+        const raw = b64urlDecode(publicKeyB64url);
+        key = await crypto.subtle.importKey("raw", raw, { name: "Ed25519" }, false, ["verify"]);
+    } catch {
+        return { valid: false };
+    }
+
+    const signingInput = enc.encode(`${headerB64}.${payloadB64}`);
+    const sig = b64urlDecode(sigB64);
+    let ok = false;
+    try {
+        ok = await crypto.subtle.verify({ name: "Ed25519" }, key, sig, signingInput);
+    } catch {
+        ok = false;
+    }
+    if (!ok) return { valid: false };
+
+    let payload: RecoveryPayload;
+    try {
+        payload = JSON.parse(dec.decode(b64urlDecode(payloadB64))) as RecoveryPayload;
+    } catch {
+        return { valid: false };
+    }
+    if (
+        !payload ||
+        typeof payload.username !== "string" ||
+        !payload.passwordHash ||
+        typeof payload.exp !== "number" ||
+        typeof payload.jti !== "string"
+    ) {
+        return { valid: false };
+    }
+    return { valid: true, payload };
+}

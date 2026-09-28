@@ -14,7 +14,8 @@
         "preview": "npm run build && vite preview",
         "deploy": "npm run build && wrangler deploy",
         "cf-typegen": "wrangler types",
-        "reset-admin": "node scripts/reset-admin-password.mjs"
+        "reset-admin": "node scripts/reset-admin-password.mjs",
+        "recovery": "node scripts/recovery-token.mjs"
     },
     "dependencies": {
         "@cfworker/jwt": "^7.0.4",

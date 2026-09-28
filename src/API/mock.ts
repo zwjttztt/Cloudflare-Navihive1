@@ -168,6 +168,17 @@ export class MockNavigationClient {
         this.clearToken();
     }
 
+    // 用恢复令牌重置管理员密码（模拟环境仅返回成功）
+    async recoverPassword(_token: string): Promise<{ success: boolean; message?: string }> {
+        await new Promise(resolve => setTimeout(resolve, 300));
+        return { success: true, message: "模拟环境未真正修改管理员凭据" };
+    }
+
+    // 是否已配置恢复公钥（模拟环境默认已配置）
+    async getRecoveryStatus(): Promise<{ configured: boolean }> {
+        return { configured: true };
+    }
+
     // 检查身份验证状态
     async checkAuthStatus(): Promise<boolean> {
         await new Promise(resolve => setTimeout(resolve, 300));

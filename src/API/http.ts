@@ -9,6 +9,7 @@ import {
     isHashedPassword,
     encryptSecret,
     decryptSecretDeep,
+    verifyRecoveryToken,
 } from "./crypto";
 
 // 定义D1数据库类型
@@ -39,6 +40,7 @@ interface Env {
     AUTH_USERNAME?: string; // 认证用户名
     AUTH_PASSWORD?: string; // 认证密码
     AUTH_SECRET?: string; // JWT密钥
+    AUTH_RECOVERY_PUBLIC_KEY?: string; // 恢复公钥（Ed25519 raw，base64url）；仅持公钥，私钥离线
 }
 
 // 数据类型定义
@@ -261,6 +263,8 @@ export class NavigationAPI {
     private seedUsername: string;
     private seedPassword: string;
     private secret: string;
+    // 恢复公钥（Ed25519 raw，base64url）：仅持公钥，私钥离线保管
+    private recoveryPubKey: string;
     // 令牌版本缓存（模块内按 isolate 读一次即可，改密时失效）
     private tokenVersionCache: number | null = null;
 
@@ -270,6 +274,7 @@ export class NavigationAPI {
         this.seedUsername = env.AUTH_USERNAME || "";
         this.seedPassword = env.AUTH_PASSWORD || "";
         this.secret = env.AUTH_SECRET || "默认密钥，建议在生产环境中设置";
+        this.recoveryPubKey = env.AUTH_RECOVERY_PUBLIC_KEY || "";
     }
 
     // 初始化数据库表
@@ -515,6 +520,55 @@ export class NavigationAPI {
         // 已经换成自己的密码了，解除「必须改密」限制
         await this.clearMustChangePassword();
         return okUser && okPass;
+    }
+
+    // ============ 密钥恢复（非对称，公钥在服务器、私钥离线） ============
+    // 用私钥签名的 JWS 令牌重置管理员密码。服务器只验签、不持有私钥，
+    // 因此这个公网入口无法被暴力猜解（没有私钥造不出合法 token）。
+    hasRecoveryKey(): boolean {
+        return this.recoveryPubKey.length > 0;
+    }
+
+    async redeemRecoveryToken(
+        token: string,
+        clientKey: string = "unknown"
+    ): Promise<{ success: boolean; message: string }> {
+        if (!this.hasRecoveryKey()) {
+            return { success: false, message: "本站点尚未配置恢复公钥，无法用密钥恢复" };
+        }
+
+        const result = await verifyRecoveryToken(token, this.recoveryPubKey);
+        if (!result.valid || !result.payload) {
+            await this.writeAudit("auth.recover.failed", "", clientKey, "签名校验失败");
+            return { success: false, message: "恢复令牌无效或签名不匹配" };
+        }
+
+        const { username, passwordHash, exp, jti } = result.payload;
+
+        // 过期（token 自带 exp，不依赖外部状态）
+        if (typeof exp === "number" && exp < Math.floor(Date.now() / 1000)) {
+            return { success: false, message: "恢复令牌已过期，请重新生成" };
+        }
+
+        // 一次性：jti 已用过则拒绝（防重放）
+        const usedKey = `auth.recoveryJti.${jti}`;
+        if (await this.getConfig(usedKey)) {
+            return { success: false, message: "恢复令牌已被使用过" };
+        }
+
+        // 写入新凭据（passwordHash 已是哈希串，直接存；不经过 hashPassword，管理员已离线算好）
+        const okUser = await this.setConfig(AUTH_USERNAME_KEY, username);
+        const okPass = await this.setConfig(AUTH_PASSWORD_KEY, passwordHash);
+        await this.bumpTokenVersion();
+        await this.clearMustChangePassword();
+        // 记下 jti，过期时间作为兜底清理依据（旧条目不自动删除，但体量极小）
+        await this.setConfig(usedKey, String(exp));
+
+        await this.writeAudit("auth.recover", username, clientKey, "密钥恢复成功");
+        if (!okUser || !okPass) {
+            return { success: false, message: "恢复成功但写入凭据失败，请重试" };
+        }
+        return { success: true, message: "密码已通过恢复密钥重置，请用新密码登录" };
     }
 
     // 验证用户登录

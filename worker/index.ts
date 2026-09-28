@@ -37,6 +37,7 @@ import type {
     ExportedHandler,
     GroupInput,
     LoginInput,
+    RecoveryInput,
     SiteInput,
 } from "./types";
 import { validateConfig, validateGroup, validateLogin, validateSite } from "./validate";
@@ -247,6 +248,36 @@ export default {
                     );
                 }
 
+                // 密钥恢复：用私钥签名的 JWS 令牌重置管理员密码（无需登录即可调用）
+                // 服务器只持公钥、验签，没有私钥造不出合法 token，故公网入口安全。
+                if (path === "auth/recover" && method === "POST") {
+                    const data = (await request.json().catch(() => ({}))) as RecoveryInput;
+                    const token = typeof data.token === "string" ? data.token.trim() : "";
+                    if (!token) {
+                        return Response.json(
+                            { success: false, message: "请提供恢复令牌" },
+                            { status: 400 }
+                        );
+                    }
+                    const clientKey =
+                        request.headers.get("CF-Connecting-IP") ||
+                        request.headers.get("X-Forwarded-For") ||
+                        "unknown";
+                    const result = await api.redeemRecoveryToken(token, clientKey);
+                    await api.writeAudit(
+                        result.success ? "auth.recover" : "auth.recover.failed",
+                        "",
+                        clientKey,
+                        result.message
+                    );
+                    return Response.json(result, { status: result.success ? 200 : 400 });
+                }
+
+                // 是否已配置恢复公钥（仅返回布尔，不下发公钥本身）
+                if (path === "auth/recovery-status" && method === "GET") {
+                    return Response.json({ configured: api.hasRecoveryKey() });
+                }
+
                 // 初始化数据库接口 - 不需要验证
                 if (path === "init" && method === "GET") {
                     // 未鉴权接口，先过一道限速：挡掉反复打接口探测的扫描。
@@ -342,7 +373,8 @@ export default {
                     method !== "GET" &&
                     method !== "HEAD" &&
                     path !== "auth/credentials" &&
-                    path !== "auth/reset" &&
+                    path !== "auth/recover" &&
+                    path !== "auth/recovery-status" &&
                     path !== "logout" &&
                     (await api.mustChangePassword())
                 ) {

@@ -107,6 +107,8 @@ pnpm deploy     # 部署到 Cloudflare Workers
 wrangler secret put AUTH_USERNAME
 wrangler secret put AUTH_PASSWORD
 wrangler secret put AUTH_SECRET      # JWT 签名密钥 + 站点密码 / WebDAV 凭据落库加密密钥
+# 可选但强烈建议：配置后可用「恢复私钥」签名令牌找回管理员密码（见下「忘记管理员密码」）
+wrangler secret put AUTH_RECOVERY_PUBLIC_KEY
 ```
 
 > `AUTH_SECRET` 请用全新的随机长串（比如 `openssl rand -base64 32`）。
@@ -191,9 +193,23 @@ wrangler secret put AUTH_SECRET      # JWT 签名密钥 + 站点密码 / WebDAV 
 
 ## 🔧 常见问题
 
-**忘记管理员密码？** 两种方式，任选其一（都不需要登录，也不需要记住「重置码」这类额外密钥）：
+**忘记管理员密码？** 几种方式任选其一（都不需要登录，也不依赖「重置码」这类可被外人反复尝试的共享密钥）：
 
-1. **用重置脚本（推荐，按正确格式写哈希，不落明文）**：仓库自带 `scripts/reset-admin-password.mjs`，会用和后端完全相同的算法生成密码哈希，并更新 D1、同时让所有已登录会话失效：
+1. **用恢复私钥签名令牌找回（推荐，登录页即可操作）**：部署时生成一对 Ed25519 密钥，公钥设为 `AUTH_RECOVERY_PUBLIC_KEY`，私钥离线保管。忘记密码时，用私钥本地对 `{账号, 新密码哈希, 过期时间, 一次性 jti}` 签名成一个 JWS 令牌，粘到登录页「用恢复密钥找回账号」即可重置。服务器只持公钥、只做验签——没有私钥造不出合法令牌，所以这个公网入口是安全的：
+
+   ```bash
+   # ① 一次性生成密钥对：公钥用于 secret，私钥写到 ./scripts/recovery-private.key（请离线保管）
+   node scripts/recovery-token.mjs generate
+   wrangler secret put AUTH_RECOVERY_PUBLIC_KEY   # 粘贴上一步打印的公钥
+
+   # ② 忘记密码时，用私钥本地签发一个重置令牌（默认 24 小时有效、一次性使用）
+   node scripts/recovery-token.mjs sign --username admin --password '新密码至少12位'
+   # 把打印出的令牌粘到登录页「用恢复密钥找回账号」即可
+   ```
+
+   > 恢复令牌带 `exp` 过期时间与 `jti` 一次性防重放；私钥等同万能钥匙，**务必离线保存、绝不提交到 Git**（已加入 `.gitignore`）。
+
+2. **用重置脚本（推荐给没有私钥在手的场景，按正确格式写哈希，不落明文）**：仓库自带 `scripts/reset-admin-password.mjs`，会用和后端完全相同的算法生成密码哈希，并更新 D1、同时让所有已登录会话失效：
 
    ```bash
    # 在仓库根目录执行；可加 --username 改账号，不写则只改密码
@@ -206,16 +222,16 @@ wrangler secret put AUTH_SECRET      # JWT 签名密钥 + 站点密码 / WebDAV 
 
    > 脚本依赖 `wrangler` 命令行（全局装了或能 `npx wrangler` 即可），走的是你本机已有的 Cloudflare 登录态——本质上就是「你亲自改库」，所以不存在可被外人反复尝试的公开入口。
 
-2. **直接改 D1**（没有 Node 环境时）：凭据存在 D1 的 `configs` 表里，直接改这两行即可（无需重新部署）。下面的写法会先把密码存成明文，**下次正常登录时后端会自动把它升级成哈希**，所以不必手动算哈希：
+3. **直接改 D1**（没有 Node 环境时）：凭据存在 D1 的 `configs` 表里，直接改这两行即可（无需重新部署）。下面的写法会先把密码存成明文，**下次正常登录时后端会自动把它升级成哈希**，所以不必手动算哈希：
 
    ```bash
    wrangler d1 execute navigation-db --command "UPDATE configs SET value='你的新密码' WHERE key='auth.password'"
    wrangler d1 execute navigation-db --command "UPDATE configs SET value='你的新账号' WHERE key='auth.username'"
    ```
 
-3. **登录后修改**：还能登录时，到「网站设置 → 管理员账号与密码」修改（需填写当前密码），改动立即生效且不会被后续部署覆盖。
+4. **登录后修改**：还能登录时，到「网站设置 → 管理员账号与密码」修改（需填写当前密码），改动立即生效且不会被后续部署覆盖。
 
-> 设计取舍：本项目不再提供「登录页填码找回」这种对公网开放的入口（旧版的 `AUTH_RESET_CODE` 应急重置码已移除）。找回密码一律要求你能操作 Cloudflare / D1——也就是本来就能动部署的人，避免多出一个任何人都能撞的攻击面。
+> 设计取舍：本项目不再提供「登录页填共享码找回」这种对公网开放、可被暴力猜解的入口（旧版的 `AUTH_RESET_CODE` 应急重置码已移除）。找回密码一律要求你能操作 Cloudflare / D1——或持有离线保管的恢复私钥。恢复公钥入口因为是**非对称验签**，服务器不持任何秘密，比共享密钥安全得多。
 
 **想关闭登录？** 将 `AUTH_ENABLED` 设为 `false`，任何访问者都可浏览与编辑（不建议公开站点使用）。
 

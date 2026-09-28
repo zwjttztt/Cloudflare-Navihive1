@@ -8,6 +8,7 @@ export interface Env {
     AUTH_USERNAME?: string;
     AUTH_PASSWORD?: string;
     AUTH_SECRET?: string;
+    AUTH_RECOVERY_PUBLIC_KEY?: string; // 恢复公钥（Ed25519 raw，base64url）
 }
 
 // 验证用接口
@@ -44,6 +45,11 @@ export interface AuthCredentialsInput {
     username?: string;
     password?: string;
     currentPassword?: string;
+}
+
+// 密钥恢复的请求体
+export interface RecoveryInput {
+    token?: string;
 }
 // 声明ExportedHandler类型
 // scheduled 是「每周自动备份」的定时入口，由 wrangler.jsonc 的 triggers.crons 触发
