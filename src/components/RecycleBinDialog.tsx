@@ -30,6 +30,9 @@ interface RecycleItem {
     deletedAt: number;
 }
 
+/** 与后端 RETENTION_DAYS 一致：回收站条目只留这些天，超期自动清除 */
+const RECYCLE_RETENTION_DAYS = 7;
+
 interface RecycleBinDialogProps {
     open: boolean;
     onClose: () => void;
@@ -122,7 +125,7 @@ export default function RecycleBinDialog({ open, onClose, client, onChanged, onN
                 <RestoreFromTrashIcon fontSize='small' />
                 回收站
                 <Typography component='span' variant='caption' color='text.secondary' sx={{ ml: "auto" }}>
-                    删除的站点 / 分组会先到这里
+                    仅保留 {RECYCLE_RETENTION_DAYS} 天，超期自动清除
                 </Typography>
             </DialogTitle>
             <DialogContent dividers sx={{ p: 0, minHeight: 120 }}>

@@ -234,7 +234,9 @@ export default {
                             {
                                 success: true,
                                 message: result.message,
-                                mustChangePassword: await api.mustChangePassword(),
+                                // 首次部署强制改密只约束种子管理员本人；
+                                // 之后注册的账号是自己设的密码，不该跟着一起被提示（见 http.ts 的说明）
+                                mustChangePassword: await api.mustChangePassword(result.role),
                                 // 多账号：把账号身份带回去，前端不用再单独问一次
                                 username: result.username,
                                 role: result.role,

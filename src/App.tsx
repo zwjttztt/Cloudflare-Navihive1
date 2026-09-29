@@ -3785,6 +3785,7 @@ function App() {
                                             onClearVisits={clearVisits}
                                             isAuthenticated={isAuthenticated}
                                             onLogout={handleLogout}
+                                            isSiteOwner={currentUser?.role === "owner"}
                                         />
                                     }
                                 />

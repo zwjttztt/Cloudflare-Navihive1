@@ -40,8 +40,10 @@ export interface MoreMenuProps {
     onOpenAccount: () => void;
     /** 打开回收站（还原 / 彻底删除被软删除的站点、分组） */
     onOpenRecycle: () => void;
-    /** 打开审计日志（仅站点所有者可见） */
+    /** 打开审计日志。仅站点所有者可用：不是所有者时整个入口不出现 */
     onOpenAudit: () => void;
+    /** 当前登录者是否为站点所有者（决定「审计日志」入口是否出现） */
+    isSiteOwner: boolean;
 }
 
 export default function MoreMenu({
@@ -65,6 +67,7 @@ export default function MoreMenu({
     onOpenRecycle,
     onOpenAudit,
     onOpenAccount,
+    isSiteOwner,
 }: MoreMenuProps) {
     return (
                     <Menu
@@ -207,17 +210,21 @@ export default function MoreMenu({
                             </ListItemIcon>
                             <ListItemText>回收站</ListItemText>
                         </MenuItem>
-                        <MenuItem
-                            onClick={() => {
-                                onClose();
-                                onOpenAudit();
-                            }}
-                        >
-                            <ListItemIcon>
-                                <HistoryIcon fontSize='small' />
-                            </ListItemIcon>
-                            <ListItemText>审计日志</ListItemText>
-                        </MenuItem>
+                        {/* 审计日志只给站点所有者看：后端同样会挡（非 owner 一律 403），
+                            这里连入口都不显示，免得点进去只看到一句报错 */}
+                        {isSiteOwner && (
+                            <MenuItem
+                                onClick={() => {
+                                    onClose();
+                                    onOpenAudit();
+                                }}
+                            >
+                                <ListItemIcon>
+                                    <HistoryIcon fontSize='small' />
+                                </ListItemIcon>
+                                <ListItemText>审计日志</ListItemText>
+                            </MenuItem>
+                        )}
                         <Divider />
                         <MenuItem
                             onClick={() => {

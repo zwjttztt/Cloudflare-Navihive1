@@ -181,7 +181,7 @@ export async function runInactiveSweep(api: SchedulerDB): Promise<void> {
 }
 
 /**
- * 过期数据清理：审计日志、令牌黑名单、用过的恢复令牌标记、过期邀请码。
+ * 过期数据清理：审计日志、回收站、令牌黑名单、用过的恢复令牌标记、过期邀请码。
  * 这些表 / 键只增不减，不清就一直线性涨。详见 http.ts 的 cleanupExpiredRows。
  */
 export async function runRetentionCleanup(api: SchedulerDB): Promise<void> {
@@ -189,11 +189,12 @@ export async function runRetentionCleanup(api: SchedulerDB): Promise<void> {
     if (typeof nav.cleanupExpiredRows !== "function") return;
     const result = await nav.cleanupExpiredRows();
     const total =
-        result.audit + result.blacklist + result.invites + result.recoveryJti;
+        result.audit + result.recycle + result.blacklist + result.invites + result.recoveryJti;
     if (total > 0) {
         console.log(
-            `过期数据清理完成：审计 ${result.audit} 条、黑名单 ${result.blacklist} 条、` +
-                `邀请码 ${result.invites} 条、恢复标记 ${result.recoveryJti} 条`
+            `过期数据清理完成：审计 ${result.audit} 条、回收站 ${result.recycle} 条、` +
+                `黑名单 ${result.blacklist} 条、邀请码 ${result.invites} 条、` +
+                `恢复标记 ${result.recoveryJti} 条`
         );
     }
 }

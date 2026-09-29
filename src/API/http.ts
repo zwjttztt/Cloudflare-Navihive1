@@ -258,6 +258,11 @@ export const MUST_CHANGE_PASSWORD_KEY = "auth.mustChangePassword";
 // 不用 auth. 前缀——那个前缀的接口一律禁止读写，只能走专用的「校验当前密码」接口。
 export const RECOVERY_PUBLIC_KEY_CONFIG = "recovery.publicKey";
 
+// 保留期（天）：审计日志与回收站条目都只留这么久，超期由定时任务自动清除。
+// 两处都存的是「事后补救」性质的东西 —— 审计用于溯源、回收站用于反悔，
+// 留太久了既占 D1 行数，也让旧数据一直挂在界面上。7 天足够覆盖"昨天删错了"这类场景。
+export const RETENTION_DAYS = 7;
+
 // 长期未登录账号治理：阈值（天）存进 configs，owner 可在后台改；读取带默认值。
 // disableDays：超过这么久没活跃 -> 置为 disabled（禁止登录，数据保留）。
 // deleteGraceDays：disabled 之后再过这么久 -> 硬删（释放 D1 行数）。owner 永不被治理。
@@ -962,6 +967,8 @@ export class NavigationAPI {
         Array<{ id: number; action: string; actor: string; ip: string; detail: string; created_at: string }>
     > {
         await this.migrate();
+        // 每次打开都先清一遍：定时任务每周才跑一次，光靠它的话过期条目最长能多挂好几天
+        await this.purgeExpiredAudit();
         const limit = Math.min(Math.max(opts.limit ?? 50, 1), 200);
         const offset = Math.max(opts.offset ?? 0, 0);
         let query = "SELECT id, action, actor, ip, detail, created_at FROM audit_log";
@@ -1026,9 +1033,40 @@ export class NavigationAPI {
 
     // ============ 首次部署强制改密 ============
     // 种子凭据来自部署变量（等同半公开），首次部署后必须改一次才算安全。
-    async mustChangePassword(): Promise<boolean> {
+    /**
+     * 是否还卡在「必须先改密」。
+     *
+     * 这个标志是全局的（configs 里一份），但含义只针对**种子管理员那一个人** ——
+     * 之后注册的账号都是自己设的密码，不该被牵连：否则新账号一登录就弹「请先修改密码」，
+     * 而且写操作还会被 worker 的闸门一并拦成 403，等于替管理员背锅。
+     *
+     * @param role 登录者的角色；不传则按当前账号上下文判定
+     */
+    async mustChangePassword(role?: string | null): Promise<boolean> {
         const raw = await this.getConfig(MUST_CHANGE_PASSWORD_KEY);
-        return raw === "1";
+        if (raw !== "1") return false;
+
+        let effectiveRole = role ?? null;
+        if (effectiveRole === null && this.currentUserId !== null) {
+            effectiveRole = await this.roleOfUser(this.currentUserId);
+        }
+        // 查不到角色（老式单管理员 / 没有账号上下文）时维持原样：仍然要求改密
+        if (effectiveRole === null) return true;
+        return effectiveRole === "owner";
+    }
+
+    /** 读某账号的角色；查不到或表还没建好时返回 null（不是 'user'——别把它当普通账号放行） */
+    private async roleOfUser(userId: number): Promise<string | null> {
+        try {
+            const row = await this.db
+                .prepare("SELECT role FROM users WHERE id = ?")
+                .bind(userId)
+                .first<{ role: string | null }>();
+            return row?.role ?? null;
+        } catch (error) {
+            console.error("读取账号角色失败:", error);
+            return null;
+        }
     }
 
     private async clearMustChangePassword(): Promise<void> {
@@ -2678,6 +2716,8 @@ export class NavigationAPI {
         Array<{ id: number; kind: "site" | "group"; name: string; deletedAt: number }>
     > {
         await this.migrate();
+        // 过期的先清掉再列：定时任务每周才跑一次，光靠它的话「7 天自动删除」并不真的成立
+        await this.purgeExpiredRecycle();
         try {
             const result = await this.db
                 .prepare(
@@ -3453,35 +3493,58 @@ export class NavigationAPI {
         }
     }
 
+    /** 清掉超过保留期的审计日志，返回清掉的行数 */
+    private async purgeExpiredAudit(): Promise<number> {
+        try {
+            const r = await this.db
+                .prepare(
+                    `DELETE FROM audit_log WHERE created_at < datetime('now', '-${RETENTION_DAYS} days')`
+                )
+                .run();
+            return Number((r.meta as { changes?: number } | undefined)?.changes ?? 0);
+        } catch (error) {
+            console.error("清理审计日志失败:", error);
+            return 0;
+        }
+    }
+
+    /** 清掉超过保留期的回收站条目，返回清掉的行数（deleted_at 是 epoch 秒） */
+    private async purgeExpiredRecycle(nowSec = Math.floor(Date.now() / 1000)): Promise<number> {
+        try {
+            const r = await this.db
+                .prepare("DELETE FROM recycle_bin WHERE deleted_at < ?")
+                .bind(nowSec - RETENTION_DAYS * 24 * 3600)
+                .run();
+            return Number((r.meta as { changes?: number } | undefined)?.changes ?? 0);
+        } catch (error) {
+            console.error("清理回收站失败:", error);
+            return 0;
+        }
+    }
+
     /**
      * 过期数据清理（每周定时任务调用）。
      *
-     * 有四类东西只增不减，放久了会把 D1 撑成随时间线性增长的负担：
+     * 有五类东西只增不减，放久了会把 D1 撑成随时间线性增长的负担：
      *   - audit_log：登录、改密、删站点…每条一行；
+     *   - recycle_bin：删错的站点 / 分组，过了后悔期就没用了；
      *   - token_blacklist：登出过期的令牌（过期后校验已不会再查它）；
      *   - auth.recoveryJti.*：恢复令牌用过后留的防重放标记（configs 里一行一个 key）；
      *   - invites：过期 / 已用掉的邀请码。
-     * 行数配额按实际情况保留：审计日志留 90 天够溯源，邀请码留 7 天便于排查。
+     * 审计日志与回收站统一按 RETENTION_DAYS（7 天）保留，邀请码也留同样久便于排查。
      */
     async cleanupExpiredRows(): Promise<{
         audit: number;
+        recycle: number;
         blacklist: number;
         invites: number;
         recoveryJti: number;
     }> {
-        const counts = { audit: 0, blacklist: 0, invites: 0, recoveryJti: 0 };
+        const counts = { audit: 0, recycle: 0, blacklist: 0, invites: 0, recoveryJti: 0 };
         const nowSec = Math.floor(Date.now() / 1000);
 
-        try {
-            const r = await this.db
-                .prepare(
-                    "DELETE FROM audit_log WHERE created_at < datetime('now', '-90 days')"
-                )
-                .run();
-            counts.audit = Number((r.meta as { changes?: number } | undefined)?.changes ?? 0);
-        } catch (error) {
-            console.error("清理审计日志失败:", error);
-        }
+        counts.audit = await this.purgeExpiredAudit();
+        counts.recycle = await this.purgeExpiredRecycle(nowSec);
 
         try {
             const r = await this.db

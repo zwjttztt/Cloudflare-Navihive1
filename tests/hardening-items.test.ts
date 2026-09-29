@@ -381,6 +381,28 @@ class InMemoryD1 {
             this.recycle = this.recycle.filter(r => r.owner_user_id !== null && r.owner_user_id !== undefined);
             return { success: true };
         }
+        // 保留期清理：回收站按 deleted_at（epoch 秒）判新旧
+        if (/DELETE FROM recycle_bin WHERE deleted_at < \?/.test(sql)) {
+            const cutoff = args[0] as number;
+            const before = this.recycle.length;
+            this.recycle = this.recycle.filter(r => Number(r.deleted_at) >= cutoff);
+            return { success: true, meta: { changes: before - this.recycle.length } };
+        }
+        // 保留期清理：审计日志按 created_at 判新旧（SQL 里是 datetime('now','-N days')）
+        if (/DELETE FROM audit_log WHERE created_at < datetime/.test(sql)) {
+            const days = Number(sql.match(/'-(\d+) days'/)![1]);
+            const cutoff = Date.now() - days * 24 * 3600 * 1000;
+            const before = this.audit.length;
+            this.audit = this.audit.filter(r => {
+                const t = Date.parse(String(r.created_at).replace(" ", "T"));
+                return Number.isNaN(t) ? true : t >= cutoff;
+            });
+            return { success: true, meta: { changes: before - this.audit.length } };
+        }
+        if (/SELECT role FROM users WHERE id = \?/.test(sql)) {
+            const row = this.users.find(u => u.id === args[0]);
+            return row ? { role: (row.role as string) ?? null } : null;
+        }
         if (/UPDATE .* SET user_id = \? WHERE user_id IS NULL/.test(sql)) return { success: true };
         if (/UPDATE users SET recovery_public_key = \? WHERE id = \?/.test(sql)) return { success: true };
         // CREATE / ALTER / 其它写语句：迁移用，忽略即可
@@ -625,4 +647,72 @@ test("回收站按账号隔离：看不到别人删的东西", async () => {
     const other = await api.listRecycleBin();
     assert.equal(other.length, 0, "8 号账号不该看到 7 号删的东西");
     assert.equal(await api.restoreRecycleItem(del.recycleId as number), false, "也还原不了");
+});
+
+// ================= 7 天保留期：审计日志 / 回收站 =================
+// 两处存的都是「事后补救」性质的东西，超期就该自动清掉，不然一直挂在界面上还占行数。
+const DAY = 24 * 3600;
+
+test("保留期：审计日志超过 7 天的会被清掉，7 天内的保留", async () => {
+    const db = new InMemoryD1();
+    const api = newApi(db);
+    const now = Date.now();
+    db.audit.push(
+        { id: 1, action: "login.success", actor: "a", ip: "1", detail: "", created_at: new Date(now - 2 * DAY * 1000).toISOString() },
+        { id: 2, action: "login.success", actor: "a", ip: "1", detail: "", created_at: new Date(now - 8 * DAY * 1000).toISOString() },
+    );
+
+    const log = await api.getAuditLog({ limit: 50, offset: 0 });
+    assert.equal(log.length, 1, "超过 7 天的那条应被清掉");
+    assert.equal(log[0].id, 1, "留下的应是 2 天前的那条");
+});
+
+test("保留期：回收站超过 7 天的条目自动清除，还原不了", async () => {
+    const db = new InMemoryD1();
+    const api = newApi(db);
+    api.setCurrentUser(7);
+    const nowSec = Math.floor(Date.now() / 1000);
+    db.recycle.push(
+        { id: 1, kind: "site", owner_user_id: 7, data: "{}", deleted_at: nowSec - 2 * DAY },
+        { id: 2, kind: "site", owner_user_id: 7, data: "{}", deleted_at: nowSec - 9 * DAY },
+    );
+
+    const items = await api.listRecycleBin();
+    assert.equal(items.length, 1, "超过 7 天的条目不该再出现在回收站");
+    assert.equal(items[0].id, 1);
+    assert.equal(await api.restoreRecycleItem(2), false, "已过期的条目不能还原");
+});
+
+test("保留期：cleanupExpiredRows 同时清审计与回收站并各自计数", async () => {
+    const db = new InMemoryD1();
+    const api = newApi(db);
+    const nowSec = Math.floor(Date.now() / 1000);
+    db.audit.push({ id: 1, action: "x", actor: "", ip: "", detail: "", created_at: new Date(nowSec * 1000 - 30 * DAY * 1000).toISOString() });
+    db.recycle.push({ id: 1, kind: "site", owner_user_id: null, data: "{}", deleted_at: nowSec - 30 * DAY });
+
+    const counts = await api.cleanupExpiredRows();
+    assert.equal(counts.audit, 1, "审计清掉 1 条");
+    assert.equal(counts.recycle, 1, "回收站清掉 1 条");
+});
+
+// ================= 首次改密提示只约束种子管理员本人 =================
+test("改密提示：新注册账号（role=user）不提示，种子管理员（owner）仍然提示", async () => {
+    const db = new InMemoryD1();
+    db.users.push({ id: 1, username: "admin", role: "owner" });
+    db.users.push({ id: 2, username: "newbie", role: "user" });
+    db.configs.set("auth.mustChangePassword", "1");
+    const api = newApi(db);
+
+    assert.equal(await api.mustChangePassword("user"), false, "新注册账号用的是自己设的密码，不该被牵连");
+    assert.equal(await api.mustChangePassword("owner"), true, "种子管理员仍必须先改密");
+});
+
+test("改密提示：标志解除后谁都不再提示；查不到角色时维持要求改密", async () => {
+    const db = new InMemoryD1();
+    const api = newApi(db);
+    db.configs.set("auth.mustChangePassword", "0");
+    assert.equal(await api.mustChangePassword("owner"), false, "已经改过密就不再拦");
+
+    db.configs.set("auth.mustChangePassword", "1");
+    assert.equal(await api.mustChangePassword(null), true, "老式单管理员（没有角色上下文）维持原行为");
 });
