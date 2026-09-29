@@ -28,6 +28,13 @@ import {
 import CloseIcon from "@mui/icons-material/Close";
 import LinkOffIcon from "@mui/icons-material/LinkOff";
 import { DEFAULT_ICON_API, DEFAULT_THUMB_API } from "../utils/iconApi";
+import {
+    RETENTION_DAYS,
+    RETENTION_DAYS_MIN,
+    RETENTION_DAYS_MAX,
+    INACTIVE_DISABLE_DAYS_DEFAULT,
+    INACTIVE_DELETE_GRACE_DAYS_DEFAULT,
+} from "../API/http";
 import type { FontScale, RadiusStyle } from "../context/UIPrefsContext";
 
 // 内置壁纸预设：既可以是渐变（直接作为 CSS background-image），也可以留空表示不用
@@ -647,7 +654,69 @@ export default function SettingsDialog({
                         )}
                     </Section>
 
-                    {/* 7. 高级 */}
+                    {/* 7. 数据保留：这三项决定「过期数据什么时候真的消失」，
+                        都是全站共享配置 —— 服务端只认站点所有者，这里同步禁用并说明原因 */}
+                    <Section
+                        title='数据保留'
+                        hint='决定审计日志、回收站与长期不登录的账号各自保留多久。每周的定时任务按这里的天数清理。'
+                    >
+                        {!isSiteOwner ? (
+                            <Alert severity='info' sx={{ mb: 1 }}>
+                                这几项是全站设置，只有站点所有者可以修改；保存时服务端也会拒绝。
+                            </Alert>
+                        ) : null}
+                        <TwoCol>
+                            <TextField
+                                margin='dense'
+                                size='small'
+                                id='retention-days'
+                                name='retention.days'
+                                label='审计与回收站保留（天）'
+                                type='number'
+                                fullWidth
+                                variant='outlined'
+                                disabled={!isSiteOwner}
+                                value={tempConfigs["retention.days"] ?? String(RETENTION_DAYS)}
+                                onChange={onConfigInputChange}
+                                inputProps={{ min: RETENTION_DAYS_MIN, max: RETENTION_DAYS_MAX }}
+                                helperText={`删掉的站点与审计日志留这么多天，到期自动清除（${RETENTION_DAYS_MIN}-${RETENTION_DAYS_MAX}，默认 ${RETENTION_DAYS}）`}
+                            />
+                            <TextField
+                                margin='dense'
+                                size='small'
+                                id='inactive-disable-days'
+                                name='inactive.disableDays'
+                                label='多久没登录算沉睡（天）'
+                                type='number'
+                                fullWidth
+                                variant='outlined'
+                                disabled={!isSiteOwner}
+                                value={tempConfigs["inactive.disableDays"] ?? ""}
+                                onChange={onConfigInputChange}
+                                inputProps={{ min: 30 }}
+                                placeholder={String(INACTIVE_DISABLE_DAYS_DEFAULT)}
+                                helperText={`超过这个天数没活跃的账号会被停用（数据保留，默认 ${INACTIVE_DISABLE_DAYS_DEFAULT} 天）。站点所有者本人不受影响`}
+                            />
+                        </TwoCol>
+                        <TextField
+                            margin='dense'
+                            size='small'
+                            id='inactive-grace-days'
+                            name='inactive.deleteGraceDays'
+                            label='停用后再过多久彻底删除（天）'
+                            type='number'
+                            fullWidth
+                            variant='outlined'
+                            disabled={!isSiteOwner}
+                            value={tempConfigs["inactive.deleteGraceDays"] ?? ""}
+                            onChange={onConfigInputChange}
+                            inputProps={{ min: 1 }}
+                            placeholder={String(INACTIVE_DELETE_GRACE_DAYS_DEFAULT)}
+                            helperText={`停用之后还有这么长的反悔期，期间重新启用即可恢复；到期才真正删除并释放数据库空间（默认 ${INACTIVE_DELETE_GRACE_DAYS_DEFAULT} 天）`}
+                        />
+                    </Section>
+
+                    {/* 8. 高级 */}
                     <Section title='高级' hint='自定义样式会直接注入页面，写错了可能影响显示。'>
                         <TextField
                             margin='dense'

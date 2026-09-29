@@ -524,6 +524,60 @@ check(
 );
 await send("Emulation.setTouchEmulationEnabled", { enabled: false });
 
+// 8) 多视口：不管窗口多宽，都得有办法跳分组；同时不能出现横向滚动条。
+//    这一组专门盯两类**已经发生过**的回归：
+//      a) 断档 —— 左侧分组栏要 ≥1344px 才显示，底部胶囊导航原来只在 <900px 显示，
+//         于是 900~1343px（1920 屏放大到 143%~213% 时就是这个区间）两个都不出现，
+//         用户没有任何快速跳分组的入口。
+//      b) 永久隐藏 —— 媒体查询键写成裸的 "(min-width:1344px)"（MUI 的 sx 要求
+//         以 "@media " 开头），基础样式 display:none 一直生效，多宽的屏都看不见栏。
+//    只断言「至少一个导航可见」，不绑死具体是哪个 —— 断点怎么调是设计自由，
+//    「任何宽度都能跳分组」才是不能破的底线。
+const VIEWPORTS = [
+    { w: 1440, h: 950 },
+    { w: 1200, h: 900 }, // 上面说的断档区间
+    { w: 1000, h: 850 },
+    { w: 900, h: 800 },
+    { w: 420, h: 780 }, // 手机
+];
+for (const vp of VIEWPORTS) {
+    await send("Emulation.setDeviceMetricsOverride", {
+        width: vp.w,
+        height: vp.h,
+        deviceScaleFactor: 1,
+        mobile: false,
+    });
+    await send("Page.reload", { ignoreCache: false });
+    await sleep(2500);
+    const nav = await evaluate(`(() => {
+      const vis = el => {
+        if (!el) return false;
+        const cs = getComputedStyle(el);
+        if (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') return false;
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
+      };
+      const rail = document.querySelector('.nav-group-rail');
+      const bar = document.querySelector('.nav-mobile-tabbar');
+      return {
+        rail: vis(rail),
+        bar: vis(bar),
+        // 诊断用：CI 真红了的时候，一眼看出是「断点没衔接上」还是「元素被 CSS 藏了」
+        innerWidth: window.innerWidth,
+        qRail: matchMedia('(min-width:1344px)').matches,
+        qBar: matchMedia('(max-width:1343.98px)').matches,
+        overflowX: document.documentElement.scrollWidth - window.innerWidth,
+      };
+    })()`);
+    check(
+        `${vp.w}px 宽下仍有分组导航可用（左栏或底栏）`,
+        nav.rail || nav.bar,
+        JSON.stringify(nav)
+    );
+    check(`${vp.w}px 宽下没有横向溢出`, nav.overflowX <= 2, `溢出 ${nav.overflowX}px`);
+}
+await send("Emulation.clearDeviceMetricsOverride");
+
 console.log(`\n${fails === 0 ? "全部通过" : fails + " 条失败"}`);
 cleanup();
 process.exit(fails === 0 ? 0 : 1);
