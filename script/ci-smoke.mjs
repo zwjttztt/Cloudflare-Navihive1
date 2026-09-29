@@ -164,6 +164,8 @@ const SITES = [
 // 新建站点 / 删除还原要发号：真实后端是自增主键，撤销批量删除靠它区分卡片
 let nextSiteId = 100;
 let nextRecycleId = 500;
+// 回收站（软删除）：recycleId -> 原始站点行
+const RECYCLE = new Map();
 const readJson = req =>
     new Promise(resolve => {
         let body = "";
@@ -207,9 +209,61 @@ const server = http.createServer(async (req, res) => {
             res.end(JSON.stringify({ id: nextSiteId++, group_id: 1, ...(await readJson(req)) }));
             return;
         }
+        // 批量删除：真实后端一次请求搬完（20 张卡过去是 20 次往返），这里也照做
+        if (p === "/api/sites/batch-delete" && req.method === "POST") {
+            const { ids = [] } = await readJson(req);
+            const items = [];
+            const failed = [];
+            for (const id of ids) {
+                const idx = SITES.findIndex(s => s.id === id);
+                if (idx === -1) {
+                    failed.push(id);
+                    continue;
+                }
+                const [site] = SITES.splice(idx, 1);
+                const recycleId = nextRecycleId++;
+                RECYCLE.set(recycleId, site);
+                items.push({ id, recycleId });
+            }
+            res.end(JSON.stringify({ items, failed }));
+            return;
+        }
+        // 批量还原：把卡片本身带回给前端，前端就地插回界面（不再 bootstrap 全量重拉）
+        if (p === "/api/recycle/restore-batch" && req.method === "POST") {
+            const { ids = [] } = await readJson(req);
+            const restored = [];
+            const failed = [];
+            for (const id of ids) {
+                const site = RECYCLE.get(id);
+                if (!site) {
+                    failed.push(id);
+                    continue;
+                }
+                RECYCLE.delete(id);
+                if (!SITES.some(s => s.id === site.id)) SITES.push(site);
+                restored.push(site);
+            }
+            res.end(JSON.stringify({ restored, failed }));
+            return;
+        }
+        if (p === "/api/recycle/purge-batch" && req.method === "POST") {
+            const { ids = [] } = await readJson(req);
+            for (const id of ids) RECYCLE.delete(id);
+            res.end(JSON.stringify({ success: true }));
+            return;
+        }
         // 删除是软删除：真实后端会回 recycleId，撤销时按它精确还原
         if (p.startsWith("/api/sites/") && req.method === "DELETE") {
-            res.end(JSON.stringify({ success: true, recycleId: nextRecycleId++ }));
+            const id = Number(p.split("/")[3]);
+            const idx = SITES.findIndex(s => s.id === id);
+            if (idx === -1) {
+                res.end(JSON.stringify({ success: false }));
+                return;
+            }
+            const [site] = SITES.splice(idx, 1);
+            const recycleId = nextRecycleId++;
+            RECYCLE.set(recycleId, site);
+            res.end(JSON.stringify({ success: true, recycleId }));
             return;
         }
         res.end(JSON.stringify({ success: true }));

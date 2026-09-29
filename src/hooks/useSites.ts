@@ -103,6 +103,15 @@ export function useSites(deps: UseSitesDeps) {
         setGroups(prev => removeSites(prev, siteIds));
     }, []);
 
+    /**
+     * 批量写回：撤销多选删除时一次把还原出来的卡片全插回去。
+     * 一个 state 更新搞定（逐个 upsert 就算 React 帮忙批处理，也要跑 N 遍纯计算）。
+     */
+    const upsertSitesLocally = useCallback((sites: Site[]) => {
+        if (sites.length === 0) return;
+        setGroups(prev => sites.reduce((acc, site) => upsertSite(acc, site), prev));
+    }, []);
+
     return {
         groups,
         setGroups,
@@ -113,6 +122,7 @@ export function useSites(deps: UseSitesDeps) {
         fetchData,
         applyRemoteData,
         upsertSiteLocally,
+        upsertSitesLocally,
         removeSiteLocally,
         removeSitesLocally,
     };

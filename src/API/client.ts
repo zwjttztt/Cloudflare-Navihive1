@@ -10,6 +10,8 @@ import {
     WebDavFile,
     WebDavResult,
     SiteOrderUpdateResult,
+    SiteBatchDeleteResult,
+    RecycleBatchRestoreResult,
     DEFAULT_TOKEN_TTL,
     REMEMBER_TOKEN_TTL,
 } from "./http";
@@ -379,6 +381,14 @@ export class NavigationClient {
         });
     }
 
+    /** 批量删除：一次往返代替 N 次 DELETE（多选删除慢就慢在那 N 次往返） */
+    async deleteSites(ids: number[]): Promise<SiteBatchDeleteResult> {
+        return this.request("sites/batch-delete", {
+            method: "POST",
+            body: JSON.stringify({ ids }),
+        });
+    }
+
     // 配置相关API
     async getConfigs(): Promise<Record<string, string>> {
         return this.request("configs");
@@ -570,6 +580,29 @@ export class NavigationClient {
         return this.request("recycle/purge", {
             method: "POST",
             body: JSON.stringify({ id }),
+        });
+    }
+
+    /**
+     * 批量还原：一次往返，并把还原出来的站点直接带回，省掉全量重拉。
+     * 归一化一下：后端（或旧版本）没按约定回数据时，退化成「全失败」，
+     * 让上层走全量重拉的兜底，而不是拿到 undefined 当场崩掉。
+     */
+    async restoreRecycleItems(ids: number[]): Promise<RecycleBatchRestoreResult> {
+        const result = await this.request<Partial<RecycleBatchRestoreResult>>("recycle/restore-batch", {
+            method: "POST",
+            body: JSON.stringify({ ids }),
+        });
+        return {
+            restored: Array.isArray(result?.restored) ? result.restored : [],
+            failed: Array.isArray(result?.failed) ? result.failed : ids,
+        };
+    }
+
+    async purgeRecycleItems(ids: number[]): Promise<{ purged: number[] }> {
+        return this.request("recycle/purge-batch", {
+            method: "POST",
+            body: JSON.stringify({ ids }),
         });
     }
 

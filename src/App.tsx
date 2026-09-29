@@ -283,6 +283,7 @@ function App() {
         fetchData,
         applyRemoteData,
         upsertSiteLocally,
+        upsertSitesLocally,
         removeSiteLocally,
         removeSitesLocally,
     } = useSites({
@@ -1602,17 +1603,8 @@ function App() {
                 // 恢复：优先从回收站精确还原（保留原 id，标签/星标按 id 自动归位）；
                 // 没有回收站 id 时退回「按快照重建」老路径。
                 const restored: { id?: number } = {};
-                const restore = async () => {
-                    if (recycleId !== undefined) {
-                        const ok = await api.restoreRecycleItem(recycleId);
-                        if (ok) {
-                            // 重新拉一份数据，被还原的卡片即刻回到原位置
-                            await fetchData({ silent: true });
-                            restored.id = snapshot.id;
-                            return;
-                        }
-                        // 还原失败（已被清掉）则继续走重建
-                    }
+                // 兜底：拿不到回收站条目时按快照重建一张（新 id，所以要重挂标签/星标）
+                const restoreBySnapshot = async () => {
                     const created = await api.createSite({
                         ...snapshot,
                         id: undefined,
@@ -1623,6 +1615,30 @@ function App() {
                     if (snapshotTags.length > 0) setSiteTags(created.id, snapshotTags);
                     if (wasStarred) setStarredMany([created.id], true);
                     restored.id = created.id;
+                };
+                const restore = async () => {
+                    if (recycleId !== undefined) {
+                        // 还原接口会把卡片本身带回来，直接插回界面即可 ——
+                        // 不再整表重拉（那要把分组/站点/配置全拉一遍再重建界面，
+                        // 站点一多就是肉眼可见的卡顿，撤销慢主要慢在这里）
+                        const result = await api.restoreRecycleItems([recycleId]);
+                        if (result.restored.length > 0) {
+                            upsertSitesLocally(result.restored);
+                            // 删除时清掉的标签/星标要按原 id 挂回去：还原保留原 id，
+                            // 所以直接写回即可。以前靠全量重拉顺带捞回来，现在不重拉了，
+                            // 不显式写回的话撤销后卡片回来了、标签却没了
+                            if (snapshot.id !== undefined) {
+                                if (snapshotTags.length > 0) setSiteTags(snapshot.id, snapshotTags);
+                                if (wasStarred) setStarredMany([snapshot.id], true);
+                            }
+                            restored.id = snapshot.id;
+                            return;
+                        }
+                        // 拿不回来（回收站里已被清掉）则退回「按快照重建」
+                        await restoreBySnapshot();
+                        return;
+                    }
+                    await restoreBySnapshot();
                 };
                 const removeAgain = async () => {
                     if (recycleId !== undefined) {
@@ -1654,6 +1670,7 @@ function App() {
         [
             removeSiteLocally,
             upsertSiteLocally,
+            upsertSitesLocally,
             handleError,
             notify,
             tags,
@@ -1663,7 +1680,6 @@ function App() {
             setStarredMany,
             pushHistory,
             runUndo,
-            fetchData,
         ]
     );
 
@@ -1690,22 +1706,27 @@ function App() {
                 });
             });
 
+            const ids = snapshots.map(site => site.id as number);
             try {
-                const results = await Promise.all(
-                    snapshots.map(site => api.deleteSite(site.id as number))
-                );
-                const recycleIds = results.map(r => r.recycleId).filter((x): x is number => x !== undefined);
-                removeSitesLocally(snapshots.map(site => site.id as number));
-                forgetSites(snapshots.map(site => site.id as number));
+                // 一次请求搬完：删 20 张卡过去是 20 次 HTTP 往返，点下去要等好几秒
+                const result = await api.deleteSites(ids);
+                const recycleIds = result.items
+                    .map(item => item.recycleId)
+                    .filter((x): x is number => x !== undefined);
+                // 只有真进了回收站的才从界面上摘掉，没删成的留在原地（提示里会说清楚）
+                const deletedIds = result.items
+                    .filter(item => item.recycleId !== undefined)
+                    .map(item => item.id);
+                if (deletedIds.length === 0) {
+                    handleError("一个都没删成功，请刷新后重试");
+                    return;
+                }
+                removeSitesLocally(deletedIds);
+                forgetSites(deletedIds);
 
                 const restoredIds: number[] = [];
-                const restore = async () => {
-                    if (recycleIds.length > 0) {
-                        await Promise.all(recycleIds.map(id => api.restoreRecycleItem(id)));
-                        await fetchData({ silent: true });
-                        return;
-                    }
-                    // 没有回收站 id（如本地 mock）时退回按快照重建
+                // 兜底：拿不到回收站条目时按快照逐个重建（新 id，要重挂标签/星标）
+                const restoreBySnapshot = async () => {
                     const ordered = [...snapshots].sort(
                         (a, b) => (a.order_num ?? 0) - (b.order_num ?? 0)
                     );
@@ -1726,25 +1747,57 @@ function App() {
                         }
                     }
                 };
-                const removeAgain = async () => {
+                const restore = async () => {
                     if (recycleIds.length > 0) {
-                        await Promise.all(recycleIds.map(id => api.purgeRecycleItem(id)));
+                        // 一次请求还原，并把卡片本身带回来直接插回界面，
+                        // 不再 bootstrap 全量重拉（撤销慢主要就慢在那一步）
+                        const restored = await api.restoreRecycleItems(recycleIds);
+                        if (restored.restored.length > 0) {
+                            upsertSitesLocally(restored.restored);
+                            // 还原保留原始 id，删除时清掉的标签/星标按原 id 挂回去即可
+                            // （以前靠全量重拉顺带从服务端捞回来，现在不重拉了）
+                            for (const site of restored.restored) {
+                                if (site.id === undefined) continue;
+                                const prefs = prefsMap.get(site.id);
+                                if (!prefs) continue;
+                                if (prefs.tags.length > 0) setSiteTags(site.id, prefs.tags);
+                                if (prefs.starred) setStarredMany([site.id], true);
+                            }
+                        }
+                        // 有没还原成的，拉一次远端把界面和库对齐
+                        if (restored.failed.length > 0) {
+                            await fetchData({ silent: true });
+                        }
                         return;
                     }
-                    const ids = [...restoredIds];
+                    await restoreBySnapshot();
+                };
+                const removeAgain = async () => {
+                    if (recycleIds.length > 0) {
+                        await api.purgeRecycleItems(recycleIds);
+                        return;
+                    }
+                    const pending = [...restoredIds];
                     restoredIds.length = 0;
-                    if (ids.length === 0) return;
-                    await Promise.all(ids.map(id => api.deleteSite(id)));
-                    removeSitesLocally(ids);
-                    forgetSites(ids);
+                    if (pending.length === 0) return;
+                    await Promise.all(pending.map(id => api.deleteSite(id)));
+                    removeSitesLocally(pending);
+                    forgetSites(pending);
                 };
 
-                const label = `删除 ${snapshots.length} 个网站`;
+                const label = `删除 ${deletedIds.length} 个网站`;
                 pushHistory({ label, undo: restore, redo: removeAgain });
-                notify(`已删除 ${snapshots.length} 个网站（可在回收站恢复）`, "info", 8000, {
-                    label: "撤销",
-                    onClick: () => void runUndo(),
-                });
+                if (result.failed.length > 0) {
+                    notify(
+                        `已删除 ${deletedIds.length} 个网站，${result.failed.length} 个没删成`,
+                        "error"
+                    );
+                } else {
+                    notify(`已删除 ${deletedIds.length} 个网站（可在回收站恢复）`, "info", 8000, {
+                        label: "撤销",
+                        onClick: () => void runUndo(),
+                    });
+                }
             } catch (error) {
                 console.error("批量删除站点失败:", error);
                 reportError(error, { source: "site-bulk-delete" });
@@ -1754,6 +1807,7 @@ function App() {
         [
             removeSitesLocally,
             upsertSiteLocally,
+            upsertSitesLocally,
             handleError,
             notify,
             tags,

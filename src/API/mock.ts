@@ -10,6 +10,8 @@ import {
     WebDavFile,
     WebDavResult,
     SiteOrderUpdateResult,
+    SiteBatchDeleteResult,
+    RecycleBatchRestoreResult,
 } from "./http";
 import { verifyBackupIntegrity, withBackupIntegrity } from "../utils/backupIntegrity";
 
@@ -380,6 +382,31 @@ export class MockNavigationClient {
         return mockSites[index];
     }
 
+    async deleteSites(ids: number[]): Promise<SiteBatchDeleteResult> {
+        await new Promise(resolve => setTimeout(resolve, 200));
+        const items: Array<{ id: number; recycleId?: number }> = [];
+        const failed: number[] = [];
+        for (const id of ids) {
+            const index = mockSites.findIndex(s => s.id === id);
+            if (index === -1) {
+                failed.push(id);
+                continue;
+            }
+            const site = mockSites[index];
+            const recycleId = mockRecycleSeq++;
+            mockRecycleBin.push({
+                id: recycleId,
+                kind: "site",
+                name: site.name,
+                deletedAt: Math.floor(Date.now() / 1000),
+                site,
+            });
+            mockSites.splice(index, 1);
+            items.push({ id, recycleId });
+        }
+        return { items, failed };
+    }
+
     async deleteSite(id: number): Promise<{ success: boolean; recycleId?: number }> {
         await new Promise(resolve => setTimeout(resolve, 200));
         const index = mockSites.findIndex(s => s.id === id);
@@ -615,6 +642,41 @@ export class MockNavigationClient {
         }
         mockRecycleBin.splice(index, 1);
         return { success: true };
+    }
+
+    async restoreRecycleItems(ids: number[]): Promise<RecycleBatchRestoreResult> {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        const restored: Site[] = [];
+        const failed: number[] = [];
+        for (const id of ids) {
+            const index = mockRecycleBin.findIndex(r => r.id === id);
+            if (index === -1) {
+                failed.push(id);
+                continue;
+            }
+            const item = mockRecycleBin[index];
+            if (item.kind === "group" && item.group) {
+                mockGroups.push(item.group);
+                (item.sites || []).forEach(site => mockSites.push(site));
+            } else if (item.site) {
+                mockSites.push(item.site);
+                restored.push(item.site);
+            }
+            mockRecycleBin.splice(index, 1);
+        }
+        return { restored, failed };
+    }
+
+    async purgeRecycleItems(ids: number[]): Promise<{ purged: number[] }> {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        const purged: number[] = [];
+        for (const id of ids) {
+            const index = mockRecycleBin.findIndex(r => r.id === id);
+            if (index === -1) continue;
+            mockRecycleBin.splice(index, 1);
+            purged.push(id);
+        }
+        return { purged };
     }
 
     async purgeRecycleItem(id: number): Promise<{ success: boolean }> {

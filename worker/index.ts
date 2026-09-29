@@ -870,6 +870,33 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
                     await api.writeAudit("recycle.purge", "", clientIp(request), `回收站条目 ${id}`);
                     return Response.json({ success: ok });
                 }
+                // 回收站：批量还原（撤销多选删除时一次请求搞定，并带回还原出来的卡片，
+                // 前端直接插回界面，不必再 bootstrap 全量重拉）
+                if (path === "recycle/restore-batch" && method === "POST") {
+                    const body = (await request.json().catch(() => ({}))) as { ids?: unknown };
+                    const ids = Array.isArray(body.ids)
+                        ? body.ids.filter((v): v is number => typeof v === "number" && Number.isInteger(v))
+                        : [];
+                    if (ids.length === 0) {
+                        return Response.json({ success: false, message: "缺少有效的 id" }, { status: 400 });
+                    }
+                    const result = await api.restoreRecycleItems(ids);
+                    await api.writeAudit("recycle.batchRestore", "", clientIp(request), `回收站条目 ${ids.length} 条`);
+                    return Response.json(result);
+                }
+                // 回收站：批量永久删除（撤销后又删一次）
+                if (path === "recycle/purge-batch" && method === "POST") {
+                    const body = (await request.json().catch(() => ({}))) as { ids?: unknown };
+                    const ids = Array.isArray(body.ids)
+                        ? body.ids.filter((v): v is number => typeof v === "number" && Number.isInteger(v))
+                        : [];
+                    if (ids.length === 0) {
+                        return Response.json({ success: false, message: "缺少有效的 id" }, { status: 400 });
+                    }
+                    await api.purgeRecycleItems(ids);
+                    await api.writeAudit("recycle.batchPurge", "", clientIp(request), `回收站条目 ${ids.length} 条`);
+                    return Response.json({ success: true });
+                }
                 // 回收站：清空
                 if (path === "recycle" && method === "DELETE") {
                     const ok = await api.emptyRecycleBin();
@@ -1071,6 +1098,23 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
                     const result = await api.deleteSite(id);
                     await api.writeAudit("site.delete", "", clientIp(request), `站点 ${id}`);
                     // 软删除：结果含 recycleId，前端撤销时据此精确还原
+                    return Response.json(result);
+                }
+                // 批量删除站点：多选删除一次请求搬完（逐个 DELETE 在 20 张卡时要等十几秒）
+                else if (path === "sites/batch-delete" && method === "POST") {
+                    const body = (await request.json().catch(() => ({}))) as { ids?: unknown };
+                    const ids = Array.isArray(body.ids)
+                        ? body.ids.filter((v): v is number => typeof v === "number" && Number.isInteger(v))
+                        : [];
+                    if (ids.length === 0) {
+                        return Response.json({ success: false, message: "缺少要删除的 id" }, { status: 400 });
+                    }
+                    // 一次删太多会把 D1 单次请求顶满，也给误操作留个上限
+                    if (ids.length > 500) {
+                        return Response.json({ success: false, message: "一次最多删除 500 个" }, { status: 400 });
+                    }
+                    const result = await api.deleteSites(ids);
+                    await api.writeAudit("site.batchDelete", "", clientIp(request), `站点 ${ids.length} 个`);
                     return Response.json(result);
                 }
                 // 批量更新排序

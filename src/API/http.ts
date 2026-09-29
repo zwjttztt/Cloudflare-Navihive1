@@ -194,6 +194,20 @@ export interface SiteOrderUpdateResult {
     failed: number[];
 }
 
+/** 批量删除的结果：items 里有 recycleId 的才算真删掉了 */
+export interface SiteBatchDeleteResult {
+    items: Array<{ id: number; recycleId?: number }>;
+    /** 一个都没动过的 id（卡片不存在 / 不是自己的 / 回收站没写进去） */
+    failed: number[];
+}
+
+/** 批量从回收站还原的结果：restored 直接给前端插回界面，省掉一次全量重拉 */
+export interface RecycleBatchRestoreResult {
+    /** 还原出来的站点（按原始 id 插回，密码已解密） */
+    restored: Site[];
+    failed: number[];
+}
+
 /** 站点元信息（/api/meta 抓回来的：新增卡片时一键补全用） */
 export interface SiteMeta {
     title: string;
@@ -2742,6 +2756,66 @@ export class NavigationAPI {
     }
 
     /**
+     * 批量删除站点：一次请求搬完，替代「前端 for 循环逐个 DELETE」。
+     *
+     * 多选删 20 张卡，原来是 20 次 HTTP 往返 × 每次 3 条 SQL（读行 / 写回收站 / 删行），
+     * 点下去要等十几秒。现在一次往返：1 次 SELECT 取回全部原始行 → 并发写回收站 →
+     * 1 条 `DELETE ... IN` 删真身。
+     */
+    async deleteSites(ids: number[]): Promise<SiteBatchDeleteResult> {
+        await this.migrate();
+        const unique = [...new Set(ids.filter(id => Number.isInteger(id)))];
+        if (unique.length === 0) return { items: [], failed: [] };
+
+        return this.withSchemaRetry(async () => {
+            const inList = unique.map(() => "?").join(", ");
+            const rows = await this.db
+                .prepare(`SELECT * FROM sites WHERE id IN (${inList})${this.scopeSql(true)}`)
+                .bind(...this.scopeParams(unique))
+                .all<Record<string, unknown>>();
+
+            const found = new Map<number, Record<string, unknown>>();
+            for (const row of rows.results || []) {
+                const id = Number(row.id);
+                if (Number.isFinite(id)) found.set(id, row);
+            }
+
+            const failed: number[] = [];
+            const pending: Promise<{ id: number; recycleId?: number }>[] = [];
+            for (const id of unique) {
+                const row = found.get(id);
+                if (!row) {
+                    failed.push(id);
+                    continue;
+                }
+                pending.push(
+                    this.pushToRecycle("site", JSON.stringify(row)).then(recycleId => ({
+                        id,
+                        recycleId,
+                    }))
+                );
+            }
+            const items = await Promise.all(pending);
+
+            // 只有真的进了回收站的才删真身：写回收站失败就当成「没删」，
+            // 免得多选删除把卡片变成硬删除（回收站里没有，找不回来）
+            const okIds = items.filter(item => item.recycleId !== undefined).map(item => item.id);
+            if (okIds.length > 0) {
+                const delList = okIds.map(() => "?").join(", ");
+                await this.db
+                    .prepare(`DELETE FROM sites WHERE id IN (${delList})${this.scopeSql(true)}`)
+                    .bind(...this.scopeParams(okIds))
+                    .run();
+            }
+
+            return {
+                items,
+                failed: [...failed, ...items.filter(item => item.recycleId === undefined).map(i => i.id)],
+            };
+        });
+    }
+
+    /**
      * 删除站点：先搬进回收站（软删除，原样保留含密文密码的原始行），再真正删除。
      * 返回 recycleId 供前端「撤销」精确还原。
      */
@@ -2829,6 +2903,90 @@ export class NavigationAPI {
         });
     }
 
+    /**
+     * 批量从回收站还原：一次请求替代「前端逐条 POST」。
+     *
+     * 关键不只是少几次往返 —— 它还把还原出来的站点**直接返回**给前端，
+     * 前端照单插回界面即可，不用再来一次 bootstrap 全量重拉（撤销慢主要就慢在这步：
+     * 全量重拉要把所有分组、站点、配置重新拉一遍再整体重建界面）。
+     */
+    async restoreRecycleItems(ids: number[]): Promise<RecycleBatchRestoreResult> {
+        await this.migrate();
+        const unique = [...new Set(ids.filter(id => Number.isInteger(id)))];
+        if (unique.length === 0) return { restored: [], failed: [] };
+
+        return this.withSchemaRetry(async () => {
+            const inList = unique.map(() => "?").join(", ");
+            const ownerIsNull = this.currentUserId === null;
+            const rows = await this.db
+                .prepare(
+                    `SELECT id, kind, data FROM recycle_bin WHERE id IN (${inList}) AND owner_user_id ${ownerIsNull ? "IS NULL" : "= ?"}`
+                )
+                .bind(...(ownerIsNull ? unique : [...unique, this.currentUserId]))
+                .all<{ id: number; kind: string; data: string }>();
+
+            const siteRows: Record<string, unknown>[] = [];
+            const restored: Site[] = [];
+            const doneIds: number[] = [];
+            const hit = new Set<number>();
+
+            for (const row of rows.results || []) {
+                const rid = Number(row.id);
+                if (!Number.isFinite(rid)) continue;
+                hit.add(rid);
+                // 分组条目不走这条批量路（要连分组带卡片一起还原），留给单条接口
+                if (row.kind !== "site") continue;
+                let parsed: unknown;
+                try {
+                    parsed = JSON.parse(row.data);
+                } catch {
+                    continue;
+                }
+                if (!parsed || typeof parsed !== "object") continue;
+                const record = parsed as Record<string, unknown>;
+                siteRows.push(record);
+                doneIds.push(rid);
+                restored.push(this.recycleRowToSite(record));
+            }
+
+            await this.reinsertSitesBatch(siteRows);
+            if (doneIds.length > 0) {
+                const delList = doneIds.map(() => "?").join(", ");
+                await this.db
+                    .prepare(`DELETE FROM recycle_bin WHERE id IN (${delList})`)
+                    .bind(...doneIds)
+                    .run();
+            }
+
+            const failed: number[] = [];
+            for (const id of unique) {
+                if (!hit.has(id)) failed.push(id);
+            }
+
+            // 回收站里存的是原始行，密码还是密文，解密后再给前端（否则界面上是一串 enc$）
+            return { restored: await this.decryptSitePasswords(restored), failed };
+        });
+    }
+
+    /**
+     * 批量永久删除回收站记录（撤销后又删一次时用），一次 `DELETE ... IN` 搞定。
+     * 返回真正删掉的 id；DELETE 是单条语句，成败一致，所以不逐个区分。
+     */
+    async purgeRecycleItems(ids: number[]): Promise<{ purged: number[] }> {
+        await this.migrate();
+        const unique = [...new Set(ids.filter(id => Number.isInteger(id)))];
+        if (unique.length === 0) return { purged: [] };
+        const inList = unique.map(() => "?").join(", ");
+        const ownerIsNull = this.currentUserId === null;
+        const result = await this.db
+            .prepare(
+                `DELETE FROM recycle_bin WHERE id IN (${inList}) AND owner_user_id ${ownerIsNull ? "IS NULL" : "= ?"}`
+            )
+            .bind(...(ownerIsNull ? unique : [...unique, this.currentUserId]))
+            .run();
+        return { purged: result.success ? unique : [] };
+    }
+
     /** 永久删除一条回收站记录（数据不可恢复） */
     async purgeRecycleItem(id: number): Promise<boolean> {
         await this.migrate();
@@ -2889,6 +3047,19 @@ export class NavigationAPI {
         row: Record<string, unknown>,
         fallbackColumns: string[]
     ): Promise<void> {
+        const statement = await this.buildReinsert(table, row, fallbackColumns);
+        if (statement) await statement.run();
+    }
+
+    /**
+     * 组装「把原始行插回表」的语句（只组装不执行，方便批量提交）。
+     * 组装不出任何列时返回 null（表里没这些列，插了也没意义）。
+     */
+    private async buildReinsert(
+        table: "sites" | "groups",
+        row: Record<string, unknown>,
+        fallbackColumns: string[]
+    ): Promise<D1PreparedStatement | null> {
         const known = await this.tableColumns(table);
         let data = row;
 
@@ -2902,18 +3073,62 @@ export class NavigationAPI {
 
         let cols = Object.keys(data).filter(c => /^[A-Za-z_][A-Za-z0-9_]*$/.test(c));
         cols = known ? cols.filter(c => known.has(c)) : cols.filter(c => fallbackColumns.includes(c));
-        if (cols.length === 0) return;
+        if (cols.length === 0) return null;
 
         const placeholders = cols.map(() => "?").join(", ");
         const vals = cols.map(c => (data[c] === undefined ? null : data[c]));
-        await this.db
+        return this.db
             .prepare(`INSERT OR REPLACE INTO ${table} (${cols.join(", ")}) VALUES (${placeholders})`)
-            .bind(...vals)
-            .run();
+            .bind(...vals);
     }
 
     private async reinsertSite(site: Record<string, unknown>): Promise<void> {
         await this.reinsertRow("sites", site, NavigationAPI.SITE_RESTORE_COLUMNS);
+    }
+
+    /**
+     * 批量插回站点：组装成一批 prepared statement 后一次 batch 提交，
+     * 还原 20 张卡只花一次 D1 往返（逐条 run 就是 20 次）。
+     */
+    private async reinsertSitesBatch(rows: Record<string, unknown>[]): Promise<void> {
+        if (rows.length === 0) return;
+        const built = await Promise.all(
+            rows.map(row => this.buildReinsert("sites", row, NavigationAPI.SITE_RESTORE_COLUMNS))
+        );
+        const statements = built.filter((s): s is D1PreparedStatement => s !== null);
+        if (statements.length === 0) return;
+        await this.db.batch(statements);
+    }
+
+    /** 把回收站里的原始行（DB 列名）转成前端的 Site 形状，交给界面直接渲染 */
+    private recycleRowToSite(row: Record<string, unknown>): Site {
+        const asNumber = (value: unknown, fallback = 0): number => {
+            if (typeof value === "number" && Number.isFinite(value)) return value;
+            if (typeof value === "string" && value.trim() !== "") {
+                const parsed = Number(value);
+                if (Number.isFinite(parsed)) return parsed;
+            }
+            return fallback;
+        };
+        const asText = (value: unknown): string =>
+            typeof value === "string" ? value : value === null || value === undefined ? "" : String(value);
+        const asOptional = (value: unknown): string | undefined =>
+            value === null || value === undefined || value === "" ? undefined : asText(value);
+
+        return {
+            id: asNumber(row.id, 0) || undefined,
+            group_id: asNumber(row.group_id),
+            name: asText(row.name),
+            url: asText(row.url),
+            icon: asText(row.icon),
+            description: asText(row.description),
+            notes: asText(row.notes),
+            username: asOptional(row.username),
+            password: asOptional(row.password),
+            order_num: asNumber(row.order_num),
+            created_at: asOptional(row.created_at),
+            updated_at: asOptional(row.updated_at),
+        };
     }
 
     /** 把分组原始行按原 id 插回，再插回其站点（站点 group_id 指向原分组 id） */
