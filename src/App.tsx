@@ -14,16 +14,9 @@ import { MockNavigationClient } from "./API/mock";
 import {
     Site,
     Group,
-    ExportData,
     BootstrapData,
     WebDavConfig,
     BACKUP_CREDENTIALS_CONFIG,
-    CRON_LAST_ERROR_KEY,
-    EXPORT_VERSION,
-    isSecretConfigKey,
-    isUserScopedConfigKey,
-    isPerUserAppearanceKey,
-    normalizeImportData,
     INACTIVE_DISABLE_DAYS_KEY,
     INACTIVE_DELETE_GRACE_DAYS_KEY,
     INACTIVE_DISABLE_DAYS_DEFAULT,
@@ -54,6 +47,8 @@ import { useSites } from "./hooks/useSites";
 import { useMultiSelect } from "./hooks/useMultiSelect";
 import { useBulkActions } from "./hooks/useBulkActions";
 import { useAppDialogs } from "./hooks/useAppDialogs";
+import { useThemeController } from "./hooks/useThemeController";
+import { useBackupController } from "./hooks/useBackupController";
 import { wrapMutations, installOnlineListener, flushOfflineQueue, pendingCount, type MutationApi } from "./API/offlineQueue";
 import { buildFavoritesGroup, deriveDisplayedGroups } from "./utils/siteView";
 import {
@@ -95,7 +90,6 @@ import { normalizeFailureText, normalizeUrl } from "./utils/url";
 import { groupAccent } from "./utils/groupColor";
 import { matchesGroupQuery, matchesSiteQuery } from "./utils/search";
 import { saveRememberedLogin, clearRememberedLogin } from "./utils/rememberedLogin";
-import { verifyBackupIntegrity, withBackupIntegrity } from "./utils/backupIntegrity";
 import { loadPersistedUndo } from "./utils/undoPersist";
 import {
     formDataKey,
@@ -103,7 +97,6 @@ import {
     secretInputType,
     SECRET_IGNORE_ATTRS,
 } from "./utils/secretInput";
-import type { ThemeMode } from "./components/ThemeToggle";
 import GroupCard from "./components/GroupCard";
 import EditGroupDialog from "./components/EditGroupDialog";
 import LoginForm from "./components/LoginForm";
@@ -137,7 +130,6 @@ import {
     Button,
     CircularProgress,
     Stack,
-    createTheme,
     ThemeProvider,
     CssBaseline,
     TextField,
@@ -150,7 +142,6 @@ import {
     Tooltip,
     InputAdornment,
 } from "@mui/material";
-import { encryptBackup } from "./API/crypto";
 import {
     algLabel,
     checkWebCryptoSupport,
@@ -236,39 +227,6 @@ const SYNC_DEBOUNCE_MS = 1500;
 // 之前搜索框（40px）比按钮（32px）高一截，一行里高矮不齐；现在统一成一个高度、一个圆角。
 // 主题模式（ThemeMode）定义在 ThemeToggle 里，这里直接引用，避免两处联合类型各写一份。
 function App() {
-    // 主题模式状态（默认跟随系统；老用户存过的 light/dark 依然兼容）
-    const [themeMode, setThemeMode] = useState<ThemeMode>(() => {
-        const saved = localStorage.getItem("theme");
-        return saved === "light" || saved === "dark" || saved === "system" ? saved : "system";
-    });
-    // 系统当前的深浅偏好
-    const [systemDark, setSystemDark] = useState(() =>
-        window.matchMedia("(prefers-color-scheme: dark)").matches
-    );
-
-    useEffect(() => {
-        const mq = window.matchMedia("(prefers-color-scheme: dark)");
-        const onChange = (e: MediaQueryListEvent) => setSystemDark(e.matches);
-        mq.addEventListener("change", onChange);
-        return () => mq.removeEventListener("change", onChange);
-    }, []);
-
-    const darkMode = themeMode === "system" ? systemDark : themeMode === "dark";
-
-    // 切换主题：每一档点下去都要有可见变化
-    // 浅色 → 深色 → 跟随系统（系统深时则先给浅色，保证「点一下就有反应」）
-    const toggleTheme = () => {
-        const next: ThemeMode =
-            themeMode === "light"
-                ? "dark"
-                : themeMode === "dark"
-                  ? "system"
-                  : systemDark
-                    ? "light"
-                    : "dark";
-        setThemeMode(next);
-        localStorage.setItem("theme", next);
-    };
 
     // 只读数据层切片：分组 / 加载中 / 错误状态与 bootstrap 落地逻辑已抽到 useSites，
     // 配置落地 + 偏好 / 链接健康合并等需要其它 App 层状态的步骤交还给 onRemoteExtras。
@@ -383,139 +341,7 @@ function App() {
     const accent = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(accentRaw) ? accentRaw : "";
 
     // 创建Material UI主题（放在 configs 之后，才能读到自定义主色）
-    const theme = useMemo(
-        () =>
-            createTheme({
-                palette: {
-                    mode: darkMode ? "dark" : "light",
-                    // 未设置主色时保持默认（亮/暗各一套，暗色下自动换成更亮的蓝）
-                    ...(accent ? { primary: { main: accent } } : {}),
-                    // 次级文字（caption/说明文案）默认 rgba(0,0,0,.6)，在带底色的面板上
-                    // 对比度 4.59 压线 AA（4.5）。各提半档留安全余量，视觉上几乎无差别
-                    // （harness/contrast-audit.mjs 守着这条）
-                    text:
-                        darkMode
-                            ? { secondary: "rgba(255,255,255,0.76)" }
-                            : { secondary: "rgba(0,0,0,0.66)" },
-                    // 凭据警告等 warning.dark 文案：MUI 亮色默认 orange[900]（#e65100）
-                    // 在白底上只有 ~3.8:1，低于 AA(4.5)。main 保持默认只加深 dark，
-                    // 暗色用 MUI 默认（contrast-audit 无不合格）
-                    ...(!darkMode && { warning: { main: "#ed6c02", dark: "#9c4f00" } }),
-                },
-                typography: {
-                    // 跟随全局字体栈（index.css 的 --font-sans）
-                    fontFamily: 'var(--font-sans)',
-                    h1: { fontWeight: 700, letterSpacing: "-0.02em" },
-                    h2: { fontWeight: 600, letterSpacing: "-0.01em" },
-                    h3: { fontWeight: 700, letterSpacing: "-0.02em" },
-                    h4: { fontWeight: 600 },
-                    h5: { fontWeight: 600 },
-                    button: { fontWeight: 500, textTransform: "none" },
-                },
-                shape: {
-                    // 统一放大圆角，观感更柔和
-                    borderRadius: 14,
-                },
-                components: {
-                    // 弹层（菜单/对话框/抽屉/下拉）一律不锁背景滚动。MUI 的滚动锁会
-                    // 把 body 的滚动条收走再补 padding，开合之间有效宽度进出 10px ——
-                    // 页面缩放时这 10px 刚好能跨过 900px 断点，顶栏字号档位跟着跳，
-                    // 「导航站」一开菜单就从一行挤成两行。禁掉后滚动条从头到尾都在，
-                    // 加上 index.css 的 scrollbar-gutter: stable，开合弹层零重排。
-                    // 代价是弹层开着时背景还能滚 —— 菜单/弹窗跟随锚点重定位，无碍。
-                    MuiPopover: { defaultProps: { disableScrollLock: true } },
-                    MuiDrawer: { defaultProps: { disableScrollLock: true } },
-                    // 键盘焦点环：index.css 里那条全局 :focus-visible 只对原生元素管用，
-                    // MUI 组件的样式是运行时由 emotion 注入的，排在意料之外的位置把它压掉了 ——
-                    // 实测 Tab 到搜索框 / 更多选项 / 视图切换时，computed outline 与 boxShadow 全是 none，
-                    // 键盘用户过了左侧分组栏就彻底看不到自己在哪。这里按组件补回来。
-                    MuiButtonBase: {
-                        styleOverrides: {
-                            root: {
-                                "&:focus-visible": {
-                                    outline: "2px solid var(--accent)",
-                                    outlineOffset: 2,
-                                },
-                            },
-                        },
-                    },
-                    // 所有弹窗默认走同一套毛玻璃面板：半透明底 + 模糊 + 细边框 + 柔和投影，
-                    // 单个弹窗自己写了 paper sx 的话会覆盖这里（比如确认弹窗、命令面板）
-                    MuiDialog: {
-                        defaultProps: { disableScrollLock: true },
-                        styleOverrides: {
-                            paper: ({ theme }) => ({
-                                borderRadius: "var(--card-radius)",
-                                backdropFilter: "blur(var(--glass-blur)) saturate(1.4)",
-                                WebkitBackdropFilter: "blur(var(--glass-blur)) saturate(1.4)",
-                                border: "1px solid var(--glass-panel-border)",
-                                boxShadow: "var(--glass-shadow-hover)",
-                                backgroundColor:
-                                    theme.palette.mode === "dark"
-                                        ? "rgba(23,27,38,0.94)"
-                                        : "rgba(255,255,255,0.94)",
-                                // 小屏别贴边
-                                "@media (max-width:600px)": { margin: 12 },
-                            }),
-                        },
-                    },
-                    // 移动端触控尺寸：以前写在 App.css 里用 !important 全站强压
-                    // （button/a/[role=button] padding 12px + min-height 36px），
-                    // 结果是连左侧分组栏、卡片右上角的图标按钮都被撑成 32×36 的长方形。
-                    // 改成按组件在断点里给尺寸后，组件自己写的 sx 优先级更高、可以覆盖，
-                    // 只有没特别声明的按钮才拿到这套保底尺寸。
-                    MuiButton: {
-                        styleOverrides: {
-                            root: {
-                                "@media (max-width:600px)": {
-                                    minHeight: 36,
-                                    paddingInline: 12,
-                                },
-                            },
-                        },
-                    },
-                    MuiIconButton: {
-                        styleOverrides: {
-                            root: {
-                                "@media (max-width:600px)": {
-                                    padding: 6,
-                                    minWidth: 36,
-                                    minHeight: 36,
-                                },
-                            },
-                        },
-                    },
-                    MuiInputBase: {
-                        styleOverrides: {
-                            root: {
-                                "@media (max-width:600px)": {
-                                    "& .MuiInputBase-input": { padding: "10px 12px" },
-                                },
-                                // 输入框**不**补外圈 outline：
-                                // outlined 输入框自己就有聚焦指示（边框 1px 灰 → 2px 主色），
-                                // 之前额外给 root 补一圈 outline 后，两者叠成两道同心环——
-                                // 点一下搜索框就看到「双红圈」。
-                                // 统一交给 MUI 的边框后，任何主题、带不带 label 都只有一圈，
-                                // 顺带也不再需要「带 label 的输入框单独排除 outline」那条例外
-                                // （label 骑在边框线上、外圈横穿文字的问题一并消失）。
-                            },
-                        },
-                    },
-                    MuiDivider: {
-                        styleOverrides: {
-                            root: { "@media (max-width:600px)": { margin: "8px 0" } },
-                        },
-                    },
-                    MuiMenu: {
-                        defaultProps: { disableScrollLock: true },
-                        styleOverrides: {
-                            paper: { "@media (max-width:600px)": { minWidth: 200 } },
-                        },
-                    },
-                },
-            }),
-        [darkMode, accent]
-    );
+    const { themeMode, darkMode, toggleTheme, theme } = useThemeController(accent);
 
     // WebDAV 备份配置
     const [webdavConfig, setWebdavConfig] = useState<WebDavConfig>(DEFAULT_WEBDAV_CONFIG);
@@ -563,9 +389,6 @@ function App() {
     const [menuAnchorEl, setMenuAnchorEl] = useState<null | HTMLElement>(null);
     const openMenu = Boolean(menuAnchorEl);
 
-    // 备份/恢复对话框状态
-    const [openBackup, setOpenBackup] = useState(false);
-    const [backupTab, setBackupTab] = useState(0);
 
     // 审计日志 / 回收站对话框状态
     const [openAudit, setOpenAudit] = useState(false);
@@ -643,12 +466,6 @@ function App() {
         mergeRemotePrefs,
     } = useUIPrefs();
 
-    // 导入预览：备份恢复前先摊开差异让用户挑，确认/取消都通过 promise 回传给备份弹窗
-    const [importPreview, setImportPreview] = useState<{
-        data: ExportData;
-        overwrite: boolean;
-    } | null>(null);
-    const importPreviewResolve = useRef<((result: ExportData | null) => void) | null>(null);
 
     // 拼音搜索：开关打开后才按需加载词典（约 28KB 的独立 chunk），加载完刷新一次筛选
     const [pinyinReady, setPinyinReady] = useState(false);
@@ -2584,421 +2401,42 @@ function App() {
     };
 
     // 打开备份对话框（0=备份，1=恢复）
-    const handleOpenBackup = (tab = 0) => {
-        setBackupTab(tab);
-        setOpenBackup(true);
-        handleMenuClose();
-    };
-
-    const handleCloseBackup = () => {
-        setOpenBackup(false);
-    };
-
-    // 最近一次定时任务（每周自动备份 / 死链巡检）的失败留痕，没有就是 null。
-    // 定时任务跑在 Worker 里，失败了页面上毫无动静，只能靠启动时提示一句 +
-    // 备份弹窗里常驻一条 —— 否则「自动备份其实早就不工作了」要等到真要恢复那天才发现。
-    const cronError = useMemo(() => {
-        for (const task of ["backup", "linkSweep"]) {
-            const raw = configs[`${CRON_LAST_ERROR_KEY}.${task}`];
-            if (!raw) continue;
-            try {
-                const parsed = JSON.parse(raw) as {
-                    task?: string;
-                    message?: string;
-                    at?: string;
-                };
-                if (parsed && typeof parsed.message === "string" && parsed.message) {
-                    return { task: parsed.task || task, message: parsed.message, at: parsed.at };
-                }
-            } catch {
-                // 留痕本身坏了就当没留过，别因为一行坏数据把弹窗搞崩
-            }
-        }
-        return null;
-    }, [configs]);
-
-    // 启动后提示一次（同一条不重复弹）：定时任务失败不是用户当下的操作引起的，
-    // 不提示的话他根本不会知道要去看一眼备份设置
-    const cronErrorNotifiedRef = useRef<string>("");
-    useEffect(() => {
-        if (!cronError) return;
-        if (cronErrorNotifiedRef.current === cronError.message) return;
-        cronErrorNotifiedRef.current = cronError.message;
-        notify(
-            `${cronError.task === "backup" ? "每周自动备份" : "死链巡检"}未成功：${
-                cronError.message
-            }`,
-            "error",
-            8000
-        );
-    }, [cronError, notify]);
-
-    // 构造完整备份数据（分组 + 站点（含账号密码）+ 网站配置 + 本机星标/标签）
-    const buildExportData = (): ExportData => {
-        // 全站设置（标题 / 主题 / 背景…）是所有账号共用的，只有站点所有者（或未启用
-        // 登录的单账号部署）才写进备份文件：否则这份备份被别的账号恢复时，会把整站
-        // 外观一起改掉。按账号隔离的那批（webdav.*）属敏感配置，一律不进备份。
-        const mayExportShared = !currentUser || currentUser.role === "owner";
-        const sharedConfigs: Record<string, string> = {};
-        Object.entries(configs).forEach(([key, value]) => {
-            // 敏感配置（WebDAV 凭据）和「服务端镜像」类的大块数据（失效记录、星标标签）
-            // 都不写进备份文件，规则统一在 isSecretConfigKey 里维护
-            if (!isSecretConfigKey(key)) {
-                sharedConfigs[key] = value;
-            }
-        });
-
-        // 普通账号：外观（标题 / 背景 / 主题色…）是自己那份，也要跟着备份走。
-        // 所有者那份本来就是全站 configs，已经进了 sharedConfigs，不重复写。
-        const ownConfigs: Record<string, string> = {};
-        if (!mayExportShared) {
-            Object.entries(configs).forEach(([key, value]) => {
-                if (!isSecretConfigKey(key) && isPerUserAppearanceKey(key)) {
-                    ownConfigs[key] = value;
-                }
-            });
-        }
-
-        return {
-            groups: groups.map(group => ({
-                id: group.id,
-                name: group.name,
-                order_num: group.order_num,
-            })),
-            sites: groups.flatMap(group =>
-                group.sites.map(site => ({
-                    ...site,
-                    // 与后端 /api/export、每周定时备份用同一个开关：
-                    // 关掉之后导出文件里不带网站账号密码
-                    ...(configs[BACKUP_CREDENTIALS_CONFIG] === "true"
-                        ? {}
-                        : { username: "", password: "" }),
-                }))
-            ),
-            // 全站设置（标题 / 主题 / 背景…）：所有者写进 sharedConfigs（恢复时会覆盖全站），
-            // 普通账号只带自己那份外观，不会把整站长什么样改掉。
-            configs: ownConfigs,
-            ...(mayExportShared ? { sharedConfigs } : {}),
-            version: EXPORT_VERSION,
-            exportDate: new Date().toISOString(),
-            // 星标 / 标签只存在本机，数据库里没有对应字段，所以由前端附带进备份文件
-            localPrefs: {
-                starred: [...starred],
-                tags: { ...tags },
-            },
-        };
-    };
-
-    // 备份到本地：下载备份文件。传了口令就用它加密后再落盘（明文 JSON 会带着站点
-    // 密码直接躺在磁盘 / 网盘同步目录里），不传则维持原来的明文 JSON（兼容老备份）。
-    const handleDownloadLocal = async (password?: string) => {
-        try {
-            // 摘要在「写文件前的最后一刻」才算：这份数据里带着本机星标 / 标签（localPrefs），
-            // 服务端那份 exportData 不知道它，早算一步就会对不上
-            const dataStr = JSON.stringify(await withBackupIntegrity(buildExportData()), null, 2);
-            const stamp = new Date().toISOString().slice(0, 10);
-
-            let blob: Blob;
-            let exportFileName: string;
-            if (password) {
-                const bytes = await encryptBackup(new TextEncoder().encode(dataStr), password);
-                blob = new Blob([bytes], { type: "application/octet-stream" });
-                // 换后缀：加密文件已经不是 JSON 了，用 .navihive 免得被当文本打开
-                exportFileName = `导航站备份_${stamp}.navihive`;
-            } else {
-                blob = new Blob([dataStr], { type: "application/json;charset=utf-8" });
-                exportFileName = `导航站备份_${stamp}.json`;
-            }
-
-            const url = URL.createObjectURL(blob);
-
-            const linkElement = document.createElement("a");
-            linkElement.setAttribute("href", url);
-            linkElement.setAttribute("download", exportFileName);
-            document.body.appendChild(linkElement);
-            linkElement.click();
-            document.body.removeChild(linkElement);
-            window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-        } catch (error) {
-            console.error("导出数据失败:", error);
-            handleError("导出数据失败: " + (error instanceof Error ? error.message : "未知错误"));
-        }
-    };
-
-    // 保存 WebDAV 配置到服务端
-    const handleSaveWebdavConfig = async (config: WebDavConfig) => {
-        try {
-            // 原来 5 个 setConfig 串行 = 5 次网络往返，网络慢时能把「连接成功」的反馈一起拖住。
-            // 两个口令必须单独写（setConfig 会用 AUTH_SECRET 加密落库，批量接口不会），
-            // 其余 4 项一次写完。
-            await api.setConfigs({
-                [`${WEBDAV_CONFIG_PREFIX}url`]: config.url,
-                [`${WEBDAV_CONFIG_PREFIX}username`]: config.username,
-                [`${WEBDAV_CONFIG_PREFIX}path`]: config.path || DEFAULT_WEBDAV_CONFIG.path,
-                [`${WEBDAV_CONFIG_PREFIX}allowPrivateNetwork`]: config.allowPrivateNetwork ? "1" : "0",
-            });
-            // 两个口令都「写了才存、清空就删」：
-            // worker 的 configs/{key} PUT 会拒绝空值（validateConfig 要求 value 非空），
-            // 写空串会直接 400 —— 而备份口令是可选的，留空才是常态，所以清空必须走 DELETE。
-            if (config.password) {
-                await api.setConfig(`${WEBDAV_CONFIG_PREFIX}password`, config.password);
-            } else {
-                await api.deleteConfig(`${WEBDAV_CONFIG_PREFIX}password`);
-            }
-            // 备份口令单独存（落库加密），定时备份与恢复都靠它，与 AUTH_SECRET 无关
-            if (config.backupPassword) {
-                await api.setConfig(
-                    `${WEBDAV_CONFIG_PREFIX}backupPassword`,
-                    config.backupPassword
-                );
-            } else {
-                await api.deleteConfig(`${WEBDAV_CONFIG_PREFIX}backupPassword`);
-            }
-            setWebdavConfig(config);
-        } catch (error) {
-            console.error("保存 WebDAV 配置失败:", error);
-            handleError("保存 WebDAV 配置失败: " + (error instanceof Error ? error.message : "未知错误"));
-            throw error;
-        }
-    };
-
-    // 每周自动备份开关（存在服务器，定时备份由 Worker 的 Cron 触发）
-    // 注意顺序：先翻转本地状态，再发请求。Switch 是受控组件，如果等 await 回来才
-    // setConfigs，从点下去到界面响应之间整整隔一个网络往返 —— 那就是「点一下卡一下」的来源。
-    // 请求失败再回滚成原值。
-    const handleToggleAutoBackup = async (enabled: boolean) => {
-        const key = `${WEBDAV_CONFIG_PREFIX}autoBackup`;
-        const previous = configs[key] ?? "true";
-        const next = enabled ? "true" : "false";
-        setConfigs(prev => ({ ...prev, [key]: next }));
-        try {
-            await api.setConfig(key, next);
-        } catch (error) {
-            setConfigs(prev => ({ ...prev, [key]: previous }));
-            console.error("保存自动备份设置失败:", error);
-            handleError("保存自动备份设置失败: " + (error instanceof Error ? error.message : "未知错误"));
-        }
-    };
-
-    /**
-     * 开/关「备份文件带上网站登录凭据」。
-     * 存服务端配置（不是本机偏好），这样 Worker 里的每周定时备份也读得到同一个开关。
-     * 同样是乐观更新：开关先动、提示先弹，写库失败再回滚。
-     */
-    const handleToggleIncludeCredentials = async (enabled: boolean) => {
-        const previous = configs[BACKUP_CREDENTIALS_CONFIG] ?? "false";
-        const next = enabled ? "true" : "false";
-        setConfigs(prev => ({ ...prev, [BACKUP_CREDENTIALS_CONFIG]: next }));
-        notify(
-            enabled ? "以后的备份会带上网站账号密码" : "以后的备份不再包含网站账号密码",
-            "info"
-        );
-        try {
-            await api.setConfig(BACKUP_CREDENTIALS_CONFIG, next);
-        } catch (error) {
-            setConfigs(prev => ({ ...prev, [BACKUP_CREDENTIALS_CONFIG]: previous }));
-            console.error("保存备份设置失败:", error);
-            handleError(
-                "保存备份设置失败: " + (error instanceof Error ? error.message : "未知错误")
-            );
-        }
-    };
-
-    /**
-     * 开/关「失效检测结果同步到服务端」。
-     * 打开时顺手把本机这份推一次，否则要等到下次探测才有内容上去。
-     * 关掉不动服务端已经存的那份：下次再打开还能接着用（也方便误关后恢复）。
-     */
-    const handleToggleLinkHealthSync = async (enabled: boolean) => {
-        const next = enabled ? "true" : "false";
-        const rollback = configs[LINK_HEALTH_SYNC_CONFIG] ?? "";
-        // 乐观更新：先拨开关再发请求。原来是 await 完才改状态，等于让用户盯着一个没反应的
-        // 开关等一次网络往返（实测 150ms RTT 下要 188ms 才翻转）。
-        setConfigs(prev => ({ ...prev, [LINK_HEALTH_SYNC_CONFIG]: next }));
-        try {
-            await api.setConfig(LINK_HEALTH_SYNC_CONFIG, next);
-            if (enabled) {
-                const payload = JSON.stringify(exportLinkHealth());
-                await api.setConfig(LINK_HEALTH_CONFIG, payload);
-                lastHealthPushRef.current = payload;
-                notify("失效检测结果已同步到服务端", "success");
-            } else {
-                notify("已停止同步失效检测结果（服务端那份先留着）", "info");
-            }
-        } catch (error) {
-            // 没写进去就把开关拨回去，别让界面显示一个不存在的状态
-            setConfigs(prev => ({ ...prev, [LINK_HEALTH_SYNC_CONFIG]: rollback }));
-            console.error("保存同步设置失败:", error);
-            handleError(
-                "保存同步设置失败: " + (error instanceof Error ? error.message : "未知错误")
-            );
-        }
-    };
-
-    /**
-     * 开/关「星标与标签同步到服务端」。
-     * 这两样本机是唯一来源，所以打开时先推一份上去，避免另一台设备看到的还是空的。
-     */
-    const handleTogglePrefSync = async (enabled: boolean) => {
-        if (!enabled) {
-            setPrefSync(false);
-            try {
-                await api.setConfig(PREF_SYNC_CONFIG, "false");
-            } catch {
-                // 关同步失败不用打扰用户，本机已经不再上传了
-            }
-            notify("已停止同步星标与标签", "info");
-            return;
-        }
-
-        // 乐观更新：打开时本来要连发 3 次配置写入，串行 await 完才拨开关，
-        // 实测 150ms RTT 下要 374ms 才有反馈。先拨开关，三次写入并发发出去。
-        setPrefSync(true);
-        const payload = JSON.stringify({ starred, tags });
-        try {
-            await Promise.all([
-                api.setConfig(PREF_SYNC_CONFIG, "true"),
-                api.setConfig(PREF_STARRED_CONFIG, JSON.stringify(starred)),
-                api.setConfig(PREF_TAGS_CONFIG, JSON.stringify(tags)),
-            ]);
-            // 记一下刚推的内容，免得开关打开后立刻又原样推一次
-            lastPrefPushRef.current = payload;
-            notify("星标与标签已同步到服务端", "success");
-        } catch (error) {
-            setPrefSync(false);
-            console.error("保存同步设置失败:", error);
-            handleError(
-                "保存同步设置失败: " + (error instanceof Error ? error.message : "未知错误")
-            );
-        }
-    };
-
-    // 导入前的差异预览：弹出预览框，等用户确认（返回裁剪后的数据）或取消（返回 null）
-    const requestImportPreview = useCallback(
-        (data: ExportData, overwrite: boolean) => {
-            setImportPreview({ data, overwrite });
-            return new Promise<ExportData | null>(resolve => {
-                importPreviewResolve.current = resolve;
-            });
-        },
-        []
-    );
-
-    const closeImportPreview = useCallback((result: ExportData | null) => {
-        setImportPreview(null);
-        const resolve = importPreviewResolve.current;
-        importPreviewResolve.current = null;
-        resolve?.(result);
-    }, []);
-
-    // 导入/恢复数据：overwrite=true 覆盖恢复（服务端整体导入），false 合并追加
-    const handleImportBackup = async (data: ExportData, overwrite: boolean) => {
-        try {
-            // 恢复前先验文件有没有损坏。必须拿**原始**数据验：normalizeImportData 会补默认值、
-            // 重排字段，归一化之后再算摘要必然对不上，好文件也会被拦下来。
-            const integrityCheck = await verifyBackupIntegrity(data);
-            if (!integrityCheck.ok) {
-                throw new Error(integrityCheck.reason || "备份文件校验失败");
-            }
-
-            const normalized = normalizeImportData(data);
-            // 站点 id 映射：覆盖恢复由服务端重新发号并回传映射，合并导入在下面自己建，
-            // 两种模式都要它来把备份里的星标 / 标签翻译到新 id 上
-            const siteIdMap = new Map<number, number>();
-            // 全站共享配置只有所有者（或未启用登录的单账号部署）能改，
-            // 免得普通账号拿别人的备份恢复时把整站外观改掉
-            const mayWriteShared = !currentUser || currentUser.role === "owner";
-
-            // 空备份当成失败处理：覆盖恢复的语义是「以这份备份为准」，拿一份没有分组
-            // 也没有卡片的备份去覆盖，等于把账号清空 —— 多半是文件选错了 / 解析没成功。
-            // 宁可报错让人重选，也不要「恢复成功」后一片空白。
-            if (normalized.groups.length === 0 && normalized.sites.length === 0) {
-                throw new Error("这份备份里没有任何分组或卡片，已取消导入（现有数据未改动）");
-            }
-
-            if (overwrite) {
-                // 传原始 data（不是 normalized）：服务端会自己归一化，
-                // 而完整性校验必须在归一化之前做，否则摘要永远对不上。
-                const result = await api.importData(data);
-                if (!result.success) {
-                    throw new Error(result.message || "服务端导入失败");
-                }
-                for (const [oldId, newId] of Object.entries(result.siteIdMap || {})) {
-                    siteIdMap.set(Number(oldId), newId);
-                }
-            } else {
-                // 合并导入：新建分组并记录新旧ID映射，再追加站点
-                const groupIdMap = new Map<number, number>();
-
-                for (const group of normalized.groups) {
-                    const created = await api.createGroup({
-                        name: group.name,
-                        order_num: group.order_num ?? 0,
-                    } as Group);
-
-                    if (group.id !== undefined && created && created.id !== undefined) {
-                        groupIdMap.set(group.id, created.id);
-                    }
-                }
-
-                for (const site of normalized.sites) {
-                    const created = await api.createSite({
-                        ...site,
-                        id: undefined,
-                        group_id: groupIdMap.get(site.group_id) ?? site.group_id,
-                    } as Site);
-
-                    if (site.id !== undefined && created && created.id !== undefined) {
-                        siteIdMap.set(site.id, created.id);
-                    }
-                }
-
-                // 老备份的全站设置混在 configs 里，新备份放在 sharedConfigs，
-                // 两边都按「共享键只有所有者能写」过滤一遍
-                const configEntries: [string, string][] = [
-                    ...Object.entries(normalized.configs || {}),
-                    ...Object.entries(normalized.sharedConfigs || {}),
-                ];
-                for (const [key, value] of configEntries) {
-                    if (key === "DB_INITIALIZED") continue;
-                    if (isSecretConfigKey(key)) continue;
-                    if (!isUserScopedConfigKey(key) && !mayWriteShared) continue;
-                    await api.setConfig(key, value);
-                }
-            }
-
-            // 把备份里的星标 / 标签写回本机 localStorage：
-            // 服务端现在会重新发号（不再保留备份里的 id），所以两种模式都按映射翻译一遍。
-            // 老备份/无 id 的备份拿不到映射，就只能照原样写回。
-            const prefs = normalized.localPrefs;
-            if (prefs) {
-                const remapped =
-                    siteIdMap.size > 0
-                        ? {
-                              starred: (prefs.starred ?? []).map(id => siteIdMap.get(id)).filter(
-                                  (id): id is number => typeof id === "number"
-                              ),
-                              tags: Object.entries(prefs.tags ?? {}).reduce<
-                                  Record<string, string[]>
-                              >((acc, [siteId, list]) => {
-                                  const mapped = siteIdMap.get(Number(siteId));
-                                  if (typeof mapped === "number") acc[String(mapped)] = list;
-                                  return acc;
-                              }, {}),
-                          }
-                        : prefs;
-
-                restoreLocalPrefs(remapped, overwrite ? "replace" : "merge");
-            }
-
-            // 恢复/导入是低频重操作，这里同步刷新一次（一次 bootstrap 请求）
-            await fetchData();
-        } catch (error) {
-            console.error("导入数据失败:", error);
-            handleError("导入数据失败: " + (error instanceof Error ? error.message : "未知错误"));
-            throw error;
-        }
-    };
+    const {
+        openBackup,
+        setOpenBackup,
+        backupTab,
+        importPreview,
+        cronError,
+        handleOpenBackup,
+        handleCloseBackup,
+        buildExportData,
+        handleDownloadLocal,
+        handleSaveWebdavConfig,
+        handleToggleAutoBackup,
+        handleToggleIncludeCredentials,
+        handleToggleLinkHealthSync,
+        handleTogglePrefSync,
+        requestImportPreview,
+        closeImportPreview,
+        handleImportBackup,
+    } = useBackupController({
+        api,
+        configs,
+        groups,
+        starred,
+        tags,
+        currentUser,
+        notify,
+        handleError,
+        handleMenuClose,
+        fetchData,
+        restoreLocalPrefs,
+        setConfigs,
+        setWebdavConfig,
+        setPrefSync,
+        lastHealthPushRef,
+        lastPrefPushRef,
+    });
 
     // 按关键词筛选：命中「网站名称 / 网站链接 / 网站描述」的卡片会被保留，分组名命中则整组保留。
     // 用 useDeferredValue 把过滤推迟到空闲帧：输入框始终跟手，卡片多的时候也不会边打边卡。
