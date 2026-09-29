@@ -142,6 +142,10 @@ html.nav-no-glass *::after {
 html,
 body {
     font-family: var(--font-sans);
+    /* 页面级横向溢出一律裁掉：避免某处宽了 1~2px 时冒出横向滚动条。
+       用 clip 而非 hidden —— clip 不创建滚动容器，纵向滚动、position:fixed /
+       sticky 都不受影响（hidden 会让同轴的 overflow-y 被算成 auto）。 */
+    overflow-x: clip;
 }
 
 /* 键盘导航时给出清晰的焦点环。用 :focus-visible 而不是 :focus，

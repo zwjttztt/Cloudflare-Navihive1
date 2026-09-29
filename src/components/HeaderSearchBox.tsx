@@ -134,7 +134,7 @@ export default function HeaderSearchBox({
                     open={dropdownOpen || historyOpen}
                     anchorEl={searchAnchor}
                     placement='bottom-start'
-                    sx={{ zIndex: (t) => t.zIndex.modal, width: 320 }}
+                    sx={{ zIndex: (t) => t.zIndex.modal, width: "min(320px, calc(100vw - 32px))" }}
                 >
                     <Paper
                         ref={searchPanelRef}

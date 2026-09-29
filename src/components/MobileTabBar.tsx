@@ -1,7 +1,11 @@
 // src/components/MobileTabBar.tsx
-// 手机端底部胶囊导航：把最常用的操作（搜索 / 分组 / 新增 / 更多）收到底部拇指区，
-// 顶部那一排按钮在窄屏上就不用挤在一起了。只在 md 以下显示。
-import { Box, Paper, Typography } from "@mui/material";
+// 底部胶囊导航：把最常用的操作（搜索 / 分组 / 新增 / 更多 / 星标）收到底部拇指区，
+// 顶部那一排按钮在窄屏上就不用挤在一起了。
+//
+// 显示时机：只要左侧分组栏（GroupNavRail，>=1344px 才显示）藏起来就出现，
+// 即视口 <=1343.98px——这样浏览器放大到 125%~200% 让有效视口落进 900~1343px 时，
+// 窄桌面窗口也有分组跳转入口，不会像原来那样「左栏没、底栏也没」断档。
+import { Box, Paper, Typography, useMediaQuery } from "@mui/material";
 import type React from "react";
 import SearchIcon from "@mui/icons-material/Search";
 import DashboardIcon from "@mui/icons-material/Dashboard";
@@ -9,6 +13,11 @@ import AddCircleOutlineIcon from "@mui/icons-material/AddCircleOutline";
 import MoreHorizIcon from "@mui/icons-material/MoreHoriz";
 import StarIcon from "@mui/icons-material/Star";
 import StarBorderIcon from "@mui/icons-material/StarBorder";
+
+// 与 GroupNavRail 的 SHOW_QUERY（min-width:1344px）正好互补：
+// 1344px 起左栏接管分组导航，1343.98px 及以下改由本底栏提供，
+// 取 .98 是为了吃掉 1343.5 这类亚像素宽度，避免两者都不显示。
+const TABBAR_SHOW_QUERY = "(max-width: 1343.98px)";
 
 interface MobileTabBarProps {
     onSearch: () => void;
@@ -30,6 +39,9 @@ export default function MobileTabBar({
     starActive = false,
     badge = 0,
 }: MobileTabBarProps) {
+    // 左栏显示时（>=1344px）本底栏让位，避免两个分组入口重叠
+    const showTabBar = useMediaQuery(TABBAR_SHOW_QUERY);
+    if (!showTabBar) return null;
     const items: {
         key: string;
         label: string;
@@ -70,7 +82,7 @@ export default function MobileTabBar({
                 right: 12,
                 bottom: 12,
                 zIndex: (t) => t.zIndex.appBar + 2,
-                display: { xs: "flex", md: "none" },
+                display: "flex",
                 justifyContent: "space-around",
                 alignItems: "center",
                 gap: 0.5,
