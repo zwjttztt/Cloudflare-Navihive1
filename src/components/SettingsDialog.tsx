@@ -84,12 +84,14 @@ interface SettingsDialogProps {
     syncPrefs: boolean;
     onSyncPrefsChange: (enabled: boolean) => void;
     /**
-     * 当前身份能不能改「全站」那部分设置。只有站点所有者：
-     * 标题 / 主题 / 背景是所有人共用的，服务端现已按同一规则拦住，
-     * 这里同步给出提示并禁用保存，省得用户改半天才发现白改。
+     * 当前身份是不是站点所有者。
+     *
+     * 标题 / 主题 / 背景这些外观是**按账号保存**的：所有者那一份写在全站 configs，
+     * 同时是「未登录时的登录页外观」和「新账号的初始外观」；其它账号改的是自己那份，
+     * 既改不到别人的，也不会因为自己没配过而看到一片空白（没配就跟着站点所有者走）。
      * 不传默认 true（未启用登录的单账号部署没有「别人」可言）。
      */
-    canEditShared?: boolean;
+    isSiteOwner?: boolean;
 }
 
 /** 分组：左侧一小段主色竖条 + 组标题，可选一行组说明；组内字段纵向排布 */
@@ -215,7 +217,7 @@ export default function SettingsDialog({
     onSyncHealthChange,
     syncPrefs,
     onSyncPrefsChange,
-    canEditShared = true,
+    isSiteOwner = true,
 }: SettingsDialogProps) {
     return (
         <>
@@ -255,10 +257,12 @@ export default function SettingsDialog({
                 <DialogContentText sx={{ mb: 1.5, fontSize: 13.5 }}>
                     集中管理站点信息、外观风格、图标来源与数据同步。
                 </DialogContentText>
-                {!canEditShared ? (
-                    // 服务端已经拦住了，这里提前说明：否则改一通才发现保存无效，只会更困惑
+                {!isSiteOwner ? (
+                    // 外观现在是按账号保存的，改得动；但「改的是谁的」得说清楚，
+                    // 否则会以为自己这一改整站都变了（或者反过来以为改了也白改）
                     <Alert severity='info' sx={{ mb: 1.5 }}>
-                        全站外观（标题、主题、背景等）只有站点所有者可以修改，这里仅供查看。
+                        外观按账号保存：这里的改动只影响你自己看到的标题、主题与背景。
+                        站点所有者的设置同时是登录页与新账号的默认外观。
                     </Alert>
                 ) : null}
                 <Stack spacing={2} divider={<Divider />}>
@@ -641,7 +645,7 @@ export default function SettingsDialog({
                     onClick={onSave}
                     variant='contained'
                     color='primary'
-                    disabled={saving || !canEditShared}
+                    disabled={saving}
                 >
                     {saving ? "保存中…" : "保存设置"}
                 </Button>

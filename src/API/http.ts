@@ -390,15 +390,34 @@ function isEncryptedConfigKey(key: string): boolean {
 }
 
 /**
- * 每个账号一份的配置（目前是 WebDAV 备份那一整套：地址 / 账号 / 口令 / 目录）。
- * 存在 user_configs 而不是全局 configs —— 否则 A 账号填的网盘地址和密码，
- * B 账号一登录就能在「数据备份」里看见，等于把别人的网盘凭据摆在页面上。
+ * 每个账号一份的配置，分两类：
+ *
+ * 1. **严格私有**（webdav.*）：网盘地址 / 账号 / 口令，绝不能让别人看见 ——
+ *    存 user_configs 而不是全局 configs，否则 A 填的网盘密码，B 一登录就能在
+ *    「数据备份」里看到，等于把别人的网盘凭据摆在页面上。读的时候也不回落全站。
+ *
+ * 2. **外观**（site.*：标题 / 主题色 / 背景 / 自定义 CSS）：每人一份，但**允许回落全站**。
+ *    站点所有者那一份就写在全局 configs 里 —— 它同时是「未登录时的登录页外观」和
+ *    其它账号的初始外观（自己没改过就跟着站点走）。普通账号改的是自己那份，
+ *    不会把整站长什么样改掉，也不会因为没配任何东西而看到一片空白。
  */
-const USER_SCOPED_CONFIG_PREFIXES = [WEBDAV_CONFIG_PREFIX];
+const PRIVATE_USER_CONFIG_PREFIXES = [WEBDAV_CONFIG_PREFIX];
+const PER_USER_APPEARANCE_PREFIXES = ["site."];
 
-/** 该键是否按账号隔离存储 */
+function isPrivateUserConfigKey(key: string): boolean {
+    return PRIVATE_USER_CONFIG_PREFIXES.some(prefix => key.startsWith(prefix));
+}
+
+export function isPerUserAppearanceKey(key: string): boolean {
+    return PER_USER_APPEARANCE_PREFIXES.some(prefix => key.startsWith(prefix));
+}
+
+/**
+ * 该键是否「账号自己就能写」—— 路由层用它判断要不要校验站点所有者。
+ * 两类都算：写进去的不是全站共享的外观，就是账号自己的私有配置。
+ */
 export function isUserScopedConfigKey(key: string): boolean {
-    return USER_SCOPED_CONFIG_PREFIXES.some(prefix => key.startsWith(prefix));
+    return isPrivateUserConfigKey(key) || isPerUserAppearanceKey(key);
 }
 
 // 判断某个配置键是否属于敏感信息
@@ -2247,8 +2266,10 @@ export class NavigationAPI {
         for (const row of (configsResult.results || []) as Config[]) {
             // 管理员凭据不下发到浏览器，避免出现「拿到配置就等于拿到密码」
             if (isAuthConfigKey(row.key)) continue;
-            // 按账号存的那批（WebDAV）只认自己那份：全局里有同键（迁移残留）一律不采纳
-            if (this.currentUserId !== null && isUserScopedConfigKey(row.key)) continue;
+            // 严格私有的那批（WebDAV）只认自己那份：全局里有同键（迁移残留）一律不采纳。
+            // 外观键（site.*）保留全站那份当底稿，下面再用账号自己的覆盖 ——
+            // 自己没改过标题/背景的话，看到的就是站点所有者定的样子。
+            if (this.currentUserId !== null && isPrivateUserConfigKey(row.key)) continue;
             // webdav.password / webdav.backupPassword 落库是密文，这里必须和
             // queryConfigs / getConfig 一样解密还原：
             // 否则刷新后前端拿到的是 enc$... 密文，回填进密码框，用户再保存一次就变成
@@ -2258,7 +2279,7 @@ export class NavigationAPI {
                 : row.value;
         }
 
-        // 覆盖上当前账号自己的那份（WebDAV 备份配置）
+        // 覆盖上当前账号自己的那份（WebDAV 备份配置 + 自己的外观）
         if (this.currentUserId !== null) {
             const own = await this.queryUserConfigs(this.currentUserId);
             for (const [key, value] of Object.entries(own)) configs[key] = value;
@@ -2538,9 +2559,11 @@ export class NavigationAPI {
         const configs: Record<string, string> = {};
         for (const config of result.results || []) {
             if (isAuthConfigKey(config.key)) continue;
-            // 已登录时，按账号存的那批（WebDAV）只认自己那份：
-            // 全站 configs 里若还有同键（迁移残留），一律不采纳，否则会串号
-            if (uid !== null && isUserScopedConfigKey(config.key)) continue;
+            // 已登录时，严格私有的那批（WebDAV）只认自己那份：
+            // 全站 configs 里若还有同键（迁移残留），一律不采纳，否则会串号。
+            // 外观键不在这里剔除 —— 它是「自己没配就回落全站」的，
+            // 全站那份正是站点所有者定的基调（也是新账号的初始外观）。
+            if (uid !== null && isPrivateUserConfigKey(config.key)) continue;
             // webdav.password / webdav.backupPassword 落库是密文，读出来解密还原给
             // 调用方（含首屏 bootstrap）
             configs[config.key] = isEncryptedConfigKey(config.key)
@@ -2625,15 +2648,32 @@ export class NavigationAPI {
         }
     }
 
-    /** 当前请求有没有「按账号存」的上下文：已登录且该键属于隔离范围 */
-    private useUserScope(key: string): number | null {
-        if (this.currentUserId === null) return null;
-        return isUserScopedConfigKey(key) ? this.currentUserId : null;
+    /**
+     * 这个 key 该存哪儿：返回账号 id = 写进该账号自己的 user_configs；null = 写全站 configs。
+     *
+     * 严格私有的（webdav.*）永远跟账号走。外观键（site.*）要分人：
+     * 站点所有者写在全站 configs —— 登录页还没有账号上下文，读的正是这份；
+     * 其它账号写在自己那份，读不到才回落全站（见 getConfig / queryConfigs）。
+     */
+    private async scopeFor(key: string): Promise<number | null> {
+        const uid = this.currentUserId;
+        if (uid === null) return null;
+        if (isPrivateUserConfigKey(key)) return uid;
+        if (isPerUserAppearanceKey(key)) {
+            return (await this.canManageSharedConfigs()) ? null : uid;
+        }
+        return null;
     }
 
     async getConfig(key: string): Promise<string | null> {
-        const uid = this.useUserScope(key);
-        if (uid !== null) return this.getUserConfig(uid, key);
+        const uid = await this.scopeFor(key);
+        if (uid !== null) {
+            const own = await this.getUserConfig(uid, key);
+            // 外观键没配过就回落全站那份（站点所有者写的），
+            // 免得新账号标题空白、背景也没了 —— 私有键（webdav.*）不回落，那是凭据。
+            if (own !== null) return own;
+            if (isPrivateUserConfigKey(key)) return null;
+        }
 
         const result = await this.db
             .prepare("SELECT value FROM configs WHERE key = ?")
@@ -2671,7 +2711,7 @@ export class NavigationAPI {
             console.warn(`拒绝非所有者改写全站配置: ${key}`);
             return false;
         }
-        const uid = this.useUserScope(key);
+        const uid = await this.scopeFor(key);
         if (uid !== null) return this.setUserConfig(uid, key, value);
 
         try {
@@ -2705,10 +2745,17 @@ export class NavigationAPI {
             const list = Object.entries(entries).filter(([, value]) => value !== undefined);
             if (list.length === 0) return true;
 
-            // 按账号隔离的那部分（WebDAV）单独写 user_configs，其余照旧进 configs
-            const uid = this.currentUserId;
-            const mine = uid !== null ? list.filter(([key]) => isUserScopedConfigKey(key)) : [];
-            const shared = uid !== null ? list.filter(([key]) => !isUserScopedConfigKey(key)) : list;
+            // 按账号隔离的那部分单独写 user_configs，其余照旧进 configs。
+            // 归谁由 scopeFor 说了算（外观键对所有者来说就是全站那份），
+            // 不能简单按前缀切 —— 否则所有者改标题只会改到自己的私有副本上，
+            // 登录页和其它新账号看到的还是旧标题。
+            const mine: { key: string; value: string; uid: number }[] = [];
+            const shared: [string, string][] = [];
+            for (const [key, value] of list) {
+                const uid = await this.scopeFor(key);
+                if (uid !== null) mine.push({ key, value, uid });
+                else shared.push([key, value]);
+            }
 
             // 全站共享配置只有 owner 能动（理由见 canWriteConfigKey）。整批一次判，
             // 别写下半句才失败 —— 那会留下「改了一半」的状态。
@@ -2742,9 +2789,9 @@ export class NavigationAPI {
                 ok = results.every(result => result.success);
             }
 
-            for (const [key, value] of mine) {
+            for (const { key, value, uid } of mine) {
                 // 口令类要在 setUserConfig 里加密，这里不能走批量那条路
-                if (!(await this.setUserConfig(uid as number, key, value))) ok = false;
+                if (!(await this.setUserConfig(uid, key, value))) ok = false;
             }
 
             return ok;
@@ -2759,7 +2806,7 @@ export class NavigationAPI {
             console.warn(`拒绝非所有者删除全站配置: ${key}`);
             return false;
         }
-        const uid = this.useUserScope(key);
+        const uid = await this.scopeFor(key);
         if (uid !== null) return this.deleteUserConfig(uid, key);
 
         const result = await this.db.prepare("DELETE FROM configs WHERE key = ?").bind(key).run();
@@ -2876,13 +2923,25 @@ export class NavigationAPI {
         // 否则「一个账号导出的备份被另一个账号恢复」会把全站外观改掉。
         const sharedAllowed = await this.canManageSharedConfigs();
 
+        // 普通账号自己的外观（标题 / 背景…）也进备份：那是「我看到的站点长什么样」，
+        // 恢复时理应回到自己这份。所有者那份本来就在全站 configs 里（见 sharedConfigs），
+        // 不必重复写一遍 —— 否则别的账号恢复他的备份会把全站外观一起改掉。
+        let ownConfigs: Record<string, string> = {};
+        if (!sharedAllowed && this.currentUserId !== null) {
+            const own = await this.queryUserConfigs(this.currentUserId);
+            for (const [key, value] of Object.entries(own)) {
+                if (isPerUserAppearanceKey(key)) ownConfigs[key] = value;
+            }
+            ownConfigs = stripSecretConfigs(ownConfigs);
+        }
+
         return {
             groups,
             // 关掉「备份含登录凭据」时把账号密码抹掉：备份文件是明文 JSON，
             // 又会被 WebDAV 同步到网盘，凭据一旦进去就等于跟着走了
             sites: withCreds ? sites : stripSiteCredentials(sites),
-            // 按账号隔离的那批（webdav.* 属敏感配置，已被 stripSecretConfigs 剔除）
-            configs: {},
+            // 自己的外观；敏感配置（WebDAV 凭据）一律不进备份
+            configs: ownConfigs,
             ...(sharedAllowed ? { sharedConfigs: stripSecretConfigs(configs) } : {}),
             version: EXPORT_VERSION,
             exportDate: new Date().toISOString(),

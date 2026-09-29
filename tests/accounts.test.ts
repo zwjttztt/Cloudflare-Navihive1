@@ -620,7 +620,7 @@ test("令牌版本按账号走：A 改密不该把 B 的会话踢掉", async () 
     assert.equal((await api2.verifyToken(bobLogin.token as string)).valid, true, "别人不该被连坐");
 });
 
-test("全站配置只有 owner 能写；每账号自己的 webdav.* 不受限制", async () => {
+test("外观键：普通账号能改自己那份但碰不到全站那份；其它全站键仍只有 owner 能写", async () => {
     const store = freshStore();
     resetMigrationCacheForTests();
     const api = makeApi(store);
@@ -631,18 +631,27 @@ test("全站配置只有 owner 能写；每账号自己的 webdav.* 不受限制
     const bob = await api.registerUser("bob", "password123", invite.code || "");
     const bobId = bob.user?.id as number;
 
-    // owner：全站标题能改
+    // owner：改的就是全站那份（同时是登录页 / 新账号的初始外观）
     api.setCurrentUser(ownerId);
     assert.equal(await api.setConfig("site.title", "我的导航"), true);
 
-    // 普通账号：全站配置不能再写（过去只靠前端藏入口）
+    // 普通账号：外观键能写，但只写进自己那份 —— 全站那份必须纹丝不动，
+    // 否则「一个账号改标题，整站（含别人的初始外观）跟着变」。
     api.setCurrentUser(bobId);
-    assert.equal(await api.setConfig("site.title", "被劫持的标题"), false);
-    assert.equal(await api.setConfigs({ "site.title": "批量也不行" }), false);
-    assert.equal(await api.deleteConfig("site.title"), false);
-    assert.equal(store.configs.get("site.title"), "我的导航", "原值必须纹丝不动");
+    assert.equal(await api.setConfig("site.title", "bob 自己的标题"), true);
+    assert.equal(await api.setConfigs({ "site.title": "bob 批量改的标题" }), true);
+    assert.equal(store.configs.get("site.title"), "我的导航", "全站那份必须纹丝不动");
+    assert.equal(await api.getConfig("site.title"), "bob 批量改的标题", "自己读到自己的");
 
-    // 但按账号隔离的那批（自己的网盘配置）要照常能写
+    // 自己那份删掉之后回落到全站那份
+    assert.equal(await api.deleteConfig("site.title"), true);
+    assert.equal(await api.getConfig("site.title"), "我的导航");
+
+    // 非外观的全站键仍然只有 owner 能写
+    assert.equal(await api.setConfig("inactive.disableDays", "30"), false);
+    assert.equal(store.configs.get("inactive.disableDays"), undefined);
+
+    // 按账号隔离的那批（自己的网盘配置）照常能写
     assert.equal(await api.setConfig("webdav.url", "https://dav.bob.example/dav/"), true);
 });
 
@@ -951,4 +960,80 @@ test("恢复密钥：被停用的账号找回后自动恢复可用（否则重�
     // 关键：找回之后能直接用新密码登录，而不是卡在「账号已被停用」
     const login = await api.login({ username: "alice", password: "AliceIsBack2026" });
     assert.equal(login.success, true, login.message);
+});
+
+// ---- 外观（标题 / 背景 / 主题色…）按账号隔离 ----
+// 判据就一句话：普通账号改的是自己看到的样子，改不到全站；
+// 自己没改过就跟着站点所有者走 —— 新账号不至于标题空白、背景也没了。
+
+async function setupOwnerAndAlice() {
+    const store = freshStore();
+    resetMigrationCacheForTests();
+    const api = makeApi(store);
+    await api.migrate();
+    const ownerId = store.users[0].id as number;
+    const invite = await api.createInvite(ownerId);
+    const registered = await api.registerUser("alice", "password123", invite.code || "");
+    const aliceId = registered.user?.id as number;
+    return { store, api, ownerId, aliceId };
+}
+
+test("外观：普通账号没配过时读到站点所有者那份（不会空白）", async () => {
+    const { api, ownerId, aliceId } = await setupOwnerAndAlice();
+
+    api.setCurrentUser(ownerId);
+    await api.setConfig("site.title", "我的导航站");
+
+    api.setCurrentUser(aliceId);
+    assert.equal(await api.getConfig("site.title"), "我的导航站");
+});
+
+test("外观：普通账号改标题只落到自己那份，全站那份纹丝不动", async () => {
+    const { store, api, ownerId, aliceId } = await setupOwnerAndAlice();
+
+    api.setCurrentUser(ownerId);
+    await api.setConfig("site.title", "我的导航站");
+
+    api.setCurrentUser(aliceId);
+    await api.setConfig("site.title", "爱丽丝的导航");
+
+    // 自己看到自己的
+    assert.equal(await api.getConfig("site.title"), "爱丽丝的导航");
+    // 全站那份（登录页 / 新账号的初始外观）还是所有者写的
+    assert.equal(store.configs.get("site.title"), "我的导航站");
+    api.setCurrentUser(ownerId);
+    assert.equal(await api.getConfig("site.title"), "我的导航站");
+    // 而且确实落在了 alice 自己的 user_configs 上
+    const own = store.userConfigs.find(r => r.user_id === aliceId && r.key === "site.title");
+    assert.equal(own?.value, "爱丽丝的导航");
+});
+
+test("外观：所有者改的就是全站那份（未登录时读到的也是它）", async () => {
+    const { store, api, ownerId } = await setupOwnerAndAlice();
+
+    api.setCurrentUser(ownerId);
+    await api.setConfig("site.title", "全站标题");
+
+    assert.equal(store.configs.get("site.title"), "全站标题");
+    // 所有者没有自己的私有副本：那份就是全站，不该再写一份到 user_configs
+    assert.equal(
+        store.userConfigs.filter(r => r.user_id === ownerId && r.key === "site.title").length,
+        0
+    );
+
+    // 登录页还没有账号上下文，读到的正是这一份
+    api.setCurrentUser(null);
+    assert.equal(await api.getConfig("site.title"), "全站标题");
+});
+
+test("外观：私有配置（webdav.*）仍然不回落全站，也不会串号", async () => {
+    const { store, api, ownerId, aliceId } = await setupOwnerAndAlice();
+
+    api.setCurrentUser(ownerId);
+    await api.setConfig("webdav.url", "https://owner.example.com/dav");
+    // 老部署迁移残留：全局里留了一份同键
+    store.configs.set("webdav.url", "https://legacy.example.com/dav");
+
+    api.setCurrentUser(aliceId);
+    assert.equal(await api.getConfig("webdav.url"), null, "别人的网盘地址不能因为回落而泄漏");
 });

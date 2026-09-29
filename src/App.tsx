@@ -21,6 +21,7 @@ import {
     EXPORT_VERSION,
     isSecretConfigKey,
     isUserScopedConfigKey,
+    isPerUserAppearanceKey,
     normalizeImportData,
     INACTIVE_DISABLE_DAYS_KEY,
     INACTIVE_DELETE_GRACE_DAYS_KEY,
@@ -2437,6 +2438,17 @@ function App() {
             }
         });
 
+        // 普通账号：外观（标题 / 背景 / 主题色…）是自己那份，也要跟着备份走。
+        // 所有者那份本来就是全站 configs，已经进了 sharedConfigs，不重复写。
+        const ownConfigs: Record<string, string> = {};
+        if (!mayExportShared) {
+            Object.entries(configs).forEach(([key, value]) => {
+                if (!isSecretConfigKey(key) && isPerUserAppearanceKey(key)) {
+                    ownConfigs[key] = value;
+                }
+            });
+        }
+
         return {
             groups: groups.map(group => ({
                 id: group.id,
@@ -2453,7 +2465,9 @@ function App() {
                         : { username: "", password: "" }),
                 }))
             ),
-            configs: {},
+            // 全站设置（标题 / 主题 / 背景…）：所有者写进 sharedConfigs（恢复时会覆盖全站），
+            // 普通账号只带自己那份外观，不会把整站长什么样改掉。
+            configs: ownConfigs,
             ...(mayExportShared ? { sharedConfigs } : {}),
             version: EXPORT_VERSION,
             exportDate: new Date().toISOString(),
@@ -4198,7 +4212,7 @@ function App() {
                         syncPrefs={prefSync}
                         onSyncPrefsChange={handleTogglePrefSync}
                         // 全站外观是所有人共用的，只有站点所有者能改（服务端同规则）
-                        canEditShared={!currentUser || currentUser.role === "owner"}
+                        isSiteOwner={!currentUser || currentUser.role === "owner"}
                     />
                     </Suspense>
 
