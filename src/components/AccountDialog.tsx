@@ -210,7 +210,7 @@ export default function AccountDialog({
         if (!inactivePolicy) return;
         setDisableDaysInput(String(inactivePolicy.disableDays));
         setGraceDaysInput(String(inactivePolicy.graceDays));
-    }, [inactivePolicy?.disableDays, inactivePolicy?.graceDays]);
+    }, [inactivePolicy]);
 
     const handleSavePolicy = async () => {
         const disableDays = Number.parseInt(disableDaysInput, 10);
