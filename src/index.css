@@ -146,6 +146,12 @@ body {
        用 clip 而非 hidden —— clip 不创建滚动容器，纵向滚动、position:fixed /
        sticky 都不受影响（hidden 会让同轴的 overflow-y 被算成 auto）。 */
     overflow-x: clip;
+    /* 菜单/弹窗打开时 MUI 会锁 body 滚动，纵向滚动条被收走、关闭时又还回来 ——
+       有效宽度一进一出 10px。页面缩放（125% 等）时这点宽度刚好能让人跨过 900px
+       断点，顶栏字号档位跟着跳：标题「导航站」一开菜单就从一行挤成两行。
+       声明 stable 后这块空间从头到尾都留着，开合弹层不再引起任何重排。
+       旧 Safari 不认识这条，忽略后行为同从前（跳动仍在，但不算破坏）。 */
+    scrollbar-gutter: stable;
 }
 
 /* 键盘导航时给出清晰的焦点环。用 :focus-visible 而不是 :focus，

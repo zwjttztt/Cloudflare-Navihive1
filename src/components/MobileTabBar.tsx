@@ -6,6 +6,7 @@
 // 即视口 <=1343.98px——这样浏览器放大到 125%~200% 让有效视口落进 900~1343px 时，
 // 窄桌面窗口也有分组跳转入口，不会像原来那样「左栏没、底栏也没」断档。
 import { Box, Paper, Typography, useMediaQuery } from "@mui/material";
+import { useEffect } from "react";
 import type React from "react";
 import SearchIcon from "@mui/icons-material/Search";
 import DashboardIcon from "@mui/icons-material/Dashboard";
@@ -28,6 +29,10 @@ interface MobileTabBarProps {
     onToggleStar?: () => void;
     starActive?: boolean;
     badge?: number;
+    /** 视口变宽跨过 1344px、本栏退场时回调。此时挂在底栏按钮上的菜单
+     *  （「分组」「更多」）anchor 会从 DOM 分离，MUI 重定位会飘到左上角，
+     *  得让上层把它们收掉 —— resize 事件跑在 React 卸载之前，靠不住 */
+    onExitViewport?: () => void;
 }
 
 export default function MobileTabBar({
@@ -38,9 +43,13 @@ export default function MobileTabBar({
     onToggleStar,
     starActive = false,
     badge = 0,
+    onExitViewport,
 }: MobileTabBarProps) {
     // 左栏显示时（>=1344px）本底栏让位，避免两个分组入口重叠
     const showTabBar = useMediaQuery(TABBAR_SHOW_QUERY);
+    useEffect(() => {
+        if (!showTabBar) onExitViewport?.();
+    }, [showTabBar, onExitViewport]);
     if (!showTabBar) return null;
     const items: {
         key: string;

@@ -416,6 +416,14 @@ function App() {
                     borderRadius: 14,
                 },
                 components: {
+                    // 弹层（菜单/对话框/抽屉/下拉）一律不锁背景滚动。MUI 的滚动锁会
+                    // 把 body 的滚动条收走再补 padding，开合之间有效宽度进出 10px ——
+                    // 页面缩放时这 10px 刚好能跨过 900px 断点，顶栏字号档位跟着跳，
+                    // 「导航站」一开菜单就从一行挤成两行。禁掉后滚动条从头到尾都在，
+                    // 加上 index.css 的 scrollbar-gutter: stable，开合弹层零重排。
+                    // 代价是弹层开着时背景还能滚 —— 菜单/弹窗跟随锚点重定位，无碍。
+                    MuiPopover: { defaultProps: { disableScrollLock: true } },
+                    MuiDrawer: { defaultProps: { disableScrollLock: true } },
                     // 键盘焦点环：index.css 里那条全局 :focus-visible 只对原生元素管用，
                     // MUI 组件的样式是运行时由 emotion 注入的，排在意料之外的位置把它压掉了 ——
                     // 实测 Tab 到搜索框 / 更多选项 / 视图切换时，computed outline 与 boxShadow 全是 none，
@@ -433,6 +441,7 @@ function App() {
                     // 所有弹窗默认走同一套毛玻璃面板：半透明底 + 模糊 + 细边框 + 柔和投影，
                     // 单个弹窗自己写了 paper sx 的话会覆盖这里（比如确认弹窗、命令面板）
                     MuiDialog: {
+                        defaultProps: { disableScrollLock: true },
                         styleOverrides: {
                             paper: ({ theme }) => ({
                                 borderRadius: "var(--card-radius)",
@@ -497,6 +506,7 @@ function App() {
                         },
                     },
                     MuiMenu: {
+                        defaultProps: { disableScrollLock: true },
                         styleOverrides: {
                             paper: { "@media (max-width:600px)": { minWidth: 200 } },
                         },
@@ -772,6 +782,30 @@ function App() {
     const handleMenuClose = () => {
         setMenuAnchorEl(null);
     };
+
+    // 窗口尺寸变化会让底栏跨过 1344px 断点整个卸载（MobileTabBar 直接 return null），
+    // 正开着的菜单 anchor 随之从 DOM 分离 —— MUI 下次重定位拿到全零坐标，
+    // 菜单就飘到左上角（用户从窄窗口最大化时就撞到过）。resize 时凡是 anchor
+    // 已经不在文档里的弹层一律收掉；底栏退场时自己也会通知一声（onExitViewport），
+    // 因为 resize 事件跑在 React 卸载底栏之前，单靠这边可能晚一步。
+    useEffect(() => {
+        const onResize = () => {
+            setMenuAnchorEl(prev => (prev && !prev.isConnected ? null : prev));
+            setMobileGroupsAnchor(prev => (prev && !prev.isConnected ? null : prev));
+        };
+        window.addEventListener("resize", onResize);
+        return () => window.removeEventListener("resize", onResize);
+    }, []);
+
+    // 底栏退场（视口宽过 1344px）：只收掉挂在底栏按钮上的弹层，顶栏自己的别误伤
+    const handleExitMobileViewport = useCallback(() => {
+        setMenuAnchorEl(prev =>
+            prev && prev.closest(".nav-mobile-tabbar") ? null : prev
+        );
+        setMobileGroupsAnchor(prev =>
+            prev && prev.closest(".nav-mobile-tabbar") ? null : prev
+        );
+    }, []);
 
     /**
      * 用邀请码注册。成功后服务端已经下发会话 cookie，
@@ -4537,6 +4571,7 @@ function App() {
                         onAdd: handleOpenAddGroup,
                         onMore: event =>
                             handleMenuOpen(event as React.MouseEvent<HTMLButtonElement>),
+                        onExitViewport: handleExitMobileViewport,
                         onToggleStar: () => setStarFilter(!starFilter),
                         starActive: starFilter,
                         badge: displayedGroups.length,

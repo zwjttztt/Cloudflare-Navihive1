@@ -28,6 +28,8 @@ export interface OverlayHostProps {
         onToggleStar: () => void;
         starActive: boolean;
         badge: number;
+        /** 底栏退场（视口跨过 1344px）时收掉挂在底栏按钮上的弹层 */
+        onExitViewport?: () => void;
         /** 移动端「分组」菜单 */
         groupsAnchor: HTMLElement | null;
         onCloseGroups: () => void;
@@ -106,6 +108,7 @@ export default function OverlayHost({
                 onToggleStar={mobile.onToggleStar}
                 starActive={mobile.starActive}
                 badge={mobile.badge}
+                onExitViewport={mobile.onExitViewport}
             />
 
             {/* 移动端「分组」菜单：列出所有分组，点一下跳过去 */}
