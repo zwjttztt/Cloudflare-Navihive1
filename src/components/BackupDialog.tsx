@@ -977,7 +977,7 @@ export default function BackupDialog({
                 <Box
                     sx={{
                         flex: 1,
-                        minHeight: 0,
+                        minHeight: 140,
                         display: "flex",
                         flexDirection: "column",
                         justifyContent: "center",
