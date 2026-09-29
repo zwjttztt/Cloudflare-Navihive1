@@ -11,6 +11,12 @@ import {
     WebDavResult,
 } from "./http";
 
+// 登录标记的 Secure 属性要和服务端那条令牌 cookie 一致，否则会出现
+// 「标记在、令牌不在」的半登录态（详见 NavigationClient.secureAttr）。
+function secureAttr(): string {
+    return typeof location !== "undefined" && location.protocol === "https:" ? "; Secure" : "";
+}
+
 // 模拟数据
 const mockGroups: Group[] = [
     {
@@ -159,17 +165,17 @@ export class MockNavigationClient {
             .some(part => part.trim().startsWith('navihive_session=1'));
     }
 
-    // 设置认证令牌
+    // 设置认证令牌（Secure 属性同 NavigationClient：与服务端那条令牌 cookie 保持一致）
     setToken(_token: string): void {
         if (typeof document !== 'undefined') {
-            document.cookie = 'navihive_session=1; Path=/; SameSite=Strict';
+            document.cookie = `navihive_session=1; Path=/; SameSite=Strict${secureAttr()}`;
         }
     }
 
     // 清除认证令牌
     clearToken(): void {
         if (typeof document !== 'undefined') {
-            document.cookie = 'navihive_session=; Path=/; SameSite=Strict; Max-Age=0';
+            document.cookie = `navihive_session=; Path=/; SameSite=Strict; Max-Age=0${secureAttr()}`;
         }
     }
 

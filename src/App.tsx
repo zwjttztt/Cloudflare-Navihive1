@@ -989,6 +989,23 @@ function App() {
             const result = await api.login(username, password, remember);
 
             if (result && result.success) {
+                // 令牌是 httpOnly cookie，浏览器可能在服务端返回 200 之后仍然没把它存上：
+                // 站点若经过反代，Worker 看到的是回源用的 https 于是下发带 Secure 的 cookie，
+                // 而当前页面是 http —— 浏览器按规范直接丢弃，于是「登录成功」后第一个接口
+                // 就 401，界面立刻弹回登录页。先确认一次再切换界面，
+                // 确认不了就明说原因，别让人对着闪退干瞪眼。
+                const sessionOk = await api.checkAuthStatus();
+                if (!sessionOk) {
+                    setLoginError(
+                        location.protocol === "https:"
+                            ? "登录状态没能保存，请检查浏览器是否禁用了 Cookie 或拦截了本站 Cookie"
+                            : "登录状态没能保存：当前通过 HTTP 访问，浏览器拒绝保存安全 Cookie。请改用 HTTPS（或 localhost）访问"
+                    );
+                    setIsAuthenticated(false);
+                    setIsAuthRequired(true);
+                    return;
+                }
+
                 // 「记住账号密码」：勾选则保存到本地供下次回填，未勾选则清除
                 if (remember) {
                     saveRememberedLogin({ username, password });

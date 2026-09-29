@@ -115,6 +115,44 @@ function readBearerToken(request: Request): string | null {
     return raw;
 }
 
+/**
+ * 判断「浏览器这一侧是不是真的在 https 上」——决定 cookie 要不要带 Secure。
+ *
+ * 不能直接信 url.protocol：站点只要架在反代后面（Nginx / Caddy / 自建网关，
+ * 或 Cloudflare 之外又套了一层），Worker 看到的往往是回源用的 https，
+ * 而浏览器那头其实是 http。这时下发带 Secure 的 cookie，浏览器会按规范
+ * 直接丢弃（非安全通道不允许写入 Secure cookie），表现为：
+ * 登录接口返回 200、前端也写了登录标记，但令牌根本没存上，
+ * 下一个请求 401 → 界面立刻弹回登录页。
+ *
+ * 取值优先级：
+ * 1. CF-Visitor —— Cloudflare 在边缘注入的客户端真实 scheme，客户端伪造不了；
+ * 2. X-Forwarded-Proto —— 只有在明确声明信任反代（NAVIHIVE_TRUST_XFF=1）时才认，
+ *    否则攻击者随手加个头就能骗我们把 Secure 去掉；
+ * 3. 都没有就退回 url.protocol。
+ */
+export function requestIsSecure(request: Request, url: URL, trustProxy: boolean): boolean {
+    const visitor = request.headers.get("CF-Visitor");
+    if (visitor) {
+        try {
+            const parsed = JSON.parse(visitor) as { scheme?: unknown };
+            if (parsed.scheme === "https" || parsed.scheme === "http") {
+                return parsed.scheme === "https";
+            }
+        } catch {
+            // 头格式异常就继续往下问
+        }
+    }
+    if (trustProxy) {
+        const proto = (request.headers.get("X-Forwarded-Proto") || "")
+            .split(",")[0]
+            .trim()
+            .toLowerCase();
+        if (proto === "https" || proto === "http") return proto === "https";
+    }
+    return url.protocol === "https:";
+}
+
 /** 登录成功时下发的两条 cookie（令牌 httpOnly + 前端可读的登录标记） */
 function sessionCookieHeaders(token: string, ttlSeconds: number, secure: boolean): string[] {
     const attrs = `Path=/; SameSite=Strict; Max-Age=${ttlSeconds}${secure ? "; Secure" : ""}`;
@@ -150,13 +188,31 @@ function isSameOrigin(request: Request): boolean {
     return true;
 }
 
-export default {
-    async fetch(request: Request, env: Env) {
+/**
+ * 所有响应统一补安全头。
+ *
+ * `_headers` 里那套 CSP / nosniff 只作用于静态资源，Worker 自己 new 出来的响应
+ * 一个安全头都没有 —— 逐个 return 处去补必漏（这个入口有一百多个出口），
+ * 所以在 fetch 出口统一加一层。已经设过的不覆盖（图标代理那条 CSP sandbox 更严格）。
+ */
+function withSecurityHeaders(response: Response): Response {
+    response.headers.set("X-Content-Type-Options", "nosniff");
+    if (!response.headers.has("X-Frame-Options")) response.headers.set("X-Frame-Options", "DENY");
+    if (!response.headers.has("Referrer-Policy")) response.headers.set("Referrer-Policy", "no-referrer");
+    return response;
+}
+
+async function handleRequest(request: Request, env: Env): Promise<Response> {
         const url = new URL(request.url);
         // 自托管时是否信任 X-Forwarded-For 作为限速分桶依据（仅当 Worker 位于可信反代之后、
         // 反代会老实填 XFF 时才打开，否则攻击者随便改 XFF 就能绕过爆破限速）。
         // 默认关闭：Cloudflare 部署走 CF-Connecting-IP（不可伪造），不受此开关影响。
         const trustXFF = env && env.NAVIHIVE_TRUST_XFF === "1";
+        // cookie 是否带 Secure：按浏览器真实 scheme 判断（见 requestIsSecure）。
+        // NAVIHIVE_COOKIE_SECURE=0 是逃生舱 —— 反代连 X-Forwarded-Proto 都不传、
+        // 又确实只能用 http 访问时，用它强制去掉 Secure，否则令牌 cookie 存不上、登录必掉线。
+        const secureCookie =
+            env?.NAVIHIVE_COOKIE_SECURE !== "0" && requestIsSecure(request, url, trustXFF);
 
         // API路由处理
         if (url.pathname.startsWith("/api/")) {
@@ -229,7 +285,7 @@ export default {
                         // 令牌只放进 httpOnly cookie，不再回传给 JS（响应体里也不带 token）
                         const ttl = loginData.remember ? REMEMBER_TOKEN_TTL : DEFAULT_TOKEN_TTL;
                         const headers = new Headers({ "Cache-Control": "no-store" });
-                        const secure = url.protocol === "https:";
+                        const secure = secureCookie;
                         if (result.token) {
                             for (const cookie of sessionCookieHeaders(result.token, ttl, secure)) {
                                 headers.append("Set-Cookie", cookie);
@@ -354,7 +410,7 @@ export default {
                     const ttl = data.remember ? REMEMBER_TOKEN_TTL : DEFAULT_TOKEN_TTL;
                     const token = await api.issueTokenForUser(uid, result.user?.username ?? username, ttl);
                     const headers = new Headers({ "Cache-Control": "no-store" });
-                    const secure = url.protocol === "https:";
+                    const secure = secureCookie;
                     for (const cookie of sessionCookieHeaders(token, ttl, secure)) {
                         headers.append("Set-Cookie", cookie);
                     }
@@ -616,7 +672,7 @@ export default {
                     }
                     await api.writeAudit("logout", "", clientIp(request));
                     const headers = new Headers({ "Cache-Control": "no-store" });
-                    for (const cookie of expiredCookieHeaders(url.protocol === "https:")) {
+                    for (const cookie of expiredCookieHeaders(secureCookie)) {
                         headers.append("Set-Cookie", cookie);
                     }
                     return Response.json({ success: true }, { headers });
@@ -752,7 +808,7 @@ export default {
                         // 账号都没了，当前令牌必须一起作废
                         if (currentJti) await api.blacklistToken(currentJti, currentTokenExp);
                         const headers = new Headers({ "Cache-Control": "no-store" });
-                        for (const cookie of expiredCookieHeaders(url.protocol === "https:")) {
+                        for (const cookie of expiredCookieHeaders(secureCookie)) {
                             headers.append("Set-Cookie", cookie);
                         }
                         return Response.json(result, { headers });
@@ -1381,6 +1437,11 @@ export default {
             status: 404,
             headers: TEXT_HEADERS(),
         });
+}
+
+export default {
+    async fetch(request: Request, env: Env): Promise<Response> {
+        return withSecurityHeaders(await handleRequest(request, env));
     },
     /**
      * 每周定时任务（由 wrangler.jsonc 的 triggers.crons 触发）。

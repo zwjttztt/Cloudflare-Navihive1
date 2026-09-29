@@ -12,6 +12,13 @@ export interface Env {
     /** 仅当部署在可信反向代理之后、且代理已校验过真实客户端 IP 时才设为 "1"，否则 XFF 一律不信任（防绕过登录限速） */
     NAVIHIVE_TRUST_XFF?: string;
     /**
+     * 逃生开关：设为 "0" 时登录 cookie 一律不带 Secure。
+     * 只有「确实只能通过 http 访问、且反代连 X-Forwarded-Proto 都不传」才用 ——
+     * 那种情况下带 Secure 的 cookie 会被浏览器直接丢弃，登录必然掉线。
+     * 代价是 http 下令牌明文传输（本来整条链路就是明文）。
+     */
+    NAVIHIVE_COOKIE_SECURE?: string;
+    /**
      * 逃生开关：账号状态查询（users.status）报 DB 异常时改为放行。
      * 默认是 fail-closed（拦下），代价是 D1 一抖就会把站点所有者自己也锁在门外；
      * 真出事时设成 "1" 可以立刻恢复访问。

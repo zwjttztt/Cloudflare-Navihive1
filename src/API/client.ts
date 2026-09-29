@@ -52,13 +52,23 @@ export class NavigationClient {
 
     private setSessionCookie(ttlSeconds: number): void {
         if (typeof document === "undefined") return;
-        document.cookie = `${SESSION_COOKIE}=1; Path=/; SameSite=Strict; Max-Age=${ttlSeconds}`;
+        document.cookie = `${SESSION_COOKIE}=1; Path=/; SameSite=Strict; Max-Age=${ttlSeconds}${this.secureAttr()}`;
     }
 
     // 清除本地登录标记（令牌本身由服务端 /api/logout 清掉）
     clearToken(): void {
         if (typeof document === "undefined") return;
-        document.cookie = `${SESSION_COOKIE}=; Path=/; SameSite=Strict; Max-Age=0`;
+        document.cookie = `${SESSION_COOKIE}=; Path=/; SameSite=Strict; Max-Age=0${this.secureAttr()}`;
+    }
+
+    /**
+     * 本地登录标记要不要带 Secure —— 必须和服务端那条 httpOnly 令牌 cookie 保持一致。
+     * 不一致会造出「标记在、令牌不在」的半登录态：isLoggedIn() 为真于是直接渲染主界面，
+     * 紧接着第一个接口 401，界面又弹回登录页，看起来就像刚登录成功就闪退。
+     * （典型触发：先用 https 登录过，之后改从 http 访问同一个域名。）
+     */
+    private secureAttr(): string {
+        return typeof location !== "undefined" && location.protocol === "https:" ? "; Secure" : "";
     }
 
     // 登录API
