@@ -33,13 +33,40 @@ interface GuardState extends LoginGuard {
 }
 type GuardStore = Record<string, GuardState>;
 
-/** 取客户端标识。CF-Connecting-IP 由 Cloudflare 注入，伪造不了。 */
-export function clientBucket(request: Request): string {
-    const ip =
-        request.headers.get("CF-Connecting-IP") ||
-        (request.headers.get("X-Forwarded-For") || "").split(",")[0].trim() ||
-        "unknown";
-    return ip.slice(0, 64);
+/**
+ * 取客户端标识（限速分桶用）。
+ *
+ * Cloudflare 部署下 `CF-Connecting-IP` 由平台注入、客户端伪造不了，直接用。
+ * 自托管（没有 CF-Connecting-IP）时，**默认不再信任 `X-Forwarded-For`**：
+ * 否则攻击者每次换一个 XFF 首段就能换一个新桶，把爆破限速彻底绕过去。
+ * 只有在「明确把 Worker 放在可信反代后面、反代会老实填 XFF」的部署里，
+ * 才把 `NAVIHIVE_TRUST_XFF=1` 打开、显式允许读 XFF 首段。
+ * 不信任且又拿不到真实 IP 时所有来源共用一个 `unknown` 桶 —— 最多只是限速粒度变粗，
+ * 不会失守。
+ */
+export function clientBucket(request: Request, trustXForwardedFor = false): string {
+    const cf = request.headers.get("CF-Connecting-IP");
+    if (cf) return cf.slice(0, 64);
+    if (trustXForwardedFor) {
+        const xff = (request.headers.get("X-Forwarded-For") || "").split(",")[0].trim();
+        if (xff) return xff.slice(0, 64);
+    }
+    return "unknown";
+}
+
+/**
+ * 计算「第 count 次失败后还要锁多久」。前 freeAttempts 次给手滑留余地，
+ * 之后每次等待时间翻倍、封顶 maxLockMs。登录 / 恢复限速共用，避免算法重复。
+ */
+export function computeLockAfterFailure(
+    count: number,
+    freeAttempts: number,
+    baseLockMs: number,
+    maxLockMs: number
+): number {
+    const over = count - freeAttempts;
+    if (over <= 0) return 0;
+    return Math.min(baseLockMs * Math.pow(2, over - 1), maxLockMs);
 }
 
 async function readStore(api: NavigationAPI, key: string): Promise<GuardStore> {
@@ -140,4 +167,36 @@ export async function writeInitGuard(
     const store = await readStore(api, INIT_GUARD_KEY);
     store[bucket] = { ...guard, seen: Date.now() };
     await writeStore(api, INIT_GUARD_KEY, store);
+}
+
+// ============ 恢复令牌接口限速 ============
+// /api/auth/recover 是公网暴露的「找回密码」入口：虽需私钥签名，但私钥一旦泄露，
+// 攻击者就能拿着它反复重置（每次成功都 bump 令牌版本）。这里按来源 IP 分桶设一道短时熔断，
+// 挡住「泄露私钥后的高频重试」。复用上面的桶存储与计数算法。
+export const RECOVER_GUARD_KEY = "auth.recoverGuard";
+export const RECOVER_FREE_ATTEMPTS = 10;
+export const RECOVER_BASE_LOCK_MS = 60_000; // 第 11 次起锁 1 分钟
+export const RECOVER_MAX_LOCK_MS = 30 * 60_000; // 最多 30 分钟
+
+export async function readRecoverGuard(
+    api: NavigationAPI,
+    bucket = "legacy"
+): Promise<LoginGuard> {
+    const store = await readStore(api, RECOVER_GUARD_KEY);
+    const found = store[bucket];
+    if (!found) return { count: 0, until: 0 };
+    return {
+        count: typeof found.count === "number" && found.count > 0 ? found.count : 0,
+        until: typeof found.until === "number" && found.until > 0 ? found.until : 0,
+    };
+}
+
+export async function writeRecoverGuard(
+    api: NavigationAPI,
+    guard: LoginGuard,
+    bucket = "legacy"
+): Promise<void> {
+    const store = await readStore(api, RECOVER_GUARD_KEY);
+    store[bucket] = { ...guard, seen: Date.now() };
+    await writeStore(api, RECOVER_GUARD_KEY, store);
 }

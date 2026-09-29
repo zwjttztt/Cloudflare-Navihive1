@@ -34,6 +34,20 @@ export async function safeJson(request: Request): Promise<Record<string, unknown
         return {};
     }
 }
+
+/**
+ * 备份导入 / WebDAV 上传这类「整份数据进请求体」的接口，若不限制体积，
+ * 一份超大备份就能把 Worker 的内存 / CPU 拖垮。这里只靠 Content-Length 头做前置拦截
+ * （最快、不读 body）；缺该头时放行交由后续解析兜底。
+ */
+export const MAX_REQUEST_BODY_BYTES = 10 * 1024 * 1024; // 10MB
+
+export function isBodyTooLarge(request: Request, maxBytes = MAX_REQUEST_BODY_BYTES): boolean {
+    const cl = request.headers.get("content-length");
+    if (cl === null) return false;
+    const n = Number(cl);
+    return Number.isFinite(n) && n > maxBytes;
+}
 // ============ 条件请求（ETag） ============
 
 /**

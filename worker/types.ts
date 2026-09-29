@@ -9,6 +9,8 @@ export interface Env {
     AUTH_PASSWORD?: string;
     AUTH_SECRET?: string;
     AUTH_RECOVERY_PUBLIC_KEY?: string; // 恢复公钥（SPKI base64url）；不配则用库里的 recovery.publicKey
+    /** 仅当部署在可信反向代理之后、且代理已校验过真实客户端 IP 时才设为 "1"，否则 XFF 一律不信任（防绕过登录限速） */
+    NAVIHIVE_TRUST_XFF?: string;
 }
 
 // 验证用接口

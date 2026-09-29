@@ -118,6 +118,30 @@ const mockConfigs: Record<string, string> = {
     "site.customCss": ""
 };
 
+// 回收站：本地 mock 也是真的软删除 —— 删掉的分组/站点先搬到这儿，还原时按原数据塞回去。
+interface MockRecycleItem {
+    id: number;
+    kind: "site" | "group";
+    name: string;
+    deletedAt: number;
+    group?: Group;
+    sites?: Site[];
+    site?: Site;
+}
+const mockRecycleBin: MockRecycleItem[] = [];
+let mockRecycleSeq = 1;
+
+// 本地没有服务端审计流水，这里保持空列表（接口形状与真实实现一致）
+type MockAuditEntry = {
+    id: number;
+    action: string;
+    actor: string;
+    ip: string;
+    detail: string;
+    created_at: string;
+};
+const mockAuditLog: MockAuditEntry[] = [];
+
 // 模拟API实现
 export class MockNavigationClient {
     // 与真实 client 保持一致：登录态看可读的 session cookie，令牌本身不落 JS
@@ -286,13 +310,24 @@ export class MockNavigationClient {
         return mockGroups[index];
     }
 
-    async deleteGroup(id: number): Promise<boolean> {
+    async deleteGroup(id: number): Promise<{ success: boolean; recycleId?: number }> {
         await new Promise(resolve => setTimeout(resolve, 200));
         const index = mockGroups.findIndex(g => g.id === id);
-        if (index === -1) return false;
+        if (index === -1) return { success: false };
 
+        const group = mockGroups[index];
+        const sites = mockSites.filter(s => s.group_id === id);
+        const recycleId = mockRecycleSeq++;
+        mockRecycleBin.push({
+            id: recycleId,
+            kind: "group",
+            name: `${group.name}（含 ${sites.length} 张卡片）`,
+            deletedAt: Math.floor(Date.now() / 1000),
+            group,
+            sites,
+        });
         mockGroups.splice(index, 1);
-        return true;
+        return { success: true, recycleId };
     }
 
     async getSites(groupId?: number): Promise<Site[]> {
@@ -334,13 +369,22 @@ export class MockNavigationClient {
         return mockSites[index];
     }
 
-    async deleteSite(id: number): Promise<boolean> {
+    async deleteSite(id: number): Promise<{ success: boolean; recycleId?: number }> {
         await new Promise(resolve => setTimeout(resolve, 200));
         const index = mockSites.findIndex(s => s.id === id);
-        if (index === -1) return false;
+        if (index === -1) return { success: false };
 
+        const site = mockSites[index];
+        const recycleId = mockRecycleSeq++;
+        mockRecycleBin.push({
+            id: recycleId,
+            kind: "site",
+            name: site.name,
+            deletedAt: Math.floor(Date.now() / 1000),
+            site,
+        });
         mockSites.splice(index, 1);
-        return true;
+        return { success: true, recycleId };
     }
 
     async updateGroupOrder(groupOrders: { id: number; order_num: number }[]): Promise<boolean> {
@@ -502,5 +546,62 @@ export class MockNavigationClient {
             console.error("模拟导入数据失败:", error);
             return { success: false, groupIdMap: {}, siteIdMap: {} };
         }
+    }
+
+    // ============ 审计日志（本地没有服务端流水，按接口形状返回空列表） ============
+    async getAuditLog(opts: { limit?: number; offset?: number; actor?: string } = {}): Promise<{
+        success: boolean;
+        log: Array<{ id: number; action: string; actor: string; ip: string; detail: string; created_at: string }>;
+        hasMore: boolean;
+    }> {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        const limit = Math.min(Math.max(opts.limit ?? 50, 1), 200);
+        const offset = Math.max(opts.offset ?? 0, 0);
+        const rows = opts.actor ? mockAuditLog.filter(r => r.actor === opts.actor) : mockAuditLog;
+        const page = rows.slice(offset, offset + limit);
+        return { success: true, log: page, hasMore: rows.length > offset + limit };
+    }
+
+    // ============ 回收站（与真实实现一致：软删除后可还原 / 彻底删除 / 清空） ============
+    async getRecycleBin(): Promise<{
+        success: boolean;
+        items: Array<{ id: number; kind: "site" | "group"; name: string; deletedAt: number }>;
+    }> {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        return {
+            success: true,
+            items: mockRecycleBin.map(r => ({ id: r.id, kind: r.kind, name: r.name, deletedAt: r.deletedAt })),
+        };
+    }
+
+    async restoreRecycleItem(id: number): Promise<{ success: boolean }> {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        const index = mockRecycleBin.findIndex(r => r.id === id);
+        if (index === -1) return { success: false };
+
+        const item = mockRecycleBin[index];
+        if (item.kind === "group" && item.group) {
+            mockGroups.push(item.group);
+            (item.sites || []).forEach(site => mockSites.push(site));
+        } else if (item.site) {
+            mockSites.push(item.site);
+        }
+        mockRecycleBin.splice(index, 1);
+        return { success: true };
+    }
+
+    async purgeRecycleItem(id: number): Promise<{ success: boolean }> {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        const index = mockRecycleBin.findIndex(r => r.id === id);
+        if (index === -1) return { success: false };
+
+        mockRecycleBin.splice(index, 1);
+        return { success: true };
+    }
+
+    async emptyRecycleBin(): Promise<{ success: boolean }> {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        mockRecycleBin.length = 0;
+        return { success: true };
     }
 }

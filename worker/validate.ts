@@ -2,6 +2,7 @@
 // 各写路由的请求体校验：返回错误列表 + 清洗后的数据（trim、截断超长字段、URL 格式校验）。
 
 import type { Group, Site } from "../src/API/http";
+import { sanitizeIconUrl } from "../src/API/http";
 import type { ConfigInput, GroupInput, LoginInput, SiteInput } from "./types";
 
 export function validateLogin(data: LoginInput): { valid: boolean; errors?: string[] } {
@@ -88,7 +89,10 @@ export function validateSite(data: SiteInput): {
             try {
                 // 验证URL格式
                 new URL(data.icon);
-                sanitizedData.icon = data.icon.trim();
+                // L1：挡掉 javascript:/vbscript:/file:/data:text/html 这类可执行 / 危险协议
+                // （data:text/html 能过 new URL 校验，但作为图标渲染是风险点，统一清掉）。
+                // 与导入路径（normalizeImportData）保持同一套清洗规则。
+                sanitizedData.icon = sanitizeIconUrl(data.icon.trim());
             } catch {
                 errors.push("无效的图标URL格式");
             }

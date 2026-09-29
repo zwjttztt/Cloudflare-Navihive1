@@ -14,6 +14,8 @@ import LinkOffIcon from "@mui/icons-material/LinkOff";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import LogoutIcon from "@mui/icons-material/Logout";
 import ManageAccountsIcon from "@mui/icons-material/ManageAccounts";
+import RestoreFromTrashIcon from "@mui/icons-material/RestoreFromTrash";
+import HistoryIcon from "@mui/icons-material/History";
 
 export interface MoreMenuProps {
     anchorEl: HTMLElement | null;
@@ -36,6 +38,10 @@ export interface MoreMenuProps {
     onLogout: () => void;
     /** 打开「账号管理」（账号密码 / 恢复密钥 / 邀请码 / 注销） */
     onOpenAccount: () => void;
+    /** 打开回收站（还原 / 彻底删除被软删除的站点、分组） */
+    onOpenRecycle: () => void;
+    /** 打开审计日志（仅站点所有者可见） */
+    onOpenAudit: () => void;
 }
 
 export default function MoreMenu({
@@ -56,6 +62,8 @@ export default function MoreMenu({
     onClearVisits,
     isAuthenticated,
     onLogout,
+    onOpenRecycle,
+    onOpenAudit,
     onOpenAccount,
 }: MoreMenuProps) {
     return (
@@ -187,6 +195,28 @@ export default function MoreMenu({
                                 <LinkOffIcon fontSize='small' />
                             </ListItemIcon>
                             <ListItemText>检测失效链接</ListItemText>
+                        </MenuItem>
+                        <MenuItem
+                            onClick={() => {
+                                onClose();
+                                onOpenRecycle();
+                            }}
+                        >
+                            <ListItemIcon>
+                                <RestoreFromTrashIcon fontSize='small' />
+                            </ListItemIcon>
+                            <ListItemText>回收站</ListItemText>
+                        </MenuItem>
+                        <MenuItem
+                            onClick={() => {
+                                onClose();
+                                onOpenAudit();
+                            }}
+                        >
+                            <ListItemIcon>
+                                <HistoryIcon fontSize='small' />
+                            </ListItemIcon>
+                            <ListItemText>审计日志</ListItemText>
                         </MenuItem>
                         <Divider />
                         <MenuItem

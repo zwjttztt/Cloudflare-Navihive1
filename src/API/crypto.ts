@@ -54,8 +54,19 @@ export async function verifyJwt(
 ): Promise<JwtResult> {
     const parts = token.split(".");
     if (parts.length !== 3) return { valid: false };
-    const [header, body, sig] = parts;
-    const expected = await hmac(secret, enc.encode(`${header}.${body}`));
+    const [headerB64, body, sig] = parts;
+
+    // 纵深防御：钉死算法与类型。单算法 HS256 下 alg:none 攻击实际不可达（签名比对必失败），
+    // 但显式拒绝非预期 header 能挡住未来「多算法共存时降级到 none」这类误配置，
+    // 也顺手拦掉 tampered/exp 改写的令牌（header 一变就验不过）。
+    try {
+        const header = JSON.parse(dec.decode(b64urlDecode(headerB64))) as Record<string, unknown>;
+        if (header.alg !== "HS256" || header.typ !== "JWT") return { valid: false };
+    } catch {
+        return { valid: false };
+    }
+
+    const expected = await hmac(secret, enc.encode(`${headerB64}.${body}`));
     if (!constantTimeEqual(expected, b64urlDecode(sig))) return { valid: false };
 
     let payload: Record<string, unknown>;

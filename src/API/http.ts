@@ -479,6 +479,13 @@ export class NavigationAPI {
      * 此时不做数据过滤，保持升级前的行为。
      */
     private currentUserId: number | null = null;
+    /**
+     * 建表 / 迁移是否已经完整跑过一遍。迁移完成前（首个请求、users 表还没建好时）
+     * 查账号状态会抛错，那时必须 fail-open（放行），否则整站登不进去；
+     * 迁移完成之后若再查出错，就是真·DB 异常，应当 fail-closed（按「不可用」拦下），
+     * 避免一个已被停用 / 清除的账号靠旧令牌继续过审。见 getAccountSessionState。
+     */
+    private dbReady = false;
 
     /** 绑定当前账号（Worker 验签通过后调用）。传 null 表示系统级调用。 */
     setCurrentUser(id: number | null): void {
@@ -579,6 +586,16 @@ export class NavigationAPI {
         // jti 抹掉，那张令牌就又活了），而且每次校验都要把整份 JSON 读出来解析。
         // 改成一行一条之后插入到 key 冲突时覆盖是幂等的，查也是走主键的单行查询。
         `CREATE TABLE IF NOT EXISTS token_blacklist (jti TEXT PRIMARY KEY, exp INTEGER NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`,
+        // 回收站：站点 / 分组删除不再硬删，先原样搬到这里，给「删错了」留后悔药。
+        // data 存原始行（站点含密文密码，不解密，避免落回明文）；owner_user_id 做按账号隔离。
+        `CREATE TABLE IF NOT EXISTS recycle_bin (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            kind TEXT NOT NULL,
+            owner_user_id INTEGER,
+            data TEXT NOT NULL,
+            deleted_at INTEGER NOT NULL,
+            expires_at INTEGER
+        );`,
     ];
 
     private async runMigrations(): Promise<void> {
@@ -624,6 +641,10 @@ export class NavigationAPI {
 
         // 5) 账号各自的令牌版本：见 bumpTokenVersion 的注释
         await this.migrateAccountSecurityColumns();
+
+        // 所有迁移步骤跑完，说明表结构已就绪：之后的查询出错就按「异常」处理（fail-closed），
+        // 而不是「库还没建好」（fail-open）。
+        this.dbReady = true;
     }
 
     /**
@@ -924,6 +945,37 @@ export class NavigationAPI {
                 .run();
         } catch (error) {
             console.error("写入审计日志失败:", error);
+        }
+    }
+
+    /** 读取审计日志（owner 只读视图）。按时间倒序，支持分页与按操作者过滤。 */
+    async getAuditLog(opts: { limit?: number; offset?: number; actor?: string } = {}): Promise<
+        Array<{ id: number; action: string; actor: string; ip: string; detail: string; created_at: string }>
+    > {
+        await this.migrate();
+        const limit = Math.min(Math.max(opts.limit ?? 50, 1), 200);
+        const offset = Math.max(opts.offset ?? 0, 0);
+        let query = "SELECT id, action, actor, ip, detail, created_at FROM audit_log";
+        const params: (string | number)[] = [];
+        if (opts.actor) {
+            query += " WHERE actor = ?";
+            params.push(opts.actor);
+        }
+        query += " ORDER BY id DESC LIMIT ? OFFSET ?";
+        params.push(limit, offset);
+        try {
+            const result = await this.db.prepare(query).bind(...params).all<{
+                id: number;
+                action: string;
+                actor: string;
+                ip: string;
+                detail: string;
+                created_at: string;
+            }>();
+            return result.results || [];
+        } catch (error) {
+            console.error("读取审计日志失败:", error);
+            return [];
         }
     }
 
@@ -1616,8 +1668,9 @@ export class NavigationAPI {
             if (!row) state = "missing";
             else state = row.status === "disabled" ? "disabled" : "active";
         } catch {
-            // 表 / 列还没建好（迁移未跑）时别把人挡在门外：按「正常」放行
-            state = "active";
+            // 迁移未跑完（首请求、users 表 / status 列还没建好）时 fail-open，放行以免整站登不进；
+            // 迁移跑完之后若还查出错，按「账号不可用」fail-closed，拦下已被停用 / 清除的旧令牌。
+            state = this.dbReady ? "missing" : "active";
         }
         this.sessionStateCache.set(uid, { state, at: now });
         return state;
@@ -2354,12 +2407,44 @@ export class NavigationAPI {
         return result.results[0];
     }
 
-    async deleteGroup(id: number): Promise<boolean> {
+    /**
+     * 删除分组：先连同它的站点一起搬进回收站（软删除），再真正删除。
+     * 返回 recycleId 供前端「撤销」时精确还原，避免本地重建产生重复副本。
+     */
+    async deleteGroup(id: number): Promise<{ success: boolean; recycleId?: number }> {
+        await this.migrate();
+        return this.withSchemaRetry(async () => {
+            const group = await this.db
+                .prepare(`SELECT * FROM groups WHERE id = ?${this.scopeSql(true)}`)
+                .bind(...this.scopeParams([id]))
+                .first<Record<string, unknown>>();
+            if (!group) return { success: false };
+            const sitesResult = await this.db
+                .prepare(`SELECT * FROM sites WHERE group_id = ?${this.scopeSql(true)}`)
+                .bind(...this.scopeParams([id]))
+                .all<Record<string, unknown>>();
+            const recycleId = await this.pushToRecycle(
+                "group",
+                JSON.stringify({ group, sites: sitesResult.results || [] })
+            );
+            const result = await this.db
+                .prepare(`DELETE FROM groups WHERE id = ?${this.scopeSql(true)}`)
+                .bind(...this.scopeParams([id]))
+                .run();
+            return { success: result.success, recycleId: result.success ? recycleId : undefined };
+        });
+    }
+
+    /** 把一条记录塞进回收站，返回新插入的行 id（失败返回 undefined） */
+    private async pushToRecycle(kind: string, data: string): Promise<number | undefined> {
         const result = await this.db
-            .prepare(`DELETE FROM groups WHERE id = ?${this.scopeSql(true)}`)
-            .bind(...this.scopeParams([id]))
+            .prepare(
+                `INSERT INTO recycle_bin (kind, owner_user_id, data, deleted_at) VALUES (?, ?, ?, ?)`
+            )
+            .bind(kind, this.currentUserId, data, Math.floor(Date.now() / 1000))
             .run();
-        return result.success;
+        const meta = result.meta as { last_row_id?: number } | undefined;
+        return typeof meta?.last_row_id === "number" ? meta.last_row_id : undefined;
     }
 
     // 网站相关 API
@@ -2534,15 +2619,138 @@ export class NavigationAPI {
         return this.decryptSitePassword(result.results[0]);
     }
 
-    async deleteSite(id: number): Promise<boolean> {
+    /**
+     * 删除站点：先搬进回收站（软删除，原样保留含密文密码的原始行），再真正删除。
+     * 返回 recycleId 供前端「撤销」精确还原。
+     */
+    async deleteSite(id: number): Promise<{ success: boolean; recycleId?: number }> {
         await this.migrate();
         return this.withSchemaRetry(async () => {
+            const row = await this.db
+                .prepare(`SELECT * FROM sites WHERE id = ?${this.scopeSql(true)}`)
+                .bind(...this.scopeParams([id]))
+                .first<Record<string, unknown>>();
+            if (!row) return { success: false };
+            const recycleId = await this.pushToRecycle("site", JSON.stringify(row));
             const result = await this.db
                 .prepare(`DELETE FROM sites WHERE id = ?${this.scopeSql(true)}`)
                 .bind(...this.scopeParams([id]))
                 .run();
-            return result.success;
+            return { success: result.success, recycleId: result.success ? recycleId : undefined };
         });
+    }
+
+    // ============ 回收站（软删除的兜底恢复） ============
+    /** 当前账号在回收站里的条目（owner 看到自己删的；普通账号只看自己的） */
+    async listRecycleBin(): Promise<
+        Array<{ id: number; kind: "site" | "group"; name: string; deletedAt: number }>
+    > {
+        await this.migrate();
+        try {
+            const result = await this.db
+                .prepare(
+                    `SELECT id, kind, data, deleted_at FROM recycle_bin WHERE owner_user_id ${this.currentUserId === null ? "IS NULL" : "= ?"} ORDER BY id DESC`
+                )
+                .bind(...(this.currentUserId === null ? [] : [this.currentUserId]))
+                .all<{ id: number; kind: string; data: string; deleted_at: number }>();
+            return (result.results || []).map(r => {
+                let name = "";
+                try {
+                    const parsed = JSON.parse(r.data) as { group?: { name?: string }; sites?: unknown[]; name?: string };
+                    name =
+                        typeof parsed.name === "string"
+                            ? parsed.name
+                            : typeof parsed.group?.name === "string"
+                              ? parsed.group.name
+                              : r.kind === "group"
+                                ? "分组"
+                                : "站点";
+                    if (r.kind === "group" && Array.isArray(parsed.sites)) {
+                        name += `（含 ${parsed.sites.length} 张卡片）`;
+                    }
+                } catch {
+                    name = r.kind === "group" ? "分组" : "站点";
+                }
+                return { id: r.id, kind: r.kind === "group" ? "group" : "site", name, deletedAt: r.deleted_at };
+            });
+        } catch (error) {
+            console.error("读取回收站失败:", error);
+            return [];
+        }
+    }
+
+    /** 从回收站还原一条（按原始 id 重新插入，含其站点）。返回是否成功。 */
+    async restoreRecycleItem(id: number): Promise<boolean> {
+        await this.migrate();
+        return this.withSchemaRetry(async () => {
+            const row = await this.db
+                .prepare(`SELECT kind, data FROM recycle_bin WHERE id = ? AND owner_user_id ${this.currentUserId === null ? "IS NULL" : "= ?"}`)
+                .bind(...(this.currentUserId === null ? [id] : [id, this.currentUserId]))
+                .first<{ kind: string; data: string }>();
+            if (!row) return false;
+            let parsed: unknown;
+            try {
+                parsed = JSON.parse(row.data);
+            } catch {
+                return false;
+            }
+            if (row.kind === "site") {
+                await this.reinsertSite(parsed as Record<string, unknown>);
+            } else {
+                const g = parsed as { group?: Record<string, unknown>; sites?: Record<string, unknown>[] };
+                await this.reinsertGroup(g.group || {}, g.sites || []);
+            }
+            await this.db.prepare(`DELETE FROM recycle_bin WHERE id = ?`).bind(id).run();
+            return true;
+        });
+    }
+
+    /** 永久删除一条回收站记录（数据不可恢复） */
+    async purgeRecycleItem(id: number): Promise<boolean> {
+        await this.migrate();
+        const result = await this.db
+            .prepare(
+                `DELETE FROM recycle_bin WHERE id = ? AND owner_user_id ${this.currentUserId === null ? "IS NULL" : "= ?"}`
+            )
+            .bind(...(this.currentUserId === null ? [id] : [id, this.currentUserId]))
+            .run();
+        return result.success;
+    }
+
+    /** 清空当前账号的回收站 */
+    async emptyRecycleBin(): Promise<boolean> {
+        await this.migrate();
+        const result = await this.db
+            .prepare(
+                `DELETE FROM recycle_bin WHERE owner_user_id ${this.currentUserId === null ? "IS NULL" : "= ?"}`
+            )
+            .bind(...(this.currentUserId === null ? [] : [this.currentUserId]))
+            .run();
+        return result.success;
+    }
+
+    /** 把一条站点原始行按原 id 插回 sites（密码仍是原密文，不解密） */
+    private async reinsertSite(site: Record<string, unknown>): Promise<void> {
+        const cols = ["id", "group_id", "name", "url", "icon", "description", "notes", "username", "password", "order_num", "created_at", "updated_at"];
+        const vals = cols.map(c => (site[c] === undefined ? null : site[c]));
+        const placeholders = cols.map(() => "?").join(", ");
+        await this.db
+            .prepare(`INSERT OR REPLACE INTO sites (${cols.join(", ")}) VALUES (${placeholders})`)
+            .bind(...vals)
+            .run();
+    }
+
+    /** 把分组原始行按原 id 插回，再插回其站点（站点 group_id 指向原分组 id） */
+    private async reinsertGroup(group: Record<string, unknown>, sites: Record<string, unknown>[]): Promise<void> {
+        const gcols = ["id", "name", "order_num", "created_at", "updated_at"];
+        const gvals = gcols.map(c => (group[c] === undefined ? null : group[c]));
+        await this.db
+            .prepare(`INSERT OR REPLACE INTO groups (${gcols.join(", ")}) VALUES (${gcols.map(() => "?").join(", ")})`)
+            .bind(...gvals)
+            .run();
+        for (const site of sites) {
+            await this.reinsertSite(site);
+        }
     }
 
     // 配置相关API

@@ -332,11 +332,10 @@ export class NavigationClient {
         });
     }
 
-    async deleteGroup(id: number): Promise<boolean> {
-        const response = await this.request(`groups/${id}`, {
+    async deleteGroup(id: number): Promise<{ success: boolean; recycleId?: number }> {
+        return this.request(`groups/${id}`, {
             method: "DELETE",
         });
-        return response.success;
     }
 
     // 网站相关API
@@ -363,11 +362,10 @@ export class NavigationClient {
         });
     }
 
-    async deleteSite(id: number): Promise<boolean> {
-        const response = await this.request(`sites/${id}`, {
+    async deleteSite(id: number): Promise<{ success: boolean; recycleId?: number }> {
+        return this.request(`sites/${id}`, {
             method: "DELETE",
         });
-        return response.success;
     }
 
     // 配置相关API
@@ -516,5 +514,44 @@ export class NavigationClient {
             throw new Error(data?.error || `抓取失败（${response.status}）`);
         }
         return data as SiteMeta;
+    }
+
+    // ============ 审计日志（owner 只读） ============
+    async getAuditLog(opts: { limit?: number; offset?: number; actor?: string } = {}): Promise<{
+        success: boolean;
+        log: Array<{ id: number; action: string; actor: string; ip: string; detail: string; created_at: string }>;
+        hasMore: boolean;
+    }> {
+        const params = new URLSearchParams();
+        if (opts.limit) params.set("limit", String(opts.limit));
+        if (opts.offset) params.set("offset", String(opts.offset));
+        if (opts.actor) params.set("actor", opts.actor);
+        return this.request(`audit?${params.toString()}`);
+    }
+
+    // ============ 回收站 ============
+    async getRecycleBin(): Promise<{
+        success: boolean;
+        items: Array<{ id: number; kind: "site" | "group"; name: string; deletedAt: number }>;
+    }> {
+        return this.request("recycle");
+    }
+
+    async restoreRecycleItem(id: number): Promise<{ success: boolean }> {
+        return this.request("recycle/restore", {
+            method: "POST",
+            body: JSON.stringify({ id }),
+        });
+    }
+
+    async purgeRecycleItem(id: number): Promise<{ success: boolean }> {
+        return this.request("recycle/purge", {
+            method: "POST",
+            body: JSON.stringify({ id }),
+        });
+    }
+
+    async emptyRecycleBin(): Promise<{ success: boolean }> {
+        return this.request("recycle", { method: "DELETE" });
     }
 }

@@ -22,6 +22,12 @@ import {
     readLoginGuard,
     writeLoginGuard,
     clientBucket,
+    computeLockAfterFailure,
+    readRecoverGuard,
+    writeRecoverGuard,
+    RECOVER_FREE_ATTEMPTS,
+    RECOVER_BASE_LOCK_MS,
+    RECOVER_MAX_LOCK_MS,
     LOGIN_FREE_ATTEMPTS,
     LOGIN_BASE_LOCK_MS,
     LOGIN_MAX_LOCK_MS,
@@ -45,7 +51,7 @@ import type {
     SiteInput,
 } from "./types";
 import { validateConfig, validateGroup, validateLogin, validateSite } from "./validate";
-import { safeJson, securityHeaders, weakEtag } from "./util";
+import { safeJson, securityHeaders, weakEtag, isBodyTooLarge } from "./util";
 import {
     readAllConfigs,
     resolveWebDavConfig,
@@ -142,6 +148,10 @@ function isSameOrigin(request: Request): boolean {
 export default {
     async fetch(request: Request, env: Env) {
         const url = new URL(request.url);
+        // 自托管时是否信任 X-Forwarded-For 作为限速分桶依据（仅当 Worker 位于可信反代之后、
+        // 反代会老实填 XFF 时才打开，否则攻击者随便改 XFF 就能绕过爆破限速）。
+        // 默认关闭：Cloudflare 部署走 CF-Connecting-IP（不可伪造），不受此开关影响。
+        const trustXFF = env && env.NAVIHIVE_TRUST_XFF === "1";
 
         // API路由处理
         if (url.pathname.startsWith("/api/")) {
@@ -189,7 +199,7 @@ export default {
 
                     // 还在锁定期就直接回绝，并告诉还要等多久。
                     // 锁是按来源 IP 分的桶：陌生人乱猜不该把站点主人自己也挡在门外。
-                    const guard = await readLoginGuard(api, clientBucket(request));
+                    const guard = await readLoginGuard(api, clientBucket(request, trustXFF));
                     const now = Date.now();
                     if (guard.until > now) {
                         const waitSec = Math.ceil((guard.until - now) / 1000);
@@ -208,7 +218,7 @@ export default {
                     if (result.success) {
                         // 登录成功就清零，别让之前的手滑一直累积
                         if (guard.count > 0)
-                            await writeLoginGuard(api, { count: 0, until: 0 }, clientBucket(request));
+                            await writeLoginGuard(api, { count: 0, until: 0 }, clientBucket(request, trustXFF));
                         await api.writeAudit("login.success", loginData.username || "", ip);
 
                         // 令牌只放进 httpOnly cookie，不再回传给 JS（响应体里也不带 token）
@@ -245,7 +255,7 @@ export default {
                                   LOGIN_MAX_LOCK_MS
                               )
                             : 0;
-                    await writeLoginGuard(api, { count, until }, clientBucket(request));
+                    await writeLoginGuard(api, { count, until }, clientBucket(request, trustXFF));
 
                     // 三种状态文案要分清楚：还能试几次 / 这是最后一次 / 已经锁了。
                     // （之前按「剩余次数」判断，第 5 次还没真锁上却说「已暂时锁定」）
@@ -319,6 +329,7 @@ export default {
 
                 // 密钥恢复：用私钥签名的 JWS 令牌重置管理员密码（无需登录即可调用）
                 // 服务器只持公钥、验签，没有私钥造不出合法 token，故公网入口安全。
+                // 私钥一旦泄露仍可能被高频重试，所以按来源 IP 加一道短时熔断（见 loginGuard）。
                 if (path === "auth/recover" && method === "POST") {
                     const data = (await request.json().catch(() => ({}))) as RecoveryInput;
                     const token = typeof data.token === "string" ? data.token.trim() : "";
@@ -328,9 +339,19 @@ export default {
                             { status: 400 }
                         );
                     }
+                    const rBucket = clientBucket(request, trustXFF);
+                    const rGuard = await readRecoverGuard(api, rBucket);
+                    const rNow = Date.now();
+                    if (rGuard.until > rNow) {
+                        const waitSec = Math.ceil((rGuard.until - rNow) / 1000);
+                        return Response.json(
+                            { success: false, message: `恢复请求过于频繁，请 ${waitSec} 秒后再试` },
+                            { status: 429, headers: { "Retry-After": String(waitSec) } }
+                        );
+                    }
                     const clientKey =
                         request.headers.get("CF-Connecting-IP") ||
-                        request.headers.get("X-Forwarded-For") ||
+                        (trustXFF ? (request.headers.get("X-Forwarded-For") || "").split(",")[0].trim() : "") ||
                         "unknown";
                     const result = await api.redeemRecoveryToken(token, clientKey);
                     await api.writeAudit(
@@ -339,6 +360,24 @@ export default {
                         clientKey,
                         result.message
                     );
+                    if (result.success) {
+                        // 成功就清零失败计数
+                        if (rGuard.count > 0) await writeRecoverGuard(api, { count: 0, until: 0 }, rBucket);
+                    } else {
+                        // 失败累加，超阈值后按指数退避短暂锁定该来源
+                        const count = rGuard.count + 1;
+                        const until =
+                            count > RECOVER_FREE_ATTEMPTS
+                                ? rNow +
+                                  computeLockAfterFailure(
+                                      count,
+                                      RECOVER_FREE_ATTEMPTS,
+                                      RECOVER_BASE_LOCK_MS,
+                                      RECOVER_MAX_LOCK_MS
+                                  )
+                                : 0;
+                        await writeRecoverGuard(api, { count, until }, rBucket);
+                    }
                     return Response.json(result, { status: result.success ? 200 : 400 });
                 }
 
@@ -363,7 +402,7 @@ export default {
                 if (path === "init" && method === "GET") {
                     // 未鉴权接口，先过一道限速：挡掉反复打接口探测的扫描。
                     // 已初始化的请求（正常回源探测）不计次，避免锁正常用户。
-                    const initGuard = await readInitGuard(api, clientBucket(request));
+                    const initGuard = await readInitGuard(api, clientBucket(request, trustXFF));
                     const initNow = Date.now();
                     if (initGuard.until > initNow) {
                         const waitSec = Math.ceil((initGuard.until - initNow) / 1000);
@@ -389,7 +428,7 @@ export default {
                         await writeInitGuard(
                             api,
                             { count: initCount, until: initUntil },
-                            clientBucket(request)
+                            clientBucket(request, trustXFF)
                         );
                     }
 
@@ -679,6 +718,60 @@ export default {
                     return Response.json(result, { status: 400 });
                 }
 
+                // 审计日志只读视图（仅 owner）。谁在何时从哪 IP 做了什么，事后能溯源。
+                if (path === "audit" && method === "GET") {
+                    const uid = api.getCurrentUserId();
+                    const me = uid !== null ? await api.getUserById(uid) : null;
+                    if (!me || me.role !== "owner") {
+                        return Response.json(
+                            { success: false, message: "仅站点所有者可以查看审计日志" },
+                            { status: 403 }
+                        );
+                    }
+                    const limit = Math.min(
+                        Math.max(parseInt(url.searchParams.get("limit") || "50", 10) || 50, 1),
+                        200
+                    );
+                    const offset = Math.max(parseInt(url.searchParams.get("offset") || "0", 10) || 0, 0);
+                    const actor = url.searchParams.get("actor") || undefined;
+                    const log = await api.getAuditLog({ limit, offset, actor });
+                    return Response.json({ success: true, log, hasMore: log.length === limit });
+                }
+
+                // 回收站：列出当前账号软删除的站点 / 分组
+                if (path === "recycle" && method === "GET") {
+                    const items = await api.listRecycleBin();
+                    return Response.json({ success: true, items });
+                }
+                // 回收站：还原一条
+                if (path === "recycle/restore" && method === "POST") {
+                    const body = (await request.json().catch(() => ({}))) as { id?: number };
+                    const id = typeof body.id === "number" ? body.id : NaN;
+                    if (isNaN(id)) {
+                        return Response.json({ success: false, message: "缺少有效的 id" }, { status: 400 });
+                    }
+                    const ok = await api.restoreRecycleItem(id);
+                    await api.writeAudit("recycle.restore", "", clientIp(request), `回收站条目 ${id}`);
+                    return Response.json({ success: ok });
+                }
+                // 回收站：永久删除一条
+                if (path === "recycle/purge" && method === "POST") {
+                    const body = (await request.json().catch(() => ({}))) as { id?: number };
+                    const id = typeof body.id === "number" ? body.id : NaN;
+                    if (isNaN(id)) {
+                        return Response.json({ success: false, message: "缺少有效的 id" }, { status: 400 });
+                    }
+                    const ok = await api.purgeRecycleItem(id);
+                    await api.writeAudit("recycle.purge", "", clientIp(request), `回收站条目 ${id}`);
+                    return Response.json({ success: ok });
+                }
+                // 回收站：清空
+                if (path === "recycle" && method === "DELETE") {
+                    const ok = await api.emptyRecycleBin();
+                    await api.writeAudit("recycle.empty", "", clientIp(request));
+                    return Response.json({ success: ok });
+                }
+
                 // 抓目标站点的标题 / 描述（新增卡片时一键补全）—— 要鉴权，因为会对外发请求，
                 // 不能让陌生人拿我们的 Worker 当代理使
                 if (path === "meta" && method === "GET") {
@@ -772,7 +865,8 @@ export default {
                     }
 
                     const result = await api.deleteGroup(id);
-                    return Response.json({ success: result });
+                    // 软删除：结果含 recycleId，前端撤销时据此精确还原
+                    return Response.json(result);
                 }
                 // 站点相关API
                 else if (path === "sites" && method === "GET") {
@@ -871,7 +965,8 @@ export default {
 
                     const result = await api.deleteSite(id);
                     await api.writeAudit("site.delete", "", clientIp(request), `站点 ${id}`);
-                    return Response.json({ success: result });
+                    // 软删除：结果含 recycleId，前端撤销时据此精确还原
+                    return Response.json(result);
                 }
                 // 批量更新排序
                 else if (path === "group-orders" && method === "PUT") {
@@ -1148,6 +1243,13 @@ export default {
 
                 // 数据导入路由
                 else if (path === "import" && method === "POST") {
+                    // 超大备份会拖垮 Worker：先用 Content-Length 拦一道（见 util.isBodyTooLarge）
+                    if (isBodyTooLarge(request)) {
+                        return Response.json(
+                            { success: false, message: "备份文件过大（上限 10MB），请精简后重试" },
+                            { status: 413 }
+                        );
+                    }
                     const data = (await request.json()) as ExportData;
 
                     // 验证导入数据（站点允许嵌套在分组中，兼容旧版备份格式）
@@ -1179,6 +1281,13 @@ export default {
                     const result = await webdavTest(config);
                     return Response.json(result);
                 } else if (path === "webdav/upload" && method === "POST") {
+                    // 备份数据整份进请求体，超大备份会拖垮 Worker（见 util.isBodyTooLarge）
+                    if (isBodyTooLarge(request)) {
+                        return Response.json(
+                            { success: false, message: "备份文件过大（上限 10MB），请精简后重试" },
+                            { status: 413 }
+                        );
+                    }
                     const body = (await safeJson(request)) as {
                         filename?: string;
                         data?: ExportData;

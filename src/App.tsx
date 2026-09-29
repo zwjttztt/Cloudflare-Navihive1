@@ -41,6 +41,7 @@ import type { CommandItem } from "./components/CommandPalette";
 import ScrollProgress from "./components/ScrollProgress";
 import BackToTop from "./components/BackToTop";
 import OfflineBanner from "./components/OfflineBanner";
+import ConfirmDialog from "./components/ConfirmDialog";
 // 提示条 / 背景装饰 / 浮层挂载点：三段纯渲染的 JSX，从 App 的渲染树里抽出来
 import SnackbarHost from "./components/SnackbarHost";
 import BackgroundLayers from "./components/BackgroundLayers";
@@ -67,6 +68,8 @@ const AccountDialog = lazy(() => import("./components/AccountDialog"));
 // 注销确认弹窗只有点「注销账号」才会用到，懒加载省首屏体积
 const DeleteAccountDialog = lazy(() => import("./components/DeleteAccountDialog"));
 const ImportPreviewDialog = lazy(() => import("./components/ImportPreviewDialog"));
+const AuditDialog = lazy(() => import("./components/AuditDialog"));
+const RecycleBinDialog = lazy(() => import("./components/RecycleBinDialog"));
 import HeaderClock from "./components/HeaderClock";
 import SiteListHeader from "./components/SiteListHeader";
 import SiteListSkeleton from "./components/SiteListSkeleton";
@@ -542,6 +545,10 @@ function App() {
     // 备份/恢复对话框状态
     const [openBackup, setOpenBackup] = useState(false);
     const [backupTab, setBackupTab] = useState(0);
+
+    // 审计日志 / 回收站对话框状态
+    const [openAudit, setOpenAudit] = useState(false);
+    const [openRecycle, setOpenRecycle] = useState(false);
 
     // 新增卡片时是否明文显示密码
     const [showNewSitePassword, setShowNewSitePassword] = useState(false);
@@ -1442,8 +1449,9 @@ function App() {
         [upsertSiteLocally, handleError, notify, guardDuplicate]
     );
 
-    // 删除站点：删完给一条带「撤销」的提示，8 秒内点一下就能把卡片原样建回来
-    // （服务端删掉的行拿不回原 id，所以撤销走「按快照重新创建」，name/url/图标/位置都还原）
+    // 删除站点：删完给一条带「撤销」的提示，8 秒内点一下就能把卡片原样建回来。
+    // 删除是软删除（先进回收站），撤销优先「从回收站精确还原」原 id；
+    // 拿不到回收站 id（如本地 mock 模式）时退回「按快照重建」。
     const handleSiteDelete = useCallback(
         async (siteId: number) => {
             const snapshot = groupsRef.current
@@ -1453,16 +1461,27 @@ function App() {
             const snapshotTags = tags[String(siteId)] ?? [];
             const wasStarred = starred.includes(siteId);
             try {
-                await api.deleteSite(siteId);
+                const del = await api.deleteSite(siteId);
+                const recycleId = del.recycleId;
                 removeSiteLocally(siteId);
                 // 卡片没了，它的标签/星标也就没有宿主，一并清掉，避免标签栏残留点不出来的标签
                 forgetSites([siteId]);
                 if (!snapshot) return;
 
-                // 恢复：删掉不是立即删除，这里留一条「按快照重建」的路径，
-                // 提示条上的「撤销」和 Ctrl+Z 都走它。
+                // 恢复：优先从回收站精确还原（保留原 id，标签/星标按 id 自动归位）；
+                // 没有回收站 id 时退回「按快照重建」老路径。
                 const restored: { id?: number } = {};
                 const restore = async () => {
+                    if (recycleId !== undefined) {
+                        const ok = await api.restoreRecycleItem(recycleId);
+                        if (ok) {
+                            // 重新拉一份数据，被还原的卡片即刻回到原位置
+                            await fetchData({ silent: true });
+                            restored.id = snapshot.id;
+                            return;
+                        }
+                        // 还原失败（已被清掉）则继续走重建
+                    }
                     const created = await api.createSite({
                         ...snapshot,
                         id: undefined,
@@ -1475,6 +1494,11 @@ function App() {
                     restored.id = created.id;
                 };
                 const removeAgain = async () => {
+                    if (recycleId !== undefined) {
+                        // 撤销后「再删一次」= 把回收站里那一条彻底删除（不可恢复）
+                        await api.purgeRecycleItem(recycleId);
+                        return;
+                    }
                     if (restored.id === undefined) return;
                     const id = restored.id;
                     restored.id = undefined;
@@ -1486,7 +1510,7 @@ function App() {
                 const label = `删除「${snapshot.name || "该网站"}」`;
                 // 压进操作栈后，即使提示条已经消失，Ctrl+Z 还能把卡片找回来
                 pushHistory({ label, undo: restore, redo: removeAgain });
-                notify(`已删除「${snapshot.name || "该网站"}」`, "info", 8000, {
+                notify(`已删除「${snapshot.name || "该网站"}」（可在回收站恢复）`, "info", 8000, {
                     label: "撤销",
                     onClick: () => void runUndo(),
                 });
@@ -1508,11 +1532,16 @@ function App() {
             setStarredMany,
             pushHistory,
             runUndo,
+            fetchData,
         ]
     );
 
-    // 批量删除站点（多选模式）：一次删完，同样给一次撤销机会
-    const handleSitesDelete = useCallback(
+    // 批量删除站点（多选模式）：先弹二次确认（含导出提示），确认后才真删。
+    // 删除是软删除（先进回收站），撤销时优先从回收站精确还原。
+    const [pendingBulkDelete, setPendingBulkDelete] = useState<number[] | null>(null);
+
+    // 真正执行批量删除（确认后调用）
+    const doSitesDelete = useCallback(
         async (siteIds: number[]) => {
             if (siteIds.length === 0) return;
             const snapshots = groupsRef.current
@@ -1532,13 +1561,21 @@ function App() {
             });
 
             try {
-                await Promise.all(snapshots.map(site => api.deleteSite(site.id as number)));
+                const results = await Promise.all(
+                    snapshots.map(site => api.deleteSite(site.id as number))
+                );
+                const recycleIds = results.map(r => r.recycleId).filter((x): x is number => x !== undefined);
                 removeSitesLocally(snapshots.map(site => site.id as number));
                 forgetSites(snapshots.map(site => site.id as number));
 
                 const restoredIds: number[] = [];
                 const restore = async () => {
-                    // 按原 order_num 从小到大重建，位置尽量还原
+                    if (recycleIds.length > 0) {
+                        await Promise.all(recycleIds.map(id => api.restoreRecycleItem(id)));
+                        await fetchData({ silent: true });
+                        return;
+                    }
+                    // 没有回收站 id（如本地 mock）时退回按快照重建
                     const ordered = [...snapshots].sort(
                         (a, b) => (a.order_num ?? 0) - (b.order_num ?? 0)
                     );
@@ -1560,6 +1597,10 @@ function App() {
                     }
                 };
                 const removeAgain = async () => {
+                    if (recycleIds.length > 0) {
+                        await Promise.all(recycleIds.map(id => api.purgeRecycleItem(id)));
+                        return;
+                    }
                     const ids = [...restoredIds];
                     restoredIds.length = 0;
                     if (ids.length === 0) return;
@@ -1570,7 +1611,7 @@ function App() {
 
                 const label = `删除 ${snapshots.length} 个网站`;
                 pushHistory({ label, undo: restore, redo: removeAgain });
-                notify(`已删除 ${snapshots.length} 个网站`, "info", 8000, {
+                notify(`已删除 ${snapshots.length} 个网站（可在回收站恢复）`, "info", 8000, {
                     label: "撤销",
                     onClick: () => void runUndo(),
                 });
@@ -1592,8 +1633,15 @@ function App() {
             setStarredMany,
             pushHistory,
             runUndo,
+            fetchData,
         ]
     );
+
+    // 入口：先确认再删（避免多选模式下一手滑清空一堆卡片）
+    const handleSitesDelete = useCallback((siteIds: number[]) => {
+        if (siteIds.length === 0) return;
+        setPendingBulkDelete(siteIds);
+    }, []);
 
     // ---- 批量操作（多选模式） ----
     // 加星 / 取消加星：只改本机偏好，不碰数据库，改完立刻可见。
@@ -1732,7 +1780,12 @@ function App() {
     );
 
     // 删除分组：连同组内卡片一起删，所以撤销要把「分组 + 卡片」整组重建回来
-    const handleGroupDelete = useCallback(
+    // 分组删除：先弹二次确认（含导出提示），确认后才真删。
+    // 删除是软删除（先进回收站），撤销时优先从回收站精确还原。
+    const [pendingGroupDelete, setPendingGroupDelete] = useState<number | null>(null);
+
+    // 真正执行分组删除（确认后调用）
+    const doGroupDelete = useCallback(
         async (groupId: number) => {
             const snapshot = groupsRef.current.find(group => group.id === groupId);
             // 分组里的卡片会跟着一起删，它们的本机标签/星标也先留一份快照
@@ -1747,7 +1800,8 @@ function App() {
                 });
             }
             try {
-                await api.deleteGroup(groupId);
+                const del = await api.deleteGroup(groupId);
+                const recycleId = del.recycleId;
                 setGroups(prev => {
                     const next = prev.filter(group => group.id !== groupId);
                     return next.length === prev.length ? prev : next;
@@ -1759,6 +1813,14 @@ function App() {
                 const restoredGroupId: { id?: number } = {};
                 const restoredSiteIds: number[] = [];
                 const restore = async () => {
+                    if (recycleId !== undefined) {
+                        const ok = await api.restoreRecycleItem(recycleId);
+                        if (ok) {
+                            await fetchData({ silent: true });
+                            restoredGroupId.id = snapshot.id;
+                            return;
+                        }
+                    }
                     const created = await api.createGroup({
                         name: snapshot.name,
                         order_num: snapshot.order_num ?? 0,
@@ -1797,6 +1859,10 @@ function App() {
                     );
                 };
                 const removeAgain = async () => {
+                    if (recycleId !== undefined) {
+                        await api.purgeRecycleItem(recycleId);
+                        return;
+                    }
                     const groupIdToRemove = restoredGroupId.id;
                     restoredGroupId.id = undefined;
                     if (groupIdToRemove === undefined) return;
@@ -1811,7 +1877,7 @@ function App() {
                 const label = `删除分组「${snapshot.name}」`;
                 pushHistory({ label, undo: restore, redo: removeAgain });
                 notify(
-                    `已删除分组「${snapshot.name}」${snapshot.sites.length ? `及 ${snapshot.sites.length} 张卡片` : ""}`,
+                    `已删除分组「${snapshot.name}」${snapshot.sites.length ? `及 ${snapshot.sites.length} 张卡片（可在回收站恢复）` : ""}`,
                     "info",
                     8000,
                     {
@@ -1835,8 +1901,14 @@ function App() {
             setStarredMany,
             pushHistory,
             runUndo,
+            fetchData,
         ]
     );
+
+    // 入口：先确认再删（分组删除会连带清空其下所有卡片，误删代价大）
+    const handleGroupDelete = useCallback((groupId: number) => {
+        setPendingGroupDelete(groupId);
+    }, []);
 
     // 保存分组排序
     const handleSaveGroupOrder = async () => {
@@ -3701,6 +3773,14 @@ function App() {
                                             onOpenShortcuts={() => setOpenShortcuts(true)}
                                             onOpenBackup={handleOpenBackup}
                                             onOpenBookmark={() => setBookmarkOpen(true)}
+                                            onOpenRecycle={() => {
+                                                handleMenuClose();
+                                                setOpenRecycle(true);
+                                            }}
+                                            onOpenAudit={() => {
+                                                handleMenuClose();
+                                                setOpenAudit(true);
+                                            }}
                                             onRunLinkCheck={() => void runLinkCheck()}
                                             onClearVisits={clearVisits}
                                             isAuthenticated={isAuthenticated}
@@ -4327,6 +4407,64 @@ function App() {
                     onConfirm={data => closeImportPreview(data)}
                 />
                 </Suspense>
+
+                {/* 审计日志：仅站点所有者可读，事后溯源谁在何时做了什么 */}
+                <Suspense fallback={null}>
+                <AuditDialog
+                    open={openAudit}
+                    onClose={() => setOpenAudit(false)}
+                    client={api as unknown as NavigationClient}
+                />
+                </Suspense>
+
+                {/* 回收站：还原 / 彻底删除被软删除的站点、分组 */}
+                <Suspense fallback={null}>
+                <RecycleBinDialog
+                    open={openRecycle}
+                    onClose={() => setOpenRecycle(false)}
+                    client={api as unknown as NavigationClient}
+                    onChanged={() => void fetchData({ silent: true })}
+                    onNotify={(msg, severity) => notify(msg, severity || "info")}
+                />
+                </Suspense>
+
+                {/* 批量删除站点：二次确认 + 导出提示 */}
+                <ConfirmDialog
+                    open={pendingBulkDelete !== null}
+                    title='删除选中的网站'
+                    danger
+                    description={
+                        <span>
+                            将删除选中的 <b>{pendingBulkDelete?.length ?? 0}</b> 个网站，且会先进入回收站（可在「更多选项 → 回收站」中恢复）。建议先到「更多选项 → 数据备份」导出一份备份。
+                        </span>
+                    }
+                    confirmText='删除'
+                    onClose={() => setPendingBulkDelete(null)}
+                    onConfirm={() => {
+                        const ids = pendingBulkDelete;
+                        setPendingBulkDelete(null);
+                        if (ids) void doSitesDelete(ids);
+                    }}
+                />
+
+                {/* 删除分组：二次确认 + 导出提示 */}
+                <ConfirmDialog
+                    open={pendingGroupDelete !== null}
+                    title='删除分组'
+                    danger
+                    description={
+                        <span>
+                            将删除该分组及其下所有网站（先进入回收站，可在回收站恢复）。建议先导出备份。
+                        </span>
+                    }
+                    confirmText='删除'
+                    onClose={() => setPendingGroupDelete(null)}
+                    onConfirm={() => {
+                        const id = pendingGroupDelete;
+                        setPendingGroupDelete(null);
+                        if (id !== null) void doGroupDelete(id);
+                    }}
+                />
 
                 </Container>
 
