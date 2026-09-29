@@ -40,6 +40,7 @@ import UploadFileIcon from "@mui/icons-material/UploadFile";
 import CheckCircleIcon from "@mui/icons-material/CheckCircle";
 import VisibilityIcon from "@mui/icons-material/Visibility";
 import VisibilityOffIcon from "@mui/icons-material/VisibilityOff";
+import BookmarkAddedIcon from "@mui/icons-material/BookmarkAdded";
 
 interface BackupDialogProps {
     open: boolean;
@@ -69,6 +70,14 @@ interface BackupDialogProps {
     /** 备份文件里是否带上网站的账号密码（默认带；关掉后本地下载、WebDAV 上传、每周定时备份都不带） */
     includeCredentials: boolean;
     onIncludeCredentialsChange: (enabled: boolean) => void;
+    /**
+     * 打开「导入浏览器书签」。
+     *
+     * 原先是「更多选项」里的一个菜单项，但它本质上就是另一种「导入」，
+     * 和本弹窗「恢复 / 导入」页的「从本地文件恢复」是同一类动作，放在一起更好找。
+     * 不传就不显示这一块。
+     */
+    onOpenBookmark?: () => void;
 }
 
 // 人类可读的文件大小
@@ -107,6 +116,7 @@ export default function BackupDialog({
     onClose,
     includeCredentials,
     onIncludeCredentialsChange,
+    onOpenBookmark,
 }: BackupDialogProps) {
     const theme = useTheme();
 
@@ -918,6 +928,32 @@ export default function BackupDialog({
                     </Alert>
                 )}
             </Box>
+
+            {/* 导入浏览器书签：从「更多选项」挪过来的，和上面「从本地文件恢复」同属导入一类 */}
+            {onOpenBookmark && (
+                <>
+                    <Divider />
+                    <Box>
+                        <Typography variant='subtitle2' fontWeight='600' gutterBottom>
+                            从浏览器书签导入
+                        </Typography>
+                        <Button
+                            variant='outlined'
+                            onClick={onOpenBookmark}
+                            startIcon={<BookmarkAddedIcon fontSize='small' />}
+                        >
+                            导入浏览器书签
+                        </Button>
+                        <Typography
+                            variant='caption'
+                            color='text.secondary'
+                            sx={{ display: "block", mt: 0.75 }}
+                        >
+                            支持 Chrome / Edge / Firefox 导出的 HTML 书签文件，导入前可以先挑要哪些、归到哪个分组。
+                        </Typography>
+                    </Box>
+                </>
+            )}
 
             <Divider />
 

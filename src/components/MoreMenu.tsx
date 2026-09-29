@@ -7,11 +7,7 @@ import SortIcon from "@mui/icons-material/Sort";
 import InstallDesktopIcon from "@mui/icons-material/InstallDesktop";
 import StarIcon from "@mui/icons-material/Star";
 import InsightsIcon from "@mui/icons-material/Insights";
-import KeyboardIcon from "@mui/icons-material/Keyboard";
-import BookmarkAddedIcon from "@mui/icons-material/BookmarkAdded";
 import SettingsBackupRestoreIcon from "@mui/icons-material/SettingsBackupRestore";
-import LinkOffIcon from "@mui/icons-material/LinkOff";
-import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import LogoutIcon from "@mui/icons-material/Logout";
 import ManageAccountsIcon from "@mui/icons-material/ManageAccounts";
 import RestoreFromTrashIcon from "@mui/icons-material/RestoreFromTrash";
@@ -28,12 +24,8 @@ export interface MoreMenuProps {
     favoritesEnabled: boolean;
     onFavoritesEnabledChange: (enabled: boolean) => void;
     onOpenVisits: () => void;
-    onOpenShortcuts: () => void;
     /** tab: 0 = 导出，1 = 导入 */
     onOpenBackup: (tab: number) => void;
-    onOpenBookmark: () => void;
-    onRunLinkCheck: () => void;
-    onClearVisits: () => void;
     isAuthenticated: boolean;
     onLogout: () => void;
     /** 打开「账号管理」（账号密码 / 恢复密钥 / 邀请码 / 注销） */
@@ -57,11 +49,7 @@ export default function MoreMenu({
     favoritesEnabled,
     onFavoritesEnabledChange,
     onOpenVisits,
-    onOpenShortcuts,
     onOpenBackup,
-    onOpenBookmark,
-    onRunLinkCheck,
-    onClearVisits,
     isAuthenticated,
     onLogout,
     onOpenRecycle,
@@ -82,6 +70,7 @@ export default function MoreMenu({
                     >
                         {/* 菜单顺序：常用配置 → 浏览偏好 → 数据管理 → 有破坏性的操作沉底，
                             中间用分隔线分组，找东西不用整列扫一遍 */}
+                        {/* 「检测失效链接」已挪进「网站设置 → 数据同步」，挨着失效检测结果开关 */}
                         <MenuItem onClick={onOpenConfig}>
                             <ListItemIcon>
                                 <SettingsIcon fontSize='small' />
@@ -157,47 +146,16 @@ export default function MoreMenu({
                             </ListItemIcon>
                             <ListItemText>访问统计</ListItemText>
                         </MenuItem>
-                        <MenuItem
-                            onClick={() => {
-                                onClose();
-                                onOpenShortcuts();
-                            }}
-                        >
-                            <ListItemIcon>
-                                <KeyboardIcon fontSize='small' />
-                            </ListItemIcon>
-                            <ListItemText>键盘快捷键</ListItemText>
-                        </MenuItem>
+                        {/* 键盘快捷键不再占一个菜单项：按 ? 随时能看，命令面板里也有入口 */}
                         <Divider />
                         {/* 备份与恢复其实是同一件事的两面（导出成文件 / 从文件还原），
-                            合成一个入口，进去再选「备份」还是「恢复 / 导入」 */}
+                            合成一个入口，进去再选「备份」还是「恢复 / 导入」。
+                            「导入浏览器书签」也并进了那个弹窗的恢复页，不再单占菜单项 */}
                         <MenuItem onClick={() => onOpenBackup(0)}>
                             <ListItemIcon>
                                 <SettingsBackupRestoreIcon fontSize='small' />
                             </ListItemIcon>
                             <ListItemText>数据备份</ListItemText>
-                        </MenuItem>
-                        <MenuItem
-                            onClick={() => {
-                                onClose();
-                                onOpenBookmark();
-                            }}
-                        >
-                            <ListItemIcon>
-                                <BookmarkAddedIcon fontSize='small' />
-                            </ListItemIcon>
-                            <ListItemText>导入浏览器书签</ListItemText>
-                        </MenuItem>
-                        <MenuItem
-                            onClick={() => {
-                                onClose();
-                                void onRunLinkCheck();
-                            }}
-                        >
-                            <ListItemIcon>
-                                <LinkOffIcon fontSize='small' />
-                            </ListItemIcon>
-                            <ListItemText>检测失效链接</ListItemText>
                         </MenuItem>
                         <MenuItem
                             onClick={() => {
@@ -225,29 +183,20 @@ export default function MoreMenu({
                                 <ListItemText>审计日志</ListItemText>
                             </MenuItem>
                         )}
-                        <Divider />
-                        <MenuItem
-                            onClick={() => {
-                                onClearVisits();
-                                // 清除访问记录不弹提示：「最近访问」分组会当场消失，本身就是反馈
-                            }}
-                            sx={{ color: "text.secondary" }}
-                        >
-                            <ListItemIcon sx={{ color: "text.secondary" }}>
-                                <DeleteOutlineIcon fontSize='small' />
-                            </ListItemIcon>
-                            <ListItemText>清除访问记录</ListItemText>
-                        </MenuItem>
+                        {/* 「清除访问记录」已移进「访问统计」弹窗 */}
                         {isAuthenticated && (
-                            <MenuItem
-                                onClick={onLogout}
-                                sx={{ color: "error.main" }}
-                            >
-                                <ListItemIcon sx={{ color: "error.main" }}>
-                                    <LogoutIcon fontSize='small' />
-                                </ListItemIcon>
-                                <ListItemText>退出登录</ListItemText>
-                            </MenuItem>
+                            <>
+                                <Divider />
+                                <MenuItem
+                                    onClick={onLogout}
+                                    sx={{ color: "error.main" }}
+                                >
+                                    <ListItemIcon sx={{ color: "error.main" }}>
+                                        <LogoutIcon fontSize='small' />
+                                    </ListItemIcon>
+                                    <ListItemText>退出登录</ListItemText>
+                                </MenuItem>
+                            </>
                         )}
                     </Menu>
     );

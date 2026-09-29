@@ -222,15 +222,19 @@ export default function VisitsDialog({ open, onClose, nameOf, onClear }: VisitsD
                     </Stack>
                 )}
             </DialogContent>
+            {/* 「清除访问记录」的入口就在这里（原先在「更多选项」菜单里）：
+                统计和清空本来就是一件事的两面，放一起比藏在菜单里好找。
+                没有记录时按钮置灰但保留 —— 否则用户会以为压根没有这个入口。 */}
             <DialogActions>
-                {onClear && summary.total > 0 && (
+                {onClear && (
                     <Button
                         color='inherit'
                         startIcon={<DeleteOutlineIcon fontSize='small' />}
                         onClick={onClear}
+                        disabled={summary.total === 0}
                         sx={{ mr: "auto" }}
                     >
-                        清空记录
+                        清除访问记录
                     </Button>
                 )}
                 <Button onClick={onClose}>关闭</Button>

@@ -26,6 +26,7 @@ import {
     Typography,
 } from "@mui/material";
 import CloseIcon from "@mui/icons-material/Close";
+import LinkOffIcon from "@mui/icons-material/LinkOff";
 import { DEFAULT_ICON_API, DEFAULT_THUMB_API } from "../utils/iconApi";
 import type { FontScale, RadiusStyle } from "../context/UIPrefsContext";
 
@@ -83,6 +84,14 @@ interface SettingsDialogProps {
     /** 星标 / 标签同步到服务端（同上） */
     syncPrefs: boolean;
     onSyncPrefsChange: (enabled: boolean) => void;
+    /**
+     * 立刻跑一遍失效链接检测。
+     *
+     * 原先是「更多选项」里的一个菜单项，但它要跟上面那个「失效检测结果」开关一起看才说得通
+     * （开关管的是结果要不要同步，这个按钮管的是结果从哪来），所以挪到同一节里。
+     * 不传就不显示这一行。
+     */
+    onRunLinkCheck?: () => void;
     /**
      * 当前身份是不是站点所有者。
      *
@@ -217,6 +226,7 @@ export default function SettingsDialog({
     onSyncHealthChange,
     syncPrefs,
     onSyncPrefsChange,
+    onRunLinkCheck,
     isSiteOwner = true,
 }: SettingsDialogProps) {
     return (
@@ -615,6 +625,26 @@ export default function SettingsDialog({
                             ariaLabel='同步星标与标签'
                             caption='这两项按设计只存本机，清掉浏览器数据就没了；打开同步后可找回，多设备之间取并集合并。'
                         />
+                        {/* 检测失效链接：和上面的「失效检测结果」开关同属一件事，放在同一节里 */}
+                        {onRunLinkCheck && (
+                            <Box sx={{ mt: 1.5 }}>
+                                <Button
+                                    size='small'
+                                    variant='outlined'
+                                    startIcon={<LinkOffIcon fontSize='small' />}
+                                    onClick={onRunLinkCheck}
+                                >
+                                    检测失效链接
+                                </Button>
+                                <Typography
+                                    variant='caption'
+                                    color='text.secondary'
+                                    sx={{ display: "block", mt: 0.5 }}
+                                >
+                                    逐个访问已收录的链接，把访问不通的标在卡片上。站点多时要点时间，后台跑完会提示结果。
+                                </Typography>
+                            </Box>
+                        )}
                     </Section>
 
                     {/* 7. 高级 */}

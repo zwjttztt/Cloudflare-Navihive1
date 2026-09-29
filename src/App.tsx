@@ -785,7 +785,8 @@ function App() {
                 // 新账号是干净的：上一个账号生成的邀请码、配置过的恢复密钥都不能跟着带过来
                 setInvite(null);
                 refreshRecoveryStatus();
-                notify("注册成功，已自动登录", "success");
+                // 不再弹「注册成功，已自动登录」：注册完直接进入页面，本身就是结果，
+                // 多一个 toast 反而把界面挡住
                 return { success: true };
             }
             return { success: false, message: result.message || "注册失败" };
@@ -3770,9 +3771,7 @@ function App() {
                                             favoritesEnabled={favoritesEnabled}
                                             onFavoritesEnabledChange={setFavoritesEnabled}
                                             onOpenVisits={() => setOpenVisits(true)}
-                                            onOpenShortcuts={() => setOpenShortcuts(true)}
                                             onOpenBackup={handleOpenBackup}
-                                            onOpenBookmark={() => setBookmarkOpen(true)}
                                             onOpenRecycle={() => {
                                                 handleMenuClose();
                                                 setOpenRecycle(true);
@@ -3781,8 +3780,6 @@ function App() {
                                                 handleMenuClose();
                                                 setOpenAudit(true);
                                             }}
-                                            onRunLinkCheck={() => void runLinkCheck()}
-                                            onClearVisits={clearVisits}
                                             isAuthenticated={isAuthenticated}
                                             onLogout={handleLogout}
                                             isSiteOwner={currentUser?.role === "owner"}
@@ -4292,6 +4289,8 @@ function App() {
                         onSyncHealthChange={handleToggleLinkHealthSync}
                         syncPrefs={prefSync}
                         onSyncPrefsChange={handleTogglePrefSync}
+                        // 检测失效链接：从「更多选项」挪进「数据同步」这一节，挨着失效检测结果开关
+                        onRunLinkCheck={() => void runLinkCheck()}
                         // 全站外观是所有人共用的，只有站点所有者能改（服务端同规则）
                         isSiteOwner={!currentUser || currentUser.role === "owner"}
                     />
@@ -4386,10 +4385,15 @@ function App() {
                         onClose={handleCloseBackup}
                         includeCredentials={configs[BACKUP_CREDENTIALS_CONFIG] === "true"}
                         onIncludeCredentialsChange={handleToggleIncludeCredentials}
+                        // 导入浏览器书签：从「更多选项」挪进「恢复 / 导入」页，和从文件恢复同类
+                        onOpenBookmark={() => {
+                            setOpenBackup(false);
+                            setBookmarkOpen(true);
+                        }}
                     />
                     </Suspense>
 
-                {/* 快捷键说明表：按 ? 或从「更多选项」菜单打开 */}
+                {/* 快捷键说明表：按 ? 打开，命令面板里也有入口（已不在「更多选项」里占位置） */}
                 <Suspense fallback={null}>
                 <ShortcutsDialog
                     open={openShortcuts}
