@@ -216,7 +216,18 @@ class InMemoryD1 {
     }
 
     private read(sql: string, args: unknown[], mode: "first" | "all"): unknown | unknown[] | null {
-        if (/pragma_table_info/.test(sql)) return mode === "first" ? null : [];
+        if (/pragma_table_info/.test(sql)) {
+            const table = args[0] as string;
+            const cols: Record<string, string[]> = {
+                sites: [
+                    "id", "group_id", "name", "url", "icon", "description", "notes",
+                    "username", "password", "order_num", "created_at", "updated_at", "user_id",
+                ],
+                groups: ["id", "name", "order_num", "created_at", "updated_at", "user_id"],
+            };
+            const rows = (cols[table] || []).map(name => ({ name }));
+            return mode === "first" ? (rows[0] ?? null) : rows;
+        }
         if (/SELECT "status" FROM users/.test(sql)) {
             if (this.throwOnUsersStatus) throw new Error("simulated DB error after migration");
             const id = args[0] as number;
@@ -245,12 +256,25 @@ class InMemoryD1 {
             return this.sites.filter(s => s.group_id === gid);
         }
         if (/SELECT id, kind, data, deleted_at FROM recycle_bin/.test(sql)) {
-            const rows = this.recycle.filter(r => r.owner_user_id === null || r.owner_user_id === undefined);
+            // 带账号上下文时是 owner_user_id = ?（args[0]）；无上下文时是 IS NULL（不带参数）
+            const owner = args.length > 0 ? args[0] : null;
+            const rows = this.recycle.filter(r =>
+                owner === null
+                    ? r.owner_user_id === null || r.owner_user_id === undefined
+                    : r.owner_user_id === owner
+            );
             return mode === "first" ? (rows[0] ?? null) : rows;
         }
         if (/SELECT kind, data FROM recycle_bin WHERE id = \?/.test(sql)) {
             const id = args[0] as number;
-            const row = this.recycle.find(r => r.id === id);
+            const owner = args.length > 1 ? args[1] : null;
+            const row = this.recycle.find(
+                r =>
+                    r.id === id &&
+                    (owner === null
+                        ? r.owner_user_id === null || r.owner_user_id === undefined
+                        : r.owner_user_id === owner)
+            );
             return row ? { kind: row.kind, data: row.data } : null;
         }
         if (/SELECT id, action, actor, ip, detail, created_at FROM audit_log/.test(sql)) {
@@ -516,4 +540,89 @@ test("Item8：删除分组软删除（含其站点），可整体还原", async 
     assert.equal(ok, true);
     assert.equal(db.groups.length, 1, "分组还原");
     assert.equal(db.sites.length, 1, "组内站点也还原");
+});
+
+// ================= 回收站还原必须保留归属（登录后才可见） =================
+// 站点 / 分组是按 user_id 做账号隔离的（scopeSql）。还原时若漏掉 user_id，
+// 插回去的行 user_id 为 NULL，会被 "user_id = ?" 过滤掉 —— 表现为「还原没反应」。
+const aliceSite = {
+    id: 1,
+    group_id: 1,
+    name: "示例",
+    url: "https://a.com",
+    icon: "",
+    description: "",
+    notes: "",
+    username: "",
+    password: "enc$x",
+    order_num: 1,
+    user_id: 7,
+};
+
+test("回收站还原站点后仍属于原账号（user_id 不能丢）", async () => {
+    const db = new InMemoryD1();
+    db.groups.push({ id: 1, name: "G", order_num: 1, user_id: 7 });
+    db.sites.push({ ...aliceSite });
+    const api = newApi(db);
+    api.setCurrentUser(7);
+
+    const del = await api.deleteSite(1);
+    assert.equal(del.success, true);
+    assert.equal(db.sites.length, 0, "原表已移除");
+
+    const list = await api.listRecycleBin();
+    assert.equal(list.length, 1, "本人能在回收站看到自己删的");
+
+    const ok = await api.restoreRecycleItem(list[0].id);
+    assert.equal(ok, true);
+    assert.equal(db.sites.length, 1, "还原后回到原表");
+    assert.equal(
+        (db.sites[0] as { user_id: number | null }).user_id,
+        7,
+        "还原后 user_id 必须仍是原账号，否则会被账号作用域过滤掉"
+    );
+});
+
+test("回收站还原分组后，分组与其卡片都仍属于原账号", async () => {
+    const db = new InMemoryD1();
+    db.groups.push({ id: 1, name: "G", order_num: 1, user_id: 7 });
+    db.sites.push({ ...aliceSite });
+    const api = newApi(db);
+    api.setCurrentUser(7);
+
+    const del = await api.deleteGroup(1);
+    assert.equal(del.success, true);
+
+    const list = await api.listRecycleBin();
+    assert.equal(list[0].kind, "group");
+    const ok = await api.restoreRecycleItem(list[0].id);
+    assert.equal(ok, true);
+
+    assert.equal(db.groups.length, 1, "分组还原");
+    assert.equal(
+        (db.groups[0] as { user_id: number | null }).user_id,
+        7,
+        "分组的 user_id 必须保留"
+    );
+    assert.equal(db.sites.length, 1, "组内卡片一并还原");
+    assert.equal(
+        (db.sites[0] as { user_id: number | null }).user_id,
+        7,
+        "卡片的 user_id 必须保留"
+    );
+});
+
+test("回收站按账号隔离：看不到别人删的东西", async () => {
+    const db = new InMemoryD1();
+    db.sites.push({ ...aliceSite });
+    const api = newApi(db);
+
+    api.setCurrentUser(7);
+    const del = await api.deleteSite(1);
+    assert.equal(del.success, true);
+
+    api.setCurrentUser(8);
+    const other = await api.listRecycleBin();
+    assert.equal(other.length, 0, "8 号账号不该看到 7 号删的东西");
+    assert.equal(await api.restoreRecycleItem(del.recycleId as number), false, "也还原不了");
 });

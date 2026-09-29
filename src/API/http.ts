@@ -2729,25 +2729,72 @@ export class NavigationAPI {
         return result.success;
     }
 
-    /** 把一条站点原始行按原 id 插回 sites（密码仍是原密文，不解密） */
-    private async reinsertSite(site: Record<string, unknown>): Promise<void> {
-        const cols = ["id", "group_id", "name", "url", "icon", "description", "notes", "username", "password", "order_num", "created_at", "updated_at"];
-        const vals = cols.map(c => (site[c] === undefined ? null : site[c]));
+    // 还原时的兜底字段：只在读不到表结构（pragma 不可用）时才用，
+    // 正常情况下按回收站里那份原始行的列来插，避免写死清单跟表结构脱节。
+    private static readonly SITE_RESTORE_COLUMNS = [
+        "id", "group_id", "name", "url", "icon", "description", "notes",
+        "username", "password", "order_num", "created_at", "updated_at", "user_id",
+    ];
+    private static readonly GROUP_RESTORE_COLUMNS = [
+        "id", "name", "order_num", "created_at", "updated_at", "user_id",
+    ];
+
+    /** 表的真实列集合；读不到（表不存在 / pragma 不支持）返回 null */
+    private async tableColumns(table: string): Promise<Set<string> | null> {
+        try {
+            const result = await this.db
+                .prepare("SELECT name FROM pragma_table_info(?)")
+                .bind(table)
+                .all<{ name: string }>();
+            const names = (result.results || []).map(row => row.name);
+            return names.length > 0 ? new Set(names) : null;
+        } catch {
+            return null;
+        }
+    }
+
+    /**
+     * 把一条原始行按原 id 插回（密码仍是原密文，不解密）。
+     *
+     * 用原始行自带的列，而不是写死的字段清单：站点/分组是按 user_id 做账号隔离的，
+     * 清单漏掉 user_id 会让还原出来的行 user_id 为 NULL，立刻被 scopeSql 的
+     * "user_id = ?" 过滤掉 —— 用户看到的就是「点了还原，什么也没发生」。
+     */
+    private async reinsertRow(
+        table: "sites" | "groups",
+        row: Record<string, unknown>,
+        fallbackColumns: string[]
+    ): Promise<void> {
+        const known = await this.tableColumns(table);
+        let data = row;
+
+        // 归属兜底：多账号上线之前删的条目里没有 user_id，还原时归给当前账号
+        // （否则插回去是 NULL，照样看不见）。鉴权关闭时 currentUserId 为 null，保持原样。
+        if (!known || known.has("user_id")) {
+            if (data.user_id === undefined || data.user_id === null) {
+                data = { ...data, user_id: this.currentUserId };
+            }
+        }
+
+        let cols = Object.keys(data).filter(c => /^[A-Za-z_][A-Za-z0-9_]*$/.test(c));
+        cols = known ? cols.filter(c => known.has(c)) : cols.filter(c => fallbackColumns.includes(c));
+        if (cols.length === 0) return;
+
         const placeholders = cols.map(() => "?").join(", ");
+        const vals = cols.map(c => (data[c] === undefined ? null : data[c]));
         await this.db
-            .prepare(`INSERT OR REPLACE INTO sites (${cols.join(", ")}) VALUES (${placeholders})`)
+            .prepare(`INSERT OR REPLACE INTO ${table} (${cols.join(", ")}) VALUES (${placeholders})`)
             .bind(...vals)
             .run();
     }
 
+    private async reinsertSite(site: Record<string, unknown>): Promise<void> {
+        await this.reinsertRow("sites", site, NavigationAPI.SITE_RESTORE_COLUMNS);
+    }
+
     /** 把分组原始行按原 id 插回，再插回其站点（站点 group_id 指向原分组 id） */
     private async reinsertGroup(group: Record<string, unknown>, sites: Record<string, unknown>[]): Promise<void> {
-        const gcols = ["id", "name", "order_num", "created_at", "updated_at"];
-        const gvals = gcols.map(c => (group[c] === undefined ? null : group[c]));
-        await this.db
-            .prepare(`INSERT OR REPLACE INTO groups (${gcols.join(", ")}) VALUES (${gcols.map(() => "?").join(", ")})`)
-            .bind(...gvals)
-            .run();
+        await this.reinsertRow("groups", group, NavigationAPI.GROUP_RESTORE_COLUMNS);
         for (const site of sites) {
             await this.reinsertSite(site);
         }
