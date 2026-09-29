@@ -465,6 +465,31 @@ export default {
                     }
                     api.setCurrentUser(typeof uid === "number" ? uid : null);
 
+                    // 令牌是自包含的：账号中途被停用 / 被清除，它不会跟着失效
+                    // （「记住我」那张能活 30 天）。所以验签之后还要再问一句账号还在不在 ——
+                    // 否则停用形同虚设，被清除的账号还能继续写库、留下挂在不存在 user_id
+                    // 上的孤儿数据。退出登录要留着：被挡住的人至少能把自己登出去。
+                    if (typeof uid === "number" && path !== "logout") {
+                        const state = await api.getAccountSessionState(uid);
+                        if (state === "missing") {
+                            // 用 401：客户端见到 401 会清掉登录标记并退回登录页
+                            return Response.json(
+                                { success: false, message: "账号已不存在，请重新登录" },
+                                { status: 401 }
+                            );
+                        }
+                        if (state === "disabled") {
+                            return Response.json(
+                                {
+                                    success: false,
+                                    message:
+                                        "账号因长期未登录已被停用；可用恢复密钥找回，或联系站点所有者",
+                                },
+                                { status: 403 }
+                            );
+                        }
+                    }
+
                     // 活跃时间：令牌一验过就算在用 —— 「记住我」的人每次回来只是静默恢复，
                     // 根本不经过登录页，不在这里刷新就会被误判成沉睡账号。
                     // 内部限频为每天最多写一次，不会每个请求都往 D1 落一行。
@@ -965,7 +990,7 @@ export default {
                         return Response.json(
                             {
                                 success: false,
-                                message: "管理员凭据请通过「网站设置 - 管理员账号与密码」修改",
+                                message: "管理员凭据请通过「更多选项 → 账号管理」修改",
                             },
                             { status: 403 }
                         );
@@ -983,7 +1008,7 @@ export default {
 
                     const result = await api.setConfigs(Object.fromEntries(entries));
                     return Response.json({ success: result, saved: entries.length });
-                }                 else if (path.startsWith("configs/") && method === "GET") {
+                } else if (path.startsWith("configs/") && method === "GET") {
                     const key = path.substring("configs/".length);
                     // 管理员凭据不允许读取
                     if (key.startsWith("auth.")) {
@@ -1001,7 +1026,7 @@ export default {
                         return Response.json(
                             {
                                 success: false,
-                                message: "管理员凭据请通过「网站设置 - 管理员账号与密码」修改",
+                                message: "管理员凭据请通过「更多选项 → 账号管理」修改",
                             },
                             { status: 403 }
                         );

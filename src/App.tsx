@@ -22,6 +22,10 @@ import {
     isSecretConfigKey,
     isUserScopedConfigKey,
     normalizeImportData,
+    INACTIVE_DISABLE_DAYS_KEY,
+    INACTIVE_DELETE_GRACE_DAYS_KEY,
+    INACTIVE_DISABLE_DAYS_DEFAULT,
+    INACTIVE_DELETE_GRACE_DAYS_DEFAULT,
 } from "./API/http";
 import type { AccountInfo } from "./API/http";
 import { GroupWithSites } from "./types";
@@ -347,6 +351,11 @@ function App() {
     const [savingAuth, setSavingAuth] = useState(false);
     // 账号清单（仅 owner 拿得到）：每个账号的沉睡治理状态，给「账号管理」里那份列表用
     const [accountList, setAccountList] = useState<AccountInfo[]>([]);
+    /** 沉睡治理阈值（天）：owner 在「账号管理」里可改，读不到就按服务端默认显示 */
+    const [inactivePolicy, setInactivePolicy] = useState<{
+        disableDays: number;
+        graceDays: number;
+    } | null>(null);
 
     // 设置弹窗里选色时的即时预览值（不落库，关闭弹窗即回滚）
     const [accentPreview, setAccentPreview] = useState<string | null>(null);
@@ -815,7 +824,43 @@ function App() {
         } catch {
             // 拉不到就当没有：账号管理里那一段直接不显示，不打扰正常功能
         }
+        // 顺带把治理阈值读回来 —— 没配过就用服务端默认值，界面上显示的数字要和实际跑的一致
+        const [disableRaw, graceRaw] = await Promise.all([
+            api.getConfig(INACTIVE_DISABLE_DAYS_KEY),
+            api.getConfig(INACTIVE_DELETE_GRACE_DAYS_KEY),
+        ]);
+        const disableDays = Number.parseInt(disableRaw || "", 10);
+        const graceDays = Number.parseInt(graceRaw || "", 10);
+        setInactivePolicy({
+            disableDays: disableDays > 0 ? disableDays : INACTIVE_DISABLE_DAYS_DEFAULT,
+            graceDays: graceDays > 0 ? graceDays : INACTIVE_DELETE_GRACE_DAYS_DEFAULT,
+        });
     }, [currentUser?.role]);
+
+    /**
+     * 保存沉睡治理阈值。这两个键属于全站配置，服务端只放 owner 写
+     * （configs/batch 里非 webdav. 前缀的键都会校验 owner），普通账号调不动。
+     */
+    const handleSaveInactivePolicy = useCallback(
+        async (policy: { disableDays: number; graceDays: number }) => {
+            try {
+                const ok = await api.setConfigs({
+                    [INACTIVE_DISABLE_DAYS_KEY]: String(policy.disableDays),
+                    [INACTIVE_DELETE_GRACE_DAYS_KEY]: String(policy.graceDays),
+                });
+                if (!ok) return { success: false, message: "保存失败，请重试" };
+                setInactivePolicy(policy);
+                await fetchAccountList(); // 清单里的「约 N 天后停用」要跟着新阈值重算
+                return { success: true };
+            } catch (error) {
+                return {
+                    success: false,
+                    message: "保存失败：" + (error instanceof Error ? error.message : "未知错误"),
+                };
+            }
+        },
+        [fetchAccountList]
+    );
 
     /** 重新启用某个账号 = 给它豁免沉睡治理（服务端会顺带把活跃时间刷成现在） */
     const handleExemptUser = useCallback(
@@ -912,9 +957,13 @@ function App() {
         } catch (error) {
             console.error("认证检查失败:", error);
             reportError(error, { source: "auth-check" });
-            if (error instanceof Error && error.message.includes("认证")) {
+            // 令牌失效 / 账号已注销：退回登录页；
+            // 账号被停用（403）也是一个道理 —— 停在这里只会看到一片空白，
+            // 把服务端那句「可以怎么用恢复密钥找回」原样带过去。
+            if (error instanceof Error && (error.message.includes("认证") || error.message.includes("HTTP 403"))) {
                 setIsAuthenticated(false);
                 setIsAuthRequired(true);
+                if (error.message.includes("HTTP 403")) setError(error.message.replace(/\s*\(HTTP 403\)$/, ""));
             }
         } finally {
             setIsAuthChecking(false);
@@ -4179,6 +4228,8 @@ function App() {
                         onCreateInvite={handleCreateInvite}
                         accounts={accountList}
                         onExemptUser={uid => void handleExemptUser(uid)}
+                        inactivePolicy={inactivePolicy ?? undefined}
+                        onSaveInactivePolicy={handleSaveInactivePolicy}
                         onDeleteAccount={() => {
                             handleMenuClose();
                             setOpenAccount(false);

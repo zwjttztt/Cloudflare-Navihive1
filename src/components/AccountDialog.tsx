@@ -8,7 +8,7 @@
 //
 // 组件本身不碰 API：改密提交、生成私钥、生成邀请码、注销都通过回调交给父组件。
 import type { ChangeEvent } from "react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
     Box,
     Button,
@@ -28,6 +28,10 @@ import VpnKeyIcon from "@mui/icons-material/VpnKey";
 import PersonRemoveIcon from "@mui/icons-material/PersonRemove";
 import { PasswordField } from "./PasswordField";
 import type { AccountInfo } from "../API/http";
+import {
+    INACTIVE_DISABLE_DAYS_DEFAULT,
+    INACTIVE_DELETE_GRACE_DAYS_DEFAULT,
+} from "../API/http";
 
 /** 距某个时间点还有几天（向上取整；null = 服务端没给推算依据） */
 function daysUntil(ts: number | null): number | null {
@@ -88,6 +92,13 @@ interface AccountDialogProps {
     accounts?: AccountInfo[];
     /** 重新启用某个被停用的账号 = 豁免沉睡治理（服务端会顺带刷新活跃时间） */
     onExemptUser?: (uid: number) => void;
+    /** 沉睡治理阈值（天）：没配就按服务端默认 180 / 30 显示 */
+    inactivePolicy?: { disableDays: number; graceDays: number };
+    /** 保存阈值：父组件负责调接口，这里只做输入与反馈 */
+    onSaveInactivePolicy?: (policy: {
+        disableDays: number;
+        graceDays: number;
+    }) => Promise<{ success: boolean; message?: string }>;
 }
 
 /** 分组：左侧一小段主色竖条 + 组标题，可选一行组说明 */
@@ -163,6 +174,8 @@ export default function AccountDialog({
     onDeleteAccount,
     accounts,
     onExemptUser,
+    inactivePolicy,
+    onSaveInactivePolicy,
 }: AccountDialogProps) {
     // 恢复密钥的生成结果提示（成功/失败都就地反馈，私钥由浏览器直接下载）
     const [recoveryBusy, setRecoveryBusy] = useState(false);
@@ -179,6 +192,52 @@ export default function AccountDialog({
     // 否则只是想下载私钥的人被迫先填「当前密码」，再点保存会被判成「没填新密码」。
     const [recoveryPwdOpen, setRecoveryPwdOpen] = useState(false);
     const [recoveryPwd, setRecoveryPwd] = useState("");
+
+    // 沉睡治理阈值：只有站点所有者看得到这一段，值从服务端读回来后回填
+    const [disableDaysInput, setDisableDaysInput] = useState(
+        String(inactivePolicy?.disableDays ?? INACTIVE_DISABLE_DAYS_DEFAULT)
+    );
+    const [graceDaysInput, setGraceDaysInput] = useState(
+        String(inactivePolicy?.graceDays ?? INACTIVE_DELETE_GRACE_DAYS_DEFAULT)
+    );
+    const [policyBusy, setPolicyBusy] = useState(false);
+    const [policyMsg, setPolicyMsg] = useState<{
+        type: "success" | "error";
+        text: string;
+    } | null>(null);
+
+    useEffect(() => {
+        if (!inactivePolicy) return;
+        setDisableDaysInput(String(inactivePolicy.disableDays));
+        setGraceDaysInput(String(inactivePolicy.graceDays));
+    }, [inactivePolicy?.disableDays, inactivePolicy?.graceDays]);
+
+    const handleSavePolicy = async () => {
+        const disableDays = Number.parseInt(disableDaysInput, 10);
+        const graceDays = Number.parseInt(graceDaysInput, 10);
+        // 0 / 负数 / 非数字都不能收：服务端会把它们当成「没配」而回落到默认，
+        // 界面上看着是「30 天后清除」、实际跑的是 180 天 —— 这种错觉最坑人。
+        if (!Number.isFinite(disableDays) || disableDays <= 0) {
+            setPolicyMsg({ type: "error", text: "停用阈值必须是大于 0 的天数" });
+            return;
+        }
+        if (!Number.isFinite(graceDays) || graceDays <= 0) {
+            setPolicyMsg({ type: "error", text: "清除宽限期必须是大于 0 的天数" });
+            return;
+        }
+        setPolicyBusy(true);
+        setPolicyMsg(null);
+        try {
+            const result = await onSaveInactivePolicy?.({ disableDays, graceDays });
+            setPolicyMsg(
+                result?.success === false
+                    ? { type: "error", text: result.message || "保存失败" }
+                    : { type: "success", text: "已保存，下次扫描生效" }
+            );
+        } finally {
+            setPolicyBusy(false);
+        }
+    };
 
     const authDirty = Boolean(auth.username.trim() || auth.newPassword);
 
@@ -527,6 +586,64 @@ export default function AccountDialog({
                                         );
                                     })}
                                 </Stack>
+
+                                {onSaveInactivePolicy ? (
+                                    <Box sx={{ mt: 1.5 }}>
+                                        <Divider sx={{ mb: 1.5 }} />
+                                        <TwoCol>
+                                            <TextField
+                                                label='多久没登录就停用（天）'
+                                                type='number'
+                                                size='small'
+                                                value={disableDaysInput}
+                                                onChange={e => setDisableDaysInput(e.target.value)}
+                                                disabled={policyBusy}
+                                                inputProps={{ min: 1, max: 3650 }}
+                                            />
+                                            <TextField
+                                                label='停用后保留多久再清除（天）'
+                                                type='number'
+                                                size='small'
+                                                value={graceDaysInput}
+                                                onChange={e => setGraceDaysInput(e.target.value)}
+                                                disabled={policyBusy}
+                                                inputProps={{ min: 1, max: 3650 }}
+                                            />
+                                        </TwoCol>
+                                        <Stack
+                                            direction='row'
+                                            spacing={1.25}
+                                            alignItems='center'
+                                            sx={{ mt: 1.25 }}
+                                        >
+                                            <Button
+                                                variant='outlined'
+                                                size='small'
+                                                onClick={() => void handleSavePolicy()}
+                                                disabled={policyBusy}
+                                                sx={{ flex: "none" }}
+                                            >
+                                                保存阈值
+                                            </Button>
+                                            <Typography variant='caption' color='text.secondary'>
+                                                站点所有者账号永不参与治理；清除前会先停用并保留数据
+                                            </Typography>
+                                        </Stack>
+                                        {policyMsg ? (
+                                            <Typography
+                                                variant='caption'
+                                                color={
+                                                    policyMsg.type === "error"
+                                                        ? "error.main"
+                                                        : "success.main"
+                                                }
+                                                sx={{ display: "block", mt: 0.75 }}
+                                            >
+                                                {policyMsg.text}
+                                            </Typography>
+                                        ) : null}
+                                    </Box>
+                                ) : null}
                             </Section>
                         ) : null}
 

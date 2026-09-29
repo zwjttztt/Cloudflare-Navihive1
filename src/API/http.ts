@@ -264,6 +264,18 @@ export const INACTIVE_DELETE_GRACE_DAYS_KEY = "inactive.deleteGraceDays";
 export const INACTIVE_DISABLE_DAYS_DEFAULT = 180;
 export const INACTIVE_DELETE_GRACE_DAYS_DEFAULT = 30;
 
+/**
+ * 会话存活状态：令牌验签通过之后，还要确认账号本身还在不在。
+ * missing = 账号已被清除（沉睡治理 / 注销），但手上这张 30 天令牌还没过期。
+ */
+export type AccountSessionState = "active" | "disabled" | "missing";
+
+/**
+ * 会话状态缓存有效期。停用 / 清除是低频操作（每周扫描一次），
+ * 缓存 60 秒足以让「刚被停用」最多延迟一分钟生效，同时把每个请求一次 D1 读降到每分钟一次。
+ */
+const SESSION_STATE_TTL_MS = 60 * 1000;
+
 // 令牌有效期（秒）：普通登录 1 天；勾选「记住账号密码」后 30 天，实现「一个月内免登录」
 export const DEFAULT_TOKEN_TTL = 24 * 60 * 60;
 export const REMEMBER_TOKEN_TTL = 30 * 24 * 60 * 60;
@@ -432,6 +444,16 @@ export class NavigationAPI {
     private accountVersionCache = new Map<number, number>();
     /** users 表里有没有账号：缓存住，决定「能否回落到 configs 老凭据」时每次都要问 */
     private anyUserCache: boolean | null = null;
+    /**
+     * 会话存活状态缓存：uid -> 状态 + 读取时刻。
+     *
+     * 令牌是 30 天「记住我」签的，账号中途被停用 / 被清除时它并不会失效 ——
+     * 光验签通过就放行的话，被清除的账号还能继续写库，数据会挂在一个已经不存在的
+     * user_id 上变成孤儿。所以每个请求都要再确认一次账号还在。
+     * 但每个请求都查一次 users 表太贵，这里缓存 SESSION_STATE_TTL_MS；
+     * 停用 / 清除 / 重新启用这些会翻转结论的操作会主动把缓存清掉。
+     */
+    private sessionStateCache = new Map<number, { state: AccountSessionState; at: number }>();
     /**
      * 当前请求所属账号。由 Worker 在验签之后 setCurrentUser(id) 注入。
      * 为 null 表示「系统级调用」（未启用鉴权、或定时备份这类没有用户上下文的任务），
@@ -1291,6 +1313,7 @@ export class NavigationAPI {
             // 否则会卡成一个死循环 —— 登录页提示「已被停用，请联系所有者」，
             // 而找回密码这条路走完仍然登不进去。
             await this.reactivateUser(target.id);
+            this.invalidateSessionState(target.id);
         } else {
             // 老部署：users 表里还没有账号，凭据仍在 configs
             okUser = name ? await this.setConfig(AUTH_USERNAME_KEY, name) : true;
@@ -1531,7 +1554,6 @@ export class NavigationAPI {
         }
     }
 
-    /** 所有账号（定时任务按账号逐个备份时用；只给 id 与账号名） */
     /**
      * 刷新「最后活跃时间」——限频为每天最多写一次，避免每个请求都往 D1 落一行。
      *
@@ -1551,6 +1573,40 @@ export class NavigationAPI {
         } catch {
             // 列缺失 / 表异常都不该影响主流程
         }
+    }
+
+    /**
+     * 令牌验签通过之后，再确认一次账号还在不在、有没有被停用。
+     *
+     * JWT 是自包含的，账号被停用或清除时它并不会失效 —— 「记住我」那张能活 30 天。
+     * 只验签就放行的话：被停用的账号照样能改数据（等于停用形同虚设），
+     * 被清除的账号写出来的行会挂在一个已不存在的 user_id 上变成孤儿数据。
+     * 所以每个请求都要补这一问，用短缓存压掉查库开销（见 sessionStateCache）。
+     */
+    async getAccountSessionState(uid: number): Promise<AccountSessionState> {
+        const now = Date.now();
+        const cached = this.sessionStateCache.get(uid);
+        if (cached && now - cached.at < SESSION_STATE_TTL_MS) return cached.state;
+
+        let state: AccountSessionState = "missing";
+        try {
+            const row = await this.db
+                .prepare(`SELECT "status" FROM users WHERE id = ?`)
+                .bind(uid)
+                .first<{ status: string | null }>();
+            if (!row) state = "missing";
+            else state = row.status === "disabled" ? "disabled" : "active";
+        } catch {
+            // 表 / 列还没建好（迁移未跑）时别把人挡在门外：按「正常」放行
+            state = "active";
+        }
+        this.sessionStateCache.set(uid, { state, at: now });
+        return state;
+    }
+
+    /** 停用 / 清除 / 重新启用之后调一下：缓存里那条结论已经不成立了 */
+    private invalidateSessionState(uid: number): void {
+        this.sessionStateCache.delete(uid);
     }
 
     /** 显式登录成功：无条件刷新活跃时间（不受每天的限频影响） */
@@ -1660,6 +1716,7 @@ export class NavigationAPI {
                 "",
                 `账号 ${target.username} 置为 ${status}`
             );
+            this.invalidateSessionState(targetUid);
             return { success: true };
         } catch (error) {
             return {
@@ -1708,6 +1765,7 @@ export class NavigationAPI {
                     .run();
                 disabled = update.success ? ids.length : 0;
                 for (const { id } of ids) {
+                    this.invalidateSessionState(id);
                     await this.writeAudit("auth.inactive.disable", String(id), "", "长期未登录，已停用");
                 }
             }
@@ -1732,6 +1790,7 @@ export class NavigationAPI {
                 ];
                 await this.db.batch(statements);
                 deleted++;
+                this.invalidateSessionState(id);
                 await this.writeAudit("auth.inactive.delete", String(id), "", "停用宽限期满，已清除");
             }
         } catch (error) {
@@ -1996,6 +2055,7 @@ export class NavigationAPI {
 
         // 令牌版本 +1：账号都没了，已签发的令牌必须一起失效
         await this.bumpTokenVersion();
+        this.invalidateSessionState(userId);
         return { success: true, message: "账号已注销，相关数据已全部删除" };
     }
 

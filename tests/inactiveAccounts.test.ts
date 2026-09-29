@@ -175,6 +175,11 @@ class MockD1 {
                 .map(u => ({ id: u.id, username: u.username, role: u.role }));
         }
 
+        // 会话校验：按 id 只取状态（令牌验签通过后确认账号还在 / 没被停用）
+        if (s.includes('SELECT "status" FROM users WHERE id = ?')) {
+            return this.users.filter(u => u.id === args[0]).map(u => ({ status: u.status }));
+        }
+
         // 其余（建表 / 补列 / 读写 configs / 删 user_configs·invites·sites·groups）一律 no-op
         return [];
     }
@@ -418,4 +423,57 @@ test("login：被停用的账号即使密码正确也进不来", async () => {
     const result = await api.login({ username: "dormant", password: "correct-pw", remember: false });
     assert.equal(result.success, false);
     assert.match(result.message || "", /停用/);
+});
+
+// ---------- 6. 老会话：账号被停用 / 被清除之后，手里的令牌必须立刻作废 ----------
+// 令牌是自包含的，账号没了它不会跟着失效（「记住我」能活 30 天）。
+// 只验签就放行的话：停用形同虚设，被清除的账号还能继续写库、留下孤儿数据。
+
+test("会话校验：正常账号放行", async () => {
+    const { api } = apiWith([makeUser({ id: 1, username: "owner", role: "owner" })]);
+    assert.equal(await api.getAccountSessionState(1), "active");
+});
+
+test("会话校验：已被停用的账号 → disabled", async () => {
+    const { api } = apiWith([
+        makeUser({ id: 1, username: "owner", role: "owner" }),
+        makeUser({ id: 2, username: "dormant", status: "disabled", disabled_at: nowSec() }),
+    ]);
+    assert.equal(await api.getAccountSessionState(2), "disabled");
+});
+
+test("会话校验：账号已不存在 → missing（老令牌不能再写库）", async () => {
+    const { api } = apiWith([makeUser({ id: 1, username: "owner", role: "owner" })]);
+    assert.equal(await api.getAccountSessionState(999), "missing");
+});
+
+test("会话校验：沉睡治理清除账号后立刻变 missing（缓存跟着翻）", async () => {
+    const now = nowSec();
+    const { api } = apiWith([
+        makeUser({ id: 1, username: "owner", role: "owner", last_active_at: now }),
+        makeUser({
+            id: 2,
+            username: "gone",
+            status: "disabled",
+            disabled_at: now - 40 * DAY, // 超过 30 天宽限期
+            last_active_at: now - 400 * DAY,
+        }),
+    ]);
+    // 先读一次把结论写进缓存，确认缓存不会把「已清除」捂住
+    assert.equal(await api.getAccountSessionState(2), "disabled");
+    const result = await api.sweepInactiveUsers();
+    assert.equal(result.deleted, 1, "宽限期满应被清除");
+    assert.equal(await api.getAccountSessionState(2), "missing");
+});
+
+test("会话校验：重新启用后缓存失效，立刻恢复放行", async () => {
+    const now = nowSec();
+    const { api } = apiWith([
+        makeUser({ id: 1, username: "owner", role: "owner" }),
+        makeUser({ id: 2, username: "dormant", status: "disabled", disabled_at: now }),
+    ]);
+    assert.equal(await api.getAccountSessionState(2), "disabled");
+    const ok = await api.setUserStatus(2, "active", 1);
+    assert.equal(ok.success, true, ok.message);
+    assert.equal(await api.getAccountSessionState(2), "active", "重新启用后不该再被挡在门外");
 });

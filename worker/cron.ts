@@ -50,8 +50,13 @@ export async function runWeeklyBackup(api: SchedulerDB): Promise<void> {
     const nav = api as unknown as NavigationAPI;
     const users = await nav.listUsers();
 
-    // 没有 users 表数据（极老的库）时退回「按全局配置备份一次」的旧行为
-    const targets: (number | null)[] = users.length > 0 ? users.map(u => u.id) : [null];
+    // 没有 users 表数据（极老的库）时退回「按全局配置备份一次」的旧行为。
+    // 已停用的账号跳过：数据还在库里但人已经进不来，每周给它们传一份备份
+    // 只是白烧 D1 读行数与网盘空间 —— 真要恢复，先「重新启用」再备份即可。
+    const targets: (number | null)[] =
+        users.length > 0
+            ? users.filter(u => u.status !== "disabled").map(u => u.id)
+            : [null];
 
     for (const uid of targets) {
         try {
