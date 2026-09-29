@@ -3,7 +3,7 @@
 // 滚动时当前分组会自动高亮。窄屏隐藏（那里用底部导航栏的「分组」入口）。
 // 面板底部挂了「折叠 / 展开全部分组」开关：和分组列表放一起，比藏进「更多选项」更好找。
 // 整条可以收成一根窄条（只留分组圆点），把空间还给内容区，收起状态记在本机。
-import { Box, Divider, Tooltip, Typography, IconButton } from "@mui/material";
+import { Box, Divider, Tooltip, Typography, IconButton, useMediaQuery } from "@mui/material";
 import { useTheme } from "@mui/material/styles";
 import { groupAccent } from "../utils/groupColor";
 import UnfoldLessIcon from "@mui/icons-material/UnfoldLess";
@@ -17,6 +17,31 @@ export interface RailGroup {
     name: string;
     count: number;
 }
+
+// ---- 显示阈值：按「视口留给内容区两侧的空白」算，不照抄断点 --------------------
+//
+// 这条栏是 fixed 贴在视口左边（left: 10）的，而内容区是居中的 Container
+// （App 里 maxWidth="lg"，最宽 1200px）。它会不会压到卡片上，取决于视口给
+// Container 两侧留了多少空白 —— 而这个空白跟断点不是一回事：
+//
+//   1920 宽、缩放 100% → 空白 (1920-1200)/2 = 360px
+//   1920 宽、缩放 125% → CSS 视口 1536 → 空白 168px
+//   1920 宽、缩放 150% → CSS 视口 1280 → 空白  40px
+//
+// 原来只按 lg(1200) 判断「够宽就显示」，于是放大到 125% 开始栏就压在内容上，
+// 150% 时几乎整条盖住卡片。现在按「内容宽 + 两侧各留够一栏的余量」算阈值：
+// 空间不够就先退化成窄条，还不够就整个不显示（此时顶部有搜索、分组标题本身
+// 也能当锚点，不至于找不到东西）。
+const RAIL_CONTENT_MAX_WIDTH = 1200; // 与 App 里 Container maxWidth="lg" 保持一致
+const RAIL_GUTTER = 12; // 栏与内容之间至少留的空隙
+const RAIL_EXPANDED_EDGE = 184; // 展开态：left 10 + 实测栏宽约 186，再留 8px 余量
+const RAIL_COLLAPSED_EDGE = 60; // 收起态：left 10 + 窄条 46，再留点余量
+const RAIL_EXPANDED_MIN_VW =
+    RAIL_CONTENT_MAX_WIDTH + 2 * (RAIL_EXPANDED_EDGE + RAIL_GUTTER);
+const RAIL_COLLAPSED_MIN_VW =
+    RAIL_CONTENT_MAX_WIDTH + 2 * (RAIL_COLLAPSED_EDGE + RAIL_GUTTER);
+const SHOW_QUERY = `(min-width:${RAIL_COLLAPSED_MIN_VW}px)`;
+const EXPAND_QUERY = `(min-width:${RAIL_EXPANDED_MIN_VW}px)`;
 
 interface GroupNavRailProps {
     groups: RailGroup[];
@@ -60,11 +85,16 @@ export default function GroupNavRail({
 }: GroupNavRailProps) {
     const { railCollapsed, setRailCollapsed } = useUIPrefs();
     const mode = useTheme().palette.mode;
+    // 视口不够宽时逐级退化：先收成窄条，再不够就整个隐藏（阈值算法见文件上方）
+    const spaceForCollapsed = useMediaQuery(SHOW_QUERY);
+    const spaceForExpanded = useMediaQuery(EXPAND_QUERY);
 
     if (groups.length < 2) return null;
+    if (!spaceForCollapsed) return null;
 
-    // 收起态：一根窄条，只剩分组圆点，点圆点照样跳转
-    if (railCollapsed) {
+    // 收起态：一根窄条，只剩分组圆点，点圆点照样跳转。
+    // 视口只够放窄条时，即使用户没手动收起也走这一支。
+    if (railCollapsed || !spaceForExpanded) {
         return (
             <Box
                 component='nav'
@@ -77,7 +107,8 @@ export default function GroupNavRail({
                     top: "50%",
                     transform: "translateY(-50%)",
                     zIndex: (t) => t.zIndex.appBar - 1,
-                    display: { xs: "none", lg: "flex" },
+                    display: "none",
+                    [SHOW_QUERY]: { display: "flex" },
                     flexDirection: "column",
                     alignItems: "center",
                     gap: 0.5,
@@ -99,18 +130,38 @@ export default function GroupNavRail({
                     scrollbarWidth: "thin",
                 }}
             >
-                <Tooltip title='展开分组栏' placement='right'>
-                    <IconButton
-                        size='small'
-                        className='nav-rail-collapse-btn'
-                        aria-label='展开分组栏'
-                        aria-expanded={false}
-                        onClick={() => setRailCollapsed(false)}
-                        sx={{ color: "text.secondary" }}
-                    >
-                        <ChevronRightIcon sx={{ fontSize: 18 }} />
-                    </IconButton>
-                </Tooltip>
+                {spaceForExpanded ? (
+                    <Tooltip title='展开分组栏' placement='right'>
+                        <IconButton
+                            size='small'
+                            className='nav-rail-collapse-btn'
+                            aria-label='展开分组栏'
+                            aria-expanded={false}
+                            onClick={() => setRailCollapsed(false)}
+                            sx={{ color: "text.secondary" }}
+                        >
+                            <ChevronRightIcon sx={{ fontSize: 18 }} />
+                        </IconButton>
+                    </Tooltip>
+                ) : (
+                    // 视口只够放窄条：展开就会压在卡片上，所以给个禁用态并说明原因，
+                    // 免得点了没反应让人以为是坏了。disabled 的按钮不吃 pointer 事件，
+                    // 外面套一层 span 才能挂上 Tooltip。
+                    <Tooltip title='窗口再宽一点才能展开，否则会挡住卡片' placement='right'>
+                        <span>
+                            <IconButton
+                                size='small'
+                                className='nav-rail-collapse-btn'
+                                aria-label='展开分组栏'
+                                aria-expanded={false}
+                                disabled
+                                sx={{ color: "text.secondary" }}
+                            >
+                                <ChevronRightIcon sx={{ fontSize: 18 }} />
+                            </IconButton>
+                        </span>
+                    </Tooltip>
+                )}
 
                 {groups.map(group => {
                     const active = group.id === activeId;
@@ -164,7 +215,8 @@ export default function GroupNavRail({
                 top: "50%",
                 transform: "translateY(-50%)",
                 zIndex: (t) => t.zIndex.appBar - 1,
-                display: { xs: "none", lg: "flex" },
+                display: "none",
+                [SHOW_QUERY]: { display: "flex" },
                 flexDirection: "column",
                 gap: 0.5,
                 p: 0.75,
