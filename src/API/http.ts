@@ -46,6 +46,8 @@ interface Env {
     AUTH_PASSWORD?: string; // 认证密码
     AUTH_SECRET?: string; // JWT密钥
     AUTH_RECOVERY_PUBLIC_KEY?: string; // 恢复公钥（Ed25519 raw，base64url）；仅持公钥，私钥离线
+    NAVIHIVE_TRUST_XFF?: string; // 仅可信反代之后才设 "1"，否则 XFF 一律不信任（防绕过登录限速）
+    NAVIHIVE_SESSION_FAIL_OPEN_ON_ERROR?: string; // 逃生开关：账号状态查询报 DB 异常时改为放行（默认 fail-closed）
 }
 
 // 数据类型定义
@@ -486,6 +488,12 @@ export class NavigationAPI {
      * 避免一个已被停用 / 清除的账号靠旧令牌继续过审。见 getAccountSessionState。
      */
     private dbReady = false;
+    /**
+     * DB 异常时的兜底取向。默认 fail-closed（查不到账号状态就拦下，见 dbReady 的注释）；
+     * 但那意味着一次 D1 抖动就能把站点所有者自己也锁在门外，所以留一个开关：
+     * 设 NAVIHIVE_SESSION_FAIL_OPEN_ON_ERROR=1 可临时恢复访问（出问题时的逃生口）。
+     */
+    private readonly failOpenOnError: boolean;
 
     /** 绑定当前账号（Worker 验签通过后调用）。传 null 表示系统级调用。 */
     setCurrentUser(id: number | null): void {
@@ -528,6 +536,7 @@ export class NavigationAPI {
             this.secretConfigured = false;
         }
         this.recoveryPubKey = env.AUTH_RECOVERY_PUBLIC_KEY || "";
+        this.failOpenOnError = env.NAVIHIVE_SESSION_FAIL_OPEN_ON_ERROR === "1";
     }
 
     // 初始化数据库表
@@ -1659,20 +1668,43 @@ export class NavigationAPI {
         const cached = this.sessionStateCache.get(uid);
         if (cached && now - cached.at < SESSION_STATE_TTL_MS) return cached.state;
 
-        let state: AccountSessionState = "missing";
-        try {
+        let state: AccountSessionState;
+        // 由「查询出错」推出的结论不进缓存：缓存了就会让一次偶发抖动把人卡住整个 TTL，
+        // 而且下次请求即便 DB 已经恢复也拿不到正确结论。
+        let fromError = false;
+
+        const readState = async (): Promise<AccountSessionState> => {
             const row = await this.db
                 .prepare(`SELECT "status" FROM users WHERE id = ?`)
                 .bind(uid)
                 .first<{ status: string | null }>();
-            if (!row) state = "missing";
-            else state = row.status === "disabled" ? "disabled" : "active";
+            if (!row) return "missing";
+            return row.status === "disabled" ? "disabled" : "active";
+        };
+
+        try {
+            state = await readState();
         } catch {
-            // 迁移未跑完（首请求、users 表 / status 列还没建好）时 fail-open，放行以免整站登不进；
-            // 迁移跑完之后若还查出错，按「账号不可用」fail-closed，拦下已被停用 / 清除的旧令牌。
-            state = this.dbReady ? "missing" : "active";
+            // 迁移未跑完（首请求、users 表 / status 列还没建好）时 fail-open，放行以免整站登不进
+            if (!this.dbReady) {
+                state = "active";
+                fromError = true;
+            } else {
+                // 迁移跑完之后若还查出错：先重试一次，排除偶发抖动再下结论；
+                // 仍失败就按 fail-closed 处理（除非显式开了逃生开关），
+                // 避免被停用 / 清除的账号靠旧令牌继续过审。
+                try {
+                    state = await readState();
+                } catch (error) {
+                    console.error(`账号状态查询失败（uid=${uid}）：`, error);
+                    state = this.failOpenOnError ? "active" : "missing";
+                    fromError = true;
+                }
+            }
         }
-        this.sessionStateCache.set(uid, { state, at: now });
+
+        if (fromError) this.sessionStateCache.delete(uid);
+        else this.sessionStateCache.set(uid, { state, at: now });
         return state;
     }
 

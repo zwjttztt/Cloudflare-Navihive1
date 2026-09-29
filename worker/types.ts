@@ -11,6 +11,12 @@ export interface Env {
     AUTH_RECOVERY_PUBLIC_KEY?: string; // 恢复公钥（SPKI base64url）；不配则用库里的 recovery.publicKey
     /** 仅当部署在可信反向代理之后、且代理已校验过真实客户端 IP 时才设为 "1"，否则 XFF 一律不信任（防绕过登录限速） */
     NAVIHIVE_TRUST_XFF?: string;
+    /**
+     * 逃生开关：账号状态查询（users.status）报 DB 异常时改为放行。
+     * 默认是 fail-closed（拦下），代价是 D1 一抖就会把站点所有者自己也锁在门外；
+     * 真出事时设成 "1" 可以立刻恢复访问。
+     */
+    NAVIHIVE_SESSION_FAIL_OPEN_ON_ERROR?: string;
 }
 
 // 验证用接口
