@@ -169,6 +169,43 @@ export async function writeInitGuard(
     await writeStore(api, INIT_GUARD_KEY, store);
 }
 
+// ============ 注册接口限速 ============
+// /api/auth/register 是唯一不需要任何凭据就能写数据库的入口，之前三个公开入口
+// （login / init / recover）都有限速、唯独它裸奔：
+//   - 每次失败都要写一条审计日志，等于拿 D1 写入次数当沙袋打；
+//   - 每次成功必然跑一次 PBKDF2 十万次哈希，是最贵的 CPU 放大面；
+//   - 「该账号名已被占用」的回显还能拿来枚举账号名。
+// 计数规则与登录不同：**成功也不清零**。注册成功同样消耗了上面那些资源，
+// 清零会让「注册 → 清零 → 再注册」无限循环，限速就形同虚设。
+// 但阈值放宽到 10 —— 一个出口 IP 下几个人各自注册是正常场景，不该被误伤。
+export const REGISTER_GUARD_KEY = "auth.registerGuard";
+export const REGISTER_FREE_ATTEMPTS = 10;
+export const REGISTER_BASE_LOCK_MS = 60_000; // 第 11 次起锁 1 分钟
+export const REGISTER_MAX_LOCK_MS = 30 * 60_000; // 最多 30 分钟
+
+export async function readRegisterGuard(
+    api: NavigationAPI,
+    bucket = "legacy"
+): Promise<LoginGuard> {
+    const store = await readStore(api, REGISTER_GUARD_KEY);
+    const found = store[bucket];
+    if (!found) return { count: 0, until: 0 };
+    return {
+        count: typeof found.count === "number" && found.count > 0 ? found.count : 0,
+        until: typeof found.until === "number" && found.until > 0 ? found.until : 0,
+    };
+}
+
+export async function writeRegisterGuard(
+    api: NavigationAPI,
+    guard: LoginGuard,
+    bucket = "legacy"
+): Promise<void> {
+    const store = await readStore(api, REGISTER_GUARD_KEY);
+    store[bucket] = { ...guard, seen: Date.now() };
+    await writeStore(api, REGISTER_GUARD_KEY, store);
+}
+
 // ============ 恢复令牌接口限速 ============
 // /api/auth/recover 是公网暴露的「找回密码」入口：虽需私钥签名，但私钥一旦泄露，
 // 攻击者就能拿着它反复重置（每次成功都 bump 令牌版本）。这里按来源 IP 分桶设一道短时熔断，

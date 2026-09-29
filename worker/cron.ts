@@ -139,20 +139,17 @@ export async function probeUrl(url: string): Promise<boolean> {
 }
 
 /**
- * 死链巡检：读 link.health 快照，挑「最久没探过」的站点重探一轮，max 时间戳写回。
+ * 单个账号的死链巡检：读它的 link.health 快照，挑「最久没探过」的站点重探一轮写回。
  * 任何失败都不抛出 —— 巡检失败不能影响同一次触发里的备份。
  */
-export async function runLinkSweep(api: SchedulerDB): Promise<void> {
+async function sweepOneAccount(api: SchedulerDB): Promise<void> {
     let snapshot: LinkHealthSnapshot = parseSnapshot(await api.getConfig(HEALTH_KEY));
 
     const sites = await api.getSites();
     const now = Date.now();
 
     const candidates = selectSweepCandidates(sites as SweepSite[], snapshot, now);
-    if (candidates.length === 0) {
-        console.log("死链巡检跳过：没有需要重探的链接");
-        return;
-    }
+    if (candidates.length === 0) return;
 
     for (const url of candidates) {
         const alive = await probeUrl(url);
@@ -163,6 +160,46 @@ export async function runLinkSweep(api: SchedulerDB): Promise<void> {
 
     await api.setConfig(HEALTH_KEY, JSON.stringify(snapshot));
     console.log(`死链巡检完成：本轮探测 ${candidates.length} 个链接`);
+}
+
+/**
+ * 死链巡检（全部账号）。
+ *
+ * 过去这是一把梭：以「无账号」身份读出**所有人**的站点、探完再写回全站共享的一份
+ * `link.health`。多账号上线后，任何开了「失效记录同步」的人都能顺手看到别人收藏的
+ * 网址清单 —— 虽然只是 URL 和死活，没有标题和凭据，但这已经是库里唯一一处
+ * 跨账号混合的数据了。现在改成逐个账号巡检，各写各的快照（`link.health` 已归入
+ * 按账号私有配置，见 http.ts 的 PRIVATE_USER_CONFIG_KEYS）。
+ *
+ * 副作用：升级前那份共享快照不再被读到，等于每人重新探一遍。
+ * 快照本来就是 7 天内可重测的临时数据，代价只是一次性的探测流量。
+ */
+export async function runLinkSweep(api: SchedulerDB): Promise<void> {
+    const nav = api as unknown as Partial<NavigationAPI> & SchedulerDB;
+
+    // 验证脚本注入的假实现没有 listUsers / setCurrentUser，退回单账号的旧行为，
+    // 免得污染既有用例（与 runInactiveSweep 同一套路）。
+    if (typeof nav.listUsers !== "function" || typeof nav.setCurrentUser !== "function") {
+        await sweepOneAccount(api);
+        return;
+    }
+
+    const users = await nav.listUsers();
+    // 没有 users 数据（极老的库）时退回「不带账号巡检一次」的旧行为。
+    // 已停用的账号跳过：人进不来看不到结果，白烧探测流量。
+    const targets: (number | null)[] =
+        users.length > 0 ? users.filter(u => u.status !== "disabled").map(u => u.id) : [null];
+
+    for (const uid of targets) {
+        try {
+            nav.setCurrentUser(uid);
+            await sweepOneAccount(api);
+        } catch (error) {
+            console.error(`账号 ${uid ?? "全局"} 死链巡检异常:`, error);
+        } finally {
+            nav.setCurrentUser(null);
+        }
+    }
 }
 
 /**

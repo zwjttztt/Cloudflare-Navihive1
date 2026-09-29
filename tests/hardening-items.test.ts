@@ -21,6 +21,7 @@ import {
 } from "../worker/loginGuard";
 import { signJwt, verifyJwt } from "../src/API/crypto";
 import { isBodyTooLarge, MAX_REQUEST_BODY_BYTES } from "../worker/util";
+import { RETENTION_DAYS_MAX } from "../src/API/http";
 import { NavigationAPI } from "../src/API/http";
 import { validateSite } from "../worker/validate";
 
@@ -693,6 +694,59 @@ test("保留期：cleanupExpiredRows 同时清审计与回收站并各自计数"
     const counts = await api.cleanupExpiredRows();
     assert.equal(counts.audit, 1, "审计清掉 1 条");
     assert.equal(counts.recycle, 1, "回收站清掉 1 条");
+});
+
+test("保留期可按配置调整：改成 30 天后，8 天前的记录不再被清掉", async () => {
+    const db = new InMemoryD1();
+    db.configs.set("retention.days", "30");
+    const api = newApi(db);
+    const now = Date.now();
+    db.audit.push({
+        id: 1,
+        action: "login.success",
+        actor: "a",
+        ip: "1",
+        detail: "",
+        created_at: new Date(now - 8 * DAY * 1000).toISOString(),
+    });
+
+    const log = await api.getAuditLog({ limit: 50, offset: 0 });
+    assert.equal(log.length, 1, "保留期放宽到 30 天后，8 天前这条应当还在");
+});
+
+test("保留期配置越界时夹回上下界，不会把数据全删或永不清理", async () => {
+    // 0 天 = 每次都把自己刚记的东西清掉；999 天则是让 D1 行数线性涨。两头都要夹住。
+    const db = new InMemoryD1();
+    db.configs.set("retention.days", "0");
+    const api0 = newApi(db);
+    const now = Date.now();
+    db.audit.push({
+        id: 1,
+        action: "x",
+        actor: "a",
+        ip: "1",
+        detail: "",
+        created_at: new Date(now - 1 * 3600 * 1000).toISOString(),
+    });
+    assert.equal((await api0.getAuditLog({})).length, 1, "0 天被夹到 1 天，1 小时前的记录还在");
+
+    // 上限：写 9999 会被夹到 RETENTION_DAYS_MAX，比它更早的记录照样清掉
+    const db2 = new InMemoryD1();
+    db2.configs.set("retention.days", "9999");
+    const apiMax = newApi(db2);
+    db2.audit.push({
+        id: 1,
+        action: "x",
+        actor: "a",
+        ip: "1",
+        detail: "",
+        created_at: new Date(now - (RETENTION_DAYS_MAX + 30) * DAY * 1000).toISOString(),
+    });
+    assert.equal(
+        (await apiMax.getAuditLog({})).length,
+        0,
+        "写再大的数也只保留到上限，超上限的记录照清"
+    );
 });
 
 // ================= 首次改密提示只约束种子管理员本人 =================

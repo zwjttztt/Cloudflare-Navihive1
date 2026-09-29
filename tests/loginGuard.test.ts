@@ -13,8 +13,11 @@ import {
     writeLoginGuard,
     readInitGuard,
     writeInitGuard,
+    readRegisterGuard,
+    writeRegisterGuard,
     LOGIN_GUARD_KEY,
     LOGIN_BASE_LOCK_MS,
+    REGISTER_GUARD_KEY,
 } from "../worker/loginGuard";
 
 /** 只实现限速真正用到的两个读写字 */
@@ -81,6 +84,43 @@ test("初始化限速同样按来源分桶", async () => {
 
     assert.equal((await readInitGuard(api as never, "1.2.3.4")).count, 3);
     assert.equal((await readInitGuard(api as never, "9.9.9.9")).count, 0);
+});
+
+// 注册是唯一「不用任何凭据就能写库」的入口：失败要写审计日志、成功要跑一次十万次
+// PBKDF2，两头都是资源。它和登录共用同一套分桶存储，但**各自独立计数** ——
+// 一个人连着注册失败，不该顺带把自己登录的额度也耗光（反之亦然）。
+test("注册限速与登录限速各记各的：互不串台", async () => {
+    const { api } = makeApi();
+    await writeRegisterGuard(api as never, { count: 6, until: 0 }, "1.2.3.4");
+
+    assert.equal((await readRegisterGuard(api as never, "1.2.3.4")).count, 6);
+    assert.equal(
+        (await readLoginGuard(api as never, "1.2.3.4")).count,
+        0,
+        "注册计数不该落进登录的桶"
+    );
+});
+
+test("注册限速按来源分桶：一个人刷注册不影响别人", async () => {
+    const { api } = makeApi();
+    const until = Date.now() + 60_000;
+    await writeRegisterGuard(api as never, { count: 12, until }, "1.2.3.4");
+
+    const attacker = await readRegisterGuard(api as never, "1.2.3.4");
+    const other = await readRegisterGuard(api as never, "9.9.9.9");
+    assert.equal(attacker.until, until);
+    assert.equal(other.count, 0);
+    assert.equal(other.until, 0, "别人不该被连坐");
+});
+
+test("注册计数不会因为登录成功被清掉（成功同样消耗资源）", async () => {
+    const { api, configs } = makeApi();
+    await writeRegisterGuard(api as never, { count: 3, until: 0 }, "1.2.3.4");
+    // 同一来源登录成功，只清登录自己的桶
+    await writeLoginGuard(api as never, { count: 0, until: 0 }, "1.2.3.4");
+
+    assert.equal((await readRegisterGuard(api as never, "1.2.3.4")).count, 3);
+    assert.ok(configs.has(REGISTER_GUARD_KEY), "注册桶独立存在");
 });
 
 test("桶数量有上限：刷再多 IP 也不会把这条配置撑爆", async () => {

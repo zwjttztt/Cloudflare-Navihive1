@@ -33,6 +33,11 @@ import {
     LOGIN_MAX_LOCK_MS,
     readInitGuard,
     writeInitGuard,
+    readRegisterGuard,
+    writeRegisterGuard,
+    REGISTER_FREE_ATTEMPTS,
+    REGISTER_BASE_LOCK_MS,
+    REGISTER_MAX_LOCK_MS,
     INIT_FREE_ATTEMPTS,
     INIT_BASE_LOCK_MS,
     INIT_MAX_LOCK_MS,
@@ -303,7 +308,42 @@ export default {
                         );
                     }
 
+                    // 注册是唯一「不用任何凭据就能写库」的入口，必须限频：
+                    // 失败要写审计日志，成功要跑一次十万次 PBKDF2，两头都是资源。
+                    // 按来源 IP 分桶，跟登录那把锁互不影响。
+                    const rBucket = clientBucket(request, trustXFF);
+                    const regGuard = await readRegisterGuard(api, rBucket);
+                    const regNow = Date.now();
+                    if (regGuard.until > regNow) {
+                        const waitSec = Math.ceil((regGuard.until - regNow) / 1000);
+                        return Response.json(
+                            {
+                                success: false,
+                                message: `注册尝试过于频繁，请 ${waitSec} 秒后再试`,
+                            },
+                            { status: 429, headers: { "Retry-After": String(waitSec) } }
+                        );
+                    }
+
                     const result = await api.registerUser(username, password, inviteCode);
+
+                    // 成功也计数：注册成功的代价（哈希 + 落库）不比失败小，
+                    // 一清零就变成「注册 → 计数归零 → 继续注册」的无限循环。
+                    const regCount = regGuard.count + 1;
+                    const regUntil =
+                        regNow +
+                        computeLockAfterFailure(
+                            regCount,
+                            REGISTER_FREE_ATTEMPTS,
+                            REGISTER_BASE_LOCK_MS,
+                            REGISTER_MAX_LOCK_MS
+                        );
+                    await writeRegisterGuard(
+                        api,
+                        { count: regCount, until: regUntil > regNow ? regUntil : 0 },
+                        rBucket
+                    );
+
                     if (!result.success) {
                         await api.writeAudit("auth.register.failed", username, clientIp(request), result.message);
                         return Response.json(result, { status: 400 });

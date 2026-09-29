@@ -262,6 +262,14 @@ export const RECOVERY_PUBLIC_KEY_CONFIG = "recovery.publicKey";
 // 两处都存的是「事后补救」性质的东西 —— 审计用于溯源、回收站用于反悔，
 // 留太久了既占 D1 行数，也让旧数据一直挂在界面上。7 天足够覆盖"昨天删错了"这类场景。
 export const RETENTION_DAYS = 7;
+/**
+ * 保留期可以在「网站设置 → 数据保留」里改（站点所有者专属）。
+ * 上下界都守住：0 天等于「每次定时任务都把自己刚记的东西删掉」，
+ * 而放到几百天以外，D1 行数就是一笔随时间线性增长的账。
+ */
+export const RETENTION_DAYS_KEY = "retention.days";
+export const RETENTION_DAYS_MIN = 1;
+export const RETENTION_DAYS_MAX = 365;
 
 // 长期未登录账号治理：阈值（天）存进 configs，owner 可在后台改；读取带默认值。
 // disableDays：超过这么久没活跃 -> 置为 disabled（禁止登录，数据保留）。
@@ -409,10 +417,19 @@ function isEncryptedConfigKey(key: string): boolean {
  *    不会把整站长什么样改掉，也不会因为没配任何东西而看到一片空白。
  */
 const PRIVATE_USER_CONFIG_PREFIXES = [WEBDAV_CONFIG_PREFIX];
+/**
+ * 必须整键匹配的私有键：死链巡检快照。
+ * 不能写成前缀 —— `link.health` 会把开关 `link.healthSync` 一起匹配掉，
+ * 而那个开关是「这台设备要不要同步」的偏好，本来就属于全站/本机层面。
+ */
+const PRIVATE_USER_CONFIG_KEYS = ["link.health"];
 const PER_USER_APPEARANCE_PREFIXES = ["site."];
 
 function isPrivateUserConfigKey(key: string): boolean {
-    return PRIVATE_USER_CONFIG_PREFIXES.some(prefix => key.startsWith(prefix));
+    return (
+        PRIVATE_USER_CONFIG_PREFIXES.some(prefix => key.startsWith(prefix)) ||
+        PRIVATE_USER_CONFIG_KEYS.includes(key)
+    );
 }
 
 export function isPerUserAppearanceKey(key: string): boolean {
@@ -968,7 +985,7 @@ export class NavigationAPI {
     > {
         await this.migrate();
         // 每次打开都先清一遍：定时任务每周才跑一次，光靠它的话过期条目最长能多挂好几天
-        await this.purgeExpiredAudit();
+        await this.purgeExpiredAudit(await this.getRetentionDays());
         const limit = Math.min(Math.max(opts.limit ?? 50, 1), 200);
         const offset = Math.max(opts.offset ?? 0, 0);
         let query = "SELECT id, action, actor, ip, detail, created_at FROM audit_log";
@@ -2716,8 +2733,8 @@ export class NavigationAPI {
         Array<{ id: number; kind: "site" | "group"; name: string; deletedAt: number }>
     > {
         await this.migrate();
-        // 过期的先清掉再列：定时任务每周才跑一次，光靠它的话「7 天自动删除」并不真的成立
-        await this.purgeExpiredRecycle();
+        // 过期的先清掉再列：定时任务每周才跑一次，光靠它的话「到期自动删除」并不真的成立
+        await this.purgeExpiredRecycle(await this.getRetentionDays());
         try {
             const result = await this.db
                 .prepare(
@@ -3493,12 +3510,20 @@ export class NavigationAPI {
         }
     }
 
+    /** 保留期（天）：配置里没有就用默认 7 天，越界的一律夹回上下界 */
+    private async getRetentionDays(): Promise<number> {
+        const raw = parseInt((await this.getConfig(RETENTION_DAYS_KEY)) || "", 10);
+        if (!Number.isFinite(raw)) return RETENTION_DAYS;
+        return Math.min(Math.max(raw, RETENTION_DAYS_MIN), RETENTION_DAYS_MAX);
+    }
+
     /** 清掉超过保留期的审计日志，返回清掉的行数 */
-    private async purgeExpiredAudit(): Promise<number> {
+    private async purgeExpiredAudit(days: number): Promise<number> {
         try {
+            // days 已经夹过上下界，是纯整数，拼进 SQL 安全
             const r = await this.db
                 .prepare(
-                    `DELETE FROM audit_log WHERE created_at < datetime('now', '-${RETENTION_DAYS} days')`
+                    `DELETE FROM audit_log WHERE created_at < datetime('now', '-${days} days')`
                 )
                 .run();
             return Number((r.meta as { changes?: number } | undefined)?.changes ?? 0);
@@ -3509,11 +3534,14 @@ export class NavigationAPI {
     }
 
     /** 清掉超过保留期的回收站条目，返回清掉的行数（deleted_at 是 epoch 秒） */
-    private async purgeExpiredRecycle(nowSec = Math.floor(Date.now() / 1000)): Promise<number> {
+    private async purgeExpiredRecycle(
+        days: number,
+        nowSec = Math.floor(Date.now() / 1000)
+    ): Promise<number> {
         try {
             const r = await this.db
                 .prepare("DELETE FROM recycle_bin WHERE deleted_at < ?")
-                .bind(nowSec - RETENTION_DAYS * 24 * 3600)
+                .bind(nowSec - days * 24 * 3600)
                 .run();
             return Number((r.meta as { changes?: number } | undefined)?.changes ?? 0);
         } catch (error) {
@@ -3531,7 +3559,8 @@ export class NavigationAPI {
      *   - token_blacklist：登出过期的令牌（过期后校验已不会再查它）；
      *   - auth.recoveryJti.*：恢复令牌用过后留的防重放标记（configs 里一行一个 key）；
      *   - invites：过期 / 已用掉的邀请码。
-     * 审计日志与回收站统一按 RETENTION_DAYS（7 天）保留，邀请码也留同样久便于排查。
+     * 审计日志与回收站统一按保留期（默认 7 天，站点所有者可改）保留，
+     * 邀请码也留同样久便于排查。
      */
     async cleanupExpiredRows(): Promise<{
         audit: number;
@@ -3542,9 +3571,10 @@ export class NavigationAPI {
     }> {
         const counts = { audit: 0, recycle: 0, blacklist: 0, invites: 0, recoveryJti: 0 };
         const nowSec = Math.floor(Date.now() / 1000);
+        const days = await this.getRetentionDays();
 
-        counts.audit = await this.purgeExpiredAudit();
-        counts.recycle = await this.purgeExpiredRecycle(nowSec);
+        counts.audit = await this.purgeExpiredAudit(days);
+        counts.recycle = await this.purgeExpiredRecycle(days, nowSec);
 
         try {
             const r = await this.db
@@ -3561,7 +3591,7 @@ export class NavigationAPI {
                 .prepare(
                     "DELETE FROM invites WHERE expires_at < ? OR (used_at IS NOT NULL AND used_at < ?)"
                 )
-                .bind(nowSec - 7 * 24 * 3600, nowSec - 7 * 24 * 3600)
+                .bind(nowSec - days * 24 * 3600, nowSec - days * 24 * 3600)
                 .run();
             counts.invites = Number((r.meta as { changes?: number } | undefined)?.changes ?? 0);
         } catch (error) {

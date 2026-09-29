@@ -176,7 +176,10 @@ export class MockNavigationClient {
     // 登录API
     async login(username: string, password: string, _remember = false): Promise<LoginResponse> {
         await new Promise(resolve => setTimeout(resolve, 500));
-        console.log(username, password);
+        void password;
+        // 这里曾经 console.log(username, password) —— 本地 mock 模式下密码会原样打进控制台。
+        // 虽然是假的后端，但用户填的往往是真密码（尤其在本机调试登录流程时），
+        // 截图、录屏、贴控制台输出都会把它带出去，不值得为省一行冒这个险。
         // 模拟登录验证逻辑 - 在Mock环境中任何账号密码都能登录
         const token = btoa(`${username}:${new Date().getTime()}`);
         this.setToken(token);
