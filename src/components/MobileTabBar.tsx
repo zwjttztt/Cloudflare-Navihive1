@@ -121,29 +121,41 @@ export default function MobileTabBar({
                         "&:hover": { bgcolor: "action.hover", color: "text.primary" },
                     }}
                 >
-                    {item.icon}
+                    {item.key === "groups" ? (
+                        // 角标贴在**图标**右上角，不是按钮右上角（按钮 flex:1 占一整格，
+                        // 贴按钮边角会离图标老远）。包裹层必须是定位基准：
+                        // 以前角标直接 absolute 挂在按钮里，按钮却没有 position:relative，
+                        // 基准跑到了 fixed 的底栏上 —— 那个「5」会飘到底栏顶部中间，
+                        // 换个屏宽位置还跟着变
+                        <Box sx={{ position: "relative", display: "inline-flex" }}>
+                            {item.icon}
+                            {badge > 0 && (
+                                <Box
+                                    sx={{
+                                        position: "absolute",
+                                        top: -5,
+                                        right: -9,
+                                        minWidth: 16,
+                                        height: 16,
+                                        px: 0.4,
+                                        borderRadius: "8px",
+                                        fontSize: 10,
+                                        lineHeight: "16px",
+                                        textAlign: "center",
+                                        bgcolor: "var(--accent)",
+                                        color: "#fff",
+                                    }}
+                                >
+                                    {badge > 99 ? "99+" : badge}
+                                </Box>
+                            )}
+                        </Box>
+                    ) : (
+                        item.icon
+                    )}
                     <Typography sx={{ fontSize: 11, lineHeight: 1.2 }}>
                         {item.label}
                     </Typography>
-                    {item.key === "groups" && badge > 0 && (
-                        <Box
-                            sx={{
-                                position: "absolute",
-                                mt: -3.5,
-                                ml: 3,
-                                minWidth: 16,
-                                px: 0.4,
-                                borderRadius: "8px",
-                                fontSize: 10,
-                                lineHeight: "16px",
-                                textAlign: "center",
-                                bgcolor: "var(--accent)",
-                                color: "#fff",
-                            }}
-                        >
-                            {badge > 99 ? "99+" : badge}
-                        </Box>
-                    )}
                 </Box>
             ))}
         </Paper>
