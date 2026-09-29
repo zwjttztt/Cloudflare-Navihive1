@@ -1053,6 +1053,23 @@ export class NavigationAPI {
     }
 
     /**
+     * 解除停用：状态恢复 active、清掉停用时间，并把活跃时间刷成现在。
+     * 活跃时间必须刷 —— 沉睡扫描每周都跑，不刷的话下周还会被判成沉睡账号。
+     */
+    private async reactivateUser(userId: number): Promise<void> {
+        try {
+            await this.db
+                .prepare(
+                    `UPDATE users SET "status" = 'active', disabled_at = NULL, last_active_at = ? WHERE id = ?`
+                )
+                .bind(Math.floor(Date.now() / 1000), userId)
+                .run();
+        } catch {
+            // 列还没建好（迁移未跑）时静默跳过：主流程是恢复访问，不该被这一句带崩
+        }
+    }
+
+    /**
      * 收集所有可用于验签的恢复公钥（连同它属于哪个账号）。
      *
      * 为什么不「只挑账号名指定的那一把」：找回密码的常见情形恰恰是**连账号名都忘了**，
@@ -1270,6 +1287,10 @@ export class NavigationAPI {
                 .bind(passwordHash, target.id)
                 .run()
                 .then(r => r.success);
+            // 能用私钥签出合法令牌的就是本人，顺手解除「长期未登录」的停用状态：
+            // 否则会卡成一个死循环 —— 登录页提示「已被停用，请联系所有者」，
+            // 而找回密码这条路走完仍然登不进去。
+            await this.reactivateUser(target.id);
         } else {
             // 老部署：users 表里还没有账号，凭据仍在 configs
             okUser = name ? await this.setConfig(AUTH_USERNAME_KEY, name) : true;

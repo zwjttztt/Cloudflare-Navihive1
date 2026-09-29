@@ -88,6 +88,8 @@ function makeDb(store: Store) {
                 password_hash: args[1],
                 role: args[2] ?? "user",
                 created_at: "now",
+                // 沉睡治理用：新账号默认可用
+                status: "active",
             };
             store.users.push(row);
             return row;
@@ -267,6 +269,17 @@ function makeDb(store: Store) {
                     const [value, id] = args as [string, number];
                     const row = store.users.find(u => u.id === id);
                     if (row) row.recovery_public_key = value;
+                    return { success: true };
+                }
+                if (sql.includes('UPDATE users SET "status"')) {
+                    // 状态是 SQL 里的字面量；只有 id 走 bind（见 bind 顺序：last_active_at, id）
+                    const next = sql.includes("= 'active'") ? "active" : "disabled";
+                    const id = args[args.length - 1] as number;
+                    const row = store.users.find(u => u.id === id);
+                    if (row) {
+                        row.status = next;
+                        if (next === "active") row.disabled_at = null;
+                    }
                     return { success: true };
                 }
                 if (sql.includes("UPDATE users SET username")) {
@@ -909,4 +922,33 @@ test("恢复密钥：改成别人在用的账号名 → 拒绝，且不动任何
     assert.match(result.message, /已被占用/);
     assert.equal((store.users.find(u => u.id === aliceId) as Row).username, "alice");
     assert.equal(await api.verifyPasswordOfUser(aliceId, "password123"), true, "旧密码仍然有效");
+});
+
+test("恢复密钥：被停用的账号找回后自动恢复可用（否则重置完仍登不进去）", async () => {
+    const { store, api, aliceId, privKey } = await setupAliceWithRecoveryKey();
+
+    // 模拟沉睡治理扫到 alice：停用后应当连登录都进不去
+    (store.users.find(u => u.id === aliceId) as Row).status = "disabled";
+    const blocked = await api.login({ username: "alice", password: "password123" });
+    assert.equal(blocked.success, false, "停用期间不能放行");
+    assert.match(blocked.message, /停用/);
+
+    const token = await signRecoveryJws(privKey, {
+        username: "",
+        passwordHash: await hashPassword("AliceIsBack2026"),
+        exp: futureExpSec(),
+        jti: "reactivate-1",
+    });
+
+    const result = await api.redeemRecoveryToken(token);
+    assert.equal(result.success, true, result.message);
+    assert.equal(
+        (store.users.find(u => u.id === aliceId) as Row).status,
+        "active",
+        "用私钥找回 = 本人回来了，停用状态必须一并解除"
+    );
+
+    // 关键：找回之后能直接用新密码登录，而不是卡在「账号已被停用」
+    const login = await api.login({ username: "alice", password: "AliceIsBack2026" });
+    assert.equal(login.success, true, login.message);
 });
