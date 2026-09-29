@@ -37,7 +37,6 @@
 - 🗑️ **回收站** — 删除的分组 / 网站先进回收站（「更多选项 → 回收站」），可一键还原或彻底删除；删除前均有二次确认
 - 📜 **审计日志** — 「更多选项 → 审计日志」，站点所有者可查看登录、改密、删除等关键操作的时间、操作者与来源 IP
 - ☁️ **WebDAV 备份** — 支持坚果云、Nextcloud、ownCloud、群晖等，由 Worker 代理上传，不受浏览器跨域限制
-- 🐳 **Docker 自托管** — 一条 `docker compose up -d` 起在自己的服务器 / NAS 上，不依赖 Cloudflare 账号
 - 🚀 **高性能** — 基于 Cloudflare Workers + D1 数据库，免费、全球加速
 
 ## 🛠️ 技术栈
@@ -45,7 +44,7 @@
 - **前端**：React 19 · TypeScript · Material UI 7 · DND Kit（拖拽）· Tailwind CSS 4 · Vite 6
 - **后端**：Cloudflare Workers · Cloudflare D1（SQLite）· JWT 认证
 
-## 🚀 部署指南（三种方式）
+## 🚀 部署指南（两种方式）
 
 ### 方式一：一键部署（推荐，无需命令行）
 
@@ -92,72 +91,7 @@ pnpm build      # 构建
 pnpm deploy     # 部署到 Cloudflare Workers
 ```
 
-### 方式三：Docker 自托管（不依赖 Cloudflare 账号）
-
-适合部署在自己的服务器 / NAS / 家用机上。容器里跑的是 **Wrangler 本地模式（Miniflare / workerd）**：
-Workers 运行时是真的，D1 由**本地 SQLite** 模拟，数据落在挂进去的卷里 —— 不需要 Cloudflare 账号，
-也不需要手动执行 `init_table.sql`（表会在首次访问时自动建）。
-
-```bash
-# 1. 拿代码
-git clone https://github.com/zwjttztt/myhomepage.git
-cd myhomepage
-
-# 2. 起服务（首次会自动构建镜像，约几分钟）
-docker compose up -d --build
-
-# 3. 看首次启动日志 —— 没设 AUTH_PASSWORD 的话，随机初始密码打印在这里
-docker compose logs -f
-```
-
-然后打开 `http://<你的服务器 IP>:8787`，用日志里的用户名/密码登录。
-
-**换端口**（比如用 8080）：改 `docker-compose.yml` 里的 `"8787:8787"` 为 `"8080:8787"`。
-
-不想用 compose 也可以直接跑：
-
-```bash
-docker build -t navihive:latest .
-docker run -d --name navihive --init \
-  -p 8787:8787 \
-  -v navihive-data:/data \
-  -e AUTH_USERNAME=admin \
-  -e AUTH_PASSWORD=改成你自己的密码 \
-  navihive:latest
-```
-
-#### 数据在哪、怎么备份
-
-| 路径 | 内容 |
-| --- | --- |
-| `/data/wrangler-state/` | D1 的 SQLite 数据文件（含 WAL），**整站数据都在这** |
-| `/data/auth-secret` | 未显式设置 `AUTH_SECRET` 时自动生成的加解密密钥 |
-
-- 备份 = 把这个卷（或整个 `/data`）打包带走：`docker run --rm -v navihive-data:/data -v "$PWD":/backup alpine tar czf /backup/navihive-data.tgz -C /data .`
-- **删掉卷 = 数据全没**，`docker compose down -v` 会连卷一起删，慎用。
-- **`AUTH_SECRET` 丢了库里已加密的站点密码 / WebDAV 口令就解不开了**，务必连 `/data/auth-secret` 一起备份。
-
-#### 放到反代后面（可选）
-
-容器本身只提供 HTTP。要上 HTTPS 就在前面挂 Nginx / Caddy / Traefik 反代到 `8787`。
-此时若要让登录限速按**真实客户端 IP** 分桶（而不是所有人都算同一个来源），
-把环境变量 `NAVIHIVE_TRUST_XFF` 设为 `1`——**前提是反代会老实覆盖 `X-Forwarded-For`**，
-否则攻击者改个头就能绕过限速。详见下方「自托管时的 `NAVIHIVE_TRUST_XFF`」。
-
-#### Docker 方式已知差异
-
-- **定时备份不会自动触发**：本地模式下 cron 不生效（启动时 wrangler 会明确提示
-  `Scheduled Workers are not automatically triggered during local development`）。
-  需要手动触发就用（镜像里一定有 node，不一定有 curl/wget，所以直接用它）：
-  ```bash
-  docker exec navihive node -e "fetch('http://127.0.0.1:8787/cdn-cgi/local/scheduled').then(r=>console.log('HTTP',r.status))"
-  ```
-  或在外层用宿主机的 crontab 定期打这个地址。
-- **D1 是本地 SQLite 模拟**，不是 Cloudflare D1：没有跨地域复制，也不该多实例并发写同一个卷。
-  单容器足够个人/小团队使用；要横向扩展请回到方式一/二部署到 Cloudflare。
-- 首次登录同样会提示改密码（种子凭据来自环境变量），建议立刻改掉。
-
-### 初始化数据库（方式一 / 方式二必须做一次；Docker 方式不用）
+### 初始化数据库（部署完成后必须做一次）
 
 部署完成后，数据库是空的，需要执行一次初始化 SQL：
 
@@ -308,25 +242,26 @@ wrangler secret put AUTH_RECOVERY_PUBLIC_KEY
 - **审计日志**：「更多选项 → 审计日志」是**只有站点所有者**能看的只读视图，记录登录、改密、恢复密码、
   删除站点 / 分组、备份配置变更等关键动作的**时间、操作者、来源 IP 与详情**，便于事后溯源。
 
-### 自托管时的 `NAVIHIVE_TRUST_XFF`（一般不用管）
+### 本地开发时的 `NAVIHIVE_TRUST_XFF`（一般不用管）
 
-> 本节对 **方式三 Docker 自托管** 才有意义；部署在 Cloudflare 上（方式一 / 方式二）不用管。
+> 本节只和「用 `wrangler dev` 在本地跑」有关；部署到 Cloudflare 上不用管。
 
 登录、初始化、密钥恢复接口的失败限速是按来源 IP 分桶的。在 Cloudflare 上部署时，Worker 读的是
 `CF-Connecting-IP`（由 Cloudflare 写入，客户端伪造不了）。
 
-自托管时（比如 Docker 部署）`CF-Connecting-IP` 就不存在了，此时默认
+本地跑 `wrangler dev` 时 `CF-Connecting-IP` 不存在，此时默认
 **不信任** `X-Forwarded-For`（否则攻击者随便改 XFF 首段就能绕过爆破限速），所有来源会共用一个 `unknown` 桶
 —— 只是限速粒度变粗，不会失守。
 
 只有当你确认「Worker 前面的反代会老实覆盖 XFF」时，才把环境变量 `NAVIHIVE_TRUST_XFF` 设为 `1` 显式打开：
 
-- Docker：在 `docker-compose.yml` 的 `environment` 里把 `NAVIHIVE_TRUST_XFF` 改成 `"1"`
-  （或 `docker run -e NAVIHIVE_TRUST_XFF=1 ...`），入口脚本会把它写进 `.dev.vars`；
-- 其他自托管方式（直接 `wrangler dev`）：写到 `.dev.vars` 里，或走 Cloudflare 的 secret：
-  ```bash
-  npx wrangler secret put NAVIHIVE_TRUST_XFF   # 输入 1
-  ```
+```bash
+# 部署到 Cloudflare 上时用 secret
+npx wrangler secret put NAVIHIVE_TRUST_XFF   # 输入 1
+
+# 本地 wrangler dev：写进项目根目录的 .dev.vars
+# NAVIHIVE_TRUST_XFF=1
+```
 
 ## 🌐 绑定自定义域名（可选）
 
