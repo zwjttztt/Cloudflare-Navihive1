@@ -97,6 +97,12 @@ import { matchesGroupQuery, matchesSiteQuery } from "./utils/search";
 import { saveRememberedLogin, clearRememberedLogin } from "./utils/rememberedLogin";
 import { verifyBackupIntegrity, withBackupIntegrity } from "./utils/backupIntegrity";
 import { loadPersistedUndo } from "./utils/undoPersist";
+import {
+    formDataKey,
+    secretInputSx,
+    secretInputType,
+    SECRET_IGNORE_ATTRS,
+} from "./utils/secretInput";
 import type { ThemeMode } from "./components/ThemeToggle";
 import GroupCard from "./components/GroupCard";
 import EditGroupDialog from "./components/EditGroupDialog";
@@ -2234,9 +2240,12 @@ function App() {
 
     const handleSiteInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         const { name, value } = e.target;
+        // 账号/密码框的 name 为避浏览器识别改叫 site-account / site-secret，
+        // 状态里的键仍是 username / password（见 utils/secretInput.ts）
+        const key = formDataKey(name);
 
         setNewSite(prev => {
-            const next: Partial<Site> = { ...prev, [name]: value };
+            const next: Partial<Site> = { ...prev, [key]: value };
 
             // 填「站点URL」时自动按「获取图标API」生成图标URL。
             // 只有图标为空、或图标仍是自动生成的值时才覆盖，用户手填过的图标不会被冲掉。
@@ -4242,7 +4251,10 @@ function App() {
                                         <Box sx={{ flex: 1 }}>
                                             <TextField
                                                 id='site-username'
-                                                name='username'
+                                                // name 不叫 username：浏览器靠「名字 + 类型」
+                                                // 猜这是登录表单，叫了它就拿导航站自己的
+                                                // 登录凭据来填这里
+                                                name='site-account'
                                                 label='网站账号'
                                                 fullWidth
                                                 size='small'
@@ -4252,21 +4264,29 @@ function App() {
                                                 value={newSite.username || ""}
                                                 onChange={handleSiteInputChange}
                                                 autoComplete='off'
+                                                inputProps={{ ...SECRET_IGNORE_ATTRS }}
                                             />
                                         </Box>
                                         <Box sx={{ flex: 1 }}>
                                             <TextField
                                                 id='site-password'
-                                                name='password'
+                                                // 不叫 password、更不写 autoComplete="new-password"
+                                                // —— 后者等于邀请浏览器「存一下？」，原先
+                                                // 「添加卡片弹保存密码」就是它招来的。
+                                                // 真正的办法是让浏览器认不出这是密码字段：
+                                                // type 换 text + CSS 遮蔽（utils/secretInput.ts）
+                                                name='site-secret'
                                                 label='网站密码'
                                                 fullWidth
                                                 size='small'
-                                                type={showNewSitePassword ? "text" : "password"}
+                                                type={secretInputType(showNewSitePassword)}
+                                                sx={secretInputSx(showNewSitePassword)}
                                                 variant='outlined'
                                                 placeholder='登录密码（可留空）'
                                                 value={newSite.password || ""}
                                                 onChange={handleSiteInputChange}
-                                                autoComplete='new-password'
+                                                autoComplete='off'
+                                                inputProps={{ ...SECRET_IGNORE_ATTRS }}
                                                 InputProps={{
                                                     endAdornment: (
                                                         <InputAdornment position='end'>

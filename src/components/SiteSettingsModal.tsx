@@ -41,6 +41,12 @@ import { copyToClipboard } from "../utils/clipboard";
 import { resolveIconApiUrl } from "../utils/iconApi";
 import { pickExistingTags, pickRecommendedTags } from "../utils/tagSuggest";
 import { useAppConfig } from "../context/AppConfigContext";
+import {
+    formDataKey,
+    secretInputSx,
+    secretInputType,
+    SECRET_IGNORE_ATTRS,
+} from "../utils/secretInput";
 
 interface SiteSettingsModalProps {
     site: Site;
@@ -168,7 +174,8 @@ export default function SiteSettingsModal({
     // 处理表单字段变化
     const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
         const { name, value } = e.target;
-        setFormData(prev => ({ ...prev, [name]: value }));
+        // name 为避浏览器识别改叫 site-account / site-secret，状态里的键仍是 username / password
+        setFormData(prev => ({ ...prev, [formDataKey(name)]: value }));
     };
 
     // 处理下拉列表变化
@@ -654,7 +661,7 @@ export default function SiteSettingsModal({
                                 spacing={1.5}
                                 sx={{ gap: { xs: 1.5, sm: 1.5 } }}
                             >
-                                <TextField
+                                    <TextField
                                     id='username'
                                     // name 刻意不叫 username：浏览器靠「名字 + 类型」猜这是登录表单，
                                     // 叫了它就会拿导航站自己的登录凭据来填卡片的账号框
@@ -667,6 +674,7 @@ export default function SiteSettingsModal({
                                     variant='outlined'
                                     size='small'
                                     autoComplete='off'
+                                    inputProps={{ ...SECRET_IGNORE_ATTRS }}
                                     InputProps={{
                                         endAdornment: (
                                             <InputAdornment position='end'>
@@ -678,18 +686,21 @@ export default function SiteSettingsModal({
                                 <TextField
                                     id='password'
                                     // 同上：不叫 password、不写 new-password。
-                                    // autoComplete="new-password" 反而是在邀请浏览器
-                                    // 「这里有个新密码，要不要存一下？」，改成 off 才是明确拒绝
+                                    // 光靠名字和 autocomplete 挡不住 —— Chrome 有 formless 检测，
+                                    // 没有 <form> 它照样提示保存。真正的办法是让浏览器认不出这是
+                                    // 密码字段：type 换成 text + CSS 遮蔽（见 utils/secretInput.ts）
                                     name='site-secret'
                                     label='密码'
                                     fullWidth
-                                    type={showPassword ? "text" : "password"}
+                                    type={secretInputType(showPassword)}
+                                    sx={secretInputSx(showPassword)}
                                     value={formData.password || ""}
                                     onChange={handleChange}
                                     placeholder='登录密码'
                                     variant='outlined'
                                     size='small'
                                     autoComplete='off'
+                                    inputProps={{ ...SECRET_IGNORE_ATTRS }}
                                     InputProps={{
                                         endAdornment: (
                                             <InputAdornment position='end'>
