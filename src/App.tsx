@@ -1537,9 +1537,8 @@ function App() {
         ]
     );
 
-    // 批量删除站点（多选模式）：先弹二次确认（含导出提示），确认后才真删。
+    // 批量删除站点（多选模式）：确认弹窗在底部操作条上（OverlayHost），确认后直接进这里。
     // 删除是软删除（先进回收站），撤销时优先从回收站精确还原。
-    const [pendingBulkDelete, setPendingBulkDelete] = useState<number[] | null>(null);
 
     // 真正执行批量删除（确认后调用）
     const doSitesDelete = useCallback(
@@ -1637,12 +1636,6 @@ function App() {
             fetchData,
         ]
     );
-
-    // 入口：先确认再删（避免多选模式下一手滑清空一堆卡片）
-    const handleSitesDelete = useCallback((siteIds: number[]) => {
-        if (siteIds.length === 0) return;
-        setPendingBulkDelete(siteIds);
-    }, []);
 
     // ---- 批量操作（多选模式） ----
     // 加星 / 取消加星：只改本机偏好，不碰数据库，改完立刻可见。
@@ -1748,13 +1741,16 @@ function App() {
         [selectedIds, handleError, notify]
     );
 
-    // 批量删除：走和单张卡片同一套「删除后可撤销」流程
+    // 批量删除：底部操作条上那个确认框就是唯一一道确认，确认后直接执行。
+    // 早年这里走的是 handleSitesDelete —— 它只负责再弹一个 ConfirmDialog，
+    // 于是「点删除 → 确认 → 又弹一个删除确认」，第二道框不点的话删除根本不发生
+    // （界面上看不出还卡着一道确认，像是按钮失灵）。现在直接进 doSitesDelete。
     const bulkDelete = useCallback(async () => {
         const ids = [...selectedIds];
         setBulkDeleteOpen(false);
         clearSelection();
-        await handleSitesDelete(ids);
-    }, [selectedIds, handleSitesDelete, clearSelection]);
+        await doSitesDelete(ids);
+    }, [selectedIds, doSitesDelete, clearSelection]);
 
     // 更新分组（引用稳定，配合 GroupCard 的 memo 减少重渲染）
     const handleGroupUpdate = useCallback(
@@ -4432,25 +4428,6 @@ function App() {
                     onNotify={(msg, severity) => notify(msg, severity || "info")}
                 />
                 </Suspense>
-
-                {/* 批量删除站点：二次确认 + 导出提示 */}
-                <ConfirmDialog
-                    open={pendingBulkDelete !== null}
-                    title='删除选中的网站'
-                    danger
-                    description={
-                        <span>
-                            将删除选中的 <b>{pendingBulkDelete?.length ?? 0}</b> 个网站，且会先进入回收站（可在「更多选项 → 回收站」中恢复）。建议先到「更多选项 → 数据备份」导出一份备份。
-                        </span>
-                    }
-                    confirmText='删除'
-                    onClose={() => setPendingBulkDelete(null)}
-                    onConfirm={() => {
-                        const ids = pendingBulkDelete;
-                        setPendingBulkDelete(null);
-                        if (ids) void doSitesDelete(ids);
-                    }}
-                />
 
                 {/* 删除分组：二次确认 + 导出提示 */}
                 <ConfirmDialog

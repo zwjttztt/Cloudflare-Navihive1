@@ -198,7 +198,12 @@ export default function OverlayHost({
             <ConfirmDialog
                 open={bulkDelete.open}
                 title={`删除选中的 ${bulkDelete.count} 个网站？`}
-                description='删除后可在提示条上点「撤销」恢复；保存的账号密码会一并删除。'
+                description={
+                    <span>
+                        会先进入回收站（可在「更多选项 → 回收站」中恢复），也可以在提示条上点「撤销」直接还原；
+                        站点上保存的账号密码会一并删除。批量操作前建议先到「更多选项 → 数据备份」导出一份备份。
+                    </span>
+                }
                 confirmText='删除'
                 danger
                 onConfirm={bulkDelete.onConfirm}
