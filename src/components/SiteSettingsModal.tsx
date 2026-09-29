@@ -228,9 +228,9 @@ export default function SiteSettingsModal({
     };
 
     // 提交表单
-    const handleSubmit = (e: React.FormEvent) => {
-        e.preventDefault();
-        e.stopPropagation();
+    const handleSubmit = (e?: React.SyntheticEvent) => {
+        e?.preventDefault();
+        e?.stopPropagation();
 
         // 没有任何改动：不写库、不弹「卡片已更新」，直接关掉
         if (!isDirty) {
@@ -335,7 +335,29 @@ export default function SiteSettingsModal({
 
             <Divider />
 
-            <form onSubmit={handleSubmit}>
+            {/*
+              这里刻意**不用 <form>**：表单里同时有「账号」和「密码」（type=password）两个
+              输入框，浏览器会把它当成登录表单 —— 每次保存卡片都弹「要不要保存密码」，
+              还会拿导航站自己的登录凭据来自动填充。改成容器 div + 按钮自己触发提交，
+              浏览器就没有「表单被提交」这个信号了；回车提交在 onKeyDown 里补上，
+              体验不变。
+            */}
+            <Box
+                component='div'
+                onKeyDown={(e: React.KeyboardEvent) => {
+                    if (e.key !== "Enter") return;
+                    // 输入法正在拼字时的回车是「选词」，不能当成提交
+                    if (e.nativeEvent.isComposing) return;
+                    // 回车已经被里面的输入框用掉了（比如标签框拿它「确认输入」），
+                    // 那是人家的语义，别再顺手把整个弹窗提交掉
+                    if (e.defaultPrevented) return;
+                    // 备注是多行文本，那里回车要换行
+                    const target = e.target as HTMLElement | null;
+                    if (target?.tagName === "TEXTAREA") return;
+                    e.preventDefault();
+                    handleSubmit();
+                }}
+            >
                 <DialogContent
                     sx={{
                         pt: 2,
@@ -634,7 +656,9 @@ export default function SiteSettingsModal({
                             >
                                 <TextField
                                     id='username'
-                                    name='username'
+                                    // name 刻意不叫 username：浏览器靠「名字 + 类型」猜这是登录表单，
+                                    // 叫了它就会拿导航站自己的登录凭据来填卡片的账号框
+                                    name='site-account'
                                     label='账号'
                                     fullWidth
                                     value={formData.username || ""}
@@ -653,7 +677,10 @@ export default function SiteSettingsModal({
                                 />
                                 <TextField
                                     id='password'
-                                    name='password'
+                                    // 同上：不叫 password、不写 new-password。
+                                    // autoComplete="new-password" 反而是在邀请浏览器
+                                    // 「这里有个新密码，要不要存一下？」，改成 off 才是明确拒绝
+                                    name='site-secret'
                                     label='密码'
                                     fullWidth
                                     type={showPassword ? "text" : "password"}
@@ -662,7 +689,7 @@ export default function SiteSettingsModal({
                                     placeholder='登录密码'
                                     variant='outlined'
                                     size='small'
-                                    autoComplete='new-password'
+                                    autoComplete='off'
                                     InputProps={{
                                         endAdornment: (
                                             <InputAdornment position='end'>
@@ -709,7 +736,8 @@ export default function SiteSettingsModal({
                             取消
                         </Button>
                         <Button
-                            type='submit'
+                            type='button'
+                            onClick={() => handleSubmit()}
                             color='primary'
                             variant='contained'
                             startIcon={<SaveIcon />}
@@ -718,7 +746,7 @@ export default function SiteSettingsModal({
                         </Button>
                     </Box>
                 </DialogActions>
-            </form>
+            </Box>
 
             {/* 删除确认：站内统一样式的确认弹窗（不再是浏览器原生 confirm） */}
             <ConfirmDialog

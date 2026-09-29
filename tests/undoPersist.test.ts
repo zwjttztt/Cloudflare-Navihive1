@@ -1,0 +1,153 @@
+// tests/undoPersist.test.ts
+// 撤销栈的跨刷新保留。
+// 重点是「别把不该留的留下来、别把脏数据写回去」：
+// 过期的要作废、坏形状的要丢弃、卡片已经不在了就不能再重建那一步撤销。
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import {
+    clearPersistedUndo,
+    isPersistedUndo,
+    loadPersistedUndo,
+    savePersistedUndo,
+    type PersistedUndo,
+} from "../src/utils/undoPersist";
+import { HistoryStack } from "../src/utils/historyStack";
+import type { Site } from "../src/API/http";
+
+// node 环境没有 localStorage：给一个够用的内存替身
+const store = new Map<string, string>();
+(globalThis as unknown as { localStorage: Storage }).localStorage = {
+    get length() {
+        return store.size;
+    },
+    clear: () => store.clear(),
+    getItem: (key: string) => store.get(key) ?? null,
+    key: (index: number) => [...store.keys()][index] ?? null,
+    removeItem: (key: string) => void store.delete(key),
+    setItem: (key: string, value: string) => void store.set(key, value),
+} as Storage;
+
+const site = (over: Partial<Site> = {}): Site => ({
+    id: 1,
+    group_id: 1,
+    name: "A",
+    url: "https://a.example",
+    icon: "",
+    description: "",
+    notes: "",
+    username: "",
+    password: "",
+    order_num: 0,
+    ...over,
+});
+
+const undoItem = (over: Partial<PersistedUndo> = {}): PersistedUndo => ({
+    kind: "site-edit",
+    label: "修改「A」",
+    at: Date.now(),
+    siteId: 1,
+    before: site({ name: "改之前" }),
+    after: site({ name: "改之后" }),
+    ...over,
+});
+
+test("存进去再读出来：往返一致", () => {
+    clearPersistedUndo();
+    const item = undoItem();
+    savePersistedUndo([item]);
+    const loaded = loadPersistedUndo();
+    assert.equal(loaded.length, 1);
+    assert.equal(loaded[0].siteId, 1);
+    assert.equal(loaded[0].before.name, "改之前");
+});
+
+test("超过一天的记录作废", () => {
+    clearPersistedUndo();
+    savePersistedUndo([undoItem({ at: Date.now() - 25 * 60 * 60 * 1000 })]);
+    assert.equal(loadPersistedUndo().length, 0);
+});
+
+test("形状不对的记录丢弃（坏数据不能变成一步撤销）", () => {
+    clearPersistedUndo();
+    store.set(
+        "navihive:persistedUndo",
+        JSON.stringify([{ kind: "site-edit" }, null, "x", { kind: "delete", siteId: 1 }])
+    );
+    assert.equal(loadPersistedUndo().length, 0);
+
+    // 缺了 before/after 的也不算数
+    assert.equal(isPersistedUndo({ kind: "site-edit", siteId: 1, at: Date.now() }), false);
+});
+
+test("只留最近 10 步，多出来的丢最旧的", () => {
+    clearPersistedUndo();
+    const list = Array.from({ length: 13 }, (_, i) => undoItem({ siteId: i + 1 }));
+    savePersistedUndo(list);
+    const loaded = loadPersistedUndo();
+    assert.equal(loaded.length, 10);
+    assert.equal(loaded[0].siteId, 4, "最旧的三步被丢掉");
+    assert.equal(loaded[9].siteId, 13);
+});
+
+test("存的是空列表：清掉键，不留空数组", () => {
+    savePersistedUndo([undoItem()]);
+    assert.equal(store.has("navihive:persistedUndo"), true);
+    savePersistedUndo([]);
+    assert.equal(store.has("navihive:persistedUndo"), false);
+});
+
+test("栈里带 persist 的才算可保留，撤销/重做要跟着同步", async () => {
+    const stack = new HistoryStack();
+    const persisted = undoItem({ siteId: 7 });
+
+    stack.push({ label: "删除（不保留）", undo: async () => {}, redo: async () => {} });
+    stack.push({
+        label: "修改（跨刷新保留）",
+        undo: async () => {},
+        redo: async () => {},
+        persist: persisted,
+    });
+
+    assert.deepEqual(
+        stack.persistable.map(item => item.siteId),
+        [7],
+        "只有给了 persist 的那一步会留下"
+    );
+
+    await stack.undo(); // 撤销掉「修改」
+    assert.deepEqual(stack.persistable, [], "撤销之后这一步不该还留在待办里");
+
+    await stack.redo();
+    assert.deepEqual(
+        stack.persistable.map(item => item.siteId),
+        [7],
+        "重做之后要回到待办里"
+    );
+});
+
+test("hydrate：能重放的压回栈，卡片已经不在的跳过", async () => {
+    const stack = new HistoryStack();
+    const count = stack.hydrate(
+        [undoItem({ siteId: 1 }), undoItem({ siteId: 2 })],
+        item => (item.siteId === 2 ? null : { label: item.label, undo: async () => {}, redo: async () => {} })
+    );
+
+    assert.equal(count, 1);
+    assert.equal(stack.undoDepth, 1);
+    assert.equal((await stack.undo()) !== null, true);
+});
+
+test("hydrate 出来的那一步仍然可继续持久化（刷新两次也不丢）", async () => {
+    const stack = new HistoryStack();
+    const item = undoItem({ siteId: 3 });
+    stack.hydrate([item], persisted => ({
+        label: persisted.label,
+        undo: async () => {},
+        redo: async () => {},
+        persist: persisted,
+    }));
+    assert.deepEqual(
+        stack.persistable.map(entry => entry.siteId),
+        [3]
+    );
+});

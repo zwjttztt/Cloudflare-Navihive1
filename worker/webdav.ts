@@ -2,6 +2,7 @@
 
 import type { ExportData, NavigationAPI } from "../src/API/http";
 import { decryptBackup, encryptBackup, isEncryptedBackup } from "../src/API/crypto";
+import { withBackupIntegrity } from "../src/utils/backupIntegrity";
 import { errorMessage, isBlockedHost, safeJson } from "./util";
 
 // ============ WebDAV 备份相关工具函数 ============
@@ -216,7 +217,9 @@ export async function runWebDavBackup(
     // 备份口令与 AUTH_SECRET 无关：没设口令只是「不加密」，照样能备份，不再拦着不让传
     const password = options.password ?? config.backupPassword ?? "";
 
-    const payload = data ?? (await api.exportData());
+    // 摘要按「最终要写进文件的这份」算：传进来的 data 可能已经被前端补过 localPrefs，
+    // 服务端自取的 exportData 也可能与第一手不同 —— 统一在这里收口重算一次
+    const payload = await withBackupIntegrity(data ?? (await api.exportData()));
     const filename = buildBackupFileName(mode);
 
     const result = await webdavUpload(config, filename, payload, password);

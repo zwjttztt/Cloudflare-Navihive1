@@ -10,7 +10,7 @@
 // D1 做端到端验证（harness/cron-check.mjs）。生产路径下 makeApi 默认 new NavigationAPI，
 // 行为和拆分前完全一致。
 
-import { NavigationAPI, type Site } from "../src/API/http";
+import { NavigationAPI, CRON_LAST_ERROR_KEY, type Site } from "../src/API/http";
 import type { Env } from "./types";
 import { configFromStored, readAllConfigs, runWebDavBackup } from "./webdav";
 import { safeFetch } from "./safeFetch";
@@ -33,6 +33,56 @@ export interface SchedulerDB {
     setConfig(key: string, value: string): Promise<boolean>;
 }
 
+/** 定时任务失败留痕的键：按任务分开存（cron.lastError.<task>） */
+function cronErrorKey(task: string): string {
+    return `${CRON_LAST_ERROR_KEY}.${task}`;
+}
+
+/**
+ * 定时任务失败的留痕：写审计日志 + 写一条 cron.lastError 给页面看。
+ *
+ * 以前失败只有一行 console —— 定时任务没人盯着看控制台，「自动备份其实已经连着
+ * 失败好几个月」只能等到真要恢复那天才发现。留痕写两处：审计日志给人查历史，
+ * cron.lastError 给前端弹一条当前状态（成功时由 clearCronError 清掉）。
+ *
+ * 两个方法都可能不存在（验证脚本注入的是 SchedulerDB 三件套的假实现），
+ * 探测不到就只留 console —— 留痕失败绝不能反过来把定时任务搞挂。
+ */
+async function recordCronFailure(
+    api: SchedulerDB,
+    task: string,
+    message: string
+): Promise<void> {
+    const nav = api as unknown as Partial<NavigationAPI> & SchedulerDB;
+    const short = (message || "未知错误").slice(0, 300);
+    try {
+        if (typeof nav.writeAudit === "function") {
+            await nav.writeAudit(`cron.${task}.failed`, "system", "cron", short);
+        }
+        if (typeof nav.setSystemConfig === "function") {
+            // 按任务分键：备份成功不该把巡检的失败提示一起清掉
+            await nav.setSystemConfig(
+                cronErrorKey(task),
+                JSON.stringify({ task, message: short, at: new Date().toISOString() })
+            );
+        }
+    } catch (error) {
+        console.error("记录定时任务失败留痕时出错:", error);
+    }
+}
+
+/** 见 recordCronFailure：任务成功（或不需要执行）后把那条失败提示撤掉 */
+async function clearCronError(api: SchedulerDB, task: string): Promise<void> {
+    const nav = api as unknown as Partial<NavigationAPI> & SchedulerDB;
+    try {
+        if (typeof nav.deleteSystemConfig === "function") {
+            await nav.deleteSystemConfig(cronErrorKey(task));
+        }
+    } catch (error) {
+        console.error("清除定时任务失败留痕时出错:", error);
+    }
+}
+
 /**
  * 每周自动备份：导出 → 压缩上传 → 删掉上一次的自动备份 → 记录文件名。
  * 与页面上的手动备份共用 runWebDavBackup，但保留策略不同：自动备份只滚动清理
@@ -47,45 +97,79 @@ export interface SchedulerDB {
  * 定时任务无人值守，用不了页面上的临时输入；而轮换 AUTH_SECRET 不该让备份解不开。
  */
 export async function runWeeklyBackup(api: SchedulerDB): Promise<void> {
-    const nav = api as unknown as NavigationAPI;
-    const users = await nav.listUsers();
+    const nav = api as unknown as Partial<NavigationAPI> & SchedulerDB;
 
-    // 没有 users 表数据（极老的库）时退回「按全局配置备份一次」的旧行为。
-    // 已停用的账号跳过：数据还在库里但人已经进不来，每周给它们传一份备份
-    // 只是白烧 D1 读行数与网盘空间 —— 真要恢复，先「重新启用」再备份即可。
-    const targets: (number | null)[] =
-        users.length > 0
-            ? users.filter(u => u.status !== "disabled").map(u => u.id)
-            : [null];
+    // 失败原因攒到最后统一留痕：一次都没失败就顺手把上一次的失败提示撤掉
+    const failures: string[] = [];
 
-    for (const uid of targets) {
-        try {
-            nav.setCurrentUser(uid);
-            const stored = await readAllConfigs(nav);
-            if (stored["webdav.autoBackup"] === "false") continue;
+    // 验证脚本注入的假实现只有 SchedulerDB 三件套，没有 listUsers / setCurrentUser，
+    // 直接调会 TypeError 把整个备份任务带崩 —— 与 runLinkSweep 同一套路，探测到就退回
+    // 「按全局配置备份一次」的旧行为（那时也确实只有一个账号）。
+    if (typeof nav.listUsers !== "function" || typeof nav.setCurrentUser !== "function") {
+        const reason = await backupOneAccount(api, null);
+        if (reason) failures.push(reason);
+    } else {
+        const users = await nav.listUsers();
 
-            const config = configFromStored(stored);
-            if (!config.url) {
-                console.log(`定时备份跳过：账号 ${uid ?? "全局"} 尚未配置 WebDAV`);
-                continue;
-            }
+        // 没有 users 表数据（极老的库）时退回「按全局配置备份一次」的旧行为。
+        // 已停用的账号跳过：数据还在库里但人已经进不来，每周给它们传一份备份
+        // 只是白烧 D1 读行数与网盘空间 —— 真要恢复，先「重新启用」再备份即可。
+        const targets: (number | null)[] =
+            users.length > 0
+                ? users.filter(u => u.status !== "disabled").map(u => u.id)
+                : [null];
 
-            const result = await runWebDavBackup(nav, config, {
-                mode: "auto",
-                stored,
-                password: config.backupPassword,
-            });
-            console.log(
-                result.success
-                    ? `定时备份完成（账号 ${uid ?? "全局"}）：${result.data?.filename}`
-                    : `定时备份失败（账号 ${uid ?? "全局"}）：${result.message}`
-            );
-        } catch (error) {
+        for (const uid of targets) {
             // 某个账号备份失败不影响其它账号
-            console.error(`账号 ${uid ?? "全局"} 定时备份异常:`, error);
-        } finally {
-            nav.setCurrentUser(null);
+            const reason = await backupOneAccount(api, uid);
+            if (reason) failures.push(reason);
         }
+    }
+
+    if (failures.length > 0) {
+        await recordCronFailure(api, "backup", `每周自动备份失败：${failures.join("；")}`);
+    } else {
+        await clearCronError(api, "backup");
+    }
+}
+
+/**
+ * 备份单个账号。返回失败原因（null = 成功或本来就该跳过）。
+ *
+ * 抽出来是因为「多账号逐个备份」和「老库 / 假实现退回单账号」走的是同一段逻辑；
+ * 异常在这里就地兜住，一个账号出问题不该让后面几个跟着不备份。
+ */
+async function backupOneAccount(api: SchedulerDB, uid: number | null): Promise<string | null> {
+    const nav = api as unknown as Partial<NavigationAPI> & SchedulerDB;
+    const label = `账号 ${uid ?? "全局"}`;
+
+    try {
+        if (typeof nav.setCurrentUser === "function") nav.setCurrentUser(uid);
+        const stored = await readAllConfigs(nav as unknown as NavigationAPI);
+        if (stored["webdav.autoBackup"] === "false") return null;
+
+        const config = configFromStored(stored);
+        if (!config.url) {
+            console.log(`定时备份跳过：${label} 尚未配置 WebDAV`);
+            return null;
+        }
+
+        const result = await runWebDavBackup(nav as unknown as NavigationAPI, config, {
+            mode: "auto",
+            stored,
+            password: config.backupPassword,
+        });
+        console.log(
+            result.success
+                ? `定时备份完成（${label}）：${result.data?.filename}`
+                : `定时备份失败（${label}）：${result.message}`
+        );
+        return result.success ? null : `${label}：${result.message || "上传失败"}`;
+    } catch (error) {
+        console.error(`${label} 定时备份异常:`, error);
+        return `${label}：${(error as Error)?.message || "备份异常"}`;
+    } finally {
+        if (typeof nav.setCurrentUser === "function") nav.setCurrentUser(null);
     }
 }
 
@@ -190,15 +274,24 @@ export async function runLinkSweep(api: SchedulerDB): Promise<void> {
     const targets: (number | null)[] =
         users.length > 0 ? users.filter(u => u.status !== "disabled").map(u => u.id) : [null];
 
+    const failures: string[] = [];
+
     for (const uid of targets) {
         try {
             nav.setCurrentUser(uid);
             await sweepOneAccount(api);
         } catch (error) {
             console.error(`账号 ${uid ?? "全局"} 死链巡检异常:`, error);
+            failures.push(`账号 ${uid ?? "全局"}：${(error as Error)?.message || "巡检异常"}`);
         } finally {
             nav.setCurrentUser(null);
         }
+    }
+
+    if (failures.length > 0) {
+        await recordCronFailure(api, "linkSweep", `死链巡检失败：${failures.join("；")}`);
+    } else {
+        await clearCronError(api, "linkSweep");
     }
 }
 
@@ -244,18 +337,36 @@ export async function runScheduledTasks(
     env: Env,
     makeApi: (env: Env) => SchedulerDB = (e) => new NavigationAPI(e)
 ): Promise<void> {
+    // 外层兜底也要留痕：runWeeklyBackup 只在「按账号循环」内部兜了异常，
+    // 取账号列表这一步就炸的话（D1 抽风、listUsers 抛错）里面根本轮不到执行
+    let backupApi: SchedulerDB | undefined;
     try {
-        const api = makeApi(env);
-        await runWeeklyBackup(api);
+        backupApi = makeApi(env);
+        await runWeeklyBackup(backupApi);
     } catch (error) {
         console.error("定时备份异常:", error);
+        if (backupApi) {
+            await recordCronFailure(
+                backupApi,
+                "backup",
+                `每周自动备份异常：${(error as Error)?.message || "未知错误"}`
+            );
+        }
     }
 
+    let sweepApi: SchedulerDB | undefined;
     try {
-        const api = makeApi(env);
-        await runLinkSweep(api);
+        sweepApi = makeApi(env);
+        await runLinkSweep(sweepApi);
     } catch (error) {
         console.error("死链巡检异常:", error);
+        if (sweepApi) {
+            await recordCronFailure(
+                sweepApi,
+                "linkSweep",
+                `死链巡检异常：${(error as Error)?.message || "未知错误"}`
+            );
+        }
     }
 
     try {

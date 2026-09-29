@@ -237,3 +237,65 @@ export async function writeRecoverGuard(
     store[bucket] = { ...guard, seen: Date.now() };
     await writeStore(api, RECOVER_GUARD_KEY, store);
 }
+
+// ============ 导出接口限速 ============
+// /api/export 一次就把整站数据打包带走（站点密码还是解密后的明文），
+// 是「拿到会话之后收益最大」的一个接口 —— 没有任何限频时，一个有效令牌能在几秒内
+// 反复把全站拖走。按「账号 + 来源 IP」分桶：同一个人在自己机器上手动备份，
+// 一小时点十次绰绰有余；换台机器、换个出口 IP 各算各的，不会互相牵连。
+// 与注册同理：**成功也计数**（每次导出都是一次全量读取 + 逐条解密，成本实打实）。
+export const EXPORT_GUARD_KEY = "auth.exportGuard";
+export const EXPORT_FREE_ATTEMPTS = 10;
+export const EXPORT_BASE_LOCK_MS = 5 * 60_000; // 第 11 次起锁 5 分钟
+export const EXPORT_MAX_LOCK_MS = 30 * 60_000; // 最多 30 分钟
+
+/** 导出限速的桶：账号 + 来源 IP（未登录 / 取不到 uid 时按匿名算） */
+export function exportBucket(request: Request, uid: number | null, trustXFF = false): string {
+    return `u${uid ?? "anon"}:${clientBucket(request, trustXFF)}`;
+}
+
+/** 导出限速的状态：比 LoginGuard 多一个「上次动它的时刻」，用来判断计数该不该重置 */
+export interface ExportGuard extends LoginGuard {
+    /** 该桶最后一次被写入的时刻（毫秒）；读不到就当 0 */
+    seen?: number;
+}
+
+/**
+ * 计数多久没动就归零（1 小时）。
+ *
+ * 不能像登录那样「成功就清零」——那会让「导出 → 清零 → 再导出」无限循环，限速形同虚设；
+ * 也**不能永不衰减**：正常用户每天手动备份一次，攒到第 11 天开始每次都被锁几分钟，
+ * 越往后锁越久，那是把正常用法当成攻击在打。所以按「离上次导出多久」衰减：
+ * 隔开一小时以上就从第 1 次重新数，短时间连着拉才会逐级变严。
+ */
+export const EXPORT_COUNT_RESET_MS = 60 * 60 * 1000;
+
+/** 下一次导出该记第几次：离上次导出超过一小时就从头数（见上面那段说明） */
+export function nextExportCount(guard: ExportGuard, now = Date.now()): number {
+    const idle = guard.seen ? now - guard.seen : Infinity;
+    return (idle > EXPORT_COUNT_RESET_MS ? 0 : guard.count) + 1;
+}
+
+export async function readExportGuard(
+    api: NavigationAPI,
+    bucket = "legacy"
+): Promise<ExportGuard> {
+    const store = await readStore(api, EXPORT_GUARD_KEY);
+    const found = store[bucket];
+    if (!found) return { count: 0, until: 0, seen: 0 };
+    return {
+        count: typeof found.count === "number" && found.count > 0 ? found.count : 0,
+        until: typeof found.until === "number" && found.until > 0 ? found.until : 0,
+        seen: typeof found.seen === "number" ? found.seen : 0,
+    };
+}
+
+export async function writeExportGuard(
+    api: NavigationAPI,
+    guard: LoginGuard,
+    bucket = "legacy"
+): Promise<void> {
+    const store = await readStore(api, EXPORT_GUARD_KEY);
+    store[bucket] = { ...guard, seen: Date.now() };
+    await writeStore(api, EXPORT_GUARD_KEY, store);
+}

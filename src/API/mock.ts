@@ -9,7 +9,9 @@ import {
     WebDavConfig,
     WebDavFile,
     WebDavResult,
+    SiteOrderUpdateResult,
 } from "./http";
+import { verifyBackupIntegrity, withBackupIntegrity } from "../utils/backupIntegrity";
 
 // 登录标记的 Secure 属性要和服务端那条令牌 cookie 一致，否则会出现
 // 「标记在、令牌不在」的半登录态（详见 NavigationClient.secureAttr）。
@@ -409,18 +411,23 @@ export class MockNavigationClient {
 
     async updateSiteOrder(
         siteOrders: { id: number; order_num: number; group_id?: number }[]
-    ): Promise<boolean> {
+    ): Promise<SiteOrderUpdateResult> {
         await new Promise(resolve => setTimeout(resolve, 200));
+        const updated: number[] = [];
+        const failed: number[] = [];
         for (const order of siteOrders) {
             const index = mockSites.findIndex(s => s.id === order.id);
-            if (index !== -1) {
-                mockSites[index].order_num = order.order_num;
-                if (order.group_id !== undefined) {
-                    mockSites[index].group_id = order.group_id;
-                }
+            if (index === -1) {
+                failed.push(order.id);
+                continue;
             }
+            mockSites[index].order_num = order.order_num;
+            if (order.group_id !== undefined) {
+                mockSites[index].group_id = order.group_id;
+            }
+            updated.push(order.id);
         }
-        return true;
+        return { success: failed.length === 0, updated, failed };
     }
 
     // 配置相关API
@@ -468,13 +475,13 @@ export class MockNavigationClient {
     // 数据导出
     async exportData(): Promise<ExportData> {
         await new Promise(resolve => setTimeout(resolve, 200));
-        return {
+        return await withBackupIntegrity({
             groups: [...mockGroups],
             sites: [...mockSites],
             configs: {...mockConfigs},
             version: "1.0",
             exportDate: new Date().toISOString()
-        };
+        });
     }
     
     // ============ WebDAV 备份（模拟环境不支持，仅返回提示） ============
@@ -519,6 +526,17 @@ export class MockNavigationClient {
     // 数据导入
     async importData(data: ExportData): Promise<ImportResult> {
         await new Promise(resolve => setTimeout(resolve, 500));
+
+        // 与真实实现同一道关：文件坏了就别清空现有数据
+        const integrityCheck = await verifyBackupIntegrity(data);
+        if (!integrityCheck.ok) {
+            return {
+                success: false,
+                message: integrityCheck.reason || "备份文件校验失败",
+                groupIdMap: {},
+                siteIdMap: {},
+            };
+        }
 
         try {
             // 清空现有数据

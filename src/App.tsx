@@ -18,6 +18,7 @@ import {
     BootstrapData,
     WebDavConfig,
     BACKUP_CREDENTIALS_CONFIG,
+    CRON_LAST_ERROR_KEY,
     EXPORT_VERSION,
     isSecretConfigKey,
     isUserScopedConfigKey,
@@ -51,6 +52,7 @@ import { useHistoryStack } from "./hooks/useHistoryStack";
 import { useNotify } from "./hooks/useNotify";
 import { useSites } from "./hooks/useSites";
 import { useMultiSelect } from "./hooks/useMultiSelect";
+import { useBulkActions } from "./hooks/useBulkActions";
 import { useAppDialogs } from "./hooks/useAppDialogs";
 import { wrapMutations, installOnlineListener, flushOfflineQueue, pendingCount, type MutationApi } from "./API/offlineQueue";
 import { buildFavoritesGroup, deriveDisplayedGroups } from "./utils/siteView";
@@ -93,6 +95,8 @@ import { normalizeFailureText, normalizeUrl } from "./utils/url";
 import { groupAccent } from "./utils/groupColor";
 import { matchesGroupQuery, matchesSiteQuery } from "./utils/search";
 import { saveRememberedLogin, clearRememberedLogin } from "./utils/rememberedLogin";
+import { verifyBackupIntegrity, withBackupIntegrity } from "./utils/backupIntegrity";
+import { loadPersistedUndo } from "./utils/undoPersist";
 import type { ThemeMode } from "./components/ThemeToggle";
 import GroupCard from "./components/GroupCard";
 import EditGroupDialog from "./components/EditGroupDialog";
@@ -1339,8 +1343,51 @@ function App() {
     // ---- 撤销 / 重做 ----
     // 每个破坏性操作做完就往栈里压一条「怎么把自己倒回去」的记录，
     // 提示条上的「撤销」按钮和 Ctrl+Z 走同一份逻辑，所以能连续撤好几步。
-    const { push: pushHistory, undo: undoHistory, redo: redoHistory, canUndo, canRedo } =
-        useHistoryStack();
+    const {
+        push: pushHistory,
+        undo: undoHistory,
+        redo: redoHistory,
+        hydrate: hydrateHistory,
+        canUndo,
+        canRedo,
+    } = useHistoryStack();
+
+    /**
+     * 刷新之后把上次留下的「可重放」撤销记录捞回来（见 utils/undoPersist）。
+     *
+     * 只恢复此刻还存在的卡片：中间已经被删掉 / 恢复过的，再写回去只会造出一张
+     * 谁都不认识的脏卡片。删卡片不走这条路 —— 它有回收站兜底，那才是跨刷新的正解。
+     */
+    const restorePersistedUndo = useCallback(() => {
+        const list = loadPersistedUndo();
+        if (list.length === 0) return;
+        hydrateHistory(list, item => {
+            const stillThere = groupsRef.current.some(group =>
+                group.sites.some(site => site.id === item.siteId)
+            );
+            if (!stillThere) return null;
+
+            const apply = async (site: Site) => {
+                await api.updateSite(item.siteId, { ...site, id: item.siteId });
+                upsertSiteLocally({ ...site, id: item.siteId });
+            };
+            return {
+                label: item.label,
+                undo: () => apply(item.before),
+                redo: () => apply(item.after),
+                persist: item,
+            };
+        });
+    }, [hydrateHistory, upsertSiteLocally, api]);
+
+    // 数据第一次到位后恢复一次：早于这时候 groupsRef 还是空的，校验会全判成「卡片不在了」
+    const restoredUndoRef = useRef(false);
+    useEffect(() => {
+        if (restoredUndoRef.current) return;
+        if (groups.length === 0) return;
+        restoredUndoRef.current = true;
+        restorePersistedUndo();
+    }, [groups, restorePersistedUndo]);
     const runUndo = useCallback(async () => {
         if (!undoHistory) return;
         try {
@@ -1447,11 +1494,37 @@ function App() {
                 upsertSiteLocally(updatedSite);
                 notify("卡片已更新", "success");
 
+                const siteId = updatedSite.id as number;
+
                 try {
-                    const saved = await api.updateSite(updatedSite.id as number, updatedSite);
+                    const saved = await api.updateSite(siteId, updatedSite);
                     // id 以本地这份为准，避免个别后端实现回显的 id 不准确
                     if (saved) {
                         upsertSiteLocally({ ...updatedSite, ...saved, id: updatedSite.id });
+                    }
+
+                    // 改卡片也能撤销：Ctrl+Z 或提示条上的「撤销」把它改回原样。
+                    // 顺带记一份持久化描述 —— 这是少数「靠数据就能倒回去」的操作，
+                    // 刷新之后照样能撤（删除不走这条，回收站已经兜住了）。
+                    if (snapshot && snapshot.id !== undefined) {
+                        const label = `修改「${snapshot.name || updatedSite.name || "该网站"}」`;
+                        const writeBack = async (site: Site) => {
+                            await api.updateSite(siteId, { ...site, id: siteId });
+                            upsertSiteLocally({ ...site, id: siteId });
+                        };
+                        pushHistory({
+                            label,
+                            undo: () => writeBack(snapshot),
+                            redo: () => writeBack(updatedSite),
+                            persist: {
+                                kind: "site-edit",
+                                label,
+                                at: Date.now(),
+                                siteId,
+                                before: snapshot,
+                                after: updatedSite,
+                            },
+                        });
                     }
                 } catch (error) {
                     console.error("更新站点失败:", error);
@@ -1464,7 +1537,7 @@ function App() {
             // 改完链接后跟别张卡片撞了，也先确认一次再写库
             guardDuplicate(updatedSite.url, updatedSite.id, doUpdate);
         },
-        [upsertSiteLocally, handleError, notify, guardDuplicate]
+        [upsertSiteLocally, handleError, notify, guardDuplicate, pushHistory]
     );
 
     // 删除站点：删完给一条带「撤销」的提示，8 秒内点一下就能把卡片原样建回来。
@@ -1655,119 +1728,24 @@ function App() {
     );
 
     // ---- 批量操作（多选模式） ----
-    // 加星 / 取消加星：只改本机偏好，不碰数据库，改完立刻可见。
-    // 批量操作后保留勾选，方便接着做下一个动作，收尾交给底部「完成」按钮。
-    const bulkStar = useCallback(
-        (next: boolean) => {
-            if (selectedIds.length === 0) return;
-            setStarredMany(selectedIds, next);
-            notify(next ? `已给 ${selectedIds.length} 个网站加星标` : `已取消 ${selectedIds.length} 个网站的星标`, "success");
-        },
-        [selectedIds, setStarredMany, notify]
-    );
-
-    // 批量打标签：追加式，不会覆盖已有标签，同样保留勾选
-    const bulkTag = useCallback(
-        (next: string[]) => {
-            if (selectedIds.length === 0) return;
-            addTagsToMany(selectedIds, next);
-            notify(`已给 ${selectedIds.length} 个网站加上标签：${next.join("、")}`, "success");
-        },
-        [selectedIds, addTagsToMany, notify]
-    );
-
-    // 标签管理：删除一个标签 = 从所有卡片上摘掉它，并给一次撤销机会
-    const deleteTagWithUndo = useCallback(
-        (tag: string) => {
-            const affected = Object.entries(tags)
-                .filter(([, list]) => list.includes(tag))
-                .map(([siteId]) => Number(siteId))
-                .filter(id => Number.isFinite(id));
-            if (affected.length === 0) return;
-
-            removeTagFromAll(tag);
-            // 这个标签正在被筛选时，顺手把筛选条件也去掉，免得筛出一片空白
-            setActiveTags(prev => prev.filter(t => t !== tag));
-
-            notify(`已删除标签「${tag}」（${affected.length} 个网站）`, "info", 8000, {
-                label: "撤销",
-                onClick: () => {
-                    addTagsToMany(affected, [tag]);
-                    notify(`已恢复标签「${tag}」`, "success");
-                },
-            });
-        },
-        [tags, removeTagFromAll, addTagsToMany, notify]
-    );
-
-    // 批量移动到分组：一次批量请求改 group_id + order_num，本地同步搬运卡片
-    const bulkMove = useCallback(
-        async (groupId: number) => {
-            if (selectedIds.length === 0) return;
-            const target = groupsRef.current.find(group => group.id === groupId);
-            if (!target) return;
-
-            const maxOrder = target.sites.reduce(
-                (max, site) => Math.max(max, site.order_num ?? 0),
-                -1
-            );
-            const orders = selectedIds.map((id, idx) => ({
-                id,
-                order_num: maxOrder + 1 + idx,
-                group_id: groupId,
-            }));
-
-            try {
-                const ok = await api.updateSiteOrder(orders);
-                if (!ok) throw new Error("服务端移动失败");
-
-                setGroups(prev => {
-                    const moving = prev
-                        .flatMap(group => group.sites)
-                        .filter(site => site.id !== undefined && selectedIds.includes(site.id))
-                        .map((site, idx) => ({
-                            ...site,
-                            group_id: groupId,
-                            order_num: maxOrder + 1 + idx,
-                        }));
-
-                    return prev.map(group => {
-                        const kept = group.sites.filter(
-                            site => !selectedIds.includes(site.id as number)
-                        );
-                        if (group.id === groupId) {
-                            return {
-                                ...group,
-                                sites: [...kept, ...moving].sort(
-                                    (a, b) => (a.order_num ?? 0) - (b.order_num ?? 0)
-                                ),
-                            };
-                        }
-                        return kept.length === group.sites.length ? group : { ...group, sites: kept };
-                    });
-                });
-
-                // 移动后也保留勾选：卡片已经搬到新分组，选中态跟着走
-                notify(`已移动 ${orders.length} 个网站到「${target.name}」`, "success");
-            } catch (error) {
-                console.error("批量移动站点失败:", error);
-                reportError(error, { source: "site-bulk-move" });
-                handleError("批量移动站点失败: " + (error as Error).message);
-            }
-        },
-        [selectedIds, handleError, notify]
-    );
-
-    // 批量删除：底部操作条上那个确认框就是唯一一道确认，确认后直接执行。
-    // 早年这里走的是 handleSitesDelete —— 它只负责再弹一个 ConfirmDialog，
-    // 于是「点删除 → 确认 → 又弹一个删除确认」，第二道框不点的话删除根本不发生
-    // （界面上看不出还卡着一道确认，像是按钮失灵）。现在直接进 doSitesDelete。
-    const bulkDelete = useCallback(async () => {
-        const ids = [...selectedIds];
-        setBulkDeleteOpen(false);
-        clearSelection();
-        await doSitesDelete(ids);
-    }, [selectedIds, doSitesDelete, clearSelection]);
+    // 加星 / 打标签 / 删标签 / 移动 / 删除：整组搬进了 useBulkActions，
+    // App 这里只负责把依赖喂进去（纯搬迁，行为不变）。
+    const { bulkStar, bulkTag, deleteTagWithUndo, bulkMove, bulkDelete } = useBulkActions({
+        selectedIds,
+        clearSelection,
+        groupsRef,
+        tags,
+        api,
+        setGroups,
+        setActiveTags,
+        setStarredMany,
+        addTagsToMany,
+        removeTagFromAll,
+        setBulkDeleteOpen,
+        doSitesDelete,
+        notify,
+        handleError,
+    });
 
     // 更新分组（引用稳定，配合 GroupCard 的 memo 减少重渲染）
     const handleGroupUpdate = useCallback(
@@ -1965,8 +1943,12 @@ function App() {
                 // 一次批量请求写入全部顺序
                 const result = await api.updateSiteOrder(siteOrders);
 
-                if (!result) {
-                    throw new Error("站点排序更新失败");
+                if (!result.success) {
+                    throw new Error(
+                        result.failed.length > 0
+                            ? `站点排序更新失败（${result.failed.length} 个未生效，刷新后重试）`
+                            : "站点排序更新失败"
+                    );
                 }
 
                 // 本地即服务端结果，补齐 order_num；只重建这一个分组，其它分组保持原引用
@@ -2154,8 +2136,14 @@ function App() {
             });
 
             if (orders.length > 0) {
-                const ok = await api.updateSiteOrder(orders);
-                if (!ok) throw new Error("更新排序失败");
+                const result = await api.updateSiteOrder(orders);
+                if (!result.success) {
+                    throw new Error(
+                        result.failed.length > 0
+                            ? `更新排序失败（${result.failed.length} 个未生效，刷新后重试）`
+                            : "更新排序失败"
+                    );
+                }
             }
 
             // 本地补齐 order_num / group_id，与服务端保持一致，无需再拉一次全量数据
@@ -2509,6 +2497,45 @@ function App() {
         setOpenBackup(false);
     };
 
+    // 最近一次定时任务（每周自动备份 / 死链巡检）的失败留痕，没有就是 null。
+    // 定时任务跑在 Worker 里，失败了页面上毫无动静，只能靠启动时提示一句 +
+    // 备份弹窗里常驻一条 —— 否则「自动备份其实早就不工作了」要等到真要恢复那天才发现。
+    const cronError = useMemo(() => {
+        for (const task of ["backup", "linkSweep"]) {
+            const raw = configs[`${CRON_LAST_ERROR_KEY}.${task}`];
+            if (!raw) continue;
+            try {
+                const parsed = JSON.parse(raw) as {
+                    task?: string;
+                    message?: string;
+                    at?: string;
+                };
+                if (parsed && typeof parsed.message === "string" && parsed.message) {
+                    return { task: parsed.task || task, message: parsed.message, at: parsed.at };
+                }
+            } catch {
+                // 留痕本身坏了就当没留过，别因为一行坏数据把弹窗搞崩
+            }
+        }
+        return null;
+    }, [configs]);
+
+    // 启动后提示一次（同一条不重复弹）：定时任务失败不是用户当下的操作引起的，
+    // 不提示的话他根本不会知道要去看一眼备份设置
+    const cronErrorNotifiedRef = useRef<string>("");
+    useEffect(() => {
+        if (!cronError) return;
+        if (cronErrorNotifiedRef.current === cronError.message) return;
+        cronErrorNotifiedRef.current = cronError.message;
+        notify(
+            `${cronError.task === "backup" ? "每周自动备份" : "死链巡检"}未成功：${
+                cronError.message
+            }`,
+            "error",
+            8000
+        );
+    }, [cronError, notify]);
+
     // 构造完整备份数据（分组 + 站点（含账号密码）+ 网站配置 + 本机星标/标签）
     const buildExportData = (): ExportData => {
         // 全站设置（标题 / 主题 / 背景…）是所有账号共用的，只有站点所有者（或未启用
@@ -2569,7 +2596,9 @@ function App() {
     // 密码直接躺在磁盘 / 网盘同步目录里），不传则维持原来的明文 JSON（兼容老备份）。
     const handleDownloadLocal = async (password?: string) => {
         try {
-            const dataStr = JSON.stringify(buildExportData(), null, 2);
+            // 摘要在「写文件前的最后一刻」才算：这份数据里带着本机星标 / 标签（localPrefs），
+            // 服务端那份 exportData 不知道它，早算一步就会对不上
+            const dataStr = JSON.stringify(await withBackupIntegrity(buildExportData()), null, 2);
             const stamp = new Date().toISOString().slice(0, 10);
 
             let blob: Blob;
@@ -2768,6 +2797,13 @@ function App() {
     // 导入/恢复数据：overwrite=true 覆盖恢复（服务端整体导入），false 合并追加
     const handleImportBackup = async (data: ExportData, overwrite: boolean) => {
         try {
+            // 恢复前先验文件有没有损坏。必须拿**原始**数据验：normalizeImportData 会补默认值、
+            // 重排字段，归一化之后再算摘要必然对不上，好文件也会被拦下来。
+            const integrityCheck = await verifyBackupIntegrity(data);
+            if (!integrityCheck.ok) {
+                throw new Error(integrityCheck.reason || "备份文件校验失败");
+            }
+
             const normalized = normalizeImportData(data);
             // 站点 id 映射：覆盖恢复由服务端重新发号并回传映射，合并导入在下面自己建，
             // 两种模式都要它来把备份里的星标 / 标签翻译到新 id 上
@@ -2784,7 +2820,9 @@ function App() {
             }
 
             if (overwrite) {
-                const result = await api.importData(normalized);
+                // 传原始 data（不是 normalized）：服务端会自己归一化，
+                // 而完整性校验必须在归一化之前做，否则摘要永远对不上。
+                const result = await api.importData(data);
                 if (!result.success) {
                     throw new Error(result.message || "服务端导入失败");
                 }
@@ -4403,6 +4441,7 @@ function App() {
                             setOpenBackup(false);
                             setBookmarkOpen(true);
                         }}
+                        cronError={cronError}
                     />
                     </Suspense>
 

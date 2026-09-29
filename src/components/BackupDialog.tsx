@@ -79,6 +79,13 @@ interface BackupDialogProps {
      * 不传就不显示这一块。
      */
     onOpenBookmark?: () => void;
+    /**
+     * 最近一次定时任务（每周自动备份 / 死链巡检）的失败留痕，没有就传 null。
+     *
+     * 定时任务跑在 Worker 里，失败了页面上毫无动静 —— 「自动备份其实已经连着失败
+     * 好几个月」这种事只能靠这里说一句，否则要等到真要恢复那天才发现。
+     */
+    cronError?: { task: string; message: string; at?: string } | null;
 }
 
 // 人类可读的文件大小
@@ -100,6 +107,13 @@ function formatTime(value: string): string {
     )}:${pad(date.getMinutes())}`;
 }
 
+/** 定时任务失败的时间：解析不出来就原样显示，别因为一行留痕把整个弹窗搞崩 */
+function formatCronErrorTime(iso: string): string {
+    const date = new Date(iso);
+    if (Number.isNaN(date.getTime())) return iso;
+    return date.toLocaleString("zh-CN", { hour12: false });
+}
+
 export default function BackupDialog({
     open,
     initialTab = 0,
@@ -118,6 +132,7 @@ export default function BackupDialog({
     includeCredentials,
     onIncludeCredentialsChange,
     onOpenBookmark,
+    cronError = null,
 }: BackupDialogProps) {
     const theme = useTheme();
 
@@ -1153,6 +1168,21 @@ export default function BackupDialog({
                     flexDirection: "column",
                 }}
             >
+                {/* 定时任务失败的提示：只在真失败过一次时出现，平时不占地方。
+                    任务下一次跑成功会自动撤掉（见 worker/cron.ts 的 clearCronError）。 */}
+                {cronError ? (
+                    <Alert severity='warning' sx={{ mb: 1.5, flexShrink: 0 }}>
+                        <Typography variant='body2' fontWeight={600}>
+                            {cronError.task === "backup" ? "每周自动备份" : "死链巡检"}未成功
+                            {cronError.at
+                                ? `（${formatCronErrorTime(cronError.at)}）`
+                                : ""}
+                        </Typography>
+                        <Typography variant='caption' color='text.secondary'>
+                            {cronError.message}
+                        </Typography>
+                    </Alert>
+                ) : null}
                 {tab === 0 ? renderBackupTab() : renderRestoreTab()}
             </DialogContent>
 

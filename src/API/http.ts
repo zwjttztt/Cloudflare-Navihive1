@@ -1,6 +1,11 @@
 // src/api/http.ts
 // 不使用外部JWT库，改为内置的crypto API
 import { normalizeUrl } from "../utils/url";
+import {
+    computeBackupIntegrity,
+    verifyBackupIntegrity,
+    type BackupIntegrity,
+} from "../utils/backupIntegrity";
 import { STARTER_GROUPS } from "./starterData";
 import {
     signJwt,
@@ -156,6 +161,11 @@ export interface ExportData {
     exportDate: string;
     /** 本机偏好（星标 / 标签），老备份文件里没有这个字段 */
     localPrefs?: LocalPrefsBackup;
+    /**
+     * 内容摘要，导入前用来判断文件有没有损坏（见 utils/backupIntegrity）。
+     * 老备份没有这个字段 —— 导入时一律放行，不会因为少了它就恢复不了。
+     */
+    integrity?: BackupIntegrity;
 }
 
 /** 导入结果：成功与否 + 新旧 id 映射（前端的星标 / 标签记的是旧 id，要翻译一遍） */
@@ -166,6 +176,22 @@ export interface ImportResult {
     groupIdMap: Record<string, number>;
     /** 备份里的站点 id -> 库里新分到的 id */
     siteIdMap: Record<string, number>;
+}
+
+/**
+ * 批量改排序 / 移动卡片的结果。
+ *
+ * 以前只回一个 boolean：D1 没有跨语句事务，一批里第 50 条挂了，前 49 条照样写进去了，
+ * 返回 false 之后前端整体不更新 —— 库里搬走一半、界面还停在原样，得手动刷新才看得到。
+ * 现在把「成了哪几个、没成哪几个」如实回传，前端按实际结果更新并说明。
+ */
+export interface SiteOrderUpdateResult {
+    /** 全部成功 */
+    success: boolean;
+    /** 真正写进去的卡片 id */
+    updated: number[];
+    /** 没写进去的卡片 id（卡片不存在、不是自己的，或目标分组不是自己的） */
+    failed: number[];
 }
 
 /** 站点元信息（/api/meta 抓回来的：新增卡片时一键补全用） */
@@ -386,6 +412,15 @@ const SECRET_CONFIG_KEYS = ["link.health", "pref.starred", "pref.tags"];
  * 默认带上（保持老行为），只有显式写成 "false" 才抹掉。
  */
 export const BACKUP_CREDENTIALS_CONFIG = "backup.includeCredentials";
+
+/**
+ * 定时任务最近一次失败的留痕（值是 JSON：{ task, message, at }）。
+ *
+ * 定时任务跑在 Worker 里，失败时只有一行 console —— 页面上看不到，于是「每周自动备份
+ * 其实已经连着失败三个月」这种事只能靠恢复那天才发现。现在失败写这里、成功清掉，
+ * 前端读它给所有者一条明确提示（普通账号读不到全站配置，正好也不会被吓到）。
+ */
+export const CRON_LAST_ERROR_KEY = "cron.lastError";
 
 /** 去掉每个站点的账号密码，其它字段原样保留 */
 export function stripSiteCredentials(sites: Site[]): Site[] {
@@ -3081,6 +3116,46 @@ export class NavigationAPI {
     }
 
     /**
+     * 内部写全站配置：**跳过**所有者门控，只给 Worker 内部的定时任务用。
+     *
+     * 定时任务没有登录态：它会把自己绑成某个普通账号去读那人的数据，
+     * 此时 canManageSharedConfigs() 是 false，走 setConfig 写 cron.* 会被门控挡掉，
+     * 失败留痕就永远写不进去。这里写的是非敏感的系统状态键（cron.*），
+     * 不加密、不做归属判断 —— HTTP 路由一律走 setConfig，别来调这个。
+     */
+    async setSystemConfig(key: string, value: string): Promise<boolean> {
+        try {
+            const result = await this.db
+                .prepare(
+                    `INSERT INTO configs (key, value, updated_at)
+                     VALUES (?, ?, CURRENT_TIMESTAMP)
+                     ON CONFLICT(key)
+                     DO UPDATE SET value = ?, updated_at = CURRENT_TIMESTAMP`
+                )
+                .bind(key, value, value)
+                .run();
+            return result.success;
+        } catch (error) {
+            console.error("写入系统配置失败:", error);
+            return false;
+        }
+    }
+
+    /** 见 setSystemConfig：内部删全站配置，同样跳过所有者门控 */
+    async deleteSystemConfig(key: string): Promise<boolean> {
+        try {
+            const result = await this.db
+                .prepare("DELETE FROM configs WHERE key = ?")
+                .bind(key)
+                .run();
+            return result.success;
+        } catch (error) {
+            console.error("删除系统配置失败:", error);
+            return false;
+        }
+    }
+
+    /**
      * 批量写入配置：保存网站设置时可能一次改十几项，
      * 逐条写就是十几个网络往返 + 十几次 D1 调用，这里用 batch 一次做完。
      */
@@ -3185,8 +3260,10 @@ export class NavigationAPI {
      */
     async updateSiteOrder(
         siteOrders: { id: number; order_num: number; group_id?: number }[]
-    ): Promise<boolean> {
-        if (siteOrders.length === 0) return true;
+    ): Promise<SiteOrderUpdateResult> {
+        if (siteOrders.length === 0) {
+            return { success: true, updated: [], failed: [] };
+        }
         await this.migrate();
 
         // 跨组移动要先确认「目标分组也是自己的」：
@@ -3224,15 +3301,38 @@ export class NavigationAPI {
         // D1 单次 batch 的语句条数有上限，站点多的时候分批提交，避免整批失败
         const CHUNK_SIZE = 100;
 
+        const updated: number[] = [];
+        const failed: number[] = [];
+
         try {
             for (let i = 0; i < siteOrders.length; i += CHUNK_SIZE) {
                 const chunk = siteOrders.slice(i, i + CHUNK_SIZE);
-                await this.db.batch(chunk.map(buildStatement));
+                // 逐条看命中行数：UPDATE 一行都没匹配上（rows_written 为 0）说明这张卡片
+                // 不存在或不是自己的 —— 表面上 batch 成功，其实那条压根没写进去
+                const results = (await this.db.batch(chunk.map(buildStatement))) as Array<{
+                    success?: boolean;
+                    meta?: { rows_written?: number };
+                }>;
+
+                chunk.forEach((item, index) => {
+                    const row = results[index];
+                    const written = row?.meta?.rows_written;
+                    // 拿不到行数（某些环境 / 假实现）时退一步，只信 success 标志
+                    const ok = written === undefined ? row?.success !== false : written > 0;
+                    if (ok) updated.push(item.id);
+                    else failed.push(item.id);
+                });
             }
-            return true;
+
+            if (failed.length > 0) {
+                console.warn(`批量更新站点排序：${failed.length} 条未生效（id: ${failed.join(",")}）`);
+            }
+            return { success: failed.length === 0, updated, failed };
         } catch (error) {
+            // 整批挂了：本批和后面还没提交的都算失败，已提交的按已生效的算
             console.error("批量更新站点排序失败:", error);
-            return false;
+            const rest = siteOrders.slice(updated.length + failed.length).map(item => item.id);
+            return { success: false, updated, failed: [...failed, ...rest] };
         }
     }
 
@@ -3279,7 +3379,7 @@ export class NavigationAPI {
             ownConfigs = stripSecretConfigs(ownConfigs);
         }
 
-        return {
+        const payload: ExportData = {
             groups,
             // 关掉「备份含登录凭据」时把账号密码抹掉：备份文件是明文 JSON，
             // 又会被 WebDAV 同步到网盘，凭据一旦进去就等于跟着走了
@@ -3290,6 +3390,11 @@ export class NavigationAPI {
             version: EXPORT_VERSION,
             exportDate: new Date().toISOString(),
         };
+
+        // 摘要只对此刻这份内容负责。前端往里补 localPrefs（星标 / 标签）之后会重算一次
+        // （见 utils/backupIntegrity 的 withBackupIntegrity），别把两份混着用。
+        const integrity = await computeBackupIntegrity(payload);
+        return integrity ? { ...payload, integrity } : payload;
     }
 
     private async queryExportBundle(): Promise<{
@@ -3351,6 +3456,20 @@ export class NavigationAPI {
         // 本次新写进去的行 id：失败时靠它们回滚（旧数据一步都没动过，删掉这些就回到原样）
         const createdGroupIds: number[] = [];
         const createdSiteIds: number[] = [];
+
+        // 先验完整性：文件坏了就别开始。放在最前面是因为本函数全程「旧数据不动」，
+        // 一旦开始 INSERT 再失败就得靠回滚擦屁股 —— 能在动手前拦住最省事。
+        // 注意这里校验的是**原始**数据：归一化会补默认值、重排字段，
+        // 归一化之后再算摘要必然对不上，会变成好文件也被拦（见前端导入时传原始 data）。
+        const integrityCheck = await verifyBackupIntegrity(data);
+        if (!integrityCheck.ok) {
+            return {
+                success: false,
+                message: integrityCheck.reason || "备份文件校验失败",
+                groupIdMap,
+                siteIdMap,
+            };
+        }
 
         try {
             await this.migrate();

@@ -41,6 +41,13 @@ import {
     INIT_FREE_ATTEMPTS,
     INIT_BASE_LOCK_MS,
     INIT_MAX_LOCK_MS,
+    readExportGuard,
+    writeExportGuard,
+    exportBucket,
+    EXPORT_FREE_ATTEMPTS,
+    EXPORT_BASE_LOCK_MS,
+    EXPORT_MAX_LOCK_MS,
+    nextExportCount,
 } from "./loginGuard";
 import { fetchSiteMeta } from "./meta";
 import type {
@@ -1146,8 +1153,10 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
                         }
                     }
 
+                    // 结果里带着「成了哪几个、没成哪几个」：D1 没有跨语句事务，
+                    // 一批里挂掉几条是真实存在的，前端要按实际结果更新（见 App 的 bulkMove）
                     const result = await api.updateSiteOrder(data);
-                    return Response.json({ success: result });
+                    return Response.json(result);
                 }
                 // 配置相关API
                 else if (path === "configs" && method === "GET") {
@@ -1328,6 +1337,48 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
 
                 // 数据导出路由
                 else if (path === "export" && method === "GET") {
+                    // 一次导出 = 整站数据 + 解密后的站点密码，是拿到会话后收益最大的接口。
+                    // 先过一道限速（按账号 + 来源 IP 分桶），别让一个令牌把全站反复拖走
+                    const eBucket = exportBucket(request, api.getCurrentUserId(), trustXFF);
+                    const exportGuard = await readExportGuard(api, eBucket);
+                    const nowMs = Date.now();
+
+                    const rejectExport = (ms: number) =>
+                        Response.json(
+                            {
+                                success: false,
+                                message: `导出太频繁，请 ${Math.ceil(ms / 1000)} 秒后再试`,
+                            },
+                            { status: 429 }
+                        );
+
+                    // 还在上一次的锁定期里：直接挡回去
+                    if (exportGuard.until > nowMs) {
+                        return rejectExport(exportGuard.until - nowMs);
+                    }
+
+                    // 成功也计数：每次导出都是一次全量读取 + 逐条解密，成本是真的。
+                    // 但隔开一小时以上就从第 1 次重新数 —— 天天手动备份的人不该被越锁越久
+                    const exportCount = nextExportCount(exportGuard, nowMs);
+                    const lockMs = computeLockAfterFailure(
+                        exportCount,
+                        EXPORT_FREE_ATTEMPTS,
+                        EXPORT_BASE_LOCK_MS,
+                        EXPORT_MAX_LOCK_MS
+                    );
+                    if (lockMs > 0) {
+                        // 这一趟超了额度：只记锁定时刻，不再往上加计数 ——
+                        // 否则「被拦了还一直点」会把等待时间越点越长
+                        await writeExportGuard(
+                            api,
+                            { count: exportGuard.count, until: nowMs + lockMs },
+                            eBucket
+                        );
+                        return rejectExport(lockMs);
+                    }
+
+                    await writeExportGuard(api, { count: exportCount, until: 0 }, eBucket);
+
                     const data = await api.exportData();
                     // 引号包住文件名：RFC 6266 推荐，且文件名带空格/中文时不被截断
                     return Response.json(data, {

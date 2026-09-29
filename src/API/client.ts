@@ -9,6 +9,7 @@ import {
     WebDavConfig,
     WebDavFile,
     WebDavResult,
+    SiteOrderUpdateResult,
     DEFAULT_TOKEN_TTL,
     REMEMBER_TOKEN_TTL,
 } from "./http";
@@ -443,12 +444,23 @@ export class NavigationClient {
     // 批量更新站点排序（可同时修改分组，一次请求完成）
     async updateSiteOrder(
         siteOrders: { id: number; order_num: number; group_id?: number }[]
-    ): Promise<boolean> {
-        const response = await this.request("site-orders", {
+    ): Promise<SiteOrderUpdateResult> {
+        const response = await this.request<Partial<SiteOrderUpdateResult>>("site-orders", {
             method: "PUT",
             body: JSON.stringify(siteOrders),
         });
-        return response.success;
+
+        // 兼容还在跑的老服务端（只回 { success: boolean }）：拿不到明细就当「成功的是全部 /
+        // 失败的为零」，行为和以前一致 —— 前端不会因为它少给两个字段就走不通
+        const allIds = siteOrders.map(item => item.id);
+        const updated = Array.isArray(response?.updated) ? response.updated : allIds;
+        const failed = Array.isArray(response?.failed) ? response.failed : [];
+
+        return {
+            success: failed.length === 0 && response?.success !== false,
+            updated,
+            failed,
+        };
     }
 
     // 数据导出
