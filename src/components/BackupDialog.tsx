@@ -28,6 +28,7 @@ import {
     ListItemButton,
     ListItemText,
     Chip,
+    Tooltip,
     useTheme,
 } from "@mui/material";
 import CloseIcon from "@mui/icons-material/Close";
@@ -888,6 +889,20 @@ export default function BackupDialog({
                     >
                         开始恢复
                     </Button>
+                    {/* 浏览器书签本质上也是「导入」，和上面的本地文件同类。
+                        挤在按钮行右侧而不是单占一段，省下的纵向空间都留给下面的 WebDAV 列表 */}
+                    {onOpenBookmark && (
+                        <Tooltip title='支持 Chrome / Edge / Firefox 导出的 HTML 书签文件，导入前可以先挑要哪些、归到哪个分组'>
+                            <Button
+                                variant='text'
+                                onClick={onOpenBookmark}
+                                startIcon={<BookmarkAddedIcon fontSize='small' />}
+                                sx={{ ml: { sm: "auto" }, color: "text.secondary", flexShrink: 0 }}
+                            >
+                                导入浏览器书签
+                            </Button>
+                        </Tooltip>
+                    )}
                 </Stack>
                 {localFile && (
                     <Typography variant='body2' sx={{ mt: 1 }}>
@@ -929,32 +944,6 @@ export default function BackupDialog({
                 )}
             </Box>
 
-            {/* 导入浏览器书签：从「更多选项」挪过来的，和上面「从本地文件恢复」同属导入一类 */}
-            {onOpenBookmark && (
-                <>
-                    <Divider />
-                    <Box>
-                        <Typography variant='subtitle2' fontWeight='600' gutterBottom>
-                            从浏览器书签导入
-                        </Typography>
-                        <Button
-                            variant='outlined'
-                            onClick={onOpenBookmark}
-                            startIcon={<BookmarkAddedIcon fontSize='small' />}
-                        >
-                            导入浏览器书签
-                        </Button>
-                        <Typography
-                            variant='caption'
-                            color='text.secondary'
-                            sx={{ display: "block", mt: 0.75 }}
-                        >
-                            支持 Chrome / Edge / Firefox 导出的 HTML 书签文件，导入前可以先挑要哪些、归到哪个分组。
-                        </Typography>
-                    </Box>
-                </>
-            )}
-
             <Divider />
 
             <Box sx={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
@@ -977,7 +966,7 @@ export default function BackupDialog({
                 <Box
                     sx={{
                         flex: 1,
-                        minHeight: 140,
+                        minHeight: 220,
                         display: "flex",
                         flexDirection: "column",
                         justifyContent: "center",
