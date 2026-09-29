@@ -161,7 +161,23 @@ const SITES = [
     },
 ];
 
-const server = http.createServer((req, res) => {
+// 新建站点 / 删除还原要发号：真实后端是自增主键，撤销批量删除靠它区分卡片
+let nextSiteId = 100;
+let nextRecycleId = 500;
+const readJson = req =>
+    new Promise(resolve => {
+        let body = "";
+        req.on("data", c => (body += c));
+        req.on("end", () => {
+            try {
+                resolve(JSON.parse(body || "{}"));
+            } catch {
+                resolve({});
+            }
+        });
+    });
+
+const server = http.createServer(async (req, res) => {
     const p = new URL(req.url, `http://127.0.0.1:${PORT}`).pathname;
 
     if (p.startsWith("/api/")) {
@@ -182,6 +198,18 @@ const server = http.createServer((req, res) => {
                     "base64"
                 )
             );
+            return;
+        }
+        // 新建站点必须真的发一个新 id：撤销「批量删除」走的是从回收站还原，
+        // 没有回收站 id 时退回按快照重建，那时靠的就是这个 id 把卡片挂回界面。
+        // 返回空对象的话撤销后卡片不会回来，流程断言会假红。
+        if (p === "/api/sites" && req.method === "POST") {
+            res.end(JSON.stringify({ id: nextSiteId++, group_id: 1, ...(await readJson(req)) }));
+            return;
+        }
+        // 删除是软删除：真实后端会回 recycleId，撤销时按它精确还原
+        if (p.startsWith("/api/sites/") && req.method === "DELETE") {
+            res.end(JSON.stringify({ success: true, recycleId: nextRecycleId++ }));
             return;
         }
         res.end(JSON.stringify({ success: true }));
@@ -577,6 +605,75 @@ for (const vp of VIEWPORTS) {
     check(`${vp.w}px 宽下没有横向溢出`, nav.overflowX <= 2, `溢出 ${nav.overflowX}px`);
 }
 await send("Emulation.clearDeviceMetricsOverride");
+
+// ---------------- 用户流程：批量删除 → 撤销 ----------------
+// 这条是拿真实回归换来的：曾经「点删除 → 确认」之后还会再弹一道看不见的确认，
+// 于是删不掉任何卡片、也没有任何提示，看起来就是按钮失灵。
+// 只断言「元素在不在」拦不住这类问题，必须真的走一遍流程看结果。
+const bulkFlow = await evaluate(`(async () => {
+  const wait = ms => new Promise(r => setTimeout(r, ms));
+  const count = () => document.querySelectorAll('.nav-card-in').length;
+  const btn = document.querySelector('.nav-multiselect-btn');
+  if (!btn) return { error: '没有多选入口' };
+  if (!document.querySelector('.nav-bulk-bar')) btn.click();
+  await wait(600);
+
+  const before = count();
+  const cards = [...document.querySelectorAll('.nav-card-in')].slice(0, 2);
+  cards.forEach(c => c.click());
+  await wait(400);
+
+  const bar = document.querySelector('.nav-bulk-bar');
+  const delBtn = bar ? [...bar.querySelectorAll('button')].find(b => (b.textContent || '').includes('删除')) : null;
+  if (!delBtn) return { error: '底部操作条上没有删除按钮', before };
+  delBtn.click();
+  await wait(700);
+
+  // 确认弹窗里那个「删除」
+  const dialogs = [...document.querySelectorAll('.nav-confirm-dialog')];
+  const confirm = dialogs
+    .flatMap(d => [...d.querySelectorAll('button')])
+    .find(b => (b.textContent || '').trim() === '删除');
+  if (!confirm) return { error: '没有删除确认按钮', before, dialogs: dialogs.length };
+  const dialogCount = dialogs.length;
+  confirm.click();
+  await wait(1200);
+
+  const after = count();
+  // 提示条上应该有「撤销」；用 textContent 而不是 innerText（过渡期间 innerText 会是空串）
+  const snack = document.querySelector('.MuiSnackbar-root');
+  const undo = snack ? [...snack.querySelectorAll('button')].find(b => (b.textContent || '').trim() === '撤销') : null;
+  if (undo) undo.click();
+  await wait(1500);
+  const restored = count();
+  // 收尾：退出多选，别影响后面的断言
+  const exit = document.querySelector('.nav-bulk-bar')
+    ? [...document.querySelector('.nav-bulk-bar').querySelectorAll('button')].find(b => (b.textContent || '').includes('完成'))
+    : null;
+  if (exit) exit.click();
+  await wait(400);
+  return { before, after, restored, hasUndo: !!undo, dialogCount, snackText: snack ? snack.textContent.replace(/\\s+/g, ' ') : '' };
+})()`);
+if (bulkFlow && bulkFlow.error) {
+    check("批量删除流程能走到确认", false, bulkFlow.error);
+} else {
+    check(
+        "批量删除：确认后卡片真的变少（不会被第二道确认卡住）",
+        bulkFlow.after < bulkFlow.before,
+        `${bulkFlow.before} → ${bulkFlow.after}`
+    );
+    check("批量删除后提示条上有「撤销」", bulkFlow.hasUndo === true, bulkFlow.snackText.slice(0, 40));
+    check(
+        "点「撤销」后卡片恢复",
+        bulkFlow.restored >= bulkFlow.before,
+        `${bulkFlow.after} → ${bulkFlow.restored}`
+    );
+    check(
+        "批量删除只有一道确认（不会叠两层弹窗）",
+        bulkFlow.dialogCount === 1,
+        `同时存在 ${bulkFlow.dialogCount} 个确认弹窗`
+    );
+}
 
 console.log(`\n${fails === 0 ? "全部通过" : fails + " 条失败"}`);
 cleanup();
