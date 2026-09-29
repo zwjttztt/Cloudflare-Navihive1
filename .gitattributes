@@ -1,0 +1,4 @@
+# 容器里跑的 shell 脚本必须用 LF 结尾。
+# Windows 上 core.autocrlf=true 会把文本文件检出成 CRLF，一旦这样送进镜像，
+# bash 会把行尾的 CR 当成命令的一部分，启动时报 "\r: command not found"。
+*.sh text eol=lf

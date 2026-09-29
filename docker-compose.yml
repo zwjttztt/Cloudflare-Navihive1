@@ -1,0 +1,44 @@
+# NaviHive —— Docker 自托管（本地模式）
+#
+# 用法：
+#   docker compose up -d --build
+#   docker compose logs -f        # 首次启动会打印随机初始密码
+# 然后打开 http://<宿主机>:8787
+#
+# 说明：容器里跑的是 Wrangler 本地模式（Miniflare/workerd），
+#       D1 由本地 SQLite 模拟，数据全在 navihive-data 卷里 —— 删卷即删库。
+services:
+  navihive:
+    build: .
+    image: navihive:latest
+    container_name: navihive
+    restart: unless-stopped
+    # 用 tini 当 1 号进程，docker stop 时信号能正确传给 wrangler
+    init: true
+    ports:
+      # 宿主机端口:容器端口（改左边即可，比如 "8080:8787"）
+      - "8787:8787"
+    environment:
+      # 是否启用登录鉴权。关掉（false）则任何人都能改数据，仅限内网可信环境
+      AUTH_ENABLED: "true"
+      # 初始管理员用户名
+      AUTH_USERNAME: "admin"
+      # 初始管理员密码。**留空则随机生成并在首次启动日志里打印**（推荐，避免弱口令入库）
+      # 只在本卷首次初始化时生效；之后以数据库为准，改密码走站内「更多选项 → 账号管理」
+      AUTH_PASSWORD: ""
+      # 加解密站点密码 / WebDAV 口令的密钥。**强烈建议固定一个值并备份**：
+      # 一旦丢失或变动，库里已加密的凭据就解不开了。
+      # 留空则自动生成一份存进持久卷（/data/auth-secret），备份该卷即可
+      AUTH_SECRET: ""
+      # 恢复密钥的公钥（SPKI base64url）。留空则不开「恢复私钥找回密码」入口
+      AUTH_RECOVERY_PUBLIC_KEY: ""
+      # 容器跑在 Nginx / Caddy 等反代后面时，若希望按真实客户端 IP 做登录限速分桶，
+      # 设为 "1"（前提是反代会老实覆盖 X-Forwarded-For）。
+      # 直连或不确定时保持 "0"，此时所有来源共用一个桶 —— 限速粒度变粗，但不会失守
+      NAVIHIVE_TRUST_XFF: "0"
+    volumes:
+      # D1/缓存等本地状态 + 自动生成的 AUTH_SECRET。删掉这个卷 = 数据全没
+      - navihive-data:/data
+
+volumes:
+  navihive-data:

@@ -1,0 +1,30 @@
+# 让构建上下文尽量小：依赖与产物都在容器里重新生成
+node_modules
+dist
+.wrangler
+
+# 版本控制与编辑器
+.git
+.github
+.vscode
+.idea
+
+# 本地环境 / 凭据（绝不能进镜像层）
+.dev.vars
+.dev.vars.*
+.env
+.env.*
+*.local
+
+# 日志与临时产物
+*.log
+npm-debug.log*
+coverage
+script/tmp-tests
+.tmp-check
+
+# 文档与测试（构建用不到，改了它们不该让缓存失效）
+docs
+tests
+*.md
+!README.md
