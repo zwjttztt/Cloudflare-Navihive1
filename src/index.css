@@ -417,17 +417,36 @@ mark.nav-hl {
 }
 
 @media (prefers-reduced-motion: reduce) {
+    /* 尊重「减少动态效果」：前庭敏感用户。把装饰性动画与过渡压到近乎瞬时，
+       但保留功能性状态（焦点环、对话框出现）——只是不再有位移/缩放动效。
+       逐个类关不如全局关稳妥：将来新加的动画类不会漏网。 */
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.001ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.001ms !important;
+        scroll-behavior: auto !important;
+    }
     .nav-card-in,
     .nav-fade-up,
     .nav-aurora,
     .nav-group-panel.nav-reveal-in,
     .nav-bulk-bar,
     .nav-select-mark[data-selected="true"],
-    .nav-star-btn[data-starred="true"] .MuiSvgIcon-root {
+    .nav-star-btn[data-starred="true"] .MuiSvgIcon-root,
+    .nav-card-icon,
+    .nav-card-actions,
+    .nav-settings-btn,
+    .nav-scroll-progress > span {
         animation: none !important;
+        transition: none !important;
     }
     .MuiButtonBase-root:not(.MuiCardActionArea-root):active:not(:disabled) {
         transform: none;
+    }
+    .nav-skip-link {
+        transition: none;
     }
 }
 
