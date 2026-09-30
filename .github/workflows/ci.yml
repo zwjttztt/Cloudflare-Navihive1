@@ -25,6 +25,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 密钥扫描：谁把 AUTH_SECRET / AUTH_PASSWORD / WebDAV 口令写进文件，这一步就拦下来。
+      #
+      # 三个刻意的取舍：
+      #   1. 只扫**工作区文件**（--no-git）。本仓库历史里曾有明文密钥，扫历史会得到一条
+      #      永远修不好的红灯 —— 而历史里的东西也救不回来，正解是轮换密钥。
+      #      这一步的职责是「拦住新的泄漏」，不是复述已经发生过的事。
+      #   2. 排在 npm ci **之前**：那时候没有 node_modules、没有 dist，
+      #      扫描范围天然等于「提交进来的文件」，不用再写一堆路径排除。
+      #   3. 用固定版本镜像而不是 latest：gitleaks 每次更新规则集都可能带来新命中，
+      #      升级应该是看得见的变更（改这个 tag），不是某天 CI 突然变红。
+      # 白名单在仓库根目录 .gitleaks.toml（lock 文件的 integrity 摘要、测试假数据…）。
+      - name: 密钥扫描（gitleaks）
+        run: |
+          docker run --rm -v "$PWD:/repo" -w /repo \
+            zricethezav/gitleaks:v8.30.1 detect \
+            --source /repo --config /repo/.gitleaks.toml \
+            --no-git --redact -v
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22

@@ -581,6 +581,176 @@ if (!groupBtn) {
     await sleep(600);
 }
 
+// 5c) 方向键在卡片网格里移动焦点（utils/cardFocus.ts）
+//
+// 这段逻辑原先写在 App.tsx 里，抽出来之后补上这条：浏览器里 `document.activeElement`
+// 到底动没动，是纯函数单测碰不到的部分（那边只能拿假矩形验证）。
+// 「同一行」是看垂直中心差 <16px 判的，「同一列」看水平中心差 <24px —— 所以期望值
+// 得按同一套规则在 Node 侧先算一遍，不能写死「一定往右移一张」，否则换个布局就假红。
+const cardRects = await evaluate(`(() => [...document.querySelectorAll('[data-nav-card="true"]')]
+  .map(c => { const r = c.getBoundingClientRect(); return { left: r.left, right: r.right, top: r.top, bottom: r.bottom }; }))()`);
+
+const focusedIndex = () =>
+    evaluate(`(() => {
+      const cards = [...document.querySelectorAll('[data-nav-card="true"]')];
+      return document.activeElement ? cards.indexOf(document.activeElement) : -1;
+    })()`);
+
+/** 与 utils/cardFocus.ts 同款：找同一方向上最近的那一张，没有则返回 -1 */
+function expectTarget(rects, from, dir) {
+    if (rects.length === 0 || from < 0) return -1;
+    const cur = rects[from];
+    const cx = (cur.left + cur.right) / 2;
+    const cy = (cur.top + cur.bottom) / 2;
+    const horizontal = dir === "left" || dir === "right";
+    const tolerance = horizontal ? 16 : 24;
+    let best = -1;
+    let bestKey = null;
+    rects.forEach((r, i) => {
+        if (i === from) return;
+        const near = horizontal ? (r.top + r.bottom) / 2 : (r.left + r.right) / 2;
+        const base = horizontal ? cy : cx;
+        if (Math.abs(near - base) >= tolerance) return;
+        const forward = dir === "right" || dir === "down";
+        const key = horizontal
+            ? (forward ? r.left : -r.right)
+            : (forward ? r.top : -r.bottom);
+        const ahead = horizontal
+            ? (forward ? r.left > cx : r.right < cx)
+            : (forward ? r.top > cy : r.bottom < cy);
+        if (!ahead) return;
+        if (bestKey === null || key < bestKey) {
+            bestKey = key;
+            best = i;
+        }
+    });
+    // 没有候选时逻辑要求在原地不动（焦点仍在第 from 张）
+    return best === -1 ? from : best;
+}
+
+async function pressArrow(key, code, vk) {
+    for (const type of ["rawKeyDown", "keyUp"]) {
+        await send("Input.dispatchKeyEvent", {
+            type,
+            key,
+            code,
+            windowsVirtualKeyCode: vk,
+            nativeVirtualKeyCode: vk,
+        });
+    }
+    await sleep(150);
+}
+
+if (cardRects.length >= 2) {
+    await evaluate(`document.querySelectorAll('[data-nav-card="true"]')[0].focus()`);
+    await sleep(120);
+    const startIndex = await focusedIndex();
+    await pressArrow("ArrowRight", "ArrowRight", 39);
+    const afterRight = await focusedIndex();
+    check(
+        "ArrowRight：焦点移到同一行的下一张卡片（没有则原地不动）",
+        afterRight === expectTarget(cardRects, startIndex, "right"),
+        `${startIndex} → ${afterRight}（期望 ${expectTarget(cardRects, startIndex, "right")}）`
+    );
+
+    await evaluate(`document.querySelectorAll('[data-nav-card="true"]')[0].focus()`);
+    await sleep(120);
+    await pressArrow("ArrowDown", "ArrowDown", 40);
+    const afterDown = await focusedIndex();
+    check(
+        "ArrowDown：焦点移到同一列的下一张卡片（没有则原地不动）",
+        afterDown === expectTarget(cardRects, startIndex, "down"),
+        `${startIndex} → ${afterDown}（期望 ${expectTarget(cardRects, startIndex, "down")}）`
+    );
+} else {
+    check("页面上有足够的卡片可以试方向键", false, `只有 ${cardRects.length} 张`);
+}
+
+// 5d) 卡片上的站点凭据不能让浏览器当成密码字段
+//
+// 这条守的东西超出一般人的直觉：导航站自己的登录密码和「某个网站的账号密码」在
+// 账号密码」在浏览器眼里长得一模一样，只要页面同时出现「文本框 + type=password」，
+// 它就会弹「要不要保存密码」、还会拿导航站自己的账号去自动填充卡片。
+// 有效抑制只有一条（utils/secretInput.ts 里写了为什么 autocomplete=off 没用）：
+// type="text" + CSS `-webkit-text-security: disc` 做视觉遮蔽。一旦有人改回
+// type="password"，用户看到的功能一切正常、只是密码管理器开始乱填 —— 本地冒烟也
+// 未必会发现，所以在 CI 里钉住。
+const secretField = await evaluate(`(async () => {
+  const wait = ms => new Promise(r => setTimeout(r, ms));
+  const card = document.querySelector('.nav-card-in');
+  const btn = card && card.querySelector('.nav-settings-btn');
+  if (!btn) return { error: '卡片上没有设置按钮' };
+  btn.click();
+  await wait(1000);
+  const pwd = document.querySelector('#password');
+  if (!pwd) return { error: '站点设置里没有密码框' };
+  const cs = getComputedStyle(pwd);
+  return {
+    type: pwd.type,
+    mask: cs.webkitTextSecurity || cs.WebkitTextSecurity || '',
+    name: pwd.getAttribute('name'),
+    autocomplete: pwd.getAttribute('autocomplete'),
+  };
+})()`);
+if (secretField && secretField.error) {
+    check("打开得出站点设置里的密码框", false, secretField.error);
+} else {
+    check(
+        "站点凭据的密码框用 type=text + CSS 遮蔽（不被浏览器识别为密码）",
+        secretField.type === "text" && secretField.mask === "disc",
+        JSON.stringify(secretField)
+    );
+    check(
+        "密码框的 name 不是 password（否则还是会被引擎当成登录字段）",
+        secretField.name === "site-secret",
+        String(secretField.name)
+    );
+}
+// MUI 的 Dialog 合成 KeyboardEvent，直接 el.dispatchEvent 关不掉 —— 走 CDP 发真键
+await pressArrow("Escape", "Escape", 27);
+await sleep(600);
+
+// 5e) 搜索：真的敲字进去，看结果面板有没有给命中项
+//
+// 「元素在不在」这类断言有个共同的盲区：受控组件的 onChange 断掉（比如改了 input 的
+// name 却忘了同步 utils/secretInput.ts 的 formDataKey 映射）时，页面照常渲染、
+// 输入框看起来也在，就是**敲键盘没反应**。所以这里用 CDP 真的往里插文本。
+// 注意必须走 Input.insertText：直接给 el.value 赋值不会触发 React 的 onChange。
+const searched = await (async () => {
+    await evaluate(`document.querySelector('input[aria-label="搜索网站"]')?.focus()`);
+    await sleep(200);
+    await send("Input.insertText", { text: "示例一" });
+    await sleep(900);
+    return evaluate(`(() => {
+      const input = document.querySelector('input[aria-label="搜索网站"]');
+      const items = [...document.querySelectorAll('.MuiListItemButton-root')];
+      return {
+        value: input ? input.value : null,
+        count: items.length,
+        texts: items.map(i => (i.innerText || '').replace(/\\s+/g, ' ')).slice(0, 5),
+      };
+    })()`);
+})();
+check("搜索框能真的吃到键盘输入（受控组件没断）", searched.value === "示例一", JSON.stringify(searched.value));
+check(
+    "输入关键字后结果面板给出命中项",
+    searched.count >= 1 && searched.texts.some(t => t.includes("示例一")),
+    JSON.stringify(searched.texts)
+);
+
+// 收尾：把关键字删干净。不清的话后面的批量删除流程是在「过滤后的列表」上跑的，
+// 卡片数量对不上会出假红 —— 这类串扰很难在 CI 日志里一眼看出来。
+await evaluate(`document.querySelector('input[aria-label="搜索网站"]')?.focus()`);
+for (let i = 0; i < searched.value.length; i++) {
+    await pressArrow("Backspace", "Backspace", 8);
+}
+await sleep(500);
+const clearedCards = await evaluate(`(() => ({
+  value: document.querySelector('input[aria-label="搜索网站"]')?.value ?? null,
+  cards: document.querySelectorAll('.nav-card-in').length,
+}))()`);
+check("清空搜索后页面恢复全部卡片", clearedCards.value === "" && clearedCards.cards >= 3, JSON.stringify(clearedCards));
+
 // 6) 控制台不能有 error（CSP 拦资源、图标 404 都会在这里现形）
 const realErrors = consoleErrors.filter(
     e => !e.includes("favicon") && !e.includes("Failed to load resource: net::ERR")
