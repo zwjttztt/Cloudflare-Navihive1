@@ -1,0 +1,167 @@
+// tests/siteCard.dom.test.tsx
+// 卡片渲染层：SiteCard 是站内最常渲染的组件（1168 行），之前**一个用例都没有** ——
+// 只有 CI 冒烟那十几条断言在守着。这里把几条用户能直接感知的行为钉住：
+// 链接与名称、失效徽章、星标按钮、多选模式下「点卡片是勾选不是打开」、搜索高亮。
+//
+// 用真实的 UIPrefsProvider + localStorage 驱动，而不是自己造一个 context 假值：
+// 星标 / 失效记录本来就是存在浏览器本地的，走真实路径才能顺带测到读写。
+
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import SiteCard from "../src/components/SiteCard";
+import { UIPrefsProvider } from "../src/context/UIPrefsContext";
+import type { Site } from "../src/API/http";
+
+// DOM 用例的启动脚本补了 window / document，但没挂 localStorage ——
+// 组件里是直接写 `localStorage.getItem` 的（UIPrefs 的星标、访问记录都在这儿），
+// 不挂的话一渲染就 ReferenceError。jsdom 自己实现了它，指过去即可。
+if (typeof globalThis.localStorage === "undefined") {
+    Object.defineProperty(globalThis, "localStorage", {
+        value: window.localStorage,
+        configurable: true,
+        writable: true,
+    });
+}
+
+let root: Root | null = null;
+let host: HTMLDivElement | null = null;
+
+function makeSite(over: Partial<Site> = {}): Site {
+    return {
+        id: 101,
+        group_id: 1,
+        name: "示例站点",
+        url: "https://example.com/",
+        icon: "",
+        description: "",
+        notes: "",
+        order_num: 0,
+        ...over,
+    };
+}
+
+function mount(node: React.ReactElement) {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+    act(() => {
+        root!.render(<UIPrefsProvider>{node}</UIPrefsProvider>);
+    });
+}
+
+function cleanup() {
+    if (root) act(() => root!.unmount());
+    host?.remove();
+    root = null;
+    host = null;
+    document.body.innerHTML = "";
+}
+
+/** 渲染一张卡片，可选地在渲染前往 localStorage 里塞本机偏好 */
+function renderCard(
+    opts: {
+        site?: Site;
+        selectMode?: boolean;
+        selected?: boolean;
+        highlight?: string;
+        isEditMode?: boolean;
+        onToggleSelect?: (id: number) => void;
+        prefs?: Record<string, string>;
+    } = {}
+) {
+    localStorage.clear();
+    for (const [k, v] of Object.entries(opts.prefs ?? {})) localStorage.setItem(k, v);
+    const site = opts.site ?? makeSite();
+    mount(
+        <SiteCard
+            site={site}
+            onUpdate={() => {}}
+            onDelete={() => {}}
+            selectMode={opts.selectMode}
+            selected={opts.selected}
+            highlight={opts.highlight}
+            isEditMode={opts.isEditMode}
+            onToggleSelect={opts.onToggleSelect}
+        />
+    );
+    return site;
+}
+
+const q = (sel: string) => document.querySelector(sel);
+const byLabel = (label: string) =>
+    document.querySelector<HTMLElement>(`[aria-label="${label}"]`);
+
+test.afterEach(cleanup);
+
+test("卡片渲染出站点名与可点开的链接", () => {
+    renderCard();
+    const link = q('a[href^="https://example.com"]');
+    assert.ok(link, "没有渲染出指向站点地址的链接");
+    assert.match(document.body.textContent ?? "", /示例站点/);
+    // 卡片本体必须是 data-nav-card（方向键导航靠它找卡片）
+    assert.ok(q('[data-nav-card="true"]'), "缺少 data-nav-card 标记");
+});
+
+test("失效链接会挂出提示徽章，健康的链接不挂", () => {
+    // 失效记录是「链接 -> 时间戳」，而且之后探测成功的会翻案，所以只塞 deadLinks 就够
+    const dead = JSON.stringify({ "https://example.com/": Date.now() });
+    renderCard({ prefs: { "navihive:deadLinks": dead } });
+    assert.ok(byLabel("链接可能已失效"), "失效链接没有出现徽章");
+
+    cleanup();
+    renderCard({ prefs: { "navihive:deadLinks": JSON.stringify({ "https://other.com/": 1 }) } });
+    assert.equal(byLabel("链接可能已失效"), null, "健康链接不该有失效徽章");
+});
+
+test("星标按钮的状态跟着本机星标走", () => {
+    renderCard({ prefs: { "navihive:starred": JSON.stringify([101]) } });
+    assert.ok(byLabel("取消星标"), "已星标的卡片按钮应该显示「取消星标」");
+
+    cleanup();
+    renderCard({ prefs: { "navihive:starred": JSON.stringify([]) } });
+    assert.ok(byLabel("加星标"), "未星标的卡片按钮应该显示「加星标」");
+});
+
+test("多选模式下点卡片是勾选，不会记一次访问", () => {
+    const picked: number[] = [];
+    renderCard({
+        selectMode: true,
+        onToggleSelect: id => picked.push(id),
+    });
+    const card = q('[data-nav-card="true"]') as HTMLElement;
+    act(() => {
+        card.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }));
+    });
+    assert.deepEqual(picked, [101], "多选模式下点卡片应该切换勾选");
+    // 记访问的副作用在多选模式下必须被跳过（否则「顺手勾选」会污染最近访问）
+    assert.equal(localStorage.getItem("navihive:visits"), null, "多选模式下不该记访问");
+});
+
+test("普通模式点卡片会记一次访问（最近访问分组的数据来源）", () => {
+    renderCard();
+    // 记访问的 onClick 挂在真正的 <a> 上，不在卡片外壳上（外壳那个是多选拦截用的）
+    const link = q('a[href^="https://example.com"]') as HTMLElement;
+    act(() => {
+        link.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }));
+    });
+    const visits = JSON.parse(localStorage.getItem("navihive:visits") || "{}");
+    assert.ok(visits["101"], "点击后应该写下访问记录");
+});
+
+test("搜索命中会高亮，没命中就不加 <mark>", () => {
+    renderCard({ highlight: "示例" });
+    const mark = q("mark.nav-hl");
+    assert.ok(mark, "命中的关键词没有高亮");
+    assert.equal(mark?.textContent, "示例");
+
+    cleanup();
+    renderCard({ highlight: "绝不匹配" });
+    assert.equal(q("mark.nav-hl"), null, "没命中时不该加高亮标记");
+});
+
+test("编辑模式下不参与方向键导航（拖拽排序时不该被焦点系统抓到）", () => {
+    renderCard({ isEditMode: true });
+    assert.equal(q('[data-nav-card="true"]'), null, "编辑模式的卡片不该带 data-nav-card");
+});

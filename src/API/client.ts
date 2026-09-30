@@ -302,8 +302,8 @@ export class NavigationClient {
             await this.getConfigs();
             return true;
         } catch (error) {
-            console.log("认证检查:", error);
-            
+            // 不往外打日志：离线 / 网络抖动时这里每次启动都会走一遍，
+            // 控制台噪声会把真正的问题淹掉。是否失效只看下面的错误类型判定。
             // 特定处理401错误
             if (error instanceof Error) {
                 if (error.message.includes("认证") || error.message.includes("API错误: 401")) {
