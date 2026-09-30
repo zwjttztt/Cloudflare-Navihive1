@@ -80,6 +80,25 @@ export async function handleBackupRoutes(ctx: RouteCtx): Promise<Response | null
         await writeExportGuard(api, { count: exportCount, until: 0 }, eBucket);
 
         const data = await api.exportData();
+
+        // 导出审计：整站数据 + 解密后的站点密码一次带走，值得留痕（与限速互补——
+        // 限速挡频率，审计留证据）。失败不影响导出本身。
+        try {
+            const uid = api.getCurrentUserId();
+            const ip =
+                request.headers.get("CF-Connecting-IP") ||
+                request.headers.get("X-Forwarded-For") ||
+                "";
+            await api.writeAudit(
+                "data-export",
+                uid === null ? "anonymous" : String(uid),
+                ip,
+                JSON.stringify({ count: exportCount })
+            );
+        } catch {
+            // 审计写入失败不影响导出结果
+        }
+
         // 引号包住文件名：RFC 6266 推荐，且文件名带空格/中文时不被截断
         return Response.json(data, {
             headers: {

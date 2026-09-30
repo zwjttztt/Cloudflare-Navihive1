@@ -71,39 +71,42 @@ export async function enforceAuth(ctx: RouteCtx, session: TokenSession): Promise
     // 所以只要 users 表里已经有账号，缺 uid 的令牌一律拒绝，让它重新登录换一张。
     // （签发侧也已在 login 里堵住：users 表非空时不再走 configs 老凭据回落。）
     const uid = verifyResult.payload?.uid;
-    if (typeof uid !== "number" && (await api.hasAnyUser())) {
+    if (typeof uid === "number") {
+        api.setCurrentUser(uid);
+        // 令牌是自包含：账号中途被停用 / 被清除不会跟着失效（「记住我」能活 30 天）。
+        // 验签后还要再问一句账号还在不在 —— 否则停用形同虚设，被清除的账号还能继续
+        // 写库、留下挂在不存在 user_id 上的孤儿数据。退出登录要留着：被挡住的人至少
+        // 能把自己登出去。这是本请求唯一一次账号态查询（另一次 hasAnyUser 查询只在
+        // 缺 uid 的遗留令牌上才跑，已登录请求不再重复查）。
+        if (path !== "logout") {
+            const state = await api.getAccountSessionState(uid);
+            if (state === "missing") {
+                // 用 401：客户端见到 401 会清掉登录标记并退回登录页
+                return Response.json(
+                    { success: false, message: "账号已不存在，请重新登录" },
+                    { status: 401 }
+                );
+            }
+            if (state === "disabled") {
+                return Response.json(
+                    {
+                        success: false,
+                        message:
+                            "账号因长期未登录已被停用；可用恢复密钥找回，或联系站点所有者",
+                    },
+                    { status: 403 }
+                );
+            }
+        }
+    } else if (await api.hasAnyUser()) {
         return new Response("登录状态已过期，请重新登录", {
             status: 401,
             headers: securityHeaders({
                 "Content-Type": "text/plain; charset=utf-8",
             }),
         });
-    }
-    api.setCurrentUser(typeof uid === "number" ? uid : null);
-
-    // 令牌是自包含的：账号中途被停用 / 被清除，它不会跟着失效
-    // （「记住我」那张能活 30 天）。所以验签之后还要再问一句账号还在不在 ——
-    // 否则停用形同虚设，被清除的账号还能继续写库、留下挂在不存在 user_id
-    // 上的孤儿数据。退出登录要留着：被挡住的人至少能把自己登出去。
-    if (typeof uid === "number" && path !== "logout") {
-        const state = await api.getAccountSessionState(uid);
-        if (state === "missing") {
-            // 用 401：客户端见到 401 会清掉登录标记并退回登录页
-            return Response.json(
-                { success: false, message: "账号已不存在，请重新登录" },
-                { status: 401 }
-            );
-        }
-        if (state === "disabled") {
-            return Response.json(
-                {
-                    success: false,
-                    message:
-                        "账号因长期未登录已被停用；可用恢复密钥找回，或联系站点所有者",
-                },
-                { status: 403 }
-            );
-        }
+    } else {
+        api.setCurrentUser(null);
     }
 
     // 活跃时间：令牌一验过就算在用 —— 「记住我」的人每次回来只是静默恢复，

@@ -40,21 +40,23 @@ export const configImpl: ConfigApi = {
         const uid = this.currentUserId;
         const result = await this.db.prepare("SELECT key, value FROM configs").all<Config>();
 
-        // 将结果转换为键值对对象（管理员凭据永远不返回）
+        // 先过滤出需要返回的键，再并行解密（decryptSecretDeep 是异步 CPU 密集操作，
+        // 串行等每个会随配置项数线性变慢；Promise.all 一次性发出）。
+        const rows = (result.results || []).filter(
+            (config) =>
+                !isAuthConfigKey(config.key) &&
+                !(uid !== null && isPrivateUserConfigKey(config.key))
+        );
+        const decoded = await Promise.all(
+            rows.map(async (config) => {
+                const value = isEncryptedConfigKey(config.key)
+                    ? await decryptSecretDeep(config.value, this.secret)
+                    : config.value;
+                return [config.key, value] as [string, string];
+            })
+        );
         const configs: Record<string, string> = {};
-        for (const config of result.results || []) {
-            if (isAuthConfigKey(config.key)) continue;
-            // 已登录时，严格私有的那批（WebDAV）只认自己那份：
-            // 全站 configs 里若还有同键（迁移残留），一律不采纳，否则会串号。
-            // 外观键不在这里剔除 —— 它是「自己没配就回落全站」的，
-            // 全站那份正是站点所有者定的基调（也是新账号的初始外观）。
-            if (uid !== null && isPrivateUserConfigKey(config.key)) continue;
-            // webdav.password / webdav.backupPassword 落库是密文，读出来解密还原给
-            // 调用方（含首屏 bootstrap）
-            configs[config.key] = isEncryptedConfigKey(config.key)
-                ? await decryptSecretDeep(config.value, this.secret)
-                : config.value;
-        }
+        for (const [key, value] of decoded) configs[key] = value;
 
         // 覆盖上当前账号自己的那份
         if (uid !== null) {
@@ -73,12 +75,18 @@ export const configImpl: ConfigApi = {
                 .prepare("SELECT key, value FROM user_configs WHERE user_id = ?")
                 .bind(userId)
                 .all<{ key: string; value: string }>();
+            const rows = result.results || [];
+            // 并行解密：口令类配置随账号数增多时，串行等待会明显变慢
+            const decoded = await Promise.all(
+                rows.map(async (row) => {
+                    const value = isEncryptedConfigKey(row.key)
+                        ? await decryptSecretDeep(row.value, this.secret)
+                        : row.value;
+                    return [row.key, value] as [string, string];
+                })
+            );
             const configs: Record<string, string> = {};
-            for (const row of result.results || []) {
-                configs[row.key] = isEncryptedConfigKey(row.key)
-                    ? await decryptSecretDeep(row.value, this.secret)
-                    : row.value;
-            }
+            for (const [key, value] of decoded) configs[key] = value;
             return configs;
         } catch {
             return {};

@@ -15,7 +15,7 @@
 
 import type { Env } from "./types";
 import { NavigationAPI } from "../src/API/navigationApi";
-import { isBlockedHost, safeJson } from "./util";
+import { isBlockedHost } from "./util";
 
 // ============ 限速 ============
 // 这是个**公开**路由：谁都能 POST，而且每次都会往 audit_log 写一行。
@@ -124,12 +124,6 @@ export interface ErrorReport {
 }
 
 export async function reportError(request: Request, env: Env): Promise<Response> {
-    // 体积硬上限（Content-Length 头不一定可信，自己再量一次）
-    const contentLength = Number(request.headers.get("content-length") || "0");
-    if (contentLength > MAX_PER_REQUEST_BODY_BYTES) {
-        return new Response("payload too large", { status: 413 });
-    }
-
     // 超窗直接丢弃（静默成功）：刷接口的人不该再从响应里学到任何东西
     if (!withinRateLimit(Date.now())) {
         return Response.json(
@@ -138,7 +132,26 @@ export async function reportError(request: Request, env: Env): Promise<Response>
         );
     }
 
-    const raw = await safeJson(request);
+    // 体积硬上限：Content-Length 头能被伪造，真正把 body 读一遍、按字节数二次校验，
+    // 超限直接拒（避免有人用小 Content-Length + 超大 body 撑爆日志 / 内存）。
+    let rawText: string;
+    try {
+        const buf = await request.arrayBuffer();
+        if (buf.byteLength > MAX_PER_REQUEST_BODY_BYTES) {
+            return new Response("payload too large", { status: 413 });
+        }
+        rawText = new TextDecoder().decode(buf);
+    } catch {
+        return new Response("bad request", { status: 400 });
+    }
+
+    let raw: Record<string, unknown>;
+    try {
+        raw = rawText ? (JSON.parse(rawText) as Record<string, unknown>) : {};
+    } catch {
+        raw = {};
+    }
+
     const sanitized = sanitize(raw) as Partial<ErrorReport> | null;
 
     // 把它写进 Workers 日志（observability 自动收集 console.*）

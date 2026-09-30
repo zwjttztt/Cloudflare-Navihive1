@@ -114,6 +114,22 @@ async function writeStore(api: NavigationAPI, key: string, buckets: GuardStore):
     }
 }
 
+/**
+ * 读-改-写单个限速桶（增量合并）。
+ * 只动目标桶，其余桶原样保留 —— 不再整 blob 重写时把其它来源 IP 的计数误伤掉。
+ * 读到的快照总是最新，调用方基于旧值算出新值后写回，降低并发覆盖的概率。
+ */
+async function mutateGuard(
+    api: NavigationAPI,
+    key: string,
+    bucket: string,
+    mutate: (prev: GuardState) => GuardState
+): Promise<void> {
+    const store = await readStore(api, key);
+    store[bucket] = mutate(store[bucket] ?? { count: 0, until: 0, seen: Date.now() });
+    await writeStore(api, key, store);
+}
+
 /** 读某个来源当前的限速状态 */
 export async function readLoginGuard(
     api: NavigationAPI,
@@ -133,9 +149,7 @@ export async function writeLoginGuard(
     guard: LoginGuard,
     bucket = "legacy"
 ): Promise<void> {
-    const store = await readStore(api, LOGIN_GUARD_KEY);
-    store[bucket] = { ...guard, seen: Date.now() };
-    await writeStore(api, LOGIN_GUARD_KEY, store);
+    await mutateGuard(api, LOGIN_GUARD_KEY, bucket, () => ({ ...guard, seen: Date.now() }));
 }
 
 // ============ 初始化接口限速 ============
@@ -164,9 +178,7 @@ export async function writeInitGuard(
     guard: LoginGuard,
     bucket = "legacy"
 ): Promise<void> {
-    const store = await readStore(api, INIT_GUARD_KEY);
-    store[bucket] = { ...guard, seen: Date.now() };
-    await writeStore(api, INIT_GUARD_KEY, store);
+    await mutateGuard(api, INIT_GUARD_KEY, bucket, () => ({ ...guard, seen: Date.now() }));
 }
 
 // ============ 注册接口限速 ============
@@ -201,9 +213,7 @@ export async function writeRegisterGuard(
     guard: LoginGuard,
     bucket = "legacy"
 ): Promise<void> {
-    const store = await readStore(api, REGISTER_GUARD_KEY);
-    store[bucket] = { ...guard, seen: Date.now() };
-    await writeStore(api, REGISTER_GUARD_KEY, store);
+    await mutateGuard(api, REGISTER_GUARD_KEY, bucket, () => ({ ...guard, seen: Date.now() }));
 }
 
 // ============ 恢复令牌接口限速 ============
@@ -233,9 +243,7 @@ export async function writeRecoverGuard(
     guard: LoginGuard,
     bucket = "legacy"
 ): Promise<void> {
-    const store = await readStore(api, RECOVER_GUARD_KEY);
-    store[bucket] = { ...guard, seen: Date.now() };
-    await writeStore(api, RECOVER_GUARD_KEY, store);
+    await mutateGuard(api, RECOVER_GUARD_KEY, bucket, () => ({ ...guard, seen: Date.now() }));
 }
 
 // ============ 导出接口限速 ============
@@ -295,7 +303,5 @@ export async function writeExportGuard(
     guard: LoginGuard,
     bucket = "legacy"
 ): Promise<void> {
-    const store = await readStore(api, EXPORT_GUARD_KEY);
-    store[bucket] = { ...guard, seen: Date.now() };
-    await writeStore(api, EXPORT_GUARD_KEY, store);
+    await mutateGuard(api, EXPORT_GUARD_KEY, bucket, () => ({ ...guard, seen: Date.now() }));
 }

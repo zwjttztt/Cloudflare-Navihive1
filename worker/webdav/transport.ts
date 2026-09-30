@@ -110,7 +110,9 @@ export async function davFetch(
     config: WebDavConfig,
     body?: string | Uint8Array,
     extraHeaders?: Record<string, string>,
-    timeoutMs?: number
+    timeoutMs?: number,
+    /** 最大重定向跳数（防跳板探测 / 无限循环），默认 4 */
+    maxRedirects = 4
 ): Promise<Response> {
     const headers: Record<string, string> = { ...(extraHeaders || {}) };
 
@@ -118,13 +120,44 @@ export async function davFetch(
         headers["Authorization"] = `Basic ${base64Encode(`${config.username}:${config.password}`)}`;
     }
 
-    return fetch(url, {
+    // 手动跟随重定向（redirect:"manual"），每跳重新过 isBlockedHost：
+    // redirect:"follow" 不会重验目标主机，攻击者可借 302 把 Worker 引到内网 / 云元数据
+    // 服务（SSRF）。WebDAV 常用非标准端口（自托管 NAS），这里不限制端口（safeFetch 限
+    // 80/443 会打断它），但内网/本机的重定向目标仍按初始地址的 allowPrivateNetwork 规矩挡。
+    const init: RequestInit = {
         method,
         headers,
         body: body ?? undefined,
+        redirect: "manual",
         // 只给探测请求加超时：备份文件上传体积可能很大，不能被掐断
         ...(timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
-    });
+    };
+
+    let currentHref = url;
+    for (let hop = 0; hop <= maxRedirects; hop++) {
+        const target = new URL(currentHref);
+        if (!config.allowPrivateNetwork && isBlockedHost(target.hostname)) {
+            throw new Error("WebDAV 重定向目标不允许指向内网或本机");
+        }
+        let res: Response;
+        try {
+            res = await fetch(currentHref, init);
+        } catch (error) {
+            // 网络层错误原样上抛，由 describeWebDavError 翻成人话
+            throw error;
+        }
+        if (res.status >= 300 && res.status < 400) {
+            const loc = res.headers.get("location");
+            if (!loc) return res; // 缺 Location：把 3xx 原样返回给调用方处理
+            if (hop === maxRedirects) {
+                throw new Error("WebDAV 重定向次数过多");
+            }
+            currentHref = new URL(loc, currentHref).href;
+            continue;
+        }
+        return res;
+    }
+    throw new Error("WebDAV 重定向次数过多");
 }
 
 // 逐级创建备份目录（已存在时服务器返回 405，忽略即可）

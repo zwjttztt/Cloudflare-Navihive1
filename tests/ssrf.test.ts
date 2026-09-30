@@ -35,6 +35,15 @@ const BLOCKED = [
     "::ffff:10.0.0.1",
     "::ffff:192.168.1.1",
     "::ffff:169.254.169.254",
+    // IP 字面量写法（SSRF 经典绕过）：必须被归一化后拦下
+    "2130706433", // 十进制 = 127.0.0.1
+    "0x7f000001", // 十六进制 = 127.0.0.1
+    "0177.0.0.1", // 八进制点分 = 127.0.0.1
+    "0x7f.0.0.1", // 混合十六进制点分 = 127.0.0.1
+    "127.1", // IPv4 省略写法 = 127.0.0.1
+    "0", // 十进制 0 = 0.0.0.0
+    "2852039166", // 十进制 = 169.254.169.254（云元数据服务）
+    "3232235777", // 十进制 = 192.168.1.1
 ];
 
 const ALLOWED = [
@@ -51,6 +60,10 @@ const ALLOWED = [
     "100.128.0.0", // CGNAT 段后一个
     "223.255.255.255", // 组播段前一个
     "256.0.0.0", // 越界（应被正则放行——它根本不是合法 IPv4，但 isBlockedHost 只看字符串前缀）
+    // 公网 IP 字面量写法：归一化后仍是公网，应放行
+    "134744072", // 十进制 = 8.8.8.8
+    "0x08080808", // 十六进制 = 8.8.8.8
+    "0x01010101", // 十六进制 = 1.1.1.1
 ];
 
 test("isBlockedHost 拒绝内网/本机地址", () => {
@@ -68,4 +81,24 @@ test("isBlockedHost 放行公网地址", () => {
 test("isBlockedHost 大小写不敏感", () => {
     assert.equal(isBlockedHost("LocalHost"), true);
     assert.equal(isBlockedHost("EXAMPLE.COM"), false);
+});
+
+test("isBlockedHost 归一化 IP 字面量（十进制/八进制/十六进制/省略写法）", () => {
+    const blockedLiterals = [
+        "2130706433",
+        "0x7f000001",
+        "0177.0.0.1",
+        "0x7f.0.0.1",
+        "127.1",
+        "0",
+        "2852039166",
+        "3232235777",
+    ];
+    for (const host of blockedLiterals) {
+        assert.equal(isBlockedHost(host), true, `IP 字面量应被归一化后拒绝: ${host}`);
+    }
+    const allowedLiterals = ["134744072", "0x08080808", "0x01010101"];
+    for (const host of allowedLiterals) {
+        assert.equal(isBlockedHost(host), false, `公网 IP 字面量应放行: ${host}`);
+    }
 });
