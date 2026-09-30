@@ -48,6 +48,7 @@ import { useMultiSelect } from "./hooks/useMultiSelect";
 import { useBulkActions } from "./hooks/useBulkActions";
 import { useAppDialogs } from "./hooks/useAppDialogs";
 import { useThemeController } from "./hooks/useThemeController";
+import { useSortController } from "./hooks/useSortController";
 import { useBackupController } from "./hooks/useBackupController";
 import { wrapMutations, installOnlineListener, flushOfflineQueue, pendingCount, type MutationApi } from "./API/offlineQueue";
 import { buildFavoritesGroup, deriveDisplayedGroups } from "./utils/siteView";
@@ -121,13 +122,9 @@ import {
     TouchSensor,
     useSensor,
     useSensors,
-    DragEndEvent,
-    DragOverEvent,
-    DragStartEvent,
     DragOverlay,
 } from "@dnd-kit/core";
 import {
-    arrayMove,
     SortableContext,
     sortableKeyboardCoordinates,
     verticalListSortingStrategy,
@@ -243,10 +240,6 @@ function App() {
         }
     }
 
-    const [sortMode, setSortMode] = useState<SortMode>(SortMode.None);
-    const [currentSortingGroupId, setCurrentSortingGroupId] = useState<number | null>(null);
-    // 记录进入站点排序时每个站点所属的原始分组，用于保存时识别跨组移动
-    const siteOriginalGroupRef = useRef<Map<number, number>>(new Map());
     // 用 ref 镜像最新的 groups：事件回调可以保持稳定引用（配合 memo 减少无谓重渲染）
     const groupsRef = useRef<GroupWithSites[]>([]);
 
@@ -1053,10 +1046,10 @@ function App() {
 
         // 检查认证状态
         checkAuthStatus();
-
-        // 确保初始化时重置排序状态
-        setSortMode(SortMode.None);
-        setCurrentSortingGroupId(null);
+        // 当初这里顺手重置过排序状态（setSortMode(None) / setCurrentSortingGroupId(null)）。
+        // 排序域搬到 useSortController 后，这两个状态本来就以 None 初始化，
+        // 挂载时再设一遍是空操作；而 hook 的调用点在 handleError 之后，
+        // 这里引用不到它的 setter，所以直接去掉这一段。
         // 故意只在挂载时跑一次：checkAuthStatus / applyRemoteData 每次渲染都是新函数，
         // 进 deps 会让这段每渲染重来一遍（重新读缓存、重发认证请求）。
         // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1777,272 +1770,32 @@ function App() {
         setPendingGroupDelete(groupId);
     }, []);
 
-    // 保存分组排序
-    const handleSaveGroupOrder = async () => {
-        try {
-            // 构造需要更新的分组顺序数据
-            const groupOrders = groupsRef.current.map((group, index) => ({
-                id: group.id as number,
-                order_num: index,
-            }));
-
-            // 一次批量请求写入全部顺序
-            const result = await api.updateGroupOrder(groupOrders);
-
-            if (!result) {
-                throw new Error("分组排序更新失败");
-            }
-
-            // 本地顺序就是拖拽后的结果，补一下 order_num 即可，不再多发一次全量刷新请求
-            setGroups(prev => prev.map((group, index) => ({ ...group, order_num: index })));
-
-            setSortMode(SortMode.None);
-            setCurrentSortingGroupId(null);
-        } catch (error) {
-            console.error("更新分组排序失败:", error);
-            reportError(error, { source: "group-reorder" });
-            handleError("更新分组排序失败: " + (error as Error).message);
-        }
-    };
-
-    // 保存站点排序（单组保存）
-    const handleSaveSiteOrder = useCallback(
-        async (groupId: number, sites: Site[]) => {
-            try {
-                // 构造需要更新的站点顺序数据
-                const siteOrders = sites.map((site, index) => ({
-                    id: site.id as number,
-                    order_num: index,
-                }));
-
-                // 一次批量请求写入全部顺序
-                const result = await api.updateSiteOrder(siteOrders);
-
-                if (!result.success) {
-                    throw new Error(
-                        result.failed.length > 0
-                            ? `站点排序更新失败（${result.failed.length} 个未生效，刷新后重试）`
-                            : "站点排序更新失败"
-                    );
-                }
-
-                // 本地即服务端结果，补齐 order_num；只重建这一个分组，其它分组保持原引用
-                const orderMap = new Map(siteOrders.map(item => [item.id, item.order_num]));
-                setGroups(prev => {
-                    const idx = prev.findIndex(g => g.id === groupId);
-                    if (idx === -1) return prev;
-                    const next = [...prev];
-                    next[idx] = {
-                        ...prev[idx],
-                        sites: prev[idx].sites
-                            .map(site => {
-                                const order = orderMap.get(site.id as number);
-                                return order === undefined ? site : { ...site, order_num: order };
-                            })
-                            .sort((a, b) => (a.order_num ?? 0) - (b.order_num ?? 0)),
-                    };
-                    return next;
-                });
-
-                setSortMode(SortMode.None);
-                setCurrentSortingGroupId(null);
-            } catch (error) {
-                console.error("更新站点排序失败:", error);
-                reportError(error, { source: "site-reorder" });
-                handleError("更新站点排序失败: " + (error as Error).message);
-            }
-        },
-        [handleError, setGroups]
-    );
-
-    // 启动分组排序
-    const startGroupSort = useCallback(() => {
-        // 必须先关掉「更多选项」菜单：进入排序模式后该按钮会被卸载，
-        // 菜单失去 anchor 元素就会跑到页面左上角
-        handleMenuClose();
-        setSortMode(SortMode.GroupSort);
-        setCurrentSortingGroupId(null);
-    }, [handleMenuClose]);
-
-    // 启动站点排序
-    const startSiteSort = useCallback((groupId: number) => {
-        setSortMode(SortMode.SiteSort);
-        setCurrentSortingGroupId(groupId);
-        // 记录每个站点当前的原始分组，用于保存时识别跨组移动
-        const map = new Map<number, number>();
-        groupsRef.current.forEach(g => {
-            g.sites.forEach(s => {
-                if (s.id !== undefined) map.set(s.id, g.id as number);
-            });
-        });
-        siteOriginalGroupRef.current = map;
-    }, []);
-
-    // 取消排序
-    const cancelSort = useCallback(() => {
-        setSortMode(SortMode.None);
-        setCurrentSortingGroupId(null);
-    }, []);
-
-    // 处理拖拽结束事件
-    const handleDragEnd = useCallback((event: DragEndEvent) => {
-        const { active, over } = event;
-
-        if (!over || active.id === over.id) return;
-
-        setGroups(prev => {
-            const oldIndex = prev.findIndex(group => group.id.toString() === active.id);
-            const newIndex = prev.findIndex(group => group.id.toString() === over.id);
-
-            if (oldIndex === -1 || newIndex === -1) return prev;
-            return arrayMove(prev, oldIndex, newIndex);
-        });
-    }, [setGroups]);
-
-    // 站点跨分组拖拽：同一分组内重排，跨分组则把卡片移动到目标分组
-    // 注意：只重建受影响的分组对象，其它分组保持原引用，避免拖拽时全量卡片重渲染
-    const moveSiteAcrossGroups = useCallback((activeId: string, overId: string) => {
-        if (!overId || activeId === overId) return;
-        if (!activeId.startsWith("site-")) return;
-
-        const activeSiteId = Number(activeId.slice("site-".length));
-        const overSiteId = overId.startsWith("site-") ? Number(overId.slice("site-".length)) : undefined;
-        const overGroupId = overId.startsWith("group-") ? Number(overId.slice("group-".length)) : undefined;
-
-        setGroups(prev => {
-            const activeContainerIdx = prev.findIndex(g => g.sites.some(s => s.id === activeSiteId));
-            if (activeContainerIdx === -1) return prev;
-
-            let overContainerIdx: number;
-            let overIndex: number;
-            if (overSiteId !== undefined) {
-                overContainerIdx = prev.findIndex(g => g.sites.some(s => s.id === overSiteId));
-                if (overContainerIdx === -1) return prev;
-                overIndex = prev[overContainerIdx].sites.findIndex(s => s.id === overSiteId);
-                if (overIndex === -1) return prev;
-            } else if (overGroupId !== undefined) {
-                overContainerIdx = prev.findIndex(g => g.id === overGroupId);
-                if (overContainerIdx === -1) return prev;
-                overIndex = prev[overContainerIdx].sites.length;
-            } else {
-                return prev;
-            }
-
-            const moved = prev[activeContainerIdx].sites.find(s => s.id === activeSiteId);
-            if (!moved) return prev;
-
-            // 同一分组内重排：只克隆这一个分组
-            if (activeContainerIdx === overContainerIdx) {
-                const c = activeContainerIdx;
-                const siteList = prev[c].sites;
-                const oldIndex = siteList.findIndex(s => s.id === activeSiteId);
-                const newIndex = Math.min(overIndex, siteList.length - 1);
-                // 位置没变化就直接返回原状态：拖拽时的 dragOver 会高频触发
-                if (oldIndex === -1 || oldIndex === newIndex) return prev;
-
-                const next = [...prev];
-                next[c] = { ...prev[c], sites: arrayMove(siteList, oldIndex, newIndex) };
-                return next;
-            }
-
-            // 跨分组移动：只改来源分组和目标分组两个对象
-            const next = [...prev];
-            const movedSite = { ...moved, group_id: prev[overContainerIdx].id as number };
-            next[activeContainerIdx] = {
-                ...prev[activeContainerIdx],
-                sites: prev[activeContainerIdx].sites.filter(s => s.id !== activeSiteId),
-            };
-            const target = prev[overContainerIdx].sites;
-            const insertIdx = Math.min(overIndex, target.length);
-            next[overContainerIdx] = {
-                ...prev[overContainerIdx],
-                sites: [...target.slice(0, insertIdx), movedSite, ...target.slice(insertIdx)],
-            };
-            return next;
-        });
-    }, [setGroups]);
-
-    const handleSiteSortDragOver = useCallback(
-        (event: DragOverEvent) => {
-            const { active, over } = event;
-            if (!over) return;
-            moveSiteAcrossGroups(String(active.id), String(over.id));
-        },
-        [moveSiteAcrossGroups]
-    );
-
-    const handleSiteSortDragEnd = useCallback(
-        (event: DragEndEvent) => {
-            const { active, over } = event;
-            if (!over) return;
-            moveSiteAcrossGroups(String(active.id), String(over.id));
-        },
-        [moveSiteAcrossGroups]
-    );
-
-    // 拖拽视觉反馈：被拖起的卡片用浮层跟着指针走，原位留半透明占位
-    const [draggingSite, setDraggingSite] = useState<Site | null>(null);
-    const handleSiteDragStart = useCallback((event: DragStartEvent) => {
-        const id = String(event.active.id);
-        if (!id.startsWith("site-")) return;
-        const siteId = Number(id.slice(5));
-        const found = groupsRef.current.flatMap(g => g.sites).find(s => s.id === siteId);
-        setDraggingSite(found ?? null);
-    }, []);
-    const handleSiteDragCancel = useCallback(() => setDraggingSite(null), []);
-
-    // 保存站点排序（支持跨分组移动）
-    // 顺序调整 + 跨组移动合并成「一次」批量请求：
-    // 原来是「1 次排序 + 每移动一张卡片一次串行更新请求」，卡片多时保存会明显变慢。
-    const handleSaveSiteSort = useCallback(async () => {
-        try {
-            const orders: { id: number; order_num: number; group_id?: number }[] = [];
-            const original = siteOriginalGroupRef.current;
-
-            groupsRef.current.forEach(g => {
-                g.sites.forEach((site, idx) => {
-                    const id = site.id as number;
-                    const fromGroup = original.get(id);
-                    const moved = fromGroup !== undefined && fromGroup !== g.id;
-                    orders.push(
-                        moved ? { id, order_num: idx, group_id: g.id as number } : { id, order_num: idx }
-                    );
-                });
-            });
-
-            if (orders.length > 0) {
-                const result = await api.updateSiteOrder(orders);
-                if (!result.success) {
-                    throw new Error(
-                        result.failed.length > 0
-                            ? `更新排序失败（${result.failed.length} 个未生效，刷新后重试）`
-                            : "更新排序失败"
-                    );
-                }
-            }
-
-            // 本地补齐 order_num / group_id，与服务端保持一致，无需再拉一次全量数据
-            const orderMap = new Map(orders.map(item => [item.id, item]));
-            setGroups(prev =>
-                prev.map(g => ({
-                    ...g,
-                    sites: g.sites.map(site => {
-                        const item = orderMap.get(site.id as number);
-                        if (!item) return site;
-                        return { ...site, order_num: item.order_num, group_id: g.id as number };
-                    }),
-                }))
-            );
-
-            setSortMode(SortMode.None);
-            setCurrentSortingGroupId(null);
-        } catch (error) {
-            console.error("保存站点排序失败:", error);
-            reportError(error, { source: "site-order-save" });
-            handleError("保存站点排序失败: " + (error as Error).message);
-        }
-    }, [handleError, setGroups]);
-
+    // ---- 排序 / 拖拽域 ----
+    // 状态（sortMode / currentSortingGroupId / draggingSite）+ 六个事件回调 + 三个保存函数
+    // 全在 useSortController 里；排列计算本身在 utils/sortable.ts（纯函数，有单测）。
+    // 引用点名字与抽走前保持一致，下面的 JSX 一行都不用改。
+    const {
+        sortMode,
+        currentSortingGroupId,
+        draggingSite,
+        startGroupSort,
+        startSiteSort,
+        cancelSort,
+        handleDragEnd,
+        handleSiteSortDragOver,
+        handleSiteSortDragEnd,
+        handleSiteDragStart,
+        handleSiteDragCancel,
+        handleSaveGroupOrder,
+        handleSaveSiteOrder,
+        handleSaveSiteSort,
+    } = useSortController({
+        api,
+        groupsRef,
+        setGroups,
+        onError: handleError,
+        onMenuClose: handleMenuClose,
+    });
     // 新增分组相关函数
     const handleOpenAddGroup = useCallback(() => {
         handleMenuClose();
