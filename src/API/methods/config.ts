@@ -1,0 +1,350 @@
+// src/API/methods/config.ts
+// NavigationAPI 的「config」域方法体。
+//
+// 这些是类的成员，只是搬到了独立文件：方法体与拆分前**逐字一致**，
+// 用 `this: NavigationAPI` 让 TS 认得 this，再由 http.ts 用 Object.assign 混回原型。
+// 别在这个文件里 new NavigationAPI，也别在模块顶层读它的状态。
+
+import type { NavigationAPI } from "../http";
+import { isAuthConfigKey, isEncryptedConfigKey, isPerUserAppearanceKey, isPrivateUserConfigKey, isUserScopedConfigKey } from "../configGuards";
+import { decryptSecretDeep, encryptSecret } from "../crypto";
+import { D1PreparedStatement } from "../schema";
+import { Config } from "../types";
+
+export interface ConfigApi {
+    getConfigs(): Promise<Record<string, string>>;
+    queryConfigs(): Promise<Record<string, string>>;
+    queryUserConfigs(userId: number): Promise<Record<string, string>>;
+    getUserConfig(userId: number, key: string): Promise<string | null>;
+    setUserConfig(userId: number, key: string, value: string): Promise<boolean>;
+    deleteUserConfig(userId: number, key: string): Promise<boolean>;
+    scopeFor(key: string): Promise<number | null>;
+    getConfig(key: string): Promise<string | null>;
+    canWriteConfigKey(key: string): Promise<boolean>;
+    setConfig(key: string, value: string): Promise<boolean>;
+    setSystemConfig(key: string, value: string): Promise<boolean>;
+    deleteSystemConfig(key: string): Promise<boolean>;
+    setConfigs(entries: Record<string, string>): Promise<boolean>;
+    deleteConfig(key: string): Promise<boolean>;
+    canManageSharedConfigs(): Promise<boolean>;
+}
+
+export const configImpl: ConfigApi = {
+
+    // 配置相关API
+    getConfigs: async function (this: NavigationAPI ): Promise<Record<string, string>> {
+        await this.migrate();
+        return this.withSchemaRetry(() => this.queryConfigs());
+    },
+    queryConfigs: async function (this: NavigationAPI ): Promise<Record<string, string>> {
+        const uid = this.currentUserId;
+        const result = await this.db.prepare("SELECT key, value FROM configs").all<Config>();
+
+        // 将结果转换为键值对对象（管理员凭据永远不返回）
+        const configs: Record<string, string> = {};
+        for (const config of result.results || []) {
+            if (isAuthConfigKey(config.key)) continue;
+            // 已登录时，严格私有的那批（WebDAV）只认自己那份：
+            // 全站 configs 里若还有同键（迁移残留），一律不采纳，否则会串号。
+            // 外观键不在这里剔除 —— 它是「自己没配就回落全站」的，
+            // 全站那份正是站点所有者定的基调（也是新账号的初始外观）。
+            if (uid !== null && isPrivateUserConfigKey(config.key)) continue;
+            // webdav.password / webdav.backupPassword 落库是密文，读出来解密还原给
+            // 调用方（含首屏 bootstrap）
+            configs[config.key] = isEncryptedConfigKey(config.key)
+                ? await decryptSecretDeep(config.value, this.secret)
+                : config.value;
+        }
+
+        // 覆盖上当前账号自己的那份
+        if (uid !== null) {
+            const own = await this.queryUserConfigs(uid);
+            for (const [key, value] of Object.entries(own)) configs[key] = value;
+        }
+
+        return configs;
+    },
+
+    // ============ 每账号一份的配置（user_configs） ============
+    /** 取某个账号自己的全部私有配置（口令类已解密） */
+    queryUserConfigs: async function (this: NavigationAPI, userId: number): Promise<Record<string, string>> {
+        try {
+            const result = await this.db
+                .prepare("SELECT key, value FROM user_configs WHERE user_id = ?")
+                .bind(userId)
+                .all<{ key: string; value: string }>();
+            const configs: Record<string, string> = {};
+            for (const row of result.results || []) {
+                configs[row.key] = isEncryptedConfigKey(row.key)
+                    ? await decryptSecretDeep(row.value, this.secret)
+                    : row.value;
+            }
+            return configs;
+        } catch {
+            return {};
+        }
+    },
+    getUserConfig: async function (this: NavigationAPI, userId: number, key: string): Promise<string | null> {
+        try {
+            const row = await this.db
+                .prepare("SELECT value FROM user_configs WHERE user_id = ? AND key = ?")
+                .bind(userId, key)
+                .first<{ value: string }>();
+            if (!row) return null;
+            return isEncryptedConfigKey(key)
+                ? await decryptSecretDeep(row.value, this.secret)
+                : row.value;
+        } catch {
+            return null;
+        }
+    },
+    setUserConfig: async function (this: NavigationAPI, userId: number, key: string, value: string): Promise<boolean> {
+        try {
+            const stored = isEncryptedConfigKey(key)
+                ? await encryptSecret(value, this.secret)
+                : value;
+            const result = await this.db
+                .prepare(
+                    `INSERT INTO user_configs (user_id, key, value, updated_at)
+                     VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                     ON CONFLICT(user_id, key)
+                     DO UPDATE SET value = ?, updated_at = CURRENT_TIMESTAMP`
+                )
+                .bind(userId, key, stored, stored)
+                .run();
+            return result.success;
+        } catch (error) {
+            console.error("设置账号配置失败:", error);
+            return false;
+        }
+    },
+    deleteUserConfig: async function (this: NavigationAPI, userId: number, key: string): Promise<boolean> {
+        try {
+            const result = await this.db
+                .prepare("DELETE FROM user_configs WHERE user_id = ? AND key = ?")
+                .bind(userId, key)
+                .run();
+            return result.success;
+        } catch {
+            return false;
+        }
+    },
+
+    /**
+     * 这个 key 该存哪儿：返回账号 id = 写进该账号自己的 user_configs；null = 写全站 configs。
+     *
+     * 严格私有的（webdav.*）永远跟账号走。外观键（site.*）要分人：
+     * 站点所有者写在全站 configs —— 登录页还没有账号上下文，读的正是这份；
+     * 其它账号写在自己那份，读不到才回落全站（见 getConfig / queryConfigs）。
+     */
+    scopeFor: async function (this: NavigationAPI, key: string): Promise<number | null> {
+        const uid = this.currentUserId;
+        if (uid === null) return null;
+        if (isPrivateUserConfigKey(key)) return uid;
+        if (isPerUserAppearanceKey(key)) {
+            return (await this.canManageSharedConfigs()) ? null : uid;
+        }
+        return null;
+    },
+    getConfig: async function (this: NavigationAPI, key: string): Promise<string | null> {
+        const uid = await this.scopeFor(key);
+        if (uid !== null) {
+            const own = await this.getUserConfig(uid, key);
+            // 外观键没配过就回落全站那份（站点所有者写的），
+            // 免得新账号标题空白、背景也没了 —— 私有键（webdav.*）不回落，那是凭据。
+            if (own !== null) return own;
+            if (isPrivateUserConfigKey(key)) return null;
+        }
+
+        const result = await this.db
+            .prepare("SELECT value FROM configs WHERE key = ?")
+            .bind(key)
+            .first<{ value: string }>();
+        if (!result) return null;
+        // webdav.password / webdav.backupPassword 落库前已加密，读取时解密还原
+        if (isEncryptedConfigKey(key)) {
+            return await decryptSecretDeep(result.value, this.secret);
+        }
+        return result.value;
+    },
+
+    /**
+     * 当前身份能不能写这个 key。
+     *
+     * 全站共享配置（标题 / 主题 / 背景…）是全站所有人共用的，过去只靠前端藏起来
+     * —— 服务端没管，普通账号直接 PUT /api/configs/<key> 就能改全站外观。
+     * 现在和导出 / 导入走同一套判据（canManageSharedConfigs），服务端这边也把住：
+     *   - user-scoped（webdav.* 这类每人一份的）永远允许，那是自己的东西；
+     *   - auth.* 是服务端内部记账（初始化标记、限速计数、必须改密标记…），
+     *     路由层已禁止外部访问，这里不再重复判角色，免得把自身逻辑卡死；
+     *   - 其余共享键：只有 owner（或未启用登录的单账号部署）能动。
+     */
+    canWriteConfigKey: async function (this: NavigationAPI, key: string): Promise<boolean> {
+        if (isUserScopedConfigKey(key)) return true;
+        if (isAuthConfigKey(key)) return true;
+        const uid = this.currentUserId;
+        if (uid === null) return true;
+        return this.canManageSharedConfigs();
+    },
+    setConfig: async function (this: NavigationAPI, key: string, value: string): Promise<boolean> {
+        if (!(await this.canWriteConfigKey(key))) {
+            console.warn(`拒绝非所有者改写全站配置: ${key}`);
+            return false;
+        }
+        const uid = await this.scopeFor(key);
+        if (uid !== null) return this.setUserConfig(uid, key, value);
+
+        try {
+            // webdav.password / webdav.backupPassword 明文落库风险高，写入前用
+            // AUTH_SECRET 派生密钥加密（无 secret 时原样存）
+            const stored = isEncryptedConfigKey(key) ? await encryptSecret(value, this.secret) : value;
+            // 使用UPSERT语法（SQLite支持）
+            const result = await this.db
+                .prepare(
+                    `INSERT INTO configs (key, value, updated_at)
+                    VALUES (?, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(key)
+                    DO UPDATE SET value = ?, updated_at = CURRENT_TIMESTAMP`
+                )
+                .bind(key, stored, stored)
+                .run();
+
+            return result.success;
+        } catch (error) {
+            console.error("设置配置失败:", error);
+            return false;
+        }
+    },
+
+    /**
+     * 内部写全站配置：**跳过**所有者门控，只给 Worker 内部的定时任务用。
+     *
+     * 定时任务没有登录态：它会把自己绑成某个普通账号去读那人的数据，
+     * 此时 canManageSharedConfigs() 是 false，走 setConfig 写 cron.* 会被门控挡掉，
+     * 失败留痕就永远写不进去。这里写的是非敏感的系统状态键（cron.*），
+     * 不加密、不做归属判断 —— HTTP 路由一律走 setConfig，别来调这个。
+     */
+    setSystemConfig: async function (this: NavigationAPI, key: string, value: string): Promise<boolean> {
+        try {
+            const result = await this.db
+                .prepare(
+                    `INSERT INTO configs (key, value, updated_at)
+                     VALUES (?, ?, CURRENT_TIMESTAMP)
+                     ON CONFLICT(key)
+                     DO UPDATE SET value = ?, updated_at = CURRENT_TIMESTAMP`
+                )
+                .bind(key, value, value)
+                .run();
+            return result.success;
+        } catch (error) {
+            console.error("写入系统配置失败:", error);
+            return false;
+        }
+    },
+
+    /** 见 setSystemConfig：内部删全站配置，同样跳过所有者门控 */
+    deleteSystemConfig: async function (this: NavigationAPI, key: string): Promise<boolean> {
+        try {
+            const result = await this.db
+                .prepare("DELETE FROM configs WHERE key = ?")
+                .bind(key)
+                .run();
+            return result.success;
+        } catch (error) {
+            console.error("删除系统配置失败:", error);
+            return false;
+        }
+    },
+
+    /**
+     * 批量写入配置：保存网站设置时可能一次改十几项，
+     * 逐条写就是十几个网络往返 + 十几次 D1 调用，这里用 batch 一次做完。
+     */
+    setConfigs: async function (this: NavigationAPI, entries: Record<string, string>): Promise<boolean> {
+        try {
+            const list = Object.entries(entries).filter(([, value]) => value !== undefined);
+            if (list.length === 0) return true;
+
+            // 按账号隔离的那部分单独写 user_configs，其余照旧进 configs。
+            // 归谁由 scopeFor 说了算（外观键对所有者来说就是全站那份），
+            // 不能简单按前缀切 —— 否则所有者改标题只会改到自己的私有副本上，
+            // 登录页和其它新账号看到的还是旧标题。
+            const mine: { key: string; value: string; uid: number }[] = [];
+            const shared: [string, string][] = [];
+            for (const [key, value] of list) {
+                const uid = await this.scopeFor(key);
+                if (uid !== null) mine.push({ key, value, uid });
+                else shared.push([key, value]);
+            }
+
+            // 全站共享配置只有 owner 能动（理由见 canWriteConfigKey）。整批一次判，
+            // 别写下半句才失败 —— 那会留下「改了一半」的状态。
+            for (const [key] of shared) {
+                if (!(await this.canWriteConfigKey(key))) {
+                    console.warn(`拒绝非所有者批量改写全站配置: ${key}`);
+                    return false;
+                }
+            }
+
+            let ok = true;
+            if (shared.length > 0) {
+                // M2：与单键 setConfig 一致，口令类配置入库前加密，避免认证用户走批写路由把明文落库
+                const statements: D1PreparedStatement[] = [];
+                for (const [key, value] of shared) {
+                    const stored = isEncryptedConfigKey(key)
+                        ? await encryptSecret(value, this.secret)
+                        : value;
+                    statements.push(
+                        this.db
+                            .prepare(
+                                `INSERT INTO configs (key, value, updated_at)
+                                VALUES (?, ?, CURRENT_TIMESTAMP)
+                                ON CONFLICT(key)
+                                DO UPDATE SET value = ?, updated_at = CURRENT_TIMESTAMP`
+                            )
+                            .bind(key, stored, stored)
+                    );
+                }
+                const results = await this.db.batch<unknown>(statements);
+                ok = results.every(result => result.success);
+            }
+
+            for (const { key, value, uid } of mine) {
+                // 口令类要在 setUserConfig 里加密，这里不能走批量那条路
+                if (!(await this.setUserConfig(uid, key, value))) ok = false;
+            }
+
+            return ok;
+        } catch (error) {
+            console.error("批量设置配置失败:", error);
+            return false;
+        }
+    },
+    deleteConfig: async function (this: NavigationAPI, key: string): Promise<boolean> {
+        if (!(await this.canWriteConfigKey(key))) {
+            console.warn(`拒绝非所有者删除全站配置: ${key}`);
+            return false;
+        }
+        const uid = await this.scopeFor(key);
+        if (uid !== null) return this.deleteUserConfig(uid, key);
+
+        const result = await this.db.prepare("DELETE FROM configs WHERE key = ?").bind(key).run();
+
+        return result.success;
+    },
+
+    /**
+     * 当前身份能不能动「全站共享配置」（标题 / 主题 / 背景…）。
+     * 只有站点所有者可以；未启用登录（拿不到账号）时是单账号部署，放行。
+     *
+     * 备份的导入导出都按它判断：普通账号导出的备份里不带全站设置，拿别人的备份
+     * 恢复时也不会顺手把整站外观改掉 —— 全站外观是所有人共用的，不该被一个账号的
+     * 恢复操作覆盖。
+     */
+    canManageSharedConfigs: async function (this: NavigationAPI ): Promise<boolean> {
+        const uid = this.currentUserId;
+        if (uid === null) return true;
+        const me = await this.getUserById(uid);
+        return me?.role === "owner";
+    },
+};
