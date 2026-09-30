@@ -431,6 +431,20 @@ export class NavigationClient {
         return response.success;
     }
 
+    /**
+     * 浏览器侧的 CAS 只能凑合做： Worker 那版是「一条 SQL 里比完再写」，
+     * 这里隔着一次 HTTP，比较和写入中间必然有窗口。
+     *
+     * 目前没有前端代码需要它（真要用它的限速计数都是服务端在 `auth.*` 上维护的，
+     * 浏览器碰不到），所以只保证接口齐、语义尽量接近；真需要严格 CAS 的场景
+     * 应该放到 Worker 上去做。
+     */
+    async compareAndSetConfig(key: string, expected: string | null, next: string): Promise<boolean> {
+        const current = await this.getConfig(key);
+        if (current !== expected) return false;
+        return this.setConfig(key, next);
+    }
+
     // 修改管理员账号密码（保存在数据库中，重新部署不会被覆盖）
     async updateAuthCredentials(
         username: string,

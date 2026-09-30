@@ -22,6 +22,20 @@ export interface ConfigApi {
     getConfig(key: string): Promise<string | null>;
     canWriteConfigKey(key: string): Promise<boolean>;
     setConfig(key: string, value: string): Promise<boolean>;
+    /**
+     * 条件更新（CAS）：**只有当前存的值等于 expected 时**才写入 next，返回有没有抢到。
+     *
+     * 「读出来 → 改 → 整条写回」这条路在 Workers 里是真会丢数据的：两个请求同时读到
+     * 旧值，各自算完再写，后写的那份会把前一份**整个盖掉**。用在限速计数上就是
+     * 「攻击者的失败次数被别人的写覆盖回小值」，限速直接失效。
+     * 所以把「比较」和「写入」压进同一条 SQL：`UPDATE ... WHERE key = ? AND value = ?`
+     * —— 命中行数不是 1，说明这中间有人抢先改过，调用方重读再算一次即可。
+     *
+     * 限制：**不支持加密键**（webdav.*）。它们落库是 AES-GCM 密文且 IV 随机，
+     * 同一明文两次加密结果都不同，没法比对；这类键一律返回 false，调用方退回普通写入。
+     * 同理不支持按账号隔离的键（user_configs），返回 false。
+     */
+    compareAndSetConfig(key: string, expected: string | null, next: string): Promise<boolean>;
     setSystemConfig(key: string, value: string): Promise<boolean>;
     deleteSystemConfig(key: string): Promise<boolean>;
     setConfigs(entries: Record<string, string>): Promise<boolean>;
@@ -224,6 +238,49 @@ export const configImpl: ConfigApi = {
         }
     },
 
+    compareAndSetConfig: async function (
+        this: NavigationAPI,
+        key: string,
+        expected: string | null,
+        next: string
+    ): Promise<boolean> {
+        // 加密键存的是密文（IV 随机，同一明文两次加密结果不同），比对不了 → 不支持
+        if (isEncryptedConfigKey(key)) return false;
+        if (!(await this.canWriteConfigKey(key))) {
+            console.warn(`拒绝非所有者改写全站配置: ${key}`);
+            return false;
+        }
+        // 按账号隔离的键落在 user_configs，且 getValue 可能回落到全站那份，
+        // 「读到的值」未必等于「表里的那行」——CAS 语义不成立，直接拒绝
+        if ((await this.scopeFor(key)) !== null) return false;
+
+        try {
+            if (expected === null) {
+                // 预期「还没有这条」：抢第一次写入，抢不到（并发已插进去）就让上层重来
+                const result = await this.db
+                    .prepare(
+                        `INSERT INTO configs (key, value, updated_at)
+                         VALUES (?, ?, CURRENT_TIMESTAMP)
+                         ON CONFLICT(key) DO NOTHING`
+                    )
+                    .bind(key, next)
+                    .run();
+                return affectedRows(result) === 1;
+            }
+            const result = await this.db
+                .prepare(
+                    `UPDATE configs SET value = ?, updated_at = CURRENT_TIMESTAMP
+                     WHERE key = ? AND value = ?`
+                )
+                .bind(next, key, expected)
+                .run();
+            return affectedRows(result) === 1;
+        } catch (error) {
+            console.error("条件更新配置失败:", error);
+            return false;
+        }
+    },
+
     /**
      * 内部写全站配置：**跳过**所有者门控，只给 Worker 内部的定时任务用。
      *
@@ -356,3 +413,17 @@ export const configImpl: ConfigApi = {
         return me?.role === "owner";
     },
 };
+
+/**
+ * 这条语句真正动了几行。
+ *
+ * D1 的 `result.success` 只表示**语句没报错**，`UPDATE` 一行都没匹配上时它照样是 true
+ * —— 而「有没有匹配到」正是 CAS 的全部依据。所以一律看 `meta.rows_written`。
+ * 取不到（模拟器 / mock 没带 meta）时退回 `success`，至少不让判据比原来更松。
+ */
+function affectedRows(result: unknown): number | null {
+    const meta = (result as { meta?: { rows_written?: number } } | undefined)?.meta;
+    if (typeof meta?.rows_written === "number") return meta.rows_written;
+    const success = (result as { success?: unknown } | undefined)?.success;
+    return typeof success === "boolean" ? (success ? 1 : 0) : null;
+}

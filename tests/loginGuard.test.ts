@@ -20,17 +20,42 @@ import {
     REGISTER_GUARD_KEY,
 } from "../worker/loginGuard";
 
-/** 只实现限速真正用到的两个读写字 */
-function makeApi(initial?: Record<string, string>) {
+/**
+ * 只实现限速真正用到的读写。
+ *
+ * `compareAndSetConfig` 是这次改动的重点：**只有当前值等于 expected 才写**，
+ * 并且用 `casHooks` 模拟「我们读完之后被别人抢先改了」的并发场景 —— 钩子返回 false
+ * 代表 CAS 失败（别人已写入），钩子可以顺手把别人的改动写进 store。
+ */
+interface CasHook {
+    (key: string, expected: string | null, next: string): boolean;
+}
+
+function makeApi(initial?: Record<string, string>, casHooks: CasHook[] = []) {
     const configs = new Map<string, string>(Object.entries(initial || {}));
+    let casCalls = 0;
     return {
         configs,
+        casCalls: () => casCalls,
         api: {
             async getConfig(key: string) {
                 return configs.has(key) ? (configs.get(key) as string) : null;
             },
             async setConfig(key: string, value: string) {
                 configs.set(key, value);
+                return true;
+            },
+            async compareAndSetConfig(key: string, expected: string | null, next: string) {
+                casCalls++;
+                const current = configs.has(key) ? (configs.get(key) as string) : null;
+                if (current !== expected) return false;
+                // 钩子按调用顺序生效：返回 false 就模拟「别人抢先写了」
+                const hook = casHooks.shift();
+                if (hook && !hook(key, expected, next)) {
+                    // 钩子负责把「别人的」改动落进 store（模拟另一路请求已提交）
+                    return false;
+                }
+                configs.set(key, next);
                 return true;
             },
         },
@@ -133,4 +158,75 @@ test("桶数量有上限：刷再多 IP 也不会把这条配置撑爆", async (
     const parsed = JSON.parse(stored) as { buckets?: Record<string, unknown> };
     assert.equal(Object.keys(parsed.buckets || {}).length, 40);
     assert.ok(stored.length < 100_000, "单条配置不该无限增长");
+});
+
+// ---------------- 并发：计数不再被别人的写整个盖掉 ----------------
+//
+// 早先是「读整条 → 改 → 整条写回」：两个请求同时读到同一份快照，各自算完写回，
+// 后写的那份会把前一份**整个覆盖**。放在攻击场景里就是
+// 「受害者的一次写入，把攻击者攒下的失败次数冲回小数」，限速形同虚设。
+// 现在改成 CAS + 重试：写完发现底层变了就**重读一次再算**，别人的桶会被重新捡回来。
+
+/** 造一份「另一个 IP 已写到一半」的 store */
+function twoBucketStore(aCount: number, bCount: number): string {
+    const now = Date.now();
+    return JSON.stringify({
+        version: 2,
+        buckets: {
+            "1.2.3.4": { count: aCount, until: 0, seen: now },
+            "9.9.9.9": { count: bCount, until: 0, seen: now },
+        },
+    });
+}
+
+test("并发改写会重读再算：不会把另一个 IP 的计数冲掉", async () => {
+    const { api, configs, casCalls } = makeApi(
+        { [LOGIN_GUARD_KEY]: twoBucketStore(7, 3) },
+        [
+            // 第一次 CAS：模拟「我们读完之后，另一个 request 抢先把自己的失败记了进去」
+            (key, _expected, _next) => {
+                configs.set(key, twoBucketStore(7, 8));
+                return false;
+            },
+        ]
+    );
+
+    await writeLoginGuard(api as never, { count: 8, until: 0 }, "1.2.3.4");
+
+    assert.equal(casCalls(), 2, "第一次 CAS 抢不到就该重试一次");
+    const buckets = JSON.parse(configs.get(LOGIN_GUARD_KEY) as string).buckets;
+    assert.equal(buckets["1.2.3.4"].count, 8, "自己的计数要写进去");
+    assert.equal(buckets["9.9.9.9"].count, 8, "并发方刚写进去的计数不能被覆盖成旧值");
+});
+
+test("CAS 一直抢不到时放弃重试，也不能抛异常（限速写失败不该拖垮登录本身）", async () => {
+    const before = twoBucketStore(7, 3);
+    const { api, configs, casCalls } = makeApi(
+        { [LOGIN_GUARD_KEY]: before },
+        // 每次都失败且不改数据 —— 重试耗尽后必须安静地放弃
+        [() => false, () => false, () => false, () => false]
+    );
+
+    await writeLoginGuard(api as never, { count: 9, until: 0 }, "1.2.3.4");
+
+    assert.equal(casCalls(), 3, "重试有上限，不能无限循环");
+    assert.equal(configs.get(LOGIN_GUARD_KEY), before, "写失败就不该留下半成品");
+});
+
+test("存储层不支持 CAS 时退回普通写入（老的行为不变）", async () => {
+    const configs = new Map<string, string>();
+    const legacyApi = {
+        async getConfig(key: string) {
+            return configs.has(key) ? (configs.get(key) as string) : null;
+        },
+        async setConfig(key: string, value: string) {
+            configs.set(key, value);
+            return true;
+        },
+    };
+
+    await writeLoginGuard(legacyApi as never, { count: 4, until: 0 }, "1.2.3.4");
+
+    const buckets = JSON.parse(configs.get(LOGIN_GUARD_KEY) as string).buckets;
+    assert.equal(buckets["1.2.3.4"].count, 4);
 });

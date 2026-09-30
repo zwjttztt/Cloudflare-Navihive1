@@ -69,10 +69,10 @@ export function computeLockAfterFailure(
     return Math.min(baseLockMs * Math.pow(2, over - 1), maxLockMs);
 }
 
-async function readStore(api: NavigationAPI, key: string): Promise<GuardStore> {
+/** 解析存储内容；读不出来 / 格式不对都当「没有限制」（不能因为存储异常把正常用户挡在门外） */
+function parseGuardStore(raw: string | null): GuardStore {
+    if (!raw) return {};
     try {
-        const raw = await api.getConfig(key);
-        if (!raw) return {};
         const parsed = JSON.parse(raw) as unknown;
         // 旧格式（扁平的 {count, until}）折算成一个名为 legacy 的桶，升级不至于「越狱」：
         // 正在锁定期的话让它锁完，否则直接丢弃这个计数
@@ -87,12 +87,11 @@ async function readStore(api: NavigationAPI, key: string): Promise<GuardStore> {
         const buckets = (parsed as { buckets?: unknown }).buckets;
         return buckets && typeof buckets === "object" ? (buckets as GuardStore) : {};
     } catch {
-        // 读不出来就当没有限制：不能因为存储异常把正常用户挡在门外
         return {};
     }
 }
 
-async function writeStore(api: NavigationAPI, key: string, buckets: GuardStore): Promise<void> {
+function serializeGuardStore(buckets: GuardStore): string {
     const now = Date.now();
     let entries = Object.entries(buckets).filter(([, v]) => {
         if (!v || typeof v !== "object") return false;
@@ -107,27 +106,81 @@ async function writeStore(api: NavigationAPI, key: string, buckets: GuardStore):
             .slice(0, MAX_BUCKETS);
     }
 
+    return JSON.stringify({ version: 2, buckets: Object.fromEntries(entries) });
+}
+
+/**
+ * CAS 重试次数。真撞上一次并发概率不高，重试 3 次足够；
+ * 写不进去也只是「这次没能记上数」，绝不能因此把登录请求本身打回去。
+ */
+const CAS_MAX_ATTEMPTS = 3;
+/** 重试前的退避（毫秒），给抢先那一方留出写完的时间 */
+const CAS_BACKOFF_MS = 10;
+
+function sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * 条件写入：只有存储值还是 expected 时才写 next。
+ *
+ * 早先是「读整条 → 改 → 整条写回」：两个请求同时读到旧值，各自算完再写，
+ * 后写的那份会把前一份**整个盖掉**。放在限速上就是「别人的写入把攻击者积累的
+ * 失败次数冲回小值」，爆破可以一直续杯 —— 这是真实的防护失效，不是洁癖。
+ * 现在比较和写入合为一条 SQL（`configs.compareAndSetConfig`），抢不到就重算一次。
+ * 没有 CAS 能力的存储层（测试桩）退回普通写入，行为与改动前一致。
+ */
+async function casWrite(
+    api: NavigationAPI,
+    key: string,
+    expected: string | null,
+    next: string
+): Promise<boolean> {
     try {
-        await api.setConfig(key, JSON.stringify({ version: 2, buckets: Object.fromEntries(entries) }));
+        const cas = api.compareAndSetConfig;
+        if (typeof cas === "function") return await cas.call(api, key, expected, next);
+        return await api.setConfig(key, next);
     } catch {
         // 写失败只影响限速强度，不影响登录本身
+        return false;
     }
 }
 
 /**
- * 读-改-写单个限速桶（增量合并）。
- * 只动目标桶，其余桶原样保留 —— 不再整 blob 重写时把其它来源 IP 的计数误伤掉。
- * 读到的快照总是最新，调用方基于旧值算出新值后写回，降低并发覆盖的概率。
+ * 读-改-写单个限速桶。
+ *
+ * 基于「读到的原始字符串」做 CAS：重算出新值后发现底层已被别人改过，就丢弃这次
+ * 结果重新读一次（`parseGuardStore` → `mutate`），最多重试 CAS_MAX_ATTEMPTS 次。
+ * 因为 mutate 只动目标桶，别人的桶在重读时会被完整捡回来，不会被我们的写盖掉。
  */
 async function mutateGuard(
     api: NavigationAPI,
     key: string,
     bucket: string,
     mutate: (prev: GuardState) => GuardState
-): Promise<void> {
-    const store = await readStore(api, key);
-    store[bucket] = mutate(store[bucket] ?? { count: 0, until: 0, seen: Date.now() });
-    await writeStore(api, key, store);
+): Promise<boolean> {
+    for (let attempt = 0; attempt < CAS_MAX_ATTEMPTS; attempt++) {
+        let raw: string | null = null;
+        try {
+            raw = await api.getConfig(key);
+        } catch {
+            raw = null; // 读不出来当作空存储，至少让 mutate 能跑完
+        }
+        const store = parseGuardStore(raw);
+        store[bucket] = mutate(store[bucket] ?? { count: 0, until: 0, seen: Date.now() });
+        if (await casWrite(api, key, raw, serializeGuardStore(store))) return true;
+        if (attempt < CAS_MAX_ATTEMPTS - 1) await sleep(CAS_BACKOFF_MS * (attempt + 1));
+    }
+    return false;
+}
+
+/** 取某个限速键的全部桶。取不到就当「没有限制」—— 存储异常不该把正常用户挡在门外 */
+async function readGuardStore(api: NavigationAPI, key: string): Promise<GuardStore> {
+    try {
+        return parseGuardStore(await api.getConfig(key));
+    } catch {
+        return {};
+    }
 }
 
 /** 读某个来源当前的限速状态 */
@@ -135,7 +188,7 @@ export async function readLoginGuard(
     api: NavigationAPI,
     bucket = "legacy"
 ): Promise<LoginGuard> {
-    const store = await readStore(api, LOGIN_GUARD_KEY);
+    const store = await readGuardStore(api, LOGIN_GUARD_KEY);
     const found = store[bucket];
     if (!found) return { count: 0, until: 0 };
     return {
@@ -164,7 +217,7 @@ export async function readInitGuard(
     api: NavigationAPI,
     bucket = "legacy"
 ): Promise<LoginGuard> {
-    const store = await readStore(api, INIT_GUARD_KEY);
+    const store = await readGuardStore(api, INIT_GUARD_KEY);
     const found = store[bucket];
     if (!found) return { count: 0, until: 0 };
     return {
@@ -199,7 +252,7 @@ export async function readRegisterGuard(
     api: NavigationAPI,
     bucket = "legacy"
 ): Promise<LoginGuard> {
-    const store = await readStore(api, REGISTER_GUARD_KEY);
+    const store = await readGuardStore(api, REGISTER_GUARD_KEY);
     const found = store[bucket];
     if (!found) return { count: 0, until: 0 };
     return {
@@ -229,7 +282,7 @@ export async function readRecoverGuard(
     api: NavigationAPI,
     bucket = "legacy"
 ): Promise<LoginGuard> {
-    const store = await readStore(api, RECOVER_GUARD_KEY);
+    const store = await readGuardStore(api, RECOVER_GUARD_KEY);
     const found = store[bucket];
     if (!found) return { count: 0, until: 0 };
     return {
@@ -303,7 +356,7 @@ export async function readExportGuard(
     api: NavigationAPI,
     bucket = "legacy"
 ): Promise<ExportGuard> {
-    const store = await readStore(api, EXPORT_GUARD_KEY);
+    const store = await readGuardStore(api, EXPORT_GUARD_KEY);
     const found = store[bucket];
     if (!found) return { count: 0, until: 0, seen: 0 };
     return {
@@ -347,7 +400,7 @@ export async function readWriteGuard(
     api: NavigationAPI,
     bucket = "legacy"
 ): Promise<ExportGuard> {
-    const store = await readStore(api, WRITE_GUARD_KEY);
+    const store = await readGuardStore(api, WRITE_GUARD_KEY);
     const found = store[bucket];
     if (!found) return { count: 0, until: 0, seen: 0 };
     return {

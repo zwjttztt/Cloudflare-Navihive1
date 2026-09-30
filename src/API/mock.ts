@@ -475,6 +475,16 @@ export class MockNavigationClient {
         return true;
     }
 
+    // 服务端那版把「比较 + 写入」压进同一条 SQL；内存版只有一个 Map，
+    // 读-改-写不会被别的请求插进来，直接在这里一次性比完即可。
+    async compareAndSetConfig(key: string, expected: string | null, next: string): Promise<boolean> {
+        await new Promise(resolve => setTimeout(resolve, 200));
+        const current = key in mockConfigs ? mockConfigs[key] : null;
+        if (current !== expected) return false;
+        mockConfigs[key] = next;
+        return true;
+    }
+
     async setConfigs(entries: Record<string, string>): Promise<boolean> {
         await new Promise(resolve => setTimeout(resolve, 200));
         Object.assign(mockConfigs, entries);
