@@ -3,7 +3,7 @@
     "compilerOptions": {
         "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.worker.tsbuildinfo",
         "types": [
-            "@cloudflare/workers-types/2023-07-01",
+            "@cloudflare/workers-types",
             "./worker-configuration.d.ts",
             "vite/client"
         ]
