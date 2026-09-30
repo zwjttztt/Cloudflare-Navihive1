@@ -142,7 +142,6 @@ export async function reportError(request: Request, env: Env): Promise<Response>
     const sanitized = sanitize(raw) as Partial<ErrorReport> | null;
 
     // 把它写进 Workers 日志（observability 自动收集 console.*）
-    // eslint-disable-next-line no-console
     console.error("[client-report]", JSON.stringify(sanitized));
 
     // 同时落一条审计日志，方便后续 grep 一段时间内的崩溃

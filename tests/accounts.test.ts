@@ -211,7 +211,7 @@ function makeDb(store: Store) {
                 // pragma_table_info 返回空 → 让迁移走一遍 ALTER 分支
                 return { results: [] as T[], success: true };
             },
-            async run<T = unknown>(): Promise<{ success: boolean; meta?: { changes?: number } }> {
+            async run(): Promise<{ success: boolean; meta?: { changes?: number } }> {
                 if (isInsert(sql)) {
                     doInsert(sql, args);
                     return { success: true };
@@ -597,8 +597,7 @@ test("令牌版本按账号走：A 改密不该把 B 的会话踢掉", async () 
     api.setCurrentUser(ownerId);
 
     const invite = await api.createInvite(ownerId);
-    const bob = await api.registerUser("bob", "password123", invite.code || "");
-    const bobId = bob.user?.id as number;
+    await api.registerUser("bob", "password123", invite.code || "");
 
     // 两人各自登录，拿到带着自己 uid 的令牌
     api.setCurrentUser(null);

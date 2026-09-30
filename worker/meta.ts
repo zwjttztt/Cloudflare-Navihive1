@@ -172,7 +172,7 @@ export async function fetchSiteMeta(request: Request): Promise<Response> {
 
         // 先用 UTF-8 解一小段找 charset 声明，再按声明的编码解全量
         const probe = new TextDecoder("utf-8").decode(all.subarray(0, Math.min(4096, bytes)));
-        const charset = /<meta[^>]+charset\s*=\s*["\']?([a-z0-9-]+)/i.exec(probe)?.[1] || "utf-8";
+        const charset = /<meta[^>]+charset\s*=\s*["']?([a-z0-9-]+)/i.exec(probe)?.[1] || "utf-8";
         let html: string;
         try {
             html = new TextDecoder(charset).decode(all);
@@ -198,10 +198,10 @@ export async function fetchSiteMeta(request: Request): Promise<Response> {
             metaContent(html, "property", "og:image") || metaContent(html, "name", "og:image");
 
         // 站点自己的 favicon 声明；相对路径要拿目标站点补全
-        const iconMatch = /<link\b[^>]*rel\s*=\s*["\']?[^"\']*icon[^"\']*["\']?[^>]*>/i.exec(html);
+        const iconMatch = /<link\b[^>]*rel\s*=\s*["']?[^"']*icon[^"']*["']?[^>]*>/i.exec(html);
         let icon = "";
         if (iconMatch) {
-            const href = /href\s*=\s*["\']([^"\']+)["\']/i.exec(iconMatch[0]);
+            const href = /href\s*=\s*["']([^"']+)["']/i.exec(iconMatch[0]);
             if (href) {
                 try {
                     icon = new URL(href[1], target.href).href;

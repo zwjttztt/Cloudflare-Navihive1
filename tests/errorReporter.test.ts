@@ -141,7 +141,7 @@ test("reportError 不抛错（同错误节流 + sendBeacon mock）", () => {
 test("reportError 体积硬截断（超过 8KB 只发精简版）", () => {
     let captured = "";
     const origFetch = globalThis.fetch;
-    (globalThis as { fetch?: typeof fetch }).fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+    (globalThis as { fetch?: typeof fetch }).fetch = ((_input: RequestInfo | URL, init?: RequestInit) => {
         captured = String(init?.body || "");
         return Promise.resolve(new Response("{}", { status: 200 }));
     }) as unknown as typeof fetch;

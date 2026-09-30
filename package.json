@@ -9,7 +9,7 @@
         "build": "tsc -b && vite build",
         "test": "node script/unit-tests.mjs",
         "smoke": "node script/ci-smoke.mjs",
-        "ci": "npm run typecheck && npm run test && npm run build && npm run smoke",
+        "ci": "npm run typecheck && npm run lint && npm run test && npm run build && npm run smoke",
         "lint": "eslint .",
         "preview": "npm run build && vite preview",
         "deploy": "npm run build && wrangler deploy",

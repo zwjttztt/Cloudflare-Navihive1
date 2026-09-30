@@ -92,7 +92,7 @@ export interface ExportedHandler {
 
 // 声明Cloudflare Workers的执行上下文类型
 export interface ExecutionContext {
-    waitUntil(promise: Promise<any>): void;
+    waitUntil(promise: Promise<unknown>): void;
     passThroughOnException(): void;
 }
 // 声明D1数据库类型
@@ -103,7 +103,9 @@ interface D1Database {
 }
 
 interface D1PreparedStatement {
-    bind(...values: any[]): D1PreparedStatement;
+    // 用 unknown[] 而不是 any[]：bind 只接受标量，但具体的联合类型在别处定义，
+    // 这里再放宽也不会有人从它身上读属性
+    bind(...values: unknown[]): D1PreparedStatement;
     first<T = unknown>(column?: string): Promise<T | null>;
     run<T = unknown>(): Promise<D1Result<T>>;
     all<T = unknown>(): Promise<D1Result<T>>;
@@ -113,5 +115,7 @@ interface D1Result<T = unknown> {
     results?: T[];
     success: boolean;
     error?: string;
-    meta?: any;
+    // 具体形状按语句不同而不同（changes / last_row_id / rows_written…），
+    // 用到处都自己 as 成需要的形状，见 http.ts
+    meta?: unknown;
 }

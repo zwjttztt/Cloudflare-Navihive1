@@ -197,7 +197,6 @@ export function reportError(
 export function setupGlobalHandlers(): void {
     if (typeof window === "undefined") return;
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     window.addEventListener("error", (event) => {
         reportError(event.error || event.message, {
             source: "window.error",

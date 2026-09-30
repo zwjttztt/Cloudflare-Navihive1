@@ -212,7 +212,7 @@ function mockFetch(handler: (url: string, init: { method: string }) => { status:
     return {
         calls,
         restore: () => {
-            // @ts-expect-error 还原
+            // @ts-expect-error -- 测试里临时替换全局 fetch，这里还原成原来的引用
             globalThis.fetch = prev;
         },
     };

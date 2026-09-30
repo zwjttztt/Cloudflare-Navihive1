@@ -12,6 +12,7 @@ import {
     isOfflineError,
     wrapMutations,
     OfflineQueuedError,
+    type MutationApi,
 } from "../src/API/offlineQueue";
 
 // 每个用例前把模块内的单例队列清空（takeAll 会取出并清空）
@@ -33,7 +34,7 @@ test("enqueue / pendingCount / takeAll：取出即清空", () => {
 test("flushOfflineQueue：逐个重放并回报成功数", async () => {
     reset();
     const calls: { kind: string; args: unknown[] }[] = [];
-    const api: any = {
+    const api: MutationApi = {
         createSite: async (...a: unknown[]) => { calls.push({ kind: "createSite", args: a }); return { id: 9 }; },
         deleteSite: async (...a: unknown[]) => { calls.push({ kind: "deleteSite", args: a }); return true; },
         setConfig: async (...a: unknown[]) => { calls.push({ kind: "setConfig", args: a }); return true; },
@@ -49,7 +50,7 @@ test("flushOfflineQueue：逐个重放并回报成功数", async () => {
 
 test("flushOfflineQueue：重放失败（返回假）的操作放回队列，不丢", async () => {
     reset();
-    const api: any = { setConfig: async () => false }; // returnsSuccess → 视为失败
+    const api: MutationApi = { setConfig: async () => false }; // returnsSuccess → 视为失败
     enqueueMutation("setConfig", ["k", "v"]);
     const done = await flushOfflineQueue(api);
     assert.equal(done, 0);
@@ -67,7 +68,7 @@ test("isOfflineError：网络错识别，服务端错不识别", () => {
 
 test("wrapMutations：网络错入队并抛 OfflineQueuedError；服务端错原样抛出不入队", async () => {
     reset();
-    const api: any = {
+    const api: MutationApi = {
         // 网络错（fetch 抛 TypeError）→ 应入队 + 抛 OfflineQueuedError
         createSite: async () => { throw new TypeError("Failed to fetch"); },
         // 服务端错（5xx）→ 原样抛出，绝不能入队
@@ -77,13 +78,13 @@ test("wrapMutations：网络错入队并抛 OfflineQueuedError；服务端错原
 
     await assert.rejects(
         () => api.createSite({ id: 1 }),
-        (e: any) => e instanceof OfflineQueuedError
+        (e: unknown) => e instanceof OfflineQueuedError
     );
     assert.equal(pendingCount(), 1);
 
     await assert.rejects(
         () => api.setConfig("k", "v"),
-        (e: any) => !(e instanceof OfflineQueuedError) && e.message.includes("500")
+        (e: unknown) => e instanceof Error && !(e instanceof OfflineQueuedError) && e.message.includes("500")
     );
     assert.equal(pendingCount(), 1); // 没新增
 });

@@ -43,6 +43,11 @@ jobs:
       - name: 类型检查
         run: npm run typecheck
 
+      # 只让 error 失败（warning 如 exhaustive-deps / fast-refresh 留着看，不阻断）。
+      # --max-warnings 设成 0 会因为 MUI 的正常写法天天红，没人会真去修。
+      - name: 代码规范
+        run: npm run lint
+
       - name: 纯函数单测
         run: npm run test
 

@@ -78,7 +78,7 @@ function makeDb(store: Store) {
                 }
                 return { results: [] as T[], success: true };
             },
-            async run<T = unknown>(): Promise<{ success: boolean; meta?: { last_row_id?: number } }> {
+            async run(): Promise<{ success: boolean; meta?: { last_row_id?: number } }> {
                 if (sql.includes("INSERT INTO recycle_bin")) {
                     const row: Row = {
                         id: allocId(),

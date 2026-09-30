@@ -52,6 +52,7 @@ export const normalizeFailureText = (reason?: NormalizeFailure): string =>
  */
 export function normalizeUrl(input: string): NormalizeResult {
     // 控制字符（含 \t \n \r）在 URL 里没有意义，还会被用来绕过黑名单检查
+    // eslint-disable-next-line no-control-regex -- 这里的控制字符就是要被清掉的目标，不是误写
     const raw = (input || "").replace(/[\u0000-\u0020\u007f]/g, "").trim();
     if (!raw) return { ok: false, url: "", reason: "empty" };
 

@@ -23,6 +23,21 @@ export default tseslint.config(
         'warn',
         { allowConstantExport: true },
       ],
+      // 下划线开头的变量/参数/捕获错误视为「有意保留」：
+      // 回调签名里用不到的形参（如 (_, index) => ...）、catch 里故意忽略的错误。
+      '@typescript-eslint/no-unused-vars': [
+        'error',
+        {
+          args: 'all',
+          argsIgnorePattern: '^_',
+          varsIgnorePattern: '^_',
+          caughtErrors: 'all',
+          caughtErrorsIgnorePattern: '^_',
+          destructuredArrayIgnorePattern: '^_',
+        },
+      ],
+      // NavigationAPI 里用 `const self = this` 是为了在嵌套回调中保留实例引用
+      '@typescript-eslint/no-this-alias': ['error', { allowedNames: ['self'] }],
     },
   },
 )

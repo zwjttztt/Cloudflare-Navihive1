@@ -6,7 +6,6 @@
 // 恢复前必须先弹差异预览，用户在预览里点取消就**绝不能**真导入。
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import type { ReactElement } from "react";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import BackupDialog from "../src/components/BackupDialog";

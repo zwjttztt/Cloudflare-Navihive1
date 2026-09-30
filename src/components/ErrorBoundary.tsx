@@ -46,12 +46,16 @@ export function clearLocalAppData(includeAuth: boolean) {
     if (includeAuth) {
         try {
             localStorage.removeItem("rememberedLogin");
-        } catch {}
+        } catch {
+            // 清不掉也不影响，只是让用户下次要重新输账号名
+        }
     }
     // 顺手清掉会话级首屏缓存，避免重载后又拿到同一份坏数据
     try {
         sessionStorage.removeItem("navihive:bootstrap");
-    } catch {}
+    } catch {
+        // 同上：清不掉顶多重拉一次
+    }
 }
 
 export default class ErrorBoundary extends Component<Props, State> {

@@ -125,7 +125,7 @@ test("全都没变化时默认全选（否则用户会以为出错了）", () =>
 
 test("取消勾选分组时，它下面的卡片一起不导入", () => {
     const diff = computeImportDiff(current, incoming, false);
-    const groupKey = diff.groupEntries[1].key; // 新增的那个分组
+    const _groupKey = diff.groupEntries[1].key; // 新增的那个分组（本例刻意不选它）
     const siteKey = diff.siteEntries[2].key; // 挂在它下面的新卡片
     const selected = new Set([siteKey]); // 只勾卡片、不勾分组
 
