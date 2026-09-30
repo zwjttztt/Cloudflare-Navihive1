@@ -1,5 +1,10 @@
 // src/components/AuditDialog.tsx
 // 审计日志只读查看（仅站点所有者可见）。谁在何时从哪个 IP 做了什么，事后能溯源。
+//
+// 两个视图：
+//   1. 操作日志 —— 逐条流水，可按操作者筛选
+//   2. 前端错误 —— 前端崩过什么，按「来源 + 错误信息」归并后看次数与最近发生时间
+//      上报落库时是一小段 JSON，直接在流水里翻没人看得懂，所以单开一个视图。
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
     Button,
@@ -16,8 +21,11 @@ import {
     Divider,
     Chip,
     CircularProgress,
+    ToggleButton,
+    ToggleButtonGroup,
 } from "@mui/material";
 import HistoryIcon from "@mui/icons-material/History";
+import BugReportIcon from "@mui/icons-material/BugReport";
 import { NavigationClient } from "../API/client";
 
 interface AuditEntry {
@@ -29,6 +37,16 @@ interface AuditEntry {
     created_at: string;
 }
 
+/** 前端错误聚合后的一组（与后端 ClientErrorGroup 对齐） */
+interface ClientErrorGroup {
+    key: string;
+    source: string;
+    message: string;
+    count: number;
+    lastAt: string;
+    paths: string[];
+}
+
 interface AuditDialogProps {
     open: boolean;
     onClose: () => void;
@@ -38,6 +56,8 @@ interface AuditDialogProps {
 /** 与后端 RETENTION_DAYS 保持一致：审计日志只留这些天，超期自动清除 */
 const AUDIT_RETENTION_DAYS = 7;
 const PAGE_SIZE = 50;
+
+type AuditTab = "log" | "errors";
 
 // 常见动作的中文名，其余原样展示
 const ACTION_LABELS: Record<string, string> = {
@@ -52,10 +72,14 @@ const ACTION_LABELS: Record<string, string> = {
     "auth.recoveryKey": "更新恢复密钥",
     "auth.invite": "生成邀请码",
     "site.delete": "删除站点",
+    "site.batchDelete": "批量删除站点",
     "auth.deleteAccount": "注销账号",
     "recycle.restore": "回收站还原",
     "recycle.purge": "回收站彻底删除",
     "recycle.empty": "清空回收站",
+    "data-export": "导出数据",
+    "data-import": "导入数据",
+    "client-error": "前端错误上报",
 };
 
 function formatTime(iso: string): string {
@@ -66,6 +90,7 @@ function formatTime(iso: string): string {
 }
 
 export default function AuditDialog({ open, onClose, client }: AuditDialogProps) {
+    const [tab, setTab] = useState<AuditTab>("log");
     const [rows, setRows] = useState<AuditEntry[]>([]);
     const [loading, setLoading] = useState(false);
     const [loadingMore, setLoadingMore] = useState(false);
@@ -75,6 +100,11 @@ export default function AuditDialog({ open, onClose, client }: AuditDialogProps)
     const [hasMore, setHasMore] = useState(false);
     // 下一页的起点。放在 ref 里而不是 state：它变化不该触发重新拉取
     const offsetRef = useRef(0);
+
+    // ---- 前端错误聚合视图 ----
+    const [errorGroups, setErrorGroups] = useState<ClientErrorGroup[]>([]);
+    const [errorsLoading, setErrorsLoading] = useState(false);
+    const [errorsError, setErrorsError] = useState("");
 
     const fetchPage = useCallback(
         async (offset: number, actor: string) =>
@@ -86,7 +116,7 @@ export default function AuditDialog({ open, onClose, client }: AuditDialogProps)
     // 只依赖 open 与 query —— 依赖 rows.length 的话，加载更多会让这个 effect 再次触发，
     // 把刚翻出来的下一页又重置回第一页（表现就是「加载更多点了没反应」）。
     useEffect(() => {
-        if (!open) return;
+        if (!open || tab !== "log") return;
         let cancelled = false;
         setLoading(true);
         void (async () => {
@@ -106,7 +136,29 @@ export default function AuditDialog({ open, onClose, client }: AuditDialogProps)
         return () => {
             cancelled = true;
         };
-    }, [open, query, fetchPage]);
+    }, [open, query, tab, fetchPage]);
+
+    // 切到「前端错误」时才拉：平时不占这一份查询
+    useEffect(() => {
+        if (!open || tab !== "errors") return;
+        let cancelled = false;
+        setErrorsLoading(true);
+        setErrorsError("");
+        void (async () => {
+            try {
+                const result = await client.getClientErrors();
+                if (cancelled) return;
+                setErrorGroups(result.groups || []);
+            } catch {
+                if (!cancelled) setErrorsError("读取失败（仅站点所有者可查看）");
+            } finally {
+                if (!cancelled) setErrorsLoading(false);
+            }
+        })();
+        return () => {
+            cancelled = true;
+        };
+    }, [open, tab, client]);
 
     const loadMore = useCallback(async () => {
         if (loading || loadingMore) return;
@@ -132,6 +184,8 @@ export default function AuditDialog({ open, onClose, client }: AuditDialogProps)
         setQuery(actorInput.trim());
     }, [actorInput]);
 
+    const totalErrors = errorGroups.reduce((sum, g) => sum + g.count, 0);
+
     return (
         <Dialog open={open} onClose={onClose} maxWidth='sm' fullWidth className='nav-dialog'>
             <DialogTitle sx={{ display: "flex", alignItems: "center", gap: 1 }}>
@@ -142,85 +196,183 @@ export default function AuditDialog({ open, onClose, client }: AuditDialogProps)
                 </Typography>
             </DialogTitle>
             <DialogContent dividers sx={{ p: 0 }}>
-                <Box sx={{ p: 2, display: "flex", gap: 1, alignItems: "center" }}>
-                    <TextField
+                <Box sx={{ p: 2, pb: 1.5 }}>
+                    <ToggleButtonGroup
                         size='small'
-                        label='按操作者筛选'
-                        value={actorInput}
-                        onChange={e => setActorInput(e.target.value)}
-                        onKeyDown={e => {
-                            if (e.key === "Enter") {
-                                e.preventDefault();
-                                applyFilter();
-                            }
+                        exclusive
+                        value={tab}
+                        onChange={(_, next: AuditTab | null) => {
+                            if (next) setTab(next);
                         }}
-                        placeholder='账号名，留空看全部'
-                        sx={{ flex: 1 }}
-                    />
-                    <Button variant='outlined' size='small' onClick={applyFilter} disabled={loading}>
-                        筛选
-                    </Button>
+                        aria-label='审计日志视图'
+                    >
+                        <ToggleButton value='log' aria-label='操作日志'>
+                            操作日志
+                        </ToggleButton>
+                        <ToggleButton value='errors' aria-label='前端错误'>
+                            前端错误
+                        </ToggleButton>
+                    </ToggleButtonGroup>
                 </Box>
-                <Divider />
-                {loading && rows.length === 0 ? (
+
+                {tab === "log" ? (
+                    <>
+                        <Box sx={{ px: 2, pb: 2, display: "flex", gap: 1, alignItems: "center" }}>
+                            <TextField
+                                size='small'
+                                label='按操作者筛选'
+                                value={actorInput}
+                                onChange={e => setActorInput(e.target.value)}
+                                onKeyDown={e => {
+                                    if (e.key === "Enter") {
+                                        e.preventDefault();
+                                        applyFilter();
+                                    }
+                                }}
+                                placeholder='账号名，留空看全部'
+                                sx={{ flex: 1 }}
+                            />
+                            <Button
+                                variant='outlined'
+                                size='small'
+                                onClick={applyFilter}
+                                disabled={loading}
+                            >
+                                筛选
+                            </Button>
+                        </Box>
+                        <Divider />
+                        {loading && rows.length === 0 ? (
+                            <Box sx={{ display: "flex", justifyContent: "center", py: 4 }}>
+                                <CircularProgress size={28} />
+                            </Box>
+                        ) : rows.length === 0 ? (
+                            <Box sx={{ p: 4, textAlign: "center" }}>
+                                <Typography variant='body2' color='text.secondary'>
+                                    暂无审计记录
+                                </Typography>
+                            </Box>
+                        ) : (
+                            <List dense sx={{ py: 0 }}>
+                                {rows.map(row => (
+                                    <ListItem
+                                        key={row.id}
+                                        divider
+                                        // 右侧的 IP 是 secondaryAction，MUI 不会自动给它腾地方，
+                                        // 正文不预留这段宽度就会被压在它下面（看起来像重叠）。
+                                        sx={{ pr: 19, alignItems: "flex-start" }}
+                                        secondaryAction={
+                                            <Chip
+                                                size='small'
+                                                variant='outlined'
+                                                label={row.ip || "—"}
+                                                sx={{ maxWidth: 132 }}
+                                            />
+                                        }
+                                    >
+                                        <ListItemText
+                                            sx={{ m: 0 }}
+                                            primary={
+                                                <span>
+                                                    <b>{ACTION_LABELS[row.action] || row.action}</b>
+                                                    {row.actor ? ` · ${row.actor}` : ""}
+                                                </span>
+                                            }
+                                            secondary={
+                                                <span>
+                                                    {row.detail ? `${row.detail} · ` : ""}
+                                                    {formatTime(row.created_at)}
+                                                </span>
+                                            }
+                                            primaryTypographyProps={{
+                                                sx: { display: "block", wordBreak: "break-word" },
+                                            }}
+                                            secondaryTypographyProps={{
+                                                sx: { display: "block", wordBreak: "break-word" },
+                                            }}
+                                        />
+                                    </ListItem>
+                                ))}
+                            </List>
+                        )}
+                        {hasMore && (
+                            <Box sx={{ p: 1.5, textAlign: "center" }}>
+                                <Button
+                                    size='small'
+                                    onClick={() => void loadMore()}
+                                    disabled={loading || loadingMore}
+                                >
+                                    {loadingMore ? "加载中…" : "加载更多"}
+                                </Button>
+                            </Box>
+                        )}
+                    </>
+                ) : errorsLoading ? (
                     <Box sx={{ display: "flex", justifyContent: "center", py: 4 }}>
                         <CircularProgress size={28} />
                     </Box>
-                ) : rows.length === 0 ? (
+                ) : errorsError ? (
                     <Box sx={{ p: 4, textAlign: "center" }}>
+                        <Typography variant='body2' color='error'>
+                            {errorsError}
+                        </Typography>
+                    </Box>
+                ) : errorGroups.length === 0 ? (
+                    <Box sx={{ p: 4, textAlign: "center" }}>
+                        <BugReportIcon sx={{ fontSize: 40, opacity: 0.4, mb: 1 }} />
                         <Typography variant='body2' color='text.secondary'>
-                            暂无审计记录
+                            最近没有收到前端错误上报
                         </Typography>
                     </Box>
                 ) : (
-                    <List dense sx={{ py: 0 }}>
-                        {rows.map(row => (
-                            <ListItem
-                                key={row.id}
-                                divider
-                                // 右侧的 IP 是 secondaryAction，MUI 不会自动给它腾地方，
-                                // 正文不预留这段宽度就会被压在它下面（看起来像重叠）。
-                                sx={{ pr: 19, alignItems: "flex-start" }}
-                                secondaryAction={
-                                    <Chip
-                                        size='small'
-                                        variant='outlined'
-                                        label={row.ip || "—"}
-                                        sx={{ maxWidth: 132 }}
+                    <>
+                        <Box sx={{ px: 2, pb: 1 }}>
+                            <Typography variant='caption' color='text.secondary'>
+                                共 {totalErrors} 次上报，归为 {errorGroups.length} 类（按次数排序）
+                            </Typography>
+                        </Box>
+                        <Divider />
+                        <List dense sx={{ py: 0 }}>
+                            {errorGroups.map(group => (
+                                <ListItem
+                                    key={group.key}
+                                    divider
+                                    sx={{ pr: 8, alignItems: "flex-start" }}
+                                    secondaryAction={
+                                        <Chip
+                                            size='small'
+                                            color={group.count > 5 ? "warning" : "default"}
+                                            variant={group.count > 5 ? "filled" : "outlined"}
+                                            label={`${group.count} 次`}
+                                        />
+                                    }
+                                >
+                                    <ListItemText
+                                        sx={{ m: 0 }}
+                                        primary={
+                                            <span>
+                                                <b>{group.source}</b>
+                                                {group.paths.length > 0
+                                                    ? ` · ${group.paths.join("、")}`
+                                                    : ""}
+                                            </span>
+                                        }
+                                        secondary={
+                                            <span>
+                                                {group.message} · 最近 {formatTime(group.lastAt)}
+                                            </span>
+                                        }
+                                        primaryTypographyProps={{
+                                            sx: { display: "block", wordBreak: "break-word" },
+                                        }}
+                                        secondaryTypographyProps={{
+                                            sx: { display: "block", wordBreak: "break-word" },
+                                        }}
                                     />
-                                }
-                            >
-                                <ListItemText
-                                    sx={{ m: 0 }}
-                                    primary={
-                                        <span>
-                                            <b>{ACTION_LABELS[row.action] || row.action}</b>
-                                            {row.actor ? ` · ${row.actor}` : ""}
-                                        </span>
-                                    }
-                                    secondary={
-                                        <span>
-                                            {row.detail ? `${row.detail} · ` : ""}
-                                            {formatTime(row.created_at)}
-                                        </span>
-                                    }
-                                    primaryTypographyProps={{
-                                        sx: { display: "block", wordBreak: "break-word" },
-                                    }}
-                                    secondaryTypographyProps={{
-                                        sx: { display: "block", wordBreak: "break-word" },
-                                    }}
-                                />
-                            </ListItem>
-                        ))}
-                    </List>
-                )}
-                {hasMore && (
-                    <Box sx={{ p: 1.5, textAlign: "center" }}>
-                        <Button size='small' onClick={() => void loadMore()} disabled={loading || loadingMore}>
-                            {loadingMore ? "加载中…" : "加载更多"}
-                        </Button>
-                    </Box>
+                                </ListItem>
+                            ))}
+                        </List>
+                    </>
                 )}
             </DialogContent>
             <DialogActions sx={{ px: 2, py: 1.5 }}>

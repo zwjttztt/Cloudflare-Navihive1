@@ -14,11 +14,18 @@ const SECRET_CONFIG_PREFIXES = ["auth.", "webdav."];
  * 不能写进上面的前缀表：`link.health` 作为前缀会把 `link.healthSync` 一起匹配掉，
  * 那个开关是要跟着备份走的（换了设备也保持原样）。
  *
- * - link.health / pref.starred / pref.tags 都是「服务端镜像」：
+ * - link.health / pref.starred / pref.tags / pref.visits / pref.collapsed 都是「服务端镜像」：
  *   星标标签在备份里有专门的 localPrefs 字段承载，重复带一份只会让人看不懂；
- *   失效记录则是可重测的临时数据，没必要让备份文件胖一圈。
+ *   失效记录则是可重测的临时数据，访问统计与折叠态同理 —— 它们跟着账号走（换台设备
+ *   登录后自己就回来了），没必要让备份文件胖一圈。
  */
-const SECRET_CONFIG_KEYS = ["link.health", "pref.starred", "pref.tags"];
+const SECRET_CONFIG_KEYS = [
+    "link.health",
+    "pref.starred",
+    "pref.tags",
+    "pref.visits",
+    "pref.collapsed",
+];
 
 /**
  * 落库前要用 AUTH_SECRET 派生密钥加密的配置键。

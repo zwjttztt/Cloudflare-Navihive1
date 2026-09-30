@@ -36,6 +36,26 @@ export async function handleOpsRoutes(ctx: RouteCtx): Promise<Response | null> {
         return Response.json({ success: true, log, hasMore: log.length === limit });
     }
 
+    // 前端错误上报的聚合视图（仅 owner）。
+    // 上报本身是公开接口（崩在登录页的错误也要能报上来），所以「看」必须收口：
+    // 聚合结果里带着页面路径与错误信息，不该让随便哪个账号都能翻。
+    if (path === "client-errors" && method === "GET") {
+        const uid = api.getCurrentUserId();
+        const me = uid !== null ? await api.getUserById(uid) : null;
+        if (!me || me.role !== "owner") {
+            return Response.json(
+                { success: false, message: "仅站点所有者可以查看错误上报" },
+                { status: 403 }
+            );
+        }
+        const limit = Math.min(
+            Math.max(parseInt(url.searchParams.get("limit") || "200", 10) || 200, 1),
+            500
+        );
+        const groups = await api.getClientErrors(limit);
+        return Response.json({ success: true, groups });
+    }
+
     // 回收站：列出当前账号软删除的站点 / 分组
     if (path === "recycle" && method === "GET") {
         const items = await api.listRecycleBin();

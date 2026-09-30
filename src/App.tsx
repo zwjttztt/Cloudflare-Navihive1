@@ -26,7 +26,7 @@ import type { AccountInfo, SessionInfo } from "./API/http";
 import { GroupWithSites } from "./types";
 import { AppConfigProvider } from "./context/AppConfigContext";
 import { NotifyContext } from "./context/NotifyContext";
-import { useUIPrefs, RADIUS_PX, onLocalPrefsChange } from "./context/UIPrefsContext";
+import { useUIPrefs, RADIUS_PX } from "./context/UIPrefsContext";
 import SiteCard from "./components/SiteCard";
 import GroupNavRail from "./components/GroupNavRail";
 // 弹窗/面板类组件按需加载：首屏用不到它们，拆出去能让主包小一大截
@@ -51,6 +51,7 @@ import { useThemeController } from "./hooks/useThemeController";
 import { useSortController } from "./hooks/useSortController";
 import { useSiteCreator } from "./hooks/useSiteCreator";
 import { useBackupController } from "./hooks/useBackupController";
+import { usePrefSync } from "./hooks/usePrefSync";
 import { wrapMutations, installOnlineListener, flushOfflineQueue, pendingCount, type MutationApi } from "./API/offlineQueue";
 import { buildFavoritesGroup, deriveDisplayedGroups } from "./utils/siteView";
 import {
@@ -74,14 +75,17 @@ import SiteListHeader from "./components/SiteListHeader";
 import SiteListSkeleton from "./components/SiteListSkeleton";
 import SiteListEmptyState from "./components/SiteListEmptyState";
 const VisitsDialog = lazy(() => import("./components/VisitsDialog"));
-import { COLLAPSED_EVENT, readCollapsedGroupIds, setAllCollapsed } from "./utils/collapse";
+import {
+    COLLAPSED_EVENT,
+    readCollapsedGroupIds,
+    setAllCollapsed,
+    writeCollapsedGroupIds,
+} from "./utils/collapse";
 import { findDuplicateSite } from "./utils/duplicate";
 import { loadPinyinMatcher } from "./utils/pinyin";
 import {
     FRESH_WINDOW_MS,
-    exportLinkHealth,
     mergeLinkHealth,
-    onLinkHealthChange,
     probeLinks,
     readDeadLinks,
 } from "./utils/linkHealth";
@@ -97,7 +101,8 @@ import {
     PREF_SYNC_CONFIG,
     PREF_STARRED_CONFIG,
     PREF_TAGS_CONFIG,
-    SYNC_DEBOUNCE_MS,
+    PREF_VISITS_CONFIG,
+    PREF_COLLAPSED_CONFIG,
 } from "./appDefaults";
 import { normalizeFailureText, normalizeUrl } from "./utils/url";
 import { groupAccent } from "./utils/groupColor";
@@ -234,6 +239,26 @@ function App() {
                 const remoteStarred = JSON.parse(incoming[PREF_STARRED_CONFIG] || "[]");
                 const remoteTags = JSON.parse(incoming[PREF_TAGS_CONFIG] || "{}");
                 mergeRemotePrefs(remoteStarred, remoteTags);
+            } catch {
+                // 同上
+            }
+
+            // 访问统计：换台设备登录，点过的热度不该从零开始重攒
+            try {
+                mergeRemoteVisits(JSON.parse(incoming[PREF_VISITS_CONFIG] || "{}"));
+            } catch {
+                // 同上
+            }
+
+            // 分组折叠是「当前状态」而非累计量，所以直接以服务端那份为准
+            // （本机刚改过的话，下面的上传会立刻把新状态推回去，不会来回打架）
+            try {
+                const remote = JSON.parse(incoming[PREF_COLLAPSED_CONFIG] || "null");
+                if (Array.isArray(remote)) {
+                    writeCollapsedGroupIds(
+                        remote.filter((id: unknown) => typeof id === "string")
+                    );
+                }
             } catch {
                 // 同上
             }
@@ -398,6 +423,7 @@ function App() {
         prefSync,
         setPrefSync,
         mergeRemotePrefs,
+        mergeRemoteVisits,
     } = useUIPrefs();
 
 
@@ -1038,57 +1064,8 @@ function App() {
     // ---- 云端同步：上传（防抖 + 内容没变就不发）----
     // 只负责「本机 → 服务端」这一半；合并在 useSites 的 applyRemoteData（分组）与
     // 本文件的 applyRemoteExtras（配置 / 偏好 / 链接健康）里做。
-    // 上传失败一律静默：同步是锦上添花，不能让网络问题干扰正常使用。
-    const lastHealthPushRef = useRef("");
-    // 只跟着「开关」这一个值走：依赖写 [configs] 的话，改个站点标题也会把监听拆了重装一次
-    const linkHealthSync = configs[LINK_HEALTH_SYNC_CONFIG] === "true";
-    useEffect(() => {
-        if (!linkHealthSync) {
-            onLinkHealthChange(null);
-            return;
-        }
-        let timer: number | undefined;
-        onLinkHealthChange(() => {
-            if (timer) window.clearTimeout(timer);
-            timer = window.setTimeout(() => {
-                const payload = JSON.stringify(exportLinkHealth());
-                if (payload === lastHealthPushRef.current) return;
-                lastHealthPushRef.current = payload;
-                void api.setConfig(LINK_HEALTH_CONFIG, payload).catch(() => {});
-            }, SYNC_DEBOUNCE_MS);
-        });
-        return () => {
-            onLinkHealthChange(null);
-            if (timer) window.clearTimeout(timer);
-        };
-    }, [linkHealthSync]);
-
-    const lastPrefPushRef = useRef("");
-    useEffect(() => {
-        if (!prefSync) {
-            onLocalPrefsChange(null);
-            return;
-        }
-        let timer: number | undefined;
-        const push = () => {
-            if (timer) window.clearTimeout(timer);
-            timer = window.setTimeout(() => {
-                const payload = JSON.stringify({ starred, tags });
-                // 打开同步时星标/标签刚合并过一轮，内容一样就不必再写一次库
-                if (payload === lastPrefPushRef.current) return;
-                lastPrefPushRef.current = payload;
-                void Promise.all([
-                    api.setConfig(PREF_STARRED_CONFIG, JSON.stringify(starred)),
-                    api.setConfig(PREF_TAGS_CONFIG, JSON.stringify(tags)),
-                ]).catch(() => {});
-            }, SYNC_DEBOUNCE_MS);
-        };
-        onLocalPrefsChange(push);
-        return () => {
-            onLocalPrefsChange(null);
-            if (timer) window.clearTimeout(timer);
-        };
-    }, [prefSync, starred, tags]);
+    // 四段上传逻辑都在 hooks/usePrefSync.ts 里（失效检测 / 星标标签 / 访问统计 / 折叠态），
+    // 调用点在 collapsedIds 声明之后 —— 上传要用到它，而 hook 调用顺序只要每渲染一致即可。
 
     useEffect(() => {
         // 先用上一次的快照把界面画出来（已登录才有意义，未登录要直接走登录页），
@@ -2021,6 +1998,13 @@ function App() {
         }
     };
 
+    /**
+     * 「上次推到服务端的内容」缓存，usePrefSync 与 useBackupController 共用：
+     * 打开同步开关时后者会立刻推一次并记下内容，前者才不会转头又原样推一遍。
+     */
+    const lastHealthPushRef = useRef("");
+    const lastPrefPushRef = useRef("");
+
     // 打开备份对话框（0=备份，1=恢复）
     const {
         openBackup,
@@ -2356,6 +2340,20 @@ function App() {
             window.removeEventListener("storage", sync);
         };
     }, []);
+
+    // 四份本机偏好的上传（失效检测 / 星标标签 / 访问统计 / 折叠态）统一在这里接上，
+    // 具体实现见 hooks/usePrefSync.ts
+    usePrefSync({
+        api,
+        lastHealthPushRef,
+        lastPrefPushRef,
+        linkHealthSync: configs[LINK_HEALTH_SYNC_CONFIG] === "true",
+        prefSync,
+        starred,
+        tags,
+        visits,
+        collapsedIds,
+    });
 
     const allGroupsCollapsed =
         realGroups.length > 0 && realGroups.every(g => collapsedIds.includes(String(g.id)));

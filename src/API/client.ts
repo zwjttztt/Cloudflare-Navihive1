@@ -562,6 +562,23 @@ export class NavigationClient {
         return this.request(`audit?${params.toString()}`);
     }
 
+    /** 前端错误上报的聚合视图（仅 owner）。 */
+    async getClientErrors(limit = 200): Promise<{
+        success: boolean;
+        groups: Array<{
+            key: string;
+            source: string;
+            message: string;
+            count: number;
+            lastAt: string;
+            paths: string[];
+        }>;
+    }> {
+        const params = new URLSearchParams();
+        params.set("limit", String(limit));
+        return this.request(`client-errors?${params.toString()}`);
+    }
+
     // ============ 回收站 ============
     async getRecycleBin(): Promise<{
         success: boolean;

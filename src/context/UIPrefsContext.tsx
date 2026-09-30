@@ -42,6 +42,53 @@ export interface VisitStat {
     days?: Record<string, number>;
 }
 
+/**
+ * 合并两份访问统计（本机 + 服务端下发的那份）。
+ *
+ * 计数取**较大值而不是相加**：两台设备各自点过一次，真实情况是「这条链接点过」，
+ * 相加会把它记成两次、越同步越虚高；取 max 至少不会丢任何一边的记录。
+ * 最近时间同样取较新的，按天明细逐天取较大 —— 热力图不会因为合并就变形。
+ */
+export function mergeVisitStats(
+    local: Record<string, VisitStat>,
+    incoming: Record<string, VisitStat>
+): Record<string, VisitStat> {
+    const out: Record<string, VisitStat> = { ...local };
+    if (!incoming || typeof incoming !== "object") return out;
+
+    for (const [url, inc] of Object.entries(incoming)) {
+        if (!inc || typeof inc !== "object" || typeof url !== "string") continue;
+        const incCount = typeof inc.count === "number" && Number.isFinite(inc.count) ? inc.count : 0;
+        const incLast = typeof inc.last === "number" && Number.isFinite(inc.last) ? inc.last : 0;
+
+        const cur = out[url];
+        if (!cur) {
+            out[url] = { count: incCount, last: incLast, days: { ...(inc.days ?? {}) } };
+            continue;
+        }
+
+        // 按天明细：逐天取较大（同一天两台机器各记 2 次，真实次数更接近 2 而不是 4）
+        const days: Record<string, number> = { ...(cur.days ?? {}) };
+        for (const [day, n] of Object.entries(inc.days ?? {})) {
+            if (typeof n !== "number" || !Number.isFinite(n)) continue;
+            days[day] = Math.max(days[day] ?? 0, n);
+        }
+
+        out[url] = {
+            count: Math.max(
+                typeof cur.count === "number" && Number.isFinite(cur.count) ? cur.count : 0,
+                incCount
+            ),
+            last: Math.max(
+                typeof cur.last === "number" && Number.isFinite(cur.last) ? cur.last : 0,
+                incLast
+            ),
+            days,
+        };
+    }
+    return out;
+}
+
 /** 本地日期键：YYYY-MM-DD（用本机时区，避免跨天算错） */
 export const dayKey = (ts: number = Date.now()): string => {
     const d = new Date(ts);
@@ -126,6 +173,11 @@ interface UIPrefsValue {
     setPrefSync: (enabled: boolean) => void;
     /** 合并服务端下发的星标 / 标签（取并集，不会减掉本机已有的） */
     mergeRemotePrefs: (starred: number[], tags: Record<string, string[]>) => void;
+    /**
+     * 合并服务端下发的访问统计（同一条链接取次数 / 时间的较大值）。
+     * 换设备后热度不会从头再来，也不会因为两台机器各记一次就把次数翻一倍。
+     */
+    mergeRemoteVisits: (incoming: Record<string, VisitStat>) => void;
 }
 
 const VIEW_KEY = "navihive:viewMode";
@@ -263,6 +315,7 @@ const defaultValue: UIPrefsValue = {
     prefSync: false,
     setPrefSync: () => {},
     mergeRemotePrefs: () => {},
+    mergeRemoteVisits: () => {},
 };
 
 export const UIPrefsContext = createContext<UIPrefsValue>(defaultValue);
@@ -359,6 +412,17 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
         },
         []
     );
+
+    /** 合并服务端下发的访问统计：取次数 / 时间的较大值（见 mergeVisitStats 的说明） */
+    const mergeRemoteVisits = useCallback((incoming: Record<string, VisitStat>) => {
+        if (!incoming || typeof incoming !== "object") return;
+        setVisits(prev => {
+            const next = mergeVisitStats(prev, incoming);
+            // 合并结果写回本机：下一秒断网也不至于把刚拉下来的丢掉
+            write(VISITS_KEY, JSON.stringify(next));
+            return next;
+        });
+    }, []);
 
     // 星标 / 标签一变就通知外部（App 用它做防抖上传）。
     // 挂在这里而不是每个 setter 里调用，是因为改动的入口太多（批量加星、标签管理、导入……），
@@ -701,6 +765,7 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
             prefSync,
             setPrefSync,
             mergeRemotePrefs,
+            mergeRemoteVisits,
         }),
         [
             viewMode,
@@ -741,6 +806,7 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
             prefSync,
             setPrefSync,
             mergeRemotePrefs,
+            mergeRemoteVisits,
         ]
     );
 

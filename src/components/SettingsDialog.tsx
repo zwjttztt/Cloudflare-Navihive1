@@ -88,7 +88,11 @@ interface SettingsDialogProps {
     /** 失效检测结果同步到服务端（打开即生效，不需要点保存） */
     syncHealth: boolean;
     onSyncHealthChange: (enabled: boolean) => void;
-    /** 星标 / 标签同步到服务端（同上） */
+    /**
+     * 本机偏好同步到服务端（同上）。
+     * 一个开关管四样：星标 / 标签 / 访问统计 / 分组折叠 —— 它们同属「只存本机、
+     * 清缓存就没了」的那类数据，拆成四个开关只会让人看不懂该开哪一个。
+     */
     syncPrefs: boolean;
     onSyncPrefsChange: (enabled: boolean) => void;
     /**
@@ -628,9 +632,9 @@ export default function SettingsDialog({
                         <SwitchRow
                             checked={syncPrefs}
                             onChange={onSyncPrefsChange}
-                            label='星标与标签'
-                            ariaLabel='同步星标与标签'
-                            caption='这两项按设计只存本机，清掉浏览器数据就没了；打开同步后可找回，多设备之间取并集合并。'
+                            label='星标、标签与访问记录'
+                            ariaLabel='同步星标、标签与访问记录'
+                            caption='这几项按设计只存本机，清掉浏览器数据就没了；打开同步后可找回。星标与标签多设备取并集，访问次数取各设备中的较大值（不会把两台机器各点一次记成两次），分组折叠状态以最后一次操作为准。'
                         />
                         {/* 检测失效链接：和上面的「失效检测结果」开关同属一件事，放在同一节里 */}
                         {onRunLinkCheck && (

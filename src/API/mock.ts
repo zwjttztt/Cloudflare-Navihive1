@@ -617,6 +617,49 @@ export class MockNavigationClient {
         return { success: true, log: page, hasMore: rows.length > offset + limit };
     }
 
+    async getClientErrors(limit = 200): Promise<{
+        success: boolean;
+        groups: Array<{
+            key: string;
+            source: string;
+            message: string;
+            count: number;
+            lastAt: string;
+            paths: string[];
+        }>;
+    }> {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        // 本地演示用：把 mock 的 client-error 记录按真实那套规则归并一遍
+        const rows = mockAuditLog.filter(r => r.action === "client-error");
+        const groups = new Map<string, { key: string; source: string; message: string; count: number; lastAt: string; paths: string[] }>();
+        for (const row of rows.slice(0, limit)) {
+            let parsed: { source?: string; message?: string; path?: string } = {};
+            try {
+                parsed = JSON.parse(row.detail || "{}") as typeof parsed;
+            } catch {
+                parsed = { message: (row.detail || "").slice(0, 200) };
+            }
+            const source = parsed.source || "unknown";
+            const message = parsed.message || (row.detail || "（无错误信息）").slice(0, 200);
+            const key = `${source}|${message.slice(0, 120)}`;
+            const found = groups.get(key);
+            if (found) {
+                found.count += 1;
+                if (row.created_at > found.lastAt) found.lastAt = row.created_at;
+                continue;
+            }
+            groups.set(key, {
+                key,
+                source,
+                message,
+                count: 1,
+                lastAt: row.created_at,
+                paths: parsed.path ? [parsed.path] : [],
+            });
+        }
+        return { success: true, groups: [...groups.values()] };
+    }
+
     // ============ 回收站（与真实实现一致：软删除后可还原 / 彻底删除 / 清空） ============
     async getRecycleBin(): Promise<{
         success: boolean;

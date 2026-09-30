@@ -55,10 +55,21 @@ export const WEBDAV_CONFIG_PREFIX = "webdav.";
 export const LINK_HEALTH_CONFIG = "link.health";
 export const LINK_HEALTH_SYNC_CONFIG = "link.healthSync";
 
-/** 本机偏好（星标 / 标签）：清了缓存也不至于全丢 */
+/** 本机偏好（星标 / 标签 / 访问统计 / 分组折叠）：清了缓存也不至于全丢 */
 export const PREF_SYNC_CONFIG = "pref.sync";
 export const PREF_STARRED_CONFIG = "pref.starred";
 export const PREF_TAGS_CONFIG = "pref.tags";
+/**
+ * 访问统计（哪条链接点过几次、最后一次什么时候点）。
+ * 和星标标签一样是「服务端镜像」：换设备要能接着看，所以跟着 pref.sync 这个开关一起同步。
+ */
+export const PREF_VISITS_CONFIG = "pref.visits";
+/**
+ * 哪些分组是折叠的。
+ * 与访问统计不同，它是「当前状态」而不是累计量 —— 合并时以服务端那份为准
+ * （本机刚改过的话会立刻再推一次上去，不会来回打架）。
+ */
+export const PREF_COLLAPSED_CONFIG = "pref.collapsed";
 
 /** 改动后多久推一次：拖星标、连续打标签时不该每个动作都发一个请求 */
 export const SYNC_DEBOUNCE_MS = 1500;
