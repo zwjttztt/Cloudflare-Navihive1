@@ -49,6 +49,7 @@ import { useBulkActions } from "./hooks/useBulkActions";
 import { useAppDialogs } from "./hooks/useAppDialogs";
 import { useThemeController } from "./hooks/useThemeController";
 import { useSortController } from "./hooks/useSortController";
+import { useSiteCreator } from "./hooks/useSiteCreator";
 import { useBackupController } from "./hooks/useBackupController";
 import { wrapMutations, installOnlineListener, flushOfflineQueue, pendingCount, type MutationApi } from "./API/offlineQueue";
 import { buildFavoritesGroup, deriveDisplayedGroups } from "./utils/siteView";
@@ -104,7 +105,6 @@ import { matchesGroupQuery, matchesSiteQuery } from "./utils/search";
 import { saveRememberedLogin, clearRememberedLogin } from "./utils/rememberedLogin";
 import { loadPersistedUndo } from "./utils/undoPersist";
 import {
-    formDataKey,
     secretInputSx,
     secretInputType,
     SECRET_IGNORE_ATTRS,
@@ -323,19 +323,6 @@ function App() {
     );
 
     // 新增状态管理
-    const [openAddGroup, setOpenAddGroup] = useState(false);
-    const [openAddSite, setOpenAddSite] = useState(false);
-    const [newSite, setNewSite] = useState<Partial<Site>>({
-        name: "",
-        url: "",
-        icon: "",
-        description: "",
-        notes: "",
-        username: "",
-        password: "",
-        order_num: 0,
-        group_id: 0,
-    });
 
     // 新增菜单状态
     const [menuAnchorEl, setMenuAnchorEl] = useState<null | HTMLElement>(null);
@@ -346,15 +333,7 @@ function App() {
     const [openAudit, setOpenAudit] = useState(false);
     const [openRecycle, setOpenRecycle] = useState(false);
 
-    // 新增卡片时是否明文显示密码
-    const [showNewSitePassword, setShowNewSitePassword] = useState(false);
 
-    // 正在创建站点：按钮置灰 + 防止连点创建出多张卡片
-    const [creatingSite, setCreatingSite] = useState(false);
-    const [fetchingMeta, setFetchingMeta] = useState(false);
-    // setState 要等下一次渲染才生效，连点两下时用 ref 同步兜住
-    const creatingSiteRef = useRef(false);
-    const fetchingMetaRef = useRef(false);
 
     // 全局提示条：状态与 notify 都挪进了 useNotify（App 只负责渲染 <Snackbar />）
     const {
@@ -1796,190 +1775,37 @@ function App() {
         onError: handleError,
         onMenuClose: handleMenuClose,
     });
-    // 新增分组相关函数
-    const handleOpenAddGroup = useCallback(() => {
-        handleMenuClose();
-        setOpenAddGroup(true);
-    }, [handleMenuClose]);
-
-    const handleCloseAddGroup = () => {
-        setOpenAddGroup(false);
-    };
-
-    const handleCreateGroup = async (name: string) => {
-        try {
-            const groupName = (name || "").trim();
-            if (!groupName) {
-                handleError("分组名称不能为空");
-                return;
-            }
-
-            const created = await api.createGroup({
-                name: groupName,
-                order_num: groupsRef.current.length,
-            } as Group);
-            // 服务端返回新建分组，直接追加到本地列表，无需重新加载
-            if (created && created.id !== undefined) {
-                setGroups(prev => [...prev, { ...created, id: created.id as number, sites: [] }]);
-            }
-            handleCloseAddGroup();
-        } catch (error) {
-            console.error("创建分组失败:", error);
-            reportError(error, { source: "group-create" });
-            handleError("创建分组失败: " + (error as Error).message);
-        }
-    };
-
-    // 新增站点相关函数
-    const handleOpenAddSite = useCallback((groupId: number) => {
-        const group = groupsRef.current.find(g => g.id === groupId);
-        const maxOrderNum = group?.sites.length
-            ? Math.max(...group.sites.map(s => s.order_num)) + 1
-            : 0;
-
-        setNewSite({
-            name: "",
-            url: "",
-            icon: "",
-            description: "",
-            notes: "",
-            username: "",
-            password: "",
-            group_id: groupId,
-            order_num: maxOrderNum,
-        });
-
-        // 每次打开都从「密码隐藏」状态开始，并清掉上一次的提交锁
-        setShowNewSitePassword(false);
-        creatingSiteRef.current = false;
-        setCreatingSite(false);
-        setOpenAddSite(true);
-    }, []);
-
-    const handleCloseAddSite = () => {
-        setOpenAddSite(false);
-    };
-
-    const handleSiteInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-        const { name, value } = e.target;
-        // 账号/密码框的 name 为避浏览器识别改叫 site-account / site-secret，
-        // 状态里的键仍是 username / password（见 utils/secretInput.ts）
-        const key = formDataKey(name);
-
-        setNewSite(prev => {
-            const next: Partial<Site> = { ...prev, [key]: value };
-
-            // 填「站点URL」时自动按「获取图标API」生成图标URL。
-            // 只有图标为空、或图标仍是自动生成的值时才覆盖，用户手填过的图标不会被冲掉。
-            if (name === "url") {
-                const autoIcon = resolveIconApiUrl(configs["site.iconApi"], value);
-                const prevAutoIcon = resolveIconApiUrl(configs["site.iconApi"], prev.url || "");
-                if (!prev.icon || prev.icon === prevAutoIcon) {
-                    next.icon = autoIcon;
-                }
-            }
-
-            return next;
-        });
-    };
-
-    // 新增站点时：让服务端去抓目标页面的标题 / 描述，一键补全
-    // （浏览器直接 fetch 第三方页面会被 CORS 挡住，所以走 worker 的 /api/meta）
-    const handleFetchNewSiteMeta = async () => {
-        if (fetchingMetaRef.current) return;
-
-        const target = normalizeUrl(newSite.url || "");
-        if (!target.ok) {
-            handleError(normalizeFailureText(target.reason));
-            return;
-        }
-
-        fetchingMetaRef.current = true;
-        setFetchingMeta(true);
-        try {
-            const meta = await api.getSiteMeta(target.url);
-            setNewSite(prev => ({
-                ...prev,
-                // 顺手把规范化后的网址写回输入框，用户填的 baidu.com 会立刻变成 https://baidu.com
-                url: target.url,
-                name: prev.name || meta.title || "",
-                description: prev.description || meta.description || "",
-                icon:
-                    prev.icon ||
-                    meta.icon ||
-                    resolveIconApiUrl(configs["site.iconApi"], target.url),
-            }));
-            notify(
-                meta.title ? "已抓取站点名称与描述" : "这个站点没给标题，手动填一下吧",
-                meta.title ? "success" : "info"
-            );
-        } catch (error) {
-            handleError("抓取站点信息失败：" + (error as Error).message);
-        } finally {
-            fetchingMetaRef.current = false;
-            setFetchingMeta(false);
-        }
-    };
-
-    // 新增站点时：按配置的图标 API 一键生成图标 URL
-    const handleFetchNewSiteIcon = () => {
-        const resolved = resolveIconApiUrl(configs["site.iconApi"], newSite.url || "");
-        if (!resolved) {
-            handleError("请先填写有效的站点URL，再获取图标");
-            return;
-        }
-        setNewSite(prev => ({ ...prev, icon: resolved }));
-        notify("已根据站点链接生成图标URL", "success");
-    };
-
-    const handleCreateSite = async () => {
-        // 连点「创建」只提交一次，避免创建出多张重复卡片
-        if (creatingSiteRef.current) return;
-        creatingSiteRef.current = true;
-        setCreatingSite(true);
-
-        const release = () => {
-            creatingSiteRef.current = false;
-            setCreatingSite(false);
-        };
-
-        if (!newSite.name || !newSite.url) {
-            handleError("站点名称和URL不能为空");
-            release();
-            return;
-        }
-
-        // 网址规范化：补上 https://、挡掉 javascript: 这类危险协议。
-        // <input type="url"> 拦得住 baidu.com 却放行 javascript:alert(1)（实测 Chrome 行为），
-        // 而卡片是 href={site.url} 直出的，所以入库前必须自己过一道。
-        const urlCheck = normalizeUrl(newSite.url || "");
-        if (!urlCheck.ok) {
-            handleError(normalizeFailureText(urlCheck.reason));
-            release();
-            return;
-        }
-        const siteToCreate = { ...newSite, url: urlCheck.url } as Site;
-
-        const doCreate = async () => {
-            try {
-                const created = await api.createSite(siteToCreate);
-                // 服务端返回新建站点，直接插入本地列表，界面立即出现新卡片（无需刷新页面）
-                if (created && created.id !== undefined) {
-                    upsertSiteLocally(created);
-                }
-                handleCloseAddSite();
-                notify("卡片已添加", "success");
-            } catch (error) {
-                console.error("创建站点失败:", error);
-                handleError("创建站点失败: " + (error as Error).message);
-            } finally {
-                release();
-            }
-        };
-
-        // 同一条链接已经加过就先问一句，用户确认「仍然添加」才真的写库
-        if (!guardDuplicate(siteToCreate.url, undefined, doCreate)) release();
-    };
+    // ---- 新建分组 / 新建卡片域 ----
+    // 表单状态 + 九个回调全在 useSiteCreator 里；字段变更与图标跟随的计算在
+    // utils/siteForm.ts（纯函数，有单测）。引用点名字保持原样，JSX 一行没改。
+    const {
+        openAddGroup,
+        openAddSite,
+        newSite,
+        showNewSitePassword,
+        setShowNewSitePassword,
+        creatingSite,
+        fetchingMeta,
+        handleOpenAddGroup,
+        handleCloseAddGroup,
+        handleCreateGroup,
+        handleOpenAddSite,
+        handleCloseAddSite,
+        handleSiteInputChange,
+        handleFetchNewSiteMeta,
+        handleFetchNewSiteIcon,
+        handleCreateSite,
+    } = useSiteCreator({
+        api,
+        groupsRef,
+        setGroups,
+        upsertSiteLocally,
+        guardDuplicate,
+        iconApi: configs["site.iconApi"],
+        onError: handleError,
+        onNotify: notify,
+        onMenuClose: handleMenuClose,
+    });
 
     // 配置相关函数
     const handleOpenConfig = useCallback(() => {
