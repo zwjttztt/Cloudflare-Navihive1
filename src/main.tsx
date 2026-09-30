@@ -6,14 +6,22 @@ import { UIPrefsProvider } from "./context/UIPrefsContext";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { applyInputModeClass } from "./utils/device";
 import { setupGlobalHandlers } from "./utils/errorReporter";
-// 只引 latin 子集：全量导入会把 cyrillic/greek/vietnamese/math 等 60 多个 @font-face 也打进 CSS，
-// 白白多出 ~70KB 的阻塞样式，而实际只会命中 latin 那几个。
-// 字重只留实际在用的 400/500/700（300 全站零使用；600 由浏览器就近取 700 渲染，
-// 一直是这个行为）。@fontsource 的 src 列表 woff2 在前，现代浏览器永远只下载 woff2，
-// .woff 回退不产生运行时流量，保留。
-import "@fontsource/roboto/latin-400.css";
-import "@fontsource/roboto/latin-500.css";
-import "@fontsource/roboto/latin-700.css";
+// 这里曾经 import 过 @fontsource/roboto 的 400/500/700 三档 latin 子集。
+// 2026-09-30 复核后整段删掉：全站字体栈是 index.css 的 --font-sans
+// （Inter → Segoe UI → system-ui → PingFang SC → 微软雅黑），
+// theme 的 typography.fontFamily 也指向它，**没有任何一条规则引用 "Roboto"**
+// （构建产物里 Roboto 只出现在 @font-face 自己的 font-family 声明上）。
+// 也就是说那三档字体从来没被下载过一次，只是白白往 dist 里塞了 6 个文件、144 KB，
+// 外加三条永远匹配不上的 @font-face。删掉后产物少 144 KB、少一个依赖，渲染零变化。
+//
+// 顺带纠正两个流传已久的错误结论：
+// - 「字体在 precache 里占 127 KB」：precache 清单只有 16 条 JS/CSS，字体不在其中；
+// - 「去掉 .woff 能省流量」：省 0 —— 现代浏览器只下 src 列表里靠前的 woff2；
+//   而且既然整个字体族都没人用，这两个问题都不存在了。
+//
+// 真要上 Web 字体的话，正确姿势是**一个**可变字体（@fontsource-variable/*，
+// 一档 latin wght 约 43 KB，覆盖 100~900 全字重），而不是三档静态字重。
+
 
 // 触屏判定要在首帧前落定：卡片浮层在触屏上常显、在鼠标环境里悬停才出，
 // 全都看 <html> 上的 .nav-touch（见 utils/device.ts）

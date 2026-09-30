@@ -20,17 +20,22 @@
 | vendor-*.js | 94 KB | 42 KB |
 | index-*.css | 14 KB | 4 KB |
 | **首屏 JS 合计** | **869 KB** | **≈281 KB** |
-| Roboto 字体（latin，现 3 字重 × woff2+woff） | ≈ 127 KB（**运行时按需下**，不在 precache） | — |
 | 弹窗 chunk（10 个，全部 lazy） | 70 KB | 28 KB（首次访问不进首屏） |
+| ~~Roboto 字体（latin，3 字重 × woff2+woff）~~ | **已整段删除**（2026-09-30，全站零引用） | — |
 
-已做对的：全部弹窗 `React.lazy`、pinyin-match 按需 import、字体只引 latin 子集、
+已做对的：全部弹窗 `React.lazy`、pinyin-match 按需 import、
 bootstrap 已带弱 ETag/304、SW 分层缓存（API 永不缓存）。
 
-> **两处口径修正**（2026-09-30 复核，早先写错过一次）：
+> **三处口径修正**（2026-09-30 复核，早先写错过两次）：
 > - 字体那 127 KB **不在 precache 里**。`dist/client/precache-manifest.json` 只有 16 条，
 >   全是 JS/CSS；SW 对 `destination === "font"` 走的是**运行时缓存**（CacheFirst 之类），
->   也就是说只有页面上真用到了某个字重才会去下。所以「字体」这一行既不算首屏、
->   也不算 precache 流量，删字重省的是**用到了才付**的钱。
+>   也就是说只有页面上真用到了某个字重才会去下。
+> - 去掉 `.woff` 实际省 **0** 字节 —— @fontsource 的 `src` 列表里 woff2 在 woff 之前，
+>   现代浏览器永远只下 woff2，`.woff` 只是给老浏览器留的回退。
+> - 最要命的一条：**Roboto 全站根本没人用**。字体栈是 `index.css` 的 `--font-sans`
+>   （Inter → Segoe UI → system-ui → PingFang SC → 微软雅黑），`theme.typography.fontFamily`
+>   也指向它；构建产物里 `Roboto` 只出现在 `@font-face` 自己的声明上，
+>   **没有任何一条规则引用它** —— 那 6 个文件 144 KB 从来没被下载过一次（详见第 3 条）。
 > - 「弹窗 70 KB 不进首屏」**只在首次访问成立**：10 个 lazy chunk 全在 precache 清单里，
 >   SW 安装完会在后台把 70 KB 全量拉走。它换来的不是「少下 70 KB」，而是
 >   「首屏不用等这 70 KB」。别拿它当省流量的成果报。
@@ -57,17 +62,33 @@ bootstrap 已带弱 ETag/304、SW 分层缓存（API 永不缓存）。
 `@cloudflare/workers-types` 已从 dependencies 移除；脚本统一为 npm 风格；
 `name` / `version` 改成 `navihive` / `0.1.0`。
 
-**3. 🔶 部分完成 —— 字体瘦身（收益比原先估的小很多，优先级已下调）**
-300 的细体已经砍掉了（现在是 400/500/700 三档 × woff2+woff ≈ 127KB）。
-剩下两步没做：再砍到 2 个字重、去掉 `.woff` 回退。
+**3. ✅ 已完成 —— 字体瘦身（结论反转：整段删掉，而不是砍字重）**
+原计划是「砍到 2 字重 + 去掉 `.woff`」。2026-09-30 真动手时先量了一遍，发现前提就不成立：
 
-⚠️ **原先这里写「还能再省 ~85KB precache」是错的**，2026-09-30 复核后更正：
-- 字体**根本不在 precache**（见上面「两处口径修正」），省的是运行时流量，不是首屏；
-- 去掉 `.woff` 实际省 **0** 字节 —— @fontsource 的 `src` 列表里 woff2 在 woff 之前，
-  现代浏览器永远只下 woff2，`.woff` 只是给老浏览器留的回退，普通访问压根不会请求它；
-- 真正能省下的只有「砍一个字重」那一份 ≈ 22 KB，而且只对**确实用到该字重**的页面成立。
+- **Roboto 一个字都没被用过**。全站字体栈是 `index.css` 的 `--font-sans`
+  （Inter → Segoe UI → system-ui → PingFang SC → 微软雅黑），MUI 主题也指向它；
+  拿构建产物 grep，`Roboto` 只出现在 `@font-face` 自身的 `font-family` 声明里，
+  **没有任何选择器引用它**。它是一路从「MUI 默认字体」带过来的遗留物，
+  之前那次「去掉 300 字重省 44KB」其实也是白省 —— 400/500/700 同样没人下。
+- 所以砍字重不但省不到 22 KB，还会**连带制造视觉回退**：按钮是 `button.fontWeight: 500`、
+  标题走 600/700，砍哪一档都会让现有界面变轻或变重。收益 0，风险 > 0。
 
-结论：还值得做（纯删减、零风险），但别再按 85 KB 预期它。适合顺手清，不值得单开一轮。
+实际做法：删掉 `src/main.tsx` 里三行 `@fontsource/roboto` import + 移除该依赖。
+
+| | 删之前 | 删之后 |
+|---|---|---|
+| dist 里的字体文件 | 6 个（3 字重 × woff2+woff） | **0 个** |
+| dist 资源体积 | 144 KB | **0** |
+| 额外产物 | `vendor-*.css`（只装了三条 @font-face） | 一并消失 |
+| 首屏 / 渲染 | 无变化（本来就没下载过） | 无变化 |
+
+顺带纠正一条：原以为「省流量」——其实这 144 KB 一直只是**部署体积**和**产物噪音**，
+用户从来没为它付过流量。真正的收益是：Worker 资源包小 144 KB、构建产物少 7 个文件、
+少一个依赖。
+
+> 以后真要上 Web 字体，正确姿势是**一个可变字体**（`@fontsource-variable/*`，
+> 单档 latin wght ≈ 43 KB 覆盖 100~900 全字重），而不是堆三档静态字重（66 KB 且字重不全）。
+> 但那会给现在「零字体流量」的站点凭空加上一次下载，先别做。
 
 **4. ✅ 已完成 —— CSP 收紧 + 上报**
 `public/_headers` 已经是**强制生效**的 CSP（不再是 Report-Only），并带了
@@ -194,9 +215,15 @@ interface 声明合并**只补类型**，TS 不会核实原型上真有这些方
 并挂进 `tsconfig.json` 的 references，`npm run typecheck` 一并检查测试文件。
 顺带装了 `@types/node`（测试要用 `node:test` / `node:assert` / `Buffer`）。
 
-**D. ✅ 已完成 —— 清掉死依赖 `@cfworker/jwt`**
-它一直在 `dependencies` 里，但全仓没人 import：JWT 是 `src/API/crypto.ts` 手写的
-（`signJwt` / `verifyJwt` / `peekJwtClaim`）。已从 `package.json` 移除并同步了 lockfile。
+**D. ✅ 已完成 —— 清掉死依赖**
+- `@cfworker/jwt`：一直在 `dependencies` 里，但全仓没人 import —— JWT 是
+  `src/API/crypto.ts` 手写的（`signJwt` / `verifyJwt` / `peekJwtClaim`）。
+- `@fontsource/roboto`：更彻底，字体本身全站零引用（见第 3 条），
+  连同 `src/main.tsx` 里三行 import 一起删了。
+
+> 这两个都是「装了但没用」的典型。**判断依赖是不是死的，别只看有没有 import** ——
+> 像字体这种「import 了、打包也进去了、但没有任何规则引用它」的，
+> 得去构建产物里 grep 才算数。
 
 ---
 
@@ -214,15 +241,15 @@ interface 声明合并**只补类型**，TS 不会核实原型上真有这些方
 2. ✅ 已做：CSP 收紧 + report-uri 上报
 3. ✅ 已做：worker 路由拆分（含 webdav）；App.tsx 批量选择域抽离
 4. ✅ 已做：死链巡检挂 cron
-5. ⬜ 字体瘦身收尾（第 3 条）：砍到 2 字重 + 去掉 .woff —— 纯删减、零风险，随时可做
-   （收益已下调到 ≈22 KB，见第 3 条的更正，别按 85 KB 预期）
+5. ✅ 已做：字体「瘦身」（第 3 条）—— 实际是整段删掉：Roboto 全站零引用，
+   144 KB / 6 个文件从产物里消失，依赖也移除（不是砍字重，砍字重只有视觉回退没有收益）
 6. ✅ 已做：拆 `src/API/http.ts`（补充条目 A）
 7. ✅ 已做：渲染层补单测 —— 登录 / 设置 / 账号三个弹窗 + 两张卡片（补充条目 B）
 8. ✅ 已做：`tests/` 进类型检查（补充条目 C）
 9. ✅ 已做：清掉死依赖 `@cfworker/jwt`（补充条目 D）
 10. ⬜ App.tsx 继续抽域（第 6 条）—— 现在 B 铺开了，可以排上日程了
 
-> 十条原始建议 + 追加的 A/B/C/D 四条，现在只剩 3（字体）、6（App 抽域）两条没做完。
+> 十条原始建议 + 追加的 A/B/C/D 四条，现在只剩 6（App 抽域）一条没做完。
 > 已完成的几条都配了回归网：路由覆盖测试、迁移 schema 测试、CSP 测试、
 > 死链巡检测试、渲染层 jsdom 用例、API 表面覆盖测试、打包边界守卫。
 > 单测基线 454 → 475 → 509。
