@@ -85,7 +85,18 @@ import {
 } from "./utils/linkHealth";
 import { clearBootstrapCache, readBootstrapCache } from "./utils/firstPaintCache";
 import { ParsedBookmarkGroup } from "./utils/bookmarks";
-import { DEFAULT_ICON_API, resolveIconApiUrl } from "./utils/iconApi";
+import { resolveIconApiUrl } from "./utils/iconApi";
+import {
+    DEFAULT_CONFIGS,
+    DEFAULT_WEBDAV_CONFIG,
+    WEBDAV_CONFIG_PREFIX,
+    LINK_HEALTH_CONFIG,
+    LINK_HEALTH_SYNC_CONFIG,
+    PREF_SYNC_CONFIG,
+    PREF_STARRED_CONFIG,
+    PREF_TAGS_CONFIG,
+    SYNC_DEBOUNCE_MS,
+} from "./appDefaults";
 import { normalizeFailureText, normalizeUrl } from "./utils/url";
 import { groupAccent } from "./utils/groupColor";
 import { matchesGroupQuery, matchesSiteQuery } from "./utils/search";
@@ -169,59 +180,7 @@ const api =
 // 恢复连接后由下面的 online 监听自动重放。模块级只跑一次。
 wrapMutations(api as unknown as MutationApi);
 
-// 默认配置
-const DEFAULT_CONFIGS = {
-    // 原来这里是脚手架的 "MyHomepage"：数据库里还没存过 site.title 时，
-    // 应用一挂载就会把 <title> 从 index.html 里的「Navihive 导航站」改成它。
-    // 用户没配过标题的话，看到的就是这个莫名其妙的名字，统一改成站点自己的名字。
-    "site.title": "Navihive 导航站",
-    "site.name": "Navihive",
-    "site.customCss": "",
-    // 一键获取图标所用的 API 模板，{domain} 会被替换成站点域名
-    "site.iconApi": DEFAULT_ICON_API,
-    // 背景图片与蒙版透明度（0~1，越大背景图越清晰）
-    "site.backgroundImage": "",
-    "site.backgroundMaskOpacity": "0.15",
-    // 站点缩略图 API 模板（{url} / {domain} / {origin} 会被替换），留空表示不启用缩略图。
-    // 默认留空：缩略图会把每个可见站点的链接交给第三方截图，不该是开箱即用的默认行为。
-    // 想用的人在设置里填（输入框的占位提示就是 DEFAULT_THUMB_API，可直接采用）。
-    "site.thumbApi": "",
-    // 自定义主色（#rrggbb），留空表示跟随默认主题色
-    "site.primaryColor": "",
-    // 毛玻璃模糊强度（px，0~24），留空表示用默认 14
-    "site.glassBlur": "",
-};
-
-
-// 背景值是不是 CSS 渐变的判定已随 BackgroundLayers 一起搬走
-
-
-// WebDAV 备份默认配置（保存在服务端 configs 表中，不会写入备份文件）
-const DEFAULT_WEBDAV_CONFIG: WebDavConfig = {
-    url: "",
-    username: "",
-    password: "",
-    path: "navihive-backup",
-    // 备份口令：空 = 不加密上传（明文 gzip）。设了之后上传/恢复都用这个口令，
-    // 与 AUTH_SECRET 无关
-    backupPassword: "",
-    // 默认不允许内网地址：WebDAV 多半是公网网盘，挡内网是白赚的防护
-    allowPrivateNetwork: false,
-};
-
-// WebDAV 配置在 configs 表中的键名前缀
-const WEBDAV_CONFIG_PREFIX = "webdav.";
-
-// ---- 可选的多端同步（都存服务端 configs，默认关）----
-// 失效检测结果：换设备不用重测一遍
-const LINK_HEALTH_CONFIG = "link.health";
-const LINK_HEALTH_SYNC_CONFIG = "link.healthSync";
-// 本机偏好（星标 / 标签）：清了缓存也不至于全丢
-const PREF_SYNC_CONFIG = "pref.sync";
-const PREF_STARRED_CONFIG = "pref.starred";
-const PREF_TAGS_CONFIG = "pref.tags";
-/** 改动后多久推一次：拖星标、连续打标签时不该每个动作都发一个请求 */
-const SYNC_DEBOUNCE_MS = 1500;
+// 默认值与配置键名都搬到了 ./appDefaults，这里只 import —— 见那个文件的注释。
 
 // ---- 顶部工具栏的统一尺寸 ----
 // 之前搜索框（40px）比按钮（32px）高一截，一行里高矮不齐；现在统一成一个高度、一个圆角。
