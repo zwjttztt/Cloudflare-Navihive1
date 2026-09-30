@@ -3,6 +3,13 @@
  *
  * 部署前请修改：
  *   1. "name"          项目名（将显示在 https://<name>.<用户名>.workers.dev）
+ *                      —— 用 Workers Builds（GitHub 连接部署）时，这一项必须与 Cloudflare
+ *                         dashboard 上那个 Worker 的名字完全一致，否则部署会失败：
+ *                         wrangler 会先用 WRANGLER_CI_OVERRIDE_NAME 强行覆盖成 dashboard 的名字，
+ *                         再回调 Cloudflare API 校验，对不上就报
+ *                         "An error occurred while trying to validate that the Worker name
+ *                          matches what is expected by the build system"（常见 [code: 10013]）。
+ *                         改名前先确认旧 Worker 上挂的自定义域名 / 路由，避免丢流量。
  *   2. database_id     你的 D1 数据库 ID（使用一键部署流程会自动创建，可跳过）
  *   3. vars 中的认证信息（务必改成自己的账号密码与随机密钥）
  *
@@ -16,7 +23,8 @@
  */
 {
     "$schema": "node_modules/wrangler/config-schema.json",
-    "name": "myhomepage",
+    // 必须与 Cloudflare dashboard 上的 Worker 同名，否则 Workers Builds 部署会失败（见文件头说明）
+    "name": "cloudflare-navihive1",
     "main": "worker/index.ts",
     "compatibility_date": "2025-04-05",
     "assets": {

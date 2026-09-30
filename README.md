@@ -49,7 +49,7 @@
 ### 方式一：一键部署（推荐，无需命令行）
 
 1. 打开上方 **"Deploy to Cloudflare Workers"** 按钮（或访问  
-   `https://deploy.workers.cloudflare.com/?url=https://github.com/zwjttztt/myhomepage`）。
+   `https://deploy.workers.cloudflare.com/?url=https://github.com/zwjttztt/Cloudflare-Navihive1`）。
 2. 使用你的 Cloudflare 账号登录。
 3. D1 数据库 `navigation-db` 已内置在 `wrangler.jsonc`（database_id 已填）；
    登录凭据需要你自己先设成 Cloudflare secret（**不要**写进 `wrangler.jsonc`，会明文进 Git）：
@@ -60,7 +60,13 @@
    ```
    然后直接点击 **"Deploy"** 即可。
 4. 部署完成后你会得到类似  
-   `https://myhomepage.<你的用户名>.workers.dev` 的地址。
+   `https://cloudflare-navihive1.<你的用户名>.workers.dev` 的地址。
+
+> ⚠️ **用 Workers Builds（连接 GitHub 自动部署）时，`wrangler.jsonc` 的 `name` 必须与
+> Cloudflare dashboard 上那个 Worker 的名字完全一致。** 不一致时 wrangler 会先用
+> `WRANGLER_CI_OVERRIDE_NAME` 强行覆盖，再回调 Cloudflare API 校验，对不上就部署失败
+> （`...validate that the Worker name matches what is expected by the build system`，常见 `[code: 10013]`）。
+> 另外注意 **secret 是按 Worker 存的**：换了 Worker 名就要重新 `wrangler secret put` 一遍。
 
 > 管理员账号密码由你上一步 `wrangler secret put` 决定（没有默认值）。  
 > 这套凭据只在**第一次部署**时生效：首次登录会写入 D1 的 `configs` 表，之后就以数据库为准，重新部署不会再改动。  
@@ -70,8 +76,8 @@
 
 ```bash
 # 1. 克隆本项目
-git clone https://github.com/zwjttztt/myhomepage.git
-cd myhomepage
+git clone https://github.com/zwjttztt/Cloudflare-Navihive1.git
+cd Cloudflare-Navihive1
 
 # 2. 安装依赖
 pnpm install
