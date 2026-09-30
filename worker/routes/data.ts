@@ -3,6 +3,7 @@
 // 从 worker/index.ts 拆出来。这是站点日常读写量最大的一组，
 // 读到的数据已经按 ctx.api 上绑定的账号过滤过（见 NavigationAPI.setCurrentUser）。
 import type { Group, Site } from "../../src/API/http";
+import { enforceWriteGuard, writeBucket } from "../loginGuard";
 import { fetchSiteMeta } from "../meta";
 import { weakEtag } from "../util";
 import type { GroupInput, SiteInput } from "../types";
@@ -17,8 +18,16 @@ export async function handleDataRoutes(ctx: RouteCtx): Promise<Response | null> 
         method,
         api,
         ip,
-        
+        trustXFF,
     } = ctx;
+
+    /**
+     * 写操作限速闸门：分组 / 站点的增删改与批量操作都要先过这一道。
+     * 放行返回 null，撞上限速返回已经填好 Retry-After 的 429，调用处直接 return 出去。
+     * GET 一律不过闸 —— 读不消耗 D1 写入配额，也不该因为「翻了几页」就把人锁住。
+     */
+    const writeGate = (): Promise<Response | null> =>
+        enforceWriteGuard(api, writeBucket(request, api.getCurrentUserId(), trustXFF));
 
     // 抓目标站点的标题 / 描述（新增卡片时一键补全）—— 要鉴权，因为会对外发请求，
     // 不能让陌生人拿我们的 Worker 当代理使
@@ -57,6 +66,9 @@ export async function handleDataRoutes(ctx: RouteCtx): Promise<Response | null> 
         const group = await api.getGroup(id);
         return Response.json(group);
     } else if (path === "groups" && method === "POST") {
+        const limited = await writeGate();
+        if (limited) return limited;
+
         const data = (await request.json()) as GroupInput;
 
         // 验证分组数据
@@ -74,6 +86,9 @@ export async function handleDataRoutes(ctx: RouteCtx): Promise<Response | null> 
         const result = await api.createGroup(validation.sanitizedData as Group);
         return Response.json(result);
     } else if (path.startsWith("groups/") && method === "PUT") {
+        const limited = await writeGate();
+        if (limited) return limited;
+
         const id = parseInt(path.split("/")[1]);
         if (isNaN(id)) {
             return Response.json({ error: "无效的ID" }, { status: 400 });
@@ -107,6 +122,9 @@ export async function handleDataRoutes(ctx: RouteCtx): Promise<Response | null> 
         const result = await api.updateGroup(id, data);
         return Response.json(result);
     } else if (path.startsWith("groups/") && method === "DELETE") {
+        const limited = await writeGate();
+        if (limited) return limited;
+
         const id = parseInt(path.split("/")[1]);
         if (isNaN(id)) {
             return Response.json({ error: "无效的ID" }, { status: 400 });
@@ -130,6 +148,9 @@ export async function handleDataRoutes(ctx: RouteCtx): Promise<Response | null> 
         const site = await api.getSite(id);
         return Response.json(site);
     } else if (path === "sites" && method === "POST") {
+        const limited = await writeGate();
+        if (limited) return limited;
+
         const data = (await request.json()) as SiteInput;
 
         // 验证站点数据
@@ -147,6 +168,9 @@ export async function handleDataRoutes(ctx: RouteCtx): Promise<Response | null> 
         const result = await api.createSite(validation.sanitizedData as Site);
         return Response.json(result);
     } else if (path.startsWith("sites/") && method === "PUT") {
+        const limited = await writeGate();
+        if (limited) return limited;
+
         const id = parseInt(path.split("/")[1]);
         if (isNaN(id)) {
             return Response.json({ error: "无效的ID" }, { status: 400 });
@@ -206,6 +230,9 @@ export async function handleDataRoutes(ctx: RouteCtx): Promise<Response | null> 
         const result = await api.updateSite(id, data);
         return Response.json(result);
     } else if (path.startsWith("sites/") && method === "DELETE") {
+        const limited = await writeGate();
+        if (limited) return limited;
+
         const id = parseInt(path.split("/")[1]);
         if (isNaN(id)) {
             return Response.json({ error: "无效的ID" }, { status: 400 });
@@ -218,6 +245,9 @@ export async function handleDataRoutes(ctx: RouteCtx): Promise<Response | null> 
     }
     // 批量删除站点：多选删除一次请求搬完（逐个 DELETE 在 20 张卡时要等十几秒）
     else if (path === "sites/batch-delete" && method === "POST") {
+        const limited = await writeGate();
+        if (limited) return limited;
+
         const body = (await request.json().catch(() => ({}))) as { ids?: unknown };
         const ids = Array.isArray(body.ids)
             ? body.ids.filter((v): v is number => typeof v === "number" && Number.isInteger(v))
@@ -235,6 +265,9 @@ export async function handleDataRoutes(ctx: RouteCtx): Promise<Response | null> 
     }
     // 批量更新排序
     else if (path === "group-orders" && method === "PUT") {
+        const limited = await writeGate();
+        if (limited) return limited;
+
         const data = (await request.json()) as Array<{ id: number; order_num: number }>;
 
         // 验证排序数据
@@ -268,6 +301,9 @@ export async function handleDataRoutes(ctx: RouteCtx): Promise<Response | null> 
         const result = await api.updateGroupOrder(data);
         return Response.json({ success: result });
     } else if (path === "site-orders" && method === "PUT") {
+        const limited = await writeGate();
+        if (limited) return limited;
+
         // 支持一次提交「顺序 + 所属分组」，拖拽跨组移动不必再逐个请求
         const data = (await request.json()) as Array<{
             id: number;

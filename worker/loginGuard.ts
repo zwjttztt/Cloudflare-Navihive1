@@ -278,10 +278,25 @@ export interface ExportGuard extends LoginGuard {
  */
 export const EXPORT_COUNT_RESET_MS = 60 * 60 * 1000;
 
+/**
+ * 按「离上次动作多久」衰减地算出「这次该记第几次」。
+ *
+ * 不能「成功就清零」（那会让「操作 → 清零 → 再操作」无限循环，限速形同虚设），
+ * 也**不能永不衰减**（正常用户天天点，攒够了每次都被锁几分钟，等于把正常用法当攻击打）。
+ * 所以：隔开一个窗口以上就从第 1 次重新数，短时间连着打才会逐级变严。
+ */
+export function nextDecayedCount(
+    guard: ExportGuard,
+    windowMs: number,
+    now = Date.now()
+): number {
+    const idle = guard.seen ? now - guard.seen : Infinity;
+    return (idle > windowMs ? 0 : guard.count) + 1;
+}
+
 /** 下一次导出该记第几次：离上次导出超过一小时就从头数（见上面那段说明） */
 export function nextExportCount(guard: ExportGuard, now = Date.now()): number {
-    const idle = guard.seen ? now - guard.seen : Infinity;
-    return (idle > EXPORT_COUNT_RESET_MS ? 0 : guard.count) + 1;
+    return nextDecayedCount(guard, EXPORT_COUNT_RESET_MS, now);
 }
 
 export async function readExportGuard(
@@ -304,4 +319,81 @@ export async function writeExportGuard(
     bucket = "legacy"
 ): Promise<void> {
     await mutateGuard(api, EXPORT_GUARD_KEY, bucket, () => ({ ...guard, seen: Date.now() }));
+}
+
+// ============ 写操作限速 ============
+// 上面五把锁全在**未鉴权**的公开入口上（login / init / register / recover）或全量导出上，
+// 而分组 / 站点的增删改、批量删除、导入这些**已登录**的写接口一把锁都没有：
+//   - 令牌一旦泄露（比如设备丢了、cookie 被抄走），攻击者能在几秒内把站点改个遍、
+//     或者反复丢大备份文件进来把 D1 的写入配额打光；
+//   - 导入是最贵的一个：整批 INSERT 再整批 DELETE，中途失败还要回滚，一次能写几千行。
+// 所以给写接口也加一道，按「账号 + 来源 IP」分桶（与导出同构，互不影响）。
+//
+// 阈值刻意放宽：正常用法里拖拽排序、批量移动会连着发好几个请求，
+// 一次整理二十来张卡片也就二十来次 —— 一分钟 120 次远在这之上，误伤不到人。
+// 成功也计数（每次写都是实打实的 D1 写入），但一分钟没动静就重新数。
+export const WRITE_GUARD_KEY = "auth.writeGuard";
+export const WRITE_FREE_ATTEMPTS = 120;
+export const WRITE_BASE_LOCK_MS = 30_000; // 第 121 次起锁 30 秒
+export const WRITE_MAX_LOCK_MS = 10 * 60_000; // 最多 10 分钟
+export const WRITE_COUNT_RESET_MS = 60 * 1000;
+
+/** 写操作限速的桶：账号 + 来源 IP（未登录 / 取不到 uid 时按匿名算） */
+export function writeBucket(request: Request, uid: number | null, trustXFF = false): string {
+    return `u${uid ?? "anon"}:${clientBucket(request, trustXFF)}`;
+}
+
+export async function readWriteGuard(
+    api: NavigationAPI,
+    bucket = "legacy"
+): Promise<ExportGuard> {
+    const store = await readStore(api, WRITE_GUARD_KEY);
+    const found = store[bucket];
+    if (!found) return { count: 0, until: 0, seen: 0 };
+    return {
+        count: typeof found.count === "number" && found.count > 0 ? found.count : 0,
+        until: typeof found.until === "number" && found.until > 0 ? found.until : 0,
+        seen: typeof found.seen === "number" ? found.seen : 0,
+    };
+}
+
+export async function writeWriteGuard(
+    api: NavigationAPI,
+    guard: LoginGuard,
+    bucket = "legacy"
+): Promise<void> {
+    await mutateGuard(api, WRITE_GUARD_KEY, bucket, () => ({ ...guard, seen: Date.now() }));
+}
+
+/**
+ * 检查并登记一次写操作。
+ *
+ * 返回 `null` 表示放行；否则是已经填好 `Retry-After` 的 429 响应，路由直接 return 它。
+ * 计数与锁定时长沿用登录那套指数退避（`computeLockAfterFailure`），
+ * 只是窗口与阈值换成写接口自己的。
+ */
+export async function enforceWriteGuard(
+    api: NavigationAPI,
+    bucket: string
+): Promise<Response | null> {
+    const guard = await readWriteGuard(api, bucket);
+    const now = Date.now();
+
+    if (guard.until > now) {
+        const retryAfter = Math.max(1, Math.ceil((guard.until - now) / 1000));
+        return Response.json(
+            { success: false, message: `操作太频繁，请 ${retryAfter} 秒后再试` },
+            { status: 429, headers: { "Retry-After": String(retryAfter) } }
+        );
+    }
+
+    const count = nextDecayedCount(guard, WRITE_COUNT_RESET_MS, now);
+    const lockMs = computeLockAfterFailure(
+        count,
+        WRITE_FREE_ATTEMPTS,
+        WRITE_BASE_LOCK_MS,
+        WRITE_MAX_LOCK_MS
+    );
+    await writeWriteGuard(api, { count, until: lockMs > 0 ? now + lockMs : 0 }, bucket);
+    return null;
 }

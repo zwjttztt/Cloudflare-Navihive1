@@ -9,8 +9,10 @@ import {
     EXPORT_FREE_ATTEMPTS,
     EXPORT_MAX_LOCK_MS,
     exportBucket,
+    enforceWriteGuard,
     nextExportCount,
     readExportGuard,
+    writeBucket,
     writeExportGuard,
 } from "../loginGuard";
 import { isBodyTooLarge, safeJson } from "../util";
@@ -24,6 +26,15 @@ import {
     webdavTest,
 } from "../webdav";
 import type { RouteCtx } from "./types";
+
+/**
+ * 单次导入的条数上限。
+ *
+ * 光限体积（10MB）不够：全是短记录的 JSON 能塞进几万条，整批 INSERT 会把 D1
+ * 单次请求顶满，写一半失败还得回滚。正常备份远到不了这个量级，真超了多半是文件不对劲。
+ */
+const MAX_IMPORT_GROUPS = 2_000;
+const MAX_IMPORT_SITES = 20_000;
 
 export async function handleBackupRoutes(ctx: RouteCtx): Promise<Response | null> {
     const {
@@ -111,6 +122,11 @@ export async function handleBackupRoutes(ctx: RouteCtx): Promise<Response | null
 
     // 数据导入路由
     else if (path === "import" && method === "POST") {
+        // 导入是全局最贵的一次写：整批 INSERT 再整批 DELETE，中途失败还要回滚。
+        // 先过写操作限速 —— 令牌泄露后被人反复丢大文件进来是最现实的打法。
+        const limited = await enforceWriteGuard(api, writeBucket(request, api.getCurrentUserId(), trustXFF));
+        if (limited) return limited;
+
         // 超大备份会拖垮 Worker：先用 Content-Length 拦一道（见 util.isBodyTooLarge）
         if (isBodyTooLarge(request)) {
             return Response.json(
@@ -135,8 +151,41 @@ export async function handleBackupRoutes(ctx: RouteCtx): Promise<Response | null
             );
         }
 
+        // 体积之外再限一次条数：10MB 的 JSON 可以塞进几万条短记录，
+        // 整批 INSERT 会把 D1 单次请求顶满、剩下的全失败（还得回滚）。
+        // 正常备份远到不了这个量级，真超了说明文件不对劲。
+        const groupCount = Array.isArray(data.groups) ? data.groups.length : 0;
+        const siteCount = Array.isArray(data.sites) ? data.sites.length : 0;
+        if (groupCount > MAX_IMPORT_GROUPS || siteCount > MAX_IMPORT_SITES) {
+            return Response.json(
+                {
+                    success: false,
+                    message: `备份内容过多（分组上限 ${MAX_IMPORT_GROUPS}、站点上限 ${MAX_IMPORT_SITES}），请分批导入`,
+                },
+                { status: 413 }
+            );
+        }
+
         // 导入结果里带新旧 id 映射（前端的星标 / 标签要翻译到新 id 上）
         const result = await api.importData(data as ExportData);
+
+        // 导出已经记了审计，导入同样要：它是唯一能「整体替换全站数据」的入口。
+        // 数据已经换完了，审计写失败绝不能回滚导入 —— 所以整块包进 try。
+        try {
+            const uid = api.getCurrentUserId();
+            const ip =
+                request.headers.get("CF-Connecting-IP") ||
+                request.headers.get("X-Forwarded-For") ||
+                "";
+            await api.writeAudit(
+                "data-import",
+                uid === null ? "anonymous" : String(uid),
+                ip,
+                JSON.stringify({ groups: groupCount, sites: siteCount })
+            );
+        } catch {
+            // 同上：审计失败不影响导入结果
+        }
         return Response.json(result);
     }
 
