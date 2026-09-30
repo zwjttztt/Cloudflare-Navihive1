@@ -90,6 +90,8 @@ import {
     readDeadLinks,
 } from "./utils/linkHealth";
 import { clearBootstrapCache, readBootstrapCache } from "./utils/firstPaintCache";
+import { sanitizeCustomCss } from "./utils/customCss";
+import { domCardEnv, focusCardByDirection as focusCardByDirectionImpl } from "./utils/cardFocus";
 import { ParsedBookmarkGroup } from "./utils/bookmarks";
 import { resolveIconApiUrl } from "./utils/iconApi";
 import {
@@ -1106,29 +1108,9 @@ function App() {
         }
 
         // 添加安全过滤，防止CSS注入攻击
-        const sanitizedCss = sanitizeCSS(customCss || "");
+        const sanitizedCss = sanitizeCustomCss(customCss || "");
         styleElement.textContent = sanitizedCss;
     }, [configs]);
-
-    // CSS安全过滤函数
-    const sanitizeCSS = (css: string): string => {
-        if (!css) return "";
-
-        // 移除可能导致XSS的内容
-        return (
-            css
-                // 移除包含javascript:的URL
-                .replace(/url\s*\(\s*(['"]?)javascript:/gi, "url($1invalid:")
-                // 移除expression
-                .replace(/expression\s*\(/gi, "invalid(")
-                // 移除import
-                .replace(/@import/gi, "/* @import */")
-                // 移除behavior
-                .replace(/behavior\s*:/gi, "/* behavior: */")
-                // 过滤content属性中的不安全内容
-                .replace(/content\s*:\s*(['"]?).*?url\s*\(\s*(['"]?)javascript:/gi, "content: $1")
-        );
-    };
 
     // 同步HTML的class以保持与现有CSS兼容
     useEffect(() => {
@@ -2538,75 +2520,8 @@ function App() {
     }, [groups, canUndo, canRedo, density, favoritesEnabled, glassEffects, allGroupsCollapsed, multiSelect, starFilter, railCollapsed, recordVisit, runUndo, runRedo, setViewMode, setDensity, toggleTheme, setFavoritesEnabled, setGlassEffects, setOpenShortcuts, handleOpenAddGroup, startGroupSort, handleOpenConfig, fetchAccountList, handleOpenBackup, setBookmarkOpen, runLinkCheck, setOpenVisits, toggleCollapseAll, exitMultiSelect, setMultiSelect, setRailCollapsed, clearVisits]);
 
     // 方向键在卡片之间移动焦点（按几何位置找同行/同列的邻居）
-    const focusCardByDirection = (dir: "left" | "right" | "up" | "down") => {
-        const cards = Array.from(
-            document.querySelectorAll<HTMLElement>('[data-nav-card="true"]')
-        );
-        if (cards.length === 0) return;
-
-        const active = document.activeElement as HTMLElement | null;
-        const current =
-            active && active.getAttribute("data-nav-card") === "true" ? active : null;
-
-        if (!current) {
-            cards[0].focus();
-            return;
-        }
-
-        const rect = current.getBoundingClientRect();
-        const cx = (rect.left + rect.right) / 2;
-        const cy = (rect.top + rect.bottom) / 2;
-
-        if (dir === "left" || dir === "right") {
-            const sameRow = cards.filter(card => {
-                if (card === current) return false;
-                const r = card.getBoundingClientRect();
-                return Math.abs((r.top + r.bottom) / 2 - cy) < 16;
-            });
-            if (sameRow.length === 0) return;
-            const target =
-                dir === "right"
-                    ? sameRow
-                          .filter(card => card.getBoundingClientRect().left > cx)
-                          .sort(
-                              (a, b) =>
-                                  a.getBoundingClientRect().left -
-                                  b.getBoundingClientRect().left
-                          )[0]
-                    : sameRow
-                          .filter(card => card.getBoundingClientRect().right < cx)
-                          .sort(
-                              (a, b) =>
-                                  b.getBoundingClientRect().right -
-                                  a.getBoundingClientRect().right
-                          )[0];
-            (target || current).focus();
-            return;
-        }
-
-        const sameColumn = cards.filter(card => {
-            if (card === current) return false;
-            const r = card.getBoundingClientRect();
-            return Math.abs((r.left + r.right) / 2 - cx) < 24;
-        });
-        if (sameColumn.length === 0) return;
-        const target =
-            dir === "down"
-                ? sameColumn
-                      .filter(card => card.getBoundingClientRect().top > cy)
-                      .sort(
-                          (a, b) =>
-                              a.getBoundingClientRect().top - b.getBoundingClientRect().top
-                      )[0]
-                : sameColumn
-                      .filter(card => card.getBoundingClientRect().bottom < cy)
-                      .sort(
-                          (a, b) =>
-                              b.getBoundingClientRect().bottom -
-                              a.getBoundingClientRect().bottom
-                      )[0];
-        (target || current).focus();
-    };
+    const focusCardByDirection = (dir: "left" | "right" | "up" | "down") =>
+        focusCardByDirectionImpl(dir, domCardEnv());
 
     // 点击搜索框与结果面板以外的地方才收起面板。
     // （不用 onBlur：点结果项时 mousedown 会先让输入框失焦，面板还没等到 click 就卸载了）
