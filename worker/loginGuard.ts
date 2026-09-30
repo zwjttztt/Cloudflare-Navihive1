@@ -1,6 +1,6 @@
 // worker/loginGuard.ts
 
-import type { NavigationAPI } from "../src/API/http";
+import type { NavigationAPI } from "../src/API/navigationApi";
 
 // ============ 登录失败限速 ============
 // 连续输错会越等越久，避免密码被无限次猜。

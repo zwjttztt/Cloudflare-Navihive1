@@ -12,8 +12,10 @@
 // 原型上就必须一一有同名函数；顺手钉住留在类里的几个核心方法没被搬丢。
 
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
 import test from "node:test";
-import { createAPI } from "../src/API/http";
+import { createAPI } from "../src/API/navigationApi";
 import { migrationImpl } from "../src/API/methods/migration";
 import { authImpl } from "../src/API/methods/auth";
 import { recoveryImpl } from "../src/API/methods/recovery";
@@ -83,4 +85,46 @@ test("搬走的方法总数没有缩水", () => {
         total >= MOVED_METHOD_COUNT,
         `原型上只有 ${total} 个搬来的方法，拆分时是 ${MOVED_METHOD_COUNT} 个 —— 有方法在搬运中丢了`,
     );
+});
+
+// ---------------- 打包边界：别把服务端代码摇进浏览器包 ----------------
+//
+// 浏览器包里出现 D1 的 SQL 是纯浪费：那 126 个方法体只有 Worker 会跑。
+// 出过一次：类和那句 Object.assign 都放在 http.ts 里，而前端 30 多处从 http.ts 引
+// 类型和常量 —— 顶层副作用让 Rollup 摇不掉，index chunk 从 199.77 KB 涨到 262.81 KB
+// （gzip 66.34 → 81.86），多出来的全是浏览器永不执行的死代码。
+// 拆出 navigationApi.ts 之后回来了。下面两条把这个边界钉住。
+
+const HTTP_TS = path.join(process.cwd(), "src", "API", "http.ts");
+
+test("http.ts 不能在运行时依赖 navigationApi（只允许 export type）", () => {
+    const src = fs.readFileSync(HTTP_TS, "utf8");
+    const offenders = src
+        .split("\n")
+        .map((line, i) => [i + 1, line] as const)
+        .filter(([, line]) => line.includes('"./navigationApi"') && !/^\s*export type\b/.test(line));
+    assert.deepEqual(
+        offenders.map(([n, line]) => `${n}: ${line.trim()}`),
+        [],
+        "http.ts 一旦运行时 import 了 navigationApi，126 个方法体就会被拖进浏览器包 —— 只能 export type",
+    );
+});
+
+test("浏览器包里不该出现 D1 的建表 / 回收站 SQL", (t) => {
+    const assets = path.join(process.cwd(), "dist", "client", "assets");
+    if (!fs.existsSync(assets)) {
+        t.diagnostic("没有 dist/client/assets，跳过（先跑 npm run build 才会检查）");
+        return;
+    }
+    const bundles = fs.readdirSync(assets).filter(f => f.startsWith("index-") && f.endsWith(".js"));
+    assert.ok(bundles.length > 0, "dist 里找不到 index chunk");
+    for (const f of bundles) {
+        const code = fs.readFileSync(path.join(assets, f), "utf8");
+        for (const needle of ["CREATE TABLE IF NOT EXISTS", "INSERT INTO recycle_bin"]) {
+            assert.ok(
+                !code.includes(needle),
+                `${f} 里出现了 ${needle} —— 服务端代码漏进浏览器包了，检查 http.ts 的顶层副作用`,
+            );
+        }
+    }
 });

@@ -16,7 +16,7 @@
  *     图标与上报是浏览器 <img> / report-only 发的，压根带不上 Authorization。
  *   - 受保护路由必须在鉴权中间件**之后**，且排在「强制改密」闸门之后。
  */
-import { NavigationAPI } from "../src/API/http";
+import { NavigationAPI } from "../src/API/navigationApi";
 import { runScheduledTasks } from "./cron";
 import {
     clientIp,

@@ -6,7 +6,8 @@
 // 库里搬走一半、界面还停在原样，用户刷新才发现少了一半。
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { NavigationAPI, resetMigrationCacheForTests } from "../src/API/http";
+import { resetMigrationCacheForTests } from "../src/API/http";
+import { NavigationAPI } from "../src/API/navigationApi";
 
 interface DbOptions {
     /** 这些 id 的 UPDATE 会命中一行（其余返回 rows_written: 0，即「没写进去」） */

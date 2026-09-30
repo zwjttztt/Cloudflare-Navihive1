@@ -13,7 +13,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { NavigationAPI, computeInactiveTimeline } from "../src/API/http";
+import { computeInactiveTimeline } from "../src/API/http";
+import { NavigationAPI } from "../src/API/navigationApi";
 import { hashPassword } from "../src/API/crypto";
 
 const DAY = 24 * 60 * 60;

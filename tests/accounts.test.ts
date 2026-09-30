@@ -4,7 +4,8 @@
 // 目的是把服务端的多账号规则钉死（谁能看到谁的数据、邀请码什么时候失效）。
 import test from "node:test";
 import assert from "node:assert/strict";
-import { NavigationAPI, resetMigrationCacheForTests } from "../src/API/http";
+import { resetMigrationCacheForTests } from "../src/API/http";
+import { NavigationAPI } from "../src/API/navigationApi";
 import { hashPassword } from "../src/API/crypto";
 
 type Row = Record<string, unknown>;

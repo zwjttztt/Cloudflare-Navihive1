@@ -17,7 +17,7 @@ import {
     readExportGuard,
     writeExportGuard,
 } from "../worker/loginGuard";
-import type { NavigationAPI } from "../src/API/http";
+import type { NavigationAPI } from "../src/API/navigationApi";
 
 /** 只用到了 getConfig / setConfig 两个方法的假 API */
 function makeApi() {

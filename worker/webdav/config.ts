@@ -3,7 +3,7 @@
 // 这一层最要紧的是那条安全约束：只有「测试连接」允许请求体临时指定一套地址，
 // 真正会碰到数据的操作（上传 / 列表 / 下载 / 删除）一律只认库里存的那套 ——
 // 否则任何登录账号都能临时指定目标，让 Worker 替它把请求发到内网去。
-import type { NavigationAPI } from "../../src/API/http";
+import type { NavigationAPI } from "../../src/API/navigationApi";
 import { safeJson } from "../util";
 import { DEFAULT_WEBDAV_PATH, type WebDavConfig } from "./types";
 

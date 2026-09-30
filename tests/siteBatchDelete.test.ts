@@ -6,7 +6,8 @@
 // 撤销再也找不回来。下面第 2 条用例就是守这个的。
 import test from "node:test";
 import assert from "node:assert/strict";
-import { NavigationAPI, resetMigrationCacheForTests } from "../src/API/http";
+import { resetMigrationCacheForTests } from "../src/API/http";
+import { NavigationAPI } from "../src/API/navigationApi";
 
 type Row = Record<string, unknown>;
 

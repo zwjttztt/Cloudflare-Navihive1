@@ -14,7 +14,7 @@
 // 失败策略：上报失败不能影响主流程，try/catch 兜住所有错。
 
 import type { Env } from "./types";
-import { NavigationAPI } from "../src/API/http";
+import { NavigationAPI } from "../src/API/navigationApi";
 import { isBlockedHost, safeJson } from "./util";
 
 // ============ 限速 ============

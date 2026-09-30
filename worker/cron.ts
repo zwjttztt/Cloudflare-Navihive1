@@ -10,7 +10,8 @@
 // D1 做端到端验证（harness/cron-check.mjs）。生产路径下 makeApi 默认 new NavigationAPI，
 // 行为和拆分前完全一致。
 
-import { NavigationAPI, CRON_LAST_ERROR_KEY, type Site } from "../src/API/http";
+import { CRON_LAST_ERROR_KEY, type Site } from "../src/API/http";
+import { NavigationAPI } from "../src/API/navigationApi";
 import type { Env } from "./types";
 import { configFromStored, readAllConfigs, runWebDavBackup } from "./webdav";
 import { safeFetch } from "./safeFetch";

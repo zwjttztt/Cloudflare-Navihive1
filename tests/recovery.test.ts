@@ -11,7 +11,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { verifyRecoveryToken, verifyPassword, isValidRecoveryPublicKey } from "../src/API/crypto";
-import { NavigationAPI } from "../src/API/http";
+import { NavigationAPI } from "../src/API/navigationApi";
 
 const enc = new TextEncoder();
 

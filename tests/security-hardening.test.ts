@@ -10,13 +10,8 @@
 // 单文件多次使用断言保证。
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import {
-    NavigationAPI,
-    sanitizeIconUrl,
-    normalizeImportData,
-    BACKUP_CREDENTIALS_CONFIG,
-    type Site,
-} from "../src/API/http";
+import { sanitizeIconUrl, normalizeImportData, BACKUP_CREDENTIALS_CONFIG, type Site } from "../src/API/http";
+import { NavigationAPI } from "../src/API/navigationApi";
 
 // ---------------- 极简内存版 D1（只撑起本文件要用到的几条查询） ----------------
 type Row = Record<string, unknown>;

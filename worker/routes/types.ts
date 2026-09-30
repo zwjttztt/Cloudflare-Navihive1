@@ -7,7 +7,7 @@
 // 约定：每个路由模块导出 `handle(ctx): Promise<Response | null>`，
 // 认领了就返回 Response，没认领返回 null，由 index.ts 继续问下一个模块。
 
-import type { NavigationAPI } from "../../src/API/http";
+import type { NavigationAPI } from "../../src/API/navigationApi";
 import type { Env } from "../types";
 
 export interface RouteCtx {

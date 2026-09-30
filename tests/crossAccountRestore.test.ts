@@ -13,7 +13,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { NavigationAPI, type ExportData } from "../src/API/http";
+import type { type ExportData } from "../src/API/http";
+import { NavigationAPI } from "../src/API/navigationApi";
 
 interface GroupRow {
     id: number;

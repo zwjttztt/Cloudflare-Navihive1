@@ -22,7 +22,7 @@ import {
 import { signJwt, verifyJwt } from "../src/API/crypto";
 import { isBodyTooLarge, MAX_REQUEST_BODY_BYTES } from "../worker/util";
 import { RETENTION_DAYS_MAX } from "../src/API/http";
-import { NavigationAPI } from "../src/API/http";
+import { NavigationAPI } from "../src/API/navigationApi";
 import { validateSite } from "../worker/validate";
 
 function b64url(obj: unknown): string {

@@ -4,7 +4,8 @@
 // 原来的 worker/webdav.ts 拆开后，这里顺手把子模块的导出原样转出去，
 // 所以 `from "../worker/webdav"` 这种老写法一行都不用改。
 import { decryptBackup, encryptBackup, isEncryptedBackup } from "../../src/API/crypto";
-import type { ExportData, NavigationAPI } from "../../src/API/http";
+import type { ExportData } from "../../src/API/http";
+import type { NavigationAPI } from "../../src/API/navigationApi";
 import { withBackupIntegrity } from "../../src/utils/backupIntegrity";
 import { errorMessage } from "../util";
 import { buildBackupFileName, selectAutoBackupsToPrune } from "./naming";

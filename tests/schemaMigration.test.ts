@@ -10,7 +10,8 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { NavigationAPI, resetMigrationCacheForTests } from "../src/API/http";
+import { resetMigrationCacheForTests } from "../src/API/http";
+import { NavigationAPI } from "../src/API/navigationApi";
 
 /** 内存里的表结构：表名 → 列名集合 */
 type Schema = Map<string, Set<string>>;
