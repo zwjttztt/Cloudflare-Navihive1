@@ -678,6 +678,33 @@ export class NavigationAPI {
         );`,
     ];
 
+    /**
+     * 索引（幂等）。
+     *
+     * 建这几条是因为：groups / sites 的每个查询都会被 scopeSql() 追加 `user_id = ?` 做账号隔离，
+     * 而 D1 里这两列没有索引，于是任何一次列表查询都是全表扫；定时清理同理 —— audit_log /
+     * recycle_bin / token_blacklist / invites 都是按时间范围 DELETE，没有索引就整表扫一遍。
+     * 审计日志是唯一会持续膨胀的表（每次写操作都留痕），扫的代价随使用时间线性增长。
+     *
+     * 注意：必须等所有「补列」迁移跑完才能建索引 —— groups / sites 的 user_id 是
+     * migrateOwnerColumns() 用 ALTER 加出来的，在它之前建会因列不存在直接报错。
+     * 所以这里单独成一个步骤，排在 runMigrations 的最后。
+     */
+    private static readonly INDEX_STATEMENTS = [
+        // 按分组取站点（最频繁的查询路径）
+        `CREATE INDEX IF NOT EXISTS idx_sites_group_id ON sites(group_id);`,
+        // 账号隔离：SELECT ... FROM sites WHERE user_id = ?
+        `CREATE INDEX IF NOT EXISTS idx_sites_user_id ON sites(user_id);`,
+        `CREATE INDEX IF NOT EXISTS idx_groups_user_id ON groups(user_id);`,
+        // 回收站：按账号列清单（ORDER BY id DESC）+ 定时清理按时间删
+        `CREATE INDEX IF NOT EXISTS idx_recycle_bin_owner ON recycle_bin(owner_user_id);`,
+        `CREATE INDEX IF NOT EXISTS idx_recycle_bin_deleted_at ON recycle_bin(deleted_at);`,
+        // 定时清理：审计日志 / 令牌黑名单 / 邀请码都按过期时间整批删
+        `CREATE INDEX IF NOT EXISTS idx_audit_log_created_at ON audit_log(created_at);`,
+        `CREATE INDEX IF NOT EXISTS idx_token_blacklist_exp ON token_blacklist(exp);`,
+        `CREATE INDEX IF NOT EXISTS idx_invites_expires_at ON invites(expires_at);`,
+    ];
+
     private async runMigrations(): Promise<void> {
         // 1) 建表：合并成一次 batch，只花一次 D1 往返（原来是 3 次 exec 串行）
         try {
@@ -722,9 +749,33 @@ export class NavigationAPI {
         // 5) 账号各自的令牌版本：见 bumpTokenVersion 的注释
         await this.migrateAccountSecurityColumns();
 
+        // 6) 索引：排在最后，因为它依赖上面补出来的 user_id 列（见 INDEX_STATEMENTS 注释）
+        await this.createIndexes();
+
         // 所有迁移步骤跑完，说明表结构已就绪：之后的查询出错就按「异常」处理（fail-closed），
         // 而不是「库还没建好」（fail-open）。
         this.dbReady = true;
+    }
+
+    /**
+     * 建索引。索引纯粹是性能优化，任何一条失败都不该让站点起不来，
+     * 所以整批失败就退回逐条、逐条再失败就只记日志继续。
+     */
+    private async createIndexes(): Promise<void> {
+        const statements = NavigationAPI.INDEX_STATEMENTS;
+        try {
+            await this.db.batch(statements.map(sql => this.db.prepare(sql)));
+        } catch (error) {
+            console.error("批量建索引失败，回退逐条执行:", error);
+            for (const sql of statements) {
+                try {
+                    await this.db.exec(sql);
+                } catch (indexError) {
+                    // 索引缺失只是查询变慢，不影响功能，不阻断启动
+                    console.error("创建索引失败（已忽略）:", sql, indexError);
+                }
+            }
+        }
     }
 
     /**
