@@ -196,7 +196,7 @@ test("新加密走 ENC2 头（10 万次迭代，Workers 也支持）", async () 
 });
 
 /** 手工按旧版 ENC1 格式（15 万次迭代）造一份备份，验证新代码仍能解开历史文件 */
-async function encryptLegacyV1(plain: Uint8Array, password: string): Promise<Uint8Array> {
+async function encryptLegacyV1(plain: Uint8Array<ArrayBuffer>, password: string): Promise<Uint8Array> {
     const salt = crypto.getRandomValues(new Uint8Array(16));
     const iv = crypto.getRandomValues(new Uint8Array(12));
     const raw = await crypto.subtle.deriveBits(

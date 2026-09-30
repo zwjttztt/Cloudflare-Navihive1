@@ -5,7 +5,9 @@ import reactRefresh from 'eslint-plugin-react-refresh'
 import tseslint from 'typescript-eslint'
 
 export default tseslint.config(
-  { ignores: ['dist'] },
+  // dist 是构建产物；script/tmp-tests 与 .tmp-check 是单测/类型检查的临时产物
+  // （单测在退出时清理，但沙箱等环境可能清理失败而留下，被误当成源码 lint 出一堆假错误）
+  { ignores: ['dist', 'script/tmp-tests', '.tmp-check'] },
   {
     extends: [js.configs.recommended, ...tseslint.configs.recommended],
     files: ['**/*.{ts,tsx}'],

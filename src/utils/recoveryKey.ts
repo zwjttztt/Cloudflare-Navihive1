@@ -9,6 +9,7 @@
 // 所有现代浏览器都支持）。算法写在 JWS 头的 alg 里，服务端按 alg 选择验签方式。
 
 import { hashPassword } from "../API/crypto";
+import type { Bytes } from "../API/crypto";
 
 export type RecoveryAlg = "EdDSA" | "ES256";
 
@@ -53,7 +54,7 @@ function b64urlEncode(bytes: Uint8Array): string {
     return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
-function b64urlDecode(s: string): Uint8Array {
+function b64urlDecode(s: string): Bytes {
     const b64 = s.replace(/-/g, "+").replace(/_/g, "/");
     const pad = b64.length % 4 ? "=".repeat(4 - (b64.length % 4)) : "";
     const bin = atob(b64 + pad);

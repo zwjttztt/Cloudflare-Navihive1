@@ -5,13 +5,28 @@
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
+/**
+ * 「由 ArrayBuffer 支撑」的字节视图。
+ *
+ * TypeScript 5.9 起 `Uint8Array` 是泛型：默认的 `Uint8Array<ArrayBufferLike>` 可以是
+ * SharedArrayBuffer 支撑的视图，因此不再满足 WebCrypto 的 `BufferSource`（要求
+ * `ArrayBufferView<ArrayBuffer>`）、`BlobPart`、`BodyInit`。而 `subarray()` 会原样保留
+ * 所在视图的泛型参数，所以从外部传进来的 `Uint8Array` 未必满足。
+ *
+ * 本项目所有字节都来自 `new Uint8Array(n)` / `arrayBuffer()` / atob 循环，不存在
+ * SharedArrayBuffer 支撑的视图；`asBytes` 只做类型重解释、不拷贝数据（改签名的地方
+ * 也尽量用「返回 `Bytes`」而不是到处断言，让约束沿着调用链自然收窄）。
+ */
+export type Bytes = Uint8Array<ArrayBuffer>;
+const asBytes = (view: Uint8Array): Bytes => view as unknown as Bytes;
+
 function b64urlEncode(bytes: Uint8Array): string {
     let bin = "";
     for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
     return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
-function b64urlDecode(s: string): Uint8Array {
+function b64urlDecode(s: string): Bytes {
     const b64 = s.replace(/-/g, "+").replace(/_/g, "/");
     const pad = b64.length % 4 ? "=".repeat(4 - (b64.length % 4)) : "";
     const bin = atob(b64 + pad);
@@ -89,7 +104,7 @@ export async function verifyJwt(
     return { valid: true, payload };
 }
 
-async function hmac(secret: string, data: Uint8Array): Promise<Uint8Array> {
+async function hmac(secret: string, data: Uint8Array): Promise<Bytes> {
     const key = await crypto.subtle.importKey(
         "raw",
         enc.encode(secret),
@@ -97,7 +112,7 @@ async function hmac(secret: string, data: Uint8Array): Promise<Uint8Array> {
         false,
         ["sign"]
     );
-    return new Uint8Array(await crypto.subtle.sign("HMAC", key, data));
+    return new Uint8Array(await crypto.subtle.sign("HMAC", key, asBytes(data)));
 }
 
 // ---------------- 密码哈希 (PBKDF2-SHA256) ----------------
@@ -135,7 +150,7 @@ async function pbkdf2(
     salt: Uint8Array,
     iterations: number,
     length: number
-): Promise<Uint8Array> {
+): Promise<Bytes> {
     const key = await crypto.subtle.importKey(
         "raw",
         enc.encode(password),
@@ -144,7 +159,7 @@ async function pbkdf2(
         ["deriveBits"]
     );
     const bits = await crypto.subtle.deriveBits(
-        { name: "PBKDF2", salt, iterations, hash: "SHA-256" },
+        { name: "PBKDF2", salt: asBytes(salt), iterations, hash: "SHA-256" },
         key,
         length * 8
     );
@@ -236,11 +251,11 @@ async function deriveAesKey(secret: string): Promise<CryptoKey> {
 }
 
 // 二进制版（用于备份文件整包加密）：IV(12) + 密文，与 encryptSecret 同套密钥派生。
-export async function encryptBytes(plain: Uint8Array, secret: string): Promise<Uint8Array> {
+export async function encryptBytes(plain: Uint8Array, secret: string): Promise<Bytes> {
     const iv = crypto.getRandomValues(new Uint8Array(12));
     const key = await aesKey(secret);
     const ct = new Uint8Array(
-        await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, plain)
+        await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, asBytes(plain))
     );
     const out = new Uint8Array(12 + ct.byteLength);
     out.set(iv, 0);
@@ -248,10 +263,11 @@ export async function encryptBytes(plain: Uint8Array, secret: string): Promise<U
     return out;
 }
 
-export async function decryptBytes(cipher: Uint8Array, secret: string): Promise<Uint8Array> {
+export async function decryptBytes(cipher: Uint8Array, secret: string): Promise<Bytes> {
     if (cipher.length <= 12) throw new Error("密文过短");
-    const iv = cipher.subarray(0, 12);
-    const ct = cipher.subarray(12);
+    const buf = asBytes(cipher);
+    const iv = buf.subarray(0, 12);
+    const ct = buf.subarray(12);
     const key = await aesKey(secret);
     return new Uint8Array(await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct));
 }
@@ -295,12 +311,14 @@ export function isEncryptedBackup(bytes: Uint8Array): boolean {
     return backupMagicVersion(bytes) !== null;
 }
 
-export async function encryptBackup(plain: Uint8Array, password: string): Promise<Uint8Array> {
+export async function encryptBackup(plain: Uint8Array, password: string): Promise<Bytes> {
     if (!password) throw new Error("请先设置备份密码");
     const salt = crypto.getRandomValues(new Uint8Array(BACKUP_SALT_BYTES));
     const iv = crypto.getRandomValues(new Uint8Array(BACKUP_IV_BYTES));
     const key = await backupKey(password, salt, BACKUP_ITERS);
-    const ct = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, plain));
+    const ct = new Uint8Array(
+        await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, asBytes(plain))
+    );
     const out = new Uint8Array(BACKUP_HEADER_BYTES + ct.byteLength);
     out.set(enc.encode(BACKUP_MAGIC), 0);
     out.set(salt, BACKUP_MAGIC.length);
@@ -309,16 +327,17 @@ export async function encryptBackup(plain: Uint8Array, password: string): Promis
     return out;
 }
 
-export async function decryptBackup(cipher: Uint8Array, password: string): Promise<Uint8Array> {
+export async function decryptBackup(cipher: Uint8Array, password: string): Promise<Bytes> {
     const version = backupMagicVersion(cipher);
     if (!version) throw new Error("这不是加密的备份文件");
     const iters = version === "v1" ? BACKUP_ITERS_V1 : BACKUP_ITERS;
-    const salt = cipher.subarray(BACKUP_MAGIC.length, BACKUP_MAGIC.length + BACKUP_SALT_BYTES);
-    const iv = cipher.subarray(
+    const buf = asBytes(cipher);
+    const salt = buf.subarray(BACKUP_MAGIC.length, BACKUP_MAGIC.length + BACKUP_SALT_BYTES);
+    const iv = buf.subarray(
         BACKUP_MAGIC.length + BACKUP_SALT_BYTES,
         BACKUP_HEADER_BYTES
     );
-    const ct = cipher.subarray(BACKUP_HEADER_BYTES);
+    const ct = buf.subarray(BACKUP_HEADER_BYTES);
     let key: CryptoKey;
     try {
         key = await backupKey(password, salt, iters);
@@ -388,7 +407,7 @@ async function importRecoveryPublicKey(
     alg: string,
     publicKeyB64url: string
 ): Promise<CryptoKey | null> {
-    let raw: Uint8Array;
+    let raw: Bytes;
     try {
         raw = b64urlDecode(publicKeyB64url);
     } catch {

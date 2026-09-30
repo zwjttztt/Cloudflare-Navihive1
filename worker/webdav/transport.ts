@@ -3,6 +3,7 @@
 // 内网拦截放在这里而不是配置层：判定的是「这个地址能不能发」，
 // 而真正要发的是 davFetch，放在一起不容易漏。
 import { errorMessage, isBlockedHost } from "../util";
+import type { Bytes } from "../../src/API/crypto";
 import { DEFAULT_WEBDAV_PATH, type WebDavConfig, type WebDavFile } from "./types";
 
 // 支持中文密码的 Base64 编码
@@ -49,14 +50,16 @@ export function buildWebDavFileUrl(folderUrl: string, filename: string): string 
 }
 
 // gzip 压缩（Workers 运行时原生支持 CompressionStream）
-export async function gzipBytes(input: string): Promise<Uint8Array> {
+export async function gzipBytes(input: string): Promise<Bytes> {
     const stream = new Blob([input]).stream().pipeThrough(new CompressionStream("gzip"));
     const buffer = await new Response(stream).arrayBuffer();
     return new Uint8Array(buffer);
 }
 
 // gzip 解压：读取旧的压缩备份时用到
-export async function gunzipToString(bytes: ArrayBuffer): Promise<string> {
+// 参数收窄成「ArrayBuffer 支撑」的视图（`Bytes`）：TS 5.9 起 `Uint8Array<ArrayBufferLike>`
+// 不再满足 BlobPart，而 `subarray()` 会保留泛型参数，只能靠调用方给出确定类型。
+export async function gunzipToString(bytes: Bytes): Promise<string> {
     const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"));
     return await new Response(stream).text();
 }
@@ -127,7 +130,10 @@ export async function davFetch(
     const init: RequestInit = {
         method,
         headers,
-        body: body ?? undefined,
+        // TS 5.9：BodyInit 只接受 ArrayBuffer 支撑的视图；本文件的字节都来自
+        // new Uint8Array(...) / arrayBuffer()，运行时 fetch 对任何 Uint8Array 都照收，
+        // 这里只做类型重解释，不拷贝数据（备份文件可能不小，避免白复制一遍）。
+        body: (body ?? undefined) as BodyInit | undefined,
         redirect: "manual",
         // 只给探测请求加超时：备份文件上传体积可能很大，不能被掐断
         ...(timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
@@ -139,13 +145,9 @@ export async function davFetch(
         if (!config.allowPrivateNetwork && isBlockedHost(target.hostname)) {
             throw new Error("WebDAV 重定向目标不允许指向内网或本机");
         }
-        let res: Response;
-        try {
-            res = await fetch(currentHref, init);
-        } catch (error) {
-            // 网络层错误原样上抛，由 describeWebDavError 翻成人话
-            throw error;
-        }
+        // 网络层错误原样上抛，由 describeWebDavError 翻成人话（这里不包 try/catch：
+        // 包了也只是原样 rethrow）
+        const res = await fetch(currentHref, init);
         if (res.status >= 300 && res.status < 400) {
             const loc = res.headers.get("location");
             if (!loc) return res; // 缺 Location：把 3xx 原样返回给调用方处理
