@@ -166,12 +166,20 @@ const SiteCard = memo(function SiteCard({
 
     // 图标候选源：自带图标 → 图标 API → 根目录 favicon → 公共 favicon 服务，
     // 哪个先加载成功用哪个，失败的会记进本地缓存，下次直接跳过
-    const primaryIcons = useMemo(() => iconCandidates(site, iconApi), [site.icon, site.url, iconApi]);
+    // 两个函数都只读 site.icon / site.url，所以依赖就按这两个字段列 ——
+    // 写成 [site] 的话，改个备注或标题也会把图标候选重算一遍。
+    const primaryIcons = useMemo(
+        () => iconCandidates({ icon: site.icon, url: site.url }, iconApi),
+        [site.icon, site.url, iconApi]
+    );
     // 兜底源（站点自己的 favicon.ico / 公共图标服务）只在主源全失败后才追加，
     // 平时每张卡片最多 2 个请求，几百张卡片也不会一上来就排出上千个
     const [fallbackAdded, setFallbackAdded] = useState(false);
     const iconSources = useMemo(
-        () => (fallbackAdded ? [...primaryIcons, ...iconFallbackCandidates(site)] : primaryIcons),
+        () =>
+            fallbackAdded
+                ? [...primaryIcons, ...iconFallbackCandidates({ url: site.url })]
+                : primaryIcons,
         [primaryIcons, fallbackAdded, site.url]
     );
     const [iconIdx, setIconIdx] = useState(0);

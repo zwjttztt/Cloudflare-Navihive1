@@ -549,16 +549,19 @@ function App() {
         };
         window.addEventListener("keydown", onKey);
         return () => window.removeEventListener("keydown", onKey);
-    }, []);
+        // setCommandOpen 来自 useAppDialogs，是 React 的 useState setter，引用恒定
+    }, [setCommandOpen]);
 
     // 菜单打开关闭
     const handleMenuOpen = (event: React.MouseEvent<HTMLButtonElement>) => {
         setMenuAnchorEl(event.currentTarget);
     };
 
-    const handleMenuClose = () => {
+    // 包成 useCallback：它进了很多 useMemo / useCallback 的依赖，
+    // 每次渲染换一个引用会让那些记忆化全部失效
+    const handleMenuClose = useCallback(() => {
         setMenuAnchorEl(null);
-    };
+    }, []);
 
     // 窗口尺寸变化会让底栏跨过 1344px 断点整个卸载（MobileTabBar 直接 return null），
     // 正开着的菜单 anchor 随之从 DOM 分离 —— MUI 下次重定位拿到全零坐标，
@@ -987,8 +990,10 @@ function App() {
     // 本文件的 applyRemoteExtras（配置 / 偏好 / 链接健康）里做。
     // 上传失败一律静默：同步是锦上添花，不能让网络问题干扰正常使用。
     const lastHealthPushRef = useRef("");
+    // 只跟着「开关」这一个值走：依赖写 [configs] 的话，改个站点标题也会把监听拆了重装一次
+    const linkHealthSync = configs[LINK_HEALTH_SYNC_CONFIG] === "true";
     useEffect(() => {
-        if (configs[LINK_HEALTH_SYNC_CONFIG] !== "true") {
+        if (!linkHealthSync) {
             onLinkHealthChange(null);
             return;
         }
@@ -1006,7 +1011,7 @@ function App() {
             onLinkHealthChange(null);
             if (timer) window.clearTimeout(timer);
         };
-    }, [configs[LINK_HEALTH_SYNC_CONFIG]]);
+    }, [linkHealthSync]);
 
     const lastPrefPushRef = useRef("");
     useEffect(() => {
@@ -1052,6 +1057,9 @@ function App() {
         // 确保初始化时重置排序状态
         setSortMode(SortMode.None);
         setCurrentSortingGroupId(null);
+        // 故意只在挂载时跑一次：checkAuthStatus / applyRemoteData 每次渲染都是新函数，
+        // 进 deps 会让这段每渲染重来一遍（重新读缓存、重发认证请求）。
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     // 设置文档标题
@@ -1195,7 +1203,7 @@ function App() {
                 persist: item,
             };
         });
-    }, [hydrateHistory, upsertSiteLocally, api]);
+    }, [hydrateHistory, upsertSiteLocally]);
 
     // 数据第一次到位后恢复一次：早于这时候 groupsRef 还是空的，校验会全判成「卡片不在了」
     const restoredUndoRef = useRef(false);
@@ -1225,11 +1233,19 @@ function App() {
 
     // 拉取全量数据：一次 bootstrap 请求搞定（原来要 1 次分组 + 每个分组一次站点 + 1 次配置）
     // silent=true 时不显示全屏 loading、不弹错误提示，用于修改后的后台同步
+    // fetchData 每次渲染都是新函数（useSites 里没包 useCallback），直接进 deps 会让下面两个
+    // effect 每渲染重跑一遍 —— 反复重装 online 监听、反复重放队列。用 ref 拿最新的一份，
+    // 既不留过期闭包，也不重复注册。
+    const fetchDataRef = useRef(fetchData);
+    useEffect(() => {
+        fetchDataRef.current = fetchData;
+    });
+
     // 离线期间入队的写入，恢复连接后自动重放；重放完顺手后台刷新一次本地数据
     useEffect(() => {
         installOnlineListener(api as unknown as MutationApi, (done) => {
             notify(`已恢复连接，自动同步了 ${done} 项离线改动`, "success");
-            fetchData({ silent: true });
+            void fetchDataRef.current({ silent: true });
         });
     }, [notify]);
 
@@ -1241,7 +1257,7 @@ function App() {
         flushOfflineQueue(api as unknown as MutationApi).then(done => {
             if (done > 0) {
                 notify(`已自动同步 ${done} 项离线改动`, "success");
-                fetchData({ silent: true });
+                void fetchDataRef.current({ silent: true });
             }
         });
     }, [notify]);
@@ -1283,7 +1299,7 @@ function App() {
             setDupPrompt({ url: url || "", hit, run });
             return false;
         },
-        []
+        [setDupPrompt]
     );
 
     // 更新站点：保存成功后直接用（本地这份 + 服务端回显）更新本地状态，界面即时生效，不再刷新页面
@@ -1638,7 +1654,7 @@ function App() {
                 handleError("更新分组失败: " + (error as Error).message);
             }
         },
-        [handleError]
+        [handleError, setGroups]
     );
 
     // 删除分组：连同组内卡片一起删，所以撤销要把「分组 + 卡片」整组重建回来
@@ -1753,18 +1769,7 @@ function App() {
                 handleError("删除分组失败: " + (error as Error).message);
             }
         },
-        [
-            handleError,
-            notify,
-            tags,
-            starred,
-            forgetSites,
-            setSiteTags,
-            setStarredMany,
-            pushHistory,
-            runUndo,
-            fetchData,
-        ]
+        [tags, starred, setGroups, forgetSites, pushHistory, notify, fetchData, setSiteTags, setStarredMany, runUndo, handleError]
     );
 
     // 入口：先确认再删（分组删除会连带清空其下所有卡片，误删代价大）
@@ -1847,7 +1852,7 @@ function App() {
                 handleError("更新站点排序失败: " + (error as Error).message);
             }
         },
-        [handleError]
+        [handleError, setGroups]
     );
 
     // 启动分组排序
@@ -1857,7 +1862,7 @@ function App() {
         handleMenuClose();
         setSortMode(SortMode.GroupSort);
         setCurrentSortingGroupId(null);
-    }, []);
+    }, [handleMenuClose]);
 
     // 启动站点排序
     const startSiteSort = useCallback((groupId: number) => {
@@ -1892,7 +1897,7 @@ function App() {
             if (oldIndex === -1 || newIndex === -1) return prev;
             return arrayMove(prev, oldIndex, newIndex);
         });
-    }, []);
+    }, [setGroups]);
 
     // 站点跨分组拖拽：同一分组内重排，跨分组则把卡片移动到目标分组
     // 注意：只重建受影响的分组对象，其它分组保持原引用，避免拖拽时全量卡片重渲染
@@ -1955,7 +1960,7 @@ function App() {
             };
             return next;
         });
-    }, []);
+    }, [setGroups]);
 
     const handleSiteSortDragOver = useCallback(
         (event: DragOverEvent) => {
@@ -2036,13 +2041,13 @@ function App() {
             reportError(error, { source: "site-order-save" });
             handleError("保存站点排序失败: " + (error as Error).message);
         }
-    }, [handleError]);
+    }, [handleError, setGroups]);
 
     // 新增分组相关函数
-    const handleOpenAddGroup = () => {
+    const handleOpenAddGroup = useCallback(() => {
         handleMenuClose();
         setOpenAddGroup(true);
-    };
+    }, [handleMenuClose]);
 
     const handleCloseAddGroup = () => {
         setOpenAddGroup(false);
@@ -2224,7 +2229,7 @@ function App() {
     };
 
     // 配置相关函数
-    const handleOpenConfig = () => {
+    const handleOpenConfig = useCallback(() => {
         handleMenuClose();
         setTempConfigs({ ...configs });
         // 管理员凭据每次打开都重新填，避免误存上一次的输入
@@ -2232,7 +2237,7 @@ function App() {
         setAuthCurrentPassword("");
         setAuthNewPassword("");
         setOpenConfig(true);
-    };
+    }, [handleMenuClose, configs]);
 
     // 修改管理员账号密码：需要验证当前密码，空白字段表示保持不变
     const submitAuthCredentials = async (): Promise<boolean> => {
@@ -2545,7 +2550,7 @@ function App() {
                 matchFilters,
                 usePinyin
             ),
-        [visibleGroups, favoritesGroup, favoritesEnabled, query, matchFilters, usePinyin]
+        [renderGroups, favoritesEnabled, favoritesGroup, query, matchFilters, usePinyin]
     );
 
     // 分组面板滚进视口时播一次「渐显上浮」（只播一次，来回滚动不会反复闪）。
@@ -2875,37 +2880,7 @@ function App() {
         ];
 
         return [...siteCommands, ...actionCommands];
-    }, [
-        groups,
-        viewMode,
-        density,
-        favoritesEnabled,
-        toggleTheme,
-        setViewMode,
-        setDensity,
-        setFavoritesEnabled,
-        glassEffects,
-        setGlassEffects,
-        canUndo,
-        canRedo,
-        runUndo,
-        runRedo,
-        handleOpenAddGroup,
-        startGroupSort,
-        handleOpenConfig,
-        handleOpenBackup,
-        runLinkCheck,
-        clearVisits,
-        notify,
-        recordVisit,
-        allGroupsCollapsed,
-        toggleCollapseAll,
-        multiSelect,
-        exitMultiSelect,
-        starFilter,
-        railCollapsed,
-        setRailCollapsed,
-    ]);
+    }, [groups, canUndo, canRedo, density, favoritesEnabled, glassEffects, allGroupsCollapsed, multiSelect, starFilter, railCollapsed, recordVisit, runUndo, runRedo, setViewMode, setDensity, toggleTheme, setFavoritesEnabled, setGlassEffects, setOpenShortcuts, handleOpenAddGroup, startGroupSort, handleOpenConfig, fetchAccountList, handleOpenBackup, setBookmarkOpen, runLinkCheck, setOpenVisits, toggleCollapseAll, exitMultiSelect, setMultiSelect, setRailCollapsed, clearVisits]);
 
     // 方向键在卡片之间移动焦点（按几何位置找同行/同列的邻居）
     const focusCardByDirection = (dir: "left" | "right" | "up" | "down") => {
@@ -2993,6 +2968,13 @@ function App() {
         return () => document.removeEventListener("mousedown", onMouseDown);
     }, [searchAnchor]);
 
+    // openResult 每次渲染都是新函数，进 deps 会让键盘监听每渲染拆装一次；
+    // 用 ref 拿最新的一份（和上面的 fetchDataRef 同一个套路）。
+    const openResultRef = useRef(openResult);
+    useEffect(() => {
+        openResultRef.current = openResult;
+    });
+
     // 「/」快速聚焦搜索框、方向键导航、搜索框内的上下键与回车
     useEffect(() => {
         const onKeyDown = (e: KeyboardEvent) => {
@@ -3040,7 +3022,7 @@ function App() {
                 if (e.key === "Enter" && flatResults.length > 0) {
                     e.preventDefault();
                     const picked = flatResults[activeResult] || flatResults[0];
-                    if (picked) openResult(picked.site);
+                    if (picked) openResultRef.current(picked.site);
                     return;
                 }
                 if (e.key === "Escape") {
@@ -3076,14 +3058,14 @@ function App() {
                     const picked = flatResults[index];
                     if (picked) {
                         e.preventDefault();
-                        openResult(picked.site);
+                        openResultRef.current(picked.site);
                     }
                     return;
                 }
                 const target = currentGroupSites[index];
                 if (target) {
                     e.preventDefault();
-                    openResult(target);
+                    openResultRef.current(target);
                 }
                 return;
             }
@@ -3105,7 +3087,7 @@ function App() {
 
         window.addEventListener("keydown", onKeyDown);
         return () => window.removeEventListener("keydown", onKeyDown);
-    }, [flatResults, activeResult, runUndo, runRedo, searchQuery, currentGroupSites]);
+    }, [flatResults, activeResult, runUndo, runRedo, searchQuery, currentGroupSites, setOpenShortcuts]);
 
     // context value 记忆化：只有相关配置真正变化时才通知消费方，避免无谓重渲染
     const appConfigValue = useMemo(

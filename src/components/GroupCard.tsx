@@ -112,7 +112,7 @@ const GroupCard: React.FC<GroupCardProps> = ({
     selectedIds,
     onToggleSelect,
 }) => {
-    const { viewMode, density, clearVisits, isStarred, starred } = useUIPrefs();
+    const { viewMode, density, clearVisits, isStarred } = useUIPrefs();
     const selectedSet = useMemo(() => new Set(selectedIds ?? []), [selectedIds]);
 
     /** 一键清空「最近访问」：清掉本机访问统计，分组随之消失（不弹提示，肉眼可见） */
@@ -187,7 +187,7 @@ const GroupCard: React.FC<GroupCardProps> = ({
         if (stars.length === 0) return group.sites;
         const rest = group.sites.filter(site => !isStarred(site.id));
         return [...stars, ...rest];
-    }, [group.sites, sortMode, globalSiteSort, isVirtualGroup, starred]);
+    }, [sortMode, globalSiteSort, isVirtualGroup, group.sites, isStarred]);
 
     // 分组本身变化时同步一次收起状态；同时监听「全部折叠/展开」广播与跨标签页改动
     useEffect(() => {
