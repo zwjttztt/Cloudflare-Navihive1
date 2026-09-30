@@ -1,11 +1,7 @@
 // src/api/http.ts
 // 不使用外部JWT库，改为内置的crypto API
 import { normalizeUrl } from "../utils/url";
-import {
-    computeBackupIntegrity,
-    verifyBackupIntegrity,
-    type BackupIntegrity,
-} from "../utils/backupIntegrity";
+import { computeBackupIntegrity, verifyBackupIntegrity } from "../utils/backupIntegrity";
 import { STARTER_GROUPS } from "./starterData";
 import {
     signJwt,
@@ -21,233 +17,63 @@ import {
     peekJwtClaim,
     type RecoveryPayload,
 } from "./crypto";
+import type { D1Database, D1PreparedStatement, Env } from "./schema";
+import type {
+    Group,
+    Site,
+    Config,
+    BootstrapData,
+    ExportData,
+    ImportResult,
+    LoginRequest,
+    LoginResponse,
+    RegisterResult,
+    UserRecord,
+    AccountInfo,
+    AccountSessionState,
+    InviteInfo,
+    LocalPrefsBackup,
+    SiteOrderUpdateResult,
+    SiteBatchDeleteResult,
+    RecycleBatchRestoreResult,
+} from "./types";
+import { computeInactiveTimeline } from "./types";
+import {
+    AUTH_USERNAME_KEY,
+    AUTH_PASSWORD_KEY,
+    WEBDAV_CONFIG_PREFIX,
+    TOKEN_VERSION_KEY,
+    MUST_CHANGE_PASSWORD_KEY,
+    RECOVERY_PUBLIC_KEY_CONFIG,
+    RETENTION_DAYS,
+    RETENTION_DAYS_KEY,
+    RETENTION_DAYS_MIN,
+    RETENTION_DAYS_MAX,
+    INACTIVE_DISABLE_DAYS_KEY,
+    INACTIVE_DELETE_GRACE_DAYS_KEY,
+    INACTIVE_DISABLE_DAYS_DEFAULT,
+    INACTIVE_DELETE_GRACE_DAYS_DEFAULT,
+    SESSION_STATE_TTL_MS,
+    DEFAULT_TOKEN_TTL,
+    REMEMBER_TOKEN_TTL,
+    INVITE_TTL_SECONDS,
+    BACKUP_CREDENTIALS_CONFIG,
+} from "./configKeys";
+import {
+    isEncryptedConfigKey,
+    isPrivateUserConfigKey,
+    isPerUserAppearanceKey,
+    isUserScopedConfigKey,
+    isSecretConfigKey,
+    isAuthConfigKey,
+    stripSecretConfigs,
+} from "./configGuards";
 
-// 定义D1数据库类型
-interface D1Database {
-    prepare(query: string): D1PreparedStatement;
-    exec(query: string): Promise<D1Result>;
-    batch<T = unknown>(statements: D1PreparedStatement[]): Promise<D1Result<T>[]>;
-}
-
-interface D1PreparedStatement {
-    bind(...values: unknown[]): D1PreparedStatement;
-    first<T = unknown>(column?: string): Promise<T | null>;
-    run<T = unknown>(): Promise<D1Result<T>>;
-    all<T = unknown>(): Promise<D1Result<T>>;
-}
-
-interface D1Result<T = unknown> {
-    results?: T[];
-    success: boolean;
-    error?: string;
-    meta?: unknown;
-}
-
-// 定义环境变量接口
-interface Env {
-    DB: D1Database;
-    AUTH_ENABLED?: string; // 是否启用身份验证
-    AUTH_USERNAME?: string; // 认证用户名
-    AUTH_PASSWORD?: string; // 认证密码
-    AUTH_SECRET?: string; // JWT密钥
-    AUTH_RECOVERY_PUBLIC_KEY?: string; // 恢复公钥（Ed25519 raw，base64url）；仅持公钥，私钥离线
-    NAVIHIVE_TRUST_XFF?: string; // 仅可信反代之后才设 "1"，否则 XFF 一律不信任（防绕过登录限速）
-    NAVIHIVE_SESSION_FAIL_OPEN_ON_ERROR?: string; // 逃生开关：账号状态查询报 DB 异常时改为放行（默认 fail-closed）
-}
-
-// 数据类型定义
-export interface Group {
-    id?: number;
-    name: string;
-    order_num: number;
-    created_at?: string;
-    updated_at?: string;
-}
-
-export interface Site {
-    id?: number;
-    group_id: number;
-    name: string;
-    url: string;
-    icon: string;
-    description: string;
-    notes: string;
-    // 站点登录凭据（可选，保存在数据库中，备份时会一起导出）
-    username?: string;
-    password?: string;
-    order_num: number;
-    created_at?: string;
-    updated_at?: string;
-}
-
-// WebDAV 备份配置
-export interface WebDavConfig {
-    url: string;
-    username: string;
-    password: string;
-    path: string;
-    /**
-     * 备份文件的加密口令（可选，留空 = 不加密）。
-     *
-     * 刻意不用 AUTH_SECRET 当备份密钥：AUTH_SECRET 是 JWT 签名密钥，轮换它会让此前
-     * 所有备份一起变成解不开的废文件；而备份一旦传到网盘，本来就不在服务端密钥的
-     * 保护范围内。用用户自己的口令，换服务端密钥不影响历史备份。
-     * 落库时和 webdav.password 一样加密（只是静态保护，密钥本身仍由用户掌握）。
-     */
-    backupPassword?: string;
-    /**
-     * 允许 WebDAV 服务器指向内网 / 本机地址（如家里 NAS 的 192.168.x.x、xxx.local）。
-     * 默认关闭 —— Worker 代发请求前会挡掉内网地址，防止账号一旦被攻破就把 Basic 凭据
-     * 打到内网服务上。只有确认 WebDAV 就在自己内网时才打开。
-     */
-    allowPrivateNetwork?: boolean;
-}
-
-// WebDAV 远端备份文件信息
-export interface WebDavFile {
-    name: string;
-    size: number;
-    lastModified: string;
-}
-
-/**
- * WebDAV 失败原因代码。
- * 「口令加密」「口令不对」都靠它区分：备份文件是别的账号传的、或本账号没存过备份口令时，
- * 前端要能弹出口令输入框，而不是笼统报一句「下载失败」让人不知道下一步该干嘛。
- */
-export type WebDavErrorCode = "encrypted" | "badPassword";
-
-// WebDAV 操作通用返回
-export interface WebDavResult<T = unknown> {
-    success: boolean;
-    message?: string;
-    data?: T;
-    code?: WebDavErrorCode;
-}
-
-// 新增配置接口
-export interface Config {
-    key: string;
-    value: string;
-    created_at?: string;
-    updated_at?: string;
-}
-
-// 只存在浏览器本机、但跟着备份文件一起走的偏好（星标站点 + 站点标签）。
-// 它们没有对应的数据库字段，导出/恢复都由前端负责写入 localStorage。
-export interface LocalPrefsBackup {
-    /** 加了星标的站点 id */
-    starred?: number[];
-    /** 站点 id -> 标签名数组（JSON 的键一定是字符串） */
-    tags?: Record<string, string[]>;
-}
-
-// 导出数据接口
-export interface ExportData {
-    groups: Group[];
-    sites: Site[];
-    /**
-     * 跟着「账号」走的配置（目前没有非敏感的按账号配置，所以这里是空的；
-     * webdav.* 属敏感配置，与 auth.* 一样不进备份）。
-     */
-    configs: Record<string, string>;
-    /**
-     * 全站共享的配置（标题 / 主题 / 背景…）。
-     * 只有「这份备份有权改全站」时才会写进文件（站点所有者，或未启用登录的单账号部署）。
-     * 老备份没有这个字段 —— 那时候全站设置混在 configs 里，导入时按同一套归属规则判断。
-     */
-    sharedConfigs?: Record<string, string>;
-    version: string;
-    exportDate: string;
-    /** 本机偏好（星标 / 标签），老备份文件里没有这个字段 */
-    localPrefs?: LocalPrefsBackup;
-    /**
-     * 内容摘要，导入前用来判断文件有没有损坏（见 utils/backupIntegrity）。
-     * 老备份没有这个字段 —— 导入时一律放行，不会因为少了它就恢复不了。
-     */
-    integrity?: BackupIntegrity;
-}
-
-/** 导入结果：成功与否 + 新旧 id 映射（前端的星标 / 标签记的是旧 id，要翻译一遍） */
-export interface ImportResult {
-    success: boolean;
-    message?: string;
-    /** 备份里的分组 id -> 库里新分到的 id（JSON 的键一定是字符串） */
-    groupIdMap: Record<string, number>;
-    /** 备份里的站点 id -> 库里新分到的 id */
-    siteIdMap: Record<string, number>;
-}
-
-/**
- * 批量改排序 / 移动卡片的结果。
- *
- * 以前只回一个 boolean：D1 没有跨语句事务，一批里第 50 条挂了，前 49 条照样写进去了，
- * 返回 false 之后前端整体不更新 —— 库里搬走一半、界面还停在原样，得手动刷新才看得到。
- * 现在把「成了哪几个、没成哪几个」如实回传，前端按实际结果更新并说明。
- */
-export interface SiteOrderUpdateResult {
-    /** 全部成功 */
-    success: boolean;
-    /** 真正写进去的卡片 id */
-    updated: number[];
-    /** 没写进去的卡片 id（卡片不存在、不是自己的，或目标分组不是自己的） */
-    failed: number[];
-}
-
-/** 批量删除的结果：items 里有 recycleId 的才算真删掉了 */
-export interface SiteBatchDeleteResult {
-    items: Array<{ id: number; recycleId?: number }>;
-    /** 一个都没动过的 id（卡片不存在 / 不是自己的 / 回收站没写进去） */
-    failed: number[];
-}
-
-/** 批量从回收站还原的结果：restored 直接给前端插回界面，省掉一次全量重拉 */
-export interface RecycleBatchRestoreResult {
-    /** 还原出来的站点（按原始 id 插回，密码已解密） */
-    restored: Site[];
-    failed: number[];
-}
-
-/** 站点元信息（/api/meta 抓回来的：新增卡片时一键补全用） */
-export interface SiteMeta {
-    title: string;
-    description: string;
-    image: string;
-    icon: string;
-}
-
-// 首屏/刷新一次性返回的数据（分组 + 平铺的站点 + 配置）
-export interface BootstrapData {
-    groups: Group[];
-    sites: Site[];
-    configs: Record<string, string>;
-}
-
-// 新增用户登录接口
-export interface LoginRequest {
-    username: string;
-    password: string;
-    /** 勾选「记住我」时签发更长期限的令牌（1 个月），实现免登录 */
-    remember?: boolean;
-}
-
-export interface LoginResponse {
-    success: boolean;
-    token?: string;
-    message?: string;
-    /** 首次部署的种子凭据还没换过：服务端会拦住其它写操作，直到改一次密码 */
-    mustChangePassword?: boolean;
-    // 多账号后登录响应带上账号身份，前端不必再发一次请求问「我是谁」
-    username?: string;
-    role?: "owner" | "user";
-}
-
-/** 注册结果：成功时顺带把账号信息回给前端，省掉一次 /auth/me */
-export interface RegisterResult {
-    success: boolean;
-    message: string;
-    user?: UserRecord;
-}
+// 类型 / 常量 / 键判定原本全在本文件里，现已拆到下面三个文件。
+// 这里原样再导出一遍，外面（Worker 路由、测试、前端）的 import 不用跟着改。
+export * from "./types";
+export * from "./configKeys";
+export * from "./configGuards";
 
 // 数据库迁移只需在每个 Worker isolate 中执行一次。
 // 注意：NavigationAPI 是每个请求 new 出来的，实例字段无法跨请求复用，
@@ -273,249 +99,9 @@ function randomInviteCode(length = 8): string {
         .join("");
 }
 
-/**
- * 管理员凭据保存在数据库的 configs 表里（键：auth.username / auth.password）。
- * wrangler vars 里的 AUTH_USERNAME / AUTH_PASSWORD 只当作「第一次部署」的默认种子：
- * 首次用到时写入数据库，之后就以数据库为准，
- * 这样反复重新部署（哪怕改了 vars）都不会把已经生效的账号密码改回去。
- */
-export const AUTH_USERNAME_KEY = "auth.username";
-export const AUTH_PASSWORD_KEY = "auth.password";
-// WebDAV 备份配置键的前缀（url / username / password / backupPassword / path / autoBackup …）
-export const WEBDAV_CONFIG_PREFIX = "webdav.";
-// WebDAV 备份凭据：明文落 D1 风险高，写入前用 AUTH_SECRET 派生密钥加密（见 setConfig/queryConfigs）
-export const WEBDAV_PASSWORD_KEY = "webdav.password";
-// WebDAV 备份口令：与 AUTH_SECRET 无关的独立口令，落库时同样加密（见 ENCRYPTED_CONFIG_KEYS）
-export const WEBDAV_BACKUP_PASSWORD_KEY = "webdav.backupPassword";
-// 令牌版本：改密 / 重置后 +1，让所有已签发的令牌立即失效（服务端可吊销）
-export const TOKEN_VERSION_KEY = "auth.tokenVersion";
-// 单点吊销：退出登录时把该令牌的 jti 拉黑，验签通过后还要再查一次。
-// 这里早年是 configs 的 auth.tokenBlacklist（一个 JSON 串），现已换成 token_blacklist 表：
-// 「读-改-写」会被并发登出互相覆盖，让注意事项失效 —— 详见 blacklistToken 的注释。
-// 首次部署后必须先改一次管理员密码（默认账号/密码来自部署变量，等于半公开）
-export const MUST_CHANGE_PASSWORD_KEY = "auth.mustChangePassword";
-// 恢复公钥（找回管理员密码用）：网页端生成密钥对后把公钥存这里，私钥只留在用户本地。
-// 不用 auth. 前缀——那个前缀的接口一律禁止读写，只能走专用的「校验当前密码」接口。
-export const RECOVERY_PUBLIC_KEY_CONFIG = "recovery.publicKey";
-
-// 保留期（天）：审计日志与回收站条目都只留这么久，超期由定时任务自动清除。
-// 两处都存的是「事后补救」性质的东西 —— 审计用于溯源、回收站用于反悔，
-// 留太久了既占 D1 行数，也让旧数据一直挂在界面上。7 天足够覆盖"昨天删错了"这类场景。
-export const RETENTION_DAYS = 7;
-/**
- * 保留期可以在「网站设置 → 数据保留」里改（站点所有者专属）。
- * 上下界都守住：0 天等于「每次定时任务都把自己刚记的东西删掉」，
- * 而放到几百天以外，D1 行数就是一笔随时间线性增长的账。
- */
-export const RETENTION_DAYS_KEY = "retention.days";
-export const RETENTION_DAYS_MIN = 1;
-export const RETENTION_DAYS_MAX = 365;
-
-// 长期未登录账号治理：阈值（天）存进 configs，owner 可在后台改；读取带默认值。
-// disableDays：超过这么久没活跃 -> 置为 disabled（禁止登录，数据保留）。
-// deleteGraceDays：disabled 之后再过这么久 -> 硬删（释放 D1 行数）。owner 永不被治理。
-export const INACTIVE_DISABLE_DAYS_KEY = "inactive.disableDays";
-export const INACTIVE_DELETE_GRACE_DAYS_KEY = "inactive.deleteGraceDays";
-export const INACTIVE_DISABLE_DAYS_DEFAULT = 180;
-export const INACTIVE_DELETE_GRACE_DAYS_DEFAULT = 30;
-
-/**
- * 会话存活状态：令牌验签通过之后，还要确认账号本身还在不在。
- * missing = 账号已被清除（沉睡治理 / 注销），但手上这张 30 天令牌还没过期。
- */
-export type AccountSessionState = "active" | "disabled" | "missing";
-
-/**
- * 会话状态缓存有效期。停用 / 清除是低频操作（每周扫描一次），
- * 缓存 60 秒足以让「刚被停用」最多延迟一分钟生效，同时把每个请求一次 D1 读降到每分钟一次。
- */
-const SESSION_STATE_TTL_MS = 60 * 1000;
-
-// 令牌有效期（秒）：普通登录 1 天；勾选「记住账号密码」后 30 天，实现「一个月内免登录」
-export const DEFAULT_TOKEN_TTL = 24 * 60 * 60;
-export const REMEMBER_TOKEN_TTL = 30 * 24 * 60 * 60;
-
-/**
- * 邀请码有效期：30 分钟。
- * 注册入口是公开的（否则新用户进不来），所以发码必须短命 ——
- * 就算码被截获，半小时后也只是一串废字符。
- */
-export const INVITE_TTL_SECONDS = 30 * 60;
-
-/** 账号记录（不含哈希，只给能下发的字段用） */
-export interface UserRecord {
-    id: number;
-    username: string;
-    /** owner = 站点所有者（首个账号），user = 被邀请进来的普通账号 */
-    role: "owner" | "user";
-    created_at?: string;
-}
-
-/** 账号列表项（owner 在「账号管理」里看到的那一列，含沉睡治理状态） */
-export interface AccountInfo {
-    id: number;
-    username: string;
-    role: "owner" | "user";
-    /** active = 正常；disabled = 已因长期未登录被停用（数据仍在，登录会被拒） */
-    status: "active" | "disabled";
-    /** 最后活跃时间（秒级时间戳；null = 从未登录过，用创建时间当锚点） */
-    lastActiveAt: number | null;
-    /** 被停用的时间（秒级时间戳） */
-    disabledAt: number | null;
-    createdAt: number | null;
-    /** 按当前阈值推算：active -> 预计被停用的时间；disabled -> 预计被清除的时间 */
-    willDisableAt: number | null;
-    willDeleteAt: number | null;
-}
-
-/**
- * 沉睡治理的时间轴推算（纯函数，便于单测，不碰数据库）。
- * 判定口径：
- *   - active：以「最后活跃时间」为锚点（从没活跃过就退回创建时间），锚点 + 停用阈值；
- *   - disabled：以「被停用时间」为锚点，锚点 + 清除宽限期 -> 预计被清除。
- * 「记住我」静默恢复也会刷新最后活跃时间，所以每天来的人不会被误判沉睡。
- */
-export function computeInactiveTimeline(
-    base: {
-        status: string;
-        lastActiveAt: number | null;
-        disabledAt: number | null;
-        createdAt: number | null;
-    },
-    disableDays: number,
-    graceDays: number
-): { willDisableAt: number | null; willDeleteAt: number | null } {
-    const day = 24 * 60 * 60;
-    if (base.status === "disabled") {
-        // 已停用：只关心「什么时候会被清除」
-        if (base.disabledAt === null) return { willDisableAt: null, willDeleteAt: null };
-        return { willDisableAt: null, willDeleteAt: base.disabledAt + graceDays * day };
-    }
-    // active：算「什么时候会被停用」
-    const anchor = base.lastActiveAt ?? base.createdAt;
-    if (anchor === null) return { willDisableAt: null, willDeleteAt: null };
-    return { willDisableAt: anchor + disableDays * day, willDeleteAt: null };
-}
-
-/** 邀请码信息（生成后返回给前端展示） */
-export interface InviteInfo {
-    code: string;
-    /** 过期时间（秒级时间戳） */
-    expiresAt: number;
-    /** 有效期秒数，前端用来显示「30 分钟内有效」 */
-    ttlSeconds: number;
-}
-
-// 敏感配置：不参与备份文件的导入导出（管理员 / WebDAV 凭据）
-const SECRET_CONFIG_PREFIXES = ["auth.", "webdav."];
-
-/**
- * 同样不进备份文件、但必须整键匹配的几个配置。
- * 不能写进上面的前缀表：`link.health` 作为前缀会把 `link.healthSync` 一起匹配掉，
- * 那个开关是要跟着备份走的（换了设备也保持原样）。
- *
- * - link.health / pref.starred / pref.tags 都是「服务端镜像」：
- *   星标标签在备份里有专门的 localPrefs 字段承载，重复带一份只会让人看不懂；
- *   失效记录则是可重测的临时数据，没必要让备份文件胖一圈。
- */
-const SECRET_CONFIG_KEYS = ["link.health", "pref.starred", "pref.tags"];
-
-/**
- * 「备份文件里要不要带上网站登录凭据」的配置键。
- * 存服务端而不是只放前端，是为了让每周的定时备份（跑在 Worker 的 cron 里）也遵守同一个开关。
- * 默认带上（保持老行为），只有显式写成 "false" 才抹掉。
- */
-export const BACKUP_CREDENTIALS_CONFIG = "backup.includeCredentials";
-
-/**
- * 定时任务最近一次失败的留痕（值是 JSON：{ task, message, at }）。
- *
- * 定时任务跑在 Worker 里，失败时只有一行 console —— 页面上看不到，于是「每周自动备份
- * 其实已经连着失败三个月」这种事只能靠恢复那天才发现。现在失败写这里、成功清掉，
- * 前端读它给所有者一条明确提示（普通账号读不到全站配置，正好也不会被吓到）。
- */
-export const CRON_LAST_ERROR_KEY = "cron.lastError";
-
 /** 去掉每个站点的账号密码，其它字段原样保留 */
 export function stripSiteCredentials(sites: Site[]): Site[] {
     return sites.map(site => ({ ...site, username: "", password: "" }));
-}
-
-/**
- * 落库前要用 AUTH_SECRET 派生密钥加密的配置键。
- * 两个 WebDAV 凭据都在这里：明文落 D1，导一份库就等于把网盘账号交出去了。
- * 注意：这里只是「静态保护」，备份口令本身不是 AUTH_SECRET —— 备份文件用它自己的
- * 口令加密，换 AUTH_SECRET 不影响已有备份能不能解开。
- */
-const ENCRYPTED_CONFIG_KEYS = [WEBDAV_PASSWORD_KEY, WEBDAV_BACKUP_PASSWORD_KEY];
-
-function isEncryptedConfigKey(key: string): boolean {
-    return ENCRYPTED_CONFIG_KEYS.includes(key);
-}
-
-/**
- * 每个账号一份的配置，分两类：
- *
- * 1. **严格私有**（webdav.*）：网盘地址 / 账号 / 口令，绝不能让别人看见 ——
- *    存 user_configs 而不是全局 configs，否则 A 填的网盘密码，B 一登录就能在
- *    「数据备份」里看到，等于把别人的网盘凭据摆在页面上。读的时候也不回落全站。
- *
- * 2. **外观**（site.*：标题 / 主题色 / 背景 / 自定义 CSS）：每人一份，但**允许回落全站**。
- *    站点所有者那一份就写在全局 configs 里 —— 它同时是「未登录时的登录页外观」和
- *    其它账号的初始外观（自己没改过就跟着站点走）。普通账号改的是自己那份，
- *    不会把整站长什么样改掉，也不会因为没配任何东西而看到一片空白。
- */
-const PRIVATE_USER_CONFIG_PREFIXES = [WEBDAV_CONFIG_PREFIX];
-/**
- * 必须整键匹配的私有键：死链巡检快照。
- * 不能写成前缀 —— `link.health` 会把开关 `link.healthSync` 一起匹配掉，
- * 而那个开关是「这台设备要不要同步」的偏好，本来就属于全站/本机层面。
- */
-const PRIVATE_USER_CONFIG_KEYS = ["link.health"];
-const PER_USER_APPEARANCE_PREFIXES = ["site."];
-
-function isPrivateUserConfigKey(key: string): boolean {
-    return (
-        PRIVATE_USER_CONFIG_PREFIXES.some(prefix => key.startsWith(prefix)) ||
-        PRIVATE_USER_CONFIG_KEYS.includes(key)
-    );
-}
-
-export function isPerUserAppearanceKey(key: string): boolean {
-    return PER_USER_APPEARANCE_PREFIXES.some(prefix => key.startsWith(prefix));
-}
-
-/**
- * 该键是否「账号自己就能写」—— 路由层用它判断要不要校验站点所有者。
- * 两类都算：写进去的不是全站共享的外观，就是账号自己的私有配置。
- */
-export function isUserScopedConfigKey(key: string): boolean {
-    return isPrivateUserConfigKey(key) || isPerUserAppearanceKey(key);
-}
-
-// 判断某个配置键是否属于敏感信息
-export function isSecretConfigKey(key: string): boolean {
-    return (
-        SECRET_CONFIG_PREFIXES.some(prefix => key.startsWith(prefix)) ||
-        SECRET_CONFIG_KEYS.includes(key)
-    );
-}
-
-// 管理员凭据额外连正常的配置读取都不返回，避免出现「拿到配置就等于拿到密码」。
-// 注意：WebDAV 凭据要照常下发，前端「备份」弹窗靠它回填已保存的配置。
-export function isAuthConfigKey(key: string): boolean {
-    return key.startsWith("auth.");
-}
-
-// 去掉敏感配置后再返回（用于写入备份文件）
-export function stripSecretConfigs(configs: Record<string, string>): Record<string, string> {
-    const safe: Record<string, string> = {};
-    for (const [key, value] of Object.entries(configs)) {
-        if (!isSecretConfigKey(key)) {
-            safe[key] = value;
-        }
-    }
-    return safe;
 }
 
 // API 类
