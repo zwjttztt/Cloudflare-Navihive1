@@ -312,7 +312,12 @@ class InMemoryD1 {
         return mode === "first" ? null : [];
     }
 
-    private async write(sql: string, args: unknown[]): Promise<{ success: boolean; meta?: { last_row_id?: number } }> {
+    // 真实 D1 的 run() 对 SELECT 也回带结果，写语句回带 meta.changes，
+    // 所以这里的返回类型得把这三种都容下（Row / null 是 SELECT 那条路）
+    private async write(
+        sql: string,
+        args: unknown[]
+    ): Promise<{ success: boolean; meta?: { last_row_id?: number; changes?: number } } | Row | null> {
         if (/INSERT INTO configs/.test(sql)) {
             this.configs.set(String(args[0]), String(args[1]));
             return { success: true };

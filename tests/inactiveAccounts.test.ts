@@ -93,7 +93,7 @@ class MockD1 {
         // 扫描候选：active 且非 owner 且锚点早于阈值（arg0 = 阈值）
         if (s.includes("COALESCE(last_active_at") && s.trim().startsWith("SELECT")) {
             return this.users
-                .filter(u => u.role !== "owner" && u.status === "active" && this.anchor(u) < args[0])
+                .filter(u => u.role !== "owner" && u.status === "active" && this.anchor(u) < (args[0] as number))
                 .map(u => ({ id: u.id }));
         }
 
@@ -118,7 +118,7 @@ class MockD1 {
                         u.role !== "owner" &&
                         u.status === "disabled" &&
                         u.disabled_at !== null &&
-                        u.disabled_at < args[0]
+                        u.disabled_at < (args[0] as number)
                 )
                 .map(u => ({ id: u.id }));
         }

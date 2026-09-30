@@ -13,7 +13,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import type { type ExportData } from "../src/API/http";
+import type { ExportData } from "../src/API/http";
 import { NavigationAPI } from "../src/API/navigationApi";
 
 interface GroupRow {
@@ -40,8 +40,8 @@ class MockD1 {
     /** 注入写入失败：站点名等于它就抛错，用来验证「导入失败不该清掉现有数据」 */
     failSiteName: string | null = null;
 
-    private nextGroupId = 1;
-    private nextSiteId = 1;
+    nextGroupId = 1;
+    nextSiteId = 1;
 
     private normalize(sql: string): string {
         return sql.replace(/\s+/g, " ").trim();
@@ -208,7 +208,7 @@ const backup: ExportData = {
         { id: 1, name: "常用工具", order_num: 0 },
         { id: 2, name: "开发", order_num: 1 },
     ],
-    sites: [{ id: 10, group_id: 1, name: "示例", url: "https://example.com", order_num: 0 }],
+    sites: [{ id: 10, group_id: 1, name: "示例", url: "https://example.com", icon: "", description: "", notes: "", order_num: 0 }],
     configs: {},
     version: "1.3",
     exportDate: new Date().toISOString(),
@@ -331,8 +331,8 @@ test("导入中途失败：现有数据一条都不能少（新写入的行要�
     const result = await api.importData({
         groups: [{ id: 1, name: "备份分组", order_num: 0 }],
         sites: [
-            { id: 10, group_id: 1, name: "能写进去的站点", url: "https://a.com", order_num: 0 },
-            { id: 11, group_id: 1, name: "写不进去的站点", url: "https://b.com", order_num: 1 },
+            { id: 10, group_id: 1, name: "能写进去的站点", url: "https://a.com", icon: "", description: "", notes: "", order_num: 0 },
+            { id: 11, group_id: 1, name: "写不进去的站点", url: "https://b.com", icon: "", description: "", notes: "", order_num: 1 },
         ],
         configs: {},
         version: "1.3",

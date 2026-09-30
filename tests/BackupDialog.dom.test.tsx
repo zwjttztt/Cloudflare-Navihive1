@@ -124,7 +124,9 @@ function counter<T = unknown>() {
     const calls: T[] = [];
     return {
         calls,
-        fn: (...args: never[]) => void calls.push(args as unknown as T),
+        // rest 参数而不是写死几个：这样 fn 既能接 (data, overwrite) 这种多参回调，
+        // 也能赋给零参数的 props（onClose）——形参比目标签名多会不兼容
+        fn: (...args: unknown[]) => void calls.push(args as unknown as T),
         get count() {
             return calls.length;
         },

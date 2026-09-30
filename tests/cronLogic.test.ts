@@ -193,7 +193,7 @@ test("HEALTH_KEY 与 link.health 一致", () => {
 function mockFetch(handler: (url: string, init: { method: string }) => { status: number } | Promise<{ status: number }>) {
     const calls: { url: string; method: string }[] = [];
     const prev = globalThis.fetch;
-    // @ts-expect-error 测试里用最小替身覆盖全局 fetch
+    // 全局 fetch 换成最小替身：返回值只要满足 safeFetch 用到的那几个字段就够
     globalThis.fetch = async (url: string | URL | Request, init?: RequestInit) => {
         const u = typeof url === "string" ? url : (url as URL).href;
         const method = (init?.method as string) || "GET";
@@ -212,7 +212,6 @@ function mockFetch(handler: (url: string, init: { method: string }) => { status:
     return {
         calls,
         restore: () => {
-            // @ts-expect-error -- 测试里临时替换全局 fetch，这里还原成原来的引用
             globalThis.fetch = prev;
         },
     };

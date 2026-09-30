@@ -117,7 +117,9 @@ function counter<T = unknown>() {
     const calls: T[] = [];
     return {
         calls,
-        fn: (arg: T) => void calls.push(arg),
+        // rest 参数：onUpdate 要 (site) => void、onClose 只要 () => void，
+        // 形参个数写死成 1 就没法赋给零参数的那个
+        fn: (...args: unknown[]) => void calls.push(args[0] as T),
         get count() {
             return calls.length;
         },

@@ -940,7 +940,7 @@ test("恢复密钥：被停用的账号找回后自动恢复可用（否则重�
     (store.users.find(u => u.id === aliceId) as Row).status = "disabled";
     const blocked = await api.login({ username: "alice", password: "password123" });
     assert.equal(blocked.success, false, "停用期间不能放行");
-    assert.match(blocked.message, /停用/);
+    assert.match(blocked.message ?? "", /停用/);
 
     const token = await signRecoveryJws(privKey, {
         username: "",

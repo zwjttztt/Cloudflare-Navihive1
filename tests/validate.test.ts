@@ -141,16 +141,16 @@ test("validateSite 多个字段同时报错都被收集", () => {
 // ============ validateConfig ============
 
 test("validateConfig 接受非空字符串", () => {
-    const r = validateConfig({ key: "site.theme", value: "dark" });
+    const r = validateConfig({ value: "dark" });
     assert.equal(r.valid, true);
 });
 
 test("validateConfig value 为空报错", () => {
-    const r = validateConfig({ key: "x", value: "" });
+    const r = validateConfig({ value: "" });
     assert.equal(r.valid, false);
 });
 
 test("validateConfig value 非字符串报错", () => {
-    const r = validateConfig({ key: "x", value: 123 as unknown as string });
+    const r = validateConfig({ value: 123 as unknown as string });
     assert.equal(r.valid, false);
 });

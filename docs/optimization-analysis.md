@@ -20,11 +20,20 @@
 | vendor-*.js | 94 KB | 42 KB |
 | index-*.css | 14 KB | 4 KB |
 | **首屏 JS 合计** | **869 KB** | **≈281 KB** |
-| Roboto 字体（latin，现 3 字重 × woff2+woff） | ≈ 127 KB（precache 全量） | — |
-| 弹窗 chunk（10 个，全部 lazy） | 70 KB | 28 KB（不进首屏） |
+| Roboto 字体（latin，现 3 字重 × woff2+woff） | ≈ 127 KB（**运行时按需下**，不在 precache） | — |
+| 弹窗 chunk（10 个，全部 lazy） | 70 KB | 28 KB（首次访问不进首屏） |
 
 已做对的：全部弹窗 `React.lazy`、pinyin-match 按需 import、字体只引 latin 子集、
 bootstrap 已带弱 ETag/304、SW 分层缓存（API 永不缓存）。
+
+> **两处口径修正**（2026-09-30 复核，早先写错过一次）：
+> - 字体那 127 KB **不在 precache 里**。`dist/client/precache-manifest.json` 只有 16 条，
+>   全是 JS/CSS；SW 对 `destination === "font"` 走的是**运行时缓存**（CacheFirst 之类），
+>   也就是说只有页面上真用到了某个字重才会去下。所以「字体」这一行既不算首屏、
+>   也不算 precache 流量，删字重省的是**用到了才付**的钱。
+> - 「弹窗 70 KB 不进首屏」**只在首次访问成立**：10 个 lazy chunk 全在 precache 清单里，
+>   SW 安装完会在后台把 70 KB 全量拉走。它换来的不是「少下 70 KB」，而是
+>   「首屏不用等这 70 KB」。别拿它当省流量的成果报。
 
 ### 代码规模（2026-09-30 校对）
 
@@ -48,10 +57,17 @@ bootstrap 已带弱 ETag/304、SW 分层缓存（API 永不缓存）。
 `@cloudflare/workers-types` 已从 dependencies 移除；脚本统一为 npm 风格；
 `name` / `version` 改成 `navihive` / `0.1.0`。
 
-**3. 🔶 部分完成 —— 字体瘦身（还能再省 ~85KB precache）**
+**3. 🔶 部分完成 —— 字体瘦身（收益比原先估的小很多，优先级已下调）**
 300 的细体已经砍掉了（现在是 400/500/700 三档 × woff2+woff ≈ 127KB）。
-剩下的两步还没做：再砍到 2 个字重（400 + 500 或 700）、去掉 `.woff` 回退
-（woff2 覆盖率已 >97%，老浏览器退到系统字体即可），能再省一半文件数和约 85KB。
+剩下两步没做：再砍到 2 个字重、去掉 `.woff` 回退。
+
+⚠️ **原先这里写「还能再省 ~85KB precache」是错的**，2026-09-30 复核后更正：
+- 字体**根本不在 precache**（见上面「两处口径修正」），省的是运行时流量，不是首屏；
+- 去掉 `.woff` 实际省 **0** 字节 —— @fontsource 的 `src` 列表里 woff2 在 woff 之前，
+  现代浏览器永远只下 woff2，`.woff` 只是给老浏览器留的回退，普通访问压根不会请求它；
+- 真正能省下的只有「砍一个字重」那一份 ≈ 22 KB，而且只对**确实用到该字重**的页面成立。
+
+结论：还值得做（纯删减、零风险），但别再按 85 KB 预期它。适合顺手清，不值得单开一轮。
 
 **4. ✅ 已完成 —— CSP 收紧 + 上报**
 `public/_headers` 已经是**强制生效**的 CSP（不再是 Report-Only），并带了
@@ -135,11 +151,24 @@ tree-shaking 已生效，108KB 是真实用量。再往下只有两条路：换�
 interface 声明合并**只补类型**，TS 不会核实原型上真有这些方法，某个域漏加进混回列表时
 编译照样过，上线后才炸。已做变异验证：摘掉 config 域，用例立刻红。
 
-**B. ✅ 已完成 —— 渲染层补单测（SiteCard / GroupCard）**
-原先这两个组件合计约 2000 行、**零用例**，只有 CI 冒烟那十几条断言在守着。
-现在补了 `tests/siteCard.dom.test.tsx`(7) 与 `tests/groupCard.dom.test.tsx`(8)，
-跑在 jsdom 上（见 `script/unit-tests.mjs` 的 DOM banner）。
-写这类用例有几个坑，后来者别再踩：
+**B. ✅ 已完成 —— 渲染层补单测（登录 / 设置 / 账号 / 两张卡片）**
+按「从没被任何测试加载过的 src 文件」排过一遍序（105 个文件里 49 个零覆盖），
+挑了最大、最容易改坏又最不敢改的几块补齐：
+
+| 用例文件 | 例数 | 覆盖的组件 |
+|---|---|---|
+| `tests/siteCard.dom.test.tsx` | 7 | SiteCard（1167 行） |
+| `tests/groupCard.dom.test.tsx` | 8 | GroupCard（830 行） |
+| `tests/loginForm.dom.test.tsx` | 15 | LoginForm（726 行，登录 / 注册 / 找回三视图） |
+| `tests/settingsDialog.dom.test.tsx` | 10 | SettingsDialog（756 行） |
+| `tests/accountDialog.dom.test.tsx` | 11 | AccountDialog（739 行） |
+
+钉住的都是「改坏了不会报错、但用户会难受」的那类行为：
+记住我有没有如实传出去、注册的三道前端校验、非所有者的权限降级、
+生成私钥前必须先验当前密码、沉睡阈值填 0 时本地拦截 ——
+以及一条安全断言：**新密码明文不得出现在恢复令牌里**（令牌里只带 PBKDF2 哈希）。
+
+跑在 jsdom 上（见 `script/unit-tests.mjs` 的 DOM banner）。写这类用例有几个坑，后来者别再踩：
 - jsdom 环境**没挂 `localStorage`**，组件里是直接写 `localStorage.getItem` 的，
   测试文件开头要自己 `Object.defineProperty(globalThis, "localStorage", { value: window.localStorage })`。
 - 启动脚本给的 `IntersectionObserver` 是**永不触发**的替身，正好用来测懒挂载；
@@ -148,14 +177,26 @@ interface 声明合并**只补类型**，TS 不会核实原型上真有这些方
 - 失效链接记录 `navihive:deadLinks` 是按 **URL** 做键的，不是按站点 id。
 - 「最近访问」的 id 是 `-1`，它自己有「清空」分支会接管标题栏 —— 想测
   `canManageGroup`（负 id 不给增删改）要用 `-2` 之类的其它负数，否则测了也白测。
+- 提交中的按钮文字会被换成进度圈，按**文案找按钮**会直接找不到人 ——
+  查提交按钮请用 `form button[type="submit"]`。
+- 给受控输入赋值必须走原生 value setter 再派发 `input`，直接改 `el.value` 会被
+  React 的 value tracker 吞掉，`onChange` 不触发。
+- 组件是受控的（值都在父组件）时，用一个小 Harness 持有 state，别直接喂死值 ——
+  否则「改完状态回滚没回滚」这类行为测不出来。
 
-**C. ⬜ `tests/` 没被类型检查覆盖（拆 http.ts 时发现的缺口）**
-`tsconfig.json` 只引用了 app / node / worker 三个 project，`include` 分别是
+**C. ✅ 已完成 —— `tests/` 进类型检查**
+`tsconfig.json` 原先只引用了 app / node / worker 三个 project，`include` 分别是
 `src` / 构建脚本 / `worker`，**没有一个是 `tests`**。所以 `npm run typecheck` 全绿
-不代表测试文件没有类型错误 —— 这次把 `createAPI` 从 `http.ts` 挪走时，
-tsc 一声不响（因为没检查测试），是 esbuild 打包阶段才暴露的。
-代价很低，改 `tsconfig.node.json` 的 include 加上 `tests` 即可，
-但会一次性冒出一批存量错误，适合单独开一轮清。
+不代表测试文件没有类型错误 —— 把 `createAPI` 从 `http.ts` 挪走时 tsc 一声不响，
+是 esbuild 打包阶段才暴露的。
+
+现已新增 `tsconfig.tests.json`（`include: ["tests"]`，`lib` 带 DOM、开 `jsx`）
+并挂进 `tsconfig.json` 的 references，`npm run typecheck` 一并检查测试文件。
+顺带装了 `@types/node`（测试要用 `node:test` / `node:assert` / `Buffer`）。
+
+**D. ✅ 已完成 —— 清掉死依赖 `@cfworker/jwt`**
+它一直在 `dependencies` 里，但全仓没人 import：JWT 是 `src/API/crypto.ts` 手写的
+（`signJwt` / `verifyJwt` / `peekJwtClaim`）。已从 `package.json` 移除并同步了 lockfile。
 
 ---
 
@@ -174,12 +215,16 @@ tsc 一声不响（因为没检查测试），是 esbuild 打包阶段才暴露�
 3. ✅ 已做：worker 路由拆分（含 webdav）；App.tsx 批量选择域抽离
 4. ✅ 已做：死链巡检挂 cron
 5. ⬜ 字体瘦身收尾（第 3 条）：砍到 2 字重 + 去掉 .woff —— 纯删减、零风险，随时可做
+   （收益已下调到 ≈22 KB，见第 3 条的更正，别按 85 KB 预期）
 6. ✅ 已做：拆 `src/API/http.ts`（补充条目 A）
-7. ⬜ App.tsx 继续抽域（第 6 条）—— 等单测再铺开一点再说
+7. ✅ 已做：渲染层补单测 —— 登录 / 设置 / 账号三个弹窗 + 两张卡片（补充条目 B）
+8. ✅ 已做：`tests/` 进类型检查（补充条目 C）
+9. ✅ 已做：清掉死依赖 `@cfworker/jwt`（补充条目 D）
+10. ⬜ App.tsx 继续抽域（第 6 条）—— 现在 B 铺开了，可以排上日程了
 
-> 十条原始建议 + 追加的 A/B 两条，现在只剩 3（字体）、6（App 抽域）两条没做完。
+> 十条原始建议 + 追加的 A/B/C/D 四条，现在只剩 3（字体）、6（App 抽域）两条没做完。
 > 已完成的几条都配了回归网：路由覆盖测试、迁移 schema 测试、CSP 测试、
-> 死链巡检测试、SiteCard / GroupCard 的 jsdom 用例、API 表面覆盖测试。
-> 单测基线 454 → 475。
+> 死链巡检测试、渲染层 jsdom 用例、API 表面覆盖测试、打包边界守卫。
+> 单测基线 454 → 475 → 509。
 > **后面再做大拆分，请沿用同样的套路：先补覆盖，再动结构，最后跑一遍变异验证**
 > （故意改坏一处，确认用例真的会红）。

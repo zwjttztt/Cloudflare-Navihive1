@@ -51,7 +51,9 @@ class MockD1 {
         return make([]);
     }
 
-    async batch(stmts: { _sql: string; _args: unknown[] }[]): Promise<{ results: Row[]; success: boolean }[]> {
+    async batch(
+        stmts: Array<{ run: () => Promise<{ results: Row[]; success: boolean }> }>
+    ): Promise<{ results: Row[]; success: boolean }[]> {
         // D1 的 batch 会真正执行每条语句（写语句落库），SELECT 回带 results
         return Promise.all(stmts.map(s => s.run()));
     }
@@ -130,7 +132,7 @@ test("M4：backup.includeCredentials 未设置时，导出抹掉站点账号密�
             password: "hunter2",
             order_num: 1,
         } as unknown as Site,
-    ];
+    ] as unknown as Row[];
     const api = new NavigationAPI({ DB: db } as never);
     const data = await api.exportData();
     const site = data.sites[0];
@@ -154,7 +156,7 @@ test("M4：backup.includeCredentials=true 时才带站点账号密码", async ()
             password: "hunter2",
             order_num: 1,
         } as unknown as Site,
-    ];
+    ] as unknown as Row[];
     const api = new NavigationAPI({ DB: db } as never);
     const data = await api.exportData();
     const site = data.sites[0];
@@ -178,7 +180,7 @@ test("M4：backup.includeCredentials=false 时仍抹掉凭据", async () => {
             password: "hunter2",
             order_num: 1,
         } as unknown as Site,
-    ];
+    ] as unknown as Row[];
     const api = new NavigationAPI({ DB: db } as never);
     const data = await api.exportData();
     assert.equal(data.sites[0]?.password, "", "显式 false 也应抹掉");

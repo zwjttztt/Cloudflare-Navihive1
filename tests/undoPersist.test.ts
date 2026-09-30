@@ -115,7 +115,9 @@ test("栈里带 persist 的才算可保留，撤销/重做要跟着同步", asyn
     );
 
     await stack.undo(); // 撤销掉「修改」
-    assert.deepEqual(stack.persistable, [], "撤销之后这一步不该还留在待办里");
+    // 注意别写 deepEqual(stack.persistable, []) —— node:assert 的签名是
+    // `asserts actual is T`，会把 persistable 收窄成 never[]，下面的 item.siteId 就取不到了
+    assert.equal(stack.persistable.length, 0, "撤销之后这一步不该还留在待办里");
 
     await stack.redo();
     assert.deepEqual(

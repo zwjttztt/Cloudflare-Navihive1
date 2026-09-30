@@ -87,10 +87,12 @@ test("sanitize：URL 类字段去掉 query/hash/userinfo", () => {
 test("sanitize：嵌套对象递归", () => {
     const out = sanitize({
         user: { name: "alice", password: "p", inner: { token: "t" } },
-    }) as { user: Record<string, string> };
+    }) as unknown as {
+        user: { name?: string; password?: string; inner: Record<string, string> };
+    };
     assert.equal(out.user.name, "alice");
     assert.equal(out.user.password, "[redacted]");
-    assert.equal((out.user.inner as Record<string, string>).token, "[redacted]");
+    assert.equal(out.user.inner.token, "[redacted]", "嵌套一层也要脱敏");
 });
 
 test("sanitize：数组截断到 50", () => {

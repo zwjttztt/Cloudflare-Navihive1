@@ -30,6 +30,8 @@ pnpm-lock.yaml
 npm-lock.yaml
 # 沙箱内 tsc 编译单测的临时产物目录
 .tmp-check
+# 单测打包（esbuild）的临时产物目录
+script/tmp-tests
 # 恢复私钥（等同万能钥匙，绝不进版本库）
 scripts/recovery-private.key
 *.recovery-token

@@ -1,0 +1,16 @@
+{
+    "extends": "./tsconfig.node.json",
+    "compilerOptions": {
+        "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.tests.tsbuildinfo",
+        // 测试里有 jsdom 组件用例：要 DOM 的全局量（window / document / MouseEvent…）
+        // 和 JSX。tsconfig.node.json 是给构建脚本用的（纯 Node，lib 只有 ES2023），
+        // 所以这两项必须在这儿覆盖，不能只加 include。
+        "lib": ["ES2023", "DOM", "DOM.Iterable"],
+        "jsx": "react-jsx",
+        // 不写这条就会把 node_modules/@types 全量拉进来，其中
+        // @cloudflare/workers-types 和 DOM lib 会打架（fetch / Request 两套定义）。
+        // 测试只跑在 Node 上，认准 @types/node 就够了。
+        "types": ["node"]
+    },
+    "include": ["tests"]
+}
