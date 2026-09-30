@@ -27,7 +27,7 @@ import CloseIcon from "@mui/icons-material/Close";
 import VpnKeyIcon from "@mui/icons-material/VpnKey";
 import PersonRemoveIcon from "@mui/icons-material/PersonRemove";
 import { PasswordField } from "./PasswordField";
-import type { AccountInfo } from "../API/http";
+import type { AccountInfo, SessionInfo } from "../API/http";
 import {
     INACTIVE_DISABLE_DAYS_DEFAULT,
     INACTIVE_DELETE_GRACE_DAYS_DEFAULT,
@@ -48,6 +48,39 @@ function formatLastActive(ts: number | null): string {
     if (days === 1) return "昨天";
     if (days < 30) return `${days} 天前`;
     return `${Math.floor(days / 30)} 个月前`;
+}
+
+/**
+ * UA → 「浏览器 · 系统」的可读短名。
+ * 认不出来就退回原始 UA（截断），总比显示一长串谁也看不懂的字符串强。
+ * 判定顺序要紧：Edge 的 UA 里也含 "Chrome"、Chrome 的里面也含 "Safari"。
+ */
+function describeUserAgent(ua: string): string {
+    if (!ua) return "未知设备";
+    const browser = /Edg\//.test(ua)
+        ? "Edge"
+        : /OPR\//.test(ua)
+          ? "Opera"
+          : /Firefox\//.test(ua)
+            ? "Firefox"
+            : /Chrome\//.test(ua)
+              ? "Chrome"
+              : /Safari\//.test(ua)
+                ? "Safari"
+                : "";
+    const os = /Windows NT/.test(ua)
+        ? "Windows"
+        : /iPhone|iPad/.test(ua)
+          ? "iOS"
+          : /Android/.test(ua)
+            ? "Android"
+            : /Macintosh/.test(ua)
+              ? "macOS"
+              : /Linux/.test(ua)
+                ? "Linux"
+                : "";
+    if (browser && os) return `${browser} · ${os}`;
+    return (browser || os || ua).slice(0, 60);
 }
 
 /** 改账号 / 改密码的输入草稿：留空表示「不改这一项」 */
@@ -99,6 +132,22 @@ interface AccountDialogProps {
         disableDays: number;
         graceDays: number;
     }) => Promise<{ success: boolean; message?: string }>;
+    /**
+     * 手动跑一次沉睡扫描：等不及每周 cron 时用（刚调完阈值、或想立刻看清谁会被清）。
+     * 父组件负责调接口，这里只做反馈；回传的停用/清除条数直接显示出来。
+     */
+    onSweepInactive?: () => Promise<{
+        success: boolean;
+        message?: string;
+        disabled?: number;
+        deleted?: number;
+    }>;
+    /** 当前账号登录过的设备（会话列表）；空数组表示还没拿到或站点没启用登录 */
+    sessions?: SessionInfo[];
+    /** 把某一台设备踢下线（父组件负责调接口并刷新列表） */
+    onRevokeSession?: (jti: string) => void;
+    /** 退出其它设备：除当前这台之外全部吊销 */
+    onRevokeOthers?: () => void;
 }
 
 /** 分组：左侧一小段主色竖条 + 组标题，可选一行组说明 */
@@ -176,6 +225,10 @@ export default function AccountDialog({
     onExemptUser,
     inactivePolicy,
     onSaveInactivePolicy,
+    onSweepInactive,
+    sessions,
+    onRevokeSession,
+    onRevokeOthers,
 }: AccountDialogProps) {
     // 恢复密钥的生成结果提示（成功/失败都就地反馈，私钥由浏览器直接下载）
     const [recoveryBusy, setRecoveryBusy] = useState(false);
@@ -202,6 +255,13 @@ export default function AccountDialog({
     );
     const [policyBusy, setPolicyBusy] = useState(false);
     const [policyMsg, setPolicyMsg] = useState<{
+        type: "success" | "error";
+        text: string;
+    } | null>(null);
+
+    // 手动扫描：与「保存阈值」分开 —— 它是一次性动作，结果要把停用/清除的条数报出来
+    const [sweepBusy, setSweepBusy] = useState(false);
+    const [sweepMsg, setSweepMsg] = useState<{
         type: "success" | "error";
         text: string;
     } | null>(null);
@@ -236,6 +296,34 @@ export default function AccountDialog({
             );
         } finally {
             setPolicyBusy(false);
+        }
+    };
+
+    const handleSweep = async () => {
+        setSweepBusy(true);
+        setSweepMsg(null);
+        try {
+            const result = await onSweepInactive?.();
+            if (result?.success === false) {
+                setSweepMsg({ type: "error", text: result.message || "扫描失败" });
+                return;
+            }
+            const disabled = result?.disabled ?? 0;
+            const deleted = result?.deleted ?? 0;
+            setSweepMsg({
+                type: "success",
+                text:
+                    disabled === 0 && deleted === 0
+                        ? "扫描完成，暂无需要停用或清除的账号"
+                        : `扫描完成：停用 ${disabled} 个、清除 ${deleted} 个`,
+            });
+        } catch (error) {
+            setSweepMsg({
+                type: "error",
+                text: "扫描失败：" + (error instanceof Error ? error.message : "未知错误"),
+            });
+        } finally {
+            setSweepBusy(false);
         }
     };
 
@@ -460,6 +548,81 @@ export default function AccountDialog({
                             )}
                         </Section>
 
+                        {/* 2.5 登录设备：哪几台设备登着，可以只踢某一台。
+                            以前「改密 / 注销」只能把账号的令牌整体作废 —— 电脑丢了只能
+                            连自己的手机一起踢掉。现在按会话精确吊销，别的设备不受影响。 */}
+                        {sessions && sessions.length > 0 ? (
+                            <Section
+                                title='登录设备'
+                                hint='列出当前账号登录过的设备。怀疑某台设备被人用过，可以只把它踢下线，其它设备不受影响。'
+                            >
+                                <Stack spacing={1}>
+                                    {sessions.map(item => (
+                                        <Stack
+                                            key={item.jti}
+                                            direction={{ xs: "column", sm: "row" }}
+                                            spacing={1}
+                                            alignItems={{ xs: "stretch", sm: "center" }}
+                                            justifyContent='space-between'
+                                            sx={{
+                                                px: 1.25,
+                                                py: 1,
+                                                borderRadius: 1,
+                                                bgcolor: "action.hover",
+                                            }}
+                                        >
+                                            <Box sx={{ minWidth: 0 }}>
+                                                <Typography variant='body2' fontWeight='600'>
+                                                    {describeUserAgent(item.userAgent)}
+                                                    {item.current ? "（当前设备）" : ""}
+                                                </Typography>
+                                                <Typography
+                                                    variant='caption'
+                                                    color='text.secondary'
+                                                >
+                                                    {item.ip ? `${item.ip} · ` : ""}
+                                                    {item.current
+                                                        ? "正在使用"
+                                                        : `最近活跃：${formatLastActive(item.lastSeenAt)}`}
+                                                </Typography>
+                                            </Box>
+                                            {/* 当前这台不给踢：踢掉等于把自己立刻踢下线，
+                                                还容易让人以为站点把自己锁在门外 */}
+                                            {item.current ? null : (
+                                                <Button
+                                                    variant='outlined'
+                                                    size='small'
+                                                    onClick={() => onRevokeSession?.(item.jti)}
+                                                    sx={{ flex: "none", whiteSpace: "nowrap" }}
+                                                >
+                                                    踢下线
+                                                </Button>
+                                            )}
+                                        </Stack>
+                                    ))}
+                                </Stack>
+
+                                {/* 没有「其它设备」可踢时按钮置灰但保留 ——
+                                    否则用户会以为压根没有这个入口 */}
+                                {onRevokeOthers ? (
+                                    <Box>
+                                        <Button
+                                            variant='outlined'
+                                            color='error'
+                                            size='small'
+                                            onClick={onRevokeOthers}
+                                            disabled={
+                                                sessions.filter(s => !s.current).length === 0
+                                            }
+                                            sx={{ alignSelf: "flex-start" }}
+                                        >
+                                            退出其它设备
+                                        </Button>
+                                    </Box>
+                                ) : null}
+                            </Section>
+                        ) : null}
+
                         {/* 3. 邀请码：给新用户注册用，30 分钟有效、只能用一次 */}
                         <Section
                             title='邀请码'
@@ -614,7 +777,7 @@ export default function AccountDialog({
                                             direction='row'
                                             spacing={1.25}
                                             alignItems='center'
-                                            sx={{ mt: 1.25 }}
+                                            sx={{ mt: 1.25, flexWrap: "wrap", rowGap: 1 }}
                                         >
                                             <Button
                                                 variant='outlined'
@@ -625,10 +788,35 @@ export default function AccountDialog({
                                             >
                                                 保存阈值
                                             </Button>
+                                            {/* 立刻跑一遍：不用等每周 cron，停用/清除条数直接回显 */}
+                                            {onSweepInactive ? (
+                                                <Button
+                                                    variant='text'
+                                                    size='small'
+                                                    onClick={() => void handleSweep()}
+                                                    disabled={sweepBusy}
+                                                    sx={{ flex: "none" }}
+                                                >
+                                                    {sweepBusy ? "扫描中…" : "立即扫描"}
+                                                </Button>
+                                            ) : null}
                                             <Typography variant='caption' color='text.secondary'>
                                                 站点所有者账号永不参与治理；清除前会先停用并保留数据
                                             </Typography>
                                         </Stack>
+                                        {sweepMsg ? (
+                                            <Typography
+                                                variant='caption'
+                                                color={
+                                                    sweepMsg.type === "error"
+                                                        ? "error.main"
+                                                        : "success.main"
+                                                }
+                                                sx={{ display: "block", mt: 0.75 }}
+                                            >
+                                                {sweepMsg.text}
+                                            </Typography>
+                                        ) : null}
                                         {policyMsg ? (
                                             <Typography
                                                 variant='caption'

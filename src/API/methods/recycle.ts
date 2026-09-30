@@ -45,6 +45,7 @@ export interface RecycleApi {
         blacklist: number;
         invites: number;
         recoveryJti: number;
+        sessions: number;
     }>;
     deleteExpiredRecoveryMarks(nowSec: number): Promise<number>;
     deleteRowsByIds(
@@ -394,7 +395,8 @@ export const recycleImpl: RecycleApi = {
      *   - recycle_bin：删错的站点 / 分组，过了后悔期就没用了；
      *   - token_blacklist：登出过期的令牌（过期后校验已不会再查它）；
      *   - auth.recoveryJti.*：恢复令牌用过后留的防重放标记（configs 里一行一个 key）；
-     *   - invites：过期 / 已用掉的邀请码。
+     *   - invites：过期 / 已用掉的邀请码；
+     *   - user_sessions：登录设备记录，令牌过期后这行就只剩占地方。
      * 审计日志与回收站统一按保留期（默认 7 天，站点所有者可改）保留，
      * 邀请码也留同样久便于排查。
      */
@@ -404,8 +406,9 @@ export const recycleImpl: RecycleApi = {
         blacklist: number;
         invites: number;
         recoveryJti: number;
+        sessions: number;
     }> {
-        const counts = { audit: 0, recycle: 0, blacklist: 0, invites: 0, recoveryJti: 0 };
+        const counts = { audit: 0, recycle: 0, blacklist: 0, invites: 0, recoveryJti: 0, sessions: 0 };
         const nowSec = Math.floor(Date.now() / 1000);
         const days = await this.getRetentionDays();
 
@@ -420,6 +423,17 @@ export const recycleImpl: RecycleApi = {
             counts.blacklist = Number((r.meta as { changes?: number } | undefined)?.changes ?? 0);
         } catch (error) {
             console.error("清理令牌黑名单失败:", error);
+        }
+
+        // 登录会话：令牌过期后这行就没用了（验签必挂），留着只会让设备列表越堆越长
+        try {
+            const r = await this.db
+                .prepare("DELETE FROM user_sessions WHERE expires_at < ?")
+                .bind(nowSec)
+                .run();
+            counts.sessions = Number((r.meta as { changes?: number } | undefined)?.changes ?? 0);
+        } catch (error) {
+            console.error("清理登录会话失败:", error);
         }
 
         try {

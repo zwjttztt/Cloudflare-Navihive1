@@ -116,6 +116,10 @@ export async function enforceAuth(ctx: RouteCtx, session: TokenSession): Promise
         await api.touchLastActive(uid);
     }
 
+    // 会话「最后活跃」：让设备列表能显示哪几台最近还用过。
+    // 同样限频（内部按小时写在 SQL 里），不会每个请求都往 D1 落一行。
+    await api.touchSession(session.jti);
+
     // CSRF：令牌改成 cookie 后跨站请求会自动带上它，
     // 所以写操作必须确认是本站发起的（判据见 isSameOrigin 注释）。
     if (cookieToken && method !== "GET" && method !== "HEAD" && !isSameOrigin(request)) {

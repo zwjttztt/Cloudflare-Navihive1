@@ -232,6 +232,25 @@ export interface AccountInfo {
 }
 
 /**
+ * 登录会话：一台设备一张（jti 就是那张令牌的编号）。
+ * 「退出登录 / 踢掉某台设备」靠它才能精确到单台 —— 否则只能改密把全部设备一起踢掉。
+ */
+export interface SessionInfo {
+    jti: string;
+    /** 浏览器 UA（入库时已截断，避免超长 UA 把行撑爆） */
+    userAgent: string;
+    ip: string;
+    /** 签发时间（秒） */
+    createdAt: number;
+    /** 最后活跃（秒）；限频刷新，不代表「刚刚」 */
+    lastSeenAt: number;
+    /** 这张令牌的过期时间（秒） */
+    expiresAt: number;
+    /** 是否为发起本次请求的这一台（列表里标「当前设备」并禁用它的吊销按钮） */
+    current: boolean;
+}
+
+/**
  * 沉睡治理的时间轴推算（纯函数，便于单测，不碰数据库）。
  * 判定口径：
  *   - active：以「最后活跃时间」为锚点（从没活跃过就退回创建时间），锚点 + 停用阈值；

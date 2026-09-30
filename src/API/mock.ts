@@ -12,6 +12,7 @@ import {
     SiteOrderUpdateResult,
     SiteBatchDeleteResult,
     RecycleBatchRestoreResult,
+    SessionInfo,
 } from "./http";
 import { verifyBackupIntegrity, withBackupIntegrity } from "../utils/backupIntegrity";
 
@@ -692,5 +693,27 @@ export class MockNavigationClient {
         await new Promise(resolve => setTimeout(resolve, 100));
         mockRecycleBin.length = 0;
         return { success: true };
+    }
+
+    // ============ 登录设备（会话） ============
+    // 本地演示模式不发真实令牌，也就没有「设备」可列：返回空列表，
+    // 界面上「登录设备」那一段会因此直接不显示（与真实接口拿不到时一致）。
+    async getSessions(): Promise<SessionInfo[]> {
+        await new Promise(resolve => setTimeout(resolve, 60));
+        return [];
+    }
+
+    async revokeSession(_jti: string): Promise<{ success: boolean; message?: string }> {
+        await new Promise(resolve => setTimeout(resolve, 60));
+        return { success: true };
+    }
+
+    async revokeOtherSessions(): Promise<{
+        success: boolean;
+        revoked: number;
+        message?: string;
+    }> {
+        await new Promise(resolve => setTimeout(resolve, 60));
+        return { success: true, revoked: 0 };
     }
 }

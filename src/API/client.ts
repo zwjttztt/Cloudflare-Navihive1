@@ -12,6 +12,7 @@ import {
     SiteOrderUpdateResult,
     SiteBatchDeleteResult,
     RecycleBatchRestoreResult,
+    SessionInfo,
     DEFAULT_TOKEN_TTL,
     REMEMBER_TOKEN_TTL,
 } from "./http";
@@ -608,5 +609,28 @@ export class NavigationClient {
 
     async emptyRecycleBin(): Promise<{ success: boolean }> {
         return this.request("recycle", { method: "DELETE" });
+    }
+
+    // ============ 登录设备（会话） ============
+    // 「改密 / 注销」只能把某个账号的令牌整体作废；有了会话表才能只踢某一台设备。
+
+    /** 当前账号登录过的设备（新近活跃的排在前面） */
+    async getSessions(): Promise<SessionInfo[]> {
+        const res = await this.request<{ success?: boolean; sessions?: SessionInfo[] }>("sessions");
+        return Array.isArray(res?.sessions) ? res.sessions : [];
+    }
+
+    /** 吊销某一台设备（按会话编号 jti） */
+    async revokeSession(jti: string): Promise<{ success: boolean; message?: string }> {
+        return this.request(`sessions/${encodeURIComponent(jti)}`, { method: "DELETE" });
+    }
+
+    /** 退出其它设备：除当前这台之外全部吊销 */
+    async revokeOtherSessions(): Promise<{
+        success: boolean;
+        revoked: number;
+        message?: string;
+    }> {
+        return this.request("sessions/revoke-others", { method: "POST" });
     }
 }

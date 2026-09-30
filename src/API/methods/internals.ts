@@ -37,6 +37,18 @@ export const CREATE_STATEMENTS = [
         deleted_at INTEGER NOT NULL,
         expires_at INTEGER
     );`,
+    // 登录会话：一台设备一行（jti = 那张令牌的编号），用来做「只踢某一台设备」。
+    // 没启用鉴权的部署（guest 令牌）uid 为 NULL —— 那种场景下整站就一个人，
+    // 也就没有「踢别人」的需求，记下来只为界面上能看到自己登过哪几台。
+    `CREATE TABLE IF NOT EXISTS user_sessions (
+        jti TEXT PRIMARY KEY,
+        user_id INTEGER,
+        user_agent TEXT,
+        ip TEXT,
+        created_at INTEGER NOT NULL,
+        last_seen_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL
+    );`,
 ];
 
 /**
@@ -64,6 +76,9 @@ export const INDEX_STATEMENTS = [
     `CREATE INDEX IF NOT EXISTS idx_audit_log_created_at ON audit_log(created_at);`,
     `CREATE INDEX IF NOT EXISTS idx_token_blacklist_exp ON token_blacklist(exp);`,
     `CREATE INDEX IF NOT EXISTS idx_invites_expires_at ON invites(expires_at);`,
+    // 登录会话：按账号列清单 + 按过期时间清理
+    `CREATE INDEX IF NOT EXISTS idx_user_sessions_user_id ON user_sessions(user_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_user_sessions_expires_at ON user_sessions(expires_at);`,
 ];
 
 // 还原时的兜底字段：只在读不到表结构（pragma 不可用）时才用，

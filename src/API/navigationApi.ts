@@ -26,6 +26,7 @@ import type { DataApi } from "./methods/data";
 import type { RecycleApi } from "./methods/recycle";
 import type { ConfigApi } from "./methods/config";
 import type { TransferApi } from "./methods/transfer";
+import type { SessionsApi } from "./methods/sessions";
 import { migrationImpl } from "./methods/migration";
 import { authImpl } from "./methods/auth";
 import { recoveryImpl } from "./methods/recovery";
@@ -35,6 +36,7 @@ import { dataImpl } from "./methods/data";
 import { recycleImpl } from "./methods/recycle";
 import { configImpl } from "./methods/config";
 import { transferImpl } from "./methods/transfer";
+import { sessionsImpl } from "./methods/sessions";
 
 /**
  * 各域的方法签名在这里合并回类上（interface 与 class 同名会声明合并）。
@@ -54,7 +56,8 @@ export interface NavigationAPI extends
     DataApi,
     RecycleApi,
     ConfigApi,
-    TransferApi {}
+    TransferApi,
+    SessionsApi {}
 
 // eslint-disable-next-line @typescript-eslint/no-unsafe-declaration-merging
 export class NavigationAPI {
@@ -149,7 +152,7 @@ export class NavigationAPI {
 
 // 把各域的方法体混回原型。逐个 assign 而不是一次性 Object.assign(原型, a, b, c...)：
 // 后者的重载只到三个源，而且一次性混入会让「哪个域没生效」难查。
-for (const mixin of [migrationImpl, authImpl, recoveryImpl, accountsImpl, auditImpl, dataImpl, recycleImpl, configImpl, transferImpl]) {
+for (const mixin of [migrationImpl, authImpl, recoveryImpl, accountsImpl, auditImpl, dataImpl, recycleImpl, configImpl, transferImpl, sessionsImpl]) {
     Object.assign(NavigationAPI.prototype, mixin);
 }
 

@@ -107,6 +107,12 @@ export async function handlePublicRoutes(ctx: RouteCtx): Promise<Response | null
                 await writeLoginGuard(api, { count: 0, until: 0 }, clientBucket(request, trustXFF));
             await api.writeAudit("login.success", loginData.username || "", ip);
 
+            // 登记这台设备：之后才好在「账号管理 → 登录设备」里把它单独踢下线。
+            // 失败不影响登录（recordSession 内部吞异常）—— 记不上只是列表里少一行。
+            if (result.token) {
+                await api.recordSession(result.token, request.headers.get("User-Agent") || "", ip);
+            }
+
             // 令牌只放进 httpOnly cookie，不再回传给 JS（响应体里也不带 token）
             const ttl = loginData.remember ? REMEMBER_TOKEN_TTL : DEFAULT_TOKEN_TTL;
             const headers = new Headers({ "Cache-Control": "no-store" });

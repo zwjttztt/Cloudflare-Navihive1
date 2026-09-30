@@ -22,7 +22,7 @@ import {
     INACTIVE_DISABLE_DAYS_DEFAULT,
     INACTIVE_DELETE_GRACE_DAYS_DEFAULT,
 } from "./API/http";
-import type { AccountInfo } from "./API/http";
+import type { AccountInfo, SessionInfo } from "./API/http";
 import { GroupWithSites } from "./types";
 import { AppConfigProvider } from "./context/AppConfigContext";
 import { NotifyContext } from "./context/NotifyContext";
@@ -276,6 +276,9 @@ function App() {
     const [savingAuth, setSavingAuth] = useState(false);
     // 账号清单（仅 owner 拿得到）：每个账号的沉睡治理状态，给「账号管理」里那份列表用
     const [accountList, setAccountList] = useState<AccountInfo[]>([]);
+    // 登录设备（当前账号自己的会话）：有了它才能只踢某一台设备，
+    // 不用靠改密把自己其它设备一起踢掉
+    const [sessions, setSessions] = useState<SessionInfo[]>([]);
     /** 沉睡治理阈值（天）：owner 在「账号管理」里可改，读不到就按服务端默认显示 */
     const [inactivePolicy, setInactivePolicy] = useState<{
         disableDays: number;
@@ -690,6 +693,81 @@ function App() {
         },
         [fetchAccountList, notify]
     );
+
+    /**
+     * 手动跑一次沉睡账号扫描（仅 owner）：等不及每周 cron 时用。
+     * 扫完一定重拉清单 —— 有人刚被停用/清除，界面还停在扫描前的状态会让人以为没生效。
+     */
+    const handleSweepInactive = useCallback(async () => {
+        try {
+            const res = await fetch("/api/users/sweep", {
+                method: "POST",
+                credentials: "same-origin",
+            });
+            const data = (await res.json().catch(() => ({}))) as {
+                success?: boolean;
+                message?: string;
+                disabled?: number;
+                deleted?: number;
+            };
+            if (!res.ok || !data.success) {
+                return { success: false, message: data.message || "扫描失败，请稍后再试" };
+            }
+            await fetchAccountList();
+            return { success: true, disabled: data.disabled ?? 0, deleted: data.deleted ?? 0 };
+        } catch (error) {
+            return {
+                success: false,
+                message: "扫描失败：" + (error instanceof Error ? error.message : "未知错误"),
+            };
+        }
+    }, [fetchAccountList]);
+
+    /** 拉登录设备列表（当前账号自己的）：打开「账号管理」时调一次 */
+    const fetchSessions = useCallback(async () => {
+        if (!isAuthenticated) return;
+        try {
+            setSessions(await api.getSessions());
+        } catch {
+            // 拉不到就当没有：界面上那一段直接不显示，不打扰正常功能
+        }
+    }, [isAuthenticated]);
+
+    /** 把某一台设备踢下线（只吊销那张令牌，别的设备不受影响） */
+    const handleRevokeSession = useCallback(
+        async (jti: string) => {
+            try {
+                const result = await api.revokeSession(jti);
+                if (result.success) {
+                    notify("已将该设备踢下线", "success");
+                    await fetchSessions();
+                } else {
+                    notify(result.message || "操作失败", "error");
+                }
+            } catch (error) {
+                notify(
+                    "操作失败：" + (error instanceof Error ? error.message : "未知错误"),
+                    "error"
+                );
+            }
+        },
+        [fetchSessions, notify]
+    );
+
+    /** 退出其它设备：除当前这台之外全部吊销 */
+    const handleRevokeOthers = useCallback(async () => {
+        try {
+            const result = await api.revokeOtherSessions();
+            if (result.success) {
+                notify(`已退出 ${result.revoked} 台其它设备`, "success");
+                await fetchSessions();
+            } else {
+                notify(result.message || "操作失败", "error");
+            }
+        } catch (error) {
+            notify("操作失败：" + (error instanceof Error ? error.message : "未知错误"), "error");
+        }
+    }, [fetchSessions, notify]);
 
     /** 注销账号：确认密码 → 服务端删号删数据 → 本地回到登录页 */
     const handleDeleteAccount = async (): Promise<{ success: boolean; message?: string }> => {
@@ -2870,6 +2948,7 @@ function App() {
                                                 handleMenuClose();
                                                 setOpenAccount(true);
                                                 void fetchAccountList();
+                                                void fetchSessions();
                                             }}
                                             onStartGroupSort={startGroupSort}
                                             canInstall={canInstall}
@@ -3441,6 +3520,10 @@ function App() {
                         onExemptUser={uid => void handleExemptUser(uid)}
                         inactivePolicy={inactivePolicy ?? undefined}
                         onSaveInactivePolicy={handleSaveInactivePolicy}
+                        onSweepInactive={handleSweepInactive}
+                        sessions={sessions}
+                        onRevokeSession={jti => void handleRevokeSession(jti)}
+                        onRevokeOthers={() => void handleRevokeOthers()}
                         onDeleteAccount={() => {
                             handleMenuClose();
                             setOpenAccount(false);

@@ -93,6 +93,102 @@ export async function handleAccountRoutes(ctx: RouteCtx): Promise<Response | nul
         return Response.json({ success: true, users });
     }
 
+    /**
+     * 手动触发一次沉睡账号扫描（仅 owner）。
+     *
+     * 例行扫描挂在每周 cron 上，但 owner 刚改完阈值、或想立刻看清「谁会被停用 / 清除」时，
+     * 等一周太久了。这里给一个即时入口，判定逻辑与 cron 完全同一份（sweepInactiveUsers）——
+     * 宁可复用也不另写，否则两边口径迟早跑偏（界面显示 180 天、手动跑的却是别的阈值）。
+     *
+     * ⚠️ 必须排在下面 users/:id/status 之前：那条是 startsWith("users/")，
+     * 会把 "sweep" 当成 :id 去 parseInt，直接回「路径无效」。
+     */
+    if (path === "users/sweep" && method === "POST") {
+        const uid = api.getCurrentUserId();
+        if (uid === null) {
+            return Response.json(
+                { success: false, message: "当前站点未启用登录，无法扫描账号" },
+                { status: 400 }
+            );
+        }
+        const me = await api.getUserById(uid);
+        if (!me || me.role !== "owner") {
+            return Response.json(
+                { success: false, message: "仅站点所有者可以扫描账号" },
+                { status: 403 }
+            );
+        }
+        const result = await api.sweepInactiveUsers();
+        await api.writeAudit(
+            "auth.inactive.sweep.manual",
+            me.username,
+            ip,
+            `停用 ${result.disabled} 个、清除 ${result.deleted} 个`
+        );
+        return Response.json({ success: true, ...result });
+    }
+
+    // ============ 登录设备（会话）============
+    // JWT 是无状态的，"改密 / 注销"只能把某个账号的令牌整体作废 —— 电脑丢了、或怀疑
+    // 某台设备被人用过时，主人没法只踢那一台。有了会话表就能按 jti 精确吊销：
+    // 拉黑（真正让令牌失效）+ 删行（列表里消失），别的设备完全不受影响。
+    // 只列当前账号自己的会话：user_id 条件写在 SQL 里，猜到别人的 jti 也踢不动。
+
+    /** 会话列表：当前账号登录过的设备 */
+    if (path === "sessions" && method === "GET") {
+        const uid = api.getCurrentUserId();
+        if (uid === null) {
+            return Response.json(
+                { success: false, message: "当前站点未启用登录，没有登录设备可管理" },
+                { status: 400 }
+            );
+        }
+        const sessions = await api.listSessions(uid, currentJti || "");
+        return Response.json({ success: true, sessions });
+    }
+
+    /** 吊销某一台设备 */
+    if (path.startsWith("sessions/") && method === "DELETE") {
+        const jti = decodeURIComponent(path.slice("sessions/".length));
+        const uid = api.getCurrentUserId();
+        if (uid === null || !jti) {
+            return Response.json({ success: false, message: "参数无效" }, { status: 400 });
+        }
+        const result = await api.revokeSession(uid, jti);
+        await api.writeAudit(
+            result.success ? "auth.session.revoke" : "auth.session.revoke.failed",
+            "",
+            ip,
+            result.message || jti
+        );
+        return Response.json(result, { status: result.success ? 200 : 400 });
+    }
+
+    /**
+     * 退出其它设备：除当前这台之外全部吊销。
+     * currentJti 为空（脚本客户端走 Authorization 头）时等于全部吊销 ——
+     * 那种场景本来就没有「当前设备」可言。
+     */
+    if (path === "sessions/revoke-others" && method === "POST") {
+        const uid = api.getCurrentUserId();
+        if (uid === null) {
+            return Response.json(
+                { success: false, message: "当前站点未启用登录" },
+                { status: 400 }
+            );
+        }
+        const result = await api.revokeOtherSessions(uid, currentJti || "");
+        await api.writeAudit(
+            result.success
+                ? "auth.session.revokeOthers"
+                : "auth.session.revokeOthers.failed",
+            "",
+            ip,
+            `吊销 ${result.revoked} 台`
+        );
+        return Response.json(result, { status: result.success ? 200 : 400 });
+    }
+
     // 改某个账号的状态（仅 owner）：
     //   active   = 豁免沉睡治理（清停用时间 + 刷新活跃时间，否则转头又被判沉睡）
     //   disabled = 手动停用
