@@ -8,9 +8,32 @@ import { fetchSiteMeta } from "../meta";
 import { weakEtag } from "../util";
 import type { GroupInput, SiteInput } from "../types";
 import { validateGroup, validateSite } from "../validate";
+import { readIdempotencyKey, withIdempotency } from "../idempotency";
 import type { RouteCtx } from "./types";
 
+/** 幂等闸门只对写方法开：GET / HEAD 没有副作用，认重没有意义，只会白占一行记录 */
+const IDEMPOTENT_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+
+/**
+ * 对外入口：写请求（带 Idempotency-Key 的）先过一遍幂等闸门，再进真正的分发。
+ *
+ * 为什么不逐个分支包：这些分支是一条 `if / else if` 链，每个分支的收尾 `}` 同时
+ * 是下一个分支的开头 `else if`，包一层箭头函数就得在链中间动刀，极易改坏。
+ * 放在这里统一包一层，一个字都不用动链本身。
+ *
+ * endpoint 取「方法 + 路径首段」（sites/123 归成 sites）：幂等记录的作用域只需要
+ * 区分开不同端点，具体 id 不进作用域 —— 那条记录是靠 op_id 认的，不是靠路径。
+ */
 export async function handleDataRoutes(ctx: RouteCtx): Promise<Response | null> {
+    if (!IDEMPOTENT_METHODS.has(ctx.method)) return await dispatchDataRoutes(ctx);
+    const key = readIdempotencyKey(ctx.request);
+    if (!key) return await dispatchDataRoutes(ctx);
+
+    const endpoint = `${ctx.method} ${ctx.path.split("/")[0]}`;
+    return await withIdempotency(ctx.api, endpoint, key, () => dispatchDataRoutes(ctx));
+}
+
+async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
     const {
         request,
         url,

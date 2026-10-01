@@ -17,6 +17,11 @@ import { UIPrefsProvider } from "../src/context/UIPrefsContext";
 import type { Site } from "../src/API/http";
 import type { GroupWithSites } from "../src/types";
 import { COLLAPSED_GROUPS_KEY } from "../src/utils/collapse";
+import { scopedKey } from "../src/utils/accountScope";
+
+// 星标 / 访问统计按账号分档存：没绑定账号时落在 anon 这一档
+const STARRED_KEY = scopedKey("navihive:starred", null);
+const VISITS_KEY = scopedKey("navihive:visits", null);
 
 // DOM 用例的启动脚本补了 window / document，但没挂 localStorage ——
 // 组件里是直接写 `localStorage.getItem` 的（星标、收起状态都在这儿）。
@@ -172,7 +177,7 @@ test("分组标题与站点数渲染出来，视口外的卡片先不建", async
 });
 
 test("加了星标的卡片排到分组最前面", async () => {
-    renderCard({ prefs: { "navihive:starred": JSON.stringify([2]) } });
+    renderCard({ prefs: { [STARRED_KEY]: JSON.stringify([2]) } });
     await enterViewport();
 
     const order = cardOrder();
@@ -188,7 +193,7 @@ test("排序模式下保持原顺序，不把星标提前", async () => {
     // 传 GroupSort：非 None 会跳过懒挂载直接全量渲染，同时不会命中「编辑中分组」分支
     renderCard({
         sortMode: "GroupSort",
-        prefs: { "navihive:starred": JSON.stringify([2]) },
+        prefs: { [STARRED_KEY]: JSON.stringify([2]) },
     });
     await enterViewport();
 
@@ -204,7 +209,7 @@ test("排序模式下保持原顺序，不把星标提前", async () => {
 test("「最近访问」虚拟分组只给一键清空，不给增删改", () => {
     renderCard({
         group: makeGroup({ id: -1, name: "最近访问", sites: [makeSite(1, "甲站点")] }),
-        prefs: { "navihive:visits": JSON.stringify({ "1": { count: 2, last: 1 } }) },
+        prefs: { [VISITS_KEY]: JSON.stringify({ "1": { count: 2, last: 1 } }) },
     });
 
     assert.equal(byText("添加卡片"), undefined, "虚拟分组不该有添加入口");
@@ -216,7 +221,7 @@ test("「最近访问」虚拟分组只给一键清空，不给增删改", () =>
         clear!.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }));
     });
     assert.equal(
-        localStorage.getItem("navihive:visits"),
+        localStorage.getItem(VISITS_KEY),
         null,
         "清空后本机访问统计应该被删掉"
     );

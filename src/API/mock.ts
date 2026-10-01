@@ -15,6 +15,23 @@ import {
     SessionInfo,
 } from "./http";
 import { verifyBackupIntegrity, withBackupIntegrity } from "../utils/backupIntegrity";
+import {
+    IDEMPOTENCY_MAX_BODY,
+    IDEMPOTENCY_TTL_MS,
+    type IdempotencyRecord,
+} from "./methods/idempotency";
+
+/** 演示模式的幂等记录：scope|opId -> 记录 */
+const mockIdempotency = new Map<
+    string,
+    {
+        state: "pending" | "done";
+        status: number | null;
+        body: string | null;
+        created_at: number;
+        expires_at: number;
+    }
+>();
 
 // 登录标记的 Secure 属性要和服务端那条令牌 cookie 一致，否则会出现
 // 「标记在、令牌不在」的半登录态（详见 NavigationClient.secureAttr）。
@@ -768,5 +785,62 @@ export class MockNavigationClient {
     }> {
         await new Promise(resolve => setTimeout(resolve, 60));
         return { success: true, revoked: 0 };
+    }
+
+    // ============ 幂等键 ============
+    // 本地演示模式不发真实请求，重放也就撞不到「响应丢了又补发」那道缝。
+    // 这里仍然照实走一遍状态机（占位 → 完成 → 回放），让界面与调用的语义
+    // 跟服务端一致，而不是让每个方法都撒手不管。
+    async readIdempotency(scope: string, opId: string): Promise<IdempotencyRecord | null> {
+        const rec = mockIdempotency.get(`${scope}|${opId}`);
+        if (!rec) return null;
+        if (rec.expires_at <= Date.now()) return null;
+        return { state: rec.state, status: rec.status, body: rec.body, createdAt: rec.created_at };
+    }
+
+    async claimIdempotency(scope: string, opId: string): Promise<boolean> {
+        const key = `${scope}|${opId}`;
+        const existing = mockIdempotency.get(key);
+        if (existing && existing.expires_at > Date.now()) return false;
+        mockIdempotency.set(key, {
+            state: "pending",
+            status: null,
+            body: null,
+            created_at: Date.now(),
+            expires_at: Date.now() + IDEMPOTENCY_TTL_MS,
+        });
+        return true;
+    }
+
+    async completeIdempotency(
+        scope: string,
+        opId: string,
+        result: { status: number; body: string | null }
+    ): Promise<void> {
+        const key = `${scope}|${opId}`;
+        const existing = mockIdempotency.get(key);
+        if (!existing) return;
+        existing.state = "done";
+        existing.status = result.status;
+        existing.body =
+            result.body !== null && result.body.length <= IDEMPOTENCY_MAX_BODY
+                ? result.body
+                : null;
+        existing.expires_at = Date.now() + IDEMPOTENCY_TTL_MS;
+    }
+
+    async releaseIdempotency(scope: string, opId: string): Promise<void> {
+        mockIdempotency.delete(`${scope}|${opId}`);
+    }
+
+    async purgeExpiredIdempotency(now = Date.now()): Promise<number> {
+        let removed = 0;
+        for (const [key, rec] of [...mockIdempotency]) {
+            if (rec.expires_at <= now) {
+                mockIdempotency.delete(key);
+                removed++;
+            }
+        }
+        return removed;
     }
 }

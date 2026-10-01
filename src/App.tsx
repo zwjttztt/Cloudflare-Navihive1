@@ -441,6 +441,7 @@ function App() {
         mergeRemotePrefs,
         mergeRemoteVisits,
         markVisitsSynced,
+        setPrefsAccountUid,
     } = useUIPrefs();
 
 
@@ -1239,11 +1240,17 @@ function App() {
             const changed = uid === null ? true : setActiveAccount(uid);
             setAccountUid(uid);
             setUndoAccountUid(uid);
+            // 星标 / 标签 / 访问统计记的是站点 id，不同账号会撞号，跟着账号换一份
+            setPrefsAccountUid(uid);
+            // 折叠状态同理记的是分组 id：换账号后留着会折叠到别人（同号不同组）的分组上，
+            // 而它本身不值钱 —— 直接复位比费劲分片划算
+            setCollapsedIds([]);
+            writeCollapsedGroupIds([]);
             if (!changed) return;
             clearPersistedUndo();
             clearHistory();
         },
-        [clearHistory]
+        [clearHistory, setPrefsAccountUid]
     );
 
     /**

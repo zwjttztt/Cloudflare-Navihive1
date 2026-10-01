@@ -12,6 +12,11 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import SiteCard from "../src/components/SiteCard";
 import { UIPrefsProvider } from "../src/context/UIPrefsContext";
+import { scopedKey } from "../src/utils/accountScope";
+
+// 星标 / 访问统计按账号分档存：没绑定账号时落在 anon 这一档
+const STARRED_KEY = scopedKey("navihive:starred", null);
+const VISITS_KEY = scopedKey("navihive:visits", null);
 import type { Site } from "../src/API/http";
 
 // DOM 用例的启动脚本补了 window / document，但没挂 localStorage ——
@@ -116,11 +121,11 @@ test("失效链接会挂出提示徽章，健康的链接不挂", () => {
 });
 
 test("星标按钮的状态跟着本机星标走", () => {
-    renderCard({ prefs: { "navihive:starred": JSON.stringify([101]) } });
+    renderCard({ prefs: { [STARRED_KEY]: JSON.stringify([101]) } });
     assert.ok(byLabel("取消星标"), "已星标的卡片按钮应该显示「取消星标」");
 
     cleanup();
-    renderCard({ prefs: { "navihive:starred": JSON.stringify([]) } });
+    renderCard({ prefs: { [STARRED_KEY]: JSON.stringify([]) } });
     assert.ok(byLabel("加星标"), "未星标的卡片按钮应该显示「加星标」");
 });
 
@@ -136,7 +141,7 @@ test("多选模式下点卡片是勾选，不会记一次访问", () => {
     });
     assert.deepEqual(picked, [101], "多选模式下点卡片应该切换勾选");
     // 记访问的副作用在多选模式下必须被跳过（否则「顺手勾选」会污染最近访问）
-    assert.equal(localStorage.getItem("navihive:visits"), null, "多选模式下不该记访问");
+    assert.equal(localStorage.getItem(VISITS_KEY), null, "多选模式下不该记访问");
 });
 
 test("普通模式点卡片会记一次访问（最近访问分组的数据来源）", () => {
@@ -146,7 +151,7 @@ test("普通模式点卡片会记一次访问（最近访问分组的数据来�
     act(() => {
         link.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }));
     });
-    const visits = JSON.parse(localStorage.getItem("navihive:visits") || "{}");
+    const visits = JSON.parse(localStorage.getItem(VISITS_KEY) || "{}");
     assert.ok(visits["101"], "点击后应该写下访问记录");
 });
 

@@ -33,9 +33,24 @@ function purgeLegacyToken(): void {
 export class NavigationClient {
     private baseUrl: string;
 
+    /**
+     * 下一次写请求要带的幂等 ID。
+     *
+     * 只有一处会写它：离线队列重放。那条操作在断网前已经「发生过一次」，
+     * 服务端可能做完了也可能没有，重放必须带着同一个 ID 去，
+     * 让服务端认出「这一条其实已经做过了」并回放上次结果，而不是再建一个重复站点。
+     * 用完即清 —— 用户手动的每一次操作都是新意图，不该被合并掉。
+     */
+    private idempotencyKey: string | null = null;
+
     constructor(baseUrl = "/api") {
         this.baseUrl = baseUrl;
         purgeLegacyToken();
+    }
+
+    /** 给下一次写请求挂幂等 ID（重放一条传一个，传 null 取消） */
+    setIdempotencyKey(key: string | null): void {
+        this.idempotencyKey = key;
     }
 
     // 检查是否已登录
@@ -276,6 +291,12 @@ export class NavigationClient {
         const headers: Record<string, string> = {
             "Content-Type": "application/json",
         };
+
+        // 幂等 ID 只在重放时挂上，发完立刻清掉（options 里显式带头的以显式为准）
+        if (this.idempotencyKey) {
+            headers["Idempotency-Key"] = this.idempotencyKey;
+            this.idempotencyKey = null;
+        }
 
         // 凭据走 httpOnly cookie，由浏览器自动带上（credentials 默认即 same-origin）。
         // 不再手动塞 Authorization —— 令牌根本不留在 JS 里。

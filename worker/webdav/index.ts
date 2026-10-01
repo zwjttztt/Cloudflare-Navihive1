@@ -7,7 +7,7 @@ import { decryptBackup, encryptBackup, isEncryptedBackup } from "../../src/API/c
 import type { ExportData } from "../../src/API/http";
 import type { NavigationAPI } from "../../src/API/navigationApi";
 import { withBackupIntegrity } from "../../src/utils/backupIntegrity";
-import { errorMessage } from "../util";
+import { BodyLimitError, errorMessage, readBoundedBytes } from "../util";
 import { buildBackupFileName, selectAutoBackupsToPrune } from "./naming";
 import {
     davFetch,
@@ -27,6 +27,15 @@ import type {
     WebDavFile,
     WebDavResult,
 } from "./types";
+
+/**
+ * 从网盘拉回来的备份文件最大读多少（32 MB）。
+ *
+ * 网盘上那份东西不由我们控制：文件名是自己生成的，内容却可能被别的东西覆盖过。
+ * 不设上限地 arrayBuffer() 一个几 G 的文件，Worker 内存直接被吃干 ——
+ * 这里是「下载链路上唯一一道体积闸」，解压那边另有一道（见 gunzipToString）。
+ */
+const MAX_BACKUP_DOWNLOAD_BYTES = 32 * 1024 * 1024;
 
 /** 执行一次完整备份：导出 → 压缩上传 →（仅自动备份）清理上一次自动备份 → 记录文件名。 */
 export async function runWebDavBackup(
@@ -247,7 +256,11 @@ export async function webdavDownload(
         // - NAVIHIVE-ENC1 开头：口令加密备份（当前默认，用备份密码解，与 AUTH_SECRET 无关）；
         // - 1f 8b 开头：早期明文 gzip 备份，直接解压；
         // - 其余：再按明文 JSON 试一次（更早期的未压缩备份），都失败就按旧格式报错。
-        const rawBytes = new Uint8Array(await response.arrayBuffer());
+        // 有界读取：网盘上的东西不受我们控制，对方真返回一个几个 G 的文件，
+        // 直接 arrayBuffer() 会把 Worker 的内存吃干。备份再大也大不过这个数。
+        const rawBytes = new Uint8Array(
+            await readBoundedBytes(response.body, MAX_BACKUP_DOWNLOAD_BYTES, 60_000)
+        );
 
         let jsonText: string;
         if (isEncryptedBackup(rawBytes)) {
@@ -292,6 +305,15 @@ export async function webdavDownload(
 
         return { success: true, data, message: filename };
     } catch (error) {
+        if (error instanceof BodyLimitError) {
+            return {
+                success: false,
+                message:
+                    error.status === 413
+                        ? "备份文件过大（超过 32 MB），已放弃下载"
+                        : "下载备份超时，请稍后重试",
+            };
+        }
         return { success: false, message: errorMessage(error, "下载备份失败") };
     }
 }

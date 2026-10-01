@@ -10,6 +10,7 @@ import {
     useState,
 } from "react";
 import { readDeadLinks } from "../utils/linkHealth";
+import { scopedKey } from "../utils/accountScope";
 import type { LocalPrefsBackup } from "../API/http";
 
 /**
@@ -44,6 +45,21 @@ export interface VisitStat {
 
 /** 只有有限数字才算数：undefined / NaN / 字符串都得当成 0，否则合并结果会变 NaN */
 const num = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+
+/**
+ * 当前账号，决定「哪几份本机数据要按账号分开存」。
+ *
+ * 星标 / 标签 / 访问统计 / 搜索历史都记着**站点 id**，而 id 是全局自增、不同账号之间
+ * 完全可能撞号：换个人登录之后，上一个人的星标会亮在别人同名号的卡片上，
+ * 搜索历史里也会冒出从没搜过的词。所以这四份跟着账号走。
+ * 外观类偏好（版式 / 密度 / 圆角 / 字号）是「这台机器的习惯」，刻意不分开。
+ */
+let prefUid: number | null = null;
+const scopedVisitsKey = () => scopedKey(VISITS_KEY, prefUid);
+const scopedVisitsSyncedKey = () => scopedKey(VISITS_SYNCED_KEY, prefUid);
+const scopedSearchKey = () => scopedKey(SEARCH_HISTORY_KEY, prefUid);
+const scopedStarredKey = () => scopedKey(STARRED_KEY, prefUid);
+const scopedTagsKey = () => scopedKey(TAGS_KEY, prefUid);
 
 /**
  * 合并两份访问统计（本机 + 服务端下发的那份），第三个参数是「上次同步时本机那份」。
@@ -207,6 +223,8 @@ interface UIPrefsValue {
     mergeRemoteVisits: (incoming: Record<string, VisitStat>) => void;
     /** 访问统计上传成功后调用：把当前这份记为「已同步」，作为下次合并的基线 */
     markVisitsSynced: () => void;
+    /** 切换账号：把按账号分开存的那几份本机数据换成新账号的 */
+    setPrefsAccountUid: (uid: number | null) => void;
 }
 
 const VIEW_KEY = "navihive:viewMode";
@@ -242,7 +260,7 @@ const readString = (key: string, fallback: string): string => {
 
 const readVisits = (): Record<string, VisitStat> => {
     try {
-        const raw = localStorage.getItem(VISITS_KEY);
+        const raw = localStorage.getItem(scopedVisitsKey());
         const parsed = raw ? JSON.parse(raw) : null;
         if (!parsed || typeof parsed !== "object") return {};
         // 过滤脏数据，保证后续排序不会崩
@@ -269,7 +287,7 @@ const readVisits = (): Record<string, VisitStat> => {
 /** 读出「上次已同步」的快照；读不到（老数据）返回 null，合并时会退化成取最大值 */
 const readSyncedVisits = (): Record<string, VisitStat> | null => {
     try {
-        const raw = localStorage.getItem(VISITS_SYNCED_KEY);
+        const raw = localStorage.getItem(scopedVisitsSyncedKey());
         if (!raw) return null;
         const parsed: unknown = JSON.parse(raw);
         if (!parsed || typeof parsed !== "object") return null;
@@ -281,7 +299,7 @@ const readSyncedVisits = (): Record<string, VisitStat> | null => {
 
 const writeSyncedVisits = (snapshot: Record<string, VisitStat>): void => {
     try {
-        localStorage.setItem(VISITS_SYNCED_KEY, JSON.stringify(snapshot));
+        localStorage.setItem(scopedVisitsSyncedKey(), JSON.stringify(snapshot));
     } catch {
         /* 隐私模式：基记不住，下次合并退化成取最大值，不会算错成负数 */
     }
@@ -289,7 +307,7 @@ const writeSyncedVisits = (snapshot: Record<string, VisitStat>): void => {
 
 const readSearchHistory = (): string[] => {
     try {
-        const raw = localStorage.getItem(SEARCH_HISTORY_KEY);
+        const raw = localStorage.getItem(scopedSearchKey());
         const parsed = raw ? JSON.parse(raw) : [];
         return Array.isArray(parsed) ? parsed.filter(t => typeof t === "string").slice(0, SEARCH_HISTORY_MAX) : [];
     } catch {
@@ -300,7 +318,7 @@ const readSearchHistory = (): string[] => {
 /** 星标名单：过滤掉非数字脏数据，保证 Set/查询不会崩 */
 const readStarred = (): number[] => {
     try {
-        const parsed = JSON.parse(localStorage.getItem(STARRED_KEY) || "[]");
+        const parsed = JSON.parse(localStorage.getItem(scopedStarredKey()) || "[]");
         return Array.isArray(parsed) ? parsed.filter(id => typeof id === "number") : [];
     } catch {
         return [];
@@ -310,7 +328,7 @@ const readStarred = (): number[] => {
 /** 标签表：{ [siteId]: string[] }，脏数据一律丢掉 */
 const readTags = (): Record<string, string[]> => {
     try {
-        const parsed = JSON.parse(localStorage.getItem(TAGS_KEY) || "{}");
+        const parsed = JSON.parse(localStorage.getItem(scopedTagsKey()) || "{}");
         if (!parsed || typeof parsed !== "object") return {};
         const clean: Record<string, string[]> = {};
         for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
@@ -374,6 +392,7 @@ const defaultValue: UIPrefsValue = {
     mergeRemotePrefs: () => {},
     mergeRemoteVisits: () => {},
     markVisitsSynced: () => {},
+    setPrefsAccountUid: () => {},
 };
 
 export const UIPrefsContext = createContext<UIPrefsValue>(defaultValue);
@@ -437,7 +456,7 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
             if (cleanStarred.length > 0) {
                 setStarred(prev => {
                     const next = [...new Set([...prev, ...cleanStarred])];
-                    write(STARRED_KEY, JSON.stringify(next));
+                    write(scopedStarredKey(), JSON.stringify(next));
                     return next;
                 });
             }
@@ -463,7 +482,7 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
                         }
                     }
                     if (!changed) return prev;
-                    write(TAGS_KEY, JSON.stringify(next));
+                    write(scopedTagsKey(), JSON.stringify(next));
                     return next;
                 });
             }
@@ -482,7 +501,7 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
         setVisits(prev => {
             const next = mergeVisitStats(prev, incoming, readSyncedVisits());
             // 合并结果写回本机：下一秒断网也不至于把刚拉下来的丢掉
-            write(VISITS_KEY, JSON.stringify(next));
+            write(scopedVisitsKey(), JSON.stringify(next));
             writeSyncedVisits(next);
             return next;
         });
@@ -500,6 +519,21 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
             writeSyncedVisits(prev);
             return prev;
         });
+    }, []);
+
+    /**
+     * 切换账号：把「按账号分开存」的那几份本机数据整体换成新账号的。
+     *
+     * 不做这件事的后果很隐蔽：星标与标签记的是站点 id，不同账号的 id 会撞号，
+     * 于是 B 登录后会看到 A 加过的星标亮在自己（编号相同、实际不同）的卡片上。
+     * 外观类偏好不在这里动 —— 那是这台机器的习惯，换账号不该跟着变。
+     */
+    const setPrefsAccountUid = useCallback((uid: number | null) => {
+        prefUid = uid;
+        setVisits(readVisits());
+        setSearchHistory(readSearchHistory());
+        setStarred(readStarred());
+        setTags(readTags());
     }, []);
 
     // 星标 / 标签一变就通知外部（App 用它做防抖上传）。
@@ -550,7 +584,7 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
                 },
             };
             try {
-                localStorage.setItem(VISITS_KEY, JSON.stringify(next));
+                localStorage.setItem(scopedVisitsKey(), JSON.stringify(next));
             } catch {
                 // 忽略写入失败
             }
@@ -563,7 +597,7 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
         if (!trimmed) return;
         setSearchHistory(prev => {
             const next = [trimmed, ...prev.filter(t => t !== trimmed)].slice(0, SEARCH_HISTORY_MAX);
-            write(SEARCH_HISTORY_KEY, JSON.stringify(next));
+            write(scopedSearchKey(), JSON.stringify(next));
             return next;
         });
     }, []);
@@ -571,7 +605,7 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
     const clearSearchHistory = useCallback(() => {
         setSearchHistory([]);
         try {
-            localStorage.removeItem(SEARCH_HISTORY_KEY);
+            localStorage.removeItem(scopedSearchKey());
         } catch {
             // 忽略
         }
@@ -589,7 +623,7 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
         setStarred(prev => {
             const has = prev.includes(siteId);
             const next = has ? prev.filter(id => id !== siteId) : [...prev, siteId];
-            write(STARRED_KEY, JSON.stringify(next));
+            write(scopedStarredKey(), JSON.stringify(next));
             return next;
         });
     }, []);
@@ -600,7 +634,7 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
             const set = new Set(prev);
             siteIds.forEach(id => (starred ? set.add(id) : set.delete(id)));
             const next = [...set];
-            write(STARRED_KEY, JSON.stringify(next));
+            write(scopedStarredKey(), JSON.stringify(next));
             return next;
         });
     }, []);
@@ -616,7 +650,7 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
             } else {
                 delete next[String(siteId)];
             }
-            write(TAGS_KEY, JSON.stringify(next));
+            write(scopedTagsKey(), JSON.stringify(next));
             return next;
         });
     }, []);
@@ -631,7 +665,7 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
                 const merged = Array.from(new Set([...(next[key] ?? []), ...wanted]));
                 next[key] = merged;
             });
-            write(TAGS_KEY, JSON.stringify(next));
+            write(scopedTagsKey(), JSON.stringify(next));
             return next;
         });
     }, []);
@@ -653,7 +687,7 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
                 if (filtered.length > 0) next[key] = filtered;
             }
             if (!changed) return prev;
-            write(TAGS_KEY, JSON.stringify(next));
+            write(scopedTagsKey(), JSON.stringify(next));
             return next;
         });
     }, []);
@@ -673,14 +707,14 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
                 }
             }
             if (!changed) return prev;
-            write(TAGS_KEY, JSON.stringify(next));
+            write(scopedTagsKey(), JSON.stringify(next));
             return next;
         });
 
         setStarred(prev => {
             const next = prev.filter(id => !siteIds.includes(id));
             if (next.length === prev.length) return prev;
-            write(STARRED_KEY, JSON.stringify(next));
+            write(scopedStarredKey(), JSON.stringify(next));
             return next;
         });
     }, []);
@@ -721,7 +755,7 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
     const clearVisits = useCallback(() => {
         setVisits({});
         try {
-            localStorage.removeItem(VISITS_KEY);
+            localStorage.removeItem(scopedVisitsKey());
         } catch {
             // 忽略
         }
@@ -744,7 +778,7 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
                 const set = new Set<number>(mode === "replace" ? [] : prev);
                 incomingStarred.forEach(id => set.add(id));
                 const next = [...set];
-                write(STARRED_KEY, JSON.stringify(next));
+                write(scopedStarredKey(), JSON.stringify(next));
                 return next;
             });
 
@@ -761,7 +795,7 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
                             : Array.from(new Set([...(next[siteId] ?? []), ...clean]));
                     if (merged.length > 0) next[siteId] = merged;
                 }
-                write(TAGS_KEY, JSON.stringify(next));
+                write(scopedTagsKey(), JSON.stringify(next));
                 return next;
             });
         },
@@ -780,7 +814,7 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
                 setFavoritesState((e.newValue ?? "1") !== "0");
             } else if (e.key === PINYIN_KEY) {
                 setPinyinState((e.newValue ?? "0") === "1");
-            } else if (e.key === VISITS_KEY) {
+            } else if (e.key === scopedVisitsKey()) {
                 setVisits(readVisits());
             } else if (e.key === RADIUS_KEY) {
                 const v = e.newValue ?? "soft";
@@ -788,11 +822,11 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
             } else if (e.key === FONT_SCALE_KEY) {
                 const v = e.newValue ?? "normal";
                 setFontScaleState(v === "compact" || v === "large" ? v : "normal");
-            } else if (e.key === SEARCH_HISTORY_KEY) {
+            } else if (e.key === scopedSearchKey()) {
                 setSearchHistory(readSearchHistory());
-            } else if (e.key === STARRED_KEY) {
+            } else if (e.key === scopedStarredKey()) {
                 setStarred(readStarred());
-            } else if (e.key === TAGS_KEY) {
+            } else if (e.key === scopedTagsKey()) {
                 setTags(readTags());
             } else if (e.key === RAIL_COLLAPSED_KEY) {
                 setRailCollapsedState((e.newValue ?? "0") === "1");
@@ -845,6 +879,7 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
             mergeRemotePrefs,
             mergeRemoteVisits,
             markVisitsSynced,
+            setPrefsAccountUid,
         }),
         [
             viewMode,
@@ -887,6 +922,7 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
             mergeRemotePrefs,
             mergeRemoteVisits,
             markVisitsSynced,
+            setPrefsAccountUid,
         ]
     );
 

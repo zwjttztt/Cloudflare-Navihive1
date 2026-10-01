@@ -1,6 +1,7 @@
 // worker/icon.ts
 
 import { safeFetch } from "./safeFetch";
+import { createMemoryLimiter } from "./rateLimit";
 import { securityHeaders, readBoundedBytes, BodyLimitError } from "./util";
 
 /**
@@ -40,7 +41,36 @@ function mimeOf(contentType: string): string {
     return (contentType.split(";")[0] || "").trim().toLowerCase();
 }
 
-export async function proxyIcon(request: Request): Promise<Response> {
+// ============ 图标代理限速 ============
+// 这个端点**公开且会替客户端出网**：谁都能让它去取任何一个地址（成本：一次外网请求 +
+// 50MB 级带宽上限里的一份）。没有限流时，它就是一个免费的「帮我抓这个 URL」接口，
+// 还能顺手把 Worker 的出网配额耗光 —— 正常用法下一分钟顶多刷几十个图标。
+// 与 errorReport 同理，用 isolate 内的滑动窗口（跨实例不共享，但足以挡住单实例刷量）。
+const iconLimiter = createMemoryLimiter({
+    windowMs: 60_000,
+    max: 60,
+    maxKeys: 2_000,
+});
+
+/** 测试用：清空窗口计数（生产不会调） */
+export function resetIconRateLimitForTest(): void {
+    iconLimiter.reset();
+}
+
+export async function proxyIcon(
+    request: Request,
+    clientKey = request.headers.get("CF-Connecting-IP") || "unknown"
+): Promise<Response> {
+    if (!iconLimiter.allow(clientKey)) {
+        return new Response("图标请求过于频繁，请稍后再试", {
+            status: 429,
+            headers: securityHeaders({
+                "Content-Type": "text/plain; charset=utf-8",
+                "Retry-After": "60",
+            }),
+        });
+    }
+
     const target = request.url.includes("?")
         ? new URL(request.url).searchParams.get("u")
         : null;

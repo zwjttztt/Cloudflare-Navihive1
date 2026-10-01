@@ -16,35 +16,74 @@
 import type { Env } from "./types";
 import { NavigationAPI } from "../src/API/navigationApi";
 import { isBlockedHost, readBoundedBytes, BodyLimitError } from "./util";
+import { createMemoryLimiter } from "./rateLimit";
+import { clientIp } from "./httpUtils";
 
 // ============ 限速 ============
 // 这是个**公开**路由：谁都能 POST，而且每次都会往 audit_log 写一行。
 // 没有限速就等于一个「免费帮你刷 D1 行数」的接口，还能把 Workers 日志灌满，
 // 真正的崩溃反而被淹没。
-// 按 IP 做滑动窗口不准确（ Workers 里得存状态），这里先用 isolate 内的窗口计数：
-// 单实例每 10 秒最多接受 MAX_PER_WINDOW 份报告，超了只丢弃、不算错误。
+// 早先是**整个实例一个窗口**：一个脚本猛刷就能把配额占满，
+// 结果是别人的真实崩溃被静默丢掉 —— 防滥用反倒成了新的拒绝服务面。
+// 改成按来源 IP 分桶：刷子只会把自己刷出去，别人照常上报。
 // 客户端本地本来就有节流（src/utils/errorReporter.ts），这里是兜底的硬上限。
 const MAX_PER_REQUEST_BODY_BYTES = 8 * 1024;
 const WINDOW_MS = 10_000;
 const MAX_PER_WINDOW = 20;
 
-/** isolate 内的滑动窗口计数（进程重启即清零，够挡住批量刷写） */
-const windowStart = { at: 0, count: 0 };
-function withinRateLimit(now: number): boolean {
-    if (now - windowStart.at > WINDOW_MS) {
-        windowStart.at = now;
-        windowStart.count = 0;
-    }
-    if (windowStart.count >= MAX_PER_WINDOW) return false;
-    windowStart.count += 1;
-    return true;
+const reportLimiter = createMemoryLimiter({
+    windowMs: WINDOW_MS,
+    max: MAX_PER_WINDOW,
+    maxKeys: 2_000,
+});
+
+/** 测试用：清空窗口计数（生产不会调） */
+export function resetErrorReportLimitForTest(): void {
+    reportLimiter.reset();
 }
 
-/** 同步清理字符串：去掉换行、控制字符 */
+/**
+ * 抹掉自由文本里**写死在字符串内部**的秘密。
+ *
+ * 按键名脱敏（见 sanitize）挡不住这种情况：`message` 是一整句话，
+ * 里面可能是 "请求 https://api.x.com/cb?access_token=eyJ... 失败" 或
+ * "Authorization: Bearer xxx" —— 键名叫 message，一点都不可疑，
+ * 可它把令牌原样带进了日志与审计表。所以字符串本身也要过一遍模式匹配。
+ */
+const SECRET_TEXT_PATTERNS: Array<[RegExp, string]> = [
+    // Bearer / Basic 之类的凭据头
+    [/\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}/gi, "$1 [redacted]"],
+    // key=value / key: value 形态（含 JSON 里的 "password":"xxx"）
+    [
+        /\b((?:password|passwd|pwd|token|secret|api[_-]?key|access[_-]?token|refresh[_-]?token|authorization)["']?\s*[=:]\s*)(?:"[^"]*"|'[^']*'|[^\s,;&}]+)/gi,
+        "$1[redacted]",
+    ],
+    // JWT：三段 base64url，特征明显
+    [/\beyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]*/g, "[redacted]"],
+];
+
+/** URL 里的查询串常带令牌，只留 origin + pathname */
+function stripUrlQuery(value: string): string {
+    return value.replace(/\bhttps?:\/\/[^\s"'<>)]+/gi, url => {
+        const q = url.indexOf("?");
+        return q === -1 ? url : url.slice(0, q);
+    });
+}
+
+export function redactSecrets(value: string): string {
+    let out = stripUrlQuery(value);
+    for (const [pattern, replacement] of SECRET_TEXT_PATTERNS) {
+        out = out.replace(pattern, replacement);
+    }
+    return out;
+}
+
+/** 同步清理字符串：去掉换行、控制字符，并抹掉写在字符串里的秘密 */
 function cleanStr(value: unknown, maxLen = 2000): string {
     if (typeof value !== "string") return "";
     // eslint-disable-next-line no-control-regex
-    return value.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, "").slice(0, maxLen);
+    const cleaned = value.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, "");
+    return redactSecrets(cleaned).slice(0, maxLen);
 }
 
 /** 从 URL 字符串里只保留 origin（去掉 query / hash / userinfo） */
@@ -125,7 +164,7 @@ export interface ErrorReport {
 
 export async function reportError(request: Request, env: Env): Promise<Response> {
     // 超窗直接丢弃（静默成功）：刷接口的人不该再从响应里学到任何东西
-    if (!withinRateLimit(Date.now())) {
+    if (!reportLimiter.allow(clientIp(request))) {
         return Response.json(
             { ok: true, dropped: true },
             { headers: { "Cache-Control": "no-store" } }

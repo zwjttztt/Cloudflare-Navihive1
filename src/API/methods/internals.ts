@@ -49,6 +49,27 @@ export const CREATE_STATEMENTS = [
         last_seen_at INTEGER NOT NULL,
         expires_at INTEGER NOT NULL
     );`,
+    // 幂等键：离线队列重放 / 网络超时重试时，客户端给每次「意图」发一个不重复的 ID，
+    // 服务端据此认出「这一条其实已经执行过了」，直接把上次的响应回放回去，
+    // 而不是再建一个重复站点。
+    //
+    // 为什么单独建表而不是塞 configs：
+    //   - configs 会进备份文件，这些临时回放记录混进去只会让备份变脏；
+    //   - configs 的写入要过所有者门控，普通账号记不了自己的幂等状态；
+    //   - 主键 (scope, op_id) 天然是「抢占位」的语义 —— 两个并发请求同时 INSERT，
+    //     只有一个成功，另一个立刻知道自己来晚了，不用读改写。
+    // scope 里带账号 id 与操作类型，所以不同账号、不同端点之间不会互相撞。
+    `CREATE TABLE IF NOT EXISTS idempotency_keys (
+        scope TEXT NOT NULL,
+        op_id TEXT NOT NULL,
+        user_id INTEGER,
+        state TEXT NOT NULL,
+        status INTEGER,
+        body TEXT,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        PRIMARY KEY (scope, op_id)
+    );`,
 ];
 
 /**
@@ -79,6 +100,8 @@ export const INDEX_STATEMENTS = [
     // 登录会话：按账号列清单 + 按过期时间清理
     `CREATE INDEX IF NOT EXISTS idx_user_sessions_user_id ON user_sessions(user_id);`,
     `CREATE INDEX IF NOT EXISTS idx_user_sessions_expires_at ON user_sessions(expires_at);`,
+    // 幂等记录按过期时间整批清（跟其它临时表一个套路）
+    `CREATE INDEX IF NOT EXISTS idx_idempotency_expires_at ON idempotency_keys(expires_at);`,
 ];
 
 // 还原时的兜底字段：只在读不到表结构（pragma 不可用）时才用，

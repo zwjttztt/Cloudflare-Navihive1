@@ -9,7 +9,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { proxyIcon } from "../worker/icon";
+import { proxyIcon, resetIconRateLimitForTest } from "../worker/icon";
 
 /** 把全局 fetch 打桩成固定响应 */
 function stubFetch(headers: Record<string, string>, body = "fake-bytes") {
@@ -64,6 +64,26 @@ test("图标代理：真正的图片类型照常返回，并带 nosniff 与 sand
         assert.equal(res.headers.get("x-content-type-options"), "nosniff");
     } finally {
         stub.restore();
+    }
+});
+
+test("图标代理：同一个来源刷太多会被限流，且不再往外发请求", async () => {
+    resetIconRateLimitForTest();
+    const stub = stubFetch({ "content-type": "image/png" }, "png-bytes");
+    try {
+        let limited = 0;
+        // 一分钟内刷到上限之外：前 60 次放行，之后应当开始 429
+        for (let i = 0; i < 70; i++) {
+            const res = await proxyIcon(iconRequest(`https://cdn.example/i${i}.png`), "1.2.3.4");
+            if (res.status === 429) limited += 1;
+        }
+        assert.ok(limited > 0, "刷过头就该被拦，这个端点是公开的出网口子");
+        // 换一个来源不受影响
+        const other = await proxyIcon(iconRequest("https://cdn.example/other.png"), "5.6.7.8");
+        assert.equal(other.status, 200);
+    } finally {
+        stub.restore();
+        resetIconRateLimitForTest();
     }
 });
 

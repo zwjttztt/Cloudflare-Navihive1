@@ -10,7 +10,16 @@
 import { scopedKey } from "../utils/accountScope";
 
 // 离线队列只关心「能按名字调出一个返回 Promise 的方法」，不需要整套客户端接口
-export type MutationApi = Record<string, (...args: unknown[]) => Promise<unknown>>;
+/**
+ * 重放时要用的接口面。
+ *
+ * 除了「按名字取出各个 mutation 方法」之外，还有 setIdempotencyKey：
+ * 重放一条之前把那条操作自己的 ID 挂上去，让服务端能认出重复补发。
+ * 它标成可选 —— 没实现也没关系，那只是退化成「不幂等」的老行为，不至于跑不起来。
+ */
+export type MutationApi = Record<string, (...args: unknown[]) => Promise<unknown>> & {
+    setIdempotencyKey?: (key: string | null) => void;
+};
 
 
 /** 所有会被拦截的 mutation 方法。returnsSuccess=true 表示「返回 false 即失败」。 */
@@ -237,6 +246,12 @@ export async function flushOfflineQueue(api: MutationApi): Promise<number> {
                 if (op.uid !== undefined && op.uid !== accountUid) {
                     drop(op);
                     continue;
+                }
+                // 带上这条操作自己的幂等 ID：服务端可能已经执行过（只是响应没回到本机），
+                // 同一个 ID 过去它会回放上次结果，而不是再做一个重复站点。
+                // 用完即清，别让后面手动的操作被误合并。
+                if (typeof api.setIdempotencyKey === "function") {
+                    api.setIdempotencyKey(op.opId ?? null);
                 }
                 const res = await fn.apply(api, op.args);
                 // returnsSuccess 类方法：返回假也视为没成功。

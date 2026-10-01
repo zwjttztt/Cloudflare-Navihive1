@@ -15,6 +15,7 @@ import {
     describeWebDavStatus,
     describeWebDavError,
     runWebDavBackup,
+    davFetch,
 } from "../worker/webdav";
 
 /** 造一份配置：默认关内网豁免，path 走默认值 */
@@ -222,6 +223,78 @@ test("isAutoBackupFileName：只有 auto 前缀算自动备份", () => {
     assert.equal(isAutoBackupFileName("navihive-backup-20260927-100000-000.json.gz"), false);
     assert.equal(isAutoBackupFileName(""), false);
     assert.equal(isAutoBackupFileName("other-file.json.gz"), false);
+});
+
+// ---- 重定向：凭据绝不能跟着跳走 ----
+// 早先是「每跳都复用 Authorization + 只检查主机」：网盘只要回一个 302 到别的域，
+// Basic 凭据就被原样送到那个域上（还能跳进内网）。现在改成同源 + 不降级。
+
+/** 用一个可编排的假 fetch 跑 davFetch，返回实际发出去的请求 */
+async function traceRedirect(
+    startUrl: string,
+    hops: Array<{ status: number; location?: string }>
+) {
+    const realFetch = globalThis.fetch;
+    const sent: Array<{ url: string; authorization?: string | null }> = [];
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : String((input as Request).url ?? input);
+        const headers = new Headers((init?.headers as Record<string, string>) ?? {});
+        sent.push({ url, authorization: headers.get("authorization") });
+        const hop = hops[Math.min(sent.length - 1, hops.length - 1)];
+        const resHeaders = new Headers();
+        if (hop.location) resHeaders.set("location", hop.location);
+        return new Response(null, { status: hop.status, headers: resHeaders });
+    }) as typeof fetch;
+    try {
+        await davFetch(startUrl, "GET", cfg("https://dav.example.com"));
+        return { sent, error: null as string | null };
+    } catch (error) {
+        return { sent, error: error instanceof Error ? error.message : String(error) };
+    } finally {
+        globalThis.fetch = realFetch;
+    }
+}
+
+test("同源重定向：正常跟着跳，凭据只在自己域上", async () => {
+    const { sent, error } = await traceRedirect("https://dav.example.com/a", [
+        { status: 302, location: "https://dav.example.com/b" },
+        { status: 200 },
+    ]);
+    assert.equal(error, null);
+    assert.equal(sent.length, 2);
+    assert.ok(sent[0].authorization, "第一跳要带上凭据");
+    assert.equal(sent[1].url, "https://dav.example.com/b");
+});
+
+test("跨源重定向直接拒绝：凭据不会送到别的域", async () => {
+    const { sent, error } = await traceRedirect("https://dav.example.com/a", [
+        { status: 302, location: "https://evil.example.net/steal" },
+        { status: 200 },
+    ]);
+    assert.match(error ?? "", /跨源重定向/);
+    assert.equal(sent.length, 1, "第二跳根本不该发出去");
+});
+
+test("HTTPS 降级重定向被拒绝（不允许退回 http）", async () => {
+    const { sent, error } = await traceRedirect("https://dav.example.com/a", [
+        { status: 302, location: "http://dav.example.com/a" },
+        { status: 200 },
+    ]);
+    assert.match(error ?? "", /HTTPS 降级/);
+    assert.equal(sent.length, 1);
+});
+
+test("重定向目标带内嵌凭据或非 http(s) 协议时拒绝", async () => {
+    const cred = await traceRedirect("https://dav.example.com/a", [
+        { status: 302, location: "https://user:pw@dav.example.com/a" },
+        { status: 200 },
+    ]);
+    assert.match(cred.error ?? "", /内嵌凭据/);
+    const file = await traceRedirect("https://dav.example.com/a", [
+        { status: 302, location: "file:///etc/passwd" },
+        { status: 200 },
+    ]);
+    assert.match(file.error ?? "", /内嵌凭据|http/);
 });
 
 // ---- 连接失败提示要能照着改 ----
