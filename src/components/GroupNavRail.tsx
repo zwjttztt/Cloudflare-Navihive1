@@ -10,7 +10,7 @@ import UnfoldLessIcon from "@mui/icons-material/UnfoldLess";
 import UnfoldMoreIcon from "@mui/icons-material/UnfoldMore";
 import ChevronLeftIcon from "@mui/icons-material/ChevronLeft";
 import ChevronRightIcon from "@mui/icons-material/ChevronRight";
-import { useUIPrefs } from "../context/UIPrefsContext";
+import { useUIPrefsStable } from "../context/UIPrefsContext";
 
 export interface RailGroup {
     id: number;
@@ -83,7 +83,8 @@ export default function GroupNavRail({
     allCollapsed,
     onToggleCollapseAll,
 }: GroupNavRailProps) {
-    const { railCollapsed, setRailCollapsed } = useUIPrefs();
+    // 只订阅稳定那份：点卡片记访问不该让分组栏重渲染
+    const { railCollapsed, setRailCollapsed } = useUIPrefsStable();
     const mode = useTheme().palette.mode;
     // 视口不够宽时逐级退化：先收成窄条，再不够就整个隐藏（阈值算法见文件上方）
     const spaceForCollapsed = useMediaQuery(SHOW_QUERY);

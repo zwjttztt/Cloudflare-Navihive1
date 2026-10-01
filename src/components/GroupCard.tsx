@@ -29,7 +29,7 @@ import EditIcon from "@mui/icons-material/Edit";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import ExpandLessIcon from "@mui/icons-material/ExpandLess";
 import EmptyArt from "./EmptyArt";
-import { useUIPrefs } from "../context/UIPrefsContext";
+import { useUIPrefsPrefs, useUIPrefsStable } from "../context/UIPrefsContext";
 import DeleteSweepIcon from "@mui/icons-material/DeleteSweep";
 import {
     COLLAPSED_EVENT,
@@ -112,7 +112,10 @@ const GroupCard: React.FC<GroupCardProps> = ({
     selectedIds,
     onToggleSelect,
 }) => {
-    const { viewMode, density, clearVisits, isStarred } = useUIPrefs();
+    // 分组本身不显示访问次数：订阅稳定那份 + 星标那份就够了，
+    // 每次点卡片都不必把整组重渲染一遍
+    const { viewMode, density, clearVisits } = useUIPrefsStable();
+    const { isStarred } = useUIPrefsPrefs();
     const selectedSet = useMemo(() => new Set(selectedIds ?? []), [selectedIds]);
 
     /** 一键清空「最近访问」：清掉本机访问统计，分组随之消失（不弹提示，肉眼可见） */

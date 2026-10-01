@@ -28,7 +28,7 @@ import {
 } from "@mui/material";
 import StarIcon from "@mui/icons-material/Star";
 import StarBorderIcon from "@mui/icons-material/StarBorder";
-import { useUIPrefs } from "../context/UIPrefsContext";
+import { useUIPrefsPrefs, useUIPrefsStable } from "../context/UIPrefsContext";
 import CloseIcon from "@mui/icons-material/Close";
 import DeleteIcon from "@mui/icons-material/Delete";
 import SaveIcon from "@mui/icons-material/Save";
@@ -67,7 +67,10 @@ export default function SiteSettingsModal({
     // 全局「网站设置」里的获取图标 API 模板
     const { iconApi } = useAppConfig();
     // 星标与标签存本机（不在数据库表里），但会随备份文件一起导出/恢复
-    const { isStarred, toggleStar, tags, setSiteTags, allTags } = useUIPrefs();
+    // 星标 / 标签走 prefs 那份，写操作走 stable（引用恒定）：
+    // 这个弹窗开着时点卡片记访问，不该让它整个重渲染
+    const { isStarred, tags, allTags } = useUIPrefsPrefs();
+    const { toggleStar, setSiteTags } = useUIPrefsStable();
     const starred = isStarred(site.id);
     const siteTags = tags[String(site.id)] ?? [];
     const [tagInput, setTagInput] = useState("");

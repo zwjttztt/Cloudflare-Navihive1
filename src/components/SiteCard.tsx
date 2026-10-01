@@ -40,7 +40,7 @@ import LinkOffIcon from "@mui/icons-material/LinkOff";
 import { useAppConfig } from "../context/AppConfigContext";
 import { useNotify } from "../context/NotifyContext";
 import { canOpenSite, safeOpenSite } from "../utils/safeOpen";
-import { useUIPrefs } from "../context/UIPrefsContext";
+import { useUIPrefsPrefs, useUIPrefsStable } from "../context/UIPrefsContext";
 import { resolveIconApiUrl } from "../utils/iconApi";
 import {
     cacheIconBlob,
@@ -151,17 +151,11 @@ const SiteCard = memo(function SiteCard({
     const theme = useTheme();
     const { thumbApi, iconApi } = useAppConfig();
     const notify = useNotify();
-    const {
-        viewMode,
-        density,
-        recordVisit,
-        deadLinks,
-        setDeadLinks,
-        isStarred,
-        toggleStar,
-        tags,
-        iconPrivacy,
-    } = useUIPrefs();
+    // 卡片不显示访问次数，所以只订阅「设置 + 写操作」和「星标 / 标签 / 死链」两份，
+    // 不订阅访问统计 —— 以前每点一次卡片，几百张卡片都会因为那份状态变化重渲染一遍
+    const { viewMode, density, recordVisit, setDeadLinks, toggleStar, iconPrivacy } =
+        useUIPrefsStable();
+    const { isStarred, tags, deadLinks } = useUIPrefsPrefs();
     // 星标与标签都存本机（UIPrefs），和访问记录、折叠状态一样不进数据库
     const starred = isStarred(site.id);
     const siteTags = tags[String(site.id)] ?? [];

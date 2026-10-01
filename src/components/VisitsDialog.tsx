@@ -17,7 +17,7 @@ import {
 } from "@mui/material";
 import CloseIcon from "@mui/icons-material/Close";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
-import { dayKey, useUIPrefs } from "../context/UIPrefsContext";
+import { dayKey, useUIPrefsVisits } from "../context/UIPrefsContext";
 
 interface VisitsDialogProps {
     open: boolean;
@@ -41,7 +41,7 @@ const levelOf = (count: number): number => {
 };
 
 export default function VisitsDialog({ open, onClose, nameOf, onClear }: VisitsDialogProps) {
-    const { visits } = useUIPrefs();
+    const { visits } = useUIPrefsVisits();
 
     const summary = useMemo(() => {
         const entries = Object.entries(visits).filter(([, v]) => v && v.count > 0);

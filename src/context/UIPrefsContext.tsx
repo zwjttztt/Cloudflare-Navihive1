@@ -153,7 +153,22 @@ export const FONT_SCALE_VALUE: Record<FontScale, string> = {
     large: "1.07",
 };
 
-interface UIPrefsValue {
+/**
+ * 三份 Context 的分工：**按「多久变一次」拆，而不是按功能拆。**
+ *
+ * 全站最频繁的状态变化是「点一次卡片记一次访问」—— 它以前会让**每一个**
+ * useUIPrefs 的消费者一起重渲染，包括只想知道「分组栏收没收起」的左侧栏、
+ * 以及几百张根本不显示访问次数的卡片。React 的 Context 没有选择器：
+ * 只要 value 变了，订阅者全部重来一遍。
+ *
+ * 所以拆成三份，各自只在自己那份变了的时候通知订阅者：
+ *   ① stable —— 设置项 + 所有写操作回调（回调都用函数式 setState，引用恒定）
+ *   ② prefs  —— 星标 / 标签 / 死链：只有用户动手才变
+ *   ③ visits —— 访问统计：每点一次卡片就变，订阅它的只有真正显示热度的那几处
+ *
+ * 需要用全量的地方（App）仍可用 useUIPrefs() 拿合并版，行为与拆分前一致。
+ */
+interface UIPrefsStableValue {
     viewMode: ViewMode;
     setViewMode: (mode: ViewMode) => void;
     density: Density;
@@ -181,28 +196,24 @@ interface UIPrefsValue {
      */
     iconPrivacy: boolean;
     setIconPrivacy: (enabled: boolean) => void;
-    visits: Record<string, VisitStat>;
-    recordVisit: (siteId?: number) => void;
-    clearVisits: () => void;
     radius: RadiusStyle;
     setRadius: (radius: RadiusStyle) => void;
     fontScale: FontScale;
     setFontScale: (scale: FontScale) => void;
-    /** 判定为失效的站点链接 -> 失效时间戳 */
-    deadLinks: Record<string, number>;
-    setDeadLinks: (next: Record<string, number>) => void;
     /** 最近搜索过的关键词（本机，最新在前） */
     searchHistory: string[];
     pushSearchHistory: (term: string) => void;
     clearSearchHistory: () => void;
-    /** 加了星标的站点 id（本机偏好，星标卡片会在分组里置顶） */
-    starred: number[];
-    isStarred: (siteId?: number) => boolean;
+    /** 左侧分组栏是否收起 */
+    railCollapsed: boolean;
+    setRailCollapsed: (collapsed: boolean) => void;
+    // 下面这些是「写操作」：它们不持有任何会变的值（全部走函数式 setState），
+    // 所以引用恒定 —— 只调用不读取的组件（卡片记一次访问）不必订阅对应状态。
+    recordVisit: (siteId?: number) => void;
+    clearVisits: () => void;
     toggleStar: (siteId?: number) => void;
     /** 批量加星 / 取消加星 */
     setStarredMany: (siteIds: number[], starred: boolean) => void;
-    /** 站点标签：站点 id -> 标签名数组（本机偏好，不进数据库） */
-    tags: Record<string, string[]>;
     setSiteTags: (siteId: number, tags: string[]) => void;
     /** 给一批站点追加标签（已存在的不会重复） */
     addTagsToMany: (siteIds: number[], tags: string[]) => void;
@@ -210,13 +221,7 @@ interface UIPrefsValue {
     removeTagFromAll: (tag: string) => void;
     /** 卡片被删除时，把它们的本机标签 / 星标一起清掉，避免留下点不出来的孤儿标签 */
     forgetSites: (siteIds: number[]) => void;
-    /** 全部用过的标签名（按使用次数排序，供筛选栏展示） */
-    allTags: string[];
-    /** 每个标签被多少张卡片使用（标签管理展示用） */
-    tagCounts: Record<string, number>;
-    /** 左侧分组栏是否收起 */
-    railCollapsed: boolean;
-    setRailCollapsed: (collapsed: boolean) => void;
+    setDeadLinks: (next: Record<string, number>) => void;
     /**
      * 从备份文件恢复星标与标签（它们只存 localStorage，备份里由前端附带）。
      * replace = 覆盖恢复，merge = 追加导入取并集。
@@ -241,6 +246,32 @@ interface UIPrefsValue {
     /** 切换账号：把按账号分开存的那几份本机数据换成新账号的 */
     setPrefsAccountUid: (uid: number | null) => void;
 }
+
+/** ② 星标 / 标签 / 死链：只在用户动手时变（见上面三份拆分说明） */
+interface UIPrefsPrefsValue {
+    /** 加了星标的站点 id（本机偏好，星标卡片会在分组里置顶） */
+    starred: number[];
+    isStarred: (siteId?: number) => boolean;
+    /** 站点标签：站点 id -> 标签名数组（本机偏好，不进数据库） */
+    tags: Record<string, string[]>;
+    /** 全部用过的标签名（按使用次数排序，供筛选栏展示） */
+    allTags: string[];
+    /** 每个标签被多少张卡片使用（标签管理展示用） */
+    tagCounts: Record<string, number>;
+    /** 判定为失效的站点链接 -> 失效时间戳 */
+    deadLinks: Record<string, number>;
+}
+
+/** ③ 访问统计：点一次卡片就变一次，是全站最频繁的状态变化 */
+interface UIPrefsVisitsValue {
+    visits: Record<string, VisitStat>;
+}
+
+/** 合并版：给确实需要全量（或懒得细分）的组件用，形状与拆分前完全一致 */
+interface UIPrefsValue
+    extends UIPrefsStableValue,
+        UIPrefsPrefsValue,
+        UIPrefsVisitsValue {}
 
 const VIEW_KEY = "navihive:viewMode";
 const DENSITY_KEY = "navihive:density";
@@ -420,7 +451,20 @@ const defaultValue: UIPrefsValue = {
 
 export const UIPrefsContext = createContext<UIPrefsValue>(defaultValue);
 
+// 三份细分 Context（分工见 UIPrefsStableValue 上的注释）。
+// 它们的默认值取自 defaultValue 的对应字段，Provider 缺失时也不至于崩。
+const StableContext = createContext<UIPrefsStableValue>(defaultValue);
+const PrefsContext = createContext<UIPrefsPrefsValue>(defaultValue);
+const VisitsContext = createContext<UIPrefsVisitsValue>(defaultValue);
+
+/** 全量（合并版）：形状与拆分前一致，给 App 这类确实需要全套的地方 */
 export const useUIPrefs = (): UIPrefsValue => useContext(UIPrefsContext);
+/** ① 设置项 + 全部写操作回调：点一次卡片不会让它变 */
+export const useUIPrefsStable = (): UIPrefsStableValue => useContext(StableContext);
+/** ② 星标 / 标签 / 死链：只有用户动手才变 */
+export const useUIPrefsPrefs = (): UIPrefsPrefsValue => useContext(PrefsContext);
+/** ③ 访问统计：每点一次卡片就变，只有真正显示热度的组件该订阅它 */
+export const useUIPrefsVisits = (): UIPrefsVisitsValue => useContext(VisitsContext);
 
 export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
     const [viewMode, setViewModeState] = useState<ViewMode>(() => {
@@ -884,7 +928,10 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
         return () => window.removeEventListener("storage", onStorage);
     }, []);
 
-    const value = useMemo(
+    // ── ① 稳定份：设置项 + 全部写操作回调 ──
+    // 写操作能放进来的原因：它们全都用函数式 setState（不读当前值），引用恒定。
+    // 于是「点一下卡片记一次访问」这种高频写入，不会让只订阅这一份的组件重渲染。
+    const stableValue = useMemo(
         () => ({
             viewMode,
             setViewMode,
@@ -900,31 +947,24 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
             setOfflineFull,
             iconPrivacy,
             setIconPrivacy,
-            visits,
-            recordVisit,
-            clearVisits,
             radius,
             setRadius,
             fontScale,
             setFontScale,
-            deadLinks,
-            setDeadLinks,
             searchHistory,
             pushSearchHistory,
             clearSearchHistory,
-            starred,
-            isStarred,
+            railCollapsed,
+            setRailCollapsed,
+            recordVisit,
+            clearVisits,
             toggleStar,
             setStarredMany,
-            tags,
             setSiteTags,
             addTagsToMany,
             removeTagFromAll,
             forgetSites,
-            allTags,
-            tagCounts,
-            railCollapsed,
-            setRailCollapsed,
+            setDeadLinks,
             restoreLocalPrefs,
             prefSync,
             setPrefSync,
@@ -948,30 +988,24 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
             setOfflineFull,
             iconPrivacy,
             setIconPrivacy,
-            visits,
-            recordVisit,
-            clearVisits,
             radius,
             setRadius,
             fontScale,
             setFontScale,
-            deadLinks,
             searchHistory,
             pushSearchHistory,
             clearSearchHistory,
-            starred,
-            isStarred,
+            railCollapsed,
+            setRailCollapsed,
+            recordVisit,
+            clearVisits,
             toggleStar,
             setStarredMany,
-            tags,
             setSiteTags,
             addTagsToMany,
             removeTagFromAll,
             forgetSites,
-            allTags,
-            tagCounts,
-            railCollapsed,
-            setRailCollapsed,
+            setDeadLinks,
             restoreLocalPrefs,
             prefSync,
             setPrefSync,
@@ -982,5 +1016,28 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
         ]
     );
 
-    return <UIPrefsContext.Provider value={value}>{children}</UIPrefsContext.Provider>;
+    // ── ② 星标 / 标签 / 死链 ──
+    const prefsValue = useMemo(
+        () => ({ starred, isStarred, tags, allTags, tagCounts, deadLinks }),
+        [starred, isStarred, tags, allTags, tagCounts, deadLinks]
+    );
+
+    // ── ③ 访问统计 ──
+    const visitsValue = useMemo(() => ({ visits }), [visits]);
+
+    // 合并版：给 useUIPrefs() 用，形状与拆分前完全一致
+    const value = useMemo(
+        () => ({ ...stableValue, ...prefsValue, ...visitsValue }),
+        [stableValue, prefsValue, visitsValue]
+    );
+
+    return (
+        <StableContext.Provider value={stableValue}>
+            <PrefsContext.Provider value={prefsValue}>
+                <VisitsContext.Provider value={visitsValue}>
+                    <UIPrefsContext.Provider value={value}>{children}</UIPrefsContext.Provider>
+                </VisitsContext.Provider>
+            </PrefsContext.Provider>
+        </StableContext.Provider>
+    );
 }
