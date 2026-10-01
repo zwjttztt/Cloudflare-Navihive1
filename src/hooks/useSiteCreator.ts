@@ -8,6 +8,7 @@ import { applySiteInputChange, emptySiteDraft, nextSiteOrderNum } from "../utils
 import { resolveIconApiUrl } from "../utils/iconApi";
 import { normalizeFailureText, normalizeUrl } from "../utils/url";
 import { reportError } from "../utils/errorReporter";
+import { OfflineQueuedError } from "../API/offlineQueue";
 import type { GroupWithSites } from "../types";
 import type { NotifySeverity } from "./useNotify";
 
@@ -70,8 +71,8 @@ export function useSiteCreator({
 
     const handleCreateGroup = useCallback(
         async (name: string) => {
+            const groupName = (name || "").trim();
             try {
-                const groupName = (name || "").trim();
                 if (!groupName) {
                     onError("分组名称不能为空");
                     return;
@@ -87,12 +88,25 @@ export function useSiteCreator({
                 }
                 setOpenAddGroup(false);
             } catch (error) {
+                // 离线：分组已经排队等着联网后创建，但用户此刻就该看得见它 ——
+                // 否则「离线新建分组 → 在它下面加站点」这条路根本走不通（没有 id 可挂）。
+                // 拿队列给的占位 id 先在本地显示一个空分组，联网重放后自动换成真实 id。
+                if (error instanceof OfflineQueuedError && typeof error.tempId === "number") {
+                    const tempId = error.tempId;
+                    setGroups(prev => [
+                        ...prev,
+                        { id: tempId, name: groupName, order_num: groupsRef.current.length, sites: [] } as GroupWithSites,
+                    ]);
+                    setOpenAddGroup(false);
+                    onNotify("网络已断开：分组已暂存本地，联网后自动创建", "info");
+                    return;
+                }
                 console.error("创建分组失败:", error);
                 reportError(error, { source: "group-create" });
                 onError("创建分组失败: " + (error as Error).message);
             }
         },
-        [api, groupsRef, onError, setGroups]
+        [api, groupsRef, onError, onNotify, setGroups]
     );
 
     // ---- 新建站点 ----
@@ -205,6 +219,14 @@ export function useSiteCreator({
                 setOpenAddSite(false);
                 onNotify("卡片已添加", "success");
             } catch (error) {
+                // 离线：卡片已经排队，本地先显示出来（占位 id），联网重放后换成真实 id。
+                // 分组是离线新建的时候，这里的 group_id 也是占位 id —— 重放时由队列翻译成真实号。
+                if (error instanceof OfflineQueuedError && typeof error.tempId === "number") {
+                    upsertSiteLocally({ ...siteToCreate, id: error.tempId } as Site);
+                    setOpenAddSite(false);
+                    onNotify("网络已断开：卡片已暂存本地，联网后自动创建", "info");
+                    return;
+                }
                 console.error("创建站点失败:", error);
                 onError("创建站点失败: " + (error as Error).message);
             } finally {

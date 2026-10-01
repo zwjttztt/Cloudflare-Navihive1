@@ -32,6 +32,11 @@ export interface TransferApi {
         configs: Record<string, string>;
     }>;
     importData(data: ExportData): Promise<ImportResult>;
+    /**
+     * 表里当前最大的 id：恢复时用它当「预分配」的起点。
+     * 拿不到（表不存在 / D1 异常）时返回 0，交给后续 INSERT 自己报错。
+     */
+    nextIdBase(table: "groups" | "sites"): Promise<number>;
     listOwnedIds(table: "groups" | "sites"): Promise<number[]>;
     filterOwnedGroupIds(ids: readonly number[]): Promise<Set<number>>;
     rollbackCreatedRows(siteIds: number[], groupIds: number[]): Promise<void>;
@@ -192,78 +197,81 @@ export const transferImpl: TransferApi = {
 
             const normalized = normalizeImportData(data);
 
-            // 先记下现有数据的 id：等新数据全部写成功之后再删它们。
+            // 旧数据 id：等新数据全部写完、并且整批一起提交成功之后才删它们。
             // 多账号后只清「当前账号」的，别把别人的数据一起抹了
             const oldSiteIds = await this.listOwnedIds("sites");
             const oldGroupIds = await this.listOwnedIds("groups");
 
-            // 导入分组：id 交给数据库分配，同时记下新旧映射
+            // ── 预分配 id：让「插分组 / 插站点 / 写配置 / 删旧数据」能进同一个事务 ──
+            //
+            // 站点要靠分组的新 id 才能落库，所以过去只能「先插分组拿 id，再插站点」——
+            // 两步之间没有任何事务保护，中途任何一步失败都得靠事后回滚擦屁股，
+            // 而回滚本身也可能失败（那就会留下没人认领的孤儿行）。
+            //
+            // 现在先把 id 算出来（当前 MAX(id) 之后的一段连续号），所有写入就不再互相
+            // 依赖，可以整批塞进**同一个 D1 batch** —— batch 在 D1 里就是一个事务：
+            // 要么整份备份生效，要么一个字节都不变。这才是「全部写入验证后原子切换」。
+            const groupBase = await this.nextIdBase("groups");
+            const siteBase = await this.nextIdBase("sites");
+
+            // 第一阶段：把要写什么算清楚（加密、权限判定这些含 await 的都在这里做完），
+            // 第二阶段只负责往 batch 里塞纯 SQL —— 保证事务里没有「等待」。
+            interface GroupPlan { id: number; name: string; order_num: number; }
+            interface SitePlan {
+                id: number; groupId: number; name: string; url: string; icon: string;
+                description: string; notes: string; username: string; password: string;
+                order_num: number;
+            }
+            const groupPlan: GroupPlan[] = [];
+            let nextGroupId = groupBase + 1;
             for (const group of normalized.groups) {
-                const result = await this.db
-                    .prepare(
-                        "INSERT INTO groups (name, order_num, user_id) VALUES (?, ?, ?) RETURNING id"
-                    )
-                    .bind(group.name, group.order_num || 0, this.currentUserId)
-                    .all<{ id: number }>();
-                const newId = result.results?.[0]?.id;
-                if (typeof newId !== "number") {
-                    throw new Error(`分组「${group.name}」写入后拿不到新 id`);
-                }
-                createdGroupIds.push(newId);
-                if (group.id !== undefined) groupIdMap[String(group.id)] = newId;
+                const id = nextGroupId++;
+                groupPlan.push({ id, name: group.name, order_num: group.order_num || 0 });
+                if (group.id !== undefined) groupIdMap[String(group.id)] = id;
+                createdGroupIds.push(id);
             }
 
             // 站点指向了备份里不存在的分组（手改过 / 老格式）时兜一个分组出来装它们，
             // sites.group_id 是 NOT NULL，没有归属就写不进去
+            const needsOrphanGroup = normalized.sites.some(site => {
+                const mapped = site.group_id !== undefined && site.group_id !== null
+                    ? groupIdMap[String(site.group_id)]
+                    : undefined;
+                return typeof mapped !== "number";
+            });
             let orphanGroupId: number | null = null;
+            if (needsOrphanGroup) {
+                orphanGroupId = nextGroupId++;
+                groupPlan.push({ id: orphanGroupId, name: "导入的站点", order_num: 999999 });
+                createdGroupIds.push(orphanGroupId);
+            }
 
-            // 导入站点数据（含账号密码）
+            let nextSiteId = siteBase + 1;
+            const sitePlan: SitePlan[] = [];
             for (const site of normalized.sites) {
-                let groupId =
-                    site.group_id !== undefined && site.group_id !== null
-                        ? groupIdMap[String(site.group_id)]
-                        : undefined;
-
+                const mapped = site.group_id !== undefined && site.group_id !== null
+                    ? groupIdMap[String(site.group_id)]
+                    : undefined;
+                const groupId = typeof mapped === "number" ? mapped : orphanGroupId;
                 if (typeof groupId !== "number") {
-                    if (orphanGroupId === null) {
-                        const created = await this.createGroup({
-                            name: "导入的站点",
-                            order_num: 999999,
-                        } as Group);
-                        if (typeof created?.id !== "number") {
-                            throw new Error("为无归属站点创建兜底分组失败");
-                        }
-                        orphanGroupId = created.id;
-                        createdGroupIds.push(orphanGroupId);
-                    }
-                    groupId = orphanGroupId;
+                    throw new Error(`站点「${site.name}」找不到所属分组`);
                 }
-
-                const result = await this.db
-                    .prepare(
-                        `INSERT INTO sites (group_id, name, url, icon, description, notes, username, password, order_num, user_id)
-                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`
-                    )
-                    .bind(
-                        groupId,
-                        site.name,
-                        site.url,
-                        site.icon || "",
-                        site.description || "",
-                        site.notes || "",
-                        site.username || "",
-                        // 备份里是明文，写回 D1 前加密
-                        await encryptSecret(site.password || "", this.keyring),
-                        site.order_num || 0,
-                        this.currentUserId
-                    )
-                    .all<{ id: number }>();
-                const newId = result.results?.[0]?.id;
-                if (typeof newId !== "number") {
-                    throw new Error(`站点「${site.name}」写入后拿不到新 id`);
-                }
-                createdSiteIds.push(newId);
-                if (site.id !== undefined) siteIdMap[String(site.id)] = newId;
+                const id = nextSiteId++;
+                sitePlan.push({
+                    id,
+                    groupId,
+                    name: site.name,
+                    url: site.url,
+                    icon: site.icon || "",
+                    description: site.description || "",
+                    notes: site.notes || "",
+                    username: site.username || "",
+                    // 备份里是明文，写回 D1 前加密
+                    password: await encryptSecret(site.password || "", this.keyring),
+                    order_num: site.order_num || 0,
+                });
+                if (site.id !== undefined) siteIdMap[String(site.id)] = id;
+                createdSiteIds.push(id);
             }
 
             // 导入配置数据。
@@ -274,9 +282,7 @@ export const transferImpl: TransferApi = {
                 ...Object.entries(normalized.configs || {}),
                 ...Object.entries(normalized.sharedConfigs || {}),
             ];
-
-            // 配置切换与旧版本删除必须在同一个 D1 batch 事务内提交。
-            const commitStatements: D1PreparedStatement[] = [];
+            const configPlan: { key: string; value: string; uid: number | null }[] = [];
             for (const [key, value] of configEntries) {
                 if (key === "DB_INITIALIZED") {
                     // 跳过数据库初始化标志
@@ -292,17 +298,57 @@ export const transferImpl: TransferApi = {
                 if (typeof value !== "string" || key.length > 200 || value.length > 256 * 1024) {
                     throw new Error("备份配置格式无效或过大");
                 }
-                const uid = await this.scopeFor(key);
-                commitStatements.push(uid === null
-                    ? this.db.prepare("INSERT INTO configs (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=CURRENT_TIMESTAMP").bind(key, value)
-                    : this.db.prepare("INSERT INTO user_configs (user_id, key, value, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP) ON CONFLICT(user_id, key) DO UPDATE SET value=excluded.value, updated_at=CURRENT_TIMESTAMP").bind(uid, key, value));
+                configPlan.push({ key, value, uid: await this.scopeFor(key) });
             }
 
-            // 单个 batch 是 D1 事务：任意配置/删除失败时旧数据与配置均不变。
+            // ── 第二阶段：整批提交（一个 D1 事务 = 原子切换）──
+            const commitStatements: D1PreparedStatement[] = [];
+            for (const g of groupPlan) {
+                commitStatements.push(
+                    this.db
+                        .prepare("INSERT INTO groups (id, name, order_num, user_id) VALUES (?, ?, ?, ?)")
+                        .bind(g.id, g.name, g.order_num, this.currentUserId)
+                );
+            }
+            for (const s of sitePlan) {
+                commitStatements.push(
+                    this.db
+                        .prepare(
+                            `INSERT INTO sites (id, group_id, name, url, icon, description, notes, username, password, order_num, user_id)
+                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+                        )
+                        .bind(
+                            s.id,
+                            s.groupId,
+                            s.name,
+                            s.url,
+                            s.icon,
+                            s.description,
+                            s.notes,
+                            s.username,
+                            s.password,
+                            s.order_num,
+                            this.currentUserId
+                        )
+                );
+            }
+            for (const c of configPlan) {
+                commitStatements.push(
+                    c.uid === null
+                        ? this.db
+                              .prepare("INSERT INTO configs (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=CURRENT_TIMESTAMP")
+                              .bind(c.key, c.value)
+                        : this.db
+                              .prepare("INSERT INTO user_configs (user_id, key, value, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP) ON CONFLICT(user_id, key) DO UPDATE SET value=excluded.value, updated_at=CURRENT_TIMESTAMP")
+                              .bind(c.uid, c.key, c.value)
+                );
+            }
+
+            // 删除旧数据仍在同一个事务里：新数据已经全部写好了，切过去和清掉旧的是一步。
             //
-            // 删除前必须剔除本次新建的 id：SQLite 的 rowid 会复用「刚被删掉的最大值」，
-            // 于是新插入的行完全可能拿到一个也在 oldXxxIds 里的 id —— 不做这层过滤，
-            // 把备份恢复进来的一瞬间新数据就被自己后面这条 DELETE 抹掉了。
+            // 仍然剔除本次新建的 id：预分配用的是 MAX(id)+1 起，理论上与旧 id 不重叠，
+            // 但 SQLite 的 rowid 会复用「刚被删掉的最大值」，留着这层过滤等于多一道保险 ——
+            // 真重叠了也只是少删几行，绝不会把刚恢复进来的数据抹掉。
             const freshGroups = new Set(createdGroupIds);
             const freshSites = new Set(createdSiteIds);
             for (const [table, ids, fresh] of [
@@ -315,9 +361,12 @@ export const transferImpl: TransferApi = {
                     commitStatements.push(this.db.prepare(`DELETE FROM ${table} WHERE id IN (${chunk.map(() => "?").join(",")})${this.scopeSql(true)}`).bind(...this.scopeParams([...chunk])));
                 }
             }
+
             if (commitStatements.length) {
                 const committed = await this.db.batch(commitStatements);
-                if (committed.some(result => !result.success)) throw new Error("恢复事务提交失败");
+                if (committed.some(result => !result.success)) {
+                    throw new Error("恢复事务提交失败：整份恢复已回滚，当前数据未改动");
+                }
             }
 
             return { success: true, groupIdMap, siteIdMap };
@@ -338,6 +387,17 @@ export const transferImpl: TransferApi = {
             if (typeof this.releaseIdempotency === "function") {
                 await this.releaseIdempotency(lockScope, lockKey).catch(() => {});
             }
+        }
+    },
+
+    nextIdBase: async function (this: NavigationAPI, table: "groups" | "sites"): Promise<number> {
+        try {
+            const row = await this.db
+                .prepare(`SELECT COALESCE(MAX(id), 0) AS m FROM ${table}`)
+                .first<{ m: number }>();
+            return typeof row?.m === "number" ? row.m : 0;
+        } catch {
+            return 0;
         }
     },
 

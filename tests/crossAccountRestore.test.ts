@@ -47,27 +47,38 @@ class MockD1 {
         return sql.replace(/\s+/g, " ").trim();
     }
 
-    /** 返回新分配的 id（RETURNING id 要用） */
+    /**
+     * 返回新分配的 id（RETURNING id 要用）。
+     *
+     * 覆盖恢复现在**显式带 id** 写入（预分配，好让整批进同一个事务），所以这里
+     * 两种写法都得认：`INSERT INTO groups (id, name, order_num, user_id)` 与
+     * 老写法 `INSERT INTO groups (name, order_num, user_id) RETURNING id`。
+     */
     private insert(sql: string, args: unknown[]): number | null {
         const s = this.normalize(sql);
         if (s.startsWith("INSERT INTO groups")) {
-            // INSERT INTO groups (name, order_num, user_id) VALUES (?, ?, ?) RETURNING id
-            const id = this.nextGroupId++;
-            const userId = Number(args[2]);
-            this.groups.push({ id, user_id: userId, name: String(args[0]) });
+            const hasId = /^INSERT INTO groups \(id,/.test(s);
+            const id = hasId ? Number(args[0]) : this.nextGroupId++;
+            const nameIdx = hasId ? 1 : 0;
+            const userId = Number(args[hasId ? 3 : 2]);
+            this.groups.push({ id, user_id: userId, name: String(args[nameIdx]) });
             this.written.push({ table: "groups", id, user_id: userId });
             return id;
         }
         if (s.startsWith("INSERT INTO sites")) {
-            // INSERT INTO sites (group_id, name, url, icon, description, notes,
-            //   username, password, order_num, user_id) VALUES (...10 个) RETURNING id
-            if (this.failSiteName !== null && String(args[1]) === this.failSiteName) {
+            // 带 id：(id, group_id, name, url, icon, description, notes, username,
+            //        password, order_num, user_id)
+            // 不带  ：(group_id, name, url, icon, description, notes, username,
+            //        password, order_num, user_id)
+            const hasId = /^INSERT INTO sites \(id,/.test(s);
+            const nameIdx = hasId ? 2 : 1;
+            if (this.failSiteName !== null && String(args[nameIdx]) === this.failSiteName) {
                 throw new Error("模拟站点写入失败");
             }
-            const id = this.nextSiteId++;
-            const groupId = Number(args[0]);
-            const userId = Number(args[9]);
-            this.sites.push({ id, group_id: groupId, user_id: userId, name: String(args[1]) });
+            const id = hasId ? Number(args[0]) : this.nextSiteId++;
+            const groupId = Number(args[hasId ? 1 : 0]);
+            const userId = Number(args[hasId ? 10 : 9]);
+            this.sites.push({ id, group_id: groupId, user_id: userId, name: String(args[nameIdx]) });
             this.written.push({ table: "sites", id, user_id: userId });
             return id;
         }
@@ -131,6 +142,12 @@ class MockD1 {
 
     private firstRow(sql: string, args: unknown[]): unknown | null {
         const s = this.normalize(sql);
+        // 覆盖恢复预分配 id 用：SELECT COALESCE(MAX(id), 0) AS m FROM groups|sites
+        const maxMatch = /^SELECT COALESCE\(MAX\(id\), 0\) AS m FROM (groups|sites)$/.exec(s);
+        if (maxMatch) {
+            const rows: { id: number }[] = maxMatch[1] === "groups" ? this.groups : this.sites;
+            return { m: rows.reduce((max, r) => Math.max(max, r.id), 0) };
+        }
         if (s.startsWith("SELECT id, username, role") && s.includes("FROM users")) {
             const id = Number(args[0]);
             const u = this.users.get(id);
@@ -258,10 +275,14 @@ test("跨账号恢复：备份里的 id 被其他账号占着也能成功（重�
     const result = await api.importData(backup);
 
     assert.equal(result.success, true, "id 撞车时也应该导入成功（不再保留原 id）");
-    // 新号是数据库分配的：都不会是备份里的 1 / 2 / 10
+    // 核心性质：新号不能撞库里已经存在的行（预分配从 MAX(id)+1 起）
     const newGroupIds = Object.values(result.groupIdMap);
     assert.equal(newGroupIds.length, 2);
-    assert.ok(newGroupIds.every(id => id > 3), `分组应重新发号，实际 ${newGroupIds}`);
+    assert.ok(
+        newGroupIds.every(id => ![1, 2].includes(id)),
+        `分组必须重新发号、不能撞已有主键，实际 ${newGroupIds}`
+    );
+    assert.equal(new Set(newGroupIds).size, 2, "两个分组要拿到不同的新号");
 
     // 站点跟着重挂到「旧 group_id=1 对应的新号」上，而不是原来那个 1
     const newSiteId = result.siteIdMap["10"];
