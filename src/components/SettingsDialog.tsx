@@ -80,6 +80,8 @@ interface SettingsDialogProps {
     /** 毛玻璃总开关（本机偏好）：关掉后模糊滑块不再有任何效果，界面得说明清楚 */
     glassEffects: boolean;
     onGlassEffectsChange: (enabled: boolean) => void;
+    offlineFull: boolean;
+    onOfflineFullChange: (enabled: boolean) => void;
     /** 正在保存：按钮禁用 + 文案变化，避免连点重复提交 */
     saving?: boolean;
     /** 拼音搜索（本机偏好，打开即生效，不需要点保存） */
@@ -230,6 +232,8 @@ export default function SettingsDialog({
     onGlassBlurChange,
     glassEffects,
     onGlassEffectsChange,
+    offlineFull,
+    onOfflineFullChange,
     saving = false,
     pinyinSearch,
     onPinyinSearchChange,
@@ -614,6 +618,20 @@ export default function SettingsDialog({
                             label='拼音搜索'
                             ariaLabel='拼音搜索'
                             caption='开启后可用首字母搜中文站点（例如「bd」命中「百度」），词典约 28KB，按需加载。'
+                        />
+                    </Section>
+
+                    {/* 5.5 离线与缓存 */}
+                    <Section
+                        title='离线与缓存'
+                        hint='默认只预下载打开页面必需的那一小块，点开某个功能时才下载它 —— 首屏更快、流量更省。'
+                    >
+                        <SwitchRow
+                            checked={offlineFull}
+                            onChange={onOfflineFullChange}
+                            label='离线增强（预下载全部功能）'
+                            ariaLabel='离线增强'
+                            caption='打开后会把设置、备份、回收站这些弹窗的代码也一并预下载，断网时也能点开。代价是首次联网时多下载约几百 KB。关闭不会删除已缓存的内容。'
                         />
                     </Section>
 

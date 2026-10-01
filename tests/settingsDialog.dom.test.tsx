@@ -28,6 +28,7 @@ type Calls = {
     radius: RadiusStyle[];
     fontScale: FontScale[];
     glassEffects: boolean[];
+    offlineFull: boolean[];
     closes: number;
     saves: number;
     linkChecks: number;
@@ -73,6 +74,7 @@ function emptyCalls(): Calls {
         radius: [],
         fontScale: [],
         glassEffects: [],
+        offlineFull: [],
         closes: 0,
         saves: 0,
         linkChecks: 0,
@@ -85,6 +87,7 @@ function Harness(o: Opts) {
     const [radius, setRadius] = useState<RadiusStyle>(o.radius ?? "soft");
     const [fontScale, setFontScale] = useState<FontScale>(o.fontScale ?? "normal");
     const [pinyin, setPinyin] = useState(false);
+    const [offlineFull, setOfflineFull] = useState(false);
     const [syncHealth, setSyncHealth] = useState(false);
     const [syncPrefs, setSyncPrefs] = useState(false);
     const [, setMaskOpacity] = useState(0.3);
@@ -118,6 +121,11 @@ function Harness(o: Opts) {
             onGlassEffectsChange={v => {
                 calls.glassEffects.push(v);
                 setGlass(v);
+            }}
+            offlineFull={offlineFull}
+            onOfflineFullChange={v => {
+                calls.offlineFull.push(v);
+                setOfflineFull(v);
             }}
             saving={o.saving ?? false}
             pinyinSearch={pinyin}

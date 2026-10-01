@@ -411,6 +411,8 @@ function App() {
     setFavoritesEnabled,
     glassEffects,
     setGlassEffects,
+    offlineFull,
+    setOfflineFull,
     visits,
     recordVisit,
         clearVisits,
@@ -3473,6 +3475,8 @@ function App() {
                         onGlassBlurChange={handleGlassBlurChange}
                         glassEffects={glassEffects}
                         onGlassEffectsChange={setGlassEffects}
+                        offlineFull={offlineFull}
+                        onOfflineFullChange={setOfflineFull}
                         saving={savingConfig}
                         pinyinSearch={pinyinSearch}
                         onPinyinSearchChange={setPinyinSearch}

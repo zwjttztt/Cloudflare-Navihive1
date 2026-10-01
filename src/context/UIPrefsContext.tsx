@@ -166,6 +166,12 @@ interface UIPrefsValue {
     /** 毛玻璃特效：关掉后全站不再用 backdrop-filter，改用接近不透明的底色（本机偏好） */
     glassEffects: boolean;
     setGlassEffects: (enabled: boolean) => void;
+    /**
+     * 离线增强：打开后 Service Worker 会把懒加载的功能块也预下载下来，
+     * 断网时也能点开全部弹窗。默认关 —— 按需加载就是为了「不点的功能不下载」。
+     */
+    offlineFull: boolean;
+    setOfflineFull: (enabled: boolean) => void;
     visits: Record<string, VisitStat>;
     recordVisit: (siteId?: number) => void;
     clearVisits: () => void;
@@ -247,6 +253,8 @@ const RAIL_COLLAPSED_KEY = "navihive:railCollapsed";
 const PINYIN_KEY = "navihive:pinyinSearch";
 const GLASS_KEY = "navihive:glassEffects";
 const PREF_SYNC_KEY = "navihive:prefSync";
+/** 离线增强：用户显式开启后才把懒加载的功能块也预下载下来 */
+const OFFLINE_FULL_KEY = "navihive:offlineFull";
 /** 搜索历史最多留几条，够用又不至于把面板撑长 */
 const SEARCH_HISTORY_MAX = 8;
 
@@ -360,6 +368,8 @@ const defaultValue: UIPrefsValue = {
     setPinyinSearch: () => {},
     glassEffects: true,
     setGlassEffects: () => {},
+    offlineFull: false,
+    setOfflineFull: () => {},
     setFavoritesEnabled: () => {},
     visits: {},
     recordVisit: () => {},
@@ -417,6 +427,11 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
     // 毛玻璃默认开：关掉只是「换一种更省的合成方式」，本机偏好，不进数据库
     const [glassEffects, setGlassState] = useState<boolean>(
         () => readString(GLASS_KEY, "1") !== "0"
+    );
+    // 离线增强默认关：按需加载的意义就是「不点的功能不下载」，
+    // 默认全预下来等于把那层优化白做了。要断网也能用全部功能，由用户自己打开。
+    const [offlineFull, setOfflineFullState] = useState<boolean>(
+        () => readString(OFFLINE_FULL_KEY, "0") === "1"
     );
     const [visits, setVisits] = useState<Record<string, VisitStat>>(readVisits);
     const [radius, setRadiusState] = useState<RadiusStyle>(() => {
@@ -566,6 +581,17 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
     const setGlassEffects = useCallback((enabled: boolean) => {
         setGlassState(enabled);
         write(GLASS_KEY, enabled ? "1" : "0");
+    }, []);
+
+    const setOfflineFull = useCallback((enabled: boolean) => {
+        setOfflineFullState(enabled);
+        write(OFFLINE_FULL_KEY, enabled ? "1" : "0");
+        // 通知 Service Worker：只有用户显式打开，才把懒加载的功能块也预下来
+        if (enabled && typeof navigator !== "undefined" && "serviceWorker" in navigator) {
+            navigator.serviceWorker.ready
+                .then(reg => reg.active?.postMessage({ type: "precache-lazy" }))
+                .catch(() => {});
+        }
     }, []);
 
     const recordVisit = useCallback((siteId?: number) => {
@@ -848,6 +874,8 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
             setPinyinSearch,
             glassEffects,
             setGlassEffects,
+            offlineFull,
+            setOfflineFull,
             visits,
             recordVisit,
             clearVisits,
@@ -892,6 +920,8 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
             setPinyinSearch,
             glassEffects,
             setGlassEffects,
+            offlineFull,
+            setOfflineFull,
             visits,
             recordVisit,
             clearVisits,
