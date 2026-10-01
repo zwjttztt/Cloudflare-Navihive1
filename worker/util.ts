@@ -13,11 +13,27 @@
  *   - X-Frame-Options / CSP frame-ancestors —— 不允许被别的站点嵌进 iframe（点击劫持）
  *   - Referrer-Policy —— 不把本站 URL 泄露给外链
  */
+/**
+ * Worker 自己产出的响应（/api/*）统一带的安全头。
+ *
+ * 静态资源那套在 public/_headers（CSP / HSTS / COOP / CORP …），但**它管不到
+ * Worker 响应**，两边必须各写一遍，否则 `/api/bootstrap` 这种返回全部站点数据的
+ * 接口反而是全站头最少的响应。缺的两条各自有实际作用：
+ *   - HSTS：只在 HTTPS 响应里下发才有效。首页（静态）虽然已经带了，但直接打到
+ *     /api 的客户端（脚本、健康检查、被 DNS 重绑定诱导的请求）拿不到，
+ *     补上后「先访问过首页」不再是建立 HSTS 的前提。
+ *   - CORP: same-origin：挡的是「别的源把这份响应当资源读走」。/api 已经是
+ *     no-store、令牌也是 HttpOnly，但 CORP 防的是共享缓存之外的那一层 ——
+ *     跨源 <img>/<script>/fetch 想读走响应体时直接被浏览器挡下。
+ * CSP 与 COOP 只对「会被当成文档渲染」的响应有意义，JSON / 图片响应不需要，故不加。
+ */
 export function securityHeaders(extra?: HeadersInit): Headers {
     const headers = new Headers(extra);
     headers.set("X-Content-Type-Options", "nosniff");
     headers.set("X-Frame-Options", "DENY");
     headers.set("Referrer-Policy", "no-referrer");
+    headers.set("Strict-Transport-Security", "max-age=63072000; includeSubDomains; preload");
+    headers.set("Cross-Origin-Resource-Policy", "same-origin");
     return headers;
 }
 
@@ -29,23 +45,41 @@ export class BodyLimitError extends Error {
     constructor(public readonly status = 413) { super(status === 413 ? "payload too large" : "body read timeout"); }
 }
 
-/** 在读取期间限制累计字节和总耗时，并在超限时取消流。 */
+/**
+ * 在读取期间限制累计字节与总耗时，超限时取消流并**明确报错**。
+ *
+ * ⚠️ 超时必须靠一个显式标记来判定，不能只看 `read()` 返回什么：
+ * 超时回调里要调 `reader.cancel()` 把卡住的流放掉，而 cancel 会让那个还挂着的
+ * `read()` **立刻以 `{ done: true }` 结束** —— 它和 reject 是同一轮微任务里并跑的，
+ * 谁先到不一定。若 read() 抢先，`Promise.race` 拿到的是「流正常结束了」，
+ * 于是函数返回一段**被截断的 body**，而不是报错。
+ * 那比报错糟得多：调用方拿到半截数据还会当正常的去解析（半截 JSON 是合法前缀时
+ * 甚至不报错），慢流攻击就这样静默生效了。
+ * 所以这里用一个 `timedOut` 标志：只要它亮了，无论 read() 回什么，一律抛 408。
+ */
 export async function readBoundedBytes(body: ReadableStream<Uint8Array> | null, maxBytes: number, timeoutMs = 15000): Promise<Uint8Array<ArrayBuffer>> {
     if (!body) return new Uint8Array(0);
     const reader = body.getReader();
     const chunks: Uint8Array[] = [];
     let size = 0;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let timedOut = false;
     const deadline = new Promise<never>((_, reject) => {
-        timer = setTimeout(() => { void reader.cancel().catch(() => {}); reject(new BodyLimitError(408)); }, timeoutMs);
+        timer = setTimeout(() => {
+            timedOut = true;
+            void reader.cancel().catch(() => {});
+            reject(new BodyLimitError(408));
+        }, timeoutMs);
     });
     try {
         while (true) {
-            const { done, value } = await Promise.race([reader.read(), deadline]);
-            if (done) break;
-            size += value.byteLength;
+            const result = await Promise.race([reader.read(), deadline]);
+            // 超时优先于「读到 done」：cancel 会把挂着的 read 变成 done:true
+            if (timedOut) throw new BodyLimitError(408);
+            if (result.done) break;
+            size += result.value.byteLength;
             if (size > maxBytes) throw new BodyLimitError();
-            chunks.push(value);
+            chunks.push(result.value);
         }
         const out = new Uint8Array(size);
         let offset = 0;

@@ -13,6 +13,8 @@ import {
     EXPORT_MAX_LOCK_MS,
     exportBucket,
     enforceWriteGuard,
+    enforceDavGuard,
+    endpointBucket,
     nextDecayedCount,
     nextExportCount,
     readExportGuard,
@@ -198,7 +200,20 @@ export async function handleBackupRoutes(ctx: RouteCtx): Promise<Response | null
     }
 
     // ============ WebDAV 备份相关路由（由 Worker 代理，避免浏览器跨域限制） ============
-    else if (path === "webdav/test" && method === "POST") {
+    // 这五条每一条都要**出网到用户自己的网盘**（列目录是 PROPFIND、下载是 GET、
+    // 上传是 PUT + 整份 gzip + 加密），是全站最贵的一类请求：既吃 Worker 的出网配额，
+    // 也把用户的网盘账号往外打。没有闸门时它就是个「帮我刷这个地址」的代理。
+    // 阈值刻意压到一分钟 10 次 —— 正常人手点远到不了，脚本才到得了。
+    if (path.startsWith("webdav/") && method === "POST") {
+        const limited = await enforceDavGuard(
+            api,
+            endpointBucket(request, api.getCurrentUserId(), trustXFF)
+        );
+        if (limited) return limited;
+    }
+
+    // 闸门放在读 body 之前：被限住的请求连那 10MB 都不必读进来
+    if (path === "webdav/test" && method === "POST") {
         // 只有这条允许「还没保存的临时配置」——填完想先试试正是它的用途
         const config = await resolveWebDavConfig(api, request, undefined, {
             allowBodyOverride: true,

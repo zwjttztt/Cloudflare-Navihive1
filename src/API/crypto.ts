@@ -104,6 +104,29 @@ export async function verifyJwt(
     return { valid: true, payload };
 }
 
+/**
+ * 依次用多把密钥验签，任意一把通过就算通过。
+ *
+ * 用途是「平滑轮换 JWT 密钥」：配了新 JWT_SECRET 之后，此前用旧密钥签发的令牌
+ * （30 天「记住我」）不该当场全部掉线，于是把旧值放进 JWT_SECRET_OLD 名单里过渡。
+ * 签名永远只用第一把（当前密钥），旧密钥只能验、不能签 —— 轮换过渡结束后把它删掉，
+ * 泄露的旧密钥就不再有签发能力。
+ */
+export async function verifyJwtAny(
+    token: string,
+    secrets: readonly string[],
+    opts?: { tokenVersion?: number }
+): Promise<JwtResult> {
+    const tried = new Set<string>();
+    for (const secret of secrets) {
+        if (!secret || tried.has(secret)) continue;
+        tried.add(secret);
+        const result = await verifyJwt(token, secret, opts);
+        if (result.valid) return result;
+    }
+    return { valid: false };
+}
+
 async function hmac(secret: string, data: Uint8Array): Promise<Bytes> {
     const key = await crypto.subtle.importKey(
         "raw",
@@ -166,41 +189,141 @@ async function pbkdf2(
     return new Uint8Array(bits);
 }
 
-// ---------------- 凭据静态加密 (AES-GCM，密钥由 AUTH_SECRET 派生) ----------------
+// ---------------- 密钥环 + 凭据静态加密 (AES-GCM) ----------------
 // 用于 webdav.password 这类「明文落 D1」的敏感字段：D1 导出 / 备份泄露也解不出明文
-// （没有 AUTH_SECRET 即解不开）。每次写入换随机 IV。
+// （没有服务端密钥即解不开）。每次写入换随机 IV。
+//
+// 密文自带 keyId，一把钥匙一个编号：
+//   keyId 0 —— 由 AUTH_SECRET 派生（升级前的唯一格式，密文里不带编号）
+//   keyId 1 —— 由 DATA_ENCRYPTION_KEY 派生
+// 这样做的意义是「轮换数据密钥不必停机迁移」：新写入一律用新钥，老密文按自己头上的
+// 编号找老钥，两边同时可读。没配 DATA_ENCRYPTION_KEY 时 writeKeyId 仍是 0、
+// 格式与升级前逐字节一致 —— 缺失新环境变量等于没启用这个功能，绝不碰已有密文。
 const ENC_PREFIX = "enc$";
-const AES_SALT = enc.encode("navihive-aes-v1");
+const AES_SALT_LEGACY = enc.encode("navihive-aes-v1");
+const AES_SALT_DATA = enc.encode("navihive-aes-k1");
 const AES_ITERS = 50_000;
+
+export const KEY_ID_LEGACY = 0;
+export const KEY_ID_DATA = 1;
+export type KeyId = typeof KEY_ID_LEGACY | typeof KEY_ID_DATA;
+
+const KEY_SALTS: Record<KeyId, Uint8Array> = {
+    [KEY_ID_LEGACY]: AES_SALT_LEGACY,
+    [KEY_ID_DATA]: AES_SALT_DATA,
+};
+
+export interface Keyring {
+    /** 新密文一律用它加密 */
+    readonly writeKeyId: KeyId;
+    /** 已注册的钥匙编号，第一个是 writeKeyId（解密时按这个顺序兜底） */
+    readonly ids: readonly KeyId[];
+    /** 取某把钥匙；没注册返回 null（不是抛错——缺钥要能优雅降级） */
+    keyFor(id: KeyId): Promise<CryptoKey | null>;
+}
+
+export function createKeyring(opts: {
+    /** DATA_ENCRYPTION_KEY：独立的数据加密密钥（可选） */
+    dataKey?: string;
+    /** AUTH_SECRET：旧密钥，同时也是未配置新密钥时的回退（可选） */
+    legacySecret?: string;
+}): Keyring {
+    const dataKey = opts.dataKey ?? "";
+    const legacySecret = opts.legacySecret ?? "";
+    const pending = new Map<KeyId, Promise<CryptoKey>>();
+    // 走 aesKey 缓存而不是直接 deriveAesKey：API 实例是每请求新建的，
+    // 不缓存的话每个请求都要重跑一次五万次迭代的 PBKDF2。
+    if (dataKey) pending.set(KEY_ID_DATA, aesKey(KEY_ID_DATA, dataKey));
+    // legacy 永远注册：升级前没配 AUTH_SECRET 时也是拿空串当密钥用的，
+    // 这里保持一致，免得「未配置」场景下加密突然变成不可解。
+    pending.set(KEY_ID_LEGACY, aesKey(KEY_ID_LEGACY, legacySecret));
+
+    const writeKeyId: KeyId = dataKey ? KEY_ID_DATA : KEY_ID_LEGACY;
+    const ids: KeyId[] = writeKeyId === KEY_ID_DATA ? [KEY_ID_DATA, KEY_ID_LEGACY] : [KEY_ID_LEGACY];
+    return {
+        writeKeyId,
+        ids,
+        async keyFor(id) {
+            const p = pending.get(id);
+            if (!p) return null;
+            try {
+                return await p;
+            } catch {
+                // 派生失败别把坏结果留在环里反复失败
+                pending.delete(id);
+                return null;
+            }
+        },
+    };
+}
+
+/**
+ * 加解密函数既吃裸字符串（老调用方 / 单测）也吃密钥环。
+ * 传字符串 = 只有一把 keyId 0 的钥匙，行为与升级前完全一致。
+ */
+export type SecretSource = string | Keyring;
+
+// 字符串 → 密钥环要缓存：PBKDF2 五万次迭代，首屏每个站点密码都要解一遍，
+// 每次调用重新派生会让首屏慢几十倍。
+const stringKeyringCache = new Map<string, Keyring>();
+function resolveKeyring(src: SecretSource): Keyring {
+    if (typeof src !== "string") return src;
+    let ring = stringKeyringCache.get(src);
+    if (!ring) {
+        ring = createKeyring({ legacySecret: src });
+        stringKeyringCache.set(src, ring);
+    }
+    return ring;
+}
 
 export function isEncrypted(stored: string): boolean {
     return stored.startsWith(ENC_PREFIX);
 }
 
-export async function encryptSecret(plain: string, secret: string): Promise<string> {
+/** 拆密文：`enc$<keyId>$<b64>`（新）或 `enc$<b64>`（旧，等价于 keyId 0） */
+function parseEnc(cipher: string): { keyId: KeyId; payload: string } | null {
+    const rest = cipher.slice(ENC_PREFIX.length);
+    const m = /^([01])\$/.exec(rest);
+    if (!m) return { keyId: KEY_ID_LEGACY, payload: rest };
+    return { keyId: Number(m[1]) as KeyId, payload: rest.slice(m[0].length) };
+}
+
+export async function encryptSecret(plain: string, src: SecretSource): Promise<string> {
     if (!plain) return "";
+    const ring = resolveKeyring(src);
+    const keyId = ring.writeKeyId;
+    const key = await ring.keyFor(keyId);
+    if (!key) return "";
     const iv = crypto.getRandomValues(new Uint8Array(12));
-    const key = await aesKey(secret);
     const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, enc.encode(plain));
     const out = new Uint8Array(12 + ct.byteLength);
     out.set(iv, 0);
     out.set(new Uint8Array(ct), 12);
-    return `${ENC_PREFIX}${b64urlEncode(out)}`;
+    const prefix = keyId === KEY_ID_LEGACY ? "" : `${keyId}$`;
+    return `${ENC_PREFIX}${prefix}${b64urlEncode(out)}`;
 }
 
-export async function decryptSecret(cipher: string, secret: string): Promise<string> {
+export async function decryptSecret(cipher: string, src: SecretSource): Promise<string> {
     if (!cipher || !isEncrypted(cipher)) return cipher;
-    const raw = b64urlDecode(cipher.slice(ENC_PREFIX.length));
+    const parsed = parseEnc(cipher);
+    if (!parsed) return "";
+    const raw = b64urlDecode(parsed.payload);
     if (raw.length <= 12) return "";
     const iv = raw.subarray(0, 12);
     const ct = raw.subarray(12);
-    const key = await aesKey(secret);
-    try {
-        const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct);
-        return dec.decode(pt);
-    } catch {
-        return "";
+    const ring = resolveKeyring(src);
+    // 先按密文自带的编号解；解不开再依次试其它已注册的钥匙 ——
+    // 历史上存在「换过 AUTH_SECRET 后旧密文没重加密」的存量，兜底能让这些数据自愈。
+    for (const id of [parsed.keyId, ...ring.ids.filter((x) => x !== parsed.keyId)]) {
+        const key = await ring.keyFor(id);
+        if (!key) continue;
+        try {
+            return dec.decode(await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct));
+        } catch {
+            // 这把钥匙不对，换下一把
+        }
     }
+    return "";
 }
 
 /**
@@ -213,13 +336,13 @@ export async function decryptSecret(cipher: string, secret: string): Promise<str
  */
 export async function decryptSecretDeep(
     stored: string,
-    secret: string,
+    src: SecretSource,
     maxDepth = 3
 ): Promise<string> {
     let value = stored;
     for (let i = 0; i < maxDepth && isEncrypted(value); i++) {
-        const next = await decryptSecret(value, secret);
-        // 解不开（换了 AUTH_SECRET 等）时 decryptSecret 返回 ""。这时必须回空而不是
+        const next = await decryptSecret(value, src);
+        // 解不开（换了密钥等）时 decryptSecret 返回 ""。这时必须回空而不是
         // 回密文：密文回填进密码框再保存一次就会被加密第二层，越修越糟
         if (!next) return "";
         if (next === value) break;
@@ -229,31 +352,35 @@ export async function decryptSecretDeep(
 }
 
 // PBKDF2 派生一次 5 万次迭代。首屏要把每个站点的密码都解一遍，逐个派生同一个密钥
-// 会白白拖慢几十倍：同一个 AUTH_SECRET 的派生结果永远不变，按 secret 缓存即可，
+// 会白白拖慢几十倍：派生结果永远不变，按「keyId + 源密钥」缓存即可，
 // 解 N 个字段只派生一次。缓存的是 Promise 而不是结果，并发调用也不会重复派生。
 // 顺带让 decryptSecretDeep 的多层解密（每层都要一次派生）也只付一次代价。
 const aesKeyCache = new Map<string, Promise<CryptoKey>>();
 
-function aesKey(secret: string): Promise<CryptoKey> {
-    let cached = aesKeyCache.get(secret);
+function aesKey(keyId: KeyId, secret: string): Promise<CryptoKey> {
+    const cacheKey = `${keyId}:${secret}`;
+    let cached = aesKeyCache.get(cacheKey);
     if (!cached) {
-        cached = deriveAesKey(secret);
-        aesKeyCache.set(secret, cached);
+        cached = deriveAesKey(keyId, secret);
+        aesKeyCache.set(cacheKey, cached);
         // 派生失败别把坏结果永久留在缓存里
-        cached.catch(() => aesKeyCache.delete(secret));
+        cached.catch(() => aesKeyCache.delete(cacheKey));
     }
     return cached;
 }
 
-async function deriveAesKey(secret: string): Promise<CryptoKey> {
-    const raw = await pbkdf2(secret, AES_SALT, AES_ITERS, 32);
+async function deriveAesKey(keyId: KeyId, secret: string): Promise<CryptoKey> {
+    const raw = await pbkdf2(secret, KEY_SALTS[keyId], AES_ITERS, 32);
     return crypto.subtle.importKey("raw", raw, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
 }
 
 // 二进制版（用于备份文件整包加密）：IV(12) + 密文，与 encryptSecret 同套密钥派生。
-export async function encryptBytes(plain: Uint8Array, secret: string): Promise<Bytes> {
+// 裸字节没有地方写 keyId，所以解密时按密钥环里的顺序依次试。
+export async function encryptBytes(plain: Uint8Array, src: SecretSource): Promise<Bytes> {
+    const ring = resolveKeyring(src);
+    const key = await ring.keyFor(ring.writeKeyId);
+    if (!key) throw new Error("没有可用的加密密钥");
     const iv = crypto.getRandomValues(new Uint8Array(12));
-    const key = await aesKey(secret);
     const ct = new Uint8Array(
         await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, asBytes(plain))
     );
@@ -263,13 +390,22 @@ export async function encryptBytes(plain: Uint8Array, secret: string): Promise<B
     return out;
 }
 
-export async function decryptBytes(cipher: Uint8Array, secret: string): Promise<Bytes> {
+export async function decryptBytes(cipher: Uint8Array, src: SecretSource): Promise<Bytes> {
     if (cipher.length <= 12) throw new Error("密文过短");
     const buf = asBytes(cipher);
     const iv = buf.subarray(0, 12);
     const ct = buf.subarray(12);
-    const key = await aesKey(secret);
-    return new Uint8Array(await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct));
+    const ring = resolveKeyring(src);
+    for (const id of ring.ids) {
+        const key = await ring.keyFor(id);
+        if (!key) continue;
+        try {
+            return new Uint8Array(await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct));
+        } catch {
+            // 换下一把
+        }
+    }
+    throw new Error("密文密钥不匹配");
 }
 
 // ---------------- 备份文件口令加密 ----------------

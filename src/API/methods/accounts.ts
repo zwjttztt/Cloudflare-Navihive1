@@ -84,11 +84,11 @@ export const accountsImpl: AccountsApi = {
             };
         }
 
-        // H1 fail-closed：启用鉴权却没配 AUTH_SECRET，登录无法签发令牌
-        if (this.authEnabled && !this.secretConfigured) {
+        // H1 fail-closed：启用鉴权却没配 JWT 密钥，登录无法签发令牌
+        if (this.authEnabled && !this.jwtSecretConfigured) {
             return {
                 success: false,
-                message: "服务器未配置 AUTH_SECRET，无法签发登录令牌，请联系管理员",
+                message: "服务器未配置 JWT 密钥（JWT_SECRET / AUTH_SECRET），无法签发登录令牌，请联系管理员",
             };
         }
 

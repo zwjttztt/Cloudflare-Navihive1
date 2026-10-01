@@ -114,7 +114,11 @@ pnpm deploy     # 部署到 Cloudflare Workers
 ```bash
 wrangler secret put AUTH_USERNAME
 wrangler secret put AUTH_PASSWORD
-wrangler secret put AUTH_SECRET      # JWT 签名密钥 + 站点密码 / WebDAV 凭据落库加密密钥
+wrangler secret put AUTH_SECRET      # 兜底密钥：没单独配下面两个时，它同时干两件事
+# 可选（推荐）：把「登录令牌签名」和「数据落库加密」拆成两把独立的钥匙，
+#   这样轮换其中一个不必动另一个，详见下方「把两个密钥拆开」
+wrangler secret put DATA_ENCRYPTION_KEY
+wrangler secret put JWT_SECRET
 # 可选：只在「用命令行签发恢复令牌」时才需要；改用网页生成密钥则不必配
 # （网页生成会直接把公钥存进数据库，详见下方「忘记管理员密码」）
 wrangler secret put AUTH_RECOVERY_PUBLIC_KEY
@@ -124,6 +128,28 @@ wrangler secret put AUTH_RECOVERY_PUBLIC_KEY
 > 它负责登录令牌签名，以及站点密码、WebDAV 凭据在数据库里的静态加密。
 > **它不再参与备份文件加密** —— 备份用的是你自己在页面上设的「备份密码」（见下），
 > 所以轮换 `AUTH_SECRET` 不会影响已有备份能不能解开。
+
+#### 把两个密钥拆开（可选，推荐）
+
+`AUTH_SECRET` 身兼两职：JWT 签名 + 数据加密。副作用是**想轮换它就得把所有站点密码重新
+加密一遍**，否则 D1 里的 `enc$` 密文会全部解不开。拆分之后两件事各走各的：
+
+| 环境变量 | 作用 | 缺失时 |
+| --- | --- | --- |
+| `DATA_ENCRYPTION_KEY` | 站点密码 / WebDAV 凭据落库加密 | 回退 `AUTH_SECRET` |
+| `JWT_SECRET` | 登录令牌签名 | 回退 `AUTH_SECRET` |
+| `JWT_SECRET_OLD` | 轮换 `JWT_SECRET` 期间的旧值，**只用于验签** | 不启用 |
+
+密文自带钥匙编号（keyId）：新写入的密文头上是 `enc$1$...`（用 `DATA_ENCRYPTION_KEY`），
+升级前的老密文是 `enc$...`（用 `AUTH_SECRET`）。**两种同时在库里可读**，所以：
+
+* 先 `wrangler secret put DATA_ENCRYPTION_KEY`，老数据照常读，新写入自动换钥，无需停机迁移；
+* 想让老密文也换钥，进站点编辑页重新保存一次即可（重新保存会用新钥加密写回）；
+* 不配这两个新变量 = 完全没启用这个功能，行为与升级前逐字节一致。
+
+轮换 `JWT_SECRET` 会让所有已登录设备重新登录。想平滑一点就把旧值放进 `JWT_SECRET_OLD`
+过渡（旧令牌能验过、自然过期），**过渡结束后务必把它删掉** —— 留着旧值，泄露的旧密钥
+就仍然验得过。
 
 部署完在页面上再做两件事：
 

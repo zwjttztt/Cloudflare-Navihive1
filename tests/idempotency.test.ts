@@ -73,15 +73,31 @@ class MockD1 {
                         row.expires_at = args[2];
                         written = 1;
                     }
-                } else if (/DELETE FROM idempotency_keys WHERE scope = \?/.test(sql)) {
-                    if (self.idem.delete(keyOf(args))) written = 1;
-                } else if (/DELETE FROM idempotency_keys WHERE expires_at/.test(sql)) {
-                    const now = Number(args[0]);
-                    for (const [k, row] of [...self.idem]) {
-                        if (Number(row.expires_at) <= now) {
-                            self.idem.delete(k);
-                            written++;
+                } else if (/DELETE FROM idempotency_keys/.test(sql)) {
+                    // 两条 DELETE：一条带 expires_at（抢锁前清过期的）、一条不带（释放）。
+                    // SQL 是跨行写的，正则不能要求关键字紧挨着。
+                    if (/scope\s*=\s*\?/.test(sql) && /expires_at\s*<=/.test(sql)) {
+                        // 抢锁前：只清这一把锁自己的过期记录
+                        const now = Number(args[2]);
+                        for (const [k, row] of [...self.idem]) {
+                            if (row.scope === args[0] && row.op_id === args[1] &&
+                                Number(row.expires_at) <= now) {
+                                self.idem.delete(k);
+                                written++;
+                            }
                         }
+                    } else if (/expires_at\s*<=/.test(sql)) {
+                        // purgeExpiredIdempotency：清全部到点的
+                        const now = Number(args[0]);
+                        for (const [k, row] of [...self.idem]) {
+                            if (Number(row.expires_at) <= now) {
+                                self.idem.delete(k);
+                                written++;
+                            }
+                        }
+                    } else if (self.idem.delete(keyOf(args))) {
+                        // releaseIdempotency：只删指定那条
+                        written = 1;
                     }
                 }
                 return { success: true, meta: { rows_written: written } };
@@ -257,6 +273,32 @@ test("清过期的记录：只删到点的，没到点的留着", async () => {
     const removed = await api.purgeExpiredIdempotency(now);
     assert.equal(removed, 1);
     assert.equal(db.idem.size, 1, "不该把还有效的那条一起清掉");
+});
+
+// ============ 兼作互斥锁（覆盖式恢复靠它防止两个恢复并发互相踩） ============
+test("当锁用：过期后能重新抢到（崩掉的进程不会永久占住）", async () => {
+    const { api, db } = newApi();
+    const scope = "restore.lock";
+    const key = "op-lock-u7-0001";
+    assert.equal(await api.claimIdempotency(scope, key, 60_000), true, "第一次抢到");
+    assert.equal(await api.claimIdempotency(scope, key, 60_000), false, "没释放就拿不到");
+    // 模拟「上一次跑到一半崩了」：把有效期拨回过去
+    (db.idem.get(`${scope}|${key}`) as Row).expires_at = Date.now() - 1;
+    assert.equal(
+        await api.claimIdempotency(scope, key, 60_000),
+        true,
+        "过期的锁必须能被重抢，否则那个账号永远恢复不了"
+    );
+});
+
+test("当锁用：释放后立刻能再抢，且不同 scope 互不干扰", async () => {
+    const { api } = newApi();
+    assert.equal(await api.claimIdempotency("restore.lock", "op-lock-a-0001"), true);
+    await api.releaseIdempotency("restore.lock", "op-lock-a-0001");
+    assert.equal(await api.claimIdempotency("restore.lock", "op-lock-a-0001"), true, "释放后应能再抢");
+
+    // 幂等键与锁共用一张表，靠 scope 隔开：锁不该被幂等记录顶掉，反之亦然
+    assert.equal(await api.claimIdempotency("POST sites", "op-lock-a-0001"), true);
 });
 
 // ============ 缓存上限 ============

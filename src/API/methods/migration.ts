@@ -10,6 +10,11 @@ import { RECOVERY_PUBLIC_KEY_CONFIG, WEBDAV_CONFIG_PREFIX } from "../configKeys"
 import { hashPassword, isHashedPassword } from "../crypto";
 import { CREATE_STATEMENTS, INDEX_STATEMENTS, migrationState } from "./internals";
 
+/** 首次建 owner 这把锁的存活时间：正常 bootstrap 几毫秒就完事，30 秒足够兜住崩掉的进程 */
+export const OWNER_BOOTSTRAP_LOCK_TTL_MS = 30_000;
+/** 没抢到锁时等同伴写完再读一次的间隔 */
+export const OWNER_BOOTSTRAP_RETRY_MS = 120;
+
 export interface MigrationApi {
     initDB(): Promise<{ success: boolean; alreadyInitialized: boolean }>;
     migrate(): Promise<void>;
@@ -318,25 +323,53 @@ export const migrationImpl: MigrationApi = {
      * 已经搬过就直接返回 owner 的 id。
      */
     ensureOwnerUser: async function (this: NavigationAPI ): Promise<number | null> {
-        try {
-            const existing = await this.db
+        const readOwner = async (): Promise<number | null> => {
+            const row = await this.db
                 .prepare("SELECT id, username FROM users ORDER BY id LIMIT 1")
                 .first<{ id: number; username: string }>();
-            if (existing?.id) return existing.id;
+            return row?.id ?? null;
+        };
+        try {
+            const existing = await readOwner();
+            if (existing) return existing;
 
-            const creds = await this.readAuthCredentials();
-            // 没有凭据说明站点还没初始化（连种子账号都没有），等第一次真正写凭据时再建
-            if (!creds.username || !creds.password) return null;
+            // 「users 表为空」这个判断和随后的 INSERT 之间有个裂缝：首次部署时
+            // 两个并发请求（刷新 + 另一个标签页、或重试）会同时看到空表，各自建一个
+            // owner。Workers 是多 isolate 的，进程内互斥锁挡不住，所以用幂等表当
+            // 跨请求的锁 —— 拿不到锁的那个先等等再读，读出同伴的成果就直接用。
+            const lockScope = "owner.bootstrap";
+            const lockKey = "global";
+            const got = await this.claimIdempotency(lockScope, lockKey, OWNER_BOOTSTRAP_LOCK_TTL_MS);
+            try {
+                // 拿到锁也要重读一次：可能在我们读空表和抢到锁之间，同伴已经建好了
+                const again = await readOwner();
+                if (again) return again;
+                if (!got) {
+                    // 同伴还在建（或幂等表此刻用不了）：等一小会儿再看，
+                    // 拿到了就直接用，绝不抢着建第二个 owner。
+                    await new Promise((r) => setTimeout(r, OWNER_BOOTSTRAP_RETRY_MS));
+                    const waited = await readOwner();
+                    if (waited) return waited;
+                }
 
-            const hashed = isHashedPassword(creds.password)
-                ? creds.password
-                : await hashPassword(creds.password);
-            const inserted = await this.db
-                .prepare("INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?) RETURNING id")
-                .bind(creds.username, hashed, "owner")
-                .first<{ id: number }>();
-            return inserted?.id ?? null;
+                const creds = await this.readAuthCredentials();
+                // 没有凭据说明站点还没初始化（连种子账号都没有），等第一次真正写凭据时再建
+                if (!creds.username || !creds.password) return null;
+
+                const hashed = isHashedPassword(creds.password)
+                    ? creds.password
+                    : await hashPassword(creds.password);
+                const inserted = await this.db
+                    .prepare("INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?) RETURNING id")
+                    .bind(creds.username, hashed, "owner")
+                    .first<{ id: number }>();
+                return inserted?.id ?? null;
+            } finally {
+                if (got) await this.releaseIdempotency(lockScope, lockKey).catch(() => {});
+            }
         } catch (error) {
+            // 并发撞 UNIQUE 也落到这里：owner 已经存在，下一次请求会读到它，
+            // 本次返回 null 让调用方跳过回填即可，不会留下第二个 owner。
             console.error("迁移首个账号失败:", error);
             return null;
         }

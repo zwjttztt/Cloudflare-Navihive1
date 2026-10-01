@@ -44,8 +44,12 @@ export interface IdempotencyApi {
     /**
      * 抢占位。**抢到返回 true**（调用方去真正执行），抢不到返回 false ——
      * 说明已经有人（上一次请求或并发的同伴）先占了，调用方应当转去读记录。
+     *
+     * 也兼作**互斥锁**：给一个固定的 opId、配一个短 ttlMs，就是一把会自动过期的锁
+     * （覆盖式恢复用它防止两个恢复并发互相踩）。过期时间到点自动失效，
+     * 进程崩了也不会把后续操作永久堵死。
      */
-    claimIdempotency(scope: string, opId: string): Promise<boolean>;
+    claimIdempotency(scope: string, opId: string, ttlMs?: number): Promise<boolean>;
     /**
      * 执行完落结果。state=done 记状态码与正文；state=pending 是把占位刷新成新的
      * 时间戳（长时间操作续租用）。
@@ -96,11 +100,23 @@ export const idempotencyImpl: IdempotencyApi = {
     claimIdempotency: async function (
         this: NavigationAPI,
         scope: string,
-        opId: string
+        opId: string,
+        ttlMs = IDEMPOTENCY_TTL_MS
     ): Promise<boolean> {
         const now = Date.now();
-        const expiresAt = now + IDEMPOTENCY_TTL_MS;
+        const expiresAt = now + ttlMs;
         try {
+            // 当锁用时这一步是关键：先清掉**已过期**的那条，否则上一次跑到一半崩掉的
+            // 进程会把这把锁永久占住（过期是唯一的自动释放机制）。
+            // 只删过期的，没到点的那条留着 —— 它代表确实还有人在跑。
+            await this.db
+                .prepare(
+                    `DELETE FROM idempotency_keys
+                     WHERE scope = ? AND op_id = ? AND expires_at <= ?`
+                )
+                .bind(scope, opId, now)
+                .run();
+
             const result = await this.db
                 .prepare(
                     // 冲突时不覆盖：谁的 INSERT 先落谁就负责执行，

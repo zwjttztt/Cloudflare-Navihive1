@@ -1,14 +1,19 @@
-# gitleaks 配置 —— CI 里那步「密钥扫描」用（.github/workflows/ci.yml）。
-
+# gitleaks 配置 —— 两个 workflow 共用，扫的对象不同：
+#   .github/workflows/ci.yml              → --no-git，只扫工作区文件（阻断，拦新泄漏）
+#   .github/workflows/secret-history.yml  → --log-opts=--all，扫全部历史（不阻断，只报告）
+#
 # 复用官方规则集（AWS / GitHub token / 私钥 / 通用高熵串…），只在上面开白名单。
 [extend]
 useDefault = true
 
 # 本仓库的安全背景（决定了这个文件的写法，改之前先读一遍）：
-#   - Git 历史里**曾经明文提交过** AUTH_SECRET / AUTH_PASSWORD / AUTH_USERNAME。
+#   - Git 历史里**曾经明文提交过**管理员账号与密码（早期 docker-entrypoint.sh）。
 #     历史扫不扫都救不回来 —— 唯一的解是「用新密钥覆盖 + 改掉对应密码」，见 wrangler.jsonc 文件头。
 #   - 所以 CI 只扫工作区文件（--no-git）：它的职责是拦住「新的密钥又被写进仓库」，
-#     不是复述已经发生过的事。扫历史只会得到一条永远修不好的红灯，然后被习惯性忽略。
+#     不是复述已经发生过的事。扫历史另开一条**不阻断**的定期流水线，只为让存量可见。
+#
+# ⚠️ 下面 regexes 那条白名单是「值里含这些词就不算密钥」——写得宽是为了压误报，
+#    代价是「正好含 example/fake 的真密钥」会被放过。所以变量命名请避开这些词。
 [allowlist]
 # 白名单按「文件路径」放行：这些地方出现高熵串是有正当理由的
 paths = [

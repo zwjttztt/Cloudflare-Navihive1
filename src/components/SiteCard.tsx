@@ -39,7 +39,7 @@ import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import LinkOffIcon from "@mui/icons-material/LinkOff";
 import { useAppConfig } from "../context/AppConfigContext";
 import { useNotify } from "../context/NotifyContext";
-import { isSafeHttpUrl } from "../utils/url";
+import { canOpenSite, safeOpenSite } from "../utils/safeOpen";
 import { useUIPrefs } from "../context/UIPrefsContext";
 import { resolveIconApiUrl } from "../utils/iconApi";
 import {
@@ -336,7 +336,7 @@ const SiteCard = memo(function SiteCard({
     const handleMenuOpen = () => {
         closeMenu();
         recordVisit(site.id);
-        window.open(site.url || "", "_blank");
+        safeOpenSite(site.url);
     };
 
     const handleMenuEdit = () => {
@@ -544,7 +544,7 @@ const SiteCard = memo(function SiteCard({
             e.preventDefault(); // 焦点在卡片外壳上，不会触发 <a> 的原生导航，这里手动打开
             if (!site.url) return;
             recordVisit(site.id);
-            window.open(site.url, "_blank");
+            safeOpenSite(site.url);
         }
     };
 
@@ -732,7 +732,7 @@ const SiteCard = memo(function SiteCard({
     // 卡片本体做成真实的 <a>：左键普通新标签，中键由浏览器原生后台打开（不切走当前页）
     // 兜底：库里的链接理论上都在保存/导入时规范化过了，但历史数据或手动改库可能混进奇怪的值，
     // 出 href 前再确认一次是 http(s)，否则干脆不给链接（宁可不能点，也不能点一下执行脚本）
-    const linkProps = site.url && isSafeHttpUrl(site.url)
+    const linkProps = site.url && canOpenSite(site.url)
         ? {
               component: "a" as const,
               href: site.url,

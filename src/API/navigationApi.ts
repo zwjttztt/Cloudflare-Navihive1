@@ -17,6 +17,8 @@
 
 import type { D1Database, Env } from "./schema";
 import type { AccountSessionState } from "./types";
+import { createKeyring } from "./crypto";
+import type { Keyring } from "./crypto";
 import type { MigrationApi } from "./methods/migration";
 import type { AuthApi } from "./methods/auth";
 import type { RecoveryApi } from "./methods/recovery";
@@ -70,8 +72,19 @@ export class NavigationAPI {
     seedUsername: string;
     seedPassword: string;
     secret: string;
-    // AUTH_SECRET 是否真正配置：未配置且启用鉴权时 fail-closed（见 verifyToken / generateToken）
+    // AUTH_SECRET 是否真正配置（数据加密与 JWT 都没单独配时，它决定两者是否可用）
     secretConfigured: boolean;
+    /**
+     * 数据加密密钥环。加密调用一律走它，不再直接用 secret 字符串：
+     * 环里可能同时挂着 DATA_ENCRYPTION_KEY（keyId 1，写入用它）与 AUTH_SECRET（keyId 0，解旧密文）。
+     */
+    keyring: Keyring;
+    /** JWT 签发密钥：JWT_SECRET ?? AUTH_SECRET */
+    jwtSecret: string;
+    /** JWT 验签时依次尝试的密钥：当前 + 可选的旧值（平滑轮换用） */
+    jwtKeys: string[];
+    /** JWT 密钥是否真正配置：未配置且启用鉴权时 fail-closed（见 verifyToken / generateToken） */
+    jwtSecretConfigured: boolean;
     // 恢复公钥（Ed25519 raw，base64url）：仅持公钥，私钥离线保管
     recoveryPubKey: string;
     // 令牌版本缓存（模块内按 isolate 读一次即可，改密时失效）
@@ -148,6 +161,17 @@ export class NavigationAPI {
             this.secret = "默认密钥，建议在生产环境中设置";
             this.secretConfigured = false;
         }
+        // 数据加密：DATA_ENCRYPTION_KEY 优先，缺失时整环只有 AUTH_SECRET 一把（= 旧行为）
+        this.keyring = createKeyring({
+            dataKey: env.DATA_ENCRYPTION_KEY,
+            legacySecret: this.secret,
+        });
+        // JWT：JWT_SECRET 优先，回退 AUTH_SECRET；JWT_SECRET_OLD 只在验签时兜底
+        this.jwtSecret = env.JWT_SECRET || this.secret;
+        const oldKey = env.JWT_SECRET_OLD || "";
+        this.jwtKeys =
+            oldKey && oldKey !== this.jwtSecret ? [this.jwtSecret, oldKey] : [this.jwtSecret];
+        this.jwtSecretConfigured = Boolean(env.JWT_SECRET) || this.secretConfigured;
         this.recoveryPubKey = env.AUTH_RECOVERY_PUBLIC_KEY || "";
         this.failOpenOnError = env.NAVIHIVE_SESSION_FAIL_OPEN_ON_ERROR === "1";
     }

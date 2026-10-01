@@ -64,7 +64,7 @@ export const configImpl: ConfigApi = {
         const decoded = await Promise.all(
             rows.map(async (config) => {
                 const value = isEncryptedConfigKey(config.key)
-                    ? await decryptSecretDeep(config.value, this.secret)
+                    ? await decryptSecretDeep(config.value, this.keyring)
                     : config.value;
                 return [config.key, value] as [string, string];
             })
@@ -94,7 +94,7 @@ export const configImpl: ConfigApi = {
             const decoded = await Promise.all(
                 rows.map(async (row) => {
                     const value = isEncryptedConfigKey(row.key)
-                        ? await decryptSecretDeep(row.value, this.secret)
+                        ? await decryptSecretDeep(row.value, this.keyring)
                         : row.value;
                     return [row.key, value] as [string, string];
                 })
@@ -114,7 +114,7 @@ export const configImpl: ConfigApi = {
                 .first<{ value: string }>();
             if (!row) return null;
             return isEncryptedConfigKey(key)
-                ? await decryptSecretDeep(row.value, this.secret)
+                ? await decryptSecretDeep(row.value, this.keyring)
                 : row.value;
         } catch {
             return null;
@@ -123,7 +123,7 @@ export const configImpl: ConfigApi = {
     setUserConfig: async function (this: NavigationAPI, userId: number, key: string, value: string): Promise<boolean> {
         try {
             const stored = isEncryptedConfigKey(key)
-                ? await encryptSecret(value, this.secret)
+                ? await encryptSecret(value, this.keyring)
                 : value;
             const result = await this.db
                 .prepare(
@@ -185,7 +185,7 @@ export const configImpl: ConfigApi = {
         if (!result) return null;
         // webdav.password / webdav.backupPassword 落库前已加密，读取时解密还原
         if (isEncryptedConfigKey(key)) {
-            return await decryptSecretDeep(result.value, this.secret);
+            return await decryptSecretDeep(result.value, this.keyring);
         }
         return result.value;
     },
@@ -219,7 +219,7 @@ export const configImpl: ConfigApi = {
         try {
             // webdav.password / webdav.backupPassword 明文落库风险高，写入前用
             // AUTH_SECRET 派生密钥加密（无 secret 时原样存）
-            const stored = isEncryptedConfigKey(key) ? await encryptSecret(value, this.secret) : value;
+            const stored = isEncryptedConfigKey(key) ? await encryptSecret(value, this.keyring) : value;
             // 使用UPSERT语法（SQLite支持）
             const result = await this.db
                 .prepare(
@@ -357,7 +357,7 @@ export const configImpl: ConfigApi = {
                 const statements: D1PreparedStatement[] = [];
                 for (const [key, value] of shared) {
                     const stored = isEncryptedConfigKey(key)
-                        ? await encryptSecret(value, this.secret)
+                        ? await encryptSecret(value, this.keyring)
                         : value;
                     statements.push(
                         this.db

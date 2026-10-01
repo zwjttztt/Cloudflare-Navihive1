@@ -54,6 +54,9 @@
         //   wrangler secret put AUTH_PASSWORD
         //   wrangler secret put AUTH_SECRET
         //   wrangler secret put AUTH_RECOVERY_PUBLIC_KEY   # 可选：公钥，开启「恢复私钥找回密码」入口
+        //   wrangler secret put DATA_ENCRYPTION_KEY        # 可选：把「数据加密」从 AUTH_SECRET 拆出来
+        //   wrangler secret put JWT_SECRET                 # 可选：把「令牌签名」从 AUTH_SECRET 拆出来
+        //   wrangler secret put JWT_SECRET_OLD             # 可选：轮换 JWT_SECRET 期间的旧值（只验签）
         // 首次部署前务必先 put AUTH_PASSWORD / AUTH_SECRET；否则数据库里没有管理员凭据，登录页也进不去。
         // 注意：本仓库历史里曾明文提交过这些值，请立即用 wrangler secret put 覆盖，并改掉对应密码；
         //       如要彻底清除历史，用 git filter-repo / BFG 重写提交（需 force-push，谨慎操作）。

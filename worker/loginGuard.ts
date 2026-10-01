@@ -528,3 +528,110 @@ export async function enforceWriteGuard(
         return null;
     }
 }
+
+// ============ 配置写 / WebDAV 备份：这两类端点原本一把锁都没有 ============
+//
+// 写操作那把锁只挂在 data 路由（分组 / 站点 CRUD）上，而这两类一直在裸奔，
+// 且它们的成本结构与 CRUD 完全不是一回事，不该共用一把：
+//
+//   1. 配置写（configs/batch、configs/{key}）：一次能改掉全站外观、WebDAV 凭据、
+//      巡检开关。频率低但**影响面大** —— 令牌泄露后改配置是攻击者最省事的持久化手段。
+//   2. WebDAV 备份（上传 / 下载 / 列目录 / 删远端）：每个都要**出网到用户自己的
+//      网盘**，还要整份 gzip + 加密，是全站最贵的一类请求。既吃 Worker 出网配额，
+//      也把用户的网盘账号往外打 —— 拿它当「帮我刷这个地址」的代理比图标代理贵得多。
+//
+// 所以两把锁都比 CRUD 严：配置一分钟 30 次（正常改配置远不到），
+// WebDAV 一分钟 10 次（一分钟内备份十次，要么是脚本要么是手抖）。
+//
+// 故障策略与写操作一致：**记不上数就放行**。它们同样依赖那个 D1，
+// 库读不出来时真正干活那一步（setConfig / 出网请求）自己就会失败。
+
+export const CONFIG_GUARD_KEY = "auth.configGuard";
+export const CONFIG_FREE_ATTEMPTS = 30;
+export const CONFIG_BASE_LOCK_MS = 30_000;
+export const CONFIG_MAX_LOCK_MS = 10 * 60_000;
+export const CONFIG_COUNT_RESET_MS = 60 * 1000;
+
+export const DAV_GUARD_KEY = "auth.davGuard";
+export const DAV_FREE_ATTEMPTS = 10;
+export const DAV_BASE_LOCK_MS = 60_000;
+export const DAV_MAX_LOCK_MS = 30 * 60_000;
+export const DAV_COUNT_RESET_MS = 60 * 1000;
+
+/** 这两类端点的桶：账号 + 来源 IP，与写操作同构（互不影响） */
+export function endpointBucket(request: Request, uid: number | null, trustXFF = false): string {
+    return `u${uid ?? "anon"}:${clientBucket(request, trustXFF)}`;
+}
+
+/**
+ * 通用闸门：按给定的 key 与阈值检查并登记一次。
+ *
+ * 抽出来是因为三把锁除了阈值和文案完全同构 —— 各写一份的话，
+ * 迟早会在某一把上漏掉「计数必须在 CAS 内重算」这条（S04 修的就是这个）。
+ */
+async function enforceGuard(
+    api: NavigationAPI,
+    key: string,
+    bucket: string,
+    opts: {
+        free: number;
+        baseLockMs: number;
+        maxLockMs: number;
+        resetMs: number;
+        message: string;
+    }
+): Promise<Response | null> {
+    const limited = (until: number, now: number) => {
+        const retryAfter = Math.max(1, Math.ceil((until - now) / 1000));
+        return Response.json(
+            { success: false, message: `${opts.message}，请 ${retryAfter} 秒后再试` },
+            { status: 429, headers: { "Retry-After": String(retryAfter) } }
+        );
+    };
+
+    const result = await bumpGuard(api, key, bucket, prev => {
+        const now = Date.now();
+        // 还在锁定期就只续「见到过」，不动计数 —— 否则锁会越滚越长
+        if (prev.until > now) return { ...prev, seen: now };
+        const count = nextDecayedCount(prev, opts.resetMs, now);
+        const lockMs = computeLockAfterFailure(
+            count,
+            opts.free,
+            opts.baseLockMs,
+            opts.maxLockMs
+        );
+        return { count, until: lockMs > 0 ? now + lockMs : 0, seen: now };
+    });
+    // 记不上（存储不可用）→ 放行：真正干活那一步自己会失败，不该在这里把错误码盖成 503
+    if (!result) return null;
+    const now = Date.now();
+    return result.until > now ? limited(result.until, now) : null;
+}
+
+/** 配置写操作闸门 */
+export async function enforceConfigGuard(
+    api: NavigationAPI,
+    bucket: string
+): Promise<Response | null> {
+    return await enforceGuard(api, CONFIG_GUARD_KEY, bucket, {
+        free: CONFIG_FREE_ATTEMPTS,
+        baseLockMs: CONFIG_BASE_LOCK_MS,
+        maxLockMs: CONFIG_MAX_LOCK_MS,
+        resetMs: CONFIG_COUNT_RESET_MS,
+        message: "配置修改过于频繁",
+    });
+}
+
+/** WebDAV 备份操作闸门 */
+export async function enforceDavGuard(
+    api: NavigationAPI,
+    bucket: string
+): Promise<Response | null> {
+    return await enforceGuard(api, DAV_GUARD_KEY, bucket, {
+        free: DAV_FREE_ATTEMPTS,
+        baseLockMs: DAV_BASE_LOCK_MS,
+        maxLockMs: DAV_MAX_LOCK_MS,
+        resetMs: DAV_COUNT_RESET_MS,
+        message: "备份操作过于频繁",
+    });
+}

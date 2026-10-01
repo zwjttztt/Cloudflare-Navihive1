@@ -3,6 +3,7 @@
 // 从 worker/index.ts 拆出来。这里最要紧的是那道「全站外观只有站点所有者能改」的门槛，
 // 三个写分支各判了一次 —— 拆出来之后三处挨在一起，改一处不容易漏掉另两处。
 import { isUserScopedConfigKey } from "../../src/API/http";
+import { enforceConfigGuard, endpointBucket } from "../loginGuard";
 import type { ConfigInput } from "../types";
 import { validateConfig } from "../validate";
 import type { RouteCtx } from "./types";
@@ -13,8 +14,22 @@ export async function handleConfigRoutes(ctx: RouteCtx): Promise<Response | null
         path,
         method,
         api,
-        
+        trustXFF,
     } = ctx;
+
+    // 写配置先过一道闸门。
+    //
+    // 之前这类端点一把锁都没有：全站外观、WebDAV 凭据、巡检开关都能被一个泄露的
+    // 令牌在几秒内反复改写（改配置还是最省事的持久化手段）。阈值比站点 CRUD 严，
+    // 因为它频率低 —— 正常人手点远到不了一分钟 30 次。
+    const WRITE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+    if (WRITE_METHODS.has(method)) {
+        const limited = await enforceConfigGuard(
+            api,
+            endpointBucket(request, api.getCurrentUserId(), trustXFF)
+        );
+        if (limited) return limited;
+    }
 
     // 配置相关API
     if (path === "configs" && method === "GET") {

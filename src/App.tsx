@@ -115,6 +115,7 @@ import {
     PREF_COLLAPSED_CONFIG,
 } from "./appDefaults";
 import { normalizeFailureText, normalizeUrl } from "./utils/url";
+import { safeOpenSite } from "./utils/safeOpen";
 import { groupAccent } from "./utils/groupColor";
 import { matchesGroupQuery, matchesSiteQuery } from "./utils/search";
 import { saveRememberedLogin, clearRememberedLogin } from "./utils/rememberedLogin";
@@ -2223,7 +2224,7 @@ function App() {
         // 从搜索面板打开的，把这次关键词记进搜索历史
         if (searchQuery.trim()) pushSearchHistory(searchQuery);
         if (site.url) {
-            window.open(site.url, "_blank", "noopener,noreferrer");
+            safeOpenSite(site.url);
         }
     };
 
@@ -2443,7 +2444,7 @@ function App() {
                     iconUrl: site.icon,
                     run: () => {
                         recordVisit(site.id);
-                        if (site.url) window.open(site.url, "_blank", "noopener");
+                        safeOpenSite(site.url);
                     },
                 }))
             )

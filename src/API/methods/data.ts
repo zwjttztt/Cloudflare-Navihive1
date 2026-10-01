@@ -95,7 +95,7 @@ export const dataImpl: DataApi = {
             // 否则刷新后前端拿到的是 enc$... 密文，回填进密码框，用户再保存一次就变成
             // 「密文的密文」（测试连接也就永远认证失败，备份也永远解不开）
             configs[row.key] = isEncryptedConfigKey(row.key)
-                ? await decryptSecretDeep(row.value, this.secret)
+                ? await decryptSecretDeep(row.value, this.keyring)
                 : row.value;
         }
 
@@ -212,7 +212,7 @@ export const dataImpl: DataApi = {
     decryptSitePassword: async function (this: NavigationAPI, site: Site): Promise<Site> {
         if (!site || !site.password) return site;
         // 用 Deep 版：已被套成多重加密的历史脏值也能解回明文（首屏拿到密文再保存就会套一层）
-        return { ...site, password: await decryptSecretDeep(site.password, this.secret) };
+        return { ...site, password: await decryptSecretDeep(site.password, this.keyring) };
     },
     decryptSitePasswords: async function (this: NavigationAPI, sites: Site[]): Promise<Site[]> {
         return Promise.all(sites.map(site => this.decryptSitePassword(site)));
@@ -275,7 +275,7 @@ export const dataImpl: DataApi = {
                 site.notes || "",
                 site.username || "",
                 // 站点登录凭据落库即加密（读出来时解密）
-                await encryptSecret(site.password || "", this.secret),
+                await encryptSecret(site.password || "", this.keyring),
                 site.order_num,
                 this.currentUserId
             )
@@ -335,7 +335,7 @@ export const dataImpl: DataApi = {
         if (site.password !== undefined) {
             updates.push("password = ?");
             // 站点登录凭据落库即加密（读出来时解密），D1 导出/备份泄露也解不出明文
-            params.push(await encryptSecret(site.password, this.secret));
+            params.push(await encryptSecret(site.password, this.keyring));
         }
 
         if (site.order_num !== undefined) {

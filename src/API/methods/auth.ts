@@ -7,7 +7,7 @@
 
 import type { NavigationAPI } from "../http";
 import { AUTH_PASSWORD_KEY, AUTH_USERNAME_KEY, DEFAULT_TOKEN_TTL, MUST_CHANGE_PASSWORD_KEY, TOKEN_VERSION_KEY } from "../configKeys";
-import { hashPassword, peekJwtClaim, signJwt, verifyJwt, verifyPassword } from "../crypto";
+import { hashPassword, peekJwtClaim, signJwt, verifyJwtAny, verifyPassword } from "../crypto";
 
 export interface AuthApi {
     getAuthCredentials(): Promise<{ username: string; password: string }>;
@@ -250,8 +250,8 @@ export const authImpl: AuthApi = {
         if (!this.authEnabled) {
             return { valid: true };
         }
-        // H1 fail-closed：启用鉴权但 AUTH_SECRET 缺失，拒绝一切令牌（避免被公开默认密钥伪造）
-        if (!this.secretConfigured) {
+        // H1 fail-closed：启用鉴权但 JWT 密钥缺失，拒绝一切令牌（避免被公开默认密钥伪造）
+        if (!this.jwtSecretConfigured) {
             return { valid: false };
         }
         // 现在会真正验签（HMAC-SHA256）+ 校验过期 + 校验令牌版本，
@@ -263,7 +263,7 @@ export const authImpl: AuthApi = {
         const tv = await this.getTokenVersion(
             typeof uidFromToken === "number" ? uidFromToken : null
         );
-        const result = await verifyJwt(token, this.secret, { tokenVersion: tv });
+        const result = await verifyJwtAny(token, this.jwtKeys, { tokenVersion: tv });
 
         // 验签通过还要再查一次黑名单：退出登录过的令牌不能复活
         if (result.valid) {
@@ -281,9 +281,9 @@ export const authImpl: AuthApi = {
         payload: Record<string, unknown>,
         ttlSeconds: number = DEFAULT_TOKEN_TTL
     ): Promise<string> {
-        // H1 fail-closed：启用鉴权却没配 AUTH_SECRET，拒绝签发令牌
-        if (this.authEnabled && !this.secretConfigured) {
-            throw new Error("AUTH_SECRET 未配置，拒绝签发令牌");
+        // H1 fail-closed：启用鉴权却没配 JWT 密钥，拒绝签发令牌
+        if (this.authEnabled && !this.jwtSecretConfigured) {
+            throw new Error("JWT 密钥未配置（JWT_SECRET / AUTH_SECRET），拒绝签发令牌");
         }
         // 嵌入令牌版本：改密后所有旧 token（版本偏低）在 verifyToken 处被拒。
         // jti 是这张令牌的唯一编号，退出登录时按它拉黑 —— 让「登出」真的能让令牌失效。
@@ -298,7 +298,7 @@ export const authImpl: AuthApi = {
             exp,
             iat: Math.floor(Date.now() / 1000),
         };
-        return signJwt(tokenPayload, this.secret);
+        return signJwt(tokenPayload, this.jwtSecret);
     },
 
     // 校验「当前密码」是否正确（auth/credentials 改密时用，避免明文比对）

@@ -15,6 +15,15 @@ import { encryptSecret } from "../crypto";
 import { Config, ExportData, Group, ImportResult, LocalPrefsBackup, Site } from "../types";
 import { sanitizeIconUrl, sanitizeLocalPrefs, stripSiteCredentials } from "./internals";
 
+/**
+ * 恢复锁的存活时间。
+ *
+ * 比一次正常恢复的最坏耗时留足余量（几千行站点要跑一阵），又短到「崩了也能自己解开」：
+ * 过期是这把锁唯一的自动释放机制 —— 没有它，一个在提交前崩掉的进程会把这个账号
+ * 永久挡在恢复之外。
+ */
+export const RESTORE_LOCK_TTL_MS = 2 * 60 * 1000;
+
 export interface TransferApi {
     exportData(): Promise<ExportData>;
     queryExportBundle(): Promise<{
@@ -149,8 +158,37 @@ export const transferImpl: TransferApi = {
             };
         }
 
+        // ── 账号级恢复锁 ──
+        // 两个恢复并发跑会互相踩：都先记下「旧数据 id」，都插自己的新数据，
+        // 然后各自把**对方刚插进去的**当成旧数据删掉 —— 最终谁的数据都不完整。
+        // 所以整段恢复期间只准一个在跑。锁借幂等键那张表（主键天然是抢锁），
+        // 带过期时间：跑到一半进程崩了，两分钟后自动失效，不会把人永久堵在门外。
+        const lockScope = "restore.lock";
+        const lockKey = `u${this.currentUserId ?? "anon"}`;
+
         try {
             await this.migrate();
+
+            if (typeof this.claimIdempotency === "function") {
+                const got = await this.claimIdempotency(lockScope, lockKey, RESTORE_LOCK_TTL_MS);
+                if (!got) {
+                    // 抢不到有两种可能，必须分开处理：
+                    //   - 确实有另一个恢复在跑 → 拒绝（这才是锁的意义）
+                    //   - 存储压根读不出这条记录 → 放行：D1 不可用时后面每一步都会自己失败，
+                    //     没必要在这里把恢复整个堵死
+                    // 重读一次而不是用进入前的快照：并发下两个请求都会先读到空，
+                    // 只有重读才认得出「刚才有人抢赢了」。
+                    const holder = await this.readIdempotency(lockScope, lockKey).catch(() => null);
+                    if (holder) {
+                        return {
+                            success: false,
+                            message: "上一次恢复还没结束，请稍后再试",
+                            groupIdMap,
+                            siteIdMap,
+                        };
+                    }
+                }
+            }
 
             const normalized = normalizeImportData(data);
 
@@ -215,7 +253,7 @@ export const transferImpl: TransferApi = {
                         site.notes || "",
                         site.username || "",
                         // 备份里是明文，写回 D1 前加密
-                        await encryptSecret(site.password || "", this.secret),
+                        await encryptSecret(site.password || "", this.keyring),
                         site.order_num || 0,
                         this.currentUserId
                     )
@@ -294,6 +332,12 @@ export const transferImpl: TransferApi = {
                 groupIdMap,
                 siteIdMap,
             };
+        } finally {
+            // 锁必须释放，成功失败都要。拿不到锁的那一次压根没进 try，
+            // 也就不会走到这里、不会误删别人的锁。
+            if (typeof this.releaseIdempotency === "function") {
+                await this.releaseIdempotency(lockScope, lockKey).catch(() => {});
+            }
         }
     },
 
@@ -340,6 +384,18 @@ export const transferImpl: TransferApi = {
             await this.deleteRowsByIds("groups", groupIds);
         } catch (error) {
             console.error("导入失败后回滚新建数据失败:", error);
+            // 回滚失败必须留痕：这批行已经不在任何人的视野里（前端只看到「导入失败」），
+            // 没人知道库里多了些孤儿卡片。写进审计日志，日后能按 id 找出来清掉。
+            try {
+                await this.writeAudit(
+                    "import.rollbackFailed",
+                    "",
+                    "",
+                    `回滚未清理: sites=${siteIds.join(",") || "-"} groups=${groupIds.join(",") || "-"}`
+                );
+            } catch {
+                // 审计也写不进去就只剩日志了，不能再抛 —— 用户该看到的是「为什么导入失败」
+            }
         }
     },
 };

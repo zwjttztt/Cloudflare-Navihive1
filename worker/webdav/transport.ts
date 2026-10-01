@@ -59,9 +59,25 @@ export async function gzipBytes(input: string): Promise<Bytes> {
 // gzip 解压：读取旧的压缩备份时用到
 // 参数收窄成「ArrayBuffer 支撑」的视图（`Bytes`）：TS 5.9 起 `Uint8Array<ArrayBufferLike>`
 // 不再满足 BlobPart，而 `subarray()` 会保留泛型参数，只能靠调用方给出确定类型。
+//
+// 两道上限，缺一不可：
+//   - 输出硬上限 10MB：撑爆内存的最后一道闸
+//   - 压缩比上限 200:1：光有硬上限挡不住「解压炸弹」—— 几十 KB 的 gzip 能吐出 10MB，
+//     真正的恶意样本能到 1000:1。按输入算一道比例闸，输入越小允许的输出越少。
+// 64KB 是下限：合法的小备份（几十字节）压缩比也可能超过 200，别把它误杀。
+const GUNZIP_MAX_BYTES = 10 * 1024 * 1024;
+const GUNZIP_MAX_RATIO = 200;
+const GUNZIP_MIN_BYTES = 64 * 1024;
+
+/** 按输入大小算出这次解压允许输出多少字节（导出以便单测直接打这个判定） */
+export function gunzipOutputLimit(inputBytes: number): number {
+    return Math.min(GUNZIP_MAX_BYTES, Math.max(GUNZIP_MIN_BYTES, inputBytes * GUNZIP_MAX_RATIO));
+}
+
 export async function gunzipToString(bytes: Bytes): Promise<string> {
     const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"));
-    return new TextDecoder().decode(await readBoundedBytes(stream, 10 * 1024 * 1024));
+    const limit = gunzipOutputLimit(bytes.byteLength);
+    return new TextDecoder().decode(await readBoundedBytes(stream, limit));
 }
 
 /** 测试连接/列目录这类探测请求的超时：卡住比报错更难受，15 秒还没回就当连不上 */
