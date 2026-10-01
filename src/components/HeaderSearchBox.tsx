@@ -84,7 +84,11 @@ export default function HeaderSearchBox({
                     }}
                     onFocus={() => setSearchFocused(true)}
                     placeholder='搜索网站（按 /）'
-                    inputProps={{ "aria-label": "搜索网站" }}
+                    inputProps={{
+                        "aria-label": "搜索网站",
+                        title:
+                            "支持条件筛选：tag:标签、group:分组、url:链接、is:starred（星标）、is:dead（失效）、-排除词",
+                    }}
                     size='small'
                     variant='outlined'
                     InputProps={{

@@ -7,6 +7,8 @@ import {
     applyImportSelection,
     computeImportDiff,
     defaultSelection,
+    diffSiteFields,
+    summarizeFieldDiff,
 } from "../src/utils/importDiff";
 import type { ExportData, Site } from "../src/API/http";
 import type { GroupWithSites } from "../src/types";
@@ -148,4 +150,120 @@ test("勾选结果与输出一一对应（顺序不被打乱）", () => {
     // 分组只带「新增」的那一个：「常用工具」本身没变化，合并导入时不用重复提交
     // （它下面的卡片照常导入，靠 group_id 落到已有的分组上）
     assert.deepEqual(trimmed.groups.map(g => g.name), ["新增分组"]);
+});
+
+// —— 字段级差异 ——
+// 只看「新增 / 更新」两个字，用户还是不知道备份会把自己的卡片改成什么样；
+// 更新项必须能说出「名称、链接已改」，展开还能看到具体从什么改成什么。
+// 唯一例外是账号与密码：预览是要摆在屏幕上的，凭据原文不能出现。
+
+test("更新项给出字段级差异：改了哪些字段、从什么改成什么", () => {
+    const incoming: ExportData = {
+        version: "1",
+        exportDate: "",
+        configs: {},
+        groups: [{ id: 1, name: "常用工具", order_num: 0 }],
+        sites: [
+            site({
+                id: 12,
+                group_id: 1,
+                name: "示例二改名",
+                url: "https://example.com/changed",
+                description: "顺手改了描述",
+            }),
+        ],
+    };
+    const diff = computeImportDiff(current, incoming, false);
+    const entry = diff.siteEntries[0];
+    assert.equal(entry.status, "updated");
+    assert.ok(entry.fields, "更新项应带字段差异");
+    const labels = entry.fields!.map(f => f.label);
+    assert.ok(labels.includes("名称"), `应标出名称变了，实际 ${labels}`);
+    assert.ok(labels.includes("链接"), `应标出链接变了，实际 ${labels}`);
+    const nameField = entry.fields!.find(f => f.field === "name");
+    assert.equal(nameField?.before, "示例二");
+    assert.equal(nameField?.after, "示例二改名");
+});
+
+test("账号与密码只说「有变化」，取值不进预览", () => {
+    const incoming: ExportData = {
+        version: "1",
+        exportDate: "",
+        configs: {},
+        groups: [{ id: 1, name: "常用工具", order_num: 0 }],
+        sites: [
+            site({
+                id: 11,
+                group_id: 1,
+                name: "云设",
+                url: "https://yunso.net",
+                password: "new-secret",
+                username: "new-user",
+            }),
+        ],
+    };
+    const diff = computeImportDiff(current, incoming, false);
+    const entry = diff.siteEntries.find(e => e.key === "site:11");
+    assert.equal(entry?.status, "updated");
+    const dumped = JSON.stringify(entry?.fields ?? []);
+    for (const secret of ["old-secret", "new-secret", "old-user", "new-user"]) {
+        assert.ok(!dumped.includes(secret), `差异里不该出现凭据原文：${secret}`);
+    }
+    const pwd = entry?.fields?.find(f => f.field === "password");
+    assert.equal(pwd?.sensitive, true);
+    assert.equal(pwd?.before, null);
+    assert.equal(pwd?.after, null);
+});
+
+test("changeSummary：三处以内列全，超过三项只点前三并给出总数", () => {
+    const many = diffSiteFields(
+        site({ id: 1, name: "a", url: "https://a.com", description: "d", notes: "n", username: "u" }),
+        site({ id: 1, name: "b", url: "https://b.com", description: "D", notes: "N", username: "U" })
+    );
+    assert.ok(many.length > 3, "这个用例需要超过三项变化");
+    const summary = summarizeFieldDiff(many);
+    assert.match(summary, /等 \d+ 项已改/);
+    const two = diffSiteFields(site({ id: 1, name: "a" }), site({ id: 1, name: "b", url: "https://b.com" }));
+    assert.equal(summarizeFieldDiff(two), "名称、链接已改");
+});
+
+test("无变化的条目不带字段差异，新增条目也不带（没有可比的对象）", () => {
+    const same: ExportData = {
+        version: "1",
+        exportDate: "",
+        configs: {},
+        groups: [{ id: 1, name: "常用工具", order_num: 0 }],
+        sites: [site({ id: 11, group_id: 1, name: "云设", url: "https://yunso.net" })],
+    };
+    const diff = computeImportDiff(current, same, false);
+    assert.equal(diff.siteEntries[0].status, "unchanged");
+    assert.equal(diff.siteEntries[0].fields, undefined);
+
+    const brandNew: ExportData = {
+        version: "1",
+        exportDate: "",
+        configs: {},
+        groups: [{ id: 1, name: "常用工具", order_num: 0 }],
+        sites: [site({ id: 99, group_id: 1, name: "新站", url: "https://new.com" })],
+    };
+    const diff2 = computeImportDiff(current, brandNew, false);
+    assert.equal(diff2.siteEntries[0].status, "added");
+    assert.equal(diff2.siteEntries[0].fields, undefined);
+});
+
+test("分组改名 / 改排序也算更新，并给出字段差异", () => {
+    const incoming: ExportData = {
+        version: "1",
+        exportDate: "",
+        configs: {},
+        groups: [{ id: 1, name: "常用工具（改名）", order_num: 3 }],
+        sites: [],
+    };
+    const diff = computeImportDiff(current, incoming, false);
+    const entry = diff.groupEntries[0];
+    assert.equal(entry.status, "updated");
+    const labels = entry.fields?.map(f => f.label) ?? [];
+    assert.deepEqual(labels, ["名称", "排序"], `实际 ${labels}`);
+    assert.equal(entry.fields?.[0].before, "常用工具");
+    assert.equal(entry.fields?.[0].after, "常用工具（改名）");
 });

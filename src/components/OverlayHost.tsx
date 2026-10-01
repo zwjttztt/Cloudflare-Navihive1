@@ -46,6 +46,8 @@ export interface OverlayHostProps {
         open: boolean;
         onClose: () => void;
         onImport: (groups: ParsedBookmarkGroup[]) => Promise<number>;
+        /** 现有分组：导入前用来判断哪些链接库里已经有了 */
+        groups: GroupWithSites[];
     };
     /** 批量操作条：只在多选且非排序模式时出现 */
     bulkBar: {
@@ -82,6 +84,8 @@ export interface OverlayHostProps {
         tags: string[];
         counts: Record<string, number>;
         onDeleteTag: (tag: string) => void;
+        onRenameTag?: (from: string, to: string) => void;
+        onMergeTags?: (sources: string[], target: string) => void;
         onClose: () => void;
     };
 }
@@ -149,6 +153,7 @@ export default function OverlayHost({
                     open={bookmarkImport.open}
                     onClose={bookmarkImport.onClose}
                     onImport={bookmarkImport.onImport}
+                    groups={bookmarkImport.groups}
                 />
             </Suspense>
 
@@ -220,6 +225,8 @@ export default function OverlayHost({
                     tags={tagManager.tags}
                     counts={tagManager.counts}
                     onDeleteTag={tagManager.onDeleteTag}
+                    onRenameTag={tagManager.onRenameTag}
+                    onMergeTags={tagManager.onMergeTags}
                     onClose={tagManager.onClose}
                 />
             </Suspense>

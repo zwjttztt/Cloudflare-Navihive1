@@ -23,6 +23,7 @@ import {
     INACTIVE_DELETE_GRACE_DAYS_DEFAULT,
 } from "./API/http";
 import type { AccountInfo, SessionInfo } from "./API/http";
+import { mapWithConcurrency } from "./API/methods/transfer";
 import { GroupWithSites } from "./types";
 import { AppConfigProvider } from "./context/AppConfigContext";
 import { NotifyContext } from "./context/NotifyContext";
@@ -46,6 +47,7 @@ import { useNotify } from "./hooks/useNotify";
 import { useSites } from "./hooks/useSites";
 import { useMultiSelect } from "./hooks/useMultiSelect";
 import { useBulkActions } from "./hooks/useBulkActions";
+import { useTagOpsActions } from "./hooks/useTagOpsActions";
 import { useAppDialogs } from "./hooks/useAppDialogs";
 import { useThemeController } from "./hooks/useThemeController";
 import { useSortController } from "./hooks/useSortController";
@@ -62,6 +64,13 @@ import {
     type MutationApi,
 } from "./API/offlineQueue";
 import { buildFavoritesGroup, deriveDisplayedGroups } from "./utils/siteView";
+import {
+    advancedHint,
+    hasAdvancedSyntax,
+    matchesAdvanced,
+    matchesExcludes,
+    parseAdvancedQuery,
+} from "./utils/advancedSearch";
 import { backgroundMaskOpacity as backgroundMaskOpacityFromSlider } from "./utils/backgroundMask";
 import { brandTitle } from "./brand";
 import {
@@ -190,6 +199,9 @@ const ShortcutsDialog = lazy(() => import("./components/ShortcutsDialog"));
 // 根据环境选择使用真实API还是模拟API
 const isDevEnvironment = import.meta.env.DEV;
 const useRealApi = import.meta.env.VITE_USE_REAL_API === "true";
+
+/** 书签导入时同时最多建几张卡片：太高会把 D1 打满，太低一份大书签要等很久 */
+const BOOKMARK_IMPORT_CONCURRENCY = 6;
 
 const api =
     isDevEnvironment && !useRealApi
@@ -441,6 +453,7 @@ function App() {
         setSiteTags,
         addTagsToMany,
         removeTagFromAll,
+        applyTagOps,
         forgetSites,
         allTags,
         tagCounts,
@@ -1738,6 +1751,16 @@ function App() {
         handleError,
     });
 
+    // ---- 标签重命名 / 合并 ----
+    // 改一个标签会同时动几十张卡片，所以走「整份写回 + 提示条上给一次撤销」，
+    // 不做逐条修改（逐条改到一半失败就是半改名状态，没法收拾）。
+    const { renameTagWithUndo, mergeTagsWithUndo } = useTagOpsActions({
+        tags,
+        applyTagOps,
+        setActiveTags,
+        notify,
+    });
+
     // 更新分组（引用稳定，配合 GroupCard 的 memo 减少重渲染）
     const handleGroupUpdate = useCallback(
         async (updatedGroup: Group) => {
@@ -2129,11 +2152,17 @@ function App() {
     // 检索索引：站点侧与分组侧的归一化文本只在**数据变了**时算一次。
     // 以前是每次按键对每个站点跑三趟正则，几千张卡片时输入会开始发涩。
     const searchIndex = useMemo(() => buildSearchIndex(groups), [groups]);
+    // 高级语法（tag: / group: / url: / is: / -关键词）：先从输入里剥出来，
+    // 剩下的自由词才交给普通检索。不写语法的人完全不受影响。
+    const advancedQuery = useMemo(() => parseAdvancedQuery(query), [query]);
     // 查询侧同理：一个关键词只归一化一次，全站点复用
-    const preparedQuery = useMemo(() => prepareQuery(query), [query]);
+    const preparedQuery = useMemo(
+        () => prepareQuery(advancedQuery.text),
+        [advancedQuery.text]
+    );
 
     const filteredGroups = useMemo(() => {
-        if (!preparedQuery.text) return groups;
+        if (!preparedQuery.text && !hasAdvancedSyntax(query)) return groups;
 
         return groups
             .map(group => {
@@ -2145,17 +2174,44 @@ function App() {
                 const sites = group.sites.filter(site => {
                     // 索引里没有（刚离线新建、还没回填 id）就现算一次，别把它当成不命中
                     const entry = site.id !== undefined ? searchIndex.sites.get(site.id) : undefined;
-                    return matchesPrepared(
-                        entry?.haystack ?? siteHaystack(site),
-                        entry?.name ?? site.name ?? "",
-                        preparedQuery,
-                        usePinyin
-                    );
+                    if (
+                        preparedQuery.text &&
+                        !matchesPrepared(
+                            entry?.haystack ?? siteHaystack(site),
+                            entry?.name ?? site.name ?? "",
+                            preparedQuery,
+                            usePinyin
+                        )
+                    ) {
+                        return false;
+                    }
+                    // 语法条件：tag: / group: / url: / is:
+                    const own = tags[String(site.id)] ?? [];
+                    if (
+                        !matchesAdvanced(site, group.name, advancedQuery, {
+                            tags: own,
+                            starred: starred.includes(site.id as number),
+                            dead: Boolean(deadLinks[site.url ?? ""]),
+                        })
+                    ) {
+                        return false;
+                    }
+                    // -排除词
+                    return !matchesExcludes(site, group.name, advancedQuery.excludes);
                 });
                 return { ...group, sites };
             })
             .filter(group => group.sites.length > 0);
-    }, [groups, preparedQuery, usePinyin, searchIndex]);
+    }, [
+        groups,
+        preparedQuery,
+        usePinyin,
+        searchIndex,
+        advancedQuery,
+        tags,
+        starred,
+        deadLinks,
+    ]);
 
     // 星标 / 标签筛选：在搜索结果之上再叠一层。
     // 标签取交集（同时带「工具」「AI」两个标签才命中），星标是独立的开关。
@@ -2384,33 +2440,44 @@ function App() {
         );
     }, [groups, notify, setDeadLinks]);
 
-    // 书签导入：同名文件夹复用已有分组，其余新建
+    // 书签导入：同名文件夹复用已有分组，其余新建。
+    // 重复与无效的链接在弹窗里已经筛掉了，这里只管建 —— 建卡片限并发，
+    // 一份几百条的书签逐个 await 会慢到以为卡住了。
     const importBookmarks = useCallback(
         async (parsed: ParsedBookmarkGroup[]) => {
             let created = 0;
+            let groupSeq = 0;
             const iconTemplate = (configs["site.iconApi"] || "").trim();
 
             for (const folder of parsed) {
+                if (folder.items.length === 0) continue;
                 let target = groups.find(g => g.name === folder.folder);
                 if (!target) {
                     const saved = await api.createGroup({
                         name: folder.folder,
-                        order_num: groups.length + created,
+                        order_num: groups.length + groupSeq,
                     } as Group);
+                    groupSeq += 1;
                     target = { ...saved, sites: [] } as GroupWithSites;
                 }
                 const baseOrder = target.sites?.length ?? 0;
-                for (const [idx, item] of folder.items.entries()) {
-                    await api.createSite({
-                        name: item.title.slice(0, 60),
-                        url: item.url,
-                        icon: resolveIconApiUrl(iconTemplate, item.url),
-                        description: "",
-                        group_id: target.id,
-                        order_num: baseOrder + idx,
-                    } as Site);
-                    created += 1;
-                }
+                const groupId = target.id;
+                const done = await mapWithConcurrency(
+                    folder.items,
+                    BOOKMARK_IMPORT_CONCURRENCY,
+                    async (item, idx) => {
+                        await api.createSite({
+                            name: item.title.slice(0, 60),
+                            url: item.url,
+                            icon: resolveIconApiUrl(iconTemplate, item.url),
+                            description: "",
+                            group_id: groupId,
+                            order_num: baseOrder + idx,
+                        } as Site);
+                        return 1;
+                    }
+                );
+                created += done.length;
             }
 
             await fetchData({ silent: true });
@@ -2937,6 +3004,18 @@ function App() {
                                     : ""}
                             </Typography>
                         )}
+
+                    {/* 语法写错了要说出来：is:deleted 这种条件如果不点名，
+                        用户只会以为「没有匹配的卡片」，而不是自己打错了 */}
+                    {advancedHint(advancedQuery) && (
+                        <Typography
+                            variant='caption'
+                            color='warning.main'
+                            sx={{ display: "block", mt: -2, mb: 2 }}
+                        >
+                            {advancedHint(advancedQuery)}
+                        </Typography>
+                    )}
 
                     {loading && <SiteListSkeleton />}
 
@@ -3608,6 +3687,7 @@ function App() {
                         open: bookmarkOpen,
                         onClose: () => setBookmarkOpen(false),
                         onImport: importBookmarks,
+                        groups: groups,
                     }}
                     bulkBar={{
                         visible: multiSelect && sortMode === SortMode.None,
@@ -3643,6 +3723,8 @@ function App() {
                         tags: allTags,
                         counts: tagCounts,
                         onDeleteTag: deleteTagWithUndo,
+                        onRenameTag: renameTagWithUndo,
+                        onMergeTags: (sources, target) => mergeTagsWithUndo(sources, target),
                         onClose: () => setTagManagerOpen(false),
                     }}
                 />

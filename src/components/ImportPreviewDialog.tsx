@@ -16,8 +16,12 @@ import {
     Stack,
     Tooltip,
     Typography,
+    TextField,
+    FormControlLabel,
 } from "@mui/material";
 import CloseIcon from "@mui/icons-material/Close";
+import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
+import ExpandLessIcon from "@mui/icons-material/ExpandLess";
 import { ExportData } from "../API/http";
 import { GroupWithSites } from "../types";
 import {
@@ -28,6 +32,7 @@ import {
     computeImportDiff,
     defaultSelection,
 } from "../utils/importDiff";
+import { dialogActionsSx, dialogContentSx, dialogPaperSx, dialogTitleSx } from "./dialogShell";
 
 const STATUS_COLOR: Record<DiffStatus, "success" | "warning" | "default" | "error"> = {
     added: "success",
@@ -60,6 +65,11 @@ export default function ImportPreviewDialog({
     );
 
     const [selected, setSelected] = useState<Set<string>>(new Set());
+    // 长清单（几百条备份）里找一条太难：给一个关键词框 + 只看有变化
+    const [keyword, setKeyword] = useState("");
+    const [changedOnly, setChangedOnly] = useState(false);
+    // 展开看字段差异的条目
+    const [expanded, setExpanded] = useState<Set<string>>(new Set());
     // 备份数据换了就重新按默认规则勾一遍：
     // 合并导入默认「新增 + 更新」，覆盖恢复默认全选（见 defaultSelection 的说明）
     const [seededFor, setSeededFor] = useState<ExportData | null>(null);
@@ -93,6 +103,21 @@ export default function ImportPreviewDialog({
         for (const entry of [...diff.groupEntries, ...diff.siteEntries]) next.add(entry.key);
         setSelected(next);
     };
+
+    // 筛选只影响「看什么」，不影响勾选项：
+    // 用户缩小范围是为了看清，不是要放弃没显示出来的那些
+    const keywordLower = keyword.trim().toLowerCase();
+    const visible = (entries: DiffEntry[]) =>
+        entries.filter(entry => {
+            if (changedOnly && entry.status === "unchanged") return false;
+            if (!keywordLower) return true;
+            return (
+                entry.name.toLowerCase().includes(keywordLower) ||
+                entry.detail.toLowerCase().includes(keywordLower)
+            );
+        });
+    const visibleGroups = visible(diff.groupEntries);
+    const visibleSites = visible(diff.siteEntries);
 
     const preview = applyImportSelection(data, diff, selected);
     const total = diff.groupEntries.length + diff.siteEntries.length;
@@ -128,7 +153,56 @@ export default function ImportPreviewDialog({
                 <Typography variant='caption' color='text.secondary' noWrap sx={{ display: "block" }}>
                     {entry.detail}
                 </Typography>
+                {/* 「名称、链接已改」：不展开也知道动了什么 */}
+                {entry.changeSummary && (
+                    <Typography variant='caption' color='warning.main' noWrap sx={{ display: "block" }}>
+                        {entry.changeSummary}
+                    </Typography>
+                )}
+                {entry.fields && expanded.has(entry.key) && (
+                    <Box sx={{ mt: 0.5, display: "grid", gap: 0.25 }}>
+                        {entry.fields.map(field => (
+                            <Box key={field.field} sx={{ display: "flex", gap: 0.75, alignItems: "baseline" }}>
+                                <Typography variant='caption' sx={{ flexShrink: 0, opacity: 0.8 }}>
+                                    {field.label}
+                                </Typography>
+                                {field.sensitive ? (
+                                    <Typography variant='caption' color='text.secondary'>
+                                        有变化（内容不显示）
+                                    </Typography>
+                                ) : (
+                                    <Typography variant='caption' color='text.secondary' sx={{ minWidth: 0, wordBreak: "break-all" }}>
+                                        {field.before || "（空）"} → {field.after || "（空）"}
+                                    </Typography>
+                                )}
+                            </Box>
+                        ))}
+                    </Box>
+                )}
             </Box>
+            {entry.fields && entry.fields.length > 0 && (
+                <IconButton
+                    size='small'
+                    onClick={e => {
+                        e.stopPropagation();
+                        setExpanded(prev => {
+                            const next = new Set(prev);
+                            if (next.has(entry.key)) next.delete(entry.key);
+                            else next.add(entry.key);
+                            return next;
+                        });
+                    }}
+                    aria-label={`查看「${entry.name}」的变化详情`}
+                    aria-expanded={expanded.has(entry.key)}
+                    sx={{ p: 0.5 }}
+                >
+                    {expanded.has(entry.key) ? (
+                        <ExpandLessIcon fontSize='small' />
+                    ) : (
+                        <ExpandMoreIcon fontSize='small' />
+                    )}
+                </IconButton>
+            )}
             <Chip
                 size='small'
                 label={STATUS_LABEL[entry.status]}
@@ -146,8 +220,9 @@ export default function ImportPreviewDialog({
             maxWidth='sm'
             fullWidth
             className='nav-import-preview'
+            slotProps={{ paper: { sx: dialogPaperSx } }}
         >
-            <DialogTitle sx={{ fontSize: 16, fontWeight: 600, pr: 6 }}>
+            <DialogTitle sx={{ ...dialogTitleSx, pr: 6 }}>
                 导入预览
                 <Tooltip title='关闭'>
                     <IconButton
@@ -161,7 +236,7 @@ export default function ImportPreviewDialog({
                 </Tooltip>
             </DialogTitle>
 
-            <DialogContent sx={{ pt: 0.5, pb: 1 }}>
+            <DialogContent sx={{ ...dialogContentSx, pt: 0.5, pb: 1 }}>
                 <Typography variant='caption' color='text.secondary' sx={{ display: "block", mb: 1 }}>
                     {overwrite
                         ? "覆盖恢复：勾选的内容会替换现有数据，没被这份备份包含的分组和卡片会被清掉。"
@@ -191,31 +266,71 @@ export default function ImportPreviewDialog({
 
                 <Divider sx={{ mb: 1 }} />
 
+                {/* 关键词 + 只看有变化：几百条的备份里找一条全靠它 */}
+                <Stack direction='row' spacing={1} sx={{ mb: 1, alignItems: "center" }}>
+                    <TextField
+                        size='small'
+                        value={keyword}
+                        onChange={e => setKeyword(e.target.value)}
+                        placeholder='在清单里找…'
+                        aria-label='在差异清单里搜索'
+                        sx={{ flexGrow: 1, maxWidth: 220 }}
+                    />
+                    <FormControlLabel
+                        control={
+                            <Checkbox
+                                size='small'
+                                checked={changedOnly}
+                                onChange={e => setChangedOnly(e.target.checked)}
+                                slotProps={{ input: { "aria-label": "只显示有变化的" } }}
+                            />
+                        }
+                        label={
+                            <Typography variant='caption' color='text.secondary'>
+                                只显示有变化的
+                            </Typography>
+                        }
+                        sx={{ m: 0 }}
+                    />
+                </Stack>
+
                 <Box sx={{ maxHeight: 320, overflowY: "auto", pr: 0.5 }}>
-                    {diff.groupEntries.length > 0 && (
+                    {visibleGroups.length > 0 && (
                         <Box sx={{ mb: 1 }}>
                             <Typography
                                 variant='caption'
                                 color='text.secondary'
                                 sx={{ px: 0.5, display: "block", mb: 0.25 }}
                             >
-                                分组（{diff.groupEntries.length}）
+                                分组（{visibleGroups.length}
+                                {visibleGroups.length !== diff.groupEntries.length
+                                    ? ` / ${diff.groupEntries.length}`
+                                    : ""}）
                             </Typography>
-                            {diff.groupEntries.map(renderRow)}
+                            {visibleGroups.map(renderRow)}
                         </Box>
                     )}
 
-                    {diff.siteEntries.length > 0 && (
+                    {visibleSites.length > 0 && (
                         <Box>
                             <Typography
                                 variant='caption'
                                 color='text.secondary'
                                 sx={{ px: 0.5, display: "block", mb: 0.25 }}
                             >
-                                卡片（{diff.siteEntries.length}）
+                                卡片（{visibleSites.length}
+                                {visibleSites.length !== diff.siteEntries.length
+                                    ? ` / ${diff.siteEntries.length}`
+                                    : ""}）
                             </Typography>
-                            {diff.siteEntries.map(renderRow)}
+                            {visibleSites.map(renderRow)}
                         </Box>
+                    )}
+
+                    {visibleGroups.length === 0 && visibleSites.length === 0 && (
+                        <Typography variant='body2' color='text.secondary' sx={{ py: 2, textAlign: "center" }}>
+                            没有匹配的条目。筛选只影响显示，勾选的条目一个都不少。
+                        </Typography>
                     )}
                 </Box>
 
@@ -229,7 +344,7 @@ export default function ImportPreviewDialog({
                 )}
             </DialogContent>
 
-            <DialogActions sx={{ px: 2, pb: 2, pt: 0.5, gap: 1 }}>
+            <DialogActions sx={dialogActionsSx}>
                 <Button onClick={onCancel} variant='outlined' color='inherit' size='small'>
                     取消
                 </Button>

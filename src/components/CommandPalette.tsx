@@ -17,6 +17,7 @@ import {
 import SearchIcon from "@mui/icons-material/Search";
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import BoltIcon from "@mui/icons-material/Bolt";
+import { pushRecentCommand, rankCommands, readRecentCommands } from "../utils/commandMatch";
 
 export interface CommandItem {
     id: string;
@@ -41,17 +42,25 @@ export default function CommandPalette({ open, onClose, commands }: CommandPalet
     const [active, setActive] = useState(0);
     const inputRef = useRef<HTMLInputElement | null>(null);
 
-    const results = useMemo(() => {
-        const key = keyword.trim().toLowerCase();
-        if (!key) return commands.slice(0, MAX_ROWS * 2);
-        return commands
-            .filter(c =>
-                [c.label, c.hint, c.keywords]
-                    .filter(Boolean)
-                    .some(v => String(v).toLowerCase().includes(key))
-            )
-            .slice(0, MAX_ROWS * 2);
-    }, [commands, keyword]);
+    // 最近用过的命令：打开面板时读一次（面板每次打开都是一次全新的会话）
+    const [recent, setRecent] = useState<string[]>([]);
+    useEffect(() => {
+        if (open) setRecent(readRecentCommands());
+    }, [open]);
+
+    // 打分排序：完全相等 > 前缀 > 包含 > 跳字（gh → GitHub），同分时用过的靠前。
+    // 以前是纯 includes + 生成顺序，输「设置」时真正想要的常常排在第四五行。
+    const results = useMemo(
+        () => rankCommands(commands, keyword, recent).slice(0, MAX_ROWS * 2),
+        [commands, keyword, recent]
+    );
+
+    const runItem = (item: CommandItem) => {
+        pushRecentCommand(item.id);
+        setRecent(prev => [item.id, ...prev.filter(id => id !== item.id)]);
+        onClose();
+        item.run();
+    };
 
     // 打开时重置状态并聚焦输入框
     useEffect(() => {
@@ -76,10 +85,7 @@ export default function CommandPalette({ open, onClose, commands }: CommandPalet
         } else if (e.key === "Enter") {
             e.preventDefault();
             const item = results[active];
-            if (item) {
-                onClose();
-                item.run();
-            }
+            if (item) runItem(item);
         }
     };
 
@@ -133,17 +139,27 @@ export default function CommandPalette({ open, onClose, commands }: CommandPalet
                         <Typography variant='body2' color='text.secondary'>
                             没有匹配的站点或命令
                         </Typography>
+                        <Typography variant='caption' color='text.secondary'>
+                            命令可以按「跳字」搜：输 gh 也能找到 GitHub
+                        </Typography>
                     </Box>
+                )}
+                {/* 没有输入时，把「最近用过」标出来，省得用户以为顺序是随机的 */}
+                {!keyword.trim() && recent.length > 0 && (
+                    <Typography
+                        variant='caption'
+                        color='text.secondary'
+                        sx={{ px: 1.5, pb: 0.5, display: "block" }}
+                    >
+                        最近用过（{Math.min(recent.length, MAX_ROWS * 2)}）
+                    </Typography>
                 )}
                 {results.map((item, idx) => (
                     <ListItemButton
                         key={item.id}
                         selected={idx === active}
                         onMouseEnter={() => setActive(idx)}
-                        onClick={() => {
-                            onClose();
-                            item.run();
-                        }}
+                        onClick={() => runItem(item)}
                         sx={{ borderRadius: "12px", mb: 0.25 }}
                     >
                         <ListItemIcon sx={{ minWidth: 34 }}>

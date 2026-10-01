@@ -11,6 +11,7 @@ import {
 } from "react";
 import { readDeadLinks } from "../utils/linkHealth";
 import { scopedKey } from "../utils/accountScope";
+import type { TagMap } from "../utils/tagOps";
 import type { LocalPrefsBackup } from "../API/http";
 
 /**
@@ -226,6 +227,12 @@ interface UIPrefsStableValue {
     addTagsToMany: (siteIds: number[], tags: string[]) => void;
     /** 删除某个标签：所有卡片都不再带它（标签管理用） */
     removeTagFromAll: (tag: string) => void;
+    /**
+     * 一次性写入标签重命名 / 合并的结果（纯计算在 utils/tagOps）。
+     * 走这里而不是多次 setSiteTags：一次 setState 只重渲染一遍，
+     * 也避免中途失败留下「一半改了名、一半没改」的状态。
+     */
+    applyTagOps: (nextTags: TagMap) => void;
     /** 卡片被删除时，把它们的本机标签 / 星标一起清掉，避免留下点不出来的孤儿标签 */
     forgetSites: (siteIds: number[]) => void;
     setDeadLinks: (next: Record<string, number>) => void;
@@ -446,6 +453,7 @@ const defaultValue: UIPrefsValue = {
     setSiteTags: () => {},
     addTagsToMany: () => {},
     removeTagFromAll: () => {},
+    applyTagOps: () => {},
     forgetSites: () => {},
     allTags: [],
     tagCounts: {},
@@ -782,6 +790,12 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
         });
     }, []);
 
+    // 标签重命名 / 合并的结果：整份 map 一次写回
+    const applyTagOps = useCallback((nextTags: TagMap) => {
+        setTags(nextTags);
+        write(scopedTagsKey(), JSON.stringify(nextTags));
+    }, []);
+
     // 标签管理：把一个标签从所有卡片上摘掉（某张卡摘空后连键一起删）
     const removeTagFromAll = useCallback((tag: string) => {
         const want = tag.trim();
@@ -985,6 +999,7 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
             setSiteTags,
             addTagsToMany,
             removeTagFromAll,
+            applyTagOps,
             forgetSites,
             setDeadLinks,
             restoreLocalPrefs,
@@ -1028,6 +1043,7 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
             setSiteTags,
             addTagsToMany,
             removeTagFromAll,
+            applyTagOps,
             forgetSites,
             setDeadLinks,
             restoreLocalPrefs,

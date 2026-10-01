@@ -9,6 +9,16 @@ import { urlKey } from "./duplicate";
 
 export type DiffStatus = "added" | "updated" | "unchanged" | "removed";
 
+/** 一个字段的变化。敏感字段（账号 / 密码）只说「有变化」，不带上任何取值 */
+export interface FieldDiff {
+    field: string;
+    label: string;
+    /** 旧值；敏感字段为 null（只表示「变了」，不泄露内容） */
+    before: string | null;
+    after: string | null;
+    sensitive?: boolean;
+}
+
 export interface DiffEntry {
     kind: "group" | "site";
     /** 勾选用的稳定 key，同时用于回查对应哪一条数据 */
@@ -19,6 +29,10 @@ export interface DiffEntry {
     detail: string;
     /** 站点所属分组的 key（分组被取消勾选时，它的站点一起不导入） */
     groupKey?: string;
+    /** 更新项才有：具体哪些字段变了 */
+    fields?: FieldDiff[];
+    /** 「名称、链接已改」这类一句话摘要，列表里不用展开就能看懂 */
+    changeSummary?: string;
 }
 
 export interface ImportDiff {
@@ -38,6 +52,52 @@ export const STATUS_LABEL: Record<DiffStatus, string> = {
     unchanged: "无变化",
     removed: "将删除",
 };
+
+/** 参与比对与展示的字段。账号 / 密码单独标 sensitive：值不进界面 */
+const SITE_FIELDS: Array<{ field: keyof Site; label: string; sensitive?: boolean }> = [
+    { field: "name", label: "名称" },
+    { field: "url", label: "链接" },
+    { field: "icon", label: "图标" },
+    { field: "description", label: "描述" },
+    { field: "notes", label: "备注" },
+    { field: "group_id", label: "所属分组" },
+    { field: "order_num", label: "排序" },
+    { field: "username", label: "账号", sensitive: true },
+    { field: "password", label: "密码", sensitive: true },
+];
+
+/**
+ * 逐字段比对两张卡片。
+ * 账号与密码只回「变了」（before/after 都是 null）—— 差异预览是要给用户当着
+ * 屏幕看的，把凭据原文打在上面，等于把备份里的敏感信息又暴露一次。
+ */
+export function diffSiteFields(prev: Site, next: Site): FieldDiff[] {
+    const out: FieldDiff[] = [];
+    for (const { field, label, sensitive } of SITE_FIELDS) {
+        const before = prev[field];
+        const after = next[field];
+        if (String(before ?? "") === String(after ?? "")) continue;
+        out.push(
+            sensitive
+                ? { field: String(field), label, before: null, after: null, sensitive: true }
+                : {
+                      field: String(field),
+                      label,
+                      before: String(before ?? ""),
+                      after: String(after ?? ""),
+                  }
+        );
+    }
+    return out;
+}
+
+/** 「名称、链接已改」：列表里不展开也能一眼看出动了什么 */
+export function summarizeFieldDiff(fields: FieldDiff[]): string {
+    if (fields.length === 0) return "";
+    const labels = fields.map(f => f.label);
+    if (labels.length <= 3) return `${labels.join("、")}已改`;
+    return `${labels.slice(0, 3).join("、")}等 ${labels.length} 项已改`;
+}
 
 /** 站点内容指纹：这些字段里有一个不同，就算「更新」 */
 const siteFingerprint = (site: Site) =>
@@ -88,12 +148,33 @@ export function computeImportDiff(
               ? "unchanged"
               : "updated";
         bump(status);
+        const fields: FieldDiff[] = [];
+        if (prev && status === "updated") {
+            if (prev.name !== group.name) {
+                fields.push({
+                    field: "name",
+                    label: "名称",
+                    before: prev.name ?? "",
+                    after: group.name ?? "",
+                });
+            }
+            if ((prev.order_num ?? 0) !== (group.order_num ?? 0)) {
+                fields.push({
+                    field: "order_num",
+                    label: "排序",
+                    before: String(prev.order_num ?? 0),
+                    after: String(group.order_num ?? 0),
+                });
+            }
+        }
         return {
             kind: "group",
             key,
             status,
             name: group.name || "未命名分组",
             detail: `排序 ${group.order_num ?? 0}`,
+            fields: fields.length > 0 ? fields : undefined,
+            changeSummary: fields.length > 0 ? summarizeFieldDiff(fields) : undefined,
         };
     });
 
@@ -111,6 +192,7 @@ export function computeImportDiff(
         bump(status);
 
         const ownerGroup = (incoming.groups ?? []).find(g => g.id === site.group_id);
+        const fields = prev && status === "updated" ? diffSiteFields(prev, site) : [];
         return {
             kind: "site",
             key,
@@ -118,6 +200,8 @@ export function computeImportDiff(
             name: site.name || site.url || "未命名站点",
             detail: ownerGroup?.name || "未分组",
             groupKey: ownerGroup ? `group:${ownerGroup.id ?? `new-${(incoming.groups ?? []).indexOf(ownerGroup)}`}` : undefined,
+            fields: fields.length > 0 ? fields : undefined,
+            changeSummary: fields.length > 0 ? summarizeFieldDiff(fields) : undefined,
         };
     });
 

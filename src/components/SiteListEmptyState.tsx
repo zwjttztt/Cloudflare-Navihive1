@@ -51,6 +51,13 @@ export default function SiteListEmptyState({
                     ? "换个关键词试试，或清空搜索框查看全部网站"
                     : "点击左上角「新增分组」开始搭建你的导航页"}
             </Typography>
+            {/* 搜不到的时候才提语法：平时不占地方，需要时正好在眼前 */}
+            {query && (
+                <Typography variant='caption' color='text.secondary' sx={{ mt: 0.5 }}>
+                    也可以按条件筛：tag:AI、group:开发、url:github、is:starred、is:dead，
+                    用 -关键词 排除
+                </Typography>
+            )}
             {/* 空状态也要有出路：能搜就给「清空搜索」，筛没了就给「清除筛选」 */}
             <Stack direction='row' spacing={1} sx={{ mt: 1 }}>
                 {query && (
