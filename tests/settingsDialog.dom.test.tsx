@@ -91,6 +91,7 @@ function Harness(o: Opts) {
     const [pinyin, setPinyin] = useState(false);
     const [offlineFull, setOfflineFull] = useState(false);
     const [iconPrivacy, setIconPrivacy] = useState(false);
+    const [liteMode, setLiteMode] = useState(false);
     const [syncHealth, setSyncHealth] = useState(false);
     const [syncPrefs, setSyncPrefs] = useState(false);
     const [, setMaskOpacity] = useState(0.3);
@@ -131,6 +132,8 @@ function Harness(o: Opts) {
                 setOfflineFull(v);
             }}
             iconPrivacy={iconPrivacy}
+            liteMode={liteMode}
+            onLiteModeChange={setLiteMode}
             onIconPrivacyChange={v => {
                 calls.iconPrivacy.push(v);
                 setIconPrivacy(v);

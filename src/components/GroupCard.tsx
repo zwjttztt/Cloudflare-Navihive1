@@ -28,6 +28,8 @@ import AddIcon from "@mui/icons-material/Add";
 import EditIcon from "@mui/icons-material/Edit";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import ExpandLessIcon from "@mui/icons-material/ExpandLess";
+import ArrowBackIcon from "@mui/icons-material/ArrowBack";
+import ArrowForwardIcon from "@mui/icons-material/ArrowForward";
 import EmptyArt from "./EmptyArt";
 import { useUIPrefsPrefs, useUIPrefsStable } from "../context/UIPrefsContext";
 import DeleteSweepIcon from "@mui/icons-material/DeleteSweep";
@@ -36,6 +38,7 @@ import {
     readCollapsedGroupIds,
     writeCollapsedGroupIds,
 } from "../utils/collapse";
+import { moveSiteByStep } from "../utils/sortable";
 
 /** 卡片视图的列宽：普通渲染 / 单组编辑 / 跨组排序三种分支必须用同一个值，
  *  否则一点「编辑排序」列数就变了（900px 段 3→2 列、1536px 段 5→4 列），整屏卡片会跳一下。 */
@@ -292,6 +295,11 @@ const GroupCard: React.FC<GroupCardProps> = ({
         }
     };
 
+    // 卡片「前移 / 后移一位」：与拖拽共用同一份本地顺序，保存时一起提交
+    const nudgeSite = (index: number, delta: number) => {
+        setSites(prev => moveSiteByStep(prev, index, delta));
+    };
+
     // 编辑分组处理函数
     const handleEditClick = () => {
         setEditDialogOpen(true);
@@ -439,6 +447,35 @@ const GroupCard: React.FC<GroupCardProps> = ({
                                             isEditMode={true}
                                             index={idx}
                                         />
+                                        {/* 拖拽之外的一条路：点箭头前后挪一位。
+                                            读屏、键盘、触屏长按误触都靠它兜住 */}
+                                        <Box
+                                            sx={{
+                                                display: "flex",
+                                                justifyContent: "center",
+                                                gap: 0.5,
+                                                mt: 0.5,
+                                            }}
+                                        >
+                                            <IconButton
+                                                size='small'
+                                                className='nav-site-move-prev'
+                                                aria-label={`把「${site.name}」前移一位`}
+                                                disabled={idx === 0}
+                                                onClick={() => nudgeSite(idx, -1)}
+                                            >
+                                                <ArrowBackIcon fontSize='small' />
+                                            </IconButton>
+                                            <IconButton
+                                                size='small'
+                                                className='nav-site-move-next'
+                                                aria-label={`把「${site.name}」后移一位`}
+                                                disabled={idx === sitesToRender.length - 1}
+                                                onClick={() => nudgeSite(idx, 1)}
+                                            >
+                                                <ArrowForwardIcon fontSize='small' />
+                                            </IconButton>
+                                        </Box>
                                     </Box>
                                 ))}
                             </Box>
@@ -583,21 +620,21 @@ const GroupCard: React.FC<GroupCardProps> = ({
             data-sort-mode={sortMode}
             style={{ ["--group-accent" as string]: accentColor || undefined }}
             sx={{
-                borderRadius: "var(--card-radius)",
+                borderRadius: "var(--radius-lg)",
                 p: { xs: 2, sm: 3 },
                 // 与卡片同源的毛玻璃，只是更淡一层，形成「面板 → 卡片」的层次
-                background: "var(--glass-panel-bg)",
-                backdropFilter: "blur(var(--glass-blur)) saturate(1.3)",
-                WebkitBackdropFilter: "blur(var(--glass-blur)) saturate(1.3)",
-                border: "1px solid var(--glass-panel-border)",
-                boxShadow: "var(--glass-shadow)",
+                background: "var(--surface-panel)",
+                backdropFilter: "blur(var(--blur-md)) saturate(1.3)",
+                WebkitBackdropFilter: "blur(var(--blur-md)) saturate(1.3)",
+                border: "1px solid var(--border-subtle)",
+                boxShadow: "var(--shadow-2)",
                 // backdrop-filter 单独钉成 0s：这个属性一旦参与补间，浏览器就得逐帧
                 // 重新采样面板背后的像素，圆角边界采样补不齐会透出一圈暗边（像「外圈变黑」）。
                 // 其余属性照旧走 all 的 0.3s；CSS 过渡里同名属性以最后一条为准。
                 transition:
                     "all 0.3s ease-in-out, backdrop-filter 0s, -webkit-backdrop-filter 0s",
                 "&:hover": {
-                    boxShadow: "var(--glass-shadow-hover)",
+                    boxShadow: "var(--shadow-3)",
                     borderColor: (theme) => theme.palette.primary.main,
                     transform: sortMode === "None" ? "scale(1.005)" : "none",
                 },
@@ -618,8 +655,8 @@ const GroupCard: React.FC<GroupCardProps> = ({
                     // 与分组面板同色：这里只负责「卡片滑过时把背后糊掉」，
                     // 不再额外垫一层比面板更白的底色
                     bgcolor: "transparent",
-                    backdropFilter: "blur(8px)",
-                    WebkitBackdropFilter: "blur(8px)",
+                    backdropFilter: "blur(var(--blur-sm))",
+                    WebkitBackdropFilter: "blur(var(--blur-sm))",
                 }}
             >
                 <Box
@@ -634,9 +671,10 @@ const GroupCard: React.FC<GroupCardProps> = ({
                     <Box
                         className='nav-group-accent-bar'
                         sx={{
-                            width: 3,
+                            // 只是一条细线标记，不铺整块背景：宽度由 token 统一控制
+                            width: "var(--group-accent-width)",
                             height: 20,
-                            borderRadius: "3px",
+                            borderRadius: "var(--radius-xs)",
                             bgcolor: "var(--group-accent)",
                             flexShrink: 0,
                         }}
@@ -685,7 +723,15 @@ const GroupCard: React.FC<GroupCardProps> = ({
                     </Typography>
                 )}
 
-                <Box 
+                {/* 分组工具条：平时是安静的导航，编辑 / 多选 / 排序态才常显 */}
+                <Box
+                    role='group'
+                    aria-label={`${group.name} 分组操作`}
+                    className={
+                        sortMode === "None" && !selectMode
+                            ? "nav-group-tools"
+                            : "nav-group-tools nav-group-tools-active"
+                    }
                     sx={{ 
                         display: 'flex', 
                         flexDirection: { xs: 'row', sm: 'row' }, 
@@ -711,19 +757,38 @@ const GroupCard: React.FC<GroupCardProps> = ({
                             清空
                         </Button>
                     ) : isCurrentEditingGroup ? (
-                        <Button
-                            variant='contained'
-                            color='primary'
-                            size='small'
-                            startIcon={<SaveIcon />}
-                            onClick={handleSaveSiteOrder}
-                            sx={{ 
-                                minWidth: 'auto',
-                                fontSize: { xs: '0.75rem', sm: '0.875rem' }
-                            }}
-                        >
-                            保存顺序
-                        </Button>
+                        <>
+                            {/* 编辑态把「新增」一并摆出来：改顺序时最常见的下一步就是补卡片 */}
+                            {onAddSite && (
+                                <Button
+                                    variant='outlined'
+                                    color='primary'
+                                    size='small'
+                                    className='nav-add-site-btn'
+                                    startIcon={<AddIcon />}
+                                    onClick={() => onAddSite(group.id!)}
+                                    sx={{ 
+                                        minWidth: 'auto',
+                                        fontSize: { xs: '0.75rem', sm: '0.875rem' }
+                                    }}
+                                >
+                                    添加卡片
+                                </Button>
+                            )}
+                            <Button
+                                variant='contained'
+                                color='primary'
+                                size='small'
+                                startIcon={<SaveIcon />}
+                                onClick={handleSaveSiteOrder}
+                                sx={{ 
+                                    minWidth: 'auto',
+                                    fontSize: { xs: '0.75rem', sm: '0.875rem' }
+                                }}
+                            >
+                                保存顺序
+                            </Button>
+                        </>
                     ) : selectMode && canManageGroup ? (
                         <Button
                             variant='outlined'

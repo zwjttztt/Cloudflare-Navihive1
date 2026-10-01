@@ -182,6 +182,13 @@ interface UIPrefsStableValue {
     glassEffects: boolean;
     setGlassEffects: (enabled: boolean) => void;
     /**
+     * 清爽模式（低性能设备友好）：一并关掉毛玻璃、柔光背景、装饰动画与悬浮阴影，
+     * 只留纯色底 + 静态卡片。比「关毛玻璃」更彻底 —— 后者只是换一种合成方式，
+     * 背景光晕那层 blur(48px) 与几百张卡片的入场动画依然在跑。
+     */
+    liteMode: boolean;
+    setLiteMode: (enabled: boolean) => void;
+    /**
      * 离线增强：打开后 Service Worker 会把懒加载的功能块也预下载下来，
      * 断网时也能点开全部弹窗。默认关 —— 按需加载就是为了「不点的功能不下载」。
      */
@@ -292,6 +299,8 @@ const TAGS_KEY = "navihive:tags";
 const RAIL_COLLAPSED_KEY = "navihive:railCollapsed";
 const PINYIN_KEY = "navihive:pinyinSearch";
 const GLASS_KEY = "navihive:glassEffects";
+/** 清爽模式：低性能设备一键关掉全部装饰性特效 */
+const LITE_KEY = "navihive:liteMode";
 const PREF_SYNC_KEY = "navihive:prefSync";
 /** 离线增强：用户显式开启后才把懒加载的功能块也预下载下来 */
 const OFFLINE_FULL_KEY = "navihive:offlineFull";
@@ -410,6 +419,8 @@ const defaultValue: UIPrefsValue = {
     setPinyinSearch: () => {},
     glassEffects: true,
     setGlassEffects: () => {},
+    liteMode: false,
+    setLiteMode: () => {},
     offlineFull: false,
     setOfflineFull: () => {},
     iconPrivacy: false,
@@ -484,6 +495,10 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
     // 毛玻璃默认开：关掉只是「换一种更省的合成方式」，本机偏好，不进数据库
     const [glassEffects, setGlassState] = useState<boolean>(
         () => readString(GLASS_KEY, "1") !== "0"
+    );
+    // 清爽模式默认关：多数设备跑得动完整效果，需要省电/老机器的人自己开
+    const [liteMode, setLiteState] = useState<boolean>(
+        () => readString(LITE_KEY, "0") === "1"
     );
     // 离线增强默认关：按需加载的意义就是「不点的功能不下载」，
     // 默认全预下来等于把那层优化白做了。要断网也能用全部功能，由用户自己打开。
@@ -642,6 +657,11 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
     const setGlassEffects = useCallback((enabled: boolean) => {
         setGlassState(enabled);
         write(GLASS_KEY, enabled ? "1" : "0");
+    }, []);
+
+    const setLiteMode = useCallback((enabled: boolean) => {
+        setLiteState(enabled);
+        write(LITE_KEY, enabled ? "1" : "0");
     }, []);
 
     const setIconPrivacy = useCallback((enabled: boolean) => {
@@ -943,6 +963,8 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
             setPinyinSearch,
             glassEffects,
             setGlassEffects,
+            liteMode,
+            setLiteMode,
             offlineFull,
             setOfflineFull,
             iconPrivacy,
@@ -984,6 +1006,8 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
             setPinyinSearch,
             glassEffects,
             setGlassEffects,
+            liteMode,
+            setLiteMode,
             offlineFull,
             setOfflineFull,
             iconPrivacy,

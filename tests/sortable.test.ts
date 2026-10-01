@@ -12,6 +12,8 @@ import type { Site } from "../src/API/http";
 import {
     buildSiteOrderPayload,
     moveGroupByDrag,
+    moveGroupByStep,
+    moveSiteByStep,
     moveSiteAcrossGroups,
 } from "../src/utils/sortable";
 
@@ -157,4 +159,53 @@ test("顺序提交：order_num 是组内下标，空分组不产生记录", () =
         { id: 21, order_num: 1 },
         { id: 22, order_num: 2 },
     ]);
+});
+
+// —— 拖拽替代：上移 / 下移 ——
+// 拖拽不是人人可用（触屏长按误触、读屏拿不到指针、键盘要按空格拾起），
+// 所以顺序调整必须有按钮这条路。这两条用例钉住「挪一位」和「到头不动」。
+
+test("上移 / 下移：分组按一位挪动，且只动相邻两项", () => {
+    const gs = [group(1, [10]), group(2, [20]), group(3, [30])];
+    const up = moveGroupByStep(gs, "2", -1);
+    assert.deepEqual(
+        up.map(g => g.id),
+        [2, 1, 3],
+        "第 2 组上移后应排到第 1 组前面"
+    );
+    const down = moveGroupByStep(gs, "2", 1);
+    assert.deepEqual(
+        down.map(g => g.id),
+        [1, 3, 2],
+        "第 2 组下移后应排到第 3 组后面"
+    );
+    // 原数组不能被就地改：拖拽/按钮混用时会有两份状态打架
+    assert.deepEqual(
+        gs.map(g => g.id),
+        [1, 2, 3],
+        "应返回新数组，原数组保持不变"
+    );
+    // 只动相邻两项，第三个分组对象保持同一引用（避免整页重渲染）
+    assert.equal(down[0], gs[0], "没被挪到的分组应保持原引用");
+});
+
+test("上移 / 下移：到头不动，返回原引用让 React 跳过重渲染", () => {
+    const gs = [group(1, [10]), group(2, [20])];
+    assert.equal(moveGroupByStep(gs, "1", -1), gs, "第一个分组不能再上移");
+    assert.equal(moveGroupByStep(gs, "2", 1), gs, "最后一个分组不能再下移");
+    assert.equal(moveGroupByStep(gs, "9", -1), gs, "不存在的 id 直接返回原数组");
+    assert.equal(moveGroupByStep(gs, "1", 0), gs, "delta 只认 ±1");
+    assert.equal(moveGroupByStep(gs, "1", 5), gs, "越界 delta 也返回原数组");
+});
+
+test("站点前移 / 后移：一位挪动、到头不动、脏参数不改数组", () => {
+    const list = [site(10, 1), site(11, 1), site(12, 1)];
+    assert.deepEqual(
+        moveSiteByStep(list, 2, -1).map(s => s.id),
+        [10, 12, 11]
+    );
+    assert.equal(moveSiteByStep(list, 0, -1), list, "第一张不能再前移");
+    assert.equal(moveSiteByStep(list, 2, 1), list, "最后一张不能再后移");
+    assert.equal(moveSiteByStep(list, 9, 1), list, "越界索引不动");
+    assert.equal(moveSiteByStep(list, 0, 0), list, "delta 只认 ±1");
 });

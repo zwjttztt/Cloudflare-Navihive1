@@ -82,6 +82,9 @@ interface SettingsDialogProps {
     onGlassEffectsChange: (enabled: boolean) => void;
     offlineFull: boolean;
     onOfflineFullChange: (enabled: boolean) => void;
+    /** 清爽模式（本机偏好）：一并关掉毛玻璃、柔光背景、装饰动画，低性能设备更省 */
+    liteMode: boolean;
+    onLiteModeChange: (enabled: boolean) => void;
     /** 图标隐私模式（本机偏好）：打开后不再为取图标请求任何第三方 */
     iconPrivacy: boolean;
     onIconPrivacyChange: (enabled: boolean) => void;
@@ -239,6 +242,8 @@ export default function SettingsDialog({
     onOfflineFullChange,
     iconPrivacy,
     onIconPrivacyChange,
+    liteMode,
+    onLiteModeChange,
     saving = false,
     pinyinSearch,
     onPinyinSearchChange,
@@ -536,7 +541,8 @@ export default function SettingsDialog({
                                 size='small'
                             />
                             <Typography variant='caption' color='text.secondary'>
-                                值越大背景图越清晰，内容可能越难看清
+                                值越大背景图越清晰，内容可能越难看清。拉到最右也会保留一层淡淡的蒙版，
+                                免得文字压在亮处直接消失。
                             </Typography>
                         </Box>
 
@@ -577,6 +583,33 @@ export default function SettingsDialog({
                             />
                             <Typography variant='caption' color='text.secondary'>
                                 数值越大越朦胧，看不清内容时调小或拖到 0。关闭总开关后滑块不生效，滚动更省。
+                            </Typography>
+                        </Box>
+
+                        <Box>
+                            <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                                <Typography variant='body2'>清爽模式</Typography>
+                                <Box sx={{ flex: 1 }} />
+                                <FormControlLabel
+                                    control={
+                                        <Switch
+                                            checked={liteMode}
+                                            size='small'
+                                            onChange={e => onLiteModeChange(e.target.checked)}
+                                            slotProps={{ input: { "aria-label": "清爽模式" } }}
+                                        />
+                                    }
+                                    label={
+                                        <Typography variant='body2'>
+                                            {liteMode ? "开" : "关"}
+                                        </Typography>
+                                    }
+                                    sx={{ m: 0 }}
+                                />
+                            </Box>
+                            <Typography variant='caption' color='text.secondary'>
+                                一并关掉毛玻璃、柔光背景与装饰动画，只留纯色底和静态卡片。
+                                老设备、省电模式或滚动发烫时开这个；开了之后上面的模糊滑块不再生效。
                             </Typography>
                         </Box>
                     </Section>

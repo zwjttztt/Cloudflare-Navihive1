@@ -173,6 +173,11 @@ export default function TagManagerDialog({
                     } 个网站）。删除后可用提示条上的「撤销」找回。`}
                     confirmText='删除'
                     danger
+                    impact={{
+                        object: "网站",
+                        count: pending ? counts[pending] ?? 0 : 0,
+                        undoable: true,
+                    }}
                     onConfirm={() => {
                         if (pending) onDeleteTag(pending);
                         setPending(null);

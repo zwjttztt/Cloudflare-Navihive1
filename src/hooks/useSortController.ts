@@ -11,6 +11,7 @@ import { SortMode } from "../constants";
 import {
     buildSiteOrderPayload,
     moveGroupByDrag,
+    moveGroupByStep,
     moveSiteAcrossGroups as moveSiteInGroups,
     type SiteOrderItem,
 } from "../utils/sortable";
@@ -160,6 +161,14 @@ export function useSortController({
         [setGroups]
     );
 
+    // 拖拽替代：分组「上移 / 下移一位」。给读屏、键盘、触屏误触用户一条不靠拖拽的路
+    const nudgeGroup = useCallback(
+        (groupId: string, delta: number) => {
+            setGroups(prev => moveGroupByStep(prev, groupId, delta));
+        },
+        [setGroups]
+    );
+
     // 站点跨分组拖拽：排列计算在 utils/sortable（有单测），这里只负责写回状态
     const moveSite = useCallback(
         (activeId: string, overId: string) => {
@@ -245,6 +254,7 @@ export function useSortController({
         startSiteSort,
         cancelSort,
         handleDragEnd,
+        nudgeGroup,
         handleSiteSortDragOver,
         handleSiteSortDragEnd,
         handleSiteDragStart,

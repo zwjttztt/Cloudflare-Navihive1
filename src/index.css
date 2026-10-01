@@ -74,39 +74,101 @@
     --font-sans: Inter, "Inter var", "Segoe UI", system-ui, -apple-system,
         "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
 
-    /* 毛玻璃（浅色） */
-    --glass-bg: rgba(255, 255, 255, 0.66);
-    --glass-bg-hover: rgba(255, 255, 255, 0.82);
-    --glass-border: rgba(255, 255, 255, 0.6);
-    --glass-shadow: 0 4px 16px rgba(15, 23, 42, 0.08);
-    --glass-shadow-hover: 0 14px 32px rgba(15, 23, 42, 0.16);
-    --glass-blur: 14px;
-    --glass-highlight: rgba(15, 23, 42, 0.08);
+    /* ============================================================
+       设计 tokens —— 所有视觉取值只在这里定义一次
+       组件一律引用语义变量，不再自己写 rgba / px：
+       换主题、换「清爽模式」只需重定义下面这一层。
+       旧的 --glass-* / --accent 保留为兼容别名，全部指向新 token。
+       ============================================================ */
 
-    /* 分组面板：比卡片更淡的一层玻璃，形成「面板 → 卡片」两级层次 */
-    --glass-panel-bg: rgba(255, 255, 255, 0.42);
-    --glass-panel-border: rgba(255, 255, 255, 0.55);
+    /* —— 表面（surface）：0 页面底 / 1 面板 / 2 卡片 / 3 抬升（菜单、浮层） —— */
+    --surface-page: transparent;
+    --surface-panel: rgba(255, 255, 255, 0.42);
+    --surface-card: rgba(255, 255, 255, 0.66);
+    --surface-card-hover: rgba(255, 255, 255, 0.82);
+    --surface-raised: rgba(255, 255, 255, 0.9);
+
+    /* —— 描边（border）：hairline 分隔线 / subtle 面板 / default 卡片 —— */
+    --border-hairline: rgba(15, 23, 42, 0.08);
+    --border-subtle: rgba(255, 255, 255, 0.55);
+    --border-default: rgba(255, 255, 255, 0.6);
+
+    /* —— 圆角（radius）：lg 跟随「外观 → 圆角风格」设置 —— */
+    --radius-xs: 6px;
+    --radius-sm: 10px;
+    --radius-md: 14px;
+    --radius-pill: 999px;
+
+    /* —— 间距（spacing）—— */
+    --space-1: 4px;
+    --space-2: 8px;
+    --space-3: 12px;
+    --space-4: 16px;
+    --space-5: 24px;
+    --space-6: 32px;
+    /* 触控目标下限：移动端所有可点区域不得小于这个值 */
+    --touch-min: 44px;
+
+    /* —— 阴影（shadow）：1 贴地 / 2 悬浮 / 3 抬起 —— */
+    --shadow-1: 0 1px 2px rgba(15, 23, 42, 0.06);
+    --shadow-2: 0 4px 16px rgba(15, 23, 42, 0.08);
+    --shadow-3: 0 14px 32px rgba(15, 23, 42, 0.16);
+
+    /* —— 模糊（blur）：sm 局部 / md 卡片 —— */
+    --blur-sm: 8px;
+    --blur-md: 14px;
+
+    /* —— 文字层级（text）—— */
+    --text-primary: rgba(15, 23, 42, 0.92);
+    --text-secondary: rgba(15, 23, 42, 0.68);
+    --text-muted: rgba(15, 23, 42, 0.48);
+
+    /* 高光：卡片顶部那道极淡的内高光 */
+    --glass-highlight: var(--border-hairline);
+
+    /* 毛玻璃（兼容别名，均指向上面的 token） */
+    --glass-bg: var(--surface-card);
+    --glass-bg-hover: var(--surface-card-hover);
+    --glass-border: var(--border-default);
+    --glass-shadow: var(--shadow-2);
+    --glass-shadow-hover: var(--shadow-3);
+    --glass-blur: var(--blur-md);
+    --glass-panel-bg: var(--surface-panel);
+    --glass-panel-border: var(--border-subtle);
 
     /* 自定义主色（默认即 MUI 亮色主题的 primary） */
     --accent: #1976d2;
 
     /* 圆角风格 / 字号档位：由「外观」设置写入，默认圆润 + 标准 */
     --card-radius: 22px;
+    --radius-lg: var(--card-radius);
     --font-scale: 1;
-    /* 分组强调色，默认为主色 */
+    /* 分组强调色，默认为主色。
+       只用在细线 / 小标记上（宽度由 --group-accent-width 控制），
+       不做整块高饱和背景——那样会压过内容、也破坏明暗两套主题的对比度。 */
     --group-accent: var(--accent);
+    --group-accent-width: 3px;
 }
 
 .dark {
-    --glass-bg: rgba(23, 27, 38, 0.58);
-    --glass-bg-hover: rgba(30, 35, 48, 0.72);
-    --glass-border: rgba(255, 255, 255, 0.12);
-    --glass-shadow: 0 4px 16px rgba(0, 0, 0, 0.42);
-    --glass-shadow-hover: 0 14px 32px rgba(0, 0, 0, 0.6);
-    --glass-highlight: rgba(255, 255, 255, 0.16);
+    --surface-panel: rgba(23, 27, 38, 0.34);
+    --surface-card: rgba(23, 27, 38, 0.58);
+    --surface-card-hover: rgba(30, 35, 48, 0.72);
+    --surface-raised: rgba(30, 35, 48, 0.92);
 
-    --glass-panel-bg: rgba(23, 27, 38, 0.34);
-    --glass-panel-border: rgba(255, 255, 255, 0.1);
+    --border-hairline: rgba(255, 255, 255, 0.1);
+    --border-subtle: rgba(255, 255, 255, 0.1);
+    --border-default: rgba(255, 255, 255, 0.12);
+
+    --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.3);
+    --shadow-2: 0 4px 16px rgba(0, 0, 0, 0.42);
+    --shadow-3: 0 14px 32px rgba(0, 0, 0, 0.6);
+
+    --text-primary: rgba(255, 255, 255, 0.92);
+    --text-secondary: rgba(255, 255, 255, 0.7);
+    --text-muted: rgba(255, 255, 255, 0.5);
+
+    --glass-highlight: rgba(255, 255, 255, 0.16);
 
     --accent: #90caf9;
 }
@@ -118,18 +180,20 @@
    所以关的时候直接把 backdrop-filter 摘掉，同时把底色换成接近不透明的版本，
    观感上还是「卡片浮在背景上」，只是不再实时取样。 */
 html.nav-no-glass {
-    --glass-bg: rgba(255, 255, 255, 0.88);
-    --glass-bg-hover: rgba(255, 255, 255, 0.95);
-    --glass-border: rgba(255, 255, 255, 0.9);
-    --glass-panel-bg: rgba(255, 255, 255, 0.78);
-    --glass-panel-border: rgba(255, 255, 255, 0.9);
+    --surface-card: rgba(255, 255, 255, 0.88);
+    --surface-card-hover: rgba(255, 255, 255, 0.95);
+    --surface-raised: rgba(255, 255, 255, 0.98);
+    --border-default: rgba(255, 255, 255, 0.9);
+    --surface-panel: rgba(255, 255, 255, 0.78);
+    --border-subtle: rgba(255, 255, 255, 0.9);
 }
 html.nav-no-glass.dark {
-    --glass-bg: rgba(23, 27, 38, 0.9);
-    --glass-bg-hover: rgba(30, 35, 48, 0.95);
-    --glass-border: rgba(255, 255, 255, 0.14);
-    --glass-panel-bg: rgba(23, 27, 38, 0.84);
-    --glass-panel-border: rgba(255, 255, 255, 0.12);
+    --surface-card: rgba(23, 27, 38, 0.9);
+    --surface-card-hover: rgba(30, 35, 48, 0.95);
+    --surface-raised: rgba(30, 35, 48, 0.96);
+    --border-default: rgba(255, 255, 255, 0.14);
+    --surface-panel: rgba(23, 27, 38, 0.84);
+    --border-subtle: rgba(255, 255, 255, 0.12);
 }
 /* 伪元素上也能写 backdrop-filter，一并关掉 */
 html.nav-no-glass *,
@@ -137,6 +201,56 @@ html.nav-no-glass *::before,
 html.nav-no-glass *::after {
     backdrop-filter: none !important;
     -webkit-backdrop-filter: none !important;
+}
+
+/* ============================================================
+   清爽模式（更多选项 → 外观 → 清爽模式）：给低端设备一个「全关」档
+   - 关毛玻璃只是换合成方式，柔光背景那层 blur(48px)、几百张卡片的入场
+     动画、悬停抬升的阴影补间一样在烧 GPU，所以这里一次性全摘。
+   - 只关装饰，不关功能性过渡（对话框出现、焦点环、菜单展开照旧，
+     只是不再位移/缩放），也不会动布局。
+   ============================================================ */
+html.nav-lite {
+    --shadow-1: none;
+    --shadow-2: none;
+    --shadow-3: none;
+    --blur-sm: 0px;
+    --blur-md: 0px;
+    --surface-panel: rgba(255, 255, 255, 0.86);
+    --surface-card: rgba(255, 255, 255, 0.92);
+    --surface-card-hover: rgba(255, 255, 255, 0.98);
+    --surface-raised: #fff;
+    --border-subtle: rgba(15, 23, 42, 0.1);
+    --border-default: rgba(15, 23, 42, 0.12);
+}
+html.nav-lite.dark {
+    --surface-panel: rgba(23, 27, 38, 0.82);
+    --surface-card: rgba(23, 27, 38, 0.9);
+    --surface-card-hover: rgba(30, 35, 48, 0.96);
+    --surface-raised: #1b1f2c;
+    --border-subtle: rgba(255, 255, 255, 0.12);
+    --border-default: rgba(255, 255, 255, 0.14);
+}
+html.nav-lite *,
+html.nav-lite *::before,
+html.nav-lite *::after {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    /* 装饰性位移/缩放一律取消：悬停抬升、分组面板 hover 放大 */
+    transition-property: opacity, background-color, border-color, color !important;
+    animation: none !important;
+}
+/* 柔光背景是整屏 blur(48px)，清爽模式下直接不画 */
+html.nav-lite .nav-aurora {
+    display: none;
+}
+html.nav-lite .nav-card-in,
+html.nav-lite .nav-group-panel {
+    animation: none !important;
+}
+html.nav-lite .nav-card-in:hover,
+html.nav-lite .nav-group-panel:hover {
+    transform: none !important;
 }
 
 html,
@@ -314,6 +428,37 @@ mark.nav-hl {
 .nav-card-actions:has(:focus-visible) {
     opacity: 1;
     transform: none;
+    pointer-events: auto;
+}
+
+/* 弹窗材质基线：站内所有 Dialog 共用同一套圆角 / 描边 / 阴影。
+   以前每个弹窗各写一份 paper 样式，圆角从 14px 到 22px 都有，同一个「确定」
+   按钮在不同弹窗里看着像两个产品。这里给一份默认，个别弹窗仍可用 sx 覆盖。
+   背景浓度不在这里统一（有的弹窗要更实一点保证长表单可读）。 */
+.MuiDialog-paper {
+    border-radius: var(--radius-lg);
+    border: 1px solid var(--border-subtle);
+    box-shadow: var(--shadow-3);
+}
+
+/* 分组工具条（添加卡片 / 排序 / 编辑）：平时安静，指到分组或键盘走进来才浮出。
+   用 opacity 而不是 display —— 位置一直占着，鼠标移到分组上不会把行高挤变。
+   隐藏期间关掉 pointer-events，免得出现「看不见却点得到」的幽灵按钮。 */
+.nav-group-tools {
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.18s ease;
+}
+.nav-group-panel:hover .nav-group-tools,
+.nav-group-panel:focus-within .nav-group-tools,
+.nav-group-tools:has(:focus-visible),
+.nav-group-tools-active {
+    opacity: 1;
+    pointer-events: auto;
+}
+/* 触屏没有悬停，藏起来就等于永远点不到 */
+html.nav-touch .nav-group-tools {
+    opacity: 1;
     pointer-events: auto;
 }
 
@@ -822,6 +967,104 @@ html.nav-touch .nav-star-btn[data-starred="false"] {
 .nav-card-in:hover .nav-card-icon {
     transform: translateY(-2px) scale(1.07);
     filter: drop-shadow(0 4px 8px color-mix(in srgb, var(--accent) 30%, transparent));
+}
+
+/* ============================================================
+   小屏（手机）：触控目标、底部面板、键盘遮挡、安全区
+   目测「差不多能点」不够 —— WCAG 与两大平台的人机规范都要求主要触控目标
+   不小于 44px，而 MUI 的 size="small" 图标按钮只有 30px。这里统一兜底：
+   能撑开的就撑到 44px，撑开会把卡片挤变形的（卡片右上角那几个小图标）
+   改用透明热区，视觉尺寸不变、手指可点范围照样 44px。
+   ============================================================ */
+@media (max-width: 599.95px) {
+    /* 顶栏 / 设置 / 对话框里的文字按钮：直接撑到 44px */
+    .MuiDialog-root .MuiButton-root,
+    .MuiDialogActions-root .MuiButton-root,
+    .nav-bulk-bar .MuiButton-root,
+    .nav-mobile-tabbar .MuiButtonBase-root,
+    header .MuiIconButton-root {
+        min-height: var(--touch-min);
+    }
+    .MuiDialogActions-root .MuiButton-root,
+    .nav-bulk-bar .MuiButton-root {
+        min-width: var(--touch-min);
+    }
+
+    /* 卡片上那些小图标：视觉保持 30px，用透明伪元素把可点范围补到 44px。
+       不直接改尺寸是有原因的 —— 卡片高度是按 30px 算好的，撑大就会顶到标题。 */
+    .nav-card-actions .MuiIconButton-root,
+    .nav-settings-btn,
+    .nav-star-btn {
+        position: relative;
+    }
+    .nav-card-actions .MuiIconButton-root::after,
+    .nav-settings-btn::after,
+    .nav-star-btn::after {
+        content: "";
+        position: absolute;
+        inset: 50% 0 auto 50%;
+        width: var(--touch-min);
+        height: var(--touch-min);
+        transform: translate(-50%, -50%);
+    }
+
+    /* 设置 / 编辑类弹窗在小屏走底部面板：
+       拇指够得到，也比居中弹窗少一次「抬头找按钮」。
+       MUI 的 Dialog 容器是 flex 居中，改成贴底即可，不用换组件。 */
+    .MuiDialog-container {
+        align-items: flex-end;
+    }
+    .MuiDialog-paper {
+        margin: 0;
+        width: 100%;
+        max-width: 100%;
+        /* dvh 而不是 vh：软键盘弹出时视口真的会变矮，vh 不跟着变，
+           dvh 会 —— 弹窗跟着收，提交按钮就不会被键盘顶到屏幕外 */
+        max-height: 92dvh;
+        border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+    }
+    /* 底部操作区粘在可视区底边：正文能滚，确定 / 保存始终露在外面 */
+    .MuiDialog-paper .MuiDialogActions-root {
+        position: sticky;
+        bottom: 0;
+        z-index: 1;
+        background: inherit;
+    }
+
+    /* iPhone 底部那道横条：底栏和批量条都要让开 */
+    .nav-mobile-tabbar {
+        padding-bottom: env(safe-area-inset-bottom, 0px);
+    }
+    .nav-bulk-bar {
+        bottom: calc(56px + env(safe-area-inset-bottom, 0px)) !important;
+    }
+
+    /* 320px 宽（iPhone SE 一类）：再收一层内边距，别让内容顶到边上 */
+    @media (max-width: 359.98px) {
+        .MuiDialog-paper {
+            padding-left: 0;
+            padding-right: 0;
+        }
+        .MuiDialogContent-root {
+            padding-left: 12px;
+            padding-right: 12px;
+        }
+        .nav-bulk-bar {
+            gap: 2px;
+            padding-left: 4px;
+            padding-right: 4px;
+        }
+    }
+}
+
+/* 横屏矮屏（手机横过来 / 分屏）：弹窗最高只留 88%，正文自己滚 */
+@media (max-height: 480px) and (max-width: 899.95px) {
+    .MuiDialog-paper {
+        max-height: 88dvh;
+    }
+    .MuiDialogContent-root {
+        overflow-y: auto;
+    }
 }
 
 /* ============================================================

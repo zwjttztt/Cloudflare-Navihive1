@@ -20,6 +20,7 @@ import PersonOutlineIcon from "@mui/icons-material/PersonOutline";
 import PersonAddAltIcon from "@mui/icons-material/PersonAddAlt";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import { readRememberedLogin } from "../utils/rememberedLogin";
+import { BRAND } from "../brand";
 import { PasswordField } from "./PasswordField";
 import {
     algLabel,
@@ -30,6 +31,8 @@ import {
 } from "../utils/recoveryKey";
 
 interface LoginFormProps {
+    /** 站点名：改过「网站设置 → 标题」就用改过的，没改过回落到品牌名 */
+    brandName?: string;
     /** 提交登录；remember 为是否勾选「记住我」（只延长会话 Cookie，不存密码） */
     onLogin: (username: string, password: string, remember: boolean) => void;
     loading?: boolean;
@@ -57,7 +60,7 @@ interface LoadedKey {
  * 站点标题存在服务端配置里，而配置接口要登录后才能取，所以这里用部署时的品牌名兜底
  * （index.html / manifest 里也是同一个名字）。
  */
-const BRAND_NAME = "Navihive";
+
 
 /** 图标候选的等待上限：图标 API 卡住时不能让图标一直空着 */
 const ICON_FALLBACK_MS = 3000;
@@ -140,6 +143,7 @@ const BrandMark: React.FC<{ size?: number }> = ({ size = 64 }) => {
 };
 
 const LoginForm: React.FC<LoginFormProps> = ({
+    brandName = BRAND.name,
     onLogin,
     loading = false,
     error = null,
@@ -346,7 +350,7 @@ const LoginForm: React.FC<LoginFormProps> = ({
             <Stack spacing={0.75} alignItems='center' sx={{ mb: 2.5, textAlign: "center" }}>
                 <BrandMark size={56} />
                 <Typography component='h1' variant='h5' fontWeight='800' letterSpacing={0.5}>
-                    {BRAND_NAME}
+                    {brandName}
                 </Typography>
             </Stack>
 
@@ -367,16 +371,16 @@ const LoginForm: React.FC<LoginFormProps> = ({
 
                 {mode === "recover" && (
                     <Alert severity='info' sx={{ mb: 2 }}>
-                        上传在「更多选项 → 账号管理」里下载的恢复私钥即可重置密码。
-                        私钥只在你的浏览器里用来签名，不会上传。
+                        选择你在「更多选项 → 账号管理」里下载的恢复私钥文件即可重置密码。
+                        文件只在这台设备的浏览器里读取并签名，不会上传到服务器。
                         {!recoverConfigured && " 当前站点尚未配置恢复公钥，找回多半会失败。"}
                     </Alert>
                 )}
 
                 {mode === "register" && (
                     <Alert severity='info' sx={{ mb: 2 }}>
-                        注册需要一枚邀请码。请让已登录的用户在「更多选项 → 账号管理」里生成，
-                        邀请码 30 分钟内有效、只能用一次。
+                        注册需要一枚邀请码。只有站点所有者能在「更多选项 → 账号管理」里生成
+                        （普通账号看不到这个入口），邀请码 30 分钟内有效、只能用一次。
                     </Alert>
                 )}
 
@@ -641,7 +645,9 @@ const LoginForm: React.FC<LoginFormProps> = ({
                                         slotProps={{ input: { "aria-label": "记住我" } }}
                                     />
                                 }
-                                label='记住我（一个月免登录）'
+                                // 说清记住的是什么：只回填账号名 + 延长会话，
+                                // 密码一个字节都不落盘（曾经这里会被读成「记住密码」）
+                                label='记住账号名（不保存密码，登录状态保留一个月）'
                                 sx={{
                                     mr: 0,
                                     "& .MuiFormControlLabel-label": { fontSize: "0.8125rem" },

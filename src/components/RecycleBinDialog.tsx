@@ -101,11 +101,15 @@ export default function RecycleBinDialog({ open, onClose, client, onChanged, onN
         }
     };
 
+    // 清空回收站：失败时抛出去 —— 确认弹窗收到异常就不关闭，
+    // 用户可以直接再点一次，不用重新走一遍「打开回收站 → 清空」。
     const handleClearAll = async () => {
         setBusyId(-1);
+        let ok = false;
         try {
             const r = await client.emptyRecycleBin();
-            if (r.success) {
+            ok = Boolean(r.success);
+            if (ok) {
                 setItems([]);
                 onNotify?.("已清空回收站", "success");
             } else {
@@ -115,8 +119,8 @@ export default function RecycleBinDialog({ open, onClose, client, onChanged, onN
             onNotify?.("清空失败", "error");
         } finally {
             setBusyId(null);
-            setConfirmClear(false);
         }
+        if (!ok) throw new Error("清空回收站失败");
     };
 
     return (
@@ -214,9 +218,11 @@ export default function RecycleBinDialog({ open, onClose, client, onChanged, onN
                 title='清空回收站'
                 danger
                 description='将永久删除回收站里的全部条目，且无法恢复。确定继续吗？'
+                impact={{ object: "回收站条目", count: items.length, undoable: false }}
                 confirmText='清空'
+                busyText='清空中…'
                 onClose={() => setConfirmClear(false)}
-                onConfirm={() => void handleClearAll()}
+                onConfirm={handleClearAll}
             />
         </Dialog>
     );

@@ -144,12 +144,18 @@ export default function BulkActionBar({
                     boxShadow: "var(--glass-shadow-hover)",
                 }}
             >
+                {/* 勾选数变化要念出来：读屏用户看不到「哪几张被勾上了」 */}
                 <Typography
                     variant='body2'
                     fontWeight={700}
+                    component='div'
+                    role='status'
+                    aria-live='polite'
+                    aria-atomic='true'
+                    className='nav-bulk-count'
                     sx={{ whiteSpace: "nowrap", px: 0.5 }}
                 >
-                    已选 {count} 个
+                    已选 {count} 个网站
                 </Typography>
 
                 <Divider orientation='vertical' flexItem sx={{ mx: 0.25 }} />

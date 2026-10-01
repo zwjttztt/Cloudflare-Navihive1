@@ -47,6 +47,35 @@ export function moveGroupByDrag(
 }
 
 /**
+ * 分组按「上移 / 下移一位」重排 —— 拖拽的键盘 / 按钮替代。
+ *
+ * 拖拽不是人人可用：触屏长按容易误触、读屏用户拿不到指针事件、键盘拖拽要靠
+ * 空格 + 方向键这套不显眼的组合。给每个分组一对上下按钮，顺序调整就有了
+ * 一条「看得见、点得到」的路。到头的方向返回原数组引用，React 直接跳过重渲染。
+ */
+export function moveGroupByStep(
+    groups: GroupWithSites[],
+    groupId: string,
+    delta: number
+): GroupWithSites[] {
+    if (delta !== -1 && delta !== 1) return groups;
+    const index = groups.findIndex(g => g.id.toString() === groupId);
+    if (index === -1) return groups;
+    const target = index + delta;
+    if (target < 0 || target >= groups.length) return groups;
+    return arrayMove(groups, index, target);
+}
+
+/** 站点列表内按「前移 / 后移一位」重排（分组内排序模式用） */
+export function moveSiteByStep(sites: Site[], index: number, delta: number): Site[] {
+    if (delta !== -1 && delta !== 1) return sites;
+    if (index < 0 || index >= sites.length) return sites;
+    const target = index + delta;
+    if (target < 0 || target >= sites.length) return sites;
+    return arrayMove(sites, index, target);
+}
+
+/**
  * 站点跨分组拖拽：同一分组内重排，跨分组则把卡片移动到目标分组。
  *
  * 只重建受影响的分组对象（同组 1 个、跨组 2 个），其它分组保持原引用。

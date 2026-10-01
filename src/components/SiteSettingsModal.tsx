@@ -771,6 +771,8 @@ export default function SiteSettingsModal({
                 }」将无法恢复，保存的账号密码也会一并删除。`}
                 confirmText='删除'
                 danger
+                impact={{ object: "网站", count: 1, undoable: false }}
+                busyText='删除中…'
                 onConfirm={handleConfirmDelete}
                 onClose={() => setConfirmDeleteOpen(false)}
             />

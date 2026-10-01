@@ -62,6 +62,8 @@ import {
     type MutationApi,
 } from "./API/offlineQueue";
 import { buildFavoritesGroup, deriveDisplayedGroups } from "./utils/siteView";
+import { backgroundMaskOpacity as backgroundMaskOpacityFromSlider } from "./utils/backgroundMask";
+import { brandTitle } from "./brand";
 import {
     SortMode,
     headerDividerSx,
@@ -415,6 +417,8 @@ function App() {
     setFavoritesEnabled,
     glassEffects,
     setGlassEffects,
+    liteMode,
+    setLiteMode,
     offlineFull,
     setOfflineFull,
     iconPrivacy,
@@ -1143,7 +1147,7 @@ function App() {
 
     // 设置文档标题
     useEffect(() => {
-        document.title = configs["site.title"] || "导航站";
+        document.title = brandTitle(configs["site.title"]);
     }, [configs]);
 
     // 应用自定义CSS
@@ -1201,6 +1205,13 @@ function App() {
     useEffect(() => {
         document.documentElement.classList.toggle("nav-no-glass", !glassEffects);
     }, [glassEffects]);
+
+    // 清爽模式：给根节点挂 .nav-lite，由 index.css 一次性摘掉 backdrop-filter、
+    // 柔光背景、装饰动画与悬浮阴影。走 CSS 而不是逐个组件判断，
+    // 这样新加的装饰效果只要用到那几个类，默认就跟着一起被关掉。
+    useEffect(() => {
+        document.documentElement.classList.toggle("nav-lite", liteMode);
+    }, [liteMode]);
 
     // 统一提示函数（引用稳定，便于被 memo 的子组件复用）
     // duration 可选：成功/信息类默认短暂停留 2.2s，错误类默认 6s（便于阅读），传入则覆盖
@@ -1883,6 +1894,7 @@ function App() {
         startSiteSort,
         cancelSort,
         handleDragEnd,
+        nudgeGroup,
         handleSiteSortDragOver,
         handleSiteSortDragEnd,
         handleSiteDragStart,
@@ -2660,6 +2672,7 @@ function App() {
                 }}
             >
                 <LoginForm
+                    brandName={brandTitle(configs["site.title"])}
                     onLogin={handleLogin}
                     loading={loginLoading}
                     error={loginError}
@@ -2704,12 +2717,11 @@ function App() {
     // ---- 背景图片相关（来自「网站设置」） ----
     const backgroundImageUrl = (configs["site.backgroundImage"] || "").trim();
     const hasBackgroundImage = backgroundImageUrl.length > 0;
-    // 滑块值越大 → 图片越清晰 → 蒙版越淡，所以蒙版不透明度取 1 - 滑块值
-    const backgroundSliderValue = Math.min(
-        1,
-        Math.max(0, Number(configs["site.backgroundMaskOpacity"]) || 0)
+    // 滑块值越大 → 图片越清晰 → 蒙版越淡（换算与下限都在 utils/backgroundMask 里：
+    // 拉到最右也保留一层最小蒙版，保证自定义背景上的文字始终读得清）
+    const backgroundMaskOpacity = backgroundMaskOpacityFromSlider(
+        Number(configs["site.backgroundMaskOpacity"])
     );
-    const backgroundMaskOpacity = 1 - backgroundSliderValue;
 
     return (
         <AppConfigProvider value={appConfigValue}>
@@ -2912,6 +2924,11 @@ function App() {
                             <Typography
                                 variant='caption'
                                 color='text.secondary'
+                                // 结果数变了要念出来：读屏用户看不到「列表变短了」
+                                component='div'
+                                role='status'
+                                aria-live='polite'
+                                aria-atomic='true'
                                 sx={{ display: "block", mt: -2, mb: 3 }}
                             >
                                 找到 {matchedCount} 个匹配的网站
@@ -2948,11 +2965,14 @@ function App() {
                                                 },
                                             }}
                                         >
-                                            {groups.map(group => (
+                                            {groups.map((group, idx) => (
                                                 <SortableGroupItem
                                                     key={group.id}
                                                     id={group.id.toString()}
                                                     group={group}
+                                                    onNudge={nudgeGroup}
+                                                    isFirst={idx === 0}
+                                                    isLast={idx === groups.length - 1}
                                                 />
                                             ))}
                                         </Stack>
@@ -3372,6 +3392,8 @@ function App() {
                         onOfflineFullChange={setOfflineFull}
                         iconPrivacy={iconPrivacy}
                         onIconPrivacyChange={setIconPrivacy}
+                        liteMode={liteMode}
+                        onLiteModeChange={setLiteMode}
                         saving={savingConfig}
                         pinyinSearch={pinyinSearch}
                         onPinyinSearchChange={setPinyinSearch}
@@ -3538,6 +3560,13 @@ function App() {
                             将删除该分组及其下所有网站（先进入回收站，可在回收站恢复）。建议先导出备份。
                         </span>
                     }
+                    // 影响面写实数：删的是哪一组、连带多少个网站，别让用户自己数
+                    impact={{
+                        object: "分组及组内网站",
+                        count:
+                            (groups.find(g => g.id === pendingGroupDelete)?.sites.length ?? 0) + 1,
+                        undoable: true,
+                    }}
                     confirmText='删除'
                     onClose={() => setPendingGroupDelete(null)}
                     onConfirm={() => {
