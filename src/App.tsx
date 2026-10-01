@@ -30,8 +30,8 @@ import { useUIPrefs, RADIUS_PX } from "./context/UIPrefsContext";
 import SiteCard from "./components/SiteCard";
 import GroupNavRail from "./components/GroupNavRail";
 // 弹窗/面板类组件按需加载：首屏用不到它们，拆出去能让主包小一大截
-// （命令面板与书签导入已随 OverlayHost 一起搬走，这里只留它们的类型）
-import type { CommandItem } from "./components/CommandPalette";
+// （命令面板与书签导入已随 OverlayHost 一起搬走；命令条目的类型跟着
+//  useAppCommands 走，App 这边连类型都不必留）
 import ScrollProgress from "./components/ScrollProgress";
 import BackToTop from "./components/BackToTop";
 import OfflineBanner from "./components/OfflineBanner";
@@ -51,6 +51,7 @@ import { useThemeController } from "./hooks/useThemeController";
 import { useSortController } from "./hooks/useSortController";
 import { useSiteCreator } from "./hooks/useSiteCreator";
 import { useBackupController } from "./hooks/useBackupController";
+import { useAppCommands } from "./hooks/useAppCommands";
 import { usePrefSync } from "./hooks/usePrefSync";
 import {
     wrapMutations,
@@ -60,7 +61,6 @@ import {
     setAccountUid,
     type MutationApi,
 } from "./API/offlineQueue";
-import { setActiveAccount, clearActiveAccount } from "./utils/accountScope";
 import { buildFavoritesGroup, deriveDisplayedGroups } from "./utils/siteView";
 import {
     SortMode,
@@ -98,6 +98,11 @@ import {
     readDeadLinks,
 } from "./utils/linkHealth";
 import { clearBootstrapCache, readBootstrapCache } from "./utils/firstPaintCache";
+import {
+    clearSessionBoundary,
+    resetCollapsedState,
+    switchAccountBoundary,
+} from "./utils/sessionBoundary";
 import { sanitizeCustomCss } from "./utils/customCss";
 import { domCardEnv, focusCardByDirection as focusCardByDirectionImpl } from "./utils/cardFocus";
 import { ParsedBookmarkGroup } from "./utils/bookmarks";
@@ -119,11 +124,7 @@ import { safeOpenSite } from "./utils/safeOpen";
 import { groupAccent } from "./utils/groupColor";
 import { buildSearchIndex, matchesPrepared, prepareQuery, siteHaystack } from "./utils/search";
 import { saveRememberedLogin, clearRememberedLogin } from "./utils/rememberedLogin";
-import {
-    clearPersistedUndo,
-    loadPersistedUndo,
-    setUndoAccountUid,
-} from "./utils/undoPersist";
+import { loadPersistedUndo, setUndoAccountUid } from "./utils/undoPersist";
 import {
     secretInputSx,
     secretInputType,
@@ -282,6 +283,9 @@ function App() {
 
     // 用 ref 镜像最新的 groups：事件回调可以保持稳定引用（配合 memo 减少无谓重渲染）
     const groupsRef = useRef<GroupWithSites[]>([]);
+    // 「折叠状态复位」的入口：折叠表声明在文件很后面（要读 collapsedIds 的初值），
+    // 而退出 / 换账号的逻辑在前面 —— 用 ref 传一个稳定的调用入口，避免提前引用
+    const resetCollapsedRef = useRef<() => void>(() => {});
 
     useEffect(() => {
         groupsRef.current = groups;
@@ -1046,19 +1050,19 @@ function App() {
     // 登出功能
     const handleLogout = () => {
         api.logout();
-        // 账号边界归零：撤销栈、撤销快照、离线队列全部解绑当前账号。
-        // 队列不删 —— 那可能是还没同步出去的编辑，等本人下次登录接着重放；
-        // 但绝不能留在「任何人都能重放」的全局键里。
-        clearActiveAccount();
-        setAccountUid(null);
-        setUndoAccountUid(null);
-        clearPersistedUndo();
-        clearHistory();
+        // 账号边界归零（与换账号共用同一条清单，见 utils/sessionBoundary.ts）：
+        // 撤销栈、撤销快照、离线队列全部解绑当前账号。队列不删 —— 那可能是还没
+        // 同步出去的编辑，等本人下次登录接着重放；但绝不能留在「任何人都能重放」
+        // 的全局键里。首屏缓存也在这一步清掉，退出后不该再把上一个人的数据画出来。
+        clearSessionBoundary({
+            setQueueAccount: setAccountUid,
+            setUndoAccount: setUndoAccountUid,
+            setPrefsAccount: setPrefsAccountUid,
+            clearHistory,
+            resetCollapsed: () => resetCollapsedRef.current(),
+        });
         setIsAuthenticated(false);
         setIsAuthRequired(true);
-
-        // 退出登录后这份数据就不该再被渲染出来，清掉首屏缓存
-        clearBootstrapCache();
 
         // 清空数据
         setGroups([]);
@@ -1242,18 +1246,14 @@ function App() {
      */
     const switchAccount = useCallback(
         (uid: number | null) => {
-            const changed = uid === null ? true : setActiveAccount(uid);
-            setAccountUid(uid);
-            setUndoAccountUid(uid);
-            // 星标 / 标签 / 访问统计记的是站点 id，不同账号会撞号，跟着账号换一份
-            setPrefsAccountUid(uid);
-            // 折叠状态同理记的是分组 id：换账号后留着会折叠到别人（同号不同组）的分组上，
-            // 而它本身不值钱 —— 直接复位比费劲分片划算
-            setCollapsedIds([]);
-            writeCollapsedGroupIds([]);
-            if (!changed) return;
-            clearPersistedUndo();
-            clearHistory();
+            // 账号边界上要清哪几样、按什么顺序，集中在 utils/sessionBoundary.ts
+            switchAccountBoundary(uid, {
+                setQueueAccount: setAccountUid,
+                setUndoAccount: setUndoAccountUid,
+                setPrefsAccount: setPrefsAccountUid,
+                clearHistory,
+                resetCollapsed: () => resetCollapsedRef.current(),
+            });
         },
         [clearHistory, setPrefsAccountUid]
     );
@@ -2416,6 +2416,7 @@ function App() {
         [groups]
     );
     const [collapsedIds, setCollapsedIds] = useState<string[]>(() => readCollapsedGroupIds());
+    resetCollapsedRef.current = resetCollapsedState(setCollapsedIds);
 
     useEffect(() => {
         const sync = () => setCollapsedIds(readCollapsedGroupIds());
@@ -2455,175 +2456,45 @@ function App() {
         // 折叠 / 展开是即时可见的操作，不再弹提示打扰
     }, [allGroupsCollapsed, realGroups]);
 
-    // 命令面板：站点跳转 + 常用操作，键盘党不用摸鼠标
-    const commands = useMemo<CommandItem[]>(() => {
-        const siteCommands: CommandItem[] = groups
-            .flatMap(group =>
-                group.sites.map(site => ({
-                    id: `cmd-site-${group.id}-${site.id}`,
-                    label: site.name || site.url || "未命名",
-                    hint: group.name,
-                    section: "打开网站",
-                    keywords: `${site.url || ""} ${site.description || ""}`,
-                    iconUrl: site.icon,
-                    run: () => {
-                        recordVisit(site.id);
-                        safeOpenSite(site.url);
-                    },
-                }))
-            )
-            .slice(0, 120);
-
-        const actionCommands: CommandItem[] = [
-            // 撤销 / 重做放在最前面：删完卡片想反悔时，Ctrl+K 之后一眼就能看到
-            {
-                id: "cmd-undo",
-                label: canUndo ? "撤销上一步" : "撤销上一步（暂无可撤销）",
-                section: "撤销",
-                run: () => void runUndo(),
-            },
-            {
-                id: "cmd-redo",
-                label: canRedo ? "重做" : "重做（暂无可重做）",
-                section: "撤销",
-                run: () => void runRedo(),
-            },
-            {
-                id: "cmd-view-card",
-                label: "切换到卡片视图",
-                section: "显示",
-                run: () => setViewMode("card"),
-            },
-            {
-                id: "cmd-view-list",
-                label: "切换到列表视图",
-                section: "显示",
-                run: () => setViewMode("list"),
-            },
-            {
-                id: "cmd-view-wall",
-                label: "切换到图标墙视图",
-                section: "显示",
-                run: () => setViewMode("wall"),
-            },
-            {
-                id: "cmd-density",
-                label: density === "compact" ? "切换到舒适密度" : "切换到紧凑密度",
-                section: "显示",
-                run: () => setDensity(density === "compact" ? "comfortable" : "compact"),
-            },
-            {
-                id: "cmd-theme",
-                label: "切换主题（浅色 / 深色 / 跟随系统）",
-                section: "显示",
-                run: () => toggleTheme(),
-            },
-            {
-                id: "cmd-favorites",
-                label: favoritesEnabled ? "关闭最近访问置前" : "开启最近访问置前",
-                section: "显示",
-                run: () => setFavoritesEnabled(!favoritesEnabled),
-            },
-            {
-                id: "cmd-glass",
-                label: glassEffects ? "关闭毛玻璃特效" : "开启毛玻璃特效",
-                section: "显示",
-                run: () => setGlassEffects(!glassEffects),
-            },
-            {
-                id: "cmd-shortcuts",
-                label: "键盘快捷键",
-                section: "帮助",
-                run: () => setOpenShortcuts(true),
-            },
-            {
-                id: "cmd-add-group",
-                label: "新增分组",
-                section: "操作",
-                run: () => handleOpenAddGroup(),
-            },
-            {
-                id: "cmd-group-sort",
-                label: "进入编辑排序",
-                section: "操作",
-                run: () => startGroupSort(),
-            },
-            {
-                id: "cmd-config",
-                label: "打开网站设置",
-                section: "操作",
-                run: () => handleOpenConfig(),
-            },
-            {
-                id: "cmd-account",
-                label: "打开账号管理",
-                section: "操作",
-                run: () => {
-                    setOpenAccount(true);
-                    void fetchAccountList();
-                },
-            },
-            {
-                id: "cmd-backup",
-                label: "数据备份",
-                section: "操作",
-                run: () => handleOpenBackup(0),
-            },
-            {
-                id: "cmd-bookmarks",
-                label: "导入浏览器书签",
-                section: "操作",
-                run: () => setBookmarkOpen(true),
-            },
-            {
-                id: "cmd-link-check",
-                label: "检测失效链接",
-                section: "操作",
-                run: () => void runLinkCheck(),
-            },
-            {
-                id: "cmd-visits",
-                label: "查看访问统计",
-                section: "显示",
-                run: () => setOpenVisits(true),
-            },
-            {
-                id: "cmd-collapse-all",
-                label: allGroupsCollapsed ? "展开全部分组" : "折叠全部分组",
-                section: "显示",
-                run: () => toggleCollapseAll(),
-            },
-            {
-                id: "cmd-multiselect",
-                label: multiSelect ? "退出批量多选" : "批量多选",
-                section: "操作",
-                run: () => (multiSelect ? exitMultiSelect() : setMultiSelect(true)),
-            },
-            {
-                id: "cmd-star-filter",
-                label: starFilter ? "取消只看星标" : "只看星标",
-                section: "显示",
-                run: () => setStarFilter(!starFilter),
-            },
-            {
-                id: "cmd-rail",
-                label: railCollapsed ? "展开左侧分组栏" : "收起左侧分组栏",
-                section: "显示",
-                run: () => setRailCollapsed(!railCollapsed),
-            },
-            {
-                id: "cmd-clear-visits",
-                label: "清除访问记录",
-                section: "操作",
-                run: () => {
-                    clearVisits();
-                    // 清除访问记录不弹提示：「最近访问」分组会当场消失，本身就是反馈
-                },
-            },
-        ];
-
-        return [...siteCommands, ...actionCommands];
-    }, [groups, canUndo, canRedo, density, favoritesEnabled, glassEffects, allGroupsCollapsed, multiSelect, starFilter, railCollapsed, recordVisit, runUndo, runRedo, setViewMode, setDensity, toggleTheme, setFavoritesEnabled, setGlassEffects, setOpenShortcuts, handleOpenAddGroup, startGroupSort, handleOpenConfig, fetchAccountList, handleOpenBackup, setBookmarkOpen, runLinkCheck, setOpenVisits, toggleCollapseAll, exitMultiSelect, setMultiSelect, setRailCollapsed, clearVisits]);
+    // 命令面板：站点跳转 + 常用操作，键盘党不用摸鼠标。
+    // 条目本身搬到 hooks/useAppCommands.ts —— App 只把动作传进去，
+    // 「哪条命令叫什么、按下去跑什么」由那边统一维护。
+    const commands = useAppCommands({
+        groups,
+        canUndo,
+        canRedo,
+        density,
+        favoritesEnabled,
+        glassEffects,
+        allGroupsCollapsed,
+        multiSelect,
+        starFilter,
+        railCollapsed,
+        recordVisit,
+        runUndo,
+        runRedo,
+        setViewMode,
+        setDensity,
+        toggleTheme,
+        setFavoritesEnabled,
+        setGlassEffects,
+        setOpenShortcuts,
+        handleOpenAddGroup,
+        startGroupSort,
+        handleOpenConfig,
+        setOpenAccount,
+        fetchAccountList,
+        handleOpenBackup,
+        setBookmarkOpen,
+        runLinkCheck,
+        setOpenVisits,
+        toggleCollapseAll,
+        exitMultiSelect,
+        setMultiSelect,
+        setStarFilter,
+        setRailCollapsed,
+        clearVisits,
+    });
 
     // 方向键在卡片之间移动焦点（按几何位置找同行/同列的邻居）
     const focusCardByDirection = (dir: "left" | "right" | "up" | "down") =>
