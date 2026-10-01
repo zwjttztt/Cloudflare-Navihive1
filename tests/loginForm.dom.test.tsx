@@ -3,7 +3,7 @@
 // 提交时「记住我」有没有如实传出去、打开时会不会回填上次的账号密码、
 // 注册的三道前端校验、邀请码自动转大写、以及**新密码明文不能出现在恢复令牌里**。
 //
-// 环境注意：启动脚本没把 localStorage 挂到 globalThis，而「记住账号密码」是直读
+// 环境注意：启动脚本没把 localStorage 挂到 globalThis，而「记住我」回填账号名是直读
 // localStorage 的（utils/rememberedLogin.ts），不挂就一渲染就 ReferenceError。
 
 import { test } from "node:test";
@@ -165,14 +165,14 @@ test("登录：勾选「记住我」后提交，remember 如实传成 true", asy
     render();
     setInputValue(inputById("username")!, "admin");
     setInputValue(inputById("password")!, "s3cret-pass");
-    const box = document.querySelector<HTMLInputElement>('input[aria-label="记住账号密码"]')!;
-    assert.ok(box, "没找到「记住账号密码」勾选框");
+    const box = document.querySelector<HTMLInputElement>('input[aria-label="记住我"]')!;
+    assert.ok(box, "没找到「记住我」勾选框");
     click(box);
     await submitForm();
     assert.deepEqual(loginCalls, [["admin", "s3cret-pass", true]]);
 });
 
-test("登录：打开时回填上次记住的账号密码，并自动勾上记住我", () => {
+test("登录：打开时只回填账号名，历史明文密码不回填且被清掉", () => {
     render({
         prefs: {
             "navihive:rememberedLogin": JSON.stringify({
@@ -182,9 +182,18 @@ test("登录：打开时回填上次记住的账号密码，并自动勾上记�
         },
     });
     assert.equal(inputById("username")!.value, "saved");
-    assert.equal(inputById("password")!.value, "saved-pass");
-    const box = document.querySelector<HTMLInputElement>('input[aria-label="记住账号密码"]')!;
-    assert.equal(box.checked, true, "回填了账号密码就应该把记住我勾上");
+    assert.equal(
+        inputById("password")!.value,
+        "",
+        "密码不落本地，旧版本存过的也不能再回填"
+    );
+    assert.equal(
+        JSON.parse(localStorage.getItem("navihive:rememberedLogin")!).password,
+        undefined,
+        "读到旧数据时要把残留密码抹掉"
+    );
+    const box = document.querySelector<HTMLInputElement>('input[aria-label="记住我"]')!;
+    assert.equal(box.checked, true, "回填了账号就该把记住我勾上");
 });
 
 test("登录：没填全时提交按钮是禁用的，loading 时也禁用", () => {

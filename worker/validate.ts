@@ -47,6 +47,26 @@ export function validateGroup(data: GroupInput): {
         sanitizedData: errors.length === 0 ? (sanitizedData as Group) : undefined,
     };
 }
+/**
+ * 站点网址的入库校验：必须能规范化成 http/https，且不接受明显不是域名的裸串。
+ *
+ * 直接吃 `normalizeUrl` 的结果是不够的：它会给任何没写协议的输入补 `https://`，
+ * 于是手滑敲进去的 "not-a-url" 也会被当成 https://not-a-url 放进来。
+ * 所以额外要求：没写协议的输入，主机名里必须有点（`baidu.com` 这种省略协议的写法
+ * 要继续放行，前台表单本来也依赖这种宽容）。写了协议的一律按协议白名单走。
+ */
+function strictSiteUrl(raw: string): string | null {
+    const normalized = normalizeUrl(raw);
+    if (!normalized.ok) return null;
+    const trimmed = raw.trim();
+    const hasScheme = /^[a-z][a-z0-9+.-]*:/i.test(trimmed);
+    if (hasScheme) return normalized.url;
+    try {
+        return /\./.test(new URL(normalized.url).hostname) ? normalized.url : null;
+    } catch {
+        return null;
+    }
+}
 export function validateSite(data: SiteInput): {
     valid: boolean;
     errors?: string[];
@@ -73,8 +93,8 @@ export function validateSite(data: SiteInput): {
     if (!data.url || typeof data.url !== "string") {
         errors.push("URL不能为空且必须是字符串");
     } else {
-        const normalized = normalizeUrl(data.url);
-        if (normalized.ok) sanitizedData.url = normalized.url;
+        const normalized = strictSiteUrl(data.url);
+        if (normalized) sanitizedData.url = normalized;
         else errors.push("无效的URL格式：只支持 http/https");
     }
 

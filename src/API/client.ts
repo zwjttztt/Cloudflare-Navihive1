@@ -188,16 +188,33 @@ export class NavigationClient {
         }
     }
 
-    /** 当前登录身份（账号名 + 角色） */
-    async getMe(): Promise<{ username: string; role: "owner" | "user" } | null> {
+    /**
+     * 当前登录身份（不可变账号 id + 账号名 + 角色）。
+     *
+     * id 是本地数据分账号存放的依据：账号名可以改，id 不会，换人登录也能立刻分辨。
+     * 服务端没给 id（老版本 / 异常响应）时退回 0，当作「无账号」这一档。
+     */
+    async getMe(): Promise<{
+        id: number;
+        username: string;
+        role: "owner" | "user";
+    } | null> {
         try {
             const response = await fetch(`${this.baseUrl}/auth/me`, {
                 credentials: "same-origin",
             });
             if (!response.ok) return null;
-            const data = (await response.json()) as { username?: string; role?: string };
+            const data = (await response.json()) as {
+                id?: number;
+                username?: string;
+                role?: string;
+            };
             if (typeof data.username !== "string") return null;
-            return { username: data.username, role: data.role === "owner" ? "owner" : "user" };
+            return {
+                id: typeof data.id === "number" && Number.isSafeInteger(data.id) ? data.id : 0,
+                username: data.username,
+                role: data.role === "owner" ? "owner" : "user",
+            };
         } catch {
             return null;
         }

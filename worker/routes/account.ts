@@ -32,12 +32,15 @@ export async function handleAccountRoutes(ctx: RouteCtx): Promise<Response | nul
         return Response.json({ success: true }, { headers });
     }
 
-    // 当前登录身份（账号名 + 角色）。前端拿它显示「当前账号：xxx」。
+    // 当前登录身份（账号 id + 账号名 + 角色）。前端拿它显示「当前账号：xxx」，
+    // 也用它给浏览器本地数据（离线队列 / 撤销快照 / 偏好）划分账号边界 ——
+    // 只给账号名是不够的：改名之后同一个人的本地数据会认不出来，换个人登录则会串在一起。
     if (path === "auth/me" && method === "GET") {
         const uid = api.getCurrentUserId();
         if (uid === null) {
-            // 未启用鉴权 / 老令牌：没有账号概念，返回一个 guest 身份让界面照常工作
-            return Response.json({ username: "guest", role: "owner" });
+            // 未启用鉴权 / 老令牌：没有账号概念，返回一个 guest 身份让界面照常工作。
+            // id 给 0：稳定、不可变，本地数据据此归到「无账号」这一档。
+            return Response.json({ id: 0, username: "guest", role: "owner" });
         }
         const user = await api.getUserById(uid);
         if (!user) {
@@ -46,7 +49,7 @@ export async function handleAccountRoutes(ctx: RouteCtx): Promise<Response | nul
                 { status: 401 }
             );
         }
-        return Response.json({ username: user.username, role: user.role });
+        return Response.json({ id: uid, username: user.username, role: user.role });
     }
 
     // 生成邀请码（站点所有者，30 分钟有效）

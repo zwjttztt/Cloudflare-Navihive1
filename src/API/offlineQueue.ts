@@ -7,8 +7,11 @@
 //   （重放也没用，反而把脏数据打进队列）。
 // - 队列里只存「方法名 + 参数」，重放时调同一份 api 方法即可，不用为每个操作写特例。
 // - 重放失败的（还连不上）放回队列末尾，等下次 online 再试，不丢。
+import { scopedKey } from "../utils/accountScope";
+
 // 离线队列只关心「能按名字调出一个返回 Promise 的方法」，不需要整套客户端接口
 export type MutationApi = Record<string, (...args: unknown[]) => Promise<unknown>>;
+
 
 /** 所有会被拦截的 mutation 方法。returnsSuccess=true 表示「返回 false 即失败」。 */
 export const MUTATION_METHODS: { name: string; returnsSuccess?: boolean }[] = [
@@ -30,13 +33,27 @@ export interface PendingMutation {
     kind: string;
     args: unknown[];
     ts: number;
+    /** 入队时的账号；重放前必须还是同一个账号，否则会把别人的编辑写到别人库里 */
+    uid?: number | null;
+    /** 幂等键：同一次操作重放多次服务端只认一次（服务端支持时生效） */
+    opId?: string;
+    /** 已经重试过几次；超过上限就放弃，不让角标永远挂着 */
+    attempts?: number;
 }
+
+/** 一条操作最多重放几次就放弃（服务端一直不收，再排下去也没用） */
+const MAX_REPLAY_ATTEMPTS = 3;
 
 const STORAGE_KEY = "navihive:offlineQueue";
 
+/** 当前生效账号；null 表示还没登录（匿名一档）。由 setAccountUid 设置。 */
+let accountUid: number | null = null;
+/** 存储键按账号分片：换人登录时各自读各自的，不会互相看见 */
+let storageKey: string = scopedKey(STORAGE_KEY, null);
+
 function loadQueue(): PendingMutation[] {
     try {
-        const raw = (globalThis.localStorage as Storage | undefined)?.getItem(STORAGE_KEY);
+        const raw = (globalThis.localStorage as Storage | undefined)?.getItem(storageKey);
         return raw ? (JSON.parse(raw) as PendingMutation[]) : [];
     } catch {
         return [];
@@ -45,13 +62,30 @@ function loadQueue(): PendingMutation[] {
 
 function saveQueue(queue: PendingMutation[]): void {
     try {
-        (globalThis.localStorage as Storage).setItem(STORAGE_KEY, JSON.stringify(queue));
+        (globalThis.localStorage as Storage).setItem(storageKey, JSON.stringify(queue));
     } catch {
         // 隐私模式 / 配额满：队列是尽力而为，存不下就本会话内生效
     }
 }
 
 let queue: PendingMutation[] = loadQueue();
+
+/**
+ * 绑定当前账号。换账号会立刻换一份存储并重读队列 ——
+ * 于是「A 排队 → 登出 → B 登录 → 自动重放」这条串号路径被物理切断。
+ */
+export function setAccountUid(uid: number | null): void {
+    if (uid === accountUid) return;
+    accountUid = uid;
+    storageKey = scopedKey(STORAGE_KEY, uid);
+    queue = loadQueue();
+    notifyChange();
+}
+
+/** 当前绑定的账号（测试与界面提示用） */
+export function currentAccountUid(): number | null {
+    return accountUid;
+}
 
 /** 网络是否判定为「离线」（单测可改 globalThis.navigator 验证） */
 export function isOffline(): boolean {
@@ -80,11 +114,34 @@ export function subscribe(cb: () => void): () => void {
     };
 }
 
-/** 离线时把一次失败的操作存进队列 */
+/**
+ * 离线时把一次失败的操作存进队列。
+ *
+ * 带上入队时的账号：重放前会比对，账号对不上就不重放 ——
+ * 「A 的操作在 B 的会话里补发」会直接写到 B 的库里，那是数据串号。
+ * 顺带生成幂等键：断网期间重复提交 / 重放成功但回包丢了，服务端据此只认一次。
+ */
 export function enqueueMutation(kind: string, args: unknown[]): void {
-    queue.push({ kind, args, ts: Date.now() });
+    queue.push({
+        kind,
+        args,
+        ts: Date.now(),
+        uid: accountUid,
+        opId: newOperationId(),
+    });
     saveQueue(queue);
     notifyChange();
+}
+
+/** 生成一次操作的幂等键（浏览器支持 crypto 就用随机的，否则退回时间戳 + 计数） */
+let opSeq = 0;
+function newOperationId(): string {
+    const cryptoObj = globalThis.crypto as Crypto | undefined;
+    if (cryptoObj && typeof cryptoObj.randomUUID === "function") {
+        return cryptoObj.randomUUID();
+    }
+    opSeq += 1;
+    return `${Date.now()}-${opSeq}`;
 }
 
 /** 待同步数量（顶栏角标用） */
@@ -108,6 +165,15 @@ export function requeue(op: PendingMutation): void {
     notifyChange();
 }
 
+/** 把已处理完（成功或被判定为不必再试）的操作从队列里划掉 */
+function drop(op: PendingMutation): void {
+    const index = queue.indexOf(op);
+    if (index === -1) return;
+    queue.splice(index, 1);
+    saveQueue(queue);
+    notifyChange();
+}
+
 /**
  * 判定一次重放是否失败。
  * 有些方法返回 boolean（false 即失败），有些返回 { success } 对象（对象恒为真，
@@ -121,35 +187,83 @@ function isFailedResult(res: unknown): boolean {
     return false;
 }
 
+/** 重放期间禁止重入：online 事件与启动各调一次就够了，两个一起跑会把同一条发两遍 */
+let flushing = false;
+
+/**
+ * 服务端明确拒绝（4xx / success=false）的错误：重试没有意义，留在队列里只会
+ * 一遍遍撞同一堵墙，还占着角标。与「还连不上」区分开，后者才继续等下次 online。
+ */
+export class RejectedByServerError extends Error {
+    constructor(message = "服务端拒绝了该操作") {
+        super(message);
+        this.name = "RejectedByServerError";
+    }
+}
+
+/** 从常见错误里认出「服务端明确拒绝」：HTTP 4xx（408/429 除外，那是「稍后再来」） */
+export function isRejectedByServer(err: unknown): boolean {
+    if (err instanceof RejectedByServerError) return true;
+    const status = (err as { status?: number } | null)?.status;
+    if (typeof status === "number") {
+        return status >= 400 && status < 500 && status !== 408 && status !== 429;
+    }
+    const msg = (err as { message?: string } | null)?.message || "";
+    return /HTTP 4\d\d/.test(msg) && !/HTTP (408|429)/.test(msg);
+}
+
 /**
  * 重放队列：逐个调 api[kind](...args)。返回成功数。
- * 仍失败的操作放回队列，连不上时不会丢。
+ *
+ * 与早先「先整批取出、失败再塞回」不同，这里**成功一条才从存储里划掉一条**：
+ * 中途关页面 / 崩溃时剩下的还在盘上，不会凭空消失。
  */
 export async function flushOfflineQueue(api: MutationApi): Promise<number> {
-    if (isOffline()) return 0;
-    const ops = takeAll();
-    if (ops.length === 0) return 0;
+    if (isOffline() || flushing || queue.length === 0) return 0;
+    flushing = true;
     let done = 0;
-    for (const op of ops) {
-        try {
-            const fn = (api as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>)[op.kind];
-            if (typeof fn !== "function") {
-                requeue(op);
-                continue;
+    try {
+        // 最多重放一轮：仍失败的会被留在 / 放回队列，等下一次 online，不会在这里死循环
+        const pending = [...queue];
+        for (const op of pending) {
+            if (isOffline()) break;
+            try {
+                const fn = (api as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>)[op.kind];
+                if (typeof fn !== "function") {
+                    drop(op);
+                    continue;
+                }
+                // 账号变了就不许再补发：这条操作属于别人，写进当前账号就是串号，直接丢弃
+                if (op.uid !== undefined && op.uid !== accountUid) {
+                    drop(op);
+                    continue;
+                }
+                const res = await fn.apply(api, op.args);
+                // returnsSuccess 类方法：返回假也视为没成功。
+                // 有的方法（importData）返回的是带 success 字段的对象，对象本身恒为真，
+                // 得看里面的 success 才算数。
+                const def = MUTATION_METHODS.find(m => m.name === op.kind);
+                if (def?.returnsSuccess && isFailedResult(res)) {
+                    // 返回假 = 服务端没收下。留着再试几次（可能是暂时性的），
+                    // 但试够就放弃：一直挂在队列里，角标永远消不掉，重放也只会一遍遍撞墙。
+                    op.attempts = (op.attempts ?? 0) + 1;
+                    if (op.attempts >= MAX_REPLAY_ATTEMPTS) {
+                        drop(op);
+                    } else {
+                        saveQueue(queue);
+                    }
+                    continue;
+                }
+                drop(op);
+                done++;
+            } catch (err) {
+                // 连不上：留在队列里等下次 online。服务端明确拒绝：直接丢弃，
+                // 否则角标永远消不掉，还一遍遍撞同一堵墙。
+                if (isRejectedByServer(err)) drop(op);
             }
-            const res = await fn.apply(api, op.args);
-            // returnsSuccess 类方法：返回假也视为没成功，放回队列。
-            // 有的方法（importData）返回的是带 success 字段的对象，对象本身恒为真，
-            // 得看里面的 success 才算数。
-            const def = MUTATION_METHODS.find(m => m.name === op.kind);
-            if (def?.returnsSuccess && isFailedResult(res)) {
-                requeue(op);
-                continue;
-            }
-            done++;
-        } catch {
-            requeue(op);
         }
+    } finally {
+        flushing = false;
     }
     return done;
 }

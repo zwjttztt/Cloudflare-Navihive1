@@ -20,6 +20,7 @@ import {
     REGISTER_GUARD_KEY,
     enforceWriteGuard,
     readWriteGuard,
+    bumpGuard,
     WRITE_GUARD_KEY,
     WRITE_FREE_ATTEMPTS,
 } from "../worker/loginGuard";
@@ -88,12 +89,44 @@ test("写限速：达到上限后的当前请求即拒绝", async () => {
     assert.equal((await readWriteGuard(api as never, "same")).count, WRITE_FREE_ATTEMPTS + 1);
 });
 
-test("写限速：竞争耗尽、存储失败或缺少 CAS 不放行", async () => {
+test("写限速：存储故障与缺少 CAS 时放行（写入本身要同一个库，库挂了写入自己会失败）", async () => {
     const { api } = makeApi({}, [() => false, () => false, () => false]);
-    assert.equal((await enforceWriteGuard(api as never, "same"))?.status, 503);
+    assert.equal(await enforceWriteGuard(api as never, "same"), null);
     const broken = { ...api, getConfig: async () => { throw new Error("db unavailable"); } };
-    assert.equal((await enforceWriteGuard(broken as never, "same"))?.status, 503);
-    assert.equal((await enforceWriteGuard({ getConfig: api.getConfig } as never, "same"))?.status, 503);
+    assert.equal(await enforceWriteGuard(broken as never, "same"), null);
+    // 存储层没有 CAS：退回读-改-写，仍要能正常放行与计数
+    const plain = { getConfig: api.getConfig, setConfig: api.setConfig };
+    assert.equal(await enforceWriteGuard(plain as never, "same"), null);
+    assert.equal((await readWriteGuard(plain as never, "same")).count, 1);
+});
+
+test("bumpGuard：同一桶并发递增各自都算数，不会互相盖掉", async () => {
+    const { api } = makeApi();
+    // 旧写法是「在外面算好 count 再写进去」：两个请求都读到 0、都算成 1，
+    // 后写的那份把前一个盖掉，最终只剩 1 —— 爆破因此能一直续杯。
+    const results = await Promise.all([
+        bumpGuard(api as never, LOGIN_GUARD_KEY, "1.2.3.4", p => ({ count: p.count + 1, until: 0 })),
+        bumpGuard(api as never, LOGIN_GUARD_KEY, "1.2.3.4", p => ({ count: p.count + 1, until: 0 })),
+    ]);
+    assert.deepEqual(results.map(r => r?.count), [1, 2]);
+    assert.equal((await readLoginGuard(api as never, "1.2.3.4")).count, 2);
+});
+
+test("bumpGuard：返回真正写进去的那一份，文案不会撒谎", async () => {
+    const { api } = makeApi();
+    const first = await bumpGuard(api as never, LOGIN_GUARD_KEY, "b", p => ({
+        count: p.count + 1,
+        until: 12345,
+    }));
+    assert.deepEqual(first, { count: 1, until: 12345 });
+});
+
+test("bumpGuard：写不进去时返回 null，不抛异常（记不上数不该拖垮登录）", async () => {
+    const { api } = makeApi({}, [() => false, () => false, () => false]);
+    assert.equal(
+        await bumpGuard(api as never, LOGIN_GUARD_KEY, "b", p => ({ count: p.count + 1, until: 0 })),
+        null
+    );
 });
 
 test("登录限速按来源分桶：一个人的失败不会累到另一个人", async () => {

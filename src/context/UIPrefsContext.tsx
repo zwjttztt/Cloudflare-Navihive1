@@ -42,16 +42,26 @@ export interface VisitStat {
     days?: Record<string, number>;
 }
 
+/** 只有有限数字才算数：undefined / NaN / 字符串都得当成 0，否则合并结果会变 NaN */
+const num = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+
 /**
- * 合并两份访问统计（本机 + 服务端下发的那份）。
+ * 合并两份访问统计（本机 + 服务端下发的那份），第三个参数是「上次同步时本机那份」。
  *
- * 计数取**较大值而不是相加**：两台设备各自点过一次，真实情况是「这条链接点过」，
- * 相加会把它记成两次、越同步越虚高；取 max 至少不会丢任何一边的记录。
- * 最近时间同样取较新的，按天明细逐天取较大 —— 热力图不会因为合并就变形。
+ * 旧做法是逐项取 max，理由写在当时的注释里：怕相加会把两台设备各点一次算成两次。
+ * 但 max 是**低估**而不是保守：手机点了 8 次、电脑点了 5 次，合完只剩 8，
+ * 另外 5 次凭空消失，而且每次同步都可能在两边来回抹。
+ *
+ * 现在的做法是把「本机自上次同步以来的增量」加到服务端那份上：
+ *   合并值 = 服务端值 + (本机现值 - 本机上次同步时的值)
+ * 服务端那份本来就含着其它设备（以及本机已同步过的部分），补上本机还没上传的那一截
+ * 才是真实总数；增量按 max(0, …) 取，本机被清过缓存也不会把服务端的值往下拽。
+ * 没有基线可比对时（老数据 / 第一次同步）退回取 max，宁可低估也不瞎加。
  */
 export function mergeVisitStats(
     local: Record<string, VisitStat>,
-    incoming: Record<string, VisitStat>
+    incoming: Record<string, VisitStat>,
+    synced?: Record<string, VisitStat> | null
 ): Record<string, VisitStat> {
     const out: Record<string, VisitStat> = { ...local };
     if (!incoming || typeof incoming !== "object") return out;
@@ -67,22 +77,38 @@ export function mergeVisitStats(
             continue;
         }
 
-        // 按天明细：逐天取较大（同一天两台机器各记 2 次，真实次数更接近 2 而不是 4）
+        const curCount = num(cur.count);
+        const base = synced?.[url];
+        // 本机自上次同步以来的增量；没有基线就当「无法计算」，退化为取最大值
+        const delta =
+            base && typeof base.count === "number"
+                ? Math.max(0, curCount - num(base.count))
+                : null;
+
         const days: Record<string, number> = { ...(cur.days ?? {}) };
         for (const [day, n] of Object.entries(inc.days ?? {})) {
             if (typeof n !== "number" || !Number.isFinite(n)) continue;
-            days[day] = Math.max(days[day] ?? 0, n);
+            const localDay = num(days[day]);
+            const baseDay = base?.days?.[day];
+            const dayDelta =
+                delta !== null && typeof baseDay === "number"
+                    ? Math.max(0, localDay - baseDay)
+                    : null;
+            days[day] =
+                dayDelta === null
+                    ? Math.max(localDay, n)
+                    : Math.max(n, num(base?.days?.[day])) + dayDelta;
         }
 
         out[url] = {
-            count: Math.max(
-                typeof cur.count === "number" && Number.isFinite(cur.count) ? cur.count : 0,
-                incCount
-            ),
-            last: Math.max(
-                typeof cur.last === "number" && Number.isFinite(cur.last) ? cur.last : 0,
-                incLast
-            ),
+            // 基线也要参与取大：服务端那份被别台设备覆盖成更小的值时，
+            // 不能让本机已经同步出去的次数跟着倒退回去。
+            count:
+                delta === null
+                    ? Math.max(curCount, incCount)
+                    : Math.max(incCount, num(base?.count)) + delta,
+            // 最近访问时间没有「累加」这回事，永远取更晚的那次
+            last: Math.max(num(cur.last), incLast),
             days,
         };
     }
@@ -174,16 +200,26 @@ interface UIPrefsValue {
     /** 合并服务端下发的星标 / 标签（取并集，不会减掉本机已有的） */
     mergeRemotePrefs: (starred: number[], tags: Record<string, string[]>) => void;
     /**
-     * 合并服务端下发的访问统计（同一条链接取次数 / 时间的较大值）。
-     * 换设备后热度不会从头再来，也不会因为两台机器各记一次就把次数翻一倍。
+     * 合并服务端下发的访问统计：把本机「自上次同步以来的增量」加到服务端那份上。
+     * 换设备后热度不会从头再来，也不会因为两台机器各记一次就把次数抹掉一半
+     * （见 mergeVisitStats 的说明）。
      */
     mergeRemoteVisits: (incoming: Record<string, VisitStat>) => void;
+    /** 访问统计上传成功后调用：把当前这份记为「已同步」，作为下次合并的基线 */
+    markVisitsSynced: () => void;
 }
 
 const VIEW_KEY = "navihive:viewMode";
 const DENSITY_KEY = "navihive:density";
 const FAVORITES_KEY = "navihive:favoritesEnabled";
 const VISITS_KEY = "navihive:visits";
+/**
+ * 上次成功同步给服务端的那份访问统计的**快照**。
+ *
+ * 增量合并需要它：拿本机现值减去快照，才是「还没上传出去的那几下」。
+ * 只在确认上传成功之后才写，写早了（上传失败却记成已同步）会把增量悄悄丢掉。
+ */
+const VISITS_SYNCED_KEY = "navihive:visitsSynced";
 const RADIUS_KEY = "navihive:radius";
 const FONT_SCALE_KEY = "navihive:fontScale";
 const SEARCH_HISTORY_KEY = "navihive:searchHistory";
@@ -227,6 +263,27 @@ const readVisits = (): Record<string, VisitStat> => {
         return clean;
     } catch {
         return {};
+    }
+};
+
+/** 读出「上次已同步」的快照；读不到（老数据）返回 null，合并时会退化成取最大值 */
+const readSyncedVisits = (): Record<string, VisitStat> | null => {
+    try {
+        const raw = localStorage.getItem(VISITS_SYNCED_KEY);
+        if (!raw) return null;
+        const parsed: unknown = JSON.parse(raw);
+        if (!parsed || typeof parsed !== "object") return null;
+        return parsed as Record<string, VisitStat>;
+    } catch {
+        return null;
+    }
+};
+
+const writeSyncedVisits = (snapshot: Record<string, VisitStat>): void => {
+    try {
+        localStorage.setItem(VISITS_SYNCED_KEY, JSON.stringify(snapshot));
+    } catch {
+        /* 隐私模式：基记不住，下次合并退化成取最大值，不会算错成负数 */
     }
 };
 
@@ -316,6 +373,7 @@ const defaultValue: UIPrefsValue = {
     setPrefSync: () => {},
     mergeRemotePrefs: () => {},
     mergeRemoteVisits: () => {},
+    markVisitsSynced: () => {},
 };
 
 export const UIPrefsContext = createContext<UIPrefsValue>(defaultValue);
@@ -413,14 +471,34 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
         []
     );
 
-    /** 合并服务端下发的访问统计：取次数 / 时间的较大值（见 mergeVisitStats 的说明） */
+    /**
+     * 合并服务端下发的访问统计（语义见 mergeVisitStats 的说明）。
+     *
+     * 合完这份就是「本机与服务端一致」的状态，所以顺手记成新的同步基线 ——
+     * 下次再合并时，本机多出来的那几下才是真正的增量。
+     */
     const mergeRemoteVisits = useCallback((incoming: Record<string, VisitStat>) => {
         if (!incoming || typeof incoming !== "object") return;
         setVisits(prev => {
-            const next = mergeVisitStats(prev, incoming);
+            const next = mergeVisitStats(prev, incoming, readSyncedVisits());
             // 合并结果写回本机：下一秒断网也不至于把刚拉下来的丢掉
             write(VISITS_KEY, JSON.stringify(next));
+            writeSyncedVisits(next);
             return next;
+        });
+    }, []);
+
+    /**
+     * 上传成功之后调用：把当前这份记为「已同步」。
+     *
+     * 是关键的一步也是容易漏的一步：不记基线，下次合并就会把已经上传过的次数
+     * 再当增量加一遍，越同步越高；反过来，上传失败时绝不能记（usePrefSync 那头
+     * 只在 resolve 之后才调这个）。
+     */
+    const markVisitsSynced = useCallback(() => {
+        setVisits(prev => {
+            writeSyncedVisits(prev);
+            return prev;
         });
     }, []);
 
@@ -766,6 +844,7 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
             setPrefSync,
             mergeRemotePrefs,
             mergeRemoteVisits,
+            markVisitsSynced,
         }),
         [
             viewMode,
@@ -807,6 +886,7 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
             setPrefSync,
             mergeRemotePrefs,
             mergeRemoteVisits,
+            markVisitsSynced,
         ]
     );
 

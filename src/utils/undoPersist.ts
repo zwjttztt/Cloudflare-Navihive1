@@ -8,6 +8,7 @@
 // 存是有代价的：卡片里可能有站点密码。所以它跟着两条限制：只留最近几步、超过一天作废，
 // 并且刷新后恢复时会先确认卡片还在（不在了就丢弃，避免把一张早删掉的卡片写回来）。
 import type { Site } from "../API/http";
+import { scopedKey } from "./accountScope";
 
 /** 一条可以跨刷新重放的撤销记录 */
 export type PersistedUndo = {
@@ -29,6 +30,29 @@ const MAX_ITEMS = 10;
 /** 超过一天就不认了：隔了这么久再撤销，多半已经不是当时那回事 */
 const MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
+/** 当前账号；换人登录时各自一份，不会看见上一个人的撤销快照 */
+let accountUid: number | null = null;
+
+/** 绑定账号：换人时换一份存储，旧账号的快照留着但读不到 */
+export function setUndoAccountUid(uid: number | null): void {
+    accountUid = uid;
+}
+
+const key = () => scopedKey(STORAGE_KEY, accountUid);
+
+/**
+ * 抹掉站点里的凭据再落盘。
+ *
+ * 撤销快照整份存在浏览器里、还是明文 JSON —— 站点密码跟着一起躺在那儿，
+ * 任何人摸到这台机器（或任意一个能读同源存储的脚本）就能把密码从 localStorage 里
+ * 翻出来。撤销「改卡片」本来也不需要凭据：重放时只把业务字段写回去，
+ * 凭据保持库里的现状，于是把这两个字段留空即可。
+ */
+function stripSecrets(site: Site): Site {
+    if (!site) return site;
+    return { ...site, username: "", password: "" };
+}
+
 function isSiteLike(value: unknown): value is Site {
     if (!value || typeof value !== "object") return false;
     const site = value as Partial<Site>;
@@ -45,30 +69,44 @@ export function isPersistedUndo(value: unknown): value is PersistedUndo {
     return isSiteLike(item.before) && isSiteLike(item.after);
 }
 
-/** 读出还能用的记录（坏的、过期的自动丢掉） */
+/**
+ * 读出还能用的记录（坏的、过期的自动丢掉）。
+ *
+ * 顺带做一次**物理清理**：过期条目以前只是「读的时候过滤掉」，盘上一直留着；
+ * 现在读完就只把有效的写回去，过期的当场删掉，不再躺着等别人来翻。
+ */
 export function loadPersistedUndo(now = Date.now()): PersistedUndo[] {
     try {
-        const raw = localStorage.getItem(STORAGE_KEY);
+        const raw = localStorage.getItem(key());
         if (!raw) return [];
         const parsed: unknown = JSON.parse(raw);
         if (!Array.isArray(parsed)) return [];
-        return parsed.filter(
+        const valid = parsed.filter(
             item => isPersistedUndo(item) && now - item.at < MAX_AGE_MS
         ) as PersistedUndo[];
+        if (valid.length !== parsed.length) {
+            // 有坏的 / 过期的：把剩下的写回去，等于顺手清掉
+            savePersistedUndo(valid);
+        }
+        return valid;
     } catch {
         return [];
     }
 }
 
-/** 写入（超过上限丢最旧的）。localStorage 不可用时静默放弃 —— 撤销少一步不是大事 */
+/** 写入（超过上限丢最旧的、凭据不落盘）。localStorage 不可用时静默放弃 —— 撤销少一步不是大事 */
 export function savePersistedUndo(list: PersistedUndo[]): void {
     try {
-        const trimmed = list.slice(-MAX_ITEMS);
+        const trimmed = list.slice(-MAX_ITEMS).map(item => ({
+            ...item,
+            before: stripSecrets(item.before),
+            after: stripSecrets(item.after),
+        }));
         if (trimmed.length === 0) {
-            localStorage.removeItem(STORAGE_KEY);
+            localStorage.removeItem(key());
             return;
         }
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(trimmed));
+        localStorage.setItem(key(), JSON.stringify(trimmed));
     } catch {
         /* 隐私模式 / 配额满：忽略 */
     }
@@ -76,7 +114,7 @@ export function savePersistedUndo(list: PersistedUndo[]): void {
 
 export function clearPersistedUndo(): void {
     try {
-        localStorage.removeItem(STORAGE_KEY);
+        localStorage.removeItem(key());
     } catch {
         /* 同上 */
     }

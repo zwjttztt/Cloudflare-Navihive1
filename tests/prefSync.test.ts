@@ -9,6 +9,60 @@ import { test } from "node:test";
 
 import { mergeVisitStats, type VisitStat } from "../src/context/UIPrefsContext";
 
+test("mergeVisitStats：有同步基线时，把本机新增的次数加到服务端那份上", () => {
+    // 手机点了 8 次（服务端那份），电脑这边上次同步时是 5 次、现在又点了 2 次
+    const local: Record<string, VisitStat> = { "https://a.example": { count: 7, last: 200 } };
+    const synced: Record<string, VisitStat> = { "https://a.example": { count: 5, last: 100 } };
+    const incoming: Record<string, VisitStat> = { "https://a.example": { count: 8, last: 300 } };
+    const merged = mergeVisitStats(local, incoming, synced);
+    // 旧算法取 max 只剩 8，电脑新点的 2 次凭空消失；现在应该是 8 + 2
+    assert.equal(merged["https://a.example"].count, 10);
+    assert.equal(merged["https://a.example"].last, 300);
+});
+
+test("mergeVisitStats：已经同步过的部分不会被重复累加", () => {
+    const local: Record<string, VisitStat> = { "https://a.example": { count: 9, last: 200 } };
+    // 基线就是当前值：说明本机这些都已经上传过了，增量为 0
+    const synced: Record<string, VisitStat> = { "https://a.example": { count: 9, last: 200 } };
+    const incoming: Record<string, VisitStat> = { "https://a.example": { count: 9, last: 200 } };
+    assert.equal(mergeVisitStats(local, incoming, synced)["https://a.example"].count, 9);
+    // 服务端比本机还少（别人清过库）也不能把数往下拽
+    assert.equal(
+        mergeVisitStats(local, { "https://a.example": { count: 1, last: 1 } }, synced)[
+            "https://a.example"
+        ].count,
+        9
+    );
+});
+
+test("mergeVisitStats：本机清过缓存时按服务端与基线的较大值，不会算成负数", () => {
+    const local: Record<string, VisitStat> = { "https://a.example": { count: 0, last: 0 } };
+    const synced: Record<string, VisitStat> = { "https://a.example": { count: 6, last: 100 } };
+    const incoming: Record<string, VisitStat> = { "https://a.example": { count: 5, last: 200 } };
+    // 本机什么都不剩，增量是 0；取服务端 5 与基线 6 的较大者，不往下掉
+    assert.equal(mergeVisitStats(local, incoming, synced)["https://a.example"].count, 6);
+});
+
+test("mergeVisitStats：按天明细同样按增量合并", () => {
+    const merged = mergeVisitStats(
+        { "https://a.example": { count: 4, last: 2, days: { "2026-09-30": 3 } } },
+        { "https://a.example": { count: 6, last: 3, days: { "2026-09-30": 2 } } },
+        { "https://a.example": { count: 2, last: 1, days: { "2026-09-30": 1 } } }
+    );
+    // 服务端这天 2 次 + 本机新增的 2 次（3 - 1）= 4
+    assert.equal(merged["https://a.example"].days?.["2026-09-30"], 4);
+    assert.equal(merged["https://a.example"].count, 8);
+});
+
+test("mergeVisitStats：没有基线（老数据）时退回取较大值，不瞎加", () => {
+    const merged = mergeVisitStats(
+        { "https://a.example": { count: 5, last: 200 } },
+        { "https://a.example": { count: 2, last: 900 } },
+        null
+    );
+    assert.equal(merged["https://a.example"].count, 5);
+});
+
 test("mergeVisitStats：本机没有的链接直接采用服务端那份", () => {
     const merged = mergeVisitStats({}, {
         "https://a.example": { count: 3, last: 100, days: { "2026-09-30": 2 } },

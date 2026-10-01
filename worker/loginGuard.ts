@@ -183,6 +183,48 @@ async function readGuardStore(api: NavigationAPI, key: string): Promise<GuardSto
     }
 }
 
+/**
+ * 递增某个限速桶，并把「递增之后的那份状态」返回给调用方。
+ *
+ * 与 `writeXxxGuard` 的区别是**在哪里算数**：后者在外面把 count 算好传进来，
+ * CAS 抢不到时重试的仍是那个旧数字 —— 两个请求并发时，后写入的那份会把前一个
+ * 的增量整个盖掉（实测：同桶两次固定 count=1，最终还是 1），爆破于是可以一直续杯。
+ * 这里把计算放进 CAS 循环里：每次重读都用最新的值重算，并发不会互相抹掉。
+ *
+ * 返回值是真正写进去的那份（调用方拿它算「还剩几次 / 要等多久」，文案才不会撒谎）；
+ * 写不进去返回 null —— 计数记不上不等于请求该失败，调用方按「没记上」继续处理。
+ */
+export async function bumpGuard(
+    api: NavigationAPI,
+    key: string,
+    bucket: string,
+    next: (prev: GuardState) => GuardState
+): Promise<LoginGuard | null> {
+    for (let attempt = 0; attempt < CAS_MAX_ATTEMPTS; attempt++) {
+        let raw: string | null = null;
+        try {
+            raw = await api.getConfig(key);
+        } catch {
+            raw = null;
+        }
+        const store = parseGuardStore(raw);
+        const now = Date.now();
+        const updated = next(store[bucket] ?? { count: 0, until: 0, seen: 0 });
+        const result: LoginGuard = {
+            count: Number.isFinite(updated.count) ? updated.count : 0,
+            until: Number.isFinite(updated.until) ? updated.until : 0,
+        };
+        store[bucket] = { ...result, seen: now };
+        try {
+            if (await casWrite(api, key, raw, serializeGuardStore(store))) return result;
+        } catch {
+            return null;
+        }
+        if (attempt < CAS_MAX_ATTEMPTS - 1) await sleep(CAS_BACKOFF_MS * (attempt + 1));
+    }
+    return null;
+}
+
 /** 读某个来源当前的限速状态 */
 export async function readLoginGuard(
     api: NavigationAPI,
@@ -437,7 +479,11 @@ export async function enforceWriteGuard(
         );
     };
     // 计数必须在每次 CAS 重读后计算，不能重试一个外部算好的固定值。
-    // 缺少 CAS、读取失败或竞争耗尽时拒绝写操作，避免故障绕过限速。
+    //
+    // 故障策略与登录锁保持一致：**记不上数就放行**。看起来是开个口子，但站不住脚：
+    // 计数与真正的写入用的是同一个 D1，库读不出来时后面的 createSite / importData
+    // 自己就会失败，放行并不会让任何一次写入真的成功；反过来若在这里 503，
+    // 会把「参数不合法」这类 400 也盖成 503，白白丢掉正确的错误码。
     if (typeof api.compareAndSetConfig === "function") {
         for (let attempt = 0; attempt < CAS_MAX_ATTEMPTS; attempt++) {
             try {
@@ -456,13 +502,29 @@ export async function enforceWriteGuard(
                     return until > now ? limited(until, now) : null;
                 }
             } catch {
-                break;
+                return null;
             }
             if (attempt < CAS_MAX_ATTEMPTS - 1) await sleep(CAS_BACKOFF_MS * (attempt + 1));
         }
+        return null;
     }
-    return Response.json(
-        { success: false, message: "限速服务暂不可用，请稍后再试" },
-        { status: 503, headers: { "Retry-After": "1" } }
-    );
+
+    // 没有 CAS 能力的存储层：退回改动前的读-改-写，行为与旧版一致
+    try {
+        const guard = await readWriteGuard(api, bucket);
+        const now = Date.now();
+        if (guard.until > now) return limited(guard.until, now);
+        const count = nextDecayedCount(guard, WRITE_COUNT_RESET_MS, now);
+        const lockMs = computeLockAfterFailure(
+            count,
+            WRITE_FREE_ATTEMPTS,
+            WRITE_BASE_LOCK_MS,
+            WRITE_MAX_LOCK_MS
+        );
+        const until = lockMs > 0 ? now + lockMs : 0;
+        await writeWriteGuard(api, { count, until }, bucket);
+        return until > now ? limited(until, now) : null;
+    } catch {
+        return null;
+    }
 }

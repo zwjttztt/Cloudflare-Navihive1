@@ -30,7 +30,7 @@ import {
 } from "../utils/recoveryKey";
 
 interface LoginFormProps {
-    /** 提交登录；remember 为是否勾选「记住账号密码」 */
+    /** 提交登录；remember 为是否勾选「记住我」（只延长会话 Cookie，不存密码） */
     onLogin: (username: string, password: string, remember: boolean) => void;
     loading?: boolean;
     error?: string | null;
@@ -170,7 +170,8 @@ const LoginForm: React.FC<LoginFormProps> = ({
     const [regError, setRegError] = useState<string | null>(null);
     const [regNotice, setRegNotice] = useState<string | null>(null);
 
-    // 打开登录页时回填上次记住的账号密码
+    // 打开登录页时只回填上次记住的账号名：
+    // 密码不再存本地，持续登录由服务端 HttpOnly Cookie 负责。
     useEffect(() => {
         const saved = readRememberedLogin();
         if (saved) {
@@ -637,7 +638,7 @@ const LoginForm: React.FC<LoginFormProps> = ({
                                         onChange={e => setRemember(e.target.checked)}
                                         disabled={loading}
                                         size='small'
-                                        slotProps={{ input: { "aria-label": "记住账号密码" } }}
+                                        slotProps={{ input: { "aria-label": "记住我" } }}
                                     />
                                 }
                                 label='记住我（一个月免登录）'

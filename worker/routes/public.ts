@@ -8,28 +8,31 @@ import { handleCspReport } from "../csp";
 import { reportError } from "../errorReport";
 import { proxyIcon } from "../icon";
 import {
+    bumpGuard,
     clientBucket,
     computeLockAfterFailure,
     INIT_BASE_LOCK_MS,
     INIT_FREE_ATTEMPTS,
+    INIT_GUARD_KEY,
     INIT_MAX_LOCK_MS,
     LOGIN_BASE_LOCK_MS,
     LOGIN_FREE_ATTEMPTS,
+    LOGIN_GUARD_KEY,
     LOGIN_MAX_LOCK_MS,
     RECOVER_BASE_LOCK_MS,
     RECOVER_FREE_ATTEMPTS,
+    RECOVER_GUARD_KEY,
     RECOVER_MAX_LOCK_MS,
     REGISTER_BASE_LOCK_MS,
     REGISTER_FREE_ATTEMPTS,
+    REGISTER_GUARD_KEY,
     REGISTER_MAX_LOCK_MS,
     readInitGuard,
     readLoginGuard,
     readRecoverGuard,
     readRegisterGuard,
-    writeInitGuard,
     writeLoginGuard,
     writeRecoverGuard,
-    writeRegisterGuard,
 } from "../loginGuard";
 import {readBearerToken, readCookie, sessionCookieHeaders, TOKEN_COOKIE} from "../httpUtils";
 import type { LoginInput, RecoveryInput, RegisterInput } from "../types";
@@ -139,17 +142,26 @@ export async function handlePublicRoutes(ctx: RouteCtx): Promise<Response | null
 
         await api.writeAudit("login.failed", loginData.username || "", ip);
 
-        const count = guard.count + 1;
-        const over = count - LOGIN_FREE_ATTEMPTS;
-        const until =
-            over > 0
-                ? now +
-                  Math.min(
-                      LOGIN_BASE_LOCK_MS * Math.pow(2, over - 1),
-                      LOGIN_MAX_LOCK_MS
-                  )
-                : 0;
-        await writeLoginGuard(api, { count, until }, clientBucket(request, trustXFF));
+        // 计数在 CAS 循环里算（bumpGuard）：外面算好再传进去，并发时后写的那份
+        // 会把前一个请求的增量盖掉，爆破就能一直续杯。返回值才是真正写进去的次数。
+        const bumped = await bumpGuard(
+            api,
+            LOGIN_GUARD_KEY,
+            clientBucket(request, trustXFF),
+            prev => {
+                const count = prev.count + 1;
+                const lockMs = computeLockAfterFailure(
+                    count,
+                    LOGIN_FREE_ATTEMPTS,
+                    LOGIN_BASE_LOCK_MS,
+                    LOGIN_MAX_LOCK_MS
+                );
+                return { count, until: lockMs > 0 ? Date.now() + lockMs : 0 };
+            }
+        );
+        // 记不上计数也要给出正确文案：按「这次算第几次失败」兜一个
+        const count = bumped ? bumped.count : guard.count + 1;
+        const until = bumped ? bumped.until : 0;
 
         // 三种状态文案要分清楚：还能试几次 / 这是最后一次 / 已经锁了。
         // （之前按「剩余次数」判断，第 5 次还没真锁上却说「已暂时锁定」）
@@ -216,20 +228,17 @@ export async function handlePublicRoutes(ctx: RouteCtx): Promise<Response | null
 
         // 成功也计数：注册成功的代价（哈希 + 落库）不比失败小，
         // 一清零就变成「注册 → 计数归零 → 继续注册」的无限循环。
-        const regCount = regGuard.count + 1;
-        const regUntil =
-            regNow +
-            computeLockAfterFailure(
-                regCount,
+        // 同样走 bumpGuard：并发注册各算各的，不会互相把计数冲掉。
+        await bumpGuard(api, REGISTER_GUARD_KEY, rBucket, prev => {
+            const count = prev.count + 1;
+            const lockMs = computeLockAfterFailure(
+                count,
                 REGISTER_FREE_ATTEMPTS,
                 REGISTER_BASE_LOCK_MS,
                 REGISTER_MAX_LOCK_MS
             );
-        await writeRegisterGuard(
-            api,
-            { count: regCount, until: regUntil > regNow ? regUntil : 0 },
-            rBucket
-        );
+            return { count, until: lockMs > 0 ? Date.now() + lockMs : 0 };
+        });
 
         if (!result.success) {
             await api.writeAudit("auth.register.failed", username, ip, result.message);
@@ -294,18 +303,16 @@ export async function handlePublicRoutes(ctx: RouteCtx): Promise<Response | null
             if (rGuard.count > 0) await writeRecoverGuard(api, { count: 0, until: 0 }, rBucket);
         } else {
             // 失败累加，超阈值后按指数退避短暂锁定该来源
-            const count = rGuard.count + 1;
-            const until =
-                count > RECOVER_FREE_ATTEMPTS
-                    ? rNow +
-                      computeLockAfterFailure(
-                          count,
-                          RECOVER_FREE_ATTEMPTS,
-                          RECOVER_BASE_LOCK_MS,
-                          RECOVER_MAX_LOCK_MS
-                      )
-                    : 0;
-            await writeRecoverGuard(api, { count, until }, rBucket);
+            await bumpGuard(api, RECOVER_GUARD_KEY, rBucket, prev => {
+                const count = prev.count + 1;
+                const lockMs = computeLockAfterFailure(
+                    count,
+                    RECOVER_FREE_ATTEMPTS,
+                    RECOVER_BASE_LOCK_MS,
+                    RECOVER_MAX_LOCK_MS
+                );
+                return { count, until: lockMs > 0 ? Date.now() + lockMs : 0 };
+            });
         }
         return Response.json(result, { status: result.success ? 200 : 400 });
     }
@@ -347,18 +354,16 @@ export async function handlePublicRoutes(ctx: RouteCtx): Promise<Response | null
         // 与「已初始化部署」，枚举失败。限速仍然生效（首次计次仍要走完整分支）
         if (!initResult.alreadyInitialized) {
             // 仅「首次真正初始化」才计次（已初始化分支不计次，避免误锁正常用户）
-            const initCount = initGuard.count + 1;
-            const initOver = initCount - INIT_FREE_ATTEMPTS;
-            const initUntil =
-                initOver > 0
-                    ? initNow +
-                      Math.min(INIT_BASE_LOCK_MS * Math.pow(2, initOver - 1), INIT_MAX_LOCK_MS)
-                    : 0;
-            await writeInitGuard(
-                api,
-                { count: initCount, until: initUntil },
-                clientBucket(request, trustXFF)
-            );
+            await bumpGuard(api, INIT_GUARD_KEY, clientBucket(request, trustXFF), prev => {
+                const count = prev.count + 1;
+                const lockMs = computeLockAfterFailure(
+                    count,
+                    INIT_FREE_ATTEMPTS,
+                    INIT_BASE_LOCK_MS,
+                    INIT_MAX_LOCK_MS
+                );
+                return { count, until: lockMs > 0 ? Date.now() + lockMs : 0 };
+            });
         }
 
         // 统一响应：调用方拿不到「这台是否已初始化」的信号

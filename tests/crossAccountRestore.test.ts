@@ -114,7 +114,10 @@ class MockD1 {
     /** DELETE FROM x WHERE id IN (?, ?, ...)：覆盖恢复成功后清旧数据用 */
     private removeByIds(sql: string, args: unknown[]): boolean {
         const s = this.normalize(sql);
-        const ids = args.map(Number);
+        // 只取 `id IN (?, ?, ...)` 占位符对应的前 N 个参数：后面还跟着 `AND user_id = ?`
+        // 的账号参数，一并当成 id 会连新数据一起删掉。
+        const placeholders = (s.match(/id IN \(([?,\s]*)\)/)?.[1].match(/\?/g) ?? []).length;
+        const ids = args.slice(0, placeholders || args.length).map(Number);
         if (s.startsWith("DELETE FROM groups WHERE id IN")) {
             this.groups = this.groups.filter(g => !ids.includes(g.id));
             return true;
@@ -178,6 +181,11 @@ class MockD1 {
                 if (norm.startsWith("INSERT")) {
                     const id = this.insert(sql, s._args || []);
                     return { results: (id === null ? [] : [{ id }]) as T[], success: true };
+                }
+                // 恢复提交把「配置 UPSERT + 旧数据清理」放进同一个 batch，桩要认 DELETE
+                if (norm.startsWith("DELETE")) {
+                    this.removeByIds(sql, s._args || []);
+                    return { results: [] as T[], success: true };
                 }
                 return { results: this.select(sql) as T[], success: true };
             })

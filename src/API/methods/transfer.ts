@@ -261,9 +261,19 @@ export const transferImpl: TransferApi = {
             }
 
             // 单个 batch 是 D1 事务：任意配置/删除失败时旧数据与配置均不变。
-            for (const [table, ids] of [["sites", oldSiteIds], ["groups", oldGroupIds]] as const) {
-                for (let offset = 0; offset < ids.length; offset += 90) {
-                    const chunk = ids.slice(offset, offset + 90);
+            //
+            // 删除前必须剔除本次新建的 id：SQLite 的 rowid 会复用「刚被删掉的最大值」，
+            // 于是新插入的行完全可能拿到一个也在 oldXxxIds 里的 id —— 不做这层过滤，
+            // 把备份恢复进来的一瞬间新数据就被自己后面这条 DELETE 抹掉了。
+            const freshGroups = new Set(createdGroupIds);
+            const freshSites = new Set(createdSiteIds);
+            for (const [table, ids, fresh] of [
+                ["sites", oldSiteIds, freshSites],
+                ["groups", oldGroupIds, freshGroups],
+            ] as const) {
+                const stale = ids.filter(id => !fresh.has(id));
+                for (let offset = 0; offset < stale.length; offset += 90) {
+                    const chunk = stale.slice(offset, offset + 90);
                     commitStatements.push(this.db.prepare(`DELETE FROM ${table} WHERE id IN (${chunk.map(() => "?").join(",")})${this.scopeSql(true)}`).bind(...this.scopeParams([...chunk])));
                 }
             }

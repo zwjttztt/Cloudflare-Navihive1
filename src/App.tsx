@@ -52,7 +52,15 @@ import { useSortController } from "./hooks/useSortController";
 import { useSiteCreator } from "./hooks/useSiteCreator";
 import { useBackupController } from "./hooks/useBackupController";
 import { usePrefSync } from "./hooks/usePrefSync";
-import { wrapMutations, installOnlineListener, flushOfflineQueue, pendingCount, type MutationApi } from "./API/offlineQueue";
+import {
+    wrapMutations,
+    installOnlineListener,
+    flushOfflineQueue,
+    pendingCount,
+    setAccountUid,
+    type MutationApi,
+} from "./API/offlineQueue";
+import { setActiveAccount, clearActiveAccount } from "./utils/accountScope";
 import { buildFavoritesGroup, deriveDisplayedGroups } from "./utils/siteView";
 import {
     SortMode,
@@ -110,7 +118,11 @@ import { normalizeFailureText, normalizeUrl } from "./utils/url";
 import { groupAccent } from "./utils/groupColor";
 import { matchesGroupQuery, matchesSiteQuery } from "./utils/search";
 import { saveRememberedLogin, clearRememberedLogin } from "./utils/rememberedLogin";
-import { loadPersistedUndo } from "./utils/undoPersist";
+import {
+    clearPersistedUndo,
+    loadPersistedUndo,
+    setUndoAccountUid,
+} from "./utils/undoPersist";
 import {
     secretInputSx,
     secretInputType,
@@ -282,8 +294,10 @@ function App() {
     const [loginLoading, setLoginLoading] = useState(false);
     // 是否已配置恢复公钥（未登录也能查，决定是否在登录页显示「用恢复密钥找回账号」）
     const [recoveryConfigured, setRecoveryConfigured] = useState(false);
-    // 当前登录账号（多账号后要能显示「我是谁」）
+    // 当前登录账号（多账号后要能显示「我是谁」）。
+    // id 是本地存储（离线队列 / 撤销快照 / 偏好）分账号的依据，改名或换人都靠它分辨。
     const [currentUser, setCurrentUser] = useState<{
+        id: number;
         username: string;
         role: "owner" | "user";
     } | null>(null);
@@ -426,6 +440,7 @@ function App() {
         setPrefSync,
         mergeRemotePrefs,
         mergeRemoteVisits,
+        markVisitsSynced,
     } = useUIPrefs();
 
 
@@ -606,7 +621,14 @@ function App() {
             if (result.success) {
                 setIsAuthenticated(true);
                 setIsAuthRequired(false);
-                setCurrentUser({ username: result.username || username, role: "user" });
+                // 服务端已经建号并发下会话，账号 id 要问一次才拿得到：
+                // 本地数据分账号靠的是这个 id，不能拿账号名凑（改名就对不上了）
+                const me = await api.getMe();
+                setCurrentUser(
+                    me ?? { id: 0, username: result.username || username, role: "user" }
+                );
+                // 新账号是另一个身份：本地数据从这一刻起归新账号
+                switchAccount(me ? me.id : 0);
                 handleCloseSnackbar();
                 await fetchData();
                 // 新账号是干净的：上一个账号生成的邀请码、配置过的恢复密钥都不能跟着带过来
@@ -856,9 +878,13 @@ function App() {
             if (ok) {
                 setIsAuthenticated(true);
                 setIsAuthRequired(false);
-                // 拿得到数据 = 已登录，顺带把「我是谁」取回来（失败不影响正常使用）
+                // 拿得到数据 = 已登录，顺带把「我是谁」取回来（失败不影响正常使用）。
+                // id 同时用来给本地数据划账号边界：换账号 / 换浏览器存档都要靠它分辨。
                 api.getMe()
-                    .then(me => setCurrentUser(me))
+                    .then(me => {
+                        setCurrentUser(me);
+                        switchAccount(me ? me.id : null);
+                    })
                     .catch(() => setCurrentUser(null));
             } else if (!api.isLoggedIn()) {
                 // 本地没有可用令牌
@@ -926,6 +952,12 @@ function App() {
                 }
                 // 加载数据（一次 bootstrap 请求）
                 await fetchData();
+                // 登录成功也要确认「我是谁」：换账号时本地数据要跟着换一份
+                const me = await api.getMe();
+                if (me) {
+                    setCurrentUser(me);
+                    switchAccount(me.id);
+                }
                 // 换账号了：恢复密钥状态要按新账号重新问一次
                 refreshRecoveryStatus();
             } else {
@@ -1008,6 +1040,14 @@ function App() {
     // 登出功能
     const handleLogout = () => {
         api.logout();
+        // 账号边界归零：撤销栈、撤销快照、离线队列全部解绑当前账号。
+        // 队列不删 —— 那可能是还没同步出去的编辑，等本人下次登录接着重放；
+        // 但绝不能留在「任何人都能重放」的全局键里。
+        clearActiveAccount();
+        setAccountUid(null);
+        setUndoAccountUid(null);
+        clearPersistedUndo();
+        clearHistory();
         setIsAuthenticated(false);
         setIsAuthRequired(true);
 
@@ -1182,9 +1222,29 @@ function App() {
         undo: undoHistory,
         redo: redoHistory,
         hydrate: hydrateHistory,
+        clear: clearHistory,
         canUndo,
         canRedo,
     } = useHistoryStack();
+
+    /**
+     * 切换账号时统一收拾本地状态（D03）。
+     *
+     * 换人登录最危险的不是界面没刷新，而是**上一个账号的本地数据继续生效**：
+     * 离线队列里排着的操作会被补发到新账号名下，撤销快照能一键把别人的卡片改回来，
+     * 撤销栈按钮还亮着。所以账号一变，这些都跟着换一份 / 清掉。
+     */
+    const switchAccount = useCallback(
+        (uid: number | null) => {
+            const changed = uid === null ? true : setActiveAccount(uid);
+            setAccountUid(uid);
+            setUndoAccountUid(uid);
+            if (!changed) return;
+            clearPersistedUndo();
+            clearHistory();
+        },
+        [clearHistory]
+    );
 
     /**
      * 刷新之后把上次留下的「可重放」撤销记录捞回来（见 utils/undoPersist）。
@@ -1202,8 +1262,21 @@ function App() {
             if (!stillThere) return null;
 
             const apply = async (site: Site) => {
-                await api.updateSite(item.siteId, { ...site, id: item.siteId });
-                upsertSiteLocally({ ...site, id: item.siteId });
+                // 快照里的账号 / 密码是空的（落盘前就抹掉了，见 undoPersist.stripSecrets）。
+                // 这里必须把它俩排除在写回之外 —— 否则撤销一次「改标题」会把库里的
+                // 站点密码清成空，等于借撤销之手做了一次静默的凭据删除。
+                const { username: _skipUser, password: _skipPass, ...rest } = site;
+                await api.updateSite(item.siteId, { ...rest, id: item.siteId });
+                // 本地同样保留现存的凭据字段，界面上不会突然变成「未设置密码」
+                const current = groupsRef.current
+                    .flatMap(group => group.sites)
+                    .find(s => s.id === item.siteId);
+                upsertSiteLocally({
+                    ...rest,
+                    id: item.siteId,
+                    username: current?.username ?? "",
+                    password: current?.password ?? "",
+                });
             };
             return {
                 label: item.label,
@@ -2334,6 +2407,7 @@ function App() {
         starred,
         tags,
         visits,
+        onVisitsSynced: markVisitsSynced,
         collapsedIds,
     });
 

@@ -4,16 +4,19 @@
 // 站点密码），导入是「一觉醒来整站被换掉」的入口，所以两者的限速 / 体积上限都在这儿。
 import type { ExportData, Group } from "../../src/API/http";
 import {
+    bumpGuard,
     computeLockAfterFailure,
     EXPORT_BASE_LOCK_MS,
+    EXPORT_COUNT_RESET_MS,
     EXPORT_FREE_ATTEMPTS,
+    EXPORT_GUARD_KEY,
     EXPORT_MAX_LOCK_MS,
     exportBucket,
     enforceWriteGuard,
+    nextDecayedCount,
     nextExportCount,
     readExportGuard,
     writeBucket,
-    writeExportGuard,
 } from "../loginGuard";
 import { isBodyTooLarge, safeJson } from "../util";
 import {
@@ -69,26 +72,29 @@ export async function handleBackupRoutes(ctx: RouteCtx): Promise<Response | null
         }
 
         // 成功也计数：每次导出都是一次全量读取 + 逐条解密，成本是真的。
-        // 但隔开一小时以上就从第 1 次重新数 —— 天天手动备份的人不该被越锁越久
-        const exportCount = nextExportCount(exportGuard, nowMs);
-        const lockMs = computeLockAfterFailure(
-            exportCount,
-            EXPORT_FREE_ATTEMPTS,
-            EXPORT_BASE_LOCK_MS,
-            EXPORT_MAX_LOCK_MS
-        );
-        if (lockMs > 0) {
-            // 这一趟超了额度：只记锁定时刻，不再往上加计数 ——
-            // 否则「被拦了还一直点」会把等待时间越点越长
-            await writeExportGuard(
-                api,
-                { count: exportGuard.count, until: nowMs + lockMs },
-                eBucket
+        // 但隔开一小时以上就从第 1 次重新数 —— 天天手动备份的人不该被越锁越久。
+        //
+        // 计数放进 CAS 循环里算（bumpGuard）：导出是最贵的一个接口，
+        // 并发时若各自拿旧值覆盖写回，额度就会被反复刷新成小值，限不住。
+        const bumped = await bumpGuard(api, EXPORT_GUARD_KEY, eBucket, prev => {
+            const seen = prev.seen ?? 0;
+            const count = nextDecayedCount({ ...prev, seen }, EXPORT_COUNT_RESET_MS, nowMs);
+            const lock = computeLockAfterFailure(
+                count,
+                EXPORT_FREE_ATTEMPTS,
+                EXPORT_BASE_LOCK_MS,
+                EXPORT_MAX_LOCK_MS
             );
-            return rejectExport(lockMs);
+            // 超了额度就只记锁定时刻、不再往上加计数 ——
+            // 否则「被拦了还一直点」会把等待时间越点越长
+            return lock > 0
+                ? { count: prev.count, until: nowMs + lock }
+                : { count, until: 0 };
+        });
+        const exportCount = bumped?.count ?? nextExportCount(exportGuard, nowMs);
+        if (bumped && bumped.until > nowMs) {
+            return rejectExport(bumped.until - nowMs);
         }
-
-        await writeExportGuard(api, { count: exportCount, until: 0 }, eBucket);
 
         const data = await api.exportData();
 

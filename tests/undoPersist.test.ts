@@ -9,10 +9,15 @@ import {
     isPersistedUndo,
     loadPersistedUndo,
     savePersistedUndo,
+    setUndoAccountUid,
     type PersistedUndo,
 } from "../src/utils/undoPersist";
 import { HistoryStack } from "../src/utils/historyStack";
+import { scopedKey } from "../src/utils/accountScope";
 import type { Site } from "../src/API/http";
+
+// 撤销快照按账号分片存放：没绑定账号时落在 anon 这一档
+const KEY = scopedKey("navihive:persistedUndo", null);
 
 // node 环境没有 localStorage：给一个够用的内存替身
 const store = new Map<string, string>();
@@ -70,7 +75,7 @@ test("超过一天的记录作废", () => {
 test("形状不对的记录丢弃（坏数据不能变成一步撤销）", () => {
     clearPersistedUndo();
     store.set(
-        "navihive:persistedUndo",
+        KEY,
         JSON.stringify([{ kind: "site-edit" }, null, "x", { kind: "delete", siteId: 1 }])
     );
     assert.equal(loadPersistedUndo().length, 0);
@@ -91,9 +96,37 @@ test("只留最近 10 步，多出来的丢最旧的", () => {
 
 test("存的是空列表：清掉键，不留空数组", () => {
     savePersistedUndo([undoItem()]);
-    assert.equal(store.has("navihive:persistedUndo"), true);
+    assert.equal(store.has(KEY), true);
     savePersistedUndo([]);
-    assert.equal(store.has("navihive:persistedUndo"), false);
+    assert.equal(store.has(KEY), false);
+});
+
+test("换账号后读不到上一个人的撤销快照", () => {
+    clearPersistedUndo();
+    savePersistedUndo([undoItem({ siteId: 1 })]);
+    setUndoAccountUid(7);
+    try {
+        assert.equal(loadPersistedUndo().length, 0, "别人的撤销不该被读出来");
+        savePersistedUndo([undoItem({ siteId: 2 })]);
+        assert.equal(loadPersistedUndo()[0].siteId, 2);
+    } finally {
+        setUndoAccountUid(null);
+        clearPersistedUndo();
+    }
+});
+
+test("落盘前抹掉站点凭据：密码不写进 localStorage", () => {
+    clearPersistedUndo();
+    savePersistedUndo([
+        undoItem({
+            before: site({ name: "改之前", username: "u1", password: "p1" }),
+            after: site({ name: "改之后", username: "u2", password: "p2" }),
+        }),
+    ]);
+    const raw = store.get(KEY) ?? "";
+    assert.equal(raw.includes("p1"), false, "旧密码不得出现在存储里");
+    assert.equal(raw.includes("p2"), false, "新密码不得出现在存储里");
+    assert.equal(loadPersistedUndo()[0].before.username, "", "账号名一并抹掉");
 });
 
 test("栈里带 persist 的才算可保留，撤销/重做要跟着同步", async () => {

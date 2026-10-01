@@ -248,9 +248,9 @@ export class MockNavigationClient {
         return { success: true, message: "模拟环境未真正注销账号" };
     }
 
-    // 当前身份（模拟环境固定为 owner）
-    async getMe(): Promise<{ username: string; role: "owner" | "user" } | null> {
-        return { username: "mock", role: "owner" };
+    // 当前身份（模拟环境固定为 owner；id 用 0 表示「无账号」这一档）
+    async getMe(): Promise<{ id: number; username: string; role: "owner" | "user" } | null> {
+        return { id: 0, username: "mock", role: "owner" };
     }
 
     // 保存恢复公钥（模拟环境仅返回成功，不真的落库）

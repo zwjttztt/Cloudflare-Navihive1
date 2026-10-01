@@ -45,6 +45,11 @@ export interface PrefSyncOptions {
     tags: Record<string, string[]>;
     /** 访问统计（哪条链接点过几次） */
     visits: Record<string, VisitStat>;
+    /**
+     * 上传成功后调用：把当前统计记为「已同步」。
+     * 记了基线，下次合并才知道哪些是新点的；不记就会把已上传的次数重复累加。
+     */
+    onVisitsSynced: () => void;
     /** 当前折叠的分组 id */
     collapsedIds: string[];
 }
@@ -67,6 +72,7 @@ export function usePrefSync({
     starred,
     tags,
     visits,
+    onVisitsSynced,
     collapsedIds,
 }: PrefSyncOptions): void {
     // ---- 失效检测结果 ----
@@ -132,10 +138,15 @@ export function usePrefSync({
             // 刚从服务端合并回来的那份内容一样，不必再写一次
             if (payload === lastVisitsPushRef.current) return;
             lastVisitsPushRef.current = payload;
-            void api.setConfig(PREF_VISITS_CONFIG, payload).catch(() => {});
+            // 只有真的写进服务端了才记基线：写失败时本机这份还没同步出去，
+            // 记成已同步的话，这几次访问就永远补不回去了。
+            void api
+                .setConfig(PREF_VISITS_CONFIG, payload)
+                .then(() => onVisitsSynced())
+                .catch(() => {});
         }, SYNC_DEBOUNCE_MS);
         return () => window.clearTimeout(timer);
-    }, [api, prefSync, visits]);
+    }, [api, prefSync, visits, onVisitsSynced]);
 
     // ---- 分组折叠 ----
     // 与访问统计不同，它是「当前状态」而不是累计量：以最后一次操作为准，
