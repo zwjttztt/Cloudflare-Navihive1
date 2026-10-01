@@ -2,7 +2,7 @@
 //
 // 内网拦截放在这里而不是配置层：判定的是「这个地址能不能发」，
 // 而真正要发的是 davFetch，放在一起不容易漏。
-import { errorMessage, isBlockedHost } from "../util";
+import { errorMessage, isBlockedHost, readBoundedBytes } from "../util";
 import type { Bytes } from "../../src/API/crypto";
 import { DEFAULT_WEBDAV_PATH, type WebDavConfig, type WebDavFile } from "./types";
 
@@ -61,7 +61,7 @@ export async function gzipBytes(input: string): Promise<Bytes> {
 // 不再满足 BlobPart，而 `subarray()` 会保留泛型参数，只能靠调用方给出确定类型。
 export async function gunzipToString(bytes: Bytes): Promise<string> {
     const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"));
-    return await new Response(stream).text();
+    return new TextDecoder().decode(await readBoundedBytes(stream, 10 * 1024 * 1024));
 }
 
 /** 测试连接/列目录这类探测请求的超时：卡住比报错更难受，15 秒还没回就当连不上 */
@@ -135,13 +135,23 @@ export async function davFetch(
         // 这里只做类型重解释，不拷贝数据（备份文件可能不小，避免白复制一遍）。
         body: (body ?? undefined) as BodyInit | undefined,
         redirect: "manual",
-        // 只给探测请求加超时：备份文件上传体积可能很大，不能被掐断
-        ...(timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
+        // 上传也必须有总耗时上限，避免无限占用资源。
+        signal: AbortSignal.timeout(timeoutMs || 60000),
     };
 
+    const original = new URL(url);
     let currentHref = url;
     for (let hop = 0; hop <= maxRedirects; hop++) {
         const target = new URL(currentHref);
+        if (!['http:', 'https:'].includes(target.protocol) || target.username || target.password) {
+            throw new Error("WebDAV 目标只允许无内嵌凭据的 http/https 地址");
+        }
+        if (original.protocol === "https:" && target.protocol !== "https:") {
+            throw new Error("WebDAV 不允许 HTTPS 降级重定向");
+        }
+        if (target.origin !== original.origin) {
+            throw new Error("WebDAV 不允许跨源重定向，请保存最终服务器地址");
+        }
         if (!config.allowPrivateNetwork && isBlockedHost(target.hostname)) {
             throw new Error("WebDAV 重定向目标不允许指向内网或本机");
         }

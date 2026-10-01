@@ -25,6 +25,41 @@ export function errorMessage(error: unknown, fallback: string): string {
     return error instanceof Error ? error.message || fallback : fallback;
 }
 
+export class BodyLimitError extends Error {
+    constructor(public readonly status = 413) { super(status === 413 ? "payload too large" : "body read timeout"); }
+}
+
+/** 在读取期间限制累计字节和总耗时，并在超限时取消流。 */
+export async function readBoundedBytes(body: ReadableStream<Uint8Array> | null, maxBytes: number, timeoutMs = 15000): Promise<Uint8Array<ArrayBuffer>> {
+    if (!body) return new Uint8Array(0);
+    const reader = body.getReader();
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => { void reader.cancel().catch(() => {}); reject(new BodyLimitError(408)); }, timeoutMs);
+    });
+    try {
+        while (true) {
+            const { done, value } = await Promise.race([reader.read(), deadline]);
+            if (done) break;
+            size += value.byteLength;
+            if (size > maxBytes) throw new BodyLimitError();
+            chunks.push(value);
+        }
+        const out = new Uint8Array(size);
+        let offset = 0;
+        for (const chunk of chunks) { out.set(chunk, offset); offset += chunk.byteLength; }
+        return out;
+    } catch (error) {
+        void reader.cancel().catch(() => {});
+        throw error;
+    } finally {
+        if (timer !== undefined) clearTimeout(timer);
+        reader.releaseLock();
+    }
+}
+
 // 安全地读取请求体（无 body 时返回空对象）
 export async function safeJson(request: Request): Promise<Record<string, unknown>> {
     try {

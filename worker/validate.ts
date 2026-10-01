@@ -1,6 +1,7 @@
 // worker/validate.ts
 // 各写路由的请求体校验：返回错误列表 + 清洗后的数据（trim、截断超长字段、URL 格式校验）。
 
+import { normalizeUrl } from "../src/utils/url";
 import type { Group, Site } from "../src/API/http";
 import { sanitizeIconUrl } from "../src/API/http";
 import type { ConfigInput, GroupInput, LoginInput, SiteInput } from "./types";
@@ -27,14 +28,14 @@ export function validateGroup(data: GroupInput): {
     const sanitizedData: Partial<Group> = {};
 
     // 验证名称
-    if (!data.name || typeof data.name !== "string") {
+    if (typeof data.name !== "string" || !data.name.trim()) {
         errors.push("分组名称不能为空且必须是字符串");
     } else {
         sanitizedData.name = data.name.trim().slice(0, 100); // 限制长度
     }
 
     // 验证排序号
-    if (data.order_num === undefined || typeof data.order_num !== "number") {
+    if (data.order_num === undefined || !Number.isSafeInteger(data.order_num)) {
         errors.push("排序号必须是数字");
     } else {
         sanitizedData.order_num = data.order_num;
@@ -55,14 +56,14 @@ export function validateSite(data: SiteInput): {
     const sanitizedData: Partial<Site> = {};
 
     // 验证分组ID
-    if (!data.group_id || typeof data.group_id !== "number") {
+    if (!Number.isSafeInteger(data.group_id) || (data.group_id ?? 0) <= 0) {
         errors.push("分组ID必须是数字且不能为空");
     } else {
         sanitizedData.group_id = data.group_id;
     }
 
     // 验证名称
-    if (!data.name || typeof data.name !== "string") {
+    if (typeof data.name !== "string" || !data.name.trim()) {
         errors.push("站点名称不能为空且必须是字符串");
     } else {
         sanitizedData.name = data.name.trim().slice(0, 100); // 限制长度
@@ -72,13 +73,9 @@ export function validateSite(data: SiteInput): {
     if (!data.url || typeof data.url !== "string") {
         errors.push("URL不能为空且必须是字符串");
     } else {
-        try {
-            // 验证URL格式
-            new URL(data.url);
-            sanitizedData.url = data.url.trim();
-        } catch {
-            errors.push("无效的URL格式");
-        }
+        const normalized = normalizeUrl(data.url);
+        if (normalized.ok) sanitizedData.url = normalized.url;
+        else errors.push("无效的URL格式：只支持 http/https");
     }
 
     // 验证图标URL (可选)
@@ -134,7 +131,7 @@ export function validateSite(data: SiteInput): {
     }
 
     // 验证排序号
-    if (data.order_num === undefined || typeof data.order_num !== "number") {
+    if (data.order_num === undefined || !Number.isSafeInteger(data.order_num)) {
         errors.push("排序号必须是数字");
     } else {
         sanitizedData.order_num = data.order_num;

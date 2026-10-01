@@ -1,7 +1,7 @@
 // worker/icon.ts
 
 import { safeFetch } from "./safeFetch";
-import { securityHeaders } from "./util";
+import { securityHeaders, readBoundedBytes, BodyLimitError } from "./util";
 
 /**
  * 图标代理：把第三方 favicon 抓回来当同源响应发出去。
@@ -63,7 +63,7 @@ export async function proxyIcon(request: Request): Promise<Response> {
     }
 
     const fetched = await safeFetch(targetUrl, {
-        timeoutMs: 0,
+        timeoutMs: 8000,
         headers: { Accept: "image/*,*/*;q=0.8" },
     });
     if (!fetched.ok) {
@@ -82,7 +82,7 @@ export async function proxyIcon(request: Request): Promise<Response> {
             });
         }
 
-        const body = await upstream.arrayBuffer();
+        const body = await readBoundedBytes(upstream.body, 512 * 1024, 8000);
         if (body.byteLength > 512 * 1024) {
             return new Response("图标过大", {
                 status: 413,
@@ -117,9 +117,9 @@ export async function proxyIcon(request: Request): Promise<Response> {
                 "X-Icon-Target": targetUrl.hostname,
             }),
         });
-    } catch {
+    } catch (error) {
         return new Response("取图标失败", {
-            status: 502,
+            status: error instanceof BodyLimitError ? error.status : 502,
             headers: securityHeaders({ "Content-Type": "text/plain; charset=utf-8" }),
         });
     }

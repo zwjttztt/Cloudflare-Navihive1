@@ -908,9 +908,9 @@ function App() {
                     return;
                 }
 
-                // 「记住账号密码」：勾选则保存到本地供下次回填，未勾选则清除
+                // 只记账号名；持续登录使用服务端 HttpOnly Cookie。
                 if (remember) {
-                    saveRememberedLogin({ username, password });
+                    saveRememberedLogin({ username });
                 } else {
                     clearRememberedLogin();
                 }

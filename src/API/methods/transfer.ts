@@ -6,6 +6,7 @@
 // 别在这个文件里 new NavigationAPI，也别在模块顶层读它的状态。
 
 import type { NavigationAPI } from "../http";
+import type { D1PreparedStatement } from "../schema";
 import { computeBackupIntegrity, verifyBackupIntegrity } from "../../utils/backupIntegrity";
 import { normalizeUrl } from "../../utils/url";
 import { isAuthConfigKey, isPerUserAppearanceKey, isSecretConfigKey, isUserScopedConfigKey, stripSecretConfigs } from "../configGuards";
@@ -236,6 +237,8 @@ export const transferImpl: TransferApi = {
                 ...Object.entries(normalized.sharedConfigs || {}),
             ];
 
+            // 配置切换与旧版本删除必须在同一个 D1 batch 事务内提交。
+            const commitStatements: D1PreparedStatement[] = [];
             for (const [key, value] of configEntries) {
                 if (key === "DB_INITIALIZED") {
                     // 跳过数据库初始化标志
@@ -248,13 +251,26 @@ export const transferImpl: TransferApi = {
                 if (!isUserScopedConfigKey(key) && !mayWriteShared) {
                     continue;
                 }
-                await this.setConfig(key, value);
+                if (typeof value !== "string" || key.length > 200 || value.length > 256 * 1024) {
+                    throw new Error("备份配置格式无效或过大");
+                }
+                const uid = await this.scopeFor(key);
+                commitStatements.push(uid === null
+                    ? this.db.prepare("INSERT INTO configs (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=CURRENT_TIMESTAMP").bind(key, value)
+                    : this.db.prepare("INSERT INTO user_configs (user_id, key, value, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP) ON CONFLICT(user_id, key) DO UPDATE SET value=excluded.value, updated_at=CURRENT_TIMESTAMP").bind(uid, key, value));
             }
 
-            // 走到这里说明新数据已经整批就位，这才清掉旧数据：
-            // 站点先删（挂在分组下），分组后删
-            await this.deleteRowsByIds("sites", oldSiteIds);
-            await this.deleteRowsByIds("groups", oldGroupIds);
+            // 单个 batch 是 D1 事务：任意配置/删除失败时旧数据与配置均不变。
+            for (const [table, ids] of [["sites", oldSiteIds], ["groups", oldGroupIds]] as const) {
+                for (let offset = 0; offset < ids.length; offset += 90) {
+                    const chunk = ids.slice(offset, offset + 90);
+                    commitStatements.push(this.db.prepare(`DELETE FROM ${table} WHERE id IN (${chunk.map(() => "?").join(",")})${this.scopeSql(true)}`).bind(...this.scopeParams([...chunk])));
+                }
+            }
+            if (commitStatements.length) {
+                const committed = await this.db.batch(commitStatements);
+                if (committed.some(result => !result.success)) throw new Error("恢复事务提交失败");
+            }
 
             return { success: true, groupIdMap, siteIdMap };
         } catch (error) {

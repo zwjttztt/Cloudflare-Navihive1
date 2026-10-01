@@ -2,7 +2,7 @@
 //
 // 从 worker/index.ts 拆出来。导出是「拿到会话后收益最大」的接口（整站数据 + 解密后的
 // 站点密码），导入是「一觉醒来整站被换掉」的入口，所以两者的限速 / 体积上限都在这儿。
-import type { ExportData } from "../../src/API/http";
+import type { ExportData, Group } from "../../src/API/http";
 import {
     computeLockAfterFailure,
     EXPORT_BASE_LOCK_MS,
@@ -155,7 +155,9 @@ export async function handleBackupRoutes(ctx: RouteCtx): Promise<Response | null
         // 整批 INSERT 会把 D1 单次请求顶满、剩下的全失败（还得回滚）。
         // 正常备份远到不了这个量级，真超了说明文件不对劲。
         const groupCount = Array.isArray(data.groups) ? data.groups.length : 0;
-        const siteCount = Array.isArray(data.sites) ? data.sites.length : 0;
+        const siteCount = Array.isArray(data.sites) && data.sites.length > 0
+            ? data.sites.length
+            : data.groups.reduce((sum, group) => sum + (Array.isArray((group as Group & { sites?: unknown[] }).sites) ? (group as Group & { sites: unknown[] }).sites.length : 0), 0);
         if (groupCount > MAX_IMPORT_GROUPS || siteCount > MAX_IMPORT_SITES) {
             return Response.json(
                 {

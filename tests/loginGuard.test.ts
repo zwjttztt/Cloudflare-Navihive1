@@ -18,6 +18,10 @@ import {
     LOGIN_GUARD_KEY,
     LOGIN_BASE_LOCK_MS,
     REGISTER_GUARD_KEY,
+    enforceWriteGuard,
+    readWriteGuard,
+    WRITE_GUARD_KEY,
+    WRITE_FREE_ATTEMPTS,
 } from "../worker/loginGuard";
 
 /**
@@ -61,6 +65,36 @@ function makeApi(initial?: Record<string, string>, casHooks: CasHook[] = []) {
         },
     };
 }
+
+test("写限速：同桶并发重读后递增，不丢失计数", async () => {
+    const { api } = makeApi();
+    const results = await Promise.all([
+        enforceWriteGuard(api as never, "same"),
+        enforceWriteGuard(api as never, "same"),
+    ]);
+    assert.deepEqual(results, [null, null]);
+    assert.equal((await readWriteGuard(api as never, "same")).count, 2);
+});
+
+test("写限速：达到上限后的当前请求即拒绝", async () => {
+    const { api } = makeApi({
+        [WRITE_GUARD_KEY]: JSON.stringify({ version: 2, buckets: {
+            same: { count: WRITE_FREE_ATTEMPTS, until: 0, seen: Date.now() },
+        } }),
+    });
+    assert.equal((await enforceWriteGuard(api as never, "same"))?.status, 429);
+    assert.equal((await readWriteGuard(api as never, "same")).count, WRITE_FREE_ATTEMPTS + 1);
+    assert.equal((await enforceWriteGuard(api as never, "same"))?.status, 429);
+    assert.equal((await readWriteGuard(api as never, "same")).count, WRITE_FREE_ATTEMPTS + 1);
+});
+
+test("写限速：竞争耗尽、存储失败或缺少 CAS 不放行", async () => {
+    const { api } = makeApi({}, [() => false, () => false, () => false]);
+    assert.equal((await enforceWriteGuard(api as never, "same"))?.status, 503);
+    const broken = { ...api, getConfig: async () => { throw new Error("db unavailable"); } };
+    assert.equal((await enforceWriteGuard(broken as never, "same"))?.status, 503);
+    assert.equal((await enforceWriteGuard({ getConfig: api.getConfig } as never, "same"))?.status, 503);
+});
 
 test("登录限速按来源分桶：一个人的失败不会累到另一个人", async () => {
     const { api } = makeApi();

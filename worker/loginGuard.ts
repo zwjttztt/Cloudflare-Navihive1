@@ -429,24 +429,40 @@ export async function enforceWriteGuard(
     api: NavigationAPI,
     bucket: string
 ): Promise<Response | null> {
-    const guard = await readWriteGuard(api, bucket);
-    const now = Date.now();
-
-    if (guard.until > now) {
-        const retryAfter = Math.max(1, Math.ceil((guard.until - now) / 1000));
+    const limited = (until: number, now: number) => {
+        const retryAfter = Math.max(1, Math.ceil((until - now) / 1000));
         return Response.json(
             { success: false, message: `操作太频繁，请 ${retryAfter} 秒后再试` },
             { status: 429, headers: { "Retry-After": String(retryAfter) } }
         );
+    };
+    // 计数必须在每次 CAS 重读后计算，不能重试一个外部算好的固定值。
+    // 缺少 CAS、读取失败或竞争耗尽时拒绝写操作，避免故障绕过限速。
+    if (typeof api.compareAndSetConfig === "function") {
+        for (let attempt = 0; attempt < CAS_MAX_ATTEMPTS; attempt++) {
+            try {
+                const raw = await api.getConfig(WRITE_GUARD_KEY);
+                const store = parseGuardStore(raw);
+                const guard = store[bucket] ?? { count: 0, until: 0, seen: 0 };
+                const now = Date.now();
+                if (guard.until > now) return limited(guard.until, now);
+                const count = nextDecayedCount(guard, WRITE_COUNT_RESET_MS, now);
+                const lockMs = computeLockAfterFailure(
+                    count, WRITE_FREE_ATTEMPTS, WRITE_BASE_LOCK_MS, WRITE_MAX_LOCK_MS
+                );
+                const until = lockMs > 0 ? now + lockMs : 0;
+                store[bucket] = { count, until, seen: now };
+                if (await api.compareAndSetConfig(WRITE_GUARD_KEY, raw, serializeGuardStore(store))) {
+                    return until > now ? limited(until, now) : null;
+                }
+            } catch {
+                break;
+            }
+            if (attempt < CAS_MAX_ATTEMPTS - 1) await sleep(CAS_BACKOFF_MS * (attempt + 1));
+        }
     }
-
-    const count = nextDecayedCount(guard, WRITE_COUNT_RESET_MS, now);
-    const lockMs = computeLockAfterFailure(
-        count,
-        WRITE_FREE_ATTEMPTS,
-        WRITE_BASE_LOCK_MS,
-        WRITE_MAX_LOCK_MS
+    return Response.json(
+        { success: false, message: "限速服务暂不可用，请稍后再试" },
+        { status: 503, headers: { "Retry-After": "1" } }
     );
-    await writeWriteGuard(api, { count, until: lockMs > 0 ? now + lockMs : 0 }, bucket);
-    return null;
 }

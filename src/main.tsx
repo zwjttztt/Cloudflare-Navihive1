@@ -2,6 +2,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import "./index.css";
 import App from "./App.tsx";
+import { readRememberedLogin } from "./utils/rememberedLogin";
 import { UIPrefsProvider } from "./context/UIPrefsContext";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { applyInputModeClass } from "./utils/device";
@@ -26,6 +27,8 @@ import { setupGlobalHandlers } from "./utils/errorReporter";
 // 触屏判定要在首帧前落定：卡片浮层在触屏上常显、在鼠标环境里悬停才出，
 // 全都看 <html> 上的 .nav-touch（见 utils/device.ts）
 applyInputModeClass();
+// 即使已有会话不显示登录页，也立即移除旧版明文密码。
+readRememberedLogin();
 
 // 接住未捕获的 window.onerror / unhandledrejection，统一上报到 /api/report-error
 setupGlobalHandlers();

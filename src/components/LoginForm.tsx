@@ -175,7 +175,6 @@ const LoginForm: React.FC<LoginFormProps> = ({
         const saved = readRememberedLogin();
         if (saved) {
             setUsername(saved.username);
-            setPassword(saved.password);
             setRemember(true);
         }
     }, []);

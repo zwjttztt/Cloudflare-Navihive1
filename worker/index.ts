@@ -16,6 +16,7 @@
  *     图标与上报是浏览器 <img> / report-only 发的，压根带不上 Authorization。
  *   - 受保护路由必须在鉴权中间件**之后**，且排在「强制改密」闸门之后。
  */
+import { BodyLimitError, readBoundedBytes } from "./util";
 import { NavigationAPI } from "../src/API/navigationApi";
 import { runScheduledTasks } from "./cron";
 import {
@@ -72,6 +73,13 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
     }
 
     try {
+        // 所有 API 写入统一在解析前限制实际流量，不依赖可缺失的 Content-Length。
+        if (!["GET", "HEAD"].includes(request.method)) {
+            const large = /\/api\/(import|webdav\/upload)$/.test(url.pathname);
+            const report = /\/api\/(report-error|csp-report)$/.test(url.pathname);
+            const bytes = await readBoundedBytes(request.body, large ? 10 * 1024 * 1024 : report ? 8192 : 256 * 1024);
+            request = new Request(request, { body: bytes.byteLength ? bytes : null });
+        }
         const api = new NavigationAPI(env);
         const ctx: RouteCtx = {
             request,
@@ -132,6 +140,7 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
             headers: TEXT_HEADERS(),
         });
     } catch (error) {
+        if (error instanceof BodyLimitError) return new Response(error.message, { status: error.status, headers: TEXT_HEADERS() });
         // 安全处理错误，不暴露内部细节
         console.error(`API错误: ${error instanceof Error ? error.message : "未知错误"}`);
         return new Response(`处理请求时发生错误`, {

@@ -20,6 +20,11 @@ function fakeApi(): { api: NavigationAPI; raw: () => string | null } {
     const store = new Map<string, string>();
     const api = {
         getConfig: async (key: string) => store.get(key) ?? null,
+        compareAndSetConfig: async (key: string, expected: string | null, next: string) => {
+            if ((store.get(key) ?? null) !== expected) return false;
+            store.set(key, next);
+            return true;
+        },
         setConfig: async (key: string, value: string) => {
             store.set(key, value);
         },
@@ -55,12 +60,11 @@ test("写操作限速：免罚额度内全放行，超出后 429 且带 Retry-Af
         assert.equal(await enforceWriteGuard(api, bucket), null, `第 ${i + 1} 次应当放行`);
     }
 
-    // 语义与登录锁一致：免罚额度用完之后的那一次**仍然放行**，只是从这次起挂上锁；
-    // 真正被挡住的是再下一次。所以这里是「第 121 次放行并计时」。
+    // 超额的当前请求就拒绝，不能多放行一次。
     assert.equal(
-        await enforceWriteGuard(api, bucket),
-        null,
-        `第 ${WRITE_FREE_ATTEMPTS + 1} 次放行，但从这次起进入锁定期`
+        (await enforceWriteGuard(api, bucket))?.status,
+        429,
+        `第 ${WRITE_FREE_ATTEMPTS + 1} 次应拒绝并进入锁定期`
     );
 
     const blocked = await enforceWriteGuard(api, bucket);

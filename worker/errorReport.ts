@@ -15,7 +15,7 @@
 
 import type { Env } from "./types";
 import { NavigationAPI } from "../src/API/navigationApi";
-import { isBlockedHost } from "./util";
+import { isBlockedHost, readBoundedBytes, BodyLimitError } from "./util";
 
 // ============ 限速 ============
 // 这是个**公开**路由：谁都能 POST，而且每次都会往 audit_log 写一行。
@@ -136,13 +136,13 @@ export async function reportError(request: Request, env: Env): Promise<Response>
     // 超限直接拒（避免有人用小 Content-Length + 超大 body 撑爆日志 / 内存）。
     let rawText: string;
     try {
-        const buf = await request.arrayBuffer();
+        const buf = await readBoundedBytes(request.body, MAX_PER_REQUEST_BODY_BYTES);
         if (buf.byteLength > MAX_PER_REQUEST_BODY_BYTES) {
             return new Response("payload too large", { status: 413 });
         }
         rawText = new TextDecoder().decode(buf);
-    } catch {
-        return new Response("bad request", { status: 400 });
+    } catch (error) {
+        return new Response("bad request", { status: error instanceof BodyLimitError ? error.status : 400 });
     }
 
     let raw: Record<string, unknown>;
