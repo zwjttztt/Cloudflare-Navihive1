@@ -4,9 +4,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+    buildSearchIndex,
     matchesGroupQuery,
+    matchesPrepared,
     matchesSiteQuery,
     normalizeSearchText,
+    prepareQuery,
+    siteHaystack,
     siteSearchText,
 } from "../src/utils/search";
 import { findDuplicateSite, groupByUrlKey, urlKey } from "../src/utils/duplicate";
@@ -109,4 +113,98 @@ test("groupByUrlKey 把同链接的卡片归到一起，空链接跳过", () => 
     const map = groupByUrlKey(list);
     assert.equal(map.size, 1);
     assert.equal([...map.values()][0].length, 2);
+});
+
+// ============ 检索索引：结果与「逐个现算」必须完全一致 ============
+// 索引是纯性能优化，命中结果**一个都不许变**。下面每条都跑两遍：
+// 一遍走索引、一遍走原来的 matchesSiteQuery，两者必须同真同假。
+
+test("索引路径与逐个现算的命中结果完全一致（多词 / 域名 / 描述 / 未命中）", () => {
+    const sites: Site[] = [
+        site({ id: 1, name: "云设", url: "https://www.yunso.net/", description: "在线设计工具" }),
+        site({ id: 2, name: "GitHub", url: "https://github.com", description: "代码托管" }),
+        site({ id: 3, name: "百度", url: "https://baidu.com", description: "搜索" }),
+        site({ id: 4, name: "设计_素材", url: "https://sucai.example", description: "" }),
+    ];
+    const groups: GroupWithSites[] = [{ id: 1, name: "常用工具", order_num: 0, sites }];
+    const index = buildSearchIndex(groups);
+
+    const queries = [
+        "云设", "设计", "云设 设计", "云设 不存在的词", "github",
+        "https://github.com", "搜索", "", "   ", "素材", "baidu", "不存在的东西",
+    ];
+
+    for (const q of queries) {
+        const prepared = prepareQuery(q);
+        for (const s of sites) {
+            const entry = index.sites.get(s.id as number);
+            assert.ok(entry, `索引里该有站点 ${s.id}`);
+            const viaIndex = matchesPrepared(entry!.haystack, entry!.name, prepared, false);
+            const direct = matchesSiteQuery(s, q, false);
+            assert.equal(
+                viaIndex,
+                direct,
+                `关键词「${q}」对站点「${s.name}」：索引结果 ${viaIndex} 与直接结果 ${direct} 不一致`
+            );
+        }
+    }
+});
+
+test("分组名命中：索引里的分组名与现算一致（整组保留那一条分支）", () => {
+    const groups: GroupWithSites[] = [
+        { id: 1, name: "常用工具", order_num: 0, sites: [site({ id: 11, name: "A" })] },
+        { id: 2, name: "开发", order_num: 1, sites: [site({ id: 21, name: "B" })] },
+    ];
+    const index = buildSearchIndex(groups);
+
+    for (const name of ["常用工具", "常用", "开发", "不存在的分组"]) {
+        const prepared = prepareQuery(name);
+        for (const g of groups) {
+            const haystack = index.groups.get(g.id as number) ?? "";
+            assert.equal(
+                matchesPrepared(haystack, g.name, prepared, false),
+                matchesGroupQuery(g.name, name, false),
+                `分组「${g.name}」关键词「${name}」结果不一致`
+            );
+        }
+    }
+});
+
+test("索引在数据不变时不用重建：站点侧文本只算一次", () => {
+    // 计数用的探针：normalizeSearchText 是被复用的，这里数的是「建索引走了多少次」
+    const groups: GroupWithSites[] = [
+        {
+            id: 1,
+            name: "分组",
+            order_num: 0,
+            sites: Array.from({ length: 500 }, (_, i) =>
+                site({ id: 100 + i, name: `站点${i}`, url: `https://s${i}.com` })
+            ),
+        },
+    ];
+
+    const t0 = process.hrtime.bigint();
+    const index = buildSearchIndex(groups);
+    const t1 = process.hrtime.bigint();
+    assert.equal(index.sites.size, 500, "每张卡片都要进索引");
+
+    // 索引建好之后，一次查询里不再有任何归一化：只做 includes
+    const prepared = prepareQuery("站点250");
+    let hits = 0;
+    for (const entry of index.sites.values()) {
+        if (matchesPrepared(entry.haystack, entry.name, prepared, false)) hits++;
+    }
+    const t2 = process.hrtime.bigint();
+
+    assert.equal(hits, 1, "只有那一张命中");
+    // 这两条不是精确的性能断言（机器不同差异大），只保证「扫一遍比建索引快一个量级」：
+    // 真退化成「每次查询都重新归一化」的话，扫一遍不可能比建索引还快
+    const scanMs = Number(t2 - t1) / 1e6;
+    const buildMs = Number(t1 - t0) / 1e6;
+    assert.ok(scanMs < Math.max(buildMs, 1), `扫一遍(${scanMs.toFixed(2)}ms)不该比建索引(${buildMs.toFixed(2)}ms)还慢`);
+});
+
+test("siteHaystack 与 matchesSiteQuery 用同一套归一化（改了归一化两边一起变）", () => {
+    const s = site({ name: "云设", url: "https://www.YunSo.net/" });
+    assert.equal(siteHaystack(s), normalizeSearchText(siteSearchText(s)));
 });

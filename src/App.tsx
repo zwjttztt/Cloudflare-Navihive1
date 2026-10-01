@@ -117,7 +117,7 @@ import {
 import { normalizeFailureText, normalizeUrl } from "./utils/url";
 import { safeOpenSite } from "./utils/safeOpen";
 import { groupAccent } from "./utils/groupColor";
-import { matchesGroupQuery, matchesSiteQuery } from "./utils/search";
+import { buildSearchIndex, matchesPrepared, prepareQuery, siteHaystack } from "./utils/search";
 import { saveRememberedLogin, clearRememberedLogin } from "./utils/rememberedLogin";
 import {
     clearPersistedUndo,
@@ -2113,17 +2113,37 @@ function App() {
     // 按关键词筛选：命中「网站名称 / 网站链接 / 网站描述」的卡片会被保留，分组名命中则整组保留。
     // 用 useDeferredValue 把过滤推迟到空闲帧：输入框始终跟手，卡片多的时候也不会边打边卡。
     const query = useDeferredValue(searchQuery.trim().toLowerCase());
+
+    // 检索索引：站点侧与分组侧的归一化文本只在**数据变了**时算一次。
+    // 以前是每次按键对每个站点跑三趟正则，几千张卡片时输入会开始发涩。
+    const searchIndex = useMemo(() => buildSearchIndex(groups), [groups]);
+    // 查询侧同理：一个关键词只归一化一次，全站点复用
+    const preparedQuery = useMemo(() => prepareQuery(query), [query]);
+
     const filteredGroups = useMemo(() => {
-        if (!query) return groups;
+        if (!preparedQuery.text) return groups;
 
         return groups
             .map(group => {
-                if (matchesGroupQuery(group.name, query, usePinyin)) return group;
-                const sites = group.sites.filter(site => matchesSiteQuery(site, query, usePinyin));
+                const groupHaystack =
+                    group.id !== undefined ? searchIndex.groups.get(group.id) ?? "" : "";
+                if (matchesPrepared(groupHaystack, group.name, preparedQuery, usePinyin)) {
+                    return group;
+                }
+                const sites = group.sites.filter(site => {
+                    // 索引里没有（刚离线新建、还没回填 id）就现算一次，别把它当成不命中
+                    const entry = site.id !== undefined ? searchIndex.sites.get(site.id) : undefined;
+                    return matchesPrepared(
+                        entry?.haystack ?? siteHaystack(site),
+                        entry?.name ?? site.name ?? "",
+                        preparedQuery,
+                        usePinyin
+                    );
+                });
                 return { ...group, sites };
             })
             .filter(group => group.sites.length > 0);
-    }, [groups, query, usePinyin]);
+    }, [groups, preparedQuery, usePinyin, searchIndex]);
 
     // 星标 / 标签筛选：在搜索结果之上再叠一层。
     // 标签取交集（同时带「工具」「AI」两个标签才命中），星标是独立的开关。
