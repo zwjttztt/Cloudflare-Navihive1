@@ -172,6 +172,15 @@ interface UIPrefsValue {
      */
     offlineFull: boolean;
     setOfflineFull: (enabled: boolean) => void;
+    /**
+     * 图标隐私模式：打开后**一个第三方图标请求都不发**。
+     *
+     * 取图标这件事本身会泄露访问了哪些站：卡片一进视野，浏览器（或本站的
+     * /api/icon 代理）就要去那个域名抓一次 favicon，第三方图标服务还会顺带
+     * 记下这个域名。开启后卡片一律用首字母块，代价是图标没那么好看。
+     */
+    iconPrivacy: boolean;
+    setIconPrivacy: (enabled: boolean) => void;
     visits: Record<string, VisitStat>;
     recordVisit: (siteId?: number) => void;
     clearVisits: () => void;
@@ -255,6 +264,8 @@ const GLASS_KEY = "navihive:glassEffects";
 const PREF_SYNC_KEY = "navihive:prefSync";
 /** 离线增强：用户显式开启后才把懒加载的功能块也预下载下来 */
 const OFFLINE_FULL_KEY = "navihive:offlineFull";
+/** 图标隐私模式：开启后不再为取图标而请求任何第三方 */
+const ICON_PRIVACY_KEY = "navihive:iconPrivacy";
 /** 搜索历史最多留几条，够用又不至于把面板撑长 */
 const SEARCH_HISTORY_MAX = 8;
 
@@ -370,6 +381,8 @@ const defaultValue: UIPrefsValue = {
     setGlassEffects: () => {},
     offlineFull: false,
     setOfflineFull: () => {},
+    iconPrivacy: false,
+    setIconPrivacy: () => {},
     setFavoritesEnabled: () => {},
     visits: {},
     recordVisit: () => {},
@@ -432,6 +445,10 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
     // 默认全预下来等于把那层优化白做了。要断网也能用全部功能，由用户自己打开。
     const [offlineFull, setOfflineFullState] = useState<boolean>(
         () => readString(OFFLINE_FULL_KEY, "0") === "1"
+    );
+    // 图标隐私模式默认关：默认行为不变（图标照常取），想要「不为图标访问外站」的人自己开
+    const [iconPrivacy, setIconPrivacyState] = useState<boolean>(
+        () => readString(ICON_PRIVACY_KEY, "0") === "1"
     );
     const [visits, setVisits] = useState<Record<string, VisitStat>>(readVisits);
     const [radius, setRadiusState] = useState<RadiusStyle>(() => {
@@ -581,6 +598,11 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
     const setGlassEffects = useCallback((enabled: boolean) => {
         setGlassState(enabled);
         write(GLASS_KEY, enabled ? "1" : "0");
+    }, []);
+
+    const setIconPrivacy = useCallback((enabled: boolean) => {
+        setIconPrivacyState(enabled);
+        write(ICON_PRIVACY_KEY, enabled ? "1" : "0");
     }, []);
 
     const setOfflineFull = useCallback((enabled: boolean) => {
@@ -876,6 +898,8 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
             setGlassEffects,
             offlineFull,
             setOfflineFull,
+            iconPrivacy,
+            setIconPrivacy,
             visits,
             recordVisit,
             clearVisits,
@@ -922,6 +946,8 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
             setGlassEffects,
             offlineFull,
             setOfflineFull,
+            iconPrivacy,
+            setIconPrivacy,
             visits,
             recordVisit,
             clearVisits,

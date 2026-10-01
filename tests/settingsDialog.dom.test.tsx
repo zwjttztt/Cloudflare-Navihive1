@@ -29,6 +29,7 @@ type Calls = {
     fontScale: FontScale[];
     glassEffects: boolean[];
     offlineFull: boolean[];
+    iconPrivacy: boolean[];
     closes: number;
     saves: number;
     linkChecks: number;
@@ -75,6 +76,7 @@ function emptyCalls(): Calls {
         fontScale: [],
         glassEffects: [],
         offlineFull: [],
+        iconPrivacy: [],
         closes: 0,
         saves: 0,
         linkChecks: 0,
@@ -88,6 +90,7 @@ function Harness(o: Opts) {
     const [fontScale, setFontScale] = useState<FontScale>(o.fontScale ?? "normal");
     const [pinyin, setPinyin] = useState(false);
     const [offlineFull, setOfflineFull] = useState(false);
+    const [iconPrivacy, setIconPrivacy] = useState(false);
     const [syncHealth, setSyncHealth] = useState(false);
     const [syncPrefs, setSyncPrefs] = useState(false);
     const [, setMaskOpacity] = useState(0.3);
@@ -126,6 +129,11 @@ function Harness(o: Opts) {
             onOfflineFullChange={v => {
                 calls.offlineFull.push(v);
                 setOfflineFull(v);
+            }}
+            iconPrivacy={iconPrivacy}
+            onIconPrivacyChange={v => {
+                calls.iconPrivacy.push(v);
+                setIconPrivacy(v);
             }}
             saving={o.saving ?? false}
             pinyinSearch={pinyin}

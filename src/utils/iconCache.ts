@@ -19,10 +19,99 @@ const BLOB_MAX_BYTES = 200 * 1024;
 export type IconRecord = { ok: boolean; ts: number };
 export type IconBlobRecord = { blob: Blob; type: string; ts: number };
 
+/**
+ * 「这个图标源能用」这条记事的保质期。
+ *
+ * 站点换图标是常事：换了新的 favicon，我们却永远记得「老地址能用」，
+ * 于是每次都命中老地址 —— 用户看到的是几个月前的图标，刷新也没用。
+ * 到期就当作没记过，重新走一次网络；网络拿到的是新图，顺手把 blob 也换了。
+ */
+export const ICON_OK_TTL = 7 * 24 * 60 * 60 * 1000;
+/**
+ * 失败负缓存的保质期（比成功那条短得多）。
+ *
+ * 负缓存是必要的：几百张卡片每张都去试一个注定 404 的地址，光等超时就能把首屏拖垮。
+ * 但它**不能是永久的** —— 站点今天装上 favicon、图标服务今天恢复，
+ * 一次失败就判终身出局的话，那个图标永远不会再回来。
+ */
+export const ICON_FAIL_TTL = 24 * 60 * 60 * 1000;
+
+/** 一条记事现在还算不算数（过期 = 当作没记过，重新试一次） */
+export function isIconRecordFresh(record: IconRecord | null, now = Date.now()): boolean {
+    if (!record) return false;
+    const ttl = record.ok ? ICON_OK_TTL : ICON_FAIL_TTL;
+    return now - (record.ts || 0) < ttl;
+}
+
 // 内存里的短期缓存：IndexedDB 打开失败（隐私模式等）时仍然可用
 const memoryCache = new Map<string, IconRecord>();
-// 图标地址 -> objectURL：同一个地址只创建一次，避免反复 createObjectURL
-const objectUrlCache = new Map<string, string>();
+
+/**
+ * 图标地址 -> objectURL。
+ *
+ * objectURL 是**拿着不放的资源**：每一个都钉住一份内存里的 blob，不 revoke 就永远不释放，
+ * 卡片来回切分组 / 长会话挂着，这个 Map 会一路涨到几百条。所以这里记引用数：
+ * 谁拿到谁负责还（releaseIconObjectUrl），没人引用了再按 LRU 淘汰掉并 revoke。
+ */
+const objectUrlCache = new Map<string, { url: string; refs: number; lastUse: number }>();
+/** 没人引用的 objectURL 最多留这么多，超了按最久没用的先 revoke */
+const OBJECT_URL_IDLE_MAX = 120;
+
+/**
+ * objectURL 的创建器。抽出来是因为它没法在 node 测试里用（那边没有真的 Blob URL），
+ * 测试替换成计数器就能验证「借了有没有还」，不用真的去建 URL。
+ */
+let objectUrlFactory: (blob: Blob) => string = blob => URL.createObjectURL(blob);
+export function setIconObjectUrlFactoryForTest(factory: (blob: Blob) => string): void {
+    objectUrlFactory = factory;
+}
+
+/** 淘汰没人引用的 objectURL：留 OBJECT_URL_IDLE_MAX 条最近用过的，其余 revoke 掉 */
+function trimIdleObjectUrls(): void {
+    const idle: { key: string; lastUse: number }[] = [];
+    for (const [key, entry] of objectUrlCache) {
+        if (entry.refs === 0) idle.push({ key, lastUse: entry.lastUse });
+    }
+    if (idle.length <= OBJECT_URL_IDLE_MAX) return;
+
+    idle.sort((a, b) => a.lastUse - b.lastUse);
+    for (const { key } of idle.slice(0, idle.length - OBJECT_URL_IDLE_MAX)) {
+        const entry = objectUrlCache.get(key);
+        if (!entry) continue;
+        objectUrlCache.delete(key);
+        try {
+            URL.revokeObjectURL(entry.url);
+        } catch {
+            // 已经失效的 URL，撤不掉没关系
+        }
+    }
+}
+
+/** 归还一个 objectURL（readIconObjectUrl 拿到的每一个都要还） */
+export function releaseIconObjectUrl(url: string): void {
+    const entry = objectUrlCache.get(url);
+    if (!entry) return;
+    entry.refs = Math.max(0, entry.refs - 1);
+    if (entry.refs === 0) trimIdleObjectUrls();
+}
+
+/**
+ * 为一个 blob 取 objectURL（同一个地址复用同一个），引用数 +1。
+ *
+ * 单独暴露出来是为了能在没有 IndexedDB 的环境里验证借还配对 ——
+ * 否则 objectURL 那部分只能靠「线上跑一段时间看内存涨不涨」来发现泄漏。
+ */
+export function acquireIconObjectUrl(url: string, blob: Blob): string {
+    const existing = objectUrlCache.get(url);
+    if (existing) {
+        existing.refs++;
+        existing.lastUse = Date.now();
+        return existing.url;
+    }
+    const created = objectUrlFactory(blob);
+    objectUrlCache.set(url, { url: created, refs: 1, lastUse: Date.now() });
+    return created;
+}
 
 let dbPromise: Promise<IDBDatabase | null> | null = null;
 
@@ -57,10 +146,15 @@ function openDb(): Promise<IDBDatabase | null> {
     return dbPromise;
 }
 
-export async function readIconRecord(url: string): Promise<IconRecord | null> {
+export async function readIconRecord(url: string, now = Date.now()): Promise<IconRecord | null> {
     if (!url) return null;
+
+    // 内存里的那份也要看保质期：进程没重启不等于记事还作数
     const hit = memoryCache.get(url);
-    if (hit) return hit;
+    if (hit) {
+        if (isIconRecordFresh(hit, now)) return hit;
+        memoryCache.delete(url);
+    }
 
     const db = await openDb();
     if (!db) return null;
@@ -72,7 +166,19 @@ export async function readIconRecord(url: string): Promise<IconRecord | null> {
             req.onsuccess = () => resolve((req.result as IconRecord) ?? null);
             req.onerror = () => resolve(null);
         });
-        if (value) memoryCache.set(url, value);
+        if (!value) return null;
+        if (!isIconRecordFresh(value, now)) {
+            // 过期就顺手清掉，省得 IndexedDB 里堆一堆永远不会被读的旧记事
+            memoryCache.delete(url);
+            try {
+                const tx = db.transaction(STORE, "readwrite");
+                tx.objectStore(STORE).delete(url);
+            } catch {
+                // 清不掉不影响使用
+            }
+            return null;
+        }
+        memoryCache.set(url, value);
         return value;
     } catch {
         return null;
@@ -140,8 +246,13 @@ async function trimIconBlobs(db: IDBDatabase) {
 export async function readIconObjectUrl(url: string): Promise<string | null> {
     if (!url) return null;
 
+    // 命中：引用数 +1，用完必须 releaseIconObjectUrl 还回来
     const cached = objectUrlCache.get(url);
-    if (cached) return cached;
+    if (cached) {
+        cached.refs++;
+        cached.lastUse = Date.now();
+        return cached.url;
+    }
 
     const db = await openDb();
     if (!db) return null;
@@ -166,9 +277,7 @@ export async function readIconObjectUrl(url: string): Promise<string | null> {
             return null;
         }
 
-        const objectUrl = URL.createObjectURL(record.blob);
-        objectUrlCache.set(url, objectUrl);
-        return objectUrl;
+        return acquireIconObjectUrl(url, record.blob);
     } catch {
         return null;
     }
@@ -189,6 +298,7 @@ const isSameOrigin = (url: string) => {
  * 只处理同源图标（跨域的 fetch 会触发 CORS 报错，那部分由 Service Worker 缓存兜住）。
  */
 export async function cacheIconBlob(url: string): Promise<void> {
+    // 已经有一份在用的就别重复抓（objectUrlCache 现在存的是带引用数的条目）
     if (!url || objectUrlCache.has(url)) return;
     if (!isSameOrigin(url)) return;
 
@@ -199,8 +309,10 @@ export async function cacheIconBlob(url: string): Promise<void> {
         if (!blob.size || blob.size > BLOB_MAX_BYTES) return;
         if (!blob.type.startsWith("image/")) return;
 
-        const objectUrl = URL.createObjectURL(blob);
-        objectUrlCache.set(url, objectUrl);
+        // 只建引用数 0 的条目：调用方（卡片）稍后会自己 read 一份并拿走引用，
+        // 这里不该替它占着 —— 否则这张卡片卸载后引用永远归不了零
+        objectUrlCache.set(url, { url: objectUrlFactory(blob), refs: 0, lastUse: Date.now() });
+        trimIdleObjectUrls();
 
         const db = await openDb();
         if (!db) return;

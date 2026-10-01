@@ -82,6 +82,9 @@ interface SettingsDialogProps {
     onGlassEffectsChange: (enabled: boolean) => void;
     offlineFull: boolean;
     onOfflineFullChange: (enabled: boolean) => void;
+    /** 图标隐私模式（本机偏好）：打开后不再为取图标请求任何第三方 */
+    iconPrivacy: boolean;
+    onIconPrivacyChange: (enabled: boolean) => void;
     /** 正在保存：按钮禁用 + 文案变化，避免连点重复提交 */
     saving?: boolean;
     /** 拼音搜索（本机偏好，打开即生效，不需要点保存） */
@@ -234,6 +237,8 @@ export default function SettingsDialog({
     onGlassEffectsChange,
     offlineFull,
     onOfflineFullChange,
+    iconPrivacy,
+    onIconPrivacyChange,
     saving = false,
     pinyinSearch,
     onPinyinSearchChange,
@@ -632,6 +637,13 @@ export default function SettingsDialog({
                             label='离线增强（预下载全部功能）'
                             ariaLabel='离线增强'
                             caption='打开后会把设置、备份、回收站这些弹窗的代码也一并预下载，断网时也能点开。代价是首次联网时多下载约几百 KB。关闭不会删除已缓存的内容。'
+                        />
+                        <SwitchRow
+                            checked={iconPrivacy}
+                            onChange={onIconPrivacyChange}
+                            label='图标隐私模式（不为取图标访问外站）'
+                            ariaLabel='图标隐私模式'
+                            caption='取图标本身会泄露访问了哪些站：卡片一进视野就要去那个域名抓一次 favicon，公共图标服务还会顺带记下这个域名。打开后卡片一律用首字母块，浏览器与本站都不会再为图标访问外站。已缓存的图标仍可继续使用。'
                         />
                     </Section>
 

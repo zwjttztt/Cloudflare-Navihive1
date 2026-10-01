@@ -413,6 +413,8 @@ function App() {
     setGlassEffects,
     offlineFull,
     setOfflineFull,
+    iconPrivacy,
+    setIconPrivacy,
     visits,
     recordVisit,
         clearVisits,
@@ -3477,6 +3479,8 @@ function App() {
                         onGlassEffectsChange={setGlassEffects}
                         offlineFull={offlineFull}
                         onOfflineFullChange={setOfflineFull}
+                        iconPrivacy={iconPrivacy}
+                        onIconPrivacyChange={setIconPrivacy}
                         saving={savingConfig}
                         pinyinSearch={pinyinSearch}
                         onPinyinSearchChange={setPinyinSearch}

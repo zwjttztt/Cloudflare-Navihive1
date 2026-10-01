@@ -47,6 +47,7 @@ import {
     iconCandidates,
     iconFallbackCandidates,
     readIconObjectUrl,
+    releaseIconObjectUrl,
     readIconRecord,
     writeIconRecord,
 } from "../utils/iconCache";
@@ -150,8 +151,17 @@ const SiteCard = memo(function SiteCard({
     const theme = useTheme();
     const { thumbApi, iconApi } = useAppConfig();
     const notify = useNotify();
-    const { viewMode, density, recordVisit, deadLinks, setDeadLinks, isStarred, toggleStar, tags } =
-        useUIPrefs();
+    const {
+        viewMode,
+        density,
+        recordVisit,
+        deadLinks,
+        setDeadLinks,
+        isStarred,
+        toggleStar,
+        tags,
+        iconPrivacy,
+    } = useUIPrefs();
     // 星标与标签都存本机（UIPrefs），和访问记录、折叠状态一样不进数据库
     const starred = isStarred(site.id);
     const siteTags = tags[String(site.id)] ?? [];
@@ -168,19 +178,22 @@ const SiteCard = memo(function SiteCard({
     // 哪个先加载成功用哪个，失败的会记进本地缓存，下次直接跳过
     // 两个函数都只读 site.icon / site.url，所以依赖就按这两个字段列 ——
     // 写成 [site] 的话，改个备注或标题也会把图标候选重算一遍。
+    // 隐私模式：一个候选都不给，卡片直接用首字母块。
+    // 取图标这件事本身就在告诉对方（以及公共图标服务）「有人在访问这个域名」，
+    // 开了这个开关就彻底不发 —— 包括兜底源和缩略图。
     const primaryIcons = useMemo(
-        () => iconCandidates({ icon: site.icon, url: site.url }, iconApi),
-        [site.icon, site.url, iconApi]
+        () => (iconPrivacy ? [] : iconCandidates({ icon: site.icon, url: site.url }, iconApi)),
+        [site.icon, site.url, iconApi, iconPrivacy]
     );
     // 兜底源（站点自己的 favicon.ico / 公共图标服务）只在主源全失败后才追加，
     // 平时每张卡片最多 2 个请求，几百张卡片也不会一上来就排出上千个
     const [fallbackAdded, setFallbackAdded] = useState(false);
     const iconSources = useMemo(
         () =>
-            fallbackAdded
+            fallbackAdded && !iconPrivacy
                 ? [...primaryIcons, ...iconFallbackCandidates({ url: site.url })]
                 : primaryIcons,
-        [primaryIcons, fallbackAdded, site.url]
+        [primaryIcons, fallbackAdded, site.url, iconPrivacy]
     );
     const [iconIdx, setIconIdx] = useState(0);
     const [imageLoaded, setImageLoaded] = useState(false);
@@ -194,19 +207,31 @@ const SiteCard = memo(function SiteCard({
     const [iconObjectUrl, setIconObjectUrl] = useState<string | null>(null);
     useEffect(() => {
         let cancelled = false;
+        // 记下这次借到的 URL：objectURL 占着 blob 不放，卸载时必须还回去，
+        // 否则卡片切来切去会把内存里的图标副本越堆越多
+        let borrowed = false;
         setIconObjectUrl(null);
         if (!currentIcon) return;
         void readIconObjectUrl(currentIcon).then(cached => {
-            if (!cancelled && cached) setIconObjectUrl(cached);
+            if (!cached) return;
+            // 结果晚到（组件已经换了源 / 已卸载）：立刻还，别占着
+            if (cancelled) {
+                releaseIconObjectUrl(currentIcon);
+                return;
+            }
+            borrowed = true;
+            setIconObjectUrl(cached);
         });
         return () => {
             cancelled = true;
+            if (borrowed) releaseIconObjectUrl(currentIcon);
         };
     }, [currentIcon]);
 
     // 缩略图：仅在「网站设置」里配了模板时才启用，避免默认请求第三方服务
     const thumbUrl = thumbApi.trim() ? resolveIconApiUrl(thumbApi, site.url || "") : "";
-    const useThumb = Boolean(thumbUrl) && !thumbError && !isList && !isWall;
+    // 缩略图是第三方截图服务，隐私模式下同样不发（它拿走的是完整链接）
+    const useThumb = Boolean(thumbUrl) && !thumbError && !isList && !isWall && !iconPrivacy;
 
     // 缩略图地址变化时重置加载状态
     useEffect(() => {

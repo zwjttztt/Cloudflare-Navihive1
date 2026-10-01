@@ -143,8 +143,11 @@ export async function proxyIcon(
                 // 即便是白名单里的图片类型，也用 CSP sandbox 再封一层：
                 // 万一将来有绕过白名单的路径，被当成文档打开时脚本也不会执行
                 "Content-Security-Policy": "default-src 'none'; sandbox",
-                // 图标基本不会变，浏览器端缓存一年；前端还会再存一份 blob
-                "Cache-Control": "public, max-age=31536000, immutable",
+                // 靠 HTTP 缓存挡掉重复抓取（CDN / 浏览器都会认），不再叠一层自己的缓存。
+                // 缓的是 7 天而不是「一年 immutable」：站点换 favicon 是常事，
+                // 一年不回源等于把老图标钉死；stale-while-revalidate 让回源发生在后台，
+                // 用户这边不会因为缓存过期而白等一次网络。
+                "Cache-Control": "public, max-age=604800, stale-while-revalidate=604800",
                 "X-Icon-Target": targetUrl.hostname,
             }),
         });
