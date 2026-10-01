@@ -13,6 +13,8 @@ import {
     SiteBatchDeleteResult,
     RecycleBatchRestoreResult,
     SessionInfo,
+    ImportOptions,
+    ImportStage,
 } from "./http";
 import { verifyBackupIntegrity, withBackupIntegrity } from "../utils/backupIntegrity";
 import {
@@ -579,7 +581,7 @@ export class MockNavigationClient {
     }
 
     // 数据导入
-    async importData(data: ExportData): Promise<ImportResult> {
+    async importData(data: ExportData, opts?: ImportOptions): Promise<ImportResult> {
         await new Promise(resolve => setTimeout(resolve, 500));
 
         // 与真实实现同一道关：文件坏了就别清空现有数据
@@ -592,8 +594,20 @@ export class MockNavigationClient {
                 siteIdMap: {},
             };
         }
+        const report = (stage: ImportStage, done: number, total: number) => {
+            try {
+                opts?.onProgress?.({ stage, done, total });
+            } catch {
+                // 进度回调出错不能把导入拖垮
+            }
+        };
 
         try {
+            const groupTotal = data.groups?.length ?? 0;
+            const siteTotal = data.sites?.length ?? 0;
+            report("verify", 1, 1);
+            report("encrypt", siteTotal, siteTotal);
+
             // 清空现有数据
             mockSites.length = 0;
             mockGroups.length = 0;
@@ -603,15 +617,17 @@ export class MockNavigationClient {
             const siteIdMap: Record<string, number> = {};
 
             // 导入分组数据
-            data.groups.forEach(group => {
+            data.groups.forEach((group, index) => {
                 mockGroups.push({...group});
                 if (group.id !== undefined) groupIdMap[String(group.id)] = group.id;
+                report("write", index + 1, groupTotal + siteTotal);
             });
 
             // 导入站点数据
-            data.sites.forEach(site => {
+            data.sites.forEach((site, index) => {
                 mockSites.push({...site});
                 if (site.id !== undefined) siteIdMap[String(site.id)] = site.id;
+                report("write", groupTotal + index + 1, groupTotal + siteTotal);
             });
 
             // 导入配置数据（共享配置从 1.3 起放在 sharedConfigs，老的还在 configs）
@@ -622,6 +638,8 @@ export class MockNavigationClient {
             configEntries.forEach(([key, value]) => {
                 mockConfigs[key] = value;
             });
+            report("cleanup", groupTotal + siteTotal, groupTotal + siteTotal);
+            report("done", groupTotal + siteTotal, groupTotal + siteTotal);
 
             return { success: true, groupIdMap, siteIdMap };
         } catch (error) {

@@ -3,6 +3,7 @@
 // 从 worker/index.ts 拆出来。导出是「拿到会话后收益最大」的接口（整站数据 + 解密后的
 // 站点密码），导入是「一觉醒来整站被换掉」的入口，所以两者的限速 / 体积上限都在这儿。
 import type { ExportData, Group } from "../../src/API/http";
+import { IMPORT_PROGRESS_MEDIA } from "../../src/API/types";
 import {
     bumpGuard,
     computeLockAfterFailure,
@@ -40,6 +41,91 @@ import type { RouteCtx } from "./types";
  */
 const MAX_IMPORT_GROUPS = 2_000;
 const MAX_IMPORT_SITES = 20_000;
+
+/**
+ * 导入审计：唯一能「整体替换全站数据」的入口，必须留痕。
+ * 数据已经换完了，写审计失败绝不能回滚导入 —— 所以调用处不接它的异常。
+ */
+async function writeImportAudit(
+    api: RouteCtx["api"],
+    ip: string,
+    groupCount: number,
+    siteCount: number
+): Promise<void> {
+    try {
+        const uid = api.getCurrentUserId();
+        await api.writeAudit(
+            "data-import",
+            uid === null ? "anonymous" : String(uid),
+            ip || "",
+            JSON.stringify({ groups: groupCount, sites: siteCount })
+        );
+    } catch {
+        // 审计失败不影响导入结果
+    }
+}
+
+/**
+ * 前端要不要导入进度。
+ * 老客户端（以及离线队列重放）不带这个 Accept，回落到普通的一问一答。
+ */
+function wantsImportProgress(request: Request): boolean {
+    return (request.headers.get("Accept") || "").includes(IMPORT_PROGRESS_MEDIA);
+}
+
+/**
+ * 把导入过程变成一条 NDJSON 流：每行一个事件 ——
+ * `{"type":"progress",stage,done,total}` 若干行，最后一行 `{"type":"result",...}`
+ * （失败则是 `{"type":"error",message}`）。
+ *
+ * 之所以是流而不是「先返回一个 job id 再轮询」：Workers 每个请求可能落在不同 isolate，
+ * 进程内的 job 状态不保证下一个请求还读得到，轮询会拿到假状态。流式响应里
+ * 进度和结果出自同一次执行，天然一致。
+ */
+function streamImportProgress(
+    ctx: RouteCtx,
+    data: ExportData,
+    groupCount: number,
+    siteCount: number
+): Response {
+    const { api, ip } = ctx;
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream<Uint8Array>({
+        async start(controller) {
+            const send = (event: Record<string, unknown>) => {
+                controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+            };
+            try {
+                const result = await api.importData(data, {
+                    onProgress: progress => send({ type: "progress", ...progress }),
+                });
+                send({ type: "result", result });
+                await writeImportAudit(api, ip, groupCount, siteCount);
+            } catch (error) {
+                send({
+                    type: "error",
+                    message: error instanceof Error ? error.message : "导入失败",
+                });
+            } finally {
+                try {
+                    controller.close();
+                } catch {
+                    // 客户端已经断开（关页面 / 取消），关不掉就算了
+                }
+            }
+        },
+    });
+
+    return new Response(stream, {
+        headers: {
+            "Content-Type": IMPORT_PROGRESS_MEDIA,
+            // 流式响应必须显式禁缓存，否则中间的缓存层会把它攒成一整块再给前端，
+            // 进度就变成「结束瞬间跳到 100%」，等于没有
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    });
+}
 
 export async function handleBackupRoutes(ctx: RouteCtx): Promise<Response | null> {
     const {
@@ -177,25 +263,16 @@ export async function handleBackupRoutes(ctx: RouteCtx): Promise<Response | null
         }
 
         // 导入结果里带新旧 id 映射（前端的星标 / 标签要翻译到新 id 上）
-        const result = await api.importData(data as ExportData);
-
-        // 导出已经记了审计，导入同样要：它是唯一能「整体替换全站数据」的入口。
-        // 数据已经换完了，审计写失败绝不能回滚导入 —— 所以整块包进 try。
-        try {
-            const uid = api.getCurrentUserId();
-            const ip =
-                request.headers.get("CF-Connecting-IP") ||
-                request.headers.get("X-Forwarded-For") ||
-                "";
-            await api.writeAudit(
-                "data-import",
-                uid === null ? "anonymous" : String(uid),
-                ip,
-                JSON.stringify({ groups: groupCount, sites: siteCount })
-            );
-        } catch {
-            // 同上：审计失败不影响导入结果
+        //
+        // 前端要进度（Accept: application/x-ndjson）时改成流式响应：服务端一边跑一边把
+        // 真实阶段进度推下去，最后一行是结果。几千条站点要跑好几秒，一个不带动的
+        // 转圈会让人以为卡死了；但进度必须是服务端数出来的，不能是前端编的百分比。
+        if (wantsImportProgress(request)) {
+            return streamImportProgress(ctx, data as ExportData, groupCount, siteCount);
         }
+
+        const result = await api.importData(data as ExportData);
+        await writeImportAudit(api, ctx.ip, groupCount, siteCount);
         return Response.json(result);
     }
 

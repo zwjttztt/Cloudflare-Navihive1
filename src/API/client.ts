@@ -13,6 +13,9 @@ import {
     SiteBatchDeleteResult,
     RecycleBatchRestoreResult,
     SessionInfo,
+    ImportOptions,
+    ImportProgress,
+    IMPORT_PROGRESS_MEDIA,
     DEFAULT_TOKEN_TTL,
     REMEMBER_TOKEN_TTL,
 } from "./http";
@@ -531,12 +534,109 @@ export class NavigationClient {
         return this.request("export");
     }
     
-    // 数据导入（覆盖式恢复）。回传的新旧 id 映射用来把本机的星标 / 标签翻译到新 id 上
-    async importData(data: ExportData): Promise<ImportResult> {
-        return this.request<ImportResult>("import", {
+    /**
+     * 数据导入（覆盖式恢复）。回传的新旧 id 映射用来把本机的星标 / 标签翻译到新 id 上。
+     *
+     * 传了 `onProgress` 就要流式响应：服务端边跑边把真实阶段进度推下来，最后一行才是
+     * 结果。不传就是普通的一问一答（离线重放走这条）。服务端不认这个 Accept 时
+     * （老部署）按 Content-Type 自动落回整包 JSON —— 只是没有进度，导入照常完成。
+     */
+    async importData(data: ExportData, opts?: ImportOptions): Promise<ImportResult> {
+        const headers: Record<string, string> = { "Content-Type": "application/json" };
+        if (this.idempotencyKey) {
+            headers["Idempotency-Key"] = this.idempotencyKey;
+            this.idempotencyKey = null;
+        }
+        if (opts?.onProgress) headers["Accept"] = IMPORT_PROGRESS_MEDIA;
+
+        const response = await fetch(`${this.baseUrl}/import`, {
             method: "POST",
+            credentials: "same-origin",
+            headers,
             body: JSON.stringify(data),
         });
+
+        const isStream =
+            !!response.body &&
+            (response.headers.get("Content-Type") || "").includes(IMPORT_PROGRESS_MEDIA);
+
+        if (!isStream) {
+            if (!response.ok) throw await this.importError(response);
+            return (await response.json()) as ImportResult;
+        }
+
+        // 流式分支：HTTP 状态码已经在响应头里（2xx 才开始跑导入），
+        // 真正的失败是流里最后那行 error
+        return this.readImportStream(response.body, opts?.onProgress);
+    }
+
+    /** 把非流式的失败响应翻成一个能直接显示给用户的 Error */
+    private async importError(response: Response): Promise<Error> {
+        let reason = "";
+        try {
+            const payload = (await response.json()) as { message?: string; error?: string };
+            reason = payload.message || payload.error || "";
+        } catch {
+            reason = "";
+        }
+        if (response.status === 401) this.clearToken();
+        return new Error(
+            reason ? `${reason} (HTTP ${response.status})` : `API错误: ${response.status}`
+        );
+    }
+
+    /** 逐行读 NDJSON：进度行回调出去，result 行返回，error 行抛错 */
+    private async readImportStream(
+        body: ReadableStream<Uint8Array>,
+        onProgress?: (progress: ImportProgress) => void
+    ): Promise<ImportResult> {
+        const reader = body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let result: ImportResult | null = null;
+        let failure: string | null = null;
+
+        const handle = (line: string) => {
+            let event: { type?: string; message?: string; result?: ImportResult } & Partial<ImportProgress>;
+            try {
+                event = JSON.parse(line);
+            } catch {
+                return; // 半行 / 无关内容，跳过
+            }
+            if (event.type === "result" && event.result) {
+                result = event.result;
+            } else if (event.type === "error") {
+                failure = event.message || "导入失败";
+            } else if (event.type === "progress" && event.stage) {
+                onProgress?.({
+                    stage: event.stage,
+                    done: event.done ?? 0,
+                    total: event.total ?? 0,
+                });
+            }
+        };
+
+        try {
+            for (;;) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                buffer += decoder.decode(value, { stream: true });
+                let nl = buffer.indexOf("\n");
+                while (nl >= 0) {
+                    const line = buffer.slice(0, nl).trim();
+                    buffer = buffer.slice(nl + 1);
+                    if (line) handle(line);
+                    nl = buffer.indexOf("\n");
+                }
+            }
+            if (buffer.trim()) handle(buffer.trim());
+        } finally {
+            reader.releaseLock();
+        }
+
+        if (failure) throw new Error(failure);
+        if (!result) throw new Error("导入中断：服务端没有返回结果");
+        return result;
     }
 
     // ============ WebDAV 备份（Worker 代理） ============

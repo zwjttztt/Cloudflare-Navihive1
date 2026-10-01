@@ -12,7 +12,7 @@ import { normalizeUrl } from "../../utils/url";
 import { isAuthConfigKey, isPerUserAppearanceKey, isSecretConfigKey, isUserScopedConfigKey, stripSecretConfigs } from "../configGuards";
 import { BACKUP_CREDENTIALS_CONFIG } from "../configKeys";
 import { encryptSecret } from "../crypto";
-import { Config, ExportData, Group, ImportResult, LocalPrefsBackup, Site } from "../types";
+import { Config, ExportData, Group, ImportOptions, ImportResult, ImportStage, LocalPrefsBackup, Site } from "../types";
 import { sanitizeIconUrl, sanitizeLocalPrefs, stripSiteCredentials } from "./internals";
 
 /**
@@ -24,6 +24,63 @@ import { sanitizeIconUrl, sanitizeLocalPrefs, stripSiteCredentials } from "./int
  */
 export const RESTORE_LOCK_TTL_MS = 2 * 60 * 1000;
 
+/** 一个待写入的分组 */
+export interface GroupPlan { id: number; name: string; order_num: number; }
+/**
+ * 一个待写入的站点。
+ * password 在「草稿」阶段是明文、加密后才是密文 —— 两个阶段共用同一个形状，
+ * 免得为了一个字段再定义一套类型。
+ */
+export interface SitePlan {
+    id: number; groupId: number; name: string; url: string; icon: string;
+    description: string; notes: string; username: string; password: string;
+    order_num: number;
+}
+
+/** 密码加密的并发窗口：见 encryptSitePasswords */
+export const ENCRYPT_CONCURRENCY = 16;
+/**
+ * 单个 D1 batch 里最多放多少条语句。
+ * 日常备份（几十条）远低于它，所以还是**一个事务切过去**；
+ * 超大备份才需要分块，分块后每块各是一个事务，失败时靠回滚已提交的块收场。
+ */
+export const COMMIT_CHUNK_STATEMENTS = 250;
+
+/**
+ * 限并发地跑一遍异步映射：同时最多 `limit` 个在飞，输出顺序与输入一致。
+ *
+ * 抽出来是因为「并发窗口到底生效没有」必须能被验证 —— 埋在 encryptSitePasswords
+ * 里就只能靠计时猜。这里是个纯函数，测试可以直接数在飞的数量。
+ * `limit` 会被夹到 [1, items.length]：0 会永久挂住，超过条目数则是白开几条空车道。
+ */
+export async function mapWithConcurrency<T, R>(
+    items: readonly T[],
+    limit: number,
+    fn: (item: T, index: number) => Promise<R>,
+    onProgress?: (done: number, total: number) => void
+): Promise<R[]> {
+    const out: R[] = new Array(items.length);
+    let done = 0;
+    let cursor = 0;
+
+    const worker = async (): Promise<void> => {
+        while (cursor < items.length) {
+            const index = cursor++;
+            out[index] = await fn(items[index], index);
+            done++;
+            onProgress?.(done, items.length);
+        }
+    };
+
+    const lanes = Math.min(Math.max(1, limit), Math.max(1, items.length));
+    await Promise.all(Array.from({ length: lanes }, worker));
+    return out;
+}
+
+// 导入进度的形状定义在 types.ts（前端和 Worker 都要用），这里转手导出一份，
+// 免得两处各写一遍、改了一边忘了另一边。
+export type { ImportStage, ImportProgress, ImportOptions } from "../types";
+
 export interface TransferApi {
     exportData(): Promise<ExportData>;
     queryExportBundle(): Promise<{
@@ -31,7 +88,12 @@ export interface TransferApi {
         sites: Site[];
         configs: Record<string, string>;
     }>;
-    importData(data: ExportData): Promise<ImportResult>;
+    importData(data: ExportData, opts?: ImportOptions): Promise<ImportResult>;
+    /** 批量加密站点密码（限并发 + 进度回调） */
+    encryptSitePasswords(
+        drafts: readonly SitePlan[],
+        onProgress?: (done: number, total: number) => void
+    ): Promise<SitePlan[]>;
     /**
      * 表里当前最大的 id：恢复时用它当「预分配」的起点。
      * 拿不到（表不存在 / D1 异常）时返回 0，交给后续 INSERT 自己报错。
@@ -142,12 +204,25 @@ export const transferImpl: TransferApi = {
      * 恢复更糟，用户连「回退」的机会都没有。现在旧数据全程不动，失败了只把本次
      * 新建的行清掉就回到原样（D1 没有跨语句事务可用，只能靠这个顺序保底）。
      */
-    importData: async function (this: NavigationAPI, data: ExportData): Promise<ImportResult> {
+    importData: async function (
+        this: NavigationAPI,
+        data: ExportData,
+        opts?: ImportOptions
+    ): Promise<ImportResult> {
+        const report = (stage: ImportStage, done: number, total: number) => {
+            try {
+                opts?.onProgress?.({ stage, done, total });
+            } catch {
+                // 进度回调出错不能把导入拖垮
+            }
+        };
         const groupIdMap: Record<string, number> = {};
         const siteIdMap: Record<string, number> = {};
         // 本次新写进去的行 id：失败时靠它们回滚（旧数据一步都没动过，删掉这些就回到原样）
         const createdGroupIds: number[] = [];
         const createdSiteIds: number[] = [];
+        /** 已经提交成功的语句数：分块提交中途失败时用来判断「有没有半截数据落下」 */
+        let committedCount = 0;
 
         // 先验完整性：文件坏了就别开始。放在最前面是因为本函数全程「旧数据不动」，
         // 一旦开始 INSERT 再失败就得靠回滚擦屁股 —— 能在动手前拦住最省事。
@@ -162,6 +237,10 @@ export const transferImpl: TransferApi = {
                 siteIdMap,
             };
         }
+
+        // 完整性校验过了 —— 这是第一个阶段，也让 UI 立刻知道服务端接住活了
+        // （后面还要排队抢锁，这段时间界面上不该是一片空白）
+        report("verify", 1, 1);
 
         // ── 账号级恢复锁 ──
         // 两个恢复并发跑会互相踩：都先记下「旧数据 id」，都插自己的新数据，
@@ -216,12 +295,6 @@ export const transferImpl: TransferApi = {
 
             // 第一阶段：把要写什么算清楚（加密、权限判定这些含 await 的都在这里做完），
             // 第二阶段只负责往 batch 里塞纯 SQL —— 保证事务里没有「等待」。
-            interface GroupPlan { id: number; name: string; order_num: number; }
-            interface SitePlan {
-                id: number; groupId: number; name: string; url: string; icon: string;
-                description: string; notes: string; username: string; password: string;
-                order_num: number;
-            }
             const groupPlan: GroupPlan[] = [];
             let nextGroupId = groupBase + 1;
             for (const group of normalized.groups) {
@@ -247,7 +320,10 @@ export const transferImpl: TransferApi = {
             }
 
             let nextSiteId = siteBase + 1;
-            const sitePlan: SitePlan[] = [];
+            // 先把「每个站点要写成什么」记下来（id 与分组归属在这一步定好），
+            // 密码单独走一趟限并发的加密：几千条逐个 await 会把这一段拖成串行流水线，
+            // 而加密是纯本地计算，压成一小批一小批并发跑最划算。
+            const siteDraft: SitePlan[] = [];
             for (const site of normalized.sites) {
                 const mapped = site.group_id !== undefined && site.group_id !== null
                     ? groupIdMap[String(site.group_id)]
@@ -257,7 +333,7 @@ export const transferImpl: TransferApi = {
                     throw new Error(`站点「${site.name}」找不到所属分组`);
                 }
                 const id = nextSiteId++;
-                sitePlan.push({
+                siteDraft.push({
                     id,
                     groupId,
                     name: site.name,
@@ -266,13 +342,16 @@ export const transferImpl: TransferApi = {
                     description: site.description || "",
                     notes: site.notes || "",
                     username: site.username || "",
-                    // 备份里是明文，写回 D1 前加密
-                    password: await encryptSecret(site.password || "", this.keyring),
+                    password: site.password || "",
                     order_num: site.order_num || 0,
                 });
                 if (site.id !== undefined) siteIdMap[String(site.id)] = id;
                 createdSiteIds.push(id);
             }
+
+            const sitePlan = await this.encryptSitePasswords(siteDraft, (done, total) =>
+                report("encrypt", done, total)
+            );
 
             // 导入配置数据。
             // 老备份的全站设置混在 configs 里，新备份放在 sharedConfigs，两边同规则：
@@ -362,22 +441,39 @@ export const transferImpl: TransferApi = {
                 }
             }
 
-            if (commitStatements.length) {
-                const committed = await this.db.batch(commitStatements);
+            // 提交：日常备份只有几十条语句，一把就是一个事务，切过去是一步到位。
+            // 超大备份（几千条）才分块 —— 一个 batch 塞太多语句既慢又容易撞上限。
+            // 分块后每块各是一个事务：中途炸了要回滚**已经提交的那几块**，
+            // 否则库里会留下半份新数据（旧数据始终没被动过，所以仍然是「一份完整可用版本」）。
+            const total = commitStatements.length;
+            report("write", 0, total);
+            for (let offset = 0; offset < commitStatements.length; offset += COMMIT_CHUNK_STATEMENTS) {
+                const chunk = commitStatements.slice(offset, offset + COMMIT_CHUNK_STATEMENTS);
+                committedCount += chunk.length;
+                const committed = await this.db.batch(chunk);
                 if (committed.some(result => !result.success)) {
-                    throw new Error("恢复事务提交失败：整份恢复已回滚，当前数据未改动");
+                    throw new Error("恢复事务提交失败：已回滚本次写入，当前数据未改动");
                 }
+                report("write", committedCount, total);
             }
+            report("cleanup", total, total);
+            report("done", total, total);
 
             return { success: true, groupIdMap, siteIdMap };
         } catch (error) {
             console.error("导入数据失败:", error);
             // 回滚：只删本次新建的行。旧数据全程没被碰过，删掉这些就回到导入前的样子。
+            // 分批提交时可能有几块已经落库了 —— 回滚按 id 删，不管它在哪一块里提交的，
+            // 所以这一步对「单事务」和「分块事务」两种情形都成立。
             // 回滚本身再出错也不能把异常抛出去（用户更该看到的是「为什么导入失败」）
             await this.rollbackCreatedRows(createdSiteIds, createdGroupIds);
+            const base = error instanceof Error ? error.message : "导入数据失败";
             return {
                 success: false,
-                message: error instanceof Error ? error.message : "导入数据失败",
+                message:
+                    committedCount > 0
+                        ? `${base}（已回滚本次写入，现有数据未改动）`
+                        : base,
                 groupIdMap,
                 siteIdMap,
             };
@@ -388,6 +484,30 @@ export const transferImpl: TransferApi = {
                 await this.releaseIdempotency(lockScope, lockKey).catch(() => {});
             }
         }
+    },
+
+    /**
+     * 批量加密站点密码（备份里是明文，写回 D1 前必须加密）。
+     *
+     * 限并发而不是「全并发」：一次几千个 Promise 会让 Worker 的 CPU 时间片被这一件事吃满，
+     * 同 isolate 上别的请求只能干等；也不是「全串行」—— 那会把纯本地计算拖成
+     * 几千次顺序 await。取一个固定的小窗口，边推进边回调进度。
+     */
+    encryptSitePasswords: async function (
+        this: NavigationAPI,
+        drafts: readonly SitePlan[],
+        onProgress?: (done: number, total: number) => void
+    ): Promise<SitePlan[]> {
+        // 备份里是明文，写回 D1 前加密
+        return mapWithConcurrency(
+            drafts,
+            ENCRYPT_CONCURRENCY,
+            async draft => ({
+                ...draft,
+                password: await encryptSecret(draft.password || "", this.keyring),
+            }),
+            onProgress
+        );
     },
 
     nextIdBase: async function (this: NavigationAPI, table: "groups" | "sites"): Promise<number> {

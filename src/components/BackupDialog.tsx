@@ -1,7 +1,7 @@
 // src/components/BackupDialog.tsx
 // 数据备份与恢复：支持备份到本地文件 / WebDAV，并支持从本地或 WebDAV 恢复
 import { useState, useEffect, useRef } from "react";
-import { ExportData, WebDavConfig, WebDavFile } from "../API/http";
+import { ExportData, WebDavConfig, WebDavFile, type ImportProgress } from "../API/http";
 import { NavigationClient } from "../API/client";
 import { MockNavigationClient } from "../API/mock";
 import { decryptBackup, isEncryptedBackup } from "../API/crypto";
@@ -29,6 +29,7 @@ import {
     ListItemText,
     Chip,
     Tooltip,
+    LinearProgress,
     useTheme,
 } from "@mui/material";
 import CloseIcon from "@mui/icons-material/Close";
@@ -57,7 +58,11 @@ interface BackupDialogProps {
     onBuildExportData: () => ExportData;
     /** 传了口令就用它加密备份文件再下载，不传则下载明文 JSON（兼容老备份） */
     onDownloadLocal: (password?: string) => void | Promise<void>;
-    onImportData: (data: ExportData, overwrite: boolean) => Promise<void>;
+    onImportData: (
+        data: ExportData,
+        overwrite: boolean,
+        onProgress?: (progress: ImportProgress) => void
+    ) => Promise<void>;
     /**
      * 导入前先弹一次差异预览，返回用户确认后真正要导入的数据；
      * 返回 null 表示用户在预览里取消了。不传则直接导入（老行为）。
@@ -114,6 +119,15 @@ function formatCronErrorTime(iso: string): string {
     return date.toLocaleString("zh-CN", { hour12: false });
 }
 
+/** 导入各阶段的中文名。阶段本身由服务端推进，这里只负责说人话 */
+export const IMPORT_STAGE_LABEL: Record<ImportProgress["stage"], string> = {
+    verify: "正在校验备份文件…",
+    encrypt: "正在加密站点密码…",
+    write: "正在写入数据…",
+    cleanup: "正在清理旧数据…",
+    done: "正在收尾…",
+};
+
 export default function BackupDialog({
     open,
     initialTab = 0,
@@ -169,6 +183,9 @@ export default function BackupDialog({
     const [localData, setLocalData] = useState<ExportData | null>(null);
     const [localError, setLocalError] = useState<string | null>(null);
     const [restoring, setRestoring] = useState(false);
+    // 导入的真实进度（由服务端流式推回，或合并导入时本地逐条数出来）。
+    // 没有进度时保持 null —— 界面只转圈，不画假进度条
+    const [importProgress, setImportProgress] = useState<ImportProgress | null>(null);
     const [overwrite, setOverwrite] = useState(true);
     // 密码默认遮住，点眼睛才明文显示（仅影响本机显示）
     const [showPassword, setShowPassword] = useState(false);
@@ -403,16 +420,18 @@ export default function BackupDialog({
             return;
         }
         setRestoring(true);
+        setImportProgress(null);
         try {
             const finalData = await resolveImportData(localData, overwrite);
             if (!finalData) return; // 用户在预览里点了取消
-            await onImportData(finalData, overwrite);
+            await onImportData(finalData, overwrite, setImportProgress);
             onNotify("已从本地备份恢复数据", "success");
             onClose();
         } catch (error) {
             onNotify(error instanceof Error ? error.message : "恢复失败", "error");
         } finally {
             setRestoring(false);
+            setImportProgress(null);
         }
     };
 
@@ -423,6 +442,7 @@ export default function BackupDialog({
             return;
         }
         setRestoring(true);
+        setImportProgress(null);
         setRemoteError(null);
         try {
             // 口令只用于这一次下载，不写进配置：恢复别人的备份不该把
@@ -443,13 +463,14 @@ export default function BackupDialog({
             }
             const finalData = await resolveImportData(result.data, overwrite);
             if (!finalData) return; // 用户在预览里点了取消
-            await onImportData(finalData, overwrite);
+            await onImportData(finalData, overwrite, setImportProgress);
             onNotify(`已从 ${selectedRemote} 恢复数据`, "success");
             onClose();
         } catch (error) {
             onNotify(error instanceof Error ? error.message : "恢复失败", "error");
         } finally {
             setRestoring(false);
+            setImportProgress(null);
         }
     };
 
@@ -1184,6 +1205,32 @@ export default function BackupDialog({
                     </Alert>
                 ) : null}
                 {tab === 0 ? renderBackupTab() : renderRestoreTab()}
+
+                {/* 导入进度：只有服务端/本机真的报了条数才显示百分比 ——
+                    拿不到进度时宁可只转圈，也不画一根「按时间匀速前进」的假进度条 */}
+                {restoring && importProgress ? (
+                    <Box sx={{ mt: 1.5, flexShrink: 0 }}>
+                        <Stack direction='row' justifyContent='space-between' sx={{ mb: 0.5 }}>
+                            <Typography variant='caption' color='text.secondary'>
+                                {IMPORT_STAGE_LABEL[importProgress.stage]}
+                            </Typography>
+                            <Typography variant='caption' color='text.secondary'>
+                                {importProgress.done} / {importProgress.total}
+                            </Typography>
+                        </Stack>
+                        <LinearProgress
+                            variant='determinate'
+                            value={
+                                importProgress.total > 0
+                                    ? Math.min(
+                                          100,
+                                          (importProgress.done / importProgress.total) * 100
+                                      )
+                                    : 0
+                            }
+                        />
+                    </Box>
+                ) : null}
             </DialogContent>
 
             {/* 顶部分隔线：内容滚动到底时按钮行离底部只剩几 px，容易和这里

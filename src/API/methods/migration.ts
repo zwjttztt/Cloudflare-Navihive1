@@ -10,6 +10,17 @@ import { RECOVERY_PUBLIC_KEY_CONFIG, WEBDAV_CONFIG_PREFIX } from "../configKeys"
 import { hashPassword, isHashedPassword } from "../crypto";
 import { CREATE_STATEMENTS, INDEX_STATEMENTS, migrationState } from "./internals";
 
+/**
+ * 表结构版本号，**只进不退**。
+ *
+ * 只要往 runMigrations 里加了新步骤（补列 / 建索引 / 搬数据…），就把这个号 +1 ——
+ * 否则「读版本号对得上就跳过迁移」那条快路径会认为都跑过了，新步骤永远不会执行。
+ * 快路径省掉的是查询，不是正确性；这个号就是它唯一的保险丝。
+ */
+export const SCHEMA_VERSION = "1";
+/** 版本号存在 configs 里的键名 */
+export const SCHEMA_VERSION_KEY = "schema.version";
+
 /** 首次建 owner 这把锁的存活时间：正常 bootstrap 几毫秒就完事，30 秒足够兜住崩掉的进程 */
 export const OWNER_BOOTSTRAP_LOCK_TTL_MS = 30_000;
 /** 没抢到锁时等同伴写完再读一次的间隔 */
@@ -18,6 +29,10 @@ export const OWNER_BOOTSTRAP_RETRY_MS = 120;
 export interface MigrationApi {
     initDB(): Promise<{ success: boolean; alreadyInitialized: boolean }>;
     migrate(): Promise<void>;
+    /** 按结构版本号判断这次冷启动要不要真的跑一遍迁移 */
+    migrateIfNeeded(): Promise<void>;
+    readSchemaVersion(): Promise<string | null>;
+    writeSchemaVersion(version: string): Promise<void>;
     runMigrations(): Promise<void>;
     createIndexes(): Promise<void>;
     migrateAccountSecurityColumns(): Promise<void>;
@@ -54,15 +69,63 @@ export const migrationImpl: MigrationApi = {
 
         return { success: true, alreadyInitialized: false };
     },
+    /**
+     * 迁移入口：**先看版本，版本对得上就一条查询都不多发**。
+     *
+     * 迁移里建表 / 补列 / 建索引加起来二十多条语句，而每个 isolate 冷启动都要走一遍。
+     * 部署频繁、流量稀疏的时候，「建一遍早就好好的表」会变成冷启动的主要成本。
+     * 所以这里先读一次结构版本号：对得上就说明这套迁移已经跑过了，直接放行。
+     * 版本号随迁移步骤一起改（见 SCHEMA_VERSION），加了新步骤就会自动重跑一次。
+     */
     migrate: async function (this: NavigationAPI ): Promise<void> {
         if (!migrationState.promise) {
-            migrationState.promise = this.runMigrations().catch(error => {
+            migrationState.promise = this.migrateIfNeeded().catch(error => {
                 console.error("数据库迁移失败:", error);
                 // 失败后清空缓存，允许下一个请求重试，避免一次偶发错误导致表结构永久缺失
                 migrationState.promise = null;
             });
         }
         return migrationState.promise;
+    },
+
+    migrateIfNeeded: async function (this: NavigationAPI ): Promise<void> {
+        // 版本号读不到（库是空的、configs 表还没建、D1 抖动）一律按「需要迁移」处理：
+        // 宁可多跑一次全量建表，也不能因为一次读失败就让站点缺表。
+        if (await this.readSchemaVersion() === SCHEMA_VERSION) {
+            this.dbReady = true;
+            return;
+        }
+        await this.runMigrations();
+        await this.writeSchemaVersion(SCHEMA_VERSION);
+    },
+
+    /** 读结构版本号；读不到返回 null */
+    readSchemaVersion: async function (this: NavigationAPI ): Promise<string | null> {
+        try {
+            const row = await this.db
+                .prepare("SELECT value FROM configs WHERE key = ?")
+                .bind(SCHEMA_VERSION_KEY)
+                .first<{ value: string }>();
+            return typeof row?.value === "string" && row.value ? row.value : null;
+        } catch {
+            return null;
+        }
+    },
+
+    /** 写结构版本号。写不进去不影响功能，只是下次冷启动要多跑一次迁移 */
+    writeSchemaVersion: async function (this: NavigationAPI, version: string): Promise<void> {
+        try {
+            await this.db
+                .prepare(
+                    `INSERT INTO configs (key, value, updated_at)
+                     VALUES (?, ?, CURRENT_TIMESTAMP)
+                     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP`
+                )
+                .bind(SCHEMA_VERSION_KEY, version)
+                .run();
+        } catch (error) {
+            console.error("写入结构版本号失败（下次冷启动会重跑一次迁移）:", error);
+        }
     },
     runMigrations: async function (this: NavigationAPI ): Promise<void> {
         // 1) 建表：合并成一次 batch，只花一次 D1 往返（原来是 3 次 exec 串行）

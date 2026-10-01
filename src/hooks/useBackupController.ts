@@ -12,6 +12,7 @@ import {
     type Site,
     type WebDavConfig,
     type LocalPrefsBackup,
+    type ImportProgress,
 } from "../API/http";
 import { NavigationClient } from "../API/client";
 import { MockNavigationClient } from "../API/mock";
@@ -409,7 +410,11 @@ export function useBackupController(deps: BackupControllerDeps) {
     };
 
     // 导入/恢复数据：overwrite=true 覆盖恢复（服务端整体导入），false 合并追加
-    const handleImportBackup = async (data: ExportData, overwrite: boolean) => {
+    const handleImportBackup = async (
+        data: ExportData,
+        overwrite: boolean,
+        onProgress?: (progress: ImportProgress) => void
+    ) => {
         try {
             // 恢复前先验文件有没有损坏。必须拿**原始**数据验：normalizeImportData 会补默认值、
             // 重排字段，归一化之后再算摘要必然对不上，好文件也会被拦下来。
@@ -436,7 +441,9 @@ export function useBackupController(deps: BackupControllerDeps) {
             if (overwrite) {
                 // 传原始 data（不是 normalized）：服务端会自己归一化，
                 // 而完整性校验必须在归一化之前做，否则摘要永远对不上。
-                const result = await api.importData(data);
+                // onProgress 让服务端把真实阶段进度流式推回来 —— 覆盖恢复可能要跑好几秒，
+                // 一个不带动的转圈跟卡死没区别。
+                const result = await api.importData(data, onProgress ? { onProgress } : undefined);
                 if (!result.success) {
                     throw new Error(result.message || "服务端导入失败");
                 }
@@ -447,6 +454,14 @@ export function useBackupController(deps: BackupControllerDeps) {
                 // 合并导入：新建分组并记录新旧ID映射，再追加站点
                 const groupIdMap = new Map<number, number>();
 
+                // 合并是一条一条建的，条数自己就数得出来 —— 进度用真实计数推，
+                // 不用「看起来在动」的假动画糊弄
+                const mergeTotal = normalized.groups.length + normalized.sites.length;
+                let mergeDone = 0;
+                const reportMerge = () => {
+                    onProgress?.({ stage: "write", done: ++mergeDone, total: mergeTotal });
+                };
+
                 for (const group of normalized.groups) {
                     const created = await api.createGroup({
                         name: group.name,
@@ -456,6 +471,7 @@ export function useBackupController(deps: BackupControllerDeps) {
                     if (group.id !== undefined && created && created.id !== undefined) {
                         groupIdMap.set(group.id, created.id);
                     }
+                    reportMerge();
                 }
 
                 for (const site of normalized.sites) {
@@ -468,6 +484,7 @@ export function useBackupController(deps: BackupControllerDeps) {
                     if (site.id !== undefined && created && created.id !== undefined) {
                         siteIdMap.set(site.id, created.id);
                     }
+                    reportMerge();
                 }
 
                 // 老备份的全站设置混在 configs 里，新备份放在 sharedConfigs，

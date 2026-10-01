@@ -128,6 +128,33 @@ export interface ImportResult {
     siteIdMap: Record<string, number>;
 }
 
+/** 导入的阶段，顺序与服务端真实推进的顺序一致 */
+export type ImportStage = "verify" | "encrypt" | "write" | "cleanup" | "done";
+
+/** 一次导入的阶段进度。done/total 是服务端数出来的真实条数，不是估算。 */
+export interface ImportProgress {
+    stage: ImportStage;
+    done: number;
+    total: number;
+}
+
+export interface ImportOptions {
+    /**
+     * 阶段进度回调。只在前端确实要显示进度时才传 —— 传了会走流式响应，
+     * 服务端边跑边推真实进度；不传就是普通的一问一答。
+     */
+    onProgress?: (progress: ImportProgress) => void;
+}
+
+/**
+ * 导入进度的流式响应媒体类型。
+ *
+ * 前端用它当 Accept 头要进度，服务端用它当 Content-Type 回 NDJSON
+ * （每行一个 {type:"progress"|"result"|"error"}），两边共用同一个常量，免得写歪。
+ * 老部署不认这个 Accept，回的还是普通 JSON —— 前端按 Content-Type 自动兜住。
+ */
+export const IMPORT_PROGRESS_MEDIA = "application/x-ndjson";
+
 /**
  * 批量改排序 / 移动卡片的结果。
  *
