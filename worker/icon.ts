@@ -14,7 +14,8 @@ import { securityHeaders, readBoundedBytes, BodyLimitError } from "./util";
  * 安全限制（集中在 worker/safeFetch.ts）：
  *   - scheme/port/host 黑名单 + 手动重定向每跳重验（详见 safeFetch 注释）
  *   - 响应超过 512KB 直接丢掉，避免有人拿它当图床
- *   - 图标代理不设 fetch 超时（timeoutMs=0）：大文件 / 慢站点偶尔会触发误杀
+ *   - 图标代理也有 8 秒超时：这个端点会替客户端出网，挂住的连接会一直占着
+ *     出网配额，慢站点宁可放弃这一次抓取（前端有占位图标兜底）
  *
  * ⚠️ 这里还有一个必须自己守的点：**content-type 绝不能照抄上游**。
  * 这个路由是公开的（浏览器用 <img> 拉图标带不上凭据），谁都能让它去取一个
