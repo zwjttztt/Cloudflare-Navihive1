@@ -242,6 +242,7 @@ export function useSiteCreator({
         openAddGroup,
         openAddSite,
         newSite,
+        setNewSite,
         showNewSitePassword,
         setShowNewSitePassword,
         creatingSite,

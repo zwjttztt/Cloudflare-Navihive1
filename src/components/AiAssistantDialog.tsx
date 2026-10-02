@@ -150,7 +150,7 @@ export default function AiAssistantDialog({
     const [form, setForm] = useState<Record<string, string>>({});
     const [loading, setLoading] = useState(false);
     const [saving, setSaving] = useState(false);
-    const [saved, setSaved] = useState(false);
+    const [saveError, setSaveError] = useState<string | null>(null);
     const [testing, setTesting] = useState(false);
     const [testResult, setTestResult] = useState<AiTestOutcome | null>(null);
 
@@ -159,7 +159,7 @@ export default function AiAssistantDialog({
         if (!open) return;
         let cancelled = false;
         setLoading(true);
-        setSaved(false);
+        setSaveError(null);
         setTestResult(null);
         void (async () => {
             const all = await api.getConfigs().catch(() => ({} as Record<string, string>));
@@ -178,7 +178,7 @@ export default function AiAssistantDialog({
 
     const set = useCallback((key: string) => (value: string) => {
         setForm(prev => ({ ...prev, [key]: value }));
-        setSaved(false);
+        setSaveError(null);
         // 改了配置，上一次的测试结果就不算数了
         setTestResult(null);
     }, []);
@@ -207,13 +207,17 @@ export default function AiAssistantDialog({
 
     const save = async () => {
         setSaving(true);
-        setSaved(false);
+        setSaveError(null);
         try {
             const payload: Record<string, string> = {};
             for (const key of AI_KEYS) payload[key] = form[key] ?? "";
-            await api.setConfigs(payload);
-            setSaved(true);
+            const ok = await api.setConfigs(payload);
+            if (!ok) throw new Error("保存没有成功，再试一次");
+            // 先让 App 把 /api/ai/status 刷新掉（界面上的 AI 按钮才跟着变可用），再收起弹窗
             onSaved?.();
+            onClose();
+        } catch (error) {
+            setSaveError((error as Error).message || "保存失败，再试一次");
         } finally {
             setSaving(false);
         }
@@ -399,9 +403,9 @@ export default function AiAssistantDialog({
                     ) : null}
                 </Box>
 
-                {saved ? (
-                    <Alert severity='success' sx={{ mt: 1.5 }}>
-                        已保存。界面上的 AI 按钮现在应该能点了。
+                {saveError ? (
+                    <Alert severity='error' sx={{ mt: 1.5 }}>
+                        {saveError}
                     </Alert>
                 ) : null}
             </DialogContent>

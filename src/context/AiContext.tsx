@@ -8,8 +8,15 @@
 import { createContext, useContext } from "react";
 import type { AiAssistant } from "../hooks/useAiAssistant";
 
-/** 站点弹窗需要的那三个字段：够用，且引用稳定 */
-export type SiteAi = Pick<AiAssistant, "ready" | "reason" | "siteMeta">;
+/** 站点弹窗需要的四个字段：够用，且引用稳定。
+ *  enabled 用来决定「AI 补全」入口出不出现 —— 没启用 AI 时连按钮都不该有。
+ *  它不在 AiAssistant 上（enabled 在 status 里），所以显式列出而非 Pick。 */
+export interface SiteAi {
+    enabled: boolean;
+    ready: boolean;
+    reason: string | null;
+    siteMeta: AiAssistant["siteMeta"];
+}
 
 /** null 表示「这台机器上没有可用的 AI」，界面上就不显示相关入口 */
 export const AiContext = createContext<SiteAi | null>(null);

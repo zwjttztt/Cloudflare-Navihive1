@@ -193,6 +193,7 @@ import {
 } from "./utils/recoveryKey";
 import CloseIcon from "@mui/icons-material/Close";
 import AutoFixHighIcon from "@mui/icons-material/AutoFixHigh";
+import AutoAwesomeIcon from "@mui/icons-material/AutoAwesome";
 import CloudDownloadIcon from "@mui/icons-material/CloudDownload";
 import VisibilityIcon from "@mui/icons-material/Visibility";
 import VisibilityOffIcon from "@mui/icons-material/VisibilityOff";
@@ -2065,6 +2066,7 @@ function App() {
         openAddGroup,
         openAddSite,
         newSite,
+        setNewSite,
         showNewSitePassword,
         setShowNewSitePassword,
         creatingSite,
@@ -2089,6 +2091,36 @@ function App() {
         onNotify: notify,
         onMenuClose: handleMenuClose,
     });
+
+    // 新增站点弹窗的 AI 补全：只填名称与描述，成功不说话，失败才提示（与编辑站点同款）
+    const [aiBusyNew, setAiBusyNew] = useState(false);
+    const [aiMessageNew, setAiMessageNew] = useState("");
+    const [aiMessageErrorNew, setAiMessageErrorNew] = useState(false);
+
+    const handleAiCompleteNew = async () => {
+        if (!siteAi?.enabled || !newSite.url) return;
+        setAiBusyNew(true);
+        setAiMessageNew("");
+        setAiMessageErrorNew(false);
+        const groupNames = groups.map(g => g.name);
+        const res = await siteAi.siteMeta(newSite.url, {
+            name: newSite.name || undefined,
+            groups: groupNames,
+            tags: allTags,
+        });
+        setAiBusyNew(false);
+        if (!res.ok) {
+            setAiMessageNew(res.message);
+            setAiMessageErrorNew(true);
+            return;
+        }
+        const { name, description } = res.data;
+        setNewSite(prev => ({
+            ...prev,
+            name: name || prev.name,
+            description: description || prev.description,
+        }));
+    };
 
     // 配置相关函数
     const handleOpenConfig = useCallback(() => {
@@ -3391,7 +3423,62 @@ function App() {
                                         flexDirection: { xs: "column", sm: "row" },
                                     }}
                                 >
-                                    <Box sx={{ flex: 1 }}>
+                                <Box sx={{ flex: 1 }}>
+                                    {siteAi?.enabled ? (
+                                        <TextField
+                                            autoFocus
+                                            id='site-name'
+                                            name='name'
+                                            label='站点名称'
+                                            required
+                                            fullWidth
+                                            size='small'
+                                            type='text'
+                                            variant='outlined'
+                                            placeholder='给它起个名字'
+                                            value={newSite.name}
+                                            onChange={handleSiteInputChange}
+                                            slotProps={{
+                                                input: {
+                                                    endAdornment: (
+                                                        <InputAdornment position='end'>
+                                                            <Tooltip
+                                                                title={
+                                    siteAi.ready
+                                        ? "让 AI 根据下面的链接补全名称与简介（会先把链接发给模型）"
+                                        : (siteAi.reason ?? "AI 助手不可用")
+                                }
+                                                            >
+                                                                <span>
+                                                                    <IconButton
+                                                                        size='small'
+                                                                        edge='end'
+                                                                        aria-label='AI 补全名称与简介'
+                                                                        disabled={
+                                                                            !siteAi.ready ||
+                                                                            aiBusyNew ||
+                                                                            !newSite.url
+                                                                        }
+                                                                        onClick={() =>
+                                                                            void handleAiCompleteNew()
+                                                                        }
+                                                                    >
+                                                                        {aiBusyNew ? (
+                                                                            <CircularProgress
+                                                                                size={16}
+                                                                            />
+                                                                        ) : (
+                                                                            <AutoAwesomeIcon fontSize='small' />
+                                                                        )}
+                                                                    </IconButton>
+                                                                </span>
+                                                            </Tooltip>
+                                                        </InputAdornment>
+                                                    ),
+                                                },
+                                            }}
+                                        />
+                                    ) : (
                                         <TextField
                                             autoFocus
                                             id='site-name'
@@ -3406,7 +3493,8 @@ function App() {
                                             value={newSite.name}
                                             onChange={handleSiteInputChange}
                                         />
-                                    </Box>
+                                    )}
+                                </Box>
                                     <Box sx={{ flex: 1 }}>
                                         <TextField
                                             id='site-url'
@@ -3453,6 +3541,16 @@ function App() {
                                         />
                                     </Box>
                                 </Box>
+
+                                {aiMessageNew ? (
+                                    <Typography
+                                        variant='caption'
+                                        color={aiMessageErrorNew ? "error" : "text.secondary"}
+                                        sx={{ display: "block", mt: -1 }}
+                                    >
+                                        {aiMessageNew}
+                                    </Typography>
+                                ) : null}
 
                                 {/* 图标 URL：紧跟站点 URL（它由链接推导而来），魔棒按钮放进输入框内，不再悬在外面 */}
                                 <TextField

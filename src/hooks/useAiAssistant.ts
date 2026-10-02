@@ -171,10 +171,10 @@ export function useAiAssistant({ api }: { api: AiApiLike }): AiAssistant {
     );
 }
 
-/** 站点弹窗用的那份：只需要「能不能补全」这一件事 */
+/** 站点弹窗用的那份：入口显隐（enabled）+ 能不能用（ready/reason）+ 补全动作 */
 export function useSiteAiMeta(ai: AiAssistant) {
     return useMemo(
-        () => ({ ready: ai.ready, reason: ai.reason, siteMeta: ai.siteMeta }),
-        [ai.ready, ai.reason, ai.siteMeta]
+        () => ({ enabled: ai.status?.enabled ?? false, ready: ai.ready, reason: ai.reason, siteMeta: ai.siteMeta }),
+        [ai.status?.enabled, ai.ready, ai.reason, ai.siteMeta]
     );
 }

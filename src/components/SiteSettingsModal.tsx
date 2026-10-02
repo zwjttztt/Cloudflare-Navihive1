@@ -20,6 +20,7 @@ import {
     Stack,
     Divider,
     Avatar,
+    CircularProgress,
     useTheme,
     SelectChangeEvent,
     InputAdornment,
@@ -138,18 +139,21 @@ export default function SiteSettingsModal({
     const [copiedField, setCopiedField] = useState<"" | "username" | "password">("");
     // 一键获取图标的结果提示
     const [iconFetchMessage, setIconFetchMessage] = useState("");
-    // AI 补全：进行中 + 结果说明（失败原因也走这里，摆在按钮旁边）
+    // AI 补全：进行中 + 「想说的坏消息」（失败原因 / 分组建议没法落地）；成功不说话
     const [aiBusy, setAiBusy] = useState(false);
     const [aiMessage, setAiMessage] = useState("");
+    const [aiMessageError, setAiMessageError] = useState(false);
 
     /**
      * AI 补全：只填名称与描述，分组只做「选中已有分组」这一件事。
      * 建议的新分组名不自动建分组 —— 建了就是一次写操作，而用户还没点保存。
+     * 填进去了就安静地填（值本身看得见，不用再播报一遍）；只有「想说的坏消息」才显示。
      */
     const handleAiComplete = async () => {
         if (!ai || !formData.url) return;
         setAiBusy(true);
         setAiMessage("");
+        setAiMessageError(false);
         const groupNames = groups.map(g => g.name);
         const res = await ai.siteMeta(formData.url, {
             name: formData.name || undefined,
@@ -159,6 +163,7 @@ export default function SiteSettingsModal({
         setAiBusy(false);
         if (!res.ok) {
             setAiMessage(res.message);
+            setAiMessageError(true);
             return;
         }
         const { name, description, group } = res.data;
@@ -169,17 +174,10 @@ export default function SiteSettingsModal({
             // 只认已有分组：建议的新名字没这个分组，不能凭空造一个 id
             group_id: groupNames.includes(group) ? String(groups[groupNames.indexOf(group)].id) : prev.group_id,
         }));
-        const parts: string[] = [];
-        if (name) parts.push("名称");
-        if (description) parts.push("简介");
-        if (group && groupNames.includes(group)) parts.push("分组");
-        setAiMessage(
-            parts.length > 0
-                ? `已填入${parts.join("、")}（还可以自己改）`
-                : group
-                  ? `AI 建议分组「${group}」，但还没有这个分组，没帮你改`
-                  : "AI 这次没给出可用的内容"
-        );
+        // 唯一值得开口的情况：模型给了分组名，但站点里还没有这个分组
+        if (group && !groupNames.includes(group)) {
+            setAiMessage(`AI 建议分组「${group}」，但还没有这个分组，没帮你改`);
+        }
     };
 
     // 一键根据「网站链接」生成图标 URL
@@ -427,19 +425,76 @@ export default function SiteSettingsModal({
                     }}
                 >
                     <Stack spacing={1.25}>
-                        {/* 网站名称 */}
-                        <TextField
-                            id='name'
-                            name='name'
-                            label='网站名称'
-                            required
-                            fullWidth
-                            value={formData.name || ""}
-                            onChange={handleChange}
-                            placeholder='输入网站名称'
-                            variant='outlined'
-                            size='small'
-                        />
+                        {/* 网站名称：AI 补全按钮就在框右侧 —— 补全的就是这个框，失败原因显示在框下方 */}
+                        {ai?.enabled ? (
+                            <TextField
+                                id='name'
+                                name='name'
+                                label='网站名称'
+                                required
+                                fullWidth
+                                value={formData.name || ""}
+                                onChange={handleChange}
+                                placeholder='输入网站名称'
+                                variant='outlined'
+                                size='small'
+                                slotProps={{
+                                    input: {
+                                        endAdornment: (
+                                            <InputAdornment position='end'>
+                                                <Tooltip
+                                                    title={
+                                                        ai.ready
+                                                            ? "让 AI 根据下面的链接补全名称与简介（会先把链接发给模型）"
+                                                            : (ai.reason ?? "AI 助手不可用")
+                                                    }
+                                                >
+                                                    <span>
+                                                        <IconButton
+                                                            size='small'
+                                                            edge='end'
+                                                            aria-label='AI 补全名称与简介'
+                                                            disabled={
+                                                                !ai.ready || aiBusy || !formData.url
+                                                            }
+                                                            onClick={() => void handleAiComplete()}
+                                                        >
+                                                            {aiBusy ? (
+                                                                <CircularProgress size={16} />
+                                                            ) : (
+                                                                <AutoAwesomeIcon fontSize='small' />
+                                                            )}
+                                                        </IconButton>
+                                                    </span>
+                                                </Tooltip>
+                                            </InputAdornment>
+                                        ),
+                                    },
+                                }}
+                            />
+                        ) : (
+                            <TextField
+                                id='name'
+                                name='name'
+                                label='网站名称'
+                                required
+                                fullWidth
+                                value={formData.name || ""}
+                                onChange={handleChange}
+                                placeholder='输入网站名称'
+                                variant='outlined'
+                                size='small'
+                            />
+                        )}
+                        {aiMessage ? (
+                            <Typography
+                                variant='caption'
+                                color={aiMessageError ? "error" : "text.secondary"}
+                                sx={{ display: "block", mt: -1 }}
+                            >
+                                {aiMessage}
+                            </Typography>
+                        ) : null}
 
                         {/* 网站链接 */}
                         <TextField
@@ -456,38 +511,8 @@ export default function SiteSettingsModal({
                             type='url'
                         />
 
-                        {/* AI 补全：没配 AI 就不出现这个入口，配了但没开就置灰并说明原因 */}
-                        {ai ? (
-                            <Box sx={{ mt: 0.75 }}>
-                                <Tooltip
-                                    title={
-                                        ai.ready
-                                            ? "让 AI 根据这个链接补全名称与简介（会先把链接发给模型）"
-                                            : (ai.reason ?? "AI 助手不可用")
-                                    }
-                                >
-                                    <span>
-                                        <Button
-                                            size='small'
-                                            startIcon={<AutoAwesomeIcon />}
-                                            disabled={!ai.ready || aiBusy || !formData.url}
-                                            onClick={() => void handleAiComplete()}
-                                        >
-                                            {aiBusy ? "AI 正在看…" : "AI 补全"}
-                                        </Button>
-                                    </span>
-                                </Tooltip>
-                                {aiMessage ? (
-                                    <Typography
-                                        variant='caption'
-                                        color='text.secondary'
-                                        sx={{ display: "block", mt: 0.5 }}
-                                    >
-                                        {aiMessage}
-                                    </Typography>
-                                ) : null}
-                            </Box>
-                        ) : null}
+                        {/* AI 补全按钮挪进了「网站名称」框右侧（那里就是要填的框）。
+                            没启用 AI 时名称框是纯净版 —— 入口都不出现。 */}
 
                         {/* 网站图标：原来的「图标 URL」小标题直接做成输入框的浮动 label，省一整行 */}
                         <Box sx={{ display: "flex", gap: 1.25, alignItems: "center" }}>

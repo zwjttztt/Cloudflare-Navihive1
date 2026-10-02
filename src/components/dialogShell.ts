@@ -17,8 +17,13 @@ export const dialogPaperSx: SxProps<Theme> = {
         theme.palette.mode === "dark" ? "rgba(23,27,38,0.94)" : "rgba(255,255,255,0.94)",
 };
 
-/** 标题区：17px / 600，右侧留出关闭按钮的位置 */
+/** 标题区：17px / 600，右侧留出关闭按钮的位置。
+ *  必须是 flex：标题旁边带关闭按钮的弹窗靠 flexGrow 占位把按钮推到右边，
+ *  没有 flex 的话那个占位 Box 会自己占一行，按钮掉到标题下面去。 */
 export const dialogTitleSx: SxProps<Theme> = {
+    display: "flex",
+    alignItems: "center",
+    gap: 1,
     py: 1.75,
     pr: 5,
     fontSize: 17,
