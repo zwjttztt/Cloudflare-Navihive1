@@ -425,78 +425,21 @@ export default function SiteSettingsModal({
                     }}
                 >
                     <Stack spacing={1.25}>
-                        {/* 网站名称：AI 补全按钮就在框右侧 —— 补全的就是这个框，失败原因显示在框下方 */}
-                        {ai?.enabled ? (
-                            <TextField
-                                id='name'
-                                name='name'
-                                label='网站名称'
-                                required
-                                fullWidth
-                                value={formData.name || ""}
-                                onChange={handleChange}
-                                placeholder='输入网站名称'
-                                variant='outlined'
-                                size='small'
-                                slotProps={{
-                                    input: {
-                                        endAdornment: (
-                                            <InputAdornment position='end'>
-                                                <Tooltip
-                                                    title={
-                                                        ai.ready
-                                                            ? "让 AI 根据下面的链接补全名称与简介（会先把链接发给模型）"
-                                                            : (ai.reason ?? "AI 助手不可用")
-                                                    }
-                                                >
-                                                    <span>
-                                                        <IconButton
-                                                            size='small'
-                                                            edge='end'
-                                                            aria-label='AI 补全名称与简介'
-                                                            disabled={
-                                                                !ai.ready || aiBusy || !formData.url
-                                                            }
-                                                            onClick={() => void handleAiComplete()}
-                                                        >
-                                                            {aiBusy ? (
-                                                                <CircularProgress size={16} />
-                                                            ) : (
-                                                                <AutoAwesomeIcon fontSize='small' />
-                                                            )}
-                                                        </IconButton>
-                                                    </span>
-                                                </Tooltip>
-                                            </InputAdornment>
-                                        ),
-                                    },
-                                }}
-                            />
-                        ) : (
-                            <TextField
-                                id='name'
-                                name='name'
-                                label='网站名称'
-                                required
-                                fullWidth
-                                value={formData.name || ""}
-                                onChange={handleChange}
-                                placeholder='输入网站名称'
-                                variant='outlined'
-                                size='small'
-                            />
-                        )}
-                        {aiMessage ? (
-                            <Typography
-                                variant='caption'
-                                color={aiMessageError ? "error" : "text.secondary"}
-                                sx={{ display: "block", mt: -1 }}
-                            >
-                                {aiMessage}
-                            </Typography>
-                        ) : null}
+                        {/* 网站名称 */}
+                        <TextField
+                            id='name'
+                            name='name'
+                            label='网站名称'
+                            required
+                            fullWidth
+                            value={formData.name || ""}
+                            onChange={handleChange}
+                            placeholder='输入网站名称'
+                            variant='outlined'
+                            size='small'
+                        />
 
-                        {/* 网站链接 */}
+                        {/* 网站链接：AI 补全按钮在框右侧（要先把链接发给模型，所以按钮放这） */}
                         <TextField
                             id='url'
                             name='url'
@@ -509,10 +452,54 @@ export default function SiteSettingsModal({
                             variant='outlined'
                             size='small'
                             type='url'
+                            slotProps={
+                                ai?.enabled
+                                    ? {
+                                          input: {
+                                              endAdornment: (
+                                                  <InputAdornment position='end'>
+                                                      <Tooltip
+                                                          title={
+                                                              ai.ready
+                                                                  ? "让 AI 根据链接补全名称与简介（会先把链接发给模型）"
+                                                                  : (ai.reason ?? "AI 助手不可用")
+                                                          }
+                                                      >
+                                                          <span>
+                                                              <IconButton
+                                                                  size='small'
+                                                                  edge='end'
+                                                                  aria-label='AI 补全名称与简介'
+                                                                  disabled={
+                                                                      !ai.ready || aiBusy || !formData.url
+                                                                  }
+                                                                  onClick={() => void handleAiComplete()}
+                                                              >
+                                                                  {aiBusy ? (
+                                                                      <CircularProgress size={16} />
+                                                                  ) : (
+                                                                      <AutoAwesomeIcon fontSize='small' />
+                                                                  )}
+                                                              </IconButton>
+                                                          </span>
+                                                      </Tooltip>
+                                                  </InputAdornment>
+                                              ),
+                                          },
+                                      }
+                                    : undefined
+                            }
                         />
 
-                        {/* AI 补全按钮挪进了「网站名称」框右侧（那里就是要填的框）。
-                            没启用 AI 时名称框是纯净版 —— 入口都不出现。 */}
+                        {aiMessage ? (
+                            <Typography
+                                variant='caption'
+                                color={aiMessageError ? "error" : "text.secondary"}
+                                sx={{ display: "block", mt: -1 }}
+                            >
+                                {aiMessage}
+                            </Typography>
+                        ) : null}
 
                         {/* 网站图标：原来的「图标 URL」小标题直接做成输入框的浮动 label，省一整行 */}
                         <Box sx={{ display: "flex", gap: 1.25, alignItems: "center" }}>

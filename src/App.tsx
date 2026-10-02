@@ -3424,76 +3424,20 @@ function App() {
                                     }}
                                 >
                                 <Box sx={{ flex: 1 }}>
-                                    {siteAi?.enabled ? (
-                                        <TextField
-                                            autoFocus
-                                            id='site-name'
-                                            name='name'
-                                            label='站点名称'
-                                            required
-                                            fullWidth
-                                            size='small'
-                                            type='text'
-                                            variant='outlined'
-                                            placeholder='给它起个名字'
-                                            value={newSite.name}
-                                            onChange={handleSiteInputChange}
-                                            slotProps={{
-                                                input: {
-                                                    endAdornment: (
-                                                        <InputAdornment position='end'>
-                                                            <Tooltip
-                                                                title={
-                                    siteAi.ready
-                                        ? "让 AI 根据下面的链接补全名称与简介（会先把链接发给模型）"
-                                        : (siteAi.reason ?? "AI 助手不可用")
-                                }
-                                                            >
-                                                                <span>
-                                                                    <IconButton
-                                                                        size='small'
-                                                                        edge='end'
-                                                                        aria-label='AI 补全名称与简介'
-                                                                        disabled={
-                                                                            !siteAi.ready ||
-                                                                            aiBusyNew ||
-                                                                            !newSite.url
-                                                                        }
-                                                                        onClick={() =>
-                                                                            void handleAiCompleteNew()
-                                                                        }
-                                                                    >
-                                                                        {aiBusyNew ? (
-                                                                            <CircularProgress
-                                                                                size={16}
-                                                                            />
-                                                                        ) : (
-                                                                            <AutoAwesomeIcon fontSize='small' />
-                                                                        )}
-                                                                    </IconButton>
-                                                                </span>
-                                                            </Tooltip>
-                                                        </InputAdornment>
-                                                    ),
-                                                },
-                                            }}
-                                        />
-                                    ) : (
-                                        <TextField
-                                            autoFocus
-                                            id='site-name'
-                                            name='name'
-                                            label='站点名称'
-                                            required
-                                            fullWidth
-                                            size='small'
-                                            type='text'
-                                            variant='outlined'
-                                            placeholder='给它起个名字'
-                                            value={newSite.name}
-                                            onChange={handleSiteInputChange}
-                                        />
-                                    )}
+                                    <TextField
+                                        autoFocus
+                                        id='site-name'
+                                        name='name'
+                                        label='站点名称'
+                                        required
+                                        fullWidth
+                                        size='small'
+                                        type='text'
+                                        variant='outlined'
+                                        placeholder='给它起个名字'
+                                        value={newSite.name}
+                                        onChange={handleSiteInputChange}
+                                    />
                                 </Box>
                                     <Box sx={{ flex: 1 }}>
                                         <TextField
@@ -3508,36 +3452,69 @@ function App() {
                                             placeholder='https://example.com'
                                             value={newSite.url}
                                             onChange={handleSiteInputChange}
-                                            InputProps={{
-                                                endAdornment: (
-                                                    <InputAdornment position='end'>
-                                                        <Tooltip title='抓取这个网站的标题和描述'>
-                                                            <span>
-                                                                <IconButton
-                                                                    size='small'
-                                                                    edge='end'
-                                                                    onClick={
-                                                                        handleFetchNewSiteMeta
-                                                                    }
-                                                                    disabled={
-                                                                        !newSite.url ||
-                                                                        fetchingMeta
-                                                                    }
-                                                                    aria-label='抓取站点标题和描述'
-                                                                >
-                                                                    {fetchingMeta ? (
-                                                                        <CircularProgress
-                                                                            size={16}
-                                                                        />
-                                                                    ) : (
-                                                                        <CloudDownloadIcon fontSize='small' />
-                                                                    )}
-                                                                </IconButton>
-                                                            </span>
-                                                        </Tooltip>
-                                                    </InputAdornment>
-                                                ),
-                                            }}
+                                    InputProps={{
+                                        endAdornment: (
+                                            <InputAdornment position='end'>
+                                                <Tooltip title='抓取这个网站的标题和描述'>
+                                                    <span>
+                                                        <IconButton
+                                                            size='small'
+                                                            edge='end'
+                                                            onClick={
+                                                                handleFetchNewSiteMeta
+                                                            }
+                                                            disabled={
+                                                                !newSite.url ||
+                                                                fetchingMeta
+                                                            }
+                                                            aria-label='抓取站点标题和描述'
+                                                        >
+                                                            {fetchingMeta ? (
+                                                                <CircularProgress
+                                                                    size={16}
+                                                                />
+                                                            ) : (
+                                                                <CloudDownloadIcon fontSize='small' />
+                                                            )}
+                                                        </IconButton>
+                                                    </span>
+                                                </Tooltip>
+                                                {siteAi?.enabled ? (
+                                                    <Tooltip
+                                                        title={
+                                                            siteAi.ready
+                                                                ? "让 AI 根据链接补全名称与简介（会先把链接发给模型）"
+                                                                : (siteAi.reason ?? "AI 助手不可用")
+                                                        }
+                                                    >
+                                                        <span>
+                                                            <IconButton
+                                                                size='small'
+                                                                edge='end'
+                                                                aria-label='AI 补全名称与简介'
+                                                                disabled={
+                                                                    !siteAi.ready ||
+                                                                    aiBusyNew ||
+                                                                    !newSite.url
+                                                                }
+                                                                onClick={() =>
+                                                                    void handleAiCompleteNew()
+                                                                }
+                                                            >
+                                                                {aiBusyNew ? (
+                                                                    <CircularProgress
+                                                                        size={16}
+                                                                    />
+                                                                ) : (
+                                                                    <AutoAwesomeIcon fontSize='small' />
+                                                                )}
+                                                            </IconButton>
+                                                        </span>
+                                                    </Tooltip>
+                                                ) : null}
+                                            </InputAdornment>
+                                        ),
+                                    }}
                                         />
                                     </Box>
                                 </Box>
