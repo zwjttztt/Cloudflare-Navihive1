@@ -139,15 +139,15 @@ export default function SiteSettingsModal({
     const [copiedField, setCopiedField] = useState<"" | "username" | "password">("");
     // 一键获取图标的结果提示
     const [iconFetchMessage, setIconFetchMessage] = useState("");
-    // AI 补全：进行中 + 「想说的坏消息」（失败原因 / 分组建议没法落地）；成功不说话
+    // AI 补全：进行中 + 「想说的坏消息」（只有失败原因）；成功不说话
     const [aiBusy, setAiBusy] = useState(false);
     const [aiMessage, setAiMessage] = useState("");
     const [aiMessageError, setAiMessageError] = useState(false);
 
     /**
-     * AI 补全：只填名称与描述，分组只做「选中已有分组」这一件事。
-     * 建议的新分组名不自动建分组 —— 建了就是一次写操作，而用户还没点保存。
-     * 填进去了就安静地填（值本身看得见，不用再播报一遍）；只有「想说的坏消息」才显示。
+     * AI 补全：只填名称与描述。不再建议分组 —— 偷偷改分组用户容易没察觉，
+     * 而且建议的新分组名还会诱导「自动建分组」这种写操作。分组交给用户自己选。
+     * 填进去了就安静地填（值本身看得见）；只有失败才显示原因。
      */
     const handleAiComplete = async () => {
         if (!ai || !formData.url) return;
@@ -166,18 +166,12 @@ export default function SiteSettingsModal({
             setAiMessageError(true);
             return;
         }
-        const { name, description, group } = res.data;
+        const { name, description } = res.data;
         setFormData(prev => ({
             ...prev,
             name: name || prev.name,
             description: description || prev.description,
-            // 只认已有分组：建议的新名字没这个分组，不能凭空造一个 id
-            group_id: groupNames.includes(group) ? String(groups[groupNames.indexOf(group)].id) : prev.group_id,
         }));
-        // 唯一值得开口的情况：模型给了分组名，但站点里还没有这个分组
-        if (group && !groupNames.includes(group)) {
-            setAiMessage(`AI 建议分组「${group}」，但还没有这个分组，没帮你改`);
-        }
     };
 
     // 一键根据「网站链接」生成图标 URL
