@@ -20,6 +20,7 @@ import {
     REMEMBER_TOKEN_TTL,
     AiStatus,
     AiSuggestResponse,
+    AiTestResponse,
 } from "./http";
 
 // 前端只读标记：真正的令牌在 httpOnly cookie 里，JS 拿不到（XSS 偷不走）。
@@ -527,6 +528,17 @@ export class NavigationClient {
         return this.request("ai/search", {
             method: "POST",
             body: JSON.stringify({ query, limit }),
+        });
+    }
+
+    /**
+     * 测试连接：把表单上这份（可能还没保存的）配置送到服务端真跑一次。
+     * 不落库，只回报文本与嵌入两项各自通不通。
+     */
+    async aiTest(settings: Partial<Record<string, string>>): Promise<AiTestResponse> {
+        return this.request("ai/test", {
+            method: "POST",
+            body: JSON.stringify(settings),
         });
     }
 

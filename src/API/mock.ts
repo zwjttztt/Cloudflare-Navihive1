@@ -17,6 +17,7 @@ import {
     ImportStage,
     AiStatus,
     AiSuggestResponse,
+    AiTestResponse,
 } from "./http";
 import { verifyBackupIntegrity, withBackupIntegrity } from "../utils/backupIntegrity";
 import type { SiteMetaSuggestion, TagSuggestion } from "../utils/aiMeta";
@@ -557,6 +558,10 @@ export class MockNavigationClient {
         AiSuggestResponse<{ results: { id: number; score: number }[]; empty?: boolean }>
     > {
         return this.aiUnavailable();
+    }
+
+    async aiTest(): Promise<AiTestResponse> {
+        return { success: false, message: "演示模式没有 AI" };
     }
 
     // 修改管理员账号密码（模拟环境仅返回成功）

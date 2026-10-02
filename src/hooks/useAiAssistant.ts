@@ -6,10 +6,22 @@
 // 不要弹窗 —— AI 帮不上忙是常态，用户正在做的那件事（加站、保存）不该被打断。
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { AiStatus } from "../API/http";
+import type { AiProbeResult, AiStatus, AiTestResponse } from "../API/http";
 import type { SiteMetaSuggestion, TagSuggestion } from "../utils/aiMeta";
 
 export type AiOutcome<T> = { ok: true; data: T } | { ok: false; message: string };
+
+/**
+ * 测试连接的结果：文本与嵌入是两件事（一个坏了另一个照样能用），
+ * 所以不套 AiOutcome —— 分项结果要照原样摆给用户看。
+ */
+export interface AiTestOutcome {
+    /** 两项都通 */
+    ok: boolean;
+    message: string;
+    text?: AiProbeResult;
+    embed?: AiProbeResult;
+}
 
 interface AiApiLike {
     aiStatus(): Promise<AiStatus>;
@@ -35,6 +47,7 @@ interface AiApiLike {
         message?: string;
         results?: { id: number; score: number }[];
     }>;
+    aiTest(settings: Partial<Record<string, string>>): Promise<AiTestResponse>;
 }
 
 export interface AiAssistant {
@@ -54,6 +67,8 @@ export interface AiAssistant {
     ) => Promise<AiOutcome<TagSuggestion[]>>;
     embed: (force?: boolean) => Promise<AiOutcome<{ done: number; total: number }>>;
     search: (query: string, limit?: number) => Promise<AiOutcome<{ id: number; score: number }[]>>;
+    /** 拿一份（可能还没保存的）配置去试连，文本与嵌入各测一次 */
+    test: (settings: Partial<Record<string, string>>) => Promise<AiTestOutcome>;
 }
 
 export function useAiAssistant({ api }: { api: AiApiLike }): AiAssistant {
@@ -77,7 +92,7 @@ export function useAiAssistant({ api }: { api: AiApiLike }): AiAssistant {
         status === null
             ? "AI 助手状态未知"
             : !status.enabled
-              ? "AI 助手没开（设置 → AI 助手）"
+              ? "AI 助手没开（更多选项 → AI 助手）"
               : status.problem;
 
     const ready = status !== null && status.enabled && !status.problem;
@@ -126,11 +141,33 @@ export function useAiAssistant({ api }: { api: AiApiLike }): AiAssistant {
         [api]
     );
 
+    const test = useCallback(
+        async (settings: Partial<Record<string, string>>): Promise<AiTestOutcome> => {
+            const res = await api.aiTest(settings);
+            if (res.success) {
+                return {
+                    ok: true,
+                    message: "连接成功，文本与嵌入都通",
+                    text: res.text,
+                    embed: res.embed,
+                };
+            }
+            // 失败也可能带着分项结果（一项通一项不通），同样要摆在界面上
+            return {
+                ok: false,
+                message: res.message || "测试连接失败",
+                text: res.text,
+                embed: res.embed,
+            };
+        },
+        [api]
+    );
+
     // 整个返回值必须 memo：App 会把它传给几百张卡片（SiteCard 是 memo 的），
     // 每次渲染都换新对象的话，所有卡片都会跟着重渲染一遍。
     return useMemo(
-        () => ({ status, ready, reason, refresh, siteMeta, suggestTags, embed, search }),
-        [status, ready, reason, refresh, siteMeta, suggestTags, embed, search]
+        () => ({ status, ready, reason, refresh, siteMeta, suggestTags, embed, search, test }),
+        [status, ready, reason, refresh, siteMeta, suggestTags, embed, search, test]
     );
 }
 

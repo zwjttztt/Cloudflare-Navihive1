@@ -12,6 +12,7 @@ import LogoutIcon from "@mui/icons-material/Logout";
 import ManageAccountsIcon from "@mui/icons-material/ManageAccounts";
 import RestoreFromTrashIcon from "@mui/icons-material/RestoreFromTrash";
 import HistoryIcon from "@mui/icons-material/History";
+import AutoAwesomeIcon from "@mui/icons-material/AutoAwesome";
 
 export interface MoreMenuProps {
     anchorEl: HTMLElement | null;
@@ -30,6 +31,8 @@ export interface MoreMenuProps {
     onLogout: () => void;
     /** 打开「账号管理」（账号密码 / 恢复密钥 / 邀请码 / 注销） */
     onOpenAccount: () => void;
+    /** 打开「AI 助手」（开关 / 模型服务 / 凭据 / 测试连接）—— 配置跟着登录账号走 */
+    onOpenAiAssistant: () => void;
     /** 打开回收站（还原 / 彻底删除被软删除的站点、分组） */
     onOpenRecycle: () => void;
     /** 打开审计日志。仅站点所有者可用：不是所有者时整个入口不出现 */
@@ -55,6 +58,7 @@ export default function MoreMenu({
     onOpenRecycle,
     onOpenAudit,
     onOpenAccount,
+    onOpenAiAssistant,
     isSiteOwner,
 }: MoreMenuProps) {
     return (
@@ -92,6 +96,20 @@ export default function MoreMenu({
                                 <ListItemText>账号管理</ListItemText>
                             </MenuItem>
                         )}
+                        {/* AI 助手：开关、模型服务与凭据都在这里。
+                            不放进「网站设置」是因为这些配置跟着登录账号走、也不进备份，
+                            跟「站点长什么样」那类全站配置不是一回事。 */}
+                        <MenuItem
+                            onClick={() => {
+                                onClose();
+                                onOpenAiAssistant();
+                            }}
+                        >
+                            <ListItemIcon>
+                                <AutoAwesomeIcon fontSize='small' />
+                            </ListItemIcon>
+                            <ListItemText>AI 助手</ListItemText>
+                        </MenuItem>
                         <MenuItem onClick={onStartGroupSort}>
                             <ListItemIcon>
                                 <SortIcon fontSize='small' />

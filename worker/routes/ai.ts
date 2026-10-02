@@ -1,5 +1,5 @@
 // worker/routes/ai.ts
-// AI 助手的四个端点：状态、补全元信息、批量建议、向量与语义搜索。
+// AI 助手的五个端点：状态、测试连接、补全元信息、批量建议、向量与语义搜索。
 //
 // 三条硬规矩，别改：
 //   1. **默认关**。没在设置里显式打开，一律 400，一个字节都不往外发。
@@ -32,6 +32,25 @@ const searchLimiter = createMemoryLimiter({ windowMs: 60_000, max: 30, maxKeys: 
 /** 语义搜索的分数门槛：最像的那个都不到 0.25，就当没搜到（免得硬塞给用户一堆无关卡片） */
 const SEARCH_MIN_SCORE = 0.25;
 const SEARCH_MAX_RESULTS = 50;
+
+/** 测试连接认哪些配置键：其余的一律忽略，避免请求体变成可配置的出站参数 */
+const ALLOWED_TEST_KEYS = new Set([
+    "ai.provider",
+    "ai.endpoint",
+    "ai.textModel",
+    "ai.embedModel",
+    "ai.apiKey",
+    "ai.cfToken",
+    "ai.cfAccount",
+]);
+
+/** 一项探测的结果：通了就通了，没通就把模型那边原话摆出来（密钥错、模型不存在一眼能看出来） */
+interface AiProbe {
+    ok: boolean;
+    message?: string;
+    /** 嵌入向量维度：换模型时维度对不上就该重算索引 */
+    dim?: number;
+}
 
 function bad(message: string, status = 400) {
     return Response.json({ success: false, message }, { status });
@@ -82,6 +101,53 @@ export async function handleAiRoutes(ctx: RouteCtx): Promise<Response | null> {
             embedModel: settings.embedModel,
             embedded,
             problem: aiConfigProblem(settings),
+        });
+    }
+
+    // ⑤ 测试连接：拿请求体里这份（很可能还没保存的）配置真跑一次，验证填的东西对不对。
+    //
+    // 必须放在「已保存配置不全就 400」那道闸之前 —— 用户就是想先试通再决定要不要保存，
+    // 这时候库里当然是空的。测的是「能不能连上」，所以强制当成启用。
+    if (path === "ai/test" && method === "POST") {
+        if (!textLimiter.allow(limiterKey(ctx, "text"))) {
+            return bad("刚用了太多次 AI，歇一分钟再试", 429);
+        }
+        const body = (await request.json().catch(() => null)) as
+            | Record<string, unknown>
+            | null;
+        const values: Record<string, string> = {};
+        for (const [key, value] of Object.entries(body ?? {})) {
+            // 只认白名单里的键，且只认字符串：别让请求体变成往模型那边塞东西的通道
+            if (ALLOWED_TEST_KEYS.has(key) && typeof value === "string") {
+                values[key] = value.slice(0, 500);
+            }
+        }
+        const settings = { ...aiSettingsFromConfigs(values), enabled: true };
+        const problem = aiConfigProblem(settings);
+        if (problem) return bad(problem, 400);
+
+        // 两个都测：文本模型坏了「AI 补全」就不能用，嵌入模型坏了语义搜索就是摆设，
+        // 只报一个「连接成功」会让人以为全都好了。
+        const text = await aiText(settings, "只回复两个字：OK", { maxTokens: 8 });
+        const embed = await aiEmbed(settings, ["连接测试"]);
+        const textPart: AiProbe = text.ok
+            ? { ok: true }
+            : { ok: false, message: text.message };
+        const embedPart: AiProbe = embed.ok
+            ? { ok: true, dim: embed.data[0]?.length ?? 0 }
+            : { ok: false, message: embed.message };
+        return Response.json({
+            success: textPart.ok && embedPart.ok,
+            message:
+                textPart.ok && embedPart.ok
+                    ? undefined
+                    : !textPart.ok && !embedPart.ok
+                      ? "文本与嵌入都没通，多半是密钥或账号 ID 不对"
+                      : textPart.ok
+                        ? "文本模型通了，但嵌入模型没通（语义搜索会不可用）"
+                        : "嵌入模型通了，但文本模型没通（补全与整理会不可用）",
+            text: textPart,
+            embed: embedPart,
         });
     }
 

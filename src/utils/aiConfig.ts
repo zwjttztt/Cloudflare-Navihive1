@@ -73,7 +73,7 @@ export function aiSettingsFromConfigs(configs: Record<string, string>): AiSettin
  * 返回 null 表示配置完整、可以发请求。
  */
 export function aiConfigProblem(settings: AiSettings): string | null {
-    if (!settings.enabled) return "AI 助手没开（设置 → AI 助手）";
+    if (!settings.enabled) return "AI 助手没开（更多选项 → AI 助手）";
     if (settings.provider === "workers-ai") {
         if (!settings.cfToken) return "还没填 Cloudflare API token";
         if (!settings.cfAccount) return "还没填 Cloudflare 账号 ID";

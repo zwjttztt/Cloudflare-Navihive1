@@ -11,6 +11,7 @@ import MobileTabBar from "./MobileTabBar";
 import CommandPalette, { type CommandItem } from "./CommandPalette";
 import BookmarkImportDialog from "./BookmarkImportDialog";
 import AiSuggestDialog from "./AiSuggestDialog";
+import AiAssistantDialog, { type AiConfigClient as AiConfigClientLike } from "./AiAssistantDialog";
 import type { AiAssistant } from "../hooks/useAiAssistant";
 import BulkActionBar from "./BulkActionBar";
 import ConfirmDialog from "./ConfirmDialog";
@@ -100,6 +101,17 @@ export interface OverlayHostProps {
         onAiSuggest?: () => void;
         onClose: () => void;
     };
+    /** 「更多选项 → AI 助手」：开关、模型服务、凭据与测试连接 */
+    aiAssistant: {
+        open: boolean;
+        onClose: () => void;
+        ai: AiAssistant;
+        /** 读写 ai.* 配置（只用到 getConfigs / setConfigs） */
+        api: AiConfigClientLike;
+        /** 保存成功后刷新 /api/ai/status */
+        onSaved?: () => void;
+        statusText?: string;
+    };
 }
 
 export default function OverlayHost({
@@ -114,6 +126,7 @@ export default function OverlayHost({
     bulkDelete,
     aiSuggest,
     tagManager,
+    aiAssistant,
 }: OverlayHostProps) {
     return (
         <>
@@ -255,6 +268,18 @@ export default function OverlayHost({
                     groups={aiSuggest.groups}
                     allTags={aiSuggest.allTags}
                     onApply={aiSuggest.onApply}
+                />
+            </Suspense>
+
+            {/* AI 助手：开关、模型服务、凭据与测试连接（更多选项 → AI 助手） */}
+            <Suspense fallback={null}>
+                <AiAssistantDialog
+                    open={aiAssistant.open}
+                    onClose={aiAssistant.onClose}
+                    api={aiAssistant.api}
+                    ai={aiAssistant.ai}
+                    onSaved={aiAssistant.onSaved}
+                    statusText={aiAssistant.statusText}
                 />
             </Suspense>
         </>

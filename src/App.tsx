@@ -1783,6 +1783,8 @@ function App() {
     const siteAi = useSiteAiMeta(ai);
 
     const [aiSuggestOpen, setAiSuggestOpen] = useState(false);
+    /** 「更多选项 → AI 助手」：AI 的开关与凭据单独一个弹窗 */
+    const [openAiAssistant, setOpenAiAssistant] = useState(false);
     // 要送去整理的站点：太多就只取前 40 个（跟 utils/aiMeta 的 MAX_SUGGEST_SITES 对齐）
     const aiSuggestSites = useMemo(
         () =>
@@ -2165,11 +2167,6 @@ function App() {
             [e.target.name]: e.target.value,
         });
     };
-
-    /** 按 key 直接改临时配置（AI 那一节的字段多，走事件对象反而不直观） */
-    const handleConfigChange = useCallback((key: string, value: string) => {
-        setTempConfigs(prev => ({ ...prev, [key]: value }));
-    }, []);
 
     // 背景蒙版透明度滑块
     const handleConfigSliderChange = (_event: Event, value: number | number[]) => {
@@ -3096,6 +3093,10 @@ function App() {
                                             }}
                                             isAuthenticated={isAuthenticated}
                                             onLogout={handleLogout}
+                                            onOpenAiAssistant={() => {
+                                                handleMenuClose();
+                                                setOpenAiAssistant(true);
+                                            }}
                                             isSiteOwner={currentUser?.role === "owner"}
                                         />
                                     }
@@ -3669,8 +3670,6 @@ function App() {
                         onRunLinkCheck={() => void runLinkCheck()}
                         // 全站外观是所有人共用的，只有站点所有者能改（服务端同规则）
                         isSiteOwner={!currentUser || currentUser.role === "owner"}
-                        aiStatusText={aiStatusText}
-                        onConfigChange={handleConfigChange}
                     />
                     </Suspense>
 
@@ -3913,6 +3912,18 @@ function App() {
                         groups: groups.map(g => g.name),
                         allTags,
                         onApply: applyAiTagSuggestions,
+                    }}
+                    aiAssistant={{
+                        open: openAiAssistant,
+                        onClose: () => setOpenAiAssistant(false),
+                        // 只传读写配置那两个方法：AI 弹窗不该摸到别的 API
+                        api: {
+                            getConfigs: () => api.getConfigs(),
+                            setConfigs: (configs: Record<string, string>) => api.setConfigs(configs),
+                        },
+                        ai,
+                        onSaved: () => void ai.refresh(),
+                        statusText: aiStatusText,
                     }}
                     tagManager={{
                         open: tagManagerOpen,

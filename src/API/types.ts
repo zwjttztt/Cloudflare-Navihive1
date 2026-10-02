@@ -335,3 +335,26 @@ export interface AiStatus {
 export type AiSuggestResponse<T> =
     | ({ success: true } & T)
     | { success: false; message: string };
+
+/** 测试连接时某一项的探测结果（文本模型 / 嵌入模型各一项） */
+export interface AiProbeResult {
+    ok: boolean;
+    /** 没通的原因，直接来自模型服务那边的原话 */
+    message?: string;
+    /** 嵌入向量的维度（仅嵌入项有） */
+    dim?: number;
+}
+
+/** POST ai/test 的返回：success 表示文本与嵌入两项都通 */
+export type AiTestResponse =
+    | {
+          success: true;
+          text: AiProbeResult;
+          embed: AiProbeResult;
+      }
+    | {
+          success: false;
+          message: string;
+          text?: AiProbeResult;
+          embed?: AiProbeResult;
+      };

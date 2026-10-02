@@ -4,7 +4,7 @@
 // 主色竖条，组内字段按「改动频率 + 语义」排序；短字段在宽屏并排成两列，纵向更紧凑。
 // 所有值都走「临时副本 + 点保存才落库」，所以组件本身不碰 API，只负责渲染和回调。
 import type { ChangeEvent } from "react";
-import AiSettingsSection from "./AiSettingsSection";
+import { Section, SwitchRow } from "./dialogSection";
 import {
     Alert,
     Box,
@@ -121,57 +121,11 @@ interface SettingsDialogProps {
      * 不传默认 true（未启用登录的单账号部署没有「别人」可言）。
      */
     isSiteOwner?: boolean;
-    /**
-     * AI 助手当前可用状态的一句话说明（来自 /api/ai/status）。
-     * 不传就不显示那行状态 —— 老调用方（含测试 Harness）不用跟着改。
-     */
-    aiStatusText?: string;
-    /** 直接按 key 改配置（AI 那一节的字段多，走事件对象反而不直观） */
-    onConfigChange?: (key: string, value: string) => void;
 }
 
-/** 分组：左侧一小段主色竖条 + 组标题，可选一行组说明；组内字段纵向排布 */
-export function Section({
-    title,
-    hint,
-    children,
-}: {
-    title: string;
-    hint?: string;
-    children: React.ReactNode;
-}) {
-    return (
-        <Box>
-            <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-                <Box
-                    sx={{
-                        width: 3,
-                        height: 14,
-                        borderRadius: 0.5,
-                        bgcolor: "primary.main",
-                        opacity: 0.75,
-                        flex: "none",
-                    }}
-                />
-                <Typography variant='subtitle2' fontWeight='600'>
-                    {title}
-                </Typography>
-            </Box>
-            {hint ? (
-                <Typography
-                    variant='caption'
-                    color='text.secondary'
-                    sx={{ display: "block", mt: 0.25, ml: "11px" }}
-                >
-                    {hint}
-                </Typography>
-            ) : null}
-            <Stack spacing={1.25} sx={{ mt: 1.25 }}>
-                {children}
-            </Stack>
-        </Box>
-    );
-}
+// Section / SwitchRow 已搬到 ./dialogSection（AI 助手弹窗要用同一套排版，
+// 从本文件导入会把整个设置弹窗的代码块一起拖过去）。这里 re-export 保持老引用不动。
+export { Section, SwitchRow } from "./dialogSection";
 
 /** 窄屏堆叠、宽屏并排的两列栅格：短字段用它省掉一整行高度 */
 function TwoCol({ children }: { children: React.ReactNode }) {
@@ -184,47 +138,6 @@ function TwoCol({ children }: { children: React.ReactNode }) {
             }}
         >
             {children}
-        </Box>
-    );
-}
-
-/** 开关 + 说明的固定组合：说明统一缩进到标签文字下方，视觉上归成一类 */
-export function SwitchRow({
-    checked,
-    onChange,
-    label,
-    ariaLabel,
-    caption,
-}: {
-    checked: boolean;
-    onChange: (checked: boolean) => void;
-    label: string;
-    ariaLabel: string;
-    caption?: string;
-}) {
-    return (
-        <Box>
-            <FormControlLabel
-                sx={{ display: "flex", m: 0, minHeight: 26 }}
-                control={
-                    <Switch
-                        checked={checked}
-                        size='small'
-                        onChange={e => onChange(e.target.checked)}
-                        slotProps={{ input: { "aria-label": ariaLabel } }}
-                    />
-                }
-                label={<Typography variant='body2'>{label}</Typography>}
-            />
-            {caption ? (
-                <Typography
-                    variant='caption'
-                    color='text.secondary'
-                    sx={{ display: "block", ml: "42px", mt: -0.25 }}
-                >
-                    {caption}
-                </Typography>
-            ) : null}
         </Box>
     );
 }
@@ -261,8 +174,6 @@ export default function SettingsDialog({
     onSyncPrefsChange,
     onRunLinkCheck,
     isSiteOwner = true,
-    aiStatusText,
-    onConfigChange,
 }: SettingsDialogProps) {
     return (
         <>
@@ -731,14 +642,9 @@ export default function SettingsDialog({
                         )}
                     </Section>
 
-                    {/* 6.5 AI 助手：可选功能，默认关；配置按账号存、凭据加密 */}
-                    {onConfigChange ? (
-                        <AiSettingsSection
-                            configs={tempConfigs}
-                            onChange={onConfigChange}
-                            statusText={aiStatusText}
-                        />
-                    ) : null}
+                    {/* AI 助手已挪走：「更多选项 → AI 助手」单独一个弹窗。
+                        它的配置跟着登录账号走、凭据加密且不进备份，
+                        跟这里管的「站点长什么样」不是一回事，混在一起容易误改。 */}
 
                     {/* 7. 数据保留：这三项决定「过期数据什么时候真的消失」，
                         都是全站共享配置 —— 服务端只认站点所有者，这里同步禁用并说明原因 */}

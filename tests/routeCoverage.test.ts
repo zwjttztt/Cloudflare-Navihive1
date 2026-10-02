@@ -130,6 +130,7 @@ const EXPECTED: Array<[string, string]> = [
     ["POST", "webdav/delete"],
     // ai
     ["GET", "ai/status"],
+    ["POST", "ai/test"],
     ["POST", "ai/site-meta"],
     ["POST", "ai/suggest-tags"],
     ["POST", "ai/embed"],
