@@ -147,7 +147,20 @@ export class NavigationClient {
                 body: JSON.stringify({ username, password, remember })
             });
 
-            const data = await response.json();
+            // 先取文本再自己解析：登录页要能分清「账号密码不对」和「压根没连上服务器」。
+            // 直接 response.json() 的话，被网络拦截时返回的是代理/拦截页的 HTML，
+            // 解析抛错后会掉进下面的 catch，报成「检查网络连接」——看起来像密码错了，
+            // 其实是网络问题，方向完全相反。
+            const raw = await response.text();
+            let data: LoginResponse;
+            try {
+                data = JSON.parse(raw) as LoginResponse;
+            } catch {
+                return {
+                    success: false,
+                    message: `登录没有成功：服务器返回的不是正常响应（HTTP ${response.status}）。可能是网络被拦截、DNS 解析到了错误地址，或站点正在更新，请换个网络或稍后再试。`,
+                };
+            }
 
             // 服务端已通过 httpOnly cookie 下发令牌，响应体里不一定还带 token，
             // 所以判据是「登录成功」而不是「拿到了 token」
@@ -158,9 +171,12 @@ export class NavigationClient {
             return data;
         } catch (error) {
             console.error('登录失败:', error);
+            // 走到这里说明 fetch 本身就没成功（DNS、TLS、断网、被拦截），
+            // 和服务端返回的「密码不对」不是一回事，别再笼统地说一句「检查网络连接」
             return {
                 success: false,
-                message: '登录请求失败，请检查网络连接'
+                message:
+                    '连不上服务器（请求没能发出去）。常见于 DNS 把站点解析到了错误地址、代理或防火墙拦截；可以换个网络、关掉代理后再试。',
             };
         }
     }
