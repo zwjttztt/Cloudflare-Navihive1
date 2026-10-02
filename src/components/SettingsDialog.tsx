@@ -4,6 +4,7 @@
 // 主色竖条，组内字段按「改动频率 + 语义」排序；短字段在宽屏并排成两列，纵向更紧凑。
 // 所有值都走「临时副本 + 点保存才落库」，所以组件本身不碰 API，只负责渲染和回调。
 import type { ChangeEvent } from "react";
+import AiSettingsSection from "./AiSettingsSection";
 import {
     Alert,
     Box,
@@ -120,10 +121,17 @@ interface SettingsDialogProps {
      * 不传默认 true（未启用登录的单账号部署没有「别人」可言）。
      */
     isSiteOwner?: boolean;
+    /**
+     * AI 助手当前可用状态的一句话说明（来自 /api/ai/status）。
+     * 不传就不显示那行状态 —— 老调用方（含测试 Harness）不用跟着改。
+     */
+    aiStatusText?: string;
+    /** 直接按 key 改配置（AI 那一节的字段多，走事件对象反而不直观） */
+    onConfigChange?: (key: string, value: string) => void;
 }
 
 /** 分组：左侧一小段主色竖条 + 组标题，可选一行组说明；组内字段纵向排布 */
-function Section({
+export function Section({
     title,
     hint,
     children,
@@ -181,7 +189,7 @@ function TwoCol({ children }: { children: React.ReactNode }) {
 }
 
 /** 开关 + 说明的固定组合：说明统一缩进到标签文字下方，视觉上归成一类 */
-function SwitchRow({
+export function SwitchRow({
     checked,
     onChange,
     label,
@@ -253,6 +261,8 @@ export default function SettingsDialog({
     onSyncPrefsChange,
     onRunLinkCheck,
     isSiteOwner = true,
+    aiStatusText,
+    onConfigChange,
 }: SettingsDialogProps) {
     return (
         <>
@@ -720,6 +730,15 @@ export default function SettingsDialog({
                             </Box>
                         )}
                     </Section>
+
+                    {/* 6.5 AI 助手：可选功能，默认关；配置按账号存、凭据加密 */}
+                    {onConfigChange ? (
+                        <AiSettingsSection
+                            configs={tempConfigs}
+                            onChange={onConfigChange}
+                            statusText={aiStatusText}
+                        />
+                    ) : null}
 
                     {/* 7. 数据保留：这三项决定「过期数据什么时候真的消失」，
                         都是全站共享配置 —— 服务端只认站点所有者，这里同步禁用并说明原因 */}

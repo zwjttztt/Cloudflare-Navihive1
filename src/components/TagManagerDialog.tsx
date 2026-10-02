@@ -21,6 +21,7 @@ import CloseIcon from "@mui/icons-material/Close";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import EditIcon from "@mui/icons-material/Edit";
 import MergeTypeIcon from "@mui/icons-material/MergeType";
+import AutoAwesomeIcon from "@mui/icons-material/AutoAwesome";
 import LabelIcon from "@mui/icons-material/Label";
 import ConfirmDialog from "./ConfirmDialog";
 import { dialogActionsSx, dialogContentSx, dialogPaperSx, dialogTitleSx } from "./dialogShell";
@@ -37,6 +38,8 @@ interface TagManagerDialogProps {
     onRenameTag?: (from: string, to: string) => void;
     /** 合并：把 sources 里的标签全部并到 target 名下 */
     onMergeTags?: (sources: string[], target: string) => void;
+    /** 用 AI 给存量站点建议标签（不传就不显示这个入口） */
+    onAiSuggest?: () => void;
     onClose: () => void;
 }
 
@@ -47,6 +50,7 @@ export default function TagManagerDialog({
     onDeleteTag,
     onRenameTag,
     onMergeTags,
+    onAiSuggest,
     onClose,
 }: TagManagerDialogProps) {
     // 待确认删除的标签名；非 null 时显示确认弹窗
@@ -110,6 +114,17 @@ export default function TagManagerDialog({
                 </DialogTitle>
 
                 <DialogContent sx={{ pt: 0, pb: 1 }}>
+                    {onAiSuggest ? (
+                        <Button
+                            size='small'
+                            variant='outlined'
+                            startIcon={<AutoAwesomeIcon />}
+                            onClick={onAiSuggest}
+                            sx={{ mb: 1.5 }}
+                        >
+                            用 AI 整理标签
+                        </Button>
+                    ) : null}
                     {tags.length === 0 ? (
                         <Typography
                             variant='body2'

@@ -37,6 +37,8 @@ import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import VisibilityIcon from "@mui/icons-material/Visibility";
 import VisibilityOffIcon from "@mui/icons-material/VisibilityOff";
 import AutoFixHighIcon from "@mui/icons-material/AutoFixHigh";
+import AutoAwesomeIcon from "@mui/icons-material/AutoAwesome";
+import { useSiteAi } from "../context/AiContext";
 import { copyToClipboard } from "../utils/clipboard";
 import { resolveIconApiUrl } from "../utils/iconApi";
 import { pickExistingTags, pickRecommendedTags } from "../utils/tagSuggest";
@@ -54,6 +56,7 @@ interface SiteSettingsModalProps {
     onDelete: (siteId: number) => void;
     onClose: () => void;
     groups?: Group[]; // 可选的分组列表
+
 }
 
 export default function SiteSettingsModal({
@@ -128,11 +131,56 @@ export default function SiteSettingsModal({
     );
 
     // 密码是否明文显示
+    // AI 补全走 context：卡片是 memo 的，把助手当 prop 一层层传下去会让所有卡片重渲染
+    const ai = useSiteAi();
     const [showPassword, setShowPassword] = useState(false);
     // 复制成功提示（"" | "username" | "password"）
     const [copiedField, setCopiedField] = useState<"" | "username" | "password">("");
     // 一键获取图标的结果提示
     const [iconFetchMessage, setIconFetchMessage] = useState("");
+    // AI 补全：进行中 + 结果说明（失败原因也走这里，摆在按钮旁边）
+    const [aiBusy, setAiBusy] = useState(false);
+    const [aiMessage, setAiMessage] = useState("");
+
+    /**
+     * AI 补全：只填名称与描述，分组只做「选中已有分组」这一件事。
+     * 建议的新分组名不自动建分组 —— 建了就是一次写操作，而用户还没点保存。
+     */
+    const handleAiComplete = async () => {
+        if (!ai || !formData.url) return;
+        setAiBusy(true);
+        setAiMessage("");
+        const groupNames = groups.map(g => g.name);
+        const res = await ai.siteMeta(formData.url, {
+            name: formData.name || undefined,
+            groups: groupNames,
+            tags: allTags,
+        });
+        setAiBusy(false);
+        if (!res.ok) {
+            setAiMessage(res.message);
+            return;
+        }
+        const { name, description, group } = res.data;
+        setFormData(prev => ({
+            ...prev,
+            name: name || prev.name,
+            description: description || prev.description,
+            // 只认已有分组：建议的新名字没这个分组，不能凭空造一个 id
+            group_id: groupNames.includes(group) ? String(groups[groupNames.indexOf(group)].id) : prev.group_id,
+        }));
+        const parts: string[] = [];
+        if (name) parts.push("名称");
+        if (description) parts.push("简介");
+        if (group && groupNames.includes(group)) parts.push("分组");
+        setAiMessage(
+            parts.length > 0
+                ? `已填入${parts.join("、")}（还可以自己改）`
+                : group
+                  ? `AI 建议分组「${group}」，但还没有这个分组，没帮你改`
+                  : "AI 这次没给出可用的内容"
+        );
+    };
 
     // 一键根据「网站链接」生成图标 URL
     const handleFetchIcon = () => {
@@ -407,6 +455,39 @@ export default function SiteSettingsModal({
                             size='small'
                             type='url'
                         />
+
+                        {/* AI 补全：没配 AI 就不出现这个入口，配了但没开就置灰并说明原因 */}
+                        {ai ? (
+                            <Box sx={{ mt: 0.75 }}>
+                                <Tooltip
+                                    title={
+                                        ai.ready
+                                            ? "让 AI 根据这个链接补全名称与简介（会先把链接发给模型）"
+                                            : (ai.reason ?? "AI 助手不可用")
+                                    }
+                                >
+                                    <span>
+                                        <Button
+                                            size='small'
+                                            startIcon={<AutoAwesomeIcon />}
+                                            disabled={!ai.ready || aiBusy || !formData.url}
+                                            onClick={() => void handleAiComplete()}
+                                        >
+                                            {aiBusy ? "AI 正在看…" : "AI 补全"}
+                                        </Button>
+                                    </span>
+                                </Tooltip>
+                                {aiMessage ? (
+                                    <Typography
+                                        variant='caption'
+                                        color='text.secondary'
+                                        sx={{ display: "block", mt: 0.5 }}
+                                    >
+                                        {aiMessage}
+                                    </Typography>
+                                ) : null}
+                            </Box>
+                        ) : null}
 
                         {/* 网站图标：原来的「图标 URL」小标题直接做成输入框的浮动 label，省一整行 */}
                         <Box sx={{ display: "flex", gap: 1.25, alignItems: "center" }}>

@@ -16,6 +16,8 @@ import {
     Typography,
 } from "@mui/material";
 import SearchIcon from "@mui/icons-material/Search";
+import AutoAwesomeIcon from "@mui/icons-material/AutoAwesome";
+import Tooltip from "@mui/material/Tooltip";
 import CloseIcon from "@mui/icons-material/Close";
 import type { Site } from "../API/http";
 import { HEADER_CONTROL_H } from "../constants";
@@ -49,6 +51,17 @@ export interface HeaderSearchBoxProps {
     clearSearchHistory: () => void;
     /** 顶栏是否处于滚动收紧状态（收紧时搜索框也收一档） */
     headerCompact: boolean;
+    /**
+     * 语义搜索开关。不传就不显示那个按钮（AI 没配的时候不该有个点了才报错的入口）。
+     * ready=false 时按钮置灰并用 reason 说明为什么。
+     */
+    semantic?: {
+        enabled: boolean;
+        onToggle: (on: boolean) => void;
+        ready: boolean;
+        reason: string | null;
+        busy?: boolean;
+    };
 }
 
 export default function HeaderSearchBox({
@@ -70,6 +83,7 @@ export default function HeaderSearchBox({
     applyHistoryTerm,
     clearSearchHistory,
     headerCompact,
+    semantic,
 }: HeaderSearchBoxProps) {
     return (
                 <Box ref={setSearchAnchor} sx={{ position: "relative" }}>
@@ -97,18 +111,51 @@ export default function HeaderSearchBox({
                                 <SearchIcon fontSize='small' />
                             </InputAdornment>
                         ),
-                        endAdornment: searchQuery ? (
-                            <InputAdornment position='end'>
-                                <IconButton
-                                    size='small'
-                                    aria-label='清空搜索'
-                                    onClick={() => {
-                                        setSearchQuery("");
-                                        searchInputRef.current?.focus();
-                                    }}
-                                >
-                                    <CloseIcon fontSize='small' />
-                                </IconButton>
+                        endAdornment: semantic || searchQuery ? (
+                            <InputAdornment position='end' sx={{ gap: 0 }}>
+                                {semantic ? (
+                                    <Tooltip
+                                        title={
+                                            semantic.ready
+                                                ? semantic.enabled
+                                                    ? "关掉语义搜索，回到关键词匹配"
+                                                    : "按意思搜：搜「看图工具」也能找到没写这几个字的站点"
+                                                : (semantic.reason ?? "AI 助手不可用")
+                                        }
+                                    >
+                                        {/* 置灰时也要能看见提示，所以不用 disabled 包一层 Box */}
+                                        <span>
+                                            <IconButton
+                                                size='small'
+                                                aria-label='语义搜索'
+                                                aria-pressed={semantic.enabled}
+                                                disabled={!semantic.ready}
+                                                onClick={() =>
+                                                    semantic.onToggle(!semantic.enabled)
+                                                }
+                                                sx={{
+                                                    color: semantic.enabled
+                                                        ? "primary.main"
+                                                        : "text.secondary",
+                                                }}
+                                            >
+                                                <AutoAwesomeIcon fontSize='small' />
+                                            </IconButton>
+                                        </span>
+                                    </Tooltip>
+                                ) : null}
+                                {searchQuery ? (
+                                    <IconButton
+                                        size='small'
+                                        aria-label='清空搜索'
+                                        onClick={() => {
+                                            setSearchQuery("");
+                                            searchInputRef.current?.focus();
+                                        }}
+                                    >
+                                        <CloseIcon fontSize='small' />
+                                    </IconButton>
+                                ) : null}
                             </InputAdornment>
                         ) : null,
                     }}

@@ -10,6 +10,8 @@ import { Menu, MenuItem, ListItemText } from "@mui/material";
 import MobileTabBar from "./MobileTabBar";
 import CommandPalette, { type CommandItem } from "./CommandPalette";
 import BookmarkImportDialog from "./BookmarkImportDialog";
+import AiSuggestDialog from "./AiSuggestDialog";
+import type { AiAssistant } from "../hooks/useAiAssistant";
 import BulkActionBar from "./BulkActionBar";
 import ConfirmDialog from "./ConfirmDialog";
 import TagManagerDialog from "./TagManagerDialog";
@@ -79,6 +81,15 @@ export interface OverlayHostProps {
         onConfirm: () => void;
         onClose: () => void;
     };
+    aiSuggest: {
+        open: boolean;
+        onClose: () => void;
+        ai: AiAssistant;
+        sites: { id: number; name: string; url: string; description?: string }[];
+        groups: string[];
+        allTags: string[];
+        onApply: (picked: { id: number; tags: string[] }[]) => void;
+    };
     tagManager: {
         open: boolean;
         tags: string[];
@@ -86,6 +97,7 @@ export interface OverlayHostProps {
         onDeleteTag: (tag: string) => void;
         onRenameTag?: (from: string, to: string) => void;
         onMergeTags?: (sources: string[], target: string) => void;
+        onAiSuggest?: () => void;
         onClose: () => void;
     };
 }
@@ -100,6 +112,7 @@ export default function OverlayHost({
     onDupCancel,
     onJumpToSite,
     bulkDelete,
+    aiSuggest,
     tagManager,
 }: OverlayHostProps) {
     return (
@@ -227,7 +240,21 @@ export default function OverlayHost({
                     onDeleteTag={tagManager.onDeleteTag}
                     onRenameTag={tagManager.onRenameTag}
                     onMergeTags={tagManager.onMergeTags}
+                    onAiSuggest={tagManager.onAiSuggest}
                     onClose={tagManager.onClose}
+                />
+            </Suspense>
+
+            {/* AI 标签建议：看完勾一勾再落地，不自动改库 */}
+            <Suspense fallback={null}>
+                <AiSuggestDialog
+                    open={aiSuggest.open}
+                    onClose={aiSuggest.onClose}
+                    ai={aiSuggest.ai}
+                    sites={aiSuggest.sites}
+                    groups={aiSuggest.groups}
+                    allTags={aiSuggest.allTags}
+                    onApply={aiSuggest.onApply}
                 />
             </Suspense>
         </>

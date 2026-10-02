@@ -25,6 +25,7 @@ import {
 import type { AccountInfo, SessionInfo } from "./API/http";
 import { mapWithConcurrency } from "./API/methods/transfer";
 import { GroupWithSites } from "./types";
+import type { TagMap } from "./utils/tagOps";
 import { AppConfigProvider } from "./context/AppConfigContext";
 import { NotifyContext } from "./context/NotifyContext";
 import { useUIPrefs, RADIUS_PX } from "./context/UIPrefsContext";
@@ -48,6 +49,8 @@ import { useSites } from "./hooks/useSites";
 import { useMultiSelect } from "./hooks/useMultiSelect";
 import { useBulkActions } from "./hooks/useBulkActions";
 import { useTagOpsActions } from "./hooks/useTagOpsActions";
+import { useAiAssistant, useSiteAiMeta } from "./hooks/useAiAssistant";
+import { AiContext } from "./context/AiContext";
 import { useAppDialogs } from "./hooks/useAppDialogs";
 import { useThemeController } from "./hooks/useThemeController";
 import { useSortController } from "./hooks/useSortController";
@@ -1761,6 +1764,127 @@ function App() {
         notify,
     });
 
+    // ---- AI 助手 ----
+    // 默认关、配置不全时 ready 为 false，界面上所有 AI 入口都只是置灰并在旁边写清原因。
+    const ai = useAiAssistant({ api });
+    const aiStatusText = useMemo(() => {
+        const st = ai.status;
+        if (!st) return "";
+        if (!st.enabled) return "未启用";
+        if (st.problem) return st.problem;
+        const provider = st.provider === "workers-ai" ? "Workers AI" : "OpenAI 兼容接口";
+        return `已就绪（${provider} · ${st.textModel}）· 已建语义索引 ${st.embedded} 条`;
+    }, [ai.status]);
+
+    // 语义搜索用原始输入（不小写、不拆词）：模型见到的是用户真正打的那句话
+    const aiQuery = searchQuery.trim();
+
+    // 往下传给卡片的那份：只含「能不能补全」三个字段，引用稳定
+    const siteAi = useSiteAiMeta(ai);
+
+    const [aiSuggestOpen, setAiSuggestOpen] = useState(false);
+    // 要送去整理的站点：太多就只取前 40 个（跟 utils/aiMeta 的 MAX_SUGGEST_SITES 对齐）
+    const aiSuggestSites = useMemo(
+        () =>
+            groups
+                .flatMap(g => g.sites ?? [])
+                .slice(0, 40)
+                .map(site => ({
+                    id: Number(site.id),
+                    name: site.name,
+                    url: site.url,
+                    description: site.description,
+                })),
+        [groups]
+    );
+
+    /** 语义搜索开关：开着且查询非空时才去问模型，关着就是一个普通搜索框 */
+    const [semanticSearch, setSemanticSearch] = useState(false);
+    const [semanticHits, setSemanticHits] = useState<{ id: number; score: number }[]>([]);
+    const [semanticNote, setSemanticNote] = useState("");
+    const [semanticBusy, setSemanticBusy] = useState(false);
+
+    // 关掉开关就清空：不然会留着上一次的语义结果继续过滤列表，看着像搜索坏了
+    useEffect(() => {
+        if (!semanticSearch) {
+            setSemanticHits([]);
+            setSemanticNote("");
+        }
+    }, [semanticSearch]);
+
+    // 查询变了就重新搜（防抖 400ms）。AI 失败只留一句提示，语义结果清空 ——
+    // 关键词结果照常显示，用户不会因此什么都看不到。
+    useEffect(() => {
+        if (!semanticSearch || !ai.ready || !aiQuery) return;
+        let cancelled = false;
+        setSemanticBusy(true);
+        const timer = setTimeout(async () => {
+            const res = await ai.search(aiQuery);
+            if (cancelled) return;
+            setSemanticBusy(false);
+            if (!res.ok) {
+                setSemanticHits([]);
+                setSemanticNote(res.message);
+                return;
+            }
+            setSemanticHits(res.data);
+            setSemanticNote(res.data.length === 0 ? "语义上没找到很像的站点，下面是关键词结果" : "");
+        }, 400);
+        return () => {
+            cancelled = true;
+            clearTimeout(timer);
+            setSemanticBusy(false);
+        };
+    }, [semanticSearch, ai.ready, aiQuery, ai]);
+
+    /** 给站点建语义索引（站点改了很多之后要重跑一次） */
+    const buildSemanticIndex = useCallback(
+        async (force = false) => {
+            setSemanticBusy(true);
+            const res = await ai.embed(force);
+            setSemanticBusy(false);
+            if (!res.ok) {
+                notify(res.message, "error");
+                return;
+            }
+            await ai.refresh();
+            notify(
+                res.data.done > 0
+                    ? `已给 ${res.data.done} 个站点建好语义索引（共 ${res.data.total} 个）`
+                    : `${res.data.total} 个站点都已经有索引了`,
+                "success"
+            );
+        },
+        [ai, notify]
+    );
+
+    /**
+     * 应用 AI 给的标签建议：整份写回 + 提示条上挂撤销。
+     * 跟标签重命名/合并走同一条路（撤销 = 写回旧表），所以「AI 帮我改错了」也能一键撤回。
+     */
+    const applyAiTagSuggestions = useCallback(
+        (picked: { id: number; tags: string[] }[]) => {
+            if (picked.length === 0) return;
+            const next: TagMap = { ...tags };
+            for (const item of picked) {
+                const key = String(item.id);
+                const merged = [...(next[key] ?? [])];
+                for (const tag of item.tags) {
+                    if (!merged.includes(tag)) merged.push(tag);
+                }
+                next[key] = merged;
+            }
+            applyTagOps(next);
+            notify(
+                `已按 AI 建议给 ${picked.length} 个网站加上标签`,
+                "success",
+                undefined,
+                { label: "撤销", onClick: () => applyTagOps(tags) }
+            );
+        },
+        [tags, applyTagOps, notify]
+    );
+
     // 更新分组（引用稳定，配合 GroupCard 的 memo 减少重渲染）
     const handleGroupUpdate = useCallback(
         async (updatedGroup: Group) => {
@@ -2042,6 +2166,11 @@ function App() {
         });
     };
 
+    /** 按 key 直接改临时配置（AI 那一节的字段多，走事件对象反而不直观） */
+    const handleConfigChange = useCallback((key: string, value: string) => {
+        setTempConfigs(prev => ({ ...prev, [key]: value }));
+    }, []);
+
     // 背景蒙版透明度滑块
     const handleConfigSliderChange = (_event: Event, value: number | number[]) => {
         const next = Array.isArray(value) ? value[0] : value;
@@ -2213,6 +2342,28 @@ function App() {
         deadLinks,
     ]);
 
+    /**
+     * 语义搜索的结果叠加。
+     * 只在「开关开着且真的有命中」时生效：命中列表为空就原样保留关键词结果 ——
+     * AI 没帮上忙不该变成「什么都看不到」。
+     */
+    const semanticGroups = useMemo(() => {
+        if (!semanticSearch || semanticHits.length === 0) return filteredGroups;
+        const order = new Map(semanticHits.map((hit, idx) => [String(hit.id), idx]));
+        return filteredGroups
+            .map(group => {
+                const sites = (group.sites ?? [])
+                    .filter(site => order.has(String(site.id)))
+                    .slice()
+                    .sort(
+                        (a, b) =>
+                            (order.get(String(a.id)) ?? 0) - (order.get(String(b.id)) ?? 0)
+                    );
+                return { ...group, sites };
+            })
+            .filter(group => group.sites.length > 0);
+    }, [semanticSearch, semanticHits, filteredGroups]);
+
     // 星标 / 标签筛选：在搜索结果之上再叠一层。
     // 标签取交集（同时带「工具」「AI」两个标签才命中），星标是独立的开关。
     const matchFilters = useCallback(
@@ -2228,11 +2379,12 @@ function App() {
     );
 
     const visibleGroups = useMemo(() => {
-        if (!starFilter && !deadOnly && activeTags.length === 0) return filteredGroups;
-        return filteredGroups
+        // 从语义结果出发：语义命中已经收窄过一轮，星标 / 标签 / 失效再叠在它上面
+        if (!starFilter && !deadOnly && activeTags.length === 0) return semanticGroups;
+        return semanticGroups
             .map(group => ({ ...group, sites: group.sites.filter(matchFilters) }))
             .filter(group => group.sites.length > 0);
-    }, [filteredGroups, starFilter, deadOnly, activeTags, matchFilters]);
+    }, [semanticGroups, starFilter, deadOnly, activeTags, matchFilters]);
 
     // 一次性清掉星标 / 失效 / 标签三档筛选（空状态里的「清除筛选」用）
     const clearAllFilters = useCallback(() => {
@@ -2296,7 +2448,7 @@ function App() {
     const flatResults = useMemo(() => {
         if (!query) return [];
         const items: { site: Site; groupName: string }[] = [];
-        for (const group of filteredGroups) {
+        for (const group of visibleGroups) {
             for (const site of group.sites) {
                 items.push({ site, groupName: group.name });
                 if (items.length >= 8) break;
@@ -2304,7 +2456,7 @@ function App() {
             if (items.length >= 8) break;
         }
         return items;
-    }, [filteredGroups, query]);
+    }, [visibleGroups, query]);
 
     const dropdownOpen = query.length > 0 && searchFocused && flatResults.length > 0;
     // 没有输入但曾经搜过：把历史关键词亮出来，点一下就能接着搜
@@ -2793,6 +2945,7 @@ function App() {
     return (
         <AppConfigProvider value={appConfigValue}>
          <NotifyContext.Provider value={notify}>
+            <AiContext.Provider value={siteAi}>
             <ThemeProvider theme={theme}>
             <CssBaseline />
 
@@ -2893,6 +3046,13 @@ function App() {
                                         applyHistoryTerm={applyHistoryTerm}
                                         clearSearchHistory={clearSearchHistory}
                                         headerCompact={headerCompact}
+                                        semantic={{
+                                            enabled: semanticSearch,
+                                            onToggle: setSemanticSearch,
+                                            ready: ai.ready,
+                                            reason: ai.reason,
+                                            busy: semanticBusy,
+                                        }}
                                     />
                                 )}
                                 {/* 搜索是「找东西」，右侧是「改数据 / 改显示」，中间用竖线分开 */}
@@ -3014,6 +3174,31 @@ function App() {
                             sx={{ display: "block", mt: -2, mb: 2 }}
                         >
                             {advancedHint(advancedQuery)}
+                        </Typography>
+                    )}
+
+                    {/* 语义搜索的两句话：没索引就教他建一个，搜不到就说清楚下面的是关键词结果 */}
+                    {semanticSearch && (
+                        <Typography
+                            variant='caption'
+                            color='text.secondary'
+                            sx={{ display: "block", mt: -2, mb: 2 }}
+                        >
+                            {semanticNote ? `${semanticNote}。` : null}
+                            {ai.ready && (ai.status?.embedded ?? 0) === 0 ? (
+                                <>
+                                    {" "}
+                                    语义搜索要先给站点建一次索引。
+                                    <Button
+                                        size='small'
+                                        disabled={semanticBusy}
+                                        onClick={() => void buildSemanticIndex(true)}
+                                        sx={{ minWidth: 0, px: 0.5, fontSize: 12 }}
+                                    >
+                                        {semanticBusy ? "正在生成…" : "现在生成"}
+                                    </Button>
+                                </>
+                            ) : null}
                         </Typography>
                     )}
 
@@ -3484,6 +3669,8 @@ function App() {
                         onRunLinkCheck={() => void runLinkCheck()}
                         // 全站外观是所有人共用的，只有站点所有者能改（服务端同规则）
                         isSiteOwner={!currentUser || currentUser.role === "owner"}
+                        aiStatusText={aiStatusText}
+                        onConfigChange={handleConfigChange}
                     />
                     </Suspense>
 
@@ -3718,6 +3905,15 @@ function App() {
                         onConfirm: bulkDelete,
                         onClose: () => setBulkDeleteOpen(false),
                     }}
+                    aiSuggest={{
+                        open: aiSuggestOpen,
+                        onClose: () => setAiSuggestOpen(false),
+                        ai,
+                        sites: aiSuggestSites,
+                        groups: groups.map(g => g.name),
+                        allTags,
+                        onApply: applyAiTagSuggestions,
+                    }}
                     tagManager={{
                         open: tagManagerOpen,
                         tags: allTags,
@@ -3725,11 +3921,13 @@ function App() {
                         onDeleteTag: deleteTagWithUndo,
                         onRenameTag: renameTagWithUndo,
                         onMergeTags: (sources, target) => mergeTagsWithUndo(sources, target),
+                        onAiSuggest: () => setAiSuggestOpen(true),
                         onClose: () => setTagManagerOpen(false),
                     }}
                 />
             </Box>
         </ThemeProvider>
+            </AiContext.Provider>
          </NotifyContext.Provider>
         </AppConfigProvider>
     );
