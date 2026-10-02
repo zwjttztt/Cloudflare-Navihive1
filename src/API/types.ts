@@ -185,14 +185,6 @@ export interface RecycleBatchRestoreResult {
     failed: number[];
 }
 
-/** 站点元信息（/api/meta 抓回来的：新增卡片时一键补全用） */
-export interface SiteMeta {
-    title: string;
-    description: string;
-    image: string;
-    icon: string;
-}
-
 // 首屏/刷新一次性返回的数据（分组 + 平铺的站点 + 配置）
 export interface BootstrapData {
     groups: Group[];

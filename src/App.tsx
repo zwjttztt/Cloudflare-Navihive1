@@ -19,6 +19,7 @@ import {
     BACKUP_CREDENTIALS_CONFIG,
 } from "./API/http";
 import { mapWithConcurrency } from "./API/methods/transfer";
+import { RETENTION_DAYS_KEY } from "./API/configKeys";
 import { GroupWithSites } from "./types";
 import type { TagMap } from "./utils/tagOps";
 import { AppConfigProvider } from "./context/AppConfigContext";
@@ -295,7 +296,7 @@ function App() {
     const accent = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(accentRaw) ? accentRaw : "";
 
     // 创建Material UI主题（放在 configs 之后，才能读到自定义主色）
-    const { themeMode, darkMode, toggleTheme, theme } = useThemeController(accent);
+    const { themeMode, setThemeMode, darkMode, toggleTheme, theme } = useThemeController(accent);
 
     // WebDAV 备份配置
     const [webdavConfig, setWebdavConfig] = useState<WebDavConfig>(DEFAULT_WEBDAV_CONFIG);
@@ -476,10 +477,13 @@ function App() {
     const [activeGroupId, setActiveGroupId] = useState<number | null>(null);
     // 向下滚动后头部收紧，让出更多内容空间
     const [headerCompact, setHeaderCompact] = useState(false);
-    // 移动端「分组」菜单的锚点
+    // 「分组」菜单的锚点（底栏与窄桌面顶栏共用同一个菜单）
     const [mobileGroupsAnchor, setMobileGroupsAnchor] = useState<HTMLElement | null>(
         null
     );
+    // 锚点来自顶栏还是底栏：顶栏按钮在页面上方，菜单要往下展开；
+    // 底栏按钮贴着屏幕下边缘，只能往上翻。两者共用菜单，方向得按锚点位置定。
+    const [groupsAnchorFromTop, setGroupsAnchorFromTop] = useState(false);
 
     // 滚动：更新头部收缩状态 + 当前分组高亮
     useEffect(() => {
@@ -1552,14 +1556,12 @@ function App() {
         showNewSitePassword,
         setShowNewSitePassword,
         creatingSite,
-        fetchingMeta,
         handleOpenAddGroup,
         handleCloseAddGroup,
         handleCreateGroup,
         handleOpenAddSite,
         handleCloseAddSite,
         handleSiteInputChange,
-        handleFetchNewSiteMeta,
         handleFetchNewSiteIcon,
         handleCreateSite,
     } = useSiteCreator({
@@ -1961,16 +1963,33 @@ function App() {
         clearVisits,
     });
 
-    // 顶栏 / 底栏的「新增」主按钮：默认开「新增网站」，挂到第一个分组下；
+    // 顶栏 / 底栏的「新增」主按钮：默认开「新增网站」。
+    // 落到哪个分组按「当前正在看的那个」算 —— 以前固定挂到第一个分组，
+    // 用户滚到第三个分组点新增，卡片却出现在列表最上面，等于白找一趟。
+    // 没有正在看的分组（刚打开、或者左栏没启用）就退回第一个；
     // 一个分组都还没有时，退回到「新增分组」——不然点了没反应。
     const handleQuickAdd = useCallback(() => {
-        const first = groups.find(g => g.id !== undefined);
-        if (first) {
-            handleOpenAddSite(first.id as number);
+        const current =
+            activeGroupId === null
+                ? undefined
+                : groups.find(g => g.id === activeGroupId && g.id !== undefined);
+        const target = current ?? groups.find(g => g.id !== undefined);
+        if (target) {
+            handleOpenAddSite(target.id as number);
             return;
         }
         handleOpenAddGroup();
-    }, [groups, handleOpenAddSite, handleOpenAddGroup]);
+    }, [groups, activeGroupId, handleOpenAddSite, handleOpenAddGroup]);
+
+    // 「新增」按钮上的目标分组名：让用户点之前就知道卡片会落到哪
+    const quickAddTargetName = useMemo(() => {
+        const current =
+            activeGroupId === null
+                ? undefined
+                : groups.find(g => g.id === activeGroupId && g.id !== undefined);
+        const target = current ?? groups.find(g => g.id !== undefined);
+        return target?.name ?? "";
+    }, [groups, activeGroupId]);
 
     // 方向键在卡片之间移动焦点（按几何位置找同行/同列的邻居）
     const focusCardByDirection = (dir: "left" | "right" | "up" | "down") =>
@@ -2306,7 +2325,10 @@ function App() {
                                 {/* 窄桌面（900~1343px）的分组入口：这一段左栏没有、底栏也没有 */}
                                 {sortMode === SortMode.None && (
                                     <HeaderGroupsButton
-                                        onOpen={event => setMobileGroupsAnchor(event.currentTarget)}
+                                        onOpen={event => {
+                                            setMobileGroupsAnchor(event.currentTarget);
+                                            setGroupsAnchorFromTop(true);
+                                        }}
                                         open={Boolean(mobileGroupsAnchor)}
                                         count={displayedGroups.length}
                                         onExitViewport={handleExitGroupsButtonViewport}
@@ -2326,7 +2348,9 @@ function App() {
                                         starFilter={starFilter}
                                         setStarFilter={setStarFilter}
                                         themeMode={themeMode}
-                                        onToggleTheme={toggleTheme}
+                                        setThemeMode={setThemeMode}
+                                        favoritesEnabled={favoritesEnabled}
+                                        onFavoritesEnabledChange={setFavoritesEnabled}
                                     />
                                 )}
                                 <HeaderActions
@@ -2335,6 +2359,7 @@ function App() {
                                     onSaveSiteSort={handleSaveSiteSort}
                                     onCancelSort={cancelSort}
                                     onQuickAdd={handleQuickAdd}
+                                    addTargetName={quickAddTargetName}
                                     onOpenAddGroup={handleOpenAddGroup}
                                     onMenuOpen={handleMenuOpen}
                                     menuOpen={openMenu}
@@ -2353,8 +2378,6 @@ function App() {
                                             onStartGroupSort={startGroupSort}
                                             canInstall={canInstall}
                                             onInstallApp={() => void handleInstallApp()}
-                                            favoritesEnabled={favoritesEnabled}
-                                            onFavoritesEnabledChange={setFavoritesEnabled}
                                             onOpenVisits={() => setOpenVisits(true)}
                                             onOpenBackup={handleOpenBackup}
                                             onOpenRecycle={() => {
@@ -2371,6 +2394,7 @@ function App() {
                                                 handleMenuClose();
                                                 setOpenAiAssistant(true);
                                             }}
+                                            onOpenShortcuts={() => setOpenShortcuts(true)}
                                             isSiteOwner={currentUser?.role === "owner"}
                                         />
                                     }
@@ -2538,8 +2562,6 @@ function App() {
                         showPassword={showNewSitePassword}
                         onTogglePassword={setShowNewSitePassword}
                         creating={creatingSite}
-                        fetchingMeta={fetchingMeta}
-                        onFetchMeta={handleFetchNewSiteMeta}
                         onFetchIcon={handleFetchNewSiteIcon}
                         onCreate={handleCreateSite}
                         ai={siteAi}
@@ -2655,6 +2677,7 @@ function App() {
                             }
                             return `已删除的网站 #${id}`;
                         }}
+                        syncEnabled={configs[PREF_SYNC_CONFIG] === "true"}
                         onClear={() => {
                             clearVisits();
                             // 清除访问记录不弹提示：「最近访问」分组会当场消失，本身就是反馈
@@ -2716,6 +2739,7 @@ function App() {
                     open={openAudit}
                     onClose={() => setOpenAudit(false)}
                     client={api as unknown as NavigationClient}
+                    retentionDays={Number(configs[RETENTION_DAYS_KEY]) || undefined}
                 />
                 </Suspense>
 
@@ -2725,6 +2749,7 @@ function App() {
                     open={openRecycle}
                     onClose={() => setOpenRecycle(false)}
                     client={api as unknown as NavigationClient}
+                    retentionDays={Number(configs[RETENTION_DAYS_KEY]) || undefined}
                     onChanged={() => void fetchData({ silent: true })}
                     onNotify={(msg, severity) => notify(msg, severity || "info")}
                 />
@@ -2765,7 +2790,10 @@ function App() {
                             searchInputRef.current?.focus();
                             window.scrollTo({ top: 0, behavior: "smooth" });
                         },
-                        onGroups: event => setMobileGroupsAnchor(event.currentTarget),
+                        onGroups: event => {
+                            setMobileGroupsAnchor(event.currentTarget);
+                            setGroupsAnchorFromTop(false);
+                        },
                         // 和顶栏主按钮同一个动作：默认新增网站，没分组时才去建分组
                         onAdd: handleQuickAdd,
                         onMore: event =>
@@ -2775,6 +2803,7 @@ function App() {
                         starActive: starFilter,
                         badge: displayedGroups.length,
                         groupsAnchor: mobileGroupsAnchor,
+                        groupsPlacement: groupsAnchorFromTop ? "top" : "bottom",
                         onCloseGroups: () => setMobileGroupsAnchor(null),
                         groups: displayedGroups,
                         onJumpGroup: jumpToGroup,

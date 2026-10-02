@@ -282,5 +282,12 @@ export function applyImportSelection(
         return true;
     });
 
-    return { ...data, groups, sites };
+    // 勾掉一部分之后，这份数据已经不是文件里原来那份了，文件自带的摘要自然对不上。
+    // 这里必须把 integrity 摘掉：否则导入时校验必然失败，
+    // 「挑几项导入」这条路就永远走不通（不挑反而是全选、能通过）。
+    const { integrity: _staleIntegrity, ...rest } = data as ExportData & {
+        integrity?: unknown;
+    };
+    void _staleIntegrity;
+    return { ...rest, groups, sites } as ExportData;
 }

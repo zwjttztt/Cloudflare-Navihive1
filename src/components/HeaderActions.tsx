@@ -24,6 +24,8 @@ export interface HeaderActionsProps {
     onCancelSort: () => void;
     /** 主按钮：默认新增网站（没有分组时退化成新增分组） */
     onQuickAdd: () => void;
+    /** 新增会落到哪个分组（为空表示还没有分组，会去建分组） */
+    addTargetName?: string;
     /** 下拉里的「新增分组」 */
     onOpenAddGroup: () => void;
     onMenuOpen: (event: React.MouseEvent<HTMLButtonElement>) => void;
@@ -39,6 +41,7 @@ export default function HeaderActions({
     onCancelSort,
     onQuickAdd,
     onOpenAddGroup,
+    addTargetName,
     onMenuOpen,
     menuOpen,
     menu,
@@ -88,20 +91,31 @@ export default function HeaderActions({
                 </>
             ) : (
                 <>
-                    {/* 新增：主按钮 + 下拉。窄屏整个交给底部导航栏，顶部不再重复 */}
+                    {/* 新增：主按钮 + 下拉。
+                        显示门槛从 sm(600px) 提到 md(900px)：底部导航栏管到 899.98px，
+                        600~899px 这一段顶部和底栏会同时出现「新增 / 更多」，同一个动作两个入口。 */}
                     <ButtonGroup
                         variant='contained'
                         size='small'
                         color='primary'
                         sx={{
-                            display: { xs: "none", sm: "inline-flex" },
+                            display: { xs: "none", md: "inline-flex" },
                             flexShrink: 0,
                         }}
                     >
                         <Button
                             startIcon={<AddIcon />}
                             onClick={onQuickAdd}
-                            aria-label='新增网站'
+                            aria-label={
+                                addTargetName
+                                    ? `新增网站到「${addTargetName}」`
+                                    : "新增分组"
+                            }
+                            title={
+                                addTargetName
+                                    ? `新增网站到「${addTargetName}」`
+                                    : "还没有分组，点这里先建一个"
+                            }
                             sx={headerControlSx}
                         >
                             新增
@@ -114,7 +128,8 @@ export default function HeaderActions({
                             aria-controls={addOpen ? "header-add-menu" : undefined}
                             sx={{
                                 minWidth: "auto",
-                                width: 28,
+                                // 原来 28px：箭头按钮窄到几乎点不中，这里拉到和主按钮一样高、宽度够一根手指
+                                width: 36,
                                 height: HEADER_CONTROL_H,
                                 p: 0,
                             }}
@@ -162,7 +177,8 @@ export default function HeaderActions({
                         size="small"
                         sx={{
                             ...headerControlSx,
-                            display: { xs: "none", sm: "inline-flex" },
+                            // 与「新增」同一个门槛：底部导航栏已经有一个「更多」，600~899px 别再重复
+                            display: { xs: "none", md: "inline-flex" },
                             flexShrink: 0,
                         }}
                     >

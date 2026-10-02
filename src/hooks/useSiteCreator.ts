@@ -16,7 +16,6 @@ import type { NotifySeverity } from "./useNotify";
 export type CreatorApi = {
     createGroup(input: Group): Promise<Group | undefined>;
     createSite(input: Site): Promise<Site | undefined>;
-    getSiteMeta(url: string): Promise<{ title?: string; description?: string; icon?: string }>;
 };
 
 type UseSiteCreatorParams = {
@@ -53,12 +52,10 @@ export function useSiteCreator({
     const [newSite, setNewSite] = useState<Partial<Site>>(emptySiteDraft);
     // 新增卡片时是否明文显示密码
     const [showNewSitePassword, setShowNewSitePassword] = useState(false);
-    // 正在创建 / 抓取：按钮置灰 + 防连点
+    // 正在创建：按钮置灰 + 防连点
     const [creatingSite, setCreatingSite] = useState(false);
-    const [fetchingMeta, setFetchingMeta] = useState(false);
     // setState 要等下一次渲染才生效，连点两下时用 ref 同步兜住
     const creatingSiteRef = useRef(false);
-    const fetchingMetaRef = useRef(false);
 
     // ---- 新建分组 ----
 
@@ -134,41 +131,6 @@ export function useSiteCreator({
         },
         [iconApi]
     );
-
-    // 新增站点时：让服务端去抓目标页面的标题 / 描述，一键补全
-    // （浏览器直接 fetch 第三方页面会被 CORS 挡住，所以走 worker 的 /api/meta）
-    const handleFetchNewSiteMeta = useCallback(async () => {
-        if (fetchingMetaRef.current) return;
-
-        const target = normalizeUrl(newSite.url || "");
-        if (!target.ok) {
-            onError(normalizeFailureText(target.reason));
-            return;
-        }
-
-        fetchingMetaRef.current = true;
-        setFetchingMeta(true);
-        try {
-            const meta = await api.getSiteMeta(target.url);
-            setNewSite(prev => ({
-                ...prev,
-                // 顺手把规范化后的网址写回输入框，用户填的 baidu.com 会立刻变成 https://baidu.com
-                url: target.url,
-                name: prev.name || meta.title || "",
-                description: prev.description || meta.description || "",
-                icon: prev.icon || meta.icon || resolveIconApiUrl(iconApi, target.url),
-            }));
-            onNotify(
-                meta.title ? "已抓取站点名称与描述" : "这个站点没给标题，手动填一下吧",
-                meta.title ? "success" : "info"
-            );
-        } catch (error) {
-            onError("抓取站点信息失败：" + (error as Error).message);
-        } finally {
-            fetchingMetaRef.current = false;
-            setFetchingMeta(false);
-        }
-    }, [api, iconApi, newSite.url, onError, onNotify]);
 
     // 新增站点时：按配置的图标 API 一键生成图标 URL
     const handleFetchNewSiteIcon = useCallback(() => {
@@ -246,14 +208,12 @@ export function useSiteCreator({
         showNewSitePassword,
         setShowNewSitePassword,
         creatingSite,
-        fetchingMeta,
         handleOpenAddGroup,
         handleCloseAddGroup,
         handleCreateGroup,
         handleOpenAddSite,
         handleCloseAddSite,
         handleSiteInputChange,
-        handleFetchNewSiteMeta,
         handleFetchNewSiteIcon,
         handleCreateSite,
     };

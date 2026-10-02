@@ -41,7 +41,7 @@ type Log = {
     duplicateCalls: number;
 };
 
-function makeApi(opts: { getMeta?: boolean; hang?: boolean } = {}) {
+function makeApi(opts: { hang?: boolean } = {}) {
     const log: Log = {
         createSite: [],
         createGroup: [],
@@ -65,10 +65,6 @@ function makeApi(opts: { getMeta?: boolean; hang?: boolean } = {}) {
             }
             return { ...input, id: 77 } as Site;
         },
-        getSiteMeta: async () => ({
-            title: opts.getMeta === false ? "" : "抓到的标题",
-            description: "抓到的描述",
-        }),
     };
     return { api, log, release: () => releaseCreate?.() };
 }
@@ -269,31 +265,6 @@ test("连点「创建」：只写一张卡片", async () => {
         await Promise.resolve();
     });
     assert.equal(text("creating"), "false", "结束后要松开按钮");
-    cleanup();
-});
-
-test("抓取站点信息：回填规范化后的网址与标题，并做提示", async () => {
-    const { api, log } = makeApi();
-    mount(<Harness api={api} log={log} menuCloser={noop} guard />);
-    await run(() => c().handleOpenAddSite(1));
-    await fill("", "yunso.net");
-    await run(() => c().handleFetchNewSiteMeta());
-    const draft = JSON.parse(text("draft"));
-    assert.equal(draft.url, "https://yunso.net");
-    assert.equal(draft.name, "抓到的标题");
-    assert.equal(draft.description, "抓到的描述");
-    assert.ok(log.notes.includes("success:已抓取站点名称与描述"));
-    cleanup();
-});
-
-test("抓取站点信息：网址非法时不发请求，只提示", async () => {
-    const { api, log } = makeApi();
-    mount(<Harness api={api} log={log} menuCloser={noop} guard />);
-    await run(() => c().handleOpenAddSite(1));
-    await fill("", "javascript:alert(1)");
-    await run(() => c().handleFetchNewSiteMeta());
-    assert.equal(log.errors.length, 1);
-    assert.equal(JSON.parse(text("draft")).name, "", "失败不该往表单里写东西");
     cleanup();
 });
 

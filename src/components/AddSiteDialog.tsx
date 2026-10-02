@@ -23,7 +23,6 @@ import {
     Typography,
 } from "@mui/material";
 import CloseIcon from "@mui/icons-material/Close";
-import CloudDownloadIcon from "@mui/icons-material/CloudDownload";
 import AutoFixHighIcon from "@mui/icons-material/AutoFixHigh";
 import AutoAwesomeIcon from "@mui/icons-material/AutoAwesome";
 import VisibilityIcon from "@mui/icons-material/Visibility";
@@ -40,8 +39,6 @@ export interface AddSiteDialogProps {
     showPassword: boolean;
     onTogglePassword: Dispatch<SetStateAction<boolean>>;
     creating: boolean;
-    fetchingMeta: boolean;
-    onFetchMeta: () => void;
     onFetchIcon: () => void;
     onCreate: () => void;
     /** null 表示这台机器上没有可用的 AI —— 入口不出现 */
@@ -61,8 +58,6 @@ export default function AddSiteDialog(props: AddSiteDialogProps) {
         showPassword,
         onTogglePassword,
         creating,
-        fetchingMeta,
-        onFetchMeta,
         onFetchIcon,
         onCreate,
         ai,
@@ -154,30 +149,6 @@ export default function AddSiteDialog(props: AddSiteDialogProps) {
                                     InputProps={{
                                         endAdornment: (
                                             <InputAdornment position='end'>
-                                                <Tooltip title='抓取这个网站的标题和描述'>
-                                                    <span>
-                                                        <IconButton
-                                                            size='small'
-                                                            edge='end'
-                                                            onClick={
-                                                                onFetchMeta
-                                                            }
-                                                            disabled={
-                                                                !site.url ||
-                                                                fetchingMeta
-                                                            }
-                                                            aria-label='抓取站点标题和描述'
-                                                        >
-                                                            {fetchingMeta ? (
-                                                                <CircularProgress
-                                                                    size={16}
-                                                                />
-                                                            ) : (
-                                                                <CloudDownloadIcon fontSize='small' />
-                                                            )}
-                                                        </IconButton>
-                                                    </span>
-                                                </Tooltip>
                                                 {ai?.enabled ? (
                                                     <Tooltip
                                                         title={

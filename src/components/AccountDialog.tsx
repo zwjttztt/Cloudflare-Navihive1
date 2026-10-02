@@ -8,7 +8,7 @@
 //
 // 组件本身不碰 API：改密提交、生成私钥、生成邀请码、注销都通过回调交给父组件。
 import type { ChangeEvent } from "react";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import {
     Box,
     Button,
@@ -246,58 +246,14 @@ export default function AccountDialog({
     const [recoveryPwdOpen, setRecoveryPwdOpen] = useState(false);
     const [recoveryPwd, setRecoveryPwd] = useState("");
 
-    // 沉睡治理阈值：只有站点所有者看得到这一段，值从服务端读回来后回填
-    const [disableDaysInput, setDisableDaysInput] = useState(
-        String(inactivePolicy?.disableDays ?? INACTIVE_DISABLE_DAYS_DEFAULT)
-    );
-    const [graceDaysInput, setGraceDaysInput] = useState(
-        String(inactivePolicy?.graceDays ?? INACTIVE_DELETE_GRACE_DAYS_DEFAULT)
-    );
-    const [policyBusy, setPolicyBusy] = useState(false);
-    const [policyMsg, setPolicyMsg] = useState<{
-        type: "success" | "error";
-        text: string;
-    } | null>(null);
-
+    // 沉睡治理阈值在这里只读展示：改它的入口统一放在「网站设置 → 数据保留」，
+    // 两处读写的是同一份全站配置，开两个编辑框只会让人不知道该信哪一个
     // 手动扫描：与「保存阈值」分开 —— 它是一次性动作，结果要把停用/清除的条数报出来
     const [sweepBusy, setSweepBusy] = useState(false);
     const [sweepMsg, setSweepMsg] = useState<{
         type: "success" | "error";
         text: string;
     } | null>(null);
-
-    useEffect(() => {
-        if (!inactivePolicy) return;
-        setDisableDaysInput(String(inactivePolicy.disableDays));
-        setGraceDaysInput(String(inactivePolicy.graceDays));
-    }, [inactivePolicy]);
-
-    const handleSavePolicy = async () => {
-        const disableDays = Number.parseInt(disableDaysInput, 10);
-        const graceDays = Number.parseInt(graceDaysInput, 10);
-        // 0 / 负数 / 非数字都不能收：服务端会把它们当成「没配」而回落到默认，
-        // 界面上看着是「30 天后清除」、实际跑的是 180 天 —— 这种错觉最坑人。
-        if (!Number.isFinite(disableDays) || disableDays <= 0) {
-            setPolicyMsg({ type: "error", text: "停用阈值必须是大于 0 的天数" });
-            return;
-        }
-        if (!Number.isFinite(graceDays) || graceDays <= 0) {
-            setPolicyMsg({ type: "error", text: "清除宽限期必须是大于 0 的天数" });
-            return;
-        }
-        setPolicyBusy(true);
-        setPolicyMsg(null);
-        try {
-            const result = await onSaveInactivePolicy?.({ disableDays, graceDays });
-            setPolicyMsg(
-                result?.success === false
-                    ? { type: "error", text: result.message || "保存失败" }
-                    : { type: "success", text: "已保存，下次扫描生效" }
-            );
-        } finally {
-            setPolicyBusy(false);
-        }
-    };
 
     const handleSweep = async () => {
         setSweepBusy(true);
@@ -398,7 +354,7 @@ export default function AccountDialog({
                 }}
             >
                 <DialogTitle sx={{ px: 3, pt: 2, pb: 0.5 }}>
-                    账号管理
+                    账号与安全
                     <IconButton
                         aria-label='close'
                         onClick={onClose}
@@ -423,6 +379,13 @@ export default function AccountDialog({
                             </Box>
                             {currentUser.role === "owner" ? "（站点所有者）" : ""}
                             。每个账号只看到自己的分组、卡片与备份配置。
+                            <Box
+                                component='span'
+                                sx={{ display: "block", mt: 0.5, color: "text.secondary" }}
+                            >
+                                上面几段是「我自己」的安全设置（账号密码 / 恢复密钥 / 登录设备 / 注销）；
+                                再往下是站点治理，只有站点所有者才看得到。
+                            </Box>
                         </DialogContentText>
                     ) : (
                         <DialogContentText sx={{ mb: 1.5, fontSize: 13.5 }}>
@@ -692,7 +655,7 @@ export default function AccountDialog({
                         {currentUser?.role === "owner" && accounts && accounts.length > 0 ? (
                             <Section
                                 title='账号与沉睡治理'
-                                hint='长期不登录的账号会先被停用（数据一条不删），宽限期满后自动清除以释放空间。认出是真人在用的，可以提前豁免。'
+                                hint='这一段属于全站治理，只有站点所有者能操作。长期不登录的账号会先被停用（数据一条不删），宽限期满后自动清除以释放空间。认出是真人在用的，可以提前豁免。'
                             >
                                 <Stack spacing={1}>
                                     {accounts.map(account => {
@@ -756,38 +719,36 @@ export default function AccountDialog({
                                         <TwoCol>
                                             <TextField
                                                 label='多久没登录就停用（天）'
-                                                type='number'
                                                 size='small'
-                                                value={disableDaysInput}
-                                                onChange={e => setDisableDaysInput(e.target.value)}
-                                                disabled={policyBusy}
-                                                inputProps={{ min: 1, max: 3650 }}
+                                                value={String(
+                                                    inactivePolicy?.disableDays ??
+                                                        INACTIVE_DISABLE_DAYS_DEFAULT
+                                                )}
+                                                disabled
                                             />
                                             <TextField
                                                 label='停用后保留多久再清除（天）'
-                                                type='number'
                                                 size='small'
-                                                value={graceDaysInput}
-                                                onChange={e => setGraceDaysInput(e.target.value)}
-                                                disabled={policyBusy}
-                                                inputProps={{ min: 1, max: 3650 }}
+                                                value={String(
+                                                    inactivePolicy?.graceDays ??
+                                                        INACTIVE_DELETE_GRACE_DAYS_DEFAULT
+                                                )}
+                                                disabled
                                             />
                                         </TwoCol>
+                                        <Typography
+                                            variant='caption'
+                                            color='text.secondary'
+                                            sx={{ display: "block", mt: 0.5 }}
+                                        >
+                                            要改这两个天数，去「网站设置 → 数据保留」；这里显示的是同一份配置，只是不在这里改。
+                                        </Typography>
                                         <Stack
                                             direction='row'
                                             spacing={1.25}
                                             alignItems='center'
                                             sx={{ mt: 1.25, flexWrap: "wrap", rowGap: 1 }}
                                         >
-                                            <Button
-                                                variant='outlined'
-                                                size='small'
-                                                onClick={() => void handleSavePolicy()}
-                                                disabled={policyBusy}
-                                                sx={{ flex: "none" }}
-                                            >
-                                                保存阈值
-                                            </Button>
                                             {/* 立刻跑一遍：不用等每周 cron，停用/清除条数直接回显 */}
                                             {onSweepInactive ? (
                                                 <Button
@@ -815,19 +776,6 @@ export default function AccountDialog({
                                                 sx={{ display: "block", mt: 0.75 }}
                                             >
                                                 {sweepMsg.text}
-                                            </Typography>
-                                        ) : null}
-                                        {policyMsg ? (
-                                            <Typography
-                                                variant='caption'
-                                                color={
-                                                    policyMsg.type === "error"
-                                                        ? "error.main"
-                                                        : "success.main"
-                                                }
-                                                sx={{ display: "block", mt: 0.75 }}
-                                            >
-                                                {policyMsg.text}
                                             </Typography>
                                         ) : null}
                                     </Box>

@@ -51,10 +51,12 @@ interface AuditDialogProps {
     open: boolean;
     onClose: () => void;
     client: NavigationClient;
+    /** 网站设置里配的保留天数；没传就用后端默认值，不把 7 天写死在界面上 */
+    retentionDays?: number;
 }
 
-/** 与后端 RETENTION_DAYS 保持一致：审计日志只留这些天，超期自动清除 */
-const AUDIT_RETENTION_DAYS = 7;
+/** 后端默认保留天数；界面优先用网站设置里的 retention.days */
+const DEFAULT_RETENTION_DAYS = 7;
 const PAGE_SIZE = 50;
 
 type AuditTab = "log" | "errors";
@@ -89,11 +91,20 @@ function formatTime(iso: string): string {
     return t.toLocaleString("zh-CN", { hour12: false });
 }
 
-export default function AuditDialog({ open, onClose, client }: AuditDialogProps) {
+export default function AuditDialog({
+    open,
+    onClose,
+    client,
+    retentionDays,
+}: AuditDialogProps) {
     const [tab, setTab] = useState<AuditTab>("log");
     const [rows, setRows] = useState<AuditEntry[]>([]);
     const [loading, setLoading] = useState(false);
     const [loadingMore, setLoadingMore] = useState(false);
+    // 拉不到日志要说出来：空白列表和「没读到」长得一样的话，
+    // 用户会以为真的没有记录，而不是自己的权限或网络出了问题
+    const [loadError, setLoadError] = useState("");
+    const [moreError, setMoreError] = useState("");
     // 输入框里的值和「已提交的筛选条件」分开：否则每敲一个字都会重新拉一次列表
     const [actorInput, setActorInput] = useState("");
     const [query, setQuery] = useState("");
@@ -119,6 +130,7 @@ export default function AuditDialog({ open, onClose, client }: AuditDialogProps)
         if (!open || tab !== "log") return;
         let cancelled = false;
         setLoading(true);
+        setLoadError("");
         void (async () => {
             try {
                 const result = await fetchPage(0, query);
@@ -127,8 +139,11 @@ export default function AuditDialog({ open, onClose, client }: AuditDialogProps)
                 offsetRef.current = incoming.length;
                 setRows(incoming);
                 setHasMore(result.hasMore);
-            } catch {
-                // 读取失败静默：审计不是关键路径
+            } catch (error) {
+                if (cancelled) return;
+                setRows([]);
+                setHasMore(false);
+                setLoadError((error as Error)?.message || "读取审计日志失败");
             } finally {
                 if (!cancelled) setLoading(false);
             }
@@ -163,6 +178,7 @@ export default function AuditDialog({ open, onClose, client }: AuditDialogProps)
     const loadMore = useCallback(async () => {
         if (loading || loadingMore) return;
         setLoadingMore(true);
+        setMoreError("");
         try {
             const result = await fetchPage(offsetRef.current, query);
             const incoming = result.log || [];
@@ -173,8 +189,8 @@ export default function AuditDialog({ open, onClose, client }: AuditDialogProps)
                 return [...prev, ...incoming.filter(r => !seen.has(r.id))];
             });
             setHasMore(result.hasMore);
-        } catch {
-            // 同上，静默
+        } catch (error) {
+            setMoreError((error as Error)?.message || "加载更多失败");
         } finally {
             setLoadingMore(false);
         }
@@ -192,7 +208,7 @@ export default function AuditDialog({ open, onClose, client }: AuditDialogProps)
                 <HistoryIcon fontSize='small' />
                 审计日志
                 <Typography component='span' variant='caption' color='text.secondary' sx={{ ml: "auto" }}>
-                    仅保留 {AUDIT_RETENTION_DAYS} 天
+                    仅保留 {retentionDays ?? DEFAULT_RETENTION_DAYS} 天
                 </Typography>
             </DialogTitle>
             <DialogContent dividers sx={{ p: 0 }}>
@@ -245,6 +261,19 @@ export default function AuditDialog({ open, onClose, client }: AuditDialogProps)
                         {loading && rows.length === 0 ? (
                             <Box sx={{ display: "flex", justifyContent: "center", py: 4 }}>
                                 <CircularProgress size={28} />
+                            </Box>
+                        ) : loadError ? (
+                            <Box sx={{ p: 4, textAlign: "center" }}>
+                                <Typography variant='body2' color='error' sx={{ mb: 1.5 }}>
+                                    没读到审计日志：{loadError}
+                                </Typography>
+                                <Button
+                                    size='small'
+                                    variant='outlined'
+                                    onClick={() => setQuery(actorInput.trim())}
+                                >
+                                    重试
+                                </Button>
                             </Box>
                         ) : rows.length === 0 ? (
                             <Box sx={{ p: 4, textAlign: "center" }}>
@@ -304,6 +333,13 @@ export default function AuditDialog({ open, onClose, client }: AuditDialogProps)
                                 >
                                     {loadingMore ? "加载中…" : "加载更多"}
                                 </Button>
+                            </Box>
+                        )}
+                        {moreError && (
+                            <Box sx={{ px: 2, pb: 1.5 }}>
+                                <Typography variant='caption' color='error'>
+                                    {moreError}
+                                </Typography>
                             </Box>
                         )}
                     </>

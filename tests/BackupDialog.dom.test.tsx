@@ -203,35 +203,40 @@ test("BackupDialog：预览确认后才真导入，并带上覆盖开关的状�
     });
     await selectBackupFile(JSON.stringify(makeBackup()));
 
-    // 先把「覆盖恢复」切成「合并导入」
-    const overwriteSwitch = switchByLabelText("覆盖恢复（清空现有数据后导入）");
-    assert.ok(overwriteSwitch, "应能找到覆盖/合并开关");
-    await clickAsync(overwriteSwitch!);
+    // 默认是合并导入，点一下切成「覆盖恢复」
+    const mergeSwitch = switchByLabelText("合并导入（保留现有数据并追加）");
+    assert.ok(mergeSwitch, "应能找到覆盖/合并开关");
+    await clickAsync(mergeSwitch!);
 
     await clickAsync(buttonByText("开始恢复")!);
     await settle();
 
     assert.equal(imported.count, 1, "预览确认后应导入一次");
     const [, overwrite] = imported.calls[0] as unknown as [ExportData, boolean];
-    assert.equal(overwrite, false, "切成合并导入后，overwrite 应为 false");
+    assert.equal(overwrite, true, "切成覆盖恢复后，overwrite 应为 true");
 });
 
-test("BackupDialog：覆盖 / 合并开关切换后文案跟着变", async t => {
+test("BackupDialog：默认合并导入，切到覆盖后文案与警告一起变", async t => {
     t.after(cleanup);
     mount();
 
+    // 默认是合并：覆盖会清空现有数据，不该是默认值
     assert.ok(
-        (document.body.textContent || "").includes("覆盖恢复（清空现有数据后导入）"),
-        "默认应是覆盖恢复"
+        (document.body.textContent || "").includes("合并导入（保留现有数据并追加）"),
+        "默认应是合并导入"
     );
 
-    const sw = switchByLabelText("覆盖恢复（清空现有数据后导入）");
+    const sw = switchByLabelText("合并导入（保留现有数据并追加）");
     assert.ok(sw, "应能找到覆盖/合并开关");
     await clickAsync(sw!);
 
     const text = document.body.textContent || "";
-    assert.ok(text.includes("合并导入（保留现有数据并追加）"), "切换后应变合并文案");
-    assert.ok(!text.includes("覆盖恢复（清空现有数据后导入）"), "旧文案应消失");
+    assert.ok(text.includes("覆盖恢复（清空现有数据后导入）"), "切换后应变覆盖文案");
+    assert.ok(!text.includes("合并导入（保留现有数据并追加）"), "旧文案应消失");
+    assert.ok(
+        text.includes("覆盖恢复会先清空现有的分组与站点"),
+        "切成覆盖时要给出不可逆提示"
+    );
 });
 
 test("BackupDialog：凭据开关有 aria-label，切换会回调父级", async t => {

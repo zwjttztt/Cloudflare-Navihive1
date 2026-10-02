@@ -4,7 +4,6 @@
 // 读到的数据已经按 ctx.api 上绑定的账号过滤过（见 NavigationAPI.setCurrentUser）。
 import type { Group, Site } from "../../src/API/http";
 import { enforceWriteGuard, writeBucket } from "../loginGuard";
-import { fetchSiteMeta } from "../meta";
 import { weakEtag } from "../util";
 import type { GroupInput, SiteInput } from "../types";
 import { validateGroup, validateSite } from "../validate";
@@ -51,12 +50,6 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
      */
     const writeGate = (): Promise<Response | null> =>
         enforceWriteGuard(api, writeBucket(request, api.getCurrentUserId(), trustXFF));
-
-    // 抓目标站点的标题 / 描述（新增卡片时一键补全）—— 要鉴权，因为会对外发请求，
-    // 不能让陌生人拿我们的 Worker 当代理使
-    if (path === "meta" && method === "GET") {
-        return await fetchSiteMeta(request);
-    }
 
     // 路由匹配
     if (path === "bootstrap" && method === "GET") {

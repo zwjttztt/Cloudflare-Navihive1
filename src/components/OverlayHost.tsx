@@ -32,8 +32,10 @@ export interface OverlayHostProps {
         badge: number;
         /** 底栏退场（视口跨过 1344px）时收掉挂在底栏按钮上的弹层 */
         onExitViewport?: () => void;
-        /** 移动端「分组」菜单 */
+        /** 「分组」菜单（窄屏底栏与窄桌面顶栏共用） */
         groupsAnchor: HTMLElement | null;
+        /** 锚点在上方（顶栏）时菜单往下展开，在下方（底栏）时往上展开 */
+        groupsPlacement?: "top" | "bottom";
         onCloseGroups: () => void;
         groups: GroupWithSites[];
         onJumpGroup: (groupId: number) => void;
@@ -140,13 +142,23 @@ export default function OverlayHost({
                 onExitViewport={mobile.onExitViewport}
             />
 
-            {/* 移动端「分组」菜单：列出所有分组，点一下跳过去 */}
+            {/* 「分组」菜单：列出所有分组，点一下跳过去。
+                底栏在屏幕下边缘 → 菜单往上翻；顶栏在页面上方 → 菜单往下展开，
+                否则顶栏那一档会有一半菜单被推出可视区外 */}
             <Menu
                 anchorEl={mobile.groupsAnchor}
                 open={Boolean(mobile.groupsAnchor)}
                 onClose={mobile.onCloseGroups}
-                anchorOrigin={{ vertical: "top", horizontal: "center" }}
-                transformOrigin={{ vertical: "bottom", horizontal: "center" }}
+                anchorOrigin={
+                    mobile.groupsPlacement === "top"
+                        ? { vertical: "bottom", horizontal: "center" }
+                        : { vertical: "top", horizontal: "center" }
+                }
+                transformOrigin={
+                    mobile.groupsPlacement === "top"
+                        ? { vertical: "top", horizontal: "center" }
+                        : { vertical: "bottom", horizontal: "center" }
+                }
                 slotProps={{ paper: { sx: { minWidth: 180, borderRadius: "14px" } } }}
             >
                 {mobile.groups.map(group => (

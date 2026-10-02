@@ -69,7 +69,7 @@ async function whoClaims(path: string, method: string): Promise<string[]> {
     return hits;
 }
 
-// 全部 50 个路由分支。startsWith 的那几个（users/ groups/ sites/ configs/）
+// 全部 49 个路由分支。startsWith 的那几个（users/ groups/ sites/ configs/）
 // 用一条具体路径代表 —— 前缀匹配对任意 id 都成立，测一个就够。
 const EXPECTED: Array<[string, string]> = [
     // public：不需要登录
@@ -98,8 +98,7 @@ const EXPECTED: Array<[string, string]> = [
     ["POST", "recycle/restore-batch"],
     ["POST", "recycle/purge-batch"],
     ["DELETE", "recycle"],
-    // data
-    ["GET", "meta"],
+    // data（"GET meta" 随「抓取站点标题」功能一起删掉了，这里同步移除）
     ["GET", "bootstrap"],
     ["GET", "groups"],
     ["GET", "groups/1"],
@@ -158,7 +157,7 @@ test("分发表里的模块数量与预期一致", () => {
     );
 });
 
-test("50 个路由分支全部有人认领，且不重复", async () => {
+test("49 个路由分支全部有人认领，且不重复", async () => {
     for (const [method, path] of EXPECTED) {
         const hits = await whoClaims(path, method);
         assert.ok(

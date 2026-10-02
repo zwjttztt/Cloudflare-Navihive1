@@ -212,6 +212,10 @@ export default function SettingsDialog({
             >
                 <DialogContentText sx={{ mb: 1.5, fontSize: 13.5 }}>
                     集中管理站点信息、外观风格、图标来源与数据同步。
+                    <Box component='span' sx={{ display: "block", mt: 0.5, color: "text.secondary" }}>
+                        带「即时生效」标注的开关改完立刻生效、不进草稿，点「取消」也不会回滚它们；
+                        其它项都是草稿，要按下面的「保存设置」才落库。
+                    </Box>
                 </DialogContentText>
                 {!isSiteOwner ? (
                     // 外观现在是按账号保存的，改得动；但「改的是谁的」得说清楚，
@@ -536,7 +540,10 @@ export default function SettingsDialog({
                     </Section>
 
                     {/* 4. 图标与缩略图：两个 URL 模板，规则相似，并排放 */}
-                    <Section title='图标与缩略图' hint='两项都支持占位符，留空则回落到默认行为。'>
+                    <Section
+                        title='图标与缩略图'
+                        hint='两项都支持占位符，留空则回落到默认行为。下面的隐私开关即时生效，不用点保存。'
+                    >
                         <TwoCol>
                             <TextField
                                 margin='dense'
@@ -567,6 +574,15 @@ export default function SettingsDialog({
                                 helperText='留空则不显示缩略图（也不向第三方发请求）。占位符：{url} 完整链接、{domain} 域名、{origin} 协议+域名'
                             />
                         </TwoCol>
+                        {/* 图标隐私跟着「取图标」这件事走，所以放在这一节，
+                            而不是和离线缓存混在一起：它管的是同一个外站请求 */}
+                        <SwitchRow
+                            checked={iconPrivacy}
+                            onChange={onIconPrivacyChange}
+                            label='图标隐私模式（不为取图标访问外站）'
+                            ariaLabel='图标隐私模式'
+                            caption='取图标本身会泄露访问了哪些站：卡片一进视野就要去那个域名抓一次 favicon，公共图标服务还会顺带记下这个域名。打开后卡片一律用首字母块，浏览器与本站都不会再为图标访问外站。已缓存的图标仍可继续使用。'
+                        />
                     </Section>
 
                     {/* 5. 搜索 */}
@@ -580,10 +596,10 @@ export default function SettingsDialog({
                         />
                     </Section>
 
-                    {/* 5.5 离线与缓存 */}
+                    {/* 5.5 离线与缓存（图标隐私已挪进「图标与缩略图」，它管的是同一件事） */}
                     <Section
                         title='离线与缓存'
-                        hint='默认只预下载打开页面必需的那一小块，点开某个功能时才下载它 —— 首屏更快、流量更省。'
+                        hint='默认只预下载打开页面必需的那一小块，点开某个功能时才下载它 —— 首屏更快、流量更省。开关即时生效。'
                     >
                         <SwitchRow
                             checked={offlineFull}
@@ -591,13 +607,6 @@ export default function SettingsDialog({
                             label='离线增强（预下载全部功能）'
                             ariaLabel='离线增强'
                             caption='打开后会把设置、备份、回收站这些弹窗的代码也一并预下载，断网时也能点开。代价是首次联网时多下载约几百 KB。关闭不会删除已缓存的内容。'
-                        />
-                        <SwitchRow
-                            checked={iconPrivacy}
-                            onChange={onIconPrivacyChange}
-                            label='图标隐私模式（不为取图标访问外站）'
-                            ariaLabel='图标隐私模式'
-                            caption='取图标本身会泄露访问了哪些站：卡片一进视野就要去那个域名抓一次 favicon，公共图标服务还会顺带记下这个域名。打开后卡片一律用首字母块，浏览器与本站都不会再为图标访问外站。已缓存的图标仍可继续使用。'
                         />
                     </Section>
 
@@ -620,9 +629,13 @@ export default function SettingsDialog({
                             ariaLabel='同步星标、标签与访问记录'
                             caption='这几项按设计只存本机，清掉浏览器数据就没了；打开同步后可找回。星标与标签多设备取并集，访问次数取各设备中的较大值（不会把两台机器各点一次记成两次），分组折叠状态以最后一次操作为准。'
                         />
-                        {/* 检测失效链接：和上面的「失效检测结果」开关同属一件事，放在同一节里 */}
-                        {onRunLinkCheck && (
-                            <Box sx={{ mt: 1.5 }}>
+                    </Section>
+
+                    {/* 维护：这里是「点一下就干活」的动作，不是开关，
+                        单独一节才不会被上面一排同步开关埋掉 */}
+                    {onRunLinkCheck && (
+                        <Section title='维护' hint='按需执行的检查动作，不会自动跑。'>
+                            <Box>
                                 <Button
                                     size='small'
                                     variant='outlined'
@@ -639,8 +652,8 @@ export default function SettingsDialog({
                                     逐个访问已收录的链接，把访问不通的标在卡片上。站点多时要点时间，后台跑完会提示结果。
                                 </Typography>
                             </Box>
-                        )}
-                    </Section>
+                        </Section>
+                    )}
 
                     {/* AI 助手已挪走：「更多选项 → AI 助手」单独一个弹窗。
                         它的配置跟着登录账号走、凭据加密且不进备份，

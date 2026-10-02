@@ -1,7 +1,8 @@
 // src/components/VisitsDialog.tsx
 // 访问统计：汇总数字 + 最近 8 周热力图 + 最常访问 Top5。
-// 数据全部来自本机 localStorage 的访问统计，不上传服务器。
-import { useMemo } from "react";
+// 数据记在本机（localStorage）；开了「偏好同步」后会在同一账号下多设备合并，
+// 没开就只留在这台机器上 —— 界面上要如实说明是哪一种，别笼统写「不上传」。
+import { useMemo, useState } from "react";
 import {
     Dialog,
     DialogTitle,
@@ -18,6 +19,7 @@ import {
 import CloseIcon from "@mui/icons-material/Close";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import { dayKey, useUIPrefsVisits } from "../context/uiPrefsStore";
+import ConfirmDialog from "./ConfirmDialog";
 
 interface VisitsDialogProps {
     open: boolean;
@@ -26,6 +28,8 @@ interface VisitsDialogProps {
     nameOf: (siteId: string) => string;
     /** 清空访问记录（可选）；不传则不显示清空按钮 */
     onClear?: () => void;
+    /** 是否开了偏好同步（决定「记在哪」这句说明怎么写） */
+    syncEnabled?: boolean;
 }
 
 const WEEKS = 8;
@@ -40,8 +44,16 @@ const levelOf = (count: number): number => {
     return 4;
 };
 
-export default function VisitsDialog({ open, onClose, nameOf, onClear }: VisitsDialogProps) {
+export default function VisitsDialog({
+    open,
+    onClose,
+    nameOf,
+    onClear,
+    syncEnabled = false,
+}: VisitsDialogProps) {
     const { visits } = useUIPrefsVisits();
+    // 清空是不可逆的（没有回收站），点一下之前先问一句
+    const [confirmClear, setConfirmClear] = useState(false);
 
     const summary = useMemo(() => {
         const entries = Object.entries(visits).filter(([, v]) => v && v.count > 0);
@@ -101,6 +113,11 @@ export default function VisitsDialog({ open, onClose, nameOf, onClear }: VisitsD
                 </IconButton>
             </DialogTitle>
             <DialogContent dividers>
+                <Typography variant='caption' color='text.secondary' sx={{ display: "block", mb: 1.5 }}>
+                    {syncEnabled
+                        ? "记录记在本机，并已开启偏好同步：同一账号下的其它设备会合并同一份统计。"
+                        : "记录只留在这台机器上，不会上传；在「网站设置 → 数据同步」里打开偏好同步后才会跨设备合并。"}
+                </Typography>
                 {summary.total === 0 ? (
                     <Typography variant='body2' color='text.secondary' sx={{ py: 4, textAlign: "center" }}>
                         还没有访问记录。点开任意卡片后，这里会开始累计统计。
@@ -230,7 +247,7 @@ export default function VisitsDialog({ open, onClose, nameOf, onClear }: VisitsD
                     <Button
                         color='inherit'
                         startIcon={<DeleteOutlineIcon fontSize='small' />}
-                        onClick={onClear}
+                        onClick={() => setConfirmClear(true)}
                         disabled={summary.total === 0}
                         sx={{ mr: "auto" }}
                     >
@@ -239,6 +256,20 @@ export default function VisitsDialog({ open, onClose, nameOf, onClear }: VisitsD
                 )}
                 <Button onClick={onClose}>关闭</Button>
             </DialogActions>
+
+            <ConfirmDialog
+                open={confirmClear}
+                title='清除访问记录'
+                danger
+                description='将清空全部访问次数记录，「最近访问」分组也会一并消失，且无法恢复。'
+                impact={{ object: "站点的访问记录", count: summary.sites, undoable: false }}
+                confirmText='清除'
+                onClose={() => setConfirmClear(false)}
+                onConfirm={() => {
+                    setConfirmClear(false);
+                    onClear?.();
+                }}
+            />
         </Dialog>
     );
 }

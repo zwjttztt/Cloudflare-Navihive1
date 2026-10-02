@@ -28,7 +28,6 @@ import {
     ListItemButton,
     ListItemText,
     Chip,
-    Tooltip,
     LinearProgress,
     useTheme,
 } from "@mui/material";
@@ -186,7 +185,9 @@ export default function BackupDialog({
     // 导入的真实进度（由服务端流式推回，或合并导入时本地逐条数出来）。
     // 没有进度时保持 null —— 界面只转圈，不画假进度条
     const [importProgress, setImportProgress] = useState<ImportProgress | null>(null);
-    const [overwrite, setOverwrite] = useState(true);
+    // 默认合并而不是覆盖：覆盖会先清空现有数据，是这一页里唯一不可逆的动作。
+    // 真要「整站还原成备份那样」再手动切过去，切过去时下面会给出红色提示。
+    const [overwrite, setOverwrite] = useState(false);
     // 密码默认遮住，点眼睛才明文显示（仅影响本机显示）
     const [showPassword, setShowPassword] = useState(false);
     // 本地备份是否用口令加密 + 口令本身（不落盘、不上传，只用于当次下载）
@@ -509,40 +510,12 @@ export default function BackupDialog({
     const renderBackupTab = () => (
         <Stack spacing={0.75} sx={{ mt: 0.5, flex: 1, minHeight: 0 }}>
             <Box>
-                {/* 主按钮跟标题平齐：这块的操作就一个，放在区块底部反而要往下找 */}
-                <Stack direction='row' alignItems='center' justifyContent='space-between' spacing={1}>
-                    <Typography variant='subtitle2' fontWeight='600'>
-                        备份到本地
-                    </Typography>
-                    <Button
-                        size='small'
-                        variant='contained'
-                        startIcon={<DownloadIcon />}
-                        onClick={async () => {
-                            // 本机校验只留「填了没」和「两次一致」：口令长度由用户自己定，
-                            // 唯一要挡的是「勾了加密却没给口令」——那会生成一个解不开的文件
-                            if (encryptLocal) {
-                                if (backupPassword.length === 0) {
-                                    onNotify("请输入备份密码，或关掉加密开关", "error");
-                                    return;
-                                }
-                                if (backupPassword !== backupPasswordConfirm) {
-                                    onNotify("两次输入的备份密码不一致", "error");
-                                    return;
-                                }
-                            }
-                            await onDownloadLocal(encryptLocal ? backupPassword : undefined);
-                            onNotify(
-                                encryptLocal
-                                    ? "加密备份已开始下载，请牢记备份密码"
-                                    : "备份文件已开始下载",
-                                "success"
-                            );
-                        }}
-                    >
-                        下载备份文件
-                    </Button>
-                </Stack>
+                {/* 顺序是「先选怎么导，再导出」：下载按钮排在配置项之后。
+                    原来按钮压在标题右边，用户常常先点了下载，才发现下面的
+                    凭据开关和加密还没设，白下一份不带密码 / 不带加密的文件。 */}
+                <Typography variant='subtitle2' fontWeight='600'>
+                    备份到本地
+                </Typography>
                 <Typography variant='caption' color='text.secondary' sx={{ display: "block", mt: 0.25, mb: 0.5 }}>
                     导出分组、站点、网站设置，以及本机的星标与标签。
                 </Typography>
@@ -667,6 +640,38 @@ export default function BackupDialog({
                         </Stack>
                     </>
                 )}
+
+                {/* 下载动作收在这一块的最后：把上面两项定完再点 */}
+                <Stack direction='row' justifyContent='flex-end' sx={{ mt: 1.5 }}>
+                    <Button
+                        size='small'
+                        variant='contained'
+                        startIcon={<DownloadIcon />}
+                        onClick={async () => {
+                            // 本机校验只留「填了没」和「两次一致」：口令长度由用户自己定，
+                            // 唯一要挡的是「勾了加密却没给口令」——那会生成一个解不开的文件
+                            if (encryptLocal) {
+                                if (backupPassword.length === 0) {
+                                    onNotify("请输入备份密码，或关掉加密开关", "error");
+                                    return;
+                                }
+                                if (backupPassword !== backupPasswordConfirm) {
+                                    onNotify("两次输入的备份密码不一致", "error");
+                                    return;
+                                }
+                            }
+                            await onDownloadLocal(encryptLocal ? backupPassword : undefined);
+                            onNotify(
+                                encryptLocal
+                                    ? "加密备份已开始下载，请牢记备份密码"
+                                    : "备份文件已开始下载",
+                                "success"
+                            );
+                        }}
+                    >
+                        下载备份文件
+                    </Button>
+                </Stack>
             </Box>
 
             <Divider />
@@ -885,21 +890,33 @@ export default function BackupDialog({
                     <Switch
                         checked={overwrite}
                         onChange={e => setOverwrite(e.target.checked)}
-                        color='primary'
+                        color={overwrite ? "error" : "primary"}
                         size='small'
                     />
                 }
                 label={
                     <Box>
-                        <Typography variant='body2' fontWeight='600'>
+                        <Typography
+                            variant='body2'
+                            fontWeight='600'
+                            color={overwrite ? "error.main" : "text.primary"}
+                        >
                             {overwrite ? "覆盖恢复（清空现有数据后导入）" : "合并导入（保留现有数据并追加）"}
                         </Typography>
                         <Typography variant='caption' color='text.secondary'>
-                            保留分组与站点的原有 ID，并连同备份里的星标 / 标签一起还原，推荐用于完整还原备份
+                            {overwrite
+                                ? "先清空现在的分组与站点，再按备份重建；保留原有 ID 与星标 / 标签，用于把整站还原成备份那一刻的样子"
+                                : "备份内容追加到现有数据后面，已有的分组与站点不动，重复链接会跳过"}
                         </Typography>
                     </Box>
                 }
             />
+            {/* 覆盖会删掉现有数据，把话说在动作之前，而不是等用户点了才发现 */}
+            {overwrite && (
+                <Alert severity='warning' sx={{ mt: -0.5 }}>
+                    覆盖恢复会先清空现有的分组与站点，再导入备份内容。确定现在的导航站数据已经不需要了吗？
+                </Alert>
+            )}
 
             <Divider />
 
@@ -925,20 +942,6 @@ export default function BackupDialog({
                     >
                         开始恢复
                     </Button>
-                    {/* 浏览器书签本质上也是「导入」，和上面的本地文件同类。
-                        挤在按钮行右侧而不是单占一段，省下的纵向空间都留给下面的 WebDAV 列表 */}
-                    {onOpenBookmark && (
-                        <Tooltip title='支持 Chrome / Edge / Firefox 导出的 HTML 书签文件，导入前可以先挑要哪些、归到哪个分组'>
-                            <Button
-                                variant='text'
-                                onClick={onOpenBookmark}
-                                startIcon={<BookmarkAddedIcon fontSize='small' />}
-                                sx={{ ml: { sm: "auto" }, color: "text.secondary", flexShrink: 0 }}
-                            >
-                                导入浏览器书签
-                            </Button>
-                        </Tooltip>
-                    )}
                 </Stack>
                 {localFile && (
                     <Typography variant='body2' sx={{ mt: 1 }}>
@@ -979,6 +982,29 @@ export default function BackupDialog({
                     </Alert>
                 )}
             </Box>
+
+            {/* 浏览器书签单占一节：它跟「恢复备份」不是一回事（来源是书签 HTML，
+                不是本站备份），挤在恢复按钮右边时很容易被当成「恢复的一种」而错过 */}
+            {onOpenBookmark && (
+                <>
+                    <Divider />
+                    <Box>
+                        <Typography variant='subtitle2' fontWeight='600' gutterBottom>
+                            从浏览器导入
+                        </Typography>
+                        <Typography variant='caption' color='text.secondary' sx={{ display: "block", mb: 0.75 }}>
+                            支持 Chrome / Edge / Firefox 导出的 HTML 书签文件，导入前可以先挑要哪些、归到哪个分组。
+                        </Typography>
+                        <Button
+                            variant='outlined'
+                            onClick={onOpenBookmark}
+                            startIcon={<BookmarkAddedIcon fontSize='small' />}
+                        >
+                            导入浏览器书签
+                        </Button>
+                    </Box>
+                </>
+            )}
 
             <Divider />
 

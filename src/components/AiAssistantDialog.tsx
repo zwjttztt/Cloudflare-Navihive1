@@ -19,6 +19,7 @@ import {
     DialogActions,
     DialogContent,
     DialogTitle,
+    Collapse,
     IconButton,
     InputAdornment,
     LinearProgress,
@@ -153,6 +154,8 @@ export default function AiAssistantDialog({
     const [saveError, setSaveError] = useState<string | null>(null);
     const [testing, setTesting] = useState(false);
     const [testResult, setTestResult] = useState<AiTestOutcome | null>(null);
+    // 嵌入模型那一栏默认收起；已经配过值就展开，免得用户以为配置丢了
+    const [showEmbed, setShowEmbed] = useState(false);
 
     // 每次打开重读：配置可能被别的设备改过，拿一份旧的来编辑会覆盖掉新的
     useEffect(() => {
@@ -167,6 +170,7 @@ export default function AiAssistantDialog({
             const next: Record<string, string> = {};
             for (const key of AI_KEYS) next[key] = all[key] ?? "";
             setForm(next);
+            setShowEmbed(Boolean(next[AI_EMBED_MODEL_KEY]));
             setLoading(false);
         })();
         return () => {
@@ -347,17 +351,34 @@ export default function AiAssistantDialog({
                                     : "deepseek-chat"
                             }
                         />
-                        <Field
-                            label='嵌入模型（语义搜索用）'
-                            value={form[AI_EMBED_MODEL_KEY] || ""}
-                            onChange={set(AI_EMBED_MODEL_KEY)}
-                            placeholder={
-                                provider === "workers-ai"
-                                    ? "@cf/baai/bge-base-en-v1.5"
-                                    : "text-embedding-3-small"
-                            }
-                            caption='换了模型就要重算一次语义索引（旧的向量跟新的比不了）。'
-                        />
+                        {/* 嵌入模型只影响「按意思搜站点」，多数人用不到，收进高级里，
+                            别让它和文本模型平起平坐占着视线 */}
+                        <Box>
+                            <Button
+                                size='small'
+                                variant='text'
+                                onClick={() => setShowEmbed(prev => !prev)}
+                                aria-expanded={showEmbed ? "true" : undefined}
+                                sx={{ px: 0, minWidth: "auto", textTransform: "none" }}
+                            >
+                                {showEmbed ? "收起嵌入模型设置" : "嵌入模型（语义搜索用）"}
+                            </Button>
+                            <Collapse in={showEmbed}>
+                                <Box sx={{ mt: 1 }}>
+                                    <Field
+                                        label='嵌入模型'
+                                        value={form[AI_EMBED_MODEL_KEY] || ""}
+                                        onChange={set(AI_EMBED_MODEL_KEY)}
+                                        placeholder={
+                                            provider === "workers-ai"
+                                                ? "@cf/baai/bge-base-en-v1.5"
+                                                : "text-embedding-3-small"
+                                        }
+                                        caption='留空则用服务商默认模型。换了模型就要重算一次语义索引（旧的向量跟新的比不了）。'
+                                    />
+                                </Box>
+                            </Collapse>
+                        </Box>
                     </Section>
                 </Box>
 

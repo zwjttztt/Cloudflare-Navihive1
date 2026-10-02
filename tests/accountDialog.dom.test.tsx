@@ -354,30 +354,30 @@ test("账号：所有者的清单里只给已停用的账号「重新启用」",
     assert.deepEqual(calls.exempts, [8]);
 });
 
-test("账号：沉睡阈值填 0 或负数在本地拦下，不会送去服务端", async () => {
+test("账号：沉睡阈值只展示不在这儿改（编辑入口统一在网站设置）", async () => {
     // 成员与治理整块只在「所有者 + 有账号清单」时才渲染，所以这里必须带上 accounts
     render({ accounts: [makeAccount()] });
-    setInputValue(inputByLabel("多久没登录就停用（天）")!, "0");
-    click(button("保存阈值")!);
-    await flush();
-    assert.equal(calls.policies.length, 0, "0 天不该发出去");
-    assert.ok(pageText().includes("停用阈值必须是大于 0 的天数"));
 
-    setInputValue(inputByLabel("多久没登录就停用（天）")!, "90");
-    setInputValue(inputByLabel("停用后保留多久再清除（天）")!, "-3");
-    click(button("保存阈值")!);
-    await flush();
-    assert.equal(calls.policies.length, 0, "负数宽限期也不该发出去");
-    assert.ok(pageText().includes("清除宽限期必须是大于 0 的天数"));
+    // 阈值显示的是父组件（服务端）读回来的值
+    const disableInput = inputByLabel("多久没登录就停用（天）");
+    const graceInput = inputByLabel("停用后保留多久再清除（天）");
+    assert.ok(disableInput, "应显示停用阈值");
+    assert.ok(graceInput, "应显示清除宽限期");
+    assert.equal(disableInput!.value, "180");
+    assert.equal(graceInput!.value, "30");
 
-    setInputValue(inputByLabel("停用后保留多久再清除（天）")!, "45");
-    click(button("保存阈值")!);
-    await flush();
-    assert.deepEqual(
-        calls.policies,
-        [{ disableDays: 90, graceDays: 45 }],
-        "正常值要原样传给父组件"
+    // 两个输入框都是只读，且不再有「保存阈值」按钮 —— 改配置的入口只有「网站设置 → 数据保留」一处
+    assert.equal(disableInput!.disabled, true, "停用阈值应为只读");
+    assert.equal(graceInput!.disabled, true, "清除宽限期应为只读");
+    assert.equal(button("保存阈值"), undefined, "这里不该再提供保存阈值的按钮");
+    assert.ok(
+        pageText().includes("网站设置 → 数据保留"),
+        "要说明去哪儿改这两个天数"
     );
+
+    // 阈值不再往父组件回写（onSaveInactivePolicy 这一段已经没人调了）
+    assert.equal(calls.policies.length, 0, "这一页不该再提交阈值");
+    await flush();
 });
 
 test("账号：不传 onDeleteAccount 就不给注销入口（单账号部署不该能把自己删了）", () => {

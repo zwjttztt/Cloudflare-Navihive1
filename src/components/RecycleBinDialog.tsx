@@ -30,8 +30,8 @@ interface RecycleItem {
     deletedAt: number;
 }
 
-/** 与后端 RETENTION_DAYS 一致：回收站条目只留这些天，超期自动清除 */
-const RECYCLE_RETENTION_DAYS = 7;
+/** 后端默认保留天数；界面优先用网站设置里配的 retention.days */
+const DEFAULT_RETENTION_DAYS = 7;
 
 interface RecycleBinDialogProps {
     open: boolean;
@@ -40,6 +40,8 @@ interface RecycleBinDialogProps {
     /** 还原后通知外层刷新（bootstrap 重新拉数据） */
     onChanged?: () => void;
     onNotify?: (msg: string, severity?: "success" | "info" | "error") => void;
+    /** 网站设置里配的保留天数；没传就用后端默认值，不再把 7 天写死在界面上 */
+    retentionDays?: number;
 }
 
 function formatTime(tsSeconds: number): string {
@@ -47,20 +49,35 @@ function formatTime(tsSeconds: number): string {
     return new Date(tsSeconds * 1000).toLocaleString("zh-CN", { hour12: false });
 }
 
-export default function RecycleBinDialog({ open, onClose, client, onChanged, onNotify }: RecycleBinDialogProps) {
+export default function RecycleBinDialog({
+    open,
+    onClose,
+    client,
+    onChanged,
+    onNotify,
+    retentionDays,
+}: RecycleBinDialogProps) {
     const theme = useTheme();
     const [items, setItems] = useState<RecycleItem[]>([]);
     const [loading, setLoading] = useState(false);
     const [busyId, setBusyId] = useState<number | null>(null);
     const [confirmClear, setConfirmClear] = useState(false);
+    // 读不出来要说明白：空列表和「没读到」在界面上不能长得一样，
+    // 否则用户会以为回收站真的是空的，直接关掉窗口走人
+    const [loadError, setLoadError] = useState("");
+    // 单项永久删除也要过一道确认：列表里还原和彻底删除两个图标挨着，
+    // 手指一偏就是不可逆的删除
+    const [pendingPurge, setPendingPurge] = useState<RecycleItem | null>(null);
 
     const refresh = useCallback(async () => {
         setLoading(true);
+        setLoadError("");
         try {
             const result = await client.getRecycleBin();
             setItems(result.items || []);
-        } catch {
-            // 读取失败静默处理
+        } catch (error) {
+            setItems([]);
+            setLoadError((error as Error)?.message || "读取回收站失败");
         } finally {
             setLoading(false);
         }
@@ -129,13 +146,22 @@ export default function RecycleBinDialog({ open, onClose, client, onChanged, onN
                 <RestoreFromTrashIcon fontSize='small' />
                 回收站
                 <Typography component='span' variant='caption' color='text.secondary' sx={{ ml: "auto" }}>
-                    仅保留 {RECYCLE_RETENTION_DAYS} 天，超期自动清除
+                    仅保留 {retentionDays ?? DEFAULT_RETENTION_DAYS} 天，超期自动清除
                 </Typography>
             </DialogTitle>
             <DialogContent dividers sx={{ p: 0, minHeight: 120 }}>
                 {loading && items.length === 0 ? (
                     <Box sx={{ display: "flex", justifyContent: "center", py: 4 }}>
                         <CircularProgress size={28} />
+                    </Box>
+                ) : loadError ? (
+                    <Box sx={{ p: 4, textAlign: "center" }}>
+                        <Typography variant='body2' color='error' sx={{ mb: 1.5 }}>
+                            没读到回收站内容：{loadError}
+                        </Typography>
+                        <Button size='small' variant='outlined' onClick={() => void refresh()}>
+                            重试
+                        </Button>
                     </Box>
                 ) : items.length === 0 ? (
                     <Box sx={{ p: 4, textAlign: "center" }}>
@@ -150,24 +176,26 @@ export default function RecycleBinDialog({ open, onClose, client, onChanged, onN
                                 key={item.id}
                                 divider
                                 secondaryAction={
-                                    <Box sx={{ display: "flex", gap: 0.5 }}>
-                                        <Tooltip title='还原'>
-                                            <IconButton
-                                                size='small'
-                                                edge='end'
-                                                disabled={busyId !== null}
-                                                onClick={() => void handleRestore(item.id)}
-                                                sx={{ color: theme.palette.primary.main }}
-                                            >
-                                                <RestoreFromTrashIcon fontSize='small' />
-                                            </IconButton>
-                                        </Tooltip>
+                                    // 还原是这一行的主要动作，做成带文字的按钮；
+                                    // 彻底删除不可逆，弱化成一个红色图标并与还原拉开距离，
+                                    // 两个动作紧挨着时手指很容易点错
+                                    <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
+                                        <Button
+                                            size='small'
+                                            startIcon={<RestoreFromTrashIcon fontSize='small' />}
+                                            disabled={busyId !== null}
+                                            onClick={() => void handleRestore(item.id)}
+                                            sx={{ textTransform: "none" }}
+                                        >
+                                            还原
+                                        </Button>
                                         <Tooltip title='彻底删除'>
                                             <IconButton
                                                 size='small'
                                                 edge='end'
                                                 disabled={busyId !== null}
-                                                onClick={() => void handlePurge(item.id)}
+                                                aria-label={`彻底删除 ${item.name}`}
+                                                onClick={() => setPendingPurge(item)}
                                                 sx={{ color: theme.palette.error.main }}
                                             >
                                                 <DeleteForeverIcon fontSize='small' />
@@ -212,6 +240,26 @@ export default function RecycleBinDialog({ open, onClose, client, onChanged, onN
                     关闭
                 </Button>
             </DialogActions>
+
+            {/* 单项也要确认：这一行旁边就是「还原」，点错了没有第二次机会 */}
+            <ConfirmDialog
+                open={pendingPurge !== null}
+                title='彻底删除'
+                danger
+                description={
+                    pendingPurge
+                        ? `「${pendingPurge.name}」将被永久删除，无法恢复。`
+                        : ""
+                }
+                impact={{ object: "回收站条目", count: 1, undoable: false }}
+                confirmText='永久删除'
+                onClose={() => setPendingPurge(null)}
+                onConfirm={async () => {
+                    const target = pendingPurge;
+                    setPendingPurge(null);
+                    if (target) await handlePurge(target.id);
+                }}
+            />
 
             <ConfirmDialog
                 open={confirmClear}
