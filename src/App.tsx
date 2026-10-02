@@ -5,7 +5,6 @@ import {
     useMemo,
     useRef,
     useCallback,
-    useDeferredValue,
     lazy,
     Suspense,
 } from "react";
@@ -17,19 +16,13 @@ import {
     BootstrapData,
     WebDavConfig,
     BACKUP_CREDENTIALS_CONFIG,
-    INACTIVE_DISABLE_DAYS_KEY,
-    INACTIVE_DELETE_GRACE_DAYS_KEY,
-    INACTIVE_DISABLE_DAYS_DEFAULT,
-    INACTIVE_DELETE_GRACE_DAYS_DEFAULT,
 } from "./API/http";
-import type { AccountInfo, SessionInfo } from "./API/http";
 import { mapWithConcurrency } from "./API/methods/transfer";
 import { GroupWithSites } from "./types";
 import type { TagMap } from "./utils/tagOps";
 import { AppConfigProvider } from "./context/AppConfigContext";
 import { NotifyContext } from "./context/NotifyContext";
 import { useUIPrefs, RADIUS_PX } from "./context/UIPrefsContext";
-import SiteCard from "./components/SiteCard";
 import GroupNavRail from "./components/GroupNavRail";
 // 弹窗/面板类组件按需加载：首屏用不到它们，拆出去能让主包小一大截
 // （命令面板与书签导入已随 OverlayHost 一起搬走；命令条目的类型跟着
@@ -42,6 +35,10 @@ import ConfirmDialog from "./components/ConfirmDialog";
 import SnackbarHost from "./components/SnackbarHost";
 import BackgroundLayers from "./components/BackgroundLayers";
 import OverlayHost from "./components/OverlayHost";
+import { useDocumentEffects } from "./hooks/useDocumentEffects";
+import { useSiteSettings } from "./hooks/useSiteSettings";
+import { useSiteSearch } from "./hooks/useSiteSearch";
+import { useAccountSession } from "./hooks/useAccountSession";
 import { usePwaInstall } from "./hooks/usePwaInstall";
 import { useHistoryStack } from "./hooks/useHistoryStack";
 import { useNotify } from "./hooks/useNotify";
@@ -66,14 +63,7 @@ import {
     setAccountUid,
     type MutationApi,
 } from "./API/offlineQueue";
-import { buildFavoritesGroup, deriveDisplayedGroups } from "./utils/siteView";
-import {
-    advancedHint,
-    hasAdvancedSyntax,
-    matchesAdvanced,
-    matchesExcludes,
-    parseAdvancedQuery,
-} from "./utils/advancedSearch";
+import { advancedHint } from "./utils/advancedSearch";
 import { backgroundMaskOpacity as backgroundMaskOpacityFromSlider } from "./utils/backgroundMask";
 import { brandTitle } from "./brand";
 import {
@@ -95,7 +85,6 @@ const RecycleBinDialog = lazy(() => import("./components/RecycleBinDialog"));
 import HeaderClock from "./components/HeaderClock";
 import SiteListHeader from "./components/SiteListHeader";
 import SiteListSkeleton from "./components/SiteListSkeleton";
-import SiteListEmptyState from "./components/SiteListEmptyState";
 const VisitsDialog = lazy(() => import("./components/VisitsDialog"));
 import {
     COLLAPSED_EVENT,
@@ -111,13 +100,11 @@ import {
     probeLinks,
     readDeadLinks,
 } from "./utils/linkHealth";
-import { clearBootstrapCache, readBootstrapCache } from "./utils/firstPaintCache";
+import { readBootstrapCache } from "./utils/firstPaintCache";
 import {
-    clearSessionBoundary,
     resetCollapsedState,
     switchAccountBoundary,
 } from "./utils/sessionBoundary";
-import { sanitizeCustomCss } from "./utils/customCss";
 import { domCardEnv, focusCardByDirection as focusCardByDirectionImpl } from "./utils/cardFocus";
 import { ParsedBookmarkGroup } from "./utils/bookmarks";
 import { resolveIconApiUrl } from "./utils/iconApi";
@@ -134,37 +121,21 @@ import {
     PREF_COLLAPSED_CONFIG,
 } from "./appDefaults";
 import { normalizeFailureText, normalizeUrl } from "./utils/url";
-import { safeOpenSite } from "./utils/safeOpen";
-import { groupAccent } from "./utils/groupColor";
-import { buildSearchIndex, matchesPrepared, prepareQuery, siteHaystack } from "./utils/search";
-import { saveRememberedLogin, clearRememberedLogin } from "./utils/rememberedLogin";
 import { loadPersistedUndo, setUndoAccountUid } from "./utils/undoPersist";
-import {
-    secretInputSx,
-    secretInputType,
-    SECRET_IGNORE_ATTRS,
-} from "./utils/secretInput";
-import GroupCard from "./components/GroupCard";
+import SiteListBody from "./components/SiteListBody";
+import AddSiteDialog from "./components/AddSiteDialog";
 import EditGroupDialog from "./components/EditGroupDialog";
 import LoginForm from "./components/LoginForm";
 const BackupDialog = lazy(() => import("./components/BackupDialog"));
 import "./App.css";
 import {
-    DndContext,
-    closestCenter,
     KeyboardSensor,
     PointerSensor,
     TouchSensor,
     useSensor,
     useSensors,
-    DragOverlay,
 } from "@dnd-kit/core";
-import {
-    SortableContext,
-    sortableKeyboardCoordinates,
-    verticalListSortingStrategy,
-} from "@dnd-kit/sortable";
-import SortableGroupItem from "./components/SortableGroupItem";
+import { sortableKeyboardCoordinates } from "@dnd-kit/sortable";
 // Material UI 导入
 import {
     Container,
@@ -172,31 +143,9 @@ import {
     Box,
     Button,
     CircularProgress,
-    Stack,
     ThemeProvider,
     CssBaseline,
-    TextField,
-    Dialog,
-    DialogActions,
-    DialogContent,
-    DialogTitle,
-    IconButton,
-    Divider,
-    Tooltip,
-    InputAdornment,
 } from "@mui/material";
-import {
-    algLabel,
-    checkWebCryptoSupport,
-    downloadRecoveryKeyFile,
-    generateRecoveryKeyPair,
-} from "./utils/recoveryKey";
-import CloseIcon from "@mui/icons-material/Close";
-import AutoFixHighIcon from "@mui/icons-material/AutoFixHigh";
-import AutoAwesomeIcon from "@mui/icons-material/AutoAwesome";
-import CloudDownloadIcon from "@mui/icons-material/CloudDownload";
-import VisibilityIcon from "@mui/icons-material/Visibility";
-import VisibilityOffIcon from "@mui/icons-material/VisibilityOff";
 import TagBar from "./components/TagBar";
 const ShortcutsDialog = lazy(() => import("./components/ShortcutsDialog"));
 
@@ -309,27 +258,10 @@ function App() {
         groupsRef.current = groups;
     }, [groups]);
 
-    // 新增认证状态
-    const [isAuthChecking, setIsAuthChecking] = useState(true);
+    // 新增认证状态（这两个开关留在 App：useSites 的鉴权失败回调比账号 hook 更早用到它们的 setter）
     const [isAuthRequired, setIsAuthRequired] = useState(false);
     const [isAuthenticated, setIsAuthenticated] = useState(false);
-    const [loginError, setLoginError] = useState<string | null>(null);
-    const [loginLoading, setLoginLoading] = useState(false);
-    // 是否已配置恢复公钥（未登录也能查，决定是否在登录页显示「用恢复密钥找回账号」）
-    const [recoveryConfigured, setRecoveryConfigured] = useState(false);
-    // 当前登录账号（多账号后要能显示「我是谁」）。
-    // id 是本地存储（离线队列 / 撤销快照 / 偏好）分账号的依据，改名或换人都靠它分辨。
-    const [currentUser, setCurrentUser] = useState<{
-        id: number;
-        username: string;
-        role: "owner" | "user";
-    } | null>(null);
-    // 生成的邀请码（含过期时间），只留在内存里，刷新页面即消失
-    const [invite, setInvite] = useState<{ code: string; expiresAt: number } | null>(null);
-    // 注销账号：二次确认弹窗 + 确认密码
-    const [deleteAccountOpen, setDeleteAccountOpen] = useState(false);
-    const [deleteAccountPassword, setDeleteAccountPassword] = useState("");
-    const [deleteAccountBusy, setDeleteAccountBusy] = useState(false);
+
 
     // 配置状态
     const [configs, setConfigs] = useState<Record<string, string>>(DEFAULT_CONFIGS);
@@ -338,21 +270,10 @@ function App() {
     // 账号管理弹窗（账号密码 / 恢复密钥 / 邀请码 / 注销）
     const [openAccount, setOpenAccount] = useState(false);
     const [savingAuth, setSavingAuth] = useState(false);
-    // 账号清单（仅 owner 拿得到）：每个账号的沉睡治理状态，给「账号管理」里那份列表用
-    const [accountList, setAccountList] = useState<AccountInfo[]>([]);
-    // 登录设备（当前账号自己的会话）：有了它才能只踢某一台设备，
-    // 不用靠改密把自己其它设备一起踢掉
-    const [sessions, setSessions] = useState<SessionInfo[]>([]);
-    /** 沉睡治理阈值（天）：owner 在「账号管理」里可改，读不到就按服务端默认显示 */
-    const [inactivePolicy, setInactivePolicy] = useState<{
-        disableDays: number;
-        graceDays: number;
-    } | null>(null);
 
     // 设置弹窗里选色时的即时预览值（不落库，关闭弹窗即回滚）
     const [accentPreview, setAccentPreview] = useState<string | null>(null);
     // 保存网站设置的防连点守卫（同步 ref 拦同一轮连点，state 用于按钮禁用）
-    const savingConfigRef = useRef(false);
     const [savingConfig, setSavingConfig] = useState(false);
 
     // 自定义主色：只有合法的 #rgb / #rrggbb 才采用，避免脏数据把主题搞坏
@@ -636,472 +557,105 @@ function App() {
         );
     }, []);
 
-    /**
-     * 用邀请码注册。成功后服务端已经下发会话 cookie，
-     * 这里直接切进应用、拉一次数据即可，不用再回登录页输一遍。
-     */
-    const handleRegister = async (
-        username: string,
-        password: string,
-        inviteCode: string
-    ): Promise<{ success: boolean; message?: string }> => {
-        try {
-            setLoginLoading(true);
-            setLoginError(null);
-            const result = await api.register(username, password, inviteCode);
-            if (result.success) {
-                setIsAuthenticated(true);
-                setIsAuthRequired(false);
-                // 服务端已经建号并发下会话，账号 id 要问一次才拿得到：
-                // 本地数据分账号靠的是这个 id，不能拿账号名凑（改名就对不上了）
-                const me = await api.getMe();
-                setCurrentUser(
-                    me ?? { id: 0, username: result.username || username, role: "user" }
-                );
-                // 新账号是另一个身份：本地数据从这一刻起归新账号
-                switchAccount(me ? me.id : 0);
-                handleCloseSnackbar();
-                await fetchData();
-                // 新账号是干净的：上一个账号生成的邀请码、配置过的恢复密钥都不能跟着带过来
-                setInvite(null);
-                refreshRecoveryStatus();
-                // 不再弹「注册成功，已自动登录」：注册完直接进入页面，本身就是结果，
-                // 多一个 toast 反而把界面挡住
-                return { success: true };
-            }
-            return { success: false, message: result.message || "注册失败" };
-        } catch (error) {
-            console.error("注册失败:", error);
-            return {
-                success: false,
-                message: "注册失败：" + (error instanceof Error ? error.message : "未知错误"),
-            };
-        } finally {
-            setLoginLoading(false);
-        }
-    };
-
-    /** 生成邀请码（30 分钟有效）。只在这个会话里显示，不落库也不缓存。 */
-    const handleCreateInvite = async (): Promise<{
-        success: boolean;
-        message?: string;
-        code?: string;
-        expiresAt?: number;
-    }> => {
-        try {
-            const result = await api.createInvite();
-            if (result.success && result.code) {
-                setInvite({ code: result.code, expiresAt: result.expiresAt || 0 });
-            }
-            return result;
-        } catch (error) {
-            return {
-                success: false,
-                message: "生成邀请码失败：" + (error instanceof Error ? error.message : "未知错误"),
-            };
-        }
-    };
-
-    /** 拉账号清单（仅 owner）：打开「账号管理」时调一次，用来看哪些账号快被停用/清除 */
-    const fetchAccountList = useCallback(async () => {
-        if (currentUser?.role !== "owner") return;
-        try {
-            const res = await fetch("/api/users", { credentials: "same-origin" });
-            if (!res.ok) return;
-            const data = (await res.json()) as { success?: boolean; users?: AccountInfo[] };
-            if (data.success) setAccountList(data.users || []);
-        } catch {
-            // 拉不到就当没有：账号管理里那一段直接不显示，不打扰正常功能
-        }
-        // 顺带把治理阈值读回来 —— 没配过就用服务端默认值，界面上显示的数字要和实际跑的一致
-        const [disableRaw, graceRaw] = await Promise.all([
-            api.getConfig(INACTIVE_DISABLE_DAYS_KEY),
-            api.getConfig(INACTIVE_DELETE_GRACE_DAYS_KEY),
-        ]);
-        const disableDays = Number.parseInt(disableRaw || "", 10);
-        const graceDays = Number.parseInt(graceRaw || "", 10);
-        setInactivePolicy({
-            disableDays: disableDays > 0 ? disableDays : INACTIVE_DISABLE_DAYS_DEFAULT,
-            graceDays: graceDays > 0 ? graceDays : INACTIVE_DELETE_GRACE_DAYS_DEFAULT,
-        });
-    }, [currentUser?.role]);
+    // ---- 撤销 / 重做 ----
+    // 每个破坏性操作做完就往栈里压一条「怎么把自己倒回去」的记录，
+    // 提示条上的「撤销」按钮和 Ctrl+Z 走同一份逻辑，所以能连续撤好几步。
+    const {
+        push: pushHistory,
+        undo: undoHistory,
+        redo: redoHistory,
+        hydrate: hydrateHistory,
+        clear: clearHistory,
+        canUndo,
+        canRedo,
+    } = useHistoryStack();
 
     /**
-     * 保存沉睡治理阈值。这两个键属于全站配置，服务端只放 owner 写
-     * （configs/batch 里非 webdav. 前缀的键都会校验 owner），普通账号调不动。
+     * 切换账号时统一收拾本地状态（D03）。
+     *
+     * 换人登录最危险的不是界面没刷新，而是**上一个账号的本地数据继续生效**：
+     * 离线队列里排着的操作会被补发到新账号名下，撤销快照能一键把别人的卡片改回来，
+     * 撤销栈按钮还亮着。所以账号一变，这些都跟着换一份 / 清掉。
      */
-    const handleSaveInactivePolicy = useCallback(
-        async (policy: { disableDays: number; graceDays: number }) => {
-            try {
-                const ok = await api.setConfigs({
-                    [INACTIVE_DISABLE_DAYS_KEY]: String(policy.disableDays),
-                    [INACTIVE_DELETE_GRACE_DAYS_KEY]: String(policy.graceDays),
-                });
-                if (!ok) return { success: false, message: "保存失败，请重试" };
-                setInactivePolicy(policy);
-                await fetchAccountList(); // 清单里的「约 N 天后停用」要跟着新阈值重算
-                return { success: true };
-            } catch (error) {
-                return {
-                    success: false,
-                    message: "保存失败：" + (error instanceof Error ? error.message : "未知错误"),
-                };
-            }
-        },
-        [fetchAccountList]
-    );
-
-    /** 重新启用某个账号 = 给它豁免沉睡治理（服务端会顺带把活跃时间刷成现在） */
-    const handleExemptUser = useCallback(
-        async (uid: number) => {
-            try {
-                const res = await fetch(`/api/users/${uid}/status`, {
-                    method: "POST",
-                    credentials: "same-origin",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ status: "active" }),
-                });
-                const data = (await res.json()) as { success?: boolean; message?: string };
-                if (data.success) {
-                    notify("已重新启用该账号", "success");
-                    await fetchAccountList();
-                } else {
-                    notify(data.message || "操作失败", "error");
-                }
-            } catch (error) {
-                notify("操作失败：" + (error instanceof Error ? error.message : "未知错误"), "error");
-            }
-        },
-        [fetchAccountList, notify]
-    );
-
-    /**
-     * 手动跑一次沉睡账号扫描（仅 owner）：等不及每周 cron 时用。
-     * 扫完一定重拉清单 —— 有人刚被停用/清除，界面还停在扫描前的状态会让人以为没生效。
-     */
-    const handleSweepInactive = useCallback(async () => {
-        try {
-            const res = await fetch("/api/users/sweep", {
-                method: "POST",
-                credentials: "same-origin",
+    const switchAccount = useCallback(
+        (uid: number | null) => {
+            // 账号边界上要清哪几样、按什么顺序，集中在 utils/sessionBoundary.ts
+            switchAccountBoundary(uid, {
+                setQueueAccount: setAccountUid,
+                setUndoAccount: setUndoAccountUid,
+                setPrefsAccount: setPrefsAccountUid,
+                clearHistory,
+                resetCollapsed: () => resetCollapsedRef.current(),
             });
-            const data = (await res.json().catch(() => ({}))) as {
-                success?: boolean;
-                message?: string;
-                disabled?: number;
-                deleted?: number;
-            };
-            if (!res.ok || !data.success) {
-                return { success: false, message: data.message || "扫描失败，请稍后再试" };
-            }
-            await fetchAccountList();
-            return { success: true, disabled: data.disabled ?? 0, deleted: data.deleted ?? 0 };
-        } catch (error) {
-            return {
-                success: false,
-                message: "扫描失败：" + (error instanceof Error ? error.message : "未知错误"),
-            };
-        }
-    }, [fetchAccountList]);
-
-    /** 拉登录设备列表（当前账号自己的）：打开「账号管理」时调一次 */
-    const fetchSessions = useCallback(async () => {
-        if (!isAuthenticated) return;
-        try {
-            setSessions(await api.getSessions());
-        } catch {
-            // 拉不到就当没有：界面上那一段直接不显示，不打扰正常功能
-        }
-    }, [isAuthenticated]);
-
-    /** 把某一台设备踢下线（只吊销那张令牌，别的设备不受影响） */
-    const handleRevokeSession = useCallback(
-        async (jti: string) => {
-            try {
-                const result = await api.revokeSession(jti);
-                if (result.success) {
-                    notify("已将该设备踢下线", "success");
-                    await fetchSessions();
-                } else {
-                    notify(result.message || "操作失败", "error");
-                }
-            } catch (error) {
-                notify(
-                    "操作失败：" + (error instanceof Error ? error.message : "未知错误"),
-                    "error"
-                );
-            }
         },
-        [fetchSessions, notify]
+        [clearHistory, setPrefsAccountUid]
     );
 
-    /** 退出其它设备：除当前这台之外全部吊销 */
-    const handleRevokeOthers = useCallback(async () => {
-        try {
-            const result = await api.revokeOtherSessions();
-            if (result.success) {
-                notify(`已退出 ${result.revoked} 台其它设备`, "success");
-                await fetchSessions();
-            } else {
-                notify(result.message || "操作失败", "error");
-            }
-        } catch (error) {
-            notify("操作失败：" + (error instanceof Error ? error.message : "未知错误"), "error");
-        }
-    }, [fetchSessions, notify]);
+    // 统一提示函数（引用稳定，便于被 memo 的子组件复用）
+    // duration 可选：成功/信息类默认短暂停留 2.2s，错误类默认 6s（便于阅读），传入则覆盖
+    // action 可选：在提示条上挂一个操作按钮（删除后的「撤销」就靠它）
+    // 处理错误的函数
+    const handleError = useCallback(
+        (errorMessage: string) => {
+            // 离线队列已接住的操作：温和不报错，告诉用户会在联网后自动同步即可
+            const isOfflineQueued = errorMessage.includes("离线保存") || errorMessage.includes("OfflineQueued");
+            notify(errorMessage, isOfflineQueued ? "info" : "error");
+            if (!isOfflineQueued) console.error(errorMessage);
+            reportError(errorMessage, { source: "save-error" });
+        },
+        [notify]
+    );
 
-    /** 注销账号：确认密码 → 服务端删号删数据 → 本地回到登录页 */
-    const handleDeleteAccount = async (): Promise<{ success: boolean; message?: string }> => {
-        if (!deleteAccountPassword) {
-            return { success: false, message: "请输入当前密码以确认注销" };
-        }
-        try {
-            setDeleteAccountBusy(true);
-            const result = await api.deleteAccount(deleteAccountPassword);
-            if (result.success) {
-                setDeleteAccountOpen(false);
-                setDeleteAccountPassword("");
-                setInvite(null);
-                // 账号都没了，本地数据必须一起清空，否则会看到上一个账号的残留
-                clearRememberedLogin();
-                setGroups([]);
-                setIsAuthenticated(false);
-                setIsAuthRequired(true);
-                setCurrentUser(null);
-                clearBootstrapCache();
-                setError(result.message || "账号已注销");
-            }
-            return result;
-        } catch (error) {
-            return {
-                success: false,
-                message: "注销失败：" + (error instanceof Error ? error.message : "未知错误"),
-            };
-        } finally {
-            setDeleteAccountBusy(false);
-        }
-    };
-
-    /**
-     * 重新问一次「当前账号有没有配恢复密钥」。
-     * 公钥是每个账号自己的，换账号（登录 / 注册 / 退出）后必须重新取，
-     * 否则上一个账号的「已配置」会串到新账号的设置页上。
-     */
-    const refreshRecoveryStatus = () => {
-        api
-            .getRecoveryStatus()
-            .then(status => setRecoveryConfigured(status?.configured === true))
-            .catch(() => setRecoveryConfigured(false));
-    };
-
-    // 检查认证状态
-    // 优化点：不再单独发一次 checkAuthStatus 请求，直接拉 bootstrap
-    // —— 拿得到数据即已登录，401 就是未登录/令牌失效，整个启动过程只花 1 次请求
-    const checkAuthStatus = async () => {
-        try {
-            setIsAuthChecking(true);
-
-            const ok = await fetchData();
-
-            // 顺带确认是否配置了恢复公钥（未登录也能查，失败就当作未配置，不影响登录）
-            refreshRecoveryStatus();
-
-            if (ok) {
-                setIsAuthenticated(true);
-                setIsAuthRequired(false);
-                // 拿得到数据 = 已登录，顺带把「我是谁」取回来（失败不影响正常使用）。
-                // id 同时用来给本地数据划账号边界：换账号 / 换浏览器存档都要靠它分辨。
-                api.getMe()
-                    .then(me => {
-                        setCurrentUser(me);
-                        switchAccount(me ? me.id : null);
-                    })
-                    .catch(() => setCurrentUser(null));
-            } else if (!api.isLoggedIn()) {
-                // 本地没有可用令牌
-                setIsAuthenticated(false);
-                setIsAuthRequired(true);
-            }
-        } catch (error) {
-            console.error("认证检查失败:", error);
-            reportError(error, { source: "auth-check" });
-            // 令牌失效 / 账号已注销：退回登录页；
-            // 账号被停用（403）也是一个道理 —— 停在这里只会看到一片空白，
-            // 把服务端那句「可以怎么用恢复密钥找回」原样带过去。
-            if (error instanceof Error && (error.message.includes("认证") || error.message.includes("HTTP 403"))) {
-                setIsAuthenticated(false);
-                setIsAuthRequired(true);
-                if (error.message.includes("HTTP 403")) setError(error.message.replace(/\s*\(HTTP 403\)$/, ""));
-            }
-        } finally {
-            setIsAuthChecking(false);
-        }
-    };
-
-    // 登录功能
-    const handleLogin = async (username: string, password: string, remember = false) => {
-        try {
-            setLoginLoading(true);
-            setLoginError(null);
-
-            // 调用登录接口（返回的是 LoginResponse 对象，必须判断 success 字段）
-            const result = await api.login(username, password, remember);
-
-            if (result && result.success) {
-                // 令牌是 httpOnly cookie，浏览器可能在服务端返回 200 之后仍然没把它存上：
-                // 站点若经过反代，Worker 看到的是回源用的 https 于是下发带 Secure 的 cookie，
-                // 而当前页面是 http —— 浏览器按规范直接丢弃，于是「登录成功」后第一个接口
-                // 就 401，界面立刻弹回登录页。先确认一次再切换界面，
-                // 确认不了就明说原因，别让人对着闪退干瞪眼。
-                const sessionOk = await api.checkAuthStatus();
-                if (!sessionOk) {
-                    setLoginError(
-                        location.protocol === "https:"
-                            ? "登录状态没能保存，请检查浏览器是否禁用了 Cookie 或拦截了本站 Cookie"
-                            : "登录状态没能保存：当前通过 HTTP 访问，浏览器拒绝保存安全 Cookie。请改用 HTTPS（或 localhost）访问"
-                    );
-                    setIsAuthenticated(false);
-                    setIsAuthRequired(true);
-                    return;
-                }
-
-                // 只记账号名；持续登录使用服务端 HttpOnly Cookie。
-                if (remember) {
-                    saveRememberedLogin({ username });
-                } else {
-                    clearRememberedLogin();
-                }
-                // 登录成功
-                setIsAuthenticated(true);
-                setIsAuthRequired(false);
-                setLoginError(null);
-                // 关掉可能残留的全局提示（比如上一次输错密码时弹出的「用户名或密码错误」）
-                handleCloseSnackbar();
-                // 首次部署的凭据来自部署变量（等同半公开），服务端会拦住其它操作直到改密
-                if (result.mustChangePassword) {
-                    notify("请先到「更多选项 → 账号管理」修改密码", "info");
-                }
-                // 加载数据（一次 bootstrap 请求）
-                await fetchData();
-                // 登录成功也要确认「我是谁」：换账号时本地数据要跟着换一份
-                const me = await api.getMe();
-                if (me) {
-                    setCurrentUser(me);
-                    switchAccount(me.id);
-                }
-                // 换账号了：恢复密钥状态要按新账号重新问一次
-                refreshRecoveryStatus();
-            } else {
-                // 登录失败：账号或密码不对
-                // 只在登录表单内提示，不再弹全局 Snackbar——否则提示会残留到下一次成功登录之后
-                const message = result?.message || "用户名或密码错误";
-                setLoginError(message);
-                setIsAuthenticated(false);
-                setIsAuthRequired(true);
-            }
-        } catch (error) {
-            console.error("登录失败:", error);
-            reportError(error, { source: "auth-login" });
-            handleError("登录失败: " + (error instanceof Error ? error.message : "未知错误"));
-            setIsAuthenticated(false);
-        } finally {
-            setLoginLoading(false);
-        }
-    };
-
-    // 用恢复令牌重置管理员密码（登录页「用恢复密钥找回账号」入口）
-    const handleRecover = async (
-        token: string
-    ): Promise<{ success: boolean; message?: string }> => {
-        try {
-            const result = await api.recoverPassword(token);
-            if (result?.success) {
-                handleCloseSnackbar();
-                notify(result.message || "密码已重置，请用新密码登录", "success");
-                clearRememberedLogin();
-            }
-            return result;
-        } catch (error) {
-            console.error("恢复密码失败:", error);
-            reportError(error, { source: "auth-recover" });
-            return {
-                success: false,
-                message: "恢复失败：" + (error instanceof Error ? error.message : "未知错误"),
-            };
-        }
-    };
-
-    /**
-     * 生成恢复密钥对（更多选项 → 账号管理）。
-     * 密钥在浏览器里生成：公钥交给服务器保存，私钥直接下载到本地，全程不上传。
-     * 服务端要求校验当前密码，所以这里必须把用户填的当前密码一起传过去。
-     */
-    const handleGenerateRecoveryKey = async (
-        currentPassword: string
-    ): Promise<{ success: boolean; message?: string }> => {
-        try {
-            const notSupported = checkWebCryptoSupport();
-            if (notSupported) {
-                return { success: false, message: notSupported };
-            }
-
-            const { alg, publicKey, privateKey } = await generateRecoveryKeyPair();
-            const result = await api.setRecoveryPublicKey(publicKey, currentPassword);
-            if (!result?.success) {
-                return { success: false, message: result?.message || "保存恢复公钥失败" };
-            }
-
-            // 公钥落库成功才下载私钥：否则会出现「私钥存了但服务器不认」的情况
-            const filename = downloadRecoveryKeyFile(alg, publicKey, privateKey);
-            setRecoveryConfigured(true);
-            return {
-                success: true,
-                message: `私钥已下载为 ${filename}（${algLabel(alg)}），请离线妥善保管；旧私钥已失效`,
-            };
-        } catch (error) {
-            console.error("生成恢复密钥失败:", error);
-            reportError(error, { source: "auth-recovery-key" });
-            return {
-                success: false,
-                message: "生成恢复密钥失败：" + (error instanceof Error ? error.message : "未知错误"),
-            };
-        }
-    };
-
-    // 登出功能
-    const handleLogout = () => {
-        api.logout();
-        // 账号边界归零（与换账号共用同一条清单，见 utils/sessionBoundary.ts）：
-        // 撤销栈、撤销快照、离线队列全部解绑当前账号。队列不删 —— 那可能是还没
-        // 同步出去的编辑，等本人下次登录接着重放；但绝不能留在「任何人都能重放」
-        // 的全局键里。首屏缓存也在这一步清掉，退出后不该再把上一个人的数据画出来。
-        clearSessionBoundary({
-            setQueueAccount: setAccountUid,
-            setUndoAccount: setUndoAccountUid,
-            setPrefsAccount: setPrefsAccountUid,
-            clearHistory,
-            resetCollapsed: () => resetCollapsedRef.current(),
-        });
-        setIsAuthenticated(false);
-        setIsAuthRequired(true);
-
-        // 清空数据
-        setGroups([]);
-        handleMenuClose();
-
-        // 上一个账号的痕迹一并清掉：邀请码是「当前会话刚生成的那枚」，
-        // 换个账号登录后不该还在设置页里露出来；恢复密钥状态同理，下次登录重新问
-        setInvite(null);
-        setCurrentUser(null);
-        setRecoveryConfigured(false);
-
-        // 多选模式是 App 本地 state，登出时不卸载组件，不会自动复位——
-        // 不在这里清掉，重登后还会停在「批量多选」态。退出时连勾选一并清空。
-        exitMultiSelect();
-
-        // 显示提示信息
-        setError("已退出登录，请重新登录");
-    };
+    // 认证与账号治理：整段搬到 hooks/useAccountSession.ts
+    // （注册 / 登录 / 登出 / 恢复密钥 / 邀请码 / 会话 / 沉睡治理 / 注销）
+    const {
+        isAuthChecking,
+        loginError,
+        loginLoading,
+        recoveryConfigured,
+        currentUser,
+        invite,
+        deleteAccountOpen,
+        setDeleteAccountOpen,
+        deleteAccountPassword,
+        setDeleteAccountPassword,
+        deleteAccountBusy,
+        accountList,
+        sessions,
+        inactivePolicy,
+        handleRegister,
+        handleCreateInvite,
+        fetchAccountList,
+        handleSaveInactivePolicy,
+        handleExemptUser,
+        handleSweepInactive,
+        fetchSessions,
+        handleRevokeSession,
+        handleRevokeOthers,
+        handleDeleteAccount,
+        checkAuthStatus,
+        handleLogin,
+        handleRecover,
+        handleGenerateRecoveryKey,
+        handleLogout,
+    } = useAccountSession({
+        api,
+        notify,
+        onError: handleError,
+        onMenuClose: handleMenuClose,
+        onDataError: setError,
+        fetchData,
+        onCloseSnackbar: handleCloseSnackbar,
+        onSwitchAccount: switchAccount,
+        onExitMultiSelect: exitMultiSelect,
+        clearHistory,
+        onResetCollapsed: () => resetCollapsedRef.current(),
+        setGroups,
+        setPrefsAccountUid,
+        isAuthenticated,
+        setIsAuthenticated,
+        setIsAuthRequired,
+    });
 
     // 加载配置（WebDAV 配置单独存放，避免被写进备份文件）
     const applyConfigs = (configsData: Record<string, string> | null | undefined) => {
@@ -1162,88 +716,9 @@ function App() {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
-    // 设置文档标题
-    useEffect(() => {
-        document.title = brandTitle(configs["site.title"]);
-    }, [configs]);
-
-    // 应用自定义CSS
-    useEffect(() => {
-        const customCss = configs["site.customCss"];
-        let styleElement = document.getElementById("custom-style");
-
-        if (!styleElement) {
-            styleElement = document.createElement("style");
-            styleElement.id = "custom-style";
-            document.head.appendChild(styleElement);
-        }
-
-        // 添加安全过滤，防止CSS注入攻击
-        const sanitizedCss = sanitizeCustomCss(customCss || "");
-        styleElement.textContent = sanitizedCss;
-    }, [configs]);
-
-    // 同步HTML的class以保持与现有CSS兼容
-    useEffect(() => {
-        if (darkMode) {
-            document.documentElement.classList.add("dark");
-        } else {
-            document.documentElement.classList.remove("dark");
-        }
-    }, [darkMode]);
-
-    // 把主色同步成 CSS 变量，供原生 CSS（如搜索高亮）跟随主题
-    useEffect(() => {
-        const root = document.documentElement;
-        if (accent) {
-            root.style.setProperty("--accent", accent);
-        } else {
-            // 清空后回退到 index.css 里亮/暗各自的默认值
-            root.style.removeProperty("--accent");
-        }
-    }, [accent]);
-
-    // 毛玻璃强度：0 表示关掉模糊（纯半透明），留空/非法值用默认 14px
-    // 注意 Number("") === 0，所以必须先排除空字符串，否则默认配置会被算成「关闭模糊」
-    const glassBlurRaw = configs["site.glassBlur"];
-    const glassBlurParsed = Number(glassBlurRaw);
-    const glassBlur =
-        glassBlurRaw === undefined || glassBlurRaw === "" || !Number.isFinite(glassBlurParsed)
-            ? 14
-            : Math.min(24, Math.max(0, glassBlurParsed));
-    useEffect(() => {
-        document.documentElement.style.setProperty("--glass-blur", `${glassBlur}px`);
-    }, [glassBlur]);
-
-    // 毛玻璃总开关：打开时保持上面的 --glass-blur；关掉时给根节点挂 .nav-no-glass，
-    // 由 index.css 统一摘掉 backdrop-filter 并换成接近不透明的底色。
-    // 之前这里做的是「滚动时把模糊降到 1/3」——实测收益有限，但每次滚动都会让所有毛玻璃层
-    // 重新采样背景，边缘反而更容易露出黑边，所以回退了，改成让用户自己决定要不要这层特效。
-    useEffect(() => {
-        document.documentElement.classList.toggle("nav-no-glass", !glassEffects);
-    }, [glassEffects]);
-
-    // 清爽模式：给根节点挂 .nav-lite，由 index.css 一次性摘掉 backdrop-filter、
-    // 柔光背景、装饰动画与悬浮阴影。走 CSS 而不是逐个组件判断，
-    // 这样新加的装饰效果只要用到那几个类，默认就跟着一起被关掉。
-    useEffect(() => {
-        document.documentElement.classList.toggle("nav-lite", liteMode);
-    }, [liteMode]);
-
-    // 统一提示函数（引用稳定，便于被 memo 的子组件复用）
-    // duration 可选：成功/信息类默认短暂停留 2.2s，错误类默认 6s（便于阅读），传入则覆盖
-    // action 可选：在提示条上挂一个操作按钮（删除后的「撤销」就靠它）
-    // 处理错误的函数
-    const handleError = useCallback(
-        (errorMessage: string) => {
-            // 离线队列已接住的操作：温和不报错，告诉用户会在联网后自动同步即可
-            const isOfflineQueued = errorMessage.includes("离线保存") || errorMessage.includes("OfflineQueued");
-            notify(errorMessage, isOfflineQueued ? "info" : "error");
-            if (!isOfflineQueued) console.error(errorMessage);
-            reportError(errorMessage, { source: "save-error" });
-        },
-        [notify]
-    );
+    // 文档标题 / 自定义 CSS / 根节点 class / 主色与毛玻璃变量：
+    // 一串纯 DOM 副作用（不改 React 树），搬到 hooks/useDocumentEffects.ts
+    useDocumentEffects({ configs, darkMode, accent, glassEffects, liteMode });
 
     // PWA：把浏览器给的安装机会存下来，用户点「安装到桌面」时才弹原生安装框
     const { canInstall, promptInstall } = usePwaInstall();
@@ -1251,40 +726,6 @@ function App() {
         const accepted = await promptInstall();
         notify(accepted ? "已装到桌面，下次从桌面图标打开就行" : "已取消安装", accepted ? "success" : "info");
     }, [promptInstall, notify]);
-
-    // ---- 撤销 / 重做 ----
-    // 每个破坏性操作做完就往栈里压一条「怎么把自己倒回去」的记录，
-    // 提示条上的「撤销」按钮和 Ctrl+Z 走同一份逻辑，所以能连续撤好几步。
-    const {
-        push: pushHistory,
-        undo: undoHistory,
-        redo: redoHistory,
-        hydrate: hydrateHistory,
-        clear: clearHistory,
-        canUndo,
-        canRedo,
-    } = useHistoryStack();
-
-    /**
-     * 切换账号时统一收拾本地状态（D03）。
-     *
-     * 换人登录最危险的不是界面没刷新，而是**上一个账号的本地数据继续生效**：
-     * 离线队列里排着的操作会被补发到新账号名下，撤销快照能一键把别人的卡片改回来，
-     * 撤销栈按钮还亮着。所以账号一变，这些都跟着换一份 / 清掉。
-     */
-    const switchAccount = useCallback(
-        (uid: number | null) => {
-            // 账号边界上要清哪几样、按什么顺序，集中在 utils/sessionBoundary.ts
-            switchAccountBoundary(uid, {
-                setQueueAccount: setAccountUid,
-                setUndoAccount: setUndoAccountUid,
-                setPrefsAccount: setPrefsAccountUid,
-                clearHistory,
-                resetCollapsed: () => resetCollapsedRef.current(),
-            });
-        },
-        [clearHistory, setPrefsAccountUid]
-    );
 
     /**
      * 刷新之后把上次留下的「可重放」撤销记录捞回来（见 utils/undoPersist）。
@@ -2122,141 +1563,42 @@ function App() {
         }));
     };
 
-    // 配置相关函数
-    const handleOpenConfig = useCallback(() => {
-        handleMenuClose();
-        setTempConfigs({ ...configs });
-        // 管理员凭据每次打开都重新填，避免误存上一次的输入
-        setAuthUsername("");
-        setAuthCurrentPassword("");
-        setAuthNewPassword("");
-        setOpenConfig(true);
-    }, [handleMenuClose, configs]);
-
-    // 修改管理员账号密码：需要验证当前密码，空白字段表示保持不变
-    const submitAuthCredentials = async (): Promise<boolean> => {
-        const username = authUsername.trim();
-        // 只有「要改账号」或「要改密码」时才提交。
-        // 注意不能把 authCurrentPassword 算进「有改动」的判断：用户可能只是为了生成恢复私钥
-        // 而填了当前密码，此时点「保存设置」会因为「既没新账号也没新密码」被服务端判成 400。
-        if (!username && !authNewPassword) {
-            return false;
-        }
-        if (!authCurrentPassword) {
-            throw new Error("修改管理员账号或密码时，必须先填写当前密码");
-        }
-        const result = await api.updateAuthCredentials(username, authNewPassword, authCurrentPassword);
-        if (!result.success) {
-            throw new Error(result.message || "修改管理员凭据失败");
-        }
-        return true;
-    };
-
-    /**
-     * 账号管理里单独保存「账号 / 密码」。
-     * 改完服务端会把令牌版本 +1，当前令牌立刻失效 —— 所以要清掉「记住登录」并踢回登录页，
-     * 否则留在页面里每个请求都是 401。
-     */
-    const handleSaveAuthCredentials = async () => {
-        if (savingAuth) return;
-        setSavingAuth(true);
-        try {
-            const changed = await submitAuthCredentials();
-            if (!changed) {
-                notify("没有需要保存的改动", "info");
-                return;
-            }
-            setAuthUsername("");
-            setAuthCurrentPassword("");
-            setAuthNewPassword("");
-            setOpenAccount(false);
-            clearRememberedLogin(); // 「记住登录」里存的是旧账号密码，留着只会误导
-            handleLogout();
-            setError("账号或密码已更新，请使用新凭据重新登录");
-        } catch (error) {
-            console.error("保存账号密码失败:", error);
-            handleError("保存账号密码失败: " + (error as Error).message);
-        } finally {
-            setSavingAuth(false);
-        }
-    };
-
-    const handleCloseConfig = () => {
-        setOpenConfig(false);
-        // 未保存的话，把预览的主色回滚掉
-        setAccentPreview(null);
-    };
-
-    // 选色：同时写入临时配置（供保存）与预览值（即时生效）
-    const pickAccent = (value: string) => {
-        setTempConfigs(prev => ({ ...prev, "site.primaryColor": value }));
-        setAccentPreview(value);
-    };
-
-    const handleConfigInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-        setTempConfigs({
-            ...tempConfigs,
-            [e.target.name]: e.target.value,
-        });
-    };
-
-    // 背景蒙版透明度滑块
-    const handleConfigSliderChange = (_event: Event, value: number | number[]) => {
-        const next = Array.isArray(value) ? value[0] : value;
-        setTempConfigs(prev => ({
-            ...prev,
-            "site.backgroundMaskOpacity": String(next),
-        }));
-    };
-
-    // 毛玻璃强度：临时值为空/非法时按默认 14 显示
-    const tempGlassBlur = (() => {
-        const raw = tempConfigs["site.glassBlur"];
-        const n = Number(raw);
-        if (raw === undefined || raw === "" || !Number.isFinite(n)) return 14;
-        return Math.min(24, Math.max(0, n));
-    })();
-
-    const handleGlassBlurChange = (_event: Event, value: number | number[]) => {
-        const next = Array.isArray(value) ? value[0] : value;
-        setTempConfigs(prev => ({ ...prev, "site.glassBlur": String(next) }));
-    };
-
-    const handleSaveConfig = async () => {
-        // 防连点：同一轮里连点「保存设置」只提交一次
-        if (savingConfigRef.current) return;
-        savingConfigRef.current = true;
-        setSavingConfig(true);
-
-        try {
-            // 只提交有变化的配置，并且一次请求写完
-            // （原来每项各发一个请求，改十项就是十个网络往返）
-            const changed = Object.entries(tempConfigs).filter(([key, value]) => configs[key] !== value);
-            if (changed.length > 0) {
-                const ok = await api.setConfigs(Object.fromEntries(changed));
-                if (!ok) throw new Error("部分配置写入失败");
-            }
-
-            // 更新配置状态：标题 / 背景图 / 自定义 CSS 都由 React 响应式生效，无需刷新页面
-            setConfigs({ ...tempConfigs });
-            // 正式保存后撤掉预览，改由已保存的配置驱动主题
-            setAccentPreview(null);
-            setAuthUsername("");
-            setAuthCurrentPassword("");
-            setAuthNewPassword("");
-            handleCloseConfig();
-
-            if (changed.length > 0) {
-                notify("设置已保存", "success");
-            }
-        } catch (error) {
-            console.error("保存配置失败:", error);
-            handleError("保存配置失败: " + (error as Error).message);
-        } finally {
-            savingConfigRef.current = false;
-            setSavingConfig(false);
-        }
-    };
+    // 「网站设置」与管理员凭据的写逻辑：整段搬到 hooks/useSiteSettings.ts
+    // （打开弹窗的初始化、临时配置编辑、凭据提交、整批保存）
+    const {
+        handleOpenConfig,
+        handleSaveAuthCredentials,
+        handleCloseConfig,
+        pickAccent,
+        handleConfigInputChange,
+        handleConfigSliderChange,
+        tempGlassBlur,
+        handleGlassBlurChange,
+        handleSaveConfig,
+    } = useSiteSettings({
+        api,
+        notify,
+        onError: handleError,
+        onMenuClose: handleMenuClose,
+        onLogout: handleLogout,
+        onDataError: setError,
+        configs,
+        setConfigs,
+        tempConfigs,
+        setTempConfigs,
+        setAccentPreview,
+        setOpenConfig,
+        authUsername,
+        authCurrentPassword,
+        authNewPassword,
+        setAuthUsername,
+        setAuthCurrentPassword,
+        setAuthNewPassword,
+        savingAuth,
+        setSavingAuth,
+        setOpenAccount,
+        setSavingConfig,
+    });
 
     /**
      * 「上次推到服务端的内容」缓存，usePrefSync 与 useBackupController 共用：
@@ -2303,232 +1645,51 @@ function App() {
         lastPrefPushRef,
     });
 
-    // 按关键词筛选：命中「网站名称 / 网站链接 / 网站描述」的卡片会被保留，分组名命中则整组保留。
-    // 用 useDeferredValue 把过滤推迟到空闲帧：输入框始终跟手，卡片多的时候也不会边打边卡。
-    const query = useDeferredValue(searchQuery.trim().toLowerCase());
-
-    // 检索索引：站点侧与分组侧的归一化文本只在**数据变了**时算一次。
-    // 以前是每次按键对每个站点跑三趟正则，几千张卡片时输入会开始发涩。
-    const searchIndex = useMemo(() => buildSearchIndex(groups), [groups]);
-    // 高级语法（tag: / group: / url: / is: / -关键词）：先从输入里剥出来，
-    // 剩下的自由词才交给普通检索。不写语法的人完全不受影响。
-    const advancedQuery = useMemo(() => parseAdvancedQuery(query), [query]);
-    // 查询侧同理：一个关键词只归一化一次，全站点复用
-    const preparedQuery = useMemo(
-        () => prepareQuery(advancedQuery.text),
-        [advancedQuery.text]
-    );
-
-    const filteredGroups = useMemo(() => {
-        if (!preparedQuery.text && !hasAdvancedSyntax(query)) return groups;
-
-        return groups
-            .map(group => {
-                const groupHaystack =
-                    group.id !== undefined ? searchIndex.groups.get(group.id) ?? "" : "";
-                if (matchesPrepared(groupHaystack, group.name, preparedQuery, usePinyin)) {
-                    return group;
-                }
-                const sites = group.sites.filter(site => {
-                    // 索引里没有（刚离线新建、还没回填 id）就现算一次，别把它当成不命中
-                    const entry = site.id !== undefined ? searchIndex.sites.get(site.id) : undefined;
-                    if (
-                        preparedQuery.text &&
-                        !matchesPrepared(
-                            entry?.haystack ?? siteHaystack(site),
-                            entry?.name ?? site.name ?? "",
-                            preparedQuery,
-                            usePinyin
-                        )
-                    ) {
-                        return false;
-                    }
-                    // 语法条件：tag: / group: / url: / is:
-                    const own = tags[String(site.id)] ?? [];
-                    if (
-                        !matchesAdvanced(site, group.name, advancedQuery, {
-                            tags: own,
-                            starred: starred.includes(site.id as number),
-                            dead: Boolean(deadLinks[site.url ?? ""]),
-                        })
-                    ) {
-                        return false;
-                    }
-                    // -排除词
-                    return !matchesExcludes(site, group.name, advancedQuery.excludes);
-                });
-                return { ...group, sites };
-            })
-            .filter(group => group.sites.length > 0);
-    }, [
-        groups,
-        preparedQuery,
-        usePinyin,
-        searchIndex,
+    // 搜索与筛选的派生链：整段搬到 hooks/useSiteSearch.ts
+    // （关键词 → 检索索引 → 高级语法 → 语义叠加 → 星标/标签/失效 → 渲染上限 → 常用置前）
+    const {
+        query,
         advancedQuery,
-        tags,
+        clearAllFilters,
+        toggleActiveTag,
+        deadCount,
+        matchedCount,
+        searchTruncated,
+        currentGroupSites,
+        reduceEntryAnimation,
+        renderedCount,
+        flatResults,
+        dropdownOpen,
+        historyOpen,
+        openResult,
+        applyHistoryTerm,
+        displayedGroups,
+    } = useSiteSearch({
+        groups,
+        searchQuery,
+        usePinyin,
+        semanticSearch,
+        semanticHits,
         starred,
+        tags,
         deadLinks,
-    ]);
-
-    /**
-     * 语义搜索的结果叠加。
-     * 只在「开关开着且真的有命中」时生效：命中列表为空就原样保留关键词结果 ——
-     * AI 没帮上忙不该变成「什么都看不到」。
-     */
-    const semanticGroups = useMemo(() => {
-        if (!semanticSearch || semanticHits.length === 0) return filteredGroups;
-        const order = new Map(semanticHits.map((hit, idx) => [String(hit.id), idx]));
-        return filteredGroups
-            .map(group => {
-                const sites = (group.sites ?? [])
-                    .filter(site => order.has(String(site.id)))
-                    .slice()
-                    .sort(
-                        (a, b) =>
-                            (order.get(String(a.id)) ?? 0) - (order.get(String(b.id)) ?? 0)
-                    );
-                return { ...group, sites };
-            })
-            .filter(group => group.sites.length > 0);
-    }, [semanticSearch, semanticHits, filteredGroups]);
-
-    // 星标 / 标签筛选：在搜索结果之上再叠一层。
-    // 标签取交集（同时带「工具」「AI」两个标签才命中），星标是独立的开关。
-    const matchFilters = useCallback(
-        (site: Site) => {
-            if (starFilter && !starred.includes(site.id as number)) return false;
-            // 「只看失效」：只留检测出问题的那些链接
-            if (deadOnly && !deadLinks[site.url ?? ""]) return false;
-            if (activeTags.length === 0) return true;
-            const own = tags[String(site.id)] ?? [];
-            return activeTags.every(tag => own.includes(tag));
-        },
-        [starFilter, starred, deadOnly, deadLinks, activeTags, tags]
-    );
-
-    const visibleGroups = useMemo(() => {
-        // 从语义结果出发：语义命中已经收窄过一轮，星标 / 标签 / 失效再叠在它上面
-        if (!starFilter && !deadOnly && activeTags.length === 0) return semanticGroups;
-        return semanticGroups
-            .map(group => ({ ...group, sites: group.sites.filter(matchFilters) }))
-            .filter(group => group.sites.length > 0);
-    }, [semanticGroups, starFilter, deadOnly, activeTags, matchFilters]);
-
-    // 一次性清掉星标 / 失效 / 标签三档筛选（空状态里的「清除筛选」用）
-    const clearAllFilters = useCallback(() => {
-        setStarFilter(false);
-        setDeadOnly(false);
-        setActiveTags([]);
-    }, []);
-
-    // 点标签：多选取交集，再点一次取消
-    const toggleActiveTag = useCallback((tag: string) => {
-        setActiveTags(prev =>
-            prev.includes(tag) ? prev.filter(item => item !== tag) : [...prev, tag]
-        );
-    }, []);
-
-    // 检出失效的链接条数：决定是否显示「只看失效」入口
-    const deadCount = Object.keys(deadLinks).length;
-
-    // 筛选生效时页面里还剩多少张卡片（搜索结果计数要用）
-    const matchedCount = useMemo(
-        () => visibleGroups.reduce((sum, group) => sum + group.sites.length, 0),
-        [visibleGroups]
-    );
-
-    // 命中太多时先只渲染一部分：几百张卡片一次性铺开会卡住输入（实测一次过滤 ~116ms），
-    // 计数照常按真实命中数显示，只是不把它们全部挂到 DOM 上。
-    const SEARCH_PER_GROUP_LIMIT = 24;
-    const SEARCH_TOTAL_LIMIT = 60;
-    const searchTruncated = query ? matchedCount > SEARCH_TOTAL_LIMIT : false;
-    const renderGroups = useMemo(
-        () =>
-            searchTruncated
-                ? visibleGroups.map(group =>
-                      group.sites.length > SEARCH_PER_GROUP_LIMIT
-                          ? { ...group, sites: group.sites.slice(0, SEARCH_PER_GROUP_LIMIT) }
-                          : group
-                  )
-                : visibleGroups,
-        [visibleGroups, searchTruncated]
-    );
-    // 「当前分组」：左侧栏选中的那个；没选中就取第一个可见分组。
-    // 数字键 1~9 打开的就是这个分组里的第 N 张卡片。
-    const currentGroupSites = useMemo(() => {
-        if (renderGroups.length === 0) return [] as Site[];
-        const picked =
-            activeGroupId != null ? renderGroups.find(g => g.id === activeGroupId) : undefined;
-        return (picked ?? renderGroups[0]).sites;
-    }, [renderGroups, activeGroupId]);
-
-    // 卡片很多时整体关掉入场动画：几百张同时跑 transform 动画，
-    // 合成开销比动画本身还贵，视觉上也看不出「依次浮现」了
-    const ENTRY_ANIMATION_LIMIT = 60;
-    const reduceEntryAnimation = matchedCount > ENTRY_ANIMATION_LIMIT;
-
-    const renderedCount = useMemo(
-        () => (searchTruncated ? renderGroups.reduce((sum, g) => sum + g.sites.length, 0) : matchedCount),
-        [searchTruncated, renderGroups, matchedCount]
-    );
-
-    // 下拉面板的扁平结果：跨分组取前 8 条，够用又不至于太长
-    const flatResults = useMemo(() => {
-        if (!query) return [];
-        const items: { site: Site; groupName: string }[] = [];
-        for (const group of visibleGroups) {
-            for (const site of group.sites) {
-                items.push({ site, groupName: group.name });
-                if (items.length >= 8) break;
-            }
-            if (items.length >= 8) break;
-        }
-        return items;
-    }, [visibleGroups, query]);
-
-    const dropdownOpen = query.length > 0 && searchFocused && flatResults.length > 0;
-    // 没有输入但曾经搜过：把历史关键词亮出来，点一下就能接着搜
-    const historyOpen = searchFocused && query.length === 0 && searchHistory.length > 0;
-
-    // 打开下拉面板里的某一项（用户主动选择，直接前台打开）
-    const openResult = (site: Site) => {
-        setSearchFocused(false);
-        // 从搜索面板打开的，把这次关键词记进搜索历史
-        if (searchQuery.trim()) pushSearchHistory(searchQuery);
-        if (site.url) {
-            safeOpenSite(site.url);
-        }
-    };
-
-    // 点历史关键词：回填到搜索框并保持聚焦，方便直接回车打开
-    const applyHistoryTerm = (term: string) => {
-        setSearchQuery(term);
-        setActiveResult(0);
-        setSearchFocused(true);
-        searchInputRef.current?.focus();
-    };
-
-    // 「最近访问」虚拟分组：7 天内点开过、且点开次数最多的前 10 个网站
-    // （纯派生逻辑抽到 utils/siteView.ts，便于单测，不再和 App 绑死）
-    const favoritesGroup = useMemo(
-        () => buildFavoritesGroup(groups, visits),
-        [groups, visits]
-    );
-
-    // 真正渲染的分组列表：常用置前（排序模式与关闭时不插）
-    const displayedGroups = useMemo(
-        () =>
-            deriveDisplayedGroups(
-                renderGroups,
-                favoritesEnabled,
-                favoritesGroup,
-                query,
-                matchFilters,
-                usePinyin
-            ),
-        [renderGroups, favoritesEnabled, favoritesGroup, query, matchFilters, usePinyin]
-    );
+        starFilter,
+        deadOnly,
+        activeTags,
+        setStarFilter,
+        setDeadOnly,
+        setActiveTags,
+        searchFocused,
+        searchHistory,
+        pushSearchHistory,
+        setSearchFocused,
+        setActiveResult,
+        setSearchQuery,
+        searchInputRef,
+        visits,
+        favoritesEnabled,
+        activeGroupId,
+    });
 
     // 分组面板滚进视口时播一次「渐显上浮」（只播一次，来回滚动不会反复闪）。
     // 元素默认就是正常显示，动画靠 JS 加 class 触发，IntersectionObserver 不可用时完全不受影响。
@@ -3238,132 +2399,41 @@ function App() {
                     {loading && <SiteListSkeleton />}
 
                     {!loading && !error && (
-                        <Box
-                            sx={{
-                                "& > *": { mb: 5 },
-                                minHeight: "100px",
-                            }}
-                        >
-                            {sortMode === SortMode.GroupSort ? (
-                                <DndContext
-                                    sensors={sensors}
-                                    collisionDetection={closestCenter}
-                                    onDragEnd={handleDragEnd}
-                                >
-                                    <SortableContext
-                                        items={groups.map(group => group.id.toString())}
-                                        strategy={verticalListSortingStrategy}
-                                    >
-                                        <Stack
-                                            spacing={2}
-                                            sx={{
-                                                "& > *": {
-                                                    transition: "none",
-                                                },
-                                            }}
-                                        >
-                                            {groups.map((group, idx) => (
-                                                <SortableGroupItem
-                                                    key={group.id}
-                                                    id={group.id.toString()}
-                                                    group={group}
-                                                    onNudge={nudgeGroup}
-                                                    isFirst={idx === 0}
-                                                    isLast={idx === groups.length - 1}
-                                                />
-                                            ))}
-                                        </Stack>
-                                    </SortableContext>
-                                </DndContext>
-                            ) : sortMode === SortMode.SiteSort ? (
-                                <DndContext
-                                    sensors={sensors}
-                                    collisionDetection={closestCenter}
-                                    onDragStart={handleSiteDragStart}
-                                    onDragOver={handleSiteSortDragOver}
-                                    onDragEnd={handleSiteSortDragEnd}
-                                    onDragCancel={handleSiteDragCancel}
-                                >
-                                    <Stack spacing={5}>
-                                        {groups.map(group => (
-                                            <GroupCard
-                                                key={`group-${group.id}`}
-                                                group={group}
-                                                accentColor={groupAccent(group.id, darkMode ? "dark" : "light")}
-                                                sortMode="SiteSort"
-                                                currentSortingGroupId={null}
-                                                globalSiteSort
-                                                onUpdate={handleSiteUpdate}
-                                                onDelete={handleSiteDelete}
-                                                onSaveSiteOrder={handleSaveSiteOrder}
-                                                onStartSiteSort={startSiteSort}
-                                                onAddSite={handleOpenAddSite}
-                                                onUpdateGroup={handleGroupUpdate}
-                                                onDeleteGroup={handleGroupDelete}
-                                            />
-                                        ))}
-                                    </Stack>
-
-                                    {/* 跟随指针的拖拽浮层：比原位卡片略大、略微倾斜 */}
-                                    <DragOverlay dropAnimation={null}>
-                                        {draggingSite && (
-                                            <Box
-                                                className='nav-drag-overlay'
-                                                sx={{ width: 200, pointerEvents: "none" }}
-                                            >
-                                                <SiteCard
-                                                    site={draggingSite}
-                                                    onUpdate={handleSiteUpdate}
-                                                    onDelete={handleSiteDelete}
-                                                    isEditMode
-                                                />
-                                            </Box>
-                                        )}
-                                    </DragOverlay>
-                                </DndContext>
-                            ) : displayedGroups.length > 0 ? (
-                                <Stack
-                                    spacing={density === "compact" ? 3 : 5}
-                                    className={reduceEntryAnimation ? "nav-static-entry" : undefined}
-                                >
-                                    {displayedGroups.map(group => (
-                                        <GroupCard
-                                            key={`group-${group.id}`}
-                                            group={group}
-                                            sortMode={
-                                                sortMode === SortMode.None ? "None" : "SiteSort"
-                                            }
-                                            currentSortingGroupId={currentSortingGroupId}
-                                            onUpdate={handleSiteUpdate}
-                                            onDelete={handleSiteDelete}
-                                            onSaveSiteOrder={handleSaveSiteOrder}
-                                            onStartSiteSort={startSiteSort}
-                                            onAddSite={handleOpenAddSite}
-                                            onUpdateGroup={handleGroupUpdate}
-                                            onDeleteGroup={handleGroupDelete}
-                                            searchQuery={query}
-                                            accentColor={
-                                                configs[`group.color.${group.id}`] ||
-                                                groupAccent(group.id, darkMode ? "dark" : "light")
-                                            }
-                                            onAccentChange={handleGroupAccentChange}
-                                            selectMode={multiSelect}
-                                            selectedIds={selectedIds}
-                                            onToggleSelect={toggleSelect}
-                                        />
-                                    ))}
-                                </Stack>
-                            ) : (
-                                <SiteListEmptyState
-                                    query={query}
-                                    hasTagFilter={activeTags.length > 0}
-                                    starFilter={starFilter}
-                                    deadOnly={deadOnly}
-                                    onClearSearch={() => setSearchQuery("")}
-                                    onClearFilters={clearAllFilters}
-                                />
-                            )}
-                        </Box>
+                        <SiteListBody
+                            sortMode={sortMode}
+                            sensors={sensors}
+                            onGroupDragEnd={handleDragEnd}
+                            groups={groups}
+                            onNudgeGroup={nudgeGroup}
+                            onSiteDragStart={handleSiteDragStart}
+                            onSiteDragOver={handleSiteSortDragOver}
+                            onSiteDragEnd={handleSiteSortDragEnd}
+                            onSiteDragCancel={handleSiteDragCancel}
+                            draggingSite={draggingSite}
+                            darkMode={darkMode}
+                            onSiteUpdate={handleSiteUpdate}
+                            onSiteDelete={handleSiteDelete}
+                            onSaveSiteOrder={handleSaveSiteOrder}
+                            onStartSiteSort={startSiteSort}
+                            onAddSite={handleOpenAddSite}
+                            onGroupUpdate={handleGroupUpdate}
+                            onGroupDelete={handleGroupDelete}
+                            displayedGroups={displayedGroups}
+                            density={density}
+                            reduceEntryAnimation={reduceEntryAnimation}
+                            currentSortingGroupId={currentSortingGroupId}
+                            configs={configs}
+                            onGroupAccentChange={handleGroupAccentChange}
+                            selectMode={multiSelect}
+                            selectedIds={selectedIds}
+                            onToggleSelect={toggleSelect}
+                            query={query}
+                            activeTags={activeTags}
+                            starFilter={starFilter}
+                            deadOnly={deadOnly}
+                            onClearSearch={() => setSearchQuery("")}
+                            onClearFilters={clearAllFilters}
+                        />
                     )}
 
                     {/* 新增分组对话框（与「编辑分组」共用同一套样式与尺寸） */}
@@ -3375,339 +2445,24 @@ function App() {
                         onSave={group => handleCreateGroup(group.name)}
                     />
 
-                    {/* 新增站点对话框：字段顺序与「网站设置」对齐
-                        （名称 → 链接 → 图标 → 描述 → 备注 → 分隔线 → 登录凭据），宽度也统一成 600px */}
-                    <Dialog open={openAddSite} onClose={handleCloseAddSite} maxWidth='sm' fullWidth>
-                        <DialogTitle
-                            sx={{
-                                display: "flex",
-                                justifyContent: "space-between",
-                                alignItems: "center",
-                                gap: 1,
-                                px: 3,
-                                pt: 2,
-                                pb: 1,
-                            }}
-                        >
-                            <Typography variant='h6' component='div' fontWeight='600'>
-                                新增站点
-                            </Typography>
-                            <IconButton
-                                color='inherit'
-                                onClick={handleCloseAddSite}
-                                aria-label='关闭'
-                                size='small'
-                            >
-                                <CloseIcon />
-                            </IconButton>
-                        </DialogTitle>
-
-                        <Divider />
-
-                        <DialogContent
-                            sx={{
-                                pt: 2,
-                                pb: 1,
-                                // 整体收紧，避免出现上下滚动
-                                "& .MuiInputBase-input": { fontSize: 14 },
-                                "& .MuiInputLabel-root": { fontSize: 14 },
-                                "& .MuiFormHelperText-root": { fontSize: 12 },
-                            }}
-                        >
-                            <Stack spacing={1.5}>
-                                {/* 站点名称 + 站点 URL：最核心的两项并排，一眼就能填完 */}
-                                <Box
-                                    sx={{
-                                        display: "flex",
-                                        gap: 1.5,
-                                        flexDirection: { xs: "column", sm: "row" },
-                                    }}
-                                >
-                                <Box sx={{ flex: 1 }}>
-                                    <TextField
-                                        autoFocus
-                                        id='site-name'
-                                        name='name'
-                                        label='站点名称'
-                                        required
-                                        fullWidth
-                                        size='small'
-                                        type='text'
-                                        variant='outlined'
-                                        placeholder='给它起个名字'
-                                        value={newSite.name}
-                                        onChange={handleSiteInputChange}
-                                    />
-                                </Box>
-                                    <Box sx={{ flex: 1 }}>
-                                        <TextField
-                                            id='site-url'
-                                            name='url'
-                                            label='站点URL'
-                                            required
-                                            fullWidth
-                                            size='small'
-                                            type='url'
-                                            variant='outlined'
-                                            placeholder='https://example.com'
-                                            value={newSite.url}
-                                            onChange={handleSiteInputChange}
-                                    InputProps={{
-                                        endAdornment: (
-                                            <InputAdornment position='end'>
-                                                <Tooltip title='抓取这个网站的标题和描述'>
-                                                    <span>
-                                                        <IconButton
-                                                            size='small'
-                                                            edge='end'
-                                                            onClick={
-                                                                handleFetchNewSiteMeta
-                                                            }
-                                                            disabled={
-                                                                !newSite.url ||
-                                                                fetchingMeta
-                                                            }
-                                                            aria-label='抓取站点标题和描述'
-                                                        >
-                                                            {fetchingMeta ? (
-                                                                <CircularProgress
-                                                                    size={16}
-                                                                />
-                                                            ) : (
-                                                                <CloudDownloadIcon fontSize='small' />
-                                                            )}
-                                                        </IconButton>
-                                                    </span>
-                                                </Tooltip>
-                                                {siteAi?.enabled ? (
-                                                    <Tooltip
-                                                        title={
-                                                            siteAi.ready
-                                                                ? "让 AI 根据链接补全名称与简介（会先把链接发给模型）"
-                                                                : (siteAi.reason ?? "AI 助手不可用")
-                                                        }
-                                                    >
-                                                        <span>
-                                                            <IconButton
-                                                                size='small'
-                                                                edge='end'
-                                                                aria-label='AI 补全名称与简介'
-                                                                disabled={
-                                                                    !siteAi.ready ||
-                                                                    aiBusyNew ||
-                                                                    !newSite.url
-                                                                }
-                                                                onClick={() =>
-                                                                    void handleAiCompleteNew()
-                                                                }
-                                                            >
-                                                                {aiBusyNew ? (
-                                                                    <CircularProgress
-                                                                        size={16}
-                                                                    />
-                                                                ) : (
-                                                                    <AutoAwesomeIcon fontSize='small' />
-                                                                )}
-                                                            </IconButton>
-                                                        </span>
-                                                    </Tooltip>
-                                                ) : null}
-                                            </InputAdornment>
-                                        ),
-                                    }}
-                                        />
-                                    </Box>
-                                </Box>
-
-                                {aiMessageNew ? (
-                                    <Typography
-                                        variant='caption'
-                                        color={aiMessageErrorNew ? "error" : "text.secondary"}
-                                        sx={{ display: "block", mt: -1 }}
-                                    >
-                                        {aiMessageNew}
-                                    </Typography>
-                                ) : null}
-
-                                {/* 图标 URL：紧跟站点 URL（它由链接推导而来），魔棒按钮放进输入框内，不再悬在外面 */}
-                                <TextField
-                                    id='site-icon'
-                                    name='icon'
-                                    label='图标URL'
-                                    InputLabelProps={{ shrink: true }}
-                                    fullWidth
-                                    size='small'
-                                    type='url'
-                                    variant='outlined'
-                                    placeholder='填好站点URL后自动生成'
-                                    value={newSite.icon}
-                                    onChange={handleSiteInputChange}
-                                    InputProps={{
-                                        endAdornment: (
-                                            <InputAdornment position='end'>
-                                                <Tooltip title='根据网站链接一键获取图标URL'>
-                                                    <span>
-                                                        <IconButton
-                                                            size='small'
-                                                            edge='end'
-                                                            onClick={handleFetchNewSiteIcon}
-                                                            disabled={!newSite.url}
-                                                            aria-label='根据网站链接获取图标URL'
-                                                        >
-                                                            <AutoFixHighIcon fontSize='small' />
-                                                        </IconButton>
-                                                    </span>
-                                                </Tooltip>
-                                            </InputAdornment>
-                                        ),
-                                    }}
-                                />
-
-                                {/* 站点描述 + 备注：两块说明文字挨在一起 */}
-                                <TextField
-                                    id='site-description'
-                                    name='description'
-                                    label='站点描述'
-                                    fullWidth
-                                    size='small'
-                                    type='text'
-                                    variant='outlined'
-                                    placeholder='一句话说明这个网站是干什么的'
-                                    value={newSite.description}
-                                    onChange={handleSiteInputChange}
-                                />
-
-                                <TextField
-                                    id='site-notes'
-                                    name='notes'
-                                    label='备注'
-                                    fullWidth
-                                    size='small'
-                                    multiline
-                                    rows={2}
-                                    variant='outlined'
-                                    placeholder='可选的私人备注'
-                                    value={newSite.notes}
-                                    onChange={handleSiteInputChange}
-                                />
-
-                                <Divider />
-
-                                {/* 登录凭据：可留空，所以放在最后 */}
-                                <Box>
-                                    <Box
-                                        sx={{
-                                            display: "flex",
-                                            alignItems: "baseline",
-                                            justifyContent: "space-between",
-                                            gap: 1,
-                                            flexWrap: "wrap",
-                                            mb: 1,
-                                        }}
-                                    >
-                                        <Typography variant='subtitle2' fontWeight='600'>
-                                            登录凭据
-                                        </Typography>
-                                        <Typography
-                                            variant='caption'
-                                            color='text.secondary'
-                                            sx={{ textAlign: "right", flex: "1 1 auto" }}
-                                        >
-                                            可留空，保存后能在卡片上一键复制。
-                                        </Typography>
-                                    </Box>
-                                    <Box
-                                        sx={{
-                                            display: "flex",
-                                            gap: 1.5,
-                                            flexDirection: { xs: "column", sm: "row" },
-                                        }}
-                                    >
-                                        <Box sx={{ flex: 1 }}>
-                                            <TextField
-                                                id='site-username'
-                                                // name 不叫 username：浏览器靠「名字 + 类型」
-                                                // 猜这是登录表单，叫了它就拿导航站自己的
-                                                // 登录凭据来填这里
-                                                name='site-account'
-                                                label='网站账号'
-                                                fullWidth
-                                                size='small'
-                                                type='text'
-                                                variant='outlined'
-                                                placeholder='登录用户名 / 邮箱（可留空）'
-                                                value={newSite.username || ""}
-                                                onChange={handleSiteInputChange}
-                                                autoComplete='off'
-                                                inputProps={{ ...SECRET_IGNORE_ATTRS }}
-                                            />
-                                        </Box>
-                                        <Box sx={{ flex: 1 }}>
-                                            <TextField
-                                                id='site-password'
-                                                // 不叫 password、更不写 autoComplete="new-password"
-                                                // —— 后者等于邀请浏览器「存一下？」，原先
-                                                // 「添加卡片弹保存密码」就是它招来的。
-                                                // 真正的办法是让浏览器认不出这是密码字段：
-                                                // type 换 text + CSS 遮蔽（utils/secretInput.ts）
-                                                name='site-secret'
-                                                label='网站密码'
-                                                fullWidth
-                                                size='small'
-                                                type={secretInputType(showNewSitePassword)}
-                                                sx={secretInputSx(showNewSitePassword)}
-                                                variant='outlined'
-                                                placeholder='登录密码（可留空）'
-                                                value={newSite.password || ""}
-                                                onChange={handleSiteInputChange}
-                                                autoComplete='off'
-                                                inputProps={{ ...SECRET_IGNORE_ATTRS }}
-                                                InputProps={{
-                                                    endAdornment: (
-                                                        <InputAdornment position='end'>
-                                                            <IconButton
-                                                                size='small'
-                                                                edge='end'
-                                                                onClick={() =>
-                                                                    setShowNewSitePassword(prev => !prev)
-                                                                }
-                                                                aria-label={
-                                                                    showNewSitePassword
-                                                                        ? "隐藏密码"
-                                                                        : "显示密码"
-                                                                }
-                                                            >
-                                                                {showNewSitePassword ? (
-                                                                    <VisibilityOffIcon fontSize='small' />
-                                                                ) : (
-                                                                    <VisibilityIcon fontSize='small' />
-                                                                )}
-                                                            </IconButton>
-                                                        </InputAdornment>
-                                                    ),
-                                                }}
-                                            />
-                                        </Box>
-                                    </Box>
-                                </Box>
-                            </Stack>
-                        </DialogContent>
-
-                        <DialogActions sx={{ px: 3, pb: 2.5, pt: 1, gap: 1.5 }}>
-                            <Button onClick={handleCloseAddSite} variant='outlined'>
-                                取消
-                            </Button>
-                            <Button
-                                onClick={handleCreateSite}
-                                variant='contained'
-                                color='primary'
-                                disabled={creatingSite}
-                            >
-                                {creatingSite ? "创建中…" : "创建"}
-                            </Button>
-                        </DialogActions>
-                    </Dialog>
-
+                    <AddSiteDialog
+                        open={openAddSite}
+                        onClose={handleCloseAddSite}
+                        site={newSite}
+                        onInputChange={handleSiteInputChange}
+                        showPassword={showNewSitePassword}
+                        onTogglePassword={setShowNewSitePassword}
+                        creating={creatingSite}
+                        fetchingMeta={fetchingMeta}
+                        onFetchMeta={handleFetchNewSiteMeta}
+                        onFetchIcon={handleFetchNewSiteIcon}
+                        onCreate={handleCreateSite}
+                        ai={siteAi}
+                        aiBusy={aiBusyNew}
+                        aiMessage={aiMessageNew}
+                        aiMessageError={aiMessageErrorNew}
+                        onAiComplete={handleAiCompleteNew}
+                    />
                     {/* 网站配置对话框 */}
                     {/* 全站设置：这一块原来内联在 App 里，抽成 SettingsDialog 单独维护 */}
                     <Suspense fallback={null}>
