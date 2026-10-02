@@ -822,19 +822,25 @@ for (const vp of VIEWPORTS) {
       };
       const rail = document.querySelector('.nav-group-rail');
       const bar = document.querySelector('.nav-mobile-tabbar');
+      // 900~1343.98px 这一档：左栏没有、底栏也没有，靠顶栏的「分组」按钮兜住
+      const groupsBtn = [...document.querySelectorAll('button')].find(
+          b => b.innerText.trim().startsWith('分组')
+      );
       return {
         rail: vis(rail),
         bar: vis(bar),
+        groups: vis(groupsBtn),
         // 诊断用：CI 真红了的时候，一眼看出是「断点没衔接上」还是「元素被 CSS 藏了」
         innerWidth: window.innerWidth,
         qRail: matchMedia('(min-width:1344px)').matches,
-        qBar: matchMedia('(max-width:1343.98px)').matches,
+        qBar: matchMedia('(max-width:899.98px)').matches,
+        qGroups: matchMedia('(min-width:900px) and (max-width:1343.98px)').matches,
         overflowX: document.documentElement.scrollWidth - window.innerWidth,
       };
     })()`);
     check(
-        `${vp.w}px 宽下仍有分组导航可用（左栏或底栏）`,
-        nav.rail || nav.bar,
+        `${vp.w}px 宽下仍有分组导航可用（左栏 / 底栏 / 顶栏分组按钮）`,
+        nav.rail || nav.bar || nav.groups,
         JSON.stringify(nav)
     );
     check(`${vp.w}px 宽下没有横向溢出`, nav.overflowX <= 2, `溢出 ${nav.overflowX}px`);

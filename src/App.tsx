@@ -75,6 +75,7 @@ import HeaderSearchBox from "./components/HeaderSearchBox";
 import HeaderActions from "./components/HeaderActions";
 import MoreMenu from "./components/MoreMenu";
 import DisplayControls from "./components/DisplayControls";
+import HeaderGroupsButton from "./components/HeaderGroupsButton";
 const SettingsDialog = lazy(() => import("./components/SettingsDialog"));
 // 账号管理（改账号密码 / 恢复密钥 / 邀请码 / 注销）：从「更多选项」进入，懒加载
 const AccountDialog = lazy(() => import("./components/AccountDialog"));
@@ -560,13 +561,22 @@ function App() {
         return () => window.removeEventListener("resize", onResize);
     }, []);
 
-    // 底栏退场（视口宽过 1344px）：只收掉挂在底栏按钮上的弹层，顶栏自己的别误伤
+    // 底栏退场（视口宽过 899.98px）：只收掉挂在底栏按钮上的弹层，顶栏自己的别误伤
     const handleExitMobileViewport = useCallback(() => {
         setMenuAnchorEl(prev =>
             prev && prev.closest(".nav-mobile-tabbar") ? null : prev
         );
         setMobileGroupsAnchor(prev =>
             prev && prev.closest(".nav-mobile-tabbar") ? null : prev
+        );
+    }, []);
+
+    // 顶栏「分组」按钮退场（视口离开 900~1343.98px）：这颗按钮只在那一档渲染，
+    // 菜单挂在它上面，按钮一卸载 anchor 就失效（MUI 会让菜单飘到左上角），
+    // 所以这里只收挂在这颗按钮上的那份，底栏那份归 handleExitMobileViewport 管。
+    const handleExitGroupsButtonViewport = useCallback(() => {
+        setMobileGroupsAnchor(prev =>
+            prev && !prev.closest(".nav-mobile-tabbar") ? null : prev
         );
     }, []);
 
@@ -2292,6 +2302,15 @@ function App() {
                                         }}
                                     />
                                     </Box>
+                                )}
+                                {/* 窄桌面（900~1343px）的分组入口：这一段左栏没有、底栏也没有 */}
+                                {sortMode === SortMode.None && (
+                                    <HeaderGroupsButton
+                                        onOpen={event => setMobileGroupsAnchor(event.currentTarget)}
+                                        open={Boolean(mobileGroupsAnchor)}
+                                        count={displayedGroups.length}
+                                        onExitViewport={handleExitGroupsButtonViewport}
+                                    />
                                 )}
                                 {/* 显示控制：星标 / 当前视图（点开是密度与主题）/ 多选。
                                     紧跟搜索：这几项都属于「当下怎么看这个列表」 */}

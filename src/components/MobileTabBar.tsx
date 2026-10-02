@@ -2,9 +2,9 @@
 // 底部胶囊导航：把最常用的操作（搜索 / 分组 / 新增 / 更多 / 星标）收到底部拇指区，
 // 顶部那一排按钮在窄屏上就不用挤在一起了。
 //
-// 显示时机：只要左侧分组栏（GroupNavRail，>=1344px 才显示）藏起来就出现，
-// 即视口 <=1343.98px——这样浏览器放大到 125%~200% 让有效视口落进 900~1343px 时，
-// 窄桌面窗口也有分组跳转入口，不会像原来那样「左栏没、底栏也没」断档。
+// 显示时机：<=899.98px，也就是真正的小屏。原来挂在「左栏藏起来就出现」（<=1343.98px），
+// 结果 900~1343px 的窄桌面窗口底部有一条底栏、顶部又有一整套按钮，同一个动作两处入口；
+// 那一档现在交给顶栏的「分组」按钮（HeaderGroupsButton），两边断点互补、不重叠。
 import { Box, Paper, Typography, useMediaQuery } from "@mui/material";
 import { useEffect } from "react";
 import type React from "react";
@@ -15,10 +15,9 @@ import MoreHorizIcon from "@mui/icons-material/MoreHoriz";
 import StarIcon from "@mui/icons-material/Star";
 import StarBorderIcon from "@mui/icons-material/StarBorder";
 
-// 与 GroupNavRail 的 SHOW_QUERY（min-width:1344px）正好互补：
-// 1344px 起左栏接管分组导航，1343.98px 及以下改由本底栏提供，
-// 取 .98 是为了吃掉 1343.5 这类亚像素宽度，避免两者都不显示。
-const TABBAR_SHOW_QUERY = "(max-width: 1343.98px)";
+// <=899.98px 才出现（.98 是为了吃掉 899.5 这类亚像素宽度）。
+// 900~1343.98px 由顶栏的「分组」按钮接管分组入口，>=1344px 由左栏接管。
+const TABBAR_SHOW_QUERY = "(max-width: 899.98px)";
 
 interface MobileTabBarProps {
     onSearch: () => void;

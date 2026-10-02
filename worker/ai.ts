@@ -78,6 +78,9 @@ async function callAi(
 
     const result = await safeFetch(target.url, {
         timeoutMs,
+        // 模型服务偶尔会 307 到就近节点，总预算给单跳之外的跳转留一点余量；
+        // 不写就按 max(timeoutMs, 15s) 走，正好卡死在单跳上限上
+        totalTimeoutMs: timeoutMs + 5_000,
         headers: authHeaders(settings),
         fetchInit: { method: "POST", body: JSON.stringify(body) },
     });

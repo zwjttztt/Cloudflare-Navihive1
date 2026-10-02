@@ -144,6 +144,122 @@ test("safeFetch 上游 4xx/5xx 返回 http 错误", async () => {
     }
 });
 
+// ---- 跨源重定向：凭据剥离 / 方法降级 ----
+// 这组是「出站请求安全专项」补的：以前 headers 与 fetchInit 原样透传到下一跳，
+// 一次 302 就能把给 A 站的 Authorization / Cookie 交给 B 站。
+interface RecordedCall {
+    url: string;
+    init?: RequestInit;
+}
+type MockSpec = { status: number; location?: string; body?: string; delayMs?: number };
+
+function makeRecordingFetcher(map: Map<string, MockSpec>) {
+    const calls: RecordedCall[] = [];
+    const fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input.toString();
+        calls.push({ url, init });
+        const spec = map.get(url);
+        if (!spec) throw new Error(`unexpected fetch: ${url}`);
+        if (spec.delayMs) await new Promise(r => setTimeout(r, spec.delayMs));
+        return new Response(spec.body ?? "", {
+            status: spec.status,
+            headers: spec.location ? { location: spec.location } : {},
+        });
+    };
+    return { fetch, calls };
+}
+
+async function withAsyncFetch<T>(
+    fetcher: { fetch: (i: RequestInfo | URL, init?: RequestInit) => Promise<Response> },
+    fn: () => Promise<T>
+): Promise<T> {
+    const orig = globalThis.fetch;
+    (globalThis as { fetch: typeof fetch }).fetch = fetcher.fetch as unknown as typeof fetch;
+    return fn().finally(() => {
+        (globalThis as { fetch: typeof fetch }).fetch = orig;
+    });
+}
+
+const headersOf = (init?: RequestInit) =>
+    (init?.headers ?? {}) as Record<string, string>;
+
+test("safeFetch 跨源重定向剥掉 Authorization / Cookie", async () => {
+    const { fetch: f, calls } = makeRecordingFetcher(
+        new Map([
+            ["https://a.com/", { status: 302, location: "https://b.com/next" }],
+            ["https://b.com/next", { status: 200, body: "ok" }],
+        ])
+    );
+    const r = await withAsyncFetch({ fetch: f }, () =>
+        safeFetch(new URL("https://a.com/"), {
+            headers: { Authorization: "Basic x", Cookie: "sid=1", Accept: "text/html" },
+        })
+    );
+    assert.equal(r.ok, true);
+    assert.equal(calls.length, 2);
+    // 第一跳照原样带凭据
+    assert.equal(headersOf(calls[0].init).Authorization, "Basic x");
+    // 第二跳跨到 b.com：凭据没了，普通头还在
+    const second = headersOf(calls[1].init);
+    assert.equal(second.Authorization, undefined);
+    assert.equal(second.Cookie, undefined);
+    assert.equal(second.Accept, "text/html");
+});
+
+test("safeFetch 跨源 302 把 POST 降级成 GET 且不带 body", async () => {
+    const { fetch: f, calls } = makeRecordingFetcher(
+        new Map([
+            ["https://a.com/", { status: 302, location: "https://b.com/next" }],
+            ["https://b.com/next", { status: 200, body: "ok" }],
+        ])
+    );
+    const r = await withAsyncFetch({ fetch: f }, () =>
+        safeFetch(new URL("https://a.com/"), {
+            fetchInit: { method: "POST", body: "secret=1" },
+        })
+    );
+    assert.equal(r.ok, true);
+    assert.equal(calls[0].init?.method, "POST");
+    assert.equal(calls[1].init?.method, "GET");
+    assert.equal(calls[1].init?.body, undefined);
+});
+
+test("safeFetch 同源重定向保留凭据（不误伤）", async () => {
+    const { fetch: f, calls } = makeRecordingFetcher(
+        new Map([
+            ["https://a.com/1", { status: 302, location: "/2" }],
+            ["https://a.com/2", { status: 200, body: "ok" }],
+        ])
+    );
+    const r = await withAsyncFetch({ fetch: f }, () =>
+        safeFetch(new URL("https://a.com/1"), {
+            headers: { Authorization: "Bearer t" },
+        })
+    );
+    assert.equal(r.ok, true);
+    assert.equal(headersOf(calls[1].init).Authorization, "Bearer t");
+});
+
+test("safeFetch 整段总超时：一串重定向不能把耗时叠加", async () => {
+    // 第一跳慢 130ms，总预算 100ms：第二跳进场时预算已经花光 → 不再发出。
+    // （mock fetch 不理会 signal，所以这里量的是「预算算得对不对」，不是真的中断连接）
+    const { fetch: f, calls } = makeRecordingFetcher(
+        new Map([
+            ["https://a.com/1", { status: 302, location: "https://a.com/2", delayMs: 130 }],
+            ["https://a.com/2", { status: 200, body: "ok" }],
+        ])
+    );
+    const r = await withAsyncFetch({ fetch: f }, () =>
+        safeFetch(new URL("https://a.com/1"), { totalTimeoutMs: 100 })
+    );
+    assert.equal(r.ok, false);
+    if (!r.ok) {
+        assert.equal(r.kind, "timeout");
+        assert.match(r.message, /整段/);
+    }
+    assert.equal(calls.length, 1, "第二跳不该再发出");
+});
+
 test("safeFetch 重定向缺少 Location 返回 redirect 错误", async () => {
     // 302 但没 location
     const map = new Map<string, { status: number }>();
