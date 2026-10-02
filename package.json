@@ -6,6 +6,9 @@
     "scripts": {
         "dev": "vite",
         "typecheck": "tsc -b",
+        "vue:dev": "vite --config vue/vite.config.ts",
+        "vue:typecheck": "vue-tsc -p vue/tsconfig.json --noEmit",
+        "vue:build": "vue-tsc -p vue/tsconfig.json --noEmit && vite build --config vue/vite.config.ts",
         "build": "tsc -b && vite build",
         "sync:brand": "node script/sync-brand.mjs",
         "check:brand": "node script/sync-brand.mjs --check",
@@ -27,9 +30,13 @@
         "@emotion/styled": "^11.14.0",
         "@mui/icons-material": "^7.3.11",
         "@mui/material": "^7.3.11",
+        "naive-ui": "^2.45.3",
+        "pinia": "^3.0.4",
         "pinyin-match": "^1.2.10",
         "react": "^19.0.0",
-        "react-dom": "^19.0.0"
+        "react-dom": "^19.0.0",
+        "vue": "^3.5.43",
+        "vue-router": "^4.6.4"
     },
     "devDependencies": {
         "@cloudflare/vite-plugin": "^1.62.2",
@@ -39,6 +46,7 @@
         "@types/react": "^19.0.10",
         "@types/react-dom": "^19.0.4",
         "@vitejs/plugin-react": "^4.3.4",
+        "@vitejs/plugin-vue": "^6.0.9",
         "esbuild": "^0.25.2",
         "eslint": "^9.21.0",
         "eslint-plugin-react-hooks": "^5.1.0",
@@ -48,6 +56,7 @@
         "typescript": "~5.9.3",
         "typescript-eslint": "^8.24.1",
         "vite": "^6.4.3",
+        "vue-tsc": "^2.2.12",
         "wrangler": "^4.144.0"
     }
 }

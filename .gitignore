@@ -10,6 +10,8 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+# Vue 迁移样板的产物（src 在 vue/，这里是打包结果）
+dist-vue
 *.local
 
 # Editor directories and files
