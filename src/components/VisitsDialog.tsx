@@ -17,7 +17,7 @@ import {
 } from "@mui/material";
 import CloseIcon from "@mui/icons-material/Close";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
-import { dayKey, useUIPrefsVisits } from "../context/UIPrefsContext";
+import { dayKey, useUIPrefsVisits } from "../context/uiPrefsStore";
 
 interface VisitsDialogProps {
     open: boolean;

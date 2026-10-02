@@ -85,7 +85,17 @@ export function useSiteSettings({
         setAuthCurrentPassword("");
         setAuthNewPassword("");
         setOpenConfig(true);
-    }, [onMenuClose, configs]);
+        // setter 与 configs 都列齐全：这里读到的每个值变化时都要重算，
+        // 而不是靠「setState 不会变」让 lint 闭嘴
+    }, [
+        onMenuClose,
+        configs,
+        setTempConfigs,
+        setAuthUsername,
+        setAuthCurrentPassword,
+        setAuthNewPassword,
+        setOpenConfig,
+    ]);
 
     // 修改管理员账号密码：需要验证当前密码，空白字段表示保持不变
     const submitAuthCredentials = async (): Promise<boolean> => {

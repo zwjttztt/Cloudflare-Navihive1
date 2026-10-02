@@ -17,7 +17,7 @@ import CheckBoxIcon from "@mui/icons-material/CheckBox";
 import CheckBoxOutlineBlankIcon from "@mui/icons-material/CheckBoxOutlineBlank";
 import StarIcon from "@mui/icons-material/Star";
 import StarBorderIcon from "@mui/icons-material/StarBorder";
-import type { Density, ViewMode } from "../context/UIPrefsContext";
+import type { Density, ViewMode } from "../context/uiPrefsStore";
 import { HEADER_CONTROL_H, HEADER_RADIUS } from "../constants";
 import ThemeToggle, { type ThemeMode } from "./ThemeToggle";
 

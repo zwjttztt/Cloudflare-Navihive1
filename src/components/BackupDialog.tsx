@@ -120,7 +120,7 @@ function formatCronErrorTime(iso: string): string {
 }
 
 /** 导入各阶段的中文名。阶段本身由服务端推进，这里只负责说人话 */
-export const IMPORT_STAGE_LABEL: Record<ImportProgress["stage"], string> = {
+const IMPORT_STAGE_LABEL: Record<ImportProgress["stage"], string> = {
     verify: "正在校验备份文件…",
     encrypt: "正在加密站点密码…",
     write: "正在写入数据…",

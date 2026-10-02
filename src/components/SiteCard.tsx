@@ -37,10 +37,10 @@ import KeyIcon from "@mui/icons-material/Key";
 import EditIcon from "@mui/icons-material/Edit";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import LinkOffIcon from "@mui/icons-material/LinkOff";
-import { useAppConfig } from "../context/AppConfigContext";
+import { useAppConfig } from "../context/appConfigStore";
 import { useNotify } from "../context/NotifyContext";
 import { canOpenSite, safeOpenSite } from "../utils/safeOpen";
-import { useUIPrefsPrefs, useUIPrefsStable } from "../context/UIPrefsContext";
+import { useUIPrefsPrefs, useUIPrefsStable } from "../context/uiPrefsStore";
 import { resolveIconApiUrl } from "../utils/iconApi";
 import {
     cacheIconBlob,

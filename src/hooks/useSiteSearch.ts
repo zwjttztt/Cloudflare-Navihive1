@@ -5,6 +5,7 @@ import {
     useCallback,
     useDeferredValue,
     useMemo,
+    useState,
     type Dispatch,
     type SetStateAction,
 } from "react";
@@ -12,8 +13,12 @@ import type { Site } from "../API/http";
 import type { GroupWithSites } from "../types";
 import type { TagMap } from "../utils/tagOps";
 import type { DeadLinks } from "../utils/linkHealth";
-import type { VisitStat } from "../context/UIPrefsContext";
-import { buildFavoritesGroup, deriveDisplayedGroups } from "../utils/siteView";
+import type { VisitStat } from "../context/uiPrefsStore";
+import {
+    buildFavoritesGroup,
+    deriveDisplayedGroups,
+    truncateSearchGroups,
+} from "../utils/siteView";
 import {
     hasAdvancedSyntax,
     matchesAdvanced,
@@ -143,6 +148,7 @@ export function useSiteSearch({
             .filter(group => group.sites.length > 0);
     }, [
         groups,
+        query,
         preparedQuery,
         usePinyin,
         searchIndex,
@@ -197,18 +203,23 @@ export function useSiteSearch({
     }, [semanticGroups, starFilter, deadOnly, activeTags, matchFilters]);
 
     // 一次性清掉星标 / 失效 / 标签三档筛选（空状态里的「清除筛选」用）
+    // 这三个都是 useState 的 setter，引用天生稳定 —— 列进依赖只是让 lint 说得清：
+    // 「这个闭包读到的东西都在依赖里」，而不是靠「反正 setState 不会变」这种心照不宣。
     const clearAllFilters = useCallback(() => {
         setStarFilter(false);
         setDeadOnly(false);
         setActiveTags([]);
-    }, []);
+    }, [setStarFilter, setDeadOnly, setActiveTags]);
 
     // 点标签：多选取交集，再点一次取消
-    const toggleActiveTag = useCallback((tag: string) => {
-        setActiveTags(prev =>
-            prev.includes(tag) ? prev.filter(item => item !== tag) : [...prev, tag]
-        );
-    }, []);
+    const toggleActiveTag = useCallback(
+        (tag: string) => {
+            setActiveTags(prev =>
+                prev.includes(tag) ? prev.filter(item => item !== tag) : [...prev, tag]
+            );
+        },
+        [setActiveTags]
+    );
 
     // 检出失效的链接条数：决定是否显示「只看失效」入口
     const deadCount = Object.keys(deadLinks).length;
@@ -221,19 +232,32 @@ export function useSiteSearch({
 
     // 命中太多时先只渲染一部分：几百张卡片一次性铺开会卡住输入（实测一次过滤 ~116ms），
     // 计数照常按真实命中数显示，只是不把它们全部挂到 DOM 上。
+    //
+    // 「先卡先后 meets 两个上限」：
+    //   - 每组最多 24 条：不让搜索结果里出现某个大分组铺满整页
+    //   - 全局最多 60 条：这才是真正的 DOM 上限。以前只对每组各截 24，
+    //     五个分组各命中 24 条就是 120 张卡，全局上限形同虚设。
     const SEARCH_PER_GROUP_LIMIT = 24;
     const SEARCH_TOTAL_LIMIT = 60;
     const searchTruncated = query ? matchedCount > SEARCH_TOTAL_LIMIT : false;
+
+    // 「显示全部」是**跟着关键词走**的：记的是展开时的那个 query，
+    // 换个关键词自动回到收起态（否则上一轮的展开会莫名其妙带进新搜索）。
+    // 它比起 useEffect 重置的好处是不会多一轮渲染，也不存在依赖写漏。
+    const [expandedQuery, setExpandedQuery] = useState<string | null>(null);
+    const searchExpanded = query !== "" && expandedQuery === query;
+    const expandAllResults = useCallback(() => setExpandedQuery(query), [query]);
+    const collapseAllResults = useCallback(() => setExpandedQuery(null), []);
+
     const renderGroups = useMemo(
         () =>
-            searchTruncated
-                ? visibleGroups.map(group =>
-                      group.sites.length > SEARCH_PER_GROUP_LIMIT
-                          ? { ...group, sites: group.sites.slice(0, SEARCH_PER_GROUP_LIMIT) }
-                          : group
-                  )
-                : visibleGroups,
-        [visibleGroups, searchTruncated]
+            truncateSearchGroups(
+                visibleGroups,
+                SEARCH_TOTAL_LIMIT,
+                SEARCH_PER_GROUP_LIMIT,
+                !searchTruncated || searchExpanded
+            ),
+        [visibleGroups, searchTruncated, searchExpanded]
     );
     // 「当前分组」：左侧栏选中的那个；没选中就取第一个可见分组。
     // 数字键 1~9 打开的就是这个分组里的第 N 张卡片。
@@ -318,6 +342,9 @@ export function useSiteSearch({
         deadCount,
         matchedCount,
         searchTruncated,
+        searchExpanded,
+        expandAllResults,
+        collapseAllResults,
         currentGroupSites,
         reduceEntryAnimation,
         renderedCount,

@@ -31,7 +31,7 @@ import ExpandLessIcon from "@mui/icons-material/ExpandLess";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import ArrowForwardIcon from "@mui/icons-material/ArrowForward";
 import EmptyArt from "./EmptyArt";
-import { useUIPrefsPrefs, useUIPrefsStable } from "../context/UIPrefsContext";
+import { useUIPrefsPrefs, useUIPrefsStable } from "../context/uiPrefsStore";
 import DeleteSweepIcon from "@mui/icons-material/DeleteSweep";
 import {
     COLLAPSED_EVENT,

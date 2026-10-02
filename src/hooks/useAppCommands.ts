@@ -12,7 +12,7 @@ import { useMemo } from "react";
 import type { CommandItem } from "../components/CommandPalette";
 import type { GroupWithSites } from "../types";
 // 只取类型：编译期擦掉，不会把 UIPrefsContext（含 Provider 与 localStorage 读写）拖进包里
-import type { Density, ViewMode } from "../context/UIPrefsContext";
+import type { Density, ViewMode } from "../context/uiPrefsStore";
 import { safeOpenSite } from "../utils/safeOpen";
 
 /** 命令面板需要的那几个动作。App 逐个传进来，这里不反向依赖 App */

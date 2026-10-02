@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import SettingsDialog from "../src/components/SettingsDialog";
-import type { FontScale, RadiusStyle } from "../src/context/UIPrefsContext";
+import type { FontScale, RadiusStyle } from "../src/context/uiPrefsStore";
 
 if (typeof globalThis.localStorage === "undefined") {
     Object.defineProperty(globalThis, "localStorage", {

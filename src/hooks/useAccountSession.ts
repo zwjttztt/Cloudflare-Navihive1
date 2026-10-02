@@ -192,7 +192,7 @@ export function useAccountSession({
             disableDays: disableDays > 0 ? disableDays : INACTIVE_DISABLE_DAYS_DEFAULT,
             graceDays: graceDays > 0 ? graceDays : INACTIVE_DELETE_GRACE_DAYS_DEFAULT,
         });
-    }, [currentUser?.role]);
+    }, [api, currentUser?.role]);
 
     /**
      * 保存沉睡治理阈值。这两个键属于全站配置，服务端只放 owner 写
@@ -216,7 +216,7 @@ export function useAccountSession({
                 };
             }
         },
-        [fetchAccountList]
+        [api, fetchAccountList]
     );
 
     /** 重新启用某个账号 = 给它豁免沉睡治理（服务端会顺带把活跃时间刷成现在） */
@@ -280,7 +280,7 @@ export function useAccountSession({
         } catch {
             // 拉不到就当没有：界面上那一段直接不显示，不打扰正常功能
         }
-    }, [isAuthenticated]);
+    }, [api, isAuthenticated]);
 
     /** 把某一台设备踢下线（只吊销那张令牌，别的设备不受影响） */
     const handleRevokeSession = useCallback(
@@ -300,7 +300,7 @@ export function useAccountSession({
                 );
             }
         },
-        [fetchSessions, notify]
+        [api, fetchSessions, notify]
     );
 
     /** 退出其它设备：除当前这台之外全部吊销 */
@@ -316,7 +316,7 @@ export function useAccountSession({
         } catch (error) {
             notify("操作失败：" + (error instanceof Error ? error.message : "未知错误"), "error");
         }
-    }, [fetchSessions, notify]);
+    }, [api, fetchSessions, notify]);
 
     /** 注销账号：确认密码 → 服务端删号删数据 → 本地回到登录页 */
     const handleDeleteAccount = async (): Promise<{ success: boolean; message?: string }> => {

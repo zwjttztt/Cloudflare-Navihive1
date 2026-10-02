@@ -16,7 +16,6 @@ import type { AiAssistant } from "../hooks/useAiAssistant";
 import BulkActionBar from "./BulkActionBar";
 import ConfirmDialog from "./ConfirmDialog";
 import TagManagerDialog from "./TagManagerDialog";
-import { SortMode } from "../constants";
 import type { GroupWithSites } from "../types";
 import type { DuplicateHit } from "../utils/duplicate";
 import type { ParsedBookmarkGroup } from "../utils/bookmarks";
@@ -285,7 +284,3 @@ export default function OverlayHost({
         </>
     );
 }
-
-/** 让调用方少写一遍：批量操作条只在多选且非排序模式时挂载 */
-export const bulkBarVisible = (multiSelect: boolean, sortMode: SortMode) =>
-    multiSelect && sortMode === SortMode.None;

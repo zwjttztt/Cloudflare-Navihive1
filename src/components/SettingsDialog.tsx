@@ -36,7 +36,7 @@ import {
     INACTIVE_DISABLE_DAYS_DEFAULT,
     INACTIVE_DELETE_GRACE_DAYS_DEFAULT,
 } from "../API/http";
-import type { FontScale, RadiusStyle } from "../context/UIPrefsContext";
+import type { FontScale, RadiusStyle } from "../context/uiPrefsStore";
 
 // 内置壁纸预设：既可以是渐变（直接作为 CSS background-image），也可以留空表示不用
 const WALLPAPER_PRESETS = [

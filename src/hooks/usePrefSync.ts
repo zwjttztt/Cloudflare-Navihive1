@@ -13,8 +13,8 @@
 import { useEffect, useRef, type MutableRefObject } from "react";
 
 import type { NavigationClient } from "../API/client";
-import type { VisitStat } from "../context/UIPrefsContext";
-import { onLocalPrefsChange } from "../context/UIPrefsContext";
+import type { VisitStat } from "../context/uiPrefsStore";
+import { onLocalPrefsChange } from "../context/uiPrefsStore";
 import { exportLinkHealth, onLinkHealthChange } from "../utils/linkHealth";
 import {
     LINK_HEALTH_CONFIG,

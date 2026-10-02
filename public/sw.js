@@ -27,6 +27,8 @@ const MAX_ICON_ENTRIES = 120;
 const MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 /** 一张图最多缓存多大：动图 / 异常大图不进缓存 */
 const MAX_CACHE_BYTES = 2 * 1024 * 1024;
+/** 超龄图标扫描的最小间隔：别每次命中缓存都去遍历一遍 Cache Storage */
+const STALE_SWEEP_INTERVAL_MS = 60 * 1000;
 
 let cacheNamePromise = null;
 
@@ -70,11 +72,22 @@ const isIconRequest = req =>
 /**
  * 缓存整理：条目数超限 / 跨域图标超龄时回收最旧的。
  * 只在写缓存之后顺手跑一次，不做定时器 —— SW 随时可能被杀掉，定时器靠不住。
+ *
+ * ⚠️ 以前这里上来就是 `if (keys.length <= MAX_ENTRIES) return`：
+ * 只要总条目没超过 300，哪怕图标已经堆到 200 条也不会走到下面的图标配额，
+ * `MAX_ICON_ENTRIES` 形同虚设。现在两类配额各自独立判 —— 互不遮挡。
  */
 async function trimCache(cache) {
     try {
         const keys = await cache.keys();
-        if (keys.length <= MAX_ENTRIES) return;
+        if (keys.length <= MAX_ENTRIES) {
+            // 图标配额是独立的一条限制：总数没超，图标也可能早已堆过头
+            const iconKeys = keys.filter(isIconRequest);
+            if (iconKeys.length <= MAX_ICON_ENTRIES) return;
+            const dropIcons = iconKeys.slice(0, iconKeys.length - MAX_ICON_ENTRIES);
+            await Promise.all(dropIcons.map(req => cache.delete(req)));
+            return;
+        }
 
         // 按「加入顺序」淘汰：Cache Storage 的 keys() 天然是插入序，
         // 但为了保险还是按 url 分组，图标单独走更严的配额。
@@ -98,11 +111,24 @@ async function trimCache(cache) {
     }
 }
 
-/** 超龄的跨域图标单独清一遍（时间维度，数量没超也可能该清了） */
+/**
+ * 超龄的跨域图标单独清一遍（时间维度，数量没超也可能该清了）。
+ *
+ * 调用点要覆盖多条路径，漏一条都会积灰：以前只在「缓存 miss → 写入」那条路上跑，
+ * 于是天天命中的那些图标永远等不到清理 —— 常访问的站点反而一直挂着陈图。
+ *
+ * 加了节流：每次都全量遍历 Cache Storage 在读多写少的场景里纯属浪费
+ * （keys() 之后还要逐个 match() 才能读到时间戳，全是 I/O）。
+ */
+let lastStaleSweepAt = 0;
 async function trimStaleIcons(cache) {
     try {
+        const now = Date.now();
+        if (now - lastStaleSweepAt < STALE_SWEEP_INTERVAL_MS) return;
+        lastStaleSweepAt = now;
+
         const keys = await cache.keys();
-        const deadline = Date.now() - MAX_AGE_MS;
+        const deadline = now - MAX_AGE_MS;
         const stale = [];
         for (const req of keys) {
             if (!isIconRequest(req)) continue;
@@ -261,7 +287,11 @@ self.addEventListener("fetch", event => {
                                                 cache,
                                                 req,
                                                 res.clone()
-                                            ).then(() => trimCache(cache));
+                                            )
+                                                .then(() => trimCache(cache))
+                                                // 命中路径也要走超龄回收：老图标被反复命中时，
+                                                // miss 那条路永远轮不到它们
+                                                .then(() => trimStaleIcons(cache));
                                         }
                                     })
                                     .catch(() => {})

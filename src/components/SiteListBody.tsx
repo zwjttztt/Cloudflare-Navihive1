@@ -15,7 +15,7 @@ import { SortableContext, verticalListSortingStrategy } from "@dnd-kit/sortable"
 import { SortMode } from "../constants";
 import type { Group, Site } from "../API/http";
 import type { GroupWithSites } from "../types";
-import type { Density } from "../context/UIPrefsContext";
+import type { Density } from "../context/uiPrefsStore";
 import SortableGroupItem from "./SortableGroupItem";
 import GroupCard from "./GroupCard";
 import SiteCard from "./SiteCard";

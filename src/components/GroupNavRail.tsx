@@ -10,7 +10,7 @@ import UnfoldLessIcon from "@mui/icons-material/UnfoldLess";
 import UnfoldMoreIcon from "@mui/icons-material/UnfoldMore";
 import ChevronLeftIcon from "@mui/icons-material/ChevronLeft";
 import ChevronRightIcon from "@mui/icons-material/ChevronRight";
-import { useUIPrefsStable } from "../context/UIPrefsContext";
+import { useUIPrefsStable } from "../context/uiPrefsStore";
 
 export interface RailGroup {
     id: number;

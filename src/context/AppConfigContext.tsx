@@ -1,30 +1,11 @@
 // src/context/AppConfigContext.tsx
-// 把「网站设置」里的全局配置（图标 API、背景图等）透传给深层组件，
-// 避免 App -> GroupCard -> SiteCard -> SiteSettingsModal 一层层往下传 props
-import { createContext, useContext } from "react";
-
-export interface AppConfigContextValue {
-    /** 图标 API 模板，含 {domain} 占位符 */
-    iconApi: string;
-    /** 站点缩略图 API 模板，留空表示不启用缩略图 */
-    thumbApi: string;
-    /** 背景图片 URL，空字符串表示不使用 */
-    backgroundImage: string;
-    /** 背景蒙版透明度 0~1 */
-    backgroundMaskOpacity: string;
-}
-
-const defaultValue: AppConfigContextValue = {
-    iconApi: "",
-    thumbApi: "",
-    backgroundImage: "",
-    backgroundMaskOpacity: "0.15",
-};
-
-const AppConfigContext = createContext<AppConfigContextValue>(defaultValue);
+// 「网站设置」全局配置的 Provider：把配置透传给深层组件，
+// 避免 App -> GroupCard -> SiteCard -> SiteSettingsModal 一层层往下传 props。
+//
+// 这个文件**只导出组件**。Context 对象、默认值、useAppConfig 都在 ./appConfigStore.ts，
+// 要取配置的组件请从那边引（连带拉进 Provider 组件会绕开这次拆分，也会让热更新降级）。
+import { AppConfigContext } from "./appConfigStore";
 
 export const AppConfigProvider = AppConfigContext.Provider;
-
-export const useAppConfig = () => useContext(AppConfigContext);
 
 export default AppConfigContext;

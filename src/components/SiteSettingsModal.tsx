@@ -29,7 +29,7 @@ import {
 } from "@mui/material";
 import StarIcon from "@mui/icons-material/Star";
 import StarBorderIcon from "@mui/icons-material/StarBorder";
-import { useUIPrefsPrefs, useUIPrefsStable } from "../context/UIPrefsContext";
+import { useUIPrefsPrefs, useUIPrefsStable } from "../context/uiPrefsStore";
 import CloseIcon from "@mui/icons-material/Close";
 import DeleteIcon from "@mui/icons-material/Delete";
 import SaveIcon from "@mui/icons-material/Save";
@@ -43,7 +43,7 @@ import { useSiteAi } from "../context/AiContext";
 import { copyToClipboard } from "../utils/clipboard";
 import { resolveIconApiUrl } from "../utils/iconApi";
 import { pickExistingTags, pickRecommendedTags } from "../utils/tagSuggest";
-import { useAppConfig } from "../context/AppConfigContext";
+import { useAppConfig } from "../context/appConfigStore";
 import {
     formDataKey,
     secretInputSx,

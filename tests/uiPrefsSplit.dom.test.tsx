@@ -11,12 +11,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { UIPrefsProvider } from "../src/context/UIPrefsContext";
+// Provider 之外的东西都住在 uiPrefsStore：那边现在是纯数据模块，不含组件
 import {
-    UIPrefsProvider,
     useUIPrefsPrefs,
     useUIPrefsStable,
     useUIPrefsVisits,
-} from "../src/context/UIPrefsContext";
+} from "../src/context/uiPrefsStore";
 
 if (typeof globalThis.localStorage === "undefined") {
     Object.defineProperty(globalThis, "localStorage", {

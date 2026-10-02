@@ -13,10 +13,8 @@ import type { ReactElement } from "react";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import SiteSettingsModal from "../src/components/SiteSettingsModal";
-import {
-    AppConfigProvider,
-    type AppConfigContextValue,
-} from "../src/context/AppConfigContext";
+import { AppConfigProvider } from "../src/context/AppConfigContext";
+import type { AppConfigContextValue } from "../src/context/appConfigStore";
 import { UIPrefsProvider } from "../src/context/UIPrefsContext";
 import type { Site } from "../src/API/http";
 

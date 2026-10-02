@@ -7,6 +7,7 @@ import {
     useCallback,
     lazy,
     Suspense,
+    type SetStateAction,
 } from "react";
 import { NavigationClient } from "./API/client";
 import { MockNavigationClient } from "./API/mock";
@@ -22,7 +23,7 @@ import { GroupWithSites } from "./types";
 import type { TagMap } from "./utils/tagOps";
 import { AppConfigProvider } from "./context/AppConfigContext";
 import { NotifyContext } from "./context/NotifyContext";
-import { useUIPrefs, RADIUS_PX } from "./context/UIPrefsContext";
+import { useUIPrefs, RADIUS_PX } from "./context/uiPrefsStore";
 import GroupNavRail from "./components/GroupNavRail";
 // 弹窗/面板类组件按需加载：首屏用不到它们，拆出去能让主包小一大截
 // （命令面板与书签导入已随 OverlayHost 一起搬走；命令条目的类型跟着
@@ -193,9 +194,10 @@ function App() {
         onRemoteExtras: applyRemoteExtras,
         onError: (msg) => handleError(msg),
         onAuthFail: () => {
-            api.logout();
+            // 只有登录过的人才需要吊销会话；没登录过的那次 401 本来就是正常答复
+            if (hadSessionRef.current) api.logout();
             setIsAuthRequired(true);
-            setIsAuthenticated(false);
+            setIsAuthenticatedTracked(false);
         },
     });
 
@@ -261,6 +263,17 @@ function App() {
     // 新增认证状态（这两个开关留在 App：useSites 的鉴权失败回调比账号 hook 更早用到它们的 setter）
     const [isAuthRequired, setIsAuthRequired] = useState(false);
     const [isAuthenticated, setIsAuthenticated] = useState(false);
+
+    // 「这一轮会话里到底有没有登录过」。
+    // 鉴权失败时（bootstrap 401）要调 logout 把服务端会话吊销 —— 但从未登录过的访客
+    // 打开页面同样是 401，这时候去 logout 只会给我们自己再制造一条 401：
+    // 浏览器控制台上三条红色报错里有两条就是这么来的，看起来像崩了，其实只是没登录。
+    const hadSessionRef = useRef(false);
+    const setIsAuthenticatedTracked = (value: SetStateAction<boolean>) => {
+        // 没法从 updater 里判断登录态，但函数式更新必然发生在「当前已登录」的前提下
+        if (value !== false) hadSessionRef.current = true;
+        setIsAuthenticated(value);
+    };
 
 
     // 配置状态
@@ -653,7 +666,7 @@ function App() {
         setGroups,
         setPrefsAccountUid,
         isAuthenticated,
-        setIsAuthenticated,
+        setIsAuthenticated: setIsAuthenticatedTracked,
         setIsAuthRequired,
     });
 
@@ -719,6 +732,24 @@ function App() {
     // 文档标题 / 自定义 CSS / 根节点 class / 主色与毛玻璃变量：
     // 一串纯 DOM 副作用（不改 React 树），搬到 hooks/useDocumentEffects.ts
     useDocumentEffects({ configs, darkMode, accent, glassEffects, liteMode });
+
+    // 系统开了「减少动效」时，主动说一句清爽模式的存在。
+    //
+    // 只在「系统要求减动效 + 自己还没开清爽模式 + 从没提醒过」时说一次：
+    // 这块-reactive CSS 已经帮他们把动画降下来了，但毛玻璃、头像模糊这些合成开销
+    // 还得靠清爽模式才能省掉 —— 而那个开关埋在设置深处，不提一句多数人永远不会发现。
+    useEffect(() => {
+        try {
+            if (typeof window.matchMedia !== "function") return;
+            if (!window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+            if (liteMode) return;
+            if (localStorage.getItem("navihive:hintedLiteMode") === "1") return;
+            localStorage.setItem("navihive:hintedLiteMode", "1");
+            notify("检测到系统偏好「减少动效」，可在设置里开启清爽模式省电", "info", 8000);
+        } catch {
+            // 隐私模式下 localStorage 写不进去，提示没出现也不影响使用
+        }
+    }, [liteMode, notify]);
 
     // PWA：把浏览器给的安装机会存下来，用户点「安装到桌面」时才弹原生安装框
     const { canInstall, promptInstall } = usePwaInstall();
@@ -1655,6 +1686,9 @@ function App() {
         deadCount,
         matchedCount,
         searchTruncated,
+        searchExpanded,
+        expandAllResults,
+        collapseAllResults,
         currentGroupSites,
         reduceEntryAnimation,
         renderedCount,
@@ -2342,21 +2376,48 @@ function App() {
                     {/* 结果计数：搜索框在上方标题栏里，这里只保留一行轻提示 */}
                     {sortMode === SortMode.None &&
                         (query || starFilter || deadOnly || activeTags.length > 0) && (
-                            <Typography
-                                variant='caption'
-                                color='text.secondary'
-                                // 结果数变了要念出来：读屏用户看不到「列表变短了」
-                                component='div'
-                                role='status'
-                                aria-live='polite'
-                                aria-atomic='true'
-                                sx={{ display: "block", mt: -2, mb: 3 }}
+                            <Box
+                                sx={{
+                                    display: "flex",
+                                    alignItems: "center",
+                                    gap: 1,
+                                    flexWrap: "wrap",
+                                    mt: -2,
+                                    mb: 3,
+                                }}
                             >
-                                找到 {matchedCount} 个匹配的网站
-                                {searchTruncated
-                                    ? `，先显示前 ${renderedCount} 个，继续输入可以缩小范围`
-                                    : ""}
-                            </Typography>
+                                <Typography
+                                    variant='caption'
+                                    color='text.secondary'
+                                    // 结果数变了要念出来：读屏用户看不到「列表变短了」
+                                    component='div'
+                                    role='status'
+                                    aria-live='polite'
+                                    aria-atomic='true'
+                                    sx={{ display: "block" }}
+                                >
+                                    找到 {matchedCount} 个匹配的网站
+                                    {searchTruncated ? `，先显示前 ${renderedCount} 个` : ""}
+                                </Typography>
+                                {/* 渲染有上限，但用户有权一次看全：给个明确的出口，
+                                    而不是让他继续输入去猜该怎么写关键词 */}
+                                {searchTruncated && (
+                                    <Button
+                                        size='small'
+                                        onClick={
+                                            searchExpanded
+                                                ? collapseAllResults
+                                                : expandAllResults
+                                        }
+                                    >
+                                        {searchExpanded
+                                            ? "收起结果"
+                                            : `显示更多（还有 ${
+                                                  matchedCount - renderedCount
+                                              } 个）`}
+                                    </Button>
+                                )}
+                            </Box>
                         )}
 
                     {/* 语法写错了要说出来：is:deleted 这种条件如果不点名，

@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { mergeVisitStats, type VisitStat } from "../src/context/UIPrefsContext";
+import { mergeVisitStats, type VisitStat } from "../src/context/uiPrefsStore";
 
 test("mergeVisitStats：有同步基线时，把本机新增的次数加到服务端那份上", () => {
     // 手机点了 8 次（服务端那份），电脑这边上次同步时是 5 次、现在又点了 2 次
