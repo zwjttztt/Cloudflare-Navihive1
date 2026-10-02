@@ -1,0 +1,44 @@
+# 手动触发的部署流水线 —— 只在点击「Run workflow」时跑，不挂在 push 上。
+#
+# 为什么要单独一份：Workers Builds（Cloudflare 侧的 GitHub 自动构建）在 2026-10-02 起
+# 报 "The build token selected for this build has been deleted or rolled"，
+# 也就是它存的构建令牌失效了，推送不再自动部署。那条要在 Cloudflare Dashboard 里修，
+# 仓库这边改不了。这份流水线让部署重新掌握在自己手里，不依赖那个令牌。
+#
+# 使用方法（一次性准备）：
+#   1. 生成 Cloudflare API Token（Workers 模板，含「编辑 Cloudflare Workers」权限）
+#   2. 到 GitHub 仓库 Settings → Secrets and variables → Actions → New repository secret
+#      名字填 CLOUDFLARE_API_TOKEN，值为刚才的令牌
+#   3. Actions 页选中本流水线，点 Run workflow
+#
+# 注意：Worker 名必须与 Cloudflare dashboard 上的完全一致（cloudflare-navihive1），
+# 否则会因 WRANGLER_CI_OVERRIDE_NAME 校验失败。
+name: Deploy
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # npm run build = tsc -b && vite build，类型错误会在这里直接拦下
+      - name: Type check and build
+        run: npm run build
+
+      # 跑的是 npx wrangler deploy：@cloudflare/vite-plugin 会把重定向后的配置
+      # 生成到 dist/cloudflare_navihive1/wrangler.json，不指定 --config 才能读到它。
+      - name: Deploy to Cloudflare Workers
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: npx wrangler deploy
