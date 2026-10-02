@@ -1,4 +1,4 @@
-# 部署流水线 —— push 到 main 自动部署，也支持手动触发。
+# 部署流水线 —— 目前只支持手动触发（push 自动部署已停用，见下面 on: 的说明）。
 #
 # 为什么要单独一份：Workers Builds（Cloudflare 侧的 GitHub 自动构建）在 2026-10-02 起
 # 报 "The build token selected for this build has been deleted or rolled"，
@@ -6,16 +6,17 @@
 # 仓库这边改不了。这份流水线让部署重新掌握在自己手里，不依赖那个令牌。
 #
 # 触发方式：
-#   - push 到 main：自动部署（配好 CLOUDFLARE_API_TOKEN 后已启用）
-#   - workflow_dispatch：Actions 页手动点 Run workflow
+#   - workflow_dispatch：Actions 页手动点 Run workflow（当前唯一入口）
+#   - push 到 main：2026-10-02 13:52 起停用。原因是仓库的 CLOUDFLARE_API_TOKEN
+#     secret 被清掉了（Secrets 数量变成 0），留着 push 触发会让每次推送都红一次。
+#     要恢复：先到 Settings → Secrets → Actions 重新配好 secret，再把下面两行解注释。
 #
-# ⚠️ 停用自动部署前请先把下面的 push 触发器注掉，不要删整个文件 ——
-#    删了 secret 却留着 push 触发，会让每次推送都变红。
+# ⚠️ 启用 push 触发前务必先确认 secret 存在，否则每次推送都会失败一次。
 name: Deploy
 
 on:
-  push:
-    branches: [main]
+  # push:
+  #   branches: [main]
   workflow_dispatch:
 
 jobs:
