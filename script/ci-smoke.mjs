@@ -527,9 +527,10 @@ check("Tab 到搜索框时有焦点环", sawSearchRing && !focusRingLost, focusR
 //     （用户看到的「分组名称四个字与边框重叠」）。这类输入框的焦点指示由 MUI 的
 //     「边框 1px 灰 → 2px 主色」承担，这里同时守住「没有环」和「仍有可见指示」两件事。
 const groupBtn = await evaluate(`(() => {
-  const b = [...document.querySelectorAll('button')].find(el => el.innerText.includes('新增分组'));
-  if (!b) return null;
-  const r = b.getBoundingClientRect();
+  // 「新增分组」在「新增」的下拉里：先定位下拉箭头
+  const arrow = document.querySelector('button[aria-label="更多新增选项"]');
+  if (!arrow) return null;
+  const r = arrow.getBoundingClientRect();
   return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
 })()`);
 if (!groupBtn) {
@@ -545,6 +546,16 @@ if (!groupBtn) {
             clickCount: 1,
         });
         await sleep(60);
+    }
+    await sleep(900);
+    // 下拉打开后点菜单项「新增分组」，弹窗里才有带 label 的输入框
+    const opened = await evaluate(`(() => {
+      const it = [...document.querySelectorAll('.MuiMenuItem-root')].find(i => i.innerText.trim() === '新增分组');
+      if (it) it.click();
+      return !!it;
+    })()`);
+    if (!opened) {
+        check("找得到「新增分组」按钮", false, "下拉里没有新增分组");
     }
     await sleep(900);
     const field = await evaluate(`(() => {

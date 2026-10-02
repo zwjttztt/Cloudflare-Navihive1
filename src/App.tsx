@@ -69,7 +69,7 @@ import { backgroundMaskOpacity as backgroundMaskOpacityFromSlider } from "./util
 import { brandTitle } from "./brand";
 import {
     SortMode,
-    headerDividerSx,
+    headerSearchSlotSx,
 } from "./constants";
 import HeaderSearchBox from "./components/HeaderSearchBox";
 import HeaderActions from "./components/HeaderActions";
@@ -1951,6 +1951,17 @@ function App() {
         clearVisits,
     });
 
+    // 顶栏 / 底栏的「新增」主按钮：默认开「新增网站」，挂到第一个分组下；
+    // 一个分组都还没有时，退回到「新增分组」——不然点了没反应。
+    const handleQuickAdd = useCallback(() => {
+        const first = groups.find(g => g.id !== undefined);
+        if (first) {
+            handleOpenAddSite(first.id as number);
+            return;
+        }
+        handleOpenAddGroup();
+    }, [groups, handleOpenAddSite, handleOpenAddGroup]);
+
     // 方向键在卡片之间移动焦点（按几何位置找同行/同列的邻居）
     const focusCardByDirection = (dir: "left" | "right" | "up" | "down") =>
         focusCardByDirectionImpl(dir, domCardEnv());
@@ -2248,9 +2259,11 @@ function App() {
                     <SiteListHeader
                         siteName={configs["site.name"]}
                         headerCompact={headerCompact}
+                        clock={<HeaderClock />}
                         actions={
                             <>
                                 {sortMode === SortMode.None && (
+                                    <Box className='nav-header-search' sx={headerSearchSlotSx}>
                                     <HeaderSearchBox
                                         searchInputRef={searchInputRef}
                                         searchPanelRef={searchPanelRef}
@@ -2278,16 +2291,31 @@ function App() {
                                             busy: semanticBusy,
                                         }}
                                     />
+                                    </Box>
                                 )}
-                                {/* 搜索是「找东西」，右侧是「改数据 / 改显示」，中间用竖线分开 */}
+                                {/* 显示控制：星标 / 当前视图（点开是密度与主题）/ 多选。
+                                    紧跟搜索：这几项都属于「当下怎么看这个列表」 */}
                                 {sortMode === SortMode.None && (
-                                    <Box aria-hidden sx={headerDividerSx} className='nav-header-divider' />
+                                    <DisplayControls
+                                        viewMode={viewMode}
+                                        setViewMode={setViewMode}
+                                        density={density}
+                                        setDensity={setDensity}
+                                        multiSelect={multiSelect}
+                                        setMultiSelect={setMultiSelect}
+                                        exitMultiSelect={exitMultiSelect}
+                                        starFilter={starFilter}
+                                        setStarFilter={setStarFilter}
+                                        themeMode={themeMode}
+                                        onToggleTheme={toggleTheme}
+                                    />
                                 )}
                                 <HeaderActions
                                     sortMode={sortMode}
                                     onSaveGroupOrder={handleSaveGroupOrder}
                                     onSaveSiteSort={handleSaveSiteSort}
                                     onCancelSort={cancelSort}
+                                    onQuickAdd={handleQuickAdd}
                                     onOpenAddGroup={handleOpenAddGroup}
                                     onMenuOpen={handleMenuOpen}
                                     menuOpen={openMenu}
@@ -2328,29 +2356,6 @@ function App() {
                                         />
                                     }
                                 />
-                                {/* 操作按钮与显示控制之间再分一次组 */}
-                                {sortMode === SortMode.None && (
-                                    <Box aria-hidden sx={headerDividerSx} className='nav-header-divider' />
-                                )}
-                                {/* 显示控制：视图版式 + 显示密度合成一块玻璃胶囊，中间一条细线分开 */}
-                                {sortMode === SortMode.None && (
-                                    <DisplayControls
-                                        viewMode={viewMode}
-                                        setViewMode={setViewMode}
-                                        density={density}
-                                        setDensity={setDensity}
-                                        multiSelect={multiSelect}
-                                        setMultiSelect={setMultiSelect}
-                                        exitMultiSelect={exitMultiSelect}
-                                        starFilter={starFilter}
-                                        setStarFilter={setStarFilter}
-                                        themeMode={themeMode}
-                                        onToggleTheme={toggleTheme}
-                                    />
-                                )}
-                                {/* 时钟自己归成「状态区」，和左侧操作按钮用竖线隔开。 */}
-                                <Box aria-hidden sx={headerDividerSx} className='nav-header-divider' />
-                                <HeaderClock />
                             </>
                         }
                     />
@@ -2742,7 +2747,8 @@ function App() {
                             window.scrollTo({ top: 0, behavior: "smooth" });
                         },
                         onGroups: event => setMobileGroupsAnchor(event.currentTarget),
-                        onAdd: handleOpenAddGroup,
+                        // 和顶栏主按钮同一个动作：默认新增网站，没分组时才去建分组
+                        onAdd: handleQuickAdd,
                         onMore: event =>
                             handleMenuOpen(event as React.MouseEvent<HTMLButtonElement>),
                         onExitViewport: handleExitMobileViewport,

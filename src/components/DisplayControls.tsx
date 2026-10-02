@@ -1,11 +1,19 @@
 // src/components/DisplayControls.tsx
-// 顶栏右侧那条玻璃胶囊：视图（卡片/列表/图标墙）+ 密度 + 批量多选 + 只看星标 + 主题切换。
-// 原来内联在 App.tsx 里 161 行。
+// 顶栏那条玻璃胶囊：只看星标 + 当前视图（点开是显示面板）+ 批量多选。
+//
+// 和以前的区别：视图三选、密度、主题不再是 8 个常驻图标，而是收进「视图」按钮
+// 后面的面板里 —— 顶栏只留「当下是什么视图」这一个入口，剩下的都是低频偏好，
+// 不该长期占着宽度。星标是筛选、多选是编辑模式，两个都保留在胶囊里但各自独立。
+import { useState } from "react";
 import {
     Box,
+    Button,
+    Divider,
     IconButton,
-    ToggleButton,
-    ToggleButtonGroup,
+    ListItemIcon,
+    ListItemText,
+    Menu,
+    MenuItem,
     Tooltip,
 } from "@mui/material";
 import ViewModuleIcon from "@mui/icons-material/ViewModule";
@@ -17,9 +25,14 @@ import CheckBoxIcon from "@mui/icons-material/CheckBox";
 import CheckBoxOutlineBlankIcon from "@mui/icons-material/CheckBoxOutlineBlank";
 import StarIcon from "@mui/icons-material/Star";
 import StarBorderIcon from "@mui/icons-material/StarBorder";
+import CheckIcon from "@mui/icons-material/Check";
+import ArrowDropDownIcon from "@mui/icons-material/ArrowDropDown";
+import LightModeIcon from "@mui/icons-material/LightMode";
+import DarkModeIcon from "@mui/icons-material/DarkMode";
+import SettingsBrightnessIcon from "@mui/icons-material/SettingsBrightness";
 import type { Density, ViewMode } from "../context/uiPrefsStore";
 import { HEADER_CONTROL_H, HEADER_RADIUS } from "../constants";
-import ThemeToggle, { type ThemeMode } from "./ThemeToggle";
+import type { ThemeMode } from "./ThemeToggle";
 
 export interface DisplayControlsProps {
     viewMode: ViewMode;
@@ -31,10 +44,27 @@ export interface DisplayControlsProps {
     exitMultiSelect: () => void;
     starFilter: boolean;
     setStarFilter: (enabled: boolean) => void;
-    /** 主题档位（浅色 / 深色 / 跟随系统）；原本是时钟左边一个独立圆按钮，现并进这条胶囊 */
+    /** 主题档位（浅色 / 深色 / 跟随系统）；现在收进显示面板 */
     themeMode: ThemeMode;
     onToggleTheme: () => void;
 }
+
+const VIEW_META: Record<ViewMode, { label: string; icon: typeof ViewModuleIcon }> = {
+    card: { label: "卡片", icon: ViewModuleIcon },
+    list: { label: "列表", icon: ViewListIcon },
+    wall: { label: "图标墙", icon: ViewCompactIcon },
+};
+
+const DENSITY_META: Record<Density, { label: string; icon: typeof DensityMediumIcon }> = {
+    comfortable: { label: "舒适", icon: DensityMediumIcon },
+    compact: { label: "紧凑", icon: DensitySmallIcon },
+};
+
+const THEME_META: Record<ThemeMode, { label: string; icon: typeof LightModeIcon }> = {
+    light: { label: "浅色", icon: LightModeIcon },
+    dark: { label: "深色", icon: DarkModeIcon },
+    system: { label: "跟随系统", icon: SettingsBrightnessIcon },
+};
 
 export default function DisplayControls({
     viewMode,
@@ -49,181 +79,194 @@ export default function DisplayControls({
     themeMode,
     onToggleTheme,
 }: DisplayControlsProps) {
+    const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
+    const panelOpen = Boolean(anchorEl);
+
+    const ViewIcon = VIEW_META[viewMode].icon;
+    const ThemeIcon = THEME_META[themeMode].icon;
+
+    // 面板里改的是「怎么显示」，改完不关面板：这类偏好用户常常连着调两三项。
+    // 只有点外面或者按 Esc 才关。
     return (
-                    <Box
-                        className='nav-display-pill'
-                        sx={{
-                            display: "flex",
-                            alignItems: "center",
-                            height: HEADER_CONTROL_H,
-                            p: "2px",
-                            gap: "2px",
-                            borderRadius: HEADER_RADIUS,
-                            bgcolor: "var(--glass-bg)",
-                            border: "1px solid var(--glass-border)",
-                            backdropFilter: "blur(10px)",
-                            WebkitBackdropFilter: "blur(10px)",
-                            flexShrink: 0,
+        <Box
+            className='nav-display-pill'
+            sx={{
+                display: "flex",
+                alignItems: "center",
+                height: HEADER_CONTROL_H,
+                p: "2px",
+                gap: "2px",
+                borderRadius: HEADER_RADIUS,
+                bgcolor: "var(--glass-bg)",
+                border: "1px solid var(--glass-border)",
+                backdropFilter: "blur(10px)",
+                WebkitBackdropFilter: "blur(10px)",
+                flexShrink: 0,
+            }}
+        >
+            {/* 「只看星标」：筛选类，和视图那一堆显示偏好分开摆 */}
+            <Tooltip title={starFilter ? "取消只看星标" : "只看星标"}>
+                <IconButton
+                    className='nav-star-filter'
+                    data-active={starFilter ? "true" : "false"}
+                    aria-label={starFilter ? "取消只看星标" : "只看星标"}
+                    aria-pressed={starFilter}
+                    onClick={() => setStarFilter(!starFilter)}
+                    sx={{
+                        width: HEADER_CONTROL_H - 4,
+                        height: HEADER_CONTROL_H - 4,
+                        borderRadius: "11px",
+                        flexShrink: 0,
+                        color: starFilter ? "primary.main" : "text.secondary",
+                        bgcolor: starFilter ? "var(--glass-bg-hover)" : "transparent",
+                    }}
+                >
+                    {starFilter ? (
+                        <StarIcon fontSize='small' />
+                    ) : (
+                        <StarBorderIcon fontSize='small' />
+                    )}
+                </IconButton>
+            </Tooltip>
+
+            <Divider
+                orientation='vertical'
+                flexItem
+                aria-hidden
+                sx={{ my: 0.75, borderColor: "var(--glass-border)" }}
+            />
+
+            {/* 「当前视图」按钮：点开是显示面板（视图 / 密度 / 主题） */}
+            <Button
+                className='nav-view-menu-btn'
+                size='small'
+                onClick={event => setAnchorEl(event.currentTarget)}
+                aria-haspopup='menu'
+                aria-expanded={panelOpen ? "true" : undefined}
+                aria-controls={panelOpen ? "display-panel" : undefined}
+                startIcon={<ViewIcon fontSize='small' />}
+                endIcon={<ArrowDropDownIcon fontSize='small' />}
+                sx={{
+                    height: HEADER_CONTROL_H - 4,
+                    minWidth: "auto",
+                    px: 1,
+                    borderRadius: "11px",
+                    color: "text.primary",
+                    textTransform: "none",
+                    // 窄屏只留图标，别让「图标墙」三个字把工具行挤换行
+                    "& .MuiButton-endIcon": { ml: 0.25 },
+                }}
+            >
+                <Box component='span' sx={{ display: { xs: "none", sm: "inline" } }}>
+                    {VIEW_META[viewMode].label}
+                </Box>
+            </Button>
+
+            <Divider
+                orientation='vertical'
+                flexItem
+                aria-hidden
+                sx={{ my: 0.75, borderColor: "var(--glass-border)" }}
+            />
+
+            {/* 批量多选：编辑模式开关，紧挨显示面板右边 */}
+            <Tooltip title={multiSelect ? "退出多选" : "批量多选"}>
+                <IconButton
+                    className='nav-multiselect-btn'
+                    data-active={multiSelect ? "true" : "false"}
+                    aria-label={multiSelect ? "退出多选模式" : "进入多选模式"}
+                    aria-pressed={multiSelect}
+                    color={multiSelect ? "primary" : "default"}
+                    onClick={() =>
+                        multiSelect ? exitMultiSelect() : setMultiSelect(true)
+                    }
+                    sx={{
+                        width: HEADER_CONTROL_H - 4,
+                        height: HEADER_CONTROL_H - 4,
+                        borderRadius: "11px",
+                        flexShrink: 0,
+                        bgcolor: multiSelect ? "var(--glass-bg-hover)" : "transparent",
+                    }}
+                >
+                    {multiSelect ? (
+                        <CheckBoxIcon fontSize='small' />
+                    ) : (
+                        <CheckBoxOutlineBlankIcon fontSize='small' />
+                    )}
+                </IconButton>
+            </Tooltip>
+
+            <Menu
+                id='display-panel'
+                anchorEl={anchorEl}
+                open={panelOpen}
+                onClose={() => setAnchorEl(null)}
+                MenuListProps={{ "aria-label": "显示设置", dense: true }}
+            >
+                {(Object.keys(VIEW_META) as ViewMode[]).map(mode => {
+                    const meta = VIEW_META[mode];
+                    const Icon = meta.icon;
+                    return (
+                        <MenuItem
+                            key={mode}
+                            selected={viewMode === mode}
+                            onClick={() => setViewMode(mode)}
+                        >
+                            <ListItemIcon>
+                                <Icon fontSize='small' />
+                            </ListItemIcon>
+                            <ListItemText>{meta.label}</ListItemText>
+                            {viewMode === mode && (
+                                <ListItemIcon sx={{ minWidth: "auto", ml: 1 }}>
+                                    <CheckIcon fontSize='small' />
+                                </ListItemIcon>
+                            )}
+                        </MenuItem>
+                    );
+                })}
+
+                <Divider />
+
+                {(Object.keys(DENSITY_META) as Density[]).map(value => {
+                    const meta = DENSITY_META[value];
+                    const Icon = meta.icon;
+                    return (
+                        <MenuItem
+                            key={value}
+                            selected={density === value}
+                            onClick={() => setDensity(value)}
+                        >
+                            <ListItemIcon>
+                                <Icon fontSize='small' />
+                            </ListItemIcon>
+                            <ListItemText>{meta.label}</ListItemText>
+                            {density === value && (
+                                <ListItemIcon sx={{ minWidth: "auto", ml: 1 }}>
+                                    <CheckIcon fontSize='small' />
+                                </ListItemIcon>
+                            )}
+                        </MenuItem>
+                    );
+                })}
+
+                <Divider />
+
+                {/* 主题：三档循环，跟 ThemeToggle 一个逻辑，只是挪进面板 */}
+                <MenuItem onClick={onToggleTheme}>
+                    <ListItemIcon>
+                        <ThemeIcon fontSize='small' />
+                    </ListItemIcon>
+                    <ListItemText>主题</ListItemText>
+                    <ListItemText
+                        primary={THEME_META[themeMode].label}
+                        sx={{ textAlign: "right", ml: 1, flex: "0 0 auto" }}
+                        primaryTypographyProps={{
+                            variant: "caption",
+                            color: "text.secondary",
                         }}
-                    >
-                        <ToggleButtonGroup
-                            size='small'
-                            exclusive
-                            value={viewMode}
-                            onChange={(_e, value) => value && setViewMode(value)}
-                            aria-label='视图切换'
-                            sx={{
-                                "& .MuiToggleButton-root": {
-                                    border: 0,
-                                    height: HEADER_CONTROL_H - 4,
-                                    px: 1,
-                                    borderRadius: "11px",
-                                },
-                            }}
-                        >
-                            <ToggleButton value='card' aria-label='卡片视图'>
-                                <Tooltip title='卡片视图'>
-                                    <ViewModuleIcon fontSize='small' />
-                                </Tooltip>
-                            </ToggleButton>
-                            <ToggleButton value='list' aria-label='列表视图'>
-                                <Tooltip title='紧凑列表'>
-                                    <ViewListIcon fontSize='small' />
-                                </Tooltip>
-                            </ToggleButton>
-                            <ToggleButton value='wall' aria-label='图标墙视图'>
-                                <Tooltip title='图标墙'>
-                                    <ViewCompactIcon fontSize='small' />
-                                </Tooltip>
-                            </ToggleButton>
-                        </ToggleButtonGroup>
-
-                        <Box
-                            aria-hidden
-                            sx={{
-                                width: "1px",
-                                height: 18,
-                                bgcolor: "var(--glass-border)",
-                                flexShrink: 0,
-                            }}
-                        />
-
-                        <ToggleButtonGroup
-                            size='small'
-                            exclusive
-                            value={density}
-                            onChange={(_e, value) => value && setDensity(value)}
-                            aria-label='显示密度'
-                            sx={{
-                                "& .MuiToggleButton-root": {
-                                    border: 0,
-                                    height: HEADER_CONTROL_H - 4,
-                                    px: 1,
-                                    borderRadius: "11px",
-                                },
-                            }}
-                        >
-                            <ToggleButton value='comfortable' aria-label='舒适密度'>
-                                <Tooltip title='舒适'>
-                                    <DensityMediumIcon fontSize='small' />
-                                </Tooltip>
-                            </ToggleButton>
-                            <ToggleButton value='compact' aria-label='紧凑密度'>
-                                <Tooltip title='紧凑'>
-                                    <DensitySmallIcon fontSize='small' />
-                                </Tooltip>
-                            </ToggleButton>
-                        </ToggleButtonGroup>
-
-                        <Box
-                            aria-hidden
-                            sx={{
-                                width: "1px",
-                                height: 18,
-                                bgcolor: "var(--glass-border)",
-                                flexShrink: 0,
-                            }}
-                        />
-
-                        {/* 批量多选：紧挨「只看星标」左边，和视图/密度同一条胶囊 */}
-                        <Tooltip title={multiSelect ? "退出多选" : "批量多选"}>
-                            <IconButton
-                                className='nav-multiselect-btn'
-                                data-active={multiSelect ? "true" : "false"}
-                                aria-label={
-                                    multiSelect ? "退出多选模式" : "进入多选模式"
-                                }
-                                aria-pressed={multiSelect}
-                                color={multiSelect ? "primary" : "default"}
-                                onClick={() =>
-                                    multiSelect
-                                        ? exitMultiSelect()
-                                        : setMultiSelect(true)
-                                }
-                                sx={{
-                                    width: HEADER_CONTROL_H - 4,
-                                    height: HEADER_CONTROL_H - 4,
-                                    borderRadius: "11px",
-                                    flexShrink: 0,
-                                    bgcolor: multiSelect
-                                        ? "var(--glass-bg-hover)"
-                                        : "transparent",
-                                }}
-                            >
-                                {multiSelect ? (
-                                    <CheckBoxIcon fontSize='small' />
-                                ) : (
-                                    <CheckBoxOutlineBlankIcon fontSize='small' />
-                                )}
-                            </IconButton>
-                        </Tooltip>
-
-                        {/* 「只看星标」：和视图/密度同一条胶囊，开着的星星是实心的 */}
-                        <ToggleButtonGroup
-                            size='small'
-                            exclusive
-                            value={starFilter ? "star" : ""}
-                            onChange={(_e, value) => setStarFilter(Boolean(value))}
-                            aria-label='只看星标'
-                            sx={{
-                                "& .MuiToggleButton-root": {
-                                    border: 0,
-                                    height: HEADER_CONTROL_H - 4,
-                                    px: 1,
-                                    borderRadius: "11px",
-                                },
-                            }}
-                        >
-                            <ToggleButton
-                                value='star'
-                                aria-label='只看星标'
-                                className='nav-star-filter'
-                                data-active={starFilter ? "true" : "false"}
-                                selected={starFilter}
-                            >
-                                <Tooltip title='只看星标'>
-                                    {starFilter ? (
-                                        <StarIcon fontSize='small' />
-                                    ) : (
-                                        <StarBorderIcon fontSize='small' />
-                                    )}
-                                </Tooltip>
-                            </ToggleButton>
-                        </ToggleButtonGroup>
-
-                        <Box
-                            aria-hidden
-                            sx={{
-                                width: "1px",
-                                height: 18,
-                                bgcolor: "var(--glass-border)",
-                                flexShrink: 0,
-                            }}
-                        />
-
-                        {/* 主题切换：跟其它显示偏好同类，所以并进这条胶囊，
-                            放在最右侧、紧时钟左边。 */}
-                        <ThemeToggle mode={themeMode} onToggle={onToggleTheme} />
-                    </Box>
+                    />
+                </MenuItem>
+            </Menu>
+        </Box>
     );
 }

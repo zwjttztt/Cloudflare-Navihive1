@@ -32,3 +32,16 @@ export const headerDividerSx: SxProps<Theme> = {
     bgcolor: "var(--glass-border)",
     flexShrink: 0,
 };
+
+/**
+ * 顶栏工具行里搜索框占的那一格：
+ * 窄屏（<900px）整行独占，宽屏跟着剩余空间伸缩，但有上限，
+ * 免得 4K 下搜索框被拉成一条空的跑道。
+ */
+export const headerSearchSlotSx: SxProps<Theme> = {
+    flexGrow: { md: 1 },
+    flexShrink: { md: 1 },
+    flexBasis: { xs: "100%", md: 280 },
+    maxWidth: { md: 520 },
+    minWidth: 0,
+};

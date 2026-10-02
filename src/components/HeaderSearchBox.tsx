@@ -160,11 +160,10 @@ export default function HeaderSearchBox({
                         ) : null,
                     }}
                     sx={{
-                        // 头部收紧时搜索框也收一档，和标题保持同步
-                        width: headerCompact
-                            ? { xs: "100%", sm: 150, md: 175 }
-                            : { xs: "100%", sm: 190, md: 230 },
-                        transition: "width .25s ease",
+                        // 宽度交给外层那一格（headerSearchSlotSx）管：
+                        // 这里撑满即可，滚动收紧时不再把搜索框压窄 —— 搜索是主操作，
+                        // 宽度随滚动变化会让「点输入框」这件事的手感跟着变。
+                        width: "100%",
                         // 毛玻璃底色必须和圆角一起挂在输入框本体上：
                         // 放在外层 FormControl 上会在圆角外面露出一块直角白底
                         "& .MuiOutlinedInput-root": {

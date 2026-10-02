@@ -29,7 +29,8 @@ export default function HeaderClock() {
         <Box
             className='nav-clock'
             aria-label={`当前时间 ${time} ${date} ${week}`}
-            sx={{ display: { xs: "none", md: "flex" }, flexShrink: 0 }}
+            // 现在待在品牌行右侧，不再和工具栏挤一行，所以 600px 起就能显示
+            sx={{ display: { xs: "none", sm: "flex" }, flexShrink: 0 }}
         >
             {/* 行高必须显式给死：MUI 默认行高会撑到 39px，比工具栏还高，日期那行会被裁掉 */}
             <Typography
