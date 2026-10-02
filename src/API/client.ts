@@ -27,6 +27,45 @@ import {
 // 这条 cookie 只表示「已登录」，不含任何凭据。
 import type { SiteMetaSuggestion, TagSuggestion } from "../utils/aiMeta";
 
+// 各端点的响应形状。request() 默认 unknown，每个调用点必须从这里领一个类型，
+// 于是「服务端改形状」和「调用方改期望」任意一边动了都会被 tsc 抓住。
+import type {
+    AiEmbedResponse,
+    AiSearchResponse,
+    AiSiteMetaResponse,
+    AiStatusResponse,
+    AiSuggestTagsResponse,
+    AiTestResult,
+    AuditLogResponse,
+    AuthCredentialsResponse,
+    BootstrapResponse,
+    ClientErrorsResponse,
+    ConfigBatchResponse,
+    ConfigItemResponse,
+    ConfigMapResponse,
+    ConfigWriteResponse,
+    ExportResponse,
+    GroupListResponse,
+    GroupOrdersResponse,
+    RecoveryStatusResponse,
+    RecycleListResponse,
+    RecyclePurgeBatchResponse,
+    RecycleRestoreBatchResponse,
+    RecycleSimpleResponse,
+    RevokeOthersResponse,
+    RevokeSessionResponse,
+    SessionsResponse,
+    SiteBatchDeleteResponse,
+    SiteListResponse,
+    SiteOrdersResponse,
+    SoftDeleteResponse,
+    WebDavDeleteResponse,
+    WebDavDownloadResponse,
+    WebDavListResponse,
+    WebDavTestResponse,
+    WebDavUploadResponse,
+} from "./responses";
+
 const SESSION_COOKIE = "navihive_session";
 
 // 旧版本把令牌存在 localStorage，这里一次性清掉遗留值，避免它留在浏览器里
@@ -264,7 +303,7 @@ export class NavigationClient {
 
     // 是否已配置恢复公钥（仅返回布尔）
     async getRecoveryStatus(): Promise<{ configured: boolean }> {
-        return this.request("auth/recovery-status");
+        return this.request<RecoveryStatusResponse>("auth/recovery-status");
     }
 
     /**
@@ -292,10 +331,14 @@ export class NavigationClient {
         }
     }
 
-    // 默认 any：很多接口的返回形状由调用处声明，逐个写泛型参数纯属噪音；
-    // 需要明确形状的地方（如 importData 的 ImportResult）显式传泛型
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    private async request<T = any>(endpoint: string, options = {}): Promise<T> {
+    /**
+     * 通用请求。默认 unknown 而不是 any：不写泛型就编译不过，
+     * 逼着每个调用点去 src/API/responses.ts 领一个形状（没有就补一个）。
+     *
+     * 以前默认 any，「外层写 Promise<Group[]>」就能蒙混过关 —— 服务端少给一个字段、
+     * 或者字段名拼错，tsc 一句话都不会说，只有运行时炸给你看。
+     */
+    private async request<T = unknown>(endpoint: string, options = {}): Promise<T> {
         const headers: Record<string, string> = {
             "Content-Type": "application/json",
         };
@@ -366,71 +409,74 @@ export class NavigationClient {
 
     // 分组相关API
     async getGroups(): Promise<Group[]> {
-        return this.request("groups");
+        return this.request<GroupListResponse>("groups");
     }
 
     // 首屏 / 刷新：一次请求取回分组 + 站点 + 配置（替代 N+1 次请求）
     async bootstrap(): Promise<BootstrapData> {
-        return this.request("bootstrap");
+        return this.request<BootstrapResponse>("bootstrap");
     }
 
     async getGroup(id: number): Promise<Group> {
-        return this.request(`groups/${id}`);
+        return this.request<Group>(`groups/${id}`);
     }
 
     async createGroup(group: Group): Promise<Group> {
-        return this.request("groups", {
+        return this.request<Group>("groups", {
             method: "POST",
             body: JSON.stringify(group),
         });
     }
 
     async updateGroup(id: number, group: Partial<Group>): Promise<Group> {
-        return this.request(`groups/${id}`, {
+        return this.request<Group>(`groups/${id}`, {
             method: "PUT",
             body: JSON.stringify(group),
         });
     }
 
     async deleteGroup(id: number): Promise<{ success: boolean; recycleId?: number }> {
-        return this.request(`groups/${id}`, {
+        const res = await this.request<SoftDeleteResponse>(`groups/${id}`, {
             method: "DELETE",
         });
+        // HTTP 200 就说明删掉了；recycleId 是老服务端不一定给的「撤销」凭据
+        return { success: res?.success !== false, recycleId: res?.recycleId };
     }
 
     // 网站相关API
     async getSites(groupId?: number): Promise<Site[]> {
         const endpoint = groupId ? `sites?groupId=${groupId}` : "sites";
-        return this.request(endpoint);
+        return this.request<SiteListResponse>(endpoint);
     }
 
     async getSite(id: number): Promise<Site> {
-        return this.request(`sites/${id}`);
+        return this.request<Site>(`sites/${id}`);
     }
 
     async createSite(site: Site): Promise<Site> {
-        return this.request("sites", {
+        return this.request<Site>("sites", {
             method: "POST",
             body: JSON.stringify(site),
         });
     }
 
     async updateSite(id: number, site: Partial<Site>): Promise<Site> {
-        return this.request(`sites/${id}`, {
+        return this.request<Site>(`sites/${id}`, {
             method: "PUT",
             body: JSON.stringify(site),
         });
     }
 
     async deleteSite(id: number): Promise<{ success: boolean; recycleId?: number }> {
-        return this.request(`sites/${id}`, {
+        const res = await this.request<SoftDeleteResponse>(`sites/${id}`, {
             method: "DELETE",
         });
+        return { success: res?.success !== false, recycleId: res?.recycleId };
     }
 
     /** 批量删除：一次往返代替 N 次 DELETE（多选删除慢就慢在那 N 次往返） */
     async deleteSites(ids: number[]): Promise<SiteBatchDeleteResult> {
-        return this.request("sites/batch-delete", {
+        return this.request<SiteBatchDeleteResponse>("sites/batch-delete", {
             method: "POST",
             body: JSON.stringify({ ids }),
         });
@@ -438,7 +484,7 @@ export class NavigationClient {
 
     // 配置相关API
     async getConfigs(): Promise<Record<string, string>> {
-        return this.request("configs");
+        return this.request<ConfigMapResponse>("configs");
     }
 
     /**
@@ -446,7 +492,7 @@ export class NavigationClient {
      * 不用为每一项各发一个请求（改十项就是十个 RTT）。
      */
     async setConfigs(configs: Record<string, string>): Promise<boolean> {
-        const result = await this.request("configs/batch", {
+        const result = await this.request<ConfigBatchResponse>("configs/batch", {
             method: "POST",
             body: JSON.stringify({ configs }),
         });
@@ -455,26 +501,27 @@ export class NavigationClient {
 
     async getConfig(key: string): Promise<string | null> {
         try {
-            const response = await this.request(`configs/${key}`);
-            return response.value;
+            const response = await this.request<ConfigItemResponse>(`configs/${key}`);
+            // 没配过的键服务端给 null / 干脆不给，这里统一成 null
+            return response?.value ?? null;
         } catch {
             return null;
         }
     }
 
     async setConfig(key: string, value: string): Promise<boolean> {
-        const response = await this.request(`configs/${key}`, {
+        const response = await this.request<ConfigWriteResponse>(`configs/${key}`, {
             method: "PUT",
             body: JSON.stringify({ value }),
         });
-        return response.success;
+        return response?.success !== false;
     }
 
     async deleteConfig(key: string): Promise<boolean> {
-        const response = await this.request(`configs/${key}`, {
+        const response = await this.request<ConfigWriteResponse>(`configs/${key}`, {
             method: "DELETE",
         });
-        return response.success;
+        return response?.success !== false;
     }
 
     // ---- AI 助手 ----
@@ -482,7 +529,7 @@ export class NavigationClient {
     // 失败一律带 message，前端直接把原因摆在按钮旁边，不要让弹窗崩掉。
 
     async aiStatus(): Promise<AiStatus> {
-        return this.request("ai/status");
+        return this.request<AiStatusResponse>("ai/status");
     }
 
     async aiSiteMeta(payload: {
@@ -491,7 +538,7 @@ export class NavigationClient {
         groups: string[];
         tags: string[];
     }): Promise<AiSuggestResponse<{ suggestion: SiteMetaSuggestion }>> {
-        return this.request("ai/site-meta", {
+        return this.request<AiSiteMetaResponse>("ai/site-meta", {
             method: "POST",
             body: JSON.stringify(payload),
         });
@@ -502,7 +549,7 @@ export class NavigationClient {
         groups: string[];
         tags: string[];
     }): Promise<AiSuggestResponse<{ suggestions: TagSuggestion[] }>> {
-        return this.request("ai/suggest-tags", {
+        return this.request<AiSuggestTagsResponse>("ai/suggest-tags", {
             method: "POST",
             body: JSON.stringify(payload),
         });
@@ -516,7 +563,7 @@ export class NavigationClient {
         model?: string;
         message?: string;
     }> {
-        return this.request("ai/embed", {
+        return this.request<AiEmbedResponse>("ai/embed", {
             method: "POST",
             body: JSON.stringify({ force }),
         });
@@ -525,7 +572,7 @@ export class NavigationClient {
     async aiSearch(query: string, limit = 20): Promise<
         AiSuggestResponse<{ results: { id: number; score: number }[]; empty?: boolean }>
     > {
-        return this.request("ai/search", {
+        return this.request<AiSearchResponse>("ai/search", {
             method: "POST",
             body: JSON.stringify({ query, limit }),
         });
@@ -536,7 +583,7 @@ export class NavigationClient {
      * 不落库，只回报文本与嵌入两项各自通不通。
      */
     async aiTest(settings: Partial<Record<string, string>>): Promise<AiTestResponse> {
-        return this.request("ai/test", {
+        return this.request<AiTestResult>("ai/test", {
             method: "POST",
             body: JSON.stringify(settings),
         });
@@ -562,26 +609,28 @@ export class NavigationClient {
         password: string,
         currentPassword: string
     ): Promise<{ success: boolean; message?: string }> {
-        return this.request("auth/credentials", {
+        const res = await this.request<AuthCredentialsResponse>("auth/credentials", {
             method: "PUT",
             body: JSON.stringify({ username, password, currentPassword }),
         });
+        // 失败一律走 4xx（会抛异常），所以 200 就是改成了；message 只在有话要说时出现
+        return { success: res?.success !== false, message: res?.message };
     }
 
     // 批量更新排序
     async updateGroupOrder(groupOrders: { id: number; order_num: number }[]): Promise<boolean> {
-        const response = await this.request("group-orders", {
+        const response = await this.request<GroupOrdersResponse>("group-orders", {
             method: "PUT",
             body: JSON.stringify(groupOrders),
         });
-        return response.success;
+        return response?.success !== false;
     }
 
     // 批量更新站点排序（可同时修改分组，一次请求完成）
     async updateSiteOrder(
         siteOrders: { id: number; order_num: number; group_id?: number }[]
     ): Promise<SiteOrderUpdateResult> {
-        const response = await this.request<Partial<SiteOrderUpdateResult>>("site-orders", {
+        const response = await this.request<SiteOrdersResponse>("site-orders", {
             method: "PUT",
             body: JSON.stringify(siteOrders),
         });
@@ -601,7 +650,7 @@ export class NavigationClient {
 
     // 数据导出
     async exportData(): Promise<ExportData> {
-        return this.request("export");
+        return this.request<ExportResponse>("export");
     }
     
     /**
@@ -713,7 +762,7 @@ export class NavigationClient {
     // 传入的 config 可只填部分字段，缺失的字段会使用服务端已保存的配置
 
     async webdavTest(config: Partial<WebDavConfig> = {}): Promise<WebDavResult> {
-        return this.request("webdav/test", {
+        return this.request<WebDavTestResponse>("webdav/test", {
             method: "POST",
             body: JSON.stringify(config),
         });
@@ -724,14 +773,14 @@ export class NavigationClient {
         data?: ExportData,
         filename?: string
     ): Promise<WebDavResult<{ filename: string; size: number }>> {
-        return this.request("webdav/upload", {
+        return this.request<WebDavUploadResponse>("webdav/upload", {
             method: "POST",
             body: JSON.stringify({ ...config, filename, data }),
         });
     }
 
     async webdavList(config: Partial<WebDavConfig> = {}): Promise<WebDavResult<WebDavFile[]>> {
-        return this.request("webdav/list", {
+        return this.request<WebDavListResponse>("webdav/list", {
             method: "POST",
             body: JSON.stringify(config),
         });
@@ -741,14 +790,14 @@ export class NavigationClient {
         filename: string,
         config: Partial<WebDavConfig> = {}
     ): Promise<WebDavResult<ExportData>> {
-        return this.request("webdav/download", {
+        return this.request<WebDavDownloadResponse>("webdav/download", {
             method: "POST",
             body: JSON.stringify({ ...config, filename }),
         });
     }
 
     async webdavDelete(filename: string, config: Partial<WebDavConfig> = {}): Promise<WebDavResult> {
-        return this.request("webdav/delete", {
+        return this.request<WebDavDeleteResponse>("webdav/delete", {
             method: "POST",
             body: JSON.stringify({ ...config, filename }),
         });
@@ -781,7 +830,7 @@ export class NavigationClient {
         if (opts.limit) params.set("limit", String(opts.limit));
         if (opts.offset) params.set("offset", String(opts.offset));
         if (opts.actor) params.set("actor", opts.actor);
-        return this.request(`audit?${params.toString()}`);
+        return this.request<AuditLogResponse>(`audit?${params.toString()}`);
     }
 
     /** 前端错误上报的聚合视图（仅 owner）。 */
@@ -798,7 +847,7 @@ export class NavigationClient {
     }> {
         const params = new URLSearchParams();
         params.set("limit", String(limit));
-        return this.request(`client-errors?${params.toString()}`);
+        return this.request<ClientErrorsResponse>(`client-errors?${params.toString()}`);
     }
 
     // ============ 回收站 ============
@@ -806,21 +855,24 @@ export class NavigationClient {
         success: boolean;
         items: Array<{ id: number; kind: "site" | "group"; name: string; deletedAt: number }>;
     }> {
-        return this.request("recycle");
+        return this.request<RecycleListResponse>("recycle");
     }
 
     async restoreRecycleItem(id: number): Promise<{ success: boolean }> {
-        return this.request("recycle/restore", {
+        const res = await this.request<RecycleSimpleResponse>("recycle/restore", {
             method: "POST",
             body: JSON.stringify({ id }),
         });
+        // 服务端没回 success 字段时按成功算：HTTP 200 就说明删/还原走通了
+        return { success: res?.success !== false };
     }
 
     async purgeRecycleItem(id: number): Promise<{ success: boolean }> {
-        return this.request("recycle/purge", {
+        const res = await this.request<RecycleSimpleResponse>("recycle/purge", {
             method: "POST",
             body: JSON.stringify({ id }),
         });
+        return { success: res?.success !== false };
     }
 
     /**
@@ -829,7 +881,7 @@ export class NavigationClient {
      * 让上层走全量重拉的兜底，而不是拿到 undefined 当场崩掉。
      */
     async restoreRecycleItems(ids: number[]): Promise<RecycleBatchRestoreResult> {
-        const result = await this.request<Partial<RecycleBatchRestoreResult>>("recycle/restore-batch", {
+        const result = await this.request<RecycleRestoreBatchResponse>("recycle/restore-batch", {
             method: "POST",
             body: JSON.stringify({ ids }),
         });
@@ -840,14 +892,15 @@ export class NavigationClient {
     }
 
     async purgeRecycleItems(ids: number[]): Promise<{ purged: number[] }> {
-        return this.request("recycle/purge-batch", {
+        return this.request<RecyclePurgeBatchResponse>("recycle/purge-batch", {
             method: "POST",
             body: JSON.stringify({ ids }),
         });
     }
 
     async emptyRecycleBin(): Promise<{ success: boolean }> {
-        return this.request("recycle", { method: "DELETE" });
+        const res = await this.request<RecycleSimpleResponse>("recycle", { method: "DELETE" });
+        return { success: res?.success !== false };
     }
 
     // ============ 登录设备（会话） ============
@@ -855,13 +908,14 @@ export class NavigationClient {
 
     /** 当前账号登录过的设备（新近活跃的排在前面） */
     async getSessions(): Promise<SessionInfo[]> {
-        const res = await this.request<{ success?: boolean; sessions?: SessionInfo[] }>("sessions");
+        const res = await this.request<SessionsResponse>("sessions");
         return Array.isArray(res?.sessions) ? res.sessions : [];
     }
 
     /** 吊销某一台设备（按会话编号 jti） */
     async revokeSession(jti: string): Promise<{ success: boolean; message?: string }> {
-        return this.request(`sessions/${encodeURIComponent(jti)}`, { method: "DELETE" });
+        const res = await this.request<RevokeSessionResponse>(`sessions/${encodeURIComponent(jti)}`, { method: "DELETE" });
+        return { success: res?.success !== false, message: res?.message };
     }
 
     /** 退出其它设备：除当前这台之外全部吊销 */
@@ -870,6 +924,10 @@ export class NavigationClient {
         revoked: number;
         message?: string;
     }> {
-        return this.request("sessions/revoke-others", { method: "POST" });
+        const res = await this.request<RevokeOthersResponse>("sessions/revoke-others", { method: "POST" });
+        return {
+            success: res?.success !== false,
+            revoked: typeof res?.revoked === "number" ? res.revoked : 0,
+        };
     }
 }
