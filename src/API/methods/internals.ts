@@ -70,6 +70,23 @@ export const CREATE_STATEMENTS = [
         expires_at INTEGER NOT NULL,
         PRIMARY KEY (scope, op_id)
     );`,
+    // 站点语义向量：AI 语义搜索用（「搜描述里没写的东西」）。
+    //
+    // 为什么不用 Vectorize：现在这个站的量级是几十条，把向量存 D1、查询时在 Worker 内存里
+    // 算余弦相似度就够了，不引新绑定（绑定要在 wrangler.jsonc 里声明，账号没开通会直接
+    // 让部署失败），也不给冷启动加一次远程查询。上千条再迁到向量库不迟 —— 那时换掉
+    // 读写这两处即可，接口不变。
+    //
+    // vec 存 JSON 数组（不是 BLOB）：D1 里 BLOB 读写要转成 Uint8Array 再回来，
+    // 而这里的数据量是几十条、每行几 KB，JSON 更好调试也更好迁移。
+    // model 记下来是为了「换了嵌入模型就把旧向量作废」——不同模型的向量不能互相比较。
+    `CREATE TABLE IF NOT EXISTS site_embeddings (
+        site_id INTEGER PRIMARY KEY,
+        model TEXT NOT NULL,
+        dim INTEGER NOT NULL,
+        vec TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );`,
 ];
 
 /**

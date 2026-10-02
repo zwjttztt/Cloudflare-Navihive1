@@ -28,6 +28,27 @@ export const MUST_CHANGE_PASSWORD_KEY = "auth.mustChangePassword";
 // 不用 auth. 前缀——那个前缀的接口一律禁止读写，只能走专用的「校验当前密码」接口。
 export const RECOVERY_PUBLIC_KEY_CONFIG = "recovery.publicKey";
 
+// ---- AI 助手配置 ----
+// 前缀统一是 ai.：整组都是「每个账号一份 + 不进备份 + 凭据加密落库」
+// （判定见 configGuards，这里只定键名）。放进备份等于把别人的 API 密钥交给拿到备份文件的人。
+export const AI_CONFIG_PREFIX = "ai.";
+/** 总开关：只有显式写成 "true" 才启用，缺失 / 报错一律按关闭处理 */
+export const AI_ENABLED_KEY = "ai.enabled";
+/** provider：workers-ai（Cloudflare）或 openai-compatible（DeepSeek / 智谱 / OpenAI …） */
+export const AI_PROVIDER_KEY = "ai.provider";
+/** OpenAI 兼容端点，如 https://api.deepseek.com/v1 */
+export const AI_ENDPOINT_KEY = "ai.endpoint";
+/** 文本模型名（openai-compatible 用；workers-ai 有默认值） */
+export const AI_TEXT_MODEL_KEY = "ai.textModel";
+/** 嵌入模型名（openai-compatible 用；workers-ai 有默认值） */
+export const AI_EMBED_MODEL_KEY = "ai.embedModel";
+/** OpenAI 兼容端点的密钥 —— 加密落库 */
+export const AI_API_KEY_KEY = "ai.apiKey";
+/** Workers AI 走 REST 时用的 Cloudflare API token —— 加密落库 */
+export const AI_CF_TOKEN_KEY = "ai.cfToken";
+/** Workers AI 走 REST 时的账号 ID */
+export const AI_CF_ACCOUNT_KEY = "ai.cfAccount";
+
 // 保留期（天）：审计日志与回收站条目都只留这么久，超期由定时任务自动清除。
 // 两处都存的是「事后补救」性质的东西 —— 审计用于溯源、回收站用于反悔，
 // 留太久了既占 D1 行数，也让旧数据一直挂在界面上。7 天足够覆盖"昨天删错了"这类场景。

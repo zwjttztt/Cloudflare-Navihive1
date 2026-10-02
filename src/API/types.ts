@@ -314,3 +314,24 @@ export interface InviteInfo {
     /** 有效期秒数，前端用来显示「30 分钟内有效」 */
     ttlSeconds: number;
 }
+
+/** AI 助手的可用性（/api/ai/status 的返回）：前端拿它决定按钮置不置灰 */
+export interface AiStatus {
+    enabled: boolean;
+    provider: string;
+    textModel: string;
+    embedModel: string;
+    /** 已经算好向量的站点数量 */
+    embedded: number;
+    /** 还缺什么；null 表示可以正常调用 */
+    problem: string | null;
+}
+
+/**
+ * AI 建议类接口的返回。
+ * 成功时带着建议内容，失败时只有一句话的原因 —— 前端一律把 message 摆在按钮旁边，
+ * 不做弹窗、不阻断用户正在做的事（AI 帮不上忙不等于操作失败）。
+ */
+export type AiSuggestResponse<T> =
+    | ({ success: true } & T)
+    | { success: false; message: string };

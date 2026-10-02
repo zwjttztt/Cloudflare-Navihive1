@@ -18,10 +18,14 @@ import {
     IMPORT_PROGRESS_MEDIA,
     DEFAULT_TOKEN_TTL,
     REMEMBER_TOKEN_TTL,
+    AiStatus,
+    AiSuggestResponse,
 } from "./http";
 
 // 前端只读标记：真正的令牌在 httpOnly cookie 里，JS 拿不到（XSS 偷不走）。
 // 这条 cookie 只表示「已登录」，不含任何凭据。
+import type { SiteMetaSuggestion, TagSuggestion } from "../utils/aiMeta";
+
 const SESSION_COOKIE = "navihive_session";
 
 // 旧版本把令牌存在 localStorage，这里一次性清掉遗留值，避免它留在浏览器里
@@ -470,6 +474,60 @@ export class NavigationClient {
             method: "DELETE",
         });
         return response.success;
+    }
+
+    // ---- AI 助手 ----
+    // 这几个都不是写操作（不进离线队列）：AI 只给建议，落地由用户点确认之后再走正常写接口。
+    // 失败一律带 message，前端直接把原因摆在按钮旁边，不要让弹窗崩掉。
+
+    async aiStatus(): Promise<AiStatus> {
+        return this.request("ai/status");
+    }
+
+    async aiSiteMeta(payload: {
+        url: string;
+        name?: string;
+        groups: string[];
+        tags: string[];
+    }): Promise<AiSuggestResponse<{ suggestion: SiteMetaSuggestion }>> {
+        return this.request("ai/site-meta", {
+            method: "POST",
+            body: JSON.stringify(payload),
+        });
+    }
+
+    async aiSuggestTags(payload: {
+        sites: { id: number; name: string; url: string; description?: string }[];
+        groups: string[];
+        tags: string[];
+    }): Promise<AiSuggestResponse<{ suggestions: TagSuggestion[] }>> {
+        return this.request("ai/suggest-tags", {
+            method: "POST",
+            body: JSON.stringify(payload),
+        });
+    }
+
+    /** 把站点文本换成向量（语义搜索的准备工作）；force=true 表示连已有的也重算 */
+    async aiEmbed(force = false): Promise<{
+        success: boolean;
+        done: number;
+        total: number;
+        model?: string;
+        message?: string;
+    }> {
+        return this.request("ai/embed", {
+            method: "POST",
+            body: JSON.stringify({ force }),
+        });
+    }
+
+    async aiSearch(query: string, limit = 20): Promise<
+        AiSuggestResponse<{ results: { id: number; score: number }[]; empty?: boolean }>
+    > {
+        return this.request("ai/search", {
+            method: "POST",
+            body: JSON.stringify({ query, limit }),
+        });
     }
 
     /**

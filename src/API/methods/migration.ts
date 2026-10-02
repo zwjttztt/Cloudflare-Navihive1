@@ -17,7 +17,7 @@ import { CREATE_STATEMENTS, INDEX_STATEMENTS, migrationState } from "./internals
  * 否则「读版本号对得上就跳过迁移」那条快路径会认为都跑过了，新步骤永远不会执行。
  * 快路径省掉的是查询，不是正确性；这个号就是它唯一的保险丝。
  */
-export const SCHEMA_VERSION = "1";
+export const SCHEMA_VERSION = "2";
 /** 版本号存在 configs 里的键名 */
 export const SCHEMA_VERSION_KEY = "schema.version";
 

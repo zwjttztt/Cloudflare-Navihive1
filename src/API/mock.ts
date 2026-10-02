@@ -15,8 +15,11 @@ import {
     SessionInfo,
     ImportOptions,
     ImportStage,
+    AiStatus,
+    AiSuggestResponse,
 } from "./http";
 import { verifyBackupIntegrity, withBackupIntegrity } from "../utils/backupIntegrity";
+import type { SiteMetaSuggestion, TagSuggestion } from "../utils/aiMeta";
 import {
     IDEMPOTENCY_MAX_BODY,
     IDEMPOTENCY_TTL_MS,
@@ -517,6 +520,43 @@ export class MockNavigationClient {
             return true;
         }
         return false;
+    }
+
+    // ---- AI 助手 ----
+    // 演示模式一律「没开」：这台机器上没有模型，也没有密钥，
+    // 与其编一份假建议让人以为 AI 能用，不如老实说没配。
+
+    async aiStatus(): Promise<AiStatus> {
+        return {
+            enabled: false,
+            provider: "workers-ai",
+            textModel: "",
+            embedModel: "",
+            embedded: 0,
+            problem: "演示模式没有 AI",
+        };
+    }
+
+    private aiUnavailable(): { success: false; message: string } {
+        return { success: false, message: "演示模式没有 AI" };
+    }
+
+    async aiSiteMeta(): Promise<AiSuggestResponse<{ suggestion: SiteMetaSuggestion }>> {
+        return this.aiUnavailable();
+    }
+
+    async aiSuggestTags(): Promise<AiSuggestResponse<{ suggestions: TagSuggestion[] }>> {
+        return this.aiUnavailable();
+    }
+
+    async aiEmbed(): Promise<{ success: boolean; done: number; total: number; message?: string }> {
+        return { success: false, done: 0, total: 0, message: "演示模式没有 AI" };
+    }
+
+    async aiSearch(): Promise<
+        AiSuggestResponse<{ results: { id: number; score: number }[]; empty?: boolean }>
+    > {
+        return this.aiUnavailable();
     }
 
     // 修改管理员账号密码（模拟环境仅返回成功）

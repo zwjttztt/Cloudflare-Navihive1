@@ -128,6 +128,12 @@ const EXPECTED: Array<[string, string]> = [
     ["POST", "webdav/list"],
     ["POST", "webdav/download"],
     ["POST", "webdav/delete"],
+    // ai
+    ["GET", "ai/status"],
+    ["POST", "ai/site-meta"],
+    ["POST", "ai/suggest-tags"],
+    ["POST", "ai/embed"],
+    ["POST", "ai/search"],
 ];
 
 // 测试期间任何 fetch 都不许真的发出去：分支里若有外网调用（图标、meta、WebDAV），
@@ -136,10 +142,18 @@ const realFetch = globalThis.fetch;
 globalThis.fetch = async () => new Response("{}", { status: 200 });
 
 test("分发表里的模块数量与预期一致", () => {
-    assert.equal(TABLE.length, 6, "public + 5 个受保护路由模块");
+    assert.equal(TABLE.length, 7, "public + 6 个受保护路由模块");
     assert.deepEqual(
         TABLE.map(([name]) => name).sort(),
-        ["handleAccountRoutes", "handleBackupRoutes", "handleConfigRoutes", "handleDataRoutes", "handleOpsRoutes", "public"].sort(),
+        [
+            "handleAccountRoutes",
+            "handleBackupRoutes",
+            "handleConfigRoutes",
+            "handleDataRoutes",
+            "handleOpsRoutes",
+            "handleAiRoutes",
+            "public",
+        ].sort(),
     );
 });
 
@@ -171,13 +185,14 @@ test("不存在的路径 / 方法组合落到 404（无人认领）", async () =
     }
 });
 
-test("受保护路由链的顺序：账号 → 运维 → 数据 → 配置 → 备份", () => {
+test("受保护路由链的顺序：账号 → 运维 → 数据 → 配置 → 备份 → AI", () => {
     assert.deepEqual(PROTECTED_ROUTES.map(fn => fn.name), [
         "handleAccountRoutes",
         "handleOpsRoutes",
         "handleDataRoutes",
         "handleConfigRoutes",
         "handleBackupRoutes",
+        "handleAiRoutes",
     ]);
 });
 

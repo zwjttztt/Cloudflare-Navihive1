@@ -4,10 +4,19 @@
 // （比如 link.health 不能当前缀匹配，会把 link.healthSync 一起吃掉）。
 // 集中之后「一类规则一坨」，也方便单测直接打这些函数。
 
-import { WEBDAV_CONFIG_PREFIX, WEBDAV_PASSWORD_KEY, WEBDAV_BACKUP_PASSWORD_KEY } from "./configKeys";
+import {
+    AI_API_KEY_KEY,
+    AI_CF_TOKEN_KEY,
+    AI_CONFIG_PREFIX,
+    WEBDAV_CONFIG_PREFIX,
+    WEBDAV_PASSWORD_KEY,
+    WEBDAV_BACKUP_PASSWORD_KEY,
+} from "./configKeys";
 
-// 敏感配置：不参与备份文件的导入导出（管理员 / WebDAV 凭据）
-const SECRET_CONFIG_PREFIXES = ["auth.", "webdav."];
+// 敏感配置：不参与备份文件的导入导出（管理员 / WebDAV 凭据 / AI 凭据）
+// AI 那组必须在这里：备份文件是会传到网盘、会发给别人的，
+// 带上一份 API 密钥等于把付费额度连同凭据一起交出去。
+const SECRET_CONFIG_PREFIXES = ["auth.", "webdav.", AI_CONFIG_PREFIX];
 
 /**
  * 同样不进备份文件、但必须整键匹配的几个配置。
@@ -33,7 +42,12 @@ const SECRET_CONFIG_KEYS = [
  * 注意：这里只是「静态保护」，备份口令本身不是 AUTH_SECRET —— 备份文件用它自己的
  * 口令加密，换 AUTH_SECRET 不影响已有备份能不能解开。
  */
-const ENCRYPTED_CONFIG_KEYS = [WEBDAV_PASSWORD_KEY, WEBDAV_BACKUP_PASSWORD_KEY];
+const ENCRYPTED_CONFIG_KEYS = [
+    WEBDAV_PASSWORD_KEY,
+    WEBDAV_BACKUP_PASSWORD_KEY,
+    AI_API_KEY_KEY,
+    AI_CF_TOKEN_KEY,
+];
 
 export function isEncryptedConfigKey(key: string): boolean {
     return ENCRYPTED_CONFIG_KEYS.includes(key);
@@ -51,7 +65,8 @@ export function isEncryptedConfigKey(key: string): boolean {
  *    其它账号的初始外观（自己没改过就跟着站点走）。普通账号改的是自己那份，
  *    不会把整站长什么样改掉，也不会因为没配任何东西而看到一片空白。
  */
-const PRIVATE_USER_CONFIG_PREFIXES = [WEBDAV_CONFIG_PREFIX];
+// AI 配置同样是「每人一份」：账号 A 填的 DeepSeek 密钥，不该被账号 B 在设置里看到。
+const PRIVATE_USER_CONFIG_PREFIXES = [WEBDAV_CONFIG_PREFIX, AI_CONFIG_PREFIX];
 /**
  * 必须整键匹配的私有键：死链巡检快照。
  * 不能写成前缀 —— `link.health` 会把开关 `link.healthSync` 一起匹配掉，

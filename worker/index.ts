@@ -26,6 +26,7 @@ import {
     withSecurityHeaders,
 } from "./httpUtils";
 import { handleAccountRoutes } from "./routes/account";
+import { handleAiRoutes } from "./routes/ai";
 import { handleBackupRoutes } from "./routes/backup";
 import { handleConfigRoutes } from "./routes/config";
 import { handleDataRoutes } from "./routes/data";
@@ -49,6 +50,7 @@ export const PROTECTED_ROUTES = [
     handleDataRoutes,
     handleConfigRoutes,
     handleBackupRoutes,
+    handleAiRoutes,
 ];
 
 async function handleRequest(request: Request, env: Env): Promise<Response> {
