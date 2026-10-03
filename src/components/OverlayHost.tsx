@@ -5,20 +5,26 @@
 // 这里全是「开关状态 + 对应回调」的接线，不含业务逻辑——每个被挂的东西本身
 // 已经是独立组件了。抽出来的好处是 App 的渲染树能一眼看到主体，而不是被一堆
 // 挂载点淹没。
-import { Suspense } from "react";
+import { Suspense, lazy } from "react";
 import { Menu, MenuItem, ListItemText } from "@mui/material";
 import MobileTabBar from "./MobileTabBar";
-import CommandPalette, { type CommandItem } from "./CommandPalette";
-import BookmarkImportDialog from "./BookmarkImportDialog";
-import AiSuggestDialog from "./AiSuggestDialog";
-import AiAssistantDialog, { type AiConfigClient as AiConfigClientLike } from "./AiAssistantDialog";
-import type { AiAssistant } from "../hooks/useAiAssistant";
 import BulkActionBar from "./BulkActionBar";
 import ConfirmDialog from "./ConfirmDialog";
-import TagManagerDialog from "./TagManagerDialog";
+// 下面五个都是「点开了才用得到」的浮层，所以走 lazy —— 它们外面已经套了 <Suspense>，
+// 静态 import 会让那个 Suspense 永远不触发、包照样进首屏。
+// 类型只用得到这几条，单独走 import type（编译期擦除，不会把组件本体拖回主包）。
+import type { CommandItem } from "./CommandPalette";
+import type { AiConfigClient as AiConfigClientLike } from "./AiAssistantDialog";
+import type { AiAssistant } from "../hooks/useAiAssistant";
 import type { GroupWithSites } from "../types";
 import type { DuplicateHit } from "../utils/duplicate";
 import type { ParsedBookmarkGroup } from "../utils/bookmarks";
+
+const CommandPalette = lazy(() => import("./CommandPalette"));
+const BookmarkImportDialog = lazy(() => import("./BookmarkImportDialog"));
+const AiSuggestDialog = lazy(() => import("./AiSuggestDialog"));
+const AiAssistantDialog = lazy(() => import("./AiAssistantDialog"));
+const TagManagerDialog = lazy(() => import("./TagManagerDialog"));
 
 export interface OverlayHostProps {
     /** 移动端底栏：搜索 / 分组 / 新增 / 更多 / 星标 */

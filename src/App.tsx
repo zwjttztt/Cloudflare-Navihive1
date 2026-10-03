@@ -77,6 +77,11 @@ import HeaderActions from "./components/HeaderActions";
 import MoreMenu from "./components/MoreMenu";
 import DisplayControls from "./components/DisplayControls";
 import HeaderGroupsButton from "./components/HeaderGroupsButton";
+// 新增卡片 / 新建分组：点「新增」才用得到，懒加载。
+// ⚠️ 注意 OverlayHost 里那五个（命令面板 / 书签导入 / 标签管理 / 两个 AI 弹窗）也走 lazy，
+//    但它们写在 OverlayHost 里 —— 别只在这里数 lazy( 的个数，得看每个组件的 import 语句本身。
+const AddSiteDialog = lazy(() => import("./components/AddSiteDialog"));
+const EditGroupDialog = lazy(() => import("./components/EditGroupDialog"));
 const SettingsDialog = lazy(() => import("./components/SettingsDialog"));
 // 账号管理（改账号密码 / 恢复密钥 / 邀请码 / 注销）：从「更多选项」进入，懒加载
 const AccountDialog = lazy(() => import("./components/AccountDialog"));
@@ -126,8 +131,6 @@ import {
 import { normalizeFailureText, normalizeUrl } from "./utils/url";
 import { loadPersistedUndo, setUndoAccountUid } from "./utils/undoPersist";
 import SiteListBody from "./components/SiteListBody";
-import AddSiteDialog from "./components/AddSiteDialog";
-import EditGroupDialog from "./components/EditGroupDialog";
 import LoginForm from "./components/LoginForm";
 const BackupDialog = lazy(() => import("./components/BackupDialog"));
 import "./App.css";
@@ -2545,31 +2548,34 @@ function App() {
                         />
                     )}
 
-                    {/* 新增分组对话框（与「编辑分组」共用同一套样式与尺寸） */}
-                    <EditGroupDialog
-                        open={openAddGroup}
-                        group={null}
-                        mode='create'
-                        onClose={handleCloseAddGroup}
-                        onSave={group => handleCreateGroup(group.name)}
-                    />
+                    {/* 新增分组对话框（与「编辑分组」共用同一套样式与尺寸）
+                        两个都是 lazy chunk，套一层 Suspense 兜住首次打开时的加载间隙 */}
+                    <Suspense fallback={null}>
+                        <EditGroupDialog
+                            open={openAddGroup}
+                            group={null}
+                            mode='create'
+                            onClose={handleCloseAddGroup}
+                            onSave={group => handleCreateGroup(group.name)}
+                        />
 
-                    <AddSiteDialog
-                        open={openAddSite}
-                        onClose={handleCloseAddSite}
-                        site={newSite}
-                        onInputChange={handleSiteInputChange}
-                        showPassword={showNewSitePassword}
-                        onTogglePassword={setShowNewSitePassword}
-                        creating={creatingSite}
-                        onFetchIcon={handleFetchNewSiteIcon}
-                        onCreate={handleCreateSite}
-                        ai={siteAi}
-                        aiBusy={aiBusyNew}
-                        aiMessage={aiMessageNew}
-                        aiMessageError={aiMessageErrorNew}
-                        onAiComplete={handleAiCompleteNew}
-                    />
+                        <AddSiteDialog
+                            open={openAddSite}
+                            onClose={handleCloseAddSite}
+                            site={newSite}
+                            onInputChange={handleSiteInputChange}
+                            showPassword={showNewSitePassword}
+                            onTogglePassword={setShowNewSitePassword}
+                            creating={creatingSite}
+                            onFetchIcon={handleFetchNewSiteIcon}
+                            onCreate={handleCreateSite}
+                            ai={siteAi}
+                            aiBusy={aiBusyNew}
+                            aiMessage={aiMessageNew}
+                            aiMessageError={aiMessageErrorNew}
+                            onAiComplete={handleAiCompleteNew}
+                        />
+                    </Suspense>
                     {/* 网站配置对话框 */}
                     {/* 全站设置：这一块原来内联在 App 里，抽成 SettingsDialog 单独维护 */}
                     <Suspense fallback={null}>

@@ -1,8 +1,11 @@
-import React, { useEffect, useMemo, useRef, useState, memo } from "react";
+import React, { Suspense, lazy, useEffect, useMemo, useRef, useState, memo } from "react";
 import { Site, Group } from "../API/http";
 import SiteCard from "./SiteCard";
 import { GroupWithSites } from "../types";
-import EditGroupDialog from "./EditGroupDialog";
+// 「编辑分组」只有在有权限的人点开时才用得到，懒加载。
+// ⚠️ App.tsx 里那个「新建分组」用的是同一个组件，那边也是 lazy —— 改回静态 import
+//    会让它重新进首屏包，tests/lazyBoundary.test.ts 会红。
+const EditGroupDialog = lazy(() => import("./EditGroupDialog"));
 import {
     DndContext,
     closestCenter,
@@ -875,19 +878,21 @@ const GroupCard: React.FC<GroupCardProps> = ({
 
             {/* 编辑分组弹窗 */}
             {onUpdateGroup && onDeleteGroup && canManageGroup && (
-                <EditGroupDialog
-                    open={editDialogOpen}
-                    group={group}
-                    onClose={() => setEditDialogOpen(false)}
-                    onSave={handleUpdateGroup}
-                    onDelete={handleDeleteGroup}
-                    color={accentColor}
-                    onColorChange={
-                        onAccentChange
-                            ? next => onAccentChange(group.id!, next)
-                            : undefined
-                    }
-                />
+                <Suspense fallback={null}>
+                    <EditGroupDialog
+                        open={editDialogOpen}
+                        group={group}
+                        onClose={() => setEditDialogOpen(false)}
+                        onSave={handleUpdateGroup}
+                        onDelete={handleDeleteGroup}
+                        color={accentColor}
+                        onColorChange={
+                            onAccentChange
+                                ? next => onAccentChange(group.id!, next)
+                                : undefined
+                        }
+                    />
+                </Suspense>
             )}
         </Paper>
     );
