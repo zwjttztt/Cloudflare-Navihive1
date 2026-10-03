@@ -76,8 +76,9 @@ import {
     headerSearchSlotSx,
 } from "./constants";
 import HeaderSearchBox from "./components/HeaderSearchBox";
-import HeaderActions from "./components/HeaderActions";
-import MoreMenu from "./components/MoreMenu";
+import HeaderActionsSlot from "./components/HeaderActionsSlot";
+import LoginScreen from "./components/LoginScreen";
+import SearchStatusLine from "./components/SearchStatusLine";
 import DisplayControls from "./components/DisplayControls";
 import HeaderGroupsButton from "./components/HeaderGroupsButton";
 // 新增卡片 / 新建分组：点「新增」才用得到，懒加载。
@@ -136,10 +137,9 @@ import {
 } from "./appDefaults";
 import { setUndoAccountUid } from "./utils/undoPersist";
 import SiteListBody from "./components/SiteListBody";
-// 登录页是首屏唯一还在同步引入的大组件（732 行）。改成 lazy 之后它不再进首屏包，
-// 但登录页本身是首屏 —— 所以配合下面的「预热」，让它的 chunk 与认证检查那次请求
-// 并行下载：等 chunk 到位时正好渲染，用户感觉不到多等一次。
-const LoginForm = lazy(() => import("./components/LoginForm"));
+// 登录页是 lazy chunk（见 components/LoginScreen.tsx）：它不进首屏包，但登录页本身
+// 是首屏 —— 所以配合下面的「预热」，让它的 chunk 与认证检查那次请求并行下载：
+// 等 chunk 到位时正好渲染，用户感觉不到多等一次。
 const BackupDialog = lazy(() => import("./components/BackupDialog"));
 import "./App.css";
 import {
@@ -156,7 +156,6 @@ import {
     Typography,
     Box,
     Button,
-    CircularProgress,
     ThemeProvider,
     CssBaseline,
 } from "@mui/material";
@@ -1566,34 +1565,6 @@ function App() {
     );
 
     // 渲染登录页面
-    const renderLoginForm = () => {
-        return (
-            <Box
-                sx={{
-                    minHeight: "100vh",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    bgcolor: "background.default",
-                }}
-            >
-                <Suspense
-                    fallback={<CircularProgress size={60} thickness={4} />}
-                >
-                    <LoginForm
-                        brandName={brandTitle(configs["site.title"])}
-                        onLogin={handleLogin}
-                        loading={loginLoading}
-                        error={loginError}
-                        onRecover={handleRecover}
-                        recoverConfigured={recoveryConfigured}
-                        onRegister={handleRegister}
-                    />
-                </Suspense>
-            </Box>
-        );
-    };
-
     // 预热登录页：本地没有可用令牌时，这次启动大概率要走到登录页。
     // 趁认证检查那次请求还在飞就把 chunk 拉下来，两边并行，登录页就不多等一次。
     // 有令牌（已登录 / 记住我）时完全不拉 —— 不能让常用路径为一个用不上的组件付流量。
@@ -1604,31 +1575,22 @@ function App() {
 
     // 如果正在检查认证状态，显示加载界面
     if (isAuthChecking) {
-        return (
-            <ThemeProvider theme={theme}>
-                <CssBaseline />
-                <Box
-                    sx={{
-                        minHeight: "100vh",
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        bgcolor: "background.default",
-                    }}
-                >
-                    <CircularProgress size={60} thickness={4} />
-                </Box>
-            </ThemeProvider>
-        );
+        return <LoginScreen theme={theme} checking />;
     }
 
     // 如果需要认证但未认证，显示登录界面
     if (isAuthRequired && !isAuthenticated) {
         return (
-            <ThemeProvider theme={theme}>
-                <CssBaseline />
-                {renderLoginForm()}
-            </ThemeProvider>
+            <LoginScreen
+                theme={theme}
+                brandName={brandTitle(configs["site.title"])}
+                onLogin={handleLogin}
+                loading={loginLoading}
+                error={loginError}
+                onRecover={handleRecover}
+                recoverConfigured={recoveryConfigured}
+                onRegister={handleRegister}
+            />
         );
     }
 
@@ -1788,7 +1750,7 @@ function App() {
                                         onFavoritesEnabledChange={setFavoritesEnabled}
                                     />
                                 )}
-                                <HeaderActions
+                                <HeaderActionsSlot
                                     sortMode={sortMode}
                                     onSaveGroupOrder={handleSaveGroupOrder}
                                     onSaveSiteSort={handleSaveSiteSort}
@@ -1798,41 +1760,36 @@ function App() {
                                     onOpenAddGroup={handleOpenAddGroup}
                                     onMenuOpen={handleMenuOpen}
                                     menuOpen={openMenu}
-                                    menu={
-                                        <MoreMenu
-                                            anchorEl={menuAnchorEl}
-                                            open={openMenu && sortMode === SortMode.None}
-                                            onClose={handleMenuClose}
-                                            onOpenConfig={handleOpenConfig}
-                                            onOpenAccount={() => {
-                                                handleMenuClose();
-                                                setOpenAccount(true);
-                                                void fetchAccountList();
-                                                void fetchSessions();
-                                            }}
-                                            onStartGroupSort={startGroupSort}
-                                            canInstall={canInstall}
-                                            onInstallApp={() => void handleInstallApp()}
-                                            onOpenVisits={() => setOpenVisits(true)}
-                                            onOpenBackup={handleOpenBackup}
-                                            onOpenRecycle={() => {
-                                                handleMenuClose();
-                                                setOpenRecycle(true);
-                                            }}
-                                            onOpenAudit={() => {
-                                                handleMenuClose();
-                                                setOpenAudit(true);
-                                            }}
-                                            isAuthenticated={isAuthenticated}
-                                            onLogout={handleLogout}
-                                            onOpenAiAssistant={() => {
-                                                handleMenuClose();
-                                                setOpenAiAssistant(true);
-                                            }}
-                                            onOpenShortcuts={() => setOpenShortcuts(true)}
-                                            isSiteOwner={currentUser?.role === "owner"}
-                                        />
-                                    }
+                                    menuAnchorEl={menuAnchorEl}
+                                    onMenuClose={handleMenuClose}
+                                    onOpenConfig={handleOpenConfig}
+                                    onOpenAccount={() => {
+                                        handleMenuClose();
+                                        setOpenAccount(true);
+                                        void fetchAccountList();
+                                        void fetchSessions();
+                                    }}
+                                    onStartGroupSort={startGroupSort}
+                                    canInstall={canInstall}
+                                    onInstallApp={() => void handleInstallApp()}
+                                    onOpenVisits={() => setOpenVisits(true)}
+                                    onOpenBackup={handleOpenBackup}
+                                    onOpenRecycle={() => {
+                                        handleMenuClose();
+                                        setOpenRecycle(true);
+                                    }}
+                                    onOpenAudit={() => {
+                                        handleMenuClose();
+                                        setOpenAudit(true);
+                                    }}
+                                    isAuthenticated={isAuthenticated}
+                                    onLogout={handleLogout}
+                                    onOpenAiAssistant={() => {
+                                        handleMenuClose();
+                                        setOpenAiAssistant(true);
+                                    }}
+                                    onOpenShortcuts={() => setOpenShortcuts(true)}
+                                    isSiteOwner={currentUser?.role === "owner"}
                                 />
                             </>
                         }
@@ -1857,63 +1814,25 @@ function App() {
                         )}
 
                     {/* 结果计数：搜索框在上方标题栏里，这里只保留一行轻提示 */}
-                    {sortMode === SortMode.None &&
-                        (query || starFilter || deadOnly || activeTags.length > 0) && (
-                            <Box
-                                sx={{
-                                    display: "flex",
-                                    alignItems: "center",
-                                    gap: 1,
-                                    flexWrap: "wrap",
-                                    mt: -2,
-                                    mb: 3,
-                                }}
-                            >
-                                <Typography
-                                    variant='caption'
-                                    color='text.secondary'
-                                    // 结果数变了要念出来：读屏用户看不到「列表变短了」
-                                    component='div'
-                                    role='status'
-                                    aria-live='polite'
-                                    aria-atomic='true'
-                                    sx={{ display: "block" }}
-                                >
-                                    找到 {matchedCount} 个匹配的网站
-                                    {searchTruncated ? `，先显示前 ${renderedCount} 个` : ""}
-                                </Typography>
-                                {/* 渲染有上限，但用户有权一次看全：给个明确的出口，
-                                    而不是让他继续输入去猜该怎么写关键词 */}
-                                {searchTruncated && (
-                                    <Button
-                                        size='small'
-                                        onClick={
-                                            searchExpanded
-                                                ? collapseAllResults
-                                                : expandAllResults
-                                        }
-                                    >
-                                        {searchExpanded
-                                            ? "收起结果"
-                                            : `显示更多（还有 ${
-                                                  matchedCount - renderedCount
-                                              } 个）`}
-                                    </Button>
-                                )}
-                            </Box>
-                        )}
-
-                    {/* 语法写错了要说出来：is:deleted 这种条件如果不点名，
-                        用户只会以为「没有匹配的卡片」，而不是自己打错了 */}
-                    {advancedHint(advancedQuery) && (
-                        <Typography
-                            variant='caption'
-                            color='warning.main'
-                            sx={{ display: "block", mt: -2, mb: 2 }}
-                        >
-                            {advancedHint(advancedQuery)}
-                        </Typography>
-                    )}
+                    <SearchStatusLine
+                        filtering={
+                            sortMode === SortMode.None &&
+                            Boolean(query || starFilter || deadOnly || activeTags.length > 0)
+                        }
+                        matchedCount={matchedCount}
+                        renderedCount={renderedCount}
+                        searchTruncated={searchTruncated}
+                        searchExpanded={searchExpanded}
+                        onExpand={expandAllResults}
+                        onCollapse={collapseAllResults}
+                        hint={sortMode === SortMode.None ? advancedHint(advancedQuery) : ""}
+                        semanticEnabled={sortMode === SortMode.None && semanticSearch}
+                        semanticNote={semanticNote}
+                        aiReady={ai.ready}
+                        embeddedCount={ai.status?.embedded ?? 0}
+                        semanticBusy={semanticBusy}
+                        onBuildSemanticIndex={() => void buildSemanticIndex(true)}
+                    />
 
                     {/* 语义搜索的两句话：没索引就教他建一个，搜不到就说清楚下面的是关键词结果 */}
                     {semanticSearch && (
