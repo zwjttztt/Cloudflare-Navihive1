@@ -4,9 +4,6 @@ import {
     BACKUP_CREDENTIALS_CONFIG,
     CRON_LAST_ERROR_KEY,
     EXPORT_VERSION,
-    isPerUserAppearanceKey,
-    isSecretConfigKey,
-    isUserScopedConfigKey,
     normalizeImportData,
     type ExportData,
     type Group,
@@ -20,6 +17,13 @@ import { MockNavigationClient } from "../API/mock";
 import { encryptBackup } from "../API/crypto";
 import { GroupWithSites } from "../types";
 import { verifyBackupIntegrity, withBackupIntegrity } from "../utils/backupIntegrity";
+import {
+    canWriteSharedConfigs,
+    pickCronError,
+    pickExportConfigs,
+    pickImportConfigEntries,
+    remapLocalPrefs,
+} from "../utils/backupScope";
 import { NotifySeverity } from "./useNotify";
 import { exportLinkHealth } from "../utils/linkHealth";
 
@@ -119,25 +123,7 @@ export function useBackupController(deps: BackupControllerDeps) {
     // 最近一次定时任务（每周自动备份 / 死链巡检）的失败留痕，没有就是 null。
     // 定时任务跑在 Worker 里，失败了页面上毫无动静，只能靠启动时提示一句 +
     // 备份弹窗里常驻一条 —— 否则「自动备份其实早就不工作了」要等到真要恢复那天才发现。
-    const cronError = useMemo(() => {
-        for (const task of ["backup", "linkSweep"]) {
-            const raw = configs[`${CRON_LAST_ERROR_KEY}.${task}`];
-            if (!raw) continue;
-            try {
-                const parsed = JSON.parse(raw) as {
-                    task?: string;
-                    message?: string;
-                    at?: string;
-                };
-                if (parsed && typeof parsed.message === "string" && parsed.message) {
-                    return { task: parsed.task || task, message: parsed.message, at: parsed.at };
-                }
-            } catch {
-                // 留痕本身坏了就当没留过，别因为一行坏数据把弹窗搞崩
-            }
-        }
-        return null;
-    }, [configs]);
+    const cronError = useMemo(() => pickCronError(configs, CRON_LAST_ERROR_KEY), [configs]);
 
     // 启动后提示一次（同一条不重复弹）：定时任务失败不是用户当下的操作引起的，
     // 不提示的话他根本不会知道要去看一眼备份设置
@@ -160,26 +146,12 @@ export function useBackupController(deps: BackupControllerDeps) {
         // 全站设置（标题 / 主题 / 背景…）是所有账号共用的，只有站点所有者（或未启用
         // 登录的单账号部署）才写进备份文件：否则这份备份被别的账号恢复时，会把整站
         // 外观一起改掉。按账号隔离的那批（webdav.*）属敏感配置，一律不进备份。
-        const mayExportShared = !currentUser || currentUser.role === "owner";
-        const sharedConfigs: Record<string, string> = {};
-        Object.entries(configs).forEach(([key, value]) => {
-            // 敏感配置（WebDAV 凭据）和「服务端镜像」类的大块数据（失效记录、星标标签）
-            // 都不写进备份文件，规则统一在 isSecretConfigKey 里维护
-            if (!isSecretConfigKey(key)) {
-                sharedConfigs[key] = value;
-            }
-        });
-
-        // 普通账号：外观（标题 / 背景 / 主题色…）是自己那份，也要跟着备份走。
-        // 所有者那份本来就是全站 configs，已经进了 sharedConfigs，不重复写。
-        const ownConfigs: Record<string, string> = {};
-        if (!mayExportShared) {
-            Object.entries(configs).forEach(([key, value]) => {
-                if (!isSecretConfigKey(key) && isPerUserAppearanceKey(key)) {
-                    ownConfigs[key] = value;
-                }
-            });
-        }
+        const mayExportShared = canWriteSharedConfigs(currentUser);
+        // 什么进备份文件的规则统一在 utils/backupScope 里（导出与导入共用同一份判定）
+        const { own: ownConfigs, shared: sharedConfigs } = pickExportConfigs(
+            configs,
+            currentUser
+        );
 
         return {
             groups: groups.map(group => ({
@@ -430,7 +402,7 @@ export function useBackupController(deps: BackupControllerDeps) {
             const siteIdMap = new Map<number, number>();
             // 全站共享配置只有所有者（或未启用登录的单账号部署）能改，
             // 免得普通账号拿别人的备份恢复时把整站外观改掉
-            const mayWriteShared = !currentUser || currentUser.role === "owner";
+            // 能不能改全站外观由 pickImportConfigEntries 判定（见 utils/backupScope）
 
             // 空备份当成失败处理：覆盖恢复的语义是「以这份备份为准」，拿一份没有分组
             // 也没有卡片的备份去覆盖，等于把账号清空 —— 多半是文件选错了 / 解析没成功。
@@ -490,14 +462,8 @@ export function useBackupController(deps: BackupControllerDeps) {
 
                 // 老备份的全站设置混在 configs 里，新备份放在 sharedConfigs，
                 // 两边都按「共享键只有所有者能写」过滤一遍
-                const configEntries: [string, string][] = [
-                    ...Object.entries(normalized.configs || {}),
-                    ...Object.entries(normalized.sharedConfigs || {}),
-                ];
+                const configEntries = pickImportConfigEntries(normalized, currentUser);
                 for (const [key, value] of configEntries) {
-                    if (key === "DB_INITIALIZED") continue;
-                    if (isSecretConfigKey(key)) continue;
-                    if (!isUserScopedConfigKey(key) && !mayWriteShared) continue;
                     await api.setConfig(key, value);
                 }
             }
@@ -506,23 +472,8 @@ export function useBackupController(deps: BackupControllerDeps) {
             // 服务端现在会重新发号（不再保留备份里的 id），所以两种模式都按映射翻译一遍。
             // 老备份/无 id 的备份拿不到映射，就只能照原样写回。
             const prefs = normalized.localPrefs;
-            if (prefs) {
-                const remapped =
-                    siteIdMap.size > 0
-                        ? {
-                              starred: (prefs.starred ?? []).map(id => siteIdMap.get(id)).filter(
-                                  (id): id is number => typeof id === "number"
-                              ),
-                              tags: Object.entries(prefs.tags ?? {}).reduce<
-                                  Record<string, string[]>
-                              >((acc, [siteId, list]) => {
-                                  const mapped = siteIdMap.get(Number(siteId));
-                                  if (typeof mapped === "number") acc[String(mapped)] = list;
-                                  return acc;
-                              }, {}),
-                          }
-                        : prefs;
-
+            const remapped = remapLocalPrefs(prefs, siteIdMap);
+            if (remapped) {
                 restoreLocalPrefs(remapped, overwrite ? "replace" : "merge");
             }
 

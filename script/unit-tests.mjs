@@ -124,14 +124,26 @@ for (const key of ["ResizeObserver", "IntersectionObserver"]) {
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 `;
 
+// 用法：npm test               跑全部
+//      npm test -- public     只跑文件名含 public 的用例（可给多个关键词，任一命中即可）
+const filters = process.argv.slice(2);
+const match = f =>
+    filters.length === 0 ||
+    filters.some(k => f.toLowerCase().includes(k.toLowerCase()));
+
 const testsDir = path.join(ROOT, "tests");
 const all = fs.existsSync(testsDir) ? fs.readdirSync(testsDir) : [];
 const pureEntries = all
-    .filter(f => f.endsWith(".test.ts"))
+    .filter(f => f.endsWith(".test.ts") && match(f))
     .map(f => path.join(testsDir, f));
 const domEntries = all
-    .filter(f => f.endsWith(DOM_SUFFIX))
+    .filter(f => f.endsWith(DOM_SUFFIX) && match(f))
     .map(f => path.join(testsDir, f));
+
+if (filters.length > 0 && pureEntries.length === 0 && domEntries.length === 0) {
+    console.error(`tests/ 下没有匹配 ${filters.join(" / ")} 的用例`);
+    process.exit(1);
+}
 
 if (pureEntries.length === 0 && domEntries.length === 0) {
     console.error("tests/ 下没有 .test.ts / .dom.test.tsx");
@@ -179,8 +191,10 @@ if (domEntries.length > 0) {
 
 await Promise.all(builds);
 
+const scope =
+    filters.length > 0 ? `（只跑匹配 ${filters.join(" / ")} 的）` : "";
 console.log(
-    `已打包 ${pureEntries.length} 个纯函数用例、${domEntries.length} 个组件用例，交给 node:test\n`
+    `已打包 ${pureEntries.length} 个纯函数用例、${domEntries.length} 个组件用例${scope}，交给 node:test\n`
 );
 
 // 显式列出产物再交给 --test：直接把目录丢给 --test 时，
