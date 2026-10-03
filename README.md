@@ -4,15 +4,15 @@
 
 ![NaviHive 导航站](https://img.shields.io/badge/NaviHive-个人导航站-blue)
 
-![React](https://img.shields.io/badge/React-19.0.0-61dafb)
+![React](https://img.shields.io/badge/React-19.3-61dafb)
 
 
 
-![TypeScript](https://img.shields.io/badge/TypeScript-5.7-3178c6)
+![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178c6)
 
 
 
-![Material UI](https://img.shields.io/badge/Material_UI-7.0-0081cb)
+![Material UI](https://img.shields.io/badge/Material_UI-7.3-0081cb)
 
 ![Cloudflare](https://img.shields.io/badge/Cloudflare-Workers_+_D1-f38020)
 
@@ -51,7 +51,10 @@
 1. 打开上方 **"Deploy to Cloudflare Workers"** 按钮（或访问  
    `https://deploy.workers.cloudflare.com/?url=https://github.com/zwjttztt/Cloudflare-Navihive1`）。
 2. 使用你的 Cloudflare 账号登录。
-3. D1 数据库 `navigation-db` 已内置在 `wrangler.jsonc`（database_id 已填）；
+3. D1 数据库 `navigation-db` 已内置在 `wrangler.jsonc`（database_id 已填）。
+   ⚠️ 那个 ID 绑定的是**本仓库作者**的数据库实例，只是个公开标识符、不是密钥
+   （D1 无法从 Cloudflare 外部直连，访问还要过账号鉴权），但你部署后应当按
+   第 5 步换成自己新建的 ID，否则会连到一个不属于你的库。
    登录凭据需要你自己先设成 Cloudflare secret（**不要**写进 `wrangler.jsonc`，会明文进 Git）：
    ```bash
    wrangler secret put AUTH_USERNAME
