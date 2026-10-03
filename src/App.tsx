@@ -132,7 +132,10 @@ import {
 } from "./appDefaults";
 import { setUndoAccountUid } from "./utils/undoPersist";
 import SiteListBody from "./components/SiteListBody";
-import LoginForm from "./components/LoginForm";
+// 登录页是首屏唯一还在同步引入的大组件（732 行）。改成 lazy 之后它不再进首屏包，
+// 但登录页本身是首屏 —— 所以配合下面的「预热」，让它的 chunk 与认证检查那次请求
+// 并行下载：等 chunk 到位时正好渲染，用户感觉不到多等一次。
+const LoginForm = lazy(() => import("./components/LoginForm"));
 const BackupDialog = lazy(() => import("./components/BackupDialog"));
 import "./App.css";
 import {
@@ -1602,18 +1605,30 @@ function App() {
                     bgcolor: "background.default",
                 }}
             >
-                <LoginForm
-                    brandName={brandTitle(configs["site.title"])}
-                    onLogin={handleLogin}
-                    loading={loginLoading}
-                    error={loginError}
-                    onRecover={handleRecover}
-                    recoverConfigured={recoveryConfigured}
-                    onRegister={handleRegister}
-                />
+                <Suspense
+                    fallback={<CircularProgress size={60} thickness={4} />}
+                >
+                    <LoginForm
+                        brandName={brandTitle(configs["site.title"])}
+                        onLogin={handleLogin}
+                        loading={loginLoading}
+                        error={loginError}
+                        onRecover={handleRecover}
+                        recoverConfigured={recoveryConfigured}
+                        onRegister={handleRegister}
+                    />
+                </Suspense>
             </Box>
         );
     };
+
+    // 预热登录页：本地没有可用令牌时，这次启动大概率要走到登录页。
+    // 趁认证检查那次请求还在飞就把 chunk 拉下来，两边并行，登录页就不多等一次。
+    // 有令牌（已登录 / 记住我）时完全不拉 —— 不能让常用路径为一个用不上的组件付流量。
+    useEffect(() => {
+        if (!api.isLoggedIn()) void import("./components/LoginForm");
+        // 只在挂载时判断一次：这是「本次启动要不要预热」的问题，不是跟着状态变的
+    }, []);
 
     // 如果正在检查认证状态，显示加载界面
     if (isAuthChecking) {
