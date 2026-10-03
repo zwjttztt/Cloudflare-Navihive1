@@ -6,9 +6,7 @@ import type { NavigationClient } from "../API/client";
 import type { MockNavigationClient } from "../API/mock";
 import type { AccountInfo, SessionInfo } from "../API/http";
 import {
-    INACTIVE_DISABLE_DAYS_DEFAULT,
     INACTIVE_DISABLE_DAYS_KEY,
-    INACTIVE_DELETE_GRACE_DAYS_DEFAULT,
     INACTIVE_DELETE_GRACE_DAYS_KEY,
 } from "../API/http";
 import { setAccountUid } from "../API/offlineQueue";
@@ -22,6 +20,12 @@ import {
     generateRecoveryKeyPair,
 } from "../utils/recoveryKey";
 import { clearRememberedLogin, saveRememberedLogin } from "../utils/rememberedLogin";
+import {
+    classifyAuthFailure,
+    cookieRejectedMessage,
+    readSweepResult,
+    resolveInactivePolicy,
+} from "../utils/authFlow";
 import { reportError } from "../utils/errorReporter";
 import type { NotifySeverity } from "./useNotify";
 import type { GroupWithSites } from "../types";
@@ -186,12 +190,7 @@ export function useAccountSession({
             api.getConfig(INACTIVE_DISABLE_DAYS_KEY),
             api.getConfig(INACTIVE_DELETE_GRACE_DAYS_KEY),
         ]);
-        const disableDays = Number.parseInt(disableRaw || "", 10);
-        const graceDays = Number.parseInt(graceRaw || "", 10);
-        setInactivePolicy({
-            disableDays: disableDays > 0 ? disableDays : INACTIVE_DISABLE_DAYS_DEFAULT,
-            graceDays: graceDays > 0 ? graceDays : INACTIVE_DELETE_GRACE_DAYS_DEFAULT,
-        });
+        setInactivePolicy(resolveInactivePolicy(disableRaw, graceRaw));
     }, [api, currentUser?.role]);
 
     /**
@@ -259,11 +258,9 @@ export function useAccountSession({
                 disabled?: number;
                 deleted?: number;
             };
-            if (!res.ok || !data.success) {
-                return { success: false, message: data.message || "扫描失败，请稍后再试" };
-            }
-            await fetchAccountList();
-            return { success: true, disabled: data.disabled ?? 0, deleted: data.deleted ?? 0 };
+            const result = readSweepResult(res.ok, data);
+            if (result.success) await fetchAccountList();
+            return result;
         } catch (error) {
             return {
                 success: false,
@@ -396,9 +393,10 @@ export function useAccountSession({
             // 账号被停用（403）也是一个道理 —— 停在这里只会看到一片空白，
             // 把服务端那句「可以怎么用恢复密钥找回」原样带过去。
             if (error instanceof Error && (error.message.includes("认证") || error.message.includes("HTTP 403"))) {
+                const failure = classifyAuthFailure(error);
                 setIsAuthenticated(false);
                 setIsAuthRequired(true);
-                if (error.message.includes("HTTP 403")) onDataError(error.message.replace(/\s*\(HTTP 403\)$/, ""));
+                if (failure.message) onDataError(failure.message);
             }
         } finally {
             setIsAuthChecking(false);
@@ -422,11 +420,7 @@ export function useAccountSession({
                 // 确认不了就明说原因，别让人对着闪退干瞪眼。
                 const sessionOk = await api.checkAuthStatus();
                 if (!sessionOk) {
-                    setLoginError(
-                        location.protocol === "https:"
-                            ? "登录状态没能保存，请检查浏览器是否禁用了 Cookie 或拦截了本站 Cookie"
-                            : "登录状态没能保存：当前通过 HTTP 访问，浏览器拒绝保存安全 Cookie。请改用 HTTPS（或 localhost）访问"
-                    );
+                    setLoginError(cookieRejectedMessage(location.protocol === "https:"));
                     setIsAuthenticated(false);
                     setIsAuthRequired(true);
                     return;
