@@ -5,7 +5,7 @@
 // 点开是一片空白 —— 和「网站设置」里那两排对不上。
 //
 // 两条容易写歪的规则：
-// - 勾上的标签必须**留在原处**显示选中态（不按已选过滤），点了就消失会数不出勾了哪些
+// - 点候选要**填进输入框**（不是另存一份勾选状态），勾完还能手改
 // - 常用排只露前 12 个，但**必须留入口**够到后面的，不能让人够不着
 
 import { test, afterEach } from "node:test";
@@ -91,6 +91,26 @@ function groupChips(kind: string) {
     return Array.from(group.querySelectorAll<HTMLElement>(".MuiChip-root"));
 }
 
+/** 弹窗里那个标签输入框的当前值 */
+function inputValue() {
+    const input = document.querySelector<HTMLInputElement>(".nav-tag-dialog input");
+    assert.ok(input, "弹窗里要有标签输入框");
+    return input!.value;
+}
+
+async function type(value: string) {
+    const input = document.querySelector<HTMLInputElement>(".nav-tag-dialog input");
+    assert.ok(input, "弹窗里要有标签输入框");
+    await act(async () => {
+        const setter = Object.getOwnPropertyDescriptor(
+            window.HTMLInputElement.prototype,
+            "value"
+        )!.set!;
+        setter.call(input!, value);
+        input!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+}
+
 test("弹窗里给出「常用」与「推荐」两排候选", async () => {
     mount();
     await openDialog();
@@ -109,18 +129,31 @@ test("空库（一个标签都没有）也要有推荐排，不能是一片空�
     assert.equal(groupChips("recommend").length, 6);
 });
 
-test("勾上的标签留在原处并变成选中态 —— 点了就消失会数不出勾了哪些", async () => {
+test("点候选标签要填进输入框 —— 不是只变个勾选态（填进去才看得到、还能手改）", async () => {
     mount();
     await openDialog();
-    const target = chip("添加标签 AI");
-    await click(target);
+    assert.equal(inputValue(), "");
+    await click(chip("添加标签 AI"));
+    assert.equal(inputValue(), "AI");
 
+    await click(chip("添加标签 工具"));
+    assert.equal(inputValue(), "AI, 工具");
+});
+
+test("填进输入框之后，候选本身要显示成已选（再点一次取消）", async () => {
+    mount();
+    await openDialog();
+    await click(chip("添加标签 AI"));
     assert.equal(chip("添加标签 AI").getAttribute("aria-pressed"), "true", "要显示成已选");
     assert.deepEqual(
         groupChips("common").map(c => c.textContent),
         ["AI", "工具"],
-        "勾上的不能从候选里消失"
+        "候选不能因为被选中就消失"
     );
+
+    await click(chip("添加标签 AI"));
+    assert.equal(chip("添加标签 AI").getAttribute("aria-pressed"), "false");
+    assert.equal(inputValue(), "", "再点一次要从输入框里摘掉");
 });
 
 test("再点一次取消勾选", async () => {
@@ -140,27 +173,27 @@ test("推荐排的标签点了也要算进提交", async () => {
     const first = groupChips("recommend")[0];
     const label = first.textContent!;
     await click(first);
+    assert.equal(inputValue(), label, "推荐的也要进输入框");
     submit();
     assert.deepEqual(tagged, [[label]]);
 });
 
-test("勾的 + 手打的合并去重后一起提交", async () => {
+test("点候选之后再手打，合并去重后一起提交", async () => {
     const { tagged } = mount();
     await openDialog();
     await click(chip("添加标签 AI"));
 
-    const input = document.querySelector<HTMLInputElement>(".nav-tag-dialog input");
-    assert.ok(input, "弹窗里要有标签输入框");
-    await act(async () => {
-        const setter = Object.getOwnPropertyDescriptor(
-            window.HTMLInputElement.prototype,
-            "value"
-        )!.set!;
-        setter.call(input!, "AI, 效率");
-        input!.dispatchEvent(new Event("input", { bubbles: true }));
-    });
+    await type("AI, AI, 效率");
     submit();
-    assert.deepEqual(tagged, [["AI", "效率"]], "AI 勾过一次，不能出现两遍");
+    assert.deepEqual(tagged, [["AI", "效率"]], "AI 出现多次只算一个");
+});
+
+test("直接手打也能提交（不点候选）", async () => {
+    const { tagged } = mount({ allTags: [] });
+    await openDialog();
+    await type("效率，网盘");
+    submit();
+    assert.deepEqual(tagged, [["效率", "网盘"]], "中文逗号也要认");
 });
 
 test("标签超过 12 个时默认只露 12 个，但要有入口够到后面的", async () => {

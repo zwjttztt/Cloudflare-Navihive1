@@ -26,6 +26,7 @@ import DriveFileMoveIcon from "@mui/icons-material/DriveFileMove";
 import CloseIcon from "@mui/icons-material/Close";
 import CheckCircleIcon from "@mui/icons-material/CheckCircle";
 import { pickBulkTagSuggestions } from "../utils/tagSuggest";
+import { parseTagInput, toggleTagInInput } from "../utils/tagInput";
 
 export interface BulkGroupOption {
     id: number;
@@ -61,7 +62,6 @@ export default function BulkActionBar({
     // 打标签的小弹窗
     const [tagOpen, setTagOpen] = useState(false);
     const [tagInput, setTagInput] = useState("");
-    const [pickedTags, setPickedTags] = useState<string[]>([]);
     // 常用排只露出前 12 个，剩下的要手动展开（标签多了不能让人够不着后面的）
     const [showAllTags, setShowAllTags] = useState(false);
     // 移动到分组的菜单
@@ -71,35 +71,31 @@ export default function BulkActionBar({
     const [tagging, setTagging] = useState(false);
 
     const openTagDialog = () => {
-        setPickedTags([]);
         setTagInput("");
         setShowAllTags(false);
         setTagOpen(true);
     };
 
     // 两排快捷候选：常用（全站用过的，按使用次数排）与推荐（常用词里还没用过的）。
-    // 批量场景不按已选过滤 —— 勾上的要留在原处显示成选中态，否则点了就找不着了。
+    // 候选点了直接进输入框（不是另存一份勾选状态）：「要提交哪些标签」只留一处真相，
+    // 勾完还能手改、还能删。
     const { common, recommended, hidden } = useMemo(
         () => pickBulkTagSuggestions(allTags),
         [allTags]
     );
     const visibleTags = showAllTags ? allTags : common;
+    // 候选的选中态 = 它现在在不在输入框里（同一处真相）
+    const pickedTags = useMemo(() => parseTagInput(tagInput), [tagInput]);
 
-    // 弹窗里勾选/取消已有标签
+    // 点候选：已经在框里就摘掉，否则加到末尾
     const togglePicked = (tag: string) => {
-        setPickedTags(prev =>
-            prev.includes(tag) ? prev.filter(t => t !== tag) : [...prev, tag]
-        );
+        setTagInput(prev => toggleTagInInput(prev, tag));
     };
 
     // 确认打标签：输入框里用逗号或空格分开，多个标签一次加上
     const submitTags = () => {
         if (taggingRef.current) return;
-        const typed = tagInput
-            .split(/[,，\s]+/)
-            .map(t => t.trim())
-            .filter(Boolean);
-        const merged = Array.from(new Set([...pickedTags, ...typed]));
+        const merged = parseTagInput(tagInput);
         if (merged.length === 0) {
             setTagOpen(false);
             return;
@@ -412,7 +408,8 @@ export default function BulkActionBar({
                             display='block'
                             sx={{ mt: 1 }}
                         >
-                            点「常用 / 推荐」里的标签可直接勾选，也可以自己输入（逗号分隔一次加多个）。
+                            点「常用 / 推荐」里的标签会填进输入框（再点一次取消），填完还能手改；
+                            也可以自己输入，逗号分隔一次加多个。
                         </Typography>
                     </Box>
                 </DialogContent>
