@@ -70,7 +70,6 @@ export function useSortController({
             setSortMode(SortMode.None);
             setCurrentSortingGroupId(null);
         } catch (error) {
-            console.error("更新分组排序失败:", error);
             reportError(error, { source: "group-reorder" });
             onError("更新分组排序失败: " + (error as Error).message);
         }
@@ -116,7 +115,6 @@ export function useSortController({
                 setSortMode(SortMode.None);
                 setCurrentSortingGroupId(null);
             } catch (error) {
-                console.error("更新站点排序失败:", error);
                 reportError(error, { source: "site-reorder" });
                 onError("更新站点排序失败: " + (error as Error).message);
             }
@@ -240,7 +238,6 @@ export function useSortController({
             setSortMode(SortMode.None);
             setCurrentSortingGroupId(null);
         } catch (error) {
-            console.error("保存站点排序失败:", error);
             reportError(error, { source: "site-order-save" });
             onError("保存站点排序失败: " + (error as Error).message);
         }

@@ -66,7 +66,6 @@ export default class ErrorBoundary extends Component<Props, State> {
     }
 
     componentDidCatch(error: Error, info: ErrorInfo) {
-        console.error("[navihive] 页面崩溃：", error, info.componentStack);
         reportError(error, {
             source: "render",
             context: { componentStack: info.componentStack },

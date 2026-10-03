@@ -98,7 +98,6 @@ export function useSiteCreator({
                     onNotify("网络已断开：分组已暂存本地，联网后自动创建", "info");
                     return;
                 }
-                console.error("创建分组失败:", error);
                 reportError(error, { source: "group-create" });
                 onError("创建分组失败: " + (error as Error).message);
             }
@@ -189,7 +188,7 @@ export function useSiteCreator({
                     onNotify("网络已断开：卡片已暂存本地，联网后自动创建", "info");
                     return;
                 }
-                console.error("创建站点失败:", error);
+                reportError(error, { source: "site-create" });
                 onError("创建站点失败: " + (error as Error).message);
             } finally {
                 release();

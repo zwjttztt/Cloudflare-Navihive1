@@ -51,6 +51,10 @@ function recoverFromStaleAssets(reason: string) {
     } catch {
         // 隐私模式下 sessionStorage 可能不可用，那就直接重载一次
     }
+    // 这一处 console 是**故意留的**：它不是错误上报，而是给正在看控制台的人
+    // （自己调试、或用户截图过来）一条「页面为什么闪了一下」的说明。
+    // 其余浏览器端的 console.error 都已经换成 utils/errorReporter 的 reportError
+    // —— 那个会先 sanitize 掉 password / token 再上报。
     console.warn("检测到旧版本资源加载失败，清缓存后重试一次：", reason);
     void (async () => {
         try {

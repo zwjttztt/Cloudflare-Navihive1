@@ -22,6 +22,11 @@ import {
     AiTestResponse,
 } from "./http";
 
+// 错误统一走 reportError：它会先 sanitize 掉 password / token / Authorization 再上报，
+// 比直接 console.error 安全（登录相关的 error 对象里可能带着请求上下文），
+// 也省得生产控制台一片噪音。改动前后控制台都不打东西 —— 要看错误去后端日志。
+import { reportError } from "../utils/errorReporter";
+
 // 前端只读标记：真正的令牌在 httpOnly cookie 里，JS 拿不到（XSS 偷不走）。
 // 这条 cookie 只表示「已登录」，不含任何凭据。
 import type { SiteMetaSuggestion, TagSuggestion } from "../utils/aiMeta";
@@ -170,7 +175,7 @@ export class NavigationClient {
 
             return data;
         } catch (error) {
-            console.error('登录失败:', error);
+            reportError(error, { source: "auth-login" });
             // 走到这里说明 fetch 本身就没成功（DNS、TLS、断网、被拦截），
             // 和服务端返回的「密码不对」不是一回事，别再笼统地说一句「检查网络连接」
             return {
@@ -218,7 +223,7 @@ export class NavigationClient {
             }
             return { success: false, message: data.message || "注册失败，请稍后再试" };
         } catch (error) {
-            console.error("注册失败:", error);
+            reportError(error, { source: "auth-register" });
             return { success: false, message: "注册请求失败，请检查网络连接" };
         }
     }
@@ -237,7 +242,7 @@ export class NavigationClient {
             }
             return { success: true, code: data.code, expiresAt: data.expiresAt, message: data.message };
         } catch (error) {
-            console.error("生成邀请码失败:", error);
+            reportError(error, { source: "invite-code" });
             return { success: false, message: "生成邀请码请求失败，请检查网络连接" };
         }
     }
@@ -260,7 +265,7 @@ export class NavigationClient {
                 message: data.message || (data.success ? "账号已注销" : "注销失败，请稍后再试"),
             };
         } catch (error) {
-            console.error("注销账号失败:", error);
+            reportError(error, { source: "account-delete" });
             return { success: false, message: "注销请求失败，请检查网络连接" };
         }
     }
@@ -311,7 +316,7 @@ export class NavigationClient {
             }
             return data;
         } catch (error) {
-            console.error("恢复密码失败:", error);
+            reportError(error, { source: "auth-recover" });
             return { success: false, message: "恢复请求失败，请检查网络连接" };
         }
     }
@@ -341,7 +346,7 @@ export class NavigationClient {
             }
             return data;
         } catch (error) {
-            console.error("保存恢复公钥失败:", error);
+            reportError(error, { source: "recovery-key-save" });
             return { success: false, message: "保存恢复公钥请求失败，请检查网络连接" };
         }
     }

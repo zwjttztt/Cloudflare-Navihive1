@@ -630,8 +630,7 @@ function App() {
             // 离线队列已接住的操作：温和不报错，告诉用户会在联网后自动同步即可
             const isOfflineQueued = errorMessage.includes("离线保存") || errorMessage.includes("OfflineQueued");
             notify(errorMessage, isOfflineQueued ? "info" : "error");
-            if (!isOfflineQueued) console.error(errorMessage);
-            reportError(errorMessage, { source: "save-error" });
+            if (!isOfflineQueued) reportError(errorMessage, { source: "save-error" });
         },
         [notify]
     );
@@ -971,7 +970,6 @@ function App() {
                         });
                     }
                 } catch (error) {
-                    console.error("更新站点失败:", error);
                     reportError(error, { source: "site-update" });
                     if (snapshot) upsertSiteLocally(snapshot);
                     handleError("更新站点失败: " + (error as Error).message);
@@ -1065,7 +1063,6 @@ function App() {
                     onClick: () => void runUndo(),
                 });
             } catch (error) {
-                console.error("删除站点失败:", error);
                 reportError(error, { source: "site-delete" });
                 handleError("删除站点失败: " + (error as Error).message);
             }
@@ -1202,7 +1199,6 @@ function App() {
                     });
                 }
             } catch (error) {
-                console.error("批量删除站点失败:", error);
                 reportError(error, { source: "site-bulk-delete" });
                 handleError("批量删除站点失败: " + (error as Error).message);
             }
@@ -1393,7 +1389,6 @@ function App() {
                     });
                 }
             } catch (error) {
-                console.error("更新分组失败:", error);
                 reportError(error, { source: "group-update" });
                 handleError("更新分组失败: " + (error as Error).message);
             }
@@ -1508,7 +1503,6 @@ function App() {
                     }
                 );
             } catch (error) {
-                console.error("删除分组失败:", error);
                 reportError(error, { source: "group-delete" });
                 handleError("删除分组失败: " + (error as Error).message);
             }

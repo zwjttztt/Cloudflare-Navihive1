@@ -2,6 +2,7 @@
 // 管理员凭据提交、以及整批保存。原来内联在 App 里，抽出来后 App 只剩一次调用。
 // 搬迁是纯机械的（只做整词改名），行为与抽取前逐行一致。
 import { useCallback, useRef, type Dispatch, type SetStateAction } from "react";
+import { reportError } from "../utils/errorReporter";
 import { clearRememberedLogin } from "../utils/rememberedLogin";
 import type { NotifySeverity } from "./useNotify";
 
@@ -138,7 +139,7 @@ export function useSiteSettings({
             onLogout();
             onDataError("账号或密码已更新，请使用新凭据重新登录");
         } catch (error) {
-            console.error("保存账号密码失败:", error);
+            reportError(error, { source: "site-credentials-save" });
             onError("保存账号密码失败: " + (error as Error).message);
         } finally {
             setSavingAuth(false);
@@ -214,7 +215,7 @@ export function useSiteSettings({
                 notify("设置已保存", "success");
             }
         } catch (error) {
-            console.error("保存配置失败:", error);
+            reportError(error, { source: "config-save" });
             onError("保存配置失败: " + (error as Error).message);
         } finally {
             savingConfigRef.current = false;

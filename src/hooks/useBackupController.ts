@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
+import { reportError } from "../utils/errorReporter";
 import {
     BACKUP_CREDENTIALS_CONFIG,
     CRON_LAST_ERROR_KEY,
@@ -241,7 +242,7 @@ export function useBackupController(deps: BackupControllerDeps) {
             document.body.removeChild(linkElement);
             window.setTimeout(() => URL.revokeObjectURL(url), 1000);
         } catch (error) {
-            console.error("导出数据失败:", error);
+            reportError(error, { source: "backup-export" });
             handleError("导出数据失败: " + (error instanceof Error ? error.message : "未知错误"));
         }
     };
@@ -277,7 +278,7 @@ export function useBackupController(deps: BackupControllerDeps) {
             }
             setWebdavConfig(config);
         } catch (error) {
-            console.error("保存 WebDAV 配置失败:", error);
+            reportError(error, { source: "backup-webdav-save" });
             handleError("保存 WebDAV 配置失败: " + (error instanceof Error ? error.message : "未知错误"));
             throw error;
         }
@@ -296,7 +297,7 @@ export function useBackupController(deps: BackupControllerDeps) {
             await api.setConfig(key, next);
         } catch (error) {
             setConfigs(prev => ({ ...prev, [key]: previous }));
-            console.error("保存自动备份设置失败:", error);
+            reportError(error, { source: "backup-auto-save" });
             handleError("保存自动备份设置失败: " + (error instanceof Error ? error.message : "未知错误"));
         }
     };
@@ -318,7 +319,7 @@ export function useBackupController(deps: BackupControllerDeps) {
             await api.setConfig(BACKUP_CREDENTIALS_CONFIG, next);
         } catch (error) {
             setConfigs(prev => ({ ...prev, [BACKUP_CREDENTIALS_CONFIG]: previous }));
-            console.error("保存备份设置失败:", error);
+            reportError(error, { source: "backup-settings-save" });
             handleError(
                 "保存备份设置失败: " + (error instanceof Error ? error.message : "未知错误")
             );
@@ -349,7 +350,7 @@ export function useBackupController(deps: BackupControllerDeps) {
         } catch (error) {
             // 没写进去就把开关拨回去，别让界面显示一个不存在的状态
             setConfigs(prev => ({ ...prev, [LINK_HEALTH_SYNC_CONFIG]: rollback }));
-            console.error("保存同步设置失败:", error);
+            reportError(error, { source: "backup-sync-save" });
             handleError(
                 "保存同步设置失败: " + (error instanceof Error ? error.message : "未知错误")
             );
@@ -387,7 +388,7 @@ export function useBackupController(deps: BackupControllerDeps) {
             notify("星标与标签已同步到服务端", "success");
         } catch (error) {
             setPrefSync(false);
-            console.error("保存同步设置失败:", error);
+            reportError(error, { source: "backup-sync-save" });
             handleError(
                 "保存同步设置失败: " + (error instanceof Error ? error.message : "未知错误")
             );
@@ -528,7 +529,7 @@ export function useBackupController(deps: BackupControllerDeps) {
             // 恢复/导入是低频重操作，这里同步刷新一次（一次 bootstrap 请求）
             await fetchData();
         } catch (error) {
-            console.error("导入数据失败:", error);
+            reportError(error, { source: "backup-import" });
             handleError("导入数据失败: " + (error instanceof Error ? error.message : "未知错误"));
             throw error;
         }

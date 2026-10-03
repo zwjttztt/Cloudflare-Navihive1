@@ -187,7 +187,6 @@ export function useBulkActions(params: BulkActionsParams) {
                     notify(`已移动 ${orders.length} 个网站到「${target.name}」`, "success");
                 }
             } catch (error) {
-                console.error("批量移动站点失败:", error);
                 reportError(error, { source: "site-bulk-move" });
                 handleError("批量移动站点失败: " + (error as Error).message);
             }

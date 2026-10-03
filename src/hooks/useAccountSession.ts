@@ -139,7 +139,7 @@ export function useAccountSession({
             }
             return { success: false, message: result.message || "注册失败" };
         } catch (error) {
-            console.error("注册失败:", error);
+            reportError(error, { source: "auth-register" });
             return {
                 success: false,
                 message: "注册失败：" + (error instanceof Error ? error.message : "未知错误"),
@@ -391,7 +391,6 @@ export function useAccountSession({
                 setIsAuthRequired(true);
             }
         } catch (error) {
-            console.error("认证检查失败:", error);
             reportError(error, { source: "auth-check" });
             // 令牌失效 / 账号已注销：退回登录页；
             // 账号被停用（403）也是一个道理 —— 停在这里只会看到一片空白，
@@ -468,7 +467,6 @@ export function useAccountSession({
                 setIsAuthRequired(true);
             }
         } catch (error) {
-            console.error("登录失败:", error);
             reportError(error, { source: "auth-login" });
             onError("登录失败: " + (error instanceof Error ? error.message : "未知错误"));
             setIsAuthenticated(false);
@@ -490,7 +488,6 @@ export function useAccountSession({
             }
             return result;
         } catch (error) {
-            console.error("恢复密码失败:", error);
             reportError(error, { source: "auth-recover" });
             return {
                 success: false,
@@ -527,7 +524,6 @@ export function useAccountSession({
                 message: `私钥已下载为 ${filename}（${algLabel(alg)}），请离线妥善保管；旧私钥已失效`,
             };
         } catch (error) {
-            console.error("生成恢复密钥失败:", error);
             reportError(error, { source: "auth-recovery-key" });
             return {
                 success: false,
