@@ -150,7 +150,10 @@ export async function signRecoveryToken(options: SignRecoveryOptions): Promise<s
     const payload = {
         username,
         passwordHash,
-        exp: Math.floor(Date.now() / 1000) + Math.max(1, Math.floor(expHours * 60 * 60)),
+        // Math.max 要套在「小时」上而不是「秒」上：套在秒上（Math.max(1, expHours*3600)）
+        // 只能保证令牌活 1 秒 —— 传 0 进来就签出一张立刻失效的万能钥匙，
+        // 找回密码流程会莫名其妙失败，而报错还是「签名不合法」这类看不出原因的提示。
+        exp: Math.floor(Date.now() / 1000) + Math.floor(Math.max(1, expHours) * 60 * 60),
         jti: randomId(),
     };
 
