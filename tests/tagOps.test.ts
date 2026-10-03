@@ -9,6 +9,7 @@ import {
     mergeTags,
     planRename,
     renameTag,
+    applyTagSuggestions,
     type TagMap,
 } from "../src/utils/tagOps";
 
@@ -104,4 +105,52 @@ test("allTags / countSitesWithTag：统计口径与实际一致", () => {
     assert.equal(countSitesWithTag(tags, "AI"), 2);
     assert.equal(countSitesWithTag(tags, "不存在"), 0);
     assert.equal(countSitesWithTag(tags, "  "), 0);
+});
+
+// ---- AI 标签建议的合并（纯追加）----
+
+test("应用 AI 建议：给指定站点追加标签，已有的不重复加", () => {
+    const next = applyTagSuggestions(tags, [{ id: 1, tags: ["效率"] }]);
+    assert.deepEqual(next["1"], ["AI", "工具", "效率"]);
+    // 没在清单里的站点原样保留
+    assert.deepEqual(next["2"], ["AI"]);
+});
+
+test("应用 AI 建议：建议里已有的标签不会再补一份", () => {
+    const next = applyTagSuggestions(tags, [{ id: 1, tags: ["AI", "工具"] }]);
+    assert.equal(next, tags, "一条要加的都没有 → 返回原引用");
+});
+
+test("应用 AI 建议：空串与重复建议会被压掉", () => {
+    const next = applyTagSuggestions(tags, [{ id: 2, tags: ["AI", "AI", "  ", ""] }]);
+    assert.equal(next, tags, "除了已存在的 AI 全是空的 → 无事发生");
+    const next2 = applyTagSuggestions(tags, [{ id: 2, tags: ["AI", "AI", "新标签"] }]);
+    assert.deepEqual(next2["2"], ["AI", "新标签"]);
+});
+
+test("应用 AI 建议：绝不摘掉用户原有的标签（与 mergeTags 的关键区别）", () => {
+    const next = applyTagSuggestions(tags, [{ id: 1, tags: ["效率"] }]);
+    assert.ok(next["1"].includes("AI"), "AI 必须还在");
+    assert.ok(next["1"].includes("工具"), "工具必须还在");
+});
+
+test("应用 AI 建议：一批站点里只有真正变化的才被改写", () => {
+    const before = tags;
+    const next = applyTagSuggestions(before, [
+        { id: 1, tags: ["效率"] },
+        { id: 2, tags: ["AI"] }, // 已经有了，不该产生变化
+    ]);
+    assert.notEqual(next, before);
+    assert.deepEqual(next["1"], ["AI", "工具", "效率"]);
+    assert.equal(next["2"], before["2"], "没变化的站点保持原数组引用");
+});
+
+test("应用 AI 建议：没在 tag 表里的站点 id 也能加（新建的卡片）", () => {
+    const next = applyTagSuggestions(tags, [{ id: 999, tags: ["新"] }]);
+    assert.deepEqual(next["999"], ["新"]);
+});
+
+test("应用 AI 建议：picked 为空 / 全是空数组 → 返回原引用", () => {
+    assert.equal(applyTagSuggestions(tags, []), tags);
+    assert.equal(applyTagSuggestions(tags, [{ id: 1, tags: [] }]), tags);
 });

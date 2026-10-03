@@ -21,7 +21,6 @@ import {
 import { mapWithConcurrency } from "./API/methods/transfer";
 import { RETENTION_DAYS_KEY } from "./API/configKeys";
 import { GroupWithSites } from "./types";
-import type { TagMap } from "./utils/tagOps";
 import { AppConfigProvider } from "./context/AppConfigContext";
 import { NotifyContext } from "./context/NotifyContext";
 import { useUIPrefs, RADIUS_PX } from "./context/uiPrefsStore";
@@ -54,6 +53,7 @@ import { useAppDialogs } from "./hooks/useAppDialogs";
 import { useThemeController } from "./hooks/useThemeController";
 import { useSortController } from "./hooks/useSortController";
 import { useSiteCreator } from "./hooks/useSiteCreator";
+import { useSemanticSearch } from "./hooks/useSemanticSearch";
 import { useBackupController } from "./hooks/useBackupController";
 import { useAppCommands } from "./hooks/useAppCommands";
 import { usePrefSync } from "./hooks/usePrefSync";
@@ -1269,109 +1269,30 @@ function App() {
     const siteAi = useSiteAiMeta(ai);
 
     const [aiSuggestOpen, setAiSuggestOpen] = useState(false);
-    /** 「更多选项 → AI 助手」：AI 的开关与凭据单独一个弹窗 */
-    const [openAiAssistant, setOpenAiAssistant] = useState(false);
-    // 要送去整理的站点：太多就只取前 40 个（跟 utils/aiMeta 的 MAX_SUGGEST_SITES 对齐）
-    const aiSuggestSites = useMemo(
-        () =>
-            groups
-                .flatMap(g => g.sites ?? [])
-                .slice(0, 40)
-                .map(site => ({
-                    id: Number(site.id),
-                    name: site.name,
-                    url: site.url,
-                    description: site.description,
-                })),
-        [groups]
-    );
-
-    /** 语义搜索开关：开着且查询非空时才去问模型，关着就是一个普通搜索框 */
-    const [semanticSearch, setSemanticSearch] = useState(false);
-    const [semanticHits, setSemanticHits] = useState<{ id: number; score: number }[]>([]);
-    const [semanticNote, setSemanticNote] = useState("");
-    const [semanticBusy, setSemanticBusy] = useState(false);
-
-    // 关掉开关就清空：不然会留着上一次的语义结果继续过滤列表，看着像搜索坏了
-    useEffect(() => {
-        if (!semanticSearch) {
-            setSemanticHits([]);
-            setSemanticNote("");
-        }
-    }, [semanticSearch]);
-
-    // 查询变了就重新搜（防抖 400ms）。AI 失败只留一句提示，语义结果清空 ——
-    // 关键词结果照常显示，用户不会因此什么都看不到。
-    useEffect(() => {
-        if (!semanticSearch || !ai.ready || !aiQuery) return;
-        let cancelled = false;
-        setSemanticBusy(true);
-        const timer = setTimeout(async () => {
-            const res = await ai.search(aiQuery);
-            if (cancelled) return;
-            setSemanticBusy(false);
-            if (!res.ok) {
-                setSemanticHits([]);
-                setSemanticNote(res.message);
-                return;
-            }
-            setSemanticHits(res.data);
-            setSemanticNote(res.data.length === 0 ? "语义上没找到很像的站点，下面是关键词结果" : "");
-        }, 400);
-        return () => {
-            cancelled = true;
-            clearTimeout(timer);
-            setSemanticBusy(false);
-        };
-    }, [semanticSearch, ai.ready, aiQuery, ai]);
-
-    /** 给站点建语义索引（站点改了很多之后要重跑一次） */
-    const buildSemanticIndex = useCallback(
-        async (force = false) => {
-            setSemanticBusy(true);
-            const res = await ai.embed(force);
-            setSemanticBusy(false);
-            if (!res.ok) {
-                notify(res.message, "error");
-                return;
-            }
-            await ai.refresh();
-            notify(
-                res.data.done > 0
-                    ? `已给 ${res.data.done} 个站点建好语义索引（共 ${res.data.total} 个）`
-                    : `${res.data.total} 个站点都已经有索引了`,
-                "success"
-            );
-        },
-        [ai, notify]
-    );
-
-    /**
-     * 应用 AI 给的标签建议：整份写回 + 提示条上挂撤销。
-     * 跟标签重命名/合并走同一条路（撤销 = 写回旧表），所以「AI 帮我改错了」也能一键撤回。
-     */
-    const applyAiTagSuggestions = useCallback(
-        (picked: { id: number; tags: string[] }[]) => {
-            if (picked.length === 0) return;
-            const next: TagMap = { ...tags };
-            for (const item of picked) {
-                const key = String(item.id);
-                const merged = [...(next[key] ?? [])];
-                for (const tag of item.tags) {
-                    if (!merged.includes(tag)) merged.push(tag);
-                }
-                next[key] = merged;
-            }
-            applyTagOps(next);
-            notify(
-                `已按 AI 建议给 ${picked.length} 个网站加上标签`,
-                "success",
-                undefined,
-                { label: "撤销", onClick: () => applyTagOps(tags) }
-            );
-        },
-        [tags, applyTagOps, notify]
-    );
+    // ---- AI 语义搜索 / 标签建议域 ----
+    // 开关、命中、提示、忙碌四个状态 + 两个 effect（关掉清空 / 防抖重搜）
+    // + 两个回调（建索引 / 应用标签建议）全在 useSemanticSearch 里；
+    // 合并标签的纯计算在 utils/tagOps.ts 的 applyTagSuggestions（有单测）。
+    // 返回值沿用原来的变量名与回调名，下面的 JSX 一行都不用改。
+    const {
+        openAiAssistant,
+        setOpenAiAssistant,
+        aiSuggestSites,
+        semanticSearch,
+        setSemanticSearch,
+        semanticHits,
+        semanticNote,
+        semanticBusy,
+        buildSemanticIndex,
+        applyAiTagSuggestions,
+    } = useSemanticSearch({
+        ai,
+        query: aiQuery,
+        groups,
+        tags,
+        applyTagOps,
+        notify,
+    });
 
     // 更新分组（引用稳定，配合 GroupCard 的 memo 减少重渲染）
     const handleGroupUpdate = useCallback(

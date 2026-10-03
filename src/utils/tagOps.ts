@@ -40,6 +40,49 @@ export function allTags(tags: TagMap): string[] {
 }
 
 /**
+ * 把 AI 给的标签建议合并进现有 tag 表：给指定站点**追加**若干标签。
+ *
+ * 与 mergeTags 的区别：mergeTags 是「把 A 改名/并到 B」（会摘掉源标签），
+ * 这里是纯追加——AI 只负责补充，绝不许它摘掉用户自己打的标签。
+ *
+ * 三条底线：
+ *   - 已有的标签不重复加（"AI" 建议了两次也只留一份）
+ *   - 空标签跳过（模型偶尔会吐空串）
+ *   - 没在建议清单里的站点原样保留（不动不相干的卡片）
+ *
+ * 返回新表，不改入参。picked 为空时返回原引用（调用方可以据此判断「没事发生」）。
+ */
+export function applyTagSuggestions(
+    tags: TagMap,
+    picked: { id: number | string; tags: string[] }[]
+): TagMap {
+    const usable = picked
+        .map(item => ({
+            key: String(item.id),
+            add: Array.from(
+                new Set((item.tags ?? []).map(clean).filter(Boolean))
+            ),
+        }))
+        .filter(item => item.add.length > 0);
+
+    if (usable.length === 0) return tags;
+
+    const next: TagMap = { ...tags };
+    let changed = false;
+
+    for (const { key, add } of usable) {
+        const current = next[key] ?? [];
+        const have = new Set(current.map(clean));
+        const missing = add.filter(t => !have.has(t));
+        if (missing.length === 0) continue;
+        next[key] = [...current, ...missing];
+        changed = true;
+    }
+
+    return changed ? next : tags;
+}
+
+/**
  * 有多少张卡片带着这个标签。
  * 比对前两边都 trim —— 库里可能躺着历史遗留的 `" AI "`，
  * 不 trim 就会得出「没人用这个标签」，改名时静默什么都不做。
