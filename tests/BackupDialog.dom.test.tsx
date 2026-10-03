@@ -104,6 +104,33 @@ async function settle(ms = 30) {
 }
 
 /**
+ * 等一个条件成立，而不是「睡固定时长」。
+ *
+ * 这个文件里的等待对象都是 **FileReader.onload**：它是真的异步回调，固定睡 30ms
+ * 在负载高的机器（或 CI）上会偶发不够用 —— 表现为用例随机红一条，
+ * 而偶发红的测试比没有测试更糟，因为它会训练人忽略红色。
+ * 所以一律改成轮询：条件先成立就立刻往下走，真等不到再失败并说明等的是什么。
+ */
+async function waitFor(label: string, predicate: () => boolean, timeoutMs = 5000) {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+        if (predicate()) return;
+        if (Date.now() > deadline) {
+            assert.fail(`等了 ${timeoutMs}ms 也没等到：${label}`);
+        }
+        await settle(10);
+    }
+}
+
+/** 等「开始恢复」变成可用（等价于：备份文件解析完了） */
+async function waitRestoreEnabled() {
+    await waitFor("「开始恢复」按钮可用（备份解析完成）", () => {
+        const btn = buttonByText("开始恢复");
+        return !!btn && !btn.disabled;
+    });
+}
+
+/**
  * 给隐藏的 file input 塞一个文件。
  * 必须用 jsdom 自己的 File（Node 22 全局也有个 File，跟 jsdom 的 FileReader 不通用），
  * 且 files 是只读属性，只能 defineProperty 覆盖。
@@ -146,6 +173,7 @@ test("BackupDialog：选中合法备份文件后，恢复按钮才可用", async
     t.after(cleanup);
     mount();
     await selectBackupFile(JSON.stringify(makeBackup()));
+    await waitRestoreEnabled();
 
     const restoreBtn = buttonByText("开始恢复");
     assert.ok(restoreBtn, "应有「开始恢复」按钮");
@@ -164,9 +192,10 @@ test("BackupDialog：恢复前会先过一遍差异预览", async t => {
         },
     });
     await selectBackupFile(JSON.stringify(makeBackup()));
+    await waitRestoreEnabled();
 
     await clickAsync(buttonByText("开始恢复")!);
-    await settle();
+    await waitFor("差异预览被弹出", () => previewed.count === 1);
 
     assert.equal(previewed.count, 1, "恢复前必须弹差异预览，不能直接导入");
 });
@@ -174,16 +203,21 @@ test("BackupDialog：恢复前会先过一遍差异预览", async t => {
 test("BackupDialog：预览里点了取消（返回 null）→ 绝不导入", async t => {
     t.after(cleanup);
     const imported = counter();
+    const previewed = counter();
     mount({
-        onRequestImportPreview: async () => null,
+        onRequestImportPreview: async () => {
+            previewed.fn();
+            return null;
+        },
         onImportData: async () => {
             imported.fn();
         },
     });
     await selectBackupFile(JSON.stringify(makeBackup()));
+    await waitRestoreEnabled();
 
     await clickAsync(buttonByText("开始恢复")!);
-    await settle();
+    await waitFor("差异预览被弹出（取消分支等的是它，不是导入）", () => previewed.count === 1);
 
     assert.equal(
         imported.count,
@@ -202,6 +236,7 @@ test("BackupDialog：预览确认后才真导入，并带上覆盖开关的状�
         },
     });
     await selectBackupFile(JSON.stringify(makeBackup()));
+    await waitRestoreEnabled();
 
     // 默认是合并导入，点一下切成「覆盖恢复」
     const mergeSwitch = switchByLabelText("合并导入（保留现有数据并追加）");
@@ -209,7 +244,7 @@ test("BackupDialog：预览确认后才真导入，并带上覆盖开关的状�
     await clickAsync(mergeSwitch!);
 
     await clickAsync(buttonByText("开始恢复")!);
-    await settle();
+    await waitFor("预览确认后导入一次", () => imported.count === 1);
 
     assert.equal(imported.count, 1, "预览确认后应导入一次");
     const [, overwrite] = imported.calls[0] as unknown as [ExportData, boolean];
