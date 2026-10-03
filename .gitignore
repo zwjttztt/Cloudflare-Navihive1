@@ -35,3 +35,6 @@ script/tmp-tests
 # 恢复私钥（等同万能钥匙，绝不进版本库）
 scripts/recovery-private.key
 *.recovery-token
+
+# 端到端脚本的 wrangler 本地 state（每次跑会清空）
+.wrangler-e2e/
