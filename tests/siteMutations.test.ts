@@ -9,7 +9,16 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { GroupWithSites } from "../src/types";
 import type { Site } from "../src/API/http";
-import { findSite, removeSite, removeSites, upsertSite } from "../src/utils/siteMutations";
+import {
+    findSite,
+    removeSite,
+    removeSites,
+    upsertSite,
+    snapshotSitePrefs,
+    pickDeletedIds,
+    describeRestoredPrefs,
+    type SitePrefs,
+} from "../src/utils/siteMutations";
 
 const site = (id: number, groupId: number, order: number, extra: Partial<Site> = {}): Site =>
     ({
@@ -105,4 +114,69 @@ test("findSite：跨分组找得到，找不到返回 null", () => {
     const groups = [group(1, [site(1, 1, 0)]), group(2, [site(9, 2, 0)])];
     assert.equal(findSite(groups, 9)?.id, 9);
     assert.equal(findSite(groups, 404), null);
+});
+
+// ---- 本机偏好快照（删卡片前留一份，撤销时挂回去）----
+
+test("偏好快照：按站点 id 记下标签与星标", () => {
+    const sites = [
+        { id: 1, name: "a", url: "https://a.com" },
+        { id: 2, name: "b", url: "https://b.com" },
+    ] as Site[];
+    const snap = snapshotSitePrefs(sites, { "1": ["AI", "工具"] }, [2]);
+    assert.deepEqual(snap.get(1), { tags: ["AI", "工具"], starred: false });
+    assert.deepEqual(snap.get(2), { tags: [], starred: true });
+});
+
+test("偏好快照：没有 id 的卡片跳过（本来就不可能有历史偏好）", () => {
+    const snap = snapshotSitePrefs([{ id: undefined, name: "x" } as Site], {}, []);
+    assert.equal(snap.size, 0);
+});
+
+test("偏好快照：库里没有记录的卡片也给一份空快照（撤销时不至于取不到）", () => {
+    const snap = snapshotSitePrefs([{ id: 9, name: "x" } as Site], {}, []);
+    assert.deepEqual(snap.get(9), { tags: [], starred: false });
+});
+
+test("偏好快照：不共享数组引用（改快照不能污染原表）", () => {
+    const tags = { "1": ["AI"] };
+    const snap = snapshotSitePrefs([{ id: 1 } as Site], tags, []);
+    assert.notEqual(snap.get(1)!.tags, tags["1"]);
+});
+
+// ---- 批量删除回执：只有真进回收站的才算删成 ----
+
+test("批量删除回执：只挑拿到回收站 id 的那些", () => {
+    const items = [
+        { id: 1, recycleId: 10 },
+        { id: 2 },
+        { id: 3, recycleId: 11 },
+    ];
+    assert.deepEqual(pickDeletedIds(items), [1, 3], "没删成的 2 要留在界面上");
+});
+
+test("批量删除回执：一个都没删成 → 空数组（调用方据此提示而不是刷新界面）", () => {
+    assert.deepEqual(pickDeletedIds([{ id: 1 }, { id: 2 }]), []);
+    assert.deepEqual(pickDeletedIds([]), []);
+});
+
+// ---- 撤销后要挂回的偏好 ----
+
+test("待恢复的偏好：只列出「标签非空或曾加星」的卡片", () => {
+    const prefs = new Map<number, SitePrefs>([
+        [1, { tags: ["AI"], starred: false }],
+        [2, { tags: [], starred: false }], // 干干净净，不用写
+        [3, { tags: [], starred: true }],
+    ]);
+    const restored = [{ id: 1 }, { id: 2 }, { id: 3 }] as Site[];
+    assert.deepEqual(describeRestoredPrefs(restored, prefs), [
+        { siteId: 1, tags: ["AI"], starred: false },
+        { siteId: 3, tags: [], starred: true },
+    ]);
+});
+
+test("待恢复的偏好：快照里没有的卡片跳过（还原保留原 id，所以按原 id 找）", () => {
+    const prefs = new Map<number, SitePrefs>([[1, { tags: ["AI"], starred: true }]]);
+    assert.deepEqual(describeRestoredPrefs([{ id: 99 }] as Site[], prefs), []);
+    assert.equal(describeRestoredPrefs([{ id: undefined }] as Site[], prefs).length, 0);
 });

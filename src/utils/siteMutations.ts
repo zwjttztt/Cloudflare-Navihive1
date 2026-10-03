@@ -96,3 +96,66 @@ export function removeSites(groups: GroupWithSites[], siteIds: number[]): GroupW
     });
     return changed ? next : groups;
 }
+
+/** 一张卡片的本机偏好：标签与星标。删卡片前留一份，撤销时挂回去 */
+export interface SitePrefs {
+    tags: string[];
+    starred: boolean;
+}
+
+/**
+ * 给一批卡片各留一份本机偏好快照（按站点 id 索引）。
+ *
+ * 为什么要快照：卡片一删，它的标签/星标就没有宿主了，会被一起清掉；
+ * 撤销时（尤其是「按快照重建」那条路径，卡片会拿到**新 id**）必须按旧 id
+ * 把这两样重新挂上，否则卡片回来了、标签却没了。
+ *
+ * 没有 id 的卡片（还没落库的）直接跳过 —— 它们本来就不可能有历史偏好。
+ */
+export function snapshotSitePrefs(
+    sites: Site[],
+    tags: Record<string, string[]>,
+    starred: readonly number[]
+): Map<number, SitePrefs> {
+    const out = new Map<number, SitePrefs>();
+    for (const site of sites) {
+        if (site.id === undefined) continue;
+        // 标签数组要复制一份：快照是「当时的记录」，跟原表共用引用的话
+        // 后面有人往表里 push 一个标签，快照里也会跟着多出来
+        out.set(site.id, {
+            tags: [...(tags[String(site.id)] ?? [])],
+            starred: starred.includes(site.id),
+        });
+    }
+    return out;
+}
+
+/**
+ * 批量删除的回执里挑出「真删成了」的 id。
+ *
+ * 判据是**有没有拿到回收站 id**：没拿到说明这一条在服务端就没删成（比如已被
+ * 清掉、或者没权限），界面上必须把它留在原地 —— 摘掉一个其实还在的卡片，
+ * 用户刷新后又冒出来，比删不掉更难解释。
+ */
+export function pickDeletedIds(items: { id: number; recycleId?: number }[]): number[] {
+    return items.filter(item => item.recycleId !== undefined).map(item => item.id);
+}
+
+/**
+ * 重建卡片时按快照恢复本机偏好。
+ * 返回 true 表示这一步真的写了东西（调用方据此决定要不要提示）。
+ */
+export function describeRestoredPrefs(
+    restored: Site[],
+    prefs: Map<number, SitePrefs>
+): { siteId: number; tags: string[]; starred: boolean }[] {
+    const out: { siteId: number; tags: string[]; starred: boolean }[] = [];
+    for (const site of restored) {
+        if (site.id === undefined) continue;
+        const pref = prefs.get(site.id);
+        if (!pref) continue;
+        if (pref.tags.length === 0 && !pref.starred) continue;
+        out.push({ siteId: site.id, tags: pref.tags, starred: pref.starred });
+    }
+    return out;
+}

@@ -32,12 +32,6 @@ afterEach(() => {
     cleanup();
 });
 
-// ⚠️ 必须有兜底清理：断言失败时用例末尾的 cleanup() 不会执行，
-// 残留的 host 会让后面几条读到上一个测试的 DOM（查过一次，很费时间）
-afterEach(() => {
-    cleanup();
-});
-
 const site = (id: number, groupId: number, name: string, url?: string): Site =>
     ({
         id,
