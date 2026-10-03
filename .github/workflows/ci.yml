@@ -72,6 +72,13 @@ jobs:
       - name: 构建
         run: npm run build
 
+      # 后端 API 的真实端到端：起一个 wrangler dev（本地 D1），按人手操作的顺序
+      # 打 20 条断言。前面几步（单测 / 构建）都碰不到真实后端 —— 而「新库首次登录
+      # 必须先改密」「改密会使当前令牌失效」「/api/init 不返回数据」这类契约，
+      # 只有真打一遍接口才会暴露。必须排在构建之后：脚本跑的是 dist 里的产物。
+      - name: 后端 API 端到端
+        run: npm run e2e
+
       # ubuntu-latest 预装了 google-chrome，ci-smoke.mjs 会自己找到它；
       # 万一某天镜像里没有了，这一步会明确报「没找到 Chrome」而不是静默跳过
       - name: 浏览器冒烟

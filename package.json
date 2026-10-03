@@ -12,7 +12,7 @@
     "test": "node script/unit-tests.mjs",
     "smoke": "node script/ci-smoke.mjs",
     "e2e": "node script/api-e2e.mjs",
-    "ci": "npm run typecheck && npm run lint && npm run test && npm run check:brand && npm run build && npm run smoke",
+    "ci": "npm run typecheck && npm run lint && npm run test && npm run check:brand && npm run build && npm run e2e && npm run smoke",
     "lint": "eslint .",
     "preview": "npm run build && vite preview",
     "deploy": "npm run build && wrangler deploy",
