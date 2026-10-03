@@ -41,7 +41,7 @@
 
 ## 🛠️ 技术栈
 
-- **前端**：React 19 · TypeScript · Material UI 7 · DND Kit（拖拽）· Tailwind CSS 4 · Vite 6
+- **前端**：React 19 · TypeScript · Material UI 7 · DND Kit（拖拽）· Tailwind CSS 4 · Vite 8
 - **后端**：Cloudflare Workers · Cloudflare D1（SQLite）· JWT 认证
 
 ## 🚀 部署指南（两种方式）
