@@ -55,6 +55,7 @@ import { useSortController } from "./hooks/useSortController";
 import { useSiteCreator } from "./hooks/useSiteCreator";
 import { useSemanticSearch } from "./hooks/useSemanticSearch";
 import { useSiteActions } from "./hooks/useSiteActions";
+import { useGroupActions } from "./hooks/useGroupActions";
 import { useBackupController } from "./hooks/useBackupController";
 import { useAppCommands } from "./hooks/useAppCommands";
 import { usePrefSync } from "./hooks/usePrefSync";
@@ -991,147 +992,31 @@ function App() {
         notify,
     });
 
-    // 更新分组（引用稳定，配合 GroupCard 的 memo 减少重渲染）
-    const handleGroupUpdate = useCallback(
-        async (updatedGroup: Group) => {
-            try {
-                if (updatedGroup.id) {
-                    const saved = await api.updateGroup(updatedGroup.id, updatedGroup);
-                    const nextGroup = saved && saved.id !== undefined ? saved : updatedGroup;
-                    setGroups(prev => {
-                        const idx = prev.findIndex(group => group.id === updatedGroup.id);
-                        if (idx === -1) return prev;
-                        const next = [...prev];
-                        next[idx] = { ...prev[idx], ...nextGroup };
-                        return next;
-                    });
-                }
-            } catch (error) {
-                reportError(error, { source: "group-update" });
-                handleError("更新分组失败: " + (error as Error).message);
-            }
-        },
-        [handleError, setGroups]
-    );
-
-    // 删除分组：连同组内卡片一起删，所以撤销要把「分组 + 卡片」整组重建回来
-    // 分组删除：先弹二次确认（含导出提示），确认后才真删。
-    // 删除是软删除（先进回收站），撤销时优先从回收站精确还原。
-    const [pendingGroupDelete, setPendingGroupDelete] = useState<number | null>(null);
-
-    // 真正执行分组删除（确认后调用）
-    const doGroupDelete = useCallback(
-        async (groupId: number) => {
-            const snapshot = groupsRef.current.find(group => group.id === groupId);
-            // 分组里的卡片会跟着一起删，它们的本机标签/星标也先留一份快照
-            const sitePrefs = new Map<number, { tags: string[]; starred: boolean }>();
-            if (snapshot) {
-                snapshot.sites.forEach(site => {
-                    const id = site.id as number;
-                    sitePrefs.set(id, {
-                        tags: tags[String(id)] ?? [],
-                        starred: starred.includes(id),
-                    });
-                });
-            }
-            try {
-                const del = await api.deleteGroup(groupId);
-                const recycleId = del.recycleId;
-                setGroups(prev => {
-                    const next = prev.filter(group => group.id !== groupId);
-                    return next.length === prev.length ? prev : next;
-                });
-                // 组内卡片的标签/星标随卡片一起清掉，避免孤儿标签残留在标签栏
-                if (snapshot) forgetSites(snapshot.sites.map(site => site.id as number));
-                if (!snapshot) return;
-
-                const restoredGroupId: { id?: number } = {};
-                const restoredSiteIds: number[] = [];
-                const restore = async () => {
-                    if (recycleId !== undefined) {
-                        const ok = await api.restoreRecycleItem(recycleId);
-                        if (ok) {
-                            await fetchData({ silent: true });
-                            restoredGroupId.id = snapshot.id;
-                            return;
-                        }
-                    }
-                    const created = await api.createGroup({
-                        name: snapshot.name,
-                        order_num: snapshot.order_num ?? 0,
-                    } as Group);
-                    const newId = created?.id;
-                    if (newId === undefined) throw new Error("重建分组失败");
-                    restoredGroupId.id = newId;
-
-                    // 卡片按原顺序重建，分组位置也按 order_num 插回原处
-                    const restored: Site[] = [];
-                    const ordered = [...snapshot.sites].sort(
-                        (a, b) => (a.order_num ?? 0) - (b.order_num ?? 0)
-                    );
-                    restoredSiteIds.length = 0;
-                    for (const site of ordered) {
-                        const createdSite = await api.createSite({
-                            ...site,
-                            id: undefined,
-                            group_id: newId,
-                        } as Site);
-                        if (createdSite && createdSite.id !== undefined) {
-                            restored.push(createdSite);
-                            restoredSiteIds.push(createdSite.id);
-                            const prefs = sitePrefs.get(site.id as number);
-                            if (prefs) {
-                                if (prefs.tags.length > 0) setSiteTags(createdSite.id, prefs.tags);
-                                if (prefs.starred) setStarredMany([createdSite.id], true);
-                            }
-                        }
-                    }
-
-                    setGroups(prev =>
-                        [...prev, { ...created, id: newId, sites: restored }].sort(
-                            (a, b) => (a.order_num ?? 0) - (b.order_num ?? 0)
-                        )
-                    );
-                };
-                const removeAgain = async () => {
-                    if (recycleId !== undefined) {
-                        await api.purgeRecycleItem(recycleId);
-                        return;
-                    }
-                    const groupIdToRemove = restoredGroupId.id;
-                    restoredGroupId.id = undefined;
-                    if (groupIdToRemove === undefined) return;
-                    await api.deleteGroup(groupIdToRemove);
-                    setGroups(prev => prev.filter(g => g.id !== groupIdToRemove));
-                    if (restoredSiteIds.length) {
-                        forgetSites([...restoredSiteIds]);
-                        restoredSiteIds.length = 0;
-                    }
-                };
-
-                const label = `删除分组「${snapshot.name}」`;
-                pushHistory({ label, undo: restore, redo: removeAgain });
-                notify(
-                    `已删除分组「${snapshot.name}」${snapshot.sites.length ? `及 ${snapshot.sites.length} 张卡片（可在回收站恢复）` : ""}`,
-                    "info",
-                    8000,
-                    {
-                        label: "撤销",
-                        onClick: () => void runUndo(),
-                    }
-                );
-            } catch (error) {
-                reportError(error, { source: "group-delete" });
-                handleError("删除分组失败: " + (error as Error).message);
-            }
-        },
-        [tags, starred, setGroups, forgetSites, pushHistory, notify, fetchData, setSiteTags, setStarredMany, runUndo, handleError]
-    );
-
-    // 入口：先确认再删（分组删除会连带清空其下所有卡片，误删代价大）
-    const handleGroupDelete = useCallback((groupId: number) => {
-        setPendingGroupDelete(groupId);
-    }, []);
+    // ---- 分组的改 / 删（删分组会连组内卡片一起删）----
+    // 分组更新、删除确认、软删与整组重建（含卡片的本机标签 / 星标）全在
+    // hooks/useGroupActions.ts；偏好快照复用 utils/siteMutations.ts 的
+    // snapshotSitePrefs。引用点名字与抽走前一致，下面的 JSX 一行都不用改。
+    const {
+        handleGroupUpdate,
+        pendingGroupDelete,
+        setPendingGroupDelete,
+        doGroupDelete,
+        handleGroupDelete,
+    } = useGroupActions({
+        api,
+        groupsRef,
+        setGroups,
+        handleError,
+        notify,
+        tags,
+        starred,
+        forgetSites,
+        setSiteTags,
+        setStarredMany,
+        pushHistory,
+        runUndo,
+        fetchData,
+    });
 
     // ---- 排序 / 拖拽域 ----
     // 状态（sortMode / currentSortingGroupId / draggingSite）+ 六个事件回调 + 三个保存函数
