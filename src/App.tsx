@@ -99,12 +99,16 @@ import SiteListSkeleton from "./components/SiteListSkeleton";
 const VisitsDialog = lazy(() => import("./components/VisitsDialog"));
 import {
     COLLAPSED_EVENT,
+    isAllCollapsed,
     readCollapsedGroupIds,
     setAllCollapsed,
     writeCollapsedGroupIds,
 } from "./utils/collapse";
+import { splitIncomingConfigs } from "./utils/configMerge";
 import { loadPinyinMatcher } from "./utils/pinyin";
 import {
+    collectCheckUrls,
+    describeLinkCheck,
     FRESH_WINDOW_MS,
     mergeLinkHealth,
     probeLinks,
@@ -692,29 +696,8 @@ function App() {
 
     // 加载配置（WebDAV 配置单独存放，避免被写进备份文件）
     const applyConfigs = (configsData: Record<string, string> | null | undefined) => {
-        const nextConfigs: Record<string, string> = { ...DEFAULT_CONFIGS };
-        const nextWebdav: WebDavConfig = { ...DEFAULT_WEBDAV_CONFIG };
-
-        Object.entries(configsData || {}).forEach(([key, value]) => {
-            if (key.startsWith(WEBDAV_CONFIG_PREFIX)) {
-                const field = key.slice(WEBDAV_CONFIG_PREFIX.length);
-                if (
-                    field === "url" ||
-                    field === "username" ||
-                    field === "password" ||
-                    field === "backupPassword" ||
-                    field === "path"
-                ) {
-                    nextWebdav[field] = value;
-                } else if (field === "allowPrivateNetwork") {
-                    // 布尔按项目惯例存 "1"/"0"，不是 "true"/"false"
-                    nextWebdav.allowPrivateNetwork = value === "1";
-                }
-            } else {
-                nextConfigs[key] = value;
-            }
-        });
-
+        // WebDAV 配置单独存放，避免被写进备份文件（拆分规则见 utils/configMerge）
+        const { configs: nextConfigs, webdav: nextWebdav } = splitIncomingConfigs(configsData);
         setConfigs(nextConfigs);
         setTempConfigs({ ...nextConfigs });
         setWebdavConfig(nextWebdav);
@@ -1246,13 +1229,7 @@ function App() {
 
     // 失效链接检测：结果存本机，卡片上标灰点
     const runLinkCheck = useCallback(async () => {
-        const urls = Array.from(
-            new Set(
-                groups
-                    .flatMap(g => g.sites.map(s => (s.url || "").trim()))
-                    .filter(Boolean)
-            )
-        );
+        const urls = collectCheckUrls(groups);
         if (urls.length === 0) {
             notify("还没有可以检测的链接", "info");
             return;
@@ -1262,20 +1239,16 @@ function App() {
         // 同一域名也只探一次，避免每次都得等上几分钟
         const result = await probeLinks(urls, { concurrency: 5, skipFreshMs: FRESH_WINDOW_MS });
         setDeadLinks(result.dead);
-        const dead = Object.keys(result.dead).length;
-        const skipNote = result.skipped
-            ? `（${result.skipped} 个近期检测过，已跳过）`
-            : "";
+        const { text, severity, offerFilter } = describeLinkCheck(
+            Object.keys(result.dead).length,
+            result.skipped
+        );
         notify(
-            dead
-                ? `检测完成，${dead} 个链接疑似失效${skipNote}`
-                : `检测完成，所有链接都能访问${skipNote}`,
-            dead ? "info" : "success",
+            text,
+            severity,
             undefined,
             // 有可疑链接时给个快捷入口，省得自己一张张翻
-            dead
-                ? { label: "只看失效", onClick: () => setDeadOnly(true) }
-                : undefined
+            offerFilter ? { label: "只看失效", onClick: () => setDeadOnly(true) } : undefined
         );
     }, [groups, notify, setDeadLinks]);
 
@@ -1362,8 +1335,7 @@ function App() {
         collapsedIds,
     });
 
-    const allGroupsCollapsed =
-        realGroups.length > 0 && realGroups.every(g => collapsedIds.includes(String(g.id)));
+    const allGroupsCollapsed = isAllCollapsed(realGroups, collapsedIds);
 
     const toggleCollapseAll = useCallback(() => {
         const next = !allGroupsCollapsed; // true = 折叠全部

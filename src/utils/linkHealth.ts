@@ -227,6 +227,48 @@ export function markLinkAlive(url: string): DeadLinks {
     return markLink(url, true);
 }
 
+/** 探测结果怎么说给用户听；App 拿到之后补上「只看失效」的快捷入口 */
+export interface LinkCheckSummary {
+    text: string;
+    severity: "info" | "success";
+    /** 有疑似失效的链接时才给快捷入口 */
+    offerFilter: boolean;
+}
+
+/** 一次批量探测结束后生成提示文案（跳过数只在实际 >0 时才提） */
+export function describeLinkCheck(deadCount: number, skipped = 0): LinkCheckSummary {
+    const skipNote = skipped > 0 ? `（${skipped} 个近期检测过，已跳过）` : "";
+    if (deadCount > 0) {
+        return {
+            text: `检测完成，${deadCount} 个链接疑似失效${skipNote}`,
+            severity: "info",
+            offerFilter: true,
+        };
+    }
+    return {
+        text: `检测完成，所有链接都能访问${skipNote}`,
+        severity: "success",
+        offerFilter: false,
+    };
+}
+
+/** 从分组里取出要去检测的全部链接：去空白、去重、保持首次出现顺序 */
+export function collectCheckUrls(
+    groups: { sites?: { url?: string }[] }[] | null | undefined
+): string[] {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const group of groups || []) {
+        for (const site of group.sites || []) {
+            const url = (site.url || "").trim();
+            if (!url || seen.has(url)) continue;
+            seen.add(url);
+            out.push(url);
+        }
+    }
+    return out;
+}
+
 /** 探测单个链接是否还能访问 */
 export async function probeLink(url: string): Promise<boolean> {
     if (!url || !hostOf(url)) return false;

@@ -28,3 +28,20 @@ export const writeCollapsedGroupIds = (ids: string[]) => {
 export const setAllCollapsed = (ids: (number | string)[], collapsed: boolean) => {
     writeCollapsedGroupIds(collapsed ? ids.map(String) : []);
 };
+
+/**
+ * 「全部折叠」开关当前该显示折叠还是展开。
+ *
+ * 注意空列表返回 false（没有分组时不该显示成「已全部折叠」，
+ * 否则开关按下去什么都不会发生）。id 一律按字符串比 —— localStorage 里存的是字符串，
+ * 直接 `includes(g.id)` 拿数字去比会永远匹配不上。
+ */
+export function isAllCollapsed(
+    groups: { id?: number | string }[] | null | undefined,
+    collapsedIds: string[] | null | undefined
+): boolean {
+    const ids = (groups || []).filter(g => typeof g.id === "number" && g.id > 0);
+    if (ids.length === 0) return false;
+    const set = new Set((collapsedIds || []).map(String));
+    return ids.every(g => set.has(String(g.id)));
+}
