@@ -1,5 +1,5 @@
 // src/components/SiteCard.tsx
-import { useState, useEffect, useMemo, memo, lazy, Suspense } from "react";
+import { useState, memo, lazy, Suspense } from "react";
 import { Site } from "../API/http";
 // 卡片设置弹窗按需加载：只有点开某一张卡片时才需要它
 const SiteSettingsModal = lazy(() => import("./SiteSettingsModal"));
@@ -41,17 +41,9 @@ import { useAppConfig } from "../context/appConfigStore";
 import { useNotify } from "../context/NotifyContext";
 import { canOpenSite, safeOpenSite } from "../utils/safeOpen";
 import { useUIPrefsPrefs, useUIPrefsStable } from "../context/uiPrefsStore";
-import { resolveIconApiUrl } from "../utils/iconApi";
-import {
-    cacheIconBlob,
-    iconCandidates,
-    iconFallbackCandidates,
-    readIconObjectUrl,
-    releaseIconObjectUrl,
-    readIconRecord,
-    writeIconRecord,
-} from "../utils/iconCache";
 import { markLinkAlive } from "../utils/linkHealth";
+import { useSiteIcon } from "../hooks/useSiteIcon";
+import { useSiteThumb } from "../hooks/useSiteThumb";
 
 interface SiteCardProps {
     site: Site;
@@ -168,103 +160,37 @@ const SiteCard = memo(function SiteCard({
     const isWall = viewMode === "wall" && !isEditMode;
     const isCompact = density === "compact";
 
-    // 图标候选源：自带图标 → 图标 API → 根目录 favicon → 公共 favicon 服务，
-    // 哪个先加载成功用哪个，失败的会记进本地缓存，下次直接跳过
-    // 两个函数都只读 site.icon / site.url，所以依赖就按这两个字段列 ——
-    // 写成 [site] 的话，改个备注或标题也会把图标候选重算一遍。
+    // 图标候选源：自带图标 → 图标 API → 根目录 favicon → 公共图标服务，
+    // 哪个先加载成功用哪个，失败的会记进本地缓存，下次直接跳过。
+    // 状态机整个搬到了 hooks/useSiteIcon.ts（含「主源全挂才补兜底源」与 blob 借还），
+    // 这里只拿结果 —— 它只读 site.icon / site.url，写成 [site] 的话改个备注
+    // 也会把图标候选重算一遍。
     // 隐私模式：一个候选都不给，卡片直接用首字母块。
     // 取图标这件事本身就在告诉对方（以及公共图标服务）「有人在访问这个域名」，
     // 开了这个开关就彻底不发 —— 包括兜底源和缩略图。
-    const primaryIcons = useMemo(
-        () => (iconPrivacy ? [] : iconCandidates({ icon: site.icon, url: site.url }, iconApi)),
-        [site.icon, site.url, iconApi, iconPrivacy]
-    );
-    // 兜底源（站点自己的 favicon.ico / 公共图标服务）只在主源全失败后才追加，
-    // 平时每张卡片最多 2 个请求，几百张卡片也不会一上来就排出上千个
-    const [fallbackAdded, setFallbackAdded] = useState(false);
-    const iconSources = useMemo(
-        () =>
-            fallbackAdded && !iconPrivacy
-                ? [...primaryIcons, ...iconFallbackCandidates({ url: site.url })]
-                : primaryIcons,
-        [primaryIcons, fallbackAdded, site.url, iconPrivacy]
-    );
-    const [iconIdx, setIconIdx] = useState(0);
-    const [imageLoaded, setImageLoaded] = useState(false);
-    const [thumbError, setThumbError] = useState(false);
-    const [thumbLoaded, setThumbLoaded] = useState(false);
+    const {
+        currentIcon,
+        iconError,
+        imageLoaded,
+        iconObjectUrl,
+        handleIconError,
+        handleImageLoad,
+    } = useSiteIcon({
+        icon: site.icon,
+        url: site.url,
+        iconApi,
+        privacy: iconPrivacy,
+    });
 
-    const iconError = iconIdx >= iconSources.length;
-    const currentIcon = iconSources[iconIdx] ?? "";
-
-    // 图标本体缓存：命中本地 blob 时直接用 objectURL，弱网 / 离线重开也能立刻显示
-    const [iconObjectUrl, setIconObjectUrl] = useState<string | null>(null);
-    useEffect(() => {
-        let cancelled = false;
-        // 记下这次借到的 URL：objectURL 占着 blob 不放，卸载时必须还回去，
-        // 否则卡片切来切去会把内存里的图标副本越堆越多
-        let borrowed = false;
-        setIconObjectUrl(null);
-        if (!currentIcon) return;
-        void readIconObjectUrl(currentIcon).then(cached => {
-            if (!cached) return;
-            // 结果晚到（组件已经换了源 / 已卸载）：立刻还，别占着
-            if (cancelled) {
-                releaseIconObjectUrl(currentIcon);
-                return;
-            }
-            borrowed = true;
-            setIconObjectUrl(cached);
+    // 缩略图：仅在「网站设置」里配了模板时才启用，避免默认请求第三方服务。
+    // 超时兜底（截图服务既不成功也不失败时别让骨架屏一直挂着）在 hooks/useSiteThumb.ts
+    const { useThumb, thumbUrl, thumbLoaded, onLoad: onThumbLoad, onError: onThumbError } =
+        useSiteThumb({
+            thumbApi,
+            siteUrl: site.url,
+            enabled: !isList && !isWall,
+            privacy: iconPrivacy,
         });
-        return () => {
-            cancelled = true;
-            if (borrowed) releaseIconObjectUrl(currentIcon);
-        };
-    }, [currentIcon]);
-
-    // 缩略图：仅在「网站设置」里配了模板时才启用，避免默认请求第三方服务
-    const thumbUrl = thumbApi.trim() ? resolveIconApiUrl(thumbApi, site.url || "") : "";
-    // 缩略图是第三方截图服务，隐私模式下同样不发（它拿走的是完整链接）
-    const useThumb = Boolean(thumbUrl) && !thumbError && !isList && !isWall && !iconPrivacy;
-
-    // 缩略图地址变化时重置加载状态
-    useEffect(() => {
-        setThumbError(false);
-        setThumbLoaded(false);
-    }, [thumbUrl]);
-
-    // 兜底：别让骨架屏无限挂着。
-    // 默认模板指向的是外部截图服务，被限流 / 被网络挡掉时请求可能既不成功也不失败，
-    // onError 一直不触发，卡片上就会留一块灰。超时就当失败处理，回到只有图标的版式。
-    useEffect(() => {
-        if (!useThumb || thumbLoaded) return;
-        const timer = window.setTimeout(() => setThumbError(true), 8000);
-        return () => window.clearTimeout(timer);
-    }, [useThumb, thumbLoaded, thumbUrl]);
-
-    // 图标地址变化时重置加载状态：
-    // 免刷新即时更新后，若图标由空改为有值，需要重新尝试加载，否则会一直显示首字母占位。
-    // 同时查一遍本地缓存，把已知加载不出来的源直接跳过去。
-    useEffect(() => {
-        let cancelled = false;
-        setImageLoaded(false);
-        setFallbackAdded(false);
-        setIconIdx(0);
-
-        (async () => {
-            for (let i = 0; i < primaryIcons.length; i++) {
-                const record = await readIconRecord(primaryIcons[i]);
-                if (record && !record.ok) continue; // 这个源以前失败过，跳过
-                if (!cancelled) setIconIdx(i);
-                return;
-            }
-            if (!cancelled) setIconIdx(primaryIcons.length); // 主源都失败过，等加载时再补兜底源
-        })();
-
-        return () => {
-            cancelled = true;
-        };
-    }, [primaryIcons]);
 
     // 使用dnd-kit的useSortable hook
     const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
@@ -373,25 +299,6 @@ const SiteCard = memo(function SiteCard({
     // 只在真的存了账号/密码时才显示对应按钮
     const hasUsername = Boolean(site.username);
     const hasPassword = Boolean(site.password);
-
-    // 处理图标加载错误：记下这个源不可用，换下一个候选
-    const handleIconError = () => {
-        if (currentIcon) void writeIconRecord(currentIcon, false);
-        setImageLoaded(false);
-        const next = iconIdx + 1;
-        // 主源全部失败：这时才把兜底源接上来，继续从第一个兜底源开始试
-        if (next >= iconSources.length && !fallbackAdded) setFallbackAdded(true);
-        setIconIdx(next);
-    };
-
-    // 处理图片加载完成：记下这个源可用，并把图标本体存一份到本地（弱网/离线时直接命中）
-    const handleImageLoad = () => {
-        if (currentIcon) {
-            void writeIconRecord(currentIcon, true);
-            void cacheIconBlob(currentIcon);
-        }
-        setImageLoaded(true);
-    };
 
     // 图标：加载失败或没有地址时，退化成按名称哈希配色的首字母块
     const renderAvatar = (mr: number | string = 1.5, size = 36) => {
@@ -789,8 +696,8 @@ const SiteCard = memo(function SiteCard({
                     alt={`${site.name} 预览图`}
                     loading='lazy'
                     decoding='async'
-                    onLoad={() => setThumbLoaded(true)}
-                    onError={() => setThumbError(true)}
+                    onLoad={onThumbLoad}
+                    onError={onThumbError}
                     sx={{
                         width: "100%",
                         height: 104,
