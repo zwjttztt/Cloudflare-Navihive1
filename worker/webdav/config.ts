@@ -40,7 +40,7 @@ export async function resolveWebDavConfig(
     const payload = body ?? (await safeJson(request));
 
     // 一次读回全部配置（原来要查四次，每次都是一次 D1 往返）
-    let stored: Record<string, string> = {};
+    let stored: Record<string, string>;
     try {
         stored = await api.getConfigs();
     } catch {

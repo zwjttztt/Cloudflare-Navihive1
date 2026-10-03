@@ -3,7 +3,10 @@
     "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.app.tsbuildinfo",
     "target": "ES2020",
     "useDefineForClassFields": true,
-    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    // ES2022 的 lib 是为了 Error 的 cause 选项（throw new Error(msg, { cause })）：
+    // lint 的 preserve-caught-error 要求把原始错误挂上去，否则排障时只剩一句翻译过的文案。
+    // 只动 lib 不动 target —— 语法降级行为不变，浏览器基线（Chrome 109 / Safari 15.4）都支持。
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "module": "ESNext",
     "skipLibCheck": true,
 

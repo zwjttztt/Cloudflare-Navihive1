@@ -166,7 +166,7 @@ export async function handlePublicRoutes(ctx: RouteCtx): Promise<Response | null
         // 三种状态文案要分清楚：还能试几次 / 这是最后一次 / 已经锁了。
         // （之前按「剩余次数」判断，第 5 次还没真锁上却说「已暂时锁定」）
         const left = LOGIN_FREE_ATTEMPTS - count;
-        let message = result.message;
+        let message: string;
         let status = 401;
         if (until > 0) {
             const waitSec = Math.ceil((until - now) / 1000);

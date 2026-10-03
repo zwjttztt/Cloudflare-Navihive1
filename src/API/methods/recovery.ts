@@ -290,7 +290,7 @@ export const recoveryImpl: RecoveryApi = {
                 : await this.findOwnerUser();
 
         let okUser = true;
-        let okPass = true;
+        let okPass: boolean;
         if (target) {
             // 账号名可以和密码一起改：连账号名都忘了的人填一个新名字即可，
             // 留空表示只重置密码、账号名不动。改名前先查重，别把别人的名字占了。

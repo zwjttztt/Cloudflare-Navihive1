@@ -13,7 +13,7 @@ export function readRememberedLogin(): RememberedLogin | null {
     // 解析与读存储要分开 try：读失败是「存储不可用」（隐私模式，正常现象），
     // 解析失败是「这份数据是坏的」（手改过 / 被写脏）。坏数据永远读不出来，
     // 留着只会让人误以为还记着登录名，所以顺手清掉。
-    let parsed: unknown = null;
+    let parsed: unknown;
     try {
         parsed = JSON.parse(raw);
     } catch {

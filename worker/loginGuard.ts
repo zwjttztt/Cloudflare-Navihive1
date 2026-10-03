@@ -160,7 +160,7 @@ async function mutateGuard(
     mutate: (prev: GuardState) => GuardState
 ): Promise<boolean> {
     for (let attempt = 0; attempt < CAS_MAX_ATTEMPTS; attempt++) {
-        let raw: string | null = null;
+        let raw: string | null;
         try {
             raw = await api.getConfig(key);
         } catch {
@@ -201,7 +201,7 @@ export async function bumpGuard(
     next: (prev: GuardState) => GuardState
 ): Promise<LoginGuard | null> {
     for (let attempt = 0; attempt < CAS_MAX_ATTEMPTS; attempt++) {
-        let raw: string | null = null;
+        let raw: string | null;
         try {
             raw = await api.getConfig(key);
         } catch {

@@ -485,7 +485,8 @@ export async function decryptBackup(cipher: Uint8Array, password: string): Promi
             /pbkdf2|iteration/i.test(error instanceof Error ? error.message : String(error))
         ) {
             throw new Error(
-                "这份备份是旧版加密格式，当前运行环境不支持它的迭代次数：请把文件下载到本地，用「从本地文件恢复」并输入备份密码"
+                "这份备份是旧版加密格式，当前运行环境不支持它的迭代次数：请把文件下载到本地，用「从本地文件恢复」并输入备份密码",
+                { cause: error }
             );
         }
         throw error;
@@ -641,7 +642,7 @@ export async function verifyRecoveryToken(
     const [headerB64, payloadB64, sigB64] = parts;
 
     // 验算法声明
-    let alg = "";
+    let alg: string;
     try {
         const header = JSON.parse(dec.decode(b64urlDecode(headerB64)));
         if (header.typ !== "JWS" || !RECOVERY_ALGS.includes(header.alg)) return { valid: false };
@@ -660,7 +661,7 @@ export async function verifyRecoveryToken(
     const verifyParams = (
         alg === "ES256" ? { name: "ECDSA", hash: "SHA-256" } : { name: "Ed25519" }
     ) as unknown as Parameters<SubtleCrypto["verify"]>[0];
-    let ok = false;
+    let ok: boolean;
     try {
         ok = await crypto.subtle.verify(verifyParams, key, sig, signingInput);
     } catch {

@@ -258,7 +258,7 @@ test("downloadRecoveryKeyFile: 文件名带日期，且真的触发了一次下�
     // 立刻吊销会让部分浏览器的下载失败，所以要留余量（见源码注释）。
     // 假定时器必须在调用**之前**开，否则源码里那个 setTimeout 用的是真的。
     mock.timers.enable({ apis: ["setTimeout"] });
-    let filename = "";
+    let filename: string;
     try {
         filename = downloadRecoveryKeyFile("EdDSA", "pub", "priv");
         mock.timers.tick(1000);

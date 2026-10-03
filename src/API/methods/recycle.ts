@@ -84,7 +84,7 @@ export const recycleImpl: RecycleApi = {
                 .bind(...(this.currentUserId === null ? [] : [this.currentUserId]))
                 .all<{ id: number; kind: string; data: string; deleted_at: number }>();
             return (result.results || []).map(r => {
-                let name = "";
+                let name: string;
                 try {
                     const parsed = JSON.parse(r.data) as { group?: { name?: string }; sites?: unknown[]; name?: string };
                     name =

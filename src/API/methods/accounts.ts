@@ -652,7 +652,7 @@ export const accountsImpl: AccountsApi = {
         }
 
         const hashed = await hashPassword(password);
-        let created: UserRecord | null = null;
+        let created: UserRecord | null;
         try {
             const row = await this.db
                 .prepare(

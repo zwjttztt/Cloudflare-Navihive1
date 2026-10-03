@@ -382,7 +382,7 @@ export class NavigationClient {
         }
 
         // 非 2xx：优先解析服务端返回的 message/error，让用户看到具体原因（如「密码强度不足」）
-        let errorPayload: { message?: string; error?: string } = {};
+        let errorPayload: { message?: string; error?: string };
         try {
             errorPayload = (await response.json()) as { message?: string; error?: string };
         } catch {
@@ -711,7 +711,7 @@ export class NavigationClient {
 
     /** 把非流式的失败响应翻成一个能直接显示给用户的 Error */
     private async importError(response: Response): Promise<Error> {
-        let reason = "";
+        let reason: string;
         try {
             const payload = (await response.json()) as { message?: string; error?: string };
             reason = payload.message || payload.error || "";

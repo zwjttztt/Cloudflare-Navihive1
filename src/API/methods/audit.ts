@@ -99,7 +99,7 @@ export const auditImpl: AuditApi = {
     getClientErrors: async function (this: NavigationAPI, limit = 200): Promise<ClientErrorGroup[]> {
         await this.migrate();
         const take = Math.min(Math.max(limit, 1), 500);
-        let rows: Array<{ detail: string; created_at: string }> = [];
+        let rows: Array<{ detail: string; created_at: string }>;
         try {
             const result = await this.db
                 .prepare(
