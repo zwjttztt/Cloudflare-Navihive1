@@ -4,6 +4,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+    pickBulkTagSuggestions,
     pickExistingTags,
     pickRecommendedTags,
     RECOMMENDED_TAGS,
@@ -49,4 +50,42 @@ test("两排候选不会撞车：现有全部用过的卡片，推荐里也不�
     const recommended = pickRecommendedTags(["AI", "工具"], []);
     const overlap = recommended.filter(tag => existing.includes(tag));
     assert.deepEqual(overlap, [], "同一排里不能出现两个一样的词");
+});
+
+// ---- 批量打标签弹窗的两排候选 ----
+
+test("批量候选：常用排按原顺序取前 12 个（调用方已按使用次数排好）", () => {
+    const all = Array.from({ length: 15 }, (_, i) => `t${i}`);
+    const next = pickBulkTagSuggestions(all);
+    assert.deepEqual(next.common, all.slice(0, 12));
+    assert.equal(next.hidden, 3, "要告诉 UI 还有 3 个没露出来");
+});
+
+test("批量候选：标签没超限时不给「显示全部」入口", () => {
+    const next = pickBulkTagSuggestions(["AI", "工具"]);
+    assert.deepEqual(next.common, ["AI", "工具"]);
+    assert.equal(next.hidden, 0);
+});
+
+test("批量候选：推荐排排除库里已经出现过的词", () => {
+    const next = pickBulkTagSuggestions(["工具", "网盘"]);
+    assert.ok(next.recommended.length > 0, "库里只有两个标签时推荐排要有东西");
+    for (const tag of next.recommended) {
+        assert.equal(["工具", "网盘"].includes(tag), false, `${tag} 库里已经有了`);
+    }
+    for (const tag of next.recommended) assert.ok(RECOMMENDED_TAGS.includes(tag));
+});
+
+test("批量候选：空库也要有推荐排（否则新用户点开是一片空白）", () => {
+    const next = pickBulkTagSuggestions([]);
+    assert.deepEqual(next.common, []);
+    assert.equal(next.recommended.length, 6);
+    assert.equal(next.hidden, 0);
+});
+
+test("批量候选：不按已选过滤 —— 勾上的要留在原处显示选中态", () => {
+    // 单张卡片那两排是「点一下就从候选里消失」；批量不能这样，
+    // 否则勾完就数不出自己勾了哪些
+    const next = pickBulkTagSuggestions(["AI", "工具"]);
+    assert.deepEqual(next.common, ["AI", "工具"], "常用排不受勾选影响");
 });

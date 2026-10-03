@@ -32,6 +32,32 @@ export function pickExistingTags(
 }
 
 /**
+ * 批量打标签弹窗的两排候选。
+ *
+ * 与「网站设置」里那两排的区别：**不按已选过滤**。
+ * 单张卡片点一下标签就落到卡片上、从候选里消失是合理的；批量场景里勾上的标签
+ * 必须留在原处显示成选中态，否则点一下就消失，对不上「我到底勾了哪些」。
+ *
+ * hidden 告诉 UI「常用排没显示完的还有几个」，> 0 时要给「显示全部」入口 ——
+ * 库里标签多了不能让用户够不着后面的。
+ */
+export function pickBulkTagSuggestions(
+    allTags: string[],
+    {
+        commonLimit = 12,
+        recommendLimit = 6,
+    }: { commonLimit?: number; recommendLimit?: number } = {}
+): { common: string[]; recommended: string[]; hidden: number } {
+    const common = allTags.slice(0, commonLimit);
+    const used = new Set(allTags);
+    return {
+        common,
+        recommended: RECOMMENDED_TAGS.filter(tag => !used.has(tag)).slice(0, recommendLimit),
+        hidden: Math.max(0, allTags.length - common.length),
+    };
+}
+
+/**
  * 推荐标签候选：常用词里排除掉「这张卡片已经有了」和「已经在现有标签里露出过」的，
  * 避免同一排里出现两个一样的词。
  */

@@ -1,6 +1,6 @@
 // src/components/BulkActionBar.tsx
 // 批量多选模式的操作条：底部居中浮出，对勾出来的卡片做删除 / 星标 / 标签 / 移动分组。
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
     Box,
     Button,
@@ -25,6 +25,7 @@ import LabelIcon from "@mui/icons-material/Label";
 import DriveFileMoveIcon from "@mui/icons-material/DriveFileMove";
 import CloseIcon from "@mui/icons-material/Close";
 import CheckCircleIcon from "@mui/icons-material/CheckCircle";
+import { pickBulkTagSuggestions } from "../utils/tagSuggest";
 
 export interface BulkGroupOption {
     id: number;
@@ -61,6 +62,8 @@ export default function BulkActionBar({
     const [tagOpen, setTagOpen] = useState(false);
     const [tagInput, setTagInput] = useState("");
     const [pickedTags, setPickedTags] = useState<string[]>([]);
+    // 常用排只露出前 12 个，剩下的要手动展开（标签多了不能让人够不着后面的）
+    const [showAllTags, setShowAllTags] = useState(false);
     // 移动到分组的菜单
     const [moveAnchor, setMoveAnchor] = useState<HTMLElement | null>(null);
     // 提交类操作防连点：同步守卫 + 按钮禁用双保险
@@ -70,8 +73,17 @@ export default function BulkActionBar({
     const openTagDialog = () => {
         setPickedTags([]);
         setTagInput("");
+        setShowAllTags(false);
         setTagOpen(true);
     };
+
+    // 两排快捷候选：常用（全站用过的，按使用次数排）与推荐（常用词里还没用过的）。
+    // 批量场景不按已选过滤 —— 勾上的要留在原处显示成选中态，否则点了就找不着了。
+    const { common, recommended, hidden } = useMemo(
+        () => pickBulkTagSuggestions(allTags),
+        [allTags]
+    );
+    const visibleTags = showAllTags ? allTags : common;
 
     // 弹窗里勾选/取消已有标签
     const togglePicked = (tag: string) => {
@@ -309,24 +321,99 @@ export default function BulkActionBar({
                                 }
                             }}
                         />
-                        {allTags.length > 0 && (
-                            <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.75, mt: 1.5 }}>
-                                {allTags.map(tag => {
-                                    const picked = pickedTags.includes(tag);
-                                    return (
-                                        <Chip
-                                            key={tag}
-                                            label={tag}
-                                            size='small'
-                                            variant={picked ? "filled" : "outlined"}
-                                            color={picked ? "primary" : "default"}
-                                            icon={picked ? <CheckCircleIcon /> : undefined}
-                                            onClick={() => togglePicked(tag)}
-                                        />
-                                    );
-                                })}
+                        {(visibleTags.length > 0 || recommended.length > 0) && (
+                            <Box sx={{ mt: 1.5, display: "flex", flexDirection: "column", gap: 0.75 }}>
+                                {visibleTags.length > 0 && (
+                                    <Box
+                                        className='nav-tag-suggest-group'
+                                        data-kind='common'
+                                        sx={{
+                                            display: "flex",
+                                            flexWrap: "wrap",
+                                            alignItems: "center",
+                                            gap: 0.5,
+                                        }}
+                                    >
+                                        <span className='nav-tag-suggest-label'>常用</span>
+                                        {visibleTags.map(tag => {
+                                            const picked = pickedTags.includes(tag);
+                                            return (
+                                                <Chip
+                                                    key={tag}
+                                                    label={tag}
+                                                    size='small'
+                                                    variant={picked ? "filled" : "outlined"}
+                                                    color={picked ? "primary" : "default"}
+                                                    icon={picked ? <CheckCircleIcon /> : undefined}
+                                                    className={
+                                                        picked ? undefined : "nav-tag-suggest"
+                                                    }
+                                                    aria-pressed={picked}
+                                                    aria-label={`添加标签 ${tag}`}
+                                                    onClick={() => togglePicked(tag)}
+                                                />
+                                            );
+                                        })}
+                                        {hidden > 0 && (
+                                            <Chip
+                                                label={showAllTags ? "收起" : `显示全部 ${allTags.length} 个`}
+                                                size='small'
+                                                variant='outlined'
+                                                className='nav-tag-suggest'
+                                                aria-label={
+                                                    showAllTags
+                                                        ? "收起标签列表"
+                                                        : `显示全部 ${allTags.length} 个标签`
+                                                }
+                                                onClick={() => setShowAllTags(v => !v)}
+                                            />
+                                        )}
+                                    </Box>
+                                )}
+
+                                {recommended.length > 0 && (
+                                    <Box
+                                        className='nav-tag-suggest-group'
+                                        data-kind='recommend'
+                                        sx={{
+                                            display: "flex",
+                                            flexWrap: "wrap",
+                                            alignItems: "center",
+                                            gap: 0.5,
+                                        }}
+                                    >
+                                        <span className='nav-tag-suggest-label'>推荐</span>
+                                        {recommended.map(tag => {
+                                            const picked = pickedTags.includes(tag);
+                                            return (
+                                                <Chip
+                                                    key={tag}
+                                                    label={tag}
+                                                    size='small'
+                                                    variant={picked ? "filled" : "outlined"}
+                                                    color={picked ? "primary" : "default"}
+                                                    icon={picked ? <CheckCircleIcon /> : undefined}
+                                                    className={
+                                                        picked ? undefined : "nav-tag-suggest"
+                                                    }
+                                                    aria-pressed={picked}
+                                                    aria-label={`添加推荐标签 ${tag}`}
+                                                    onClick={() => togglePicked(tag)}
+                                                />
+                                            );
+                                        })}
+                                    </Box>
+                                )}
                             </Box>
                         )}
+                        <Typography
+                            variant='caption'
+                            color='text.secondary'
+                            display='block'
+                            sx={{ mt: 1 }}
+                        >
+                            点「常用 / 推荐」里的标签可直接勾选，也可以自己输入（逗号分隔一次加多个）。
+                        </Typography>
                     </Box>
                 </DialogContent>
                 <DialogActions sx={{ px: 2, pb: 2, pt: 0.5, gap: 1 }}>
