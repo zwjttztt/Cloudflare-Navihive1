@@ -56,6 +56,7 @@ import { useSiteCreator } from "./hooks/useSiteCreator";
 import { useSemanticSearch } from "./hooks/useSemanticSearch";
 import { useSiteActions } from "./hooks/useSiteActions";
 import { useGroupActions } from "./hooks/useGroupActions";
+import { useUndoRedo } from "./hooks/useUndoRedo";
 import { useBackupController } from "./hooks/useBackupController";
 import { useAppCommands } from "./hooks/useAppCommands";
 import { usePrefSync } from "./hooks/usePrefSync";
@@ -129,7 +130,7 @@ import {
     PREF_VISITS_CONFIG,
     PREF_COLLAPSED_CONFIG,
 } from "./appDefaults";
-import { loadPersistedUndo, setUndoAccountUid } from "./utils/undoPersist";
+import { setUndoAccountUid } from "./utils/undoPersist";
 import SiteListBody from "./components/SiteListBody";
 import LoginForm from "./components/LoginForm";
 const BackupDialog = lazy(() => import("./components/BackupDialog"));
@@ -774,72 +775,19 @@ function App() {
         notify(accepted ? "已装到桌面，下次从桌面图标打开就行" : "已取消安装", accepted ? "success" : "info");
     }, [promptInstall, notify]);
 
-    /**
-     * 刷新之后把上次留下的「可重放」撤销记录捞回来（见 utils/undoPersist）。
-     *
-     * 只恢复此刻还存在的卡片：中间已经被删掉 / 恢复过的，再写回去只会造出一张
-     * 谁都不认识的脏卡片。删卡片不走这条路 —— 它有回收站兜底，那才是跨刷新的正解。
-     */
-    const restorePersistedUndo = useCallback(() => {
-        const list = loadPersistedUndo();
-        if (list.length === 0) return;
-        hydrateHistory(list, item => {
-            const stillThere = groupsRef.current.some(group =>
-                group.sites.some(site => site.id === item.siteId)
-            );
-            if (!stillThere) return null;
-
-            const apply = async (site: Site) => {
-                // 快照里的账号 / 密码是空的（落盘前就抹掉了，见 undoPersist.stripSecrets）。
-                // 这里必须把它俩排除在写回之外 —— 否则撤销一次「改标题」会把库里的
-                // 站点密码清成空，等于借撤销之手做了一次静默的凭据删除。
-                const { username: _skipUser, password: _skipPass, ...rest } = site;
-                await api.updateSite(item.siteId, { ...rest, id: item.siteId });
-                // 本地同样保留现存的凭据字段，界面上不会突然变成「未设置密码」
-                const current = groupsRef.current
-                    .flatMap(group => group.sites)
-                    .find(s => s.id === item.siteId);
-                upsertSiteLocally({
-                    ...rest,
-                    id: item.siteId,
-                    username: current?.username ?? "",
-                    password: current?.password ?? "",
-                });
-            };
-            return {
-                label: item.label,
-                undo: () => apply(item.before),
-                redo: () => apply(item.after),
-                persist: item,
-            };
-        });
-    }, [hydrateHistory, upsertSiteLocally]);
-
-    // 数据第一次到位后恢复一次：早于这时候 groupsRef 还是空的，校验会全判成「卡片不在了」
-    const restoredUndoRef = useRef(false);
-    useEffect(() => {
-        if (restoredUndoRef.current) return;
-        if (groups.length === 0) return;
-        restoredUndoRef.current = true;
-        restorePersistedUndo();
-    }, [groups, restorePersistedUndo]);
-    const runUndo = useCallback(async () => {
-        if (!undoHistory) return;
-        try {
-            const label = await undoHistory();
-            notify(label ? `已撤销：${label}` : "没有可撤销的操作", label ? "success" : "info");
-        } catch {
-            notify("撤销失败", "error");
-        }
-    }, [undoHistory, notify]);
-    const runRedo = useCallback(async () => {
-        try {
-            const label = await redoHistory();
-            notify(label ? `已重做：${label}` : "没有可重做的操作", label ? "success" : "info");
-        } catch {
-            notify("重做失败", "error");
-        }
-    }, [redoHistory, notify]);
+    // ---- 撤销 / 重做的执行层 ----
+    // 按下之后发生什么、以及刷新后把落盘的「可重放」记录捞回来，都在
+    // hooks/useUndoRedo.ts（栈本身在 useHistoryStack）。引用点名字保持原样。
+    const { runUndo, runRedo } = useUndoRedo({
+        api,
+        groupsRef,
+        upsertSiteLocally,
+        notify,
+        undoHistory,
+        redoHistory,
+        hydrateHistory,
+        groupsReady: groups.length > 0,
+    });
 
     // 拉取全量数据：一次 bootstrap 请求搞定（原来要 1 次分组 + 每个分组一次站点 + 1 次配置）
     // silent=true 时不显示全屏 loading、不弹错误提示，用于修改后的后台同步

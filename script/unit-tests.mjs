@@ -66,6 +66,10 @@ define("document", win.document);
 define("navigator", win.navigator);
 define("location", win.location);
 define("history", win.history);
+// jsdom 的 localStorage 挂在 window 上，globalThis 上没有 —— 而业务代码里写的
+// 是裸的 localStorage.xxx（如 utils/undoPersist），漏了这行会静默读写失败
+// （那些地方都包了 try/catch，表现为「存了但读不出来」，很难查）
+if (typeof globalThis.localStorage === "undefined") define("localStorage", win.localStorage);
 define("getComputedStyle", win.getComputedStyle.bind(win));
 define("requestAnimationFrame", win.requestAnimationFrame.bind(win));
 define("cancelAnimationFrame", win.cancelAnimationFrame.bind(win));
