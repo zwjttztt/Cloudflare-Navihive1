@@ -8,7 +8,7 @@
 
 
 
-![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178c6)
+![TypeScript](https://img.shields.io/badge/TypeScript-6.0-3178c6)
 
 
 
