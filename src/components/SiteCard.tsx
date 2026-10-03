@@ -3,6 +3,9 @@ import { useState, memo, lazy, Suspense } from "react";
 import { Site } from "../API/http";
 // 卡片设置弹窗按需加载：只有点开某一张卡片时才需要它
 const SiteSettingsModal = lazy(() => import("./SiteSettingsModal"));
+import SiteCardAvatar from "./SiteCardAvatar";
+import { SiteCardTitle, SiteCardDescription } from "./SiteCardText";
+import Highlighted from "./Highlighted";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 // 引入Material UI组件
@@ -14,7 +17,6 @@ import {
     Skeleton,
     IconButton,
     Box,
-    Fade,
     Tooltip,
     Menu,
     MenuItem,
@@ -109,24 +111,6 @@ const copyText = async (text: string): Promise<boolean> => {
         return false;
     }
 };
-
-// 把命中的关键词片段包成 <mark>，未命中时原样输出
-function Highlighted({ text, query }: { text: string; query?: string }) {
-    if (!query) return <>{text}</>;
-
-    const lower = text.toLowerCase();
-    const key = query.toLowerCase();
-    const hit = lower.indexOf(key);
-    if (hit === -1) return <>{text}</>;
-
-    return (
-        <>
-            {text.slice(0, hit)}
-            <mark className='nav-hl'>{text.slice(hit, hit + query.length)}</mark>
-            {text.slice(hit + query.length)}
-        </>
-    );
-}
 
 // 使用memo包装组件以减少不必要的重渲染
 const SiteCard = memo(function SiteCard({
@@ -301,150 +285,45 @@ const SiteCard = memo(function SiteCard({
     const hasPassword = Boolean(site.password);
 
     // 图标：加载失败或没有地址时，退化成按名称哈希配色的首字母块
-    const renderAvatar = (mr: number | string = 1.5, size = 36) => {
-        if (!iconError && currentIcon) {
-            return (
-                <Box
-                    className='nav-card-icon'
-                    position='relative'
-                    mr={mr}
-                    width={size}
-                    height={size}
-                    flexShrink={0}
-                    sx={{
-                        // 统一底板：浅色 logo 有边框托底不至于「消失」，深色 logo 也不会糊在一起
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        borderRadius: "11px",
-                        bgcolor: isDark ? "rgba(255,255,255,0.09)" : "rgba(255,255,255,0.94)",
-                        border: "1px solid",
-                        borderColor: isDark ? "rgba(255,255,255,0.14)" : "rgba(15,23,42,0.09)",
-                        boxShadow: isDark ? "none" : "0 1px 3px rgba(15,23,42,0.08)",
-                        transition: "transform .22s cubic-bezier(.22,.61,.36,1)",
-                    }}
-                >
-                    <Skeleton
-                        variant='rounded'
-                        width={size - 12}
-                        height={size - 12}
-                        sx={{
-                            display: !imageLoaded ? "block" : "none",
-                            position: "absolute",
-                            inset: 0,
-                            margin: "auto",
-                        }}
-                    />
-                    <Fade in={imageLoaded} timeout={400}>
-                        <Box
-                            component='img'
-                            src={iconObjectUrl || currentIcon}
-                            alt={site.name}
-                            loading='lazy'
-                            decoding='async'
-                            sx={{
-                                width: size - 12,
-                                height: size - 12,
-                                borderRadius: "6px",
-                                objectFit: "contain",
-                            }}
-                            onError={handleIconError}
-                            onLoad={handleImageLoad}
-                        />
-                    </Fade>
-                </Box>
-            );
-        }
-
-        return (
-            <Box
-                className='nav-card-icon'
-                sx={{
-                    width: size,
-                    height: size,
-                    mr: mr,
-                    borderRadius: 1.5,
-                    flexShrink: 0,
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    fontWeight: 600,
-                    fontSize: size > 40 ? 20 : 15,
-                    // 图标取不到时用站点名首字母顶上，底色做成同色系渐变，比纯色块耐看
-                    background: `linear-gradient(135deg, ${alpha(
-                        isDark ? tone.soft : tone.strong,
-                        isDark ? 0.34 : 0.2
-                    )} 0%, ${alpha(isDark ? tone.strong : tone.soft, isDark ? 0.16 : 0.08)} 100%)`,
-                    color: isDark ? tone.soft : tone.strong,
-                    border: "1px solid",
-                    borderColor: alpha(isDark ? tone.soft : tone.strong, isDark ? 0.3 : 0.22),
-                    transition: "transform .22s cubic-bezier(.22,.61,.36,1)",
-                }}
-            >
-                {fallbackIcon}
-            </Box>
-        );
-    };
+    // 图标那一块整套搬到了 components/SiteCardAvatar.tsx（两个分支形状完全不同，
+    // 内联在这里时「取不到图标会长什么样」很难一眼看清）
+    const renderAvatar = (mr: number | string = 1.5, size = 36) => (
+        <SiteCardAvatar
+            icon={currentIcon}
+            iconError={iconError}
+            imageLoaded={imageLoaded}
+            iconObjectUrl={iconObjectUrl}
+            onIconError={handleIconError}
+            onImageLoad={handleImageLoad}
+            siteName={site.name}
+            fallbackChar={fallbackIcon}
+            tone={tone}
+            isDark={isDark}
+            mr={mr}
+            size={size}
+        />
+    );
 
     // 失效标记（打开时间与点击次数不再展示，避免卡片右侧信息过载）
     const isDead = Boolean(site.url && deadLinks[site.url]);
 
-    const renderBadges = () => (
-        <>
-            {isDead && (
-                <Tooltip title='链接可能已失效（点右键 → 复制链接确认）'>
-                    <Box className='nav-dead-dot' aria-label='链接可能已失效'>
-                        失效
-                    </Box>
-                </Tooltip>
-            )}
-        </>
-    );
-
-    // 标题
     const renderTitle = () => (
-        <Box
-            sx={{
-                display: "flex",
-                alignItems: "center",
-                gap: 0.75,
-                minWidth: 0,
-                flexShrink: 1,
-            }}
-        >
-            <Typography
-                className='nav-card-title'
-                variant={isWall ? "caption" : "subtitle1"}
-                fontWeight='medium'
-                noWrap
-                title={site.name}
-                sx={{
-                    fontSize: { xs: "0.875rem", sm: "1rem" },
-                    transition: "color .2s ease",
-                }}
-            >
-                <Highlighted text={site.name} query={highlight} />
-            </Typography>
-            {renderBadges()}
-        </Box>
+        <SiteCardTitle
+            name={site.name}
+            highlight={highlight}
+            dead={isDead}
+            compactTitle={isWall}
+        />
     );
 
     // 描述
     const renderDescription = () => (
-        <Typography
-            variant='body2'
-            color='text.secondary'
-            sx={{
-                display: "-webkit-box",
-                WebkitLineClamp: isCompact ? 2 : useThumb ? 2 : 3,
-                WebkitBoxOrient: "vertical",
-                overflow: "hidden",
-                flexGrow: 1,
-                fontSize: { xs: "0.75rem", sm: "0.875rem" },
-            }}
-        >
-            <Highlighted text={site.description || "暂无描述"} query={highlight} />
-        </Typography>
+        <SiteCardDescription
+            description={site.description}
+            highlight={highlight}
+            compact={isCompact}
+            withThumb={useThumb}
+        />
     );
 
     // 键盘可达：卡片聚焦后回车/空格打开链接（方向键由 App 统一处理）
