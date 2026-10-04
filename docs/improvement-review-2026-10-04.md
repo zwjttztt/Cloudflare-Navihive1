@@ -18,9 +18,10 @@
 > 用例 1459 → 1598；首屏 224.21 → 221.77 KB（余量 4.8% → 5.96%）；
 > BackupDialog 1381 → 687 行。过程中还挖出一个真 bug：被服务端拒绝的改动进失败清单时
 > 不通知订阅者，界面上根本不显示（详见 CHANGELOG 2026-10-04 的「修复」一节）。
-> 仍未做的只剩 B5 里的 MoreMenu / DisplayControls / SiteListBody 三个展示型组件的 DOM 用例
-> （它们的重排目前只有仓库外的 ui-smoke 盯着），以及 B4 之后顺带发现的
-> `useSites` / `useConfigController` 两个 hook 的直测。
+> **再更新（同日收尾）：最后两项也补齐了** —— B5 里的 `MoreMenu` /
+> `DisplayControls` / `SiteListBody` 三个展示型组件各有 DOM 用例，`useSites` /
+> `useConfigController` 两个 hook 有了直测，共新增 59 条（用例 1598 → 1648）。
+> 至此下面 A/B/C 三级**没有遗留项**。
 
 ---
 

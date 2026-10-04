@@ -91,7 +91,18 @@
   等于悄悄吞掉用户的改动）。
 - **首屏预算改成按当前产物算**：原来只按基线（221.18 KB）算余量，中间陆续加进去的几 KB
   它一概看不见 —— 实测出现过「基线余量 6.25%、实际只剩 4.24%」而用例是绿的。
-- 用例 1459 → 1598。
+- **三个展示型组件补 DOM 用例**（新增，28 条）：`MoreMenu`（分区顺序「整理与数据 →
+  设置与账号 → 帮助与安装 → 会话」，且**每一项必须先 `onClose()` 再执行动作** —— 反了
+  菜单会飘到左上角）、`DisplayControls`（星标/多选是开关必须带 `aria-pressed`，
+  退出多选要走 `exitMultiSelect()` 而不是 `setMultiSelect(false)`，后者会留下幽灵勾选；
+  面板里是三档直选不是循环）、`SiteListBody`（**站点排序模式用 `groups` 而不是
+  `displayedGroups`** —— 否则拖完保存会把没显示的分组一起重排）。
+  这三个刚做过一轮重排，此前只有仓库外的 ui-smoke 盯着，CI 里没有回归网。
+- **两个数据层 hook 补直测**（新增，21 条）：`useSites`（站点按 `order_num` 归堆、
+  无 id 的分组丢弃、**静默刷新失败不弹提示也不动 loading**、仅认证类失败才触发
+  `onAuthFail`）、`useConfigController`（**WebDAV 配置必须单独存放、不留在 configs 里**
+  —— 否则会被写进备份文件；主色预览值优先、非法值丢弃；撤预览后回滚到已保存值）。
+- 用例 1459 → 1598 → **1648**。
 
 ### 重构
 - **BackupDialog 1381 → 687**：两个巨大的 render 函数（`renderBackupTab` / `renderRestoreTab`，
