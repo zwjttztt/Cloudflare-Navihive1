@@ -100,9 +100,14 @@ npm install --dry-run vite@8 @vitejs/plugin-react@6 esbuild@0.28
 | 图标 `DeleteOutline` / `PersonOutline` / `AddCircleOutline` → `…Outlined` | 3 | 手写（官方没给 codemod） |
 | codemod 搬完还剩下的（`slotProps` 里的 `fontSize`） | 7 | 手写包一层 `sx` |
 
-⚠️ codemod 用 jscodeshift 会**整文件重排**：`src/utils/advancedSearch.ts` 和
-`src/utils/customCss.ts` 一个语义改动都没有、纯被重新排版了，已经还原
-（判定办法：把全文件空白去掉后与 HEAD 比对，相等即纯格式改动）。
+⚠️ codemod 走 jscodeshift 会**整文件重排**，两种表现，处理方式不同：
+
+1. 纯被重新排版、一个语义改动都没有：`src/utils/advancedSearch.ts` 与
+   `src/utils/customCss.ts`，已还原（判据：全文件去空白后与 HEAD 相同）。
+2. 顺手把整块 JSX 重新缩进：`AddSiteDialog`（原来多缩了 8）、`SettingsDialog`
+   （原来少缩了 4）、`App.tsx`（整块 +3）。前两个是**修好了**（原来相对父级是错的），
+   留着；App.tsx 那个既没修好也没修坏、纯多 600 行 diff，已手工退回去
+   （退完 App.tsx 的净改动只剩 6 行，构建产物字节不变）。
 
 ### 那条行为变化的回归：ButtonBase 的 Enter / Space
 
