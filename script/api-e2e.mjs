@@ -12,7 +12,7 @@
 //      会表现为「改密成功之后什么都做不了」；
 //   3. /api/init 只返回 {ok, initialized}，数据在 /api/groups 与 /api/sites。
 //
-// 用法：npm run e2e      （需要先 npm run build，跑的是 dist/myhomepage 里的产物）
+// 用法：npm run e2e      （需要先 npm run build，跑的是 dist/ 下构建出来的那份产物）
 
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -23,7 +23,75 @@ import { setTimeout as sleep } from "node:timers/promises";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, "..");
-const CONFIG = path.join(ROOT, "dist", "myhomepage", "wrangler.json");
+/**
+ * 找到构建出来的 worker 产物配置。
+ *
+ * 目录名**不能写死**：@cloudflare/vite-plugin 把 worker 产物放在 dist/<worker 名>/
+ * 下，而 worker 名就是 wrangler.jsonc 里的 "name"。项目改名之后
+ * （myhomepage → cloudflare-navihive1）目录名跟着变了，于是：
+ *   - CI 上是干净检出，dist 里只有新目录 → 写死旧名字的那份直接找不到文件；
+ *   - 本地反而「能跑」，因为旧目录还留着 —— 但它跑的是改名前的旧包，
+ *     20/20 全绿其实什么都没验到。
+ *
+ * 所以在 dist 下找 wrangler.json，而不是猜目录名。找到多份说明历次构建的
+ * 旧目录没被覆盖（目录名不同就不会被清理），取最新的那份并把忽略掉的列出来。
+ */
+function resolveWorkerConfig() {
+    const dist = path.join(ROOT, "dist");
+    const candidates = fs
+        .readdirSync(dist, { withFileTypes: true })
+        .filter(d => d.isDirectory() && d.name !== "client")
+        .map(d => path.join(dist, d.name, "wrangler.json"))
+        .filter(p => fs.existsSync(p))
+        .map(p => ({ path: p, mtime: fs.statSync(p).mtimeMs }))
+        .sort((a, b) => b.mtime - a.mtime);
+
+    if (!candidates.length) {
+        return {
+            error: `${dist} 下没有找到任何 <目录>/wrangler.json，先跑 npm run build`,
+        };
+    }
+    return { config: candidates[0].path, stale: candidates.slice(1) };
+}
+
+const resolved = fs.existsSync(path.join(ROOT, "dist"))
+    ? resolveWorkerConfig()
+    : { error: `找不到 ${path.join(ROOT, "dist")}，先跑 npm run build` };
+
+if (resolved.error) {
+    console.error(resolved.error);
+    process.exit(1);
+}
+const CONFIG = resolved.config;
+for (const old of resolved.stale ?? []) {
+    console.warn(
+        `注意：${old.path} 也在 dist 下，但比正在用的这份旧（多半是改 worker 名之前的\n` +
+            `遗留产物，不会被新构建覆盖）。要清干净就删掉 ${path.dirname(old.path)} 后再 build。`
+    );
+}
+
+// 产物比源码还旧 = 跑的不是刚才那份代码。只警告不拦：mtime 在有些环境下不可靠，
+// 但真踩到的时候（本地改完忘 build）这条能省掉一次「明明改了怎么没生效」。
+{
+    const newestUnder = dir => {
+        let newest = 0;
+        const walk = d => {
+            for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+                const p = path.join(d, e.name);
+                if (e.isDirectory()) walk(p);
+                else newest = Math.max(newest, fs.statSync(p).mtimeMs);
+            }
+        };
+        walk(dir);
+        return newest;
+    };
+    const srcNewest = Math.max(newestUnder(path.join(ROOT, "worker")), 0);
+    if (srcNewest > fs.statSync(CONFIG).mtimeMs) {
+        console.warn(
+            "注意：dist 里的 worker 产物比 worker/ 下的源码还旧 —— 现在跑的是上一版代码，先跑 npm run build"
+        );
+    }
+}
 // 端口默认随机：连着跑两次时，上一次的 wrangler 未必已经把端口放干净，
 // 撞上就是一场「登录失败」的误报。指定 E2E_PORT 时按指定的来，撞了就直接报错。
 const FIXED_PORT = process.env.E2E_PORT ? Number(process.env.E2E_PORT) : 0;
@@ -78,10 +146,6 @@ function check(label, ok, detail = "") {
 
 // ---------------- 起 wrangler dev ----------------
 
-if (!fs.existsSync(CONFIG)) {
-    console.error(`找不到 ${CONFIG}，先跑 npm run build`);
-    process.exit(1);
-}
 
 // 每次跑都必须从**空库**开始：上一次跑会把管理员密码改掉，库要是复用，
 // 第二次登录就会「用户名或密码错误」，而且失败原因看不出是数据没清。
