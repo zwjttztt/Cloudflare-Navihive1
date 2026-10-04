@@ -7,7 +7,7 @@
 //   2. 筛选**只影响显示、不影响勾选** —— 注释里写得清清楚楚，但极容易写反：
 //      一旦写反，用户在几百条清单里搜一下关键字，没显示出来的那些就被悄悄放弃了。
 //   3. 「全不选」要真的把导入按钮置灰，而不是点了才弹错误。
-import { test } from "node:test";
+import { test, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -67,6 +67,7 @@ const incoming: ExportData = {
 
 interface Handlers {
     overwrite?: boolean;
+    data?: ExportData | null;
     onConfirm?: (data: ExportData) => void;
     onCancel?: () => void;
 }
@@ -79,7 +80,23 @@ function mount(handlers: Handlers = {}) {
         root!.render(
             <ImportPreviewDialog
                 open
-                data={incoming}
+                data={handlers.data ?? incoming}
+                overwrite={handlers.overwrite ?? false}
+                current={current}
+                onCancel={handlers.onCancel ?? (() => {})}
+                onConfirm={handlers.onConfirm ?? (() => {})}
+            />
+        );
+    });
+}
+
+/** 换一份备份 / 换模式：模拟用户重新选了文件或切了「覆盖恢复」 */
+function rerender(handlers: Handlers = {}) {
+    act(() => {
+        root!.render(
+            <ImportPreviewDialog
+                open
+                data={handlers.data ?? incoming}
                 overwrite={handlers.overwrite ?? false}
                 current={current}
                 onCancel={handlers.onCancel ?? (() => {})}
@@ -133,6 +150,16 @@ async function typeInto(input: HTMLInputElement, value: string) {
 }
 
 const rows = () => document.querySelectorAll<HTMLElement>("[data-import-row]");
+
+const checkedRows = () =>
+    [...rows()].filter(
+        r => r.querySelector<HTMLInputElement>('input[type="checkbox"]')?.checked
+    );
+
+// 断言失败时如果没人收尾，MUI 的 Portal 会留在 body 上污染下一条用例，
+// 表现为「上一条明明失败了，后面却莫名其妙全绿」。每条末尾手写的 cleanup()
+// 只在走到那一行时才生效，这里再兜一层。
+afterEach(cleanup);
 
 test("点取消：onConfirm 一次都不许被调用", async () => {
     let confirmed = 0;
@@ -271,4 +298,81 @@ test("data 为空时不渲染（没有备份却弹个空窗会让人以为导入
     });
     assert.equal(document.body.textContent?.includes("导入预览"), false);
     cleanup();
+});
+
+// ============ 下面这半边是后补的：默认勾选的**播种时机**与批量按钮 ============
+// 上面已经盯住了「筛选不改勾选」和「全不选要置灰」，但还差两类：
+//   1. 覆盖恢复的默认必须全选 —— 没勾的那部分会被当成「备份里没有」直接删掉，
+//      用户什么都没动就丢数据，而且界面上完全看不出来；
+//   2. 换一份备份 / 切模式时要按新规则重新勾一遍（seededFor 那段渲染期 setState）。
+//      写错的表现是「上一次的勾选莫名其妙留到了这一份备份上」。
+
+test("覆盖恢复：默认全选（没勾的会被当成「不在备份里」删掉）", () => {
+    mount({ overwrite: true });
+    assert.equal(rows().length, 5, "2 个分组 + 3 张卡片");
+    assert.equal(checkedRows().length, 5, "一条都不能漏勾");
+    assert.match(importButton()?.textContent ?? "", /导入\s*5\s*\//);
+});
+
+test("换一份备份：按新数据的默认规则重新勾一遍", async () => {
+    const captured: { preview: ExportData | null } = { preview: null };
+    mount({ onConfirm: d => void (captured.preview = d) });
+    const none = buttonByText("全不选");
+    assert.ok(none);
+    await clickAsync(none);
+    assert.equal(checkedRows().length, 0);
+
+    // 用户重新选了一份备份（内容一样，但是另一个对象）
+    rerender({ data: { ...incoming }, onConfirm: d => void (captured.preview = d) });
+    assert.equal(
+        checkedRows().length,
+        3,
+        "换了数据要重新播种，不能把上一次的「全不选」留着"
+    );
+});
+
+test("切到覆盖恢复也要重新播种（默认规则本身变了）", () => {
+    mount({ overwrite: false });
+    assert.equal(checkedRows().length, 3);
+    rerender({ overwrite: true });
+    assert.equal(checkedRows().length, 5);
+});
+
+test("「只看新增与更新」只勾这两类，无变化的留空", async () => {
+    mount();
+    const all = buttonByText("全选");
+    assert.ok(all);
+    await clickAsync(all);
+    assert.equal(checkedRows().length, 5);
+
+    const only = buttonByText("只看新增与更新");
+    assert.ok(only);
+    await clickAsync(only);
+
+    const statuses = checkedRows().map(r => r.getAttribute("data-status"));
+    assert.equal(statuses.length, 3);
+    assert.equal(statuses.includes("unchanged"), false, "无变化的不该被勾上");
+});
+
+test("取消勾选一条后，交出去的数据里真的没有它", async () => {
+    const captured: { preview: ExportData | null } = { preview: null };
+    mount({ onConfirm: d => void (captured.preview = d) });
+
+    const target = [...rows()].find(r => r.getAttribute("data-status") === "added");
+    assert.ok(target, "夹具里应有一条「新增」");
+    await clickAsync(target!);
+    assert.equal(
+        target!.querySelector<HTMLInputElement>('input[type="checkbox"]')?.checked,
+        false
+    );
+
+    await clickAsync(importButton()!);
+    assert.ok(captured.preview);
+    const names = (captured.preview.sites ?? []).map(s => s.name);
+    assert.equal(
+        names.includes("新卡片"),
+        false,
+        "取消勾选的那条不该出现在交出去的数据里"
+    );
+    assert.equal(names.includes("示例二（改过）"), true, "别的勾选照常导出");
 });

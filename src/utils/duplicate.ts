@@ -3,17 +3,27 @@
 // 同一个站点在多个分组里各存一份，删的时候很容易漏删，所以提前拦一下。
 import { Site } from "../API/http";
 import { GroupWithSites } from "../types";
-import { normalizeSearchText } from "./search";
 
 /**
- * 网址归一：去掉协议头、www. 和末尾斜杠之类的差异，只留「是不是同一个地址」的信息。
+ * 网址归一：抹掉协议头、www.、大小写与末尾斜杠的差异，只留「是不是同一个地址」的信息。
  * 例：https://www.A.com/Path/ 与 a.com/path 会归一成同一个 key。
- * 查询串（?a=1）保留，因为不同参数通常就是不同页面。
+ *
+ * ⚠️ 只抹「差异」，不能抹「分隔」：早先是先把非字母数字全换成空格、再把空格删掉，
+ * 于是 a.com/a/b、a.com/ab、a.com/a-b 三个地址算出同一个 key，
+ * 新增第二张卡时会被判成「链接已存在」直接拦下来（误报）。
+ * 现在把连续的非字母数字压成一个 "/"，路径层级留住；"?" 和 "#" 保持原样，
+ * 免得查询串 / 锚点和路径层级混在一起（p?x=1 与 p/x/1 因此仍然不同）。
  */
 export const urlKey = (url?: string | null): string => {
     const raw = (url || "").trim();
     if (!raw) return "";
-    return normalizeSearchText(raw).replace(/\s+/g, "");
+    return raw
+        .toLowerCase()
+        .replace(/^https?:\/\//, "")
+        .replace(/^www\./, "")
+        .replace(/[^\p{L}\p{N}?#]+/gu, "/")
+        .replace(/^\/+/, "")
+        .replace(/[/?#]+$/, "");
 };
 
 export interface DuplicateHit {

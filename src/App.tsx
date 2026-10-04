@@ -59,6 +59,8 @@ import { useUndoRedo } from "./hooks/useUndoRedo";
 import { useBackupController } from "./hooks/useBackupController";
 import { useAppCommands } from "./hooks/useAppCommands";
 import { usePrefSync } from "./hooks/usePrefSync";
+import { useGlobalShortcuts } from "./hooks/useGlobalShortcuts";
+import { useViewportUi } from "./hooks/useViewportUi";
 import {
     wrapMutations,
     installOnlineListener,
@@ -333,10 +335,6 @@ function App() {
 
     // 新增状态管理
 
-    // 新增菜单状态
-    const [menuAnchorEl, setMenuAnchorEl] = useState<null | HTMLElement>(null);
-    const openMenu = Boolean(menuAnchorEl);
-
 
     // 审计日志 / 回收站对话框状态
     const [openAudit, setOpenAudit] = useState(false);
@@ -479,116 +477,23 @@ function App() {
     // 退出多选 / 勾选切换的逻辑在 useMultiSelect 里
 
     // 命令面板 / 访问统计 / 快捷键 / 书签导入的开关在 useAppDialogs 里
-    // 分组锚点导航：当前视口里的分组
-    const [activeGroupId, setActiveGroupId] = useState<number | null>(null);
-    // 向下滚动后头部收紧，让出更多内容空间
-    const [headerCompact, setHeaderCompact] = useState(false);
-    // 「分组」菜单的锚点（底栏与窄桌面顶栏共用同一个菜单）
-    const [mobileGroupsAnchor, setMobileGroupsAnchor] = useState<HTMLElement | null>(
-        null
-    );
-    // 锚点来自顶栏还是底栏：顶栏按钮在页面上方，菜单要往下展开；
-    // 底栏按钮贴着屏幕下边缘，只能往上翻。两者共用菜单，方向得按锚点位置定。
-    const [groupsAnchorFromTop, setGroupsAnchorFromTop] = useState(false);
 
-    // 滚动：更新头部收缩状态 + 当前分组高亮
-    useEffect(() => {
-        let raf = 0;
-        let lastY = window.scrollY;
-
-        const update = () => {
-            raf = 0;
-            const y = window.scrollY;
-            // 往下滚且已经离开顶部一段距离才收紧，避免刚滚一点就跳
-            setHeaderCompact(y > 90 && y > lastY + 2);
-            lastY = y;
-
-            const nodes = document.querySelectorAll<HTMLElement>("[data-group-anchor]");
-            if (nodes.length === 0) return;
-            const line = 160; // 视口上「当前位置」的判定线
-            let current: number | null = null;
-            nodes.forEach(node => {
-                const rect = node.getBoundingClientRect();
-                if (rect.top <= line) {
-                    current = Number(node.dataset.groupAnchor);
-                }
-            });
-            if (current === null) {
-                const first = nodes[0];
-                if (first) current = Number(first.dataset.groupAnchor);
-            }
-            setActiveGroupId(current);
-        };
-
-        const onScroll = () => {
-            if (raf) return;
-            raf = window.requestAnimationFrame(update);
-        };
-
-        window.addEventListener("scroll", onScroll, { passive: true });
-        update();
-        return () => {
-            window.removeEventListener("scroll", onScroll);
-            if (raf) window.cancelAnimationFrame(raf);
-        };
-    }, [loading, groups.length]);
-
-    // Ctrl / Cmd + K 打开命令面板（「/」聚焦搜索框的快捷键在下面那个全局监听里）
-    useEffect(() => {
-        const onKey = (e: KeyboardEvent) => {
-            if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
-                e.preventDefault();
-                setCommandOpen(true);
-            }
-        };
-        window.addEventListener("keydown", onKey);
-        return () => window.removeEventListener("keydown", onKey);
-        // setCommandOpen 来自 useAppDialogs，是 React 的 useState setter，引用恒定
-    }, [setCommandOpen]);
-
-    // 菜单打开关闭
-    const handleMenuOpen = (event: React.MouseEvent<HTMLButtonElement>) => {
-        setMenuAnchorEl(event.currentTarget);
-    };
-
-    // 包成 useCallback：它进了很多 useMemo / useCallback 的依赖，
-    // 每次渲染换一个引用会让那些记忆化全部失效
-    const handleMenuClose = useCallback(() => {
-        setMenuAnchorEl(null);
-    }, []);
-
-    // 窗口尺寸变化会让底栏跨过 1344px 断点整个卸载（MobileTabBar 直接 return null），
-    // 正开着的菜单 anchor 随之从 DOM 分离 —— MUI 下次重定位拿到全零坐标，
-    // 菜单就飘到左上角（用户从窄窗口最大化时就撞到过）。resize 时凡是 anchor
-    // 已经不在文档里的弹层一律收掉；底栏退场时自己也会通知一声（onExitViewport），
-    // 因为 resize 事件跑在 React 卸载底栏之前，单靠这边可能晚一步。
-    useEffect(() => {
-        const onResize = () => {
-            setMenuAnchorEl(prev => (prev && !prev.isConnected ? null : prev));
-            setMobileGroupsAnchor(prev => (prev && !prev.isConnected ? null : prev));
-        };
-        window.addEventListener("resize", onResize);
-        return () => window.removeEventListener("resize", onResize);
-    }, []);
-
-    // 底栏退场（视口宽过 899.98px）：只收掉挂在底栏按钮上的弹层，顶栏自己的别误伤
-    const handleExitMobileViewport = useCallback(() => {
-        setMenuAnchorEl(prev =>
-            prev && prev.closest(".nav-mobile-tabbar") ? null : prev
-        );
-        setMobileGroupsAnchor(prev =>
-            prev && prev.closest(".nav-mobile-tabbar") ? null : prev
-        );
-    }, []);
-
-    // 顶栏「分组」按钮退场（视口离开 900~1343.98px）：这颗按钮只在那一档渲染，
-    // 菜单挂在它上面，按钮一卸载 anchor 就失效（MUI 会让菜单飘到左上角），
-    // 所以这里只收挂在这颗按钮上的那份，底栏那份归 handleExitMobileViewport 管。
-    const handleExitGroupsButtonViewport = useCallback(() => {
-        setMobileGroupsAnchor(prev =>
-            prev && !prev.closest(".nav-mobile-tabbar") ? null : prev
-        );
-    }, []);
+    // 视口相关的那一簇（头部收缩 / 当前分组高亮 / 顶栏与底栏的菜单锚点，
+    // 以及「锚点所在按钮被卸载时把菜单收掉」的补救）整套搬到 hooks/useViewportUi。
+    const {
+        menuAnchorEl,
+        openMenu,
+        activeGroupId,
+        headerCompact,
+        mobileGroupsAnchor,
+        setMobileGroupsAnchor,
+        groupsAnchorFromTop,
+        setGroupsAnchorFromTop,
+        handleMenuOpen,
+        handleMenuClose,
+        handleExitMobileViewport,
+        handleExitGroupsButtonViewport,
+    } = useViewportUi({ loading, groupCount: groups.length });
 
     // ---- 撤销 / 重做 ----
     // 每个破坏性操作做完就往栈里压一条「怎么把自己倒回去」的记录，
@@ -1196,7 +1101,9 @@ function App() {
         if (!node) return;
         const top = node.getBoundingClientRect().top + window.scrollY - 96;
         window.scrollTo({ top, behavior: "smooth" });
-    }, []);
+        // setMobileGroupsAnchor 来自 useViewportUi，和 useState 的 setter 一样引用恒定，
+        // 列进依赖只是让 lint 说得清（见 useSiteSearch 里同样的一处说明）
+    }, [setMobileGroupsAnchor]);
 
     // 分组强调色：存成 group.color.<id> 配置，不动数据表结构
     const handleGroupAccentChange = useCallback(
@@ -1351,141 +1258,29 @@ function App() {
     const focusCardByDirection = (dir: "left" | "right" | "up" | "down") =>
         focusCardByDirectionImpl(dir, domCardEnv());
 
-    // 点击搜索框与结果面板以外的地方才收起面板。
-    // （不用 onBlur：点结果项时 mousedown 会先让输入框失焦，面板还没等到 click 就卸载了）
-    useEffect(() => {
-        const onMouseDown = (e: MouseEvent) => {
-            const target = e.target as Node | null;
-            if (!target) return;
-            if (searchAnchor && searchAnchor.contains(target)) return;
-            if (searchPanelRef.current && searchPanelRef.current.contains(target)) return;
-            setSearchFocused(false);
-        };
-
-        document.addEventListener("mousedown", onMouseDown);
-        return () => document.removeEventListener("mousedown", onMouseDown);
-    }, [searchAnchor]);
-
-    // openResult 每次渲染都是新函数，进 deps 会让键盘监听每渲染拆装一次；
-    // 用 ref 拿最新的一份（和上面的 fetchDataRef 同一个套路）。
-    const openResultRef = useRef(openResult);
-    useEffect(() => {
-        openResultRef.current = openResult;
+    // 全局键盘（「/」聚焦搜索框 / Ctrl+Z 撤销 / 1~9 打开第 N 条 / 「?」说明表 / 方向键导航）
+    // 与「点面板外收起」整套搬到 hooks/useGlobalShortcuts —— 那 100 多行里有 6 条守卫
+    // （正在输入时不拦、有弹窗 / 菜单开着时不拦、搜索态下 1~9 优先开结果……），
+    // 原先一条用例都没有；搬出来之后能用 jsdom 派真键盘事件把它们钉住
+    // （见 tests/globalShortcuts.dom.test.tsx）。
+    useGlobalShortcuts({
+        searchInputRef,
+        searchPanelRef,
+        searchAnchor,
+        searchQuery,
+        setSearchQuery,
+        setSearchFocused,
+        flatResults,
+        activeResult,
+        setActiveResult,
+        openResult,
+        currentGroupSites,
+        runUndo,
+        runRedo,
+        setOpenShortcuts,
+        setCommandOpen,
+        focusCardByDirection,
     });
-
-    // 「/」快速聚焦搜索框、方向键导航、搜索框内的上下键与回车
-    useEffect(() => {
-        const onKeyDown = (e: KeyboardEvent) => {
-            const target = e.target as HTMLElement | null;
-            const isTyping =
-                !!target &&
-                (target.tagName === "INPUT" ||
-                    target.tagName === "TEXTAREA" ||
-                    target.isContentEditable);
-
-            if (e.key === "/" && !isTyping) {
-                e.preventDefault();
-                searchInputRef.current?.focus();
-                return;
-            }
-
-            // Ctrl / Cmd + Z 撤销、Ctrl+Shift+Z（或 Ctrl+Y）重做。
-            // 正在输入时不能拦：输入框里的 Ctrl+Z 是「撤销我刚打的字」，那是浏览器自己的事。
-            if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z" && !isTyping) {
-                e.preventDefault();
-                if (e.shiftKey) void runRedo();
-                else void runUndo();
-                return;
-            }
-            if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "y" && !isTyping) {
-                e.preventDefault();
-                void runRedo();
-                return;
-            }
-
-            // 搜索框内：↑↓ 选结果，Enter 打开，Esc 清空
-            if (target === searchInputRef.current) {
-                if (e.key === "ArrowDown" && flatResults.length > 0) {
-                    e.preventDefault();
-                    setActiveResult(prev => (prev + 1) % flatResults.length);
-                    return;
-                }
-                if (e.key === "ArrowUp" && flatResults.length > 0) {
-                    e.preventDefault();
-                    setActiveResult(prev =>
-                        prev <= 0 ? flatResults.length - 1 : prev - 1
-                    );
-                    return;
-                }
-                if (e.key === "Enter" && flatResults.length > 0) {
-                    e.preventDefault();
-                    const picked = flatResults[activeResult] || flatResults[0];
-                    if (picked) openResultRef.current(picked.site);
-                    return;
-                }
-                if (e.key === "Escape") {
-                    setSearchQuery("");
-                    setSearchFocused(false);
-                    searchInputRef.current?.blur();
-                    return;
-                }
-                return;
-            }
-
-            // 其它位置：方向键在卡片之间移动焦点
-            if (isTyping) return;
-
-            // 有弹窗 / 菜单开着的时候，下面这些「直接动手」的快捷键一律不响应，
-            // 免得在设置弹窗里按个 1 就把某个网站打开了
-            const overlayOpen = !!document.querySelector(
-                ".MuiModal-root, .MuiMenu-root, .MuiPopover-root"
-            );
-
-            // ? 打开快捷键说明表（Shift + /）
-            if (e.key === "?" && !overlayOpen && !e.metaKey && !e.ctrlKey) {
-                e.preventDefault();
-                setOpenShortcuts(true);
-                return;
-            }
-
-            // 1~9：搜索状态下打开第 N 条结果，否则打开当前分组第 N 张卡片。
-            // 这是最省事的一条路 —— 不用先把鼠标挪过去，敲个数字就跳走了
-            if (!overlayOpen && !e.metaKey && !e.ctrlKey && !e.altKey && /^[1-9]$/.test(e.key)) {
-                const index = Number(e.key) - 1;
-                if (searchQuery.trim() && flatResults.length > 0) {
-                    const picked = flatResults[index];
-                    if (picked) {
-                        e.preventDefault();
-                        openResultRef.current(picked.site);
-                    }
-                    return;
-                }
-                const target = currentGroupSites[index];
-                if (target) {
-                    e.preventDefault();
-                    openResultRef.current(target);
-                }
-                return;
-            }
-
-            if (e.key === "ArrowRight") {
-                focusCardByDirection("right");
-                e.preventDefault();
-            } else if (e.key === "ArrowLeft") {
-                focusCardByDirection("left");
-                e.preventDefault();
-            } else if (e.key === "ArrowDown") {
-                focusCardByDirection("down");
-                e.preventDefault();
-            } else if (e.key === "ArrowUp") {
-                focusCardByDirection("up");
-                e.preventDefault();
-            }
-        };
-
-        window.addEventListener("keydown", onKeyDown);
-        return () => window.removeEventListener("keydown", onKeyDown);
-    }, [flatResults, activeResult, runUndo, runRedo, searchQuery, currentGroupSites, setOpenShortcuts]);
 
     // context value 记忆化：只有相关配置真正变化时才通知消费方，避免无谓重渲染
     const appConfigValue = useMemo(

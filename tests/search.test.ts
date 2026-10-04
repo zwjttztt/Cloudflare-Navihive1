@@ -84,6 +84,23 @@ test("urlKey 保留查询串：不同参数算不同地址，但协议/www 差�
     assert.equal(urlKey("https://a.com/p?x=1"), urlKey("https://www.a.com/p?x=1"));
 });
 
+// 归一化只能抹「协议/www/大小写/末尾斜杠」这些**差异**，不能把路径层级一起抹掉：
+// 早先的实现先把所有非字母数字换成空格、再把空格删掉，于是下面三个不同的地址
+// 算出同一个 key —— 表现为「新增一个链接，被提示和已有的某张卡重复」，拦住正常操作。
+test("urlKey 留住路径分隔符：/a/b 与 /ab 不是同一个地址", () => {
+    assert.notEqual(urlKey("https://a.com/a/b"), urlKey("https://a.com/ab"));
+    assert.notEqual(urlKey("https://a.com/a-b"), urlKey("https://a.com/ab"));
+    assert.notEqual(urlKey("https://a.com/a.b"), urlKey("https://a.com/ab"));
+    // 同一条路径的不同写法仍然归一
+    assert.equal(urlKey("https://a.com/a/b"), urlKey("http://www.A.com/a/b/"));
+});
+
+test("查询串 / 锚点不会和路径层级混在一起", () => {
+    assert.notEqual(urlKey("https://a.com/p?x=1"), urlKey("https://a.com/p/x/1"));
+    assert.notEqual(urlKey("https://a.com/p#frag"), urlKey("https://a.com/p/frag"));
+    assert.equal(urlKey("https://a.com/p?x=1/"), urlKey("https://a.com/p?x=1"));
+});
+
 test("查重能找出别的分组里的同链接卡片", () => {
     const groups: GroupWithSites[] = [
         { id: 1, name: "常用工具", order_num: 0, sites: [site({ id: 11, url: "https://a.com" })] },

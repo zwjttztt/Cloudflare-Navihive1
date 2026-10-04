@@ -71,10 +71,14 @@ export default function ImportPreviewDialog({
     // 展开看字段差异的条目
     const [expanded, setExpanded] = useState<Set<string>>(new Set());
     // 备份数据换了就重新按默认规则勾一遍：
-    // 合并导入默认「新增 + 更新」，覆盖恢复默认全选（见 defaultSelection 的说明）
+    // 合并导入默认「新增 + 更新」，覆盖恢复默认全选（见 defaultSelection 的说明）。
+    // 模式也要算进播种键 —— 覆盖模式下没勾的那部分会被当成「备份里没有」直接删掉，
+    // 沿用合并模式那套勾选等于让人什么都没动就丢数据。
     const [seededFor, setSeededFor] = useState<ExportData | null>(null);
-    if (diff && data && seededFor !== data) {
+    const [seededMode, setSeededMode] = useState(false);
+    if (diff && data && (seededFor !== data || seededMode !== overwrite)) {
         setSeededFor(data);
+        setSeededMode(overwrite);
         setSelected(defaultSelection(diff, overwrite));
     }
 
