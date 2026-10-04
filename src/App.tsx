@@ -12,12 +12,9 @@ import {
 import { NavigationClient } from "./API/client";
 import { MockNavigationClient } from "./API/mock";
 import {
-    Site,
-    Group,
     BootstrapData,
     BACKUP_CREDENTIALS_CONFIG,
 } from "./API/http";
-import { mapWithConcurrency } from "./API/methods/transfer";
 import { RETENTION_DAYS_KEY } from "./API/configKeys";
 import { GroupWithSites } from "./types";
 import { AppConfigProvider } from "./context/AppConfigContext";
@@ -54,6 +51,7 @@ import { useAppDialogs } from "./hooks/useAppDialogs";
 import { useThemeController } from "./hooks/useThemeController";
 import { useSortController } from "./hooks/useSortController";
 import { useSiteCreator } from "./hooks/useSiteCreator";
+import { useBookmarkImport } from "./hooks/useBookmarkImport";
 import { useSemanticSearch } from "./hooks/useSemanticSearch";
 import { useSiteActions } from "./hooks/useSiteActions";
 import { useGroupActions } from "./hooks/useGroupActions";
@@ -115,8 +113,6 @@ import {
     switchAccountBoundary,
 } from "./utils/sessionBoundary";
 import { domCardEnv, focusCardByDirection as focusCardByDirectionImpl } from "./utils/cardFocus";
-import { ParsedBookmarkGroup } from "./utils/bookmarks";
-import { resolveIconApiUrl } from "./utils/iconApi";
 import {
     WEBDAV_CONFIG_PREFIX,
     LINK_HEALTH_CONFIG,
@@ -157,9 +153,6 @@ const ShortcutsDialog = lazy(() => import("./components/ShortcutsDialog"));
 // 根据环境选择使用真实API还是模拟API
 const isDevEnvironment = import.meta.env.DEV;
 const useRealApi = import.meta.env.VITE_USE_REAL_API === "true";
-
-/** 书签导入时同时最多建几张卡片：太高会把 D1 打满，太低一份大书签要等很久 */
-const BOOKMARK_IMPORT_CONCURRENCY = 6;
 
 const api =
     isDevEnvironment && !useRealApi
@@ -1248,52 +1241,15 @@ function App() {
         );
     }, [groups, notify, setDeadLinks]);
 
-    // 书签导入：同名文件夹复用已有分组，其余新建。
-    // 重复与无效的链接在弹窗里已经筛掉了，这里只管建 —— 建卡片限并发，
-    // 一份几百条的书签逐个 await 会慢到以为卡住了。
-    const importBookmarks = useCallback(
-        async (parsed: ParsedBookmarkGroup[]) => {
-            let created = 0;
-            let groupSeq = 0;
-            const iconTemplate = (configs["site.iconApi"] || "").trim();
-
-            for (const folder of parsed) {
-                if (folder.items.length === 0) continue;
-                let target = groups.find(g => g.name === folder.folder);
-                if (!target) {
-                    const saved = await api.createGroup({
-                        name: folder.folder,
-                        order_num: groups.length + groupSeq,
-                    } as Group);
-                    groupSeq += 1;
-                    target = { ...saved, sites: [] } as GroupWithSites;
-                }
-                const baseOrder = target.sites?.length ?? 0;
-                const groupId = target.id;
-                const done = await mapWithConcurrency(
-                    folder.items,
-                    BOOKMARK_IMPORT_CONCURRENCY,
-                    async (item, idx) => {
-                        await api.createSite({
-                            name: item.title.slice(0, 60),
-                            url: item.url,
-                            icon: resolveIconApiUrl(iconTemplate, item.url),
-                            description: "",
-                            group_id: groupId,
-                            order_num: baseOrder + idx,
-                        } as Site);
-                        return 1;
-                    }
-                );
-                created += done.length;
-            }
-
-            await fetchData({ silent: true });
-            notify(`已导入 ${created} 个网站`, "success");
-            return created;
-        },
-        [groups, configs, notify, fetchData]
-    );
+    // 书签导入的写库过程搬到 hooks/useBookmarkImport（解析 / 差异 / 预览三处都有用例，
+    // 缺的就是「确认之后到底往库里写了什么」这一层，搬出来它才能被单独测到）。
+    const { importBookmarks } = useBookmarkImport({
+        api,
+        groups,
+        iconApi: configs["site.iconApi"],
+        refresh: fetchData,
+        onNotify: notify,
+    });
 
     // ---- 一键全部折叠 / 展开 ----
     // 分组折叠：本机存储 / 跨标签页同步 / 「全部折叠」开关整套搬到
