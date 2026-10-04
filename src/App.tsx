@@ -38,6 +38,7 @@ import OverlayHost from "./components/OverlayHost";
 import { useDocumentEffects } from "./hooks/useDocumentEffects";
 import { useConfigController } from "./hooks/useConfigController";
 import { useSiteSettings } from "./hooks/useSiteSettings";
+import { useCollapseController } from "./hooks/useCollapseController";
 import { useSiteSearch } from "./hooks/useSiteSearch";
 import { useAccountSession } from "./hooks/useAccountSession";
 import { usePwaInstall } from "./hooks/usePwaInstall";
@@ -98,13 +99,7 @@ import HeaderClock from "./components/HeaderClock";
 import SiteListHeader from "./components/SiteListHeader";
 import SiteListSkeleton from "./components/SiteListSkeleton";
 const VisitsDialog = lazy(() => import("./components/VisitsDialog"));
-import {
-    COLLAPSED_EVENT,
-    isAllCollapsed,
-    readCollapsedGroupIds,
-    setAllCollapsed,
-    writeCollapsedGroupIds,
-} from "./utils/collapse";
+import { writeCollapsedGroupIds } from "./utils/collapse";
 import { loadPinyinMatcher } from "./utils/pinyin";
 import {
     collectCheckUrls,
@@ -116,7 +111,6 @@ import {
 } from "./utils/linkHealth";
 import { readBootstrapCache } from "./utils/firstPaintCache";
 import {
-    resetCollapsedState,
     switchAccountBoundary,
 } from "./utils/sessionBoundary";
 import { domCardEnv, focusCardByDirection as focusCardByDirectionImpl } from "./utils/cardFocus";
@@ -1293,25 +1287,17 @@ function App() {
     );
 
     // ---- 一键全部折叠 / 展开 ----
-    // 收起状态存在 localStorage（和 GroupCard 共用），这里再跟一份 state：
-    // 左侧分组栏的开关要能立刻换成「展开全部」，所以必须随事件同步，不能只现算
-    const realGroups = useMemo(
-        () => groups.filter(g => typeof g.id === "number" && g.id > 0),
-        [groups]
-    );
-    const [collapsedIds, setCollapsedIds] = useState<string[]>(() => readCollapsedGroupIds());
-    resetCollapsedRef.current = resetCollapsedState(setCollapsedIds);
-
-    useEffect(() => {
-        const sync = () => setCollapsedIds(readCollapsedGroupIds());
-        // 本页写入走自定义事件，其他标签页写入走 storage
-        window.addEventListener(COLLAPSED_EVENT, sync);
-        window.addEventListener("storage", sync);
-        return () => {
-            window.removeEventListener(COLLAPSED_EVENT, sync);
-            window.removeEventListener("storage", sync);
-        };
-    }, []);
+    // 分组折叠：本机存储 / 跨标签页同步 / 「全部折叠」开关整套搬到
+    // hooks/useCollapseController。纯读写与「是否全折叠」的判断在 utils/collapse.ts。
+    // resetCollapsed 交给上面那个 ref —— 退出 / 换账号的逻辑在折叠表声明之前，
+    // 直接引用会引用不到（ref 就是为这个存在的）。
+    const {
+        collapsedIds,
+        allGroupsCollapsed,
+        toggleCollapseAll,
+        resetCollapsed,
+    } = useCollapseController(groups);
+    resetCollapsedRef.current = resetCollapsed;
 
     // 四份本机偏好的上传（失效检测 / 星标标签 / 访问统计 / 折叠态）统一在这里接上，
     // 具体实现见 hooks/usePrefSync.ts
@@ -1327,17 +1313,6 @@ function App() {
         onVisitsSynced: markVisitsSynced,
         collapsedIds,
     });
-
-    const allGroupsCollapsed = isAllCollapsed(realGroups, collapsedIds);
-
-    const toggleCollapseAll = useCallback(() => {
-        const next = !allGroupsCollapsed; // true = 折叠全部
-        setAllCollapsed(
-            realGroups.map(g => g.id),
-            next
-        );
-        // 折叠 / 展开是即时可见的操作，不再弹提示打扰
-    }, [allGroupsCollapsed, realGroups]);
 
     // 命令面板：站点跳转 + 常用操作，键盘党不用摸鼠标。
     // 条目本身搬到 hooks/useAppCommands.ts —— App 只把动作传进去，
