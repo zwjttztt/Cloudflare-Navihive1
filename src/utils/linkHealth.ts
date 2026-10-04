@@ -251,6 +251,66 @@ export function markLink(url: string, alive: boolean): DeadLinks {
     return computeDead();
 }
 
+/** 旧判据留下的失效标记降级到哪一刻为止（存的是首次迁移的时间戳） */
+const MIGRATION_KEY = "navihive:linkHealthDemotedAt";
+
+const readMigrationBaseline = (): number => {
+    try {
+        const raw = localStorage.getItem(MIGRATION_KEY);
+        if (!raw) return 0;
+        const n: unknown = JSON.parse(raw);
+        return typeof n === "number" && Number.isFinite(n) ? n : 0;
+    } catch {
+        return 0;
+    }
+};
+
+/**
+ * 把旧判据留下的「失效」降级成「疑似」。
+ *
+ * 背景：「一次探测失败就标失效」那条老规则误伤率太高（见 SUSPECT_WINDOW_MS 的注释），
+ * 已经改成连续两次。但老规则留下的标记还躺在 dead 表里 —— 不处理的话，用户升级完
+ * 打开页面，那几个天天在用的站照样挂着「失效」，只会觉得这功能没救了。
+ *
+ * 为什么用「基线时间戳」而不是「迁移过没有」的布尔标记：
+ * - 布尔标记跑一次就不能再跑。而失效记录是可以从云端合并回来的（mergeLinkHealth
+ *   取两边较大值），本机降级完、下次启动云端那份旧的又并回来，标记却已经写了，
+ *   于是永远清不掉。
+ * - 基线时间戳天然幂等：时间戳早于基线的（也就是迁移那一刻就已经存在的）一律降级，
+ *   迁移之后新判定的一律不碰。云端回填多少次都会被下一次启动再降级一次。
+ *
+ * 取舍：人工「标记为失效」且发生在迁移之前的，也会被降级 —— 光看两张表区分不出
+ * 「人工标的」和「一次失败标的」（两者都是 dead 有、suspect 无）。真失效的站重跑
+ * 一次检测就会重新标上，这时代价是用户多点一下，比留着一堆假的红标划算。
+ *
+ * @returns 本次降级了多少条；0 表示没有可降级的（也就不会触发上传）
+ */
+export function demoteLegacyDeadMarks(now: number = Date.now()): number {
+    let baseline = readMigrationBaseline();
+    if (baseline <= 0) {
+        baseline = now;
+        writeJson(MIGRATION_KEY, baseline);
+    }
+
+    const dead = readNumberMap(KEY);
+    const suspects = readSuspectTimes();
+    let moved = 0;
+    for (const [url, ts] of Object.entries(dead)) {
+        if (ts >= baseline) continue; // 迁移之后判定的，是真连续两次失败的结果
+        delete dead[url];
+        // 只在已有疑似更旧时才覆盖：把时间戳往前推会让「连续两次」更容易成立
+        if ((suspects[url] ?? 0) < ts) suspects[url] = ts;
+        moved += 1;
+    }
+    if (moved === 0) return 0;
+
+    writeDeadLinks(dead);
+    writeSuspectTimes(suspects);
+    // 让开了同步的设备把降级后的快照推上去，否则云端那份旧的还会被合并回来
+    emitChange();
+    return moved;
+}
+
 export function clearDeadLinks(): DeadLinks {
     // 清空失效标记的同时记一次「探测成功」，否则下次合并还会把云端的旧失效记录带回来
     const probes = readProbeTimes();

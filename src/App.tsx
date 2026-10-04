@@ -103,6 +103,7 @@ import { writeCollapsedGroupIds } from "./utils/collapse";
 import { loadPinyinMatcher } from "./utils/pinyin";
 import {
     collectCheckUrls,
+    demoteLegacyDeadMarks,
     describeLinkCheck,
     FRESH_WINDOW_MS,
     mergeLinkHealth,
@@ -216,11 +217,16 @@ function App() {
         if (incoming[LINK_HEALTH_SYNC_CONFIG] === "true" && incoming[LINK_HEALTH_CONFIG]) {
             try {
                 mergeLinkHealth(JSON.parse(incoming[LINK_HEALTH_CONFIG]));
-                setDeadLinks(readDeadLinks());
             } catch {
                 // 云端那份坏了就当没有，不影响本机
             }
         }
+
+        // 旧判据（一次失败就标失效）留下的标记一律降级成「疑似」，否则用户升级完看到的
+        // 还是那几个天天在用却挂着「失效」的站。必须放在云端合并**之后**：合并进来的
+        // 旧记录同样要降级，不然开了同步的机器怎么都清不掉。
+        demoteLegacyDeadMarks();
+        setDeadLinks(readDeadLinks());
 
         if (incoming[PREF_SYNC_CONFIG] === "true") {
             try {
