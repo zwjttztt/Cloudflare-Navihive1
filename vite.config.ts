@@ -13,6 +13,15 @@ import { cloudflare } from "@cloudflare/vite-plugin";
  * 首屏还多出十几个并发请求跟真正的首屏资源抢带宽。
  * 离线增强（把 lazy 也预下来）改成用户显式开启后才做，见 public/sw.js 的消息处理。
  */
+/**
+ * 本次构建的构建号。两处共用同一个值，必须同源：
+ *   - precache-manifest.json 的 version（Service Worker 用它给缓存命名）
+ *   - __NAVIHIVE_BUILD_VERSION__（烘进前端产物，用来判断「我这一版是不是旧的」）
+ * 分成两个 Date.now() 的话，「服务端版本」和「本机版本」永远不相等，
+ * 页面会每一次加载都判定自己过期。
+ */
+const BUILD_VERSION = String(Date.now());
+
 function precacheManifest(): Plugin {
     return {
         name: "navihive-precache-manifest",
@@ -55,7 +64,7 @@ function precacheManifest(): Plugin {
                 type: "asset",
                 fileName: "precache-manifest.json",
                 source: JSON.stringify({
-                    version: Date.now(),
+                    version: BUILD_VERSION,
                     core: coreFiles,
                     lazy: lazyFiles,
                 }),
@@ -67,6 +76,12 @@ function precacheManifest(): Plugin {
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react(), cloudflare(), precacheManifest()],
+  // 把构建号烘进前端：src/utils/buildVersion.ts 用它跟服务端的清单对版本号，
+  // 对不上就说明 Service Worker 喂的是上一版的外壳（见那个文件头的说明）。
+  // 只在 src 里读得到（worker 侧的 tsconfig 不认识这个全局，那边也不该读它）。
+  define: {
+    __NAVIHIVE_BUILD_VERSION__: JSON.stringify(BUILD_VERSION),
+  },
   build: {
     // 分包：react / mui 各自成块，其余依赖归 vendor。
     // 改业务代码时用户不用重新下载体积最大、最稳定的 MUI 那块。

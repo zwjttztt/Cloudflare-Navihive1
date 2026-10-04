@@ -33,6 +33,9 @@ readRememberedLogin();
 // 接住未捕获的 window.onerror / unhandledrejection，统一上报到 /api/report-error
 setupGlobalHandlers();
 
+import { fetchServerVersion, isStaleBuild, localBuildVersion } from "./utils/buildVersion";
+import { shouldRecoverAssets } from "./utils/assetRecovery";
+
 /**
  * 站点刚更新完最容易撞上的一种白屏：
  * 浏览器里还留着上一版的 Service Worker 缓存，旧页面引用的 JS 块带内容 hash，
@@ -43,11 +46,21 @@ setupGlobalHandlers();
  * 否则网络真的不通时会变成无限刷新。
  */
 const ASSET_RECOVER_KEY = "navihive:asset-recover";
+/** 版本漂移单独记一笔：它和「资源取不到」是两件事，不该互相顶掉名额 */
+const BUILD_RECOVER_KEY = "navihive:build-recover";
 
-function recoverFromStaleAssets(reason: string) {
+/** 已经在重载了 —— 两条路同时发现问题时只刷一次，别竞态刷两遍 */
+let recovering = false;
+
+function recoverFromStaleAssets(reason: string, key: string = ASSET_RECOVER_KEY) {
+    if (recovering) return;
+    // 真离线时不要动：懒加载块默认不预缓存，断网点开弹窗本来就取不到，
+    // 这时清缓存 + 重载会把一个还能用的离线页面换成浏览器的错误页。
+    if (!shouldRecoverAssets({ online: navigator.onLine })) return;
+    recovering = true;
     try {
-        if (sessionStorage.getItem(ASSET_RECOVER_KEY)) return;
-        sessionStorage.setItem(ASSET_RECOVER_KEY, String(Date.now()));
+        if (sessionStorage.getItem(key)) return;
+        sessionStorage.setItem(key, String(Date.now()));
     } catch {
         // 隐私模式下 sessionStorage 可能不可用，那就直接重载一次
     }
@@ -74,6 +87,31 @@ function recoverFromStaleAssets(reason: string) {
         window.location.reload();
     })();
 }
+
+/**
+ * 版本漂移的自查：Service Worker 把上一版的 HTML 外壳喂给浏览器时，
+ * 页面能起来、但点开任一懒加载弹窗都会 404（旧版引用的 chunk 在新版里已经删了）。
+ *
+ * 放在**加载阶段主动查**而不是等报错再救，是因为要救的正是**上一版**的产物 ——
+ * 那条补救代码也在产物里，上一版根本没有。从这一版起每一版都带这条自查，
+ * 于是「停在旧版」能被自己发现：拿服务端清单的版本号跟自己烘进去的对一下，
+ * 不一样就清掉 SW 缓存重载一次，直接落到最新版。
+ *
+ * 只在拿到确切结论时才动作：清单拉不到、版本号读不出来，都当作「不知道」不刷页面；
+ * 刷之前先清 SW 缓存并注销 SW，否则重载回来的还是那份缓存里的旧外壳。
+ */
+async function reloadOnStaleBuild() {
+    const local = localBuildVersion();
+    // 没有烘进构建号（开发模式 / 老产物）：不做判断，交给下面那两条兜底
+    if (!local) return;
+    const server = await fetchServerVersion();
+    if (!isStaleBuild(local, server)) return;
+    recoverFromStaleAssets(`版本落后（本机 ${local} / 服务端 ${server}）`, BUILD_RECOVER_KEY);
+}
+
+// 与首屏资源并发地发一个几字节的请求：结论出来得越早，越能在用户动手之前刷好。
+// 失败静默 —— 网络本来就不通时，下面那两条兜底还在。
+void reloadOnStaleBuild();
 
 // 捕获阶段才能收到 <script>/<link> 的加载失败（这类错误不冒泡）
 window.addEventListener(
