@@ -15,7 +15,6 @@ import {
     Site,
     Group,
     BootstrapData,
-    WebDavConfig,
     BACKUP_CREDENTIALS_CONFIG,
 } from "./API/http";
 import { mapWithConcurrency } from "./API/methods/transfer";
@@ -37,6 +36,7 @@ import SnackbarHost from "./components/SnackbarHost";
 import BackgroundLayers from "./components/BackgroundLayers";
 import OverlayHost from "./components/OverlayHost";
 import { useDocumentEffects } from "./hooks/useDocumentEffects";
+import { useConfigController } from "./hooks/useConfigController";
 import { useSiteSettings } from "./hooks/useSiteSettings";
 import { useSiteSearch } from "./hooks/useSiteSearch";
 import { useAccountSession } from "./hooks/useAccountSession";
@@ -105,7 +105,6 @@ import {
     setAllCollapsed,
     writeCollapsedGroupIds,
 } from "./utils/collapse";
-import { splitIncomingConfigs } from "./utils/configMerge";
 import { loadPinyinMatcher } from "./utils/pinyin";
 import {
     collectCheckUrls,
@@ -124,8 +123,6 @@ import { domCardEnv, focusCardByDirection as focusCardByDirectionImpl } from "./
 import { ParsedBookmarkGroup } from "./utils/bookmarks";
 import { resolveIconApiUrl } from "./utils/iconApi";
 import {
-    DEFAULT_CONFIGS,
-    DEFAULT_WEBDAV_CONFIG,
     WEBDAV_CONFIG_PREFIX,
     LINK_HEALTH_CONFIG,
     LINK_HEALTH_SYNC_CONFIG,
@@ -288,33 +285,39 @@ function App() {
     };
 
 
-    // 配置状态
-    const [configs, setConfigs] = useState<Record<string, string>>(DEFAULT_CONFIGS);
-    const [openConfig, setOpenConfig] = useState(false);
-    const [tempConfigs, setTempConfigs] = useState<Record<string, string>>(DEFAULT_CONFIGS);
-    // 账号管理弹窗（账号密码 / 恢复密钥 / 邀请码 / 注销）
-    const [openAccount, setOpenAccount] = useState(false);
-    const [savingAuth, setSavingAuth] = useState(false);
-
-    // 设置弹窗里选色时的即时预览值（不落库，关闭弹窗即回滚）
-    const [accentPreview, setAccentPreview] = useState<string | null>(null);
-    // 保存网站设置的防连点守卫（同步 ref 拦同一轮连点，state 用于按钮禁用）
-    const [savingConfig, setSavingConfig] = useState(false);
-
-    // 自定义主色：只有合法的 #rgb / #rrggbb 才采用，避免脏数据把主题搞坏
-    const accentRaw = (accentPreview ?? (configs["site.primaryColor"] || "")).trim();
-    const accent = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(accentRaw) ? accentRaw : "";
+    // 配置域：设置弹窗 / 管理员凭据 / WebDAV 备份配置的整套状态，
+    // 搬到了 hooks/useConfigController（写逻辑在 useSiteSettings）。
+    // 解构出来的变量名与抽取前完全一致，下面几百行引用无需改动。
+    // ⚠️ accent 之所以留在这一簇里，是因为 useThemeController 紧接着就要读它 ——
+    //    主题 hook 的调用点比 useSiteSettings 靠前得多，挪走就引用不到了。
+    const {
+        configs,
+        setConfigs,
+        tempConfigs,
+        setTempConfigs,
+        openConfig,
+        setOpenConfig,
+        openAccount,
+        setOpenAccount,
+        savingAuth,
+        setSavingAuth,
+        savingConfig,
+        setSavingConfig,
+        setAccentPreview,
+        accent,
+        webdavConfig,
+        setWebdavConfig,
+        authUsername,
+        setAuthUsername,
+        authCurrentPassword,
+        setAuthCurrentPassword,
+        authNewPassword,
+        setAuthNewPassword,
+        applyConfigs,
+    } = useConfigController();
 
     // 创建Material UI主题（放在 configs 之后，才能读到自定义主色）
     const { themeMode, setThemeMode, darkMode, toggleTheme, theme } = useThemeController(accent);
-
-    // WebDAV 备份配置
-    const [webdavConfig, setWebdavConfig] = useState<WebDavConfig>(DEFAULT_WEBDAV_CONFIG);
-
-    // 管理员账号密码修改（不写入 configs，走独立的 auth/credentials 接口）
-    const [authUsername, setAuthUsername] = useState("");
-    const [authCurrentPassword, setAuthCurrentPassword] = useState("");
-    const [authNewPassword, setAuthNewPassword] = useState("");
 
     // 配置传感器，支持鼠标、触摸和键盘操作
     const sensors = useSensors(
@@ -692,15 +695,6 @@ function App() {
         setIsAuthenticated: setIsAuthenticatedTracked,
         setIsAuthRequired,
     });
-
-    // 加载配置（WebDAV 配置单独存放，避免被写进备份文件）
-    const applyConfigs = (configsData: Record<string, string> | null | undefined) => {
-        // WebDAV 配置单独存放，避免被写进备份文件（拆分规则见 utils/configMerge）
-        const { configs: nextConfigs, webdav: nextWebdav } = splitIncomingConfigs(configsData);
-        setConfigs(nextConfigs);
-        setTempConfigs({ ...nextConfigs });
-        setWebdavConfig(nextWebdav);
-    };
 
     // 把一次 bootstrap 拉回的数据合并进本地状态
     // ---- 云端同步：上传（防抖 + 内容没变就不发）----
@@ -1223,7 +1217,7 @@ function App() {
                 notify("分组颜色保存失败", "error");
             }
         },
-        [notify]
+        [notify, setConfigs]
     );
 
     // 失效链接检测：结果存本机，卡片上标灰点

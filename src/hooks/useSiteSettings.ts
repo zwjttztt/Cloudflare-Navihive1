@@ -4,6 +4,7 @@
 import { useCallback, useRef, type Dispatch, type SetStateAction } from "react";
 import { reportError } from "../utils/errorReporter";
 import { clearRememberedLogin } from "../utils/rememberedLogin";
+import { normalizeGlassBlur } from "../utils/configForm";
 import type { NotifySeverity } from "./useNotify";
 
 /** 只声明本域用到的两个接口，方便单测里塞一个假 api */
@@ -174,13 +175,10 @@ export function useSiteSettings({
         }));
     };
 
-    // 毛玻璃强度：临时值为空/非法时按默认 14 显示
-    const tempGlassBlur = (() => {
-        const raw = tempConfigs["site.glassBlur"];
-        const n = Number(raw);
-        if (raw === undefined || raw === "" || !Number.isFinite(n)) return 14;
-        return Math.min(24, Math.max(0, n));
-    })();
+    // 毛玻璃强度：临时值为空/非法时按默认 14 显示。
+    // 规矩统一在 utils/configForm（那里有单测）—— 原来这里内联了一份一模一样的判断，
+    // 两份实现迟早会漂移到不一致。
+    const tempGlassBlur = normalizeGlassBlur(tempConfigs["site.glassBlur"]);
 
     const handleGlassBlurChange = (_event: Event, value: number | number[]) => {
         const next = Array.isArray(value) ? value[0] : value;
