@@ -1,6 +1,6 @@
 // tests/search.test.ts
-// 搜索与查重的单测。pinyin 相关一律不传 usePinyin（那会触发词典加载，
-// 单测里不该有这种副作用），拼音本身由端到端冒烟覆盖。
+// 搜索与查重的单测。这里不 load 拼音词典（那是有副作用的一次性加载，
+// 放在 tests/pinyin.test.ts 里单独测），所以下面涉及拼音的用例一律不传 usePinyin。
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -113,6 +113,39 @@ test("groupByUrlKey 把同链接的卡片归到一起，空链接跳过", () => 
     const map = groupByUrlKey(list);
     assert.equal(map.size, 1);
     assert.equal([...map.values()][0].length, 2);
+});
+
+test("excludeId 传字符串也能排除自己（id 从 URL 参数来的时候是字符串）", () => {
+    const groups: GroupWithSites[] = [
+        { id: 1, name: "常用工具", order_num: 0, sites: [site({ id: 11, url: "https://a.com" })] },
+    ];
+    // 库里 id 是数字、传进来是字符串：两边都得 String() 过一遍再比，否则排除不掉，
+    // 表现为「编辑一张卡，一保存就提示链接重复」
+    assert.equal(findDuplicateSite(groups, "https://a.com", "11"), null);
+    assert.ok(findDuplicateSite(groups, "https://a.com", "12"));
+});
+
+test("分组还没带 sites（初始化中途）时不炸，只是查不到", () => {
+    const groups = [
+        { id: 1, name: "常用工具", order_num: 0, sites: undefined },
+    ] as unknown as GroupWithSites[];
+    assert.equal(findDuplicateSite(groups, "https://a.com"), null);
+});
+
+test("分组没名字时报「未命名分组」而不是 undefined", () => {
+    const groups: GroupWithSites[] = [
+        { id: 1, name: "", order_num: 0, sites: [site({ id: 11, url: "https://a.com" })] },
+    ];
+    const hit = findDuplicateSite(groups, "https://a.com");
+    assert.equal(hit?.groupName, "未命名分组");
+});
+
+test("待查链接是空的：不查重（一堆都没填链接的卡片不能互相判重复）", () => {
+    const groups: GroupWithSites[] = [
+        { id: 1, name: "常用工具", order_num: 0, sites: [site({ id: 11, url: "" })] },
+    ];
+    assert.equal(findDuplicateSite(groups, ""), null);
+    assert.equal(findDuplicateSite(groups, undefined), null);
 });
 
 // ============ 检索索引：结果与「逐个现算」必须完全一致 ============
