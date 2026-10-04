@@ -857,7 +857,10 @@ const bulkFlow = await evaluate(`(async () => {
   const btn = document.querySelector('.nav-multiselect-btn');
   if (!btn) return { error: '没有多选入口' };
   if (!document.querySelector('.nav-bulk-bar')) btn.click();
-  await wait(600);
+  // 底部批量条是 lazy 加载的（首屏不背那 6 KB），所以它什么时候出现取决于
+  // 那个块什么时候下载完 —— 固定 sleep 在 CI 慢的时候会偶发「底部操作条上没有
+  // 删除按钮」的假红。轮询等它出现，最多等 3 秒。
+  for (let i = 0; i < 30 && !document.querySelector('.nav-bulk-bar'); i++) await wait(100);
 
   const before = count();
   const cards = [...document.querySelectorAll('.nav-card-in')].slice(0, 2);

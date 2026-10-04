@@ -31,8 +31,15 @@ function findProjectDir(): string {
 }
 
 const BUDGET_KB = 235;
-/** 基线：LoginForm 改 lazy 之后测得的 222.61 KB（见 git log） */
-const BASELINE_KB = 222.61;
+/**
+ * 基线：每次真的把首屏压下来之后都要跟着更新，否则这条用例会一路放任包变大。
+ * 222.61 KB —— LoginForm 改 lazy 之后（见 git log）
+ * 221.18 KB —— 底部批量条 BulkActionBar 改 lazy 之后：它只有进入多选才出现，
+ *              却一直躺在首屏里（6.46 KB）。首屏预算当时只剩 7 KB 余量，
+ *              这是当时最干净的一刀（其余大块都是首屏真要用到的：
+ *              App 26 KB、SiteCard 12 KB、client 10 KB、GroupCard 10 KB）。
+ */
+const BASELINE_KB = 221.18;
 
 function indexChunk(): { name: string; kb: number } | null {
     const assets = join(findProjectDir(), "dist", "client", "assets");

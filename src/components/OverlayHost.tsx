@@ -8,10 +8,13 @@
 import { Suspense, lazy } from "react";
 import { Menu, MenuItem, ListItemText } from "@mui/material";
 import MobileTabBar from "./MobileTabBar";
-import BulkActionBar from "./BulkActionBar";
 import ConfirmDialog from "./ConfirmDialog";
-// 下面五个都是「点开了才用得到」的浮层，所以走 lazy —— 它们外面已经套了 <Suspense>，
+// 下面六个都是「触发了才用得到」的浮层，所以走 lazy —— 它们外面已经套了 <Suspense>，
 // 静态 import 会让那个 Suspense 永远不触发、包照样进首屏。
+//
+// BulkActionBar 是这里面唯一一条**批量条**：只有进入多选模式（勾了卡片）才出现，
+// 平时首屏根本用不到它，却有 6.8 KB 躺在 index chunk 里。首屏预算只剩几 KB 余量，
+// 它是最干净的一刀 —— 代价是首次进入多选时要等一个小数百 KB 的块。
 // 类型只用得到这几条，单独走 import type（编译期擦除，不会把组件本体拖回主包）。
 import type { CommandItem } from "./CommandPalette";
 import type { AiConfigClient as AiConfigClientLike } from "./AiAssistantDialog";
@@ -25,6 +28,7 @@ const BookmarkImportDialog = lazy(() => import("./BookmarkImportDialog"));
 const AiSuggestDialog = lazy(() => import("./AiSuggestDialog"));
 const AiAssistantDialog = lazy(() => import("./AiAssistantDialog"));
 const TagManagerDialog = lazy(() => import("./TagManagerDialog"));
+const BulkActionBar = lazy(() => import("./BulkActionBar"));
 
 export interface OverlayHostProps {
     /** 移动端底栏：搜索 / 分组 / 新增 / 更多 / 星标 */
@@ -202,20 +206,25 @@ export default function OverlayHost({
 
             {/* 批量多选：底部操作条（删除 / 星标 / 标签 / 移动分组） */}
             {bulkBar.visible && (
-                <BulkActionBar
-                    count={bulkBar.count}
-                    groups={bulkBar.groups.map(group => ({
-                        id: group.id,
-                        name: group.name,
-                    }))}
-                    allTags={bulkBar.allTags}
-                    onStar={bulkBar.onStar}
-                    onTag={bulkBar.onTag}
-                    onMove={bulkBar.onMove}
-                    onDelete={bulkBar.onDelete}
-                    onFinish={bulkBar.onFinish}
-                    onExit={bulkBar.onExit}
-                />
+                // lazy 组件必须自己有一层 Suspense，否则 React 会往上找、找不到就报错。
+                // fallback 给 null：批量条是「勾上卡片才出现」的，晚一帧出现比首屏多
+                // 背 6.8 KB 划算；真加载失败时用户也能用卡片上的方式退出多选。
+                <Suspense fallback={null}>
+                    <BulkActionBar
+                        count={bulkBar.count}
+                        groups={bulkBar.groups.map(group => ({
+                            id: group.id,
+                            name: group.name,
+                        }))}
+                        allTags={bulkBar.allTags}
+                        onStar={bulkBar.onStar}
+                        onTag={bulkBar.onTag}
+                        onMove={bulkBar.onMove}
+                        onDelete={bulkBar.onDelete}
+                        onFinish={bulkBar.onFinish}
+                        onExit={bulkBar.onExit}
+                    />
+                </Suspense>
             )}
 
             {/* 重复网址确认：同一条链接已经加过，先确认再写库 */}
