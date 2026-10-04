@@ -513,10 +513,19 @@ export default function BackupDialog({
                 {/* 顺序是「先选怎么导，再导出」：下载按钮排在配置项之后。
                     原来按钮压在标题右边，用户常常先点了下载，才发现下面的
                     凭据开关和加密还没设，白下一份不带密码 / 不带加密的文件。 */}
-                <Typography variant='subtitle2' fontWeight='600'>
+                <Typography variant='subtitle2' sx={{
+                    fontWeight: '600'
+                }}>
                     备份到本地
                 </Typography>
-                <Typography variant='caption' color='text.secondary' sx={{ display: "block", mt: 0.25, mb: 0.5 }}>
+                <Typography
+                    variant='caption'
+                    sx={{
+                        color: 'text.secondary',
+                        display: "block",
+                        mt: 0.25,
+                        mb: 0.5
+                    }}>
                     导出分组、站点、网站设置，以及本机的星标与标签。
                 </Typography>
 
@@ -565,7 +574,13 @@ export default function BackupDialog({
                 {/* 本地备份加密：明文 JSON 落盘那一刻就带着站点密码，进网盘同步目录
                     或被随手发出去就等于泄密。默认关闭，所以不套边框容器 ——
                     它是进阶选项，视觉层级比上面的凭据开关低一档，也省下纵向空间。 */}
-                <Stack direction='row' alignItems='center' spacing={0.5} sx={{ mt: 0.75 }}>
+                <Stack
+                    direction='row'
+                    spacing={0.5}
+                    sx={{
+                        alignItems: 'center',
+                        mt: 0.75
+                    }}>
                     <Switch
                         checked={encryptLocal}
                         size='small'
@@ -585,9 +600,12 @@ export default function BackupDialog({
                     <>
                         <Typography
                             variant='caption'
-                            color='success.dark'
-                            sx={{ display: "block", ml: 5.5, mb: 0.5 }}
-                        >
+                            sx={{
+                                color: 'success.dark',
+                                display: "block",
+                                ml: 5.5,
+                                mb: 0.5
+                            }}>
                             恢复时要输入这个密码；密码无法找回，请务必牢记。
                         </Typography>
                         <Stack
@@ -642,7 +660,12 @@ export default function BackupDialog({
                 )}
 
                 {/* 下载动作收在这一块的最后：把上面两项定完再点 */}
-                <Stack direction='row' justifyContent='flex-end' sx={{ mt: 1.5 }}>
+                <Stack
+                    direction='row'
+                    sx={{
+                        justifyContent: 'flex-end',
+                        mt: 1.5
+                    }}>
                     <Button
                         size='small'
                         variant='contained'
@@ -677,10 +700,18 @@ export default function BackupDialog({
             <Divider />
 
             <Box>
-                <Typography variant='subtitle2' fontWeight='600' gutterBottom>
+                <Typography variant='subtitle2' gutterBottom sx={{
+                    fontWeight: '600'
+                }}>
                     备份到 WebDAV
                 </Typography>
-                <Typography variant='caption' color='text.secondary' sx={{ display: "block", mb: 0.75 }}>
+                <Typography
+                    variant='caption'
+                    sx={{
+                        color: 'text.secondary',
+                        display: "block",
+                        mb: 0.75
+                    }}>
                     配置存在服务器，由服务端代理上传；目录不存在会自动创建，自动备份只保留最新一份，手动备份全部保留。
                 </Typography>
 
@@ -782,7 +813,13 @@ export default function BackupDialog({
                             },
                         }}
                     />
-                    <Typography variant='caption' color='text.secondary' display='block' sx={{ mt: -0.5 }}>
+                    <Typography
+                        variant='caption'
+                        sx={{
+                            color: 'text.secondary',
+                            display: 'block',
+                            mt: -0.5
+                        }}>
                         设了就用它加密上传（恢复时要填同一个密码，无法找回）；留空则明文上传。
                         手动 / 每周自动 / 远端恢复共用，与服务端的 AUTH_SECRET 无关。
                     </Typography>
@@ -804,7 +841,12 @@ export default function BackupDialog({
                             label='允许内网地址'
                         />
                         {/* 一行放得下（sm 宽度），别折行 */}
-                        <Typography variant='caption' color='text.secondary' display='block'>
+                        <Typography
+                            variant='caption'
+                            sx={{
+                                color: 'text.secondary',
+                                display: 'block'
+                            }}>
                             默认关闭；备份到内网地址（家庭 NAS 192.168.x.x、xxx.local）时才需要打开。
                         </Typography>
                     </Box>
@@ -823,7 +865,12 @@ export default function BackupDialog({
                             }
                             label='每周自动备份一次'
                         />
-                        <Typography variant='caption' color='text.secondary' display='block'>
+                        <Typography
+                            variant='caption'
+                            sx={{
+                                color: 'text.secondary',
+                                display: 'block'
+                            }}>
                             每周一上午 10:00 自动备份，会替换掉上一次的自动备份；手动备份不会被删除。
                             {lastBackupAt ? ` 上次备份：${formatTime(lastBackupAt)}` : " 还没有备份记录。"}
                         </Typography>
@@ -862,7 +909,9 @@ export default function BackupDialog({
 
                     {remoteFiles.length > 0 && (
                         <Box>
-                            <Typography variant='caption' color='text.secondary'>
+                            <Typography variant='caption' sx={{
+                                color: 'text.secondary'
+                            }}>
                                 最近的远端备份：
                             </Typography>
                             <Stack spacing={0.5} sx={{ mt: 0.5 }}>
@@ -898,12 +947,16 @@ export default function BackupDialog({
                     <Box>
                         <Typography
                             variant='body2'
-                            fontWeight='600'
                             color={overwrite ? "error.main" : "text.primary"}
+                            sx={{
+                                fontWeight: '600'
+                            }}
                         >
                             {overwrite ? "覆盖恢复（清空现有数据后导入）" : "合并导入（保留现有数据并追加）"}
                         </Typography>
-                        <Typography variant='caption' color='text.secondary'>
+                        <Typography variant='caption' sx={{
+                            color: 'text.secondary'
+                        }}>
                             {overwrite
                                 ? "先清空现在的分组与站点，再按备份重建；保留原有 ID 与星标 / 标签，用于把整站还原成备份那一刻的样子"
                                 : "备份内容追加到现有数据后面，已有的分组与站点不动，重复链接会跳过"}
@@ -921,10 +974,14 @@ export default function BackupDialog({
             <Divider />
 
             <Box>
-                <Typography variant='subtitle2' fontWeight='600' gutterBottom>
+                <Typography variant='subtitle2' gutterBottom sx={{
+                    fontWeight: '600'
+                }}>
                     从本地文件恢复
                 </Typography>
-                <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} alignItems={{ sm: "center" }}>
+                <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} sx={{
+                    alignItems: { sm: "center" }
+                }}>
                     <Button variant='outlined' component='label' startIcon={<UploadFileIcon />}>
                         选择备份文件
                         <input
@@ -953,9 +1010,10 @@ export default function BackupDialog({
                     <Stack
                         direction={{ xs: "column", sm: "row" }}
                         spacing={1}
-                        alignItems={{ sm: "center" }}
-                        sx={{ mt: 1 }}
-                    >
+                        sx={{
+                            alignItems: { sm: "center" },
+                            mt: 1
+                        }}>
                         <TextField
                             id='backup-restore-password'
                             label='备份密码'
@@ -989,10 +1047,18 @@ export default function BackupDialog({
                 <>
                     <Divider />
                     <Box>
-                        <Typography variant='subtitle2' fontWeight='600' gutterBottom>
+                        <Typography variant='subtitle2' gutterBottom sx={{
+                            fontWeight: '600'
+                        }}>
                             从浏览器导入
                         </Typography>
-                        <Typography variant='caption' color='text.secondary' sx={{ display: "block", mb: 0.75 }}>
+                        <Typography
+                            variant='caption'
+                            sx={{
+                                color: 'text.secondary',
+                                display: "block",
+                                mb: 0.75
+                            }}>
                             支持 Chrome / Edge / Firefox 导出的 HTML 书签文件，导入前可以先挑要哪些、归到哪个分组。
                         </Typography>
                         <Button
@@ -1009,8 +1075,16 @@ export default function BackupDialog({
             <Divider />
 
             <Box sx={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
-                <Stack direction='row' justifyContent='space-between' alignItems='center' sx={{ mb: 1 }}>
-                    <Typography variant='subtitle2' fontWeight='600'>
+                <Stack
+                    direction='row'
+                    sx={{
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        mb: 1
+                    }}>
+                    <Typography variant='subtitle2' sx={{
+                        fontWeight: '600'
+                    }}>
                         从 WebDAV 恢复
                     </Typography>
                     <Button
@@ -1054,7 +1128,12 @@ export default function BackupDialog({
                     )}
 
                     {config.url && remoteFiles.length === 0 && !listLoading && (
-                        <Typography variant='body2' color='text.secondary' textAlign='center'>
+                        <Typography
+                            variant='body2'
+                            sx={{
+                                color: 'text.secondary',
+                                textAlign: 'center'
+                            }}>
                             暂无远端备份，点击「查看远端备份」重新获取。
                         </Typography>
                     )}
@@ -1157,29 +1236,33 @@ export default function BackupDialog({
             onClose={onClose}
             fullWidth
             maxWidth='md'
-            PaperProps={{
-                sx: {
-                    borderRadius: 2,
-                    backgroundColor: theme.palette.background.paper,
-                    m: { xs: 2, sm: "auto" },
-                    // 宽度也要写死：width:auto 时 paper 会跟着内容宽度走，
-                    // 结果切标签页时弹窗宽度会跳（备份页 541 / 恢复页 560 实测）
-                    width: { xs: "calc(100% - 32px)", sm: 600 },
-                    // 高度写在 paper 层而不是内容层：内容层写死的话，遇到小视口 /
-                    // 系统 125% 缩放（CSS 视口只有 ~830px 高），弹窗整体会顶满甚至
-                    // 超出屏幕，底部按钮区和页面底栏叠在一起。
-                    // 高度写在这里，弹窗在任何视口下上下至少各留 24px，永远不顶满；
-                    // 内容区 flex 填剩余高度，内容装不下时在区内滚动。
-                    // 上限取 880：备份页自然高 ~640（含末尾留白），扣掉标题/标签页/
-                    // 按钮行约 166px 后需要 ~806 才装得下，880 让 1000px 左右的常见
-                    // 视口完全不出滚动条；更矮的视口仍在区内滚动，外框不超屏幕。
-                    height: { xs: "auto", sm: "min(880px, calc(100% - 48px))" },
-                    maxHeight: { sm: "calc(100% - 48px)" },
-                },
+            slotProps={{
+                paper: {
+                    sx: {
+                        borderRadius: 2,
+                        backgroundColor: theme.palette.background.paper,
+                        m: { xs: 2, sm: "auto" },
+                        // 宽度也要写死：width:auto 时 paper 会跟着内容宽度走，
+                        // 结果切标签页时弹窗宽度会跳（备份页 541 / 恢复页 560 实测）
+                        width: { xs: "calc(100% - 32px)", sm: 600 },
+                        // 高度写在 paper 层而不是内容层：内容层写死的话，遇到小视口 /
+                        // 系统 125% 缩放（CSS 视口只有 ~830px 高），弹窗整体会顶满甚至
+                        // 超出屏幕，底部按钮区和页面底栏叠在一起。
+                        // 高度写在这里，弹窗在任何视口下上下至少各留 24px，永远不顶满；
+                        // 内容区 flex 填剩余高度，内容装不下时在区内滚动。
+                        // 上限取 880：备份页自然高 ~640（含末尾留白），扣掉标题/标签页/
+                        // 按钮行约 166px 后需要 ~806 才装得下，880 让 1000px 左右的常见
+                        // 视口完全不出滚动条；更矮的视口仍在区内滚动，外框不超屏幕。
+                        height: { xs: "auto", sm: "min(880px, calc(100% - 48px))" },
+                        maxHeight: { sm: "calc(100% - 48px)" },
+                    },
+                }
             }}
         >
             <DialogTitle sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", pb: 1 }}>
-                <Typography variant='h6' component='div' fontWeight='600'>
+                <Typography variant='h6' component='div' sx={{
+                    fontWeight: '600'
+                }}>
                     数据备份与恢复
                 </Typography>
                 <IconButton edge='end' color='inherit' onClick={onClose} aria-label='关闭' size='small'>
@@ -1219,13 +1302,17 @@ export default function BackupDialog({
                     任务下一次跑成功会自动撤掉（见 worker/cron.ts 的 clearCronError）。 */}
                 {cronError ? (
                     <Alert severity='warning' sx={{ mb: 1.5, flexShrink: 0 }}>
-                        <Typography variant='body2' fontWeight={600}>
+                        <Typography variant='body2' sx={{
+                            fontWeight: 600
+                        }}>
                             {cronError.task === "backup" ? "每周自动备份" : "死链巡检"}未成功
                             {cronError.at
                                 ? `（${formatCronErrorTime(cronError.at)}）`
                                 : ""}
                         </Typography>
-                        <Typography variant='caption' color='text.secondary'>
+                        <Typography variant='caption' sx={{
+                            color: 'text.secondary'
+                        }}>
                             {cronError.message}
                         </Typography>
                     </Alert>
@@ -1236,11 +1323,20 @@ export default function BackupDialog({
                     拿不到进度时宁可只转圈，也不画一根「按时间匀速前进」的假进度条 */}
                 {restoring && importProgress ? (
                     <Box sx={{ mt: 1.5, flexShrink: 0 }}>
-                        <Stack direction='row' justifyContent='space-between' sx={{ mb: 0.5 }}>
-                            <Typography variant='caption' color='text.secondary'>
+                        <Stack
+                            direction='row'
+                            sx={{
+                                justifyContent: 'space-between',
+                                mb: 0.5
+                            }}>
+                            <Typography variant='caption' sx={{
+                                color: 'text.secondary'
+                            }}>
                                 {IMPORT_STAGE_LABEL[importProgress.stage]}
                             </Typography>
-                            <Typography variant='caption' color='text.secondary'>
+                            <Typography variant='caption' sx={{
+                                color: 'text.secondary'
+                            }}>
                                 {importProgress.done} / {importProgress.total}
                             </Typography>
                         </Stack>

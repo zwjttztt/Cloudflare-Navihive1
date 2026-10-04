@@ -47,10 +47,13 @@ jobs:
         with:
           node-version: 22
 
-      # 仓库已提交 package-lock.json，用 ci 保证依赖树与锁定版本完全一致；
-      # --legacy-peer-deps 是为了绕开 MUI 7 的 peer 依赖告警
+      # 仓库已提交 package-lock.json，用 ci 保证依赖树与锁定版本完全一致。
+      #
+      # 这里**不要**加 --legacy-peer-deps：MUI 7 时代的 peer 告警已经随大版本升级消失
+      # （本地 npm ci 实测无冲突），留着它只会让以后真正的 peer 冲突被静默跳过 ——
+      # 那正是「装上才发现跑不起来」的那类问题。
       - name: 安装依赖
-        run: npm ci --legacy-peer-deps
+        run: npm ci
 
       # 依赖漏洞巡检：只报 high/critical，且不阻断流水线
       # （历史依赖经常有修不动的间接告警，硬失败只会让人习惯性忽略 CI）。

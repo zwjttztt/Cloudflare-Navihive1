@@ -43,14 +43,13 @@ export const SiteCardTitle = memo(function SiteCardTitle({
             <Typography
                 className='nav-card-title'
                 variant={compactTitle ? "caption" : "subtitle1"}
-                fontWeight='medium'
                 noWrap
                 title={name}
                 sx={{
+                    fontWeight: 'medium',
                     fontSize: { xs: "0.875rem", sm: "1rem" },
-                    transition: "color .2s ease",
-                }}
-            >
+                    transition: "color .2s ease"
+                }}>
                 <Highlighted text={name} query={highlight} />
             </Typography>
             {dead && (
@@ -82,16 +81,15 @@ export const SiteCardDescription = memo(function SiteCardDescription({
     return (
         <Typography
             variant='body2'
-            color='text.secondary'
             sx={{
+                color: 'text.secondary',
                 display: "-webkit-box",
                 WebkitLineClamp: compact ? 2 : withThumb ? 2 : 3,
                 WebkitBoxOrient: "vertical",
                 overflow: "hidden",
                 flexGrow: 1,
-                fontSize: { xs: "0.75rem", sm: "0.875rem" },
-            }}
-        >
+                fontSize: { xs: "0.75rem", sm: "0.875rem" }
+            }}>
             <Highlighted text={description || "暂无描述"} query={highlight} />
         </Typography>
     );

@@ -207,7 +207,13 @@ export default function AuditDialog({
             <DialogTitle sx={{ display: "flex", alignItems: "center", gap: 1 }}>
                 <HistoryIcon fontSize='small' />
                 审计日志
-                <Typography component='span' variant='caption' color='text.secondary' sx={{ ml: "auto" }}>
+                <Typography
+                    component='span'
+                    variant='caption'
+                    sx={{
+                        color: 'text.secondary',
+                        ml: "auto"
+                    }}>
                     仅保留 {retentionDays ?? DEFAULT_RETENTION_DAYS} 天
                 </Typography>
             </DialogTitle>
@@ -277,7 +283,9 @@ export default function AuditDialog({
                             </Box>
                         ) : rows.length === 0 ? (
                             <Box sx={{ p: 4, textAlign: "center" }}>
-                                <Typography variant='body2' color='text.secondary'>
+                                <Typography variant='body2' sx={{
+                                    color: 'text.secondary'
+                                }}>
                                     暂无审计记录
                                 </Typography>
                             </Box>
@@ -313,13 +321,15 @@ export default function AuditDialog({
                                                     {formatTime(row.created_at)}
                                                 </span>
                                             }
-                                            primaryTypographyProps={{
-                                                sx: { display: "block", wordBreak: "break-word" },
-                                            }}
-                                            secondaryTypographyProps={{
-                                                sx: { display: "block", wordBreak: "break-word" },
-                                            }}
-                                        />
+                                            slotProps={{
+                                                primary: {
+                                                    sx: { display: "block", wordBreak: "break-word" },
+                                                },
+
+                                                secondary: {
+                                                    sx: { display: "block", wordBreak: "break-word" },
+                                                }
+                                            }} />
                                     </ListItem>
                                 ))}
                             </List>
@@ -356,14 +366,18 @@ export default function AuditDialog({
                 ) : errorGroups.length === 0 ? (
                     <Box sx={{ p: 4, textAlign: "center" }}>
                         <BugReportIcon sx={{ fontSize: 40, opacity: 0.4, mb: 1 }} />
-                        <Typography variant='body2' color='text.secondary'>
+                        <Typography variant='body2' sx={{
+                            color: 'text.secondary'
+                        }}>
                             最近没有收到前端错误上报
                         </Typography>
                     </Box>
                 ) : (
                     <>
                         <Box sx={{ px: 2, pb: 1 }}>
-                            <Typography variant='caption' color='text.secondary'>
+                            <Typography variant='caption' sx={{
+                                color: 'text.secondary'
+                            }}>
                                 共 {totalErrors} 次上报，归为 {errorGroups.length} 类（按次数排序）
                             </Typography>
                         </Box>
@@ -398,13 +412,15 @@ export default function AuditDialog({
                                                 {group.message} · 最近 {formatTime(group.lastAt)}
                                             </span>
                                         }
-                                        primaryTypographyProps={{
-                                            sx: { display: "block", wordBreak: "break-word" },
-                                        }}
-                                        secondaryTypographyProps={{
-                                            sx: { display: "block", wordBreak: "break-word" },
-                                        }}
-                                    />
+                                        slotProps={{
+                                            primary: {
+                                                sx: { display: "block", wordBreak: "break-word" },
+                                            },
+
+                                            secondary: {
+                                                sx: { display: "block", wordBreak: "break-word" },
+                                            }
+                                        }} />
                                 </ListItem>
                             ))}
                         </List>

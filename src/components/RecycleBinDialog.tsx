@@ -145,7 +145,13 @@ export default function RecycleBinDialog({
             <DialogTitle sx={{ display: "flex", alignItems: "center", gap: 1 }}>
                 <RestoreFromTrashIcon fontSize='small' />
                 回收站
-                <Typography component='span' variant='caption' color='text.secondary' sx={{ ml: "auto" }}>
+                <Typography
+                    component='span'
+                    variant='caption'
+                    sx={{
+                        color: 'text.secondary',
+                        ml: "auto"
+                    }}>
                     仅保留 {retentionDays ?? DEFAULT_RETENTION_DAYS} 天，超期自动清除
                 </Typography>
             </DialogTitle>
@@ -165,7 +171,9 @@ export default function RecycleBinDialog({
                     </Box>
                 ) : items.length === 0 ? (
                     <Box sx={{ p: 4, textAlign: "center" }}>
-                        <Typography variant='body2' color='text.secondary'>
+                        <Typography variant='body2' sx={{
+                            color: 'text.secondary'
+                        }}>
                             回收站是空的
                         </Typography>
                     </Box>
@@ -211,9 +219,10 @@ export default function RecycleBinDialog({
                                             <Typography
                                                 component='span'
                                                 variant='caption'
-                                                color='text.secondary'
-                                                sx={{ ml: 1 }}
-                                            >
+                                                sx={{
+                                                    color: 'text.secondary',
+                                                    ml: 1
+                                                }}>
                                                 {item.kind === "group" ? "分组" : "站点"}
                                             </Typography>
                                         </span>

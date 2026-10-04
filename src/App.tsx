@@ -1605,643 +1605,646 @@ function App() {
 
     return (
         <AppConfigProvider value={appConfigValue}>
-         <NotifyContext.Provider value={notify}>
-            <AiContext.Provider value={siteAi}>
-            <ThemeProvider theme={theme}>
-            <CssBaseline />
+            <NotifyContext.Provider value={notify}>
+               <AiContext.Provider value={siteAi}>
+               <ThemeProvider theme={theme}>
+               <CssBaseline />
 
-            {/* 顶部滚动进度条：固定贴在最上方，纯装饰 */}
-            <ScrollProgress />
-            {/* 断网 / 恢复的浮动提示 */}
-            <OfflineBanner />
+               {/* 顶部滚动进度条：固定贴在最上方，纯装饰 */}
+               <ScrollProgress />
+               {/* 断网 / 恢复的浮动提示 */}
+               <OfflineBanner />
 
-            {/* 回到顶部：滚过一屏才出现 */}
-            <BackToTop />
+               {/* 回到顶部：滚过一屏才出现 */}
+               <BackToTop />
 
-            <SnackbarHost
-                open={snackbarOpen}
-                message={snackbarMessage}
-                severity={snackbarSeverity}
-                duration={snackbarDuration}
-                action={snackbarAction}
-                liveMessage={liveMessage}
-                onClose={handleCloseSnackbar}
-            />
+               <SnackbarHost
+                   open={snackbarOpen}
+                   message={snackbarMessage}
+                   severity={snackbarSeverity}
+                   duration={snackbarDuration}
+                   action={snackbarAction}
+                   liveMessage={liveMessage}
+                   onClose={handleCloseSnackbar}
+               />
 
-            <BackgroundLayers
-                imageUrl={backgroundImageUrl}
-                maskOpacity={backgroundMaskOpacity}
-                darkMode={darkMode}
-            />
+               <BackgroundLayers
+                   imageUrl={backgroundImageUrl}
+                   maskOpacity={backgroundMaskOpacity}
+                   darkMode={darkMode}
+               />
 
-            <Box
-                className='nav-root'
-                data-font-scale={fontScale}
-                style={{ ["--card-radius" as string]: RADIUS_PX[radius] }}
-                sx={{
-                    minHeight: "100vh",
-                    bgcolor: hasBackgroundImage ? "transparent" : "background.default",
-                    color: "text.primary",
-                    transition: "all 0.3s ease-in-out",
-                    position: "relative",
-                    zIndex: 1,
-                }}
-            >
-                {/* 键盘 / 读屏用户的第一站：一次 Tab 就能跳过分组导航与顶栏直达网站列表。
-                    平时视觉隐藏，只有被键盘聚焦时才浮到左上角。 */}
-                <Box component='a' href='#main-content' className='nav-skip-link'>
-                    跳到网站列表
-                </Box>
+               <Box
+                   className='nav-root'
+                   data-font-scale={fontScale}
+                   style={{ ["--card-radius" as string]: RADIUS_PX[radius] }}
+                   sx={{
+                       minHeight: "100vh",
+                       bgcolor: hasBackgroundImage ? "transparent" : "background.default",
+                       color: "text.primary",
+                       transition: "all 0.3s ease-in-out",
+                       position: "relative",
+                       zIndex: 1,
+                   }}
+               >
+                   {/* 键盘 / 读屏用户的第一站：一次 Tab 就能跳过分组导航与顶栏直达网站列表。
+                       平时视觉隐藏，只有被键盘聚焦时才浮到左上角。 */}
+                   <Box component='a' href='#main-content' className='nav-skip-link'>
+                       跳到网站列表
+                   </Box>
 
-                <Container
-                    component='main'
-                    id='main-content'
-                    tabIndex={-1}
-                    aria-label='网站列表'
-                    maxWidth='lg'
-                    sx={{
-                        py: 4,
-                        px: { xs: 2, sm: 3, md: 4 },
-                        // 手机端给底部导航条留出空间
-                        pb: { xs: 11, md: 4 },
-                        // 跳转链接把焦点送到这里时别画一圈突兀的框
-                        "&:focus": { outline: "none" },
-                    }}
-                >
-                    {/* 分组锚点导航：分组多了直接跳，不用一路滚 */}
-                    {!loading && sortMode === SortMode.None && (
-                        <GroupNavRail
-                            groups={displayedGroups.map(g => ({
-                                id: g.id,
-                                name: g.name,
-                                count: g.sites.length,
-                            }))}
-                            activeId={activeGroupId}
-                            onJump={jumpToGroup}
-                            allCollapsed={allGroupsCollapsed}
-                            onToggleCollapseAll={toggleCollapseAll}
-                        />
-                    )}
-                    <SiteListHeader
-                        siteName={configs["site.name"]}
-                        headerCompact={headerCompact}
-                        clock={<HeaderClock />}
-                        actions={
-                            <>
-                                {sortMode === SortMode.None && (
-                                    <Box className='nav-header-search' sx={headerSearchSlotSx}>
-                                    <HeaderSearchBox
-                                        searchInputRef={searchInputRef}
-                                        searchPanelRef={searchPanelRef}
-                                        searchQuery={searchQuery}
-                                        setSearchQuery={setSearchQuery}
-                                        setActiveResult={setActiveResult}
-                                        setSearchFocused={setSearchFocused}
-                                        searchAnchor={searchAnchor}
-                                        setSearchAnchor={setSearchAnchor}
-                                        dropdownOpen={dropdownOpen}
-                                        historyOpen={historyOpen}
-                                        query={query}
-                                        results={flatResults}
-                                        activeResult={activeResult}
-                                        openResult={openResult}
-                                        searchHistory={searchHistory}
-                                        applyHistoryTerm={applyHistoryTerm}
-                                        clearSearchHistory={clearSearchHistory}
-                                        headerCompact={headerCompact}
-                                        semantic={{
-                                            enabled: semanticSearch,
-                                            onToggle: setSemanticSearch,
-                                            ready: ai.ready,
-                                            reason: ai.reason,
-                                            busy: semanticBusy,
-                                        }}
-                                    />
-                                    </Box>
-                                )}
-                                {/* 窄桌面（900~1343px）的分组入口：这一段左栏没有、底栏也没有 */}
-                                {sortMode === SortMode.None && (
-                                    <HeaderGroupsButton
-                                        onOpen={event => {
-                                            setMobileGroupsAnchor(event.currentTarget);
-                                            setGroupsAnchorFromTop(true);
-                                        }}
-                                        open={Boolean(mobileGroupsAnchor)}
-                                        count={displayedGroups.length}
-                                        onExitViewport={handleExitGroupsButtonViewport}
-                                    />
-                                )}
-                                {/* 显示控制：星标 / 当前视图（点开是密度与主题）/ 多选。
-                                    紧跟搜索：这几项都属于「当下怎么看这个列表」 */}
-                                {sortMode === SortMode.None && (
-                                    <DisplayControls
-                                        viewMode={viewMode}
-                                        setViewMode={setViewMode}
-                                        density={density}
-                                        setDensity={setDensity}
-                                        multiSelect={multiSelect}
-                                        setMultiSelect={setMultiSelect}
-                                        exitMultiSelect={exitMultiSelect}
-                                        starFilter={starFilter}
-                                        setStarFilter={setStarFilter}
-                                        themeMode={themeMode}
-                                        setThemeMode={setThemeMode}
-                                        favoritesEnabled={favoritesEnabled}
-                                        onFavoritesEnabledChange={setFavoritesEnabled}
-                                    />
-                                )}
-                                <HeaderActionsSlot
-                                    sortMode={sortMode}
-                                    onSaveGroupOrder={handleSaveGroupOrder}
-                                    onSaveSiteSort={handleSaveSiteSort}
-                                    onCancelSort={cancelSort}
-                                    onQuickAdd={handleQuickAdd}
-                                    addTargetName={quickAddTargetName}
-                                    onOpenAddGroup={handleOpenAddGroup}
-                                    onMenuOpen={handleMenuOpen}
-                                    menuOpen={openMenu}
-                                    menuAnchorEl={menuAnchorEl}
-                                    onMenuClose={handleMenuClose}
-                                    onOpenConfig={handleOpenConfig}
-                                    onOpenAccount={() => {
-                                        handleMenuClose();
-                                        setOpenAccount(true);
-                                        void fetchAccountList();
-                                        void fetchSessions();
-                                    }}
-                                    onStartGroupSort={startGroupSort}
-                                    canInstall={canInstall}
-                                    onInstallApp={() => void handleInstallApp()}
-                                    onOpenVisits={() => setOpenVisits(true)}
-                                    onOpenBackup={handleOpenBackup}
-                                    onOpenRecycle={() => {
-                                        handleMenuClose();
-                                        setOpenRecycle(true);
-                                    }}
-                                    onOpenAudit={() => {
-                                        handleMenuClose();
-                                        setOpenAudit(true);
-                                    }}
-                                    isAuthenticated={isAuthenticated}
-                                    onLogout={handleLogout}
-                                    onOpenAiAssistant={() => {
-                                        handleMenuClose();
-                                        setOpenAiAssistant(true);
-                                    }}
-                                    onOpenShortcuts={() => setOpenShortcuts(true)}
-                                    isSiteOwner={currentUser?.role === "owner"}
-                                />
-                            </>
-                        }
-                    />
+                   <Container
+                       component='main'
+                       id='main-content'
+                       tabIndex={-1}
+                       aria-label='网站列表'
+                       maxWidth='lg'
+                       sx={{
+                           py: 4,
+                           px: { xs: 2, sm: 3, md: 4 },
+                           // 手机端给底部导航条留出空间
+                           pb: { xs: 11, md: 4 },
+                           // 跳转链接把焦点送到这里时别画一圈突兀的框
+                           "&:focus": { outline: "none" },
+                       }}
+                   >
+                       {/* 分组锚点导航：分组多了直接跳，不用一路滚 */}
+                       {!loading && sortMode === SortMode.None && (
+                           <GroupNavRail
+                               groups={displayedGroups.map(g => ({
+                                   id: g.id,
+                                   name: g.name,
+                                   count: g.sites.length,
+                               }))}
+                               activeId={activeGroupId}
+                               onJump={jumpToGroup}
+                               allCollapsed={allGroupsCollapsed}
+                               onToggleCollapseAll={toggleCollapseAll}
+                           />
+                       )}
+                       <SiteListHeader
+                           siteName={configs["site.name"]}
+                           headerCompact={headerCompact}
+                           clock={<HeaderClock />}
+                           actions={
+                               <>
+                                   {sortMode === SortMode.None && (
+                                       <Box className='nav-header-search' sx={headerSearchSlotSx}>
+                                       <HeaderSearchBox
+                                           searchInputRef={searchInputRef}
+                                           searchPanelRef={searchPanelRef}
+                                           searchQuery={searchQuery}
+                                           setSearchQuery={setSearchQuery}
+                                           setActiveResult={setActiveResult}
+                                           setSearchFocused={setSearchFocused}
+                                           searchAnchor={searchAnchor}
+                                           setSearchAnchor={setSearchAnchor}
+                                           dropdownOpen={dropdownOpen}
+                                           historyOpen={historyOpen}
+                                           query={query}
+                                           results={flatResults}
+                                           activeResult={activeResult}
+                                           openResult={openResult}
+                                           searchHistory={searchHistory}
+                                           applyHistoryTerm={applyHistoryTerm}
+                                           clearSearchHistory={clearSearchHistory}
+                                           headerCompact={headerCompact}
+                                           semantic={{
+                                               enabled: semanticSearch,
+                                               onToggle: setSemanticSearch,
+                                               ready: ai.ready,
+                                               reason: ai.reason,
+                                               busy: semanticBusy,
+                                           }}
+                                       />
+                                       </Box>
+                                   )}
+                                   {/* 窄桌面（900~1343px）的分组入口：这一段左栏没有、底栏也没有 */}
+                                   {sortMode === SortMode.None && (
+                                       <HeaderGroupsButton
+                                           onOpen={event => {
+                                               setMobileGroupsAnchor(event.currentTarget);
+                                               setGroupsAnchorFromTop(true);
+                                           }}
+                                           open={Boolean(mobileGroupsAnchor)}
+                                           count={displayedGroups.length}
+                                           onExitViewport={handleExitGroupsButtonViewport}
+                                       />
+                                   )}
+                                   {/* 显示控制：星标 / 当前视图（点开是密度与主题）/ 多选。
+                                       紧跟搜索：这几项都属于「当下怎么看这个列表」 */}
+                                   {sortMode === SortMode.None && (
+                                       <DisplayControls
+                                           viewMode={viewMode}
+                                           setViewMode={setViewMode}
+                                           density={density}
+                                           setDensity={setDensity}
+                                           multiSelect={multiSelect}
+                                           setMultiSelect={setMultiSelect}
+                                           exitMultiSelect={exitMultiSelect}
+                                           starFilter={starFilter}
+                                           setStarFilter={setStarFilter}
+                                           themeMode={themeMode}
+                                           setThemeMode={setThemeMode}
+                                           favoritesEnabled={favoritesEnabled}
+                                           onFavoritesEnabledChange={setFavoritesEnabled}
+                                       />
+                                   )}
+                                   <HeaderActionsSlot
+                                       sortMode={sortMode}
+                                       onSaveGroupOrder={handleSaveGroupOrder}
+                                       onSaveSiteSort={handleSaveSiteSort}
+                                       onCancelSort={cancelSort}
+                                       onQuickAdd={handleQuickAdd}
+                                       addTargetName={quickAddTargetName}
+                                       onOpenAddGroup={handleOpenAddGroup}
+                                       onMenuOpen={handleMenuOpen}
+                                       menuOpen={openMenu}
+                                       menuAnchorEl={menuAnchorEl}
+                                       onMenuClose={handleMenuClose}
+                                       onOpenConfig={handleOpenConfig}
+                                       onOpenAccount={() => {
+                                           handleMenuClose();
+                                           setOpenAccount(true);
+                                           void fetchAccountList();
+                                           void fetchSessions();
+                                       }}
+                                       onStartGroupSort={startGroupSort}
+                                       canInstall={canInstall}
+                                       onInstallApp={() => void handleInstallApp()}
+                                       onOpenVisits={() => setOpenVisits(true)}
+                                       onOpenBackup={handleOpenBackup}
+                                       onOpenRecycle={() => {
+                                           handleMenuClose();
+                                           setOpenRecycle(true);
+                                       }}
+                                       onOpenAudit={() => {
+                                           handleMenuClose();
+                                           setOpenAudit(true);
+                                       }}
+                                       isAuthenticated={isAuthenticated}
+                                       onLogout={handleLogout}
+                                       onOpenAiAssistant={() => {
+                                           handleMenuClose();
+                                           setOpenAiAssistant(true);
+                                       }}
+                                       onOpenShortcuts={() => setOpenShortcuts(true)}
+                                       isSiteOwner={currentUser?.role === "owner"}
+                                   />
+                               </>
+                           }
+                       />
 
-                    {/* 标签筛选栏：有用过的标签、或检出失效链接时才出现 */}
-                    {sortMode === SortMode.None &&
-                        !loading &&
-                        (allTags.length > 0 || deadCount > 0 || starFilter) && (
-                            <TagBar
-                                tags={allTags}
-                                activeTags={activeTags}
-                                onToggleTag={toggleActiveTag}
-                                onClearTags={() => setActiveTags([])}
-                                starFilter={starFilter}
-                                onToggleStarFilter={() => setStarFilter(prev => !prev)}
-                                deadCount={deadCount}
-                                deadOnly={deadOnly}
-                                onToggleDeadOnly={() => setDeadOnly(prev => !prev)}
-                                onManageTags={() => setTagManagerOpen(true)}
-                            />
-                        )}
+                       {/* 标签筛选栏：有用过的标签、或检出失效链接时才出现 */}
+                       {sortMode === SortMode.None &&
+                           !loading &&
+                           (allTags.length > 0 || deadCount > 0 || starFilter) && (
+                               <TagBar
+                                   tags={allTags}
+                                   activeTags={activeTags}
+                                   onToggleTag={toggleActiveTag}
+                                   onClearTags={() => setActiveTags([])}
+                                   starFilter={starFilter}
+                                   onToggleStarFilter={() => setStarFilter(prev => !prev)}
+                                   deadCount={deadCount}
+                                   deadOnly={deadOnly}
+                                   onToggleDeadOnly={() => setDeadOnly(prev => !prev)}
+                                   onManageTags={() => setTagManagerOpen(true)}
+                               />
+                           )}
 
-                    {/* 结果计数：搜索框在上方标题栏里，这里只保留一行轻提示 */}
-                    <SearchStatusLine
-                        filtering={
-                            sortMode === SortMode.None &&
-                            Boolean(query || starFilter || deadOnly || activeTags.length > 0)
-                        }
-                        matchedCount={matchedCount}
-                        renderedCount={renderedCount}
-                        searchTruncated={searchTruncated}
-                        searchExpanded={searchExpanded}
-                        onExpand={expandAllResults}
-                        onCollapse={collapseAllResults}
-                        hint={sortMode === SortMode.None ? advancedHint(advancedQuery) : ""}
-                        semanticEnabled={sortMode === SortMode.None && semanticSearch}
-                        semanticNote={semanticNote}
-                        aiReady={ai.ready}
-                        embeddedCount={ai.status?.embedded ?? 0}
-                        semanticBusy={semanticBusy}
-                        onBuildSemanticIndex={() => void buildSemanticIndex(true)}
-                    />
+                       {/* 结果计数：搜索框在上方标题栏里，这里只保留一行轻提示 */}
+                       <SearchStatusLine
+                           filtering={
+                               sortMode === SortMode.None &&
+                               Boolean(query || starFilter || deadOnly || activeTags.length > 0)
+                           }
+                           matchedCount={matchedCount}
+                           renderedCount={renderedCount}
+                           searchTruncated={searchTruncated}
+                           searchExpanded={searchExpanded}
+                           onExpand={expandAllResults}
+                           onCollapse={collapseAllResults}
+                           hint={sortMode === SortMode.None ? advancedHint(advancedQuery) : ""}
+                           semanticEnabled={sortMode === SortMode.None && semanticSearch}
+                           semanticNote={semanticNote}
+                           aiReady={ai.ready}
+                           embeddedCount={ai.status?.embedded ?? 0}
+                           semanticBusy={semanticBusy}
+                           onBuildSemanticIndex={() => void buildSemanticIndex(true)}
+                       />
 
-                    {/* 语义搜索的两句话：没索引就教他建一个，搜不到就说清楚下面的是关键词结果 */}
-                    {semanticSearch && (
-                        <Typography
-                            variant='caption'
-                            color='text.secondary'
-                            sx={{ display: "block", mt: -2, mb: 2 }}
-                        >
-                            {semanticNote ? `${semanticNote}。` : null}
-                            {ai.ready && (ai.status?.embedded ?? 0) === 0 ? (
-                                <>
-                                    {" "}
-                                    语义搜索要先给站点建一次索引。
-                                    <Button
-                                        size='small'
-                                        disabled={semanticBusy}
-                                        onClick={() => void buildSemanticIndex(true)}
-                                        sx={{ minWidth: 0, px: 0.5, fontSize: 12 }}
-                                    >
-                                        {semanticBusy ? "正在生成…" : "现在生成"}
-                                    </Button>
-                                </>
-                            ) : null}
-                        </Typography>
-                    )}
+                       {/* 语义搜索的两句话：没索引就教他建一个，搜不到就说清楚下面的是关键词结果 */}
+                       {semanticSearch && (
+                           <Typography
+                               variant='caption'
+                               sx={{
+                                   color: 'text.secondary',
+                                   display: "block",
+                                   mt: -2,
+                                   mb: 2
+                               }}>
+                               {semanticNote ? `${semanticNote}。` : null}
+                               {ai.ready && (ai.status?.embedded ?? 0) === 0 ? (
+                                   <>
+                                       {" "}
+                                       语义搜索要先给站点建一次索引。
+                                       <Button
+                                           size='small'
+                                           disabled={semanticBusy}
+                                           onClick={() => void buildSemanticIndex(true)}
+                                           sx={{ minWidth: 0, px: 0.5, fontSize: 12 }}
+                                       >
+                                           {semanticBusy ? "正在生成…" : "现在生成"}
+                                       </Button>
+                                   </>
+                               ) : null}
+                           </Typography>
+                       )}
 
-                    {loading && <SiteListSkeleton />}
+                       {loading && <SiteListSkeleton />}
 
-                    {!loading && !error && (
-                        <SiteListBody
-                            sortMode={sortMode}
-                            sensors={sensors}
-                            onGroupDragEnd={handleDragEnd}
-                            groups={groups}
-                            onNudgeGroup={nudgeGroup}
-                            onSiteDragStart={handleSiteDragStart}
-                            onSiteDragOver={handleSiteSortDragOver}
-                            onSiteDragEnd={handleSiteSortDragEnd}
-                            onSiteDragCancel={handleSiteDragCancel}
-                            draggingSite={draggingSite}
-                            darkMode={darkMode}
-                            onSiteUpdate={handleSiteUpdate}
-                            onSiteDelete={handleSiteDelete}
-                            onSaveSiteOrder={handleSaveSiteOrder}
-                            onStartSiteSort={startSiteSort}
-                            onAddSite={handleOpenAddSite}
-                            onGroupUpdate={handleGroupUpdate}
-                            onGroupDelete={handleGroupDelete}
-                            displayedGroups={displayedGroups}
-                            density={density}
-                            reduceEntryAnimation={reduceEntryAnimation}
-                            currentSortingGroupId={currentSortingGroupId}
-                            configs={configs}
-                            onGroupAccentChange={handleGroupAccentChange}
-                            selectMode={multiSelect}
-                            selectedIds={selectedIds}
-                            onToggleSelect={toggleSelect}
-                            query={query}
-                            activeTags={activeTags}
-                            starFilter={starFilter}
-                            deadOnly={deadOnly}
-                            onClearSearch={() => setSearchQuery("")}
-                            onClearFilters={clearAllFilters}
-                        />
-                    )}
+                       {!loading && !error && (
+                           <SiteListBody
+                               sortMode={sortMode}
+                               sensors={sensors}
+                               onGroupDragEnd={handleDragEnd}
+                               groups={groups}
+                               onNudgeGroup={nudgeGroup}
+                               onSiteDragStart={handleSiteDragStart}
+                               onSiteDragOver={handleSiteSortDragOver}
+                               onSiteDragEnd={handleSiteSortDragEnd}
+                               onSiteDragCancel={handleSiteDragCancel}
+                               draggingSite={draggingSite}
+                               darkMode={darkMode}
+                               onSiteUpdate={handleSiteUpdate}
+                               onSiteDelete={handleSiteDelete}
+                               onSaveSiteOrder={handleSaveSiteOrder}
+                               onStartSiteSort={startSiteSort}
+                               onAddSite={handleOpenAddSite}
+                               onGroupUpdate={handleGroupUpdate}
+                               onGroupDelete={handleGroupDelete}
+                               displayedGroups={displayedGroups}
+                               density={density}
+                               reduceEntryAnimation={reduceEntryAnimation}
+                               currentSortingGroupId={currentSortingGroupId}
+                               configs={configs}
+                               onGroupAccentChange={handleGroupAccentChange}
+                               selectMode={multiSelect}
+                               selectedIds={selectedIds}
+                               onToggleSelect={toggleSelect}
+                               query={query}
+                               activeTags={activeTags}
+                               starFilter={starFilter}
+                               deadOnly={deadOnly}
+                               onClearSearch={() => setSearchQuery("")}
+                               onClearFilters={clearAllFilters}
+                           />
+                       )}
 
-                    {/* 新增分组对话框（与「编辑分组」共用同一套样式与尺寸）
-                        两个都是 lazy chunk，套一层 Suspense 兜住首次打开时的加载间隙 */}
-                    <Suspense fallback={null}>
-                        <EditGroupDialog
-                            open={openAddGroup}
-                            group={null}
-                            mode='create'
-                            onClose={handleCloseAddGroup}
-                            onSave={group => handleCreateGroup(group.name)}
-                        />
+                       {/* 新增分组对话框（与「编辑分组」共用同一套样式与尺寸）
+                           两个都是 lazy chunk，套一层 Suspense 兜住首次打开时的加载间隙 */}
+                       <Suspense fallback={null}>
+                           <EditGroupDialog
+                               open={openAddGroup}
+                               group={null}
+                               mode='create'
+                               onClose={handleCloseAddGroup}
+                               onSave={group => handleCreateGroup(group.name)}
+                           />
 
-                        <AddSiteDialog
-                            open={openAddSite}
-                            onClose={handleCloseAddSite}
-                            site={newSite}
-                            onInputChange={handleSiteInputChange}
-                            showPassword={showNewSitePassword}
-                            onTogglePassword={setShowNewSitePassword}
-                            creating={creatingSite}
-                            onFetchIcon={handleFetchNewSiteIcon}
-                            onCreate={handleCreateSite}
-                            ai={siteAi}
-                            aiBusy={aiBusyNew}
-                            aiMessage={aiMessageNew}
-                            aiMessageError={aiMessageErrorNew}
-                            onAiComplete={handleAiCompleteNew}
-                        />
-                    </Suspense>
-                    {/* 网站配置对话框 */}
-                    {/* 全站设置：这一块原来内联在 App 里，抽成 SettingsDialog 单独维护 */}
-                    <Suspense fallback={null}>
-                    <SettingsDialog
-                        open={openConfig}
-                        onClose={handleCloseConfig}
-                        onSave={handleSaveConfig}
-                        tempConfigs={tempConfigs}
-                        setTempConfigs={setTempConfigs}
-                        onConfigInputChange={handleConfigInputChange}
-                        onMaskOpacityChange={handleConfigSliderChange}
-                        onPickAccent={pickAccent}
-                        radius={radius}
-                        onRadiusChange={setRadius}
-                        fontScale={fontScale}
-                        onFontScaleChange={setFontScale}
-                        glassBlur={tempGlassBlur}
-                        onGlassBlurChange={handleGlassBlurChange}
-                        glassEffects={glassEffects}
-                        onGlassEffectsChange={setGlassEffects}
-                        offlineFull={offlineFull}
-                        onOfflineFullChange={setOfflineFull}
-                        iconPrivacy={iconPrivacy}
-                        onIconPrivacyChange={setIconPrivacy}
-                        liteMode={liteMode}
-                        onLiteModeChange={setLiteMode}
-                        saving={savingConfig}
-                        pinyinSearch={pinyinSearch}
-                        onPinyinSearchChange={setPinyinSearch}
-                        syncHealth={configs[LINK_HEALTH_SYNC_CONFIG] === "true"}
-                        onSyncHealthChange={handleToggleLinkHealthSync}
-                        syncPrefs={prefSync}
-                        onSyncPrefsChange={handleTogglePrefSync}
-                        // 检测失效链接：从「更多选项」挪进「数据同步」这一节，挨着失效检测结果开关
-                        onRunLinkCheck={() => void runLinkCheck()}
-                        // 全站外观是所有人共用的，只有站点所有者能改（服务端同规则）
-                        isSiteOwner={!currentUser || currentUser.role === "owner"}
-                    />
-                    </Suspense>
+                           <AddSiteDialog
+                               open={openAddSite}
+                               onClose={handleCloseAddSite}
+                               site={newSite}
+                               onInputChange={handleSiteInputChange}
+                               showPassword={showNewSitePassword}
+                               onTogglePassword={setShowNewSitePassword}
+                               creating={creatingSite}
+                               onFetchIcon={handleFetchNewSiteIcon}
+                               onCreate={handleCreateSite}
+                               ai={siteAi}
+                               aiBusy={aiBusyNew}
+                               aiMessage={aiMessageNew}
+                               aiMessageError={aiMessageErrorNew}
+                               onAiComplete={handleAiCompleteNew}
+                           />
+                       </Suspense>
+                       {/* 网站配置对话框 */}
+                       {/* 全站设置：这一块原来内联在 App 里，抽成 SettingsDialog 单独维护 */}
+                       <Suspense fallback={null}>
+                       <SettingsDialog
+                           open={openConfig}
+                           onClose={handleCloseConfig}
+                           onSave={handleSaveConfig}
+                           tempConfigs={tempConfigs}
+                           setTempConfigs={setTempConfigs}
+                           onConfigInputChange={handleConfigInputChange}
+                           onMaskOpacityChange={handleConfigSliderChange}
+                           onPickAccent={pickAccent}
+                           radius={radius}
+                           onRadiusChange={setRadius}
+                           fontScale={fontScale}
+                           onFontScaleChange={setFontScale}
+                           glassBlur={tempGlassBlur}
+                           onGlassBlurChange={handleGlassBlurChange}
+                           glassEffects={glassEffects}
+                           onGlassEffectsChange={setGlassEffects}
+                           offlineFull={offlineFull}
+                           onOfflineFullChange={setOfflineFull}
+                           iconPrivacy={iconPrivacy}
+                           onIconPrivacyChange={setIconPrivacy}
+                           liteMode={liteMode}
+                           onLiteModeChange={setLiteMode}
+                           saving={savingConfig}
+                           pinyinSearch={pinyinSearch}
+                           onPinyinSearchChange={setPinyinSearch}
+                           syncHealth={configs[LINK_HEALTH_SYNC_CONFIG] === "true"}
+                           onSyncHealthChange={handleToggleLinkHealthSync}
+                           syncPrefs={prefSync}
+                           onSyncPrefsChange={handleTogglePrefSync}
+                           // 检测失效链接：从「更多选项」挪进「数据同步」这一节，挨着失效检测结果开关
+                           onRunLinkCheck={() => void runLinkCheck()}
+                           // 全站外观是所有人共用的，只有站点所有者能改（服务端同规则）
+                           isSiteOwner={!currentUser || currentUser.role === "owner"}
+                       />
+                       </Suspense>
 
-                    {/* 账号管理：改账号密码 / 恢复密钥 / 邀请码 / 注销账号。
-                        原先「账户安全」混在网站设置里、注销账号又孤零零挂在更多菜单，
-                        现在都收在这里 —— 网站设置只管「站点长什么样」。 */}
-                    <Suspense fallback={null}>
-                    <AccountDialog
-                        open={openAccount}
-                        onClose={() => setOpenAccount(false)}
-                        auth={{
-                            username: authUsername,
-                            currentPassword: authCurrentPassword,
-                            newPassword: authNewPassword,
-                        }}
-                        onAuthChange={(field, value) => {
-                            if (field === "username") setAuthUsername(value);
-                            else if (field === "currentPassword") setAuthCurrentPassword(value);
-                            else setAuthNewPassword(value);
-                        }}
-                        onSaveAuth={() => void handleSaveAuthCredentials()}
-                        saving={savingAuth}
-                        currentUser={currentUser}
-                        recoveryKeyConfigured={recoveryConfigured}
-                        onGenerateRecoveryKey={handleGenerateRecoveryKey}
-                        invite={invite}
-                        onCreateInvite={handleCreateInvite}
-                        accounts={accountList}
-                        onExemptUser={uid => void handleExemptUser(uid)}
-                        inactivePolicy={inactivePolicy ?? undefined}
-                        onSaveInactivePolicy={handleSaveInactivePolicy}
-                        onSweepInactive={handleSweepInactive}
-                        sessions={sessions}
-                        onRevokeSession={jti => void handleRevokeSession(jti)}
-                        onRevokeOthers={() => void handleRevokeOthers()}
-                        onDeleteAccount={() => {
-                            handleMenuClose();
-                            setOpenAccount(false);
-                            setDeleteAccountOpen(true);
-                        }}
-                    />
-                    </Suspense>
+                       {/* 账号管理：改账号密码 / 恢复密钥 / 邀请码 / 注销账号。
+                           原先「账户安全」混在网站设置里、注销账号又孤零零挂在更多菜单，
+                           现在都收在这里 —— 网站设置只管「站点长什么样」。 */}
+                       <Suspense fallback={null}>
+                       <AccountDialog
+                           open={openAccount}
+                           onClose={() => setOpenAccount(false)}
+                           auth={{
+                               username: authUsername,
+                               currentPassword: authCurrentPassword,
+                               newPassword: authNewPassword,
+                           }}
+                           onAuthChange={(field, value) => {
+                               if (field === "username") setAuthUsername(value);
+                               else if (field === "currentPassword") setAuthCurrentPassword(value);
+                               else setAuthNewPassword(value);
+                           }}
+                           onSaveAuth={() => void handleSaveAuthCredentials()}
+                           saving={savingAuth}
+                           currentUser={currentUser}
+                           recoveryKeyConfigured={recoveryConfigured}
+                           onGenerateRecoveryKey={handleGenerateRecoveryKey}
+                           invite={invite}
+                           onCreateInvite={handleCreateInvite}
+                           accounts={accountList}
+                           onExemptUser={uid => void handleExemptUser(uid)}
+                           inactivePolicy={inactivePolicy ?? undefined}
+                           onSaveInactivePolicy={handleSaveInactivePolicy}
+                           onSweepInactive={handleSweepInactive}
+                           sessions={sessions}
+                           onRevokeSession={jti => void handleRevokeSession(jti)}
+                           onRevokeOthers={() => void handleRevokeOthers()}
+                           onDeleteAccount={() => {
+                               handleMenuClose();
+                               setOpenAccount(false);
+                               setDeleteAccountOpen(true);
+                           }}
+                       />
+                       </Suspense>
 
-                    {/* 注销账号：二次确认 + 当前密码（入口在「更多选项」） */}
-                    <DeleteAccountDialog
-                        open={deleteAccountOpen}
-                        username={currentUser?.username}
-                        busy={deleteAccountBusy}
-                        password={deleteAccountPassword}
-                        onPasswordChange={setDeleteAccountPassword}
-                        onConfirm={() => void handleDeleteAccount()}
-                        onClose={() => {
-                            if (deleteAccountBusy) return;
-                            setDeleteAccountOpen(false);
-                            setDeleteAccountPassword("");
-                        }}
-                    />
+                       {/* 注销账号：二次确认 + 当前密码（入口在「更多选项」） */}
+                       <DeleteAccountDialog
+                           open={deleteAccountOpen}
+                           username={currentUser?.username}
+                           busy={deleteAccountBusy}
+                           password={deleteAccountPassword}
+                           onPasswordChange={setDeleteAccountPassword}
+                           onConfirm={() => void handleDeleteAccount()}
+                           onClose={() => {
+                               if (deleteAccountBusy) return;
+                               setDeleteAccountOpen(false);
+                               setDeleteAccountPassword("");
+                           }}
+                       />
 
-                    {/* 访问统计：本机热力图 + Top5 */}
-                    <Suspense fallback={null}>
-                    <VisitsDialog
-                        open={openVisits}
-                        onClose={() => setOpenVisits(false)}
-                        nameOf={id => {
-                            for (const group of groups) {
-                                const hit = group.sites.find(s => String(s.id) === id);
-                                if (hit) return hit.name || hit.url || `#${id}`;
-                            }
-                            return `已删除的网站 #${id}`;
-                        }}
-                        syncEnabled={configs[PREF_SYNC_CONFIG] === "true"}
-                        onClear={() => {
-                            clearVisits();
-                            // 清除访问记录不弹提示：「最近访问」分组会当场消失，本身就是反馈
-                        }}
-                    />
-                    </Suspense>
+                       {/* 访问统计：本机热力图 + Top5 */}
+                       <Suspense fallback={null}>
+                       <VisitsDialog
+                           open={openVisits}
+                           onClose={() => setOpenVisits(false)}
+                           nameOf={id => {
+                               for (const group of groups) {
+                                   const hit = group.sites.find(s => String(s.id) === id);
+                                   if (hit) return hit.name || hit.url || `#${id}`;
+                               }
+                               return `已删除的网站 #${id}`;
+                           }}
+                           syncEnabled={configs[PREF_SYNC_CONFIG] === "true"}
+                           onClear={() => {
+                               clearVisits();
+                               // 清除访问记录不弹提示：「最近访问」分组会当场消失，本身就是反馈
+                           }}
+                       />
+                       </Suspense>
 
-                    {/* 数据备份与恢复对话框 */}
-                    <Suspense fallback={null}>
-                    <BackupDialog
-                        open={openBackup}
-                        initialTab={backupTab}
-                        client={api}
-                        webdavConfig={webdavConfig}
-                        onSaveWebdavConfig={handleSaveWebdavConfig}
-                        autoBackup={configs[`${WEBDAV_CONFIG_PREFIX}autoBackup`] !== "false"}
-                        lastBackupAt={configs[`${WEBDAV_CONFIG_PREFIX}lastBackupAt`] || ""}
-                        onToggleAutoBackup={handleToggleAutoBackup}
-                        onBuildExportData={buildExportData}
-                        onDownloadLocal={handleDownloadLocal}
-                        onImportData={handleImportBackup}
-                        onRequestImportPreview={requestImportPreview}
-                        onNotify={notify}
-                        onClose={handleCloseBackup}
-                        includeCredentials={configs[BACKUP_CREDENTIALS_CONFIG] === "true"}
-                        onIncludeCredentialsChange={handleToggleIncludeCredentials}
-                        // 导入浏览器书签：从「更多选项」挪进「恢复 / 导入」页，和从文件恢复同类
-                        onOpenBookmark={() => {
-                            setOpenBackup(false);
-                            setBookmarkOpen(true);
-                        }}
-                        cronError={cronError}
-                    />
-                    </Suspense>
+                       {/* 数据备份与恢复对话框 */}
+                       <Suspense fallback={null}>
+                       <BackupDialog
+                           open={openBackup}
+                           initialTab={backupTab}
+                           client={api}
+                           webdavConfig={webdavConfig}
+                           onSaveWebdavConfig={handleSaveWebdavConfig}
+                           autoBackup={configs[`${WEBDAV_CONFIG_PREFIX}autoBackup`] !== "false"}
+                           lastBackupAt={configs[`${WEBDAV_CONFIG_PREFIX}lastBackupAt`] || ""}
+                           onToggleAutoBackup={handleToggleAutoBackup}
+                           onBuildExportData={buildExportData}
+                           onDownloadLocal={handleDownloadLocal}
+                           onImportData={handleImportBackup}
+                           onRequestImportPreview={requestImportPreview}
+                           onNotify={notify}
+                           onClose={handleCloseBackup}
+                           includeCredentials={configs[BACKUP_CREDENTIALS_CONFIG] === "true"}
+                           onIncludeCredentialsChange={handleToggleIncludeCredentials}
+                           // 导入浏览器书签：从「更多选项」挪进「恢复 / 导入」页，和从文件恢复同类
+                           onOpenBookmark={() => {
+                               setOpenBackup(false);
+                               setBookmarkOpen(true);
+                           }}
+                           cronError={cronError}
+                       />
+                       </Suspense>
 
-                {/* 快捷键说明表：按 ? 打开，命令面板里也有入口（已不在「更多选项」里占位置） */}
-                <Suspense fallback={null}>
-                <ShortcutsDialog
-                    open={openShortcuts}
-                    onClose={() => setOpenShortcuts(false)}
-                />
-                </Suspense>
+                   {/* 快捷键说明表：按 ? 打开，命令面板里也有入口（已不在「更多选项」里占位置） */}
+                   <Suspense fallback={null}>
+                   <ShortcutsDialog
+                       open={openShortcuts}
+                       onClose={() => setOpenShortcuts(false)}
+                   />
+                   </Suspense>
 
-                {/* 导入预览：恢复前先给用户看差异，勾选后才会真的写库 */}
-                <Suspense fallback={null}>
-                <ImportPreviewDialog
-                    open={importPreview !== null}
-                    data={importPreview?.data ?? null}
-                    overwrite={importPreview?.overwrite ?? false}
-                    current={groups}
-                    onCancel={() => closeImportPreview(null)}
-                    onConfirm={data => closeImportPreview(data)}
-                />
-                </Suspense>
+                   {/* 导入预览：恢复前先给用户看差异，勾选后才会真的写库 */}
+                   <Suspense fallback={null}>
+                   <ImportPreviewDialog
+                       open={importPreview !== null}
+                       data={importPreview?.data ?? null}
+                       overwrite={importPreview?.overwrite ?? false}
+                       current={groups}
+                       onCancel={() => closeImportPreview(null)}
+                       onConfirm={data => closeImportPreview(data)}
+                   />
+                   </Suspense>
 
-                {/* 审计日志：仅站点所有者可读，事后溯源谁在何时做了什么 */}
-                <Suspense fallback={null}>
-                <AuditDialog
-                    open={openAudit}
-                    onClose={() => setOpenAudit(false)}
-                    client={api as unknown as NavigationClient}
-                    retentionDays={Number(configs[RETENTION_DAYS_KEY]) || undefined}
-                />
-                </Suspense>
+                   {/* 审计日志：仅站点所有者可读，事后溯源谁在何时做了什么 */}
+                   <Suspense fallback={null}>
+                   <AuditDialog
+                       open={openAudit}
+                       onClose={() => setOpenAudit(false)}
+                       client={api as unknown as NavigationClient}
+                       retentionDays={Number(configs[RETENTION_DAYS_KEY]) || undefined}
+                   />
+                   </Suspense>
 
-                {/* 回收站：还原 / 彻底删除被软删除的站点、分组 */}
-                <Suspense fallback={null}>
-                <RecycleBinDialog
-                    open={openRecycle}
-                    onClose={() => setOpenRecycle(false)}
-                    client={api as unknown as NavigationClient}
-                    retentionDays={Number(configs[RETENTION_DAYS_KEY]) || undefined}
-                    onChanged={() => void fetchData({ silent: true })}
-                    onNotify={(msg, severity) => notify(msg, severity || "info")}
-                />
-                </Suspense>
+                   {/* 回收站：还原 / 彻底删除被软删除的站点、分组 */}
+                   <Suspense fallback={null}>
+                   <RecycleBinDialog
+                       open={openRecycle}
+                       onClose={() => setOpenRecycle(false)}
+                       client={api as unknown as NavigationClient}
+                       retentionDays={Number(configs[RETENTION_DAYS_KEY]) || undefined}
+                       onChanged={() => void fetchData({ silent: true })}
+                       onNotify={(msg, severity) => notify(msg, severity || "info")}
+                   />
+                   </Suspense>
 
-                {/* 删除分组：二次确认 + 导出提示 */}
-                <ConfirmDialog
-                    open={pendingGroupDelete !== null}
-                    title='删除分组'
-                    danger
-                    description={
-                        <span>
-                            将删除该分组及其下所有网站（先进入回收站，可在回收站恢复）。建议先导出备份。
-                        </span>
-                    }
-                    // 影响面写实数：删的是哪一组、连带多少个网站，别让用户自己数
-                    impact={{
-                        object: "分组及组内网站",
-                        count:
-                            (groups.find(g => g.id === pendingGroupDelete)?.sites.length ?? 0) + 1,
-                        undoable: true,
-                    }}
-                    confirmText='删除'
-                    onClose={() => setPendingGroupDelete(null)}
-                    onConfirm={() => {
-                        const id = pendingGroupDelete;
-                        setPendingGroupDelete(null);
-                        if (id !== null) void doGroupDelete(id);
-                    }}
-                />
+                   {/* 删除分组：二次确认 + 导出提示 */}
+                   <ConfirmDialog
+                       open={pendingGroupDelete !== null}
+                       title='删除分组'
+                       danger
+                       description={
+                           <span>
+                               将删除该分组及其下所有网站（先进入回收站，可在回收站恢复）。建议先导出备份。
+                           </span>
+                       }
+                       // 影响面写实数：删的是哪一组、连带多少个网站，别让用户自己数
+                       impact={{
+                           object: "分组及组内网站",
+                           count:
+                               (groups.find(g => g.id === pendingGroupDelete)?.sites.length ?? 0) + 1,
+                           undoable: true,
+                       }}
+                       confirmText='删除'
+                       onClose={() => setPendingGroupDelete(null)}
+                       onConfirm={() => {
+                           const id = pendingGroupDelete;
+                           setPendingGroupDelete(null);
+                           if (id !== null) void doGroupDelete(id);
+                       }}
+                   />
 
-                </Container>
+                   </Container>
 
-                {/* 手机端底部导航：搜索 / 分组 / 新增 / 更多 */}
-                <OverlayHost
-                    mobile={{
-                        onSearch: () => {
-                            searchInputRef.current?.focus();
-                            window.scrollTo({ top: 0, behavior: "smooth" });
-                        },
-                        onGroups: event => {
-                            setMobileGroupsAnchor(event.currentTarget);
-                            setGroupsAnchorFromTop(false);
-                        },
-                        // 和顶栏主按钮同一个动作：默认新增网站，没分组时才去建分组
-                        onAdd: handleQuickAdd,
-                        onMore: event =>
-                            handleMenuOpen(event as React.MouseEvent<HTMLButtonElement>),
-                        onExitViewport: handleExitMobileViewport,
-                        onToggleStar: () => setStarFilter(!starFilter),
-                        starActive: starFilter,
-                        badge: displayedGroups.length,
-                        groupsAnchor: mobileGroupsAnchor,
-                        groupsPlacement: groupsAnchorFromTop ? "top" : "bottom",
-                        onCloseGroups: () => setMobileGroupsAnchor(null),
-                        groups: displayedGroups,
-                        onJumpGroup: jumpToGroup,
-                        activeGroupId: activeGroupId,
-                    }}
-                    commandPalette={{
-                        open: commandOpen,
-                        onClose: () => setCommandOpen(false),
-                        commands: commands,
-                    }}
-                    bookmarkImport={{
-                        open: bookmarkOpen,
-                        onClose: () => setBookmarkOpen(false),
-                        onImport: importBookmarks,
-                        groups: groups,
-                    }}
-                    bulkBar={{
-                        visible: multiSelect && sortMode === SortMode.None,
-                        count: selectedIds.length,
-                        groups: groups,
-                        allTags: allTags,
-                        onStar: bulkStar,
-                        onTag: bulkTag,
-                        onMove: bulkMove,
-                        onDelete: () => {
-                            if (selectedIds.length === 0) return;
-                            setBulkDeleteOpen(true);
-                        },
-                        onFinish: exitMultiSelect,
-                        onExit: exitMultiSelect,
-                    }}
-                    dupPrompt={dupPrompt}
-                    onDupConfirm={() => {
-                        const run = dupPrompt?.run;
-                        setDupPrompt(null);
-                        if (run) void run();
-                    }}
-                    onDupCancel={() => setDupPrompt(null)}
-                    onJumpToSite={jumpToSite}
-                    bulkDelete={{
-                        open: bulkDeleteOpen,
-                        count: selectedIds.length,
-                        onConfirm: bulkDelete,
-                        onClose: () => setBulkDeleteOpen(false),
-                    }}
-                    aiSuggest={{
-                        open: aiSuggestOpen,
-                        onClose: () => setAiSuggestOpen(false),
-                        ai,
-                        sites: aiSuggestSites,
-                        groups: groups.map(g => g.name),
-                        allTags,
-                        onApply: applyAiTagSuggestions,
-                    }}
-                    aiAssistant={{
-                        open: openAiAssistant,
-                        onClose: () => setOpenAiAssistant(false),
-                        // 只传读写配置那两个方法：AI 弹窗不该摸到别的 API
-                        api: {
-                            getConfigs: () => api.getConfigs(),
-                            setConfigs: (configs: Record<string, string>) => api.setConfigs(configs),
-                        },
-                        ai,
-                        onSaved: () => void ai.refresh(),
-                        statusText: aiStatusText,
-                    }}
-                    tagManager={{
-                        open: tagManagerOpen,
-                        tags: allTags,
-                        counts: tagCounts,
-                        onDeleteTag: deleteTagWithUndo,
-                        onRenameTag: renameTagWithUndo,
-                        onMergeTags: (sources, target) => mergeTagsWithUndo(sources, target),
-                        onAiSuggest: () => setAiSuggestOpen(true),
-                        onClose: () => setTagManagerOpen(false),
-                    }}
-                />
-            </Box>
-        </ThemeProvider>
-            </AiContext.Provider>
-         </NotifyContext.Provider>
+                   {/* 手机端底部导航：搜索 / 分组 / 新增 / 更多 */}
+                   <OverlayHost
+                       mobile={{
+                           onSearch: () => {
+                               searchInputRef.current?.focus();
+                               window.scrollTo({ top: 0, behavior: "smooth" });
+                           },
+                           onGroups: event => {
+                               setMobileGroupsAnchor(event.currentTarget);
+                               setGroupsAnchorFromTop(false);
+                           },
+                           // 和顶栏主按钮同一个动作：默认新增网站，没分组时才去建分组
+                           onAdd: handleQuickAdd,
+                           onMore: event =>
+                               handleMenuOpen(event as React.MouseEvent<HTMLButtonElement>),
+                           onExitViewport: handleExitMobileViewport,
+                           onToggleStar: () => setStarFilter(!starFilter),
+                           starActive: starFilter,
+                           badge: displayedGroups.length,
+                           groupsAnchor: mobileGroupsAnchor,
+                           groupsPlacement: groupsAnchorFromTop ? "top" : "bottom",
+                           onCloseGroups: () => setMobileGroupsAnchor(null),
+                           groups: displayedGroups,
+                           onJumpGroup: jumpToGroup,
+                           activeGroupId: activeGroupId,
+                       }}
+                       commandPalette={{
+                           open: commandOpen,
+                           onClose: () => setCommandOpen(false),
+                           commands: commands,
+                       }}
+                       bookmarkImport={{
+                           open: bookmarkOpen,
+                           onClose: () => setBookmarkOpen(false),
+                           onImport: importBookmarks,
+                           groups: groups,
+                       }}
+                       bulkBar={{
+                           visible: multiSelect && sortMode === SortMode.None,
+                           count: selectedIds.length,
+                           groups: groups,
+                           allTags: allTags,
+                           onStar: bulkStar,
+                           onTag: bulkTag,
+                           onMove: bulkMove,
+                           onDelete: () => {
+                               if (selectedIds.length === 0) return;
+                               setBulkDeleteOpen(true);
+                           },
+                           onFinish: exitMultiSelect,
+                           onExit: exitMultiSelect,
+                       }}
+                       dupPrompt={dupPrompt}
+                       onDupConfirm={() => {
+                           const run = dupPrompt?.run;
+                           setDupPrompt(null);
+                           if (run) void run();
+                       }}
+                       onDupCancel={() => setDupPrompt(null)}
+                       onJumpToSite={jumpToSite}
+                       bulkDelete={{
+                           open: bulkDeleteOpen,
+                           count: selectedIds.length,
+                           onConfirm: bulkDelete,
+                           onClose: () => setBulkDeleteOpen(false),
+                       }}
+                       aiSuggest={{
+                           open: aiSuggestOpen,
+                           onClose: () => setAiSuggestOpen(false),
+                           ai,
+                           sites: aiSuggestSites,
+                           groups: groups.map(g => g.name),
+                           allTags,
+                           onApply: applyAiTagSuggestions,
+                       }}
+                       aiAssistant={{
+                           open: openAiAssistant,
+                           onClose: () => setOpenAiAssistant(false),
+                           // 只传读写配置那两个方法：AI 弹窗不该摸到别的 API
+                           api: {
+                               getConfigs: () => api.getConfigs(),
+                               setConfigs: (configs: Record<string, string>) => api.setConfigs(configs),
+                           },
+                           ai,
+                           onSaved: () => void ai.refresh(),
+                           statusText: aiStatusText,
+                       }}
+                       tagManager={{
+                           open: tagManagerOpen,
+                           tags: allTags,
+                           counts: tagCounts,
+                           onDeleteTag: deleteTagWithUndo,
+                           onRenameTag: renameTagWithUndo,
+                           onMergeTags: (sources, target) => mergeTagsWithUndo(sources, target),
+                           onAiSuggest: () => setAiSuggestOpen(true),
+                           onClose: () => setTagManagerOpen(false),
+                       }}
+                   />
+               </Box>
+           </ThemeProvider>
+               </AiContext.Provider>
+            </NotifyContext.Provider>
         </AppConfigProvider>
     );
 }

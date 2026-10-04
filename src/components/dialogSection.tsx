@@ -30,16 +30,21 @@ export function Section({
                         flex: "none",
                     }}
                 />
-                <Typography variant='subtitle2' fontWeight='600'>
+                <Typography variant='subtitle2' sx={{
+                    fontWeight: '600'
+                }}>
                     {title}
                 </Typography>
             </Box>
             {hint ? (
                 <Typography
                     variant='caption'
-                    color='text.secondary'
-                    sx={{ display: "block", mt: 0.25, ml: "11px" }}
-                >
+                    sx={{
+                        color: 'text.secondary',
+                        display: "block",
+                        mt: 0.25,
+                        ml: "11px"
+                    }}>
                     {hint}
                 </Typography>
             ) : null}
@@ -81,9 +86,12 @@ export function SwitchRow({
             {caption ? (
                 <Typography
                     variant='caption'
-                    color='text.secondary'
-                    sx={{ display: "block", ml: "42px", mt: -0.25 }}
-                >
+                    sx={{
+                        color: 'text.secondary',
+                        display: "block",
+                        ml: "42px",
+                        mt: -0.25
+                    }}>
                     {caption}
                 </Typography>
             ) : null}

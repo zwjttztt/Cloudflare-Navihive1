@@ -28,13 +28,15 @@ export default function EmptyArt({ variant = "empty", size = 96 }: EmptyArtProps
         <Box
             className='nav-empty-art'
             component='svg'
-            width={size}
-            height={size * 0.75}
             viewBox='0 0 128 96'
             role='img'
             aria-hidden
-            sx={{ display: "block", opacity: 0.9 }}
-        >
+            sx={{
+                width: size,
+                height: size * 0.75,
+                display: "block",
+                opacity: 0.9
+            }}>
             {/* 统一的底衬：一圈很淡的光晕 */}
             <ellipse
                 cx='64'

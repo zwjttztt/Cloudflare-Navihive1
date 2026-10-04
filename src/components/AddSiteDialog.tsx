@@ -69,314 +69,328 @@ export default function AddSiteDialog(props: AddSiteDialogProps) {
 
     return (
         <>
-                    {/* 新增站点对话框：字段顺序与「网站设置」对齐
-                        （名称 → 链接 → 图标 → 描述 → 备注 → 分隔线 → 登录凭据），宽度也统一成 600px */}
-                    <Dialog open={open} onClose={onClose} maxWidth='sm' fullWidth>
-                        <DialogTitle
+            {/* 新增站点对话框：字段顺序与「网站设置」对齐
+                （名称 → 链接 → 图标 → 描述 → 备注 → 分隔线 → 登录凭据），宽度也统一成 600px */}
+            <Dialog open={open} onClose={onClose} maxWidth='sm' fullWidth>
+                <DialogTitle
+                    sx={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                        gap: 1,
+                        px: 3,
+                        pt: 2,
+                        pb: 1,
+                    }}
+                >
+                    <Typography variant='h6' component='div' sx={{
+                        fontWeight: '600'
+                    }}>
+                        新增站点
+                    </Typography>
+                    <IconButton
+                        color='inherit'
+                        onClick={onClose}
+                        aria-label='关闭'
+                        size='small'
+                    >
+                        <CloseIcon />
+                    </IconButton>
+                </DialogTitle>
+
+                <Divider />
+
+                <DialogContent
+                    sx={{
+                        pt: 2,
+                        pb: 1,
+                        // 整体收紧，避免出现上下滚动
+                        "& .MuiInputBase-input": { fontSize: 14 },
+                        "& .MuiInputLabel-root": { fontSize: 14 },
+                        "& .MuiFormHelperText-root": { fontSize: 12 },
+                    }}
+                >
+                    <Stack spacing={1.5}>
+                        {/* 站点名称 + 站点 URL：最核心的两项并排，一眼就能填完 */}
+                        <Box
                             sx={{
                                 display: "flex",
-                                justifyContent: "space-between",
-                                alignItems: "center",
-                                gap: 1,
-                                px: 3,
-                                pt: 2,
-                                pb: 1,
+                                gap: 1.5,
+                                flexDirection: { xs: "column", sm: "row" },
                             }}
                         >
-                            <Typography variant='h6' component='div' fontWeight='600'>
-                                新增站点
-                            </Typography>
-                            <IconButton
-                                color='inherit'
-                                onClick={onClose}
-                                aria-label='关闭'
+                        <Box sx={{ flex: 1 }}>
+                            <TextField
+                                autoFocus
+                                id='site-name'
+                                name='name'
+                                label='站点名称'
+                                required
+                                fullWidth
                                 size='small'
-                            >
-                                <CloseIcon />
-                            </IconButton>
-                        </DialogTitle>
-
-                        <Divider />
-
-                        <DialogContent
-                            sx={{
-                                pt: 2,
-                                pb: 1,
-                                // 整体收紧，避免出现上下滚动
-                                "& .MuiInputBase-input": { fontSize: 14 },
-                                "& .MuiInputLabel-root": { fontSize: 14 },
-                                "& .MuiFormHelperText-root": { fontSize: 12 },
-                            }}
-                        >
-                            <Stack spacing={1.5}>
-                                {/* 站点名称 + 站点 URL：最核心的两项并排，一眼就能填完 */}
-                                <Box
-                                    sx={{
-                                        display: "flex",
-                                        gap: 1.5,
-                                        flexDirection: { xs: "column", sm: "row" },
-                                    }}
-                                >
-                                <Box sx={{ flex: 1 }}>
-                                    <TextField
-                                        autoFocus
-                                        id='site-name'
-                                        name='name'
-                                        label='站点名称'
-                                        required
-                                        fullWidth
-                                        size='small'
-                                        type='text'
-                                        variant='outlined'
-                                        placeholder='给它起个名字'
-                                        value={site.name}
-                                        onChange={onInputChange}
-                                    />
-                                </Box>
-                                    <Box sx={{ flex: 1 }}>
-                                        <TextField
-                                            id='site-url'
-                                            name='url'
-                                            label='站点URL'
-                                            required
-                                            fullWidth
-                                            size='small'
-                                            type='url'
-                                            variant='outlined'
-                                            placeholder='https://example.com'
-                                            value={site.url}
-                                            onChange={onInputChange}
-                                    InputProps={{
-                                        endAdornment: (
-                                            <InputAdornment position='end'>
-                                                {ai?.enabled ? (
-                                                    <Tooltip
-                                                        title={
-                                                            ai.ready
-                                                                ? "让 AI 根据链接补全名称与简介（会先把链接发给模型）"
-                                                                : (ai.reason ?? "AI 助手不可用")
-                                                        }
-                                                    >
-                                                        <span>
-                                                            <IconButton
-                                                                size='small'
-                                                                edge='end'
-                                                                aria-label='AI 补全名称与简介'
-                                                                disabled={
-                                                                    !ai.ready ||
-                                                                    aiBusy ||
-                                                                    !site.url
-                                                                }
-                                                                onClick={() =>
-                                                                    void onAiComplete()
-                                                                }
-                                                            >
-                                                                {aiBusy ? (
-                                                                    <CircularProgress
-                                                                        size={16}
-                                                                    />
-                                                                ) : (
-                                                                    <AutoAwesomeIcon fontSize='small' />
-                                                                )}
-                                                            </IconButton>
-                                                        </span>
-                                                    </Tooltip>
-                                                ) : null}
-                                            </InputAdornment>
-                                        ),
-                                    }}
-                                        />
-                                    </Box>
-                                </Box>
-
-                                {aiMessage ? (
-                                    <Typography
-                                        variant='caption'
-                                        color={aiMessageError ? "error" : "text.secondary"}
-                                        sx={{ display: "block", mt: -1 }}
-                                    >
-                                        {aiMessage}
-                                    </Typography>
-                                ) : null}
-
-                                {/* 图标 URL：紧跟站点 URL（它由链接推导而来），魔棒按钮放进输入框内，不再悬在外面 */}
+                                type='text'
+                                variant='outlined'
+                                placeholder='给它起个名字'
+                                value={site.name}
+                                onChange={onInputChange}
+                            />
+                        </Box>
+                            <Box sx={{ flex: 1 }}>
                                 <TextField
-                                    id='site-icon'
-                                    name='icon'
-                                    label='图标URL'
-                                    InputLabelProps={{ shrink: true }}
+                                    id='site-url'
+                                    name='url'
+                                    label='站点URL'
+                                    required
                                     fullWidth
                                     size='small'
                                     type='url'
                                     variant='outlined'
-                                    placeholder='填好站点URL后自动生成'
-                                    value={site.icon}
+                                    placeholder='https://example.com'
+                                    value={site.url}
                                     onChange={onInputChange}
-                                    InputProps={{
-                                        endAdornment: (
-                                            <InputAdornment position='end'>
-                                                <Tooltip title='根据网站链接一键获取图标URL'>
+                            slotProps={{
+                                input: {
+                                    endAdornment: (
+                                        <InputAdornment position='end'>
+                                            {ai?.enabled ? (
+                                                <Tooltip
+                                                    title={
+                                                        ai.ready
+                                                            ? "让 AI 根据链接补全名称与简介（会先把链接发给模型）"
+                                                            : (ai.reason ?? "AI 助手不可用")
+                                                    }
+                                                >
                                                     <span>
                                                         <IconButton
                                                             size='small'
                                                             edge='end'
-                                                            onClick={onFetchIcon}
-                                                            disabled={!site.url}
-                                                            aria-label='根据网站链接获取图标URL'
+                                                            aria-label='AI 补全名称与简介'
+                                                            disabled={
+                                                                !ai.ready ||
+                                                                aiBusy ||
+                                                                !site.url
+                                                            }
+                                                            onClick={() =>
+                                                                void onAiComplete()
+                                                            }
                                                         >
-                                                            <AutoFixHighIcon fontSize='small' />
+                                                            {aiBusy ? (
+                                                                <CircularProgress
+                                                                    size={16}
+                                                                />
+                                                            ) : (
+                                                                <AutoAwesomeIcon fontSize='small' />
+                                                            )}
                                                         </IconButton>
                                                     </span>
                                                 </Tooltip>
-                                            </InputAdornment>
-                                        ),
-                                    }}
+                                            ) : null}
+                                        </InputAdornment>
+                                    ),
+                                }
+                            }}
                                 />
+                            </Box>
+                        </Box>
 
-                                {/* 站点描述 + 备注：两块说明文字挨在一起 */}
-                                <TextField
-                                    id='site-description'
-                                    name='description'
-                                    label='站点描述'
-                                    fullWidth
-                                    size='small'
-                                    type='text'
-                                    variant='outlined'
-                                    placeholder='一句话说明这个网站是干什么的'
-                                    value={site.description}
-                                    onChange={onInputChange}
-                                />
-
-                                <TextField
-                                    id='site-notes'
-                                    name='notes'
-                                    label='备注'
-                                    fullWidth
-                                    size='small'
-                                    multiline
-                                    rows={2}
-                                    variant='outlined'
-                                    placeholder='可选的私人备注'
-                                    value={site.notes}
-                                    onChange={onInputChange}
-                                />
-
-                                <Divider />
-
-                                {/* 登录凭据：可留空，所以放在最后 */}
-                                <Box>
-                                    <Box
-                                        sx={{
-                                            display: "flex",
-                                            alignItems: "baseline",
-                                            justifyContent: "space-between",
-                                            gap: 1,
-                                            flexWrap: "wrap",
-                                            mb: 1,
-                                        }}
-                                    >
-                                        <Typography variant='subtitle2' fontWeight='600'>
-                                            登录凭据
-                                        </Typography>
-                                        <Typography
-                                            variant='caption'
-                                            color='text.secondary'
-                                            sx={{ textAlign: "right", flex: "1 1 auto" }}
-                                        >
-                                            可留空，保存后能在卡片上一键复制。
-                                        </Typography>
-                                    </Box>
-                                    <Box
-                                        sx={{
-                                            display: "flex",
-                                            gap: 1.5,
-                                            flexDirection: { xs: "column", sm: "row" },
-                                        }}
-                                    >
-                                        <Box sx={{ flex: 1 }}>
-                                            <TextField
-                                                id='site-username'
-                                                // name 不叫 username：浏览器靠「名字 + 类型」
-                                                // 猜这是登录表单，叫了它就拿导航站自己的
-                                                // 登录凭据来填这里
-                                                name='site-account'
-                                                label='网站账号'
-                                                fullWidth
-                                                size='small'
-                                                type='text'
-                                                variant='outlined'
-                                                placeholder='登录用户名 / 邮箱（可留空）'
-                                                value={site.username || ""}
-                                                onChange={onInputChange}
-                                                autoComplete='off'
-                                                inputProps={{ ...SECRET_IGNORE_ATTRS }}
-                                            />
-                                        </Box>
-                                        <Box sx={{ flex: 1 }}>
-                                            <TextField
-                                                id='site-password'
-                                                // 不叫 password、更不写 autoComplete="new-password"
-                                                // —— 后者等于邀请浏览器「存一下？」，原先
-                                                // 「添加卡片弹保存密码」就是它招来的。
-                                                // 真正的办法是让浏览器认不出这是密码字段：
-                                                // type 换 text + CSS 遮蔽（utils/secretInput.ts）
-                                                name='site-secret'
-                                                label='网站密码'
-                                                fullWidth
-                                                size='small'
-                                                type={secretInputType(showPassword)}
-                                                sx={secretInputSx(showPassword)}
-                                                variant='outlined'
-                                                placeholder='登录密码（可留空）'
-                                                value={site.password || ""}
-                                                onChange={onInputChange}
-                                                autoComplete='off'
-                                                inputProps={{ ...SECRET_IGNORE_ATTRS }}
-                                                InputProps={{
-                                                    endAdornment: (
-                                                        <InputAdornment position='end'>
-                                                            <IconButton
-                                                                size='small'
-                                                                edge='end'
-                                                                onClick={() =>
-                                                                    onTogglePassword(prev => !prev)
-                                                                }
-                                                                aria-label={
-                                                                    showPassword
-                                                                        ? "隐藏密码"
-                                                                        : "显示密码"
-                                                                }
-                                                            >
-                                                                {showPassword ? (
-                                                                    <VisibilityOffIcon fontSize='small' />
-                                                                ) : (
-                                                                    <VisibilityIcon fontSize='small' />
-                                                                )}
-                                                            </IconButton>
-                                                        </InputAdornment>
-                                                    ),
-                                                }}
-                                            />
-                                        </Box>
-                                    </Box>
-                                </Box>
-                            </Stack>
-                        </DialogContent>
-
-                        <DialogActions sx={{ px: 3, pb: 2.5, pt: 1, gap: 1.5 }}>
-                            <Button onClick={onClose} variant='outlined'>
-                                取消
-                            </Button>
-                            <Button
-                                onClick={onCreate}
-                                variant='contained'
-                                color='primary'
-                                disabled={creating}
+                        {aiMessage ? (
+                            <Typography
+                                variant='caption'
+                                color={aiMessageError ? "error" : "text.secondary"}
+                                sx={{ display: "block", mt: -1 }}
                             >
-                                {creating ? "创建中…" : "创建"}
-                            </Button>
-                        </DialogActions>
-                    </Dialog>
+                                {aiMessage}
+                            </Typography>
+                        ) : null}
+
+                        {/* 图标 URL：紧跟站点 URL（它由链接推导而来），魔棒按钮放进输入框内，不再悬在外面 */}
+                        <TextField
+                            id='site-icon'
+                            name='icon'
+                            label='图标URL'
+                            fullWidth
+                            size='small'
+                            type='url'
+                            variant='outlined'
+                            placeholder='填好站点URL后自动生成'
+                            value={site.icon}
+                            onChange={onInputChange}
+                            slotProps={{
+                                input: {
+                                    endAdornment: (
+                                        <InputAdornment position='end'>
+                                            <Tooltip title='根据网站链接一键获取图标URL'>
+                                                <span>
+                                                    <IconButton
+                                                        size='small'
+                                                        edge='end'
+                                                        onClick={onFetchIcon}
+                                                        disabled={!site.url}
+                                                        aria-label='根据网站链接获取图标URL'
+                                                    >
+                                                        <AutoFixHighIcon fontSize='small' />
+                                                    </IconButton>
+                                                </span>
+                                            </Tooltip>
+                                        </InputAdornment>
+                                    ),
+                                },
+
+                                inputLabel: { shrink: true }
+                            }} />
+
+                        {/* 站点描述 + 备注：两块说明文字挨在一起 */}
+                        <TextField
+                            id='site-description'
+                            name='description'
+                            label='站点描述'
+                            fullWidth
+                            size='small'
+                            type='text'
+                            variant='outlined'
+                            placeholder='一句话说明这个网站是干什么的'
+                            value={site.description}
+                            onChange={onInputChange}
+                        />
+
+                        <TextField
+                            id='site-notes'
+                            name='notes'
+                            label='备注'
+                            fullWidth
+                            size='small'
+                            multiline
+                            rows={2}
+                            variant='outlined'
+                            placeholder='可选的私人备注'
+                            value={site.notes}
+                            onChange={onInputChange}
+                        />
+
+                        <Divider />
+
+                        {/* 登录凭据：可留空，所以放在最后 */}
+                        <Box>
+                            <Box
+                                sx={{
+                                    display: "flex",
+                                    alignItems: "baseline",
+                                    justifyContent: "space-between",
+                                    gap: 1,
+                                    flexWrap: "wrap",
+                                    mb: 1,
+                                }}
+                            >
+                                <Typography variant='subtitle2' sx={{
+                                    fontWeight: '600'
+                                }}>
+                                    登录凭据
+                                </Typography>
+                                <Typography
+                                    variant='caption'
+                                    sx={{
+                                        color: 'text.secondary',
+                                        textAlign: "right",
+                                        flex: "1 1 auto"
+                                    }}>
+                                    可留空，保存后能在卡片上一键复制。
+                                </Typography>
+                            </Box>
+                            <Box
+                                sx={{
+                                    display: "flex",
+                                    gap: 1.5,
+                                    flexDirection: { xs: "column", sm: "row" },
+                                }}
+                            >
+                                <Box sx={{ flex: 1 }}>
+                                    <TextField
+                                        id='site-username'
+                                        // name 不叫 username：浏览器靠「名字 + 类型」
+                                        // 猜这是登录表单，叫了它就拿导航站自己的
+                                        // 登录凭据来填这里
+                                        name='site-account'
+                                        label='网站账号'
+                                        fullWidth
+                                        size='small'
+                                        type='text'
+                                        variant='outlined'
+                                        placeholder='登录用户名 / 邮箱（可留空）'
+                                        value={site.username || ""}
+                                        onChange={onInputChange}
+                                        autoComplete='off'
+                                        slotProps={{
+                                            htmlInput: { ...SECRET_IGNORE_ATTRS }
+                                        }}
+                                    />
+                                </Box>
+                                <Box sx={{ flex: 1 }}>
+                                    <TextField
+                                        id='site-password'
+                                        // 不叫 password、更不写 autoComplete="new-password"
+                                        // —— 后者等于邀请浏览器「存一下？」，原先
+                                        // 「添加卡片弹保存密码」就是它招来的。
+                                        // 真正的办法是让浏览器认不出这是密码字段：
+                                        // type 换 text + CSS 遮蔽（utils/secretInput.ts）
+                                        name='site-secret'
+                                        label='网站密码'
+                                        fullWidth
+                                        size='small'
+                                        type={secretInputType(showPassword)}
+                                        sx={secretInputSx(showPassword)}
+                                        variant='outlined'
+                                        placeholder='登录密码（可留空）'
+                                        value={site.password || ""}
+                                        onChange={onInputChange}
+                                        autoComplete='off'
+                                        slotProps={{
+                                            input: {
+                                                endAdornment: (
+                                                    <InputAdornment position='end'>
+                                                        <IconButton
+                                                            size='small'
+                                                            edge='end'
+                                                            onClick={() =>
+                                                                onTogglePassword(prev => !prev)
+                                                            }
+                                                            aria-label={
+                                                                showPassword
+                                                                    ? "隐藏密码"
+                                                                    : "显示密码"
+                                                            }
+                                                        >
+                                                            {showPassword ? (
+                                                                <VisibilityOffIcon fontSize='small' />
+                                                            ) : (
+                                                                <VisibilityIcon fontSize='small' />
+                                                            )}
+                                                        </IconButton>
+                                                    </InputAdornment>
+                                                ),
+                                            },
+
+                                            htmlInput: { ...SECRET_IGNORE_ATTRS }
+                                        }} />
+                                </Box>
+                            </Box>
+                        </Box>
+                    </Stack>
+                </DialogContent>
+
+                <DialogActions sx={{ px: 3, pb: 2.5, pt: 1, gap: 1.5 }}>
+                    <Button onClick={onClose} variant='outlined'>
+                        取消
+                    </Button>
+                    <Button
+                        onClick={onCreate}
+                        variant='contained'
+                        color='primary'
+                        disabled={creating}
+                    >
+                        {creating ? "创建中…" : "创建"}
+                    </Button>
+                </DialogActions>
+            </Dialog>
         </>
     );
 }

@@ -389,13 +389,16 @@ const GroupCard: React.FC<GroupCardProps> = ({
                             ))}
                             {group.sites.length === 0 && (
                                 <Box
-                                    width='100%'
-                                    display='flex'
-                                    justifyContent='center'
-                                    alignItems='center'
-                                    minHeight={72}
-                                >
-                                    <Typography variant='body2' color='text.secondary'>
+                                    sx={{
+                                        width: '100%',
+                                        display: 'flex',
+                                        justifyContent: 'center',
+                                        alignItems: 'center',
+                                        minHeight: 72
+                                    }}>
+                                    <Typography variant='body2' sx={{
+                                        color: 'text.secondary'
+                                    }}>
                                         空分组，可将其他分组的卡片拖到这里
                                     </Typography>
                                 </Box>
@@ -509,7 +512,9 @@ const GroupCard: React.FC<GroupCardProps> = ({
                     <Typography variant='body2'>
                         {searchQuery ? "本组没有匹配的网站" : "这个分组还没有卡片"}
                     </Typography>
-                    <Typography variant='caption' color='text.secondary'>
+                    <Typography variant='caption' sx={{
+                        color: 'text.secondary'
+                    }}>
                         {searchQuery
                             ? "试试换个关键词，或清空搜索框"
                             : canManageGroup
@@ -643,25 +648,26 @@ const GroupCard: React.FC<GroupCardProps> = ({
                 },
             }}
         >
-            <Box 
-                display='flex' 
-                flexDirection={{ xs: 'column', sm: 'row' }}
-                justifyContent='space-between' 
-                alignItems={{ xs: 'flex-start', sm: 'center' }} 
-                mb={isCollapsed ? 0 : 2.5}
-                gap={1}
+            <Box
                 className='nav-sticky'
                 sx={{
+                    display: 'flex',
+                    flexDirection: { xs: 'column', sm: 'row' },
+                    justifyContent: 'space-between',
+                    alignItems: { xs: 'flex-start', sm: 'center' },
+                    mb: isCollapsed ? 0 : 2.5,
+                    gap: 1,
                     py: 1,
                     px: 1,
                     mx: -1,
+
                     // 与分组面板同色：这里只负责「卡片滑过时把背后糊掉」，
                     // 不再额外垫一层比面板更白的底色
                     bgcolor: "transparent",
+
                     backdropFilter: "blur(var(--blur-sm))",
-                    WebkitBackdropFilter: "blur(var(--blur-sm))",
-                }}
-            >
+                    WebkitBackdropFilter: "blur(var(--blur-sm))"
+                }}>
                 <Box
                     sx={{
                         display: "flex",
@@ -701,17 +707,20 @@ const GroupCard: React.FC<GroupCardProps> = ({
                     <Typography
                         variant='h5'
                         component='h2'
-                        fontWeight='600'
-                        color='text.primary'
-                        sx={{ mb: { xs: 1, sm: 0 } }}
-                    >
+                        sx={{
+                            fontWeight: '600',
+                            color: 'text.primary',
+                            mb: { xs: 1, sm: 0 }
+                        }}>
                         {group.name}
                     </Typography>
                     <Typography
                         variant='body2'
-                        color='text.secondary'
-                        sx={{ ml: 0.5, mb: { xs: 1, sm: 0 } }}
-                    >
+                        sx={{
+                            color: 'text.secondary',
+                            ml: 0.5,
+                            mb: { xs: 1, sm: 0 }
+                        }}>
                         ({group.sites.length})
                     </Typography>
                 </Box>
@@ -719,9 +728,11 @@ const GroupCard: React.FC<GroupCardProps> = ({
                 {globalSiteSort && (
                     <Typography
                         variant='caption'
-                        color='text.secondary'
-                        sx={{ display: { xs: 'none', sm: 'inline' }, alignSelf: 'center' }}
-                    >
+                        sx={{
+                            color: 'text.secondary',
+                            display: { xs: 'none', sm: 'inline' },
+                            alignSelf: 'center'
+                        }}>
                         可拖拽卡片到其他分组
                     </Typography>
                 )}

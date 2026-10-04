@@ -20,7 +20,7 @@ import {
 } from "@mui/material";
 import StarIcon from "@mui/icons-material/Star";
 import StarBorderIcon from "@mui/icons-material/StarBorder";
-import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
+import DeleteOutlineIcon from "@mui/icons-material/DeleteOutlined";
 import LabelIcon from "@mui/icons-material/Label";
 import DriveFileMoveIcon from "@mui/icons-material/DriveFileMove";
 import CloseIcon from "@mui/icons-material/Close";
@@ -155,14 +155,16 @@ export default function BulkActionBar({
                 {/* 勾选数变化要念出来：读屏用户看不到「哪几张被勾上了」 */}
                 <Typography
                     variant='body2'
-                    fontWeight={700}
                     component='div'
                     role='status'
                     aria-live='polite'
                     aria-atomic='true'
                     className='nav-bulk-count'
-                    sx={{ whiteSpace: "nowrap", px: 0.5 }}
-                >
+                    sx={{
+                        fontWeight: 700,
+                        whiteSpace: "nowrap",
+                        px: 0.5
+                    }}>
                     已选 {count} 个网站
                 </Typography>
 
@@ -404,10 +406,11 @@ export default function BulkActionBar({
                         )}
                         <Typography
                             variant='caption'
-                            color='text.secondary'
-                            display='block'
-                            sx={{ mt: 1 }}
-                        >
+                            sx={{
+                                color: 'text.secondary',
+                                display: 'block',
+                                mt: 1
+                            }}>
                             点「常用 / 推荐」里的标签会填进输入框（再点一次取消），填完还能手改；
                             也可以自己输入，逗号分隔一次加多个。
                         </Typography>

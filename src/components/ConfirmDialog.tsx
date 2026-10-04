@@ -171,7 +171,12 @@ export default function ConfirmDialog({
             </DialogTitle>
 
             <DialogContent sx={dialogContentSx}>
-                <Typography variant='body2' color='text.secondary' sx={{ lineHeight: 1.7 }}>
+                <Typography
+                    variant='body2'
+                    sx={{
+                        color: 'text.secondary',
+                        lineHeight: 1.7
+                    }}>
                     {description}
                 </Typography>
                 {/* 影响面：对象 + 数量 + 可撤销性，一行说清 */}

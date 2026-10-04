@@ -130,7 +130,12 @@ const EditGroupDialog: React.FC<EditGroupDialogProps> = ({
 
                 {onColorChange && (
                     <Box sx={{ mb: 1 }}>
-                        <Typography variant='body2' color='text.secondary' sx={{ mb: 1 }}>
+                        <Typography
+                            variant='body2'
+                            sx={{
+                                color: 'text.secondary',
+                                mb: 1
+                            }}>
                             分组颜色
                         </Typography>
                         <Box sx={{ display: "flex", gap: 1, flexWrap: "wrap" }}>
@@ -235,8 +240,10 @@ const EditGroupDialog: React.FC<EditGroupDialogProps> = ({
                             onChange={e => setDeleteConfirmText(e.target.value)}
                             placeholder={group.name}
                             error={deleteConfirmText.length > 0 && !deleteConfirmOk}
-                            inputProps={{ "aria-label": "输入分组名称确认删除" }}
                             sx={{ mt: 1, "& .MuiOutlinedInput-root": { bgcolor: "background.paper" } }}
+                            slotProps={{
+                                htmlInput: { "aria-label": "输入分组名称确认删除" }
+                            }}
                         />
                     </Alert>
                 )}

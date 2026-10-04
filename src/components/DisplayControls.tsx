@@ -220,7 +220,6 @@ export default function DisplayControls({
                 anchorEl={anchorEl}
                 open={panelOpen}
                 onClose={() => setAnchorEl(null)}
-                MenuListProps={{ "aria-label": "显示设置", dense: true }}
                 slotProps={{
                     paper: {
                         sx: {
@@ -232,8 +231,9 @@ export default function DisplayControls({
                             },
                         },
                     },
-                }}
-            >
+
+                    list: { "aria-label": "显示设置", dense: true }
+                }}>
                 {/* 分区写清楚是「视图 / 密度 / 主题 / 排序」四类，
                     一眼能看出哪一项会改什么，不用先点一下猜 */}
                 <ListSubheader>视图</ListSubheader>

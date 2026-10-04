@@ -91,7 +91,7 @@ export const migrationImpl: MigrationApi = {
     migrateIfNeeded: async function (this: NavigationAPI ): Promise<void> {
         // 版本号读不到（库是空的、configs 表还没建、D1 抖动）一律按「需要迁移」处理：
         // 宁可多跑一次全量建表，也不能因为一次读失败就让站点缺表。
-        if (await this.readSchemaVersion() === SCHEMA_VERSION) {
+        if ((await this.readSchemaVersion()) === SCHEMA_VERSION) {
             this.dbReady = true;
             return;
         }

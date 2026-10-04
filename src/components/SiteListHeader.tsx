@@ -51,19 +51,20 @@ export default function SiteListHeader({
                 <Typography
                     variant="h3"
                     component="h1"
-                    fontWeight="bold"
-                    color="text.primary"
                     noWrap
                     sx={{
+                        fontWeight: "bold",
+                        color: "text.primary",
+
                         // 原来最大 3rem：站名一长就把工具行挤到换行，现在收到 32px
                         fontSize: headerCompact
                             ? { xs: "1.25rem", sm: "1.5rem", md: "1.75rem" }
                             : { xs: "1.5rem", sm: "1.75rem", md: "2rem" },
+
                         textAlign: { xs: "center", sm: "left" },
                         minWidth: 0,
-                        transition: "font-size .25s ease",
-                    }}
-                >
+                        transition: "font-size .25s ease"
+                    }}>
                     {siteName}
                 </Typography>
                 {clock}

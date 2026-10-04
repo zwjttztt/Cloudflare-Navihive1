@@ -37,7 +37,7 @@ import LinkIcon from "@mui/icons-material/Link";
 import PersonIcon from "@mui/icons-material/Person";
 import KeyIcon from "@mui/icons-material/Key";
 import EditIcon from "@mui/icons-material/Edit";
-import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
+import DeleteOutlineIcon from "@mui/icons-material/DeleteOutlined";
 import LinkOffIcon from "@mui/icons-material/LinkOff";
 import { useAppConfig } from "../context/appConfigStore";
 import { useNotify } from "../context/NotifyContext";
@@ -725,11 +725,21 @@ const SiteCard = memo(function SiteCard({
                             flexDirection: "column",
                         }}
                     >
-                        <Box position='absolute' top={8} right={8}>
+                        <Box
+                            sx={{
+                                position: 'absolute',
+                                top: 8,
+                                right: 8
+                            }}>
                             <DragIndicatorIcon fontSize='small' color='primary' />
                         </Box>
                         {/* 图标和名称 */}
-                        <Box display='flex' alignItems='center' mb={1}>
+                        <Box
+                            sx={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                mb: 1
+                            }}>
                             {renderAvatar()}
                             {renderTitle()}
                         </Box>
@@ -761,10 +771,11 @@ const SiteCard = memo(function SiteCard({
                             {!isCompact && (
                                 <Typography
                                     variant='caption'
-                                    color='text.secondary'
                                     noWrap
-                                    sx={{ display: "block" }}
-                                >
+                                    sx={{
+                                        color: 'text.secondary',
+                                        display: "block"
+                                    }}>
                                     <Highlighted
                                         text={site.description || site.url || ""}
                                         query={highlight}
@@ -825,7 +836,12 @@ const SiteCard = memo(function SiteCard({
                             }}
                         >
                             {/* 图标和名称 */}
-                            <Box display='flex' alignItems='center' mb={isCompact ? 0.5 : 1}>
+                            <Box
+                                sx={{
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    mb: isCompact ? 0.5 : 1
+                                }}>
                                 {renderAvatar()}
                                 {renderTitle()}
                             </Box>
@@ -885,7 +901,9 @@ const SiteCard = memo(function SiteCard({
             </MenuItem>
             <MenuItem onClick={e => handleQuickCopy(e, "链接", site.url)} disabled={!site.url}>
                 <ListItemIcon>
-                    <LinkIcon fontSize='small' />
+                    <LinkIcon sx={{
+                        fontSize: 'small'
+                    }} />
                 </ListItemIcon>
                 <ListItemText>复制链接</ListItemText>
             </MenuItem>

@@ -117,7 +117,12 @@ export default function AiSuggestDialog({
             </DialogTitle>
 
             <DialogContent sx={dialogContentSx}>
-                <Typography variant='body2' color='text.secondary' sx={{ mb: 1.5 }}>
+                <Typography
+                    variant='body2'
+                    sx={{
+                        color: 'text.secondary',
+                        mb: 1.5
+                    }}>
                     下面是模型给的建议，勾上你要的那些再应用。应用后提示条上有「撤销」。
                 </Typography>
 
@@ -154,9 +159,10 @@ export default function AiSuggestDialog({
                             </Button>
                             <Typography
                                 variant='caption'
-                                color='text.secondary'
-                                sx={{ alignSelf: "center" }}
-                            >
+                                sx={{
+                                    color: 'text.secondary',
+                                    alignSelf: "center"
+                                }}>
                                 共 {suggestions.length} 条建议
                             </Typography>
                         </Stack>
@@ -228,7 +234,9 @@ export default function AiSuggestDialog({
                                                         ) : null}
                                                     </Stack>
                                                 }
-                                                primaryTypographyProps={{ noWrap: true }}
+                                                slotProps={{
+                                                    primary: { noWrap: true }
+                                                }}
                                             />
                                         }
                                     />
@@ -238,9 +246,11 @@ export default function AiSuggestDialog({
 
                         <Typography
                             variant='caption'
-                            color='text.secondary'
-                            sx={{ display: "block", mt: 1 }}
-                        >
+                            sx={{
+                                color: 'text.secondary',
+                                display: "block",
+                                mt: 1
+                            }}>
                             建议的分组只列出来给你参考，不会自动移动卡片（挪分组比加标签难撤销得多）。
                         </Typography>
                     </>

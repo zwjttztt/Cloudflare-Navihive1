@@ -16,7 +16,7 @@ import {
 } from "@mui/material";
 import LockOutlinedIcon from "@mui/icons-material/LockOutlined";
 import UploadFileIcon from "@mui/icons-material/UploadFile";
-import PersonOutlineIcon from "@mui/icons-material/PersonOutline";
+import PersonOutlineIcon from "@mui/icons-material/PersonOutlined";
 import PersonAddAltIcon from "@mui/icons-material/PersonAddAlt";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import { readRememberedLogin } from "../utils/rememberedLogin";
@@ -347,9 +347,21 @@ const LoginForm: React.FC<LoginFormProps> = ({
             }}
         >
             {/* 品牌区：图标 + 名字一律居中，三个视图共用 */}
-            <Stack spacing={0.75} alignItems='center' sx={{ mb: 2.5, textAlign: "center" }}>
+            <Stack
+                spacing={0.75}
+                sx={{
+                    alignItems: 'center',
+                    mb: 2.5,
+                    textAlign: "center"
+                }}>
                 <BrandMark size={56} />
-                <Typography component='h1' variant='h5' fontWeight='800' letterSpacing={0.5}>
+                <Typography
+                    component='h1'
+                    variant='h5'
+                    sx={{
+                        fontWeight: '800',
+                        letterSpacing: 0.5
+                    }}>
                     {brandName}
                 </Typography>
             </Stack>
@@ -408,15 +420,17 @@ const LoginForm: React.FC<LoginFormProps> = ({
                                 onChange={e => setRegUsername(e.target.value)}
                                 disabled={regLoading}
                                 placeholder='2 - 32 个字符'
-                                InputProps={{
-                                    startAdornment: (
-                                        <InputAdornment position='start'>
-                                            <PersonOutlineIcon
-                                                fontSize='small'
-                                                sx={{ color: "text.disabled" }}
-                                            />
-                                        </InputAdornment>
-                                    ),
+                                slotProps={{
+                                    input: {
+                                        startAdornment: (
+                                            <InputAdornment position='start'>
+                                                <PersonOutlineIcon
+                                                    fontSize='small'
+                                                    sx={{ color: "text.disabled" }}
+                                                />
+                                            </InputAdornment>
+                                        ),
+                                    }
                                 }}
                             />
                             <PasswordField
@@ -519,9 +533,11 @@ const LoginForm: React.FC<LoginFormProps> = ({
                                 ) : (
                                     <Typography
                                         variant='caption'
-                                        color='text.secondary'
-                                        sx={{ display: "block", mt: 0.5 }}
-                                    >
+                                        sx={{
+                                            color: 'text.secondary',
+                                            display: "block",
+                                            mt: 0.5
+                                        }}>
                                         文件名形如 navihive-recovery-key-日期.json
                                     </Typography>
                                 )}
@@ -601,16 +617,17 @@ const LoginForm: React.FC<LoginFormProps> = ({
                                 value={username}
                                 onChange={e => setUsername(e.target.value)}
                                 disabled={loading}
-                                // 左侧放个图标，和密码框右侧的眼睛按钮对称，两个框视觉上一样高一样宽
-                                InputProps={{
-                                    startAdornment: (
-                                        <InputAdornment position='start'>
-                                            <PersonOutlineIcon
-                                                fontSize='small'
-                                                sx={{ color: "text.disabled" }}
-                                            />
-                                        </InputAdornment>
-                                    ),
+                                slotProps={{
+                                    input: {
+                                        startAdornment: (
+                                            <InputAdornment position='start'>
+                                                <PersonOutlineIcon
+                                                    fontSize='small'
+                                                    sx={{ color: "text.disabled" }}
+                                                />
+                                            </InputAdornment>
+                                        ),
+                                    }
                                 }}
                             />
                             <PasswordField

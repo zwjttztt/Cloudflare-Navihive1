@@ -156,7 +156,12 @@ export default function BookmarkImportDialog({
             </DialogTitle>
 
             <DialogContent sx={dialogContentSx}>
-                <Typography variant='body2' color='text.secondary' sx={{ mb: 1.5 }}>
+                <Typography
+                    variant='body2'
+                    sx={{
+                        color: 'text.secondary',
+                        mb: 1.5
+                    }}>
                     在浏览器书签管理器里选「导出书签」，得到 HTML 文件后在这里选择。
                     顶层文件夹会成为分组，里面的链接成为卡片。已经存在的链接会标为重复、默认不导入。
                 </Typography>
@@ -177,7 +182,12 @@ export default function BookmarkImportDialog({
                     选择书签文件
                 </Button>
                 {fileName && (
-                    <Typography variant='caption' color='text.secondary' sx={{ ml: 1 }}>
+                    <Typography
+                        variant='caption'
+                        sx={{
+                            color: 'text.secondary',
+                            ml: 1
+                        }}>
                         {fileName}
                     </Typography>
                 )}
@@ -234,19 +244,23 @@ export default function BookmarkImportDialog({
                                                 <ListItemText
                                                     primary={entry.title || entry.url}
                                                     secondary={`${entry.note ?? "重复"} · ${entry.folder}`}
-                                                    primaryTypographyProps={{
-                                                        noWrap: true,
-                                                        fontSize: 13,
-                                                    }}
-                                                    secondaryTypographyProps={{ fontSize: 11 }}
-                                                />
+                                                    slotProps={{
+                                                        primary: {
+                                                            noWrap: true,
+                                                            sx: { fontSize: 13 },
+                                                        },
+
+                                                        secondary: { sx: { fontSize: 11 } }
+                                                    }} />
                                             </ListItem>
                                         ))}
                                         {duplicates.length > DUPLICATE_PREVIEW_LIMIT && (
                                             <ListItem disableGutters sx={{ px: 1 }}>
                                                 <ListItemText
                                                     secondary={`仅列出前 ${DUPLICATE_PREVIEW_LIMIT} 条`}
-                                                    secondaryTypographyProps={{ fontSize: 11 }}
+                                                    slotProps={{
+                                                        secondary: { sx: { fontSize: 11 } }
+                                                    }}
                                                 />
                                             </ListItem>
                                         )}
@@ -294,9 +308,10 @@ export default function BookmarkImportDialog({
                                                                 ? `${group.items.length} 个将导入 · 跳过 ${skipped} 个`
                                                                 : `${group.items.length} 个链接`
                                                         }
-                                                        primaryTypographyProps={{ noWrap: true }}
-                                                        secondaryTypographyProps={{ fontSize: 11 }}
-                                                    />
+                                                        slotProps={{
+                                                            primary: { noWrap: true },
+                                                            secondary: { sx: { fontSize: 11 } }
+                                                        }} />
                                                 }
                                             />
                                         </ListItem>
@@ -306,9 +321,10 @@ export default function BookmarkImportDialog({
                         ) : (
                             <Typography
                                 variant='body2'
-                                color='text.secondary'
-                                sx={{ mt: 2 }}
-                            >
+                                sx={{
+                                    color: 'text.secondary',
+                                    mt: 2
+                                }}>
                                 这份文件里没有可导入的新链接 —— 它们要么库里已经有了，要么不是网页链接。
                             </Typography>
                         )}
@@ -325,7 +341,9 @@ export default function BookmarkImportDialog({
                                     />
                                 }
                                 label={
-                                    <Typography variant='caption' color='text.secondary'>
+                                    <Typography variant='caption' sx={{
+                                        color: 'text.secondary'
+                                    }}>
                                         连重复的也一起导入
                                     </Typography>
                                 }

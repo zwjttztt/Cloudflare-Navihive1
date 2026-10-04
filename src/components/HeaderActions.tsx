@@ -142,7 +142,9 @@ export default function HeaderActions({
                         anchorEl={addAnchor}
                         open={addOpen}
                         onClose={closeAdd}
-                        MenuListProps={{ "aria-label": "新增", dense: true }}
+                        slotProps={{
+                            list: { "aria-label": "新增", dense: true }
+                        }}
                     >
                         <MenuItem
                             onClick={() => {

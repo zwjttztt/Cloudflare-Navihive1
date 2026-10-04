@@ -150,12 +150,24 @@ export default function ImportPreviewDialog({
                 <Typography variant='body2' noWrap>
                     {entry.name}
                 </Typography>
-                <Typography variant='caption' color='text.secondary' noWrap sx={{ display: "block" }}>
+                <Typography
+                    variant='caption'
+                    noWrap
+                    sx={{
+                        color: 'text.secondary',
+                        display: "block"
+                    }}>
                     {entry.detail}
                 </Typography>
                 {/* 「名称、链接已改」：不展开也知道动了什么 */}
                 {entry.changeSummary && (
-                    <Typography variant='caption' color='warning.main' noWrap sx={{ display: "block" }}>
+                    <Typography
+                        variant='caption'
+                        noWrap
+                        sx={{
+                            color: 'warning.main',
+                            display: "block"
+                        }}>
                         {entry.changeSummary}
                     </Typography>
                 )}
@@ -167,11 +179,19 @@ export default function ImportPreviewDialog({
                                     {field.label}
                                 </Typography>
                                 {field.sensitive ? (
-                                    <Typography variant='caption' color='text.secondary'>
+                                    <Typography variant='caption' sx={{
+                                        color: 'text.secondary'
+                                    }}>
                                         有变化（内容不显示）
                                     </Typography>
                                 ) : (
-                                    <Typography variant='caption' color='text.secondary' sx={{ minWidth: 0, wordBreak: "break-all" }}>
+                                    <Typography
+                                        variant='caption'
+                                        sx={{
+                                            color: 'text.secondary',
+                                            minWidth: 0,
+                                            wordBreak: "break-all"
+                                        }}>
                                         {field.before || "（空）"} → {field.after || "（空）"}
                                     </Typography>
                                 )}
@@ -237,7 +257,13 @@ export default function ImportPreviewDialog({
             </DialogTitle>
 
             <DialogContent sx={{ ...dialogContentSx, pt: 0.5, pb: 1 }}>
-                <Typography variant='caption' color='text.secondary' sx={{ display: "block", mb: 1 }}>
+                <Typography
+                    variant='caption'
+                    sx={{
+                        color: 'text.secondary',
+                        display: "block",
+                        mb: 1
+                    }}>
                     {overwrite
                         ? "覆盖恢复：勾选的内容会替换现有数据，没被这份备份包含的分组和卡片会被清掉。"
                         : "合并导入：勾选的内容会追加到现有数据后面，已有的分组和卡片不会被改动。"}
@@ -286,7 +312,9 @@ export default function ImportPreviewDialog({
                             />
                         }
                         label={
-                            <Typography variant='caption' color='text.secondary'>
+                            <Typography variant='caption' sx={{
+                                color: 'text.secondary'
+                            }}>
                                 只显示有变化的
                             </Typography>
                         }
@@ -299,9 +327,12 @@ export default function ImportPreviewDialog({
                         <Box sx={{ mb: 1 }}>
                             <Typography
                                 variant='caption'
-                                color='text.secondary'
-                                sx={{ px: 0.5, display: "block", mb: 0.25 }}
-                            >
+                                sx={{
+                                    color: 'text.secondary',
+                                    px: 0.5,
+                                    display: "block",
+                                    mb: 0.25
+                                }}>
                                 分组（{visibleGroups.length}
                                 {visibleGroups.length !== diff.groupEntries.length
                                     ? ` / ${diff.groupEntries.length}`
@@ -315,9 +346,12 @@ export default function ImportPreviewDialog({
                         <Box>
                             <Typography
                                 variant='caption'
-                                color='text.secondary'
-                                sx={{ px: 0.5, display: "block", mb: 0.25 }}
-                            >
+                                sx={{
+                                    color: 'text.secondary',
+                                    px: 0.5,
+                                    display: "block",
+                                    mb: 0.25
+                                }}>
                                 卡片（{visibleSites.length}
                                 {visibleSites.length !== diff.siteEntries.length
                                     ? ` / ${diff.siteEntries.length}`
@@ -328,14 +362,26 @@ export default function ImportPreviewDialog({
                     )}
 
                     {visibleGroups.length === 0 && visibleSites.length === 0 && (
-                        <Typography variant='body2' color='text.secondary' sx={{ py: 2, textAlign: "center" }}>
+                        <Typography
+                            variant='body2'
+                            sx={{
+                                color: 'text.secondary',
+                                py: 2,
+                                textAlign: "center"
+                            }}>
                             没有匹配的条目。筛选只影响显示，勾选的条目一个都不少。
                         </Typography>
                     )}
                 </Box>
 
                 {overwrite && (diff.removedGroups.length > 0 || diff.removedSites.length > 0) && (
-                    <Typography variant='caption' color='error.main' sx={{ display: "block", mt: 1 }}>
+                    <Typography
+                        variant='caption'
+                        sx={{
+                            color: 'error.main',
+                            display: "block",
+                            mt: 1
+                        }}>
                         覆盖后还会删掉 {diff.removedGroups.length} 个分组、{diff.removedSites.length} 张卡片
                         {diff.removedSites.length > 0
                             ? `（如 ${diff.removedSites.slice(0, 3).join("、")}${diff.removedSites.length > 3 ? " 等" : ""}）`

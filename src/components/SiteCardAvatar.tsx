@@ -53,14 +53,16 @@ const SiteCardAvatar = memo(function SiteCardAvatar({
         return (
             <Box
                 className='nav-card-icon'
-                position='relative'
-                mr={mr}
-                width={size}
-                height={size}
-                flexShrink={0}
                 sx={{
+                    position: 'relative',
+                    mr: mr,
+                    width: size,
+                    height: size,
+                    flexShrink: 0,
+
                     // 统一底板：浅色 logo 有边框托底不至于「消失」，深色 logo 也不会糊在一起
                     display: "flex",
+
                     alignItems: "center",
                     justifyContent: "center",
                     borderRadius: "11px",
@@ -68,9 +70,8 @@ const SiteCardAvatar = memo(function SiteCardAvatar({
                     border: "1px solid",
                     borderColor: isDark ? "rgba(255,255,255,0.14)" : "rgba(15,23,42,0.09)",
                     boxShadow: isDark ? "none" : "0 1px 3px rgba(15,23,42,0.08)",
-                    transition: "transform .22s cubic-bezier(.22,.61,.36,1)",
-                }}
-            >
+                    transition: "transform .22s cubic-bezier(.22,.61,.36,1)"
+                }}>
                 <Skeleton
                     variant='rounded'
                     width={size - 12}

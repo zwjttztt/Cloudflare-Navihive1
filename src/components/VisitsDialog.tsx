@@ -17,7 +17,7 @@ import {
     IconButton,
 } from "@mui/material";
 import CloseIcon from "@mui/icons-material/Close";
-import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
+import DeleteOutlineIcon from "@mui/icons-material/DeleteOutlined";
 import { dayKey, useUIPrefsVisits } from "../context/uiPrefsStore";
 import ConfirmDialog from "./ConfirmDialog";
 
@@ -113,13 +113,25 @@ export default function VisitsDialog({
                 </IconButton>
             </DialogTitle>
             <DialogContent dividers>
-                <Typography variant='caption' color='text.secondary' sx={{ display: "block", mb: 1.5 }}>
+                <Typography
+                    variant='caption'
+                    sx={{
+                        color: 'text.secondary',
+                        display: "block",
+                        mb: 1.5
+                    }}>
                     {syncEnabled
                         ? "记录记在本机，并已开启偏好同步：同一账号下的其它设备会合并同一份统计。"
                         : "记录只留在这台机器上，不会上传；在「网站设置 → 数据同步」里打开偏好同步后才会跨设备合并。"}
                 </Typography>
                 {summary.total === 0 ? (
-                    <Typography variant='body2' color='text.secondary' sx={{ py: 4, textAlign: "center" }}>
+                    <Typography
+                        variant='body2'
+                        sx={{
+                            color: 'text.secondary',
+                            py: 4,
+                            textAlign: "center"
+                        }}>
                         还没有访问记录。点开任意卡片后，这里会开始累计统计。
                     </Typography>
                 ) : (
@@ -147,7 +159,9 @@ export default function VisitsDialog({
                                     >
                                         {item.value}
                                     </Typography>
-                                    <Typography variant='caption' color='text.secondary'>
+                                    <Typography variant='caption' sx={{
+                                        color: 'text.secondary'
+                                    }}>
                                         {item.label}
                                     </Typography>
                                 </Box>
@@ -182,17 +196,22 @@ export default function VisitsDialog({
                             </Box>
                             <Stack
                                 direction='row'
-                                alignItems='center'
                                 spacing={0.75}
-                                sx={{ mt: 1.5 }}
-                            >
-                                <Typography variant='caption' color='text.secondary'>
+                                sx={{
+                                    alignItems: 'center',
+                                    mt: 1.5
+                                }}>
+                                <Typography variant='caption' sx={{
+                                    color: 'text.secondary'
+                                }}>
                                     少
                                 </Typography>
                                 {[0, 1, 2, 3, 4].map(lv => (
                                     <Box key={lv} className='nav-heat-cell' data-level={lv} />
                                 ))}
-                                <Typography variant='caption' color='text.secondary'>
+                                <Typography variant='caption' sx={{
+                                    color: 'text.secondary'
+                                }}>
                                     多
                                 </Typography>
                             </Stack>
@@ -229,7 +248,9 @@ export default function VisitsDialog({
                                         >
                                             {nameOf(item.id)}
                                         </Typography>
-                                        <Typography variant='caption' color='text.secondary'>
+                                        <Typography variant='caption' sx={{
+                                            color: 'text.secondary'
+                                        }}>
                                             {item.count} 次
                                         </Typography>
                                     </Box>

@@ -75,7 +75,9 @@ export default function ShortcutsDialog({ open, onClose }: ShortcutsDialogProps)
                     pb: 1,
                 }}
             >
-                <Typography variant='h6' component='div' fontWeight='600'>
+                <Typography variant='h6' component='div' sx={{
+                    fontWeight: '600'
+                }}>
                     键盘快捷键
                 </Typography>
                 <IconButton color='inherit' onClick={onClose} aria-label='关闭' size='small'>

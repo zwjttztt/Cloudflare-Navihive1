@@ -18,7 +18,7 @@ import {
     MenuItem,
 } from "@mui/material";
 import CloseIcon from "@mui/icons-material/Close";
-import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
+import DeleteOutlineIcon from "@mui/icons-material/DeleteOutlined";
 import EditIcon from "@mui/icons-material/Edit";
 import MergeTypeIcon from "@mui/icons-material/MergeType";
 import AutoAwesomeIcon from "@mui/icons-material/AutoAwesome";
@@ -128,19 +128,22 @@ export default function TagManagerDialog({
                     {tags.length === 0 ? (
                         <Typography
                             variant='body2'
-                            color='text.secondary'
-                            sx={{ py: 2, textAlign: "center" }}
-                        >
+                            sx={{
+                                color: 'text.secondary',
+                                py: 2,
+                                textAlign: "center"
+                            }}>
                             还没有任何标签
                         </Typography>
                     ) : (
                         <>
                             <Typography
                                 variant='caption'
-                                color='text.secondary'
-                                display='block'
-                                sx={{ mb: 1.25 }}
-                            >
+                                sx={{
+                                    color: 'text.secondary',
+                                    display: 'block',
+                                    mb: 1.25
+                                }}>
                                 删除一个标签，会把它从所有卡片上移除（删除后可在提示条里撤销）。
                             </Typography>
                             <Stack spacing={0.75} className='nav-tag-manager-list'>
@@ -168,9 +171,10 @@ export default function TagManagerDialog({
                                         />
                                         <Typography
                                             variant='caption'
-                                            color='text.secondary'
-                                            sx={{ flex: 1 }}
-                                        >
+                                            sx={{
+                                                color: 'text.secondary',
+                                                flex: 1
+                                            }}>
                                             {counts[tag] ?? 0} 个网站
                                         </Typography>
                                         {onRenameTag && (
@@ -278,7 +282,13 @@ export default function TagManagerDialog({
                             sx={{ mt: 0.5 }}
                         />
                         {renaming && (
-                            <Typography variant='caption' color='text.secondary' sx={{ display: "block", mt: 1 }}>
+                            <Typography
+                                variant='caption'
+                                sx={{
+                                    color: 'text.secondary',
+                                    display: "block",
+                                    mt: 1
+                                }}>
                                 「{renaming}」现在用于 {counts[renaming] ?? 0} 个网站，改名后这些卡片一起变。
                                 {renameTo.trim() &&
                                 renameTo.trim() !== renaming &&
@@ -338,7 +348,13 @@ export default function TagManagerDialog({
                                 ))}
                         </TextField>
                         {merging && (
-                            <Typography variant='caption' color='text.secondary' sx={{ display: "block", mt: 1 }}>
+                            <Typography
+                                variant='caption'
+                                sx={{
+                                    color: 'text.secondary',
+                                    display: "block",
+                                    mt: 1
+                                }}>
                                 「{merging}」的 {counts[merging] ?? 0} 个网站会改用「
                                 {mergeTarget || "…"}」，「{merging}」不再存在。
                             </Typography>

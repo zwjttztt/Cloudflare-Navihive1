@@ -324,20 +324,22 @@ export default function SiteSettingsModal({
             onClose={onClose}
             fullWidth
             maxWidth='sm'
-            PaperProps={{
-                className: "nav-settings-dialog",
-                sx: {
-                    // 和确认弹窗/提示条同一套毛玻璃面板，视觉统一
-                    borderRadius: "var(--card-radius)",
-                    backdropFilter: "blur(var(--glass-blur)) saturate(1.4)",
-                    WebkitBackdropFilter: "blur(var(--glass-blur)) saturate(1.4)",
-                    border: "1px solid var(--glass-panel-border)",
-                    boxShadow: "var(--glass-shadow-hover)",
-                    backgroundColor:
-                        theme.palette.mode === "dark"
-                            ? "rgba(23,27,38,0.94)"
-                            : "rgba(255,255,255,0.94)",
-                },
+            slotProps={{
+                paper: {
+                    className: "nav-settings-dialog",
+                    sx: {
+                        // 和确认弹窗/提示条同一套毛玻璃面板，视觉统一
+                        borderRadius: "var(--card-radius)",
+                        backdropFilter: "blur(var(--glass-blur)) saturate(1.4)",
+                        WebkitBackdropFilter: "blur(var(--glass-blur)) saturate(1.4)",
+                        border: "1px solid var(--glass-panel-border)",
+                        boxShadow: "var(--glass-shadow-hover)",
+                        backgroundColor:
+                            theme.palette.mode === "dark"
+                                ? "rgba(23,27,38,0.94)"
+                                : "rgba(255,255,255,0.94)",
+                    },
+                }
             }}
         >
             <DialogTitle
@@ -352,7 +354,9 @@ export default function SiteSettingsModal({
                     pb: 1,
                 }}
             >
-                <Typography variant='h6' component='div' fontWeight='600'>
+                <Typography variant='h6' component='div' sx={{
+                    fontWeight: '600'
+                }}>
                     网站设置
                 </Typography>
                 <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
@@ -502,11 +506,13 @@ export default function SiteSettingsModal({
                                     src={iconPreview}
                                     alt={formData.name || "Icon Preview"}
                                     sx={{ width: 34, height: 34, borderRadius: 1.5, flexShrink: 0 }}
-                                    imgProps={{
-                                        onError: handleIconError,
-                                        style: { objectFit: "cover" },
-                                    }}
                                     variant='rounded'
+                                    slotProps={{
+                                        img: {
+                                            onError: handleIconError,
+                                            style: { objectFit: "cover" },
+                                        }
+                                    }}
                                 />
                             ) : (
                                 <Avatar
@@ -530,39 +536,41 @@ export default function SiteSettingsModal({
                                 id='icon'
                                 name='icon'
                                 label='图标 URL'
-                                InputLabelProps={{ shrink: true }}
                                 fullWidth
                                 value={formData.icon || ""}
                                 onChange={handleIconChange}
                                 placeholder='https://example.com/icon.png'
                                 variant='outlined'
                                 size='small'
-                                InputProps={{
-                                    endAdornment: (
-                                        <InputAdornment position='end'>
-                                            <Tooltip
-                                                title={
-                                                    iconFetchMessage ||
-                                                    "根据网站链接一键获取图标URL"
-                                                }
-                                                open={iconFetchMessage ? true : undefined}
-                                            >
-                                                <span>
-                                                    <IconButton
-                                                        size='small'
-                                                        edge='end'
-                                                        onClick={handleFetchIcon}
-                                                        disabled={!formData.url}
-                                                        aria-label='根据网站链接获取图标URL'
-                                                    >
-                                                        <AutoFixHighIcon fontSize='small' />
-                                                    </IconButton>
-                                                </span>
-                                            </Tooltip>
-                                        </InputAdornment>
-                                    ),
-                                }}
-                            />
+                                slotProps={{
+                                    input: {
+                                        endAdornment: (
+                                            <InputAdornment position='end'>
+                                                <Tooltip
+                                                    title={
+                                                        iconFetchMessage ||
+                                                        "根据网站链接一键获取图标URL"
+                                                    }
+                                                    open={iconFetchMessage ? true : undefined}
+                                                >
+                                                    <span>
+                                                        <IconButton
+                                                            size='small'
+                                                            edge='end'
+                                                            onClick={handleFetchIcon}
+                                                            disabled={!formData.url}
+                                                            aria-label='根据网站链接获取图标URL'
+                                                        >
+                                                            <AutoFixHighIcon fontSize='small' />
+                                                        </IconButton>
+                                                    </span>
+                                                </Tooltip>
+                                            </InputAdornment>
+                                        ),
+                                    },
+
+                                    inputLabel: { shrink: true }
+                                }} />
                         </Box>
 
                         {/* 分组选择 */}
@@ -607,12 +615,13 @@ export default function SiteSettingsModal({
                                     }}
                                     onBlur={commitTag}
                                     label='标签'
-                                    InputLabelProps={{ shrink: true }}
                                     placeholder='输入后回车'
                                     size='small'
-                                    inputProps={{ "aria-label": "添加标签" }}
                                     sx={{ width: 128, "& .MuiInputBase-input": { fontSize: 13 } }}
-                                />
+                                    slotProps={{
+                                        htmlInput: { "aria-label": "添加标签" },
+                                        inputLabel: { shrink: true }
+                                    }} />
 
                                 {siteTags.map(tag => (
                                     <Chip
@@ -685,10 +694,11 @@ export default function SiteSettingsModal({
                             </Box>
                             <Typography
                                 variant='caption'
-                                color='text.secondary'
-                                display='block'
-                                sx={{ mt: 0.5 }}
-                            >
+                                sx={{
+                                    color: 'text.secondary',
+                                    display: 'block',
+                                    mt: 0.5
+                                }}>
                                 回车即可加标签（可一次输入多个，用逗号分隔），也可以直接点右侧的现有/推荐标签。
                             </Typography>
                         </Box>
@@ -735,14 +745,18 @@ export default function SiteSettingsModal({
                                     mb: 1,
                                 }}
                             >
-                                <Typography variant='subtitle2' fontWeight='600'>
+                                <Typography variant='subtitle2' sx={{
+                                    fontWeight: '600'
+                                }}>
                                     登录凭据
                                 </Typography>
                                 <Typography
                                     variant='caption'
-                                    color='text.secondary'
-                                    sx={{ textAlign: "right", flex: "1 1 auto" }}
-                                >
+                                    sx={{
+                                        color: 'text.secondary',
+                                        textAlign: "right",
+                                        flex: "1 1 auto"
+                                    }}>
                                     保存后可随时一键复制；凭据会随备份文件一起导出，请妥善保管备份。
                                 </Typography>
                             </Box>
@@ -752,27 +766,29 @@ export default function SiteSettingsModal({
                                 sx={{ gap: { xs: 1.5, sm: 1.5 } }}
                             >
                                     <TextField
-                                    id='username'
-                                    // name 刻意不叫 username：浏览器靠「名字 + 类型」猜这是登录表单，
-                                    // 叫了它就会拿导航站自己的登录凭据来填卡片的账号框
-                                    name='site-account'
-                                    label='账号'
-                                    fullWidth
-                                    value={formData.username || ""}
-                                    onChange={handleChange}
-                                    placeholder='登录用户名 / 邮箱 / 手机号'
-                                    variant='outlined'
-                                    size='small'
-                                    autoComplete='off'
-                                    inputProps={{ ...SECRET_IGNORE_ATTRS }}
-                                    InputProps={{
-                                        endAdornment: (
-                                            <InputAdornment position='end'>
-                                                {copyButton("username", "复制账号")}
-                                            </InputAdornment>
-                                        ),
-                                    }}
-                                />
+                                        id='username'
+                                        // name 刻意不叫 username：浏览器靠「名字 + 类型」猜这是登录表单，
+                                        // 叫了它就会拿导航站自己的登录凭据来填卡片的账号框
+                                        name='site-account'
+                                        label='账号'
+                                        fullWidth
+                                        value={formData.username || ""}
+                                        onChange={handleChange}
+                                        placeholder='登录用户名 / 邮箱 / 手机号'
+                                        variant='outlined'
+                                        size='small'
+                                        autoComplete='off'
+                                        slotProps={{
+                                            input: {
+                                                endAdornment: (
+                                                    <InputAdornment position='end'>
+                                                        {copyButton("username", "复制账号")}
+                                                    </InputAdornment>
+                                                ),
+                                            },
+
+                                            htmlInput: { ...SECRET_IGNORE_ATTRS }
+                                        }} />
                                 <TextField
                                     id='password'
                                     // 同上：不叫 password、不写 new-password。
@@ -790,27 +806,29 @@ export default function SiteSettingsModal({
                                     variant='outlined'
                                     size='small'
                                     autoComplete='off'
-                                    inputProps={{ ...SECRET_IGNORE_ATTRS }}
-                                    InputProps={{
-                                        endAdornment: (
-                                            <InputAdornment position='end'>
-                                                <IconButton
-                                                    size='small'
-                                                    onClick={() => setShowPassword(prev => !prev)}
-                                                    aria-label={showPassword ? "隐藏密码" : "显示密码"}
-                                                    edge={formData.password ? undefined : "end"}
-                                                >
-                                                    {showPassword ? (
-                                                        <VisibilityOffIcon fontSize='small' />
-                                                    ) : (
-                                                        <VisibilityIcon fontSize='small' />
-                                                    )}
-                                                </IconButton>
-                                                {copyButton("password", "复制密码")}
-                                            </InputAdornment>
-                                        ),
-                                    }}
-                                />
+                                    slotProps={{
+                                        input: {
+                                            endAdornment: (
+                                                <InputAdornment position='end'>
+                                                    <IconButton
+                                                        size='small'
+                                                        onClick={() => setShowPassword(prev => !prev)}
+                                                        aria-label={showPassword ? "隐藏密码" : "显示密码"}
+                                                        edge={formData.password ? undefined : "end"}
+                                                    >
+                                                        {showPassword ? (
+                                                            <VisibilityOffIcon fontSize='small' />
+                                                        ) : (
+                                                            <VisibilityIcon fontSize='small' />
+                                                        )}
+                                                    </IconButton>
+                                                    {copyButton("password", "复制密码")}
+                                                </InputAdornment>
+                                            ),
+                                        },
+
+                                        htmlInput: { ...SECRET_IGNORE_ATTRS }
+                                    }} />
                             </Stack>
                         </Box>
                     </Stack>

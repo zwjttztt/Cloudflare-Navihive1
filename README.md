@@ -12,7 +12,7 @@
 
 
 
-![Material UI](https://img.shields.io/badge/Material_UI-7.3-0081cb)
+![Material UI](https://img.shields.io/badge/Material_UI-9.4-0081cb)
 
 ![Cloudflare](https://img.shields.io/badge/Cloudflare-Workers_+_D1-f38020)
 
@@ -41,7 +41,7 @@
 
 ## 🛠️ 技术栈
 
-- **前端**：React 19 · TypeScript · Material UI 7 · DND Kit（拖拽）· Tailwind CSS 4 · Vite 8
+- **前端**：React 19 · TypeScript · Material UI 9 · DND Kit（拖拽）· Tailwind CSS 4 · Vite 8
 - **后端**：Cloudflare Workers · Cloudflare D1（SQLite）· JWT 认证
 
 ## 🚀 部署指南（两种方式）

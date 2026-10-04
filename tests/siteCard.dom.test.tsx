@@ -98,6 +98,38 @@ const q = (sel: string) => document.querySelector(sel);
 const byLabel = (label: string) =>
     document.querySelector<HTMLElement>(`[aria-label="${label}"]`);
 
+/**
+ * 把 window.open 换成计数器。
+ *
+ * 键盘打开卡片走的是 safeOpenSite → window.open，jsdom 里真的 window.open 只会
+ * 打一条 "Not implemented" 就返回 null，数不出来。而「按一次回车开出几个标签页」
+ * 正是 MUI 9 那条行为变化（ButtonBase 的 Enter/Space 会派发**冒泡**的 click）
+ * 唯一能被机器验出来的地方 —— 冒烟脚本在真实浏览器里数不了标签页。
+ */
+function stubWindowOpen() {
+    const calls: string[] = [];
+    const holder = window as unknown as { open: unknown };
+    const original = holder.open;
+    holder.open = (url: string) => {
+        calls.push(String(url));
+        return null;
+    };
+    return {
+        calls,
+        restore: () => {
+            holder.open = original;
+        },
+    };
+}
+
+function pressKey(el: Element, key: string) {
+    act(() => {
+        el.dispatchEvent(
+            new window.KeyboardEvent("keydown", { key, bubbles: true, cancelable: true })
+        );
+    });
+}
+
 test.afterEach(cleanup);
 
 test("卡片渲染出站点名与可点开的链接", () => {
@@ -169,4 +201,52 @@ test("搜索命中会高亮，没命中就不加 <mark>", () => {
 test("编辑模式下不参与方向键导航（拖拽排序时不该被焦点系统抓到）", () => {
     renderCard({ isEditMode: true });
     assert.equal(q('[data-nav-card="true"]'), null, "编辑模式的卡片不该带 data-nav-card");
+});
+
+// ── 键盘打开：MUI 9 的重点回归点 ────────────────────────────────────────────
+//
+// 卡片有两层可聚焦元素：外壳 Box（tabIndex=0，自己处理回车/空格）和里面的
+// CardActionArea（渲染成真的 <a>，基于 MUI 的 ButtonBase）。ButtonBase 自己也会
+// 处理回车/空格 —— MUI 9 把它改成「派发一个会冒泡的 click」，于是键盘事件很容易
+// 被两条路各接一次，表现就是**按一次回车开出两个标签页**。
+// 这两个用例按「焦点在哪一层」分别钉住，升级 MUI 时它们就是验收标准。
+
+test("焦点在卡片外壳上：回车/空格各只打开一次链接", () => {
+    const opened = stubWindowOpen();
+    try {
+        renderCard();
+        const card = q('[data-nav-card="true"]') as HTMLElement;
+        pressKey(card, "Enter");
+        assert.deepEqual(opened.calls, ["https://example.com/"], "回车应该只打开一次");
+
+        opened.calls.length = 0;
+        pressKey(card, " ");
+        assert.deepEqual(opened.calls, ["https://example.com/"], "空格应该只打开一次");
+    } finally {
+        opened.restore();
+    }
+});
+
+test("焦点在里面的链接上：回车/空格都不会被 ButtonBase 重复触发", () => {
+    const opened = stubWindowOpen();
+    try {
+        renderCard();
+        const link = q('a[href^="https://example.com"]') as HTMLElement;
+        pressKey(link, "Enter");
+        assert.deepEqual(
+            opened.calls,
+            ["https://example.com/"],
+            "焦点在 <a> 上时回车开出了不止一个标签页"
+        );
+
+        opened.calls.length = 0;
+        pressKey(link, " ");
+        assert.deepEqual(
+            opened.calls,
+            ["https://example.com/"],
+            "焦点在 <a> 上时空格开出了不止一个标签页"
+        );
+    } finally {
+        opened.restore();
+    }
 });

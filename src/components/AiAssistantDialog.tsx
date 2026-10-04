@@ -94,7 +94,13 @@ function Field({
     const [visible, setVisible] = useState(false);
     return (
         <Box>
-            <Typography variant='caption' color='text.secondary' sx={{ display: "block", mb: 0.25 }}>
+            <Typography
+                variant='caption'
+                sx={{
+                    color: 'text.secondary',
+                    display: "block",
+                    mb: 0.25
+                }}>
                 {label}
             </Typography>
             <TextField
@@ -132,7 +138,13 @@ function Field({
                 }}
             />
             {caption ? (
-                <Typography variant='caption' color='text.secondary' sx={{ display: "block", mt: 0.25 }}>
+                <Typography
+                    variant='caption'
+                    sx={{
+                        color: 'text.secondary',
+                        display: "block",
+                        mt: 0.25
+                    }}>
                     {caption}
                 </Typography>
             ) : null}
@@ -251,7 +263,12 @@ export default function AiAssistantDialog({
             <DialogContent sx={dialogContentSx}>
                 {loading && <LinearProgress sx={{ mb: 1.5, borderRadius: 1 }} />}
 
-                <Typography variant='body2' color='text.secondary' sx={{ mb: 1.5 }}>
+                <Typography
+                    variant='body2'
+                    sx={{
+                        color: 'text.secondary',
+                        mb: 1.5
+                    }}>
                     打开后，站点的名称与链接会送到你填的那个模型服务去分析。
                     这些配置<b>跟着你的登录账号走</b>（换一个账号看不到这份配置），
                     令牌加密存库，也<b>不会写进备份文件</b>。关掉不会删掉已经生成的内容，只是不再调用。
@@ -266,7 +283,12 @@ export default function AiAssistantDialog({
                         caption='没开的时候，所有 AI 按钮都只是置灰，一个字节都不会往外发。'
                     />
                     {statusText ? (
-                        <Typography variant='caption' color='text.secondary' sx={{ display: "block" }}>
+                        <Typography
+                            variant='caption'
+                            sx={{
+                                color: 'text.secondary',
+                                display: "block"
+                            }}>
                             当前生效：{statusText}
                         </Typography>
                     ) : null}
@@ -277,9 +299,11 @@ export default function AiAssistantDialog({
                         <Box>
                             <Typography
                                 variant='caption'
-                                color='text.secondary'
-                                sx={{ display: "block", mb: 0.25 }}
-                            >
+                                sx={{
+                                    color: 'text.secondary',
+                                    display: "block",
+                                    mb: 0.25
+                                }}>
                                 用哪家模型
                             </Typography>
                             <TextField
@@ -298,9 +322,11 @@ export default function AiAssistantDialog({
                             </TextField>
                             <Typography
                                 variant='caption'
-                                color='text.secondary'
-                                sx={{ display: "block", mt: 0.5 }}
-                            >
+                                sx={{
+                                    color: 'text.secondary',
+                                    display: "block",
+                                    mt: 0.5
+                                }}>
                                 {AI_PROVIDERS.find(p => p.value === provider)?.hint}
                             </Typography>
                         </Box>
@@ -395,9 +421,11 @@ export default function AiAssistantDialog({
                     </Button>
                     <Typography
                         variant='caption'
-                        color='text.secondary'
-                        sx={{ display: "block", mt: 0.5 }}
-                    >
+                        sx={{
+                            color: 'text.secondary',
+                            display: "block",
+                            mt: 0.5
+                        }}>
                         {problem
                             ? `还不能测：${problem}`
                             : "用上面填的内容试一次（不用先保存），会各发一条最短的请求。"}

@@ -68,14 +68,15 @@ export default function SearchStatusLine({
                 >
                     <Typography
                         variant='caption'
-                        color='text.secondary'
                         // 结果数变了要念出来：读屏用户看不到「列表变短了」
                         component='div'
                         role='status'
                         aria-live='polite'
                         aria-atomic='true'
-                        sx={{ display: "block" }}
-                    >
+                        sx={{
+                            color: 'text.secondary',
+                            display: "block"
+                        }}>
                         找到 {matchedCount} 个匹配的网站
                         {searchTruncated ? `，先显示前 ${renderedCount} 个` : ""}
                     </Typography>
@@ -96,9 +97,12 @@ export default function SearchStatusLine({
             {hint && (
                 <Typography
                     variant='caption'
-                    color='warning.main'
-                    sx={{ display: "block", mt: -2, mb: 2 }}
-                >
+                    sx={{
+                        color: 'warning.main',
+                        display: "block",
+                        mt: -2,
+                        mb: 2
+                    }}>
                     {hint}
                 </Typography>
             )}
@@ -107,9 +111,12 @@ export default function SearchStatusLine({
             {semanticEnabled && (
                 <Typography
                     variant='caption'
-                    color='text.secondary'
-                    sx={{ display: "block", mt: -2, mb: 2 }}
-                >
+                    sx={{
+                        color: 'text.secondary',
+                        display: "block",
+                        mt: -2,
+                        mb: 2
+                    }}>
                     {semanticNote ? `${semanticNote}。` : null}
                     {aiReady && embeddedCount === 0 ? (
                         <>

@@ -43,17 +43,26 @@ export default function SiteListEmptyState({
             }}
         >
             <EmptyArt variant={query ? "search" : "empty"} size={132} />
-            <Typography variant='subtitle1' fontWeight='600'>
+            <Typography variant='subtitle1' sx={{
+                fontWeight: '600'
+            }}>
                 {query ? "没有找到匹配的网站" : "还没有任何分组"}
             </Typography>
-            <Typography variant='body2' color='text.secondary'>
+            <Typography variant='body2' sx={{
+                color: 'text.secondary'
+            }}>
                 {query
                     ? "换个关键词试试，或清空搜索框查看全部网站"
                     : "点击左上角「新增分组」开始搭建你的导航页"}
             </Typography>
             {/* 搜不到的时候才提语法：平时不占地方，需要时正好在眼前 */}
             {query && (
-                <Typography variant='caption' color='text.secondary' sx={{ mt: 0.5 }}>
+                <Typography
+                    variant='caption'
+                    sx={{
+                        color: 'text.secondary',
+                        mt: 0.5
+                    }}>
                     也可以按条件筛：tag:AI、group:开发、url:github、is:starred、is:dead，
                     用 -关键词 排除
                 </Typography>

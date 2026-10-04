@@ -118,28 +118,34 @@ export default function CommandPalette({ open, onClose, commands }: CommandPalet
                     onChange={e => setKeyword(e.target.value)}
                     onKeyDown={handleKeyDown}
                     placeholder='搜索站点或执行命令…'
-                    inputProps={{ "aria-label": "命令面板搜索" }}
                     fullWidth
                     size='small'
                     variant='outlined'
-                    InputProps={{
-                        startAdornment: (
-                            <InputAdornment position='start'>
-                                <SearchIcon fontSize='small' />
-                            </InputAdornment>
-                        ),
-                    }}
                     sx={{ "& .MuiOutlinedInput-root": { borderRadius: "14px" } }}
-                />
+                    slotProps={{
+                        input: {
+                            startAdornment: (
+                                <InputAdornment position='start'>
+                                    <SearchIcon fontSize='small' />
+                                </InputAdornment>
+                            ),
+                        },
+
+                        htmlInput: { "aria-label": "命令面板搜索" }
+                    }} />
             </Box>
 
             <List dense sx={{ maxHeight: 380, overflowY: "auto", px: 1, pb: 1 }}>
                 {results.length === 0 && (
                     <Box sx={{ px: 2, py: 3, textAlign: "center" }}>
-                        <Typography variant='body2' color='text.secondary'>
+                        <Typography variant='body2' sx={{
+                            color: 'text.secondary'
+                        }}>
                             没有匹配的站点或命令
                         </Typography>
-                        <Typography variant='caption' color='text.secondary'>
+                        <Typography variant='caption' sx={{
+                            color: 'text.secondary'
+                        }}>
                             命令可以按「跳字」搜：输 gh 也能找到 GitHub
                         </Typography>
                     </Box>
@@ -148,9 +154,12 @@ export default function CommandPalette({ open, onClose, commands }: CommandPalet
                 {!keyword.trim() && recent.length > 0 && (
                     <Typography
                         variant='caption'
-                        color='text.secondary'
-                        sx={{ px: 1.5, pb: 0.5, display: "block" }}
-                    >
+                        sx={{
+                            color: 'text.secondary',
+                            px: 1.5,
+                            pb: 0.5,
+                            display: "block"
+                        }}>
                         最近用过（{Math.min(recent.length, MAX_ROWS * 2)}）
                     </Typography>
                 )}
@@ -179,9 +188,10 @@ export default function CommandPalette({ open, onClose, commands }: CommandPalet
                         <ListItemText
                             primary={item.label}
                             secondary={item.hint}
-                            primaryTypographyProps={{ noWrap: true }}
-                            secondaryTypographyProps={{ noWrap: true, fontSize: 11 }}
-                        />
+                            slotProps={{
+                                primary: { noWrap: true },
+                                secondary: { noWrap: true, sx: { fontSize: 11 } }
+                            }} />
                         <Chip
                             label={item.section}
                             size='small'
@@ -202,7 +212,9 @@ export default function CommandPalette({ open, onClose, commands }: CommandPalet
                     flexWrap: "wrap",
                 }}
             >
-                <Typography variant='caption' color='text.secondary'>
+                <Typography variant='caption' sx={{
+                    color: 'text.secondary'
+                }}>
                     ↑↓ 选择 · Enter 执行 · Esc 关闭
                 </Typography>
             </Box>

@@ -177,584 +177,606 @@ export default function SettingsDialog({
 }: SettingsDialogProps) {
     return (
         <>
-        <Dialog
-            open={open}
-            onClose={onClose}
-            maxWidth='md'
-            fullWidth
-            PaperProps={{
-                sx: {
-                    m: { xs: 2, sm: "auto" },
-                    width: { xs: "calc(100% - 32px)", sm: "auto" },
-                },
-            }}
-        >
-            <DialogTitle sx={{ px: 3, pt: 2, pb: 0.5 }}>
-                网站设置
-                <IconButton
-                    aria-label='close'
-                    onClick={onClose}
-                    sx={{ position: "absolute", right: 8, top: 8 }}
-                >
-                    <CloseIcon />
-                </IconButton>
-            </DialogTitle>
-            <DialogContent
-                sx={{
-                    px: 3,
-                    pt: 1,
-                    pb: 2,
-                    // 说明文字统一收紧：默认 helperText 的行高和上间距太占地方
-                    "& .MuiFormHelperText-root": { mt: 0.5, fontSize: 11.5, lineHeight: 1.5 },
-                    // 滑块默认上下各留一段内边距，压掉一半换密度
-                    "& .MuiSlider-root": { py: 0.75 },
+            <Dialog
+                open={open}
+                onClose={onClose}
+                maxWidth='md'
+                fullWidth
+                slotProps={{
+                    paper: {
+                        sx: {
+                            m: { xs: 2, sm: "auto" },
+                            width: { xs: "calc(100% - 32px)", sm: "auto" },
+                        },
+                    }
                 }}
             >
-                <DialogContentText sx={{ mb: 1.5, fontSize: 13.5 }}>
-                    集中管理站点信息、外观风格、图标来源与数据同步。
-                    <Box component='span' sx={{ display: "block", mt: 0.5, color: "text.secondary" }}>
-                        带「即时生效」标注的开关改完立刻生效、不进草稿，点「取消」也不会回滚它们；
-                        其它项都是草稿，要按下面的「保存设置」才落库。
-                    </Box>
-                </DialogContentText>
-                {!isSiteOwner ? (
-                    // 外观现在是按账号保存的，改得动；但「改的是谁的」得说清楚，
-                    // 否则会以为自己这一改整站都变了（或者反过来以为改了也白改）
-                    <Alert severity='info' sx={{ mb: 1.5 }}>
-                        外观按账号保存：这里的改动只影响你自己看到的标题、主题与背景。
-                        站点所有者的设置同时是登录页与新账号的默认外观。
-                    </Alert>
-                ) : null}
-                <Stack spacing={2} divider={<Divider />}>
-                    {/* 1. 基本信息：最常改，放最上面 */}
-                    <Section title='基本信息'>
-                        <TwoCol>
-                            <TextField
-                                margin='dense'
-                                size='small'
-                                id='site-title'
-                                name='site.title'
-                                label='网站标题 (浏览器标签)'
-                                type='text'
-                                fullWidth
-                                variant='outlined'
-                                value={tempConfigs["site.title"]}
-                                onChange={onConfigInputChange}
-                            />
-                            <TextField
-                                margin='dense'
-                                size='small'
-                                id='site-name'
-                                name='site.name'
-                                label='网站名称 (显示在页面中)'
-                                type='text'
-                                fullWidth
-                                variant='outlined'
-                                value={tempConfigs["site.name"]}
-                                onChange={onConfigInputChange}
-                            />
-                        </TwoCol>
-                    </Section>
-
-                    {/* 2. 外观：配色（随备份走）+ 圆角/字号（只存本机） */}
-                    <Section
-                        title='外观'
-                        hint='配色会随备份同步；圆角与字号只存在这台设备，换设备或换浏览器不跟随。'
+                <DialogTitle sx={{ px: 3, pt: 2, pb: 0.5 }}>
+                    网站设置
+                    <IconButton
+                        aria-label='close'
+                        onClick={onClose}
+                        sx={{ position: "absolute", right: 8, top: 8 }}
                     >
-                        <Box>
-                            <Box
-                                sx={{
-                                    display: "flex",
-                                    alignItems: "center",
-                                    gap: 1,
-                                    flexWrap: "wrap",
-                                }}
-                            >
-                                {PRESET_ACCENTS.map(color => {
-                                    const picked =
-                                        (tempConfigs["site.primaryColor"] || "").toLowerCase() ===
-                                        color.toLowerCase();
-                                    return (
-                                        <IconButton
-                                            key={color}
-                                            size='small'
-                                            aria-label={`使用配色 ${color}`}
-                                            aria-pressed={picked}
-                                            onClick={() => onPickAccent(color)}
-                                            sx={{
-                                                width: 26,
-                                                height: 26,
-                                                minWidth: 26,
-                                                bgcolor: color,
-                                                border: "2px solid",
-                                                borderColor: picked ? "text.primary" : "transparent",
-                                                boxShadow: picked
-                                                    ? `0 0 0 2px ${color}55`
-                                                    : "0 1px 3px rgba(15,23,42,0.18)",
-                                                "&:hover": { bgcolor: color },
-                                            }}
-                                        />
-                                    );
-                                })}
-
-                                {/* 原生取色器：可任选任意颜色 */}
-                                <Box
-                                    component='input'
-                                    type='color'
-                                    name='site.primaryColor'
-                                    aria-label='自定义主色'
-                                    value={
-                                        /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(
-                                            tempConfigs["site.primaryColor"] || ""
-                                        )
-                                            ? tempConfigs["site.primaryColor"]
-                                            : "#1976d2"
-                                    }
-                                    onChange={e => onPickAccent(e.target.value)}
-                                    sx={{
-                                        width: 34,
-                                        height: 26,
-                                        p: 0,
-                                        cursor: "pointer",
-                                        bgcolor: "transparent",
-                                        border: "1px solid",
-                                        borderColor: "divider",
-                                        borderRadius: 1,
-                                    }}
-                                />
-
-                                <Button size='small' variant='text' onClick={() => onPickAccent("")}>
-                                    恢复默认
-                                </Button>
-                            </Box>
-                            <Typography
-                                variant='caption'
-                                color='text.secondary'
-                                sx={{ display: "block", mt: 0.5 }}
-                            >
-                                影响按钮、链接高亮、焦点环与卡片悬停色；留空则跟随默认蓝色。
-                            </Typography>
+                        <CloseIcon />
+                    </IconButton>
+                </DialogTitle>
+                <DialogContent
+                    sx={{
+                        px: 3,
+                        pt: 1,
+                        pb: 2,
+                        // 说明文字统一收紧：默认 helperText 的行高和上间距太占地方
+                        "& .MuiFormHelperText-root": { mt: 0.5, fontSize: 11.5, lineHeight: 1.5 },
+                        // 滑块默认上下各留一段内边距，压掉一半换密度
+                        "& .MuiSlider-root": { py: 0.75 },
+                    }}
+                >
+                    <DialogContentText sx={{ mb: 1.5, fontSize: 13.5 }}>
+                        集中管理站点信息、外观风格、图标来源与数据同步。
+                        <Box component='span' sx={{ display: "block", mt: 0.5, color: "text.secondary" }}>
+                            带「即时生效」标注的开关改完立刻生效、不进草稿，点「取消」也不会回滚它们；
+                            其它项都是草稿，要按下面的「保存设置」才落库。
                         </Box>
-
-                        <TwoCol>
-                            <Box
-                                sx={{
-                                    display: "flex",
-                                    alignItems: "center",
-                                    gap: 1,
-                                    flexWrap: "wrap",
-                                }}
-                            >
-                                <Typography variant='body2' sx={{ minWidth: 40 }}>
-                                    圆角
-                                </Typography>
-                                <ToggleButtonGroup
+                    </DialogContentText>
+                    {!isSiteOwner ? (
+                        // 外观现在是按账号保存的，改得动；但「改的是谁的」得说清楚，
+                        // 否则会以为自己这一改整站都变了（或者反过来以为改了也白改）
+                        <Alert severity='info' sx={{ mb: 1.5 }}>
+                            外观按账号保存：这里的改动只影响你自己看到的标题、主题与背景。
+                            站点所有者的设置同时是登录页与新账号的默认外观。
+                        </Alert>
+                    ) : null}
+                    <Stack spacing={2} divider={<Divider />}>
+                        {/* 1. 基本信息：最常改，放最上面 */}
+                        <Section title='基本信息'>
+                            <TwoCol>
+                                <TextField
+                                    margin='dense'
                                     size='small'
-                                    exclusive
-                                    value={radius}
-                                    onChange={(_e, value) => value && onRadiusChange(value)}
-                                    aria-label='圆角风格'
-                                >
-                                    <ToggleButton value='soft' aria-label='圆润圆角'>
-                                        圆润
-                                    </ToggleButton>
-                                    <ToggleButton value='standard' aria-label='标准圆角'>
-                                        标准
-                                    </ToggleButton>
-                                    <ToggleButton value='sharp' aria-label='锐利圆角'>
-                                        锐利
-                                    </ToggleButton>
-                                </ToggleButtonGroup>
-                            </Box>
-                            <Box
-                                sx={{
-                                    display: "flex",
-                                    alignItems: "center",
-                                    gap: 1,
-                                    flexWrap: "wrap",
-                                }}
-                            >
-                                <Typography variant='body2' sx={{ minWidth: 40 }}>
-                                    字号
-                                </Typography>
-                                <ToggleButtonGroup
-                                    size='small'
-                                    exclusive
-                                    value={fontScale}
-                                    onChange={(_e, value) => value && onFontScaleChange(value)}
-                                    aria-label='字号档位'
-                                >
-                                    <ToggleButton value='compact' aria-label='紧凑字号'>
-                                        紧凑
-                                    </ToggleButton>
-                                    <ToggleButton value='normal' aria-label='标准字号'>
-                                        标准
-                                    </ToggleButton>
-                                    <ToggleButton value='large' aria-label='宽松字号'>
-                                        宽松
-                                    </ToggleButton>
-                                </ToggleButtonGroup>
-                            </Box>
-                        </TwoCol>
-                    </Section>
-
-                    {/* 3. 背景与毛玻璃：都属于「背后的画面」，合成一组。
-                        毛玻璃总开关原本在「更多选项」菜单里，菜单变短后移到这里和强度滑块作伴。 */}
-                    <Section title='背景与毛玻璃'>
-                        {/* 内置壁纸预设：点一下即用，也可以自己在下面填图片 URL */}
-                        <Box sx={{ display: "flex", gap: 1, flexWrap: "wrap" }}>
-                            {WALLPAPER_PRESETS.map(preset => {
-                                const picked =
-                                    (tempConfigs["site.backgroundImage"] || "") === preset.value;
-                                return (
-                                    <Tooltip key={preset.label} title={preset.label}>
-                                        <IconButton
-                                            size='small'
-                                            aria-label={`使用壁纸 ${preset.label}`}
-                                            onClick={() =>
-                                                setTempConfigs(prev => ({
-                                                    ...prev,
-                                                    "site.backgroundImage": picked
-                                                        ? ""
-                                                        : preset.value,
-                                                }))
-                                            }
-                                            sx={{
-                                                width: 34,
-                                                height: 34,
-                                                background: preset.value,
-                                                border: "2px solid",
-                                                borderColor: picked
-                                                    ? "text.primary"
-                                                    : "transparent",
-                                                "&:hover": { background: preset.value },
-                                            }}
-                                        />
-                                    </Tooltip>
-                                );
-                            })}
-                        </Box>
-
-                        <TextField
-                            margin='dense'
-                            size='small'
-                            id='site-background-image'
-                            name='site.backgroundImage'
-                            label='背景图片URL'
-                            type='text'
-                            fullWidth
-                            variant='outlined'
-                            value={tempConfigs["site.backgroundImage"]}
-                            onChange={onConfigInputChange}
-                            placeholder='https://example.com/background.jpg'
-                            helperText='留空则不用背景图片，也可以直接点上面的预设壁纸。'
-                        />
-
-                        <Box>
-                            <Typography variant='body2' color='text.secondary'>
-                                背景蒙版透明度:{" "}
-                                {Number(tempConfigs["site.backgroundMaskOpacity"]) || 0}
-                            </Typography>
-                            <Slider
-                                value={Number(tempConfigs["site.backgroundMaskOpacity"]) || 0}
-                                min={0}
-                                max={1}
-                                step={0.01}
-                                onChange={onMaskOpacityChange}
-                                aria-label='背景蒙版透明度'
-                                valueLabelDisplay='auto'
-                                size='small'
-                            />
-                            <Typography variant='caption' color='text.secondary'>
-                                值越大背景图越清晰，内容可能越难看清。拉到最右也会保留一层淡淡的蒙版，
-                                免得文字压在亮处直接消失。
-                            </Typography>
-                        </Box>
-
-                        <Box>
-                            <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-                                <Typography variant='body2'>毛玻璃特效</Typography>
-                                <Box sx={{ flex: 1 }} />
-                                <FormControlLabel
-                                    control={
-                                        <Switch
-                                            checked={glassEffects}
-                                            size='small'
-                                            onChange={e => onGlassEffectsChange(e.target.checked)}
-                                            slotProps={{ input: { "aria-label": "毛玻璃特效" } }}
-                                        />
-                                    }
-                                    label={
-                                        <Typography variant='body2'>
-                                            {glassEffects ? "开" : "关"}
-                                        </Typography>
-                                    }
-                                    sx={{ m: 0 }}
-                                />
-                            </Box>
-                            <Typography variant='body2' color='text.secondary'>
-                                模糊半径: {glassBlur}px（0 = 完全不模糊）
-                            </Typography>
-                            <Slider
-                                value={glassBlur}
-                                min={0}
-                                max={24}
-                                step={1}
-                                onChange={onGlassBlurChange}
-                                aria-label='毛玻璃强度'
-                                valueLabelDisplay='auto'
-                                size='small'
-                                disabled={!glassEffects}
-                            />
-                            <Typography variant='caption' color='text.secondary'>
-                                数值越大越朦胧，看不清内容时调小或拖到 0。关闭总开关后滑块不生效，滚动更省。
-                            </Typography>
-                        </Box>
-
-                        <Box>
-                            <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-                                <Typography variant='body2'>清爽模式</Typography>
-                                <Box sx={{ flex: 1 }} />
-                                <FormControlLabel
-                                    control={
-                                        <Switch
-                                            checked={liteMode}
-                                            size='small'
-                                            onChange={e => onLiteModeChange(e.target.checked)}
-                                            slotProps={{ input: { "aria-label": "清爽模式" } }}
-                                        />
-                                    }
-                                    label={
-                                        <Typography variant='body2'>
-                                            {liteMode ? "开" : "关"}
-                                        </Typography>
-                                    }
-                                    sx={{ m: 0 }}
-                                />
-                            </Box>
-                            <Typography variant='caption' color='text.secondary'>
-                                一并关掉毛玻璃、柔光背景与装饰动画，只留纯色底和静态卡片。
-                                老设备、省电模式或滚动发烫时开这个；开了之后上面的模糊滑块不再生效。
-                            </Typography>
-                        </Box>
-                    </Section>
-
-                    {/* 4. 图标与缩略图：两个 URL 模板，规则相似，并排放 */}
-                    <Section
-                        title='图标与缩略图'
-                        hint='两项都支持占位符，留空则回落到默认行为。下面的隐私开关即时生效，不用点保存。'
-                    >
-                        <TwoCol>
-                            <TextField
-                                margin='dense'
-                                size='small'
-                                id='site-icon-api'
-                                name='site.iconApi'
-                                label='获取图标API URL'
-                                type='text'
-                                fullWidth
-                                variant='outlined'
-                                value={tempConfigs["site.iconApi"]}
-                                onChange={onConfigInputChange}
-                                placeholder={DEFAULT_ICON_API}
-                                helperText='域名字符串用 {domain} 占位，例：https://www.faviconextractor.com/favicon/{domain}'
-                            />
-                            <TextField
-                                margin='dense'
-                                size='small'
-                                id='site-thumb-api'
-                                name='site.thumbApi'
-                                label='缩略图API URL'
-                                type='text'
-                                fullWidth
-                                variant='outlined'
-                                value={tempConfigs["site.thumbApi"] || ""}
-                                onChange={onConfigInputChange}
-                                placeholder={DEFAULT_THUMB_API}
-                                helperText='留空则不显示缩略图（也不向第三方发请求）。占位符：{url} 完整链接、{domain} 域名、{origin} 协议+域名'
-                            />
-                        </TwoCol>
-                        {/* 图标隐私跟着「取图标」这件事走，所以放在这一节，
-                            而不是和离线缓存混在一起：它管的是同一个外站请求 */}
-                        <SwitchRow
-                            checked={iconPrivacy}
-                            onChange={onIconPrivacyChange}
-                            label='图标隐私模式（不为取图标访问外站）'
-                            ariaLabel='图标隐私模式'
-                            caption='取图标本身会泄露访问了哪些站：卡片一进视野就要去那个域名抓一次 favicon，公共图标服务还会顺带记下这个域名。打开后卡片一律用首字母块，浏览器与本站都不会再为图标访问外站。已缓存的图标仍可继续使用。'
-                        />
-                    </Section>
-
-                    {/* 5. 搜索 */}
-                    <Section title='搜索'>
-                        <SwitchRow
-                            checked={pinyinSearch}
-                            onChange={onPinyinSearchChange}
-                            label='拼音搜索'
-                            ariaLabel='拼音搜索'
-                            caption='开启后可用首字母搜中文站点（例如「bd」命中「百度」），词典约 28KB，按需加载。'
-                        />
-                    </Section>
-
-                    {/* 5.5 离线与缓存（图标隐私已挪进「图标与缩略图」，它管的是同一件事） */}
-                    <Section
-                        title='离线与缓存'
-                        hint='默认只预下载打开页面必需的那一小块，点开某个功能时才下载它 —— 首屏更快、流量更省。开关即时生效。'
-                    >
-                        <SwitchRow
-                            checked={offlineFull}
-                            onChange={onOfflineFullChange}
-                            label='离线增强（预下载全部功能）'
-                            ariaLabel='离线增强'
-                            caption='打开后会把设置、备份、回收站这些弹窗的代码也一并预下载，断网时也能点开。代价是首次联网时多下载约几百 KB。关闭不会删除已缓存的内容。'
-                        />
-                    </Section>
-
-                    {/* 6. 数据同步：两项都是可选，默认关（关着的时候数据只在本机，不上传） */}
-                    <Section
-                        title='数据同步'
-                        hint='默认关闭，数据只留在这台设备的浏览器里；打开后写入服务端数据库，换设备也能看到。开关即时生效，不用点保存。'
-                    >
-                        <SwitchRow
-                            checked={syncHealth}
-                            onChange={onSyncHealthChange}
-                            label='失效检测结果'
-                            ariaLabel='同步失效检测结果'
-                            caption='记住哪些链接探测失败过（含「标记为可访问」的白名单），换设备后不用整库重测。'
-                        />
-                        <SwitchRow
-                            checked={syncPrefs}
-                            onChange={onSyncPrefsChange}
-                            label='星标、标签与访问记录'
-                            ariaLabel='同步星标、标签与访问记录'
-                            caption='这几项按设计只存本机，清掉浏览器数据就没了；打开同步后可找回。星标与标签多设备取并集，访问次数取各设备中的较大值（不会把两台机器各点一次记成两次），分组折叠状态以最后一次操作为准。'
-                        />
-                    </Section>
-
-                    {/* 维护：这里是「点一下就干活」的动作，不是开关，
-                        单独一节才不会被上面一排同步开关埋掉 */}
-                    {onRunLinkCheck && (
-                        <Section title='维护' hint='按需执行的检查动作，不会自动跑。'>
-                            <Box>
-                                <Button
-                                    size='small'
+                                    id='site-title'
+                                    name='site.title'
+                                    label='网站标题 (浏览器标签)'
+                                    type='text'
+                                    fullWidth
                                     variant='outlined'
-                                    startIcon={<LinkOffIcon fontSize='small' />}
-                                    onClick={onRunLinkCheck}
+                                    value={tempConfigs["site.title"]}
+                                    onChange={onConfigInputChange}
+                                />
+                                <TextField
+                                    margin='dense'
+                                    size='small'
+                                    id='site-name'
+                                    name='site.name'
+                                    label='网站名称 (显示在页面中)'
+                                    type='text'
+                                    fullWidth
+                                    variant='outlined'
+                                    value={tempConfigs["site.name"]}
+                                    onChange={onConfigInputChange}
+                                />
+                            </TwoCol>
+                        </Section>
+
+                        {/* 2. 外观：配色（随备份走）+ 圆角/字号（只存本机） */}
+                        <Section
+                            title='外观'
+                            hint='配色会随备份同步；圆角与字号只存在这台设备，换设备或换浏览器不跟随。'
+                        >
+                            <Box>
+                                <Box
+                                    sx={{
+                                        display: "flex",
+                                        alignItems: "center",
+                                        gap: 1,
+                                        flexWrap: "wrap",
+                                    }}
                                 >
-                                    检测失效链接
-                                </Button>
+                                    {PRESET_ACCENTS.map(color => {
+                                        const picked =
+                                            (tempConfigs["site.primaryColor"] || "").toLowerCase() ===
+                                            color.toLowerCase();
+                                        return (
+                                            <IconButton
+                                                key={color}
+                                                size='small'
+                                                aria-label={`使用配色 ${color}`}
+                                                aria-pressed={picked}
+                                                onClick={() => onPickAccent(color)}
+                                                sx={{
+                                                    width: 26,
+                                                    height: 26,
+                                                    minWidth: 26,
+                                                    bgcolor: color,
+                                                    border: "2px solid",
+                                                    borderColor: picked ? "text.primary" : "transparent",
+                                                    boxShadow: picked
+                                                        ? `0 0 0 2px ${color}55`
+                                                        : "0 1px 3px rgba(15,23,42,0.18)",
+                                                    "&:hover": { bgcolor: color },
+                                                }}
+                                            />
+                                        );
+                                    })}
+
+                                    {/* 原生取色器：可任选任意颜色 */}
+                                    <Box
+                                        component='input'
+                                        type='color'
+                                        name='site.primaryColor'
+                                        aria-label='自定义主色'
+                                        value={
+                                            /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(
+                                                tempConfigs["site.primaryColor"] || ""
+                                            )
+                                                ? tempConfigs["site.primaryColor"]
+                                                : "#1976d2"
+                                        }
+                                        onChange={e => onPickAccent(e.target.value)}
+                                        sx={{
+                                            width: 34,
+                                            height: 26,
+                                            p: 0,
+                                            cursor: "pointer",
+                                            bgcolor: "transparent",
+                                            border: "1px solid",
+                                            borderColor: "divider",
+                                            borderRadius: 1,
+                                        }}
+                                    />
+
+                                    <Button size='small' variant='text' onClick={() => onPickAccent("")}>
+                                        恢复默认
+                                    </Button>
+                                </Box>
                                 <Typography
                                     variant='caption'
-                                    color='text.secondary'
-                                    sx={{ display: "block", mt: 0.5 }}
+                                    sx={{
+                                        color: 'text.secondary',
+                                        display: "block",
+                                        mt: 0.5
+                                    }}>
+                                    影响按钮、链接高亮、焦点环与卡片悬停色；留空则跟随默认蓝色。
+                                </Typography>
+                            </Box>
+
+                            <TwoCol>
+                                <Box
+                                    sx={{
+                                        display: "flex",
+                                        alignItems: "center",
+                                        gap: 1,
+                                        flexWrap: "wrap",
+                                    }}
                                 >
-                                    逐个访问已收录的链接，把访问不通的标在卡片上。站点多时要点时间，后台跑完会提示结果。
+                                    <Typography variant='body2' sx={{ minWidth: 40 }}>
+                                        圆角
+                                    </Typography>
+                                    <ToggleButtonGroup
+                                        size='small'
+                                        exclusive
+                                        value={radius}
+                                        onChange={(_e, value) => value && onRadiusChange(value)}
+                                        aria-label='圆角风格'
+                                    >
+                                        <ToggleButton value='soft' aria-label='圆润圆角'>
+                                            圆润
+                                        </ToggleButton>
+                                        <ToggleButton value='standard' aria-label='标准圆角'>
+                                            标准
+                                        </ToggleButton>
+                                        <ToggleButton value='sharp' aria-label='锐利圆角'>
+                                            锐利
+                                        </ToggleButton>
+                                    </ToggleButtonGroup>
+                                </Box>
+                                <Box
+                                    sx={{
+                                        display: "flex",
+                                        alignItems: "center",
+                                        gap: 1,
+                                        flexWrap: "wrap",
+                                    }}
+                                >
+                                    <Typography variant='body2' sx={{ minWidth: 40 }}>
+                                        字号
+                                    </Typography>
+                                    <ToggleButtonGroup
+                                        size='small'
+                                        exclusive
+                                        value={fontScale}
+                                        onChange={(_e, value) => value && onFontScaleChange(value)}
+                                        aria-label='字号档位'
+                                    >
+                                        <ToggleButton value='compact' aria-label='紧凑字号'>
+                                            紧凑
+                                        </ToggleButton>
+                                        <ToggleButton value='normal' aria-label='标准字号'>
+                                            标准
+                                        </ToggleButton>
+                                        <ToggleButton value='large' aria-label='宽松字号'>
+                                            宽松
+                                        </ToggleButton>
+                                    </ToggleButtonGroup>
+                                </Box>
+                            </TwoCol>
+                        </Section>
+
+                        {/* 3. 背景与毛玻璃：都属于「背后的画面」，合成一组。
+                            毛玻璃总开关原本在「更多选项」菜单里，菜单变短后移到这里和强度滑块作伴。 */}
+                        <Section title='背景与毛玻璃'>
+                            {/* 内置壁纸预设：点一下即用，也可以自己在下面填图片 URL */}
+                            <Box sx={{ display: "flex", gap: 1, flexWrap: "wrap" }}>
+                                {WALLPAPER_PRESETS.map(preset => {
+                                    const picked =
+                                        (tempConfigs["site.backgroundImage"] || "") === preset.value;
+                                    return (
+                                        <Tooltip key={preset.label} title={preset.label}>
+                                            <IconButton
+                                                size='small'
+                                                aria-label={`使用壁纸 ${preset.label}`}
+                                                onClick={() =>
+                                                    setTempConfigs(prev => ({
+                                                        ...prev,
+                                                        "site.backgroundImage": picked
+                                                            ? ""
+                                                            : preset.value,
+                                                    }))
+                                                }
+                                                sx={{
+                                                    width: 34,
+                                                    height: 34,
+                                                    background: preset.value,
+                                                    border: "2px solid",
+                                                    borderColor: picked
+                                                        ? "text.primary"
+                                                        : "transparent",
+                                                    "&:hover": { background: preset.value },
+                                                }}
+                                            />
+                                        </Tooltip>
+                                    );
+                                })}
+                            </Box>
+
+                            <TextField
+                                margin='dense'
+                                size='small'
+                                id='site-background-image'
+                                name='site.backgroundImage'
+                                label='背景图片URL'
+                                type='text'
+                                fullWidth
+                                variant='outlined'
+                                value={tempConfigs["site.backgroundImage"]}
+                                onChange={onConfigInputChange}
+                                placeholder='https://example.com/background.jpg'
+                                helperText='留空则不用背景图片，也可以直接点上面的预设壁纸。'
+                            />
+
+                            <Box>
+                                <Typography variant='body2' sx={{
+                                    color: 'text.secondary'
+                                }}>
+                                    背景蒙版透明度:{" "}
+                                    {Number(tempConfigs["site.backgroundMaskOpacity"]) || 0}
+                                </Typography>
+                                <Slider
+                                    value={Number(tempConfigs["site.backgroundMaskOpacity"]) || 0}
+                                    min={0}
+                                    max={1}
+                                    step={0.01}
+                                    onChange={onMaskOpacityChange}
+                                    aria-label='背景蒙版透明度'
+                                    valueLabelDisplay='auto'
+                                    size='small'
+                                />
+                                <Typography variant='caption' sx={{
+                                    color: 'text.secondary'
+                                }}>
+                                    值越大背景图越清晰，内容可能越难看清。拉到最右也会保留一层淡淡的蒙版，
+                                    免得文字压在亮处直接消失。
+                                </Typography>
+                            </Box>
+
+                            <Box>
+                                <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                                    <Typography variant='body2'>毛玻璃特效</Typography>
+                                    <Box sx={{ flex: 1 }} />
+                                    <FormControlLabel
+                                        control={
+                                            <Switch
+                                                checked={glassEffects}
+                                                size='small'
+                                                onChange={e => onGlassEffectsChange(e.target.checked)}
+                                                slotProps={{ input: { "aria-label": "毛玻璃特效" } }}
+                                            />
+                                        }
+                                        label={
+                                            <Typography variant='body2'>
+                                                {glassEffects ? "开" : "关"}
+                                            </Typography>
+                                        }
+                                        sx={{ m: 0 }}
+                                    />
+                                </Box>
+                                <Typography variant='body2' sx={{
+                                    color: 'text.secondary'
+                                }}>
+                                    模糊半径: {glassBlur}px（0 = 完全不模糊）
+                                </Typography>
+                                <Slider
+                                    value={glassBlur}
+                                    min={0}
+                                    max={24}
+                                    step={1}
+                                    onChange={onGlassBlurChange}
+                                    aria-label='毛玻璃强度'
+                                    valueLabelDisplay='auto'
+                                    size='small'
+                                    disabled={!glassEffects}
+                                />
+                                <Typography variant='caption' sx={{
+                                    color: 'text.secondary'
+                                }}>
+                                    数值越大越朦胧，看不清内容时调小或拖到 0。关闭总开关后滑块不生效，滚动更省。
+                                </Typography>
+                            </Box>
+
+                            <Box>
+                                <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                                    <Typography variant='body2'>清爽模式</Typography>
+                                    <Box sx={{ flex: 1 }} />
+                                    <FormControlLabel
+                                        control={
+                                            <Switch
+                                                checked={liteMode}
+                                                size='small'
+                                                onChange={e => onLiteModeChange(e.target.checked)}
+                                                slotProps={{ input: { "aria-label": "清爽模式" } }}
+                                            />
+                                        }
+                                        label={
+                                            <Typography variant='body2'>
+                                                {liteMode ? "开" : "关"}
+                                            </Typography>
+                                        }
+                                        sx={{ m: 0 }}
+                                    />
+                                </Box>
+                                <Typography variant='caption' sx={{
+                                    color: 'text.secondary'
+                                }}>
+                                    一并关掉毛玻璃、柔光背景与装饰动画，只留纯色底和静态卡片。
+                                    老设备、省电模式或滚动发烫时开这个；开了之后上面的模糊滑块不再生效。
                                 </Typography>
                             </Box>
                         </Section>
-                    )}
 
-                    {/* AI 助手已挪走：「更多选项 → AI 助手」单独一个弹窗。
-                        它的配置跟着登录账号走、凭据加密且不进备份，
-                        跟这里管的「站点长什么样」不是一回事，混在一起容易误改。 */}
+                        {/* 4. 图标与缩略图：两个 URL 模板，规则相似，并排放 */}
+                        <Section
+                            title='图标与缩略图'
+                            hint='两项都支持占位符，留空则回落到默认行为。下面的隐私开关即时生效，不用点保存。'
+                        >
+                            <TwoCol>
+                                <TextField
+                                    margin='dense'
+                                    size='small'
+                                    id='site-icon-api'
+                                    name='site.iconApi'
+                                    label='获取图标API URL'
+                                    type='text'
+                                    fullWidth
+                                    variant='outlined'
+                                    value={tempConfigs["site.iconApi"]}
+                                    onChange={onConfigInputChange}
+                                    placeholder={DEFAULT_ICON_API}
+                                    helperText='域名字符串用 {domain} 占位，例：https://www.faviconextractor.com/favicon/{domain}'
+                                />
+                                <TextField
+                                    margin='dense'
+                                    size='small'
+                                    id='site-thumb-api'
+                                    name='site.thumbApi'
+                                    label='缩略图API URL'
+                                    type='text'
+                                    fullWidth
+                                    variant='outlined'
+                                    value={tempConfigs["site.thumbApi"] || ""}
+                                    onChange={onConfigInputChange}
+                                    placeholder={DEFAULT_THUMB_API}
+                                    helperText='留空则不显示缩略图（也不向第三方发请求）。占位符：{url} 完整链接、{domain} 域名、{origin} 协议+域名'
+                                />
+                            </TwoCol>
+                            {/* 图标隐私跟着「取图标」这件事走，所以放在这一节，
+                                而不是和离线缓存混在一起：它管的是同一个外站请求 */}
+                            <SwitchRow
+                                checked={iconPrivacy}
+                                onChange={onIconPrivacyChange}
+                                label='图标隐私模式（不为取图标访问外站）'
+                                ariaLabel='图标隐私模式'
+                                caption='取图标本身会泄露访问了哪些站：卡片一进视野就要去那个域名抓一次 favicon，公共图标服务还会顺带记下这个域名。打开后卡片一律用首字母块，浏览器与本站都不会再为图标访问外站。已缓存的图标仍可继续使用。'
+                            />
+                        </Section>
 
-                    {/* 7. 数据保留：这三项决定「过期数据什么时候真的消失」，
-                        都是全站共享配置 —— 服务端只认站点所有者，这里同步禁用并说明原因 */}
-                    <Section
-                        title='数据保留'
-                        hint='决定审计日志、回收站与长期不登录的账号各自保留多久。每周的定时任务按这里的天数清理。'
+                        {/* 5. 搜索 */}
+                        <Section title='搜索'>
+                            <SwitchRow
+                                checked={pinyinSearch}
+                                onChange={onPinyinSearchChange}
+                                label='拼音搜索'
+                                ariaLabel='拼音搜索'
+                                caption='开启后可用首字母搜中文站点（例如「bd」命中「百度」），词典约 28KB，按需加载。'
+                            />
+                        </Section>
+
+                        {/* 5.5 离线与缓存（图标隐私已挪进「图标与缩略图」，它管的是同一件事） */}
+                        <Section
+                            title='离线与缓存'
+                            hint='默认只预下载打开页面必需的那一小块，点开某个功能时才下载它 —— 首屏更快、流量更省。开关即时生效。'
+                        >
+                            <SwitchRow
+                                checked={offlineFull}
+                                onChange={onOfflineFullChange}
+                                label='离线增强（预下载全部功能）'
+                                ariaLabel='离线增强'
+                                caption='打开后会把设置、备份、回收站这些弹窗的代码也一并预下载，断网时也能点开。代价是首次联网时多下载约几百 KB。关闭不会删除已缓存的内容。'
+                            />
+                        </Section>
+
+                        {/* 6. 数据同步：两项都是可选，默认关（关着的时候数据只在本机，不上传） */}
+                        <Section
+                            title='数据同步'
+                            hint='默认关闭，数据只留在这台设备的浏览器里；打开后写入服务端数据库，换设备也能看到。开关即时生效，不用点保存。'
+                        >
+                            <SwitchRow
+                                checked={syncHealth}
+                                onChange={onSyncHealthChange}
+                                label='失效检测结果'
+                                ariaLabel='同步失效检测结果'
+                                caption='记住哪些链接探测失败过（含「标记为可访问」的白名单），换设备后不用整库重测。'
+                            />
+                            <SwitchRow
+                                checked={syncPrefs}
+                                onChange={onSyncPrefsChange}
+                                label='星标、标签与访问记录'
+                                ariaLabel='同步星标、标签与访问记录'
+                                caption='这几项按设计只存本机，清掉浏览器数据就没了；打开同步后可找回。星标与标签多设备取并集，访问次数取各设备中的较大值（不会把两台机器各点一次记成两次），分组折叠状态以最后一次操作为准。'
+                            />
+                        </Section>
+
+                        {/* 维护：这里是「点一下就干活」的动作，不是开关，
+                            单独一节才不会被上面一排同步开关埋掉 */}
+                        {onRunLinkCheck && (
+                            <Section title='维护' hint='按需执行的检查动作，不会自动跑。'>
+                                <Box>
+                                    <Button
+                                        size='small'
+                                        variant='outlined'
+                                        startIcon={<LinkOffIcon fontSize='small' />}
+                                        onClick={onRunLinkCheck}
+                                    >
+                                        检测失效链接
+                                    </Button>
+                                    <Typography
+                                        variant='caption'
+                                        sx={{
+                                            color: 'text.secondary',
+                                            display: "block",
+                                            mt: 0.5
+                                        }}>
+                                        逐个访问已收录的链接，把访问不通的标在卡片上。站点多时要点时间，后台跑完会提示结果。
+                                    </Typography>
+                                </Box>
+                            </Section>
+                        )}
+
+                        {/* AI 助手已挪走：「更多选项 → AI 助手」单独一个弹窗。
+                            它的配置跟着登录账号走、凭据加密且不进备份，
+                            跟这里管的「站点长什么样」不是一回事，混在一起容易误改。 */}
+
+                        {/* 7. 数据保留：这三项决定「过期数据什么时候真的消失」，
+                            都是全站共享配置 —— 服务端只认站点所有者，这里同步禁用并说明原因 */}
+                        <Section
+                            title='数据保留'
+                            hint='决定审计日志、回收站与长期不登录的账号各自保留多久。每周的定时任务按这里的天数清理。'
+                        >
+                            {!isSiteOwner ? (
+                                <Alert severity='info' sx={{ mb: 1 }}>
+                                    这几项是全站设置，只有站点所有者可以修改；保存时服务端也会拒绝。
+                                </Alert>
+                            ) : null}
+                            <TwoCol>
+                                <TextField
+                                    margin='dense'
+                                    size='small'
+                                    id='retention-days'
+                                    name='retention.days'
+                                    label='审计与回收站保留（天）'
+                                    type='number'
+                                    fullWidth
+                                    variant='outlined'
+                                    disabled={!isSiteOwner}
+                                    value={tempConfigs["retention.days"] ?? String(RETENTION_DAYS)}
+                                    onChange={onConfigInputChange}
+                                    helperText={`删掉的站点与审计日志留这么多天，到期自动清除（${RETENTION_DAYS_MIN}-${RETENTION_DAYS_MAX}，默认 ${RETENTION_DAYS}）`}
+                                    slotProps={{
+                                        htmlInput: { min: RETENTION_DAYS_MIN, max: RETENTION_DAYS_MAX }
+                                    }}
+                                />
+                                <TextField
+                                    margin='dense'
+                                    size='small'
+                                    id='inactive-disable-days'
+                                    name='inactive.disableDays'
+                                    label='多久没登录算沉睡（天）'
+                                    type='number'
+                                    fullWidth
+                                    variant='outlined'
+                                    disabled={!isSiteOwner}
+                                    value={tempConfigs["inactive.disableDays"] ?? ""}
+                                    onChange={onConfigInputChange}
+                                    placeholder={String(INACTIVE_DISABLE_DAYS_DEFAULT)}
+                                    helperText={`超过这个天数没活跃的账号会被停用（数据保留，默认 ${INACTIVE_DISABLE_DAYS_DEFAULT} 天）。站点所有者本人不受影响`}
+                                    slotProps={{
+                                        htmlInput: { min: 30 }
+                                    }}
+                                />
+                            </TwoCol>
+                            <TextField
+                                margin='dense'
+                                size='small'
+                                id='inactive-grace-days'
+                                name='inactive.deleteGraceDays'
+                                label='停用后再过多久彻底删除（天）'
+                                type='number'
+                                fullWidth
+                                variant='outlined'
+                                disabled={!isSiteOwner}
+                                value={tempConfigs["inactive.deleteGraceDays"] ?? ""}
+                                onChange={onConfigInputChange}
+                                placeholder={String(INACTIVE_DELETE_GRACE_DAYS_DEFAULT)}
+                                helperText={`停用之后还有这么长的反悔期，期间重新启用即可恢复；到期才真正删除并释放数据库空间（默认 ${INACTIVE_DELETE_GRACE_DAYS_DEFAULT} 天）`}
+                                slotProps={{
+                                    htmlInput: { min: 1 }
+                                }}
+                            />
+                        </Section>
+
+                        {/* 8. 高级 */}
+                        <Section title='高级' hint='自定义样式会直接注入页面，写错了可能影响显示。'>
+                            <TextField
+                                margin='dense'
+                                size='small'
+                                id='site-custom-css'
+                                name='site.customCss'
+                                label='自定义CSS'
+                                type='text'
+                                fullWidth
+                                multiline
+                                rows={5}
+                                variant='outlined'
+                                value={tempConfigs["site.customCss"]}
+                                onChange={onConfigInputChange}
+                                placeholder={'/* 自定义样式 */\nbody { }'}
+                            />
+                        </Section>
+                    </Stack>
+                </DialogContent>
+                <DialogActions sx={{ px: 3, pb: 3, pt: 1 }}>
+                    <Button onClick={onClose} variant='outlined'>
+                        取消
+                    </Button>
+                    <Button
+                        onClick={onSave}
+                        variant='contained'
+                        color='primary'
+                        disabled={saving}
                     >
-                        {!isSiteOwner ? (
-                            <Alert severity='info' sx={{ mb: 1 }}>
-                                这几项是全站设置，只有站点所有者可以修改；保存时服务端也会拒绝。
-                            </Alert>
-                        ) : null}
-                        <TwoCol>
-                            <TextField
-                                margin='dense'
-                                size='small'
-                                id='retention-days'
-                                name='retention.days'
-                                label='审计与回收站保留（天）'
-                                type='number'
-                                fullWidth
-                                variant='outlined'
-                                disabled={!isSiteOwner}
-                                value={tempConfigs["retention.days"] ?? String(RETENTION_DAYS)}
-                                onChange={onConfigInputChange}
-                                inputProps={{ min: RETENTION_DAYS_MIN, max: RETENTION_DAYS_MAX }}
-                                helperText={`删掉的站点与审计日志留这么多天，到期自动清除（${RETENTION_DAYS_MIN}-${RETENTION_DAYS_MAX}，默认 ${RETENTION_DAYS}）`}
-                            />
-                            <TextField
-                                margin='dense'
-                                size='small'
-                                id='inactive-disable-days'
-                                name='inactive.disableDays'
-                                label='多久没登录算沉睡（天）'
-                                type='number'
-                                fullWidth
-                                variant='outlined'
-                                disabled={!isSiteOwner}
-                                value={tempConfigs["inactive.disableDays"] ?? ""}
-                                onChange={onConfigInputChange}
-                                inputProps={{ min: 30 }}
-                                placeholder={String(INACTIVE_DISABLE_DAYS_DEFAULT)}
-                                helperText={`超过这个天数没活跃的账号会被停用（数据保留，默认 ${INACTIVE_DISABLE_DAYS_DEFAULT} 天）。站点所有者本人不受影响`}
-                            />
-                        </TwoCol>
-                        <TextField
-                            margin='dense'
-                            size='small'
-                            id='inactive-grace-days'
-                            name='inactive.deleteGraceDays'
-                            label='停用后再过多久彻底删除（天）'
-                            type='number'
-                            fullWidth
-                            variant='outlined'
-                            disabled={!isSiteOwner}
-                            value={tempConfigs["inactive.deleteGraceDays"] ?? ""}
-                            onChange={onConfigInputChange}
-                            inputProps={{ min: 1 }}
-                            placeholder={String(INACTIVE_DELETE_GRACE_DAYS_DEFAULT)}
-                            helperText={`停用之后还有这么长的反悔期，期间重新启用即可恢复；到期才真正删除并释放数据库空间（默认 ${INACTIVE_DELETE_GRACE_DAYS_DEFAULT} 天）`}
-                        />
-                    </Section>
-
-                    {/* 8. 高级 */}
-                    <Section title='高级' hint='自定义样式会直接注入页面，写错了可能影响显示。'>
-                        <TextField
-                            margin='dense'
-                            size='small'
-                            id='site-custom-css'
-                            name='site.customCss'
-                            label='自定义CSS'
-                            type='text'
-                            fullWidth
-                            multiline
-                            rows={5}
-                            variant='outlined'
-                            value={tempConfigs["site.customCss"]}
-                            onChange={onConfigInputChange}
-                            placeholder={'/* 自定义样式 */\nbody { }'}
-                        />
-                    </Section>
-                </Stack>
-            </DialogContent>
-            <DialogActions sx={{ px: 3, pb: 3, pt: 1 }}>
-                <Button onClick={onClose} variant='outlined'>
-                    取消
-                </Button>
-                <Button
-                    onClick={onSave}
-                    variant='contained'
-                    color='primary'
-                    disabled={saving}
-                >
-                    {saving ? "保存中…" : "保存设置"}
-                </Button>
-            </DialogActions>
-        </Dialog>
+                        {saving ? "保存中…" : "保存设置"}
+                    </Button>
+                </DialogActions>
+            </Dialog>
 
         </>
     );

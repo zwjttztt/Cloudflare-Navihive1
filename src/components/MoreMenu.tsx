@@ -71,9 +71,6 @@ export default function MoreMenu({
             // 排序模式里「更多选项」按钮会被卸载，anchor 失效时菜单会飘到左上角，这里直接不渲染
             open={open}
             onClose={onClose}
-            MenuListProps={{
-                "aria-labelledby": "navigation-button",
-            }}
             slotProps={{
                 paper: {
                     sx: {
@@ -86,8 +83,11 @@ export default function MoreMenu({
                         },
                     },
                 },
-            }}
-        >
+
+                list: {
+                    "aria-labelledby": "navigation-button",
+                }
+            }}>
             {/* 一、整理与数据：改结构的、看数据的、搬数据的都在这里，是菜单里最常用的半区 */}
             <ListSubheader>整理与数据</ListSubheader>
             <MenuItem

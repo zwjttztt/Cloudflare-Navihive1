@@ -38,7 +38,12 @@ export default function DeleteAccountDialog({
                     注销后，这个账号的<strong>全部分组、卡片与保存的账号密码都会被删除</strong>，
                     且无法恢复。此操作不可撤销。
                 </Alert>
-                <Typography variant='body2' color='text.secondary' sx={{ mb: 1.5 }}>
+                <Typography
+                    variant='body2'
+                    sx={{
+                        color: 'text.secondary',
+                        mb: 1.5
+                    }}>
                     {username ? `当前账号：${username}。` : ""}
                     请先用「更多选项 → 数据备份」保存一份备份，再输入当前密码确认注销。
                 </Typography>

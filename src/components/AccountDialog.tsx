@@ -173,16 +173,21 @@ function Section({
                         flex: "none",
                     }}
                 />
-                <Typography variant='subtitle2' fontWeight='600'>
+                <Typography variant='subtitle2' sx={{
+                    fontWeight: '600'
+                }}>
                     {title}
                 </Typography>
             </Box>
             {hint ? (
                 <Typography
                     variant='caption'
-                    color='text.secondary'
-                    sx={{ display: "block", mt: 0.25, ml: "11px" }}
-                >
+                    sx={{
+                        color: 'text.secondary',
+                        display: "block",
+                        mt: 0.25,
+                        ml: "11px"
+                    }}>
                     {hint}
                 </Typography>
             ) : null}
@@ -346,11 +351,13 @@ export default function AccountDialog({
                 onClose={onClose}
                 maxWidth='sm'
                 fullWidth
-                PaperProps={{
-                    sx: {
-                        m: { xs: 2, sm: "auto" },
-                        width: { xs: "calc(100% - 32px)", sm: "auto" },
-                    },
+                slotProps={{
+                    paper: {
+                        sx: {
+                            m: { xs: 2, sm: "auto" },
+                            width: { xs: "calc(100% - 32px)", sm: "auto" },
+                        },
+                    }
                 }}
             >
                 <DialogTitle sx={{ px: 3, pt: 2, pb: 0.5 }}>
@@ -445,9 +452,11 @@ export default function AccountDialog({
                                 {!authDirty ? (
                                     <Typography
                                         variant='caption'
-                                        color='text.secondary'
-                                        sx={{ display: "block", mt: 0.5 }}
-                                    >
+                                        sx={{
+                                            color: 'text.secondary',
+                                            display: "block",
+                                            mt: 0.5
+                                        }}>
                                         填写新账号或新密码后才能保存。
                                     </Typography>
                                 ) : null}
@@ -462,14 +471,19 @@ export default function AccountDialog({
                             <Stack
                                 direction={{ xs: "column", sm: "row" }}
                                 spacing={1}
-                                alignItems={{ xs: "stretch", sm: "center" }}
-                                justifyContent='space-between'
-                            >
+                                sx={{
+                                    alignItems: { xs: "stretch", sm: "center" },
+                                    justifyContent: 'space-between'
+                                }}>
                                 <Box>
-                                    <Typography variant='body2' fontWeight='600'>
+                                    <Typography variant='body2' sx={{
+                                        fontWeight: '600'
+                                    }}>
                                         {recoveryKeyConfigured ? "已配置" : "未配置"}
                                     </Typography>
-                                    <Typography variant='caption' color='text.secondary'>
+                                    <Typography variant='caption' sx={{
+                                        color: 'text.secondary'
+                                    }}>
                                         私钥只在你本机生成并下载，服务器只保存公钥；忘记密码时上传私钥即可重置。
                                     </Typography>
                                 </Box>
@@ -503,9 +517,11 @@ export default function AccountDialog({
                             ) : (
                                 <Typography
                                     variant='caption'
-                                    color='text.secondary'
-                                    sx={{ display: "block", mt: 0.5 }}
-                                >
+                                    sx={{
+                                        color: 'text.secondary',
+                                        display: "block",
+                                        mt: 0.5
+                                    }}>
                                     点击后会单独弹窗验证当前密码；重新生成会让此前下载的私钥立即失效。
                                 </Typography>
                             )}
@@ -525,23 +541,26 @@ export default function AccountDialog({
                                             key={item.jti}
                                             direction={{ xs: "column", sm: "row" }}
                                             spacing={1}
-                                            alignItems={{ xs: "stretch", sm: "center" }}
-                                            justifyContent='space-between'
                                             sx={{
+                                                alignItems: { xs: "stretch", sm: "center" },
+                                                justifyContent: 'space-between',
                                                 px: 1.25,
                                                 py: 1,
                                                 borderRadius: 1,
-                                                bgcolor: "action.hover",
-                                            }}
-                                        >
+                                                bgcolor: "action.hover"
+                                            }}>
                                             <Box sx={{ minWidth: 0 }}>
-                                                <Typography variant='body2' fontWeight='600'>
+                                                <Typography variant='body2' sx={{
+                                                    fontWeight: '600'
+                                                }}>
                                                     {describeUserAgent(item.userAgent)}
                                                     {item.current ? "（当前设备）" : ""}
                                                 </Typography>
                                                 <Typography
                                                     variant='caption'
-                                                    color='text.secondary'
+                                                    sx={{
+                                                        color: 'text.secondary'
+                                                    }}
                                                 >
                                                     {item.ip ? `${item.ip} · ` : ""}
                                                     {item.current
@@ -594,10 +613,13 @@ export default function AccountDialog({
                             <Stack
                                 direction={{ xs: "column", sm: "row" }}
                                 spacing={1}
-                                alignItems={{ xs: "stretch", sm: "center" }}
-                                justifyContent='space-between'
-                            >
-                                <Typography variant='caption' color='text.secondary'>
+                                sx={{
+                                    alignItems: { xs: "stretch", sm: "center" },
+                                    justifyContent: 'space-between'
+                                }}>
+                                <Typography variant='caption' sx={{
+                                    color: 'text.secondary'
+                                }}>
                                     新账号注册后自带几个示例分组，数据与你互不可见。
                                 </Typography>
                                 <Button
@@ -612,7 +634,9 @@ export default function AccountDialog({
                             </Stack>
 
                             {invite ? (
-                                <Stack direction='row' spacing={1} alignItems='center'>
+                                <Stack direction='row' spacing={1} sx={{
+                                    alignItems: 'center'
+                                }}>
                                     <Typography
                                         component='code'
                                         sx={{
@@ -624,7 +648,9 @@ export default function AccountDialog({
                                     >
                                         {invite.code}
                                     </Typography>
-                                    <Typography variant='caption' color='text.secondary'>
+                                    <Typography variant='caption' sx={{
+                                        color: 'text.secondary'
+                                    }}>
                                         {invite.expiresAt
                                             ? `有效期至 ${new Date(invite.expiresAt * 1000).toLocaleTimeString()}`
                                             : "30 分钟内有效"}
@@ -642,9 +668,11 @@ export default function AccountDialog({
                             {inviteMsg ? (
                                 <Typography
                                     variant='caption'
-                                    color='error.main'
-                                    sx={{ display: "block", mt: 0.5 }}
-                                >
+                                    sx={{
+                                        color: 'error.main',
+                                        display: "block",
+                                        mt: 0.5
+                                    }}>
                                     {inviteMsg}
                                 </Typography>
                             ) : null}
@@ -667,17 +695,18 @@ export default function AccountDialog({
                                                 key={account.id}
                                                 direction={{ xs: "column", sm: "row" }}
                                                 spacing={1}
-                                                alignItems={{ xs: "stretch", sm: "center" }}
-                                                justifyContent='space-between'
                                                 sx={{
+                                                    alignItems: { xs: "stretch", sm: "center" },
+                                                    justifyContent: 'space-between',
                                                     px: 1.25,
                                                     py: 1,
                                                     borderRadius: 1,
-                                                    bgcolor: "action.hover",
-                                                }}
-                                            >
+                                                    bgcolor: "action.hover"
+                                                }}>
                                                 <Box>
-                                                    <Typography variant='body2' fontWeight='600'>
+                                                    <Typography variant='body2' sx={{
+                                                        fontWeight: '600'
+                                                    }}>
                                                         {account.username}
                                                         {account.role === "owner"
                                                             ? "（站点所有者）"
@@ -738,17 +767,22 @@ export default function AccountDialog({
                                         </TwoCol>
                                         <Typography
                                             variant='caption'
-                                            color='text.secondary'
-                                            sx={{ display: "block", mt: 0.5 }}
-                                        >
+                                            sx={{
+                                                color: 'text.secondary',
+                                                display: "block",
+                                                mt: 0.5
+                                            }}>
                                             要改这两个天数，去「网站设置 → 数据保留」；这里显示的是同一份配置，只是不在这里改。
                                         </Typography>
                                         <Stack
                                             direction='row'
                                             spacing={1.25}
-                                            alignItems='center'
-                                            sx={{ mt: 1.25, flexWrap: "wrap", rowGap: 1 }}
-                                        >
+                                            sx={{
+                                                alignItems: 'center',
+                                                mt: 1.25,
+                                                flexWrap: "wrap",
+                                                rowGap: 1
+                                            }}>
                                             {/* 立刻跑一遍：不用等每周 cron，停用/清除条数直接回显 */}
                                             {onSweepInactive ? (
                                                 <Button
@@ -761,7 +795,9 @@ export default function AccountDialog({
                                                     {sweepBusy ? "扫描中…" : "立即扫描"}
                                                 </Button>
                                             ) : null}
-                                            <Typography variant='caption' color='text.secondary'>
+                                            <Typography variant='caption' sx={{
+                                                color: 'text.secondary'
+                                            }}>
                                                 站点所有者账号永不参与治理；清除前会先停用并保留数据
                                             </Typography>
                                         </Stack>

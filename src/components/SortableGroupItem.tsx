@@ -78,7 +78,13 @@ export default function SortableGroupItem({
                 >
                     <DragIndicatorIcon sx={{ color: "primary.main", opacity: 0.8 }} />
                 </IconButton>
-                <Typography variant='h5' component='h2' fontWeight='600' color='text.primary'>
+                <Typography
+                    variant='h5'
+                    component='h2'
+                    sx={{
+                        fontWeight: '600',
+                        color: 'text.primary'
+                    }}>
                     {group.name}
                 </Typography>
                 <Box sx={{ flex: 1 }} />

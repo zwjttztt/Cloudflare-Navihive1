@@ -176,10 +176,14 @@ export default function OfflineBanner() {
                         <Stack spacing={1.25}>
                             {failed.map(item => (
                                 <Box key={item.opId ?? `${item.kind}-${item.failedAt}`}>
-                                    <Typography variant='body2' fontWeight={600}>
+                                    <Typography variant='body2' sx={{
+                                        fontWeight: 600
+                                    }}>
                                         {describe(item)}
                                     </Typography>
-                                    <Typography variant='caption' color='text.secondary' component='div'>
+                                    <Typography variant='caption' component='div' sx={{
+                                        color: 'text.secondary'
+                                    }}>
                                         {item.reason}
                                     </Typography>
                                     <Stack direction='row' spacing={0.5} sx={{ mt: 0.5 }}>
