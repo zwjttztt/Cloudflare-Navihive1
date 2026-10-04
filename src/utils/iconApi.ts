@@ -24,6 +24,9 @@ export function getDomainFromUrl(siteUrl: string): string {
     try {
         return new URL(raw).hostname;
     } catch {
+        // 已经写了协议却解析不了，说明这就是个坏链接 —— 别再补一次协议，
+        // 否则 "http://" 会被当成域名 "http"，拼出一个看着合法其实没意义的图标地址
+        if (raw.includes("://")) return "";
         // 用户可能只填了 example.com，容错补一个协议再试
         try {
             return new URL(`https://${raw}`).hostname;

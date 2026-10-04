@@ -22,11 +22,18 @@ export function listLocalAppKeys(): string[] {
     return keys;
 }
 
-/** 清空本机数据；includeAuth=false 时保留登录票据 */
+/**
+ * 清空本机数据。
+ *
+ * `includeAuth` 管的是**记住的账号名**（rememberedLogin）：不勾的话它是「只想清掉
+ * 坏缓存」，顺手把登录表单的便利也清掉属于越界。登录票据本身不在这个函数的职责里 ——
+ * 令牌早就改用 httpOnly cookie，localStorage 里那份是历史遗留、由启动时的清理负责，
+ * 而且它连键名前缀都不是 navihive:，根本进不了下面的清单。
+ */
 export function clearLocalAppData(includeAuth: boolean) {
     const keys = listLocalAppKeys();
     for (const k of keys) {
-        if (!includeAuth && k === "auth_token") continue;
+        if (!includeAuth && k === "rememberedLogin") continue;
         try {
             localStorage.removeItem(k);
         } catch {
@@ -34,6 +41,7 @@ export function clearLocalAppData(includeAuth: boolean) {
         }
     }
     if (includeAuth) {
+        // 双保险：万一哪天 rememberedLogin 从上面的固定名单里挪走，这里还管着
         try {
             localStorage.removeItem("rememberedLogin");
         } catch {
