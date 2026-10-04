@@ -55,7 +55,7 @@ export default function DeleteAccountDialog({
                     onChange={e => onPasswordChange(e.target.value)}
                     disabled={busy}
                     onKeyDown={e => {
-                        if (e.key === "Enter" && !busy && password) onConfirm();
+                        if (e.key === "Enter" && !busy && password.trim()) onConfirm();
                     }}
                 />
             </DialogContent>
@@ -67,7 +67,9 @@ export default function DeleteAccountDialog({
                     onClick={onConfirm}
                     variant='contained'
                     color='error'
-                    disabled={busy || !password}
+                    // 只填空格不算填过：密码校验在后端，但这里放行的话用户会以为
+                    // 「按钮亮了就是填对了」，然后被一个 400 打回来
+                    disabled={busy || !password.trim()}
                 >
                     {busy ? "注销中…" : "确认注销"}
                 </Button>
