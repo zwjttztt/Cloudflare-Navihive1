@@ -12,14 +12,15 @@
     "test": "node script/unit-tests.mjs",
     "smoke": "node script/ci-smoke.mjs",
     "e2e": "node script/api-e2e.mjs",
-    "ci": "npm run typecheck && npm run lint && npm run test && npm run check:brand && npm run build && npm run e2e && npm run smoke && npm run e2e:webdav",
+    "ci": "npm run typecheck && npm run lint && npm run test && npm run check:brand && npm run build && npm run e2e && npm run e2e:cron && npm run smoke && npm run e2e:webdav",
     "lint": "eslint .",
     "preview": "npm run build && vite preview",
     "deploy": "npm run build && wrangler deploy",
     "cf-typegen": "wrangler types",
     "reset-admin": "node scripts/reset-admin-password.mjs",
     "recovery": "node scripts/recovery-token.mjs",
-    "e2e:webdav": "node script/webdav-e2e.mjs"
+    "e2e:webdav": "node script/webdav-e2e.mjs",
+    "e2e:cron": "node script/cron-e2e.mjs"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",

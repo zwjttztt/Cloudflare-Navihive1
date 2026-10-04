@@ -82,6 +82,15 @@ jobs:
       - name: 后端 API 端到端
         run: npm run e2e
 
+      # 定时备份（cron）的端到端：用 --test-scheduled 把 scheduled handler 挂到
+      # /__scheduled 上，真跑一次自动备份。
+      # wrangler 本地模式不会真的按 cron 触发，所以「定时备份会不会真的写出一份
+      # 备份、会不会把上一份自动备份清掉、会不会误删手动备份」这条链路以前只有
+      # 纯逻辑单测（cronLogic）盯着，从没端到端跑过 —— 而它一旦坏了是静默的：
+      # 备份默默不写，发现时已经没有可恢复的数据。
+      - name: 定时任务端到端
+        run: npm run e2e:cron
+
       # WebDAV 备份的端到端：本地起一个 mock WebDAV 服务，让 worker 真的
       # MKCOL / PUT / PROPFIND / GET / DELETE 一遍。
       # 单测（webdav.test.ts）里的 fetch 是假的，只能证明「我们发出了什么」；

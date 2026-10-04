@@ -13,7 +13,6 @@
 //
 // 用法：npm run e2e:webdav   （需要先 npm run build）
 
-import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -21,6 +20,7 @@ import {
     ROOT,
     createChecker,
     pickPort,
+    startMockWebDav,
     resolveWorkerConfig,
     startWrangler,
     waitReady,
@@ -30,118 +30,6 @@ import {
 const { state, check } = createChecker();
 
 // ---------------- mock WebDAV 服务 ----------------
-
-/**
- * 最小实现：MKCOL / PUT / GET / DELETE / PROPFIND，带 Basic 校验。
- * 全程记下收到的 Authorization 与请求，供后面断言「凭据确实送到了」。
- */
-async function startMockWebDav({ username, password }) {
-    const files = new Map();
-    const requests = [];
-    const authorizations = [];
-    const rejected = new Set();
-    const state = { rejectFirstPut: false };
-    const expected = `Basic ${Buffer.from(`${username}:${password}`, "utf8").toString("base64")}`;
-
-    const server = http.createServer((req, res) => {
-        const chunks = [];
-        req.on("data", c => chunks.push(c));
-        req.on("end", () => {
-                const auth = req.headers.authorization ?? "";
-                authorizations.push(auth);
-                requests.push(`${req.method} ${req.url}`);
-                const rejectFirstPut = state.rejectFirstPut;
-
-            if (username && auth !== expected) {
-                res.writeHead(401, { "WWW-Authenticate": 'Basic realm="dav"' });
-                res.end();
-                return;
-            }
-
-            const pathname = decodeURIComponent(new URL(req.url, "http://mock").pathname);
-            const name = pathname.split("/").filter(Boolean).pop() ?? "";
-
-            if (req.method === "MKCOL") {
-                res.writeHead(201);
-                res.end();
-                return;
-            }
-            if (req.method === "PUT") {
-                // 模拟「备份目录还不存在」的网盘：第一次 PUT 回 409，
-                // 用来验 worker 会不会补建目录再重试（那条分支平时走不到）
-                if (rejectFirstPut && !rejected.has(name)) {
-                    rejected.add(name);
-                    res.writeHead(409);
-                    res.end();
-                    return;
-                }
-                files.set(name, {
-                    bytes: Buffer.concat(chunks),
-                    modified: new Date().toUTCString(),
-                });
-                res.writeHead(201);
-                res.end();
-                return;
-            }
-            if (req.method === "GET") {
-                const hit = files.get(name);
-                if (!hit) {
-                    res.writeHead(404);
-                    res.end();
-                    return;
-                }
-                res.writeHead(200, { "Content-Type": "application/gzip" });
-                res.end(hit.bytes);
-                return;
-            }
-            if (req.method === "DELETE") {
-                files.delete(name);
-                res.writeHead(204);
-                res.end();
-                return;
-            }
-            if (req.method === "PROPFIND") {
-                const body =
-                    `<?xml version="1.0" encoding="utf-8"?><d:multistatus xmlns:d="DAV:">` +
-                    `<d:response><d:href>/navihive-backup/</d:href><d:propstat><d:prop>` +
-                    `<d:resourcetype><d:collection/></d:resourcetype></d:prop></d:propstat></d:response>` +
-                    [...files.entries()]
-                        .map(
-                            ([file, meta]) =>
-                                `<d:response><d:href>/navihive-backup/${encodeURIComponent(file)}</d:href>` +
-                                `<d:propstat><d:prop><d:getcontentlength>${meta.bytes.length}</d:getcontentlength>` +
-                                `<d:getlastmodified>${meta.modified}</d:getlastmodified></d:prop></d:propstat></d:response>`
-                        )
-                        .join("") +
-                    `</d:multistatus>`;
-                res.writeHead(207, { "Content-Type": "application/xml; charset=utf-8" });
-                res.end(body);
-                return;
-            }
-            res.writeHead(405);
-            res.end();
-        });
-    });
-
-    // 端口交给系统分配：写死会跟别的服务撞，撞了的表现是「连不上」而不是端口占用
-    await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
-    const { port } = server.address();
-    return {
-        port,
-        url: `http://127.0.0.1:${port}`,
-        files,
-        requests,
-        authorizations,
-        state,
-        expected,
-        // worker 侧是 keep-alive：不先掐掉连接，server.close() 会一直等到超时
-        close: () =>
-            new Promise(resolve => {
-                server.closeAllConnections?.();
-                server.close(resolve);
-            }),
-    };
-}
 
 // ---------------- 准备 ----------------
 
