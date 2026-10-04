@@ -188,9 +188,11 @@ export default function AiAssistantDialog({
         return () => {
             cancelled = true;
         };
-        // api 每次渲染都是新引用，故意只在 open 变化时重跑
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [open]);
+        // 只在打开时读一次配置：打开期间表单本身就是唯一真实来源，
+        // 父组件重渲染不该把用户正在填的内容冲掉。
+        // （api 是 App 顶层的模块级常量、引用稳定，放进 deps 不会导致重跑 ——
+        //   以前这里写着「api 每次渲染都是新引用」，是错的，按那句话去「修」反而会跑偏。）
+    }, [open, api]);
 
     const set = useCallback((key: string) => (value: string) => {
         setForm(prev => ({ ...prev, [key]: value }));

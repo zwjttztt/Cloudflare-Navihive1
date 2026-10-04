@@ -174,8 +174,10 @@ export default function BackupDialog({
     const [needsRemotePassword, setNeedsRemotePassword] = useState(false);
     const [remoteError, setRemoteError] = useState<string | null>(null);
 
-    // 打开时同步外部保存的 WebDAV 配置
-    // 注意：不把 webdavConfig 放进依赖，避免保存配置后把连接测试结果清空
+    // 打开时同步外部保存的 WebDAV 配置，之后**不跟随** webdavConfig 的变化。
+    // 这不是偷懒：「测试连接并保存」按钮就在本弹窗里，保存完外部配置会变，
+    // 一旦跟随，这段就会把用户正在填的备份口令、本地文件选择一起清掉
+    // （看起来像「保存完表单自己清空了」）。所以依赖里只放 open / initialTab。
     useEffect(() => {
         if (open) {
             setConfig(webdavConfig);

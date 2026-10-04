@@ -11,6 +11,7 @@
     "check:brand": "node script/sync-brand.mjs --check",
     "test": "node script/unit-tests.mjs",
     "smoke": "node script/ci-smoke.mjs",
+    "coverage": "node script/coverage.mjs",
     "e2e": "node script/api-e2e.mjs",
     "ci": "npm run typecheck && npm run lint && npm run test && npm run check:brand && npm run build && npm run e2e && npm run e2e:cron && npm run smoke && npm run e2e:webdav",
     "lint": "eslint .",

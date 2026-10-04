@@ -63,7 +63,9 @@ const EditGroupDialog: React.FC<EditGroupDialogProps> = ({
     const groupName = group?.name;
 
     // 弹窗每次打开时初始化名称。
-    // 依赖里只放 open / groupId，避免新增模式下父组件传入新对象把正在输入的内容重置掉。
+    // 依赖里只放 open / groupId / isCreate，**故意不含 groupName**：父组件每次渲染
+    // 都会传一个新的 group 对象，跟着它走的话，用户刚改了一个字，下一次渲染就会
+    // 把输入框弹回原名（表现是「打字打不进去」）。名字只在打开那一刻取一次就够了。
     React.useEffect(() => {
         if (!open) return;
         setName(isCreate ? "" : groupName ?? "");

@@ -152,12 +152,18 @@ if (pureEntries.length === 0 && domEntries.length === 0) {
 
 fs.rmSync(OUT_DIR, { recursive: true, force: true });
 
+// 覆盖率模式（由 script/coverage.mjs 打开）：多生成一份 sourcemap，并保留打包产物。
+// 两个动作必须一起做 —— c8 是在**本进程退出之后**才去读 bundle 与 .map 做重映射的，
+// 只开 sourcemap 却把产物删了，看到的还是打包产物的覆盖率。
+const coverageMode = !!process.env.NAVIHIVE_COVERAGE;
+
 const shared = {
     bundle: true,
     format: "esm",
     platform: "node",
     target: "node22",
     logLevel: "error",
+    ...(coverageMode ? { sourcemap: "external" } : {}),
 };
 
 const builds = [];
@@ -217,6 +223,6 @@ const child = spawn(process.execPath, ["--test", "--test-force-exit", ...bundles
     stdio: "inherit",
 });
 child.on("exit", code => {
-    fs.rmSync(OUT_DIR, { recursive: true, force: true });
+    if (!coverageMode) fs.rmSync(OUT_DIR, { recursive: true, force: true });
     process.exit(code ?? 1);
 });
