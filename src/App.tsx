@@ -1226,9 +1226,12 @@ function App() {
         // 同一域名也只探一次，避免每次都得等上几分钟
         const result = await probeLinks(urls, { concurrency: 5, skipFreshMs: FRESH_WINDOW_MS });
         setDeadLinks(result.dead);
+        // 第三个参数是「这次第一次失败、只记了疑似」的数量 —— 分两次才标失效之后，
+        // 第一次检测完界面上什么都不标，不说明白用户只会以为检测坏了
         const { text, severity, offerFilter } = describeLinkCheck(
             Object.keys(result.dead).length,
-            result.skipped
+            result.skipped,
+            result.suspect
         );
         notify(
             text,

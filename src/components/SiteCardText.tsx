@@ -53,7 +53,9 @@ export const SiteCardTitle = memo(function SiteCardTitle({
                 <Highlighted text={name} query={highlight} />
             </Typography>
             {dead && (
-                <Tooltip title='链接可能已失效（点右键 → 复制链接确认）'>
+                // 说清「两次」很重要：用户看到自己天天用的站被标灰，第一反应是这个功能不准。
+                // 告诉他判定依据、以及怎么纠偏（右键里那条「标记为可访问」）。
+                <Tooltip title='连续两次检测都没连上，可能已失效；右键卡片可「标记为可访问」'>
                     <Box className='nav-dead-dot' aria-label='链接可能已失效'>
                         失效
                     </Box>

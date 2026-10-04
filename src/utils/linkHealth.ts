@@ -17,10 +17,21 @@
 const KEY = "navihive:deadLinks";
 const PROBE_KEY = "navihive:linkProbe";
 const WHITELIST_KEY = "navihive:linkWhitelist";
+/** 第一次探测失败的链接先记在这里（「疑似」），再失败一次才真的标失效 */
+const SUSPECT_KEY = "navihive:linkSuspect";
 const TIMEOUT_MS = 6000;
 
 /** 默认「多久内探测过就不再重复探测」：7 天 */
 export const FRESH_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+/**
+ * 「疑似失效」的有效期：7 天内第二次失败才升级成失效，超时就从头再算。
+ *
+ * 为什么要两次：no-cors 探测拿不到真实状态码，失败只说明「这次请求没发出去」——
+ * 网络抖一下、被广告拦截插件挡掉、DNS 临时抽风、站点慢过 6 秒超时，都会失败，
+ * 而这些站点其实都还好好的。一次失败就贴「失效」标签，误伤率太高
+ * （用户看到自己天天用的站被标灰，第一反应是这个功能不准，然后就再也不信它了）。
+ */
+export const SUSPECT_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
 export type DeadLinks = Record<string, number>; // 站点链接 -> 判定失效的时间戳
 
@@ -30,6 +41,12 @@ export interface LinkHealthSnapshot {
     dead: DeadLinks;
     probe: Record<string, number>;
     white: string[];
+    /**
+     * 「疑似失效」表（v1 之后追加的可选字段）。
+     * 老快照没有它 —— 缺了就当没有，最多是「下一个第一次失败又被记成疑似」，
+     * 不会丢数据。刻意不升版本号：升了的话老客户端会把整份快照当成不认识而丢弃。
+     */
+    suspect?: Record<string, number>;
 }
 
 /** 快照里最多留多少个链接：多了既占 D1 也占流量，超出时丢最旧的 */
@@ -114,6 +131,24 @@ function writeProbeTimes(map: Record<string, number>) {
     writeJson(PROBE_KEY, map);
 }
 
+/** 「疑似失效」表：url -> 第一次失败的时间戳 */
+export function readSuspectTimes(): Record<string, number> {
+    return readNumberMap(SUSPECT_KEY);
+}
+
+function writeSuspectTimes(map: Record<string, number>) {
+    writeJson(SUSPECT_KEY, map);
+}
+
+/**
+ * 这次失败够不够格把链接判成失效。
+ * 只有「上次的疑似还在有效期内」才算连续两次失败 —— 隔了半个月才再失败一次，
+ * 中间很可能早就恢复了，不该拿旧账算数。
+ */
+function isConfirmedFailure(previousSuspectAt: number | undefined, now: number): boolean {
+    return typeof previousSuspectAt === "number" && now - previousSuspectAt < SUSPECT_WINDOW_MS;
+}
+
 // ---------- 云端同步钩子 ----------
 
 type ChangeListener = () => void;
@@ -152,6 +187,7 @@ export function exportLinkHealth(): LinkHealthSnapshot {
         dead: capEntries(readNumberMap(KEY)),
         probe: capEntries(readProbeTimes()),
         white: [...new Set(readWhitelist())].slice(0, MAX_ENTRIES),
+        suspect: capEntries(readSuspectTimes()),
     };
 }
 
@@ -179,6 +215,8 @@ export function mergeLinkHealth(snapshot: LinkHealthSnapshot | null | undefined)
 
     mergeMap(KEY, snapshot.dead);
     mergeMap(PROBE_KEY, snapshot.probe);
+    // 可选字段：老快照没有，缺了就跳过（见接口上的注释）
+    mergeMap(SUSPECT_KEY, snapshot.suspect);
 
     if (Array.isArray(snapshot.white) && snapshot.white.length > 0) {
         const local = readWhitelist();
@@ -197,8 +235,16 @@ export function markLink(url: string, alive: boolean): DeadLinks {
         const probes = readProbeTimes();
         probes[url] = Date.now();
         writeProbeTimes(probes);
+        // 探测成功过，之前那次「疑似」就不作数了
+        const suspects = readSuspectTimes();
+        delete suspects[url];
+        writeSuspectTimes(suspects);
     } else {
+        // 人工标记失效：用户的判断比探测可靠，不需要凑够两次
         map[url] = Date.now();
+        const suspects = readSuspectTimes();
+        delete suspects[url];
+        writeSuspectTimes(suspects);
     }
     writeDeadLinks(map);
     emitChange();
@@ -212,6 +258,7 @@ export function clearDeadLinks(): DeadLinks {
     for (const url of Object.keys(readNumberMap(KEY))) probes[url] = now;
     writeProbeTimes(probes);
     writeDeadLinks({});
+    writeSuspectTimes({});
     emitChange();
     return {};
 }
@@ -235,18 +282,31 @@ export interface LinkCheckSummary {
     offerFilter: boolean;
 }
 
-/** 一次批量探测结束后生成提示文案（跳过数只在实际 >0 时才提） */
-export function describeLinkCheck(deadCount: number, skipped = 0): LinkCheckSummary {
+/**
+ * 一次批量探测结束后生成提示文案（跳过数只在实际 >0 时才提）。
+ *
+ * 疑似数单独说一句很重要：改成分两次才标失效之后，第一次检测完界面上**什么都没标**，
+ * 不说清楚的话用户只会觉得「检测坏了」。
+ */
+export function describeLinkCheck(
+    deadCount: number,
+    skipped = 0,
+    suspectCount = 0
+): LinkCheckSummary {
     const skipNote = skipped > 0 ? `（${skipped} 个近期检测过，已跳过）` : "";
+    const suspectNote =
+        suspectCount > 0
+            ? `；另有 ${suspectCount} 个这次没连上，再检测一次仍失败才会标失效`
+            : "";
     if (deadCount > 0) {
         return {
-            text: `检测完成，${deadCount} 个链接疑似失效${skipNote}`,
+            text: `检测完成，${deadCount} 个链接疑似失效${skipNote}${suspectNote}`,
             severity: "info",
             offerFilter: true,
         };
     }
     return {
-        text: `检测完成，所有链接都能访问${skipNote}`,
+        text: `检测完成，所有链接都能访问${skipNote}${suspectNote}`,
         severity: "success",
         offerFilter: false,
     };
@@ -308,6 +368,8 @@ export interface ProbeResult {
     probed: number;
     /** 因「近期测过」或「用户标记过正常」而跳过的链接数 */
     skipped: number;
+    /** 本次**第一次**失败的链接数：只记了疑似，还没标失效 */
+    suspect: number;
 }
 
 /**
@@ -326,8 +388,9 @@ export async function probeLinks(
     const probes = readProbeTimes();
     const now = Date.now();
 
-    // 这里直接操作两张原始表，最后统一推导一次失效清单
+    // 这里直接操作原始表，最后统一推导一次失效清单
     const rawDead = readNumberMap(KEY);
+    const rawSuspect = readSuspectTimes();
     const uniq = [...new Set(urls.map(u => (u || "").trim()).filter(Boolean))];
 
     // 第一层：白名单 / 近期探测成功 → 直接判定存活，不再发请求
@@ -339,12 +402,16 @@ export async function probeLinks(
             (skipFreshMs > 0 && probes[url] && now - probes[url] < skipFreshMs)
         ) {
             delete rawDead[url];
+            delete rawSuspect[url];
             skipped += 1;
             continue;
         }
         pending.push(url);
     }
-    if (skipped > 0) writeDeadLinks(rawDead);
+    if (skipped > 0) {
+        writeDeadLinks(rawDead);
+        writeSuspectTimes(rawSuspect);
+    }
 
     // 第二层：同一域名只探代表链接，结果复用给该域名下的其它链接
     const byHost = new Map<string, string[]>();
@@ -357,6 +424,7 @@ export async function probeLinks(
 
     const queue = [...byHost.values()].map(list => list[0]);
     let done = skipped;
+    let suspectCount = 0;
 
     const worker = async () => {
         while (queue.length) {
@@ -368,16 +436,26 @@ export async function probeLinks(
 
             const nextProbes = readProbeTimes();
             const nextDead = readNumberMap(KEY);
+            const nextSuspect = readSuspectTimes();
+            const at = Date.now();
             for (const u of group) {
                 if (alive) {
                     delete nextDead[u];
-                    nextProbes[u] = Date.now();
+                    delete nextSuspect[u];
+                    nextProbes[u] = at;
+                } else if (isConfirmedFailure(nextSuspect[u], at)) {
+                    // 窗口内连续第二次失败 —— 这次才真的贴「失效」
+                    delete nextSuspect[u];
+                    nextDead[u] = at;
                 } else {
-                    nextDead[u] = Date.now();
+                    // 第一次失败：只记疑似。站点可能只是这次没连上，别急着标灰
+                    nextSuspect[u] = at;
+                    suspectCount += 1;
                 }
             }
             writeDeadLinks(nextDead);
             writeProbeTimes(nextProbes);
+            writeSuspectTimes(nextSuspect);
 
             done += group.length;
             onProgress?.(Math.min(done, uniq.length), uniq.length);
@@ -389,5 +467,5 @@ export async function probeLinks(
     );
 
     emitChange();
-    return { dead: computeDead(), probed: pending.length, skipped };
+    return { dead: computeDead(), probed: pending.length, skipped, suspect: suspectCount };
 }
