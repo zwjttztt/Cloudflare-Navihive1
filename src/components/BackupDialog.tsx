@@ -5,6 +5,8 @@ import { ExportData, WebDavConfig, WebDavFile, type ImportProgress } from "../AP
 import { NavigationClient } from "../API/client";
 import { MockNavigationClient } from "../API/mock";
 import { decryptBackup, isEncryptedBackup } from "../API/crypto";
+import BackupTab from "./BackupTab";
+import RestoreTab from "./RestoreTab";
 import {
     Dialog,
     DialogTitle,
@@ -16,32 +18,14 @@ import {
     Box,
     Stack,
     Divider,
-    TextField,
-    InputAdornment,
     Tabs,
     Tab,
     Alert,
-    CircularProgress,
-    Switch,
-    FormControlLabel,
-    List,
-    ListItemButton,
-    ListItemText,
     Chip,
     LinearProgress,
     useTheme,
 } from "@mui/material";
 import CloseIcon from "@mui/icons-material/Close";
-import DownloadIcon from "@mui/icons-material/Download";
-import CloudUploadIcon from "@mui/icons-material/CloudUpload";
-import CloudDownloadIcon from "@mui/icons-material/CloudDownload";
-import RefreshIcon from "@mui/icons-material/Refresh";
-import DeleteIcon from "@mui/icons-material/Delete";
-import UploadFileIcon from "@mui/icons-material/UploadFile";
-import CheckCircleIcon from "@mui/icons-material/CheckCircle";
-import VisibilityIcon from "@mui/icons-material/Visibility";
-import VisibilityOffIcon from "@mui/icons-material/VisibilityOff";
-import BookmarkAddedIcon from "@mui/icons-material/BookmarkAdded";
 
 interface BackupDialogProps {
     open: boolean;
@@ -92,24 +76,6 @@ interface BackupDialogProps {
     cronError?: { task: string; message: string; at?: string } | null;
 }
 
-// 人类可读的文件大小
-function formatSize(bytes: number): string {
-    if (!bytes) return "未知大小";
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
-}
-
-// 远端备份时间格式化
-function formatTime(value: string): string {
-    if (!value) return "";
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return value;
-    const pad = (n: number) => String(n).padStart(2, "0");
-    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(
-        date.getHours()
-    )}:${pad(date.getMinutes())}`;
-}
 
 /** 定时任务失败的时间：解析不出来就原样显示，别因为一行留痕把整个弹窗搞崩 */
 function formatCronErrorTime(iso: string): string {
@@ -507,729 +473,6 @@ export default function BackupDialog({
         }
     };
 
-    const renderBackupTab = () => (
-        <Stack spacing={0.75} sx={{ mt: 0.5, flex: 1, minHeight: 0 }}>
-            <Box>
-                {/* 顺序是「先选怎么导，再导出」：下载按钮排在配置项之后。
-                    原来按钮压在标题右边，用户常常先点了下载，才发现下面的
-                    凭据开关和加密还没设，白下一份不带密码 / 不带加密的文件。 */}
-                <Typography variant='subtitle2' sx={{
-                    fontWeight: '600'
-                }}>
-                    备份到本地
-                </Typography>
-                <Typography
-                    variant='caption'
-                    sx={{
-                        color: 'text.secondary',
-                        display: "block",
-                        mt: 0.25,
-                        mb: 0.5
-                    }}>
-                    导出分组、站点、网站设置，以及本机的星标与标签。
-                </Typography>
-
-                {/* 凭据开关：三处导出（本地下载 / WebDAV 上传 / 每周定时备份）共用同一个设置 */}
-                <Box
-                    sx={{
-                        mb: 1,
-                        px: 1,
-                        py: 0.5,
-                        borderRadius: 2,
-                        border: 1,
-                        // 带凭据是「有风险」的状态，边框用警告色提示一下
-                        borderColor: includeCredentials ? "warning.main" : "divider",
-                    }}
-                >
-                    <FormControlLabel
-                        sx={{ display: "flex", mr: 0, ml: 0 }}
-                        control={
-                            <Switch
-                                checked={includeCredentials}
-                                size='small'
-                                onChange={e => onIncludeCredentialsChange(e.target.checked)}
-                                slotProps={{ input: { "aria-label": "备份包含网站登录凭据" } }}
-                            />
-                        }
-                        label={
-                            <Typography variant='body2'>
-                                备份包含网站登录凭据（账号 / 密码）
-                            </Typography>
-                        }
-                    />
-                    {/* 两态文案长短不同。以前在这里 minHeight 占位防高度跳，
-                        现在弹窗外框高度已写死（见下方 Dialog / DialogContent），
-                        开关两态只会影响内部排布，不会再带得弹窗跳 */}
-                    <Typography
-                        variant='caption'
-                        color={includeCredentials ? "warning.dark" : "text.secondary"}
-                        sx={{ display: "block", ml: 5.5 }}
-                    >
-                        {includeCredentials
-                            ? "本地下载为明文 JSON，上传与定时备份会再加密一层。"
-                            : "导出、上传、定时备份都不带网站的账号密码，恢复后需手动补填。"}
-                    </Typography>
-                </Box>
-
-                {/* 本地备份加密：明文 JSON 落盘那一刻就带着站点密码，进网盘同步目录
-                    或被随手发出去就等于泄密。默认关闭，所以不套边框容器 ——
-                    它是进阶选项，视觉层级比上面的凭据开关低一档，也省下纵向空间。 */}
-                <Stack
-                    direction='row'
-                    spacing={0.5}
-                    sx={{
-                        alignItems: 'center',
-                        mt: 0.75
-                    }}>
-                    <Switch
-                        checked={encryptLocal}
-                        size='small'
-                        onChange={e => {
-                            setEncryptLocal(e.target.checked);
-                            // 关掉就清空口令，别让密码留在内存里等着被误用
-                            if (!e.target.checked) {
-                                setBackupPassword("");
-                                setBackupPasswordConfirm("");
-                            }
-                        }}
-                        slotProps={{ input: { "aria-label": "用密码加密备份文件" } }}
-                    />
-                    <Typography variant='body2'>用密码加密备份文件（.navihive）</Typography>
-                </Stack>
-                {encryptLocal && (
-                    <>
-                        <Typography
-                            variant='caption'
-                            sx={{
-                                color: 'success.dark',
-                                display: "block",
-                                ml: 5.5,
-                                mb: 0.5
-                            }}>
-                            恢复时要输入这个密码；密码无法找回，请务必牢记。
-                        </Typography>
-                        <Stack
-                            direction={{ xs: "column", sm: "row" }}
-                            spacing={1}
-                            sx={{ ml: 5.5 }}
-                        >
-                            <TextField
-                                id='backup-encrypt-password'
-                                label='备份密码'
-                                type={showBackupPassword ? "text" : "password"}
-                                size='small'
-                                fullWidth
-                                value={backupPassword}
-                                onChange={e => setBackupPassword(e.target.value)}
-                                autoComplete='new-password'
-                            />
-                            <TextField
-                                id='backup-encrypt-password-confirm'
-                                label='确认备份密码'
-                                type={showBackupPassword ? "text" : "password"}
-                                size='small'
-                                fullWidth
-                                value={backupPasswordConfirm}
-                                onChange={e => setBackupPasswordConfirm(e.target.value)}
-                                autoComplete='new-password'
-                                slotProps={{
-                                    input: {
-                                        endAdornment: (
-                                            <InputAdornment position='end'>
-                                                <IconButton
-                                                    id='backup-toggle-password'
-                                                    size='small'
-                                                    onClick={() =>
-                                                        setShowBackupPassword(prev => !prev)
-                                                    }
-                                                    aria-label='显示备份密码'
-                                                >
-                                                    {showBackupPassword ? (
-                                                        <VisibilityOffIcon fontSize='small' />
-                                                    ) : (
-                                                        <VisibilityIcon fontSize='small' />
-                                                    )}
-                                                </IconButton>
-                                            </InputAdornment>
-                                        ),
-                                    },
-                                }}
-                            />
-                        </Stack>
-                    </>
-                )}
-
-                {/* 下载动作收在这一块的最后：把上面两项定完再点 */}
-                <Stack
-                    direction='row'
-                    sx={{
-                        justifyContent: 'flex-end',
-                        mt: 1.5
-                    }}>
-                    <Button
-                        size='small'
-                        variant='contained'
-                        startIcon={<DownloadIcon />}
-                        onClick={async () => {
-                            // 本机校验只留「填了没」和「两次一致」：口令长度由用户自己定，
-                            // 唯一要挡的是「勾了加密却没给口令」——那会生成一个解不开的文件
-                            if (encryptLocal) {
-                                if (backupPassword.length === 0) {
-                                    onNotify("请输入备份密码，或关掉加密开关", "error");
-                                    return;
-                                }
-                                if (backupPassword !== backupPasswordConfirm) {
-                                    onNotify("两次输入的备份密码不一致", "error");
-                                    return;
-                                }
-                            }
-                            await onDownloadLocal(encryptLocal ? backupPassword : undefined);
-                            onNotify(
-                                encryptLocal
-                                    ? "加密备份已开始下载，请牢记备份密码"
-                                    : "备份文件已开始下载",
-                                "success"
-                            );
-                        }}
-                    >
-                        下载备份文件
-                    </Button>
-                </Stack>
-            </Box>
-
-            <Divider />
-
-            <Box>
-                <Typography variant='subtitle2' gutterBottom sx={{
-                    fontWeight: '600'
-                }}>
-                    备份到 WebDAV
-                </Typography>
-                <Typography
-                    variant='caption'
-                    sx={{
-                        color: 'text.secondary',
-                        display: "block",
-                        mb: 0.75
-                    }}>
-                    配置存在服务器，由服务端代理上传；目录不存在会自动创建，自动备份只保留最新一份，手动备份全部保留。
-                </Typography>
-
-                <Stack spacing={0.75}>
-                    <TextField
-                        label='WebDAV 地址'
-                        placeholder='https://dav.jianguoyun.com/dav/'
-                        value={config.url}
-                        onChange={handleConfigChange("url")}
-                        size='small'
-                        fullWidth
-                    />
-                    <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
-                        <TextField
-                            label='账号'
-                            placeholder='WebDAV 用户名'
-                            value={config.username}
-                            onChange={handleConfigChange("username")}
-                            size='small'
-                            fullWidth
-                            autoComplete='off'
-                        />
-                        <TextField
-                            label='密码 / 应用密码'
-                            type={showPassword ? "text" : "password"}
-                            placeholder='建议使用应用专用密码'
-                            value={config.password}
-                            onChange={handleConfigChange("password")}
-                            size='small'
-                            fullWidth
-                            autoComplete='new-password'
-                            // 应用密码一长串随机字符，粘进去看不到内容很容易粘错；
-                            // 点眼睛就能核对。默认仍然遮住
-                            slotProps={{
-                                input: {
-                                    endAdornment: (
-                                        <InputAdornment position='end'>
-                                            <IconButton
-                                                id='webdav-toggle-password'
-                                                size='small'
-                                                edge='end'
-                                                onClick={() => setShowPassword(prev => !prev)}
-                                                aria-label={showPassword ? "隐藏密码" : "显示密码"}
-                                            >
-                                                {showPassword ? (
-                                                    <VisibilityOffIcon fontSize='small' />
-                                                ) : (
-                                                    <VisibilityIcon fontSize='small' />
-                                                )}
-                                            </IconButton>
-                                        </InputAdornment>
-                                    ),
-                                },
-                            }}
-                        />
-                    </Stack>
-                    <TextField
-                        label='备份目录'
-                        placeholder='navihive-backup'
-                        value={config.path}
-                        onChange={handleConfigChange("path")}
-                        size='small'
-                        fullWidth
-                    />
-
-                    {/* 备份口令：独立的加密密钥，不用服务端的 AUTH_SECRET ——
-                        轮换 AUTH_SECRET 不该让此前所有备份变成解不开的废文件 */}
-                    <TextField
-                        id='webdav-backup-password'
-                        label='备份密码（可选）'
-                        type={showWebdavBackupPassword ? "text" : "password"}
-                        placeholder='留空则备份不加密'
-                        value={config.backupPassword || ""}
-                        onChange={handleConfigChange("backupPassword")}
-                        size='small'
-                        fullWidth
-                        autoComplete='new-password'
-                        slotProps={{
-                            input: {
-                                endAdornment: (
-                                    <InputAdornment position='end'>
-                                        <IconButton
-                                            id='webdav-toggle-backup-password'
-                                            size='small'
-                                            edge='end'
-                                            onClick={() => setShowWebdavBackupPassword(prev => !prev)}
-                                            aria-label={
-                                                showWebdavBackupPassword ? "隐藏备份密码" : "显示备份密码"
-                                            }
-                                        >
-                                            {showWebdavBackupPassword ? (
-                                                <VisibilityOffIcon fontSize='small' />
-                                            ) : (
-                                                <VisibilityIcon fontSize='small' />
-                                            )}
-                                        </IconButton>
-                                    </InputAdornment>
-                                ),
-                            },
-                        }}
-                    />
-                    <Typography
-                        variant='caption'
-                        sx={{
-                            color: 'text.secondary',
-                            display: 'block',
-                            mt: -0.5
-                        }}>
-                        设了就用它加密上传（恢复时要填同一个密码，无法找回）；留空则明文上传。
-                        手动 / 每周自动 / 远端恢复共用，与服务端的 AUTH_SECRET 无关。
-                    </Typography>
-
-                    <Box>
-                        <FormControlLabel
-                            sx={{ ml: 0 }}
-                            control={
-                                <Switch
-                                    id='webdav-allow-private'
-                                    size='small'
-                                    checked={!!config.allowPrivateNetwork}
-                                    onChange={e =>
-                                        setConfig(c => ({ ...c, allowPrivateNetwork: e.target.checked }))
-                                    }
-                                    slotProps={{ input: { "aria-label": "允许内网地址" } }}
-                                />
-                            }
-                            label='允许内网地址'
-                        />
-                        {/* 一行放得下（sm 宽度），别折行 */}
-                        <Typography
-                            variant='caption'
-                            sx={{
-                                color: 'text.secondary',
-                                display: 'block'
-                            }}>
-                            默认关闭；备份到内网地址（家庭 NAS 192.168.x.x、xxx.local）时才需要打开。
-                        </Typography>
-                    </Box>
-
-                    <Box>
-                        <FormControlLabel
-                            sx={{ ml: 0 }}
-                            control={
-                                <Switch
-                                    id='webdav-auto-backup'
-                                    size='small'
-                                    checked={autoBackup}
-                                    onChange={e => onToggleAutoBackup?.(e.target.checked)}
-                                    slotProps={{ input: { "aria-label": "每周自动备份" } }}
-                                />
-                            }
-                            label='每周自动备份一次'
-                        />
-                        <Typography
-                            variant='caption'
-                            sx={{
-                                color: 'text.secondary',
-                                display: 'block'
-                            }}>
-                            每周一上午 10:00 自动备份，会替换掉上一次的自动备份；手动备份不会被删除。
-                            {lastBackupAt ? ` 上次备份：${formatTime(lastBackupAt)}` : " 还没有备份记录。"}
-                        </Typography>
-                    </Box>
-
-                    <Stack
-                        ref={webdavActionsRef}
-                        direction={{ xs: "column", sm: "row" }}
-                        spacing={2}
-                    >
-                        <Button
-                            variant='outlined'
-                            onClick={handleTest}
-                            disabled={testing || !config.url}
-                            startIcon={testing ? <CircularProgress size={18} /> : <RefreshIcon />}
-                        >
-                            测试连接并保存
-                        </Button>
-                        <Button
-                            variant='contained'
-                            color='primary'
-                            onClick={handleUpload}
-                            disabled={uploading || !config.url}
-                            startIcon={uploading ? <CircularProgress size={18} /> : <CloudUploadIcon />}
-                        >
-                            备份到 WebDAV
-                        </Button>
-                    </Stack>
-
-                    {/* 测试结果放在按钮下方：点完按钮反馈就在手指底下，不用往回找 */}
-                    {testResult && (
-                        <Alert severity={testResult.success ? "success" : "error"} icon={testResult.success ? <CheckCircleIcon fontSize='inherit' /> : undefined}>
-                            {testResult.message}
-                        </Alert>
-                    )}
-
-                    {remoteFiles.length > 0 && (
-                        <Box>
-                            <Typography variant='caption' sx={{
-                                color: 'text.secondary'
-                            }}>
-                                最近的远端备份：
-                            </Typography>
-                            <Stack spacing={0.5} sx={{ mt: 0.5 }}>
-                                {remoteFiles.slice(0, 3).map(file => (
-                                    <Typography key={file.name} variant='body2'>
-                                        {file.name} · {formatSize(file.size)} · {formatTime(file.lastModified)}
-                                    </Typography>
-                                ))}
-                            </Stack>
-                        </Box>
-                    )}
-                </Stack>
-            </Box>
-            {/* 滚动内容末尾的留白：矮视口下自动滚到底后，按钮行不贴内容区底边。
-                必须是真实元素——容器 padding 会被 flex 溢出吃掉，margin 不计入
-                可滚动区域，只有占位元素能稳定撑出这段空间 */}
-            <Box sx={{ height: 12, flexShrink: 0 }} />
-        </Stack>
-    );
-
-    const renderRestoreTab = () => (
-        <Stack spacing={1.5} sx={{ mt: 0.5, flex: 1, minHeight: 0 }}>
-            <FormControlLabel
-                control={
-                    <Switch
-                        checked={overwrite}
-                        onChange={e => setOverwrite(e.target.checked)}
-                        color={overwrite ? "error" : "primary"}
-                        size='small'
-                    />
-                }
-                label={
-                    <Box>
-                        <Typography
-                            variant='body2'
-                            color={overwrite ? "error.main" : "text.primary"}
-                            sx={{
-                                fontWeight: '600'
-                            }}
-                        >
-                            {overwrite ? "覆盖恢复（清空现有数据后导入）" : "合并导入（保留现有数据并追加）"}
-                        </Typography>
-                        <Typography variant='caption' sx={{
-                            color: 'text.secondary'
-                        }}>
-                            {overwrite
-                                ? "先清空现在的分组与站点，再按备份重建；保留原有 ID 与星标 / 标签，用于把整站还原成备份那一刻的样子"
-                                : "备份内容追加到现有数据后面，已有的分组与站点不动，重复链接会跳过"}
-                        </Typography>
-                    </Box>
-                }
-            />
-            {/* 覆盖会删掉现有数据，把话说在动作之前，而不是等用户点了才发现 */}
-            {overwrite && (
-                <Alert severity='warning' sx={{ mt: -0.5 }}>
-                    覆盖恢复会先清空现有的分组与站点，再导入备份内容。确定现在的导航站数据已经不需要了吗？
-                </Alert>
-            )}
-
-            <Divider />
-
-            <Box>
-                <Typography variant='subtitle2' gutterBottom sx={{
-                    fontWeight: '600'
-                }}>
-                    从本地文件恢复
-                </Typography>
-                <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} sx={{
-                    alignItems: { sm: "center" }
-                }}>
-                    <Button variant='outlined' component='label' startIcon={<UploadFileIcon />}>
-                        选择备份文件
-                        <input
-                            type='file'
-                            hidden
-                            accept='.json,.navihive,application/json'
-                            onChange={handleFileSelect}
-                        />
-                    </Button>
-                    <Button
-                        variant='contained'
-                        onClick={handleRestoreLocal}
-                        disabled={!localData || restoring}
-                        startIcon={restoring ? <CircularProgress size={18} /> : <UploadFileIcon />}
-                    >
-                        开始恢复
-                    </Button>
-                </Stack>
-                {localFile && (
-                    <Typography variant='body2' sx={{ mt: 1 }}>
-                        已选择：{localFile.name}
-                    </Typography>
-                )}
-                {/* 加密备份：先输口令解开，再走和明文一样的恢复流程 */}
-                {encryptedBytes && !localData && (
-                    <Stack
-                        direction={{ xs: "column", sm: "row" }}
-                        spacing={1}
-                        sx={{
-                            alignItems: { sm: "center" },
-                            mt: 1
-                        }}>
-                        <TextField
-                            id='backup-restore-password'
-                            label='备份密码'
-                            type='password'
-                            size='small'
-                            value={restorePassword}
-                            onChange={e => setRestorePassword(e.target.value)}
-                            autoComplete='off'
-                            sx={{ flex: 1 }}
-                        />
-                        <Button
-                            variant='outlined'
-                            onClick={handleDecryptBackup}
-                            disabled={decrypting}
-                            startIcon={decrypting ? <CircularProgress size={18} /> : undefined}
-                        >
-                            解密
-                        </Button>
-                    </Stack>
-                )}
-                {localError && (
-                    <Alert severity='error' sx={{ mt: 1 }}>
-                        {localError}
-                    </Alert>
-                )}
-            </Box>
-
-            {/* 浏览器书签单占一节：它跟「恢复备份」不是一回事（来源是书签 HTML，
-                不是本站备份），挤在恢复按钮右边时很容易被当成「恢复的一种」而错过 */}
-            {onOpenBookmark && (
-                <>
-                    <Divider />
-                    <Box>
-                        <Typography variant='subtitle2' gutterBottom sx={{
-                            fontWeight: '600'
-                        }}>
-                            从浏览器导入
-                        </Typography>
-                        <Typography
-                            variant='caption'
-                            sx={{
-                                color: 'text.secondary',
-                                display: "block",
-                                mb: 0.75
-                            }}>
-                            支持 Chrome / Edge / Firefox 导出的 HTML 书签文件，导入前可以先挑要哪些、归到哪个分组。
-                        </Typography>
-                        <Button
-                            variant='outlined'
-                            onClick={onOpenBookmark}
-                            startIcon={<BookmarkAddedIcon fontSize='small' />}
-                        >
-                            导入浏览器书签
-                        </Button>
-                    </Box>
-                </>
-            )}
-
-            <Divider />
-
-            <Box sx={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
-                <Stack
-                    direction='row'
-                    sx={{
-                        justifyContent: 'space-between',
-                        alignItems: 'center',
-                        mb: 1
-                    }}>
-                    <Typography variant='subtitle2' sx={{
-                        fontWeight: '600'
-                    }}>
-                        从 WebDAV 恢复
-                    </Typography>
-                    <Button
-                        size='small'
-                        onClick={() => loadRemoteFiles(config)}
-                        disabled={listLoading || !config.url}
-                        startIcon={listLoading ? <CircularProgress size={18} /> : <CloudDownloadIcon />}
-                    >
-                        查看远端备份
-                    </Button>
-                </Stack>
-
-                {/* 列表区撑满剩余高度：「恢复」页的内容本来只有「备份」页的一半高，
-                    空态也给这块留位，切标签页、点开关时弹窗高矮才不会跳 */}
-                <Box
-                    sx={{
-                        flex: 1,
-                        minHeight: 220,
-                        display: "flex",
-                        flexDirection: "column",
-                        justifyContent: "center",
-                        p: 1,
-                        borderRadius: 2,
-                        border: "1px solid",
-                        borderColor: "divider",
-                        bgcolor: "background.default",
-                        overflow: "hidden",
-                    }}
-                >
-                    {!config.url && (
-                        <Alert
-                            severity='info'
-                            action={
-                                <Button color='inherit' size='small' onClick={() => setTab(0)}>
-                                    去填写
-                                </Button>
-                            }
-                        >
-                            网盘配置按账号各自保存：本账号还没填过，请先在「备份」标签页填写并测试 WebDAV 配置
-                        </Alert>
-                    )}
-
-                    {config.url && remoteFiles.length === 0 && !listLoading && (
-                        <Typography
-                            variant='body2'
-                            sx={{
-                                color: 'text.secondary',
-                                textAlign: 'center'
-                            }}>
-                            暂无远端备份，点击「查看远端备份」重新获取。
-                        </Typography>
-                    )}
-
-                    {remoteFiles.length > 0 && (
-                        <List
-                            dense
-                            sx={{
-                                flex: 1,
-                                minHeight: 0,
-                                overflowY: "auto",
-                            }}
-                        >
-                            {remoteFiles.map(file => (
-                                <ListItemButton
-                                    key={file.name}
-                                    selected={selectedRemote === file.name}
-                                    onClick={() => setSelectedRemote(file.name)}
-                                    dense
-                                >
-                                    <ListItemText
-                                        primary={file.name}
-                                        secondary={
-                                            selectedRemote === file.name
-                                                ? `已选中 · ${formatSize(file.size)} · ${formatTime(file.lastModified)}`
-                                                : `${formatSize(file.size)} · ${formatTime(file.lastModified)}`
-                                        }
-                                    />
-                                    <IconButton
-                                        edge='end'
-                                        size='small'
-                                        color='error'
-                                        // 删除中的那条已经被移出列表了，这里只是兜底防连点
-                                        disabled={deletingFiles.has(file.name)}
-                                        onClick={event => {
-                                            event.stopPropagation();
-                                            handleDeleteRemote(file.name);
-                                        }}
-                                        aria-label={`删除 ${file.name}`}
-                                    >
-                                        {deletingFiles.has(file.name) ? (
-                                            <CircularProgress size={16} />
-                                        ) : (
-                                            <DeleteIcon fontSize='small' />
-                                        )}
-                                    </IconButton>
-                                </ListItemButton>
-                            ))}
-                        </List>
-                    )}
-                </Box>
-
-                {needsRemotePassword && (
-                    <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ mt: 1 }}>
-                        <TextField
-                            id='backup-remote-restore-password'
-                            label='备份密码'
-                            type='password'
-                            size='small'
-                            value={remotePassword}
-                            onChange={e => setRemotePassword(e.target.value)}
-                            autoComplete='off'
-                            sx={{ flex: 1 }}
-                        />
-                        <Button
-                            variant='outlined'
-                            onClick={handleRestoreRemote}
-                            disabled={!remotePassword || restoring}
-                        >
-                            解密并恢复
-                        </Button>
-                    </Stack>
-                )}
-
-                {remoteError && (
-                    <Alert severity='error' sx={{ mt: 1 }}>
-                        {remoteError}
-                    </Alert>
-                )}
-
-                {remoteFiles.length > 0 && (
-                    <Button
-                        sx={{ mt: 1.5 }}
-                        variant='contained'
-                        onClick={handleRestoreRemote}
-                        disabled={!selectedRemote || restoring}
-                        startIcon={restoring ? <CircularProgress size={18} /> : <CloudDownloadIcon />}
-                    >
-                        从选中备份恢复
-                    </Button>
-                )}
-            </Box>
-            <Box sx={{ height: 24, flexShrink: 0 }} />
-        </Stack>
-    );
-
     return (
         <Dialog
             open={open}
@@ -1317,7 +560,70 @@ export default function BackupDialog({
                         </Typography>
                     </Alert>
                 ) : null}
-                {tab === 0 ? renderBackupTab() : renderRestoreTab()}
+                tab === 0 ? (
+                    <BackupTab
+                        config={config}
+                        setConfig={setConfig}
+                        handleConfigChange={handleConfigChange}
+                        testing={testing}
+                        testResult={testResult}
+                        handleTest={handleTest}
+                        uploading={uploading}
+                        handleUpload={handleUpload}
+                        webdavActionsRef={webdavActionsRef}
+                        autoBackup={autoBackup}
+                        onToggleAutoBackup={onToggleAutoBackup}
+                        lastBackupAt={lastBackupAt}
+                        remoteFiles={remoteFiles}
+                        includeCredentials={includeCredentials}
+                        onIncludeCredentialsChange={onIncludeCredentialsChange}
+                        encryptLocal={encryptLocal}
+                        setEncryptLocal={setEncryptLocal}
+                        backupPassword={backupPassword}
+                        setBackupPassword={setBackupPassword}
+                        backupPasswordConfirm={backupPasswordConfirm}
+                        setBackupPasswordConfirm={setBackupPasswordConfirm}
+                        showBackupPassword={showBackupPassword}
+                        setShowBackupPassword={setShowBackupPassword}
+                        showPassword={showPassword}
+                        setShowPassword={setShowPassword}
+                        showWebdavBackupPassword={showWebdavBackupPassword}
+                        setShowWebdavBackupPassword={setShowWebdavBackupPassword}
+                        onDownloadLocal={onDownloadLocal}
+                        onNotify={onNotify}
+                    />
+                ) : (
+                    <RestoreTab
+                        setTab={setTab}
+                        overwrite={overwrite}
+                        setOverwrite={setOverwrite}
+                        localFile={localFile}
+                        localData={localData}
+                        localError={localError}
+                        handleFileSelect={handleFileSelect}
+                        encryptedBytes={encryptedBytes}
+                        restorePassword={restorePassword}
+                        setRestorePassword={setRestorePassword}
+                        decrypting={decrypting}
+                        handleDecryptBackup={handleDecryptBackup}
+                        handleRestoreLocal={handleRestoreLocal}
+                        config={config}
+                        remoteFiles={remoteFiles}
+                        listLoading={listLoading}
+                        loadRemoteFiles={loadRemoteFiles}
+                        selectedRemote={selectedRemote}
+                        setSelectedRemote={setSelectedRemote}
+                        handleRestoreRemote={handleRestoreRemote}
+                        handleDeleteRemote={handleDeleteRemote}
+                        deletingFiles={deletingFiles}
+                        needsRemotePassword={needsRemotePassword}
+                        remotePassword={remotePassword}
+                        setRemotePassword={setRemotePassword}
+                        remoteError={remoteError}
+                        restoring={restoring}
+                        onOpenBookmark={onOpenBookmark}
+                    />
+                )
 
                 {/* 导入进度：只有服务端/本机真的报了条数才显示百分比 ——
                     拿不到进度时宁可只转圈，也不画一根「按时间匀速前进」的假进度条 */}

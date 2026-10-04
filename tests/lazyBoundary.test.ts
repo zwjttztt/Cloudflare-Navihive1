@@ -155,17 +155,30 @@ test("弹窗必须真的被 lazy 引用过（防止清单写了但没人引、�
     }
 });
 
-test("lazy 的弹窗外面得有 Suspense 兜着，否则打开瞬间会报错", () => {
+test("lazy 的弹窗外面得有兜底，否则打开瞬间会报错", () => {
     // 只需要看挂载它们的宿主文件（新增宿主时加到这里）
     const hosts = ["components/OverlayHost.tsx", "App.tsx", "components/GroupCard.tsx"];
     for (const host of hosts) {
         const file = FILES.find(f => f.path.endsWith(host.replace(/\//g, path.sep)));
         assert.ok(file, `找不到 ${host}`);
+        // 两种写法都算兜住了：直接写 <Suspense>，或者套 <ChunkBoundary>（它内部有 Suspense）。
+        // 后者还额外挡住了「块取不到」的报错，是现在推荐写法。
+        const hasSuspense = /<Suspense/.test(file.text);
+        const hasBoundary = /<ChunkBoundary/.test(file.text);
         assert.ok(
-            /<Suspense/.test(file.text),
-            `${host} 里有 lazy 组件却没有 <Suspense>，首次打开会因为没兜底而报错`
+            hasSuspense || hasBoundary,
+            `${host} 里有 lazy 组件却既没有 <Suspense> 也没有 <ChunkBoundary>，首次打开会因为没兜底而报错`
         );
     }
+});
+
+test("ChunkBoundary 自己内部得有 Suspense，否则套了它其实也没兜住", () => {
+    // 上一条把 <ChunkBoundary> 也算作兜底，前提是它真的包了 Suspense。
+    // 哪天有人把里面的 Suspense 拿掉（比如改成只认 error 的边界），
+    // 外面看着还写着 ChunkBoundary，lazy 组件却会在打开瞬间直接报错 —— 这条钉住它。
+    const file = FILES.find(f => f.path.endsWith(path.join("components", "ChunkBoundary.tsx")));
+    assert.ok(file, "找不到 components/ChunkBoundary.tsx");
+    assert.ok(/<Suspense/.test(file.text), "ChunkBoundary 内部没有 <Suspense>，套了它也不会兜 lazy 的加载期");
 });
 
 test("守卫自身没跑空：清单里的组件在 src 里都得真实存在", () => {

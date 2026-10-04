@@ -35,11 +35,27 @@ function precacheManifest(): Plugin {
                 ][]
             );
 
+            // 按需加载、但**离线时也必须可用**的块。
+            //
+            // 现在只有二次确认（ConfirmDialog）：删除在离线队列里是允许的（删完进队列、
+            // 联网后重放），不能因为「这个块还没下载到本机」就把用户的删除拦下来 ——
+            // 那样离线时点删除会看到「离线状态下这个功能打不开」，而操作本身其实能做。
+            // 所以它虽然不走静态 import（为了不占首屏），仍要进预缓存核心清单。
+            const ALWAYS_PRECACHE = [/[\\/]components[\\/]ConfirmDialog\.tsx$/];
+            const isAlwaysPrecached = (name: string) => {
+                const ids =
+                    (bundle[name] as { moduleIds?: readonly string[] }).moduleIds ?? [];
+                return ids.some(id => ALWAYS_PRECACHE.some(re => re.test(id)));
+            };
+
             // 从入口出发沿静态 import 走一遍：走得到的是「首屏就要用」的，
             // 只有被 dynamic import 指向的才是真正可以等的。
+            // ALWAYS_PRECACHE 命中的块也算起点，于是它和它引用的块一起进核心清单。
             const core = new Set<string>();
             const queue = [...chunks.keys()].filter(
-                name => (bundle[name] as { isEntry?: boolean }).isEntry
+                name =>
+                    (bundle[name] as { isEntry?: boolean }).isEntry ||
+                    isAlwaysPrecached(name)
             );
             while (queue.length) {
                 const name = queue.pop()!;

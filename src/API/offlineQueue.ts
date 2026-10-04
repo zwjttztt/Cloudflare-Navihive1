@@ -337,6 +337,11 @@ function pushFailed(op: PendingMutation, reason: string): void {
     // 只留最近这些条：再多的历史对排错没帮助，还会把 localStorage 撑爆
     if (failed.length > MAX_FAILED_KEPT) failed = failed.slice(-MAX_FAILED_KEPT);
     writeJson(failedStorageKey, failed);
+    // ⚠️ 必须在这里通知：重放路径是「先 drop(op) 再 pushFailed(op)」，
+    // drop 里那次通知发出去时这条还没进失败清单，订阅者（OfflineBanner、顶栏角标）
+    // 看到的还是旧列表 —— 结果是**被服务端拒绝的改动界面上不显示**，
+    // 而那正是失败清单唯一存在的理由（悄悄丢掉等于骗人「都同步好了」）。
+    notifyChange();
 }
 
 function removeFailed(opId: string): FailedMutation | null {

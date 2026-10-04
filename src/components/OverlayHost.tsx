@@ -8,7 +8,7 @@
 import { Suspense, lazy } from "react";
 import { Menu, MenuItem, ListItemText } from "@mui/material";
 import MobileTabBar from "./MobileTabBar";
-import ConfirmDialog from "./ConfirmDialog";
+import ConfirmDialog from "./ConfirmDialogGate";
 // 下面六个都是「触发了才用得到」的浮层，所以走 lazy —— 它们外面已经套了 <Suspense>，
 // 静态 import 会让那个 Suspense 永远不触发、包照样进首屏。
 //
@@ -22,6 +22,7 @@ import type { AiAssistant } from "../hooks/useAiAssistant";
 import type { GroupWithSites } from "../types";
 import type { DuplicateHit } from "../utils/duplicate";
 import type { ParsedBookmarkGroup } from "../utils/bookmarks";
+import ChunkBoundary from "./ChunkBoundary";
 
 const CommandPalette = lazy(() => import("./CommandPalette"));
 const BookmarkImportDialog = lazy(() => import("./BookmarkImportDialog"));
@@ -186,23 +187,23 @@ export default function OverlayHost({
             </Menu>
 
             {/* 命令面板：Ctrl / Cmd + K */}
-            <Suspense fallback={null}>
+            <ChunkBoundary>
                 <CommandPalette
                     open={commandPalette.open}
                     onClose={commandPalette.onClose}
                     commands={commandPalette.commands}
                 />
-            </Suspense>
+            </ChunkBoundary>
 
             {/* 浏览器书签批量导入 */}
-            <Suspense fallback={null}>
+            <ChunkBoundary>
                 <BookmarkImportDialog
                     open={bookmarkImport.open}
                     onClose={bookmarkImport.onClose}
                     onImport={bookmarkImport.onImport}
                     groups={bookmarkImport.groups}
                 />
-            </Suspense>
+            </ChunkBoundary>
 
             {/* 批量多选：底部操作条（删除 / 星标 / 标签 / 移动分组） */}
             {bulkBar.visible && (
@@ -271,7 +272,7 @@ export default function OverlayHost({
             />
 
             {/* 标签管理：集中删标签，删掉即从所有卡片上摘掉 */}
-            <Suspense fallback={null}>
+            <ChunkBoundary>
                 <TagManagerDialog
                     open={tagManager.open}
                     tags={tagManager.tags}
@@ -282,10 +283,10 @@ export default function OverlayHost({
                     onAiSuggest={tagManager.onAiSuggest}
                     onClose={tagManager.onClose}
                 />
-            </Suspense>
+            </ChunkBoundary>
 
             {/* AI 标签建议：看完勾一勾再落地，不自动改库 */}
-            <Suspense fallback={null}>
+            <ChunkBoundary>
                 <AiSuggestDialog
                     open={aiSuggest.open}
                     onClose={aiSuggest.onClose}
@@ -295,10 +296,10 @@ export default function OverlayHost({
                     allTags={aiSuggest.allTags}
                     onApply={aiSuggest.onApply}
                 />
-            </Suspense>
+            </ChunkBoundary>
 
             {/* AI 助手：开关、模型服务、凭据与测试连接（更多选项 → AI 助手） */}
-            <Suspense fallback={null}>
+            <ChunkBoundary>
                 <AiAssistantDialog
                     open={aiAssistant.open}
                     onClose={aiAssistant.onClose}
@@ -307,7 +308,7 @@ export default function OverlayHost({
                     onSaved={aiAssistant.onSaved}
                     statusText={aiAssistant.statusText}
                 />
-            </Suspense>
+            </ChunkBoundary>
         </>
     );
 }

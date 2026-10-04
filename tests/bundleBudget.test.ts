@@ -75,3 +75,22 @@ test("首屏包体积预算本身要留有余量（基线不能贴着上限）",
     const headroom = (BUDGET_KB - BASELINE_KB) / BASELINE_KB;
     assert.ok(headroom >= 0.05, `预算余量只有 ${(headroom * 100).toFixed(1)}%，太紧了`);
 });
+
+test("**当前**首屏包也要留 5% 余量，不只是基线留", t => {
+    // 上面那条是按基线算的。基线只在「真的把首屏压下来」时才更新，
+    // 于是中间陆续加进去的几 KB 它一概看不见 —— 实测出现过基线余量 6.25%、
+    // 实际余量只剩 4.24% 的情况，用例却是绿的。
+    // 真正会红的应该是「现在这个包离上限还有多远」，所以这里按当前体积再算一遍。
+    const chunk = indexChunk();
+    if (!chunk) {
+        t.skip("没有构建产物，跳过（先跑 npm run build 再跑单测）");
+        return;
+    }
+    const actual = (BUDGET_KB - chunk.kb) / chunk.kb;
+    assert.ok(
+        actual >= 0.05,
+        `当前首屏包 ${chunk.name} 是 ${chunk.kb.toFixed(2)} KB，离预算只剩 ` +
+            `${(actual * 100).toFixed(1)}%（至少要 5%）。` +
+            `要么继续把只在触发后才出现的组件改成 lazy，要么连同理由一起上调预算。`
+    );
+});

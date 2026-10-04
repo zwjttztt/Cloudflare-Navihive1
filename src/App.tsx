@@ -6,7 +6,6 @@ import {
     useRef,
     useCallback,
     lazy,
-    Suspense,
     type SetStateAction,
 } from "react";
 import { NavigationClient } from "./API/client";
@@ -26,8 +25,9 @@ import GroupNavRail from "./components/GroupNavRail";
 //  useAppCommands 走，App 这边连类型都不必留）
 import ScrollProgress from "./components/ScrollProgress";
 import BackToTop from "./components/BackToTop";
-import OfflineBanner from "./components/OfflineBanner";
-import ConfirmDialog from "./components/ConfirmDialog";
+import { useOfflineBannerVisible } from "./hooks/useOfflineBannerVisible";
+// 二次确认走按需入口：它只在用户点了删除之后才出现，不该占首屏
+import ConfirmDialog from "./components/ConfirmDialogGate";
 // 提示条 / 背景装饰 / 浮层挂载点：三段纯渲染的 JSX，从 App 的渲染树里抽出来
 import SnackbarHost from "./components/SnackbarHost";
 import BackgroundLayers from "./components/BackgroundLayers";
@@ -127,6 +127,9 @@ import {
 } from "./appDefaults";
 import { setUndoAccountUid } from "./utils/undoPersist";
 import SiteListBody from "./components/SiteListBody";
+// 断网提示只在断网 / 刚恢复 / 有同步失败项时才看得见，其余时候渲染出来也是 null，
+// 没必要占首屏（实测 3.7 KB）。挂不挂由 useOfflineBannerVisible 决定，块按需下载。
+const OfflineBanner = lazy(() => import("./components/OfflineBanner"));
 // 登录页是 lazy chunk（见 components/LoginScreen.tsx）：它不进首屏包，但登录页本身
 // 是首屏 —— 所以配合下面的「预热」，让它的 chunk 与认证检查那次请求并行下载：
 // 等 chunk 到位时正好渲染，用户感觉不到多等一次。
@@ -150,6 +153,7 @@ import {
     CssBaseline,
 } from "@mui/material";
 import TagBar from "./components/TagBar";
+import ChunkBoundary from "./components/ChunkBoundary";
 const ShortcutsDialog = lazy(() => import("./components/ShortcutsDialog"));
 
 // 根据环境选择使用真实API还是模拟API
@@ -494,6 +498,8 @@ function App() {
         handleExitMobileViewport,
         handleExitGroupsButtonViewport,
     } = useViewportUi({ loading, groupCount: groups.length });
+    // 断网提示挂不挂（决定要不要去下载那个块）；见 hooks/useOfflineBannerVisible
+    const showOfflineBanner = useOfflineBannerVisible();
 
     // ---- 撤销 / 重做 ----
     // 每个破坏性操作做完就往栈里压一条「怎么把自己倒回去」的记录，
@@ -1341,8 +1347,12 @@ function App() {
 
             {/* 顶部滚动进度条：固定贴在最上方，纯装饰 */}
             <ScrollProgress />
-            {/* 断网 / 恢复的浮动提示 */}
-            <OfflineBanner />
+            {/* 断网 / 恢复的浮动提示：断网或有失败项时才挂上（块按需下载） */}
+            {showOfflineBanner && (
+                <ChunkBoundary>
+                    <OfflineBanner />
+                </ChunkBoundary>
+            )}
 
             {/* 回到顶部：滚过一屏才出现 */}
             <BackToTop />
@@ -1633,7 +1643,7 @@ function App() {
 
                     {/* 新增分组对话框（与「编辑分组」共用同一套样式与尺寸）
                         两个都是 lazy chunk，套一层 Suspense 兜住首次打开时的加载间隙 */}
-                    <Suspense fallback={null}>
+                    <ChunkBoundary>
                         <EditGroupDialog
                             open={openAddGroup}
                             group={null}
@@ -1658,10 +1668,10 @@ function App() {
                             aiMessageError={aiMessageErrorNew}
                             onAiComplete={handleAiCompleteNew}
                         />
-                    </Suspense>
+                    </ChunkBoundary>
                     {/* 网站配置对话框 */}
                     {/* 全站设置：这一块原来内联在 App 里，抽成 SettingsDialog 单独维护 */}
-                    <Suspense fallback={null}>
+                    <ChunkBoundary>
                     <SettingsDialog
                         open={openConfig}
                         onClose={handleCloseConfig}
@@ -1697,12 +1707,12 @@ function App() {
                         // 全站外观是所有人共用的，只有站点所有者能改（服务端同规则）
                         isSiteOwner={!currentUser || currentUser.role === "owner"}
                     />
-                    </Suspense>
+                    </ChunkBoundary>
 
                     {/* 账号管理：改账号密码 / 恢复密钥 / 邀请码 / 注销账号。
                         原先「账户安全」混在网站设置里、注销账号又孤零零挂在更多菜单，
                         现在都收在这里 —— 网站设置只管「站点长什么样」。 */}
-                    <Suspense fallback={null}>
+                    <ChunkBoundary>
                     <AccountDialog
                         open={openAccount}
                         onClose={() => setOpenAccount(false)}
@@ -1737,9 +1747,13 @@ function App() {
                             setDeleteAccountOpen(true);
                         }}
                     />
-                    </Suspense>
+                    </ChunkBoundary>
 
-                    {/* 注销账号：二次确认 + 当前密码（入口在「更多选项」） */}
+                    {/* 注销账号：二次确认 + 当前密码（入口在「更多选项」）
+                        它也是 lazy chunk，同样要有边界 —— 之前漏了这层，
+                        块取不到时（断网、或站点刚更新）会一路冒到根上的错误边界，
+                        变成「整站挂了」，其实只是这一个弹窗没下来。 */}
+                    <ChunkBoundary>
                     <DeleteAccountDialog
                         open={deleteAccountOpen}
                         username={currentUser?.username}
@@ -1753,9 +1767,10 @@ function App() {
                             setDeleteAccountPassword("");
                         }}
                     />
+                    </ChunkBoundary>
 
                     {/* 访问统计：本机热力图 + Top5 */}
-                    <Suspense fallback={null}>
+                    <ChunkBoundary>
                     <VisitsDialog
                         open={openVisits}
                         onClose={() => setOpenVisits(false)}
@@ -1772,10 +1787,10 @@ function App() {
                             // 清除访问记录不弹提示：「最近访问」分组会当场消失，本身就是反馈
                         }}
                     />
-                    </Suspense>
+                    </ChunkBoundary>
 
                     {/* 数据备份与恢复对话框 */}
-                    <Suspense fallback={null}>
+                    <ChunkBoundary>
                     <BackupDialog
                         open={openBackup}
                         initialTab={backupTab}
@@ -1800,18 +1815,18 @@ function App() {
                         }}
                         cronError={cronError}
                     />
-                    </Suspense>
+                    </ChunkBoundary>
 
                 {/* 快捷键说明表：按 ? 打开，命令面板里也有入口（已不在「更多选项」里占位置） */}
-                <Suspense fallback={null}>
+                <ChunkBoundary>
                 <ShortcutsDialog
                     open={openShortcuts}
                     onClose={() => setOpenShortcuts(false)}
                 />
-                </Suspense>
+                </ChunkBoundary>
 
                 {/* 导入预览：恢复前先给用户看差异，勾选后才会真的写库 */}
-                <Suspense fallback={null}>
+                <ChunkBoundary>
                 <ImportPreviewDialog
                     open={importPreview !== null}
                     data={importPreview?.data ?? null}
@@ -1820,20 +1835,20 @@ function App() {
                     onCancel={() => closeImportPreview(null)}
                     onConfirm={data => closeImportPreview(data)}
                 />
-                </Suspense>
+                </ChunkBoundary>
 
                 {/* 审计日志：仅站点所有者可读，事后溯源谁在何时做了什么 */}
-                <Suspense fallback={null}>
+                <ChunkBoundary>
                 <AuditDialog
                     open={openAudit}
                     onClose={() => setOpenAudit(false)}
                     client={api as unknown as NavigationClient}
                     retentionDays={Number(configs[RETENTION_DAYS_KEY]) || undefined}
                 />
-                </Suspense>
+                </ChunkBoundary>
 
                 {/* 回收站：还原 / 彻底删除被软删除的站点、分组 */}
-                <Suspense fallback={null}>
+                <ChunkBoundary>
                 <RecycleBinDialog
                     open={openRecycle}
                     onClose={() => setOpenRecycle(false)}
@@ -1842,7 +1857,7 @@ function App() {
                     onChanged={() => void fetchData({ silent: true })}
                     onNotify={(msg, severity) => notify(msg, severity || "info")}
                 />
-                </Suspense>
+                </ChunkBoundary>
 
                 {/* 删除分组：二次确认 + 导出提示 */}
                 <ConfirmDialog

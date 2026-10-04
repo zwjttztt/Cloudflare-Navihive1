@@ -38,7 +38,7 @@ export interface ConfirmImpact {
     undoable?: boolean;
 }
 
-interface ConfirmDialogProps {
+export interface ConfirmDialogProps {
     open: boolean;
     title: string;
     /** 正文说明，可传字符串或任意节点 */

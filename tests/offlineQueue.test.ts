@@ -9,6 +9,9 @@ import {
     takeAll,
     pendingCount,
     flushOfflineQueue,
+    failedMutations,
+    clearFailedMutations,
+    subscribe,
     isOfflineError,
     wrapMutations,
     setAccountUid,
@@ -20,6 +23,8 @@ import {
 const reset = () => {
     setAccountUid(null);
     takeAll();
+    // 失败清单是另一个单例：只清队列的话，上一个用例留下的失败项会串到下一个用例里
+    clearFailedMutations();
 };
 
 test("enqueue / pendingCount / takeAll：取出即清空", () => {
@@ -88,6 +93,34 @@ test("服务端明确拒绝（4xx）的操作不再反复重放", async () => {
     enqueueMutation("setConfig", ["k", "v"]);
     assert.equal(await flushOfflineQueue(api), 0);
     assert.equal(pendingCount(), 0, "4xx 再排也没用，不该让角标永远挂着");
+});
+
+test("进失败清单时要通知订阅者 —— 否则界面上根本不显示这条（等于悄悄吞掉）", async () => {
+    reset();
+    // 重放路径是「先 drop 再 pushFailed」：drop 里那次通知发出去时，
+    // 这条还没进失败清单，订阅者读到的还是旧列表。少了 pushFailed 里的通知，
+    // 被服务端拒绝的改动就永远不出现在 OfflineBanner 上 —— 而那正是它唯一的用途。
+    // 订阅者在通知里读到的失败条数：这才是界面实际会渲染出来的数
+    let seenBySubscriber = -1;
+    const unsubscribe = subscribe(() => {
+        seenBySubscriber = failedMutations().length;
+    });
+    try {
+        const api: MutationApi = {
+            setConfig: async () => { throw Object.assign(new Error("bad request"), { status: 400 }); },
+        };
+        enqueueMutation("setConfig", ["k", "v"]);
+        await flushOfflineQueue(api);
+        assert.equal(failedMutations().length, 1, "前置：确实进了失败清单");
+        assert.equal(
+            seenBySubscriber,
+            1,
+            "订阅者最后一次收到的通知里必须已经包含这条，否则横幅不会显示它"
+        );
+    } finally {
+        unsubscribe();
+        clearFailedMutations();
+    }
 });
 
 test("还连不上（网络错）的操作留在队列里等下次", async () => {
