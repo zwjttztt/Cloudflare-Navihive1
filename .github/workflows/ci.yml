@@ -82,6 +82,15 @@ jobs:
       - name: 后端 API 端到端
         run: npm run e2e
 
+      # WebDAV 备份的端到端：本地起一个 mock WebDAV 服务，让 worker 真的
+      # MKCOL / PUT / PROPFIND / GET / DELETE 一遍。
+      # 单测（webdav.test.ts）里的 fetch 是假的，只能证明「我们发出了什么」；
+      # 这条能证明「发出去的东西真的能被网盘接住、再原样取回来」——
+      # gzip 流的组装与解压、Basic 凭据的 UTF-8 编码、PROPFIND 的 XML 形态、
+      # 以及「没开内网豁免时指向内网必须被挡下且根本没发出请求」。
+      - name: WebDAV 备份端到端
+        run: npm run e2e:webdav
+
       # ubuntu-latest 预装了 google-chrome，ci-smoke.mjs 会自己找到它；
       # 万一某天镜像里没有了，这一步会明确报「没找到 Chrome」而不是静默跳过
       - name: 浏览器冒烟

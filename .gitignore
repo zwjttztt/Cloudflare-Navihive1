@@ -38,3 +38,6 @@ scripts/recovery-private.key
 
 # 端到端脚本的 wrangler 本地 state（每次跑会清空）
 .wrangler-e2e/
+
+# WebDAV 端到端脚本的 wrangler 本地 state（每次跑新建子目录）
+.wrangler-webdav-e2e/
