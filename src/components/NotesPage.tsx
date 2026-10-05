@@ -18,7 +18,7 @@
 //
 // 为什么全 Flex 而不是 Grid：和 inkstone 一致，且和项目里现有布局同源。
 // 移动端按 inkstone 的做法切成「列表 / 编辑」两屏，而不是硬塞双栏。
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import IconButton from "@mui/material/IconButton";
@@ -31,6 +31,7 @@ import EditIcon from "@mui/icons-material/Edit";
 import PushPinIcon from "@mui/icons-material/PushPin";
 import SearchIcon from "@mui/icons-material/Search";
 import type { Note } from "../API/http";
+import { renderMarkdownToReact } from "../utils/markdownToReact";
 
 export interface NotesPageProps {
     notes: Note[];
@@ -270,9 +271,7 @@ export default function NotesPage({
                         }}
                     />
 
-                    {/* 内容区：源码 | 预览。预览这一栏现在先显示纯文本 ——
-                        Markdown 渲染层是下一步（它必须走 token→React，
-                        不能用 innerHTML，会被 CSP 的 require-trusted-types 拦掉）。 */}
+                    {/* 内容区：源码 | 预览 */}
                     <Box sx={{ flex: 1, display: "flex", minHeight: 0, minWidth: 0 }}>
                         {pane !== "preview" && (
                             <Box
@@ -313,19 +312,7 @@ export default function NotesPage({
                                     lineHeight: 1.7,
                                 }}
                             >
-                                <Typography
-                                    variant='caption'
-                                    color='text.secondary'
-                                    sx={{ display: "block", mb: 1 }}
-                                >
-                                    预览：Markdown 渲染层还在做，这一栏暂时显示源码
-                                </Typography>
-                                <Typography
-                                    variant='body2'
-                                    sx={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}
-                                >
-                                    {draft?.content || "（空）"}
-                                </Typography>
+                                <MarkdownPreview source={draft?.content || ""} />
                             </Box>
                         )}
                     </Box>
@@ -469,4 +456,48 @@ export default function NotesPage({
             )}
         </Box>
     );
+}
+
+/**
+ * Markdown 预览。
+ *
+ * 渲染是**异步**的：markdown-it 走动态 import（必须 lazy，否则进首屏）。
+ * 所以先渲染一个占位，解析完再替换 —— 免得每次输入都闪一下。
+ */
+function MarkdownPreview({ source }: { source: string }) {
+    const [node, setNode] = useState<ReactNode>(null);
+    const [ready, setReady] = useState(false);
+
+    useEffect(() => {
+        let cancelled = false;
+        if (!source) {
+            setNode(null);
+            return;
+        }
+        void renderMarkdownToReact(source).then(result => {
+            if (cancelled) return;
+            setNode(result);
+            setReady(true);
+        });
+        return () => {
+            // 输入很快时，旧的解析结果要丢掉，否则会闪回上一版内容
+            cancelled = true;
+        };
+    }, [source]);
+
+    if (!source) {
+        return (
+            <Typography variant='body2' color='text.disabled'>
+                （空）
+            </Typography>
+        );
+    }
+    if (!ready) {
+        return (
+            <Typography variant='body2' color='text.disabled'>
+                解析中…
+            </Typography>
+        );
+    }
+    return <Box sx={{ wordBreak: "break-word", lineHeight: 1.7 }}>{node}</Box>;
 }

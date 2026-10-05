@@ -8,6 +8,49 @@
 
 ---
 
+## 2026-10-05（十二续）· 收尾
+
+**记事本最后一块：Markdown 渲染层**（方案里最微妙的一处）。至此记事本完整可用。
+
+- **`src/utils/markdownToReact.tsx`**：markdown-it **只当解析器**（`md.parse()` 出 token），
+  再把 token 映射成 React 元素。全程**不产生 HTML 字符串、不碰任何 sink**，
+  连 DOMPurify 都不需要 —— 保住「全仓 0 处 innerHTML」，也就保住了 CSP 的
+  `require-trusted-types-for 'script'`（enforce、无 trusted-types 指令）不炸。
+  覆盖：标题 / 段落 / 有序无序列表 / **任务列表（真 checkbox）** / 引用 / 代码块（带
+  `data-lang`）/ 表格 / 分隔线 / 粗斜删除线高亮 / 行内代码 / 链接（外链带
+  `target=_blank rel=noopener`，`javascript:` 降级成纯文本）/ 图片（只放行 http(s) 与内联图片）。
+- 写它时踩了三个坑，都写进注释了：
+  1. **配对标签必须按 `nesting` 用栈处理**。`strong_open` / `strong_close` 是两个 token，
+     我一开始 `children.map()` 逐个渲染，**结果 strong / em / link 全都渲染不出来**
+     （open/close 都落进 default 分支，只剩一堆空 span）。
+  2. **token 名带 `_open` 后缀**：映射表写成 `strong` 一个都匹配不上（它给的是
+     `strong_open`），同样全落进 span。
+  3. `takeUntilClose` 的深度**从 1 起算**（调用方已消费了 open）。从 0 起算的话
+     第一个内容 token 会被 `depth >= 1` 挡掉，**引用和表格整块变空**。
+- **一个 `manualChunks` 的坑（+105KB）**：`vite.config.ts` 里那条兜底规则
+  `if (!id.includes("node_modules")) return; … return "vendor"` 会把**所有**
+  node_modules 扫进 `vendor`，而 `vendor` 是**首屏 chunk** —— markdown-it 于是被
+  硬塞进首屏，bundleBudget 直接判红（实测 1019.4 KB，超预算 69 KB）。
+  它明明只被动态 import（`loadParser` 里 `import("markdown-it")`）。
+  修法：给它单独一条规则 `return "markdown"`，与它的依赖
+  （mdurl / uc.micro / entities / linkify-it）一起成块（实测 102.84 KB 独立成块）。
+  **教训：加新依赖后要跑 bundleBudget —— 动态 import 不等于不进首屏，
+  `manualChunks` 的兜底规则会把它捞进去。**
+- **测试**（`tests/markdownRender.dom.test.tsx`，10 条）：结构断言（真的渲染出
+  h1/li/blockquote/table/pre，不是纯文本）+ 安全断言（`<script>` / `onerror` /
+  `javascript:` / `data:text/html` 一律不执行、降级成纯文本）+
+  **静态守卫：渲染层源码里不许出现 `innerHTML` / `dangerouslySetInnerHTML` /
+  `document.write` / `eval` 等 sink，也不许调用 markdown-it 的 `.render(`**。
+  静态扫之前先 `stripComments` —— 不剥的话会扫到注释里「为什么不用 dangerouslySetInnerHTML」
+  这类说明文字，守卫变成永远红的假警报（比没有守卫更糟）。
+- 接线：`NotesPage` 的预览栏换成 `<MarkdownPreview>`（异步解析 + 「解析中…」占位 +
+  取消标记，输入快时不会闪回旧内容）。
+- 用例 1755 → **1766**；首屏回到 225.96 KB，bundleBudget 通过。
+
+**记事本至此完整**：数据通路 / 导入导出（默认含 + 合并覆盖 + 三态统计）/ 独立页面
+（参考 inkstone 的列表 + 源码|预览分栏 + 状态栏）/ Markdown 渲染。剩下没做的只有
+**拖拽排序**与**离线队列**（两处都已有服务端接口，见下轮）。
+
 ## 2026-10-05（十一续）
 
 **又一轮 500，这次是 SQL 写错了**（用户报「新建笔记失败：API 错误: 500」）。

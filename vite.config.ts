@@ -106,8 +106,15 @@ export default defineConfig({
         manualChunks(id: string) {
           if (!id.includes("node_modules")) return;
           if (/node_modules[\\/](react|react-dom|scheduler)[\\/]/.test(id)) return "react";
-          if (/node_modules[\\/](@mui|@emotion|@popperjs|@floating-ui)[\\/]/.test(id)) return "mui";
-          return "vendor";
+            if (/node_modules[\\/](@mui|@emotion|@popperjs|@floating-ui)[\\/]/.test(id)) return "mui";
+            // markdown-it 必须单独成块。它**只**被 utils/markdownToReact 动态 import
+            // （见那里的 loadParser），本来不进首屏；但下面这条兜底规则会把所有
+            // node_modules 扫进 vendor —— 而 vendor 是首屏 chunk，于是这 ~100KB
+            // 就被硬塞进首屏了（实测 +105KB，bundleBudget 立刻判红）。
+            if (/node_modules[\\/](markdown-it|mdurl|uc\.micro|entities|linkify-it)[\\/]/.test(id)) {
+                return "markdown";
+            }
+            return "vendor";
         },
       },
     },
