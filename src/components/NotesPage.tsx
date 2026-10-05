@@ -62,6 +62,9 @@ import type { Note } from "../API/http";
 import type { TrashedNote } from "../hooks/useNotes";
 import { renderMarkdownToReact } from "../utils/markdownToReact";
 import { useScrollLock } from "../hooks/useScrollLock";
+// 笔记时间统一走这里：SQLite 的 UTC 无时区串必须按 UTC 解释，
+// 直接 `new Date(iso)` 在东八区会差 8 小时（「笔记时间不对」的根因）。
+import { formatWhen, monthLabel } from "../utils/noteTime";
 
 export interface NotesPageProps {
     notes: Note[];
@@ -93,29 +96,6 @@ function summarize(source: string, max = 90): string {
     return flat.length > max ? `${flat.slice(0, max)}…` : flat;
 }
 
-/** 列表里的时间：今天只给时刻，更早给日期（inkstone 同款） */
-function formatWhen(iso?: string): string {
-    if (!iso) return "";
-    const t = new Date(iso);
-    if (Number.isNaN(t.getTime())) return "";
-    const now = new Date();
-    const sameDay =
-        t.getFullYear() === now.getFullYear() &&
-        t.getMonth() === now.getMonth() &&
-        t.getDate() === now.getDate();
-    const hh = String(t.getHours()).padStart(2, "0");
-    const mm = String(t.getMinutes()).padStart(2, "0");
-    if (sameDay) return `${hh}:${mm}`;
-    return `${t.getMonth() + 1}月${t.getDate()}日`;
-}
-
-/** 列表里月份分组标题（阶段二）：「2026-10」→「十月」 */
-function monthLabel(iso?: string): string {
-    if (!iso) return "其他";
-    const d = new Date(iso);
-    if (Number.isNaN(d.getTime())) return "其他";
-    return `${d.getFullYear()} 年 ${d.getMonth() + 1} 月`;
-}
 
 /** 把编辑区拆成「源码 | 预览」两栏 */
 type Pane = "edit" | "split" | "preview";
@@ -127,25 +107,34 @@ type NoteView = "all" | "recent" | "starred" | "archived" | "uncategorized" | "t
  * 编辑区里那条「能看见的滚动条」。
  *
  * 之前预览区用的是浏览器默认滚动条，Windows 11 默认 overlay —— 不动鼠标时不显示，
- * 用户就以为「预览窗没滚轮 / 内容显示不全」。统一给这两栏定一条 10px 的常显滚动条，
- * inkstone 也是这个调子（细瘦、灰、hover 加深）。
+ * 用户就以为「预览窗没滚轮 / 内容显示不全」，所以必须给它常显。
+ *
+ * ⚠️ 但**别做成 12px 的 45% 深灰粗条**：那和全站那条细圆角条完全不是一个调子，
+ * 用户第一反应是「这根黑杠太丑了」。这里改成复刻全局那套（src/index.css）：
+ * 10px 宽、透明轨道、半透明 thumb、2px 透明边框 + `background-clip: content-box`
+ * 把 thumb 内缩成一条居中细圆角 —— 细、轻、hover 才明显加深。
+ *
+ * 看得见与好看之间的度：thumb 用 0.32（比全局的 0.22 稍深一点，
+ * 保证不动鼠标也能看见），hover 给 0.5，轨道保持透明（露出底色，不糊成一块灰）。
  */
 const SCROLLBAR_SX = {
     // ⚠️⚠️ **千万别写 `scrollbarWidth: "thin"`**。Chrome 121+ 也认这个标准属性，
     // 一旦设上，浏览器就改用自己的 thin 滚动条（浅灰细条 + 上下箭头），
     // 下面整套 `::-webkit-scrollbar` **被直接忽略** ——
-    // 症状极具迷惑性：`offsetWidth - clientWidth` 量到 12px 槽位、截图放大也「有」条，
-    // 用户还是说「看不见滚动条」。现在只留 Firefox 用的 scrollbarColor（宽度保持默认），
-    // Chrome/Edge 走伪元素，才能拿到 12px 深色、对比足够的自定义条。
-    scrollbarColor: "rgba(0,0,0,0.45) rgba(0,0,0,0.06)",
-    "&::-webkit-scrollbar": { width: 12, height: 12 },
+    // 症状极具迷惑性：`offsetWidth - clientWidth` 量到 10px 槽位、截图放大也「有」条，
+    // 用户还是说「看不见滚动条」。Firefox 走 scrollbarColor，Chrome/Edge 走伪元素。
+    scrollbarColor: "rgba(15, 23, 42, 0.32) transparent",
+    "&::-webkit-scrollbar": { width: 10, height: 10 },
     "&::-webkit-scrollbar-corner": { background: "transparent" },
-    "&::-webkit-scrollbar-track": { background: "rgba(0,0,0,0.06)" },
+    "&::-webkit-scrollbar-track": { background: "transparent" },
     "&::-webkit-scrollbar-thumb": {
-        bgcolor: "rgba(0,0,0,0.45)",
-        borderRadius: 6,
+        bgcolor: "rgba(15, 23, 42, 0.32)",
+        // 内缩成一条细圆角，而不是占满整条轨道的方块
+        border: "3px solid transparent",
+        backgroundClip: "content-box",
+        borderRadius: 999,
         minHeight: 40,
-        "&:hover": { bgcolor: "rgba(0,0,0,0.6)" },
+        "&:hover": { bgcolor: "rgba(15, 23, 42, 0.5)" },
     },
 } as const;
 
@@ -341,8 +330,8 @@ export default function NotesPage({
                                 {item.title}
                             </Typography>
                             <Typography variant='caption' color='text.disabled' sx={{ fontSize: 11 }}>
-                                {formatWhen(new Date(item.deletedAt).toISOString()) ||
-                                    new Date(item.deletedAt).toLocaleDateString()}
+                                {/* deletedAt 是毫秒时间戳，同样要走统一的解析入口 */}
+                                {formatWhen(item.deletedAt)}
                             </Typography>
                         </Box>
                         <Tooltip title='还原到全部笔记'>
@@ -1066,6 +1055,13 @@ export default function NotesPage({
             sx={{
                 position: "fixed",
                 inset: 0,
+                // ⚠️ 必须显式铺到 100vw，光靠 `inset: 0` 铺不满。
+                // `scrollbar-gutter: stable`（src/index.css）让 html 和 body 各留一条
+                // 恒定 10px 的滚动条槽位；fixed 层的 containing block 是 **html 的内容盒**，
+                // 所以 inset:0 只得到视口宽减 10 —— 剩下那道 10px 的缝里，
+                // 底下还挂着的主界面（极光背景层）就从缝里冒出一条来。
+                // 这就是真机上看到的「右边显示了一点」。100vw 把槽位一起盖住。
+                width: "100vw",
                 // 明确禁止这一层滚动：它是整页，**页面级滚动条本身就是缺陷**
                 //（该滚的是预览区内部）。之前某一层漏了 minHeight: 0，内容顶出视口、
                 // 连带 body 出现滚动条；inset + overflow 才彻底按住。
