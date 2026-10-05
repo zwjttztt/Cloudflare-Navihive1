@@ -303,6 +303,7 @@ export default function NotesPage({
                         sx={{
                             px: 2,
                             pt: 1.5,
+                            flexShrink: 0,
                             "& .MuiInputBase-root": { fontSize: 19, fontWeight: 600 },
                             "& .MuiInput-input": { padding: "6px 0" },
                         }}
@@ -377,6 +378,7 @@ export default function NotesPage({
                             gap: 2,
                             px: 2,
                             py: 0.75,
+                            flexShrink: 0,
                             borderTop: "1px solid rgba(128,128,128,0.25)",
                             fontSize: 12,
                             color: "text.secondary",
@@ -488,10 +490,29 @@ export default function NotesPage({
 
             {/* 主体：移动端在「列表 / 编辑」之间切，桌面端左右并排 */}
             <Box sx={{ flex: 1, display: "flex", minHeight: 0 }}>
-                <Box sx={{ display: { xs: mobileDetail ? "none" : "flex", md: "flex" }, flex: 1, minWidth: 0 }}>
+                {/* 左栏**不能**加 flex:1 —— 它内部已经用 width:300 定宽了（flexShrink:0）。
+                    外层再来一个 flex:1，容器会被 flex 撑到约 445px，而里面的列表只有 300px，
+                    剩下的 145px 就是「中间那块空白」。宽度只由内层决定：flex: 0 0 auto。 */}
+                <Box
+                    sx={{
+                        display: { xs: mobileDetail ? "none" : "flex", md: "flex" },
+                        flex: "0 0 auto",
+                        minWidth: 0,
+                        minHeight: 0,
+                    }}
+                >
                     {listPane}
                 </Box>
-                <Box sx={{ display: { xs: mobileDetail ? "flex" : "none", md: "flex" }, flex: 1, minWidth: 0 }}>
+                {/* 右栏占满剩余空间。minHeight:0 同样要加：缺了它，内部内容会把这层
+                    撑高、进而把最外层的 fixed 容器顶出视口 —— 表现就是页面级滚动条。 */}
+                <Box
+                    sx={{
+                        display: { xs: mobileDetail ? "flex" : "none", md: "flex" },
+                        flex: 1,
+                        minWidth: 0,
+                        minHeight: 0,
+                    }}
+                >
                     {editorPane}
                 </Box>
             </Box>

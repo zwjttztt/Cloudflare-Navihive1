@@ -13,6 +13,22 @@ import NotesPage from "../src/components/NotesPage";
 import { useNotes } from "../src/hooks/useNotes";
 import { UIPrefsProvider } from "../src/context/UIPrefsContext";
 import type { Note } from "../src/API/http";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join, resolve } from "node:path";
+
+/** 单测会被复制到 script/tmp-tests/ 下再跑，逐级向上找真身 */
+function findProjectDir(): string {
+    for (let dir = dirname(fileURLToPath(import.meta.url)), i = 0; i < 6; i++) {
+        try {
+            readFileSync(resolve(dir, "package.json"), "utf-8");
+            return dir;
+        } catch {
+            dir = dirname(dir);
+        }
+    }
+    throw new Error("找不到项目根目录");
+}
 
 let host: HTMLDivElement | null = null;
 let root: Root | null = null;
@@ -245,4 +261,50 @@ test("搜索框的放大镜在框内（不是绝对定位飘在外面）", () =>
         adornment,
         "放大镜应该在 InputAdornment 里（跟着输入框走），不是绝对定位浮在页面上的"
     );
+});
+
+test("左栏容器不能带 flex:1（会把 300px 的列表撑成两栏宽，中间留空白）", () => {
+    // 这条是**静态守卫**：jsdom 没有布局，目测不了「中间那块空白」，
+    // 只能把结论钉在源码上。
+    //
+    // 坑的来由：listPane 内部已经 `width: 300 + flexShrink: 0` 定死了宽度，
+    // 而它**外层**那个容器又写了 `flex: 1` —— flex 会把外层撑到约 445px，
+    // 里面的列表还是 300px，多出来的 145px 就是用户看到的「中间空白」。
+    // 宽度只能由一层决定：外层 `flex: 0 0 auto`。
+    const source = readFileSync(
+        join(findProjectDir(), "src", "components", "NotesPage.tsx"),
+        "utf-8"
+    );
+    const body = source.slice(
+        source.indexOf("主体：移动端"),
+        source.indexOf("移动端从编辑态回列表")
+    );
+    assert.ok(
+        body.includes('flex: "0 0 auto"'),
+        "左栏容器应该是 flex: 0 0 auto（宽度由内层的 width:300 决定）"
+    );
+    // 内层那条 width:300 是配套的：外层不定宽、内层不定宽就没有「固定宽列表」可言
+    assert.ok(
+        source.includes("md: 300"),
+        "listPane 内部仍应是 width 300（md 起）"
+    );
+});
+
+test("右栏要有 minHeight:0（缺了它内容会顶出视口，出现页面级滚动条）", () => {
+    const source = readFileSync(
+        join(findProjectDir(), "src", "components", "NotesPage.tsx"),
+        "utf-8"
+    );
+    const body = source.slice(
+        source.indexOf("主体：移动端"),
+        source.indexOf("移动端从编辑态回列表")
+    );
+    // 右栏那一段（最后一个容器）必须带 minHeight
+    const parts = body.split("minWidth: 0");
+    assert.ok(
+        body.includes("minHeight: 0"),
+        "两个容器都要有 minHeight: 0 —— flex 子项默认 min-height:auto，" +
+            "内容一高就撑破容器，把 fixed 布局顶出视口（页面级滚动条的来源）"
+    );
+    assert.ok(parts.length >= 2, "没找到两个容器的 minWidth 声明，检查匹配是否失效");
 });
