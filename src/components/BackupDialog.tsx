@@ -567,7 +567,7 @@ export default function BackupDialog({
                         </Typography>
                     </Alert>
                 ) : null}
-                tab === 0 ? (
+                {tab === 0 ? (
                     <BackupTab
                         config={config}
                         setConfig={setConfig}
@@ -632,7 +632,7 @@ export default function BackupDialog({
                         restoring={restoring}
                         onOpenBookmark={onOpenBookmark}
                     />
-                )
+                )}
 
                 {/* 导入进度：只有服务端/本机真的报了条数才显示百分比 ——
                     拿不到进度时宁可只转圈，也不画一根「按时间匀速前进」的假进度条 */}

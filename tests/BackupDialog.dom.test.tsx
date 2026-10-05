@@ -4,7 +4,7 @@
 // 为什么是它：这是站内**唯一能一键覆盖全部数据**的入口。写错一条就是「用户点了一下，
 // 整个站的数据被换成备份里的那份」，而且不可逆。最该锁死的是那条闸门——
 // 恢复前必须先弹差异预览，用户在预览里点取消就**绝不能**真导入。
-import { test } from "node:test";
+import { test, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -39,6 +39,11 @@ interface Handlers {
     includeCredentials?: boolean;
     initialTab?: number;
 }
+
+// 兜底清理：这个文件的用例过去全都用 initialTab={1}（「恢复」页），
+// 于是「备份」页出过一次「三元表达式丢了开头的 {、整段代码被当文本渲染」的
+// 事故而无人发现（tab 0 从来没被渲染过）。afterEach 保证一条失败不会污染下一条。
+afterEach(cleanup);
 
 function mount(handlers: Handlers = {}) {
     host = document.createElement("div");
@@ -296,4 +301,30 @@ test("BackupDialog：凭据开关有 aria-label，切换会回调父级", async 
 
     assert.equal(toggled.count, 1, "切换应回调一次");
     assert.equal((toggled.calls[0] as unknown as [boolean])[0], false, "应从 true 切到 false");
+});
+
+test("「备份」页能正常渲染（tab 0 曾经整段变成裸文本）", () => {
+    // 这条钉的是一个真实事故：`{tab === 0 ? (` 的开头的 `{` 丢过一次，
+    // 于是 `tab === 0 ? (` 被当成文本直接渲染在页面上，
+    // **两个 tab 的内容同时可见**、按钮全部点不动。
+    // TS 编译抓不到（缺 `{` 在 JSX 文本位置是合法语法），
+    // 而本文件原有的用例全都渲染 tab 1，所以一直没暴露。
+    mount({ initialTab: 0 });
+    const text = document.body.textContent || "";
+    assert.ok(
+        !text.includes("tab === 0"),
+        "页面里出现了 `tab === 0` 这类源码文本 —— JSX 的 `{` 丢了，条件渲染变成了纯文本"
+    );
+    assert.ok(text.includes("备份到本地"), "「备份」页的内容该出现");
+    assert.ok(
+        !text.includes("恢复到本地"),
+        "「恢复」页的内容不该同时出现（两个 tab 一起渲染就是条件渲染失效的表现）"
+    );
+});
+
+test("「备份」页有「备份包含记事本」开关（tab 0 才看得到）", () => {
+    mount({ initialTab: 0 });
+    const sw = document.querySelector<HTMLInputElement>('input[aria-label="备份包含记事本"]');
+    assert.ok(sw, "记事本开关应该在「备份」页");
+    assert.equal(sw!.checked, true, "默认要带上记事本（与凭据开关相反）");
 });
