@@ -34,6 +34,7 @@ import PushPinIcon from "@mui/icons-material/PushPin";
 import SearchIcon from "@mui/icons-material/Search";
 import type { Note } from "../API/http";
 import { renderMarkdownToReact } from "../utils/markdownToReact";
+import { useScrollLock } from "../hooks/useScrollLock";
 
 export interface NotesPageProps {
     notes: Note[];
@@ -109,6 +110,12 @@ export default function NotesPage({
     /** 草稿：编辑期间不立刻写库（点「保存」或切走才提交） */
     const [draft, setDraft] = useState<{ title: string; content: string } | null>(null);
     const [mobileDetail, setMobileDetail] = useState(false);
+
+    // ⚠️ 这一行不能省。记事本自己是 `position: fixed` 的全屏层，压根不占文档流，
+    // 但**底下的导航站主界面还挂载着**（卡片网格一两千像素高），document照样能滚。
+    // 于是「记事本页面里」右侧有一条整页滚动条，拖它页面会动，看着像坏了。
+    // 关掉记事本（组件卸载）时 hook 会自动把样式还原回去。
+    useScrollLock(true);
 
     const active = useMemo(
         () => notes.find(n => n.id === activeId) || null,
@@ -202,24 +209,34 @@ export default function NotesPage({
     const insertAtCursor = useCallback(
         (before: string, after: string, placeholder: string) => {
             const el = textareaRef.current;
-            const content = draft?.content ?? "";
-            if (!el) {
-                setDraft(d => (d ? { ...d, content: d.content + before + after } : d));
-                return;
-            }
+            if (!el) return;
+            // ⚠️ **内容要从 textarea.value 读，不能从 draft（React state）读**。
+            // setDraft 是异步的：连点两下按钮时，第二次拿到的 draft 还是**上一次
+            // 插入之前**的值，于是又从旧的 selectionStart 插一遍 —— 两次插入
+            // 叠在同一处，内容就堆成一团（用户报「多次点击有问题」）。
+            // DOM 上的 value 永远是最新且唯一的事实来源。
+            const content = el.value;
             const start = el.selectionStart ?? content.length;
             const end = el.selectionEnd ?? start;
             const selected = content.slice(start, end) || placeholder;
             const next = content.slice(0, start) + before + selected + after + content.slice(end);
+            // ⚠️ 光标必须落在**整段**之后（before + selected + after 三者全部算上）。
+            // 漏掉 after.length 的话，点一下「粗体」光标就落在闭合的 `**` 中间，
+            // 接着打字会插到标记里头（变 `**粗体X**` 看着像加粗失败），
+            // 再点一次又是从半截标记处插入 —— 用户报的「多次点击有问题」就是它俩叠加。
+            const caret = Math.min(
+                next.length,
+                start + before.length + selected.length + after.length
+            );
+
+            // 先同步把 value 改掉、并把光标放好，再更新 state。
+            // 这样下一次点击读到的 el.value 已经是插入后的内容。
+            el.value = next;
+            el.setSelectionRange(caret, caret);
+            el.focus();
             setDraft(d => (d ? { ...d, content: next } : d));
-            // 等 React 把新值写进 textarea，再把光标挪到插入内容之后
-            window.requestAnimationFrame(() => {
-                el.focus();
-                const caret = start + before.length + selected.length;
-                el.setSelectionRange(caret, caret);
-            });
         },
-        [draft]
+        []
     );
 
     const charCount = draft ? draft.content.length : 0;

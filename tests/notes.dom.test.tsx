@@ -392,3 +392,79 @@ test("整页容器不许滚动（页面级滚动条是缺陷，该滚的是预�
             "某一层漏了 minHeight:0 就会连带 body 出现滚动条"
     );
 });
+
+test("挂载期间锁住整页滚动（底下的导航站不该让 document 变长）", () => {
+    // 真因（浏览器实测 1696 vs 700）：记事本自己是 fixed，压根不占文档流；
+    // 是**底下没卸载的导航站**（卡片网格 1475px）把 document 撑长了，
+    // body 又是 overflow-y:visible，于是整页出现滚动条。
+    // 只把记事本做成 fixed 治不了这个 —— 必须按住 document。
+    document.body.style.overflow = "";
+    document.documentElement.style.overflow = "";
+
+    mountPanel([note({ id: 1, title: "甲", content: "内容甲" })]);
+    assert.equal(document.body.style.overflow, "hidden", "body 要锁滚动");
+    assert.equal(
+        document.documentElement.style.overflow,
+        "hidden",
+        "html 也要锁 —— 只锁 body 在部分浏览器上挡不住滚轮"
+    );
+
+    // 关掉记事本要把样式还原，否则整站都滚不动了（这是最容易被漏掉的那一半）
+    act(() => root!.unmount());
+    root = null;
+    assert.equal(document.body.style.overflow, "", "卸载后 body 的内联样式要还原");
+    assert.equal(document.documentElement.style.overflow, "", "卸载后 html 的内联样式要还原");
+});
+
+test("工具栏连点两次不会把内容叠在同一处", () => {
+    // 原来 insertAtCursor 读的是 draft（React state）：setDraft 是异步的，
+    // 连点第二下时 draft 还停留在「第一次插入之前」，于是又从旧光标插一遍，
+    // 两次插入叠成一坨。DOM 上的 value 才是唯一事实来源。
+    mountPanel([note({ id: 1, title: "甲", content: "abc" })]);
+    const ta = document.querySelector<HTMLTextAreaElement>(
+        "textarea[aria-label='笔记内容']"
+    );
+    assert.ok(ta, "要有笔记内容输入框");
+
+    ta.focus();
+    ta.setSelectionRange(3, 3); // 光标放到 "abc" 末尾
+
+    const bold = [...document.querySelectorAll("button")].find(b => b.textContent === "B");
+    assert.ok(bold, "工具栏要有「B（粗体）」按钮");
+
+    act(() => bold!.click());
+    act(() => bold!.click());
+
+    // 两次都从光标处插入「**粗体**」，第二次读到的必须是第一次插入后的内容
+    assert.equal(ta.value, "abc**粗体****粗体**", "连点两下应在末尾依次插入，不能叠");
+    // 光标要落在整段之后（含闭合的 `**`），不能卡在标记中间
+    assert.equal(ta.selectionStart, ta.value.length);
+});
+
+test("插入内容以 textarea 的 DOM 值为准，不能读 draft", () => {
+    // 静态守卫：上面那条行为用例只覆盖连点，读错来源换个场景又会漏回去。
+    const clean = stripComments(
+        readFileSync(
+            join(findProjectDir(), "src", "components", "NotesPage.tsx"),
+            "utf-8"
+        )
+    );
+    const fn = clean.slice(
+        clean.indexOf("const insertAtCursor"),
+        clean.indexOf("const charCount")
+    );
+    assert.ok(fn.includes("el.value"), "插入要以 textarea 的 DOM 值（el.value）为准");
+    assert.ok(
+        !fn.includes("draft.content"),
+        "不能从 draft 读内容：setDraft 异步，连点第二下读到的是上一次插入前的值"
+    );
+    // 光标位置必须把闭合标记算进去（漏 after.length 会插到 `**` 中间）。
+    // ⚠️ 这句是**跨行**的（Math.min(...) 折了三行），不能只取 `const caret` 那一行。
+    const caretAt = fn.indexOf("const caret");
+    assert.ok(caretAt >= 0, "没找到 caret 的计算（静态守卫已失效）");
+    const caretExpr = fn.slice(caretAt, caretAt + 200);
+    assert.ok(
+        caretExpr.includes("after.length"),
+        "光标位置必须加上 after.length —— 否则点完「粗体」光标卡在闭合的 ** 中间"
+    );
+});
