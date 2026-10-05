@@ -272,3 +272,21 @@ test("id 不是数字就报 400，不该拿 NaN 去查库", async () => {
     assert.deepEqual(log.got, [], "非法 id 不该打到 api 层");
     assert.deepEqual(log.deleted, []);
 });
+
+test("阶段三：路由层 PUT 必须放行 archived（漏了就是静默丢弃）", () => {
+    // 实测踩过：notes.ts 认 archived、路由层白名单没认 →
+    // PUT archived:true 返回 200 但回显 archived: 0，用户点归档没反应。
+    const src = readFileSync(
+        join(findProjectDir(), "src", "API", "methods", "notes.ts"),
+        "utf-8"
+    );
+    void src;
+    const routes = readFileSync(
+        join(findProjectDir(), "worker", "routes", "data.ts"),
+        "utf-8"
+    );
+    assert.ok(
+        /data\.archived !== undefined\) patch\.archived = Boolean\(data\.archived\)/.test(routes),
+        "路由层要把 archived 放进 patch，否则字段被静默丢掉"
+    );
+});

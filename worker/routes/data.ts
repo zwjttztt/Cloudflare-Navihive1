@@ -211,6 +211,10 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
         if (data.site_id !== undefined) {
             patch.site_id = typeof data.site_id === "number" ? data.site_id : null;
         }
+        // ⚠️ 阶段三的归档列。**漏了这一行就是「点了归档按钮，刷新又变回来」**：
+        // 路由层白名单是照抄字段的，notes.ts 里认 archived 这里没认，
+        // 请求不报错、HTTP 200，只是字段被静默丢掉（实测 archived: true → 回显 0）。
+        if (data.archived !== undefined) patch.archived = Boolean(data.archived);
         const note = await api.updateNote(id, patch);
         if (!note) return Response.json({ error: "笔记不存在" }, { status: 404 });
         return Response.json(note);
