@@ -131,39 +131,19 @@ type Pane = "edit" | "split" | "preview";
 type NoteView = "all" | "recent" | "starred" | "archived" | "uncategorized" | "trash";
 
 /**
- * 编辑区里那条「能看见的滚动条」。
+ * 编辑区（以及左栏 / 列表 / 工具栏）的滚动条**不再本地定义**，直接吃
+ * src/index.css 里那套全局规则 —— 也就是导航页看到的那根细圆角条。
  *
- * 之前预览区用的是浏览器默认滚动条，Windows 11 默认 overlay —— 不动鼠标时不显示，
- * 用户就以为「预览窗没滚轮 / 内容显示不全」，所以必须给它常显。
+ * 为什么不能像以前那样在组件里写一份「本地版」：
+ * 本地版里设了标准属性 `scrollbar-color`（本意是给 Firefox），但
+ * **Chrome 121+ 只要认到 `scrollbar-color` / `scrollbar-width`，就会改用自家
+ * 原生滚动条渲染，整套 `::-webkit-scrollbar` 被直接忽略** ——
+ * 症状就是编辑器里出现一根又粗又灰的原生条（用户：「太难看了，换成导航页的」），
+ * 而量伪元素样式还显示 10px / 0.32 都在，极具迷惑性。
  *
- * ⚠️ 但**别做成 12px 的 45% 深灰粗条**：那和全站那条细圆角条完全不是一个调子，
- * 用户第一反应是「这根黑杠太丑了」。这里改成复刻全局那套（src/index.css）：
- * 10px 宽、透明轨道、半透明 thumb、2px 透明边框 + `background-clip: content-box`
- * 把 thumb 内缩成一条居中细圆角 —— 细、轻、hover 才明显加深。
- *
- * 看得见与好看之间的度：thumb 用 0.32（比全局的 0.22 稍深一点，
- * 保证不动鼠标也能看见），hover 给 0.5，轨道保持透明（露出底色，不糊成一块灰）。
+ * 全局规则用 `*` 选择器本来就覆盖所有元素（含 textarea），这里只要保证
+ * 各滚动容器自己有 `overflow-y: auto` 就够了。
  */
-const SCROLLBAR_SX = {
-    // ⚠️⚠️ **千万别写 `scrollbarWidth: "thin"`**。Chrome 121+ 也认这个标准属性，
-    // 一旦设上，浏览器就改用自己的 thin 滚动条（浅灰细条 + 上下箭头），
-    // 下面整套 `::-webkit-scrollbar` **被直接忽略** ——
-    // 症状极具迷惑性：`offsetWidth - clientWidth` 量到 10px 槽位、截图放大也「有」条，
-    // 用户还是说「看不见滚动条」。Firefox 走 scrollbarColor，Chrome/Edge 走伪元素。
-    scrollbarColor: "rgba(15, 23, 42, 0.32) transparent",
-    "&::-webkit-scrollbar": { width: 10, height: 10 },
-    "&::-webkit-scrollbar-corner": { background: "transparent" },
-    "&::-webkit-scrollbar-track": { background: "transparent" },
-    "&::-webkit-scrollbar-thumb": {
-        bgcolor: "rgba(15, 23, 42, 0.32)",
-        // 内缩成一条细圆角，而不是占满整条轨道的方块
-        border: "3px solid transparent",
-        backgroundClip: "content-box",
-        borderRadius: 999,
-        minHeight: 40,
-        "&:hover": { bgcolor: "rgba(15, 23, 42, 0.5)" },
-    },
-} as const;
 
 /**
  * 左栏两列的宽度（阶段三收尾：左栏从单列改成 inkstone 那样两列）。
@@ -755,8 +735,17 @@ export default function NotesPage({
         if (!box) return;
         const rect = box.getBoundingClientRect();
         if (rect.width <= 0) return;
+        // ⚠️ 比例要按**内容盒**算，不能按 border-box：内容区加了 px:2 的内边距后，
+        // 两栏的宽度是相对「扣掉左右内边距后的宽度」分的（textarea 的 width:% 同理）。
+        // 不扣的话分隔条会跟手差 16px，看起来就是「拖不到头」。
+        const cs = getComputedStyle(box);
+        const padL = parseFloat(cs.paddingLeft) || 0;
+        const padR = parseFloat(cs.paddingRight) || 0;
+        const contentLeft = rect.left + padL;
+        const contentWidth = rect.width - padL - padR;
+        if (contentWidth <= 0) return;
         const onMove = (ev: MouseEvent) => {
-            const ratio = (ev.clientX - rect.left) / rect.width;
+            const ratio = (ev.clientX - contentLeft) / contentWidth;
             setSplitRatio(Math.min(MAX_RATIO, Math.max(MIN_RATIO, ratio)));
         };
         const onUp = () => {
@@ -975,7 +964,6 @@ export default function NotesPage({
                     overflowY: "auto",
                     overflowX: "hidden",
                     py: 1,
-                    ...SCROLLBAR_SX,
                 }}
             >
             <Box sx={{ px: 1.5, pb: 1 }}>
@@ -1112,7 +1100,7 @@ export default function NotesPage({
 
             <Box
                 data-note-list='1'
-                sx={{ flex: 1, overflowY: "auto", minHeight: 0, pb: 1, ...SCROLLBAR_SX }}
+                sx={{ flex: 1, overflowY: "auto", minHeight: 0, pb: 1 }}
             >
                 {view === "trash" ? (
                     // 阶段三：回收站。条目不能点开编辑（它已经不在 notes 表里了），
@@ -1265,7 +1253,18 @@ export default function NotesPage({
                     {/* 内容区：源码 | 预览 */}
                     <Box
                         ref={splitBoxRef}
-                        sx={{ flex: 1, display: "flex", minHeight: 0, minWidth: 0 }}
+                        sx={{
+                            flex: 1,
+                            display: "flex",
+                            minHeight: 0,
+                            minWidth: 0,
+                            // ⚠️ 这里必须有内边距。编辑区是 `flex:1` 吃掉整条剩余宽度的，
+                            // 而记事本这层全屏又铺到 100vw —— 不留边距的话源码 / 预览
+                            // 两栏会**贴死视口右边缘**：预览的右边框和滚动条被顶出屏幕，
+                            // 看起来就是「右边显示不全」。px:2 与标题 / 工具栏 / 状态栏对齐。
+                            px: 2,
+                            py: 1,
+                        }}
                     >
                         {pane !== "preview" && (
                             <Box
@@ -1301,7 +1300,6 @@ export default function NotesPage({
                                     outline: "none",
                                     resize: "none",
                                     // 常显滚动条：默认 overlay 会让人以为「预览窗没滚轮」
-                                    ...SCROLLBAR_SX,
                                     p: 2.5,
                                     font: "inherit",
                                     fontFamily: "ui-monospace, monospace",
@@ -1351,7 +1349,6 @@ export default function NotesPage({
                                     // 子项漏掉 → 症状就是「怎么还有滚动条」。
                                     minHeight: 0,
                                     overflowY: "auto",
-                                    ...SCROLLBAR_SX,
                                     p: 2.5,
                                     lineHeight: 1.7,
                                     border:
@@ -1779,7 +1776,6 @@ function MarkdownToolbar({
                 flexShrink: 0,
                 overflowX: "auto",
                 borderBottom: "1px solid var(--card-border, rgba(128,128,128,0.18))",
-                ...SCROLLBAR_SX,
             }}
         >
             {/* 标题层级：从两个 H1/H2 文字按钮收成一个下拉 */}

@@ -379,23 +379,33 @@ test("顶栏：折叠按钮不能挨着「返回导航站」（两个无文字�
     );
 });
 
-test("滚动条样式里不能有 scrollbarWidth: thin（会让 Chrome 忽略自定义样式）", () => {
+test("滚动条样式必须统一走全局（导航页那套），NotesPage 不能再自带一份", () => {
     const src = readFileSync(
         resolve(findProjectDir(), "src/components/NotesPage.tsx"),
         "utf-8"
     );
-    // ⚠️ 必须先剥注释：这段 CSS 上方就有解释「别写 scrollbarWidth: thin」的注释，
-    // 不剥的话守卫会自己把自己判红
+    // ⚠️ 必须先剥注释：文件里那段解释「为什么不能设 scrollbar-color」的注释
+    // 本身就含这些字样，不剥的话守卫会自己把自己判红
     const clean = stripComments(src);
-    const block = clean.slice(
-        clean.indexOf("const SCROLLBAR_SX"),
-        clean.indexOf("} as const;")
+    // 以前这里有个本地 SCROLLBAR_SX（还设了标准属性 scrollbar-color）。
+    // Chrome 121+ 认到 scrollbar-color / scrollbar-width 就改用原生滚动条渲染，
+    // 整套 ::-webkit-scrollbar 被忽略 → 编辑器里变成又粗又灰的原生条。
+    // 现在统一吃 src/index.css 的全局规则，与导航页完全一致。
+    assert.ok(
+        !/SCROLLBAR_SX/.test(clean),
+        "NotesPage 里又出现了本地滚动条样式 SCROLLBAR_SX"
     );
     assert.ok(
-        !/scrollbarWidth\s*:/.test(block),
-        "scrollbarWidth: thin 会让 Chrome 改用自己的细滚动条，::-webkit-scrollbar 全部失效"
+        !/scrollbarColor\s*:|scrollbarWidth\s*:|"&::-webkit-scrollbar"/.test(clean),
+        "NotesPage 里又写了 scrollbar-color / scrollbar-width / 本地 ::-webkit-scrollbar " +
+            "—— 设了标准属性后 Chrome 121+ 会忽略全局那套细圆角条"
     );
-    assert.ok(/::-webkit-scrollbar-thumb/.test(block), "自定义滚动条样式要留着");
+    // 全局规则必须真的存在（别哪天把 index.css 那段删了还没人发现）
+    const css = readFileSync(resolve(findProjectDir(), "src/index.css"), "utf-8");
+    assert.ok(
+        /\*::-webkit-scrollbar-thumb/.test(css),
+        "src/index.css 的全局滚动条规则不见了 —— 各页面的细圆角条全靠它"
+    );
 });
 
 test("没有笔记时给一句引导，不是一片空白", () => {
@@ -946,4 +956,52 @@ test("没有 folderTags（老部署）时退化成只有那六个视图，不能
         ["all", "recent", "starred", "uncategorized", "archived", "trash"]
     );
     assert.ok(document.querySelector("[data-note-list]"), "列表照常渲染");
+});
+
+// ---------- 编辑区滚动条与右边距（2026-10-05 用户报的两个问题）----------
+//
+// ①「右边还是显示不全」：编辑区是 flex:1 吃掉整条剩余宽度，而记事本全屏层铺到
+//    100vw —— 内容区不留内边距的话，预览窗会贴死视口右缘，右边框和滚动条被顶出屏幕。
+// ②「滚轮换成导航页相同样式」：本地那份 SCROLLBAR_SX 里设了标准属性 scrollbar-color，
+//    Chrome 121+ 认到它就改用原生滚动条渲染、整套 ::-webkit-scrollbar 被忽略 ——
+//    症状是编辑器里出现又粗又灰的原生条。已删除本地定义，让全局 index.css 生效。
+
+test("编辑区不能自己定义滚动条样式（会顶掉全局那套细圆角条）", () => {
+    const src = readFileSync(
+        resolve(findProjectDir(), "src/components/NotesPage.tsx"),
+        "utf-8"
+    );
+    // 上一条已经按剥过注释的源码做了完整断言，这里只防「测试本身被整段删掉」：
+    const clean = stripComments(src);
+    assert.ok(
+        !/SCROLLBAR_SX/.test(clean),
+        "NotesPage 里又出现了本地滚动条样式 SCROLLBAR_SX —— " +
+            "设了 scrollbar-color 后 Chrome 121+ 会忽略 ::-webkit-scrollbar，" +
+            "编辑器里会变成原生粗灰条。滚动条统一走 src/index.css（与导航页一致）。"
+    );
+});
+
+test("内容区必须有内边距，预览窗不能贴死视口右缘", () => {
+    const src = readFileSync(
+        resolve(findProjectDir(), "src/components/NotesPage.tsx"),
+        "utf-8"
+    );
+    // ⚠️ 锚点必须用 JSX 注释全文：「内容区：源码 | 预览」这串字在文件头的
+    // ASCII 示意图里也出现过，只用短串会锚到文件开头，切出来的窗口全是 import。
+    const idx = src.indexOf("{/* 内容区：源码 | 预览 */}");
+    assert.ok(idx > 0, "找不到内容区注释，测试锚点失效");
+    const body = src.slice(idx, idx + 900);
+    assert.match(
+        body,
+        /px:\s*2/,
+        "内容区（源码 | 预览）没有水平内边距 —— 预览窗会贴死视口右边缘，" +
+            "右边框和滚动条被顶出屏幕，看起来就是「右边显示不全」"
+    );
+    // 拖拽比例必须按内容盒算，否则内边距会让分隔条跟手差一截
+    const drag = src.slice(src.indexOf("const startSplitDrag"));
+    assert.match(
+        drag,
+        /paddingLeft/,
+        "startSplitDrag 还是按 border-box 算比例 —— 加了内边距后分隔条会跟手不准"
+    );
 });
