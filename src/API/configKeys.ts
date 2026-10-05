@@ -95,6 +95,16 @@ export const INVITE_TTL_SECONDS = 30 * 60;
 export const BACKUP_CREDENTIALS_CONFIG = "backup.includeCredentials";
 
 /**
+ * 「备份文件里要不要带上记事本」的配置键。
+ *
+ * **刻意不复用** `backup.includeCredentials`：那个默认是**不含**（凭据敏感），
+ * 笔记是主要内容、默认应该带上。合成一个开关的话，用户为了拿笔记就得把密码也导出去。
+ * 与凭据一样存服务端，好让定时备份（跑在 Worker 的 cron 里）也遵守。
+ * 默认含 —— 只有显式写成 "false" 才排除。
+ */
+export const BACKUP_NOTES_CONFIG = "backup.includeNotes";
+
+/**
  * 定时任务最近一次失败的留痕（值是 JSON：{ task, message, at }）。
  *
  * 定时任务跑在 Worker 里，失败时只有一行 console —— 页面上看不到，于是「每周自动备份

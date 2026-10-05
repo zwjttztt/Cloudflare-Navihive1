@@ -10,9 +10,21 @@ import type { D1PreparedStatement } from "../schema";
 import { computeBackupIntegrity, verifyBackupIntegrity } from "../../utils/backupIntegrity";
 import { normalizeUrl } from "../../utils/url";
 import { isAuthConfigKey, isPerUserAppearanceKey, isSecretConfigKey, isUserScopedConfigKey, stripSecretConfigs } from "../configGuards";
-import { BACKUP_CREDENTIALS_CONFIG } from "../configKeys";
+import { BACKUP_NOTES_CONFIG,
+    BACKUP_CREDENTIALS_CONFIG } from "../configKeys";
 import { encryptSecret } from "../crypto";
-import { Config, ExportData, Group, ImportOptions, ImportResult, ImportStage, LocalPrefsBackup, Site } from "../types";
+import {
+    Config,
+    ExportData,
+    Group,
+    ImportOptions,
+    ImportResult,
+    ImportStage,
+    LocalPrefsBackup,
+    Note,
+    NoteImportStats,
+    Site,
+} from "../types";
 import { sanitizeIconUrl, sanitizeLocalPrefs, stripSiteCredentials } from "./internals";
 
 /**
@@ -87,6 +99,7 @@ export interface TransferApi {
         groups: Group[];
         sites: Site[];
         configs: Record<string, string>;
+        notes: Note[];
     }>;
     importData(data: ExportData, opts?: ImportOptions): Promise<ImportResult>;
     /** 批量加密站点密码（限并发 + 进度回调） */
@@ -98,10 +111,10 @@ export interface TransferApi {
      * 表里当前最大的 id：恢复时用它当「预分配」的起点。
      * 拿不到（表不存在 / D1 异常）时返回 0，交给后续 INSERT 自己报错。
      */
-    nextIdBase(table: "groups" | "sites"): Promise<number>;
-    listOwnedIds(table: "groups" | "sites"): Promise<number[]>;
+    nextIdBase(table: "groups" | "sites" | "notes"): Promise<number>;
+    listOwnedIds(table: "groups" | "sites" | "notes"): Promise<number[]>;
     filterOwnedGroupIds(ids: readonly number[]): Promise<Set<number>>;
-    rollbackCreatedRows(siteIds: number[], groupIds: number[]): Promise<void>;
+    rollbackCreatedRows(siteIds: number[], groupIds: number[], noteIds: number[]): Promise<void>;
 }
 
 export const transferImpl: TransferApi = {
@@ -110,13 +123,18 @@ export const transferImpl: TransferApi = {
     exportData: async function (this: NavigationAPI ): Promise<ExportData> {
         await this.migrate();
         // 一次 batch 取回分组 + 站点 + 配置，只花一次 D1 往返（原来是三次）
-        const { groups, sites, configs } = await this.withSchemaRetry(() =>
+        const { groups, sites, configs, notes } = await this.withSchemaRetry(() =>
             this.queryExportBundle()
         );
 
         // M4：默认不含站点账号密码（明文 JSON 备份会被 WebDAV 同步到网盘，凭据跟着走风险高）。
         // 只有用户主动开启「备份含登录凭据」（backup.includeCredentials=true）才带。
         const withCreds = configs[BACKUP_CREDENTIALS_CONFIG] === "true";
+
+        // 记事本：**默认带上**（它是主要内容），只有显式写成 "false" 才排除。
+        // 与上面的凭据开关刻意分开：那个默认不带（凭据敏感），合成一个开关的话
+        // 用户为了拿笔记就得把密码也导出去。
+        const withNotes = configs[BACKUP_NOTES_CONFIG] !== "false";
 
         // 全站设置单独放 sharedConfigs，且只有所有者（或单账号部署）才写进备份文件。
         // 否则「一个账号导出的备份被另一个账号恢复」会把全站外观改掉。
@@ -141,6 +159,10 @@ export const transferImpl: TransferApi = {
             sites: withCreds ? sites : stripSiteCredentials(sites),
             // 自己的外观；敏感配置（WebDAV 凭据）一律不进备份
             configs: ownConfigs,
+            // 关掉「备份含记事本」时整块不放 notes 字段（而不是放空数组）：
+            // 空数组会被导入当成「备份里有一条笔记都没有」，从而清空本地；
+            // 字段缺失才表示「这份备份与记事本无关」，导入时保持本地不动。
+            ...(withNotes ? { notes } : {}),
             ...(sharedAllowed ? { sharedConfigs: stripSecretConfigs(configs) } : {}),
             version: EXPORT_VERSION,
             exportDate: new Date().toISOString(),
@@ -155,8 +177,12 @@ export const transferImpl: TransferApi = {
         groups: Group[];
         sites: Site[];
         configs: Record<string, string>;
+        notes: Note[];
     }> {
-        const [groupResult, siteResult, configResult] = await this.db.batch<Group | Site | Config>([
+        // 记事本跟着同一次 batch 走 —— 多一张表不该多一次 D1 往返
+        const [groupResult, siteResult, configResult, noteResult] = await this.db.batch<
+            Group | Site | Config | Note
+        >([
             this.db
                 .prepare(
                     `SELECT id, name, order_num, created_at, updated_at FROM groups${this.scopeSql(
@@ -172,6 +198,13 @@ export const transferImpl: TransferApi = {
                 )
                 .bind(...this.scopeParams([])),
             this.db.prepare("SELECT key, value FROM configs"),
+            this.db
+                .prepare(
+                    `SELECT id, uuid, title, content, pinned, order_num, site_id, created_at, updated_at FROM notes${this.scopeSql(
+                        false
+                    )} ORDER BY pinned DESC, order_num, id`
+                )
+                .bind(...this.scopeParams([])),
         ]);
 
         const configs: Record<string, string> = {};
@@ -186,6 +219,19 @@ export const transferImpl: TransferApi = {
             // 库里是密文，导出前解密成明文 JSON（备份文件整体再由 AES-GCM 加密一次）
             sites: await this.decryptSitePasswords((siteResult.results || []) as Site[]),
             configs,
+            // 导出时把 id / user_id 抹掉：id 是对方库里的 AUTOINCREMENT，照搬必撞主键；
+            // user_id 更是只能由导入者自己决定（那是唯一的账号隔离依据）。
+            // uuid 保留 —— 合并导入靠它识别「同一条笔记」。
+            notes: ((noteResult.results || []) as Note[]).map(n => ({
+                uuid: n.uuid,
+                title: n.title,
+                content: n.content,
+                pinned: n.pinned,
+                order_num: n.order_num,
+                site_id: n.site_id,
+                created_at: n.created_at,
+                updated_at: n.updated_at,
+            })),
         };
     },
 
@@ -217,10 +263,24 @@ export const transferImpl: TransferApi = {
             }
         };
         const groupIdMap: Record<string, number> = {};
+        /**
+         * 笔记三态统计。声明在 try 之外：成功路径要返回它，
+         * 而 try 之后的 return 才在作用域内。
+         * 备份里没有 notes 字段时四项全为 0 —— 那表示「这份备份与笔记无关」，
+         * 不是「导入后笔记没了」。
+         */
+        const noteStats: NoteImportStats = {
+            created: 0,
+            updated: 0,
+            skipped: 0,
+            removed: 0,
+        };
         const siteIdMap: Record<string, number> = {};
         // 本次新写进去的行 id：失败时靠它们回滚（旧数据一步都没动过，删掉这些就回到原样）
         const createdGroupIds: number[] = [];
         const createdSiteIds: number[] = [];
+        /** 本次新建的笔记 id：分批提交中途失败时靠它回滚（漏清会留下用户看不见的孤儿笔记） */
+        const createdNoteIds: number[] = [];
         /** 已经提交成功的语句数：分块提交中途失败时用来判断「有没有半截数据落下」 */
         let committedCount = 0;
 
@@ -290,8 +350,10 @@ export const transferImpl: TransferApi = {
             // 现在先把 id 算出来（当前 MAX(id) 之后的一段连续号），所有写入就不再互相
             // 依赖，可以整批塞进**同一个 D1 batch** —— batch 在 D1 里就是一个事务：
             // 要么整份备份生效，要么一个字节都不变。这才是「全部写入验证后原子切换」。
+            let nextNoteId = 0;
             const groupBase = await this.nextIdBase("groups");
             const siteBase = await this.nextIdBase("sites");
+            nextNoteId = await this.nextIdBase("notes");
 
             // 第一阶段：把要写什么算清楚（加密、权限判定这些含 await 的都在这里做完），
             // 第二阶段只负责往 batch 里塞纯 SQL —— 保证事务里没有「等待」。
@@ -380,8 +442,175 @@ export const transferImpl: TransferApi = {
                 configPlan.push({ key, value, uid: await this.scopeFor(key) });
             }
 
+            // ── 记事本 ──
+            //
+            // 三种情形，语义完全不同，**靠字段是否存在区分**：
+            //   ① 备份里没有 notes 字段（老备份 / 用户关了「备份含记事本」）
+            //      → **本地笔记一根汗毛都不动**。清空是不可逆的，宁可什么都不做。
+            //   ② notesMode='replace'（用户明确选了「完全覆盖」）
+            //      → 清掉本地全部笔记，再插入备份里的。
+            //   ③ notesMode='merge'（默认）
+            //      → 按 uuid 识别同一条：本地没有就插入；有就比 updated_at，
+            //        文件里较新才覆盖，本地较新就跳过（保留本地）。
+            //
+            // 关键：这一段只做**读**（要本地现有笔记），读到的结果用来算计划；
+            // 真正的 INSERT / DELETE 都在下面的第二阶段塞进同一个事务。
+            const notesMode = opts?.notesMode === "replace" ? "replace" : "merge";
+            const incomingNotes = normalized.notes;
+
+            const notePlan: Array<{
+                id: number;
+                uuid: string;
+                title: string;
+                content: string;
+                pinned: boolean;
+                order_num: number;
+                site_id: number | null;
+            }> = [];
+            /** replace 模式要清的本地笔记 id；merge 模式为空数组（本地一律不动） */
+            const staleNoteIds: string[] = [];
+
+            if (incomingNotes) {
+                if (notesMode === "replace") {
+                    staleNoteIds.push(...(await this.listOwnedIds("notes")).map(String));
+                    for (const n of incomingNotes) {
+                        const id = ++nextNoteId;
+                        createdNoteIds.push(id);
+                        notePlan.push({
+                            id,
+                            uuid: n.uuid!,
+                            title: n.title,
+                            content: n.content,
+                            pinned: Boolean(n.pinned),
+                            order_num: n.order_num ?? 0,
+                            site_id: n.site_id ?? null,
+                        });
+                        noteStats.created += 1;
+                    }
+                } else {
+                    // 合并：先读本地现有的（只在这个分支读 —— replace 用不上）
+                    const localRows = await this.db
+                        .prepare(
+                            `SELECT id, uuid, title, content, pinned, order_num, site_id, updated_at FROM notes${this.scopeSql(
+                                true
+                            )}`
+                        )
+                        .bind(...this.scopeParams([]))
+                        .all<Note>();
+                    const localByUuid = new Map<string, Note>();
+                    for (const row of localRows.results || []) {
+                        // 没有 uuid 的老笔记不进索引：它没法参与去重，插进来的都会被当成新的
+                        if (row.uuid) localByUuid.set(row.uuid, row);
+                    }
+
+                    for (const n of incomingNotes) {
+                        const local = n.uuid ? localByUuid.get(n.uuid) : undefined;
+                        if (!local) {
+                            const id = ++nextNoteId;
+                            createdNoteIds.push(id);
+                            notePlan.push({
+                                id,
+                                uuid: n.uuid!,
+                                title: n.title,
+                                content: n.content,
+                                pinned: Boolean(n.pinned),
+                                order_num: n.order_num ?? 0,
+                                site_id: n.site_id ?? null,
+                            });
+                            noteStats.created += 1;
+                            continue;
+                        }
+                        // 同一条笔记：比谁新。updated_at 缺失或解析不出来时，
+                        // 保守起见判「本地较新」→ 跳过，不冒险覆盖用户正在用的那份
+                        const localTime = Date.parse(local.updated_at || "") || 0;
+                        const incomingTime = Date.parse(n.updated_at || "") || 0;
+                        if (incomingTime > localTime) {
+                            // 覆盖写回原 id —— 新建一条再删旧的，等于把 updated_at 弄丢了
+                            notePlan.push({
+                                id: local.id!,
+                                uuid: n.uuid!,
+                                title: n.title,
+                                content: n.content,
+                                pinned: Boolean(n.pinned),
+                                order_num: n.order_num ?? 0,
+                                site_id: n.site_id ?? null,
+                            });
+                            noteStats.updated += 1;
+                        } else {
+                            noteStats.skipped += 1;
+                        }
+                    }
+                    noteStats.removed = 0;
+                }
+                noteStats.removed = staleNoteIds.length;
+            }
+
             // ── 第二阶段：整批提交（一个 D1 事务 = 原子切换）──
             const commitStatements: D1PreparedStatement[] = [];
+
+            // 记事本：replace 模式先清本地全部（和卡片一样「先插新的成功、再删旧的」
+            // 的顺序反过来 —— 这里是**同一个事务**里先 DELETE 再 INSERT，
+            // 中途失败整批回滚，本地笔记不会少）。
+            // merge 模式下 staleNoteIds 恒为空，本地一条都不动。
+            for (let offset = 0; offset < staleNoteIds.length; offset += 90) {
+                const chunk = staleNoteIds.slice(offset, offset + 90);
+                commitStatements.push(
+                    this.db
+                        .prepare(
+                            `DELETE FROM notes WHERE id IN (${chunk
+                                .map(() => "?")
+                                .join(",")})${this.scopeSql(true)}`
+                        )
+                        .bind(...this.scopeParams(chunk))
+                );
+            }
+            for (const n of notePlan) {
+                // 同一个 uuid 既可能是「新建」也可能是「覆盖本地那条」——
+                // 用 ON CONFLICT 的话需要 uuid 上有唯一索引，而老库里可能有重复
+                // （uuid 是后加的列）。所以这里分两句：id 是新分配的就 INSERT，
+                // 是本地已有 id 的（merge 覆盖）就 UPDATE。
+                const isExisting = !createdNoteIds.includes(n.id);
+                if (isExisting) {
+                    commitStatements.push(
+                        this.db
+                            .prepare(
+                                `UPDATE notes SET uuid = ?, title = ?, content = ?, pinned = ?,
+                                 order_num = ?, site_id = ?, updated_at = CURRENT_TIMESTAMP
+                                 WHERE id = ?${this.scopeSql(true)}`
+                            )
+                            .bind(
+                                n.uuid,
+                                n.title,
+                                n.content,
+                                n.pinned ? 1 : 0,
+                                n.order_num,
+                                n.site_id,
+                                n.id
+                            )
+                    );
+                } else {
+                    commitStatements.push(
+                        this.db
+                            .prepare(
+                                `INSERT INTO notes (id, user_id, uuid, title, content, pinned, order_num, site_id)
+                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+                            )
+                            .bind(
+                                n.id,
+                                // user_id 只能是**导入者自己** —— 文件里那个值是导出方的，
+                                // 照抄会把笔记写到别人名下，而这个字段是唯一的隔离依据
+                                this.currentUserId,
+                                n.uuid,
+                                n.title,
+                                n.content,
+                                n.pinned ? 1 : 0,
+                                n.order_num,
+                                n.site_id
+                            )
+                    );
+                }
+            }
+
             for (const g of groupPlan) {
                 commitStatements.push(
                     this.db
@@ -459,14 +688,21 @@ export const transferImpl: TransferApi = {
             report("cleanup", total, total);
             report("done", total, total);
 
-            return { success: true, groupIdMap, siteIdMap };
+            return {
+                success: true,
+                groupIdMap,
+                siteIdMap,
+                // 笔记三态统计。合并模式下「本地较新就跳过」是正确行为，
+                // 但不给用户一个数字他会以为导入没生效。
+                noteStats,
+            };
         } catch (error) {
             console.error("导入数据失败:", error);
             // 回滚：只删本次新建的行。旧数据全程没被碰过，删掉这些就回到导入前的样子。
             // 分批提交时可能有几块已经落库了 —— 回滚按 id 删，不管它在哪一块里提交的，
             // 所以这一步对「单事务」和「分块事务」两种情形都成立。
             // 回滚本身再出错也不能把异常抛出去（用户更该看到的是「为什么导入失败」）
-            await this.rollbackCreatedRows(createdSiteIds, createdGroupIds);
+            await this.rollbackCreatedRows(createdSiteIds, createdGroupIds, createdNoteIds);
             const base = error instanceof Error ? error.message : "导入数据失败";
             return {
                 success: false,
@@ -476,6 +712,9 @@ export const transferImpl: TransferApi = {
                         : base,
                 groupIdMap,
                 siteIdMap,
+                // 笔记三态统计。合并模式下「本地较新就跳过」是正确行为，
+                // 但不给用户一个数字他会以为导入没生效。
+                noteStats,
             };
         } finally {
             // 锁必须释放，成功失败都要。拿不到锁的那一次压根没进 try，
@@ -558,10 +797,30 @@ export const transferImpl: TransferApi = {
     },
 
     /** 导入失败后的回滚：删掉本次新建的行，旧数据原样保留 */
-    rollbackCreatedRows: async function (this: NavigationAPI, siteIds: number[], groupIds: number[]): Promise<void> {
+    rollbackCreatedRows: async function (
+        this: NavigationAPI,
+        siteIds: number[],
+        groupIds: number[],
+        noteIds: number[] = []
+    ): Promise<void> {
         try {
             await this.deleteRowsByIds("sites", siteIds);
             await this.deleteRowsByIds("groups", groupIds);
+            // 合并模式下被「覆盖」的那几条是 UPDATE，回滚不了（那是覆盖不是新建）；
+            // 这里只清**新建**的。漏清会留下一批用户看不见的孤儿笔记。
+            if (noteIds.length > 0) {
+                for (let offset = 0; offset < noteIds.length; offset += 90) {
+                    const chunk = noteIds.slice(offset, offset + 90);
+                    await this.db
+                        .prepare(
+                            `DELETE FROM notes WHERE id IN (${chunk
+                                .map(() => "?")
+                                .join(",")})${this.scopeSql(true)}`
+                        )
+                        .bind(...this.scopeParams(chunk))
+                        .run();
+                }
+            }
         } catch (error) {
             console.error("导入失败后回滚新建数据失败:", error);
             // 回滚失败必须留痕：这批行已经不在任何人的视野里（前端只看到「导入失败」），
@@ -571,7 +830,7 @@ export const transferImpl: TransferApi = {
                     "import.rollbackFailed",
                     "",
                     "",
-                    `回滚未清理: sites=${siteIds.join(",") || "-"} groups=${groupIds.join(",") || "-"}`
+                    `回滚未清理: sites=${siteIds.join(",") || "-"} groups=${groupIds.join(",") || "-"} notes=${noteIds.join(",") || "-"}`
                 );
             } catch {
                 // 审计也写不进去就只剩日志了，不能再抛 —— 用户该看到的是「为什么导入失败」
@@ -594,6 +853,7 @@ export function normalizeImportData(data: ExportData | Record<string, unknown>):
     const raw = (data || {}) as {
         groups?: (Group & { sites?: Site[] })[];
         sites?: Site[];
+        notes?: Note[];
         configs?: Record<string, string>;
         sharedConfigs?: Record<string, string>;
         version?: string;
@@ -638,9 +898,30 @@ export function normalizeImportData(data: ExportData | Record<string, unknown>):
             return { ...site, url, icon };
         });
 
+    // 记事本：content 是 Markdown 源码，这里只做「保证是字符串」的归一化，
+    // 不做内容改写 —— 渲染层会把任何非文本的东西当纯文本显示，不会执行。
+    // ⚠️ 没有 uuid 的老笔记要在这里补一个：合并导入全靠 uuid 识别同一条，
+    // 缺了就会退化成「每次导入都多一份」。
+    const rawNotes = Array.isArray(raw.notes) ? raw.notes : undefined;
+    const notes: Note[] | undefined = rawNotes
+        ? rawNotes.map((n, index) => ({
+              uuid: typeof n?.uuid === "string" && n.uuid ? n.uuid : `legacy-${index}-${Date.now().toString(36)}`,
+              title: typeof n?.title === "string" ? n.title : "",
+              content: typeof n?.content === "string" ? n.content : "",
+              pinned: Boolean(n?.pinned),
+              order_num: typeof n?.order_num === "number" ? n.order_num : index,
+              site_id: typeof n?.site_id === "number" ? n.site_id : null,
+              created_at: n?.created_at,
+              updated_at: n?.updated_at,
+          }))
+        : undefined;
+
     return {
         groups,
         sites,
+        // **字段缺失与空数组是两件事**：老备份没有这个字段 → undefined →
+        // 导入时保持本地笔记原样不动。空数组 → 明确「这份备份里一条笔记都没有」。
+        ...(notes ? { notes } : {}),
         configs: raw.configs && typeof raw.configs === "object" ? raw.configs : {},
         // 全站共享配置：老备份没有这个字段，导入时那份全站设置从 configs 里按规则挑
         ...(raw.sharedConfigs && typeof raw.sharedConfigs === "object"

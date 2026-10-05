@@ -8,6 +8,39 @@
 
 ---
 
+## 2026-10-05（八续）
+
+**记事本第 4–5 项：导入导出**（这轮的核心目的）。数据通路见上一条。
+**UI 面板与 Markdown 渲染还没做**，所以线上仍然看不到记事本 —— 但备份里已经有它的数据了。
+
+- **导出**（`transfer.ts` + `configKeys.ts`）：
+  - `ExportData.notes`（**可选字段**）。`queryExportBundle` 把 notes 加进**同一次
+    `db.batch`** —— 多一张表不增 D1 往返。
+  - 导出时**抹掉 `id` / `user_id`，保留 `uuid`**：id 是对方库的 AUTOINCREMENT，
+    照搬必撞主键；user_id 只能由导入者决定；uuid 是合并去重的唯一依据。
+  - 独立开关 `backup.includeNotes`，**默认含**（与凭据开关相反）。
+    关闭时**整块不放 `notes` 字段**而不是放空数组 —— 空数组会被导入当成
+    「备份里一条笔记都没有」，从而清空本地；字段缺失才表示「与笔记无关」。
+- **导入**（`transfer.ts`）：三种情形靠**字段是否存在**区分，语义完全不同：
+  | 情形 | 行为 |
+  |---|---|
+  | 备份无 `notes` 字段（老备份 / 关了开关） | **本地一根汗毛不动**，即使选了「完全覆盖」 |
+  | `merge`（默认） | 按 uuid 识别：本地没有就插入；同 uuid 比 `updated_at`，**文件里较新才覆盖**，本地较新则跳过；本地多出来的原样保留 |
+  | `replace` | 清空本地全部再插入，`removed` 记本地条数 |
+  - 覆盖写回**原 id**（新建再删会把 `updated_at` 弄丢）
+  - `user_id` 写 `currentUserId`（导入者），**不是文件里的值**
+  - 跟着现有的 250 语句分批提交；回滚带上新建的笔记 id
+  - 返回 `noteStats`（created/updated/skipped/removed）—— 合并模式下
+    「本地较新就跳过」是正确行为，不给数字用户会以为没生效
+- **归一化**：没有 `uuid` 的笔记补一个（否则每次导入都多一份）；
+  非字符串的 title/content 压成空串。
+- **UI**：`BackupTab` 加「备份包含记事本」开关（默认开），走
+  `useBackupController.handleToggleIncludeNotes` 落到服务端配置。
+- **测试**（`tests/noteTransfer.test.ts`，13 条）：三条决策各有用例。
+  变异验证三处：① 让老备份也清笔记 → 2 条变红；② 合并时无视 `updated_at` 一律覆盖
+  → 「保留本地那份」变红；③ `user_id` 照抄文件里的 → 「归导入者」那条变红。
+- 用例 1726 → **1739**。
+
 ## 2026-10-05（七续）
 
 **记事本第 1–3 项：数据通路**（表 + 服务端 + 客户端）。方案见 `docs/notebook-design.md`。

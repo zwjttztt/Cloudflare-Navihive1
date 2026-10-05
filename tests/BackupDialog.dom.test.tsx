@@ -34,6 +34,8 @@ interface Handlers {
         overwrite: boolean
     ) => Promise<ExportData | null>;
     onIncludeCredentialsChange?: (enabled: boolean) => void;
+    includeNotes?: boolean;
+    onIncludeNotesChange?: (enabled: boolean) => void;
     includeCredentials?: boolean;
     initialTab?: number;
 }
@@ -59,6 +61,8 @@ function mount(handlers: Handlers = {}) {
                 onClose={() => {}}
                 includeCredentials={handlers.includeCredentials ?? true}
                 onIncludeCredentialsChange={handlers.onIncludeCredentialsChange ?? (() => {})}
+                includeNotes={handlers.includeNotes ?? true}
+                onIncludeNotesChange={handlers.onIncludeNotesChange ?? (() => {})}
             />
         );
     });

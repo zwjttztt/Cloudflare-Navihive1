@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type MutableRefObject } from "rea
 import { reportError } from "../utils/errorReporter";
 import {
     BACKUP_CREDENTIALS_CONFIG,
+    BACKUP_NOTES_CONFIG,
     CRON_LAST_ERROR_KEY,
     EXPORT_VERSION,
     normalizeImportData,
@@ -279,6 +280,27 @@ export function useBackupController(deps: BackupControllerDeps) {
      * 存服务端配置（不是本机偏好），这样 Worker 里的每周定时备份也读得到同一个开关。
      * 同样是乐观更新：开关先动、提示先弹，写库失败再回滚。
      */
+    /**
+     * 记事本开关。**默认含**（与凭据开关相反）—— 笔记是主要内容，
+     * 用户导出后找不到笔记会以为坏了；而凭据是敏感数据，默认不带。
+     */
+    const handleToggleIncludeNotes = async (enabled: boolean) => {
+        // 默认值是「含」，所以上一状态要按同样的口径回退
+        const previous = configs[BACKUP_NOTES_CONFIG] ?? "true";
+        const next = enabled ? "true" : "false";
+        setConfigs(prev => ({ ...prev, [BACKUP_NOTES_CONFIG]: next }));
+        notify(enabled ? "以后的备份会带上记事本" : "以后的备份不再包含记事本", "info");
+        try {
+            await api.setConfig(BACKUP_NOTES_CONFIG, next);
+        } catch (error) {
+            setConfigs(prev => ({ ...prev, [BACKUP_NOTES_CONFIG]: previous }));
+            reportError(error, { source: "backup-settings-save" });
+            handleError(
+                "保存备份设置失败: " + (error instanceof Error ? error.message : "未知错误")
+            );
+        }
+    };
+
     const handleToggleIncludeCredentials = async (enabled: boolean) => {
         const previous = configs[BACKUP_CREDENTIALS_CONFIG] ?? "false";
         const next = enabled ? "true" : "false";
@@ -501,6 +523,7 @@ export function useBackupController(deps: BackupControllerDeps) {
         handleDownloadLocal,
         handleSaveWebdavConfig,
         handleToggleAutoBackup,
+        handleToggleIncludeNotes,
         handleToggleIncludeCredentials,
         handleToggleLinkHealthSync,
         handleTogglePrefSync,

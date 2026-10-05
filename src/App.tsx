@@ -13,6 +13,7 @@ import { MockNavigationClient } from "./API/mock";
 import {
     BootstrapData,
     BACKUP_CREDENTIALS_CONFIG,
+    BACKUP_NOTES_CONFIG,
 } from "./API/http";
 import { RETENTION_DAYS_KEY } from "./API/configKeys";
 import { GroupWithSites } from "./types";
@@ -994,6 +995,7 @@ function App() {
         handleDownloadLocal,
         handleSaveWebdavConfig,
         handleToggleAutoBackup,
+        handleToggleIncludeNotes,
         handleToggleIncludeCredentials,
         handleToggleLinkHealthSync,
         handleTogglePrefSync,
@@ -1808,6 +1810,9 @@ function App() {
                         onClose={handleCloseBackup}
                         includeCredentials={configs[BACKUP_CREDENTIALS_CONFIG] === "true"}
                         onIncludeCredentialsChange={handleToggleIncludeCredentials}
+                        // 记事本默认**带**（与凭据相反）：它是主要内容，导出后找不到会以为坏了
+                        includeNotes={configs[BACKUP_NOTES_CONFIG] !== "false"}
+                        onIncludeNotesChange={handleToggleIncludeNotes}
                         // 导入浏览器书签：从「更多选项」挪进「恢复 / 导入」页，和从文件恢复同类
                         onOpenBookmark={() => {
                             setOpenBackup(false);

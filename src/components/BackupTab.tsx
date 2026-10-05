@@ -55,6 +55,9 @@ export interface BackupTabProps {
     /** 备份文件里是否带网站的账号密码 */
     includeCredentials: boolean;
     onIncludeCredentialsChange: (enabled: boolean) => void;
+    /** 备份文件里是否带记事本。默认 true（与凭据相反：笔记是主要内容，凭据才敏感） */
+    includeNotes: boolean;
+    onIncludeNotesChange: (enabled: boolean) => void;
     encryptLocal: boolean;
     setEncryptLocal: Dispatch<SetStateAction<boolean>>;
     backupPassword: string;
@@ -72,7 +75,7 @@ export interface BackupTabProps {
 }
 
 export default function BackupTab({
-    config, setConfig, handleConfigChange, testing, testResult, handleTest, uploading, handleUpload, webdavActionsRef, autoBackup, onToggleAutoBackup, lastBackupAt, remoteFiles, includeCredentials, onIncludeCredentialsChange, encryptLocal, setEncryptLocal, backupPassword, setBackupPassword, backupPasswordConfirm, setBackupPasswordConfirm, showBackupPassword, setShowBackupPassword, showPassword, setShowPassword, showWebdavBackupPassword, setShowWebdavBackupPassword, onDownloadLocal, onNotify,
+    config, setConfig, handleConfigChange, testing, testResult, handleTest, uploading, handleUpload, webdavActionsRef, autoBackup, onToggleAutoBackup, lastBackupAt, remoteFiles, includeCredentials, onIncludeCredentialsChange, includeNotes, onIncludeNotesChange, encryptLocal, setEncryptLocal, backupPassword, setBackupPassword, backupPasswordConfirm, setBackupPasswordConfirm, showBackupPassword, setShowBackupPassword, showPassword, setShowPassword, showWebdavBackupPassword, setShowWebdavBackupPassword, onDownloadLocal, onNotify,
 }: BackupTabProps) {
     return (
         <Stack spacing={0.75} sx={{ mt: 0.5, flex: 1, minHeight: 0 }}>
@@ -135,6 +138,44 @@ export default function BackupTab({
                         {includeCredentials
                             ? "本地下载为明文 JSON，上传与定时备份会再加密一层。"
                             : "导出、上传、定时备份都不带网站的账号密码，恢复后需手动补填。"}
+                    </Typography>
+                </Box>
+
+                {/* 记事本开关：默认含。它与凭据刻意分成两个 ——
+                    合并成一个的话，用户为了拿笔记就得把密码也导出去。
+                    不套警告色边框：笔记是明文的，但不像密码那样属于「凭据」。 */}
+                <Box
+                    sx={{
+                        mb: 1,
+                        px: 1,
+                        py: 0.5,
+                        borderRadius: 2,
+                        border: 1,
+                        borderColor: "divider",
+                    }}
+                >
+                    <FormControlLabel
+                        sx={{ display: "flex", mr: 0, ml: 0 }}
+                        control={
+                            <Switch
+                                checked={includeNotes}
+                                size='small'
+                                onChange={e => onIncludeNotesChange(e.target.checked)}
+                                slotProps={{
+                                    input: { "aria-label": "备份包含记事本" },
+                                }}
+                            />
+                        }
+                        label={<Typography variant='body2'>备份包含记事本</Typography>}
+                    />
+                    <Typography
+                        variant='caption'
+                        color='text.secondary'
+                        sx={{ display: "block", ml: 5.5 }}
+                    >
+                        {includeNotes
+                            ? "导出文件里会带上全部笔记（Markdown 源码）。"
+                            : "导出文件不含笔记；导入这样的备份时，本地笔记保持不动。"}
                     </Typography>
                 </Box>
 
