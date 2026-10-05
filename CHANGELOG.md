@@ -8,6 +8,41 @@
 
 ---
 
+## 2026-10-05（续）
+
+**要点**：B 级三项。安全头两处的差异查清后发现**大部分是有意的**，于是没有机械补齐，
+而是补了一条守卫把「哪些故意不同」钉住；另外给使用频率最高的搜索框补了直测。
+三个大件（`App.tsx` / `GroupCard` / `SiteCard`）本轮**没有拆** —— 理由见下。
+
+### 工程
+- **安全头两处的差异查清了，并落守卫**（`tests/securityHeaders.test.ts`，4 条）：
+  安全头分散在 `public/_headers`（静态资源，9 项）与 `worker/util.ts` 的
+  `securityHeaders()`（Worker 响应，5 项）。原以为要「补齐」，读完注释才发现
+  **CSP / COOP / Permissions-Policy / X-Permitted-Cross-Domain-Policies 是故意不加的**：
+  它们只对会被当成文档渲染的响应有意义，JSON 与图片响应加了不起作用；更关键的是
+  图标代理要传自己的 `default-src 'none'; sandbox`（`worker/icon.ts`），默认塞一条
+  CSP 会把它盖掉 —— 白名单哪天被绕过时那道沙箱是最后一道防线。
+  所以守卫钉的是「**该有的必须有，不该有的不许有**」：既断言 nosniff / HSTS / CORP /
+  X-Frame-Options 齐全，也断言那四条**不许出现**，还直接照 icon.ts 的用法调一次
+  `securityHeaders()` 确认沙箱 CSP 没被默认值盖掉。已做变异验证：给 `securityHeaders`
+  加一条默认 CSP → 两条守卫同时变红。
+  真正需要处理的只有 `Referrer-Policy` 两处取值不同，已在注释里写明**为什么故意不同**
+  （该头只对文档/导航生效，API 响应上近乎无效，取更严的值没有副作用）。
+  顺手清掉了 `util.ts` 顶部两段重叠的注释。
+- **`HeaderSearchBox` 补直测**（新增，10 条）：284 行、**使用频率最高的一个控件**，
+  此前零覆盖。搜索坏掉的表现往往不是报错而是「搜不到了」「按回车没反应」，很隐蔽。
+  钉住的：有关键词下列表是**结果**、没关键词时是**历史**（两者不能串）、悬停要能改选中项
+  （否则只能一路按 ↓）、面板关着时不渲染内容、语义搜索开关必须带 `aria-pressed`
+  且没准备好时禁用。已做变异验证：去掉 `onMouseEnter` → 对应用例变红。
+  ⚠️ MUI 的 `ListItemButton` 渲染成 **div 而不是 li**，按标签名找会一个都找不到，
+  得用 `.MuiListItemButton-root`。
+- 用例 1686 → **1700**。
+
+### 暂缓：三个大件先不拆
+`App.tsx` 1996 / `GroupCard` 914 / `SiteCard` 990。`App.tsx` 本身就是零覆盖第一名，
+在它上面做结构改动没有回归网撑着；`GroupCard` 那个 272 行的 `renderSites` 与组件状态
+深度耦合，硬拆会变出 20+ props 的组件，可读性未必改善。**先补网再拆**。
+
 ## 2026-10-05
 
 **要点**：新一次全面复查（`docs/improvement-review-2026-10-05.md`）挖出一条被两轮复查

@@ -2,30 +2,36 @@
 // 与具体业务无关的小工具：错误消息提取、安全的 JSON 读取、弱 ETag、响应安全头。
 
 /**
- * 所有 Worker 响应都该带上的安全头。
+ * Worker 自己产出的响应（/api/*、图标代理）统一带的安全头。
  *
- * 关键点：`public/_headers` 里那套 CSP / nosniff **只对静态资源生效** —— Worker 用
- * `new Response()` 返回的响应一个安全头都没有。少了 nosniff 浏览器会按内容猜类型，
- * 一个 content-type 透传第三方的接口（比如图标代理）就能把任意内容变成同源文档。
- * 这里不重复静态资源已经配好的 CSP（各接口用途不同，统一塞反而容易打断正常功能），
- * 只补这些「无论什么响应都成立」的：
- *   - X-Content-Type-Options: nosniff —— 禁止 MIME 嗅探
- *   - X-Frame-Options / CSP frame-ancestors —— 不允许被别的站点嵌进 iframe（点击劫持）
- *   - Referrer-Policy —— 不把本站 URL 泄露给外链
- */
-/**
- * Worker 自己产出的响应（/api/*）统一带的安全头。
+ * 静态资源那套在 `public/_headers`（CSP / HSTS / COOP / CORP / Permissions-Policy …），
+ * 但**它管不到 Worker 响应** —— 那边一个安全头都没有。两边必须各写一遍，
+ * 否则 `/api/bootstrap` 这种返回全部站点数据的接口反而是全站头最少的响应。
  *
- * 静态资源那套在 public/_headers（CSP / HSTS / COOP / CORP …），但**它管不到
- * Worker 响应**，两边必须各写一遍，否则 `/api/bootstrap` 这种返回全部站点数据的
- * 接口反而是全站头最少的响应。缺的两条各自有实际作用：
+ * ⚠️ **刻意与静态资源不同的三处**（都带注释，别看着"不统一"就顺手抹平）：
+ *   - **CSP / COOP 不加**。它们只对「会被当成文档渲染」的响应有意义，
+ *     JSON 与图片响应加了不起作用；更关键的是图标代理要传自己的
+ *     `default-src 'none'; sandbox`（见 icon.ts），默认塞一条 CSP 把它盖掉，
+ *     那道沙箱就没了。静态资源那边的 CSP 含 `require-trusted-types-for 'script'`，
+ *     对 API 响应也毫无意义。
+ *   - **Permissions-Policy / X-Permitted-Cross-Domain-Policies 不加**：
+ *     都是文档级指令，JSON 响应带上去纯粹是摆设。
+ *   - **Referrer-Policy 用更严的 `no-referrer`**（静态资源是
+ *     `strict-origin-when-cross-origin`）。该头其实只对文档/导航生效，
+ *     两边值不同是**故意的**：API 响应上它近乎无效，取更保守的值没有副作用，
+ *     而统一成宽松的那个反而会让人以为「它在这里是有用的」。
+ *     有一处要留意：别把它改成 `strict-origin-when-cross-origin` 了事 ——
+ *     真要统一，就两处都换，并且确认过外链跳转不依赖 Referer。
+ *
+ * 另外三条缺了都有实际作用：
  *   - HSTS：只在 HTTPS 响应里下发才有效。首页（静态）虽然已经带了，但直接打到
  *     /api 的客户端（脚本、健康检查、被 DNS 重绑定诱导的请求）拿不到，
  *     补上后「先访问过首页」不再是建立 HSTS 的前提。
  *   - CORP: same-origin：挡的是「别的源把这份响应当资源读走」。/api 已经是
  *     no-store、令牌也是 HttpOnly，但 CORP 防的是共享缓存之外的那一层 ——
  *     跨源 <img>/<script>/fetch 想读走响应体时直接被浏览器挡下。
- * CSP 与 COOP 只对「会被当成文档渲染」的响应有意义，JSON / 图片响应不需要，故不加。
+ *   - nosniff：少它浏览器会按内容猜类型，一个 content-type 透传第三方的接口
+ *     （比如图标代理）就能把任意内容变成同源文档。
  */
 export function securityHeaders(extra?: HeadersInit): Headers {
     const headers = new Headers(extra);
