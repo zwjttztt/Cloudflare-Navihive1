@@ -163,3 +163,63 @@ test("每条 SQL 的占位符个数与 bind 的参数个数对得上（逐个方
         );
     }
 });
+
+// ---------- 阶段三：归档列 + 回收站认识笔记 ----------
+
+test("阶段三：NOTE_FIELDS 必须带 archived，否则归档状态永远读不回来", () => {
+    assert.ok(
+        /const NOTE_FIELDS =[\s\S]*?archived/.test(source),
+        "查询字段里要有 archived"
+    );
+    // 归档走 updateNote 的白名单：漏了就变成「点了归档按钮，刷新又变回来」
+    assert.ok(
+        /patch\.archived !== undefined[\s\S]{0,200}archived = \?/.test(source),
+        "updateNote 要认 archived，并写成 archived = ?"
+    );
+    assert.ok(
+        /params\.push\(patch\.archived \? 1 : 0\)/.test(source),
+        "archived 要存成 0/1，不是 true/false（D1 的 INTEGER 列不认布尔）"
+    );
+});
+
+test("阶段三：建表语句里有 archived，且老库有 ALTER 补列（否则老实例 500）", () => {
+    const internals = readFileSync(
+        join(findProjectDir(), "src", "API", "methods", "internals.ts"),
+        "utf-8"
+    );
+    assert.ok(
+        /CREATE TABLE IF NOT EXISTS notes \([\s\S]*?archived INTEGER NOT NULL DEFAULT 0/.test(internals),
+        "新库建表要带 archived"
+    );
+    const migration = readFileSync(
+        join(findProjectDir(), "src", "API", "methods", "migration.ts"),
+        "utf-8"
+    );
+    assert.ok(
+        /ALTER TABLE notes ADD COLUMN archived INTEGER NOT NULL DEFAULT 0/.test(migration),
+        "老库必须靠 ALTER 补列：CREATE TABLE IF NOT EXISTS 对已存在的表不补字段"
+    );
+    assert.ok(
+        /export const SCHEMA_VERSION = "4"/.test(migration),
+        "结构版本号要升到 4，否则 migrateIfNeeded 读到相同版本直接跳过迁移"
+    );
+});
+
+test("阶段三：回收站要认出笔记（之前把 note 降级成 site，列表里显示成「站点」）", () => {
+    const recycle = readFileSync(
+        join(findProjectDir(), "src", "API", "methods", "recycle.ts"),
+        "utf-8"
+    );
+    assert.ok(
+        /r\.kind === "note"/.test(recycle),
+        "要按 kind='note' 分支取标题"
+    );
+    assert.ok(
+        /parsed\.note\?\.title/.test(recycle),
+        "笔记标题要从回收站存的 { note: {...} } 里取"
+    );
+    assert.ok(
+        /r\.kind === "note" \? "note" : "site"/.test(recycle),
+        "kind 不能把 note 降级成 site"
+    );
+});

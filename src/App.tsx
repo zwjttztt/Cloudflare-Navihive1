@@ -988,7 +988,19 @@ function App() {
 
     // 记事本：列表在首屏就拉一次（顶栏按钮要显示条数），面板按需打开
     const [notesOpen, setNotesOpen] = useState(false);
-    const { notes, createNote, updateNote, deleteNote, togglePin } = useNotes({
+    const {
+        notes,
+        createNote,
+        updateNote,
+        deleteNote,
+        togglePin,
+        trash: trashedNotes,
+        loadTrash: loadTrashedNotes,
+        restoreTrashed,
+        purgeTrashed,
+        emptyTrash: emptyTrashedNotes,
+        toggleArchive,
+    } = useNotes({
         api,
         onError: handleError,
         onNotify: notify,
@@ -1816,6 +1828,12 @@ function App() {
                                 onUpdate={updateNote}
                                 onDelete={deleteNote}
                                 onTogglePin={togglePin}
+                                trashedNotes={trashedNotes}
+                                onLoadTrash={loadTrashedNotes}
+                                onRestoreTrashed={restoreTrashed}
+                                onPurgeTrashed={purgeTrashed}
+                                onEmptyTrash={emptyTrashedNotes}
+                                onToggleArchive={toggleArchive}
                             />
                         </Suspense>
                         </ChunkBoundary>

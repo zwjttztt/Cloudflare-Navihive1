@@ -38,9 +38,11 @@ import TextField from "@mui/material/TextField";
 import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 import AddIcon from "@mui/icons-material/Add";
+import ArchiveIcon from "@mui/icons-material/Archive";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import ChecklistIcon from "@mui/icons-material/Checklist";
 import CodeIcon from "@mui/icons-material/Code";
+import DeleteForeverIcon from "@mui/icons-material/DeleteForever";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutlined";
 import EditIcon from "@mui/icons-material/Edit";
 import FormatBoldIcon from "@mui/icons-material/FormatBold";
@@ -55,7 +57,9 @@ import PushPinIcon from "@mui/icons-material/PushPin";
 import SearchIcon from "@mui/icons-material/Search";
 import StrikethroughIcon from "@mui/icons-material/StrikethroughS";
 import TableRowsIcon from "@mui/icons-material/TableRows";
+import UndoIcon from "@mui/icons-material/Undo";
 import type { Note } from "../API/http";
+import type { TrashedNote } from "../hooks/useNotes";
 import { renderMarkdownToReact } from "../utils/markdownToReact";
 import { useScrollLock } from "../hooks/useScrollLock";
 
@@ -66,6 +70,14 @@ export interface NotesPageProps {
     onUpdate: (id: number, patch: Partial<Note>) => Promise<void>;
     onDelete: (note: Note) => Promise<void>;
     onTogglePin: (note: Note) => Promise<void>;
+    // ---------- 阶段三：回收站 + 归档 ----------
+    /** 回收站里的笔记（只含 kind='note' 的），从 useNotes 传进来 */
+    trashedNotes: TrashedNote[];
+    onLoadTrash: () => Promise<void>;
+    onRestoreTrashed: (recycleId: number) => Promise<void>;
+    onPurgeTrashed: (recycleId: number) => Promise<void>;
+    onEmptyTrash: () => Promise<void>;
+    onToggleArchive: (note: Note) => Promise<void>;
 }
 
 /** 摘要：把 Markdown 源码压成一行预览（去掉语法符号，不解析） */
@@ -109,7 +121,7 @@ function monthLabel(iso?: string): string {
 type Pane = "edit" | "split" | "preview";
 
 /** 左栏视图 */
-type NoteView = "all" | "recent" | "starred";
+type NoteView = "all" | "recent" | "starred" | "archived" | "uncategorized" | "trash";
 
 /**
  * 编辑区里那条「能看见的滚动条」。
@@ -119,12 +131,15 @@ type NoteView = "all" | "recent" | "starred";
  * inkstone 也是这个调子（细瘦、灰、hover 加深）。
  */
 const SCROLLBAR_SX = {
-    // Firefox
-    scrollbarWidth: "thin",
-    scrollbarColor: "rgba(0,0,0,0.45) transparent",
-    // ⚠️ 用户实测「预览框能滚但还是看不见滚动条」—— 之前 10px + 35% 灰 + 2px 透明
-    // 内边距把拇指挤成 6px 的一细条，太浅。现在 12px + 45% 黑，直接填满不缩边。
+    // ⚠️⚠️ **千万别写 `scrollbarWidth: "thin"`**。Chrome 121+ 也认这个标准属性，
+    // 一旦设上，浏览器就改用自己的 thin 滚动条（浅灰细条 + 上下箭头），
+    // 下面整套 `::-webkit-scrollbar` **被直接忽略** ——
+    // 症状极具迷惑性：`offsetWidth - clientWidth` 量到 12px 槽位、截图放大也「有」条，
+    // 用户还是说「看不见滚动条」。现在只留 Firefox 用的 scrollbarColor（宽度保持默认），
+    // Chrome/Edge 走伪元素，才能拿到 12px 深色、对比足够的自定义条。
+    scrollbarColor: "rgba(0,0,0,0.45) rgba(0,0,0,0.06)",
     "&::-webkit-scrollbar": { width: 12, height: 12 },
+    "&::-webkit-scrollbar-corner": { background: "transparent" },
     "&::-webkit-scrollbar-track": { background: "rgba(0,0,0,0.06)" },
     "&::-webkit-scrollbar-thumb": {
         bgcolor: "rgba(0,0,0,0.45)",
@@ -156,6 +171,12 @@ export default function NotesPage({
     onUpdate,
     onDelete,
     onTogglePin,
+    trashedNotes,
+    onLoadTrash,
+    onRestoreTrashed,
+    onPurgeTrashed,
+    onEmptyTrash,
+    onToggleArchive,
 }: NotesPageProps) {
     const [keyword, setKeyword] = useState("");
     /** 左栏视图：全部 / 最近 / 收藏（回收站要软删字段，留到阶段三） */
@@ -196,35 +217,58 @@ export default function NotesPage({
         [notes, activeId]
     );
 
+    // 回收站是懒加载：只有真的切到那个视图才去拉（首屏不该为没人看的列表发请求）
+    useEffect(() => {
+        if (view === "trash") void onLoadTrash();
+    }, [view, onLoadTrash]);
+
     // 选中的笔记变了就把草稿换成它的内容（没在编辑时才换，避免打字被冲掉）
     useEffect(() => {
         if (active) setDraft({ title: active.title || "", content: active.content || "" });
     }, [active?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
     const filtered = useMemo(() => {
-        const byView = notes.filter(n => {
+        // 归档的笔记默认从「全部 / 最近 / 收藏 / 未归类」里隐去，只在「归档」视图露面
+        const live = notes.filter(n => !n.archived);
+        const byView = live.filter(n => {
             if (view === "starred") return Boolean(n.pinned);
-            if (view === "recent") {
-                // 最近：按更新时间倒序（置顶的在列表里永远排前面，取前 10 条）
-                return true;
-            }
             return true;
         });
-        const bySort = view === "recent"
-            ? [...byView].sort((a, b) =>
-                  (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) ||
-                  String(b.updated_at || b.created_at || "").localeCompare(
-                      String(a.updated_at || a.created_at || "")
+        const bySort =
+            view === "recent"
+                ? [...byView].sort(
+                      (a, b) =>
+                          (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) ||
+                          String(b.updated_at || b.created_at || "").localeCompare(
+                              String(a.updated_at || a.created_at || "")
+                          )
                   )
-              )
-            : byView;
+                : byView;
         const kw = keyword.trim().toLowerCase();
-        if (!kw) return bySort;
-        return bySort.filter(
-            n =>
-                (n.title || "").toLowerCase().includes(kw) ||
-                (n.content || "").toLowerCase().includes(kw)
-        );
+        const matched = kw
+            ? bySort.filter(
+                  n =>
+                      (n.title || "").toLowerCase().includes(kw) ||
+                      (n.content || "").toLowerCase().includes(kw)
+              )
+            : bySort;
+        if (view === "archived") {
+            // 归档视图看的是**全部**归档笔记（不管收藏不收藏）
+            const kw2 = keyword.trim().toLowerCase();
+            const all = notes.filter(n => n.archived);
+            return kw2
+                ? all.filter(
+                      n =>
+                          (n.title || "").toLowerCase().includes(kw2) ||
+                          (n.content || "").toLowerCase().includes(kw2)
+                  )
+                : all;
+        }
+        if (view === "uncategorized") {
+            // 「未归类」= 没挂在任何站点上的笔记（site_id 为空），不是新加的字段
+            return matched.filter(n => n.site_id === null || n.site_id === undefined);
+        }
+        return matched;
     }, [notes, keyword, view]);
 
     /** 阶段二：列表按月份分组（「十月」「九月…」），和 inkstone 一样 */
@@ -243,14 +287,108 @@ export default function NotesPage({
         return [...buckets.entries()].sort((a, b) => (a[0] < b[0] ? 1 : -1));
     }, [filtered]);
 
+    /** 阶段三：回收站列表。还原是主操作，彻底删除放右边且要二次确认。 */
+    const trashPane = (
+        <Box sx={{ px: 0.75, pb: 1 }}>
+            <Box sx={{ display: "flex", alignItems: "center", gap: 1, px: 1.25, py: 0.75 }}>
+                <Typography variant='caption' color='text.secondary' sx={{ flex: 1 }}>
+                    删除的笔记会先放到这里，保留 30 天
+                </Typography>
+                {trashedNotes.length > 0 && (
+                    <Button
+                        size='small'
+                        color='error'
+                        data-action='empty-trash'
+                        onClick={() => {
+                            if (window.confirm(`彻底删除这 ${trashedNotes.length} 条笔记？删了就找不回来了。`)) {
+                                void onEmptyTrash();
+                            }
+                        }}
+                        sx={{ fontSize: 12, py: 0.25 }}
+                    >
+                        清空
+                    </Button>
+                )}
+            </Box>
+            {trashedNotes.length === 0 ? (
+                <Typography variant='body2' color='text.secondary' sx={{ p: 2 }}>
+                    回收站是空的。
+                </Typography>
+            ) : (
+                trashedNotes.map(item => (
+                    <Box
+                        key={item.recycleId}
+                        data-trash-id={item.recycleId}
+                        sx={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 0.5,
+                            px: 1.25,
+                            py: 0.9,
+                            borderRadius: 1.5,
+                            "&:hover": { bgcolor: "rgba(128,128,128,0.08)" },
+                        }}
+                    >
+                        <Box sx={{ minWidth: 0, flex: 1 }}>
+                            <Typography
+                                variant='body2'
+                                sx={{
+                                    overflow: "hidden",
+                                    textOverflow: "ellipsis",
+                                    whiteSpace: "nowrap",
+                                }}
+                            >
+                                {item.title}
+                            </Typography>
+                            <Typography variant='caption' color='text.disabled' sx={{ fontSize: 11 }}>
+                                {formatWhen(new Date(item.deletedAt).toISOString()) ||
+                                    new Date(item.deletedAt).toLocaleDateString()}
+                            </Typography>
+                        </Box>
+                        <Tooltip title='还原到全部笔记'>
+                            <IconButton
+                                size='small'
+                                aria-label={`还原 ${item.title}`}
+                                data-action='restore'
+                                onClick={() => void onRestoreTrashed(item.recycleId)}
+                            >
+                                <UndoIcon fontSize='small' />
+                            </IconButton>
+                        </Tooltip>
+                        <Tooltip title='彻底删除（找不回来）'>
+                            <IconButton
+                                size='small'
+                                color='error'
+                                aria-label={`彻底删除 ${item.title}`}
+                                data-action='purge'
+                                onClick={() => {
+                                    if (window.confirm(`彻底删除「${item.title}」？删了就找不回来了。`)) {
+                                        void onPurgeTrashed(item.recycleId);
+                                    }
+                                }}
+                            >
+                                <DeleteForeverIcon fontSize='small' />
+                            </IconButton>
+                        </Tooltip>
+                    </Box>
+                ))
+            )}
+        </Box>
+    );
+
     /** 左栏导航上挂的三个数 */
     const viewCounts = useMemo(
         () => ({
-            all: notes.length,
-            recent: notes.length,
-            starred: notes.filter(n => Boolean(n.pinned)).length,
+            all: notes.filter(n => !n.archived).length,
+            recent: notes.filter(n => !n.archived).length,
+            starred: notes.filter(n => !n.archived && Boolean(n.pinned)).length,
+            archived: notes.filter(n => Boolean(n.archived)).length,
+            uncategorized: notes.filter(
+                n => !n.archived && (n.site_id === null || n.site_id === undefined)
+            ).length,
+            trash: trashedNotes.length,
         }),
-        [notes]
+        [notes, trashedNotes]
     );
 
     const dirty =
@@ -472,12 +610,32 @@ export default function NotesPage({
                 // 阶段二：折叠后收成 44px 的图标轨（平时 300px）
                 width: listCollapsed ? 44 : { xs: "100%", md: 300 },
                 flexShrink: 0,
+                // 折叠成 44px 轨道时，任何子元素都不许溢出压到右边的编辑区
+                overflow: "hidden",
                 borderRight: { md: "1px solid var(--card-border, rgba(0,0,0,0.08))" },
                 display: "flex",
                 flexDirection: "column",
                 minHeight: 0,
             }}
         >
+            {/* ⚠️ 折叠态必须把**搜索框和视图导航也一起藏掉**：
+                之前只藏了计数和列表，44px 宽的轨道里塞着三个「全部/最近/收藏」按钮，
+                文字直接溢出压到右边的编辑区上（用户报「收齐后文字重叠」）。
+                轨道里只留一个展开按钮。 */}
+            {listCollapsed ? (
+                <Box sx={{ display: "flex", justifyContent: "center", pt: 1 }}>
+                    <Tooltip title='展开笔记列表'>
+                        <IconButton
+                            aria-label='展开笔记列表'
+                            size='small'
+                            onClick={() => setListCollapsed(false)}
+                        >
+                            <LastPageIcon fontSize='small' />
+                        </IconButton>
+                    </Tooltip>
+                </Box>
+            ) : (
+            <>
             <Box sx={{ p: 1.5, pb: 1 }}>
                 {/* 用 TextField + InputAdornment：之前是自己画的绝对定位图标，
                     那个放大镜飘在框外面右下方，对不齐也很难看。 */}
@@ -522,12 +680,26 @@ export default function NotesPage({
             </Box>
 
             {/* 左栏视图导航：像 inkstone 那样，列表顶部先有几个「入口」再是条目 */}
-            <Box sx={{ display: "flex", gap: 0.5, px: 1.5, pb: 1, flexShrink: 0 }}>
+            {/* 阶段三：视图多了到 6 个，排成两行三列（原来一行三个就满了） */}
+            <Box
+                sx={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+                    gap: 0.5,
+                    px: 1.5,
+                    pb: 1,
+                    flexShrink: 0,
+                    overflow: "hidden",
+                }}
+            >
                 {(
                     [
                         ["all", "全部", viewCounts.all],
                         ["recent", "最近", viewCounts.recent],
                         ["starred", "收藏", viewCounts.starred],
+                        ["archived", "归档", viewCounts.archived],
+                        ["uncategorized", "未归类", viewCounts.uncategorized],
+                        ["trash", "回收站", viewCounts.trash],
                     ] as const
                 ).map(([key, label, count]) => (
                     <Button
@@ -537,8 +709,8 @@ export default function NotesPage({
                         data-view={key}
                         onClick={() => setView(key)}
                         sx={{
-                            flex: 1,
                             minWidth: 0,
+                            px: 0.5,
                             py: 0.25,
                             fontSize: 12,
                             fontWeight: view === key ? 600 : 400,
@@ -553,10 +725,7 @@ export default function NotesPage({
                 ))}
             </Box>
 
-            {!listCollapsed && (
-            <>
-            {notes.length > 0 && (
-                <Typography
+            {notes.length > 0 && (                <Typography
                     variant='caption'
                     color='text.secondary'
                     sx={{ px: 2, pb: 0.75 }}
@@ -570,7 +739,11 @@ export default function NotesPage({
                 data-note-list='1'
                 sx={{ flex: 1, overflowY: "auto", minHeight: 0, pb: 1, ...SCROLLBAR_SX }}
             >
-                {filtered.length === 0 ? (
+                {view === "trash" ? (
+                    // 阶段三：回收站。条目不能点开编辑（它已经不在 notes 表里了），
+                    // 只给「还原」和「彻底删除」两个动作。
+                    trashPane
+                ) : filtered.length === 0 ? (
                     <Typography variant='body2' color='text.secondary' sx={{ p: 2 }}>
                         {notes.length === 0
                             ? "还没有笔记。点右上角 + 新建一条。"
@@ -677,7 +850,13 @@ export default function NotesPage({
 
     const editorPane = (
         <Box sx={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, minHeight: 0 }}>
-            {!active ? (
+            {view === "trash" ? (
+                <Box sx={{ flex: 1, display: "grid", placeItems: "center" }}>
+                    <Typography variant='body2' color='text.secondary'>
+                        回收站里的笔记不能直接编辑。先「还原」回全部笔记，或者「彻底删除」。
+                    </Typography>
+                </Box>
+            ) : !active ? (
                 <Box sx={{ flex: 1, display: "grid", placeItems: "center" }}>
                     <Typography variant='body2' color='text.secondary'>
                         左边选一条笔记，或者新建一条。
@@ -740,7 +919,7 @@ export default function NotesPage({
                                     // 分栏才看得出是两栏而不是一栏。
                                     border:
                                         pane === "split"
-                                            ? "1px solid var(--card-border, rgba(128,128,128,0.25))"
+                                            ? "1px solid var(--card-border, rgba(128,128,128,0.45))"
                                             : "none",
                                     borderRadius: pane === "split" ? 1.5 : 0,
                                     outline: "none",
@@ -801,7 +980,7 @@ export default function NotesPage({
                                     lineHeight: 1.7,
                                     border:
                                         pane === "split"
-                                            ? "1px solid var(--card-border, rgba(128,128,128,0.25))"
+                                            ? "1px solid var(--card-border, rgba(128,128,128,0.45))"
                                             : "none",
                                     borderRadius: pane === "split" ? 1.5 : 0,
                                     bgcolor:
@@ -863,6 +1042,19 @@ export default function NotesPage({
                                 />
                             </IconButton>
                         </Tooltip>
+                        {/* 阶段三：归档。归档只是从「全部」里收起来，笔记还在，随时能取回 */}
+                        <Tooltip title={active.archived ? "取消归档" : "归档（从全部里收起来）"}>
+                            <IconButton
+                                aria-label={active.archived ? "取消归档" : "归档"}
+                                size='small'
+                                onClick={() => void onToggleArchive(active)}
+                            >
+                                <ArchiveIcon
+                                    fontSize='small'
+                                    sx={active.archived ? { color: "var(--accent)" } : undefined}
+                                />
+                            </IconButton>
+                        </Tooltip>
                     </Box>
                 </>
             )}
@@ -898,10 +1090,14 @@ export default function NotesPage({
                 <IconButton aria-label='返回导航站' onClick={onClose} size='small'>
                     <ArrowBackIcon fontSize='small' />
                 </IconButton>
-                {/* 阶段二：左栏折叠（照 inkstone 那个 196↔9 的收起动作） */}
-                <Tooltip
-                    title={listCollapsed ? "展开笔记列表" : "收起笔记列表"}
-                >
+                <Typography variant='h6' component='div' sx={{ fontWeight: 600, flex: 1 }}>
+                    记事本
+                </Typography>
+
+                {/* 阶段二：左栏折叠（照 inkstone 那个 196↔9 的收起动作）。
+                    ⚠️ 这个按钮原来紧挨着「返回导航站」，两个都是无文字的箭头，
+                    靠太近必误按（用户报过）→ 挪到右侧这一组里，和视图切换、+ 相邻。 */}
+                <Tooltip title={listCollapsed ? "展开笔记列表" : "收起笔记列表"}>
                     <IconButton
                         aria-label={listCollapsed ? "展开笔记列表" : "收起笔记列表"}
                         size='small'
@@ -914,9 +1110,6 @@ export default function NotesPage({
                         )}
                     </IconButton>
                 </Tooltip>
-                <Typography variant='h6' component='div' sx={{ fontWeight: 600, flex: 1 }}>
-                    记事本
-                </Typography>
 
                 {/* 源码/预览切换：像 inkstone 那样给三档 */}
                 <Box sx={{ display: { xs: "none", sm: "flex" }, gap: 0.5 }}>

@@ -901,7 +901,7 @@ export class NavigationClient {
     // ============ 回收站 ============
     async getRecycleBin(): Promise<{
         success: boolean;
-        items: Array<{ id: number; kind: "site" | "group"; name: string; deletedAt: number }>;
+        items: Array<{ id: number; kind: "site" | "group" | "note"; name: string; deletedAt: number }>;
     }> {
         return this.request<RecycleListResponse>("recycle");
     }

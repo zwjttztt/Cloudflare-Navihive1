@@ -44,6 +44,7 @@ export const CREATE_STATEMENTS = [
         pinned INTEGER NOT NULL DEFAULT 0,
         order_num INTEGER NOT NULL DEFAULT 0,
         site_id INTEGER,
+        archived INTEGER NOT NULL DEFAULT 0,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );`,
@@ -134,6 +135,7 @@ export const INDEX_STATEMENTS = [
     // 不写 `pinned DESC`：SQLite 的索引本来就能反向扫描满足 DESC 排序，
     // 写上去只会让「按列名解析索引」的校验工具误判（把 "pinned DESC" 当成一个列名）。
     `CREATE INDEX IF NOT EXISTS idx_notes_user ON notes(user_id, pinned, order_num);`,
+    `CREATE INDEX IF NOT EXISTS idx_notes_archived ON notes(user_id, archived, updated_at);`,
     `CREATE INDEX IF NOT EXISTS idx_notes_uuid ON notes(user_id, uuid);`,
     // 定时清理：审计日志 / 令牌黑名单 / 邀请码都按过期时间整批删
     `CREATE INDEX IF NOT EXISTS idx_audit_log_created_at ON audit_log(created_at);`,

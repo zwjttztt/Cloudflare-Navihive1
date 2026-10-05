@@ -155,7 +155,7 @@ const mockConfigs: Record<string, string> = {
 // 回收站：本地 mock 也是真的软删除 —— 删掉的分组/站点先搬到这儿，还原时按原数据塞回去。
 interface MockRecycleItem {
     id: number;
-    kind: "site" | "group";
+    kind: "site" | "group" | "note";
     name: string;
     deletedAt: number;
     group?: Group;
@@ -822,7 +822,7 @@ export class MockNavigationClient {
     // ============ 回收站（与真实实现一致：软删除后可还原 / 彻底删除 / 清空） ============
     async getRecycleBin(): Promise<{
         success: boolean;
-        items: Array<{ id: number; kind: "site" | "group"; name: string; deletedAt: number }>;
+        items: Array<{ id: number; kind: "site" | "group" | "note"; name: string; deletedAt: number }>;
     }> {
         await new Promise(resolve => setTimeout(resolve, 100));
         return {

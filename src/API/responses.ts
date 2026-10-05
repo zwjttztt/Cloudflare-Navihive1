@@ -138,7 +138,7 @@ export interface ClientErrorsResponse {
 /** GET recycle */
 export interface RecycleListResponse {
     success: boolean;
-    items: Array<{ id: number; kind: "site" | "group"; name: string; deletedAt: number }>;
+    items: Array<{ id: number; kind: "site" | "group" | "note"; name: string; deletedAt: number }>;
 }
 
 /** POST recycle/restore、DELETE recycle */

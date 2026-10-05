@@ -85,6 +85,12 @@ function mountPanel(notes: Note[], handlers: Record<string, unknown> = {}) {
                     onUpdate={async () => {}}
                     onDelete={async () => {}}
                     onTogglePin={async () => {}}
+                    trashedNotes={[]}
+                    onLoadTrash={async () => {}}
+                    onRestoreTrashed={async () => {}}
+                    onPurgeTrashed={async () => {}}
+                    onEmptyTrash={async () => {}}
+                    onToggleArchive={async () => {}}
                     {...handlers}
                 />
             </UIPrefsProvider>
@@ -243,6 +249,151 @@ test("阶段二：搜索框右侧挂 ⌘K 提示", () => {
     assert.ok(input.parentElement!.textContent!.includes("⌘K"), "要有 ⌘K 角标");
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", ctrlKey: true }));
     assert.equal(document.activeElement, input, "Ctrl+K 要聚焦搜索框");
+});
+
+// ---------- 阶段三：回收站 / 归档 / 未归类 ----------
+
+test("阶段三：左栏六个视图（全部/最近/收藏/归档/未归类/回收站）都在", () => {
+    mountPanel([note({ id: 1, title: "甲", content: "" })]);
+    const views = [...document.querySelectorAll("button[data-view]")].map(b =>
+        b.getAttribute("data-view")
+    );
+    assert.deepEqual(views, [
+        "all",
+        "recent",
+        "starred",
+        "archived",
+        "uncategorized",
+        "trash",
+    ]);
+});
+
+test("阶段三：回收站视图列出被删的笔记，并给还原 / 彻底删除两个动作", () => {
+    const onLoadTrash = async () => {};
+    mountPanel([note({ id: 1, title: "甲", content: "" })], {
+        trashedNotes: [{ recycleId: 42, title: "删掉的那条", deletedAt: Date.now() }],
+        onLoadTrash,
+    });
+    act(() => {
+        (
+            document.querySelector('button[data-view="trash"]') as HTMLElement
+        ).click();
+    });
+    const list = document.querySelector("[data-note-list]")!;
+    assert.ok(list.textContent!.includes("删掉的那条"), "回收站里要列出标题");
+    assert.ok(list.querySelector('[data-action="restore"]'), "要有还原按钮");
+    assert.ok(list.querySelector('[data-action="purge"]'), "要有彻底删除按钮");
+    assert.ok(list.textContent!.includes("保留 30 天"), "要说清保留多久");
+});
+
+test("阶段三：进回收站视图才去拉回收站（别在首屏就发请求）", () => {
+    let calls = 0;
+    mountPanel([note({ id: 1, title: "甲", content: "" })], {
+        onLoadTrash: async () => {
+            calls += 1;
+        },
+    });
+    assert.equal(calls, 0, "默认视图不该拉回收站");
+    act(() => {
+        (document.querySelector('button[data-view="trash"]') as HTMLElement).click();
+    });
+    assert.equal(calls, 1, "切到回收站要拉一次");
+});
+
+test("阶段三：回收站里不能编辑笔记（它已经不在 notes 表里了）", () => {
+    mountPanel([note({ id: 1, title: "甲", content: "内容" })], {
+        trashedNotes: [{ recycleId: 42, title: "删掉的", deletedAt: Date.now() }],
+    });
+    act(() => {
+        (document.querySelector('button[data-view="trash"]') as HTMLElement).click();
+    });
+    assert.equal(
+        document.querySelector("textarea[aria-label='笔记内容']"),
+        null,
+        "回收站视图不该渲染编辑器"
+    );
+    assert.ok(text().includes("不能直接编辑"), "要有一句说明");
+});
+
+test("阶段三：归档的笔记从「全部」里隐去，只在「归档」视图露面", () => {
+    mountPanel([
+        note({ id: 1, title: "正常的", content: "a" }),
+        note({ id: 2, title: "收起来的", content: "b", archived: true }),
+    ]);
+    const listText = () => document.querySelector("[data-note-list]")!.textContent || "";
+    assert.ok(listText().includes("正常的") && !listText().includes("收起来的"), "全部视图不该有归档的");
+
+    act(() => {
+        (document.querySelector('button[data-view="archived"]') as HTMLElement).click();
+    });
+    assert.ok(listText().includes("收起来的"), "归档视图里要有它");
+    assert.ok(!listText().includes("正常的"), "归档视图不该混进正常笔记");
+});
+
+test("阶段三：未归类 = 没挂在任何站点上的笔记", () => {
+    mountPanel([
+        note({ id: 1, title: "没挂站点", content: "a", site_id: null }),
+        note({ id: 2, title: "挂了站点", content: "b", site_id: 7 }),
+    ]);
+    act(() => {
+        (
+            document.querySelector('button[data-view="uncategorized"]') as HTMLElement
+        ).click();
+    });
+    const listText = () => document.querySelector("[data-note-list]")!.textContent || "";
+    assert.ok(listText().includes("没挂站点"), "未归类里要有它");
+    assert.ok(!listText().includes("挂了站点"), "挂了站点的不该进来");
+});
+
+// ---------- 本轮修掉的三个界面问题 ----------
+
+test("折叠左栏时搜索框和视图导航要一起藏掉（只藏列表会文字重叠）", () => {
+    mountPanel([note({ id: 1, title: "甲", content: "" })]);
+    act(() => {
+        (document.querySelector('button[aria-label="收起笔记列表"]') as HTMLElement).click();
+    });
+    assert.equal(document.querySelector("input[aria-label='搜索笔记']"), null, "搜索框要收起来");
+    assert.equal(
+        document.querySelectorAll("button[data-view]").length,
+        0,
+        "视图导航也要收起来，否则 44px 宽的轨道里文字会溢出压到编辑区"
+    );
+});
+
+test("顶栏：折叠按钮不能挨着「返回导航站」（两个无文字箭头靠太近会误按）", () => {
+    mountPanel([note({ id: 1, title: "甲", content: "" })]);
+    const src = readFileSync(
+        resolve(findProjectDir(), "src/components/NotesPage.tsx"),
+        "utf-8"
+    );
+    // 源码里两者的距离：返回键之后应当先出现标题 Typography，折叠按钮在它右边
+    const backAt = src.indexOf("aria-label='返回导航站'");
+    const foldAt = src.indexOf("收起笔记列表", backAt);
+    const titleAt = src.indexOf("记事本", backAt);
+    assert.ok(backAt > 0 && foldAt > backAt, "折叠按钮要在返回键之后");
+    assert.ok(
+        titleAt > backAt && titleAt < foldAt,
+        "折叠按钮要挪到标题右边那一组，不能紧贴返回键"
+    );
+});
+
+test("滚动条样式里不能有 scrollbarWidth: thin（会让 Chrome 忽略自定义样式）", () => {
+    const src = readFileSync(
+        resolve(findProjectDir(), "src/components/NotesPage.tsx"),
+        "utf-8"
+    );
+    // ⚠️ 必须先剥注释：这段 CSS 上方就有解释「别写 scrollbarWidth: thin」的注释，
+    // 不剥的话守卫会自己把自己判红
+    const clean = stripComments(src);
+    const block = clean.slice(
+        clean.indexOf("const SCROLLBAR_SX"),
+        clean.indexOf("} as const;")
+    );
+    assert.ok(
+        !/scrollbarWidth\s*:/.test(block),
+        "scrollbarWidth: thin 会让 Chrome 改用自己的细滚动条，::-webkit-scrollbar 全部失效"
+    );
+    assert.ok(/::-webkit-scrollbar-thumb/.test(block), "自定义滚动条样式要留着");
 });
 
 test("没有笔记时给一句引导，不是一片空白", () => {

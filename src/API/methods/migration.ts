@@ -23,9 +23,10 @@ import { CREATE_STATEMENTS, INDEX_STATEMENTS, migrationState } from "./internals
  * 于是新表在**已经部署过的实例**上永远不会被建出来，
  * 症状是那个表的接口一律 500（本地/新库反而正常，因为那是全新迁移）。
  *
- * 3 = 记事本的 notes 表（2026-10-05）。加表时别忘了它。
+ * 3 = 记事本的 notes 表（2026-10-05）。
+ * 4 = notes.archived 归档列（阶段三）。加表/加列时别忘了它。
  */
-export const SCHEMA_VERSION = "3";
+export const SCHEMA_VERSION = "4";
 /** 版本号存在 configs 里的键名 */
 export const SCHEMA_VERSION_KEY = "schema.version";
 
@@ -46,6 +47,7 @@ export interface MigrationApi {
     migrateAccountSecurityColumns(): Promise<void>;
     migrateInactiveColumns(): Promise<void>;
     migrateOwnerColumns(): Promise<void>;
+    migrateNoteColumns(): Promise<void>;
     migrateRecoveryKeyToOwner(ownerId: number): Promise<void>;
     migrateWebdavConfigToOwner(ownerId: number): Promise<void>;
     hasColumn(table: string, column: string): Promise<boolean>;
@@ -179,7 +181,10 @@ export const migrationImpl: MigrationApi = {
         // 5) 账号各自的令牌版本：见 bumpTokenVersion 的注释
         await this.migrateAccountSecurityColumns();
 
-        // 6) 索引：排在最后，因为它依赖上面补出来的 user_id 列（见 INDEX_STATEMENTS 注释）
+        // 6) 阶段三：notes 补 archived 列（老库必须 ALTER 才会有，见 migrateNoteColumns）
+        await this.migrateNoteColumns();
+
+        // 7) 索引：排在最后，因为它依赖上面补出来的 user_id 列（见 INDEX_STATEMENTS 注释）
         await this.createIndexes();
 
         // 所有迁移步骤跑完，说明表结构已就绪：之后的查询出错就按「异常」处理（fail-closed），
@@ -258,6 +263,24 @@ export const migrationImpl: MigrationApi = {
      *   2. 把 configs 里那份单管理员凭据搬进 users 表，成为 owner；
      *   3. user_id 为空的历史数据全部归到 owner —— 升级后原账号看到的数据和升级前一模一样。
      */
+    /**
+     * notes 补 `archived` 列（阶段三的「归档」）。
+     *
+     * ⚠️ `CREATE TABLE IF NOT EXISTS` 对**已经存在的表不会补列**：
+     * 建表语句里加字段只对全新库有效，已经部署过的实例必须 ALTER。
+     * 漏了这一步的症状：老库上 `SELECT archived FROM notes` 报「no such column」，
+     * 整个记事本 500，而本地新库一切正常 —— 极难查。
+     */
+    migrateNoteColumns: async function (this: NavigationAPI ): Promise<void> {
+        try {
+            if (await this.hasColumn("notes", "archived")) return;
+            await this.db.exec("ALTER TABLE notes ADD COLUMN archived INTEGER NOT NULL DEFAULT 0");
+        } catch (error) {
+            // 列已存在 / 表还不存在（全新库会先建表）—— 都不是问题
+            void error;
+        }
+    },
+
     migrateOwnerColumns: async function (this: NavigationAPI ): Promise<void> {
         for (const table of ["groups", "sites"]) {
             if (await this.hasColumn(table, "user_id")) continue;

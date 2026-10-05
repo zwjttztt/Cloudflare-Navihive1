@@ -55,6 +55,8 @@ export interface Note {
      * **不建外键** —— 卡片删了，笔记要留下来；所以它只是一个可空引用。
      */
     site_id?: number | null;
+    /** 阶段三：归档。归档后不在「全部」里列表，但还好好留着，可以随时取回 */
+    archived?: boolean;
     created_at?: string;
     updated_at?: string;
 }

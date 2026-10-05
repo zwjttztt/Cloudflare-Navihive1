@@ -89,22 +89,43 @@ export const recycleImpl: RecycleApi = {
             return (result.results || []).map(r => {
                 let name: string;
                 try {
-                    const parsed = JSON.parse(r.data) as { group?: { name?: string }; sites?: unknown[]; name?: string };
-                    name =
-                        typeof parsed.name === "string"
-                            ? parsed.name
-                            : typeof parsed.group?.name === "string"
-                              ? parsed.group.name
-                              : r.kind === "group"
-                                ? "分组"
-                                : "站点";
-                    if (r.kind === "group" && Array.isArray(parsed.sites)) {
-                        name += `（含 ${parsed.sites.length} 张卡片）`;
+                    // 笔记存进来的是 `{ note: {...} }`（见 notes.ts 的 deleteNote）
+                    const parsed = JSON.parse(r.data) as {
+                        group?: { name?: string };
+                        sites?: unknown[];
+                        name?: string;
+                        note?: { title?: string };
+                    };
+                    if (r.kind === "note") {
+                        // ⚠️ 之前这里把 note 降级成了 "site"、名字回退成「站点」——
+                        // 于是回收站里的笔记看起来像一张卡片，用户根本认不出删的是哪条。
+                        const title = parsed.note?.title;
+                        name =
+                            typeof title === "string" && title.trim() ? title : "无标题笔记";
+                    } else {
+                        name =
+                            typeof parsed.name === "string"
+                                ? parsed.name
+                                : typeof parsed.group?.name === "string"
+                                  ? parsed.group.name
+                                  : r.kind === "group"
+                                    ? "分组"
+                                    : "站点";
+                        if (r.kind === "group" && Array.isArray(parsed.sites)) {
+                            name += `（含 ${parsed.sites.length} 张卡片）`;
+                        }
                     }
                 } catch {
-                    name = r.kind === "group" ? "分组" : "站点";
+                    name =
+                        r.kind === "group"
+                            ? "分组"
+                            : r.kind === "note"
+                              ? "无标题笔记"
+                              : "站点";
                 }
-                return { id: r.id, kind: r.kind === "group" ? "group" : "site", name, deletedAt: r.deleted_at };
+                const kind: "site" | "group" | "note" =
+                    r.kind === "group" ? "group" : r.kind === "note" ? "note" : "site";
+                return { id: r.id, kind, name, deletedAt: r.deleted_at };
             });
         } catch (error) {
             console.error("读取回收站失败:", error);

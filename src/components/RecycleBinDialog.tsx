@@ -25,7 +25,8 @@ import ConfirmDialog from "./ConfirmDialog";
 
 interface RecycleItem {
     id: number;
-    kind: "site" | "group";
+    /** "note" 是阶段三起才进回收站的（记事本删掉的笔记） */
+    kind: "site" | "group" | "note";
     name: string;
     deletedAt: number;
 }
@@ -223,7 +224,7 @@ export default function RecycleBinDialog({
                                                     color: 'text.secondary',
                                                     ml: 1
                                                 }}>
-                                                {item.kind === "group" ? "分组" : "站点"}
+                                                {item.kind === "group" ? "分组" : item.kind === "note" ? "笔记" : "站点"}
                                             </Typography>
                                         </span>
                                     }

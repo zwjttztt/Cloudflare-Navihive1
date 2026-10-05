@@ -25,7 +25,7 @@ export interface NotesApi {
 }
 
 const NOTE_FIELDS =
-    "id, uuid, title, content, pinned, order_num, site_id, created_at, updated_at";
+    "id, uuid, title, content, pinned, order_num, site_id, archived, created_at, updated_at";
 
 export const notesImpl: NotesApi = {
     listNotes: async function (this: NavigationAPI): Promise<Note[]> {
@@ -121,6 +121,11 @@ export const notesImpl: NotesApi = {
             if (patch.site_id !== undefined) {
                 updates.push("site_id = ?");
                 params.push(patch.site_id);
+            }
+            // 阶段三：归档 / 取回归档
+            if (patch.archived !== undefined) {
+                updates.push("archived = ?");
+                params.push(patch.archived ? 1 : 0);
             }
 
             params.push(id);
