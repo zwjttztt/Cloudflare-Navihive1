@@ -17,7 +17,15 @@ import { CREATE_STATEMENTS, INDEX_STATEMENTS, migrationState } from "./internals
  * 否则「读版本号对得上就跳过迁移」那条快路径会认为都跑过了，新步骤永远不会执行。
  * 快路径省掉的是查询，不是正确性；这个号就是它唯一的保险丝。
  */
-export const SCHEMA_VERSION = "2";
+/**
+ * 结构版本号。**往 CREATE_STATEMENTS 里加了新表，就必须把这里 +1** ——
+ * `migrateIfNeeded` 读到相同的版本号会直接返回、连建表都跳过，
+ * 于是新表在**已经部署过的实例**上永远不会被建出来，
+ * 症状是那个表的接口一律 500（本地/新库反而正常，因为那是全新迁移）。
+ *
+ * 3 = 记事本的 notes 表（2026-10-05）。加表时别忘了它。
+ */
+export const SCHEMA_VERSION = "3";
 /** 版本号存在 configs 里的键名 */
 export const SCHEMA_VERSION_KEY = "schema.version";
 

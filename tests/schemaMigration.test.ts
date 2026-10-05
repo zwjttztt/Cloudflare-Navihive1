@@ -12,6 +12,23 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { resetMigrationCacheForTests } from "../src/API/http";
 import { NavigationAPI } from "../src/API/navigationApi";
+import { SCHEMA_VERSION } from "../src/API/methods/migration";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join, resolve } from "node:path";
+
+/** 单测会被复制到 script/tmp-tests/ 下再跑，逐级向上找真身 */
+function findProjectDir(): string {
+    for (let dir = dirname(fileURLToPath(import.meta.url)), i = 0; i < 6; i++) {
+        try {
+            readFileSync(resolve(dir, "package.json"), "utf-8");
+            return dir;
+        } catch {
+            dir = dirname(dir);
+        }
+    }
+    throw new Error("找不到项目根目录");
+}
 
 /** 内存里的表结构：表名 → 列名集合 */
 type Schema = Map<string, Set<string>>;
@@ -221,4 +238,37 @@ test("迁移结果有缓存，同一 isolate 内不重复跑", async () => {
     const after = db.log.length;
     await api.migrate();
     assert.equal(db.log.length, after, "第二次 migrate() 又跑了一遍建表");
+});
+
+test("版本号不等于旧值 —— 加了新表就必须 +1，否则线上那个表永远建不出来", () => {
+    // 这是一条真踩过的坑：`migrateIfNeeded` 读到与库里相同的版本号就**直接返回，
+    // 连 CREATE TABLE 都不跑**。于是新表只在「全新迁移」的库里有（本地、新部署），
+    // 已经部署过的实例上一律没有 → 那个表的接口全部 500。
+    // 本地测试用 FakeD1，每次都是空库 + 全新迁移，所以**本地永远发现不了**。
+    // 只能靠这条静态断言把「建表语句变过、版本号却没变」钉住。
+    const source = readFileSync(
+        join(findProjectDir(), "src", "API", "methods", "internals.ts"),
+        "utf-8"
+    );
+    const tables = [...source.matchAll(/CREATE TABLE IF NOT EXISTS (\w+)/g)].map(m => m[1]);
+
+    // 拿一张「只有老版本才会建的表」当锚点：它一定在，但它属于旧版本
+    const ANCHOR = "invites";
+    assert.ok(tables.includes(ANCHOR), `建表语句里连 ${ANCHOR} 都没了，测试本身该更新`);
+
+    // 建表语句里有没有比锚点更新的表（notes 是 2026-10-05 加的，排在锚点之后）
+    const newer = tables.filter(t => !["groups", "sites", "configs", ANCHOR].includes(t));
+    assert.ok(
+        newer.length > 0,
+        "建表语句里没有「较新」的表了 —— 如果是有意回退，请同步更新这条用例的说明"
+    );
+
+    // 版本号必须够新：2026-10-05 加 notes 时是 3。这里用「数字不小于 3」而不是精确值，
+    // 这样以后再加表（版本号继续 +1）这条用例仍然成立，也不会逼着每次都改它。
+    const version = Number(SCHEMA_VERSION);
+    assert.ok(
+        Number.isFinite(version) && version >= 3,
+        `SCHEMA_VERSION=${SCHEMA_VERSION} —— 2026-10-05 加了 notes 表，版本号至少要 3。` +
+            "忘了 +1 的话，已部署的实例上 notes 表永远不会被建，接口一律 500。"
+    );
 });
