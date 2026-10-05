@@ -68,6 +68,17 @@ interface SiteSettingsModalProps {
      * 万一将来改成常驻挂载，得改成「open 从 false→true 时同步」而不是只认初始值。
      */
     initiallyExpandNotes?: boolean;
+    /**
+     * **只显示备注窗**，不渲染网站设置主窗。
+     *
+     * 卡片右键「编辑备注」走这条：用户要的就是改备注，先给他糊一整屏设置再等他自己
+     * 找到备注框，是把「三步」做成「五步」。
+     *
+     * 与 initiallyExpandNotes 分开而不是合并成一个 flag：两个诉求不同 ——
+     * 「打开就是放大态」也可能是在主窗里点放大按钮（这时主窗要在下面垫着），
+     * 而右键是**根本不要主窗**。合成一个 flag 就没法表达后者。
+     */
+    notesOnly?: boolean;
 
 }
 
@@ -79,17 +90,20 @@ interface SiteSettingsModalProps {
  * 这类「两个窗口要长得一样」的约定，最容易在只改了一处时悄悄漂移，
  * 所以让它们**共用同一个对象**，以后改主题只改这一处。
  */
-function settingsPaper(theme: Theme, opts?: { minHeight?: number | null }) {
+function settingsPaper(theme: Theme) {
     return {
         className: "nav-settings-dialog",
         sx: {
-            // 定高之后要靠 flex 让内容把多出来的高度吃掉，否则底部会留一片空白。
-            // 两窗都设：主窗虽然不定高，但列布局对「标题固定、内容滚动」也更稳。
             display: "flex",
             flexDirection: "column",
-            // 放大窗用它把高度对齐主窗（见 notesHeight）。主窗自己不定高 —— 它的
-            // 高度是内容决定的，写死反而会在内容变多时被截断。
-            ...(opts?.minHeight ? { minHeight: opts.minHeight } : {}),
+            // **固定高度**，两个窗因此永远一样大。
+            //
+            // 之前试过「点开时量主窗的 offsetHeight、当放大窗的 minHeight」，实测没生效
+            // —— 那是动态测出来的：量不到（ref 没挂上 / 布局未完成）就静默退化成
+            // 「按内容自适应」，于是又矮一截。为这件事用户反馈了三轮。
+            // 固定高度是唯一可靠的做法：两窗用**同一个函数**，值来自同一处，不可能不一致。
+            // 视口不够高时用 calc 收窄，小屏上不会超出屏幕。
+            height: "min(700px, calc(100vh - 104px))",
             // 和确认弹窗/提示条同一套毛玻璃面板，视觉统一
             borderRadius: "var(--card-radius)",
             backdropFilter: "blur(var(--glass-blur)) saturate(1.4)",
@@ -111,6 +125,7 @@ export default function SiteSettingsModal({
     onClose,
     groups = [],
     initiallyExpandNotes,
+    notesOnly = false,
 }: SiteSettingsModalProps) {
     const theme = useTheme();
     // 全局「网站设置」里的获取图标 API 模板
@@ -166,16 +181,23 @@ export default function SiteSettingsModal({
     // 两行框里改长文本很难受（要拖着框边角拉），所以给一个和本弹窗同尺寸的
     // 大输入框。共用同一份 formData.notes —— 不做两份再同步，少一处能写错的地方。
     const [notesExpanded, setNotesExpanded] = useState(!!initiallyExpandNotes);
-    // 放大窗要与主窗**同样大小**。宽度靠 maxWidth 就一致了，高度不行 ——
-    // 主窗的高度由内容决定，放大窗内容少就矮一截，看起来像小一号。
-    // 打开时量一次主窗的实测高度喂给放大窗（照项目里「paper 定高、内容 flex:1」的约定）。
-    // 量不到时（jsdom / 极端情况）就不设高度，退回内容自适应 —— 不能因为量不到就卡住功能。
-    const mainPaperRef = useRef<HTMLDivElement | null>(null);
-    const [notesHeight, setNotesHeight] = useState<number | null>(null);
 
-    const openNotesExpanded = () => {
-        setNotesHeight(mainPaperRef.current?.offsetHeight || null);
-        setNotesExpanded(true);
+    // 备注窗的「关闭」出口。notesOnly 时没有主窗垫着，关掉就是整个弹窗没了；
+    // 普通情况下只是从放大态退回主窗，编辑还在原地。
+    const closeNotes = () => {
+        setNotesExpanded(false);
+        if (notesOnly) onClose();
+    };
+
+    // 备注窗的「保存」出口。普通情况下改的是共享的 formData.notes，回主窗再点保存
+    // 才真正写库；notesOnly 时没有主窗，所以这里就得直接把改动写回去。
+    const saveNotes = () => {
+        if (notesOnly) {
+            onUpdate({ ...site, notes: formData.notes || "" });
+            onClose();
+            return;
+        }
+        setNotesExpanded(false);
     };
 
     // 初始快照只取第一次渲染的值，之后不再变
@@ -381,12 +403,14 @@ export default function SiteSettingsModal({
 
     return (
         <>
+        {/* notesOnly：只要备注窗，主窗整个不渲染（少开一个遮罩，也少一层焦点陷阱） */}
+        {!notesOnly && (
         <Dialog
             open={true}
             onClose={onClose}
             fullWidth
             maxWidth='sm'
-            slotProps={{ paper: { ...settingsPaper(theme), ref: mainPaperRef } }}
+            slotProps={{ paper: settingsPaper(theme) }}
         >
             <DialogTitle
                 sx={{
@@ -444,6 +468,9 @@ export default function SiteSettingsModal({
             */}
             <Box
                 component='div'
+                // 固定高度之后字段多就必须能滚，否则底部的凭据区会被挤出弹窗够不着。
+                // minHeight:0 是 flex 子项能滚的前提 —— 少了它 flex:1 撑不开、overflow 也不生效。
+                sx={{ flex: 1, minHeight: 0, overflowY: "auto" }}
                 onKeyDown={(e: React.KeyboardEvent) => {
                     if (e.key !== "Enter") return;
                     // 输入法正在拼字时的回车是「选词」，不能当成提交
@@ -785,7 +812,7 @@ export default function SiteSettingsModal({
                                                         size='small'
                                                         edge='end'
                                                         aria-label='放大编辑备注'
-                                                        onClick={openNotesExpanded}
+                                                        onClick={() => setNotesExpanded(true)}
                                                     >
                                                         <FullscreenIcon fontSize='small' />
                                                     </IconButton>
@@ -948,16 +975,17 @@ export default function SiteSettingsModal({
                 onClose={() => setConfirmDeleteOpen(false)}
             />
         </Dialog>
+        )}
 
         {/* 备注放大编辑：尺寸与网站设置一致（fullWidth + maxWidth='sm'），
             差别只在里面的输入框更高。放在主 Dialog **外面** —— 弹窗套弹窗时
             关掉大窗不会顺手把设置也关掉。共用 formData.notes，不做第二份状态。 */}
         <Dialog
             open={notesExpanded}
-            onClose={() => setNotesExpanded(false)}
+            onClose={closeNotes}
             fullWidth
             maxWidth='sm'
-            slotProps={{ paper: settingsPaper(theme, { minHeight: notesHeight }) }}
+            slotProps={{ paper: settingsPaper(theme) }}
         >
             <DialogTitle
                 sx={{
@@ -970,7 +998,7 @@ export default function SiteSettingsModal({
                 备注
                 <IconButton
                     aria-label='关闭'
-                    onClick={() => setNotesExpanded(false)}
+                    onClick={closeNotes}
                     size='small'
                 >
                     <CloseIcon fontSize='small' />
@@ -991,7 +1019,14 @@ export default function SiteSettingsModal({
                     // 看起来完全不像「放大」了。
                     // ⚠️ 只写 flex:1 不够 —— 那只能撑开 FormControl，textarea 在
                     // InputBase 内部有自己的高度，必须连它一起设成 100%。
-                    sx={{ flex: 1, "& .MuiInputBase-root": { height: "100%" } }}
+                    sx={{
+                        flex: 1,
+                        minWidth: 0,
+                        "& .MuiInputBase-root": { height: "100%" },
+                        // ⚠️ textarea 自己也要 100%：只设 InputBase 的话，textarea 仍是
+                        // rows={10} 那个高度，框的下半截点不进焦点（用户报「只有当中能打字」）
+                        "& textarea": { height: "100%" },
+                    }}
                     fullWidth
                     value={formData.notes || ""}
                     onChange={handleChange}
@@ -1003,11 +1038,7 @@ export default function SiteSettingsModal({
                 />
             </DialogContent>
             <DialogActions sx={{ px: 3, pb: 2.5, pt: 1 }}>
-                <Button
-                    onClick={() => setNotesExpanded(false)}
-                    variant='contained'
-                    color='primary'
-                >
+                <Button onClick={saveNotes} variant='contained' color='primary'>
                     保存
                 </Button>
             </DialogActions>

@@ -206,8 +206,10 @@ const SiteCard = memo(function SiteCard({
     // 处理关闭设置
     const handleCloseSettings = () => {
         setShowSettings(false);
-        // 标志只对「下一次打开」有效：不清的话，下次点「编辑」也会直接进放大窗
+        // 这两个标志都只对「下一次打开」有效：不清的话，下次点「编辑」会被强制进放大窗，
+        // 而且还会带着 notesOnly 变成「只剩备注窗」
         setOpenNotesAtMount(false);
+        setNotesOnly(false);
     };
 
     // 处理卡片点击：卡片本体是真实的 <a target="_blank">，
@@ -273,6 +275,8 @@ const SiteCard = memo(function SiteCard({
 
     const handleMenuEdit = () => {
         closeMenu();
+        // 显式回到完整设置：万一上一次的 notesOnly 还没清干净，这里是最后一道保险
+        setNotesOnly(false);
         setShowSettings(true);
     };
 
@@ -282,10 +286,14 @@ const SiteCard = memo(function SiteCard({
     // showSettings 条件渲染的，标志得由父级在打开那一刻传给 modal（见下面的
     // initiallyExpandNotes），因为 modal 内部的初始 state 只在挂载时读一次。
     const [openNotesAtMount, setOpenNotesAtMount] = useState(false);
+    // 右键那条路**不要网站设置主窗**（notesOnly）：用户点的是「编辑备注」，
+    // 先糊一整屏设置再让他自己找备注框，等于把三步做成五步。
+    const [notesOnly, setNotesOnly] = useState(false);
 
     const handleMenuNotes = () => {
         closeMenu();
         setOpenNotesAtMount(true);
+        setNotesOnly(true);
         setShowSettings(true);
     };
 
@@ -984,6 +992,7 @@ const SiteCard = memo(function SiteCard({
                         onDelete={onDelete}
                         onClose={handleCloseSettings}
                         initiallyExpandNotes={openNotesAtMount}
+                        notesOnly={notesOnly}
                     />
                     </Suspense>
                 )}
@@ -1004,6 +1013,7 @@ const SiteCard = memo(function SiteCard({
                     onDelete={onDelete}
                     onClose={handleCloseSettings}
                     initiallyExpandNotes={openNotesAtMount}
+                        notesOnly={notesOnly}
                 />
                 </Suspense>
             )}

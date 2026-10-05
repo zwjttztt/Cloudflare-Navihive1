@@ -17,6 +17,22 @@ import { AppConfigProvider } from "../src/context/AppConfigContext";
 import type { AppConfigContextValue } from "../src/context/appConfigStore";
 import { UIPrefsProvider } from "../src/context/UIPrefsContext";
 import type { Site } from "../src/API/http";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join, resolve } from "node:path";
+
+/** 单测会被复制到 script/tmp-tests/ 下再跑，逐级向上找真身 */
+function findProjectDir(): string {
+    for (let dir = dirname(fileURLToPath(import.meta.url)), i = 0; i < 6; i++) {
+        try {
+            readFileSync(resolve(dir, "package.json"), "utf-8");
+            return dir;
+        } catch {
+            dir = dirname(dir);
+        }
+    }
+    throw new Error("找不到项目根目录");
+}
 
 let root: Root | null = null;
 let host: HTMLDivElement | null = null;
@@ -467,46 +483,43 @@ test("放大窗里不再挂可见标签（标题已写着「备注」，两个�
     );
 });
 
-test("放大窗的高度对齐主窗（量到主窗高度就把它用上）", () => {
-    mount(
-        <SiteSettingsModal
-            site={makeSite({ notes: "" })}
-            groups={[] as never}
-            onUpdate={() => {}}
-            onDelete={() => {}}
-            onClose={() => {}}
-        />
-    );
-    // jsdom 里 offsetHeight 恒为 0，所以「量高度」这件事在默认环境里是量不到的 ——
-    // 得手动给主窗 paper 灌一个高度，否则这条永远测不到真东西。
-    const mainPaper = document.querySelector<HTMLElement>(".MuiDialog-paper")!;
-    assert.ok(mainPaper, "先找到主窗");
-    const realHeight = Object.getOwnPropertyDescriptor(
-        HTMLElement.prototype,
-        "offsetHeight"
-    )!.get!;
-    Object.defineProperty(mainPaper, "offsetHeight", {
-        configurable: true,
-        get: () => 640,
-    });
-
-    const sameBeforeClick = document.querySelectorAll(".MuiDialog-paper").length;
-    click(document.querySelector<HTMLElement>('[aria-label="放大编辑备注"]')!);
-
-    // 还原，别影响后面可能复用同一 paper 的用例
-    Object.defineProperty(mainPaper, "offsetHeight", {
-        configurable: true,
-        get: realHeight,
-    });
-    assert.equal(sameBeforeClick, 1, "点之前只有主窗");
-
+test("两窗用的是同一份固定高度（不是量出来的）", () => {
+    // 这条判据换过一次。原先的做法是「点开时量主窗 offsetHeight 当放大窗 minHeight」，
+    // 实测**根本没生效** —— 量不到就静默退化成按内容自适应，于是又矮一截，
+    // 为此用户反馈了三轮。现在改成固定高度：两窗用**同一个 settingsPaper**，
+    // 值来自同一处，不可能不一致。
+    //
+    // 能这么断言的前提是「两窗的 sx 完全一样」—— emotion 对相同样式生成相同 hash，
+    // 所以整串 className 必须一致。这比「都有某个 class」强得多。
+    openExpanded();
     const papers = [...document.querySelectorAll<HTMLElement>(".MuiDialog-paper")];
-    assert.equal(papers.length, 2, "放大窗已打开");
-    assert.notEqual(
+    assert.equal(papers.length, 2);
+    assert.equal(
         papers[1].className,
         papers[0].className,
-        "量到高度后放大窗的样式必须与主窗不同 —— 相同就说明 minHeight 根本没被用上，"
-            + "那「两个窗一样大」又回到了只对齐宽度的状态"
+        "两个窗的样式 class 必须完全相同 —— 高度是从同一个函数出来的，不允许有第二个来源"
+    );
+});
+
+test("固定高度写在共享样式里（不许只给放大窗写）", () => {
+    // 反过来钉一次：如果有人为了「让主窗自适应」把 height 从共享函数里删掉、
+    // 只留在放大窗上，两窗 className 就会不同 —— 上面那条会红。
+    // 这条则保证「共享函数确实产出了高度」，而不是恰好两边都没高度。
+    const source = readFileSync(
+        join(findProjectDir(), "src", "components", "SiteSettingsModal.tsx"),
+        "utf-8"
+    );
+    const fn = source.slice(source.indexOf("function settingsPaper"));
+    const body = fn.slice(0, fn.indexOf("}"));
+    assert.ok(
+        body.includes('height: "min(') || body.includes("height: 'min("),
+        "settingsPaper 里必须写死高度 —— 不写就退回「按内容自适应」，两窗又不一致了"
+    );
+    // 固定高度必须同时照顾小屏：min() 里那个 calc 是视口兜底，
+    // 只写死 700px 在小屏上会超出屏幕
+    assert.ok(
+        body.includes("calc(100vh"),
+        "固定高度要用 min(…, calc(100vh …)) 收窄，否则小屏上弹窗会超出屏幕"
     );
 });
 

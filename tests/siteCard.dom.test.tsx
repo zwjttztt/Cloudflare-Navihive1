@@ -341,8 +341,13 @@ test("点「编辑备注」直达放大窗；点「编辑」进的是主窗（�
     assert.equal(area!.value, "原来的备注", "要带着卡片上已有的备注");
     assert.equal(
         document.querySelectorAll(".MuiDialog-paper").length,
-        2,
-        "放大窗是叠在网站设置之上的，所以两层都在"
+        1,
+        "右键「编辑备注」**只要备注窗**，不该再糊一个网站设置在下面 —— 用户点的是备注"
+    );
+    assert.equal(
+        document.querySelector("#notes"),
+        null,
+        "主窗根本没渲染，页面里不该有主窗那个两行的 #notes 框"
     );
 
     await openVia("编辑");
@@ -355,4 +360,54 @@ test("点「编辑备注」直达放大窗；点「编辑」进的是主窗（�
         document.querySelector("#notes"),
         "主窗的备注框应该在（说明设置弹窗确实打开了）"
     );
+});
+
+test("右键那条路点「保存」会直接写库（没有主窗替你提交）", async () => {
+    const updates: Site[] = [];
+    cleanup();
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+    act(() => {
+        root!.render(
+            <AppConfigProvider value={APP_CONFIG}>
+                <UIPrefsProvider>
+                    <SiteCard
+                        site={{ ...makeSite(), id: 9, name: "站点", notes: "旧备注" }}
+                        onUpdate={(next: Site) => {
+                            updates.push(next);
+                        }}
+                        onDelete={() => {}}
+                    />
+                </UIPrefsProvider>
+            </AppConfigProvider>
+        );
+    });
+    openContextMenu();
+    await act(async () => {
+        menuItem("编辑备注")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        await new Promise(r => setTimeout(r, 80));
+    });
+    const area = document.querySelector<HTMLTextAreaElement>("#notes-expanded");
+    assert.ok(area, "先确认备注窗在");
+    await act(async () => {
+        const setter = Object.getOwnPropertyDescriptor(
+            HTMLTextAreaElement.prototype,
+            "value"
+        )!.set!;
+        setter.call(area, "新备注");
+        area.dispatchEvent(new Event("input", { bubbles: true }));
+        await new Promise(r => setTimeout(r, 20));
+    });
+    await act(async () => {
+        const save = [...document.querySelectorAll<HTMLButtonElement>("button")].find(
+            b => (b.textContent || "").trim() === "保存"
+        );
+        assert.ok(save, "备注窗里要有「保存」按钮");
+        save!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        await new Promise(r => setTimeout(r, 20));
+    });
+
+    assert.equal(updates.length, 1, "notesOnly 下点保存要直接写库 —— 没人替它提交");
+    assert.equal(updates[0].notes, "新备注");
 });
