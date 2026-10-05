@@ -22,6 +22,8 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import IconButton from "@mui/material/IconButton";
+import InputAdornment from "@mui/material/InputAdornment";
+import TextField from "@mui/material/TextField";
 import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 import AddIcon from "@mui/icons-material/Add";
@@ -53,6 +55,22 @@ function summarize(source: string, max = 90): string {
         .replace(/\s+/g, " ")
         .trim();
     return flat.length > max ? `${flat.slice(0, max)}…` : flat;
+}
+
+/** 列表里的时间：今天只给时刻，更早给日期（inkstone 同款） */
+function formatWhen(iso?: string): string {
+    if (!iso) return "";
+    const t = new Date(iso);
+    if (Number.isNaN(t.getTime())) return "";
+    const now = new Date();
+    const sameDay =
+        t.getFullYear() === now.getFullYear() &&
+        t.getMonth() === now.getMonth() &&
+        t.getDate() === now.getDate();
+    const hh = String(t.getHours()).padStart(2, "0");
+    const mm = String(t.getMinutes()).padStart(2, "0");
+    if (sameDay) return `${hh}:${mm}`;
+    return `${t.getMonth() + 1}月${t.getDate()}日`;
 }
 
 /** 把编辑区拆成「源码 | 预览」两栏 */
@@ -127,6 +145,7 @@ export default function NotesPage({
     );
 
     const charCount = draft ? draft.content.length : 0;
+    const pinnedCount = notes.filter(n => Boolean(n.pinned)).length;
     const listPane = (
         <Box
             sx={{
@@ -139,32 +158,39 @@ export default function NotesPage({
             }}
         >
             <Box sx={{ p: 1.5, pb: 1 }}>
-                <Box
-                    component='input'
+                {/* 用 TextField + InputAdornment：之前是自己画的绝对定位图标，
+                    那个放大镜飘在框外面右下方，对不齐也很难看。 */}
+                <TextField
+                    fullWidth
+                    size='small'
                     value={keyword}
-                    onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-                        setKeyword(e.target.value)
-                    }
+                    onChange={e => setKeyword(e.target.value)}
                     placeholder='搜索标题与内容'
-                    aria-label='搜索笔记'
-                    style={{
-                        width: "100%",
-                        boxSizing: "border-box",
-                        padding: "8px 10px 8px 30px",
-                        borderRadius: 8,
-                        border: "1px solid rgba(128,128,128,0.35)",
-                        background: "transparent",
-                        color: "inherit",
-                        font: "inherit",
+                    slotProps={{
+                        input: {
+                            "aria-label": "搜索笔记",
+                            startAdornment: (
+                                <InputAdornment position='start'>
+                                    <SearchIcon fontSize='small' />
+                                </InputAdornment>
+                            ),
+                        },
                     }}
-                />
-                <SearchIcon
-                    fontSize='small'
-                    sx={{ position: "absolute", ml: 1.1, mt: 1.1, pointerEvents: "none", opacity: 0.6 }}
                 />
             </Box>
 
-            <Box data-note-list='1' sx={{ flex: 1, overflowY: "auto", minHeight: 0 }}>
+            {notes.length > 0 && (
+                <Typography
+                    variant='caption'
+                    color='text.secondary'
+                    sx={{ px: 2, pb: 0.75 }}
+                >
+                    共 {notes.length} 条
+                    {pinnedCount > 0 ? `，${pinnedCount} 条置顶` : ""}
+                </Typography>
+            )}
+
+            <Box data-note-list='1' sx={{ flex: 1, overflowY: "auto", minHeight: 0, pb: 1 }}>
                 {filtered.length === 0 ? (
                     <Typography variant='body2' color='text.secondary' sx={{ p: 2 }}>
                         {notes.length === 0
@@ -187,15 +213,19 @@ export default function NotesPage({
                                     }
                                 }}
                                 sx={{
-                                    px: 1.5,
-                                    py: 1,
+                                    mx: 0.75,
+                                    mb: 0.25,
+                                    px: 1.25,
+                                    py: 0.9,
+                                    borderRadius: 1.5,
                                     cursor: "pointer",
                                     borderLeft: "3px solid",
                                     borderLeftColor: isActive ? "var(--accent)" : "transparent",
                                     bgcolor: isActive
-                                        ? "rgba(128,128,128,0.10)"
+                                        ? "rgba(128,128,128,0.12)"
                                         : "transparent",
-                                    "&:hover": { bgcolor: "rgba(128,128,128,0.07)" },
+                                    transition: "background-color 120ms ease",
+                                    "&:hover": { bgcolor: "rgba(128,128,128,0.08)" },
                                 }}
                             >
                                 <Box
@@ -205,7 +235,10 @@ export default function NotesPage({
                                         gap: 0.5,
                                     }}
                                 >
-                                    {note.pinned && (
+                                    {/* ⚠️ 必须先转布尔：pinned 存的是 0/1，
+                                        `0 && <Icon/>` 在 JS 里返回 0，React 会把它
+                                        当文本渲染出来 —— 列表里就冒出一个孤零零的 "0" */}
+                                    {Boolean(note.pinned) && (
                                         <PushPinIcon fontSize='inherit' sx={{ color: "var(--accent)" }} />
                                     )}
                                     <Typography
@@ -228,9 +261,17 @@ export default function NotesPage({
                                         WebkitLineClamp: 2,
                                         WebkitBoxOrient: "vertical",
                                         overflow: "hidden",
+                                        mt: 0.25,
                                     }}
                                 >
-                                    {summarize(note.content)}
+                                    {summarize(note.content) || "空白笔记"}
+                                </Typography>
+                                <Typography
+                                    variant='caption'
+                                    color='text.disabled'
+                                    sx={{ display: "block", mt: 0.25, fontSize: 11 }}
+                                >
+                                    {formatWhen(note.updated_at || note.created_at)}
                                 </Typography>
                             </Box>
                         );
@@ -250,24 +291,20 @@ export default function NotesPage({
                 </Box>
             ) : (
                 <>
-                    <Box
-                        component='input'
+                    <TextField
+                        fullWidth
+                        variant='standard'
                         value={draft?.title ?? ""}
-                        onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                        onChange={e =>
                             setDraft(d => (d ? { ...d, title: e.target.value } : d))
                         }
                         placeholder='无标题'
-                        aria-label='笔记标题'
-                        style={{
-                            border: "none",
-                            borderBottom: "1px solid rgba(128,128,128,0.25)",
-                            background: "transparent",
-                            color: "inherit",
-                            font: "inherit",
-                            fontSize: 18,
-                            fontWeight: 600,
-                            padding: "12px 16px",
-                            outline: "none",
+                        slotProps={{ input: { "aria-label": "笔记标题" } }}
+                        sx={{
+                            px: 2,
+                            pt: 1.5,
+                            "& .MuiInputBase-root": { fontSize: 19, fontWeight: 600 },
+                            "& .MuiInput-input": { padding: "6px 0" },
                         }}
                     />
 
@@ -285,20 +322,26 @@ export default function NotesPage({
                                 sx={{
                                     flex: pane === "edit" ? 1 : "1 1 50%",
                                     minWidth: 0,
-                                    border: "none",
-                                    borderRight:
+                                    // 之前只有一条右边框、背景透明，源码区与预览区糊成一片空白，
+                                    // 看着就像「中间那块没内容」。给源码区一个淡底色 + 完整边框，
+                                    // 分栏才看得出是两栏而不是一栏。
+                                    border:
                                         pane === "split"
-                                            ? "1px solid rgba(128,128,128,0.25)"
+                                            ? "1px solid var(--card-border, rgba(128,128,128,0.25))"
                                             : "none",
+                                    borderRadius: pane === "split" ? 1.5 : 0,
                                     outline: "none",
                                     resize: "none",
-                                    p: 2,
+                                    p: 2.5,
                                     font: "inherit",
                                     fontFamily: "ui-monospace, monospace",
                                     fontSize: 14,
-                                    lineHeight: 1.7,
+                                    lineHeight: 1.75,
                                     color: "inherit",
-                                    bgcolor: "transparent",
+                                    bgcolor:
+                                        pane === "split"
+                                            ? "rgba(128,128,128,0.05)"
+                                            : "transparent",
                                 }}
                             />
                         )}
@@ -308,8 +351,17 @@ export default function NotesPage({
                                     flex: 1,
                                     minWidth: 0,
                                     overflowY: "auto",
-                                    p: 2,
+                                    p: 2.5,
                                     lineHeight: 1.7,
+                                    border:
+                                        pane === "split"
+                                            ? "1px solid var(--card-border, rgba(128,128,128,0.25))"
+                                            : "none",
+                                    borderRadius: pane === "split" ? 1.5 : 0,
+                                    bgcolor:
+                                        pane === "split"
+                                            ? "rgba(128,128,128,0.03)"
+                                            : "transparent",
                                 }}
                             >
                                 <MarkdownPreview source={draft?.content || ""} />
@@ -331,6 +383,8 @@ export default function NotesPage({
                         }}
                     >
                         <span>{charCount} 字</span>
+                        <span>{charCount} 字符</span>
+                        <span>约 {Math.max(1, Math.ceil(charCount / 400))} 分钟读完</span>
                         <span>
                             {pane === "edit" ? "编辑" : pane === "preview" ? "预览" : "分栏"}
                         </span>

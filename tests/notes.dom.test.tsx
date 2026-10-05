@@ -220,3 +220,29 @@ test("useNotes：保存成功后以服务端回显为准", async () => {
         "乐观更新之后要拿服务端回显替换，否则 updated_at 之类会一直停在旧值"
     );
 });
+
+test("未置顶的笔记不会在标题左边渲染出一个「0」", () => {
+    // 真踩过的 bug：`{note.pinned && <Icon/>}` —— pinned 存的是数字 0，
+    // 而 `0 && x` 在 JS 里**返回 0**，React 把 0 当文本渲染，列表里就冒出一个孤零零的 0。
+    // 写这条的时候要传 pinned: 0（数字）而不是 false，否则测不到。
+    mountPanel([note({ id: 1, title: "甲", pinned: 0 as unknown as boolean })]);
+    const list = document.querySelector("[data-note-list]")!;
+    assert.ok(
+        !list.textContent!.includes("0"),
+        `列表里出现了裸的 0：${list.textContent!.slice(0, 60)} —— ` +
+            "pinned 是数字 0，`0 && <Icon/>` 会把 0 本身返回出来"
+    );
+    assert.ok(list.textContent!.includes("甲"));
+});
+
+test("搜索框的放大镜在框内（不是绝对定位飘在外面）", () => {
+    mountPanel([note({ id: 1, title: "甲" })]);
+    const input = document.querySelector<HTMLInputElement>("input[aria-label='搜索笔记']");
+    assert.ok(input, "搜索框应该是 MUI TextField（自带 adornment 槽）");
+    // 放大镜作为 input 的前置节点存在，而不是页面里独立漂浮的一枚图标
+    const adornment = input!.parentElement?.querySelector(".MuiInputAdornment-root");
+    assert.ok(
+        adornment,
+        "放大镜应该在 InputAdornment 里（跟着输入框走），不是绝对定位浮在页面上的"
+    );
+});
