@@ -6,6 +6,7 @@ import {
     useRef,
     useCallback,
     lazy,
+    Suspense,
     type SetStateAction,
 } from "react";
 import { NavigationClient } from "./API/client";
@@ -58,6 +59,7 @@ import { useSiteActions } from "./hooks/useSiteActions";
 import { useGroupActions } from "./hooks/useGroupActions";
 import { useUndoRedo } from "./hooks/useUndoRedo";
 import { useBackupController } from "./hooks/useBackupController";
+import { useNotes } from "./hooks/useNotes";
 import { useAppCommands } from "./hooks/useAppCommands";
 import { usePrefSync } from "./hooks/usePrefSync";
 import { useGlobalShortcuts } from "./hooks/useGlobalShortcuts";
@@ -96,6 +98,8 @@ const DeleteAccountDialog = lazy(() => import("./components/DeleteAccountDialog"
 const ImportPreviewDialog = lazy(() => import("./components/ImportPreviewDialog"));
 const AuditDialog = lazy(() => import("./components/AuditDialog"));
 const RecycleBinDialog = lazy(() => import("./components/RecycleBinDialog"));
+// 记事本面板：懒加载。面板本身不重，但它可以继续懒加载渲染层
+const NotesPanel = lazy(() => import("./components/NotesPanel"));
 import HeaderClock from "./components/HeaderClock";
 import SiteListHeader from "./components/SiteListHeader";
 import SiteListSkeleton from "./components/SiteListSkeleton";
@@ -982,6 +986,14 @@ function App() {
     const lastHealthPushRef = useRef("");
     const lastPrefPushRef = useRef("");
 
+    // 记事本：列表在首屏就拉一次（顶栏按钮要显示条数），面板按需打开
+    const [notesOpen, setNotesOpen] = useState(false);
+    const { notes, createNote, updateNote, deleteNote, togglePin } = useNotes({
+        api,
+        onError: handleError,
+        onNotify: notify,
+    });
+
     // 打开备份对话框（0=备份，1=恢复）
     const {
         openBackup,
@@ -1499,6 +1511,8 @@ function App() {
                                     onQuickAdd={handleQuickAdd}
                                     addTargetName={quickAddTargetName}
                                     onOpenAddGroup={handleOpenAddGroup}
+            onOpenNotes={() => setNotesOpen(true)}
+            notesCount={notes.length}
                                     onMenuOpen={handleMenuOpen}
                                     menuOpen={openMenu}
                                     menuAnchorEl={menuAnchorEl}
@@ -1790,6 +1804,23 @@ function App() {
                         }}
                     />
                     </ChunkBoundary>
+
+                    {/* 记事本面板：lazy 引入，点开才下载 */}
+                    {notesOpen && (
+                        <ChunkBoundary>
+                        <Suspense fallback={null}>
+                            <NotesPanel
+                                open={notesOpen}
+                                onClose={() => setNotesOpen(false)}
+                                notes={notes}
+                                onCreate={() => createNote({ title: "", content: "" })}
+                                onUpdate={updateNote}
+                                onDelete={deleteNote}
+                                onTogglePin={togglePin}
+                            />
+                        </Suspense>
+                        </ChunkBoundary>
+                    )}
 
                     {/* 数据备份与恢复对话框 */}
                     <ChunkBoundary>

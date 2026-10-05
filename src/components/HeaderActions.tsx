@@ -12,6 +12,7 @@ import SaveIcon from "@mui/icons-material/Save";
 import CancelIcon from "@mui/icons-material/Cancel";
 import AddIcon from "@mui/icons-material/Add";
 import MenuIcon from "@mui/icons-material/Menu";
+import StickyNote2Icon from "@mui/icons-material/StickyNote2";
 import ArrowDropDownIcon from "@mui/icons-material/ArrowDropDown";
 import LanguageIcon from "@mui/icons-material/Language";
 import CreateNewFolderIcon from "@mui/icons-material/CreateNewFolder";
@@ -29,6 +30,10 @@ export interface HeaderActionsProps {
     /** 下拉里的「新增分组」 */
     onOpenAddGroup: () => void;
     onMenuOpen: (event: React.MouseEvent<HTMLButtonElement>) => void;
+    /** 打开记事本面板 */
+    onOpenNotes: () => void;
+    /** 笔记条数：在按钮上显示一个角标（0 条时不显示） */
+    notesCount: number;
     menuOpen: boolean;
     /** 「更多选项」菜单节点，挂在按钮后面（菜单自己管 anchor 与开关状态） */
     menu: ReactNode;
@@ -43,6 +48,8 @@ export default function HeaderActions({
     onOpenAddGroup,
     addTargetName,
     onMenuOpen,
+    onOpenNotes,
+    notesCount,
     menuOpen,
     menu,
 }: HeaderActionsProps) {
@@ -165,6 +172,20 @@ export default function HeaderActions({
                             新增分组
                         </MenuItem>
                     </Menu>
+
+                    {/* 记事本：高频入口，给独立按钮而不是塞进「更多选项」 */}
+                    <Button
+                        variant='outlined'
+                        color='primary'
+                        startIcon={<StickyNote2Icon />}
+                        onClick={onOpenNotes}
+                        aria-label='打开记事本'
+                        size="small"
+                        sx={{ ...headerControlSx }}
+                    >
+                        记事本
+                        {notesCount > 0 ? `（${notesCount}）` : ""}
+                    </Button>
 
                     <Button
                         variant='outlined'

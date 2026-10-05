@@ -20,6 +20,10 @@ export interface HeaderActionsSlotProps {
     onQuickAdd: () => void;
     addTargetName?: string;
     onOpenAddGroup: () => void;
+    /** 打开记事本面板 */
+    onOpenNotes: () => void;
+    /** 笔记条数（0 时按钮不显示角标） */
+    notesCount: number;
     onMenuOpen: (event: React.MouseEvent<HTMLButtonElement>) => void;
     /** 菜单开关状态。菜单实际是否展开由内部再叠一层排序模式判断 */
     menuOpen: boolean;
@@ -50,6 +54,8 @@ export default function HeaderActionsSlot({
     onQuickAdd,
     addTargetName,
     onOpenAddGroup,
+    onOpenNotes,
+    notesCount,
     onMenuOpen,
     menuOpen,
     menuAnchorEl,
@@ -78,6 +84,8 @@ export default function HeaderActionsSlot({
             onQuickAdd={onQuickAdd}
             addTargetName={addTargetName}
             onOpenAddGroup={onOpenAddGroup}
+            onOpenNotes={onOpenNotes}
+            notesCount={notesCount}
             onMenuOpen={onMenuOpen}
             menuOpen={menuOpen}
             menu={
