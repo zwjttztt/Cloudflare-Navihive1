@@ -59,6 +59,15 @@ interface SiteSettingsModalProps {
     onDelete: (siteId: number) => void;
     onClose: () => void;
     groups?: Group[]; // 可选的分组列表
+    /**
+     * 打开就直接进「备注放大窗」。
+     *
+     * 卡片右键的「编辑备注」用它 —— 用户既然点了备注，就不该先看到一整屏设置再自己找备注框。
+     * 只在**首次挂载**时生效：本组件是条件渲染（`showSettings && <Modal/>`），
+     * 每次打开都是新挂载，所以 useState 的初始值刚好对上；
+     * 万一将来改成常驻挂载，得改成「open 从 false→true 时同步」而不是只认初始值。
+     */
+    initiallyExpandNotes?: boolean;
 
 }
 
@@ -101,6 +110,7 @@ export default function SiteSettingsModal({
     onDelete,
     onClose,
     groups = [],
+    initiallyExpandNotes,
 }: SiteSettingsModalProps) {
     const theme = useTheme();
     // 全局「网站设置」里的获取图标 API 模板
@@ -155,7 +165,7 @@ export default function SiteSettingsModal({
     // 备注的放大编辑弹窗。备注是这一屏里唯一「可能写很长」的字段，
     // 两行框里改长文本很难受（要拖着框边角拉），所以给一个和本弹窗同尺寸的
     // 大输入框。共用同一份 formData.notes —— 不做两份再同步，少一处能写错的地方。
-    const [notesExpanded, setNotesExpanded] = useState(false);
+    const [notesExpanded, setNotesExpanded] = useState(!!initiallyExpandNotes);
     // 放大窗要与主窗**同样大小**。宽度靠 maxWidth 就一致了，高度不行 ——
     // 主窗的高度由内容决定，放大窗内容少就矮一截，看起来像小一号。
     // 打开时量一次主窗的实测高度喂给放大窗（照项目里「paper 定高、内容 flex:1」的约定）。
@@ -966,7 +976,7 @@ export default function SiteSettingsModal({
                     <CloseIcon fontSize='small' />
                 </IconButton>
             </DialogTitle>
-            <DialogContent>
+            <DialogContent sx={{ flex: 1, display: "flex" }}>
                 <TextField
                     id='notes-expanded'
                     name='notes'
@@ -977,6 +987,11 @@ export default function SiteSettingsModal({
                     multiline
                     // 比主弹窗的两行宽裕得多：这就是这个弹窗存在的意义
                     rows={10}
+                    // 定高之后输入框要吃掉多出来的那截，否则备注框下面空一大块，
+                    // 看起来完全不像「放大」了。
+                    // ⚠️ 只写 flex:1 不够 —— 那只能撑开 FormControl，textarea 在
+                    // InputBase 内部有自己的高度，必须连它一起设成 100%。
+                    sx={{ flex: 1, "& .MuiInputBase-root": { height: "100%" } }}
                     fullWidth
                     value={formData.notes || ""}
                     onChange={handleChange}
@@ -993,7 +1008,7 @@ export default function SiteSettingsModal({
                     variant='contained'
                     color='primary'
                 >
-                    完成
+                    保存
                 </Button>
             </DialogActions>
         </Dialog>

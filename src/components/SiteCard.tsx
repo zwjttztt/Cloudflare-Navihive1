@@ -37,6 +37,7 @@ import LinkIcon from "@mui/icons-material/Link";
 import PersonIcon from "@mui/icons-material/Person";
 import KeyIcon from "@mui/icons-material/Key";
 import EditIcon from "@mui/icons-material/Edit";
+import NotesIcon from "@mui/icons-material/Notes";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutlined";
 import LinkOffIcon from "@mui/icons-material/LinkOff";
 import { useAppConfig } from "../context/appConfigStore";
@@ -205,6 +206,8 @@ const SiteCard = memo(function SiteCard({
     // 处理关闭设置
     const handleCloseSettings = () => {
         setShowSettings(false);
+        // 标志只对「下一次打开」有效：不清的话，下次点「编辑」也会直接进放大窗
+        setOpenNotesAtMount(false);
     };
 
     // 处理卡片点击：卡片本体是真实的 <a target="_blank">，
@@ -270,6 +273,19 @@ const SiteCard = memo(function SiteCard({
 
     const handleMenuEdit = () => {
         closeMenu();
+        setShowSettings(true);
+    };
+
+    // 右键「编辑备注」：直奔放大窗。
+    // 用户既然点了备注，就不该先看到一整屏设置再自己找备注框。
+    // 用一个「下次打开时」的标志而不是直接把 settings 打开 —— 设置弹窗是由
+    // showSettings 条件渲染的，标志得由父级在打开那一刻传给 modal（见下面的
+    // initiallyExpandNotes），因为 modal 内部的初始 state 只在挂载时读一次。
+    const [openNotesAtMount, setOpenNotesAtMount] = useState(false);
+
+    const handleMenuNotes = () => {
+        closeMenu();
+        setOpenNotesAtMount(true);
         setShowSettings(true);
     };
 
@@ -932,6 +948,12 @@ const SiteCard = memo(function SiteCard({
                 </MenuItem>
             )}
             <Divider />
+            <MenuItem onClick={handleMenuNotes}>
+                <ListItemIcon>
+                    <NotesIcon fontSize='small' />
+                </ListItemIcon>
+                <ListItemText>编辑备注</ListItemText>
+            </MenuItem>
             <MenuItem onClick={handleMenuEdit}>
                 <ListItemIcon>
                     <EditIcon fontSize='small' />
@@ -961,6 +983,7 @@ const SiteCard = memo(function SiteCard({
                         onUpdate={onUpdate}
                         onDelete={onDelete}
                         onClose={handleCloseSettings}
+                        initiallyExpandNotes={openNotesAtMount}
                     />
                     </Suspense>
                 )}
@@ -980,6 +1003,7 @@ const SiteCard = memo(function SiteCard({
                     onUpdate={onUpdate}
                     onDelete={onDelete}
                     onClose={handleCloseSettings}
+                    initiallyExpandNotes={openNotesAtMount}
                 />
                 </Suspense>
             )}

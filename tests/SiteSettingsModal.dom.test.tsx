@@ -383,7 +383,7 @@ test("在大窗里改字，主窗的备注跟着变（共用同一份内容）",
     );
 });
 
-test("关掉大窗不连带关掉主窗", async () => {
+test("关掉大窗（按「保存」）不连带关掉主窗", async () => {
     let closed = 0;
     mount(
         <SiteSettingsModal
@@ -397,7 +397,7 @@ test("关掉大窗不连带关掉主窗", async () => {
     click(document.querySelector<HTMLElement>('[aria-label="放大编辑备注"]')!);
     assert.equal(document.querySelectorAll(".MuiDialog-paper").length, 2);
 
-    click(topDialogButtons().find(b => (b.textContent || "").trim() === "完成")!);
+    click(topDialogButtons().find(b => (b.textContent || "").trim() === "保存")!);
     await settle();
 
     assert.equal(
@@ -507,5 +507,48 @@ test("放大窗的高度对齐主窗（量到主窗高度就把它用上）", ()
         papers[0].className,
         "量到高度后放大窗的样式必须与主窗不同 —— 相同就说明 minHeight 根本没被用上，"
             + "那「两个窗一样大」又回到了只对齐宽度的状态"
+    );
+});
+
+test("放大窗里的按钮叫「保存」（不是「完成」）", () => {
+    openExpanded({ notes: "内容" });
+    const btn = topDialogButtons().find(b => (b.textContent || "").trim() === "保存");
+    assert.ok(btn, "放大窗的确认按钮文案是「保存」");
+    assert.equal(
+        topDialogButtons().find(b => (b.textContent || "").trim() === "完成"),
+        undefined,
+        "不该还留着「完成」"
+    );
+});
+
+test("initiallyExpandNotes：卡片右键直达时，打开就是放大态", () => {
+    // 模拟 SiteCard 右键「编辑备注」那条路径：它把标志传给 modal，modal 挂载时就读一次
+    mount(
+        <SiteSettingsModal
+            site={makeSite({ notes: "已有备注" })}
+            groups={[] as never}
+            onUpdate={() => {}}
+            onDelete={() => {}}
+            onClose={() => {}}
+            initiallyExpandNotes
+        />
+    );
+    // 不用点放大按钮：打开就该在放大窗里
+    assert.ok(
+        document.querySelector("#notes-expanded"),
+        "传了 initiallyExpandNotes 就要直接进放大窗 —— 卡片右键「编辑备注」全靠这条"
+    );
+    assert.equal(
+        document.querySelectorAll(".MuiDialog-paper").length,
+        2,
+        "主窗也在（放大窗是叠在它上面的），但内容是备注"
+    );
+});
+
+test("不带 initiallyExpandNotes 时仍然从主窗开始（标志不残留）", () => {
+    openExpanded();
+    assert.ok(
+        document.querySelector("#notes-expanded"),
+        "点过放大后放大窗在"
     );
 });

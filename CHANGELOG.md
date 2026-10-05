@@ -8,6 +8,38 @@
 
 ---
 
+## 2026-10-05（三续）
+
+用户提了三个要求，一次做完：
+
+- **放大窗里的输入框也同步放大**：内容区 `flex:1` + 输入框
+  `sx={{ flex:1, "& .MuiInputBase-root": { height: "100%" } }}`。
+  ⚠️ **只写 `flex:1` 不够** —— 那只能撑开 FormControl，textarea 在 InputBase 内部
+  有自己的高度，必须连它一起设成 100%。
+  ⚠️ 顺带认一个错：上一轮这两段代码**根本没写进文件**（python `s.replace()` 没匹配上，
+  而我没 assert 就当成功了），所以用户看到的是「窗变高了、输入框没变、底部空一大块」。
+  **教训：用脚本改文件时每步都要 assert，「没报错」不等于「改成功了」。**
+- **「完成」按钮改成「保存」**。
+- **卡片右键新增「编辑备注」，直达放大窗**（`SiteCard.tsx`）：用户既然点了备注，
+  就不该先看到一整屏设置再自己找备注框。实现是给 `SiteSettingsModal` 加
+  `initiallyExpandNotes` prop —— 菜单点击时置一个「下次打开时」的标志，
+  弹窗挂载那一刻读它（组件是条件渲染的，初始值刚好对上），
+  **关闭时清掉标志**，否则以后点「编辑」也会被强制进放大窗。
+  菜单项排在「编辑」前面（同属修改类）。
+- 用例 1709 → **1715**（`siteSettingsModal` 15 → 18，`siteCard` 9 → 12）。
+- **一个值得记的测试教训**：先给右键入口写了三条弱断言（菜单项存在 / 顺序在前 /
+  点击不抛错），跑变异验证时把 `onClick` 换成 `handleMenuEdit` —— **测试依然全绿**，
+  等于这个功能压根没被测住。改成一条强断言：
+  「点编辑备注 → `#notes-expanded` 出现且带着原备注；点编辑 → 主窗里没有放大窗」，
+  两条路必须区分得开。这次变异立刻变红。
+  配套要解决两件事：
+  ① 测试的 `mount` 原来只包 `UIPrefsProvider`，而 `SiteSettingsModal` 还要
+     `useAppConfig()` —— 缺 Provider 时那条路径跑不起来（先报
+     `RangeError: Array buffer allocation failed`），补上 `AppConfigProvider` 即可；
+  ② 弹窗是 `lazy(() => import(...))`，点开要等 Suspense，**必须用
+     `await act(async () => { …; await sleep(80) })`** —— 裸 `setTimeout` 里的更新
+     不在 act 范围内，React 不刷新，DOM 里永远找不到。
+
 ## 2026-10-05（再续）
 
 - **网站设置的备注框右侧加放大按钮**，点开一个**与网站设置同尺寸**的大弹窗

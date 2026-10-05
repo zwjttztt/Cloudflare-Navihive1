@@ -12,6 +12,8 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import SiteCard from "../src/components/SiteCard";
 import { UIPrefsProvider } from "../src/context/UIPrefsContext";
+import { AppConfigProvider } from "../src/context/AppConfigContext";
+import type { AppConfigContextValue } from "../src/context/appConfigStore";
 import { scopedKey } from "../src/utils/accountScope";
 
 // 星标 / 访问统计按账号分档存：没绑定账号时落在 anon 这一档
@@ -29,6 +31,13 @@ if (typeof globalThis.localStorage === "undefined") {
         writable: true,
     });
 }
+
+const APP_CONFIG: AppConfigContextValue = {
+    iconApi: "https://ico.example/{domain}",
+    thumbApi: "",
+    backgroundImage: "",
+    backgroundMaskOpacity: "0.15",
+};
 
 let root: Root | null = null;
 let host: HTMLDivElement | null = null;
@@ -52,7 +61,15 @@ function mount(node: React.ReactElement) {
     document.body.appendChild(host);
     root = createRoot(host);
     act(() => {
-        root!.render(<UIPrefsProvider>{node}</UIPrefsProvider>);
+        // AppConfigProvider 也要包：右键「编辑备注」会打开 SiteSettingsModal，
+        // 它用到 useAppConfig()。缺了 Provider 那条路径根本跑不起来，
+        // 于是「点编辑备注是不是真的直达放大窗」就没法断言 ——
+        // 而那恰恰是这个入口唯一值得测的地方。
+        root!.render(
+            <AppConfigProvider value={APP_CONFIG}>
+                <UIPrefsProvider>{node}</UIPrefsProvider>
+            </AppConfigProvider>
+        );
     });
 }
 
@@ -249,4 +266,93 @@ test("焦点在里面的链接上：回车/空格都不会被 ButtonBase 重复�
     } finally {
         opened.restore();
     }
+});
+
+// ---------------------------------------------------------------------------
+// 右键「编辑备注」：直达放大窗
+// ---------------------------------------------------------------------------
+
+/** 打开卡片右键菜单（真实右键事件走的是同一条路径） */
+function openContextMenu() {
+    const shell = document.querySelector(".nav-site-card") || document.querySelector("a") || document.body;
+    act(() => {
+        shell.dispatchEvent(
+            new MouseEvent("contextmenu", { bubbles: true, clientX: 120, clientY: 160 })
+        );
+    });
+}
+
+const menuItem = (label: string) =>
+    [...document.querySelectorAll<HTMLElement>("li")].find(li =>
+        (li.textContent || "").trim() === label
+    );
+
+test("右键菜单里有「编辑备注」", () => {
+    renderCard();
+    openContextMenu();
+    assert.ok(
+        menuItem("编辑备注"),
+        "右键菜单要有一项「编辑备注」—— 不然想改备注得先进设置再找放大按钮"
+    );
+});
+
+test("「编辑备注」排在「编辑」前面（同属修改类，位置要好找）", () => {
+    renderCard();
+    openContextMenu();
+    const labels = [...document.querySelectorAll<HTMLElement>("li")].map(li =>
+        (li.textContent || "").trim()
+    );
+    const notesIdx = labels.indexOf("编辑备注");
+    const editIdx = labels.indexOf("编辑");
+    assert.ok(notesIdx >= 0, "菜单里要有「编辑备注」");
+    assert.ok(editIdx >= 0, "原有的「编辑」要还在（别为了加新项把老的挤掉）");
+    assert.ok(
+        notesIdx < editIdx,
+        `「编辑备注」(${notesIdx}) 应该在「编辑」(${editIdx}) 前面`
+    );
+});
+
+test("点「编辑备注」直达放大窗；点「编辑」进的是主窗（两条路必须区分得开）", async () => {
+    // 这是这个入口唯一值得测的地方：**它和「编辑」走的是两条不同的路**。
+    // 之前只测了「菜单项在不在、顺序对不对」，把 onClick 换成 handleMenuEdit
+    // 变体验证时测试依然全绿 —— 等于这个功能压根没被测住。
+    // 变异验证：把菜单项的 onClick 改回 handleMenuEdit，下面两条会一起变红。
+    const openVia = async (label: string) => {
+        cleanup();
+        renderCard({ site: { ...makeSite(), id: 5, name: "带备注的站", notes: "原来的备注" } });
+        openContextMenu();
+        const item = menuItem(label);
+        assert.ok(item, `菜单里要有「${label}」`);
+        // 设置弹窗是 lazy(() => import(...))，要点 + 等 Suspense 把 chunk 解析完。
+        // ⚠️ 必须用 `await act(async …)`：裸 setTimeout 里的更新不在 act 范围内，
+        // React 不会刷新，DOM 里就永远是找不到的样子。
+        await act(async () => {
+            item!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+            await new Promise(resolve => setTimeout(resolve, 80));
+        });
+    };
+
+    await openVia("编辑备注");
+    const area = document.querySelector<HTMLTextAreaElement>("#notes-expanded");
+    assert.ok(
+        area,
+        "点「编辑备注」后放大窗应该直接是打开的 —— 用户点了备注就不该先看一整屏设置"
+    );
+    assert.equal(area!.value, "原来的备注", "要带着卡片上已有的备注");
+    assert.equal(
+        document.querySelectorAll(".MuiDialog-paper").length,
+        2,
+        "放大窗是叠在网站设置之上的，所以两层都在"
+    );
+
+    await openVia("编辑");
+    assert.equal(
+        document.querySelector("#notes-expanded"),
+        null,
+        "点「编辑」进的是主窗，不该被强制进放大窗 —— 标志必须每次打开时重置"
+    );
+    assert.ok(
+        document.querySelector("#notes"),
+        "主窗的备注框应该在（说明设置弹窗确实打开了）"
+    );
 });
