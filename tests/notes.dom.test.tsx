@@ -17,6 +17,19 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 
+/** 剥掉注释，避免扫到「为什么不用 X」这类说明文字（否则守卫永远红） */
+function stripComments(source: string): string {
+    return source
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .split("\n")
+        .map(line => {
+            const idx = line.indexOf("//");
+            if (idx === -1) return line;
+            return /:\/\/[\s\S]*$/.test(line.slice(0, idx)) ? line : line.slice(0, idx);
+        })
+        .join("\n");
+}
+
 /** 单测会被复制到 script/tmp-tests/ 下再跑，逐级向上找真身 */
 function findProjectDir(): string {
     for (let dir = dirname(fileURLToPath(import.meta.url)), i = 0; i < 6; i++) {
@@ -307,4 +320,47 @@ test("右栏要有 minHeight:0（缺了它内容会顶出视口，出现页面�
             "内容一高就撑破容器，把 fixed 布局顶出视口（页面级滚动条的来源）"
     );
     assert.ok(parts.length >= 2, "没找到两个容器的 minWidth 声明，检查匹配是否失效");
+});
+
+test("分栏两栏必须对称（一边 flex-basis 50% 会把另一边挤没）", () => {
+    // 视觉问题 jsdom 测不了，只能钉源码。
+    //
+    // 算过一遍：容器 890px 时，源码 `1 1 50%`（basis 445）+ 预览 `1`（basis 0），
+    // 剩余 445px 再按 grow(1:1) 分 → 源码 667 / 预览 222 —— 预览只剩四分之一，
+    // 看着就像「被挤没了」。两边都用 basis 0 才是严格对半。
+    // 剥掉注释再检查：注释里正好写着「1 1 50%」当作反例说明，
+    // 不剥的话这条守卫会永远红 —— 而一个永远红的守卫比没有更糟。
+    const source = stripComments(
+        readFileSync(
+            join(findProjectDir(), "src", "components", "NotesPage.tsx"),
+            "utf-8"
+        )
+    );
+    assert.ok(
+        !source.includes("1 1 50%"),
+        "源码区还挂着 `1 1 50%` —— 与预览区的 basis 不一致，两栏不会对半"
+    );
+    assert.ok(
+        source.includes('"1 1 0"'),
+        "源码区在分栏时应该用 flex: 1 1 0（basis 0），与预览区对称"
+    );
+});
+
+test("整页容器不许滚动（页面级滚动条是缺陷，该滚的是预览区内部）", () => {
+    // ⚠️ 索引必须在**同一个字符串**上找：剥掉注释后长度变了，
+    // 拿原文的偏移去切清理后的字符串会切错位置（守卫就会误报）。
+    const clean = stripComments(
+        readFileSync(
+            join(findProjectDir(), "src", "components", "NotesPage.tsx"),
+            "utf-8"
+        )
+    );
+    const at = clean.indexOf('position: "fixed"');
+    assert.ok(at >= 0, "没找到整页容器的 position:fixed —— 检查是否被删改");
+    const root = clean.slice(at, at + 600);
+    assert.ok(
+        root.includes('overflow: "hidden"'),
+        "position:fixed;inset:0 的整页容器要显式 overflow:hidden —— " +
+            "某一层漏了 minHeight:0 就会连带 body 出现滚动条"
+    );
 });

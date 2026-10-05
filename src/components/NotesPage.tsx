@@ -321,7 +321,11 @@ export default function NotesPage({
                                 placeholder={'支持 Markdown：\n# 标题\n- 列表\n- [ ] 待办\n> 引用\n**粗体**'}
                                 aria-label='笔记内容'
                                 sx={{
-                                    flex: pane === "edit" ? 1 : "1 1 50%",
+                                    // ⚠️ 两栏都用 `flex: 1 1 0`（basis 0）才会严格对半。
+                                    // 之前一边是 `1 1 50%`（basis 445）一边是 `1`（basis 0），
+                                    // 剩余空间再按 grow 分 —— 结果源码 667px、预览 222px，
+                                    // 看着就像「预览被挤没了」。
+                                    flex: pane === "edit" ? 1 : "1 1 0",
                                     minWidth: 0,
                                     // 之前只有一条右边框、背景透明，源码区与预览区糊成一片空白，
                                     // 看着就像「中间那块没内容」。给源码区一个淡底色 + 完整边框，
@@ -349,6 +353,7 @@ export default function NotesPage({
                         {pane !== "edit" && (
                             <Box
                                 sx={{
+                                    // 与源码区同一个 basis（0），两栏才严格对半
                                     flex: 1,
                                     minWidth: 0,
                                     overflowY: "auto",
@@ -429,6 +434,10 @@ export default function NotesPage({
             sx={{
                 position: "fixed",
                 inset: 0,
+                // 明确禁止这一层滚动：它是整页，**页面级滚动条本身就是缺陷**
+                //（该滚的是预览区内部）。之前某一层漏了 minHeight: 0，内容顶出视口、
+                // 连带 body 出现滚动条；inset + overflow 才彻底按住。
+                overflow: "hidden",
                 zIndex: (t: { zIndex: { modal: number } }) => t.zIndex.modal,
                 display: "flex",
                 flexDirection: "column",
