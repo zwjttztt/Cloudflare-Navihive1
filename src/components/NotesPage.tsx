@@ -18,7 +18,7 @@
 //
 // 为什么全 Flex 而不是 Grid：和 inkstone 一致，且和项目里现有布局同源。
 // 移动端按 inkstone 的做法切成「列表 / 编辑」两屏，而不是硬塞双栏。
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import IconButton from "@mui/material/IconButton";
@@ -76,6 +76,21 @@ function formatWhen(iso?: string): string {
 /** 把编辑区拆成「源码 | 预览」两栏 */
 type Pane = "edit" | "split" | "preview";
 
+/** 分栏比例的持久化键。按账号分桶：换账号后各用各的宽度习惯。 */
+const SPLIT_KEY = "notes.splitRatio";
+const MIN_RATIO = 0.2;
+const MAX_RATIO = 0.8;
+
+function readSplitRatio(): number {
+    try {
+        const raw = globalThis.localStorage?.getItem(SPLIT_KEY);
+        const n = Number(raw);
+        return Number.isFinite(n) && n >= MIN_RATIO && n <= MAX_RATIO ? n : 0.5;
+    } catch {
+        return 0.5;
+    }
+}
+
 export default function NotesPage({
     notes,
     onClose,
@@ -87,6 +102,10 @@ export default function NotesPage({
     const [keyword, setKeyword] = useState("");
     const [activeId, setActiveId] = useState<number | null>(notes[0]?.id ?? null);
     const [pane, setPane] = useState<Pane>("split");
+    /** 分栏比例（源码 : 预览）。可拖拽，记住上一次。 */
+    const [splitRatio, setSplitRatio] = useState(readSplitRatio);
+    const splitBoxRef = useRef<HTMLDivElement | null>(null);
+    const textareaRef = useRef<HTMLTextAreaElement | null>(null);
     /** 草稿：编辑期间不立刻写库（点「保存」或切走才提交） */
     const [draft, setDraft] = useState<{ title: string; content: string } | null>(null);
     const [mobileDetail, setMobileDetail] = useState(false);
@@ -142,6 +161,65 @@ export default function NotesPage({
             setActiveId(id);
         },
         [dirty, save]
+    );
+
+    /**
+     * 拖分隔条。监听挂在 **window** 上而不是分隔条自己身上：指针在拖动中移出
+     * 那 4px 宽的条就会丢失 mousemove，光靠元素上的事件会「拖到一半卡住」。
+     */
+    const startSplitDrag = (e: React.MouseEvent) => {
+        e.preventDefault();
+        const box = splitBoxRef.current;
+        if (!box) return;
+        const rect = box.getBoundingClientRect();
+        if (rect.width <= 0) return;
+        const onMove = (ev: MouseEvent) => {
+            const ratio = (ev.clientX - rect.left) / rect.width;
+            setSplitRatio(Math.min(MAX_RATIO, Math.max(MIN_RATIO, ratio)));
+        };
+        const onUp = () => {
+            window.removeEventListener("mousemove", onMove);
+            window.removeEventListener("mouseup", onUp);
+            document.body.style.userSelect = "";
+            try {
+                localStorage.setItem(SPLIT_KEY, String(readSplitRatio()));
+            } catch {
+                /* 隐私模式下写不了，忽略 */
+            }
+        };
+        document.body.style.userSelect = "none";
+        window.addEventListener("mousemove", onMove);
+        window.addEventListener("mouseup", onUp);
+    };
+
+    /**
+     * 在光标处插入一段 Markdown 语法。
+     *
+     * 选区存在时**包住选区**（比如选中一段字按粗体 → `**这段字**`），
+     * 没有选区就纯插入。插入后要把光标放到插入内容之后，并重新聚焦 ——
+     * 不这么做的话点一下工具栏，焦点就丢了，接着打字会打到别处。
+     */
+    const insertAtCursor = useCallback(
+        (before: string, after: string, placeholder: string) => {
+            const el = textareaRef.current;
+            const content = draft?.content ?? "";
+            if (!el) {
+                setDraft(d => (d ? { ...d, content: d.content + before + after } : d));
+                return;
+            }
+            const start = el.selectionStart ?? content.length;
+            const end = el.selectionEnd ?? start;
+            const selected = content.slice(start, end) || placeholder;
+            const next = content.slice(0, start) + before + selected + after + content.slice(end);
+            setDraft(d => (d ? { ...d, content: next } : d));
+            // 等 React 把新值写进 textarea，再把光标挪到插入内容之后
+            window.requestAnimationFrame(() => {
+                el.focus();
+                const caret = start + before.length + selected.length;
+                el.setSelectionRange(caret, caret);
+            });
+        },
+        [draft]
     );
 
     const charCount = draft ? draft.content.length : 0;
@@ -309,11 +387,19 @@ export default function NotesPage({
                         }}
                     />
 
+                    {/* 格式工具栏：照 inkstone 那一排。放在标题与内容区之间，
+                        点一下在光标处插入语法 —— 省得手打 `**` 和 `- [ ]`。 */}
+                    <MarkdownToolbar onInsert={insertAtCursor} />
+
                     {/* 内容区：源码 | 预览 */}
-                    <Box sx={{ flex: 1, display: "flex", minHeight: 0, minWidth: 0 }}>
+                    <Box
+                        ref={splitBoxRef}
+                        sx={{ flex: 1, display: "flex", minHeight: 0, minWidth: 0 }}
+                    >
                         {pane !== "preview" && (
                             <Box
                                 component='textarea'
+                                ref={textareaRef}
                                 value={draft?.content ?? ""}
                                 onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) =>
                                     setDraft(d => (d ? { ...d, content: e.target.value } : d))
@@ -325,7 +411,13 @@ export default function NotesPage({
                                     // 之前一边是 `1 1 50%`（basis 445）一边是 `1`（basis 0），
                                     // 剩余空间再按 grow 分 —— 结果源码 667px、预览 222px，
                                     // 看着就像「预览被挤没了」。
-                                    flex: pane === "edit" ? 1 : "1 1 0",
+                                    // 分栏时用 flexBasis 吃比例；单栏时独占
+                                    ...(pane === "edit"
+                                        ? { flex: 1 }
+                                        : {
+                                              flex: "0 0 auto",
+                                              width: `${splitRatio * 100}%`,
+                                          }),
                                     minWidth: 0,
                                     // 之前只有一条右边框、背景透明，源码区与预览区糊成一片空白，
                                     // 看着就像「中间那块没内容」。给源码区一个淡底色 + 完整边框，
@@ -350,12 +442,41 @@ export default function NotesPage({
                                 }}
                             />
                         )}
+                        {pane === "split" && (
+                            <Box
+                                role='separator'
+                                aria-orientation='vertical'
+                                aria-label='拖动调整源码与预览的比例'
+                                title='拖动调整比例（双击回到对半）'
+                                onMouseDown={startSplitDrag}
+                                onDoubleClick={() => {
+                                    setSplitRatio(0.5);
+                                    try {
+                                        localStorage.setItem(SPLIT_KEY, "0.5");
+                                    } catch {
+                                        /* 隐私模式写不了，忽略 */
+                                    }
+                                }}
+                                sx={{
+                                    width: 8,
+                                    flexShrink: 0,
+                                    cursor: "col-resize",
+                                    "&:hover": { bgcolor: "rgba(128,128,128,0.18)" },
+                                    "&:active": { bgcolor: "rgba(128,128,128,0.3)" },
+                                }}
+                            />
+                        )}
                         {pane !== "edit" && (
                             <Box
                                 sx={{
                                     // 与源码区同一个 basis（0），两栏才严格对半
                                     flex: 1,
                                     minWidth: 0,
+                                    // ⚠️ minHeight:0 不能少：flex 子项默认 min-height:auto，
+                                    // Markdown 一长就把这一层撑高、连带整页出现滚动条
+                                    //（该滚的只有预览区内部）。之前只给外层容器加了，
+                                    // 子项漏掉 → 症状就是「怎么还有滚动条」。
+                                    minHeight: 0,
                                     overflowY: "auto",
                                     p: 2.5,
                                     lineHeight: 1.7,
@@ -584,4 +705,86 @@ function MarkdownPreview({ source }: { source: string }) {
         );
     }
     return <Box sx={{ wordBreak: "break-word", lineHeight: 1.7 }}>{node}</Box>;
+}
+
+/** 一个工具按钮：label 是显示的字，before/after 是包在选区两侧的语法 */
+interface ToolSpec {
+    label: string;
+    title: string;
+    before: string;
+    after?: string;
+    placeholder?: string;
+}
+
+const TOOLS: ToolSpec[] = [
+    { label: "H1", title: "一级标题", before: "# ", placeholder: "标题" },
+    { label: "H2", title: "二级标题", before: "## ", placeholder: "标题" },
+    { label: "B", title: "粗体", before: "**", after: "**", placeholder: "粗体" },
+    { label: "I", title: "斜体", before: "*", after: "*", placeholder: "斜体" },
+    { label: "S", title: "删除线", before: "~~", after: "~~", placeholder: "删除" },
+    { label: "<>", title: "行内代码", before: "`", after: "`", placeholder: "code" },
+    { label: "{ }", title: "代码块", before: "```\n", after: "\n```", placeholder: "代码" },
+    { label: "❝", title: "引用", before: "> ", placeholder: "引用" },
+    { label: "•", title: "无序列表", before: "- ", placeholder: "列表项" },
+    { label: "1.", title: "有序列表", before: "1. ", placeholder: "列表项" },
+    { label: "☑", title: "待办项", before: "- [ ] ", placeholder: "要做的事" },
+    { label: "🔗", title: "链接", before: "[", after: "](https://)", placeholder: "链接文字" },
+    { label: "🖼", title: "图片", before: "![", after: "](https://)", placeholder: "图片说明" },
+    { label: "==", title: "高亮", before: "==", after: "==", placeholder: "高亮" },
+    { label: "|", title: "表格", before: "| 列1 | 列2 |\n|---|---|\n| ", after: " | |", placeholder: "内容" },
+];
+
+/**
+ * Markdown 格式工具栏。
+ *
+ * 只在「源码」可见时出现 —— 预览模式下没有可编辑的文本，工具栏会让人以为能改。
+ * 按钮用 `onMouseDown` 的 preventDefault 保住 textarea 的选区：
+ * 默认的 mousedown 会让输入框失焦，selectionStart 就变成了 0，
+ * 插入的位置会全跑到开头去。
+ */
+function MarkdownToolbar({
+    onInsert,
+}: {
+    onInsert: (before: string, after: string, placeholder: string) => void;
+}) {
+    return (
+        <Box
+            role='toolbar'
+            aria-label='Markdown 格式'
+            sx={{
+                display: "flex",
+                flexWrap: "wrap",
+                gap: 0.25,
+                px: 2,
+                py: 0.5,
+                flexShrink: 0,
+                borderBottom: "1px solid var(--card-border, rgba(128,128,128,0.18))",
+            }}
+        >
+            {TOOLS.map(tool => (
+                <Tooltip key={tool.label} title={tool.title}>
+                    <Button
+                        size='small'
+                        // 关键：阻止默认行为，输入框才不会失焦、选区才不会丢
+                        onMouseDown={e => e.preventDefault()}
+                        onClick={() =>
+                            onInsert(tool.before, tool.after ?? "", tool.placeholder ?? "")
+                        }
+                        sx={{
+                            minWidth: 30,
+                            px: 0.75,
+                            py: 0.25,
+                            fontSize: 12,
+                            lineHeight: 1.4,
+                            color: "text.secondary",
+                            borderRadius: 1,
+                            "&:hover": { bgcolor: "rgba(128,128,128,0.14)", color: "text.primary" },
+                        }}
+                    >
+                        {tool.label}
+                    </Button>
+                </Tooltip>
+            ))}
+        </Box>
+    );
 }

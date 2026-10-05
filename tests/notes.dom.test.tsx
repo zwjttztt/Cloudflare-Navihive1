@@ -322,14 +322,10 @@ test("右栏要有 minHeight:0（缺了它内容会顶出视口，出现页面�
     assert.ok(parts.length >= 2, "没找到两个容器的 minWidth 声明，检查匹配是否失效");
 });
 
-test("分栏两栏必须对称（一边 flex-basis 50% 会把另一边挤没）", () => {
-    // 视觉问题 jsdom 测不了，只能钉源码。
-    //
-    // 算过一遍：容器 890px 时，源码 `1 1 50%`（basis 445）+ 预览 `1`（basis 0），
-    // 剩余 445px 再按 grow(1:1) 分 → 源码 667 / 预览 222 —— 预览只剩四分之一，
-    // 看着就像「被挤没了」。两边都用 basis 0 才是严格对半。
-    // 剥掉注释再检查：注释里正好写着「1 1 50%」当作反例说明，
-    // 不剥的话这条守卫会永远红 —— 而一个永远红的守卫比没有更糟。
+test("分栏是「左栏按比例 + 可拖分隔条」，不是写死的对半", () => {
+    // 判据换过一次：从「两边 basis 相同」改成了「按 splitRatio 分配 + 有分隔条」。
+    // 用户原话是「分栏两边大小不合理，做**可拖拽**的分隔条」——
+    // 写死对半只是第一步，能拖才是他要的。
     const source = stripComments(
         readFileSync(
             join(findProjectDir(), "src", "components", "NotesPage.tsx"),
@@ -337,12 +333,44 @@ test("分栏两栏必须对称（一边 flex-basis 50% 会把另一边挤没）"
         )
     );
     assert.ok(
-        !source.includes("1 1 50%"),
-        "源码区还挂着 `1 1 50%` —— 与预览区的 basis 不一致，两栏不会对半"
+        source.includes("splitRatio"),
+        "左栏宽度应该由 splitRatio 决定"
     );
     assert.ok(
-        source.includes('"1 1 0"'),
-        "源码区在分栏时应该用 flex: 1 1 0（basis 0），与预览区对称"
+        source.includes("splitRatio * 100"),
+        "源码区宽度要用 splitRatio 算，不能写死"
+    );
+    assert.ok(
+        source.includes("role='separator'"),
+        "要有可拖的分隔条（role=separator，键盘/读屏也能认出）"
+    );
+    assert.ok(
+        source.includes("startSplitDrag"),
+        "分隔条要接上拖拽处理"
+    );
+    // 拖拽监听必须挂在 window 上：指针移出那条 8px 宽的带子就会丢 mousemove
+    assert.ok(
+        source.includes("window.addEventListener(\"mousemove\""),
+        "mousemove/mouseup 要挂在 window 上 —— 只挂分隔条会在拖出边界时卡住"
+    );
+});
+
+test("格式工具栏：存在，且按钮用 onMouseDown preventDefault 保住选区", () => {
+    const source = stripComments(
+        readFileSync(
+            join(findProjectDir(), "src", "components", "NotesPage.tsx"),
+            "utf-8"
+        )
+    );
+    assert.ok(source.includes("MarkdownToolbar"), "要有格式工具栏");
+    assert.ok(
+        /onMouseDown=\{e => e\.preventDefault\(\)\}/.test(source),
+        "工具栏按钮必须 onMouseDown + preventDefault —— 默认行为会让 textarea 失焦、" +
+            "selectionStart 变成 0，插入的位置全跑到开头"
+    );
+    assert.ok(
+        source.includes("setSelectionRange"),
+        "插入后要把光标放回去（setSelectionRange），否则接着打字会打到别处"
     );
 });
 
