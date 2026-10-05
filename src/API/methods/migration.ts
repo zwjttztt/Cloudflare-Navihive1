@@ -293,17 +293,24 @@ export const migrationImpl: MigrationApi = {
      * 整个记事本 500，而本地新库一切正常 —— 极难查。
      */
     migrateNoteColumns: async function (this: NavigationAPI ): Promise<void> {
+        // ⚠️ 每一列**各判各的**，绝不能写成「archived 在就直接 return」——
+        // 那是上一版留下的真 bug：线上库里 archived 早就有了，于是这个 return 把后面
+        // folder_id 的 ALTER 一起跳过，notes 表永远没有 folder_id 列，
+        // 而 NOTE_FIELDS 里已经带上了它 → 所有 notes 接口一律 500「加载记事本失败」。
+        // 新表建出来了、列没建出来，就是这个不对称造成的。
         try {
-            if (await this.hasColumn("notes", "archived")) return;
-            await this.db.exec("ALTER TABLE notes ADD COLUMN archived INTEGER NOT NULL DEFAULT 0");
+            if (!(await this.hasColumn("notes", "archived"))) {
+                await this.db.exec("ALTER TABLE notes ADD COLUMN archived INTEGER NOT NULL DEFAULT 0");
+            }
         } catch (error) {
             // 列已存在 / 表还不存在（全新库会先建表）—— 都不是问题
             void error;
         }
         try {
-            if (await this.hasColumn("notes", "folder_id")) return;
-            // 可空列，不给 NOT NULL 默认值：老笔记一条都不用回填就成了「未归类」
-            await this.db.exec("ALTER TABLE notes ADD COLUMN folder_id INTEGER");
+            if (!(await this.hasColumn("notes", "folder_id"))) {
+                // 可空列，不给 NOT NULL 默认值：老笔记一条都不用回填就成了「未归类」
+                await this.db.exec("ALTER TABLE notes ADD COLUMN folder_id INTEGER");
+            }
         } catch (error) {
             // 同上，忽略
             void error;
@@ -451,13 +458,19 @@ export const migrationImpl: MigrationApi = {
         }
     },
     hasColumn: async function (this: NavigationAPI, table: string, column: string): Promise<boolean> {
+        // 表名是**直接插进 SQL**的，不是绑定参数：把表名当占位符传给 pragma_table_info
+        // 在 D1 上会抛「near ? syntax error」，catch 掉之后一律 return false ——
+        // 于是 hasColumn 恒为 false，补列逻辑等于「每次都盲发 ALTER」，
+        // 失败还被静默吞掉，列就永远补不上（folder_id 缺失就是这么来的）。
+        // 所以先做白名单校验（表名只可能来自代码里的字面量）再插值。
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(table)) return false;
         try {
             const result = await this.db
-                .prepare("SELECT name FROM pragma_table_info(?)")
-                .bind(table)
+                .prepare(`SELECT name FROM pragma_table_info('${table}')`)
                 .all<{ name: string }>();
             return (result.results || []).some(row => row.name === column);
         } catch {
+            // 表还不存在（全新库还没建表）—— 当作「没有这列」，让上层去补
             return false;
         }
     },

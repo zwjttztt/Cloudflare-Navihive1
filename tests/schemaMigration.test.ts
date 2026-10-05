@@ -240,8 +240,7 @@ test("迁移结果有缓存，同一 isolate 内不重复跑", async () => {
     assert.equal(db.log.length, after, "第二次 migrate() 又跑了一遍建表");
 });
 
-test("版本号不等于旧值 —— 加了新表就必须 +1，否则线上那个表永远建不出来", () => {
-    // 这是一条真踩过的坑：`migrateIfNeeded` 读到与库里相同的版本号就**直接返回，
+test("版本号不等于旧值 —— 加了新表就必须 +1，否则线上那个表永远建不出来", () => {    // 这是一条真踩过的坑：`migrateIfNeeded` 读到与库里相同的版本号就**直接返回，
     // 连 CREATE TABLE 都不跑**。于是新表只在「全新迁移」的库里有（本地、新部署），
     // 已经部署过的实例上一律没有 → 那个表的接口全部 500。
     // 本地测试用 FakeD1，每次都是空库 + 全新迁移，所以**本地永远发现不了**。
@@ -271,4 +270,72 @@ test("版本号不等于旧值 —— 加了新表就必须 +1，否则线上那
         `SCHEMA_VERSION=${SCHEMA_VERSION} —— 2026-10-05 加了 notes 表，版本号至少要 3。` +
             "忘了 +1 的话，已部署的实例上 notes 表永远不会被建，接口一律 500。"
     );
+});
+
+// ---- 阶段三收尾踩到的真 bug（2026-10-05，线上「加载记事本失败: API 错误: 500」）----
+//
+// 现象：新表 note_folder / note_tag 建出来了，但 notes 表**没有 folder_id 列**，
+// 而 NOTE_FIELDS 里已经带上了它 → 所有 notes 接口 500。
+// 根因：migrateNoteColumns 写成
+//     if (await hasColumn("notes", "archived")) return;   ← archived 早就有了
+//     ... ALTER TABLE notes ADD COLUMN folder_id INTEGER
+// 于是这个 return 把 folder_id 的 ALTER 一起跳过了。
+// 换句话说：**「这一列不需要补」被误当成了「这个函数可以下班了」**。
+
+test("notes.folder_id 会被补出来，哪怕 archived 列早就存在", async () => {
+    resetMigrationCacheForTests();
+    const db = new FakeD1();
+    // 复刻线上现状：notes 表齐全，但只有 archived、**没有** folder_id
+    db.schema.set(
+        "notes",
+        new Set([
+            "id", "user_id", "uuid", "title", "content",
+            "pinned", "order_num", "site_id", "created_at", "updated_at", "archived",
+        ]),
+    );
+    await makeApi(db).migrate();
+
+    assert.ok(
+        db.schema.get("notes")!.has("folder_id"),
+        "notes.folder_id 没被补上 —— 一旦缺这列，NOTE_FIELDS 里的 folder_id 会让所有 notes 接口 500"
+    );
+});
+
+test("hasColumn 不能用绑定参数查 pragma_table_info（那样恒为 false，补列等于没做）", async () => {
+    // pragma_table_info(?) 在 D1 上直接抛语法错，catch 掉之后 hasColumn 永远返回 false，
+    // 于是每轮迁移都盲发一次 ALTER、失败还被静默吞掉 —— 列永远补不上。
+    // 所以这里要求：表名是白名单校验后**插值**进去的，和 findMissingSiteColumns 一样。
+    const source = readFileSync(
+        join(findProjectDir(), "src", "API", "methods", "migration.ts"),
+        "utf-8"
+    );
+    const hasColumnBody = /hasColumn: async function[\s\S]*?\n {4}\},/.exec(source)?.[0] ?? "";
+    assert.ok(hasColumnBody, "没找到 hasColumn 的实现，测试本身该更新");
+    assert.ok(
+        !/pragma_table_info\(\?\)/.test(hasColumnBody),
+        "hasColumn 又用回 pragma_table_info(?) 了 —— 它在 D1 上抛错，恒返回 false"
+    );
+    assert.match(
+        hasColumnBody,
+        /pragma_table_info\(/,
+        "hasColumn 应该用 pragma_table_info('表名') 的插值写法"
+    );
+});
+
+test("migrateNoteColumns 里不能有「archived 已存在就 return」这种提前退出", async () => {
+    // 静态守卫：两列必须**各判各的**。一旦有人图省事写回 early-return，
+    // 下面那条「notes.folder_id 会被补出来」在全新库上依然会绿（全新库建表语句里
+    // 本来就有 folder_id），只有线上那种「老表 + 新代码」才会炸 —— 纯靠运行测不出来。
+    const source = readFileSync(
+        join(findProjectDir(), "src", "API", "methods", "migration.ts"),
+        "utf-8"
+    );
+    const body = /migrateNoteColumns: async function[\s\S]*?\n {4}\},/.exec(source)?.[0] ?? "";
+    assert.ok(body, "没找到 migrateNoteColumns 的实现，测试本身该更新");
+    assert.ok(
+        !/if \(await this\.hasColumn\([^)]*\)\) return;/.test(body),
+        "migrateNoteColumns 里又有「hasColumn 为真就 return」—— 会把后面几列的 ALTER 一起跳过"
+    );
+    assert.match(body, /folder_id/, "migrateNoteColumns 里看不到 folder_id，补列逻辑不见了");
+    assert.match(body, /archived/, "migrateNoteColumns 里看不到 archived");
 });

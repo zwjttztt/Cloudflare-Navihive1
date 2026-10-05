@@ -3,6 +3,7 @@
 // 滚动时当前分组会自动高亮。窄屏隐藏（那里用底部导航栏的「分组」入口）。
 // 面板底部挂了「折叠 / 展开全部分组」开关：和分组列表放一起，比藏进「更多选项」更好找。
 // 整条可以收成一根窄条（只留分组圆点），把空间还给内容区，收起状态记在本机。
+import { useEffect } from "react";
 import { Box, Divider, Tooltip, Typography, IconButton, useMediaQuery } from "@mui/material";
 import { useTheme } from "@mui/material/styles";
 import { groupAccent } from "../utils/groupColor";
@@ -42,6 +43,11 @@ const RAIL_COLLAPSED_MIN_VW =
     RAIL_CONTENT_MAX_WIDTH + 2 * (RAIL_COLLAPSED_EDGE + RAIL_GUTTER);
 const SHOW_QUERY = `(min-width:${RAIL_COLLAPSED_MIN_VW}px)`;
 const EXPAND_QUERY = `(min-width:${RAIL_EXPANDED_MIN_VW}px)`;
+
+// 展开态的栏宽（约 186）+ 左侧偏移 10 + 与内容之间的空隙 12。
+// 视口不够宽时不是「禁止展开」，而是把内容整体往右让出这么宽 ——
+// 否则窄窗口下用户一点展开就没反应，只能干瞪眼（这正是上一版的毛病）。
+const RAIL_PUSH_PX = 10 + 186 + 12;
 
 interface GroupNavRailProps {
     groups: RailGroup[];
@@ -90,6 +96,22 @@ export default function GroupNavRail({
     const spaceForCollapsed = useMediaQuery(SHOW_QUERY);
     const spaceForExpanded = useMediaQuery(EXPAND_QUERY);
 
+    const railVisible = groups.length >= 2 && spaceForCollapsed;
+    // 窄视口下展开：**把内容让开**，而不是禁用按钮。
+    // 写在 body 上而不是 state 里：栏是 fixed 的，App 那边要用它给 Container 加左内边距，
+    // 走一个 CSS 变量最省事，也不用把这份状态再往上传一层。
+    const pushing = railVisible && !railCollapsed && !spaceForExpanded;
+    useEffect(() => {
+        const root = document.documentElement;
+        if (pushing) root.style.setProperty("--nav-rail-push", `${RAIL_PUSH_PX}px`);
+        else root.style.removeProperty("--nav-rail-push");
+        // removeProperty 返回的是被删掉的那个值（string），直接返回会被 TS 判成
+        // 「不是 Destructor」的清理函数，所以这里必须用花括号截断。
+        return () => {
+            root.style.removeProperty("--nav-rail-push");
+        };
+    }, [pushing]);
+
     if (groups.length < 2) return null;
     if (!spaceForCollapsed) return null;
 
@@ -130,38 +152,20 @@ export default function GroupNavRail({
                     scrollbarWidth: "thin",
                 }}
             >
-                {spaceForExpanded ? (
-                    <Tooltip title='展开分组栏' placement='right'>
-                        <IconButton
-                            size='small'
-                            className='nav-rail-collapse-btn'
-                            aria-label='展开分组栏'
-                            aria-expanded={false}
-                            onClick={() => setRailCollapsed(false)}
-                            sx={{ color: "text.secondary" }}
-                        >
-                            <ChevronRightIcon sx={{ fontSize: 18 }} />
-                        </IconButton>
-                    </Tooltip>
-                ) : (
-                    // 视口只够放窄条：展开就会压在卡片上，所以给个禁用态并说明原因，
-                    // 免得点了没反应让人以为是坏了。disabled 的按钮不吃 pointer 事件，
-                    // 外面套一层 span 才能挂上 Tooltip。
-                    <Tooltip title='窗口再宽一点才能展开，否则会挡住卡片' placement='right'>
-                        <span>
-                            <IconButton
-                                size='small'
-                                className='nav-rail-collapse-btn'
-                                aria-label='展开分组栏'
-                                aria-expanded={false}
-                                disabled
-                                sx={{ color: "text.secondary" }}
-                            >
-                                <ChevronRightIcon sx={{ fontSize: 18 }} />
-                            </IconButton>
-                        </span>
-                    </Tooltip>
-                )}
+                {/* 展开按钮任何宽度下都可用：空间不够时由上面那个 effect
+                    把内容整体右移让出位置（--nav-rail-push），而不是把按钮禁掉。 */}
+                <Tooltip title='展开分组栏' placement='right'>
+                    <IconButton
+                        size='small'
+                        className='nav-rail-collapse-btn'
+                        aria-label='展开分组栏'
+                        aria-expanded={false}
+                        onClick={() => setRailCollapsed(false)}
+                        sx={{ color: "text.secondary" }}
+                    >
+                        <ChevronRightIcon sx={{ fontSize: 18 }} />
+                    </IconButton>
+                </Tooltip>
 
                 {groups.map(group => {
                     const active = group.id === activeId;
