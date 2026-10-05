@@ -8,6 +8,44 @@
 
 ---
 
+## 2026-10-05（十一续）
+
+**又一轮 500，这次是 SQL 写错了**（用户报「新建笔记失败：API 错误: 500」）。
+
+- 根因：`createNote` 的 `order_num` 子查询里用了 `scopeSql(true)`。它生成的是
+  ` AND user_id = ?`，接在 `FROM notes` 后面就成了
+  `FROM notes AND user_id = ?` —— **SQL 语法错误**。
+  规则是：`scopeSql(true)` 只在「语句已经有 WHERE」时用（追加 AND），
+  没有 WHERE 时必须用 `scopeSql(false)`（生成 WHERE）。
+- 还漏绑了子查询里那个 `?` 的参数（7 个占位符只给了 6 个）。
+  用 `scopeParams([])` 取 —— 它在单账号部署（uid 为 NULL）下返回空数组，两种情况都对。
+
+### 顺着修出了三处同类错误
+
+写完守卫一扫，发现**同样的误用还有两处**，都已经在代码里了：
+`listNotes`（`FROM notes AND …`）与 `transfer.ts` 合并分支里读本地笔记那条。
+更要紧的是：上一轮修 500 时**我以为已经修完了** ——
+一个 python 脚本里三处改动共用一个 assert，其中一处失败导致**整体没写入**，
+我却没有检查结果就提交了。**「脚本没报错」不等于「改成功了」**（这坑我今天踩第二次了）。
+
+### 加了 SQL 形状守卫（tests/noteSql.test.ts，5 条）
+
+这类错误在现有测试结构里是**盲区**：
+- `noteRoutes` 测路由层（只验证「路由把什么交给 api」）；
+- `noteTransfer` 的 MockD1 按前缀字符串匹配，**不校验参数个数**；
+- `schemaMigration` 不碰业务 SQL。
+
+守卫里有两条特别值得说：
+1. **运行时检查**：真调一次 `listNotes` / `countNotes`，看生成的 SQL 长什么样。
+   之前我写的是「在源码文本里找字面 ` AND `」—— 而源码里是 `${this.scopeSql(true)}`
+   （函数调用），那条检查**永远是绿的**，变异验证时才发现它形同虚设。
+   **静态正则抓不住这种事**。
+2. `createNote` 的 bind 必须展开 `...scopeTail`（子查询参数漏绑的守卫）。
+变异验证：listNotes 改回 `scopeSql(true)` → 立刻变红并打出真实 SQL；
+删掉 `...scopeTail` → 那条也变红。
+
+- 用例 1750 → **1755**。
+
 ## 2026-10-05（十续）
 
 **修 500 + 记事本改成独立页面**（两件事，用户一次报上来的）。

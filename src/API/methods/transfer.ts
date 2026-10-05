@@ -492,7 +492,7 @@ export const transferImpl: TransferApi = {
                     const localRows = await this.db
                         .prepare(
                             `SELECT id, uuid, title, content, pinned, order_num, site_id, updated_at FROM notes${this.scopeSql(
-                                true
+                                false
                             )}`
                         )
                         .bind(...this.scopeParams([]))

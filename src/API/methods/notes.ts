@@ -34,7 +34,7 @@ export const notesImpl: NotesApi = {
             const result = await this.db
                 .prepare(
                     `SELECT ${NOTE_FIELDS} FROM notes${this.scopeSql(
-                        true
+                        false
                     )} ORDER BY pinned DESC, order_num, id`
                 )
                 .bind(...this.scopeParams([]))
@@ -56,12 +56,21 @@ export const notesImpl: NotesApi = {
 
     createNote: async function (this: NavigationAPI, draft: Partial<Note>): Promise<Note> {
         await this.migrate();
-        // order_num 缺省时排到当前最后一条之后，省得前端每次都要先查一遍最大值
+        // order_num 缺省时排到当前最后一条之后，省得前端每次都要先查一遍最大值。
+        //
+        // ⚠️ 两个坑都在这���句里（踩过一次，症状是接口一律 500）：
+        //   1. 子查询里必须用 `scopeSql(false)`。`scopeSql(true)` 生成的是
+        //      ` AND user_id = ?`，接在 `FROM notes` 后面就成了
+        //      `FROM notes AND user_id = ?` —— SQL 语法错误。
+        //      带 AND 的那个只用在「已经有 WHERE」的语句尾部。
+        //   2. 子查询里的 `?` 也要绑参数。用 `scopeParams([])` 取，
+        //      它在单账号部署（uid 为 NULL）下返回空数组，两种情况都对。
+        const scopeTail = this.scopeParams([]);
         const result = await this.db
             .prepare(
                 `INSERT INTO notes (user_id, uuid, title, content, pinned, order_num, site_id)
                  VALUES (?, ?, ?, ?, ?, COALESCE((
-                     SELECT MAX(order_num) + 1 FROM notes${this.scopeSql(true)}
+                     SELECT MAX(order_num) + 1 FROM notes${this.scopeSql(false)}
                  ), 0), ?)
                  RETURNING ${NOTE_FIELDS}`
             )
@@ -71,6 +80,7 @@ export const notesImpl: NotesApi = {
                 draft.title || "",
                 draft.content || "",
                 draft.pinned ? 1 : 0,
+                ...scopeTail,
                 draft.site_id ?? null
             )
             .all<Note>();
@@ -185,7 +195,7 @@ export const notesImpl: NotesApi = {
         await this.migrate();
         return this.withSchemaRetry(async () => {
             const row = await this.db
-                .prepare(`SELECT COUNT(*) AS n FROM notes${this.scopeSql(true)}`)
+                .prepare(`SELECT COUNT(*) AS n FROM notes${this.scopeSql(false)}`)
                 .bind(...this.scopeParams([]))
                 .first<{ n: number }>();
             return row?.n ?? 0;
