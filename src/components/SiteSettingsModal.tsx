@@ -39,6 +39,7 @@ import VisibilityIcon from "@mui/icons-material/Visibility";
 import VisibilityOffIcon from "@mui/icons-material/VisibilityOff";
 import AutoFixHighIcon from "@mui/icons-material/AutoFixHigh";
 import AutoAwesomeIcon from "@mui/icons-material/AutoAwesome";
+import OpenInFullIcon from "@mui/icons-material/OpenInFull";
 import { useSiteAi } from "../context/AiContext";
 import { copyToClipboard } from "../utils/clipboard";
 import { resolveIconApiUrl } from "../utils/iconApi";
@@ -116,6 +117,11 @@ export default function SiteSettingsModal({
 
     // 存储字符串形式的group_id，与Material-UI的Select兼容
     const [formData, setFormData] = useState(buildInitialForm);
+
+    // 备注的放大编辑弹窗。备注是这一屏里唯一「可能写很长」的字段，
+    // 两行框里改长文本很难受（要拖着框边角拉），所以给一个和本弹窗同尺寸的
+    // 大输入框。共用同一份 formData.notes —— 不做两份再同步，少一处能写错的地方。
+    const [notesExpanded, setNotesExpanded] = useState(false);
 
     // 初始快照只取第一次渲染的值，之后不再变
     const initialRef = useRef<ReturnType<typeof buildInitialForm> | null>(null);
@@ -319,6 +325,7 @@ export default function SiteSettingsModal({
     const fallbackIcon = formData.name?.charAt(0).toUpperCase() || "A";
 
     return (
+        <>
         <Dialog
             open={true}
             onClose={onClose}
@@ -716,7 +723,7 @@ export default function SiteSettingsModal({
                             size='small'
                         />
 
-                        {/* 备注：放在网站描述下方 */}
+                        {/* 备注：放在网站描述下方。右侧放大按钮开大输入框（见 notesExpanded） */}
                         <TextField
                             id='notes'
                             name='notes'
@@ -729,6 +736,28 @@ export default function SiteSettingsModal({
                             placeholder='可选的私人备注'
                             variant='outlined'
                             size='small'
+                            slotProps={{
+                                input: {
+                                    endAdornment: (
+                                        <InputAdornment position='end'>
+                                            <Tooltip title='放大编辑'>
+                                                <span>
+                                                    <IconButton
+                                                        size='small'
+                                                        edge='end'
+                                                        aria-label='放大编辑备注'
+                                                        onClick={() =>
+                                                            setNotesExpanded(true)
+                                                        }
+                                                    >
+                                                        <OpenInFullIcon fontSize='small' />
+                                                    </IconButton>
+                                                </span>
+                                            </Tooltip>
+                                        </InputAdornment>
+                                    ),
+                                },
+                            }}
                         />
 
                         <Divider />
@@ -882,5 +911,67 @@ export default function SiteSettingsModal({
                 onClose={() => setConfirmDeleteOpen(false)}
             />
         </Dialog>
+
+        {/* 备注放大编辑：尺寸与网站设置一致（fullWidth + maxWidth='sm'），
+            差别只在里面的输入框更高。放在主 Dialog **外面** —— 弹窗套弹窗时
+            关掉大窗不会顺手把设置也关掉。共用 formData.notes，不做第二份状态。 */}
+        <Dialog
+            open={notesExpanded}
+            onClose={() => setNotesExpanded(false)}
+            fullWidth
+            maxWidth='sm'
+            slotProps={{
+                paper: {
+                    className: "nav-settings-dialog",
+                    sx: { borderRadius: "var(--card-radius)" },
+                },
+            }}
+        >
+            <DialogTitle
+                sx={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    gap: 1,
+                }}
+            >
+                备注
+                <IconButton
+                    aria-label='关闭'
+                    onClick={() => setNotesExpanded(false)}
+                    size='small'
+                >
+                    <CloseIcon fontSize='small' />
+                </IconButton>
+            </DialogTitle>
+            <DialogContent>
+                <TextField
+                    id='notes-expanded'
+                    name='notes'
+                    label='备注'
+                    multiline
+                    // 比主弹窗的两行宽裕得多：这就是这个弹窗存在的意义
+                    rows={10}
+                    fullWidth
+                    value={formData.notes || ""}
+                    onChange={handleChange}
+                    placeholder='可选的私人备注'
+                    variant='outlined'
+                    size='small'
+                    // 打开就把光标放进去接着写，不用再点一下
+                    autoFocus
+                />
+            </DialogContent>
+            <DialogActions sx={{ px: 3, pb: 2.5, pt: 1 }}>
+                <Button
+                    onClick={() => setNotesExpanded(false)}
+                    variant='contained'
+                    color='primary'
+                >
+                    完成
+                </Button>
+            </DialogActions>
+        </Dialog>
+        </>
     );
 }

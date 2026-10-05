@@ -7,7 +7,7 @@
 //   - 点「删除」不能直接删，必须先弹站内确认框
 //   - 站点没图标时，打开就按「图标 API 模板 + 链接」自动补一个
 // 这几条散在 265 条冒烟里覆盖不全，在这里几行就能锁死。
-import { test } from "node:test";
+import { test, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import type { ReactElement } from "react";
 import { act } from "react";
@@ -67,6 +67,15 @@ function cleanup() {
     host = null;
     document.body.innerHTML = "";
 }
+
+afterEach(cleanup);
+
+/**
+ * 等 MUI 的 Dialog 关闭过渡走完（225ms）。
+ * 关闭时 DOM 不会被立刻移除 —— 「paper 还在」不等于「没关」，
+ * 必须给过渡时间，否则每条测「关掉了没」的用例都会假失败。
+ */
+const settle = () => new Promise(resolve => setTimeout(resolve, 350));
 
 const buttonByText = (text: string): HTMLButtonElement | undefined =>
     [...document.querySelectorAll<HTMLButtonElement>("button")].find(
@@ -262,5 +271,173 @@ test("SiteSettingsModal：密码默认掩码，点「显示密码」才变明文
         inputByLabel("密码")?.getAttribute("type"),
         "text",
         "点过之后应切为明文"
+    );
+});
+
+// ---------------------------------------------------------------------------
+// 备注的放大编辑（2026-10-05 新增）
+// ---------------------------------------------------------------------------
+//
+// 备注是这一屏里唯一可能写很长的字段，两行框里改长文本很难受。要钉的是四件事：
+//   1. 放大入口在备注框右侧，且有可访问名
+//   2. 弹出的窗**与网站设置同尺寸**（fullWidth + maxWidth='sm'），别做成小一号的框
+//   3. 两边共用同一份内容 —— 在大窗里改字，主窗要跟着变（做两份再同步 = 多一处能写错的地方）
+//   4. **关掉大窗不能连带关掉主窗** —— 弹窗套弹窗最容易写错的就是这条
+
+/** 最上层弹窗（放大窗开着时它是最后一个） */
+const topDialog = (): HTMLElement | null => {
+    const papers = [...document.querySelectorAll<HTMLElement>(".MuiDialog-paper")];
+    return papers[papers.length - 1] ?? null;
+};
+
+/** 大窗里的备注输入框（textarea） */
+const expandedNotes = (): HTMLTextAreaElement | null =>
+    topDialog()?.querySelector<HTMLTextAreaElement>("textarea#notes-expanded") ?? null;
+
+function openExpanded(overrides: Partial<Site> = {}) {
+    mount(
+        <SiteSettingsModal
+            site={makeSite(overrides)}
+            groups={[] as never}
+            onUpdate={() => {}}
+            onDelete={() => {}}
+            onClose={() => {}}
+        />
+    );
+    click(document.querySelector<HTMLElement>('[aria-label="放大编辑备注"]')!);
+}
+
+test("备注框右侧有放大入口", () => {
+    mount(
+        <SiteSettingsModal
+            site={makeSite()}
+            groups={[] as never}
+            onUpdate={() => {}}
+            onDelete={() => {}}
+            onClose={() => {}}
+        />
+    );
+    const btn = document.querySelector<HTMLElement>('[aria-label="放大编辑备注"]');
+    assert.ok(btn, "备注框右侧要有放大按钮");
+    // 按钮必须在备注那个 FormControl 里面，否则它会飘到别的地方去
+    const inNotes = btn!.closest(".MuiFormControl-root");
+    assert.ok(
+        inNotes?.querySelector("#notes"),
+        "放大按钮要长在备注输入框里（写成了别处的按钮就等于没有这个功能）"
+    );
+});
+
+test("放大窗的尺寸和网站设置一致", () => {
+    openExpanded();
+    const papers = [...document.querySelectorAll<HTMLElement>(".MuiDialog-paper")];
+    assert.equal(papers.length, 2, "应该同时存在主窗与放大窗两个弹窗");
+    const main = papers[0];
+    const expanded = papers[1];
+    // ⚠️ 不能比整串 className：emotion 每次生成的 hash 不同（主窗的 sx 里还有背景色等），
+    // 那样断言永远不成立。要比的是「尺寸由哪个 class 决定」—— paperWidthSm 才是宽度。
+    for (const cls of ["MuiDialog-paperWidthSm", "MuiDialog-paperFullWidth", "nav-settings-dialog"]) {
+        assert.ok(
+            main.className.includes(cls),
+            `主窗上应有 ${cls}`
+        );
+        assert.ok(
+            expanded.className.includes(cls),
+            `放大窗上应有 ${cls} —— 做成小一号的话，长备注照样没法看`
+        );
+    }
+});
+
+test("放大窗里带着当前备注内容，不是空的", () => {
+    openExpanded({ notes: "第一行\n第二行\n第三行" });
+    const area = expandedNotes();
+    assert.ok(area, "放大窗里要有输入框");
+    assert.equal(
+        area!.value,
+        "第一行\n第二行\n第三行",
+        "打开时要把现有备注带进来，否则用户得先记住内容再重写一遍"
+    );
+});
+
+test("在大窗里改字，主窗的备注跟着变（共用同一份内容）", () => {
+    openExpanded({ notes: "旧内容" });
+    const area = expandedNotes()!;
+    act(() => {
+        const setter = Object.getOwnPropertyDescriptor(
+            HTMLTextAreaElement.prototype,
+            "value"
+        )!.set!;
+        setter.call(area, "新内容");
+        area.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const mainArea = document.querySelector<HTMLTextAreaElement>("#notes");
+    assert.ok(mainArea, "主窗的备注框应该还在");
+    assert.equal(
+        mainArea!.value,
+        "新内容",
+        "两边必须共用一份内容 —— 各存一份再同步，迟早会出现「大窗改了、主窗没改」"
+    );
+});
+
+test("关掉大窗不连带关掉主窗", async () => {
+    let closed = 0;
+    mount(
+        <SiteSettingsModal
+            site={makeSite({ notes: "内容" })}
+            groups={[] as never}
+            onUpdate={() => {}}
+            onDelete={() => {}}
+            onClose={() => (closed += 1)}
+        />
+    );
+    click(document.querySelector<HTMLElement>('[aria-label="放大编辑备注"]')!);
+    assert.equal(document.querySelectorAll(".MuiDialog-paper").length, 2);
+
+    click(topDialogButtons().find(b => (b.textContent || "").trim() === "完成")!);
+    await settle();
+
+    assert.equal(
+        document.querySelectorAll("#notes-expanded").length,
+        0,
+        "点「完成」后放大窗该消失（它带着自己的 textarea 一起卸载）"
+    );
+    assert.equal(closed, 0, "主窗绝不能跟着关 —— 那等于用户白填一遍备注");
+    assert.ok(
+        document.querySelector("#notes"),
+        "主窗还在，备注框也还在"
+    );
+});
+
+test("大窗右上角的关闭按钮同样只关自己", async () => {
+    openExpanded();
+    // 放大窗的关闭按钮是最后一个弹窗里的那个（主窗也有一个同名按钮）
+    const expanded = topDialog()!;
+    const closeBtn = [...expanded.querySelectorAll<HTMLElement>('[aria-label="关闭"]')].pop()!;
+    click(closeBtn);
+    await settle();
+    assert.equal(
+        document.querySelectorAll("#notes-expanded").length,
+        0,
+        "关掉放大窗后它的输入框该没了"
+    );
+    assert.ok(
+        document.querySelector("#notes"),
+        "而主窗（连带它的备注框）要留着 —— 顶层是主窗的内容"
+    );
+});
+
+test("没打开放大窗时，大窗的输入框不在 DOM 里", () => {
+    mount(
+        <SiteSettingsModal
+            site={makeSite({ notes: "内容" })}
+            groups={[] as never}
+            onUpdate={() => {}}
+            onDelete={() => {}}
+            onClose={() => {}}
+        />
+    );
+    assert.equal(
+        document.querySelector("#notes-expanded"),
+        null,
+        "没点放大就不该渲染大窗（省掉一棵无用的 textarea）"
     );
 });
