@@ -501,10 +501,14 @@ test("两窗用的是同一份固定高度（不是量出来的）", () => {
     );
 });
 
-test("固定高度写在共享样式里（不许只给放大窗写）", () => {
-    // 反过来钉一次：如果有人为了「让主窗自适应」把 height 从共享函数里删掉、
-    // 只留在放大窗上，两窗 className 就会不同 —— 上面那条会红。
-    // 这条则保证「共享函数确实产出了高度」，而不是恰好两边都没高度。
+test("高度策略写在共享样式里，且必须是 minHeight 而不是写死的 height", () => {
+    // 这条判据换过两次，每次都因为用户实际看到了问题：
+    //   ① 「点开时量主窗 offsetHeight」—— 量不到就静默退化，等于没有；
+    //   ② 「两窗都写死 height」—— 一致了，但主窗内容少时底部空出一大片，
+    //      用户反馈「网站设置下面空出一段，恢复原来大小」。
+    // 现在是 minHeight 下限：主窗内容多就自然变高（不留空白），放大窗有下限保证够大。
+    // 「严格等大」与「不留空白」本身冲突，这里选了后者 —— 所以下面第二条
+    // 明确禁止有人再把固定 height 加回来。
     const source = readFileSync(
         join(findProjectDir(), "src", "components", "SiteSettingsModal.tsx"),
         "utf-8"
@@ -512,14 +516,18 @@ test("固定高度写在共享样式里（不许只给放大窗写）", () => {
     const fn = source.slice(source.indexOf("function settingsPaper"));
     const body = fn.slice(0, fn.indexOf("}"));
     assert.ok(
-        body.includes('height: "min(') || body.includes("height: 'min("),
-        "settingsPaper 里必须写死高度 —— 不写就退回「按内容自适应」，两窗又不一致了"
+        body.includes("minHeight:"),
+        "settingsPaper 里必须写 minHeight 下限 —— 不写放大窗就退回「按内容自适应」"
     );
-    // 固定高度必须同时照顾小屏：min() 里那个 calc 是视口兜底，
-    // 只写死 700px 在小屏上会超出屏幕
+    // 下限必须同时照顾小屏：min() 里那个 calc 是视口兜底
     assert.ok(
         body.includes("calc(100vh"),
-        "固定高度要用 min(…, calc(100vh …)) 收窄，否则小屏上弹窗会超出屏幕"
+        "要用 min(…, calc(100vh …)) 收窄，否则小屏上弹窗会超出屏幕"
+    );
+    assert.ok(
+        !/\n\s+height:\s*["']/.test(body),
+        "别在 settingsPaper 里写死 height —— 主窗内容少时底部会空一大片" +
+            "（用户报过「恢复原来大小」）。要下限就 minHeight。"
     );
 });
 

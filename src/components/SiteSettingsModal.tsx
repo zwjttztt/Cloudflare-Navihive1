@@ -96,14 +96,17 @@ function settingsPaper(theme: Theme) {
         sx: {
             display: "flex",
             flexDirection: "column",
-            // **固定高度**，两个窗因此永远一样大。
+            // 两个窗共用的**高度下限**。
             //
-            // 之前试过「点开时量主窗的 offsetHeight、当放大窗的 minHeight」，实测没生效
-            // —— 那是动态测出来的：量不到（ref 没挂上 / 布局未完成）就静默退化成
-            // 「按内容自适应」，于是又矮一截。为这件事用户反馈了三轮。
-            // 固定高度是唯一可靠的做法：两窗用**同一个函数**，值来自同一处，不可能不一致。
-            // 视口不够高时用 calc 收窄，小屏上不会超出屏幕。
-            height: "min(700px, calc(100vh - 104px))",
+            // 走过一圈弯路，结论值得写下来：
+            //   ① 先试「点开时量主窗 offsetHeight 当放大窗 minHeight」—— 动态测量的值
+            //      量不到就静默退化（ref 没挂上 / 布局未完成），用户看到的是"没变化"。
+            //   ② 再试「两窗都写死 height」—— 一致了，但主窗内容只有 600px 时
+            //      底部空出一大片，比高度不一致更刺眼。
+            // 现在用 minHeight：主窗内容多就自然变高（**不留多余空白**），
+            // 放大窗有这个下限保证够大。视口不够高时用 calc 收窄。
+            // 「严格等大」和「不留空白」本身是冲突的 —— 这里选了后者。
+            minHeight: "min(620px, calc(100vh - 104px))",
             // 和确认弹窗/提示条同一套毛玻璃面板，视觉统一
             borderRadius: "var(--card-radius)",
             backdropFilter: "blur(var(--glass-blur)) saturate(1.4)",
@@ -468,9 +471,9 @@ export default function SiteSettingsModal({
             */}
             <Box
                 component='div'
-                // 固定高度之后字段多就必须能滚，否则底部的凭据区会被挤出弹窗够不着。
-                // minHeight:0 是 flex 子项能滚的前提 —— 少了它 flex:1 撑不开、overflow 也不生效。
-                sx={{ flex: 1, minHeight: 0, overflowY: "auto" }}
+                // 字段多时（账号密码、分组下拉都在这儿）要能滚，否则够不着底部的凭据区。
+                // minHeight:0 是 flex 子项能滚的前提。
+                sx={{ minHeight: 0, overflowY: "auto" }}
                 onKeyDown={(e: React.KeyboardEvent) => {
                     if (e.key !== "Enter") return;
                     // 输入法正在拼字时的回车是「选词」，不能当成提交
@@ -1004,7 +1007,7 @@ export default function SiteSettingsModal({
                     <CloseIcon fontSize='small' />
                 </IconButton>
             </DialogTitle>
-            <DialogContent sx={{ flex: 1, display: "flex" }}>
+            <DialogContent>
                 <TextField
                     id='notes-expanded'
                     name='notes'
@@ -1013,20 +1016,16 @@ export default function SiteSettingsModal({
                     // 可见标签由 DialogTitle 承担，这里补 aria-label 保住语义。
                     slotProps={{ htmlInput: { "aria-label": "备注" } }}
                     multiline
-                    // 比主弹窗的两行宽裕得多：这就是这个弹窗存在的意义
-                    rows={10}
+                    // 比主弹窗的两行宽裕得多：这就是这个弹窗存在的意义。
+                    // 用 rows 定高，**不要**给 textarea 设 height:100% ——
+                    // 那样框被拉高了、内容却仍按原高度垂直居中，
+                    // 表现为「光标出现在框中间、上下打不了字」（用户报过）。
+                    rows={15}
                     // 定高之后输入框要吃掉多出来的那截，否则备注框下面空一大块，
                     // 看起来完全不像「放大」了。
                     // ⚠️ 只写 flex:1 不够 —— 那只能撑开 FormControl，textarea 在
                     // InputBase 内部有自己的高度，必须连它一起设成 100%。
-                    sx={{
-                        flex: 1,
-                        minWidth: 0,
-                        "& .MuiInputBase-root": { height: "100%" },
-                        // ⚠️ textarea 自己也要 100%：只设 InputBase 的话，textarea 仍是
-                        // rows={10} 那个高度，框的下半截点不进焦点（用户报「只有当中能打字」）
-                        "& textarea": { height: "100%" },
-                    }}
+
                     fullWidth
                     value={formData.notes || ""}
                     onChange={handleChange}
