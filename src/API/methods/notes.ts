@@ -247,17 +247,20 @@ export const notesImpl: NotesApi = {
     listFolders: async function (this: NavigationAPI): Promise<NoteFolder[]> {
         await this.migrate();
         return this.withSchemaRetry(async () => {
-            // 左子树是聚合查询，右子树是条件：SQLite 支持的这种写法比 JOIN + GROUP BY 好读，
-            // 且 HAVING 里直接就能写「count(n.id) > 0」这种别名。
+            // ⚠️ 子查询里必须用 scopeSql(**true**) —— 它给的是 " AND user_id = ?"。
+            // 用 scopeSql(false) 会在「WHERE n.folder_id = f.id」后面再接一个
+            // 「WHERE user_id = ?」，拼出两个 WHERE，SQLite 直接报语法错 → 接口 500。
+            // 子查询里那个没限定的 user_id 归 notes n（内层优先），正好是想要的隔离。
+            // 绑定顺序要跟 SQL 里 ? 的出现顺序一致：子查询的先，外层的后。
             const result = await this.db
                 .prepare(
                     `SELECT f.*, (SELECT COUNT(*) FROM notes n
-                        WHERE n.folder_id = f.id ${this.scopeSql(false)}
+                        WHERE n.folder_id = f.id${this.scopeSql(true)}
                     ) AS count
                     FROM note_folder f ${this.scopeSql(false)}
                     ORDER BY f.order_num, f.name`
                 )
-                .bind(...this.scopeParams([]))
+                .bind(...this.scopeParams([]), ...this.scopeParams([]))
                 .all<NoteFolder>();
             return result.results || [];
         });
@@ -310,11 +313,12 @@ export const notesImpl: NotesApi = {
             const row = await this.db
                 .prepare(
                     `SELECT f.*, (SELECT COUNT(*) FROM notes n
-                        WHERE n.folder_id = f.id ${this.scopeSql(false)}
+                        WHERE n.folder_id = f.id${this.scopeSql(true)}
                     ) AS count
                     FROM note_folder f WHERE f.id = ?${this.scopeSql(true)}`
                 )
-                .bind(...this.scopeParams([id]))
+                // 顺序：子查询的账号 id → 外层 id → 外层账号 id
+                .bind(...this.scopeParams([]), id, ...this.scopeParams([]))
                 .first<NoteFolder>();
             return row ?? null;
         });
@@ -359,16 +363,18 @@ export const notesImpl: NotesApi = {
     listTags: async function (this: NavigationAPI): Promise<NoteTag[]> {
         await this.migrate();
         return this.withSchemaRetry(async () => {
+            // 同 listFolders：子查询里必须是 scopeSql(true)，且真实 WHERE 要写在它前面，
+            // 否则拼出两个 WHERE。绑定顺序同样是「子查询账号 id → 外层账号 id」。
             const result = await this.db
                 .prepare(
                     `SELECT t.*, (SELECT COUNT(*) FROM note_note_tag l
-                        JOIN notes n ON n.id = l.note_id ${this.scopeSql(false)}
-                        WHERE l.tag_id = t.id
+                        JOIN notes n ON n.id = l.note_id
+                        WHERE l.tag_id = t.id${this.scopeSql(true)}
                     ) AS count
                     FROM note_tag t ${this.scopeSql(false)}
                     ORDER BY t.name`
                 )
-                .bind(...this.scopeParams([]))
+                .bind(...this.scopeParams([]), ...this.scopeParams([]))
                 .all<NoteTag>();
             return result.results || [];
         });
@@ -418,12 +424,13 @@ export const notesImpl: NotesApi = {
             const row = await this.db
                 .prepare(
                     `SELECT t.*, (SELECT COUNT(*) FROM note_note_tag l
-                        JOIN notes n ON n.id = l.note_id ${this.scopeSql(false)}
-                        WHERE l.tag_id = t.id
+                        JOIN notes n ON n.id = l.note_id
+                        WHERE l.tag_id = t.id${this.scopeSql(true)}
                     ) AS count
                     FROM note_tag t WHERE t.id = ?${this.scopeSql(true)}`
                 )
-                .bind(...this.scopeParams([id]))
+                // 顺序：子查询的账号 id → 外层 id → 外层账号 id
+                .bind(...this.scopeParams([]), id, ...this.scopeParams([]))
                 .first<NoteTag>();
             return row ?? null;
         });

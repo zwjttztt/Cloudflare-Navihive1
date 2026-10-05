@@ -84,6 +84,7 @@ import HeaderActionsSlot from "./components/HeaderActionsSlot";
 import LoginScreen from "./components/LoginScreen";
 import SearchStatusLine from "./components/SearchStatusLine";
 import DisplayControls from "./components/DisplayControls";
+import HeaderGroupsButton from "./components/HeaderGroupsButton";
 // 新增卡片 / 新建分组：点「新增」才用得到，懒加载。
 // ⚠️ 注意 OverlayHost 里那五个（命令面板 / 书签导入 / 标签管理 / 两个 AI 弹窗）也走 lazy，
 //    但它们写在 OverlayHost 里 —— 别只在这里数 lazy( 的个数，得看每个组件的 import 语句本身。
@@ -135,9 +136,6 @@ import SiteListBody from "./components/SiteListBody";
 const TagBar = lazy(() => import("./components/TagBar"));
 // 骨架屏只在 loading 时挂上，同理。
 const SiteListSkeleton = lazy(() => import("./components/SiteListSkeleton"));
-// 「分组」按钮只存在于 900~1344px 这一档断点（组件内部 useMediaQuery 会 return null），
-// 窄屏有底部导航栏、宽屏有左侧分组栏，所以绝大多数视口下都用不上它 —— 走 lazy。
-const HeaderGroupsButton = lazy(() => import("./components/HeaderGroupsButton"));
 // 断网提示只在断网 / 刚恢复 / 有同步失败项时才看得见，其余时候渲染出来也是 null，
 // 没必要占首屏（实测 3.7 KB）。挂不挂由 useOfflineBannerVisible 决定，块按需下载。
 const OfflineBanner = lazy(() => import("./components/OfflineBanner"));
@@ -1479,16 +1477,6 @@ function App() {
                     sx={{
                         py: 4,
                         px: { xs: 2, sm: 3, md: 4 },
-                        // 分组栏在窄视口下展开时，会往 body 上写 --nav-rail-push
-                        // （见 GroupNavRail），这里跟着把内容整体右移让出位置，
-                        // 这样「展开」在任何窗口宽度下都可用，不会被卡片压住或干脆禁掉。
-                        // 逐断点写是为了保住原来 16/24/32 的左边距 —— 栏没展开时变量不存在，
-                        // max() 退回到各自的原值，移动端布局一点没变。
-                        pl: {
-                            xs: "max(var(--nav-rail-push, 0px), 16px)",
-                            sm: "max(var(--nav-rail-push, 0px), 24px)",
-                            md: "max(var(--nav-rail-push, 0px), 32px)",
-                        },
                         // 手机端给底部导航条留出空间
                         pb: { xs: 11, md: 4 },
                         // 跳转链接把焦点送到这里时别画一圈突兀的框
@@ -1548,17 +1536,15 @@ function App() {
                                 )}
                                 {/* 窄桌面（900~1343px）的分组入口：这一段左栏没有、底栏也没有 */}
                                 {sortMode === SortMode.None && (
-                                    <ChunkBoundary>
-                                        <HeaderGroupsButton
-                                            onOpen={event => {
-                                                setMobileGroupsAnchor(event.currentTarget);
-                                                setGroupsAnchorFromTop(true);
-                                            }}
-                                            open={Boolean(mobileGroupsAnchor)}
-                                            count={displayedGroups.length}
-                                            onExitViewport={handleExitGroupsButtonViewport}
-                                        />
-                                    </ChunkBoundary>
+                                    <HeaderGroupsButton
+                                        onOpen={event => {
+                                            setMobileGroupsAnchor(event.currentTarget);
+                                            setGroupsAnchorFromTop(true);
+                                        }}
+                                        open={Boolean(mobileGroupsAnchor)}
+                                        count={displayedGroups.length}
+                                        onExitViewport={handleExitGroupsButtonViewport}
+                                    />
                                 )}
                                 {/* 显示控制：星标 / 当前视图（点开是密度与主题）/ 多选。
                                     紧跟搜索：这几项都属于「当下怎么看这个列表」 */}

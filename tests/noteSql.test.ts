@@ -329,3 +329,103 @@ test("阶段三：回收站要认出笔记（之前把 note 降级成 site，列
         "kind 不能把 note 降级成 site"
     );
 });
+
+// ---------- 阶段三收尾：文件夹 / 标签的 SQL 里不能再出现「两个 WHERE」----------
+//
+// 这是线上 500 的第二个根因（第一个是 notes.folder_id 没补出来）。
+// scopeSql(false) 生成 " WHERE user_id = ?"，scopeSql(true) 生成 " AND user_id = ?"。
+// 子查询里若用 scopeSql(false)，就会拼成：
+//     WHERE n.folder_id = f.id  WHERE user_id = ?          ← 语法错
+//     JOIN notes n ON n.id = l.note_id  WHERE …  WHERE …    ← 语法错
+// 表结构、迁移、路由白名单全都正常，只有这两个接口 500，最容易误判成「表没建出来」。
+//
+// 这里**真调用一次**再检查 SQL 文本 —— 静态正则抓不到「模板里套函数」的情况
+// （上面那条 static 守卫被证实过是形同虚设，见文件头注释）。
+test("文件夹 / 标签的 SQL：每个子查询里只能有一个 WHERE，且占位符与参数个数一致", async () => {
+    const captured: Array<{ sql: string; args: unknown[] }> = [];
+    const api = {
+        currentUserId: 1,
+        migrate: async () => {},
+        withSchemaRetry: async <T,>(fn: () => Promise<T>) => fn(),
+        scopeSql: (hasWhere: boolean) => (hasWhere ? " AND " : " WHERE ") + "user_id = ?",
+        scopeParams: <T,>(params: T[]) => [...params, 1],
+        db: {
+            prepare: (sql: string) => {
+                const rec = { sql: sql.replace(/\s+/g, " ").trim(), args: [] as unknown[] };
+                captured.push(rec);
+                return {
+                    bind: (...args: unknown[]) => {
+                        rec.args = args;
+                        return {
+                            all: async () => ({ results: [] }),
+                            first: async () => null,
+                            run: async () => ({ success: true }),
+                        };
+                    },
+                };
+            },
+        },
+    };
+
+    await notesImpl.listFolders.call(api as never);
+    await notesImpl.listTags.call(api as never);
+    await notesImpl.updateFolder.call(api as never, 1, { name: "x" });
+    await notesImpl.updateTag.call(api as never, 1, { name: "x" });
+
+    // listFolders 1 条 + listTags 1 条 + updateFolder 2 条（UPDATE 再 SELECT 回读）
+    // + updateTag 2 条 = 6 条
+    assert.equal(captured.length, 6, "四个方法产生的 SQL 条数对不上，守卫可能没覆盖全");
+
+    for (const { sql, args } of captured) {
+        // ① 拆出每个括号层级里的 WHERE 数量，逐层都不能超过 1。
+        //    注意正则里 **开闭括号都要收**：只匹配 "(" 的话深度只增不减，
+        //    子查询里的 WHERE 会和它外面的 WHERE 算到同一层上，平白报红。
+        let depth = 0;
+        const perLevel: number[] = [];
+        const tokens = sql.match(/\(|\)|\bWHERE\b/gi) || [];
+        for (const tk of tokens) {
+            if (tk === "(") {
+                depth += 1;
+                perLevel[depth] = perLevel[depth] || 0;
+            } else if (tk === ")") {
+                depth -= 1;
+            } else {
+                perLevel[depth] = (perLevel[depth] || 0) + 1;
+            }
+        }
+        assert.ok(
+            depth === 0,
+            `括号不配对（depth 结束时为 ${depth}），这条 SQL 本身就有问题：${sql}`
+        );
+        const doubled = perLevel.filter(n => n > 1).length;
+        assert.equal(
+            doubled,
+            0,
+            `同一层里出现了两个 WHERE（子查询里误用 scopeSql(false)）：${sql}`
+        );
+        // ② 占位符个数 == 绑定参数个数
+        const placeholders = (sql.match(/\?/g) || []).length;
+        assert.equal(
+            placeholders,
+            args.length,
+            `占位符 ${placeholders} 个但只绑了 ${args.length} 个参数：${sql}`
+        );
+    }
+});
+
+test("子查询里出现的 scopeSql 必须是 (true)", () => {
+    // 兜底的静态视角：凡是「已经有 WHERE 之后」再插 scopeSql(false) 的，一律不行。
+    // 上面那条是运行时检查（真调一次看 SQL），这条防的是「以后新加的 SQL 又写成 false」。
+    const re = /WHERE[^`$]*?\$\{this\.scopeSql\(false\)\}/g;
+    assert.equal(
+        (source.match(re) || []).length,
+        0,
+        "有「WHERE … ${scopeSql(false)}」这种写法 —— 子查询里要用 scopeSql(true)"
+    );
+    // 反向也钉一下：文件里得有若干 scopeSql(true)，否则说明文件夹 / 标签那几条被改回去了
+    const subQueries = source.match(/scopeSql\(true\)/g) || [];
+    assert.ok(
+        subQueries.length >= 3,
+        `只找到 ${subQueries.length} 处 scopeSql(true) —— 文件夹 / 标签那几条 SQL 是不是被改回去了？`
+    );
+});

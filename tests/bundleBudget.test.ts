@@ -49,14 +49,14 @@ const BUDGET_KB = 236;
  *              却一直躺在首屏里（6.46 KB）。首屏预算当时只剩 7 KB 余量，
  *              这是当时最干净的一刀（其余大块都是首屏真要用到的：
  *              App 26 KB、SiteCard 12 KB、client 10 KB、GroupCard 10 KB）。
- * 224.20 KB —— 2026-10-05 修「分组栏不能展开」那轮顺手做的三刀：
+ * 224.60 KB —— 2026-10-05 修「记事本 500」那轮顺手做的两刀：
  *              TagBar（只在有标签 / 死链 / 星标筛选时出现）、
- *              SiteListSkeleton（只在 loading 时挂）、
- *              HeaderGroupsButton（组件内部 useMediaQuery 只在 900~1344px 露出，
- *              窄屏有底栏、宽屏有左栏，等于绝大多数视口都用不上）。
- *              这三个都是**真条件渲染**，不是把常驻组件硬拆出去骗指标。
+ *              SiteListSkeleton（只在 loading 时挂）。
+ *              这两个都是**真条件渲染**，不是把常驻组件硬拆出去骗指标。
+ *              （同轮还试过把 HeaderGroupsButton 也改 lazy，能再省 0.4 KB，
+ *                但它属于分组栏那条线，按要求整块回退了，所以基线是这个数。）
  */
-const BASELINE_KB = 224.2;
+const BASELINE_KB = 224.6;
 
 function indexChunk(): { name: string; kb: number } | null {
     const assets = join(findProjectDir(), "dist", "client", "assets");
