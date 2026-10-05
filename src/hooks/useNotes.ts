@@ -6,9 +6,18 @@
 // 记事本是「想到就写」的场景，保存要是有 200ms 的延迟，手感会立刻变差；
 // 而失败时回滚到旧值 + 提示，代价远小于「每敲一个字都等一下」。
 import { useCallback, useEffect, useState } from "react";
-import type { Note } from "../API/http";
+import type { Note, NoteFolder, NoteTag } from "../API/http";
 import { reportError } from "../utils/errorReporter";
 import type { NotifySeverity } from "./useNotify";
+
+/** 文件夹排序：先按 order_num，再按名字（和后端 listFolders 的 ORDER BY 一致） */
+function sortFolders(a: NoteFolder, b: NoteFolder): number {
+    return (a.order_num ?? 0) - (b.order_num ?? 0) || a.name.localeCompare(b.name);
+}
+/** 标签排序：按名字（后端 listTags 也是 ORDER BY name） */
+function sortTags(a: NoteTag, b: NoteTag): number {
+    return a.name.localeCompare(b.name);
+}
 
 /** 回收站里的一条（阶段三：只把 kind='note' 的拎出来给记事本用） */
 export interface TrashedNote {
@@ -33,6 +42,20 @@ export type NotesApiLike = {
     restoreRecycleItem?(id: number): Promise<{ success: boolean }>;
     purgeRecycleItem?(id: number): Promise<{ success: boolean }>;
     emptyRecycleBin?(): Promise<{ success: boolean }>;
+    // ---------- 阶段三收尾：文件夹 / 标签 ----------
+    // 同样全部可选：老部署 / 老 mock 上没这几个方法时，界面退化成「没有文件夹、没有标签」，
+    // 而不是整个记事本打不开。
+    listFolders?(): Promise<NoteFolder[]>;
+    createFolder?(name: string): Promise<NoteFolder>;
+    updateFolder?(id: number, patch: Partial<NoteFolder>): Promise<NoteFolder | null>;
+    deleteFolder?(id: number): Promise<{ success: boolean; orphaned: number }>;
+    listTags?(): Promise<NoteTag[]>;
+    createTag?(name: string, color?: string | null): Promise<NoteTag>;
+    updateTag?(id: number, patch: Partial<NoteTag>): Promise<NoteTag | null>;
+    deleteTag?(id: number): Promise<{ success: boolean }>;
+    setNoteTags?(noteId: number, tagIds: number[]): Promise<NoteTag[]>;
+    /** 全量标签关联：{ [noteId]: tagId[] } */
+    listNoteTags?(): Promise<Record<number, number[]>>;
 };
 
 type UseNotesParams = {
@@ -46,6 +69,11 @@ export function useNotes({ api, onError, onNotify }: UseNotesParams) {
     const [loaded, setLoaded] = useState(false);
     /** 阶段三：回收站里的笔记（懒加载，进「回收站」视图时才拉） */
     const [trash, setTrash] = useState<TrashedNote[]>([]);
+    /** 阶段三收尾：笔记文件夹 / 标签（左栏第一列要用，所以状态放在这里而不是组件里） */
+    const [folders, setFolders] = useState<NoteFolder[]>([]);
+    const [tags, setTags] = useState<NoteTag[]>([]);
+    /** 笔记 → 标签Id：[noteId]: tagId[] */
+    const [noteTags, setNoteTags] = useState<Record<number, number[]>>({});
 
     const reload = useCallback(async () => {
         try {
@@ -228,6 +256,182 @@ export function useNotes({ api, onError, onNotify }: UseNotesParams) {
         [updateNote]
     );
 
+    // ---------- 阶段三收尾：文件夹 / 标签 ----------
+
+    /**
+     * 拉文件夹 + 标签两份清单。
+     *
+     * 放在同一个 callback 里、一次 mount 只调一次：这两份是小清单（几十条），
+     * 分开两个 effect 会让首屏多两次 setState，没必要。
+     */
+    const loadMeta = useCallback(async () => {
+        if (typeof api.listFolders === "function") {
+            try {
+                const list = await api.listFolders();
+                setFolders(Array.isArray(list) ? list : []);
+            } catch (error) {
+                reportError(error, { source: "notes-folders-list" });
+                setFolders([]);
+            }
+        }
+        if (typeof api.listTags === "function") {
+            try {
+                const list = await api.listTags();
+                setTags(Array.isArray(list) ? list : []);
+            } catch (error) {
+                reportError(error, { source: "notes-tags-list" });
+                setTags([]);
+            }
+        }
+        if (typeof api.listNoteTags === "function") {
+            try {
+                const links = await api.listNoteTags();
+                // 必须是对象（Record）才敢用：null / 数组都可能被后端意外返回，
+                // 而下面 `noteTags[noteId]` 的写法对 null 会直接抛。
+                setNoteTags(links && typeof links === "object" ? links : {});
+            } catch (error) {
+                reportError(error, { source: "notes-tag-links" });
+                setNoteTags({});
+            }
+        }
+    }, [api]);
+
+    // 文件夹 / 标签首屏一起拉：左栏第一列要在记事本打开前就有东西，
+    // 挂在首屏这次上，和笔记同一个节奏（不多一次往返）。
+    // ⚠️ 这个 effect 必须写在 loadMeta **之后**：依赖一个尚未声明的 callback，
+    // 就是 TDZ 报错（Block-scoped variable used before its declaration）。
+    useEffect(() => {
+        void loadMeta();
+    }, [loadMeta]);
+
+    /** 笔记增删后文件夹/标签的计数会变，重拉一次最省事（清单就几十条） */
+    const createFolder = useCallback(
+        async (name: string) => {
+            if (typeof api.createFolder !== "function") return null;
+            try {
+                const folder = await api.createFolder(name);
+                setFolders(prev => [...prev, folder].sort(sortFolders));
+                onNotify(`已新建文件夹「${folder.name}」`, "success");
+                return folder;
+            } catch (error) {
+                reportError(error, { source: "note-folder-create" });
+                onError("新建文件夹失败: " + (error instanceof Error ? error.message : "未知错误"));
+                return null;
+            }
+        },
+        [api, onNotify, onError]
+    );
+
+    const renameFolder = useCallback(
+        async (id: number, name: string) => {
+            if (typeof api.updateFolder !== "function") return;
+            try {
+                const folder = await api.updateFolder(id, { name });
+                if (folder) {
+                    setFolders(prev => prev.map(f => (f.id === id ? folder : f)));
+                }
+            } catch (error) {
+                reportError(error, { source: "note-folder-update" });
+                onError("重命名文件夹失败: " + (error instanceof Error ? error.message : "未知错误"));
+            }
+        },
+        [api, onError]
+    );
+
+    const removeFolder = useCallback(
+        async (id: number) => {
+            if (typeof api.deleteFolder !== "function") return;
+            const before = folders;
+            // 先摘掉，失败再放回去：删文件夹不该让左栏卡在一个已经不存在的项上
+            setFolders(prev => prev.filter(f => f.id !== id));
+            try {
+                const res = await api.deleteFolder(id);
+                if (res?.orphaned > 0) {
+                    onNotify(`${res.orphaned} 条笔记已移到「未归类」`, "success");
+                }
+                // 笔记被挪走了，本地那份 notes 里的 folder_id 也跟着失效
+                await reload();
+            } catch (error) {
+                reportError(error, { source: "note-folder-delete" });
+                setFolders(before);
+                onError("删除文件夹失败: " + (error instanceof Error ? error.message : "未知错误"));
+            }
+        },
+        [api, onError, onNotify, folders, reload]
+    );
+
+    const createTag = useCallback(
+        async (name: string) => {
+            if (typeof api.createTag !== "function") return null;
+            try {
+                const tag = await api.createTag(name);
+                setTags(prev => [...prev, tag].sort(sortTags));
+                onNotify(`已新建标签「${tag.name}」`, "success");
+                return tag;
+            } catch (error) {
+                reportError(error, { source: "note-tag-create" });
+                onError("新建标签失败: " + (error instanceof Error ? error.message : "未知错误"));
+                return null;
+            }
+        },
+        [api, onNotify, onError]
+    );
+
+    const renameTag = useCallback(
+        async (id: number, name: string) => {
+            if (typeof api.updateTag !== "function") return;
+            try {
+                const tag = await api.updateTag(id, { name });
+                if (tag) setTags(prev => prev.map(t => (t.id === id ? tag : t)));
+            } catch (error) {
+                reportError(error, { source: "note-tag-update" });
+                onError("重命名标签失败: " + (error instanceof Error ? error.message : "未知错误"));
+            }
+        },
+        [api, onError]
+    );
+
+    const removeTag = useCallback(
+        async (id: number) => {
+            if (typeof api.deleteTag !== "function") return;
+            const before = tags;
+            setTags(prev => prev.filter(t => t.id !== id));
+            try {
+                await api.deleteTag(id);
+            } catch (error) {
+                reportError(error, { source: "note-tag-delete" });
+                setTags(before);
+                onError("删除标签失败: " + (error instanceof Error ? error.message : "未知错误"));
+            }
+        },
+        [api, onError, tags]
+    );
+
+    /** 改一条笔记的标签：返回最新清单，让界面能直接替换左栏那一份 */
+    const assignTags = useCallback(
+        async (noteId: number, tagIds: number[]) => {
+            if (typeof api.setNoteTags !== "function") return null;
+            try {
+                const list = await api.setNoteTags(noteId, tagIds);
+                setTags(Array.isArray(list) ? list : []);
+                // 关联表也本地更新一份：否则左栏那个「待办 2」还是旧数字，
+                // 得等下一次首屏才对得上
+                setNoteTags(prev => {
+                    const next = { ...prev };
+                    if (tagIds.length === 0) delete next[noteId];
+                    else next[noteId] = [...tagIds];
+                    return next;
+                });
+                return list;
+            } catch (error) {
+                reportError(error, { source: "note-tag-assign" });
+                onError("保存标签失败: " + (error instanceof Error ? error.message : "未知错误"));
+                return null;
+            }
+        },
+        [api, onError]
+    );
+
     return {
         notes,
         loaded,
@@ -243,5 +447,17 @@ export function useNotes({ api, onError, onNotify }: UseNotesParams) {
         purgeTrashed,
         emptyTrash,
         toggleArchive,
+        // ---------- 阶段三收尾 ----------
+        folders,
+        tags,
+        noteTags,
+        loadMeta,
+        createFolder,
+        renameFolder,
+        removeFolder,
+        createTag,
+        renameTag,
+        removeTag,
+        assignTags,
     };
 }

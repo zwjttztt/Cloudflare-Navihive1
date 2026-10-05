@@ -4,6 +4,42 @@
 
 import { LocalPrefsBackup, Site } from "../types";
 
+// 笔记文件夹 / 标签这三张表的 DDL 单独提出来：
+// 它们**只在迁移里逐条建**（runMigrations 第 6.5 步），不进 CREATE_STATEMENTS 那个 batch。
+// 原因写在 migration.ts 那一步的注释里 —— 老库上已经在的 notes 表不会因
+// CREATE TABLE IF NOT EXISTS 补出新表，而这三张新表在老库上根本不存在，
+// 得单独显式执行；放进 batch 反而会让它和「补列」抢同一批事务。
+const NOTE_FOLDER_TABLE_SQL = `CREATE TABLE IF NOT EXISTS note_folder (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    name TEXT NOT NULL,
+    order_num INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);`;
+
+const NOTE_TAG_TABLE_SQL = `CREATE TABLE IF NOT EXISTS note_tag (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    name TEXT NOT NULL,
+    color TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);`;
+
+const NOTE_TAG_LINK_TABLE_SQL = `CREATE TABLE IF NOT EXISTS note_note_tag (
+    note_id INTEGER NOT NULL,
+    tag_id INTEGER NOT NULL,
+    PRIMARY KEY (note_id, tag_id)
+);`;
+
+/** 迁移里逐条执行的「新表」DDL（见 runMigrations 第 6.5 步） */
+export const FOLDER_TAG_TABLE_STATEMENTS = [
+    NOTE_FOLDER_TABLE_SQL,
+    NOTE_TAG_TABLE_SQL,
+    NOTE_TAG_LINK_TABLE_SQL,
+];
+
 // 建表 SQL（幂等）
 export const CREATE_STATEMENTS = [
     // 保证表结构存在（新建的 D1 库即使没访问过 /api/init 也能直接用）
@@ -35,6 +71,9 @@ export const CREATE_STATEMENTS = [
     //   - site_id：可选，只是个可空引用，**故意不建外键** —— 卡片删了，笔记要留下来
     //     （这正是笔记独立于卡片的意义）。UI 上显示成「站点已删除」而已。
     //   - content 存 **Markdown 源码**，不是 HTML。
+    //   - folder_id 可空：NULL = 未归类（阶段三的「未归类」视图就是靠它筛出来的）。
+    //     刻意不建外键 —— 文件夹删了，笔记要留下来而不是连带消失，
+    //     删文件夹时只把笔记的 folder_id 置空即可。
     `CREATE TABLE IF NOT EXISTS notes (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER,
@@ -45,9 +84,20 @@ export const CREATE_STATEMENTS = [
         order_num INTEGER NOT NULL DEFAULT 0,
         site_id INTEGER,
         archived INTEGER NOT NULL DEFAULT 0,
+        folder_id INTEGER,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );`,
+    // 笔记文件夹：与分组/站点那套同一套路 —— 按账号隔离（user_id + scopeSql）。
+    // 与 groups 的区别是它只装笔记，不装书签卡片，两边刻意不复用同一张表。
+    NOTE_FOLDER_TABLE_SQL,
+    // 笔记标签：多对多。所以只有标签本体一张表，关联关系在下面那张。
+    // 存 color 只是给 UI 上色用（存色值而不是枚举 —— 以后想换调色板不用改数据）。
+    NOTE_TAG_TABLE_SQL,
+    // 笔记 ↔ 标签的关联表。
+    // 主键选 (note_id, tag_id) 而不是 id：插入时天然幂等，同一条笔记重复打同一个标签
+    // 不会插出两行（离线队列重放时这个特性特别省事，不用先查再判）。
+    NOTE_TAG_LINK_TABLE_SQL,
     // 回收站：站点 / 分组删除不再硬删，先原样搬到这里，给「删错了」留后悔药。
     // data 存原始行（站点含密文密码，不解密，避免落回明文）；owner_user_id 做按账号隔离。
     `CREATE TABLE IF NOT EXISTS recycle_bin (
@@ -137,6 +187,14 @@ export const INDEX_STATEMENTS = [
     `CREATE INDEX IF NOT EXISTS idx_notes_user ON notes(user_id, pinned, order_num);`,
     `CREATE INDEX IF NOT EXISTS idx_notes_archived ON notes(user_id, archived, updated_at);`,
     `CREATE INDEX IF NOT EXISTS idx_notes_uuid ON notes(user_id, uuid);`,
+    // 文件夹视图：WHERE folder_id = ? ORDER BY updated_at，两个条件都得能走索引
+    `CREATE INDEX IF NOT EXISTS idx_notes_folder ON notes(user_id, folder_id, updated_at);`,
+    // 文件夹 / 标签清单：列表查询都带 user_id 过滤
+    `CREATE INDEX IF NOT EXISTS idx_note_folder_user ON note_folder(user_id, order_num);`,
+    `CREATE INDEX IF NOT EXISTS idx_note_tag_user ON note_tag(user_id, name);`,
+    // 标签视图：按标签筛笔记时，从关联表按 tag_id 出发找 note_id
+    `CREATE INDEX IF NOT EXISTS idx_note_note_tag_tag ON note_note_tag(tag_id, note_id);`,
+    `CREATE INDEX IF NOT EXISTS idx_note_note_tag_note ON note_note_tag(note_id, tag_id);`,
     // 定时清理：审计日志 / 令牌黑名单 / 邀请码都按过期时间整批删
     `CREATE INDEX IF NOT EXISTS idx_audit_log_created_at ON audit_log(created_at);`,
     `CREATE INDEX IF NOT EXISTS idx_token_blacklist_exp ON token_blacklist(exp);`,

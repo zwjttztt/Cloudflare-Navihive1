@@ -57,6 +57,32 @@ export interface Note {
     site_id?: number | null;
     /** 阶段三：归档。归档后不在「全部」里列表，但还好好留着，可以随时取回 */
     archived?: boolean;
+    /** 阶段三收尾：归入哪个文件夹。NULL = 未归类 */
+    folder_id?: number | null;
+    created_at?: string;
+    updated_at?: string;
+}
+
+/** 笔记文件夹（row 形状和 note_folder 表一致，count 是查询时顺带算出来的） */
+export interface NoteFolder {
+    id?: number;
+    user_id?: number | null;
+    name: string;
+    order_num?: number;
+    /** UI 要显示「这个文件夹几条」，查询时算出来，不进表里 */
+    count?: number;
+    created_at?: string;
+    updated_at?: string;
+}
+
+/** 笔记标签（row 形状和 note_tag 表一致） */
+export interface NoteTag {
+    id?: number;
+    user_id?: number | null;
+    name: string;
+    color?: string | null;
+    /** 同上：用到这条标签的笔记数 */
+    count?: number;
     created_at?: string;
     updated_at?: string;
 }

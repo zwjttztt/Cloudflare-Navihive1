@@ -199,10 +199,116 @@ test("阶段三：建表语句里有 archived，且老库有 ALTER 补列（否�
         /ALTER TABLE notes ADD COLUMN archived INTEGER NOT NULL DEFAULT 0/.test(migration),
         "老库必须靠 ALTER 补列：CREATE TABLE IF NOT EXISTS 对已存在的表不补字段"
     );
+    // 📌 写成「版本 >= 5」而不是死钉 `"5"`：
+    // 上一版就是死钉 `"4"`，于是阶段三升到 5 的当天这条用例立刻变红 ——
+    // 守卫本身没错（它就是要盯住「别忘升号」），但钉死具体的号只会在
+    // 下一次升级时制造一次无意义的红，还会让人养成「顺手改成 5 绕过去」的坏习惯。
+    // 这里判的是**单调不减**：新增了迁移步骤（补列 / 建表 / 搬数据）就必须 +1。
+    const version = /\bSCHEMA_VERSION = "(\d+)"/.exec(migration)?.[1];
+    assert.ok(version !== undefined, "SCHEMA_VERSION 得是个数字版本号");
     assert.ok(
-        /export const SCHEMA_VERSION = "4"/.test(migration),
-        "结构版本号要升到 4，否则 migrateIfNeeded 读到相同版本直接跳过迁移"
+        Number(version) >= 5,
+        `结构版本号要 >= 5（notes.folder_id + 文件夹/标签三张新表），现在是 ${version} —— ` +
+            "不升号的话 migrateIfNeeded 读到相同版本会直接跳过，新表在老实例上永远建不出来"
     );
+});
+
+test("阶段三收尾：notes.folder_id 建表有、老库也要 ALTER 补列", () => {
+    const internals = readFileSync(
+        join(findProjectDir(), "src", "API", "methods", "internals.ts"),
+        "utf-8"
+    );
+    assert.ok(
+        /CREATE TABLE IF NOT EXISTS notes \([\s\S]*?folder_id INTEGER/.test(internals),
+        "新库建表要带 folder_id"
+    );
+    // ⚠️ 可空、且**不给 NOT NULL 默认值**：老笔记一条都不用回填就自然成了「未归类」。
+    // 给 NOT NULL DEFAULT 0 会让 NULL（= 未归类）永远出不来，未归类视图会空掉。
+    const migration = readFileSync(
+        join(findProjectDir(), "src", "API", "methods", "migration.ts"),
+        "utf-8"
+    );
+    assert.ok(
+        /ALTER TABLE notes ADD COLUMN folder_id INTEGER(?! NOT NULL)/.test(migration),
+        "老库 ALTER 补 folder_id，且必须是可空列"
+    );
+});
+
+test("阶段三收尾：文件夹 / 标签三张新表，老实例上也要真被建出来", () => {
+    const internals = readFileSync(
+        join(findProjectDir(), "src", "API", "methods", "internals.ts"),
+        "utf-8"
+    );
+    const migration = readFileSync(
+        join(findProjectDir(), "src", "API", "methods", "migration.ts"),
+        "utf-8"
+    );
+    // 1) 三张表必须挂在 FOLDER_TAG_TABLE_STATEMENTS 上（而不是只写进 CREATE_STATEMENTS）
+    assert.ok(
+        /export const FOLDER_TAG_TABLE_STATEMENTS = \[/.test(internals),
+        "要有 FOLDER_TAG_TABLE_STATEMENTS 这个导出：只写进 CREATE_STATEMENTS 的话，"
+    );
+    assert.ok(
+        /NOTE_FOLDER_TABLE_SQL|note_folder \(/.test(internals),
+        "文件夹表的 DDL 要提出来单独用"
+    );
+    assert.ok(
+        /NOTE_TAG_TABLE_SQL|note_tag \(/.test(internals),
+        "标签表的 DDL 要提出来单独用"
+    );
+    assert.ok(
+        /NOTE_TAG_LINK_TABLE_SQL|note_note_tag \(/.test(internals),
+        "关联表的 DDL 要提出来单独用"
+    );
+    // 2) 迁移里必须真的执行它们 —— 光声明不跑，老库上那三张表永远不存在
+    assert.ok(
+        /for \(const sql of FOLDER_TAG_TABLE_STATEMENTS\)[\s\S]{0,200}await this\.db\.exec\(sql\)/.test(
+            migration
+        ),
+        "runMigrations 里要逐条 exec 这三张新表"
+    );
+    assert.ok(
+        /migrateFolderTagTables/.test(migration),
+        "要有 migrateFolderTagTables 这个迁移步骤（版本号升到 5 才跑得到）"
+    );
+});
+
+test("阶段三收尾：notes/ 的文件夹/标签路由必须排在通用 notes/ 分支之前", () => {
+    const source = readFileSync(
+        join(findProjectDir(), "worker", "routes", "data.ts"),
+        "utf-8"
+    );
+    const foldersAt = source.indexOf('path === "notes/folders"');
+    const tagsAt = source.indexOf('path === "notes/tags"');
+    const genericAt = source.indexOf('path.startsWith("notes/") && method === "GET"');
+    assert.ok(foldersAt > -1 && tagsAt > -1, "要有 notes/folders 与 notes/tags 的路由");
+    assert.ok(genericAt > -1, "通用 notes/ 分支要还在");
+    // ⚠️ 顺序反了的表现极其隐蔽：「notes/folders」也满足 startsWith("notes/")，
+    // 而那一路是 `parseInt(path.split("/")[1])` —— 拿到 NaN 直接返回 400「无效的ID」。
+    // 本地新库不会走这条链，所以只有老部署才看得出来。
+    assert.ok(
+        foldersAt < genericAt && tagsAt < genericAt,
+        "notes/folders、notes/tags 要排在通用 notes/ 分支前面，否则一律 400"
+    );
+});
+
+test("阶段三收尾：notes 编辑接口认 folder_id（漏了就是静默丢字段）", () => {
+    const notes = readFileSync(
+        join(findProjectDir(), "src", "API", "methods", "notes.ts"),
+        "utf-8"
+    );
+    const route = readFileSync(
+        join(findProjectDir(), "worker", "routes", "data.ts"),
+        "utf-8"
+    );
+    // 数据层：白名单 + 回读字段
+    assert.ok(/patch\.folder_id !== undefined/.test(notes), "notes.ts 的更新白名单要认 folder_id");
+    assert.ok(/draft\.folder_id \?\? null/.test(notes), "新建笔记要落 folder_id");
+    // 路由层：白名单（漏了这条 = HTTP 200 但字段被丢）
+    assert.ok(/data\.folder_id !== undefined/.test(route), "路由层要放行 folder_id");
+    // 类型层：Note 上要有这个字段，否则 TS 会先在编译期拦住
+    const types = readFileSync(join(findProjectDir(), "src", "API", "types.ts"), "utf-8");
+    assert.ok(/folder_id\?: number \| null;/.test(types), "Note 类型要有 folder_id");
 });
 
 test("阶段三：回收站要认出笔记（之前把 note 降级成 site，列表里显示成「站点」）", () => {

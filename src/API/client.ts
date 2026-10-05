@@ -2,6 +2,8 @@ import {
     Group,
     Site,
     Note,
+    NoteFolder,
+    NoteTag,
     LoginResponse,
     ExportData,
     ImportResult,
@@ -506,6 +508,66 @@ export class NavigationClient {
     async countNotes(): Promise<number> {
         const res = await this.request<{ count?: number }>("notes/count");
         return res?.count ?? 0;
+    }
+
+    // ---- 阶段三收尾：笔记文件夹 / 标签 ----
+    // 与后端路由一一对应（worker/routes/data.ts 那一段白名单），
+    // 端点名刻意带前缀 `notes/`：它们都属于记事本这个域，不跟站点分组那套混。
+    async listFolders(): Promise<NoteFolder[]> {
+        return this.request<NoteFolder[]>("notes/folders");
+    }
+
+    async createFolder(name: string): Promise<NoteFolder> {
+        return this.request<NoteFolder>("notes/folders", {
+            method: "POST",
+            body: JSON.stringify({ name }),
+        });
+    }
+
+    async updateFolder(id: number, patch: Partial<NoteFolder>): Promise<NoteFolder | null> {
+        return this.request<NoteFolder | null>(`notes/folders/${id}`, {
+            method: "PUT",
+            body: JSON.stringify(patch),
+        });
+    }
+
+    async deleteFolder(id: number): Promise<{ success: boolean; orphaned: number }> {
+        return this.request<{ success: boolean; orphaned: number }>(`notes/folders/${id}`, {
+            method: "DELETE",
+        });
+    }
+
+    async listTags(): Promise<NoteTag[]> {
+        return this.request<NoteTag[]>("notes/tags");
+    }
+
+    async createTag(name: string, color?: string | null): Promise<NoteTag> {
+        return this.request<NoteTag>("notes/tags", {
+            method: "POST",
+            body: JSON.stringify({ name, color: color ?? null }),
+        });
+    }
+
+    async updateTag(id: number, patch: Partial<NoteTag>): Promise<NoteTag | null> {
+        return this.request<NoteTag | null>(`notes/tags/${id}`, {
+            method: "PUT",
+            body: JSON.stringify(patch),
+        });
+    }
+
+    async deleteTag(id: number): Promise<{ success: boolean }> {
+        return this.request<{ success: boolean }>(`notes/tags/${id}`, { method: "DELETE" });
+    }
+
+    async listNoteTags(): Promise<Record<number, number[]>> {
+        return this.request<Record<number, number[]>>("notes/tag-links");
+    }
+
+    async setNoteTags(noteId: number, tagIds: number[]): Promise<NoteTag[]> {
+        return this.request<NoteTag[]>(`notes/${noteId}/tags`, {
+            method: "PUT",
+            body: JSON.stringify({ tagIds }),
+        });
     }
 
     // 网站相关API

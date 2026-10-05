@@ -2,6 +2,8 @@ import {
     Group,
     Site,
     Note,
+    NoteFolder,
+    NoteTag,
     LoginResponse,
     ExportData,
     ImportResult,
@@ -184,8 +186,18 @@ const mockNotes: Note[] = [
         pinned: false,
         order_num: 1,
         site_id: null,
+        folder_id: null,
     },
 ];
+
+// 阶段三收尾：演示模式下的文件夹 / 标签内存状态。
+// 与 mockNotes 一样是模块级可变数组 —— 演示模式没有服务端，刷新即重置。
+const mockFolders: NoteFolder[] = [{ id: 1, name: "收集箱", order_num: 0 }];
+const mockTags: NoteTag[] = [{ id: 1, name: "待办", color: "#f59e0b" }];
+/** 笔记 ↔ 标签关联。故意不挂 id：关联表本身就是「两列 + 主键」的形状 */
+const mockNoteTagLinks: { note_id: number; tag_id: number }[] = [{ note_id: 2, tag_id: 1 }];
+let mockFolderSeq = mockFolders.length;
+let mockTagSeq = mockTags.length;
 
 // 本地没有服务端审计流水，这里保持空列表（接口形状与真实实现一致）
 type MockAuditEntry = {
@@ -400,6 +412,100 @@ export class MockNavigationClient {
     async countNotes(): Promise<number> {
         await new Promise(resolve => setTimeout(resolve, 200));
         return mockNotes.length;
+    }
+
+    // ---- 阶段三收尾：笔记文件夹 / 标签（演示模式下的内存实现）----
+    // 与 client.ts 一一对应：两者的方法集合是对齐的（有契约守卫测试盯着），
+    // 少一个 mock 那边就会在演示模式下抛「不是函数」。
+    async listFolders(): Promise<NoteFolder[]> {
+        await new Promise(resolve => setTimeout(resolve, 120));
+        return mockFolders.map(f => ({ ...f, count: mockNotes.filter(n => n.folder_id === f.id).length }));
+    }
+
+    async createFolder(name: string): Promise<NoteFolder> {
+        await new Promise(resolve => setTimeout(resolve, 120));
+        const folder: NoteFolder = {
+            id: mockFolderSeq++,
+            name,
+            order_num: mockFolders.length,
+            count: 0,
+        };
+        mockFolders.push(folder);
+        return folder;
+    }
+
+    async updateFolder(id: number, patch: Partial<NoteFolder>): Promise<NoteFolder | null> {
+        await new Promise(resolve => setTimeout(resolve, 120));
+        const folder = mockFolders.find(f => f.id === id);
+        if (!folder) return null;
+        Object.assign(folder, patch);
+        return folder;
+    }
+
+    async deleteFolder(id: number): Promise<{ success: boolean; orphaned: number }> {
+        await new Promise(resolve => setTimeout(resolve, 120));
+        const idx = mockFolders.findIndex(f => f.id === id);
+        if (idx === -1) return { success: false, orphaned: 0 };
+        mockFolders.splice(idx, 1);
+        // 笔记不跟着删：只把它们挪到未归类，和后端 deleteFolder 一个语义
+        const orphaned = mockNotes.filter(n => n.folder_id === id).length;
+        for (const note of mockNotes) {
+            if (note.folder_id === id) note.folder_id = null;
+        }
+        return { success: true, orphaned };
+    }
+
+    async listTags(): Promise<NoteTag[]> {
+        await new Promise(resolve => setTimeout(resolve, 120));
+        return mockTags.map(t => ({
+            ...t,
+            count: mockNoteTagLinks.filter(l => l.tag_id === t.id).length,
+        }));
+    }
+
+    async createTag(name: string, color?: string | null): Promise<NoteTag> {
+        await new Promise(resolve => setTimeout(resolve, 120));
+        const tag: NoteTag = { id: mockTagSeq++, name, color: color ?? null, count: 0 };
+        mockTags.push(tag);
+        return tag;
+    }
+
+    async updateTag(id: number, patch: Partial<NoteTag>): Promise<NoteTag | null> {
+        await new Promise(resolve => setTimeout(resolve, 120));
+        const tag = mockTags.find(t => t.id === id);
+        if (!tag) return null;
+        Object.assign(tag, patch);
+        return tag;
+    }
+
+    async deleteTag(id: number): Promise<{ success: boolean }> {
+        await new Promise(resolve => setTimeout(resolve, 120));
+        const idx = mockTags.findIndex(t => t.id === id);
+        if (idx === -1) return { success: false };
+        mockTags.splice(idx, 1);
+        // 只删关联，笔记留着
+        for (let i = mockNoteTagLinks.length - 1; i >= 0; i -= 1) {
+            if (mockNoteTagLinks[i].tag_id === id) mockNoteTagLinks.splice(i, 1);
+        }
+        return { success: true };
+    }
+
+    async listNoteTags(): Promise<Record<number, number[]>> {
+        await new Promise(resolve => setTimeout(resolve, 120));
+        return mockNoteTagLinks.reduce<Record<number, number[]>>((acc, link) => {
+            (acc[link.note_id] ||= []).push(link.tag_id);
+            return acc;
+        }, {});
+    }
+
+    async setNoteTags(noteId: number, tagIds: number[]): Promise<NoteTag[]> {
+        await new Promise(resolve => setTimeout(resolve, 120));
+        const kept = new Set(tagIds.filter(n => Number.isInteger(n) && n > 0));
+        for (let i = mockNoteTagLinks.length - 1; i >= 0; i -= 1) {
+            if (mockNoteTagLinks[i].note_id === noteId) mockNoteTagLinks.splice(i, 1);
+        }
+        for (const tagId of kept) mockNoteTagLinks.push({ note_id: noteId, tag_id: tagId });
+        return this.listTags();
     }
 
     async createGroup(group: Group): Promise<Group> {

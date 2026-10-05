@@ -10,7 +10,7 @@
 //   3. **uuid 在这里生成**：合并导入靠它识别「同一条笔记」（见 transfer.ts 的导入逻辑）。
 //      没有它就只能按标题+内容硬比，用户改过一次的笔记会被当成两条。
 import type { NavigationAPI } from "../http";
-import type { Note } from "../types";
+import type { Note, NoteFolder, NoteTag } from "../types";
 import { newUuid } from "../../utils/uuid";
 
 export interface NotesApi {
@@ -22,10 +22,38 @@ export interface NotesApi {
     deleteNote(id: number): Promise<{ success: boolean; recycleId?: number }>;
     updateNoteOrder(orders: { id: number; order_num: number }[]): Promise<boolean>;
     countNotes(): Promise<number>;
+
+    // ---- 文件夹（阶段三收尾）----
+    /** 取当前账号的文件夹清单（顺带回每条的笔记数，UI 直接显示） */
+    listFolders(): Promise<NoteFolder[]>;
+    createFolder(draft: Partial<NoteFolder>): Promise<NoteFolder>;
+    updateFolder(id: number, patch: Partial<NoteFolder>): Promise<NoteFolder | null>;
+    /** 删文件夹：笔记不跟着删，只把它们的 folder_id 置空（变成「未归类」） */
+    deleteFolder(id: number): Promise<{ success: boolean; orphaned: number }>;
+
+    // ---- 标签（阶段三收尾）----
+    listTags(): Promise<NoteTag[]>;
+    createTag(draft: Partial<NoteTag>): Promise<NoteTag>;
+    updateTag(id: number, patch: Partial<NoteTag>): Promise<NoteTag | null>;
+    /** 删标签：只删关联，笔记本身不动 */
+    deleteTag(id: number): Promise<{ success: boolean }>;
+    /** 给一条笔记换上整组标签（传空数组 = 清空标签） */
+    setNoteTags(noteId: number, tagIds: number[]): Promise<NoteTag[]>;
+    /** 反查：一组标签Id命中哪些笔记（标签筛选视图用） */
+    listNotesByTags(tagIds: number[]): Promise<number[]>;
+    /**
+     * 全量标签关联：{ [noteId]: tagId[] }。
+     * 列表页要显示每条笔记的标签、也算每个标签的条数，逐条查笔记标签会是 N+1；
+     * 而这份东西就几百行，一次全取回来放在客户端最省事。
+     */
+    listNoteTags(): Promise<Record<number, number[]>>;
 }
 
+// NoteFolder / NoteTag 定义在 ../types（那边的 Note 也在一起）——
+// 前后端、路由层共用同一份形状，别在方法文件里另起一份。
+
 const NOTE_FIELDS =
-    "id, uuid, title, content, pinned, order_num, site_id, archived, created_at, updated_at";
+    "id, uuid, title, content, pinned, order_num, site_id, archived, folder_id, created_at, updated_at";
 
 export const notesImpl: NotesApi = {
     listNotes: async function (this: NavigationAPI): Promise<Note[]> {
@@ -68,7 +96,7 @@ export const notesImpl: NotesApi = {
         const scopeTail = this.scopeParams([]);
         const result = await this.db
             .prepare(
-                `INSERT INTO notes (user_id, uuid, title, content, pinned, order_num, site_id)
+                `INSERT INTO notes (user_id, uuid, title, content, pinned, order_num, site_id, folder_id)
                  VALUES (?, ?, ?, ?, ?, COALESCE((
                      SELECT MAX(order_num) + 1 FROM notes${this.scopeSql(false)}
                  ), 0), ?)
@@ -81,7 +109,9 @@ export const notesImpl: NotesApi = {
                 draft.content || "",
                 draft.pinned ? 1 : 0,
                 ...scopeTail,
-                draft.site_id ?? null
+                draft.site_id ?? null,
+                // 未指定就落 NULL（= 未归类），而不是 0 —— 0 会被当成「有个 id 为 0 的文件夹」
+                draft.folder_id ?? null
             )
             .all<Note>();
         if (!result.results || result.results.length === 0) {
@@ -126,6 +156,11 @@ export const notesImpl: NotesApi = {
             if (patch.archived !== undefined) {
                 updates.push("archived = ?");
                 params.push(patch.archived ? 1 : 0);
+            }
+            // 阶段三收尾：归入 / 移出文件夹。显式传 null 才是「移到未归类」
+            if (patch.folder_id !== undefined) {
+                updates.push("folder_id = ?");
+                params.push(patch.folder_id);
             }
 
             params.push(id);
@@ -204,6 +239,293 @@ export const notesImpl: NotesApi = {
                 .bind(...this.scopeParams([]))
                 .first<{ n: number }>();
             return row?.n ?? 0;
+        });
+    },
+
+    // ---------------- 文件夹 ----------------
+
+    listFolders: async function (this: NavigationAPI): Promise<NoteFolder[]> {
+        await this.migrate();
+        return this.withSchemaRetry(async () => {
+            // 左子树是聚合查询，右子树是条件：SQLite 支持的这种写法比 JOIN + GROUP BY 好读，
+            // 且 HAVING 里直接就能写「count(n.id) > 0」这种别名。
+            const result = await this.db
+                .prepare(
+                    `SELECT f.*, (SELECT COUNT(*) FROM notes n
+                        WHERE n.folder_id = f.id ${this.scopeSql(false)}
+                    ) AS count
+                    FROM note_folder f ${this.scopeSql(false)}
+                    ORDER BY f.order_num, f.name`
+                )
+                .bind(...this.scopeParams([]))
+                .all<NoteFolder>();
+            return result.results || [];
+        });
+    },
+
+    createFolder: async function (this: NavigationAPI, draft: Partial<NoteFolder>): Promise<NoteFolder> {
+        await this.migrate();
+        return this.withSchemaRetry(async () => {
+            const scopeTail = this.scopeParams([]);
+            const result = await this.db
+                .prepare(
+                    `INSERT INTO note_folder (user_id, name, order_num)
+                     VALUES (?, ?, COALESCE((SELECT MAX(order_num) + 1 FROM note_folder${
+                         this.scopeSql(false)
+                     }), 0))
+                     RETURNING *, 0 AS count`
+                )
+                .bind(this.currentUserId, draft.name || "新建文件夹", ...scopeTail)
+                .all<NoteFolder>();
+            if (!result.results || result.results.length === 0) {
+                throw new Error("创建文件夹失败");
+            }
+            return result.results[0];
+        });
+    },
+
+    updateFolder: async function (
+        this: NavigationAPI,
+        id: number,
+        patch: Partial<NoteFolder>
+    ): Promise<NoteFolder | null> {
+        await this.migrate();
+        return this.withSchemaRetry(async () => {
+            const updates: string[] = ["updated_at = CURRENT_TIMESTAMP"];
+            const params: (string | number | null)[] = [];
+            if (patch.name !== undefined) {
+                updates.push("name = ?");
+                params.push(patch.name);
+            }
+            if (patch.order_num !== undefined) {
+                updates.push("order_num = ?");
+                params.push(patch.order_num);
+            }
+            params.push(id);
+            const result = await this.db
+                .prepare(`UPDATE note_folder SET ${updates.join(", ")} WHERE id = ?${this.scopeSql(true)}`)
+                .bind(...this.scopeParams(params))
+                .run();
+            if (!result.success) return null;
+            const row = await this.db
+                .prepare(
+                    `SELECT f.*, (SELECT COUNT(*) FROM notes n
+                        WHERE n.folder_id = f.id ${this.scopeSql(false)}
+                    ) AS count
+                    FROM note_folder f WHERE f.id = ?${this.scopeSql(true)}`
+                )
+                .bind(...this.scopeParams([id]))
+                .first<NoteFolder>();
+            return row ?? null;
+        });
+    },
+
+    /**
+     * 删文件夹：**不连带删笔记**。
+     *
+     * 笔记不可再生（用户写了几百字的 Markdown），文件夹名删错了还能重建；
+     * 所以这里只把笔记的 folder_id 置空，让它们回到「未归类」。
+     * 返回值里的 orphaned 给 UI 提示「N 条笔记已移到未归类」——
+     * 不告诉用户的话，他会以为笔记跟着文件夹一起没了。
+     */
+    deleteFolder: async function (
+        this: NavigationAPI,
+        id: number
+    ): Promise<{ success: boolean; orphaned: number }> {
+        await this.migrate();
+        return this.withSchemaRetry(async () => {
+            const stat = await this.db
+                .prepare(`SELECT COUNT(*) AS n FROM notes WHERE folder_id = ?${this.scopeSql(true)}`)
+                .bind(...this.scopeParams([id]))
+                .first<{ n: number }>();
+            const orphaned = stat?.n ?? 0;
+            const drop = await this.db
+                .prepare(`DELETE FROM note_folder WHERE id = ?${this.scopeSql(true)}`)
+                .bind(...this.scopeParams([id]))
+                .run();
+            if (!drop.success) return { success: false, orphaned: 0 };
+            if (orphaned > 0) {
+                await this.db
+                    .prepare(`UPDATE notes SET folder_id = NULL WHERE folder_id = ?${this.scopeSql(true)}`)
+                    .bind(...this.scopeParams([id]))
+                    .run();
+            }
+            return { success: true, orphaned };
+        });
+    },
+
+    // ---------------- 标签 ----------------
+
+    listTags: async function (this: NavigationAPI): Promise<NoteTag[]> {
+        await this.migrate();
+        return this.withSchemaRetry(async () => {
+            const result = await this.db
+                .prepare(
+                    `SELECT t.*, (SELECT COUNT(*) FROM note_note_tag l
+                        JOIN notes n ON n.id = l.note_id ${this.scopeSql(false)}
+                        WHERE l.tag_id = t.id
+                    ) AS count
+                    FROM note_tag t ${this.scopeSql(false)}
+                    ORDER BY t.name`
+                )
+                .bind(...this.scopeParams([]))
+                .all<NoteTag>();
+            return result.results || [];
+        });
+    },
+
+    createTag: async function (this: NavigationAPI, draft: Partial<NoteTag>): Promise<NoteTag> {
+        await this.migrate();
+        return this.withSchemaRetry(async () => {
+            const result = await this.db
+                .prepare(
+                    `INSERT INTO note_tag (user_id, name, color)
+                     VALUES (?, ?, ?)
+                     RETURNING *, 0 AS count`
+                )
+                .bind(
+                    this.currentUserId,
+                    draft.name || "新标签",
+                    draft.color ?? null
+                )
+                .all<NoteTag>();
+            if (!result.results || result.results.length === 0) {
+                throw new Error("创建标签失败");
+            }
+            return result.results[0];
+        });
+    },
+
+    updateTag: async function (this: NavigationAPI, id: number, patch: Partial<NoteTag>): Promise<NoteTag | null> {
+        await this.migrate();
+        return this.withSchemaRetry(async () => {
+            const updates: string[] = ["updated_at = CURRENT_TIMESTAMP"];
+            const params: (string | number | null)[] = [];
+            if (patch.name !== undefined) {
+                updates.push("name = ?");
+                params.push(patch.name);
+            }
+            if (patch.color !== undefined) {
+                updates.push("color = ?");
+                params.push(patch.color);
+            }
+            params.push(id);
+            const result = await this.db
+                .prepare(`UPDATE note_tag SET ${updates.join(", ")} WHERE id = ?${this.scopeSql(true)}`)
+                .bind(...this.scopeParams(params))
+                .run();
+            if (!result.success) return null;
+            const row = await this.db
+                .prepare(
+                    `SELECT t.*, (SELECT COUNT(*) FROM note_note_tag l
+                        JOIN notes n ON n.id = l.note_id ${this.scopeSql(false)}
+                        WHERE l.tag_id = t.id
+                    ) AS count
+                    FROM note_tag t WHERE t.id = ?${this.scopeSql(true)}`
+                )
+                .bind(...this.scopeParams([id]))
+                .first<NoteTag>();
+            return row ?? null;
+        });
+    },
+
+    deleteTag: async function (this: NavigationAPI, id: number): Promise<{ success: boolean }> {
+        await this.migrate();
+        return this.withSchemaRetry(async () => {
+            // 先删关联再删标签：反着来会在第一个 DELETE 上就卡外键（虽然这张表没建外键，
+            // 但留着顺序是对的 —— 万一以后加上 ON DELETE，就不会留下悬空关联）。
+            await this.db
+                .prepare("DELETE FROM note_note_tag WHERE tag_id = ?")
+                .bind(id)
+                .run();
+            const result = await this.db
+                .prepare(`DELETE FROM note_tag WHERE id = ?${this.scopeSql(true)}`)
+                .bind(...this.scopeParams([id]))
+                .run();
+            return { success: result.success };
+        });
+    },
+
+    /**
+     * 给一条笔记换上整组标签。
+     *
+     * 用「整组替换」而不是逐个增删：UI 每次都是由勾选状态发出去的，
+     * 差量算法（只加差集）在勾选/反选来回点时会把状态算乱。
+     * 两条 INSERT 就能盖住（主键 (note_id, tag_id) 保证重复插入是幂等的），
+     * 两条 DELETE 兜掉被取消的标签。
+     */
+    setNoteTags: async function (this: NavigationAPI, noteId: number, tagIds: number[]): Promise<NoteTag[]> {
+        await this.migrate();
+        return this.withSchemaRetry(async () => {
+            const ids = Array.isArray(tagIds) ? tagIds.filter(n => Number.isInteger(n) && n > 0) : [];
+            // 先确认这条笔记属于当前账号，否则能给别人家的笔记贴标签
+            const note = await this.db
+                .prepare(`SELECT id FROM notes WHERE id = ?${this.scopeSql(true)}`)
+                .bind(...this.scopeParams([noteId]))
+                .first<{ id: number }>();
+            if (!note) return [];
+
+            // 标签也必须属于当前账号：别人的标签 id 传进来不能拿来贴上
+            const owned = ids.length
+                ? await this.db
+                      .prepare(
+                          `SELECT id FROM note_tag WHERE id IN (${ids
+                              .map(() => "?")
+                              .join(",")})${this.scopeSql(true)}`
+                      )
+                      .bind(...this.scopeParams(ids))
+                      .all<{ id: number }>()
+                : null;
+            const allowed = new Set((owned?.results || []).map(r => r.id));
+            const toKeep = ids.filter(id => allowed.has(id));
+
+            await this.db
+                .prepare("DELETE FROM note_note_tag WHERE note_id = ?")
+                .bind(noteId)
+                .run();
+            if (toKeep.length > 0) {
+                await this.db
+                    .prepare(
+                        `INSERT OR REPLACE INTO note_note_tag (note_id, tag_id) VALUES ${toKeep
+                            .map(() => "(?, ?)")
+                            .join(",")}`
+                    )
+                    .bind(...toKeep.flatMap(id => [noteId, id]))
+                    .run();
+            }
+            return this.listTags();
+        });
+    },
+
+    listNotesByTags: async function (this: NavigationAPI, tagIds: number[]): Promise<number[]> {
+        await this.migrate();
+        return this.withSchemaRetry(async () => {
+            const ids = Array.isArray(tagIds) ? tagIds.filter(n => Number.isInteger(n) && n > 0) : [];
+            if (ids.length === 0) return [];
+            const result = await this.db
+                .prepare(
+                    `SELECT DISTINCT l.note_id FROM note_note_tag l
+                     JOIN notes n ON n.id = l.note_id${this.scopeSql(true)}
+                     WHERE l.tag_id IN (${ids.map(() => "?").join(",")})`
+                )
+                .bind(...this.scopeParams(ids))
+                .all<{ note_id: number }>();
+            return (result.results || []).map(r => r.note_id);
+        });
+    },
+
+    listNoteTags: async function (this: NavigationAPI): Promise<Record<number, number[]>> {
+        await this.migrate();
+        return this.withSchemaRetry(async () => {
+            const result = await this.db.prepare("SELECT note_id, tag_id FROM note_note_tag").all<{
+                note_id: number;
+                tag_id: number;
+            }>();
+            const map: Record<number, number[]> = {};
+            for (const row of result.results || []) {
+                (map[row.note_id] ||= []).push(row.tag_id);
+            }
+            return map;
         });
     },
 };

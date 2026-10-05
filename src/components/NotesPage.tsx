@@ -35,6 +35,7 @@ import InputAdornment from "@mui/material/InputAdornment";
 import Menu from "@mui/material/Menu";
 import MenuItem from "@mui/material/MenuItem";
 import TextField from "@mui/material/TextField";
+import Stack from "@mui/material/Stack";
 import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 import AddIcon from "@mui/icons-material/Add";
@@ -44,6 +45,7 @@ import ChecklistIcon from "@mui/icons-material/Checklist";
 import CodeIcon from "@mui/icons-material/Code";
 import DeleteForeverIcon from "@mui/icons-material/DeleteForever";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutlined";
+import MoreVertIcon from "@mui/icons-material/MoreVert";
 import EditIcon from "@mui/icons-material/Edit";
 import FormatBoldIcon from "@mui/icons-material/FormatBold";
 import FormatItalicIcon from "@mui/icons-material/FormatItalic";
@@ -58,7 +60,7 @@ import SearchIcon from "@mui/icons-material/Search";
 import StrikethroughIcon from "@mui/icons-material/StrikethroughS";
 import TableRowsIcon from "@mui/icons-material/TableRows";
 import UndoIcon from "@mui/icons-material/Undo";
-import type { Note } from "../API/http";
+import type { Note, NoteFolder, NoteTag } from "../API/http";
 import type { TrashedNote } from "../hooks/useNotes";
 import { renderMarkdownToReact } from "../utils/markdownToReact";
 import { useScrollLock } from "../hooks/useScrollLock";
@@ -81,6 +83,31 @@ export interface NotesPageProps {
     onPurgeTrashed: (recycleId: number) => Promise<void>;
     onEmptyTrash: () => Promise<void>;
     onToggleArchive: (note: Note) => Promise<void>;
+    // ---------- 阶段三收尾：文件夹 / 标签 ----------
+    /**
+     * 左栏第一列要的东西打包成一个对象传进来（不是一个一个 props）：
+     * 这一块有 8 个回调，拆成 8 个 props 会让调用方的 JSX 没法读，
+     * 而它们本来就只服务「导航列这一个区域」。
+     *
+     * 全部**可选**：老部署上没这几个方法时，导航列退化成「只有那六个视图」，
+     * 而不是把整个记事本打崩（和回收站那几个可选方法一个处理）。
+     */
+    folderTags?: {
+        folders: NoteFolder[];
+        tags: NoteTag[];
+        /** { [noteId]: tagId[] }——左栏算「每个标签几条」要用 */
+        noteTags?: Record<number, number[]>;
+        onCreateFolder: (name: string) => Promise<NoteFolder | null>;
+        onRenameFolder: (id: number, name: string) => Promise<void>;
+        onRemoveFolder: (id: number) => Promise<void>;
+        onCreateTag: (name: string) => Promise<NoteTag | null>;
+        onRenameTag: (id: number, name: string) => Promise<void>;
+        onRemoveTag: (id: number) => Promise<void>;
+        // 返回值故意留成 `Promise<NoteTag[] | null>` 而不是 `Promise<void>`：
+        // `Promise<T>` 不能赋给 `Promise<void>`（void 的那条宽松规则只在函数返回类型上生效，
+        // 套一层 Promise 就不认了），写 void 会让调用方的实现没法返回查到的最新清单。
+        onAssignTags: (noteId: number, tagIds: number[]) => Promise<NoteTag[] | null>;
+    };
 }
 
 /** 摘要：把 Markdown 源码压成一行预览（去掉语法符号，不解析） */
@@ -138,6 +165,210 @@ const SCROLLBAR_SX = {
     },
 } as const;
 
+/**
+ * 左栏两列的宽度（阶段三收尾：左栏从单列改成 inkstone 那样两列）。
+ *
+ * 导航列刻意做窄（128）：它只有名字 + 一个条数，宽了就是浪费；
+ * 笔记列表列给 208，比原来的 300 整列窄一些 —— 但换来的是「导航归导航、列表归列表」，
+ * 月份分组标题不会再被挤到换行。两列加起来 336，只比原来宽 36px，
+ * 编辑区在 1360 的窗口下仍有 1000 出头。
+ */
+export const NAV_COL_W = 128;
+export const LIST_COL_W = 208;
+
+/** 「这条笔记挂了哪些标签」。模块级常量，避免每次渲染新造一个 {} 让依赖失效 */
+const EMPTY_TAG_LINKS: Record<number, number[]> = {};
+
+/** 某个笔记的标签Id集合。空的也返回空集合（不是 undefined）—— 列表里要无条件渲染 */
+function tagOf(note: Note, links: Record<number, number[]>): Set<number> {
+    return new Set(links[note.id ?? 0] || []);
+}
+
+/**
+ * 左栏第一列里的一行导航（inkstone 的调子：名字靠左、条数靠右、选中整行变底色）。
+ *
+ * 刻意用**真 <button>**（Box component='button'）而不是 div + role='button'：
+ * 原生 button 自带 Enter / 空格激活、焦点环、可访问名，一套都齐，
+ * 不用自己补 tabIndex + onKeyDown（之前那两个手写补法漏过一次焦点规则）。
+ * 样式上要按 button 默认值逐个压掉（背景 / 边框 / 字体 / 内边距 / 文本对齐），
+ * 否则它在 128px 的窄列里会鼓成一块方砖。
+ */
+function NavRow({
+    label,
+    count,
+    selected,
+    onClick,
+    ...rest
+}: {
+    label: string;
+    count: number;
+    selected: boolean;
+    onClick: () => void;
+} & React.ButtonHTMLAttributes<HTMLButtonElement>) {
+    return (
+        <Box
+            component='button'
+            type='button'
+            onClick={onClick}
+            sx={{
+                display: "flex",
+                alignItems: "center",
+                gap: 0.5,
+                px: 1.25,
+                py: 0.45,
+                width: "100%",
+                borderRadius: 1.25,
+                cursor: "pointer",
+                minWidth: 0,
+                // ---- 把 <button> 的默认外观压回「一张透明的行」----
+                appearance: "none",
+                border: "none",
+                m: 0,
+                font: "inherit",
+                textAlign: "left",
+                bgcolor: selected ? "rgba(128,128,128,0.14)" : "transparent",
+                color: selected ? "text.primary" : "text.secondary",
+                transition: "background-color 120ms ease",
+                "&:hover": { bgcolor: "rgba(128,128,128,0.1)" },
+                "&:focus-visible": { outline: "2px solid var(--accent)", outlineOffset: 1 },
+            }}
+            {...rest}
+        >
+            <Typography
+                variant='body2'
+                sx={{
+                    flex: 1,
+                    minWidth: 0,
+                    fontSize: 13,
+                    fontWeight: selected ? 600 : 400,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                }}
+            >
+                {label}
+            </Typography>
+            <Typography
+                variant='caption'
+                sx={{ fontSize: 11, color: "text.disabled", flexShrink: 0 }}
+            >
+                {count > 0 ? count : ""}
+            </Typography>
+        </Box>
+    );
+}
+
+/**
+ * 导航列里「文件夹 / 标签」这样一节：一个小节标题（右边跟一个 + 新建）＋ 若干条目。
+ *
+ * 条目自带 hover 菜单（重命名 / 删除）：128px 宽的列里塞不下按钮，
+ * 所以把操作折进 hover 出现的 ⋯ 里。
+ */
+function FolderTagSection({
+    title,
+    items,
+    selectedId,
+    onSelect,
+    onCreate,
+    onRename,
+    onRemove,
+}: {
+    title: string;
+    items: { id: number; name: string; count: number }[];
+    selectedId: number | null;
+    onSelect: (id: number | null) => void;
+    onCreate: () => void;
+    onRename: (id: number, name: string) => void;
+    onRemove: (id: number) => void;
+}) {
+    const [menuId, setMenuId] = useState<number | null>(null);
+    const anchorRef = useRef<HTMLSpanElement | null>(null);
+    return (
+        <Box sx={{ px: 0.75, pb: 1 }}>
+            <Box
+                sx={{ display: "flex", alignItems: "center", px: 0.5, pb: 0.5, pt: 0.5 }}
+            >
+                <Typography variant='caption' sx={{ flex: 1, fontSize: 11, color: "text.disabled" }}>
+                    {title}
+                </Typography>
+                <Tooltip title={`新建${title}`}>
+                    <IconButton size='small' aria-label={`新建${title}`} onClick={onCreate} sx={{ p: 0.25 }}>
+                        <AddIcon fontSize='inherit' />
+                    </IconButton>
+                </Tooltip>
+            </Box>
+            {items.map(item => (
+                <Box key={item.id} sx={{ position: "relative" }}>
+                    <NavRow
+                        label={item.name}
+                        count={item.count}
+                        selected={selectedId === item.id}
+                        // 给一个稳定的测试抓手：文件夹视图的筛选用例和未来的 e2e 都靠它定位，
+                        // 别去按文字找（名字是用户自己起的，随时会变）
+                        data-folder-id={item.id}
+                        onClick={() => onSelect(selectedId === item.id ? null : item.id)}
+                    />
+                    <IconButton
+                        size='small'
+                        aria-label={`${item.name} 操作`}
+                        onClick={() => {
+                            setMenuId(item.id);
+                            anchorRef.current = null;
+                        }}
+                        sx={{
+                            position: "absolute",
+                            right: 2,
+                            top: "50%",
+                            mt: "-14px",
+                            p: 0.25,
+                            opacity: 0,
+                            bgcolor: "background.paper",
+                            "&:hover": { opacity: 1 },
+                            // 触屏没有 hover：直接常显，否则在那边根本点不到
+                            "@media (hover: none)": { opacity: 1 },
+                        }}
+                    >
+                        <MoreVertIcon fontSize='inherit' />
+                    </IconButton>
+                </Box>
+            ))}
+            {items.length === 0 && (
+                <Typography variant='caption' sx={{ display: "block", px: 1, fontSize: 11, color: "text.disabled" }}>
+                    还没有{title}
+                </Typography>
+            )}
+            {/* 重命名 / 删除就用系统 prompt：为这两个动作单独做一个带校验的弹窗，
+                在 128px 的窄列里是杀鸡用牛刀，而且重命名根本没有别的输入方式 */}
+            <Menu
+                open={menuId !== null}
+                anchorEl={undefined}
+                onClose={() => setMenuId(null)}
+                slotProps={{ paper: { sx: { minWidth: 140 } } }}
+            >
+                <MenuItem
+                    onClick={() => {
+                        const item = items.find(i => i.id === menuId);
+                        setMenuId(null);
+                        const name = globalThis.prompt?.("重命名" + title, item?.name ?? "");
+                        if (name && item) onRename(item.id, name.trim());
+                    }}
+                >
+                    重命名
+                </MenuItem>
+                <MenuItem
+                    onClick={() => {
+                        const id = menuId;
+                        setMenuId(null);
+                        if (id !== null && globalThis.confirm?.("确定删除？")) onRemove(id);
+                    }}
+                >
+                    删除
+                </MenuItem>
+            </Menu>
+        </Box>
+    );
+}
+
 /** 分栏比例的持久化键。按账号分桶：换账号后各用各的宽度习惯。 */
 const SPLIT_KEY = "notes.splitRatio";
 const MIN_RATIO = 0.2;
@@ -166,10 +397,26 @@ export default function NotesPage({
     onPurgeTrashed,
     onEmptyTrash,
     onToggleArchive,
+    folderTags,
 }: NotesPageProps) {
     const [keyword, setKeyword] = useState("");
     /** 左栏视图：全部 / 最近 / 收藏（回收站要软删字段，留到阶段三） */
     const [view, setView] = useState<NoteView>("all");
+    /** 阶段三收尾：导航列里选中的文件夹 / 标签（选中任一个就只看那一份） */
+    const [activeFolder, setActiveFolder] = useState<number | null>(null);
+    const [activeTag, setActiveTag] = useState<number | null>(null);
+    /** 新建文件夹/标签的临时名（写进 prompt 前的占位，避免空名直接建） */
+    const promptCreate = useCallback(
+        async (kind: "folder" | "tag") => {
+            const fallback = kind === "folder" ? "新建文件夹" : "新建标签";
+            const name = globalThis.prompt?.(`${fallback}名字`, fallback)?.trim();
+            if (!name) return;
+            if (kind === "folder") await createFolder(name);
+            else await createTag(name);
+        },
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+        [folderTags]
+    );
     /** 阶段二：左栏可折叠（照 inkstone 的 196↔9，我们这边是 300↔44 的图标轨） */
     const [listCollapsed, setListCollapsed] = useState(false);
     const [activeId, setActiveId] = useState<number | null>(notes[0]?.id ?? null);
@@ -216,11 +463,26 @@ export default function NotesPage({
         if (active) setDraft({ title: active.title || "", content: active.content || "" });
     }, [active?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
+    // ---------- 阶段三收尾：文件夹 / 标签 ----------
+    // ⚠️ 这三个必须在 `filtered` **之前**声明：过滤链要用 noteTags 判断「这条笔记挂了哪个标签」，
+    // 放在下面就是 TDZ（used before its declaration）。
+    // ⚠️ 三处 `?? []` 都必须包 useMemo：直接写 `?? []` 得到的是**每次渲染一个全新数组**，
+    // 下游 folderCounts / tagCounts 两个 useMemo 会跟着每次渲染重算（lint 也会盯这条）。
+    const folders = useMemo(() => folderTags?.folders ?? [], [folderTags]);
+    const tags = useMemo(() => folderTags?.tags ?? [], [folderTags]);
+    const noteTags = useMemo(() => folderTags?.noteTags ?? EMPTY_TAG_LINKS, [folderTags]);
+
     const filtered = useMemo(() => {
         // 归档的笔记默认从「全部 / 最近 / 收藏 / 未归类」里隐去，只在「归档」视图露面
         const live = notes.filter(n => !n.archived);
         const byView = live.filter(n => {
             if (view === "starred") return Boolean(n.pinned);
+            // 阶段三收尾：选中了某个文件夹（或标签）就只看那一份，
+            // 和「全部 / 最近」这些视图是**叠加**关系，不是互斥的。
+            // ⚠️ 但文件夹/标签只在 live 里筛 —— 归档的笔记不该出现在任何文件夹视图里，
+            // 那个视图要看归档笔记得先切到「归档」。
+            if (activeFolder !== null) return n.folder_id === activeFolder;
+            if (activeTag !== null) return tagOf(n, noteTags).has(activeTag);
             return true;
         });
         const bySort =
@@ -258,7 +520,7 @@ export default function NotesPage({
             return matched.filter(n => n.site_id === null || n.site_id === undefined);
         }
         return matched;
-    }, [notes, keyword, view]);
+    }, [notes, keyword, view, activeFolder, activeTag, noteTags]);
 
     /** 阶段二：列表按月份分组（「十月」「九月…」），和 inkstone 一样 */
     const monthGroups = useMemo(() => {
@@ -378,6 +640,76 @@ export default function NotesPage({
             trash: trashedNotes.length,
         }),
         [notes, trashedNotes]
+    );
+
+    // ---------- 阶段三收尾：文件夹 / 标签 ----------
+    /** 没传 folderTags（老部署）时用两个空常量，而不是每次渲染都新建 [] ——
+        后者会让下面的 useMemo 每次都重算，白费。 */
+
+    /** 每条笔记的计数：服务端 listFolders/listTags 也带了 count，但那要等接口回来，
+        本地 notes 一变就应该立刻反映到左栏，所以这里按本地数据算（同号重算）。 */
+    const folderCounts = useMemo(() => {
+        const map = new Map<number, number>();
+        for (const f of folders) {
+            map.set(f.id!, notes.filter(n => !n.archived && n.folder_id === f.id).length);
+        }
+        return map;
+    }, [folders, notes]);
+
+    const tagCounts = useMemo(() => {
+        const map = new Map<number, number>();
+        for (const t of tags) {
+            map.set(
+                t.id!,
+                notes.filter(n => !n.archived && tagOf(n, noteTags).has(t.id!)).length
+            );
+        }
+        return map;
+    }, [tags, notes, noteTags]);
+    // ⚠️ 下面这些 callback 的引用都取 `folderTags?.xxx`，**不直接写 folderTags 本身进依赖**：
+    // folderTags 是调用方每次渲染新造的对象字面量，把它放进行依赖会让每一次渲染都
+    // 重跑一遍这些回调、连带下面的 useMemo 全部失效（这是「effect 无限循环 → 内存打满」
+    // 那类问题的入口）。只认里面那几个函数，它们由 useCallback 缓存住了。
+    const createFolder = useCallback(
+        async (name: string) => {
+            const created = await folderTags?.onCreateFolder(name);
+            if (created?.id !== undefined) setActiveFolder(created.id);
+        },
+        [folderTags]
+    );
+    const renameFolder = useCallback(
+        async (id: number, name: string) => {
+            await folderTags?.onRenameFolder(id, name);
+        },
+        [folderTags]
+    );
+    const removeFolder = useCallback(
+        async (id: number) => {
+            await folderTags?.onRemoveFolder(id);
+            // 删掉的是当前选中的那个，就得跟着回到「全部」，否则左栏停在一个空视图上
+            setActiveFolder(cur => (cur === id ? null : cur));
+        },
+        [folderTags]
+    );
+    const createTag = useCallback(
+        async (name: string) => {
+            const created = await folderTags?.onCreateTag(name);
+            if (created?.id !== undefined) setActiveTag(created.id);
+        },
+        [folderTags]
+    );
+    const renameTag = useCallback(
+        async (id: number, name: string) => {
+            await folderTags?.onRenameTag(id, name);
+        },
+        [folderTags]
+    );
+    const removeTag = useCallback(
+        async (id: number) => {
+            await folderTags?.onRemoveTag(id);
+            setActiveTag(cur => (cur === id ? null : cur));
+        },
+        [folderTags]
     );
 
     const dirty =
@@ -596,14 +928,17 @@ export default function NotesPage({
     const listPane = (
         <Box
             sx={{
-                // 阶段二：折叠后收成 44px 的图标轨（平时 300px）
-                width: listCollapsed ? 44 : { xs: "100%", md: 300 },
+                // 阶段二：折叠后收成 44px 的图标轨（平时是【导航列 + 列表列】两列并排）
+                width: listCollapsed ? 44 : { xs: "100%", md: NAV_COL_W + LIST_COL_W },
                 flexShrink: 0,
                 // 折叠成 44px 轨道时，任何子元素都不许溢出压到右边的编辑区
                 overflow: "hidden",
                 borderRight: { md: "1px solid var(--card-border, rgba(0,0,0,0.08))" },
+                // ⚠️ 这里改成了**横向**排列：左栏现在自己就是两列（导航 | 列表）。
+                // 原来是一整个竖列里塞「搜索框 + 六个视图按钮 + 笔记列表」——
+                // 300px 宽里三样挤一起，列表只剩 200 出头，月份分组标题一换行就漏字。
                 display: "flex",
-                flexDirection: "column",
+                alignItems: "stretch",
                 minHeight: 0,
             }}
         >
@@ -625,7 +960,25 @@ export default function NotesPage({
                 </Box>
             ) : (
             <>
-            <Box sx={{ p: 1.5, pb: 1 }}>
+            {/* ================= 第一列：导航 / 文件夹 / 标签 =================
+                这一列自己滚（overflowY: auto）：整块一起滚会把搜索框顶出视野，
+                而搜索框是「随时都想用得上」的，不能被笔记列表推走。 */}
+            <Box
+                data-nav-col='1'
+                sx={{
+                    width: NAV_COL_W,
+                    flexShrink: 0,
+                    display: "flex",
+                    flexDirection: "column",
+                    minHeight: 0,
+                    borderRight: "1px solid rgba(128,128,128,0.18)",
+                    overflowY: "auto",
+                    overflowX: "hidden",
+                    py: 1,
+                    ...SCROLLBAR_SX,
+                }}
+            >
+            <Box sx={{ px: 1.5, pb: 1 }}>
                 {/* 用 TextField + InputAdornment：之前是自己画的绝对定位图标，
                     那个放大镜飘在框外面右下方，对不齐也很难看。 */}
                 <TextField
@@ -668,52 +1021,85 @@ export default function NotesPage({
                 />
             </Box>
 
-            {/* 左栏视图导航：像 inkstone 那样，列表顶部先有几个「入口」再是条目 */}
-            {/* 阶段三：视图多了到 6 个，排成两行三列（原来一行三个就满了） */}
-            <Box
-                sx={{
-                    display: "grid",
-                    gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
-                    gap: 0.5,
-                    px: 1.5,
-                    pb: 1,
-                    flexShrink: 0,
-                    overflow: "hidden",
-                }}
-            >
+            {/* 左栏视图导航：从「三列网格按钮」改成 inkstone 那种纵向条目 ——
+                一个入口一行、名字靠左、条数靠右一行（原来六个按钮占两行、条数塞在名字后面
+                挤成一团，而且没有地方放文件夹和标签）。 */}
+            <Stack sx={{ px: 0.75, gap: 0.25, pb: 1 }}>
                 {(
                     [
                         ["all", "全部", viewCounts.all],
                         ["recent", "最近", viewCounts.recent],
                         ["starred", "收藏", viewCounts.starred],
-                        ["archived", "归档", viewCounts.archived],
                         ["uncategorized", "未归类", viewCounts.uncategorized],
+                        ["archived", "归档", viewCounts.archived],
                         ["trash", "回收站", viewCounts.trash],
                     ] as const
                 ).map(([key, label, count]) => (
-                    <Button
+                    <NavRow
                         key={key}
-                        size='small'
-                        aria-pressed={view === key}
-                        data-view={key}
-                        onClick={() => setView(key)}
-                        sx={{
-                            minWidth: 0,
-                            px: 0.5,
-                            py: 0.25,
-                            fontSize: 12,
-                            fontWeight: view === key ? 600 : 400,
-                            color: view === key ? "primary.main" : "text.secondary",
-                            bgcolor: view === key ? "rgba(128,128,128,0.12)" : "transparent",
-                            "&:hover": { bgcolor: "rgba(128,128,128,0.1)" },
+                        label={label}
+                        count={count}
+                        selected={view === key}
+                        onClick={() => {
+                            setView(key);
+                            setActiveFolder(null);
+                            setActiveTag(null);
                         }}
-                    >
-                        {label}
-                        {count > 0 ? ` ${count}` : ""}
-                    </Button>
+                        data-view={key}
+                    />
                 ))}
-            </Box>
+            </Stack>
 
+            {/* 文件夹 / 标签两节：阶段三收尾，左栏第一列现在真正成了「导航列」 */}
+            <FolderTagSection
+                title='文件夹'
+                items={folders.map(f => ({
+                    id: f.id!,
+                    name: f.name || "未命名",
+                    count: folderCounts.get(f.id!) ?? 0,
+                }))}
+                selectedId={activeFolder}
+                onSelect={id => {
+                    setActiveFolder(id);
+                    setActiveTag(null);
+                    if (id === null) setView("all");
+                }}
+                onCreate={() => promptCreate("folder")}
+                onRename={(id, name) => void renameFolder(id, name)}
+                onRemove={id => void removeFolder(id)}
+            />
+            <FolderTagSection
+                title='标签'
+                items={tags.map(t => ({
+                    id: t.id!,
+                    name: t.name || "未命名",
+                    count: tagCounts.get(t.id!) ?? 0,
+                }))}
+                selectedId={activeTag}
+                onSelect={id => {
+                    setActiveTag(id);
+                    setActiveFolder(null);
+                    if (id === null) setView("all");
+                }}
+                onCreate={() => promptCreate("tag")}
+                onRename={(id, name) => void renameTag(id, name)}
+                onRemove={id => void removeTag(id)}
+            />
+
+            </Box>
+            {/* ================= 第二列：笔记列表 ================= */}
+            <Box
+                data-list-col='1'
+                sx={{
+                    width: LIST_COL_W,
+                    flex: 1,
+                    minWidth: 0,
+                    minHeight: 0,
+                    display: "flex",
+                    flexDirection: "column",
+                    py: 1,
+                }}
+            >
             {notes.length > 0 && (                <Typography
                     variant='caption'
                     color='text.secondary'
@@ -831,6 +1217,7 @@ export default function NotesPage({
                         </Box>
                     ))
                 )}
+            </Box>
             </Box>
             </>
             )}

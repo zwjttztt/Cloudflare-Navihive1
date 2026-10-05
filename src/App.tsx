@@ -1000,11 +1000,58 @@ function App() {
         purgeTrashed,
         emptyTrash: emptyTrashedNotes,
         toggleArchive,
+        // ---------- 阶段三收尾：文件夹 / 标签 ----------
+        // ⚠️ 故意不叫 folders / tags：App 里那两个名字已经给了站点那套标签，
+        // 同名会直接「Cannot redeclare block-scoped variable」。
+        folders: noteFolders,
+        tags: noteTagList,
+        noteTags: noteTagLinks,
+        createFolder,
+        renameFolder,
+        removeFolder,
+        createTag,
+        renameTag,
+        removeTag,
+        assignTags,
     } = useNotes({
         api,
         onError: handleError,
         onNotify: notify,
     });
+
+    /**
+     * 打包给记事本左栏第一列的那一套。
+     *
+     * ⚠️ 用 useMemo 而不是每次渲染新造一个字面量：NotesPage 里那几个 callback 会把
+     * 这里挂进去的方法当依赖，外层对象每次都变会让它们跟着重跑（回调一变，
+     * 下方 memo 与 effect 全失效，严重的会滚成「内存打满」那类死循环）。
+     */
+    const noteFolderTags = useMemo(
+        () => ({
+            folders: noteFolders,
+            tags: noteTagList,
+            noteTags: noteTagLinks,
+            onCreateFolder: createFolder,
+            onRenameFolder: renameFolder,
+            onRemoveFolder: removeFolder,
+            onCreateTag: createTag,
+            onRenameTag: renameTag,
+            onRemoveTag: removeTag,
+            onAssignTags: assignTags,
+        }),
+        [
+            noteFolders,
+            noteTagList,
+            noteTagLinks,
+            createFolder,
+            renameFolder,
+            removeFolder,
+            createTag,
+            renameTag,
+            removeTag,
+            assignTags,
+        ]
+    );
 
     // 打开备份对话框（0=备份，1=恢复）
     const {
@@ -1834,6 +1881,7 @@ function App() {
                                 onPurgeTrashed={purgeTrashed}
                                 onEmptyTrash={emptyTrashedNotes}
                                 onToggleArchive={toggleArchive}
+                                folderTags={noteFolderTags}
                             />
                         </Suspense>
                         </ChunkBoundary>

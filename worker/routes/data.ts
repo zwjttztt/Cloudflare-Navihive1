@@ -2,7 +2,7 @@
 //
 // 从 worker/index.ts 拆出来。这是站点日常读写量最大的一组，
 // 读到的数据已经按 ctx.api 上绑定的账号过滤过（见 NavigationAPI.setCurrentUser）。
-import type { Group, Note, Site } from "../../src/API/http";
+import type { Group, Note, NoteFolder, NoteTag, Site } from "../../src/API/http";
 import { enforceWriteGuard, writeBucket } from "../loginGuard";
 import { weakEtag } from "../util";
 import type { GroupInput, SiteInput } from "../types";
@@ -157,6 +157,94 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
         return Response.json(notes);
     } else if (path === "notes/count" && method === "GET") {
         return Response.json({ count: await api.countNotes() });
+
+    // ---- 阶段三收尾：笔记文件夹 / 标签 ----
+    // ⚠️ 这一整块必须排在下面那些 `path.startsWith("notes/")` 分支**之前**：
+    // 「notes/folders」/「notes/tags」也满足 startsWith("notes/")，而那几个分支是
+    // `parseInt(path.split("/")[1])` —— 解析 "folders" 得到 NaN，直接返回 400「无效的ID」。
+    // 顺序反了的表现就是：接口一直 400，本地新库却正常（那边根本不进这条链）。
+    } else if (path === "notes/folders" && method === "GET") {
+        return Response.json(await api.listFolders());
+    } else if (path === "notes/folders" && method === "POST") {
+        const limited = await writeGate();
+        if (limited) return limited;
+
+        const data = (await request.json()) as Partial<NoteFolder>;
+        // 白名单：只有 name 是文件夹的字段，其它（id / user_id / count）一律不收
+        const name = typeof data.name === "string" ? data.name.trim().slice(0, 80) : "";
+        if (!name) return Response.json({ error: "文件夹名不能为空" }, { status: 400 });
+        return Response.json(await api.createFolder({ name }));
+    } else if (path.startsWith("notes/folders/") && method === "PUT") {
+        const limited = await writeGate();
+        if (limited) return limited;
+
+        const id = parseInt(path.split("/")[2]);
+        if (isNaN(id)) return Response.json({ error: "无效的ID" }, { status: 400 });
+
+        const data = (await request.json()) as Partial<NoteFolder>;
+        const patch: Partial<NoteFolder> = {};
+        if (typeof data.name === "string") patch.name = data.name.trim().slice(0, 80) || "";
+        if (data.order_num !== undefined) patch.order_num = Number(data.order_num) || 0;
+        const folder = await api.updateFolder(id, patch);
+        if (!folder) return Response.json({ error: "文件夹不存在" }, { status: 404 });
+        return Response.json(folder);
+    } else if (path.startsWith("notes/folders/") && method === "DELETE") {
+        const limited = await writeGate();
+        if (limited) return limited;
+
+        const id = parseInt(path.split("/")[2]);
+        if (isNaN(id)) return Response.json({ error: "无效的ID" }, { status: 400 });
+        // 回收到「未归类」，orphaned 给 UI 提示用
+        return Response.json(await api.deleteFolder(id));
+    } else if (path === "notes/tag-links" && method === "GET") {
+        // 全量标签关联，形如 { "12": [3, 5] }：列表页算每个标签的条数要用到，
+        // 逐条查会是 N+1，而这点数据一次拿到最省事。
+        return Response.json(await api.listNoteTags());
+    } else if (path === "notes/tags" && method === "GET") {
+        return Response.json(await api.listTags());
+    } else if (path === "notes/tags" && method === "POST") {
+        const limited = await writeGate();
+        if (limited) return limited;
+
+        const data = (await request.json()) as Partial<NoteTag>;
+        const name = typeof data.name === "string" ? data.name.trim().slice(0, 40) : "";
+        if (!name) return Response.json({ error: "标签名不能为空" }, { status: 400 });
+        return Response.json(
+            await api.createTag({ name, color: typeof data.color === "string" ? data.color : null })
+        );
+    } else if (path.startsWith("notes/tags/") && method === "PUT") {
+        const limited = await writeGate();
+        if (limited) return limited;
+
+        const id = parseInt(path.split("/")[2]);
+        if (isNaN(id)) return Response.json({ error: "无效的ID" }, { status: 400 });
+
+        const data = (await request.json()) as Partial<NoteTag>;
+        const patch: Partial<NoteTag> = {};
+        if (typeof data.name === "string") patch.name = data.name.trim().slice(0, 40) || "";
+        if (data.color !== undefined) patch.color = typeof data.color === "string" ? data.color : null;
+        const tag = await api.updateTag(id, patch);
+        if (!tag) return Response.json({ error: "标签不存在" }, { status: 404 });
+        return Response.json(tag);
+    } else if (path.startsWith("notes/tags/") && method === "DELETE") {
+        const limited = await writeGate();
+        if (limited) return limited;
+
+        const id = parseInt(path.split("/")[2]);
+        if (isNaN(id)) return Response.json({ error: "无效的ID" }, { status: 400 });
+        return Response.json(await api.deleteTag(id));
+    } else if (path.startsWith("notes/") && path.endsWith("/tags") && method === "PUT") {
+        const limited = await writeGate();
+        if (limited) return limited;
+
+        const id = parseInt(path.split("/")[1]);
+        if (isNaN(id)) return Response.json({ error: "无效的ID" }, { status: 400 });
+
+        const body = (await request.json()) as { tagIds?: unknown };
+        const tagIds = Array.isArray((body as { tagIds?: unknown })?.tagIds)
+            ? ((body as { tagIds?: unknown[] }).tagIds as unknown[]).map(Number).filter(n => Number.isInteger(n) && n > 0)
+            : [];
+        return Response.json(await api.setNoteTags(id, tagIds));
     } else if (path.startsWith("notes/") && method === "GET") {
         const id = parseInt(path.split("/")[1]);
         if (isNaN(id)) {
@@ -176,6 +264,12 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
             content: typeof data.content === "string" ? data.content : "",
             pinned: Boolean(data.pinned),
             site_id: typeof data.site_id === "number" ? data.site_id : null,
+            // 只对**正整数**认文件夹，其余（字符串、0、负数、数组）一律落 NULL = 未归类。
+            // 不拿 `data.folder_id ?? null` 直传：0 会被当成「id 为 0 的文件夹」写进库里。
+            folder_id:
+                typeof data.folder_id === "number" && Number.isInteger(data.folder_id) && data.folder_id > 0
+                    ? data.folder_id
+                    : null,
         };
         return Response.json(await api.createNote(draft));
     } else if (path === "note-orders" && method === "PUT") {
@@ -215,6 +309,15 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
         // 路由层白名单是照抄字段的，notes.ts 里认 archived 这里没认，
         // 请求不报错、HTTP 200，只是字段被静默丢掉（实测 archived: true → 回显 0）。
         if (data.archived !== undefined) patch.archived = Boolean(data.archived);
+        // 阶段三收尾：归入 / 移出文件夹（显式传 null = 移到未归类，这和站点 site_id 一个语义）
+        if (data.folder_id !== undefined) {
+            patch.folder_id =
+                typeof data.folder_id === "number" &&
+                Number.isInteger(data.folder_id) &&
+                data.folder_id > 0
+                    ? data.folder_id
+                    : null;
+        }
         const note = await api.updateNote(id, patch);
         if (!note) return Response.json({ error: "笔记不存在" }, { status: 404 });
         return Response.json(note);

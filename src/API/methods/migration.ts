@@ -8,7 +8,12 @@
 import type { NavigationAPI } from "../http";
 import { RECOVERY_PUBLIC_KEY_CONFIG, WEBDAV_CONFIG_PREFIX } from "../configKeys";
 import { hashPassword, isHashedPassword } from "../crypto";
-import { CREATE_STATEMENTS, INDEX_STATEMENTS, migrationState } from "./internals";
+import {
+    CREATE_STATEMENTS,
+    FOLDER_TAG_TABLE_STATEMENTS,
+    INDEX_STATEMENTS,
+    migrationState,
+} from "./internals";
 
 /**
  * 表结构版本号，**只进不退**。
@@ -25,8 +30,9 @@ import { CREATE_STATEMENTS, INDEX_STATEMENTS, migrationState } from "./internals
  *
  * 3 = 记事本的 notes 表（2026-10-05）。
  * 4 = notes.archived 归档列（阶段三）。加表/加列时别忘了它。
+ * 5 = notes.folder_id + note_folder / note_tag / note_note_tag 三张新表（阶段三收尾）。
  */
-export const SCHEMA_VERSION = "4";
+export const SCHEMA_VERSION = "5";
 /** 版本号存在 configs 里的键名 */
 export const SCHEMA_VERSION_KEY = "schema.version";
 
@@ -48,6 +54,8 @@ export interface MigrationApi {
     migrateInactiveColumns(): Promise<void>;
     migrateOwnerColumns(): Promise<void>;
     migrateNoteColumns(): Promise<void>;
+    /** 阶段三收尾：文件夹 / 标签三张新表（老库上 CREATE TABLE IF NOT EXISTS 建不出来） */
+    migrateFolderTagTables(): Promise<void>;
     migrateRecoveryKeyToOwner(ownerId: number): Promise<void>;
     migrateWebdavConfigToOwner(ownerId: number): Promise<void>;
     hasColumn(table: string, column: string): Promise<boolean>;
@@ -184,6 +192,19 @@ export const migrationImpl: MigrationApi = {
         // 6) 阶段三：notes 补 archived 列（老库必须 ALTER 才会有，见 migrateNoteColumns）
         await this.migrateNoteColumns();
 
+        // 6.5) 阶段三收尾：文件夹 / 标签三张新表。
+        // 光靠上面第 1 步的 batch 建表不够 —— 已经部署过的实例上 notes 表早就在了，
+        // CREATE TABLE IF NOT EXISTS 对**已存在的表**不会补列；同理那三张新表在那批
+        // 实例上从来没被建过，而「版本号读得到就整段跳过迁移」的快路径会连建表都跳过
+        //（见 migrateIfNeeded），于是新表永远不存在、对应接口一律 500。所以这里再显式建一次。
+        for (const sql of FOLDER_TAG_TABLE_STATEMENTS) {
+            try {
+                await this.db.exec(sql);
+            } catch {
+                // 表已存在 / 并发迁移抢先建了，都不是问题
+            }
+        }
+
         // 7) 索引：排在最后，因为它依赖上面补出来的 user_id 列（见 INDEX_STATEMENTS 注释）
         await this.createIndexes();
 
@@ -278,6 +299,35 @@ export const migrationImpl: MigrationApi = {
         } catch (error) {
             // 列已存在 / 表还不存在（全新库会先建表）—— 都不是问题
             void error;
+        }
+        try {
+            if (await this.hasColumn("notes", "folder_id")) return;
+            // 可空列，不给 NOT NULL 默认值：老笔记一条都不用回填就成了「未归类」
+            await this.db.exec("ALTER TABLE notes ADD COLUMN folder_id INTEGER");
+        } catch (error) {
+            // 同上，忽略
+            void error;
+        }
+    },
+
+    /**
+     * 阶段三收尾：note_folder / note_tag / note_note_tag 三张新表。
+     *
+     * 为什么不能只靠 runMigrations 第 1 步那个 batch：
+     *   - `migrateIfNeeded` 读到**相同的** SCHEMA_VERSION 会直接返回，一条建表都不跑；
+     *   - 新表只写在 CREATE_STATEMENTS 里的话，只有「全新库」才会建出来；
+     *   - 已经部署过的实例（表结构停留在 4） upgrading 到 5 时，batch 里那三条
+     *     `CREATE TABLE IF NOT EXISTS` 本来会执行 —— 但**版本号不匹配**会让
+     *     migrateIfNeeded 根本不进 runMigrations。
+     * 显式逐条执行是唯一稳的做法，失败（表已存在）忽略即可。
+     */
+    migrateFolderTagTables: async function (this: NavigationAPI ): Promise<void> {
+        for (const sql of FOLDER_TAG_TABLE_STATEMENTS) {
+            try {
+                await this.db.exec(sql);
+            } catch {
+                // 表已存在（并发迁移抢先建了），不是问题
+            }
         }
     },
 

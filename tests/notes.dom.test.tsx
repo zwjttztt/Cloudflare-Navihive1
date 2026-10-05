@@ -258,12 +258,14 @@ test("阶段三：左栏六个视图（全部/最近/收藏/归档/未归类/回
     const views = [...document.querySelectorAll("button[data-view]")].map(b =>
         b.getAttribute("data-view")
     );
+    // 顺序按 inkstone 那套（所有 / 最近编辑 / 收藏 / 未归类 / … / 归档 / 回收站）：
+    // 「未归类」紧跟收藏、「归档」收在末尾，是刻意的，不是随手排的。
     assert.deepEqual(views, [
         "all",
         "recent",
         "starred",
-        "archived",
         "uncategorized",
+        "archived",
         "trash",
     ]);
 });
@@ -583,10 +585,25 @@ test("左栏容器不能带 flex:1（会把 300px 的列表撑成两栏宽，中
         body.includes('flex: "0 0 auto"'),
         "左栏容器应该是 flex: 0 0 auto（宽度由内层的 width:300 决定）"
     );
-    // 内层那条 width:300 是配套的：外层不定宽、内层不定宽就没有「固定宽列表」可言
+    // 内层那两条定宽是配套的：外层不定宽、内层不定宽就没有「固定宽列表」可言。
+    //
+    // ⚠️ 这里判的是**两列之和**，不是某个写死的像素：
+    // 阶段三收尾把左栏从「单列 300px」改成 inkstone 那样「导航列 + 列表列」两列，
+    // 所以总宽变成 NAV_COL_W + LIST_COL_W（336）。再钉 300 只会每次改布局都变红。
     assert.ok(
-        source.includes("md: 300"),
-        "listPane 内部仍应是 width 300（md 起）"
+        /width: listCollapsed \? 44 : \{ xs: "100%", md: NAV_COL_W \+ LIST_COL_W \}/.test(source),
+        "listPane 展开时宽度应是「导航列 + 列表列」两列之和"
+    );
+    assert.ok(
+        /export const NAV_COL_W = \d+;/.test(source) &&
+            /export const LIST_COL_W = \d+;/.test(source),
+        "两列各自的宽度要在文件顶部导出常量（别散落在 sx 里）"
+    );
+    // 导航列和列表列都得是「定宽 + 不收缩」：少一个 flexShrink、或给某一列 flex:1，
+    // 两列就会互相挤，列表在窄窗口下被压成几十像素。
+    assert.ok(
+        (source.match(/flexShrink: 0/g) ?? []).length >= 2,
+        "两列都要 flexShrink: 0（宽度由它们自己的 width 决定）"
     );
 });
 
@@ -855,4 +872,78 @@ test("插入内容以 textarea 的 DOM 值为准，不能读 draft", () => {
         fn.includes("before.length + selected.length + after.length"),
         "光标位置必须算上 after.length —— 否则点完「粗体」光标卡在闭合的 ** 中间"
     );
+});
+
+// ---------- 阶段三收尾：左栏两列 + 文件夹 / 标签 ----------
+
+test("左栏真的是两列：导航列与列表列各自独立", () => {
+    mountPanel([note({ id: 1, title: "甲", content: "" })]);
+    const nav = document.querySelector("[data-nav-col]");
+    const list = document.querySelector("[data-list-col]");
+    assert.ok(nav, "要有导航列（data-nav-col）");
+    assert.ok(list, "要有列表列（data-list-col）");
+    assert.ok(nav!.contains(document.querySelector("input[aria-label='搜索笔记']")!), "搜索框在导航列里");
+    assert.ok(!nav!.contains(document.querySelector("[data-note-list]")!), "笔记列表不该在导航列里");
+    assert.ok(list!.contains(document.querySelector("[data-note-list]")!), "笔记列表在列表列里");
+});
+
+test("选中某个文件夹 → 列表只留这个文件夹里的笔记", () => {
+    mountPanel(
+        [
+            note({ id: 1, title: "甲", content: "", folder_id: 7 }),
+            note({ id: 2, title: "乙", content: "", folder_id: null }),
+        ],
+        {
+            folderTags: {
+                folders: [
+                    { id: 7, name: "收集箱" },
+                    { id: 8, name: "空的" },
+                ],
+                tags: [],
+                onCreateFolder: async () => null,
+                onRenameFolder: async () => {},
+                onRemoveFolder: async () => {},
+                onCreateTag: async () => null,
+                onRenameTag: async () => {},
+                onRemoveTag: async () => {},
+                onAssignTags: async () => null,
+            },
+        }
+    );
+    const listText = () => document.querySelector("[data-note-list]")!.textContent || "";
+    assert.ok(listText().includes("甲") && listText().includes("乙"), "默认全部都该在");
+
+    const folderBtn = [...document.querySelectorAll("button[data-folder-id]")].find(
+        b => b.getAttribute("data-folder-id") === "7"
+    ) as HTMLElement | null;
+    assert.ok(folderBtn, "导航列里要有「收集箱」这一项");
+    act(() => folderBtn!.click());
+
+    assert.ok(listText().includes("甲"), "选中收集箱后，它里面的要还在");
+    assert.ok(!listText().includes("乙"), "别文件夹的笔记要被筛掉");
+});
+
+test("导航列要自己滚（整块一起滚会把搜索框顶出视野）", () => {
+    // 静态守卫：jsdom 里 MUI 的 sx 编译成 hash 类名，量不到 overflow-y，
+    // 只能把结论钉在源码上（和「左栏容器不能带 flex:1」同一套路）。
+    const clean = stripComments(
+        readFileSync(join(findProjectDir(), "src", "components", "NotesPage.tsx"), "utf-8")
+    );
+    // ⚠️ 源码里写的是单引号 `data-nav-col='1'`：找错引号会拿到 -1，
+    // slice(-1, -1) 是个空串，断言会报「没这个属性」而不是「这一列没滚」。
+    const navCol = clean.slice(clean.indexOf("data-nav-col='1'"), clean.indexOf("data-list-col='1'"));
+    assert.ok(navCol.includes("overflowY: \"auto\""), "导航列得住自己那一列滚");
+    assert.ok(
+        navCol.includes("flexShrink: 0"),
+        "导航列要定宽不收缩，否则会被列表挤掉"
+    );
+});
+
+test("没有 folderTags（老部署）时退化成只有那六个视图，不能崩", () => {
+    mountPanel([note({ id: 1, title: "甲", content: "" })]);
+    assert.deepEqual(
+        [...document.querySelectorAll("button[data-view]")].map(b => b.getAttribute("data-view")),
+        ["all", "recent", "starred", "uncategorized", "archived", "trash"]
+    );
+    assert.ok(document.querySelector("[data-note-list]"), "列表照常渲染");
 });
