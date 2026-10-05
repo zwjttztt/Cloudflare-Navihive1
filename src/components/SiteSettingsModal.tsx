@@ -3,6 +3,7 @@ import { useRef, useState } from "react";
 import { Site, Group } from "../API/http";
 import ConfirmDialog from "./ConfirmDialog";
 // Material UI 导入
+import type { Theme } from "@mui/material";
 import {
     Dialog,
     DialogTitle,
@@ -39,7 +40,7 @@ import VisibilityIcon from "@mui/icons-material/Visibility";
 import VisibilityOffIcon from "@mui/icons-material/VisibilityOff";
 import AutoFixHighIcon from "@mui/icons-material/AutoFixHigh";
 import AutoAwesomeIcon from "@mui/icons-material/AutoAwesome";
-import OpenInFullIcon from "@mui/icons-material/OpenInFull";
+import FullscreenIcon from "@mui/icons-material/Fullscreen";
 import { useSiteAi } from "../context/AiContext";
 import { copyToClipboard } from "../utils/clipboard";
 import { resolveIconApiUrl } from "../utils/iconApi";
@@ -59,6 +60,32 @@ interface SiteSettingsModalProps {
     onClose: () => void;
     groups?: Group[]; // 可选的分组列表
 
+}
+
+/**
+ * 网站设置面板的样式，**主窗与「备注放大窗」共用同一份**。
+ *
+ * 为什么抽出来：之前放大窗只抄了 borderRadius，毛玻璃、边框、阴影、背景全没抄，
+ * 结果它看起来比主窗「小了一号」—— 用户一看就觉得是两个不同的弹窗。
+ * 这类「两个窗口要长得一样」的约定，最容易在只改了一处时悄悄漂移，
+ * 所以让它们**共用同一个对象**，以后改主题只改这一处。
+ */
+function settingsPaper(theme: Theme) {
+    return {
+        className: "nav-settings-dialog",
+        sx: {
+            // 和确认弹窗/提示条同一套毛玻璃面板，视觉统一
+            borderRadius: "var(--card-radius)",
+            backdropFilter: "blur(var(--glass-blur)) saturate(1.4)",
+            WebkitBackdropFilter: "blur(var(--glass-blur)) saturate(1.4)",
+            border: "1px solid var(--glass-panel-border)",
+            boxShadow: "var(--glass-shadow-hover)",
+            backgroundColor:
+                theme.palette.mode === "dark"
+                    ? "rgba(23,27,38,0.94)"
+                    : "rgba(255,255,255,0.94)",
+        },
+    };
 }
 
 export default function SiteSettingsModal({
@@ -331,23 +358,7 @@ export default function SiteSettingsModal({
             onClose={onClose}
             fullWidth
             maxWidth='sm'
-            slotProps={{
-                paper: {
-                    className: "nav-settings-dialog",
-                    sx: {
-                        // 和确认弹窗/提示条同一套毛玻璃面板，视觉统一
-                        borderRadius: "var(--card-radius)",
-                        backdropFilter: "blur(var(--glass-blur)) saturate(1.4)",
-                        WebkitBackdropFilter: "blur(var(--glass-blur)) saturate(1.4)",
-                        border: "1px solid var(--glass-panel-border)",
-                        boxShadow: "var(--glass-shadow-hover)",
-                        backgroundColor:
-                            theme.palette.mode === "dark"
-                                ? "rgba(23,27,38,0.94)"
-                                : "rgba(255,255,255,0.94)",
-                    },
-                }
-            }}
+            slotProps={{ paper: settingsPaper(theme) }}
         >
             <DialogTitle
                 sx={{
@@ -750,7 +761,7 @@ export default function SiteSettingsModal({
                                                             setNotesExpanded(true)
                                                         }
                                                     >
-                                                        <OpenInFullIcon fontSize='small' />
+                                                        <FullscreenIcon fontSize='small' />
                                                     </IconButton>
                                                 </span>
                                             </Tooltip>
@@ -920,12 +931,7 @@ export default function SiteSettingsModal({
             onClose={() => setNotesExpanded(false)}
             fullWidth
             maxWidth='sm'
-            slotProps={{
-                paper: {
-                    className: "nav-settings-dialog",
-                    sx: { borderRadius: "var(--card-radius)" },
-                },
-            }}
+            slotProps={{ paper: settingsPaper(theme) }}
         >
             <DialogTitle
                 sx={{
@@ -948,7 +954,10 @@ export default function SiteSettingsModal({
                 <TextField
                     id='notes-expanded'
                     name='notes'
-                    label='备注'
+                    // 故意不给 label：窗口标题已经是「备注」了，再挂一个就成了重复标签，
+                    // 而且 autoFocus 时 label 的收缩动画容易和 placeholder 叠字（真踩到过）。
+                    // 可见标签由 DialogTitle 承担，这里补 aria-label 保住语义。
+                    slotProps={{ htmlInput: { "aria-label": "备注" } }}
                     multiline
                     // 比主弹窗的两行宽裕得多：这就是这个弹窗存在的意义
                     rows={10}

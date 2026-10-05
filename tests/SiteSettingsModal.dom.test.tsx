@@ -333,17 +333,22 @@ test("放大窗的尺寸和网站设置一致", () => {
     assert.equal(papers.length, 2, "应该同时存在主窗与放大窗两个弹窗");
     const main = papers[0];
     const expanded = papers[1];
-    // ⚠️ 不能比整串 className：emotion 每次生成的 hash 不同（主窗的 sx 里还有背景色等），
-    // 那样断言永远不成立。要比的是「尺寸由哪个 class 决定」—— paperWidthSm 才是宽度。
-    for (const cls of ["MuiDialog-paperWidthSm", "MuiDialog-paperFullWidth", "nav-settings-dialog"]) {
-        assert.ok(
-            main.className.includes(cls),
-            `主窗上应有 ${cls}`
-        );
-        assert.ok(
-            expanded.className.includes(cls),
-            `放大窗上应有 ${cls} —— 做成小一号的话，长备注照样没法看`
-        );
+    // 现在两个窗共用 settingsPaper(theme) 这**同一份**样式对象，emotion 会为相同的
+    // sx 生成相同的 hash，所以整串 className 必须一模一样 —— 这是最强的断言。
+    // （第一版只抄了 borderRadius，毛玻璃/边框/阴影/背景全没抄，肉眼一看就「小一号」，
+    //   而当时只比「都有 paperWidthSm」，所以没抓到。共用之后才敢比整串。）
+    assert.equal(
+        expanded.className,
+        main.className,
+        "两个窗的样式 class 必须完全相同 —— 少抄一条样式就变成另一个窗了"
+    );
+    // 顺带把关键的几条点名，失败时能一眼看出差在哪
+    for (const cls of [
+        "MuiDialog-paperWidthSm",
+        "MuiDialog-paperFullWidth",
+        "nav-settings-dialog",
+    ]) {
+        assert.ok(expanded.className.includes(cls), `放大窗上应有 ${cls}`);
     }
 });
 
@@ -439,5 +444,25 @@ test("没打开放大窗时，大窗的输入框不在 DOM 里", () => {
         document.querySelector("#notes-expanded"),
         null,
         "没点放大就不该渲染大窗（省掉一棵无用的 textarea）"
+    );
+});
+
+test("放大窗里不再挂可见标签（标题已写着「备注」，两个标签会叠字）", () => {
+    openExpanded({ notes: "" });
+    const area = expandedNotes();
+    assert.ok(area, "放大窗里要有输入框");
+    // 曾经这里挂了 label='备注'，而窗口标题也是「备注」；autoFocus 时 label 的收缩
+    // 动画还没跑完，label 就压在 placeholder「可选的私人备注」上面（用户报的字重叠）。
+    const label = area!.closest(".MuiFormControl-root")?.querySelector("label");
+    assert.equal(
+        label,
+        null,
+        "输入框上不该再有可见 label —— 标题已经说明了，再加一个既重复又叠字"
+    );
+    // 语义不能丢：读屏要能得到「备注」这个名字
+    assert.equal(
+        area!.getAttribute("aria-label"),
+        "备注",
+        "去掉可见 label 后要用 aria-label 补上，否则读屏用户听不出这是备注框"
     );
 });
