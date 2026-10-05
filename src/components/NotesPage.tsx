@@ -18,20 +18,41 @@
 //
 // 为什么全 Flex 而不是 Grid：和 inkstone 一致，且和项目里现有布局同源。
 // 移动端按 inkstone 的做法切成「列表 / 编辑」两屏，而不是硬塞双栏。
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+    Fragment,
+    useCallback,
+    useEffect,
+    useMemo,
+    useRef,
+    useState,
+    type ReactNode,
+} from "react";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
+import Divider from "@mui/material/Divider";
 import IconButton from "@mui/material/IconButton";
 import InputAdornment from "@mui/material/InputAdornment";
+import Menu from "@mui/material/Menu";
+import MenuItem from "@mui/material/MenuItem";
 import TextField from "@mui/material/TextField";
 import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 import AddIcon from "@mui/icons-material/Add";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
+import ChecklistIcon from "@mui/icons-material/Checklist";
+import CodeIcon from "@mui/icons-material/Code";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutlined";
 import EditIcon from "@mui/icons-material/Edit";
+import FormatBoldIcon from "@mui/icons-material/FormatBold";
+import FormatItalicIcon from "@mui/icons-material/FormatItalic";
+import FormatQuoteIcon from "@mui/icons-material/FormatQuote";
+import ImageIcon from "@mui/icons-material/Image";
+import LinkIcon from "@mui/icons-material/Link";
+import ListIcon from "@mui/icons-material/List";
 import PushPinIcon from "@mui/icons-material/PushPin";
 import SearchIcon from "@mui/icons-material/Search";
+import StrikethroughIcon from "@mui/icons-material/StrikethroughS";
+import TableRowsIcon from "@mui/icons-material/TableRows";
 import type { Note } from "../API/http";
 import { renderMarkdownToReact } from "../utils/markdownToReact";
 import { useScrollLock } from "../hooks/useScrollLock";
@@ -77,6 +98,29 @@ function formatWhen(iso?: string): string {
 /** 把编辑区拆成「源码 | 预览」两栏 */
 type Pane = "edit" | "split" | "preview";
 
+/** 左栏视图 */
+type NoteView = "all" | "recent" | "starred";
+
+/**
+ * 编辑区里那条「能看见的滚动条」。
+ *
+ * 之前预览区用的是浏览器默认滚动条，Windows 11 默认 overlay —— 不动鼠标时不显示，
+ * 用户就以为「预览窗没滚轮 / 内容显示不全」。统一给这两栏定一条 10px 的常显滚动条，
+ * inkstone 也是这个调子（细瘦、灰、hover 加深）。
+ */
+const SCROLLBAR_SX = {
+    scrollbarWidth: "thin",
+    "&::-webkit-scrollbar": { width: 10, height: 10 },
+    "&::-webkit-scrollbar-track": { background: "transparent" },
+    "&::-webkit-scrollbar-thumb": {
+        bgcolor: "rgba(128,128,128,0.35)",
+        borderRadius: 5,
+        border: "2px solid transparent",
+        backgroundClip: "content-box",
+        "&:hover": { bgcolor: "rgba(128,128,128,0.55)" },
+    },
+} as const;
+
 /** 分栏比例的持久化键。按账号分桶：换账号后各用各的宽度习惯。 */
 const SPLIT_KEY = "notes.splitRatio";
 const MIN_RATIO = 0.2;
@@ -101,6 +145,8 @@ export default function NotesPage({
     onTogglePin,
 }: NotesPageProps) {
     const [keyword, setKeyword] = useState("");
+    /** 左栏视图：全部 / 最近 / 收藏（回收站要软删字段，留到阶段三） */
+    const [view, setView] = useState<NoteView>("all");
     const [activeId, setActiveId] = useState<number | null>(notes[0]?.id ?? null);
     const [pane, setPane] = useState<Pane>("split");
     /** 分栏比例（源码 : 预览）。可拖拽，记住上一次。 */
@@ -128,14 +174,40 @@ export default function NotesPage({
     }, [active?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
     const filtered = useMemo(() => {
+        const byView = notes.filter(n => {
+            if (view === "starred") return Boolean(n.pinned);
+            if (view === "recent") {
+                // 最近：按更新时间倒序（置顶的在列表里永远排前面，取前 10 条）
+                return true;
+            }
+            return true;
+        });
+        const bySort = view === "recent"
+            ? [...byView].sort((a, b) =>
+                  (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) ||
+                  String(b.updated_at || b.created_at || "").localeCompare(
+                      String(a.updated_at || a.created_at || "")
+                  )
+              )
+            : byView;
         const kw = keyword.trim().toLowerCase();
-        if (!kw) return notes;
-        return notes.filter(
+        if (!kw) return bySort;
+        return bySort.filter(
             n =>
                 (n.title || "").toLowerCase().includes(kw) ||
                 (n.content || "").toLowerCase().includes(kw)
         );
-    }, [notes, keyword]);
+    }, [notes, keyword, view]);
+
+    /** 左栏导航上挂的三个数 */
+    const viewCounts = useMemo(
+        () => ({
+            all: notes.length,
+            recent: notes.length,
+            starred: notes.filter(n => Boolean(n.pinned)).length,
+        }),
+        [notes]
+    );
 
     const dirty =
         !!active &&
@@ -209,6 +281,10 @@ export default function NotesPage({
     const lastInsertRef = useRef<{
         start: number;
         snippet: string;
+        /** 插进去的正文（`selected`，可能是占位符） */
+        body: string;
+        /** 这次插入是「包住一段真实选区」还是「没选东西、只塞了个占位符」 */
+        hadSelection: boolean;
         before: string;
         after: string;
     } | null>(null);
@@ -218,7 +294,10 @@ export default function NotesPage({
      * 已经有这层格式就摘掉，没有就包上（点第二下把上一次插入撤掉 = 取消）。
      *
      * 三条路径：
-     *   ① 连点同一个按钮，且那段还是上次插的东西 → 整段撤销；
+     *   ① 连点同一个按钮，且那段还是上次插的东西：
+     *      - 刚才是**包住一段真实选区**插的 → 只拆掉两枚标记，**正文要留着**
+     *        （用户原话：「选中输入内容后点击两下粗体会删除内容，应该只取消粗体」）；
+     *      - 刚才是没选东西、只塞了个占位符 → 整段撤掉（没什么可留的，才叫「取消」）。
      *   ② 选区已经带标记（`**粗体**`）或正好被两枚标记夹住 → 去掉标记；
      *   ③ 其余 → 包一层（有选区包住选区，没有就放占位符）。
      */
@@ -247,11 +326,24 @@ export default function NotesPage({
             const last = lastInsertRef.current;
             const sameTool = last && last.before === before && last.after === after;
             if (sameTool && content.slice(last.start, last.start + last.snippet.length) === last.snippet) {
-                const next =
-                    content.slice(0, last.start) +
-                    content.slice(last.start + last.snippet.length);
+                const at = last.start;
                 lastInsertRef.current = null;
-                writeBack(next, Math.min(last.start, next.length));
+                if (last.hadSelection) {
+                    // ② 只取消这层格式：摘掉 before/after，把选中的正文原样留在原地，
+                    //    并顺手选中它，用户马上能接着改。
+                    const next =
+                        content.slice(0, at) + last.body + content.slice(at + last.snippet.length);
+                    writeBack(
+                        next,
+                        Math.min(at, next.length),
+                        Math.min(at + last.body.length, next.length)
+                    );
+                } else {
+                    // ③ 纯占位符插入（当时没选东西），第二下直接把这段撤掉
+                    const next =
+                        content.slice(0, at) + content.slice(at + last.snippet.length);
+                    writeBack(next, Math.min(at, next.length));
+                }
                 return;
             }
 
@@ -285,6 +377,8 @@ export default function NotesPage({
             lastInsertRef.current = {
                 start,
                 snippet: before + selected + after,
+                body: selected,
+                hadSelection: seg.length > 0,
                 before,
                 after,
             };
@@ -295,6 +389,27 @@ export default function NotesPage({
         },
         []
     );
+
+    /**
+     * 行首插入前缀（标题 `# `、引用 `> `、列表 `- `）。
+     * 和 insertAtCursor 走两条路：标题必须落在**当前行开头**，不能插在光标中间 ——
+     * 否则光标在段落中间点「H1」，得到的不是标题而是半句被 `#` 劈开的话。
+     */
+    const insertLinePrefix = useCallback((prefix: string) => {
+        const el = textareaRef.current;
+        if (!el) return;
+        const value = el.value;
+        const pos = el.selectionStart ?? value.length;
+        // ⚠️ lastIndexOf 的第二个参数不能是 pos，要用 pos - 1，且夹到 0：
+        // 第 0 个字符前没有行首，传 -1 会命中字符串前面的 "-" 位置。
+        const lineStart = value.lastIndexOf("\n", Math.max(0, pos - 1)) + 1;
+        const next = value.slice(0, lineStart) + prefix + value.slice(lineStart);
+        const caret = lineStart + prefix.length;
+        el.value = next;
+        el.focus();
+        el.setSelectionRange(caret, caret);
+        setDraft(d => (d ? { ...d, content: next } : d));
+    }, []);
 
     const charCount = draft ? draft.content.length : 0;
     const pinnedCount = notes.filter(n => Boolean(n.pinned)).length;
@@ -331,18 +446,53 @@ export default function NotesPage({
                 />
             </Box>
 
+            {/* 左栏视图导航：像 inkstone 那样，列表顶部先有几个「入口」再是条目 */}
+            <Box sx={{ display: "flex", gap: 0.5, px: 1.5, pb: 1, flexShrink: 0 }}>
+                {(
+                    [
+                        ["all", "全部", viewCounts.all],
+                        ["recent", "最近", viewCounts.recent],
+                        ["starred", "收藏", viewCounts.starred],
+                    ] as const
+                ).map(([key, label, count]) => (
+                    <Button
+                        key={key}
+                        size='small'
+                        aria-pressed={view === key}
+                        data-view={key}
+                        onClick={() => setView(key)}
+                        sx={{
+                            flex: 1,
+                            minWidth: 0,
+                            py: 0.25,
+                            fontSize: 12,
+                            fontWeight: view === key ? 600 : 400,
+                            color: view === key ? "primary.main" : "text.secondary",
+                            bgcolor: view === key ? "rgba(128,128,128,0.12)" : "transparent",
+                            "&:hover": { bgcolor: "rgba(128,128,128,0.1)" },
+                        }}
+                    >
+                        {label}
+                        {count > 0 ? ` ${count}` : ""}
+                    </Button>
+                ))}
+            </Box>
+
             {notes.length > 0 && (
                 <Typography
                     variant='caption'
                     color='text.secondary'
                     sx={{ px: 2, pb: 0.75 }}
                 >
-                    共 {notes.length} 条
+                    共 {filtered.length} 条
                     {pinnedCount > 0 ? `，${pinnedCount} 条置顶` : ""}
                 </Typography>
             )}
 
-            <Box data-note-list='1' sx={{ flex: 1, overflowY: "auto", minHeight: 0, pb: 1 }}>
+            <Box
+                data-note-list='1'
+                sx={{ flex: 1, overflowY: "auto", minHeight: 0, pb: 1, ...SCROLLBAR_SX }}
+            >
                 {filtered.length === 0 ? (
                     <Typography variant='body2' color='text.secondary' sx={{ p: 2 }}>
                         {notes.length === 0
@@ -463,7 +613,7 @@ export default function NotesPage({
 
                     {/* 格式工具栏：照 inkstone 那一排。放在标题与内容区之间，
                         点一下在光标处插入语法 —— 省得手打 `**` 和 `- [ ]`。 */}
-                    <MarkdownToolbar onInsert={insertAtCursor} />
+                    <MarkdownToolbar onInsert={insertAtCursor} onInsertLinePrefix={insertLinePrefix} />
 
                     {/* 内容区：源码 | 预览 */}
                     <Box
@@ -503,6 +653,8 @@ export default function NotesPage({
                                     borderRadius: pane === "split" ? 1.5 : 0,
                                     outline: "none",
                                     resize: "none",
+                                    // 常显滚动条：默认 overlay 会让人以为「预览窗没滚轮」
+                                    ...SCROLLBAR_SX,
                                     p: 2.5,
                                     font: "inherit",
                                     fontFamily: "ui-monospace, monospace",
@@ -552,6 +704,7 @@ export default function NotesPage({
                                     // 子项漏掉 → 症状就是「怎么还有滚动条」。
                                     minHeight: 0,
                                     overflowY: "auto",
+                                    ...SCROLLBAR_SX,
                                     p: 2.5,
                                     lineHeight: 1.7,
                                     border:
@@ -781,31 +934,135 @@ function MarkdownPreview({ source }: { source: string }) {
     return <Box sx={{ wordBreak: "break-word", lineHeight: 1.7 }}>{node}</Box>;
 }
 
-/** 一个工具按钮：label 是显示的字，before/after 是包在选区两侧的语法 */
+/** 一个工具按钮：icon / label 二选一，before/after 是包在选区两侧的语法 */
 interface ToolSpec {
-    label: string;
+    key: string;
+    icon?: ReactNode;
+    label?: string;
     title: string;
     before: string;
     after?: string;
     placeholder?: string;
 }
 
-const TOOLS: ToolSpec[] = [
-    { label: "H1", title: "一级标题", before: "# ", placeholder: "标题" },
-    { label: "H2", title: "二级标题", before: "## ", placeholder: "标题" },
-    { label: "B", title: "粗体", before: "**", after: "**", placeholder: "粗体" },
-    { label: "I", title: "斜体", before: "*", after: "*", placeholder: "斜体" },
-    { label: "S", title: "删除线", before: "~~", after: "~~", placeholder: "删除" },
-    { label: "<>", title: "行内代码", before: "`", after: "`", placeholder: "code" },
-    { label: "{ }", title: "代码块", before: "```\n", after: "\n```", placeholder: "代码" },
-    { label: "❝", title: "引用", before: "> ", placeholder: "引用" },
-    { label: "•", title: "无序列表", before: "- ", placeholder: "列表项" },
-    { label: "1.", title: "有序列表", before: "1. ", placeholder: "列表项" },
-    { label: "☑", title: "待办项", before: "- [ ] ", placeholder: "要做的事" },
-    { label: "🔗", title: "链接", before: "[", after: "](https://)", placeholder: "链接文字" },
-    { label: "🖼", title: "图片", before: "![", after: "](https://)", placeholder: "图片说明" },
-    { label: "==", title: "高亮", before: "==", after: "==", placeholder: "高亮" },
-    { label: "|", title: "表格", before: "| 列1 | 列2 |\n|---|---|\n| ", after: " | |", placeholder: "内容" },
+/**
+ * 工具栏分组（阶段一）：原来是一长串 15 个文字按钮，换行两排、还占地方。
+ * 参照 inkstone 收成「标题 | 强调 | 代码 | 列表 | 插入 | 块」六段，
+ * 单行走不完就横向滚动，高度锁 40px。
+ */
+const TOOL_GROUPS: { name: string; tools: ToolSpec[] }[] = [
+    {
+        name: "强调",
+        tools: [
+            {
+                key: "bold",
+                icon: <FormatBoldIcon fontSize='small' />,
+                title: "粗体",
+                before: "**",
+                after: "**",
+                placeholder: "粗体",
+            },
+            {
+                key: "italic",
+                icon: <FormatItalicIcon fontSize='small' />,
+                title: "斜体",
+                before: "*",
+                after: "*",
+                placeholder: "斜体",
+            },
+            {
+                key: "strike",
+                icon: <StrikethroughIcon fontSize='small' />,
+                title: "删除线",
+                before: "~~",
+                after: "~~",
+                placeholder: "删除",
+            },
+            { key: "highlight", label: "==", title: "高亮", before: "==", after: "==", placeholder: "高亮" },
+        ],
+    },
+    {
+        name: "代码",
+        tools: [
+            {
+                key: "code",
+                icon: <CodeIcon fontSize='small' />,
+                title: "行内代码",
+                before: "`",
+                after: "`",
+                placeholder: "code",
+            },
+            { key: "pre", label: "{ }", title: "代码块", before: "```\n", after: "\n```", placeholder: "代码" },
+        ],
+    },
+    {
+        name: "列表",
+        tools: [
+            {
+                key: "ul",
+                icon: <ListIcon fontSize='small' />,
+                title: "无序列表",
+                before: "- ",
+                placeholder: "列表项",
+            },
+            { key: "ol", label: "1.", title: "有序列表", before: "1. ", placeholder: "列表项" },
+            {
+                key: "task",
+                icon: <ChecklistIcon fontSize='small' />,
+                title: "待办项",
+                before: "- [ ] ",
+                placeholder: "要做的事",
+            },
+        ],
+    },
+    {
+        name: "插入",
+        tools: [
+            {
+                key: "link",
+                icon: <LinkIcon fontSize='small' />,
+                title: "链接",
+                before: "[",
+                after: "](https://)",
+                placeholder: "链接文字",
+            },
+            {
+                key: "image",
+                icon: <ImageIcon fontSize='small' />,
+                title: "图片",
+                before: "![",
+                after: "](https://)",
+                placeholder: "图片说明",
+            },
+        ],
+    },
+    {
+        name: "块",
+        tools: [
+            {
+                key: "quote",
+                icon: <FormatQuoteIcon fontSize='small' />,
+                title: "引用",
+                before: "> ",
+                placeholder: "引用",
+            },
+            {
+                key: "table",
+                icon: <TableRowsIcon fontSize='small' />,
+                title: "表格",
+                before: "| 列1 | 列2 |\n|---|---|\n| ",
+                after: " | |",
+                placeholder: "内容",
+            },
+        ],
+    },
+];
+
+/** 标题层级下拉（H1/H2/H3）—— 标题是「行首加前缀」，走另一条路径 */
+const HEADING_LEVELS: { level: string; label: string; prefix: string }[] = [
+    { level: "1", label: "H1 一级标题", prefix: "# " },
+    { level: "2", label: "H2 二级标题", prefix: "## " },
+    { level: "3", label: "H3 三级标题", prefix: "### " },
 ];
 
 /**
@@ -818,46 +1075,100 @@ const TOOLS: ToolSpec[] = [
  */
 function MarkdownToolbar({
     onInsert,
+    onInsertLinePrefix,
 }: {
     onInsert: (before: string, after: string, placeholder: string) => void;
+    onInsertLinePrefix: (prefix: string) => void;
 }) {
+    const [headingAnchor, setHeadingAnchor] = useState<HTMLElement | null>(null);
+
     return (
         <Box
             role='toolbar'
             aria-label='Markdown 格式'
             sx={{
                 display: "flex",
-                flexWrap: "wrap",
-                gap: 0.25,
-                px: 2,
-                py: 0.5,
+                alignItems: "center",
+                gap: 0.5,
+                px: 1.5,
+                height: 40,
                 flexShrink: 0,
+                overflowX: "auto",
                 borderBottom: "1px solid var(--card-border, rgba(128,128,128,0.18))",
+                ...SCROLLBAR_SX,
             }}
         >
-            {TOOLS.map(tool => (
-                <Tooltip key={tool.label} title={tool.title}>
-                    <Button
-                        size='small'
-                        // 关键：阻止默认行为，输入框才不会失焦、选区才不会丢
-                        onMouseDown={e => e.preventDefault()}
-                        onClick={() =>
-                            onInsert(tool.before, tool.after ?? "", tool.placeholder ?? "")
-                        }
-                        sx={{
-                            minWidth: 30,
-                            px: 0.75,
-                            py: 0.25,
-                            fontSize: 12,
-                            lineHeight: 1.4,
-                            color: "text.secondary",
-                            borderRadius: 1,
-                            "&:hover": { bgcolor: "rgba(128,128,128,0.14)", color: "text.primary" },
+            {/* 标题层级：从两个 H1/H2 文字按钮收成一个下拉 */}
+            <Button
+                size='small'
+                aria-label='标题层级'
+                aria-haspopup='menu'
+                aria-expanded={headingAnchor ? true : undefined}
+                onClick={e => setHeadingAnchor(e.currentTarget)}
+                sx={{
+                    minWidth: 0,
+                    px: 0.75,
+                    py: 0.25,
+                    fontSize: 12,
+                    lineHeight: 1.4,
+                    color: "text.secondary",
+                    "&:hover": { bgcolor: "rgba(128,128,128,0.14)", color: "text.primary" },
+                }}
+            >
+                标题
+            </Button>
+            <Menu
+                open={Boolean(headingAnchor)}
+                anchorEl={headingAnchor}
+                onClose={() => setHeadingAnchor(null)}
+            >
+                {HEADING_LEVELS.map(h => (
+                    <MenuItem
+                        key={h.level}
+                        data-heading={h.level}
+                        onClick={() => {
+                            onInsertLinePrefix(h.prefix);
+                            setHeadingAnchor(null);
                         }}
                     >
-                        {tool.label}
-                    </Button>
-                </Tooltip>
+                        {h.label}
+                    </MenuItem>
+                ))}
+            </Menu>
+
+            {TOOL_GROUPS.map((group, gi) => (
+                <Fragment key={group.name}>
+                    {gi > 0 && (
+                        <Divider orientation='vertical' flexItem sx={{ mx: 0.25, my: 0.5 }} />
+                    )}
+                    <Box sx={{ display: "flex", alignItems: "center", gap: 0.25 }}>
+                        {group.tools.map(tool => (
+                            <Tooltip key={tool.key} title={tool.title}>
+                                <IconButton
+                                    size='small'
+                                    // 关键：阻止默认行为，输入框才不会失焦、选区才不会丢
+                                    onMouseDown={e => e.preventDefault()}
+                                    onClick={() =>
+                                        onInsert(tool.before, tool.after ?? "", tool.placeholder ?? "")
+                                    }
+                                    data-tool={tool.key}
+                                    aria-label={tool.title}
+                                    sx={{
+                                        width: 28,
+                                        height: 28,
+                                        color: "text.secondary",
+                                        "&:hover": {
+                                            bgcolor: "rgba(128,128,128,0.14)",
+                                            color: "text.primary",
+                                        },
+                                    }}
+                                >
+                                    {tool.icon ?? tool.label}
+                                </IconButton>
+                            </Tooltip>
+                        ))}
+                    </Box>
+                </Fragment>
             ))}
         </Box>
     );

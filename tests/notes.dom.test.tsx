@@ -109,6 +109,66 @@ test("面板列出笔记的标题与内容摘要", () => {
     assert.ok(list.textContent!.includes("已完成"));
 });
 
+// ---------- 阶段一：工具栏图标化 + 分组 + 标题层级下拉 ----------
+
+test("工具栏按 data-tool 暴露分组按钮（不再是 15 个散落文字按钮）", () => {
+    mountPanel([note({ id: 1, title: "甲", content: "" })]);
+    const bar = document.querySelector('[aria-label="Markdown 格式"]') as HTMLElement | null;
+    assert.ok(bar, "要有格式工具栏");
+    const tools = [...bar.querySelectorAll("button[data-tool]")].map(b =>
+        b.getAttribute("data-tool")
+    );
+    for (const key of ["bold", "italic", "strike", "code", "ul", "ol", "task", "link", "image", "quote", "table"]) {
+        assert.ok(tools.includes(key), `工具栏要有 ${key} 按钮，实际 ${JSON.stringify(tools)}`);
+    }
+    // 分组之间要用 Divider 隔开，不然又变成一长串
+    assert.ok(bar.querySelectorAll('hr, [class*="MuiDivider"]').length >= 4, "分组之间要有分隔线");
+});
+
+test("标题层级下拉：点 H2 是把 `## ` 加在当前行开头", () => {
+    mountPanel([note({ id: 1, title: "甲", content: "一段文字" })]);
+    const ta = document.querySelector<HTMLTextAreaElement>("textarea[aria-label='笔记内容']")!;
+    const bar = document.querySelector('[aria-label="Markdown 格式"]')!;
+
+    // 光标放在「段」与「文字」之间
+    act(() => {
+        ta.focus();
+        ta.value = "一段文字";
+        ta.setSelectionRange(2, 2);
+    });
+
+    const headingBtn = bar.querySelector('button[aria-label="标题层级"]') as HTMLElement | null;
+    assert.ok(headingBtn, "要有标题层级按钮");
+    act(() => headingBtn!.click());
+
+    const h2 = document.querySelector('[data-heading="2"]') as HTMLElement | null;
+    assert.ok(h2, "H2 要在下拉里");
+    act(() => h2!.click());
+
+    // 标题是行首前缀，不能插到光标中间把半句话劈开
+    assert.equal(ta.value, "## 一段文字", "H2 要落在整行开头");
+    assert.equal(ta.selectionStart, 3, "光标跟着落到前缀之后");
+});
+
+test("左栏导航「收藏」只看置顶的那几条", () => {
+    mountPanel([
+        note({ id: 1, title: "置顶的", content: "a", pinned: true }),
+        note({ id: 2, title: "普通的", content: "b", pinned: false }),
+    ]);
+    const list = () =>
+        document.querySelector("[data-note-list]")!.textContent || "";
+    assert.ok(list().includes("置顶的") && list().includes("普通的"), "默认全部");
+
+    const starred = [...document.querySelectorAll("button[data-view]")].find(
+        b => b.getAttribute("data-view") === "starred"
+    ) as HTMLElement | null;
+    assert.ok(starred, "要有收藏视图按钮");
+    act(() => starred!.click());
+
+    assert.ok(list().includes("置顶的"), "收藏里要有置顶的");
+    assert.ok(!list().includes("普通的"), "收藏里不该出现没置顶的");
+});
+
 test("没有笔记时给一句引导，不是一片空白", () => {
     mountPanel([]);
     assert.ok(text().includes("还没有笔记"), "空状态要有引导文案");
@@ -429,7 +489,7 @@ test("工具栏同名按钮是开关：连点第二下是「取消」而不是�
     ta.focus();
     ta.setSelectionRange(3, 3); // 光标放到 "abc" 末尾
 
-    const bold = [...document.querySelectorAll("button")].find(b => b.textContent === "B");
+    const bold = document.querySelector('button[data-tool="bold"]') as HTMLElement | null;
     assert.ok(bold, "工具栏要有「B（粗体）」按钮");
 
     act(() => bold!.click());
@@ -444,6 +504,37 @@ test("工具栏同名按钮是开关：连点第二下是「取消」而不是�
     assert.equal(ta.selectionStart, 3, "取消后光标回到原来的插入处");
 });
 
+test("选中一段内容后点两下 B：第二下只取消粗体，不能把内容删掉", () => {
+    // 用户原话：「选中输入内容后点击两下粗体会删除内容，应该只取消粗体」。
+    // 选中的正文是**用户自己的字**，第二下撤的是「加粗」这件事本身，不是把字也删了。
+    mountPanel([note({ id: 1, title: "甲", content: "" })]);
+    const ta = document.querySelector<HTMLTextAreaElement>(
+        "textarea[aria-label='笔记内容']"
+    );
+    assert.ok(ta, "要有笔记内容输入框");
+    const bold = document.querySelector('button[data-tool="bold"]') as HTMLElement | null;
+    assert.ok(bold, "工具栏要有「B（粗体）」按钮");
+
+    // 先手动敲一段字，整段选中
+    act(() => {
+        ta.focus();
+        ta.value = "这篇笔记";
+        ta.setSelectionRange(0, 4);
+    });
+
+    act(() => bold!.click());
+    assert.equal(ta.value, "**这篇笔记**", "第一下：把选中的字加粗");
+
+    act(() => bold!.click());
+    assert.equal(
+        ta.value,
+        "这篇笔记",
+        "第二下：只摘掉 ** 标记，选中的正文必须还在（不能变成空）"
+    );
+    assert.equal(ta.selectionStart, 0, "取消后光标落回那段正文的开头");
+    assert.equal(ta.selectionEnd, 4, "并把正文重新选上，方便接着编辑");
+});
+
 test("已经有这层格式时点按钮是摘掉标记（不是再加一层）", () => {
     // 选中整段带标记的内容 / 只选中被两枚标记夹在中间的字，按同名按钮都要「取消」
     mountPanel([note({ id: 1, title: "甲", content: "" })]);
@@ -452,7 +543,7 @@ test("已经有这层格式时点按钮是摘掉标记（不是再加一层）",
     );
     assert.ok(ta, "要有笔记内容输入框");
     // ⚠️ 按钮要等面板挂上才存在，不能在 mountPanel 之前去查
-    const bold = [...document.querySelectorAll("button")].find(b => b.textContent === "B");
+    const bold = document.querySelector('button[data-tool="bold"]') as HTMLElement | null;
     assert.ok(bold, "工具栏要有「B（粗体）」按钮");
 
     // ① 整段 `**粗**`（5 字符）：选区自带两枚标记 → 去掉标记
@@ -491,21 +582,22 @@ test("换一个按钮不会被误判成「取消」（点完粗体再点斜体�
         "textarea[aria-label='笔记内容']"
     );
     assert.ok(ta, "要有笔记内容输入框");
-    const bar = document.querySelector('[aria-label="Markdown 格式"]');
+    const bar = document.querySelector('[aria-label="Markdown 格式"]') as HTMLElement | null;
     assert.ok(bar, "要有格式工具栏");
-    const byLabel = (label: string) =>
-        [...bar!.querySelectorAll("button")].find(b => b.textContent === label);
+    // ⚠️ 图标化之后按钮上不再有文字，按 data-tool 找（阶段一重构跟着改）
+    const byLabel = (tool: string) =>
+        bar!.querySelector(`button[data-tool="${tool}"]`) as HTMLElement | null;
 
     act(() => {
         ta!.focus();
         ta!.setSelectionRange(0, 0);
     });
-    act(() => byLabel("B")!.click());
+    act(() => byLabel("bold")!.click());
     assert.equal(ta.value, "**粗体**", "B：加粗");
 
     // 关键点：I 按下之后，**粗体那一段必须还留着**（不能当成「同名第二次」撤掉）。
     // 至于 I 自己是在光标处插还是摘，两种都算合理，浏览器里再细调。
-    act(() => byLabel("I")!.click());
+    act(() => byLabel("italic")!.click());
     assert.ok(
         ta.value.includes("**粗体**"),
         "I 是另一个按钮，不能把上一段粗体撤销掉；实际 " + JSON.stringify(ta.value)
