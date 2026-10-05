@@ -95,18 +95,16 @@ function settingsPaper(theme: Theme) {
         className: "nav-settings-dialog",
         sx: {
             display: "flex",
-            flexDirection: "column",
-            // 两个窗共用的**高度下限**。
+            // ⚠️ 这里**故意不设任何高度**（既不 height 也不 minHeight）。
             //
-            // 走过一圈弯路，结论值得写下来：
-            //   ① 先试「点开时量主窗 offsetHeight 当放大窗 minHeight」—— 动态测量的值
-            //      量不到就静默退化（ref 没挂上 / 布局未完成），用户看到的是"没变化"。
-            //   ② 再试「两窗都写死 height」—— 一致了，但主窗内容只有 600px 时
-            //      底部空出一大片，比高度不一致更刺眼。
-            // 现在用 minHeight：主窗内容多就自然变高（**不留多余空白**），
-            // 放大窗有这个下限保证够大。视口不够高时用 calc 收窄。
-            // 「严格等大」和「不留空白」本身是冲突的 —— 这里选了后者。
-            minHeight: "min(620px, calc(100vh - 104px))",
+            // 为这件事来回改了四轮，结论写下来免得再走回头路：
+            //   ① 「点开时量主窗 offsetHeight 当放大窗 minHeight」—— 动态测量的值
+            //      量不到就静默退化成"按内容自适应"，用户看到的是"没变化"。
+            //   ② 「两窗共用 minHeight」—— 主窗内容少时底部照样空一段。
+            //   ③ 「两窗都写死 height」—— 一致了，但空白更刺眼。
+            // 「两窗严格等大」与「主窗不留空白」本质冲突：等大只能写死高度，而写死高度
+            // 就是给主窗强加空白。用户明确要**恢复原来的自适应**，所以这里彻底不管高度 ——
+            // 放大窗改由自己的 notesPaper 给下限、并用 rows 把输入框撑大（见那两处）。
             // 和确认弹窗/提示条同一套毛玻璃面板，视觉统一
             borderRadius: "var(--card-radius)",
             backdropFilter: "blur(var(--glass-blur)) saturate(1.4)",
@@ -117,6 +115,26 @@ function settingsPaper(theme: Theme) {
                 theme.palette.mode === "dark"
                     ? "rgba(23,27,38,0.94)"
                     : "rgba(255,255,255,0.94)",
+        },
+    };
+}
+
+/**
+ * 「备注放大窗」专用的面板样式：宽度/配色/圆角与主窗完全一致，只是**内容区更高**。
+ *
+ * 为什么单独一份而不是两窗共用：主窗要保持原来的自适应（内容多高就多高、不留空白），
+ * 而放大窗天生就该是大个子。共用一份样式必然给主窗强加一个高度下限 —— 那正是用户
+ * 连续几轮抱怨的「网站设置下面空出一段」。底色等仍来自同一个 settingsPaper，两窗一套。
+ */
+function notesPaper(theme: Theme) {
+    const base = settingsPaper(theme);
+    return {
+        ...base,
+        sx: {
+            ...base.sx,
+            // 备注窗内容就是一个大输入框，给个下限让点击区域更舒服。
+            // 真正的「撑满」由 TextField 的 rows 决定 —— 见那里的注释。
+            minHeight: "min(560px, calc(100vh - 104px))",
         },
     };
 }
@@ -413,7 +431,7 @@ export default function SiteSettingsModal({
             onClose={onClose}
             fullWidth
             maxWidth='sm'
-            slotProps={{ paper: settingsPaper(theme) }}
+            slotProps={{ paper: notesPaper(theme) }}
         >
             <DialogTitle
                 sx={{
@@ -1016,11 +1034,11 @@ export default function SiteSettingsModal({
                     // 可见标签由 DialogTitle 承担，这里补 aria-label 保住语义。
                     slotProps={{ htmlInput: { "aria-label": "备注" } }}
                     multiline
-                    // 比主弹窗的两行宽裕得多：这就是这个弹窗存在的意义。
-                    // 用 rows 定高，**不要**给 textarea 设 height:100% ——
-                    // 那样框被拉高了、内容却仍按原高度垂直居中，
-                    // 表现为「光标出现在框中间、上下打不了字」（用户报过）。
-                    rows={15}
+                    // 「放大」的实现就是**行数多**，不是把 textarea 硬拉高。
+                    // 之前试过给 textarea / InputBase 设 `height: 100%`，结果内容
+                    // 垂直居中、光标落在框中间、上下打不了字（用户报过两次）——
+                    // 那是硬拉 textarea 的副作用。rows 可预测：框从顶部开始，占多高一目了然。
+                    rows={20}
                     // 定高之后输入框要吃掉多出来的那截，否则备注框下面空一大块，
                     // 看起来完全不像「放大」了。
                     // ⚠️ 只写 flex:1 不够 —— 那只能撑开 FormControl，textarea 在

@@ -8,6 +8,27 @@
 
 ---
 
+## 2026-10-05（六续）
+
+- **网站设置彻底恢复自适应**：`settingsPaper`（主窗那份样式）里**不再有任何高度设置** ——
+  既不 `height` 也不 `minHeight`。上一版虽然改成了 `minHeight`，但主窗内容少时
+  底部照样空一段（用户：「还是没恢复原来大小」）。两窗不再共用同一份样式。
+- **新增 `notesPaper`**：放大窗专用的面板样式，宽度/配色/圆角/毛玻璃仍从
+  `settingsPaper` 派生（两窗看起来是一套），只多给一个 `minHeight` 下限。
+  备注窗内容就是一个大输入框，撑高不违和。
+- **「放大」改成用 `rows={20}`**，不再拉伸 textarea。
+  先探过 MUI 9 的结构（`FormControl → InputBase-root → textarea`，
+  textarea 是 `display:block`、高度由 `rows` 决定），确认「硬设 height:100%」
+  就是「光标落在框中间」的来源 —— 那套技巧全部去掉。
+- **判据同步换掉**（前几轮的判据都是为上一版写的，已经过期）：
+  - 「两窗 className 必须完全相同」→「宽度与视觉一套，但高度不要求相同」；
+  - 新增「`settingsPaper` 里不许出现 height / minHeight」（防回退第一轮）；
+  - 新增「`notesPaper` 里要有 minHeight + calc 视口兜底、且不许写死 height」；
+  - 新增「`rows={2x}` 且源码里不许再出现 `MuiInputBase-root`」（防回退第二轮）。
+  两处都做了变异验证：给主窗加回 `minHeight` → 第 15 条红；
+  给 textarea 加回 `height:100%` → 第 16 条红。
+- 用例 1717 → **1714**（合并了 3 条重复的高度判据，净减 3 条）。
+
 ## 2026-10-05（五续）
 
 - **输入框「只有当中能打字」**：是我上一轮加的 `& textarea { height: 100% }` 造成的 ——

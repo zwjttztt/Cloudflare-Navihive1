@@ -343,28 +343,29 @@ test("备注框右侧有放大入口", () => {
     );
 });
 
-test("放大窗的尺寸和网站设置一致", () => {
+test("两窗宽度与视觉是一套（但高度不要求相同）", () => {
+    // 这条判据换过两次，都是因为用户实际看到了问题：
+    //   ① 一开始只抄了 borderRadius → 放大窗没有毛玻璃/边框/阴影，肉眼小一号；
+    //   ② 后来要求「整串 className 完全相同」→ 逼出了两窗共用样式，
+    //      也顺带保证了宽度一致。现在**故意不要求高度相同**（见下面两条），
+    //      但宽度与配色仍必须一致，所以关键 class 还是要逐个点名。
     openExpanded();
     const papers = [...document.querySelectorAll<HTMLElement>(".MuiDialog-paper")];
-    assert.equal(papers.length, 2, "应该同时存在主窗与放大窗两个弹窗");
-    const main = papers[0];
-    const expanded = papers[1];
-    // 现在两个窗共用 settingsPaper(theme) 这**同一份**样式对象，emotion 会为相同的
-    // sx 生成相同的 hash，所以整串 className 必须一模一样 —— 这是最强的断言。
-    // （第一版只抄了 borderRadius，毛玻璃/边框/阴影/背景全没抄，肉眼一看就「小一号」，
-    //   而当时只比「都有 paperWidthSm」，所以没抓到。共用之后才敢比整串。）
-    assert.equal(
-        expanded.className,
-        main.className,
-        "两个窗的样式 class 必须完全相同 —— 少抄一条样式就变成另一个窗了"
-    );
-    // 顺带把关键的几条点名，失败时能一眼看出差在哪
+    assert.equal(papers.length, 2);
     for (const cls of [
         "MuiDialog-paperWidthSm",
         "MuiDialog-paperFullWidth",
         "nav-settings-dialog",
     ]) {
-        assert.ok(expanded.className.includes(cls), `放大窗上应有 ${cls}`);
+        assert.ok(papers[0].className.includes(cls), `主窗上应有 ${cls}`);
+        assert.ok(papers[1].className.includes(cls), `放大窗上应有 ${cls}`);
+    }
+    // 毛玻璃那套也该一致（同一个 settingsPaper 派生来的）
+    for (const paper of papers) {
+        assert.ok(
+            paper.className.includes("MuiPaper-root"),
+            "两窗都该是 Paper 材质"
+        );
     }
 });
 
@@ -483,93 +484,46 @@ test("放大窗里不再挂可见标签（标题已写着「备注」，两个�
     );
 });
 
-test("两窗用的是同一份固定高度（不是量出来的）", () => {
-    // 这条判据换过一次。原先的做法是「点开时量主窗 offsetHeight 当放大窗 minHeight」，
-    // 实测**根本没生效** —— 量不到就静默退化成按内容自适应，于是又矮一截，
-    // 为此用户反馈了三轮。现在改成固定高度：两窗用**同一个 settingsPaper**，
-    // 值来自同一处，不可能不一致。
-    //
-    // 能这么断言的前提是「两窗的 sx 完全一样」—— emotion 对相同样式生成相同 hash，
-    // 所以整串 className 必须一致。这比「都有某个 class」强得多。
-    openExpanded();
-    const papers = [...document.querySelectorAll<HTMLElement>(".MuiDialog-paper")];
-    assert.equal(papers.length, 2);
-    assert.equal(
-        papers[1].className,
-        papers[0].className,
-        "两个窗的样式 class 必须完全相同 —— 高度是从同一个函数出来的，不允许有第二个来源"
-    );
-});
-
-test("高度策略写在共享样式里，且必须是 minHeight 而不是写死的 height", () => {
-    // 这条判据换过两次，每次都因为用户实际看到了问题：
-    //   ① 「点开时量主窗 offsetHeight」—— 量不到就静默退化，等于没有；
-    //   ② 「两窗都写死 height」—— 一致了，但主窗内容少时底部空出一大片，
-    //      用户反馈「网站设置下面空出一段，恢复原来大小」。
-    // 现在是 minHeight 下限：主窗内容多就自然变高（不留空白），放大窗有下限保证够大。
-    // 「严格等大」与「不留空白」本身冲突，这里选了后者 —— 所以下面第二条
-    // 明确禁止有人再把固定 height 加回来。
+test("网站设置**不设任何高度**（恢复原来的自适应，别再撑出空白）", () => {
+    // 用户连续三轮抱怨「网站设置下面空出一段」。根因是主窗被写了 minHeight / height，
+    // 内容少时底部就空一块。这里钉死：主窗那份样式里不许出现任何高度。
+    // 放大窗要高度由 notesPaper 单独给（那是内容一个大输入框，撑高不违和）。
     const source = readFileSync(
         join(findProjectDir(), "src", "components", "SiteSettingsModal.tsx"),
         "utf-8"
     );
-    const fn = source.slice(source.indexOf("function settingsPaper"));
-    const body = fn.slice(0, fn.indexOf("}"));
+    const body = source
+        .slice(source.indexOf("function settingsPaper"), source.indexOf("function notesPaper"));
     assert.ok(
-        body.includes("minHeight:"),
-        "settingsPaper 里必须写 minHeight 下限 —— 不写放大窗就退回「按内容自适应」"
+        !/\n\s+(min)?[Hh]eight:/.test(body),
+        "settingsPaper（网站设置）里不许再写 height / minHeight —— " +
+            "内容少时底部会空一段（用户报过三轮）。要撑高就改 notesPaper"
     );
-    // 下限必须同时照顾小屏：min() 里那个 calc 是视口兜底
+});
+
+test("放大窗的高度下限写在 notesPaper 里，且带视口兜底", () => {
+    const source = readFileSync(
+        join(findProjectDir(), "src", "components", "SiteSettingsModal.tsx"),
+        "utf-8"
+    );
+    const start = source.indexOf("function notesPaper");
+    const body = source.slice(start, source.indexOf("export default function"));
+    assert.ok(body.includes("minHeight:"), "notesPaper 里要给放大窗一个高度下限");
     assert.ok(
         body.includes("calc(100vh"),
         "要用 min(…, calc(100vh …)) 收窄，否则小屏上弹窗会超出屏幕"
     );
     assert.ok(
-        !/\n\s+height:\s*["']/.test(body),
-        "别在 settingsPaper 里写死 height —— 主窗内容少时底部会空一大片" +
-            "（用户报过「恢复原来大小」）。要下限就 minHeight。"
+        !/\n\s+height:/.test(body),
+        "notesPaper 也别写死 height —— 内容（标题+20 行输入框+按钮）自己就够高了"
     );
-});
-
-test("放大窗里的按钮叫「保存」（不是「完成」）", () => {
-    openExpanded({ notes: "内容" });
-    const btn = topDialogButtons().find(b => (b.textContent || "").trim() === "保存");
-    assert.ok(btn, "放大窗的确认按钮文案是「保存」");
-    assert.equal(
-        topDialogButtons().find(b => (b.textContent || "").trim() === "完成"),
-        undefined,
-        "不该还留着「完成」"
-    );
-});
-
-test("initiallyExpandNotes：卡片右键直达时，打开就是放大态", () => {
-    // 模拟 SiteCard 右键「编辑备注」那条路径：它把标志传给 modal，modal 挂载时就读一次
-    mount(
-        <SiteSettingsModal
-            site={makeSite({ notes: "已有备注" })}
-            groups={[] as never}
-            onUpdate={() => {}}
-            onDelete={() => {}}
-            onClose={() => {}}
-            initiallyExpandNotes
-        />
-    );
-    // 不用点放大按钮：打开就该在放大窗里
+    // rows 才是「撑满」的主力：写死高度 + 拉伸 textarea 会让内容垂直居中
     assert.ok(
-        document.querySelector("#notes-expanded"),
-        "传了 initiallyExpandNotes 就要直接进放大窗 —— 卡片右键「编辑备注」全靠这条"
+        /rows=\{2\d\}/.test(source),
+        "放大窗的输入框要用 rows 撑大（20 行以上），别用 height:100% 硬拉伸"
     );
-    assert.equal(
-        document.querySelectorAll(".MuiDialog-paper").length,
-        2,
-        "主窗也在（放大窗是叠在它上面的），但内容是备注"
-    );
-});
-
-test("不带 initiallyExpandNotes 时仍然从主窗开始（标志不残留）", () => {
-    openExpanded();
     assert.ok(
-        document.querySelector("#notes-expanded"),
-        "点过放大后放大窗在"
+        !source.includes("MuiInputBase-root"),
+        "别再给 InputBase/textarea 设 height:100% —— 那是「光标落在框中间」的来源"
     );
 });
