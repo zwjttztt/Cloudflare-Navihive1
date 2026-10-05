@@ -46,7 +46,9 @@ import EditIcon from "@mui/icons-material/Edit";
 import FormatBoldIcon from "@mui/icons-material/FormatBold";
 import FormatItalicIcon from "@mui/icons-material/FormatItalic";
 import FormatQuoteIcon from "@mui/icons-material/FormatQuote";
+import FirstPageIcon from "@mui/icons-material/FirstPage";
 import ImageIcon from "@mui/icons-material/Image";
+import LastPageIcon from "@mui/icons-material/LastPage";
 import LinkIcon from "@mui/icons-material/Link";
 import ListIcon from "@mui/icons-material/List";
 import PushPinIcon from "@mui/icons-material/PushPin";
@@ -95,6 +97,14 @@ function formatWhen(iso?: string): string {
     return `${t.getMonth() + 1}月${t.getDate()}日`;
 }
 
+/** 列表里月份分组标题（阶段二）：「2026-10」→「十月」 */
+function monthLabel(iso?: string): string {
+    if (!iso) return "其他";
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return "其他";
+    return `${d.getFullYear()} 年 ${d.getMonth() + 1} 月`;
+}
+
 /** 把编辑区拆成「源码 | 预览」两栏 */
 type Pane = "edit" | "split" | "preview";
 
@@ -109,15 +119,18 @@ type NoteView = "all" | "recent" | "starred";
  * inkstone 也是这个调子（细瘦、灰、hover 加深）。
  */
 const SCROLLBAR_SX = {
+    // Firefox
     scrollbarWidth: "thin",
-    "&::-webkit-scrollbar": { width: 10, height: 10 },
-    "&::-webkit-scrollbar-track": { background: "transparent" },
+    scrollbarColor: "rgba(0,0,0,0.45) transparent",
+    // ⚠️ 用户实测「预览框能滚但还是看不见滚动条」—— 之前 10px + 35% 灰 + 2px 透明
+    // 内边距把拇指挤成 6px 的一细条，太浅。现在 12px + 45% 黑，直接填满不缩边。
+    "&::-webkit-scrollbar": { width: 12, height: 12 },
+    "&::-webkit-scrollbar-track": { background: "rgba(0,0,0,0.06)" },
     "&::-webkit-scrollbar-thumb": {
-        bgcolor: "rgba(128,128,128,0.35)",
-        borderRadius: 5,
-        border: "2px solid transparent",
-        backgroundClip: "content-box",
-        "&:hover": { bgcolor: "rgba(128,128,128,0.55)" },
+        bgcolor: "rgba(0,0,0,0.45)",
+        borderRadius: 6,
+        minHeight: 40,
+        "&:hover": { bgcolor: "rgba(0,0,0,0.6)" },
     },
 } as const;
 
@@ -147,6 +160,8 @@ export default function NotesPage({
     const [keyword, setKeyword] = useState("");
     /** 左栏视图：全部 / 最近 / 收藏（回收站要软删字段，留到阶段三） */
     const [view, setView] = useState<NoteView>("all");
+    /** 阶段二：左栏可折叠（照 inkstone 的 196↔9，我们这边是 300↔44 的图标轨） */
+    const [listCollapsed, setListCollapsed] = useState(false);
     const [activeId, setActiveId] = useState<number | null>(notes[0]?.id ?? null);
     const [pane, setPane] = useState<Pane>("split");
     /** 分栏比例（源码 : 预览）。可拖拽，记住上一次。 */
@@ -162,6 +177,19 @@ export default function NotesPage({
     // 于是「记事本页面里」右侧有一条整页滚动条，拖它页面会动，看着像坏了。
     // 关掉记事本（组件卸载）时 hook 会自动把样式还原回去。
     useScrollLock(true);
+
+    /** 阶段二：搜索框的 ⌘K 快捷键 */
+    const searchRef = useRef<HTMLInputElement | null>(null);
+    useEffect(() => {
+        const onKey = (e: KeyboardEvent) => {
+            if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+                e.preventDefault();
+                searchRef.current?.focus();
+            }
+        };
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
+    }, []);
 
     const active = useMemo(
         () => notes.find(n => n.id === activeId) || null,
@@ -198,6 +226,22 @@ export default function NotesPage({
                 (n.content || "").toLowerCase().includes(kw)
         );
     }, [notes, keyword, view]);
+
+    /** 阶段二：列表按月份分组（「十月」「九月…」），和 inkstone 一样 */
+    const monthGroups = useMemo(() => {
+        const buckets = new Map<string, { label: string; items: Note[] }>();
+        for (const n of filtered) {
+            const raw = n.updated_at || n.created_at || "";
+            const key = raw.slice(0, 7); // "2026-10"
+            const list = buckets.get(key);
+            if (list) list.items.push(n);
+            else buckets.set(key, { label: monthLabel(raw), items: [n] });
+        }
+        // 月份从新到旧（最近编辑的笔记在最上面）。
+        // ⚠️ 不能直接拿「2026 年 10 月」这种中文字面排字典序：`9` > `1`，
+        // 会把九月排到十月前面；按 `YYYY-MM` 排才对。
+        return [...buckets.entries()].sort((a, b) => (a[0] < b[0] ? 1 : -1));
+    }, [filtered]);
 
     /** 左栏导航上挂的三个数 */
     const viewCounts = useMemo(
@@ -382,10 +426,19 @@ export default function NotesPage({
                 before,
                 after,
             };
-            writeBack(
-                next,
-                Math.min(next.length, start + before.length + selected.length + after.length)
-            );
+            // ⚠️ 选中一段字点按钮之后，这段字要**继续选着** ——
+            // 之前 writeBack 只给了 caret（selEnd 默认 = caret），选区被折叠到末尾，
+            // 用户看到的「点了粗体后选择就没了」，再点第二下「取消粗体」也无从判断。
+            // 行首前缀类（`# ` `- ` `> `）也一样：把刚包上的正文重新选上。
+            if (seg.length > 0) {
+                const bodyFrom = start + before.length;
+                writeBack(next, bodyFrom, Math.min(bodyFrom + selected.length, next.length));
+            } else {
+                writeBack(
+                    next,
+                    Math.min(next.length, start + before.length + selected.length + after.length)
+                );
+            }
         },
         []
     );
@@ -416,7 +469,8 @@ export default function NotesPage({
     const listPane = (
         <Box
             sx={{
-                width: { xs: "100%", md: 300 },
+                // 阶段二：折叠后收成 44px 的图标轨（平时 300px）
+                width: listCollapsed ? 44 : { xs: "100%", md: 300 },
                 flexShrink: 0,
                 borderRight: { md: "1px solid var(--card-border, rgba(0,0,0,0.08))" },
                 display: "flex",
@@ -430,6 +484,7 @@ export default function NotesPage({
                 <TextField
                     fullWidth
                     size='small'
+                    inputRef={searchRef}
                     value={keyword}
                     onChange={e => setKeyword(e.target.value)}
                     placeholder='搜索标题与内容'
@@ -439,6 +494,26 @@ export default function NotesPage({
                             startAdornment: (
                                 <InputAdornment position='start'>
                                     <SearchIcon fontSize='small' />
+                                </InputAdornment>
+                            ),
+                            // 阶段二：搜索框右侧挂个 ⌘K 提示（⌘/Ctrl+K 会聚焦它）
+                            endAdornment: (
+                                <InputAdornment position='end'>
+                                    <Box
+                                        component='kbd'
+                                        aria-hidden='true'
+                                        sx={{
+                                            fontSize: 10,
+                                            lineHeight: 1.4,
+                                            px: 0.5,
+                                            py: 0.1,
+                                            borderRadius: 0.75,
+                                            border: "1px solid rgba(128,128,128,0.35)",
+                                            color: "text.disabled",
+                                        }}
+                                    >
+                                        ⌘K
+                                    </Box>
                                 </InputAdornment>
                             ),
                         },
@@ -478,6 +553,8 @@ export default function NotesPage({
                 ))}
             </Box>
 
+            {!listCollapsed && (
+            <>
             {notes.length > 0 && (
                 <Typography
                     variant='caption'
@@ -500,7 +577,18 @@ export default function NotesPage({
                             : "没有匹配的笔记。"}
                     </Typography>
                 ) : (
-                    filtered.map(note => {
+                    monthGroups.map(([, group]) => (
+                        <Box key={group.label}>
+                            {/* 阶段二：月份分组标题（「2026 年 10 月」），和 inkstone 一样 */}
+                            <Typography
+                                variant='caption'
+                                color='text.disabled'
+                                data-month={group.label}
+                                sx={{ display: "block", px: 2, pt: 1, pb: 0.5, fontSize: 11 }}
+                            >
+                                {group.label}
+                            </Typography>
+                            {group.items.map(note => {
                         const isActive = note.id === activeId;
                         return (
                             <Box
@@ -577,9 +665,13 @@ export default function NotesPage({
                                 </Typography>
                             </Box>
                         );
-                    })
+                    })}
+                        </Box>
+                    ))
                 )}
             </Box>
+            </>
+            )}
         </Box>
     );
 
@@ -806,6 +898,22 @@ export default function NotesPage({
                 <IconButton aria-label='返回导航站' onClick={onClose} size='small'>
                     <ArrowBackIcon fontSize='small' />
                 </IconButton>
+                {/* 阶段二：左栏折叠（照 inkstone 那个 196↔9 的收起动作） */}
+                <Tooltip
+                    title={listCollapsed ? "展开笔记列表" : "收起笔记列表"}
+                >
+                    <IconButton
+                        aria-label={listCollapsed ? "展开笔记列表" : "收起笔记列表"}
+                        size='small'
+                        onClick={() => setListCollapsed(c => !c)}
+                    >
+                        {listCollapsed ? (
+                            <LastPageIcon fontSize='small' />
+                        ) : (
+                            <FirstPageIcon fontSize='small' />
+                        )}
+                    </IconButton>
+                </Tooltip>
                 <Typography variant='h6' component='div' sx={{ fontWeight: 600, flex: 1 }}>
                     记事本
                 </Typography>
@@ -1106,11 +1214,15 @@ function MarkdownToolbar({
                 aria-expanded={headingAnchor ? true : undefined}
                 onClick={e => setHeadingAnchor(e.currentTarget)}
                 sx={{
+                    // ⚠️ 必须和旁边那些图标按钮**一样大**（28×28）、字号也对齐：
+                    // 之前是个「按钮」，自带 padding + 18px 字，比图标高一截也宽一截，
+                    // 用户一眼就看出「标题按键和其他大小不一样」。
+                    width: 28,
+                    height: 28,
                     minWidth: 0,
-                    px: 0.75,
-                    py: 0.25,
-                    fontSize: 12,
-                    lineHeight: 1.4,
+                    p: 0,
+                    fontSize: 13,
+                    lineHeight: 1,
                     color: "text.secondary",
                     "&:hover": { bgcolor: "rgba(128,128,128,0.14)", color: "text.primary" },
                 }}

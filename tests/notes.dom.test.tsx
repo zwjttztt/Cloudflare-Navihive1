@@ -169,6 +169,82 @@ test("左栏导航「收藏」只看置顶的那几条", () => {
     assert.ok(!list().includes("普通的"), "收藏里不该出现没置顶的");
 });
 
+// ---------- 阶段二：左栏折叠 / 月份分组 / ⌘K ----------
+
+test("标题下拉按钮和图标按钮一样大（28×28），不再高一截", () => {
+    mountPanel([note({ id: 1, title: "甲", content: "" })]);
+    const bar = document.querySelector('[aria-label="Markdown 格式"]')!;
+    const head = bar.querySelector('button[aria-label="标题层级"]') as HTMLElement;
+    const bold = bar.querySelector('button[data-tool="bold"]') as HTMLElement;
+    assert.ok(head && bold, "标题下拉和粗体按钮都要在");
+    // ⚠️ jsdom 没有布局，getBoundingClientRect 恒为 0，量不了真实尺寸；
+    // 所以这里查源码：标题按钮必须和图标按钮一样是 28×28 —— 它之前是「Button」自带
+    // padding + 18px 字，比图标高一截，用户一眼看出大小不一致。
+    const src = readFileSync(
+        resolve(findProjectDir(), "src/components/NotesPage.tsx"),
+        "utf-8"
+    );
+    const headBlock = src.slice(src.indexOf("标题层级"), src.indexOf("</Button>", src.indexOf("标题层级")));
+    assert.ok(headBlock.includes("width: 28"), "标题按钮宽度要和图标按钮一致");
+    assert.ok(headBlock.includes("height: 28"), "标题按钮高度要和图标按钮一致");
+});
+
+test("选中一段字点粗体后，选区还在（不能一按就没了）", () => {
+    mountPanel([note({ id: 1, title: "甲", content: "" })]);
+    const ta = document.querySelector<HTMLTextAreaElement>("textarea[aria-label='笔记内容']")!;
+    const bold = document.querySelector('button[data-tool="bold"]') as HTMLElement;
+    act(() => {
+        ta.focus();
+        ta.value = "这篇笔记";
+        ta.setSelectionRange(0, 4);
+    });
+    act(() => bold.click());
+    assert.equal(ta.value, "**这篇笔记**", "第一下包一层");
+    assert.equal(ta.selectionStart, 2, "选区左边界要跟着标记挪到 `**` 之后");
+    assert.equal(ta.selectionEnd, 6, "刚包上的 `这篇笔记`(4 字)要整体还在选中态");
+});
+
+test("阶段二：列表按月份分组，月份标题挂在条目上面", () => {
+    mountPanel([
+        note({ id: 1, title: "早的", content: "a", updated_at: "2026-09-03T10:00:00Z" }),
+        note({ id: 2, title: "晚的", content: "b", updated_at: "2026-10-05T10:00:00Z" }),
+    ]);
+    const headers = [...document.querySelectorAll("[data-month]")].map(h => h.textContent);
+    assert.deepEqual(headers, ["2026 年 10 月", "2026 年 9 月"], "月份从新到旧");
+    const list = document.querySelector("[data-note-list]")!;
+    assert.ok(list.textContent!.includes("晚的") && list.textContent!.includes("早的"));
+    // 分组顺序：新的月份那组整体排在前面（「晚的」必须出现在「早的」之前）
+    assert.ok(
+        list.innerHTML.indexOf("晚的") < list.innerHTML.indexOf("早的"),
+        "新的月份分组要在列表里排在前面"
+    );
+});
+
+test("阶段二：顶栏能收起 / 展开左栏", () => {
+    mountPanel([note({ id: 1, title: "甲", content: "" })]);
+    assert.ok(document.querySelector("[data-note-list]"), "默认列表在");
+    const collapse = document.querySelector('button[aria-label="收起笔记列表"]');
+    assert.ok(collapse, "顶栏要有收起按钮");
+    act(() => (collapse as HTMLElement).click());
+    assert.equal(
+        document.querySelector("[data-note-list]"),
+        null,
+        "收起后列表要整块消失（不是被 width:0 藏起来）"
+    );
+    const expand = document.querySelector('button[aria-label="展开笔记列表"]');
+    assert.ok(expand, "要能再展开回来");
+    act(() => (expand as HTMLElement).click());
+    assert.ok(document.querySelector("[data-note-list]"), "展开后列表回来");
+});
+
+test("阶段二：搜索框右侧挂 ⌘K 提示", () => {
+    mountPanel([note({ id: 1, title: "甲", content: "" })]);
+    const input = document.querySelector("input[aria-label='搜索笔记']") as HTMLInputElement;
+    assert.ok(input.parentElement!.textContent!.includes("⌘K"), "要有 ⌘K 角标");
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", ctrlKey: true }));
+    assert.equal(document.activeElement, input, "Ctrl+K 要聚焦搜索框");
+});
+
 test("没有笔记时给一句引导，不是一片空白", () => {
     mountPanel([]);
     assert.ok(text().includes("还没有笔记"), "空状态要有引导文案");
