@@ -200,11 +200,20 @@ export default function NotesPage({
     };
 
     /**
-     * 在光标处插入一段 Markdown 语法。
+     * 上一次插入的片段（起止偏移 + 原文），用来做「连点第二下 = 取消」。
+     * 只靠位置判断取消是不行的：插完后光标落在整段之后，其两侧未必还是
+     * 那两枚标记（比如在文末就什么都没有），硬判取消会把用户刚敲的 `**` 删掉。
+     */
+    const lastInsertRef = useRef<{ start: number; snippet: string } | null>(null);
+
+    /**
+     * 在光标处插入一段 Markdown 语法 —— **同名按钮是开关**：
+     * 已经有这层格式就摘掉，没有就包上（点第二下把上一次插入撤掉 = 取消）。
      *
-     * 选区存在时**包住选区**（比如选中一段字按粗体 → `**这段字**`），
-     * 没有选区就纯插入。插入后要把光标放到插入内容之后，并重新聚焦 ——
-     * 不这么做的话点一下工具栏，焦点就丢了，接着打字会打到别处。
+     * 三条路径：
+     *   ① 连点同一个按钮，且那段还是上次插的东西 → 整段撤销；
+     *   ② 选区已经带标记（`**粗体**`）或正好被两枚标记夹住 → 去掉标记；
+     *   ③ 其余 → 包一层（有选区包住选区，没有就放占位符）。
      */
     const insertAtCursor = useCallback(
         (before: string, after: string, placeholder: string) => {
@@ -218,23 +227,58 @@ export default function NotesPage({
             const content = el.value;
             const start = el.selectionStart ?? content.length;
             const end = el.selectionEnd ?? start;
-            const selected = content.slice(start, end) || placeholder;
-            const next = content.slice(0, start) + before + selected + after + content.slice(end);
-            // ⚠️ 光标必须落在**整段**之后（before + selected + after 三者全部算上）。
-            // 漏掉 after.length 的话，点一下「粗体」光标就落在闭合的 `**` 中间，
-            // 接着打字会插到标记里头（变 `**粗体X**` 看着像加粗失败），
-            // 再点一次又是从半截标记处插入 —— 用户报的「多次点击有问题」就是它俩叠加。
-            const caret = Math.min(
-                next.length,
-                start + before.length + selected.length + after.length
-            );
 
-            // 先同步把 value 改掉、并把光标放好，再更新 state。
-            // 这样下一次点击读到的 el.value 已经是插入后的内容。
-            el.value = next;
-            el.setSelectionRange(caret, caret);
-            el.focus();
-            setDraft(d => (d ? { ...d, content: next } : d));
+            /** 写回：先落 DOM 值 + 光标，再同步 state（顺序反了连点会读到旧值） */
+            const writeBack = (next: string, caret: number, selEnd = caret) => {
+                el.value = next;
+                el.setSelectionRange(caret, selEnd);
+                el.focus();
+                setDraft(d => (d ? { ...d, content: next } : d));
+            };
+
+            // ① 连点同一个按钮 → 撤销上一次插入（用户要的「第二下取消」）
+            const last = lastInsertRef.current;
+            if (last && content.slice(last.start, last.start + last.snippet.length) === last.snippet) {
+                const next =
+                    content.slice(0, last.start) +
+                    content.slice(last.start + last.snippet.length);
+                lastInsertRef.current = null;
+                writeBack(next, Math.min(last.start, next.length));
+                return;
+            }
+
+            const seg = content.slice(start, end) || "";
+            const pre = content.slice(start - before.length, start);
+            const post = content.slice(end, end + after.length);
+            // 选区自带两枚标记（整段选中），或选区正好被两枚标记夹住（只选了里面的字）
+            const segHasMarks =
+                seg.length > before.length + after.length &&
+                seg.startsWith(before) &&
+                seg.endsWith(after);
+            const segBare = !seg.startsWith(before) && !seg.endsWith(after);
+            const surrounding = pre === before && post === after;
+
+            // ② 已经有这层格式 → 摘掉（取消加粗/斜体…）
+            if (segHasMarks || (segBare && surrounding)) {
+                const body = segHasMarks ? seg.slice(before.length, seg.length - after.length) : seg;
+                const from = segHasMarks ? start : start - before.length;
+                const to = segHasMarks ? end : end + after.length;
+                const next = content.slice(0, from) + body + content.slice(to);
+                lastInsertRef.current = null;
+                writeBack(next, Math.min(from, next.length), Math.min(from + body.length, next.length));
+                return;
+            }
+
+            // ③ 包一层。⚠️ 光标必须落在**整段**之后（before + selected + after 都算上），
+            // 漏掉 after.length 的话光标会落在闭合的 `**` 中间，接着打字就插到标记里头。
+            const selected = seg || placeholder;
+            const next =
+                content.slice(0, start) + before + selected + after + content.slice(end);
+            lastInsertRef.current = { start, snippet: before + selected + after };
+            writeBack(
+                next,
+                Math.min(next.length, start + before.length + selected.length + after.length)
+            );
         },
         []
     );

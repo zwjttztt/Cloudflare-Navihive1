@@ -416,10 +416,10 @@ test("挂载期间锁住整页滚动（底下的导航站不该让 document 变�
     assert.equal(document.documentElement.style.overflow, "", "卸载后 html 的内联样式要还原");
 });
 
-test("工具栏连点两次不会把内容叠在同一处", () => {
-    // 原来 insertAtCursor 读的是 draft（React state）：setDraft 是异步的，
-    // 连点第二下时 draft 还停留在「第一次插入之前」，于是又从旧光标插一遍，
-    // 两次插入叠成一坨。DOM 上的 value 才是唯一事实来源。
+test("工具栏同名按钮是开关：连点第二下是「取消」而不是再插一遍", () => {
+    // 用户原话：「把连点两下粗体第二下改为取消」。
+    // 工具栏的语义应该是**开关**（像 inkstone / 富文本编辑器那样），
+    // 不是每次都往里塞一层新标记。
     mountPanel([note({ id: 1, title: "甲", content: "abc" })]);
     const ta = document.querySelector<HTMLTextAreaElement>(
         "textarea[aria-label='笔记内容']"
@@ -433,12 +433,54 @@ test("工具栏连点两次不会把内容叠在同一处", () => {
     assert.ok(bold, "工具栏要有「B（粗体）」按钮");
 
     act(() => bold!.click());
-    act(() => bold!.click());
+    assert.equal(ta.value, "abc**粗体**", "第一下：包一层");
 
-    // 两次都从光标处插入「**粗体**」，第二次读到的必须是第一次插入后的内容
-    assert.equal(ta.value, "abc**粗体****粗体**", "连点两下应在末尾依次插入，不能叠");
-    // 光标要落在整段之后（含闭合的 `**`），不能卡在标记中间
-    assert.equal(ta.selectionStart, ta.value.length);
+    act(() => bold!.click());
+    assert.equal(
+        ta.value,
+        "abc",
+        "第二下：把上一次插的那段撤掉（取消），不能变成 abc**粗体****粗体**"
+    );
+    assert.equal(ta.selectionStart, 3, "取消后光标回到原来的插入处");
+});
+
+test("已经有这层格式时点按钮是摘掉标记（不是再加一层）", () => {
+    // 选中整段带标记的内容 / 只选中被两枚标记夹在中间的字，按同名按钮都要「取消」
+    mountPanel([note({ id: 1, title: "甲", content: "" })]);
+    const ta = document.querySelector<HTMLTextAreaElement>(
+        "textarea[aria-label='笔记内容']"
+    );
+    assert.ok(ta, "要有笔记内容输入框");
+    // ⚠️ 按钮要等面板挂上才存在，不能在 mountPanel 之前去查
+    const bold = [...document.querySelectorAll("button")].find(b => b.textContent === "B");
+    assert.ok(bold, "工具栏要有「B（粗体）」按钮");
+
+    // ① 整段 `**粗**`（5 字符）：选区自带两枚标记 → 去掉标记
+    act(() => {
+        ta!.focus();
+        ta!.value = "**粗**";
+        ta!.setSelectionRange(0, 6);
+    });
+    act(() => bold!.click());
+    assert.equal(ta.value, "粗", "整段选中带标记的内容，按 B 要去掉标记");
+
+    // ② 只选中里面的字：前后各有一枚标记 → 也要去掉标记
+    act(() => {
+        ta.focus();
+        ta.value = "**粗**";
+        ta.setSelectionRange(2, 3);
+    });
+    act(() => bold!.click());
+    assert.equal(ta.value, "粗", "只选中被 ** 夹住的字，按 B 要去掉标记");
+
+    // ③ 没被标记包着的字，按同名按钮仍然是加格式
+    act(() => {
+        ta.focus();
+        ta.value = "粗";
+        ta.setSelectionRange(0, 1);
+    });
+    act(() => bold!.click());
+    assert.equal(ta.value, "**粗**", "没带标记的内容不受影响，正常包一层");
 });
 
 test("插入内容以 textarea 的 DOM 值为准，不能读 draft", () => {
@@ -459,12 +501,10 @@ test("插入内容以 textarea 的 DOM 值为准，不能读 draft", () => {
         "不能从 draft 读内容：setDraft 异步，连点第二下读到的是上一次插入前的值"
     );
     // 光标位置必须把闭合标记算进去（漏 after.length 会插到 `**` 中间）。
-    // ⚠️ 这句是**跨行**的（Math.min(...) 折了三行），不能只取 `const caret` 那一行。
-    const caretAt = fn.indexOf("const caret");
-    assert.ok(caretAt >= 0, "没找到 caret 的计算（静态守卫已失效）");
-    const caretExpr = fn.slice(caretAt, caretAt + 200);
+    // ⚠️ 位置是**作为参数**传给 writeBack 的，不再有 `const caret` 这一句，
+    // 所以只认这个表达式本身。
     assert.ok(
-        caretExpr.includes("after.length"),
-        "光标位置必须加上 after.length —— 否则点完「粗体」光标卡在闭合的 ** 中间"
+        fn.includes("before.length + selected.length + after.length"),
+        "光标位置必须算上 after.length —— 否则点完「粗体」光标卡在闭合的 ** 中间"
     );
 });
