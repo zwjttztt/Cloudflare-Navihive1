@@ -70,10 +70,17 @@ interface SiteSettingsModalProps {
  * 这类「两个窗口要长得一样」的约定，最容易在只改了一处时悄悄漂移，
  * 所以让它们**共用同一个对象**，以后改主题只改这一处。
  */
-function settingsPaper(theme: Theme) {
+function settingsPaper(theme: Theme, opts?: { minHeight?: number | null }) {
     return {
         className: "nav-settings-dialog",
         sx: {
+            // 定高之后要靠 flex 让内容把多出来的高度吃掉，否则底部会留一片空白。
+            // 两窗都设：主窗虽然不定高，但列布局对「标题固定、内容滚动」也更稳。
+            display: "flex",
+            flexDirection: "column",
+            // 放大窗用它把高度对齐主窗（见 notesHeight）。主窗自己不定高 —— 它的
+            // 高度是内容决定的，写死反而会在内容变多时被截断。
+            ...(opts?.minHeight ? { minHeight: opts.minHeight } : {}),
             // 和确认弹窗/提示条同一套毛玻璃面板，视觉统一
             borderRadius: "var(--card-radius)",
             backdropFilter: "blur(var(--glass-blur)) saturate(1.4)",
@@ -149,6 +156,17 @@ export default function SiteSettingsModal({
     // 两行框里改长文本很难受（要拖着框边角拉），所以给一个和本弹窗同尺寸的
     // 大输入框。共用同一份 formData.notes —— 不做两份再同步，少一处能写错的地方。
     const [notesExpanded, setNotesExpanded] = useState(false);
+    // 放大窗要与主窗**同样大小**。宽度靠 maxWidth 就一致了，高度不行 ——
+    // 主窗的高度由内容决定，放大窗内容少就矮一截，看起来像小一号。
+    // 打开时量一次主窗的实测高度喂给放大窗（照项目里「paper 定高、内容 flex:1」的约定）。
+    // 量不到时（jsdom / 极端情况）就不设高度，退回内容自适应 —— 不能因为量不到就卡住功能。
+    const mainPaperRef = useRef<HTMLDivElement | null>(null);
+    const [notesHeight, setNotesHeight] = useState<number | null>(null);
+
+    const openNotesExpanded = () => {
+        setNotesHeight(mainPaperRef.current?.offsetHeight || null);
+        setNotesExpanded(true);
+    };
 
     // 初始快照只取第一次渲染的值，之后不再变
     const initialRef = useRef<ReturnType<typeof buildInitialForm> | null>(null);
@@ -358,7 +376,7 @@ export default function SiteSettingsModal({
             onClose={onClose}
             fullWidth
             maxWidth='sm'
-            slotProps={{ paper: settingsPaper(theme) }}
+            slotProps={{ paper: { ...settingsPaper(theme), ref: mainPaperRef } }}
         >
             <DialogTitle
                 sx={{
@@ -757,9 +775,7 @@ export default function SiteSettingsModal({
                                                         size='small'
                                                         edge='end'
                                                         aria-label='放大编辑备注'
-                                                        onClick={() =>
-                                                            setNotesExpanded(true)
-                                                        }
+                                                        onClick={openNotesExpanded}
                                                     >
                                                         <FullscreenIcon fontSize='small' />
                                                     </IconButton>
@@ -931,7 +947,7 @@ export default function SiteSettingsModal({
             onClose={() => setNotesExpanded(false)}
             fullWidth
             maxWidth='sm'
-            slotProps={{ paper: settingsPaper(theme) }}
+            slotProps={{ paper: settingsPaper(theme, { minHeight: notesHeight }) }}
         >
             <DialogTitle
                 sx={{

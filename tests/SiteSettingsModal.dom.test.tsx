@@ -466,3 +466,46 @@ test("放大窗里不再挂可见标签（标题已写着「备注」，两个�
         "去掉可见 label 后要用 aria-label 补上，否则读屏用户听不出这是备注框"
     );
 });
+
+test("放大窗的高度对齐主窗（量到主窗高度就把它用上）", () => {
+    mount(
+        <SiteSettingsModal
+            site={makeSite({ notes: "" })}
+            groups={[] as never}
+            onUpdate={() => {}}
+            onDelete={() => {}}
+            onClose={() => {}}
+        />
+    );
+    // jsdom 里 offsetHeight 恒为 0，所以「量高度」这件事在默认环境里是量不到的 ——
+    // 得手动给主窗 paper 灌一个高度，否则这条永远测不到真东西。
+    const mainPaper = document.querySelector<HTMLElement>(".MuiDialog-paper")!;
+    assert.ok(mainPaper, "先找到主窗");
+    const realHeight = Object.getOwnPropertyDescriptor(
+        HTMLElement.prototype,
+        "offsetHeight"
+    )!.get!;
+    Object.defineProperty(mainPaper, "offsetHeight", {
+        configurable: true,
+        get: () => 640,
+    });
+
+    const sameBeforeClick = document.querySelectorAll(".MuiDialog-paper").length;
+    click(document.querySelector<HTMLElement>('[aria-label="放大编辑备注"]')!);
+
+    // 还原，别影响后面可能复用同一 paper 的用例
+    Object.defineProperty(mainPaper, "offsetHeight", {
+        configurable: true,
+        get: realHeight,
+    });
+    assert.equal(sameBeforeClick, 1, "点之前只有主窗");
+
+    const papers = [...document.querySelectorAll<HTMLElement>(".MuiDialog-paper")];
+    assert.equal(papers.length, 2, "放大窗已打开");
+    assert.notEqual(
+        papers[1].className,
+        papers[0].className,
+        "量到高度后放大窗的样式必须与主窗不同 —— 相同就说明 minHeight 根本没被用上，"
+            + "那「两个窗一样大」又回到了只对齐宽度的状态"
+    );
+});
