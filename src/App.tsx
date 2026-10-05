@@ -98,8 +98,8 @@ const DeleteAccountDialog = lazy(() => import("./components/DeleteAccountDialog"
 const ImportPreviewDialog = lazy(() => import("./components/ImportPreviewDialog"));
 const AuditDialog = lazy(() => import("./components/AuditDialog"));
 const RecycleBinDialog = lazy(() => import("./components/RecycleBinDialog"));
-// 记事本面板：懒加载。面板本身不重，但它可以继续懒加载渲染层
-const NotesPanel = lazy(() => import("./components/NotesPanel"));
+// 记事本：独立页面（参考 inkstone 的工作区布局）。懒加载。
+const NotesPage = lazy(() => import("./components/NotesPage"));
 import HeaderClock from "./components/HeaderClock";
 import SiteListHeader from "./components/SiteListHeader";
 import SiteListSkeleton from "./components/SiteListSkeleton";
@@ -1805,15 +1805,14 @@ function App() {
                     />
                     </ChunkBoundary>
 
-                    {/* 记事本面板：lazy 引入，点开才下载 */}
+                    {/* 记事本：全屏独立页面（不是右侧抽屉），lazy 引入 */}
                     {notesOpen && (
                         <ChunkBoundary>
                         <Suspense fallback={null}>
-                            <NotesPanel
-                                open={notesOpen}
-                                onClose={() => setNotesOpen(false)}
+                            <NotesPage
                                 notes={notes}
-                                onCreate={() => createNote({ title: "", content: "" })}
+                                onClose={() => setNotesOpen(false)}
+                                onCreate={createNote}
                                 onUpdate={updateNote}
                                 onDelete={deleteNote}
                                 onTogglePin={togglePin}

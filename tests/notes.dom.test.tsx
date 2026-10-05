@@ -1,5 +1,5 @@
 // tests/notes.dom.test.tsx
-// 记事本面板（NotesPanel）+ 数据层（useNotes）的行为用例。
+// 记事本页面（NotesPage）+ 数据层（useNotes）的行为用例。
 //
 // 这一组钉的是**写错了不报错、只是界面不对**的地方：
 //   - 面板的搜索/摘要/编辑态切换；
@@ -9,7 +9,7 @@ import { test, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import NotesPanel from "../src/components/NotesPanel";
+import NotesPage from "../src/components/NotesPage";
 import { useNotes } from "../src/hooks/useNotes";
 import { UIPrefsProvider } from "../src/context/UIPrefsContext";
 import type { Note } from "../src/API/http";
@@ -49,8 +49,7 @@ function mountPanel(notes: Note[], handlers: Record<string, unknown> = {}) {
     act(() => {
         root!.render(
             <UIPrefsProvider>
-                <NotesPanel
-                    open
+                <NotesPage
                     onClose={() => {}}
                     notes={notes}
                     onCreate={async () => note({ id: 99 })}
@@ -73,9 +72,12 @@ test("面板列出笔记的标题与内容摘要", () => {
     ]);
     assert.ok(text().includes("常用入口"));
     assert.ok(text().includes("待办"));
-    // 摘要要去掉 Markdown 语法符号（# 与列表符），不是原样显示源码
-    assert.ok(!text().includes("- [x] 已完成"), "摘要里不该留着列表符号");
-    assert.ok(text().includes("已完成"));
+    // 摘要要去掉 Markdown 语法符号（# 与列表符），不是原样显示源码。
+    // ⚠️ 只在**列表项里**找：编辑区/预览区本来就显示原文（那是源码视图，不是摘要）
+    const list = document.querySelector("[data-note-list]")!;
+    assert.ok(list, "列表区要有标记，方便测试只盯它");
+    assert.ok(!list.textContent!.includes("- [x] 已完成"), "摘要里不该留着列表符号");
+    assert.ok(list.textContent!.includes("已完成"));
 });
 
 test("没有笔记时给一句引导，不是一片空白", () => {
@@ -88,7 +90,7 @@ test("关键字过滤：只留命中的那几条", () => {
         note({ id: 1, title: "苹果", content: "a" }),
         note({ id: 2, title: "香蕉", content: "b" }),
     ]);
-    const input = document.querySelector<HTMLInputElement>("input[type='text']")!;
+    const input = document.querySelector<HTMLInputElement>("input[aria-label='搜索笔记']")!;
     const setter = Object.getOwnPropertyDescriptor(
         HTMLInputElement.prototype,
         "value"
@@ -103,7 +105,7 @@ test("关键字过滤：只留命中的那几条", () => {
 
 test("有笔记但没匹配时，提示与「没有笔记」要区分开", () => {
     mountPanel([note({ id: 1, title: "苹果" })]);
-    const input = document.querySelector<HTMLInputElement>("input[type='text']")!;
+    const input = document.querySelector<HTMLInputElement>("input[aria-label='搜索笔记']")!;
     const setter = Object.getOwnPropertyDescriptor(
         HTMLInputElement.prototype,
         "value"
