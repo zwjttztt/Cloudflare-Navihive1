@@ -483,6 +483,35 @@ test("已经有这层格式时点按钮是摘掉标记（不是再加一层）",
     assert.equal(ta.value, "**粗**", "没带标记的内容不受影响，正常包一层");
 });
 
+test("换一个按钮不会被误判成「取消」（点完粗体再点斜体不能把粗体撤掉）", () => {
+    // 浏览器实测抓出来的：记录上次插入时只存了片段没存按钮，
+    // 于是「斜体」一按，发现同一位置还是那段 `**粗体**`，就当成同名按钮撤了它。
+    mountPanel([note({ id: 1, title: "甲", content: "" })]);
+    const ta = document.querySelector<HTMLTextAreaElement>(
+        "textarea[aria-label='笔记内容']"
+    );
+    assert.ok(ta, "要有笔记内容输入框");
+    const bar = document.querySelector('[aria-label="Markdown 格式"]');
+    assert.ok(bar, "要有格式工具栏");
+    const byLabel = (label: string) =>
+        [...bar!.querySelectorAll("button")].find(b => b.textContent === label);
+
+    act(() => {
+        ta!.focus();
+        ta!.setSelectionRange(0, 0);
+    });
+    act(() => byLabel("B")!.click());
+    assert.equal(ta.value, "**粗体**", "B：加粗");
+
+    // 关键点：I 按下之后，**粗体那一段必须还留着**（不能当成「同名第二次」撤掉）。
+    // 至于 I 自己是在光标处插还是摘，两种都算合理，浏览器里再细调。
+    act(() => byLabel("I")!.click());
+    assert.ok(
+        ta.value.includes("**粗体**"),
+        "I 是另一个按钮，不能把上一段粗体撤销掉；实际 " + JSON.stringify(ta.value)
+    );
+});
+
 test("插入内容以 textarea 的 DOM 值为准，不能读 draft", () => {
     // 静态守卫：上面那条行为用例只覆盖连点，读错来源换个场景又会漏回去。
     const clean = stripComments(

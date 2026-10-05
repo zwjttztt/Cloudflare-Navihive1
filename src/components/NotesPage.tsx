@@ -200,11 +200,18 @@ export default function NotesPage({
     };
 
     /**
-     * 上一次插入的片段（起止偏移 + 原文），用来做「连点第二下 = 取消」。
+     * 上一次插入的片段（起止偏移 + 原文 + 是**哪个**按钮插的）。
      * 只靠位置判断取消是不行的：插完后光标落在整段之后，其两侧未必还是
      * 那两枚标记（比如在文末就什么都没有），硬判取消会把用户刚敲的 `**` 删掉。
+     * ⚠️ before/after 必须一起记：少了这层校验，点完「粗体」再点「斜体」，
+     * 斜体会把上一段粗体当成「同名按钮的第二次点击」给撤掉（浏览器实测抓出来的）。
      */
-    const lastInsertRef = useRef<{ start: number; snippet: string } | null>(null);
+    const lastInsertRef = useRef<{
+        start: number;
+        snippet: string;
+        before: string;
+        after: string;
+    } | null>(null);
 
     /**
      * 在光标处插入一段 Markdown 语法 —— **同名按钮是开关**：
@@ -236,9 +243,10 @@ export default function NotesPage({
                 setDraft(d => (d ? { ...d, content: next } : d));
             };
 
-            // ① 连点同一个按钮 → 撤销上一次插入（用户要的「第二下取消」）
+            // ① 连点**同一个**按钮 → 撤销上一次插入（用户要的「第二下取消」）
             const last = lastInsertRef.current;
-            if (last && content.slice(last.start, last.start + last.snippet.length) === last.snippet) {
+            const sameTool = last && last.before === before && last.after === after;
+            if (sameTool && content.slice(last.start, last.start + last.snippet.length) === last.snippet) {
                 const next =
                     content.slice(0, last.start) +
                     content.slice(last.start + last.snippet.length);
@@ -274,7 +282,12 @@ export default function NotesPage({
             const selected = seg || placeholder;
             const next =
                 content.slice(0, start) + before + selected + after + content.slice(end);
-            lastInsertRef.current = { start, snippet: before + selected + after };
+            lastInsertRef.current = {
+                start,
+                snippet: before + selected + after,
+                before,
+                after,
+            };
             writeBack(
                 next,
                 Math.min(next.length, start + before.length + selected.length + after.length)
