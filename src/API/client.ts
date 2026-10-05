@@ -1,6 +1,7 @@
 import {
     Group,
     Site,
+    Note,
     LoginResponse,
     ExportData,
     ImportResult,
@@ -461,6 +462,50 @@ export class NavigationClient {
         });
         // HTTP 200 就说明删掉了；recycleId 是老服务端不一定给的「撤销」凭据
         return { success: res?.success !== false, recycleId: res?.recycleId };
+    }
+
+    // 记事本相关API（notes 分域）
+    async listNotes(): Promise<Note[]> {
+        return this.request<Note[]>("notes");
+    }
+
+    async getNote(id: number): Promise<Note | null> {
+        return this.request<Note | null>(`notes/${id}`);
+    }
+
+    async createNote(draft: Partial<Note>): Promise<Note> {
+        return this.request<Note>("notes", {
+            method: "POST",
+            body: JSON.stringify(draft),
+        });
+    }
+
+    async updateNote(id: number, patch: Partial<Note>): Promise<Note | null> {
+        return this.request<Note | null>(`notes/${id}`, {
+            method: "PUT",
+            body: JSON.stringify(patch),
+        });
+    }
+
+    async deleteNote(id: number): Promise<{ success: boolean; recycleId?: number }> {
+        const res = await this.request<SoftDeleteResponse>(`notes/${id}`, {
+            method: "DELETE",
+        });
+        // 与 deleteGroup 同一套：HTTP 200 就说明删掉了，recycleId 是撤销凭据
+        return { success: res?.success !== false, recycleId: res?.recycleId };
+    }
+
+    async updateNoteOrder(orders: { id: number; order_num: number }[]): Promise<boolean> {
+        const response = await this.request<{ success?: boolean }>("note-orders", {
+            method: "PUT",
+            body: JSON.stringify({ orders }),
+        });
+        return response?.success !== false;
+    }
+
+    async countNotes(): Promise<number> {
+        const res = await this.request<{ count?: number }>("notes/count");
+        return res?.count ?? 0;
     }
 
     // 网站相关API

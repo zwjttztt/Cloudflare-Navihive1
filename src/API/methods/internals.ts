@@ -27,6 +27,26 @@ export const CREATE_STATEMENTS = [
     // jti 抹掉，那张令牌就又活了），而且每次校验都要把整份 JSON 读出来解析。
     // 改成一行一条之后插入到 key 冲突时覆盖是幂等的，查也是走主键的单行查询。
     `CREATE TABLE IF NOT EXISTS token_blacklist (jti TEXT PRIMARY KEY, exp INTEGER NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`,
+    // 记事本：全局的笔记列表，跟账号走（user_id + scopeSql 复用 sites 那套隔离）。
+    //
+    // 与 sites.notes（每个站点一条、跟着卡片生灭）是两回事，两者并存。
+    //   - uuid：跨设备/跨导入识别同一条笔记。**合并导入靠它去重** ——
+    //     没有它就只能按「标题+内容」硬比，用户改过一次的笔记会被当成两条。
+    //   - site_id：可选，只是个可空引用，**故意不建外键** —— 卡片删了，笔记要留下来
+    //     （这正是笔记独立于卡片的意义）。UI 上显示成「站点已删除」而已。
+    //   - content 存 **Markdown 源码**，不是 HTML。
+    `CREATE TABLE IF NOT EXISTS notes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        uuid TEXT,
+        title TEXT NOT NULL DEFAULT '',
+        content TEXT NOT NULL DEFAULT '',
+        pinned INTEGER NOT NULL DEFAULT 0,
+        order_num INTEGER NOT NULL DEFAULT 0,
+        site_id INTEGER,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );`,
     // 回收站：站点 / 分组删除不再硬删，先原样搬到这里，给「删错了」留后悔药。
     // data 存原始行（站点含密文密码，不解密，避免落回明文）；owner_user_id 做按账号隔离。
     `CREATE TABLE IF NOT EXISTS recycle_bin (
@@ -110,6 +130,11 @@ export const INDEX_STATEMENTS = [
     // 回收站：按账号列清单（ORDER BY id DESC）+ 定时清理按时间删
     `CREATE INDEX IF NOT EXISTS idx_recycle_bin_owner ON recycle_bin(owner_user_id);`,
     `CREATE INDEX IF NOT EXISTS idx_recycle_bin_deleted_at ON recycle_bin(deleted_at);`,
+    // 记事本：列清单（pinned DESC, order_num）+ 合并导入按 uuid 找
+    // 不写 `pinned DESC`：SQLite 的索引本来就能反向扫描满足 DESC 排序，
+    // 写上去只会让「按列名解析索引」的校验工具误判（把 "pinned DESC" 当成一个列名）。
+    `CREATE INDEX IF NOT EXISTS idx_notes_user ON notes(user_id, pinned, order_num);`,
+    `CREATE INDEX IF NOT EXISTS idx_notes_uuid ON notes(user_id, uuid);`,
     // 定时清理：审计日志 / 令牌黑名单 / 邀请码都按过期时间整批删
     `CREATE INDEX IF NOT EXISTS idx_audit_log_created_at ON audit_log(created_at);`,
     `CREATE INDEX IF NOT EXISTS idx_token_blacklist_exp ON token_blacklist(exp);`,

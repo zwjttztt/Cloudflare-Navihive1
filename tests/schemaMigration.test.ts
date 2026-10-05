@@ -157,9 +157,12 @@ const EXPECTED_INDEXES = [
     "idx_audit_log_created_at",
     "idx_token_blacklist_exp",
     "idx_invites_expires_at",
+    // 记事本（2026-10-05 新增）
+    "idx_notes_user",
+    "idx_notes_uuid",
 ];
 
-test("迁移建出全部 8 条索引，且每条索引建的时候表、列都已存在", async () => {
+test("迁移建出全部 10 条索引，且每条索引建的时候表、列都已存在", async () => {
     resetMigrationCacheForTests();
     const db = new FakeD1();
     await makeApi(db).migrate();

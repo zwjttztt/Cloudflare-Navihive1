@@ -5,6 +5,7 @@
 // 用 `this: NavigationAPI` 让 TS 认得 this，再由 http.ts 用 Object.assign 混回原型。
 // 别在这个文件里 new NavigationAPI，也别在模块顶层读它的状态。
 
+import { newUuid } from "../../utils/uuid";
 import type { NavigationAPI } from "../http";
 import { RETENTION_DAYS, RETENTION_DAYS_KEY, RETENTION_DAYS_MAX, RETENTION_DAYS_MIN } from "../configKeys";
 import { D1PreparedStatement } from "../schema";
@@ -14,7 +15,7 @@ import { GROUP_RESTORE_COLUMNS, SITE_RESTORE_COLUMNS } from "./internals";
 export interface RecycleApi {
     pushToRecycle(kind: string, data: string): Promise<number | undefined>;
     listRecycleBin(): Promise<
-        Array<{ id: number; kind: "site" | "group"; name: string; deletedAt: number }>
+        Array<{ id: number; kind: "site" | "group" | "note"; name: string; deletedAt: number }>
     >;
     restoreRecycleItem(id: number): Promise<boolean>;
     restoreRecycleItems(ids: number[]): Promise<RecycleBatchRestoreResult>;
@@ -36,6 +37,8 @@ export interface RecycleApi {
     reinsertSitesBatch(rows: Record<string, unknown>[]): Promise<void>;
     recycleRowToSite(row: Record<string, unknown>): Site;
     reinsertGroup(group: Record<string, unknown>, sites: Record<string, unknown>[]): Promise<void>;
+    /** 记事本：还原一条笔记（实现放在 methods/notes.ts，与 reinsertSite 同做法） */
+    reinsertNote(note: Record<string, unknown>): Promise<void>;
     getRetentionDays(): Promise<number>;
     purgeExpiredRecycle(
         days: number, nowSec?: number): Promise<number>;
@@ -71,7 +74,7 @@ export const recycleImpl: RecycleApi = {
     // ============ 回收站（软删除的兜底恢复） ============
     /** 当前账号在回收站里的条目（owner 看到自己删的；普通账号只看自己的） */
     listRecycleBin: async function (this: NavigationAPI ): Promise<
-        Array<{ id: number; kind: "site" | "group"; name: string; deletedAt: number }>
+        Array<{ id: number; kind: "site" | "group" | "note"; name: string; deletedAt: number }>
     > {
         await this.migrate();
         // 过期的先清掉再列：定时任务每周才跑一次，光靠它的话「到期自动删除」并不真的成立
@@ -110,6 +113,31 @@ export const recycleImpl: RecycleApi = {
     },
 
     /** 从回收站还原一条（按原始 id 重新插入，含其站点）。返回是否成功。 */
+    /**
+     * 还原一条笔记：按回收站里存的那份原样插回去（换新 id）。
+     *
+     * 为什么单独一个方法而不是让 restoreRecycleItem 认 kind='note'：
+     * 站点 / 分组还原要带着各自的关联数据（分组的 sites），笔记是单行，形状不同。
+     */
+    reinsertNote: async function (this: NavigationAPI, note: Record<string, unknown>): Promise<void> {
+        const uuid = (note.uuid as string) || newUuid();
+        await this.db
+            .prepare(
+                `INSERT INTO notes (user_id, uuid, title, content, pinned, order_num, site_id)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)`
+            )
+            .bind(
+                this.currentUserId,
+                uuid,
+                (note.title as string) ?? "",
+                (note.content as string) ?? "",
+                note.pinned ? 1 : 0,
+                (note.order_num as number) ?? 0,
+                (note.site_id as number | null) ?? null
+            )
+            .run();
+    },
+
     restoreRecycleItem: async function (this: NavigationAPI, id: number): Promise<boolean> {
         await this.migrate();
         return this.withSchemaRetry(async () => {
@@ -126,6 +154,10 @@ export const recycleImpl: RecycleApi = {
             }
             if (row.kind === "site") {
                 await this.reinsertSite(parsed as Record<string, unknown>);
+            } else if (row.kind === "note") {
+                // 记事本：存进去的是 { note: {...} }
+                const n = parsed as { note?: Record<string, unknown> };
+                await this.reinsertNote(n.note || (parsed as Record<string, unknown>));
             } else {
                 const g = parsed as { group?: Record<string, unknown>; sites?: Record<string, unknown>[] };
                 await this.reinsertGroup(g.group || {}, g.sites || []);

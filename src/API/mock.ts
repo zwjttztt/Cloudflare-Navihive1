@@ -1,6 +1,7 @@
 import {
     Group,
     Site,
+    Note,
     LoginResponse,
     ExportData,
     ImportResult,
@@ -164,6 +165,28 @@ interface MockRecycleItem {
 const mockRecycleBin: MockRecycleItem[] = [];
 let mockRecycleSeq = 1;
 
+// 记事本：给两条示例，其中一条用 Markdown 演示渲染层要处理的语法
+const mockNotes: Note[] = [
+    {
+        id: 1,
+        uuid: "m1-note-a",
+        title: "常用入口",
+        content: "# 常用入口\n\n- [x] 部署文档\n- [ ] 监控面板\n\n> 记得改完先跑一遍冒烟",
+        pinned: true,
+        order_num: 0,
+        site_id: null,
+    },
+    {
+        id: 2,
+        uuid: "m1-note-b",
+        title: "待办",
+        content: "## 待办\n\n1. 备份加密\n2. 整理标签",
+        pinned: false,
+        order_num: 1,
+        site_id: null,
+    },
+];
+
 // 本地没有服务端审计流水，这里保持空列表（接口形状与真实实现一致）
 type MockAuditEntry = {
     id: number;
@@ -319,6 +342,64 @@ export class MockNavigationClient {
     async getGroup(id: number): Promise<Group | null> {
         await new Promise(resolve => setTimeout(resolve, 200));
         return mockGroups.find(g => g.id === id) || null;
+    }
+
+    // ---- 记事本 ----
+    async listNotes(): Promise<Note[]> {
+        await new Promise(resolve => setTimeout(resolve, 200));
+        return [...mockNotes].sort(
+            (a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) || (a.order_num || 0) - (b.order_num || 0)
+        );
+    }
+
+    async getNote(id: number): Promise<Note | null> {
+        await new Promise(resolve => setTimeout(resolve, 200));
+        return mockNotes.find(n => n.id === id) || null;
+    }
+
+    async createNote(draft: Partial<Note>): Promise<Note> {
+        await new Promise(resolve => setTimeout(resolve, 200));
+        const note: Note = {
+            id: Math.max(0, ...mockNotes.map(n => n.id || 0)) + 1,
+            uuid: draft.uuid || `m1-${Date.now().toString(36)}`,
+            title: draft.title || "",
+            content: draft.content || "",
+            pinned: draft.pinned || false,
+            order_num: Math.max(0, ...mockNotes.map(n => n.order_num || 0)) + 1,
+            site_id: draft.site_id ?? null,
+        };
+        mockNotes.push(note);
+        return note;
+    }
+
+    async updateNote(id: number, patch: Partial<Note>): Promise<Note | null> {
+        await new Promise(resolve => setTimeout(resolve, 200));
+        const note = mockNotes.find(n => n.id === id);
+        if (!note) return null;
+        Object.assign(note, patch, { updated_at: new Date().toISOString() });
+        return note;
+    }
+
+    async deleteNote(id: number): Promise<{ success: boolean; recycleId?: number }> {
+        await new Promise(resolve => setTimeout(resolve, 200));
+        const idx = mockNotes.findIndex(n => n.id === id);
+        if (idx === -1) return { success: false };
+        mockNotes.splice(idx, 1);
+        return { success: true, recycleId: mockRecycleSeq++ };
+    }
+
+    async updateNoteOrder(orders: { id: number; order_num: number }[]): Promise<boolean> {
+        await new Promise(resolve => setTimeout(resolve, 200));
+        for (const item of orders) {
+            const note = mockNotes.find(n => n.id === item.id);
+            if (note) note.order_num = item.order_num;
+        }
+        return true;
+    }
+
+    async countNotes(): Promise<number> {
+        await new Promise(resolve => setTimeout(resolve, 200));
+        return mockNotes.length;
     }
 
     async createGroup(group: Group): Promise<Group> {

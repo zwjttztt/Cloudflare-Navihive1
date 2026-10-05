@@ -30,6 +30,47 @@ export interface Site {
     updated_at?: string;
 }
 
+/**
+ * 记事本里的一条笔记。
+ *
+ * 与 `Site.notes`（每个站点一条、跟着卡片生灭）是两回事，两者并存：
+ * 站点备注记「这个站怎么登录」，记事本记「临时想法、待办、片段」。
+ */
+export interface Note {
+    id?: number;
+    /**
+     * 跨设备 / 跨导入识别同一条笔记。**合并导入靠它去重** ——
+     * 没有它就只能按「标题 + 内容」硬比，用户改过一次的笔记会被当成两条。
+     * 服务端在 createNote 时生成。
+     */
+    uuid?: string;
+    title: string;
+    /** Markdown 源码，不是 HTML */
+    content: string;
+    /** 置顶排在最前 */
+    pinned?: boolean;
+    order_num?: number;
+    /**
+     * 可选：这条笔记是关于哪个站点的。
+     * **不建外键** —— 卡片删了，笔记要留下来；所以它只是一个可空引用。
+     */
+    site_id?: number | null;
+    created_at?: string;
+    updated_at?: string;
+}
+
+/** 导入后笔记的处理统计（合并模式下用户要知道每种各几条） */
+export interface NoteImportStats {
+    /** 文件里有、本地没有 → 新增 */
+    created: number;
+    /** 同 uuid，取了文件里较新的一份 → 覆盖 */
+    updated: number;
+    /** 同 uuid 但本地较新，或内容一致 → 保留本地不动 */
+    skipped: number;
+    /** 完全覆盖模式下被清掉的本地笔记数 */
+    removed: number;
+}
+
 // WebDAV 备份配置
 export interface WebDavConfig {
     url: string;
@@ -97,6 +138,13 @@ export interface ExportData {
     groups: Group[];
     sites: Site[];
     /**
+     * 记事本。老备份文件里没有这个字段 —— 那时还没有记事本。
+     *
+     * 可选还有一个原因：`normalizeImportData` 为「老文件没有新字段」做了兼容，
+     * 导入时 `notes` 为 undefined 就**保持本地笔记原样不动**（清空会毁掉用户现有的笔记）。
+     */
+    notes?: Note[];
+    /**
      * 跟着「账号」走的配置（目前没有非敏感的按账号配置，所以这里是空的；
      * webdav.* 属敏感配置，与 auth.* 一样不进备份）。
      */
@@ -126,6 +174,13 @@ export interface ImportResult {
     groupIdMap: Record<string, number>;
     /** 备份里的站点 id -> 库里新分到的 id */
     siteIdMap: Record<string, number>;
+    /**
+     * 笔记三态统计。
+     *
+     * 为什么必须有：合并模式下「本地较新就不动」是**正确行为**，但不给用户一个数字，
+     * 他会以为导入没生效。老备份没有笔记时全为 0。
+     */
+    noteStats?: NoteImportStats;
 }
 
 /** 导入的阶段，顺序与服务端真实推进的顺序一致 */

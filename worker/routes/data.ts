@@ -2,7 +2,7 @@
 //
 // 从 worker/index.ts 拆出来。这是站点日常读写量最大的一组，
 // 读到的数据已经按 ctx.api 上绑定的账号过滤过（见 NavigationAPI.setCurrentUser）。
-import type { Group, Site } from "../../src/API/http";
+import type { Group, Note, Site } from "../../src/API/http";
 import { enforceWriteGuard, writeBucket } from "../loginGuard";
 import { weakEtag } from "../util";
 import type { GroupInput, SiteInput } from "../types";
@@ -149,6 +149,80 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
         const result = await api.deleteGroup(id);
         // 软删除：结果含 recycleId，前端撤销时据此精确还原
         return Response.json(result);
+
+    // ---- 记事本 ----
+    // 与分组/站点同一套：写操作走 writeGate 限速，账号隔离在 api 层用 scopeSql 做。
+    } else if (path === "notes" && method === "GET") {
+        const notes = await api.listNotes();
+        return Response.json(notes);
+    } else if (path === "notes/count" && method === "GET") {
+        return Response.json({ count: await api.countNotes() });
+    } else if (path.startsWith("notes/") && method === "GET") {
+        const id = parseInt(path.split("/")[1]);
+        if (isNaN(id)) {
+            return Response.json({ error: "无效的ID" }, { status: 400 });
+        }
+        const note = await api.getNote(id);
+        if (!note) return Response.json({ error: "笔记不存在" }, { status: 404 });
+        return Response.json(note);
+    } else if (path === "notes" && method === "POST") {
+        const limited = await writeGate();
+        if (limited) return limited;
+
+        const data = (await request.json()) as Partial<Note>;
+        // 只留认识的字段：请求体是用户可控的，不能让它决定往哪几列写值
+        const draft: Partial<Note> = {
+            title: typeof data.title === "string" ? data.title : "",
+            content: typeof data.content === "string" ? data.content : "",
+            pinned: Boolean(data.pinned),
+            site_id: typeof data.site_id === "number" ? data.site_id : null,
+        };
+        return Response.json(await api.createNote(draft));
+    } else if (path === "note-orders" && method === "PUT") {
+        const limited = await writeGate();
+        if (limited) return limited;
+
+        const body = (await request.json()) as unknown;
+        const orders = Array.isArray(body)
+            ? body
+            : (body as { orders?: unknown })?.orders;
+        if (!Array.isArray(orders)) {
+            return Response.json({ error: "无效的排序数据" }, { status: 400 });
+        }
+        return Response.json({
+            success: await api.updateNoteOrder(
+                orders as { id: number; order_num: number }[]
+            ),
+        });
+    } else if (path.startsWith("notes/") && method === "PUT") {
+        const limited = await writeGate();
+        if (limited) return limited;
+
+        const id = parseInt(path.split("/")[1]);
+        if (isNaN(id)) {
+            return Response.json({ error: "无效的ID" }, { status: 400 });
+        }
+        const data = (await request.json()) as Partial<Note>;
+        const patch: Partial<Note> = {};
+        if (typeof data.title === "string") patch.title = data.title;
+        if (typeof data.content === "string") patch.content = data.content;
+        if (data.pinned !== undefined) patch.pinned = Boolean(data.pinned);
+        // 显式传 null 才解除与站点的关联
+        if (data.site_id !== undefined) {
+            patch.site_id = typeof data.site_id === "number" ? data.site_id : null;
+        }
+        const note = await api.updateNote(id, patch);
+        if (!note) return Response.json({ error: "笔记不存在" }, { status: 404 });
+        return Response.json(note);
+    } else if (path.startsWith("notes/") && method === "DELETE") {
+        const limited = await writeGate();
+        if (limited) return limited;
+
+        const id = parseInt(path.split("/")[1]);
+        if (isNaN(id)) {
+            return Response.json({ error: "无效的ID" }, { status: 400 });
+        }
+        return Response.json(await api.deleteNote(id));
     }
     // 站点相关API
     if (path === "sites" && method === "GET") {

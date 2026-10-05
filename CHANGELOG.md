@@ -8,6 +8,38 @@
 
 ---
 
+## 2026-10-05（七续）
+
+**记事本第 1–3 项：数据通路**（表 + 服务端 + 客户端）。方案见 `docs/notebook-design.md`。
+UI、Markdown 渲染、导入导出还没做，所以**这一版线上还看不到记事本**。
+
+- **建表**（`internals.ts`）：`notes` 表 + 两条索引。三个刻意的设计：
+  `user_id` 与 sites 同构（可直接复用 `scopeSql`，含单账号部署 uid=NULL）；
+  **不建到 sites 的外键**（卡片删了笔记要留下来）；`content` 存 Markdown 源码。
+- **`uuid` 工具**（`src/utils/uuid.ts`）：用 `crypto.getRandomValues` 手搓 RFC 4122 v4。
+  没用 `crypto.randomUUID()` —— 运行时有，但本项目 workers-types v5 没有它的类型。
+- **服务端七个方法**（`src/API/methods/notes.ts`）：`listNotes` / `getNote` / `createNote`
+  （顺带生成 uuid、order_num 缺省时排到末尾）/ `updateNote`（白名单逐字段）/
+  `deleteNote`（**先搬回收站再删行**）/ `updateNoteOrder`（分批 250，同 transfer.ts）/
+  `countNotes`。
+- **回收站支持 note**：还原走 `reinsertNote`（与 `reinsertSite` 同一套做法，
+  实现放在 `recycle.ts` 里 —— 一开始我放错文件了，`reinsertXxx` 都住那儿）。
+- **路由**（`worker/routes/data.ts`）：GET/POST `notes`、GET `notes/count`、
+  GET/PUT/DELETE `notes/:id`、PUT `note-orders`。四个写分支都过 `writeGate` 限速。
+  请求体是用户可控的，所以**逐字段白名单**：`id` / `user_id` / `uuid` / `order_num`
+  一律不认（由服务端决定），`site_id` 显式传 `null` 才是解除关联。
+- **客户端 + mock**：七对方法齐平（`apiContract` 守卫会查），mock 给了两条示例笔记。
+- **测试**（`tests/noteRoutes.test.ts`，12 条）：覆盖上面那三处最容易坏的地方。
+  其中「四个写分支都过限速闸」用**静态检查**而不是打桩 ——
+  `writeGate` 是 data.ts 内部闭包（引用真实的 `enforceWriteGuard`），桩不掉；
+  而漏掉限速的表现恰恰是「功能全正常、只是限速没了」，只能数代码。
+  变异验证：删掉 DELETE 分支的 `writeGate()` → 那条立刻变红。
+- **踩了一个坑**：`idx_notes_user` 最初写成 `notes(user_id, pinned DESC, order_num)`，
+  `schemaMigration` 的 FakeD1 报「有索引建在了列还不存在的时候」——
+  它的解析器把 `pinned DESC` 当成一个列名。真实 SQLite 支持索引方向修饰，
+  但既然索引本来就能反向扫描满足 `DESC`，去掉更稳（也省得校验工具误判）。
+- 用例 1714 → **1726**。
+
 ## 2026-10-05（六续）
 
 - **网站设置彻底恢复自适应**：`settingsPaper`（主窗那份样式）里**不再有任何高度设置** ——
