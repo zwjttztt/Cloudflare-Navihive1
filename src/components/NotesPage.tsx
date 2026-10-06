@@ -172,6 +172,17 @@ function tagOf(note: Note, links: Record<number, number[]>): Set<number> {
     return new Set(links[note.id ?? 0] || []);
 }
 
+/** 某条笔记的标签**名字**列表（列表徽章 / 菜单里都要显示名字，不是 id） */
+function tagNamesOf(
+    note: Note,
+    links: Record<number, number[]>,
+    allTags: NoteTag[]
+): string[] {
+    const ids = tagOf(note, links);
+    if (ids.size === 0) return [];
+    return allTags.filter(t => typeof t.id === "number" && ids.has(t.id!)).map(t => t.name);
+}
+
 /**
  * 左栏第一列里的一行导航（inkstone 的调子：名字靠左、条数靠右、选中整行变底色）。
  *
@@ -416,10 +427,30 @@ export default function NotesPage({
     );
     /** 阶段二：左栏可折叠（照 inkstone 的 196↔9，我们这边是 300↔44 的图标轨） */
     const [listCollapsed, setListCollapsed] = useState(false);
+    /**
+     * 列表行的操作菜单：记住是哪条笔记（noteId）+ 锚在哪（el）。
+     *
+     * ⚠️ 存 noteId 而不是 note 本身：菜单开着的时候那条笔记可能被自动保存刷新成
+     * 新对象，存旧引用会拿过期数据去渲染菜单项。
+     */
+    const [rowMenu, setRowMenu] = useState<{ noteId: number; el: HTMLElement } | null>(null);
+    /** 「归入文件夹 / 编辑标签」这两个二级弹窗的锚点（复用同一个 Menu 容器） */
+    const [folderPick, setFolderPick] = useState<{
+        el: HTMLElement;
+        noteId: number;
+    } | null>(null);
+    const [tagPick, setTagPick] = useState<{ el: HTMLElement; noteId: number } | null>(null);
     const [activeId, setActiveId] = useState<number | null>(notes[0]?.id ?? null);
     const [pane, setPane] = useState<Pane>("split");
     /** 分栏比例（源码 : 预览）。可拖拽，记住上一次。 */
     const [splitRatio, setSplitRatio] = useState(readSplitRatio);
+    /**
+     * 拖分隔条时的**实时**比例。为什么要单独一个 ref：
+     * `onMove` / `onUp` 是在 mousedown 那一刻挂上 window 的闭包，拖动过程中的
+     * `setSplitRatio` 不会回头改写它们读到的 `splitRatio` —— 那个值会一直停在按下鼠标那一刻。
+     * 松手时要持久化的是**松开那一刻**的比例，只能靠这个 ref 跟住。
+     */
+    const splitRatioRef = useRef(splitRatio);
     const splitBoxRef = useRef<HTMLDivElement | null>(null);
     const textareaRef = useRef<HTMLTextAreaElement | null>(null);
     /** 草稿：编辑期间不立刻写库（点「保存」或切走才提交） */
@@ -513,8 +544,13 @@ export default function NotesPage({
                 : all;
         }
         if (view === "uncategorized") {
-            // 「未归类」= 没挂在任何站点上的笔记（site_id 为空），不是新加的字段
-            return matched.filter(n => n.site_id === null || n.site_id === undefined);
+            // 「未归类」= **没有归到任何文件夹**的笔记（folder_id 为空）。
+            // ⚠️ 这里原来筛的是 `site_id` —— 那是「没挂在站点上」，可记事本里
+            // 根本没有「把笔记挂到某个站点」的入口，site_id 永远是 null，
+            // 于是这个视图跟「全部」**完全等价**（左栏两个计数一模一样），
+            // 而用户看到「未归类」时想的是文件夹，不是站点。阶段三加了文件夹，
+            // 这个判据没跟着换过来。
+            return matched.filter(n => n.folder_id === null || n.folder_id === undefined);
         }
         return matched;
     }, [notes, keyword, view, activeFolder, activeTag, noteTags]);
@@ -637,7 +673,9 @@ export default function NotesPage({
             starred: notes.filter(n => !n.archived && Boolean(n.pinned)).length,
             archived: notes.filter(n => Boolean(n.archived)).length,
             uncategorized: notes.filter(
-                n => !n.archived && (n.site_id === null || n.site_id === undefined)
+                // 与 filtered 里那个视图同一判据（folder_id 为空 = 没归到任何文件夹）。
+                // 两处必须一致，否则左栏写着「未归类 3」点进去却空着。
+                n => !n.archived && (n.folder_id === null || n.folder_id === undefined)
             ).length,
             trash: trashedNotes.length,
         }),
@@ -836,14 +874,23 @@ export default function NotesPage({
         if (contentWidth <= 0) return;
         const onMove = (ev: MouseEvent) => {
             const ratio = (ev.clientX - contentLeft) / contentWidth;
-            setSplitRatio(Math.min(MAX_RATIO, Math.max(MIN_RATIO, ratio)));
+            const clamped = Math.min(MAX_RATIO, Math.max(MIN_RATIO, ratio));
+            // 拖动中 setState 不会回头改 onUp 那个闭包里的 splitRatio
+            //（事件处理函数是 mousedown 那一刻挂上去的），所以最新值走 ref。
+            splitRatioRef.current = clamped;
+            setSplitRatio(clamped);
         };
         const onUp = () => {
             window.removeEventListener("mousemove", onMove);
             window.removeEventListener("mouseup", onUp);
             document.body.style.userSelect = "";
             try {
-                localStorage.setItem(SPLIT_KEY, String(readSplitRatio()));
+                // ⚠️⚠️ 这里原来写的是 `String(readSplitRatio())` —— 那是**从 localStorage 读**，
+                // 读回来的必然是拖动开始之前的旧值：拖了半天松手，存回去的还是原来那个比例，
+                // 刷新页面宽度就弹回去了（用户视角就是「拖不动」/「拖了没反应」）。
+                // 而且这里也不能直接读 splitRatio：onUp 是 mousedown 那一刻挂上去的闭包，
+                // 拖动中的 setState 改不到它 —— 只有 splitRatioRef 跟得住最新值。
+                localStorage.setItem(SPLIT_KEY, String(splitRatioRef.current));
             } catch {
                 /* 隐私模式下写不了，忽略 */
             }
@@ -1119,18 +1166,22 @@ export default function NotesPage({
      * 再点一下摘掉这一层；没选中就插占位符」的开关语义已经在那儿了，
      * 公式没有任何理由再写一遍（写第二遍就迟早跟主逻辑跑偏）。
      *
-     * 行内用 `$…$`，块级用换行的 `$$\n…\n$$`：
-     * 块级必须独占行，否则渲染层（markdown-it）会把 `$$` 当成行首块来解析。
+     * 行内默认 `$…$`，块级默认换行的 `$$\n…\n$$`；另有 LaTeX 原生写法
+     * （行内 `\(…\)`、块级 `\[\n…\n\]`）走同一套逻辑，只是换个定界符。
+     * 块级必须独占行，否则渲染层（markdown-it）会把定界符当成行首块来解析。
      */
     const applyFormula = useCallback(
-        (kind: "inline" | "block") => {
-            if (kind === "inline") {
-                insertAtCursor("$", "$", "公式");
+        (kind: "inline" | "block" | "inlineTex" | "blockTex") => {
+            const tex = kind === "inlineTex" || kind === "blockTex";
+            const [open, close] = tex ? ["\\(", "\\)"] : ["$", "$"];
+            if (kind === "inline" || kind === "inlineTex") {
+                insertAtCursor(open, close, "公式");
                 return;
             }
-            // 块级公式**必须独占行**（`$$` 单独成行才被认成公式块），所以不能套用
-            // insertAtCursor 的「就地包一层」—— 它会在光标处紧凑插入，把 `$$` 粘到
+            // 块级公式**必须独占行**（`$$` / `\[` 单独成行才被认成公式块），所以不能套用
+            // insertAtCursor 的「就地包一层」—— 它会在光标处紧凑插入，把定界符粘到
             // 上一行末尾，渲染层看到「摘要$$」这种行首就整块不认，公式人间蒸发。
+            const fence = tex ? ["\\[", "\\]"] : ["$$", "$$"];
             const el = textareaRef.current;
             if (!el) return;
             const value = el.value;
@@ -1143,9 +1194,9 @@ export default function NotesPage({
             const insertLine = Math.min(cursorLine + 1, lines.length);
             const head = lines.slice(0, insertLine);
             const tail = lines.slice(insertLine);
-            const next = [...head, "$$", body, "$$", ...tail].join("\n");
+            const next = [...head, fence[0], body, fence[1], ...tail].join("\n");
             // 光标落进公式正文（并且选中它，一打字就能换掉「公式」这个占位符）
-            const caret = head.join("\n").length + "$$\n".length;
+            const caret = head.join("\n").length + fence[0].length + 1;
             el.value = next;
             el.focus();
             // 光标落在公式正文上并选中它，用户直接打字就能替换「公式」这个占位符
@@ -1385,6 +1436,10 @@ export default function NotesPage({
                             </Typography>
                             {group.items.map(note => {
                         const isActive = note.id === activeId;
+                        // ⚠️ 菜单锚点状态必须挂在组件上，**不能**在 map 回调里 useState：
+                        // map 是普通回调不是组件，hooks 在里面就是违反规则
+                        // （渲染顺序一变，状态就会串到别的行上）。
+                        const menuOpen = rowMenu?.noteId === note.id;
                         return (
                             <Box
                                 key={note.id}
@@ -1410,6 +1465,11 @@ export default function NotesPage({
                                         ? "rgba(128,128,128,0.12)"
                                         : "transparent",
                                     transition: "background-color 120ms ease",
+                                    // 菜单按钮平时藏起来，hover / 聚焦才出 —— 和 inkstone 一致，
+                                    // 128px 的窄列里常驻一个按钮会把标题挤没。
+                                    "&:hover .note-row-actions, &:focus-within .note-row-actions": {
+                                        opacity: 1,
+                                    },
                                     "&:hover": { bgcolor: "rgba(128,128,128,0.08)" },
                                 }}
                             >
@@ -1433,10 +1493,40 @@ export default function NotesPage({
                                             overflow: "hidden",
                                             textOverflow: "ellipsis",
                                             whiteSpace: "nowrap",
+                                            flex: 1,
+                                            minWidth: 0,
                                         }}
                                     >
                                         {note.title || "无标题"}
                                     </Typography>
+                                    {/* 行内操作菜单。放在标题行右侧、hover 才现形。 */}
+                                    <IconButton
+                                        className='note-row-actions'
+                                        data-note-menu={note.id}
+                                        aria-label={`${note.title || "无标题"} 的操作`}
+                                        size='small'
+                                        onClick={e => {
+                                            // ⚠️ 必须 stopPropagation：这一行自己是 role='button'，
+                                            // 不拦住的话点菜单会顺带把笔记打开/切换过去。
+                                            e.stopPropagation();
+                                            // note.id 是可选类型（新建出来的那一瞬可能还没有），
+                                            // 这里窄化一次再用，别让 undefined 混进 state。
+                                            const id = note.id;
+                                            if (id === undefined) return;
+                                            setRowMenu(
+                                                menuOpen ? null : { noteId: id, el: e.currentTarget }
+                                            );
+                                        }}
+                                        sx={{
+                                            opacity: menuOpen ? 1 : 0,
+                                            transition: "opacity 120ms ease",
+                                            flexShrink: 0,
+                                            p: 0.25,
+                                            color: "text.secondary",
+                                        }}
+                                    >
+                                        <MoreVertIcon fontSize='inherit' />
+                                    </IconButton>
                                 </Box>
                                 <Typography
                                     variant='caption'
@@ -1462,6 +1552,30 @@ export default function NotesPage({
                                 >
                                     {formatRelative(note.updated_at || note.created_at)}
                                 </Typography>
+                                {/* 标签小徽章：让「这条笔记打了哪些标签」在列表里直接看得见，
+                                    不用点进去看。左栏那个标签视图才有意义也靠它。 */}
+                                {tagNamesOf(note, noteTags, tags).length > 0 && (
+                                    <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.5, mt: 0.5 }}>
+                                        {tagNamesOf(note, noteTags, tags).map(name => (
+                                            <Box
+                                                key={name}
+                                                data-note-tag={name}
+                                                sx={{
+                                                    px: 0.75,
+                                                    py: 0.1,
+                                                    fontSize: 10.5,
+                                                    lineHeight: 1.6,
+                                                    borderRadius: 999,
+                                                    border: "1px solid var(--card-border, rgba(128,128,128,0.35))",
+                                                    color: "text.secondary",
+                                                    bgcolor: "rgba(128,128,128,0.08)",
+                                                }}
+                                            >
+                                                {name}
+                                            </Box>
+                                        ))}
+                                    </Box>
+                                )}
                             </Box>
                         );
                     })}
@@ -1469,6 +1583,154 @@ export default function NotesPage({
                     ))
                 )}
             </Box>
+
+            {/* ---------- 列表行的操作菜单 ----------
+                以前这些动作（置顶 / 归档 / 归入文件夹 / 标签 / 删除）只挂在**底部状态栏**上，
+                也就是「只能对当前打开的那条笔记操作」—— 想给列表里第 8 条打标签，
+                得先点开它、找到状态栏、点对按钮。
+                inkstone 是每行 hover 出「⋯」，这里照抄：
+                  - 菜单按钮 stopPropagation，否则点它会顺带打开这条笔记；
+                  - 「归入文件夹 / 标签」这两个二级菜单是**唯一**能把笔记归类进去的入口
+                    （后端 setNoteTags / folder_id 早就有了，界面上却没有地方调）。 */}
+            <Menu
+                open={Boolean(rowMenu)}
+                anchorEl={rowMenu?.el ?? null}
+                onClose={() => setRowMenu(null)}
+            >
+                {(() => {
+                    const note = rowMenu ? notes.find(n => n.id === rowMenu.noteId) : null;
+                    if (!note) return null;
+                    const done = async (fn: () => Promise<unknown> | void) => {
+                        setRowMenu(null);
+                        await fn();
+                    };
+                    return (
+                        <>
+                            <MenuItem
+                                data-row-op='pin'
+                                onClick={() =>
+                                    void done(() => onTogglePin(note))
+                                }
+                            >
+                                {note.pinned ? "取消收藏" : "收藏"}
+                            </MenuItem>
+                            <MenuItem
+                                data-row-op='archive'
+                                onClick={() => void done(() => onToggleArchive(note))}
+                            >
+                                {note.archived ? "取消归档" : "归档"}
+                            </MenuItem>
+                            <MenuItem
+                                data-row-op='folder'
+                                onClick={() => {
+                                    // rowMenu 此刻一定非空（菜单能打开就是它给的锚），
+                                    // 但 TS 看不穿这层间接，先取局部变量再窄化。
+                                    const pick = rowMenu;
+                                    const id = note.id;
+                                    setRowMenu(null);
+                                    if (pick && id !== undefined) {
+                                        setFolderPick({ el: pick.el, noteId: id });
+                                    }
+                                }}
+                            >
+                                归入文件夹…
+                            </MenuItem>
+                            <MenuItem
+                                data-row-op='tags'
+                                onClick={() => {
+                                    const pick = rowMenu;
+                                    const id = note.id;
+                                    setRowMenu(null);
+                                    if (pick && id !== undefined) {
+                                        setTagPick({ el: pick.el, noteId: id });
+                                    }
+                                }}
+                            >
+                                编辑标签…
+                            </MenuItem>
+                            <Divider />
+                            <MenuItem
+                                data-row-op='delete'
+                                onClick={() => void done(() => onDelete(note))}
+                                sx={{ color: "error.main" }}
+                            >
+                                删除（进回收站）
+                            </MenuItem>
+                        </>
+                    );
+                })()}
+            </Menu>
+
+            {/* 归入文件夹：列出全部文件夹 + 「移出文件夹」 */}
+            <Menu
+                open={Boolean(folderPick)}
+                anchorEl={folderPick?.el ?? null}
+                onClose={() => setFolderPick(null)}
+            >
+                <MenuItem
+                    data-folder-pick='none'
+                    onClick={() => {
+                        const pick = folderPick;
+                        setFolderPick(null);
+                        if (pick) void onUpdate(pick.noteId, { folder_id: null });
+                    }}
+                >
+                    未归类（移出文件夹）
+                </MenuItem>
+                <Divider />
+                {folders.length === 0 && (
+                    <MenuItem disabled>还没有文件夹（左栏「文件夹」右边 + 新建）</MenuItem>
+                )}
+                {folders.map(f => (
+                    <MenuItem
+                        key={f.id}
+                        data-folder-pick={f.id}
+                        selected={notes.find(n => n.id === folderPick?.noteId)?.folder_id === f.id}
+                        onClick={() => {
+                            const pick = folderPick;
+                            setFolderPick(null);
+                            if (pick && f.id !== undefined) {
+                                void onUpdate(pick.noteId, { folder_id: f.id });
+                            }
+                        }}
+                    >
+                        {f.name}
+                    </MenuItem>
+                ))}
+            </Menu>
+
+            {/* 编辑标签：勾选式多选，一次性整组保存（后端就是「整组替换」语义） */}
+            <Menu
+                open={Boolean(tagPick)}
+                anchorEl={tagPick?.el ?? null}
+                onClose={() => setTagPick(null)}
+            >
+                {tags.length === 0 && (
+                    <MenuItem disabled>还没有标签（左栏「标签」右边 + 新建）</MenuItem>
+                )}
+                {tags.map(t => {
+                    const target = notes.find(n => n.id === tagPick?.noteId);
+                    const on = target ? tagOf(target, noteTags).has(t.id!) : false;
+                    return (
+                        <MenuItem
+                            key={t.id}
+                            data-tag-pick={t.id}
+                            onClick={async () => {
+                                const pick = tagPick;
+                                if (!pick || t.id === undefined) return;
+                                const current = notes.find(n => n.id === pick.noteId);
+                                const next = new Set(current ? tagOf(current, noteTags) : []);
+                                if (on) next.delete(t.id);
+                                else next.add(t.id);
+                                await folderTags?.onAssignTags?.(pick.noteId, [...next]);
+                            }}
+                        >
+                            {on ? "✓ " : ""}
+                            {t.name}
+                        </MenuItem>
+                    );
+                })}
+            </Menu>
             </Box>
             </>
             )}
@@ -1591,6 +1853,9 @@ export default function NotesPage({
                                 onMouseDown={startSplitDrag}
                                 onDoubleClick={() => {
                                     setSplitRatio(0.5);
+                                    // 同步 ref：不然「双击归中 → 立刻再拖 → 松手」这一串里，
+                                    // 松手存的还是归中之前那个旧值。
+                                    splitRatioRef.current = 0.5;
                                     try {
                                         localStorage.setItem(SPLIT_KEY, "0.5");
                                     } catch {
@@ -2079,7 +2344,7 @@ function MarkdownToolbar({
     /** 阶段四第 12 条：表格的插入 / 增删行列 */
     onTable: (op: TableOp) => void;
     /** 阶段四第 12c 条：插入公式（行内 $…$ / 块级 $$…$$） */
-    onFormula: (kind: "inline" | "block") => void;
+    onFormula: (kind: "inline" | "block" | "inlineTex" | "blockTex") => void;
 }) {
     const [headingAnchor, setHeadingAnchor] = useState<HTMLElement | null>(null);
     const [langAnchor, setLangAnchor] = useState<HTMLElement | null>(null);
@@ -2228,6 +2493,24 @@ function MarkdownToolbar({
                     }}
                 >
                     独立公式 $$ 另起一段 $$
+                </MenuItem>
+                <MenuItem
+                    data-formula-op='inlineTex'
+                    onClick={() => {
+                        onFormula("inlineTex");
+                        setFormulaAnchor(null);
+                    }}
+                >
+                    行内公式 \( 文本 \)
+                </MenuItem>
+                <MenuItem
+                    data-formula-op='blockTex'
+                    onClick={() => {
+                        onFormula("blockTex");
+                        setFormulaAnchor(null);
+                    }}
+                >
+                    独立公式 \[ 另起一段 \]
                 </MenuItem>
             </Menu>
 

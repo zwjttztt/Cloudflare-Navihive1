@@ -429,3 +429,70 @@ test("子查询里出现的 scopeSql 必须是 (true)", () => {
         `只找到 ${subQueries.length} 处 scopeSql(true) —— 文件夹 / 标签那几条 SQL 是不是被改回去了？`
     );
 });
+
+// ---------- INSERT 的列数必须等于值数（2026-10-06 线上 500 的根因）----------
+//
+// 阶段三收尾给 `INSERT INTO notes (...)` 的列尾加了 `folder_id`，值这一侧忘了补 `?`，
+// 于是 8 列只给了 7 个值。SQLite 直接报
+// "table notes has 8 columns but 7 values were supplied" → POST /api/notes 一律 500。
+//
+// 为什么之前一条测试都没红：
+//   - 现有的守卫盯的是「占位符数 == bind 参数数」（这一条**照样成立**：7 个 ? 配 7 个参数，
+//     只是参数被错位绑给了后面的列）；
+//   - 路由层测试只验「路由把什么交给 api」，不执行 SQL；
+//   - MockD1 按前缀匹配，不校验列/值个数。
+// 也就是说「列数 vs 顶层值数」是整个测试结构里的盲区，必须单独钉。
+test("createNote 的 INSERT：列数与顶层值数必须一一对应", () => {
+    const fn = source.slice(
+        source.indexOf("createNote: async"),
+        source.indexOf("updateNote: async")
+    );
+    assert.ok(fn.includes("INSERT INTO notes"), "没抠到 createNote 的 INSERT");
+
+    // 列名要取 INSERT 之后**紧跟**的那对括号，不能用「函数体里的第一个左括号」——
+    // 那会取到 createNote 的参数表 (this, draft)，数出 2 列，守卫立刻自己先红了。
+    const insertAt = fn.indexOf("INSERT INTO notes");
+    const colsOpen = fn.indexOf("(", insertAt);
+    const colsClose = fn.indexOf(")", colsOpen);
+    const cols = fn.slice(colsOpen + 1, colsClose).split(",");
+    const valuesStart = fn.indexOf("VALUES");
+    // 只取第一组括号里的内容：COALESCE((SELECT …), 0) 这种嵌套要靠括号深度跳过
+    let depth = 0;
+    let end = -1;
+    for (let i = valuesStart; i < fn.length; i++) {
+        if (fn[i] === "(") depth++;
+        else if (fn[i] === ")") {
+            depth--;
+            if (depth === 0) {
+                end = i;
+                break;
+            }
+        }
+    }
+    assert.ok(end > 0, "没找到 VALUES 的收尾括号");
+    const valuePart = fn.slice(fn.indexOf("(", valuesStart) + 1, end);
+
+    // 按**顶层**逗号切（深度 0 的逗号才算分隔符）
+    const values: string[] = [];
+    let d = 0;
+    let cur = "";
+    for (const ch of valuePart) {
+        if (ch === "(") d++;
+        if (ch === ")") d--;
+        if (ch === "," && d === 0) {
+            values.push(cur);
+            cur = "";
+            continue;
+        }
+        cur += ch;
+    }
+    values.push(cur);
+
+    assert.equal(
+        cols.length,
+        values.length,
+        `INSERT 的列数(${cols.length}) 与顶层值数(${values.length}) 对不上 —— ` +
+            "SQLite 会直接报「N columns but M values were supplied」，接口一律 500。" +
+            "加列时值这一侧也要补上对应的表达式。"
+    );
+});

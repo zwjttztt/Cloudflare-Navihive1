@@ -8,10 +8,15 @@
 // 所以只能自己写 parser 侧的 inline / block 规则，产出自定义 token，渲染层再认它。
 //
 // 语法约定（比 LaTeX 常见的 `$…$` 稍微严一点，宁可漏认也不误伤正文）：
-//   - 行内：`$x^2$`，跨行不成立，内容**首尾都不能是空白**
-//     （`$ x$` / `$x $` / `价格是 $100 和 $5` 一律不当公式）；
-//   - 块级：整行 `$$` 起、某行 `$$` 止；也支持一行写完 `$$x=1$$`；
-//   - 没闭合的 `$$` 一律不当公式（退回普通文本），否则一整段会被吞掉。
+//   - 行内：`$x^2$` 或 `\(x^2\)`，跨行不成立；
+//   - 块级：整行 `$$` 起、某行 `$$` 止（也支持一行写完 `$$x=1$$`）；
+//     或整行 `\[` 起、某行 `\]` 止（也支持一行写完 `\[x=1\]`）；
+//   - 没闭合的一律不当公式（退回普通文本），否则一整段会被吞掉。
+//
+// ⚠️ 两套定界符的**严格程度故意不同**：
+//   - `$…$` 在正文里和「美元符号」撞车（`价格是 $100 和 $5`），所以内容首尾带空白一律不认；
+//   - `\(` `\[` 是用户**明写**的意图标记（LaTeX 原生写法），不会与正文混淆，
+//     所以只要求非空，首尾空白照收（`\( a+b \)` 这种两边留空格的写法很常见）。
 
 import type StateInline from "markdown-it/lib/rules_inline/state_inline.mjs";
 import type StateBlock from "markdown-it/lib/rules_block/state_block.mjs";
@@ -22,6 +27,11 @@ const FENCE_LINE = /^\$\$[ \t]*$/;
 const FENCE_SINGLE = /^\$\$([\s\S]*?)\$\$[ \t]*$/;
 /** 结束行：`$$` 前可带缩进 */
 const FENCE_CLOSE = /^[ \t]*\$\$[ \t]*$/;
+
+/** LaTeX 原生块级定界符：`\[` / `\]`（单行写法与独占行写法各一条） */
+const BRACKET_FENCE_LINE = /^\\\[[ \t]*$/;
+const BRACKET_FENCE_SINGLE = /^\\\[([\s\S]*?)\\\][ \t]*$/;
+const BRACKET_FENCE_CLOSE = /^[ \t]*\\\][ \t]*$/;
 
 /**
  * 行内公式：读 `$…$`。
@@ -73,7 +83,54 @@ export function mathInline(state: StateInline, silent: boolean): boolean {
 }
 
 /**
- * 块级公式：读 `$$\n…\n$$`。
+ * 行内公式（LaTeX 原生定界符）：读 `\(…\)` 与 `\[…\]`。
+ *
+ * ⚠️⚠️ 这条规则**必须注册在 `escape` 之前**，否则永远匹配不到：
+ * markdown-it 的 `escape` 规则会把「反斜杠 + ASCII 标点」整个吃掉
+ * （`\(` 属于 ASCII 标点转义），等到我们这条规则运行时，源码里已经是光秃秃的 `(` 了。
+ * 这也是为什么 `$…$` 那条要挂在 escape **之后**——两条规则的注册位置是反的，各有各的理由。
+ *
+ * 另一处刻意的宽松：内容首尾的空白**照收**（只 trim 不拒绝）。
+ * `$` 会和正文里的美元符号撞车，`\(` 不会 —— 用户都明写出来了，没理由再拦一道。
+ */
+export function mathParenInline(state: StateInline, silent: boolean): boolean {
+    const start = state.pos;
+    if (state.src[start] !== "\\") return false;
+    const open = state.src[start + 1];
+    // 只认 `\(` 与 `\[`；`\\(`（转义的反斜杠 + 括号）不认
+    if (open !== "(" && open !== "[") return false;
+    const close = open === "(" ? "\\)" : "\\]";
+
+    let pos = start + 2;
+    let end = -1;
+    while (pos < state.posMax) {
+        const ch = state.src[pos];
+        if (ch === "\\") {
+            if (state.src.startsWith(close, pos)) {
+                end = pos;
+                break;
+            }
+            pos += 2; // 公式里的其它转义（`\{`、`\alpha`、`\\` 换行）整体跳过
+            continue;
+        }
+        if (ch === "\n") break; // 与 $ 版本一致：行内公式不跨行
+        pos++;
+    }
+    if (end < 0) return false;
+    const content = state.src.slice(start + 2, end).trim();
+    if (!content) return false;
+
+    if (!silent) {
+        const token = state.push("math_inline", "", 0);
+        token.content = content;
+        token.markup = open === "(" ? "\\(" : "\\[";
+    }
+    state.pos = end + 2; // +2 是把闭合标记两个字符都吃掉
+    return true;
+}
+
+/**
+ * 块级公式：读 `$$\n…\n$$` 与 `\[\n…\n\]`。
  *
  * ⚠️ **规则签名是 `(state, startLine, endLine, silent)`**（markdown-it 14 起就是四个参数）。
  * 只写 `(state, silent)` 的话，那个 `silent` 收到的其实是**行号** —— 恒为真值，
@@ -95,22 +152,31 @@ export function mathBlock(
     const start = state.bMarks[line];
     const text = state.src.slice(start, state.eMarks[line]);
 
-    // ① `$$x=1$$` 一行写完
-    const single = FENCE_SINGLE.exec(text);
-    if (single) {
-        if (!silent) pushBlock(state, line, line + 1, single[1].trim());
+    // 定界符风格：`$$…$$` 还是 `\[…\]`。两者结构一样，只是行首行尾的记号不同。
+    const dollarSingle = FENCE_SINGLE.exec(text);
+    const bracketSingle = BRACKET_FENCE_SINGLE.exec(text);
+    const style = dollarSingle ? "dollar" : bracketSingle ? "bracket" : null;
+
+    // ① 一行写完：`$$x=1$$` / `\[x=1\]`
+    if (style) {
+        if (!silent) {
+            pushBlock(state, line, line + 1, (dollarSingle ?? bracketSingle)![1].trim(),
+                style === "dollar" ? "$$" : "\\[");
+        }
         state.line = line + 1;
         return true;
     }
-    // ② `$$` 独占首行，后面几行是公式体，再某行 `$$` 收尾
-    if (!FENCE_LINE.test(text)) return false;
+    // ② 定界符独占首行，后面几行是公式体，再某行收尾
+    const dollar = FENCE_LINE.test(text);
+    const bracket = BRACKET_FENCE_LINE.test(text);
+    if (!dollar && !bracket) return false;
 
     const body: string[] = [];
     let closeLine = -1;
     for (let l = line + 1; l < endLine; l++) {
         const from = state.bMarks[l] + state.tShift[l];
         const lineText = state.src.slice(from, state.eMarks[l]);
-        if (FENCE_CLOSE.test(lineText)) {
+        if (dollar ? FENCE_CLOSE.test(lineText) : BRACKET_FENCE_CLOSE.test(lineText)) {
             closeLine = l;
             break;
         }
@@ -119,30 +185,47 @@ export function mathBlock(
     if (closeLine < 0) return false; // 没闭合
 
     if (!silent) {
-        pushBlock(state, line, closeLine + 1, body.join("\n").trim());
+        pushBlock(state, line, closeLine + 1, body.join("\n").trim(),
+            dollar ? "$$" : "\\[");
     }
     state.line = closeLine + 1;
     return true;
 }
 
 /** 推一个 math_block token。map 是右开的（末行 + 1），和 markdown-it 自己的规矩一致 */
-function pushBlock(state: StateBlock, fromLine: number, toLine: number, content: string): void {
+function pushBlock(
+    state: StateBlock,
+    fromLine: number,
+    toLine: number,
+    content: string,
+    markup: string
+): void {
     const token = state.push("math_block", "", 0);
     token.block = true;
     token.content = content;
-    token.markup = "$$";
+    token.markup = markup;
     token.map = [fromLine, toLine];
 }
 
 /**
  * 装到 markdown-it 实例上。
  *
- * inline 挂在 `escape` **之后**：`\$` 那类转义要先由 escape 规则处理掉，
- * 否则 `$5\$3$` 这种（写「5 美元 3 美元」）会被当成公式的起止。
+ * 两条 inline 规则的注册位置**故意相反**，各有各的理由：
+ *   - `\(` `\[` 挂在 `escape` **之前**：escape 会把「反斜杠 + ASCII 标点」整个吃掉
+ *     （`\(` 就是 ASCII 标点转义），等我们跑到时源码里已经没有反斜杠了；
+ *   - `$` 挂在 `escape` **之后**：`\$` 那类要先被 escape 处理掉，
+ *     否则 `$5\$3$` 这种（写「5 美元 3 美元」）会被当成公式的起止。
  */
-export function registerMath(md: { inline: { ruler: unknown }; block: { ruler: unknown } }): void {
-    const inlineRuler = md.inline.ruler as { after: (name: string, id: string, fn: unknown, opts?: unknown) => void };
+export function registerMath(md: {
+    inline: { ruler: unknown };
+    block: { ruler: unknown };
+}): void {
+    const inlineRuler = md.inline.ruler as {
+        before: (name: string, id: string, fn: unknown, opts?: unknown) => void;
+        after: (name: string, id: string, fn: unknown, opts?: unknown) => void;
+    };
     const blockRuler = md.block.ruler as { before: (name: string, id: string, fn: unknown, opts?: unknown) => void };
+    inlineRuler.before("escape", "math_paren_inline", mathParenInline as never, { alt: [] });
     inlineRuler.after("escape", "math_inline", mathInline as never, { alt: ["escape"] });
     blockRuler.before("fence", "math_block", mathBlock as never, { alt: ["paragraph", "reference", "blockquote", "list"] });
 }

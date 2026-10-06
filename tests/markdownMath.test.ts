@@ -169,3 +169,80 @@ test("同一个实例连着解析多段都认公式（实例只建一次，别�
         1
     );
 });
+
+// ---- LaTeX 原生定界符：\(…\) 行内、\[…\] 块级 ----
+//
+// 这两套的注册位置与 `$` 那套**相反**（必须排在 escape 之前，
+// 因为 escape 会把 `\(` 当成 ASCII 标点转义吃掉），所以单独钉一组用例。
+test("行内原生定界符 \\(…\\)", async () => {
+    const md = makeMarkdownIt();
+    const math = pick(flat(md.parse("看这个 \\(a^2+b^2=c^2\\) 就行", {})), "math_inline");
+    assert.equal(math.length, 1);
+    assert.equal(math[0].content, "a^2+b^2=c^2");
+});
+
+test("行内原生定界符两侧留空格照样认（\\$ 那套会拒，这是故意的差别）", async () => {
+    const md = makeMarkdownIt();
+    const math = pick(flat(md.parse("\\( a + b \\)", {})), "math_inline");
+    assert.equal(math.length, 1);
+    assert.equal(math[0].content, "a + b", "内容两侧的空白要 trim 掉");
+});
+
+test("行内 \\[…\\] 也认成行内公式", async () => {
+    const md = makeMarkdownIt();
+    const math = pick(flat(md.parse("夹在文字里 \\[x=1\\] 也能认", {})), "math_inline");
+    assert.equal(math.length, 1);
+    assert.equal(math[0].content, "x=1");
+});
+
+test("\\( 没闭合不当公式（退回原文）", async () => {
+    const md = makeMarkdownIt();
+    const tokens = md.parse("写了一半 \\(a+b 就没了", {});
+    assert.equal(pick(flat(tokens), "math_inline").length, 0);
+    assert.ok(textOf(tokens).includes("a+b"), "原文要留着");
+});
+
+test("空内容 \\(\\) 不当公式", async () => {
+    const md = makeMarkdownIt();
+    assert.equal(pick(flat(md.parse("\\(\\)", {})), "math_inline").length, 0);
+});
+
+test("转义的反斜杠 \\\\( 不当公式开头", async () => {
+    const md = makeMarkdownIt();
+    assert.equal(pick(flat(md.parse("路径 C:////(x) 不是公式", {})), "math_inline").length, 0);
+});
+
+test("代码块里的 \\( 不是公式", async () => {
+    const md = makeMarkdownIt();
+    assert.equal(pick(flat(md.parse("`\\(a\\)`", {})), "math_inline").length, 0);
+});
+
+test("块级 \\[ … \\] 独占行写法", async () => {
+    const md = makeMarkdownIt();
+    const tokens = md.parse("前文\n\n\\[\nE = mc^2\n\\]\n\n后文", {});
+    const math = pick(tokens, "math_block");
+    assert.equal(math.length, 1);
+    assert.equal(math[0].content, "E = mc^2");
+    assert.ok(textOf(tokens).includes("后文"), "公式块后面那段不能被吞");
+});
+
+test("块级 \\[…\\] 一行写完", async () => {
+    const md = makeMarkdownIt();
+    const math = pick(md.parse("\\[\\frac{1}{2}\\]", {}), "math_block");
+    assert.equal(math.length, 1);
+    assert.equal(math[0].content, "\\frac{1}{2}");
+});
+
+test("块级 \\[ 没闭合不当公式（不能吞掉后面的段落）", async () => {
+    const md = makeMarkdownIt();
+    const tokens = md.parse("\\[\nx = 1\n\n这是后面的正文", {});
+    assert.equal(pick(tokens, "math_block").length, 0);
+    assert.ok(textOf(tokens).includes("后面的正文"));
+});
+
+test("两套定界符混排各认各的", async () => {
+    const md = makeMarkdownIt();
+    const inline = pick(flat(md.parse("美元 $a$ 与原生 \\(b\\) 并存", {})), "math_inline");
+    assert.equal(inline.length, 2);
+    assert.deepEqual(inline.map(t => t.content), ["a", "b"]);
+});

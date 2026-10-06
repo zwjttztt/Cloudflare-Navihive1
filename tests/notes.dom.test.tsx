@@ -332,10 +332,16 @@ test("阶段三：归档的笔记从「全部」里隐去，只在「归档」�
     assert.ok(!listText().includes("正常的"), "归档视图不该混进正常笔记");
 });
 
-test("阶段三：未归类 = 没挂在任何站点上的笔记", () => {
+test("未归类 = 没有归到任何文件夹的笔记（不是「没挂站点」）", () => {
+    // ⚠️ 判据在 2026-10-06 改过：原来筛的是 site_id（没挂在站点上），
+    // 而记事本根本没有「把笔记挂到站点」的入口，site_id 永远是 null ——
+    // 于是「未归类」跟「全部」完全等价，左栏两个计数一模一样。
+    // 阶段三加了文件夹，「未归类」真正该问的是「没归到任何文件夹」。
     mountPanel([
-        note({ id: 1, title: "没挂站点", content: "a", site_id: null }),
-        note({ id: 2, title: "挂了站点", content: "b", site_id: 7 }),
+        note({ id: 1, title: "没进文件夹", content: "a", folder_id: null }),
+        note({ id: 2, title: "进了文件夹", content: "b", folder_id: 3 }),
+        // 挂着站点但没进文件夹 → 仍算「未归类」（旧判据会把它踢出去）
+        note({ id: 3, title: "挂了站点但没进文件夹", content: "c", site_id: 7, folder_id: null }),
     ]);
     act(() => {
         (
@@ -343,8 +349,28 @@ test("阶段三：未归类 = 没挂在任何站点上的笔记", () => {
         ).click();
     });
     const listText = () => document.querySelector("[data-note-list]")!.textContent || "";
-    assert.ok(listText().includes("没挂站点"), "未归类里要有它");
-    assert.ok(!listText().includes("挂了站点"), "挂了站点的不该进来");
+    assert.ok(listText().includes("没进文件夹"), "未归类里要有它");
+    assert.ok(
+        listText().includes("挂了站点但没进文件夹"),
+        "判据是文件夹不是站点：挂了站点的笔记也该在未归类里"
+    );
+    assert.ok(!listText().includes("进了文件夹"), "进了文件夹的不该进来");
+});
+
+test("左栏「未归类」的计数与视图内容一致（两处判据不许各写各的）", () => {
+    mountPanel([
+        note({ id: 1, title: "甲", content: "", folder_id: null }),
+        note({ id: 2, title: "乙", content: "", folder_id: 5 }),
+    ]);
+    const countText = () =>
+        document.querySelector('button[data-view="uncategorized"]')!.textContent || "";
+    // 计数是 1（只有甲没进文件夹）
+    assert.ok(countText().includes("1"), `未归类计数应为 1，实际是「${countText()}」`);
+    act(() => {
+        (document.querySelector('button[data-view="uncategorized"]') as HTMLElement).click();
+    });
+    const list = document.querySelector("[data-note-list]")!.textContent || "";
+    assert.ok(list.includes("甲") && !list.includes("乙"), "列表要和计数对得上");
 });
 
 // ---------- 本轮修掉的三个界面问题 ----------
@@ -1296,4 +1322,104 @@ test("阶段四：光标不在表格里，增删行列不许改坏正文", () =>
     assert.equal(ta.value, original, "不在表格里 → 原样不动");
     pickTable('[data-table-op="delCol"]');
     assert.equal(ta.value, original, "不在表格里 → 原样不动");
+});
+
+// ---------- 列表行操作菜单（2026-10-06 补）----------
+//
+// 之前置顶 / 归档 / 归类 / 删除只挂在底部状态栏上，也就是「只能对当前打开的那条操作」，
+// 而「归入文件夹 / 编辑标签」**根本没有入口** —— 后端 setNoteTags、folder_id 都齐了，
+// 界面上却没有一处能调，文件夹和标签于是永远是空的。
+test("列表行有操作菜单按钮，且菜单里带归入文件夹 / 编辑标签", async () => {
+    mountPanel([note({ id: 1, title: "甲", content: "a" })]);
+    const btn = document.querySelector("button[data-note-menu='1']") as HTMLElement;
+    assert.ok(btn, "列表行要有一个操作菜单按钮（data-note-menu）");
+    assert.ok(
+        btn.getAttribute("aria-label")?.includes("甲"),
+        "按钮的可访问名要含笔记标题（读屏用户听得出来这是谁的菜单）"
+    );
+    await act(async () => {
+        btn.click();
+    });
+    for (const op of ["pin", "archive", "folder", "tags", "delete"]) {
+        assert.ok(
+            document.querySelector(`[data-row-op='${op}']`),
+            `菜单里要能按到 data-row-op='${op}' 这一项`
+        );
+    }
+});
+
+test("点菜单按钮不会顺带切到那条笔记（必须 stopPropagation）", async () => {
+    // ⚠️ 判据不能挂原生监听器：React 17+ 把事件委托在 root 上，行上的原生 listener
+    // 会**先于** React 的 stopPropagation 触发（合成事件是在 root 才派发的），
+    // 那样测出来的是「事件确实冒泡到了行」，而不是「行的 onClick 有没有被执行」。
+    // 真正要验的是后者：行 onClick 会 openNote → activeId 变 → 标题框换成那条笔记。
+    mountPanel([
+        note({ id: 1, title: "第一条", content: "a" }),
+        note({ id: 2, title: "第二条", content: "b" }),
+    ]);
+    const titleInput = () =>
+        document.querySelector("input[aria-label='笔记标题']") as HTMLInputElement;
+    assert.equal(titleInput().value, "第一条", "初始打开的是第一条");
+    // 菜单按钮点的是**第二条**（非当前那条）—— 一旦事件漏进行 onClick，标题会变成「第二条」
+    const btn = document.querySelector("button[data-note-menu='2']") as HTMLElement;
+    await act(async () => {
+        btn.click();
+    });
+    assert.equal(titleInput().value, "第一条", "点菜单不该把笔记切过去");
+    assert.ok(document.querySelector("[data-row-op='delete']"), "菜单应仍然打开");
+});
+
+test("「归入文件夹」能把笔记真的归进去（onUpdate 收到 folder_id）", async () => {
+    const updates: Array<{ id: number; patch: Record<string, unknown> }> = [];
+    mountPanel([note({ id: 5, title: "甲", content: "a" })], {
+        onUpdate: async (id: number, patch: Record<string, unknown>) => {
+            updates.push({ id, patch });
+        },
+        folderTags: {
+            folders: [
+                { id: 3, user_id: null, name: "工作", order_num: 0, created_at: "", updated_at: "" },
+            ] as never,
+            tags: [],
+            onCreateFolder: async () => null,
+            onRenameFolder: async () => {},
+            onRemoveFolder: async () => {},
+            onCreateTag: async () => null,
+            onRenameTag: async () => {},
+            onRemoveTag: async () => {},
+            onAssignTags: async () => [],
+        },
+    });
+    await act(async () => {
+        (document.querySelector("button[data-note-menu='5']") as HTMLElement).click();
+    });
+    await act(async () => {
+        (document.querySelector("[data-row-op='folder']") as HTMLElement).click();
+    });
+    const opt = document.querySelector("[data-folder-pick='3']") as HTMLElement;
+    assert.ok(opt, "二级菜单要列出已有文件夹");
+    await act(async () => {
+        opt.click();
+    });
+    assert.equal(updates.length, 1, "应当只发一次更新");
+    assert.equal(updates[0].id, 5);
+    assert.equal(updates[0].patch.folder_id, 3, "要把 folder_id 写进 patch");
+});
+
+test("列表行显示标签徽章（不用点进去才知道打了哪些标签）", () => {
+    mountPanel([note({ id: 1, title: "甲", content: "a" })], {
+        folderTags: {
+            folders: [],
+            tags: [{ id: 7, user_id: null, name: "重要", color: null, created_at: "", updated_at: "" }] as never,
+            noteTags: { 1: [7] },
+            onCreateFolder: async () => null,
+            onRenameFolder: async () => {},
+            onRemoveFolder: async () => {},
+            onCreateTag: async () => null,
+            onRenameTag: async () => {},
+            onRemoveTag: async () => {},
+            onAssignTags: async () => [],
+        },
+    });
+    const badge = document.querySelector("[data-note-tag='重要']");
+    assert.ok(badge, "打了标签的笔记要在行里显示标签名徽章");
 });

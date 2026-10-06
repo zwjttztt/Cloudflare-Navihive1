@@ -38,7 +38,7 @@ export interface RecycleApi {
     recycleRowToSite(row: Record<string, unknown>): Site;
     reinsertGroup(group: Record<string, unknown>, sites: Record<string, unknown>[]): Promise<void>;
     /** 记事本：还原一条笔记（实现放在 methods/notes.ts，与 reinsertSite 同做法） */
-    reinsertNote(note: Record<string, unknown>): Promise<void>;
+    reinsertNote(note: Record<string, unknown>, tagIds?: number[]): Promise<void>;
     getRetentionDays(): Promise<number>;
     purgeExpiredRecycle(
         days: number, nowSec?: number): Promise<number>;
@@ -139,13 +139,25 @@ export const recycleImpl: RecycleApi = {
      *
      * 为什么单独一个方法而不是让 restoreRecycleItem 认 kind='note'：
      * 站点 / 分组还原要带着各自的关联数据（分组的 sites），笔记是单行，形状不同。
+     *
+     * ⚠️ `folder_id` / `archived` **必须一起还原**。
+     * 删笔记时进回收站的是 `SELECT *` 的完整行（这两个字段在里面），
+     * 少写一列就等于「还原时被静默清零」：归档笔记回到「全部」视图、
+     * 归了文件夹的笔记掉回「未归类」——用户看着像还原成功，其实在丢状态。
+     * 标签关联同理，而且它换新 id 之后旧关联一律接不回来，
+     * 所以必须由 deleteNote 一起存进回收站（`{ note, tagIds }`），这里再写回去。
      */
-    reinsertNote: async function (this: NavigationAPI, note: Record<string, unknown>): Promise<void> {
+    reinsertNote: async function (
+        this: NavigationAPI,
+        note: Record<string, unknown>,
+        tagIds: number[] = []
+    ): Promise<void> {
         const uuid = (note.uuid as string) || newUuid();
-        await this.db
+        const inserted = await this.db
             .prepare(
-                `INSERT INTO notes (user_id, uuid, title, content, pinned, order_num, site_id)
-                 VALUES (?, ?, ?, ?, ?, ?, ?)`
+                `INSERT INTO notes (user_id, uuid, title, content, pinned, order_num, site_id, folder_id, archived)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 RETURNING id`
             )
             .bind(
                 this.currentUserId,
@@ -154,8 +166,35 @@ export const recycleImpl: RecycleApi = {
                 (note.content as string) ?? "",
                 note.pinned ? 1 : 0,
                 (note.order_num as number) ?? 0,
-                (note.site_id as number | null) ?? null
+                (note.site_id as number | null) ?? null,
+                (note.folder_id as number | null) ?? null,
+                note.archived ? 1 : 0
             )
+            .first<{ id: number }>();
+        const newId = inserted?.id;
+        // 标签关联写回新 id。⚠️ 别把 tagIds 直接信到底：删笔记到还原之间，
+        // 用户可能已经把那个标签删了 —— 那几条关联照写回去就是新的悬空行。
+        const wanted = (Array.isArray(tagIds) ? tagIds : []).filter(
+            n => Number.isInteger(n) && n > 0
+        );
+        if (!newId || wanted.length === 0) return;
+        const alive = await this.db
+            .prepare(
+                `SELECT id FROM note_tag WHERE id IN (${wanted.map(() => "?").join(",")})${this.scopeSql(
+                    true
+                )}`
+            )
+            .bind(...this.scopeParams(wanted))
+            .all<{ id: number }>();
+        const ok = (alive.results || []).map(r => r.id);
+        if (ok.length === 0) return;
+        await this.db
+            .prepare(
+                `INSERT OR REPLACE INTO note_note_tag (note_id, tag_id) VALUES ${ok
+                    .map(() => "(?, ?)")
+                    .join(",")}`
+            )
+            .bind(...ok.flatMap(tagId => [newId, tagId]))
             .run();
     },
 
@@ -176,9 +215,12 @@ export const recycleImpl: RecycleApi = {
             if (row.kind === "site") {
                 await this.reinsertSite(parsed as Record<string, unknown>);
             } else if (row.kind === "note") {
-                // 记事本：存进去的是 { note: {...} }
-                const n = parsed as { note?: Record<string, unknown> };
-                await this.reinsertNote(n.note || (parsed as Record<string, unknown>));
+                // 记事本：存进去的是 { note: {...}, tagIds: [...] }（见 notes.ts 的 deleteNote）
+                const n = parsed as { note?: Record<string, unknown>; tagIds?: number[] };
+                await this.reinsertNote(
+                    n.note || (parsed as Record<string, unknown>),
+                    n.tagIds || []
+                );
             } else {
                 const g = parsed as { group?: Record<string, unknown>; sites?: Record<string, unknown>[] };
                 await this.reinsertGroup(g.group || {}, g.sites || []);

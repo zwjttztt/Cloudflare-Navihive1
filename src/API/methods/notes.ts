@@ -96,10 +96,16 @@ export const notesImpl: NotesApi = {
         const scopeTail = this.scopeParams([]);
         const result = await this.db
             .prepare(
+                // ⚠️⚠️ 列数必须与值数**一一对应**：阶段三收尾给列尾加了 folder_id，
+                // 值这一侧却忘了补 `?` —— 8 列 7 值，SQLite 直接报
+                // "table notes has 8 columns but 7 values were supplied"，
+                // POST /api/notes **一律 500，新建笔记功能整个不可用**
+                // （GET /api/notes 正常，所以列表看着好好的，一点都不像坏了）。
+                // 下面的 sql 形状守卫就是盯这一类：INSERT 的列数 ≠ 顶层值数就红。
                 `INSERT INTO notes (user_id, uuid, title, content, pinned, order_num, site_id, folder_id)
                  VALUES (?, ?, ?, ?, ?, COALESCE((
                      SELECT MAX(order_num) + 1 FROM notes${this.scopeSql(false)}
-                 ), 0), ?)
+                 ), 0), ?, ?)
                  RETURNING ${NOTE_FIELDS}`
             )
             .bind(
@@ -191,8 +197,37 @@ export const notesImpl: NotesApi = {
                 .bind(...this.scopeParams([id]))
                 .first<Record<string, unknown>>();
             if (!note) return { success: false };
+
+            // ⚠️ 标签关联必须**跟着笔记一起进回收站**，而且要在删行之前取。
+            // 以前两处都缺：① 关联行留在 note_note_tag 里，笔记没了它就成悬空行
+            // （左栏标签计数还照算，读的是全表）；② 还原换新 id，那些关联接不回来，
+            // 用户看到的是「删之前有标签，还原后标签没了」。
+            // note_note_tag 这张表没有 user_id 列，归属只能靠 JOIN notes 判定。
+            const links = await this.db
+                .prepare(
+                    `SELECT l.tag_id FROM note_note_tag l
+                     JOIN notes n ON n.id = l.note_id${this.scopeSql(true)}
+                     WHERE l.note_id = ?`
+                )
+                .bind(...this.scopeParams([id]))
+                .all<{ tag_id: number }>();
+            const tagIds = (links.results || []).map(r => r.tag_id);
+
             // 先搬进回收站再删行：顺序反了就救不回来了
-            const recycleId = await this.pushToRecycle("note", JSON.stringify({ note }));
+            const recycleId = await this.pushToRecycle(
+                "note",
+                JSON.stringify({ note, tagIds })
+            );
+            if (tagIds.length > 0) {
+                await this.db
+                    .prepare(
+                        `DELETE FROM note_note_tag WHERE note_id IN (
+                             SELECT id FROM notes WHERE id = ?${this.scopeSql(true)}
+                         )`
+                    )
+                    .bind(...this.scopeParams([id]))
+                    .run();
+            }
             const result = await this.db
                 .prepare(`DELETE FROM notes WHERE id = ?${this.scopeSql(true)}`)
                 .bind(...this.scopeParams([id]))
@@ -343,17 +378,20 @@ export const notesImpl: NotesApi = {
                 .bind(...this.scopeParams([id]))
                 .first<{ n: number }>();
             const orphaned = stat?.n ?? 0;
-            const drop = await this.db
-                .prepare(`DELETE FROM note_folder WHERE id = ?${this.scopeSql(true)}`)
-                .bind(...this.scopeParams([id]))
-                .run();
-            if (!drop.success) return { success: false, orphaned: 0 };
-            if (orphaned > 0) {
-                await this.db
+            // ⚠️ 这三条必须**走同一个 batch**（= 同一个 D1 事务），不能顺序单发。
+            // 分开跑的话，中途失败/超时就会留下「文件夹没了、笔记还指着它」的悬空
+            // folder_id：那几条笔记在左栏任何文件夹视图里都点不出来，
+            // 看着就像被删掉了。顺序也重要 —— 先摘关联再删文件夹。
+            const statements = [
+                this.db
                     .prepare(`UPDATE notes SET folder_id = NULL WHERE folder_id = ?${this.scopeSql(true)}`)
-                    .bind(...this.scopeParams([id]))
-                    .run();
-            }
+                    .bind(...this.scopeParams([id])),
+                this.db
+                    .prepare(`DELETE FROM note_folder WHERE id = ?${this.scopeSql(true)}`)
+                    .bind(...this.scopeParams([id])),
+            ];
+            const committed = await this.db.batch(statements);
+            if (committed.some(r => !r.success)) return { success: false, orphaned: 0 };
             return { success: true, orphaned };
         });
     },
@@ -509,13 +547,18 @@ export const notesImpl: NotesApi = {
         return this.withSchemaRetry(async () => {
             const ids = Array.isArray(tagIds) ? tagIds.filter(n => Number.isInteger(n) && n > 0) : [];
             if (ids.length === 0) return [];
+            // ⚠️ 绑定顺序要跟 SQL 里 `?` 的出现顺序一致：这里的账号条件写在
+            // `WHERE l.tag_id IN (…)` **之前**，所以账号 id 排在标签 id 前面。
+            // 直接 `scopeParams(ids)`（它把账号 id 追加到**末尾**）会跟 SQL 反过来，
+            // 运行时报「绑定参数个数/顺序对不上」。这个方法前端还没调用（死代码），
+            // 但留着这条错绑定就是个雷：哪天有人接上去，症状是 500 且极难定位。
             const result = await this.db
                 .prepare(
                     `SELECT DISTINCT l.note_id FROM note_note_tag l
                      JOIN notes n ON n.id = l.note_id${this.scopeSql(true)}
                      WHERE l.tag_id IN (${ids.map(() => "?").join(",")})`
                 )
-                .bind(...this.scopeParams(ids))
+                .bind(...this.scopeParams([]), ...ids)
                 .all<{ note_id: number }>();
             return (result.results || []).map(r => r.note_id);
         });
@@ -524,10 +567,18 @@ export const notesImpl: NotesApi = {
     listNoteTags: async function (this: NavigationAPI): Promise<Record<number, number[]>> {
         await this.migrate();
         return this.withSchemaRetry(async () => {
-            const result = await this.db.prepare("SELECT note_id, tag_id FROM note_note_tag").all<{
-                note_id: number;
-                tag_id: number;
-            }>();
+            // ⚠️⚠️ 这条以前是 `SELECT note_id, tag_id FROM note_note_tag` —— **一张表全扫**。
+            // note_note_tag 这张表没有 user_id 列，归属只能靠 JOIN notes 判定；
+            // 不加这个 JOIN 就是跨账号越权：别家账号的 (note_id → tagId) 也会被拉回前端。
+            // 顺带把「删了笔记却没清关联」留下的悬空行一并挡掉
+            //（它们永远匹配不到活着的笔记，以前却照样占着左栏的标签计数）。
+            const result = await this.db
+                .prepare(
+                    `SELECT l.note_id, l.tag_id FROM note_note_tag l
+                     JOIN notes n ON n.id = l.note_id${this.scopeSql(true)}`
+                )
+                .bind(...this.scopeParams([]))
+                .all<{ note_id: number; tag_id: number }>();
             const map: Record<number, number[]> = {};
             for (const row of result.results || []) {
                 (map[row.note_id] ||= []).push(row.tag_id);
