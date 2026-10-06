@@ -880,8 +880,11 @@ test("左栏容器不能带 flex:1（会把 300px 的列表撑成两栏宽，中
     // 阶段三收尾把左栏从「单列 300px」改成 inkstone 那样「导航列 + 列表列」两列，
     // 所以总宽变成 NAV_COL_W + LIST_COL_W（336）。再钉 300 只会每次改布局都变红。
     assert.ok(
-        /width: listCollapsed \? 44 : \{ xs: "100%", md: navW \+ listW \+ 14 \}/.test(source),
-        "listPane 展开时宽度应是「导航列 + 列表列 + 两条分隔条」之和（2026-10-06 改成可拖动）"
+        /width: listCollapsed\s*\?\s*44\s*:\s*folderFocus\s*\?/.test(source) &&
+            /md: navW \+ 14/.test(source) &&
+            /md: navW \+ listW \+ 14/.test(source),
+        "listPane 展开时宽度应是「导航列 + 列表列 + 两条分隔条」之和；" +
+            "选中文件夹时中间列不渲染，只剩「导航列 + 一条分隔条」（2026-10-06）"
     );
     assert.ok(
         /export const NAV_COL_W = \d+;/.test(source) &&
@@ -1129,6 +1132,277 @@ test("换一个按钮不会被误判成「取消」（点完粗体再点斜体�
     );
 });
 
+test("标题/内容块/分隔线等按钮：第二次点击要真的取消（2026-10-06 补）", () => {
+    // 之前只有强调/代码/列表（走 insertAtCursor）与脚注有开关语义，
+    // 其余全是「点了就往上叠」：连点两下标题得到 `## ## 标题`、
+    // 连点两下内容块得到 `> [!NOTE] > [!NOTE] …`，用户以为按钮坏了。
+    mountPanel([note({ id: 1, title: "甲", content: "" })]);
+    const bar = document.querySelector('[aria-label="Markdown 格式"]') as HTMLElement;
+    assert.ok(bar, "要有格式工具栏");
+    const ta = getEditor();
+
+    const openMenu = (label: string) => {
+        act(() => (bar.querySelector(`button[aria-label="${label}"]`) as HTMLElement).click());
+    };
+    const pick = (sel: string) => {
+        const el = document.querySelector(sel) as HTMLElement;
+        assert.ok(el, `下拉里要有 ${sel}`);
+        act(() => el.click());
+    };
+    const reset = (v = "一段文字") => {
+        act(() => {
+            ta.focus();
+            ta.value = v;
+            ta.setSelectionRange(v.length, v.length);
+        });
+    };
+
+    // ① 标题 H2：给**当前行**加前缀 → 再点一次去掉
+    reset();
+    openMenu("标题层级");
+    pick('[data-heading="2"]');
+    assert.equal(ta.value, "## 一段文字", "H2 落在整行开头");
+    openMenu("标题层级");
+    pick('[data-heading="2"]');
+    assert.equal(ta.value, "一段文字", "再点一次 H2 要撤销，实际 " + JSON.stringify(ta.value));
+
+    // ② 引用：行首 `> `
+    reset();
+    act(() => (bar.querySelector('button[data-tool="quote"]') as HTMLElement).click());
+    assert.equal(ta.value, "> 一段文字");
+    act(() => (bar.querySelector('button[data-tool="quote"]') as HTMLElement).click());
+    assert.equal(ta.value, "一段文字", "再点一次引用要撤销");
+
+    // ③ 内容块：`> [!NOTE]`
+    reset();
+    openMenu("内容块");
+    pick('[data-callout-type="NOTE"]');
+    assert.equal(ta.value, "> [!NOTE] 一段文字");
+    openMenu("内容块");
+    pick('[data-callout-type="NOTE"]');
+    assert.equal(ta.value, "一段文字", "再点一次内容块要撤销");
+
+    // ④ 分隔线：不能插两条；且**光标所在行的正文一个字都不能丢**
+    reset();
+    openMenu("块");
+    pick('[data-block-op="divider"]');
+    const once = String(ta.value);
+    assert.ok(once.includes("一段文字"), "插入分隔线不能把这一行的正文吃掉，实际 " + JSON.stringify(once));
+    assert.ok(once.includes("---"), "第一下确实插了分隔线");
+    openMenu("块");
+    pick('[data-block-op="divider"]');
+    assert.equal(ta.value, "一段文字", "再点一次分隔线要撤销，实际 " + JSON.stringify(ta.value));
+
+    // ⑤ 折叠块 / 标签页：块级同样能撤
+    reset();
+    openMenu("块");
+    pick('[data-block-op="fold"]');
+    assert.ok(String(ta.value).includes("[!FOLD]"), "第一下插了折叠块");
+    assert.ok(String(ta.value).includes("一段文字"), "折叠块不能吃掉正文");
+    openMenu("块");
+    pick('[data-block-op="fold"]');
+    assert.equal(ta.value, "一段文字", "再点一次折叠要撤销");
+
+    reset();
+    openMenu("块");
+    pick('[data-block-op="tabs"]');
+    assert.ok(String(ta.value).includes(":::tabs"), "第一下插了标签页");
+    openMenu("块");
+    pick('[data-block-op="tabs"]');
+    assert.equal(ta.value, "一段文字", "再点一次标签页要撤销");
+});
+
+test("换了按钮不能误撤上一段；改了正文也不能误撤（撤销的两个前置条件）", () => {
+    mountPanel([note({ id: 1, title: "甲", content: "" })]);
+    const ta = getEditor();
+    const bar = document.querySelector('[aria-label="Markdown 格式"]') as HTMLElement;
+    const pickDivider = () => {
+        act(() => (bar.querySelector('button[aria-label="块"]') as HTMLElement).click());
+        act(() => (document.querySelector('[data-block-op="divider"]') as HTMLElement).click());
+    };
+    act(() => {
+        ta.focus();
+        ta.value = "";
+        ta.setSelectionRange(0, 0);
+    });
+    pickDivider();
+    assert.ok(ta.value.includes("---"), "先插一条分隔线");
+
+    // ① 换个工具（折叠）不能把分隔线撤掉 —— lastToolRef 记了工具名
+    act(() => (bar.querySelector('button[aria-label="块"]') as HTMLElement).click());
+    act(() => (document.querySelector('[data-block-op="fold"]') as HTMLElement).click());
+    assert.ok(ta.value.includes("---"), "换按钮不能撤掉上一段，实际 " + JSON.stringify(ta.value));
+
+    // ② 用户在别处改了正文 → 原片段对不上 → 当成新的插入，不误删
+    act(() => {
+        ta.value = ta.value.replace("---", "---改");
+        ta.setSelectionRange(ta.value.length, ta.value.length);
+    });
+    pickDivider();
+    assert.ok(
+        ta.value.includes("---改"),
+        "正文被改过就不能按「取消」处理把这段删掉，实际 " + JSON.stringify(ta.value)
+    );
+});
+
+test("插入表格 / 独立公式：第二次点击也要能撤销", () => {
+    mountPanel([note({ id: 1, title: "甲", content: "" })]);
+    const ta = getEditor();
+    const bar = document.querySelector('[aria-label="Markdown 格式"]') as HTMLElement;
+    const act0 = () => {
+        act(() => {
+            ta.focus();
+            ta.value = "正文";
+            ta.setSelectionRange(2, 2);
+        });
+    };
+
+    // 表格
+    act0();
+    act(() => (bar.querySelector('button[aria-label="表格"]') as HTMLElement).click());
+    act(() => (document.querySelector('[data-table-preset="2x3"]') as HTMLElement).click());
+    assert.ok(ta.value.includes("|"), "第一下插了表格");
+    act(() => (bar.querySelector('button[aria-label="表格"]') as HTMLElement).click());
+    act(() => (document.querySelector('[data-table-preset="2x3"]') as HTMLElement).click());
+    assert.equal(ta.value, "正文", "再点一次插入表格要撤销，实际 " + JSON.stringify(ta.value));
+
+    // 块级公式（行内公式走 insertAtCursor，本来就有开关）
+    act0();
+    act(() => (bar.querySelector('button[aria-label="公式"]') as HTMLElement).click());
+    act(() => (document.querySelector('[data-formula-op="block"]') as HTMLElement).click());
+    assert.ok(ta.value.includes("$$"), "第一下插了块级公式");
+    act(() => (bar.querySelector('button[aria-label="公式"]') as HTMLElement).click());
+    act(() => (document.querySelector('[data-formula-op="block"]') as HTMLElement).click());
+    assert.equal(ta.value, "正文", "再点一次块级公式要撤销，实际 " + JSON.stringify(ta.value));
+});
+
+test("归档 / 回收站挪到左下角固定区，且那里有账号与设置（inkstone 布局）", () => {
+    mountPanel([note({ id: 1, title: "甲", content: "" })], {
+        accountName: "zwj",
+        onOpenSettings: () => {},
+    });
+    const footer = document.querySelector('[data-nav-footer="1"]');
+    assert.ok(footer, "左下角要有固定区");
+    // 归档 / 回收站在这个固定区里
+    for (const v of ["archived", "trash"]) {
+        const row = footer!.querySelector(`button[data-view="${v}"]`);
+        assert.ok(row, `${v} 要在左下角固定区里`);
+    }
+    // 账号名 + 设置按钮
+    assert.equal(
+        footer!.querySelector('[data-account-name="1"]')?.textContent,
+        "zwj",
+        "左下角要显示账号名"
+    );
+    assert.ok(footer!.querySelector('button[data-tool="settings"]'), "要有设置按钮");
+    // 固定区本身不参与滚动（父级才是滚动容器），这里断言它带 sticky 语义
+    assert.ok(footer!.querySelector('[data-nav-account="1"]'), "要有账号头像");
+});
+
+test("没传账号 / 设置回调时不应给死按钮", () => {
+    mountPanel([note({ id: 1, title: "甲", content: "" })]);
+    const footer = document.querySelector('[data-nav-footer="1"]')!;
+    assert.ok(footer, "左下角固定区还要在");
+    assert.equal(
+        footer.querySelector('[data-account-name="1"]')?.textContent,
+        "未登录",
+        "没传账号名时显示未登录"
+    );
+    assert.ok(
+        !footer.querySelector('button[data-tool="settings"]'),
+        "没传 onOpenSettings 就不该给一个点了没反应的设置按钮"
+    );
+});
+
+test("选中文件夹：中间笔记列不渲染，笔记内联在文件夹下面（inkstone 文件夹树）", () => {
+    mountPanel(
+        [
+            note({ id: 1, title: "在夹里的笔记", content: "x", folder_id: 7 }),
+            note({ id: 2, title: "别的笔记", content: "y", folder_id: null }),
+        ],
+        {
+            folderTags: {
+                folders: [{ id: 7, name: "工作", order_num: 0, created_at: "", updated_at: "" }],
+                tags: [],
+                noteTags: {},
+                onCreateFolder: async () => null,
+                onRenameFolder: async () => {},
+                onRemoveFolder: async () => {},
+                onCreateTag: async () => null,
+                onRenameTag: async () => {},
+                onRemoveTag: async () => {},
+                onAssignTags: async () => null,
+            },
+        }
+    );
+    // 默认（没选文件夹）：中间那栏在
+    assert.ok(document.querySelector('[data-list-col="1"]'), "默认要显示中间笔记列");
+
+    const folderBtn = document.querySelector('button[data-folder-id="7"]') as HTMLElement;
+    assert.ok(folderBtn, "左栏要有这个文件夹");
+    act(() => folderBtn.click());
+
+    // 选中后：中间列消失
+    assert.ok(
+        !document.querySelector('[data-list-col="1"]'),
+        "选中文件夹后中间那栏不该出现"
+    );
+    // 笔记内联在文件夹下面
+    const inline = document.querySelector('[data-folder-notes="1"]');
+    assert.ok(inline, "笔记要内联在文件夹下面");
+    assert.ok(
+        inline!.querySelector('[data-folder-note="1"]'),
+        "该文件夹下的笔记要出现在内联区"
+    );
+    assert.ok(
+        !inline!.querySelector('[data-folder-note="2"]'),
+        "别的文件夹/未归类的笔记不该出现在这里"
+    );
+});
+
+test("点内联笔记能打开它；文件夹视图里新建笔记会落进该文件夹", async () => {
+    const created: (Partial<Note> | undefined)[] = [];
+    mountPanel(
+        [note({ id: 1, title: "夹里的笔记", content: "x", folder_id: 7 })],
+        {
+            onCreate: async (draft?: Partial<Note>) => {
+                created.push(draft);
+                return note({ id: 55, title: "", content: "", folder_id: 7 });
+            },
+            folderTags: {
+                folders: [{ id: 7, name: "工作", order_num: 0, created_at: "", updated_at: "" }],
+                tags: [],
+                noteTags: {},
+                onCreateFolder: async () => null,
+                onRenameFolder: async () => {},
+                onRemoveFolder: async () => {},
+                onCreateTag: async () => null,
+                onRenameTag: async () => {},
+                onRemoveTag: async () => {},
+                onAssignTags: async () => null,
+            },
+        }
+    );
+    act(() => (document.querySelector('button[data-folder-id="7"]') as HTMLElement).click());
+
+    // 点内联笔记 → 打开（activeId 变化通过编辑器内容体现）
+    const row = document.querySelector('[data-folder-note="1"]') as HTMLElement;
+    assert.ok(row, "要有内联笔记行");
+    await act(async () => {
+        row.click();
+    });
+    assert.equal(getEditor().value, "x", "点内联笔记要切到那条笔记");
+
+    // 新建笔记 → folder_id 落在这个文件夹上
+    const newBtn = document.querySelector('button[aria-label="新建笔记"]') as HTMLElement;
+    assert.ok(newBtn, "左栏文件夹那节要有新建笔记");
+    await act(async () => {
+        newBtn.click();
+    });
+    assert.equal(created.length, 1, "应新建了一条");
+    assert.equal(created[0]?.folder_id, 7, "新建的笔记要落进当前文件夹，实际 " + JSON.stringify(created[0]));
+});
+
 test("插入内容以 textarea 的 DOM 值为准，不能读 draft", () => {
     // 静态守卫：上面那条行为用例只覆盖连点，读错来源换个场景又会漏回去。
     const clean = stripComments(
@@ -1191,7 +1465,7 @@ test("选中某个文件夹 → 列表只留这个文件夹里的笔记", () => 
             },
         }
     );
-    const listText = () => document.querySelector("[data-note-list]")!.textContent || "";
+    const listText = () => document.querySelector("[data-note-list]")?.textContent || "";
     assert.ok(listText().includes("甲") && listText().includes("乙"), "默认全部都该在");
 
     const folderBtn = [...document.querySelectorAll("button[data-folder-id]")].find(
@@ -1200,8 +1474,17 @@ test("选中某个文件夹 → 列表只留这个文件夹里的笔记", () => 
     assert.ok(folderBtn, "导航列里要有「收集箱」这一项");
     act(() => folderBtn!.click());
 
-    assert.ok(listText().includes("甲"), "选中收集箱后，它里面的要还在");
-    assert.ok(!listText().includes("乙"), "别文件夹的笔记要被筛掉");
+    // ⚠️ 2026-10-06 起（对齐 inkstone 文件夹树）：选中文件夹后**中间列表列不渲染**，
+    // 该文件夹的笔记直接内联在左栏这个文件夹下面。所以这里查内联区而不是列表列。
+    assert.ok(
+        !document.querySelector('[data-list-col="1"]'),
+        "选中文件夹后中间那栏不该出现"
+    );
+    const inline = document.querySelector("[data-folder-notes='1']");
+    assert.ok(inline, "笔记要内联在文件夹下面");
+    const inlineText = inline?.textContent || "";
+    assert.ok(inlineText.includes("甲"), "选中收集箱后，它里面的要还在");
+    assert.ok(!inlineText.includes("乙"), "别文件夹的笔记要被筛掉");
 });
 
 test("导航列要自己滚（整块一起滚会把搜索框顶出视野）", () => {

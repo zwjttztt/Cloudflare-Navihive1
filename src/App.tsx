@@ -1830,6 +1830,12 @@ function App() {
                                 onError={handleError}
                                 onNotify={notify}
                                 onCountChange={setNotesCount}
+                                // 左下角那一行（inkstone 布局）：账号名 + 设置
+                                accountName={currentUser?.username}
+                                onOpenSettings={() => {
+                                    setNotesOpen(false);
+                                    handleOpenConfig();
+                                }}
                             />
                         </Suspense>
                         </ChunkBoundary>
