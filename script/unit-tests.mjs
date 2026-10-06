@@ -121,6 +121,10 @@ for (const key of ["ResizeObserver", "IntersectionObserver"]) {
     }
 }
 
+// CodeMirror 测量文本 Range；jsdom 无布局，仅提供空测量结果，像素由真浏览器验收。
+win.Range.prototype.getClientRects = function() { return []; };
+win.Range.prototype.getBoundingClientRect = function() { return new win.DOMRect(); };
+
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 `;
 
@@ -159,6 +163,7 @@ const coverageMode = !!process.env.NAVIHIVE_COVERAGE;
 
 const shared = {
     bundle: true,
+    jsx: "automatic",
     format: "esm",
     platform: "node",
     target: "node22",
@@ -168,6 +173,7 @@ const shared = {
     // 一碰就 "No loader is configured for .woff2 files" 把整批用例都拖死 ——
     // 而测试环境根本不去取字体（CSS 用 empty loader 丢掉即可）。
     loader: { ".css": "empty", ".woff": "file", ".woff2": "file", ".ttf": "file" },
+    external: ["react-dom/server"],
     ...(coverageMode ? { sourcemap: "external" } : {}),
 };
 
@@ -226,6 +232,7 @@ for (const group of ["pure", "dom"]) {
 // 测例跑完事件循环也空不下来（碰到 FileReader 这类异步更明显），不加就永远不退。
 const child = spawn(process.execPath, ["--test", "--test-force-exit", ...bundles], {
     stdio: "inherit",
+    cwd: ROOT,
 });
 child.on("exit", code => {
     if (!coverageMode) fs.rmSync(OUT_DIR, { recursive: true, force: true });

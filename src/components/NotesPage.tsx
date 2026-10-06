@@ -71,6 +71,8 @@ import { formatRelative, formatWhen, formatWhenFull, monthLabel } from "../utils
 import { extractOutline, outlineIndent } from "../utils/noteOutline";
 import { exportNoteAsMarkdown } from "../utils/noteExport";
 import { reportError } from "../utils/errorReporter";
+import NoteEditor from "./NoteEditor";
+import type { NoteEditorHandle } from "../utils/noteEditorHandle";
 import {
     addColumnRight,
     addRowBelow,
@@ -609,7 +611,7 @@ export default function NotesPage({
      * 只挪光标不选中的话，长笔记里落点在哪一格根本看不见（光标是个 1px 的竖线，
      * 夹在一堆同色文字里找不着）。选中整行当行高亮用，闭着眼也知道跳到了哪。
      */
-    const jumpToOffset = useCallback((offset: number, line: number) => {
+    const jumpToOffset = useCallback((offset: number) => {
         const el = textareaRef.current;
         if (!el) return;
         const value = el.value;
@@ -618,12 +620,7 @@ export default function NotesPage({
         const to = nl === -1 ? value.length : nl;
         el.focus();
         el.setSelectionRange(from, to);
-        // 视口跟着滚过去：光标在几千行之下时，不滚就等于没跳
-        const lineHeight = 24;
-        const top = line * lineHeight;
-        if (el.scrollTop !== undefined && top < el.scrollTop || top > el.scrollTop + el.clientHeight) {
-            el.scrollTop = Math.max(0, top - el.clientHeight / 3);
-        }
+        // CodeMirror 按真实布局滚动选区，包含自动换行，不再估算行高。
     }, []);
     /** 「归入文件夹 / 编辑标签」这两个二级弹窗的锚点（复用同一个 Menu 容器） */
     const [folderPick, setFolderPick] = useState<{
@@ -643,7 +640,7 @@ export default function NotesPage({
      */
     const splitRatioRef = useRef(splitRatio);
     const splitBoxRef = useRef<HTMLDivElement | null>(null);
-    const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+    const textareaRef = useRef<NoteEditorHandle | null>(null);
     /** 草稿：编辑期间不立刻写库（点「保存」或切走才提交） */
     const [draft, setDraft] = useState<{ title: string; content: string } | null>(null);
     const [mobileDetail, setMobileDetail] = useState(false);
@@ -2081,14 +2078,6 @@ export default function NotesPage({
                     >
                         {pane !== "preview" && (
                             <Box
-                                component='textarea'
-                                ref={textareaRef}
-                                value={draft?.content ?? ""}
-                                onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) =>
-                                    setDraft(d => (d ? { ...d, content: e.target.value } : d))
-                                }
-                                placeholder={'支持 Markdown：\n# 标题\n- 列表\n- [ ] 待办\n> 引用\n**粗体**'}
-                                aria-label='笔记内容'
                                 sx={{
                                     // ⚠️ 两栏都用 `flex: 1 1 0`（basis 0）才会严格对半。
                                     // 之前一边是 `1 1 50%`（basis 445）一边是 `1`（basis 0），
@@ -2113,7 +2102,9 @@ export default function NotesPage({
                                     outline: "none",
                                     resize: "none",
                                     // 常显滚动条：默认 overlay 会让人以为「预览窗没滚轮」
-                                    p: 2.5,
+                                    p: 0,
+                                    minHeight: 0,
+                                    overflow: "hidden",
                                     font: "inherit",
                                     fontFamily: "ui-monospace, monospace",
                                     fontSize: 14,
@@ -2124,7 +2115,14 @@ export default function NotesPage({
                                             ? "rgba(128,128,128,0.05)"
                                             : "transparent",
                                 }}
-                            />
+                            >
+                                <NoteEditor
+                                    key={active.id}
+                                    editorRef={textareaRef}
+                                    value={draft?.content ?? ""}
+                                    onChange={content => setDraft(d => d ? { ...d, content } : d)}
+                                />
+                            </Box>
                         )}
                         {pane === "split" && (
                             <Box
@@ -2391,7 +2389,7 @@ export default function NotesPage({
                             data-outline-item={item.line}
                             onClick={() => {
                                 setOutlineAnchor(null);
-                                jumpToOffset(item.offset, item.line);
+                                jumpToOffset(item.offset);
                             }}
                             sx={{
                                 pl: 1 + outlineIndent(item.level) / 8,
@@ -2612,6 +2610,7 @@ const TOOL_GROUPS: { name: string; tools: ToolSpec[] }[] = [
                 after: "](https://)",
                 placeholder: "链接文字",
             },
+            { key: "footnote", label: "¹", title: "行内脚注", before: "^[", after: "]", placeholder: "脚注说明" },
             {
                 key: "image",
                 icon: <ImageIcon fontSize='small' />,

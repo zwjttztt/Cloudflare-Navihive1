@@ -118,6 +118,8 @@ export default defineConfig({
             if (/node_modules[\\/](markdown-it|mdurl|uc\.micro|entities|linkify-it|katex)[\\/]/.test(id)) {
                 return "markdown";
             }
+            if (/node_modules[\\/](@codemirror|@lezer|style-mod|w3c-keyname|crelt)[\\/]/.test(id)) return "note-editor";
+            if (/node_modules[\\/]markdown-it-footnote[\\/]/.test(id)) return "markdown";
             return "vendor";
         },
       },

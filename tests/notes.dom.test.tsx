@@ -10,6 +10,12 @@ import assert from "node:assert/strict";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import NotesPage from "../src/components/NotesPage";
+import { editorHandle, type NoteEditorHandle } from "../src/utils/noteEditorHandle";
+import { EditorView } from "@codemirror/view";
+function getEditor(): NoteEditorHandle {
+    const dom = document.querySelector<HTMLElement>(".cm-content")!;
+    return editorHandle(EditorView.findFromDOM(dom)!);
+}
 import { useNotes } from "../src/hooks/useNotes";
 import { UIPrefsProvider } from "../src/context/UIPrefsContext";
 import type { Note } from "../src/API/http";
@@ -100,6 +106,35 @@ function mountPanel(notes: Note[], handlers: Record<string, unknown> = {}) {
 
 const text = () => document.body.textContent || "";
 
+test("CodeMirror 使用 contenteditable 而非 textarea，并支持工具栏撤销重做", async () => {
+    const { undo, redo } = await import("@codemirror/commands");
+    mountPanel([note({ content: "原文" })]);
+    assert.equal(document.querySelector("textarea[aria-label='笔记内容']"), null);
+    const content = document.querySelector<HTMLElement>(".cm-content")!;
+    assert.equal(content.getAttribute("contenteditable"), "true");
+    assert.ok(document.querySelector(".cm-lineNumbers"));
+    const view = EditorView.findFromDOM(content)!;
+    const editor = getEditor();
+    act(() => editor.setSelectionRange(0, 2));
+    act(() => (document.querySelector('[data-tool="bold"]') as HTMLElement).click());
+    assert.equal(editor.value, "**原文**");
+    act(() => { assert.equal(undo(view), true); });
+    assert.equal(editor.value, "原文");
+    act(() => { assert.equal(redo(view), true); });
+    assert.equal(editor.value, "**原文**");
+});
+
+test("切笔记重建编辑器，不能撤销到另一条正文", async () => {
+    const { undo } = await import("@codemirror/commands");
+    mountPanel([note({ id: 1, title: "第一条", content: "甲" }), note({ id: 2, title: "第二条", content: "乙" })]);
+    act(() => { getEditor().value = "甲改"; });
+    await act(async () => { (document.querySelectorAll('[data-note-list] [role="button"]')[1] as HTMLElement).click(); });
+    const view = EditorView.findFromDOM(document.querySelector<HTMLElement>(".cm-content")!)!;
+    assert.equal(view.state.doc.toString(), "乙");
+    act(() => { assert.equal(undo(view), false); });
+    assert.equal(view.state.doc.toString(), "乙");
+});
+
 test("面板列出笔记的标题与内容摘要", () => {
     mountPanel([
         note({ id: 1, title: "常用入口", content: "# 标题\n\n- [x] 已完成" }),
@@ -133,7 +168,7 @@ test("工具栏按 data-tool 暴露分组按钮（不再是 15 个散落文字�
 
 test("标题层级下拉：点 H2 是把 `## ` 加在当前行开头", () => {
     mountPanel([note({ id: 1, title: "甲", content: "一段文字" })]);
-    const ta = document.querySelector<HTMLTextAreaElement>("textarea[aria-label='笔记内容']")!;
+    const ta = getEditor();
     const bar = document.querySelector('[aria-label="Markdown 格式"]')!;
 
     // 光标放在「段」与「文字」之间
@@ -197,7 +232,7 @@ test("标题下拉按钮和图标按钮一样大（28×28），不再高一截",
 
 test("选中一段字点粗体后，选区还在（不能一按就没了）", () => {
     mountPanel([note({ id: 1, title: "甲", content: "" })]);
-    const ta = document.querySelector<HTMLTextAreaElement>("textarea[aria-label='笔记内容']")!;
+    const ta = getEditor();
     const bold = document.querySelector('button[data-tool="bold"]') as HTMLElement;
     act(() => {
         ta.focus();
@@ -313,7 +348,7 @@ test("阶段三：回收站里不能编辑笔记（它已经不在 notes 表里�
         (document.querySelector('button[data-view="trash"]') as HTMLElement).click();
     });
     assert.equal(
-        document.querySelector("textarea[aria-label='笔记内容']"),
+        document.querySelector(".cm-content[aria-label='笔记内容']"),
         null,
         "回收站视图不该渲染编辑器"
     );
@@ -764,9 +799,7 @@ test("工具栏同名按钮是开关：连点第二下是「取消」而不是�
     // 工具栏的语义应该是**开关**（像 inkstone / 富文本编辑器那样），
     // 不是每次都往里塞一层新标记。
     mountPanel([note({ id: 1, title: "甲", content: "abc" })]);
-    const ta = document.querySelector<HTMLTextAreaElement>(
-        "textarea[aria-label='笔记内容']"
-    );
+    const ta = getEditor();
     assert.ok(ta, "要有笔记内容输入框");
 
     ta.focus();
@@ -791,9 +824,7 @@ test("选中一段内容后点两下 B：第二下只取消粗体，不能把内
     // 用户原话：「选中输入内容后点击两下粗体会删除内容，应该只取消粗体」。
     // 选中的正文是**用户自己的字**，第二下撤的是「加粗」这件事本身，不是把字也删了。
     mountPanel([note({ id: 1, title: "甲", content: "" })]);
-    const ta = document.querySelector<HTMLTextAreaElement>(
-        "textarea[aria-label='笔记内容']"
-    );
+    const ta = getEditor();
     assert.ok(ta, "要有笔记内容输入框");
     const bold = document.querySelector('button[data-tool="bold"]') as HTMLElement | null;
     assert.ok(bold, "工具栏要有「B（粗体）」按钮");
@@ -821,9 +852,7 @@ test("选中一段内容后点两下 B：第二下只取消粗体，不能把内
 test("已经有这层格式时点按钮是摘掉标记（不是再加一层）", () => {
     // 选中整段带标记的内容 / 只选中被两枚标记夹在中间的字，按同名按钮都要「取消」
     mountPanel([note({ id: 1, title: "甲", content: "" })]);
-    const ta = document.querySelector<HTMLTextAreaElement>(
-        "textarea[aria-label='笔记内容']"
-    );
+    const ta = getEditor();
     assert.ok(ta, "要有笔记内容输入框");
     // ⚠️ 按钮要等面板挂上才存在，不能在 mountPanel 之前去查
     const bold = document.querySelector('button[data-tool="bold"]') as HTMLElement | null;
@@ -861,9 +890,7 @@ test("换一个按钮不会被误判成「取消」（点完粗体再点斜体�
     // 浏览器实测抓出来的：记录上次插入时只存了片段没存按钮，
     // 于是「斜体」一按，发现同一位置还是那段 `**粗体**`，就当成同名按钮撤了它。
     mountPanel([note({ id: 1, title: "甲", content: "" })]);
-    const ta = document.querySelector<HTMLTextAreaElement>(
-        "textarea[aria-label='笔记内容']"
-    );
+    const ta = getEditor();
     assert.ok(ta, "要有笔记内容输入框");
     const bar = document.querySelector('[aria-label="Markdown 格式"]') as HTMLElement | null;
     assert.ok(bar, "要有格式工具栏");
@@ -1053,17 +1080,12 @@ test("阶段四：改动后约 3 秒自动写库，不用手点保存", async ()
         },
     });
     const updated = () => calls[0] ?? null;
-    const ta = document.querySelector<HTMLTextAreaElement>("textarea[aria-label='笔记内容']")!;
+    const ta = getEditor();
     act(() => {
         // ⚠️ 不能 `ta.value = ...`：React 在节点上装了自己的 value setter 做变更追踪，
         // 直接赋值会把它的记录一起改掉，onChange 就**不会被触发**（草稿压根没变，
         // dirty 恒为 false，自动保存当然不跑）。要绕开它，用原型上的原生 setter。
-        const native = Object.getOwnPropertyDescriptor(
-            HTMLTextAreaElement.prototype,
-            "value"
-        )!.set!;
-        native.call(ta, "改过的内容");
-        ta.dispatchEvent(new Event("input", { bubbles: true }));
+        typeInto(ta, "改过的内容");
     });
     assert.equal(updated(), null, "刚打完字不该立刻发请求（debounce 还没走完）");
 
@@ -1104,13 +1126,8 @@ test("阶段四：自动保存的常量与卸载前 flush 都得在（防止有�
 // ---------- 阶段四第 12 条：代码块语言 ----------
 
 /** 用原型上的原生 setter 写值并触发 React 的 onChange（直接赋值会被 React 的 value tracker 吞掉） */
-function typeInto(el: HTMLTextAreaElement, text: string) {
-    const native = Object.getOwnPropertyDescriptor(
-        HTMLTextAreaElement.prototype,
-        "value"
-    )!.set!;
-    native.call(el, text);
-    el.dispatchEvent(new Event("input", { bubbles: true }));
+function typeInto(el: NoteEditorHandle, text: string) {
+    el.value = text;
 }
 
 /** 打开「语言」下拉，点某一项 */
@@ -1126,7 +1143,7 @@ function pickCodeLang(value: string) {
 
 test("阶段四：光标在围栏里，选语言只改围栏行、不动代码", () => {
     mountPanel([note({ id: 1, title: "甲", content: "" })]);
-    const ta = document.querySelector<HTMLTextAreaElement>("textarea[aria-label='笔记内容']")!;
+    const ta = getEditor();
     act(() => {
         typeInto(ta, "```\nlet a = 1;\n```");
         ta.setSelectionRange(10, 10); // 落在代码正文那一行
@@ -1137,7 +1154,7 @@ test("阶段四：光标在围栏里，选语言只改围栏行、不动代码",
 
 test("阶段四：不在围栏里就插入新围栏，语言直接带上", () => {
     mountPanel([note({ id: 1, title: "甲", content: "" })]);
-    const ta = document.querySelector<HTMLTextAreaElement>("textarea[aria-label='笔记内容']")!;
+    const ta = getEditor();
     act(() => {
         typeInto(ta, "前文");
         ta.setSelectionRange(2, 2);
@@ -1153,7 +1170,7 @@ test("阶段四：不在围栏里就插入新围栏，语言直接带上", () =>
 
 test("阶段四：选中的文字当代码体包进围栏", () => {
     mountPanel([note({ id: 1, title: "甲", content: "" })]);
-    const ta = document.querySelector<HTMLTextAreaElement>("textarea[aria-label='笔记内容']")!;
+    const ta = getEditor();
     act(() => {
         typeInto(ta, "echo hi");
         ta.setSelectionRange(0, 7); // 全选
@@ -1164,7 +1181,7 @@ test("阶段四：选中的文字当代码体包进围栏", () => {
 
 test("阶段四：选「纯文本」把围栏上的语言摘掉", () => {
     mountPanel([note({ id: 1, title: "甲", content: "" })]);
-    const ta = document.querySelector<HTMLTextAreaElement>("textarea[aria-label='笔记内容']")!;
+    const ta = getEditor();
     act(() => {
         typeInto(ta, "```js\nlet a = 1;\n```");
         ta.setSelectionRange(10, 10);
@@ -1175,7 +1192,7 @@ test("阶段四：选「纯文本」把围栏上的语言摘掉", () => {
 
 test("阶段四：围栏之上的位置不算「在围栏里」，别改到别的块", () => {
     mountPanel([note({ id: 1, title: "甲", content: "" })]);
-    const ta = document.querySelector<HTMLTextAreaElement>("textarea[aria-label='笔记内容']")!;
+    const ta = getEditor();
     act(() => {
         typeInto(ta, "说明文字\n```js\nlet a = 1;\n```");
         ta.setSelectionRange(2, 2); // 围栏之上
@@ -1209,7 +1226,7 @@ function pickTable(sel: string) {
 
 test("阶段四：插入 2×3 表格 —— 表头 / 分隔行 / 两行正文都在", () => {
     mountPanel([note({ id: 1, title: "甲", content: "" })]);
-    const ta = document.querySelector<HTMLTextAreaElement>("textarea[aria-label='笔记内容']")!;
+    const ta = getEditor();
     pickTable('[data-table-preset="2x3"]');
     const lines = ta.value.split("\n").filter(l => l.trim() !== "");
     assert.equal(lines.length, 4, "表头 + 分隔 + 2 行正文，实际是 " + JSON.stringify(ta.value));
@@ -1219,7 +1236,7 @@ test("阶段四：插入 2×3 表格 —— 表头 / 分隔行 / 两行正文都
 
 test("阶段四：在表格里加一行 / 删一行", () => {
     mountPanel([note({ id: 1, title: "甲", content: "" })]);
-    const ta = document.querySelector<HTMLTextAreaElement>("textarea[aria-label='笔记内容']")!;
+    const ta = getEditor();
     act(() => {
         typeInto(ta, "| a | b |\n| --- | --- |\n| 1 | 2 |");
         ta.setSelectionRange(ta.value.indexOf("1") + 1, ta.value.indexOf("1") + 1);
@@ -1234,7 +1251,7 @@ test("阶段四：在表格里加一行 / 删一行", () => {
 
 test("阶段四：加一列 / 删一列，各列仍然对齐", () => {
     mountPanel([note({ id: 1, title: "甲", content: "" })]);
-    const ta = document.querySelector<HTMLTextAreaElement>("textarea[aria-label='笔记内容']")!;
+    const ta = getEditor();
     act(() => {
         typeInto(ta, "| a | b |\n| --- | --- |\n| 1 | 2 |");
         ta.setSelectionRange(ta.value.indexOf("1") + 1, ta.value.indexOf("1") + 1);
@@ -1279,7 +1296,7 @@ function pickFormula(sel: string) {
 
 test("阶段四：行内公式按钮在光标处插 $…$（选中的字要被包进去）", () => {
     mountPanel([note({ id: 1, title: "甲", content: "" })]);
-    const ta = document.querySelector<HTMLTextAreaElement>("textarea[aria-label='笔记内容']")!;
+    const ta = getEditor();
     act(() => {
         typeInto(ta, "设 x=1");
         const at = ta.value.indexOf("x");
@@ -1291,7 +1308,7 @@ test("阶段四：行内公式按钮在光标处插 $…$（选中的字要被�
 
 test("阶段四：独立公式插入的是独占一行的 $$ 块（不然渲染层不认）", () => {
     mountPanel([note({ id: 1, title: "甲", content: "" })]);
-    const ta = document.querySelector<HTMLTextAreaElement>("textarea[aria-label='笔记内容']")!;
+    const ta = getEditor();
     act(() => {
         typeInto(ta, "摘要");
         ta.setSelectionRange(2, 2);
@@ -1315,7 +1332,7 @@ test("阶段四：工具栏按 data-tool 暴露公式按钮（图标化后按文
 
 test("阶段四：光标不在表格里，增删行列不许改坏正文", () => {
     mountPanel([note({ id: 1, title: "甲", content: "" })]);
-    const ta = document.querySelector<HTMLTextAreaElement>("textarea[aria-label='笔记内容']")!;
+    const ta = getEditor();
     const original = "# 标题\n\n随便一段字";
     act(() => {
         typeInto(ta, original);
@@ -1626,7 +1643,7 @@ test("点大纲某一条会把光标送到那一行并选中它", async () => {
     await act(async () => {
         (document.querySelector("[data-outline-item='2']") as HTMLElement).click();
     });
-    const ta = document.querySelector("textarea[aria-label='笔记内容']") as HTMLTextAreaElement;
+    const ta = getEditor();
     assert.equal(ta.value.slice(ta.selectionStart, ta.selectionEnd), "## 目标行");
 });
 

@@ -292,6 +292,7 @@ test("真实首屏里搜不到记事本的数据层 SQL", t => {
     for (const f of fs.files) {
         if (!/\.js$/.test(f.name)) continue;
         const text = readFileSync(join(findProjectDir(), "dist", "client", "assets", f.name), "utf-8");
+        assert.ok(!text.includes("cm-content") && !text.includes("cm-scroller"), `${f.name} 含 CodeMirror 编辑器代码，不能进入首屏`);
         assert.ok(
             !text.includes("INSERT INTO notes"),
             `${f.name} 里有 notes 表的 INSERT —— 记事本的数据层进首屏了`

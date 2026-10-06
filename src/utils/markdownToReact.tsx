@@ -27,6 +27,7 @@ import type { ReactNode } from "react";
 import { MathNode } from "./MathNode";
 import { registerMath } from "./markdownMath";
 import { registerMark } from "./markdownMark";
+import footnote from "markdown-it-footnote";
 
 /** 延迟加载 markdown-it：它只进懒加载 chunk，不进首屏 */
 let parserPromise: Promise<MarkdownIt> | null = null;
@@ -51,6 +52,8 @@ function loadParser(): Promise<MarkdownIt> {
             // 插入的 `==…==` 在预览里原样显示成那四个字符，看着像按钮坏了 ——
             // 其实插入是对的，只是没有规则把它变成 <mark>。
             registerMark(md);
+            // 插件提供完整 token 解析；HTML renderer 不调用，下面单独映射 React。
+            md.use(footnote as unknown as (parser: MarkdownIt) => void);
             return md;
         });
     }
@@ -175,6 +178,14 @@ function renderInline(children: Token[] | null, c: Cursor): ReactNode {
 function renderLeaf(tok: Token, c: Cursor): ReactNode {
     const key = nextKey(c);
     switch (tok.type) {
+        case "footnote_ref": {
+            const { id, subId } = tok.meta as { id: number; subId: number };
+            return <sup key={key} id={`note-fnref-${id}-${subId}`}><a href={`#note-fn-${id}`} aria-label={`脚注 ${id + 1}`}>[{id + 1}]</a></sup>;
+        }
+        case "footnote_anchor": {
+            const { id, subId } = tok.meta as { id: number; subId: number };
+            return <a key={key} href={`#note-fnref-${id}-${subId}`} aria-label={`返回脚注 ${id + 1} 引用`}> ↩</a>;
+        }
         case "text":
             return <span key={key}>{tok.content}</span>;
         case "code_inline":
@@ -233,6 +244,23 @@ function renderBlocks(c: Cursor): ReactNode[] {
         const key = nextKey(c);
 
         switch (tok.type) {
+            case "footnote_block_open": {
+                c.i++;
+                const inner = takeUntilClose(c, "footnote_block_open", "footnote_block_close");
+                out.push(<section key={key} aria-label='脚注' style={{ borderTop: "1px solid rgba(128,128,128,.3)", marginTop: 20 }}><ol>{renderBlocks({ tokens: inner, i: 0, key: c.key++ })}</ol></section>);
+                break;
+            }
+            case "footnote_open": {
+                const { id } = tok.meta as { id: number };
+                c.i++;
+                const inner = takeUntilClose(c, "footnote_open", "footnote_close");
+                out.push(<li key={key} id={`note-fn-${id}`}>{renderBlocks({ tokens: inner, i: 0, key: c.key++ })}</li>);
+                break;
+            }
+            case "footnote_anchor":
+                out.push(renderLeaf(tok, c));
+                c.i++;
+                break;
             case "heading_open": {
                 const level = Number(tok.tag.replace("h", "")) || 1;
                 const Tag = (`h${Math.min(6, Math.max(1, level))}` as unknown) as "h2";
