@@ -358,6 +358,53 @@ export function useNotes({ api, onError, onNotify }: UseNotesParams) {
         }
     }, [api, onError]);
 
+    /**
+     * 同级内前后挪一位（inkstone 文件夹菜单里的「向前/向后移动」）。
+     *
+     * 做法是**和相邻兄弟交换 order_num**，不是简单地给 ±1：
+     * order_num 是后端 `COALESCE(MAX(order_num)+1, 0)` 累出来的，同级内可能有空洞、
+     * 也可能有重复，直接 ±1 会撞车（两个文件夹 order_num 相同，排序就不稳定了）。
+     * 交换则永远自洽。
+     *
+     * 两条 updateFolder 必须**都成功**才算成功：只成功一条会让两个文件夹的
+     * order_num 变成同一个值，界面上顺序就乱了 —— 所以失败时整份回退。
+     */
+    const reorderFolder = useCallback(
+        async (id: number, dir: -1 | 1) => {
+            if (typeof api.updateFolder !== "function") return;
+            const target = folders.find(f => f.id === id);
+            if (!target) return;
+            const siblings = folders
+                .filter(f => (f.parent_id ?? null) === (target.parent_id ?? null))
+                .sort((a, b) => (a.order_num ?? 0) - (b.order_num ?? 0));
+            const idx = siblings.findIndex(f => f.id === id);
+            const swapWith = siblings[idx + dir];
+            // 已经在最前 / 最后：不报错也不动（inkstone 同样是把这一项置灰）
+            if (idx < 0 || !swapWith) return;
+            const aOrder = target.order_num ?? idx;
+            const bOrder = swapWith.order_num ?? idx + dir;
+            const before = folders;
+            try {
+                const [fa, fb] = await Promise.all([
+                    api.updateFolder(id, { order_num: bOrder }),
+                    api.updateFolder(swapWith.id!, { order_num: aOrder }),
+                ]);
+                if (!fa || !fb) throw new Error("排序失败");
+                setFolders(prev =>
+                    prev.map(f => (f.id === id ? fa : f.id === swapWith.id ? fb : f))
+                );
+            } catch (error) {
+                reportError(error, { source: "note-folder-reorder" });
+                setFolders(before);
+                onError(
+                    "调整文件夹顺序失败: " +
+                        (error instanceof Error ? error.message : "未知错误")
+                );
+            }
+        },
+        [api, folders, onError]
+    );
+
     const renameFolder = useCallback(
         async (id: number, name: string) => {
             if (typeof api.updateFolder !== "function") return;
@@ -553,6 +600,7 @@ export function useNotes({ api, onError, onNotify }: UseNotesParams) {
         loadMeta,
         createFolder,
         moveFolder,
+        reorderFolder,
         renameFolder,
         removeFolder,
         createTag,

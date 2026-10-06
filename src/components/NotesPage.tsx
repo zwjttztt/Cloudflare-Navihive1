@@ -147,6 +147,8 @@ export interface NotesPageProps {
         noteTags?: Record<number, number[]>;
         onCreateFolder: (name: string, parentId?: number | null) => Promise<NoteFolder | null>;
         onMoveFolder?: (id: number, parentId: number | null) => Promise<void>;
+        /** 同级内前后挪一位（inkstone 的「向前/向后移动」） */
+        onReorderFolder?: (id: number, dir: -1 | 1) => Promise<void>;
         onRenameFolder: (id: number, name: string) => Promise<void>;
         onRemoveFolder: (id: number) => Promise<void>;
         onCreateTag: (name: string) => Promise<NoteTag | null>;
@@ -355,6 +357,8 @@ function FolderTagSection({
     childrenOf,
     activeNoteId,
     onOpenNote,
+    onCreateNoteIn,
+    onReorder,
 }: {
     title: string;
     items: { id: number; name: string; count: number; parent_id?: number | null }[];
@@ -389,8 +393,15 @@ function FolderTagSection({
     activeNoteId?: number | null;
     /** 点内联笔记 → 打开它（有未保存改动时上层会先存） */
     onOpenNote?: (id: number) => void;
+    /** 在这个文件夹**里面**新建笔记（inkstone 菜单里的「在此新建笔记」） */
+    onCreateNoteIn?: (folderId: number) => void;
+    /** 同级内前后挪一位（inkstone 的「向前/向后移动」） */
+    onReorder?: (folderId: number, dir: -1 | 1) => void;
 }) {
     const [menuId, setMenuId] = useState<number | null>(null);
+    /** 「移动到…」二级菜单：要移动谁 + 锚点 */
+    const [moveId, setMoveId] = useState<number | null>(null);
+    const [moveAnchor, setMoveAnchor] = useState<HTMLElement | null>(null);
     /**
      * 拖放反馈的两个状态（2026-10-06 补，之前完全没有）：
      *  - dragging 谁：拖起的那一行半透明，用户知道手上抓的是哪个
@@ -623,16 +634,9 @@ function FolderTagSection({
                 }}
                 slotProps={{ paper: { sx: { minWidth: 140 } } }}
             >
-                {onCreateChild && <MenuItem onClick={() => {
-                    const id = menuId; setMenuId(null);
-                    if (id !== null) onCreateChild(id);
-                }}>新建子文件夹</MenuItem>}
-                {onMove && <MenuItem onClick={() => {
-                    const id = menuId; setMenuId(null);
-                    if (id !== null) onMove(id, null);
-                }}>移到根目录</MenuItem>}
                 {onAskRename && (
                     <MenuItem
+                        data-folder-op='rename'
                         onClick={() => {
                             const item = items.find(i => i.id === menuId);
                             setMenuId(null);
@@ -644,8 +648,70 @@ function FolderTagSection({
                         重命名
                     </MenuItem>
                 )}
+                {/* 在这个文件夹**里面**新建笔记。inkstone 也有这一项。
+                    ⚠️ 左栏标题那颗「新建笔记」只在**选中**了文件夹时才落到该文件夹，
+                    没选中时落到「未归类」；这里是从具体某个文件夹的菜单进的，落点是明确的。 */}
+                {onCreateNoteIn && (
+                    <MenuItem
+                        data-folder-op='new-note-here'
+                        onClick={() => {
+                            const id = menuId;
+                            setMenuId(null);
+                            if (id !== null) onCreateNoteIn(id);
+                        }}
+                    >
+                        在此新建笔记
+                    </MenuItem>
+                )}
+                {onCreateChild && (
+                    <MenuItem data-folder-op='new-child' onClick={() => {
+                        const id = menuId; setMenuId(null);
+                        if (id !== null) onCreateChild(id);
+                    }}>新建子文件夹</MenuItem>
+                )}
+                {onMove && (
+                    <MenuItem
+                        data-folder-op='move-to'
+                        onClick={() => {
+                            // 二级菜单：目标文件夹得另开一个 Menu 列出来
+                            setMoveId(menuId);
+                            setMoveAnchor(anchorEl);
+                        }}
+                    >
+                        移动到…
+                    </MenuItem>
+                )}
+                {onReorder && (
+                    <MenuItem
+                        data-folder-op='move-up'
+                        onClick={() => {
+                            const id = menuId; setMenuId(null);
+                            if (id !== null) void onReorder(id, -1);
+                        }}
+                    >
+                        向前移动
+                    </MenuItem>
+                )}
+                {onReorder && (
+                    <MenuItem
+                        data-folder-op='move-down'
+                        onClick={() => {
+                            const id = menuId; setMenuId(null);
+                            if (id !== null) void onReorder(id, 1);
+                        }}
+                    >
+                        向后移动
+                    </MenuItem>
+                )}
+                {onMove && (
+                    <MenuItem data-folder-op='move-root' onClick={() => {
+                        const id = menuId; setMenuId(null);
+                        if (id !== null) onMove(id, null);
+                    }}>移到根目录</MenuItem>
+                )}
                 {onAskRemove && (
                     <MenuItem
+                        data-folder-op='remove'
                         onClick={() => {
                             const id = menuId;
                             setMenuId(null);
@@ -656,6 +722,53 @@ function FolderTagSection({
                         删除
                     </MenuItem>
                 )}
+            </Menu>
+            {/* 「移动到…」的二级菜单：根目录 + 其余**合法的**目标文件夹。
+                ⚠️ 不能把自己、以及自己的后代列进去 —— 那会把父子关系绕成环
+                （后端 validateFolderParent 会拒，但界面先拦一道更省事）。 */}
+            <Menu
+                open={moveId !== null}
+                anchorEl={moveAnchor}
+                onClose={() => {
+                    setMoveId(null);
+                    setMoveAnchor(null);
+                    setMenuId(null);
+                    setAnchorEl(null);
+                }}
+                slotProps={{ paper: { sx: { minWidth: 160, maxHeight: 320 } } }}
+            >
+                <MenuItem
+                    data-move-target='root'
+                    onClick={() => {
+                        const id = moveId;
+                        setMoveId(null);
+                        setMoveAnchor(null);
+                        setMenuId(null);
+                        setAnchorEl(null);
+                        if (id !== null) onMove?.(id, null);
+                    }}
+                >
+                    根目录
+                </MenuItem>
+                {moveId !== null &&
+                    items
+                        .filter(f => f.id !== moveId && !isDescendant(items, f.id, moveId))
+                        .map(f => (
+                            <MenuItem
+                                key={f.id}
+                                data-move-target={f.id}
+                                onClick={() => {
+                                    const id = moveId;
+                                    setMoveId(null);
+                                    setMoveAnchor(null);
+                                    setMenuId(null);
+                                    setAnchorEl(null);
+                                    if (id !== null) onMove?.(id, f.id);
+                                }}
+                            >
+                                {f.name}
+                            </MenuItem>
+                        ))}
             </Menu>
         </Box>
     );
@@ -2298,6 +2411,28 @@ export default function NotesPage({
         insertAtCursor("%%", "%%", "隐藏注释");
     }, [insertAtCursor]);
 
+    /**
+     * Ctrl/Cmd + / 插入隐藏注释 —— inkstone 的「笔记工具」菜单里给这项标了这个快捷键，
+     * 属于「不用记也知道在哪、记住了就很快」的那种。
+     *
+     * ⚠️ 只在**编辑器里有焦点**时抢这个键：全局拦截会把浏览器/页面的其它
+     * Ctrl+/ 语义一起吃掉（比如输入法切换），那属于抢用户的东西。
+     */
+    useEffect(() => {
+        const onKey = (e: KeyboardEvent) => {
+            if ((e.metaKey || e.ctrlKey) && e.key === "/") {
+                const el = textareaRef.current;
+                if (!el) return;
+                const focused = document.activeElement as HTMLElement | null;
+                if (!focused || !focused.closest?.(".cm-editor, textarea")) return;
+                e.preventDefault();
+                onInsertHiddenComment();
+            }
+        };
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
+    }, [onInsertHiddenComment]);
+
     /** 插入折叠块 `> [!FOLD] 标题` */
     const onInsertFold = useCallback(() => {
         insertBlock("fold", buildFoldSource(""));
@@ -2314,6 +2449,23 @@ export default function NotesPage({
     }, [insertBlock]);
 
     const charCount = draft ? draft.content.length : 0;
+    /**
+     * 字数（**不含**空白）与字符数（含空白）必须是两个不同的量。
+     *
+     * ⚠️ 之前状态栏写的是「{charCount} 字」「{charCount} 字符」——同一个数字摆两遍。
+     * 真机实测状态栏原文就是「297 字 297 字符」，看着像给了两个指标，其实只有一个，
+     * 用户只会以为「字」和「字符」在这儿是同义词（inkstone 那边是「1字 67字符」，两个数确实不同）。
+     */
+    const wordCount = useMemo(() => {
+        const s = draft?.content ?? "";
+        return s.replace(/\s+/g, "").length;
+    }, [draft?.content]);
+    /** 当前笔记所在文件夹名（状态栏的位置指示，inkstone 也有这一项） */
+    const activeFolderName = useMemo(() => {
+        const fid = active?.folder_id;
+        if (fid === null || fid === undefined) return "";
+        return folders.find(f => f.id === fid)?.name ?? "";
+    }, [active?.folder_id, folders]);
     const pinnedCount = notes.filter(n => Boolean(n.pinned)).length;
     /**
      * 选中了某个文件夹 → 中间那栏笔记列表**不出现**（inkstone 的文件夹树）：
@@ -2490,6 +2642,12 @@ export default function NotesPage({
                 childrenOf={notesInFolder}
                 activeNoteId={activeId}
                 onOpenNote={id => void jumpToNote(id)}
+                onCreateNoteIn={id => void startCreateInFolder(id)}
+                onReorder={
+                    folderTags?.onReorderFolder
+                        ? (id, dir) => void folderTags.onReorderFolder?.(id, dir)
+                        : undefined
+                }
             />
             <FolderTagSection
                 title='标签'
@@ -3227,9 +3385,16 @@ export default function NotesPage({
                             color: "text.secondary",
                         }}
                     >
-                        <span>{charCount} 字</span>
+                        <span>{wordCount} 字</span>
                         <span>{charCount} 字符</span>
-                        <span>约 {Math.max(1, Math.ceil(charCount / 400))} 分钟读完</span>
+                        <span>约 {Math.max(1, Math.ceil(wordCount / 400))} 分钟读完</span>
+                        {/* 所在文件夹：inkstone 状态栏也有这一项（「… 约1分钟 新建文件夹 创建于…」），
+                            相当于一个位置指示 —— 笔记是从哪个文件夹里打开的。没归类的不显示。 */}
+                        {activeFolderName && (
+                            <span data-note-folder style={{ opacity: 0.85 }}>
+                                {activeFolderName}
+                            </span>
+                        )}
                         <span>
                             {pane === "edit" ? "编辑" : pane === "preview" ? "预览" : "分栏"}
                         </span>

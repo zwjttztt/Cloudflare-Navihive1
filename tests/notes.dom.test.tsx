@@ -1403,6 +1403,121 @@ test("点内联笔记能打开它；文件夹视图里新建笔记会落进该�
     assert.equal(created[0]?.folder_id, 7, "新建的笔记要落进当前文件夹，实际 " + JSON.stringify(created[0]));
 });
 
+test("状态栏：字数与字符数要是**两个不同的量**（不能同一个数字摆两遍）", () => {
+    // 真机实测（2026-10-06）抓到的原文是「297 字 297 字符」——
+    // 同一个 charCount 渲染了两遍，看着像两个指标，其实只有一个。
+    // inkstone 是「1字 67字符」，两个数确实不同。
+    mountPanel([note({ id: 1, title: "甲", content: "ab cd\n ef" })]);
+    // 直接读两个 span 最可靠：整段文本是紧凑拼接的，正则容易误匹配
+    const spans = [...document.querySelectorAll("span")].map(s => s.textContent || "");
+    const wordSpan = spans.find(s => /^\d+ 字$/.test(s.trim()));
+    const charSpan = spans.find(s => /^\d+ 字符$/.test(s.trim()));
+    assert.ok(wordSpan && charSpan, "状态栏要同时给出字数与字符数");
+    const w = Number(wordSpan.replace(/\D/g, ""));
+    const c = Number(charSpan.replace(/\D/g, ""));
+    // content 是 "ab cd\n ef"：字符数 9（含空白），字数 6（去空白）
+    assert.equal(c, 9, "字符数要含空白");
+    assert.equal(w, 6, "字数要去掉空白");
+    assert.notEqual(w, c, "字数与字符数不能是同一个数，否则等于把同一个指标摆两遍");
+});
+
+test("状态栏给出当前笔记所在文件夹（inkstone 也有这个位置指示）", () => {
+    mountPanel(
+        [note({ id: 1, title: "甲", content: "x", folder_id: 7 })],
+        {
+            folderTags: {
+                folders: [{ id: 7, name: "工作", order_num: 0, created_at: "", updated_at: "" }],
+                tags: [],
+                noteTags: {},
+                onCreateFolder: async () => null,
+                onRenameFolder: async () => {},
+                onRemoveFolder: async () => {},
+                onCreateTag: async () => null,
+                onRenameTag: async () => {},
+                onRemoveTag: async () => {},
+                onAssignTags: async () => null,
+            },
+        }
+    );
+    const el = document.querySelector("[data-note-folder]");
+    assert.ok(el, "笔记归在某个文件夹里时，状态栏要显示它的位置");
+    assert.equal(el!.textContent, "工作");
+});
+
+test("文件夹菜单补齐 inkstone 那几项：在此新建笔记 / 移动到… / 前后移动", async () => {
+    const created: (Partial<Note> | undefined)[] = [];
+    const moves: { id: number; parent: number | null }[] = [];
+    const reorders: { id: number; dir: number }[] = [];
+    mountPanel(
+        [note({ id: 1, title: "甲", content: "x", folder_id: 7 })],
+        {
+            onCreate: async (draft?: Partial<Note>) => {
+                created.push(draft);
+                return note({ id: 55, ...(draft || {}) });
+            },
+            folderTags: {
+                folders: [
+                    { id: 7, name: "工作", order_num: 0, created_at: "", updated_at: "" },
+                    { id: 8, name: "生活", order_num: 1, created_at: "", updated_at: "" },
+                ],
+                onMoveFolder: async (id: number, parent: number | null) => { moves.push({ id, parent }); },
+                onReorderFolder: async (id: number, dir: -1 | 1) => { reorders.push({ id, dir }); },
+                tags: [],
+                noteTags: {},
+                onCreateFolder: async () => null,
+                onRenameFolder: async () => {},
+                onRemoveFolder: async () => {},
+                onCreateTag: async () => null,
+                onRenameTag: async () => {},
+                onRemoveTag: async () => {},
+                onAssignTags: async () => null,
+            },
+        }
+    );
+    const openMenu = () => {
+        const btn = document.querySelector(
+            'button[aria-label="工作 操作"]'
+        ) as HTMLElement | null;
+        assert.ok(btn, "文件夹行要有「⋯」按钮");
+        act(() => btn!.click());
+    };
+    openMenu();
+    // 菜单项齐不齐
+    for (const op of ["rename", "new-note-here", "new-child", "move-to", "move-up", "move-down", "move-root", "remove"]) {
+        assert.ok(
+            document.querySelector(`[data-folder-op="${op}"]`),
+            `文件夹菜单要有 ${op}（inkstone 的「更多操作」有 9 项，我们不能只有 4 项）`
+        );
+    }
+    // 在此新建笔记 → folder_id 落在这个文件夹
+    await act(async () => {
+        (document.querySelector('[data-folder-op="new-note-here"]') as HTMLElement).click();
+    });
+    assert.equal(created[0]?.folder_id, 7, "在此新建笔记要落进那个文件夹，实际 " + JSON.stringify(created[0]));
+
+    // 移动到… → 二级菜单列出合法目标（不能含自己 / 自己的后代）
+    openMenu();
+    act(() => (document.querySelector('[data-folder-op="move-to"]') as HTMLElement).click());
+    assert.ok(document.querySelector('[data-move-target="root"]'), "要有「根目录」这一项");
+    assert.ok(document.querySelector('[data-move-target="8"]'), "要有同级/其它文件夹可去");
+    assert.ok(!document.querySelector('[data-move-target="7"]'), "不能把文件夹移到它自己（会成环）");
+    await act(async () => {
+        (document.querySelector('[data-move-target="8"]') as HTMLElement).click();
+    });
+    assert.deepEqual(moves, [{ id: 7, parent: 8 }], "移动到目标文件夹");
+
+    // 前后移动
+    openMenu();
+    await act(async () => {
+        (document.querySelector('[data-folder-op="move-up"]') as HTMLElement).click();
+    });
+    openMenu();
+    await act(async () => {
+        (document.querySelector('[data-folder-op="move-down"]') as HTMLElement).click();
+    });
+    assert.deepEqual(reorders, [{ id: 7, dir: -1 }, { id: 7, dir: 1 }], "前后移动要带方向");
+});
+
 test("插入内容以 textarea 的 DOM 值为准，不能读 draft", () => {
     // 静态守卫：上面那条行为用例只覆盖连点，读错来源换个场景又会漏回去。
     const clean = stripComments(
