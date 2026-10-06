@@ -163,6 +163,11 @@ const shared = {
     platform: "node",
     target: "node22",
     logLevel: "error",
+    // ⚠️ 字体 / 样式必须给 loader：单测的某些依赖会带 CSS（比如公式用的
+    // katex.min.css，里面 url() 指向十几张 woff2/ttf）。esbuild 默认不认这些后缀，
+    // 一碰就 "No loader is configured for .woff2 files" 把整批用例都拖死 ——
+    // 而测试环境根本不去取字体（CSS 用 empty loader 丢掉即可）。
+    loader: { ".css": "empty", ".woff": "file", ".woff2": "file", ".ttf": "file" },
     ...(coverageMode ? { sourcemap: "external" } : {}),
 };
 

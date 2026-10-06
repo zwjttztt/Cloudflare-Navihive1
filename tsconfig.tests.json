@@ -12,5 +12,9 @@
         // 测试只跑在 Node 上，认准 @types/node 就够了。
         "types": ["node"]
     },
-    "include": ["tests"]
+    // ⚠️ src/vite-env.d.ts 必须一起进来：组件用例（tests/*.dom.test.tsx）会 import
+    // src 下的模块，而那些模块里可能有动态 import 的样式（动态 CSS 那条 ambient
+    // 声明只存在于 vite-env.d.ts）。include 只写 ["tests"] 的话，TS 看到
+    // `import("katex/dist/katex.min.css")` 会直接报 Cannot find module。
+    "include": ["tests", "src/vite-env.d.ts"]
 }

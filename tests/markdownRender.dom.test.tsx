@@ -175,15 +175,68 @@ test("渲染层源码里不出现任何 innerHTML sink", async () => {
     }
 });
 
+test("公式层（MathNode）不碰任何 CSP 禁用的 sink，且 KaTeX 必须是动态引入", async () => {
+    // 公式是唯一会**生产 DOM 子树**的地方（KaTeX 用 createElement/appendChild），
+    // 所以它跟渲染层一样需要一条独立守卫：
+    //   - 静态扫：不许出现 innerHTML / outerHTML / insertAdjacentHTML 等 sink；
+    //   - 再扫源码：必须写成 `import(` 的动态形式（katex 近 270KB，静态引入会顶穿首屏预算）。
+    const source = stripComments(
+        readFileSync(
+            join(findProjectDir(), "src", "utils", "MathNode.tsx"),
+            "utf-8"
+        )
+    );
+    for (const sink of [
+        "dangerouslySetInnerHTML",
+        ".innerHTML",
+        "outerHTML",
+        "insertAdjacentHTML",
+        "document.write",
+        "new Function",
+        "eval(",
+    ]) {
+        assert.ok(
+            !source.includes(sink),
+            `公式层里出现了 ${sink} —— CSP 的 require-trusted-types-for 'script' 会把它封死`
+        );
+    }
+    assert.ok(
+        /import\(\s*["']katex["']/.test(source),
+        "katex 必须动态 import：静态引入会把 ~270KB 拖进首屏（bundleBudget 会红）"
+    );
+    // 降级路径：真渲染不出公式时（网络挂了 / 公式写坏）不能让整篇预览消失
+    assert.ok(source.includes("failed"), "KaTeX 加载或渲染失败时要退化成文本显示原文");
+});
+
+test("预览里 $行内$ 与 $$块级$$ 都渲染成公式节点", async () => {
+    const host = await renderToDom("欧拉恒等式 $e^{i\\pi}+1=0$ 见下\n\n$$a^2+b^2=c^2$$\n");
+    // 两个公式各出一个「渲染中」的挂载点（内容由 KaTeX 异步补上）
+    const math = host.querySelectorAll('[role="math"]');
+    assert.equal(math.length, 2, "行内 1 个 + 块级 1 个");
+    // 挂载点要带上公式原文（读屏工具、以及 KaTeX 还没到位时的兜底文案）
+    assert.ok(
+        [...math].some(el => (el.getAttribute("aria-label") || "").includes("e^{i")),
+        "行内公式的 LaTeX 原文要挂在 role=math 上"
+    );
+    // 语法没闭合的美元符号不许被吃掉（误伤正文比不渲染更糟）
+    const other = await renderToDom("这件东西 $100 很贵");
+    assert.equal(other.querySelectorAll('[role="math"]').length, 0);
+});
+
 test("渲染层不依赖 markdown-it 的 renderer（只当解析器用）", async () => {
     const source = readFileSync(
         join(findProjectDir(), "src", "utils", "markdownToReact.tsx"),
         "utf-8"
     );
-    assert.ok(
-        !source.includes(".render("),
-        "出现了 `.render(` —— 那是 markdown-it 的 HTML 输出路径（innerHTML）"
-    );
+    // ⚠️ 两条都要盯 `md.` 前缀、且不能用宽泛的 `.render(`：
+    // KaTeX 自己也提供 DOM 入口 katex.render()，公式那条路是合法的，
+    // 宽泛匹配会让这条守卫变成假警报。要挡的是**解析器自带的 HTML 输出**。
+    for (const bad of ["md.render(", ".renderToString("]) {
+        assert.ok(
+            !source.includes(bad),
+            `出现了 ${bad} —— 那是 markdown-it 的 HTML 输出路径（会碰 innerHTML）`
+        );
+    }
     assert.ok(
         source.includes("md.parse("),
         "应该只调用 md.parse() 拿 token"

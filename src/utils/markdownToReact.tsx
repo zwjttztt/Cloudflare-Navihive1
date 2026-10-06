@@ -14,11 +14,18 @@
 // 代价（写在方案 docs/notebook-design.md 4.2）：markdown-it 的插件大多注册
 // `renderer.rules.*`，在 token 流下大部分失效，所以任务列表 / 高亮都自己实现。
 //
-// 不做（体积炸弹，且它们要输出 HTML 又得绕回 innerHTML）：KaTeX、Mermaid、原始 HTML。
+// Mermaid、原始 HTML 依旧不做（理由同上）。
+//
+// 公式（KaTeX）**做**，2026-10-05 改：KaTeX 支持 DOM 入口 `katex.render(tex, el)`，
+// 它用 createElement / appendChild 建节点、不碰 innerHTML 之类的字符串 sink，
+// 所以在 `require-trusted-types-for 'script'` 下是安全的（katex 的 dist 里
+// 搜不到任何一个 sink）。渲染组件在 utils/MathNode.tsx，那边有自己的 sink 守卫。
 import type MarkdownIt from "markdown-it";
 import type { Options as MarkdownItOptions } from "markdown-it";
 import type Token from "markdown-it/lib/token.mjs";
 import type { ReactNode } from "react";
+import { MathNode } from "./MathNode";
+import { registerMath } from "./markdownMath";
 
 /** 延迟加载 markdown-it：它只进懒加载 chunk，不进首屏 */
 let parserPromise: Promise<MarkdownIt> | null = null;
@@ -29,13 +36,17 @@ function loadParser(): Promise<MarkdownIt> {
             const Ctor = ((mod as { default?: unknown }).default ?? mod) as new (
                 opts: MarkdownItOptions
             ) => MarkdownIt;
-            return new Ctor({
+            const md = new Ctor({
                 // html: false —— 不解析原始 HTML。这是安全上的最后一道闸：
                 // 开了它就等于把不可信内容当标签处理，而我们要的正是「只出文本」。
                 html: false,
                 linkify: true,
                 breaks: false,
             });
+            // 数学公式语法（$行内$ / $$块级$$）→ 自定义 token，渲染层再认。
+            // 注册必须发生在 parse 之前，且整个实例只装一次（parserPromise 缓存了）。
+            registerMath(md);
+            return md;
         });
     }
     return parserPromise;
@@ -170,6 +181,9 @@ function renderLeaf(tok: Token, c: Cursor): ReactNode {
         case "softbreak":
         case "hardbreak":
             return <br key={key} />;
+        // 公式：内容原样交给 KaTeX 那层（它会自己异步把节点挂进这个 span）
+        case "math_inline":
+            return <MathNode key={key} tex={tok.content} />;
         case "image": {
             const src = tok.attrGet("src") || "";
             // 只放行 http(s) 与内联图片，其余当文本 —— 与链接同一把尺子
@@ -268,6 +282,23 @@ function renderBlocks(c: Cursor): ReactNode[] {
                 out.push(<hr key={key} style={HR_STYLE} />);
                 c.i++;
                 break;
+            case "math_block": {
+                // 块级公式独占一块：居中 + 可横向滚动（超宽的公式不能把预览挤歪）
+                out.push(
+                    <div
+                        key={key}
+                        style={{
+                            margin: "10px 0",
+                            textAlign: "center",
+                            overflowX: "auto",
+                        }}
+                    >
+                        <MathNode tex={tok.content} block />
+                    </div>
+                );
+                c.i++;
+                break;
+            }
             case "table_open": {
                 c.i++;
                 const inner = takeUntilClose(c, "table_open", "table_close");

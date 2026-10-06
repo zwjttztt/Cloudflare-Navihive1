@@ -1005,3 +1005,295 @@ test("内容区必须有内边距，预览窗不能贴死视口右缘", () => {
         "startSplitDrag 还是按 border-box 算比例 —— 加了内边距后分隔条会跟手不准"
     );
 });
+
+// ---------- 阶段四第 14 条：自动保存 ----------
+//
+// 之前**既没有保存按钮也没有自动保存**：草稿只在「切到另一条笔记」时才写库，
+// 改完直接关掉记事本内容就没了。现在加 debounce 3s 自动存 + 卸载前 flush。
+//
+// ⚠️ 这里用**真定时器**等 3 秒多，不用假定时器：mock.timers 会把 React 自己
+// 调度用的 setTimeout 一起冻住，act() 里等不到渲染，测试会假死。
+
+test("阶段四：改动后约 3 秒自动写库，不用手点保存", async () => {
+    // ⚠️ 显式写类型：写成 `let updated = null` 的话 TS 会把它窄化成 null，
+    // 后面 `updated!.id` 会报「Property 'id' does not exist on type 'never'」。
+    const calls: { id: number; patch: Record<string, unknown> }[] = [];
+    mountPanel([note({ id: 1, title: "甲", content: "原文" })], {
+        onUpdate: async (id: number, patch: Partial<Note>) => {
+            calls.push({ id, patch: patch as Record<string, unknown> });
+        },
+    });
+    const updated = () => calls[0] ?? null;
+    const ta = document.querySelector<HTMLTextAreaElement>("textarea[aria-label='笔记内容']")!;
+    act(() => {
+        // ⚠️ 不能 `ta.value = ...`：React 在节点上装了自己的 value setter 做变更追踪，
+        // 直接赋值会把它的记录一起改掉，onChange 就**不会被触发**（草稿压根没变，
+        // dirty 恒为 false，自动保存当然不跑）。要绕开它，用原型上的原生 setter。
+        const native = Object.getOwnPropertyDescriptor(
+            HTMLTextAreaElement.prototype,
+            "value"
+        )!.set!;
+        native.call(ta, "改过的内容");
+        ta.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    assert.equal(updated(), null, "刚打完字不该立刻发请求（debounce 还没走完）");
+
+    await act(async () => {
+        await new Promise(r => setTimeout(r, 3400));
+    });
+    assert.ok(updated(), "过了 debounce 就该自动存了");
+    assert.equal(updated()!.id, 1);
+    assert.equal(updated()!.patch.content, "改过的内容", "存的必须是最新草稿");
+});
+
+test("阶段四：没改动就不发请求（别空转刷库）", async () => {
+    let calls = 0;
+    mountPanel([note({ id: 1, title: "甲", content: "原文" })], {
+        onUpdate: async () => {
+            calls += 1;
+        },
+    });
+    await act(async () => {
+        await new Promise(r => setTimeout(r, 3400));
+    });
+    assert.equal(calls, 0, "什么都没改却发了保存请求");
+});
+
+test("阶段四：自动保存的常量与卸载前 flush 都得在（防止有人改回去）", () => {
+    const src = readFileSync(
+        resolve(findProjectDir(), "src/components/NotesPage.tsx"),
+        "utf-8"
+    );
+    assert.match(src, /AUTO_SAVE_MS\s*=\s*3000/, "自动保存的 debounce 常量没了");
+    // 卸载前要把没落库的草稿刷一次 —— 否则打完字立刻关窗口，那 3 秒还没走完就丢了
+    assert.ok(
+        /flushRef\.current\.dirty/.test(src),
+        "卸载前 flush 草稿的逻辑没了 —— 打完字立刻关记事本会丢内容"
+    );
+});
+
+// ---------- 阶段四第 12 条：代码块语言 ----------
+
+/** 用原型上的原生 setter 写值并触发 React 的 onChange（直接赋值会被 React 的 value tracker 吞掉） */
+function typeInto(el: HTMLTextAreaElement, text: string) {
+    const native = Object.getOwnPropertyDescriptor(
+        HTMLTextAreaElement.prototype,
+        "value"
+    )!.set!;
+    native.call(el, text);
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+/** 打开「语言」下拉，点某一项 */
+function pickCodeLang(value: string) {
+    const btn = document.querySelector('button[aria-label="代码块语言"]') as HTMLElement;
+    act(() => btn.click());
+    const item = document.querySelector(
+        '[data-code-lang="' + (value || "plain") + '"]'
+    ) as HTMLElement | null;
+    assert.ok(item, "下拉里没有 " + (value || "纯文本") + " 这一项");
+    act(() => item!.click());
+}
+
+test("阶段四：光标在围栏里，选语言只改围栏行、不动代码", () => {
+    mountPanel([note({ id: 1, title: "甲", content: "" })]);
+    const ta = document.querySelector<HTMLTextAreaElement>("textarea[aria-label='笔记内容']")!;
+    act(() => {
+        typeInto(ta, "```\nlet a = 1;\n```");
+        ta.setSelectionRange(10, 10); // 落在代码正文那一行
+    });
+    pickCodeLang("js");
+    assert.equal(ta.value, "```js\nlet a = 1;\n```", "只把开头那行补上语言，正文原样保留");
+});
+
+test("阶段四：不在围栏里就插入新围栏，语言直接带上", () => {
+    mountPanel([note({ id: 1, title: "甲", content: "" })]);
+    const ta = document.querySelector<HTMLTextAreaElement>("textarea[aria-label='笔记内容']")!;
+    act(() => {
+        typeInto(ta, "前文");
+        ta.setSelectionRange(2, 2);
+    });
+    pickCodeLang("python");
+    // 后面没有内容就不补尾随换行（补了会平白多一个空行）
+    assert.equal(ta.value, "前文\n```python\n代码\n```", "插出带语言的围栏");
+    assert.ok(
+        ta.selectionStart === 13 && ta.selectionEnd === 15,
+        "插完要选中占位代码，方便直接覆写"
+    );
+});
+
+test("阶段四：选中的文字当代码体包进围栏", () => {
+    mountPanel([note({ id: 1, title: "甲", content: "" })]);
+    const ta = document.querySelector<HTMLTextAreaElement>("textarea[aria-label='笔记内容']")!;
+    act(() => {
+        typeInto(ta, "echo hi");
+        ta.setSelectionRange(0, 7); // 全选
+    });
+    pickCodeLang("bash");
+    assert.equal(ta.value, "```bash\necho hi\n```", "选中的那行成了代码体");
+});
+
+test("阶段四：选「纯文本」把围栏上的语言摘掉", () => {
+    mountPanel([note({ id: 1, title: "甲", content: "" })]);
+    const ta = document.querySelector<HTMLTextAreaElement>("textarea[aria-label='笔记内容']")!;
+    act(() => {
+        typeInto(ta, "```js\nlet a = 1;\n```");
+        ta.setSelectionRange(10, 10);
+    });
+    pickCodeLang("");
+    assert.equal(ta.value, "```\nlet a = 1;\n```", "改回纯文本");
+});
+
+test("阶段四：围栏之上的位置不算「在围栏里」，别改到别的块", () => {
+    mountPanel([note({ id: 1, title: "甲", content: "" })]);
+    const ta = document.querySelector<HTMLTextAreaElement>("textarea[aria-label='笔记内容']")!;
+    act(() => {
+        typeInto(ta, "说明文字\n```js\nlet a = 1;\n```");
+        ta.setSelectionRange(2, 2); // 围栏之上
+    });
+    pickCodeLang("sql");
+    // 光标不在任何围栏内 → 走「插入新围栏」分支，原来的 js 围栏不能被动到
+    assert.ok(
+        ta.value.includes("```js\nlet a = 1;\n```"),
+        "原有围栏得原样留着：" + ta.value
+    );
+    assert.ok(ta.value.includes("```sql"), "应该在光标处新插一个 sql 围栏");
+});
+
+// ---------- 阶段四第 12 条：表格下拉的接线（纯函数那部分在 markdownTable.test.ts）----------
+
+/** 打开「表格」下拉并点某一项 */
+function pickTable(sel: string) {
+    const btn = document.querySelector('button[aria-label="表格"]') as HTMLElement;
+    assert.ok(
+        btn,
+        "找不到 aria-label=表格 的按钮，页面上带 aria-label 的按钮是：" +
+            [...document.querySelectorAll("button[aria-label]")]
+                .map(b => b.getAttribute("aria-label"))
+                .join(" / ")
+    );
+    act(() => btn.click());
+    const item = document.querySelector(sel) as HTMLElement | null;
+    assert.ok(item, "表格下拉里没有 " + sel);
+    act(() => item!.click());
+}
+
+test("阶段四：插入 2×3 表格 —— 表头 / 分隔行 / 两行正文都在", () => {
+    mountPanel([note({ id: 1, title: "甲", content: "" })]);
+    const ta = document.querySelector<HTMLTextAreaElement>("textarea[aria-label='笔记内容']")!;
+    pickTable('[data-table-preset="2x3"]');
+    const lines = ta.value.split("\n").filter(l => l.trim() !== "");
+    assert.equal(lines.length, 4, "表头 + 分隔 + 2 行正文，实际是 " + JSON.stringify(ta.value));
+    assert.match(lines[1], /^\|\s*-+\s*\|/, "第二行必须是分隔行，否则渲染不出表");
+    assert.equal((lines[0].match(/\|/g) || []).length, 4, "3 列 → 4 根管道");
+});
+
+test("阶段四：在表格里加一行 / 删一行", () => {
+    mountPanel([note({ id: 1, title: "甲", content: "" })]);
+    const ta = document.querySelector<HTMLTextAreaElement>("textarea[aria-label='笔记内容']")!;
+    act(() => {
+        typeInto(ta, "| a | b |\n| --- | --- |\n| 1 | 2 |");
+        ta.setSelectionRange(ta.value.indexOf("1") + 1, ta.value.indexOf("1") + 1);
+    });
+    const rows = () => ta.value.split("\n").filter(l => l.trim().startsWith("|")).length;
+    assert.equal(rows(), 3);
+    pickTable('[data-table-op="addRow"]');
+    assert.equal(rows(), 4, "加一行");
+    pickTable('[data-table-op="delRow"]');
+    assert.equal(rows(), 3, "再删掉一行");
+});
+
+test("阶段四：加一列 / 删一列，各列仍然对齐", () => {
+    mountPanel([note({ id: 1, title: "甲", content: "" })]);
+    const ta = document.querySelector<HTMLTextAreaElement>("textarea[aria-label='笔记内容']")!;
+    act(() => {
+        typeInto(ta, "| a | b |\n| --- | --- |\n| 1 | 2 |");
+        ta.setSelectionRange(ta.value.indexOf("1") + 1, ta.value.indexOf("1") + 1);
+    });
+    pickTable('[data-table-op="addCol"]');
+    const pipes = new Set(
+        ta.value
+            .split("\n")
+            .filter(l => l.trim().startsWith("|"))
+            .map(l => (l.match(/\|/g) || []).length)
+    );
+    assert.equal(pipes.size, 1, "加完列各行管道数要一致：" + ta.value);
+    assert.equal([...pipes][0], 4, "2 列变 3 列 → 4 根管道");
+
+    pickTable('[data-table-op="delCol"]');
+    const pipes2 = new Set(
+        ta.value
+            .split("\n")
+            .filter(l => l.trim().startsWith("|"))
+            .map(l => (l.match(/\|/g) || []).length)
+    );
+    assert.equal([...pipes2][0], 3, "再删一列回到 2 列");
+});
+
+// ---------- 阶段四第 12c 条：公式的接线 ----------
+
+/** 打开「公式」下拉并点某一项 */
+function pickFormula(sel: string) {
+    const btn = document.querySelector('button[aria-label="公式"]') as HTMLElement | null;
+    assert.ok(
+        btn,
+        "找不到 aria-label=公式 的按钮，页面上带 aria-label 的按钮是：" +
+            [...document.querySelectorAll("button[aria-label]")]
+                .map(b => b.getAttribute("aria-label"))
+                .join(" / ")
+    );
+    act(() => btn.click());
+    const item = document.querySelector(sel) as HTMLElement | null;
+    assert.ok(item, "公式下拉里没有 " + sel);
+    act(() => item!.click());
+}
+
+test("阶段四：行内公式按钮在光标处插 $…$（选中的字要被包进去）", () => {
+    mountPanel([note({ id: 1, title: "甲", content: "" })]);
+    const ta = document.querySelector<HTMLTextAreaElement>("textarea[aria-label='笔记内容']")!;
+    act(() => {
+        typeInto(ta, "设 x=1");
+        const at = ta.value.indexOf("x");
+        ta.setSelectionRange(at, at + 1); // 选中 "x"
+    });
+    pickFormula('[data-formula-op="inline"]');
+    assert.equal(ta.value, "设 $x$=1", "选中的字要被 $ 包住：" + ta.value);
+});
+
+test("阶段四：独立公式插入的是独占一行的 $$ 块（不然渲染层不认）", () => {
+    mountPanel([note({ id: 1, title: "甲", content: "" })]);
+    const ta = document.querySelector<HTMLTextAreaElement>("textarea[aria-label='笔记内容']")!;
+    act(() => {
+        typeInto(ta, "摘要");
+        ta.setSelectionRange(2, 2);
+    });
+    pickFormula('[data-formula-op="block"]');
+    assert.match(
+        ta.value,
+        /摘要\n\$\$\n公式\n\$\$\n?$/,
+        "$$ 必须另起一行，否则预览里根本渲染不出公式：" + JSON.stringify(ta.value)
+    );
+});
+
+test("阶段四：工具栏按 data-tool 暴露公式按钮（图标化后按文字找是找不到的）", () => {
+    mountPanel([note({ id: 1, title: "甲", content: "" })]);
+    const keys = [...document.querySelectorAll("button[data-tool]")].map(b =>
+        b.getAttribute("data-tool")
+    );
+    assert.ok(keys.includes("formula"), "data-tool 里没有 formula，实际是 " + keys.join("/"));
+    assert.ok(keys.includes("table"), "老的 data-tool=table 不能丢");
+});
+
+test("阶段四：光标不在表格里，增删行列不许改坏正文", () => {
+    mountPanel([note({ id: 1, title: "甲", content: "" })]);
+    const ta = document.querySelector<HTMLTextAreaElement>("textarea[aria-label='笔记内容']")!;
+    const original = "# 标题\n\n随便一段字";
+    act(() => {
+        typeInto(ta, original);
+        ta.setSelectionRange(2, 2);
+    });
+    pickTable('[data-table-op="addRow"]');
+    assert.equal(ta.value, original, "不在表格里 → 原样不动");
+    pickTable('[data-table-op="delCol"]');
+    assert.equal(ta.value, original, "不在表格里 → 原样不动");
+});

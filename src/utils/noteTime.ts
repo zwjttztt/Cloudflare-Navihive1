@@ -32,10 +32,19 @@ function toUtcIso(raw: string): string {
 /**
  * 解析笔记时间戳。解析不出来返回 null（不要返回 Invalid Date 给 UI 显示）。
  * 入参允许 number 是因为回收站的 `deletedAt` 是**毫秒时间戳**（number），
- * 而笔记的 created_at/updated_at 是 SQLite 的日期串（string），两种都得吃得下。
+ * 而笔记的 created_at/updated_at 是 SQLite 的日期串（string），两种都得吃得下；
+ * 也接受现成的 Date（阶段四的相对时间要拿「相对某个基准」算，基准传 Date 最直接）。
+ *
+ * ⚠️ 不接受 Date 会**静默出错**：`String(new Date())` 得到 "Mon Oct 06 2026 ..."，
+ * 既不是带时区的 ISO 也不是 SQLite 串，解析出来是 NaN → 返回 null → 时间显示成空白。
  */
-export function parseNoteTime(iso?: string | number | null | undefined): Date | null {
+export function parseNoteTime(
+    iso?: string | number | Date | null | undefined
+): Date | null {
     if (iso == null || iso === "") return null;
+    if (iso instanceof Date) {
+        return Number.isFinite(iso.getTime()) ? iso : null;
+    }
     // ⚠️ number（毫秒时间戳）必须走数值分支。**不能**先 `String()` 再丢给 Date：
     // `new Date("1757000000000")` 解析不出来，直接返回 Invalid Date → 上层变 null。
     // 踩这个坑的正是回收站：`deletedAt` 是 number，之前一调用就显示不出删除时间。
@@ -55,7 +64,7 @@ export function parseNoteTime(iso?: string | number | null | undefined): Date | 
 }
 
 /** 列表里的时间：今天只给时刻，更早只给日期（inkstone 同款）。解析失败给空串 */
-export function formatWhen(iso?: string | number | null | undefined): string {
+export function formatWhen(iso?: string | number | Date | null | undefined): string {
     const t = parseNoteTime(iso);
     if (!t) return "";
     const now = new Date();
@@ -69,8 +78,48 @@ export function formatWhen(iso?: string | number | null | undefined): string {
     return `${t.getMonth() + 1}月${t.getDate()}日`;
 }
 
+/**
+ * 相对时间（阶段四第 13 条）：「刚刚 / N分钟前 / N小时前 / 昨天 / M月D日 / YYYY年M月D日」。
+ *
+ * 为什么替换 formatWhen：列表里给一串 `14:23` 或 `10月5日`，用户还得自己在脑子里
+ * 换算「这是多久以前」。相对时间一眼就知道新鲜程度，也是 inkstone 那类的做法。
+ *
+ * ⚠️ 刻度是刻意的：**分钟只在 1 小时内、小时只在当天内**。
+ * 超过一天还写「26小时前」只会让人再算一遍，所以跨天就退回日历式（昨天 / M月D日）。
+ * `now` 可注入是为了单测能钉住边界（不注入就用当前时刻）。
+ */
+export function formatRelative(
+    iso?: string | number | Date | null | undefined,
+    now: Date = new Date()
+): string {
+    const t = parseNoteTime(iso);
+    if (!t) return "";
+
+    const diffMs = now.getTime() - t.getTime();
+    // 时钟不同步 / 服务器时间略超前 → 出现过「-1分钟前」这种怪东西，一律当「刚刚」
+    if (diffMs < 60_000) return "刚刚";
+
+    const minutes = Math.floor(diffMs / 60_000);
+    if (minutes < 60) return `${minutes}分钟前`;
+
+    const sameDay =
+        t.getFullYear() === now.getFullYear() &&
+        t.getMonth() === now.getMonth() &&
+        t.getDate() === now.getDate();
+    if (sameDay) return `${Math.floor(minutes / 60)}小时前`;
+
+    // 昨天：拿「今天零点 - 24h」当区间，比按 24 小时整减更贴近人的直觉
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    if (t.getTime() >= todayStart - 86_400_000) return "昨天";
+
+    if (t.getFullYear() === now.getFullYear()) {
+        return `${t.getMonth() + 1}月${t.getDate()}日`;
+    }
+    return `${t.getFullYear()}年${t.getMonth() + 1}月${t.getDate()}日`;
+}
+
 /** 月份分组标题：「2026-10」→「2026 年 10 月」。解析失败给「其他」 */
-export function monthLabel(iso?: string | number | null | undefined): string {
+export function monthLabel(iso?: string | number | Date | null | undefined): string {
     const d = parseNoteTime(iso);
     if (!d) return "其他";
     return `${d.getFullYear()} 年 ${d.getMonth() + 1} 月`;

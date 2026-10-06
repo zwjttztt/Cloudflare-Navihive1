@@ -111,7 +111,11 @@ export default defineConfig({
             // （见那里的 loadParser），本来不进首屏；但下面这条兜底规则会把所有
             // node_modules 扫进 vendor —— 而 vendor 是首屏 chunk，于是这 ~100KB
             // 就被硬塞进首屏了（实测 +105KB，bundleBudget 立刻判红）。
-            if (/node_modules[\\/](markdown-it|mdurl|uc\.micro|entities|linkify-it)[\\/]/.test(id)) {
+            // KaTeX 同理（2026-10-05 加公式时踩到）：它 ~254KB，只被 utils/MathNode
+            // 动态 import（而 MathNode 挂在 Markdown 预览这棵 lazy 树上）。
+            // 不显式分流就会被下面这条兜底扫进首屏 vendor —— 用户一进页面就得下 254KB，
+            // 而公式往往一篇笔记里只有一个。连带它自己的字体与 katex.min.css 一起进这个块。
+            if (/node_modules[\\/](markdown-it|mdurl|uc\.micro|entities|linkify-it|katex)[\\/]/.test(id)) {
                 return "markdown";
             }
             return "vendor";

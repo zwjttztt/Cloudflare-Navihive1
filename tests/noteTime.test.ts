@@ -12,7 +12,12 @@
 // 并且 test 里用的时间串刻意写成 SQLite 的真实形状。
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { formatWhen, monthLabel, parseNoteTime } from "../src/utils/noteTime";
+import {
+    formatRelative,
+    formatWhen,
+    monthLabel,
+    parseNoteTime,
+} from "../src/utils/noteTime";
 
 /**
  * 造一条「今天的笔记在库里长这样」的串：SQLite 形状（UTC、空格分隔、无时区后缀），
@@ -97,6 +102,48 @@ test("formatWhen：今天只给时:分，更早给 M月D日", () => {
 test("formatWhen 解析不出就给空串，而不是 Invalid Date", () => {
     assert.equal(formatWhen("不是时间"), "");
     assert.equal(formatWhen(undefined), "");
+});
+
+// ---- 阶段四第 13 条：相对时间 ----
+//
+// `now` 是可注入的，所以这里能钉死边界而不是「跑的时候刚好是几点」。
+// 用**真实 Date 对象**当入参最省事（parseNoteTime 本来就吃得下 Date）。
+test("formatRelative：分钟 / 小时 / 刚刚 的刻度", () => {
+    const now = new Date("2026-10-06T12:00:00Z");
+    const ago = (ms: number) => new Date(now.getTime() - ms);
+
+    assert.equal(formatRelative(ago(5_000), now), "刚刚", "不到 1 分钟 → 刚刚");
+    assert.equal(formatRelative(ago(59_000), now), "刚刚", "59 秒还在「刚刚」里");
+    assert.equal(formatRelative(ago(60_000), now), "1分钟前");
+    assert.equal(formatRelative(ago(35 * 60_000), now), "35分钟前");
+    assert.equal(formatRelative(ago(59 * 60_000), now), "59分钟前");
+});
+
+test("formatRelative：超过 1 小时且还在今天 → N小时前", () => {
+    // 同一天，往前推 3 小时
+    const now = new Date(2026, 9, 6, 15, 0, 0); // 本地 2026-10-06 15:00
+    const t = new Date(2026, 9, 6, 12, 0, 0);
+    assert.equal(formatRelative(t, now), "3小时前");
+});
+
+test("formatRelative：跨天就退回日历式，不再堆小时", () => {
+    const now = new Date(2026, 9, 6, 9, 0, 0); // 10-06 09:00
+    // 昨天 23:00 —— 只差 10 小时，但跨天了：写「10小时前」反而要人再算一遍
+    assert.equal(formatRelative(new Date(2026, 9, 5, 23, 0, 0), now), "昨天");
+    // 前天
+    assert.equal(formatRelative(new Date(2026, 9, 4, 23, 0, 0), now), "10月4日");
+    // 去年 → 带年份
+    assert.equal(formatRelative(new Date(2025, 11, 31, 10, 0, 0), now), "2025年12月31日");
+});
+
+test("formatRelative：时钟超前（未来时间）不会输出「-1分钟前」", () => {
+    const now = new Date(2026, 9, 6, 12, 0, 0);
+    assert.equal(formatRelative(new Date(2026, 9, 6, 13, 0, 0), now), "刚刚");
+});
+
+test("formatRelative 解析不出就给空串", () => {
+    assert.equal(formatRelative("不是时间"), "");
+    assert.equal(formatRelative(undefined), "");
 });
 
 test("monthLabel：普通给「2026 年 10 月」，坏值给「其他」", () => {

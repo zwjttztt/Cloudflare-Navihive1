@@ -43,6 +43,7 @@ import ArchiveIcon from "@mui/icons-material/Archive";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import ChecklistIcon from "@mui/icons-material/Checklist";
 import CodeIcon from "@mui/icons-material/Code";
+import CalculateIcon from "@mui/icons-material/Calculate";
 import DeleteForeverIcon from "@mui/icons-material/DeleteForever";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutlined";
 import MoreVertIcon from "@mui/icons-material/MoreVert";
@@ -66,7 +67,14 @@ import { renderMarkdownToReact } from "../utils/markdownToReact";
 import { useScrollLock } from "../hooks/useScrollLock";
 // 笔记时间统一走这里：SQLite 的 UTC 无时区串必须按 UTC 解释，
 // 直接 `new Date(iso)` 在东八区会差 8 小时（「笔记时间不对」的根因）。
-import { formatWhen, monthLabel } from "../utils/noteTime";
+import { formatRelative, formatWhen, monthLabel } from "../utils/noteTime";
+import {
+    addColumnRight,
+    addRowBelow,
+    buildTable,
+    removeColumn,
+    removeRow,
+} from "../utils/markdownTable";
 
 export interface NotesPageProps {
     notes: Note[];
@@ -354,6 +362,15 @@ const SPLIT_KEY = "notes.splitRatio";
 const MIN_RATIO = 0.2;
 const MAX_RATIO = 0.8;
 
+/**
+ * 自动保存的防抖间隔（阶段四第 14 条）。
+ *
+ * 3 秒是「打字不被打断」和「关掉不至于丢太多」之间的折中：1 秒太勤（每个停顿都发一次
+ * 请求，离线队列里会攒一堆无用 PATCH），10 秒太长（关窗口就丢几秒的字）。
+ * 真关窗口还有卸载前那次 flush 兜底，所以 3 秒不会真丢东西。
+ */
+const AUTO_SAVE_MS = 3000;
+
 function readSplitRatio(): number {
     try {
         const raw = globalThis.localStorage?.getItem(SPLIT_KEY);
@@ -571,9 +588,14 @@ export default function NotesPage({
                             >
                                 {item.title}
                             </Typography>
-                            <Typography variant='caption' color='text.disabled' sx={{ fontSize: 11 }}>
+                            <Typography
+                                variant='caption'
+                                color='text.disabled'
+                                sx={{ fontSize: 11 }}
+                                title={formatWhen(item.deletedAt)}
+                            >
                                 {/* deletedAt 是毫秒时间戳，同样要走统一的解析入口 */}
-                                {formatWhen(item.deletedAt)}
+                                {formatRelative(item.deletedAt)}
                             </Typography>
                         </Box>
                         <Tooltip title='还原到全部笔记'>
@@ -701,6 +723,74 @@ export default function NotesPage({
         if (!active?.id || !draft) return;
         await onUpdate(active.id, { title: draft.title, content: draft.content });
     }, [active, draft, onUpdate]);
+
+    // ---------- 阶段四第 14 条：自动保存 ----------
+    //
+    // 之前**既没有保存按钮也没有自动保存**，草稿只在「切到另一条笔记」时才写库 ——
+    // 改完直接关掉记事本，内容就没了。这里补 debounce 3s 自动存 + 状态指示。
+    //
+    // ⚠️ 为什么 save 要走 ref 塞进定时器：save 依赖 onUpdate，而 onUpdate（= updateNote）
+    // 依赖 notes —— notes 每保存一次就换一个引用，save 的身份也跟着换。
+    // 直接把 save 写进下面那个 effect 的依赖，debounce 定时器会被反复重置，
+    // 打字正好赶上保存完成的那一下就会被清掉、拖到下一次按键才重新计时。
+    // 用 ref 存最新的 save，effect 只认 dirty / draft / active.id 这三样。
+    const [saveState, setSaveState] = useState<"idle" | "pending" | "saving" | "saved">("idle");
+    const [savedAt, setSavedAt] = useState<number | null>(null);
+    // 「已保存 · 刚刚」这句得自己走：formatRelative 只在渲染时算一次，
+    // 不刷新它会永远停在「刚刚」（放那儿二十分钟也一样）。只在显示已保存时起这个定时器。
+    const [tick, setTick] = useState(() => Date.now());
+    useEffect(() => {
+        if (saveState !== "saved") return;
+        const timer = setInterval(() => setTick(Date.now()), 30_000);
+        return () => clearInterval(timer);
+    }, [saveState]);
+    const saveRef = useRef(save);
+    useEffect(() => {
+        saveRef.current = save;
+    }, [save]);
+
+    useEffect(() => {
+        // 还没拿到 id 的新笔记不能存（onCreate 是异步的，那一瞬间 id 还是空的）
+        if (!dirty || !active?.id) {
+            setSaveState(cur => (cur === "pending" ? "idle" : cur));
+            return;
+        }
+        setSaveState("pending");
+        const timer = setTimeout(async () => {
+            setSaveState("saving");
+            await saveRef.current();
+            setSaveState("saved");
+            setSavedAt(Date.now());
+            setTick(Date.now());
+        }, AUTO_SAVE_MS);
+        return () => clearTimeout(timer);
+    }, [dirty, draft, active?.id]);
+
+    // 关掉记事本时把还没落库的草稿刷一次：debounce 是 3 秒，
+    // 打完字立刻关闭的话那 3 秒还没走完。卸载是同步的，await 不上，
+    // 只能 fire-and-forget（api 是模块级的实例，组件没了请求照样发得出去）。
+    const flushRef = useRef({ dirty: false, save: async () => {} });
+    useEffect(() => {
+        flushRef.current = { dirty, save };
+    });
+    useEffect(
+        () => () => {
+            if (flushRef.current.dirty) void flushRef.current.save();
+        },
+        []
+    );
+
+    /** ⌘/Ctrl+S 手动存一下：自动保存已经兜底，但有人就是想立刻存 */
+    useEffect(() => {
+        const onKey = (e: KeyboardEvent) => {
+            if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
+                e.preventDefault();
+                void saveRef.current();
+            }
+        };
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
+    }, []);
 
     const openNote = useCallback((note: Note) => {
         setActiveId(note.id ?? null);
@@ -896,6 +986,175 @@ export default function NotesPage({
      * 和 insertAtCursor 走两条路：标题必须落在**当前行开头**，不能插在光标中间 ——
      * 否则光标在段落中间点「H1」，得到的不是标题而是半句被 `#` 劈开的话。
      */
+    /**
+     * 阶段四第 12 条：给代码块定语言。
+     *
+     * 两种情形分开处理：
+     *   - 光标已经在某个 ``` 围栏**里面**（或在围栏行上）→ 只把那一行的语言改掉，
+     *     不动代码正文。这是最常用的场景：先敲了围栏，回头想标语言。
+     *   - 不在围栏里 → 插一个新围栏；有选中内容就把选中部分当代码体包进去。
+     *
+     * ⚠️ 判「在不在围栏里」必须**同时**找到开和闭两行，且光标夹在中间：
+     * 只找开头会把「围栏之上、围栏之外」的位置也算进去，改到别的块上去。
+     * 另外光标就在围栏行上时也算在里面（否则想改语言得先把光标挪进代码块）。
+     */
+    const applyCodeLanguage = useCallback((lang: string) => {
+        const el = textareaRef.current;
+        if (!el) return;
+        const value = el.value;
+        const pos = el.selectionStart ?? value.length;
+        const end = el.selectionEnd ?? pos;
+
+        const lines = value.split("\n");
+        const cursorLine = value.slice(0, pos).split("\n").length - 1;
+        const isFence = (s: string) => /^\s*```/.test(s);
+
+        let openLine = -1;
+        for (let i = Math.min(cursorLine, lines.length - 1); i >= 0; i--) {
+            if (isFence(lines[i])) {
+                openLine = i;
+                break;
+            }
+        }
+        let closeLine = -1;
+        if (openLine >= 0) {
+            for (let i = openLine + 1; i < lines.length; i++) {
+                if (isFence(lines[i])) {
+                    closeLine = i;
+                    break;
+                }
+            }
+        }
+        const insideFence =
+            openLine >= 0 && closeLine > openLine && cursorLine >= openLine && cursorLine <= closeLine;
+
+        let next: string;
+        let caret: number;
+        let caretEnd: number;
+
+        if (insideFence) {
+            // 只改围栏行，正文一行不动
+            lines[openLine] = "```" + lang;
+            next = lines.join("\n");
+            // 光标留在原处：按字符位置换算（改的是第 openLine 行，光标在它下面，位置只受那一行长度变化影响）
+            const delta = lines[openLine].length - value.split("\n")[openLine].length;
+            caret = Math.min(pos + delta, next.length);
+            caretEnd = Math.min(end + delta, next.length);
+        } else {
+            const body = value.slice(pos, end) || "代码";
+            const block = "```" + lang + "\n" + body + "\n```";
+            // 前后补空行：紧贴上一段文字时 markdown-it 会把围栏并进上一段里
+            const head = value.slice(0, pos);
+            const tail = value.slice(end);
+            const lead = head && !head.endsWith("\n") ? "\n" : "";
+            const trail = tail && !tail.startsWith("\n") ? "\n" : "";
+            next = head + lead + block + trail + tail;
+            const bodyStart = head.length + lead.length + lang.length + 3 + 1; // ```lang + \n
+            caret = bodyStart;
+            caretEnd = Math.min(bodyStart + body.length, next.length);
+        }
+
+        el.value = next;
+        el.focus();
+        el.setSelectionRange(caret, caretEnd);
+        setDraft(d => (d ? { ...d, content: next } : d));
+    }, []);
+
+    /**
+     * 阶段四第 12 条：表格的插入 / 增删行列。
+     *
+     * 具体怎么改字符串全在 utils/markdownTable.ts（那边有单测），这里只负责
+     * 拿到光标位置 → 调纯函数 → 写回 textarea 并把光标摆回合理的位置。
+     */
+    const applyTable = useCallback((op: TableOp) => {
+        const el = textareaRef.current;
+        if (!el) return;
+        const value = el.value;
+        const pos = el.selectionStart ?? value.length;
+        const lines = value.split("\n");
+        const cursorLine = value.slice(0, pos).split("\n").length - 1;
+        const lineStart = value.lastIndexOf("\n", Math.max(0, pos - 1)) + 1;
+        const cursorCol = pos - lineStart;
+
+        let next: string[];
+        switch (op.kind) {
+            case "insert": {
+                const table = buildTable(op.rows, op.cols);
+                // 插到光标所在行**下面**，并保证前后有空行（贴着正文时围栏/表格会被并进上一段）
+                const head = lines.slice(0, cursorLine + 1);
+                const tail = lines.slice(cursorLine + 1);
+                next = [...head, "", ...table, "", ...tail];
+                break;
+            }
+            case "addRow":
+                next = addRowBelow(lines, cursorLine);
+                break;
+            case "delRow":
+                next = removeRow(lines, cursorLine);
+                break;
+            case "addCol":
+                next = addColumnRight(lines, cursorLine, cursorCol);
+                break;
+            case "delCol":
+                next = removeColumn(lines, cursorLine, cursorCol);
+                break;
+        }
+
+        const nextValue = next.join("\n");
+        // 光标：增删行列后尽量停在原来那一行（行号不变），列位置夹到新行长度内
+        const targetLine = Math.min(cursorLine, next.length - 1);
+        const before = next.slice(0, targetLine).join("\n").length + (targetLine > 0 ? 1 : 0);
+        const caret = Math.min(before + cursorCol, nextValue.length);
+
+        el.value = nextValue;
+        el.focus();
+        el.setSelectionRange(caret, caret);
+        setDraft(d => (d ? { ...d, content: nextValue } : d));
+    }, []);
+
+    /**
+     * 阶段四第 12c 条：插入公式。
+     *
+     * 两种规格都直接复用 `insertAtCursor` —— 那套「选中一段 → 包一层；
+     * 再点一下摘掉这一层；没选中就插占位符」的开关语义已经在那儿了，
+     * 公式没有任何理由再写一遍（写第二遍就迟早跟主逻辑跑偏）。
+     *
+     * 行内用 `$…$`，块级用换行的 `$$\n…\n$$`：
+     * 块级必须独占行，否则渲染层（markdown-it）会把 `$$` 当成行首块来解析。
+     */
+    const applyFormula = useCallback(
+        (kind: "inline" | "block") => {
+            if (kind === "inline") {
+                insertAtCursor("$", "$", "公式");
+                return;
+            }
+            // 块级公式**必须独占行**（`$$` 单独成行才被认成公式块），所以不能套用
+            // insertAtCursor 的「就地包一层」—— 它会在光标处紧凑插入，把 `$$` 粘到
+            // 上一行末尾，渲染层看到「摘要$$」这种行首就整块不认，公式人间蒸发。
+            const el = textareaRef.current;
+            if (!el) return;
+            const value = el.value;
+            const pos = el.selectionStart ?? value.length;
+            const end = el.selectionEnd ?? pos;
+            const body = value.slice(pos, end) || "公式";
+            // 和「插入表格」同一套做法：整块插到光标所在行**下面**，`$$` 各占一行。
+            const lines = value.split("\n");
+            const cursorLine = value.slice(0, pos).split("\n").length - 1;
+            const insertLine = Math.min(cursorLine + 1, lines.length);
+            const head = lines.slice(0, insertLine);
+            const tail = lines.slice(insertLine);
+            const next = [...head, "$$", body, "$$", ...tail].join("\n");
+            // 光标落进公式正文（并且选中它，一打字就能换掉「公式」这个占位符）
+            const caret = head.join("\n").length + "$$\n".length;
+            el.value = next;
+            el.focus();
+            // 光标落在公式正文上并选中它，用户直接打字就能替换「公式」这个占位符
+            el.setSelectionRange(caret, Math.min(caret + body.length, next.length));
+            setDraft(d => (d ? { ...d, content: next } : d));
+        },
+        [insertAtCursor]
+    );
+
     const insertLinePrefix = useCallback((prefix: string) => {
         const el = textareaRef.current;
         if (!el) return;
@@ -1196,8 +1455,12 @@ export default function NotesPage({
                                     variant='caption'
                                     color='text.disabled'
                                     sx={{ display: "block", mt: 0.25, fontSize: 11 }}
+                                    // 阶段四第 13 条：改相对时间（「3分钟前」）。
+                                    // 精确时刻挂到 title 上 —— 相对时间省事但不精确，
+                                    // hover 一下还是得能看到具体几点几分。
+                                    title={formatWhen(note.updated_at || note.created_at)}
                                 >
-                                    {formatWhen(note.updated_at || note.created_at)}
+                                    {formatRelative(note.updated_at || note.created_at)}
                                 </Typography>
                             </Box>
                         );
@@ -1248,7 +1511,13 @@ export default function NotesPage({
 
                     {/* 格式工具栏：照 inkstone 那一排。放在标题与内容区之间，
                         点一下在光标处插入语法 —— 省得手打 `**` 和 `- [ ]`。 */}
-                    <MarkdownToolbar onInsert={insertAtCursor} onInsertLinePrefix={insertLinePrefix} />
+                    <MarkdownToolbar
+                        onInsert={insertAtCursor}
+                        onInsertLinePrefix={insertLinePrefix}
+                        onCodeLanguage={applyCodeLanguage}
+                        onTable={applyTable}
+                        onFormula={applyFormula}
+                    />
 
                     {/* 内容区：源码 | 预览 */}
                     <Box
@@ -1388,7 +1657,14 @@ export default function NotesPage({
                             {pane === "edit" ? "编辑" : pane === "preview" ? "预览" : "分栏"}
                         </span>
                         <Box sx={{ flex: 1 }} />
-                        {dirty && <span>有未保存的改动</span>}
+                        {/* 阶段四第 14 条：原来只有一句「有未保存的改动」，
+                            看不出到底存没存。现在把保存过程摊开：
+                            待存 / 正在存 / 已存多久。已存的时刻复用相对时间那条。 */}
+                        {saveState === "pending" && <span>有改动，即将保存…</span>}
+                        {saveState === "saving" && <span>正在保存…</span>}
+                        {saveState === "saved" && !dirty && (
+                            <span>已保存 · {formatRelative(savedAt, new Date(tick))}</span>
+                        )}
                         <Tooltip title='删除这条笔记（可从回收站还原）'>
                             <IconButton
                                 aria-label='删除这条笔记'
@@ -1616,6 +1892,21 @@ function MarkdownPreview({ source }: { source: string }) {
 }
 
 /** 一个工具按钮：icon / label 二选一，before/after 是包在选区两侧的语法 */
+/** 阶段四第 12 条：工具栏能发出的表格操作（kind 决定走哪条纯函数） */
+type TableOp =
+    | { kind: "insert"; rows: number; cols: number }
+    | { kind: "addRow" }
+    | { kind: "delRow" }
+    | { kind: "addCol" }
+    | { kind: "delCol" };
+
+/** 表格菜单里的常用尺寸：给几个现成的，不逼用户先想行列数 */
+const TABLE_PRESETS: { label: string; rows: number; cols: number }[] = [
+    { label: "2 行 × 3 列", rows: 2, cols: 3 },
+    { label: "3 行 × 4 列", rows: 3, cols: 4 },
+    { label: "4 行 × 5 列", rows: 4, cols: 5 },
+];
+
 interface ToolSpec {
     key: string;
     icon?: ReactNode;
@@ -1727,16 +2018,36 @@ const TOOL_GROUPS: { name: string; tools: ToolSpec[] }[] = [
                 before: "> ",
                 placeholder: "引用",
             },
-            {
-                key: "table",
-                icon: <TableRowsIcon fontSize='small' />,
-                title: "表格",
-                before: "| 列1 | 列2 |\n|---|---|\n| ",
-                after: " | |",
-                placeholder: "内容",
-            },
+            // 「块」组里的表格按钮已升级成下面的下拉（能增删行列），
+            // 这里不再放一个只会插固定 2×2 的图标按钮。
         ],
     },
+];
+
+/**
+ * 代码块语言下拉（阶段四第 12 条）。
+ *
+ * 预览层（markdown-it）本来就会把 ```js 渲染成 `<code class="language-js">`
+ * —— 差的一直只是「怎么把语言标上去」这个入口，所以这里只做选择，不碰渲染。
+ * 第一项留空 = 纯文本：不标语言时预览就是普通 <pre>，别逼用户非选一个。
+ */
+const CODE_LANGUAGES: { label: string; value: string }[] = [
+    { label: "纯文本", value: "" },
+    { label: "JavaScript", value: "js" },
+    { label: "TypeScript", value: "ts" },
+    { label: "Python", value: "python" },
+    { label: "Bash / Shell", value: "bash" },
+    { label: "JSON", value: "json" },
+    { label: "HTML", value: "html" },
+    { label: "CSS", value: "css" },
+    { label: "SQL", value: "sql" },
+    { label: "Java", value: "java" },
+    { label: "Go", value: "go" },
+    { label: "Rust", value: "rust" },
+    { label: "C / C++", value: "cpp" },
+    { label: "YAML", value: "yaml" },
+    { label: "Markdown", value: "markdown" },
+    { label: "Diff", value: "diff" },
 ];
 
 /** 标题层级下拉（H1/H2/H3）—— 标题是「行首加前缀」，走另一条路径 */
@@ -1757,11 +2068,23 @@ const HEADING_LEVELS: { level: string; label: string; prefix: string }[] = [
 function MarkdownToolbar({
     onInsert,
     onInsertLinePrefix,
+    onCodeLanguage,
+    onTable,
+    onFormula,
 }: {
     onInsert: (before: string, after: string, placeholder: string) => void;
     onInsertLinePrefix: (prefix: string) => void;
+    /** 阶段四第 12 条：给光标所在的（或新插入的）代码块定语言 */
+    onCodeLanguage: (lang: string) => void;
+    /** 阶段四第 12 条：表格的插入 / 增删行列 */
+    onTable: (op: TableOp) => void;
+    /** 阶段四第 12c 条：插入公式（行内 $…$ / 块级 $$…$$） */
+    onFormula: (kind: "inline" | "block") => void;
 }) {
     const [headingAnchor, setHeadingAnchor] = useState<HTMLElement | null>(null);
+    const [langAnchor, setLangAnchor] = useState<HTMLElement | null>(null);
+    const [tableAnchor, setTableAnchor] = useState<HTMLElement | null>(null);
+    const [formulaAnchor, setFormulaAnchor] = useState<HTMLElement | null>(null);
 
     return (
         <Box
@@ -1818,6 +2141,173 @@ function MarkdownToolbar({
                         {h.label}
                     </MenuItem>
                 ))}
+            </Menu>
+
+            {/* 阶段四第 12 条：代码块语言。和「标题」同一个调子（文字按钮 + 下拉），
+                图标按钮装不下「语言」这两个字。 */}
+            <Button
+                size='small'
+                aria-label='代码块语言'
+                aria-haspopup='menu'
+                aria-expanded={langAnchor ? true : undefined}
+                onMouseDown={e => e.preventDefault()}
+                onClick={e => setLangAnchor(e.currentTarget)}
+                sx={{
+                    width: 28,
+                    height: 28,
+                    minWidth: 0,
+                    p: 0,
+                    fontSize: 13,
+                    lineHeight: 1,
+                    color: "text.secondary",
+                    "&:hover": { bgcolor: "rgba(128,128,128,0.14)", color: "text.primary" },
+                }}
+            >
+                语言
+            </Button>
+            <Menu
+                open={Boolean(langAnchor)}
+                anchorEl={langAnchor}
+                onClose={() => setLangAnchor(null)}
+            >
+                {CODE_LANGUAGES.map(item => (
+                    <MenuItem
+                        key={item.label}
+                        data-code-lang={item.value || "plain"}
+                        onClick={() => {
+                            onCodeLanguage(item.value);
+                            setLangAnchor(null);
+                        }}
+                    >
+                        {item.label}
+                    </MenuItem>
+                ))}
+            </Menu>
+
+            {/* 阶段四第 12c 条：公式。两种规格放进一个下拉 ——
+                图标按钮塞不下「$」这种说明，而它又不是「点一下就完事」的单动作，
+                顺便把 `$` / `$$` 的差别写在菜单文案里，省得用户瞎试。 */}
+            <Tooltip title='插入公式'>
+                <IconButton
+                    size='small'
+                    aria-label='公式'
+                    data-tool='formula'
+                    aria-haspopup='menu'
+                    aria-expanded={formulaAnchor ? true : undefined}
+                    onMouseDown={e => e.preventDefault()}
+                    onClick={e => setFormulaAnchor(e.currentTarget)}
+                    sx={{
+                        width: 28,
+                        height: 28,
+                        color: "text.secondary",
+                        "&:hover": { bgcolor: "rgba(128,128,128,0.14)", color: "text.primary" },
+                    }}
+                >
+                    <CalculateIcon fontSize='small' />
+                </IconButton>
+            </Tooltip>
+            <Menu
+                open={Boolean(formulaAnchor)}
+                anchorEl={formulaAnchor}
+                onClose={() => setFormulaAnchor(null)}
+            >
+                <MenuItem
+                    data-formula-op='inline'
+                    onClick={() => {
+                        onFormula("inline");
+                        setFormulaAnchor(null);
+                    }}
+                >
+                    行内公式 $ 文本 $
+                </MenuItem>
+                <MenuItem
+                    data-formula-op='block'
+                    onClick={() => {
+                        onFormula("block");
+                        setFormulaAnchor(null);
+                    }}
+                >
+                    独立公式 $$ 另起一段 $$
+                </MenuItem>
+            </Menu>
+
+            {/* 阶段四第 12 条：表格下拉。插入给几个现成尺寸；
+                下面四项只在光标已经落在表格里时才起作用（不在表格里纯函数会原样返回，
+                不报错也不改坏文字）。 */}
+            <Tooltip title='插入表格 / 增删行列'>
+                <IconButton
+                    size='small'
+                    aria-label='表格'
+                    // 保留 data-tool="table"：老的用例（以及可能的自动化脚本）按它找按钮
+                    data-tool='table'
+                    aria-haspopup='menu'
+                    aria-expanded={tableAnchor ? true : undefined}
+                    onMouseDown={e => e.preventDefault()}
+                    onClick={e => setTableAnchor(e.currentTarget)}
+                    sx={{
+                        width: 28,
+                        height: 28,
+                        color: "text.secondary",
+                        "&:hover": { bgcolor: "rgba(128,128,128,0.14)", color: "text.primary" },
+                    }}
+                >
+                    <TableRowsIcon fontSize='small' />
+                </IconButton>
+            </Tooltip>
+            <Menu
+                open={Boolean(tableAnchor)}
+                anchorEl={tableAnchor}
+                onClose={() => setTableAnchor(null)}
+            >
+                {TABLE_PRESETS.map(p => (
+                    <MenuItem
+                        key={p.label}
+                        data-table-preset={p.rows + "x" + p.cols}
+                        onClick={() => {
+                            onTable({ kind: "insert", rows: p.rows, cols: p.cols });
+                            setTableAnchor(null);
+                        }}
+                    >
+                        插入 {p.label}
+                    </MenuItem>
+                ))}
+                <Divider />
+                <MenuItem
+                    data-table-op='addRow'
+                    onClick={() => {
+                        onTable({ kind: "addRow" });
+                        setTableAnchor(null);
+                    }}
+                >
+                    在下方插入一行
+                </MenuItem>
+                <MenuItem
+                    data-table-op='delRow'
+                    onClick={() => {
+                        onTable({ kind: "delRow" });
+                        setTableAnchor(null);
+                    }}
+                >
+                    删除当前行
+                </MenuItem>
+                <MenuItem
+                    data-table-op='addCol'
+                    onClick={() => {
+                        onTable({ kind: "addCol" });
+                        setTableAnchor(null);
+                    }}
+                >
+                    在右侧插入一列
+                </MenuItem>
+                <MenuItem
+                    data-table-op='delCol'
+                    onClick={() => {
+                        onTable({ kind: "delCol" });
+                        setTableAnchor(null);
+                    }}
+                >
+                    删除当前列
+                </MenuItem>
             </Menu>
 
             {TOOL_GROUPS.map((group, gi) => (
