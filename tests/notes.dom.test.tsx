@@ -277,6 +277,54 @@ test("工具栏按 data-tool 暴露分组按钮（不再是 15 个散落文字�
     assert.ok(bar.querySelectorAll('hr, [class*="MuiDivider"]').length >= 4, "分组之间要有分隔线");
 });
 
+test("工具栏补齐 inkstone 式下拉：链接 / 图片 / 插入 / 块", () => {
+    mountPanel([note({ id: 1, title: "甲", content: "" })]);
+    const bar = document.querySelector('[aria-label="Markdown 格式"]') as HTMLElement;
+    assert.ok(bar, "要有格式工具栏");
+    // 这四个是 inkstone 式「文字/图标按钮 + 下拉」入口，区别于原来的散落图标
+    for (const label of ["链接", "图片", "插入", "块"]) {
+        assert.ok(
+            bar.querySelector(`button[aria-label="${label}"]`),
+            `工具栏要有 ${label} 下拉按钮`
+        );
+    }
+    // 点开「链接」下拉，里面四种插入项都要在（覆盖双链 / 嵌入 / 块引用）
+    const linkBtn = bar.querySelector('button[aria-label="链接"]') as HTMLElement;
+    act(() => linkBtn.click());
+    for (const op of ["external", "wikilink", "embed", "blockref"]) {
+        assert.ok(
+            document.querySelector(`[data-link-op="${op}"]`),
+            `链接下拉要有 ${op} 这一项`
+        );
+    }
+    // 点「笔记嵌入」要往编辑器插入 ![[笔记标题]]（和粗体走同一条 insertBlock 路径）
+    const ta = getEditor();
+    act(() => (document.querySelector('[data-link-op="embed"]') as HTMLElement).click());
+    assert.ok(ta.value.includes("![[笔记标题]]"), "点嵌入要插入 ![[笔记标题]]，实际：" + ta.value);
+    // 「插入」下拉：块 ID / 属性 / 隐藏注释 / 标签
+    const insertBtn = bar.querySelector('button[aria-label="插入"]') as HTMLElement;
+    act(() => insertBtn.click());
+    for (const op of ["blockid", "frontmatter", "hidden", "tag"]) {
+        assert.ok(document.querySelector(`[data-insert-op="${op}"]`), `插入下拉要有 ${op}`);
+    }
+    // 「块」下拉：折叠 / 标签页 / 分隔线
+    const blockBtn = bar.querySelector('button[aria-label="块"]') as HTMLElement;
+    act(() => blockBtn.click());
+    for (const op of ["fold", "tabs", "divider"]) {
+        assert.ok(document.querySelector(`[data-block-op="${op}"]`), `块下拉要有 ${op}`);
+    }
+});
+
+test("新建笔记按钮挪到左栏文件夹标题右侧（顶栏那个移除）", () => {
+    mountPanel([note({ id: 1, title: "甲", content: "" })]);
+    const newBtns = [...document.querySelectorAll('button[aria-label="新建笔记"]')];
+    assert.equal(newBtns.length, 1, "顶栏新建笔记已移除，只剩左栏文件夹处一个");
+    assert.ok(
+        newBtns[0].closest('[data-nav-col="1"]'),
+        "新建笔记按钮应在左栏导航列（文件夹标题右侧），和新建文件夹并排"
+    );
+});
+
 test("标题层级下拉：点 H2 是把 `## ` 加在当前行开头", () => {
     mountPanel([note({ id: 1, title: "甲", content: "一段文字" })]);
     const ta = getEditor();

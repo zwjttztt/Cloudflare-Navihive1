@@ -39,6 +39,7 @@ import Stack from "@mui/material/Stack";
 import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 import AddIcon from "@mui/icons-material/Add";
+import NoteAddIcon from "@mui/icons-material/NoteAdd";
 import ArchiveIcon from "@mui/icons-material/Archive";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import ChecklistIcon from "@mui/icons-material/Checklist";
@@ -70,6 +71,9 @@ import UndoIcon from "@mui/icons-material/Undo";
 import type { Note, NoteFolder, NoteRevision, NoteTag } from "../API/http";
 import type { TrashedNote } from "../hooks/useNotes";
 import { renderMarkdownToReact } from "../utils/markdownToReact";
+import { withBlockId, buildTabSource, buildFoldSource } from "../utils/noteBlocks";
+import { buildFrontMatter, type FrontMatterEntry } from "../utils/noteFrontMatter";
+import type { NoteEmbedTarget } from "./NoteEmbedNode";
 import { useScrollLock } from "../hooks/useScrollLock";
 // 笔记时间统一走这里：SQLite 的 UTC 无时区串必须按 UTC 解释，
 // 直接 `new Date(iso)` 在东八区会差 8 小时（「笔记时间不对」的根因）。
@@ -332,6 +336,7 @@ function FolderTagSection({
     selectedId,
     onSelect,
     onCreate,
+    onCreateNote,
     onAskRename,
     onAskRemove,
     onCreateChild,
@@ -346,6 +351,11 @@ function FolderTagSection({
     selectedId: number | null;
     onSelect: (id: number | null) => void;
     onCreate: () => void;
+    /**
+     * 只有「文件夹」这一节传：把「新建笔记」挪到左栏文件夹标题右侧，
+     * 和「新建文件夹」并排（参考 inkstone 布局），顶栏那个原位按钮就去掉了。
+     */
+    onCreateNote?: () => void;
     /**
      * 「重命名 / 删除」交给上层弹窗处理。
      * 之前这个组件内部直接调 window.prompt / window.confirm ——
@@ -405,6 +415,18 @@ function FolderTagSection({
                         <AddIcon fontSize='inherit' />
                     </IconButton>
                 </Tooltip>
+                {onCreateNote && (
+                    <Tooltip title='新建笔记'>
+                        <IconButton
+                            size='small'
+                            aria-label='新建笔记'
+                            onClick={onCreateNote}
+                            sx={{ p: 0.25 }}
+                        >
+                            <NoteAddIcon fontSize='inherit' />
+                        </IconButton>
+                    </Tooltip>
+                )}
             </Box>
             {treeItems.map(item => (
                 <Box
@@ -1482,6 +1504,30 @@ export default function NotesPage({
     );
 
     /**
+     * 笔记嵌入 `![[标题]]` / 块引用 `![[标题#^块ID]]` 在预览里按标题找目标笔记。
+     * 大小写不敏感、去首尾空白 —— 用户写 `[[API]]` 能命中「api」。
+     */
+    const resolveNote = useCallback(
+        (title: string): NoteEmbedTarget | null => {
+            const key = title.trim().toLowerCase();
+            if (!key) return null;
+            const hit = notes.find(n => (n.title ?? "").trim().toLowerCase() === key);
+            return hit ? { title: hit.title ?? "", content: hit.content ?? "" } : null;
+        },
+        [notes]
+    );
+
+    /** 点嵌入标题跳到那篇笔记（有未保存改动先存） */
+    const handleOpenEmbedNote = useCallback(
+        (title: string) => {
+            const key = title.trim().toLowerCase();
+            const hit = notes.find(n => (n.title ?? "").trim().toLowerCase() === key);
+            if (hit?.id != null) void jumpToNote(hit.id);
+        },
+        [notes, jumpToNote]
+    );
+
+    /**
      * 拖分隔条。监听挂在 **window** 上而不是分隔条自己身上：指针在拖动中移出
      * 那 4px 宽的条就会丢失 mousemove，光靠元素上的事件会「拖到一半卡住」。
      */
@@ -1964,6 +2010,107 @@ export default function NotesPage({
         setDraft(d => (d ? { ...d, content: next } : d));
     }, []);
 
+    /**
+     * 在光标所在行**下面**插入一整块（嵌入 / 折叠 / 标签页 / 分隔线都走这条）：
+     * 前后补空行，避免被 markdown-it 并进上一段；插入后整块选中，方便直接改占位符。
+     */
+    const insertBlock = useCallback((block: string) => {
+        const el = textareaRef.current;
+        if (!el) return;
+        const value = el.value;
+        const pos = el.selectionStart ?? value.length;
+        const lineStart = value.lastIndexOf("\n", Math.max(0, pos - 1)) + 1;
+        const lineEnd = value.indexOf("\n", pos);
+        const end = lineEnd < 0 ? value.length : lineEnd;
+        const head = value.slice(0, lineStart);
+        const tail = value.slice(end);
+        // 贴着正文时围栏 / 容器会被并进上一段，所以前后各补一个空行
+        const lead = head && !head.endsWith("\n") ? "\n" : "";
+        const trail = tail && !tail.startsWith("\n") ? "\n" : "";
+        const next = head + lead + block + trail + tail;
+        const caret = head.length + lead.length;
+        el.value = next;
+        el.focus();
+        el.setSelectionRange(caret, Math.min(caret + block.length, next.length));
+        setDraft(d => (d ? { ...d, content: next } : d));
+    }, []);
+
+    /** 笔记嵌入 `![[标题]]`（块级，单独成行） */
+    const onInsertEmbed = useCallback(() => {
+        insertBlock("![[笔记标题]]");
+    }, [insertBlock]);
+
+    /** 块引用 `![[标题#^块ID]]`（块级，单独成行） */
+    const onInsertBlockRef = useCallback(() => {
+        insertBlock("![[笔记标题#^块ID]]");
+    }, [insertBlock]);
+
+    /** 给当前行追加一个块 ID（` ^abc12`），供 `![[标题#^块ID]]` 引用 */
+    const onInsertBlockId = useCallback(() => {
+        const el = textareaRef.current;
+        if (!el) return;
+        const value = el.value;
+        const pos = el.selectionStart ?? value.length;
+        const lineStart = value.lastIndexOf("\n", Math.max(0, pos - 1)) + 1;
+        const lineEnd = value.indexOf("\n", pos);
+        const end = lineEnd < 0 ? value.length : lineEnd;
+        const line = value.slice(lineStart, end);
+        // 短随机 id（只要符合 `[A-Za-z][A-Za-z0-9_-]` 即可，eng 风格够用）
+        const id = Math.random().toString(36).slice(2, 7);
+        const newLine = withBlockId(line, id);
+        const next = value.slice(0, lineStart) + newLine + value.slice(end);
+        const caret = lineStart + newLine.length;
+        el.value = next;
+        el.focus();
+        el.setSelectionRange(caret, caret);
+        setDraft(d => (d ? { ...d, content: next } : d));
+    }, []);
+
+    /** 在笔记最前面插入 YAML 属性块（已经有的话就在它前面再插一份：极少见，不特殊处理） */
+    const onInsertFrontMatter = useCallback(() => {
+        const el = textareaRef.current;
+        if (!el) return;
+        const value = el.value;
+        const entries: FrontMatterEntry[] = [{ key: "tags", value: "", list: [] }];
+        const fm = buildFrontMatter(entries);
+        const next = fm + (value && !value.startsWith("\n") ? "\n" : "") + value;
+        const caret = fm.length;
+        el.value = next;
+        el.focus();
+        el.setSelectionRange(caret, caret);
+        setDraft(d => (d ? { ...d, content: next } : d));
+    }, []);
+
+    /** 插入标签 `#标签`（行内，和前端 `#标签` 解析规则一致） */
+    const onInsertTag = useCallback(() => {
+        insertAtCursor("#", "", "标签");
+    }, [insertAtCursor]);
+
+    /** 插入双链 `[[标题]]`（行内，可点跳转） */
+    const onInsertWikiLink = useCallback(() => {
+        insertAtCursor("[[", "]]", "笔记标题");
+    }, [insertAtCursor]);
+
+    /** 插入隐藏注释 `%%…%%`（预览不显示） */
+    const onInsertHiddenComment = useCallback(() => {
+        insertAtCursor("%%", "%%", "隐藏注释");
+    }, [insertAtCursor]);
+
+    /** 插入折叠块 `> [!FOLD] 标题` */
+    const onInsertFold = useCallback(() => {
+        insertBlock(buildFoldSource(""));
+    }, [insertBlock]);
+
+    /** 插入标签页容器 `:::tabs … :::` */
+    const onInsertTabs = useCallback(() => {
+        insertBlock(buildTabSource());
+    }, [insertBlock]);
+
+    /** 插入分隔线 `---` */
+    const onInsertDivider = useCallback(() => {
+        insertBlock("---");
+    }, [insertBlock]);
+
     const charCount = draft ? draft.content.length : 0;
     const pinnedCount = notes.filter(n => Boolean(n.pinned)).length;
     const listPane = (
@@ -2120,6 +2267,7 @@ export default function NotesPage({
                     })
                 }
                 onAskRemove={(id, name) => setRemoveTarget({ kind: "folder", id, name })}
+                onCreateNote={() => void startCreate()}
             />
             <FolderTagSection
                 title='标签'
@@ -2584,6 +2732,16 @@ export default function NotesPage({
                         onFormula={applyFormula}
                         onFootnoteRef={insertFootnoteRef}
                         onCallout={insertCallout}
+                        onInsertEmbed={onInsertEmbed}
+                        onInsertBlockRef={onInsertBlockRef}
+                        onInsertBlockId={onInsertBlockId}
+                        onInsertFrontMatter={onInsertFrontMatter}
+                        onInsertTag={onInsertTag}
+                        onInsertWikiLink={onInsertWikiLink}
+                        onInsertHiddenComment={onInsertHiddenComment}
+                        onInsertFold={onInsertFold}
+                        onInsertTabs={onInsertTabs}
+                        onInsertDivider={onInsertDivider}
                     />
 
                     {/* 内容区：源码 | 预览 */}
@@ -2726,7 +2884,11 @@ export default function NotesPage({
                                         e.preventDefault();
                                         onNotify?.(`没有找到名为「${title}」的笔记`, "error");
                                     }
-                                }}><MarkdownPreview source={draft?.content || ""} /></Box>
+                                }}><MarkdownPreview
+                                    source={draft?.content || ""}
+                                    resolveNote={resolveNote}
+                                    onOpenNote={handleOpenEmbedNote}
+                                /></Box>
                             </Box>
                         )}
                     </Box>
@@ -3014,11 +3176,6 @@ export default function NotesPage({
                         </IconButton>
                     ))}
                 </Box>
-                <Tooltip title='新建笔记'>
-                    <IconButton aria-label='新建笔记' size='small' onClick={startCreate}>
-                        <AddIcon fontSize='small' />
-                    </IconButton>
-                </Tooltip>
             </Box>
 
             {/* 大纲面板：当前这条笔记的标题层级。没标题时给一句说明，
@@ -3251,7 +3408,17 @@ export default function NotesPage({
  * 渲染是**异步**的：markdown-it 走动态 import（必须 lazy，否则进首屏）。
  * 所以先渲染一个占位，解析完再替换 —— 免得每次输入都闪一下。
  */
-function MarkdownPreview({ source }: { source: string }) {
+function MarkdownPreview({
+    source,
+    resolveNote,
+    onOpenNote,
+}: {
+    source: string;
+    /** 笔记嵌入 `![[标题]]` 按标题找目标 */
+    resolveNote?: (title: string) => NoteEmbedTarget | null;
+    /** 点嵌入标题跳到那篇笔记 */
+    onOpenNote?: (title: string) => void;
+}) {
     const [node, setNode] = useState<ReactNode>(null);
     const [ready, setReady] = useState(false);
 
@@ -3261,7 +3428,7 @@ function MarkdownPreview({ source }: { source: string }) {
             setNode(null);
             return;
         }
-        void renderMarkdownToReact(source).then(result => {
+        void renderMarkdownToReact(source, { resolveNote, onOpenNote }).then(result => {
             if (cancelled) return;
             setNode(result);
             setReady(true);
@@ -3270,7 +3437,7 @@ function MarkdownPreview({ source }: { source: string }) {
             // 输入很快时，旧的解析结果要丢掉，否则会闪回上一版内容
             cancelled = true;
         };
-    }, [source]);
+    }, [source, resolveNote, onOpenNote]);
 
     if (!source) {
         return (
@@ -3385,42 +3552,6 @@ const TOOL_GROUPS: { name: string; tools: ToolSpec[] }[] = [
             },
         ],
     },
-    {
-        name: "插入",
-        tools: [
-            {
-                key: "link",
-                icon: <LinkIcon fontSize='small' />,
-                title: "链接",
-                before: "[",
-                after: "](https://)",
-                placeholder: "链接文字",
-            },
-            { key: "footnote", label: "¹", title: "行内脚注", before: "^[", after: "]", placeholder: "脚注说明" },
-            {
-                key: "image",
-                icon: <ImageIcon fontSize='small' />,
-                title: "图片",
-                before: "![",
-                after: "](https://)",
-                placeholder: "图片说明",
-            },
-        ],
-    },
-    {
-        name: "块",
-        tools: [
-            {
-                key: "quote",
-                icon: <FormatQuoteIcon fontSize='small' />,
-                title: "引用",
-                before: "> ",
-                placeholder: "引用",
-            },
-            // 「块」组里的表格按钮已升级成下面的下拉（能增删行列），
-            // 这里不再放一个只会插固定 2×2 的图标按钮。
-        ],
-    },
 ];
 
 /**
@@ -3473,6 +3604,16 @@ function MarkdownToolbar({
     onFormula,
     onFootnoteRef,
     onCallout,
+    onInsertEmbed,
+    onInsertBlockRef,
+    onInsertBlockId,
+    onInsertFrontMatter,
+    onInsertTag,
+    onInsertWikiLink,
+    onInsertHiddenComment,
+    onInsertFold,
+    onInsertTabs,
+    onInsertDivider,
 }: {
     onInsert: (before: string, after: string, placeholder: string) => void;
     onInsertLinePrefix: (prefix: string) => void;
@@ -3490,8 +3631,32 @@ function MarkdownToolbar({
     onFootnoteRef: () => void;
     /** 内容块：插 `> [!类型]` 骨架（inkstone 的「内容块」） */
     onCallout: (type: string) => void;
+    /** 笔记嵌入 `![[标题]]`（块级，单独成行） */
+    onInsertEmbed: () => void;
+    /** 块引用 `![[标题#^块ID]]`（块级，单独成行） */
+    onInsertBlockRef: () => void;
+    /** 给当前行追加块 ID（` ^abc12`） */
+    onInsertBlockId: () => void;
+    /** 在笔记最前面插入 YAML 属性块 */
+    onInsertFrontMatter: () => void;
+    /** 插入标签 `#标签`（行内） */
+    onInsertTag: () => void;
+    /** 插入双链 `[[标题]]`（行内，可点跳转） */
+    onInsertWikiLink: () => void;
+    /** 插入隐藏注释 `%%…%%`（预览不显示） */
+    onInsertHiddenComment: () => void;
+    /** 插入折叠块 `> [!FOLD] 标题` */
+    onInsertFold: () => void;
+    /** 插入标签页容器 `:::tabs … :::` */
+    onInsertTabs: () => void;
+    /** 插入分隔线 `---` */
+    onInsertDivider: () => void;
 }) {
     const [headingAnchor, setHeadingAnchor] = useState<HTMLElement | null>(null);
+    const [linkAnchor, setLinkAnchor] = useState<HTMLElement | null>(null);
+    const [imageAnchor, setImageAnchor] = useState<HTMLElement | null>(null);
+    const [insertAnchor, setInsertAnchor] = useState<HTMLElement | null>(null);
+    const [blockAnchor, setBlockAnchor] = useState<HTMLElement | null>(null);
     const [langAnchor, setLangAnchor] = useState<HTMLElement | null>(null);
     const [tableAnchor, setTableAnchor] = useState<HTMLElement | null>(null);
     const [calloutAnchor, setCalloutAnchor] = useState<HTMLElement | null>(null);
@@ -3520,9 +3685,6 @@ function MarkdownToolbar({
                 aria-expanded={headingAnchor ? true : undefined}
                 onClick={e => setHeadingAnchor(e.currentTarget)}
                 sx={{
-                    // ⚠️ 必须和旁边那些图标按钮**一样大**（28×28）、字号也对齐：
-                    // 之前是个「按钮」，自带 padding + 18px 字，比图标高一截也宽一截，
-                    // 用户一眼就看出「标题按键和其他大小不一样」。
                     width: 28,
                     height: 28,
                     minWidth: 0,
@@ -3554,11 +3716,241 @@ function MarkdownToolbar({
                 ))}
             </Menu>
 
-            {/* 「链接与引用」：inkstone 工具栏第 12 项。选中文字 → 一条脚注引用
-                （正文一个 `[^n]` + 文末一条 `[^n]: 原文`）。
-                刻意**单独放一个按钮**而不塞进 TOOL_GROUPS：那一组都是
-                「在光标处包一层 before/after」，脚注要同时改两处，走同一条路必写错。 */}
-            <Tooltip title='内容块（提示 / 技巧 / 重要 / 警告）'>
+            {/* 链接下拉（inkstone 式）：链接 / 双链 / 笔记嵌入 / 块引用 四种。
+                data-tool='link' 仍挂在触发器上，老的用例按它找按钮不丢。 */}
+            <Tooltip title='链接'>
+                <IconButton
+                    size='small'
+                    aria-label='链接'
+                    data-tool='link'
+                    aria-haspopup='menu'
+                    aria-expanded={linkAnchor ? true : undefined}
+                    onMouseDown={e => e.preventDefault()}
+                    onClick={e => setLinkAnchor(e.currentTarget)}
+                    sx={{ width: 28, height: 28, color: "text.secondary", flexShrink: 0 }}
+                >
+                    <LinkIcon fontSize='small' />
+                </IconButton>
+            </Tooltip>
+            <Menu
+                open={Boolean(linkAnchor)}
+                anchorEl={linkAnchor}
+                onClose={() => setLinkAnchor(null)}
+            >
+                <MenuItem
+                    data-link-op='external'
+                    onClick={() => {
+                        onInsert("[", "](https://)", "链接文字");
+                        setLinkAnchor(null);
+                    }}
+                >
+                    链接（网页地址）
+                </MenuItem>
+                <MenuItem
+                    data-link-op='wikilink'
+                    onClick={() => {
+                        onInsertWikiLink();
+                        setLinkAnchor(null);
+                    }}
+                >
+                    双链 [[笔记]]
+                </MenuItem>
+                <MenuItem
+                    data-link-op='embed'
+                    onClick={() => {
+                        onInsertEmbed();
+                        setLinkAnchor(null);
+                    }}
+                >
+                    笔记嵌入 ![[笔记]]
+                </MenuItem>
+                <MenuItem
+                    data-link-op='blockref'
+                    onClick={() => {
+                        onInsertBlockRef();
+                        setLinkAnchor(null);
+                    }}
+                >
+                    块引用 ![[笔记#^块ID]]
+                </MenuItem>
+            </Menu>
+
+            {/* 图片下拉：目前只开放「网络图片」（粘贴链接），上传未做 */}
+            <Tooltip title='图片'>
+                <IconButton
+                    size='small'
+                    aria-label='图片'
+                    data-tool='image'
+                    aria-haspopup='menu'
+                    aria-expanded={imageAnchor ? true : undefined}
+                    onMouseDown={e => e.preventDefault()}
+                    onClick={e => setImageAnchor(e.currentTarget)}
+                    sx={{ width: 28, height: 28, color: "text.secondary", flexShrink: 0 }}
+                >
+                    <ImageIcon fontSize='small' />
+                </IconButton>
+            </Tooltip>
+            <Menu
+                open={Boolean(imageAnchor)}
+                anchorEl={imageAnchor}
+                onClose={() => setImageAnchor(null)}
+            >
+                <MenuItem
+                    data-image-op='url'
+                    onClick={() => {
+                        onInsert("![", "](https://)", "图片说明");
+                        setImageAnchor(null);
+                    }}
+                >
+                    网络图片（粘贴链接）
+                </MenuItem>
+                <MenuItem disabled data-image-op='upload'>
+                    上传图片（暂未开放）
+                </MenuItem>
+            </Menu>
+
+            {/* 「链接与引用」：把选中的文字变成脚注引用。单独放（不在链接下拉里），
+                因为它要同时改两处（文末定义 + 正文引用），和链接下拉的「包一层」不是一回事。
+                测试用例直接按 data-tool='footnote-ref' 点它，不能挪进下拉。 */}
+            <Tooltip title='链接与引用（把选中的文字变成脚注引用）'>
+                <IconButton
+                    size='small'
+                    data-tool='footnote-ref'
+                    aria-label='链接与引用'
+                    onMouseDown={e => e.preventDefault()}
+                    onClick={onFootnoteRef}
+                    sx={{ width: 28, height: 28, color: "text.secondary", flexShrink: 0 }}
+                >
+                    <LinkIcon fontSize='small' />
+                </IconButton>
+            </Tooltip>
+
+            <Divider orientation='vertical' flexItem sx={{ mx: 0.25, my: 0.5 }} />
+
+            {/* 插入下拉：把「高级插入」收进来（块 ID / 属性 / 隐藏注释 / 标签），
+                和 inkstone 的「插入」一组对齐。 */}
+            <Button
+                size='small'
+                aria-label='插入'
+                aria-haspopup='menu'
+                aria-expanded={insertAnchor ? true : undefined}
+                onMouseDown={e => e.preventDefault()}
+                onClick={e => setInsertAnchor(e.currentTarget)}
+                sx={{
+                    width: 40,
+                    height: 28,
+                    minWidth: 0,
+                    p: 0,
+                    fontSize: 13,
+                    lineHeight: 1,
+                    color: "text.secondary",
+                    "&:hover": { bgcolor: "rgba(128,128,128,0.14)", color: "text.primary" },
+                }}
+            >
+                插入
+            </Button>
+            <Menu
+                open={Boolean(insertAnchor)}
+                anchorEl={insertAnchor}
+                onClose={() => setInsertAnchor(null)}
+            >
+                <MenuItem
+                    data-insert-op='blockid'
+                    onClick={() => {
+                        onInsertBlockId();
+                        setInsertAnchor(null);
+                    }}
+                >
+                    块 ID（^标识，供引用）
+                </MenuItem>
+                <MenuItem
+                    data-insert-op='frontmatter'
+                    onClick={() => {
+                        onInsertFrontMatter();
+                        setInsertAnchor(null);
+                    }}
+                >
+                    笔记属性（YAML）
+                </MenuItem>
+                <MenuItem
+                    data-insert-op='hidden'
+                    onClick={() => {
+                        onInsertHiddenComment();
+                        setInsertAnchor(null);
+                    }}
+                >
+                    隐藏注释（预览不显示）
+                </MenuItem>
+                <MenuItem
+                    data-insert-op='tag'
+                    onClick={() => {
+                        onInsertTag();
+                        setInsertAnchor(null);
+                    }}
+                >
+                    标签 #标签
+                </MenuItem>
+            </Menu>
+
+            {/* 块下拉：折叠 / 标签页 / 分隔线（inkstone 的「块」一组） */}
+            <Button
+                size='small'
+                aria-label='块'
+                aria-haspopup='menu'
+                aria-expanded={blockAnchor ? true : undefined}
+                onMouseDown={e => e.preventDefault()}
+                onClick={e => setBlockAnchor(e.currentTarget)}
+                sx={{
+                    width: 32,
+                    height: 28,
+                    minWidth: 0,
+                    p: 0,
+                    fontSize: 13,
+                    lineHeight: 1,
+                    color: "text.secondary",
+                    "&:hover": { bgcolor: "rgba(128,128,128,0.14)", color: "text.primary" },
+                }}
+            >
+                块
+            </Button>
+            <Menu
+                open={Boolean(blockAnchor)}
+                anchorEl={blockAnchor}
+                onClose={() => setBlockAnchor(null)}
+            >
+                <MenuItem
+                    data-block-op='fold'
+                    onClick={() => {
+                        onInsertFold();
+                        setBlockAnchor(null);
+                    }}
+                >
+                    折叠内容（{">"} [!FOLD]）
+                </MenuItem>
+                <MenuItem
+                    data-block-op='tabs'
+                    onClick={() => {
+                        onInsertTabs();
+                        setBlockAnchor(null);
+                    }}
+                >
+                    标签页（:::tabs）
+                </MenuItem>
+                <MenuItem
+                    data-block-op='divider'
+                    onClick={() => {
+                        onInsertDivider();
+                        setBlockAnchor(null);
+                    }}
+                >
+                    分隔线（---）
+                </MenuItem>
+            </Menu>
+
+            <Divider orientation='vertical' flexItem sx={{ mx: 0.25, my: 0.5 }} />
+
+            {/* 内容块（提示 / 技巧 / 重要 / 警告 / 引用） */}
+            <Tooltip title='内容块（提示 / 技巧 / 重要 / 警告 / 引用）'>
                 <IconButton
                     size='small'
                     data-tool='callout'
@@ -3597,23 +3989,22 @@ function MarkdownToolbar({
                     </MenuItem>
                 ))}
             </Menu>
-            <Tooltip title='链接与引用（把选中的文字变成脚注引用）'>
+
+            {/* 引用：行首 `> ` 前缀（独立图标按钮，data-tool='quote' 测试要用） */}
+            <Tooltip title='引用'>
                 <IconButton
                     size='small'
-                    data-tool='footnote-ref'
-                    aria-label='链接与引用'
-                    // 同其他格式按钮：mousedown 要 preventDefault，
-                    // 否则输入框先失焦，selectionStart 变 0，插入位置全跑到开头
+                    data-tool='quote'
+                    aria-label='引用'
                     onMouseDown={e => e.preventDefault()}
-                    onClick={onFootnoteRef}
+                    onClick={() => onInsertLinePrefix("> ")}
                     sx={{ width: 28, height: 28, color: "text.secondary", flexShrink: 0 }}
                 >
-                    <LinkIcon fontSize='small' />
+                    <FormatQuoteIcon fontSize='small' />
                 </IconButton>
             </Tooltip>
 
-            {/* 阶段四第 12 条：代码块语言。和「标题」同一个调子（文字按钮 + 下拉），
-                图标按钮装不下「语言」这两个字。 */}
+            {/* 阶段四第 12 条：代码块语言 */}
             <Button
                 size='small'
                 aria-label='代码块语言'
@@ -3653,9 +4044,7 @@ function MarkdownToolbar({
                 ))}
             </Menu>
 
-            {/* 阶段四第 12c 条：公式。两种规格放进一个下拉 ——
-                图标按钮塞不下「$」这种说明，而它又不是「点一下就完事」的单动作，
-                顺便把 `$` / `$$` 的差别写在菜单文案里，省得用户瞎试。 */}
+            {/* 公式下拉 */}
             <Tooltip title='插入公式'>
                 <IconButton
                     size='small'
@@ -3718,14 +4107,11 @@ function MarkdownToolbar({
                 </MenuItem>
             </Menu>
 
-            {/* 阶段四第 12 条：表格下拉。插入给几个现成尺寸；
-                下面四项只在光标已经落在表格里时才起作用（不在表格里纯函数会原样返回，
-                不报错也不改坏文字）。 */}
+            {/* 表格下拉 */}
             <Tooltip title='插入表格 / 增删行列'>
                 <IconButton
                     size='small'
                     aria-label='表格'
-                    // 保留 data-tool="table"：老的用例（以及可能的自动化脚本）按它找按钮
                     data-tool='table'
                     aria-haspopup='menu'
                     aria-expanded={tableAnchor ? true : undefined}
@@ -3797,6 +4183,8 @@ function MarkdownToolbar({
                 </MenuItem>
             </Menu>
 
+            <Divider orientation='vertical' flexItem sx={{ mx: 0.25, my: 0.5 }} />
+
             {TOOL_GROUPS.map((group, gi) => (
                 <Fragment key={group.name}>
                     {gi > 0 && (
@@ -3807,7 +4195,6 @@ function MarkdownToolbar({
                             <Tooltip key={tool.key} title={tool.title}>
                                 <IconButton
                                     size='small'
-                                    // 关键：阻止默认行为，输入框才不会失焦、选区才不会丢
                                     onMouseDown={e => e.preventDefault()}
                                     onClick={() =>
                                         onInsert(tool.before, tool.after ?? "", tool.placeholder ?? "")

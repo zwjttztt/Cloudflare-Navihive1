@@ -31,7 +31,27 @@ import { registerMark } from "./markdownMark";
 import footnote from "markdown-it-footnote";
 import { registerNoteTags } from "./markdownNoteTags";
 import { registerWikiLink } from "./noteWikiLink";
-import { registerCallout, calloutTypeOf, type CalloutType } from "./markdownCallout";
+import {
+    calloutTitleOf,
+    calloutTypeOf,
+    isFoldType,
+    registerCallout,
+    type CalloutType,
+} from "./markdownCallout";
+import { blockIdOf, registerNoteBlocks } from "./markdownNoteBlocks";
+import { parseRefTarget } from "./noteBlocks";
+import { splitFrontMatter, type FrontMatterEntry } from "./noteFrontMatter";
+import { NoteEmbedNode, type NoteEmbedTarget } from "../components/NoteEmbedNode";
+import { NoteTabsNode } from "../components/NoteTabsNode";
+
+/** 渲染时能被语法引用的外部能力（由页面注入；缺省则相关语法降级） */
+export interface RenderContext {
+    /** 笔记嵌入 `![[标题]]` 用：按标题找目标笔记 */
+    resolveNote?: (title: string) => NoteEmbedTarget | null;
+    /** 点嵌入标题时跳到那篇笔记 */
+    onOpenNote?: (title: string) => void;
+}
+
 
 /** 延迟加载 markdown-it：它只进懒加载 chunk，不进首屏 */
 let parserPromise: Promise<MarkdownIt> | null = null;
@@ -62,6 +82,8 @@ function loadParser(): Promise<MarkdownIt> {
             registerWikiLink(md);
             // 内容块 `> [!NOTE]`（inkstone 的「内容块」）。注册顺序在 blockquote 之前。
             registerCallout(md);
+            // 标签页 / 折叠容器、笔记嵌入、隐藏注释、块 ID（工具栏「插入 / 块」两组）
+            registerNoteBlocks(md);
             // 插件提供完整 token 解析；HTML renderer 不调用，下面单独映射 React。
             md.use(footnote as unknown as (parser: MarkdownIt) => void);
             return md;
@@ -75,23 +97,85 @@ interface Cursor {
     tokens: Token[];
     i: number;
     key: number;
+    /** 嵌入深度（防止笔记互相嵌入导致无限递归） */
+    depth: number;
+    /** 页面注入的外部能力 */
+    ctx: RenderContext;
 }
 
 function nextKey(c: Cursor): string {
     return `md${c.key++}`;
 }
 
+/** 递归渲染用：同样的上下文往下传一层，深度 +1 */
+function child(tokens: Token[], c: Cursor, depthOffset = 0): Cursor {
+    return { tokens, i: 0, key: c.key++, depth: c.depth + depthOffset, ctx: c.ctx };
+}
+
+/** 渲染某段 Markdown 的闭包（给嵌入 / 标签页用） */
+function rendererFor(c: Cursor): (source: string, depth: number) => Promise<ReactNode> {
+    return (source, depth) => renderMarkdownToReact(source, { ...c.ctx, depth });
+}
+
 /**
  * 渲染 Markdown 源码 → React 元素。
  * 异步是因为 markdown-it 走动态 import（必须 lazy，否则进首屏）。
+ *
+ * @param options.depth  仅供内部递归使用；调用方不用传
  */
-export async function renderMarkdownToReact(source: string): Promise<ReactNode> {
+export async function renderMarkdownToReact(
+    source: string,
+    options: RenderContext & { depth?: number } = {}
+): Promise<ReactNode> {
     if (!source) return null;
     const md = await loadParser();
-    const tokens = md.parse(source, {});
-    const cursor: Cursor = { tokens, i: 0, key: 0 };
-    return renderBlocks(cursor);
+    const ctx: RenderContext = { resolveNote: options.resolveNote, onOpenNote: options.onOpenNote };
+    const depth = options.depth ?? 0;
+
+    // front matter 在**进解析器之前**摘掉：markdown-it 会把 `---` 那段拆成 hr + 段落，
+    // 到 token 层已经看不出它们本来是一块属性了（详见 noteFrontMatter.ts 头注释）。
+    const fm = splitFrontMatter(source);
+    const tokens = md.parse(fm.body, {});
+    const cursor: Cursor = { tokens, i: 0, key: 0, depth, ctx };
+    const body = renderBlocks(cursor);
+    if (fm.entries.length === 0) return body;
+    return (
+        <>
+            <FrontMatterTable entries={fm.entries} />
+            {body}
+        </>
+    );
 }
+
+/** 笔记属性表：inkstone 的「笔记属性（YAML）」。可折叠，默认展开 */
+function FrontMatterTable({ entries }: { entries: readonly FrontMatterEntry[] }) {
+    return (
+        <details data-note-front-matter='1' style={{ margin: "0 0 10px" }}>
+            <summary style={{ cursor: "pointer", fontSize: 12, opacity: 0.7 }}>
+                属性（{entries.length}）
+            </summary>
+            <table style={{ ...TABLE_STYLE, fontSize: 13 }}>
+                <tbody>
+                    {entries.map(e => (
+                        <tr key={e.key}>
+                            <th style={TH_STYLE}>{e.key}</th>
+                            <td style={TD_STYLE}>
+                                {e.list?.length
+                                    ? e.list.map(t => (
+                                          <span key={t} data-inline-tag={t} style={{ marginRight: 6, color: "var(--accent)" }}>
+                                              #{t}
+                                          </span>
+                                      ))
+                                    : e.value || "—"}
+                            </td>
+                        </tr>
+                    ))}
+                </tbody>
+            </table>
+        </details>
+    );
+}
+
 
 // ---------------------------------------------------------------------------
 // 行内
@@ -202,6 +286,33 @@ function renderLeaf(tok: Token, c: Cursor): ReactNode {
                     {tok.content}
                 </a>
             );
+        // 笔记嵌入 `![[标题]]` / 块引用 `[[笔记#^块ID]]`（带 `!` 的那种）。
+        // 独立组件：内容要再跑一遍渲染（异步），synchronous 的映射函数做不了。
+        case "note_embed": {
+            const { title, blockId } = parseRefTarget(tok.content);
+            if (!c.ctx.resolveNote) {
+                return (
+                    <span key={key} data-note-embed-missing={title} style={{ opacity: 0.7 }}>
+                        {title}
+                    </span>
+                );
+            }
+            return (
+                <NoteEmbedNode
+                    key={key}
+                    title={title}
+                    blockId={blockId}
+                    depth={c.depth}
+                    resolve={c.ctx.resolveNote}
+                    render={rendererFor(c)}
+                    onOpen={t => c.ctx.onOpenNote?.(t)}
+                />
+            );
+        }
+        // 隐藏注释 `%%…%%`：源码里留着，预览里不显示。
+        // 渲染成 null 而不是空 span —— 空 span 会在「两段文字之间」留一个无意义的位置。
+        case "note_hidden":
+            return null;
         case "footnote_ref": {
             const { id, subId } = tok.meta as { id: number; subId: number };
             return <sup key={key} id={`note-fnref-${id}-${subId}`}><a href={`#note-fn-${id}`} aria-label={`脚注 ${id + 1}`}>[{id + 1}]</a></sup>;
@@ -271,14 +382,14 @@ function renderBlocks(c: Cursor): ReactNode[] {
             case "footnote_block_open": {
                 c.i++;
                 const inner = takeUntilClose(c, "footnote_block_open", "footnote_block_close");
-                out.push(<section key={key} aria-label='脚注' style={{ borderTop: "1px solid rgba(128,128,128,.3)", marginTop: 20 }}><ol>{renderBlocks({ tokens: inner, i: 0, key: c.key++ })}</ol></section>);
+                out.push(<section key={key} aria-label='脚注' style={{ borderTop: "1px solid rgba(128,128,128,.3)", marginTop: 20 }}><ol>{renderBlocks(child(inner, c))}</ol></section>);
                 break;
             }
             case "footnote_open": {
                 const { id } = tok.meta as { id: number };
                 c.i++;
                 const inner = takeUntilClose(c, "footnote_open", "footnote_close");
-                out.push(<li key={key} id={`note-fn-${id}`}>{renderBlocks({ tokens: inner, i: 0, key: c.key++ })}</li>);
+                out.push(<li key={key} id={`note-fn-${id}`}>{renderBlocks(child(inner, c))}</li>);
                 break;
             }
             case "footnote_anchor":
@@ -288,17 +399,42 @@ function renderBlocks(c: Cursor): ReactNode[] {
             case "heading_open": {
                 const level = Number(tok.tag.replace("h", "")) || 1;
                 const Tag = (`h${Math.min(6, Math.max(1, level))}` as unknown) as "h2";
+                const anchor = anchorProps(tok);
                 c.i++; // 跳过 open
                 const inline = c.tokens[c.i];
                 c.i++; // 跳过 inline
-                out.push(<Tag key={key}>{renderInline(inline?.children, c)}</Tag>);
+                out.push(
+                    <Tag key={key} {...anchor}>
+                        {renderInline(inline?.children, c)}
+                    </Tag>
+                );
                 break;
             }
             case "paragraph_open": {
+                const anchor = anchorProps(tok);
                 c.i++;
                 const inline = c.tokens[c.i];
                 c.i++;
-                out.push(<p key={key}>{renderInline(inline?.children, c)}</p>);
+                out.push(
+                    <p key={key} {...anchor}>
+                        {renderInline(inline?.children, c)}
+                    </p>
+                );
+                break;
+            }
+            case "note_container": {
+                // `:::tabs` 标签页。正文要再跑一遍渲染（异步），所以交给组件。
+                const arg = (tok.meta as { arg?: string } | null)?.arg ?? "";
+                c.i++;
+                out.push(
+                    <NoteTabsNode
+                        key={key}
+                        body={tok.content}
+                        arg={arg}
+                        depth={c.depth + 1}
+                        render={rendererFor(c)}
+                    />
+                );
                 break;
             }
             case "bullet_list_open":
@@ -341,6 +477,19 @@ function renderBlocks(c: Cursor): ReactNode[] {
                 //   整个预览区一起崩（实测：双链也跟着消失了）。
                 c.i++;
                 const inner = takeUntilClose(c, "callout_open", "callout_close");
+                if (isFoldType(type)) {
+                    // 折叠块：用原生 <details>（可展开收起，且天然带无障碍语义）。
+                    // 首行标题在解析层就摘走了（markdownCallout.takeMarker）。
+                    out.push(
+                        <details key={key} data-callout='FOLD' style={FOLD_STYLE}>
+                            <summary style={FOLD_SUMMARY_STYLE}>
+                                {calloutTitleOf(tok.meta) || "展开"}
+                            </summary>
+                            <div style={{ paddingTop: 6 }}>{renderBlocks(child(inner, c))}</div>
+                        </details>
+                    );
+                    break;
+                }
                 out.push(
                     // ⚠️ 用原生 div/span + inline style：这个文件全程不引 MUI
                     // （见文件头「为什么不用 renderer」的同款理由），
@@ -364,7 +513,7 @@ function renderBlocks(c: Cursor): ReactNode[] {
                             {palette.icon}
                         </span>
                         <div style={{ flex: 1, minWidth: 0 }}>
-                            {renderBlocks({ tokens: inner, i: 0, key: c.key++ })}
+                            {renderBlocks(child(inner, c))}
                         </div>
                     </div>
                 );
@@ -379,7 +528,7 @@ function renderBlocks(c: Cursor): ReactNode[] {
                 const inner = takeUntilClose(c, "blockquote_open", "blockquote_close");
                 out.push(
                     <blockquote key={key} style={QUOTE_STYLE}>
-                        {renderBlocks({ tokens: inner, i: 0, key: c.key++ })}
+                        {renderBlocks(child(inner, c))}
                     </blockquote>
                 );
                 break;
@@ -428,7 +577,7 @@ function renderBlocks(c: Cursor): ReactNode[] {
                 const inner = takeUntilClose(c, "table_open", "table_close");
                 out.push(
                     <table key={key} style={TABLE_STYLE}>
-                        {renderBlocks({ tokens: inner, i: 0, key: c.key++ })}
+                        {renderBlocks(child(inner, c))}
                     </table>
                 );
                 break;
@@ -437,7 +586,7 @@ function renderBlocks(c: Cursor): ReactNode[] {
                 c.i++;
                 const inner = takeUntilClose(c, "tr_open", "tr_close");
                 out.push(
-                    <tr key={key}>{renderBlocks({ tokens: inner, i: 0, key: c.key++ })}</tr>
+                    <tr key={key}>{renderBlocks(child(inner, c))}</tr>
                 );
                 break;
             }
@@ -470,7 +619,7 @@ function renderBlocks(c: Cursor): ReactNode[] {
  * 自己实现而不是用 markdown-it-task-lists（那个插件注册的是 renderer，token 流下无效）。
  */
 function renderListItemBody(body: Token[], c: Cursor): ReactNode {
-    const sub: Cursor = { tokens: body, i: 0, key: c.key++ };
+    const sub: Cursor = child(body, c);
     if (body.length >= 2 && body[0].type === "paragraph_open") {
         const inline = body[1];
         if (inline?.type === "inline") {
@@ -592,6 +741,8 @@ const CALLOUT_STYLE: Record<CalloutType, { border: string; bg: string; fg: strin
     IMPORTANT: { border: "#8b5cf6", bg: "rgba(139,92,246,0.10)", fg: "inherit", icon: "❗" },
     WARNING: { border: "#f59e0b", bg: "rgba(245,158,11,0.12)", fg: "inherit", icon: "⚠" },
     QUOTE: { border: "rgba(128,128,128,0.6)", bg: "rgba(128,128,128,0.08)", fg: "inherit", icon: "❝" },
+    // FOLD 走 <details> 分支，palette 不会被读到；放这里只为满足类型完整性
+    FOLD: { border: "rgba(128,128,128,0.6)", bg: "transparent", fg: "inherit", icon: "▸" },
 };
 
 const QUOTE_STYLE: React.CSSProperties = {
@@ -602,6 +753,34 @@ const QUOTE_STYLE: React.CSSProperties = {
     opacity: 0.9,
 };
 const HR_STYLE: React.CSSProperties = { border: "none", borderTop: "1px solid rgba(128,128,128,0.3)", margin: "12px 0" };
+/** 折叠块（`> [!FOLD]`）：原生 details，展开/收起交给浏览器 */
+const FOLD_STYLE: React.CSSProperties = {
+    margin: "0.6em 0",
+    padding: "8px 12px",
+    borderRadius: 6,
+    border: "1px solid rgba(128,128,128,0.3)",
+    background: "rgba(128,128,128,0.05)",
+};
+const FOLD_SUMMARY_STYLE: React.CSSProperties = {
+    cursor: "pointer",
+    fontSize: 14,
+    fontWeight: 600,
+    listStyle: "revert",
+};
+
+/**
+ * 块 ID → 锚点属性。
+ *
+ * 块 ID（行尾 `^id`）的唯一用途是**被引用**（`![[笔记#^id]]`），
+ * 而引用是靠标题名找笔记、再按 ID 裁内容（NoteEmbedNode.sliceBlock），
+ * 不依赖 DOM 里的 id 属性。所以这里**不**往元素上写 `id=`：
+ * 同一篇里两个块用同一个 ID 很常见，写了就会在 DOM 里撞出重复 id，
+ * 而页面里恰好有别的锚点跳转逻辑（大纲/脚注回跳），撞了就是「点大纲跳错地方」。
+ */
+function anchorProps(tok: Token): { "data-block-id"?: string } {
+    const blockId = blockIdOf(tok.meta);
+    return blockId ? { "data-block-id": blockId } : {};
+}
 const TABLE_STYLE: React.CSSProperties = {
     borderCollapse: "collapse",
     margin: "8px 0",
