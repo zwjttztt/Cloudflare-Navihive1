@@ -3,6 +3,7 @@ import {
     Site,
     Note,
     NoteFolder,
+    NoteRevision,
     NoteTag,
     LoginResponse,
     ExportData,
@@ -198,6 +199,9 @@ const mockTags: NoteTag[] = [{ id: 1, name: "待办", color: "#f59e0b" }];
 const mockNoteTagLinks: { note_id: number; tag_id: number }[] = [{ note_id: 2, tag_id: 1 }];
 let mockFolderSeq = mockFolders.length;
 let mockTagSeq = mockTags.length;
+/** 版本历史快照（演示模式）。只保留最近若干条，与后端同一套裁剪语义。 */
+const mockRevisions: NoteRevision[] = [];
+let mockRevisionSeq = 0;
 
 // 本地没有服务端审计流水，这里保持空列表（接口形状与真实实现一致）
 type MockAuditEntry = {
@@ -419,6 +423,10 @@ export class MockNavigationClient {
         const note = mockNotes.find(n => n.id === id);
         if (!note) return null;
         if (patch.folder_id !== undefined) validateMockParent(patch.folder_id);
+        // 版本历史：改动前先存一份（与后端 updateNote 同一时机与判据）
+        if (patch.content !== undefined && patch.content !== note.content) {
+            await this.pushRevision(id, note.title, note.content);
+        }
         Object.assign(note, patch, { updated_at: new Date().toISOString() });
         if (patch.content !== undefined) await syncMockInlineTags(note);
         return note;
@@ -529,8 +537,7 @@ export class MockNavigationClient {
         return { success: true };
     }
 
-    async listNoteTags(): Promise<Record<number, number[]>> {
-        await new Promise(resolve => setTimeout(resolve, 120));
+    async listNoteTags(): Promise<Record<number, number[]>> {        await new Promise(resolve => setTimeout(resolve, 120));
         return mockNoteTagLinks.reduce<Record<number, number[]>>((acc, link) => {
             (acc[link.note_id] ||= []).push(link.tag_id);
             return acc;
@@ -545,6 +552,44 @@ export class MockNavigationClient {
         }
         for (const tagId of kept) mockNoteTagLinks.push({ note_id: noteId, tag_id: tagId });
         return this.listTags();
+    }
+
+    // ---- 版本历史（与后端同一套语义：存改动前的内容 + 只留 N 条）----
+    async pushRevision(noteId: number, title: string, content: string): Promise<void> {
+        await new Promise(resolve => setTimeout(resolve, 60));
+        mockRevisions.push({
+            id: ++mockRevisionSeq,
+            note_id: noteId,
+            title,
+            content,
+            created_at: new Date().toISOString().slice(0, 19).replace("T", " "),
+        });
+        const mine = mockRevisions.filter(r => r.note_id === noteId);
+        // 与后端 REVISION_KEEP_PER_NOTE 一致：超出的从最旧开始裁
+        for (const old of mine.slice(0, Math.max(0, mine.length - 60))) {
+            const at = mockRevisions.indexOf(old);
+            if (at >= 0) mockRevisions.splice(at, 1);
+        }
+    }
+
+    async listNoteRevisions(noteId: number): Promise<NoteRevision[]> {
+        await new Promise(resolve => setTimeout(resolve, 120));
+        // 与后端一致：列表**不带正文**，只给长度
+        return mockRevisions
+            .filter(r => r.note_id === noteId)
+            .sort((a, b) => b.id - a.id)
+            .map(({ content, ...rest }) => ({ ...rest, content: "", size: content.length }));
+    }
+
+    async getNoteRevision(noteId: number, revisionId: number): Promise<NoteRevision | null> {
+        await new Promise(resolve => setTimeout(resolve, 120));
+        return mockRevisions.find(r => r.note_id === noteId && r.id === revisionId) ?? null;
+    }
+
+    async restoreNoteRevision(noteId: number, revisionId: number): Promise<Note | null> {
+        const revision = await this.getNoteRevision(noteId, revisionId);
+        if (!revision) return null;
+        return this.updateNote(noteId, { title: revision.title, content: revision.content });
     }
 
     async createGroup(group: Group): Promise<Group> {

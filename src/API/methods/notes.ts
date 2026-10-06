@@ -10,7 +10,7 @@
 //   3. **uuid 在这里生成**：合并导入靠它识别「同一条笔记」（见 transfer.ts 的导入逻辑）。
 //      没有它就只能按标题+内容硬比，用户改过一次的笔记会被当成两条。
 import type { NavigationAPI } from "../http";
-import type { Note, NoteFolder, NoteTag } from "../types";
+import type { Note, NoteFolder, NoteRevision, NoteTag } from "../types";
 import type { D1PreparedStatement } from "../schema";
 import { newUuid } from "../../utils/uuid";
 import { extractNoteTags } from "../../utils/markdownNoteTags";
@@ -49,6 +49,16 @@ export interface NotesApi {
      * 而这份东西就几百行，一次全取回来放在客户端最省事。
      */
     listNoteTags(): Promise<Record<number, number[]>>;
+
+    // ---- 版本历史（inkstone 顶栏「版本历史」）----
+    /** 存一个快照（updateNote 内部调用；对外暴露是为了测试与批量导入） */
+    pushRevision(noteId: number, title: string, content: string): Promise<void>;
+    /** 列出一条笔记的历史快照（新→旧），不含正文全文以外的账号外信息 */
+    listNoteRevisions(id: number): Promise<NoteRevision[]>;
+    /** 取某个快照的全文（列表里只给摘要，省得一次拉十几份正文） */
+    getNoteRevision(noteId: number, revisionId: number): Promise<NoteRevision | null>;
+    /** 把某条快照恢复成当前正文（走 updateNote 的同一条路径，自动再存一份快照） */
+    restoreNoteRevision(noteId: number, revisionId: number): Promise<Note | null>;
 }
 
 // NoteFolder / NoteTag 定义在 ../types（那边的 Note 也在一起）——
@@ -56,6 +66,15 @@ export interface NotesApi {
 
 const NOTE_FIELDS =
     "id, uuid, title, content, pinned, order_num, site_id, archived, folder_id, created_at, updated_at";
+
+/**
+ * 每条笔记保留多少个历史快照。
+ *
+ * 60 是个容量与体验的折中：正常一天改十几版，60 条够回溯半个月；
+ * 单条快照按 2KB 算 → 每条笔记最多约 120KB，一百条笔记约 12MB，
+ * 在 D1 的额度里可接受。超出的从最旧开始裁。
+ */
+const REVISION_KEEP_PER_NOTE = 60;
 
 async function validateFolderParent(api: NavigationAPI, parent: number | null, moving?: number): Promise<void> {
     if (parent === null) return;
@@ -90,6 +109,39 @@ function inlineTagStatements(api: NavigationAPI, noteKey: number | string, conte
             .bind(noteKey, name, ...api.scopeParams([]), ...api.scopeParams([])));
     }
     return statements;
+}
+
+/**
+ * 记一个版本快照，并裁掉超出上限的旧版本。
+ *
+ * 两步必须都在：只插不裁，这张表就会随使用时间无限增长（D1 有容量上限，
+ * 且备份/导出也会跟着变大）。裁剪用一条 `DELETE … WHERE id NOT IN (最近 N 条)`，
+ * 不用 OFFSET 分页 —— 一次语句搞定，不受并发影响。
+ */
+async function pushRevision(
+    api: NavigationAPI,
+    noteId: number,
+    title: string,
+    content: string
+): Promise<void> {
+    await api.db
+        .prepare(
+            `INSERT INTO note_revision (note_id, user_id, title, content) VALUES (?, ?, ?, ?)`
+        )
+        .bind(noteId, api.currentUserId, title, content)
+        .run();
+    await api.db
+        .prepare(
+            `DELETE FROM note_revision WHERE note_id = ? AND user_id IS ?
+             AND id NOT IN (
+                 SELECT id FROM note_revision WHERE note_id = ? AND user_id IS ?
+                 ORDER BY id DESC LIMIT ?
+             )`
+        )
+        // ⚠️ `IS ?` 而不是 `= ?`：单账号部署下 user_id 是 NULL，
+        // 而 `col = NULL` 永远不成立，裁剪会**一条都删不掉**（静默失去上限）。
+        .bind(noteId, api.currentUserId, noteId, api.currentUserId, REVISION_KEEP_PER_NOTE)
+        .run();
 }
 
 export const notesImpl: NotesApi = {
@@ -214,11 +266,37 @@ export const notesImpl: NotesApi = {
             const statement = this.db
                 .prepare(`UPDATE notes SET ${updates.join(", ")} WHERE id = ?${this.scopeSql(true)}`)
                 .bind(...this.scopeParams(params));
+            // 版本历史：**正文/标题真的变了才留快照**。
+            // 自动保存是 3 秒一防抖，一次连续改字会触发很多次 update，
+            // 每次都存的话一分钟能堆出几十条一模一样的快照（用户回溯时被
+            // 「十几版内容相同」淹没，真正的那次改动反而找不到）。
+            const before =
+                patch.content !== undefined || patch.title !== undefined
+                    ? await this.db
+                          .prepare(`SELECT title, content FROM notes WHERE id = ?${this.scopeSql(true)}`)
+                          .bind(...this.scopeParams([id]))
+                          .first<{ title: string; content: string }>()
+                    : null;
+            const changed =
+                before !== null &&
+                (before.content !== (patch.content ?? before.content) ||
+                    before.title !== (patch.title ?? before.title));
             const tags = patch.content === undefined ? [] : inlineTagStatements(this, id, patch.content);
+            // 快照与正文更新**不在同一个事务**里：快照失败不该让用户的保存失败
+            // （历史是辅助功能，存不上只说明少一个版本，不能反过来把正文丢了）。
             const result = tags.length
                 ? (await this.db.batch([statement, ...tags]))[0]
                 : await statement.run();
             if (!result.success) return null;
+            // 更新成功后才落快照（存的是**改动前**的内容）。
+            // 失败只记日志：历史丢了不该让用户的保存变成失败。
+            if (changed && before) {
+                try {
+                    await this.pushRevision(id, before.title, before.content);
+                } catch (error) {
+                    console.error("保存版本快照失败:", error);
+                }
+            }
             // updated_at 刚被刷新，直接回读一次拿最新值
             const row = await this.db
                 .prepare(`SELECT ${NOTE_FIELDS} FROM notes WHERE id = ?${this.scopeSql(true)}`)
@@ -637,6 +715,91 @@ export const notesImpl: NotesApi = {
                 (map[row.note_id] ||= []).push(row.tag_id);
             }
             return map;
+        });
+    },
+
+    // ============ 版本历史 ============
+    //
+    // 快照落点：updateNote 里正文**改动前**先把旧内容存一份。
+    // 每条笔记只保留 REVISION_KEEP_PER_NOTE 条 —— 这是容量红线：
+    // D1 单库有上限，快照是唯一会随时间无限增长的新表，不裁剪迟早撑爆。
+
+    pushRevision: async function (
+        this: NavigationAPI,
+        noteId: number,
+        title: string,
+        content: string
+    ): Promise<void> {
+        await this.migrate();
+        await pushRevision(this, noteId, title, content);
+    },
+
+    listNoteRevisions: async function (this: NavigationAPI, id: number): Promise<NoteRevision[]> {
+        await this.migrate();
+        return this.withSchemaRetry(async () => {
+            // 归属校验：note_revision 有 user_id，但先确认这条笔记是当前账号的，
+            // 免得靠快照表自己的 user_id 判断（老数据可能是 NULL）
+            const note = await this.db
+                .prepare(`SELECT id FROM notes WHERE id = ?${this.scopeSql(true)}`)
+                .bind(...this.scopeParams([id]))
+                .first<{ id: number }>();
+            if (!note) return [];
+            // ⚠️ 列表**不带正文**：一条笔记可能有几十版，全量拉回来只是白费流量。
+            //   用户点开某一条时再走 getNoteRevision 取全文。
+            const result = await this.db
+                .prepare(
+                    `SELECT id, note_id, title, length(content) AS size, created_at
+                     FROM note_revision WHERE note_id = ?${this.scopeSql(true)}
+                     ORDER BY id DESC LIMIT ?`
+                )
+                // ⚠️ 必须**按 SQL 里 ? 的出现顺序**手工绑定，不能用 scopeParams：
+                //   占位符顺序是 note_id → user_id → LIMIT，而 scopeParams 把账号 id
+                //   追加到**末尾**，那样 LIMIT 会绑到 user_id、60 会绑到 LIMIT ——
+                //   症状是「历史永远是空的」（LIMIT 0）或「串到别人的行」。
+                .bind(
+                    id,
+                    ...(this.currentUserId === null ? [] : [this.currentUserId]),
+                    REVISION_KEEP_PER_NOTE
+                )
+                .all<NoteRevision>();
+            return result.results || [];
+        });
+    },
+
+    getNoteRevision: async function (
+        this: NavigationAPI,
+        noteId: number,
+        revisionId: number
+    ): Promise<NoteRevision | null> {
+        await this.migrate();
+        return this.withSchemaRetry(async () => {
+            // 两次条件都要有：note_id 挡住「拿 A 笔记的快照 id 读 B 笔记」，
+            // 账号条件挡住跨账号。
+            const row = await this.db
+                .prepare(
+                    `SELECT r.id, r.note_id, r.title, r.content, r.created_at
+                     FROM note_revision r
+                     JOIN notes n ON n.id = r.note_id${this.scopeSql(true)}
+                     WHERE r.note_id = ? AND r.id = ?`
+                )
+                .bind(...this.scopeParams([]), noteId, revisionId)
+                .first<NoteRevision>();
+            return row ?? null;
+        });
+    },
+
+    restoreNoteRevision: async function (
+        this: NavigationAPI,
+        noteId: number,
+        revisionId: number
+    ): Promise<Note | null> {
+        const revision = await this.getNoteRevision(noteId, revisionId);
+        if (!revision) return null;
+        // 走 updateNote 那条路：会自动把「恢复前」的正文再存一份快照，
+        // 所以恢复这个动作本身也能撤回（不至于一点就永久丢失）。
+        return await this.updateNote(noteId, {
+            title: revision.title,
+            content: revision.content,
         });
     },
 };

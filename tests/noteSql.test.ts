@@ -526,6 +526,10 @@ test("正文标签：正文更新和标签写入必须同批，标签失败应�
             prepare: (sql: string) => {
                 const stmt = { sql, args: [] as unknown[],
                     bind(...args: unknown[]) { stmt.args = args; return stmt; },
+                    // 版本历史要读「改动前的正文」来判是否真的变了 → 走 first()。
+                    // 少这个方法的话 TypeError 会盖掉后面所有断言，看着像别的用例坏了。
+                    first: async () => null,
+                    all: async () => ({ results: [] }),
                     run: async () => { directWrites++; return { success: true }; },
                 };
                 captured.push(stmt);

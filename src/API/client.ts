@@ -3,6 +3,7 @@ import {
     Site,
     Note,
     NoteFolder,
+    NoteRevision,
     NoteTag,
     LoginResponse,
     ExportData,
@@ -561,6 +562,19 @@ export class NavigationClient {
 
     async listNoteTags(): Promise<Record<number, number[]>> {
         return this.request<Record<number, number[]>>("notes/tag-links");
+    }
+
+    // ---- 版本历史（inkstone 顶栏「版本历史」）----
+    async listNoteRevisions(id: number): Promise<NoteRevision[]> {
+        return this.request<NoteRevision[]>(`notes/${id}/revisions`);
+    }
+
+    async getNoteRevision(noteId: number, revisionId: number): Promise<NoteRevision | null> {
+        return this.request<NoteRevision | null>(`notes/${noteId}/revisions/${revisionId}`);
+    }
+
+    async restoreNoteRevision(noteId: number, revisionId: number): Promise<Note | null> {
+        return this.request<Note | null>(`notes/${noteId}/revisions/${revisionId}`, { method: "POST" });
     }
 
     async setNoteTags(noteId: number, tagIds: number[]): Promise<NoteTag[]> {

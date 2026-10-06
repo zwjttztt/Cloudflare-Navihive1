@@ -28,8 +28,27 @@ const NOTE_TAG_TABLE_SQL = `CREATE TABLE IF NOT EXISTS note_tag (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );`;
 
-const NOTE_TAG_LINK_TABLE_SQL = `CREATE TABLE IF NOT EXISTS note_note_tag (
+/**
+ * 笔记的修订快照（inkstone 顶栏「版本历史」）。
+ *
+ * 存的是**上一版内容**：保存正文时先把改动前的样子落一行，用户就能「退回那一刻」。
+ * 每条笔记只留最近 REVISION_KEEP_PER_NOTE 条（见 notes.ts 的裁剪），
+ * 所以这张表不会随时间无限膨胀 —— 这是能不能上线的关键（D1 有容量上限）。
+ */
+const NOTE_REVISION_TABLE_SQL = `CREATE TABLE IF NOT EXISTS note_revision (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
     note_id INTEGER NOT NULL,
+    user_id INTEGER,
+    title TEXT NOT NULL,
+    content TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);`;
+
+/** 按 note_id 查历史，没有索引就是整表扫（recycle_bin 那边已经吃过一次这个亏） */
+const NOTE_REVISION_INDEX_SQL =
+    `CREATE INDEX IF NOT EXISTS idx_note_revision_note ON note_revision(note_id, id DESC);`;
+
+const NOTE_TAG_LINK_TABLE_SQL = `CREATE TABLE IF NOT EXISTS note_note_tag (    note_id INTEGER NOT NULL,
     tag_id INTEGER NOT NULL,
     PRIMARY KEY (note_id, tag_id)
 );`;
@@ -39,6 +58,8 @@ export const FOLDER_TAG_TABLE_STATEMENTS = [
     NOTE_FOLDER_TABLE_SQL,
     NOTE_TAG_TABLE_SQL,
     NOTE_TAG_LINK_TABLE_SQL,
+    NOTE_REVISION_TABLE_SQL,
+    NOTE_REVISION_INDEX_SQL,
 ];
 
 // 建表 SQL（幂等）

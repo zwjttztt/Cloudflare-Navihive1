@@ -254,6 +254,35 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
             ? ((body as { tagIds?: unknown[] }).tagIds as unknown[]).map(Number).filter(n => Number.isInteger(n) && n > 0)
             : [];
         return Response.json(await api.setNoteTags(id, tagIds));
+    } else if (path.startsWith("notes/") && path.endsWith("/revisions") && method === "GET") {
+        // 版本历史列表。⚠️ 必须排在下面那个 `notes/{id}` 的 GET 分支**之前** ——
+        //   否则 "notes/5/revisions" 会被当成 id=parseInt("5/revisions") 走掉。
+        const id = parseInt(path.split("/")[1]);
+        if (isNaN(id)) return Response.json({ error: "无效的ID" }, { status: 400 });
+        return Response.json(await api.listNoteRevisions(id));
+    } else if (path.startsWith("notes/") && path.endsWith("/revisions/") && method === "GET") {
+        const [rawNoteId, rawRevId] = path.split("/");
+        const noteId = parseInt(rawNoteId);
+        const revisionId = parseInt(rawRevId);
+        if (isNaN(noteId) || isNaN(revisionId)) {
+            return Response.json({ error: "无效的ID" }, { status: 400 });
+        }
+        const revision = await api.getNoteRevision(noteId, revisionId);
+        if (!revision) return Response.json({ error: "该版本不存在" }, { status: 404 });
+        return Response.json(revision);
+    } else if (path.startsWith("notes/") && path.endsWith("/revisions/") && method === "POST") {
+        const limited = await writeGate();
+        if (limited) return limited;
+
+        const [rawNoteId, rawRevId] = path.split("/");
+        const noteId = parseInt(rawNoteId);
+        const revisionId = parseInt(rawRevId);
+        if (isNaN(noteId) || isNaN(revisionId)) {
+            return Response.json({ error: "无效的ID" }, { status: 400 });
+        }
+        const note = await api.restoreNoteRevision(noteId, revisionId);
+        if (!note) return Response.json({ error: "该版本不存在" }, { status: 404 });
+        return Response.json(note);
     } else if (path.startsWith("notes/") && method === "GET") {
         const id = parseInt(path.split("/")[1]);
         if (isNaN(id)) {

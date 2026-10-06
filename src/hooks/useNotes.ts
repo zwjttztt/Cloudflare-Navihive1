@@ -6,7 +6,7 @@
 // 记事本是「想到就写」的场景，保存要是有 200ms 的延迟，手感会立刻变差；
 // 而失败时回滚到旧值 + 提示，代价远小于「每敲一个字都等一下」。
 import { useCallback, useEffect, useState } from "react";
-import type { Note, NoteFolder, NoteTag } from "../API/http";
+import type { Note, NoteFolder, NoteRevision, NoteTag } from "../API/http";
 import { reportError } from "../utils/errorReporter";
 import type { NotifySeverity } from "./useNotify";
 
@@ -56,6 +56,10 @@ export type NotesApiLike = {
     setNoteTags?(noteId: number, tagIds: number[]): Promise<NoteTag[]>;
     /** 全量标签关联：{ [noteId]: tagId[] } */
     listNoteTags?(): Promise<Record<number, number[]>>;
+    /** 版本历史：列表 / 取全文 / 恢复 */
+    listNoteRevisions?(noteId: number): Promise<NoteRevision[]>;
+    getNoteRevision?(noteId: number, revisionId: number): Promise<NoteRevision | null>;
+    restoreNoteRevision?(noteId: number, revisionId: number): Promise<Note | null>;
 };
 
 type UseNotesParams = {
@@ -482,6 +486,51 @@ export function useNotes({ api, onError, onNotify }: UseNotesParams) {
         [api, onError]
     );
 
+    // ---------- 版本历史（inkstone 顶栏「版本历史」）----------
+
+    /**
+     * 拉一条笔记的历史快照。
+     * 失败返回空数组而不是抛错：历史是辅助功能，接口挂了不该让顶栏按钮点不动。
+     */
+    const listRevisions = useCallback(
+        async (noteId: number): Promise<NoteRevision[]> => {
+            if (typeof api.listNoteRevisions !== "function") return [];
+            try {
+                const list = await api.listNoteRevisions(noteId);
+                return Array.isArray(list) ? list : [];
+            } catch (error) {
+                reportError(error, { source: "note-revisions-list" });
+                return [];
+            }
+        },
+        [api]
+    );
+
+    /**
+     * 恢复某个版本：成功后把服务端回来的正文替换进本地状态。
+     * 返回恢复后的笔记（失败为 null）：调用方要拿它刷新编辑器草稿 ——
+     * 草稿只认「切换了笔记」才重置，版本恢复时 id 没变，不显式塞回去界面不会动。
+     */
+    const restoreRevision = useCallback(
+        async (noteId: number, revisionId: number): Promise<Note | null> => {
+            if (typeof api.restoreNoteRevision !== "function") return null;
+            try {
+                const note = await api.restoreNoteRevision(noteId, revisionId);
+                if (!note) {
+                    onError("该版本已不存在");
+                    return null;
+                }
+                setNotes(prev => prev.map(n => (n.id === noteId ? note : n)));
+                return note;
+            } catch (error) {
+                reportError(error, { source: "note-revision-restore" });
+                onError("恢复失败: " + (error instanceof Error ? error.message : "未知错误"));
+                return null;
+            }
+        },
+        [api, onError]
+    );
+
     return {
         notes,
         loaded,
@@ -510,5 +559,7 @@ export function useNotes({ api, onError, onNotify }: UseNotesParams) {
         renameTag,
         removeTag,
         assignTags,
+        listRevisions,
+        restoreRevision,
     };
 }

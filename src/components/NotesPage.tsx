@@ -58,13 +58,15 @@ import ImageIcon from "@mui/icons-material/Image";
 import LastPageIcon from "@mui/icons-material/LastPage";
 import LinkIcon from "@mui/icons-material/Link";
 import LinkOffIcon from "@mui/icons-material/LinkOff";
+import HistoryIcon from "@mui/icons-material/History";
+import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
 import ListIcon from "@mui/icons-material/List";
 import PushPinIcon from "@mui/icons-material/PushPin";
 import SearchIcon from "@mui/icons-material/Search";
 import StrikethroughIcon from "@mui/icons-material/StrikethroughS";
 import TableRowsIcon from "@mui/icons-material/TableRows";
 import UndoIcon from "@mui/icons-material/Undo";
-import type { Note, NoteFolder, NoteTag } from "../API/http";
+import type { Note, NoteFolder, NoteRevision, NoteTag } from "../API/http";
 import type { TrashedNote } from "../hooks/useNotes";
 import { renderMarkdownToReact } from "../utils/markdownToReact";
 import { useScrollLock } from "../hooks/useScrollLock";
@@ -136,6 +138,9 @@ export interface NotesPageProps {
         // `Promise<T>` 不能赋给 `Promise<void>`（void 的那条宽松规则只在函数返回类型上生效，
         // 套一层 Promise 就不认了），写 void 会让调用方的实现没法返回查到的最新清单。
         onAssignTags: (noteId: number, tagIds: number[]) => Promise<NoteTag[] | null>;
+        /** 版本历史：列快照 / 恢复 */
+        onListRevisions?: (noteId: number) => Promise<NoteRevision[]>;
+        onRestoreRevision?: (noteId: number, revisionId: number) => Promise<Note | null>;
     };
 }
 
@@ -1310,6 +1315,46 @@ export default function NotesPage({
             content: draft?.content ?? active.content ?? "",
         });
     }, [active, draft?.content, notes]);
+
+    // ---------- 版本历史（inkstone 顶栏「版本历史」）----------
+    const [revisionAnchor, setRevisionAnchor] = useState<HTMLElement | null>(null);
+    const [revisions, setRevisions] = useState<NoteRevision[] | null>(null);
+    /** 正在恢复的版本 id：期间禁用所有按钮，避免连点重复提交 */
+    const [restoringId, setRestoringId] = useState<number | null>(null);
+
+    /** 打开面板时才拉列表：不为一条没打开过的笔记请求历史 */
+    const openRevisions = useCallback(
+        async (anchor: HTMLElement) => {
+            setRevisionAnchor(anchor);
+            const noteId = active?.id;
+            if (noteId === undefined || !folderTags?.onListRevisions) {
+                setRevisions([]);
+                return;
+            }
+            setRevisions(null);
+            setRevisions(await folderTags.onListRevisions(noteId));
+        },
+        [active?.id, folderTags]
+    );
+
+    const doRestoreRevision = useCallback(
+        async (revisionId: number) => {
+            const noteId = active?.id;
+            if (noteId === undefined || !folderTags?.onRestoreRevision) return;
+            setRestoringId(revisionId);
+            const restored = await folderTags.onRestoreRevision(noteId, revisionId);
+            setRestoringId(null);
+            if (!restored) return;
+            setRevisionAnchor(null);
+            setRevisions(null);
+            // ⚠️ 必须显式写回草稿：草稿只在「换了笔记」（active.id 变化）时重置，
+            // 而版本恢复 id 是一样的 —— 不塞回去的话界面还停在恢复前的内容，
+            // 看着像「点了没反应」。
+            setDraft({ title: restored.title || "", content: restored.content || "" });
+            onNotify?.("已恢复到该版本（恢复前的内容也存了一份快照）", "success");
+        },
+        [active?.id, folderTags, onNotify]
+    );
     /** 当前这条笔记的标题层级（草稿内容变就重算） */
     const outline = useMemo(
         () => extractOutline(draft?.content ?? ""),
@@ -1616,6 +1661,31 @@ export default function NotesPage({
         },
         []
     );
+
+    /**
+     * 内容块（inkstone 工具栏「内容块」）：插一个 `> [!NOTE]` 骨架。
+     *
+     * 做成**下拉**而不是单一按钮：NOTE/TIP/IMPORTANT/WARNING/QUOTE 五种，
+     * 一次点一种。这里只负责把行首改成引用 + 加上类型标记，
+     * 真正的判定与渲染在 utils/markdownCallout.ts（那边有单测）。
+     */
+    const insertCallout = useCallback((type: string) => {
+        const el = textareaRef.current;
+        if (!el) return;
+        const value = el.value;
+        const pos = el.selectionStart ?? value.length;
+        const lineStart = value.lastIndexOf("\n", Math.max(0, pos - 1)) + 1;
+        // 已经在引用块里就别再套一层 `>`，否则会变成 `>> [!NOTE]`
+        const inQuote = value.slice(lineStart, pos).startsWith(">");
+        const marker = `> [!${type}] `;
+        const insert = inQuote ? `[!${type}] ` : marker;
+        const next = value.slice(0, lineStart) + insert + value.slice(lineStart);
+        el.value = next;
+        const caret = lineStart + insert.length;
+        el.focus();
+        el.setSelectionRange(caret, caret);
+        setDraft(d => (d ? { ...d, content: next } : d));
+    }, []);
 
     /**
      * 「链接与引用」（inkstone 工具栏第 12 项）：把**选中的文字**变成一条脚注引用。
@@ -2507,6 +2577,7 @@ export default function NotesPage({
                         onTable={applyTable}
                         onFormula={applyFormula}
                         onFootnoteRef={insertFootnoteRef}
+                        onCallout={insertCallout}
                     />
 
                     {/* 内容区：源码 | 预览 */}
@@ -2795,6 +2866,22 @@ export default function NotesPage({
                     </IconButton>
                 </Tooltip>
 
+                {/* 版本历史：inkstone 顶栏第二项。改动前的正文由后端自动留档，
+                    这里只负责列出来 + 恢复。历史只有一条时按钮仍可用 ——
+                    「只有一版」本身就是要让用户知道的事实。 */}
+                <Tooltip title='版本历史'>
+                    <IconButton
+                        size='small'
+                        data-tool='revisions'
+                        aria-label='版本历史'
+                        disabled={!active || !folderTags?.onListRevisions}
+                        onClick={e => void openRevisions(e.currentTarget)}
+                        sx={{ width: 28, height: 28, color: "text.secondary" }}
+                    >
+                        <HistoryIcon fontSize='small' />
+                    </IconButton>
+                </Tooltip>
+
                 {/* 大纲：inkstone 顶栏有「大纲」，长笔记没有它就只能一路往下滚。
                     点一条就把光标送到那行 —— 跳的是**源码里的行首**，
                     顺便把那一行选中，闭着眼也能看得到落点。 */}
@@ -2962,6 +3049,47 @@ export default function NotesPage({
                                 }}
                             >
                                 {item.text}
+                            </Typography>
+                        </MenuItem>
+                    ))
+                )}
+            </Menu>
+
+            <Menu
+                open={Boolean(revisionAnchor)}
+                anchorEl={revisionAnchor}
+                onClose={() => setRevisionAnchor(null)}
+                slotProps={{ paper: { sx: { maxHeight: 420, overflowY: "auto", minWidth: 260 } } }}
+            >
+                {revisions === null ? (
+                    <MenuItem disabled data-revisions='loading'>
+                        正在读取历史版本…
+                    </MenuItem>
+                ) : revisions.length === 0 ? (
+                    <MenuItem disabled data-revisions='empty'>
+                        还没有历史版本（改动正文后会自动留档）
+                    </MenuItem>
+                ) : (
+                    revisions.map(r => (
+                        <MenuItem
+                            key={r.id}
+                            data-revision-item={r.id}
+                            disabled={restoringId !== null}
+                            onClick={() => void doRestoreRevision(r.id)}
+                            sx={{ display: "block" }}
+                        >
+                            <Typography component='span' sx={{ display: "block", fontSize: 13 }}>
+                                {restoringId === r.id
+                                    ? "正在恢复…"
+                                    : formatWhenFull(r.created_at) || "某一版"}
+                            </Typography>
+                            <Typography
+                                component='span'
+                                variant='caption'
+                                color='text.secondary'
+                                sx={{ display: "block" }}
+                            >
+                                {r.title || "（无标题）"} · {r.size ?? 0} 字
                             </Typography>
                         </MenuItem>
                     ))
@@ -3333,6 +3461,7 @@ function MarkdownToolbar({
     onTable,
     onFormula,
     onFootnoteRef,
+    onCallout,
 }: {
     onInsert: (before: string, after: string, placeholder: string) => void;
     onInsertLinePrefix: (prefix: string) => void;
@@ -3348,10 +3477,13 @@ function MarkdownToolbar({
      * （文末一条定义 + 正文一个引用），所以单开一个回调。
      */
     onFootnoteRef: () => void;
+    /** 内容块：插 `> [!类型]` 骨架（inkstone 的「内容块」） */
+    onCallout: (type: string) => void;
 }) {
     const [headingAnchor, setHeadingAnchor] = useState<HTMLElement | null>(null);
     const [langAnchor, setLangAnchor] = useState<HTMLElement | null>(null);
     const [tableAnchor, setTableAnchor] = useState<HTMLElement | null>(null);
+    const [calloutAnchor, setCalloutAnchor] = useState<HTMLElement | null>(null);
     const [formulaAnchor, setFormulaAnchor] = useState<HTMLElement | null>(null);
 
     return (
@@ -3415,6 +3547,45 @@ function MarkdownToolbar({
                 （正文一个 `[^n]` + 文末一条 `[^n]: 原文`）。
                 刻意**单独放一个按钮**而不塞进 TOOL_GROUPS：那一组都是
                 「在光标处包一层 before/after」，脚注要同时改两处，走同一条路必写错。 */}
+            <Tooltip title='内容块（提示 / 技巧 / 重要 / 警告）'>
+                <IconButton
+                    size='small'
+                    data-tool='callout'
+                    aria-label='内容块'
+                    aria-haspopup='menu'
+                    onMouseDown={e => e.preventDefault()}
+                    onClick={e => setCalloutAnchor(e.currentTarget)}
+                    sx={{ width: 28, height: 28, color: "text.secondary", flexShrink: 0 }}
+                >
+                    <InfoOutlinedIcon fontSize='small' />
+                </IconButton>
+            </Tooltip>
+            <Menu
+                open={Boolean(calloutAnchor)}
+                anchorEl={calloutAnchor}
+                onClose={() => setCalloutAnchor(null)}
+            >
+                {(
+                    [
+                        ["NOTE", "提示"],
+                        ["TIP", "技巧"],
+                        ["IMPORTANT", "重要"],
+                        ["WARNING", "警告"],
+                        ["QUOTE", "引用"],
+                    ] as const
+                ).map(([type, label]) => (
+                    <MenuItem
+                        key={type}
+                        data-callout-type={type}
+                        onClick={() => {
+                            setCalloutAnchor(null);
+                            onCallout(type);
+                        }}
+                    >
+                        {label}
+                    </MenuItem>
+                ))}
+            </Menu>
             <Tooltip title='链接与引用（把选中的文字变成脚注引用）'>
                 <IconButton
                     size='small'

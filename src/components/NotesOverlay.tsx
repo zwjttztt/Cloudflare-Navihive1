@@ -66,6 +66,8 @@ export default function NotesOverlay({
         renameTag,
         removeTag,
         assignTags,
+        listRevisions,
+        restoreRevision,
     } = useNotes({ api, onError, onNotify });
 
     /**
@@ -89,6 +91,8 @@ export default function NotesOverlay({
             onRenameTag: renameTag,
             onRemoveTag: removeTag,
             onAssignTags: assignTags,
+            onListRevisions: listRevisions,
+            onRestoreRevision: restoreRevision,
         }),
         [
             folders,
@@ -102,6 +106,8 @@ export default function NotesOverlay({
             renameTag,
             removeTag,
             assignTags,
+            listRevisions,
+            restoreRevision,
         ]
     );
 

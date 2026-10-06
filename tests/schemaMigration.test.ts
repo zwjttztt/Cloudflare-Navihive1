@@ -98,8 +98,12 @@ class FakeD1 {
                 return;
             }
             for (const column of cols.split(",").map(c => c.trim())) {
-                if (!columns.has(column)) {
-                    this.indexViolations.push(`${name}: ${table}.${column} 列还不存在`);
+                // ⚠️ 要剥掉排序修饰：`id DESC` / `name ASC` 里真正的列名只是 `id`。
+                //   不剥的话带 DESC 的索引会被误判成「列还不存在」——
+                //   而 D1 / SQLite 接受这种写法（note_revision 的索引就用了 DESC）。
+                const bare = column.replace(/\s+(ASC|DESC)$/i, "").replace(/["'`]/g, "");
+                if (!columns.has(bare)) {
+                    this.indexViolations.push(`${name}: ${table}.${bare} 列还不存在`);
                 }
             }
         }
@@ -177,9 +181,11 @@ const EXPECTED_INDEXES = [
     // 记事本（2026-10-05 新增）
     "idx_notes_user",
     "idx_notes_uuid",
+    // 版本历史（2026-10-06）：按笔记查历史，没索引就是整表扫
+    "idx_note_revision_note",
 ];
 
-test("迁移建出全部 10 条索引，且每条索引建的时候表、列都已存在", async () => {
+test("迁移建出全部 11 条索引，且每条索引建的时候表、列都已存在", async () => {
     resetMigrationCacheForTests();
     const db = new FakeD1();
     await makeApi(db).migrate();

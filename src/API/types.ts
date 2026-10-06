@@ -89,6 +89,24 @@ export interface NoteTag {
     updated_at?: string;
 }
 
+/**
+ * 笔记的一个历史快照（note_revision 表）。
+ *
+ * `content` 在**列表接口里是空串**（为了不一次拉十几份正文全文），
+ * 只有 getNoteRevision 才带真的 —— 所以判断「有没有正文」别拿它。
+ */
+export interface NoteRevision {
+    id: number;
+    note_id: number;
+    title: string;
+    content: string;
+    /** 列表接口返回的正文摘要，给用户一眼认出是哪一版 */
+    excerpt?: string;
+    created_at?: string;
+    /** 字数差（相对当前正文），比「有多少字」更有用：一眼看出改动大小 */
+    size?: number;
+}
+
 /** 导入后笔记的处理统计（合并模式下用户要知道每种各几条） */
 export interface NoteImportStats {
     /** 文件里有、本地没有 → 新增 */

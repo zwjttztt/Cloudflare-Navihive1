@@ -30,6 +30,7 @@ import { registerMark } from "./markdownMark";
 import footnote from "markdown-it-footnote";
 import { registerNoteTags } from "./markdownNoteTags";
 import { registerWikiLink } from "./noteWikiLink";
+import { registerCallout, calloutTypeOf, type CalloutType } from "./markdownCallout";
 
 /** 延迟加载 markdown-it：它只进懒加载 chunk，不进首屏 */
 let parserPromise: Promise<MarkdownIt> | null = null;
@@ -58,6 +59,8 @@ function loadParser(): Promise<MarkdownIt> {
             // `[[双链]]` → 可点链接。inkstone 的核心卖点之一，
             // 解析规则在 utils/noteWikiLink.ts（反向链接面板复用同一套判据）。
             registerWikiLink(md);
+            // 内容块 `> [!NOTE]`（inkstone 的「内容块」）。注册顺序在 blockquote 之前。
+            registerCallout(md);
             // 插件提供完整 token 解析；HTML renderer 不调用，下面单独映射 React。
             md.use(footnote as unknown as (parser: MarkdownIt) => void);
             return md;
@@ -324,6 +327,52 @@ function renderBlocks(c: Cursor): ReactNode[] {
                 );
                 break;
             }
+            case "callout_open": {
+                // 内容块（`> [!NOTE]` 这类）：靠 callout_open/close 包住整块引用。
+                // 里面的 blockquote_open 仍会正常渲染成引用块（左侧竖线保留），
+                // 这里只加外层的图标、底色与左侧色条。
+                const type = calloutTypeOf(tok.meta) ?? "NOTE";
+                const palette = CALLOUT_STYLE[type];
+                // ⚠️ 必须先 c.i++ 再取内容：takeUntilClose 假定「已经站在 open 之后」，
+                //   深度从 1 起算。漏掉这一行的话它会**再读到自己的 open**，
+                //   深度变成 2、永远归不了零 → 把后面所有 token（含自己）都吞进去
+                //   → 递归渲染自己 → Maximum call stack size exceeded，
+                //   整个预览区一起崩（实测：双链也跟着消失了）。
+                c.i++;
+                const inner = takeUntilClose(c, "callout_open", "callout_close");
+                out.push(
+                    // ⚠️ 用原生 div/span + inline style：这个文件全程不引 MUI
+                    // （见文件头「为什么不用 renderer」的同款理由），
+                    // 引进来的话 markdown 懒加载块会拖上整个 MUI。
+                    <div
+                        key={key}
+                        data-callout={type}
+                        style={{
+                            display: "flex",
+                            gap: 8,
+                            alignItems: "flex-start",
+                            margin: "0.6em 0",
+                            padding: "8px 12px",
+                            borderRadius: 6,
+                            borderLeft: `3px solid ${palette.border}`,
+                            background: palette.bg,
+                            color: palette.fg,
+                        }}
+                    >
+                        <span aria-hidden style={{ fontSize: 14, lineHeight: 1.7 }}>
+                            {palette.icon}
+                        </span>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                            {renderBlocks({ tokens: inner, i: 0, key: c.key++ })}
+                        </div>
+                    </div>
+                );
+                break;
+            }
+            case "callout_close":
+                // 内容在 callout_open 时已经一次性取走了，这里不重复渲染
+                c.i++;
+                break;
             case "blockquote_open": {
                 c.i++;
                 const inner = takeUntilClose(c, "blockquote_open", "blockquote_close");
@@ -530,6 +579,15 @@ const CODE_STYLE: React.CSSProperties = {
 };
 const LIST_STYLE: React.CSSProperties = { margin: "8px 0", paddingLeft: 22 };
 const LI_STYLE: React.CSSProperties = { margin: "2px 0" };
+/** 内容块配色。深浅色都用半透明色，跟随主题走，不需要单独切 dark 模式。 */
+const CALLOUT_STYLE: Record<CalloutType, { border: string; bg: string; fg: string; icon: string }> = {
+    NOTE: { border: "#3b82f6", bg: "rgba(59,130,246,0.10)", fg: "inherit", icon: "ℹ" },
+    TIP: { border: "#10b981", bg: "rgba(16,185,129,0.10)", fg: "inherit", icon: "💡" },
+    IMPORTANT: { border: "#8b5cf6", bg: "rgba(139,92,246,0.10)", fg: "inherit", icon: "❗" },
+    WARNING: { border: "#f59e0b", bg: "rgba(245,158,11,0.12)", fg: "inherit", icon: "⚠" },
+    QUOTE: { border: "rgba(128,128,128,0.6)", bg: "rgba(128,128,128,0.08)", fg: "inherit", icon: "❝" },
+};
+
 const QUOTE_STYLE: React.CSSProperties = {
     borderLeft: "3px solid rgba(128,128,128,0.45)",
     margin: "8px 0",
