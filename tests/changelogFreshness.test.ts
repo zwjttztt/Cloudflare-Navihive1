@@ -32,10 +32,18 @@ function findProjectDir(): string {
     throw new Error("找不到项目根目录");
 }
 
-/** `## YYYY-MM-DD` 那几行；取字典序最大的就是最新一段 */
+/**
+ * `## YYYY-MM-DD` 那几行；取字典序最大的就是最新一段。
+ *
+ * ⚠️ 标题后面**允许带后缀**（`## 2026-10-06 · 记事本阶段四：…`、`## 2026-10-05（十六续）· …`
+ * 都是本仓库的写法），用 `\b` 断掉日期即可，别要求「日期后面直接是行尾」。
+ * 之前写成 `(\d{4}-\d{2}-\d{2})\s*$`：文件本身是 CRLF，靠 `\s*` 吞掉 `\r` 才勉强匹配
+ * 纯日期标题，凡带后缀的一段**一个都数不进来**（实测 12 段里全是没后缀的老段落，
+ * 最新一段还显示成 10-05，守卫等于摆设）。
+ */
 function changelogDates(readme: string): string[] {
     const dates: string[] = [];
-    for (const m of readme.matchAll(/^##\s+(\d{4}-\d{2}-\d{2})\s*$/gm)) {
+    for (const m of readme.matchAll(/^##\s+(\d{4}-\d{2}-\d{2})\b/gm)) {
         dates.push(m[1]);
     }
     return dates;
