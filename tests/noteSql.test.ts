@@ -430,6 +430,21 @@ test("子查询里出现的 scopeSql 必须是 (true)", () => {
     );
 });
 
+test("分类计数必须排除归档笔记（否则首屏数字会在本地重算后变小）", () => {
+    // 前后端判据必须一致：前端的 folderCounts / tagCounts 都按「未归档」算
+    //（归档笔记默认从全部/文件夹/标签视图隐去），后端 COUNT 不排除的话，
+    // 首屏渲染的是含归档的数字，本地重算后又变小 —— 同一行数字自己变了。
+    const countQueries = [...source.matchAll(/COUNT\(\*\)[^`]*?AS count/gs)].map(m => m[0]);
+    assert.ok(countQueries.length >= 4, `只找到 ${countQueries.length} 条计数子查询，守卫可能没覆盖全`);
+    for (const sql of countQueries) {
+        assert.match(
+            sql,
+            /archived = 0/,
+            `计数子查询漏了 archived = 0，归档笔记会被算进条数：${sql.replace(/\s+/g, " ")}`
+        );
+    }
+});
+
 // ---------- INSERT 的列数必须等于值数（2026-10-06 线上 500 的根因）----------
 //
 // 阶段三收尾给 `INSERT INTO notes (...)` 的列尾加了 `folder_id`，值这一侧忘了补 `?`，

@@ -429,16 +429,32 @@ export function useNotes({ api, onError, onNotify }: UseNotesParams) {
         async (id: number) => {
             if (typeof api.deleteTag !== "function") return;
             const before = tags;
+            const noteTagsBefore = noteTags;
             setTags(prev => prev.filter(t => t.id !== id));
             try {
                 await api.deleteTag(id);
+                // ⚠️ 关联表也要一起清：tagCounts 是靠 noteTags 里残留的 tagId 统计的，
+                // 只摘标签行的话，那个 id 还留在每条笔记的关联里 —— 一旦之后有标签
+                // 复用了同一个 id，计数就会串到别的标签上（后端 deleteTag 已在事务里
+                // 清了关联，这里只是让本地视图跟上）。
+                setNoteTags(prev => {
+                    const next: Record<number, number[]> = {};
+                    let changed = false;
+                    for (const [noteId, ids] of Object.entries(prev)) {
+                        const kept = ids.filter(tagId => tagId !== id);
+                        if (kept.length !== ids.length) changed = true;
+                        if (kept.length) next[Number(noteId)] = kept;
+                    }
+                    return changed ? next : prev;
+                });
             } catch (error) {
                 reportError(error, { source: "note-tag-delete" });
                 setTags(before);
+                setNoteTags(noteTagsBefore);
                 onError("删除标签失败: " + (error instanceof Error ? error.message : "未知错误"));
             }
         },
-        [api, onError, tags]
+        [api, onError, tags, noteTags]
     );
 
     /** 改一条笔记的标签：返回最新清单，让界面能直接替换左栏那一份 */

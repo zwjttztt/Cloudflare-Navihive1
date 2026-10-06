@@ -451,7 +451,7 @@ export class MockNavigationClient {
     // 少一个 mock 那边就会在演示模式下抛「不是函数」。
     async listFolders(): Promise<NoteFolder[]> {
         await new Promise(resolve => setTimeout(resolve, 120));
-        return mockFolders.map(f => ({ ...f, count: mockNotes.filter(n => n.folder_id === f.id).length }));
+        return mockFolders.map(f => ({ ...f, count: mockNotes.filter(n => !n.archived && n.folder_id === f.id).length }));
     }
 
     async createFolder(name: string, parent_id: number | null = null): Promise<NoteFolder> {
@@ -495,7 +495,10 @@ export class MockNavigationClient {
         await new Promise(resolve => setTimeout(resolve, 120));
         return mockTags.map(t => ({
             ...t,
-            count: mockNoteTagLinks.filter(l => l.tag_id === t.id).length,
+            // 与后端 listTags / 前端 tagCounts 同一口径：归档笔记不算
+            count: mockNoteTagLinks.filter(
+                l => l.tag_id === t.id && !mockNotes.find(n => n.id === l.note_id)?.archived
+            ).length,
         }));
     }
 

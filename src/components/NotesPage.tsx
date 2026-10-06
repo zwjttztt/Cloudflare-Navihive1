@@ -311,7 +311,15 @@ function FolderTagSection({
     onRemove: (id: number) => void;
 }) {
     const [menuId, setMenuId] = useState<number | null>(null);
-    const anchorRef = useRef<HTMLSpanElement | null>(null);
+    /**
+     * 菜单锚点：**必须**是那个「⋯」按钮本身。
+     * 之前这里是 `anchorEl={undefined}`，MUI 拿不到锚点就退化成锚到视口原点 ——
+     * 真机实测菜单落在 `x:16 y:724`（屏幕左下角），而点击点在左栏上部，
+     * 四个菜单项全都不在鼠标附近，用户只会以为「点击没反应」。
+     * ⚠️ 这类错位 jsdom 测不出来（没有布局，getBoundingClientRect 全 0），
+     * 所以 DOM 用例只能断言「菜单能打开」，位置必须真机量坐标。
+     */
+    const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
     const treeItems = useMemo(() => {
         const output: (typeof items[number] & { depth: number })[] = [];
         const visited = new Set<number>();
@@ -366,9 +374,9 @@ function FolderTagSection({
                     <IconButton
                         size='small'
                         aria-label={`${item.name} 操作`}
-                        onClick={() => {
+                        onClick={e => {
                             setMenuId(item.id);
-                            anchorRef.current = null;
+                            setAnchorEl(e.currentTarget);
                         }}
                         sx={{
                             position: "absolute",
@@ -396,8 +404,11 @@ function FolderTagSection({
                 在 128px 的窄列里是杀鸡用牛刀，而且重命名根本没有别的输入方式 */}
             <Menu
                 open={menuId !== null}
-                anchorEl={undefined}
-                onClose={() => setMenuId(null)}
+                anchorEl={anchorEl}
+                onClose={() => {
+                    setMenuId(null);
+                    setAnchorEl(null);
+                }}
                 slotProps={{ paper: { sx: { minWidth: 140 } } }}
             >
                 {onCreateChild && <MenuItem onClick={() => {

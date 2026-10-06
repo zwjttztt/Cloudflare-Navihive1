@@ -544,6 +544,26 @@ async function mountHook(api: Record<string, unknown>, onError: (message: string
     return seen;
 }
 
+test("文件夹菜单锚在按钮上（anchorEl 不能是 undefined，否则弹到视口原点）", () => {
+    // ⚠️ jsdom 没有布局，这里**量不到坐标** —— jsdom 的 getBoundingClientRect 全是 0，
+    // 「菜单飘到屏幕左下角」这种错位在单测里天然测不出来（2026-10-06 真机实测到
+    // x:16 y:724，点击点却在左栏上部）。所以这里只钉「锚点必须来自那个 ⋯ 按钮」，
+    // 坐标由 harness 的真机脚本量。
+    const source = stripComments(
+        readFileSync(join(findProjectDir(), "src", "components", "NotesPage.tsx"), "utf-8")
+    );
+    assert.ok(
+        !/anchorEl=\{undefined\}/.test(source),
+        "FolderTagSection 的 Menu 传了 anchorEl={undefined} —— MUI 会锚到视口原点"
+    );
+    assert.match(
+        source,
+        /setAnchorEl\(e\.currentTarget\)/,
+        "打开菜单时要记下按钮本身（e.currentTarget）当锚点"
+    );
+    assert.match(source, /anchorEl=\{anchorEl\}/, "Menu 的 anchorEl 要用这个状态");
+});
+
 test("useNotes：保存成功后标签刷新失败不回滚正文", async () => {
     const errors: string[] = [];
     let refreshFails = false;
@@ -557,6 +577,28 @@ test("useNotes：保存成功后标签刷新失败不回滚正文", async () => 
     await act(async () => { await seen.at(-1)!.updateNote(1, { content: "已保存 #新标签" }); });
     assert.equal(seen.at(-1)!.notes[0].content, "已保存 #新标签");
     assert.ok(errors.some(e => e.includes("笔记已保存")));
+});
+
+test("useNotes：删标签要连带清掉本地关联，计数不能串到别的标签", async () => {
+    let deleted: number | null = null;
+    const seen = await mountHook({
+        listNotes: async () => [],
+        // 两条笔记关联到 7，其中一条还关联 8
+        listTags: async () => [{ id: 7, name: "待删", color: null }, { id: 8, name: "留下", color: null }],
+        listNoteTags: async () => ({ 1: [7, 8], 2: [7] }),
+        listFolders: async () => [],
+        deleteTag: async (id: number) => {
+            deleted = id;
+            return { success: true };
+        },
+    });
+    assert.ok(seen.at(-1)!.tags.some(t => t.id === 7), "首屏应拉到该标签");
+    await act(async () => { await seen.at(-1)!.removeTag(7); });
+    assert.equal(deleted, 7);
+    const links = seen.at(-1)!.noteTags;
+    assert.deepEqual(links[1], [8], "另一个标签要留下，笔记本身不能从表里消失");
+    assert.equal(links[2], undefined, "只剩被删标签的关联整条清掉");
+    assert.ok(!(seen.at(-1)!.tags ?? []).some(t => t.id === 7), "标签行本身也要消失");
 });
 
 test("useNotes：首屏就拉一次列表（顶栏按钮要显示条数）", async () => {

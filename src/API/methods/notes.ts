@@ -329,10 +329,13 @@ export const notesImpl: NotesApi = {
             // 「WHERE user_id = ?」，拼出两个 WHERE，SQLite 直接报语法错 → 接口 500。
             // 子查询里那个没限定的 user_id 归 notes n（内层优先），正好是想要的隔离。
             // 绑定顺序要跟 SQL 里 ? 的出现顺序一致：子查询的先，外层的后。
+            // ⚠️ 计数子查询里的 `n.archived = 0` 不能少：前端的 folderCounts/tagCounts
+            // 是按「未归档」算的（归档笔记默认从各视图隐去），后端不排除的话，
+            // 首屏渲染的 count 会在本地重算后突然变小 —— 同一行数字自己变了。
             const result = await this.db
                 .prepare(
                     `SELECT f.*, (SELECT COUNT(*) FROM notes n
-                        WHERE n.folder_id = f.id${this.scopeSql(true)}
+                        WHERE n.folder_id = f.id AND n.archived = 0${this.scopeSql(true)}
                     ) AS count
                     FROM note_folder f ${this.scopeSql(false)}
                     ORDER BY f.order_num, f.name`
@@ -396,7 +399,7 @@ export const notesImpl: NotesApi = {
             const row = await this.db
                 .prepare(
                     `SELECT f.*, (SELECT COUNT(*) FROM notes n
-                        WHERE n.folder_id = f.id${this.scopeSql(true)}
+                        WHERE n.folder_id = f.id AND n.archived = 0${this.scopeSql(true)}
                     ) AS count
                     FROM note_folder f WHERE f.id = ?${this.scopeSql(true)}`
                 )
@@ -458,7 +461,7 @@ export const notesImpl: NotesApi = {
                 .prepare(
                     `SELECT t.*, (SELECT COUNT(*) FROM note_note_tag l
                         JOIN notes n ON n.id = l.note_id
-                        WHERE l.tag_id = t.id${this.scopeSql(true)}
+                        WHERE l.tag_id = t.id AND n.archived = 0${this.scopeSql(true)}
                     ) AS count
                     FROM note_tag t ${this.scopeSql(false)}
                     ORDER BY t.name`
@@ -514,7 +517,7 @@ export const notesImpl: NotesApi = {
                 .prepare(
                     `SELECT t.*, (SELECT COUNT(*) FROM note_note_tag l
                         JOIN notes n ON n.id = l.note_id
-                        WHERE l.tag_id = t.id${this.scopeSql(true)}
+                        WHERE l.tag_id = t.id AND n.archived = 0${this.scopeSql(true)}
                     ) AS count
                     FROM note_tag t WHERE t.id = ?${this.scopeSql(true)}`
                 )
