@@ -67,7 +67,10 @@ import { renderMarkdownToReact } from "../utils/markdownToReact";
 import { useScrollLock } from "../hooks/useScrollLock";
 // 笔记时间统一走这里：SQLite 的 UTC 无时区串必须按 UTC 解释，
 // 直接 `new Date(iso)` 在东八区会差 8 小时（「笔记时间不对」的根因）。
-import { formatRelative, formatWhen, monthLabel } from "../utils/noteTime";
+import { formatRelative, formatWhen, formatWhenFull, monthLabel } from "../utils/noteTime";
+import { extractOutline, outlineIndent } from "../utils/noteOutline";
+import { exportNoteAsMarkdown } from "../utils/noteExport";
+import { reportError } from "../utils/errorReporter";
 import {
     addColumnRight,
     addRowBelow,
@@ -91,6 +94,15 @@ export interface NotesPageProps {
     onPurgeTrashed: (recycleId: number) => Promise<void>;
     onEmptyTrash: () => Promise<void>;
     onToggleArchive: (note: Note) => Promise<void>;
+    /**
+     * 提示条（可选）。导出成功 / 失败要有个回执 ——
+     * 「点了没反应」在下载场景里最容易被误判成功能坏了。
+     * 严重级别与 useNotify 的 NotifySeverity 保持一致（success / error / info）。
+     */
+    onNotify?: (
+        message: string,
+        severity?: "success" | "error" | "info"
+    ) => void;
     // ---------- 阶段三收尾：文件夹 / 标签 ----------
     /**
      * 左栏第一列要的东西打包成一个对象传进来（不是一个一个 props）：
@@ -136,7 +148,16 @@ function summarize(source: string, max = 90): string {
 type Pane = "edit" | "split" | "preview";
 
 /** 左栏视图 */
-type NoteView = "all" | "recent" | "starred" | "archived" | "uncategorized" | "trash";
+type NoteView =
+    | "all"
+    | "recent"
+    | "starred"
+    | "archived"
+    | "uncategorized"
+    | "trash"
+    // 「搜索」是 2026-10-06 加的独立视图：inkstone 左栏第一项就是它。
+    // 之前只有列表上方那个输入框（搜标题+正文），搜不到标签、也不给命中数。
+    | "search";
 
 /**
  * 编辑区（以及左栏 / 列表 / 工具栏）的滚动条**不再本地定义**，直接吃
@@ -373,6 +394,141 @@ const SPLIT_KEY = "notes.splitRatio";
 const MIN_RATIO = 0.2;
 const MAX_RATIO = 0.8;
 
+// ---------- 左两列的宽度（2026-10-06：用户报「太窄了，要能拖」） ----------
+//
+// 128 / 208 是当初照着「1360 宽窗口下编辑区还剩 1000 出头」定的死值，
+// 但用户自己的窗口大小、想给文件夹名多少空间，各人不同 —— 固定值就必然有人嫌窄。
+// 两个键都按账号分桶（与 UI 偏好同一套 scopedKey），换账号后各用各的习惯。
+const NAV_W_KEY = "notes.navColW";
+const LIST_W_KEY = "notes.listColW";
+const NAV_W_MIN = 104;
+const NAV_W_MAX = 260;
+const LIST_W_MIN = 150;
+const LIST_W_MAX = 460;
+
+/** 读一个宽度；越界或读不到就用默认值（手改过 localStorage / 老版本的值都在这儿兜住） */
+function readColW(key: string, fallback: number, min: number, max: number): number {
+    try {
+        const n = Number(globalThis.localStorage?.getItem(key));
+        return Number.isFinite(n) && n >= min && n <= max ? n : fallback;
+    } catch {
+        return fallback;
+    }
+}
+
+function writeColW(key: string, value: number): void {
+    try {
+        globalThis.localStorage?.setItem(key, String(value));
+    } catch {
+        /* 隐私模式下写不了，忽略 */
+    }
+}
+
+/**
+ * 拖动两列之间的那条缝。
+ *
+ * ⚠️ 两个必须这么写的理由（都是这仓库踩过的）：
+ *   1. 事件处理函数是 mousedown 那一刻挂上 window 的闭包，拖动中的 setState
+ *      **改不到它读到的 state**。最新宽度只能靠 ref 跟住（分隔条那次同类问题）。
+ *   2. 松手时别调「从 localStorage 读」的那个函数 —— 读回来必然是拖动前的旧值。
+ */
+function useColumnResize() {
+    const [navW, setNavW] = useState(() => readColW(NAV_W_KEY, NAV_COL_W, NAV_W_MIN, NAV_W_MAX));
+    const [listW, setListW] = useState(() =>
+        readColW(LIST_W_KEY, LIST_COL_W, LIST_W_MIN, LIST_W_MAX)
+    );
+    const navRef = useRef(navW);
+    const listRef = useRef(listW);
+
+    /** 拖动哪一列。nav 的起点是它的左边缘，list 的起点是「导航列右边缘」。 */
+    const startDrag = useCallback((which: "nav" | "list") => (e: React.MouseEvent) => {
+        e.preventDefault();
+        const startX = e.clientX;
+        const startNav = navRef.current;
+        const startList = listRef.current;
+
+        const onMove = (ev: MouseEvent) => {
+            const d = ev.clientX - startX;
+            if (which === "nav") {
+                // 导航列不能吃掉整个左栏：给列表列留至少 LIST_W_MIN
+                const next = Math.round(
+                    Math.min(NAV_W_MAX, Math.max(NAV_W_MIN, startNav + d))
+                );
+                navRef.current = next;
+                setNavW(next);
+            } else {
+                // 列表列拖太宽会把编辑区挤没，这里再卡一道「左栏最多占窗口 45%」
+                const room = Math.max(LIST_W_MIN, Math.floor(window.innerWidth * 0.45) - startNav);
+                const next = Math.round(
+                    Math.min(Math.min(LIST_W_MAX, room), Math.max(LIST_W_MIN, startList + d))
+                );
+                listRef.current = next;
+                setListW(next);
+            }
+        };
+        const onUp = () => {
+            window.removeEventListener("mousemove", onMove);
+            window.removeEventListener("mouseup", onUp);
+            document.body.style.userSelect = "";
+            if (which === "nav") writeColW(NAV_W_KEY, navRef.current);
+            else writeColW(LIST_W_KEY, listRef.current);
+        };
+        document.body.style.userSelect = "none";
+        window.addEventListener("mousemove", onMove);
+        window.addEventListener("mouseup", onUp);
+    }, []);
+
+    /** 双击那条缝 = 回默认宽度（与分隔条双击回对半同一套手势） */
+    const reset = useCallback((which: "nav" | "list") => () => {
+        if (which === "nav") {
+            navRef.current = NAV_COL_W;
+            setNavW(NAV_COL_W);
+            writeColW(NAV_W_KEY, NAV_COL_W);
+        } else {
+            listRef.current = LIST_COL_W;
+            setListW(LIST_COL_W);
+            writeColW(LIST_W_KEY, LIST_COL_W);
+        }
+    }, []);
+
+    return { navW, listW, startDrag, reset };
+}
+
+/**
+ * 两条列之间的可拖分隔条。
+ *
+ * 视觉上几乎看不见（hover 才浮出一条 2px 的竖线），但**命中区有 7px 宽** ——
+ * 2px 的细线在笔记本触控板上根本点不中，那是「有分隔条却拖不动」的常见原因。
+ */
+function ColResizeHandle({
+    label,
+    onDrag,
+    onReset,
+}: {
+    label: string;
+    onDrag: (e: React.MouseEvent) => void;
+    onReset: () => void;
+}) {
+    return (
+        <Box
+            role='separator'
+            aria-orientation='vertical'
+            aria-label={label}
+            title={`${label}（双击回到默认宽度）`}
+            onMouseDown={onDrag}
+            onDoubleClick={onReset}
+            sx={{
+                width: 7,
+                flexShrink: 0,
+                cursor: "col-resize",
+                bgcolor: "transparent",
+                transition: "background-color 120ms ease",
+                "&:hover": { bgcolor: "var(--accent)" },
+            }}
+        />
+    );
+}
+
 /**
  * 自动保存的防抖间隔（阶段四第 14 条）。
  *
@@ -405,6 +561,7 @@ export default function NotesPage({
     onPurgeTrashed,
     onEmptyTrash,
     onToggleArchive,
+    onNotify,
     folderTags,
 }: NotesPageProps) {
     const [keyword, setKeyword] = useState("");
@@ -427,6 +584,8 @@ export default function NotesPage({
     );
     /** 阶段二：左栏可折叠（照 inkstone 的 196↔9，我们这边是 300↔44 的图标轨） */
     const [listCollapsed, setListCollapsed] = useState(false);
+    /** 左两列的宽度（可拖动，持久化到 localStorage） */
+    const { navW, listW, startDrag, reset } = useColumnResize();
     /**
      * 列表行的操作菜单：记住是哪条笔记（noteId）+ 锚在哪（el）。
      *
@@ -434,6 +593,28 @@ export default function NotesPage({
      * 新对象，存旧引用会拿过期数据去渲染菜单项。
      */
     const [rowMenu, setRowMenu] = useState<{ noteId: number; el: HTMLElement } | null>(null);
+    /**
+     * 大纲跳转：把光标送到那一行并**选中整行**。
+     *
+     * 只挪光标不选中的话，长笔记里落点在哪一格根本看不见（光标是个 1px 的竖线，
+     * 夹在一堆同色文字里找不着）。选中整行当行高亮用，闭着眼也知道跳到了哪。
+     */
+    const jumpToOffset = useCallback((offset: number, line: number) => {
+        const el = textareaRef.current;
+        if (!el) return;
+        const value = el.value;
+        const from = offset;
+        const nl = value.indexOf("\n", from);
+        const to = nl === -1 ? value.length : nl;
+        el.focus();
+        el.setSelectionRange(from, to);
+        // 视口跟着滚过去：光标在几千行之下时，不滚就等于没跳
+        const lineHeight = 24;
+        const top = line * lineHeight;
+        if (el.scrollTop !== undefined && top < el.scrollTop || top > el.scrollTop + el.clientHeight) {
+            el.scrollTop = Math.max(0, top - el.clientHeight / 3);
+        }
+    }, []);
     /** 「归入文件夹 / 编辑标签」这两个二级弹窗的锚点（复用同一个 Menu 容器） */
     const [folderPick, setFolderPick] = useState<{
         el: HTMLElement;
@@ -469,6 +650,12 @@ export default function NotesPage({
         const onKey = (e: KeyboardEvent) => {
             if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
                 e.preventDefault();
+                // ⚠️ 必须同时切到「搜索」视图：光聚焦输入框的话，
+                // 用户看到的还是当前视图（比如「归档」）筛出来的列表，
+                // 打完字发现列表纹丝不动 —— 那是「快捷键没生效」的第一印象。
+                setView("search");
+                setActiveFolder(null);
+                setActiveTag(null);
                 searchRef.current?.focus();
             }
         };
@@ -500,7 +687,31 @@ export default function NotesPage({
     const tags = useMemo(() => folderTags?.tags ?? [], [folderTags]);
     const noteTags = useMemo(() => folderTags?.noteTags ?? EMPTY_TAG_LINKS, [folderTags]);
 
+    /**
+     * 搜索命中的笔记（2026-10-06）。
+     *
+     * 比原来那个「标题 + 正文 includes」多搜了**标签名** —— 用户记不清笔记正文里
+     * 有没有那个词，但记得「我给标了『合同』的那几条」，标签是唯一能想起来的线索。
+     * 归档的笔记也一并搜：找东西的时候不会先想「这条是不是被我收起来了」。
+     */
+    const searchHits = useMemo(() => {
+        const kw = keyword.trim().toLowerCase();
+        if (!kw) return [];
+        return notes.filter(n => {
+            if ((n.title || "").toLowerCase().includes(kw)) return true;
+            if ((n.content || "").toLowerCase().includes(kw)) return true;
+            const names = tagNamesOf(n, noteTags, tags).map(t => t.toLowerCase());
+            return names.some(t => t.includes(kw));
+        });
+    }, [notes, keyword, noteTags, tags]);
+
     const filtered = useMemo(() => {
+        // 搜索视图：只给命中列表，不受「文件夹 / 标签选中」叠加影响 ——
+        // 用户搜东西时想看的是「所有命中」，再被一个残留的文件夹选中态筛一遍
+        // 只会让人以为「搜不到」。没关键词时回落到全部。
+        if (view === "search") {
+            return keyword.trim() ? searchHits : notes.filter(n => !n.archived);
+        }
         // 归档的笔记默认从「全部 / 最近 / 收藏 / 未归类」里隐去，只在「归档」视图露面
         const live = notes.filter(n => !n.archived);
         const byView = live.filter(n => {
@@ -553,7 +764,7 @@ export default function NotesPage({
             return matched.filter(n => n.folder_id === null || n.folder_id === undefined);
         }
         return matched;
-    }, [notes, keyword, view, activeFolder, activeTag, noteTags]);
+    }, [notes, keyword, view, activeFolder, activeTag, noteTags, searchHits]);
 
     /** 阶段二：列表按月份分组（「十月」「九月…」），和 inkstone 一样 */
     const monthGroups = useMemo(() => {
@@ -750,6 +961,34 @@ export default function NotesPage({
             setActiveTag(cur => (cur === id ? null : cur));
         },
         [folderTags]
+    );
+
+    /**
+     * 导出一条笔记成 .md（inkstone 的「导出」，我们放在列表行菜单里）。
+     *
+     * ⚠️ 导的是 `active.content` 而不是本地草稿 `draft`：草稿可能还有没到 3 秒
+     * 自动保存窗口的改动，而导出的是**已经存进库**的内容 —— 标题和正文必须同源，
+     * 否则用户会拿到「旧正文 + 新标题」这种拼接产物。
+     */
+    const exportOne = useCallback(
+        (note: Note) => {
+            try {
+                const name = exportNoteAsMarkdown(note.title, note.content);
+                onNotify?.(`已导出「${name}」`, "success");
+            } catch (error) {
+                reportError(error, { source: "note-export" });
+                onNotify?.("导出失败：" + (error instanceof Error ? error.message : "未知错误"), "error");
+            }
+        },
+        [onNotify]
+    );
+
+    /** 大纲面板的锚点 */
+    const [outlineAnchor, setOutlineAnchor] = useState<HTMLElement | null>(null);
+    /** 当前这条笔记的标题层级（草稿内容变就重算） */
+    const outline = useMemo(
+        () => extractOutline(draft?.content ?? ""),
+        [draft?.content]
     );
 
     const dirty =
@@ -1228,7 +1467,8 @@ export default function NotesPage({
         <Box
             sx={{
                 // 阶段二：折叠后收成 44px 的图标轨（平时是【导航列 + 列表列】两列并排）
-                width: listCollapsed ? 44 : { xs: "100%", md: NAV_COL_W + LIST_COL_W },
+                // ⚠️ 两条缝（7px 命中区）也算进总宽，否则拖到最宽时右边界会溢出一点。
+                width: listCollapsed ? 44 : { xs: "100%", md: navW + listW + 14 },
                 flexShrink: 0,
                 // 折叠成 44px 轨道时，任何子元素都不许溢出压到右边的编辑区
                 overflow: "hidden",
@@ -1265,7 +1505,7 @@ export default function NotesPage({
             <Box
                 data-nav-col='1'
                 sx={{
-                    width: NAV_COL_W,
+                    width: navW,
                     flexShrink: 0,
                     display: "flex",
                     flexDirection: "column",
@@ -1319,12 +1559,20 @@ export default function NotesPage({
                 />
             </Box>
 
+            {/* 导航列 ↔ 列表列之间的可拖缝 */}
+            <ColResizeHandle
+                label='拖动调整导航列宽度'
+                onDrag={startDrag('nav')}
+                onReset={reset('nav')}
+            />
+
             {/* 左栏视图导航：从「三列网格按钮」改成 inkstone 那种纵向条目 ——
                 一个入口一行、名字靠左、条数靠右一行（原来六个按钮占两行、条数塞在名字后面
                 挤成一团，而且没有地方放文件夹和标签）。 */}
             <Stack sx={{ px: 0.75, gap: 0.25, pb: 1 }}>
                 {(
                     [
+                        ["search", "搜索", keyword.trim() ? searchHits.length : viewCounts.all],
                         ["all", "全部", viewCounts.all],
                         ["recent", "最近", viewCounts.recent],
                         ["starred", "收藏", viewCounts.starred],
@@ -1389,8 +1637,12 @@ export default function NotesPage({
             <Box
                 data-list-col='1'
                 sx={{
-                    width: LIST_COL_W,
-                    flex: 1,
+                    width: listW,
+                    // ⚠️ 不能留 `flex: 1`：那会让浏览器按容器剩余空间重新分配，
+                    // 实测「设定 208 → 量出来 221」，于是拖完存进 localStorage 的值
+                    // 和真正渲染出来的宽度差 13px，刷新后列宽会莫名其妙跳一下。
+                    // 宽度既然由用户拖定了，就让它**设定即所得**。
+                    flexShrink: 0,
                     minWidth: 0,
                     minHeight: 0,
                     display: "flex",
@@ -1403,7 +1655,9 @@ export default function NotesPage({
                     color='text.secondary'
                     sx={{ px: 2, pb: 0.75 }}
                 >
-                    共 {filtered.length} 条
+                    {view === "search" && keyword.trim()
+                        ? `搜到 ${filtered.length} 条`
+                        : `共 ${filtered.length} 条`}
                     {pinnedCount > 0 ? `，${pinnedCount} 条置顶` : ""}
                 </Typography>
             )}
@@ -1648,6 +1902,12 @@ export default function NotesPage({
                             >
                                 编辑标签…
                             </MenuItem>
+                            <MenuItem
+                                data-row-op='export'
+                                onClick={() => void done(() => exportOne(note))}
+                            >
+                                导出 Markdown
+                            </MenuItem>
                             <Divider />
                             <MenuItem
                                 data-row-op='delete'
@@ -1731,6 +1991,13 @@ export default function NotesPage({
                     );
                 })}
             </Menu>
+
+            {/* 列表列 ↔ 编辑区之间的可拖缝 */}
+            <ColResizeHandle
+                label='拖动调整笔记列表宽度'
+                onDrag={startDrag('list')}
+                onReset={reset('list')}
+            />
             </Box>
             </>
             )}
@@ -1922,6 +2189,14 @@ export default function NotesPage({
                             {pane === "edit" ? "编辑" : pane === "preview" ? "预览" : "分栏"}
                         </span>
                         <Box sx={{ flex: 1 }} />
+                        {/* 「创建于…」跟在保存状态后面（inkstone 把它放在状态栏右端）：
+                            左边一串是「这篇现在多长」，右边是「它是什么时候来的」。
+                            解析不出时间就整项不显示 —— 宁可少一项，也别给「Invalid Date」。 */}
+                        {active.created_at && formatWhenFull(active.created_at) && (
+                            <span data-note-created style={{ marginRight: 0.5 }}>
+                                创建于 {formatWhenFull(active.created_at)}
+                            </span>
+                        )}
                         {/* 阶段四第 14 条：原来只有一句「有未保存的改动」，
                             看不出到底存没存。现在把保存过程摊开：
                             待存 / 正在存 / 已存多久。已存的时刻复用相对时间那条。 */}
@@ -2032,6 +2307,21 @@ export default function NotesPage({
                     </IconButton>
                 </Tooltip>
 
+                {/* 大纲：inkstone 顶栏有「大纲」，长笔记没有它就只能一路往下滚。
+                    点一条就把光标送到那行 —— 跳的是**源码里的行首**，
+                    顺便把那一行选中，闭着眼也能看得到落点。 */}
+                <Tooltip title='大纲'>
+                    <IconButton
+                        size='small'
+                        data-tool='outline'
+                        aria-label='大纲'
+                        onClick={e => setOutlineAnchor(e.currentTarget)}
+                        sx={{ width: 28, height: 28, color: "text.secondary" }}
+                    >
+                        <ListIcon fontSize='small' />
+                    </IconButton>
+                </Tooltip>
+
                 {/* 源码/预览切换：像 inkstone 那样给三档 */}
                 <Box sx={{ display: { xs: "none", sm: "flex" }, gap: 0.5 }}>
                     {(
@@ -2066,6 +2356,50 @@ export default function NotesPage({
                     </IconButton>
                 </Tooltip>
             </Box>
+
+            {/* 大纲面板：当前这条笔记的标题层级。没标题时给一句说明，
+                别弹一个空框让人以为功能坏了。 */}
+            <Menu
+                open={Boolean(outlineAnchor)}
+                anchorEl={outlineAnchor}
+                onClose={() => setOutlineAnchor(null)}
+                slotProps={{ paper: { sx: { maxHeight: 320, overflowY: "auto" } } }}
+            >
+                {outline.length === 0 ? (
+                    <MenuItem disabled data-outline='empty'>
+                        这条笔记还没有标题（用 # 标题 就能出现在这里）
+                    </MenuItem>
+                ) : (
+                    outline.map(item => (
+                        <MenuItem
+                            key={`${item.line}-${item.offset}`}
+                            data-outline-item={item.line}
+                            onClick={() => {
+                                setOutlineAnchor(null);
+                                jumpToOffset(item.offset, item.line);
+                            }}
+                            sx={{
+                                pl: 1 + outlineIndent(item.level) / 8,
+                                fontWeight: item.level <= 2 ? 600 : 400,
+                                fontSize: 13,
+                                minWidth: 200,
+                            }}
+                        >
+                            <Typography
+                                component='span'
+                                sx={{
+                                    display: "block",
+                                    overflow: "hidden",
+                                    textOverflow: "ellipsis",
+                                    whiteSpace: "nowrap",
+                                }}
+                            >
+                                {item.text}
+                            </Typography>
+                        </MenuItem>
+                    ))
+                )}
+            </Menu>
 
             {/* 主体：移动端在「列表 / 编辑」之间切，桌面端左右并排 */}
             <Box sx={{ flex: 1, display: "flex", minHeight: 0 }}>

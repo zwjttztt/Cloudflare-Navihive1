@@ -1890,6 +1890,7 @@ function App() {
                                 onPurgeTrashed={purgeTrashed}
                                 onEmptyTrash={emptyTrashedNotes}
                                 onToggleArchive={toggleArchive}
+                                onNotify={notify}
                                 folderTags={noteFolderTags}
                             />
                         </Suspense>

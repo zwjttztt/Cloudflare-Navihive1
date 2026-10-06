@@ -26,6 +26,7 @@ import type Token from "markdown-it/lib/token.mjs";
 import type { ReactNode } from "react";
 import { MathNode } from "./MathNode";
 import { registerMath } from "./markdownMath";
+import { registerMark } from "./markdownMark";
 
 /** 延迟加载 markdown-it：它只进懒加载 chunk，不进首屏 */
 let parserPromise: Promise<MarkdownIt> | null = null;
@@ -46,6 +47,10 @@ function loadParser(): Promise<MarkdownIt> {
             // 数学公式语法（$行内$ / $$块级$$）→ 自定义 token，渲染层再认。
             // 注册必须发生在 parse 之前，且整个实例只装一次（parserPromise 缓存了）。
             registerMath(md);
+            // 高亮 `==文本==`。⚠️ 不装它的话，工具栏那个高亮按钮「点了没反应」：
+            // 插入的 `==…==` 在预览里原样显示成那四个字符，看着像按钮坏了 ——
+            // 其实插入是对的，只是没有规则把它变成 <mark>。
+            registerMark(md);
             return md;
         });
     }
@@ -184,6 +189,22 @@ function renderLeaf(tok: Token, c: Cursor): ReactNode {
         // 公式：内容原样交给 KaTeX 那层（它会自己异步把节点挂进这个 span）
         case "math_inline":
             return <MathNode key={key} tex={tok.content} />;
+        // 高亮 `==文本==`。用语义标签 <mark> 而不是 <span style>：
+        // 读屏软件会念「高亮」，而且浏览器里 ⌘F 搜内容时黄色底也还在。
+        case "mark_inline":
+            return (
+                <mark
+                    key={key}
+                    style={{
+                        background: "rgba(250, 204, 21, 0.38)",
+                        color: "inherit",
+                        borderRadius: 2,
+                        padding: "0 2px",
+                    }}
+                >
+                    {tok.content}
+                </mark>
+            );
         case "image": {
             const src = tok.attrGet("src") || "";
             // 只放行 http(s) 与内联图片，其余当文本 —— 与链接同一把尺子

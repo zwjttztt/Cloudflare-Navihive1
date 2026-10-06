@@ -118,6 +118,22 @@ export function formatRelative(
     return `${t.getFullYear()}年${t.getMonth() + 1}月${t.getDate()}日`;
 }
 
+/**
+ * 完整时刻：「2026年9月25日 13:52」（inkstone 状态栏同款）。
+ *
+ * 与 formatWhen 的分工：那个用于**列表**（今天只给时:分，更早给 M月D日），
+ * 这个用于**状态栏**，要一眼看到「哪年哪月哪日几点」，所以不做「今天」的特殊化 ——
+ * 状态栏那行字有地方放，藏掉反而让人以为笔记没有创建时间。
+ * 解析失败给空串。
+ */
+export function formatWhenFull(iso?: string | number | Date | null | undefined): string {
+    const t = parseNoteTime(iso);
+    if (!t) return "";
+    const hh = String(t.getHours()).padStart(2, "0");
+    const mm = String(t.getMinutes()).padStart(2, "0");
+    return `${t.getFullYear()}年${t.getMonth() + 1}月${t.getDate()}日 ${hh}:${mm}`;
+}
+
 /** 月份分组标题：「2026-10」→「2026 年 10 月」。解析失败给「其他」 */
 export function monthLabel(iso?: string | number | Date | null | undefined): string {
     const d = parseNoteTime(iso);

@@ -253,14 +253,17 @@ test("阶段二：搜索框右侧挂 ⌘K 提示", () => {
 
 // ---------- 阶段三：回收站 / 归档 / 未归类 ----------
 
-test("阶段三：左栏六个视图（全部/最近/收藏/归档/未归类/回收站）都在", () => {
+test("左栏视图齐全（搜索/全部/最近/收藏/未归类/归档/回收站）", () => {
     mountPanel([note({ id: 1, title: "甲", content: "" })]);
     const views = [...document.querySelectorAll("button[data-view]")].map(b =>
         b.getAttribute("data-view")
     );
     // 顺序按 inkstone 那套（所有 / 最近编辑 / 收藏 / 未归类 / … / 归档 / 回收站）：
     // 「未归类」紧跟收藏、「归档」收在末尾，是刻意的，不是随手排的。
+    // ⚠️ 「搜索」是 2026-10-06 加的（inkstone 左栏第一项就是它），
+    // 它把「原来只有列表上方一个输入框」升级成独立视图，还多搜标签名。
     assert.deepEqual(views, [
+        "search",
         "all",
         "recent",
         "starred",
@@ -627,13 +630,13 @@ test("左栏容器不能带 flex:1（会把 300px 的列表撑成两栏宽，中
     // 阶段三收尾把左栏从「单列 300px」改成 inkstone 那样「导航列 + 列表列」两列，
     // 所以总宽变成 NAV_COL_W + LIST_COL_W（336）。再钉 300 只会每次改布局都变红。
     assert.ok(
-        /width: listCollapsed \? 44 : \{ xs: "100%", md: NAV_COL_W \+ LIST_COL_W \}/.test(source),
-        "listPane 展开时宽度应是「导航列 + 列表列」两列之和"
+        /width: listCollapsed \? 44 : \{ xs: "100%", md: navW \+ listW \+ 14 \}/.test(source),
+        "listPane 展开时宽度应是「导航列 + 列表列 + 两条分隔条」之和（2026-10-06 改成可拖动）"
     );
     assert.ok(
         /export const NAV_COL_W = \d+;/.test(source) &&
             /export const LIST_COL_W = \d+;/.test(source),
-        "两列各自的宽度要在文件顶部导出常量（别散落在 sx 里）"
+        "两列各自的**默认**宽度要在文件顶部导出常量（别散落在 sx 里）"
     );
     // 导航列和列表列都得是「定宽 + 不收缩」：少一个 flexShrink、或给某一列 flex:1，
     // 两列就会互相挤，列表在窄窗口下被压成几十像素。
@@ -975,11 +978,11 @@ test("导航列要自己滚（整块一起滚会把搜索框顶出视野）", ()
     );
 });
 
-test("没有 folderTags（老部署）时退化成只有那六个视图，不能崩", () => {
+test("没有 folderTags（老部署）时退化成只有那七个视图，不能崩", () => {
     mountPanel([note({ id: 1, title: "甲", content: "" })]);
     assert.deepEqual(
         [...document.querySelectorAll("button[data-view]")].map(b => b.getAttribute("data-view")),
-        ["all", "recent", "starred", "uncategorized", "archived", "trash"]
+        ["search", "all", "recent", "starred", "uncategorized", "archived", "trash"]
     );
     assert.ok(document.querySelector("[data-note-list]"), "列表照常渲染");
 });
@@ -1422,4 +1425,253 @@ test("列表行显示标签徽章（不用点进去才知道打了哪些标签�
     });
     const badge = document.querySelector("[data-note-tag='重要']");
     assert.ok(badge, "打了标签的笔记要在行里显示标签名徽章");
+});
+
+// ---------- 左两列可拖动（2026-10-06）----------
+//
+// 用户报「左边两栏太窄」：128 / 208 是当初照着某个窗口宽度定死的死值。
+// 现在两条缝都能拖，宽度持久化到 localStorage。
+//
+// ⚠️ 这一组只断言**落盘值**与元素结构，**不断言渲染出来的像素宽**：
+// 单测的 DOM 环境没有布局引擎，getBoundingClientRect() 一律返回 0
+// （「命中区只有 0px」「导航列 0 → 0」就是这么来的）。
+// 真正的像素验收走真机：harness 里的 CDP 探针量到 128 → 198 / 208 → 388，
+// 且与 localStorage 里的值完全一致。
+test("左两栏各有一条可拖分隔条（role=separator + 可访问名）", () => {
+    mountPanel([note({ id: 1, title: "甲", content: "a" })]);
+    const labels = [...document.querySelectorAll("[role='separator']")].map(e =>
+        e.getAttribute("aria-label")
+    );
+    assert.ok(
+        labels.includes("拖动调整导航列宽度"),
+        "导航列 ↔ 列表列之间要有可拖分隔条"
+    );
+    assert.ok(
+        labels.includes("拖动调整笔记列表宽度"),
+        "列表列 ↔ 编辑区之间也要有可拖分隔条"
+    );
+});
+
+test("列宽的默认值与上下界都写成了常量（便于以后统一调）", () => {
+    // 静态守卫：宽度上下界与命中区宽度是「写死在 sx 里」的，jsdom 量不到，
+    // 只能钉在源码上。渲染出来的像素宽由真机 CDP 探针验收。
+    const pageSource = readFileSync(
+        join(findProjectDir(), "src", "components", "NotesPage.tsx"),
+        "utf-8"
+    );
+    assert.ok(
+        /export const NAV_COL_W = \d+;/.test(pageSource),
+        "导航列默认宽度要是导出的常量"
+    );
+    assert.ok(
+        /export const LIST_COL_W = \d+;/.test(pageSource),
+        "列表列默认宽度要是导出的常量"
+    );
+    // 上下界必须在，别让人拖出 20px 或 2000px 的列
+    assert.ok(
+        /NAV_W_MIN = \d+;/.test(pageSource) && /NAV_W_MAX = \d+;/.test(pageSource),
+        "导航列要有上下界"
+    );
+    assert.ok(
+        /LIST_W_MIN = \d+;/.test(pageSource) && /LIST_W_MAX = \d+;/.test(pageSource),
+        "列表列要有上下界"
+    );
+    assert.ok(
+        /width: 7,/.test(pageSource),
+        "分隔条命中区要 ≥7px —— 2px 的细线在笔记本触控板上根本点不中"
+    );
+});
+
+test("拖动分隔条后宽度落盘，并且夹在上下界之间", async () => {
+    mountPanel([note({ id: 1, title: "甲", content: "a" })]);
+    const sepOf = (label: string) =>
+        document.querySelector(`[role='separator'][aria-label='${label}']`) as HTMLElement;
+    const drag = async (label: string, dx: number) => {
+        const sep = sepOf(label);
+        assert.ok(sep, `找不到分隔条：${label}`);
+        const opts = { bubbles: true, clientX: 100, clientY: 100 };
+        await act(async () => {
+            sep.dispatchEvent(new MouseEvent("mousedown", opts));
+            window.dispatchEvent(
+                new MouseEvent("mousemove", { ...opts, clientX: 100 + dx })
+            );
+            window.dispatchEvent(
+                new MouseEvent("mouseup", { ...opts, clientX: 100 + dx })
+            );
+        });
+    };
+
+    // ⚠️ 顺序有讲究：先拖列表列。此时导航列还是默认 128px，窗口（jsdom 默认 1024）
+    // 留给列表的空间还够；要是先把导航列拖到 260px，剩下的空间不够，
+    // 列表列会被「左栏最多占窗口 45%」那道夹取挡回去 —— 那是设计，不是 bug。
+    await drag("拖动调整笔记列表宽度", 80);
+    const list = Number(localStorage.getItem("notes.listColW"));
+    assert.ok(list > 208, `列表列应被拖宽并落盘，实际 ${list}`);
+
+    await drag("拖动调整导航列宽度", 60);
+    const grown = Number(localStorage.getItem("notes.navColW"));
+    assert.ok(grown > 128, `导航列应被拖宽并落盘，实际 ${grown}`);
+
+    // 往死里拖也不能失控
+    await drag("拖动调整导航列宽度", -9999);
+    const min = Number(localStorage.getItem("notes.navColW"));
+    assert.ok(min >= 100, `导航列最小宽度应 ≥100，实际 ${min}`);
+    await drag("拖动调整导航列宽度", 9999);
+    const max = Number(localStorage.getItem("notes.navColW"));
+    assert.ok(max <= 300, `导航列最大宽度应 ≤300，实际 ${max}`);
+});
+
+test("拖动不能让选区被浏览器抢走（mousedown 要 preventDefault）", () => {
+    mountPanel([note({ id: 1, title: "甲", content: "a" })]);
+    const sep = document.querySelector(
+        "[role='separator'][aria-label='拖动调整导航列宽度']"
+    ) as HTMLElement;
+    const ev = new MouseEvent("mousedown", { bubbles: true, cancelable: true });
+    sep.dispatchEvent(ev);
+    assert.ok(ev.defaultPrevented, "分隔条 mousedown 必须 preventDefault，否则会选中文本");
+});
+
+test("双击分隔条回到默认宽度", async () => {
+    mountPanel([note({ id: 1, title: "甲", content: "a" })]);
+    const sepOf = () =>
+        document.querySelector(
+            "[role='separator'][aria-label='拖动调整导航列宽度']"
+        ) as HTMLElement;
+    const opts = { bubbles: true, clientX: 100, clientY: 100 };
+    await act(async () => {
+        sepOf().dispatchEvent(new MouseEvent("mousedown", opts));
+        window.dispatchEvent(new MouseEvent("mousemove", { ...opts, clientX: 160 }));
+        window.dispatchEvent(new MouseEvent("mouseup", { ...opts, clientX: 160 }));
+    });
+    assert.notEqual(localStorage.getItem("notes.navColW"), "128", "先确认拖动过");
+    await act(async () => {
+        sepOf().dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    });
+    assert.equal(localStorage.getItem("notes.navColW"), "128", "双击要回到默认宽度");
+});
+
+// ---------- 2026-10-06 第一批：大纲 / 导出 / 搜索视图 / 创建于 ----------
+
+test("工具栏有大纲按钮，点了列出当前笔记的标题层级", async () => {
+    mountPanel([note({ id: 1, title: "甲", content: "# 一\n## 二\n" })]);
+    const btn = document.querySelector("button[data-tool='outline']") as HTMLElement;
+    assert.ok(btn, "工具栏要有大纲按钮");
+    await act(async () => {
+        btn.click();
+    });
+    const items = [...document.querySelectorAll("[data-outline-item]")].map(e => e.textContent);
+    assert.deepEqual(items, ["一", "二"]);
+});
+
+test("没有标题时大纲给一句说明，不弹空框", async () => {
+    mountPanel([note({ id: 1, title: "甲", content: "就是一段正文，没有标题。" })]);
+    await act(async () => {
+        (document.querySelector("button[data-tool='outline']") as HTMLElement).click();
+    });
+    assert.ok(
+        document.querySelector("[data-outline='empty']"),
+        "没有标题时要给提示，不能是空面板"
+    );
+});
+
+test("代码块里的 # 不会混进大纲", async () => {
+    mountPanel([
+        note({ id: 1, title: "甲", content: "## 真标题\n```bash\n# 注释\n```\n" }),
+    ]);
+    await act(async () => {
+        (document.querySelector("button[data-tool='outline']") as HTMLElement).click();
+    });
+    const items = [...document.querySelectorAll("[data-outline-item]")].map(e => e.textContent);
+    assert.deepEqual(items, ["真标题"]);
+});
+
+test("点大纲某一条会把光标送到那一行并选中它", async () => {
+    mountPanel([note({ id: 1, title: "甲", content: "第一行\n第二行\n## 目标行\n" })]);
+    await act(async () => {
+        (document.querySelector("button[data-tool='outline']") as HTMLElement).click();
+    });
+    await act(async () => {
+        (document.querySelector("[data-outline-item='2']") as HTMLElement).click();
+    });
+    const ta = document.querySelector("textarea[aria-label='笔记内容']") as HTMLTextAreaElement;
+    assert.equal(ta.value.slice(ta.selectionStart, ta.selectionEnd), "## 目标行");
+});
+
+test("状态栏给出创建时间", () => {
+    mountPanel([
+        note({ id: 1, title: "甲", content: "a", created_at: "2026-10-05 11:05:18" }),
+    ]);
+    const el = document.querySelector("[data-note-created]");
+    assert.ok(el, "状态栏要有「创建于…」");
+    assert.ok(el!.textContent!.startsWith("创建于 "), `实际是「${el!.textContent}」`);
+    assert.ok(/\d{4}年\d{1,2}月\d{1,2}日/.test(el!.textContent!), "要给出完整日期");
+});
+
+test("创建时间解析不出来就不显示（宁可少一项也不给 Invalid Date）", () => {
+    mountPanel([note({ id: 1, title: "甲", content: "a", created_at: "乱写" } as never)]);
+    assert.equal(
+        document.querySelector("[data-note-created]"),
+        null,
+        "时间坏了就整项不显示"
+    );
+});
+
+test("列表行菜单有「导出 Markdown」", async () => {
+    mountPanel([note({ id: 1, title: "甲", content: "a" })]);
+    await act(async () => {
+        (document.querySelector("button[data-note-menu='1']") as HTMLElement).click();
+    });
+    assert.ok(
+        document.querySelector("[data-row-op='export']"),
+        "导出入口要和置顶/归档/删除并排（inkstone 顶栏那个「导出」）"
+    );
+});
+
+test("搜索视图：搜正文里的词能命中，左栏计数跟着变", async () => {
+    mountPanel([
+        note({ id: 1, title: "甲", content: "苹果派的做法" }),
+        note({ id: 2, title: "乙", content: "香蕉船的做法" }),
+    ]);
+    const search = document.querySelector("input[aria-label='搜索笔记']") as HTMLInputElement;
+    assert.ok(search, "要有搜索框");
+    await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(
+            search,
+            "苹果"
+        );
+        search.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    // 左栏「搜索」那一项的计数 = 命中数
+    const searchRow = document.querySelector("button[data-view='search']")!;
+    assert.ok(searchRow.textContent!.includes("1"), `搜索计数应为 1，实际「${searchRow.textContent}」`);
+});
+
+test("搜索视图：搜标签名也能命中（原来只搜标题+正文）", async () => {
+    mountPanel([note({ id: 1, title: "甲", content: "正文里没有那个词" })], {
+        folderTags: {
+            folders: [],
+            tags: [{ id: 7, user_id: null, name: "合同", color: null, created_at: "", updated_at: "" }] as never,
+            noteTags: { 1: [7] },
+            onCreateFolder: async () => null,
+            onRenameFolder: async () => {},
+            onRemoveFolder: async () => {},
+            onCreateTag: async () => null,
+            onRenameTag: async () => {},
+            onRemoveTag: async () => {},
+            onAssignTags: async () => [],
+        },
+    });
+    const search = document.querySelector("input[aria-label='搜索笔记']") as HTMLInputElement;
+    await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(
+            search,
+            "合同"
+        );
+        search.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const searchRow = document.querySelector("button[data-view='search']")!;
+    assert.ok(
+        searchRow.textContent!.includes("1"),
+        `按标签名也要搜得到，实际「${searchRow.textContent}」`
+    );
 });
