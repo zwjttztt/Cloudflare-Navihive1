@@ -1212,6 +1212,8 @@ export default function NotesPage({
     /** 「编辑标签」二级弹窗的锚点 */
     const [tagPick, setTagPick] = useState<{ el: HTMLElement; noteId: number } | null>(null);
     const [activeId, setActiveId] = useState<number | null>(notes[0]?.id ?? null);
+    /** 用户主动清空过选择（把当前这条移到回收站）—— 见下面那条自动选中的 effect */
+    const userClearedRef = useRef(false);
     const [pane, setPane] = useState<Pane>("split");
     /** 分栏比例（源码 : 预览）。可拖拽，记住上一次。 */
     const [splitRatio, setSplitRatio] = useState(readSplitRatio);
@@ -1368,6 +1370,24 @@ export default function NotesPage({
     useEffect(() => {
         if (active) setDraft({ title: active.title || "", content: active.content || "" });
     }, [active?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    /**
+     * 首次进记事本要**自动选中第一条**（inkstone 打开就是「上次的笔记」）。
+     *
+     * ⚠️ 为什么必须补这一步（2026-10-06 真机量到）：`activeId` 只在**首次渲染**
+     * 用 `notes[0]` 初始化，而真实环境里笔记是**异步**拉回来的 —— 挂载那一刻
+     * notes 还是空数组，等数据到位 activeId 已经定型为 null，不会再变。
+     * 症状是：列表里明明有两条笔记，右边编辑器却整块空着、大纲按钮灰着，
+     * 得手动点一行才出内容（jsdom 单测里 notes 是同步传入的，所以测不出来）。
+     *
+     * ⚠️ 用户**主动**清空过选择时不要抢：把当前这条移到回收站之后，
+     * 应该停在空状态让他自己挑下一条，而不是立刻弹一篇上来。
+     */
+    useEffect(() => {
+        if (activeId !== null || userClearedRef.current) return;
+        const first = notes.find(n => n.id !== undefined && !n.archived) ?? notes.find(n => n.id !== undefined);
+        if (first?.id !== undefined) setActiveId(first.id);
+    }, [activeId, notes]);
 
     // ---------- 阶段三收尾：文件夹 / 标签 ----------
     // ⚠️ 这三个必须在 `filtered` **之前**声明：过滤链要用 noteTags 判断「这条笔记挂了哪个标签」，
@@ -3905,6 +3925,9 @@ export default function NotesPage({
                             onClick={async () => {
                                 setActiveMenuAnchor(null);
                                 await onDelete(active);
+                                // ⚠️ 这是用户**主动**清空选择：标记一下，别让自动选中
+                                // 立刻把另一条顶上来（他要的是空状态，自己挑下一条）。
+                                userClearedRef.current = true;
                                 setActiveId(null);
                                 setMobileDetail(false);
                             }}

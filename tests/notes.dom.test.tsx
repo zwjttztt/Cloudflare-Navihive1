@@ -2871,3 +2871,62 @@ test("侧边那条笔记被删掉后不留半屏空白", async () => {
         "侧边那条不在列表里了就自动收起，别留一块空白"
     );
 });
+
+test("笔记异步到位后要自动选中第一条（真机量到：编辑器整块空着、大纲按钮灰着）", () => {
+    // ⚠️ 这条钉的是 2026-10-06 真机 CDP 实测出来的缺陷：activeId 只在**首次渲染**
+    // 用 notes[0] 初始化，而真实环境里 notes 是异步拉回来的 —— 挂载那一刻还是空数组，
+    // 等数据到位 activeId 已经定型为 null，编辑器整块空着，得手动点一行才出内容。
+    // jsdom 用例里 notes 都是同步传入的，所以只有这种「先空后到」的写法才测得出来。
+    mountPanel([]);
+    assert.equal(
+        document.querySelectorAll("[data-note-list] [data-note-id]").length,
+        0,
+        "先渲染一个空列表"
+    );
+    act(() => {
+        root!.render(
+            <UIPrefsProvider>
+                <NotesPage
+                    onClose={() => {}}
+                    notes={[note({ id: 7, title: "迟到的", content: "内容" })]}
+                    onCreate={async () => note({ id: 99 })}
+                    onUpdate={async () => {}}
+                    onDelete={async () => {}}
+                    onTogglePin={async () => {}}
+                    trashedNotes={[]}
+                    onLoadTrash={async () => {}}
+                    onRestoreTrashed={async () => {}}
+                    onPurgeTrashed={async () => {}}
+                    onEmptyTrash={async () => {}}
+                    onToggleArchive={async () => {}}
+                />
+            </UIPrefsProvider>
+        );
+    });
+    assert.equal(
+        (document.querySelector("input[aria-label='笔记标题']") as HTMLInputElement | null)?.value,
+        "迟到的",
+        "数据到位后要自动选中第一条（编辑器不能再空着）"
+    );
+    assert.equal(
+        document.querySelector("button[data-tool='outline']")?.hasAttribute("disabled"),
+        false,
+        "选中之后大纲按钮不再灰着"
+    );
+});
+
+test("用户把当前这条移到回收站后不要自作主张顶另一条上来", async () => {
+    mountPanel([note({ id: 1, title: "甲", content: "a" }), note({ id: 2, title: "乙", content: "b" })]);
+    assert.equal(
+        (document.querySelector("input[aria-label='笔记标题']") as HTMLInputElement).value,
+        "甲",
+        "默认选中第一条"
+    );
+    await act(async () => (document.querySelector("button[data-tool='note-more']") as HTMLElement).click());
+    await act(async () => (document.querySelector("[data-active-op='delete']") as HTMLElement).click());
+    assert.equal(
+        document.querySelector("input[aria-label='笔记标题']"),
+        null,
+        "用户主动删掉当前这条 → 停在空状态让他自己挑，不要自动弹另一条"
+    );
+});
