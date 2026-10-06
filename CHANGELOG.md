@@ -6,6 +6,13 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。---
 
+## 2026-10-06 · 修复：记事本文件夹创建/删除 500（parent_id 缺列）
+
+- 修复「新建文件夹」与「删除文件夹」线上报 API 错误 500：已部署的 `note_folder` 表**缺 `parent_id` 列**。老库建表时尚无该列，`CREATE TABLE IF NOT EXISTS` 不对已存在表补列；而负责 `ALTER` 补 `parent_id` 的 `migrateFolderTagTables` 此前**定义却没接进 `runMigrations`**，于是老实例上这一列永远补不上。`createFolder` 的 `INSERT (…, parent_id, …)` 与 `deleteFolder` 的 batch（`UPDATE note_folder SET parent_id = NULL`）都踩到缺列 → 500。
+- 修复方式：在 `runMigrations` 第 6.5 步改调 `migrateFolderTagTables`（建表后补 `parent_id`），并升结构版本号到 `8`，让已部署实例（版本停在 7）冷启动时会重跑迁移补上该列。
+- 标签的创建/删除本身正确（表结构完整、路由与弹窗入口齐全），此前「标签删不掉」多为同一故障会话的连带观感；已在真实 SQLite 上回归验证「建/删文件夹、建/删标签」四个操作全部跑通。
+- 新增真实 SQLite 回归测试（`tests/noteFolderTagRealSql.test.ts` + `schemaMigration` 的 `parent_id` 守卫），堵住「单测全绿、线上 500」的盲区：FakeD1/MockD1 不执行 SQL，发现不了「真实库里缺一列」。
+
 ## 2026-10-06 · 记事本第四批 D：版本历史与内容块
 
 - 新增版本历史：正文改动前自动留档，顶栏可列出各版本时间与字数并一键恢复；恢复动作本身也会留档，可再撤回。

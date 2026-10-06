@@ -31,8 +31,13 @@ import {
  * 3 = 记事本的 notes 表（2026-10-05）。
  * 4 = notes.archived 归档列（阶段三）。加表/加列时别忘了它。
  * 5 = notes.folder_id + note_folder / note_tag / note_note_tag 三张新表（阶段三收尾）。
+ * 6/7 = 版本历史（note_revision）/ 内容块等后续迭代的表与列。
+ * 8 = note_folder.parent_id 补列。老库建 note_folder 时那张表还没有 parent_id，
+ *     CREATE TABLE IF NOT EXISTS 不补列、而 migrateFolderTagTables（它负责 ALTER 补 parent_id）
+ *     又有定义却没接进 runMigrations —— 于是线上「新建文件夹 / 删除文件夹」一律 500。
+ *     （见下方 runMigrations 第 6.5 步 + 2026-10-06 的修复）
  */
-export const SCHEMA_VERSION = "7";
+export const SCHEMA_VERSION = "8";
 /** 版本号存在 configs 里的键名 */
 export const SCHEMA_VERSION_KEY = "schema.version";
 
@@ -192,18 +197,17 @@ export const migrationImpl: MigrationApi = {
         // 6) 阶段三：notes 补 archived 列（老库必须 ALTER 才会有，见 migrateNoteColumns）
         await this.migrateNoteColumns();
 
-        // 6.5) 阶段三收尾：文件夹 / 标签三张新表。
+        // 6.5) 阶段三收尾：文件夹 / 标签三张新表 + note_folder.parent_id 补列。
         // 光靠上面第 1 步的 batch 建表不够 —— 已经部署过的实例上 notes 表早就在了，
         // CREATE TABLE IF NOT EXISTS 对**已存在的表**不会补列；同理那三张新表在那批
         // 实例上从来没被建过，而「版本号读得到就整段跳过迁移」的快路径会连建表都跳过
         //（见 migrateIfNeeded），于是新表永远不存在、对应接口一律 500。所以这里再显式建一次。
-        for (const sql of FOLDER_TAG_TABLE_STATEMENTS) {
-            try {
-                await this.db.exec(sql);
-            } catch {
-                // 表已存在 / 并发迁移抢先建了，都不是问题
-            }
-        }
+        // ⚠️ 必须走 migrateFolderTagTables（它建完表后还会 ALTER 补 parent_id），
+        // 不能只在这里循环 FOLDER_TAG_TABLE_STATEMENTS 建表 —— 那样 parent_id 永远不会被补，
+        // 老库上 note_folder 没有 parent_id 列 → createFolder(INSERT parent_id) /
+        // deleteFolder(UPDATE note_folder SET parent_id = NULL) 全 500。
+        //（2026-10-06 线上就是这俩接口 500，根因就是 migrateFolderTagTables 定义却没接进来）
+        await this.migrateFolderTagTables();
 
         // 7) 索引：排在最后，因为它依赖上面补出来的 user_id 列（见 INDEX_STATEMENTS 注释）
         await this.createIndexes();

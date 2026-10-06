@@ -307,6 +307,26 @@ test("notes.folder_id 会被补出来，哪怕 archived 列早就存在", async 
     );
 });
 
+test("note_folder.parent_id 会被补出来（即便表是老版本建的、没有 parent_id）", async () => {
+    // 复刻 2026-10-06 线上现状：note_folder 表存在，但只有老版本那几列、**没有** parent_id。
+    // 根因：CREATE TABLE IF NOT EXISTS 对已存在的表不补列，而 migrateFolderTagTables
+    // （负责 ALTER 补 parent_id）定义后没接进 runMigrations —— 于是老库上
+    // createFolder(INSERT parent_id) / deleteFolder(UPDATE parent_id = NULL) 一律 500。
+    // 这条用例把「老库 + 新代码」的状态钉住：一旦有人又把父级调用改掉，这里立刻红。
+    resetMigrationCacheForTests();
+    const db = new FakeD1();
+    db.schema.set(
+        "note_folder",
+        new Set(["id", "user_id", "name", "order_num", "created_at", "updated_at"]),
+    );
+    await makeApi(db).migrate();
+
+    assert.ok(
+        db.schema.get("note_folder")!.has("parent_id"),
+        "note_folder.parent_id 没被补上 —— 老库上「新建文件夹 / 删除文件夹」会 500"
+    );
+});
+
 test("hasColumn 不能用绑定参数查 pragma_table_info（那样恒为 false，补列等于没做）", async () => {
     // pragma_table_info(?) 在 D1 上直接抛语法错，catch 掉之后 hasColumn 永远返回 false，
     // 于是每轮迁移都盲发一次 ALTER、失败还被静默吞掉 —— 列永远补不上。
