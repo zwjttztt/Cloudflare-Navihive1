@@ -27,7 +27,7 @@
   #   上线前必须跑一遍全量冒烟（stub 会照发 _headers，本地就能测出来）。
   # - report-uri 指向 Worker 的公开路由：真被拦下的资源会上报一条 JSON，
   #   在 Workers 日志里能搜到（worker/csp.ts），据此再决定要不要继续收紧策略。
-  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' https:; media-src 'self' https:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; frame-src 'none'; worker-src 'self'; manifest-src 'self'; require-trusted-types-for 'script'; trusted-types navihive-sw; report-uri /api/csp-report
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' https:; media-src 'self' https:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; frame-src 'self'; worker-src 'self'; manifest-src 'self'; require-trusted-types-for 'script'; trusted-types navihive-sw; report-uri /api/csp-report
   # 别让浏览器去猜 MIME 类型（把 txt 当 js 执行那一类问题）
   X-Content-Type-Options: nosniff
   # 老的点击劫持防护；现代浏览器看 CSP 的 frame-ancestors，两条一起给，兼容旧客户端
@@ -59,6 +59,20 @@
 # Vite 产物带内容哈希，可长期强缓存，浏览器不再回源校验
 /assets/*
   Cache-Control: public, max-age=31536000, immutable
+  Access-Control-Allow-Origin: *
+  Cross-Origin-Resource-Policy: cross-origin
+
+# 只有这一页允许 Mermaid 的 DOM sink；强制无同源权限的沙箱、禁止联网/表单。
+/mermaid-sandbox.html
+  ! Content-Security-Policy
+  ! X-Frame-Options
+  Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'; sandbox allow-scripts
+  Cache-Control: no-store
+  Referrer-Policy: no-referrer
+
+/n/*
+  Referrer-Policy: no-referrer
+  X-Robots-Tag: noindex, nofollow
 
 # HTML 入口保持每次校验，保证发版后能立即拿到新版本
 /

@@ -54,7 +54,8 @@ function precacheManifest(): Plugin {
             const core = new Set<string>();
             const queue = [...chunks.keys()].filter(
                 name =>
-                    (bundle[name] as { isEntry?: boolean }).isEntry ||
+                    ((bundle[name] as { isEntry?: boolean; name?: string }).isEntry &&
+                        (bundle[name] as { name?: string }).name !== "mermaidSandbox") ||
                     isAlwaysPrecached(name)
             );
             while (queue.length) {
@@ -92,6 +93,9 @@ function precacheManifest(): Plugin {
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react(), cloudflare(), precacheManifest()],
+  environments: {
+    client: { build: { rollupOptions: { input: { index: "index.html", mermaidSandbox: "mermaid-sandbox.html" } } } },
+  },
   // 把构建号烘进前端：src/utils/buildVersion.ts 用它跟服务端的清单对版本号，
   // 对不上就说明 Service Worker 喂的是上一版的外壳（见那个文件头的说明）。
   // 只在 src 里读得到（worker 侧的 tsconfig 不认识这个全局，那边也不该读它）。
@@ -103,8 +107,22 @@ export default defineConfig({
     // 改业务代码时用户不用重新下载体积最大、最稳定的 MUI 那块。
     rollupOptions: {
       output: {
-        manualChunks(id: string) {
+        manualChunks(id: string, { getModuleInfo }: { getModuleInfo: (id: string) => { importers: readonly string[]; dynamicImporters: readonly string[] } | null }) {
           if (!id.includes("node_modules")) return;
+          // 沙箱独占的传递依赖不能被兜底 vendor 拉回首屏。
+          const visited = new Set<string>();
+          let sandbox = false;
+          let main = false;
+          const visit = (moduleId: string) => {
+              if (visited.has(moduleId)) return;
+              visited.add(moduleId);
+              if (/src[\\/]mermaidSandbox\.ts$/.test(moduleId)) { sandbox = true; return; }
+              if (!moduleId.includes("node_modules") && /src[\\/]/.test(moduleId)) { main = true; return; }
+              const info = getModuleInfo(moduleId);
+              for (const parent of [...(info?.importers ?? []), ...(info?.dynamicImporters ?? [])]) visit(parent);
+          };
+          visit(id);
+          if (sandbox && !main) return;
           if (/node_modules[\\/](react|react-dom|scheduler)[\\/]/.test(id)) return "react";
             if (/node_modules[\\/](@mui|@emotion|@popperjs|@floating-ui)[\\/]/.test(id)) return "mui";
             // markdown-it 必须单独成块。它**只**被 utils/markdownToReact 动态 import

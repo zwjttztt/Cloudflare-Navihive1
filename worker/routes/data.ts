@@ -152,6 +152,23 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
 
     // ---- 记事本 ----
     // 与分组/站点同一套：写操作走 writeGate 限速，账号隔离在 api 层用 scopeSql 做。
+    } else if (/^notes\/\d+\/share$/.test(path)) {
+        const id = Number(path.split("/")[1]);
+        const headers = { "Cache-Control": "no-store" };
+        if (!Number.isSafeInteger(id) || id <= 0) return Response.json({ error: "无效的ID" }, { status: 400, headers });
+        if (method === "GET") return Response.json(await api.getNoteShare(id), { headers });
+        if (method === "POST" || method === "DELETE") {
+            const limited = await writeGate();
+            if (limited) return limited;
+            if (method === "DELETE") return Response.json(await api.revokeNoteShare(id), { headers });
+            const { days } = await request.json() as { days?: unknown };
+            if (days !== null && days !== 1 && days !== 7 && days !== 30) {
+                return Response.json({ error: "有效期仅支持1、7、30天或永久" }, { status: 400, headers });
+            }
+            const share = await api.createNoteShare(id, days);
+            return Response.json(share ?? { error: "笔记不存在" }, { status: share ? 200 : 404, headers });
+        }
+        return Response.json({ error: "不支持的方法" }, { status: 405, headers });
     } else if (path === "notes" && method === "GET") {
         const notes = await api.listNotes();
         return Response.json(notes);

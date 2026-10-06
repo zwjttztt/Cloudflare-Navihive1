@@ -60,6 +60,13 @@ export const FOLDER_TAG_TABLE_STATEMENTS = [
     NOTE_TAG_LINK_TABLE_SQL,
     NOTE_REVISION_TABLE_SQL,
     NOTE_REVISION_INDEX_SQL,
+    `CREATE TABLE IF NOT EXISTS note_share (
+        note_id INTEGER PRIMARY KEY,
+        note_uuid TEXT NOT NULL,
+        user_id INTEGER,
+        token TEXT NOT NULL UNIQUE,
+        expires_at INTEGER
+    );`,
 ];
 
 // 建表 SQL（幂等）

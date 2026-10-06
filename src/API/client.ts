@@ -5,6 +5,7 @@ import {
     NoteFolder,
     NoteRevision,
     NoteTag,
+    NoteShare,
     LoginResponse,
     ExportData,
     ImportResult,
@@ -468,6 +469,16 @@ export class NavigationClient {
     }
 
     // 记事本相关API（notes 分域）
+    async getNoteShare(id: number): Promise<NoteShare | null> {
+        return this.request<NoteShare | null>(`notes/${id}/share`);
+    }
+    async createNoteShare(id: number, days: number | null): Promise<NoteShare | null> {
+        return this.request<NoteShare | null>(`notes/${id}/share`, { method: "POST", body: JSON.stringify({ days }) });
+    }
+    async revokeNoteShare(id: number): Promise<{ success: boolean }> {
+        return this.request<{ success: boolean }>(`notes/${id}/share`, { method: "DELETE" });
+    }
+
     async listNotes(): Promise<Note[]> {
         return this.request<Note[]>("notes");
     }

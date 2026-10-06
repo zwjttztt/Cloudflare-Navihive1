@@ -10,12 +10,16 @@
 //   3. **uuid 在这里生成**：合并导入靠它识别「同一条笔记」（见 transfer.ts 的导入逻辑）。
 //      没有它就只能按标题+内容硬比，用户改过一次的笔记会被当成两条。
 import type { NavigationAPI } from "../http";
-import type { Note, NoteFolder, NoteRevision, NoteTag } from "../types";
+import type { Note, NoteFolder, NoteRevision, NoteTag, NoteShare, PublicNote } from "../types";
 import type { D1PreparedStatement } from "../schema";
 import { newUuid } from "../../utils/uuid";
 import { extractNoteTags } from "../../utils/markdownNoteTags";
 
 export interface NotesApi {
+    getNoteShare(id: number): Promise<NoteShare | null>;
+    createNoteShare(id: number, days: number | null): Promise<NoteShare | null>;
+    revokeNoteShare(id: number): Promise<{ success: boolean }>;
+    getPublicNote(token: string): Promise<PublicNote | null>;
     listNotes(): Promise<Note[]>;
     getNote(id: number): Promise<Note | null>;
     createNote(draft: Partial<Note>): Promise<Note>;
@@ -145,6 +149,42 @@ async function pushRevision(
 }
 
 export const notesImpl: NotesApi = {
+    getNoteShare: async function (this: NavigationAPI, id: number) {
+        await this.migrate();
+        return this.db.prepare(`SELECT s.token, s.expires_at FROM note_share s
+            JOIN notes n ON n.id = s.note_id AND n.uuid = s.note_uuid AND n.user_id IS s.user_id
+            WHERE n.id = ? AND n.user_id IS ?`)
+            .bind(id, this.currentUserId).first<NoteShare>();
+    },
+    createNoteShare: async function (this: NavigationAPI, id: number, days: number | null) {
+        if (days !== null && ![1, 7, 30].includes(days)) throw new Error("分享有效期无效");
+        await this.migrate();
+        const token = Array.from(crypto.getRandomValues(new Uint8Array(32)), b => b.toString(16).padStart(2, "0")).join("");
+        const expires = days === null ? null : Date.now() + days * 86_400_000;
+        // INSERT SELECT 直接验证归属；重新生成会轮换令牌，旧链接立即失效。
+        return this.db.prepare(`INSERT INTO note_share (note_id, note_uuid, user_id, token, expires_at)
+            SELECT id, uuid, user_id, ?, ? FROM notes WHERE id = ? AND user_id IS ?
+            ON CONFLICT(note_id) DO UPDATE SET note_uuid = excluded.note_uuid,
+                user_id = excluded.user_id, token = excluded.token, expires_at = excluded.expires_at
+            RETURNING token, expires_at`)
+            .bind(token, expires, id, this.currentUserId).first<NoteShare>();
+    },
+    revokeNoteShare: async function (this: NavigationAPI, id: number) {
+        await this.migrate();
+        await this.db.prepare("DELETE FROM note_share WHERE note_id = ? AND user_id IS ?")
+            .bind(id, this.currentUserId).run();
+        return { success: true };
+    },
+    getPublicNote: async function (this: NavigationAPI, token: string) {
+        if (!/^[a-f0-9]{64}$/.test(token)) return null;
+        await this.migrate();
+        return this.db.prepare(`SELECT n.title, n.content, n.updated_at FROM note_share s
+            JOIN notes n ON n.id = s.note_id AND n.uuid = s.note_uuid AND n.user_id IS s.user_id
+            WHERE s.token = ? AND (s.expires_at IS NULL OR s.expires_at > ?)
+            AND (s.user_id IS NULL OR EXISTS (
+                SELECT 1 FROM users u WHERE u.id = s.user_id AND COALESCE(u.status, 'active') = 'active'))`)
+            .bind(token, Date.now()).first<PublicNote>();
+    },
     listNotes: async function (this: NavigationAPI): Promise<Note[]> {
         await this.migrate();
         return this.withSchemaRetry(async () => {
@@ -348,6 +388,8 @@ export const notesImpl: NotesApi = {
                     .bind(...this.scopeParams([id]))
                     .run();
             }
+            // 删除时先吊销链接，恢复笔记也不会重新公开。
+            await this.revokeNoteShare(id);
             const result = await this.db
                 .prepare(`DELETE FROM notes WHERE id = ?${this.scopeSql(true)}`)
                 .bind(...this.scopeParams([id]))

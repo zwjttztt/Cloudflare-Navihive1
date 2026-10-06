@@ -14,7 +14,7 @@
 // 代价（写在方案 docs/notebook-design.md 4.2）：markdown-it 的插件大多注册
 // `renderer.rules.*`，在 token 流下大部分失效，所以任务列表 / 高亮都自己实现。
 //
-// Mermaid、原始 HTML 依旧不做（理由同上）。
+// Mermaid 通过独立 opaque-origin 沙箱渲染；主页面仍不允许字符串 HTML sink。原始 HTML 不做。
 //
 // 公式（KaTeX）**做**，2026-10-05 改：KaTeX 支持 DOM 入口 `katex.render(tex, el)`，
 // 它用 createElement / appendChild 建节点、不碰 innerHTML 之类的字符串 sink，
@@ -25,6 +25,7 @@ import type { Options as MarkdownItOptions } from "markdown-it";
 import type Token from "markdown-it/lib/token.mjs";
 import type { ReactNode } from "react";
 import { MathNode } from "./MathNode";
+import { MermaidNode } from "./MermaidNode";
 import { registerMath } from "./markdownMath";
 import { registerMark } from "./markdownMark";
 import footnote from "markdown-it-footnote";
@@ -386,6 +387,11 @@ function renderBlocks(c: Cursor): ReactNode[] {
             case "fence":
             case "code_block": {
                 const lang = (tok.info || "").trim().split(/\s+/)[0];
+                if (lang.toLowerCase() === "mermaid") {
+                    out.push(<MermaidNode key={`${key}:${tok.content}`} source={tok.content} />);
+                    c.i++;
+                    break;
+                }
                 out.push(
                     <pre key={key} style={PRE_STYLE}>
                         <code {...(lang ? { 'data-lang': lang } : {})} style={CODE_STYLE}>

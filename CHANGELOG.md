@@ -6,6 +6,14 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。---
 
+## 2026-10-06 · 记事本只读分享与 Mermaid
+
+- 新增令牌分享表（schema9）和主人创建/查询/撤销接口；公开接口只返回标题、正文和更新时间，不缓存。
+- 分享对话框支持1/7/30天或永久，重新生成轮换令牌；公开只读页面独立于登录界面。
+- Mermaid 围栏走独立 opaque-origin 沙箱，主页面保留 Trusted Types；沙箱禁止联网、表单与同源访问。
+- 分享真实SQLite隔离、轮换、过期、撤销回归通过；真实Chrome验证分享弹窗生成/撤销与公开图表沙箱，图表独占依赖不进首屏。
+- 更新source-map-js传递依赖消除高危审计项；Mermaid内嵌KaTeX仍有低危审计项，受沙箱与strict模式限制，继续跟进上游。
+
 ## 2026-10-06 · 修复：记事本文件夹创建/删除 500（parent_id 缺列）
 
 - 修复「新建文件夹」与「删除文件夹」线上报 API 错误 500：已部署的 `note_folder` 表**缺 `parent_id` 列**。老库建表时尚无该列，`CREATE TABLE IF NOT EXISTS` 不对已存在表补列；而负责 `ALTER` 补 `parent_id` 的 `migrateFolderTagTables` 此前**定义却没接进 `runMigrations`**，于是老实例上这一列永远补不上。`createFolder` 的 `INSERT (…, parent_id, …)` 与 `deleteFolder` 的 batch（`UPDATE note_folder SET parent_id = NULL`）都踩到缺列 → 500。

@@ -37,7 +37,8 @@ import {
  *     又有定义却没接进 runMigrations —— 于是线上「新建文件夹 / 删除文件夹」一律 500。
  *     （见下方 runMigrations 第 6.5 步 + 2026-10-06 的修复）
  */
-export const SCHEMA_VERSION = "8";
+// 9 = 令牌只读分享 note_share（uuid 防止删除/恢复后旧链接复活）。
+export const SCHEMA_VERSION = "9";
 /** 版本号存在 configs 里的键名 */
 export const SCHEMA_VERSION_KEY = "schema.version";
 

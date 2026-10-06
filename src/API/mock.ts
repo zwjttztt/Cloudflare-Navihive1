@@ -388,6 +388,17 @@ export class MockNavigationClient {
     }
 
     // ---- 记事本 ----
+    // 演示模式没有公开服务，不能生成看似可用但无法打开的分享链接。
+    async getNoteShare(_id: number): Promise<import("./types").NoteShare | null> {
+        return null;
+    }
+    async createNoteShare(_id: number, _days: number | null): Promise<import("./types").NoteShare | null> {
+        throw new Error("演示模式不支持公开分享，请连接真实账号");
+    }
+    async revokeNoteShare(_id: number): Promise<{ success: boolean }> {
+        return { success: true };
+    }
+
     async listNotes(): Promise<Note[]> {
         await new Promise(resolve => setTimeout(resolve, 200));
         return [...mockNotes].sort(

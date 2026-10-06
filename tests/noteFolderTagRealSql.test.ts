@@ -55,6 +55,42 @@ function makeRealD1() {
     };
 }
 
+test("真实 SQLite：分享隔离、令牌轮换、到期、撤销与公开字段白名单", async () => {
+    resetMigrationCacheForTests();
+    const db = makeRealD1();
+    const api = makeApi(db);
+    await api.migrate();
+    const note = await api.createNote({ title: "公开标题", content: "正文" });
+    const id = note.id!;
+    const share = await api.createNoteShare(id, 7);
+    assert.ok(share);
+    assert.match(share.token, /^[a-f0-9]{64}$/);
+    assert.deepEqual(Object.keys((await api.getPublicNote(share.token))!).sort(), ["content", "title", "updated_at"]);
+    api.setCurrentUser(123);
+    assert.equal(await api.getNoteShare(id), null);
+    assert.equal(await api.createNoteShare(id, 1), null);
+    await api.revokeNoteShare(id);
+    assert.ok(await api.getPublicNote(share.token));
+    api.setCurrentUser(null);
+    const rotated = await api.createNoteShare(id, null);
+    assert.ok(rotated);
+    assert.notEqual(rotated.token, share.token);
+    assert.equal(await api.getPublicNote(share.token), null);
+    await db.prepare("UPDATE note_share SET expires_at = 0 WHERE note_id = ?").bind(id).run();
+    assert.equal(await api.getPublicNote(rotated.token), null);
+    const fresh = await api.createNoteShare(id, 1);
+    assert.ok(fresh);
+    await api.revokeNoteShare(id);
+    assert.equal(await api.getPublicNote(fresh.token), null);
+    assert.equal(await api.getPublicNote("../../notes"), null);
+    await assert.rejects(api.createNoteShare(id, 2), /有效期/);
+    const beforeDelete = await api.createNoteShare(id, null);
+    assert.ok(beforeDelete);
+    await api.deleteNote(id);
+    assert.equal(await api.getPublicNote(beforeDelete.token), null);
+    assert.equal(await db.prepare("SELECT token FROM note_share WHERE note_id = ?").bind(id).first(), null);
+});
+
 type RealD1 = ReturnType<typeof makeRealD1>;
 
 function makeApi(db: RealD1): NavigationAPI {

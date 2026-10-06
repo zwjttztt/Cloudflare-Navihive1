@@ -59,6 +59,7 @@ import LastPageIcon from "@mui/icons-material/LastPage";
 import LinkIcon from "@mui/icons-material/Link";
 import LinkOffIcon from "@mui/icons-material/LinkOff";
 import HistoryIcon from "@mui/icons-material/History";
+import ShareIcon from "@mui/icons-material/Share";
 import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
 import ListIcon from "@mui/icons-material/List";
 import PushPinIcon from "@mui/icons-material/PushPin";
@@ -89,7 +90,10 @@ import {
     removeRow,
 } from "../utils/markdownTable";
 
+import NoteShareDialog, { type NoteShareApi } from "./NoteShareDialog";
+
 export interface NotesPageProps {
+    shareApi?: NoteShareApi;
     notes: Note[];
     onClose: () => void;
     onCreate: (draft?: Partial<Note>) => Promise<Note | null>;
@@ -715,6 +719,7 @@ function readSplitRatio(): number {
 }
 
 export default function NotesPage({
+    shareApi,
     notes,
     onClose,
     onCreate,
@@ -1318,6 +1323,7 @@ export default function NotesPage({
 
     // ---------- 版本历史（inkstone 顶栏「版本历史」）----------
     const [revisionAnchor, setRevisionAnchor] = useState<HTMLElement | null>(null);
+    const [shareId, setShareId] = useState<number | null>(null);
     const [revisions, setRevisions] = useState<NoteRevision[] | null>(null);
     /** 正在恢复的版本 id：期间禁用所有按钮，避免连点重复提交 */
     const [restoringId, setRestoringId] = useState<number | null>(null);
@@ -2831,6 +2837,7 @@ export default function NotesPage({
                 bgcolor: "background.default",
             }}
         >
+            {shareId !== null && shareApi && <NoteShareDialog key={shareId} id={shareId} api={shareApi} onClose={() => setShareId(null)} />}
             {/* Header */}
             <Box
                 sx={{
@@ -2869,6 +2876,9 @@ export default function NotesPage({
                 {/* 版本历史：inkstone 顶栏第二项。改动前的正文由后端自动留档，
                     这里只负责列出来 + 恢复。历史只有一条时按钮仍可用 ——
                     「只有一版」本身就是要让用户知道的事实。 */}
+                <Tooltip title='只读分享'><span><IconButton size='small' data-tool='share' aria-label='只读分享'
+                    disabled={!shareApi || !active?.id || active.id <= 0 || view === "trash"}
+                    onClick={() => { if (active?.id) setShareId(active.id); }}><ShareIcon fontSize='small' /></IconButton></span></Tooltip>
                 <Tooltip title='版本历史'>
                     <IconButton
                         size='small'
@@ -3436,6 +3446,7 @@ const CODE_LANGUAGES: { label: string; value: string }[] = [
     { label: "C / C++", value: "cpp" },
     { label: "YAML", value: "yaml" },
     { label: "Markdown", value: "markdown" },
+    { label: "Mermaid 图表", value: "mermaid" },
     { label: "Diff", value: "diff" },
 ];
 

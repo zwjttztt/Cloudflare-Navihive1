@@ -16,6 +16,7 @@
 // 凡是记事本自己的状态，都由本组件内部持有。
 import { useEffect, useMemo, useState } from "react";
 import NotesPage from "./NotesPage";
+import type { NoteShareApi } from "./NoteShareDialog";
 import { useNotes, type NotesApiLike } from "../hooks/useNotes";
 
 export interface NotesOverlayProps {
@@ -27,7 +28,7 @@ export interface NotesOverlayProps {
      * 而 useNotes 声明的接口要 `Promise<{success:boolean}>` ——
      * 直接写具体类型会在此报一个和业务毫无关系的类型不兼容。
      */
-    api: NotesApiLike;
+    api: NotesApiLike & Partial<NoteShareApi>;
     /** 关掉整个记事本层 */
     onClose: () => void;
     onError: (message: string) => void;
@@ -124,6 +125,7 @@ export default function NotesOverlay({
 
     return (
         <NotesPage
+            shareApi={api.getNoteShare && api.createNoteShare && api.revokeNoteShare ? api as NotesApiLike & NoteShareApi : undefined}
             notes={notes}
             onClose={onClose}
             onCreate={createNote}

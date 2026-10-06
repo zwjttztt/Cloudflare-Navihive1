@@ -52,6 +52,14 @@ export async function handlePublicRoutes(ctx: RouteCtx): Promise<Response | null
         
     } = ctx;
 
+    if (path.startsWith("note-shares/") && method === "GET") {
+        const note = await api.getPublicNote(path.slice("note-shares/".length));
+        return Response.json(note ?? { error: "分享不存在、已过期或已撤销" }, {
+            status: note ? 200 : 404,
+            headers: { "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "X-Robots-Tag": "noindex, nofollow" },
+        });
+    }
+
     // 图标代理 - 公开路由，必须放在鉴权之前：
     // 浏览器用 <img src> 拉图标带不上 Authorization，被拦就是一片空白。
     // 作用是把第三方图标变成同源响应：跨域图片的 opaque response 读不出内容，

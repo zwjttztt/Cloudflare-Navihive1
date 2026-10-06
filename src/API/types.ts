@@ -63,6 +63,17 @@ export interface Note {
     updated_at?: string;
 }
 
+/** 分享令牌只在主人接口返回；公开接口仅返回正文白名单。时间单位为毫秒。 */
+export interface NoteShare {
+    token: string;
+    expires_at: number | null;
+}
+export interface PublicNote {
+    title: string;
+    content: string;
+    updated_at?: string;
+}
+
 /** 笔记文件夹（row 形状和 note_folder 表一致，count 是查询时顺带算出来的） */
 export interface NoteFolder {
     id?: number;
