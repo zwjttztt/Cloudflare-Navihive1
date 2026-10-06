@@ -14,6 +14,8 @@ const NOTE_FOLDER_TABLE_SQL = `CREATE TABLE IF NOT EXISTS note_folder (
     user_id INTEGER,
     parent_id INTEGER,
     name TEXT NOT NULL,
+    icon TEXT,
+    color TEXT,
     order_num INTEGER NOT NULL DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP

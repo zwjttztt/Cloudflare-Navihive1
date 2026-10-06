@@ -40,12 +40,14 @@ import Stack from "@mui/material/Stack";
 import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 import AddIcon from "@mui/icons-material/Add";
+import FolderIcon from "@mui/icons-material/Folder";
 import NoteAddIcon from "@mui/icons-material/NoteAdd";
 import ArchiveIcon from "@mui/icons-material/Archive";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import ChecklistIcon from "@mui/icons-material/Checklist";
 import CodeIcon from "@mui/icons-material/Code";
 import CalculateIcon from "@mui/icons-material/Calculate";
+import CloseIcon from "@mui/icons-material/Close";
 import DeleteForeverIcon from "@mui/icons-material/DeleteForever";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutlined";
 import MoreVertIcon from "@mui/icons-material/MoreVert";
@@ -67,14 +69,19 @@ import ListIcon from "@mui/icons-material/List";
 import PushPinIcon from "@mui/icons-material/PushPin";
 import SearchIcon from "@mui/icons-material/Search";
 import SettingsIcon from "@mui/icons-material/Settings";
+import SortIcon from "@mui/icons-material/Sort";
 import StrikethroughIcon from "@mui/icons-material/StrikethroughS";
 import TableRowsIcon from "@mui/icons-material/TableRows";
 import UndoIcon from "@mui/icons-material/Undo";
+import ContentCopyIcon from "@mui/icons-material/ContentCopy";
+import DriveFileRenameOutlineIcon from "@mui/icons-material/DriveFileRenameOutline";
+import NoteAltIcon from "@mui/icons-material/NoteAlt";
+import OpenInNewIcon from "@mui/icons-material/OpenInNew";
+import PaletteIcon from "@mui/icons-material/Palette";
+import FileDownloadIcon from "@mui/icons-material/FileDownload";
 import type { Note, NoteFolder, NoteRevision, NoteTag } from "../API/http";
 import type { TrashedNote } from "../hooks/useNotes";
 import { renderMarkdownToReact } from "../utils/markdownToReact";
-import { withBlockId, buildTabSource, buildFoldSource } from "../utils/noteBlocks";
-import { buildFrontMatter, type FrontMatterEntry } from "../utils/noteFrontMatter";
 import type { NoteEmbedTarget } from "./NoteEmbedNode";
 import { useScrollLock } from "../hooks/useScrollLock";
 // 笔记时间统一走这里：SQLite 的 UTC 无时区串必须按 UTC 解释，
@@ -83,18 +90,22 @@ import { formatRelative, formatWhen, formatWhenFull, monthLabel } from "../utils
 import { extractOutline, outlineIndent } from "../utils/noteOutline";
 import { buildBacklinks, resolveWikiLinks } from "../utils/noteWikiLink";
 import { exportNoteAsMarkdown } from "../utils/noteExport";
+import { exportNoteAsHtml, printNoteAsPdf } from "../utils/noteHtmlExport";
+import { isFolderColor, FOLDER_ICONS } from "../utils/folderAppearance";
+import {
+    loadNotesSettings,
+    saveNotesSettings,
+    type NotesUiSettings,
+} from "../utils/notesSettings";
 import { reportError } from "../utils/errorReporter";
 import NoteEditor from "./NoteEditor";
 import ConfirmDialog from "./ConfirmDialog";
 import NamePromptDialog from "./NamePromptDialog";
+import FolderAppearanceDialog from "./FolderAppearanceDialog";
+import MoveFolderDrawer from "./MoveFolderDrawer";
+import NotesSettingsDialog from "./NotesSettingsDialog";
 import type { NoteEditorHandle } from "../utils/noteEditorHandle";
-import {
-    addColumnRight,
-    addRowBelow,
-    buildTable,
-    removeColumn,
-    removeRow,
-} from "../utils/markdownTable";
+import { useEditorTools, type TableOp, type EditorDraft } from "../hooks/useEditorTools";
 
 import NoteShareDialog, { type NoteShareApi } from "./NoteShareDialog";
 
@@ -103,13 +114,12 @@ export interface NotesPageProps {
     notes: Note[];
     onClose: () => void;
     /**
-     * 左下角显示的账号名（inkstone 那样的「用户名 + 头像」）与设置入口。
+     * 左下角显示的账号名（inkstone 那样的「用户名 + 头像」）。
      *
-     * 全部**可选**：没传就只显示一个匿名的默认头像 —— 记事本自己不该依赖
+     * 可选：没传就只显示一个匿名的默认头像 —— 记事本自己不该依赖
      * 登录态，知道有账号的人传进来显示 nicer，不传也不会坏。
      */
     accountName?: string;
-    onOpenSettings?: () => void;
     onCreate: (draft?: Partial<Note>) => Promise<Note | null>;
     onUpdate: (id: number, patch: Partial<Note>) => Promise<void>;
     onDelete: (note: Note) => Promise<void>;
@@ -158,6 +168,11 @@ export interface NotesPageProps {
         // `Promise<T>` 不能赋给 `Promise<void>`（void 的那条宽松规则只在函数返回类型上生效，
         // 套一层 Promise 就不认了），写 void 会让调用方的实现没法返回查到的最新清单。
         onAssignTags: (noteId: number, tagIds: number[]) => Promise<NoteTag[] | null>;
+        /** 文件夹外观（icon / color）：交给上层走 updateFolder */
+        onStyleFolder?: (
+            id: number,
+            patch: { icon?: string | null; color?: string | null }
+        ) => Promise<void>;
         /** 版本历史：列快照 / 恢复 */
         onListRevisions?: (noteId: number) => Promise<NoteRevision[]>;
         onRestoreRevision?: (noteId: number, revisionId: number) => Promise<Note | null>;
@@ -252,12 +267,17 @@ function NavRow({
     count,
     selected,
     onClick,
+    /** 可选的行首小图标（文件夹外观用）；不给就不渲染，保持原有两列排版 */
+    icon,
+    iconColor,
     ...rest
 }: {
     label: string;
     count: number;
     selected: boolean;
     onClick: () => void;
+    icon?: ReactNode;
+    iconColor?: string;
 } & React.ButtonHTMLAttributes<HTMLButtonElement>) {
     return (
         <Box
@@ -280,7 +300,8 @@ function NavRow({
                 m: 0,
                 font: "inherit",
                 textAlign: "left",
-                bgcolor: selected ? "rgba(128,128,128,0.14)" : "transparent",
+                // inkstone 的选中态是「淡淡的强调色底」：比灰色底多一层「这是你正在看的」的指向
+                bgcolor: selected ? "color-mix(in srgb, var(--accent) 10%, transparent)" : "transparent",
                 color: selected ? "text.primary" : "text.secondary",
                 transition: "background-color 120ms ease",
                 "&:hover": { bgcolor: "rgba(128,128,128,0.1)" },
@@ -288,6 +309,15 @@ function NavRow({
             }}
             {...rest}
         >
+            {icon && (
+                <Box
+                    component='span'
+                    aria-hidden
+                    sx={{ display: "inline-flex", flexShrink: 0, color: iconColor ?? "inherit" }}
+                >
+                    {icon}
+                </Box>
+            )}
             <Typography
                 variant='body2'
                 sx={{
@@ -359,9 +389,20 @@ function FolderTagSection({
     onOpenNote,
     onCreateNoteIn,
     onReorder,
+    onAppearance,
+    unfiledNotes,
+    onNoteContext,
 }: {
     title: string;
-    items: { id: number; name: string; count: number; parent_id?: number | null }[];
+    items: {
+        id: number;
+        name: string;
+        count: number;
+        parent_id?: number | null;
+        /** 文件夹外观（icon 名 / 颜色）—— 只有文件夹节会传 */
+        icon?: string | null;
+        color?: string | null;
+    }[];
     onCreateChild?: (id: number) => void;
     onMove?: (id: number, parentId: number | null) => void;
     onDropNote?: (noteId: number, folderId: number) => void;
@@ -397,6 +438,15 @@ function FolderTagSection({
     onCreateNoteIn?: (folderId: number) => void;
     /** 同级内前后挪一位（inkstone 的「向前/向后移动」） */
     onReorder?: (folderId: number, dir: -1 | 1) => void;
+    /** 文件夹外观：打开图标/颜色选择弹窗 */
+    onAppearance?: (folderId: number) => void;
+    /**
+     * 未归入任何文件夹的笔记（inkstone：直接列在文件夹树下）。
+     * 只给「文件夹」节传；标签节没有归属概念。
+     */
+    unfiledNotes?: { id: number; title: string }[];
+    /** 内联笔记（选中文件夹的 + 未归类的）右键菜单：交给上层统一弹 */
+    onNoteContext?: (noteId: number, el: HTMLElement) => void;
 }) {
     const [menuId, setMenuId] = useState<number | null>(null);
     /** 「移动到…」二级菜单：要移动谁 + 锚点 */
@@ -520,6 +570,23 @@ function FolderTagSection({
                         // 给一个稳定的测试抓手：文件夹视图的筛选用例和未来的 e2e 都靠它定位，
                         // 别去按文字找（名字是用户自己起的，随时会变）
                         data-folder-id={item.id}
+                        // 文件夹外观：按存的 icon 名找组件；颜色不在调色板里就按默认画
+                        icon={
+                            (() => {
+                                const spec =
+                                    FOLDER_ICONS.find(i => i.key === (item.icon || "")) ??
+                                    FOLDER_ICONS[0];
+                                const Icon = spec.icon;
+                                return <Icon fontSize='inherit' sx={{ fontSize: 14 }} />;
+                            })()
+                        }
+                        iconColor={
+                            isFolderColor(item.color)
+                                ? item.color
+                                : selectedId === item.id
+                                  ? "var(--accent)"
+                                  : "text.disabled"
+                        }
                         draggable={Boolean(onMove)}
                         onDragStart={onMove ? e => {
                             e.dataTransfer.setData("application/navihive-folder", String(item.id));
@@ -528,6 +595,12 @@ function FolderTagSection({
                         } : undefined}
                         onDragEnd={onMove ? endDrag : undefined}
                         onClick={() => onSelect(selectedId === item.id ? null : item.id)}
+                        onContextMenu={e => {
+                            // 右键文件夹 = 直接开它的操作菜单（inkstone 同样支持右键）
+                            e.preventDefault();
+                            setMenuId(item.id);
+                            setAnchorEl(e.currentTarget as HTMLElement);
+                        }}
                     />
                     <IconButton
                         size='small'
@@ -573,6 +646,11 @@ function FolderTagSection({
                                     data-folder-note={n.id}
                                     aria-label={`打开笔记 ${n.title || "无标题"}`}
                                     onClick={() => onOpenNote?.(n.id)}
+                                    onContextMenu={e => {
+                                        if (!onNoteContext) return;
+                                        e.preventDefault();
+                                        onNoteContext(n.id, e.currentTarget as HTMLElement);
+                                    }}
                                     sx={{
                                         display: "block",
                                         width: "100%",
@@ -618,6 +696,72 @@ function FolderTagSection({
                         </Box>
                     );
                 })()}
+            {/* 未归入任何文件夹的笔记（inkstone：直接列在文件夹树下，不占中间那栏）。
+                右键可移动到文件夹（右侧抽屉）/归档/移到回收站。 */}
+            {unfiledNotes && unfiledNotes.length > 0 && (
+                <Box data-unfiled-notes='1' sx={{ pb: 0.5 }}>
+                    <Typography
+                        variant='caption'
+                        sx={{ display: "block", px: 1.25, pt: 0.5, pb: 0.25, fontSize: 11, color: "text.disabled" }}
+                    >
+                        未归类
+                    </Typography>
+                    {unfiledNotes.map(n => (
+                        <Box
+                            key={n.id}
+                            component='button'
+                            type='button'
+                            data-unfiled-note={n.id}
+                            aria-label={`打开笔记 ${n.title || "无标题"}`}
+                            onClick={() => onOpenNote?.(n.id)}
+                            onContextMenu={e => {
+                                if (!onNoteContext) return;
+                                e.preventDefault();
+                                onNoteContext(n.id, e.currentTarget as HTMLElement);
+                            }}
+                            sx={{
+                                display: "block",
+                                width: "100%",
+                                textAlign: "left",
+                                appearance: "none",
+                                border: "none",
+                                m: 0,
+                                font: "inherit",
+                                cursor: "pointer",
+                                minWidth: 0,
+                                px: 1.25,
+                                pl: 2.25,
+                                py: 0.35,
+                                borderRadius: 1.25,
+                                bgcolor:
+                                    activeNoteId === n.id
+                                        ? "color-mix(in srgb, var(--accent) 10%, transparent)"
+                                        : "transparent",
+                                color:
+                                    activeNoteId === n.id ? "text.primary" : "text.secondary",
+                                "&:hover": { bgcolor: "rgba(128,128,128,0.1)" },
+                                "&:focus-visible": {
+                                    outline: "2px solid var(--accent)",
+                                    outlineOffset: 1,
+                                },
+                            }}
+                        >
+                            <Typography
+                                component='span'
+                                sx={{
+                                    display: "block",
+                                    fontSize: 12.5,
+                                    overflow: "hidden",
+                                    textOverflow: "ellipsis",
+                                    whiteSpace: "nowrap",
+                                }}
+                            >
+                                {n.title || "无标题"}
+                            </Typography>
+                        </Box>
+                    ))}
+                </Box>
+            )}
             {items.length === 0 && (
                 <Typography variant='caption' sx={{ display: "block", px: 1, fontSize: 11, color: "text.disabled" }}>
                     还没有{title}
@@ -669,6 +813,17 @@ function FolderTagSection({
                         if (id !== null) onCreateChild(id);
                     }}>新建子文件夹</MenuItem>
                 )}
+                {onAppearance && (
+                    <MenuItem
+                        data-folder-op='appearance'
+                        onClick={() => {
+                            const id = menuId; setMenuId(null);
+                            if (id !== null) onAppearance(id);
+                        }}
+                    >
+                        文件夹外观
+                    </MenuItem>
+                )}
                 {onMove && (
                     <MenuItem
                         data-folder-op='move-to'
@@ -718,8 +873,10 @@ function FolderTagSection({
                             // 同理，删除的二次确认也走上层的 ConfirmDialog
                             if (id !== null) onAskRemove(id, items.find(i => i.id === id)?.name ?? "");
                         }}
+                        // 删除是危险动作：跟 inkstone 一样用红色示警
+                        sx={{ color: "error.main" }}
                     >
-                        删除
+                        删除文件夹
                     </MenuItem>
                 )}
             </Menu>
@@ -948,7 +1105,6 @@ export default function NotesPage({
     notes,
     onClose,
     accountName,
-    onOpenSettings,
     onCreate,
     onUpdate,
     onDelete,
@@ -965,6 +1121,12 @@ export default function NotesPage({
     const [keyword, setKeyword] = useState("");
     /** 左栏视图：全部 / 最近 / 收藏（回收站要软删字段，留到阶段三） */
     const [view, setView] = useState<NoteView>("all");
+    /** 中间栏排序（中栏右上角「排序」菜单）。
+     *  default = 置顶优先 + 原始顺序；title/created 按字面排序。 */
+    const [sortKey, setSortKey] = useState<"default" | "title" | "created">("default");
+    const [sortAnchor, setSortAnchor] = useState<HTMLElement | null>(null);
+    /** 「收起」：中栏右上角把列表收起；切视图 / 选文件夹 / 点搜索框时自动展开 */
+    const [middleHidden, setMiddleHidden] = useState(false);
     /** 阶段三收尾：导航列里选中的文件夹 / 标签（选中任一个就只看那一份） */
     const [activeFolder, setActiveFolder] = useState<number | null>(null);
     const [activeTag, setActiveTag] = useState<number | null>(null);
@@ -1039,31 +1201,15 @@ export default function NotesPage({
      * ⚠️ 存 noteId 而不是 note 本身：菜单开着的时候那条笔记可能被自动保存刷新成
      * 新对象，存旧引用会拿过期数据去渲染菜单项。
      */
-    const [rowMenu, setRowMenu] = useState<{ noteId: number; el: HTMLElement } | null>(null);
+    const [rowMenu, setRowMenu] = useState<{
+        noteId: number;
+        el: HTMLElement;
+        /** 菜单从哪里打开：列表行菜单全量；左栏内联笔记给精简菜单（inkstone 同款） */
+        source: "list" | "rail";
+    } | null>(null);
     /** 正在拖的笔记行（半透明反馈，与文件夹那边同一套观感） */
     const [draggingNoteId, setDraggingNoteId] = useState<number | null>(null);
-    /**
-     * 大纲跳转：把光标送到那一行并**选中整行**。
-     *
-     * 只挪光标不选中的话，长笔记里落点在哪一格根本看不见（光标是个 1px 的竖线，
-     * 夹在一堆同色文字里找不着）。选中整行当行高亮用，闭着眼也知道跳到了哪。
-     */
-    const jumpToOffset = useCallback((offset: number) => {
-        const el = textareaRef.current;
-        if (!el) return;
-        const value = el.value;
-        const from = offset;
-        const nl = value.indexOf("\n", from);
-        const to = nl === -1 ? value.length : nl;
-        el.focus();
-        el.setSelectionRange(from, to);
-        // CodeMirror 按真实布局滚动选区，包含自动换行，不再估算行高。
-    }, []);
-    /** 「归入文件夹 / 编辑标签」这两个二级弹窗的锚点（复用同一个 Menu 容器） */
-    const [folderPick, setFolderPick] = useState<{
-        el: HTMLElement;
-        noteId: number;
-    } | null>(null);
+    /** 「编辑标签」二级弹窗的锚点 */
     const [tagPick, setTagPick] = useState<{ el: HTMLElement; noteId: number } | null>(null);
     const [activeId, setActiveId] = useState<number | null>(notes[0]?.id ?? null);
     const [pane, setPane] = useState<Pane>("split");
@@ -1081,6 +1227,42 @@ export default function NotesPage({
     /** 草稿：编辑期间不立刻写库（点「保存」或切走才提交） */
     const [draft, setDraft] = useState<{ title: string; content: string } | null>(null);
     const [mobileDetail, setMobileDetail] = useState(false);
+
+    // ---------- 编辑器工具集（2026-10-06 抽进 useEditorTools） ----------
+    //
+    // 主编辑器与「侧边打开」的第二台编辑器各拿一份：插入/撤销状态（lastInsertRef 等）
+    // 随实例隔离，主编辑器撤销不会误伤侧编辑器刚插入的片段。
+    // ⚠️ hooks 不能条件调用：侧编辑器没开时 sideRef.current 是 null，
+    // 回调内部判空兜住，不会有副作用。
+    const sideRef = useRef<NoteEditorHandle | null>(null);
+    const [sideId, setSideId] = useState<number | null>(null);
+    const [sideDraft, setSideDraft] = useState<EditorDraft | null>(null);
+    const tools = useEditorTools(textareaRef, setDraft);
+    /** 大纲跳转 = 主编辑器的光标跳转（原局部实现已抽进 hook） */
+    const jumpToOffset = tools.jumpToOffset;
+    const sideTools = useEditorTools(sideRef, setSideDraft);
+
+    // ---------- 设置（外观 / 编辑器） ----------
+    const [uiSettings, setUiSettings] = useState<NotesUiSettings>(loadNotesSettings);
+    const [settingsOpen, setSettingsOpen] = useState(false);
+    useEffect(() => {
+        saveNotesSettings(uiSettings);
+    }, [uiSettings]);
+
+    // ---------- 文件夹外观弹窗（icon / color） ----------
+    const [appearanceFolderId, setAppearanceFolderId] = useState<number | null>(null);
+
+    // ---------- 「移动到文件夹」右侧抽屉 ----------
+    const [moveDrawerNoteId, setMoveDrawerNoteId] = useState<number | null>(null);
+
+    // ---------- 在侧边打开（两个文档同时编辑） ----------
+    // sideId / sideDraft / sideRef 已随工具集声明（hooks 顺序要求），这里只有派生状态
+
+    // ---------- 大纲面板（预览窗右侧，inkstone 的「大纲」） ----------
+    const [outlineOpen, setOutlineOpen] = useState(false);
+
+    /** 顶栏「⋯」：对**当前打开的笔记**弹出与右键同一套操作菜单（右下角按键已并入） */
+    const [activeMenuAnchor, setActiveMenuAnchor] = useState<HTMLElement | null>(null);
 
     // ⚠️ 这一行不能省。记事本自己是 `position: fixed` 的全屏层，压根不占文档流，
     // 但**底下的导航站主界面还挂载着**（卡片网格一两千像素高），document照样能滚。
@@ -1108,7 +1290,7 @@ export default function NotesPage({
         overlayKeyState.current = {
             dirty,
             save: () => save(),
-            blocking: Boolean(namePrompt || removeTarget || rowMenu || outlineAnchor || backlinkAnchor),
+            blocking: Boolean(namePrompt || removeTarget || rowMenu || backlinkAnchor),
         };
     });
     useEffect(() => {
@@ -1276,9 +1458,22 @@ export default function NotesPage({
     }, [notes, keyword, view, activeFolder, activeTag, noteTags, searchHits]);
 
     /** 阶段二：列表按月份分组（「十月」「九月…」），和 inkstone 一样 */
+    /** 中栏「排序」的排序键。default = 置顶优先 + 原始顺序（服务端排序） */
+    const sorted = useMemo(() => {
+        const list = [...filtered];
+        if (sortKey === "title") {
+            list.sort((a, b) => (a.title || "无标题").localeCompare(b.title || "无标题"));
+        } else if (sortKey === "created") {
+            list.sort((a, b) =>
+                String(b.created_at || "").localeCompare(String(a.created_at || ""))
+            );
+        }
+        return list;
+    }, [filtered, sortKey]);
+
     const monthGroups = useMemo(() => {
         const buckets = new Map<string, { label: string; items: Note[] }>();
-        for (const n of filtered) {
+        for (const n of sorted) {
             const raw = n.updated_at || n.created_at || "";
             const key = raw.slice(0, 7); // "2026-10"
             const list = buckets.get(key);
@@ -1289,7 +1484,7 @@ export default function NotesPage({
         // ⚠️ 不能直接拿「2026 年 10 月」这种中文字面排字典序：`9` > `1`，
         // 会把九月排到十月前面；按 `YYYY-MM` 排才对。
         return [...buckets.entries()].sort((a, b) => (a[0] < b[0] ? 1 : -1));
-    }, [filtered]);
+    }, [sorted]);
 
     /** 阶段三：回收站列表。还原是主操作，彻底删除放右边且要二次确认。 */
     const trashPane = (
@@ -1521,8 +1716,137 @@ export default function NotesPage({
         [onNotify]
     );
 
-    /** 大纲面板的锚点 */
-    const [outlineAnchor, setOutlineAnchor] = useState<HTMLElement | null>(null);
+    // ---------- 笔记右键菜单的各个动作（inkstone 的完整菜单） ----------
+
+    /** 复制到剪贴板并给出回执 —— 静默成功会让人怀疑「复制了没」 */
+    const copyText = useCallback(
+        async (text: string, okMsg: string) => {
+            try {
+                await navigator.clipboard.writeText(text);
+                onNotify?.(okMsg, "success");
+            } catch {
+                onNotify?.("复制失败（浏览器拒绝了剪贴板访问）", "error");
+            }
+        },
+        [onNotify]
+    );
+
+    /** 笔记的直达链接：打开记事本时带 #note=<id> 就直接定位到这条 */
+    const noteLink = useCallback((note: Note): string => {
+        if (note.id === undefined) return "";
+        return `${globalThis.location.origin}${globalThis.location.pathname}${globalThis.location.search}#note=${note.id}`;
+    }, []);
+
+    /** 深链接：打开记事本时 #note=<id> 存在就直接定位（配合「复制直链」） */
+    useEffect(() => {
+        const m = /^#note=(\d+)$/.exec(globalThis.location.hash || "");
+        if (!m) return;
+        const id = Number(m[1]);
+        if (notes.some(n => n.id === id)) {
+            setActiveId(id);
+            setMobileDetail(true);
+        }
+        // 只在笔记列表首次到位时读一次 hash
+    }, [notes.length]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    /** 在侧边打开：第二台编辑器同时编辑另一篇 */
+    const openInSide = useCallback(
+        (note: Note) => {
+            if (note.id === undefined) return;
+            if (note.id === activeId) {
+                onNotify?.("这条笔记已经在主编辑区打开了", "info");
+                return;
+            }
+            setSideId(note.id);
+            setSideDraft({ title: note.title || "", content: note.content || "" });
+            onNotify?.(`已在侧边打开「${note.title || "无标题"}」`, "success");
+        },
+        [activeId, onNotify]
+    );
+
+    /** 关闭侧边编辑器：先把还没落库的草稿刷掉（自动保存是 3 秒防抖，关了就丢） */
+    const closeSide = useCallback(() => {
+        const note = sideId !== null ? notes.find(n => n.id === sideId) : null;
+        if (note && sideDraft) {
+            const dirtySide =
+                sideDraft.title !== (note.title || "") ||
+                sideDraft.content !== (note.content || "");
+            if (dirtySide) {
+                void onUpdate(note.id!, {
+                    title: sideDraft.title,
+                    content: sideDraft.content,
+                });
+            }
+        }
+        setSideId(null);
+        setSideDraft(null);
+    }, [sideId, sideDraft, notes, onUpdate]);
+
+    /** 侧边那条笔记没了（被移到回收站 / 彻底删除）就收起侧边栏，
+        否则会留下一个「标题栏空白、编辑器空转」的半屏。 */
+    useEffect(() => {
+        if (sideId === null) return;
+        if (!notes.some(n => n.id === sideId)) {
+            setSideId(null);
+            setSideDraft(null);
+        }
+    }, [sideId, notes]);
+
+    /** 侧边编辑器的自动保存（与主编辑器同一套 3 秒防抖） */
+    useEffect(() => {
+        if (sideId === null || !sideDraft) return;
+        const note = notes.find(n => n.id === sideId);
+        if (!note) return;
+        const dirtySide =
+            sideDraft.title !== (note.title || "") ||
+            sideDraft.content !== (note.content || "");
+        if (!dirtySide) return;
+        const timer = setTimeout(() => {
+            void onUpdate(sideId, { title: sideDraft.title, content: sideDraft.content });
+        }, AUTO_SAVE_MS);
+        return () => clearTimeout(timer);
+    }, [sideDraft, sideId, notes, onUpdate]);
+
+    /** 创建副本：标题加「副本」，归到同一文件夹 */
+    const duplicateNote = useCallback(
+        async (note: Note) => {
+            const created = await onCreate({
+                title: `${note.title || "无标题"} 副本`,
+                content: note.content || "",
+                folder_id: note.folder_id ?? null,
+            });
+            if (created?.id) {
+                setActiveId(created.id);
+                setDraft({ title: created.title || "", content: created.content || "" });
+            }
+            onNotify?.("已创建副本", "success");
+        },
+        [onCreate, onNotify]
+    );
+
+    /** 导出 HTML（markdown-it 渲染成离线可看的单文件） */
+    const exportHtmlOne = useCallback(
+        (note: Note) => {
+            void exportNoteAsHtml(note.title, note.content)
+                .then(name => onNotify?.(`已导出「${name}」`, "success"))
+                .catch(error => {
+                    reportError(error, { source: "note-export-html" });
+                    onNotify?.("导出失败：" + (error instanceof Error ? error.message : "未知错误"), "error");
+                });
+        },
+        [onNotify]
+    );
+
+    /** 导出 PDF：调起系统打印（目的地选「另存为 PDF」） */
+    const exportPdfOne = useCallback(
+        (note: Note) => {
+            void printNoteAsPdf(note.title, note.content).catch(error => {
+                reportError(error, { source: "note-export-pdf" });
+                onNotify?.("打印失败：" + (error instanceof Error ? error.message : "未知错误"), "error");
+            });
+        },
+        [onNotify]
+    );
 
     // ---------- 反向链接（inkstone 顶栏那个「反向链接」）----------
     //
@@ -1810,608 +2134,6 @@ export default function NotesPage({
     };
 
     /**
-     * 上一次插入的片段（起止偏移 + 原文 + 是**哪个**按钮插的）。
-     * 只靠位置判断取消是不行的：插完后光标落在整段之后，其两侧未必还是
-     * 那两枚标记（比如在文末就什么都没有），硬判取消会把用户刚敲的 `**` 删掉。
-     * ⚠️ before/after 必须一起记：少了这层校验，点完「粗体」再点「斜体」，
-     * 斜体会把上一段粗体当成「同名按钮的第二次点击」给撤掉（浏览器实测抓出来的）。
-     */
-    const lastInsertRef = useRef<{
-        start: number;
-        snippet: string;
-        /** 插进去的正文（`selected`，可能是占位符） */
-        body: string;
-        /** 这次插入是「包住一段真实选区」还是「没选东西、只塞了个占位符」 */
-        hadSelection: boolean;
-        before: string;
-        after: string;
-    } | null>(null);
-
-    /** 「链接与引用」上一次插入的位置，用于「再点一次撤掉」 */
-    const footnoteRefRef = useRef<{
-        /** 正文里那个引用所在的位置 */
-        refAt: number;
-        snippet: string;
-        definition: string;
-        /** 插入时被引用替换掉的原文，撤掉时要还原回去 */
-        body: string;
-        /** 插入后光标停在哪。只有用户没动过光标才允许「再点一次撤掉」 */
-        caretAfter: number;
-    } | null>(null);
-
-    /**
-     * 通用「插一段 → 再点一次撤掉」开关（2026-10-06 补）。
-     *
-     * ⚠️ 之前只有 `insertAtCursor`（强调/代码/列表）和 `insertFootnoteRef` 有这个语义，
-     * 其余全是「点了就往上叠」：连点两下标题得到 `## ## 标题`，连点两下内容块得到
-     * `> [!NOTE] > [!NOTE] …`，连点两下分隔线中间多一条线。用户看到的是「按钮坏了」。
-     *
-     * 判据与 insertAtCursor 一致，缺一不可：
-     *   - **同一个工具**（换了按钮就不算，不能拿别的按钮撤掉这一段）
-     *   - **上次插的那段字还在原位**（用户改过别处就说明不是想「取消」，这时段对不上，
-     *     当成一次新的插入，绝不误删正文）
-     */
-    const lastToolRef = useRef<{ tool: string; at: number; snippet: string } | null>(null);
-
-    /**
-     * 包住一次「插入」。`build` 收到当前编辑器内容，算出插入后的文本与插入片段；
-     * 返回 null 表示这次不动（调用方据此什么都不做）。
-     */
-    const undoableInsert = useCallback(
-        (
-            tool: string,
-            build: (value: string) => {
-                next: string;
-                /** 插入内容在 next 里的起点 */
-                at: number;
-                /** 插进去的那一段（撤销时整段删掉） */
-                snippet: string;
-                caret: number;
-                selEnd: number;
-            } | null
-        ) => {
-            const el = textareaRef.current;
-            if (!el) return;
-            const value = el.value;
-            const write = (next: string, caret: number, selEnd: number) => {
-                el.value = next;
-                el.focus();
-                el.setSelectionRange(caret, selEnd);
-                setDraft(d => (d ? { ...d, content: next } : d));
-            };
-            const last = lastToolRef.current;
-            if (
-                last &&
-                last.tool === tool &&
-                value.slice(last.at, last.at + last.snippet.length) === last.snippet
-            ) {
-                lastToolRef.current = null;
-                const next =
-                    value.slice(0, last.at) + value.slice(last.at + last.snippet.length);
-                write(next, Math.min(last.at, next.length), Math.min(last.at, next.length));
-                return;
-            }
-            const built = build(value);
-            if (!built) return;
-            lastToolRef.current = { tool, at: built.at, snippet: built.snippet };
-            write(built.next, built.caret, built.selEnd);
-        },
-        []
-    );
-
-    /**
-     * 在光标处插入一段 Markdown 语法 —— **同名按钮是开关**：
-     * 已经有这层格式就摘掉，没有就包上（点第二下把上一次插入撤掉 = 取消）。
-     *
-     * 三条路径：
-     *   ① 连点同一个按钮，且那段还是上次插的东西：
-     *      - 刚才是**包住一段真实选区**插的 → 只拆掉两枚标记，**正文要留着**
-     *        （用户原话：「选中输入内容后点击两下粗体会删除内容，应该只取消粗体」）；
-     *      - 刚才是没选东西、只塞了个占位符 → 整段撤掉（没什么可留的，才叫「取消」）。
-     *   ② 选区已经带标记（`**粗体**`）或正好被两枚标记夹住 → 去掉标记；
-     *   ③ 其余 → 包一层（有选区包住选区，没有就放占位符）。
-     */
-    const insertAtCursor = useCallback(
-        (before: string, after: string, placeholder: string) => {
-            const el = textareaRef.current;
-            if (!el) return;
-            // ⚠️ **内容要从 textarea.value 读，不能从 draft（React state）读**。
-            // setDraft 是异步的：连点两下按钮时，第二次拿到的 draft 还是**上一次
-            // 插入之前**的值，于是又从旧的 selectionStart 插一遍 —— 两次插入
-            // 叠在同一处，内容就堆成一团（用户报「多次点击有问题」）。
-            // DOM 上的 value 永远是最新且唯一的事实来源。
-            const content = el.value;
-            const start = el.selectionStart ?? content.length;
-            const end = el.selectionEnd ?? start;
-
-            /** 写回：先落 DOM 值 + 光标，再同步 state（顺序反了连点会读到旧值） */
-            const writeBack = (next: string, caret: number, selEnd = caret) => {
-                el.value = next;
-                el.setSelectionRange(caret, selEnd);
-                el.focus();
-                setDraft(d => (d ? { ...d, content: next } : d));
-            };
-
-            // ① 连点**同一个**按钮 → 撤销上一次插入（用户要的「第二下取消」）
-            const last = lastInsertRef.current;
-            const sameTool = last && last.before === before && last.after === after;
-            if (sameTool && content.slice(last.start, last.start + last.snippet.length) === last.snippet) {
-                const at = last.start;
-                lastInsertRef.current = null;
-                if (last.hadSelection) {
-                    // ② 只取消这层格式：摘掉 before/after，把选中的正文原样留在原地，
-                    //    并顺手选中它，用户马上能接着改。
-                    const next =
-                        content.slice(0, at) + last.body + content.slice(at + last.snippet.length);
-                    writeBack(
-                        next,
-                        Math.min(at, next.length),
-                        Math.min(at + last.body.length, next.length)
-                    );
-                } else {
-                    // ③ 纯占位符插入（当时没选东西），第二下直接把这段撤掉
-                    const next =
-                        content.slice(0, at) + content.slice(at + last.snippet.length);
-                    writeBack(next, Math.min(at, next.length));
-                }
-                return;
-            }
-
-            const seg = content.slice(start, end) || "";
-            const pre = content.slice(start - before.length, start);
-            const post = content.slice(end, end + after.length);
-            // 选区自带两枚标记（整段选中），或选区正好被两枚标记夹住（只选了里面的字）
-            const segHasMarks =
-                seg.length > before.length + after.length &&
-                seg.startsWith(before) &&
-                seg.endsWith(after);
-            const segBare = !seg.startsWith(before) && !seg.endsWith(after);
-            const surrounding = pre === before && post === after;
-
-            // ② 已经有这层格式 → 摘掉（取消加粗/斜体…）
-            if (segHasMarks || (segBare && surrounding)) {
-                const body = segHasMarks ? seg.slice(before.length, seg.length - after.length) : seg;
-                const from = segHasMarks ? start : start - before.length;
-                const to = segHasMarks ? end : end + after.length;
-                const next = content.slice(0, from) + body + content.slice(to);
-                lastInsertRef.current = null;
-                writeBack(next, Math.min(from, next.length), Math.min(from + body.length, next.length));
-                return;
-            }
-
-            // ③ 包一层。⚠️ 光标必须落在**整段**之后（before + selected + after 都算上），
-            // 漏掉 after.length 的话光标会落在闭合的 `**` 中间，接着打字就插到标记里头。
-            const selected = seg || placeholder;
-            const next =
-                content.slice(0, start) + before + selected + after + content.slice(end);
-            lastInsertRef.current = {
-                start,
-                snippet: before + selected + after,
-                body: selected,
-                hadSelection: seg.length > 0,
-                before,
-                after,
-            };
-            // ⚠️ 选中一段字点按钮之后，这段字要**继续选着** ——
-            // 之前 writeBack 只给了 caret（selEnd 默认 = caret），选区被折叠到末尾，
-            // 用户看到的「点了粗体后选择就没了」，再点第二下「取消粗体」也无从判断。
-            // 行首前缀类（`# ` `- ` `> `）也一样：把刚包上的正文重新选上。
-            if (seg.length > 0) {
-                const bodyFrom = start + before.length;
-                writeBack(next, bodyFrom, Math.min(bodyFrom + selected.length, next.length));
-            } else {
-                writeBack(
-                    next,
-                    Math.min(next.length, start + before.length + selected.length + after.length)
-                );
-            }
-        },
-        []
-    );
-
-    /**
-     * 内容块（inkstone 工具栏「内容块」）：插一个 `> [!NOTE]` 骨架。
-     *
-     * 做成**下拉**而不是单一按钮：NOTE/TIP/IMPORTANT/WARNING/QUOTE 五种，
-     * 一次点一种。这里只负责把行首改成引用 + 加上类型标记，
-     * 真正的判定与渲染在 utils/markdownCallout.ts（那边有单测）。
-     */
-    const insertCallout = useCallback((type: string) => {
-        undoableInsert(`callout:${type}`, value => {
-            const pos = textareaRef.current?.selectionStart ?? value.length;
-            const lineStart = value.lastIndexOf("\n", Math.max(0, pos - 1)) + 1;
-            // 已经在引用块里就别再套一层 `>`，否则会变成 `>> [!NOTE]`
-            const inQuote = value.slice(lineStart, pos).startsWith(">");
-            const snippet = inQuote ? `[!${type}] ` : `> [!${type}] `;
-            const caret = lineStart + snippet.length;
-            return {
-                next: value.slice(0, lineStart) + snippet + value.slice(lineStart),
-                at: lineStart,
-                snippet,
-                caret,
-                selEnd: caret,
-            };
-        });
-    }, [undoableInsert]);
-
-    /**
-     * 「链接与引用」（inkstone 工具栏第 12 项）：把**选中的文字**变成一条脚注引用。
-     *
-     * 为什么不用 `[[双链]]` 语法实现：双链是「链到另一条**笔记**」，
-     * 这里要的是「链到本文的**某一段**」—— 语义不同，落地方式也不同
-     * （脚注 `[^n]` + 文末 `[^n]: 原文`，markdown-it-footnote 已经能渲染和跳回）。
-     *
-     * 三种情形：
-     *   - 选中了文字 → **选区被引用替换**（原文搬进文末定义），光标留在文末引用处
-     *   - 没选东西    → 文末补一条占位定义，正文插引用
-     *   - 连点第二下  → 撤掉刚插入的那一条（含文末定义，不留孤儿）
-     *
-     * ⚠️ 定义编号取「文末已有脚注最大值 + 1」，不能固定从 1 开始：
-     * 同一篇里插第二条时 `[^1]: …` 会被写成两条同名定义，markdown-it 只认第一条。
-     */
-    const insertFootnoteRef = useCallback(() => {
-        const el = textareaRef.current;
-        if (!el) return;
-        const content = el.value;
-        const start = el.selectionStart ?? content.length;
-        const end = el.selectionEnd ?? start;
-        const writeBack = (next: string, caret: number, selEnd = caret) => {
-            el.value = next;
-            el.setSelectionRange(caret, selEnd);
-            el.focus();
-            setDraft(d => (d ? { ...d, content: next } : d));
-        };
-
-        // ① 连点第二下 → 撤掉上一次插入的这条引用。
-        //    ⚠️ 两个前置条件缺一不可：
-        //      - 那段引用还在原位（内容没被别处改过）；
-        //      - **光标还停在插入后留下的位置** —— 用户挪过光标就说明他不是想「取消」，
-        //        而是要在别处再插一条，这时按「撤掉」会把他刚插的那条也抹掉。
-        //      （之前只判位置，插第二条时第一条的引用恰好还在眼前 → 误撤，整段正文消失）
-        const last = footnoteRefRef.current;
-        const caretNow = el.selectionStart ?? content.length;
-        if (
-            last &&
-            content.slice(last.refAt, last.refAt + last.snippet.length) === last.snippet &&
-            caretNow === last.caretAfter
-        ) {
-            // 引用换回原文，文末那条定义一起去掉（否则留下没人引用的孤儿定义）
-            const restored =
-                content.slice(0, last.refAt) + last.body + content.slice(last.refAt + last.snippet.length);
-            const defAt = restored.indexOf(last.definition);
-            const cleaned = (
-                defAt >= 0
-                    ? restored.slice(0, defAt) + restored.slice(defAt + last.definition.length)
-                    : restored
-            ).replace(/\s+$/, "");
-            footnoteRefRef.current = null;
-            writeBack(cleaned, Math.min(last.refAt, cleaned.length));
-            return;
-        }
-
-        // ② 编号：文末已有脚注的最大序号 + 1
-        let max = 0;
-        for (const m of content.matchAll(/\[\^(\d+)\]/g)) {
-            const n = Number(m[1]);
-            if (n > max) max = n;
-        }
-        const num = max + 1;
-        const snippet = `[^${num}]`;
-        const body = content.slice(start, end).trim() || "引用内容";
-
-        // 先在正文把选区换成引用，再在文末补定义 —— 顺序反了会让引用落在定义之后
-        const withRef =
-            content.slice(0, start) + snippet + content.slice(end);
-        const trimmedEnd = withRef.replace(/\s+$/, "");
-        const definition = `\n\n[^${num}]: ${body}`;
-        const next = `${trimmedEnd}${definition}`;
-        const caret = trimmedEnd.length + definition.length;
-        footnoteRefRef.current = { refAt: start, snippet, definition, body, caretAfter: caret };
-        // 光标留在文末：用户多半是要接着写下一条
-        writeBack(next, caret);
-    }, []);
-
-    /**
-     * 行首插入前缀（标题 `# `、引用 `> `、列表 `- `）。
-     * 和 insertAtCursor 走两条路：标题必须落在**当前行开头**，不能插在光标中间 ——
-     * 否则光标在段落中间点「H1」，得到的不是标题而是半句被 `#` 劈开的话。
-     */
-    /**
-     * 阶段四第 12 条：给代码块定语言。
-     *
-     * 两种情形分开处理：
-     *   - 光标已经在某个 ``` 围栏**里面**（或在围栏行上）→ 只把那一行的语言改掉，
-     *     不动代码正文。这是最常用的场景：先敲了围栏，回头想标语言。
-     *   - 不在围栏里 → 插一个新围栏；有选中内容就把选中部分当代码体包进去。
-     *
-     * ⚠️ 判「在不在围栏里」必须**同时**找到开和闭两行，且光标夹在中间：
-     * 只找开头会把「围栏之上、围栏之外」的位置也算进去，改到别的块上去。
-     * 另外光标就在围栏行上时也算在里面（否则想改语言得先把光标挪进代码块）。
-     */
-    const applyCodeLanguage = useCallback((lang: string) => {
-        const el = textareaRef.current;
-        if (!el) return;
-        const value = el.value;
-        const pos = el.selectionStart ?? value.length;
-        const end = el.selectionEnd ?? pos;
-
-        const lines = value.split("\n");
-        const cursorLine = value.slice(0, pos).split("\n").length - 1;
-        const isFence = (s: string) => /^\s*```/.test(s);
-
-        let openLine = -1;
-        for (let i = Math.min(cursorLine, lines.length - 1); i >= 0; i--) {
-            if (isFence(lines[i])) {
-                openLine = i;
-                break;
-            }
-        }
-        let closeLine = -1;
-        if (openLine >= 0) {
-            for (let i = openLine + 1; i < lines.length; i++) {
-                if (isFence(lines[i])) {
-                    closeLine = i;
-                    break;
-                }
-            }
-        }
-        const insideFence =
-            openLine >= 0 && closeLine > openLine && cursorLine >= openLine && cursorLine <= closeLine;
-
-        let next: string;
-        let caret: number;
-        let caretEnd: number;
-
-        if (insideFence) {
-            // 只改围栏行，正文一行不动
-            lines[openLine] = "```" + lang;
-            next = lines.join("\n");
-            // 光标留在原处：按字符位置换算（改的是第 openLine 行，光标在它下面，位置只受那一行长度变化影响）
-            const delta = lines[openLine].length - value.split("\n")[openLine].length;
-            caret = Math.min(pos + delta, next.length);
-            caretEnd = Math.min(end + delta, next.length);
-        } else {
-            const body = value.slice(pos, end) || "代码";
-            const block = "```" + lang + "\n" + body + "\n```";
-            // 前后补空行：紧贴上一段文字时 markdown-it 会把围栏并进上一段里
-            const head = value.slice(0, pos);
-            const tail = value.slice(end);
-            const lead = head && !head.endsWith("\n") ? "\n" : "";
-            const trail = tail && !tail.startsWith("\n") ? "\n" : "";
-            next = head + lead + block + trail + tail;
-            const bodyStart = head.length + lead.length + lang.length + 3 + 1; // ```lang + \n
-            caret = bodyStart;
-            caretEnd = Math.min(bodyStart + body.length, next.length);
-        }
-
-        el.value = next;
-        el.focus();
-        el.setSelectionRange(caret, caretEnd);
-        setDraft(d => (d ? { ...d, content: next } : d));
-    }, []);
-
-    /**
-     * 阶段四第 12 条：表格的插入 / 增删行列。
-     *
-     * 具体怎么改字符串全在 utils/markdownTable.ts（那边有单测），这里只负责
-     * 拿到光标位置 → 调纯函数 → 写回 textarea 并把光标摆回合理的位置。
-     */
-    const applyTable = useCallback((op: TableOp) => {
-        if (op.kind === "insert") {
-            // 「插入表格」也要能再点一次撤掉；增删行列改的是已有表格，不是插入，不走开关
-            undoableInsert(`table:${op.rows}x${op.cols}`, value => {
-                const p = textareaRef.current?.selectionStart ?? value.length;
-                const lineEnd = value.indexOf("\n", p);
-                const stop = lineEnd < 0 ? value.length : lineEnd;
-                // 同上：按整行切，别把光标所在行的正文丢掉
-                const above = value.slice(0, stop);
-                const below = value.slice(stop);
-                const table = buildTable(op.rows, op.cols);
-                const lead = above && !above.endsWith("\n") ? "\n" : "";
-                const trail = below && !below.startsWith("\n") ? "\n" : "";
-                const snippet = lead + ["", ...table, ""].join("\n") + trail;
-                const next = above + snippet + below;
-                const at = above.length;
-                const caret = at + lead.length;
-                return { next, at, snippet, caret, selEnd: caret };
-            });
-            return;
-        }
-
-        const el = textareaRef.current;
-        if (!el) return;
-        const value = el.value;
-        const pos = el.selectionStart ?? value.length;
-        const lines = value.split("\n");
-        const cursorLine = value.slice(0, pos).split("\n").length - 1;
-        const lineStart = value.lastIndexOf("\n", Math.max(0, pos - 1)) + 1;
-        const cursorCol = pos - lineStart;
-
-        let next: string[];
-        switch (op.kind) {
-            case "addRow":
-                next = addRowBelow(lines, cursorLine);
-                break;
-            case "delRow":
-                next = removeRow(lines, cursorLine);
-                break;
-            case "addCol":
-                next = addColumnRight(lines, cursorLine, cursorCol);
-                break;
-            case "delCol":
-                next = removeColumn(lines, cursorLine, cursorCol);
-                break;
-        }
-
-        const nextValue = next.join("\n");
-        // 光标：增删行列后尽量停在原来那一行（行号不变），列位置夹到新行长度内
-        const targetLine = Math.min(cursorLine, next.length - 1);
-        const before = next.slice(0, targetLine).join("\n").length + (targetLine > 0 ? 1 : 0);
-        const caret = Math.min(before + cursorCol, nextValue.length);
-
-        el.value = nextValue;
-        el.focus();
-        el.setSelectionRange(caret, caret);
-        setDraft(d => (d ? { ...d, content: nextValue } : d));
-    }, [undoableInsert]);
-
-    /**
-     * 阶段四第 12c 条：插入公式。
-     *
-     * 两种规格都直接复用 `insertAtCursor` —— 那套「选中一段 → 包一层；
-     * 再点一下摘掉这一层；没选中就插占位符」的开关语义已经在那儿了，
-     * 公式没有任何理由再写一遍（写第二遍就迟早跟主逻辑跑偏）。
-     *
-     * 行内默认 `$…$`，块级默认换行的 `$$\n…\n$$`；另有 LaTeX 原生写法
-     * （行内 `\(…\)`、块级 `\[\n…\n\]`）走同一套逻辑，只是换个定界符。
-     * 块级必须独占行，否则渲染层（markdown-it）会把定界符当成行首块来解析。
-     */
-    const applyFormula = useCallback(
-        (kind: "inline" | "block" | "inlineTex" | "blockTex") => {
-            const tex = kind === "inlineTex" || kind === "blockTex";
-            const [open, close] = tex ? ["\\(", "\\)"] : ["$", "$"];
-            if (kind === "inline" || kind === "inlineTex") {
-                insertAtCursor(open, close, "公式");
-                return;
-            }
-            // 块级公式**必须独占行**（`$$` / `\[` 单独成行才被认成公式块），所以不能套用
-            // insertAtCursor 的「就地包一层」—— 它会在光标处紧凑插入，把定界符粘到
-            // 上一行末尾，渲染层看到「摘要$$」这种行首就整块不认，公式人间蒸发。
-            const fence = tex ? ["\\[", "\\]"] : ["$$", "$$"];
-            undoableInsert(`formula:${kind}`, value => {
-                const pos = textareaRef.current?.selectionStart ?? value.length;
-                const end = textareaRef.current?.selectionEnd ?? pos;
-                const body = value.slice(pos, end) || "公式";
-                // 整块插到光标所在行**下面**，`$$` 各占一行。
-                // ⚠️ 按「整行」切，不能只留行首之前的内容 —— 否则光标停在行中间时，
-                // 那一行的正文会被整段丢掉（同 insertBlock 里那个坑）。
-                const lineEnd = value.indexOf("\n", pos);
-                const stop = lineEnd < 0 ? value.length : lineEnd;
-                const above = value.slice(0, stop);
-                const below = value.slice(stop);
-                const lead = above && !above.endsWith("\n") ? "\n" : "";
-                const trail = below && !below.startsWith("\n") ? "\n" : "";
-                const snippet = lead + [fence[0], body, fence[1]].join("\n") + trail;
-                const next = above + snippet + below;
-                const at = above.length;
-                // 光标落进公式正文（并且选中它，一打字就能换掉「公式」这个占位符）
-                const caret = at + lead.length + fence[0].length + 1;
-                return { next, at, snippet, caret, selEnd: caret + body.length };
-            });
-        },
-        [insertAtCursor, undoableInsert]
-    );
-
-    const insertLinePrefix = useCallback((prefix: string) => {
-        undoableInsert(`prefix:${prefix}`, value => {
-            const pos = textareaRef.current?.selectionStart ?? value.length;
-            // ⚠️ lastIndexOf 的第二个参数不能是 pos，要用 pos - 1，且夹到 0：
-            // 第 0 个字符前没有行首，传 -1 会命中字符串前面的 "-" 位置。
-            const lineStart = value.lastIndexOf("\n", Math.max(0, pos - 1)) + 1;
-            const caret = lineStart + prefix.length;
-            return {
-                next: value.slice(0, lineStart) + prefix + value.slice(lineStart),
-                at: lineStart,
-                snippet: prefix,
-                caret,
-                selEnd: caret,
-            };
-        });
-    }, [undoableInsert]);
-
-    /**
-     * 在光标所在行**下面**插入一整块（嵌入 / 折叠 / 标签页 / 分隔线都走这条）：
-     * 前后补空行，避免被 markdown-it 并进上一段；插入后整块选中，方便直接改占位符。
-     */
-    const insertBlock = useCallback((tool: string, block: string) => {
-        undoableInsert(`block:${tool}`, value => {
-            const pos = textareaRef.current?.selectionStart ?? value.length;
-            const lineEnd = value.indexOf("\n", pos);
-            const end = lineEnd < 0 ? value.length : lineEnd;
-            // ⚠️ 光标通常停在某一行的**中间**（甚至就是那行文字），
-            // 这里必须按「整行切开」而不是「行首切开」：
-            // 之前按行首算 head、只留 `value.slice(0, lineStart)`，
-            // 光标所在行的正文就被整段丢掉了（输出一行字 + 点插入 → 字没了）。
-            const above = value.slice(0, end);
-            const below = value.slice(end);
-            // 贴着正文时围栏 / 容器会被并进上一段，所以前面补一个换行；
-            // 后面只有在**下面还有内容**时才补，避免文末多一个空行
-            const lead = above && !above.endsWith("\n") ? "\n" : "";
-            const trail = below && !below.startsWith("\n") ? "\n" : "";
-            const snippet = lead + block + trail;
-            const next = above + snippet + below;
-            const at = above.length;
-            const caret = at + lead.length;
-            return { next, at, snippet, caret, selEnd: caret + block.length };
-        });
-    }, [undoableInsert]);
-
-    /** 笔记嵌入 `![[标题]]`（块级，单独成行） */
-    const onInsertEmbed = useCallback(() => {
-        insertBlock("embed", "![[笔记标题]]");
-    }, [insertBlock]);
-
-    /** 块引用 `![[标题#^块ID]]`（块级，单独成行） */
-    const onInsertBlockRef = useCallback(() => {
-        insertBlock("blockref", "![[笔记标题#^块ID]]");
-    }, [insertBlock]);
-
-    /** 给当前行追加一个块 ID（` ^abc12`），供 `![[标题#^块ID]]` 引用 */
-    const onInsertBlockId = useCallback(() => {
-        undoableInsert("blockid", value => {
-            const pos = textareaRef.current?.selectionStart ?? value.length;
-            const lineStart = value.lastIndexOf("\n", Math.max(0, pos - 1)) + 1;
-            const lineEnd = value.indexOf("\n", pos);
-            const end = lineEnd < 0 ? value.length : lineEnd;
-            const line = value.slice(lineStart, end);
-            // 短随机 id（只要符合 `[A-Za-z][A-Za-z0-9_-]` 即可，eng 风格够用）
-            const id = Math.random().toString(36).slice(2, 7);
-            const newLine = withBlockId(line, id);
-            // 记的 snippet 是**新追加的那一截**，撤销时只删它，正文一个字都不动
-            const snippet = newLine.slice(line.length);
-            const at = lineStart + line.length;
-            return {
-                next: value.slice(0, lineStart) + newLine + value.slice(end),
-                at,
-                snippet,
-                caret: at + snippet.length,
-                selEnd: at + snippet.length,
-            };
-        });
-    }, [undoableInsert]);
-
-    /** 在笔记最前面插入 YAML 属性块（已经有的话就在它前面再插一份：极少见，不特殊处理） */
-    const onInsertFrontMatter = useCallback(() => {
-        undoableInsert("frontmatter", value => {
-            const entries: FrontMatterEntry[] = [{ key: "tags", value: "", list: [] }];
-            const fm = buildFrontMatter(entries);
-            const snippet = fm + (value && !value.startsWith("\n") ? "\n" : "");
-            return {
-                next: snippet + value,
-                at: 0,
-                snippet,
-                caret: snippet.length,
-                selEnd: snippet.length,
-            };
-        });
-    }, [undoableInsert]);
-
-    /** 插入标签 `#标签`（行内，和前端 `#标签` 解析规则一致） */
-    const onInsertTag = useCallback(() => {
-        insertAtCursor("#", "", "标签");
-    }, [insertAtCursor]);
-
-    /** 插入双链 `[[标题]]`（行内，可点跳转） */
-    const onInsertWikiLink = useCallback(() => {
-        insertAtCursor("[[", "]]", "笔记标题");
-    }, [insertAtCursor]);
-
-    /** 插入隐藏注释 `%%…%%`（预览不显示） */
-    const onInsertHiddenComment = useCallback(() => {
-        insertAtCursor("%%", "%%", "隐藏注释");
-    }, [insertAtCursor]);
-
-    /**
      * Ctrl/Cmd + / 插入隐藏注释 —— inkstone 的「笔记工具」菜单里给这项标了这个快捷键，
      * 属于「不用记也知道在哪、记住了就很快」的那种。
      *
@@ -2426,27 +2148,12 @@ export default function NotesPage({
                 const focused = document.activeElement as HTMLElement | null;
                 if (!focused || !focused.closest?.(".cm-editor, textarea")) return;
                 e.preventDefault();
-                onInsertHiddenComment();
+                tools.onInsertHiddenComment();
             }
         };
         window.addEventListener("keydown", onKey);
         return () => window.removeEventListener("keydown", onKey);
-    }, [onInsertHiddenComment]);
-
-    /** 插入折叠块 `> [!FOLD] 标题` */
-    const onInsertFold = useCallback(() => {
-        insertBlock("fold", buildFoldSource(""));
-    }, [insertBlock]);
-
-    /** 插入标签页容器 `:::tabs … :::` */
-    const onInsertTabs = useCallback(() => {
-        insertBlock("tabs", buildTabSource());
-    }, [insertBlock]);
-
-    /** 插入分隔线 `---` */
-    const onInsertDivider = useCallback(() => {
-        insertBlock("divider", "---");
-    }, [insertBlock]);
+    }, [tools, textareaRef]);
 
     const charCount = draft ? draft.content.length : 0;
     /**
@@ -2476,6 +2183,11 @@ export default function NotesPage({
      * 「标签→笔记」那种树状归属不成立，所以标签视图仍走中间栏。
      */
     const folderFocus = activeFolder !== null;
+    /**
+     * 中栏隐藏 = 选中了文件夹（笔记内联在左栏）或用户点了「收起」。
+     * 两者共用同一套隐藏逻辑：导航列后面的那条拖拽缝、中间的列表列都不渲染。
+     */
+    const listHidden = folderFocus || middleHidden;
     const listPane = (
         <Box
             sx={{
@@ -2484,7 +2196,7 @@ export default function NotesPage({
                 // 选中文件夹时只剩导航列一栏（笔记内联在里面），总宽要把列表列那份让出来。
                 width: listCollapsed
                     ? 44
-                    : folderFocus
+                    : listHidden
                       ? { xs: "100%", md: navW + 14 }
                       : { xs: "100%", md: navW + listW + 14 },
                 flexShrink: 0,
@@ -2545,7 +2257,23 @@ export default function NotesPage({
                     size='small'
                     inputRef={searchRef}
                     value={keyword}
-                    onChange={e => setKeyword(e.target.value)}
+                    onChange={e => {
+                        setKeyword(e.target.value);
+                        // 打字即进入「全文搜索」视图（inkstone 的做法：搜索框就是
+                        // 全文搜索的入口，不再单独占一个导航行）。清空时留在搜索视图，
+                        // 给出全部列表（与原来的空关键词回退一致）。
+                        setView("search");
+                        setActiveFolder(null);
+                        setActiveTag(null);
+                        setMiddleHidden(false);
+                    }}
+                    onFocus={() => {
+                        // 点搜索框 = 打开全文搜索中栏（inkstone 同款交互）
+                        setView("search");
+                        setActiveFolder(null);
+                        setActiveTag(null);
+                        setMiddleHidden(false);
+                    }}
                     placeholder='搜索标题与内容'
                     slotProps={{
                         input: {
@@ -2582,13 +2310,15 @@ export default function NotesPage({
 
             {/* 左栏视图导航：inkstone 那种纵向条目 —— 一个入口一行、名字靠左、
                 条数靠右一行。
-                ⚠️ 归档 / 回收站**不在这一组里**：它们是低频入口，压在导航列表中间
+                ⚠️ 「搜索」不再占一行（2026-10-06 去掉）：上面那个搜索框本身就是
+                全文搜索的入口（聚焦即打开全文搜索中栏），重复的两行只会让人
+                分不清哪个管哪个。
+                ⚠️ 归档 / 回收站也不在这一组里：它们是低频入口，压在导航列表中间
                 会把「全部 / 最近 / 收藏」这些高频的挤开。挪到左下角单独一组
                 （与 inkstone 一致），见本列底部。 */}
             <Stack sx={{ px: 0.75, gap: 0.25, pb: 1 }}>
                 {(
                     [
-                        ["search", "搜索", keyword.trim() ? searchHits.length : viewCounts.all],
                         ["all", "全部", viewCounts.all],
                         ["recent", "最近", viewCounts.recent],
                         ["starred", "收藏", viewCounts.starred],
@@ -2604,6 +2334,7 @@ export default function NotesPage({
                             setView(key);
                             setActiveFolder(null);
                             setActiveTag(null);
+                            setMiddleHidden(false);
                         }}
                         data-view={key}
                     />
@@ -2618,11 +2349,14 @@ export default function NotesPage({
                     name: f.name || "未命名",
                     parent_id: f.parent_id,
                     count: folderCounts.get(f.id!) ?? 0,
+                    icon: f.icon,
+                    color: f.color,
                 }))}
                 selectedId={activeFolder}
                 onSelect={id => {
                     setActiveFolder(id);
                     setActiveTag(null);
+                    setMiddleHidden(false);
                     if (id === null) setView("all");
                 }}
                 onCreate={() => askName("folder")}
@@ -2648,6 +2382,35 @@ export default function NotesPage({
                         ? (id, dir) => void folderTags.onReorderFolder?.(id, dir)
                         : undefined
                 }
+                onAppearance={
+                    folderTags?.onStyleFolder
+                        ? id => setAppearanceFolderId(id)
+                        : undefined
+                }
+                // 未归入任何文件夹的笔记直接列在文件夹树下（inkstone 布局）
+                unfiledNotes={
+                    notes
+                        .filter(n => !n.archived && (n.folder_id === null || n.folder_id === undefined))
+                        // ⚠️ 搜索时这一组也要跟着筛（2026-10-06）：左栏留着没命中的
+                        // 笔记、中栏却只剩命中的，用户会以为「搜索坏了」。
+                        // 判据与 searchHits 一致：标题 / 正文 / 标签名任一命中。
+                        .filter(n => {
+                            const kw = keyword.trim().toLowerCase();
+                            if (!kw) return true;
+                            if ((n.title || "").toLowerCase().includes(kw)) return true;
+                            if ((n.content || "").toLowerCase().includes(kw)) return true;
+                            return tagNamesOf(n, noteTags, tags).some(t =>
+                                t.toLowerCase().includes(kw)
+                            );
+                        })
+                        .sort((a, b) =>
+                            String(b.updated_at || b.created_at || "").localeCompare(
+                                String(a.updated_at || a.created_at || "")
+                            )
+                        )
+                        .map(n => ({ id: n.id!, title: n.title || "" }))
+                }
+                onNoteContext={(noteId, el) => setRowMenu({ noteId, el, source: "rail" })}
             />
             <FolderTagSection
                 title='标签'
@@ -2660,6 +2423,7 @@ export default function NotesPage({
                 onSelect={id => {
                     setActiveTag(id);
                     setActiveFolder(null);
+                    setMiddleHidden(false);
                     if (id === null) setView("all");
                 }}
                 onCreate={() => askName("tag")}
@@ -2706,6 +2470,10 @@ export default function NotesPage({
                                 setView(key);
                                 setActiveFolder(null);
                                 setActiveTag(null);
+                                // ⚠️ 这两个入口也要把中栏放出来：用户刚点过「收起列表」，
+                                // 再点归档 / 回收站会只剩导航列 —— 屏幕上什么都没有，
+                                // 看着就像这两个入口坏了（顶部四个入口已经处理过）。
+                                setMiddleHidden(false);
                             }}
                             data-view={key}
                         />
@@ -2746,19 +2514,18 @@ export default function NotesPage({
                     >
                         {accountName || "未登录"}
                     </Typography>
-                    {onOpenSettings && (
-                        <Tooltip title='设置'>
-                            <IconButton
-                                size='small'
-                                aria-label='设置'
-                                data-tool='settings'
-                                onClick={onOpenSettings}
-                                sx={{ p: 0.25 }}
-                            >
-                                <SettingsIcon fontSize='inherit' />
-                            </IconButton>
-                        </Tooltip>
-                    )}
+                    {/* 设置：打开记事本自己的设置（外观 / 编辑器），不再复用导航站配置 */}
+                    <Tooltip title='设置'>
+                        <IconButton
+                            size='small'
+                            aria-label='设置'
+                            data-tool='settings'
+                            onClick={() => setSettingsOpen(true)}
+                            sx={{ p: 0.25 }}
+                        >
+                            <SettingsIcon fontSize='inherit' />
+                        </IconButton>
+                    </Tooltip>
                 </Box>
             </Box>
             </Box>
@@ -2769,7 +2536,7 @@ export default function NotesPage({
                 所以单测和合成事件探针都会「通过」，真机却拖不动（2026-10-06 踩过）。
                 ⚠️ 选中文件夹时中间栏整个不渲染，这条缝也跟着收起来 ——
                 不然会留下一条拖了没用的把手，点它还会把 listW 存进 localStorage。 */}
-            {!folderFocus && (
+            {!listHidden && (
                 <ColResizeHandle
                     label='拖动调整导航列宽度'
                     onDrag={startDrag('nav')}
@@ -2781,7 +2548,7 @@ export default function NotesPage({
                 ⚠️ 选中文件夹时**整列不渲染**（inkstone 的文件夹树）：
                 笔记已经直接列在左栏那个文件夹下面了，中间再来一栏是同一批内容，
                 白占 200 多 px，还会让人以为是两份不同的笔记。 */}
-            {!folderFocus && (
+            {!listHidden && (
             <>
             <Box
                 data-list-col='1'
@@ -2799,6 +2566,72 @@ export default function NotesPage({
                     py: 1,
                 }}
             >
+            {/* 中栏头部（inkstone：视图名 + 右上角 排序 / 新建 / 收起）。
+                回收站视图不給这三个按钮（那里没有「新建」语义，排序无意义）。 */}
+            {view !== "trash" && (
+                <Box
+                    data-list-header='1'
+                    sx={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 0.25,
+                        px: 1.5,
+                        pb: 0.5,
+                        flexShrink: 0,
+                    }}
+                >
+                    <Typography
+                        variant='body2'
+                        sx={{ flex: 1, fontWeight: 600, fontSize: 13.5, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                    >
+                        {view === "search"
+                            ? "全文搜索"
+                            : view === "all"
+                              ? "所有笔记"
+                              : view === "recent"
+                                ? "最近"
+                                : view === "starred"
+                                  ? "收藏"
+                                  : view === "uncategorized"
+                                    ? "未归类"
+                                    : "归档"}
+                    </Typography>
+                    <Tooltip title='排序'>
+                        <IconButton
+                            size='small'
+                            aria-label='排序'
+                            data-tool='sort'
+                            onClick={e => setSortAnchor(e.currentTarget)}
+                            sx={{ p: 0.4 }}
+                        >
+                            <SortIcon fontSize='inherit' />
+                        </IconButton>
+                    </Tooltip>
+                    <Tooltip title='新建笔记'>
+                        <IconButton
+                            size='small'
+                            aria-label='新建笔记'
+                            data-tool='list-new-note'
+                            onClick={() => void startCreateInFolder(activeFolder)}
+                            sx={{ p: 0.4 }}
+                        >
+                            <NoteAddIcon fontSize='inherit' />
+                        </IconButton>
+                    </Tooltip>
+                    <Tooltip title='收起列表'>
+                        <IconButton
+                            size='small'
+                            aria-label='收起列表'
+                            data-tool='collapse-list'
+                            onClick={() => setMiddleHidden(true)}
+                            sx={{ p: 0.4 }}
+                        >
+                            <CloseIcon fontSize='inherit' />
+                        </IconButton>
+                    </Tooltip>
+                </Box>
+            )}
+
             {notes.length > 0 && (                <Typography
                     variant='caption'
                     color='text.secondary'
@@ -2862,6 +2695,12 @@ export default function NotesPage({
                                         e.preventDefault();
                                         openNote(note);
                                     }
+                                }}
+                                onContextMenu={e => {
+                                    // 右键行 = 打开完整操作菜单（inkstone 同款交互）
+                                    e.preventDefault();
+                                    if (note.id === undefined) return;
+                                    setRowMenu({ noteId: note.id, el: e.currentTarget as HTMLElement, source: "list" });
                                 }}
                                 sx={{
                                     mx: 0.75,
@@ -2927,7 +2766,7 @@ export default function NotesPage({
                                             const id = note.id;
                                             if (id === undefined) return;
                                             setRowMenu(
-                                                menuOpen ? null : { noteId: id, el: e.currentTarget }
+                                                menuOpen ? null : { noteId: id, el: e.currentTarget, source: "list" }
                                             );
                                         }}
                                         sx={{
@@ -2997,14 +2836,13 @@ export default function NotesPage({
                 )}
             </Box>
 
-            {/* ---------- 列表行的操作菜单 ----------
-                以前这些动作（置顶 / 归档 / 归入文件夹 / 标签 / 删除）只挂在**底部状态栏**上，
-                也就是「只能对当前打开的那条笔记操作」—— 想给列表里第 8 条打标签，
-                得先点开它、找到状态栏、点对按钮。
-                inkstone 是每行 hover 出「⋯」，这里照抄：
-                  - 菜单按钮 stopPropagation，否则点它会顺带打开这条笔记；
-                  - 「归入文件夹 / 标签」这两个二级菜单是**唯一**能把笔记归类进去的入口
-                    （后端 setNoteTags / folder_id 早就有了，界面上却没有地方调）。 */}
+            {/* ---------- 笔记的操作菜单（右键 / hover「⋯」都能打开） ----------
+                与 inkstone 对齐的两套菜单：
+                  - list（中栏列表行，右键或 ⋯）：复制标题/ID/直链、在侧边打开、收藏、
+                    创建副本、归档、移动到文件夹、导出三件套、移到回收站；
+                  - rail（左栏内联笔记右键）：精简版 —— 在侧边打开/收藏/移动到文件夹/
+                    归档/移到回收站。
+                菜单带图标（inkstone 的菜单行是「图标 + 文字」）。 */}
             <Menu
                 open={Boolean(rowMenu)}
                 anchorEl={rowMenu?.el ?? null}
@@ -3013,40 +2851,91 @@ export default function NotesPage({
                 {(() => {
                     const note = rowMenu ? notes.find(n => n.id === rowMenu.noteId) : null;
                     if (!note) return null;
+                    const source = rowMenu?.source ?? "list";
                     const done = async (fn: () => Promise<unknown> | void) => {
                         setRowMenu(null);
                         await fn();
                     };
+                    const moveToFolder = () => {
+                        const id = note.id;
+                        setRowMenu(null);
+                        if (id !== undefined) setMoveDrawerNoteId(id);
+                    };
+                    // 左栏内联笔记的精简菜单（inkstone 的左栏右键）
+                    if (source === "rail") {
+                        return (
+                            <>
+                                <MenuItem data-row-op='open-side' onClick={() => void done(() => openInSide(note))}>
+                                    <OpenInNewIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
+                                    在侧边打开
+                                </MenuItem>
+                                <MenuItem data-row-op='pin' onClick={() => void done(() => onTogglePin(note))}>
+                                    <PushPinIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
+                                    {note.pinned ? "取消收藏" : "收藏"}
+                                </MenuItem>
+                                <MenuItem data-row-op='folder' onClick={moveToFolder}>
+                                    <FolderIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
+                                    移动到文件夹…
+                                </MenuItem>
+                                <MenuItem data-row-op='archive' onClick={() => void done(() => onToggleArchive(note))}>
+                                    <ArchiveIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
+                                    {note.archived ? "取消归档" : "归档"}
+                                </MenuItem>
+                                <Divider />
+                                <MenuItem
+                                    data-row-op='delete'
+                                    onClick={() => void done(() => onDelete(note))}
+                                    sx={{ color: "error.main" }}
+                                >
+                                    <DeleteOutlineIcon fontSize='small' sx={{ mr: 1, fontSize: 16 }} />
+                                    移到回收站
+                                </MenuItem>
+                            </>
+                        );
+                    }
                     return (
                         <>
                             <MenuItem
-                                data-row-op='pin'
-                                onClick={() =>
-                                    void done(() => onTogglePin(note))
-                                }
+                                data-row-op='copy-title'
+                                onClick={() => void done(() => copyText(note.title || "", "已复制标题"))}
                             >
+                                <DriveFileRenameOutlineIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
+                                复制标题
+                            </MenuItem>
+                            <MenuItem
+                                data-row-op='copy-id'
+                                onClick={() => void done(() => copyText(String(note.id ?? ""), "已复制 ID"))}
+                            >
+                                <ContentCopyIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
+                                复制 ID
+                            </MenuItem>
+                            <MenuItem
+                                data-row-op='copy-link'
+                                onClick={() => void done(() => copyText(noteLink(note), "已复制直链"))}
+                            >
+                                <LinkIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
+                                复制直链
+                            </MenuItem>
+                            <Divider />
+                            <MenuItem data-row-op='open-side' onClick={() => void done(() => openInSide(note))}>
+                                <OpenInNewIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
+                                在侧边打开
+                            </MenuItem>
+                            <MenuItem data-row-op='pin' onClick={() => void done(() => onTogglePin(note))}>
+                                <PushPinIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
                                 {note.pinned ? "取消收藏" : "收藏"}
                             </MenuItem>
-                            <MenuItem
-                                data-row-op='archive'
-                                onClick={() => void done(() => onToggleArchive(note))}
-                            >
+                            <MenuItem data-row-op='duplicate' onClick={() => void done(() => duplicateNote(note))}>
+                                <NoteAltIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
+                                创建副本
+                            </MenuItem>
+                            <MenuItem data-row-op='archive' onClick={() => void done(() => onToggleArchive(note))}>
+                                <ArchiveIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
                                 {note.archived ? "取消归档" : "归档"}
                             </MenuItem>
-                            <MenuItem
-                                data-row-op='folder'
-                                onClick={() => {
-                                    // rowMenu 此刻一定非空（菜单能打开就是它给的锚），
-                                    // 但 TS 看不穿这层间接，先取局部变量再窄化。
-                                    const pick = rowMenu;
-                                    const id = note.id;
-                                    setRowMenu(null);
-                                    if (pick && id !== undefined) {
-                                        setFolderPick({ el: pick.el, noteId: id });
-                                    }
-                                }}
-                            >
-                                归入文件夹…
+                            <MenuItem data-row-op='folder' onClick={moveToFolder}>
+                                <FolderIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
+                                移动到文件夹…
                             </MenuItem>
                             <MenuItem
                                 data-row-op='tags'
@@ -3059,13 +2948,21 @@ export default function NotesPage({
                                     }
                                 }}
                             >
+                                <PaletteIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
                                 编辑标签…
                             </MenuItem>
-                            <MenuItem
-                                data-row-op='export'
-                                onClick={() => void done(() => exportOne(note))}
-                            >
+                            <Divider />
+                            <MenuItem data-row-op='export' onClick={() => void done(() => exportOne(note))}>
+                                <FileDownloadIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
                                 导出 Markdown
+                            </MenuItem>
+                            <MenuItem data-row-op='export-html' onClick={() => void done(() => exportHtmlOne(note))}>
+                                <FileDownloadIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
+                                导出 HTML
+                            </MenuItem>
+                            <MenuItem data-row-op='export-pdf' onClick={() => void done(() => exportPdfOne(note))}>
+                                <FileDownloadIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
+                                导出 PDF
                             </MenuItem>
                             <Divider />
                             <MenuItem
@@ -3073,50 +2970,91 @@ export default function NotesPage({
                                 onClick={() => void done(() => onDelete(note))}
                                 sx={{ color: "error.main" }}
                             >
-                                删除（进回收站）
+                                <DeleteOutlineIcon fontSize='small' sx={{ mr: 1, fontSize: 16 }} />
+                                移到回收站
                             </MenuItem>
                         </>
                     );
                 })()}
             </Menu>
 
-            {/* 归入文件夹：列出全部文件夹 + 「移出文件夹」 */}
+            {/* 「排序」菜单（中栏头部） */}
             <Menu
-                open={Boolean(folderPick)}
-                anchorEl={folderPick?.el ?? null}
-                onClose={() => setFolderPick(null)}
+                open={Boolean(sortAnchor)}
+                anchorEl={sortAnchor}
+                onClose={() => setSortAnchor(null)}
             >
-                <MenuItem
-                    data-folder-pick='none'
-                    onClick={() => {
-                        const pick = folderPick;
-                        setFolderPick(null);
-                        if (pick) void onUpdate(pick.noteId, { folder_id: null });
-                    }}
-                >
-                    未归类（移出文件夹）
-                </MenuItem>
-                <Divider />
-                {folders.length === 0 && (
-                    <MenuItem disabled>还没有文件夹（左栏「文件夹」右边 + 新建）</MenuItem>
-                )}
-                {folders.map(f => (
+                {(
+                    [
+                        ["default", "默认（置顶优先）"],
+                        ["title", "按标题"],
+                        ["created", "按创建时间"],
+                    ] as const
+                ).map(([key, label]) => (
                     <MenuItem
-                        key={f.id}
-                        data-folder-pick={f.id}
-                        selected={notes.find(n => n.id === folderPick?.noteId)?.folder_id === f.id}
+                        key={key}
+                        data-sort-op={key}
+                        selected={sortKey === key}
                         onClick={() => {
-                            const pick = folderPick;
-                            setFolderPick(null);
-                            if (pick && f.id !== undefined) {
-                                void onUpdate(pick.noteId, { folder_id: f.id });
-                            }
+                            setSortKey(key);
+                            setSortAnchor(null);
                         }}
                     >
-                        {f.name}
+                        {sortKey === key ? "✓ " : ""}
+                        {label}
                     </MenuItem>
                 ))}
             </Menu>
+
+            {/* 「移动到文件夹」右侧抽屉（inkstone 的做法：右侧滑出、带搜索） */}
+            <MoveFolderDrawer
+                open={moveDrawerNoteId !== null}
+                noteTitle={
+                    moveDrawerNoteId !== null
+                        ? notes.find(n => n.id === moveDrawerNoteId)?.title || ""
+                        : ""
+                }
+                folders={folders.map(f => ({ id: f.id!, name: f.name || "未命名", icon: f.icon, color: f.color }))}
+                currentFolderId={
+                    moveDrawerNoteId !== null
+                        ? notes.find(n => n.id === moveDrawerNoteId)?.folder_id ?? null
+                        : null
+                }
+                onPick={(folderId) => {
+                    const id = moveDrawerNoteId;
+                    setMoveDrawerNoteId(null);
+                    if (id !== null) void onUpdate(id, { folder_id: folderId });
+                }}
+                onClose={() => setMoveDrawerNoteId(null)}
+            />
+
+            {/* 文件夹外观弹窗（icon / color，走 updateFolder 落库） */}
+            <FolderAppearanceDialog
+                open={appearanceFolderId !== null}
+                folder={
+                    (() => {
+                        const f =
+                            appearanceFolderId !== null
+                                ? folders.find(x => x.id === appearanceFolderId)
+                                : null;
+                        // 弹窗要的是「确定存在」的形状（id: number），这里窄化一次
+                        return f?.id !== undefined
+                            ? { id: f.id, name: f.name || "未命名", icon: f.icon, color: f.color }
+                            : null;
+                    })()
+                }
+                onSave={async (icon, color) => {
+                    if (appearanceFolderId !== null) {
+                        await folderTags?.onStyleFolder?.(appearanceFolderId, { icon, color });
+                    }
+                }}
+                onClose={() => setAppearanceFolderId(null)}
+            />
+
+            {/* ⚠️ 原来这里有一个「归入文件夹」的锚点 Menu，2026-10-06 删掉了：
+                「移动到文件夹」改成 inkstone 那种**右侧抽屉**（见 MoveFolderDrawer），
+                这个 Menu 从此没有任何入口能把它打开 —— 留着就是一段永远不渲染的
+                死代码，改文件夹逻辑时很容易改错地方。 */}
 
             {/* 编辑标签：勾选式多选，一次性整组保存（后端就是「整组替换」语义） */}
             <Menu
@@ -3201,28 +3139,33 @@ export default function NotesPage({
                     />
 
                     {/* 格式工具栏：照 inkstone 那一排。放在标题与内容区之间，
-                        点一下在光标处插入语法 —— 省得手打 `**` 和 `- [ ]`。 */}
+                        点一下在光标处插入语法 —— 省得手打 `**` 和 `- [ ]`。
+                        设置里可以整个关掉（uiSettings.showToolbar）。 */}
+                    {uiSettings.showToolbar && (
                     <MarkdownToolbar
-                        onInsert={insertAtCursor}
-                        onInsertLinePrefix={insertLinePrefix}
-                        onCodeLanguage={applyCodeLanguage}
-                        onTable={applyTable}
-                        onFormula={applyFormula}
-                        onFootnoteRef={insertFootnoteRef}
-                        onCallout={insertCallout}
-                        onInsertEmbed={onInsertEmbed}
-                        onInsertBlockRef={onInsertBlockRef}
-                        onInsertBlockId={onInsertBlockId}
-                        onInsertFrontMatter={onInsertFrontMatter}
-                        onInsertTag={onInsertTag}
-                        onInsertWikiLink={onInsertWikiLink}
-                        onInsertHiddenComment={onInsertHiddenComment}
-                        onInsertFold={onInsertFold}
-                        onInsertTabs={onInsertTabs}
-                        onInsertDivider={onInsertDivider}
+                        onInsert={tools.insertAtCursor}
+                        onInsertLinePrefix={tools.insertLinePrefix}
+                        onCodeLanguage={tools.applyCodeLanguage}
+                        onTable={tools.applyTable}
+                        onFormula={tools.applyFormula}
+                        onFootnoteRef={tools.insertFootnoteRef}
+                        onCallout={tools.insertCallout}
+                        onInsertEmbed={tools.onInsertEmbed}
+                        onInsertBlockRef={tools.onInsertBlockRef}
+                        onInsertBlockId={tools.onInsertBlockId}
+                        onInsertFrontMatter={tools.onInsertFrontMatter}
+                        onInsertTag={tools.onInsertTag}
+                        onInsertWikiLink={tools.onInsertWikiLink}
+                        onInsertHiddenComment={tools.onInsertHiddenComment}
+                        onInsertFold={tools.onInsertFold}
+                        onInsertTabs={tools.onInsertTabs}
+                        onInsertDivider={tools.onInsertDivider}
                     />
+                    )}
 
-                    {/* 内容区：源码 | 预览 */}
+                    {/* 内容区：源码 | 预览 | 大纲面板。外层再包一行，
+                        大纲面板（outlineOpen）作为第三列贴在预览右侧（inkstone 布局）。 */}
+                    <Box sx={{ flex: 1, display: "flex", minHeight: 0, minWidth: 0 }}>
                     <Box
                         ref={splitBoxRef}
                         sx={{
@@ -3279,10 +3222,16 @@ export default function NotesPage({
                                 }}
                             >
                                 <NoteEditor
-                                    key={active.id}
+                                    // 行号/拼写开关会重建编辑器（CodeMirror 的扩展只能在建时定），
+                                    // 拼进 key；字体/字号走 CSS 变量，不用重建。
+                                    key={`${active.id}|${uiSettings.lineNumbers ? 1 : 0}|${uiSettings.spellcheck ? 1 : 0}`}
                                     editorRef={textareaRef}
                                     value={draft?.content ?? ""}
                                     onChange={content => setDraft(d => d ? { ...d, content } : d)}
+                                    lineNumbers={uiSettings.lineNumbers}
+                                    spellcheck={uiSettings.spellcheck}
+                                    font={uiSettings.editorFont}
+                                    fontSize={uiSettings.editorFontSize}
                                 />
                             </Box>
                         )}
@@ -3320,13 +3269,13 @@ export default function NotesPage({
                                     flex: 1,
                                     minWidth: 0,
                                     // ⚠️ minHeight:0 不能少：flex 子项默认 min-height:auto，
-                                    // Markdown 一长就把这一层撑高、连带整页出现滚动条
-                                    //（该滚的只有预览区内部）。之前只给外层容器加了，
-                                    // 子项漏掉 → 症状就是「怎么还有滚动条」。
+                                    // Markdown 一长就把这一层撑高、连带整页出现滚动条。
                                     minHeight: 0,
                                     overflowY: "auto",
                                     p: 2.5,
-                                    lineHeight: 1.7,
+                                    // 设置面板「外观」：预览正文字号 / 行高直接在这里生效
+                                    fontSize: uiSettings.previewFontSize,
+                                    lineHeight: uiSettings.lineHeight,
                                     border:
                                         pane === "split"
                                             ? "1px solid var(--card-border, rgba(128,128,128,0.45))"
@@ -3338,7 +3287,25 @@ export default function NotesPage({
                                             : "transparent",
                                 }}
                             >
-                                <Box onDoubleClick={e => {
+                                <Box
+                                    data-preview-content='1'
+                                    sx={{
+                                        // 设置面板「内容宽度」：窄/标准/宽/满 四档，
+                                        // 窄于可用宽度时居中（inkstone 的预览排版同款）
+                                        width: "100%",
+                                        maxWidth:
+                                            uiSettings.contentWidth === "narrow"
+                                                ? 560
+                                                : uiSettings.contentWidth === "standard"
+                                                  ? 760
+                                                  : uiSettings.contentWidth === "wide"
+                                                    ? 980
+                                                    : "100%",
+                                        mx: "auto",
+                                        wordBreak: "break-word",
+                                    }}
+                                
+                                onDoubleClick={e => {
                                     const target = (e.target as HTMLElement).closest<HTMLElement>("[data-inline-tag]");
                                     const tag = tags.find(t => t.name === target?.dataset.inlineTag);
                                     if (tag?.id !== undefined) {
@@ -3369,6 +3336,87 @@ export default function NotesPage({
                                 /></Box>
                             </Box>
                         )}
+                    </Box>
+                    {/* 大纲面板：当前这条笔记的标题层级，常驻在预览右侧。
+                        没标题时给一句说明，别给一块空白让人以为功能坏了。 */}
+                    {outlineOpen && (
+                        <Box
+                            data-outline-panel='1'
+                            sx={{
+                                width: 190,
+                                flexShrink: 0,
+                                borderLeft: "1px solid rgba(128,128,128,0.18)",
+                                overflowY: "auto",
+                                py: 1,
+                                px: 0.75,
+                                display: { xs: "none", md: "block" },
+                            }}
+                        >
+                            <Typography
+                                variant='caption'
+                                sx={{ display: "block", px: 1, pb: 0.5, fontSize: 11, color: "text.disabled" }}
+                            >
+                                大纲
+                            </Typography>
+                            {outline.length === 0 ? (
+                                <Typography
+                                    variant='caption'
+                                    data-outline='empty'
+                                    sx={{ display: "block", px: 1, fontSize: 11.5, color: "text.secondary" }}
+                                >
+                                    这条笔记还没有标题（用 # 标题 就能出现在这里）
+                                </Typography>
+                            ) : (
+                                outline.map(item => (
+                                    <Box
+                                        key={`${item.line}-${item.offset}`}
+                                        component='button'
+                                        type='button'
+                                        data-outline-item={item.line}
+                                        onClick={() => jumpToOffset(item.offset)}
+                                        sx={{
+                                            display: "block",
+                                            width: "100%",
+                                            appearance: "none",
+                                            border: "none",
+                                            m: 0,
+                                            font: "inherit",
+                                            cursor: "pointer",
+                                            textAlign: "left",
+                                            minWidth: 0,
+                                            pl: 1 + Math.min(outlineIndent(item.level), 6),
+                                            pr: 0.5,
+                                            py: 0.4,
+                                            borderRadius: 1,
+                                            bgcolor: "transparent",
+                                            color: "text.secondary",
+                                            fontWeight: item.level <= 2 ? 600 : 400,
+                                            fontSize: 12.5,
+                                            "&:hover": {
+                                                bgcolor: "rgba(128,128,128,0.1)",
+                                                color: "text.primary",
+                                            },
+                                        }}
+                                    >
+                                        <Typography
+                                            component='span'
+                                            sx={{
+                                                display: "block",
+                                                overflow: "hidden",
+                                                textOverflow: "ellipsis",
+                                                whiteSpace: "nowrap",
+                                                font: "inherit",
+                                                fontWeight: "inherit",
+                                                fontSize: "inherit",
+                                            }}
+                                        >
+                                            {item.text}
+                                        </Typography>
+                                    </Box>
+                                ))
+                            )}
+                        </Box>
+                    )}
                     </Box>
 
                     {/* 状态栏：像 inkstone 那样把「写了多少」摆在脚下 */}
@@ -3415,50 +3463,118 @@ export default function NotesPage({
                         {saveState === "saved" && !dirty && (
                             <span>已保存 · {formatRelative(savedAt, new Date(tick))}</span>
                         )}
-                        <Tooltip title='删除这条笔记（可从回收站还原）'>
-                            <IconButton
-                                aria-label='删除这条笔记'
-                                size='small'
-                                color='error'
-                                onClick={async () => {
-                                    await onDelete(active);
-                                    setActiveId(null);
-                                    setMobileDetail(false);
-                                }}
-                            >
-                                <DeleteOutlineIcon fontSize='small' />
-                            </IconButton>
-                        </Tooltip>
-                        <Tooltip title='置顶 / 取消置顶'>
-                            <IconButton
-                                aria-label={active.pinned ? "取消置顶" : "置顶"}
-                                size='small'
-                                onClick={() => onTogglePin(active)}
-                            >
-                                <PushPinIcon
-                                    fontSize='small'
-                                    sx={active.pinned ? { color: "var(--accent)" } : undefined}
-                                />
-                            </IconButton>
-                        </Tooltip>
-                        {/* 阶段三：归档。归档只是从「全部」里收起来，笔记还在，随时能取回 */}
-                        <Tooltip title={active.archived ? "取消归档" : "归档（从全部里收起来）"}>
-                            <IconButton
-                                aria-label={active.archived ? "取消归档" : "归档"}
-                                size='small'
-                                onClick={() => void onToggleArchive(active)}
-                            >
-                                <ArchiveIcon
-                                    fontSize='small'
-                                    sx={active.archived ? { color: "var(--accent)" } : undefined}
-                                />
-                            </IconButton>
-                        </Tooltip>
+                        {/* ⚠️ 右下角的那排「删除 / 置顶 / 归档」按键已移除（2026-10-06）：
+                            它们的功能全部在笔记右键菜单与顶栏「⋯」里，脚下这排图标
+                            既占地方又容易误触。 */}
                     </Box>
                 </>
             )}
         </Box>
     );
+
+    /**
+     * 侧边编辑器（「在侧边打开」）：第二台**完整可编辑**的编辑器 ——
+     * 自己的标题框、自己的工具栏（sideTools，撤销状态与主编辑器互相隔离）、
+     * 自己的 3 秒自动保存。关闭时先把没落库的草稿刷掉。
+     */
+    const sideNote = sideId !== null ? notes.find(n => n.id === sideId) ?? null : null;
+    const sidePane = sideNote ? (
+        <Box
+            data-side-editor='1'
+            sx={{ flex: "1 1 50%", minWidth: 0, minHeight: 0, display: "flex", flexDirection: "column" }}
+        >
+            <Box sx={{ display: "flex", alignItems: "center", gap: 0.5, pr: 1 }}>
+                <TextField
+                    fullWidth
+                    variant='standard'
+                    value={sideDraft?.title ?? ""}
+                    onChange={e => setSideDraft(d => (d ? { ...d, title: e.target.value } : d))}
+                    placeholder='无标题'
+                    slotProps={{ input: { "aria-label": "侧边笔记标题" } }}
+                    sx={{
+                        px: 2,
+                        pt: 1.5,
+                        flexShrink: 0,
+                        "& .MuiInputBase-root": { fontSize: 17, fontWeight: 600 },
+                        "& .MuiInput-input": { padding: "6px 0" },
+                    }}
+                />
+                <Tooltip title='关闭侧边编辑器'>
+                    <IconButton
+                        size='small'
+                        aria-label='关闭侧边编辑器'
+                        data-side-close='1'
+                        onClick={closeSide}
+                        sx={{ flexShrink: 0 }}
+                    >
+                        <CloseIcon fontSize='small' />
+                    </IconButton>
+                </Tooltip>
+            </Box>
+            {uiSettings.showToolbar && (
+                <MarkdownToolbar
+                    onInsert={sideTools.insertAtCursor}
+                    onInsertLinePrefix={sideTools.insertLinePrefix}
+                    onCodeLanguage={sideTools.applyCodeLanguage}
+                    onTable={sideTools.applyTable}
+                    onFormula={sideTools.applyFormula}
+                    onFootnoteRef={sideTools.insertFootnoteRef}
+                    onCallout={sideTools.insertCallout}
+                    onInsertEmbed={sideTools.onInsertEmbed}
+                    onInsertBlockRef={sideTools.onInsertBlockRef}
+                    onInsertBlockId={sideTools.onInsertBlockId}
+                    onInsertFrontMatter={sideTools.onInsertFrontMatter}
+                    onInsertTag={sideTools.onInsertTag}
+                    onInsertWikiLink={sideTools.onInsertWikiLink}
+                    onInsertHiddenComment={sideTools.onInsertHiddenComment}
+                    onInsertFold={sideTools.onInsertFold}
+                    onInsertTabs={sideTools.onInsertTabs}
+                    onInsertDivider={sideTools.onInsertDivider}
+                />
+            )}
+            <Box
+                sx={{
+                    flex: 1,
+                    minHeight: 0,
+                    minWidth: 0,
+                    overflow: "hidden",
+                    borderLeft: "none",
+                    borderRight: "none",
+                    borderTop: "none",
+                    borderBottom: "none",
+                }}
+            >
+                <NoteEditor
+                    key={`side-${sideNote.id}|${uiSettings.lineNumbers ? 1 : 0}|${uiSettings.spellcheck ? 1 : 0}`}
+                    editorRef={sideRef}
+                    value={sideDraft?.content ?? ""}
+                    onChange={content => setSideDraft(d => (d ? { ...d, content } : d))}
+                    lineNumbers={uiSettings.lineNumbers}
+                    spellcheck={uiSettings.spellcheck}
+                    font={uiSettings.editorFont}
+                    fontSize={uiSettings.editorFontSize}
+                />
+            </Box>
+            <Box
+                sx={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 2,
+                    px: 2,
+                    py: 0.75,
+                    flexShrink: 0,
+                    borderTop: "1px solid rgba(128,128,128,0.25)",
+                    fontSize: 12,
+                    color: "text.secondary",
+                }}
+            >
+                <span>{(sideDraft?.content ?? "").replace(/\s+/g, "").length} 字</span>
+                <span>{(sideDraft?.content ?? "").length} 字符</span>
+                <Box sx={{ flex: 1 }} />
+                <span>侧边</span>
+            </Box>
+        </Box>
+    ) : null;
 
     return (
         <Box
@@ -3483,8 +3599,18 @@ export default function NotesPage({
                 flexDirection: "column",
                 bgcolor: "background.default",
             }}
+            // 设置面板的「强调色」：写在根元素上，页内所有用到 var(--accent)
+            // 的地方（选中态/焦点环/图标）一起跟着变，不出这个页面。
+            style={{ "--accent": uiSettings.accent } as React.CSSProperties}
         >
             {shareId !== null && shareApi && <NoteShareDialog key={shareId} id={shareId} api={shareApi} onClose={() => setShareId(null)} />}
+            {/* 设置：记事本自己的外观 / 编辑器设置（不是导航站那个弹窗） */}
+            <NotesSettingsDialog
+                open={settingsOpen}
+                settings={uiSettings}
+                onChange={setUiSettings}
+                onClose={() => setSettingsOpen(false)}
+            />
             {/* Header */}
             <Box
                 sx={{
@@ -3539,16 +3665,22 @@ export default function NotesPage({
                     </IconButton>
                 </Tooltip>
 
-                {/* 大纲：inkstone 顶栏有「大纲」，长笔记没有它就只能一路往下滚。
-                    点一条就把光标送到那行 —— 跳的是**源码里的行首**，
-                    顺便把那一行选中，闭着眼也能看得到落点。 */}
-                <Tooltip title='大纲'>
+                {/* 大纲：inkstone 顶栏有「大纲」。这里是**开关**：点开在预览窗
+                    右侧常驻一块大纲面板（不再是弹个菜单就消失），点条目跳转。 */}
+                <Tooltip title={outlineOpen ? "收起大纲" : "大纲"}>
                     <IconButton
                         size='small'
                         data-tool='outline'
                         aria-label='大纲'
-                        onClick={e => setOutlineAnchor(e.currentTarget)}
-                        sx={{ width: 28, height: 28, color: "text.secondary" }}
+                        aria-pressed={outlineOpen}
+                        disabled={!active}
+                        onClick={() => setOutlineOpen(o => !o)}
+                        sx={{
+                            width: 28,
+                            height: 28,
+                            color: outlineOpen ? "primary.main" : "text.secondary",
+                            bgcolor: outlineOpen ? "rgba(128,128,128,0.12)" : "transparent",
+                        }}
                     >
                         <ListIcon fontSize='small' />
                     </IconButton>
@@ -3660,50 +3792,128 @@ export default function NotesPage({
                             {label}
                         </IconButton>
                     ))}
+                    {/* 当前笔记的操作入口（右下角那排按键已并入右键菜单 / 这个 ⋯） */}
+                    <Tooltip title='更多操作'>
+                        <IconButton
+                            size='small'
+                            data-tool='note-more'
+                            aria-label='更多操作'
+                            aria-haspopup='menu'
+                            disabled={!active || view === "trash"}
+                            onClick={e => setActiveMenuAnchor(e.currentTarget)}
+                            sx={{ width: 28, height: 28, color: "text.secondary" }}
+                        >
+                            <MoreVertIcon fontSize='small' />
+                        </IconButton>
+                    </Tooltip>
                 </Box>
             </Box>
 
-            {/* 大纲面板：当前这条笔记的标题层级。没标题时给一句说明，
-                别弹一个空框让人以为功能坏了。 */}
+            {/* 当前笔记的「⋯」菜单：与右键菜单同一套（全量版）。 */}
             <Menu
-                open={Boolean(outlineAnchor)}
-                anchorEl={outlineAnchor}
-                onClose={() => setOutlineAnchor(null)}
-                slotProps={{ paper: { sx: { maxHeight: 320, overflowY: "auto" } } }}
+                open={Boolean(activeMenuAnchor)}
+                anchorEl={activeMenuAnchor}
+                onClose={() => setActiveMenuAnchor(null)}
             >
-                {outline.length === 0 ? (
-                    <MenuItem disabled data-outline='empty'>
-                        这条笔记还没有标题（用 # 标题 就能出现在这里）
-                    </MenuItem>
-                ) : (
-                    outline.map(item => (
+                {active && (
+                    <>
                         <MenuItem
-                            key={`${item.line}-${item.offset}`}
-                            data-outline-item={item.line}
+                            data-active-op='copy-title'
                             onClick={() => {
-                                setOutlineAnchor(null);
-                                jumpToOffset(item.offset);
-                            }}
-                            sx={{
-                                pl: 1 + outlineIndent(item.level) / 8,
-                                fontWeight: item.level <= 2 ? 600 : 400,
-                                fontSize: 13,
-                                minWidth: 200,
+                                setActiveMenuAnchor(null);
+                                void copyText(active.title || "", "已复制标题");
                             }}
                         >
-                            <Typography
-                                component='span'
-                                sx={{
-                                    display: "block",
-                                    overflow: "hidden",
-                                    textOverflow: "ellipsis",
-                                    whiteSpace: "nowrap",
-                                }}
-                            >
-                                {item.text}
-                            </Typography>
+                            <DriveFileRenameOutlineIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
+                            复制标题
                         </MenuItem>
-                    ))
+                        <MenuItem
+                            data-active-op='copy-link'
+                            onClick={() => {
+                                setActiveMenuAnchor(null);
+                                void copyText(noteLink(active), "已复制直链");
+                            }}
+                        >
+                            <LinkIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
+                            复制直链
+                        </MenuItem>
+                        <Divider />
+                        <MenuItem
+                            data-active-op='pin'
+                            onClick={() => {
+                                setActiveMenuAnchor(null);
+                                void onTogglePin(active);
+                            }}
+                        >
+                            <PushPinIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
+                            {active.pinned ? "取消收藏" : "收藏"}
+                        </MenuItem>
+                        <MenuItem
+                            data-active-op='archive'
+                            onClick={() => {
+                                setActiveMenuAnchor(null);
+                                void onToggleArchive(active);
+                            }}
+                        >
+                            <ArchiveIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
+                            {active.archived ? "取消归档" : "归档"}
+                        </MenuItem>
+                        <MenuItem
+                            data-active-op='folder'
+                            onClick={() => {
+                                const id = active.id;
+                                setActiveMenuAnchor(null);
+                                if (id !== undefined) setMoveDrawerNoteId(id);
+                            }}
+                        >
+                            <FolderIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
+                            移动到文件夹…
+                        </MenuItem>
+                        <MenuItem
+                            data-active-op='export'
+                            onClick={() => {
+                                setActiveMenuAnchor(null);
+                                exportOne(active);
+                            }}
+                        >
+                            <FileDownloadIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
+                            导出 Markdown
+                        </MenuItem>
+                        <MenuItem
+                            data-active-op='export-html'
+                            onClick={() => {
+                                setActiveMenuAnchor(null);
+                                exportHtmlOne(active);
+                            }}
+                        >
+                            <FileDownloadIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
+                            导出 HTML
+                        </MenuItem>
+                        <MenuItem
+                            data-active-op='export-pdf'
+                            onClick={() => {
+                                setActiveMenuAnchor(null);
+                                exportPdfOne(active);
+                            }}
+                        >
+                            <FileDownloadIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
+                            导出 PDF
+                        </MenuItem>
+                        <Divider />
+                        <MenuItem
+                            data-active-op='delete'
+                            onClick={async () => {
+                                setActiveMenuAnchor(null);
+                                await onDelete(active);
+                                setActiveId(null);
+                                setMobileDetail(false);
+                            }}
+                            sx={{ color: "error.main" }}
+                        >
+                            <DeleteOutlineIcon fontSize='small' sx={{ mr: 1, fontSize: 16 }} />
+                            移到回收站
+                        </MenuItem>
+                    </>
                 )}
             </Menu>
 
@@ -3828,7 +4038,23 @@ export default function NotesPage({
                         minHeight: 0,
                     }}
                 >
-                    {editorPane}
+                    {/* 侧边编辑器打开时主编辑器让出一半（两个文档同时编辑，inkstone 的分屏）
+                        ⚠️ 判据用 sidePane（= 侧边那条笔记真的还在），不能用 sideId：
+                        侧边那条被删掉/回收后 sideId 还留着，按它分屏会让主编辑区
+                        白白让出一半、右边空着一条（2026-10-06） */}
+                    <Box
+                        sx={{
+                            flex: sidePane !== null ? "1 1 50%" : 1,
+                            minWidth: 0,
+                            minHeight: 0,
+                            display: "flex",
+                            borderRight:
+                                sidePane !== null ? "1px solid rgba(128,128,128,0.25)" : undefined,
+                        }}
+                    >
+                        {editorPane}
+                    </Box>
+                    {sidePane}
                 </Box>
             </Box>
 
@@ -3942,14 +4168,6 @@ function MarkdownPreview({
 }
 
 /** 一个工具按钮：icon / label 二选一，before/after 是包在选区两侧的语法 */
-/** 阶段四第 12 条：工具栏能发出的表格操作（kind 决定走哪条纯函数） */
-type TableOp =
-    | { kind: "insert"; rows: number; cols: number }
-    | { kind: "addRow" }
-    | { kind: "delRow" }
-    | { kind: "addCol" }
-    | { kind: "delCol" };
-
 /** 表格菜单里的常用尺寸：给几个现成的，不逼用户先想行列数 */
 const TABLE_PRESETS: { label: string; rows: number; cols: number }[] = [
     { label: "2 行 × 3 列", rows: 2, cols: 3 },

@@ -421,6 +421,23 @@ export function useNotes({ api, onError, onNotify }: UseNotesParams) {
         [api, onError]
     );
 
+    /** 文件夹外观（icon / color）：同 updateFolder 一条路，只改这两字段 */
+    const styleFolder = useCallback(
+        async (id: number, patch: { icon?: string | null; color?: string | null }) => {
+            if (typeof api.updateFolder !== "function") return;
+            try {
+                const folder = await api.updateFolder(id, patch);
+                if (folder) {
+                    setFolders(prev => prev.map(f => (f.id === id ? folder : f)));
+                }
+            } catch (error) {
+                reportError(error, { source: "note-folder-style" });
+                onError("设置文件夹外观失败: " + (error instanceof Error ? error.message : "未知错误"));
+            }
+        },
+        [api, onError]
+    );
+
     const removeFolder = useCallback(
         async (id: number) => {
             if (typeof api.deleteFolder !== "function") return;
@@ -602,6 +619,7 @@ export function useNotes({ api, onError, onNotify }: UseNotesParams) {
         moveFolder,
         reorderFolder,
         renameFolder,
+        styleFolder,
         removeFolder,
         createTag,
         renameTag,

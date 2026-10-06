@@ -187,13 +187,20 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
         if (limited) return limited;
 
         const data = (await request.json()) as Partial<NoteFolder>;
-        // 白名单：只有 name 是文件夹的字段，其它（id / user_id / count）一律不收
+        // 白名单：只有 name / 外观两列是文件夹的字段，其它（id / user_id / count）一律不收
         const name = typeof data.name === "string" ? data.name.trim().slice(0, 80) : "";
         if (!name) return Response.json({ error: "文件夹名不能为空" }, { status: 400 });
         if (data.parent_id !== undefined && data.parent_id !== null && (!Number.isInteger(data.parent_id) || data.parent_id <= 0)) {
             return Response.json({ error: "父文件夹 ID 无效" }, { status: 400 });
         }
-        return Response.json(await api.createFolder({ name, parent_id: data.parent_id ?? null }));
+        return Response.json(
+            await api.createFolder({
+                name,
+                parent_id: data.parent_id ?? null,
+                icon: typeof data.icon === "string" ? data.icon.slice(0, 32) : null,
+                color: typeof data.color === "string" ? data.color.slice(0, 32) : null,
+            })
+        );
     } else if (path.startsWith("notes/folders/") && method === "PUT") {
         const limited = await writeGate();
         if (limited) return limited;
@@ -205,6 +212,9 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
         const patch: Partial<NoteFolder> = {};
         if (typeof data.name === "string") patch.name = data.name.trim().slice(0, 80) || "";
         if (data.order_num !== undefined) patch.order_num = Number(data.order_num) || 0;
+        // 文件夹外观：可空字符串 = 恢复默认样式；只收短串，防脏数据撑大行
+        if (data.icon !== undefined) patch.icon = typeof data.icon === "string" ? data.icon.slice(0, 32) : null;
+        if (data.color !== undefined) patch.color = typeof data.color === "string" ? data.color.slice(0, 32) : null;
         if (data.parent_id !== undefined) {
             if (data.parent_id !== null && (!Number.isInteger(data.parent_id) || data.parent_id <= 0)) {
                 return Response.json({ error: "父文件夹 ID 无效" }, { status: 400 });

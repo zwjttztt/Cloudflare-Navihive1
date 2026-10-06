@@ -37,8 +37,6 @@ export interface NotesOverlayProps {
     onCountChange: (count: number) => void;
     /** 左下角显示的账号名（inkstone 布局）。没传就不显示具体用户名 */
     accountName?: string;
-    /** 左下角设置按钮（复用站点设置弹窗）。没传就不给这个按钮 */
-    onOpenSettings?: () => void;
 }
 
 export default function NotesOverlay({
@@ -48,7 +46,6 @@ export default function NotesOverlay({
     onNotify,
     onCountChange,
     accountName,
-    onOpenSettings,
 }: NotesOverlayProps) {
     const {
         notes,
@@ -69,6 +66,7 @@ export default function NotesOverlay({
         moveFolder,
         reorderFolder,
         renameFolder,
+        styleFolder,
         removeFolder,
         createTag,
         renameTag,
@@ -95,6 +93,7 @@ export default function NotesOverlay({
             onMoveFolder: moveFolder,
             onReorderFolder: reorderFolder,
             onRenameFolder: renameFolder,
+            onStyleFolder: styleFolder,
             onRemoveFolder: removeFolder,
             onCreateTag: createTag,
             onRenameTag: renameTag,
@@ -111,6 +110,7 @@ export default function NotesOverlay({
             moveFolder,
             reorderFolder,
             renameFolder,
+            styleFolder,
             removeFolder,
             createTag,
             renameTag,
@@ -138,7 +138,6 @@ export default function NotesOverlay({
             notes={notes}
             onClose={onClose}
             accountName={accountName}
-            onOpenSettings={onOpenSettings}
             onCreate={createNote}
             onUpdate={updateNote}
             onDelete={deleteNote}

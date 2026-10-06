@@ -315,13 +315,19 @@ test("工具栏补齐 inkstone 式下拉：链接 / 图片 / 插入 / 块", () =
     }
 });
 
-test("新建笔记按钮挪到左栏文件夹标题右侧（顶栏那个移除）", () => {
+test("新建笔记按钮在左栏文件夹标题右侧与中间栏右上角（顶栏那个移除）", () => {
     mountPanel([note({ id: 1, title: "甲", content: "" })]);
     const newBtns = [...document.querySelectorAll('button[aria-label="新建笔记"]')];
-    assert.equal(newBtns.length, 1, "顶栏新建笔记已移除，只剩左栏文件夹处一个");
-    assert.ok(
-        newBtns[0].closest('[data-nav-col="1"]'),
-        "新建笔记按钮应在左栏导航列（文件夹标题右侧），和新建文件夹并排"
+    // 两处：左栏文件夹标题右侧（和新建文件夹并排）+ 中间栏右上角（inkstone 同样两处）
+    assert.equal(newBtns.length, 2, "顶栏新建笔记已移除，只剩左栏一处 + 中间栏一处");
+    const inNav = newBtns.find(b => b.closest('[data-nav-col="1"]'));
+    assert.ok(inNav, "要有一个新建笔记按钮在左栏导航列（文件夹标题右侧）");
+    const inListHeader = newBtns.find(b => b.closest("[data-list-header='1']"));
+    assert.ok(inListHeader, "要有一个新建笔记按钮在中间栏头部右侧");
+    assert.equal(
+        inListHeader!.getAttribute("data-tool"),
+        "list-new-note",
+        "中间栏那颗要能被 data-tool='list-new-note' 定位到"
     );
 });
 
@@ -447,17 +453,17 @@ test("阶段二：搜索框右侧挂 ⌘K 提示", () => {
 
 // ---------- 阶段三：回收站 / 归档 / 未归类 ----------
 
-test("左栏视图齐全（搜索/全部/最近/收藏/未归类/归档/回收站）", () => {
+test("左栏视图齐全（全部/最近/收藏/未归类 + 底部归档/回收站，搜索不再占一行）", () => {
     mountPanel([note({ id: 1, title: "甲", content: "" })]);
     const views = [...document.querySelectorAll("button[data-view]")].map(b =>
         b.getAttribute("data-view")
     );
-    // 顺序按 inkstone 那套（所有 / 最近编辑 / 收藏 / 未归类 / … / 归档 / 回收站）：
-    // 「未归类」紧跟收藏、「归档」收在末尾，是刻意的，不是随手排的。
-    // ⚠️ 「搜索」是 2026-10-06 加的（inkstone 左栏第一项就是它），
-    // 它把「原来只有列表上方一个输入框」升级成独立视图，还多搜标签名。
+    // 顺序按 inkstone 那套（全部 / 最近 / 收藏 / 未归类 / … / 归档 / 回收站）。
+    // ⚠️ 「搜索」不再是一个视图（2026-10-06 去掉）：左栏顶部那个输入框本身就是
+    // 全文搜索入口（聚焦即打开中栏搜索结果），再单独占一行只会让人分不清
+    // 哪个搜索管哪个。
+    // ⚠️ 归档 / 回收站压在左下角单独一组（data-nav-footer），DOM 上仍排在这四个之后。
     assert.deepEqual(views, [
-        "search",
         "all",
         "recent",
         "starred",
@@ -465,6 +471,20 @@ test("左栏视图齐全（搜索/全部/最近/收藏/未归类/归档/回收�
         "archived",
         "trash",
     ]);
+    // 顶上那四个要在导航列表里；归档 / 回收站在底部固定区
+    const top = [...document.querySelectorAll("button[data-view]")].filter(
+        b => !b.closest("[data-nav-footer='1']")
+    );
+    assert.deepEqual(
+        top.map(b => b.getAttribute("data-view")),
+        ["all", "recent", "starred", "uncategorized"],
+        "顶部四个高频入口，搜索不占行"
+    );
+    // 搜索框仍然在，且不再有同名视图行
+    assert.ok(
+        document.querySelector('input[aria-label="搜索笔记"]'),
+        "全文搜索入口仍然是左栏顶部那个输入框"
+    );
 });
 
 test("阶段三：回收站视图列出被删的笔记，并给还原 / 彻底删除两个动作", () => {
@@ -880,11 +900,11 @@ test("左栏容器不能带 flex:1（会把 300px 的列表撑成两栏宽，中
     // 阶段三收尾把左栏从「单列 300px」改成 inkstone 那样「导航列 + 列表列」两列，
     // 所以总宽变成 NAV_COL_W + LIST_COL_W（336）。再钉 300 只会每次改布局都变红。
     assert.ok(
-        /width: listCollapsed\s*\?\s*44\s*:\s*folderFocus\s*\?/.test(source) &&
+        /width: listCollapsed\s*\?\s*44\s*:\s*listHidden\s*\?/.test(source) &&
             /md: navW \+ 14/.test(source) &&
             /md: navW \+ listW \+ 14/.test(source),
         "listPane 展开时宽度应是「导航列 + 列表列 + 两条分隔条」之和；" +
-            "选中文件夹时中间列不渲染，只剩「导航列 + 一条分隔条」（2026-10-06）"
+            "中栏隐藏（选中文件夹 / 点「收起」）时只剩「导航列 + 一条分隔条」（2026-10-06）"
     );
     assert.ok(
         /export const NAV_COL_W = \d+;/.test(source) &&
@@ -952,11 +972,9 @@ test("分栏是「左栏按比例 + 可拖分隔条」，不是写死的对半",
 });
 
 test("格式工具栏：存在，且按钮用 onMouseDown preventDefault 保住选区", () => {
+    const dir = findProjectDir();
     const source = stripComments(
-        readFileSync(
-            join(findProjectDir(), "src", "components", "NotesPage.tsx"),
-            "utf-8"
-        )
+        readFileSync(join(dir, "src", "components", "NotesPage.tsx"), "utf-8")
     );
     assert.ok(source.includes("MarkdownToolbar"), "要有格式工具栏");
     assert.ok(
@@ -964,8 +982,18 @@ test("格式工具栏：存在，且按钮用 onMouseDown preventDefault 保住�
         "工具栏按钮必须 onMouseDown + preventDefault —— 默认行为会让 textarea 失焦、" +
             "selectionStart 变成 0，插入的位置全跑到开头"
     );
+    // ⚠️ 插入逻辑 2026-10-06 抽到了 useEditorTools（主编辑器 / 侧边编辑器各一份，
+    // 撤销状态互相隔离），所以「插入后把光标放回去」这条守卫视的是新文件。
+    // 只查 NotesPage 会因为代码搬走而假通过（守卫失效比不写更糟）。
+    const tools = stripComments(
+        readFileSync(join(dir, "src", "hooks", "useEditorTools.ts"), "utf-8")
+    );
     assert.ok(
-        source.includes("setSelectionRange"),
+        source.includes("useEditorTools"),
+        "NotesPage 要改用 useEditorTools 拿插入动作（两份编辑器各一份，互不串台）"
+    );
+    assert.ok(
+        tools.includes("setSelectionRange"),
         "插入后要把光标放回去（setSelectionRange），否则接着打字会打到别处"
     );
 });
@@ -1279,7 +1307,6 @@ test("插入表格 / 独立公式：第二次点击也要能撤销", () => {
 test("归档 / 回收站挪到左下角固定区，且那里有账号与设置（inkstone 布局）", () => {
     mountPanel([note({ id: 1, title: "甲", content: "" })], {
         accountName: "zwj",
-        onOpenSettings: () => {},
     });
     const footer = document.querySelector('[data-nav-footer="1"]');
     assert.ok(footer, "左下角要有固定区");
@@ -1299,7 +1326,7 @@ test("归档 / 回收站挪到左下角固定区，且那里有账号与设置�
     assert.ok(footer!.querySelector('[data-nav-account="1"]'), "要有账号头像");
 });
 
-test("没传账号 / 设置回调时不应给死按钮", () => {
+test("没传账号时显示未登录，设置按钮仍然可用（记事本自带设置）", () => {
     mountPanel([note({ id: 1, title: "甲", content: "" })]);
     const footer = document.querySelector('[data-nav-footer="1"]')!;
     assert.ok(footer, "左下角固定区还要在");
@@ -1308,9 +1335,14 @@ test("没传账号 / 设置回调时不应给死按钮", () => {
         "未登录",
         "没传账号名时显示未登录"
     );
+    // ⚠️ 2026-10-06：设置改成记事本**自己的**对话框（外观 / 编辑器），
+    // 不再依赖外部 onOpenSettings —— 所以没回调也必须有按钮、且点得开。
+    const btn = footer.querySelector('button[data-tool="settings"]') as HTMLElement;
+    assert.ok(btn, "设置按钮要一直在，点了开记事本自己的设置");
+    act(() => btn.click());
     assert.ok(
-        !footer.querySelector('button[data-tool="settings"]'),
-        "没传 onOpenSettings 就不该给一个点了没反应的设置按钮"
+        document.querySelector('[data-notes-settings="1"]'),
+        "点设置要弹出记事本专用设置（不是导航站的配置）"
     );
 });
 
@@ -1520,16 +1552,19 @@ test("文件夹菜单补齐 inkstone 那几项：在此新建笔记 / 移动到�
 
 test("插入内容以 textarea 的 DOM 值为准，不能读 draft", () => {
     // 静态守卫：上面那条行为用例只覆盖连点，读错来源换个场景又会漏回去。
+    // ⚠️ 插入逻辑 2026-10-06 抽到了 useEditorTools（主 / 侧边两编辑器各一份），
+    // 所以这条守卫要跟着看新文件 —— 否则代码搬走后 indexOf 返回 -1，
+    // slice(-1, -1) 得到空串，守卫会**静默失效**（比报错更糟）。
     const clean = stripComments(
         readFileSync(
-            join(findProjectDir(), "src", "components", "NotesPage.tsx"),
+            join(findProjectDir(), "src", "hooks", "useEditorTools.ts"),
             "utf-8"
         )
     );
-    const fn = clean.slice(
-        clean.indexOf("const insertAtCursor"),
-        clean.indexOf("const charCount")
-    );
+    const from = clean.indexOf("const insertAtCursor");
+    const to = clean.indexOf("const insertCallout");
+    assert.ok(from >= 0 && to > from, "没定位到 insertAtCursor —— 检查是否改名/搬走");
+    const fn = clean.slice(from, to);
     assert.ok(fn.includes("el.value"), "插入要以 textarea 的 DOM 值（el.value）为准");
     assert.ok(
         !fn.includes("draft.content"),
@@ -1618,11 +1653,11 @@ test("导航列要自己滚（整块一起滚会把搜索框顶出视野）", ()
     );
 });
 
-test("没有 folderTags（老部署）时退化成只有那七个视图，不能崩", () => {
+test("没有 folderTags（老部署）时退化成只有那六个视图，不能崩", () => {
     mountPanel([note({ id: 1, title: "甲", content: "" })]);
     assert.deepEqual(
         [...document.querySelectorAll("button[data-view]")].map(b => b.getAttribute("data-view")),
-        ["search", "all", "recent", "starred", "uncategorized", "archived", "trash"]
+        ["all", "recent", "starred", "uncategorized", "archived", "trash"]
     );
     assert.ok(document.querySelector("[data-note-list]"), "列表照常渲染");
 });
@@ -1655,11 +1690,12 @@ test("内容区必须有内边距，预览窗不能贴死视口右缘", () => {
         resolve(findProjectDir(), "src/components/NotesPage.tsx"),
         "utf-8"
     );
-    // ⚠️ 锚点必须用 JSX 注释全文：「内容区：源码 | 预览」这串字在文件头的
+    // ⚠️ 锚点必须用 JSX 注释**开头**那一段：「内容区：源码 | 预览」这串字在文件头的
     // ASCII 示意图里也出现过，只用短串会锚到文件开头，切出来的窗口全是 import。
-    const idx = src.indexOf("{/* 内容区：源码 | 预览 */}");
+    // 注释正文会随功能迭代加字（现在多了「| 大纲面板」），所以只锚前 12 个字符。
+    const idx = src.indexOf("{/* 内容区：源码 | 预览");
     assert.ok(idx > 0, "找不到内容区注释，测试锚点失效");
-    const body = src.slice(idx, idx + 900);
+    const body = src.slice(idx, idx + 1400);
     assert.match(
         body,
         /px:\s*2/,
@@ -2002,7 +2038,7 @@ test("点菜单按钮不会顺带切到那条笔记（必须 stopPropagation）"
     assert.ok(document.querySelector("[data-row-op='delete']"), "菜单应仍然打开");
 });
 
-test("「归入文件夹」能把笔记真的归进去（onUpdate 收到 folder_id）", async () => {
+test("「移动到文件夹」走右侧抽屉，选完就真归进去（onUpdate 收到 folder_id）", async () => {
     const updates: Array<{ id: number; patch: Record<string, unknown> }> = [];
     mountPanel([note({ id: 5, title: "甲", content: "a" })], {
         onUpdate: async (id: number, patch: Record<string, unknown>) => {
@@ -2028,14 +2064,29 @@ test("「归入文件夹」能把笔记真的归进去（onUpdate 收到 folder_
     await act(async () => {
         (document.querySelector("[data-row-op='folder']") as HTMLElement).click();
     });
-    const opt = document.querySelector("[data-folder-pick='3']") as HTMLElement;
-    assert.ok(opt, "二级菜单要列出已有文件夹");
+    // ⚠️ 2026-10-06：不再是锚点小菜单，而是 inkstone 那种**右侧抽屉**
+    const drawer = document.querySelector("[data-move-drawer='1']");
+    assert.ok(drawer, "点「移动到文件夹…」要在屏幕右侧滑出抽屉");
+    const opt = document.querySelector("[data-move-target='3']") as HTMLElement;
+    assert.ok(opt, "抽屉里要列出已有文件夹");
     await act(async () => {
         opt.click();
     });
     assert.equal(updates.length, 1, "应当只发一次更新");
     assert.equal(updates[0].id, 5);
     assert.equal(updates[0].patch.folder_id, 3, "要把 folder_id 写进 patch");
+    // 抽屉里还有「未归类（移出文件夹）」，点了要把 folder_id 置空
+    await act(async () => {
+        (document.querySelector("button[data-note-menu='5']") as HTMLElement).click();
+    });
+    await act(async () => {
+        (document.querySelector("[data-row-op='folder']") as HTMLElement).click();
+    });
+    await act(async () => {
+        (document.querySelector("[data-move-target='none']") as HTMLElement).click();
+    });
+    assert.equal(updates.length, 2, "移出文件夹也要发一次更新");
+    assert.equal(updates[1].patch.folder_id, null, "「未归类」要把 folder_id 置空");
 });
 
 test("列表行显示标签徽章（不用点进去才知道打了哪些标签）", () => {
@@ -2304,9 +2355,19 @@ test("搜索视图：搜正文里的词能命中，左栏计数跟着变", async
         );
         search.dispatchEvent(new Event("input", { bubbles: true }));
     });
-    // 左栏「搜索」那一项的计数 = 命中数
-    const searchRow = document.querySelector("button[data-view='search']")!;
-    assert.ok(searchRow.textContent!.includes("1"), `搜索计数应为 1，实际「${searchRow.textContent}」`);
+    // ⚠️ 2026-10-06：左栏不再有「搜索」这一行（搜索框本身就是入口），
+    // 计数改在中栏顶部那句「搜到 N 条」，命中列表就是中栏的行。
+    assert.ok(
+        text().includes("搜到 1 条"),
+        "中栏顶部要显示命中数：搜到 1 条"
+    );
+    assert.deepEqual(
+        [...document.querySelectorAll("[data-note-list] [data-note-id]")].map(e =>
+            e.getAttribute("data-note-id")
+        ),
+        ["1"],
+        "中栏只留下命中的那条"
+    );
 });
 
 test("搜索视图：搜标签名也能命中（原来只搜标题+正文）", async () => {
@@ -2332,9 +2393,481 @@ test("搜索视图：搜标签名也能命中（原来只搜标题+正文）", a
         );
         search.dispatchEvent(new Event("input", { bubbles: true }));
     });
-    const searchRow = document.querySelector("button[data-view='search']")!;
     assert.ok(
-        searchRow.textContent!.includes("1"),
-        `按标签名也要搜得到，实际「${searchRow.textContent}」`
+        text().includes("搜到 1 条"),
+        "按标签名也要搜得到（正文里没有「合同」两个字）"
+    );
+    assert.equal(
+        document.querySelectorAll("[data-note-list] [data-note-id]").length,
+        1,
+        "命中列表里要有那一条打了「合同」标签的笔记"
+    );
+});
+
+// ===========================================================================
+// 2026-10-06 一批：inkstone 对齐（文件夹外观 / 搜索行 / 未归类直列 / 中栏头部 /
+// 大纲面板 / 右键菜单 / 记事本自己的设置 / 右下角按键入右键 / 侧边分屏）
+// ===========================================================================
+
+/** folderTags 的最小可用形状（每个用例只覆盖自己关心的那几项） */
+function folderTagsOf(over: Record<string, unknown> = {}) {
+    return {
+        folders: [{ id: 3, user_id: null, name: "工作", order_num: 0, created_at: "", updated_at: "" }] as never,
+        tags: [] as never,
+        onCreateFolder: async () => null,
+        onRenameFolder: async () => {},
+        onRemoveFolder: async () => {},
+        onCreateTag: async () => null,
+        onRenameTag: async () => {},
+        onRemoveTag: async () => {},
+        onAssignTags: async () => [],
+        ...over,
+    };
+}
+
+/** jsdom 里右键：React 18 走根级委托，派发一个冒泡的 contextmenu 即可 */
+function rightClick(el: Element) {
+    el.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+}
+
+// ---------- 1. 文件夹外观 ----------
+
+test("文件夹外观：右键菜单里能改图标与颜色，保存走 onStyleFolder", async () => {
+    const styled: { id: number; patch: Record<string, unknown> }[] = [];
+    mountPanel([note({ id: 1, title: "甲", content: "a" })], {
+        folderTags: folderTagsOf({
+            onStyleFolder: async (id: number, patch: Record<string, unknown>) => {
+                styled.push({ id, patch });
+            },
+        }),
+    });
+    await act(async () => {
+        rightClick(document.querySelector("[data-folder-id='3']")!);
+    });
+    const appearance = document.querySelector("[data-folder-op='appearance']") as HTMLElement;
+    assert.ok(appearance, "文件夹右键菜单里要有「文件夹外观」");
+    await act(async () => appearance.click());
+
+    // 图标 + 颜色都在弹窗里
+    const icon = document.querySelector("[data-appearance-icon='work']") as HTMLElement;
+    const color = document.querySelector("[data-appearance-color='#3b82f6']") as HTMLElement;
+    assert.ok(icon, "要有图标可选");
+    assert.ok(color, "要有颜色可选");
+    await act(async () => icon.click());
+    await act(async () => color.click());
+    await act(async () => (document.querySelector("[data-appearance-save='1']") as HTMLElement).click());
+
+    assert.equal(styled.length, 1, "保存要走一次 onStyleFolder");
+    assert.equal(styled[0].id, 3);
+    assert.equal(styled[0].patch.icon, "work", "图标存的是枚举 key，不是组件/中文名");
+    assert.equal(styled[0].patch.color, "#3b82f6", "颜色存的是十六进制色值");
+});
+
+test("文件夹外观：脏数据（不在清单里的 icon/color）不能把左栏画崩", () => {
+    mountPanel([note({ id: 1, title: "甲", content: "a" })], {
+        folderTags: folderTagsOf({
+            folders: [
+                { id: 3, user_id: null, name: "工作", order_num: 0, icon: "不存在的图标", color: "javascript:alert(1)" },
+            ] as never,
+        }),
+    });
+    assert.ok(
+        document.querySelector("[data-folder-id='3']"),
+        "icon/color 是脏值时仍要正常渲染这一行（回落到默认样式）"
+    );
+});
+
+// ---------- 2. 左栏不再有「搜索」那一行 ----------
+
+test("搜索框聚焦即进入全文搜索（不再需要单独的「搜索」导航行）", async () => {
+    mountPanel([note({ id: 1, title: "甲", content: "a" })]);
+    assert.equal(
+        document.querySelector("button[data-view='search']"),
+        null,
+        "左栏不该再有「搜索」这一行"
+    );
+    const input = document.querySelector("input[aria-label='搜索笔记']") as HTMLInputElement;
+    await act(async () => input.focus());
+    assert.ok(
+        document.querySelector("[data-note-list]"),
+        "聚焦搜索框要打开中间栏（全文搜索结果）"
+    );
+    assert.ok(text().includes("全文搜索"), "中栏标题要说明现在在看全文搜索");
+});
+
+// ---------- 3. 未归类笔记直接列在左栏，右键可移动到文件夹 ----------
+
+test("未归类的笔记直接列在左栏文件夹树下（不占中间栏）", () => {
+    mountPanel([note({ id: 1, title: "散着的", content: "a", folder_id: null })], {
+        folderTags: folderTagsOf(),
+    });
+    const block = document.querySelector("[data-unfiled-notes='1']");
+    assert.ok(block, "左栏要有「未归类」那一组");
+    const row = block!.querySelector("[data-unfiled-note='1']") as HTMLElement;
+    assert.ok(row, "没进文件夹的笔记要直接列出来");
+    assert.match(row.getAttribute("aria-label") ?? "", /散着的/);
+});
+
+test("左栏未归类笔记右键 → 「移动到文件夹…」滑出右侧抽屉，选了就真归进去", async () => {
+    const updates: { id: number; patch: Record<string, unknown> }[] = [];
+    mountPanel([note({ id: 1, title: "散着的", content: "a", folder_id: null })], {
+        onUpdate: async (id: number, patch: Record<string, unknown>) => {
+            updates.push({ id, patch });
+        },
+        folderTags: folderTagsOf(),
+    });
+    await act(async () => {
+        rightClick(document.querySelector("[data-unfiled-note='1']")!);
+    });
+    const move = document.querySelector("[data-row-op='folder']") as HTMLElement;
+    assert.ok(move, "左栏笔记右键菜单里要有「移动到文件夹…」");
+    await act(async () => move.click());
+
+    const drawer = document.querySelector("[data-move-drawer='1']");
+    assert.ok(drawer, "要在**屏幕右侧**滑出抽屉（不是在原地弹小菜单）");
+    // 抽屉里能搜文件夹
+    const find = drawer!.querySelector("input[aria-label='搜索文件夹']") as HTMLInputElement;
+    assert.ok(find, "抽屉里要有搜索框（文件夹多了才找得到）");
+    await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(find, "不存在");
+        find.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    assert.equal(
+        document.querySelector("[data-move-target='3']"),
+        null,
+        "搜索没命中时那条文件夹要被过滤掉"
+    );
+    await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(find, "工作");
+        find.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const target = document.querySelector("[data-move-target='3']") as HTMLElement;
+    assert.ok(target, "搜到「工作」要能选");
+    await act(async () => target.click());
+
+    assert.equal(updates.length, 1, "选中就发一次更新");
+    assert.equal(updates[0].patch.folder_id, 3, "要把 folder_id 写进去");
+});
+
+// ---------- 4. 中栏头部：排序 / 新建笔记 / 收起 ----------
+
+test("中栏头部有 排序 / 新建笔记 / 收起，收起后中栏真的消失", async () => {
+    let created = 0;
+    mountPanel([note({ id: 1, title: "甲", content: "a" })], {
+        onCreate: async () => {
+            created += 1;
+            return note({ id: 99, title: "" });
+        },
+    });
+    const header = document.querySelector("[data-list-header='1']")!;
+    assert.ok(header, "中栏要有头部");
+    assert.ok(header.querySelector("[data-tool='sort']"), "右上角要有排序");
+    assert.ok(header.querySelector("[data-tool='list-new-note']"), "右上角要有新建笔记");
+    assert.ok(header.querySelector("[data-tool='collapse-list']"), "右上角要有收起");
+
+    // 排序菜单
+    await act(async () => (header.querySelector("[data-tool='sort']") as HTMLElement).click());
+    const byTitle = document.querySelector("[data-sort-op='title']") as HTMLElement;
+    assert.ok(byTitle, "排序菜单里要有「按标题」");
+    await act(async () => byTitle.click());
+
+    // 新建笔记
+    await act(async () =>
+        (document.querySelector("[data-tool='list-new-note']") as HTMLElement).click()
+    );
+    assert.equal(created, 1, "点中栏的新建笔记要真的建一条");
+
+    // 收起
+    await act(async () =>
+        (document.querySelector("[data-tool='collapse-list']") as HTMLElement).click()
+    );
+    assert.equal(
+        document.querySelector("[data-list-header='1']"),
+        null,
+        "点「收起」后中间栏整个不渲染"
+    );
+    // 再点顶部入口要能放回来（否则就再也回不来了）
+    await act(async () => (document.querySelector("button[data-view='all']") as HTMLElement).click());
+    assert.ok(document.querySelector("[data-list-header='1']"), "点顶部入口要把中栏放回来");
+    // 底部「归档 / 回收站」同样要放回来
+    await act(async () =>
+        (document.querySelector("[data-tool='collapse-list']") as HTMLElement).click()
+    );
+    await act(async () => (document.querySelector("button[data-view='archived']") as HTMLElement).click());
+    assert.ok(
+        document.querySelector("[data-list-header='1']"),
+        "从归档 / 回收站回来也要把中栏放出来（不然屏幕上什么都没有）"
+    );
+});
+
+test("中栏排序：按标题排序真的改变了顺序", async () => {
+    mountPanel([
+        note({ id: 1, title: "乙", content: "a" }),
+        note({ id: 2, title: "甲", content: "b" }),
+    ]);
+    const ids = () =>
+        [...document.querySelectorAll("[data-note-list] [data-note-id]")].map(e =>
+            e.getAttribute("data-note-id")
+        );
+    assert.deepEqual(ids(), ["1", "2"], "默认顺序保持原样");
+    await act(async () => (document.querySelector("[data-tool='sort']") as HTMLElement).click());
+    await act(async () => (document.querySelector("[data-sort-op='title']") as HTMLElement).click());
+    assert.deepEqual(ids(), ["2", "1"], "按标题排序后「甲」要在「乙」前面");
+});
+
+// ---------- 5. 大纲面板在预览右侧 ----------
+
+test("大纲：顶栏按钮是开关，点开后面板常驻在预览右侧", async () => {
+    mountPanel([note({ id: 1, title: "甲", content: "# 一级\n正文\n## 二级\n正文" })]);
+    const btn = document.querySelector("button[data-tool='outline']") as HTMLElement;
+    assert.equal(btn.getAttribute("aria-pressed"), "false", "默认关着");
+    await act(async () => btn.click());
+    const panel = document.querySelector("[data-outline-panel='1']")!;
+    assert.ok(panel, "点开要出现大纲面板");
+    assert.equal(
+        document.querySelector("button[data-tool='outline']")!.getAttribute("aria-pressed"),
+        "true",
+        "再点一下是收起（aria-pressed 跟着变）"
+    );
+    const items = [...panel.querySelectorAll("[data-outline-item]")];
+    assert.equal(items.length, 2, "两个标题都要列出来");
+    assert.ok(items[0].textContent!.includes("一级"));
+    assert.ok(items[1].textContent!.includes("二级"));
+    // 面板在预览（内容区）那一格里，而不是浮层里
+    assert.ok(
+        panel.closest("[data-notes-root]"),
+        "大纲是页面里的常驻面板，不是弹一下就消失的菜单"
+    );
+    await act(async () => (document.querySelector("button[data-tool='outline']") as HTMLElement).click());
+    assert.equal(document.querySelector("[data-outline-panel='1']"), null, "再点一下收起");
+});
+
+test("大纲：没有标题时给一句说明，不给一块空白", async () => {
+    mountPanel([note({ id: 1, title: "甲", content: "纯正文，没有标题" })]);
+    await act(async () => (document.querySelector("button[data-tool='outline']") as HTMLElement).click());
+    assert.ok(
+        document.querySelector("[data-outline='empty']"),
+        "没标题时要说明「用 # 标题 就能出现在这里」"
+    );
+});
+
+// ---------- 6. 右键菜单 ----------
+
+test("列表行右键：完整菜单（复制三件套 / 侧边打开 / 副本 / 导出 / 回收站）", async () => {
+    mountPanel([note({ id: 1, title: "甲", content: "a" })], { folderTags: folderTagsOf() });
+    await act(async () => {
+        rightClick(document.querySelector("[data-note-list] [data-note-id='1']")!);
+    });
+    for (const op of [
+        "copy-title",
+        "copy-id",
+        "copy-link",
+        "open-side",
+        "pin",
+        "duplicate",
+        "archive",
+        "folder",
+        "tags",
+        "export",
+        "export-html",
+        "export-pdf",
+        "delete",
+    ]) {
+        assert.ok(
+            document.querySelector(`[data-row-op='${op}']`),
+            `中栏右键菜单里要有 data-row-op='${op}'`
+        );
+    }
+    assert.ok(
+        text().includes("移到回收站"),
+        "删除那一项的措辞是「移到回收站」（可恢复，不是彻底删）"
+    );
+});
+
+test("左栏内联笔记右键：精简菜单（没有复制/导出那一堆）", async () => {
+    mountPanel([note({ id: 1, title: "甲", content: "a", folder_id: null })], {
+        folderTags: folderTagsOf(),
+    });
+    await act(async () => {
+        rightClick(document.querySelector("[data-unfiled-note='1']")!);
+    });
+    for (const op of ["open-side", "pin", "folder", "archive", "delete"]) {
+        assert.ok(document.querySelector(`[data-row-op='${op}']`), `左栏右键要有 ${op}`);
+    }
+    assert.equal(
+        document.querySelector("[data-row-op='export']"),
+        null,
+        "左栏精简菜单不带导出（那是中栏列表行才有的）"
+    );
+});
+
+// ---------- 7. 记事本自己的设置 ----------
+
+test("左下角设置打开的是记事本专用设置（外观 / 编辑器两个分页）", async () => {
+    mountPanel([note({ id: 1, title: "甲", content: "a" })]);
+    await act(async () =>
+        (document.querySelector("button[data-tool='settings']") as HTMLElement).click()
+    );
+    const dialog = document.querySelector("[data-notes-settings='1']")!;
+    assert.ok(dialog, "要弹出记事本自己的设置（不是导航站那个配置页）");
+    for (const tab of ["appearance", "editor"]) {
+        assert.ok(
+            dialog.querySelector(`[data-settings-tab='${tab}']`),
+            `设置里要有 ${tab} 这一页`
+        );
+    }
+    // 外观页的强调色
+    const accent = dialog.querySelector("[data-setting='accent:#3b82f6']") as HTMLElement;
+    assert.ok(accent, "外观页要能选强调色");
+    await act(async () => accent.click());
+    // 外观页带效果预览（调字号/行高/宽度时直接看效果）—— 它属于外观这一页
+    assert.ok(document.querySelector("[data-settings-preview='1']"), "要有实时预览区");
+    // 编辑器页
+    await act(async () =>
+        (dialog.querySelector("[data-settings-tab='editor']") as HTMLElement).click()
+    );
+    assert.ok(
+        document.querySelector("[data-setting='lineNumbers']"),
+        "编辑器页要有行号开关"
+    );
+    assert.ok(
+        document.querySelector("[data-setting='showToolbar']"),
+        "编辑器页要有工具栏开关"
+    );
+    assert.ok(
+        document.querySelector("[data-setting='spellcheck']"),
+        "编辑器页要有拼写检查开关"
+    );
+});
+
+test("设置改动落到 localStorage（下次打开还在）", async () => {
+    globalThis.localStorage?.removeItem("notes.uiSettings");
+    mountPanel([note({ id: 1, title: "甲", content: "a" })]);
+    await act(async () =>
+        (document.querySelector("button[data-tool='settings']") as HTMLElement).click()
+    );
+    await act(async () =>
+        (document.querySelector("[data-setting='accent:#3b82f6']") as HTMLElement).click()
+    );
+    const saved = JSON.parse(globalThis.localStorage!.getItem("notes.uiSettings") || "{}");
+    assert.equal(saved.accent, "#3b82f6", "强调色要写进 notes.uiSettings");
+    // 强调色作用在页面根元素上，整页跟着变
+    const rootEl = document.querySelector("[data-notes-root]") as HTMLElement;
+    assert.equal(
+        rootEl.style.getPropertyValue("--accent"),
+        "#3b82f6",
+        "强调色要作为 --accent 挂在记事本根元素上（作用域只在这页）"
+    );
+});
+
+// ---------- 8. 右下角那排按键已移除 ----------
+
+test("状态栏不再有 删除 / 置顶 / 归档 那排按键（都进了右键菜单）", () => {
+    mountPanel([note({ id: 1, title: "甲", content: "a" })]);
+    for (const label of ["删除", "置顶", "归档"]) {
+        assert.equal(
+            document.querySelector(`button[aria-label='${label}']`),
+            null,
+            `状态栏不该再有「${label}」按键（功能在右键菜单 / 顶栏 ⋯ 里）`
+        );
+    }
+    // 但功能没丢：顶栏 ⋯ 与右键菜单里都还在
+    assert.ok(document.querySelector("button[data-tool='note-more']"), "顶栏要有「⋯」入口");
+});
+
+// ---------- 10. 在侧边打开（两篇同时编辑） ----------
+
+test("在侧边打开：出现第二台完整编辑器（标题框 + 工具栏 + 编辑器）", async () => {
+    mountPanel([
+        note({ id: 1, title: "甲", content: "甲正文" }),
+        note({ id: 2, title: "乙", content: "乙正文" }),
+    ]);
+    await act(async () => {
+        rightClick(document.querySelector("[data-note-list] [data-note-id='2']")!);
+    });
+    await act(async () => (document.querySelector("[data-row-op='open-side']") as HTMLElement).click());
+
+    const side = document.querySelector("[data-side-editor='1']") as HTMLElement;
+    assert.ok(side, "要出现侧边编辑器");
+    assert.ok(
+        side.querySelector("input[aria-label='侧边笔记标题']"),
+        "侧边要有自己的标题框"
+    );
+    assert.equal(
+        (side.querySelector("input[aria-label='侧边笔记标题']") as HTMLInputElement).value,
+        "乙",
+        "侧边打开的是右键那条笔记"
+    );
+    assert.ok(side.querySelector('[aria-label="Markdown 格式"]'), "侧边要有自己的工具栏");
+    // 两台编辑器同时在（主编辑区还在，不能被挤掉）
+    assert.ok(document.querySelector(".cm-content"), "主编辑器要还在");
+    assert.ok(side.querySelector(".cm-content"), "侧边也要有一台编辑器");
+    // 关掉
+    await act(async () => (side.querySelector("[data-side-close='1']") as HTMLElement).click());
+    assert.equal(document.querySelector("[data-side-editor='1']"), null, "点关闭要收起侧边");
+});
+
+test("侧边编辑器改了内容也会自动存（和主编辑器同一套 3 秒防抖）", async () => {
+    const calls: { id: number; patch: Record<string, unknown> }[] = [];
+    mountPanel([
+        note({ id: 1, title: "甲", content: "甲正文" }),
+        note({ id: 2, title: "乙", content: "乙正文" }),
+    ], {
+        onUpdate: async (id: number, patch: Record<string, unknown>) => {
+            calls.push({ id, patch });
+        },
+    });
+    await act(async () => {
+        rightClick(document.querySelector("[data-note-list] [data-note-id='2']")!);
+    });
+    await act(async () => (document.querySelector("[data-row-op='open-side']") as HTMLElement).click());
+    const title = document.querySelector("input[aria-label='侧边笔记标题']") as HTMLInputElement;
+    await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(
+            title,
+            "乙改名"
+        );
+        title.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await new Promise(r => setTimeout(r, 3300));
+    assert.ok(
+        calls.some(c => c.id === 2 && c.patch.title === "乙改名"),
+        "侧边改的标题要自动写库，实际：" + JSON.stringify(calls)
+    );
+});
+
+test("侧边那条笔记被删掉后不留半屏空白", async () => {
+    const two = [note({ id: 1, title: "甲", content: "a" }), note({ id: 2, title: "乙", content: "b" })];
+    mountPanel(two);
+    await act(async () => {
+        rightClick(document.querySelector("[data-note-list] [data-note-id='2']")!);
+    });
+    await act(async () => (document.querySelector("[data-row-op='open-side']") as HTMLElement).click());
+    assert.ok(document.querySelector("[data-side-editor='1']"), "先打开侧边");
+    // 侧边那条被移出列表（模拟被回收）
+    act(() => {
+        root!.render(
+            <UIPrefsProvider>
+                <NotesPage
+                    onClose={() => {}}
+                    notes={[two[0]]}
+                    onCreate={async () => note({ id: 99 })}
+                    onUpdate={async () => {}}
+                    onDelete={async () => {}}
+                    onTogglePin={async () => {}}
+                    trashedNotes={[]}
+                    onLoadTrash={async () => {}}
+                    onRestoreTrashed={async () => {}}
+                    onPurgeTrashed={async () => {}}
+                    onEmptyTrash={async () => {}}
+                    onToggleArchive={async () => {}}
+                />
+            </UIPrefsProvider>
+        );
+    });
+    assert.equal(
+        document.querySelector("[data-side-editor='1']"),
+        null,
+        "侧边那条不在列表里了就自动收起，别留一块空白"
     );
 });

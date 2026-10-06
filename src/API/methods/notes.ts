@@ -473,13 +473,21 @@ export const notesImpl: NotesApi = {
             const scopeTail = this.scopeParams([]);
             const result = await this.db
                 .prepare(
-                    `INSERT INTO note_folder (user_id, name, parent_id, order_num)
-                     VALUES (?, ?, ?, COALESCE((SELECT MAX(order_num) + 1 FROM note_folder${
+                    `INSERT INTO note_folder (user_id, name, icon, color, parent_id, order_num)
+                     VALUES (?, ?, ?, ?, ?, COALESCE((SELECT MAX(order_num) + 1 FROM note_folder${
                          this.scopeSql(false)
                      }), 0))
                      RETURNING *, 0 AS count`
                 )
-                .bind(this.currentUserId, draft.name || "新建文件夹", draft.parent_id ?? null, ...scopeTail)
+                .bind(
+                    this.currentUserId,
+                    draft.name || "新建文件夹",
+                    // 外观两列：传什么存什么（路由层已验证格式），空就是默认样式
+                    draft.icon ?? null,
+                    draft.color ?? null,
+                    draft.parent_id ?? null,
+                    ...scopeTail
+                )
                 .all<NoteFolder>();
             if (!result.results || result.results.length === 0) {
                 throw new Error("创建文件夹失败");
@@ -509,6 +517,15 @@ export const notesImpl: NotesApi = {
                 await validateFolderParent(this, patch.parent_id, id);
                 updates.push("parent_id = ?");
                 params.push(patch.parent_id);
+            }
+            // 文件夹外观（schema 11）：与 name 同一层级的普通字段，格式校验在路由层
+            if (patch.icon !== undefined) {
+                updates.push("icon = ?");
+                params.push(patch.icon);
+            }
+            if (patch.color !== undefined) {
+                updates.push("color = ?");
+                params.push(patch.color);
             }
             params.push(id);
             const result = await this.db

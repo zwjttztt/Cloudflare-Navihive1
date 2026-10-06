@@ -82,6 +82,14 @@ export interface NoteFolder {
     parent_id?: number | null;
     name: string;
     order_num?: number;
+    /**
+     * 文件夹外观（inkstone 的「文件夹外观」）：图标名 + 颜色。
+     * 存的是**约定枚举的字符串**（icon 名 / 十六进制色值），不是自由文本——
+     * 渲染端只认自己调色板里的名字，脏数据直接按默认样式画。
+     * 两个都可空：空 = 默认图标 + 默认颜色（老数据一行都不用回填）。
+     */
+    icon?: string | null;
+    color?: string | null;
     /** UI 要显示「这个文件夹几条」，查询时算出来，不进表里 */
     count?: number;
     created_at?: string;

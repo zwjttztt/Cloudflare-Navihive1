@@ -38,7 +38,11 @@ import {
  *     （见下方 runMigrations 第 6.5 步 + 2026-10-06 的修复）
  */
 // 9 = 令牌只读分享 note_share（uuid 防止删除/恢复后旧链接复活）。
-export const SCHEMA_VERSION = "10";
+// 11 = note_folder.icon / note_folder.color（文件夹外观）。
+//     ⚠️ CREATE TABLE IF NOT EXISTS 对已存在的表**不会补列**（2026-10-06 的
+//     parent_id 500 就是这个坑），所以老库必须走 migrateFolderTagTables 里的
+//     hasColumn + ALTER，版本号必须 +1 让快路径失效。
+export const SCHEMA_VERSION = "11";
 /** 版本号存在 configs 里的键名 */
 export const SCHEMA_VERSION_KEY = "schema.version";
 
@@ -344,6 +348,18 @@ export const migrationImpl: MigrationApi = {
                 await this.db.exec("ALTER TABLE note_folder ADD COLUMN parent_id INTEGER");
             } catch (error) {
                 if (!(await this.hasColumn("note_folder", "parent_id"))) throw error;
+            }
+        }
+        // 文件夹外观两列（schema 11）。⚠️ 每列**各判各的**，不能写成
+        // 「icon 在就直接 return」—— 那是 archived/folder_id 那次真 bug 的原样复刻。
+        // 老库上 note_folder 早就在了，CREATE TABLE 里的新列对它无效，必须 ALTER。
+        for (const column of ["icon", "color"] as const) {
+            if (await this.hasColumn("note_folder", column)) continue;
+            try {
+                await this.db.exec(`ALTER TABLE note_folder ADD COLUMN ${column} TEXT`);
+            } catch (error) {
+                // 并发迁移时列可能已存在；确认真的存在才算没事
+                if (!(await this.hasColumn("note_folder", column))) throw error;
             }
         }
     },
