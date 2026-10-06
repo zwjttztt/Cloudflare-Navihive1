@@ -524,6 +524,16 @@ function ColResizeHandle({
                 bgcolor: "transparent",
                 transition: "background-color 120ms ease",
                 "&:hover": { bgcolor: "var(--accent)" },
+                // ⚠️ 下面两条是「拖得动」的关键，不是装饰：
+                //   - `alignSelf: stretch` + `minHeight`：父容器是 flex，
+                //     不显式拉伸的话这条会**塌成 0 高度**（2026-10-06 的真机 bug：
+                //     真机量到 h=0，鼠标点不中；而合成事件绕过命中测试，单测全绿）。
+                //   - `touchAction: none`：触屏上浏览器会把手势当成滚动，
+                //     拖动直接被滚动手势吃掉。
+                alignSelf: "stretch",
+                minHeight: 120,
+                touchAction: "none",
+                userSelect: "none",
             }}
         />
     );
@@ -1559,13 +1569,6 @@ export default function NotesPage({
                 />
             </Box>
 
-            {/* 导航列 ↔ 列表列之间的可拖缝 */}
-            <ColResizeHandle
-                label='拖动调整导航列宽度'
-                onDrag={startDrag('nav')}
-                onReset={reset('nav')}
-            />
-
             {/* 左栏视图导航：从「三列网格按钮」改成 inkstone 那种纵向条目 ——
                 一个入口一行、名字靠左、条数靠右一行（原来六个按钮占两行、条数塞在名字后面
                 挤成一团，而且没有地方放文件夹和标签）。 */}
@@ -1633,6 +1636,17 @@ export default function NotesPage({
             />
 
             </Box>
+            {/* 导航列 ↔ 列表列之间的可拖缝。
+                ⚠️⚠️ 它必须在导航列这个 Box **外面**：里面是 flex-direction: column，
+                放进去会被压成 0 高度、贴到 x=0，真实鼠标根本点不中 ——
+                而页内 dispatchEvent 合成事件是直接派发给元素的、不做命中测试，
+                所以单测和合成事件探针都会「通过」，真机却拖不动（2026-10-06 踩过）。 */}
+            <ColResizeHandle
+                label='拖动调整导航列宽度'
+                onDrag={startDrag('nav')}
+                onReset={reset('nav')}
+            />
+
             {/* ================= 第二列：笔记列表 ================= */}
             <Box
                 data-list-col='1'
@@ -1992,13 +2006,14 @@ export default function NotesPage({
                 })}
             </Menu>
 
-            {/* 列表列 ↔ 编辑区之间的可拖缝 */}
+            </Box>
+            {/* 列表列 ↔ 编辑区之间的可拖缝。同样必须在列表列这个 Box **外面** ——
+                里面是 flex-direction: column，放进去会塌成 0 高度、真实鼠标点不中。 */}
             <ColResizeHandle
                 label='拖动调整笔记列表宽度'
                 onDrag={startDrag('list')}
                 onReset={reset('list')}
             />
-            </Box>
             </>
             )}
         </Box>

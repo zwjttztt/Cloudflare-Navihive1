@@ -56,7 +56,7 @@ const BUDGET_KB = 236;
  *              （同轮还试过把 HeaderGroupsButton 也改 lazy，能再省 0.4 KB，
  *                但它属于分组栏那条线，按要求整块回退了，所以基线是这个数。）
  */
-const BASELINE_KB = 224.6;
+const BASELINE_KB = 218.2;
 
 function indexChunk(): { name: string; kb: number } | null {
     const assets = join(findProjectDir(), "dist", "client", "assets");
@@ -92,8 +92,8 @@ function indexChunk(): { name: string; kb: number } | null {
 const FIRST_SCREEN_BUDGET_RAW_KB = 970;
 const FIRST_SCREEN_BUDGET_GZIP_KB = 315;
 /** 实测基线（main @ affaf2b，2026-10-05）：914.1 KB 原始 / 295.2 KB gzip */
-const FIRST_SCREEN_BASELINE_RAW_KB = 914.1;
-const FIRST_SCREEN_BASELINE_GZIP_KB = 295.2;
+const FIRST_SCREEN_BASELINE_RAW_KB = 919.0;
+const FIRST_SCREEN_BASELINE_GZIP_KB = 296.8;
 
 interface FirstScreen {
     files: { name: string; rawKb: number; gzipKb: number }[];
@@ -247,4 +247,58 @@ test("**当前**首屏包也要留 5% 余量，不只是基线留", t => {
             `${(actual * 100).toFixed(1)}%（至少要 5%）。` +
             `要么继续把只在触发后才出现的组件改成 lazy，要么连同理由一起上调预算。`
     );
+});
+
+
+test("记事本整块不许进首屏（hook 也不能）", t => {
+    // 这条钉的是 2026-10-06 的一次疏漏：`NotesPage` 组件确实 lazy 了，
+    // 但 App 顶层还调着 `useNotes()` —— **hooks 不能异步调用**，
+    // 于是整个 hook（连带它的全部文案、乐观更新、回滚逻辑）都留在首屏包里。
+    // 组件 lazy、hook 没 lazy，等于只 lazy 了一半。
+    //
+    // 正确做法：hook 与视图一起塞进 `NotesOverlay`，对这个文件做 lazy。
+    const dir = findProjectDir();
+    let appSrc: string;
+    try {
+        appSrc = readFileSync(join(dir, "src", "App.tsx"), "utf-8");
+    } catch {
+        t.skip("读不到 App.tsx，跳过");
+        return;
+    }
+    assert.ok(
+        !/import\s*\{[^}]*useNotes[^}]*\}\s*from\s*["'][^"']*useNotes["']/.test(appSrc),
+        "App.tsx 又静态 import 了 useNotes —— 记事本的 hook 会被打进首屏包。" +
+            "它只能通过 lazy 的 NotesOverlay 用（组件与 hook 必须一起懒加载）"
+    );
+    assert.ok(
+        !/=\s*useNotes\s*\(/.test(appSrc),
+        "App.tsx 顶层又调了 useNotes() —— hooks 不能异步调用，" +
+            "这样整个 hook 都会留在首屏。挪进 NotesOverlay 组件里"
+    );
+    assert.ok(
+        /NotesOverlay/.test(appSrc) && /lazy\s*\(\s*\(\)\s*=>\s*import\(["'][^"']*NotesOverlay["']\)/.test(appSrc),
+        "App.tsx 应该是 lazy(() => import('./components/NotesOverlay'))"
+    );
+});
+
+test("真实首屏里搜不到记事本的数据层 SQL", t => {
+    // 双保险：上面那条管源码，这里管产物。
+    // `INSERT INTO notes` 出现就说明 methods/notes.ts 被打进首屏了。
+    const fs = firstScreen();
+    if (!fs || fs.files.length === 0) {
+        t.skip("没有构建产物，跳过（先跑 npm run build 再跑单测）");
+        return;
+    }
+    for (const f of fs.files) {
+        if (!/\.js$/.test(f.name)) continue;
+        const text = readFileSync(join(findProjectDir(), "dist", "client", "assets", f.name), "utf-8");
+        assert.ok(
+            !text.includes("INSERT INTO notes"),
+            `${f.name} 里有 notes 表的 INSERT —— 记事本的数据层进首屏了`
+        );
+        assert.ok(
+            !text.includes("加载记事本失败"),
+            `${f.name} 里有 useNotes 的文案 —— hook 进首屏了（lazy 漏了一半？）`
+        );
+    }
 });

@@ -59,7 +59,6 @@ import { useSiteActions } from "./hooks/useSiteActions";
 import { useGroupActions } from "./hooks/useGroupActions";
 import { useUndoRedo } from "./hooks/useUndoRedo";
 import { useBackupController } from "./hooks/useBackupController";
-import { useNotes } from "./hooks/useNotes";
 import { useAppCommands } from "./hooks/useAppCommands";
 import { usePrefSync } from "./hooks/usePrefSync";
 import { useGlobalShortcuts } from "./hooks/useGlobalShortcuts";
@@ -99,7 +98,8 @@ const ImportPreviewDialog = lazy(() => import("./components/ImportPreviewDialog"
 const AuditDialog = lazy(() => import("./components/AuditDialog"));
 const RecycleBinDialog = lazy(() => import("./components/RecycleBinDialog"));
 // 记事本：独立页面（参考 inkstone 的工作区布局）。懒加载。
-const NotesPage = lazy(() => import("./components/NotesPage"));
+/** 记事本整块（hook + 视图）懒加载：打开之前一行代码都不进首屏 */
+const NotesOverlay = lazy(() => import("./components/NotesOverlay"));
 import HeaderClock from "./components/HeaderClock";
 import SiteListHeader from "./components/SiteListHeader";
 const VisitsDialog = lazy(() => import("./components/VisitsDialog"));
@@ -989,72 +989,16 @@ function App() {
     const lastHealthPushRef = useRef("");
     const lastPrefPushRef = useRef("");
 
-    // 记事本：列表在首屏就拉一次（顶栏按钮要显示条数），面板按需打开
+    // ---------- 记事本 ----------
+    //
+    // ⚠️⚠️ 这里**刻意不调 useNotes**（2026-10-06 改的）：hooks 不能异步调用，
+    // 只要 App 顶层调了它，整个 hook（连带 notes / recycle 的数据层与全部文案）
+    // 就都进了首屏包 —— 哪怕面板还没打开过。
+    // 现在改成：hook 与视图一起塞在 lazy 的 NotesOverlay 里，
+    // 打开记事本才下载那个 chunk；App 这边只留一个「条数」数字给顶栏菜单显示。
     const [notesOpen, setNotesOpen] = useState(false);
-    const {
-        notes,
-        createNote,
-        updateNote,
-        deleteNote,
-        togglePin,
-        trash: trashedNotes,
-        loadTrash: loadTrashedNotes,
-        restoreTrashed,
-        purgeTrashed,
-        emptyTrash: emptyTrashedNotes,
-        toggleArchive,
-        // ---------- 阶段三收尾：文件夹 / 标签 ----------
-        // ⚠️ 故意不叫 folders / tags：App 里那两个名字已经给了站点那套标签，
-        // 同名会直接「Cannot redeclare block-scoped variable」。
-        folders: noteFolders,
-        tags: noteTagList,
-        noteTags: noteTagLinks,
-        createFolder,
-        renameFolder,
-        removeFolder,
-        createTag,
-        renameTag,
-        removeTag,
-        assignTags,
-    } = useNotes({
-        api,
-        onError: handleError,
-        onNotify: notify,
-    });
-
-    /**
-     * 打包给记事本左栏第一列的那一套。
-     *
-     * ⚠️ 用 useMemo 而不是每次渲染新造一个字面量：NotesPage 里那几个 callback 会把
-     * 这里挂进去的方法当依赖，外层对象每次都变会让它们跟着重跑（回调一变，
-     * 下方 memo 与 effect 全失效，严重的会滚成「内存打满」那类死循环）。
-     */
-    const noteFolderTags = useMemo(
-        () => ({
-            folders: noteFolders,
-            tags: noteTagList,
-            noteTags: noteTagLinks,
-            onCreateFolder: createFolder,
-            onRenameFolder: renameFolder,
-            onRemoveFolder: removeFolder,
-            onCreateTag: createTag,
-            onRenameTag: renameTag,
-            onRemoveTag: removeTag,
-            onAssignTags: assignTags,
-        }),
-        [
-            noteFolders,
-            noteTagList,
-            noteTagLinks,
-            createFolder,
-            renameFolder,
-            removeFolder,
-            createTag,
-            renameTag,
-            removeTag,
-            assignTags,
-        ]
-    );
+    /** 顶栏菜单上那个「记事本（N）」的 N。进面板时由 NotesOverlay 回报。 */
+    const [notesCount, setNotesCount] = useState(0);
 
     // 打开备份对话框（0=备份，1=恢复）
     const {
@@ -1574,7 +1518,7 @@ function App() {
                                     addTargetName={quickAddTargetName}
                                     onOpenAddGroup={handleOpenAddGroup}
             onOpenNotes={() => setNotesOpen(true)}
-            notesCount={notes.length}
+            notesCount={notesCount}
                                     onMenuOpen={handleMenuOpen}
                                     menuOpen={openMenu}
                                     menuAnchorEl={menuAnchorEl}
@@ -1873,25 +1817,19 @@ function App() {
                     />
                     </ChunkBoundary>
 
-                    {/* 记事本：全屏独立页面（不是右侧抽屉），lazy 引入 */}
+                    {/* 记事本：全屏独立页面（不是右侧抽屉），lazy 引入。
+                        ⚠️ 懒的是 **NotesOverlay** 而不是 NotesPage ——
+                        里面同时装着 useNotes 这个 hook 与视图，两者一起出首屏。
+                        （以前只 lazy 了视图，hook 还留在 App 顶层，首屏照样背着它。） */}
                     {notesOpen && (
                         <ChunkBoundary>
                         <Suspense fallback={null}>
-                            <NotesPage
-                                notes={notes}
+                            <NotesOverlay
+                                api={api}
                                 onClose={() => setNotesOpen(false)}
-                                onCreate={createNote}
-                                onUpdate={updateNote}
-                                onDelete={deleteNote}
-                                onTogglePin={togglePin}
-                                trashedNotes={trashedNotes}
-                                onLoadTrash={loadTrashedNotes}
-                                onRestoreTrashed={restoreTrashed}
-                                onPurgeTrashed={purgeTrashed}
-                                onEmptyTrash={emptyTrashedNotes}
-                                onToggleArchive={toggleArchive}
+                                onError={handleError}
                                 onNotify={notify}
-                                folderTags={noteFolderTags}
+                                onCountChange={setNotesCount}
                             />
                         </Suspense>
                         </ChunkBoundary>

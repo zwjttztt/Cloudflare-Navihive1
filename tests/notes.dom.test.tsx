@@ -1452,6 +1452,39 @@ test("左两栏各有一条可拖分隔条（role=separator + 可访问名）", 
     );
 });
 
+test("两条分隔条必须是左栏容器的直接子元素（放进去会被压成 0 高）", () => {
+    // 这条钉的是 2026-10-06 的真机 bug：分隔条被写在导航列/列表列**内部**，
+    // 而那两列是 flex-direction: column → 分隔条被压成 **0 高度**、贴在 x=0，
+    // 真实鼠标点不中。
+    //
+    // ⚠️ 为什么之前没被抓住：页内 `dispatchEvent(new MouseEvent("mousedown"))`
+    // **不做浏览器的命中测试**，直接把事件塞给那个元素 —— 单测和合成事件探针都绿，
+    // 真机却拖不动。**依赖命中测试的交互，单测里只能验 DOM 结构，不能验事件。**
+    //
+    // 判据：分隔条的 parentElement 必须是那个装着 [data-nav-col] + [data-list-col] 的
+    // flex 容器，且**不能**是任何一列自己。
+    mountPanel([note({ id: 1, title: "甲", content: "a" })]);
+    const navCol = document.querySelector("[data-nav-col]");
+    const listCol = document.querySelector("[data-list-col]");
+    assert.ok(navCol && listCol, "两列都要在");
+    const row = navCol.parentElement!;
+    assert.equal(
+        listCol.parentElement,
+        row,
+        "两列应该在同一个 flex 容器里（否则没法用一条缝把它们串起来）"
+    );
+    for (const label of ["拖动调整导航列宽度", "拖动调整笔记列表宽度"]) {
+        const sep = row.querySelector(`[role='separator'][aria-label='${label}']`);
+        assert.ok(sep, `左栏容器里要能找到分隔条：${label}`);
+        assert.equal(
+            sep!.parentElement,
+            row,
+            `「${label}」被塞进了某一列**内部**（parentElement 是列自己）—— ` +
+                "那两列是 flex-direction: column，会把它压成 0 高度，真机鼠标点不中"
+        );
+    }
+});
+
 test("列宽的默认值与上下界都写成了常量（便于以后统一调）", () => {
     // 静态守卫：宽度上下界与命中区宽度是「写死在 sx 里」的，jsdom 量不到，
     // 只能钉在源码上。渲染出来的像素宽由真机 CDP 探针验收。
