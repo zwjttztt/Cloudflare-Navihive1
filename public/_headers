@@ -63,7 +63,7 @@
   Cross-Origin-Resource-Policy: cross-origin
 
 # 只有这一页允许 Mermaid 的 DOM sink；强制无同源权限的沙箱、禁止联网/表单。
-/mermaid-sandbox.html
+/mermaid-sandbox*
   ! Content-Security-Policy
   ! X-Frame-Options
   Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'; sandbox allow-scripts

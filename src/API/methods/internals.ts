@@ -71,6 +71,8 @@ export const FOLDER_TAG_TABLE_STATEMENTS = [
 
 // 建表 SQL（幂等）
 export const CREATE_STATEMENTS = [
+    // 分享表也进基础迁移batch，避免部署中的分步迁移漏建但版本已更新。
+    `CREATE TABLE IF NOT EXISTS note_share (note_id INTEGER PRIMARY KEY, note_uuid TEXT NOT NULL, user_id INTEGER, token TEXT NOT NULL UNIQUE, expires_at INTEGER);`,
     // 保证表结构存在（新建的 D1 库即使没访问过 /api/init 也能直接用）
     `CREATE TABLE IF NOT EXISTS groups (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, order_num INTEGER NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`,
     `CREATE TABLE IF NOT EXISTS sites (id INTEGER PRIMARY KEY AUTOINCREMENT, group_id INTEGER NOT NULL, name TEXT NOT NULL, url TEXT NOT NULL, icon TEXT, description TEXT, notes TEXT, username TEXT, password TEXT, order_num INTEGER NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE);`,

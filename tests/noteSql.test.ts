@@ -262,10 +262,10 @@ test("阶段三收尾：文件夹 / 标签三张新表，老实例上也要真�
     );
     // 2) 迁移里必须真的执行它们 —— 光声明不跑，老库上那三张表永远不存在
     assert.ok(
-        /for \(const sql of FOLDER_TAG_TABLE_STATEMENTS\)[\s\S]{0,200}await this\.db\.exec\(sql\)/.test(
+        /for \(const sql of FOLDER_TAG_TABLE_STATEMENTS\)[\s\S]{0,300}await this\.db\.prepare\(sql\)\.run\(\)/.test(
             migration
         ),
-        "runMigrations 里要逐条 exec 这三张新表"
+        "迁移要prepare整条执行多行DDL，不能用D1按行拆分的exec"
     );
     assert.ok(
         /migrateFolderTagTables/.test(migration),

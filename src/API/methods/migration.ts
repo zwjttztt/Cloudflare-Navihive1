@@ -38,7 +38,7 @@ import {
  *     （见下方 runMigrations 第 6.5 步 + 2026-10-06 的修复）
  */
 // 9 = 令牌只读分享 note_share（uuid 防止删除/恢复后旧链接复活）。
-export const SCHEMA_VERSION = "9";
+export const SCHEMA_VERSION = "10";
 /** 版本号存在 configs 里的键名 */
 export const SCHEMA_VERSION_KEY = "schema.version";
 
@@ -335,11 +335,9 @@ export const migrationImpl: MigrationApi = {
      */
     migrateFolderTagTables: async function (this: NavigationAPI ): Promise<void> {
         for (const sql of FOLDER_TAG_TABLE_STATEMENTS) {
-            try {
-                await this.db.exec(sql);
-            } catch {
-                // 表已存在（并发迁移抢先建了），不是问题
-            }
+            // D1 exec 按行拆SQL，不适合多行DDL；prepare整条执行。
+            // IF NOT EXISTS 已处理并发建表；不能吞错误后仍写新版本。
+            await this.db.prepare(sql).run();
         }
         if (!(await this.hasColumn("note_folder", "parent_id"))) {
             try {
