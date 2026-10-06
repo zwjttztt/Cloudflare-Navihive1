@@ -517,10 +517,10 @@ export class NavigationClient {
         return this.request<NoteFolder[]>("notes/folders");
     }
 
-    async createFolder(name: string): Promise<NoteFolder> {
+    async createFolder(name: string, parent_id: number | null = null): Promise<NoteFolder> {
         return this.request<NoteFolder>("notes/folders", {
             method: "POST",
-            body: JSON.stringify({ name }),
+            body: JSON.stringify({ name, parent_id }),
         });
     }
 

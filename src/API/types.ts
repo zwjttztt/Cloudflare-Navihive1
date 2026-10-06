@@ -67,6 +67,8 @@ export interface Note {
 export interface NoteFolder {
     id?: number;
     user_id?: number | null;
+    /** NULL = 根文件夹；父子关系只允许同账号且无环。 */
+    parent_id?: number | null;
     name: string;
     order_num?: number;
     /** UI 要显示「这个文件夹几条」，查询时算出来，不进表里 */
@@ -172,6 +174,11 @@ export interface ExportData {
      * 导入时 `notes` 为 undefined 就**保持本地笔记原样不动**（清空会毁掉用户现有的笔记）。
      */
     notes?: Note[];
+    /** 文件夹和标签的 id 仅作为备份内引用，恢复时重新映射。缺失表示老备份。 */
+    noteFolders?: NoteFolder[];
+    noteTags?: NoteTag[];
+    /** 用笔记 uuid 关联标签，绝不依赖源库笔记 id。 */
+    noteTagLinks?: { note_uuid: string; tag_id: number }[];
     /**
      * 跟着「账号」走的配置（目前没有非敏感的按账号配置，所以这里是空的；
      * webdav.* 属敏感配置，与 auth.* 一样不进备份）。

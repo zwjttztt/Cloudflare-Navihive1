@@ -46,7 +46,7 @@ export type NotesApiLike = {
     // 同样全部可选：老部署 / 老 mock 上没这几个方法时，界面退化成「没有文件夹、没有标签」，
     // 而不是整个记事本打不开。
     listFolders?(): Promise<NoteFolder[]>;
-    createFolder?(name: string): Promise<NoteFolder>;
+    createFolder?(name: string, parentId?: number | null): Promise<NoteFolder>;
     updateFolder?(id: number, patch: Partial<NoteFolder>): Promise<NoteFolder | null>;
     deleteFolder?(id: number): Promise<{ success: boolean; orphaned: number }>;
     listTags?(): Promise<NoteTag[]>;
@@ -96,6 +96,15 @@ export function useNotes({ api, onError, onNotify }: UseNotesParams) {
             try {
                 const created = await api.createNote(draft);
                 setNotes(prev => [...prev, created]);
+                if (draft.content && api.listTags && api.listNoteTags) {
+                    try {
+                        const [nextTags, nextLinks] = await Promise.all([api.listTags(), api.listNoteTags()]);
+                        setTags(nextTags); setNoteTags(nextLinks);
+                    } catch (error) {
+                        reportError(error, { source: "notes-tags-refresh" });
+                        onError("笔记已创建，但标签刷新失败，请重新打开记事本");
+                    }
+                }
                 return created;
             } catch (error) {
                 reportError(error, { source: "note-create" });
@@ -116,6 +125,18 @@ export function useNotes({ api, onError, onNotify }: UseNotesParams) {
                 const saved = await api.updateNote(id, patch);
                 if (saved) {
                     setNotes(prev => prev.map(n => (n.id === id ? saved : n)));
+                    if (patch.content !== undefined && api.listTags && api.listNoteTags) {
+                        try {
+                            const [nextTags, nextLinks] = await Promise.all([api.listTags(), api.listNoteTags()]);
+                            setTags(nextTags); setNoteTags(nextLinks);
+                        } catch (error) {
+                            // 保存已成功，元数据读取失败不能把正文回滚成旧版本。
+                            reportError(error, { source: "notes-tags-refresh" });
+                            onError("笔记已保存，但标签刷新失败，请重新打开记事本");
+                        }
+                    }
+                } else {
+                    throw new Error("笔记不存在或保存失败");
                 }
             } catch (error) {
                 reportError(error, { source: "note-update" });
@@ -306,10 +327,10 @@ export function useNotes({ api, onError, onNotify }: UseNotesParams) {
 
     /** 笔记增删后文件夹/标签的计数会变，重拉一次最省事（清单就几十条） */
     const createFolder = useCallback(
-        async (name: string) => {
+        async (name: string, parentId: number | null = null) => {
             if (typeof api.createFolder !== "function") return null;
             try {
-                const folder = await api.createFolder(name);
+                const folder = await api.createFolder(name, parentId);
                 setFolders(prev => [...prev, folder].sort(sortFolders));
                 onNotify(`已新建文件夹「${folder.name}」`, "success");
                 return folder;
@@ -321,6 +342,17 @@ export function useNotes({ api, onError, onNotify }: UseNotesParams) {
         },
         [api, onNotify, onError]
     );
+
+    const moveFolder = useCallback(async (id: number, parentId: number | null) => {
+        if (!api.updateFolder) return;
+        try {
+            const folder = await api.updateFolder(id, { parent_id: parentId });
+            if (!folder) throw new Error("文件夹不存在");
+            setFolders(prev => prev.map(f => f.id === id ? folder : f));
+        } catch (error) {
+            onError("移动文件夹失败: " + (error instanceof Error ? error.message : "未知错误"));
+        }
+    }, [api, onError]);
 
     const renameFolder = useCallback(
         async (id: number, name: string) => {
@@ -346,6 +378,8 @@ export function useNotes({ api, onError, onNotify }: UseNotesParams) {
             setFolders(prev => prev.filter(f => f.id !== id));
             try {
                 const res = await api.deleteFolder(id);
+                if (!res.success) throw new Error("删除失败");
+                setFolders(prev => prev.map(f => f.parent_id === id ? { ...f, parent_id: null } : f));
                 if (res?.orphaned > 0) {
                     onNotify(`${res.orphaned} 条笔记已移到「未归类」`, "success");
                 }
@@ -453,6 +487,7 @@ export function useNotes({ api, onError, onNotify }: UseNotesParams) {
         noteTags,
         loadMeta,
         createFolder,
+        moveFolder,
         renameFolder,
         removeFolder,
         createTag,

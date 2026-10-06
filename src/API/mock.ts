@@ -211,6 +211,33 @@ type MockAuditEntry = {
 const mockAuditLog: MockAuditEntry[] = [];
 
 // 模拟API实现
+function validateMockParent(parent: number | null, moving?: number): void {
+    const seen = new Set<number>(moving === undefined ? [] : [moving]);
+    let cursor = parent;
+    while (cursor !== null) {
+        if (!Number.isInteger(cursor) || cursor <= 0 || seen.has(cursor)) throw new Error("文件夹不能移入自身或子文件夹");
+        seen.add(cursor);
+        const folder = mockFolders.find(f => f.id === cursor);
+        if (!folder) throw new Error("目标文件夹不存在");
+        cursor = folder.parent_id ?? null;
+    }
+}
+
+async function syncMockInlineTags(note: Note): Promise<void> {
+    if (note.id === undefined || !note.content.includes("#")) return;
+    const { extractNoteTags } = await import("../utils/markdownNoteTags");
+    for (const name of extractNoteTags(note.content)) {
+        let tag = mockTags.find(t => t.name === name);
+        if (!tag) {
+            tag = { id: Math.max(0, ...mockTags.map(t => t.id ?? 0)) + 1, name, color: null };
+            mockTags.push(tag);
+            mockTagSeq = Math.max(mockTagSeq, tag.id! + 1);
+        }
+        if (!mockNoteTagLinks.some(l => l.note_id === note.id && l.tag_id === tag.id))
+            mockNoteTagLinks.push({ note_id: note.id, tag_id: tag.id! });
+    }
+}
+
 export class MockNavigationClient {
     // 与真实 client 保持一致：登录态看可读的 session cookie，令牌本身不落 JS
     constructor() {
@@ -380,7 +407,10 @@ export class MockNavigationClient {
             order_num: Math.max(0, ...mockNotes.map(n => n.order_num || 0)) + 1,
             site_id: draft.site_id ?? null,
         };
+        validateMockParent(draft.folder_id ?? null);
+        note.folder_id = draft.folder_id ?? null;
         mockNotes.push(note);
+        await syncMockInlineTags(note);
         return note;
     }
 
@@ -388,7 +418,9 @@ export class MockNavigationClient {
         await new Promise(resolve => setTimeout(resolve, 200));
         const note = mockNotes.find(n => n.id === id);
         if (!note) return null;
+        if (patch.folder_id !== undefined) validateMockParent(patch.folder_id);
         Object.assign(note, patch, { updated_at: new Date().toISOString() });
+        if (patch.content !== undefined) await syncMockInlineTags(note);
         return note;
     }
 
@@ -422,11 +454,13 @@ export class MockNavigationClient {
         return mockFolders.map(f => ({ ...f, count: mockNotes.filter(n => n.folder_id === f.id).length }));
     }
 
-    async createFolder(name: string): Promise<NoteFolder> {
+    async createFolder(name: string, parent_id: number | null = null): Promise<NoteFolder> {
         await new Promise(resolve => setTimeout(resolve, 120));
+        validateMockParent(parent_id);
         const folder: NoteFolder = {
             id: mockFolderSeq++,
             name,
+            parent_id,
             order_num: mockFolders.length,
             count: 0,
         };
@@ -438,6 +472,7 @@ export class MockNavigationClient {
         await new Promise(resolve => setTimeout(resolve, 120));
         const folder = mockFolders.find(f => f.id === id);
         if (!folder) return null;
+        if (patch.parent_id !== undefined) validateMockParent(patch.parent_id, id);
         Object.assign(folder, patch);
         return folder;
     }
@@ -447,6 +482,7 @@ export class MockNavigationClient {
         const idx = mockFolders.findIndex(f => f.id === id);
         if (idx === -1) return { success: false, orphaned: 0 };
         mockFolders.splice(idx, 1);
+        for (const folder of mockFolders) if (folder.parent_id === id) folder.parent_id = null;
         // 笔记不跟着删：只把它们挪到未归类，和后端 deleteFolder 一个语义
         const orphaned = mockNotes.filter(n => n.folder_id === id).length;
         for (const note of mockNotes) {

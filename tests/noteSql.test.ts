@@ -496,3 +496,38 @@ test("createNote 的 INSERT：列数与顶层值数必须一一对应", () => {
             "加列时值这一侧也要补上对应的表达式。"
     );
 });
+
+test("正文标签：正文更新和标签写入必须同批，标签失败应向调用方报错", async () => {
+    const captured: { sql: string; args: unknown[] }[] = [];
+    let batches = 0;
+    let directWrites = 0;
+    const api = {
+        currentUserId: 7,
+        migrate: async () => {},
+        withSchemaRetry: async <T,>(fn: () => Promise<T>) => fn(),
+        scopeSql: (hasWhere: boolean) => `${hasWhere ? " AND " : " WHERE "}user_id = ?`,
+        scopeParams: (params: unknown[]) => [...params, 7],
+        db: {
+            prepare: (sql: string) => {
+                const stmt = { sql, args: [] as unknown[],
+                    bind(...args: unknown[]) { stmt.args = args; return stmt; },
+                    run: async () => { directWrites++; return { success: true }; },
+                };
+                captured.push(stmt);
+                return stmt;
+            },
+            batch: async (stmts: typeof captured) => {
+                batches++;
+                assert.equal(stmts.length, 3);
+                assert.match(stmts[0].sql, /UPDATE notes/);
+                assert.match(stmts[1].sql, /INSERT INTO note_tag/);
+                assert.match(stmts[2].sql, /INSERT OR IGNORE INTO note_note_tag/);
+                for (const s of stmts) assert.equal((s.sql.match(/\?/g) || []).length, s.args.length);
+                throw new Error("标签写入失败");
+            },
+        },
+    };
+    await assert.rejects(notesImpl.updateNote.call(api as never, 3, { content: "正文 #中文" }), /标签写入失败/);
+    assert.equal(batches, 1);
+    assert.equal(directWrites, 0, "事务前不得单独写入正文或标签");
+});

@@ -191,8 +191,13 @@ class MockD1 {
     async batch<T>(stmts: { _sql: string; _args: unknown[] }[]): Promise<
         { results: T[]; success: boolean }[]
     > {
-        return Promise.all(
-            stmts.map(s => {
+        const snapshot = {
+            groups: structuredClone(this.groups), sites: structuredClone(this.sites),
+            configs: new Map(this.configs), written: structuredClone(this.written),
+            nextGroupId: this.nextGroupId, nextSiteId: this.nextSiteId,
+        };
+        try {
+            return stmts.map(s => {
                 const sql = s._sql;
                 const norm = this.normalize(sql);
                 if (norm.startsWith("INSERT")) {
@@ -205,8 +210,16 @@ class MockD1 {
                     return { results: [] as T[], success: true };
                 }
                 return { results: this.select(sql) as T[], success: true };
-            })
-        );
+            });
+        } catch (error) {
+            this.groups = snapshot.groups;
+            this.sites = snapshot.sites;
+            this.configs = snapshot.configs;
+            this.written = snapshot.written;
+            this.nextGroupId = snapshot.nextGroupId;
+            this.nextSiteId = snapshot.nextSiteId;
+            throw error;
+        }
     }
 
     async exec(): Promise<{ count: number }> {

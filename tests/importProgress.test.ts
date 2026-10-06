@@ -1,12 +1,11 @@
 // tests/importProgress.test.ts
 // 第四章第 7 项「批量导入」的验收：
 //   - 密码加密限并发（不再是一条一条串行 await），且顺序不乱
-//   - 超大备份分块提交（一个 batch 塞几千条会顶满 D1 单次请求）
+//   - 大备份也只能单事务提交；容量拒绝不能分块重试
 //   - 阶段进度是服务端数出来的真实条数，不是前端编的百分比
-//   - 分块提交中途失败时：旧数据完好 + 不谎报成功
+//   - 事务后段失败时：旧数据完好 + 新数据全部撤销
 //
-// 这里的 MockD1 沿用 restoreAtomicity 那套真事务语义（batch 里一条炸 = 整批撤销），
-// 否则「分块提交失败后回滚」测的是代码以为自己回滚了，而不是库真的没变。
+// MockD1 使用事务语义（batch 里一条炸 = 整批撤销），并单独模拟容量拒绝。
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
@@ -36,6 +35,7 @@ class MockD1 {
     failRules: FailRule[] = [];
     batchCalls = 0;
     batchSizes: number[] = [];
+    maxBatchSize = Infinity;
 
     private norm(sql: string): string {
         return sql.replace(/\s+/g, " ").trim();
@@ -150,6 +150,7 @@ class MockD1 {
     async batch<T>(stmts: { _sql: string; _args?: unknown[] }[]): Promise<{ results: T[]; success: boolean }[]> {
         this.batchCalls++;
         this.batchSizes.push(stmts.length);
+        if (stmts.length > this.maxBatchSize) throw new Error("恢复事务超过容量限制");
         const snapG = this.groups.map(r => ({ ...r }));
         const snapS = this.sites.map(r => ({ ...r }));
         const snapC = new Map(this.configs);
@@ -301,7 +302,7 @@ test("小备份：仍然一个事务切过去（分块不该把日常备份拆�
     assert.ok(db.batchSizes[0] <= COMMIT_CHUNK_STATEMENTS);
 });
 
-test("大备份：语句数超过单批上限时分块提交，且数据一条不少", async () => {
+test("大备份：超过旧分块阈值仍原子提交，且数据一条不少", async () => {
     const siteCount = COMMIT_CHUNK_STATEMENTS; // 加分组 / 配置 / 删除语句后必然超过上限
     const db = new MockD1();
     seed(db);
@@ -317,14 +318,8 @@ test("大备份：语句数超过单批上限时分块提交，且数据一条�
     });
 
     assert.equal(result.success, true, "大备份也要能恢复成功");
-    assert.ok(
-        db.batchCalls > 1,
-        `语句数超过 ${COMMIT_CHUNK_STATEMENTS} 就该分块，实际只提交了 ${db.batchCalls} 次`
-    );
-    assert.ok(
-        db.batchSizes.every(n => n <= COMMIT_CHUNK_STATEMENTS),
-        `每块都不能超过上限，实际 ${JSON.stringify(db.batchSizes)}`
-    );
+    assert.equal(db.batchCalls, 1, "新旧数据必须在同一个事务内切换");
+    assert.ok(db.batchSizes[0] > COMMIT_CHUNK_STATEMENTS, "超过旧分块阈值也不能拆开事务");
     assert.equal(db.sites.filter(s => s.name.startsWith("站点")).length, siteCount, "站点一条都不能少");
     assert.ok(!db.sites.some(s => s.name === "旧站点"), "旧数据该被清掉");
 
@@ -340,12 +335,11 @@ test("大备份：语句数超过单批上限时分块提交，且数据一条�
     assert.equal(writes[0], 0, "write 阶段从 0 开始");
 });
 
-test("分块提交到一半失败：旧数据完好、新数据收干净，且说明已回滚", async () => {
+test("事务后段写入失败：旧数据完好、新数据整批撤销，保留失败原因", async () => {
     const siteCount = COMMIT_CHUNK_STATEMENTS;
     const db = new MockD1();
     seed(db);
-    // 只炸「第二块才轮到」的那条站点插入：第一块已经提交成功，
-    // 正好是「分块事务」独有的失败面（单事务情形下这一条根本不会出现）
+    // 在事务后段注入失败，确认前段执行过的插入也被数据库撤销。
     db.failRules = [
         {
             when: /^INSERT INTO sites/,
@@ -358,7 +352,8 @@ test("分块提交到一半失败：旧数据完好、新数据收干净，且�
     const result = await api.importData(makeBackup(siteCount));
 
     assert.equal(result.success, false, "中途失败必须报失败");
-    assert.match(result.message ?? "", /已回滚/, "要说清楚现有数据没被改动");
+    assert.match(result.message ?? "", /模拟分块提交中途失败/, "必须保留数据库返回的失败原因");
+    assert.equal(db.batchCalls, 1, "失败后不能另发按预分配 ID 删除的补偿事务");
     // 旧数据全程没被动过
     assert.ok(db.sites.some(s => s.id === 7 && s.name === "旧站点"), "旧站点必须还在");
     assert.ok(db.groups.some(g => g.id === 5), "旧分组必须还在");
@@ -367,4 +362,31 @@ test("分块提交到一半失败：旧数据完好、新数据收干净，且�
         !db.sites.some(s => s.name.startsWith("站点")),
         `不该留下半截新数据，实际残留 ${db.sites.filter(s => s.name.startsWith("站点")).length} 条`
     );
+});
+
+test("服务端容量拒绝：不得分块重试，原有数据和配置完整保留", async () => {
+    const db = new MockD1();
+    seed(db);
+    const api = await prepared(db, 2);
+    db.configs.set("sentinel", "before");
+    const before = { groups: structuredClone(db.groups), sites: structuredClone(db.sites), configs: [...db.configs] };
+    db.maxBatchSize = 10;
+    const result = await api.importData(makeBackup(20));
+    assert.equal(result.success, false);
+    assert.match(result.message ?? "", /容量限制/);
+    assert.equal(db.batchCalls, 1);
+    assert.deepEqual(db.groups, before.groups);
+    assert.deepEqual(db.sites, before.sites);
+    assert.deepEqual([...db.configs], before.configs);
+});
+
+test("恢复锁被占用：拒绝请求不得释放另一个请求的锁", async () => {
+    const db = new MockD1();
+    const api = await prepared(db, 2);
+    assert.equal(await api.claimIdempotency("restore.lock", "u2", 120000), true);
+    const result = await api.importData(makeBackup(1));
+    assert.equal(result.success, false);
+    assert.match(result.message ?? "", /上一次恢复/);
+    assert.ok(db.idempotency.has("restore.lock|u2"));
+    assert.equal(db.batchCalls, 0);
 });

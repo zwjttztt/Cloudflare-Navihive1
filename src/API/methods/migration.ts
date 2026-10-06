@@ -32,7 +32,7 @@ import {
  * 4 = notes.archived 归档列（阶段三）。加表/加列时别忘了它。
  * 5 = notes.folder_id + note_folder / note_tag / note_note_tag 三张新表（阶段三收尾）。
  */
-export const SCHEMA_VERSION = "5";
+export const SCHEMA_VERSION = "6";
 /** 版本号存在 configs 里的键名 */
 export const SCHEMA_VERSION_KEY = "schema.version";
 
@@ -334,6 +334,13 @@ export const migrationImpl: MigrationApi = {
                 await this.db.exec(sql);
             } catch {
                 // 表已存在（并发迁移抢先建了），不是问题
+            }
+        }
+        if (!(await this.hasColumn("note_folder", "parent_id"))) {
+            try {
+                await this.db.exec("ALTER TABLE note_folder ADD COLUMN parent_id INTEGER");
+            } catch (error) {
+                if (!(await this.hasColumn("note_folder", "parent_id"))) throw error;
             }
         }
     },

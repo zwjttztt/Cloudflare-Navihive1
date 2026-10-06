@@ -11,7 +11,9 @@
 //      没有它就只能按标题+内容硬比，用户改过一次的笔记会被当成两条。
 import type { NavigationAPI } from "../http";
 import type { Note, NoteFolder, NoteTag } from "../types";
+import type { D1PreparedStatement } from "../schema";
 import { newUuid } from "../../utils/uuid";
+import { extractNoteTags } from "../../utils/markdownNoteTags";
 
 export interface NotesApi {
     listNotes(): Promise<Note[]>;
@@ -55,6 +57,41 @@ export interface NotesApi {
 const NOTE_FIELDS =
     "id, uuid, title, content, pinned, order_num, site_id, archived, folder_id, created_at, updated_at";
 
+async function validateFolderParent(api: NavigationAPI, parent: number | null, moving?: number): Promise<void> {
+    if (parent === null) return;
+    if (!Number.isInteger(parent) || parent <= 0) throw new Error("文件夹 ID 无效");
+    const seen = new Set<number>(moving === undefined ? [] : [moving]);
+    let cursor: number | null = parent;
+    while (cursor !== null) {
+        if (seen.has(cursor)) throw new Error("文件夹不能移入自身或子文件夹");
+        seen.add(cursor);
+        const row: { parent_id: number | null } | null = await api.db
+            .prepare(`SELECT parent_id FROM note_folder WHERE id = ?${api.scopeSql(true)}`)
+            .bind(...api.scopeParams([cursor])).first<{ parent_id: number | null }>();
+        if (!row) throw new Error("目标文件夹不存在或不属于当前账号");
+        cursor = row.parent_id ?? null;
+    }
+}
+
+function inlineTagStatements(api: NavigationAPI, noteKey: number | string, content: string): D1PreparedStatement[] {
+    // 只追加，不撤销手工标签。条件 INSERT 在同一事务内避免并发创建同名标签。
+    const statements: D1PreparedStatement[] = [];
+    const noteColumn = typeof noteKey === "number" ? "id" : "uuid";
+    for (const name of extractNoteTags(content)) {
+        statements.push(api.db.prepare(`INSERT INTO note_tag (user_id, name)
+            SELECT ?, ? WHERE EXISTS (SELECT id FROM notes WHERE ${noteColumn} = ?${api.scopeSql(true)})
+            AND NOT EXISTS (SELECT id FROM note_tag WHERE name = ?${api.scopeSql(true)})`)
+            .bind(api.currentUserId, name, ...api.scopeParams([noteKey]), ...api.scopeParams([name])));
+        statements.push(api.db.prepare(`INSERT OR IGNORE INTO note_note_tag (note_id, tag_id)
+            SELECT n.id, t.id FROM notes n, note_tag t
+            WHERE n.${noteColumn} = ? AND t.name = ?
+              AND n.id IN (SELECT id FROM notes${api.scopeSql(false)})
+              AND t.id IN (SELECT id FROM note_tag${api.scopeSql(false)})`)
+            .bind(noteKey, name, ...api.scopeParams([]), ...api.scopeParams([])));
+    }
+    return statements;
+}
+
 export const notesImpl: NotesApi = {
     listNotes: async function (this: NavigationAPI): Promise<Note[]> {
         await this.migrate();
@@ -84,6 +121,7 @@ export const notesImpl: NotesApi = {
 
     createNote: async function (this: NavigationAPI, draft: Partial<Note>): Promise<Note> {
         await this.migrate();
+        await validateFolderParent(this, draft.folder_id ?? null);
         // order_num 缺省时排到当前最后一条之后，省得前端每次都要先查一遍最大值。
         //
         // ⚠️ 两个坑都在这���句里（踩过一次，症状是接口一律 500）：
@@ -94,7 +132,8 @@ export const notesImpl: NotesApi = {
         //   2. 子查询里的 `?` 也要绑参数。用 `scopeParams([])` 取，
         //      它在单账号部署（uid 为 NULL）下返回空数组，两种情况都对。
         const scopeTail = this.scopeParams([]);
-        const result = await this.db
+        const uuid = draft.uuid || newUuid();
+        const statement = this.db
             .prepare(
                 // ⚠️⚠️ 列数必须与值数**一一对应**：阶段三收尾给列尾加了 folder_id，
                 // 值这一侧却忘了补 `?` —— 8 列 7 值，SQLite 直接报
@@ -110,7 +149,7 @@ export const notesImpl: NotesApi = {
             )
             .bind(
                 this.currentUserId,
-                draft.uuid || newUuid(),
+                uuid,
                 draft.title || "",
                 draft.content || "",
                 draft.pinned ? 1 : 0,
@@ -118,11 +157,12 @@ export const notesImpl: NotesApi = {
                 draft.site_id ?? null,
                 // 未指定就落 NULL（= 未归类），而不是 0 —— 0 会被当成「有个 id 为 0 的文件夹」
                 draft.folder_id ?? null
-            )
-            .all<Note>();
-        if (!result.results || result.results.length === 0) {
-            throw new Error("创建笔记失败");
-        }
+            );
+        const tags = inlineTagStatements(this, uuid, draft.content || "");
+        const result = tags.length
+            ? (await this.db.batch<Note>([statement, ...tags]))[0]
+            : await statement.all<Note>();
+        if (!result.success || !result.results?.length) throw new Error("创建笔记失败");
         return result.results[0];
     },
 
@@ -165,17 +205,19 @@ export const notesImpl: NotesApi = {
             }
             // 阶段三收尾：归入 / 移出文件夹。显式传 null 才是「移到未归类」
             if (patch.folder_id !== undefined) {
+                await validateFolderParent(this, patch.folder_id);
                 updates.push("folder_id = ?");
                 params.push(patch.folder_id);
             }
 
             params.push(id);
-            const result = await this.db
-                .prepare(
-                    `UPDATE notes SET ${updates.join(", ")} WHERE id = ?${this.scopeSql(true)}`
-                )
-                .bind(...this.scopeParams(params))
-                .run();
+            const statement = this.db
+                .prepare(`UPDATE notes SET ${updates.join(", ")} WHERE id = ?${this.scopeSql(true)}`)
+                .bind(...this.scopeParams(params));
+            const tags = patch.content === undefined ? [] : inlineTagStatements(this, id, patch.content);
+            const result = tags.length
+                ? (await this.db.batch([statement, ...tags]))[0]
+                : await statement.run();
             if (!result.success) return null;
             // updated_at 刚被刷新，直接回读一次拿最新值
             const row = await this.db
@@ -209,7 +251,7 @@ export const notesImpl: NotesApi = {
                      JOIN notes n ON n.id = l.note_id${this.scopeSql(true)}
                      WHERE l.note_id = ?`
                 )
-                .bind(...this.scopeParams([id]))
+                .bind(...this.scopeParams([]), id)
                 .all<{ tag_id: number }>();
             const tagIds = (links.results || []).map(r => r.tag_id);
 
@@ -304,16 +346,17 @@ export const notesImpl: NotesApi = {
     createFolder: async function (this: NavigationAPI, draft: Partial<NoteFolder>): Promise<NoteFolder> {
         await this.migrate();
         return this.withSchemaRetry(async () => {
+            await validateFolderParent(this, draft.parent_id ?? null);
             const scopeTail = this.scopeParams([]);
             const result = await this.db
                 .prepare(
-                    `INSERT INTO note_folder (user_id, name, order_num)
-                     VALUES (?, ?, COALESCE((SELECT MAX(order_num) + 1 FROM note_folder${
+                    `INSERT INTO note_folder (user_id, name, parent_id, order_num)
+                     VALUES (?, ?, ?, COALESCE((SELECT MAX(order_num) + 1 FROM note_folder${
                          this.scopeSql(false)
                      }), 0))
                      RETURNING *, 0 AS count`
                 )
-                .bind(this.currentUserId, draft.name || "新建文件夹", ...scopeTail)
+                .bind(this.currentUserId, draft.name || "新建文件夹", draft.parent_id ?? null, ...scopeTail)
                 .all<NoteFolder>();
             if (!result.results || result.results.length === 0) {
                 throw new Error("创建文件夹失败");
@@ -338,6 +381,11 @@ export const notesImpl: NotesApi = {
             if (patch.order_num !== undefined) {
                 updates.push("order_num = ?");
                 params.push(patch.order_num);
+            }
+            if (patch.parent_id !== undefined) {
+                await validateFolderParent(this, patch.parent_id, id);
+                updates.push("parent_id = ?");
+                params.push(patch.parent_id);
             }
             params.push(id);
             const result = await this.db
@@ -385,6 +433,9 @@ export const notesImpl: NotesApi = {
             const statements = [
                 this.db
                     .prepare(`UPDATE notes SET folder_id = NULL WHERE folder_id = ?${this.scopeSql(true)}`)
+                    .bind(...this.scopeParams([id])),
+                this.db
+                    .prepare(`UPDATE note_folder SET parent_id = NULL WHERE parent_id = ?${this.scopeSql(true)}`)
                     .bind(...this.scopeParams([id])),
                 this.db
                     .prepare(`DELETE FROM note_folder WHERE id = ?${this.scopeSql(true)}`)
@@ -479,15 +530,14 @@ export const notesImpl: NotesApi = {
         return this.withSchemaRetry(async () => {
             // 先删关联再删标签：反着来会在第一个 DELETE 上就卡外键（虽然这张表没建外键，
             // 但留着顺序是对的 —— 万一以后加上 ON DELETE，就不会留下悬空关联）。
-            await this.db
-                .prepare("DELETE FROM note_note_tag WHERE tag_id = ?")
-                .bind(id)
-                .run();
-            const result = await this.db
-                .prepare(`DELETE FROM note_tag WHERE id = ?${this.scopeSql(true)}`)
-                .bind(...this.scopeParams([id]))
-                .run();
-            return { success: result.success };
+            const results = await this.db.batch([
+                this.db.prepare(`DELETE FROM note_note_tag WHERE tag_id IN
+                    (SELECT id FROM note_tag WHERE id = ?${this.scopeSql(true)})`)
+                    .bind(...this.scopeParams([id])),
+                this.db.prepare(`DELETE FROM note_tag WHERE id = ?${this.scopeSql(true)}`)
+                    .bind(...this.scopeParams([id])),
+            ]);
+            return { success: results.every(r => r.success) };
         });
     },
 

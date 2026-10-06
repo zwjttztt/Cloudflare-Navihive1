@@ -12,6 +12,7 @@ import { LocalPrefsBackup, Site } from "../types";
 const NOTE_FOLDER_TABLE_SQL = `CREATE TABLE IF NOT EXISTS note_folder (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER,
+    parent_id INTEGER,
     name TEXT NOT NULL,
     order_num INTEGER NOT NULL DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,

@@ -23,6 +23,8 @@ import {
     LocalPrefsBackup,
     Note,
     NoteImportStats,
+    NoteFolder,
+    NoteTag,
     Site,
 } from "../types";
 import { sanitizeIconUrl, sanitizeLocalPrefs, stripSiteCredentials } from "./internals";
@@ -52,9 +54,8 @@ export interface SitePlan {
 /** 密码加密的并发窗口：见 encryptSitePasswords */
 export const ENCRYPT_CONCURRENCY = 16;
 /**
- * 单个 D1 batch 里最多放多少条语句。
- * 日常备份（几十条）远低于它，所以还是**一个事务切过去**；
- * 超大备份才需要分块，分块后每块各是一个事务，失败时靠回滚已提交的块收场。
+ * 旧分块阈值（保留兼容导出及回归测试引用），不是 D1 的容量承诺。
+ * 恢复现统一使用一个事务；容量超限由数据库拒绝，不拆开提交。
  */
 export const COMMIT_CHUNK_STATEMENTS = 250;
 
@@ -100,6 +101,9 @@ export interface TransferApi {
         sites: Site[];
         configs: Record<string, string>;
         notes: Note[];
+        noteFolders: NoteFolder[];
+        noteTags: NoteTag[];
+        noteTagLinks: { note_uuid: string; tag_id: number }[];
     }>;
     importData(data: ExportData, opts?: ImportOptions): Promise<ImportResult>;
     /** 批量加密站点密码（限并发 + 进度回调） */
@@ -123,7 +127,7 @@ export const transferImpl: TransferApi = {
     exportData: async function (this: NavigationAPI ): Promise<ExportData> {
         await this.migrate();
         // 一次 batch 取回分组 + 站点 + 配置，只花一次 D1 往返（原来是三次）
-        const { groups, sites, configs, notes } = await this.withSchemaRetry(() =>
+        const { groups, sites, configs, notes, noteFolders, noteTags, noteTagLinks } = await this.withSchemaRetry(() =>
             this.queryExportBundle()
         );
 
@@ -162,7 +166,7 @@ export const transferImpl: TransferApi = {
             // 关掉「备份含记事本」时整块不放 notes 字段（而不是放空数组）：
             // 空数组会被导入当成「备份里有一条笔记都没有」，从而清空本地；
             // 字段缺失才表示「这份备份与记事本无关」，导入时保持本地不动。
-            ...(withNotes ? { notes } : {}),
+            ...(withNotes ? { notes, noteFolders, noteTags, noteTagLinks } : {}),
             ...(sharedAllowed ? { sharedConfigs: stripSecretConfigs(configs) } : {}),
             version: EXPORT_VERSION,
             exportDate: new Date().toISOString(),
@@ -178,10 +182,13 @@ export const transferImpl: TransferApi = {
         sites: Site[];
         configs: Record<string, string>;
         notes: Note[];
+        noteFolders: NoteFolder[];
+        noteTags: NoteTag[];
+        noteTagLinks: { note_uuid: string; tag_id: number }[];
     }> {
         // 记事本跟着同一次 batch 走 —— 多一张表不该多一次 D1 往返
-        const [groupResult, siteResult, configResult, noteResult] = await this.db.batch<
-            Group | Site | Config | Note
+        const [groupResult, siteResult, configResult, noteResult, folderResult, tagResult, linkResult] = await this.db.batch<
+            Group | Site | Config | Note | NoteFolder | NoteTag | { note_uuid: string; tag_id: number }
         >([
             this.db
                 .prepare(
@@ -200,11 +207,20 @@ export const transferImpl: TransferApi = {
             this.db.prepare("SELECT key, value FROM configs"),
             this.db
                 .prepare(
-                    `SELECT id, uuid, title, content, pinned, order_num, site_id, created_at, updated_at FROM notes${this.scopeSql(
+                    `SELECT id, uuid, title, content, pinned, order_num, site_id, folder_id, archived, created_at, updated_at FROM notes${this.scopeSql(
                         false
                     )} ORDER BY pinned DESC, order_num, id`
                 )
                 .bind(...this.scopeParams([])),
+            this.db.prepare(`SELECT * FROM note_folder${this.scopeSql(false)} ORDER BY order_num, id`)
+                .bind(...this.scopeParams([])),
+            this.db.prepare(`SELECT * FROM note_tag${this.scopeSql(false)} ORDER BY id`)
+                .bind(...this.scopeParams([])),
+            this.db.prepare(`SELECT n.uuid AS note_uuid, l.tag_id FROM note_note_tag l
+                JOIN notes n ON n.id = l.note_id
+                WHERE n.id IN (SELECT id FROM notes${this.scopeSql(false)})
+                  AND l.tag_id IN (SELECT id FROM note_tag${this.scopeSql(false)})`)
+                .bind(...this.scopeParams([]), ...this.scopeParams([])),
         ]);
 
         const configs: Record<string, string> = {};
@@ -229,9 +245,14 @@ export const transferImpl: TransferApi = {
                 pinned: n.pinned,
                 order_num: n.order_num,
                 site_id: n.site_id,
+                folder_id: n.folder_id ?? null,
+                archived: Boolean(n.archived),
                 created_at: n.created_at,
                 updated_at: n.updated_at,
             })),
+            noteFolders: ((folderResult.results || []) as NoteFolder[]).map(({ user_id: _uid, count: _count, ...folder }) => folder),
+            noteTags: ((tagResult.results || []) as NoteTag[]).map(({ user_id: _uid, count: _count, ...tag }) => tag),
+            noteTagLinks: (linkResult.results || []) as { note_uuid: string; tag_id: number }[],
         };
     },
 
@@ -281,8 +302,7 @@ export const transferImpl: TransferApi = {
         const createdSiteIds: number[] = [];
         /** 本次新建的笔记 id：分批提交中途失败时靠它回滚（漏清会留下用户看不见的孤儿笔记） */
         const createdNoteIds: number[] = [];
-        /** 已经提交成功的语句数：分块提交中途失败时用来判断「有没有半截数据落下」 */
-        let committedCount = 0;
+        let lockAcquired = false;
 
         // 先验完整性：文件坏了就别开始。放在最前面是因为本函数全程「旧数据不动」，
         // 一旦开始 INSERT 再失败就得靠回滚擦屁股 —— 能在动手前拦住最省事。
@@ -315,6 +335,7 @@ export const transferImpl: TransferApi = {
 
             if (typeof this.claimIdempotency === "function") {
                 const got = await this.claimIdempotency(lockScope, lockKey, RESTORE_LOCK_TTL_MS);
+                if (got) lockAcquired = true;
                 if (!got) {
                     // 抢不到有两种可能，必须分开处理：
                     //   - 确实有另一个恢复在跑 → 拒绝（这才是锁的意义）
@@ -458,6 +479,60 @@ export const transferImpl: TransferApi = {
             const notesMode = opts?.notesMode === "replace" ? "replace" : "merge";
             const incomingNotes = normalized.notes;
 
+            // 元数据只在笔记备份存在时恢复；老文件缺分类字段不清空本地分类。
+            const folderMap = new Map<number, number>();
+            const tagMap = new Map<number, number>();
+            const metadataStatements: D1PreparedStatement[] = [];
+            if (incomingNotes) {
+                if (normalized.noteFolders) {
+                    const local = await this.db.prepare(`SELECT id, name, parent_id FROM note_folder${this.scopeSql(false)}`)
+                        .bind(...this.scopeParams([])).all<{ id: number; name: string; parent_id: number | null }>();
+                    const max = await this.db.prepare("SELECT COALESCE(MAX(id), 0) AS m FROM note_folder").first<{ m: number }>();
+                    let next = max?.m || 0;
+                    const byPath = new Map((local.results || []).map(f => [JSON.stringify([f.parent_id ?? null, f.name]), f.id]));
+                    const visiting = new Set<number>();
+                    const source = new Map(normalized.noteFolders.map(f => [f.id, f]));
+                    const add = (folder: NoteFolder): number => {
+                        if (folder.id !== undefined && folderMap.has(folder.id)) return folderMap.get(folder.id)!;
+                        if (folder.id !== undefined && visiting.has(folder.id)) throw new Error("备份文件夹层级存在循环");
+                        if (folder.id !== undefined) visiting.add(folder.id);
+                        const parent = folder.parent_id ? source.get(folder.parent_id) : undefined;
+                        const parentId = parent ? add(parent) : null;
+                        const key = JSON.stringify([parentId, folder.name]);
+                        let id = byPath.get(key);
+                        if (id === undefined) {
+                            id = ++next;
+                            byPath.set(key, id);
+                            metadataStatements.push(this.db.prepare("INSERT INTO note_folder (id, user_id, name, order_num, parent_id) VALUES (?, ?, ?, ?, ?)")
+                                .bind(id, this.currentUserId, folder.name, folder.order_num ?? 0, parentId));
+                        }
+                        if (folder.id !== undefined) { folderMap.set(folder.id, id); visiting.delete(folder.id); }
+                        return id;
+                    };
+                    normalized.noteFolders.forEach(add);
+                }
+                for (const [table, rows, map] of [
+                    ["note_tag", normalized.noteTags, tagMap],
+                ] as const) {
+                    if (!rows) continue;
+                    const local = await this.db.prepare(`SELECT id, name FROM ${table}${this.scopeSql(false)}`)
+                        .bind(...this.scopeParams([])).all<{ id: number; name: string }>();
+                    const byName = new Map((local.results || []).map(r => [r.name, r.id]));
+                    const max = await this.db.prepare(`SELECT COALESCE(MAX(id), 0) AS m FROM ${table}`)
+                        .first<{ m: number }>();
+                    let next = max?.m || 0;
+                    for (const row of rows) {
+                        let id = byName.get(row.name);
+                        if (id === undefined) {
+                            id = ++next;
+                            byName.set(row.name, id);
+                            metadataStatements.push(this.db.prepare("INSERT INTO note_tag (id, user_id, name, color) VALUES (?, ?, ?, ?)")
+                                .bind(id, this.currentUserId, row.name, row.color ?? null));
+                        }
+                        if (typeof row.id === "number") map.set(row.id, id);
+                    }
+                }
+            }
             const notePlan: Array<{
                 id: number;
                 uuid: string;
@@ -466,7 +541,13 @@ export const transferImpl: TransferApi = {
                 pinned: boolean;
                 order_num: number;
                 site_id: number | null;
+                folder_id?: number | null;
+                archived?: boolean;
             }> = [];
+            const importedMetadata = (n: Note) => ({
+                folder_id: n.folder_id !== undefined ? folderMap.get(n.folder_id ?? 0) ?? null : undefined,
+                archived: n.archived,
+            });
             /** replace 模式要清的本地笔记 id；merge 模式为空数组（本地一律不动） */
             const staleNoteIds: string[] = [];
 
@@ -483,7 +564,8 @@ export const transferImpl: TransferApi = {
                             content: n.content,
                             pinned: Boolean(n.pinned),
                             order_num: n.order_num ?? 0,
-                            site_id: n.site_id ?? null,
+                            site_id: n.site_id != null ? siteIdMap[String(n.site_id)] ?? null : null,
+                            ...importedMetadata(n),
                         });
                         noteStats.created += 1;
                     }
@@ -515,7 +597,8 @@ export const transferImpl: TransferApi = {
                                 content: n.content,
                                 pinned: Boolean(n.pinned),
                                 order_num: n.order_num ?? 0,
-                                site_id: n.site_id ?? null,
+                                site_id: n.site_id != null ? siteIdMap[String(n.site_id)] ?? null : null,
+                            ...importedMetadata(n),
                             });
                             noteStats.created += 1;
                             continue;
@@ -533,7 +616,8 @@ export const transferImpl: TransferApi = {
                                 content: n.content,
                                 pinned: Boolean(n.pinned),
                                 order_num: n.order_num ?? 0,
-                                site_id: n.site_id ?? null,
+                                site_id: n.site_id != null ? siteIdMap[String(n.site_id)] ?? null : null,
+                            ...importedMetadata(n),
                             });
                             noteStats.updated += 1;
                         } else {
@@ -546,7 +630,7 @@ export const transferImpl: TransferApi = {
             }
 
             // ── 第二阶段：整批提交（一个 D1 事务 = 原子切换）──
-            const commitStatements: D1PreparedStatement[] = [];
+            const commitStatements: D1PreparedStatement[] = [...metadataStatements];
 
             // 记事本：replace 模式先清本地全部（和卡片一样「先插新的成功、再删旧的」
             // 的顺序反过来 —— 这里是**同一个事务**里先 DELETE 再 INSERT，
@@ -554,6 +638,9 @@ export const transferImpl: TransferApi = {
             // merge 模式下 staleNoteIds 恒为空，本地一条都不动。
             for (let offset = 0; offset < staleNoteIds.length; offset += 90) {
                 const chunk = staleNoteIds.slice(offset, offset + 90);
+                commitStatements.push(this.db.prepare(`DELETE FROM note_note_tag WHERE note_id IN
+                    (SELECT id FROM notes WHERE id IN (${chunk.map(() => "?").join(",")})${this.scopeSql(true)})`)
+                    .bind(...this.scopeParams(chunk)));
                 commitStatements.push(
                     this.db
                         .prepare(
@@ -575,25 +662,23 @@ export const transferImpl: TransferApi = {
                         this.db
                             .prepare(
                                 `UPDATE notes SET uuid = ?, title = ?, content = ?, pinned = ?,
-                                 order_num = ?, site_id = ?, updated_at = CURRENT_TIMESTAMP
+                                 order_num = ?, site_id = ?, folder_id = CASE WHEN ? THEN ? ELSE folder_id END,
+                                 archived = COALESCE(?, archived), updated_at = CURRENT_TIMESTAMP
                                  WHERE id = ?${this.scopeSql(true)}`
                             )
-                            .bind(
-                                n.uuid,
-                                n.title,
-                                n.content,
-                                n.pinned ? 1 : 0,
-                                n.order_num,
-                                n.site_id,
-                                n.id
-                            )
+                            .bind(...this.scopeParams([
+                                n.uuid, n.title, n.content, n.pinned ? 1 : 0,
+                                n.order_num, n.site_id, n.folder_id !== undefined ? 1 : 0,
+                                n.folder_id ?? null, n.archived === undefined ? null : n.archived ? 1 : 0,
+                                n.id,
+                            ]))
                     );
                 } else {
                     commitStatements.push(
                         this.db
                             .prepare(
-                                `INSERT INTO notes (id, user_id, uuid, title, content, pinned, order_num, site_id)
-                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+                                `INSERT INTO notes (id, user_id, uuid, title, content, pinned, order_num, site_id, folder_id, archived)
+                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
                             )
                             .bind(
                                 n.id,
@@ -605,9 +690,25 @@ export const transferImpl: TransferApi = {
                                 n.content,
                                 n.pinned ? 1 : 0,
                                 n.order_num,
-                                n.site_id
+                                n.site_id,
+                                n.folder_id ?? null,
+                                n.archived ? 1 : 0
                             )
                     );
+                }
+            }
+
+            if (incomingNotes && normalized.noteTagLinks !== undefined) {
+                for (const n of notePlan) {
+                    commitStatements.push(this.db.prepare(`DELETE FROM note_note_tag WHERE note_id IN
+                        (SELECT id FROM notes WHERE id = ?${this.scopeSql(true)})`)
+                        .bind(...this.scopeParams([n.id])));
+                    const ids = new Set(normalized.noteTagLinks.filter(l => l.note_uuid === n.uuid)
+                        .map(l => tagMap.get(l.tag_id)).filter((id): id is number => id !== undefined));
+                    for (const tagId of ids) {
+                        commitStatements.push(this.db.prepare("INSERT OR IGNORE INTO note_note_tag (note_id, tag_id) VALUES (?, ?)")
+                            .bind(n.id, tagId));
+                    }
                 }
             }
 
@@ -670,20 +771,17 @@ export const transferImpl: TransferApi = {
                 }
             }
 
-            // 提交：日常备份只有几十条语句，一把就是一个事务，切过去是一步到位。
-            // 超大备份（几千条）才分块 —— 一个 batch 塞太多语句既慢又容易撞上限。
-            // 分块后每块各是一个事务：中途炸了要回滚**已经提交的那几块**，
-            // 否则库里会留下半份新数据（旧数据始终没被动过，所以仍然是「一份完整可用版本」）。
+            // 提交必须只有一个事务：包含新增、已有笔记更新、关联与旧数据清理。
             const total = commitStatements.length;
             report("write", 0, total);
-            for (let offset = 0; offset < commitStatements.length; offset += COMMIT_CHUNK_STATEMENTS) {
-                const chunk = commitStatements.slice(offset, offset + COMMIT_CHUNK_STATEMENTS);
-                committedCount += chunk.length;
-                const committed = await this.db.batch(chunk);
+            // 关联恢复和已有笔记 UPDATE 无法靠删除新行补偿，必须一次事务提交。
+            // 超出服务端容量时整批失败，不允许先删旧笔记后分块落库。
+            if (commitStatements.length > 0) {
+                const committed = await this.db.batch(commitStatements);
                 if (committed.some(result => !result.success)) {
-                    throw new Error("恢复事务提交失败：已回滚本次写入，当前数据未改动");
+                    throw new Error("恢复事务提交失败");
                 }
-                report("write", committedCount, total);
+                report("write", total, total);
             }
             report("cleanup", total, total);
             report("done", total, total);
@@ -698,18 +796,12 @@ export const transferImpl: TransferApi = {
             };
         } catch (error) {
             console.error("导入数据失败:", error);
-            // 回滚：只删本次新建的行。旧数据全程没被碰过，删掉这些就回到导入前的样子。
-            // 分批提交时可能有几块已经落库了 —— 回滚按 id 删，不管它在哪一块里提交的，
-            // 所以这一步对「单事务」和「分块事务」两种情形都成立。
-            // 回滚本身再出错也不能把异常抛出去（用户更该看到的是「为什么导入失败」）
-            await this.rollbackCreatedRows(createdSiteIds, createdGroupIds, createdNoteIds);
+            // 单次 batch 失败由 D1 整批回滚。不得按预分配 ID 发补偿删除，
+            // 因为这些 ID 可能已被另一个并发写入占用。
             const base = error instanceof Error ? error.message : "导入数据失败";
             return {
                 success: false,
-                message:
-                    committedCount > 0
-                        ? `${base}（已回滚本次写入，现有数据未改动）`
-                        : base,
+                message: base,
                 groupIdMap,
                 siteIdMap,
                 // 笔记三态统计。合并模式下「本地较新就跳过」是正确行为，
@@ -717,9 +809,8 @@ export const transferImpl: TransferApi = {
                 noteStats,
             };
         } finally {
-            // 锁必须释放，成功失败都要。拿不到锁的那一次压根没进 try，
-            // 也就不会走到这里、不会误删别人的锁。
-            if (typeof this.releaseIdempotency === "function") {
+            // 仅释放本次实际取得的锁；拒绝请求也会进 finally，不能删持有者的锁。
+            if (lockAcquired && typeof this.releaseIdempotency === "function") {
                 await this.releaseIdempotency(lockScope, lockKey).catch(() => {});
             }
         }
@@ -842,7 +933,7 @@ export const transferImpl: TransferApi = {
 // 备份文件格式版本号。
 // 1.3：全站共享配置从 configs 拆到 sharedConfigs（且只有所有者导出时才带），
 // 导入不再保留备份里的 id（改由数据库重新发号并回传映射）。
-export const EXPORT_VERSION = "1.3";
+export const EXPORT_VERSION = "1.4";
 
 // 兼容多种备份格式：
 // 1) 标准格式 { groups, sites, configs }
@@ -854,6 +945,9 @@ export function normalizeImportData(data: ExportData | Record<string, unknown>):
         groups?: (Group & { sites?: Site[] })[];
         sites?: Site[];
         notes?: Note[];
+        noteFolders?: NoteFolder[];
+        noteTags?: NoteTag[];
+        noteTagLinks?: { note_uuid: string; tag_id: number }[];
         configs?: Record<string, string>;
         sharedConfigs?: Record<string, string>;
         version?: string;
@@ -911,6 +1005,8 @@ export function normalizeImportData(data: ExportData | Record<string, unknown>):
               pinned: Boolean(n?.pinned),
               order_num: typeof n?.order_num === "number" ? n.order_num : index,
               site_id: typeof n?.site_id === "number" ? n.site_id : null,
+              ...(n?.folder_id !== undefined ? { folder_id: Number.isInteger(n.folder_id) && n.folder_id! > 0 ? n.folder_id : null } : {}),
+              ...(n?.archived !== undefined ? { archived: Boolean(n.archived) } : {}),
               created_at: n?.created_at,
               updated_at: n?.updated_at,
           }))
@@ -922,6 +1018,18 @@ export function normalizeImportData(data: ExportData | Record<string, unknown>):
         // **字段缺失与空数组是两件事**：老备份没有这个字段 → undefined →
         // 导入时保持本地笔记原样不动。空数组 → 明确「这份备份里一条笔记都没有」。
         ...(notes ? { notes } : {}),
+        ...(notes && Array.isArray(raw.noteFolders) ? { noteFolders: raw.noteFolders.map(f => ({
+            id: f.id, name: typeof f.name === "string" ? f.name.slice(0, 80) : "新建文件夹",
+            order_num: Number.isFinite(f.order_num) ? f.order_num : 0,
+            parent_id: Number.isInteger(f.parent_id) && f.parent_id! > 0 ? f.parent_id : null,
+        })) } : {}),
+        ...(notes && Array.isArray(raw.noteTags) ? { noteTags: raw.noteTags.map(t => ({
+            id: t.id, name: typeof t.name === "string" ? t.name.slice(0, 80) : "新标签",
+            color: typeof t.color === "string" ? t.color : null,
+        })) } : {}),
+        ...(notes && Array.isArray(raw.noteTagLinks) ? { noteTagLinks: raw.noteTagLinks.filter(l =>
+            typeof l?.note_uuid === "string" && Number.isInteger(l.tag_id) && l.tag_id > 0
+        ).map(l => ({ note_uuid: l.note_uuid, tag_id: l.tag_id })) } : {}),
         configs: raw.configs && typeof raw.configs === "object" ? raw.configs : {},
         // 全站共享配置：老备份没有这个字段，导入时那份全站设置从 configs 里按规则挑
         ...(raw.sharedConfigs && typeof raw.sharedConfigs === "object"

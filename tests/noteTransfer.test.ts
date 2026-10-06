@@ -20,6 +20,7 @@ import { transferImpl } from "../src/API/methods/transfer";
 import { normalizeImportData } from "../src/API/methods/transfer";
 import type { NavigationAPI } from "../src/API/navigationApi";
 import type { ExportData, Note } from "../src/API/types";
+import { extractNoteTags } from "../src/utils/markdownNoteTags";
 
 interface NoteRow {
     id: number;
@@ -30,6 +31,8 @@ interface NoteRow {
     pinned: number;
     order_num: number;
     site_id: number | null;
+    folder_id?: number | null;
+    archived?: number;
     updated_at: string;
 }
 
@@ -41,6 +44,9 @@ class MockD1 {
     notes: NoteRow[] = [];
     /** 记录笔记相关的语句，用来验证「哪些表被动过」 */
     log: string[] = [];
+    folders: { id: number; name: string; user_id: number | null; parent_id?: number | null }[] = [];
+    tags: { id: number; name: string; user_id: number | null }[] = [];
+    links: { note_id: number; tag_id: number }[] = [];
     writtenNotes: number[] = [];
     updatedNotes: number[] = [];
     deletedNotes: number[] = [];
@@ -58,6 +64,9 @@ class MockD1 {
     prepare(sql: string) {
         const s = this.norm(sql);
         return {
+            first: async () => this.run(s, [], "first"),
+            all: async () => this.run(s, [], "all"),
+            run: async () => this.run(s, [], "run"),
             bind: (...args: unknown[]) => ({
                 first: async () => this.run(s, args, "first"),
                 all: async () => this.run(s, args, "all"),
@@ -91,7 +100,7 @@ class MockD1 {
             return { results: this.notes.map(n => ({ ...n })) };
         }
         if (s.startsWith("INSERT INTO notes")) {
-            const [id, userId, uuid, title, content, pinned, orderNum, siteId] = args as [
+            const [id, userId, uuid, title, content, pinned, orderNum, siteId, folderId, archived] = args as [
                 number,
                 number | null,
                 string,
@@ -100,6 +109,8 @@ class MockD1 {
                 number,
                 number,
                 number | null,
+                number | null,
+                number,
             ];
             if (this.notes.some(n => n.id === id)) {
                 throw new Error(`UNIQUE constraint failed: notes.id = ${id}`);
@@ -113,18 +124,23 @@ class MockD1 {
                 pinned,
                 order_num: orderNum,
                 site_id: siteId,
+                folder_id: folderId,
+                archived,
                 updated_at: T0,
             });
             this.writtenNotes.push(id);
             return { success: true, results: [{ id }] };
         }
         if (s.startsWith("UPDATE notes SET uuid")) {
-            const [uuid, title, content, pinned, orderNum, siteId, id] = args as [
+            const [uuid, title, content, pinned, orderNum, siteId, hasFolder, folderId, archived, id] = args as [
                 string,
                 string,
                 string,
                 number,
                 number,
+                number | null,
+                number,
+                number | null,
                 number | null,
                 number,
             ];
@@ -137,6 +153,8 @@ class MockD1 {
                     pinned,
                     order_num: orderNum,
                     site_id: siteId,
+                    ...(hasFolder ? { folder_id: folderId } : {}),
+                    ...(archived !== null ? { archived } : {}),
                     updated_at: T0,
                 });
                 this.updatedNotes.push(id);
@@ -155,6 +173,23 @@ class MockD1 {
             return { success: true };
         }
 
+        for (const [table, rows] of [["note_folder", this.folders], ["note_tag", this.tags]] as const) {
+            if (s.startsWith(`SELECT COALESCE(MAX(id), 0) AS m FROM ${table}`)) return { m: Math.max(0, ...rows.map(r => r.id)) };
+            if (s.startsWith(`SELECT id, name FROM ${table}`) || s.startsWith(`SELECT id, name, parent_id FROM ${table}`)) return { results: rows };
+            if (s.startsWith(`INSERT INTO ${table} `)) {
+                rows.push({ id: Number(args[0]), user_id: args[1] as number | null, name: String(args[2]),
+                    ...(table === "note_folder" ? { parent_id: args[4] as number | null } : {}) });
+                return { success: true };
+            }
+        }
+        if (s.startsWith("DELETE FROM note_note_tag")) {
+            this.links = this.links.filter(l => l.note_id !== args[0]);
+            return { success: true };
+        }
+        if (s.startsWith("INSERT OR IGNORE INTO note_note_tag")) {
+            this.links.push({ note_id: Number(args[0]), tag_id: Number(args[1]) });
+            return { success: true };
+        }
         // ── 其余表：只求「别把 importData 弄崩」 ──
         if (s.startsWith("SELECT COALESCE(MAX(id), 0) AS m FROM")) return { m: 0 };
         if (s.startsWith("SELECT id FROM")) return { results: [] };
@@ -461,6 +496,51 @@ test("归一化：非字符串的 title / content 被压成空串，不当对象
     } as never);
     assert.equal(normalized.notes![0].title, "");
     assert.equal(normalized.notes![0].content, "");
+});
+
+test("分类备份恢复：文件夹和标签重新映射，归档与关联保留", async () => {
+    const db = new MockD1();
+    db.folders.push({ id: 50, name: "别的分类", user_id: 7 });
+    db.tags.push({ id: 70, name: "旧标签", user_id: 7 });
+    const api = makeApi(db);
+    const result = await transferImpl.importData.call(api, {
+        ...backup([note({ uuid: "mapped", folder_id: 3, archived: true })]),
+        noteFolders: [{ id: 3, name: "学习" }],
+        noteTags: [{ id: 4, name: "知识" }],
+        noteTagLinks: [{ note_uuid: "mapped", tag_id: 4 }],
+    });
+    assert.equal(result.success, true);
+    assert.equal(db.notes[0].folder_id, 51);
+    assert.equal(db.notes[0].archived, 1);
+    assert.deepEqual(db.links, [{ note_id: db.notes[0].id, tag_id: 71 }]);
+    assert.equal(db.folders[1].user_id, 7);
+    assert.equal(db.tags[1].user_id, 7);
+});
+
+test("正文标签识别忽略代码、转义、链接及标题语法", () => {
+    assert.deepEqual(extractNoteTags("# 标题\n正文 #中文 #work-tag #中文\n`#代码` \\#转义 [#链接](https://example.com)\n```\n#块代码\n```"), ["中文", "work-tag"]);
+});
+
+test("子文件夹备份按父子路径恢复，同名不同父不合并", async () => {
+    const db = new MockD1();
+    const result = await transferImpl.importData.call(makeApi(db), {
+        ...backup([note({ folder_id: 2 })]),
+        noteFolders: [{ id: 2, name: "资料", parent_id: 1 }, { id: 1, name: "工作" }, { id: 3, name: "资料" }],
+    });
+    assert.equal(result.success, true);
+    assert.equal(db.folders.length, 3);
+    assert.equal(db.folders[1].parent_id, db.folders[0].id);
+    assert.equal(db.notes[0].folder_id, db.folders[1].id);
+});
+
+test("老备份更新正文不覆盖本地归档和分类", async () => {
+    const db = new MockD1([{ id: 5, user_id: 7, uuid: "same", title: "旧",
+        content: "旧", pinned: 0, order_num: 0, site_id: null,
+        folder_id: 19, archived: 1, updated_at: T0 }]);
+    const result = await transferImpl.importData.call(makeApi(db), backup([note({ uuid: "same", updated_at: T1 })]));
+    assert.equal(result.success, true);
+    assert.equal(db.notes[0].folder_id, 19);
+    assert.equal(db.notes[0].archived, 1);
 });
 
 test("归一化：notes 字段缺失 ≠ 空数组（这是两种语义）", () => {

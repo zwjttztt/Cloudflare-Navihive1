@@ -28,6 +28,7 @@ import { MathNode } from "./MathNode";
 import { registerMath } from "./markdownMath";
 import { registerMark } from "./markdownMark";
 import footnote from "markdown-it-footnote";
+import { registerNoteTags } from "./markdownNoteTags";
 
 /** 延迟加载 markdown-it：它只进懒加载 chunk，不进首屏 */
 let parserPromise: Promise<MarkdownIt> | null = null;
@@ -52,6 +53,7 @@ function loadParser(): Promise<MarkdownIt> {
             // 插入的 `==…==` 在预览里原样显示成那四个字符，看着像按钮坏了 ——
             // 其实插入是对的，只是没有规则把它变成 <mark>。
             registerMark(md);
+            registerNoteTags(md);
             // 插件提供完整 token 解析；HTML renderer 不调用，下面单独映射 React。
             md.use(footnote as unknown as (parser: MarkdownIt) => void);
             return md;
@@ -178,6 +180,9 @@ function renderInline(children: Token[] | null, c: Cursor): ReactNode {
 function renderLeaf(tok: Token, c: Cursor): ReactNode {
     const key = nextKey(c);
     switch (tok.type) {
+        case "note_tag":
+            return <span key={key} data-inline-tag={tok.content} title="双击查看标签笔记"
+                style={{ color: "var(--accent)", cursor: "pointer" }}>#{tok.content}</span>;
         case "footnote_ref": {
             const { id, subId } = tok.meta as { id: number; subId: number };
             return <sup key={key} id={`note-fnref-${id}-${subId}`}><a href={`#note-fn-${id}`} aria-label={`脚注 ${id + 1}`}>[{id + 1}]</a></sup>;

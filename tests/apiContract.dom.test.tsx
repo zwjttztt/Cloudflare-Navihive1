@@ -223,3 +223,24 @@ test("形状指纹：null、空数组与缺失键要能区分（守卫本身的�
     );
     assert.deepEqual(shapeOf({ a: 1, b: 2 }), shapeOf({ b: 2, a: 1 }), "键的顺序不该算差异");
 });
+
+test("记事本模拟契约：层级防环、删除父升根、正文标签只追加且忽略代码", async () => {
+    const api = new MockNavigationClient();
+    const parent = await api.createFolder("契约父");
+    const child = await api.createFolder("契约子", parent.id!);
+    await assert.rejects(api.updateFolder(parent.id!, { parent_id: child.id }), /自身或子文件夹/);
+    const note = await api.createNote({ content: "正文 #契约标签 `#不应关联`", folder_id: child.id });
+    const tags = await api.listTags();
+    const tag = tags.find(t => t.name === "契约标签");
+    assert.ok(tag);
+    assert.ok(!tags.some(t => t.name === "不应关联"));
+    assert.ok((await api.listNoteTags())[note.id!].includes(tag.id!));
+    await api.updateNote(note.id!, { content: "正文标签已移除" });
+    assert.ok((await api.listNoteTags())[note.id!].includes(tag.id!), "不撤销手工/已有标签");
+    await api.deleteFolder(parent.id!);
+    assert.equal((await api.listFolders()).find(f => f.id === child.id)?.parent_id, null);
+    assert.equal((await api.getNote(note.id!))?.folder_id, child.id);
+    await api.deleteNote(note.id!);
+    await api.deleteFolder(child.id!);
+    await api.deleteTag(tag.id!);
+});

@@ -119,7 +119,8 @@ export interface NotesPageProps {
         tags: NoteTag[];
         /** { [noteId]: tagId[] }——左栏算「每个标签几条」要用 */
         noteTags?: Record<number, number[]>;
-        onCreateFolder: (name: string) => Promise<NoteFolder | null>;
+        onCreateFolder: (name: string, parentId?: number | null) => Promise<NoteFolder | null>;
+        onMoveFolder?: (id: number, parentId: number | null) => Promise<void>;
         onRenameFolder: (id: number, name: string) => Promise<void>;
         onRemoveFolder: (id: number) => Promise<void>;
         onCreateTag: (name: string) => Promise<NoteTag | null>;
@@ -294,9 +295,15 @@ function FolderTagSection({
     onCreate,
     onRename,
     onRemove,
+    onCreateChild,
+    onMove,
+    onDropNote,
 }: {
     title: string;
-    items: { id: number; name: string; count: number }[];
+    items: { id: number; name: string; count: number; parent_id?: number | null }[];
+    onCreateChild?: (id: number) => void;
+    onMove?: (id: number, parentId: number | null) => void;
+    onDropNote?: (noteId: number, folderId: number) => void;
     selectedId: number | null;
     onSelect: (id: number | null) => void;
     onCreate: () => void;
@@ -305,6 +312,19 @@ function FolderTagSection({
 }) {
     const [menuId, setMenuId] = useState<number | null>(null);
     const anchorRef = useRef<HTMLSpanElement | null>(null);
+    const treeItems = useMemo(() => {
+        const output: (typeof items[number] & { depth: number })[] = [];
+        const visited = new Set<number>();
+        const visit = (item: typeof items[number], depth: number) => {
+            if (visited.has(item.id)) return;
+            visited.add(item.id);
+            output.push({ ...item, depth });
+            items.filter(child => child.parent_id === item.id).forEach(child => visit(child, depth + 1));
+        };
+        items.filter(item => !item.parent_id || !items.some(p => p.id === item.parent_id)).forEach(item => visit(item, 0));
+        items.forEach(item => visit(item, 0));
+        return output;
+    }, [items]);
     return (
         <Box sx={{ px: 0.75, pb: 1 }}>
             <Box
@@ -319,8 +339,16 @@ function FolderTagSection({
                     </IconButton>
                 </Tooltip>
             </Box>
-            {items.map(item => (
-                <Box key={item.id} sx={{ position: "relative" }}>
+            {treeItems.map(item => (
+                <Box key={item.id} data-folder-depth={item.depth} sx={{ position: "relative", pl: Math.min(item.depth, 8) * 1.25 }}
+                    onDragOver={onMove || onDropNote ? e => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; } : undefined}
+                    onDrop={onMove || onDropNote ? e => {
+                        e.preventDefault(); e.stopPropagation();
+                        const folder = Number(e.dataTransfer.getData("application/navihive-folder"));
+                        const note = Number(e.dataTransfer.getData("application/navihive-note"));
+                        if (folder > 0) onMove?.(folder, item.id);
+                        else if (note > 0) onDropNote?.(note, item.id);
+                    } : undefined}>
                     <NavRow
                         label={item.name}
                         count={item.count}
@@ -328,6 +356,11 @@ function FolderTagSection({
                         // 给一个稳定的测试抓手：文件夹视图的筛选用例和未来的 e2e 都靠它定位，
                         // 别去按文字找（名字是用户自己起的，随时会变）
                         data-folder-id={item.id}
+                        draggable={Boolean(onMove)}
+                        onDragStart={onMove ? e => {
+                            e.dataTransfer.setData("application/navihive-folder", String(item.id));
+                            e.dataTransfer.effectAllowed = "move";
+                        } : undefined}
                         onClick={() => onSelect(selectedId === item.id ? null : item.id)}
                     />
                     <IconButton
@@ -367,6 +400,14 @@ function FolderTagSection({
                 onClose={() => setMenuId(null)}
                 slotProps={{ paper: { sx: { minWidth: 140 } } }}
             >
+                {onCreateChild && <MenuItem onClick={() => {
+                    const id = menuId; setMenuId(null);
+                    if (id !== null) onCreateChild(id);
+                }}>新建子文件夹</MenuItem>}
+                {onMove && <MenuItem onClick={() => {
+                    const id = menuId; setMenuId(null);
+                    if (id !== null) onMove(id, null);
+                }}>移到根目录</MenuItem>}
                 <MenuItem
                     onClick={() => {
                         const item = items.find(i => i.id === menuId);
@@ -1602,6 +1643,7 @@ export default function NotesPage({
                 items={folders.map(f => ({
                     id: f.id!,
                     name: f.name || "未命名",
+                    parent_id: f.parent_id,
                     count: folderCounts.get(f.id!) ?? 0,
                 }))}
                 selectedId={activeFolder}
@@ -1611,6 +1653,12 @@ export default function NotesPage({
                     if (id === null) setView("all");
                 }}
                 onCreate={() => promptCreate("folder")}
+                onCreateChild={id => {
+                    const name = globalThis.prompt?.("子文件夹名字", "新建文件夹")?.trim();
+                    if (name) void folderTags?.onCreateFolder(name, id);
+                }}
+                onMove={folderTags?.onMoveFolder ? (id, parent) => void folderTags.onMoveFolder?.(id, parent) : undefined}
+                onDropNote={(id, folder) => void onUpdate(id, { folder_id: folder })}
                 onRename={(id, name) => void renameFolder(id, name)}
                 onRemove={id => void removeFolder(id)}
             />
@@ -1708,6 +1756,12 @@ export default function NotesPage({
                         return (
                             <Box
                                 key={note.id}
+                                data-note-id={note.id}
+                                draggable={note.id !== undefined}
+                                onDragStart={e => {
+                                    e.dataTransfer.setData("application/navihive-note", String(note.id));
+                                    e.dataTransfer.effectAllowed = "move";
+                                }}
                                 role='button'
                                 tabIndex={0}
                                 onClick={() => (dirty ? void switchTo(note.id ?? null) : openNote(note))}
@@ -2176,7 +2230,13 @@ export default function NotesPage({
                                             : "transparent",
                                 }}
                             >
-                                <MarkdownPreview source={draft?.content || ""} />
+                                <Box onDoubleClick={e => {
+                                    const target = (e.target as HTMLElement).closest<HTMLElement>("[data-inline-tag]");
+                                    const tag = tags.find(t => t.name === target?.dataset.inlineTag);
+                                    if (tag?.id !== undefined) {
+                                        setActiveTag(tag.id); setActiveFolder(null); setView("all");
+                                    }
+                                }}><MarkdownPreview source={draft?.content || ""} /></Box>
                             </Box>
                         )}
                     </Box>

@@ -173,7 +173,10 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
         // 白名单：只有 name 是文件夹的字段，其它（id / user_id / count）一律不收
         const name = typeof data.name === "string" ? data.name.trim().slice(0, 80) : "";
         if (!name) return Response.json({ error: "文件夹名不能为空" }, { status: 400 });
-        return Response.json(await api.createFolder({ name }));
+        if (data.parent_id !== undefined && data.parent_id !== null && (!Number.isInteger(data.parent_id) || data.parent_id <= 0)) {
+            return Response.json({ error: "父文件夹 ID 无效" }, { status: 400 });
+        }
+        return Response.json(await api.createFolder({ name, parent_id: data.parent_id ?? null }));
     } else if (path.startsWith("notes/folders/") && method === "PUT") {
         const limited = await writeGate();
         if (limited) return limited;
@@ -185,6 +188,12 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
         const patch: Partial<NoteFolder> = {};
         if (typeof data.name === "string") patch.name = data.name.trim().slice(0, 80) || "";
         if (data.order_num !== undefined) patch.order_num = Number(data.order_num) || 0;
+        if (data.parent_id !== undefined) {
+            if (data.parent_id !== null && (!Number.isInteger(data.parent_id) || data.parent_id <= 0)) {
+                return Response.json({ error: "父文件夹 ID 无效" }, { status: 400 });
+            }
+            patch.parent_id = data.parent_id;
+        }
         const folder = await api.updateFolder(id, patch);
         if (!folder) return Response.json({ error: "文件夹不存在" }, { status: 404 });
         return Response.json(folder);

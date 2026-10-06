@@ -514,7 +514,7 @@ test("有笔记但没匹配时，提示与「没有笔记」要区分开", () =>
 // useNotes：乐观更新 + 失败回滚
 // ---------------------------------------------------------------------------
 
-async function mountHook(api: Record<string, unknown>, onError = () => {}) {
+async function mountHook(api: Record<string, unknown>, onError: (message: string) => void = () => {}) {
     const seen: ReturnType<typeof useNotes>[] = [];
     function Probe() {
         const notes = useNotes({
@@ -543,6 +543,21 @@ async function mountHook(api: Record<string, unknown>, onError = () => {}) {
     assert.ok(seen.length > 0, "Probe 至少该渲染过一次");
     return seen;
 }
+
+test("useNotes：保存成功后标签刷新失败不回滚正文", async () => {
+    const errors: string[] = [];
+    let refreshFails = false;
+    const seen = await mountHook({
+        listNotes: async () => [note()],
+        updateNote: async () => note({ content: "已保存 #新标签" }),
+        listTags: async () => { if (refreshFails) throw new Error("标签读取失败"); return []; },
+        listNoteTags: async () => ({}),
+    }, message => errors.push(message));
+    refreshFails = true;
+    await act(async () => { await seen.at(-1)!.updateNote(1, { content: "已保存 #新标签" }); });
+    assert.equal(seen.at(-1)!.notes[0].content, "已保存 #新标签");
+    assert.ok(errors.some(e => e.includes("笔记已保存")));
+});
 
 test("useNotes：首屏就拉一次列表（顶栏按钮要显示条数）", async () => {
     let calls = 0;
