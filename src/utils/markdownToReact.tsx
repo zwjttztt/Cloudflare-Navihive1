@@ -29,6 +29,7 @@ import { registerMath } from "./markdownMath";
 import { registerMark } from "./markdownMark";
 import footnote from "markdown-it-footnote";
 import { registerNoteTags } from "./markdownNoteTags";
+import { registerWikiLink } from "./noteWikiLink";
 
 /** 延迟加载 markdown-it：它只进懒加载 chunk，不进首屏 */
 let parserPromise: Promise<MarkdownIt> | null = null;
@@ -54,6 +55,9 @@ function loadParser(): Promise<MarkdownIt> {
             // 其实插入是对的，只是没有规则把它变成 <mark>。
             registerMark(md);
             registerNoteTags(md);
+            // `[[双链]]` → 可点链接。inkstone 的核心卖点之一，
+            // 解析规则在 utils/noteWikiLink.ts（反向链接面板复用同一套判据）。
+            registerWikiLink(md);
             // 插件提供完整 token 解析；HTML renderer 不调用，下面单独映射 React。
             md.use(footnote as unknown as (parser: MarkdownIt) => void);
             return md;
@@ -183,6 +187,17 @@ function renderLeaf(tok: Token, c: Cursor): ReactNode {
         case "note_tag":
             return <span key={key} data-inline-tag={tok.content} title="双击查看标签笔记"
                 style={{ color: "var(--accent)", cursor: "pointer" }}>#{tok.content}</span>;
+        // `[[双链]]`：整篇预览的点击事件由 NotesPage 委托处理（按 data-wiki-link 找目标），
+        // 这里只负责语义与外观。用 <a> 而不是 <span>：读屏会念「链接」，
+        // 而且点不动时（目标不存在）样式能明显区分。
+        case "wiki_link":
+            return (
+                <a key={key} data-wiki-link={tok.content}
+                    title={`跳到「${tok.content}」`}
+                    style={{ color: "var(--accent)", textDecoration: "underline" }}>
+                    {tok.content}
+                </a>
+            );
         case "footnote_ref": {
             const { id, subId } = tok.meta as { id: number; subId: number };
             return <sup key={key} id={`note-fnref-${id}-${subId}`}><a href={`#note-fn-${id}`} aria-label={`脚注 ${id + 1}`}>[{id + 1}]</a></sup>;

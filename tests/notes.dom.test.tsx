@@ -106,6 +106,117 @@ function mountPanel(notes: Note[], handlers: Record<string, unknown> = {}) {
 
 const text = () => document.body.textContent || "";
 
+test("反向链接：面板列出引用当前笔记的条目，且能跳过去", async () => {
+    mountPanel([
+        note({ id: 1, title: "数据库设计", content: "表结构" }),
+        note({ id: 2, title: "设计稿", content: "参考 [[数据库设计]]" }),
+        note({ id: 3, title: "无关", content: "没有链接" }),
+    ]);
+    // 先打开《设计稿》（列表里第二条）
+    await act(async () => {
+        (document.querySelectorAll('[data-note-list] [role="button"]')[1] as HTMLElement).click();
+    });
+    const btn = document.querySelector<HTMLElement>('[data-tool="backlinks"]');
+    assert.ok(btn, "顶栏要有反向链接按钮");
+    // 打开《数据库设计》（第一条）才有被引用
+    await act(async () => {
+        (document.querySelectorAll('[data-note-list] [role="button"]')[0] as HTMLElement).click();
+    });
+    const target = document.querySelector<HTMLElement>('[data-tool="backlinks"]')!;
+    assert.match(target.getAttribute("aria-label") ?? "", /反向链接 1 条/);
+    await act(async () => { target.click(); });
+    assert.ok(document.querySelector("[data-backlinks='incoming-label']"));
+    const item = document.querySelector<HTMLElement>("[data-backlink-source='2']");
+    assert.ok(item, "应列出引用了它的《设计稿》");
+    await act(async () => { item!.click(); });
+    // 跳过去之后当前笔记变成《设计稿》，它自己没有反向链接
+    const after = document.querySelector<HTMLElement>('[data-tool="backlinks"]')!;
+    assert.match(after.getAttribute("aria-label") ?? "", /反向链接 0 条/);
+});
+
+test("双链渲染成可点元素，点一下跳到目标笔记", async () => {
+    mountPanel([
+        note({ id: 1, title: "目标笔记", content: "内容" }),
+        note({ id: 2, title: "来源笔记", content: "见 [[目标笔记]]" }),
+    ]);
+    await act(async () => {
+        (document.querySelectorAll('[data-note-list] [role="button"]')[1] as HTMLElement).click();
+    });
+    const link = document.querySelector<HTMLElement>("[data-wiki-link]");
+    assert.ok(link, "正文里的 [[目标笔记]] 要渲染成链接");
+    assert.equal(link!.textContent, "目标笔记");
+    await act(async () => { link!.click(); });
+    // 跳到《目标笔记》：反向链接按钮显示 1 条
+    assert.match(
+        document.querySelector<HTMLElement>('[data-tool="backlinks"]')!.getAttribute("aria-label") ?? "",
+        /反向链接 1 条/
+    );
+});
+
+test("链接与引用：选中文字换成脚注引用，原文进文末定义；再点一次全撤", () => {
+    mountPanel([note({ content: "第一段第二段" })]);
+    const editor = getEditor();
+    act(() => editor.setSelectionRange(3, 6)); // 选中「第二段」
+    act(() => (document.querySelector('[data-tool="footnote-ref"]') as HTMLElement).click());
+    // 选区被引用替换，原文搬到文末
+    assert.equal(editor.value, "第一段[^1]\n\n[^1]: 第二段");
+    // 再点一次：引用和定义都要没，且不留孤儿定义
+    act(() => (document.querySelector('[data-tool="footnote-ref"]') as HTMLElement).click());
+    // ⚠️ 用局部变量再断言：上面那行 assert.equal 会把 editor.value 收窄成字面量类型，
+    // 后面再 `.includes()` 就变成 never 上的调用（tsc 报错）。
+    const afterUndo: string = editor.value;
+    assert.equal(afterUndo, "第一段第二段");
+    assert.ok(!afterUndo.includes("[^"), "不该留下没有引用的孤儿定义");
+});
+
+test("链接与引用：连插两条编号不重复（都写 [^1] 的话第二条定义会被忽略）", () => {
+    mountPanel([note({ content: "甲乙丙" })]);
+    const editor = getEditor();
+    act(() => editor.setSelectionRange(0, 1));
+    act(() => (document.querySelector('[data-tool="footnote-ref"]') as HTMLElement).click());
+    // 插完是 "[^1]乙丙\n\n[^1]: 甲"（索引 4 = 乙、5 = 丙），选中「丙」再插第二条
+    act(() => editor.setSelectionRange(5, 6));
+    act(() => (document.querySelector('[data-tool="footnote-ref"]') as HTMLElement).click());
+    assert.match(editor.value, /\[\^1\]: 甲/);
+    assert.match(editor.value, /\[\^2\]: 丙/, "第二条要编号 2，不能与第一条重号");
+    assert.equal((editor.value.match(/\[\^1\]:/g) ?? []).length, 1);
+});
+
+test("Escape 能关掉全屏记事本（有未保存内容时先存）", async () => {
+    let closed = 0;
+    let saved = 0;
+    mountPanel([note({ content: "原文" })], {
+        onClose: () => { closed += 1; },
+        onUpdate: async () => { saved += 1; },
+    });
+    const key = (k: string) =>
+        window.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true }));
+    await act(async () => { key("Escape"); });
+    assert.equal(closed, 1, "Escape 要能关掉整页（原来只能去点左上角箭头）");
+    assert.equal(saved, 0, "没有改动时不该触发保存");
+    // 有改动：先存再关
+    act(() => { getEditor().value = "改过了"; });
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => { key("Escape"); });
+    assert.equal(saved, 1, "有关改动时要先保存再关，不能把编辑中的正文丢掉");
+    assert.equal(closed, 2);
+});
+
+test("Tab 在记事本内循环，不会跑到看不见的背景里", async () => {
+    mountPanel([note({ content: "正文" })]);
+    const root = document.querySelector<HTMLElement>("[data-notes-root]");
+    assert.ok(root, "根容器要带 data-notes-root，Tab 循环靠它圈定范围");
+    const focusables = [...root!.querySelectorAll<HTMLElement>("button:not([disabled])")];
+    assert.ok(focusables.length > 2, "要有可聚焦元素才谈得上循环");
+    // 焦点在最后一个可聚焦元素上时按 Tab → 回到第一个
+    const last = focusables[focusables.length - 1];
+    last.focus();
+    await act(async () => {
+        window.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
+    });
+    assert.equal(document.activeElement, focusables[0], "Tab 走到末尾要绕回开头");
+});
+
 test("CodeMirror 使用 contenteditable 而非 textarea，并支持工具栏撤销重做", async () => {
     const { undo, redo } = await import("@codemirror/commands");
     mountPanel([note({ content: "原文" })]);
@@ -544,8 +655,7 @@ async function mountHook(api: Record<string, unknown>, onError: (message: string
     return seen;
 }
 
-test("文件夹菜单锚在按钮上（anchorEl 不能是 undefined，否则弹到视口原点）", () => {
-    // ⚠️ jsdom 没有布局，这里**量不到坐标** —— jsdom 的 getBoundingClientRect 全是 0，
+test("文件夹菜单锚在按钮上（anchorEl 不能是 undefined，否则弹到视口原点）", () => {    // ⚠️ jsdom 没有布局，这里**量不到坐标** —— jsdom 的 getBoundingClientRect 全是 0，
     // 「菜单飘到屏幕左下角」这种错位在单测里天然测不出来（2026-10-06 真机实测到
     // x:16 y:724，点击点却在左栏上部）。所以这里只钉「锚点必须来自那个 ⋯ 按钮」，
     // 坐标由 harness 的真机脚本量。
