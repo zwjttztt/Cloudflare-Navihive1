@@ -2601,9 +2601,15 @@ test("中栏头部有 排序 / 新建笔记 / 收起，收起后中栏真的消�
 });
 
 test("中栏排序：按标题排序真的改变了顺序", async () => {
+    // ⚠️ 标题必须用 ASCII（2026-10-07 CI 踩到）：排序用的是 localeCompare，
+    // 而 CI runner 上的 Node 是 **small-icu**（没有中文排序数据），
+    // `localeCompare("乙", "甲")` 会退化成按码点比 —— 乙 U+4E59 < 甲 U+7532，
+    // 顺序「没变」，测试就红了；本机有完整 ICU 时按拼音 甲 < 乙，是绿的。
+    // 浏览器里始终是 full-icu，中文按拼音排是对的 —— 这个差异只影响单测断言，
+    // 所以这里钉的是「排序真的生效」，用不受 ICU 影响的字母标题。
     mountPanel([
-        note({ id: 1, title: "乙", content: "a" }),
-        note({ id: 2, title: "甲", content: "b" }),
+        note({ id: 1, title: "bbb", content: "a" }),
+        note({ id: 2, title: "aaa", content: "b" }),
     ]);
     const ids = () =>
         [...document.querySelectorAll("[data-note-list] [data-note-id]")].map(e =>
@@ -2612,7 +2618,7 @@ test("中栏排序：按标题排序真的改变了顺序", async () => {
     assert.deepEqual(ids(), ["1", "2"], "默认顺序保持原样");
     await act(async () => (document.querySelector("[data-tool='sort']") as HTMLElement).click());
     await act(async () => (document.querySelector("[data-sort-op='title']") as HTMLElement).click());
-    assert.deepEqual(ids(), ["2", "1"], "按标题排序后「甲」要在「乙」前面");
+    assert.deepEqual(ids(), ["2", "1"], "按标题排序后 aaa 要在 bbb 前面");
 });
 
 // ---------- 5. 大纲面板在预览右侧 ----------
