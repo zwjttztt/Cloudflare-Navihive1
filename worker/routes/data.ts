@@ -152,6 +152,10 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
 
     // ---- 记事本 ----
     // 与分组/站点同一套：写操作走 writeGate 限速，账号隔离在 api 层用 scopeSql 做。
+    } else if (path === "notes/shares" && method === "GET") {
+        // ⚠️ 必须排在 /^notes\/\d+\/share$/ 之前，也在 notes/folders 那一堆之前：
+        // 「notes/shares」不匹配数字正则，但绝不能被后面的前缀分支抢走。
+        return Response.json(await api.listNoteShares());
     } else if (/^notes\/\d+\/share$/.test(path)) {
         const id = Number(path.split("/")[1]);
         const headers = { "Cache-Control": "no-store" };

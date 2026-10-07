@@ -8,22 +8,31 @@
 //
 // 只放**真的会生效**的开关：每个控件都能说出它改了哪个渲染行为；
 // 「存了没用」的假开关比缺一个功能更糟。
-import { useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Dialog from "@mui/material/Dialog";
 import Divider from "@mui/material/Divider";
 import IconButton from "@mui/material/IconButton";
 import Slider from "@mui/material/Slider";
+import TextField from "@mui/material/TextField";
+import CircularProgress from "@mui/material/CircularProgress";
 import Switch from "@mui/material/Switch";
 import Typography from "@mui/material/Typography";
 import CloseIcon from "@mui/icons-material/Close";
 import PaletteIcon from "@mui/icons-material/Palette";
 import TuneIcon from "@mui/icons-material/Tune";
+import ShareIcon from "@mui/icons-material/Share";
+import SearchIcon from "@mui/icons-material/Search";
+import RefreshIcon from "@mui/icons-material/Refresh";
+import LaunchIcon from "@mui/icons-material/Launch";
+import LinkOffIcon from "@mui/icons-material/LinkOff";
+import LinkIcon from "@mui/icons-material/Link";
 import { FOLDER_COLORS } from "../utils/folderAppearance";
 import type { NotesUiSettings } from "../utils/notesSettings";
+import type { NoteShareListItem } from "../API/types";
 
-type SettingsTab = "appearance" | "editor";
+type SettingsTab = "appearance" | "editor" | "shares";
 
 /** 一行设置：左标签（+可选说明）、右控件 —— inkstone 的设置行样式 */
 function SettingRow({
@@ -107,10 +116,54 @@ export interface NotesSettingsDialogProps {
     settings: NotesUiSettings;
     onChange: (next: NotesUiSettings) => void;
     onClose: () => void;
+    /**
+     * 分享列表要用的三个方法。没传就不显示「分享列表」这一页（老部署/未登录）。
+     * 只取这三个，别把整个 api 塞进来 —— 设置弹窗不该有权限去干别的事。
+     */
+    shareApi?: {
+        listNoteShares: () => Promise<NoteShareListItem[]>;
+        revokeNoteShare: (id: number) => Promise<{ success: boolean }>;
+    } | null;
+    /** 撤销后回执（成功/失败都提示一下，别让用户猜） */
+    onNotify?: (message: string, severity?: "success" | "error" | "info") => void;
+    /** 打开某条笔记（点「管理」时跳回编辑器） */
+    onOpenNote?: (id: number) => void;
 }
 
-export default function NotesSettingsDialog({ open, settings, onChange, onClose }: NotesSettingsDialogProps) {
+export default function NotesSettingsDialog({
+    open,
+    settings,
+    onChange,
+    onClose,
+    shareApi = null,
+    onNotify,
+    onOpenNote,
+}: NotesSettingsDialogProps) {
     const [tab, setTab] = useState<SettingsTab>("appearance");
+    // ---- 分享列表（2026-07-07 参考 inkstone 新增）----
+    const [shares, setShares] = useState<NoteShareListItem[] | null>(null);
+    const [shareError, setShareError] = useState<string | null>(null);
+    const [shareKeyword, setShareKeyword] = useState("");
+    const reloadShares = useCallback(async () => {
+        if (!shareApi) return;
+        try {
+            setShareError(null);
+            setShares(await shareApi.listNoteShares());
+        } catch (error) {
+            setShares([]);
+            setShareError(error instanceof Error ? error.message : "读取分享列表失败");
+        }
+    }, [shareApi]);
+    // 打开设置或切到这一页时才拉 —— 首屏不需要它
+    useEffect(() => {
+        if (open && tab === "shares") void reloadShares();
+    }, [open, tab, reloadShares]);
+    const filteredShares = useMemo(() => {
+        const kw = shareKeyword.trim().toLowerCase();
+        if (!kw) return shares ?? [];
+        return (shares ?? []).filter(s => (s.title || "").toLowerCase().includes(kw));
+    }, [shares, shareKeyword]);
+    const shareUrl = (token: string) => `${globalThis.location.origin}/note/${token}`;
     const set = <K extends keyof NotesUiSettings>(key: K, value: NotesUiSettings[K]) =>
         onChange({ ...settings, [key]: value });
 
@@ -143,6 +196,9 @@ export default function NotesSettingsDialog({ open, settings, onChange, onClose 
                         [
                             ["appearance", "外观", <PaletteIcon fontSize='small' key='a' />],
                             ["editor", "编辑器", <TuneIcon fontSize='small' key='e' />],
+                            ...(shareApi
+                                ? [["shares", "分享列表", <ShareIcon fontSize='small' key='s' />] as const]
+                                : []),
                         ] as const
                     ).map(([key, label, icon]) => (
                         <Box
@@ -180,7 +236,7 @@ export default function NotesSettingsDialog({ open, settings, onChange, onClose 
                 <Box sx={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
                     <Box sx={{ display: "flex", alignItems: "center", px: 2.5, py: 1.5 }}>
                         <Typography variant='subtitle1' sx={{ flex: 1, fontWeight: 600 }}>
-                            {tab === "appearance" ? "外观" : "编辑器"}
+                            {tab === "appearance" ? "外观" : tab === "editor" ? "编辑器" : "分享列表"}
                         </Typography>
                         <IconButton size='small' aria-label='关闭设置' onClick={onClose} data-settings-close='1'>
                             <CloseIcon fontSize='small' />
@@ -326,7 +382,7 @@ export default function NotesSettingsDialog({ open, settings, onChange, onClose 
                                     </Box>
                                 </Box>
                             </>
-                        ) : (
+                        ) : tab === "editor" ? (
                             <>
                                 <SettingRow label='编辑器字体'>
                                     <SegOptions
@@ -473,6 +529,161 @@ export default function NotesSettingsDialog({ open, settings, onChange, onClose 
                                     字体与字号即时生效；行号、拼写检查与缩进宽度会重建编辑器（撤销历史会清空）。
                                 </Typography>
                             </>
+                        ) : (
+                            // 分享列表（inkstone 设置里同名那一页）：列出所有已分享的笔记 ——
+                            // 链接、剩余有效期、创建/更新时间，以及复制/打开/管理/撤销四个动作。
+                            <Box data-settings-shares='1'>
+                                <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 1.5 }}>
+                                    <Typography variant='subtitle2' sx={{ flex: 1 }}>
+                                        分享列表
+                                    </Typography>
+                                    <Typography variant='caption' color='text.secondary'>
+                                        查看和管理你创建的公开链接
+                                    </Typography>
+                                    <IconButton
+                                        size='small'
+                                        aria-label='刷新分享列表'
+                                        data-share-action='refresh'
+                                        onClick={() => void reloadShares()}
+                                        sx={{ p: 0.25 }}
+                                    >
+                                        <RefreshIcon fontSize='small' />
+                                    </IconButton>
+                                </Box>
+                                <TextField
+                                    fullWidth
+                                    size='small'
+                                    value={shareKeyword}
+                                    onChange={e => setShareKeyword(e.target.value)}
+                                    placeholder='搜索分享的笔记标题'
+                                    slotProps={{
+                                        input: {
+                                            // ⚠️ aria-label 必须挂 input：直接写在 TextField 上
+                                            // 会被 MUI 摊到外层 FormControl（div）上，读屏与
+                                            // 选择器都找不到它（同一个坑踩第二次了）。
+                                            "aria-label": '搜索分享的笔记标题',
+                                            startAdornment: (
+                                                <SearchIcon fontSize='small' sx={{ mr: 0.75, color: "text.disabled" }} />
+                                            ),
+                                        },
+                                    }}
+                                    sx={{ mb: 1.5, borderRadius: 2, bgcolor: "rgba(128,128,128,0.06)" }}
+                                />
+                                {shareError && (
+                                    <Typography variant='body2' color='error' sx={{ mb: 1 }}>
+                                        {shareError}
+                                    </Typography>
+                                )}
+                                {shares === null ? (
+                                    <Box sx={{ display: "grid", placeItems: "center", py: 4 }}>
+                                        <CircularProgress size={20} />
+                                    </Box>
+                                ) : filteredShares.length === 0 ? (
+                                    <Typography variant='body2' color='text.secondary' sx={{ py: 3, textAlign: "center" }}>
+                                        {shareKeyword.trim() ? "没有匹配的分享。" : "还没有分享任何笔记。在笔记的「更多操作」里点「只读分享…」。"}
+                                    </Typography>
+                                ) : (
+                                    filteredShares.map(item => {
+                                        const url = shareUrl(item.token);
+                                        const expired = item.expires_at !== null && item.expires_at <= Date.now();
+                                        return (
+                                            <Box
+                                                key={item.note_id}
+                                                data-share-row={item.note_id}
+                                                sx={{
+                                                    border: "1px solid var(--card-border, rgba(128,128,128,0.22))",
+                                                    borderRadius: 2,
+                                                    px: 1.5,
+                                                    py: 1.25,
+                                                    mb: 1,
+                                                }}
+                                            >
+                                                <Typography variant='body2' sx={{ fontWeight: 600, mb: 0.25 }}>
+                                                    {item.title || "（无标题）"}
+                                                </Typography>
+                                                <Typography
+                                                    variant='caption'
+                                                    color='text.secondary'
+                                                    sx={{ display: "block", wordBreak: "break-all", mb: 0.5 }}
+                                                >
+                                                    {url}
+                                                </Typography>
+                                                <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, flexWrap: "wrap" }}>
+                                                    <Typography variant='caption' sx={{ color: expired ? "error.main" : "success.main" }}>
+                                                        {item.expires_at === null
+                                                            ? "永久有效"
+                                                            : expired
+                                                              ? "已过期"
+                                                              : `${Math.max(1, Math.ceil((item.expires_at - Date.now()) / 86_400_000))} 天后过期`}
+                                                    </Typography>
+                                                    {item.updated_at && (
+                                                        <Typography variant='caption' color='text.disabled'>
+                                                            更新于 {new Date(item.updated_at).toLocaleDateString("zh-CN")}
+                                                        </Typography>
+                                                    )}
+                                                    <Box sx={{ flex: 1 }} />
+                                                    <Button
+                                                        size='small'
+                                                        startIcon={<LinkIcon fontSize='small' />}
+                                                        data-share-action='copy'
+                                                        onClick={async () => {
+                                                            try {
+                                                                await navigator.clipboard.writeText(url);
+                                                                onNotify?.("已复制分享链接", "success");
+                                                            } catch {
+                                                                onNotify?.("复制失败（浏览器拒绝了剪贴板访问）", "error");
+                                                            }
+                                                        }}
+                                                    >
+                                                        复制
+                                                    </Button>
+                                                    <Button
+                                                        size='small'
+                                                        startIcon={<LaunchIcon fontSize='small' />}
+                                                        data-share-action='open'
+                                                        onClick={() => globalThis.open(url, "_blank", "noopener")}
+                                                    >
+                                                        打开链接
+                                                    </Button>
+                                                    <Button
+                                                        size='small'
+                                                        startIcon={<TuneIcon fontSize='small' />}
+                                                        data-share-action='manage'
+                                                        onClick={() => {
+                                                            onOpenNote?.(item.note_id);
+                                                            onClose();
+                                                        }}
+                                                    >
+                                                        管理
+                                                    </Button>
+                                                    <Button
+                                                        size='small'
+                                                        color='error'
+                                                        startIcon={<LinkOffIcon fontSize='small' />}
+                                                        data-share-action='revoke'
+                                                        onClick={async () => {
+                                                            if (!shareApi) return;
+                                                            try {
+                                                                await shareApi.revokeNoteShare(item.note_id);
+                                                                onNotify?.("已撤销分享", "success");
+                                                                await reloadShares();
+                                                            } catch (error) {
+                                                                onNotify?.(
+                                                                    "撤销失败：" +
+                                                                        (error instanceof Error ? error.message : "未知错误"),
+                                                                    "error"
+                                                                );
+                                                            }
+                                                        }}
+                                                    >
+                                                        撤销链接
+                                                    </Button>
+                                                </Box>
+                                            </Box>
+                                        );
+                                    })
+                                )}
+                            </Box>
                         )}
                     </Box>
                     <Box sx={{ display: "flex", justifyContent: "flex-end", px: 2.5, py: 1.5, borderTop: "1px solid rgba(128,128,128,0.12)" }}>

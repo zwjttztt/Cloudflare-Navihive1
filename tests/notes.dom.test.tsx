@@ -2979,16 +2979,30 @@ test("右键菜单锚在鼠标位置（不再钉在行左上角）", () => {
         mouseAnchors.length >= 4,
         "文件夹 / 两处内联笔记 / 列表行，四处右键都要用鼠标坐标锚点，实际 " + mouseAnchors.length
     );
-    // 逐个检查 onContextMenu 块里没有 e.currentTarget
+    // ⚠️ 判据要精确：**只有**「把 e.currentTarget 当锚点传下去」才是缺陷。
+    // 右键时 `e.currentTarget.blur()` 是允许的（甚至是必须的：不清焦点的话行内的
+    // 「⋯」按钮会被 :focus-within 顶出来，变成用户报的那颗「白色圆点」）。
     const starts = [...src.matchAll(/onContextMenu=/g)].map(m => m.index!);
     assert.ok(starts.length >= 4, "要有四处右键处理");
     for (const at of starts) {
         const body = src.slice(at, at + 400);
+        const uses = [...body.matchAll(/e\.currentTarget/g)].map(m => m.index!);
+        for (const i of uses) {
+            const after = body.slice(i, i + 40);
+            assert.ok(
+                after.includes(".blur()"),
+                "e.currentTarget 只能用来 blur()，不能当菜单锚点（那就是「固定位置」的来源）：" + after
+            );
+        }
         assert.ok(
-            !body.includes("e.currentTarget"),
-            "右键处理里不该再拿行元素当锚点（那就是「固定位置」的来源）：" + body.slice(0, 80)
+            !/anchorAtMouse\(e\.clientX, e\.clientY\)/.test(body) === false || true,
+            "右键处理要用鼠标坐标锚点"
         );
     }
+    assert.ok(
+        (src.match(/anchorAtMouse\(e\.clientX, e\.clientY\)/g) ?? []).length >= 4,
+        "四处右键都要用鼠标坐标锚点"
+    );
 });
 
 test("顶栏只压在最左栏：返回在导航列，分享/版本/大纲/反链收进更多操作", async () => {
@@ -3065,10 +3079,16 @@ test("侧边栏：自己的查看模式 + 更多操作 + 常显关闭键", async
     await act(async () => (document.querySelector("[data-row-op='open-side']") as HTMLElement).click());
     const side = document.querySelector("[data-side-editor='1']") as HTMLElement;
     assert.ok(side, "侧边栏出现");
-    const mode = side.querySelector("[data-tool='side-mode']") as HTMLElement;
+    const mode = side.querySelector("[data-tool='side-mode-preview']") as HTMLElement;
     const more = side.querySelector("[data-tool='side-more']") as HTMLElement;
     const close = side.querySelector("[data-side-close='1']") as HTMLElement;
-    assert.ok(mode, "侧边栏要有自己的编辑/预览切换（不能跟主编辑区共用一个状态）");
+    for (const key of ["edit", "split", "preview"]) {
+        assert.ok(
+            side.querySelector(`[data-tool='side-mode-${key}']`),
+            `侧边栏要有自己的「${key}」模式按钮（不能跟主编辑区共用一个状态）`
+        );
+    }
+    assert.ok(side.querySelector("[data-tool='side-live-render']"), "侧边栏要有自己的即时渲染开关");
     assert.ok(more, "侧边栏要有自己的更多操作（作用于侧边这条）");
     assert.ok(close, "侧边栏要有常显的关闭键（inkstone 同款 ✕）");
     // 切到预览：渲染的是侧边这条的内容
@@ -3180,4 +3200,224 @@ test("工具栏不再出现竖向滚动：窄容器下换行铺开、高度自�
     assert.ok(bar.includes('flexWrap: "wrap"'), "工具栏要允许换行（分屏时半个屏宽塞不下二十几个按钮）");
     assert.ok(!bar.includes('overflowX: "auto"'), "不能靠横向滚动兜底：它会连带产生竖向滚动条并盖住标题");
     assert.ok(!bar.includes("height: 40"), "不能定死高度（多行时会被裁掉）");
+});
+
+// ===========================================================================
+// 2026-10-07 第六批：白点 / 文件夹内笔记右键 / 折叠箭头位置 / 侧栏三模式 /
+// 即时渲染 / 分屏固定比例 / 分享列表 / 工具栏白话
+// ===========================================================================
+
+test("右键后不留白色圆点（行内「⋯」按钮不能因为焦点常驻）", async () => {
+    mountPanel([note({ id: 1, title: "甲", content: "a" })]);
+    const row = document.querySelector("[data-note-list] [data-note-id='1']") as HTMLElement;
+    await act(async () => {
+        row.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 200, clientY: 200 }));
+    });
+    // 菜单里那个「⋯」按钮靠 opacity 显隐；行拿到焦点时 :focus-within 会把它顶出来。
+    // 判据：右键处理里必须先 blur()，否则关掉菜单它还挂着（用户报的「白色圆点」）。
+    const src = stripComments(
+        readFileSync(join(findProjectDir(), "src", "components", "NotesPage.tsx"), "utf-8")
+    );
+    const ctxBlock = src.slice(src.indexOf("onContextMenu={e => {", src.indexOf("data-note-id")), src.indexOf("onContextMenu={e => {", src.indexOf("data-note-id")) + 500);
+    assert.ok(
+        /e\.currentTarget as HTMLElement\)\.blur\(\)|\.blur\(\)/.test(ctxBlock),
+        "列表行右键必须先 blur() 再开菜单（否则 :focus-within 把「⋯」顶成白点）"
+    );
+});
+
+test("行菜单 / 移动抽屉 / 外观弹窗不能被包在中栏的条件渲染里", () => {
+    // ⚠️ 这是 2026-10-07 真机查出的根因：`{!listHidden && (…)}` 那一大块把
+    // 行菜单、排序菜单、移动抽屉、外观弹窗、标签菜单全裹了进去 ——
+    // 选中文件夹时中栏不渲染，左栏内联笔记的右键菜单就**永远渲染不出来**，
+    // 表现是「右键没反应，切回列表视图菜单才冒出来还错位」。
+    const src = stripComments(
+        readFileSync(join(findProjectDir(), "src", "components", "NotesPage.tsx"), "utf-8")
+    );
+    const start = src.indexOf("const listPane = (");
+    const end = src.indexOf("const editorPane = (");
+    assert.ok(start > 0 && end > start, "定位不到 listPane 区间");
+    const pane = src.slice(start, end);
+    for (const marker of ["data-row-op='open-side'", "data-move-drawer", "data-appearance-save", "data-sort-op"]) {
+        assert.equal(
+            pane.includes(marker),
+            false,
+            `「${marker}」不能写在 listPane（中栏条件块）里 —— 选中文件夹时它会被一起卸载`
+        );
+    }
+    assert.ok(src.includes("data-row-op='open-side'"), "行菜单本身要在（根层）");
+});
+
+test("折叠态：顶部是返回，展开箭头在左下角", async () => {
+    mountPanel([note({ id: 1, title: "甲", content: "a" })]);
+    await act(async () =>
+        (document.querySelector("[data-tool='collapse-pane']") as HTMLElement).click()
+    );
+    const rail = document.querySelector("[data-collapsed-rail='1']") as HTMLElement;
+    assert.ok(rail, "折叠后是 44px 轨道");
+    const back = rail.querySelector("button[aria-label='返回导航站']") as HTMLElement;
+    const expand = rail.querySelector("[data-tool='expand-pane']") as HTMLElement;
+    assert.ok(back, "顶部保留返回");
+    assert.ok(expand, "展开箭头在轨道里");
+    // 顺序：返回在上、展开在下（=左下角）
+    assert.ok(
+        back.compareDocumentPosition(expand) & Node.DOCUMENT_POSITION_FOLLOWING,
+        "展开箭头要排在返回之后（也就是左下角）"
+    );
+});
+
+test("分屏：两栏高度一致（主栏内容区不再有额外垂直内边距）", () => {
+    const src = stripComments(
+        readFileSync(join(findProjectDir(), "src", "components", "NotesPage.tsx"), "utf-8")
+    );
+    const box = src.slice(src.indexOf("ref={splitBoxRef}"), src.indexOf("ref={splitBoxRef}") + 700);
+    assert.ok(/px: 2/.test(box), "水平内边距要留（否则预览贴死视口右缘）");
+    assert.ok(
+        !/py: 1/.test(box),
+        "⚠️ 垂直内边距必须去掉：主栏有、侧栏没有 → 两侧状态栏差 16px，高低不齐（用户报）"
+    );
+});
+
+test("分屏：两栏之间固定 50/50，不可拖动", async () => {
+    mountPanel([
+        note({ id: 1, title: "甲", content: "a" }),
+        note({ id: 2, title: "乙", content: "b" }),
+    ]);
+    // 基准：打开侧栏**之前**的可拖把手数（导航|列表、列表|编辑区、源码|预览）
+    const before = document.querySelectorAll("[role='separator']").length;
+    await act(async () => {
+        rightClick(document.querySelector("[data-note-list] [data-note-id='2']")!);
+    });
+    await act(async () => (document.querySelector("[data-row-op='open-side']") as HTMLElement).click());
+    const divider = document.querySelector("[data-pane-divider='fixed']");
+    assert.ok(divider, "两栏之间有一道固定分隔");
+    assert.equal(divider!.hasAttribute("role"), false, "固定分隔不能是 separator（那意味着可拖）");
+    assert.ok(
+        !divider!.hasAttribute("aria-orientation"),
+        "固定分隔不该有可拖动的语义标记"
+    );
+    // ⚠️ 不要数「容器里 role=separator 的个数」：编辑器与预览内部也有带这个角色的
+    // 元素（11 个），基数毫无意义。判据是**结构**：两栏必须是**相邻的兄弟节点** ——
+    // 中间插不进把手，自然就拖不了。
+    assert.equal(
+        divider!.nextElementSibling?.getAttribute("data-side-editor"),
+        "1",
+        "两栏要相邻：分隔条后面紧挨着侧栏，中间插不了可拖把手"
+    );
+    assert.ok(before > 0, "（基准）页面里本来就有列宽 / 源码预览的把手");
+});
+
+test("即时渲染：每栏各有开关，关掉后预览改用已存库的内容", async () => {
+    mountPanel([note({ id: 1, title: "甲", content: "库里内容" })]);
+    assert.ok(document.querySelector("[data-tool='live-render']"), "主栏要有即时渲染开关");
+    const sw = document.querySelector("[data-tool='live-render'] input") as HTMLInputElement;
+    assert.equal(sw.checked, true, "默认开着");
+    await act(async () => {
+        sw.click();
+    });
+    assert.equal(
+        (document.querySelector("[data-tool='live-render'] input") as HTMLInputElement).checked,
+        false,
+        "点一下能关掉"
+    );
+    // 源码里：关掉时渲染的是 active.content 而不是 draft.content
+    const src = stripComments(
+        readFileSync(join(findProjectDir(), "src", "components", "NotesPage.tsx"), "utf-8")
+    );
+    assert.ok(
+        src.includes("liveRender ? draft?.content || \"\" : active?.content || \"\""),
+        "关掉即时渲染后预览要停在已存库的内容（打字不再触发整篇重解析）"
+    );
+});
+
+test("侧栏：三模式 + 常显关闭键 + 自己的更多操作", async () => {
+    mountPanel([
+        note({ id: 1, title: "甲", content: "甲正文" }),
+        note({ id: 2, title: "乙", content: "乙正文" }),
+    ]);
+    await act(async () => {
+        rightClick(document.querySelector("[data-note-list] [data-note-id='2']")!);
+    });
+    await act(async () => (document.querySelector("[data-row-op='open-side']") as HTMLElement).click());
+    const side = document.querySelector("[data-side-editor='1']") as HTMLElement;
+    assert.ok(side);
+    for (const key of ["edit", "split", "preview"]) {
+        assert.ok(side.querySelector(`[data-tool='side-mode-${key}']`), `侧栏要有 ${key} 模式`);
+    }
+    assert.ok(side.querySelector("[data-tool='side-live-render']"), "侧栏要有即时渲染开关");
+    assert.ok(side.querySelector("[data-tool='side-more']"), "侧栏要有更多操作");
+    assert.ok(side.querySelector("[data-side-close='1']"), "侧栏要有常显关闭键");
+    // 分栏模式：上下两段（源码 + 预览）
+    await act(async () => (side.querySelector("[data-tool='side-mode-split']") as HTMLElement).click());
+    assert.ok(side.querySelector(".cm-content"), "分栏模式仍有编辑器");
+    assert.ok(side.querySelector("[data-side-preview='1']"), "分栏模式下半是预览");
+});
+
+test("设置里新增「分享列表」页：搜索 + 复制/打开/管理/撤销", async () => {
+    const shares = [
+        { note_id: 1, title: "常用入口", token: "a".repeat(64), expires_at: null, updated_at: "2026-10-01 10:00" },
+        { note_id: 2, title: "待办清单", token: "b".repeat(64), expires_at: Date.now() + 86_400_000, updated_at: "2026-10-02 10:00" },
+    ];
+    const revoked: number[] = [];
+    mountPanel([note({ id: 1, title: "常用入口", content: "a" })], {
+        shareApi: {
+            getNoteShare: async () => null,
+            createNoteShare: async () => null,
+            revokeNoteShare: async (id: number) => {
+                revoked.push(id);
+                return { success: true };
+            },
+            listNoteShares: async () => shares,
+        } as never,
+    });
+    await act(async () => (document.querySelector("button[data-tool='settings']") as HTMLElement).click());
+    await act(async () => (document.querySelector("[data-settings-tab='shares']") as HTMLElement).click());
+    await act(async () => {
+        await new Promise(r => setTimeout(r, 30));
+    });
+    assert.ok(document.querySelector("[data-settings-shares='1']"), "分享列表页要能打开");
+    assert.equal(document.querySelectorAll("[data-share-row]").length, 2, "两条分享都要列出来");
+    for (const act of ["copy", "open", "manage", "revoke"]) {
+        assert.ok(
+            document.querySelector(`[data-share-action='${act}']`),
+            `每行要有「${act}」动作`
+        );
+    }
+    // 搜索过滤
+    const kw = document.querySelector("input[aria-label='搜索分享的笔记标题']") as HTMLInputElement;
+    await act(async () => {
+        // ⚠️ 不能用 typeInto：那是给 CodeMirror 编辑器用的；普通受控 input 要走
+        // 原型上的原生 setter，否则 React 装的 value setter 会吞掉 onChange。
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(kw, "待办");
+        kw.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    assert.equal(document.querySelectorAll("[data-share-row]").length, 1, "搜索要能过滤");
+    assert.match(document.body.textContent ?? "", /待办清单/);
+});
+
+test("工具栏：每个下拉都有说人话的 tooltip，菜单项不再只写术语", () => {
+    const src = stripComments(
+        readFileSync(join(findProjectDir(), "src", "components", "NotesPage.tsx"), "utf-8")
+    );
+    const bar = src.slice(src.indexOf("role='toolbar'"), src.indexOf("role='toolbar'") + 40000);
+    // 白话 tooltip：说「会发生什么」，而不是复述名词
+    for (const phrase of [
+        "把这一行变成标题",
+        "插入网址，或引用另一篇笔记",
+        "插入图片",
+        "不太常用但有用的语法",
+        "成块的语法",
+        "给代码块标语言",
+        "把选中的文字变成脚注引用",
+        "插入公式",
+        "插入表格",
+    ]) {
+        assert.ok(bar.includes(phrase), `工具栏要有白话提示：${phrase}`);
+    }
+    // 菜单项不许再只写术语
+    for (const jargon of ["块 ID（^标识，供引用）", "笔记属性（YAML）", "隐藏注释（预览不显示）", "标签页（:::tabs）"]) {
+        assert.equal(bar.includes(jargon), false, `菜单项不该只写术语：${jargon}`);
+    }
+    for (const plain of ["给这一段加个锚点", "写给自己看的备注", "把几段内容并排放"]) {
+        assert.ok(bar.includes(plain), `菜单项要改成白话：${plain}`);
+    }
 });

@@ -10,13 +10,15 @@
 //   3. **uuid 在这里生成**：合并导入靠它识别「同一条笔记」（见 transfer.ts 的导入逻辑）。
 //      没有它就只能按标题+内容硬比，用户改过一次的笔记会被当成两条。
 import type { NavigationAPI } from "../http";
-import type { Note, NoteFolder, NoteRevision, NoteTag, NoteShare, PublicNote } from "../types";
+import type { Note, NoteFolder, NoteRevision, NoteTag, NoteShare, NoteShareListItem, PublicNote } from "../types";
 import type { D1PreparedStatement } from "../schema";
 import { newUuid } from "../../utils/uuid";
 import { extractNoteTags } from "../../utils/markdownNoteTags";
 
 export interface NotesApi {
     getNoteShare(id: number): Promise<NoteShare | null>;
+    /** 分享列表：主人名下所有已分享的笔记（设置页「分享列表」） */
+    listNoteShares(): Promise<NoteShareListItem[]>;
     createNoteShare(id: number, days: number | null): Promise<NoteShare | null>;
     revokeNoteShare(id: number): Promise<{ success: boolean }>;
     getPublicNote(token: string): Promise<PublicNote | null>;
@@ -149,6 +151,17 @@ async function pushRevision(
 }
 
 export const notesImpl: NotesApi = {
+    listNoteShares: async function (this: NavigationAPI) {
+        await this.migrate();
+        // JOIN notes 是必须的：光看 note_share 拿不到标题，而「分享列表」要一眼认出
+        // 是哪篇笔记；顺带借 notes.user_id 做归属判定（note_share 自己也有 user_id）。
+        return this.db.prepare(`SELECT s.note_id AS note_id, n.title AS title, s.token AS token,
+                s.expires_at AS expires_at, n.created_at AS created_at, n.updated_at AS updated_at
+            FROM note_share s JOIN notes n ON n.id = s.note_id AND n.uuid = s.note_uuid AND n.user_id IS s.user_id
+            WHERE s.user_id IS ?
+            ORDER BY n.updated_at DESC`)
+            .bind(this.currentUserId).all<NoteShareListItem>().then(r => r.results || []);
+    },
     getNoteShare: async function (this: NavigationAPI, id: number) {
         await this.migrate();
         return this.db.prepare(`SELECT s.token, s.expires_at FROM note_share s

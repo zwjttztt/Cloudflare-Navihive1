@@ -68,6 +68,16 @@ export interface NoteShare {
     token: string;
     expires_at: number | null;
 }
+/** 分享列表的一行（设置页「分享列表」用；把笔记标题一起带出来，省一次请求） */
+export interface NoteShareListItem {
+    note_id: number;
+    title: string;
+    token: string;
+    /** null = 永不过期 */
+    expires_at: number | null;
+    created_at?: string;
+    updated_at?: string;
+}
 export interface PublicNote {
     title: string;
     content: string;

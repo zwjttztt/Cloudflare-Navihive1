@@ -6,6 +6,7 @@ import {
     NoteRevision,
     NoteTag,
     NoteShare,
+    NoteShareListItem,
     LoginResponse,
     ExportData,
     ImportResult,
@@ -469,6 +470,11 @@ export class NavigationClient {
     }
 
     // 记事本相关API（notes 分域）
+    /** 分享列表（设置页「分享列表」）。注意路径是 notes/shares，别写成 notes/:id/share */
+    async listNoteShares(): Promise<NoteShareListItem[]> {
+        return this.request<NoteShareListItem[]>("notes/shares");
+    }
+
     async getNoteShare(id: number): Promise<NoteShare | null> {
         return this.request<NoteShare | null>(`notes/${id}/share`);
     }

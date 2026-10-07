@@ -38,6 +38,7 @@ import Menu from "@mui/material/Menu";
 import MenuItem from "@mui/material/MenuItem";
 import TextField from "@mui/material/TextField";
 import Stack from "@mui/material/Stack";
+import Switch from "@mui/material/Switch";
 import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 import AddIcon from "@mui/icons-material/Add";
@@ -637,6 +638,8 @@ function FolderTagSection({
                             // 右键文件夹 = 直接开它的操作菜单（inkstone 同样支持右键）。
                             // ⚠️ 锚在鼠标处：锚到整行左上角的话，菜单位置与指针无关（用户报「固定位置」）。
                             e.preventDefault();
+                            // 同列表行：右键后别让行一直留着焦点（否则「⋯」常驻成一颗白点）
+                            (e.currentTarget as HTMLElement).blur();
                             setMenuId(item.id);
                             setAnchorEl(anchorAtMouse(e.clientX, e.clientY));
                         }}
@@ -1286,9 +1289,19 @@ export default function NotesPage({
     const sideRef = useRef<NoteEditorHandle | null>(null);
     const [sideId, setSideId] = useState<number | null>(null);
     const [sideDraft, setSideDraft] = useState<EditorDraft | null>(null);
-    /** 侧边栏自己的查看模式（编辑 / 预览）：与主编辑区的 pane 互不相干 ——
-        顶栏那套只对左边生效的问题（用户报）就是从共用状态来的 */
-    const [sideMode, setSideMode] = useState<"edit" | "preview">("edit");
+    /**
+     * 侧边栏自己的查看模式：与主编辑区的 pane **互不相干**（2026-10-07）。
+     * 三档与主栏一致（编辑 / 分栏 / 预览），只是窄栏里的「分栏」是上下排 —— 用户要
+     * 「两边都能切」，不是只有主栏能。
+     */
+    const [sideMode, setSideMode] = useState<"edit" | "split" | "preview">("edit");
+    /**
+     * 即时渲染（inkstone 顶栏那个同名开关）：开着=打字时预览跟着刷新；关掉=预览
+     * 停在「上一次存库的内容」，长文里打字会流畅很多（每敲一下都要重解析整篇）。
+     * 每栏各一份，跟着那一栏走。
+     */
+    const [liveRender, setLiveRender] = useState(true);
+    const [sideLiveRender, setSideLiveRender] = useState(true);
     const tools = useEditorTools(textareaRef, setDraft);
     /** 大纲跳转 = 主编辑器的光标跳转（原局部实现已抽进 hook） */
     const jumpToOffset = tools.jumpToOffset;
@@ -2320,21 +2333,32 @@ export default function NotesPage({
                 文字直接溢出压到右边的编辑区上（用户报「收齐后文字重叠」）。
                 轨道里只留一个展开按钮。 */}
             {listCollapsed ? (
-                <Box sx={{ display: "flex", flexDirection: "column", alignItems: "center", pt: 1, gap: 0.5 }}>
-                    <Tooltip title='展开笔记列表'>
+                // 折叠态：顶部只留「返回」，**展开箭头放左下角**（2026-10-07 用户要求，
+                // 与 inkstone 一致 —— 收起是低频动作，该待在不碍事、但伸手就能点到的角落）。
+                <Box
+                    data-collapsed-rail='1'
+                    sx={{
+                        display: "flex",
+                        flexDirection: "column",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        py: 1,
+                        gap: 0.5,
+                    }}
+                >
+                    <Tooltip title='返回导航站'>
+                        <IconButton aria-label='返回导航站' onClick={onClose} size='small'>
+                            <ArrowBackIcon fontSize='small' />
+                        </IconButton>
+                    </Tooltip>
+                    <Tooltip title='展开笔记列表' placement='right'>
                         <IconButton
                             aria-label='展开笔记列表'
+                            data-tool='expand-pane'
                             size='small'
                             onClick={() => setListCollapsed(false)}
                         >
                             <LastPageIcon fontSize='small' />
-                        </IconButton>
-                    </Tooltip>
-                    {/* 顶栏拆掉后「返回导航站」搬进了导航列头部；折叠态下导航列整个不渲染，
-                        这里必须补一颗，否则收起左栏后就回不去了（2026-10-07）。 */}
-                    <Tooltip title='返回导航站'>
-                        <IconButton aria-label='返回导航站' onClick={onClose} size='small'>
-                            <ArrowBackIcon fontSize='small' />
                         </IconButton>
                     </Tooltip>
                 </Box>
@@ -2857,6 +2881,12 @@ export default function NotesPage({
                                 onContextMenu={e => {
                                     // 右键行 = 打开完整操作菜单（inkstone 同款交互）
                                     e.preventDefault();
+                                    // ⚠️ 必须先把焦点从行上拿走（2026-10-07 用户报「右键后
+                                    // 留下一颗白色圆点」）：行是 tabIndex=0 的 role=button，
+                                    // 右键会让它拿到焦点，行内的「⋯」按钮靠
+                                    // `:focus-within` 常显 —— 菜单关掉后焦点还在，
+                                    // 那颗按钮就一直挂在行右侧（22×22 的圆形 IconButton）。
+                                    (e.currentTarget as HTMLElement).blur();
                                     if (note.id === undefined) return;
                                     // ⚠️ 锚在鼠标处：锚整行左上角的话菜单跟指针没关系（用户报「固定位置」）
                                     setRowMenu({
@@ -2999,6 +3029,764 @@ export default function NotesPage({
                 )}
             </Box>
 
+
+            </Box>
+            {/* 列表列 ↔ 编辑区之间的可拖缝。同样必须在列表列这个 Box **外面** ——
+                里面是 flex-direction: column，放进去会塌成 0 高度、真实鼠标点不中。 */}
+            <ColResizeHandle
+                label='拖动调整笔记列表宽度'
+                onDrag={startDrag('list')}
+                onReset={reset('list')}
+            />
+            </>
+            )}
+            </>
+            )}
+        </Box>
+    );
+
+    const editorPane = (
+        <Box sx={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, minHeight: 0 }}>
+            {view === "trash" ? (
+                <Box sx={{ flex: 1, display: "grid", placeItems: "center" }}>
+                    <Typography variant='body2' color='text.secondary'>
+                        回收站里的笔记不能直接编辑。先「还原」回全部笔记，或者「彻底删除」。
+                    </Typography>
+                </Box>
+            ) : !active ? (
+                <Box sx={{ flex: 1, display: "grid", placeItems: "center" }}>
+                    <Typography variant='body2' color='text.secondary'>
+                        左边选一条笔记，或者新建一条。
+                    </Typography>
+                </Box>
+            ) : (
+                <>
+                    {/* 标题行（2026-10-07）：右侧是**这一栏自己的**按键栏 ——
+                        模式切换（编辑/分栏/预览）+「更多操作」。分屏时每栏各有一套，
+                        顶栏那排只对当前笔记生效的问题就没了（inkstone 同款布局）。 */}
+                    <Box sx={{ display: "flex", alignItems: "center", flexShrink: 0, pr: 1 }}>
+                        <TextField
+                            variant='standard'
+                            value={draft?.title ?? ""}
+                            onChange={e =>
+                                setDraft(d => (d ? { ...d, title: e.target.value } : d))
+                            }
+                            placeholder='无标题'
+                            slotProps={{ input: { "aria-label": "笔记标题" } }}
+                            sx={{
+                                flex: 1,
+                                minWidth: 0,
+                                px: 2,
+                                pt: 1.5,
+                                "& .MuiInputBase-root": { fontSize: 19, fontWeight: 600 },
+                                "& .MuiInput-input": { padding: "6px 0" },
+                            }}
+                        />
+                        {/* 即时渲染（inkstone 顶栏同名开关）：关掉后预览停在「已存库的
+                            内容」，打字不再触发整篇重解析。放在模式按钮左边。 */}
+                        <Box sx={{ display: "flex", alignItems: "center", gap: 0.25, flexShrink: 0, mr: 0.5 }}>
+                            <Typography variant='caption' color='text.secondary' sx={{ fontSize: 11, whiteSpace: "nowrap" }}>
+                                即时渲染
+                            </Typography>
+                            <Switch
+                                size='small'
+                                checked={liveRender}
+                                onChange={e => setLiveRender(e.target.checked)}
+                                slotProps={{ input: { "aria-label": "即时渲染" } }}
+                                data-tool='live-render'
+                                sx={{ ml: 0 }}
+                            />
+                        </Box>
+                        {/* 源码/预览切换：三档。宽屏文字按钮、小屏收成图标（都在标题行右端）。 */}
+                        <Box sx={{ display: "flex", gap: 0.25, flexShrink: 0 }}>
+                            {(
+                                [
+                                    ["edit", "编辑", <EditIcon fontSize='inherit' key='i' />],
+                                    ["split", "分栏", <VerticalSplitIcon fontSize='inherit' key='s' />],
+                                    ["preview", "预览", <VisibilityIcon fontSize='inherit' key='v' />],
+                                ] as const
+                            ).map(([key, label, icon]) => (
+                                <IconButton
+                                    key={key}
+                                    aria-label={label}
+                                    title={label}
+                                    size='small'
+                                    onClick={() => setPane(key)}
+                                    sx={{
+                                        width: 28,
+                                        height: 28,
+                                        p: 0,
+                                        color: pane === key ? "primary.main" : "text.secondary",
+                                        bgcolor:
+                                            pane === key ? "rgba(128,128,128,0.12)" : "transparent",
+                                        display: { xs: "inline-flex", sm: "none" },
+                                    }}
+                                >
+                                    {icon}
+                                </IconButton>
+                            ))}
+                            {(
+                                [
+                                    ["edit", "编辑"],
+                                    ["split", "分栏"],
+                                    ["preview", "预览"],
+                                ] as const
+                            ).map(([key, label]) => (
+                                <IconButton
+                                    key={`wide-${key}`}
+                                    aria-label={label}
+                                    size='small'
+                                    onClick={() => setPane(key)}
+                                    sx={{
+                                        fontSize: 12,
+                                        px: 1,
+                                        width: "auto",
+                                        height: 28,
+                                        display: { xs: "none", sm: "inline-flex" },
+                                        borderRadius: 1.5,
+                                        fontWeight: pane === key ? 600 : 400,
+                                        color: pane === key ? "primary.main" : "text.secondary",
+                                        bgcolor:
+                                            pane === key ? "rgba(128,128,128,0.12)" : "transparent",
+                                    }}
+                                >
+                                    {label}
+                                </IconButton>
+                            ))}
+                            {/* 当前笔记的操作入口。顶栏拆掉后，只读分享 / 版本历史 / 大纲 /
+                                反向链接也收进了这个菜单（见下面 data-active-op 那几项）。 */}
+                            <Tooltip title='更多操作'>
+                                <IconButton
+                                    size='small'
+                                    data-tool='note-more'
+                                    aria-label='更多操作'
+                                    aria-haspopup='menu'
+                                    disabled={!active}
+                                    onClick={e => setActiveMenuAnchor(e.currentTarget)}
+                                    sx={{ width: 28, height: 28, color: "text.secondary" }}
+                                >
+                                    <MoreVertIcon fontSize='small' />
+                                </IconButton>
+                            </Tooltip>
+                        </Box>
+                    </Box>
+
+                    {/* 格式工具栏：照 inkstone 那一排。放在标题与内容区之间，
+                        点一下在光标处插入语法 —— 省得手打 `**` 和 `- [ ]`。
+                        设置里可以整个关掉（uiSettings.showToolbar）。 */}
+                    {uiSettings.showToolbar && (
+                    <MarkdownToolbar
+                        onInsert={tools.insertAtCursor}
+                        onInsertLinePrefix={tools.insertLinePrefix}
+                        onCodeLanguage={tools.applyCodeLanguage}
+                        onTable={tools.applyTable}
+                        onFormula={tools.applyFormula}
+                        onFootnoteRef={tools.insertFootnoteRef}
+                        onCallout={tools.insertCallout}
+                        onInsertEmbed={tools.onInsertEmbed}
+                        onInsertBlockRef={tools.onInsertBlockRef}
+                        onInsertBlockId={tools.onInsertBlockId}
+                        onInsertFrontMatter={tools.onInsertFrontMatter}
+                        onInsertTag={tools.onInsertTag}
+                        onInsertWikiLink={tools.onInsertWikiLink}
+                        onInsertHiddenComment={tools.onInsertHiddenComment}
+                        onInsertFold={tools.onInsertFold}
+                        onInsertTabs={tools.onInsertTabs}
+                        onInsertDivider={tools.onInsertDivider}
+                    />
+                    )}
+
+                    {/* 内容区：源码 | 预览 | 大纲面板。外层再包一行，
+                        大纲面板（outlineOpen）作为第三列贴在预览右侧（inkstone 布局）。 */}
+                    <Box sx={{ flex: 1, display: "flex", minHeight: 0, minWidth: 0 }}>
+                    <Box
+                        ref={splitBoxRef}
+                        sx={{
+                            flex: 1,
+                            display: "flex",
+                            minHeight: 0,
+                            minWidth: 0,
+                            // ⚠️ 这里必须有水平内边距。编辑区是 `flex:1` 吃掉整条剩余宽度的，
+                            // 而记事本这层全屏又铺到 100vw —— 不留边距的话源码 / 预览
+                            // 两栏会**贴死视口右边缘**：预览的右边框和滚动条被顶出屏幕，
+                            // 看起来就是「右边显示不全」。px:2 与标题 / 工具栏 / 状态栏对齐。
+                            //
+                            // ⚠️⚠️ 垂直内边距必须去掉（2026-10-07 用户报「分屏两侧高度不一致」）：
+                            // 主编辑区这一层有 py:1 而侧边栏没有，于是主栏的状态栏比
+                            // 侧边栏高 16px，两栏底部对不齐。改成只留 px，交给各自的
+                            // 头部 / 工具栏 / 状态栏负责上下留白。
+                            px: 2,
+                        }}
+                    >
+                        {pane !== "preview" && (
+                            <Box
+                                sx={{
+                                    // ⚠️ 两栏都用 `flex: 1 1 0`（basis 0）才会严格对半。
+                                    // 之前一边是 `1 1 50%`（basis 445）一边是 `1`（basis 0），
+                                    // 剩余空间再按 grow 分 —— 结果源码 667px、预览 222px，
+                                    // 看着就像「预览被挤没了」。
+                                    // 分栏时用 flexBasis 吃比例；单栏时独占
+                                    ...(pane === "edit"
+                                        ? { flex: 1 }
+                                        : {
+                                              flex: "0 0 auto",
+                                              width: `${splitRatio * 100}%`,
+                                          }),
+                                    minWidth: 0,
+                                    // 之前只有一条右边框、背景透明，源码区与预览区糊成一片空白，
+                                    // 看着就像「中间那块没内容」。给源码区一个淡底色 + 完整边框，
+                                    // 分栏才看得出是两栏而不是一栏。
+                                    border:
+                                        pane === "split"
+                                            ? "1px solid var(--card-border, rgba(128,128,128,0.45))"
+                                            : "none",
+                                    borderRadius: pane === "split" ? 1.5 : 0,
+                                    outline: "none",
+                                    resize: "none",
+                                    // 常显滚动条：默认 overlay 会让人以为「预览窗没滚轮」
+                                    p: 0,
+                                    minHeight: 0,
+                                    overflow: "hidden",
+                                    font: "inherit",
+                                    fontFamily: "ui-monospace, monospace",
+                                    fontSize: 14,
+                                    lineHeight: 1.75,
+                                    color: "inherit",
+                                    bgcolor:
+                                        pane === "split"
+                                            ? "rgba(128,128,128,0.05)"
+                                            : "transparent",
+                                }}
+                            >
+                                <NoteEditor
+                                    // 行号/拼写/缩进开关会重建编辑器（CodeMirror 的扩展只能在建时定），
+                                    // 拼进 key；字体/字号走 CSS 变量，不用重建。
+                                    key={`${active.id}|${uiSettings.lineNumbers ? 1 : 0}|${uiSettings.spellcheck ? 1 : 0}|${uiSettings.indentWidth}`}
+                                    editorRef={textareaRef}
+                                    value={draft?.content ?? ""}
+                                    onChange={content => setDraft(d => d ? { ...d, content } : d)}
+                                    lineNumbers={uiSettings.lineNumbers}
+                                    spellcheck={uiSettings.spellcheck}
+                                    font={uiSettings.editorFont}
+                                    fontSize={uiSettings.editorFontSize}
+                                    indentWidth={uiSettings.indentWidth}
+                                    onScrollRatio={syncPreviewScroll}
+                                />
+                            </Box>
+                        )}
+                        {pane === "split" && (
+                            <Box
+                                role='separator'
+                                aria-orientation='vertical'
+                                aria-label='拖动调整源码与预览的比例'
+                                title='拖动调整比例（双击回到对半）'
+                                onMouseDown={startSplitDrag}
+                                onDoubleClick={() => {
+                                    setSplitRatio(0.5);
+                                    // 同步 ref：不然「双击归中 → 立刻再拖 → 松手」这一串里，
+                                    // 松手存的还是归中之前那个旧值。
+                                    splitRatioRef.current = 0.5;
+                                    try {
+                                        localStorage.setItem(SPLIT_KEY, "0.5");
+                                    } catch {
+                                        /* 隐私模式写不了，忽略 */
+                                    }
+                                }}
+                                sx={{
+                                    width: 8,
+                                    flexShrink: 0,
+                                    cursor: "col-resize",
+                                    "&:hover": { bgcolor: "rgba(128,128,128,0.18)" },
+                                    "&:active": { bgcolor: "rgba(128,128,128,0.3)" },
+                                }}
+                            />
+                        )}
+                        {pane !== "edit" && (
+                            <Box
+                                ref={previewScrollRef}
+                                sx={{
+                                    // 与源码区同一个 basis（0），两栏才严格对半
+                                    flex: 1,
+                                    minWidth: 0,
+                                    // ⚠️ minHeight:0 不能少：flex 子项默认 min-height:auto，
+                                    // Markdown 一长就把这一层撑高、连带整页出现滚动条。
+                                    minHeight: 0,
+                                    overflowY: "auto",
+                                    p: 2.5,
+                                    // 设置面板「外观」：预览正文字号 / 行高 / 字体直接在这里生效
+                                    fontSize: uiSettings.previewFontSize,
+                                    lineHeight: uiSettings.lineHeight,
+                                    fontFamily:
+                                        uiSettings.previewFont === "serif"
+                                            ? 'Georgia, "Songti SC", "Noto Serif CJK SC", serif'
+                                            : "inherit",
+                                    border:
+                                        pane === "split"
+                                            ? "1px solid var(--card-border, rgba(128,128,128,0.45))"
+                                            : "none",
+                                    borderRadius: pane === "split" ? 1.5 : 0,
+                                    bgcolor:
+                                        pane === "split"
+                                            ? "rgba(128,128,128,0.03)"
+                                            : "transparent",
+                                }}
+                            >
+                                <Box
+                                    data-preview-content='1'
+                                    sx={{
+                                        // 设置面板「内容宽度」：窄/标准/宽/满 四档，
+                                        // 窄于可用宽度时居中（inkstone 的预览排版同款）
+                                        width: "100%",
+                                        maxWidth:
+                                            uiSettings.contentWidth === "narrow"
+                                                ? 560
+                                                : uiSettings.contentWidth === "standard"
+                                                  ? 760
+                                                  : uiSettings.contentWidth === "wide"
+                                                    ? 980
+                                                    : "100%",
+                                        mx: "auto",
+                                        wordBreak: "break-word",
+                                    }}
+                                
+                                onDoubleClick={e => {
+                                    const target = (e.target as HTMLElement).closest<HTMLElement>("[data-inline-tag]");
+                                    const tag = tags.find(t => t.name === target?.dataset.inlineTag);
+                                    if (tag?.id !== undefined) {
+                                        setActiveTag(tag.id); setActiveFolder(null); setView("all");
+                                    }
+                                }} onClick={e => {
+                                    // `[[双链]]` 单击即跳。它是 <a> 但**没有 href**：
+                                    // 真 href 会让浏览器做新页面导航（全屏 overlay 里
+                                    // 直接白掉），所以这里只用 data 属性 + 委托点击，
+                                    // 保留 <a> 的语义与可点外观。
+                                    const link = (e.target as HTMLElement).closest<HTMLElement>("[data-wiki-link]");
+                                    const title = link?.dataset.wikiLink;
+                                    if (!title) return;
+                                    const hit = notes.find(n => (n.title || "").trim().toLowerCase() === title.trim().toLowerCase());
+                                    if (hit?.id !== undefined) {
+                                        e.preventDefault();
+                                        void jumpToNote(hit.id);
+                                    } else {
+                                        // ⚠️ 死链必须给反馈，不能点了毫无反应 ——
+                                        // 用户会以为是按钮坏了。多数情况是标题改了或还没建。
+                                        e.preventDefault();
+                                        onNotify?.(`没有找到名为「${title}」的笔记`, "error");
+                                    }
+                                }}><MarkdownPreview
+                                    source={liveRender ? draft?.content || "" : active?.content || ""}
+                                    resolveNote={resolveNote}
+                                    onOpenNote={handleOpenEmbedNote}
+                                    features={previewFeatures}
+                                /></Box>
+                            </Box>
+                        )}
+                    </Box>
+                    {/* 大纲面板：当前这条笔记的标题层级，常驻在预览右侧。
+                        没标题时给一句说明，别给一块空白让人以为功能坏了。 */}
+                    {outlineOpen && (
+                        <Box
+                            data-outline-panel='1'
+                            sx={{
+                                width: 190,
+                                flexShrink: 0,
+                                borderLeft: "1px solid rgba(128,128,128,0.18)",
+                                overflowY: "auto",
+                                py: 1,
+                                px: 0.75,
+                                display: { xs: "none", md: "block" },
+                            }}
+                        >
+                            <Typography
+                                variant='caption'
+                                sx={{ display: "block", px: 1, pb: 0.5, fontSize: 11, color: "text.disabled" }}
+                            >
+                                大纲
+                            </Typography>
+                            {outline.length === 0 ? (
+                                <Typography
+                                    variant='caption'
+                                    data-outline='empty'
+                                    sx={{ display: "block", px: 1, fontSize: 11.5, color: "text.secondary" }}
+                                >
+                                    这条笔记还没有标题（用 # 标题 就能出现在这里）
+                                </Typography>
+                            ) : (
+                                outline.map(item => (
+                                    <Box
+                                        key={`${item.line}-${item.offset}`}
+                                        component='button'
+                                        type='button'
+                                        data-outline-item={item.line}
+                                        onClick={() => jumpToOffset(item.offset)}
+                                        sx={{
+                                            display: "block",
+                                            width: "100%",
+                                            appearance: "none",
+                                            border: "none",
+                                            m: 0,
+                                            font: "inherit",
+                                            cursor: "pointer",
+                                            textAlign: "left",
+                                            minWidth: 0,
+                                            pl: 1 + Math.min(outlineIndent(item.level), 6),
+                                            pr: 0.5,
+                                            py: 0.4,
+                                            borderRadius: 1,
+                                            bgcolor: "transparent",
+                                            color: "text.secondary",
+                                            fontWeight: item.level <= 2 ? 600 : 400,
+                                            fontSize: 12.5,
+                                            "&:hover": {
+                                                bgcolor: "rgba(128,128,128,0.1)",
+                                                color: "text.primary",
+                                            },
+                                        }}
+                                    >
+                                        <Typography
+                                            component='span'
+                                            sx={{
+                                                display: "block",
+                                                overflow: "hidden",
+                                                textOverflow: "ellipsis",
+                                                whiteSpace: "nowrap",
+                                                font: "inherit",
+                                                fontWeight: "inherit",
+                                                fontSize: "inherit",
+                                            }}
+                                        >
+                                            {item.text}
+                                        </Typography>
+                                    </Box>
+                                ))
+                            )}
+                        </Box>
+                    )}
+                    </Box>
+
+                    {/* 状态栏：像 inkstone 那样把「写了多少」摆在脚下 */}
+                    <Box
+                        sx={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 2,
+                            px: 2,
+                            py: 0.75,
+                            flexShrink: 0,
+                            borderTop: "1px solid rgba(128,128,128,0.25)",
+                            fontSize: 12,
+                            color: "text.secondary",
+                        }}
+                    >
+                        <span>{wordCount} 字</span>
+                        <span>{charCount} 字符</span>
+                        <span>约 {Math.max(1, Math.ceil(wordCount / 400))} 分钟读完</span>
+                        {/* 所在文件夹：inkstone 状态栏也有这一项（「… 约1分钟 新建文件夹 创建于…」），
+                            相当于一个位置指示 —— 笔记是从哪个文件夹里打开的。没归类的不显示。 */}
+                        {activeFolderName && (
+                            <span data-note-folder style={{ opacity: 0.85 }}>
+                                {activeFolderName}
+                            </span>
+                        )}
+                        <span>
+                            {pane === "edit" ? "编辑" : pane === "preview" ? "预览" : "分栏"}
+                        </span>
+                        <Box sx={{ flex: 1 }} />
+                        {/* 「创建于…」跟在保存状态后面（inkstone 把它放在状态栏右端）：
+                            左边一串是「这篇现在多长」，右边是「它是什么时候来的」。
+                            解析不出时间就整项不显示 —— 宁可少一项，也别给「Invalid Date」。 */}
+                        {active.created_at && formatWhenFull(active.created_at) && (
+                            <span data-note-created style={{ marginRight: 0.5 }}>
+                                创建于 {formatWhenFull(active.created_at)}
+                            </span>
+                        )}
+                        {/* 阶段四第 14 条：原来只有一句「有未保存的改动」，
+                            看不出到底存没存。现在把保存过程摊开：
+                            待存 / 正在存 / 已存多久。已存的时刻复用相对时间那条。 */}
+                        {saveState === "pending" && <span>有改动，即将保存…</span>}
+                        {saveState === "saving" && <span>正在保存…</span>}
+                        {saveState === "saved" && !dirty && (
+                            <span>已保存 · {formatRelative(savedAt, new Date(tick))}</span>
+                        )}
+                        {/* ⚠️ 右下角的那排「删除 / 置顶 / 归档」按键已移除（2026-10-06）：
+                            它们的功能全部在笔记右键菜单与顶栏「⋯」里，脚下这排图标
+                            既占地方又容易误触。 */}
+                    </Box>
+                </>
+            )}
+        </Box>
+    );
+
+    /**
+     * 侧边编辑器（「在侧边打开」）：第二台**完整可编辑**的编辑器 ——
+     * 自己的标题框、自己的工具栏（sideTools，撤销状态与主编辑器互相隔离）、
+     * 自己的 3 秒自动保存。关闭时先把没落库的草稿刷掉。
+     */
+    const sideNote = sideId !== null ? notes.find(n => n.id === sideId) ?? null : null;
+    const sidePane = sideNote ? (
+        <Box
+            data-side-editor='1'
+            sx={{ flex: "1 1 50%", minWidth: 0, minHeight: 0, display: "flex", flexDirection: "column" }}
+        >
+            {/* 头部（2026-10-07）：inkstone 每栏右上角都有自己的按键栏 ——
+                标题 + 编辑/预览 + 更多操作（作用于**侧边这条**）+ 关闭。 */}
+            <Box sx={{ display: "flex", alignItems: "center", gap: 0.25, pr: 0.75, flexShrink: 0 }}>
+                <TextField
+                    variant='standard'
+                    value={sideDraft?.title ?? ""}
+                    onChange={e => setSideDraft(d => (d ? { ...d, title: e.target.value } : d))}
+                    placeholder='无标题'
+                    slotProps={{ input: { "aria-label": "侧边笔记标题" } }}
+                    sx={{
+                        flex: 1,
+                        minWidth: 0,
+                        px: 2,
+                        pt: 1.5,
+                        "& .MuiInputBase-root": { fontSize: 17, fontWeight: 600 },
+                        "& .MuiInput-input": { padding: "6px 0" },
+                    }}
+                />
+                {/* 即时渲染（inkstone 同名开关）：关掉后预览停在「已存库的内容」，
+                    打字不再触发整篇重解析 —— 长文里体感差别很大。 */}
+                <Box sx={{ display: "flex", alignItems: "center", gap: 0.25, flexShrink: 0, mr: 0.5 }}>
+                    <Typography variant='caption' color='text.secondary' sx={{ fontSize: 11, whiteSpace: "nowrap" }}>
+                        即时渲染
+                    </Typography>
+                    <Switch
+                        size='small'
+                        checked={sideLiveRender}
+                        onChange={e => setSideLiveRender(e.target.checked)}
+                        slotProps={{ input: { "aria-label": "侧边即时渲染" } }}
+                        data-tool='side-live-render'
+                        sx={{ ml: 0 }}
+                    />
+                </Box>
+                {/* 模式：编辑 / 分栏 / 预览（窄栏里「分栏」是上下排） */}
+                <Box sx={{ display: "flex", gap: 0.25, flexShrink: 0 }}>
+                    {(
+                        [
+                            ["edit", "编辑", <EditIcon fontSize='inherit' key='i' />],
+                            ["split", "分栏", <VerticalSplitIcon fontSize='inherit' key='s' />],
+                            ["preview", "预览", <VisibilityIcon fontSize='inherit' key='v' />],
+                        ] as const
+                    ).map(([key, label, icon]) => (
+                        <Tooltip key={key} title={label}>
+                            <IconButton
+                                size='small'
+                                aria-label={`侧边${label}`}
+                                data-tool={`side-mode-${key}`}
+                                aria-pressed={sideMode === key}
+                                onClick={() => setSideMode(key)}
+                                sx={{
+                                    width: 28,
+                                    height: 28,
+                                    p: 0,
+                                    flexShrink: 0,
+                                    color: sideMode === key ? "primary.main" : "text.secondary",
+                                    bgcolor: sideMode === key ? "rgba(128,128,128,0.12)" : "transparent",
+                                }}
+                            >
+                                {icon}
+                            </IconButton>
+                        </Tooltip>
+                    ))}
+                </Box>
+                {/* 更多操作：直接复用列表行的全量菜单，只是锚在侧边栏头部、
+                    作用于侧边这条笔记（顶栏那套只管主编辑区的问题到此为止）。 */}
+                <Tooltip title='更多操作'>
+                    <IconButton
+                        size='small'
+                        data-tool='side-more'
+                        aria-label='侧边笔记更多操作'
+                        aria-haspopup='menu'
+                        onClick={e =>
+                            sideNote.id !== undefined &&
+                            setRowMenu({ noteId: sideNote.id, el: e.currentTarget, source: "list" })
+                        }
+                        sx={{ width: 28, height: 28, flexShrink: 0, color: "text.secondary" }}
+                    >
+                        <MoreVertIcon fontSize='small' />
+                    </IconButton>
+                </Tooltip>
+                {/* 关闭键常显（inkstone 同款 ✕）：藏在 hover 里的话分屏时根本找不到 */}
+                <Tooltip title='关闭侧边编辑器'>
+                    <IconButton
+                        size='small'
+                        aria-label='关闭侧边编辑器'
+                        data-side-close='1'
+                        onClick={closeSide}
+                        sx={{ flexShrink: 0, color: "text.secondary" }}
+                    >
+                        <CloseIcon fontSize='small' />
+                    </IconButton>
+                </Tooltip>
+            </Box>
+            {uiSettings.showToolbar && sideMode !== "preview" && (
+                <MarkdownToolbar
+                    onInsert={sideTools.insertAtCursor}
+                    onInsertLinePrefix={sideTools.insertLinePrefix}
+                    onCodeLanguage={sideTools.applyCodeLanguage}
+                    onTable={sideTools.applyTable}
+                    onFormula={sideTools.applyFormula}
+                    onFootnoteRef={sideTools.insertFootnoteRef}
+                    onCallout={sideTools.insertCallout}
+                    onInsertEmbed={sideTools.onInsertEmbed}
+                    onInsertBlockRef={sideTools.onInsertBlockRef}
+                    onInsertBlockId={sideTools.onInsertBlockId}
+                    onInsertFrontMatter={sideTools.onInsertFrontMatter}
+                    onInsertTag={sideTools.onInsertTag}
+                    onInsertWikiLink={sideTools.onInsertWikiLink}
+                    onInsertHiddenComment={sideTools.onInsertHiddenComment}
+                    onInsertFold={sideTools.onInsertFold}
+                    onInsertTabs={sideTools.onInsertTabs}
+                    onInsertDivider={sideTools.onInsertDivider}
+                />
+            )}
+            <Box
+                sx={{
+                    flex: 1,
+                    minHeight: 0,
+                    minWidth: 0,
+                    overflow: "hidden",
+                    borderLeft: "none",
+                    borderRight: "none",
+                    borderTop: "none",
+                    borderBottom: "none",
+                }}
+            >
+                {sideMode === "preview" ? (
+                    /* 侧边预览：与主编辑区同一套 Markdown 渲染（token→React，无 HTML sink）。
+                       关掉「即时渲染」时渲染的是**已存库**的那份，不是草稿 —— 这正是
+                       那个开关的意义（打字时不再整篇重解析）。 */
+                    <Box data-side-preview='1' sx={{ height: "100%", overflowY: "auto", px: 2, py: 1, fontSize: uiSettings.previewFontSize, lineHeight: uiSettings.lineHeight }}>
+                        <MarkdownPreview
+                            source={sideLiveRender ? (sideDraft?.content ?? "") : (sideNote.content || "")}
+                            resolveNote={resolveNote}
+                            onOpenNote={handleOpenEmbedNote}
+                            features={previewFeatures}
+                        />
+                    </Box>
+                ) : sideMode === "split" ? (
+                    /* 窄栏里的「分栏」= 源码在上、预览在下（横向两栏在这个宽度没法看） */
+                    <Box sx={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
+                        <Box sx={{ flex: 1, minHeight: 0, overflow: "hidden" }}>
+                            <NoteEditor
+                                key={`side-${sideNote.id}|${uiSettings.lineNumbers ? 1 : 0}|${uiSettings.spellcheck ? 1 : 0}|${uiSettings.indentWidth}`}
+                                editorRef={sideRef}
+                                value={sideDraft?.content ?? ""}
+                                onChange={content => setSideDraft(d => (d ? { ...d, content } : d))}
+                                lineNumbers={uiSettings.lineNumbers}
+                                spellcheck={uiSettings.spellcheck}
+                                font={uiSettings.editorFont}
+                                fontSize={uiSettings.editorFontSize}
+                                indentWidth={uiSettings.indentWidth}
+                            />
+                        </Box>
+                        <Box data-side-preview='1' sx={{ flex: 1, minHeight: 0, overflowY: "auto", px: 2, py: 1, borderTop: "1px solid var(--card-border, rgba(128,128,128,0.3))", fontSize: uiSettings.previewFontSize, lineHeight: uiSettings.lineHeight }}>
+                            <MarkdownPreview
+                                source={sideLiveRender ? (sideDraft?.content ?? "") : (sideNote.content || "")}
+                                resolveNote={resolveNote}
+                                onOpenNote={handleOpenEmbedNote}
+                                features={previewFeatures}
+                            />
+                        </Box>
+                    </Box>
+                ) : (
+                    <NoteEditor
+                        key={`side-${sideNote.id}|${uiSettings.lineNumbers ? 1 : 0}|${uiSettings.spellcheck ? 1 : 0}`}
+                        editorRef={sideRef}
+                        value={sideDraft?.content ?? ""}
+                        onChange={content => setSideDraft(d => (d ? { ...d, content } : d))}
+                        lineNumbers={uiSettings.lineNumbers}
+                        spellcheck={uiSettings.spellcheck}
+                        font={uiSettings.editorFont}
+                        fontSize={uiSettings.editorFontSize}
+                        indentWidth={uiSettings.indentWidth}
+                    />
+                )}
+            </Box>
+            <Box
+                sx={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 2,
+                    px: 2,
+                    py: 0.75,
+                    flexShrink: 0,
+                    borderTop: "1px solid rgba(128,128,128,0.25)",
+                    fontSize: 12,
+                    color: "text.secondary",
+                }}
+            >
+                <span>{(sideDraft?.content ?? "").replace(/\s+/g, "").length} 字</span>
+                <span>{(sideDraft?.content ?? "").length} 字符</span>
+                <Box sx={{ flex: 1 }} />
+                <span>侧边</span>
+            </Box>
+        </Box>
+    ) : null;
+
+    return (
+        <Box
+            ref={pageRef}
+            data-notes-root=''
+            sx={{
+                position: "fixed",
+                inset: 0,
+                // ⚠️ 必须显式铺到 100vw，光靠 `inset: 0` 铺不满。
+                // `scrollbar-gutter: stable`（src/index.css）让 html 和 body 各留一条
+                // 恒定 10px 的滚动条槽位；fixed 层的 containing block 是 **html 的内容盒**，
+                // 所以 inset:0 只得到视口宽减 10 —— 剩下那道 10px 的缝里，
+                // 底下还挂着的主界面（极光背景层）就从缝里冒出一条来。
+                // 这就是真机上看到的「右边显示了一点」。100vw 把槽位一起盖住。
+                width: "100vw",
+                // 明确禁止这一层滚动：它是整页，**页面级滚动条本身就是缺陷**
+                //（该滚的是预览区内部）。之前某一层漏了 minHeight: 0，内容顶出视口、
+                // 连带 body 出现滚动条；inset + overflow 才彻底按住。
+                overflow: "hidden",
+                zIndex: (t: { zIndex: { modal: number } }) => t.zIndex.modal,
+                display: "flex",
+                // ⚠️ 2026-10-07 改为**横向**：顶栏只压在最左边的导航列上方（inkstone 布局），
+                // 中栏列表与编辑区各自带头部、直达页面顶部 —— 全宽顶栏会把三栏都压低一截，
+                // 而顶栏上那排按钮实际只对「当前编辑的这篇」有意义，摆在页首纯属浪费纵深。
+                flexDirection: "row",
+                // 「背景色」设置：暖白（纸感）/ 纯白。深色模式下「暖白」不成立，
+                // 照旧走主题默认色 —— 否则会得到一块刺眼的白底配深色文字。
+                bgcolor: (t: { palette: { mode: string; background: { default: string; paper: string } } }) =>
+                    uiSettings.bgcolor === "pure"
+                        ? t.palette.background.paper
+                        : t.palette.mode === "light"
+                          ? "#faf8f1"
+                          : t.palette.background.default,
+            }}
+            // 「界面密度」与「强调色」都作用在整个记事本根元素上：
+            // 强调色用 --accent（页内选中态/图标），密度用 data 属性（index.css 里收紧行距）
+            data-notes-density={uiSettings.density}
+            style={{ "--accent": uiSettings.accent } as React.CSSProperties}
+        >
+            {shareId !== null && shareApi && <NoteShareDialog key={shareId} id={shareId} api={shareApi} onClose={() => setShareId(null)} />}
+            {/* 设置：记事本自己的外观 / 编辑器设置（不是导航站那个弹窗） */}
+            <NotesSettingsDialog
+                open={settingsOpen}
+                settings={uiSettings}
+                onChange={setUiSettings}
+                onClose={() => setSettingsOpen(false)}
+                // 分享列表页要用的三个方法（老部署/未登录时 shareApi 为空，那一页自动不出现）
+                shareApi={shareApi ?? null}
+                onNotify={onNotify}
+                onOpenNote={id => {
+                    setSettingsOpen(false);
+                    void jumpToNote(id);
+                }}
+            />
+
+            {/* ---------- 浮层：菜单 / 抽屉 / 弹窗 ----------
+                ⚠️⚠️ 2026-10-07：这组必须待在**根层**，不能放进中栏那个
+                `{!listHidden && …}` 里。选中文件夹时中栏整列不渲染（笔记内联在左栏），
+                而左栏内联笔记的右键菜单正是靠它们渲染 —— 一旦被条件块裹进去，
+                表现就是「右键左栏笔记没反应，等点别处、切回列表视图菜单才冒出来，
+                而且位置还是错的」（用户 2026-10-07 报的）。
+                MUI 的 Menu/Drawer/Dialog 默认 portal 到 body，放根层不影响定位。 */}
             {/* ---------- 笔记的操作菜单（右键 / hover「⋯」都能打开） ----------
                 与 inkstone 对齐的两套菜单：
                   - list（中栏列表行，右键或 ⋯）：复制标题/ID/直链、在侧边打开、收藏、
@@ -3251,675 +4039,6 @@ export default function NotesPage({
                     );
                 })}
             </Menu>
-
-            </Box>
-            {/* 列表列 ↔ 编辑区之间的可拖缝。同样必须在列表列这个 Box **外面** ——
-                里面是 flex-direction: column，放进去会塌成 0 高度、真实鼠标点不中。 */}
-            <ColResizeHandle
-                label='拖动调整笔记列表宽度'
-                onDrag={startDrag('list')}
-                onReset={reset('list')}
-            />
-            </>
-            )}
-            </>
-            )}
-        </Box>
-    );
-
-    const editorPane = (
-        <Box sx={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, minHeight: 0 }}>
-            {view === "trash" ? (
-                <Box sx={{ flex: 1, display: "grid", placeItems: "center" }}>
-                    <Typography variant='body2' color='text.secondary'>
-                        回收站里的笔记不能直接编辑。先「还原」回全部笔记，或者「彻底删除」。
-                    </Typography>
-                </Box>
-            ) : !active ? (
-                <Box sx={{ flex: 1, display: "grid", placeItems: "center" }}>
-                    <Typography variant='body2' color='text.secondary'>
-                        左边选一条笔记，或者新建一条。
-                    </Typography>
-                </Box>
-            ) : (
-                <>
-                    {/* 标题行（2026-10-07）：右侧是**这一栏自己的**按键栏 ——
-                        模式切换（编辑/分栏/预览）+「更多操作」。分屏时每栏各有一套，
-                        顶栏那排只对当前笔记生效的问题就没了（inkstone 同款布局）。 */}
-                    <Box sx={{ display: "flex", alignItems: "center", flexShrink: 0, pr: 1 }}>
-                        <TextField
-                            variant='standard'
-                            value={draft?.title ?? ""}
-                            onChange={e =>
-                                setDraft(d => (d ? { ...d, title: e.target.value } : d))
-                            }
-                            placeholder='无标题'
-                            slotProps={{ input: { "aria-label": "笔记标题" } }}
-                            sx={{
-                                flex: 1,
-                                minWidth: 0,
-                                px: 2,
-                                pt: 1.5,
-                                "& .MuiInputBase-root": { fontSize: 19, fontWeight: 600 },
-                                "& .MuiInput-input": { padding: "6px 0" },
-                            }}
-                        />
-                        {/* 源码/预览切换：三档。宽屏文字按钮、小屏收成图标（都在标题行右端）。 */}
-                        <Box sx={{ display: "flex", gap: 0.25, flexShrink: 0 }}>
-                            {(
-                                [
-                                    ["edit", "编辑", <EditIcon fontSize='inherit' key='i' />],
-                                    ["split", "分栏", <VerticalSplitIcon fontSize='inherit' key='s' />],
-                                    ["preview", "预览", <VisibilityIcon fontSize='inherit' key='v' />],
-                                ] as const
-                            ).map(([key, label, icon]) => (
-                                <IconButton
-                                    key={key}
-                                    aria-label={label}
-                                    title={label}
-                                    size='small'
-                                    onClick={() => setPane(key)}
-                                    sx={{
-                                        width: 28,
-                                        height: 28,
-                                        p: 0,
-                                        color: pane === key ? "primary.main" : "text.secondary",
-                                        bgcolor:
-                                            pane === key ? "rgba(128,128,128,0.12)" : "transparent",
-                                        display: { xs: "inline-flex", sm: "none" },
-                                    }}
-                                >
-                                    {icon}
-                                </IconButton>
-                            ))}
-                            {(
-                                [
-                                    ["edit", "编辑"],
-                                    ["split", "分栏"],
-                                    ["preview", "预览"],
-                                ] as const
-                            ).map(([key, label]) => (
-                                <IconButton
-                                    key={`wide-${key}`}
-                                    aria-label={label}
-                                    size='small'
-                                    onClick={() => setPane(key)}
-                                    sx={{
-                                        fontSize: 12,
-                                        px: 1,
-                                        width: "auto",
-                                        height: 28,
-                                        display: { xs: "none", sm: "inline-flex" },
-                                        borderRadius: 1.5,
-                                        fontWeight: pane === key ? 600 : 400,
-                                        color: pane === key ? "primary.main" : "text.secondary",
-                                        bgcolor:
-                                            pane === key ? "rgba(128,128,128,0.12)" : "transparent",
-                                    }}
-                                >
-                                    {label}
-                                </IconButton>
-                            ))}
-                            {/* 当前笔记的操作入口。顶栏拆掉后，只读分享 / 版本历史 / 大纲 /
-                                反向链接也收进了这个菜单（见下面 data-active-op 那几项）。 */}
-                            <Tooltip title='更多操作'>
-                                <IconButton
-                                    size='small'
-                                    data-tool='note-more'
-                                    aria-label='更多操作'
-                                    aria-haspopup='menu'
-                                    disabled={!active}
-                                    onClick={e => setActiveMenuAnchor(e.currentTarget)}
-                                    sx={{ width: 28, height: 28, color: "text.secondary" }}
-                                >
-                                    <MoreVertIcon fontSize='small' />
-                                </IconButton>
-                            </Tooltip>
-                        </Box>
-                    </Box>
-
-                    {/* 格式工具栏：照 inkstone 那一排。放在标题与内容区之间，
-                        点一下在光标处插入语法 —— 省得手打 `**` 和 `- [ ]`。
-                        设置里可以整个关掉（uiSettings.showToolbar）。 */}
-                    {uiSettings.showToolbar && (
-                    <MarkdownToolbar
-                        onInsert={tools.insertAtCursor}
-                        onInsertLinePrefix={tools.insertLinePrefix}
-                        onCodeLanguage={tools.applyCodeLanguage}
-                        onTable={tools.applyTable}
-                        onFormula={tools.applyFormula}
-                        onFootnoteRef={tools.insertFootnoteRef}
-                        onCallout={tools.insertCallout}
-                        onInsertEmbed={tools.onInsertEmbed}
-                        onInsertBlockRef={tools.onInsertBlockRef}
-                        onInsertBlockId={tools.onInsertBlockId}
-                        onInsertFrontMatter={tools.onInsertFrontMatter}
-                        onInsertTag={tools.onInsertTag}
-                        onInsertWikiLink={tools.onInsertWikiLink}
-                        onInsertHiddenComment={tools.onInsertHiddenComment}
-                        onInsertFold={tools.onInsertFold}
-                        onInsertTabs={tools.onInsertTabs}
-                        onInsertDivider={tools.onInsertDivider}
-                    />
-                    )}
-
-                    {/* 内容区：源码 | 预览 | 大纲面板。外层再包一行，
-                        大纲面板（outlineOpen）作为第三列贴在预览右侧（inkstone 布局）。 */}
-                    <Box sx={{ flex: 1, display: "flex", minHeight: 0, minWidth: 0 }}>
-                    <Box
-                        ref={splitBoxRef}
-                        sx={{
-                            flex: 1,
-                            display: "flex",
-                            minHeight: 0,
-                            minWidth: 0,
-                            // ⚠️ 这里必须有内边距。编辑区是 `flex:1` 吃掉整条剩余宽度的，
-                            // 而记事本这层全屏又铺到 100vw —— 不留边距的话源码 / 预览
-                            // 两栏会**贴死视口右边缘**：预览的右边框和滚动条被顶出屏幕，
-                            // 看起来就是「右边显示不全」。px:2 与标题 / 工具栏 / 状态栏对齐。
-                            px: 2,
-                            py: 1,
-                        }}
-                    >
-                        {pane !== "preview" && (
-                            <Box
-                                sx={{
-                                    // ⚠️ 两栏都用 `flex: 1 1 0`（basis 0）才会严格对半。
-                                    // 之前一边是 `1 1 50%`（basis 445）一边是 `1`（basis 0），
-                                    // 剩余空间再按 grow 分 —— 结果源码 667px、预览 222px，
-                                    // 看着就像「预览被挤没了」。
-                                    // 分栏时用 flexBasis 吃比例；单栏时独占
-                                    ...(pane === "edit"
-                                        ? { flex: 1 }
-                                        : {
-                                              flex: "0 0 auto",
-                                              width: `${splitRatio * 100}%`,
-                                          }),
-                                    minWidth: 0,
-                                    // 之前只有一条右边框、背景透明，源码区与预览区糊成一片空白，
-                                    // 看着就像「中间那块没内容」。给源码区一个淡底色 + 完整边框，
-                                    // 分栏才看得出是两栏而不是一栏。
-                                    border:
-                                        pane === "split"
-                                            ? "1px solid var(--card-border, rgba(128,128,128,0.45))"
-                                            : "none",
-                                    borderRadius: pane === "split" ? 1.5 : 0,
-                                    outline: "none",
-                                    resize: "none",
-                                    // 常显滚动条：默认 overlay 会让人以为「预览窗没滚轮」
-                                    p: 0,
-                                    minHeight: 0,
-                                    overflow: "hidden",
-                                    font: "inherit",
-                                    fontFamily: "ui-monospace, monospace",
-                                    fontSize: 14,
-                                    lineHeight: 1.75,
-                                    color: "inherit",
-                                    bgcolor:
-                                        pane === "split"
-                                            ? "rgba(128,128,128,0.05)"
-                                            : "transparent",
-                                }}
-                            >
-                                <NoteEditor
-                                    // 行号/拼写/缩进开关会重建编辑器（CodeMirror 的扩展只能在建时定），
-                                    // 拼进 key；字体/字号走 CSS 变量，不用重建。
-                                    key={`${active.id}|${uiSettings.lineNumbers ? 1 : 0}|${uiSettings.spellcheck ? 1 : 0}|${uiSettings.indentWidth}`}
-                                    editorRef={textareaRef}
-                                    value={draft?.content ?? ""}
-                                    onChange={content => setDraft(d => d ? { ...d, content } : d)}
-                                    lineNumbers={uiSettings.lineNumbers}
-                                    spellcheck={uiSettings.spellcheck}
-                                    font={uiSettings.editorFont}
-                                    fontSize={uiSettings.editorFontSize}
-                                    indentWidth={uiSettings.indentWidth}
-                                    onScrollRatio={syncPreviewScroll}
-                                />
-                            </Box>
-                        )}
-                        {pane === "split" && (
-                            <Box
-                                role='separator'
-                                aria-orientation='vertical'
-                                aria-label='拖动调整源码与预览的比例'
-                                title='拖动调整比例（双击回到对半）'
-                                onMouseDown={startSplitDrag}
-                                onDoubleClick={() => {
-                                    setSplitRatio(0.5);
-                                    // 同步 ref：不然「双击归中 → 立刻再拖 → 松手」这一串里，
-                                    // 松手存的还是归中之前那个旧值。
-                                    splitRatioRef.current = 0.5;
-                                    try {
-                                        localStorage.setItem(SPLIT_KEY, "0.5");
-                                    } catch {
-                                        /* 隐私模式写不了，忽略 */
-                                    }
-                                }}
-                                sx={{
-                                    width: 8,
-                                    flexShrink: 0,
-                                    cursor: "col-resize",
-                                    "&:hover": { bgcolor: "rgba(128,128,128,0.18)" },
-                                    "&:active": { bgcolor: "rgba(128,128,128,0.3)" },
-                                }}
-                            />
-                        )}
-                        {pane !== "edit" && (
-                            <Box
-                                ref={previewScrollRef}
-                                sx={{
-                                    // 与源码区同一个 basis（0），两栏才严格对半
-                                    flex: 1,
-                                    minWidth: 0,
-                                    // ⚠️ minHeight:0 不能少：flex 子项默认 min-height:auto，
-                                    // Markdown 一长就把这一层撑高、连带整页出现滚动条。
-                                    minHeight: 0,
-                                    overflowY: "auto",
-                                    p: 2.5,
-                                    // 设置面板「外观」：预览正文字号 / 行高 / 字体直接在这里生效
-                                    fontSize: uiSettings.previewFontSize,
-                                    lineHeight: uiSettings.lineHeight,
-                                    fontFamily:
-                                        uiSettings.previewFont === "serif"
-                                            ? 'Georgia, "Songti SC", "Noto Serif CJK SC", serif'
-                                            : "inherit",
-                                    border:
-                                        pane === "split"
-                                            ? "1px solid var(--card-border, rgba(128,128,128,0.45))"
-                                            : "none",
-                                    borderRadius: pane === "split" ? 1.5 : 0,
-                                    bgcolor:
-                                        pane === "split"
-                                            ? "rgba(128,128,128,0.03)"
-                                            : "transparent",
-                                }}
-                            >
-                                <Box
-                                    data-preview-content='1'
-                                    sx={{
-                                        // 设置面板「内容宽度」：窄/标准/宽/满 四档，
-                                        // 窄于可用宽度时居中（inkstone 的预览排版同款）
-                                        width: "100%",
-                                        maxWidth:
-                                            uiSettings.contentWidth === "narrow"
-                                                ? 560
-                                                : uiSettings.contentWidth === "standard"
-                                                  ? 760
-                                                  : uiSettings.contentWidth === "wide"
-                                                    ? 980
-                                                    : "100%",
-                                        mx: "auto",
-                                        wordBreak: "break-word",
-                                    }}
-                                
-                                onDoubleClick={e => {
-                                    const target = (e.target as HTMLElement).closest<HTMLElement>("[data-inline-tag]");
-                                    const tag = tags.find(t => t.name === target?.dataset.inlineTag);
-                                    if (tag?.id !== undefined) {
-                                        setActiveTag(tag.id); setActiveFolder(null); setView("all");
-                                    }
-                                }} onClick={e => {
-                                    // `[[双链]]` 单击即跳。它是 <a> 但**没有 href**：
-                                    // 真 href 会让浏览器做新页面导航（全屏 overlay 里
-                                    // 直接白掉），所以这里只用 data 属性 + 委托点击，
-                                    // 保留 <a> 的语义与可点外观。
-                                    const link = (e.target as HTMLElement).closest<HTMLElement>("[data-wiki-link]");
-                                    const title = link?.dataset.wikiLink;
-                                    if (!title) return;
-                                    const hit = notes.find(n => (n.title || "").trim().toLowerCase() === title.trim().toLowerCase());
-                                    if (hit?.id !== undefined) {
-                                        e.preventDefault();
-                                        void jumpToNote(hit.id);
-                                    } else {
-                                        // ⚠️ 死链必须给反馈，不能点了毫无反应 ——
-                                        // 用户会以为是按钮坏了。多数情况是标题改了或还没建。
-                                        e.preventDefault();
-                                        onNotify?.(`没有找到名为「${title}」的笔记`, "error");
-                                    }
-                                }}><MarkdownPreview
-                                    source={draft?.content || ""}
-                                    resolveNote={resolveNote}
-                                    onOpenNote={handleOpenEmbedNote}
-                                    features={previewFeatures}
-                                /></Box>
-                            </Box>
-                        )}
-                    </Box>
-                    {/* 大纲面板：当前这条笔记的标题层级，常驻在预览右侧。
-                        没标题时给一句说明，别给一块空白让人以为功能坏了。 */}
-                    {outlineOpen && (
-                        <Box
-                            data-outline-panel='1'
-                            sx={{
-                                width: 190,
-                                flexShrink: 0,
-                                borderLeft: "1px solid rgba(128,128,128,0.18)",
-                                overflowY: "auto",
-                                py: 1,
-                                px: 0.75,
-                                display: { xs: "none", md: "block" },
-                            }}
-                        >
-                            <Typography
-                                variant='caption'
-                                sx={{ display: "block", px: 1, pb: 0.5, fontSize: 11, color: "text.disabled" }}
-                            >
-                                大纲
-                            </Typography>
-                            {outline.length === 0 ? (
-                                <Typography
-                                    variant='caption'
-                                    data-outline='empty'
-                                    sx={{ display: "block", px: 1, fontSize: 11.5, color: "text.secondary" }}
-                                >
-                                    这条笔记还没有标题（用 # 标题 就能出现在这里）
-                                </Typography>
-                            ) : (
-                                outline.map(item => (
-                                    <Box
-                                        key={`${item.line}-${item.offset}`}
-                                        component='button'
-                                        type='button'
-                                        data-outline-item={item.line}
-                                        onClick={() => jumpToOffset(item.offset)}
-                                        sx={{
-                                            display: "block",
-                                            width: "100%",
-                                            appearance: "none",
-                                            border: "none",
-                                            m: 0,
-                                            font: "inherit",
-                                            cursor: "pointer",
-                                            textAlign: "left",
-                                            minWidth: 0,
-                                            pl: 1 + Math.min(outlineIndent(item.level), 6),
-                                            pr: 0.5,
-                                            py: 0.4,
-                                            borderRadius: 1,
-                                            bgcolor: "transparent",
-                                            color: "text.secondary",
-                                            fontWeight: item.level <= 2 ? 600 : 400,
-                                            fontSize: 12.5,
-                                            "&:hover": {
-                                                bgcolor: "rgba(128,128,128,0.1)",
-                                                color: "text.primary",
-                                            },
-                                        }}
-                                    >
-                                        <Typography
-                                            component='span'
-                                            sx={{
-                                                display: "block",
-                                                overflow: "hidden",
-                                                textOverflow: "ellipsis",
-                                                whiteSpace: "nowrap",
-                                                font: "inherit",
-                                                fontWeight: "inherit",
-                                                fontSize: "inherit",
-                                            }}
-                                        >
-                                            {item.text}
-                                        </Typography>
-                                    </Box>
-                                ))
-                            )}
-                        </Box>
-                    )}
-                    </Box>
-
-                    {/* 状态栏：像 inkstone 那样把「写了多少」摆在脚下 */}
-                    <Box
-                        sx={{
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 2,
-                            px: 2,
-                            py: 0.75,
-                            flexShrink: 0,
-                            borderTop: "1px solid rgba(128,128,128,0.25)",
-                            fontSize: 12,
-                            color: "text.secondary",
-                        }}
-                    >
-                        <span>{wordCount} 字</span>
-                        <span>{charCount} 字符</span>
-                        <span>约 {Math.max(1, Math.ceil(wordCount / 400))} 分钟读完</span>
-                        {/* 所在文件夹：inkstone 状态栏也有这一项（「… 约1分钟 新建文件夹 创建于…」），
-                            相当于一个位置指示 —— 笔记是从哪个文件夹里打开的。没归类的不显示。 */}
-                        {activeFolderName && (
-                            <span data-note-folder style={{ opacity: 0.85 }}>
-                                {activeFolderName}
-                            </span>
-                        )}
-                        <span>
-                            {pane === "edit" ? "编辑" : pane === "preview" ? "预览" : "分栏"}
-                        </span>
-                        <Box sx={{ flex: 1 }} />
-                        {/* 「创建于…」跟在保存状态后面（inkstone 把它放在状态栏右端）：
-                            左边一串是「这篇现在多长」，右边是「它是什么时候来的」。
-                            解析不出时间就整项不显示 —— 宁可少一项，也别给「Invalid Date」。 */}
-                        {active.created_at && formatWhenFull(active.created_at) && (
-                            <span data-note-created style={{ marginRight: 0.5 }}>
-                                创建于 {formatWhenFull(active.created_at)}
-                            </span>
-                        )}
-                        {/* 阶段四第 14 条：原来只有一句「有未保存的改动」，
-                            看不出到底存没存。现在把保存过程摊开：
-                            待存 / 正在存 / 已存多久。已存的时刻复用相对时间那条。 */}
-                        {saveState === "pending" && <span>有改动，即将保存…</span>}
-                        {saveState === "saving" && <span>正在保存…</span>}
-                        {saveState === "saved" && !dirty && (
-                            <span>已保存 · {formatRelative(savedAt, new Date(tick))}</span>
-                        )}
-                        {/* ⚠️ 右下角的那排「删除 / 置顶 / 归档」按键已移除（2026-10-06）：
-                            它们的功能全部在笔记右键菜单与顶栏「⋯」里，脚下这排图标
-                            既占地方又容易误触。 */}
-                    </Box>
-                </>
-            )}
-        </Box>
-    );
-
-    /**
-     * 侧边编辑器（「在侧边打开」）：第二台**完整可编辑**的编辑器 ——
-     * 自己的标题框、自己的工具栏（sideTools，撤销状态与主编辑器互相隔离）、
-     * 自己的 3 秒自动保存。关闭时先把没落库的草稿刷掉。
-     */
-    const sideNote = sideId !== null ? notes.find(n => n.id === sideId) ?? null : null;
-    const sidePane = sideNote ? (
-        <Box
-            data-side-editor='1'
-            sx={{ flex: "1 1 50%", minWidth: 0, minHeight: 0, display: "flex", flexDirection: "column" }}
-        >
-            {/* 头部（2026-10-07）：inkstone 每栏右上角都有自己的按键栏 ——
-                标题 + 编辑/预览 + 更多操作（作用于**侧边这条**）+ 关闭。 */}
-            <Box sx={{ display: "flex", alignItems: "center", gap: 0.25, pr: 0.75, flexShrink: 0 }}>
-                <TextField
-                    variant='standard'
-                    value={sideDraft?.title ?? ""}
-                    onChange={e => setSideDraft(d => (d ? { ...d, title: e.target.value } : d))}
-                    placeholder='无标题'
-                    slotProps={{ input: { "aria-label": "侧边笔记标题" } }}
-                    sx={{
-                        flex: 1,
-                        minWidth: 0,
-                        px: 2,
-                        pt: 1.5,
-                        "& .MuiInputBase-root": { fontSize: 17, fontWeight: 600 },
-                        "& .MuiInput-input": { padding: "6px 0" },
-                    }}
-                />
-                <Tooltip title={sideMode === "preview" ? "编辑" : "预览"}>
-                    <IconButton
-                        size='small'
-                        aria-label={sideMode === "preview" ? "侧边编辑" : "侧边预览"}
-                        data-tool='side-mode'
-                        aria-pressed={sideMode === "preview"}
-                        onClick={() => setSideMode(m => (m === "edit" ? "preview" : "edit"))}
-                        sx={{
-                            width: 28,
-                            height: 28,
-                            flexShrink: 0,
-                            color: sideMode === "preview" ? "primary.main" : "text.secondary",
-                            bgcolor: sideMode === "preview" ? "rgba(128,128,128,0.12)" : "transparent",
-                        }}
-                    >
-                        {sideMode === "preview" ? <EditIcon fontSize='small' /> : <VisibilityIcon fontSize='small' />}
-                    </IconButton>
-                </Tooltip>
-                {/* 更多操作：直接复用列表行的全量菜单，只是锚在侧边栏头部、
-                    作用于侧边这条笔记（顶栏那套只管主编辑区的问题到此为止）。 */}
-                <Tooltip title='更多操作'>
-                    <IconButton
-                        size='small'
-                        data-tool='side-more'
-                        aria-label='侧边笔记更多操作'
-                        aria-haspopup='menu'
-                        onClick={e =>
-                            sideNote.id !== undefined &&
-                            setRowMenu({ noteId: sideNote.id, el: e.currentTarget, source: "list" })
-                        }
-                        sx={{ width: 28, height: 28, flexShrink: 0, color: "text.secondary" }}
-                    >
-                        <MoreVertIcon fontSize='small' />
-                    </IconButton>
-                </Tooltip>
-                {/* 关闭键常显（inkstone 同款 ✕）：藏在 hover 里的话分屏时根本找不到 */}
-                <Tooltip title='关闭侧边编辑器'>
-                    <IconButton
-                        size='small'
-                        aria-label='关闭侧边编辑器'
-                        data-side-close='1'
-                        onClick={closeSide}
-                        sx={{ flexShrink: 0, color: "text.secondary" }}
-                    >
-                        <CloseIcon fontSize='small' />
-                    </IconButton>
-                </Tooltip>
-            </Box>
-            {uiSettings.showToolbar && sideMode === "edit" && (
-                <MarkdownToolbar
-                    onInsert={sideTools.insertAtCursor}
-                    onInsertLinePrefix={sideTools.insertLinePrefix}
-                    onCodeLanguage={sideTools.applyCodeLanguage}
-                    onTable={sideTools.applyTable}
-                    onFormula={sideTools.applyFormula}
-                    onFootnoteRef={sideTools.insertFootnoteRef}
-                    onCallout={sideTools.insertCallout}
-                    onInsertEmbed={sideTools.onInsertEmbed}
-                    onInsertBlockRef={sideTools.onInsertBlockRef}
-                    onInsertBlockId={sideTools.onInsertBlockId}
-                    onInsertFrontMatter={sideTools.onInsertFrontMatter}
-                    onInsertTag={sideTools.onInsertTag}
-                    onInsertWikiLink={sideTools.onInsertWikiLink}
-                    onInsertHiddenComment={sideTools.onInsertHiddenComment}
-                    onInsertFold={sideTools.onInsertFold}
-                    onInsertTabs={sideTools.onInsertTabs}
-                    onInsertDivider={sideTools.onInsertDivider}
-                />
-            )}
-            <Box
-                sx={{
-                    flex: 1,
-                    minHeight: 0,
-                    minWidth: 0,
-                    overflow: "hidden",
-                    borderLeft: "none",
-                    borderRight: "none",
-                    borderTop: "none",
-                    borderBottom: "none",
-                }}
-            >
-                {sideMode === "edit" ? (
-                    <NoteEditor
-                        key={`side-${sideNote.id}|${uiSettings.lineNumbers ? 1 : 0}|${uiSettings.spellcheck ? 1 : 0}`}
-                        editorRef={sideRef}
-                        value={sideDraft?.content ?? ""}
-                        onChange={content => setSideDraft(d => (d ? { ...d, content } : d))}
-                        lineNumbers={uiSettings.lineNumbers}
-                        spellcheck={uiSettings.spellcheck}
-                        font={uiSettings.editorFont}
-                        fontSize={uiSettings.editorFontSize}
-                    />
-                ) : (
-                    /* 侧边预览：与主编辑区同一套 Markdown 渲染（token→React，无 HTML sink） */
-                    <Box data-side-preview='1' sx={{ height: "100%", overflowY: "auto", px: 2, py: 1, fontSize: uiSettings.previewFontSize, lineHeight: uiSettings.lineHeight }}>
-                        <MarkdownPreview
-                            source={sideDraft?.content ?? ""}
-                            resolveNote={resolveNote}
-                            onOpenNote={handleOpenEmbedNote}
-                            features={previewFeatures}
-                        />
-                    </Box>
-                )}
-            </Box>
-            <Box
-                sx={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 2,
-                    px: 2,
-                    py: 0.75,
-                    flexShrink: 0,
-                    borderTop: "1px solid rgba(128,128,128,0.25)",
-                    fontSize: 12,
-                    color: "text.secondary",
-                }}
-            >
-                <span>{(sideDraft?.content ?? "").replace(/\s+/g, "").length} 字</span>
-                <span>{(sideDraft?.content ?? "").length} 字符</span>
-                <Box sx={{ flex: 1 }} />
-                <span>侧边</span>
-            </Box>
-        </Box>
-    ) : null;
-
-    return (
-        <Box
-            ref={pageRef}
-            data-notes-root=''
-            sx={{
-                position: "fixed",
-                inset: 0,
-                // ⚠️ 必须显式铺到 100vw，光靠 `inset: 0` 铺不满。
-                // `scrollbar-gutter: stable`（src/index.css）让 html 和 body 各留一条
-                // 恒定 10px 的滚动条槽位；fixed 层的 containing block 是 **html 的内容盒**，
-                // 所以 inset:0 只得到视口宽减 10 —— 剩下那道 10px 的缝里，
-                // 底下还挂着的主界面（极光背景层）就从缝里冒出一条来。
-                // 这就是真机上看到的「右边显示了一点」。100vw 把槽位一起盖住。
-                width: "100vw",
-                // 明确禁止这一层滚动：它是整页，**页面级滚动条本身就是缺陷**
-                //（该滚的是预览区内部）。之前某一层漏了 minHeight: 0，内容顶出视口、
-                // 连带 body 出现滚动条；inset + overflow 才彻底按住。
-                overflow: "hidden",
-                zIndex: (t: { zIndex: { modal: number } }) => t.zIndex.modal,
-                display: "flex",
-                // ⚠️ 2026-10-07 改为**横向**：顶栏只压在最左边的导航列上方（inkstone 布局），
-                // 中栏列表与编辑区各自带头部、直达页面顶部 —— 全宽顶栏会把三栏都压低一截，
-                // 而顶栏上那排按钮实际只对「当前编辑的这篇」有意义，摆在页首纯属浪费纵深。
-                flexDirection: "row",
-                // 「背景色」设置：暖白（纸感）/ 纯白。深色模式下「暖白」不成立，
-                // 照旧走主题默认色 —— 否则会得到一块刺眼的白底配深色文字。
-                bgcolor: (t: { palette: { mode: string; background: { default: string; paper: string } } }) =>
-                    uiSettings.bgcolor === "pure"
-                        ? t.palette.background.paper
-                        : t.palette.mode === "light"
-                          ? "#faf8f1"
-                          : t.palette.background.default,
-            }}
-            // 「界面密度」与「强调色」都作用在整个记事本根元素上：
-            // 强调色用 --accent（页内选中态/图标），密度用 data 属性（index.css 里收紧行距）
-            data-notes-density={uiSettings.density}
-            style={{ "--accent": uiSettings.accent } as React.CSSProperties}
-        >
-            {shareId !== null && shareApi && <NoteShareDialog key={shareId} id={shareId} api={shareApi} onClose={() => setShareId(null)} />}
-            {/* 设置：记事本自己的外观 / 编辑器设置（不是导航站那个弹窗） */}
-            <NotesSettingsDialog
-                open={settingsOpen}
-                settings={uiSettings}
-                onChange={setUiSettings}
-                onClose={() => setSettingsOpen(false)}
-            />
             {/* 当前笔记的「⋯」菜单：与右键菜单同一套（全量版）。 */}
             <Menu
                 open={Boolean(activeMenuAnchor)}
@@ -4205,13 +4324,20 @@ export default function NotesPage({
                         {/* 侧边编辑器打开时主编辑器让出一半（两个文档同时编辑，inkstone 的分屏）
                             ⚠️ 判据用 sidePane（= 侧边那条笔记真的还在），不能用 sideId：
                             侧边那条被删掉/回收后 sideId 还留着，按它分屏会让主编辑区
-                            白白让出一半、右边空着一条（2026-10-06） */}
+                            白白让出一半、右边空着一条（2026-10-06）
+                            ⚠️⚠️ 2026-10-07 用户要求：两栏之间**固定 50/50，不能拖**。
+                            所以这里既没有 ColResizeHandle，也没有 resize/cursor 提示 ——
+                            之前那条 1px 边框会被误认成把手（用户以为能拖、拖不动）。
+                            要改比例只能关掉侧边栏、把左栏（中栏）拖宽。 */}
                         <Box
+                            data-pane-divider={sidePane !== null ? "fixed" : undefined}
                             sx={{
                                 flex: sidePane !== null ? "1 1 50%" : 1,
                                 minWidth: 0,
                                 minHeight: 0,
                                 display: "flex",
+                                cursor: "default",
+                                userSelect: sidePane !== null ? "none" : undefined,
                                 borderRight:
                                     sidePane !== null ? "1px solid rgba(128,128,128,0.25)" : undefined,
                             }}
@@ -4553,7 +4679,10 @@ function MarkdownToolbar({
                 borderBottom: "1px solid var(--card-border, rgba(128,128,128,0.18))",
             }}
         >
-            {/* 标题层级：从两个 H1/H2 文字按钮收成一个下拉 */}
+            {/* 标题层级：从两个 H1/H2 文字按钮收成一个下拉。
+                ⚠️ tooltip 一律写「会发生什么」，不写「这是什么」——
+                用户看不懂的是**作用**，不是名词（2026-10-07 反馈）。 */}
+            <Tooltip title='把这一行变成标题：一级 / 二级 / 三级 / 正文'>
             <Button
                 size='small'
                 aria-label='标题层级'
@@ -4573,6 +4702,7 @@ function MarkdownToolbar({
             >
                 标题
             </Button>
+            </Tooltip>
             <Menu
                 open={Boolean(headingAnchor)}
                 anchorEl={headingAnchor}
@@ -4594,7 +4724,7 @@ function MarkdownToolbar({
 
             {/* 链接下拉（inkstone 式）：链接 / 双链 / 笔记嵌入 / 块引用 四种。
                 data-tool='link' 仍挂在触发器上，老的用例按它找按钮不丢。 */}
-            <Tooltip title='链接'>
+            <Tooltip title='插入网址，或引用另一篇笔记（双链 / 嵌入）'>
                 <IconButton
                     size='small'
                     aria-label='链接'
@@ -4652,7 +4782,7 @@ function MarkdownToolbar({
             </Menu>
 
             {/* 图片下拉：目前只开放「网络图片」（粘贴链接），上传未做 */}
-            <Tooltip title='图片'>
+            <Tooltip title='插入图片（目前只支持网络图片，本地图片还没开放）'>
                 <IconButton
                     size='small'
                     aria-label='图片'
@@ -4688,7 +4818,7 @@ function MarkdownToolbar({
             {/* 「链接与引用」：把选中的文字变成脚注引用。单独放（不在链接下拉里），
                 因为它要同时改两处（文末定义 + 正文引用），和链接下拉的「包一层」不是一回事。
                 测试用例直接按 data-tool='footnote-ref' 点它，不能挪进下拉。 */}
-            <Tooltip title='链接与引用（把选中的文字变成脚注引用）'>
+            <Tooltip title='把选中的文字变成脚注引用（脚注定义自动放到文末）'>
                 <IconButton
                     size='small'
                     data-tool='footnote-ref'
@@ -4705,6 +4835,7 @@ function MarkdownToolbar({
 
             {/* 插入下拉：把「高级插入」收进来（块 ID / 属性 / 隐藏注释 / 标签），
                 和 inkstone 的「插入」一组对齐。 */}
+            <Tooltip title='不太常用但有用的语法：块 ID、笔记属性、隐藏注释、标签'>
             <Button
                 size='small'
                 aria-label='插入'
@@ -4725,6 +4856,7 @@ function MarkdownToolbar({
             >
                 插入
             </Button>
+            </Tooltip>
             <Menu
                 open={Boolean(insertAnchor)}
                 anchorEl={insertAnchor}
@@ -4737,7 +4869,7 @@ function MarkdownToolbar({
                         setInsertAnchor(null);
                     }}
                 >
-                    块 ID（^标识，供引用）
+                    块 ID：给这一段加个锚点，别处能引用它
                 </MenuItem>
                 <MenuItem
                     data-insert-op='frontmatter'
@@ -4746,7 +4878,7 @@ function MarkdownToolbar({
                         setInsertAnchor(null);
                     }}
                 >
-                    笔记属性（YAML）
+                    笔记属性：给整篇笔记加标题、标签等信息
                 </MenuItem>
                 <MenuItem
                     data-insert-op='hidden'
@@ -4755,7 +4887,7 @@ function MarkdownToolbar({
                         setInsertAnchor(null);
                     }}
                 >
-                    隐藏注释（预览不显示）
+                    隐藏注释：写给自己看的备注，预览里不显示
                 </MenuItem>
                 <MenuItem
                     data-insert-op='tag'
@@ -4764,11 +4896,12 @@ function MarkdownToolbar({
                         setInsertAnchor(null);
                     }}
                 >
-                    标签 #标签
+                    标签：给这篇笔记加一个 #标签，便于检索
                 </MenuItem>
             </Menu>
 
             {/* 块下拉：折叠 / 标签页 / 分隔线（inkstone 的「块」一组） */}
+            <Tooltip title='成块的语法：可折叠内容、标签页、分隔线'>
             <Button
                 size='small'
                 aria-label='块'
@@ -4789,6 +4922,7 @@ function MarkdownToolbar({
             >
                 块
             </Button>
+            </Tooltip>
             <Menu
                 open={Boolean(blockAnchor)}
                 anchorEl={blockAnchor}
@@ -4801,7 +4935,7 @@ function MarkdownToolbar({
                         setBlockAnchor(null);
                     }}
                 >
-                    折叠内容（{">"} [!FOLD]）
+                    折叠内容：可点开 / 收起的一段
                 </MenuItem>
                 <MenuItem
                     data-block-op='tabs'
@@ -4810,7 +4944,7 @@ function MarkdownToolbar({
                         setBlockAnchor(null);
                     }}
                 >
-                    标签页（:::tabs）
+                    标签页：把几段内容并排放，一页只显示一页
                 </MenuItem>
                 <MenuItem
                     data-block-op='divider'
@@ -4819,14 +4953,14 @@ function MarkdownToolbar({
                         setBlockAnchor(null);
                     }}
                 >
-                    分隔线（---）
+                    分隔线：一条横线，把内容分段
                 </MenuItem>
             </Menu>
 
             <Divider orientation='vertical' flexItem sx={{ mx: 0.25, my: 0.5 }} />
 
             {/* 内容块（提示 / 技巧 / 重要 / 警告 / 引用） */}
-            <Tooltip title='内容块（提示 / 技巧 / 重要 / 警告 / 引用）'>
+            <Tooltip title='插入一个醒目的提示框：提示 / 技巧 / 重要 / 警告 / 危险'>
                 <IconButton
                     size='small'
                     data-tool='callout'
@@ -4881,6 +5015,7 @@ function MarkdownToolbar({
             </Tooltip>
 
             {/* 阶段四第 12 条：代码块语言 */}
+            <Tooltip title='给代码块标语言：有语法高亮，也能被折叠'>
             <Button
                 size='small'
                 aria-label='代码块语言'
@@ -4901,6 +5036,7 @@ function MarkdownToolbar({
             >
                 语言
             </Button>
+            </Tooltip>
             <Menu
                 open={Boolean(langAnchor)}
                 anchorEl={langAnchor}
@@ -4921,7 +5057,7 @@ function MarkdownToolbar({
             </Menu>
 
             {/* 公式下拉 */}
-            <Tooltip title='插入公式'>
+            <Tooltip title='插入公式：行内 $…$ 或单独一段的 $$…$$'>
                 <IconButton
                     size='small'
                     aria-label='公式'
@@ -4984,7 +5120,7 @@ function MarkdownToolbar({
             </Menu>
 
             {/* 表格下拉 */}
-            <Tooltip title='插入表格 / 增删行列'>
+            <Tooltip title='插入表格，或给已有表格增删行列'>
                 <IconButton
                     size='small'
                     aria-label='表格'

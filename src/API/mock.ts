@@ -178,6 +178,10 @@ const mockNotes: Note[] = [
         pinned: true,
         order_num: 0,
         site_id: null,
+        // 演示数据刻意留一条**在文件夹里**的笔记（2026-10-07）：
+        // 否则「选中文件夹 → 笔记内联在左栏 → 内联笔记右键」这条路径在演示模式
+        // 里根本走不到，文件夹树看起来永远是空的。
+        folder_id: 1,
     },
     {
         id: 2,
@@ -389,6 +393,12 @@ export class MockNavigationClient {
 
     // ---- 记事本 ----
     // 演示模式没有公开服务，不能生成看似可用但无法打开的分享链接。
+    /** 分享列表（演示模式：内存里没有就返回空数组，形状与真实实现一致） */
+    async listNoteShares(): Promise<import("./types").NoteShareListItem[]> {
+        await new Promise(resolve => setTimeout(resolve, 120));
+        return [];
+    }
+
     async getNoteShare(_id: number): Promise<import("./types").NoteShare | null> {
         return null;
     }

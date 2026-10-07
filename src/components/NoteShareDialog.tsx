@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react";
 import { Alert, Button, Dialog, DialogActions, DialogContent, DialogTitle, MenuItem, TextField } from "@mui/material";
-import type { NoteShare } from "../API/types";
+import type { NoteShare, NoteShareListItem } from "../API/types";
 
 export interface NoteShareApi {
     getNoteShare(id: number): Promise<NoteShare | null>;
+    /** 分享列表（设置页「分享列表」用） */
+    listNoteShares(): Promise<NoteShareListItem[]>;
     createNoteShare(id: number, days: number | null): Promise<NoteShare | null>;
     revokeNoteShare(id: number): Promise<{ success: boolean }>;
 }
