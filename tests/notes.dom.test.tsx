@@ -169,15 +169,25 @@ test("双链渲染成可点元素，点一下跳到目标笔记", async () => {
     );
 });
 
-test("链接与引用：选中文字换成脚注引用，原文进文末定义；再点一次全撤", () => {
+test("链接与引用：选中文字换成脚注引用，原文进文末定义；再点一次全撤", async () => {
     mountPanel([note({ content: "第一段第二段" })]);
     const editor = getEditor();
     act(() => editor.setSelectionRange(3, 6)); // 选中「第二段」
-    act(() => (document.querySelector('[data-tool="footnote-ref"]') as HTMLElement).click());
+    await act(async () => {
+        (document.querySelector('[data-tool="link-menu"]') as HTMLElement).click();
+    });
+    await act(async () => {
+        (document.querySelector('[data-tool="footnote-ref"]') as HTMLElement).click();
+    });
     // 选区被引用替换，原文搬到文末
     assert.equal(editor.value, "第一段[^1]\n\n[^1]: 第二段");
     // 再点一次：引用和定义都要没，且不留孤儿定义
-    act(() => (document.querySelector('[data-tool="footnote-ref"]') as HTMLElement).click());
+    await act(async () => {
+        (document.querySelector('[data-tool="link-menu"]') as HTMLElement).click();
+    });
+    await act(async () => {
+        (document.querySelector('[data-tool="footnote-ref"]') as HTMLElement).click();
+    });
     // ⚠️ 用局部变量再断言：上面那行 assert.equal 会把 editor.value 收窄成字面量类型，
     // 后面再 `.includes()` 就变成 never 上的调用（tsc 报错）。
     const afterUndo: string = editor.value;
@@ -185,14 +195,22 @@ test("链接与引用：选中文字换成脚注引用，原文进文末定义�
     assert.ok(!afterUndo.includes("[^"), "不该留下没有引用的孤儿定义");
 });
 
-test("链接与引用：连插两条编号不重复（都写 [^1] 的话第二条定义会被忽略）", () => {
+test("链接与引用：连插两条编号不重复（都写 [^1] 的话第二条定义会被忽略）", async () => {
     mountPanel([note({ content: "甲乙丙" })]);
     const editor = getEditor();
+    const clickFootnote = async () => {
+        await act(async () => {
+            (document.querySelector('[data-tool="link-menu"]') as HTMLElement).click();
+        });
+        await act(async () => {
+            (document.querySelector('[data-tool="footnote-ref"]') as HTMLElement).click();
+        });
+    };
     act(() => editor.setSelectionRange(0, 1));
-    act(() => (document.querySelector('[data-tool="footnote-ref"]') as HTMLElement).click());
+    await clickFootnote();
     // 插完是 "[^1]乙丙\n\n[^1]: 甲"（索引 4 = 乙、5 = 丙），选中「丙」再插第二条
     act(() => editor.setSelectionRange(5, 6));
-    act(() => (document.querySelector('[data-tool="footnote-ref"]') as HTMLElement).click());
+    await clickFootnote();
     assert.match(editor.value, /\[\^1\]: 甲/);
     assert.match(editor.value, /\[\^2\]: 丙/, "第二条要编号 2，不能与第一条重号");
     assert.equal((editor.value.match(/\[\^1\]:/g) ?? []).length, 1);
@@ -293,21 +311,22 @@ test("工具栏按 data-tool 暴露分组按钮（不再是 15 个散落文字�
     assert.ok(bar.querySelectorAll('hr, [class*="MuiDivider"]').length >= 4, "分组之间要有分隔线");
 });
 
-test("工具栏补齐 inkstone 式下拉：链接 / 图片 / 插入 / 块", () => {
+test("工具栏补齐 inkstone 式下拉：链接 / 图片 / 笔记工具 / 块", async () => {
     mountPanel([note({ id: 1, title: "甲", content: "" })]);
     const bar = document.querySelector('[aria-label="Markdown 格式"]') as HTMLElement;
     assert.ok(bar, "要有格式工具栏");
-    // 这四个是 inkstone 式「文字/图标按钮 + 下拉」入口，区别于原来的散落图标
-    for (const label of ["链接", "图片", "插入", "块"]) {
+    // ⚠️ 2026-10-07 对齐 inkstone 后：链接/图片/代码都是「主按钮 + 箭头」双态，
+    // 箭头才是下拉入口；「插入」改名「笔记工具」（inkstone 的 note 菜单）。
+    for (const label of ["链接与引用", "插入图片", "笔记工具"]) {
         assert.ok(
             bar.querySelector(`button[aria-label="${label}"]`),
-            `工具栏要有 ${label} 下拉按钮`
+            `工具栏要有「${label}」下拉按钮`
         );
     }
-    // 点开「链接」下拉，里面四种插入项都要在（覆盖双链 / 嵌入 / 块引用）
-    const linkBtn = bar.querySelector('button[aria-label="链接"]') as HTMLElement;
-    act(() => linkBtn.click());
-    for (const op of ["external", "wikilink", "embed", "blockref"]) {
+    // 点开「链接与引用」，里面几种插入项都要在（覆盖双链 / 嵌入 / 块引用 / 脚注）
+    const linkBtn = bar.querySelector('button[aria-label="链接与引用"]') as HTMLElement;
+    await act(async () => linkBtn.click());
+    for (const op of ["external", "wikilink", "embed", "blockref", "footnote"]) {
         assert.ok(
             document.querySelector(`[data-link-op="${op}"]`),
             `链接下拉要有 ${op} 这一项`
@@ -315,18 +334,19 @@ test("工具栏补齐 inkstone 式下拉：链接 / 图片 / 插入 / 块", () =
     }
     // 点「笔记嵌入」要往编辑器插入 ![[笔记标题]]（和粗体走同一条 insertBlock 路径）
     const ta = getEditor();
-    act(() => (document.querySelector('[data-link-op="embed"]') as HTMLElement).click());
+    await act(async () => (document.querySelector('[data-link-op="embed"]') as HTMLElement).click());
     assert.ok(ta.value.includes("![[笔记标题]]"), "点嵌入要插入 ![[笔记标题]]，实际：" + ta.value);
-    // 「插入」下拉：块 ID / 属性 / 隐藏注释 / 标签
-    const insertBtn = bar.querySelector('button[aria-label="插入"]') as HTMLElement;
-    act(() => insertBtn.click());
+    // 「笔记工具」下拉：标签 / 块 ID / 属性 / 隐藏注释
+    const insertBtn = bar.querySelector('button[aria-label="笔记工具"]') as HTMLElement;
+    await act(async () => insertBtn.click());
     for (const op of ["blockid", "frontmatter", "hidden", "tag"]) {
-        assert.ok(document.querySelector(`[data-insert-op="${op}"]`), `插入下拉要有 ${op}`);
+        assert.ok(document.querySelector(`[data-insert-op="${op}"]`), `笔记工具下拉要有 ${op}`);
     }
-    // 「块」下拉：折叠 / 标签页 / 分隔线
+    // 「块」下拉：提示框 / 折叠 / 标签页 / 分隔线
+    // ⚠️ 提示框已从独立按钮收进这里（inkstone 就是放 block 里的）
     const blockBtn = bar.querySelector('button[aria-label="块"]') as HTMLElement;
-    act(() => blockBtn.click());
-    for (const op of ["fold", "tabs", "divider"]) {
+    await act(async () => blockBtn.click());
+    for (const op of ["fold", "tabs", "divider", "callout"]) {
         assert.ok(document.querySelector(`[data-block-op="${op}"]`), `块下拉要有 ${op}`);
     }
 });
@@ -406,7 +426,11 @@ test("标题下拉按钮和图标按钮一样大（28×28），不再高一截",
         resolve(findProjectDir(), "src/components/NotesPage.tsx"),
         "utf-8"
     );
-    const headBlock = src.slice(src.indexOf("标题层级"), src.indexOf("</Button>", src.indexOf("标题层级")));
+    // ⚠️ 别拿 `indexOf("标题层级")` 当锚点：源码里「标题层级」这四个字在
+    // 大纲注释、菜单项 label 等处出现过好几次，indexOf 命中的是最早那处
+    // 注释，切出来的片段跟按钮没关系。锚在 aria-label 上才是这个按钮本身。
+    const anchor = "aria-label='标题层级'";
+    const headBlock = src.slice(src.indexOf(anchor), src.indexOf("</IconButton>", src.indexOf(anchor)));
     assert.ok(headBlock.includes("width: 28"), "标题按钮宽度要和图标按钮一致");
     assert.ok(headBlock.includes("height: 28"), "标题按钮高度要和图标按钮一致");
 });
@@ -426,19 +450,82 @@ test("选中一段字点粗体后，选区还在（不能一按就没了）", ()
     assert.equal(ta.selectionEnd, 6, "刚包上的 `这篇笔记`(4 字)要整体还在选中态");
 });
 
-test("阶段二：列表按月份分组，月份标题挂在条目上面", () => {
+test("阶段二：列表按时间分组，分组标题挂在条目上面", () => {
     mountPanel([
         note({ id: 1, title: "早的", content: "a", updated_at: "2026-09-03T10:00:00Z" }),
         note({ id: 2, title: "晚的", content: "b", updated_at: "2026-10-05T10:00:00Z" }),
     ]);
     const headers = [...document.querySelectorAll("[data-month]")].map(h => h.textContent);
-    assert.deepEqual(headers, ["2026 年 10 月", "2026 年 9 月"], "月份从新到旧");
+    // ⚠️ 2026-10-07 按 inkstone 改成**相对**分组（今天/昨天/本周/本月/N 月/年 月），
+    // 不再是「一律按 YYYY-MM」。断言只看「新的一段排在旧的一段前面」，
+    // 不写死具体标签 —— 今天是几号会改变「今天/昨天/本周」的判定。
+    assert.ok(headers.length >= 2, "两个不同时间段的笔记要落在两个分组里，实际 " + JSON.stringify(headers));
     const list = document.querySelector("[data-note-list]")!;
     assert.ok(list.textContent!.includes("晚的") && list.textContent!.includes("早的"));
-    // 分组顺序：新的月份那组整体排在前面（「晚的」必须出现在「早的」之前）
+    // 分组顺序：新的那组整体排在前面（「晚的」必须出现在「早的」之前）
     assert.ok(
         list.innerHTML.indexOf("晚的") < list.innerHTML.indexOf("早的"),
-        "新的月份分组要在列表里排在前面"
+        "时间较新的分组要排在列表里前面"
+    );
+});
+
+test("列表分组标题用 inkstone 那套排版（10.5px / 加粗 / 0.06em 字距）", () => {
+    const src = stripComments(
+        readFileSync(join(findProjectDir(), "src", "components", "NotesPage.tsx"), "utf-8")
+    );
+    // 从 data-month 一直取到该 Typography 闭合，取够整个 sx 块
+    const i = src.indexOf("data-month={group.label}");
+    const block = src.slice(i, src.indexOf("/>", i));
+    assert.ok(/fontSize: 10\.5/.test(block), "分组标题 10.5px（inkstone 的 text-[10.5px]）");
+    assert.ok(/fontWeight: 600/.test(block), "分组标题加粗");
+    assert.ok(/letterSpacing: "0\.06em"/.test(block), "分组标题 0.06em 字距");
+    // 按标题排序时 label 为空 → 整条标题不渲染（inkstone: label 为 null 就不画）
+    assert.ok(
+        /\{group\.label && \(\s*<Typography/.test(src),
+        "label 为空时不能渲染一个空标题"
+    );
+});
+
+test("笔记行内不再有时间戳（时间已由分组标题承担）", () => {
+    const src = stripComments(
+        readFileSync(join(findProjectDir(), "src", "components", "NotesPage.tsx"), "utf-8")
+    );
+    const row = src.slice(src.indexOf("data-note-id={note.id}"), src.indexOf("data-note-id={note.id}") + 4200);
+    assert.equal(
+        /formatRelative\(note\.updated_at/.test(row),
+        false,
+        "行内不该再渲染「3分钟前」—— 分组标题已经说了这段时间"
+    );
+    // 精确时刻不能跟着一起丢：挂到整行的 title 上
+    assert.ok(
+        /title=\{formatWhen\(note\.updated_at \|\| note\.created_at\)\}/.test(src),
+        "整行的 title 要保留精确时刻（删了行内时间戳不能把信息也删了）"
+    );
+});
+
+test("悬停时整行右移 2px，且只在真能 hover 的设备上（inkstone 同款）", () => {
+    const src = stripComments(
+        readFileSync(join(findProjectDir(), "src", "components", "NotesPage.tsx"), "utf-8")
+    );
+    const row = src.slice(src.indexOf("data-note-id={note.id}"), src.indexOf("data-note-id={note.id}") + 4200);
+    assert.ok(/translateX\(2px\)/.test(row), "悬停要右移 2px");
+    assert.ok(
+        /@media \(hover: hover\) and \(pointer: fine\)/.test(row),
+        "⚠️ 必须限在 hover:hover + pointer:fine —— 触屏上 sticky hover 会让行点完还歪着"
+    );
+});
+
+test("置顶的笔记单独排在最上面一组（inkstone 的 pinned 组）", () => {
+    mountPanel([
+        note({ id: 1, title: "普通", content: "a", updated_at: "2026-09-03T10:00:00Z" }),
+        note({ id: 2, title: "置顶的", content: "b", updated_at: "2026-09-04T10:00:00Z", pinned: true }),
+    ]);
+    const headers = [...document.querySelectorAll("[data-month]")].map(h => h.textContent);
+    assert.equal(headers[0], "置顶", "第一组必须是「置顶」，实际 " + JSON.stringify(headers));
+    const list = document.querySelector("[data-note-list]")!;
+    assert.ok(
+        list.innerHTML.indexOf("置顶的") < list.innerHTML.indexOf("普通"),
+        "置顶的那条要排在普通笔记前面"
     );
 });
 
@@ -1218,11 +1305,13 @@ test("标题/内容块/分隔线等按钮：第二次点击要真的取消（202
     assert.equal(ta.value, "一段文字", "再点一次引用要撤销");
 
     // ③ 内容块：`> [!NOTE]`
+    // ⚠️ 2026-10-07：内容块从「独立图标 + 自己的菜单」收进了「块」下拉
+    // （inkstone 就是这么放的，之前我们多出一个按钮，工具栏比它宽一截）。
     reset();
-    openMenu("内容块");
+    openMenu("块");
     pick('[data-callout-type="NOTE"]');
     assert.equal(ta.value, "> [!NOTE] 一段文字");
-    openMenu("内容块");
+    openMenu("块");
     pick('[data-callout-type="NOTE"]');
     assert.equal(ta.value, "一段文字", "再点一次内容块要撤销");
 
@@ -3438,6 +3527,7 @@ test("工具栏：每个下拉都有说人话的 tooltip，菜单项不再只写
         "把选中的文字变成脚注引用",
         "插入公式",
         "插入表格",
+        "代码与图表",
     ]) {
         assert.ok(bar.includes(phrase), `工具栏要有白话提示：${phrase}`);
     }
@@ -3459,6 +3549,10 @@ const readNotesPage = () =>
     stripComments(
         readFileSync(join(findProjectDir(), "src", "components", "NotesPage.tsx"), "utf-8")
     );
+
+/** 读源码文件（剥注释，避免拿注释里的中文当锚点） */
+const readSrcFile = (...parts: string[]) =>
+    stripComments(readFileSync(join(findProjectDir(), "src", ...parts), "utf-8"));
 
 test("左下角那块不写死背景色（否则「背景色」设置对它无效）", () => {
     const src = readNotesPage();
@@ -3483,16 +3577,41 @@ test("侧栏「分栏」是左右排（与主栏一致）", async () => {
     const src = readNotesPage();
     const i = src.indexOf('sideMode === "split"');
     assert.ok(i > 0);
-    // 窗口要够大：borderLeft 在预览盒子上，离分支开头比较远
-    const block = src.slice(i, i + 2600);
+    // 窗口要够大：分隔条在预览盒子前面，离分支开头比较远
+    const block = src.slice(i, i + 3200);
     assert.ok(
         block.includes('flexDirection: "row"'),
         "侧栏分栏必须是左右排（之前是上下排，与主栏习惯不一致）"
     );
+    // ⚠️ 2026-10-07：分隔改成 inkstone 那套「9px 命中区 + 内含 1px 发丝线的 separator」，
+    // 不再是预览盒上的 borderLeft（那条线与主栏分隔条粗细不一，看着不齐）。
     assert.ok(
-        /borderLeft:/.test(block),
-        "预览与源码之间应该是竖线分隔（左右排）"
+        /role=['"]separator['"]/.test(block) && block.includes('left: "50%"'),
+        "源码与预览之间应该有一根居中的发丝线分隔（inkstone 同款）"
     );
+    assert.ok(
+        !/borderLeft: "1px solid var\(--card-border\)"/.test(block),
+        "预览盒上不该再有 borderLeft —— 分隔由 separator 负责"
+    );
+    // ⚠️ 这条是 2026-10-07 真机探针量出来的：写成 `width: 1` 时 MUI 的 sizing
+    // transform 会把它当成 `100%`，发丝线被拉满整个 9px 命中区（真机量到 width=9px），
+    // 看着就是一条粗带子 —— 而 jsdom 量不到计算样式，单测一直是绿的。
+    // 所以这条只能静态守。切法：从 `"& > span"` 起往后取 400 字（发丝线的属性
+    // 都在这段里），**不要**去配平花括号 —— 源码里收尾是 `},` 不是 `}}`。
+    const hairlineIdx = [...src.matchAll(/"& > span"/g)].map(m => m.index);
+    assert.ok(hairlineIdx.length >= 3, `三处发丝线都要在（实际 ${hairlineIdx.length} 处）`);
+    for (const at of hairlineIdx) {
+        const b = src.slice(at, at + 400);
+        assert.ok(
+            /width: "1px"/.test(b),
+            "发丝线必须写 width: '1px' —— 写 1 会被 MUI 当成 100%，线被拉满 9px 命中区"
+        );
+        assert.equal(
+            /(^|[^\d"])\bwidth: 1\s*(,|$)/m.test(b),
+            false,
+            "sx 里不许出现裸的 width: 1（MUI sizing transform 会展开成 100%）"
+        );
+    }
     mountPanel([
         note({ id: 1, title: "甲", content: "a" }),
         note({ id: 2, title: "乙", content: "b" }),
@@ -3505,9 +3624,89 @@ test("侧栏「分栏」是左右排（与主栏一致）", async () => {
     await act(async () => (side.querySelector("[data-tool='side-mode-split']") as HTMLElement).click());
     assert.ok(side.querySelector(".cm-content"), "分栏时左半是编辑器");
     assert.ok(side.querySelector("[data-side-preview='1']"), "分栏时右半是预览");
+    const sep = side.querySelector("[aria-label='拖动调整侧栏源码与预览的比例']");
+    assert.ok(sep, "两半之间要有可拖的分隔条");
+    assert.ok(sep!.querySelector("span"), "分隔条里要有画线用的 span");
 });
 
-test("侧栏状态栏与左侧同款：显示模式/字数/创建于/保存，不写「侧边」", async () => {
+test("分屏两栏无框：只有中间一根线（inkstone 同款，用户报「太丑」）", () => {
+    const src = readNotesPage();
+    // 源码区与预览区都不该再有完整边框 + 圆角 + 淡底色 ——
+    // 之前那套让两栏看着像「两张卡片拼在一起」，边界又粗又脏。
+    const splitBlocks = src.match(/border:\s*pane === "split"[\s\S]{0,120}/g) ?? [];
+    assert.equal(
+        splitBlocks.length,
+        0,
+        `分屏时不该再给两栏套边框（仍有 ${splitBlocks.length} 处 border: pane === "split"）`
+    );
+    assert.ok(
+        !/borderRadius: pane === "split"/.test(src),
+        "分屏时不该再有圆角边框"
+    );
+    assert.ok(
+        !/bgcolor:\s*pane === "split"/.test(src),
+        "分屏时不该再给两栏上淡底色"
+    );
+});
+
+test("分隔线颜色跟随主题：--card-border 必须真的被定义", () => {
+    const css = readSrcFile("index.css");
+    // ⚠️ 之前分隔线写的是 var(--card-border, rgba(128,128,128,.45))，
+    // 而 --card-border 从没被定义过 —— 每次都落到中性灰 fallback，亮色主题下很脏。
+    assert.ok(
+        /--card-border:\s*var\(--border-hairline\)/.test(css),
+        "index.css 里必须定义 --card-border，否则分隔线永远是硬编码中性灰"
+    );
+    const notesSrc = readNotesPage();
+    assert.ok(
+        !/var\(--card-border,/.test(notesSrc),
+        "NotesPage 里不该再有 --card-border 的 fallback（说明 token 没定义）"
+    );
+});
+
+test("两栏宽度不写 flex:1 1 X%（否则切分栏分割线会跳）", () => {
+    const src = readNotesPage();
+    // ⚠️ 两个 flex-basis 加起来正好 100%，再加 9px 把手就超了，
+    // 浏览器按 shrink 回缩两栏；侧栏内容一变（切分栏/切预览）分割线就跳一下。
+    // inkstone 的写法：左栏 width: X%，右栏 flex: 1。
+    assert.ok(
+        !/flex: `1 1 \$\{\(1 - paneRatio\)/.test(src),
+        "侧栏不能写 1 1 (1-paneRatio)*100%，要写 flex: 1 吃剩余"
+    );
+    assert.ok(
+        !/flex: sidePane !== null \? `1 1 \$\{paneRatio/.test(src),
+        "主栏不能写 1 1 paneRatio*100%，要写 0 0 auto + width"
+    );
+    assert.ok(
+        src.includes('width: `${paneRatio * 100}%`'),
+        "主栏宽度必须只由比例决定（inkstone 同款），这样分割线位置恒定"
+    );
+});
+
+test("即时渲染：单行段落也必须被渲染（块行号是开区间）", () => {
+    const src = readSrcFile("components", "NoteEditorLivePreview.ts");
+    // ⚠️ 这是「编辑区内依旧无即时渲染」的根因：块行号曾是闭区间，
+    // 于是 endLine <= startLine 的检查把所有**单行段落**判成空块跳过 ——
+    // 而真实笔记里绝大多数段落都是单行，表现就是「开了开关什么都没发生」。
+    assert.ok(
+        src.includes("endLine: end"),
+        "flush 必须把开区间的 endLine 写进块里"
+    );
+    assert.ok(
+        src.includes("state.doc.line(Math.min(block.endLine, state.doc.lines)).to"),
+        "装饰右边界要用开区间 endLine（与 inkstone 一致）"
+    );
+    assert.ok(
+        src.includes("live.focused || !r.empty"),
+        "编辑器未聚焦时空选区不算落在块里 —— 点到别处整篇都该是渲染态"
+    );
+    assert.ok(
+        src.includes("cm-live-strong"),
+        "要有行内语法级渲染（源码态里的 **粗体** 也要显示成粗体）"
+    );
+});
+
+test("侧栏状态栏与左侧同款：26px 一条，字数/字符/阅读时长/创建于，不写「侧边」", async () => {
     mountPanel([
         note({ id: 1, title: "甲", content: "a" }),
         note({ id: 2, title: "乙", content: "b", created_at: "2026-10-01 09:00:00" }),
@@ -3516,14 +3715,56 @@ test("侧栏状态栏与左侧同款：显示模式/字数/创建于/保存，�
         rightClick(document.querySelector("[data-note-list] [data-note-id='2']")!);
     });
     await act(async () => (document.querySelector("[data-row-op='open-side']") as HTMLElement).click());
-    const side = document.querySelector("[data-side-editor='1']") as HTMLElement;
-    const bar = side.lastElementChild as HTMLElement;
+    const bar = document.querySelector("[data-side-statusbar='1']") as HTMLElement;
     const text = bar.textContent ?? "";
-    assert.match(text, /编辑|分栏|预览/, "状态栏要标明当前模式（与左侧一致）");
+    // ⚠️ 2026-10-07 按 inkstone 精简：模式标识搬去了头部那一排图标
+    // （aria-label 已经写着「侧边编辑/分栏/预览」），状态栏只管「这篇多长、它是谁」。
     assert.match(text, /字/, "要显示字数");
     assert.match(text, /字符/, "要显示字符数");
+    assert.match(text, /分钟读完/, "要显示预计阅读时长（inkstone 的第三项）");
     assert.ok(bar.querySelector("[data-side-created]"), "有创建时间时要显示（与左侧一样）");
     assert.equal(text.includes("侧边"), false, "不要再只写「侧边」两个字");
+    // 与主栏状态栏同高（26px），两栏并排时脚下齐平
+    const main = document.querySelector("[data-statusbar='1']") as HTMLElement;
+    assert.equal(
+        bar.getAttribute("data-side-statusbar") !== null && main.getAttribute("data-statusbar") !== null,
+        true,
+        "两栏状态栏都要有标记，好让样式走同一套常量"
+    );
+});
+
+test("状态栏搬去 inkstone 那套：26px、六项、无行号无光标、保存状态在头部", () => {
+    const src = stripComments(
+        readFileSync(join(findProjectDir(), "src", "components", "NotesPage.tsx"), "utf-8")
+    );
+    assert.ok(/const STATUSBAR_H = 26;/.test(src), "状态栏 26px（inkstone 的 --statusbar-h）");
+    // 保存状态必须从状态栏里搬走，挂到头部（inkstone 的 SaveIndicator 就在头部）
+    const bar = src.slice(src.indexOf("data-statusbar='1'"), src.indexOf("data-side-statusbar='1'"));
+    assert.equal(
+        /正在保存|已保存 · /.test(bar),
+        false,
+        "保存状态不该留在状态栏 —— 26px 塞不下，而且 inkstone 是放头部的"
+    );
+    assert.ok(/<SaveDot state=\{saveState\}/.test(src), "主栏头部要有保存指示");
+    assert.ok(/<SaveDot[\s\S]{0,80}state=\{sideSaveState\}/.test(src), "侧栏头部也要有一份");
+    // 三栏背景分层
+    assert.ok(/--bg-sunken/.test(src), "导航列要用 --bg-sunken");
+    assert.ok(/--bg-base/.test(src), "列表列要用 --bg-base");
+    assert.ok(/--bg-editor/.test(src), "编辑区要用 --bg-editor");
+});
+
+test("三栏背景分层在 index.css 里真的定义了（亮/暗两套都要有）", () => {
+    const css = stripComments(
+        readFileSync(join(findProjectDir(), "src", "index.css"), "utf-8")
+    );
+    for (const token of ["--bg-sunken", "--bg-base", "--bg-editor"]) {
+        assert.ok(css.includes(`${token}:`), `${token} 必须被定义，否则会落到透明，三栏糊成一片`);
+    }
+    // 暗色那套也要重定义一次，否则深色模式下分层完全看不出来
+    const dark = css.slice(css.indexOf(".dark {"));
+    for (const token of ["--bg-sunken", "--bg-base", "--bg-editor"]) {
+        assert.ok(dark.includes(`${token}:`), `暗色主题也要定义 ${token}`);
+    }
 });
 
 
@@ -3574,5 +3815,33 @@ test("即时渲染不再维护「上一段」缓存（那套已随重构删掉�
         src.includes("cursorPara"),
         false,
         "cursorPara 那套（切笔记清缓存）应随行内渲染改造一起移除 —— 实时渲染块由编辑器装饰实时生成，没有缓存可脏"
+    );
+});
+
+test("分享页的标签页标题换成笔记标题，离开时还原（对齐 inkstone 的 SharePage）", () => {
+    const src = readSrcFile("components", "PublicNotePage.tsx");
+    assert.ok(src.includes("document.title = shown"), "标题要换成这条笔记的标题");
+    assert.ok(
+        src.includes("document.title === appliedTitle.current"),
+        "还原前必须先确认标题还是自己设的那个，否则会冲掉这期间别人设的新标题"
+    );
+    assert.ok(src.includes("originalTitle"), "要记住进来时的标题");
+    // ⚠️ 不能学 inkstone 拼「· 站点名」后缀：我们的公开接口只返回
+    // content/title/updated_at（见 noteFolderTagRealSql 的键数断言），没有站点名。
+    const at = src.indexOf("document.title = shown");
+    const assign = src.slice(at, src.indexOf(";", at));
+    assert.equal(/\u00b7|site\.name/.test(assign), false, "别拼站点名后缀，公开接口没这个字段");
+});
+
+test("标签页标题的分工：主应用挂品牌名，分享页挂笔记名", () => {
+    const brand = readSrcFile("hooks", "useDocumentEffects.ts");
+    assert.ok(
+        brand.includes('document.title = brandTitle(configs["site.title"])'),
+        "主应用的标题由站点配置决定（inkstone 是写死 'Inkstone'，我们站点名可配）"
+    );
+    const html = readFileSync(join(findProjectDir(), "index.html"), "utf-8");
+    assert.ok(
+        /<title>[^<]+<\/title>/.test(html),
+        "index.html 要有初始标题（首屏到 JS 接管之间标签页不能是空的）"
     );
 });

@@ -8,6 +8,8 @@ import { syntaxHighlighting, defaultHighlightStyle, bracketMatching, indentUnit 
 import { Compartment } from "@codemirror/state";
 import { livePreview, type LiveRenderer } from "./NoteEditorLivePreview";
 import { editorHandle, type NoteEditorHandle } from "../utils/noteEditorHandle";
+import { EDITOR_SHORTCUTS, toCodeMirrorKey } from "../utils/editorShortcuts";
+import { typewriter, typewriterCompartment } from "./NoteTypewriter";
 
 // 字体/字号走 CSS 变量而不是把值写死进 theme：设置面板改字号时不用重建编辑器
 //（重建会丢撤销历史）。变量由宿主元素上的 style 提供。
@@ -103,6 +105,20 @@ export interface NoteEditorProps {
      * 传 null / undefined = 关掉，此时就是纯源码编辑。
      */
     liveRender?: LiveRenderer | null;
+    /**
+     * 打字机模式（inkstone 同名功能）：光标行始终垂直居中。
+     * 走 Compartment 热插拔，不重建编辑器。
+     */
+    typewriterMode?: boolean;
+    /**
+     * 快捷键要执行的动作表（id → 执行）。
+     *
+     * ⚠️ 为什么用 prop 传而不是在编辑器里直接调工具函数：格式动作要作用于
+     * **编辑器里真实的选区**，而工具函数走的是 `NoteEditorHandle`（宿主 ref）。
+     * 把映射交给宿主注入，编辑器只负责「按到键就调对应 id」，
+     * 这样快捷键和工具栏按钮走的是**同一套实现**，不会出现两边行为不一致。
+     */
+    shortcutActions?: Partial<Record<string, () => void>>;
 }
 
 export default function NoteEditor({
@@ -117,6 +133,8 @@ export default function NoteEditor({
     onScrollRatio,
     liveRender = null,
     focusMode = false,
+    typewriterMode = false,
+    shortcutActions,
 }: NoteEditorProps) {
     const host = useRef<HTMLDivElement>(null);
     const viewRef = useRef<EditorView | null>(null);
@@ -134,6 +152,9 @@ export default function NoteEditor({
     const [focusTick, setFocusTick] = useState(0);
     useEffect(() => { setFocusTick(t => t + 1); }, [focusMode]);
     useLayoutEffect(() => { changeRef.current = onChange; }, [onChange]);
+    // 快捷键动作表同样走 ref：换回调只是换映射，不该重建编辑器。
+    const shortcutRef = useRef(shortcutActions);
+    shortcutRef.current = shortcutActions;
     useLayoutEffect(() => {
         const view = new EditorView({
             parent: host.current!,
@@ -142,6 +163,7 @@ export default function NoteEditor({
                 extensions: [
                     markdown(), history(), bracketMatching(), focusField,
                     liveCompartment.of([]),
+                    typewriterCompartment.of([]),
                     // 缩进宽度（设置面板）：Tab / 自动缩进都认它
                     indentUnit.of(" ".repeat(indentWidth)),
                     // 行号是扩展不是样式：关掉它只能在建编辑器时决定 ——
@@ -150,6 +172,27 @@ export default function NoteEditor({
                     highlightActiveLine(),
                     syntaxHighlighting(defaultHighlightStyle), EditorView.lineWrapping, theme,
                     placeholder("支持 Markdown：标题、列表、公式和脚注"),
+                    // ⚠️ 快捷键 keymap 必须排在 defaultKeymap/historyKeymap **前面**：
+                    // CM 的 keymap 是「数组靠前优先级高」，放后面的话 Mod-B 会被
+                    // 浏览器/CM 默认行为抢走，我们声明的组合键就成了摆设。
+                    // 组合键字符串由 EDITOR_SHORTCUTS 单表生成（inkstone 同款设计），
+                    // 所以「菜单上显示的」和「实际按的」永远一致。
+                    keymap.of(
+                        // ⚠️ 两个条件都要判：`combo` 在表里是可选的（有些动作只声明
+                        // 不绑定，见 editorShortcuts 的说明），只判 run 的话
+                        // toCodeMirrorKey 会收到 undefined。
+                        EDITOR_SHORTCUTS.filter(s => s.run && s.combo).map(s => ({
+                            key: toCodeMirrorKey(s.combo!),
+                            preventDefault: true,
+                            run: (view: EditorView) => {
+                                const fn = shortcutRef.current?.[s.id];
+                                if (!fn) return false;
+                                fn();
+                                view.focus();
+                                return true;
+                            },
+                        }))
+                    ),
                     keymap.of([...defaultKeymap, ...historyKeymap]),
                     EditorView.contentAttributes.of({
                         "aria-label": "笔记内容",
@@ -252,6 +295,20 @@ export default function NoteEditor({
             setLiveApplied(wantLive);
         }
     }, [wantLive, liveApplied]);
+
+    // 打字机模式：同样走 Compartment 热插拔（重建会丢撤销历史）。
+    const wantTypewriter = typewriterMode ? 1 : 0;
+    const [typewriterApplied, setTypewriterApplied] = useState(0);
+    useEffect(() => {
+        const view = viewRef.current;
+        if (!view) return;
+        if (typewriterApplied !== wantTypewriter) {
+            view.dispatch({
+                effects: typewriterCompartment.reconfigure(wantTypewriter ? typewriter() : []),
+            });
+            setTypewriterApplied(wantTypewriter);
+        }
+    }, [wantTypewriter, typewriterApplied]);
 
     useImperativeHandle(editorRef, () => editorHandle(viewRef.current!), []);
     useEffect(() => {

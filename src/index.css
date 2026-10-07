@@ -92,6 +92,11 @@
     --border-hairline: rgba(15, 23, 42, 0.08);
     --border-subtle: rgba(255, 255, 255, 0.55);
     --border-default: rgba(255, 255, 255, 0.6);
+    /* 分隔线 / 卡片描边的**语义别名**。
+       ⚠️ 2026-10-07：记事本的分隔线一直在写 `var(--card-border, rgba(128,128,128,.45))`，
+       而 `--card-border` 从没被定义过 —— 于是每次都落到 fallback 的中性灰，
+       亮色主题下显得又脏又突兀。这里补上定义，线色才跟着主题走。 */
+    --card-border: var(--border-hairline);
 
     /* —— 圆角（radius）：lg 跟随「外观 → 圆角风格」设置 —— */
     --radius-xs: 6px;
@@ -108,6 +113,27 @@
     --space-6: 32px;
     /* 触控目标下限：移动端所有可点区域不得小于这个值 */
     --touch-min: 44px;
+
+    /* —— 动效（duration / easing）——
+       对齐 inkstone 的 --dur-* / --ease-*：分隔线与工具栏的过渡统一走这里，
+       避免同一个交互在两处写出两套时长。 */
+    --dur-fast: 130ms;
+    --dur-base: 220ms;
+    --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+
+    /* —— 三栏背景分层（对齐 inkstone 的 --bg-sunken / --bg-base / --bg-editor）——
+       inkstone 把三栏画成**三个递进的层次**：导航站最沉、笔记列表居中、
+       编辑区最亮（写字的地方要最「平」，不然正文像贴在板上）。
+       我们之前三栏一律透明 + 同一个页面底色，远看是一整块白，
+       少了「这是一块可以写字的板」那种聚焦感。 */
+    --bg-sunken: rgba(15, 23, 42, 0.035);
+    --bg-base: rgba(255, 255, 255, 0.5);
+    --bg-editor: rgba(255, 255, 255, 0.72);
+
+    /* —— 面板高度（对齐 inkstone：header 44 / toolbar 36 / statusbar 26）—— */
+    --statusbar-h: 26px;
+    --panel-header-h: 44px;
+    --toolbar-h: 36px;
 
     /* —— 阴影（shadow）：1 贴地 / 2 悬浮 / 3 抬起 —— */
     --shadow-1: 0 1px 2px rgba(15, 23, 42, 0.06);
@@ -159,6 +185,7 @@
     --border-hairline: rgba(255, 255, 255, 0.1);
     --border-subtle: rgba(255, 255, 255, 0.1);
     --border-default: rgba(255, 255, 255, 0.12);
+    --card-border: var(--border-hairline);
 
     --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.3);
     --shadow-2: 0 4px 16px rgba(0, 0, 0, 0.42);
@@ -167,6 +194,11 @@
     --text-primary: rgba(255, 255, 255, 0.92);
     --text-secondary: rgba(255, 255, 255, 0.7);
     --text-muted: rgba(255, 255, 255, 0.5);
+
+    /* 暗色下三栏仍然分层，但方向反过来：越靠里的越亮 */
+    --bg-sunken: rgba(0, 0, 0, 0.22);
+    --bg-base: rgba(255, 255, 255, 0.03);
+    --bg-editor: rgba(255, 255, 255, 0.055);
 
     --glass-highlight: rgba(255, 255, 255, 0.16);
 
@@ -222,6 +254,7 @@ html.nav-lite {
     --surface-raised: #fff;
     --border-subtle: rgba(15, 23, 42, 0.1);
     --border-default: rgba(15, 23, 42, 0.12);
+    --card-border: var(--border-hairline);
 }
 html.nav-lite.dark {
     --surface-panel: rgba(23, 27, 38, 0.82);
@@ -230,6 +263,7 @@ html.nav-lite.dark {
     --surface-raised: #1b1f2c;
     --border-subtle: rgba(255, 255, 255, 0.12);
     --border-default: rgba(255, 255, 255, 0.14);
+    --card-border: var(--border-hairline);
 }
 html.nav-lite *,
 html.nav-lite *::before,
@@ -337,6 +371,23 @@ html.dark .nav-skip-link {
     to {
         opacity: 1;
         transform: none;
+    }
+}
+
+/* 保存指示：正在存的时候那颗点转圈（inkstone 的 ink-spin，0.72s 一圈） */
+@keyframes note-save-spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+/* 空状态插画的「一笔画出来」描边动画（inkstone 的 ink-draw）：
+   配合组件里给的 stroke-dasharray: 220 / stroke-dashoffset: 220 使用。
+   ⚠️ 两条都要写：没有 animation 时线条会永远停在 offset=220，也就是完全看不见 ——
+   那样空状态就只剩标题字，比没有插画还怪。 */
+@keyframes ink-draw {
+    to {
+        stroke-dashoffset: 0;
     }
 }
 
@@ -1153,3 +1204,25 @@ html.nav-touch .nav-star-btn[data-starred="false"] {
     opacity: 0.38;
     transition: opacity 120ms ease;
 }
+
+/* 编辑区「即时渲染」的渲染块（inkstone 的 .cm-live-block）。
+   块内是 React root（Markdown token → ReactNode，无 innerHTML），
+   所以这里只管外框的呼吸感与 hover 反馈。 */
+.note-live-block {
+    padding: 2px 4px;
+    margin: 2px 0;
+    border-radius: var(--radius-xs, 6px);
+    cursor: text;
+    transition: box-shadow var(--dur-base, 220ms) var(--ease-out, ease);
+}
+.note-live-block:hover {
+    box-shadow: inset 0 0 0 1px var(--card-border, rgba(128, 128, 128, 0.35));
+}
+/* 渲染块里的首个元素不要额外的上边距 —— 否则块与块之间会莫名多出一截空白 */
+.note-live-block > *:first-child {
+    margin-top: 0;
+}
+.note-live-block > *:last-child {
+    margin-bottom: 0;
+}
+

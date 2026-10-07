@@ -40,8 +40,12 @@ export interface NotesUiSettings {
     scrollSync: boolean;
     /** 专注模式：淡化光标所在段落之外的内容 */
     focusMode: boolean;
-    /** 编辑区实时渲染（渲染光标所在段落） */
+    /** 编辑区实时渲染（非光标段落渲染成所见即所得） */
     liveRender: boolean;
+    /** 打字机模式：光标行始终垂直居中（inkstone 同名功能） */
+    typewriterMode: boolean;
+    /** 记住每篇笔记的阅读滚动位置，重开恢复 */
+    rememberPosition: boolean;
     /** 渲染数学公式 */
     mathRender: boolean;
     /** 渲染 Mermaid 图表 */
@@ -73,6 +77,8 @@ export const DEFAULT_NOTES_SETTINGS: NotesUiSettings = {
     scrollSync: true,
     focusMode: false,
     liveRender: true,
+    typewriterMode: false,
+    rememberPosition: true,
     mathRender: true,
     mermaidRender: true,
     foldCode: true,
@@ -116,6 +122,8 @@ function sanitize(raw: unknown): NotesUiSettings {
         scrollSync: bool(o.scrollSync, d.scrollSync),
         focusMode: bool(o.focusMode, d.focusMode),
         liveRender: bool(o.liveRender, d.liveRender),
+        typewriterMode: bool(o.typewriterMode, d.typewriterMode),
+        rememberPosition: bool(o.rememberPosition, d.rememberPosition),
         mathRender: bool(o.mathRender, d.mathRender),
         mermaidRender: bool(o.mermaidRender, d.mermaidRender),
         foldCode: bool(o.foldCode, d.foldCode),

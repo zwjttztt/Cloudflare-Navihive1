@@ -437,11 +437,27 @@ export default function NotesSettingsDialog({
                                         size='small'
                                     />
                                 </SettingRow>
-                                <SettingRow label='编辑区实时渲染' description='在编辑区里实时渲染光标所在段落（预览区一直是渲染后的结果）'>
+                                <SettingRow label='编辑区实时渲染' description='在编辑区里实时渲染：离开光标的那一段直接显示成渲染后的样子'>
                                     <Switch
                                         checked={settings.liveRender}
                                         onChange={e => set("liveRender", e.target.checked)}
                                         data-setting='liveRender'
+                                        size='small'
+                                    />
+                                </SettingRow>
+                                <SettingRow label='打字机模式' description='光标所在的那一行始终停在屏幕中间，写作时眼睛不用来回跳'>
+                                    <Switch
+                                        checked={settings.typewriterMode}
+                                        onChange={e => set("typewriterMode", e.target.checked)}
+                                        data-setting='typewriterMode'
+                                        size='small'
+                                    />
+                                </SettingRow>
+                                <SettingRow label='记住阅读位置' description='重新打开一篇笔记时，回到上次读到的地方'>
+                                    <Switch
+                                        checked={settings.rememberPosition}
+                                        onChange={e => set("rememberPosition", e.target.checked)}
+                                        data-setting='rememberPosition'
                                         size='small'
                                     />
                                 </SettingRow>

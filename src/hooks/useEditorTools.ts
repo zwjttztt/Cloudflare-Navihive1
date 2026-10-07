@@ -137,6 +137,42 @@ export function useEditorTools(
     );
 
     /**
+     * 设标题层级（inkstone 的 `setHeading(level)`）。
+     *
+     * ⚠️ 为什么不能直接用 insertLinePrefix：那个函数是**无条件往上加前缀**，
+     * 于是「二级标题」上点「一级标题」会变成 `### xxx`（三级），
+     * 连点两次变四级 —— 而用户期望的是「换成一级」。这里先把已有的
+     * `# `×N / 列表 / 引用前缀剥掉，再按目标层级重新加，
+     * level=0 就是「去掉标题变正文」。
+     */
+    const setHeadingLevel = useCallback(
+        (level: number) => {
+            undoableInsert(`heading:${level}`, value => {
+                const pos = textareaRef.current?.selectionStart ?? value.length;
+                const lineStart = value.lastIndexOf("\n", Math.max(0, pos - 1)) + 1;
+                const lineEndRaw = value.indexOf("\n", lineStart);
+                const lineEnd = lineEndRaw < 0 ? value.length : lineEndRaw;
+                const line = value.slice(lineStart, lineEnd);
+                // 剥掉：标题 / 有序无序列表 / 任务项 / 引用（可叠加）
+                const stripped = line.replace(
+                    /^(?:\s*>\s*)*\s*(?:#{1,6}\s+|\d+[.)]\s+|[-*+]\s+(?:\[[ xX]\]\s+)?)/,
+                    ""
+                );
+                const prefix = "#".repeat(Math.max(0, Math.min(6, level))) + (level > 0 ? " " : "");
+                const caret = lineStart + prefix.length;
+                return {
+                    next: value.slice(0, lineStart) + prefix + stripped + value.slice(lineEnd),
+                    at: lineStart,
+                    snippet: prefix,
+                    caret,
+                    selEnd: caret + stripped.length,
+                };
+            });
+        },
+        [undoableInsert, textareaRef]
+    );
+
+    /**
      * 在光标处插入一段 Markdown 语法 —— **同名按钮是开关**。
      * 三条路径：① 连点同一个按钮 → 撤销上一次插入（真实选区只拆标记留正文）；
      * ② 选区已带标记 → 摘掉；③ 其余 → 包一层（没有选区就放占位符）。
@@ -459,22 +495,45 @@ export function useEditorTools(
         [insertAtCursor, undoableInsert, textareaRef]
     );
 
-    /** 行首插入前缀（标题 `# `、引用 `> `、列表 `- `） */
-    const insertLinePrefix = useCallback((prefix: string) => {
-        undoableInsert(`prefix:${prefix}`, value => {
-            const pos = textareaRef.current?.selectionStart ?? value.length;
-            // ⚠️ lastIndexOf 第二个参数用 pos - 1 且夹到 0：第 0 个字符前没有行首
-            const lineStart = value.lastIndexOf("\n", Math.max(0, pos - 1)) + 1;
-            const caret = lineStart + prefix.length;
-            return {
-                next: value.slice(0, lineStart) + prefix + value.slice(lineStart),
-                at: lineStart,
-                snippet: prefix,
-                caret,
-                selEnd: caret,
-            };
-        });
-    }, [undoableInsert, textareaRef]);
+    /**
+     * 行首前缀的**开关**（引用 `> `、无序 `- `、有序 `1. `、任务 `- [ ] `）。
+     *
+     * ⚠️ 为什么不能走 insertAtCursor：那个是「在光标处包一段」，
+     * 而行首前缀必须落在**行首** —— 光标停在「一段文字」末尾时，
+     * 走 insertAtCursor 会得到 `一段文字> 引用`（前缀掉在行中间，Markdown 也不认）。
+     * 也不能走 insertLinePrefix：那个无条件往上加，连点两下变成 `> > 一段文字`。
+     * 这里先看当前行有没有这个前缀，有就摘掉、没有就补上。
+     */
+    const toggleLinePrefix = useCallback(
+        (prefix: string) => {
+            undoableInsert(`prefix:${prefix}`, value => {
+                const pos = textareaRef.current?.selectionStart ?? value.length;
+                // ⚠️ lastIndexOf 第二个参数用 pos - 1 且夹到 0：第 0 个字符前没有行首
+                const lineStart = value.lastIndexOf("\n", Math.max(0, pos - 1)) + 1;
+                const lineEndRaw = value.indexOf("\n", lineStart);
+                const lineEnd = lineEndRaw < 0 ? value.length : lineEndRaw;
+                const line = value.slice(lineStart, lineEnd);
+                if (line.startsWith(prefix)) {
+                    return {
+                        next: value.slice(0, lineStart) + line.slice(prefix.length) + value.slice(lineEnd),
+                        at: lineStart,
+                        snippet: prefix,
+                        caret: lineStart,
+                        selEnd: lineStart + line.length - prefix.length,
+                    };
+                }
+                const caret = lineStart + prefix.length;
+                return {
+                    next: value.slice(0, lineStart) + prefix + line + value.slice(lineEnd),
+                    at: lineStart,
+                    snippet: prefix,
+                    caret,
+                    selEnd: caret + line.length,
+                };
+            });
+        },
+        [undoableInsert, textareaRef]
+    );
 
     /**
      * 在光标所在行**下面**插入一整块（嵌入 / 折叠 / 标签页 / 分隔线都走这条）。
@@ -594,12 +653,13 @@ export function useEditorTools(
     return {
         undoableInsert,
         insertAtCursor,
+        setHeadingLevel,
         insertCallout,
         insertFootnoteRef,
         applyCodeLanguage,
         applyTable,
         applyFormula,
-        insertLinePrefix,
+        toggleLinePrefix,
         insertBlock,
         onInsertEmbed,
         onInsertBlockRef,

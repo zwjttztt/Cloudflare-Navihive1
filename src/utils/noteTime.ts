@@ -134,9 +134,39 @@ export function formatWhenFull(iso?: string | number | Date | null | undefined):
     return `${t.getFullYear()}年${t.getMonth() + 1}月${t.getDate()}日 ${hh}:${mm}`;
 }
 
-/** 月份分组标题：「2026-10」→「2026 年 10 月」。解析失败给「其他」 */
-export function monthLabel(iso?: string | number | Date | null | undefined): string {
+/**
+ * 笔记列表的分组标题（照 inkstone 的 `groupLabel`）。
+ *
+ * ⚠️ 为什么不是「按月分」：inkstone 的分组是**相对**的 ——
+ * 今天 / 昨天 / 本周 / 本月 / 「10月」/ 「2026年10月」，越近的越粗，
+ * 越远的越细。之前我们一律按 `YYYY-MM` 分组，于是列表顶部永远是
+ * 「2026 年 10 月」这种又长又没信息量的标题，而「今天改的那几条」被埋在里面。
+ * 同一批笔记、同一个列表，inkstone 那套一眼就能看出「哪几条是刚动的」。
+ *
+ * 解析失败给「其他」—— 宁可分组名退化，也不要在列表顶上打一个「NaN」。
+ */
+export function groupLabel(
+    iso: string | number | Date | null | undefined,
+    now: number = Date.now()
+): string {
     const d = parseNoteTime(iso);
     if (!d) return "其他";
+    const today = new Date(now);
+    const startOfToday = new Date(
+        today.getFullYear(),
+        today.getMonth(),
+        today.getDate()
+    ).getTime();
+    const ts = d.getTime();
+    if (ts >= startOfToday) return "今天";
+    if (ts >= startOfToday - 24 * 3600_000) return "昨天";
+    // 本周：从周一开始算（跟 inkstone 的 isSameDay/previousDay 一样按自然日）
+    const weekday = (today.getDay() + 6) % 7;
+    const startOfWeek = startOfToday - weekday * 24 * 3600_000;
+    if (ts >= startOfWeek) return "本周";
+    if (d.getFullYear() === today.getFullYear() && d.getMonth() === today.getMonth()) {
+        return "本月";
+    }
+    if (d.getFullYear() === today.getFullYear()) return `${d.getMonth() + 1} 月`;
     return `${d.getFullYear()} 年 ${d.getMonth() + 1} 月`;
 }

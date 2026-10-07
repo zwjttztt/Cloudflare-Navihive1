@@ -15,7 +15,7 @@ import assert from "node:assert/strict";
 import {
     formatRelative,
     formatWhen,
-    monthLabel,
+    groupLabel,
     parseNoteTime,
 } from "../src/utils/noteTime";
 
@@ -146,9 +146,33 @@ test("formatRelative 解析不出就给空串", () => {
     assert.equal(formatRelative(undefined), "");
 });
 
-test("monthLabel：普通给「2026 年 10 月」，坏值给「其他」", () => {
-    assert.equal(monthLabel("2026-10-05 11:05:18"), "2026 年 10 月");
-    assert.equal(monthLabel("2026-01-01 11:05:18"), "2026 年 1 月");
-    assert.equal(monthLabel("乱写"), "其他");
-    assert.equal(monthLabel(undefined), "其他");
+test("groupLabel：越近的分组越粗（今天/昨天/本周/本月/N 月/年 月）", () => {
+    // 基准定在 2026-10-07（周三）：本周从周一 10-05 起算，
+    // 这样「本周」里至少有一天不是「昨天」，能单独验到这一档。
+    const now = new Date(2026, 9, 7, 12, 0, 0).getTime();
+    const at = (y: number, m: number, d: number, h = 10) =>
+        new Date(y, m, d, h, 0, 0).getTime();
+
+    assert.equal(groupLabel(at(2026, 9, 7), now), "今天", "今天");
+    assert.equal(groupLabel(at(2026, 9, 7, 0), now), "今天", "今天凌晨也算今天");
+    assert.equal(groupLabel(at(2026, 9, 6), now), "昨天", "昨天");
+    assert.equal(groupLabel(at(2026, 9, 5), now), "本周", "前天属于本周（本周从周一 10-05 起算）");
+    assert.equal(groupLabel(at(2026, 9, 5, 8), now), "本周", "本周一属于本周");
+    assert.equal(groupLabel(at(2026, 9, 4), now), "本月", "同月但过了本周（周日）");
+    assert.equal(groupLabel(at(2026, 9, 1), now), "本月", "月初同理");
+    assert.equal(groupLabel(at(2026, 8, 20), now), "9 月", "上个月只给月");
+    assert.equal(groupLabel(at(2025, 8, 20), now), "2025 年 9 月", "跨年才给年");
+});
+
+test("groupLabel：坏值给「其他」，绝不打 NaN", () => {
+    assert.equal(groupLabel("乱写"), "其他");
+    assert.equal(groupLabel(undefined), "其他");
+    assert.equal(groupLabel(null), "其他");
+    assert.equal(groupLabel(""), "其他");
+});
+
+test("groupLabel：默认基准是此刻（不传 now 也能用）", () => {
+    const today = new Date();
+    today.setHours(9, 0, 0, 0);
+    assert.equal(groupLabel(today), "今天");
 });

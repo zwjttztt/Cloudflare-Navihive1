@@ -9,22 +9,32 @@
 // inkstone 的 RenderedBlock.toDOM 里是 `host.innerHTML = block.html`；我们这边
 // 全项目禁止字符串 HTML sink（严格 Trusted Types），渲染统一走「Markdown token →
 // ReactNode」。所以 widget 里挂一个 React root，把 token 树渲染进去。
-import type { ReactNode } from "react";
+import { createElement, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { StateEffect, StateField, type EditorState, type Extension, type Range } from "@codemirror/state";
 import { Decoration, EditorView, ViewPlugin, WidgetType, type DecorationSet } from "@codemirror/view";
+import { syntaxTree } from "@codemirror/language";
 
-/** 一段 Markdown 块（空行分隔；围栏代码块内部不切） */
+/**
+ * 一段 Markdown 块（空行分隔；围栏代码块内部不切）。
+ *
+ * ⚠️ `endLine` 是**开区间**（= 块内最后一行 + 1），与 inkstone 的 MarkdownBlock 一致。
+ * 这一点必须和 inkstone 一样，否则「单行段落」会被判成空块而整块跳过 ——
+ * 而真实笔记里绝大多数段落都是单行，结果就是「开了即时渲染什么都没发生」。
+ */
 export interface LiveBlock {
-    /** 0 起的起止行号 */
+    /** 0 起的起止行号，endLine 为开区间 */
     startLine: number;
     endLine: number;
     source: string;
 }
 
 /**
- * 按空行切块，但要**跳过围栏代码块内部**的���行 ——
- * ``` 围栏里常有��行，按空行切会把代码块切碎、渲染出乱码。
+ * 按空行切块，但要**跳过围栏代码块内部**的空行 ——
+ * ``` 围栏里常有空行，按空行切会把代码块切碎、渲染出乱码。
+ *
+ * 行号约定与 inkstone 的 renderMarkdownBlocks 对齐：
+ * `startLine` 0 起（含），`endLine` 开区间（不含）。
  */
 export function splitLiveBlocks(doc: string): LiveBlock[] {
     const lines = doc.split("\n");
@@ -44,7 +54,7 @@ export function splitLiveBlocks(doc: string): LiveBlock[] {
         if (m) {
             const mark = m[1];
             if (fence === null) {
-                flush(i - 1);
+                flush(i);
                 start = i;
                 fence = mark[0];
             } else if (mark[0] === fence) {
@@ -52,21 +62,25 @@ export function splitLiveBlocks(doc: string): LiveBlock[] {
             }
         }
         if (fence === null && text.trim() === "" && buf.length > 0) {
-            flush(i - 1);
+            flush(i);
             start = i + 1;
             continue;
         }
         buf.push(text);
     }
-    flush(lines.length - 1);
+    flush(lines.length);
     return blocks;
 }
 
 const refreshEffect = StateEffect.define<boolean>();
+const focusChanged = StateEffect.define<boolean>();
 
 interface LiveState {
     blocks: LiveBlock[];
     decorations: DecorationSet;
+    /** 编辑器是否聚焦。inkstone 用它决定「空选区算不算落在某块里」——
+     *  点进正文外时，整篇都该显示成渲染态。 */
+    focused: boolean;
     revision: number;
 }
 
@@ -75,7 +89,7 @@ export type LiveRenderer = (source: string, key: string) => Promise<ReactNode>;
 
 /**
  * 渲染块 widget：挂一个 React root，把这一块的渲染结果放进去。
- * 点击 → 把光标送回该块第一行（inkstone 的行为：点哪儿就回到那行接着编辑）。
+ * 点击 → 把光标送回该块源码行（inkstone 的行为：点哪儿就回到那行接着编辑）。
  */
 class LiveBlockWidget extends WidgetType {
     private root: Root | null = null;
@@ -102,18 +116,26 @@ class LiveBlockWidget extends WidgetType {
         this.root = createRoot(container);
         const source = this.block.source;
         const revision = this.revision;
-        void this.render(source, `${this.block.startLine}:${revision}`).then(node => {
-            if (!this.root) return; // 已被销毁
-            this.root.render(node);
-            view.requestMeasure();
-        });
+        void this.render(source, `${this.block.startLine}:${revision}`)
+            .then(node => {
+                if (!this.root) return; // 已被销毁
+                this.root.render(node);
+                view.requestMeasure();
+            })
+            // ⚠️ 渲染管线是异步的（markdown-it 动态 import）。任何一次失败都会让
+            // 这个块**整块空白** —— 用户看到的就是「即时渲染开了、文档少了好几段」。
+            // 所以兜一层：失败就把原文显示出来，宁可丑也不能少内容。
+            .catch(() => {
+                if (!this.root) return;
+                this.root.render(
+                    createElement("span", { className: "note-live-block-fallback" }, source)
+                );
+                view.requestMeasure();
+            });
         host.addEventListener("mousedown", event => {
             // 让浏览器先把这次点击当普通点击处理，我们只负责把光标送回去
             event.preventDefault();
-            const lineNo = Math.min(
-                this.block.endLine + 1,
-                Math.max(this.block.startLine + 1, view.state.doc.lines)
-            );
+            const lineNo = Math.min(this.block.startLine + 1, view.state.doc.lines);
             const line = view.state.doc.line(lineNo);
             view.dispatch({ selection: { anchor: line.from }, userEvent: "select.pointer" });
             view.focus();
@@ -139,13 +161,18 @@ class LiveBlockWidget extends WidgetType {
 function buildDecorations(state: EditorState, live: LiveState, render: LiveRenderer): DecorationSet {
     const ranges: Range<Decoration>[] = [];
     for (const block of live.blocks) {
-        if (block.endLine <= block.startLine) continue;      // 单行：没有可替换的范围
+        // endLine 是开区间：单行块的 endLine = startLine + 1，正好通过这道检查
+        // （旧实现用闭区间，`endLine <= startLine` 会把**所有单行段落**判成空块跳过）。
+        if (block.endLine <= block.startLine) continue;
         if (block.startLine >= state.doc.lines) continue;
         const from = state.doc.line(block.startLine + 1).from;
-        const to = state.doc.line(Math.min(block.endLine + 1, state.doc.lines)).to;
+        const to = state.doc.line(Math.min(block.endLine, state.doc.lines)).to;
         if (to <= from) continue;
-        // 光标（或选区）落在这块里 → 保持源码，方便接着打字
-        const active = state.selection.ranges.some(r => r.from <= to && r.to >= from);
+        // 光标（或选区）落在这块里 → 保持源码，方便接着打字。
+        // 编辑器未聚焦时空选区不算「落在某块里」—— 点到别处去，整篇都该是渲染态。
+        const active = state.selection.ranges.some(
+            r => (live.focused || !r.empty) && r.from <= to && r.to >= from
+        );
         if (active) continue;
         ranges.push(
             Decoration.replace({
@@ -165,18 +192,40 @@ export function livePreview(render: LiveRenderer): Extension {
     const field = StateField.define<LiveState>({
         create(state) {
             const blocks = splitLiveBlocks(state.doc.toString());
-            const value: LiveState = { blocks, decorations: Decoration.none, revision: 0 };
+            const value: LiveState = { blocks, decorations: Decoration.none, focused: false, revision: 0 };
             value.decorations = buildDecorations(state, value, render);
             return value;
         },
         update(value, tr) {
             const refresh = tr.effects.find(e => e.is(refreshEffect));
-            if (!tr.docChanged && !tr.selection && !refresh) return value;
+            const focused = tr.effects.find(e => e.is(focusChanged));
+            if (!tr.docChanged && !tr.selection && !refresh && !focused) return value;
             // 打字时只重算「哪一块被替换」（行号会随编辑漂移），不重新解析整篇；
             // 真正的重新渲染交给下面的防抖 refresh —— 打字路径必须便宜。
+            // ⚠️ 但行号会漂：编辑后旧块号不再准确，所以先把**被动过的块**丢掉，
+            // 余下的按 changes 映射修正（inkstone 的 mapped 逻辑），否则装饰会错位。
+            const mapped = tr.docChanged
+                ? value.blocks.flatMap(block => {
+                      const from = tr.startState.doc.line(block.startLine + 1).from;
+                      const to = tr.startState.doc.line(Math.min(block.endLine, tr.startState.doc.lines)).to;
+                      if (tr.changes.touchesRange(from, to)) return [];
+                      const startLine = tr.state.doc.lineAt(tr.changes.mapPos(from, 1)).number - 1;
+                      const endLine = tr.state.doc.lineAt(tr.changes.mapPos(to, -1)).number;
+                      return startLine < endLine ? [{ ...block, startLine, endLine }] : [];
+                  })
+                : value.blocks;
+            // ⚠️ refresh 那支必须**显式带上 focused**（哪怕下一行就会覆盖）：
+            // 直接少写这个键，TS 会说这个对象不满足 LiveState（TS2322）——
+            // 类型系统在这类地方比人可靠，别用类型断言把它糊过去。
             const next: LiveState = refresh
-                ? { blocks: splitLiveBlocks(tr.state.doc.toString()), decorations: Decoration.none, revision: value.revision + 1 }
-                : { ...value, blocks: value.blocks };
+                ? {
+                      blocks: splitLiveBlocks(tr.state.doc.toString()),
+                      decorations: Decoration.none,
+                      focused: focused ? focused.value : value.focused,
+                      revision: value.revision + 1,
+                  }
+                : { ...value, blocks: mapped };
+            next.focused = focused ? focused.value : value.focused;
             next.decorations = buildDecorations(tr.state, next, render);
             return next;
         },
@@ -203,14 +252,56 @@ export function livePreview(render: LiveRenderer): Extension {
                 }
             }
         ),
+        // 聚焦态：inkstone 用它判断「空选区算不算落在某块里」。
+        EditorView.domEventHandlers({
+            focus(_event, view) {
+                view.dispatch({ effects: focusChanged.of(true) });
+            },
+            blur(_event, view) {
+                view.dispatch({ effects: focusChanged.of(false) });
+            },
+        }),
+        // 行内语法级渲染（inkstone 的第二个 ViewPlugin）：**当前这块还是源码**，
+        // 但源码里的 `**粗体**` / `*斜体*` / `# 标题` 也要显示成对应样式，
+        // 否则源码态和渲染态的观感差一大截（用户会以为「开了即时渲染没生效」）。
+        ViewPlugin.fromClass(
+            class {
+                decorations: DecorationSet = Decoration.none;
+                constructor(view: EditorView) {
+                    this.build(view);
+                }
+                update(update: { view: EditorView }) {
+                    this.build(update.view);
+                }
+                build(view: EditorView) {
+                    const ranges: Range<Decoration>[] = [];
+                    for (const { from, to } of view.visibleRanges) {
+                        syntaxTree(view.state).iterate({
+                            from,
+                            to,
+                            enter(node) {
+                                const cls =
+                                    node.name === "StrongEmphasis"
+                                        ? "cm-live-strong"
+                                        : node.name === "Emphasis"
+                                          ? "cm-live-em"
+                                          : /^ATXHeading/.test(node.name)
+                                            ? "cm-live-heading"
+                                            : "";
+                                if (cls) ranges.push(Decoration.mark({ class: cls }).range(node.from, node.to));
+                            },
+                        });
+                    }
+                    this.decorations = Decoration.set(ranges, true);
+                }
+            },
+            { decorations: plugin => plugin.decorations }
+        ),
         EditorView.baseTheme({
             ".note-live-block": {
-                padding: "2px 2px",
+                padding: "2px 4px",
                 borderRadius: "6px",
                 cursor: "text",
-            },
-            ".note-live-block:hover": {
-                boxShadow: "inset 0 0 0 1px var(--card-border, rgba(128,128,128,0.35))",
             },
         }),
     ];
