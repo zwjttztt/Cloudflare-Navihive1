@@ -98,6 +98,7 @@ import type { TrashedNote } from "../hooks/useNotes";
 import { renderMarkdownToReact, type RenderFeatures } from "../utils/markdownToReact";
 import type { NoteEmbedTarget } from "./NoteEmbedNode";
 import { useScrollLock } from "../hooks/useScrollLock";
+import { usePanelBreakpoint } from "../hooks/usePanelBreakpoint";
 // 笔记时间统一走这里：SQLite 的 UTC 无时区串必须按 UTC 解释，
 // 直接 `new Date(iso)` 在东八区会差 8 小时（「笔记时间不对」的根因）。
 import { formatRelative, formatWhen, formatWhenFull, groupLabel } from "../utils/noteTime";
@@ -1461,6 +1462,21 @@ export default function NotesPage({
     /** 草稿：编辑期间不立刻写库（点「保存」或切走才提交） */
     const [draft, setDraft] = useState<{ title: string; content: string } | null>(null);
     const [mobileDetail, setMobileDetail] = useState(false);
+    /**
+     * 三栏断点（2026-10-07）：desktop 三栏 / tablet 收导航 / mobile 两屏。
+     *
+     * ⚠️ 之前**完全没有断点**，三栏宽度全是写死的像素（导航 128 + 列表 208），
+     * 唯一一处 `md:`（MUI 默认 900px）只用来切「列表/编辑」两屏。
+     * 后果：浏览器缩放 125% 时 1080px 窗口在 CSS 里只剩 864px，跨过 900px 那条线，
+     * 编辑区被压成 **0 宽**（真机量到 edW=0）—— 工具栏、正文、状态栏全都看不见，
+     * 用户报「右边内容超出不可见」。缩放 150% 以上更糟。
+     *
+     * 现在跟着 inkstone 的两��线走（见 usePanelBreakpoint.ts）：
+     *   ≥1180 三栏 ≥768 两栏（收导航） <768 两屏切换
+     */
+    const bp = usePanelBreakpoint();
+    /** 窄屏（tablet/mobile）下左两列要收起来，只留列表 + 编辑区 */
+    const narrowLayout = bp !== "desktop";
 
     // ---------- 编辑器工具集（2026-10-06 抽进 useEditorTools） ----------
     //
@@ -1741,8 +1757,25 @@ export default function NotesPage({
         return () => window.removeEventListener("keydown", onKey);
     }, [onClose]);
 
-    /** 阶段二：搜索框的 ⌘K 快捷键 */
+    /**
+     * 搜索框的 DOM 节点。**必须一个位置一个 ref**（2026-10-07 踩过）：
+     * 之前两处 `searchField` 共用同一个 `inputRef`，jsdom 下直接把整个
+     * notes.dom 测试文件**堆爆内存**（FATAL: heap out of memory，1992 条断言全过但进程死掉）。
+     * 原因：同一个 ref 被两个 <input> 争抢，React 每次 commit 都要「解绑旧的、绑上新的」，
+     * 而条件渲染（`narrowLayout &&`）会让这两个 input 反复互换角色，
+     * 于是 attach/detach 永远收敛不了。
+     *
+     * 现在是两个独立 ref，⌘K 聚焦**当前可见的那一个**（隐藏的 display:none 聚焦不到）。
+     */
     const searchRef = useRef<HTMLInputElement | null>(null);
+    const searchRefNarrow = useRef<HTMLInputElement | null>(null);
+    /** 聚焦当前看得见的那个搜索框 */
+    const focusSearch = useCallback(() => {
+        const narrow = searchRefNarrow.current;
+        const wide = searchRef.current;
+        if (narrow && narrow.offsetParent !== null) narrow.focus();
+        else wide?.focus();
+    }, []);
     useEffect(() => {
         const onKey = (e: KeyboardEvent) => {
             if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
@@ -1753,12 +1786,12 @@ export default function NotesPage({
                 setView("search");
                 setActiveFolder(null);
                 setActiveTag(null);
-                searchRef.current?.focus();
+                focusSearch();
             }
         };
         window.addEventListener("keydown", onKey);
         return () => window.removeEventListener("keydown", onKey);
-    }, []);
+    }, [focusSearch]);
 
     const active = useMemo(
         () => notes.find(n => n.id === activeId) || null,
@@ -2726,21 +2759,116 @@ export default function NotesPage({
         }
         return { art: "notes", title: "这里没有要显示的笔记", desc: "换个筛选条件看看。" };
     }, [view, activeFolder, activeTag, notes.length]);
-    const listPane = (
-        <Box
+    /**
+     * 搜索框。做成**函数**而不是变量，因为它要挂两个地方（2026-10-07）：
+     * 宽屏在导航列顶部；tablet/mobile 导航列整列 display:none，搜索框会跟着消失 ——
+     * 而搜索是最高频入口，不能没有。窄屏时列表列头部再挂一份（inkstone 的
+     * tablet 头部就是这个思路：一条 44px 顶栏 + 搜索）。
+     *
+     * ⚠️⚠️ 每个位置必须传**自己的 ref**。曾经写成「一个变量渲染两处、共用一个
+     * inputRef」，结果把整个 notes.dom 测试文件堆爆内存
+     * （FATAL: heap out of memory；1992 条断言全过但进程直接死掉，
+     *  表现成「只跑了 10 条就 not ok」，极难定位）。
+     * 原因：同一个 ref 被两个 <input> 争抢 + 条件渲染让两者互换角色，
+     * React 每次 commit 都在「解绑 A / 绑上 B」之间来回，永远收敛不了。
+     */
+    const renderSearchField = (inputRef: React.RefObject<HTMLInputElement | null>) => (
+        // 用 TextField + InputAdornment：之前是自己画的绝对定位图标，
+        // 那个放大镜飘在框外面右下方，对不齐也很难看。
+        <TextField
+            fullWidth
+            size='small'
+            inputRef={inputRef}
+            value={keyword}
+            onChange={e => {
+                setKeyword(e.target.value);
+                // 打字即进入「全文搜索」视图（inkstone 的做法：搜索框就是
+                // 全文搜索的入口，不再单独占一个导航行）。清空时留在搜索视图，
+                // 给出全部列表（与原来的空关键词回退一致）。
+                setView("search");
+                setActiveFolder(null);
+                setActiveTag(null);
+                setMiddleHidden(false);
+            }}
+            onFocus={() => {
+                // 点搜索框 = 打开全文搜索中栏（inkstone 同款交互）
+                setView("search");
+                setActiveFolder(null);
+                setActiveTag(null);
+                setMiddleHidden(false);
+            }}
+            placeholder='搜索标题与内容'
+            slotProps={{
+                input: {
+                    "aria-label": "搜索笔记",
+                    startAdornment: (
+                        <InputAdornment position='start'>
+                            <SearchIcon fontSize='small' />
+                        </InputAdornment>
+                    ),
+                    // 阶段二：搜索框右侧挂个 ⌘K 提示（⌘/Ctrl+K 会聚焦它）
+                    endAdornment: (
+                        <InputAdornment position='end'>
+                            <Box
+                                component='kbd'
+                                aria-hidden='true'
+                                sx={{
+                                    fontSize: 10,
+                                    lineHeight: 1.4,
+                                    px: 0.5,
+                                    py: 0.1,
+                                    borderRadius: 0.75,
+                                    border: "1px solid rgba(128,128,128,0.35)",
+                                    color: "text.disabled",
+                                }}
+                            >
+                                ⌘K
+                            </Box>
+                        </InputAdornment>
+                    ),
+                },
+            }}
+        />
+    );
+
+    const listPane = (        <Box
             sx={{
                 // 阶段二：折叠后收成 44px 的图标轨（平时是【导航列 + 列表列】两列并排）
-                // ⚠️ 两条缝（7px 命中区）也算进总宽，否则拖到最宽时右边界会溢出一点。
+                // ⚠️ 两条缝（9px 命中区）也算进总宽，否则拖到最宽时右边界会溢出一点。
                 // 选中文件夹时只剩导航列一栏（笔记内联在里面），总宽要把列表列那份让出来。
-                width: listCollapsed
-                    ? 44
-                    : listHidden
-                      ? { xs: "100%", md: navW + 14 }
-                      : { xs: "100%", md: navW + listW + 14 },
+                //
+                // ⚠️ 2026-10-07 重写：原来写的是 `{ xs: "100%", md: navW + listW + 14 }`。
+                // `xs: "100%"` 是个**陷阱**：窄屏下它让左栏吃掉整行，编辑区就被压成 0 宽
+                // （真机量到 edW=0，整块看不见）。而 MUI 的 md 是 900px，
+                // 跟 inkstone 的 1180/768 两条线根本不是一回事。
+                // 现在按 usePanelBreakpoint 的三档显式给宽度：
+                //   mobile  100%（两屏切换时它就是整屏）
+                //   tablet  只有列表列（导航列已被上一层的 narrowLayout 收掉）
+                //   desktop 导航 + 列表
+                width: bp === "mobile"
+                    ? "100%"
+                    : bp === "tablet"
+                      ? listCollapsed
+                        ? 44
+                        : listW + 9
+                      : listCollapsed
+                        ? 44
+                        : listHidden
+                          ? navW + 9
+                          : navW + listW + 18,
                 flexShrink: 0,
                 // 折叠成 44px 轨道时，任何子元素都不许溢出压到右边的编辑区
                 overflow: "hidden",
-                borderRight: { md: "1px solid var(--card-border)" },
+                // ⚠️ 这里**不能**再画右边框（2026-10-07 用户报「分割线太粗」）。
+                // 两条缝（nav|list、list|editor）各自有一个 9px 命中区 + 1px 发丝线，
+                // 线就画在命中区正中；这个盒子是它们的**共同祖先**，它的 borderRight
+                // 落在最右那条命中区的右边 12px 处，于是屏幕上出现两条线：
+                //   x=487 发丝线（list|editor 那条）
+                //   x=500 本行的 borderRight
+                // 看着就是「分割线粗了一截」。inkstone 那边同理 —— AppShell 的
+                // flex 容器不带边框，边框只由 Resizer 的那根 span 负责。
+                // 真机量过：去掉之后 list|editor 边界上只剩 1 条 1px 线。
+                // borderRight: { md: "1px solid var(--card-border)" },
                 // ⚠️ 这里改成了**横向**排列：左栏现在自己就是两列（导航 | 列表）。
                 // 原来是一整个竖列里塞「搜索框 + 六个视图按钮 + 笔记列表」——
                 // 300px 宽里三样挤一起，列表只剩 200 出头，月份分组标题一换行就漏字。
@@ -2793,10 +2921,17 @@ export default function NotesPage({
                 sx={{
                     width: navW,
                     flexShrink: 0,
-                    display: "flex",
+                    // tablet 起收掉导航列（inkstone 的 showNav = !isMobile && !isTablet）：
+                    // 768~1180 之间三栏挤不开，导航列是最先该让位的那个。
+                    display: narrowLayout ? "none" : "flex",
                     flexDirection: "column",
                     minHeight: 0,
-                    borderRight: "1px solid var(--card-border)",
+                    // ⚠️ 这里原来有 borderRight，已去掉（2026-10-07）。
+                    // 右边已经有「拖动调整导航列宽度」那条带发丝线的把手了，
+                    // 两者叠在一起 = 2px 粗线。inkstone 的 Sidebar 也没有边框
+                    // （`bg-[var(--bg-sunken)]` 而已），线只由 Resizer 负责。
+                    // 真机量过：nav|list 边界只剩 1 条 1px 线。
+                    // borderRight: "1px solid var(--card-border)",
                     // ⚠️ 这一列**自己不再滚**：改成「上半可滚 + 底部固定」。
                     // 之前整列 overflowY:auto，归档/回收站/账号被文件夹挤到视野外。
                     overflow: "hidden",
@@ -2832,63 +2967,12 @@ export default function NotesPage({
             </Box>
             {/* 可滚动的上半：搜索框 + 视图导航 + 文件夹 + 标签 */}
             <Box sx={{ flex: 1, minHeight: 0, overflowY: "auto", overflowX: "hidden" }}>
-            <Box sx={{ px: 1.5, pb: 1 }}>
-                {/* 用 TextField + InputAdornment：之前是自己画的绝对定位图标，
-                    那个放大镜飘在框外面右下方，对不齐也很难看。 */}
-                <TextField
-                    fullWidth
-                    size='small'
-                    inputRef={searchRef}
-                    value={keyword}
-                    onChange={e => {
-                        setKeyword(e.target.value);
-                        // 打字即进入「全文搜索」视图（inkstone 的做法：搜索框就是
-                        // 全文搜索的入口，不再单独占一个导航行）。清空时留在搜索视图，
-                        // 给出全部列表（与原来的空关键词回退一致）。
-                        setView("search");
-                        setActiveFolder(null);
-                        setActiveTag(null);
-                        setMiddleHidden(false);
-                    }}
-                    onFocus={() => {
-                        // 点搜索框 = 打开全文搜索中栏（inkstone 同款交互）
-                        setView("search");
-                        setActiveFolder(null);
-                        setActiveTag(null);
-                        setMiddleHidden(false);
-                    }}
-                    placeholder='搜索标题与内容'
-                    slotProps={{
-                        input: {
-                            "aria-label": "搜索笔记",
-                            startAdornment: (
-                                <InputAdornment position='start'>
-                                    <SearchIcon fontSize='small' />
-                                </InputAdornment>
-                            ),
-                            // 阶段二：搜索框右侧挂个 ⌘K 提示（⌘/Ctrl+K 会聚焦它）
-                            endAdornment: (
-                                <InputAdornment position='end'>
-                                    <Box
-                                        component='kbd'
-                                        aria-hidden='true'
-                                        sx={{
-                                            fontSize: 10,
-                                            lineHeight: 1.4,
-                                            px: 0.5,
-                                            py: 0.1,
-                                            borderRadius: 0.75,
-                                            border: "1px solid rgba(128,128,128,0.35)",
-                                            color: "text.disabled",
-                                        }}
-                                    >
-                                        ⌘K
-                                    </Box>
-                                </InputAdornment>
-                            ),
-                        },
-                    }}
-                />
+            {/* ⚠️ tablet/mobile 下整个导航列是 display:none，搜索框得另有一份
+                （挂到列表列头部，见下面 data-list-header 里的 {narrowLayout && searchField}）。
+                这里用 display 控制而不是条件渲染，是为了让两处共用同一个 inputRef ——
+                ⌘K 聚焦的是同一个 DOM 节点，ref 指向谁就聚焦谁。 */}
+            <Box sx={{ display: narrowLayout ? "none" : "block", px: 1.5, pb: 1 }}>
+                {renderSearchField(searchRef)}
             </Box>
 
             {/* 左栏视图导航：inkstone 那种纵向条目 —— 一个入口一行、名字靠左、
@@ -3138,8 +3222,10 @@ export default function NotesPage({
                 而页内 dispatchEvent 合成事件是直接派发给元素的、不做命中测试，
                 所以单测和合成事件探针都会「通过」，真机却拖不动（2026-10-06 踩过）。
                 ⚠️ 选中文件夹时中间栏整个不渲染，这条缝也跟着收起来 ——
-                不然会留下一条拖了没用的把手，点它还会把 listW 存进 localStorage。 */}
-            {!listHidden && (
+                不然会留下一条拖了没用的把手，点它还会把 listW 存进 localStorage。
+                ⚠️ tablet 起导航列整列 display:none，这条缝也要一起收 ——
+                否则左边凭空多出一条 9px 命中区，视觉上像「还有第三栏」。 */}
+            {!listHidden && !narrowLayout && (
                 <ColResizeHandle
                     label='拖动调整导航列宽度'
                     onDrag={startDrag('nav')}
@@ -3175,6 +3261,14 @@ export default function NotesPage({
                     bgcolor: "var(--bg-base)",
                 }}
             >
+            {/* ⚠️ 2026-10-07：tablet/mobile 下导航列整列隐藏，搜索框搬来这里
+                （inkstone 的 tablet 头部就是「一条 44px 顶栏 + 搜索」）。
+                没有它的话，窄屏就完全搜不了笔记 —— 这是最高频的入口。 */}
+            {narrowLayout && (
+                <Box sx={{ px: 1.5, pt: 1, pb: 0.5, flexShrink: 0 }}>
+                    {renderSearchField(searchRefNarrow)}
+                </Box>
+            )}
             {/* 中栏头部（inkstone：视图名 + 右上角 排序 / 新建 / 收起）。
                 回收站视图不給这三个按钮（那里没有「新建」语义，排序无意义）。 */}
             {view !== "trash" && (
@@ -3205,8 +3299,7 @@ export default function NotesPage({
                                   : view === "uncategorized"
                                     ? "未归类"
                                     : "归档"}
-                    </Typography>
-                    <Tooltip title='排序'>
+                    </Typography>                    <Tooltip title='排序'>
                         <IconButton
                             size='small'
                             aria-label='排序'
@@ -3568,7 +3661,7 @@ export default function NotesPage({
                             ⚠️ 窄屏（<900px）藏起来：标题行已经装了「即时渲染 + 三档 + 更多 +
                             关闭」，窄窗口塞不下。同一个开关在「更多操作」菜单里有一份，
                             窄屏走那条路（见下面 data-active-op='live-render'）。 */}
-                        <Box sx={{ display: { xs: "none", md: "flex" }, alignItems: "center", gap: 0.25, flexShrink: 0, mr: 0.5 }}>
+                        <Box sx={{ display: narrowLayout ? "none" : "flex", alignItems: "center", gap: 0.25, flexShrink: 0, mr: 0.5 }}>
                             <Typography variant='caption' color='text.secondary' sx={{ fontSize: 11, whiteSpace: "nowrap" }}>
                                 即时渲染
                             </Typography>
@@ -3899,7 +3992,7 @@ export default function NotesPage({
                                 overflowY: "auto",
                                 py: 1,
                                 px: 0.75,
-                                display: { xs: "none", md: "block" },
+                                display: narrowLayout ? "none" : "block",
                             }}
                         >
                             <Typography
@@ -4072,7 +4165,7 @@ export default function NotesPage({
                 />
                 {/* 即时渲染（inkstone 同名开关）：关掉后预览停在「已存库的内容」，
                     打字不再触发整篇重解析 —— 长文里体感差别很大。 */}
-                <Box sx={{ display: { xs: "none", md: "flex" }, alignItems: "center", gap: 0.25, flexShrink: 0, mr: 0.5 }}>
+                <Box sx={{ display: narrowLayout ? "none" : "flex", alignItems: "center", gap: 0.25, flexShrink: 0, mr: 0.5 }}>
                     <Typography variant='caption' color='text.secondary' sx={{ fontSize: 11, whiteSpace: "nowrap" }}>
                         即时渲染
                     </Typography>
@@ -4908,14 +5001,19 @@ export default function NotesPage({
                 )}
             </Menu>
 
-            {/* 主体：移动端在「列表 / 编辑」之间切，桌面端左右并排 */}
+            {/* 主体：desktop 三栏并排；tablet 收掉导航列；mobile 在「列表 / 编辑」之间切。
+                ⚠️ 2026-10-07：原来这里靠 MUI 的 `md:`（900px）做两屏切换，
+                但三栏宽度是写死的像素、又没有断点，缩放一放大（CSS 视口 < 900）
+                编辑区就被压成 0 宽 —— 整块看不见（用户报「右边内容超出不可见」）。
+                现在改成用 usePanelBreakpoint 的三档（1180 / 768），与 inkstone 一致。 */}
             <Box sx={{ flex: 1, display: "flex", minHeight: 0 }}>
-                {/* 左栏**不能**加 flex:1 —— 它内部已经用 width:300 定宽了（flexShrink:0）。
-                    外层再来一个 flex:1，容器会被 flex 撑到约 445px，而里面的列表只有 300px，
-                    剩下的 145px 就是「中间那块空白」。宽度只由内层决定：flex: 0 0 auto。 */}
+                {/* 左栏**不能**加 flex:1 —— 它内部已经定宽了（flexShrink:0）。
+                    外层再来一个 flex:1，容器会被 flex 撑开，而里面的列表是定宽的，
+                    剩下的就是「中间那块空白」。宽度只由内层决定：flex: 0 0 auto。 */}
                 <Box
                     sx={{
-                        display: { xs: mobileDetail ? "none" : "flex", md: "flex" },
+                        // mobile：两屏切换（列表 ⇄ 编辑）；tablet/desktop：常驻
+                        display: bp === "mobile" ? (mobileDetail ? "none" : "flex") : "flex",
                         flex: "0 0 auto",
                         minWidth: 0,
                         minHeight: 0,
@@ -4929,7 +5027,9 @@ export default function NotesPage({
                     （根容器 2026-10-07 起是 row，这条不能再挂在根上，否则会横着排到右边）。 */}
                 <Box
                     sx={{
-                        display: { xs: mobileDetail ? "flex" : "none", md: "flex" },
+                        // mobile 且没打开笔记时，右边不占位（否则会把 0 宽的 flex 项
+                        // 留在行里，列表被挤窄）。tablet/desktop 永远显示。
+                        display: bp === "mobile" && !mobileDetail ? "none" : "flex",
                         flex: 1,
                         minWidth: 0,
                         minHeight: 0,
@@ -4985,9 +5085,11 @@ export default function NotesPage({
                         )}
                         {sidePane}
                     </Box>
-                    {/* 移动端从编辑态回列表 */}
-                    {mobileDetail && (
-                        <Box sx={{ display: { xs: "flex", md: "none" }, p: 1, borderTop: "1px solid rgba(128,128,128,0.25)", flexShrink: 0 }}>
+                    {/* 移动端从编辑态回列表。
+                        ⚠️ 同样不能用 `md:`（900px）：两屏切换现在由 bp === "mobile"（768）
+                        决定，按钮要跟它**同一个判据**，否则会出现「按钮在、列表也在」的矛盾态。 */}
+                    {mobileDetail && bp === "mobile" && (
+                        <Box sx={{ display: "flex", p: 1, borderTop: "1px solid rgba(128,128,128,0.25)", flexShrink: 0 }}>
                             <Button
                                 startIcon={<EditIcon />}
                                 onClick={() => setMobileDetail(false)}
@@ -5467,6 +5569,53 @@ function MarkdownToolbar({
 
             {divider}
 
+            {/* ⑦ 独立图标组（inkstone 的 ToolButton 群）：强调 → 行内代码 → 列表。
+                ⚠️ 2026-10-07 把它从工具栏**末尾**挪到了这里（紧跟标题层级之后），
+                对齐 inkstone EditorToolbar.tsx:101-112 的顺序：
+                  标题 │ 加粗 斜体 删除线 高亮 行内代码 │ 无序 有序 任务 引用
+                之前它在最后面，于是「加粗」这种最高频的按钮排在倒数第二，跟 inkstone 差得最远。
+                ⚠️ tooltip 里带上快捷键（inkstone 的 Tooltip 支持 combo），
+                这样「这个键是干什么的」不用去记 —— 但**只在真的有绑定时**才显示，
+                高亮这类没绑定的就只写名称，不显示一个按了没反应的键。 */}
+            <Box sx={{ display: "flex", alignItems: "center", gap: 0.25 }}>
+                {TOOL_GROUPS.map((group, gi) => (
+                    <Fragment key={group.name}>
+                        {gi > 0 && <Divider orientation='vertical' flexItem sx={{ mx: 0.5, my: 0.5 }} />}
+                        {group.tools.map(tool => {
+                            const combo = comboFor(tool.shortcutId ?? "");
+                            return (
+                                <Tooltip
+                                    key={tool.key}
+                                    title={
+                                        <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                                            <span>{tool.title}</span>
+                                            {combo && <Kbd combo={combo} />}
+                                        </span>
+                                    }
+                                >
+                                    <IconButton
+                                        size='small'
+                                        onMouseDown={e => e.preventDefault()}
+                                        onClick={() =>
+                                            tool.linePrefix
+                                                ? onLinePrefix(tool.before)
+                                                : onInsert(tool.before, tool.after ?? "", tool.placeholder ?? "")
+                                        }
+                                        data-tool={tool.key}
+                                        aria-label={tool.title}
+                                        sx={toolBtnSx}
+                                    >
+                                        {tool.icon ?? tool.label}
+                                    </IconButton>
+                                </Tooltip>
+                            );
+                        })}
+                    </Fragment>
+                ))}
+            </Box>
+
+            {divider}
+
             {/* ② 链接与引用（inkstone 的 reference 菜单）：**图标直接插链接**，
                 小箭头才开下拉 —— 想插最常见的普通链接不用点两次。
                 data-tool='link' 挂在主按钮上，老的用例按它找按钮不丢。 */}
@@ -5676,36 +5825,15 @@ function MarkdownToolbar({
                 </MenuItem>
             </Menu>
 
-            {/* 块下拉：折叠 / 标签页 / 分隔线（inkstone 的「块」一组） */}
-            <Tooltip title='成块的语法：可折叠内容、标签页、分隔线'>
-            <Button
-                size='small'
-                aria-label='块'
-                aria-haspopup='menu'
-                aria-expanded={blockAnchor ? true : undefined}
-                onMouseDown={e => e.preventDefault()}
-                onClick={e => setBlockAnchor(e.currentTarget)}
-                sx={{
-                    width: 32,
-                    height: 28,
-                    minWidth: 0,
-                    p: 0,
-                    fontSize: 13,
-                    lineHeight: 1,
-                    color: "text.secondary",
-                    "&:hover": { bgcolor: "rgba(128,128,128,0.14)", color: "text.primary" },
-                }}
-            >
-                块
-            </Button>
-            </Tooltip>
             {/* ⑤ 内容块（inkstone 的 block 菜单）：提示框 / 折叠 / 标签页 / 分隔线。
-                ⚠️ 提示框从「独立图标 + 自己的菜单」收进这个下拉 —— inkstone 就是
-                放在 block 里的，之前我们多出一个按钮，工具栏显得比它宽出一截。 */}
+                ⚠️ 2026-10-07 删掉了前面那个**文字「块」按钮**：
+                它和下面这个图标版都叫 aria-label='块'、都开同一个 blockAnchor 菜单，
+                真机上就是两个按钮干同一件事（读屏也会念两遍「块」）。
+                inkstone 那边只有图标 + ChevronDown 一个（EditorToolbar.tsx:121）。 */}
             <Tooltip title='成块的语法：提示框、折叠内容、标签页、分隔线'>
             <Button
                 size='small'
-                aria-label='块'
+                aria-label='内容块'
                 data-tool='callout'
                 aria-haspopup='menu'
                 aria-expanded={blockAnchor ? true : undefined}
@@ -5985,48 +6113,6 @@ function MarkdownToolbar({
                 </MenuItem>
             </Menu>
 
-            {divider}
-
-            {/* ⑦ 独立图标组（inkstone 的 ToolButton 群）：强调 → 列表 → 表格。
-                ⚠️ tooltip 里带上快捷键（inkstone 的 Tooltip 支持 combo），
-                这样「这个键是干什么的」不用去记 —— 但**只在真的有绑定时**才显示，
-                高亮/表格这类没绑定的就只写名称，不显示一个按了没反应的键。 */}
-            <Box sx={{ display: "flex", alignItems: "center", gap: 0.25 }}>
-                {TOOL_GROUPS.map((group, gi) => (
-                    <Fragment key={group.name}>
-                        {gi > 0 && <Divider orientation='vertical' flexItem sx={{ mx: 0.5, my: 0.5 }} />}
-                        {group.tools.map(tool => {
-                            const combo = comboFor(tool.shortcutId ?? "");
-                            return (
-                                <Tooltip
-                                    key={tool.key}
-                                    title={
-                                        <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-                                            <span>{tool.title}</span>
-                                            {combo && <Kbd combo={combo} />}
-                                        </span>
-                                    }
-                                >
-                                    <IconButton
-                                        size='small'
-                                        onMouseDown={e => e.preventDefault()}
-                                        onClick={() =>
-                                            tool.linePrefix
-                                                ? onLinePrefix(tool.before)
-                                                : onInsert(tool.before, tool.after ?? "", tool.placeholder ?? "")
-                                        }
-                                        data-tool={tool.key}
-                                        aria-label={tool.title}
-                                        sx={toolBtnSx}
-                                    >
-                                        {tool.icon ?? tool.label}
-                                    </IconButton>
-                                </Tooltip>
-                            );
-                        })}
-                    </Fragment>
-                ))}
-            </Box>
         </Box>
     );
 }

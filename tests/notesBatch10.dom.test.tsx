@@ -110,7 +110,11 @@ test("Kbd 用真正的 <kbd> 标签，且没绑定时不渲染", () => {
 test("工具栏对齐 inkstone：图标下拉 + 主按钮双态", () => {
     const src = readNotesPageForBatch10();
     // inkstone 的 7 个下拉：heading / reference / image / note / code / math / block
-    for (const label of ["标题层级", "链接与引用", "插入图片", "笔记工具", "代码块语言", "公式", "块"]) {
+    // ⚠️ 标签用的是 inkstone zh-CN 里的原文（src/shared/locales/zh-CN.ts）：
+    //   workspace.content_blocks = "内容块"（不是「块」）
+    // 「块」是我们早期自己起的名，而且曾经**同时存在两个** aria-label='块' 的按钮
+    // 都开同一个菜单（2026-10-07 删掉了重复的那个）。
+    for (const label of ["标题层级", "链接与引用", "插入图片", "笔记工具", "代码块语言", "公式", "内容块"]) {
         assert.ok(
             src.includes(`aria-label='${label}'`),
             `工具栏应该有「${label}」下拉（inkstone 的 7 个之一）`
@@ -124,6 +128,36 @@ test("工具栏对齐 inkstone：图标下拉 + 主按钮双态", () => {
     assert.ok(
         src.includes("data-tool='code-menu'"),
         "代码也要有下拉箭头"
+    );
+    // ⚠️ 别再出现两个同名 '块' 按钮：读屏会念两遍，真机上是两个按钮干同一件事
+    assert.equal(
+        (src.match(/aria-label='块'/g) ?? []).length,
+        0,
+        "不要用「块」这个标签（inkstone 叫「内容块」），也别留重复按钮"
+    );
+});
+
+test("工具栏顺序照 inkstone：加粗紧跟标题层级，而不是排在末尾", () => {
+    const src = readNotesPageForBatch10();
+    // inkstone EditorToolbar.tsx:101-112 的顺序：
+    //   标题 │ 加粗 斜体 删除线 高亮 行内代码 │ 无序 有序 任务 引用 │ 链接 图片 笔记工具 │ 代码块…
+    //
+    // ⚠️ 锚点必须用**渲染处**的下标，不能用 TOOL_GROUPS 里的 `key: "bold"` ——
+    // 那是常量定义（文件更靠前），量到的是「声明顺序」而不是「用户看到的顺序」。
+    // 这条测试第一次写就踩了这个坑。
+    const at = (s: string) => src.indexOf(s);
+    const heading = at("aria-label='标题层级'");
+    const inlineGroup = at("{TOOL_GROUPS.map(");
+    const link = at("data-tool='link'");
+    const blockMenu = at("data-tool='callout'");
+    const pre = at("data-tool='pre'");
+    assert.ok(
+        heading > 0 && inlineGroup > 0 && link > 0 && blockMenu > 0 && pre > 0,
+        "五个锚点都要在"
+    );
+    assert.ok(
+        heading < inlineGroup && inlineGroup < link && link < blockMenu && blockMenu < pre,
+        `顺序必须是 标题 < 加粗组 < 链接 < 内容块 < 代码块（实际 ${heading}/${inlineGroup}/${link}/${blockMenu}/${pre}）`
     );
 });
 
@@ -175,12 +209,18 @@ test("引用不再有独立按钮（已并入列表组，否则工具栏比 inks
     assert.equal(count, 1, "引用只能出现一次（列表组里），不该有第二个独立按钮");
 });
 
-test("提示框并进「块」下拉（inkstone 就是这么放的）", () => {
+test("提示框并进「内容块」下拉（inkstone 就是这么放的）", () => {
     const src = readNotesPageForBatch10();
-    const blockMenu = src.slice(src.indexOf('aria-label=\'块\''), src.indexOf('data-block-op=\'divider\''));
+    // ⚠️ 锚点用 '内容块'（inkstone zh-CN 的 workspace.content_blocks），
+    // 不用 '块' —— 那个旧标签下曾经有两个按钮都开同一个菜单。
+    const blockMenu = src.slice(
+        src.indexOf("aria-label='内容块'"),
+        src.indexOf("data-block-op='divider'")
+    );
+    assert.ok(blockMenu.length > 0, "定位不到内容块下拉");
     assert.ok(
         blockMenu.includes("data-callout-type"),
-        "提示框类型应该在「块」下拉里，而不是另开一个菜单"
+        "提示框类型应该在「内容块」下拉里，而不是另开一个菜单"
     );
 });
 

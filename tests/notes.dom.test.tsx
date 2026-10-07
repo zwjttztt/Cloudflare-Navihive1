@@ -62,7 +62,22 @@ afterEach(() => {
         host = null;
     }
     document.body.innerHTML = "";
+    // 视口宽度复原。2026-10-07 起布局有了三档断点（usePanelBreakpoint），
+    // 而 jsdom 默认 innerWidth = 1024 → 落在 tablet 档 → 导航列整列 display:none、
+    // 它那条拖动把手也不渲染。凡是测「导航列 / 左两栏」的用例都必须先 setWide(),
+    // 否则 querySelector 返回 null，症状是 `Cannot read properties of null`。
+    setViewport(1024);
 });
+
+/** 设定 jsdom 的视口宽度（写 innerWidth 只够让 matchMedia 之外的逻辑读到；MUI 的 sx 断点也读它）。 */
+function setViewport(width: number) {
+    Object.defineProperty(window, "innerWidth", { value: width, configurable: true, writable: true });
+}
+
+/** 把视口设成 desktop 档（≥1180），让三栏与两条导航分隔条都渲染出来。 */
+function setWide() {
+    setViewport(1440);
+}
 
 function note(over: Partial<Note> = {}): Note {
     return {
@@ -342,12 +357,17 @@ test("工具栏补齐 inkstone 式下拉：链接 / 图片 / 笔记工具 / 块"
     for (const op of ["blockid", "frontmatter", "hidden", "tag"]) {
         assert.ok(document.querySelector(`[data-insert-op="${op}"]`), `笔记工具下拉要有 ${op}`);
     }
-    // 「块」下拉：提示框 / 折叠 / 标签页 / 分隔线
-    // ⚠️ 提示框已从独立按钮收进这里（inkstone 就是放 block 里的）
-    const blockBtn = bar.querySelector('button[aria-label="块"]') as HTMLElement;
-    await act(async () => blockBtn.click());
+    // 「内容块」下拉：提示框 / 折叠 / 标签页 / 分隔线
+    // ⚠️ 提示框已从独立按钮收进这里（inkstone 就是放 block 里的）。
+    // ⚠️ 2026-10-07：aria-label 从「块」改成「内容块」（inkstone zh-CN 的
+    // workspace.content_blocks）。之前这里 querySelector 返回 null，
+    // 下一行 .click() 抛异常 —— 而这是个 async 用例，抛出去会**整个测试文件**挂掉，
+    // 表现成「只跑了 10 条就 not ok」，根因却藏在第 11 条里。
+    const blockBtn = bar.querySelector('button[aria-label="内容块"]') as HTMLElement | null;
+    assert.ok(blockBtn, "工具栏要有「内容块」下拉按钮");
+    await act(async () => blockBtn!.click());
     for (const op of ["fold", "tabs", "divider", "callout"]) {
-        assert.ok(document.querySelector(`[data-block-op="${op}"]`), `块下拉要有 ${op}`);
+        assert.ok(document.querySelector(`[data-block-op="${op}"]`), `内容块下拉要有 ${op}`);
     }
 });
 
@@ -990,7 +1010,7 @@ test("左栏容器不能带 flex:1（会把 300px 的列表撑成两栏宽，中
         "utf-8"
     );
     const body = source.slice(
-        source.indexOf("主体：移动端"),
+        source.indexOf("主体：desktop"),
         source.indexOf("移动端从编辑态回列表")
     );
     assert.ok(
@@ -1003,11 +1023,17 @@ test("左栏容器不能带 flex:1（会把 300px 的列表撑成两栏宽，中
     // 阶段三收尾把左栏从「单列 300px」改成 inkstone 那样「导航列 + 列表列」两列，
     // 所以总宽变成 NAV_COL_W + LIST_COL_W（336）。再钉 300 只会每次改布局都变红。
     assert.ok(
-        /width: listCollapsed\s*\?\s*44\s*:\s*listHidden\s*\?/.test(source) &&
-            /md: navW \+ 14/.test(source) &&
-            /md: navW \+ listW \+ 14/.test(source),
-        "listPane 展开时宽度应是「导航列 + 列表列 + 两条分隔条」之和；" +
-            "中栏隐藏（选中文件夹 / 点「收起」）时只剩「导航列 + 一条分隔条」（2026-10-06）"
+        /width: listCollapsed\s*\?\s*44\s*:\s*listHidden\s*\?/.test(source) === false,
+        "listPane 的宽度不该再是「listCollapsed ? … : listHidden ? …」这种二选一的老结构" +
+            "（2026-10-07 改成按 bp 三档：mobile 100% / tablet 只列表 / desktop 导航+列表）"
+    );
+    // ⚠️ 2026-10-07：宽度表达式换成了三档（对应 inkstone 的 1180 / 768），
+    // 不再是 `md: navW + listW + 14`。这里钉的是**新**结构。
+    assert.ok(
+        /bp === "mobile"\s*\?\s*"100%"/.test(source) &&
+            /bp === "tablet"/.test(source) &&
+            /navW \+ listW \+ 18/.test(source),
+        "listPane 宽度按 bp 三档给：mobile 100% / tablet 只列表列 / desktop 导航+列表+两条 9px 把手"
     );
     assert.ok(
         /export const NAV_COL_W = \d+;/.test(source) &&
@@ -1028,7 +1054,7 @@ test("右栏要有 minHeight:0（缺了它内容会顶出视口，出现页面�
         "utf-8"
     );
     const body = source.slice(
-        source.indexOf("主体：移动端"),
+        source.indexOf("主体：desktop"),
         source.indexOf("移动端从编辑态回列表")
     );
     // 右栏那一段（最后一个容器）必须带 minHeight
@@ -1273,7 +1299,11 @@ test("标题/内容块/分隔线等按钮：第二次点击要真的取消（202
     const ta = getEditor();
 
     const openMenu = (label: string) => {
-        act(() => (bar.querySelector(`button[aria-label="${label}"]`) as HTMLElement).click());
+        // ⚠️ 必须先断言再点：直接 .click() 在找不到时抛
+        // `Cannot read properties of null`，看不出是哪个按钮没了。
+        const btn = bar.querySelector(`button[aria-label="${label}"]`) as HTMLElement | null;
+        assert.ok(btn, `工具栏要有「${label}」按钮`);
+        act(() => btn!.click());
     };
     const pick = (sel: string) => {
         const el = document.querySelector(sel) as HTMLElement;
@@ -1308,39 +1338,39 @@ test("标题/内容块/分隔线等按钮：第二次点击要真的取消（202
     // ⚠️ 2026-10-07：内容块从「独立图标 + 自己的菜单」收进了「块」下拉
     // （inkstone 就是这么放的，之前我们多出一个按钮，工具栏比它宽一截）。
     reset();
-    openMenu("块");
+    openMenu("内容块");
     pick('[data-callout-type="NOTE"]');
     assert.equal(ta.value, "> [!NOTE] 一段文字");
-    openMenu("块");
+    openMenu("内容块");
     pick('[data-callout-type="NOTE"]');
     assert.equal(ta.value, "一段文字", "再点一次内容块要撤销");
 
     // ④ 分隔线：不能插两条；且**光标所在行的正文一个字都不能丢**
     reset();
-    openMenu("块");
+    openMenu("内容块");
     pick('[data-block-op="divider"]');
     const once = String(ta.value);
     assert.ok(once.includes("一段文字"), "插入分隔线不能把这一行的正文吃掉，实际 " + JSON.stringify(once));
     assert.ok(once.includes("---"), "第一下确实插了分隔线");
-    openMenu("块");
+    openMenu("内容块");
     pick('[data-block-op="divider"]');
     assert.equal(ta.value, "一段文字", "再点一次分隔线要撤销，实际 " + JSON.stringify(ta.value));
 
     // ⑤ 折叠块 / 标签页：块级同样能撤
     reset();
-    openMenu("块");
+    openMenu("内容块");
     pick('[data-block-op="fold"]');
     assert.ok(String(ta.value).includes("[!FOLD]"), "第一下插了折叠块");
     assert.ok(String(ta.value).includes("一段文字"), "折叠块不能吃掉正文");
-    openMenu("块");
+    openMenu("内容块");
     pick('[data-block-op="fold"]');
     assert.equal(ta.value, "一段文字", "再点一次折叠要撤销");
 
     reset();
-    openMenu("块");
+    openMenu("内容块");
     pick('[data-block-op="tabs"]');
     assert.ok(String(ta.value).includes(":::tabs"), "第一下插了标签页");
-    openMenu("块");
+    openMenu("内容块");
     pick('[data-block-op="tabs"]');
     assert.equal(ta.value, "一段文字", "再点一次标签页要撤销");
 });
@@ -1350,7 +1380,7 @@ test("换了按钮不能误撤上一段；改了正文也不能误撤（撤销�
     const ta = getEditor();
     const bar = document.querySelector('[aria-label="Markdown 格式"]') as HTMLElement;
     const pickDivider = () => {
-        act(() => (bar.querySelector('button[aria-label="块"]') as HTMLElement).click());
+        act(() => (bar.querySelector('button[aria-label="内容块"]') as HTMLElement).click());
         act(() => (document.querySelector('[data-block-op="divider"]') as HTMLElement).click());
     };
     act(() => {
@@ -1362,7 +1392,7 @@ test("换了按钮不能误撤上一段；改了正文也不能误撤（撤销�
     assert.ok(ta.value.includes("---"), "先插一条分隔线");
 
     // ① 换个工具（折叠）不能把分隔线撤掉 —— lastToolRef 记了工具名
-    act(() => (bar.querySelector('button[aria-label="块"]') as HTMLElement).click());
+    act(() => (bar.querySelector('button[aria-label="内容块"]') as HTMLElement).click());
     act(() => (document.querySelector('[data-block-op="fold"]') as HTMLElement).click());
     assert.ok(ta.value.includes("---"), "换按钮不能撤掉上一段，实际 " + JSON.stringify(ta.value));
 
@@ -2224,6 +2254,8 @@ test("列表行显示标签徽章（不用点进去才知道打了哪些标签�
 // 真正的像素验收走真机：harness 里的 CDP 探针量到 128 → 198 / 208 → 388，
 // 且与 localStorage 里的值完全一致。
 test("左两栏各有一条可拖分隔条（role=separator + 可访问名）", () => {
+    // 导航列那条分隔条在 tablet 档不渲染（inkstone 同款），测它必须先切到 desktop 宽度
+    setWide();
     mountPanel([note({ id: 1, title: "甲", content: "a" })]);
     const labels = [...document.querySelectorAll("[role='separator']")].map(e =>
         e.getAttribute("aria-label")
@@ -2239,6 +2271,8 @@ test("左两栏各有一条可拖分隔条（role=separator + 可访问名）", 
 });
 
 test("两条分隔条必须是左栏容器的直接子元素（放进去会被压成 0 高）", () => {
+    // 导航列那条分隔条在 tablet 档不渲染（inkstone 同款），测它必须先切到 desktop 宽度
+    setWide();
     // 这条钉的是 2026-10-06 的真机 bug：分隔条被写在导航列/列表列**内部**，
     // 而那两列是 flex-direction: column → 分隔条被压成 **0 高度**、贴在 x=0，
     // 真实鼠标点不中。
@@ -2302,6 +2336,8 @@ test("列宽的默认值与上下界都写成了常量（便于以后统一调�
 });
 
 test("拖动分隔条后宽度落盘，并且夹在上下界之间", async () => {
+    // 导航列那条分隔条在 tablet 档不渲染（inkstone 同款），测它必须先切到 desktop 宽度
+    setWide();
     mountPanel([note({ id: 1, title: "甲", content: "a" })]);
     const sepOf = (label: string) =>
         document.querySelector(`[role='separator'][aria-label='${label}']`) as HTMLElement;
@@ -2341,6 +2377,8 @@ test("拖动分隔条后宽度落盘，并且夹在上下界之间", async () =>
 });
 
 test("拖动不能让选区被浏览器抢走（mousedown 要 preventDefault）", () => {
+    // 导航列那条分隔条在 tablet 档不渲染（inkstone 同款），测它必须先切到 desktop 宽度
+    setWide();
     mountPanel([note({ id: 1, title: "甲", content: "a" })]);
     const sep = document.querySelector(
         "[role='separator'][aria-label='拖动调整导航列宽度']"
@@ -2351,6 +2389,8 @@ test("拖动不能让选区被浏览器抢走（mousedown 要 preventDefault）"
 });
 
 test("双击分隔条回到默认宽度", async () => {
+    // 导航列那条分隔条在 tablet 档不渲染（inkstone 同款），测它必须先切到 desktop 宽度
+    setWide();
     mountPanel([note({ id: 1, title: "甲", content: "a" })]);
     const sepOf = () =>
         document.querySelector(
@@ -3843,5 +3883,101 @@ test("标签页标题的分工：主应用挂品牌名，分享页挂笔记名",
     assert.ok(
         /<title>[^<]+<\/title>/.test(html),
         "index.html 要有初始标题（首屏到 JS 接管之间标签页不能是空的）"
+    );
+});
+
+// ===========================================================================
+// 2026-10-07 第十一批：缩放塌陷 + 分隔线 2px + 重复「块」按钮
+// ===========================================================================
+
+test("三栏不能靠写死的像素宽度 + MUI 的 md（用户报：缩放后右边内容看不见）", () => {
+    const src = readNotesPage();
+    // ⚠️ 这条钉的是 2026-10-07 修的那个真 bug：
+    // 三栏宽度写死成 `navW + listW + 14`，窄屏分支是 `xs: "100%"`。
+    // 浏览器缩放 125% 时，1080px 窗口在 CSS 里只剩 864px，跨过 MUI 的 md(900)，
+    // `xs:"100%"` 生效 → 左栏吃掉整行 → 编辑区被压成 **0 宽**，
+    // 工具栏 / 正文 / 状态栏全部不可见（真机量到 edW=0）。
+    // inkstone 的做法是 useBreakpoint()：≥1180 三栏 / ≥768 两栏 / <768 两屏。
+    assert.equal(
+        /xs:\s*"100%"/.test(src),
+        false,
+        "别再用 xs:'100%' 当窄屏宽度 —— 它会让左栏吃掉整行、编辑区变成 0 宽"
+    );
+    assert.ok(
+        src.includes("usePanelBreakpoint"),
+        "要用 usePanelBreakpoint 的三档断点（与 inkstone 的 1180 / 768 一致）"
+    );
+    // 两屏切换与「回到列表」按钮必须用同一个判据，
+    // 否则会出现「按钮在、列表也在」的矛盾态
+    assert.ok(
+        src.includes('bp === "mobile" && !mobileDetail ? "none" : "flex"'),
+        "编辑区的两屏切换要用 bp === 'mobile'"
+    );
+    assert.ok(
+        src.includes('mobileDetail && bp === "mobile"'),
+        "「回到列表」按钮要和两屏切换用同一个判据"
+    );
+    // 导航列在 tablet 起要收起来，否则三栏挤不开
+    assert.ok(
+        src.includes('display: narrowLayout ? "none" : "flex"'),
+        "导航列在 tablet/mobile 要 display:none（inkstone 的 showNav = !isMobile && !isTablet）"
+    );
+    // 收掉导航列后搜索框不能跟着消失 —— 必须搬到列表列头部再挂一份。
+    // ⚠️ 数的是**调用处**（2 处）。定义那行是
+    // `const renderSearchField = (inputRef: …) => (`，而 readNotesPage() 会先
+    // stripComments()，JSX 里的 `{/* … */}` 注释被剥掉后定义行也只剩调用点可数 ——
+    // 数成 3 会永远红。别用「定义+调用」去凑数。
+    const searchDefs = (src.match(/renderSearchField\(/g) ?? []).length;
+    assert.equal(
+        searchDefs,
+        2,
+        "renderSearchField 要有 2 处调用：导航列顶部（searchRef）+ 窄屏时列表列头部（searchRefNarrow）"
+    );
+    assert.ok(
+        src.includes("{narrowLayout && (") && src.includes("{renderSearchField(searchRefNarrow)}"),
+        "列表列头部要挂一份搜索框（否则窄屏完全搜不了笔记）"
+    );
+    // ⚠️ 两个位置必须各用各的 ref：共用一个 inputRef 会把整个测试文件堆爆内存
+    // （FATAL: heap out of memory —— 1992 条断言全过但进程直接死掉）。
+    assert.ok(
+        src.includes("const searchRefNarrow = useRef") &&
+            src.includes("renderSearchField(searchRef)") &&
+            src.includes("renderSearchField(searchRefNarrow)"),
+        "两个搜索框要各有一个 ref（searchRef / searchRefNarrow），共用会把 React 拖进 attach/detach 死循环"
+    );
+});
+
+test("导航列与左栏容器都不再画右边框（否则和发丝线叠成 2px 粗线）", () => {
+    const src = readNotesPage();
+    // ⚠️ 用户报「记事本编辑栏和目录栏当中的分割线太粗了」。真机逐层量出来：
+    //   nav|list   边界：1 条线（正常）
+    //   list|editor 边界：**2 条** —— x=487 是把手里的发丝线，
+    //                 x=500 是左栏容器（导航+列表的共同祖先）的 borderRight。
+    // 两条线差了 12px 并排出现，看着就是「粗了一截」。
+    // inkstone 那边只有 Resizer 里那根 span 负责画线，容器一律不带边框。
+    const navCol = src.slice(src.indexOf("data-nav-col='1'"), src.indexOf("data-nav-col='1'") + 1200);
+    assert.equal(
+        /borderRight:\s*"1px solid var\(--card-border\)"/.test(navCol),
+        false,
+        "导航列不要自带 borderRight —— 右边的拖动把手已经画了 1px 发丝线"
+    );
+    const listPane = src.slice(src.indexOf("const listPane = ("), src.indexOf("const listPane = (") + 1600);
+    assert.equal(
+        /borderRight:\s*\{\s*md:\s*"1px solid var\(--card-border\)"\s*\}/.test(listPane),
+        false,
+        "左栏容器不要带 borderRight —— 它落在最后那条把手右侧 12px，会变成第二条线"
+    );
+});
+
+test("工具栏只有一个内容块下拉（之前有两个同名「块」按钮开同一个菜单）", () => {
+    const src = readNotesPage();
+    assert.equal(
+        (src.match(/aria-label='块'/g) ?? []).length,
+        0,
+        "aria-label='块' 的按钮要删掉（inkstone 叫「内容块」）：留两个的话读屏会念两遍，点哪个都一样"
+    );
+    assert.ok(
+        src.includes("aria-label='内容块'"),
+        "内容块下拉要在，用 inkstone zh-CN 里的原名 workspace.content_blocks"
     );
 });
