@@ -22,6 +22,7 @@
 - **修「上传后正文里出现 `![undefined](data:text/html;base64,…)`」**（真机实测抓到）：后端回了「200 但不是预期 JSON」时（错误页、代理拦截，或 SPA 兜底把接口回落成 index.html），前端拿到的响应没有 `url` 与 `filename`，而 `fetch(undefined)` 会去请求**当前页面**、拿到 HTML 还当成图片内嵌。现在两道闸：① 响应缺 `url`/`filename` 直接报人话错误；② `blob.type` 不是 `image/*` 就不内嵌、改插链接。
 - 验证：全量单测 **2154** 通过（2153 pass / 1 本地跳过，本批新增 4 条守卫），tsc `-b --force` / eslint / build / smoke 全绿；真机探针 `harness/verify-b18-upload.mjs` 通过（菜单顺序与文案对齐 inkstone、隐藏 file input 的 accept、塞文件后正文出现 `![probe.png](data:image/png;base64,…)`）。
 - 部署前置：已建 KV 命名空间 `navihive-files-kv` 并把 id 写进 `wrangler.jsonc`（换环境部署要另建一个再换 id —— KV 不跨账号）。
+- 收尾：图片按钮的 Tooltip 还写着「本地图片还没开放」（上线时漏同步）—— 用户悬停会照着提示以为是坏的。改成与现状一致：「点图标直接传本地图，点箭头选网络图片」。
 
 ## 2026-10-07 · 记事本第九批：两栏之间可见分隔线 + 编辑区内即时渲染（对齐 inkstone）
 

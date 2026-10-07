@@ -6128,10 +6128,10 @@ function MarkdownToolbar({
             </Menu>
 
             {/* ③ 图片（inkstone 的 image 菜单）：同样是「主按钮 + 箭头」。
-                ⚠️ 本地上传仍未开放（R2/D1 存储没定），菜单项置灰并写清原因，
-                免得用户以为是 bug。 */}
+                2026-10-08 起本地上传已接上（KV 落地），下面的 Tooltip 别再写
+                「还没开放」—— 用户会照着提示以为是坏的（真发生过）。 */}
             <Box sx={{ display: "inline-flex", alignItems: "center", flexShrink: 0 }}>
-                <Tooltip title='插入图片（目前只支持网络图片，本地图片还没开放）'>
+                <Tooltip title='插入图片：点图标直接传本地图，点箭头选网络图片'>
                 <IconButton
                     size='small'
                     aria-label='图片'
@@ -6143,7 +6143,7 @@ function MarkdownToolbar({
                     <ImageIcon fontSize='small' />
                 </IconButton>
                     </Tooltip>
-                <Tooltip title='插入图片：网络图片，或本地上传（未开放）'>
+                <Tooltip title='插入图片菜单：上传图片 / 网络图片'>
                 <IconButton
                     size='small'
                     aria-label='插入图片'
