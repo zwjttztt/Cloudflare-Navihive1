@@ -5,6 +5,8 @@ import { markdown } from "@codemirror/lang-markdown";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { syntaxHighlighting, defaultHighlightStyle, bracketMatching, indentUnit } from "@codemirror/language";
 
+import { Compartment } from "@codemirror/state";
+import { livePreview, type LiveRenderer } from "./NoteEditorLivePreview";
 import { editorHandle, type NoteEditorHandle } from "../utils/noteEditorHandle";
 
 // 字体/字号走 CSS 变量而不是把值写死进 theme：设置面板改字号时不用重建编辑器
@@ -57,6 +59,9 @@ const DIMMED_LINE_DECORATION = Decoration.line({ class: "cm-focus-dimmed" });
 /** 承载专注模式的装饰集；null = 关闭。 */
 const setFocusEffect = StateEffect.define<DecorationSet | null>();
 
+/** 即时渲染的开关用 Compartment 换扩展 —— 重建编辑器会丢撤销历史，不能那么干。 */
+const liveCompartment = new Compartment();
+
 const focusField = StateField.define<DecorationSet>({
     create: () => Decoration.none,
     update(value, tr) {
@@ -93,13 +98,11 @@ export interface NoteEditorProps {
      */
     focusMode?: boolean;
     /**
-     * 「即时渲染」用：把**光标所在段落**的原文报出去，由宿主渲染成 HTML 贴在编辑器里。
-     *
-     * ⚠️ 为什么是段落而不是整篇：整篇渲染等于把预览区复制一份到编辑区，
-     * 大文档会卡到没法打字；只渲染当前段落既能实时看到效果，又不拖慢编辑。
-     * 回调放进 ref：换回调不重建编辑器（重建会丢撤销历史）。
+     * 「即时渲染」：非当前段落整块替换成渲染后的样子（inkstone 同款）。
+     * 渲染函数由宿主注入（异步，因为 markdown-it 是动态 import）。
+     * 传 null / undefined = 关掉，此时就是纯源码编辑。
      */
-    onCursorParagraph?: (text: string) => void;
+    liveRender?: LiveRenderer | null;
 }
 
 export default function NoteEditor({
@@ -112,7 +115,7 @@ export default function NoteEditor({
     fontSize = 14,
     indentWidth = 2,
     onScrollRatio,
-    onCursorParagraph,
+    liveRender = null,
     focusMode = false,
 }: NoteEditorProps) {
     const host = useRef<HTMLDivElement>(null);
@@ -121,8 +124,6 @@ export default function NoteEditor({
     // 滚动回调放进 ref：换回调不该重建编辑器（会丢撤销历史）
     const scrollRef = useRef(onScrollRatio);
     useLayoutEffect(() => { scrollRef.current = onScrollRatio; }, [onScrollRatio]);
-    const paraRef = useRef(onCursorParagraph);
-    useLayoutEffect(() => { paraRef.current = onCursorParagraph; }, [onCursorParagraph]);
     // 专注模式是**装饰**：它是纯视觉的开关，所以走 ref + 一个重绘 effect，
     // 绝不能进 extensions 依赖（那会让整台编辑器重建、撤销历史清空）。
     const focusRef = useRef(focusMode);
@@ -140,6 +141,7 @@ export default function NoteEditor({
                 doc: value,
                 extensions: [
                     markdown(), history(), bracketMatching(), focusField,
+                    liveCompartment.of([]),
                     // 缩进宽度（设置面板）：Tab / 自动缩进都认它
                     indentUnit.of(" ".repeat(indentWidth)),
                     // 行号是扩展不是样式：关掉它只能在建编辑器时决定 ——
@@ -161,12 +163,6 @@ export default function NoteEditor({
                             changeRef.current(update.state.doc.toString());
                             // 正文变了 → 专注模式的「当前段落」可能换了一段，重算淡化
                             if (focusRef.current) focusRebuildRef.current?.();
-                        }
-                        // 光标所在段落：光标移动或正文改动都算（段落可能被改写）
-                        if (update.docChanged || update.selectionSet) {
-                            const pos = update.state.selection.main.head;
-                            const range = paragraphRange(update.state, pos);
-                            paraRef.current?.(update.state.sliceDoc(range.from, range.to));
                         }
                     }),
                 ],
@@ -228,6 +224,34 @@ export default function NoteEditor({
             view.dom.removeEventListener("mouseup", onChange);
         };
     }, [focusMode, focusTick]);
+
+    // 渲染函数用 ref 传给扩展：换函数不重配扩展（重配会重建所有装饰块，代价大）
+    const liveRenderRef = useRef(liveRender);
+    liveRenderRef.current = liveRender;
+    const liveRenderStable = useRef<LiveRenderer | null>(null);
+    if (!liveRenderStable.current) {
+        // 只建一次：内部按当前 ref 取真正的渲染函数
+        const fallback: LiveRenderer = (source, key) => {
+            const fn = liveRenderRef.current;
+            if (!fn) return Promise.resolve(null);
+            return fn(source, key);
+        };
+        liveRenderStable.current = fallback;
+    }
+    const wantLive = liveRender ? 1 : 0;
+    const [liveApplied, setLiveApplied] = useState(0);
+    useEffect(() => {
+        const view = viewRef.current;
+        if (!view) return;
+        if (liveApplied !== wantLive) {
+            view.dispatch({
+                effects: liveCompartment.reconfigure(
+                    wantLive ? livePreview(liveRenderStable.current!) : []
+                ),
+            });
+            setLiveApplied(wantLive);
+        }
+    }, [wantLive, liveApplied]);
 
     useImperativeHandle(editorRef, () => editorHandle(viewRef.current!), []);
     useEffect(() => {

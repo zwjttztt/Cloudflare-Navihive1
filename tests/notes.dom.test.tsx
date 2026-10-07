@@ -2207,8 +2207,8 @@ test("列宽的默认值与上下界都写成了常量（便于以后统一调�
         "列表列要有上下界"
     );
     assert.ok(
-        /width: 7,/.test(pageSource),
-        "分隔条命中区要 ≥7px —— 2px 的细线在笔记本触控板上根本点不中"
+        /width: (7|8|9),/.test(pageSource),
+        "分隔条命中区要 ≥7px（现在是 9px：里面画 1px 可见线，其余留给命中区）"
     );
 });
 
@@ -3340,10 +3340,15 @@ test("即时渲染：只作用于编辑区，预览区始终是渲染后的结�
         false,
         "预览区不该再受「即时渲染」影响（2026-10-07 用户澄清）"
     );
-    // 开关改成控制编辑区上方的「实时渲染当前段落」
+    // 开关改成控制「编辑区内部」的即时渲染（inkstone 同款：非当前段落整块替换）
     assert.ok(
+        src.includes("liveRender={liveRender ? liveRenderer : null}"),
+        "编辑器的即时渲染要由设置里的开关注入"
+    );
+    assert.equal(
         src.includes("data-inline-render"),
-        "编辑区要有实时渲染当前段落的那一块"
+        false,
+        "不要再有独立的「实时渲染」窗口（2026-10-07 用户要求：直接体现在编辑区内）"
     );
     // 设置里有这两项，跨会话保留
     assert.ok(
@@ -3522,36 +3527,27 @@ test("侧栏状态栏与左侧同款：显示模式/字数/创建于/保存，�
 });
 
 
-test("专注模式与实时渲染：编辑器上方的渲染块随开关出现/消失", async () => {
+test("即时渲染：编辑区内非当前段落被替换成渲染块，点一下回到源码", async () => {
     mountPanel([note({ id: 1, title: "甲", content: "第一段\n\n第二段" })]);
-    // 默认开着即时渲染 → 光标段落渲染块应该出现（编辑器上报了段落才有）
-    const ta = getEditor();
-    act(() => {
-        typeInto(ta, "第一段");
-    });
-    await act(async () => {
-        await new Promise(r => setTimeout(r, 300));
-    });
-    assert.ok(
-        document.querySelector("[data-inline-render='1']"),
-        "编辑区上方要实时渲染光标所在段落"
-    );
-    // 关掉设置里的「编辑区实时渲染」→ 这块消失
-    globalThis.localStorage?.setItem(
-        "notes.uiSettings",
-        JSON.stringify({ liveRender: false })
-    );
-    await act(async () => {
-        window.dispatchEvent(new Event("storage"));
-    });
+    // 编辑器上报的渲染函数由宿主注入；这里断言「有注入」且「不再是独立窗口」
     const src = readNotesPage();
-    assert.ok(
-        src.includes("{liveRender && pane !== \"preview\" && cursorPara.trim()"),
-        "渲染块受「编辑区实时渲染」开关控制"
+    assert.ok(src.includes("liveRender={liveRender ? liveRenderer : null}"), "要注入渲染函数");
+    assert.equal(src.includes("data-inline-render"), false, "不要独立窗口");
+    // 扩展本体：装饰替换 + 点击回源码
+    const lp = readFileSync(join(findProjectDir(), "src", "components", "NoteEditorLivePreview.ts"), "utf-8");
+    assert.ok(lp.includes("Decoration.replace"), "非当前段落要用 Decoration.replace 换成渲染块");
+    assert.ok(lp.includes("selection: { anchor: line.from }"), "点渲染块要把光标送回源码行");
+    const lpCode = lp
+        .split("\n")
+        .filter(line => !line.trim().startsWith("//") && !line.trim().startsWith("*") && !line.trim().startsWith("/*"))
+        .join("\n");
+    assert.equal(
+        /innerHTML/.test(lpCode),
+        false,
+        "⚠️ 渲染块不许用 innerHTML（全项目禁止字符串 HTML sink，必须走 token→React）"
     );
     // 专注模式：设置项 + 编辑器装饰类名都在
     assert.ok(src.includes("focusMode={uiSettings.focusMode}"), "编辑器要接专注模式");
-    globalThis.localStorage?.removeItem("notes.uiSettings");
 });
 
 test("文件夹内笔记标题靠左：缩进必须写像素，不能用 MUI 间距单位", () => {
@@ -3572,16 +3568,11 @@ test("文件夹内笔记标题靠左：缩进必须写像素，不能用 MUI 间
     );
 });
 
-test("切笔记时清掉「编辑区实时渲染」的缓存段落", () => {
+test("即时渲染不再维护「上一段」缓存（那套已随重构删掉）", () => {
     const src = readNotesPage();
-    // 不清的话，编辑区上方会继续渲染**上一篇**的段落：页面上第一个 wiki 链接变成旧的，
-    // 点下去跳错笔记（实测踩过：双链用例反向链接数对不上）。
-    // ⚠️ 锚点要落在**代码**上：readNotesPage() 会剥掉注释，
-    // 拿注释里的中文当锚点必然 indexOf = -1。
-    const i = src.indexOf("setDraft({ title: active.title");
-    const block = src.slice(Math.max(0, i - 200), i + 600);
-    assert.ok(
-        block.includes('setCursorPara("")'),
-        "换笔记时要清空 cursorPara（否则实时渲染块显示的是上一篇）"
+    assert.equal(
+        src.includes("cursorPara"),
+        false,
+        "cursorPara 那套（切笔记清缓存）应随行内渲染改造一起移除 —— 实时渲染块由编辑器装饰实时生成，没有缓存可脏"
     );
 });

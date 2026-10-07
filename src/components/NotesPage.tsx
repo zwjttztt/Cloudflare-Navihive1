@@ -1121,12 +1121,26 @@ function ColResizeHandle({
             onMouseDown={onDrag}
             onDoubleClick={onReset}
             sx={{
-                width: 7,
+                width: 9,
                 flexShrink: 0,
                 cursor: "col-resize",
                 bgcolor: "transparent",
-                transition: "background-color 120ms ease",
-                "&:hover": { bgcolor: "var(--accent)" },
+                position: "relative",
+                // ⚠️ 常驻一条发丝线（2026-10-07 用户报「两篇笔记当中没有线分开」）：
+                // 之前整条把手是透明的、hover 才变色 —— 静态看上去两篇笔记是**粘在一起**的，
+                // 分不清哪里能拖。用 ::after 画 1px 线居中，hover/拖动时变强调色。
+                "&::after": {
+                    content: '""',
+                    position: "absolute",
+                    top: 0,
+                    bottom: 0,
+                    left: "50%",
+                    width: 1,
+                    transform: "translateX(-50%)",
+                    bgcolor: "var(--card-border, rgba(128,128,128,0.45))",
+                    transition: "background-color 120ms ease",
+                },
+                "&:hover::after": { bgcolor: "var(--accent)", width: 2 },
                 // ⚠️ 下面两条是「拖得动」的关键，不是装饰：
                 //   - `alignSelf: stretch` + `minHeight`：父容器是 flex，
                 //     不显式拉伸的话这条会**塌成 0 高度**（2026-10-06 的真机 bug：
@@ -1337,9 +1351,15 @@ export default function NotesPage({
      * 停在「上一次存库的内容」，长文里打字会流畅很多（每敲一下都要重解析整篇）。
      * 每栏各一份，跟着那一栏走。
      */
-    /** 「即时渲染」的内容：光标所在段落的原文（主栏 / 侧栏各一份） */
-    const [cursorPara, setCursorPara] = useState("");
-    const [sideCursorPara, setSideCursorPara] = useState("");
+    /**
+     * 「即时渲染」的渲染函数：编辑器用它把**非当前段落**整块替换成渲染后的样子
+     * （inkstone 同款做法，见 NoteEditorLivePreview.ts）。
+     * 关掉时传 null，编辑器就是纯源码。
+     */
+    const liveRenderer = useCallback(
+        (source: string): Promise<ReactNode> => renderMarkdownToReact(source, {}),
+        []
+    );
     const tools = useEditorTools(textareaRef, setDraft);
     /** 大纲跳转 = 主编辑器的光标跳转（原局部实现已抽进 hook） */
     const jumpToOffset = tools.jumpToOffset;
@@ -1555,10 +1575,6 @@ export default function NotesPage({
     // 选中的笔记变了就把草稿换成它的内容（没在编辑时才换，避免打字被冲掉）
     useEffect(() => {
         if (active) setDraft({ title: active.title || "", content: active.content || "" });
-        // ⚠️ 顺带清掉「编辑区实时渲染」的缓存段落：它属于**上一篇**。
-        // 不清的话，编辑区上方会继续渲染上一段（实测踩到过：页面上第一个 wiki 链接
-        // 变成了上一篇的，点下去跳错笔记，反向链接数对不上）。
-        setCursorPara("");
     }, [active?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
     /**
@@ -2016,9 +2032,6 @@ export default function NotesPage({
                 n.id === sideId &&
                 (sideDraft.title !== (n.title || "") || sideDraft.content !== (n.content || ""))
         );
-    useEffect(() => {
-        setSideCursorPara("");
-    }, [sideId]);
     useEffect(() => {
         if (sideId === null || !sideDraft) return;
         const note = notes.find(n => n.id === sideId);
@@ -3313,42 +3326,6 @@ export default function NotesPage({
                     />
                     )}
 
-                    {/* 「即时渲染」= 在**编辑区里**实时渲染光标所在段落。
-                        预览区本来就一直是渲染结果、不受这个开关影响（2026-10-07 用户澄清：
-                        「即时渲染改成渲染编辑区的内容，预览区都是渲染后不收它影响」）。 */}
-                    {liveRender && pane !== "preview" && cursorPara.trim() && (
-                        <Box
-                            data-inline-render='1'
-                            sx={{
-                                mx: 2,
-                                mb: 1,
-                                px: 1.5,
-                                py: 1,
-                                flexShrink: 0,
-                                maxHeight: 132,
-                                overflowY: "auto",
-                                borderRadius: 1.5,
-                                border: "1px solid var(--card-border, rgba(128,128,128,0.3))",
-                                bgcolor: "rgba(128,128,128,0.05)",
-                                fontSize: uiSettings.previewFontSize,
-                                lineHeight: uiSettings.lineHeight,
-                            }}
-                        >
-                            <Typography
-                                variant='caption'
-                                color='text.disabled'
-                                sx={{ display: "block", mb: 0.5, fontSize: 11 }}
-                            >
-                                编辑区实时渲染（光标所在段落）
-                            </Typography>
-                            <MarkdownPreview
-                                source={cursorPara}
-                                resolveNote={resolveNote}
-                                onOpenNote={handleOpenEmbedNote}
-                                features={previewFeatures}
-                            />
-                        </Box>
-                    )}
                     {/* 内容区：源码 | 预览 | 大纲面板。外层再包一行，
                         大纲面板（outlineOpen）作为第三列贴在预览右侧（inkstone 布局）。 */}
                     <Box sx={{ flex: 1, display: "flex", minHeight: 0, minWidth: 0 }}>
@@ -3424,7 +3401,7 @@ export default function NotesPage({
                                     fontSize={uiSettings.editorFontSize}
                                     indentWidth={uiSettings.indentWidth}
                                     onScrollRatio={syncPreviewScroll}
-                                    onCursorParagraph={setCursorPara}
+                                    liveRender={liveRender ? liveRenderer : null}
                                     focusMode={uiSettings.focusMode}
                                 />
                             </Box>
@@ -3834,39 +3811,6 @@ export default function NotesPage({
                     borderBottom: "none",
                 }}
             >
-                {sideMode !== "preview" && sideLiveRender && sideCursorPara.trim() && (
-                    <Box
-                        data-side-inline-render='1'
-                        sx={{
-                            mx: 1.5,
-                            mt: 1,
-                            px: 1.25,
-                            py: 0.75,
-                            flexShrink: 0,
-                            maxHeight: 120,
-                            overflowY: "auto",
-                            borderRadius: 1.5,
-                            border: "1px solid var(--card-border, rgba(128,128,128,0.3))",
-                            bgcolor: "rgba(128,128,128,0.05)",
-                            fontSize: uiSettings.previewFontSize,
-                            lineHeight: uiSettings.lineHeight,
-                        }}
-                    >
-                        <Typography
-                            variant='caption'
-                            color='text.disabled'
-                            sx={{ display: "block", mb: 0.5, fontSize: 11 }}
-                        >
-                            编辑区实时渲染
-                        </Typography>
-                        <MarkdownPreview
-                            source={sideCursorPara}
-                            resolveNote={resolveNote}
-                            onOpenNote={handleOpenEmbedNote}
-                            features={previewFeatures}
-                        />
-                    </Box>
-                )}
                 {sideMode === "preview" ? (
                     /* 侧边预览：与主编辑区同一套 Markdown 渲染（token→React，无 HTML sink）。
                        关掉「即时渲染」时渲染的是**已存库**的那份，不是草稿 —— 这正是
@@ -3894,7 +3838,7 @@ export default function NotesPage({
                                 font={uiSettings.editorFont}
                                 fontSize={uiSettings.editorFontSize}
                                 indentWidth={uiSettings.indentWidth}
-                                onCursorParagraph={setSideCursorPara}
+                                liveRender={liveRender ? liveRenderer : null}
                                 focusMode={uiSettings.focusMode}
                             />
                         </Box>
@@ -3918,7 +3862,8 @@ export default function NotesPage({
                         font={uiSettings.editorFont}
                         fontSize={uiSettings.editorFontSize}
                         indentWidth={uiSettings.indentWidth}
-                        onCursorParagraph={setSideCursorPara}
+                        liveRender={liveRender ? liveRenderer : null}
+                        focusMode={uiSettings.focusMode}
                     />
                 )}
             </Box>
