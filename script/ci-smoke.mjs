@@ -315,8 +315,22 @@ const chrome = spawn(
         "--window-size=1440,950",
         "about:blank",
     ],
-    { stdio: "ignore" }
+    // ⚠️ stderr 不能丢（2026-10-08：CI 的 ubuntu runner 上报「连不上 Chrome 的
+    // 调试端口」，而这里是 `stdio:"ignore"`，Chrome 自己为什么起不来一条都看不到，
+    // 只能对着一句「连不上」猜）。只接 stderr：stdout 里是没用的启动噪音。
+    { stdio: ["ignore", "ignore", "pipe"] }
 );
+
+/** Chrome 自己报的错，等连接失败时打出来 —— 否则无从下手 */
+const chromeStderr = [];
+/** Chrome 是否已经退出（code / signal）。先声明再用，别踩 TDZ。 */
+let chromeExited = null;
+chrome.stderr.on("data", chunk => chromeStderr.push(chunk.toString()));
+chrome.on("exit", (code, signal) => {
+    // Chrome 起来了但**中途退出**（缺共享库 / 端口被占）时，这里会先有信号，
+    // 而上面还在傻等 —— 记下来，失败信息里一并报出。
+    if (code !== null || signal) chromeExited = { code, signal };
+});
 
 let ws;
 let msgId = 1;
@@ -349,15 +363,38 @@ const check = (name, ok, extra = "") => {
 };
 
 let target = null;
-for (let i = 0; i < 60 && !target; i++) {
+// ⚠️ 窗口从 60×300ms（18s）放宽到 60 秒：CI 上 Chrome 冷启动偶尔就是要更久，
+// 18 秒等满直接判失败，看日志只看到「连不上」，很容易被误判成产品问题。
+const CHROME_READY_TIMEOUT_MS = 60_000;
+const readyT0 = Date.now();
+let readyAttempts = 0;
+for (let i = 0; i < 400 && !target; i++) {
+    if (Date.now() - readyT0 > CHROME_READY_TIMEOUT_MS) break;
     await sleep(300);
+    readyAttempts++;
     try {
         const list = await (await fetch(`http://127.0.0.1:${CDP_PORT}/json/list`)).json();
         target = list.find(t => t.type === "page");
     } catch {}
 }
 if (!target) {
-    console.error("连不上 Chrome 的调试端口");
+    const waited = ((Date.now() - readyT0) / 1000).toFixed(1);
+    console.error(
+        `连不上 Chrome 的调试端口（等了 ${waited}s / 探了 ${readyAttempts} 次，二进制：${CHROME}）`
+    );
+    if (chromeExited) {
+        console.error(
+            `⚠️ Chrome 进程已经退出了（code=${chromeExited.code} signal=${chromeExited.signal}）` +
+                ` —— 不是「没起来」，是起来就崩了`
+        );
+    }
+    const err = chromeStderr.join("").trim();
+    if (err) {
+        console.error("Chrome 的 stderr（最后 25 行）：");
+        console.error(err.split("\n").slice(-25).join("\n"));
+    } else {
+        console.error("Chrome 没有输出任何 stderr —— 可能是还没来得及写就退出了");
+    }
     cleanup();
     process.exit(1);
 }
