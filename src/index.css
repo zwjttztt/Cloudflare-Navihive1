@@ -1146,3 +1146,10 @@ html.nav-touch .nav-star-btn[data-starred="false"] {
 [data-notes-density='compact'] [data-list-header='1'] {
     padding-bottom: 2px !important;
 }
+
+/* 专注模式：淡化光标所在段落之外的行（inkstone 编辑器页同名功能）。
+   用 opacity 而不是改颜色 —— 颜色在亮/暗两种主题下都要重新挑，透明度不用。 */
+.cm-content .cm-line.cm-focus-dimmed {
+    opacity: 0.38;
+    transition: opacity 120ms ease;
+}

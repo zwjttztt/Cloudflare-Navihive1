@@ -427,6 +427,24 @@ export default function NotesSettingsDialog({
                                         size='small'
                                     />
                                 </SettingRow>
+                                {/* 专注模式 / 编辑区实时渲染放这一组：都在「写东西」时用，
+                                    埋在长列表底下要滚动才看见（实测点不到）。 */}
+                                <SettingRow label='专注模式' description='淡化光标所在段落之外的内容，只留当前这段'>
+                                    <Switch
+                                        checked={settings.focusMode}
+                                        onChange={e => set("focusMode", e.target.checked)}
+                                        data-setting='focusMode'
+                                        size='small'
+                                    />
+                                </SettingRow>
+                                <SettingRow label='编辑区实时渲染' description='在编辑区里实时渲染光标所在段落（预览区一直是渲染后的结果）'>
+                                    <Switch
+                                        checked={settings.liveRender}
+                                        onChange={e => set("liveRender", e.target.checked)}
+                                        data-setting='liveRender'
+                                        size='small'
+                                    />
+                                </SettingRow>
                                 <SettingRow label='拼写检查' description='使用浏览器的原生拼写检查'>
                                     <Switch
                                         checked={settings.spellcheck}

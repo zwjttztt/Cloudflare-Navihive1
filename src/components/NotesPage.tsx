@@ -66,6 +66,7 @@ import LinkIcon from "@mui/icons-material/Link";
 import LinkOffIcon from "@mui/icons-material/LinkOff";
 import HistoryIcon from "@mui/icons-material/History";
 import ShareIcon from "@mui/icons-material/Share";
+import BoltIcon from "@mui/icons-material/Bolt";
 import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
 import ListIcon from "@mui/icons-material/List";
 import PushPinIcon from "@mui/icons-material/PushPin";
@@ -715,8 +716,13 @@ function FolderTagSection({
                                         cursor: "pointer",
                                         minWidth: 0,
                                         px: 1.25,
-                                        // 比文件夹行再缩进一档，父子关系一眼看得出
-                                        pl: 1.25 + Math.min(depth + 1, 6) * 10,
+                                        // 比文件夹行再缩进一档，父子关系一眼看得出。
+                                        // ⚠️⚠️ 必须写**像素字符串**：这里的 pl 是 MUI 间距单位
+                                        // （1 个单位 = 8px）。之前写成 1.25 + (depth+1)*10
+                                        // → 第一层就是 90px 缩进，128px 宽的左栏里文字只剩
+                                        // 25px，看起来就像「标题居中了」（用户报）。
+                                        // 现在 22px 起步（与「未归类」那组基本齐平），每深一层 +12px。
+                                        pl: `${22 + Math.min(depth, 4) * 12}px`,
                                         py: 0.35,
                                         borderRadius: 1.25,
                                         bgcolor:
@@ -1148,6 +1154,24 @@ function ColResizeHandle({
  */
 const AUTO_SAVE_MS = 3000;
 
+/** 主栏↔侧栏比例的持久化（与列宽同一套思路：越界回落默认值） */
+const PANE_RATIO_KEY = "notes.paneRatio";
+function readPaneRatio(): number {
+    try {
+        const n = Number(globalThis.localStorage?.getItem(PANE_RATIO_KEY));
+        return Number.isFinite(n) && n >= 0.2 && n <= 0.8 ? n : 0.5;
+    } catch {
+        return 0.5;
+    }
+}
+function writePaneRatio(value: number): void {
+    try {
+        globalThis.localStorage?.setItem(PANE_RATIO_KEY, String(value));
+    } catch {
+        /* 隐私模式写不了，忽略 */
+    }
+}
+
 function readSplitRatio(): number {
     try {
         const raw = globalThis.localStorage?.getItem(SPLIT_KEY);
@@ -1313,8 +1337,9 @@ export default function NotesPage({
      * 停在「上一次存库的内容」，长文里打字会流畅很多（每敲一下都要重解析整篇）。
      * 每栏各一份，跟着那一栏走。
      */
-    const [liveRender, setLiveRender] = useState(true);
-    const [sideLiveRender, setSideLiveRender] = useState(true);
+    /** 「即时渲染」的内容：光标所在段落的原文（主栏 / 侧栏各一份） */
+    const [cursorPara, setCursorPara] = useState("");
+    const [sideCursorPara, setSideCursorPara] = useState("");
     const tools = useEditorTools(textareaRef, setDraft);
     /** 大纲跳转 = 主编辑器的光标跳转（原局部实现已抽进 hook） */
     const jumpToOffset = tools.jumpToOffset;
@@ -1322,6 +1347,16 @@ export default function NotesPage({
 
     // ---------- 设置（外观 / 编辑器） ----------
     const [uiSettings, setUiSettings] = useState<NotesUiSettings>(loadNotesSettings);
+    // 「即时渲染」存进设置（跨会话保留，两栏共用同一个值）；标题行那颗开关只改设置。
+    // ⚠️ 必须声明在 uiSettings 之后 —— 它是从设置派生出来的。
+    const liveRender = uiSettings.liveRender;
+    const setLiveRender = (updater: boolean | ((v: boolean) => boolean)) =>
+        setUiSettings(cur => ({
+            ...cur,
+            liveRender: typeof updater === "function" ? updater(cur.liveRender) : updater,
+        }));
+    const sideLiveRender = uiSettings.liveRender;
+    const setSideLiveRender = setLiveRender;
     const [settingsOpen, setSettingsOpen] = useState(false);
     useEffect(() => {
         saveNotesSettings(uiSettings);
@@ -1342,8 +1377,50 @@ export default function NotesPage({
         }),
         [uiSettings.mathRender, uiSettings.mermaidRender, uiSettings.foldCode, uiSettings.foldCodeLines]
     );
+    /**
+     * 主栏 ↔ 侧栏的分栏比例（0.2~0.8，记住上一次）。
+     * ⚠️ 2026-10-07 先按「固定 50/50 不可拖」做，当天用户又要求「能拖动改大小」——
+     * 两条需求各成立一半，最后按后者做：默认 50/50，但可以拖，拖完记住。
+     */
+    const [paneRatio, setPaneRatio] = useState(() => readPaneRatio());
+    const paneRatioRef = useRef(paneRatio);
+    const [sideResizing, setSideResizing] = useState(false);
+    const startPaneDrag = useCallback((e: React.MouseEvent) => {
+        e.preventDefault();
+        const row = paneRowRef.current;
+        if (!row) return;
+        const rect = row.getBoundingClientRect();
+        const total = rect.width;
+        if (total <= 0) return;
+        setSideResizing(true);
+        const onMove = (ev: MouseEvent) => {
+            const ratio = (ev.clientX - rect.left) / total;
+            const next = Math.min(0.8, Math.max(0.2, ratio));
+            paneRatioRef.current = next;
+            setPaneRatio(next);
+        };
+        const onUp = () => {
+            window.removeEventListener("mousemove", onMove);
+            window.removeEventListener("mouseup", onUp);
+            document.body.style.userSelect = "";
+            document.body.style.cursor = "";
+            setSideResizing(false);
+            writePaneRatio(paneRatioRef.current);
+        };
+        document.body.style.userSelect = "none";
+        document.body.style.cursor = "col-resize";
+        window.addEventListener("mousemove", onMove);
+        window.addEventListener("mouseup", onUp);
+    }, []);
+    const resetPaneRatio = useCallback(() => {
+        paneRatioRef.current = 0.5;
+        setPaneRatio(0.5);
+        writePaneRatio(0.5);
+    }, []);
     /** 预览窗的滚动容器（滚动同步要拿它算位置） */
     const previewScrollRef = useRef<HTMLDivElement | null>(null);
+    /** 两栏（主栏 | 侧栏）那一行，拖动时用它量总宽 */
+    const paneRowRef = useRef<HTMLDivElement | null>(null);
     /**
      * 滚动同步：源码滚到 50%，预览也滚到 50%（设置面板「滚动同步」）。
      * 按比例而不是像素 —— 两栏行高不同，像素对不齐。
@@ -1478,6 +1555,10 @@ export default function NotesPage({
     // 选中的笔记变了就把草稿换成它的内容（没在编辑时才换，避免打字被冲掉）
     useEffect(() => {
         if (active) setDraft({ title: active.title || "", content: active.content || "" });
+        // ⚠️ 顺带清掉「编辑区实时渲染」的缓存段落：它属于**上一篇**。
+        // 不清的话，编辑区上方会继续渲染上一段（实测踩到过：页面上第一个 wiki 链接
+        // 变成了上一篇的，点下去跳错笔记，反向链接数对不上）。
+        setCursorPara("");
     }, [active?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
     /**
@@ -1935,6 +2016,9 @@ export default function NotesPage({
                 n.id === sideId &&
                 (sideDraft.title !== (n.title || "") || sideDraft.content !== (n.content || ""))
         );
+    useEffect(() => {
+        setSideCursorPara("");
+    }, [sideId]);
     useEffect(() => {
         if (sideId === null || !sideDraft) return;
         const note = notes.find(n => n.id === sideId);
@@ -3120,9 +3204,11 @@ export default function NotesPage({
                                 "& .MuiInput-input": { padding: "6px 0" },
                             }}
                         />
-                        {/* 即时渲染（inkstone 顶栏同名开关）：关掉后预览停在「已存库的
-                            内容」，打字不再触发整篇重解析。放在模式按钮左边。 */}
-                        <Box sx={{ display: "flex", alignItems: "center", gap: 0.25, flexShrink: 0, mr: 0.5 }}>
+                        {/* 即时渲染（inkstone 顶栏同名开关）。
+                            ⚠️ 窄屏（<900px）藏起来：标题行已经装了「即时渲染 + 三档 + 更多 +
+                            关闭」，窄窗口塞不下。同一个开关在「更多操作」菜单里有一份，
+                            窄屏走那条路（见下面 data-active-op='live-render'）。 */}
+                        <Box sx={{ display: { xs: "none", md: "flex" }, alignItems: "center", gap: 0.25, flexShrink: 0, mr: 0.5 }}>
                             <Typography variant='caption' color='text.secondary' sx={{ fontSize: 11, whiteSpace: "nowrap" }}>
                                 即时渲染
                             </Typography>
@@ -3227,6 +3313,42 @@ export default function NotesPage({
                     />
                     )}
 
+                    {/* 「即时渲染」= 在**编辑区里**实时渲染光标所在段落。
+                        预览区本来就一直是渲染结果、不受这个开关影响（2026-10-07 用户澄清：
+                        「即时渲染改成渲染编辑区的内容，预览区都是渲染后不收它影响」）。 */}
+                    {liveRender && pane !== "preview" && cursorPara.trim() && (
+                        <Box
+                            data-inline-render='1'
+                            sx={{
+                                mx: 2,
+                                mb: 1,
+                                px: 1.5,
+                                py: 1,
+                                flexShrink: 0,
+                                maxHeight: 132,
+                                overflowY: "auto",
+                                borderRadius: 1.5,
+                                border: "1px solid var(--card-border, rgba(128,128,128,0.3))",
+                                bgcolor: "rgba(128,128,128,0.05)",
+                                fontSize: uiSettings.previewFontSize,
+                                lineHeight: uiSettings.lineHeight,
+                            }}
+                        >
+                            <Typography
+                                variant='caption'
+                                color='text.disabled'
+                                sx={{ display: "block", mb: 0.5, fontSize: 11 }}
+                            >
+                                编辑区实时渲染（光标所在段落）
+                            </Typography>
+                            <MarkdownPreview
+                                source={cursorPara}
+                                resolveNote={resolveNote}
+                                onOpenNote={handleOpenEmbedNote}
+                                features={previewFeatures}
+                            />
+                        </Box>
+                    )}
                     {/* 内容区：源码 | 预览 | 大纲面板。外层再包一行，
                         大纲面板（outlineOpen）作为第三列贴在预览右侧（inkstone 布局）。 */}
                     <Box sx={{ flex: 1, display: "flex", minHeight: 0, minWidth: 0 }}>
@@ -3302,6 +3424,8 @@ export default function NotesPage({
                                     fontSize={uiSettings.editorFontSize}
                                     indentWidth={uiSettings.indentWidth}
                                     onScrollRatio={syncPreviewScroll}
+                                    onCursorParagraph={setCursorPara}
+                                    focusMode={uiSettings.focusMode}
                                 />
                             </Box>
                         )}
@@ -3362,34 +3486,8 @@ export default function NotesPage({
                                             : "transparent",
                                 }}
                             >
-                                {/* 即时渲染关闭时的提示条。
-                                    ⚠️ 2026-10-07 用户报「即时渲染打开后无效果」：这个开关
-                                    默认就是开的，打开当然看不出差别；关掉后预览停在旧内容，
-                                    界面却毫无提示，用户以为坏了。现在给一条明确的
-                                    「预览已暂停 + 立即刷新」，两种状态都一眼可见。 */}
-                                {!liveRender && (
-                                    <Box
-                                        data-preview-paused='1'
-                                        sx={{
-                                            display: "flex",
-                                            alignItems: "center",
-                                            gap: 1,
-                                            mb: 1,
-                                            px: 1.25,
-                                            py: 0.5,
-                                            borderRadius: 1.5,
-                                            bgcolor: "rgba(128,128,128,0.10)",
-                                            fontSize: 12,
-                                            color: "text.secondary",
-                                        }}
-                                    >
-                                        <span>预览已暂停：即时渲染已关闭，正文改动不会自动出现在这里</span>
-                                        <Box sx={{ flex: 1 }} />
-                                        <Button size='small' data-tool='preview-refresh' onClick={() => setLiveRender(true)}>
-                                            立即刷新
-                                        </Button>
-                                    </Box>
-                                )}
+                                {/* 「即时渲染」只作用于**编辑区**：预览区永远是渲染后的结果，
+                                    始终跟随编辑内容（2026-10-07 用户澄清）。 */}
                                 <Box
                                     data-preview-content='1'
                                     sx={{
@@ -3433,7 +3531,8 @@ export default function NotesPage({
                                         onNotify?.(`没有找到名为「${title}」的笔记`, "error");
                                     }
                                 }}><MarkdownPreview
-                                    source={liveRender ? draft?.content || "" : active?.content || ""}
+                                    // 预览区**始终**渲染编辑区（草稿）的内容，不受「即时渲染」影响
+                                    source={draft?.content || ""}
                                     resolveNote={resolveNote}
                                     onOpenNote={handleOpenEmbedNote}
                                     features={previewFeatures}
@@ -3585,7 +3684,14 @@ export default function NotesPage({
     const sidePane = sideNote ? (
         <Box
             data-side-editor='1'
-            sx={{ flex: "1 1 50%", minWidth: 0, minHeight: 0, display: "flex", flexDirection: "column" }}
+            sx={{
+                // 与主栏按 paneRatio 对半（可拖）：flex-basis 各占一份，其余由 handle 占 8px
+                flex: `1 1 ${(1 - paneRatio) * 100}%`,
+                minWidth: 0,
+                minHeight: 0,
+                display: "flex",
+                flexDirection: "column",
+            }}
         >
             {/* 头部（2026-10-07）：inkstone 每栏右上角都有自己的按键栏 ——
                 标题 + 编辑/预览 + 更多操作（作用于**侧边这条**）+ 关闭。 */}
@@ -3608,7 +3714,7 @@ export default function NotesPage({
                 />
                 {/* 即时渲染（inkstone 同名开关）：关掉后预览停在「已存库的内容」，
                     打字不再触发整篇重解析 —— 长文里体感差别很大。 */}
-                <Box sx={{ display: "flex", alignItems: "center", gap: 0.25, flexShrink: 0, mr: 0.5 }}>
+                <Box sx={{ display: { xs: "none", md: "flex" }, alignItems: "center", gap: 0.25, flexShrink: 0, mr: 0.5 }}>
                     <Typography variant='caption' color='text.secondary' sx={{ fontSize: 11, whiteSpace: "nowrap" }}>
                         即时渲染
                     </Typography>
@@ -3728,28 +3834,37 @@ export default function NotesPage({
                     borderBottom: "none",
                 }}
             >
-                {sideMode !== "edit" && !sideLiveRender && (
+                {sideMode !== "preview" && sideLiveRender && sideCursorPara.trim() && (
                     <Box
-                        data-side-preview-paused='1'
+                        data-side-inline-render='1'
                         sx={{
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 1,
-                            px: 1.5,
-                            py: 0.5,
                             mx: 1.5,
                             mt: 1,
+                            px: 1.25,
+                            py: 0.75,
+                            flexShrink: 0,
+                            maxHeight: 120,
+                            overflowY: "auto",
                             borderRadius: 1.5,
-                            bgcolor: "rgba(128,128,128,0.10)",
-                            fontSize: 12,
-                            color: "text.secondary",
+                            border: "1px solid var(--card-border, rgba(128,128,128,0.3))",
+                            bgcolor: "rgba(128,128,128,0.05)",
+                            fontSize: uiSettings.previewFontSize,
+                            lineHeight: uiSettings.lineHeight,
                         }}
                     >
-                        <span>预览已暂停（即时渲染已关闭）</span>
-                        <Box sx={{ flex: 1 }} />
-                        <Button size='small' data-tool='side-preview-refresh' onClick={() => setSideLiveRender(true)}>
-                            立即刷新
-                        </Button>
+                        <Typography
+                            variant='caption'
+                            color='text.disabled'
+                            sx={{ display: "block", mb: 0.5, fontSize: 11 }}
+                        >
+                            编辑区实时渲染
+                        </Typography>
+                        <MarkdownPreview
+                            source={sideCursorPara}
+                            resolveNote={resolveNote}
+                            onOpenNote={handleOpenEmbedNote}
+                            features={previewFeatures}
+                        />
                     </Box>
                 )}
                 {sideMode === "preview" ? (
@@ -3758,7 +3873,7 @@ export default function NotesPage({
                        那个开关的意义（打字时不再整篇重解析）。 */
                     <Box data-side-preview='1' sx={{ height: "100%", overflowY: "auto", px: 2, py: 1, fontSize: uiSettings.previewFontSize, lineHeight: uiSettings.lineHeight }}>
                         <MarkdownPreview
-                            source={sideLiveRender ? (sideDraft?.content ?? "") : (sideNote.content || "")}
+                            source={sideDraft?.content ?? ""}
                             resolveNote={resolveNote}
                             onOpenNote={handleOpenEmbedNote}
                             features={previewFeatures}
@@ -3779,6 +3894,8 @@ export default function NotesPage({
                                 font={uiSettings.editorFont}
                                 fontSize={uiSettings.editorFontSize}
                                 indentWidth={uiSettings.indentWidth}
+                                onCursorParagraph={setSideCursorPara}
+                                focusMode={uiSettings.focusMode}
                             />
                         </Box>
                         <Box data-side-preview='1' sx={{ flex: 1, minWidth: 0, minHeight: 0, overflowY: "auto", px: 1.5, py: 1, borderLeft: "1px solid var(--card-border, rgba(128,128,128,0.3))", fontSize: uiSettings.previewFontSize, lineHeight: uiSettings.lineHeight }}>
@@ -3801,6 +3918,7 @@ export default function NotesPage({
                         font={uiSettings.editorFont}
                         fontSize={uiSettings.editorFontSize}
                         indentWidth={uiSettings.indentWidth}
+                        onCursorParagraph={setSideCursorPara}
                     />
                 )}
             </Box>
@@ -4206,6 +4324,14 @@ export default function NotesPage({
                             反向链接（{backlinks.length}）
                         </MenuItem>
                         <Divider />
+                        {/* 窄屏时标题行放不下「即时渲染」，这里补一个入口（同一个状态） */}
+                        <MenuItem
+                            data-active-op='live-render'
+                            onClick={() => setLiveRender(v => !v)}
+                        >
+                            <BoltIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
+                            {liveRender ? "关掉编辑区实时渲染" : "打开编辑区实时渲染"}
+                        </MenuItem>
                         <MenuItem
                             data-active-op='copy-title'
                             onClick={() => {
@@ -4433,30 +4559,42 @@ export default function NotesPage({
                         flexDirection: "column",
                     }}
                 >
-                    <Box sx={{ flex: 1, display: "flex", minHeight: 0, minWidth: 0 }}>
+                    <Box
+                        ref={paneRowRef}
+                        data-pane-row={sideResizing ? "resizing" : undefined}
+                        sx={{
+                            flex: 1,
+                            display: "flex",
+                            minHeight: 0,
+                            minWidth: 0,
+                            // 拖动过程中禁掉选中，否则鼠标一划会整片选中文字
+                            userSelect: sideResizing ? "none" : undefined,
+                        }}
+                    >
                         {/* 侧边编辑器打开时主编辑器让出一半（两个文档同时编辑，inkstone 的分屏）
                             ⚠️ 判据用 sidePane（= 侧边那条笔记真的还在），不能用 sideId：
                             侧边那条被删掉/回收后 sideId 还留着，按它分屏会让主编辑区
                             白白让出一半、右边空着一条（2026-10-06）
-                            ⚠️⚠️ 2026-10-07 用户要求：两栏之间**固定 50/50，不能拖**。
-                            所以这里既没有 ColResizeHandle，也没有 resize/cursor 提示 ——
-                            之前那条 1px 边框会被误认成把手（用户以为能拖、拖不动）。
-                            要改比例只能关掉侧边栏、把左栏（中栏）拖宽。 */}
+                            ⚠️ 比例可拖（2026-10-07 用户要求）：默认 50/50，中间那条缝能拖，
+                            拖完记住（notes.paneRatio）；双击回 50/50。 */}
                         <Box
-                            data-pane-divider={sidePane !== null ? "fixed" : undefined}
+                            data-pane-divider={sidePane !== null ? "drag" : undefined}
                             sx={{
-                                flex: sidePane !== null ? "1 1 50%" : 1,
+                                flex: sidePane !== null ? `1 1 ${paneRatio * 100}%` : 1,
                                 minWidth: 0,
                                 minHeight: 0,
                                 display: "flex",
-                                cursor: "default",
-                                userSelect: sidePane !== null ? "none" : undefined,
-                                borderRight:
-                                    sidePane !== null ? "1px solid rgba(128,128,128,0.25)" : undefined,
                             }}
                         >
                             {editorPane}
                         </Box>
+                        {sidePane !== null && (
+                            <ColResizeHandle
+                                label='拖动调整两栏的比例（双击回到对半）'
+                                onDrag={startPaneDrag}
+                                onReset={resetPaneRatio}
+                            />
+                        )}
                         {sidePane}
                     </Box>
                     {/* 移动端从编辑态回列表 */}

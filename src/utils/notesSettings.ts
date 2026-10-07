@@ -38,6 +38,10 @@ export interface NotesUiSettings {
     spellcheck: boolean;
     /** 分栏时预览跟随源码滚动 */
     scrollSync: boolean;
+    /** 专注模式：淡化光标所在段落之外的内容 */
+    focusMode: boolean;
+    /** 编辑区实时渲染（渲染光标所在段落） */
+    liveRender: boolean;
     /** 渲染数学公式 */
     mathRender: boolean;
     /** 渲染 Mermaid 图表 */
@@ -67,6 +71,8 @@ export const DEFAULT_NOTES_SETTINGS: NotesUiSettings = {
     showToolbar: true,
     spellcheck: false,
     scrollSync: true,
+    focusMode: false,
+    liveRender: true,
     mathRender: true,
     mermaidRender: true,
     foldCode: true,
@@ -108,6 +114,8 @@ function sanitize(raw: unknown): NotesUiSettings {
         showToolbar: bool(o.showToolbar, d.showToolbar),
         spellcheck: bool(o.spellcheck, d.spellcheck),
         scrollSync: bool(o.scrollSync, d.scrollSync),
+        focusMode: bool(o.focusMode, d.focusMode),
+        liveRender: bool(o.liveRender, d.liveRender),
         mathRender: bool(o.mathRender, d.mathRender),
         mermaidRender: bool(o.mermaidRender, d.mermaidRender),
         foldCode: bool(o.foldCode, d.foldCode),

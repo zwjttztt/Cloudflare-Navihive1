@@ -155,7 +155,9 @@ test("双链渲染成可点元素，点一下跳到目标笔记", async () => {
     await act(async () => {
         (document.querySelectorAll('[data-note-list] [role="button"]')[1] as HTMLElement).click();
     });
-    const link = document.querySelector<HTMLElement>("[data-wiki-link]");
+    // ⚠️ 限定在预览区里找：编辑区上方的「实时渲染当前段落」也会渲染出一个同名链接，
+    // 那是另一个入口（页面上确实有两个可点的双链）。
+    const link = document.querySelector<HTMLElement>("[data-preview-content='1'] [data-wiki-link]");
     assert.ok(link, "正文里的 [[目标笔记]] 要渲染成链接");
     assert.equal(link!.textContent, "目标笔记");
     await act(async () => { link!.click(); });
@@ -3301,55 +3303,52 @@ test("分屏：两栏高度一致（主栏内容区不再有额外垂直内边�
     );
 });
 
-test("分屏：两栏之间固定 50/50，不可拖动", async () => {
+test("分屏：两栏默认对半，中间那条缝能拖（2026-10-07 改为可拖）", async () => {
     mountPanel([
         note({ id: 1, title: "甲", content: "a" }),
         note({ id: 2, title: "乙", content: "b" }),
     ]);
-    // 基准：打开侧栏**之前**的可拖把手数（导航|列表、列表|编辑区、源码|预览）
-    const before = document.querySelectorAll("[role='separator']").length;
+    const findPaneHandle = () =>
+        [...document.querySelectorAll("[role='separator']")].find(el =>
+            /两栏的比例/.test(el.getAttribute("aria-label") || "")
+        );
+    assert.equal(findPaneHandle(), undefined, "侧栏没打开时不该有这条把手");
     await act(async () => {
         rightClick(document.querySelector("[data-note-list] [data-note-id='2']")!);
     });
     await act(async () => (document.querySelector("[data-row-op='open-side']") as HTMLElement).click());
-    const divider = document.querySelector("[data-pane-divider='fixed']");
-    assert.ok(divider, "两栏之间有一道固定分隔");
-    assert.equal(divider!.hasAttribute("role"), false, "固定分隔不能是 separator（那意味着可拖）");
-    assert.ok(
-        !divider!.hasAttribute("aria-orientation"),
-        "固定分隔不该有可拖动的语义标记"
-    );
-    // ⚠️ 不要数「容器里 role=separator 的个数」：编辑器与预览内部也有带这个角色的
-    // 元素（11 个），基数毫无意义。判据是**结构**：两栏必须是**相邻的兄弟节点** ——
-    // 中间插不进把手，自然就拖不了。
-    assert.equal(
-        divider!.nextElementSibling?.getAttribute("data-side-editor"),
-        "1",
-        "两栏要相邻：分隔条后面紧挨着侧栏，中间插不了可拖把手"
-    );
-    assert.ok(before > 0, "（基准）页面里本来就有列宽 / 源码预览的把手");
+    // ⚠️ 不要数全页 role=separator：编辑器/预览内部也有带这个角色的元素。
+    // 按 aria-label 找我们自己的把手，最稳。
+    const handle = findPaneHandle() as HTMLElement | undefined;
+    assert.ok(handle, "两栏之间要有一条可拖把手（aria-label 里写明「两栏的比例」）");
+    // 比例持久化
+    const src = readNotesPage();
+    assert.ok(src.includes("notes.paneRatio"), "两栏比例要记住（notes.paneRatio）");
+    assert.ok(src.includes("readPaneRatio()"), "启动时要读回上次的比例");
 });
 
-test("即时渲染：每栏各有开关，关掉后预览改用已存库的内容", async () => {
+test("即时渲染：只作用于编辑区，预览区始终是渲染后的结果", async () => {
     mountPanel([note({ id: 1, title: "甲", content: "库里内容" })]);
-    assert.ok(document.querySelector("[data-tool='live-render']"), "主栏要有即时渲染开关");
-    const sw = document.querySelector("[data-tool='live-render'] input") as HTMLInputElement;
-    assert.equal(sw.checked, true, "默认开着");
-    await act(async () => {
-        sw.click();
-    });
-    assert.equal(
-        (document.querySelector("[data-tool='live-render'] input") as HTMLInputElement).checked,
-        false,
-        "点一下能关掉"
-    );
-    // 源码里：关掉时渲染的是 active.content 而不是 draft.content
-    const src = stripComments(
-        readFileSync(join(findProjectDir(), "src", "components", "NotesPage.tsx"), "utf-8")
-    );
+    // 预览区永远渲染草稿，不看开关
+    const src = readNotesPage();
     assert.ok(
-        src.includes("liveRender ? draft?.content || \"\" : active?.content || \"\""),
-        "关掉即时渲染后预览要停在已存库的内容（打字不再触发整篇重解析）"
+        src.includes("source={draft?.content || \"\"}"),
+        "预览区始终渲染编辑区（草稿）的内容"
+    );
+    assert.equal(
+        src.includes("source={liveRender ? draft?.content"),
+        false,
+        "预览区不该再受「即时渲染」影响（2026-10-07 用户澄清）"
+    );
+    // 开关改成控制编辑区上方的「实时渲染当前段落」
+    assert.ok(
+        src.includes("data-inline-render"),
+        "编辑区要有实时渲染当前段落的那一块"
+    );
+    // 设置里有这两项，跨会话保留
+    assert.ok(
+        src.includes("liveRender: uiSettings.liveRender") || src.includes("const liveRender = uiSettings.liveRender"),
+        "开关值来自设置"
     );
 });
 
@@ -3479,8 +3478,8 @@ test("侧栏「分栏」是左右排（与主栏一致）", async () => {
     const src = readNotesPage();
     const i = src.indexOf('sideMode === "split"');
     assert.ok(i > 0);
-    // 窗口要够大：borderLeft 在预览盒子上，离分支开头有几百字符
-    const block = src.slice(i, i + 1200);
+    // 窗口要够大：borderLeft 在预览盒子上，离分支开头比较远
+    const block = src.slice(i, i + 2600);
     assert.ok(
         block.includes('flexDirection: "row"'),
         "侧栏分栏必须是左右排（之前是上下排，与主栏习惯不一致）"
@@ -3522,30 +3521,67 @@ test("侧栏状态栏与左侧同款：显示模式/字数/创建于/保存，�
     assert.equal(text.includes("侧边"), false, "不要再只写「侧边」两个字");
 });
 
-test("即时渲染：关掉时预览区出现「已暂停 + 立即刷新」，开关不再是「看不出差别」", async () => {
-    mountPanel([note({ id: 1, title: "甲", content: "正文" })]);
-    const sw = document.querySelector("[data-tool='live-render'] input") as HTMLInputElement;
-    await act(async () => {
-        sw.click();
+
+test("专注模式与实时渲染：编辑器上方的渲染块随开关出现/消失", async () => {
+    mountPanel([note({ id: 1, title: "甲", content: "第一段\n\n第二段" })]);
+    // 默认开着即时渲染 → 光标段落渲染块应该出现（编辑器上报了段落才有）
+    const ta = getEditor();
+    act(() => {
+        typeInto(ta, "第一段");
     });
-    assert.equal(
-        (document.querySelector("[data-tool='live-render'] input") as HTMLInputElement).checked,
-        false,
-        "关掉即时渲染"
-    );
+    await act(async () => {
+        await new Promise(r => setTimeout(r, 300));
+    });
     assert.ok(
-        document.querySelector("[data-preview-paused='1']"),
-        "预览区要出现提示条（否则用户以为开关坏了 / 没生效）"
+        document.querySelector("[data-inline-render='1']"),
+        "编辑区上方要实时渲染光标所在段落"
     );
-    await act(async () => (document.querySelector("[data-tool='preview-refresh']") as HTMLElement).click());
-    assert.equal(
-        document.querySelector("[data-preview-paused='1']"),
-        null,
-        "点「立即刷新」后恢复随打字刷新"
+    // 关掉设置里的「编辑区实时渲染」→ 这块消失
+    globalThis.localStorage?.setItem(
+        "notes.uiSettings",
+        JSON.stringify({ liveRender: false })
+    );
+    await act(async () => {
+        window.dispatchEvent(new Event("storage"));
+    });
+    const src = readNotesPage();
+    assert.ok(
+        src.includes("{liveRender && pane !== \"preview\" && cursorPara.trim()"),
+        "渲染块受「编辑区实时渲染」开关控制"
+    );
+    // 专注模式：设置项 + 编辑器装饰类名都在
+    assert.ok(src.includes("focusMode={uiSettings.focusMode}"), "编辑器要接专注模式");
+    globalThis.localStorage?.removeItem("notes.uiSettings");
+});
+
+test("文件夹内笔记标题靠左：缩进必须写像素，不能用 MUI 间距单位", () => {
+    const src = readNotesPage();
+    const i = src.indexOf("data-folder-note");
+    // 窗口要够大：pl 在 sx 的后半段，隔着十来行属性
+    const block = src.slice(i, i + 2400);
+    // ⚠️ 这条踩过：pl 写成 1.25 + (depth+1)*10 会被当成「间距单位」→ 1.25*8 + 80 = 90px，
+    // 128px 宽的左栏里文字只剩 25px，看起来就像「标题居中了」（用户报）。
+    assert.ok(
+        block.includes("pl: `${22 + Math.min(depth, 4) * 12}px`"),
+        "内联笔记的左缩进要用像素字符串，起步 22px（与「未归类」齐平）"
     );
     assert.equal(
-        (document.querySelector("[data-tool='live-render'] input") as HTMLInputElement).checked,
-        true,
-        "开关也同步回到开启状态"
+        /pl:\s*1\.25\s*\+/.test(block),
+        false,
+        "不要再用 MUI 间距单位算缩进（1 单位 = 8px，会算出 90px 把文字挤没）"
+    );
+});
+
+test("切笔记时清掉「编辑区实时渲染」的缓存段落", () => {
+    const src = readNotesPage();
+    // 不清的话，编辑区上方会继续渲染**上一篇**的段落：页面上第一个 wiki 链接变成旧的，
+    // 点下去跳错笔记（实测踩过：双链用例反向链接数对不上）。
+    // ⚠️ 锚点要落在**代码**上：readNotesPage() 会剥掉注释，
+    // 拿注释里的中文当锚点必然 indexOf = -1。
+    const i = src.indexOf("setDraft({ title: active.title");
+    const block = src.slice(Math.max(0, i - 200), i + 600);
+    assert.ok(
+        block.includes('setCursorPara("")'),
+        "换笔记时要清空 cursorPara（否则实时渲染块显示的是上一篇）"
     );
 });
