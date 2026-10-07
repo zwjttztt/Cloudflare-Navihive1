@@ -3025,14 +3025,38 @@ test("顶栏只压在最左栏：返回在导航列，分享/版本/大纲/反�
     for (const op of ["share", "revisions", "outline", "backlinks"]) {
         assert.ok(document.querySelector(`[data-active-op='${op}']`), `更多操作里要有 ${op}`);
     }
-    // 模式切换跟着编辑区走（标题行右端）
-    const bar = document.querySelector("[data-tool='note-more']")!.parentElement!;
+    // 模式切换跟着编辑区走（标题行右端）。
+    // ⚠️ 别只看 note-more 的父节点：2026-10-07 给模式键加了外框（分段控件）、
+    // 「更多操作」另起一组，父节点已经不是标题行了 —— 从分段控件往上找。
+    const modes = document.querySelector("[data-pane-modes='1']")!;
+    assert.ok(modes, "主栏标题行右端要有框起来的模式控件");
     for (const label of ["编辑", "分栏", "预览"]) {
         assert.ok(
-            [...bar.querySelectorAll("button")].some(b => b.getAttribute("aria-label") === label),
-            `标题行右端要有「${label}」模式按钮`
+            [...modes.querySelectorAll("button")].some(b => b.getAttribute("aria-label") === label),
+            `模式控件里要有「${label}」`
         );
     }
+    const header = modes.parentElement!;
+    for (const label of ["编辑", "分栏", "预览", "更多操作"]) {
+        assert.ok(
+            [...header.querySelectorAll("button")].some(b => b.getAttribute("aria-label") === label),
+            `标题行右端要有「${label}」按钮`
+        );
+    }
+    // 分段控件要有外框（inkstone 那种「框起来的一组」）。
+    // ⚠️ 不能读 computed style：jsdom 下 emotion 样式不注入，border 恒为 0px。
+    // 改成静态守卫 —— 断言源码里那段确实写了 border。
+    const srcPane = stripComments(
+        readFileSync(join(findProjectDir(), "src", "components", "NotesPage.tsx"), "utf-8")
+    );
+    const modesSrc = srcPane.slice(
+        srcPane.indexOf("data-pane-modes"),
+        srcPane.indexOf("data-pane-modes") + 400
+    );
+    assert.ok(
+        /border:\s*"1px solid/.test(modesSrc),
+        "模式控件要有外框（框起来的一组图标）"
+    );
 });
 
 test("「收起笔记列表」挪到左下角、设置左边，且收起后还有返回按钮", async () => {
@@ -3420,4 +3444,108 @@ test("工具栏：每个下拉都有说人话的 tooltip，菜单项不再只写
     for (const plain of ["给这一段加个锚点", "写给自己看的备注", "把几段内容并排放"]) {
         assert.ok(bar.includes(plain), `菜单项要改成白话：${plain}`);
     }
+});
+
+// ===========================================================================
+// 2026-10-07 第七批：即时渲染反馈 / 模式分段控件 / 左下角背景色 /
+// 侧栏左右分栏 / 两栏头部对齐 / 侧栏状态栏
+// ===========================================================================
+
+const readNotesPage = () =>
+    stripComments(
+        readFileSync(join(findProjectDir(), "src", "components", "NotesPage.tsx"), "utf-8")
+    );
+
+test("左下角那块不写死背景色（否则「背景色」设置对它无效）", () => {
+    const src = readNotesPage();
+    const i = src.indexOf("data-nav-footer='1'");
+    assert.ok(i > 0, "定位不到左下角容器");
+    const block = src.slice(i, i + 600);
+    assert.ok(
+        !block.includes('bgcolor: "background.paper"'),
+        "左下角不能写死 background.paper：页面背景色是算出来的，写死就成了纯白方块（用户报「颜色不会变」）"
+    );
+    assert.ok(block.includes('bgcolor: "transparent"'), "应该改成透明，跟随页面根背景");
+});
+
+test("两栏头部用同一个高度常量（否则标题与工具栏整排错位）", () => {
+    const src = readNotesPage();
+    assert.ok(src.includes("const PANE_HEADER_H ="), "要有统一的头部高度常量");
+    const uses = (src.match(/height: PANE_HEADER_H/g) ?? []).length;
+    assert.ok(uses >= 4, `主栏与侧栏的标题行+头部容器都要用它（实际 ${uses} 处）`);
+});
+
+test("侧栏「分栏」是左右排（与主栏一致）", async () => {
+    const src = readNotesPage();
+    const i = src.indexOf('sideMode === "split"');
+    assert.ok(i > 0);
+    // 窗口要够大：borderLeft 在预览盒子上，离分支开头有几百字符
+    const block = src.slice(i, i + 1200);
+    assert.ok(
+        block.includes('flexDirection: "row"'),
+        "侧栏分栏必须是左右排（之前是上下排，与主栏习惯不一致）"
+    );
+    assert.ok(
+        /borderLeft:/.test(block),
+        "预览与源码之间应该是竖线分隔（左右排）"
+    );
+    mountPanel([
+        note({ id: 1, title: "甲", content: "a" }),
+        note({ id: 2, title: "乙", content: "b" }),
+    ]);
+    await act(async () => {
+        rightClick(document.querySelector("[data-note-list] [data-note-id='2']")!);
+    });
+    await act(async () => (document.querySelector("[data-row-op='open-side']") as HTMLElement).click());
+    const side = document.querySelector("[data-side-editor='1']") as HTMLElement;
+    await act(async () => (side.querySelector("[data-tool='side-mode-split']") as HTMLElement).click());
+    assert.ok(side.querySelector(".cm-content"), "分栏时左半是编辑器");
+    assert.ok(side.querySelector("[data-side-preview='1']"), "分栏时右半是预览");
+});
+
+test("侧栏状态栏与左侧同款：显示模式/字数/创建于/保存，不写「侧边」", async () => {
+    mountPanel([
+        note({ id: 1, title: "甲", content: "a" }),
+        note({ id: 2, title: "乙", content: "b", created_at: "2026-10-01 09:00:00" }),
+    ]);
+    await act(async () => {
+        rightClick(document.querySelector("[data-note-list] [data-note-id='2']")!);
+    });
+    await act(async () => (document.querySelector("[data-row-op='open-side']") as HTMLElement).click());
+    const side = document.querySelector("[data-side-editor='1']") as HTMLElement;
+    const bar = side.lastElementChild as HTMLElement;
+    const text = bar.textContent ?? "";
+    assert.match(text, /编辑|分栏|预览/, "状态栏要标明当前模式（与左侧一致）");
+    assert.match(text, /字/, "要显示字数");
+    assert.match(text, /字符/, "要显示字符数");
+    assert.ok(bar.querySelector("[data-side-created]"), "有创建时间时要显示（与左侧一样）");
+    assert.equal(text.includes("侧边"), false, "不要再只写「侧边」两个字");
+});
+
+test("即时渲染：关掉时预览区出现「已暂停 + 立即刷新」，开关不再是「看不出差别」", async () => {
+    mountPanel([note({ id: 1, title: "甲", content: "正文" })]);
+    const sw = document.querySelector("[data-tool='live-render'] input") as HTMLInputElement;
+    await act(async () => {
+        sw.click();
+    });
+    assert.equal(
+        (document.querySelector("[data-tool='live-render'] input") as HTMLInputElement).checked,
+        false,
+        "关掉即时渲染"
+    );
+    assert.ok(
+        document.querySelector("[data-preview-paused='1']"),
+        "预览区要出现提示条（否则用户以为开关坏了 / 没生效）"
+    );
+    await act(async () => (document.querySelector("[data-tool='preview-refresh']") as HTMLElement).click());
+    assert.equal(
+        document.querySelector("[data-preview-paused='1']"),
+        null,
+        "点「立即刷新」后恢复随打字刷新"
+    );
+    assert.equal(
+        (document.querySelector("[data-tool='live-render'] input") as HTMLInputElement).checked,
+        true,
+        "开关也同步回到开启状态"
+    );
 });

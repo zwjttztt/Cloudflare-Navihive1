@@ -392,6 +392,13 @@ function isDescendant(
 export type MenuAnchor = HTMLElement | PopoverVirtualElement;
 
 /** 用鼠标坐标构造一个 0×0 的虚拟锚点（菜单左上角 = 指针位置） */
+/**
+ * 每个笔记栏头部（标题行）的统一高度。
+ * ⚠️ 主栏与侧栏必须用同一个值：之前主栏靠 `pt:1.5` 自然撑高、侧栏多了两个
+ * 按钮也各自撑高，两栏并排时高度差 5~8px，标题与工具栏整排错位（2026-10-07 用户报）。
+ */
+const PANE_HEADER_H = 52;
+
 function anchorAtMouse(x: number, y: number): PopoverVirtualElement {
     return {
         nodeType: 1,
@@ -658,8 +665,10 @@ function FolderTagSection({
                             mt: "-14px",
                             p: 0.25,
                             opacity: 0,
-                            bgcolor: "background.paper",
-                            "&:hover": { opacity: 1 },
+                            // ⚠️ 不能写死 background.paper：页面背景色（暖白/纯白）是算出来的，
+                            // 写死就会在暖白底上留一个纯白方块（用户报「颜色不会变」）。
+                            bgcolor: "transparent",
+                            "&:hover": { opacity: 1, bgcolor: "background.paper" },
                             // 触屏没有 hover：直接常显，否则在那边根本点不到
                             "@media (hover: none)": { opacity: 1 },
                         }}
@@ -1295,6 +1304,10 @@ export default function NotesPage({
      * 「两边都能切」，不是只有主栏能。
      */
     const [sideMode, setSideMode] = useState<"edit" | "split" | "preview">("edit");
+    /** 侧栏的保存状态（与主栏 saveState 同一套语义，状态栏要显示） */
+    const [sideSaveState, setSideSaveState] = useState<"idle" | "pending" | "saving" | "saved">("idle");
+    const [sideSavedAt, setSideSavedAt] = useState<number | null>(null);
+    const [sideTick, setSideTick] = useState(() => Date.now());
     /**
      * 即时渲染（inkstone 顶栏那个同名开关）：开着=打字时预览跟着刷新；关掉=预览
      * 停在「上一次存库的内容」，长文里打字会流畅很多（每敲一下都要重解析整篇）。
@@ -1909,7 +1922,19 @@ export default function NotesPage({
         }
     }, [sideId, notes]);
 
-    /** 侧边编辑器的自动保存（与主编辑器同一套 3 秒防抖） */
+    /**
+     * 侧边编辑器的自动保存（与主编辑器同一套防抖）。
+     * ⚠️ 状态（待存/正在存/已存 + 时刻）也跟主栏一样摊出来 —— 否则侧栏状态栏
+     * 只能写「侧边」两个字，用户看不到这篇到底存没存（2026-10-07 要求对齐左侧）。
+     */
+    const sideDirty =
+        sideId !== null &&
+        sideDraft !== null &&
+        notes.some(
+            n =>
+                n.id === sideId &&
+                (sideDraft.title !== (n.title || "") || sideDraft.content !== (n.content || ""))
+        );
     useEffect(() => {
         if (sideId === null || !sideDraft) return;
         const note = notes.find(n => n.id === sideId);
@@ -1917,9 +1942,17 @@ export default function NotesPage({
         const dirtySide =
             sideDraft.title !== (note.title || "") ||
             sideDraft.content !== (note.content || "");
-        if (!dirtySide) return;
-        const timer = setTimeout(() => {
-            void onUpdate(sideId, { title: sideDraft.title, content: sideDraft.content });
+        if (!dirtySide) {
+            setSideSaveState(cur => (cur === "pending" ? "idle" : cur));
+            return;
+        }
+        setSideSaveState("pending");
+        const timer = setTimeout(async () => {
+            setSideSaveState("saving");
+            await onUpdate(sideId, { title: sideDraft.title, content: sideDraft.content });
+            setSideSaveState("saved");
+            setSideSavedAt(Date.now());
+            setSideTick(Date.now());
         }, autosaveMs);
         return () => clearTimeout(timer);
     }, [sideDraft, sideId, notes, onUpdate, autosaveMs]);
@@ -2611,7 +2644,10 @@ export default function NotesPage({
                     pb: 0.5,
                     position: "sticky",
                     bottom: 0,
-                    bgcolor: "background.paper",
+                    // ⚠️ 同上：这块以前写死 background.paper，于是「背景色」设置
+                    // （暖白 / 纯白）对它无效 —— 用户报「左下角归档和用户名那一块
+                    // 的颜色不会变」。透明即可跟随页面根背景。
+                    bgcolor: "transparent",
                 }}
             >
                 <Stack sx={{ px: 0.75, gap: 0.25 }}>
@@ -3064,7 +3100,7 @@ export default function NotesPage({
                     {/* 标题行（2026-10-07）：右侧是**这一栏自己的**按键栏 ——
                         模式切换（编辑/分栏/预览）+「更多操作」。分屏时每栏各有一套，
                         顶栏那排只对当前笔记生效的问题就没了（inkstone 同款布局）。 */}
-                    <Box sx={{ display: "flex", alignItems: "center", flexShrink: 0, pr: 1 }}>
+                    <Box sx={{ display: "flex", alignItems: "center", flexShrink: 0, pr: 1, height: PANE_HEADER_H }}>
                         <TextField
                             variant='standard'
                             value={draft?.title ?? ""}
@@ -3077,8 +3113,10 @@ export default function NotesPage({
                                 flex: 1,
                                 minWidth: 0,
                                 px: 2,
-                                pt: 1.5,
-                                "& .MuiInputBase-root": { fontSize: 19, fontWeight: 600 },
+                                // ⚠️ 高度/字号要与侧栏**完全一致**（PANE_HEADER_H / 18px）：
+                                // 两栏并排时头部一高一低，标题与工具栏就错位（用户报）。
+                                height: PANE_HEADER_H,
+                                "& .MuiInputBase-root": { fontSize: 18, fontWeight: 600 },
                                 "& .MuiInput-input": { padding: "6px 0" },
                             }}
                         />
@@ -3097,8 +3135,21 @@ export default function NotesPage({
                                 sx={{ ml: 0 }}
                             />
                         </Box>
-                        {/* 源码/预览切换：三档。宽屏文字按钮、小屏收成图标（都在标题行右端）。 */}
-                        <Box sx={{ display: "flex", gap: 0.25, flexShrink: 0 }}>
+                        {/* 模式切换：**框起来的一组图标**（inkstone 同款）。
+                            ⚠️ 之前是「宽屏文字按钮 + 小屏图标」两套，宽屏下三个
+                            「编辑/分栏/预览」文字把标题行撑得很宽，两栏并排时
+                            标题与工具栏都对不齐（用户报）。现在统一成图标 +
+                            外框，选中项填底色。aria-label 保持中文，测试与读屏不受影响。 */}
+                        <Box
+                            data-pane-modes='1'
+                            sx={{
+                                display: "flex",
+                                flexShrink: 0,
+                                border: "1px solid var(--card-border, rgba(128,128,128,0.35))",
+                                borderRadius: 1.5,
+                                overflow: "hidden",
+                            }}
+                        >
                             {(
                                 [
                                     ["edit", "编辑", <EditIcon fontSize='inherit' key='i' />],
@@ -3106,55 +3157,35 @@ export default function NotesPage({
                                     ["preview", "预览", <VisibilityIcon fontSize='inherit' key='v' />],
                                 ] as const
                             ).map(([key, label, icon]) => (
-                                <IconButton
-                                    key={key}
-                                    aria-label={label}
-                                    title={label}
-                                    size='small'
-                                    onClick={() => setPane(key)}
-                                    sx={{
-                                        width: 28,
-                                        height: 28,
-                                        p: 0,
-                                        color: pane === key ? "primary.main" : "text.secondary",
-                                        bgcolor:
-                                            pane === key ? "rgba(128,128,128,0.12)" : "transparent",
-                                        display: { xs: "inline-flex", sm: "none" },
-                                    }}
-                                >
-                                    {icon}
-                                </IconButton>
+                                <Tooltip key={key} title={label}>
+                                    <IconButton
+                                        aria-label={label}
+                                        title={label}
+                                        size='small'
+                                        onClick={() => setPane(key)}
+                                        sx={{
+                                            width: 30,
+                                            height: 28,
+                                            p: 0,
+                                            borderRadius: 0,
+                                            color: pane === key ? "var(--accent)" : "text.secondary",
+                                            bgcolor:
+                                                pane === key
+                                                    ? "color-mix(in srgb, var(--accent) 12%, transparent)"
+                                                    : "transparent",
+                                            "&:hover": { bgcolor: "rgba(128,128,128,0.12)" },
+                                            "& + &": { borderLeft: "1px solid var(--card-border, rgba(128,128,128,0.28))" },
+                                        }}
+                                    >
+                                        {icon}
+                                    </IconButton>
+                                </Tooltip>
                             ))}
-                            {(
-                                [
-                                    ["edit", "编辑"],
-                                    ["split", "分栏"],
-                                    ["preview", "预览"],
-                                ] as const
-                            ).map(([key, label]) => (
-                                <IconButton
-                                    key={`wide-${key}`}
-                                    aria-label={label}
-                                    size='small'
-                                    onClick={() => setPane(key)}
-                                    sx={{
-                                        fontSize: 12,
-                                        px: 1,
-                                        width: "auto",
-                                        height: 28,
-                                        display: { xs: "none", sm: "inline-flex" },
-                                        borderRadius: 1.5,
-                                        fontWeight: pane === key ? 600 : 400,
-                                        color: pane === key ? "primary.main" : "text.secondary",
-                                        bgcolor:
-                                            pane === key ? "rgba(128,128,128,0.12)" : "transparent",
-                                    }}
-                                >
-                                    {label}
-                                </IconButton>
-                            ))}
+                        </Box>
                             {/* 当前笔记的操作入口。顶栏拆掉后，只读分享 / 版本历史 / 大纲 /
                                 反向链接也收进了这个菜单（见下面 data-active-op 那几项）。 */}
+                        {/* 「更多操作」独立成组，紧贴模式控件右侧 */}
+                        <Box sx={{ display: "flex", flexShrink: 0 }}>
                             <Tooltip title='更多操作'>
                                 <IconButton
                                     size='small'
@@ -3331,6 +3362,34 @@ export default function NotesPage({
                                             : "transparent",
                                 }}
                             >
+                                {/* 即时渲染关闭时的提示条。
+                                    ⚠️ 2026-10-07 用户报「即时渲染打开后无效果」：这个开关
+                                    默认就是开的，打开当然看不出差别；关掉后预览停在旧内容，
+                                    界面却毫无提示，用户以为坏了。现在给一条明确的
+                                    「预览已暂停 + 立即刷新」，两种状态都一眼可见。 */}
+                                {!liveRender && (
+                                    <Box
+                                        data-preview-paused='1'
+                                        sx={{
+                                            display: "flex",
+                                            alignItems: "center",
+                                            gap: 1,
+                                            mb: 1,
+                                            px: 1.25,
+                                            py: 0.5,
+                                            borderRadius: 1.5,
+                                            bgcolor: "rgba(128,128,128,0.10)",
+                                            fontSize: 12,
+                                            color: "text.secondary",
+                                        }}
+                                    >
+                                        <span>预览已暂停：即时渲染已关闭，正文改动不会自动出现在这里</span>
+                                        <Box sx={{ flex: 1 }} />
+                                        <Button size='small' data-tool='preview-refresh' onClick={() => setLiveRender(true)}>
+                                            立即刷新
+                                        </Button>
+                                    </Box>
+                                )}
                                 <Box
                                     data-preview-content='1'
                                     sx={{
@@ -3530,7 +3589,7 @@ export default function NotesPage({
         >
             {/* 头部（2026-10-07）：inkstone 每栏右上角都有自己的按键栏 ——
                 标题 + 编辑/预览 + 更多操作（作用于**侧边这条**）+ 关闭。 */}
-            <Box sx={{ display: "flex", alignItems: "center", gap: 0.25, pr: 0.75, flexShrink: 0 }}>
+            <Box sx={{ display: "flex", alignItems: "center", gap: 0.25, pr: 0.75, flexShrink: 0, height: PANE_HEADER_H }}>
                 <TextField
                     variant='standard'
                     value={sideDraft?.title ?? ""}
@@ -3541,8 +3600,9 @@ export default function NotesPage({
                         flex: 1,
                         minWidth: 0,
                         px: 2,
-                        pt: 1.5,
-                        "& .MuiInputBase-root": { fontSize: 17, fontWeight: 600 },
+                        // 与主栏同一个高度常量，两栏头部齐平（否则工具栏错位）
+                        height: PANE_HEADER_H,
+                        "& .MuiInputBase-root": { fontSize: 18, fontWeight: 600 },
                         "& .MuiInput-input": { padding: "6px 0" },
                     }}
                 />
@@ -3561,8 +3621,17 @@ export default function NotesPage({
                         sx={{ ml: 0 }}
                     />
                 </Box>
-                {/* 模式：编辑 / 分栏 / 预览（窄栏里「分栏」是上下排） */}
-                <Box sx={{ display: "flex", gap: 0.25, flexShrink: 0 }}>
+                {/* 模式：编辑 / 分栏 / 预览（与主栏同款：框起来的一组图标） */}
+                <Box
+                    data-side-modes='1'
+                    sx={{
+                        display: "flex",
+                        flexShrink: 0,
+                        border: "1px solid var(--card-border, rgba(128,128,128,0.35))",
+                        borderRadius: 1.5,
+                        overflow: "hidden",
+                    }}
+                >
                     {(
                         [
                             ["edit", "编辑", <EditIcon fontSize='inherit' key='i' />],
@@ -3578,12 +3647,17 @@ export default function NotesPage({
                                 aria-pressed={sideMode === key}
                                 onClick={() => setSideMode(key)}
                                 sx={{
-                                    width: 28,
+                                    width: 30,
                                     height: 28,
                                     p: 0,
-                                    flexShrink: 0,
-                                    color: sideMode === key ? "primary.main" : "text.secondary",
-                                    bgcolor: sideMode === key ? "rgba(128,128,128,0.12)" : "transparent",
+                                    borderRadius: 0,
+                                    color: sideMode === key ? "var(--accent)" : "text.secondary",
+                                    bgcolor:
+                                        sideMode === key
+                                            ? "color-mix(in srgb, var(--accent) 12%, transparent)"
+                                            : "transparent",
+                                    "&:hover": { bgcolor: "rgba(128,128,128,0.12)" },
+                                    "& + &": { borderLeft: "1px solid var(--card-border, rgba(128,128,128,0.28))" },
                                 }}
                             >
                                 {icon}
@@ -3654,6 +3728,30 @@ export default function NotesPage({
                     borderBottom: "none",
                 }}
             >
+                {sideMode !== "edit" && !sideLiveRender && (
+                    <Box
+                        data-side-preview-paused='1'
+                        sx={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 1,
+                            px: 1.5,
+                            py: 0.5,
+                            mx: 1.5,
+                            mt: 1,
+                            borderRadius: 1.5,
+                            bgcolor: "rgba(128,128,128,0.10)",
+                            fontSize: 12,
+                            color: "text.secondary",
+                        }}
+                    >
+                        <span>预览已暂停（即时渲染已关闭）</span>
+                        <Box sx={{ flex: 1 }} />
+                        <Button size='small' data-tool='side-preview-refresh' onClick={() => setSideLiveRender(true)}>
+                            立即刷新
+                        </Button>
+                    </Box>
+                )}
                 {sideMode === "preview" ? (
                     /* 侧边预览：与主编辑区同一套 Markdown 渲染（token→React，无 HTML sink）。
                        关掉「即时渲染」时渲染的是**已存库**的那份，不是草稿 —— 这正是
@@ -3667,8 +3765,9 @@ export default function NotesPage({
                         />
                     </Box>
                 ) : sideMode === "split" ? (
-                    /* 窄栏里的「分栏」= 源码在上、预览在下（横向两栏在这个宽度没法看） */
-                    <Box sx={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
+                    /* 「分栏」= 源码在左、预览在右（2026-10-07 用户要求：之前是上下排，
+                       和主栏的左右排不一致，两栏并排看时习惯会打架） */
+                    <Box sx={{ display: "flex", flexDirection: "row", height: "100%", minHeight: 0 }}>
                         <Box sx={{ flex: 1, minHeight: 0, overflow: "hidden" }}>
                             <NoteEditor
                                 key={`side-${sideNote.id}|${uiSettings.lineNumbers ? 1 : 0}|${uiSettings.spellcheck ? 1 : 0}|${uiSettings.indentWidth}`}
@@ -3682,7 +3781,7 @@ export default function NotesPage({
                                 indentWidth={uiSettings.indentWidth}
                             />
                         </Box>
-                        <Box data-side-preview='1' sx={{ flex: 1, minHeight: 0, overflowY: "auto", px: 2, py: 1, borderTop: "1px solid var(--card-border, rgba(128,128,128,0.3))", fontSize: uiSettings.previewFontSize, lineHeight: uiSettings.lineHeight }}>
+                        <Box data-side-preview='1' sx={{ flex: 1, minWidth: 0, minHeight: 0, overflowY: "auto", px: 1.5, py: 1, borderLeft: "1px solid var(--card-border, rgba(128,128,128,0.3))", fontSize: uiSettings.previewFontSize, lineHeight: uiSettings.lineHeight }}>
                             <MarkdownPreview
                                 source={sideLiveRender ? (sideDraft?.content ?? "") : (sideNote.content || "")}
                                 resolveNote={resolveNote}
@@ -3718,10 +3817,24 @@ export default function NotesPage({
                     color: "text.secondary",
                 }}
             >
+                <span>
+                    {sideMode === "edit" ? "编辑" : sideMode === "preview" ? "预览" : "分栏"}
+                </span>
                 <span>{(sideDraft?.content ?? "").replace(/\s+/g, "").length} 字</span>
                 <span>{(sideDraft?.content ?? "").length} 字符</span>
                 <Box sx={{ flex: 1 }} />
-                <span>侧边</span>
+                {/* 与主栏状态栏同款：左边「这篇多长」，右边「它什么时候来的 / 存没存」。
+                    ⚠️ 之前这里只写了个「侧边」，两边对不齐，用户要求改成一样的。 */}
+                {sideNote.created_at && formatWhenFull(sideNote.created_at) && (
+                    <span data-side-created style={{ marginRight: 0.5 }}>
+                        创建于 {formatWhenFull(sideNote.created_at)}
+                    </span>
+                )}
+                {sideSaveState === "pending" && <span>有改动，即将保存…</span>}
+                {sideSaveState === "saving" && <span>正在保存…</span>}
+                {sideSaveState === "saved" && !sideDirty && (
+                    <span>已保存 · {formatRelative(sideSavedAt, new Date(sideTick))}</span>
+                )}
             </Box>
         </Box>
     ) : null;
