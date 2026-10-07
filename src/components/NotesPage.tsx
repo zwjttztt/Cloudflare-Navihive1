@@ -3396,7 +3396,19 @@ export default function NotesPage({
                         title={emptyCopy.title}
                         description={emptyCopy.desc}
                         action={
-                            view === "all" || view === "search" ? (
+                            // ⚠️ P1-7（2026-10-07）：条件对齐 inkstone（NoteList.tsx:684）
+                            //   `view !== 'trash' && view !== 'archived'`
+                            // 之前只有 `all` / `search` 两个视图给按钮，于是
+                            // 「最近」「收藏」「未归类」「某个文件夹」空的时候
+                            // 只有一句说明、没有下一步入口 —— 而这几种视图里
+                            // 「新建一条」完全合理（甚至更该给）。
+                            //
+                            // ⚠️ `view !== "trash"` 这个判断在**这个分支里是恒真的**：
+                            // 回收站在进列表之前就被 `view === "trash"` 提前短路了
+                            //（TS2367 会报 "no overlap"，它说得对）。
+                            // 所以这里只需排除「归档」—— 归档是唯一还能走到列表
+                            // 却不该给「新建」入口的视图（在归档里新建没有语义）。
+                            view !== "archived" ? (
                                 <Button
                                     size='small'
                                     variant='outlined'
