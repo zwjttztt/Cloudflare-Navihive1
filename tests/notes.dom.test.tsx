@@ -527,7 +527,7 @@ test("笔记行内不再有时间戳（时间已由分组标题承担）", () =>
     const src = stripComments(
         readFileSync(join(findProjectDir(), "src", "components", "NotesPage.tsx"), "utf-8")
     );
-    const row = src.slice(src.indexOf("data-note-id={note.id}"), src.indexOf("data-note-id={note.id}") + 4200);
+    const row = src.slice(src.indexOf("data-note-id={note.id}"), src.indexOf("data-note-id={note.id}") + 6000);
     assert.equal(
         /formatRelative\(note\.updated_at/.test(row),
         false,
@@ -544,7 +544,7 @@ test("悬停时整行右移 2px，且只在真能 hover 的设备上（inkstone 
     const src = stripComments(
         readFileSync(join(findProjectDir(), "src", "components", "NotesPage.tsx"), "utf-8")
     );
-    const row = src.slice(src.indexOf("data-note-id={note.id}"), src.indexOf("data-note-id={note.id}") + 4200);
+    const row = src.slice(src.indexOf("data-note-id={note.id}"), src.indexOf("data-note-id={note.id}") + 6000);
     assert.ok(/translateX\(2px\)/.test(row), "悬停要右移 2px");
     assert.ok(
         /@media \(hover: hover\) and \(pointer: fine\)/.test(row),
@@ -3167,12 +3167,22 @@ test("顶栏只压在最左栏：返回在导航列，分享/版本/大纲/反�
         nav.querySelector("button[aria-label='返回导航站']"),
         "返回导航站要落在最左的导航列顶部（顶栏已不再横跨三栏）"
     );
-    // 顶栏那一排按钮整体搬走了
-    for (const tool of ["share", "revisions", "outline", "backlinks"]) {
+    // P0-3（2026-10-07）：「大纲」和「收藏」从「更多操作」提到头部常驻 —— inkstone 的头部
+    // 就是平铺一排图标（Workspace.tsx:425-472），这两个是随手要用的，
+    // 先点开菜单再点一项太绕。其余（分享/版本/反链）仍留在菜单里。
+    assert.ok(
+        document.querySelector("button[data-tool='outline']"),
+        "大纲要提到头部常驻（inkstone 同款）"
+    );
+    assert.ok(
+        document.querySelector("button[data-tool='pin']"),
+        "收藏要提到头部常驻（inkstone 同款）"
+    );
+    for (const tool of ["share", "revisions", "backlinks"]) {
         assert.equal(
             document.querySelector(`button[data-tool='${tool}']`),
             null,
-            `顶栏不该再有 ${tool} 按钮（收进更多操作菜单）`
+            `${tool} 仍收在更多操作里（不是高频动作，不占头部位置）`
         );
     }
     // 但功能没丢：都在「更多操作」里
@@ -4130,7 +4140,7 @@ test("笔记行选中态不画 3px 左边框（会被拉成贯穿整屏的色带
         "笔记行不要 3px 左边框（inkstone 没有；它会在窄栏里被拉成贯穿整屏的色带）"
     );
     // 反向锚点：改用软底 + 淡描边
-    const row = src.slice(src.indexOf("data-note-id={note.id}"), src.indexOf("data-note-id={note.id}") + 4200);
+    const row = src.slice(src.indexOf("data-note-id={note.id}"), src.indexOf("data-note-id={note.id}") + 6000);
     assert.ok(
         /border: "1px solid"/.test(row) && /color-mix\(in srgb, var\(--accent\) 40%/.test(row),
         "选中态改用 1px 淡描边（inkstone 的 ring-1）+ 软底"

@@ -69,6 +69,7 @@ import ShareIcon from "@mui/icons-material/Share";
 import BoltIcon from "@mui/icons-material/Bolt";
 import ListIcon from "@mui/icons-material/List";
 import PushPinIcon from "@mui/icons-material/PushPin";
+import PushPinOutlinedIcon from "@mui/icons-material/PushPinOutlined";
 import SearchIcon from "@mui/icons-material/Search";
 import SettingsIcon from "@mui/icons-material/Settings";
 import SortIcon from "@mui/icons-material/Sort";
@@ -3368,7 +3369,19 @@ export default function NotesPage({
 
             <Box
                 data-note-list='1'
-                sx={{ flex: 1, overflowY: "auto", minHeight: 0, pb: 1 }}
+                sx={{
+                    flex: 1,
+                    overflowY: "auto",
+                    minHeight: 0,
+                    pb: 1,
+                    // ⚠️ P1-5：切视图 / 切文件夹时整列淡入（inkstone 同款）。
+                    // 注意 inkstone 是把动画挂在**列表容器**上（NoteList.tsx:310
+                    // `anim-view-content`），不是每一行 —— 逐行动画会让长列表像在逐个蹦。
+                    // key 用 view + 文件夹 + 标签，跟 inkstone 的
+                    // `key={`${view}:${folderId ?? ''}:${tag ?? ''}`}` 一致。
+                    animation: "noteListFadeIn 220ms cubic-bezier(0.2, 0, 0, 1) both",
+                }}
+                key={`${view}:${activeFolder ?? ''}:${activeTag ?? ''}`}
             >
                 {view === "trash" ? (
                     // 阶段三：回收站。条目不能点开编辑（它已经不在 notes 表里了），
@@ -3416,6 +3429,16 @@ export default function NotesPage({
                                         fontSize: 10.5,
                                         fontWeight: 600,
                                         letterSpacing: "0.06em",
+                                        borderRadius: "6px",
+                                        // ⚠️ P1-4：分组标题加一点 hover 反馈。
+                                        // inkstone 的分组标题是纯静态的（NoteList.tsx:312），
+                                        // 没有 hover —— 它靠 `motion-note-row` 的入场动画
+                                        // 表达「这批是新的」。我们补一个极轻的底色，
+                                        // 纯装饰、不改字号（改字号会让整列在 hover 时抖）。
+                                        transition: "background-color 120ms ease",
+                                        "@media (hover: hover) and (pointer: fine)": {
+                                            "&:hover": { bgcolor: "rgba(128,128,128,0.06)" },
+                                        },
                                     }}
                                 >
                                     {group.label}
@@ -3469,9 +3492,14 @@ export default function NotesPage({
                                     });
                                 }}
                                 sx={{
+                                    // ⚠️ P0-2：行内操作按钮改成绝对定位后，行必须是定位上下文
+                                    position: "relative",
                                     mx: 0.75,
                                     mb: 0.25,
                                     px: 1.25,
+                                    // 右侧给绝对定位的「⋯」预留位置（inkstone 的 pr-11）——
+                                    // 不预留的话标题会顶到按钮底下
+                                    pr: 5,
                                     py: 0.9,
                                     borderRadius: 1.5,
                                     cursor: "pointer",
@@ -3522,8 +3550,18 @@ export default function NotesPage({
                                     )}
                                     <Typography
                                         variant='body2'
+                                        // ⚠️ P0-1（2026-10-07）：字号对齐 inkstone 的四档阶梯
+                                        // （NoteList.tsx:530/539/544）：
+                                        //   标题 13px / 摘要 11.5px / 标签 10.5px
+                                        // 我们之前全交给 MUI 的 variant.body2/caption，在
+                                        // 128px 窄列里显得偏大 —— 摘要是两行、标签换行，
+                                        // 一行笔记能占掉 3~4 行，列表密度明显比 inkstone 稀。
                                         sx={{
-                                            fontWeight: isActive ? 600 : 400,
+                                            fontSize: 13,
+                                            lineHeight: 1.375,
+                                            // inkstone：选中用 semibold + accent 色，未选中 medium + 主色
+                                            fontWeight: isActive ? 600 : 500,
+                                            color: isActive ? "var(--accent)" : "var(--text-primary)",
                                             overflow: "hidden",
                                             textOverflow: "ellipsis",
                                             whiteSpace: "nowrap",
@@ -3533,7 +3571,14 @@ export default function NotesPage({
                                     >
                                         {note.title || "无标题"}
                                     </Typography>
-                                    {/* 行内操作菜单。放在标题行右侧、hover 才现形。 */}
+                                    {/* ⚠️ P0-2（2026-10-07）：行尾操作区改**绝对定位**（inkstone 同款）。
+                    之前这个「⋯」按钮在标题行的正常流里，hover 时 opacity 0→1 ——
+                    按钮「出现」会占位，把标题/摘要/标签**挤窄一点再重排**，
+                    于是指针扫过列表时每行都在抖。
+                    inkstone 的做法（NoteList.tsx:519 + 555）：
+                    行上 `pr-11 md:pr-10` **给按钮预留固定空间**，按钮本身
+                    `absolute top-1.5 right-1.5 opacity-0 group-hover:opacity-100`。
+                    这样标题宽度恒定，只有按钮在淡入。 */}
                                     <IconButton
                                         className='note-row-actions'
                                         data-note-menu={note.id}
@@ -3552,11 +3597,16 @@ export default function NotesPage({
                                             );
                                         }}
                                         sx={{
+                                            position: "absolute",
+                                            top: 6,
+                                            right: 4,
                                             opacity: menuOpen ? 1 : 0,
                                             transition: "opacity 120ms ease",
                                             flexShrink: 0,
                                             p: 0.25,
                                             color: "text.secondary",
+                                            bgcolor: "var(--bg-base)",
+                                            borderRadius: "50%",
                                         }}
                                     >
                                         <MoreVertIcon fontSize='inherit' />
@@ -3570,7 +3620,11 @@ export default function NotesPage({
                                         WebkitLineClamp: 2,
                                         WebkitBoxOrient: "vertical",
                                         overflow: "hidden",
-                                        mt: 0.25,
+                                        // ⚠️ P0-1：inkstone 的摘要是 11.5px/1.5（NoteList.tsx:539），
+                                        // 我们跟着走 —— 之前用 caption（12px）偏大，两行就顶满一行笔记的高度
+                                        fontSize: 11.5,
+                                        lineHeight: 1.5,
+                                        mt: 0.5,
                                     }}
                                 >
                                     {summarize(note.content) || "空白笔记"}
@@ -3751,6 +3805,49 @@ export default function NotesPage({
                         {/* 保存状态（inkstone 的 SaveIndicator 就挂在头部这一排）。
                             之前它写在状态栏右端，于是那一行既报长度又报状态，26px 塞不下。 */}
                         <SaveDot state={saveState} dirty={dirty} savedAt={savedAt} now={tick} />
+                        {/* ⚠️ P0-3（2026-10-07）：把两个高频动作从「⋯」里提到头部常驻。
+                            inkstone 的头部右侧是平铺的一排图标（Workspace.tsx:425-472）：
+                            更多 / 收藏 / 反向链接 / 版本历史 / 导出 / 大纲 / 分享。
+                            我们把分享/版本/大纲/反链都收进了「⋯」—— 收着不算错（窄栏更合理），
+                            但「收藏」和「大纲」是随手要用的，让用户先点开菜单再点一项太绕。
+                            所以只把这两个提成常驻按钮，其余仍留在「⋯」里。 */}
+                        <Box sx={{ display: "flex", flexShrink: 0, alignItems: "center", gap: 0.25, mr: 0.5 }}>
+                            <Tooltip title={active?.pinned ? "取消收藏" : "收藏"}>
+                                <span>
+                                    <IconButton
+                                        size='small'
+                                        aria-label={active?.pinned ? "取消收藏" : "收藏"}
+                                        data-tool='pin'
+                                        disabled={!active}
+                                        onClick={() => active && void onTogglePin(active)}
+                                        sx={{
+                                            width: 28, height: 28,
+                                            color: active?.pinned ? "var(--accent)" : "text.secondary",
+                                        }}
+                                    >
+                                        {active?.pinned ? <PushPinIcon fontSize='small' /> : <PushPinOutlinedIcon fontSize='small' />}
+                                    </IconButton>
+                                </span>
+                            </Tooltip>
+                            <Tooltip title='大纲（本文标题列表）'>
+                                <IconButton
+                                    size='small'
+                                    aria-label='大纲'
+                                    data-tool='outline'
+                                    disabled={!active}
+                                    onClick={() => {
+                                        setOutlineOpen(o => !o);
+                                        setActiveMenuAnchor(null);
+                                    }}
+                                    sx={{
+                                        width: 28, height: 28,
+                                        color: outlineOpen ? "var(--accent)" : "text.secondary",
+                                    }}
+                                >
+                                    <ListIcon fontSize='small' />
+                                </IconButton>
+                            </Tooltip>
+                        </Box>
                         {/* 当前笔记的操作入口。顶栏拆掉后，只读分享 / 版本历史 / 大纲 /
                             反向链接也收进了这个菜单（见下面 data-active-op 那几项）。 */}
                         {/* 「更多操作」独立成组，紧贴模式控件右侧 */}

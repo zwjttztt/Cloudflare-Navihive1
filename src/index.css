@@ -374,6 +374,20 @@ html.dark .nav-skip-link {
     }
 }
 
+/* 笔记列表整列淡入（2026-10-07 P1-5，inkstone 的 anim-view-content 同款）。
+   inkstone 是把动画挂在**列表容器**上（NoteList.tsx:310），不是每一行 ——
+   逐行动画会让长列表像在逐个蹦，几十行时很吵。 */
+@keyframes noteListFadeIn {
+    from {
+        opacity: 0;
+        transform: translateY(6px);
+    }
+    to {
+        opacity: 1;
+        transform: none;
+    }
+}
+
 /* 保存指示：正在存的时候那颗点转圈（inkstone 的 ink-spin，0.72s 一圈） */
 @keyframes note-save-spin {
     to {
