@@ -2845,17 +2845,36 @@ export default function NotesPage({
                 //   mobile  100%（两屏切换时它就是整屏）
                 //   tablet  只有列表列（导航列已被上一层的 narrowLayout 收掉）
                 //   desktop 导航 + 列表
+                //
+                // ⚠️⚠️ 「两条缝」只值 **1px**，不是 9px，更不是 18px（2026-10-07 用户报
+                // 「拖动绿线右边有一条竖长条」，红框圈的就是这段空隙）。
+                //
+                // 几何账：每条把手 `width: 9px` + `mx: -4px` —— 负边距让它向两侧各溢出 4px，
+                // 所以它**净占 9 − 4 − 4 = 1px**。之前这里写 `+18`（= 9 + 9，把两条把手
+                // 都按满宽算），于是：
+                //   真实右边界 = navW + listW + 5   （最后一条把手只露 5px）
+                //   给定宽度   = navW + listW + 18
+                //   多出 13px 的**空白带**，夹在列表列与编辑区之间。真机逐列读像素确认：
+                //   列表列 right=336 → 编辑区 left=354，中间 337..353 什么都没有，
+                //   而发丝线在 337 —— 视觉上就是「一条竖长条」。
+                //
+                // inkstone 那边压根不给这个数（AppShell.tsx:95-107：每列各自
+                // `shrink-0` + 定宽，Resizer 是它们之间的兄弟节点，浏览器自然排布，
+                // 零死空间）。我们把两列塞进同一个容器，只能自己算这个账，
+                // 那就按 `每条把手净占 1px` 来算：
+                //   两条把手 = +2；最后一条把手还会往右露 5px（9 − 4），那 5px 归容器。
+                // 所以总数 = navW + listW + 9 - 4 + 1×1 = navW + listW + 6。
                 width: bp === "mobile"
                     ? "100%"
                     : bp === "tablet"
                       ? listCollapsed
                         ? 44
-                        : listW + 9
+                        : listW + 5
                       : listCollapsed
                         ? 44
                         : listHidden
-                          ? navW + 9
-                          : navW + listW + 18,
+                          ? navW + 5
+                          : navW + listW + 6,
                 flexShrink: 0,
                 // 折叠成 44px 轨道时，任何子元素都不许溢出压到右边的编辑区
                 overflow: "hidden",
@@ -3456,10 +3475,18 @@ export default function NotesPage({
                                     py: 0.9,
                                     borderRadius: 1.5,
                                     cursor: "pointer",
-                                    borderLeft: "3px solid",
-                                    borderLeftColor: isActive ? "var(--accent)" : "transparent",
+                                    // ⚠️ 2026-10-07 去掉 3px 左边框 + 强调色：它在「选中文件夹 →
+                                    // 笔记内联在左栏」时被拉成贯穿整屏的青绿色带（真机读像素：
+                                    // rgb(20,184,166)，y=0..911 全中，x=599..601）。用户原话
+                                    // 「拖动绿线的右边笔记编辑的左边有一竖长条去除他」。
+                                    // inkstone 的选中行没有左边框（NoteList.tsx:519-523），
+                                    // 靠软底 + 淡描边表达选中 —— 照它改。
+                                    border: "1px solid",
+                                    borderColor: isActive
+                                        ? "color-mix(in srgb, var(--accent) 40%, transparent)"
+                                        : "transparent",
                                     bgcolor: isActive
-                                        ? "rgba(128,128,128,0.12)"
+                                        ? "color-mix(in srgb, var(--accent) 12%, transparent)"
                                         : "transparent",
                                     // 拖起来的那一行半透明：告诉用户「手上抓的是这条」
                                     opacity: draggingNoteId === note.id ? 0.45 : 1,
@@ -3943,6 +3970,10 @@ export default function NotesPage({
                                                     ? 980
                                                     : "100%",
                                         mx: "auto",
+                                        // ⚠️ 光有 break-word 不够：中文长句没有空格，
+                                        // 会被当成一个超长单词而不断行（同下面预览层
+                                        // 的注释）。要 `anywhere` 才在任意字符间断。
+                                        overflowWrap: "anywhere",
                                         wordBreak: "break-word",
                                     }}
                                 
@@ -4142,6 +4173,17 @@ export default function NotesPage({
                 minHeight: 0,
                 display: "flex",
                 flexDirection: "column",
+                // ⚠️ 2026-10-07 补上底色（用户报「侧边打开时框颜色不一样」）。
+                // 主编辑区那一层写了 `bgcolor: var(--bg-editor)`，侧边这层没写 →
+                // 它透出父容器（--bg-base / --bg-sunken），于是两栏底色深浅不同，
+                // 看着像「两个框」。
+                // inkstone 两栏是**同一个**底色：Workspace.tsx:378
+                //   `flex h-full min-col-0 flex-col bg-[var(--bg-editor)]`
+                // 唯一差别是「当前激活的那栏」顶部多一道 2px 强调色
+                // （shadow-[inset_0_2px_0_var(--accent)]），靠 pointer/focus 捕获切换。
+                // 那道激活条需要一套「哪栏是激活态」的状态，本批只修用户报的颜色不一致，
+                // 激活条留到后续（见交付报告 P1）。
+                bgcolor: "var(--bg-editor)",
             }}
         >
             {/* 头部（2026-10-07）：inkstone 每栏右上角都有自己的按键栏 ——
@@ -5006,7 +5048,14 @@ export default function NotesPage({
                 但三栏宽度是写死的像素、又没有断点，缩放一放大（CSS 视口 < 900）
                 编辑区就被压成 0 宽 —— 整块看不见（用户报「右边内容超出不可见」）。
                 现在改成用 usePanelBreakpoint 的三档（1180 / 768），与 inkstone 一致。 */}
-            <Box sx={{ flex: 1, display: "flex", minHeight: 0 }}>
+            {/* ⚠️ minWidth: 0 不能少（2026-10-07 用户报「编辑区有代码时右边超出范围」）。
+                flex 子项的 `min-width` 默认是 `auto`，意思是「至少撑到内容的 min-content」。
+                于是一个超长代码块的 `<pre>`（本该自己横向滚动）会把**这一整行**顶宽：
+                真机量到 1080 视口下这一行被顶到 **1209px**、编辑区 992px，
+                于是工具栏右端、状态栏、「分栏」按钮全被推出屏幕（46 个元素越界）。
+                注入 min-width:0 后编辑区立刻回到 863px（= 1080 − 左栏 217），正好。
+                inkstone 那边每个 flex 容器都显式写了 min-w-0，就是这个原因。 */}
+            <Box sx={{ flex: 1, display: "flex", minHeight: 0, minWidth: 0 }}>
                 {/* 左栏**不能**加 flex:1 —— 它内部已经定宽了（flexShrink:0）。
                     外层再来一个 flex:1，容器会被 flex 撑开，而里面的列表是定宽的，
                     剩下的就是「中间那块空白」。宽度只由内层决定：flex: 0 0 auto。 */}
@@ -5198,7 +5247,20 @@ function MarkdownPreview({
             </Typography>
         );
     }
-    return <Box sx={{ wordBreak: "break-word", lineHeight: 1.7 }}>{node}</Box>;
+    // ⚠️ `overflowWrap: "anywhere"` 不是 `wordBreak: "break-word"`（2026-10-07 用户报
+    // 「分栏时右侧内容超出屏幕」）。两者差别就在中文长句上：
+    //   break-word  只在**词边界**断行 —— 而中文没有空格，
+    //                 于是「## 引用内容引用内容…」这种一整串 CJK 被当成一个超长单词，
+    //                 撑到 1000px 宽也不断，直接把预览层顶出屏幕且**没有滚动条**
+    //                 （真机 1080 宽复现：预览层 377px，标题被切掉半个字）。
+    //   anywhere     必要时在任意字符间断行 —— 正是 inkstone 用的
+    //                 （prose.css:429/435/897/960 全是 `overflow-wrap: anywhere`）。
+    // 源码区（CodeMirror）早就配了 `overflowWrap: "anywhere"`，只有预览层漏了。
+    return (
+        <Box sx={{ overflowWrap: "anywhere", wordBreak: "break-word", lineHeight: 1.7 }}>
+            {node}
+        </Box>
+    );
 }
 
 /** 一个工具按钮：icon / label 二选一，before/after 是包在选区两侧的语法 */

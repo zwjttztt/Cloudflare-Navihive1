@@ -3981,3 +3981,117 @@ test("工具栏只有一个内容块下拉（之前有两个同名「块」按�
         "内容块下拉要在，用 inkstone zh-CN 里的原名 workspace.content_blocks"
     );
 });
+// ===========================================================================
+// 2026-10-07 第十三批：竖线空隙 13px / 中文长句撑破预览 / 侧栏底色
+// ===========================================================================
+
+test("列表列与编辑区之间不能有多余空隙（两条把手净占 1px，不是 9px 也不是 18px）", () => {
+    const src = readNotesPage();
+    // ⚠️ 钉的是 2026-10-07 修的那个真 bug（用户红框圈出来的「竖长条」）：
+    // 每条拖动把手是 `width: 9px` + `mx: -4px` —— 负边距让它向两侧各溢出 4px，
+    // 所以**净占 9 − 4 − 4 = 1px**。之前 listPane 总宽写的是 `navW + listW + 18`
+    // （把两条把手都按满宽 9px 算），于是多出 13px 的空白带夹在列表列与编辑区之间。
+    // 真机逐列读像素确认过：列表列 right=336、编辑区 left=354，中间 337..353 空着，
+    // 而发丝线在 337 —— 视觉上就是「一条竖长条」。
+    //
+    // inkstone 那边压根不给这个数（AppShell.tsx:95-107：每列各自 shrink-0 + 定宽，
+    // Resizer 是它们之间的兄弟节点，浏览器自然排布，零死空间）。
+    // 我们把两列塞进同一个容器，只能自己算这笔账。
+    const w = src.slice(src.indexOf("width: bp === \"mobile\""), src.indexOf("width: bp === \"mobile\"") + 600);
+    assert.ok(
+        /navW \+ listW \+ 6\b/.test(w),
+        "desktop 档总宽应是 navW + listW + 6（两条把手各净占 1px + 最后一条露 5px）"
+    );
+    assert.equal(
+        /navW \+ listW \+ 18/.test(src),
+        false,
+        "别再用 navW + listW + 18 —— 那是把 9px 把手按满宽算，会多出 13px 空隙"
+    );
+    // tablet / listHidden 两档同理
+    assert.ok(/listW \+ 5\b/.test(w), "tablet 档应是 listW + 5");
+    assert.ok(/navW \+ 5\b/.test(w), "listHidden 档应是 navW + 5");
+});
+
+test("预览层用 overflowWrap:anywhere，不能只有 wordBreak:break-word", () => {
+    const src = readNotesPage();
+    // ⚠️ 用户报「分栏时右侧内容超出屏幕」。真机 1080 宽复现：预览层 377px，
+    // 一条纯中文长标题「## 引用内容引用内容…」被切掉半个字，而且**没有滚动条**。
+    //
+    // 真因：`word-break: break-word` 只在**词边界**断行，而中文没有空格，
+    // 整串 CJK 被当成一个超长单词 → 撑到 1000px 宽也不断。
+    // inkstone 用的是 `overflow-wrap: anywhere`（prose.css:429/435/897/960），
+    // 必要时在任意字符间断行。源码区（CodeMirror）早就配了 anywhere，只有预览层漏了。
+    assert.ok(
+        /overflowWrap: "anywhere"/.test(src),
+        "预览层要 overflowWrap:anywhere（中文长句靠它断行；break-word 不够）"
+    );
+    // 行内渲染块也要（它是预览的一个分支）
+    const count = (src.match(/overflowWrap: "anywhere"/g) ?? []).length;
+    assert.equal(
+        count,
+        2,
+        "两处都要：预览层容器 + 行内渲染块（漏一处那条路径还是会溢出）"
+    );
+});
+
+test("主行必须 minWidth:0（否则超长代码块把整行顶出视口）", () => {
+    const src = readNotesPage();
+    // ⚠️ 用户报「编辑区有代码等内容时右边还是会超出范围」。
+    // flex 子项的 min-width 默认 auto = 至少撑到内容的 min-content，
+    // 于是一个超长代码块的 <pre>（本该自己滚动）把**这一整行**顶宽：
+    // 真机量到 1080 视口下该行被顶到 1209px、编辑区 992px，46 个元素越界。
+    // ⚠️ 锚点必须用**代码**而不是注释：readNotesPage() 会 stripComments()，
+    // 注释里的「主体：desktop」早就被剥掉了，indexOf 返回 −1、slice 出空串，
+    // 断言会永远红（这条测试第一版就这么栽了）。
+    const body = src.slice(
+        src.indexOf('display: bp === "mobile" && !mobileDetail ? "none" : "flex"'),
+        src.indexOf("data-pane-divider")
+    );
+    assert.ok(body.length > 0, "定位不到主体那一段");
+    // ⚠️⚠️ 三个坑叠在一起，这条断言第一版栽了两次：
+    //  1. 锚点写在注释里 → readNotesPage() 会 stripComments()，indexOf 返回 −1；
+    //  2. 正则里的引号没转义 → 在 .tsx 的模板上下文里提前闭合；
+    //  3. **源码是 CRLF** —— `minHeight: 0,\n` 那种「精确到换行」的匹配全都不成立。
+    // 所以这里只断言**属性存在**，不写死换行；CRLF/LF 都能过。
+    assert.ok(
+        /flex:\s*1,[\s\r\n]*display:\s*"flex",[\s\r\n]*minHeight:\s*0,[\s\r\n]*minWidth:\s*0/.test(body),
+        "主体那一行必须 minWidth:0（inkstone 每个 flex 容器都写了 min-w-0）"
+    );
+    assert.ok(
+        /<Box sx=\{\{ flex: 1, display: "flex", minHeight: 0 \}\}>/.test(src) === false,
+        "别再写没有 minWidth 的主体行 —— 它会被内容顶宽"
+    );
+});
+
+test("侧边编辑区与主编辑区同底色（用户报「侧边打开时框颜色不一样」）", () => {
+    const src = readNotesPage();
+    // 主编辑区那层写了 bgcolor: var(--bg-editor)，侧边这层没写 →
+    // 它透出父容器（--bg-base / --bg-sunken），两栏底色深浅不同，看着像「两个框」。
+    // inkstone 两栏是同一个底色（Workspace.tsx:378）：
+    //   flex h-full min-col-0 flex-col bg-[var(--bg-editor)]
+    const side = src.slice(src.indexOf("data-side-editor='1'"), src.indexOf("data-side-editor='1'") + 900);
+    assert.ok(
+        /bgcolor: "var\(--bg-editor\)"/.test(side),
+        "侧边编辑区要跟主编辑区一样用 --bg-editor（否则两栏颜色不同）"
+    );
+});
+
+test("笔记行选中态不画 3px 左边框（会被拉成贯穿整屏的色带）", () => {
+    const src = readNotesPage();
+    // ⚠️ 2026-10-07：原来选中行有 `borderLeft: "3px solid"` + 强调色。
+    // 在「选中文件夹 → 笔记内联在左栏」时它被拉成**贯穿整屏的 3px 青绿色带**
+    // （真机读像素：rgb(20,184,166)，y=0..911 全命中，x=599..601）。
+    // inkstone 的选中行没有左边框（NoteList.tsx:519-523）：
+    //   选中 = bg-[var(--accent-soft)] + ring-1 ring-[var(--accent)]/40
+    assert.equal(
+        /borderLeft: "3px solid"/.test(src),
+        false,
+        "笔记行不要 3px 左边框（inkstone 没有；它会在窄栏里被拉成贯穿整屏的色带）"
+    );
+    // 反向锚点：改用软底 + 淡描边
+    const row = src.slice(src.indexOf("data-note-id={note.id}"), src.indexOf("data-note-id={note.id}") + 4200);
+    assert.ok(
+        /border: "1px solid"/.test(row) && /color-mix\(in srgb, var\(--accent\) 40%/.test(row),
+        "选中态改用 1px 淡描边（inkstone 的 ring-1）+ 软底"
+    );
+});
