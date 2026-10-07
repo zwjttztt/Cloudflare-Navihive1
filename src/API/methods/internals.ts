@@ -55,6 +55,35 @@ const NOTE_TAG_LINK_TABLE_SQL = `CREATE TABLE IF NOT EXISTS note_note_tag (    n
     PRIMARY KEY (note_id, tag_id)
 );`;
 
+/**
+ * 图片附件元数据表（2026-07，schema 12）。
+ *
+ * ⚠️ 只有**元数据**在 D1；二进制在 R2（首选）或 KV（降级），见 worker/attachments.ts。
+ * D1 单行上限约 2MB —— 一张图就顶满，所以绝不能把本体塞进来。
+ *
+ * `id` 是 uuid 字符串而不是自增整数：key 里带它，
+ * 而 key 形如 `attach/<user_id>/<uuid>`（attachmentObjectKey），
+ * 这样按用户列前缀就能清理某个账号的全部对象，不用在 D1 里逐行反查。
+ */
+export const ATTACHMENTS_TABLE_SQL = `CREATE TABLE IF NOT EXISTS attachments (
+    id TEXT PRIMARY KEY,
+    user_id INTEGER,
+    note_id INTEGER,
+    filename TEXT NOT NULL,
+    mime TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    storage TEXT NOT NULL,
+    object_key TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+);`;
+
+/** 配额要按 user_id 实时 SUM(size)，所以这张索引是功能必需而非性能优化 */
+export const ATTACHMENTS_INDEX_SQL = `CREATE INDEX IF NOT EXISTS idx_attachments_user
+    ON attachments(user_id);`;
+
+/** 迁移里逐条执行的「新表」DDL（见 migrateAttachmentsTable） */
+export const ATTACHMENTS_TABLE_STATEMENTS = [ATTACHMENTS_TABLE_SQL, ATTACHMENTS_INDEX_SQL];
+
 /** 迁移里逐条执行的「新表」DDL（见 runMigrations 第 6.5 步） */
 export const FOLDER_TAG_TABLE_STATEMENTS = [
     NOTE_FOLDER_TABLE_SQL,

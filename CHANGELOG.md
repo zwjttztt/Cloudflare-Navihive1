@@ -6,6 +6,23 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。---
 
+## 2026-10-07 · 图片上传（KV 落地，R2 接口预留）+ 修 Windows 上的 smoke
+
+三点：**工具栏「上传图片」真的能用了**（此前一直是置灰的）、**存储按 inkstone 的方案做**（R2 优先、KV 降级，都没配就禁用入口）、**`npm run smoke` 在 Windows 上不再找不到 Chrome**。
+
+- **修 `npm run smoke` 在 Windows 上报「Chrome: /usr/bin/google-chrome / 连不上调试端口」**：`script/ci-smoke.mjs` 的 `findChrome()` 只列了 darwin / linux 两组候选，Windows 落进 linux 那一档去查 `/usr/bin/google-chrome` —— 被 PATH 里的包装脚本骗到，拿了个不存在的路径。现在 win32 走自己的候选清单（`AppData/Local/Google/Chrome`、`Program Files (x86)`…），并用 `where` 兜底；**兜底结果也会再验一次 `fs.existsSync`**（不验的话一样会被 PATH 里的假路径骗）。
+- **图片上传**（对齐 inkstone `src/worker/attachments/`）：
+  - **存储选择**：有 `env.FILES`(R2) 用 R2，否则有 `env.FILES_KV` 用 KV，都没有就返回 null —— 上传入口自动禁用并说明原因。R2 未开通，所以**接口留着、绑定注释掉**（`wrangler.jsonc` 里 `r2_buckets` 整段注释）；开通只要建 bucket + 取消注释，**代码与前端都不用改**。
+  - **不用 D1 存二进制**：D1 单行上限约 2MB，一张图就顶满（inkstone 同样不用 D1）。
+  - **配额**：单文件 25MB（正好是 KV 单条上限，超出在写入前就被拒）、每账号 1GB、每小时 100 张 —— 与 inkstone `shared/constants.ts` 一致。
+  - **租约（lease）**：并发下「都读到已用 900MB、都觉得还能塞 100MB」会实际写 1.1GB，所以同一用户的上传要串行化，抢不到锁返回 409。
+  - **类型按文件头嗅探**，不信客户端给的 Content-Type；**SVG 不在白名单里**（它是 XML，能内嵌脚本）。
+  - 对象写失败**不写 D1 记录** —— 否则留下一条指向不存在对象的元数据，用户刷新后图裂了却删不掉。
+  - `attachments` 表随迁移建出来（schema 11 → 12）。⚠️ 和当初 `migrateFolderTagTables` 那个 500 是同一个坑：「版本号读得到就整段跳过迁移」的快路径会让新表永远建不出来，所以必须显式调用。
+- **修「上传后正文里出现 `![undefined](data:text/html;base64,…)`」**（真机实测抓到）：后端回了「200 但不是预期 JSON」时（错误页、代理拦截，或 SPA 兜底把接口回落成 index.html），前端拿到的响应没有 `url` 与 `filename`，而 `fetch(undefined)` 会去请求**当前页面**、拿到 HTML 还当成图片内嵌。现在两道闸：① 响应缺 `url`/`filename` 直接报人话错误；② `blob.type` 不是 `image/*` 就不内嵌、改插链接。
+- 验证：全量单测 **2154** 通过（2153 pass / 1 本地跳过，本批新增 4 条守卫），tsc `-b --force` / eslint / build / smoke 全绿；真机探针 `harness/verify-b18-upload.mjs` 通过（菜单顺序与文案对齐 inkstone、隐藏 file input 的 accept、塞文件后正文出现 `![probe.png](data:image/png;base64,…)`）。
+- 部署前置：已建 KV 命名空间 `navihive-files-kv` 并把 id 写进 `wrangler.jsonc`（换环境部署要另建一个再换 id —— KV 不跨账号）。
+
 ## 2026-10-07 · 记事本第九批：两栏之间可见分隔线 + 编辑区内即时渲染（对齐 inkstone）
 
 - **两篇笔记之间有可见分隔线**：`ColResizeHandle` 之前整条透明、hover 才变色，静态看两篇是「粘在一起」的。现在常驻 1px 发丝线（`::after`），命中区加宽到 9px，hover/拖动时变强调色并加粗。

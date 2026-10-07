@@ -4208,3 +4208,124 @@ test("绑定要等预览层挂上再绑（切分栏那一刻 previewScrollRef �
         "不要在 useEffect 里调 useState（React error #321，会白屏）"
     );
 });
+
+// ===========================================================================
+// 2026-10-07 第十八批：图片上传（KV 落地，R2 接口预留）
+// ===========================================================================
+
+test("源码静态守卫的「剥注释」不能被注释里的 /* 骗到", () => {
+    const raw = readFileSync(
+        join(findProjectDir(), "src", "components", "NotesPage.tsx"),
+        "utf-8"
+    );
+    const stripped = stripComments(raw);
+
+    // ⚠️ 这个坑 2026-10-07 真踩过一次，代价是两条毫不相干的守卫同时变红、
+    // 排查了很久才想到是注释的问题：
+    //   在 `//` 行注释里写了「SPA 兜底把 /api/* 回落成 index.html」，
+    //   其中 **`/api/*` 的 `/*` 被 stripComments 当成块注释起始**，
+    //   于是第一个 replace 从那个 `/*` 一路吃到下一个 `*/`，
+    //   把中间几百行**真的代码**全删了 —— 后面所有「源码里应该有 X」的守卫
+    //   集体失配，而报错信息只会说是 X 不见了，完全指不到注释上。
+    //
+    // 所以留一条**自愈式**守卫：不针对某段具体代码，只保证剥完注释后
+    // 内容没有异常缩水。真被误吞时这里的比值会暴跌，一眼就知道是注释惹的祸。
+    const ratio = stripped.length / raw.length;
+    assert.ok(
+        ratio > 0.75,
+        `剥注释后只剩 ${(ratio * 100).toFixed(1)}%（${stripped.length}/${raw.length}）—— ` +
+            "多半是某条 `//` 注释里混进了 `/*`（比如写 `/api/*`），把后面大片代码当成块注释吃掉了"
+    );
+
+    // 顺手守住「剥完还能认出关键代码」这件事本身
+    assert.ok(
+        /pane === "split"/.test(stripped),
+        "剥完注释必须还能找到真实代码（否则所有源码守卫都是在匹配空字符串）"
+    );
+});
+
+test("上传响应缺字段时要报错，不能插出 ![undefined]", () => {
+    const page = readNotesPage();
+    // 真机实测的坑：后端/中间层回了「200 但不是预期 JSON」时（错误页、代理拦截，
+    // 或 SPA 兜底把接口回落成 index.html），前端拿到的响应没有 url 与 filename。
+    // 不拦的话：`fetch(undefined)` 会去请求**当前页面**、拿到 HTML 还当成图片内嵌，
+    // 正文里出现 `![undefined](data:text/html;base64,...)`，用户完全看不懂。
+    assert.ok(
+        /result\?\.url[\s\S]{0,120}result\?\.filename/.test(page),
+        "上传返回要先校验 url 与 filename，缺了就抛错"
+    );
+    assert.ok(
+        /上传返回的数据不完整/.test(page),
+        "要给出人话提示（「上传返回的数据不完整」）"
+    );
+    // 只内嵌**真的是图片**的响应：200 也可能是错误页，内嵌了比裂图还难排查
+    assert.ok(
+        /blob\.type\.startsWith\("image\/"\)/.test(page),
+        "内嵌前要确认 blob 是图片（光看 response.ok 不够，200 可能是 HTML 错误页）"
+    );
+});
+
+test("附件存储：R2 优先、KV 降级、都没配就禁用（对齐 inkstone selectAttachmentStorage）", () => {
+    const store = readSrcFile("..", "worker", "attachments.ts");
+    assert.ok(
+        /env\.FILES[\s\S]{0,60}return "r2"/.test(store),
+        "绑定了 R2（env.FILES）就用 r2"
+    );
+    assert.ok(
+        /env\.FILES_KV[\s\S]{0,60}return "kv"/.test(store),
+        "没 R2 但绑了 KV（env.FILES_KV）就用 kv"
+    );
+    assert.ok(/return null/.test(store), "两个都没绑就返回 null（上传入口禁用）");
+    // 配额常量对齐 inkstone shared/constants：25MB / 1GB / 每小时 100 次
+    assert.ok(
+        /ATTACHMENT_MAX_BYTES = 25 \* 1024 \* 1024/.test(store),
+        "单文件上限 25MB"
+    );
+    assert.ok(
+        /ATTACHMENT_QUOTA_BYTES = 1024 \* 1024 \* 1024/.test(store),
+        "总配额 1GB"
+    );
+    assert.ok(
+        /ATTACHMENT_UPLOADS_PER_HOUR = 100/.test(store),
+        "每小时最多 100 次上传"
+    );
+    // 并发下「都读到已用 900MB、都觉得还能塞 100MB」→ 实际写 1.1GB。
+    // inkstone 用租约把同一用户的上传串行化，我们照做。
+    assert.ok(
+        /ATTACHMENT_LEASE_MS/.test(store),
+        "要有租约（lease）把同一用户的上传串行化，否则并发会突破配额"
+    );
+    // 类型只按文件头判定，不信客户端给的 Content-Type
+    assert.ok(
+        /function sniffImageMime/.test(store),
+        "要按文件头嗅探类型（不能信 Content-Type，那是客户端给的）"
+    );
+    assert.ok(
+        !/"image\/svg\+xml"/.test(store),
+        "SVG 不能进白名单（它是 XML，能内嵌脚本）"
+    );
+});
+
+test("附件表随迁移建出来，且不下车（schema 12）", () => {
+    const migration = readSrcFile("API", "methods", "migration.ts");
+    const internals = readSrcFile("API", "methods", "internals.ts");
+    assert.ok(
+        /SCHEMA_VERSION[\s\S]{0,40}"12"/.test(migration),
+        "schema 版本要升到 12"
+    );
+    // ⚠️ 和当初 migrateFolderTagTables 那个 500 是同一个坑：
+    // 「版本号读得到就整段跳过迁移」的快路径会让新表永远建不出来。
+    assert.ok(
+        /migrateAttachmentsTable\(\)/.test(migration),
+        "迁移入口要显式调用 migrateAttachmentsTable（不然新库永远没有这张表）"
+    );
+    assert.ok(
+        /CREATE TABLE IF NOT EXISTS attachments/.test(internals),
+        "要有 attachments 建表语句"
+    );
+    // 配额要 SUM(size)，没索引的话每次上传都是全表扫
+    assert.ok(
+        /idx_attachments_user/.test(internals),
+        "要有 user_id 索引（配额按 SUM(size) 算）"
+    );
+});

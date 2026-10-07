@@ -10,7 +10,17 @@
 //   3. **uuid 在这里生成**：合并导入靠它识别「同一条笔记」（见 transfer.ts 的导入逻辑）。
 //      没有它就只能按标题+内容硬比，用户改过一次的笔记会被当成两条。
 import type { NavigationAPI } from "../http";
-import type { Note, NoteFolder, NoteRevision, NoteTag, NoteShare, NoteShareListItem, PublicNote } from "../types";
+import type {
+    AttachmentStorage,
+    Note,
+    NoteAttachment,
+    NoteFolder,
+    NoteRevision,
+    NoteTag,
+    NoteShare,
+    NoteShareListItem,
+    PublicNote,
+} from "../types";
 import type { D1PreparedStatement } from "../schema";
 import { newUuid } from "../../utils/uuid";
 import { extractNoteTags } from "../../utils/markdownNoteTags";
@@ -38,6 +48,30 @@ export interface NotesApi {
     updateFolder(id: number, patch: Partial<NoteFolder>): Promise<NoteFolder | null>;
     /** 删文件夹：笔记不跟着删，只把它们的 folder_id 置空（变成「未归类」） */
     deleteFolder(id: number): Promise<{ success: boolean; orphaned: number }>;
+
+    // ---- 图片附件（2026-07）----
+    /**
+     * 列出当前账号的附件（给「图片管理」之类的入口用）。
+     * ⚠️ 二进制**不在这里**返回 —— 一次最多 25MB，走 JSON 会把 Worker 响应体撑爆。
+     * 这里只回元数据，取图走 `GET notes/attachments/<id>`。
+     */
+    listAttachments(): Promise<NoteAttachment[]>;
+    getAttachment(id: string): Promise<NoteAttachment | null>;
+    /** 删记录。**不删对象** —— 对象由调用方拿着 storage/object_key 去删（见 worker/routes/data.ts） */
+    deleteAttachment(id: string): Promise<
+        | { ok: true; storage: AttachmentStorage; objectKey: string }
+        | { ok: false; status: 404; error: string }
+    >;
+    /** 写一条附件记录（D1 只有元数据） */
+    createAttachment(row: {
+        id: string;
+        note_id: number | null;
+        filename: string;
+        mime: string;
+        size: number;
+        storage: AttachmentStorage;
+        object_key: string;
+    }): Promise<void>;
 
     // ---- 标签（阶段三收尾）----
     listTags(): Promise<NoteTag[]>;
@@ -449,6 +483,103 @@ export const notesImpl: NotesApi = {
                 .bind(...this.scopeParams([]))
                 .first<{ n: number }>();
             return row?.n ?? 0;
+        });
+    },
+
+    // ---------------- 图片附件（2026-07） ----------------
+    //
+    // ⚠️ 只存**元数据**。二进制在 R2（首选）或 KV（降级），见 worker/attachments.ts。
+    //   账号隔离：与其它 notes 方法同一套 scopeSql（单账号部署 uid 可能是 NULL，
+    //   scopeSql 会处理；这里不多套一层 WHERE —— attachments 表**没有 user_id 以外
+    //   的全局可见性**，写死 WHERE user_id 会破坏单账号部署）。
+
+    listAttachments: async function (this: NavigationAPI): Promise<NoteAttachment[]> {
+        await this.migrate();
+        return this.withSchemaRetry(async () => {
+            // ⚠️ 不 SELECT object_key：暴露它等于泄漏存储布局（key 里带 user_id），
+            // 前端也没有理由知道。
+            const result = await this.db
+                .prepare(
+                    `SELECT id, note_id, filename, mime, size, storage, created_at
+                     FROM attachments
+                     ${this.scopeSql(false)}
+                     ORDER BY created_at DESC
+                     LIMIT 200`
+                )
+                .run();
+            return result.results as unknown as NoteAttachment[];
+        });
+    },
+
+    getAttachment: async function (this: NavigationAPI, id: string): Promise<NoteAttachment | null> {
+        await this.migrate();
+        return this.withSchemaRetry(async () => {
+            const row = await this.db
+                .prepare(`SELECT * FROM attachments WHERE id = ?1 ${this.scopeSql(true)}`)
+                .bind(id)
+                .first<Record<string, unknown>>();
+            return row ? ({ ...row } as unknown as NoteAttachment) : null;
+        });
+    },
+
+    createAttachment: async function (
+        this: NavigationAPI,
+        row: {
+            id: string;
+            note_id: number | null;
+            filename: string;
+            mime: string;
+            size: number;
+            storage: AttachmentStorage;
+            object_key: string;
+        }
+    ): Promise<void> {
+        await this.migrate();
+        await this.withSchemaRetry(async () => {
+            await this.db
+                .prepare(
+                    `INSERT INTO attachments
+                       (id, user_id, note_id, filename, mime, size, storage, object_key, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)`
+                )
+                // ⚠️ user_id 取当前账号 —— **不要**接受调用方传的用户 id，
+                // 否则改个参数就能往别人名下塞数据（越权）。
+                .bind(
+                    row.id,
+                    this.currentUserId ?? null,
+                    row.note_id,
+                    row.filename,
+                    row.mime,
+                    row.size,
+                    row.storage,
+                    row.object_key,
+                    Date.now()
+                )
+                .run();
+        });
+    },
+
+    deleteAttachment: async function (
+        this: NavigationAPI,
+        id: string
+    ): Promise<
+        | { ok: true; storage: AttachmentStorage; objectKey: string }
+        | { ok: false; status: 404; error: string }
+    > {
+        await this.migrate();
+        return this.withSchemaRetry(async () => {
+            const row = await this.db
+                .prepare(`SELECT storage, object_key FROM attachments WHERE id = ?1 ${this.scopeSql(true)}`)
+                .bind(id)
+                .first<{ storage: string; object_key: string }>();
+            if (!row) return { ok: false, status: 404, error: "附件不存在" };
+            // 先删记录，成功才让调用方去删对象（反过来会出现「记录没了、对象还在」→ 永久泄漏）
+            const del = (await this.db
+                .prepare(`DELETE FROM attachments WHERE id = ?1 ${this.scopeSql(true)}`)
+                .bind(id)
+                .run()) as { meta?: { changes?: number } };
+            if (!del.meta?.changes) return { ok: false, status: 404, error: "附件不存在" };
+            return { ok: true, storage: row.storage as AttachmentStorage, objectKey: row.object_key };
         });
     },
 

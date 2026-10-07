@@ -2,6 +2,7 @@ import {
     Group,
     Site,
     Note,
+    NoteAttachment,
     NoteFolder,
     NoteRevision,
     NoteTag,
@@ -526,6 +527,50 @@ export class NavigationClient {
     async countNotes(): Promise<number> {
         const res = await this.request<{ count?: number }>("notes/count");
         return res?.count ?? 0;
+    }
+
+    // ---- 图片附件（2026-07）----
+    /**
+     * 上传一张图片。
+     *
+     * ⚠️ body 是**原始 File**，不是 multipart、不是 base64：
+     //   base64 撑大 33%，而单文件上限就是存储单条的 25MB，base64 之后必然超；
+     *   multipart 要在服务端手写解析，对 25MB 的体很吃内存。
+     * 元数据（文件名 / 归属笔记）走 query —— 见 worker/routes/data.ts 的同名说明。
+     *
+     * ⚠️ 返回的 url 走鉴权，`<img src>` 不能直接用它（会 401）。
+     * 调用方要 fetch 成 blob 再 `URL.createObjectURL`（见 NotesPage 的 attachImage）。
+     */
+    async uploadAttachment(file: File, noteId?: number | null): Promise<{
+        id: string;
+        url: string;
+        filename: string;
+        mime: string;
+        size: number;
+    }> {
+        const params = new URLSearchParams({ filename: file.name || "image" });
+        if (noteId) params.set("noteId", String(noteId));
+        return this.request<{
+            id: string;
+            url: string;
+            filename: string;
+            mime: string;
+            size: number;
+        }>(`notes/attachments?${params.toString()}`, {
+            method: "POST",
+            body: file,
+            // ⚠️ 不能写 Content-Type: application/json —— 这里要带的是**真实**类型，
+            // 让服务端记进元数据（但类型判定仍以文件头嗅探为准，不信这个头）。
+            headers: { "Content-Type": file.type || "application/octet-stream" },
+        });
+    }
+
+    async listAttachments(): Promise<NoteAttachment[]> {
+        return this.request<NoteAttachment[]>("notes/attachments/list");
+    }
+
+    async deleteAttachment(id: string): Promise<{ ok: boolean }> {
+        return this.request<{ ok: boolean }>(`notes/attachments/${id}`, { method: "DELETE" });
     }
 
     // ---- 阶段三收尾：笔记文件夹 / 标签 ----

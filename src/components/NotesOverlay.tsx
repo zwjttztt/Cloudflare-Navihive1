@@ -135,6 +135,15 @@ export default function NotesOverlay({
     return (
         <NotesPage
             shareApi={api.getNoteShare && api.createNoteShare && api.revokeNoteShare ? api as NotesApiLike & NoteShareApi : undefined}
+            // ⚠️ 与 shareApi 同一个套路：只在这个 api 实例**真的有** uploadAttachment
+            // 时才传。用途不只是类型 —— 老版本后端（没升级 migration 12、或没绑
+            // 存储）拿不到这个方法，此时工具栏的「上传图片」会自动置灰并说明原因，
+            // 而不是点了才报一个看不懂的错误。
+            uploadApi={
+                typeof api.uploadAttachment === "function"
+                    ? { uploadAttachment: api.uploadAttachment.bind(api) }
+                    : undefined
+            }
             notes={notes}
             onClose={onClose}
             accountName={accountName}

@@ -68,6 +68,53 @@ export interface NoteShare {
     token: string;
     expires_at: number | null;
 }
+
+/**
+ * 图片附件的存储通道（2026-07）。
+ *
+ * ⚠️ 这是**有主次**的，不是二选一（见 worker/attachments.ts 的 selectAttachmentStorage）：
+ *   "r2" 优先（R2 更合适：读配额便宜、可设缓存头）；没有 R2 才退 "kv"。
+ * 现在部署只配了 KV，所以实际都落在 "kv"；以后加一条 r2 绑定就自动切换，
+ * **前端与 API 都不用改**。
+ *
+ * 之所以单独定义而不是引用 worker/attachments.ts 的类型：那份文件在 worker/
+ * 目录里、依赖 Workers 运行时；前端 bundle 不能引它（会把 @cloudflare/workers-types
+ * 拖进浏览器构建，与 DOM lib 打架 —— tsconfig.tests.json:10-12 记着这个坑）。
+ */
+export type AttachmentStorage = "r2" | "kv";
+
+/**
+ * 一张图片的**元数据**（2026-07）。二进制不在这里 —— 25MB 的图走 JSON 会撑爆响应体。
+ * 取图走 `GET /api/notes/attachments/<id>`。
+ */
+export interface NoteAttachment {
+    /** uuid 字符串（不是自增整数）：对象 key 里带它，见 worker/attachments.ts */
+    id: string;
+    note_id: number | null;
+    filename: string;
+    mime: string;
+    size: number;
+    storage: AttachmentStorage;
+    /** 只在服务端用；列给前端时会被剥掉（暴露它等于泄漏存储布局） */
+    object_key?: string;
+    created_at: number;
+}
+
+/**
+ * 上传一张图的返回结果。
+ *
+ * ⚠️ 单独起个名字而不是内联写 `Promise<{…}>` ——
+ * mock.ts 那个内联写法让 TS 解析器在 `noteId?: number | null): Promise<{…}> {`
+ * 这里卡住（TS1068 连报三行），排查绕了很久。具名类型没这个问题。
+ */
+export interface AttachmentUploadResult {
+    id: string;
+    /** 取图地址。⚠️ 走鉴权，`<img src>` 不能直接用（会 401），要 fetch 成 blob */
+    url: string;
+    filename: string;
+    mime: string;
+    size: number;
+}
 /** 分享列表的一行（设置页「分享列表」用；把笔记标题一起带出来，省一次请求） */
 export interface NoteShareListItem {
     note_id: number;

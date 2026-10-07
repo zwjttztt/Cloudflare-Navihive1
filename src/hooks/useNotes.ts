@@ -6,7 +6,7 @@
 // 记事本是「想到就写」的场景，保存要是有 200ms 的延迟，手感会立刻变差；
 // 而失败时回滚到旧值 + 提示，代价远小于「每敲一个字都等一下」。
 import { useCallback, useEffect, useState } from "react";
-import type { Note, NoteFolder, NoteRevision, NoteTag } from "../API/http";
+import type { Note, NoteAttachment, NoteFolder, NoteRevision, NoteTag } from "../API/http";
 import { reportError } from "../utils/errorReporter";
 import type { NotifySeverity } from "./useNotify";
 
@@ -60,6 +60,16 @@ export type NotesApiLike = {
     listNoteRevisions?(noteId: number): Promise<NoteRevision[]>;
     getNoteRevision?(noteId: number, revisionId: number): Promise<NoteRevision | null>;
     restoreNoteRevision?(noteId: number, revisionId: number): Promise<Note | null>;
+
+    // ---------- 图片附件（2026-07）----------
+    // 同样**可选**：后端没配存储（R2 / KV 都没绑）时这个方法不存在，
+    // 界面退化成「上传图片不可用」并置灰，而不是整个记事本打不开。
+    uploadAttachment?(
+        file: File,
+        noteId?: number | null
+    ): Promise<{ id: string; url: string; filename: string; mime: string; size: number }>;
+    listAttachments?(): Promise<NoteAttachment[]>;
+    deleteAttachment?(id: string): Promise<{ ok: boolean }>;
 };
 
 type UseNotesParams = {

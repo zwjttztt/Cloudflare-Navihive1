@@ -9,6 +9,7 @@ import type { NavigationAPI } from "../http";
 import { RECOVERY_PUBLIC_KEY_CONFIG, WEBDAV_CONFIG_PREFIX } from "../configKeys";
 import { hashPassword, isHashedPassword } from "../crypto";
 import {
+    ATTACHMENTS_TABLE_STATEMENTS,
     CREATE_STATEMENTS,
     FOLDER_TAG_TABLE_STATEMENTS,
     INDEX_STATEMENTS,
@@ -42,7 +43,7 @@ import {
 //     ⚠️ CREATE TABLE IF NOT EXISTS 对已存在的表**不会补列**（2026-10-06 的
 //     parent_id 500 就是这个坑），所以老库必须走 migrateFolderTagTables 里的
 //     hasColumn + ALTER，版本号必须 +1 让快路径失效。
-export const SCHEMA_VERSION = "11";
+export const SCHEMA_VERSION = "12";
 /** 版本号存在 configs 里的键名 */
 export const SCHEMA_VERSION_KEY = "schema.version";
 
@@ -66,6 +67,8 @@ export interface MigrationApi {
     migrateNoteColumns(): Promise<void>;
     /** 阶段三收尾：文件夹 / 标签三张新表（老库上 CREATE TABLE IF NOT EXISTS 建不出来） */
     migrateFolderTagTables(): Promise<void>;
+    /** 2026-07：图片附件元数据表（老库上同样建不出来，必须显式跑） */
+    migrateAttachmentsTable(): Promise<void>;
     migrateRecoveryKeyToOwner(ownerId: number): Promise<void>;
     migrateWebdavConfigToOwner(ownerId: number): Promise<void>;
     hasColumn(table: string, column: string): Promise<boolean>;
@@ -214,6 +217,11 @@ export const migrationImpl: MigrationApi = {
         //（2026-10-06 线上就是这俩接口 500，根因就是 migrateFolderTagTables 定义却没接进来）
         await this.migrateFolderTagTables();
 
+        // 6.6) 2026-07：图片附件的元数据表（binary 在 R2/KV，不在 D1）。
+        // 同样必须**显式建**，不能指望第 1 步的批量建表 —— 已经部署过的实例上
+        // 版本号读得到就整段跳过迁移（见 migrateIfNeeded），新表永远建不出来。
+        await this.migrateAttachmentsTable();
+
         // 7) 索引：排在最后，因为它依赖上面补出来的 user_id 列（见 INDEX_STATEMENTS 注释）
         await this.createIndexes();
 
@@ -361,6 +369,25 @@ export const migrationImpl: MigrationApi = {
                 // 并发迁移时列可能已存在；确认真的存在才算没事
                 if (!(await this.hasColumn("note_folder", column))) throw error;
             }
+        }
+    },
+
+    /**
+     * 图片附件的元数据表（2026-07，schema 12）。
+     *
+     * ⚠️ 只有**元数据**在 D1 —— 二进制在 R2（首选）或 KV（降级）。
+     * D1 单行上限约 2MB，一张图就顶满，所以绝不能把图片本体塞进来
+     * （inkstone 同样如此，constants.ts:19 的注释里写明了这点）。
+     *
+     * 为什么这张表必须在迁移里显式建：已经部署过的实例上，
+     * 「版本号读得到就整段跳过迁移」的快路径（见 migrateIfNeeded）
+     * 会连建表都跳过 → 表永远不存在 → 附件接口一律 500。
+     * 这与 migrateFolderTagTables 当初的 500 是同一个坑。
+     */
+    migrateAttachmentsTable: async function (this: NavigationAPI ): Promise<void> {
+        for (const sql of ATTACHMENTS_TABLE_STATEMENTS) {
+            // 同上：D1 exec 按行拆 SQL，不适合多行 DDL；prepare 整条执行。
+            await this.db.prepare(sql).run();
         }
     },
 

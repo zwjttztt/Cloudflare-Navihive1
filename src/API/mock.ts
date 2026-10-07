@@ -2,6 +2,8 @@ import {
     Group,
     Site,
     Note,
+    AttachmentUploadResult,
+    NoteAttachment,
     NoteFolder,
     NoteRevision,
     NoteTag,
@@ -167,6 +169,19 @@ interface MockRecycleItem {
 }
 const mockRecycleBin: MockRecycleItem[] = [];
 let mockRecycleSeq = 1;
+
+/**
+ * 图片附件的内存副本（2026-07）。
+ *
+ * ⚠️ 演示模式**不存字节** —— 只留元数据、url 指向一个占位图。
+ * 目的是让「插入图片」的交互链路在演示模式下能跑通（弹窗 / 插入 / 删除），
+ * 而不是让人以为上传坏了。真实字节要靠后端的 R2/KV。
+ */
+const mockAttachments: NoteAttachment[] = [];
+
+/** 演示模式的占位图：1×1 透明 PNG。抽成常量是因为 uploadAttachment 里要用两次。 */
+const PLACEHOLDER_PNG =
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
 
 // 记事本：给两条示例，其中一条用 Markdown 演示渲染层要处理的语法
 const mockNotes: Note[] = [
@@ -473,6 +488,46 @@ export class MockNavigationClient {
     async countNotes(): Promise<number> {
         await new Promise(resolve => setTimeout(resolve, 200));
         return mockNotes.length;
+    }
+
+    // ---- 图片附件（2026-07，演示模式下的内存实现）----
+    // ⚠️ 与 client.ts 一一对应：契约守卫测试盯着两边的方法集合，少一个 mock 就会
+    // 在演示模式下抛「不是函数」。
+
+    async uploadAttachment(file: File, noteId?: number | null): Promise<AttachmentUploadResult> {
+        await new Promise(resolve => setTimeout(resolve, 200));
+        const id = `mock-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+        const mime = file.type || "image/png";
+        mockAttachments.unshift({
+            id,
+            note_id: noteId ?? null,
+            filename: file.name || `image.${(mime.split("/")[1] || "png").split("+")[0]}`,
+            mime,
+            size: file.size,
+            storage: "kv",
+            created_at: Date.now(),
+        });
+        // 占位图：1×1 透明 PNG（data URI 直接能进 <img src>）。
+        // 演示模式没有后端存储，给一张真实可显示的图，好过让用户对着裂图困惑。
+        return {
+            id,
+            url: PLACEHOLDER_PNG,
+            filename: file.name || "image.png",
+            mime,
+            size: file.size,
+        };
+    }
+
+    async listAttachments(): Promise<NoteAttachment[]> {
+        await new Promise(resolve => setTimeout(resolve, 80));
+        return mockAttachments.map(a => ({ ...a }));
+    }
+
+    async deleteAttachment(id: string): Promise<{ ok: boolean }> {
+        await new Promise(resolve => setTimeout(resolve, 80));
+        const i = mockAttachments.findIndex(a => a.id === id);
+        if (i >= 0) mockAttachments.splice(i, 1);
+        return { ok: i >= 0 };
     }
 
     // ---- 阶段三收尾：笔记文件夹 / 标签（演示模式下的内存实现）----

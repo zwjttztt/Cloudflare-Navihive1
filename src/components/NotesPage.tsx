@@ -130,6 +130,20 @@ import NoteShareDialog, { type NoteShareApi } from "./NoteShareDialog";
 
 export interface NotesPageProps {
     shareApi?: NoteShareApi;
+    /**
+     * 图片上传能力（2026-07）。
+     *
+     * ⚠️ 刻意**可选**：后端没配存储（R2 / KV 都没绑）时这个能力就不存在，
+     * 那时工具栏的「上传图片」会自动置灰、并在 tooltip 里说明原因 ——
+     * 而不是点了才报一个看不懂的错误。与 shareApi 同一个套路
+     * （NotesOverlay.tsx:137 那一行）。
+     */
+    uploadApi?: {
+        uploadAttachment(
+            file: File,
+            noteId?: number | null
+        ): Promise<{ id: string; url: string; filename: string; mime: string; size: number }>;
+    };
     notes: Note[];
     onClose: () => void;
     /**
@@ -1336,6 +1350,7 @@ function readSplitRatio(): number {
 
 export default function NotesPage({
     shareApi,
+    uploadApi,
     notes,
     onClose,
     accountName,
@@ -1678,6 +1693,34 @@ export default function NotesPage({
         // 真正的同步在 syncScrollRef 那条链路里；这里保留是为了兼容
         // NoteEditor 的 onScrollRatio 回调（它报的「比例」已不再用于定位）。
     }, []);
+
+    /**
+     * 把「上传一张图」转交给 uploadApi（2026-07）。
+     *
+     * ⚠️ uploadApi 是**可选**的：后端没配存储（R2 / KV 都没绑）时它不存在。
+     * 这里不抛错、而是返回一个被拒的 Promise —— 让工具栏的调用点自己走 catch
+     * 去提示用户；工具栏那边还会因为拿不到这个能力而把菜单项置灰。
+     */
+    const handleUpload = useCallback(
+        async (file: File, noteId: number | null) => {
+            if (!uploadApi) {
+                throw new Error("服务器未配置图片存储，上传暂不可用");
+            }
+            const result = await uploadApi.uploadAttachment(file, noteId);
+            // ⚠️ 别无条件把返回值往下传（2026-10-07 真机实测的坑）：
+            // 只要后端/中间层回了个「200 但不是我们预期的 JSON」（错误页、代理拦截、
+            // SPA 兜底把 /api/ 开头的路径回落成 index.html），拿到的就是 `{success:true}`
+            // 之类的东西 —— url 与 filename 全是 undefined，而 fetch(undefined) 会
+            // 去请求**当前页面**、拿到 HTML 还当成图片内嵌，正文里就出现
+            // `![undefined](data:text/html;base64,...)`，用户根本看不懂哪里错了。
+            // 宁可在这里拦下来报一句人话。
+            if (!result?.url || !result?.filename) {
+                throw new Error("上传返回的数据不完整（缺少图片地址），请重试");
+            }
+            return { url: result.url, filename: result.filename, size: result.size };
+        },
+        [uploadApi]
+    );
 
     // 滚动同步控制器：只在「分栏 + 设置里开着」时启用（inkstone 同条件，
     // Workspace.tsx:241 的 `settings.preview.syncScroll && showSplit`）。
@@ -3961,6 +4004,9 @@ export default function NotesPage({
                         onInsertFold={tools.onInsertFold}
                         onInsertTabs={tools.onInsertTabs}
                         onInsertDivider={tools.onInsertDivider}
+                        onNotify={onNotify}
+                        activeId={active?.id ?? null}
+                        onUploadImage={handleUpload}
                     />
                     )}
 
@@ -4488,6 +4534,9 @@ export default function NotesPage({
                     onInsertFold={sideTools.onInsertFold}
                     onInsertTabs={sideTools.onInsertTabs}
                     onInsertDivider={sideTools.onInsertDivider}
+                    onNotify={onNotify}
+                    activeId={sideNote?.id ?? null}
+                    onUploadImage={handleUpload}
                 />
             )}
             <Box
@@ -5628,6 +5677,24 @@ const HEADING_LEVELS: { level: string; label: string; prefix: string; value: num
  * 默认的 mousedown 会让输入框失焦，selectionStart 就变成了 0，
  * 插入的位置会全跑到开头去。
  */
+/**
+ * Blob → data URI。
+ *
+ * 为什么需要：上传接口返回的 URL 走 cookie 鉴权，浏览器 `<img src>` 不会带
+ * 我们自己的鉴权流程（它只带同源 cookie，但接口要求的是登录态 cookie ——
+ * 同源下其实会带，真正的问题是**图片加载失败时无法区分是 401 还是 404**）。
+ * 内嵌成 data URI 后图片成为正文的一部分，离线可读、不需要再发请求。
+ * 代价见 pickImage 注释（25MB 上限、只内嵌小图）。
+ */
+function blobToDataUri(blob: Blob): Promise<string> {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result));
+        reader.onerror = () => reject(reader.error ?? new Error("读取图片失败"));
+        reader.readAsDataURL(blob);
+    });
+}
+
 function MarkdownToolbar({
     onInsert,
     onLinePrefix,
@@ -5644,6 +5711,9 @@ function MarkdownToolbar({
     onInsertTag,
     onInsertWikiLink,
     onInsertHiddenComment,
+    onNotify,
+    activeId,
+    onUploadImage,
     onInsertFold,
     onInsertTabs,
     onInsertDivider,
@@ -5691,6 +5761,18 @@ function MarkdownToolbar({
     onInsertTabs: () => void;
     /** 插入分隔线 `---` */
     onInsertDivider: () => void;
+    /** 上传进度 / 失败时提示（与页面同一套通知） */
+    onNotify?: (message: string, level: "error" | "success" | "info") => void;
+    /** 当前笔记 id（图片挂到这条笔记名下） */
+    activeId?: number | null;
+    /**
+     * 上传一张图，返回可直接取图的 URL。
+     *
+     * ⚠️ 走**回调**而不是在工具栏里直接 import api：NotesPage 并不持有 api 实例
+     * （数据读写都在父组件那一层）。做成回调后单测也能塞一个假的进去，
+     * 不用起真实后端。
+     */
+    onUploadImage: (file: File, noteId: number | null) => Promise<{ url: string; filename: string; size: number }>;
 }) {
     const [headingAnchor, setHeadingAnchor] = useState<HTMLElement | null>(null);
     const [linkAnchor, setLinkAnchor] = useState<HTMLElement | null>(null);
@@ -5710,6 +5792,66 @@ function MarkdownToolbar({
     const [calloutAnchor, setCalloutAnchor] = useState<HTMLElement | null>(null);
     const [tableAnchor, setTableAnchor] = useState<HTMLElement | null>(null);
     const [formulaAnchor, setFormulaAnchor] = useState<HTMLElement | null>(null);
+    /** 隐藏的 `<input type=file>`：点「上传图片」时用它弹系统选择框 */
+    const fileInputRef = useRef<HTMLInputElement | null>(null);
+    /** 上传中：禁掉菜单项，避免连点把同一张图传两遍 */
+    const [uploading, setUploading] = useState(false);
+
+    /**
+     * 选一张图 → 上传 → 把 Markdown 插进正文。
+     *
+     * 三步链路上有两个容易踩的点：
+     *
+     *  1. **上传的是原始 File，不是 base64 / multipart**（见 worker/routes/data.ts
+     *     的 handleUploadAttachment）：base64 撑大 33%，而单文件上限就是存储
+     *     单条的 25MB，base64 之后必然超。
+     *
+     *  2. **返回的 url 走鉴权，`<img src>` 不能直接用它**（会 401）。
+     *     所以这里把图片 fetch 成 blob、转成 data URI 再插进正文 ——
+     *     代价是正文体积变大（图片内嵌），但这是「离线可读」与
+     *     「不重复鉴权」换来的；真实部署更该用受保护的 URL + 一次性 token。
+     *     ⚠️ 25MB 的图内嵌会让笔记正文膨胀到几十 MB（D1 单行上限 2MB），
+     *     所以这里**只内嵌小于 1MB 的图**，更大的只插 URL 链接。
+     */
+    const pickImage = useCallback(() => {
+        fileInputRef.current?.click();
+    }, []);
+
+    const handleImagePicked = useCallback(
+        async (file: File) => {
+            setUploading(true);
+            try {
+                const uploaded = await onUploadImage(file, activeId ?? null);
+                // 小图内嵌成 data URI（离线可读），大图只插链接
+                const INLINE_MAX = 1024 * 1024;
+                if (file.size <= INLINE_MAX) {
+                    const response = await fetch(uploaded.url, { credentials: "same-origin" });
+                    if (response.ok) {
+                        const blob = await response.blob();
+                        // ⚠️ 光看 response.ok 不够（2026-10-07 实测）：200 也可能是
+                        // 错误页 / SPA 兜底的 index.html。内嵌了它，正文里就是一坨
+                        // `data:text/html;base64,...`，比裂图还难排查。
+                        // 不是图片就退回插 URL，让浏览器自己去裂、至少是个正常链接。
+                        if (blob.type.startsWith("image/")) {
+                            const dataUri = await blobToDataUri(blob);
+                            onInsert(`![${uploaded.filename}](`, ")", dataUri);
+                            return;
+                        }
+                        console.warn("附件地址返回的不是图片，改为插入链接", blob.type);
+                    }
+                }
+                onInsert(`![${uploaded.filename}](`, ")", uploaded.url);
+            } catch (error) {
+                onNotify?.(
+                    error instanceof Error ? error.message : "图片上传失败",
+                    "error"
+                );
+            } finally {
+                setUploading(false);
+            }
+        },
+        [activeId, onInsert, onNotify, onUploadImage]
+    );
 
     /**
      * inkstone 的「菜单 + 主按钮」双态：一半的图标既能直接点（执行主功能），
@@ -5742,6 +5884,25 @@ function MarkdownToolbar({
     const divider = <Divider orientation='vertical' flexItem sx={{ mx: 0.5, my: 0.5 }} />;
 
     return (
+        <>
+        {/* 隐藏的文件选择框。
+            ⚠️ 为什么不用 `display:none` 的 `<input>` 直接放工具栏里：
+            它会被 flexWrap 的布局当成第 28 个「按钮」占位（虽然 0 宽，
+            但在换行计算里仍占一个 flex item），极端窄栏下会多折一行。
+            放在 fragment 里、工具栏外面，布局就不算它。 */}
+        <input
+            ref={fileInputRef}
+            type='file'
+            accept='image/png,image/jpeg,image/gif,image/webp,image/avif'
+            style={{ display: "none" }}
+            data-file-input='1'
+            onChange={e => {
+                const file = e.target.files?.[0];
+                // ⚠️ 读完立刻清空 value：否则选同一张图第二次不会触发 change
+                e.target.value = "";
+                if (file) void handleImagePicked(file);
+            }}
+        />
         <Box
             role='toolbar'
             aria-label='Markdown 格式'
@@ -6005,12 +6166,25 @@ function MarkdownToolbar({
                 {/* ⚠️ 2026-10-07 对齐 inkstone（EditorToolbar.tsx:56-59 `imageItems`）：
                     上传图片在前、网络图片在后，且**没有分隔线**。
                     之前我们是「网络图片 → 分隔线 → 上传图片（置灰）」，顺序反了。
-                    文案也照 inkstone 的 zh-CN 原文：`上传图片` / `网络图片`，
-                    「暂未开放」这类说明搬进 Tooltip，不占菜单项文字。 */}
-                <Tooltip title='从本机选一张图片插进来（尚未开放）'>
+                    文案也照 inkstone 的 zh-CN 原文：`上传图片` / `网络图片`。
+                    「暂未开放」这类说明搬进 Tooltip，不占菜单项文字。
+
+                    ⚠️ 2026-10-07 后端就绪后**解除置灰**：存储走 KV（R2 未开通，
+                    但接口留着 —— 开了只加一条 wrangler 绑定，前端不用动）。 */}
+                <Tooltip
+                    title={
+                        uploading
+                            ? '正在上传…'
+                            : '从本机选一张图片插进来（≤25MB，PNG / JPEG / GIF / WebP / AVIF）'
+                    }
+                >
                 <MenuItem
-                    disabled
                     data-image-op='upload'
+                    disabled={uploading}
+                    onClick={() => {
+                        setImageAnchor(null);
+                        pickImage();
+                    }}
                 >
                     上传图片
                 </MenuItem>
@@ -6459,5 +6633,6 @@ function MarkdownToolbar({
             </Menu>
 
         </Box>
+        </>
     );
 }

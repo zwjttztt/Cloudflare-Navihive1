@@ -33,11 +33,23 @@ function findChrome() {
     if (process.env.CHROME_PATH && fs.existsSync(process.env.CHROME_PATH)) {
         return process.env.CHROME_PATH;
     }
+    const home = process.env.USERPROFILE || process.env.HOME || "";
+    /**
+     * ⚠️ 2026-07 修：原来只按 darwin / linux 分支列候选，**Windows 落到了
+     * linux 那一档**，于是 `process.platform === "win32"` 时会去 `fs.existsSync`
+     * 检查 `/usr/bin/google-chrome` —— Windows 上不存在，函数返回 null，
+     * 但**如果 PATH 里恰好有个同名包装脚本**，`which/where` 兜底会返回它，
+     * 结果就是「Chrome: /usr/bin/google-chrome」然后连不上调试端口。
+     * （用户在 Windows 上真的撞到了：`npm run smoke` 报
+     *   Chrome: /usr/bin/google-chrome / 连不上 Chrome 的调试端口。）
+     */
     const candidates =
         process.platform === "win32"
             ? [
+                  `${home}/AppData/Local/Google/Chrome/Application/chrome.exe`,
                   "C:/Program Files/Google/Chrome/Application/chrome.exe",
                   "C:/Program Files (x86)/Google/Chrome/Application/chrome.exe",
+                  `${home}/AppData/Local/Chromium/Application/chrome.exe`,
               ]
             : process.platform === "darwin"
               ? [
@@ -51,13 +63,16 @@ function findChrome() {
                     "/usr/bin/chromium-browser",
                     "/snap/bin/chromium",
                 ];
-    for (const c of candidates) if (fs.existsSync(c)) return c;
+    for (const c of candidates) if (c && fs.existsSync(c)) return c;
     // 最后试一下 PATH
-    for (const name of ["google-chrome", "chromium", "chromium-browser"]) {
-        const found = spawnSync(process.platform === "win32" ? "where" : "which", [name], {
-            encoding: "utf8",
-        });
-        if (found.status === 0 && found.stdout.trim()) return found.stdout.trim().split("\n")[0];
+    const lookup = process.platform === "win32" ? "where" : "which";
+    for (const name of ["google-chrome", "chrome", "chromium", "chromium-browser"]) {
+        const found = spawnSync(lookup, [name], { encoding: "utf8" });
+        if (found.status === 0 && found.stdout.trim()) {
+            const p = found.stdout.trim().split("\n")[0];
+            // ⚠️ 兜底结果必须**真的存在**，否则又会被包装脚本/别名骗到
+            if (fs.existsSync(p)) return p;
+        }
     }
     return null;
 }

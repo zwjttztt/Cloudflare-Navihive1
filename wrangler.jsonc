@@ -45,6 +45,37 @@
             "database_id": "e4f73ada-564f-4a37-89a7-52729d2e8c07"
         }
     ],
+
+    // ---- 附件（图片）存储：R2 为主、KV 为辅 ----
+    //
+    // 绑定名 `FILES_KV` 与 worker/types.ts 里的声明对应，别改。
+    // 命名空间是 2026-10-07 建的（title: navihive-files-kv）；换环境部署时
+    // 要建一个新的并把 id 换掉 —— KV 不跨账号。
+    //
+    // R2 还没开通，所以**先把接口留着**（worker/types.ts 里 FILES?: R2Bucket 已声明）。
+    // 以后开通只要两步：
+    //   wrangler r2 bucket create navihive-files
+    //   然后把下面 r2_buckets 整段取消注释、填上 bucket_name
+    // 代码与前端**都不用改** —— attachments.ts 的 selectAttachmentStorage 会自动优先用 R2。
+    //
+    // 为什么不用 D1 存二进制：D1 单行上限约 2MB，一张图就顶满（inkstone 同样不用）。
+    // 为什么 KV 单条 25MB 够用：正好等于我们给单文件设的上限（attachments.ts 的
+    // ATTACHMENT_MAX_BYTES），超出在 put 之前就被拒了。
+    //
+    // ⚠️ 配额提醒（KV 计费口径）：KV **读**也要花配额，而笔记正文里的图片
+    // 每次渲染都要读一次。所以正文里存的是 URL、不是 base64 —— 这是必须的。
+    "kv_namespaces": [
+        {
+            "binding": "FILES_KV",
+            "id": "d08f4b812e314d2fa3bf8fe1d75411a0"
+        }
+    ],
+    // "r2_buckets": [
+    //     {
+    //         "binding": "FILES",
+    //         "bucket_name": "navihive-files"
+    //     }
+    // ],
     // 每周一 UTC 02:00（北京时间 10:00）自动备份一次到 WebDAV。
     // 开关在页面「备份与恢复 → 每周自动备份」，需要重新部署才会应用这里的改动。
     "triggers": {
