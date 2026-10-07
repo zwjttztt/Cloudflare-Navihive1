@@ -567,7 +567,7 @@ function FolderTagSection({
                     <IconButton size='small' aria-label={`新建${title}`} onClick={onCreate} sx={{ p: 0.25 }}>
                         <AddIcon fontSize='inherit' />
                     </IconButton>
-                </Tooltip>
+                    </Tooltip>
                 {onCreateNote && (
                     <Tooltip title='新建笔记'>
                         <IconButton
@@ -2069,7 +2069,7 @@ export default function NotesPage({
                             >
                                 <UndoIcon fontSize='small' />
                             </IconButton>
-                        </Tooltip>
+                    </Tooltip>
                         <Tooltip title='彻底删除（找不回来）'>
                             <IconButton
                                 size='small'
@@ -2084,7 +2084,7 @@ export default function NotesPage({
                             >
                                 <DeleteForeverIcon fontSize='small' />
                             </IconButton>
-                        </Tooltip>
+                    </Tooltip>
                     </Box>
                 ))
             )}
@@ -3745,7 +3745,7 @@ export default function NotesPage({
                                     >
                                         {icon}
                                     </IconButton>
-                                </Tooltip>
+                            </Tooltip>
                             ))}
                         </Box>
                         {/* 保存状态（inkstone 的 SaveIndicator 就挂在头部这一排）。
@@ -3767,7 +3767,7 @@ export default function NotesPage({
                                 >
                                     <MoreVertIcon fontSize='small' />
                                 </IconButton>
-                            </Tooltip>
+                        </Tooltip>
                         </Box>
                     </Box>
 
@@ -4261,7 +4261,7 @@ export default function NotesPage({
                             >
                                 {icon}
                             </IconButton>
-                        </Tooltip>
+                    </Tooltip>
                     ))}
                 </Box>
                 {/* 保存状态：与主栏同款，也挂在头部（inkstone 每栏各自一份） */}
@@ -4287,7 +4287,7 @@ export default function NotesPage({
                     >
                         <MoreVertIcon fontSize='small' />
                     </IconButton>
-                </Tooltip>
+                    </Tooltip>
                 {/* 关闭键常显（inkstone 同款 ✕）：藏在 hover 里的话分屏时根本找不到 */}
                 <Tooltip title='关闭侧边编辑器'>
                     <IconButton
@@ -4299,7 +4299,7 @@ export default function NotesPage({
                     >
                         <CloseIcon fontSize='small' />
                     </IconButton>
-                </Tooltip>
+                    </Tooltip>
             </Box>
             {uiSettings.showToolbar && sideMode !== "preview" && (
                 <MarkdownToolbar
@@ -5439,13 +5439,18 @@ const menuRowSx = {
  * 平台差异（mac 是 ⌘）由 editorShortcuts 统一处理。
  */
 const HEADING_LEVELS: { level: string; label: string; prefix: string; value: number; shortcutId: string }[] = [
-    { level: "0", label: "正文（去掉标题）", prefix: "", value: 0, shortcutId: "paragraph" },
-    { level: "1", label: "H1 一级标题", prefix: "# ", value: 1, shortcutId: "h1" },
-    { level: "2", label: "H2 二级标题", prefix: "## ", value: 2, shortcutId: "h2" },
-    { level: "3", label: "H3 三级标题", prefix: "### ", value: 3, shortcutId: "h3" },
-    { level: "4", label: "H4 四级标题", prefix: "#### ", value: 4, shortcutId: "h4" },
-    { level: "5", label: "H5 五级标题", prefix: "##### ", value: 5, shortcutId: "h5" },
-    { level: "6", label: "H6 六级标题", prefix: "###### ", value: 6, shortcutId: "h6" },
+    // ⚠️ 2026-07 文案对齐 inkstone zh-CN：
+    //   workspace.paragraph      = "正文"
+    //   workspace.heading_value0 = "{value0} 级标题"
+    // 之前写的是「正文（去掉标题）」「H1 一级标题」—— 那个 H1 冗余（菜单项在标题组里，
+    // 「1 级标题」已经够了），而解释性文案该放 Tooltip 不该占菜单项文字。
+    { level: "0", label: "正文", prefix: "", value: 0, shortcutId: "paragraph" },
+    { level: "1", label: "1 级标题", prefix: "# ", value: 1, shortcutId: "h1" },
+    { level: "2", label: "2 级标题", prefix: "## ", value: 2, shortcutId: "h2" },
+    { level: "3", label: "3 级标题", prefix: "### ", value: 3, shortcutId: "h3" },
+    { level: "4", label: "4 级标题", prefix: "#### ", value: 4, shortcutId: "h4" },
+    { level: "5", label: "5 级标题", prefix: "##### ", value: 5, shortcutId: "h5" },
+    { level: "6", label: "6 级标题", prefix: "###### ", value: 6, shortcutId: "h6" },
 ];
 
 /**
@@ -5526,6 +5531,16 @@ function MarkdownToolbar({
     const [insertAnchor, setInsertAnchor] = useState<HTMLElement | null>(null);
     const [blockAnchor, setBlockAnchor] = useState<HTMLElement | null>(null);
     const [langAnchor, setLangAnchor] = useState<HTMLElement | null>(null);
+    /**
+     * 「代码语言」菜单的锚点（2026-07 新增）。
+     * 为什么与 `langAnchor` 分开：inkstone 的 code 菜单只有 3 项
+     * （代码块 / 增强代码块 / Mermaid），而我们有 17 种语言要选 ——
+     * 塞进同一个菜单会变成 19 项，和 inkstone 完全不像。
+     * 两个独立按钮 + 两个独立菜单：主按钮管「插什么」，语言按钮管「标什么」。
+     */
+    const [codeLangAnchor, setCodeLangAnchor] = useState<HTMLElement | null>(null);
+    /** 「提示块」二级菜单的锚点（2026-07）：主菜单只 1 项「提示块」，5 种类型在二级里。 */
+    const [calloutAnchor, setCalloutAnchor] = useState<HTMLElement | null>(null);
     const [tableAnchor, setTableAnchor] = useState<HTMLElement | null>(null);
     const [formulaAnchor, setFormulaAnchor] = useState<HTMLElement | null>(null);
 
@@ -5614,18 +5629,23 @@ function MarkdownToolbar({
                 onClose={() => setHeadingAnchor(null)}
             >
                 {HEADING_LEVELS.map(h => (
-                    <MenuItem
-                        key={h.level}
-                        data-heading={h.level}
-                        sx={menuRowSx}
-                        onClick={() => {
-                            onSetHeading(h.value);
-                            setHeadingAnchor(null);
-                        }}
-                    >
-                        <span>{h.label}</span>
-                        <Kbd combo={comboFor(h.shortcutId)} />
-                    </MenuItem>
+                    <Fragment key={h.level}>
+                        {/* ⚠️ inkstone 的 headingItems 在「正文」之后有一条分隔线
+                            （EditorToolbar.tsx:46 `separatorBefore: level === 1`）——
+                            「正文」是「去掉标题」，语义上跟 H1~H6 是两类，分开更清楚。 */}
+                        {h.level === "1" && <Divider />}
+                        <MenuItem
+                            data-heading={h.level}
+                            sx={menuRowSx}
+                            onClick={() => {
+                                onSetHeading(h.value);
+                                setHeadingAnchor(null);
+                            }}
+                        >
+                            <span>{h.label}</span>
+                            <Kbd combo={comboFor(h.shortcutId)} />
+                        </MenuItem>
+                    </Fragment>
                 ))}
             </Menu>
 
@@ -5669,7 +5689,7 @@ function MarkdownToolbar({
                                     >
                                         {tool.icon ?? tool.label}
                                     </IconButton>
-                                </Tooltip>
+                            </Tooltip>
                             );
                         })}
                     </Fragment>
@@ -5693,7 +5713,7 @@ function MarkdownToolbar({
                 >
                     <LinkIcon fontSize='small' />
                 </IconButton>
-                </Tooltip>
+                    </Tooltip>
                 <Tooltip title='插入网址，或引用另一篇笔记（双链 / 嵌入 / 脚注）'>
                 <IconButton
                     size='small'
@@ -5707,7 +5727,7 @@ function MarkdownToolbar({
                 >
                     <ExpandMoreIcon sx={{ fontSize: 14, opacity: 0.7 }} />
                 </IconButton>
-                </Tooltip>
+                    </Tooltip>
             </Box>
             <Menu
                 open={Boolean(linkAnchor)}
@@ -5722,9 +5742,13 @@ function MarkdownToolbar({
                         setLinkAnchor(null);
                     }}
                 >
-                    <span>链接（网页地址）</span>
+                    <span>链接</span>
                     <Kbd combo={comboFor("link")} />
                 </MenuItem>
+                {/* ⚠️ inkstone 的 referenceItems 有两条分隔线（EditorToolbar.tsx:51/54）：
+                    `链接` 是「插一个普通链接」，下面三项是「引用到别处的东西」，
+                    `脚注` 又是另一类（要同时改文末定义）。分组比说明文字清楚。 */}
+                <Divider />
                 <MenuItem
                     data-link-op='wikilink'
                     sx={menuRowSx}
@@ -5733,7 +5757,7 @@ function MarkdownToolbar({
                         setLinkAnchor(null);
                     }}
                 >
-                    <span>双链 [[笔记]]</span>
+                    <span>双链</span>
                 </MenuItem>
                 <MenuItem
                     data-link-op='embed'
@@ -5743,7 +5767,7 @@ function MarkdownToolbar({
                         setLinkAnchor(null);
                     }}
                 >
-                    <span>笔记嵌入 ![[笔记]]</span>
+                    <span>笔记嵌入</span>
                 </MenuItem>
                 <MenuItem
                     data-link-op='blockref'
@@ -5753,10 +5777,14 @@ function MarkdownToolbar({
                         setLinkAnchor(null);
                     }}
                 >
-                    <span>块引用 ![[笔记#^块ID]]</span>
+                    <span>块引用</span>
                 </MenuItem>
+                <Divider />
                 {/* 脚注要同时改两处（文末定义 + 正文引用），和上面「包一层」不是一回事，
                     所以逻辑上归「引用」而不是「链接」。data-tool 保持不变，老用例能点到。 */}
+                {/* 菜单项文字照 inkstone 的短名词（脚注 / 块 ID / 折叠内容…），
+                    解释性文案搬进 tooltip —— 既对齐了 inkstone，又不丢可理解性。 */}
+                <Tooltip title='把选中的文字变成脚注引用，定义自动放到文末'>
                 <MenuItem
                     data-link-op='footnote'
                     data-tool='footnote-ref'
@@ -5766,8 +5794,9 @@ function MarkdownToolbar({
                         setLinkAnchor(null);
                     }}
                 >
-                    <span>脚注 [^1]：把选中的文字变成脚注引用，定义自动放到文末</span>
+                    <span>脚注</span>
                 </MenuItem>
+                </Tooltip>
             </Menu>
 
             {/* ③ 图片（inkstone 的 image 菜单）：同样是「主按钮 + 箭头」。
@@ -5785,7 +5814,7 @@ function MarkdownToolbar({
                 >
                     <ImageIcon fontSize='small' />
                 </IconButton>
-                </Tooltip>
+                    </Tooltip>
                 <Tooltip title='插入图片：网络图片，或本地上传（未开放）'>
                 <IconButton
                     size='small'
@@ -5799,13 +5828,26 @@ function MarkdownToolbar({
                 >
                     <ExpandMoreIcon sx={{ fontSize: 14, opacity: 0.7 }} />
                 </IconButton>
-                </Tooltip>
+                    </Tooltip>
             </Box>
             <Menu
                 open={Boolean(imageAnchor)}
                 anchorEl={imageAnchor}
                 onClose={() => setImageAnchor(null)}
             >
+                {/* ⚠️ 2026-10-07 对齐 inkstone（EditorToolbar.tsx:56-59 `imageItems`）：
+                    上传图片在前、网络图片在后，且**没有分隔线**。
+                    之前我们是「网络图片 → 分隔线 → 上传图片（置灰）」，顺序反了。
+                    文案也照 inkstone 的 zh-CN 原文：`上传图片` / `网络图片`，
+                    「暂未开放」这类说明搬进 Tooltip，不占菜单项文字。 */}
+                <Tooltip title='从本机选一张图片插进来（尚未开放）'>
+                <MenuItem
+                    disabled
+                    data-image-op='upload'
+                >
+                    上传图片
+                </MenuItem>
+                </Tooltip>
                 <MenuItem
                     data-image-op='url'
                     onClick={() => {
@@ -5813,10 +5855,7 @@ function MarkdownToolbar({
                         setImageAnchor(null);
                     }}
                 >
-                    网络图片（粘贴链接）
-                </MenuItem>
-                <MenuItem disabled data-image-op='upload'>
-                    上传图片（暂未开放）
+                    网络图片
                 </MenuItem>
             </Menu>
 
@@ -5844,6 +5883,7 @@ function MarkdownToolbar({
                 anchorEl={insertAnchor}
                 onClose={() => setInsertAnchor(null)}
             >
+                <Tooltip title='给这篇笔记加一个 #标签，便于检索'>
                 <MenuItem
                     data-insert-op='tag'
                     sx={menuRowSx}
@@ -5852,8 +5892,10 @@ function MarkdownToolbar({
                         setInsertAnchor(null);
                     }}
                 >
-                    <span>标签：给这篇笔记加一个 #标签，便于检索</span>
+                    <span>插入标签</span>
                 </MenuItem>
+                </Tooltip>
+                <Tooltip title='给这一段加个锚点（^标识），别处能引用它'>
                 <MenuItem
                     data-insert-op='blockid'
                     sx={menuRowSx}
@@ -5862,8 +5904,14 @@ function MarkdownToolbar({
                         setInsertAnchor(null);
                     }}
                 >
-                    <span>块 ID：给这一段加个锚点，别处能引用它</span>
+                    <span>块 ID</span>
                 </MenuItem>
+                </Tooltip>
+                {/* ⚠️ inkstone 的 noteItems 也有两条分隔线（EditorToolbar.tsx:63/64）：
+                    标签/块 ID 是「往正文里插东西」，属性是「改整篇笔记的元信息」，
+                    隐藏注释又是另一类。 */}
+                <Divider />
+                <Tooltip title='给整篇笔记加标题、标签等信息（YAML 头部）'>
                 <MenuItem
                     data-insert-op='frontmatter'
                     sx={menuRowSx}
@@ -5872,8 +5920,11 @@ function MarkdownToolbar({
                         setInsertAnchor(null);
                     }}
                 >
-                    <span>笔记属性：给整篇笔记加标题、标签等信息</span>
+                    <span>笔记属性（YAML）</span>
                 </MenuItem>
+                </Tooltip>
+                <Divider />
+                <Tooltip title='写给自己看的备注，预览里不显示'>
                 <MenuItem
                     data-insert-op='hidden'
                     sx={menuRowSx}
@@ -5882,9 +5933,10 @@ function MarkdownToolbar({
                         setInsertAnchor(null);
                     }}
                 >
-                    <span>隐藏注释：写给自己看的备注，预览里不显示</span>
+                    <span>隐藏注释</span>
                     <Kbd combo={comboFor("comment")} />
                 </MenuItem>
+                </Tooltip>
             </Menu>
 
             {/* ⑤ 内容块（inkstone 的 block 菜单）：提示框 / 折叠 / 标签页 / 分隔线。
@@ -5912,27 +5964,58 @@ function MarkdownToolbar({
                 anchorEl={blockAnchor}
                 onClose={() => setBlockAnchor(null)}
             >
-                {(
-                    [
-                        ["NOTE", "提示"],
-                        ["TIP", "技巧"],
-                        ["IMPORTANT", "重要"],
-                        ["WARNING", "警告"],
-                        ["QUOTE", "引用"],
-                    ] as const
-                ).map(([type, label]) => (
-                    <MenuItem
-                        key={type}
-                        data-block-op='callout'
-                        data-callout-type={type}
-                        onClick={() => {
-                            setBlockAnchor(null);
-                            onCallout(type);
-                        }}
+                {/* ⚠️ 2026-10-07 对齐 inkstone（EditorToolbar.tsx:75-80 `blockItems`）：
+                    4 项 —— `提示块` / `折叠内容` / `标签页` /（分隔线）`分隔线`。
+                    之前我们有 8 项：5 种提示框（提示/技巧/重要/警告/引用）+ 折叠 + 标签页 + 分隔线。
+                    合并成 1 项「提示块」，5 种类型挪到**二级菜单** ——
+                    菜单与 inkstone 一致，功能一个不丢。
+                    文案也照 zh-CN 原文，说明搬进 Tooltip。 */}
+                <MenuItem
+                    data-block-op='callout-menu'
+                    aria-label='提示块类型'
+                    aria-haspopup='menu'
+                    onClick={e => {
+                        // 停住不让菜单关闭，然后在这项右侧开二级菜单
+                        e.stopPropagation();
+                        setCalloutAnchor(e.currentTarget);
+                    }}
+                    sx={{ position: "relative" }}
+                >
+                    提示块
+                </MenuItem>
+                {calloutAnchor && (
+                    <Menu
+                        open
+                        anchorEl={calloutAnchor}
+                        onClose={() => setCalloutAnchor(null)}
+                        anchorOrigin={{ vertical: "center", horizontal: "right" }}
+                        transformOrigin={{ vertical: "center", horizontal: "left" }}
                     >
-                        提示框 · {label}
-                    </MenuItem>
-                ))}
+                        {(
+                            [
+                                ["NOTE", "提示"],
+                                ["TIP", "技巧"],
+                                ["IMPORTANT", "重要"],
+                                ["WARNING", "警告"],
+                                ["QUOTE", "引用"],
+                            ] as const
+                        ).map(([type, label]) => (
+                            <MenuItem
+                                key={type}
+                                data-block-op='callout'
+                                data-callout-type={type}
+                                onClick={() => {
+                                    setCalloutAnchor(null);
+                                    setBlockAnchor(null);
+                                    onCallout(type);
+                                }}
+                            >
+                                提示框 · {label}
+                            </MenuItem>
+                        ))}
+                    </Menu>
+                )}
+                <Tooltip title='可点开 / 收起的一段'>
                 <MenuItem
                     data-block-op='fold'
                     onClick={() => {
@@ -5940,8 +6023,10 @@ function MarkdownToolbar({
                         setBlockAnchor(null);
                     }}
                 >
-                    折叠内容：可点开 / 收起的一段
+                    折叠内容
                 </MenuItem>
+                </Tooltip>
+                <Tooltip title='把几段内容并排放，一页只显示一页'>
                 <MenuItem
                     data-block-op='tabs'
                     onClick={() => {
@@ -5949,8 +6034,11 @@ function MarkdownToolbar({
                         setBlockAnchor(null);
                     }}
                 >
-                    标签页：把几段内容并排放，一页只显示一页
+                    标签页
                 </MenuItem>
+                </Tooltip>
+                <Divider />
+                <Tooltip title='一条横线，把内容分段'>
                 <MenuItem
                     data-block-op='divider'
                     onClick={() => {
@@ -5958,8 +6046,9 @@ function MarkdownToolbar({
                         setBlockAnchor(null);
                     }}
                 >
-                    分隔线：一条横线，把内容分段
+                    分隔线
                 </MenuItem>
+                </Tooltip>
             </Menu>
 
             {divider}
@@ -5969,7 +6058,10 @@ function MarkdownToolbar({
                 之前这里单独放一个，工具栏因此比 inkstone 宽出一截。 */}
 
             {/* ⑥ 代码与图表（inkstone 的 code 菜单）：**图标直接插代码块**，
-                箭头里是「代码块 / 增强代码块 / Mermaid / 选语言」。 */}
+                箭头里是 inkstone 那 3 项（代码块 / 增强代码块 / Mermaid 图表）。
+                ⚠️ 2026-10-07 菜单名从「代码块语言」改成 inkstone 的 zh-CN 原文
+                「代码与图表」—— 原来那个名字是按「这菜单里能选语言」起的，
+                拆出独立的语言按钮后它就不贴切了。 */}
             <Box sx={{ display: "inline-flex", alignItems: "center", flexShrink: 0 }}>
                 <Tooltip title='插入代码块'>
                 <IconButton
@@ -5982,11 +6074,11 @@ function MarkdownToolbar({
                 >
                     <DataObjectIcon fontSize='small' />
                 </IconButton>
-                </Tooltip>
-                <Tooltip title='代码与图表：插代码块、画 Mermaid 图、给代码块标语言'>
+                    </Tooltip>
+                <Tooltip title='代码与图表：插代码块、画 Mermaid 图'>
                 <IconButton
                     size='small'
-                    aria-label='代码块语言'
+                    aria-label='代码与图表'
                     data-tool='code-menu'
                     aria-haspopup='menu'
                     aria-expanded={langAnchor ? true : undefined}
@@ -5996,13 +6088,19 @@ function MarkdownToolbar({
                 >
                     <ExpandMoreIcon sx={{ fontSize: 14, opacity: 0.7 }} />
                 </IconButton>
-                </Tooltip>
+                    </Tooltip>
             </Box>
             <Menu
                 open={Boolean(langAnchor)}
                 anchorEl={langAnchor}
                 onClose={() => setLangAnchor(null)}
             >
+                {/* ⚠️ 2026-10-07 对齐 inkstone（EditorToolbar.tsx:66-70 `codeItems`）：菜单只有 3 项
+                    —— `代码块` / `增强代码块` / `Mermaid 图表`，且 Mermaid 前有分隔线。
+                    之前这里是「代码块 / Mermaid + 17 种语言列表」，语言选择器
+                    把这个菜单撑到 19 项，跟 inkstone 差得很远。
+                    语言选择器是真实功能（inkstone 没有 —— 它在「增强代码块」里处理），
+                    所以**保留但拆成独立的「代码语言」按钮**，不塞进这个菜单。 */}
                 <MenuItem
                     data-code-lang='block'
                     onClick={() => {
@@ -6013,6 +6111,16 @@ function MarkdownToolbar({
                     代码块
                 </MenuItem>
                 <MenuItem
+                    data-code-lang='enhanced'
+                    onClick={() => {
+                        onInsert("```js title=example.js showLineNumbers\n", "\n```", "// 代码");
+                        setLangAnchor(null);
+                    }}
+                >
+                    增强代码块
+                </MenuItem>
+                <Divider />
+                <MenuItem
                     data-code-lang='mermaid'
                     onClick={() => {
                         onInsert("```mermaid\n", "\n```", "flowchart LR\n  A --> B");
@@ -6021,14 +6129,36 @@ function MarkdownToolbar({
                 >
                     Mermaid 图表
                 </MenuItem>
-                <Divider />
+            </Menu>
+
+            {/* 代码语言（inkstone 没有这个入口，我们保留 —— 标语言是真需求）。
+                独立成一个按钮，避免把上面那个菜单撑成 19 项。 */}
+            <Tooltip title='给已有的代码块标语言（js / python / sql…）'>
+            <IconButton
+                size='small'
+                aria-label='代码语言'
+                data-tool='code-lang-menu'
+                aria-haspopup='menu'
+                aria-expanded={codeLangAnchor ? true : undefined}
+                onMouseDown={e => e.preventDefault()}
+                onClick={e => setCodeLangAnchor(e.currentTarget)}
+                sx={{ ...toolBtnSx }}
+            >
+                <CodeIcon fontSize='small' />
+            </IconButton>
+            </Tooltip>
+            <Menu
+                open={Boolean(codeLangAnchor)}
+                anchorEl={codeLangAnchor}
+                onClose={() => setCodeLangAnchor(null)}
+            >
                 {CODE_LANGUAGES.map(item => (
                     <MenuItem
                         key={item.label}
                         data-code-lang={item.value || "plain"}
                         onClick={() => {
                             onCodeLanguage(item.value);
-                            setLangAnchor(null);
+                            setCodeLangAnchor(null);
                         }}
                     >
                         {item.label}
@@ -6061,6 +6191,10 @@ function MarkdownToolbar({
                 anchorEl={formulaAnchor}
                 onClose={() => setFormulaAnchor(null)}
             >
+                {/* ⚠️ 2026-10-07 对齐 inkstone（EditorToolbar.tsx:71-74 `mathItems`）：只有两项
+                    —— `行内公式` / `块级公式`。之前我们有 4 项，多出来的
+                    `行内公式 \( … \)` / `独立公式 \[ … \]` 是 KaTeX 的第二套分隔符，
+                    inkstone 不用（它只用 $…$ / $$…$$）。删掉以保持菜单一致。 */}
                 <MenuItem
                     data-formula-op='inline'
                     onClick={() => {
@@ -6068,7 +6202,7 @@ function MarkdownToolbar({
                         setFormulaAnchor(null);
                     }}
                 >
-                    行内公式 $ 文本 $
+                    行内公式
                 </MenuItem>
                 <MenuItem
                     data-formula-op='block'
@@ -6077,25 +6211,7 @@ function MarkdownToolbar({
                         setFormulaAnchor(null);
                     }}
                 >
-                    独立公式 $$ 另起一段 $$
-                </MenuItem>
-                <MenuItem
-                    data-formula-op='inlineTex'
-                    onClick={() => {
-                        onFormula("inlineTex");
-                        setFormulaAnchor(null);
-                    }}
-                >
-                    行内公式 \( 文本 \)
-                </MenuItem>
-                <MenuItem
-                    data-formula-op='blockTex'
-                    onClick={() => {
-                        onFormula("blockTex");
-                        setFormulaAnchor(null);
-                    }}
-                >
-                    独立公式 \[ 另起一段 \]
+                    块级公式
                 </MenuItem>
             </Menu>
 

@@ -357,17 +357,34 @@ test("工具栏补齐 inkstone 式下拉：链接 / 图片 / 笔记工具 / 块"
     for (const op of ["blockid", "frontmatter", "hidden", "tag"]) {
         assert.ok(document.querySelector(`[data-insert-op="${op}"]`), `笔记工具下拉要有 ${op}`);
     }
-    // 「内容块」下拉：提示框 / 折叠 / 标签页 / 分隔线
-    // ⚠️ 提示框已从独立按钮收进这里（inkstone 就是放 block 里的）。
-    // ⚠️ 2026-10-07：aria-label 从「块」改成「内容块」（inkstone zh-CN 的
-    // workspace.content_blocks）。之前这里 querySelector 返回 null，
-    // 下一行 .click() 抛异常 —— 而这是个 async 用例，抛出去会**整个测试文件**挂掉，
-    // 表现成「只跑了 10 条就 not ok」，根因却藏在第 11 条里。
+    // 「内容块」下拉：inkstone 的 blockItems 只有 4 项
+    // ���提示块 / 折叠内容 / 标签页 / 分隔线）。
+    // ⚠️ 2026-10-07：5 种提示框类型合并成 1 项「提示块」，类型挪到**二级菜单** ——
+    // 菜单与 inkstone 一致，功能一个不丢（下面单独验二级菜单）。
     const blockBtn = bar.querySelector('button[aria-label="内容块"]') as HTMLElement | null;
     assert.ok(blockBtn, "工具栏要有「内容块」下拉按钮");
     await act(async () => blockBtn!.click());
-    for (const op of ["fold", "tabs", "divider", "callout"]) {
+    for (const op of ["fold", "tabs", "divider"]) {
         assert.ok(document.querySelector(`[data-block-op="${op}"]`), `内容块下拉要有 ${op}`);
+    }
+    assert.ok(
+        document.querySelector('[data-block-op="callout-menu"]'),
+        "要有 1 项「提示块」（5 种类型在二级菜单里）"
+    );
+    assert.equal(
+        document.querySelectorAll("[data-callout-type]").length,
+        0,
+        "主菜单里不该直接出现 5 种提示框类型（inkstone 只有 1 项「提示块」）"
+    );
+    // 点开二级菜单，5 种类型都在
+    await act(async () =>
+        (document.querySelector('[data-block-op="callout-menu"]') as HTMLElement).click()
+    );
+    for (const t of ["NOTE", "TIP", "IMPORTANT", "WARNING", "QUOTE"]) {
+        assert.ok(
+            document.querySelector(`[data-callout-type="${t}"]`),
+            `提示框二级菜单里要有 ${t}`
+        );
     }
 });
 
@@ -1338,10 +1355,13 @@ test("标题/内容块/分隔线等按钮：第二次点击要真的取消（202
     // ⚠️ 2026-10-07：内容块从「独立图标 + 自己的菜单」收进了「块」下拉
     // （inkstone 就是这么放的，之前我们多出一个按钮，工具栏比它宽一截）。
     reset();
+    // ⚠️ 2026-10-07：提示框类型挪进二级菜单了，要先点「提示块」再选类型
     openMenu("内容块");
+    act(() => (document.querySelector('[data-block-op="callout-menu"]') as HTMLElement).click());
     pick('[data-callout-type="NOTE"]');
     assert.equal(ta.value, "> [!NOTE] 一段文字");
     openMenu("内容块");
+    act(() => (document.querySelector('[data-block-op="callout-menu"]') as HTMLElement).click());
     pick('[data-callout-type="NOTE"]');
     assert.equal(ta.value, "一段文字", "再点一次内容块要撤销");
 
@@ -1916,8 +1936,12 @@ function typeInto(el: NoteEditorHandle, text: string) {
 
 /** 打开「语言」下拉，点某一项 */
 function pickCodeLang(value: string) {
-    const btn = document.querySelector('button[aria-label="代码块语言"]') as HTMLElement;
-    act(() => btn.click());
+    // ⚠️ 2026-07：语言选择器从「代码与图表」菜单里**拆成了独立按钮**
+    // （inkstone 的 code 菜单只有 3 项，语言列表塞进去会变成 19 项）。
+    // 所以这里开的是「代码语言」按钮。
+    const btn = document.querySelector('button[aria-label="代码语言"]') as HTMLElement | null;
+    assert.ok(btn, "工具栏要有「代码语言」按钮（语言选择器已从代码菜单拆出来）");
+    act(() => btn!.click());
     const item = document.querySelector(
         '[data-code-lang="' + (value || "plain") + '"]'
     ) as HTMLElement | null;
@@ -3563,7 +3587,7 @@ test("工具栏：每个下拉都有说人话的 tooltip，菜单项不再只写
         "插入图片",
         "不太常用但有用的语法",
         "成块的语法",
-        "给代码块标语言",
+        "给已有的代码块标语言",
         "把选中的文字变成脚注引用",
         "插入公式",
         "插入表格",
@@ -3572,11 +3596,28 @@ test("工具栏：每个下拉都有说人话的 tooltip，菜单项不再只写
         assert.ok(bar.includes(phrase), `工具栏要有白话提示：${phrase}`);
     }
     // 菜单项不许再只写术语
-    for (const jargon of ["块 ID（^标识，供引用）", "笔记属性（YAML）", "隐藏注释（预览不显示）", "标签页（:::tabs）"]) {
-        assert.equal(bar.includes(jargon), false, `菜单项不该只写术语：${jargon}`);
+    //
+    // ⚠️ 2026-10-07 调整：现在菜单项文字**照 inkstone zh-CN 原文**，一个解释性后缀都不加。
+    // 之前这条测试反过来要求「把术语换成白话」（如 `笔记属性（YAML）` → `笔记属性：给整篇笔记加…`），
+    // 那与「菜单和 inkstone 一模一样」冲突 —— 现在是 inkstone 原名进菜单项、
+    // 白话进 tooltip，两者兼得。
+    // 所以下面这组断言的意思变成「菜单项文字后面**不许再拖解释**」。
+    for (const jargon of ["笔记属性：", "隐藏注释：", "标签页：", "折叠内容：", "分隔线："]) {
+        assert.equal(bar.includes(jargon), false, `菜单项文字不该带解释性后缀：${jargon}`);
     }
-    for (const plain of ["给这一段加个锚点", "写给自己看的备注", "把几段内容并排放"]) {
-        assert.ok(bar.includes(plain), `菜单项要改成白话：${plain}`);
+    // 白话说明要落在 tooltip 上（不是菜单项文字里）
+    for (const plain of ["给这一段加个锚点", "把几段内容并排放", "把选中的文字变成脚注引用"]) {
+        assert.ok(bar.includes(plain), `tooltip 里要有白话说明：${plain}`);
+    }
+    // 菜单项本身要用 inkstone 的短名词。
+    // ⚠️ 三个坑（这条断言改了三轮才过）：
+    //  1. 不能查 `<span>xx</span>` —— 「链接/笔记工具」那组用 <span> 包（同行要放 <Kbd>），
+    //     「内容块」那组是裸文本（没有快捷键）；
+    //  2. 不能用 `\n  标签页  \n` 这种精确到换行的写法 —— **源码是 CRLF**；
+    //  3. 所以统一用「标签后面紧跟行尾」的宽松匹配。
+    for (const short of ["脚注", "块 ID", "标签页", "折叠内容", "分隔线", "提示块"]) {
+        const re = new RegExp(`>${short}\\s*</span>|\\r?\\n\\s+${short}\\r?\\n`);
+        assert.ok(re.test(bar), `菜单项要用 inkstone 的短名词：${short}`);
     }
 });
 
