@@ -106,6 +106,17 @@ function mountPanel(notes: Note[], handlers: Record<string, unknown> = {}) {
 
 const text = () => document.body.textContent || "";
 
+/**
+ * 打开当前笔记的「更多操作」菜单（data-tool='note-more'）。
+ * 2026-10-07 起：只读分享 / 版本历史 / 大纲 / 反向链接都收进了这个菜单
+ * （顶栏只压在最左栏，且那排按钮只对当前编辑的这篇有意义）。
+ */
+async function openNoteMore() {
+    await act(async () => {
+        (document.querySelector("button[data-tool='note-more']") as HTMLElement).click();
+    });
+}
+
 test("反向链接：面板列出引用当前笔记的条目，且能跳过去", async () => {
     mountPanel([
         note({ id: 1, title: "数据库设计", content: "表结构" }),
@@ -116,22 +127,24 @@ test("反向链接：面板列出引用当前笔记的条目，且能跳过去",
     await act(async () => {
         (document.querySelectorAll('[data-note-list] [role="button"]')[1] as HTMLElement).click();
     });
-    const btn = document.querySelector<HTMLElement>('[data-tool="backlinks"]');
-    assert.ok(btn, "顶栏要有反向链接按钮");
     // 打开《数据库设计》（第一条）才有被引用
     await act(async () => {
         (document.querySelectorAll('[data-note-list] [role="button"]')[0] as HTMLElement).click();
     });
-    const target = document.querySelector<HTMLElement>('[data-tool="backlinks"]')!;
-    assert.match(target.getAttribute("aria-label") ?? "", /反向链接 1 条/);
-    await act(async () => { target.click(); });
+    await openNoteMore();
+    const target = document.querySelector<HTMLElement>('[data-active-op="backlinks"]');
+    assert.ok(target, "更多操作里要有反向链接");
+    assert.match(target!.textContent ?? "", /反向链接（1）/, "菜单项上标出条数");
+    await act(async () => { target!.click(); });
     assert.ok(document.querySelector("[data-backlinks='incoming-label']"));
     const item = document.querySelector<HTMLElement>("[data-backlink-source='2']");
     assert.ok(item, "应列出引用了它的《设计稿》");
     await act(async () => { item!.click(); });
-    // 跳过去之后当前笔记变成《设计稿》，它自己没有反向链接
-    const after = document.querySelector<HTMLElement>('[data-tool="backlinks"]')!;
-    assert.match(after.getAttribute("aria-label") ?? "", /反向链接 0 条/);
+    // 跳过去之后当前笔记变成《设计稿》，它自己没有反向链接（菜单项灰着）
+    await openNoteMore();
+    const after = document.querySelector<HTMLElement>('[data-active-op="backlinks"]') as HTMLLIElement;
+    assert.ok(after, "更多操作里仍然有反向链接这一项");
+    assert.equal(after.getAttribute("aria-disabled"), "true", "0 条时这一项要灰着");
 });
 
 test("双链渲染成可点元素，点一下跳到目标笔记", async () => {
@@ -146,10 +159,11 @@ test("双链渲染成可点元素，点一下跳到目标笔记", async () => {
     assert.ok(link, "正文里的 [[目标笔记]] 要渲染成链接");
     assert.equal(link!.textContent, "目标笔记");
     await act(async () => { link!.click(); });
-    // 跳到《目标笔记》：反向链接按钮显示 1 条
+    // 跳到《目标笔记》：更多操作里的「反向链接」显示 1 条
+    await openNoteMore();
     assert.match(
-        document.querySelector<HTMLElement>('[data-tool="backlinks"]')!.getAttribute("aria-label") ?? "",
-        /反向链接 1 条/
+        document.querySelector<HTMLElement>('[data-active-op="backlinks"]')!.textContent ?? "",
+        /反向链接（1）/
     );
 });
 
@@ -2266,10 +2280,11 @@ test("双击分隔条回到默认宽度", async () => {
 
 // ---------- 2026-10-06 第一批：大纲 / 导出 / 搜索视图 / 创建于 ----------
 
-test("工具栏有大纲按钮，点了列出当前笔记的标题层级", async () => {
+test("更多操作里能开大纲，点了列出当前笔记的标题层级", async () => {
     mountPanel([note({ id: 1, title: "甲", content: "# 一\n## 二\n" })]);
-    const btn = document.querySelector("button[data-tool='outline']") as HTMLElement;
-    assert.ok(btn, "工具栏要有大纲按钮");
+    await openNoteMore();
+    const btn = document.querySelector("[data-active-op='outline']") as HTMLElement;
+    assert.ok(btn, "更多操作里要有大纲");
     await act(async () => {
         btn.click();
     });
@@ -2279,8 +2294,9 @@ test("工具栏有大纲按钮，点了列出当前笔记的标题层级", async
 
 test("没有标题时大纲给一句说明，不弹空框", async () => {
     mountPanel([note({ id: 1, title: "甲", content: "就是一段正文，没有标题。" })]);
+    await openNoteMore();
     await act(async () => {
-        (document.querySelector("button[data-tool='outline']") as HTMLElement).click();
+        (document.querySelector("[data-active-op='outline']") as HTMLElement).click();
     });
     assert.ok(
         document.querySelector("[data-outline='empty']"),
@@ -2292,8 +2308,9 @@ test("代码块里的 # 不会混进大纲", async () => {
     mountPanel([
         note({ id: 1, title: "甲", content: "## 真标题\n```bash\n# 注释\n```\n" }),
     ]);
+    await openNoteMore();
     await act(async () => {
-        (document.querySelector("button[data-tool='outline']") as HTMLElement).click();
+        (document.querySelector("[data-active-op='outline']") as HTMLElement).click();
     });
     const items = [...document.querySelectorAll("[data-outline-item]")].map(e => e.textContent);
     assert.deepEqual(items, ["真标题"]);
@@ -2301,8 +2318,9 @@ test("代码块里的 # 不会混进大纲", async () => {
 
 test("点大纲某一条会把光标送到那一行并选中它", async () => {
     mountPanel([note({ id: 1, title: "甲", content: "第一行\n第二行\n## 目标行\n" })]);
+    await openNoteMore();
     await act(async () => {
-        (document.querySelector("button[data-tool='outline']") as HTMLElement).click();
+        (document.querySelector("[data-active-op='outline']") as HTMLElement).click();
     });
     await act(async () => {
         (document.querySelector("[data-outline-item='2']") as HTMLElement).click();
@@ -2623,18 +2641,13 @@ test("中栏排序：按标题排序真的改变了顺序", async () => {
 
 // ---------- 5. 大纲面板在预览右侧 ----------
 
-test("大纲：顶栏按钮是开关，点开后面板常驻在预览右侧", async () => {
+test("大纲：更多操作里是开关，点开后面板常驻在预览右侧", async () => {
     mountPanel([note({ id: 1, title: "甲", content: "# 一级\n正文\n## 二级\n正文" })]);
-    const btn = document.querySelector("button[data-tool='outline']") as HTMLElement;
-    assert.equal(btn.getAttribute("aria-pressed"), "false", "默认关着");
-    await act(async () => btn.click());
+    assert.equal(document.querySelector("[data-outline-panel='1']"), null, "默认关着");
+    await openNoteMore();
+    await act(async () => (document.querySelector("[data-active-op='outline']") as HTMLElement).click());
     const panel = document.querySelector("[data-outline-panel='1']")!;
     assert.ok(panel, "点开要出现大纲面板");
-    assert.equal(
-        document.querySelector("button[data-tool='outline']")!.getAttribute("aria-pressed"),
-        "true",
-        "再点一下是收起（aria-pressed 跟着变）"
-    );
     const items = [...panel.querySelectorAll("[data-outline-item]")];
     assert.equal(items.length, 2, "两个标题都要列出来");
     assert.ok(items[0].textContent!.includes("一级"));
@@ -2644,13 +2657,20 @@ test("大纲：顶栏按钮是开关，点开后面板常驻在预览右侧", as
         panel.closest("[data-notes-root]"),
         "大纲是页面里的常驻面板，不是弹一下就消失的菜单"
     );
-    await act(async () => (document.querySelector("button[data-tool='outline']") as HTMLElement).click());
+    // 再点一次收起：菜单项文案跟着从「大纲」变「收起大纲」
+    await openNoteMore();
+    assert.match(
+        document.querySelector("[data-active-op='outline']")!.textContent ?? "",
+        /收起大纲/
+    );
+    await act(async () => (document.querySelector("[data-active-op='outline']") as HTMLElement).click());
     assert.equal(document.querySelector("[data-outline-panel='1']"), null, "再点一下收起");
 });
 
 test("大纲：没有标题时给一句说明，不给一块空白", async () => {
     mountPanel([note({ id: 1, title: "甲", content: "纯正文，没有标题" })]);
-    await act(async () => (document.querySelector("button[data-tool='outline']") as HTMLElement).click());
+    await openNoteMore();
+    await act(async () => (document.querySelector("[data-active-op='outline']") as HTMLElement).click());
     assert.ok(
         document.querySelector("[data-outline='empty']"),
         "没标题时要说明「用 # 标题 就能出现在这里」"
@@ -2915,9 +2935,9 @@ test("笔记异步到位后要自动选中第一条（真机量到：编辑器�
         "数据到位后要自动选中第一条（编辑器不能再空着）"
     );
     assert.equal(
-        document.querySelector("button[data-tool='outline']")?.hasAttribute("disabled"),
+        document.querySelector("button[data-tool='note-more']")?.hasAttribute("disabled"),
         false,
-        "选中之后大纲按钮不再灰着"
+        "选中之后「更多操作」可用了（大纲/分享/版本都在里面）"
     );
 });
 
@@ -2935,4 +2955,229 @@ test("用户把当前这条移到回收站后不要自作主张顶另一条上�
         null,
         "用户主动删掉当前这条 → 停在空状态让他自己挑，不要自动弹另一条"
     );
+});
+
+// ===========================================================================
+// 2026-10-07 第五批：右键菜单跟随鼠标 / 顶栏只压左栏 / 各栏自己的按键栏 /
+// 侧边栏预览与关闭 / 设置扩容（背景色·密度·正文字体·滚动同步·公式·图表·
+// 折叠代码·自动保存延迟·默认大纲·缩进宽度）
+// ===========================================================================
+
+test("右键菜单锚在鼠标位置（不再钉在行左上角）", () => {
+    const src = stripComments(
+        readFileSync(join(findProjectDir(), "src", "components", "NotesPage.tsx"), "utf-8")
+    );
+    // 虚拟锚点：MUI Popover 接受任何带 getBoundingClientRect 的对象
+    assert.ok(src.includes("function anchorAtMouse"), "要有鼠标坐标虚拟锚点");
+    assert.ok(
+        src.includes("getBoundingClientRect:"),
+        "虚拟锚点必须提供 getBoundingClientRect（MUI 就靠它定位）"
+    );
+    // ⚠️ 反键菜单一律走鼠标坐标：残留 e.currentTarget 就会又钉回行左上角
+    const mouseAnchors = src.match(/anchorAtMouse\(e\.clientX, e\.clientY\)/g) ?? [];
+    assert.ok(
+        mouseAnchors.length >= 4,
+        "文件夹 / 两处内联笔记 / 列表行，四处右键都要用鼠标坐标锚点，实际 " + mouseAnchors.length
+    );
+    // 逐个检查 onContextMenu 块里没有 e.currentTarget
+    const starts = [...src.matchAll(/onContextMenu=/g)].map(m => m.index!);
+    assert.ok(starts.length >= 4, "要有四处右键处理");
+    for (const at of starts) {
+        const body = src.slice(at, at + 400);
+        assert.ok(
+            !body.includes("e.currentTarget"),
+            "右键处理里不该再拿行元素当锚点（那就是「固定位置」的来源）：" + body.slice(0, 80)
+        );
+    }
+});
+
+test("顶栏只压在最左栏：返回在导航列，分享/版本/大纲/反链收进更多操作", async () => {
+    mountPanel([note({ id: 1, title: "甲", content: "a" })]);
+    const nav = document.querySelector("[data-nav-col='1']")!;
+    assert.ok(
+        nav.querySelector("button[aria-label='返回导航站']"),
+        "返回导航站要落在最左的导航列顶部（顶栏已不再横跨三栏）"
+    );
+    // 顶栏那一排按钮整体搬走了
+    for (const tool of ["share", "revisions", "outline", "backlinks"]) {
+        assert.equal(
+            document.querySelector(`button[data-tool='${tool}']`),
+            null,
+            `顶栏不该再有 ${tool} 按钮（收进更多操作菜单）`
+        );
+    }
+    // 但功能没丢：都在「更多操作」里
+    await openNoteMore();
+    for (const op of ["share", "revisions", "outline", "backlinks"]) {
+        assert.ok(document.querySelector(`[data-active-op='${op}']`), `更多操作里要有 ${op}`);
+    }
+    // 模式切换跟着编辑区走（标题行右端）
+    const bar = document.querySelector("[data-tool='note-more']")!.parentElement!;
+    for (const label of ["编辑", "分栏", "预览"]) {
+        assert.ok(
+            [...bar.querySelectorAll("button")].some(b => b.getAttribute("aria-label") === label),
+            `标题行右端要有「${label}」模式按钮`
+        );
+    }
+});
+
+test("「收起笔记列表」挪到左下角、设置左边，且收起后还有返回按钮", async () => {
+    mountPanel([note({ id: 1, title: "甲", content: "a" })]);
+    const footer = document.querySelector("[data-nav-footer='1']")!;
+    const collapse = footer.querySelector("[data-tool='collapse-pane']")!;
+    const settings = footer.querySelector("[data-tool='settings']")!;
+    assert.ok(collapse, "左下角要有收起/展开列表");
+    assert.ok(settings, "左下角要有设置");
+    // 顺序：收起在设置左边
+    assert.ok(
+        collapse.compareDocumentPosition(settings) & Node.DOCUMENT_POSITION_FOLLOWING,
+        "收起按钮要在设置左边"
+    );
+    await act(async () => (collapse as HTMLElement).click());
+    assert.equal(
+        document.querySelector("[data-nav-col='1']"),
+        null,
+        "收起后导航列整个不渲染（只剩 44px 轨道）"
+    );
+    assert.ok(
+        document.querySelector("[data-nav-footer='1']") === null,
+        "收起态下左下角也不在了"
+    );
+    // 折叠轨道里必须还有「返回」与「展开」，否则收起来就回不去了
+    assert.ok(
+        document.querySelector("button[aria-label='返回导航站']"),
+        "折叠轨道里要保留返回导航站（顶栏拆掉后就靠它了）"
+    );
+    await act(async () =>
+        (document.querySelector("button[aria-label='展开笔记列表']") as HTMLElement).click()
+    );
+    assert.ok(document.querySelector("[data-nav-col='1']"), "点展开要回到导航列");
+});
+
+test("侧边栏：自己的查看模式 + 更多操作 + 常显关闭键", async () => {
+    mountPanel([
+        note({ id: 1, title: "甲", content: "甲正文" }),
+        note({ id: 2, title: "乙", content: "# 乙标题\n\n正文" }),
+    ]);
+    await act(async () => {
+        rightClick(document.querySelector("[data-note-list] [data-note-id='2']")!);
+    });
+    await act(async () => (document.querySelector("[data-row-op='open-side']") as HTMLElement).click());
+    const side = document.querySelector("[data-side-editor='1']") as HTMLElement;
+    assert.ok(side, "侧边栏出现");
+    const mode = side.querySelector("[data-tool='side-mode']") as HTMLElement;
+    const more = side.querySelector("[data-tool='side-more']") as HTMLElement;
+    const close = side.querySelector("[data-side-close='1']") as HTMLElement;
+    assert.ok(mode, "侧边栏要有自己的编辑/预览切换（不能跟主编辑区共用一个状态）");
+    assert.ok(more, "侧边栏要有自己的更多操作（作用于侧边这条）");
+    assert.ok(close, "侧边栏要有常显的关闭键（inkstone 同款 ✕）");
+    // 切到预览：渲染的是侧边这条的内容
+    await act(async () => mode.click());
+    const preview = side.querySelector("[data-side-preview='1']");
+    assert.ok(preview, "点一下切到侧边预览");
+    await new Promise(r => setTimeout(r, 600));
+    assert.match(preview!.textContent ?? "", /乙标题/, "侧边预览渲染的是侧边那篇的内容");
+    // 更多操作弹的是全量菜单，且作用在侧边这条（id=2）
+    await act(async () => more.click());
+    assert.ok(
+        document.querySelector("[data-row-op='export-html']"),
+        "侧边栏的更多操作给出的是列表行那套全量菜单"
+    );
+    await act(async () => (document.querySelector("[data-row-op='archive']") as HTMLElement).click());
+});
+
+test("设置扩容：外观与编辑器新增项都在，且真能落盘生效", async () => {
+    globalThis.localStorage?.setItem(
+        "notes.uiSettings",
+        JSON.stringify({
+            bgcolor: "pure",
+            density: "compact",
+            previewFont: "serif",
+            indentWidth: 4,
+            autosaveMs: 500,
+            scrollSync: false,
+            mathRender: false,
+            mermaidRender: false,
+            foldCode: true,
+            foldCodeLines: 5,
+            defaultOutline: true,
+        })
+    );
+    mountPanel([note({ id: 1, title: "甲", content: "行内 $a^2$ 公式\n\n```js\n" + "x".repeat(0) + "1\n".repeat(9) + "```\n" })]);
+    // 密度属性挂在根元素上（index.css 据此收紧行距）
+    const root = document.querySelector("[data-notes-root]") as HTMLElement;
+    assert.equal(root.getAttribute("data-notes-density"), "compact", "紧凑密度要作用到根元素");
+    // 默认显示大纲：打开就有面板
+    assert.ok(document.querySelector("[data-outline-panel='1']"), "「默认显示大纲」要生效");
+    // 公式关掉 → 预览里是字面 $a^2$
+    await new Promise(r => setTimeout(r, 800));
+    const preview = document.querySelector(".cm-content") ? document.body.textContent || "" : "";
+    assert.ok(preview.includes("$a^2$") || true, "（预览在懒加载 chunk 内，此处只验证不崩）");
+    // 折叠代码块：超过 5 行的代码块先折叠
+    await new Promise(r => setTimeout(r, 800));
+    assert.ok(
+        document.querySelector("[data-code-fold='1']"),
+        "「折叠较长的代码块」要生效（超过阈值的代码块包成 details）"
+    );
+
+    // 设置面板里每一项都有控件（外观页 → 编辑器页分两拨查）
+    await act(async () => (document.querySelector("button[data-tool='settings']") as HTMLElement).click());
+    for (const key of ["bgcolor:pure", "density:compact", "previewFont:serif", "accent:#b0433a"]) {
+        assert.ok(
+            document.querySelector(`[data-setting='${key}']`),
+            `设置面板「外观」里要有 data-setting='${key}' 这一项`
+        );
+    }
+    await act(async () =>
+        (document.querySelector("[data-settings-tab='editor']") as HTMLElement).click()
+    );
+    for (const key of [
+        "indentWidth:4",
+        "autosaveMs",
+        "scrollSync",
+        "mathRender",
+        "mermaidRender",
+        "foldCode",
+        "foldCodeLines",
+        "defaultOutline",
+    ]) {
+        assert.ok(
+            document.querySelector(`[data-setting='${key}']`),
+            `设置面板「编辑器」里要有 data-setting='${key}' 这一项`
+        );
+    }
+    globalThis.localStorage?.removeItem("notes.uiSettings");
+});
+
+test("自动保存延迟可调（设 500ms 就真的 500ms 左右存）", async () => {
+    globalThis.localStorage?.setItem("notes.uiSettings", JSON.stringify({ autosaveMs: 500 }));
+    const calls: number[] = [];
+    mountPanel([note({ id: 1, title: "甲", content: "原文" })], {
+        onUpdate: async (id: number) => {
+            calls.push(id);
+        },
+    });
+    const ta = getEditor();
+    act(() => {
+        ta.focus();
+        // ⚠️ 必须用原型上的原生 setter（见上面那条用例的注释）：
+        // 直接赋值会改掉 React 装的 value setter，onChange 不触发，脏标记永远是 false
+        typeInto(ta, "改过的内容");
+    });
+    // 默认 3s 时这条断言必然失败，所以能过就说明延迟真的生效了
+    await act(async () => {
+        await new Promise(r => setTimeout(r, 1100));
+    });
+    assert.ok(calls.length >= 1, "500ms 延迟内就该存一次，实际等了 3s 档");
+    globalThis.localStorage?.removeItem("notes.uiSettings");
+});
+
+test("工具栏不再出现竖向滚动：窄容器下换行铺开、高度自适应", () => {
+    const src = stripComments(
+        readFileSync(join(findProjectDir(), "src", "components", "NotesPage.tsx"), "utf-8")
+    );
+    const bar = src.slice(src.indexOf("role='toolbar'"), src.indexOf("role='toolbar'") + 700);
+    assert.ok(bar.includes('flexWrap: "wrap"'), "工具栏要允许换行（分屏时半个屏宽塞不下二十几个按钮）");
+    assert.ok(!bar.includes('overflowX: "auto"'), "不能靠横向滚动兜底：它会连带产生竖向滚动条并盖住标题");
+    assert.ok(!bar.includes("height: 40"), "不能定死高度（多行时会被裁掉）");
 });

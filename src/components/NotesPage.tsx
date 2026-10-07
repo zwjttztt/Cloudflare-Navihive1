@@ -27,6 +27,7 @@ import {
     useState,
     type ReactNode,
 } from "react";
+import type { PopoverVirtualElement } from "@mui/material/Popover";
 import Box from "@mui/material/Box";
 import Avatar from "@mui/material/Avatar";
 import Button from "@mui/material/Button";
@@ -81,7 +82,7 @@ import PaletteIcon from "@mui/icons-material/Palette";
 import FileDownloadIcon from "@mui/icons-material/FileDownload";
 import type { Note, NoteFolder, NoteRevision, NoteTag } from "../API/http";
 import type { TrashedNote } from "../hooks/useNotes";
-import { renderMarkdownToReact } from "../utils/markdownToReact";
+import { renderMarkdownToReact, type RenderFeatures } from "../utils/markdownToReact";
 import type { NoteEmbedTarget } from "./NoteEmbedNode";
 import { useScrollLock } from "../hooks/useScrollLock";
 // 笔记时间统一走这里：SQLite 的 UTC 无时区串必须按 UTC 解释，
@@ -284,6 +285,8 @@ function NavRow({
             component='button'
             type='button'
             onClick={onClick}
+            // 「界面密度：紧凑」靠这个类名收紧上下留白（规则在 index.css）
+            className='note-dense-row'
             sx={{
                 display: "flex",
                 alignItems: "center",
@@ -372,6 +375,40 @@ function isDescendant(
     return false;
 }
 
+/**
+ * 右键菜单的锚点：要么是「⋯」按钮本身（左键点按钮开的菜单），要么是
+ * **鼠标坐标**造出来的虚拟元素（MUI Popover 支持任何带 getBoundingClientRect
+ * 的对象，见 @mui/material/Popover 的 PopoverVirtualElement）。
+ *
+ * ⚠️ 为什么右键要用虚拟锚点（2026-10-07 用户报的两条一起修）：
+ *  - 右键弹窗「都在固定位置」：原来锚的是整行元素，MUI 默认锚到它的左上角 ——
+ *    行有多长、列表滚到哪，菜单就钉死在哪，跟鼠标没关系；
+ *  - 左栏内联笔记右键「点其他地方才出现、还错位」：整行 button 是 100% 宽，
+ *    右键点在行中下部，菜单却出现在行顶 —— 视觉上就是「错位」；而行在
+ *    状态更新后重渲染，锚点元素可能被 React 换掉，菜单一度拿不到位置。
+ *    虚拟元素不受渲染影响，坐标即点即所得。
+ */
+export type MenuAnchor = HTMLElement | PopoverVirtualElement;
+
+/** 用鼠标坐标构造一个 0×0 的虚拟锚点（菜单左上角 = 指针位置） */
+function anchorAtMouse(x: number, y: number): PopoverVirtualElement {
+    return {
+        nodeType: 1,
+        getBoundingClientRect: () =>
+            ({
+                x,
+                y,
+                left: x,
+                top: y,
+                right: x,
+                bottom: y,
+                width: 0,
+                height: 0,
+                toJSON: () => ({}),
+            }) as DOMRect,
+    };
+}
+
 function FolderTagSection({
     title,
     items,
@@ -445,13 +482,14 @@ function FolderTagSection({
      * 只给「文件夹」节传；标签节没有归属概念。
      */
     unfiledNotes?: { id: number; title: string }[];
-    /** 内联笔记（选中文件夹的 + 未归类的）右键菜单：交给上层统一弹 */
-    onNoteContext?: (noteId: number, el: HTMLElement) => void;
+    /** 内联笔记（选中文件夹的 + 未归类的）右键菜单：交给上层统一弹。
+     *  锚点用 MenuAnchor（右键=鼠标坐标虚拟元素，⋯按钮=元素本身）。 */
+    onNoteContext?: (noteId: number, anchor: MenuAnchor) => void;
 }) {
     const [menuId, setMenuId] = useState<number | null>(null);
     /** 「移动到…」二级菜单：要移动谁 + 锚点 */
     const [moveId, setMoveId] = useState<number | null>(null);
-    const [moveAnchor, setMoveAnchor] = useState<HTMLElement | null>(null);
+    const [moveAnchor, setMoveAnchor] = useState<MenuAnchor | null>(null);
     /**
      * 拖放反馈的两个状态（2026-10-06 补，之前完全没有）：
      *  - dragging 谁：拖起的那一行半透明，用户知道手上抓的是哪个
@@ -474,7 +512,7 @@ function FolderTagSection({
      * ⚠️ 这类错位 jsdom 测不出来（没有布局，getBoundingClientRect 全 0），
      * 所以 DOM 用例只能断言「菜单能打开」，位置必须真机量坐标。
      */
-    const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
+    const [anchorEl, setAnchorEl] = useState<MenuAnchor | null>(null);
     const treeItems = useMemo(() => {
         const output: (typeof items[number] & { depth: number })[] = [];
         const visited = new Set<number>();
@@ -596,10 +634,11 @@ function FolderTagSection({
                         onDragEnd={onMove ? endDrag : undefined}
                         onClick={() => onSelect(selectedId === item.id ? null : item.id)}
                         onContextMenu={e => {
-                            // 右键文件夹 = 直接开它的操作菜单（inkstone 同样支持右键）
+                            // 右键文件夹 = 直接开它的操作菜单（inkstone 同样支持右键）。
+                            // ⚠️ 锚在鼠标处：锚到整行左上角的话，菜单位置与指针无关（用户报「固定位置」）。
                             e.preventDefault();
                             setMenuId(item.id);
-                            setAnchorEl(e.currentTarget as HTMLElement);
+                            setAnchorEl(anchorAtMouse(e.clientX, e.clientY));
                         }}
                     />
                     <IconButton
@@ -644,12 +683,14 @@ function FolderTagSection({
                                     component='button'
                                     type='button'
                                     data-folder-note={n.id}
+                                    className='note-dense-row'
                                     aria-label={`打开笔记 ${n.title || "无标题"}`}
                                     onClick={() => onOpenNote?.(n.id)}
                                     onContextMenu={e => {
                                         if (!onNoteContext) return;
                                         e.preventDefault();
-                                        onNoteContext(n.id, e.currentTarget as HTMLElement);
+                                        // 菜单弹在鼠标处（原来锚整行顶部，右键行中下部会「错位」）
+                                        onNoteContext(n.id, anchorAtMouse(e.clientX, e.clientY));
                                     }}
                                     sx={{
                                         display: "block",
@@ -712,12 +753,14 @@ function FolderTagSection({
                             component='button'
                             type='button'
                             data-unfiled-note={n.id}
+                            className='note-dense-row'
                             aria-label={`打开笔记 ${n.title || "无标题"}`}
                             onClick={() => onOpenNote?.(n.id)}
                             onContextMenu={e => {
                                 if (!onNoteContext) return;
                                 e.preventDefault();
-                                onNoteContext(n.id, e.currentTarget as HTMLElement);
+                                // 菜单弹在鼠标处（同上）
+                                onNoteContext(n.id, anchorAtMouse(e.clientX, e.clientY));
                             }}
                             sx={{
                                 display: "block",
@@ -1082,11 +1125,14 @@ function ColResizeHandle({
 }
 
 /**
- * 自动保存的防抖间隔（阶段四第 14 条）。
+ * 自动保存的防抖间隔**默认值**（阶段四第 14 条）。
  *
  * 3 秒是「打字不被打断」和「关掉不至于丢太多」之间的折中：1 秒太勤（每个停顿都发一次
  * 请求，离线队列里会攒一堆无用 PATCH），10 秒太长（关窗口就丢几秒的字）。
  * 真关窗口还有卸载前那次 flush 兜底，所以 3 秒不会真丢东西。
+ *
+ * ⚠️ 2026-10-07：真正生效的值是设置面板里的「自动保存延迟」
+ * （notes.uiSettings.autosaveMs），这里只作为它的默认/兜底值。
  */
 const AUTO_SAVE_MS = 3000;
 
@@ -1203,14 +1249,15 @@ export default function NotesPage({
      */
     const [rowMenu, setRowMenu] = useState<{
         noteId: number;
-        el: HTMLElement;
+        /** ⋯按钮打开=元素本身；右键打开=鼠标坐标虚拟元素（见 anchorAtMouse） */
+        el: MenuAnchor;
         /** 菜单从哪里打开：列表行菜单全量；左栏内联笔记给精简菜单（inkstone 同款） */
         source: "list" | "rail";
     } | null>(null);
     /** 正在拖的笔记行（半透明反馈，与文件夹那边同一套观感） */
     const [draggingNoteId, setDraggingNoteId] = useState<number | null>(null);
     /** 「编辑标签」二级弹窗的锚点 */
-    const [tagPick, setTagPick] = useState<{ el: HTMLElement; noteId: number } | null>(null);
+    const [tagPick, setTagPick] = useState<{ el: MenuAnchor; noteId: number } | null>(null);
     const [activeId, setActiveId] = useState<number | null>(notes[0]?.id ?? null);
     /** 用户主动清空过选择（把当前这条移到回收站）—— 见下面那条自动选中的 effect */
     const userClearedRef = useRef(false);
@@ -1239,6 +1286,9 @@ export default function NotesPage({
     const sideRef = useRef<NoteEditorHandle | null>(null);
     const [sideId, setSideId] = useState<number | null>(null);
     const [sideDraft, setSideDraft] = useState<EditorDraft | null>(null);
+    /** 侧边栏自己的查看模式（编辑 / 预览）：与主编辑区的 pane 互不相干 ——
+        顶栏那套只对左边生效的问题（用户报）就是从共用状态来的 */
+    const [sideMode, setSideMode] = useState<"edit" | "preview">("edit");
     const tools = useEditorTools(textareaRef, setDraft);
     /** 大纲跳转 = 主编辑器的光标跳转（原局部实现已抽进 hook） */
     const jumpToOffset = tools.jumpToOffset;
@@ -1250,6 +1300,39 @@ export default function NotesPage({
     useEffect(() => {
         saveNotesSettings(uiSettings);
     }, [uiSettings]);
+    /** 自动保存间隔（设置面板可调；兜底回落到默认值） */
+    const autosaveMs = uiSettings.autosaveMs || AUTO_SAVE_MS;
+    /**
+     * 预览功能开关（公式 / 图表 / 折叠代码块）。
+     * ⚠️ 必须 useMemo 稳定引用：MarkdownPreview 的解析 effect 依赖它，
+     * 每次渲染都造新对象会让预览无限重新解析（输入一个字重渲一次）。
+     */
+    const previewFeatures = useMemo<RenderFeatures>(
+        () => ({
+            math: uiSettings.mathRender,
+            mermaid: uiSettings.mermaidRender,
+            foldCode: uiSettings.foldCode,
+            foldCodeLines: uiSettings.foldCodeLines,
+        }),
+        [uiSettings.mathRender, uiSettings.mermaidRender, uiSettings.foldCode, uiSettings.foldCodeLines]
+    );
+    /** 预览窗的滚动容器（滚动同步要拿它算位置） */
+    const previewScrollRef = useRef<HTMLDivElement | null>(null);
+    /**
+     * 滚动同步：源码滚到 50%，预览也滚到 50%（设置面板「滚动同步」）。
+     * 按比例而不是像素 —— 两栏行高不同，像素对不齐。
+     */
+    const syncPreviewScroll = useCallback(
+        (ratio: number) => {
+            if (!uiSettings.scrollSync) return;
+            const el = previewScrollRef.current;
+            if (!el) return;
+            const max = el.scrollHeight - el.clientHeight;
+            if (max <= 0) return;
+            el.scrollTop = Math.max(0, Math.min(1, ratio)) * max;
+        },
+        [uiSettings.scrollSync]
+    );
 
     // ---------- 文件夹外观弹窗（icon / color） ----------
     const [appearanceFolderId, setAppearanceFolderId] = useState<number | null>(null);
@@ -1261,7 +1344,7 @@ export default function NotesPage({
     // sideId / sideDraft / sideRef 已随工具集声明（hooks 顺序要求），这里只有派生状态
 
     // ---------- 大纲面板（预览窗右侧，inkstone 的「大纲」） ----------
-    const [outlineOpen, setOutlineOpen] = useState(false);
+    const [outlineOpen, setOutlineOpen] = useState(loadNotesSettings().defaultOutline);
 
     /** 顶栏「⋯」：对**当前打开的笔记**弹出与右键同一套操作菜单（右下角按键已并入） */
     const [activeMenuAnchor, setActiveMenuAnchor] = useState<HTMLElement | null>(null);
@@ -1778,6 +1861,7 @@ export default function NotesPage({
                 return;
             }
             setSideId(note.id);
+            setSideMode("edit"); // 每次新开一篇都回到编辑态，别把上一次的预览态带过来
             setSideDraft({ title: note.title || "", content: note.content || "" });
             onNotify?.(`已在侧边打开「${note.title || "无标题"}」`, "success");
         },
@@ -1823,9 +1907,9 @@ export default function NotesPage({
         if (!dirtySide) return;
         const timer = setTimeout(() => {
             void onUpdate(sideId, { title: sideDraft.title, content: sideDraft.content });
-        }, AUTO_SAVE_MS);
+        }, autosaveMs);
         return () => clearTimeout(timer);
-    }, [sideDraft, sideId, notes, onUpdate]);
+    }, [sideDraft, sideId, notes, onUpdate, autosaveMs]);
 
     /** 创建副本：标题加「副本」，归到同一文件夹 */
     const duplicateNote = useCallback(
@@ -1986,9 +2070,9 @@ export default function NotesPage({
             setSaveState("saved");
             setSavedAt(Date.now());
             setTick(Date.now());
-        }, AUTO_SAVE_MS);
+        }, autosaveMs);
         return () => clearTimeout(timer);
-    }, [dirty, draft, active?.id]);
+    }, [dirty, draft, active?.id, autosaveMs]);
 
     // 关掉记事本时把还没落库的草稿刷一次：debounce 是 3 秒，
     // 打完字立刻关闭的话那 3 秒还没走完。卸载是同步的，await 不上，
@@ -2236,7 +2320,7 @@ export default function NotesPage({
                 文字直接溢出压到右边的编辑区上（用户报「收齐后文字重叠」）。
                 轨道里只留一个展开按钮。 */}
             {listCollapsed ? (
-                <Box sx={{ display: "flex", justifyContent: "center", pt: 1 }}>
+                <Box sx={{ display: "flex", flexDirection: "column", alignItems: "center", pt: 1, gap: 0.5 }}>
                     <Tooltip title='展开笔记列表'>
                         <IconButton
                             aria-label='展开笔记列表'
@@ -2244,6 +2328,13 @@ export default function NotesPage({
                             onClick={() => setListCollapsed(false)}
                         >
                             <LastPageIcon fontSize='small' />
+                        </IconButton>
+                    </Tooltip>
+                    {/* 顶栏拆掉后「返回导航站」搬进了导航列头部；折叠态下导航列整个不渲染，
+                        这里必须补一颗，否则收起左栏后就回不去了（2026-10-07）。 */}
+                    <Tooltip title='返回导航站'>
+                        <IconButton aria-label='返回导航站' onClick={onClose} size='small'>
+                            <ArrowBackIcon fontSize='small' />
                         </IconButton>
                     </Tooltip>
                 </Box>
@@ -2267,6 +2358,31 @@ export default function NotesPage({
                     py: 1,
                 }}
             >
+            {/* 迷你顶栏（2026-10-07）：顶栏只压这一列（inkstone 布局），中栏 / 编辑区
+                直达页面顶部、各带头部。返回 + 应用名留在这里；「收起列表」进左下角
+                （设置左边）；分享 / 版本 / 大纲 / 反链收进编辑区右上角的「更多操作」。 */}
+            <Box
+                sx={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 0.5,
+                    px: 1,
+                    pt: 0.25,
+                    pb: 0.75,
+                    flexShrink: 0,
+                }}
+            >
+                <IconButton aria-label='返回导航站' onClick={onClose} size='small'>
+                    <ArrowBackIcon fontSize='small' />
+                </IconButton>
+                <Typography
+                    variant='subtitle2'
+                    component='div'
+                    sx={{ fontWeight: 600, flex: 1, fontSize: 14, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                >
+                    记事本
+                </Typography>
+            </Box>
             {/* 可滚动的上半：搜索框 + 视图导航 + 文件夹 + 标签 */}
             <Box sx={{ flex: 1, minHeight: 0, overflowY: "auto", overflowX: "hidden" }}>
             <Box sx={{ px: 1.5, pb: 1 }}>
@@ -2534,6 +2650,23 @@ export default function NotesPage({
                     >
                         {accountName || "未登录"}
                     </Typography>
+                    {/* 收起 / 展开整个左栏（2026-10-07 从顶栏挪到这里，设置左边）：
+                        低频操作和设置是同一类，跟账号挤一行正合适 */}
+                    <Tooltip title={listCollapsed ? "展开笔记列表" : "收起笔记列表"}>
+                        <IconButton
+                            size='small'
+                            aria-label={listCollapsed ? "展开笔记列表" : "收起笔记列表"}
+                            data-tool='collapse-pane'
+                            onClick={() => setListCollapsed(c => !c)}
+                            sx={{ p: 0.25 }}
+                        >
+                            {listCollapsed ? (
+                                <LastPageIcon fontSize='inherit' />
+                            ) : (
+                                <FirstPageIcon fontSize='inherit' />
+                            )}
+                        </IconButton>
+                    </Tooltip>
                     {/* 设置：打开记事本自己的设置（外观 / 编辑器），不再复用导航站配置 */}
                     <Tooltip title='设置'>
                         <IconButton
@@ -2583,7 +2716,10 @@ export default function NotesPage({
                     minHeight: 0,
                     display: "flex",
                     flexDirection: "column",
-                    py: 1,
+                    // ⚠️ 2026-10-07：原来这里是 py:1（上下各 8px）。顶栏拆掉后
+                    // 「直达页顶」就靠这一栏 —— 留着上内边距的话，中栏头部会比
+                    // 导航列低一截，看着还是像被什么压着。留 pb 就行。
+                    pb: 1,
                 }}
             >
             {/* 中栏头部（inkstone：视图名 + 右上角 排序 / 新建 / 收起）。
@@ -2596,6 +2732,7 @@ export default function NotesPage({
                         alignItems: "center",
                         gap: 0.25,
                         px: 1.5,
+                        pt: 1,
                         pb: 0.5,
                         flexShrink: 0,
                     }}
@@ -2700,6 +2837,7 @@ export default function NotesPage({
                             <Box
                                 key={note.id}
                                 data-note-id={note.id}
+                                className='note-dense-row'
                                 draggable={note.id !== undefined}
                                 onDragStart={e => {
                                     e.dataTransfer.setData("application/navihive-note", String(note.id));
@@ -2720,7 +2858,12 @@ export default function NotesPage({
                                     // 右键行 = 打开完整操作菜单（inkstone 同款交互）
                                     e.preventDefault();
                                     if (note.id === undefined) return;
-                                    setRowMenu({ noteId: note.id, el: e.currentTarget as HTMLElement, source: "list" });
+                                    // ⚠️ 锚在鼠标处：锚整行左上角的话菜单跟指针没关系（用户报「固定位置」）
+                                    setRowMenu({
+                                        noteId: note.id,
+                                        el: anchorAtMouse(e.clientX, e.clientY),
+                                        source: "list",
+                                    });
                                 }}
                                 sx={{
                                     mx: 0.75,
@@ -3140,23 +3283,100 @@ export default function NotesPage({
                 </Box>
             ) : (
                 <>
-                    <TextField
-                        fullWidth
-                        variant='standard'
-                        value={draft?.title ?? ""}
-                        onChange={e =>
-                            setDraft(d => (d ? { ...d, title: e.target.value } : d))
-                        }
-                        placeholder='无标题'
-                        slotProps={{ input: { "aria-label": "笔记标题" } }}
-                        sx={{
-                            px: 2,
-                            pt: 1.5,
-                            flexShrink: 0,
-                            "& .MuiInputBase-root": { fontSize: 19, fontWeight: 600 },
-                            "& .MuiInput-input": { padding: "6px 0" },
-                        }}
-                    />
+                    {/* 标题行（2026-10-07）：右侧是**这一栏自己的**按键栏 ——
+                        模式切换（编辑/分栏/预览）+「更多操作」。分屏时每栏各有一套，
+                        顶栏那排只对当前笔记生效的问题就没了（inkstone 同款布局）。 */}
+                    <Box sx={{ display: "flex", alignItems: "center", flexShrink: 0, pr: 1 }}>
+                        <TextField
+                            variant='standard'
+                            value={draft?.title ?? ""}
+                            onChange={e =>
+                                setDraft(d => (d ? { ...d, title: e.target.value } : d))
+                            }
+                            placeholder='无标题'
+                            slotProps={{ input: { "aria-label": "笔记标题" } }}
+                            sx={{
+                                flex: 1,
+                                minWidth: 0,
+                                px: 2,
+                                pt: 1.5,
+                                "& .MuiInputBase-root": { fontSize: 19, fontWeight: 600 },
+                                "& .MuiInput-input": { padding: "6px 0" },
+                            }}
+                        />
+                        {/* 源码/预览切换：三档。宽屏文字按钮、小屏收成图标（都在标题行右端）。 */}
+                        <Box sx={{ display: "flex", gap: 0.25, flexShrink: 0 }}>
+                            {(
+                                [
+                                    ["edit", "编辑", <EditIcon fontSize='inherit' key='i' />],
+                                    ["split", "分栏", <VerticalSplitIcon fontSize='inherit' key='s' />],
+                                    ["preview", "预览", <VisibilityIcon fontSize='inherit' key='v' />],
+                                ] as const
+                            ).map(([key, label, icon]) => (
+                                <IconButton
+                                    key={key}
+                                    aria-label={label}
+                                    title={label}
+                                    size='small'
+                                    onClick={() => setPane(key)}
+                                    sx={{
+                                        width: 28,
+                                        height: 28,
+                                        p: 0,
+                                        color: pane === key ? "primary.main" : "text.secondary",
+                                        bgcolor:
+                                            pane === key ? "rgba(128,128,128,0.12)" : "transparent",
+                                        display: { xs: "inline-flex", sm: "none" },
+                                    }}
+                                >
+                                    {icon}
+                                </IconButton>
+                            ))}
+                            {(
+                                [
+                                    ["edit", "编辑"],
+                                    ["split", "分栏"],
+                                    ["preview", "预览"],
+                                ] as const
+                            ).map(([key, label]) => (
+                                <IconButton
+                                    key={`wide-${key}`}
+                                    aria-label={label}
+                                    size='small'
+                                    onClick={() => setPane(key)}
+                                    sx={{
+                                        fontSize: 12,
+                                        px: 1,
+                                        width: "auto",
+                                        height: 28,
+                                        display: { xs: "none", sm: "inline-flex" },
+                                        borderRadius: 1.5,
+                                        fontWeight: pane === key ? 600 : 400,
+                                        color: pane === key ? "primary.main" : "text.secondary",
+                                        bgcolor:
+                                            pane === key ? "rgba(128,128,128,0.12)" : "transparent",
+                                    }}
+                                >
+                                    {label}
+                                </IconButton>
+                            ))}
+                            {/* 当前笔记的操作入口。顶栏拆掉后，只读分享 / 版本历史 / 大纲 /
+                                反向链接也收进了这个菜单（见下面 data-active-op 那几项）。 */}
+                            <Tooltip title='更多操作'>
+                                <IconButton
+                                    size='small'
+                                    data-tool='note-more'
+                                    aria-label='更多操作'
+                                    aria-haspopup='menu'
+                                    disabled={!active}
+                                    onClick={e => setActiveMenuAnchor(e.currentTarget)}
+                                    sx={{ width: 28, height: 28, color: "text.secondary" }}
+                                >
+                                    <MoreVertIcon fontSize='small' />
+                                </IconButton>
+                            </Tooltip>
+                        </Box>
+                    </Box>
 
                     {/* 格式工具栏：照 inkstone 那一排。放在标题与内容区之间，
                         点一下在光标处插入语法 —— 省得手打 `**` 和 `- [ ]`。
@@ -3242,9 +3462,9 @@ export default function NotesPage({
                                 }}
                             >
                                 <NoteEditor
-                                    // 行号/拼写开关会重建编辑器（CodeMirror 的扩展只能在建时定），
+                                    // 行号/拼写/缩进开关会重建编辑器（CodeMirror 的扩展只能在建时定），
                                     // 拼进 key；字体/字号走 CSS 变量，不用重建。
-                                    key={`${active.id}|${uiSettings.lineNumbers ? 1 : 0}|${uiSettings.spellcheck ? 1 : 0}`}
+                                    key={`${active.id}|${uiSettings.lineNumbers ? 1 : 0}|${uiSettings.spellcheck ? 1 : 0}|${uiSettings.indentWidth}`}
                                     editorRef={textareaRef}
                                     value={draft?.content ?? ""}
                                     onChange={content => setDraft(d => d ? { ...d, content } : d)}
@@ -3252,6 +3472,8 @@ export default function NotesPage({
                                     spellcheck={uiSettings.spellcheck}
                                     font={uiSettings.editorFont}
                                     fontSize={uiSettings.editorFontSize}
+                                    indentWidth={uiSettings.indentWidth}
+                                    onScrollRatio={syncPreviewScroll}
                                 />
                             </Box>
                         )}
@@ -3284,6 +3506,7 @@ export default function NotesPage({
                         )}
                         {pane !== "edit" && (
                             <Box
+                                ref={previewScrollRef}
                                 sx={{
                                     // 与源码区同一个 basis（0），两栏才严格对半
                                     flex: 1,
@@ -3293,9 +3516,13 @@ export default function NotesPage({
                                     minHeight: 0,
                                     overflowY: "auto",
                                     p: 2.5,
-                                    // 设置面板「外观」：预览正文字号 / 行高直接在这里生效
+                                    // 设置面板「外观」：预览正文字号 / 行高 / 字体直接在这里生效
                                     fontSize: uiSettings.previewFontSize,
                                     lineHeight: uiSettings.lineHeight,
+                                    fontFamily:
+                                        uiSettings.previewFont === "serif"
+                                            ? 'Georgia, "Songti SC", "Noto Serif CJK SC", serif'
+                                            : "inherit",
                                     border:
                                         pane === "split"
                                             ? "1px solid var(--card-border, rgba(128,128,128,0.45))"
@@ -3353,6 +3580,7 @@ export default function NotesPage({
                                     source={draft?.content || ""}
                                     resolveNote={resolveNote}
                                     onOpenNote={handleOpenEmbedNote}
+                                    features={previewFeatures}
                                 /></Box>
                             </Box>
                         )}
@@ -3503,35 +3731,73 @@ export default function NotesPage({
             data-side-editor='1'
             sx={{ flex: "1 1 50%", minWidth: 0, minHeight: 0, display: "flex", flexDirection: "column" }}
         >
-            <Box sx={{ display: "flex", alignItems: "center", gap: 0.5, pr: 1 }}>
+            {/* 头部（2026-10-07）：inkstone 每栏右上角都有自己的按键栏 ——
+                标题 + 编辑/预览 + 更多操作（作用于**侧边这条**）+ 关闭。 */}
+            <Box sx={{ display: "flex", alignItems: "center", gap: 0.25, pr: 0.75, flexShrink: 0 }}>
                 <TextField
-                    fullWidth
                     variant='standard'
                     value={sideDraft?.title ?? ""}
                     onChange={e => setSideDraft(d => (d ? { ...d, title: e.target.value } : d))}
                     placeholder='无标题'
                     slotProps={{ input: { "aria-label": "侧边笔记标题" } }}
                     sx={{
+                        flex: 1,
+                        minWidth: 0,
                         px: 2,
                         pt: 1.5,
-                        flexShrink: 0,
                         "& .MuiInputBase-root": { fontSize: 17, fontWeight: 600 },
                         "& .MuiInput-input": { padding: "6px 0" },
                     }}
                 />
+                <Tooltip title={sideMode === "preview" ? "编辑" : "预览"}>
+                    <IconButton
+                        size='small'
+                        aria-label={sideMode === "preview" ? "侧边编辑" : "侧边预览"}
+                        data-tool='side-mode'
+                        aria-pressed={sideMode === "preview"}
+                        onClick={() => setSideMode(m => (m === "edit" ? "preview" : "edit"))}
+                        sx={{
+                            width: 28,
+                            height: 28,
+                            flexShrink: 0,
+                            color: sideMode === "preview" ? "primary.main" : "text.secondary",
+                            bgcolor: sideMode === "preview" ? "rgba(128,128,128,0.12)" : "transparent",
+                        }}
+                    >
+                        {sideMode === "preview" ? <EditIcon fontSize='small' /> : <VisibilityIcon fontSize='small' />}
+                    </IconButton>
+                </Tooltip>
+                {/* 更多操作：直接复用列表行的全量菜单，只是锚在侧边栏头部、
+                    作用于侧边这条笔记（顶栏那套只管主编辑区的问题到此为止）。 */}
+                <Tooltip title='更多操作'>
+                    <IconButton
+                        size='small'
+                        data-tool='side-more'
+                        aria-label='侧边笔记更多操作'
+                        aria-haspopup='menu'
+                        onClick={e =>
+                            sideNote.id !== undefined &&
+                            setRowMenu({ noteId: sideNote.id, el: e.currentTarget, source: "list" })
+                        }
+                        sx={{ width: 28, height: 28, flexShrink: 0, color: "text.secondary" }}
+                    >
+                        <MoreVertIcon fontSize='small' />
+                    </IconButton>
+                </Tooltip>
+                {/* 关闭键常显（inkstone 同款 ✕）：藏在 hover 里的话分屏时根本找不到 */}
                 <Tooltip title='关闭侧边编辑器'>
                     <IconButton
                         size='small'
                         aria-label='关闭侧边编辑器'
                         data-side-close='1'
                         onClick={closeSide}
-                        sx={{ flexShrink: 0 }}
+                        sx={{ flexShrink: 0, color: "text.secondary" }}
                     >
                         <CloseIcon fontSize='small' />
                     </IconButton>
                 </Tooltip>
             </Box>
-            {uiSettings.showToolbar && (
+            {uiSettings.showToolbar && sideMode === "edit" && (
                 <MarkdownToolbar
                     onInsert={sideTools.insertAtCursor}
                     onInsertLinePrefix={sideTools.insertLinePrefix}
@@ -3564,16 +3830,28 @@ export default function NotesPage({
                     borderBottom: "none",
                 }}
             >
-                <NoteEditor
-                    key={`side-${sideNote.id}|${uiSettings.lineNumbers ? 1 : 0}|${uiSettings.spellcheck ? 1 : 0}`}
-                    editorRef={sideRef}
-                    value={sideDraft?.content ?? ""}
-                    onChange={content => setSideDraft(d => (d ? { ...d, content } : d))}
-                    lineNumbers={uiSettings.lineNumbers}
-                    spellcheck={uiSettings.spellcheck}
-                    font={uiSettings.editorFont}
-                    fontSize={uiSettings.editorFontSize}
-                />
+                {sideMode === "edit" ? (
+                    <NoteEditor
+                        key={`side-${sideNote.id}|${uiSettings.lineNumbers ? 1 : 0}|${uiSettings.spellcheck ? 1 : 0}`}
+                        editorRef={sideRef}
+                        value={sideDraft?.content ?? ""}
+                        onChange={content => setSideDraft(d => (d ? { ...d, content } : d))}
+                        lineNumbers={uiSettings.lineNumbers}
+                        spellcheck={uiSettings.spellcheck}
+                        font={uiSettings.editorFont}
+                        fontSize={uiSettings.editorFontSize}
+                    />
+                ) : (
+                    /* 侧边预览：与主编辑区同一套 Markdown 渲染（token→React，无 HTML sink） */
+                    <Box data-side-preview='1' sx={{ height: "100%", overflowY: "auto", px: 2, py: 1, fontSize: uiSettings.previewFontSize, lineHeight: uiSettings.lineHeight }}>
+                        <MarkdownPreview
+                            source={sideDraft?.content ?? ""}
+                            resolveNote={resolveNote}
+                            onOpenNote={handleOpenEmbedNote}
+                            features={previewFeatures}
+                        />
+                    </Box>
+                )}
             </Box>
             <Box
                 sx={{
@@ -3616,11 +3894,22 @@ export default function NotesPage({
                 overflow: "hidden",
                 zIndex: (t: { zIndex: { modal: number } }) => t.zIndex.modal,
                 display: "flex",
-                flexDirection: "column",
-                bgcolor: "background.default",
+                // ⚠️ 2026-10-07 改为**横向**：顶栏只压在最左边的导航列上方（inkstone 布局），
+                // 中栏列表与编辑区各自带头部、直达页面顶部 —— 全宽顶栏会把三栏都压低一截，
+                // 而顶栏上那排按钮实际只对「当前编辑的这篇」有意义，摆在页首纯属浪费纵深。
+                flexDirection: "row",
+                // 「背景色」设置：暖白（纸感）/ 纯白。深色模式下「暖白」不成立，
+                // 照旧走主题默认色 —— 否则会得到一块刺眼的白底配深色文字。
+                bgcolor: (t: { palette: { mode: string; background: { default: string; paper: string } } }) =>
+                    uiSettings.bgcolor === "pure"
+                        ? t.palette.background.paper
+                        : t.palette.mode === "light"
+                          ? "#faf8f1"
+                          : t.palette.background.default,
             }}
-            // 设置面板的「强调色」：写在根元素上，页内所有用到 var(--accent)
-            // 的地方（选中态/焦点环/图标）一起跟着变，不出这个页面。
+            // 「界面密度」与「强调色」都作用在整个记事本根元素上：
+            // 强调色用 --accent（页内选中态/图标），密度用 data 属性（index.css 里收紧行距）
+            data-notes-density={uiSettings.density}
             style={{ "--accent": uiSettings.accent } as React.CSSProperties}
         >
             {shareId !== null && shareApi && <NoteShareDialog key={shareId} id={shareId} api={shareApi} onClose={() => setShareId(null)} />}
@@ -3631,204 +3920,6 @@ export default function NotesPage({
                 onChange={setUiSettings}
                 onClose={() => setSettingsOpen(false)}
             />
-            {/* Header */}
-            <Box
-                sx={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 1,
-                    px: 1.5,
-                    py: 1,
-                    borderBottom: "1px solid rgba(128,128,128,0.25)",
-                }}
-            >
-                <IconButton aria-label='返回导航站' onClick={onClose} size='small'>
-                    <ArrowBackIcon fontSize='small' />
-                </IconButton>
-                <Typography variant='h6' component='div' sx={{ fontWeight: 600, flex: 1 }}>
-                    记事本
-                </Typography>
-
-                {/* 阶段二：左栏折叠（照 inkstone 那个 196↔9 的收起动作）。
-                    ⚠️ 这个按钮原来紧挨着「返回导航站」，两个都是无文字的箭头，
-                    靠太近必误按（用户报过）→ 挪到右侧这一组里，和视图切换、+ 相邻。 */}
-                <Tooltip title={listCollapsed ? "展开笔记列表" : "收起笔记列表"}>
-                    <IconButton
-                        aria-label={listCollapsed ? "展开笔记列表" : "收起笔记列表"}
-                        size='small'
-                        onClick={() => setListCollapsed(c => !c)}
-                    >
-                        {listCollapsed ? (
-                            <LastPageIcon fontSize='small' />
-                        ) : (
-                            <FirstPageIcon fontSize='small' />
-                        )}
-                    </IconButton>
-                </Tooltip>
-
-                {/* 版本历史：inkstone 顶栏第二项。改动前的正文由后端自动留档，
-                    这里只负责列出来 + 恢复。历史只有一条时按钮仍可用 ——
-                    「只有一版」本身就是要让用户知道的事实。 */}
-                <Tooltip title='只读分享'><span><IconButton size='small' data-tool='share' aria-label='只读分享'
-                    disabled={!shareApi || !active?.id || active.id <= 0 || view === "trash"}
-                    onClick={() => { if (active?.id) setShareId(active.id); }}><ShareIcon fontSize='small' /></IconButton></span></Tooltip>
-                <Tooltip title='版本历史'>
-                    <IconButton
-                        size='small'
-                        data-tool='revisions'
-                        aria-label='版本历史'
-                        disabled={!active || !folderTags?.onListRevisions}
-                        onClick={e => void openRevisions(e.currentTarget)}
-                        sx={{ width: 28, height: 28, color: "text.secondary" }}
-                    >
-                        <HistoryIcon fontSize='small' />
-                    </IconButton>
-                </Tooltip>
-
-                {/* 大纲：inkstone 顶栏有「大纲」。这里是**开关**：点开在预览窗
-                    右侧常驻一块大纲面板（不再是弹个菜单就消失），点条目跳转。 */}
-                <Tooltip title={outlineOpen ? "收起大纲" : "大纲"}>
-                    <IconButton
-                        size='small'
-                        data-tool='outline'
-                        aria-label='大纲'
-                        aria-pressed={outlineOpen}
-                        disabled={!active}
-                        onClick={() => setOutlineOpen(o => !o)}
-                        sx={{
-                            width: 28,
-                            height: 28,
-                            color: outlineOpen ? "primary.main" : "text.secondary",
-                            bgcolor: outlineOpen ? "rgba(128,128,128,0.12)" : "transparent",
-                        }}
-                    >
-                        <ListIcon fontSize='small' />
-                    </IconButton>
-                </Tooltip>
-
-                {/* 反向链接：inkstone 顶栏的核心卖点之一。哪些笔记用 [[双链]] 指向了这条。
-                    数字直接标在图标角上 —— 有 0 条时按钮就灰着，不必点开才知道。 */}
-                <Tooltip
-                    title={
-                        backlinks.length
-                            ? `反向链接（${backlinks.length} 条笔记引用了这里）`
-                            : "反向链接（还没有笔记链接到这里）"
-                    }
-                >
-                    <span>
-                        <IconButton
-                            size='small'
-                            data-tool='backlinks'
-                            aria-label={`反向链接 ${backlinks.length} 条`}
-                            disabled={!active || backlinks.length === 0}
-                            onClick={e => setBacklinkAnchor(e.currentTarget)}
-                            sx={{ width: 28, height: 28, color: "text.secondary" }}
-                        >
-                            <LinkIcon fontSize='small' />
-                            {backlinks.length > 0 && (
-                                <Box
-                                    component='span'
-                                    aria-hidden
-                                    sx={{
-                                        position: "absolute",
-                                        top: -2,
-                                        right: -2,
-                                        minWidth: 13,
-                                        height: 13,
-                                        px: 0.25,
-                                        borderRadius: 7,
-                                        bgcolor: "primary.main",
-                                        color: "primary.contrastText",
-                                        fontSize: 9,
-                                        lineHeight: "13px",
-                                        textAlign: "center",
-                                    }}
-                                >
-                                    {backlinks.length}
-                                </Box>
-                            )}
-                        </IconButton>
-                    </span>
-                </Tooltip>
-
-                {/* 源码/预览切换：像 inkstone 那样给三档。
-                    ⚠️ 原来这里是 `display: { xs: "none", sm: "flex" }` —— 小屏直接**整组藏掉**，
-                    手机上用户因此永远拿不到「预览模式」，只能被迫在源码态编辑（连写没写错都看不到）。
-                    现在改成**收窄成图标**：三个 28px 的小按钮在 375px 上也放得下，
-                    文案换成 aria-label（读屏仍读得到），点得到比看得到更重要。 */}
-                <Box sx={{ display: "flex", gap: 0.25, flexShrink: 0 }}>
-                    {(
-                        [
-                            ["edit", "编辑", <EditIcon fontSize='inherit' key='i' />],
-                            ["split", "分栏", <VerticalSplitIcon fontSize='inherit' key='s' />],
-                            ["preview", "预览", <VisibilityIcon fontSize='inherit' key='v' />],
-                        ] as const
-                    ).map(([key, label, icon]) => (
-                        <IconButton
-                            key={key}
-                            aria-label={label}
-                            title={label}
-                            size='small'
-                            onClick={() => setPane(key)}
-                            sx={{
-                                width: 28,
-                                height: 28,
-                                p: 0,
-                                color: pane === key ? "primary.main" : "text.secondary",
-                                bgcolor:
-                                    pane === key ? "rgba(128,128,128,0.12)" : "transparent",
-                                display: { xs: "inline-flex", sm: "none" },
-                            }}
-                        >
-                            {icon}
-                        </IconButton>
-                    ))}
-                    {/* sm 及以上仍用文字按钮：宽屏有地方，文字比图标更省解释 */}
-                    {(
-                        [
-                            ["edit", "编辑"],
-                            ["split", "分栏"],
-                            ["preview", "预览"],
-                        ] as const
-                    ).map(([key, label]) => (
-                        <IconButton
-                            key={`wide-${key}`}
-                            aria-label={label}
-                            size='small'
-                            onClick={() => setPane(key)}
-                            sx={{
-                                fontSize: 12,
-                                px: 1,
-                                width: "auto",
-                                height: 28,
-                                display: { xs: "none", sm: "inline-flex" },
-                                borderRadius: 1.5,
-                                fontWeight: pane === key ? 600 : 400,
-                                color: pane === key ? "primary.main" : "text.secondary",
-                                bgcolor:
-                                    pane === key ? "rgba(128,128,128,0.12)" : "transparent",
-                            }}
-                        >
-                            {label}
-                        </IconButton>
-                    ))}
-                    {/* 当前笔记的操作入口（右下角那排按键已并入右键菜单 / 这个 ⋯） */}
-                    <Tooltip title='更多操作'>
-                        <IconButton
-                            size='small'
-                            data-tool='note-more'
-                            aria-label='更多操作'
-                            aria-haspopup='menu'
-                            disabled={!active || view === "trash"}
-                            onClick={e => setActiveMenuAnchor(e.currentTarget)}
-                            sx={{ width: 28, height: 28, color: "text.secondary" }}
-                        >
-                            <MoreVertIcon fontSize='small' />
-                        </IconButton>
-                    </Tooltip>
-                </Box>
-            </Box>
-
             {/* 当前笔记的「⋯」菜单：与右键菜单同一套（全量版）。 */}
             <Menu
                 open={Boolean(activeMenuAnchor)}
@@ -3837,6 +3928,52 @@ export default function NotesPage({
             >
                 {active && (
                     <>
+                        {/* 顶栏拆掉后搬进来的四项（2026-10-07）：分享 / 版本 / 大纲 / 反链。
+                            它们都只作用于「当前编辑的这篇」，收进当前笔记的菜单正合适。 */}
+                        <MenuItem
+                            data-active-op='share'
+                            disabled={!shareApi || (active.id ?? 0) <= 0}
+                            onClick={() => {
+                                setActiveMenuAnchor(null);
+                                if (active.id) setShareId(active.id);
+                            }}
+                        >
+                            <ShareIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
+                            只读分享…
+                        </MenuItem>
+                        <MenuItem
+                            data-active-op='revisions'
+                            disabled={!folderTags?.onListRevisions}
+                            onClick={e => {
+                                setActiveMenuAnchor(null);
+                                void openRevisions(e.currentTarget);
+                            }}
+                        >
+                            <HistoryIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
+                            版本历史…
+                        </MenuItem>
+                        <MenuItem
+                            data-active-op='outline'
+                            onClick={() => {
+                                setActiveMenuAnchor(null);
+                                setOutlineOpen(o => !o);
+                            }}
+                        >
+                            <ListIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
+                            {outlineOpen ? "收起大纲" : "大纲"}
+                        </MenuItem>
+                        <MenuItem
+                            data-active-op='backlinks'
+                            disabled={backlinks.length === 0}
+                            onClick={e => {
+                                setActiveMenuAnchor(null);
+                                setBacklinkAnchor(e.currentTarget);
+                            }}
+                        >
+                            <LinkIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
+                            反向链接（{backlinks.length}）
+                        </MenuItem>
+                        <Divider />
                         <MenuItem
                             data-active-op='copy-title'
                             onClick={() => {
@@ -4052,47 +4189,51 @@ export default function NotesPage({
                     {listPane}
                 </Box>
                 {/* 右栏占满剩余空间。minHeight:0 同样要加：缺了它，内部内容会把这层
-                    撑高、进而把最外层的 fixed 容器顶出视口 —— 表现就是页面级滚动条。 */}
+                    撑高、进而把最外层的 fixed 容器顶出视口 —— 表现就是页面级滚动条。
+                    ⚠️ 外层改成了**列**方向：编辑区本体在上，移动端的「回到列表」压在底下
+                    （根容器 2026-10-07 起是 row，这条不能再挂在根上，否则会横着排到右边）。 */}
                 <Box
                     sx={{
                         display: { xs: mobileDetail ? "flex" : "none", md: "flex" },
                         flex: 1,
                         minWidth: 0,
                         minHeight: 0,
+                        flexDirection: "column",
                     }}
                 >
-                    {/* 侧边编辑器打开时主编辑器让出一半（两个文档同时编辑，inkstone 的分屏）
-                        ⚠️ 判据用 sidePane（= 侧边那条笔记真的还在），不能用 sideId：
-                        侧边那条被删掉/回收后 sideId 还留着，按它分屏会让主编辑区
-                        白白让出一半、右边空着一条（2026-10-06） */}
-                    <Box
-                        sx={{
-                            flex: sidePane !== null ? "1 1 50%" : 1,
-                            minWidth: 0,
-                            minHeight: 0,
-                            display: "flex",
-                            borderRight:
-                                sidePane !== null ? "1px solid rgba(128,128,128,0.25)" : undefined,
-                        }}
-                    >
-                        {editorPane}
+                    <Box sx={{ flex: 1, display: "flex", minHeight: 0, minWidth: 0 }}>
+                        {/* 侧边编辑器打开时主编辑器让出一半（两个文档同时编辑，inkstone 的分屏）
+                            ⚠️ 判据用 sidePane（= 侧边那条笔记真的还在），不能用 sideId：
+                            侧边那条被删掉/回收后 sideId 还留着，按它分屏会让主编辑区
+                            白白让出一半、右边空着一条（2026-10-06） */}
+                        <Box
+                            sx={{
+                                flex: sidePane !== null ? "1 1 50%" : 1,
+                                minWidth: 0,
+                                minHeight: 0,
+                                display: "flex",
+                                borderRight:
+                                    sidePane !== null ? "1px solid rgba(128,128,128,0.25)" : undefined,
+                            }}
+                        >
+                            {editorPane}
+                        </Box>
+                        {sidePane}
                     </Box>
-                    {sidePane}
+                    {/* 移动端从编辑态回列表 */}
+                    {mobileDetail && (
+                        <Box sx={{ display: { xs: "flex", md: "none" }, p: 1, borderTop: "1px solid rgba(128,128,128,0.25)", flexShrink: 0 }}>
+                            <Button
+                                startIcon={<EditIcon />}
+                                onClick={() => setMobileDetail(false)}
+                                size='small'
+                            >
+                                回到列表
+                            </Button>
+                        </Box>
+                    )}
                 </Box>
             </Box>
-
-            {/* 移动端从编辑态回列表 */}
-            {mobileDetail && (
-                <Box sx={{ display: { xs: "flex", md: "none" }, p: 1, borderTop: "1px solid rgba(128,128,128,0.25)" }}>
-                    <Button
-                        startIcon={<EditIcon />}
-                        onClick={() => setMobileDetail(false)}
-                        size='small'
-                    >
-                        回到列表
-                    </Button>
-                </Box>
-            )}
 
             {/* 分类相关的弹窗：新建 / 重命名（NamePromptDialog）与删除二次确认
                 （ConfirmDialog）。原来这些走的是 window.prompt / window.confirm ——
@@ -4146,12 +4287,15 @@ function MarkdownPreview({
     source,
     resolveNote,
     onOpenNote,
+    features,
 }: {
     source: string;
     /** 笔记嵌入 `![[标题]]` 按标题找目标 */
     resolveNote?: (title: string) => NoteEmbedTarget | null;
     /** 点嵌入标题跳到那篇笔记 */
     onOpenNote?: (title: string) => void;
+    /** 预览功能开关（公式 / 图表 / 折叠代码块），来自设置面板 */
+    features?: RenderFeatures;
 }) {
     const [node, setNode] = useState<ReactNode>(null);
     const [ready, setReady] = useState(false);
@@ -4162,7 +4306,7 @@ function MarkdownPreview({
             setNode(null);
             return;
         }
-        void renderMarkdownToReact(source, { resolveNote, onOpenNote }).then(result => {
+        void renderMarkdownToReact(source, { resolveNote, onOpenNote, features }).then(result => {
             if (cancelled) return;
             setNode(result);
             setReady(true);
@@ -4171,7 +4315,7 @@ function MarkdownPreview({
             // 输入很快时，旧的解析结果要丢掉，否则会闪回上一版内容
             cancelled = true;
         };
-    }, [source, resolveNote, onOpenNote]);
+    }, [source, resolveNote, onOpenNote, features]);
 
     if (!source) {
         return (
@@ -4395,11 +4539,17 @@ function MarkdownToolbar({
             sx={{
                 display: "flex",
                 alignItems: "center",
-                gap: 0.5,
-                px: 1.5,
-                height: 40,
+                flexWrap: "wrap",
+                gap: 0.25,
+                px: 1,
+                py: 0.25,
+                // ⚠️ 不能定高 + overflowX:auto（2026-10-07 用户报）：分屏时一栏只有
+                // 半个屏宽，二十几个按钮塞一行必然溢出 —— overflowX:auto 会连带把
+                // overflowY 也变成 auto，横滚动条一出现就把 40px 撑出**竖向滚动**，
+                // 工具栏还会盖住标题。改成**换行铺开**：窄栏下自动折成两三行，
+                // 高度自适应（编辑器是 flex:1 会自己让空间），永远不出现滚动条。
+                minHeight: 36,
                 flexShrink: 0,
-                overflowX: "auto",
                 borderBottom: "1px solid var(--card-border, rgba(128,128,128,0.18))",
             }}
         >

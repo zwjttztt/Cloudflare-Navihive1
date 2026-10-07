@@ -50,6 +50,20 @@ export interface RenderContext {
     resolveNote?: (title: string) => NoteEmbedTarget | null;
     /** 点嵌入标题时跳到那篇笔记 */
     onOpenNote?: (title: string) => void;
+    /** 预览功能开关（设置面板「编辑器」页；不传=全部开启） */
+    features?: RenderFeatures;
+}
+
+/** 预览功能开关：inkstone 设置页里的那几项，对应到我们的渲染层 */
+export interface RenderFeatures {
+    /** 数学公式（关→按普通代码文本显示， KaTeX 不加载） */
+    math?: boolean;
+    /** Mermaid 图表（关→显示源码块） */
+    mermaid?: boolean;
+    /** 折叠超过 foldCodeLines 行的代码块 */
+    foldCode?: boolean;
+    /** 折叠阈值（行数），默认 24 */
+    foldCodeLines?: number;
 }
 
 
@@ -129,7 +143,11 @@ export async function renderMarkdownToReact(
 ): Promise<ReactNode> {
     if (!source) return null;
     const md = await loadParser();
-    const ctx: RenderContext = { resolveNote: options.resolveNote, onOpenNote: options.onOpenNote };
+    const ctx: RenderContext = {
+        resolveNote: options.resolveNote,
+        onOpenNote: options.onOpenNote,
+        features: options.features,
+    };
     const depth = options.depth ?? 0;
 
     // front matter 在**进解析器之前**摘掉：markdown-it 会把 `---` 那段拆成 hr + 段落，
@@ -332,8 +350,12 @@ function renderLeaf(tok: Token, c: Cursor): ReactNode {
         case "softbreak":
         case "hardbreak":
             return <br key={key} />;
-        // 公式：内容原样交给 KaTeX 那层（它会自己异步把节点挂进这个 span）
+        // 公式：内容原样交给 KaTeX 那层（它会自己异步把节点挂进这个 span）。
+        // 设置里关掉数学公式时按普通代码文本显示（把定界符补回来）。
         case "math_inline":
+            if (c.ctx.features?.math === false) {
+                return <code key={key} style={INLINE_CODE}>{`$${tok.content}$`}</code>;
+            }
             return <MathNode key={key} tex={tok.content} />;
         // 高亮 `==文本==`。用语义标签 <mark> 而不是 <span style>：
         // 读屏软件会念「高亮」，而且浏览器里 ⌘F 搜内容时黄色底也还在。
@@ -536,18 +558,45 @@ function renderBlocks(c: Cursor): ReactNode[] {
             case "fence":
             case "code_block": {
                 const lang = (tok.info || "").trim().split(/\s+/)[0];
-                if (lang.toLowerCase() === "mermaid") {
+                // 设置里关掉图表：Mermaid 源码按普通代码块显示
+                if (lang.toLowerCase() === "mermaid" && c.ctx.features?.mermaid !== false) {
                     out.push(<MermaidNode key={`${key}:${tok.content}`} source={tok.content} />);
                     c.i++;
                     break;
                 }
-                out.push(
+                const codeEl = (
                     <pre key={key} style={PRE_STYLE}>
                         <code {...(lang ? { 'data-lang': lang } : {})} style={CODE_STYLE}>
                             {tok.content}
                         </code>
                     </pre>
                 );
+                // 折叠较长的代码块（inkstone「折叠较长的代码块」）：超过阈值的
+                // 默认只露 summary，点开看全文。阈值 0/负数视为不折叠。
+                const foldLines = c.ctx.features?.foldCodeLines ?? 24;
+                if (c.ctx.features?.foldCode && foldLines > 0) {
+                    const lineCount = tok.content.split("\n").length;
+                    if (lineCount > foldLines) {
+                        out.push(
+                            <details key={key} data-code-fold='1' style={{ margin: "8px 0" }}>
+                                <summary
+                                    style={{
+                                        cursor: "pointer",
+                                        fontSize: 12,
+                                        color: "text.secondary" as const,
+                                        userSelect: "none" as const,
+                                    }}
+                                >
+                                    代码块（{lineCount} 行，点击展开）
+                                </summary>
+                                {codeEl}
+                            </details>
+                        );
+                        c.i++;
+                        break;
+                    }
+                }
+                out.push(codeEl);
                 c.i++;
                 break;
             }
@@ -556,7 +605,17 @@ function renderBlocks(c: Cursor): ReactNode[] {
                 c.i++;
                 break;
             case "math_block": {
-                // 块级公式独占一块：居中 + 可横向滚动（超宽的公式不能把预览挤歪）
+                // 块级公式独占一块：居中 + 可横向滚动（超宽的公式不能把预览挤歪）。
+                // 设置里关掉数学公式时按普通代码文本显示。
+                if (c.ctx.features?.math === false) {
+                    out.push(
+                        <pre key={key} style={PRE_STYLE}>
+                            <code style={CODE_STYLE}>{`$$\n${tok.content}\n$$`}</code>
+                        </pre>
+                    );
+                    c.i++;
+                    break;
+                }
                 out.push(
                     <div
                         key={key}

@@ -1135,3 +1135,14 @@ html.nav-touch .nav-star-btn[data-starred="false"] {
     }
 }
 
+
+/* ---- 记事本「界面密度：紧凑」（设置面板）----
+   行高是 sx 内联样式，普通选择器压不住，只能用 !important。
+   只收紧**行内间距**，不动字号 —— 字号一缩，行高不变的话反而更难读。 */
+[data-notes-density='compact'] .note-dense-row {
+    padding-top: 3px !important;
+    padding-bottom: 3px !important;
+}
+[data-notes-density='compact'] [data-list-header='1'] {
+    padding-bottom: 2px !important;
+}

@@ -216,6 +216,40 @@ export default function NotesSettingsDialog({ open, settings, onChange, onClose 
                                         ))}
                                     </Box>
                                 </SettingRow>
+                                {/* 背景色 / 密度 / 正文字体：inkstone「外观」页同名的三项 */}
+                                <SettingRow label='背景色' description='纸感（暖白）或纯白'>
+                                    <SegOptions
+                                        dataKey='bgcolor'
+                                        value={settings.bgcolor}
+                                        onChange={v => set("bgcolor", v)}
+                                        options={[
+                                            { value: "warm", label: "暖白" },
+                                            { value: "pure", label: "纯白" },
+                                        ]}
+                                    />
+                                </SettingRow>
+                                <SettingRow label='界面密度' description='紧凑模式下列表与行距更小，一屏能看到更多'>
+                                    <SegOptions
+                                        dataKey='density'
+                                        value={settings.density}
+                                        onChange={v => set("density", v)}
+                                        options={[
+                                            { value: "comfortable", label: "舒适" },
+                                            { value: "compact", label: "紧凑" },
+                                        ]}
+                                    />
+                                </SettingRow>
+                                <SettingRow label='正文字体' description='预览区正文用什么字体'>
+                                    <SegOptions
+                                        dataKey='previewFont'
+                                        value={settings.previewFont}
+                                        onChange={v => set("previewFont", v)}
+                                        options={[
+                                            { value: "sans", label: "无衬线" },
+                                            { value: "serif", label: "衬线" },
+                                        ]}
+                                    />
+                                </SettingRow>
                                 <SettingRow label='正文字号'>
                                     <Slider
                                         aria-label='正文字号'
@@ -345,9 +379,98 @@ export default function NotesSettingsDialog({ open, settings, onChange, onClose 
                                         size='small'
                                     />
                                 </SettingRow>
+                                <SettingRow label='缩进宽度' description='Tab 与自动缩进用几个空格'>
+                                    <SegOptions
+                                        dataKey='indentWidth'
+                                        value={String(settings.indentWidth) as "2" | "4"}
+                                        onChange={v => set("indentWidth", Number(v) as 2 | 4)}
+                                        options={[
+                                            { value: "2", label: "2" },
+                                            { value: "4", label: "4" },
+                                        ]}
+                                    />
+                                </SettingRow>
+                                <SettingRow label='自动保存延迟' description='停止输入后等多久自动写库（越短越频繁）'>
+                                    <Slider
+                                        aria-label='自动保存延迟'
+                                        data-setting='autosaveMs'
+                                        value={settings.autosaveMs}
+                                        min={500}
+                                        max={8000}
+                                        step={250}
+                                        valueLabelDisplay='auto'
+                                        onChange={(_, v) => set("autosaveMs", v as number)}
+                                        sx={{ width: 150 }}
+                                    />
+                                    <Typography variant='caption' sx={{ width: 52, textAlign: "right" }}>
+                                        {settings.autosaveMs}ms
+                                    </Typography>
+                                </SettingRow>
+                                <Divider sx={{ my: 1.5 }} />
+                                <Typography variant='caption' color='text.secondary' sx={{ px: 0.5, display: "block", mb: 0.5 }}>
+                                    预览
+                                </Typography>
+                                <SettingRow label='滚动同步' description='分栏时预览跟随源码滚动'>
+                                    <Switch
+                                        checked={settings.scrollSync}
+                                        onChange={e => set("scrollSync", e.target.checked)}
+                                        data-setting='scrollSync'
+                                        size='small'
+                                    />
+                                </SettingRow>
+                                <SettingRow label='数学公式' description='渲染 $行内$ 与 $$块级$$ 公式'>
+                                    <Switch
+                                        checked={settings.mathRender}
+                                        onChange={e => set("mathRender", e.target.checked)}
+                                        data-setting='mathRender'
+                                        size='small'
+                                    />
+                                </SettingRow>
+                                <SettingRow label='图表' description='把 Mermaid 代码块渲染为图表'>
+                                    <Switch
+                                        checked={settings.mermaidRender}
+                                        onChange={e => set("mermaidRender", e.target.checked)}
+                                        data-setting='mermaidRender'
+                                        size='small'
+                                    />
+                                </SettingRow>
+                                <SettingRow label='折叠较长的代码块' description='超过下面行数的代码块先折叠，点一下展开'>
+                                    <Switch
+                                        checked={settings.foldCode}
+                                        onChange={e => set("foldCode", e.target.checked)}
+                                        data-setting='foldCode'
+                                        size='small'
+                                    />
+                                </SettingRow>
+                                {settings.foldCode && (
+                                    <SettingRow label='折叠阈值'>
+                                        <Slider
+                                            aria-label='折叠阈值'
+                                            data-setting='foldCodeLines'
+                                            value={settings.foldCodeLines}
+                                            min={6}
+                                            max={120}
+                                            step={2}
+                                            valueLabelDisplay='auto'
+                                            onChange={(_, v) => set("foldCodeLines", v as number)}
+                                            sx={{ width: 150 }}
+                                        />
+                                        <Typography variant='caption' sx={{ width: 32, textAlign: "right" }}>
+                                            {settings.foldCodeLines} 行
+                                        </Typography>
+                                    </SettingRow>
+                                )}
+                                <SettingRow label='默认显示大纲' description='打开笔记时右侧就带着大纲面板'>
+                                    <Switch
+                                        checked={settings.defaultOutline}
+                                        onChange={e => set("defaultOutline", e.target.checked)}
+                                        data-setting='defaultOutline'
+                                        size='small'
+                                    />
+                                </SettingRow>
                                 <Divider sx={{ my: 1.5 }} />
                                 <Typography variant='caption' color='text.secondary' sx={{ px: 0.5, display: "block" }}>
-                                    字体与字号即时生效；行号与拼写检查会重建编辑器（撤销历史会清空）。
+                                    字体与字号即时生效；行号、拼写检查与缩进宽度会重建编辑器（撤销历史会清空）。
                                 </Typography>
                             </>
                         )}

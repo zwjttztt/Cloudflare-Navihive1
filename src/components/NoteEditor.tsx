@@ -3,7 +3,7 @@ import { EditorState, Transaction } from "@codemirror/state";
 import { EditorView, keymap, lineNumbers, highlightActiveLine, placeholder } from "@codemirror/view";
 import { markdown } from "@codemirror/lang-markdown";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
-import { syntaxHighlighting, defaultHighlightStyle, bracketMatching } from "@codemirror/language";
+import { syntaxHighlighting, defaultHighlightStyle, bracketMatching, indentUnit } from "@codemirror/language";
 
 import { editorHandle, type NoteEditorHandle } from "../utils/noteEditorHandle";
 
@@ -40,6 +40,13 @@ export interface NoteEditorProps {
     font?: "mono" | "sans";
     /** 编辑器字号（px），只换 CSS 变量，不重建 */
     fontSize?: number;
+    /** 缩进宽度（设置面板「缩进宽度」2/4）。是扩展：改了会重建编辑器（key 由调用方拼） */
+    indentWidth?: 2 | 4;
+    /**
+     * 源码滚动时把「滚了多少比例」报出去（设置面板「滚动同步」用）。
+     * 报比例而不是像素：预览与源码行高不同，像素对不齐，比例才稳。
+     */
+    onScrollRatio?: (ratio: number) => void;
 }
 
 export default function NoteEditor({
@@ -50,10 +57,15 @@ export default function NoteEditor({
     spellcheck = false,
     font = "mono",
     fontSize = 14,
+    indentWidth = 2,
+    onScrollRatio,
 }: NoteEditorProps) {
     const host = useRef<HTMLDivElement>(null);
     const viewRef = useRef<EditorView | null>(null);
     const changeRef = useRef(onChange);
+    // 滚动回调放进 ref：换回调不该重建编辑器（会丢撤销历史）
+    const scrollRef = useRef(onScrollRatio);
+    useLayoutEffect(() => { scrollRef.current = onScrollRatio; }, [onScrollRatio]);
     useLayoutEffect(() => { changeRef.current = onChange; }, [onChange]);
     useLayoutEffect(() => {
         const view = new EditorView({
@@ -62,6 +74,8 @@ export default function NoteEditor({
                 doc: value,
                 extensions: [
                     markdown(), history(), bracketMatching(),
+                    // 缩进宽度（设置面板）：Tab / 自动缩进都认它
+                    indentUnit.of(" ".repeat(indentWidth)),
                     // 行号是扩展不是样式：关掉它只能在建编辑器时决定 ——
                     // 所以设置里切这一项由调用方用 key 重建本组件（会丢撤销历史，可接受）
                     ...(showLineNumbers ? [lineNumbers()] : []),
@@ -83,10 +97,22 @@ export default function NoteEditor({
             }),
         });
         viewRef.current = view;
-        return () => { view.destroy(); viewRef.current = null; };
-        // 组件由笔记 id + 行号/拼写开关做 key；输入期间不重建编辑器或丢撤销历史。
+        // 滚动同步：报「滚了多少比例」给预览窗（设置面板可关）。
+        // 监听挂在 scrollDOM 上而不是外层 div —— scroll 事件不冒泡，挂外面收不到。
+        const onScroll = () => {
+            const el = view.scrollDOM;
+            const max = el.scrollHeight - el.clientHeight;
+            scrollRef.current?.(max > 0 ? el.scrollTop / max : 0);
+        };
+        view.scrollDOM.addEventListener("scroll", onScroll);
+        return () => {
+            view.scrollDOM.removeEventListener("scroll", onScroll);
+            view.destroy();
+            viewRef.current = null;
+        };
+        // 组件由笔记 id + 行号/拼写/缩进开关做 key；输入期间不重建编辑器或丢撤销历史。
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [showLineNumbers, spellcheck]);
+    }, [showLineNumbers, spellcheck, indentWidth]);
     useImperativeHandle(editorRef, () => editorHandle(viewRef.current!), []);
     useEffect(() => {
         const view = viewRef.current;
