@@ -836,9 +836,31 @@ const FOLD_SUMMARY_STYLE: React.CSSProperties = {
  * 同一篇里两个块用同一个 ID 很常见，写了就会在 DOM 里撞出重复 id，
  * 而页面里恰好有别的锚点跳转逻辑（大纲/脚注回跳），撞了就是「点大纲跳错地方」。
  */
-function anchorProps(tok: Token): { "data-block-id"?: string } {
+/**
+ * 块级 token 的公共属性。
+ *
+ * ⚠️ `data-line` 是**滚动同步锚点**（2026-10-17 对齐 inkstone 的
+ * `previewSourceAnchors`，features/preview/preview-anchors.ts）：
+ * 它记下「这个预览块对应源码的第几行」。滚动同步据此按**行**定位，
+ * 而不是按百分比 —— 百分比在两栏长度不同时必然漂移
+ * （真机量到一篇文章里源码 2722px / 预览 2174px，长度差 20%，
+ * 滚到中间时两边已经对不上是第几段了）。
+ *
+ * inkstone 靠 markdown-it 的 `token.map`（源码行号数组）拿这个值；
+ * 我们 markdown-it 也开着 map，但 `anchorProps` 之前只取 blockId，
+ * 这里补上 line。拿不到时返回 undefined（同步会自动退回比例兜底）。
+ */
+function anchorProps(tok: Token): { "data-block-id"?: string; "data-line"?: number } {
+    const props: { "data-block-id"?: string; "data-line"?: number } = {};
     const blockId = blockIdOf(tok.meta);
-    return blockId ? { "data-block-id": blockId } : {};
+    if (blockId) props["data-block-id"] = blockId;
+    // token.map = [起始行, 结束行]（0 基）。块级 token 一定有 map；
+    // inline token 没有（它们不是块）。
+    const line = Array.isArray(tok.map) ? tok.map[0] : undefined;
+    if (typeof line === "number" && Number.isInteger(line) && line >= 0) {
+        props["data-line"] = line;
+    }
+    return props;
 }
 const TABLE_STYLE: React.CSSProperties = {
     borderCollapse: "collapse",

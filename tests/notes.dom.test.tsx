@@ -4146,3 +4146,65 @@ test("笔记行选中态不画 3px 左边框（会被拉成贯穿整屏的色带
         "选中态改用 1px 淡描边（inkstone 的 ring-1）+ 软底"
     );
 });
+// ===========================================================================
+// 2026-10-07 第十七批：分栏滚动同步改成「按源码行锚点」
+// ===========================================================================
+
+test("预览块必须带 data-line（滚动同步按行锚点定位的前提）", () => {
+    const src = readSrcFile("utils", "markdownToReact.tsx");
+    // 锚点从 markdown-it 的 token.map[0] 取（源码 0 基行号）。
+    // 没有它就只能按百分比滚 —— 两栏长度不同时必然漂移
+    // （真机量到源码 2987px / 预览 2175px，差 27%）。
+    assert.ok(
+        /anchorProps[\s\S]{0,700}data-line/.test(src),
+        "anchorProps 要给块级元素挂 data-line（inkstone 的 previewSourceAnchors 同款）"
+    );
+    assert.ok(
+        /Array\.isArray\(tok\.map\)/.test(src),
+        "行号要从 token.map 取（markdown-it 的 map 是 [起始行, 结束行]）"
+    );
+});
+
+test("滚动同步用锚点插值，不是按比例（对齐 inkstone 的 sync-scroll）", () => {
+    const sync = readSrcFile("utils", "syncScroll.ts");
+    const page = readNotesPage();
+    // ⚠️ 之前是 `el.scrollTop = ratio * max`，比例对齐在两栏长度不同时会漂。
+    assert.equal(
+        /scrollTop = Math\.max\(0, Math\.min\(1, ratio\)\) \* max/.test(page),
+        false,
+        "别再按比例同步（previewTop = ratio × maxScroll）"
+    );
+    assert.ok(
+        /previewTopForLine/.test(sync) && /buildScrollCurve/.test(sync),
+        "要有「曲线插值」那套：buildScrollCurve + previewTopForLine"
+    );
+    // 防反馈环的 driver 门控：没有它两栏会互相追着跑
+    assert.ok(
+        /DRIVER_IDLE_MS/.test(sync) && /claim/.test(sync),
+        "要有 driver 门控（只有被 wheel/pointerdown 碰过的那侧才能带动另一侧）"
+    );
+    // 只能在分栏 + 设置开着时同步（inkstone: settings.preview.syncScroll && showSplit）
+    assert.ok(
+        /pane === "split" && uiSettings\.scrollSync/.test(page),
+        "同步只在「分栏 + 设置里开着滚动同步」时启用"
+    );
+});
+
+test("绑定要等预览层挂上再绑（切分栏那一刻 previewScrollRef 还是 null）", () => {
+    const page = readNotesPage();
+    // 真机症状：切到分栏后预览纹丝不动。根因是 effect 在 pane 变 "split" 的
+    // 那一刻跑，此时预览层还没渲染，previewScrollRef.current === null，
+    // 于是 effect 直接 return，之后依赖没变、再也不重跑。
+    // 解法是轮询等 ref 到位（最多 ~1.2s）。
+    assert.ok(
+        /previewScrollRef\.current/.test(page) && /setTimeout\(tryBind/.test(page),
+        "要用轮询等 previewScrollRef 就绪，不能一次性 querySelector 后 return"
+    );
+    // ⚠️ 绝不能在 useEffect 里调 useState：违反 Hooks 规则，
+    // 真机直接白屏（React error #321 "Invalid hook call"）。
+    assert.equal(
+        /useEffect\(\(\) => \{[\s\S]{0,900}const \[, forceReady\] = useState/.test(page),
+        false,
+        "不要在 useEffect 里调 useState（React error #321，会白屏）"
+    );
+});

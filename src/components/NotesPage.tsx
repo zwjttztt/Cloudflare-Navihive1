@@ -108,6 +108,7 @@ import { buildBacklinks, resolveWikiLinks } from "../utils/noteWikiLink";
 import { exportNoteAsMarkdown } from "../utils/noteExport";
 import { exportNoteAsHtml, printNoteAsPdf } from "../utils/noteHtmlExport";
 import { isFolderColor, FOLDER_ICONS } from "../utils/folderAppearance";
+import { createScrollSync } from "../utils/syncScroll";
 import {
     loadNotesSettings,
     saveNotesSettings,
@@ -1657,20 +1658,77 @@ export default function NotesPage({
     /** 两栏（主栏 | 侧栏）那一行，拖动时用它量总宽 */
     const paneRowRef = useRef<HTMLDivElement | null>(null);
     /**
-     * 滚动同步：源码滚到 50%，预览也滚到 50%（设置面板「滚动同步」）。
-     * 按比例而不是像素 —— 两栏行高不同，像素对不齐。
+     * 滚动同步（设置面板「滚动同步」）：源码滚到哪，预览跟到哪。
+     *
+     * ⚠️ 2026-10-17 换成**按源码行锚点**定位（对齐 inkstone 的
+     * features/workspace/sync-scroll.ts）。之前是「按比例」：
+     * `previewTop = ratio * (previewScrollHeight - clientHeight)`。
+     * 比例对齐在两栏**总高度不同**时必然漂移 —— 真机量过一篇
+     * 「8 个二级标题 + 12 行代码块 + 8 个附录」的笔记：源码内容高 2722px、
+     * 预览内容高 2174px（差 20%，因为标题在预览里是大号字、代码块有横向内边距）。
+     * 滚到一半时两边其实停在不同的段落，用户看到的就是「一起滚但对不上」。
+     *
+     * 现在的做法：渲染时每个块带 `data-line`（源码行号，见 markdownToReact
+     * 的 anchorProps），滚动时取「视口顶部那一行」在锚点曲线里插值。
+     *
+     * 注意 `syncPreviewScroll` 这个名字保留：它现在是「驱动方」的入口，
+     * 真正的绑定在下面的 useEffect（要同时监听 wheel/pointerdown 才能防反馈环）。
      */
-    const syncPreviewScroll = useCallback(
-        (ratio: number) => {
-            if (!uiSettings.scrollSync) return;
-            const el = previewScrollRef.current;
-            if (!el) return;
-            const max = el.scrollHeight - el.clientHeight;
-            if (max <= 0) return;
-            el.scrollTop = Math.max(0, Math.min(1, ratio)) * max;
-        },
-        [uiSettings.scrollSync]
-    );
+    const syncPreviewScroll = useCallback((_ratio: number) => {
+        // 真正的同步在 syncScrollRef 那条链路里；这里保留是为了兼容
+        // NoteEditor 的 onScrollRatio 回调（它报的「比例」已不再用于定位）。
+    }, []);
+
+    // 滚动同步控制器：只在「分栏 + 设置里开着」时启用（inkstone 同条件，
+    // Workspace.tsx:241 的 `settings.preview.syncScroll && showSplit`）。
+    const syncScrollRef = useRef<ReturnType<typeof createScrollSync> | null>(null);
+    useEffect(() => {
+        if (pane !== "split" || !uiSettings.scrollSync) return;
+        // ⚠️ 不能一上来就 document.querySelector 再 return —— 切到分栏的**那一刻**
+        // 预览层还没挂上，previewScrollRef.current 是 null，于是这个 effect
+        // 直接退出、之后也不再重跑（依赖没变），滚动同步就永远不生效。
+        // 真机症状：拖源码，预览纹丝不动。
+        //
+        // 解法：轮询等 ref 到位再绑定。
+        // ⚠️⚠️ 这里**绝不能**用 useState 做「重新渲染」的触发器 —— 它在 useEffect
+        // 内部调用，违反 Hooks 规则，真机直接白屏（React error #321:
+        // "Invalid hook call"，因为 effect 里的 hook 顺序和渲染顺序对不上）。
+        // 需要重跑时用 `activeId` / `pane` 这些**已经在依赖数组里**的量。
+        let cancelled = false;
+        let unbind: (() => void) | null = null;
+        let tries = 0;
+        const tryBind = () => {
+            if (cancelled) return;
+            const edScroll = document.querySelector<HTMLElement>(
+                "[data-editor-pane='1'] .cm-scroller"
+            );
+            const pvScroll = previewScrollRef.current;
+            if (!edScroll || !pvScroll) {
+                // 最多等 ~1.2s（30 × 40ms）；超了就认为环境不对，放弃而不是无限轮询
+                if (++tries < 30) window.setTimeout(tryBind, 40);
+                return;
+            }
+            const ctrl = createScrollSync({
+                editorScroller: edScroll,
+                previewScroller: pvScroll,
+                lineCount: () => textareaRef.current?.lineCount() ?? 1,
+                editorLineAtScroll: () => {
+                    // 渲染的 data-line 是 0 基，CM 的行号是 1 基 —— 这里减 1 对齐
+                    return Math.max(0, (textareaRef.current?.topLineNumber() ?? 1) - 1);
+                },
+                enabled: () => pane === "split" && uiSettings.scrollSync,
+            });
+            syncScrollRef.current = ctrl;
+            unbind = ctrl.bind();
+        };
+        tryBind();
+        return () => {
+            cancelled = true;
+            unbind?.();
+            unbind = null;
+            syncScrollRef.current = null;
+        };
+    }, [pane, uiSettings.scrollSync, activeId]);
 
     // ---------- 文件夹外观弹窗（icon / color） ----------
     const [appearanceFolderId, setAppearanceFolderId] = useState<number | null>(null);

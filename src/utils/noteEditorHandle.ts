@@ -15,6 +15,18 @@ export interface NoteEditorHandle {
     scrollRatio(): number;
     /** 恢复到某个滚动比例（内容还没量高时调用会自动等一帧再试）。 */
     restoreScrollRatio(ratio: number): void;
+    /**
+     * 当前视口**顶部**那一行在文档里的行号（1 基，与 CM 的 lineAt 一致）。
+     *
+     * 分栏滚动同步按「行」而不是「比例」定位（2026-10-17，对齐 inkstone 的
+     * sync-scroll.ts）：两栏总高度不一样，按比例映射必然漂移
+     * （真机量到源码 2722px / 预览 2174px，差 20%）。
+     */
+    topLineNumber(): number;
+    /** 文档总行数（给锚点曲线补末端点用）。 */
+    lineCount(): number;
+    /** 让第 line 行（1 基）贴到视口顶部。 */
+    scrollToLineNumber(line: number): void;
 }
 export function editorHandle(view: EditorView): NoteEditorHandle {
     return {
@@ -52,6 +64,25 @@ export function editorHandle(view: EditorView): NoteEditorHandle {
             // 这时 scrollHeight 还是 0，直接写 scrollTop 会被浏览器夹成 0 ——
             // 表现就是「位置记忆功能好像没生效」。所以量不到高度时等一帧再试。
             if (!apply()) requestAnimationFrame(() => apply());
+        },
+        topLineNumber() {
+            // ⚠️ 用 CM 的 lineBlockAtHeight(0) 拿「视口顶部那个块」。
+            // 不能用「scrollTop / 行高」硬算 —— 代码块折行时视觉行 ≠ 文档行，
+            // 折行一多就偏（CM 的高度参数都是相对 documentTop 的）。
+            const b = view.lineBlockAtHeight(0);
+            if (!b) return 1;
+            return view.state.doc.lineAt(b.from).number; // 转成文档行号（1 基）
+        },
+        lineCount() {
+            return view.state.doc.lines;
+        },
+        scrollToLineNumber(line) {
+            const total = view.state.doc.lines;
+            const target = Math.max(1, Math.min(total, line));
+            const block = view.lineBlockAt(target);
+            if (!block) return;
+            // documentTop 是文档顶部相对滚动容器的偏移，减掉它换算回 scrollTop
+            view.scrollDOM.scrollTop = Math.max(0, block.top - view.documentTop);
         },
     };
 }
