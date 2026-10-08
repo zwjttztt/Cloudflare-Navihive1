@@ -1511,12 +1511,10 @@ export default function NotesPage({
     const bp = usePanelBreakpoint();
     /** 窄屏（tablet/mobile）下左两列要收起来，只留列表 + 编辑区 */
     const narrowLayout = bp !== "desktop";
-    // 跨进 tablet 时若中栏关着，自动展开导航抽屉（用户要求：关闭后是展开态的
-    // 导航栏）。桌面关着中栏拖窄、tablet 里点「收起列表」两条路径都覆盖；
-    // 用户手动关掉抽屉后不会被抓回来（bp/middleHidden 没变，effect 不重跑）。
-    useEffect(() => {
-        if (bp === "tablet" && middleHidden) setNavDrawerOpen(true);
-    }, [bp, middleHidden]);
+    // ⚠️ 不要自动弹导航抽屉（2026-10-09 用户明确）：桌面关着中栏拖窄、tablet 里点
+    // 「收起列表」，两条路径都**不该**自动弹抽屉 —— 左区让位给编辑区就好，
+    // 要导航时用户自己点顶部栏的「导航栏」按钮。此前这里有个
+    // `bp==="tablet" && middleHidden → setNavDrawerOpen(true)` 的 effect，已删。
     // ⚠️ 2026-10-08 用户报「调整窗口后最左侧栏显示不出」→ 当天先修成「跨进窄布局
     // 复位桌面态」，用户复访后改为：**窄屏里关掉列表列（middleHidden）后左侧要显示
     // 导航栏**（与桌面「关中栏剩导航列」同一语义），不要收成图标轨。于是规则改成
@@ -3083,11 +3081,14 @@ export default function NotesPage({
                 >
                     记事本
                 </Typography>
-                {/* 返回箭头放右上角（2026-10-08 用户要求）：左上角留给标题，
-                    退出动作靠右，与右上角关闭的弹窗习惯一致 */}
-                <IconButton aria-label='返回导航站' onClick={onClose} size='small'>
-                    <ArrowBackIcon fontSize='small' sx={{ transform: "scaleX(-1)" }} />
-                </IconButton>
+                {/* 返回箭头（2026-10-09 用户明确）：只在**桌面**导航列里显示；
+                    窄屏（tablet/mobile）的返回箭头要贴着**整页右上角**（顶部 44px 栏
+                    最右端 / 列表屏头部行最右），不能落在抽屉（最左栏）的右上角。 */}
+                {!narrowLayout && (
+                    <IconButton aria-label='返回导航站' onClick={onClose} size='small'>
+                        <ArrowBackIcon fontSize='small' sx={{ transform: "scaleX(-1)" }} />
+                    </IconButton>
+                )}
             </Box>
             {/* 可滚动的上半：搜索框 + 视图导航 + 文件夹 + 标签 */}
             <Box sx={{ flex: 1, minHeight: 0, overflowY: "auto", overflowX: "hidden" }}>
@@ -3592,14 +3593,29 @@ export default function NotesPage({
                             data-tool='collapse-list'
                             // mobile 不给这个入口：mobile 没有导航抽屉可回，
                             // 关掉列表列 = 屏幕上没有任何导航入口（inkstone 同）。
-                            // tablet 关掉后左区让位给编辑区，effect 会自动展开导航抽屉
-                            // （用户要求：关闭后是导航栏且是展开态）。
+                            // tablet 关掉后左区让位给编辑区，导航走顶部 44px 栏的
+                            // 「导航栏」按钮手动开（2026-10-09 用户明确：不要自动弹抽屉）。
                             onClick={() => setMiddleHidden(true)}
                             sx={{ p: 0.4, ...(bp === "mobile" ? { display: "none" } : {}) }}
                         >
                             <CloseIcon fontSize='inherit' />
                         </IconButton>
                     </Tooltip>
+                    {/* 返回箭头贴页面右上角（2026-10-09 用户明确）：mobile 列表屏的
+                        退出入口挂在中栏头部行最右（tablet 在顶部 44px 栏最右）。 */}
+                    {bp === "mobile" && (
+                        <Tooltip title='返回导航站'>
+                            <IconButton
+                                size='small'
+                                aria-label='返回导航站'
+                                data-tool='back-out'
+                                onClick={onClose}
+                                sx={{ p: 0.4 }}
+                            >
+                                <ArrowBackIcon fontSize='inherit' sx={{ transform: "scaleX(-1)" }} />
+                            </IconButton>
+                        </Tooltip>
+                    )}
                 </Box>
             )}
 
@@ -5614,6 +5630,17 @@ export default function NotesPage({
                     <Box sx={{ width: "min(360px, 60%)", pt: 0.5 }}>
                         {renderSearchField(searchRefNarrow)}
                     </Box>
+                    {/* 返回箭头贴**整页右上角**（2026-10-09 用户明确）：
+                        不能放在抽屉/最左栏的头部 —— 顶栏最右端才是页面右上角。 */}
+                    <IconButton
+                        size='small'
+                        aria-label='返回导航站'
+                        data-tool='back-out'
+                        onClick={onClose}
+                        sx={{ ml: "auto" }}
+                    >
+                        <ArrowBackIcon fontSize='small' sx={{ transform: "scaleX(-1)" }} />
+                    </IconButton>
                 </Box>
             )}
 
@@ -5637,8 +5664,8 @@ export default function NotesPage({
                     sx={{
                         // mobile：两屏切换（列表 ⇄ 编辑）；tablet/desktop：常驻。
                         // ⚠️ tablet 关中栏（middleHidden）后整个左区让位给编辑区
-                        // （inkstone 的 showList = !listCollapsed，导航走抽屉）。 tablet
-                        // 关闭后抽屉已自动展开（见收起列表按钮），导航永远可达。
+                        // （inkstone 的 showList = !listCollapsed）。导航走顶部栏
+                        // 「导航栏」按钮手动开 —— 不要自动弹抽屉（2026-10-09 用户明确）。
                         display:
                             (bp === "mobile" && mobileDetail) || (bp === "tablet" && middleHidden)
                                 ? "none"

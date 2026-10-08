@@ -1572,7 +1572,7 @@ test("选中文件夹：中间笔记列不渲染，笔记内联在文件夹下�
     );
 });
 
-test("桌面关中栏 → 拖窄 → 左区让位给编辑区，导航抽屉自动展开（inkstone 顶栏模式）", () => {
+test("桌面关中栏 → 拖窄 → 左区让位，抽屉不自动弹，顶栏按钮手动开（2026-10-09）", () => {
     setWide();
     mountPanel([note({ id: 1, title: "A", content: "x" })]);
     assert.ok(document.querySelector('[data-list-col="1"]'), "桌面档默认要显示列表列");
@@ -1587,8 +1587,8 @@ test("桌面关中栏 → 拖窄 → 左区让位给编辑区，导航抽屉自�
         "点了收起后列表列要消失（桌面态，导航列还在）"
     );
 
-    // 把窗口拖窄跨过 1180 → tablet（inkstone 模式）：左区整个让位给编辑区，
-    // 导航抽屉自动展开（展开态的导航栏，不是 44px 图标轨）。
+    // 把窗口拖窄跨过 1180 → tablet（inkstone 模式）：左区整个让位给编辑区。
+    // ⚠️ 抽屉**不要**自动弹（2026-10-09 用户明确）：要导航时用户自己点顶栏按钮。
     act(() => {
         setViewport(900);
         window.dispatchEvent(new Event("resize"));
@@ -1601,15 +1601,30 @@ test("桌面关中栏 → 拖窄 → 左区让位给编辑区，导航抽屉自�
         !document.querySelector('[data-nav-col="1"]'),
         "导航列不再内联挂载（tablet 走抽屉）"
     );
+    assert.ok(
+        !document.querySelector("[data-nav-drawer='1']"),
+        "抽屉不能自动弹出（2026-10-09 用户明确）"
+    );
+    assert.ok(!document.querySelector("[data-collapsed-rail]"), "不要 44px 图标轨");
+    assert.ok(document.querySelector("[data-tablet-bar='1']"), "顶部 44px 栏在");
+
+    // 顶栏「导航栏」按钮手动开抽屉 → 里面有视图导航 → 点「所有笔记」列表列回来
+    const toggle = document.querySelector(
+        'button[data-tool="nav-drawer"]'
+    ) as HTMLElement;
+    assert.ok(toggle, "顶栏要有「导航栏」按钮");
+    act(() => toggle.click());
     const drawer = document.querySelector("[data-nav-drawer='1']");
-    assert.ok(drawer, "导航抽屉要自动展开（展开态的导航栏）");
+    assert.ok(drawer, "顶栏按钮能展开导航抽屉");
     assert.ok(
         drawer!.querySelector("button[data-view='all']"),
         "抽屉里有视图导航"
     );
-    assert.ok(!document.querySelector("[data-collapsed-rail]"), "不要 44px 图标轨");
-
-    // 点抽屉里的视图 → 列表列回来（抽屉也关掉）
+    // 抽屉（最左栏）头部不该有返回箭头：窄屏的返回箭头要贴整页右上角
+    assert.ok(
+        !drawer!.querySelector("button[aria-label='返回导航站']"),
+        "抽屉头部不该有返回箭头（页面右上角才有）"
+    );
     const allBtn = drawer!.querySelector("button[data-view='all']") as HTMLElement;
     assert.ok(allBtn, "抽屉里要有「所有笔记」入口");
     act(() => allBtn.click());
@@ -1682,7 +1697,7 @@ test("聚焦文件夹 → 拖窄 → 左区让位，顶栏按钮能展开导航�
     );
 });
 
-test("tablet 里点「收起列表」→ 导航抽屉自动展开（展开态），点视图切回列表列", () => {
+test("tablet 里点「收起列表」→ 左区让位、抽屉不自动弹，顶栏按钮手动开（2026-10-09）", () => {
     setViewport(900); // 直接以 tablet 档挂载
     mountPanel([note({ id: 1, title: "A", content: "x" })]);
     assert.ok(document.querySelector('[data-list-col="1"]'), "tablet 默认显示列表列");
@@ -1702,13 +1717,48 @@ test("tablet 里点「收起列表」→ 导航抽屉自动展开（展开态）
         !document.querySelector("[data-collapsed-rail]"),
         "不要收成 44px 图标轨（2026-10-08 用户明确不要）"
     );
-    const drawer = document.querySelector("[data-nav-drawer='1']");
-    assert.ok(drawer, "导航抽屉自动展开（展开态）");
+    assert.ok(
+        !document.querySelector("[data-nav-drawer='1']"),
+        "抽屉不能自动弹出（2026-10-09 用户明确）"
+    );
 
+    // 顶栏「导航栏」按钮手动开抽屉 → 点「所有笔记」切回列表列
+    const toggle = document.querySelector(
+        'button[data-tool="nav-drawer"]'
+    ) as HTMLElement;
+    assert.ok(toggle, "顶栏要有「导航栏」按钮");
+    act(() => toggle.click());
+    const drawer = document.querySelector("[data-nav-drawer='1']");
+    assert.ok(drawer, "顶栏按钮能展开导航抽屉");
     const allBtn = drawer!.querySelector("button[data-view='all']") as HTMLElement;
     assert.ok(allBtn, "抽屉里要有「所有笔记」入口");
     act(() => allBtn.click());
     assert.ok(document.querySelector('[data-list-col="1"]'), "点视图按钮后列表列回来");
+});
+
+test("窄屏返回箭头贴整页右上角：tablet 在顶栏最右、mobile 在列表头部最右（2026-10-09）", () => {
+    // tablet：顶部 44px 栏最右端要有返回箭头；抽屉里（navInner）不该再有
+    setViewport(900);
+    mountPanel([note({ id: 1, title: "A", content: "x" })]);
+    const bar = document.querySelector("[data-tablet-bar='1']");
+    assert.ok(bar, "tablet 顶部 44px 栏在");
+    const back = bar!.querySelector("button[aria-label='返回导航站']") as HTMLElement;
+    assert.ok(back, "顶栏最右端要有返回箭头（整页右上角）");
+    // 它必须是这一行的最后一个元素（右边不再有别的按钮）
+    const barButtons = Array.from(bar!.querySelectorAll("button"));
+    assert.equal(barButtons[barButtons.length - 1], back, "返回箭头要贴顶栏最右端");
+
+    // mobile：列表屏中栏头部行最右端要有返回箭头
+    act(() => {
+        setViewport(700);
+        window.dispatchEvent(new Event("resize"));
+    });
+    const listHeader = document.querySelector("[data-list-header='1']");
+    assert.ok(listHeader, "mobile 列表屏头部行在");
+    assert.ok(
+        listHeader!.querySelector("button[aria-label='返回导航站']"),
+        "mobile 列表屏头部最右要有返回箭头（整页右上角）"
+    );
 });
 
 test("点内联笔记能打开它；文件夹视图里新建笔记会落进该文件夹", async () => {

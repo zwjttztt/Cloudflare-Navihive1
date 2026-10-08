@@ -91,6 +91,69 @@ test("真实 SQLite：分享隔离、令牌轮换、到期、撤销与公开字�
     assert.equal(await db.prepare("SELECT token FROM note_share WHERE note_id = ?").bind(id).first(), null);
 });
 
+test("真实 SQLite：附件四方法在登录态（uid≠null）下 bind 数量与占位符必须匹配", async () => {
+    // 2026-10-09 线上「图片显示不出（服务器返回 500）」的真因：
+    // getAttachment / deleteAttachment 直接 .bind(id)（SQL 里 scopeSql(true) 还有一个
+    // user_id 占位符），listAttachments / pruneAttachments 的 scopeSql(false) 干脆没 bind
+    // —— 登录用户下占位符比参数多一个，D1 抛 wrong number of bindings → 500。
+    // 单账号部署（uid=null）scopeSql 返回空串，所以本机/旧用例全绿测不出；
+    // FakeD1 不校验 bind 数量，只有真 SQLite 能把这类错钉死。
+    resetMigrationCacheForTests();
+    const realDb = makeRealD1();
+    const api = makeApi(realDb);
+    await api.migrate();
+    api.setCurrentUser(123);
+
+    // 正文里带 att-1 的引用（prune 的判据是「正文全集里没出现过的 id 才清」）
+    const note = await api.createNote({
+        title: "带图笔记",
+        content: "![a](/api/notes/attachments/att-1)",
+    });
+    assert.ok(note.id, "建笔记失败");
+    await api.createAttachment({
+        id: "att-1",
+        note_id: note.id!,
+        filename: "a.png",
+        mime: "image/png",
+        size: 3,
+        storage: "kv",
+        object_key: "attach/123/att-1",
+    });
+    await api.createAttachment({
+        id: "att-orphan",
+        note_id: null,
+        filename: "b.png",
+        mime: "image/png",
+        size: 4,
+        storage: "kv",
+        object_key: "attach/123/att-orphan",
+    });
+
+    // 1) listAttachments：scopeSql(false) 的 WHERE user_id = ? 必须补 bind
+    const listed = await api.listAttachments();
+    assert.equal(listed.length, 2, "listAttachments 在登录态下失败（疑似 bind 数量不匹配 → 线上 500）");
+
+    // 2) getAttachment：scopeSql(true) 追加的占位符必须 scopeParams 补上
+    const found = await api.getAttachment("att-1");
+    assert.ok(found, "getAttachment 在登录态下失败（疑似 bind 数量不匹配 → 线上取图 500）");
+    assert.equal(found!.object_key, "attach/123/att-1");
+
+    // 3) pruneAttachments：两条 scopeSql(false) 的 SELECT 同样要 bind
+    const pruned = await api.pruneAttachments();
+    assert.deepEqual(
+        pruned.removed.map(r => r.id),
+        ["att-orphan"],
+        "pruneAttachments 清单不对（未被引用的才清）"
+    );
+
+    // 4) deleteAttachment：SELECT + DELETE 两处都要 scopeParams
+    const del = await api.deleteAttachment("att-1");
+    assert.ok(del.ok, "deleteAttachment 在登录态下失败（疑似 bind 数量不匹配 → 线上删图 500）");
+    assert.equal(del.ok && del.objectKey, "attach/123/att-1");
+
+    assert.equal((await api.listAttachments()).length, 0, "删完应该一张不剩");
+});
+
 type RealD1 = ReturnType<typeof makeRealD1>;
 
 function makeApi(db: RealD1): NavigationAPI {

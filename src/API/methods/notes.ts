@@ -538,7 +538,12 @@ export const notesImpl: NotesApi = {
                      ORDER BY created_at DESC
                      LIMIT 200`
                 )
-                .run();
+                // ⚠️ scopeSql(false) 在登录用户下会追加 "WHERE user_id = ?"：
+                // 不 bind 的话 D1 直接抛 wrong number of bindings → 接口 500。
+                // 附件方法是全库唯一直接 .bind(id) 的重灾区（2026-10-09 线上取图 500 的真因）。
+                .bind(...this.scopeParams([]))
+                // 纯读用 all()（D1 的 run()/all() 都带 results，但真 SQLite 适配器只有 all() 给行）
+                .all();
             return result.results as unknown as NoteAttachment[];
         });
     },
@@ -547,8 +552,11 @@ export const notesImpl: NotesApi = {
         await this.migrate();
         return this.withSchemaRetry(async () => {
             const row = await this.db
+                // ⚠️ 必须走 scopeParams：scopeSql(true) 追加 " AND user_id = ?"，
+                // 直接 .bind(id) 会让占位符（2 个）与参数（1 个）不匹配 → D1 抛错 → 500。
+                // 2026-10-09 线上「图片显示不出（服务器返回 500）」就是这一行。
                 .prepare(`SELECT * FROM attachments WHERE id = ?1 ${this.scopeSql(true)}`)
-                .bind(id)
+                .bind(...this.scopeParams([id]))
                 .first<Record<string, unknown>>();
             return row ? ({ ...row } as unknown as NoteAttachment) : null;
         });
@@ -633,14 +641,15 @@ export const notesImpl: NotesApi = {
         await this.migrate();
         return this.withSchemaRetry(async () => {
             const row = await this.db
+                // ⚠️ 同 getAttachment：scopeSql(true) 多一个占位符，必须 scopeParams 补 uid
                 .prepare(`SELECT storage, object_key FROM attachments WHERE id = ?1 ${this.scopeSql(true)}`)
-                .bind(id)
+                .bind(...this.scopeParams([id]))
                 .first<{ storage: string; object_key: string }>();
             if (!row) return { ok: false, status: 404, error: "附件不存在" };
             // 先删记录，成功才让调用方去删对象（反过来会出现「记录没了、对象还在」→ 永久泄漏）
             const del = (await this.db
                 .prepare(`DELETE FROM attachments WHERE id = ?1 ${this.scopeSql(true)}`)
-                .bind(id)
+                .bind(...this.scopeParams([id]))
                 .run()) as { meta?: { changes?: number } };
             if (!del.meta?.changes) return { ok: false, status: 404, error: "附件不存在" };
             return { ok: true, storage: row.storage as AttachmentStorage, objectKey: row.object_key };
@@ -658,11 +667,14 @@ export const notesImpl: NotesApi = {
                 .prepare(
                     `SELECT id, size, storage, object_key FROM attachments ${this.scopeSql(false)}`
                 )
+                // ⚠️ scopeSql(false) 登录用户下是 "WHERE user_id = ?"，必须补 bind（同 listAttachments）
+                .bind(...this.scopeParams([]))
                 .all<{ id: string; size: number; storage: string; object_key: string }>();
             // 正文全集（含回收站 / 归档）：还原后图片还得能用，所以判据是
             // 「任何一篇的正文里都没出现这个 id」，不是「所属笔记已删除」。
             const rows = await this.db
                 .prepare(`SELECT content FROM notes ${this.scopeSql(false)}`)
+                .bind(...this.scopeParams([]))
                 .all<{ content: string | null }>();
             const corpus = (rows.results || []).map(r => r.content || "").join("\n");
             const removed = (atts.results || []).filter(a => !corpus.includes(a.id));
