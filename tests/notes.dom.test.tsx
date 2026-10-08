@@ -4824,6 +4824,44 @@ test("预览图片：直连失败时要带凭据再取一次，并把失败原�
     );
 });
 
+// ⚠️ 这条盯的是「编辑区图片不停抽动」的真因（2026-10-09 用户报）：
+// 渲染块（把整块 markdown 换成渲染结果的 widget）的高度**会变** —— 图片加载完
+// 会把这一块从 20px 撑到 300px。CM 靠自己的高度表算视口 / 要不要出滚动条 /
+// 虚拟化哪些行，高度变了**必须**通知它重测；以前只在 render() 的 promise 完成后
+// 测一次（那时 <img> 还没插进 DOM，量到的是空高度），之后没人再告诉 CM，
+// 于是「CM 以为的高度」与「浏览器真实布局」长期不一致，编辑区拖到刚好要出
+// 滚动条的临界点就两边互相推翻 —— 表现就是图片（连整块内容）不停地抖。
+// 回滚验证：把 NoteEditorLivePreview 里那句 new ResizeObserver 删掉，这条就红。
+test("编辑区渲染块：高度一变就要通知 CodeMirror 重测（图片抽动的真因）", () => {
+    const src = readSrcFile("components", "NoteEditorLivePreview.ts");
+    assert.ok(/new ResizeObserver/.test(src), "渲染块要挂 ResizeObserver 盯高度变化");
+    // 观察到变化后必须让 CM 重测，光 observer 不做事等于没挂
+    const at = src.indexOf("new ResizeObserver");
+    const block = src.slice(at, at + 260);
+    assert.ok(
+        /requestMeasure/.test(block),
+        "ResizeObserver 回调里必须 view.requestMeasure()（否则 CM 的高度表还是旧的）"
+    );
+    assert.ok(
+        /observer\?\.disconnect\(\)/.test(src),
+        "destroy 时要 disconnect，否则销毁后还往已下线的 view 上报测量"
+    );
+});
+
+// 抽动的第二半：widget 会随视口进出反复重建，没缓存时每重建一次就重走一遍
+// 「直连 → 失败 → 带凭据 fetch → objectURL → 卸载时 revoke」，图就没了又来。
+// 缓存里还要记下自然尺寸，重挂时带上 width/height 让浏览器预留正确高度，
+// 0 → 300px 的塌缩撑开消失，抖动幅度也就没了。
+test("预览图片：结论与尺寸要进模块级缓存（重挂不再重复请求、不再从 0 高度开始）", () => {
+    const src = readSrcFile("utils", "markdownToReact.tsx");
+    assert.ok(/const imageCache = new Map</.test(src), "要有模块级的图片结果缓存");
+    assert.ok(/rememberImage/.test(src), "加载结论要写回缓存（含 LRU 淘汰）");
+    // 尺寸要真的用到 <img> 上，否则浏览器预留不出高度
+    assert.ok(/width=\{size\?\.width\}/.test(src), "缓存里的宽要带到 <img> 上");
+    assert.ok(/height=\{size\?\.height\}/.test(src), "缓存里的高要带到 <img> 上");
+    assert.ok(/onLoad=/.test(src), "图加载完要把自然尺寸记进缓存");
+});
+
 test("上传被拒（413）要说人话，不能只剩「API错误: 413」", () => {
     const src = readSrcFile("API", "client.ts");
     assert.ok(

@@ -3612,7 +3612,9 @@ export default function NotesPage({
                                 onClick={onClose}
                                 sx={{ p: 0.4 }}
                             >
-                                <ArrowBackIcon fontSize='inherit' sx={{ transform: "scaleX(-1)" }} />
+                                {/* ⚠️ 箭头**朝左**（2026-10-09 用户明确）：这里是「返回导航站」，
+                                    ArrowBackIcon 本身就是朝左的，不要再 scaleX(-1) 翻成朝右。 */}
+                                <ArrowBackIcon fontSize='inherit' />
                             </IconButton>
                         </Tooltip>
                     )}
@@ -5639,7 +5641,9 @@ export default function NotesPage({
                         onClick={onClose}
                         sx={{ ml: "auto" }}
                     >
-                        <ArrowBackIcon fontSize='small' sx={{ transform: "scaleX(-1)" }} />
+                        {/* ⚠️ 箭头**朝左**（2026-10-09 用户明确）：这是「返回导航站」，
+                            用 ArrowBackIcon 原方向，不要 scaleX(-1) 翻成朝右。 */}
+                        <ArrowBackIcon fontSize='small' />
                     </IconButton>
                 </Box>
             )}

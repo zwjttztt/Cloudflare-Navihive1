@@ -23,7 +23,7 @@
 import type MarkdownIt from "markdown-it";
 import type { Options as MarkdownItOptions } from "markdown-it";
 import type Token from "markdown-it/lib/token.mjs";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { MathNode } from "./MathNode";
 import { MermaidNode } from "./MermaidNode";
 import { registerMath } from "./markdownMath";
@@ -222,7 +222,54 @@ const isProtectedAttachment = (src: string): boolean =>
     /^\/api\/notes\/attachments\//.test(src);
 
 /**
- * 预览里的图片（2026-10-08 第二轮）。
+ * 图片加载结果缓存（2026-10-09 加，模块级 = 跨渲染、跨挂载复用）。
+ *
+ * 为什么必须有这一层：编辑区的「即时渲染」会把块整块换成 widget，widget 会随
+ * 视口进出而被销毁重建。没有缓存时**每重建一次就重走一遍**：
+ * 直连 <img> → 失败 → 带凭据 fetch → createObjectURL → 显示 → 卸载时 revoke。
+ * 于是同一张图在编辑区里反复「没了又来」，这也是抽动的一部分。
+ *
+ * 缓存里除了结论还记了**图片的自然尺寸**：下次挂载时直接把 width/height 属性
+ * 带上，浏览器按 aspect-ratio 预留出正确高度 —— 图还没解码完，占位高度就已经
+ * 是对的，**0 → 300px 的跳变消失**，抖动的幅度也就没了。
+ */
+interface ImageEntry {
+    status: "ok" | "error";
+    /** 成功后实际显示的地址：直连成功就是原 src，走 fetch 兜底的就是 objectURL */
+    url?: string;
+    width?: number;
+    height?: number;
+    /** 失败原因（会显示在占位上） */
+    reason?: string;
+}
+const imageCache = new Map<string, ImageEntry>();
+/** 上限 64 条：笔记里图片不会太多，超了就把最旧的淘汰（blob: 的要 revoke） */
+const IMAGE_CACHE_MAX = 64;
+function rememberImage(src: string, entry: ImageEntry): ImageEntry {
+    const prev = imageCache.get(src);
+    imageCache.delete(src);
+    imageCache.set(src, entry);
+    // LRU 淘汰：只对**被顶掉的** blob: 地址 revoke（缓存里的还在用，不能动）
+    while (imageCache.size > IMAGE_CACHE_MAX) {
+        const oldestKey = imageCache.keys().next().value as string | undefined;
+        if (oldestKey === undefined || oldestKey === src) break;
+        const oldest = imageCache.get(oldestKey);
+        imageCache.delete(oldestKey);
+        if (oldest?.url?.startsWith("blob:")) URL.revokeObjectURL(oldest.url);
+    }
+    if (prev?.url?.startsWith("blob:") && prev.url !== entry.url) URL.revokeObjectURL(prev.url);
+    return entry;
+}
+/** 测试用：清空图片缓存（用例之间不能互相污染） */
+export function resetImageCacheForTests(): void {
+    for (const entry of imageCache.values()) {
+        if (entry.url?.startsWith("blob:")) URL.revokeObjectURL(entry.url);
+    }
+    imageCache.clear();
+}
+
+/**
+ * 预览里的图片（2026-10-08 第二轮，2026-10-09 加缓存与尺寸预留）。
  *
  * 三态，每一态都能在界面上看出来，不再静默空白：
  *  1. 正常：<img src> 直连（最省事，浏览器缓存也照常生效）。
@@ -235,50 +282,47 @@ const isProtectedAttachment = (src: string): boolean =>
  *     外链图片不做这一步（跨域 fetch 多半反而更糟，直接判失败）。
  *  3. 还是失败 → 虚线占位，**把状态码/原因写出来**，让人一眼看出是
  *     「图没了 / 没权限 / 断网」，而不是渲染层坏了。
+ *
+ * ⚠️ 结论（含成功用的地址和尺寸）进模块级缓存：编辑区的 widget 反复重建时
+ * 不再重新请求、也不再从 0 高度开始撑 —— 这是「图片抽动」的第二半修复，
+ * 另一半在 NoteEditorLivePreview 的 ResizeObserver。
  */
 function NoteImage({ src, alt }: { src: string; alt: string }) {
-    const [failed, setFailed] = useState<string | null>(null);
-    const [retrySrc, setRetrySrc] = useState<string | null>(null);
-    const objectUrlRef = useRef<string | null>(null);
+    // 初值直接读缓存：命中就能**第一帧**给出正确地址与预留高度
+    const [entry, setEntry] = useState<ImageEntry | null>(() => imageCache.get(src) ?? null);
 
-    // 组件卸载 / 换图时回收 objectURL，别把整张图留在内存里
     useEffect(() => {
-        return () => {
-            if (objectUrlRef.current) {
-                URL.revokeObjectURL(objectUrlRef.current);
-                objectUrlRef.current = null;
-            }
-        };
+        setEntry(imageCache.get(src) ?? null);
     }, [src]);
 
+    const remember = (next: ImageEntry) => setEntry(rememberImage(src, next));
+
     const retryWithCredentials = () => {
-        if (!isProtectedAttachment(src) || retrySrc) {
-            setFailed(alt || src);
+        if (!isProtectedAttachment(src)) {
+            remember({ status: "error", reason: alt || src });
             return;
         }
         void (async () => {
             try {
                 const response = await fetch(src, { credentials: "same-origin" });
                 if (!response.ok) {
-                    setFailed(`${alt || src}（服务器返回 ${response.status}）`);
+                    remember({ status: "error", reason: `${alt || src}（服务器返回 ${response.status}）` });
                     return;
                 }
                 const blob = await response.blob();
                 // 401 的登录页 / SPA 兜底也是 200，但类型是 text/html —— 别当图显示
                 if (!blob.type.startsWith("image/")) {
-                    setFailed(`${alt || src}（返回的不是图片：${blob.type || "未知类型"}）`);
+                    remember({ status: "error", reason: `${alt || src}（返回的不是图片：${blob.type || "未知类型"}）` });
                     return;
                 }
-                const url = URL.createObjectURL(blob);
-                objectUrlRef.current = url;
-                setRetrySrc(url);
+                remember({ status: "ok", url: URL.createObjectURL(blob) });
             } catch {
-                setFailed(`${alt || src}（网络请求失败）`);
+                remember({ status: "error", reason: `${alt || src}（网络请求失败）` });
             }
         })();
     };
 
-    if (failed !== null) {
+    if (entry?.status === "error") {
         return (
             <span
                 data-image-failed='1'
@@ -294,16 +338,38 @@ function NoteImage({ src, alt }: { src: string; alt: string }) {
                     color: "rgba(128,128,128,0.9)",
                 }}
             >
-                ⚠️ 图片加载失败：{failed}
+                ⚠️ 图片加载失败：{entry.reason}
             </span>
         );
     }
+    const size = entry?.status === "ok" ? entry : null;
     return (
         <img
-            src={retrySrc ?? src}
+            src={entry?.status === "ok" && entry.url ? entry.url : src}
             alt={alt}
             loading='lazy'
-            onError={() => (retrySrc ? setFailed(alt || src) : retryWithCredentials())}
+            // ⚠️ 有缓存尺寸就带上：浏览器据此推出 aspect-ratio 并预留高度，
+            // 图还没解码完也不会先塌成 0 再撑开（塌缩→撑开正是抖动的幅度来源）
+            width={size?.width}
+            height={size?.height}
+            onLoad={event => {
+                const img = event.currentTarget;
+                if (entry?.status === "ok" && entry.width && entry.height) return;
+                remember({
+                    status: "ok",
+                    url: entry?.url ?? src,
+                    width: img.naturalWidth || undefined,
+                    height: img.naturalHeight || undefined,
+                });
+            }}
+            onError={() => {
+                // 已经在用缓存地址还失败 → 图确实没了，别再循环重试
+                if (entry?.status === "ok" && entry.url && entry.url !== src) {
+                    remember({ status: "error", reason: alt || src });
+                    return;
+                }
+                retryWithCredentials();
+            }}
             style={{ maxWidth: "100%", height: "auto", borderRadius: 4 }}
         />
     );

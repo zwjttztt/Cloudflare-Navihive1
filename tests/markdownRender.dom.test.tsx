@@ -160,6 +160,52 @@ test("本站上传的附件图片（/api/notes/attachments/）渲染成真 <img>
     assert.equal(img!.getAttribute("alt"), "QQ浏览器截图");
 });
 
+// 2026-10-09「编辑区图片不停抽动」的第二半修复：编辑区的即时渲染会把块整块换成
+// widget，widget 随视口进出被反复销毁重建。没有缓存时**每重建一次就重走一遍**
+// 直连失败 → 带凭据 fetch → objectURL → 卸载时 revoke，图就没了又来。
+// 这条用例盯的是「第二次挂载还请不请求」—— 回滚掉 imageCache 就会红。
+test("图片：结论进缓存后，同一张图再次挂载不再重复请求", async () => {
+    const { resetImageCacheForTests } = await import("../src/utils/markdownToReact");
+    resetImageCacheForTests();
+    const originFetch = globalThis.fetch;
+    const originCreate = URL.createObjectURL;
+    const originRevoke = URL.revokeObjectURL;
+    let calls = 0;
+    try {
+        globalThis.fetch = (async () => {
+            calls++;
+            return new Response(new Blob([new Uint8Array([1, 2, 3])], { type: "image/png" }), {
+                status: 200,
+            });
+        }) as typeof fetch;
+        URL.createObjectURL = () => "blob:stub-1";
+        URL.revokeObjectURL = () => {};
+
+        const md = "![缓存测试](/api/notes/attachments/cache-1.png)";
+        const first = await renderToDom(md);
+        const img1 = first.querySelector("img");
+        assert.ok(img1, "第一次要渲染出 <img>");
+        // jsdom 不发真实网络请求 → 手动触发 error，走「带凭据重试」那条路
+        await act(async () => {
+            img1!.dispatchEvent(new Event("error"));
+            await new Promise(r => setTimeout(r, 0));
+        });
+        assert.equal(calls, 1, "第一次加载失败要带凭据取一次");
+
+        // 第二次挂载（编辑区 widget 重建就是这么发生的）：缓存命中 → 不再请求
+        const second = await renderToDom(md);
+        const img2 = second.querySelector("img");
+        assert.ok(img2, "第二次也要有 <img>");
+        assert.equal(calls, 1, "同一张图再次挂载不该再请求一次（缓存要命中）");
+        assert.equal(img2!.getAttribute("src"), "blob:stub-1", "缓存里的地址要直接用上");
+    } finally {
+        globalThis.fetch = originFetch;
+        URL.createObjectURL = originCreate;
+        URL.revokeObjectURL = originRevoke;
+        resetImageCacheForTests();
+    }
+});
+
 test("其它相对路径的图片仍然挡掉（白名单只放开本站附件）", async () => {
     const host = await renderToDom("![a](/etc/passwd.png) ![b](javascript:alert(1)) ![c](//evil.com/x.png)");
     assert.equal(

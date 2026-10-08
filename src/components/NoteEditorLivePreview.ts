@@ -93,6 +93,25 @@ export type LiveRenderer = (source: string, key: string) => Promise<ReactNode>;
  */
 class LiveBlockWidget extends WidgetType {
     private root: Root | null = null;
+    /**
+     * 渲染块高度的观察器（2026-10-09 补，对齐 inkstone 的 RenderedBlock）。
+     *
+     * ⚠️ **这条是「编辑区里图片不停抽动」的真因**。CM 用一张自己的高度表来算
+     * 视口 / 要不要出滚动条 / 该虚拟化哪些行；而渲染块的高度是**会变的** ——
+     * 图片加载完会把这一块从 20px 撑到 300px。以前只在 render() 的 promise
+     * 完成后 `requestMeasure()` 一次，那时 React 连 <img> 都还没插进去，
+     * CM 量到的是「图还没来」的空高度，之后**再也没人告诉它高度变了**。
+     *
+     * 于是「CM 以为的高度」和「浏览器真实布局」长期不一致：编辑区大小拖到
+     * 刚好要出上下滚动条的临界点时，两边互相推翻——CM 按旧高度重排 → 真实
+     * 高度变化 → 滚动条加/去 → 内容宽度变 → 图片等比变高变矮 → 又一次重排，
+     * 看上去就是图片（连同整块内容）不停地抖。
+     *
+     * 修法就是 inkstone 的做法：给 host 挂 ResizeObserver，高度一变就让 CM
+     * 重新测量（`view.requestMeasure()`）。destroy 时必须 disconnect，
+     * 否则销毁后还会往已经下线的 view 上报测量。
+     */
+    private observer: ResizeObserver | null = null;
 
     constructor(
         readonly block: LiveBlock,
@@ -132,6 +151,11 @@ class LiveBlockWidget extends WidgetType {
                 );
                 view.requestMeasure();
             });
+        // 高度一变就通知 CM 重新测量（见上面 observer 字段的说明）
+        if (typeof ResizeObserver === "function") {
+            this.observer = new ResizeObserver(() => view.requestMeasure());
+            this.observer.observe(host);
+        }
         host.addEventListener("mousedown", event => {
             // 让浏览器先把这次点击当普通点击处理，我们只负责把光标送回去
             event.preventDefault();
@@ -148,6 +172,8 @@ class LiveBlockWidget extends WidgetType {
     }
 
     destroy(): void {
+        this.observer?.disconnect();
+        this.observer = null;
         this.root?.unmount();
         this.root = null;
     }
