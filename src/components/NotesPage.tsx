@@ -1510,6 +1510,23 @@ export default function NotesPage({
      * 「两边都能切」，不是只有主栏能。
      */
     const [sideMode, setSideMode] = useState<"edit" | "split" | "preview">("edit");
+    /**
+     * 侧栏「分栏」模式里源码 / 预览的比例（2026-10-08 新增可拖）：
+     * 之前这条缝只是装饰（没有 onMouseDown），两栏写死 flex:1 固定 50/50，拖不动。
+     * 沿用主栏 startSplitDrag 的那套 —— 比例按内容盒算、用 ref 跟住最新值、松手存 localStorage。
+     */
+    const SIDE_SPLIT_KEY = "notes.sideSplitRatio";
+    const [sideSplitRatio, setSideSplitRatio] = useState<number>(() => {
+        try {
+            const raw = globalThis.localStorage?.getItem(SIDE_SPLIT_KEY);
+            const n = raw == null ? NaN : Number(raw);
+            return Number.isFinite(n) && n >= MIN_RATIO && n <= MAX_RATIO ? n : 0.5;
+        } catch {
+            return 0.5;
+        }
+    });
+    const sideSplitRatioRef = useRef(sideSplitRatio);
+    const sideSplitBoxRef = useRef<HTMLDivElement | null>(null);
     /** 侧栏的保存状态（与主栏 saveState 同一套语义，状态栏要显示） */
     const [sideSaveState, setSideSaveState] = useState<"idle" | "pending" | "saving" | "saved">("idle");
     const [sideSavedAt, setSideSavedAt] = useState<number | null>(null);
@@ -2767,6 +2784,42 @@ export default function NotesPage({
         window.addEventListener("mouseup", onUp);
     };
 
+    /** 侧栏「分栏」那条缝的拖动：与主栏 startSplitDrag 同款，只是量的是 sideSplitBoxRef。 */
+    const startSideSplitDrag = (e: React.MouseEvent) => {
+        e.preventDefault();
+        const box = sideSplitBoxRef.current;
+        if (!box) return;
+        const rect = box.getBoundingClientRect();
+        if (rect.width <= 0) return;
+        const cs = getComputedStyle(box);
+        const padL = parseFloat(cs.paddingLeft) || 0;
+        const padR = parseFloat(cs.paddingRight) || 0;
+        const contentLeft = rect.left + padL;
+        const contentWidth = rect.width - padL - padR;
+        if (contentWidth <= 0) return;
+        const onMove = (ev: MouseEvent) => {
+            const ratio = (ev.clientX - contentLeft) / contentWidth;
+            const clamped = Math.min(MAX_RATIO, Math.max(MIN_RATIO, ratio));
+            sideSplitRatioRef.current = clamped;
+            setSideSplitRatio(clamped);
+        };
+        const onUp = () => {
+            window.removeEventListener("mousemove", onMove);
+            window.removeEventListener("mouseup", onUp);
+            document.body.style.userSelect = "";
+            document.body.style.cursor = "";
+            try {
+                localStorage.setItem(SIDE_SPLIT_KEY, String(sideSplitRatioRef.current));
+            } catch {
+                /* 隐私模式下写不了，忽略 */
+            }
+        };
+        document.body.style.userSelect = "none";
+        document.body.style.cursor = "col-resize";
+        window.addEventListener("mousemove", onMove);
+        window.addEventListener("mouseup", onUp);
+    };
+
     /**
      * Ctrl/Cmd + / 插入隐藏注释 —— inkstone 的「笔记工具」菜单里给这项标了这个快捷键，
      * 属于「不用记也知道在哪、记住了就很快」的那种。
@@ -3342,11 +3395,12 @@ export default function NotesPage({
                 放进去会被压成 0 高度、贴到 x=0，真实鼠标根本点不中 ——
                 而页内 dispatchEvent 合成事件是直接派发给元素的、不做命中测试，
                 所以单测和合成事件探针都会「通过」，真机却拖不动（2026-10-06 踩过）。
-                ⚠️ 选中文件夹时中间栏整个不渲染，这条缝也跟着收起来 ——
-                不然会留下一条拖了没用的把手，点它还会把 listW 存进 localStorage。
+                ⚠️ 选中文件夹时中间栏整个不渲染，但这条缝**仍要保留** ——
+                否则关闭列表后导航列就再也拖不宽了（2026-10-08 用户报）。
+                只有「导航列本身不显示」时才收：tablet 起整列 display:none、收起态只剩 44px 轨道。
                 ⚠️ tablet 起导航列整列 display:none，这条缝也要一起收 ——
                 否则左边凭空多出一条 9px 命中区，视觉上像「还有第三栏」。 */}
-            {!listHidden && !narrowLayout && (
+            {!listCollapsed && !narrowLayout && (
                 <ColResizeHandle
                     label='拖动调整导航列宽度'
                     onDrag={startDrag('nav')}
@@ -4565,14 +4619,27 @@ export default function NotesPage({
                     </Box>
                 ) : sideMode === "split" ? (
                     /* 「分栏」= 源码在左、预览在右（2026-10-07 用户要求：之前是上下排，
-                       和主栏的左右排不一致，两栏并排看时习惯会打架） */
-                    <Box sx={{ display: "flex", flexDirection: "row", height: "100%", minHeight: 0, minWidth: 0 }}>
+                       和主栏的左右排不一致，两栏并排看时习惯会打架）。
+                       2026-10-08：中间那条缝现在能拖（startSideSplitDrag），比例存 localStorage。 */
+                    <Box
+                        ref={sideSplitBoxRef}
+                        sx={{ display: "flex", flexDirection: "row", height: "100%", minHeight: 0, minWidth: 0 }}
+                    >
                         {/* ⚠️ minWidth: 0 不能少（2026-10-07 用户报「右边显示不全」）。
                             flex 子项默认 min-width:auto = 内容的 min-content 宽度；
                             CodeMirror 的 .cm-content 一旦比这半栏宽，左边这一格就拒绝收缩，
                             把右边的预览推出可视区 —— 右边就被裁掉一块。
-                            inkstone 从根到右栏每一层都写 min-w-0，就是防这个。 */}
-                        <Box sx={{ flex: 1, minWidth: 0, minHeight: 0, overflow: "hidden" }}>
+                            inkstone 从根到右栏每一层都写 min-w-0，就是防这个。
+                            ⚠️ 分栏时用 `0 0 auto` + 百分比宽度吃比例（和主栏 split 同款），
+                            双击缝归中、拖动改比例、松手记住。 */}
+                        <Box sx={{
+                            ...(sideMode === "split"
+                                ? { flex: "0 0 auto", width: `${sideSplitRatio * 100}%` }
+                                : { flex: 1 }),
+                            minWidth: 0,
+                            minHeight: 0,
+                            overflow: "hidden",
+                        }}>
                             <NoteEditor
                                 key={`side-${sideNote.id}|${uiSettings.lineNumbers ? 1 : 0}|${uiSettings.spellcheck ? 1 : 0}|${uiSettings.indentWidth}`}
                                 editorRef={sideRef}
@@ -4590,11 +4657,23 @@ export default function NotesPage({
                             />
                         </Box>
                         {/* 侧栏分栏里的那条线：与主栏同一套发丝线（1px，hover 加粗）。
-                            之前只写了一条 borderLeft，与主栏的分隔条粗细不一，看着不齐。 */}
+                            之前只写了一条 borderLeft，与主栏的分隔条粗细不一，看着不齐。
+                            2026-10-08：补上拖动（startSideSplitDrag）+ 双击归中，和主栏 split 一样能调比例。 */}
                         <Box
                             role='separator'
                             aria-orientation='vertical'
                             aria-label='拖动调整侧栏源码与预览的比例'
+                            title='拖动调整比例（双击回到对半）'
+                            onMouseDown={startSideSplitDrag}
+                            onDoubleClick={() => {
+                                setSideSplitRatio(0.5);
+                                sideSplitRatioRef.current = 0.5;
+                                try {
+                                    localStorage.setItem(SIDE_SPLIT_KEY, "0.5");
+                                } catch {
+                                    /* 隐私模式下写不了，忽略 */
+                                }
+                            }}
                             sx={{
                                 width: 9,
                                 mx: "-4px",

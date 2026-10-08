@@ -2,7 +2,10 @@ import { StrictMode, lazy, Suspense } from "react";
 // 入口不导出组件；此 lazy 只服务公开页路由，不参与热更新边界。
 // eslint-disable-next-line react-refresh/only-export-components
 const PublicNotePage = lazy(() => import("./components/PublicNotePage"));
-const publicToken = /^\/n\/([a-f0-9]{64})$/.exec(location.pathname)?.[1];
+// 公开分享页路径前缀是 /s/（见 components/PublicNotePage.tsx 顶部注释 /s/:token）。
+// 三处必须一致：这里的路由提取、NoteShareDialog 的分享链接、NotesSettingsDialog 的分享列表链接。
+// worker 的 assets 用 single-page-application 回退，/s/<token> 会落到 index.html 再渲染公开页。
+const publicToken = /^\/s\/([a-f0-9]{64})$/.exec(location.pathname)?.[1];
 import { createRoot } from "react-dom/client";
 import "./index.css";
 import App from "./App.tsx";

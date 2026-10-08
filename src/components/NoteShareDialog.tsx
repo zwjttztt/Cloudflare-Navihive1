@@ -22,7 +22,7 @@ export default function NoteShareDialog({ id, api, onClose }: { id: number; api:
             .finally(() => { if (live) setBusy(false); });
         return () => { live = false; };
     }, [api, id]);
-    const link = share ? `${location.origin}/n/${share.token}` : "";
+    const link = share ? `${location.origin}/s/${share.token}` : "";
     const act = async (revoke: boolean) => {
         setBusy(true);
         setMessage("");

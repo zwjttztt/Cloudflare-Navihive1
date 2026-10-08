@@ -163,7 +163,9 @@ export default function NotesSettingsDialog({
         if (!kw) return shares ?? [];
         return (shares ?? []).filter(s => (s.title || "").toLowerCase().includes(kw));
     }, [shares, shareKeyword]);
-    const shareUrl = (token: string) => `${globalThis.location.origin}/note/${token}`;
+    // 公开分享页路径前缀是 /s/（与 main.tsx 的路由正则、PublicNotePage 注释一致）。
+    // 之前写成 /note/，和路由的 /s/ 对不上，打开会落到导航主页而不是公开笔记页。
+    const shareUrl = (token: string) => `${globalThis.location.origin}/s/${token}`;
     const set = <K extends keyof NotesUiSettings>(key: K, value: NotesUiSettings[K]) =>
         onChange({ ...settings, [key]: value });
 

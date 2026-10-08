@@ -3668,8 +3668,10 @@ test("侧栏「分栏」是左右排（与主栏一致）", async () => {
     const src = readNotesPage();
     const i = src.indexOf('sideMode === "split"');
     assert.ok(i > 0);
-    // 窗口要够大：分隔条在预览盒子前面，离分支开头比较远
-    const block = src.slice(i, i + 3200);
+    // 窗口要够大：分隔条在预览盒子前面，离分支开头比较远。
+    // 2026-10-08 分隔条补了 onMouseDown/onDoubleClick 拖动逻辑（用户报「缝拖不动」），
+    // left:"50%" 被推到约 4050 字符处 —— 窗口从 3200 扩到 4400。
+    const block = src.slice(i, i + 4400);
     assert.ok(
         block.includes('flexDirection: "row"'),
         "侧栏分栏必须是左右排（之前是上下排，与主栏习惯不一致）"

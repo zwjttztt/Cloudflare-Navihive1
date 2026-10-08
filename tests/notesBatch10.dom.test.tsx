@@ -412,3 +412,91 @@ test("打字机/阅读位置在设置里有开关，且默认值的取舍说得�
         "两个都要过 sanitize 兜底"
     );
 });
+
+// ---------------------------------------------------------------------------
+// 2026-10-08 五连修：#1 侧栏分栏的缝能拖 / #3 关列表后导航列仍能拖宽 /
+// #4 分享链接前缀统一 /s/（#2 是响应式断点设计、#5 未复现，不设守卫）
+// ---------------------------------------------------------------------------
+
+test("侧栏分栏：中间那条缝必须真的能拖（onMouseDown + 双击归中 + 比例持久化）", () => {
+    const src = readNotesPageForBatch10();
+    // 拖动 handler 本体：与主栏 startSplitDrag 同一套「窗口级 mousemove/mouseup」模式
+    assert.ok(src.includes("const startSideSplitDrag"), "要有 startSideSplitDrag");
+    assert.ok(
+        src.includes('SIDE_SPLIT_KEY = "notes.sideSplitRatio"'),
+        "比例要存独立的 localStorage 键（不能蹭主栏的）"
+    );
+    // 分隔条必须挂上拖动与双击归中 —— 之前只有 role=separator 没有任何 handler，
+    // 看着像缝、实际拖不动（2026-10-08 用户报）
+    assert.ok(
+        src.includes("onMouseDown={startSideSplitDrag}"),
+        "侧栏分隔条必须挂 onMouseDown"
+    );
+    assert.ok(src.includes("onDoubleClick"), "双击要回到对半");
+    assert.ok(
+        src.includes("拖动调整侧栏源码与预览的比例"),
+        "分隔条要有 aria-label（读屏与测试都要认得它）"
+    );
+    // 比例要真落在宽度上：split 态源码栏按 sideSplitRatio 定宽
+    assert.ok(
+        src.includes("sideSplitRatio * 100"),
+        "split 态源码栏宽度必须吃 sideSplitRatio"
+    );
+    assert.ok(
+        src.includes("sideSplitBoxRef"),
+        "拖动量的是分栏容器（ref），不是瞎猜的坐标基准"
+    );
+    // 持久化：mouseup 时写回
+    assert.ok(
+        src.includes("localStorage.setItem(SIDE_SPLIT_KEY"),
+        "拖完要把比例写回 localStorage"
+    );
+    // 夹在 MIN/MAX 之间：防止把一边拖没
+    const fn = src.slice(src.indexOf("const startSideSplitDrag"), src.indexOf("const startSideSplitDrag") + 1600);
+    assert.ok(
+        fn.includes("MIN_RATIO") && fn.includes("MAX_RATIO"),
+        "拖动比例必须夹在 MIN_RATIO/MAX_RATIO 之间"
+    );
+});
+
+test("关闭中栏后导航列的拖缝仍在：守卫条件是 listCollapsed 不是 listHidden", () => {
+    const src = readNotesPageForBatch10();
+    const at = src.indexOf("拖动调整导航列宽度");
+    assert.ok(at > -1, "导航列拖缝要存在");
+    // 往前找这段 JSX 的条件（同一表达式的 200 字符内）
+    const seg = src.slice(Math.max(0, at - 200), at);
+    assert.ok(
+        seg.includes("!listCollapsed && !narrowLayout"),
+        "导航列拖缝条件必须是 !listCollapsed（listHidden 在关列表时为真，会把缝一起收掉）"
+    );
+    assert.ok(
+        !seg.includes("listHidden"),
+        "这条缝的条件里不能再出现 listHidden（folderFocus/中间栏关闭都会让它变 true）"
+    );
+});
+
+test("分享链接前缀三处必须一致是 /s/（main 路由 / 分享弹窗 / 设置列表）", () => {
+    const mainSrc = readSrcFile("main.tsx");
+    assert.ok(
+        mainSrc.includes("/^\\/s\\/([a-f0-9]{64})$/"),
+        "main.tsx 的公开页路由必须认 /s/<token>"
+    );
+    assert.ok(
+        !mainSrc.includes("/^\\/n\\/([a-f0-9]{64})$/"),
+        "旧的 /n/ 前缀不能残留（路由对不上就落到导航主页）"
+    );
+    const dialog = readSrcFile("components", "NoteShareDialog.tsx");
+    assert.ok(
+        dialog.includes("/s/${share.token}"),
+        "分享弹窗生成的链接必须是 /s/<token>"
+    );
+    const settings = readSrcFile("components", "NotesSettingsDialog.tsx");
+    assert.ok(
+        settings.includes("/s/${token}"),
+        "设置里分享列表的链接必须是 /s/<token>"
+    );
+    assert.ok(
+        !settings.includes("/note/${token}"),
+        "设置里旧的 /note/ 前缀不能残留"
+    );
+});
