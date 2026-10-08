@@ -1494,6 +1494,20 @@ export default function NotesPage({
     const bp = usePanelBreakpoint();
     /** 窄屏（tablet/mobile）下左两列要收起来，只留列表 + 编辑区 */
     const narrowLayout = bp !== "desktop";
+    // ⚠️ 2026-10-08 用户报「浏览器调整大小后最左侧栏显示不出」：
+    // tablet/mobile 下导航列整列 display:none，而「关中栏」(middleHidden) 与
+    // 「聚焦文件夹」(folderFocus → 笔记内联在导航列里) 都是**导航列存在**才成立的
+    // 桌面态。带着它们跨进窄布局：列表列被 {!listHidden} 整列藏掉、搜索框
+    // （narrowLayout 时就住在列表列里）跟着消失，但 listPane 宽度仍按 listW 预留
+    // → 屏幕左边多出一条空白带，而且窄布局里没有任何入口能把状态翻回来
+    // （能恢复它们的按钮全在藏掉的导航列/列表列里）。真机截图量过：空白带宽
+    // ≈ listW+5，编辑区从那之后才开始 —— 正是「宽度预留、内容不渲染」。
+    // 修法：跨进窄布局的一瞬间把两个状态复位；回到桌面后重新选一次即可。
+    useEffect(() => {
+        if (!narrowLayout) return;
+        setMiddleHidden(false);
+        setActiveFolder(null);
+    }, [narrowLayout]);
 
     // ---------- 编辑器工具集（2026-10-06 抽进 useEditorTools） ----------
     //
@@ -3411,8 +3425,12 @@ export default function NotesPage({
             {/* ================= 第二列：笔记列表 =================
                 ⚠️ 选中文件夹时**整列不渲染**（inkstone 的文件夹树）：
                 笔记已经直接列在左栏那个文件夹下面了，中间再来一栏是同一批内容，
-                白占 200 多 px，还会让人以为是两份不同的笔记。 */}
-            {!listHidden && (
+                白占 200 多 px，还会让人以为是两份不同的笔记。
+                ⚠️ 2026-10-08 起窄布局（tablet/mobile）**永远渲染**这一列：
+                listHidden 的两个来源（关中栏 / 聚焦文件夹）都是桌面态，进窄布局时
+                已被上面的复位 effect 清掉；这里再兜一层 —— 将来任何状态漏网，
+                也不能把窄屏唯一的导航入口（搜索框就住在这列里）藏成一条空白带。 */}
+            {(!listHidden || narrowLayout) && (
             <>
             <Box
                 data-list-col='1'
@@ -3501,7 +3519,13 @@ export default function NotesPage({
                             size='small'
                             aria-label='收起列表'
                             data-tool='collapse-list'
-                            onClick={() => setMiddleHidden(true)}
+                            // ⚠️ tablet/mobile 下没有「关中栏」语义：导航列已经整列隐藏，
+                            // 再关掉列表列 = 屏幕上没有任何导航入口且无法恢复。
+                            // 窄布局里这个按钮改收成 44px 图标轨（与桌面折叠同一套，
+                            // 轨上常驻「展开」按钮，见 listCollapsed 分支）。
+                            onClick={() =>
+                                narrowLayout ? setListCollapsed(true) : setMiddleHidden(true)
+                            }
                             sx={{ p: 0.4 }}
                         >
                             <CloseIcon fontSize='inherit' />

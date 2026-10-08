@@ -1502,6 +1502,9 @@ test("没传账号时显示未登录，设置按钮仍然可用（记事本自�
 });
 
 test("选中文件夹：中间笔记列不渲染，笔记内联在文件夹下面（inkstone 文件夹树）", () => {
+    // ⚠️ 必须 desktop 档：文件夹聚焦是桌面态（笔记内联在导航列里）。
+    // 2026-10-08 起窄布局下列表列永远渲染（唯一的导航入口），不能在 tablet 档测这个语义。
+    setWide();
     mountPanel(
         [
             note({ id: 1, title: "在夹里的笔记", content: "x", folder_id: 7 }),
@@ -1544,6 +1547,102 @@ test("选中文件夹：中间笔记列不渲染，笔记内联在文件夹下�
     assert.ok(
         !inline!.querySelector('[data-folder-note="2"]'),
         "别的文件夹/未归类的笔记不该出现在这里"
+    );
+});
+
+test("拖窄窗口要把「关中栏」复位：列表列必须回来（2026-10-08 用户报空白带）", () => {
+    setWide();
+    mountPanel([note({ id: 1, title: "A", content: "x" })]);
+    assert.ok(document.querySelector('[data-list-col="1"]'), "桌面档默认要显示列表列");
+
+    const collapseBtn = document.querySelector(
+        'button[data-tool="collapse-list"]'
+    ) as HTMLElement;
+    assert.ok(collapseBtn, "中栏头部要有「收起列表」按钮");
+    act(() => collapseBtn.click());
+    assert.ok(
+        !document.querySelector('[data-list-col="1"]'),
+        "点了收起后列表列要消失（桌面态，导航列还在）"
+    );
+
+    // 把窗口拖窄跨过 1180 → tablet：导航列整列隐藏，若「关中栏」不被复位，
+    // 列表列不渲染但宽度仍按 listW 预留 → 左边一条空白带 + 搜索框消失，且无法恢复。
+    act(() => {
+        setViewport(900);
+        window.dispatchEvent(new Event("resize"));
+    });
+    assert.ok(
+        document.querySelector('[data-list-col="1"]'),
+        "跨进 tablet 后列表列要自动回来"
+    );
+    assert.ok(
+        document.querySelector("[data-nav-col]"),
+        "列表列回来了，搜索框所在的窄屏头部也要跟着在"
+    );
+});
+
+test("拖窄窗口要把「聚焦文件夹」复位：内联笔记不能成孤岛（导航列藏掉就够不着了）", () => {
+    setWide();
+    mountPanel(
+        [
+            note({ id: 1, title: "在夹里的笔记", content: "x", folder_id: 7 }),
+            note({ id: 2, title: "别的笔记", content: "y", folder_id: null }),
+        ],
+        {
+            folderTags: {
+                folders: [{ id: 7, name: "工作", order_num: 0, created_at: "", updated_at: "" }],
+                tags: [],
+                noteTags: {},
+                onCreateFolder: async () => null,
+                onRenameFolder: async () => {},
+                onRemoveFolder: async () => {},
+                onCreateTag: async () => null,
+                onRenameTag: async () => {},
+                onRemoveTag: async () => {},
+                onAssignTags: async () => null,
+            },
+        }
+    );
+    const folderBtn = document.querySelector('button[data-folder-id="7"]') as HTMLElement;
+    assert.ok(folderBtn, "左栏要有这个文件夹");
+    act(() => folderBtn.click());
+    assert.ok(
+        !document.querySelector('[data-list-col="1"]'),
+        "选中文件夹后中间列不渲染（桌面态，笔记内联在导航列）"
+    );
+
+    act(() => {
+        setViewport(900);
+        window.dispatchEvent(new Event("resize"));
+    });
+    assert.ok(
+        document.querySelector('[data-list-col="1"]'),
+        "跨进 tablet 后列表列要回来（文件夹聚焦被复位）"
+    );
+    assert.ok(
+        !document.querySelector('[data-folder-notes="1"]'),
+        "内联笔记区不该再渲染（导航列已经藏了，内联区无人可达）"
+    );
+});
+
+test("窄屏里的「收起列表」收成 44px 图标轨，而不是关中栏（轨上要有展开按钮）", () => {
+    setViewport(900); // 直接以 tablet 档挂载
+    mountPanel([note({ id: 1, title: "A", content: "x" })]);
+    assert.ok(document.querySelector('[data-list-col="1"]'), "tablet 默认显示列表列");
+
+    const collapseBtn = document.querySelector(
+        'button[data-tool="collapse-list"]'
+    ) as HTMLElement;
+    assert.ok(collapseBtn, "窄屏列表头部也有「收起列表」按钮");
+    act(() => collapseBtn.click());
+
+    assert.ok(
+        document.querySelector("[data-collapsed-rail='1']"),
+        "窄屏收起后要出现 44px 图标轨（不是列表列整列消失）"
+    );
+    assert.ok(
+        document.querySelector('button[data-tool="expand-pane"]'),
+        "图标轨上要有「展开」按钮，保证永远能恢复"
     );
 });
 
@@ -1748,6 +1847,8 @@ test("左栏真的是两列：导航列与列表列各自独立", () => {
 });
 
 test("选中某个文件夹 → 列表只留这个文件夹里的笔记", () => {
+    // ⚠️ desktop 档（理由同上）：窄布局下列表列不再随 folderFocus 消失。
+    setWide();
     mountPanel(
         [
             note({ id: 1, title: "甲", content: "", folder_id: 7 }),
@@ -2725,6 +2826,9 @@ test("左栏未归类笔记右键 → 「移动到文件夹…」滑出右侧抽
 // ---------- 4. 中栏头部：排序 / 新建笔记 / 收起 ----------
 
 test("中栏头部有 排序 / 新建笔记 / 收起，收起后中栏真的消失", async () => {
+    // ⚠️ desktop 档：窄布局里「收起」收的是 44px 图标轨（listCollapsed），
+    // 不是关中栏 —— 关中栏是桌面态，窄屏里关了就没有任何导航入口了。
+    setWide();
     let created = 0;
     mountPanel([note({ id: 1, title: "甲", content: "a" })], {
         onCreate: async () => {
