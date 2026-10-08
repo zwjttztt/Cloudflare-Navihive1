@@ -1494,20 +1494,12 @@ export default function NotesPage({
     const bp = usePanelBreakpoint();
     /** 窄屏（tablet/mobile）下左两列要收起来，只留列表 + 编辑区 */
     const narrowLayout = bp !== "desktop";
-    // ⚠️ 2026-10-08 用户报「浏览器调整大小后最左侧栏显示不出」：
-    // tablet/mobile 下导航列整列 display:none，而「关中栏」(middleHidden) 与
-    // 「聚焦文件夹」(folderFocus → 笔记内联在导航列里) 都是**导航列存在**才成立的
-    // 桌面态。带着它们跨进窄布局：列表列被 {!listHidden} 整列藏掉、搜索框
-    // （narrowLayout 时就住在列表列里）跟着消失，但 listPane 宽度仍按 listW 预留
-    // → 屏幕左边多出一条空白带，而且窄布局里没有任何入口能把状态翻回来
-    // （能恢复它们的按钮全在藏掉的导航列/列表列里）。真机截图量过：空白带宽
-    // ≈ listW+5，编辑区从那之后才开始 —— 正是「宽度预留、内容不渲染」。
-    // 修法：跨进窄布局的一瞬间把两个状态复位；回到桌面后重新选一次即可。
-    useEffect(() => {
-        if (!narrowLayout) return;
-        setMiddleHidden(false);
-        setActiveFolder(null);
-    }, [narrowLayout]);
+    // ⚠️ 2026-10-08 用户报「调整窗口后最左侧栏显示不出」→ 当天先修成「跨进窄布局
+    // 复位桌面态」，用户复访后改为：**窄屏里关掉列表列（middleHidden）后左侧要显示
+    // 导航栏**（与桌面「关中栏剩导航列」同一语义），不要收成图标轨。于是规则改成
+    // 「二选一常驻」：窄布局里 listHidden → 导航列显示、列表列不渲染；否则相反。
+    // 这样任何状态都自带出口（导航列里的视图按钮都会 setMiddleHidden(false)），
+    // 也不需要复位 effect 了 —— 桌面关着中栏拖窄，导航列直接顶上，语义连续。
 
     // ---------- 编辑器工具集（2026-10-06 抽进 useEditorTools） ----------
     //
@@ -3012,8 +3004,9 @@ export default function NotesPage({
                 // 跟 inkstone 的 1180/768 两条线根本不是一回事。
                 // 现在按 usePanelBreakpoint 的三档显式给宽度：
                 //   mobile  100%（两屏切换时它就是整屏）
-                //   tablet  只有列表列（导航列已被上一层的 narrowLayout 收掉）
-                //   desktop 导航 + 列表
+                //   tablet  listHidden（关中栏/聚焦文件夹）→ 只剩导航列（导航列顶上，
+                //           2026-10-08 用户要求）；否则只有列表列
+                //   desktop listHidden → 只剩导航列；否则导航 + 列表
                 //
                 // ⚠️⚠️ 「两条缝」只值 **1px**，不是 9px，更不是 18px（2026-10-07 用户报
                 // 「拖动绿线右边有一条竖长条」，红框圈的就是这段空隙）。
@@ -3038,7 +3031,9 @@ export default function NotesPage({
                     : bp === "tablet"
                       ? listCollapsed
                         ? 44
-                        : listW + 5
+                        : listHidden
+                          ? navW + 5
+                          : listW + 5
                       : listCollapsed
                         ? 44
                         : listHidden
@@ -3111,7 +3106,11 @@ export default function NotesPage({
                     flexShrink: 0,
                     // tablet 起收掉导航列（inkstone 的 showNav = !isMobile && !isTablet）：
                     // 768~1180 之间三栏挤不开，导航列是最先该让位的那个。
-                    display: narrowLayout ? "none" : "flex",
+                    // ⚠️ 例外（2026-10-08 用户要求）：窄屏里关掉列表列（middleHidden）
+                    // 或聚焦文件夹（folderFocus，笔记内联在导航列里）时，导航列
+                    // **要显示** —— 列表列和导航列在窄屏里二选一常驻，永远不会有
+                    // 空白带，也永远有入口切回列表（视图按钮都带 setMiddleHidden(false)）。
+                    display: narrowLayout && !listHidden ? "none" : "flex",
                     flexDirection: "column",
                     minHeight: 0,
                     // ⚠️ 这里原来有 borderRight，已去掉（2026-10-07）。
@@ -3426,11 +3425,11 @@ export default function NotesPage({
                 ⚠️ 选中文件夹时**整列不渲染**（inkstone 的文件夹树）：
                 笔记已经直接列在左栏那个文件夹下面了，中间再来一栏是同一批内容，
                 白占 200 多 px，还会让人以为是两份不同的笔记。
-                ⚠️ 2026-10-08 起窄布局（tablet/mobile）**永远渲染**这一列：
-                listHidden 的两个来源（关中栏 / 聚焦文件夹）都是桌面态，进窄布局时
-                已被上面的复位 effect 清掉；这里再兜一层 —— 将来任何状态漏网，
-                也不能把窄屏唯一的导航入口（搜索框就住在这列里）藏成一条空白带。 */}
-            {(!listHidden || narrowLayout) && (
+                ⚠️ 2026-10-08 起：窄布局里 listHidden（关中栏/聚焦文件夹）时这一列
+                不渲染，但**导航列会顶上来**（见上面导航列 display 的例外）——
+                列表列和导航列在窄屏里二选一常驻，永远不会有空白带，也永远有入口
+                能切回列表（导航列里的视图按钮都会 setMiddleHidden(false)）。 */}
+            {!listHidden && (
             <>
             <Box
                 data-list-col='1'
@@ -3519,13 +3518,10 @@ export default function NotesPage({
                             size='small'
                             aria-label='收起列表'
                             data-tool='collapse-list'
-                            // ⚠️ tablet/mobile 下没有「关中栏」语义：导航列已经整列隐藏，
-                            // 再关掉列表列 = 屏幕上没有任何导航入口且无法恢复。
-                            // 窄布局里这个按钮改收成 44px 图标轨（与桌面折叠同一套，
-                            // 轨上常驻「展开」按钮，见 listCollapsed 分支）。
-                            onClick={() =>
-                                narrowLayout ? setListCollapsed(true) : setMiddleHidden(true)
-                            }
+                            // 窄屏里关掉列表列后**导航列会顶上来**（见导航列 display
+                            // 的例外），与桌面「关中栏剩导航列」同一语义（2026-10-08
+                            // 用户要求：关闭后是导航栏，不要自动收成图标轨）。
+                            onClick={() => setMiddleHidden(true)}
                             sx={{ p: 0.4 }}
                         >
                             <CloseIcon fontSize='inherit' />

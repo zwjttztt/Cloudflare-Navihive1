@@ -1550,7 +1550,7 @@ test("选中文件夹：中间笔记列不渲染，笔记内联在文件夹下�
     );
 });
 
-test("拖窄窗口要把「关中栏」复位：列表列必须回来（2026-10-08 用户报空白带）", () => {
+test("桌面关中栏 → 拖窄 → 左侧显示导航栏（不是图标轨），点视图按钮回列表列", () => {
     setWide();
     mountPanel([note({ id: 1, title: "A", content: "x" })]);
     assert.ok(document.querySelector('[data-list-col="1"]'), "桌面档默认要显示列表列");
@@ -1565,23 +1565,35 @@ test("拖窄窗口要把「关中栏」复位：列表列必须回来（2026-10-
         "点了收起后列表列要消失（桌面态，导航列还在）"
     );
 
-    // 把窗口拖窄跨过 1180 → tablet：导航列整列隐藏，若「关中栏」不被复位，
-    // 列表列不渲染但宽度仍按 listW 预留 → 左边一条空白带 + 搜索框消失，且无法恢复。
+    // 把窗口拖窄跨过 1180 → tablet：关中栏态带进去，导航列要**顶上来**
+    // （2026-10-08 用户要求：关闭后是导航栏，不要收成图标轨）。
     act(() => {
         setViewport(900);
         window.dispatchEvent(new Event("resize"));
     });
+    const nav = document.querySelector('[data-nav-col="1"]') as HTMLElement | null;
+    assert.ok(nav, "窄屏关中栏后导航列要顶上来");
+    assert.notEqual(nav!.style.display, "none", "导航列不能是 display:none");
     assert.ok(
-        document.querySelector('[data-list-col="1"]'),
-        "跨进 tablet 后列表列要自动回来"
+        !document.querySelector('[data-list-col="1"]'),
+        "列表列此时不渲染（与导航列二选一）"
     );
     assert.ok(
-        document.querySelector("[data-nav-col]"),
-        "列表列回来了，搜索框所在的窄屏头部也要跟着在"
+        !document.querySelector("[data-collapsed-rail]"),
+        "不要收成 44px 图标轨"
+    );
+
+    // 导航列里的视图按钮都带 setMiddleHidden(false)：点「所有笔记」回列表列
+    const allBtn = document.querySelector("button[data-view='all']") as HTMLElement;
+    assert.ok(allBtn, "导航列里要有「所有笔记」入口");
+    act(() => allBtn.click());
+    assert.ok(
+        document.querySelector('[data-list-col="1"]'),
+        "点视图按钮后列表列回来"
     );
 });
 
-test("拖窄窗口要把「聚焦文件夹」复位：内联笔记不能成孤岛（导航列藏掉就够不着了）", () => {
+test("聚焦文件夹 → 拖窄 → 导航栏显示且内联笔记还在（不再是孤岛）", () => {
     setWide();
     mountPanel(
         [
@@ -1608,24 +1620,34 @@ test("拖窄窗口要把「聚焦文件夹」复位：内联笔记不能成孤�
     act(() => folderBtn.click());
     assert.ok(
         !document.querySelector('[data-list-col="1"]'),
-        "选中文件夹后中间列不渲染（桌面态，笔记内联在导航列）"
+        "选中文件夹后中间列不渲染（笔记内联在导航列）"
     );
 
     act(() => {
         setViewport(900);
         window.dispatchEvent(new Event("resize"));
     });
+    // folderFocus 也是 listHidden：窄屏里导航列同样要顶上来，内联笔记就在里面
+    const nav = document.querySelector('[data-nav-col="1"]') as HTMLElement | null;
+    assert.ok(nav, "窄屏聚焦文件夹后导航列要顶上来");
+    assert.notEqual(nav!.style.display, "none", "导航列不能是 display:none");
+    const inline = document.querySelector('[data-folder-notes="1"]');
+    assert.ok(inline, "内联笔记区要跟着导航列一起可见");
+    assert.ok(
+        inline!.querySelector('[data-folder-note="1"]'),
+        "文件夹里的笔记还在内联区"
+    );
+    // 点「所有笔记」退出文件夹聚焦 → 列表列回来
+    const allBtn = document.querySelector("button[data-view='all']") as HTMLElement;
+    assert.ok(allBtn, "导航列里要有「所有笔记」入口");
+    act(() => allBtn.click());
     assert.ok(
         document.querySelector('[data-list-col="1"]'),
-        "跨进 tablet 后列表列要回来（文件夹聚焦被复位）"
-    );
-    assert.ok(
-        !document.querySelector('[data-folder-notes="1"]'),
-        "内联笔记区不该再渲染（导航列已经藏了，内联区无人可达）"
+        "点视图按钮后列表列回来"
     );
 });
 
-test("窄屏里的「收起列表」收成 44px 图标轨，而不是关中栏（轨上要有展开按钮）", () => {
+test("窄屏点「收起列表」→ 导航栏顶上来（不是图标轨），点视图按钮切回列表列", () => {
     setViewport(900); // 直接以 tablet 档挂载
     mountPanel([note({ id: 1, title: "A", content: "x" })]);
     assert.ok(document.querySelector('[data-list-col="1"]'), "tablet 默认显示列表列");
@@ -1636,14 +1658,22 @@ test("窄屏里的「收起列表」收成 44px 图标轨，而不是关中栏�
     assert.ok(collapseBtn, "窄屏列表头部也有「收起列表」按钮");
     act(() => collapseBtn.click());
 
+    const nav = document.querySelector('[data-nav-col="1"]') as HTMLElement | null;
+    assert.ok(nav, "窄屏关中栏后导航列要顶上来");
+    assert.notEqual(nav!.style.display, "none", "导航列不能是 display:none");
     assert.ok(
-        document.querySelector("[data-collapsed-rail='1']"),
-        "窄屏收起后要出现 44px 图标轨（不是列表列整列消失）"
+        !document.querySelector('[data-list-col="1"]'),
+        "列表列不渲染（与导航列二选一）"
     );
     assert.ok(
-        document.querySelector('button[data-tool="expand-pane"]'),
-        "图标轨上要有「展开」按钮，保证永远能恢复"
+        !document.querySelector("[data-collapsed-rail]"),
+        "不要收成 44px 图标轨（2026-10-08 用户明确不要）"
     );
+
+    const allBtn = document.querySelector("button[data-view='all']") as HTMLElement;
+    assert.ok(allBtn, "导航列里要有「所有笔记」入口");
+    act(() => allBtn.click());
+    assert.ok(document.querySelector('[data-list-col="1"]'), "点视图按钮后列表列回来");
 });
 
 test("点内联笔记能打开它；文件夹视图里新建笔记会落进该文件夹", async () => {
