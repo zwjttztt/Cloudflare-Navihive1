@@ -70,6 +70,8 @@ export type NotesApiLike = {
     ): Promise<{ id: string; url: string; filename: string; mime: string; size: number }>;
     listAttachments?(): Promise<NoteAttachment[]>;
     deleteAttachment?(id: string): Promise<{ ok: boolean }>;
+    /** 设置→数据→维护：清理未引用附件（2026-10-08）。可选：老部署没有 */
+    pruneAttachments?(): Promise<{ removed: number; freedBytes: number }>;
 };
 
 type UseNotesParams = {

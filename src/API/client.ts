@@ -573,6 +573,13 @@ export class NavigationClient {
         return this.request<{ ok: boolean }>(`notes/attachments/${id}`, { method: "DELETE" });
     }
 
+    /** 设置→数据→维护：清理未被任何笔记正文引用的附件（2026-10-08，照 inkstone） */
+    async pruneAttachments(): Promise<{ removed: number; freedBytes: number }> {
+        return this.request<{ removed: number; freedBytes: number }>("notes/attachments/prune", {
+            method: "POST",
+        });
+    }
+
     // ---- 阶段三收尾：笔记文件夹 / 标签 ----
     // 与后端路由一一对应（worker/routes/data.ts 那一段白名单），
     // 端点名刻意带前缀 `notes/`：它们都属于记事本这个域，不跟站点分组那套混。

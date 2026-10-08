@@ -32,6 +32,7 @@ import Box from "@mui/material/Box";
 import Avatar from "@mui/material/Avatar";
 import Button from "@mui/material/Button";
 import Divider from "@mui/material/Divider";
+import Drawer from "@mui/material/Drawer";
 import IconButton from "@mui/material/IconButton";
 import InputAdornment from "@mui/material/InputAdornment";
 import Menu from "@mui/material/Menu";
@@ -60,6 +61,7 @@ import FormatBoldIcon from "@mui/icons-material/FormatBold";
 import FormatItalicIcon from "@mui/icons-material/FormatItalic";
 import FormatQuoteIcon from "@mui/icons-material/FormatQuote";
 import FirstPageIcon from "@mui/icons-material/FirstPage";
+import MenuIcon from "@mui/icons-material/Menu";
 import ImageIcon from "@mui/icons-material/Image";
 import LastPageIcon from "@mui/icons-material/LastPage";
 import LinkIcon from "@mui/icons-material/Link";
@@ -143,6 +145,11 @@ export interface NotesPageProps {
             file: File,
             noteId?: number | null
         ): Promise<{ id: string; url: string; filename: string; mime: string; size: number }>;
+        /** 附件统计 / 清理（2026-10-08 设置→数据）。可选：老部署的 api 没有这两个方法 */
+        listAttachments?(): Promise<
+            { id: string; size: number; filename: string; mime: string }[]
+        >;
+        pruneAttachments?(): Promise<{ removed: number; freedBytes: number }>;
     };
     notes: Note[];
     onClose: () => void;
@@ -1376,6 +1383,14 @@ export default function NotesPage({
     const [sortAnchor, setSortAnchor] = useState<HTMLElement | null>(null);
     /** 「收起」：中栏右上角把列表收起；切视图 / 选文件夹 / 点搜索框时自动展开 */
     const [middleHidden, setMiddleHidden] = useState(false);
+    /**
+     * tablet（768~1180）的导航抽屉（2026-10-08 照 inkstone 的 AppShell）：
+     * 顶部一条 44px 栏放「导航栏」按钮 + 搜索框，导航列以 272px 左侧抽屉展开；
+     * 导航列在窄屏不再内联渲染（desktop 才有），列表列收起后整个左区让给编辑区。
+     */
+    const [navDrawerOpen, setNavDrawerOpen] = useState(false);
+    /** 编辑区头部「导出」下拉（2026-10-08 照 inkstone：Download 按钮 + 三格式菜单） */
+    const [exportAnchor, setExportAnchor] = useState<HTMLElement | null>(null);
     /** 阶段三收尾：导航列里选中的文件夹 / 标签（选中任一个就只看那一份） */
     const [activeFolder, setActiveFolder] = useState<number | null>(null);
     const [activeTag, setActiveTag] = useState<number | null>(null);
@@ -1494,6 +1509,12 @@ export default function NotesPage({
     const bp = usePanelBreakpoint();
     /** 窄屏（tablet/mobile）下左两列要收起来，只留列表 + 编辑区 */
     const narrowLayout = bp !== "desktop";
+    // 跨进 tablet 时若中栏关着，自动展开导航抽屉（用户要求：关闭后是展开态的
+    // 导航栏）。桌面关着中栏拖窄、tablet 里点「收起列表」两条路径都覆盖；
+    // 用户手动关掉抽屉后不会被抓回来（bp/middleHidden 没变，effect 不重跑）。
+    useEffect(() => {
+        if (bp === "tablet" && middleHidden) setNavDrawerOpen(true);
+    }, [bp, middleHidden]);
     // ⚠️ 2026-10-08 用户报「调整窗口后最左侧栏显示不出」→ 当天先修成「跨进窄布局
     // 复位桌面态」，用户复访后改为：**窄屏里关掉列表列（middleHidden）后左侧要显示
     // 导航栏**（与桌面「关中栏剩导航列」同一语义），不要收成图标轨。于是规则改成
@@ -2495,6 +2516,40 @@ export default function NotesPage({
     );
 
     /** 导出 PDF：调起系统打印（目的地选「另存为 PDF」） */
+
+    /** 导出全部笔记（2026-10-08 设置→数据，照 inkstone 的导出）：JSON 一份
+     *  （笔记 + 文件夹 + 标签 + 关联），不含附件二进制。前端直接从内存生成，
+     *  不需要新端点；导入等后续批次再做。 */
+    const exportAllData = () => {
+        try {
+            const payload = {
+                kind: "navihive-notes-export",
+                exported_at: new Date().toISOString(),
+                notes,
+                folders: folderTags?.folders ?? [],
+                tags: folderTags?.tags ?? [],
+                noteTags: folderTags?.noteTags ?? {},
+            };
+            const blob = new Blob([JSON.stringify(payload, null, 2)], {
+                type: "application/json",
+            });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = `notes-export-${new Date().toISOString().slice(0, 10)}.json`;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            // 下载已触发后再回收；立刻 revoke 在部分浏览器会打断下载
+            setTimeout(() => URL.revokeObjectURL(url), 4000);
+            onNotify?.(`已导出 ${notes.length} 条笔记（JSON，不含附件）`, "success");
+        } catch (error) {
+            onNotify?.(
+                "导出失败：" + (error instanceof Error ? error.message : "未知错误"),
+                "error"
+            );
+        }
+    };
     const exportPdfOne = useCallback(
         (note: Note) => {
             void printNoteAsPdf(note.title, note.content).catch(error => {
@@ -2992,141 +3047,11 @@ export default function NotesPage({
         />
     );
 
-    const listPane = (        <Box
-            sx={{
-                // 阶段二：折叠后收成 44px 的图标轨（平时是【导航列 + 列表列】两列并排）
-                // ⚠️ 两条缝（9px 命中区）也算进总宽，否则拖到最宽时右边界会溢出一点。
-                // 选中文件夹时只剩导航列一栏（笔记内联在里面），总宽要把列表列那份让出来。
-                //
-                // ⚠️ 2026-10-07 重写：原来写的是 `{ xs: "100%", md: navW + listW + 14 }`。
-                // `xs: "100%"` 是个**陷阱**：窄屏下它让左栏吃掉整行，编辑区就被压成 0 宽
-                // （真机量到 edW=0，整块看不见）。而 MUI 的 md 是 900px，
-                // 跟 inkstone 的 1180/768 两条线根本不是一回事。
-                // 现在按 usePanelBreakpoint 的三档显式给宽度：
-                //   mobile  100%（两屏切换时它就是整屏）
-                //   tablet  listHidden（关中栏/聚焦文件夹）→ 只剩导航列（导航列顶上，
-                //           2026-10-08 用户要求）；否则只有列表列
-                //   desktop listHidden → 只剩导航列；否则导航 + 列表
-                //
-                // ⚠️⚠️ 「两条缝」只值 **1px**，不是 9px，更不是 18px（2026-10-07 用户报
-                // 「拖动绿线右边有一条竖长条」，红框圈的就是这段空隙）。
-                //
-                // 几何账：每条把手 `width: 9px` + `mx: -4px` —— 负边距让它向两侧各溢出 4px，
-                // 所以它**净占 9 − 4 − 4 = 1px**。之前这里写 `+18`（= 9 + 9，把两条把手
-                // 都按满宽算），于是：
-                //   真实右边界 = navW + listW + 5   （最后一条把手只露 5px）
-                //   给定宽度   = navW + listW + 18
-                //   多出 13px 的**空白带**，夹在列表列与编辑区之间。真机逐列读像素确认：
-                //   列表列 right=336 → 编辑区 left=354，中间 337..353 什么都没有，
-                //   而发丝线在 337 —— 视觉上就是「一条竖长条」。
-                //
-                // inkstone 那边压根不给这个数（AppShell.tsx:95-107：每列各自
-                // `shrink-0` + 定宽，Resizer 是它们之间的兄弟节点，浏览器自然排布，
-                // 零死空间）。我们把两列塞进同一个容器，只能自己算这个账，
-                // 那就按 `每条把手净占 1px` 来算：
-                //   两条把手 = +2；最后一条把手还会往右露 5px（9 − 4），那 5px 归容器。
-                // 所以总数 = navW + listW + 9 - 4 + 1×1 = navW + listW + 6。
-                width: bp === "mobile"
-                    ? "100%"
-                    : bp === "tablet"
-                      ? listCollapsed
-                        ? 44
-                        : listHidden
-                          ? navW + 5
-                          : listW + 5
-                      : listCollapsed
-                        ? 44
-                        : listHidden
-                          ? navW + 5
-                          : navW + listW + 6,
-                flexShrink: 0,
-                // 折叠成 44px 轨道时，任何子元素都不许溢出压到右边的编辑区
-                overflow: "hidden",
-                // ⚠️ 这里**不能**再画右边框（2026-10-07 用户报「分割线太粗」）。
-                // 两条缝（nav|list、list|editor）各自有一个 9px 命中区 + 1px 发丝线，
-                // 线就画在命中区正中；这个盒子是它们的**共同祖先**，它的 borderRight
-                // 落在最右那条命中区的右边 12px 处，于是屏幕上出现两条线：
-                //   x=487 发丝线（list|editor 那条）
-                //   x=500 本行的 borderRight
-                // 看着就是「分割线粗了一截」。inkstone 那边同理 —— AppShell 的
-                // flex 容器不带边框，边框只由 Resizer 的那根 span 负责。
-                // 真机量过：去掉之后 list|editor 边界上只剩 1 条 1px 线。
-                // borderRight: { md: "1px solid var(--card-border)" },
-                // ⚠️ 这里改成了**横向**排列：左栏现在自己就是两列（导航 | 列表）。
-                // 原来是一整个竖列里塞「搜索框 + 六个视图按钮 + 笔记列表」——
-                // 300px 宽里三样挤一起，列表只剩 200 出头，月份分组标题一换行就漏字。
-                display: "flex",
-                alignItems: "stretch",
-                minHeight: 0,
-            }}
-        >
-            {/* ⚠️ 折叠态必须把**搜索框和视图导航也一起藏掉**：
-                之前只藏了计数和列表，44px 宽的轨道里塞着三个「全部/最近/收藏」按钮，
-                文字直接溢出压到右边的编辑区上（用户报「收齐后文字重叠」）。
-                轨道里只留一个展开按钮。 */}
-            {listCollapsed ? (
-                // 折叠态：顶部只留「返回」，**展开箭头放左下角**（2026-10-07 用户要求，
-                // 与 inkstone 一致 —— 收起是低频动作，该待在不碍事、但伸手就能点到的角落）。
-                <Box
-                    data-collapsed-rail='1'
-                    sx={{
-                        display: "flex",
-                        flexDirection: "column",
-                        alignItems: "center",
-                        justifyContent: "space-between",
-                        py: 1,
-                        gap: 0.5,
-                    }}
-                >
-                    <Tooltip title='返回导航站'>
-                        <IconButton aria-label='返回导航站' onClick={onClose} size='small'>
-                            <ArrowBackIcon fontSize='small' />
-                        </IconButton>
-                    </Tooltip>
-                    <Tooltip title='展开笔记列表' placement='right'>
-                        <IconButton
-                            aria-label='展开笔记列表'
-                            data-tool='expand-pane'
-                            size='small'
-                            onClick={() => setListCollapsed(false)}
-                        >
-                            <LastPageIcon fontSize='small' />
-                        </IconButton>
-                    </Tooltip>
-                </Box>
-            ) : (
+    /** 导航列内容（2026-10-08 抽出）：桌面导航列与 tablet 导航抽屉共用同一份 JSX。
+     *  两者互斥挂载（桌面列 !narrowLayout 才挂、抽屉仅 tablet 开），
+     *  所以 data-view / searchRef / data-nav-col 都不会出现两份。 */
+    const navInner = (
             <>
-            {/* ================= 第一列：导航 / 文件夹 / 标签 =================
-                这一列自己滚（overflowY: auto）：整块一起滚会把搜索框顶出视野，
-                而搜索框是「随时都想用得上」的，不能被笔记列表推走。 */}
-            <Box
-                data-nav-col='1'
-                sx={{
-                    width: navW,
-                    flexShrink: 0,
-                    // tablet 起收掉导航列（inkstone 的 showNav = !isMobile && !isTablet）：
-                    // 768~1180 之间三栏挤不开，导航列是最先该让位的那个。
-                    // ⚠️ 例外（2026-10-08 用户要求）：窄屏里关掉列表列（middleHidden）
-                    // 或聚焦文件夹（folderFocus，笔记内联在导航列里）时，导航列
-                    // **要显示** —— 列表列和导航列在窄屏里二选一常驻，永远不会有
-                    // 空白带，也永远有入口切回列表（视图按钮都带 setMiddleHidden(false)）。
-                    display: narrowLayout && !listHidden ? "none" : "flex",
-                    flexDirection: "column",
-                    minHeight: 0,
-                    // ⚠️ 这里原来有 borderRight，已去掉（2026-10-07）。
-                    // 右边已经有「拖动调整导航列宽度」那条带发丝线的把手了，
-                    // 两者叠在一起 = 2px 粗线。inkstone 的 Sidebar 也没有边框
-                    // （`bg-[var(--bg-sunken)]` 而已），线只由 Resizer 负责。
-                    // 真机量过：nav|list 边界只剩 1 条 1px 线。
-                    // borderRight: "1px solid var(--card-border)",
-                    // ⚠️ 这一列**自己不再滚**：改成「上半可滚 + 底部固定」。
-                    // 之前整列 overflowY:auto，归档/回收站/账号被文件夹挤到视野外。
-                    overflow: "hidden",
-                    py: 1,
-                    // 三栏背景分层（inkstone）：导航站最沉（--bg-sunken）
-                    bgcolor: "var(--bg-sunken)",
-                }}
-            >
             {/* 迷你顶栏（2026-10-07）：顶栏只压这一列（inkstone 布局），中栏 / 编辑区
                 直达页面顶部、各带头部。返回 + 应用名留在这里；「收起列表」进左下角
                 （设置左边）；分享 / 版本 / 大纲 / 反链收进编辑区右上角的「更多操作」。 */}
@@ -3154,11 +3079,9 @@ export default function NotesPage({
             </Box>
             {/* 可滚动的上半：搜索框 + 视图导航 + 文件夹 + 标签 */}
             <Box sx={{ flex: 1, minHeight: 0, overflowY: "auto", overflowX: "hidden" }}>
-            {/* ⚠️ tablet/mobile 下整个导航列是 display:none，搜索框得另有一份
-                （挂到列表列头部，见下面 data-list-header 里的 {narrowLayout && searchField}）。
-                这里用 display 控制而不是条件渲染，是为了让两处共用同一个 inputRef ——
-                ⌘K 聚焦的是同一个 DOM 节点，ref 指向谁就聚焦谁。 */}
-            <Box sx={{ display: narrowLayout ? "none" : "block", px: 1.5, pb: 1 }}>
+            {/* 搜索框：桌面导航列与 tablet 导航抽屉共用这一份 navInner（两者互斥挂载，
+                searchRef 不会打架）；mobile 的搜索在列表列头部（searchRefNarrow）。 */}
+            <Box sx={{ px: 1.5, pb: 1 }}>
                 {renderSearchField(searchRef)}
             </Box>
 
@@ -3189,6 +3112,7 @@ export default function NotesPage({
                             setActiveFolder(null);
                             setActiveTag(null);
                             setMiddleHidden(false);
+                            setNavDrawerOpen(false);
                         }}
                         data-view={key}
                     />
@@ -3211,6 +3135,7 @@ export default function NotesPage({
                     setActiveFolder(id);
                     setActiveTag(null);
                     setMiddleHidden(false);
+                    setNavDrawerOpen(false);
                     if (id === null) setView("all");
                 }}
                 onCreate={() => askName("folder")}
@@ -3229,7 +3154,7 @@ export default function NotesPage({
                 onCreateNote={() => void startCreateInFolder(activeFolder)}
                 childrenOf={notesInFolder}
                 activeNoteId={activeId}
-                onOpenNote={id => void jumpToNote(id)}
+                onOpenNote={id => { setNavDrawerOpen(false); void jumpToNote(id); }}
                 onCreateNoteIn={id => void startCreateInFolder(id)}
                 onReorder={
                     folderTags?.onReorderFolder
@@ -3278,6 +3203,7 @@ export default function NotesPage({
                     setActiveTag(id);
                     setActiveFolder(null);
                     setMiddleHidden(false);
+                    setNavDrawerOpen(false);
                     if (id === null) setView("all");
                 }}
                 onCreate={() => askName("tag")}
@@ -3331,6 +3257,7 @@ export default function NotesPage({
                                 // 再点归档 / 回收站会只剩导航列 —— 屏幕上什么都没有，
                                 // 看着就像这两个入口坏了（顶部四个入口已经处理过）。
                                 setMiddleHidden(false);
+                                setNavDrawerOpen(false);
                             }}
                             data-view={key}
                         />
@@ -3402,7 +3329,141 @@ export default function NotesPage({
                     </Tooltip>
                 </Box>
             </Box>
+            </>
+    );
+
+    const listPane = (        <Box
+            sx={{
+                // 阶段二：折叠后收成 44px 的图标轨（平时是【导航列 + 列表列】两列并排）
+                // ⚠️ 两条缝（9px 命中区）也算进总宽，否则拖到最宽时右边界会溢出一点。
+                // 选中文件夹时只剩导航列一栏（笔记内联在里面），总宽要把列表列那份让出来。
+                //
+                // ⚠️ 2026-10-07 重写：原来写的是 `{ xs: "100%", md: navW + listW + 14 }`。
+                // `xs: "100%"` 是个**陷阱**：窄屏下它让左栏吃掉整行，编辑区就被压成 0 宽
+                // （真机量到 edW=0，整块看不见）。而 MUI 的 md 是 900px，
+                // 跟 inkstone 的 1180/768 两条线根本不是一回事。
+                // 现在按 usePanelBreakpoint 的三档显式给宽度：
+                //   mobile  100%（两屏切换时它就是整屏）
+                //   tablet  只有列表列（导航列不内联渲染，走顶部 44px 栏 + 抽屉；
+                //           中栏关掉时整个左区让位给编辑区，见主行那层的 display）
+                //   desktop listHidden → 只剩导航列；否则导航 + 列表
+                //
+                // ⚠️⚠️ 「两条缝」只值 **1px**，不是 9px，更不是 18px（2026-10-07 用户报
+                // 「拖动绿线右边有一条竖长条」，红框圈的就是这段空隙）。
+                //
+                // 几何账：每条把手 `width: 9px` + `mx: -4px` —— 负边距让它向两侧各溢出 4px，
+                // 所以它**净占 9 − 4 − 4 = 1px**。之前这里写 `+18`（= 9 + 9，把两条把手
+                // 都按满宽算），于是：
+                //   真实右边界 = navW + listW + 5   （最后一条把手只露 5px）
+                //   给定宽度   = navW + listW + 18
+                //   多出 13px 的**空白带**，夹在列表列与编辑区之间。真机逐列读像素确认：
+                //   列表列 right=336 → 编辑区 left=354，中间 337..353 什么都没有，
+                //   而发丝线在 337 —— 视觉上就是「一条竖长条」。
+                //
+                // inkstone 那边压根不给这个数（AppShell.tsx:95-107：每列各自
+                // `shrink-0` + 定宽，Resizer 是它们之间的兄弟节点，浏览器自然排布，
+                // 零死空间）。我们把两列塞进同一个容器，只能自己算这个账，
+                // 那就按 `每条把手净占 1px` 来算：
+                //   两条把手 = +2；最后一条把手还会往右露 5px（9 − 4），那 5px 归容器。
+                // 所以总数 = navW + listW + 9 - 4 + 1×1 = navW + listW + 6。
+                width: bp === "mobile"
+                    ? "100%"
+                    : bp === "tablet"
+                      ? listCollapsed
+                        ? 44
+                        : listW + 5
+                      : listCollapsed
+                        ? 44
+                        : listHidden
+                          ? navW + 5
+                          : navW + listW + 6,
+                flexShrink: 0,
+                // 折叠成 44px 轨道时，任何子元素都不许溢出压到右边的编辑区
+                overflow: "hidden",
+                // ⚠️ 这里**不能**再画右边框（2026-10-07 用户报「分割线太粗」）。
+                // 两条缝（nav|list、list|editor）各自有一个 9px 命中区 + 1px 发丝线，
+                // 线就画在命中区正中；这个盒子是它们的**共同祖先**，它的 borderRight
+                // 落在最右那条命中区的右边 12px 处，于是屏幕上出现两条线：
+                //   x=487 发丝线（list|editor 那条）
+                //   x=500 本行的 borderRight
+                // 看着就是「分割线粗了一截」。inkstone 那边同理 —— AppShell 的
+                // flex 容器不带边框，边框只由 Resizer 的那根 span 负责。
+                // 真机量过：去掉之后 list|editor 边界上只剩 1 条 1px 线。
+                // borderRight: { md: "1px solid var(--card-border)" },
+                // ⚠️ 这里改成了**横向**排列：左栏现在自己就是两列（导航 | 列表）。
+                // 原来是一整个竖列里塞「搜索框 + 六个视图按钮 + 笔记列表」——
+                // 300px 宽里三样挤一起，列表只剩 200 出头，月份分组标题一换行就漏字。
+                display: "flex",
+                alignItems: "stretch",
+                minHeight: 0,
+            }}
+        >
+            {/* ⚠️ 折叠态必须把**搜索框和视图导航也一起藏掉**：
+                之前只藏了计数和列表，44px 宽的轨道里塞着三个「全部/最近/收藏」按钮，
+                文字直接溢出压到右边的编辑区上（用户报「收齐后文字重叠」）。
+                轨道里只留一个展开按钮。 */}
+            {listCollapsed ? (
+                // 折叠态：顶部只留「返回」，**展开箭头放左下角**（2026-10-07 用户要求，
+                // 与 inkstone 一致 —— 收起是低频动作，该待在不碍事、但伸手就能点到的角落）。
+                <Box
+                    data-collapsed-rail='1'
+                    sx={{
+                        display: "flex",
+                        flexDirection: "column",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        py: 1,
+                        gap: 0.5,
+                    }}
+                >
+                    <Tooltip title='返回导航站'>
+                        <IconButton aria-label='返回导航站' onClick={onClose} size='small'>
+                            <ArrowBackIcon fontSize='small' />
+                        </IconButton>
+                    </Tooltip>
+                    <Tooltip title='展开笔记列表' placement='right'>
+                        <IconButton
+                            aria-label='展开笔记列表'
+                            data-tool='expand-pane'
+                            size='small'
+                            onClick={() => setListCollapsed(false)}
+                        >
+                            <LastPageIcon fontSize='small' />
+                        </IconButton>
+                    </Tooltip>
+                </Box>
+            ) : (
+            <>
+            {/* ================= 第一列：导航 / 文件夹 / 标签 =================
+                这一列自己滚（overflowY: auto）：整块一起滚会把搜索框顶出视野，
+                而搜索框是「随时都想用得上」的，不能被笔记列表推走。 */}
+            {!narrowLayout && (
+            <Box
+                data-nav-col='1'
+                sx={{
+                    width: navW,
+                    flexShrink: 0,
+                    // 导航列 desktop 常驻；窄屏走顶部 44px 栏 + 272px 导航抽屉（内容同 navInner）。
+                    display: "flex",
+                    flexDirection: "column",
+                    minHeight: 0,
+                    // ⚠️ 这里原来有 borderRight，已去掉（2026-10-07）。
+                    // 右边已经有「拖动调整导航列宽度」那条带发丝线的把手了，
+                    // 两者叠在一起 = 2px 粗线。inkstone 的 Sidebar 也没有边框
+                    // （`bg-[var(--bg-sunken)]` 而已），线只由 Resizer 负责。
+                    // 真机量过：nav|list 边界只剩 1 条 1px 线。
+                    // borderRight: "1px solid var(--card-border)",
+                    // ⚠️ 这一列**自己不再滚**：改成「上半可滚 + 底部固定」。
+                    // 之前整列 overflowY:auto，归档/回收站/账号被文件夹挤到视野外。
+                    overflow: "hidden",
+                    py: 1,
+                    // 三栏背景分层（inkstone）：导航站最沉（--bg-sunken）
+                    bgcolor: "var(--bg-sunken)",
+                }}
+            >
+            {navInner}
             </Box>
+            )}
             {/* 导航列 ↔ 列表列之间的可拖缝。
                 ⚠️⚠️ 它必须在导航列这个 Box **外面**：里面是 flex-direction: column，
                 放进去会被压成 0 高度、贴到 x=0，真实鼠标根本点不中 ——
@@ -3425,11 +3486,10 @@ export default function NotesPage({
                 ⚠️ 选中文件夹时**整列不渲染**（inkstone 的文件夹树）：
                 笔记已经直接列在左栏那个文件夹下面了，中间再来一栏是同一批内容，
                 白占 200 多 px，还会让人以为是两份不同的笔记。
-                ⚠️ 2026-10-08 起：窄布局里 listHidden（关中栏/聚焦文件夹）时这一列
-                不渲染，但**导航列会顶上来**（见上面导航列 display 的例外）——
-                列表列和导航列在窄屏里二选一常驻，永远不会有空白带，也永远有入口
-                能切回列表（导航列里的视图按钮都会 setMiddleHidden(false)）。 */}
-            {!listHidden && (
+                ⚠️ mobile（<768）例外：**永远渲染**这一列。关中栏/聚焦文件夹都是
+                桌面/平板态，mobile 没有导航抽屉可回，列表列是唯一入口 ——
+                就算带着残留状态缩到 mobile，也不能藏成空白带。 */}
+            {(!listHidden || bp === "mobile") && (
             <>
             <Box
                 data-list-col='1'
@@ -3453,10 +3513,10 @@ export default function NotesPage({
                     bgcolor: "var(--bg-base)",
                 }}
             >
-            {/* ⚠️ 2026-10-07：tablet/mobile 下导航列整列隐藏，搜索框搬来这里
-                （inkstone 的 tablet 头部就是「一条 44px 顶栏 + 搜索」）。
-                没有它的话，窄屏就完全搜不了笔记 —— 这是最高频的入口。 */}
-            {narrowLayout && (
+            {/* ⚠️ 搜索框只在 mobile 挂在列表列头部；tablet 的搜索搬到了顶部
+                44px 栏（见 data-tablet-bar，与 inkstone 的顶栏同位）。两个位置
+                互斥挂载，共用 searchRefNarrow 不会打架。 */}
+            {bp === "mobile" && (
                 <Box sx={{ px: 1.5, pt: 1, pb: 0.5, flexShrink: 0 }}>
                     {renderSearchField(searchRefNarrow)}
                 </Box>
@@ -3518,11 +3578,12 @@ export default function NotesPage({
                             size='small'
                             aria-label='收起列表'
                             data-tool='collapse-list'
-                            // 窄屏里关掉列表列后**导航列会顶上来**（见导航列 display
-                            // 的例外），与桌面「关中栏剩导航列」同一语义（2026-10-08
-                            // 用户要求：关闭后是导航栏，不要自动收成图标轨）。
+                            // mobile 不给这个入口：mobile 没有导航抽屉可回，
+                            // 关掉列表列 = 屏幕上没有任何导航入口（inkstone 同）。
+                            // tablet 关掉后左区让位给编辑区，effect 会自动展开导航抽屉
+                            // （用户要求：关闭后是导航栏且是展开态）。
                             onClick={() => setMiddleHidden(true)}
-                            sx={{ p: 0.4 }}
+                            sx={{ p: 0.4, ...(bp === "mobile" ? { display: "none" } : {}) }}
                         >
                             <CloseIcon fontSize='inherit' />
                         </IconButton>
@@ -4035,6 +4096,72 @@ export default function NotesPage({
                                 </IconButton>
                             </Tooltip>
                         </Box>
+                        {/* 桌面端把高频操作直接平铺（2026-10-08 照 inkstone Workspace 头部：
+                            收藏 / 反链 / 版本历史 / 导出 / 大纲 / 分享直接显示，
+                            「⋯」桌面端不再收纳它们；窄屏标题行窄，不渲染这组，仍走「⋯」）。 */}
+                        {!narrowLayout && (
+                        <Box
+                            data-desktop-actions='1'
+                            sx={{ flexShrink: 0, alignItems: "center", gap: 0.25, mr: 0.5, display: "flex" }}
+                        >
+                            <Tooltip title={`反向链接（${backlinks.length}）`}>
+                                <span>
+                                    <IconButton
+                                        size='small'
+                                        aria-label='反向链接'
+                                        data-tool='backlinks'
+                                        disabled={!active || backlinks.length === 0}
+                                        onClick={e => setBacklinkAnchor(e.currentTarget)}
+                                        sx={{ width: 28, height: 28, color: "text.secondary" }}
+                                    >
+                                        <LinkIcon fontSize='small' />
+                                    </IconButton>
+                                </span>
+                            </Tooltip>
+                            <Tooltip title='版本历史'>
+                                <span>
+                                    <IconButton
+                                        size='small'
+                                        aria-label='版本历史'
+                                        data-tool='revisions'
+                                        disabled={!active || !folderTags?.onListRevisions}
+                                        onClick={e => active && void openRevisions(e.currentTarget)}
+                                        sx={{ width: 28, height: 28, color: "text.secondary" }}
+                                    >
+                                        <HistoryIcon fontSize='small' />
+                                    </IconButton>
+                                </span>
+                            </Tooltip>
+                            <Tooltip title='导出'>
+                                <span>
+                                    <IconButton
+                                        size='small'
+                                        aria-label='导出'
+                                        data-tool='export'
+                                        disabled={!active}
+                                        onClick={e => setExportAnchor(e.currentTarget)}
+                                        sx={{ width: 28, height: 28, color: "text.secondary" }}
+                                    >
+                                        <FileDownloadIcon fontSize='small' />
+                                    </IconButton>
+                                </span>
+                            </Tooltip>
+                            <Tooltip title='只读分享'>
+                                <span>
+                                    <IconButton
+                                        size='small'
+                                        aria-label='只读分享'
+                                        data-tool='share'
+                                        disabled={!active || !shareApi || (active.id ?? 0) <= 0}
+                                        onClick={() => active.id && setShareId(active.id)}
+                                        sx={{ width: 28, height: 28, color: "text.secondary" }}
+                                    >
+                                        <ShareIcon fontSize='small' />
+                                    </IconButton>
+                                </span>
+                            </Tooltip>
+                        </Box>
+                        )}
                         {/* 当前笔记的操作入口。顶栏拆掉后，只读分享 / 版本历史 / 大纲 /
                             反向链接也收进了这个菜单（见下面 data-active-op 那几项）。 */}
                         {/* 「更多操作」独立成组，紧贴模式控件右侧 */}
@@ -4807,7 +4934,10 @@ export default function NotesPage({
                 // ⚠️ 2026-10-07 改为**横向**：顶栏只压在最左边的导航列上方（inkstone 布局），
                 // 中栏列表与编辑区各自带头部、直达页面顶部 —— 全宽顶栏会把三栏都压低一截，
                 // 而顶栏上那排按钮实际只对「当前编辑的这篇」有意义，摆在页首纯属浪费纵深。
-                flexDirection: "row",
+                // ⚠️ 2026-10-08：tablet 改成**列**方向 —— 顶部多一条 44px 全宽栏
+                // （「导航栏」按钮 + 搜索，inkstone AppShell 的顶栏同位），下面才是三栏行。
+                // 桌面 / mobile 仍是 row：顶栏只压在最左导航列上方。
+                flexDirection: bp === "tablet" ? "column" : "row",
                 // 「背景色」设置：暖白（纸感）/ 纯白。深色模式下「暖白」不成立，
                 // 照旧走主题默认色 —— 否则会得到一块刺眼的白底配深色文字。
                 bgcolor: (t: { palette: { mode: string; background: { default: string; paper: string } } }) =>
@@ -4831,6 +4961,23 @@ export default function NotesPage({
                 onClose={() => setSettingsOpen(false)}
                 // 分享列表页要用的三个方法（老部署/未登录时 shareApi 为空，那一页自动不出现）
                 shareApi={shareApi ?? null}
+                // 数据页（2026-10-08 照 inkstone 的 DataSettings）：概览 / 导出 / 维护。
+                data={{
+                    stats: {
+                        notes: notes.length,
+                        folders: folders.length,
+                        tags: tags.length,
+                        trashed: Array.isArray(trashedNotes) ? trashedNotes.length : null,
+                    },
+                    onExportAll: exportAllData,
+                    onEmptyTrash: () => onEmptyTrash(),
+                    onLoadAttachments: uploadApi?.listAttachments
+                        ? () => uploadApi.listAttachments!()
+                        : undefined,
+                    onPruneAttachments: uploadApi?.pruneAttachments
+                        ? () => uploadApi.pruneAttachments!()
+                        : undefined,
+                }}
                 onNotify={onNotify}
                 onOpenNote={id => {
                     setSettingsOpen(false);
@@ -5097,6 +5244,46 @@ export default function NotesPage({
                     );
                 })}
             </Menu>
+            {/* 导出下拉（2026-10-08）：桌面头部「导出」按钮（data-tool='export'）用，
+                三格式与 inkstone 的导出菜单一致；窄屏仍走「⋯」里的三件套。 */}
+            <Menu
+                open={Boolean(exportAnchor)}
+                anchorEl={exportAnchor}
+                onClose={() => setExportAnchor(null)}
+            >
+                {active && (
+                    <>
+                        <MenuItem
+                            onClick={() => {
+                                setExportAnchor(null);
+                                exportOne(active);
+                            }}
+                        >
+                            <FileDownloadIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
+                            导出 Markdown
+                        </MenuItem>
+                        <MenuItem
+                            onClick={() => {
+                                setExportAnchor(null);
+                                exportHtmlOne(active);
+                            }}
+                        >
+                            <FileDownloadIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
+                            导出 HTML
+                        </MenuItem>
+                        <MenuItem
+                            onClick={() => {
+                                setExportAnchor(null);
+                                exportPdfOne(active);
+                            }}
+                        >
+                            <FileDownloadIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
+                            导出 PDF
+                        </MenuItem>
+                    </>
+                )}
+            </Menu>
+
             {/* 当前笔记的「⋯」菜单：与右键菜单同一套（全量版）。 */}
             <Menu
                 open={Boolean(activeMenuAnchor)}
@@ -5105,8 +5292,10 @@ export default function NotesPage({
             >
                 {active && (
                     <>
-                        {/* 顶栏拆掉后搬进来的四项（2026-10-07）：分享 / 版本 / 大纲 / 反链。
-                            它们都只作用于「当前编辑的这篇」，收进当前笔记的菜单正合适。 */}
+                        {/* 分享 / 版本 / 大纲 / 反链：桌面端已平铺到头部（2026-10-08），
+                            这几项只留给窄屏（标题行放不下）。 */}
+                        {narrowLayout && (
+                        <>
                         <MenuItem
                             data-active-op='share'
                             disabled={!shareApi || (active.id ?? 0) <= 0}
@@ -5150,8 +5339,12 @@ export default function NotesPage({
                             <LinkIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
                             反向链接（{backlinks.length}）
                         </MenuItem>
+                        </>
+                        )}
                         <Divider />
-                        {/* 窄屏时标题行放不下「即时渲染」，这里补一个入口（同一个状态） */}
+                        {/* 窄屏时标题行放不下「即时渲染」，这里补一个入口（同一个状态）；
+                            桌面端头部已有开关，这项不再重复出现。 */}
+                        {narrowLayout && (
                         <MenuItem
                             data-active-op='live-render'
                             onClick={() => setLiveRender(v => !v)}
@@ -5159,6 +5352,7 @@ export default function NotesPage({
                             <BoltIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
                             {liveRender ? "关掉编辑区实时渲染" : "打开编辑区实时渲染"}
                         </MenuItem>
+                        )}
                         <MenuItem
                             data-active-op='copy-title'
                             onClick={() => {
@@ -5211,6 +5405,10 @@ export default function NotesPage({
                             <FolderIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
                             移动到文件夹…
                         </MenuItem>
+                        {/* 导出三件套：桌面端已收进头部「导出」下拉（data-tool='export'），
+                            这里只留给窄屏。 */}
+                        {narrowLayout && (
+                        <>
                         <MenuItem
                             data-active-op='export'
                             onClick={() => {
@@ -5241,6 +5439,8 @@ export default function NotesPage({
                             <FileDownloadIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
                             导出 PDF
                         </MenuItem>
+                        </>
+                        )}
                         <Divider />
                         <MenuItem
                             data-active-op='delete'
@@ -5358,6 +5558,37 @@ export default function NotesPage({
                 )}
             </Menu>
 
+            {/* ⚠️ tablet（768~1180）：44px 全宽顶栏（inkstone AppShell 同款）——
+                左边「导航栏」按钮开/关 272px 左侧抽屉（内容与桌面导航列同源），
+                右边搜索框（与 mobile 列表列头部那份互斥挂载，共用 searchRefNarrow）。 */}
+            {bp === "tablet" && (
+                <Box
+                    data-tablet-bar='1'
+                    sx={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 1,
+                        px: 1.5,
+                        height: 44,
+                        flexShrink: 0,
+                        bgcolor: "var(--bg-sunken)",
+                        borderBottom: "1px solid rgba(128,128,128,0.18)",
+                    }}
+                >
+                    <IconButton
+                        size='small'
+                        aria-label='导航栏'
+                        data-tool='nav-drawer'
+                        onClick={() => setNavDrawerOpen(o => !o)}
+                    >
+                        <MenuIcon fontSize='small' />
+                    </IconButton>
+                    <Box sx={{ width: "min(360px, 60%)", pt: 0.5 }}>
+                        {renderSearchField(searchRefNarrow)}
+                    </Box>
+                </Box>
+            )}
+
             {/* 主体：desktop 三栏并排；tablet 收掉导航列；mobile 在「列表 / 编辑」之间切。
                 ⚠️ 2026-10-07：原来这里靠 MUI 的 `md:`（900px）做两屏切换，
                 但三栏宽度是写死的像素、又没有断点，缩放一放大（CSS 视口 < 900）
@@ -5376,8 +5607,14 @@ export default function NotesPage({
                     剩下的就是「中间那块空白」。宽度只由内层决定：flex: 0 0 auto。 */}
                 <Box
                     sx={{
-                        // mobile：两屏切换（列表 ⇄ 编辑）；tablet/desktop：常驻
-                        display: bp === "mobile" ? (mobileDetail ? "none" : "flex") : "flex",
+                        // mobile：两屏切换（列表 ⇄ 编辑）；tablet/desktop：常驻。
+                        // ⚠️ tablet 关中栏（middleHidden）后整个左区让位给编辑区
+                        // （inkstone 的 showList = !listCollapsed，导航走抽屉）。 tablet
+                        // 关闭后抽屉已自动展开（见收起列表按钮），导航永远可达。
+                        display:
+                            (bp === "mobile" && mobileDetail) || (bp === "tablet" && middleHidden)
+                                ? "none"
+                                : "flex",
                         flex: "0 0 auto",
                         minWidth: 0,
                         minHeight: 0,
@@ -5465,6 +5702,30 @@ export default function NotesPage({
                     )}
                 </Box>
             </Box>
+
+            {/* tablet 导航抽屉（inkstone AppShell 同款）：272px 左侧滑出，内容与
+                桌面导航列同源（navInner）。「收起列表」与顶栏按钮都能开它；
+                抽屉里点视图 / 文件夹 / 笔记会自带 setNavDrawerOpen(false)。 */}
+            <Drawer
+                anchor='left'
+                open={bp === "tablet" && navDrawerOpen}
+                onClose={() => setNavDrawerOpen(false)}
+                slotProps={{ paper: { sx: { width: 272, bgcolor: "var(--bg-sunken)" } } }}
+            >
+                <Box
+                    data-nav-drawer='1'
+                    sx={{
+                        width: "100%",
+                        height: "100%",
+                        display: "flex",
+                        flexDirection: "column",
+                        py: 1,
+                        overflow: "hidden",
+                    }}
+                >
+                    {navInner}
+                </Box>
+            </Drawer>
 
             {/* 分类相关的弹窗：新建 / 重命名（NamePromptDialog）与删除二次确认
                 （ConfirmDialog）。原来这些走的是 window.prompt / window.confirm ——

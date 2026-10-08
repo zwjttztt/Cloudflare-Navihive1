@@ -375,11 +375,23 @@ function renderLeaf(tok: Token, c: Cursor): ReactNode {
             );
         case "image": {
             const src = tok.attrGet("src") || "";
-            // 只放行 http(s) 与内联图片，其余当文本 —— 与链接同一把尺子
-            if (!/^(https?:|data:image\/(png|jpe?g|gif|webp);|blob:)/i.test(src)) {
+            // 只放行 http(s)、内联图片与**本站附件**，其余当文本 —— 与链接同一把尺子。
+            // ⚠️ `/api/notes/attachments/...` 是上传图片落进正文的形式（2026-07 批次），
+            // 之前没放行 → 预览里整张图变成一行 alt 文本（2026-10-08 用户报
+            // 「上传图片后预览窗看不见图片」）。同源相对路径在 <img> 上会自动带上
+            // 登录 cookie（鉴权走 httpOnly cookie，GET 无 CSRF 问题），安全尺子不变。
+            if (!/^(https?:|\/api\/notes\/attachments\/|data:image\/(png|jpe?g|gif|webp);|blob:)/i.test(src)) {
                 return <span key={key}>{tok.content}</span>;
             }
-            return <img key={key} src={src} alt={tok.content || ""} loading='lazy' />;
+            return (
+                <img
+                    key={key}
+                    src={src}
+                    alt={tok.content || ""}
+                    loading='lazy'
+                    style={{ maxWidth: "100%", height: "auto", borderRadius: 4 }}
+                />
+            );
         }
         case "html_inline":
         case "html_block":

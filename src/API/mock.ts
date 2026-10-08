@@ -530,6 +530,12 @@ export class MockNavigationClient {
         return { ok: i >= 0 };
     }
 
+    /** 设置→数据→维护：演示模式下所有附件都挂在示例笔记里，无未引用 → 空清理 */
+    async pruneAttachments(): Promise<{ removed: number; freedBytes: number }> {
+        await new Promise(resolve => setTimeout(resolve, 120));
+        return { removed: 0, freedBytes: 0 };
+    }
+
     // ---- 阶段三收尾：笔记文件夹 / 标签（演示模式下的内存实现）----
     // 与 client.ts 一一对应：两者的方法集合是对齐的（有契约守卫测试盯着），
     // 少一个 mock 那边就会在演示模式下抛「不是函数」。

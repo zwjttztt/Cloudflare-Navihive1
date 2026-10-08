@@ -8,7 +8,7 @@
 //
 // 只放**真的会生效**的开关：每个控件都能说出它改了哪个渲染行为；
 // 「存了没用」的假开关比缺一个功能更糟。
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Dialog from "@mui/material/Dialog";
@@ -28,11 +28,32 @@ import RefreshIcon from "@mui/icons-material/Refresh";
 import LaunchIcon from "@mui/icons-material/Launch";
 import LinkOffIcon from "@mui/icons-material/LinkOff";
 import LinkIcon from "@mui/icons-material/Link";
+import StorageIcon from "@mui/icons-material/Storage";
+import FileDownloadIcon from "@mui/icons-material/FileDownload";
+import DeleteSweepIcon from "@mui/icons-material/DeleteSweep";
+import NoteShareDialog, { type NoteShareApi } from "./NoteShareDialog";
+import ConfirmDialog from "./ConfirmDialog";
 import { FOLDER_COLORS } from "../utils/folderAppearance";
 import type { NotesUiSettings } from "../utils/notesSettings";
 import type { NoteShareListItem } from "../API/types";
 
-type SettingsTab = "appearance" | "editor" | "shares";
+type SettingsTab = "appearance" | "editor" | "data" | "shares";
+
+/** 数据页统计（2026-10-08 照 inkstone 的 DataSettings，精简到现有端点能做到的） */
+export interface NotesDataTab {
+    stats: {
+        notes: number;
+        folders: number;
+        tags: number;
+        /** null = 回收站还没拉过 / 老部署没有 */
+        trashed: number | null;
+    };
+    onExportAll: () => void;
+    onEmptyTrash: () => Promise<void>;
+    /** 可选：老部署的 api 没有附件方法，相应能力自动隐藏 */
+    onLoadAttachments?: () => Promise<{ id: string; size: number }[]>;
+    onPruneAttachments?: () => Promise<{ removed: number; freedBytes: number }>;
+}
 
 /** 一行设置：左标签（+可选说明）、右控件 —— inkstone 的设置行样式 */
 function SettingRow({
@@ -65,6 +86,13 @@ function SettingRow({
             <Box sx={{ flexShrink: 0, display: "flex", alignItems: "center", gap: 0.75 }}>{children}</Box>
         </Box>
     );
+}
+
+/** 附件字节数 → 人类可读（数据页「附件占用」用） */
+function fmtBytes(n: number): string {
+    if (n >= 1048576) return `${(n / 1048576).toFixed(1)} MB`;
+    if (n >= 1024) return `${Math.round(n / 1024)} KB`;
+    return `${n} B`;
 }
 
 /** 一组互斥的小段选择（暖纸/纯白 那种样式）：选中项描强调色 */
@@ -117,17 +145,18 @@ export interface NotesSettingsDialogProps {
     onChange: (next: NotesUiSettings) => void;
     onClose: () => void;
     /**
-     * 分享列表要用的三个方法。没传就不显示「分享列表」这一页（老部署/未登录）。
-     * 只取这三个，别把整个 api 塞进来 —— 设置弹窗不该有权限去干别的事。
+     * 分享列表要用的方法。没传就不显示「分享列表」这一页（老部署/未登录）。
+     * 只取这四个，别把整个 api 塞进来 —— 设置弹窗不该有权限去干别的事。
+     * 2026-10-08 起「管理」直接打开该笔记的分享设置（NoteShareDialog，
+     * 与 inkstone 的「管理 → SharePanel」同语义），所以补上 get/create 两个。
      */
-    shareApi?: {
-        listNoteShares: () => Promise<NoteShareListItem[]>;
-        revokeNoteShare: (id: number) => Promise<{ success: boolean }>;
-    } | null;
+    shareApi?: NoteShareApi | null;
     /** 撤销后回执（成功/失败都提示一下，别让用户猜） */
     onNotify?: (message: string, severity?: "success" | "error" | "info") => void;
-    /** 打开某条笔记（点「管理」时跳回编辑器） */
+    /** 打开某条笔记（分享列表里点笔记标题跳回编辑器；「管理」开分享设置） */
     onOpenNote?: (id: number) => void;
+    /** 数据页（概览 / 导出 / 维护）。没传就不显示「数据」这一页 */
+    data?: NotesDataTab;
 }
 
 export default function NotesSettingsDialog({
@@ -138,11 +167,18 @@ export default function NotesSettingsDialog({
     shareApi = null,
     onNotify,
     onOpenNote,
+    data,
 }: NotesSettingsDialogProps) {
     const [tab, setTab] = useState<SettingsTab>("appearance");
+    // ---- 数据页（2026-10-08 照 inkstone 的 DataSettings）----
+    const [attStats, setAttStats] = useState<{ count: number; bytes: number } | null>(null);
+    const [sharesCount, setSharesCount] = useState<number | null>(null);
+    const [confirmKind, setConfirmKind] = useState<"trash" | "prune" | null>(null);
     // ---- 分享列表（2026-07-07 参考 inkstone 新增）----
     const [shares, setShares] = useState<NoteShareListItem[] | null>(null);
     const [shareError, setShareError] = useState<string | null>(null);
+    /** 「管理」打开的那条分享（NoteShareDialog，inkstone 的 SharePanel 同位） */
+    const [managingId, setManagingId] = useState<number | null>(null);
     const [shareKeyword, setShareKeyword] = useState("");
     const reloadShares = useCallback(async () => {
         if (!shareApi) return;
@@ -158,6 +194,44 @@ export default function NotesSettingsDialog({
     useEffect(() => {
         if (open && tab === "shares") void reloadShares();
     }, [open, tab, reloadShares]);
+    // 数据页打开时拉一次附件统计与分享数（都是轻量读；data 回调用 ref 持有，
+    // 避免 NotesPage 每次重渲染都重拉）
+    const dataRef = useRef(data);
+    dataRef.current = data;
+    useEffect(() => {
+        if (!open || tab !== "data") return;
+        let live = true;
+        const cur = dataRef.current;
+        if (cur?.onLoadAttachments) {
+            cur
+                .onLoadAttachments()
+                .then(list => {
+                    if (live)
+                        setAttStats({
+                            count: list.length,
+                            bytes: list.reduce((s, a) => s + (a.size || 0), 0),
+                        });
+                })
+                .catch(() => {
+                    if (live) setAttStats(null);
+                });
+        } else {
+            setAttStats(null);
+        }
+        if (shareApi) {
+            shareApi
+                .listNoteShares()
+                .then(list => {
+                    if (live) setSharesCount(list.length);
+                })
+                .catch(() => {
+                    if (live) setSharesCount(null);
+                });
+        }
+        return () => {
+            live = false;
+        };
+    }, [open, tab, shareApi]);
     const filteredShares = useMemo(() => {
         const kw = shareKeyword.trim().toLowerCase();
         if (!kw) return shares ?? [];
@@ -198,6 +272,9 @@ export default function NotesSettingsDialog({
                         [
                             ["appearance", "外观", <PaletteIcon fontSize='small' key='a' />],
                             ["editor", "编辑器", <TuneIcon fontSize='small' key='e' />],
+                            ...(data
+                                ? [["data", "数据", <StorageIcon fontSize='small' key='d' />] as const]
+                                : []),
                             ...(shareApi
                                 ? [["shares", "分享列表", <ShareIcon fontSize='small' key='s' />] as const]
                                 : []),
@@ -238,7 +315,13 @@ export default function NotesSettingsDialog({
                 <Box sx={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
                     <Box sx={{ display: "flex", alignItems: "center", px: 2.5, py: 1.5 }}>
                         <Typography variant='subtitle1' sx={{ flex: 1, fontWeight: 600 }}>
-                            {tab === "appearance" ? "外观" : tab === "editor" ? "编辑器" : "分享列表"}
+                            {tab === "appearance"
+                                ? "外观"
+                                : tab === "editor"
+                                  ? "编辑器"
+                                  : tab === "data"
+                                    ? "数据"
+                                    : "分享列表"}
                         </Typography>
                         <IconButton size='small' aria-label='关闭设置' onClick={onClose} data-settings-close='1'>
                             <CloseIcon fontSize='small' />
@@ -565,6 +648,98 @@ export default function NotesSettingsDialog({
                                     字体与字号即时生效；行号、拼写检查与缩进宽度会重建编辑器（撤销历史会清空）。
                                 </Typography>
                             </>
+                        ) : tab === "data" && data ? (
+                            // 数据页（2026-10-08 照 inkstone 的 DataSettings，
+                            // 精简到现有端点能做到的：概览 / 导出 JSON / 维护）
+                            <Box data-settings-data='1'>
+                                <Typography variant='subtitle2' sx={{ mb: 1 }}>
+                                    概览
+                                </Typography>
+                                <Box sx={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 1, mb: 1.5 }}>
+                                    {(
+                                        [
+                                            ["笔记", data.stats.notes],
+                                            ["文件夹", data.stats.folders],
+                                            ["标签", data.stats.tags],
+                                            ["回收站", data.stats.trashed],
+                                            ["分享", sharesCount],
+                                            ["附件", attStats ? attStats.count : null],
+                                        ] as const
+                                    ).map(([label, n]) => (
+                                        <Box
+                                            key={label}
+                                            data-data-stat={label}
+                                            sx={{
+                                                border: "1px solid rgba(128,128,128,0.18)",
+                                                borderRadius: 2,
+                                                px: 1.5,
+                                                py: 1.25,
+                                            }}
+                                        >
+                                            <Typography sx={{ fontSize: 20, fontWeight: 600 }}>
+                                                {n ?? "—"}
+                                            </Typography>
+                                            <Typography variant='caption' color='text.secondary'>
+                                                {label}
+                                            </Typography>
+                                        </Box>
+                                    ))}
+                                </Box>
+                                {attStats && attStats.bytes > 0 && (
+                                    <Typography variant='caption' color='text.secondary' sx={{ display: "block", mb: 2 }}>
+                                        附件占用 {fmtBytes(attStats.bytes)}
+                                    </Typography>
+                                )}
+
+                                <Typography variant='subtitle2' sx={{ mb: 0.5, mt: 2 }}>
+                                    导出
+                                </Typography>
+                                <SettingRow
+                                    label='导出全部笔记（JSON）'
+                                    description='笔记、文件夹、标签与关联打包成一份 JSON；不含图片附件。'
+                                >
+                                    <Button
+                                        size='small'
+                                        startIcon={<FileDownloadIcon fontSize='small' />}
+                                        data-data-action='export-all'
+                                        onClick={data.onExportAll}
+                                    >
+                                        下载 JSON
+                                    </Button>
+                                </SettingRow>
+
+                                <Typography variant='subtitle2' sx={{ mb: 0.5, mt: 2 }}>
+                                    维护
+                                </Typography>
+                                {data.onPruneAttachments && (
+                                    <SettingRow
+                                        label='清理未引用附件'
+                                        description='删除不再出现在任何笔记正文里的图片，释放存储；正在使用的图片不受影响。'
+                                    >
+                                        <Button
+                                            size='small'
+                                            startIcon={<DeleteSweepIcon fontSize='small' />}
+                                            data-data-action='prune'
+                                            onClick={() => setConfirmKind("prune")}
+                                        >
+                                            清理
+                                        </Button>
+                                    </SettingRow>
+                                )}
+                                <SettingRow
+                                    label='清空回收站'
+                                    description='永久删除回收站里的全部笔记，不可恢复。'
+                                >
+                                    <Button
+                                        size='small'
+                                        color='error'
+                                        data-data-action='empty-trash'
+                                        onClick={() => setConfirmKind("trash")}
+                                    >
+                                        清空
+                                    </Button>
+                                </SettingRow>
+                            </Box>
                         ) : (
                             // 分享列表（inkstone 设置里同名那一页）：列出所有已分享的笔记 ——
                             // 链接、剩余有效期、创建/更新时间，以及复制/打开/管理/撤销四个动作。
@@ -634,7 +809,29 @@ export default function NotesSettingsDialog({
                                                     mb: 1,
                                                 }}
                                             >
-                                                <Typography variant='body2' sx={{ fontWeight: 600, mb: 0.25 }}>
+                                                <Typography
+                                                    variant='body2'
+                                                    component='button'
+                                                    type='button'
+                                                    data-share-title={item.note_id}
+                                                    onClick={() => {
+                                                        // 点标题跳回编辑器（inkstone 的 visitNote）
+                                                        onOpenNote?.(item.note_id);
+                                                        onClose();
+                                                    }}
+                                                    sx={{
+                                                        fontWeight: 600,
+                                                        mb: 0.25,
+                                                        display: "block",
+                                                        bgcolor: "transparent",
+                                                        border: "none",
+                                                        font: "inherit",
+                                                        p: 0,
+                                                        cursor: "pointer",
+                                                        textAlign: "left",
+                                                        "&:hover": { color: "var(--accent)" },
+                                                    }}
+                                                >
                                                     {item.title || "（无标题）"}
                                                 </Typography>
                                                 <Typography
@@ -686,8 +883,9 @@ export default function NotesSettingsDialog({
                                                         startIcon={<TuneIcon fontSize='small' />}
                                                         data-share-action='manage'
                                                         onClick={() => {
-                                                            onOpenNote?.(item.note_id);
-                                                            onClose();
+                                                            // 2026-10-08 照 inkstone 的「管理」：打开该笔记的
+                                                            // 分享设置（有效期/重生成/撤销），不再是跳回编辑器。
+                                                            setManagingId(item.note_id);
                                                         }}
                                                     >
                                                         管理
@@ -728,7 +926,82 @@ export default function NotesSettingsDialog({
                         </Button>
                     </Box>
                 </Box>
-            </Box>
-        </Dialog>
+                </Box>
+
+                {/* 「管理」打开的分享设置（叠在设置弹窗上，inkstone 的 SharePanel 同位）；
+                    关掉时顺带刷新分享列表（有效期/撤销可能变了） */}
+                {managingId !== null && shareApi && (
+                    <NoteShareDialog
+                        id={managingId}
+                        api={shareApi}
+                        onClose={() => {
+                            setManagingId(null);
+                            void reloadShares();
+                        }}
+                    />
+                )}
+
+                {/* 数据页的两个危险操作二次确认 */}
+                {confirmKind === "trash" && (
+                    <ConfirmDialog
+                        open
+                        danger
+                        title='清空回收站？'
+                        description='回收站里的全部笔记将被永久删除，无法恢复。'
+                        confirmText='清空'
+                        onConfirm={async () => {
+                            try {
+                                await data?.onEmptyTrash();
+                                onNotify?.("回收站已清空", "success");
+                            } catch (error) {
+                                onNotify?.(
+                                    "清空失败：" + (error instanceof Error ? error.message : "未知错误"),
+                                    "error"
+                                );
+                                throw error; // ConfirmDialog 契约：reject 保持打开
+                            }
+                        }}
+                        onClose={() => setConfirmKind(null)}
+                    />
+                )}
+                {confirmKind === "prune" && data?.onPruneAttachments && (
+                    <ConfirmDialog
+                        open
+                        danger
+                        title='清理未引用附件？'
+                        description='只删除不再出现在任何笔记正文里的图片；正在使用的图片不受影响。'
+                        confirmText='清理'
+                        onConfirm={async () => {
+                            try {
+                                const cur = dataRef.current;
+                                if (!cur?.onPruneAttachments) return;
+                                const r = await cur.onPruneAttachments();
+                                onNotify?.(
+                                    r.removed
+                                        ? `已清理 ${r.removed} 个附件，释放 ${fmtBytes(r.freedBytes)}`
+                                        : "没有需要清理的附件",
+                                    "success"
+                                );
+                                // 重新拉统计
+                                const cur2 = dataRef.current;
+                                if (cur2?.onLoadAttachments) {
+                                    const list = await cur2.onLoadAttachments();
+                                    setAttStats({
+                                        count: list.length,
+                                        bytes: list.reduce((s, a) => s + (a.size || 0), 0),
+                                    });
+                                }
+                            } catch (error) {
+                                onNotify?.(
+                                    "清理失败：" + (error instanceof Error ? error.message : "未知错误"),
+                                    "error"
+                                );
+                                throw error;
+                            }
+                        }}
+                        onClose={() => setConfirmKind(null)}
+                    />
+                )}
+            </Dialog>
     );
 }

@@ -62,6 +62,15 @@ export interface NotesApi {
         | { ok: true; storage: AttachmentStorage; objectKey: string }
         | { ok: false; status: 404; error: string }
     >;
+    /**
+     * 清理未引用附件（2026-10-08，设置 → 数据 → 维护，照 inkstone）：
+     * 扫全部笔记正文（含回收站/归档，还原后图片还要能用），把 id 没在任何
+     * 正文里出现过的附件删掉。**只删 D1 记录** —— 对象由 worker 路由拿着
+     * 返回的 storage/object_key 去删（与 deleteAttachment 同一约定）。
+     */
+    pruneAttachments(): Promise<{
+        removed: { id: string; size: number; storage: AttachmentStorage; object_key: string }[];
+    }>;
     /** 写一条附件记录（D1 只有元数据） */
     createAttachment(row: {
         id: string;
@@ -580,6 +589,44 @@ export const notesImpl: NotesApi = {
                 .run()) as { meta?: { changes?: number } };
             if (!del.meta?.changes) return { ok: false, status: 404, error: "附件不存在" };
             return { ok: true, storage: row.storage as AttachmentStorage, objectKey: row.object_key };
+        });
+    },
+
+    pruneAttachments: async function (this: NavigationAPI): Promise<{
+        removed: { id: string; size: number; storage: AttachmentStorage; object_key: string }[];
+    }> {
+        await this.migrate();
+        return this.withSchemaRetry(async () => {
+            // 全量附件元数据（object_key 只在服务端链路里用，前端列表会被剥掉、
+            // 但 prune 本身只在 worker 侧跑，拿得到）。
+            const atts = await this.db
+                .prepare(
+                    `SELECT id, size, storage, object_key FROM attachments ${this.scopeSql(false)}`
+                )
+                .all<{ id: string; size: number; storage: string; object_key: string }>();
+            // 正文全集（含回收站 / 归档）：还原后图片还得能用，所以判据是
+            // 「任何一篇的正文里都没出现这个 id」，不是「所属笔记已删除」。
+            const rows = await this.db
+                .prepare(`SELECT content FROM notes ${this.scopeSql(false)}`)
+                .all<{ content: string | null }>();
+            const corpus = (rows.results || []).map(r => r.content || "").join("\n");
+            const removed = (atts.results || []).filter(a => !corpus.includes(a.id));
+            for (const a of removed) {
+                await this.db
+                    .prepare(`DELETE FROM attachments WHERE id = ?1 ${this.scopeSql(true)}`)
+                    // scopeSql(true) 追加 " AND user_id = ?"：参数末尾要跟上 uid
+                    // （单账号部署 uid 为 NULL 时 scopeSql/scopeParams 都返回空，正好）。
+                    .bind(...this.scopeParams([a.id]))
+                    .run();
+            }
+            return {
+                removed: removed.map(a => ({
+                    id: a.id,
+                    size: a.size,
+                    storage: a.storage as AttachmentStorage,
+                    object_key: a.object_key,
+                })),
+            };
         });
     },
 

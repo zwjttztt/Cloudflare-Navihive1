@@ -389,6 +389,7 @@ test("工具栏补齐 inkstone 式下拉：链接 / 图片 / 笔记工具 / 块"
 });
 
 test("新建笔记按钮在左栏文件夹标题右侧与中间栏右上角（顶栏那个移除）", () => {
+    setWide();
     mountPanel([note({ id: 1, title: "甲", content: "" })]);
     const newBtns = [...document.querySelectorAll('button[aria-label="新建笔记"]')];
     // 两处：左栏文件夹标题右侧（和新建文件夹并排）+ 中间栏右上角（inkstone 同样两处）
@@ -430,6 +431,7 @@ test("标题层级下拉：点 H2 是把 `## ` 加在当前行开头", () => {
 });
 
 test("左栏导航「收藏」只看置顶的那几条", () => {
+    setWide();
     mountPanel([
         note({ id: 1, title: "置顶的", content: "a", pinned: true }),
         note({ id: 2, title: "普通的", content: "b", pinned: false }),
@@ -567,6 +569,7 @@ test("置顶的笔记单独排在最上面一组（inkstone 的 pinned 组）", 
 });
 
 test("阶段二：顶栏能收起 / 展开左栏", () => {
+    setWide();
     mountPanel([note({ id: 1, title: "甲", content: "" })]);
     assert.ok(document.querySelector("[data-note-list]"), "默认列表在");
     const collapse = document.querySelector('button[aria-label="收起笔记列表"]');
@@ -584,6 +587,7 @@ test("阶段二：顶栏能收起 / 展开左栏", () => {
 });
 
 test("阶段二：搜索框右侧挂 ⌘K 提示", () => {
+    setWide();
     mountPanel([note({ id: 1, title: "甲", content: "" })]);
     const input = document.querySelector("input[aria-label='搜索笔记']") as HTMLInputElement;
     assert.ok(input.parentElement!.textContent!.includes("⌘K"), "要有 ⌘K 角标");
@@ -594,6 +598,7 @@ test("阶段二：搜索框右侧挂 ⌘K 提示", () => {
 // ---------- 阶段三：回收站 / 归档 / 未归类 ----------
 
 test("左栏视图齐全（全部/最近/收藏/未归类 + 底部归档/回收站，搜索不再占一行）", () => {
+    setWide();
     mountPanel([note({ id: 1, title: "甲", content: "" })]);
     const views = [...document.querySelectorAll("button[data-view]")].map(b =>
         b.getAttribute("data-view")
@@ -628,6 +633,7 @@ test("左栏视图齐全（全部/最近/收藏/未归类 + 底部归档/回收�
 });
 
 test("阶段三：回收站视图列出被删的笔记，并给还原 / 彻底删除两个动作", () => {
+    setWide();
     const onLoadTrash = async () => {};
     mountPanel([note({ id: 1, title: "甲", content: "" })], {
         trashedNotes: [{ recycleId: 42, title: "删掉的那条", deletedAt: Date.now() }],
@@ -646,6 +652,7 @@ test("阶段三：回收站视图列出被删的笔记，并给还原 / 彻底�
 });
 
 test("阶段三：进回收站视图才去拉回收站（别在首屏就发请求）", () => {
+    setWide();
     let calls = 0;
     mountPanel([note({ id: 1, title: "甲", content: "" })], {
         onLoadTrash: async () => {
@@ -660,6 +667,7 @@ test("阶段三：进回收站视图才去拉回收站（别在首屏就发请�
 });
 
 test("阶段三：回收站里不能编辑笔记（它已经不在 notes 表里了）", () => {
+    setWide();
     mountPanel([note({ id: 1, title: "甲", content: "内容" })], {
         trashedNotes: [{ recycleId: 42, title: "删掉的", deletedAt: Date.now() }],
     });
@@ -675,6 +683,7 @@ test("阶段三：回收站里不能编辑笔记（它已经不在 notes 表里�
 });
 
 test("阶段三：归档的笔记从「全部」里隐去，只在「归档」视图露面", () => {
+    setWide();
     mountPanel([
         note({ id: 1, title: "正常的", content: "a" }),
         note({ id: 2, title: "收起来的", content: "b", archived: true }),
@@ -690,6 +699,7 @@ test("阶段三：归档的笔记从「全部」里隐去，只在「归档」�
 });
 
 test("未归类 = 没有归到任何文件夹的笔记（不是「没挂站点」）", () => {
+    setWide();
     // ⚠️ 判据在 2026-10-06 改过：原来筛的是 site_id（没挂在站点上），
     // 而记事本根本没有「把笔记挂到站点」的入口，site_id 永远是 null ——
     // 于是「未归类」跟「全部」完全等价，左栏两个计数一模一样。
@@ -715,6 +725,7 @@ test("未归类 = 没有归到任何文件夹的笔记（不是「没挂站点�
 });
 
 test("左栏「未归类」的计数与视图内容一致（两处判据不许各写各的）", () => {
+    setWide();
     mountPanel([
         note({ id: 1, title: "甲", content: "", folder_id: null }),
         note({ id: 2, title: "乙", content: "", folder_id: 5 }),
@@ -733,6 +744,7 @@ test("左栏「未归类」的计数与视图内容一致（两处判据不许�
 // ---------- 本轮修掉的三个界面问题 ----------
 
 test("折叠左栏时搜索框和视图导航要一起藏掉（只藏列表会文字重叠）", () => {
+    setWide();
     mountPanel([note({ id: 1, title: "甲", content: "" })]);
     act(() => {
         (document.querySelector('button[aria-label="收起笔记列表"]') as HTMLElement).click();
@@ -1460,6 +1472,7 @@ test("插入表格 / 独立公式：第二次点击也要能撤销", () => {
 });
 
 test("归档 / 回收站挪到左下角固定区，且那里有账号与设置（inkstone 布局）", () => {
+    setWide();
     mountPanel([note({ id: 1, title: "甲", content: "" })], {
         accountName: "zwj",
     });
@@ -1482,6 +1495,7 @@ test("归档 / 回收站挪到左下角固定区，且那里有账号与设置�
 });
 
 test("没传账号时显示未登录，设置按钮仍然可用（记事本自带设置）", () => {
+    setWide();
     mountPanel([note({ id: 1, title: "甲", content: "" })]);
     const footer = document.querySelector('[data-nav-footer="1"]')!;
     assert.ok(footer, "左下角固定区还要在");
@@ -1550,7 +1564,7 @@ test("选中文件夹：中间笔记列不渲染，笔记内联在文件夹下�
     );
 });
 
-test("桌面关中栏 → 拖窄 → 左侧显示导航栏（不是图标轨），点视图按钮回列表列", () => {
+test("桌面关中栏 → 拖窄 → 左区让位给编辑区，导航抽屉自动展开（inkstone 顶栏模式）", () => {
     setWide();
     mountPanel([note({ id: 1, title: "A", content: "x" })]);
     assert.ok(document.querySelector('[data-list-col="1"]'), "桌面档默认要显示列表列");
@@ -1565,27 +1579,31 @@ test("桌面关中栏 → 拖窄 → 左侧显示导航栏（不是图标轨）�
         "点了收起后列表列要消失（桌面态，导航列还在）"
     );
 
-    // 把窗口拖窄跨过 1180 → tablet：关中栏态带进去，导航列要**顶上来**
-    // （2026-10-08 用户要求：关闭后是导航栏，不要收成图标轨）。
+    // 把窗口拖窄跨过 1180 → tablet（inkstone 模式）：左区整个让位给编辑区，
+    // 导航抽屉自动展开（展开态的导航栏，不是 44px 图标轨）。
     act(() => {
         setViewport(900);
         window.dispatchEvent(new Event("resize"));
     });
-    const nav = document.querySelector('[data-nav-col="1"]') as HTMLElement | null;
-    assert.ok(nav, "窄屏关中栏后导航列要顶上来");
-    assert.notEqual(nav!.style.display, "none", "导航列不能是 display:none");
     assert.ok(
         !document.querySelector('[data-list-col="1"]'),
-        "列表列此时不渲染（与导航列二选一）"
+        "tablet 关中栏后左区让位（列表列不渲染）"
     );
     assert.ok(
-        !document.querySelector("[data-collapsed-rail]"),
-        "不要收成 44px 图标轨"
+        !document.querySelector('[data-nav-col="1"]'),
+        "导航列不再内联挂载（tablet 走抽屉）"
     );
+    const drawer = document.querySelector("[data-nav-drawer='1']");
+    assert.ok(drawer, "导航抽屉要自动展开（展开态的导航栏）");
+    assert.ok(
+        drawer!.querySelector("button[data-view='all']"),
+        "抽屉里有视图导航"
+    );
+    assert.ok(!document.querySelector("[data-collapsed-rail]"), "不要 44px 图标轨");
 
-    // 导航列里的视图按钮都带 setMiddleHidden(false)：点「所有笔记」回列表列
-    const allBtn = document.querySelector("button[data-view='all']") as HTMLElement;
-    assert.ok(allBtn, "导航列里要有「所有笔记」入口");
+    // 点抽屉里的视图 → 列表列回来（抽屉也关掉）
+    const allBtn = drawer!.querySelector("button[data-view='all']") as HTMLElement;
+    assert.ok(allBtn, "抽屉里要有「所有笔记」入口");
     act(() => allBtn.click());
     assert.ok(
         document.querySelector('[data-list-col="1"]'),
@@ -1593,7 +1611,7 @@ test("桌面关中栏 → 拖窄 → 左侧显示导航栏（不是图标轨）�
     );
 });
 
-test("聚焦文件夹 → 拖窄 → 导航栏显示且内联笔记还在（不再是孤岛）", () => {
+test("聚焦文件夹 → 拖窄 → 左区让位，顶栏按钮能展开导航抽屉（内联笔记在里面）", () => {
     setWide();
     mountPanel(
         [
@@ -1627,19 +1645,28 @@ test("聚焦文件夹 → 拖窄 → 导航栏显示且内联笔记还在（不�
         setViewport(900);
         window.dispatchEvent(new Event("resize"));
     });
-    // folderFocus 也是 listHidden：窄屏里导航列同样要顶上来，内联笔记就在里面
-    const nav = document.querySelector('[data-nav-col="1"]') as HTMLElement | null;
-    assert.ok(nav, "窄屏聚焦文件夹后导航列要顶上来");
-    assert.notEqual(nav!.style.display, "none", "导航列不能是 display:none");
-    const inline = document.querySelector('[data-folder-notes="1"]');
-    assert.ok(inline, "内联笔记区要跟着导航列一起可见");
+    // folderFocus 也是 listHidden：tablet 里左区同样让位，导航进抽屉
+    assert.ok(
+        !document.querySelector('[data-list-col="1"]'),
+        "tablet 聚焦文件夹后左区让位"
+    );
+    assert.ok(document.querySelector("[data-tablet-bar='1']"), "tablet 顶部 44px 栏在");
+    const toggle = document.querySelector(
+        'button[data-tool="nav-drawer"]'
+    ) as HTMLElement;
+    assert.ok(toggle, "顶栏要有「导航栏」按钮");
+    act(() => toggle.click());
+    const drawer = document.querySelector("[data-nav-drawer='1']");
+    assert.ok(drawer, "顶栏按钮能展开导航抽屉");
+    const inline = drawer!.querySelector('[data-folder-notes="1"]');
+    assert.ok(inline, "内联笔记区在抽屉里");
     assert.ok(
         inline!.querySelector('[data-folder-note="1"]'),
         "文件夹里的笔记还在内联区"
     );
     // 点「所有笔记」退出文件夹聚焦 → 列表列回来
-    const allBtn = document.querySelector("button[data-view='all']") as HTMLElement;
-    assert.ok(allBtn, "导航列里要有「所有笔记」入口");
+    const allBtn = drawer!.querySelector("button[data-view='all']") as HTMLElement;
+    assert.ok(allBtn, "抽屉里要有「所有笔记」入口");
     act(() => allBtn.click());
     assert.ok(
         document.querySelector('[data-list-col="1"]'),
@@ -1647,10 +1674,11 @@ test("聚焦文件夹 → 拖窄 → 导航栏显示且内联笔记还在（不�
     );
 });
 
-test("窄屏点「收起列表」→ 导航栏顶上来（不是图标轨），点视图按钮切回列表列", () => {
+test("tablet 里点「收起列表」→ 导航抽屉自动展开（展开态），点视图切回列表列", () => {
     setViewport(900); // 直接以 tablet 档挂载
     mountPanel([note({ id: 1, title: "A", content: "x" })]);
     assert.ok(document.querySelector('[data-list-col="1"]'), "tablet 默认显示列表列");
+    assert.ok(document.querySelector("[data-tablet-bar='1']"), "tablet 顶部 44px 栏在");
 
     const collapseBtn = document.querySelector(
         'button[data-tool="collapse-list"]'
@@ -1658,25 +1686,25 @@ test("窄屏点「收起列表」→ 导航栏顶上来（不是图标轨），�
     assert.ok(collapseBtn, "窄屏列表头部也有「收起列表」按钮");
     act(() => collapseBtn.click());
 
-    const nav = document.querySelector('[data-nav-col="1"]') as HTMLElement | null;
-    assert.ok(nav, "窄屏关中栏后导航列要顶上来");
-    assert.notEqual(nav!.style.display, "none", "导航列不能是 display:none");
     assert.ok(
         !document.querySelector('[data-list-col="1"]'),
-        "列表列不渲染（与导航列二选一）"
+        "列表列让位（左区整个不渲染）"
     );
     assert.ok(
         !document.querySelector("[data-collapsed-rail]"),
         "不要收成 44px 图标轨（2026-10-08 用户明确不要）"
     );
+    const drawer = document.querySelector("[data-nav-drawer='1']");
+    assert.ok(drawer, "导航抽屉自动展开（展开态）");
 
-    const allBtn = document.querySelector("button[data-view='all']") as HTMLElement;
-    assert.ok(allBtn, "导航列里要有「所有笔记」入口");
+    const allBtn = drawer!.querySelector("button[data-view='all']") as HTMLElement;
+    assert.ok(allBtn, "抽屉里要有「所有笔记」入口");
     act(() => allBtn.click());
     assert.ok(document.querySelector('[data-list-col="1"]'), "点视图按钮后列表列回来");
 });
 
 test("点内联笔记能打开它；文件夹视图里新建笔记会落进该文件夹", async () => {
+    setWide();
     const created: (Partial<Note> | undefined)[] = [];
     mountPanel(
         [note({ id: 1, title: "夹里的笔记", content: "x", folder_id: 7 })],
@@ -1761,6 +1789,7 @@ test("状态栏给出当前笔记所在文件夹（inkstone 也有这个位置�
 });
 
 test("文件夹菜单补齐 inkstone 那几项：在此新建笔记 / 移动到… / 前后移动", async () => {
+    setWide();
     const created: (Partial<Note> | undefined)[] = [];
     const moves: { id: number; parent: number | null }[] = [];
     const reorders: { id: number; dir: number }[] = [];
@@ -1866,6 +1895,7 @@ test("插入内容以 textarea 的 DOM 值为准，不能读 draft", () => {
 // ---------- 阶段三收尾：左栏两列 + 文件夹 / 标签 ----------
 
 test("左栏真的是两列：导航列与列表列各自独立", () => {
+    setWide();
     mountPanel([note({ id: 1, title: "甲", content: "" })]);
     const nav = document.querySelector("[data-nav-col]");
     const list = document.querySelector("[data-list-col]");
@@ -1924,6 +1954,7 @@ test("选中某个文件夹 → 列表只留这个文件夹里的笔记", () => 
 });
 
 test("导航列要自己滚（整块一起滚会把搜索框顶出视野）", () => {
+    setWide();
     // 静态守卫：jsdom 里 MUI 的 sx 编译成 hash 类名，量不到 overflow-y，
     // 只能把结论钉在源码上（和「左栏容器不能带 flex:1」同一套路）。
     const clean = stripComments(
@@ -1931,7 +1962,9 @@ test("导航列要自己滚（整块一起滚会把搜索框顶出视野）", ()
     );
     // ⚠️ 源码里写的是单引号 `data-nav-col='1'`：找错引号会拿到 -1，
     // slice(-1, -1) 是个空串，断言会报「没这个属性」而不是「这一列没滚」。
-    const navCol = clean.slice(clean.indexOf("data-nav-col='1'"), clean.indexOf("data-list-col='1'"));
+    // 2026-10-08 起内容抽成了 navInner（滚动盒在里面），切片要从 navInner 开始，
+    // 到 data-list-col 为止 —— 这样才同时盖住滚动盒与外层定宽盒。
+    const navCol = clean.slice(clean.indexOf("const navInner = ("), clean.indexOf("data-list-col='1'"));
     assert.ok(navCol.includes("overflowY: \"auto\""), "导航列得住自己那一列滚");
     assert.ok(
         navCol.includes("flexShrink: 0"),
@@ -1940,6 +1973,7 @@ test("导航列要自己滚（整块一起滚会把搜索框顶出视野）", ()
 });
 
 test("没有 folderTags（老部署）时退化成只有那六个视图，不能崩", () => {
+    setWide();
     mountPanel([note({ id: 1, title: "甲", content: "" })]);
     assert.deepEqual(
         [...document.querySelectorAll("button[data-view]")].map(b => b.getAttribute("data-view")),
@@ -2737,6 +2771,7 @@ function rightClick(el: Element) {
 // ---------- 1. 文件夹外观 ----------
 
 test("文件夹外观：右键菜单里能改图标与颜色，保存走 onStyleFolder", async () => {
+    setWide();
     const styled: { id: number; patch: Record<string, unknown> }[] = [];
     mountPanel([note({ id: 1, title: "甲", content: "a" })], {
         folderTags: folderTagsOf({
@@ -2768,6 +2803,7 @@ test("文件夹外观：右键菜单里能改图标与颜色，保存走 onStyle
 });
 
 test("文件夹外观：脏数据（不在清单里的 icon/color）不能把左栏画崩", () => {
+    setWide();
     mountPanel([note({ id: 1, title: "甲", content: "a" })], {
         folderTags: folderTagsOf({
             folders: [
@@ -2802,6 +2838,7 @@ test("搜索框聚焦即进入全文搜索（不再需要单独的「搜索」�
 // ---------- 3. 未归类笔记直接列在左栏，右键可移动到文件夹 ----------
 
 test("未归类的笔记直接列在左栏文件夹树下（不占中间栏）", () => {
+    setWide();
     mountPanel([note({ id: 1, title: "散着的", content: "a", folder_id: null })], {
         folderTags: folderTagsOf(),
     });
@@ -2813,6 +2850,7 @@ test("未归类的笔记直接列在左栏文件夹树下（不占中间栏）",
 });
 
 test("左栏未归类笔记右键 → 「移动到文件夹…」滑出右侧抽屉，选了就真归进去", async () => {
+    setWide();
     const updates: { id: number; patch: Record<string, unknown> }[] = [];
     mountPanel([note({ id: 1, title: "散着的", content: "a", folder_id: null })], {
         onUpdate: async (id: number, patch: Record<string, unknown>) => {
@@ -3000,6 +3038,7 @@ test("列表行右键：完整菜单（复制三件套 / 侧边打开 / 副本 /
 });
 
 test("左栏内联笔记右键：精简菜单（没有复制/导出那一堆）", async () => {
+    setWide();
     mountPanel([note({ id: 1, title: "甲", content: "a", folder_id: null })], {
         folderTags: folderTagsOf(),
     });
@@ -3019,6 +3058,7 @@ test("左栏内联笔记右键：精简菜单（没有复制/导出那一堆）"
 // ---------- 7. 记事本自己的设置 ----------
 
 test("左下角设置打开的是记事本专用设置（外观 / 编辑器两个分页）", async () => {
+    setWide();
     mountPanel([note({ id: 1, title: "甲", content: "a" })]);
     await act(async () =>
         (document.querySelector("button[data-tool='settings']") as HTMLElement).click()
@@ -3056,6 +3096,7 @@ test("左下角设置打开的是记事本专用设置（外观 / 编辑器两�
 });
 
 test("设置改动落到 localStorage（下次打开还在）", async () => {
+    setWide();
     globalThis.localStorage?.removeItem("notes.uiSettings");
     mountPanel([note({ id: 1, title: "甲", content: "a" })]);
     await act(async () =>
@@ -3294,16 +3335,14 @@ test("右键菜单锚在鼠标位置（不再钉在行左上角）", () => {
     );
 });
 
-test("顶栏只压在最左栏：返回在导航列，分享/版本/大纲/反链收进更多操作", async () => {
+test("桌面头部平铺高频操作：分享/版本/反链/导出直接显示（inkstone 同款），菜单不再重复", async () => {
+    setWide();
     mountPanel([note({ id: 1, title: "甲", content: "a" })]);
     const nav = document.querySelector("[data-nav-col='1']")!;
     assert.ok(
         nav.querySelector("button[aria-label='返回导航站']"),
         "返回导航站要落在最左的导航列顶部（顶栏已不再横跨三栏）"
     );
-    // P0-3（2026-10-07）：「大纲」和「收藏」从「更多操作」提到头部常驻 —— inkstone 的头部
-    // 就是平铺一排图标（Workspace.tsx:425-472），这两个是随手要用的，
-    // 先点开菜单再点一项太绕。其余（分享/版本/反链）仍留在菜单里。
     assert.ok(
         document.querySelector("button[data-tool='outline']"),
         "大纲要提到头部常驻（inkstone 同款）"
@@ -3312,17 +3351,23 @@ test("顶栏只压在最左栏：返回在导航列，分享/版本/大纲/反�
         document.querySelector("button[data-tool='pin']"),
         "收藏要提到头部常驻（inkstone 同款）"
     );
-    for (const tool of ["share", "revisions", "backlinks"]) {
-        assert.equal(
-            document.querySelector(`button[data-tool='${tool}']`),
-            null,
-            `${tool} 仍收在更多操作里（不是高频动作，不占头部位置）`
+    // 2026-10-08 照 inkstone Workspace 头部：反链 / 版本历史 / 导出 / 分享也直接平铺
+    const actions = document.querySelector("[data-desktop-actions='1']");
+    assert.ok(actions, "桌面平铺组要在（窄屏不渲染）");
+    for (const tool of ["backlinks", "revisions", "export", "share"]) {
+        assert.ok(
+            actions.querySelector(`button[data-tool='${tool}']`),
+            `${tool} 要直接显示在头部（inkstone 同款）`
         );
     }
-    // 但功能没丢：都在「更多操作」里
+    // 桌面端「更多操作」里不再重复这几项（只剩复制/归档/移动/删除等）
     await openNoteMore();
-    for (const op of ["share", "revisions", "outline", "backlinks"]) {
-        assert.ok(document.querySelector(`[data-active-op='${op}']`), `更多操作里要有 ${op}`);
+    for (const op of ["share", "revisions", "backlinks", "export", "outline"]) {
+        assert.equal(
+            document.querySelector(`[data-active-op='${op}']`),
+            null,
+            `桌面更多操作里不该再有 ${op}（已平铺到头部）`
+        );
     }
     // 模式切换跟着编辑区走（标题行右端）。
     // ⚠️ 别只看 note-more 的父节点：2026-10-07 给模式键加了外框（分段控件）、
@@ -3333,13 +3378,6 @@ test("顶栏只压在最左栏：返回在导航列，分享/版本/大纲/反�
         assert.ok(
             [...modes.querySelectorAll("button")].some(b => b.getAttribute("aria-label") === label),
             `模式控件里要有「${label}」`
-        );
-    }
-    const header = modes.parentElement!;
-    for (const label of ["编辑", "分栏", "预览", "更多操作"]) {
-        assert.ok(
-            [...header.querySelectorAll("button")].some(b => b.getAttribute("aria-label") === label),
-            `标题行右端要有「${label}」按钮`
         );
     }
     // 分段控件要有外框（inkstone 那种「框起来的一组」）。
@@ -3358,7 +3396,25 @@ test("顶栏只压在最左栏：返回在导航列，分享/版本/大纲/反�
     );
 });
 
+test("窄屏头部放不下一排：平铺组不渲染，分享/版本/反链/导出仍收在「更多操作」里", async () => {
+    setViewport(900); // tablet
+    mountPanel([note({ id: 1, title: "甲", content: "a" })]);
+    assert.equal(
+        document.querySelector("[data-desktop-actions='1']"),
+        null,
+        "窄屏平铺组不渲染（标题行放不下，走「⋯」）"
+    );
+    await openNoteMore();
+    for (const op of ["share", "revisions", "backlinks", "export", "outline"]) {
+        assert.ok(
+            document.querySelector(`[data-active-op='${op}']`),
+            `窄屏更多操作里要有 ${op}`
+        );
+    }
+});
+
 test("「收起笔记列表」挪到左下角、设置左边，且收起后还有返回按钮", async () => {
+    setWide();
     mountPanel([note({ id: 1, title: "甲", content: "a" })]);
     const footer = document.querySelector("[data-nav-footer='1']")!;
     const collapse = footer.querySelector("[data-tool='collapse-pane']")!;
@@ -3430,6 +3486,7 @@ test("侧边栏：自己的查看模式 + 更多操作 + 常显关闭键", async
 });
 
 test("设置扩容：外观与编辑器新增项都在，且真能落盘生效", async () => {
+    setWide();
     globalThis.localStorage?.setItem(
         "notes.uiSettings",
         JSON.stringify({
@@ -3571,6 +3628,7 @@ test("行菜单 / 移动抽屉 / 外观弹窗不能被包在中栏的条件渲�
 });
 
 test("折叠态：顶部是返回，展开箭头在左下角", async () => {
+    setWide();
     mountPanel([note({ id: 1, title: "甲", content: "a" })]);
     await act(async () =>
         (document.querySelector("[data-tool='collapse-pane']") as HTMLElement).click()
@@ -3678,6 +3736,7 @@ test("侧栏：三模式 + 常显关闭键 + 自己的更多操作", async () =>
 });
 
 test("设置里新增「分享列表」页：搜索 + 复制/打开/管理/撤销", async () => {
+    setWide();
     const shares = [
         { note_id: 1, title: "常用入口", token: "a".repeat(64), expires_at: null, updated_at: "2026-10-01 10:00" },
         { note_id: 2, title: "待办清单", token: "b".repeat(64), expires_at: Date.now() + 86_400_000, updated_at: "2026-10-02 10:00" },
@@ -3717,6 +3776,72 @@ test("设置里新增「分享列表」页：搜索 + 复制/打开/管理/撤�
     });
     assert.equal(document.querySelectorAll("[data-share-row]").length, 1, "搜索要能过滤");
     assert.match(document.body.textContent ?? "", /待办清单/);
+});
+
+test("分享列表点「管理」打开该笔记的分享设置（inkstone 的 SharePanel 同语义）", async () => {
+    setWide();
+    const shares = [
+        { note_id: 1, title: "常用入口", token: "a".repeat(64), expires_at: null, updated_at: "" },
+    ];
+    let asked = 0;
+    mountPanel([note({ id: 1, title: "常用入口", content: "a" })], {
+        shareApi: {
+            getNoteShare: async () => {
+                asked += 1;
+                return { note_id: 1, token: "a".repeat(64), expires_at: null } as never;
+            },
+            createNoteShare: async () => null,
+            revokeNoteShare: async () => ({ success: true }),
+            listNoteShares: async () => shares,
+        } as never,
+    });
+    await act(async () => (document.querySelector("button[data-tool='settings']") as HTMLElement).click());
+    await act(async () => (document.querySelector("[data-settings-tab='shares']") as HTMLElement).click());
+    await act(async () => {
+        await new Promise(r => setTimeout(r, 30));
+    });
+    const manage = document.querySelector("[data-share-action='manage']") as HTMLElement;
+    assert.ok(manage, "要有「管理」按钮");
+    await act(async () => manage.click());
+    // 2026-10-08 照 inkstone：管理 = 打开该笔记的分享设置弹窗（不再是跳回编辑器）
+    assert.match(document.body.textContent ?? "", /只读分享/, "点「管理」要打开分享设置弹窗");
+    assert.ok(asked > 0, "弹窗要真的去读该笔记的分享状态");
+});
+
+test("设置新增「数据」页：概览统计 + 导出 + 维护入口", async () => {
+    setWide();
+    mountPanel(
+        [note({ id: 1, title: "甲", content: "a" }), note({ id: 2, title: "乙", content: "b" })],
+        {
+            uploadApi: {
+                uploadAttachment: async () => ({
+                    id: "x",
+                    url: "",
+                    filename: "x.png",
+                    mime: "image/png",
+                    size: 1,
+                }),
+                listAttachments: async () => [
+                    { id: "x", size: 2048, filename: "x.png", mime: "image/png" },
+                    { id: "y", size: 1024, filename: "y.png", mime: "image/png" },
+                ],
+                pruneAttachments: async () => ({ removed: 2, freedBytes: 3072 }),
+            },
+        }
+    );
+    await act(async () => (document.querySelector("button[data-tool='settings']") as HTMLElement).click());
+    await act(async () => (document.querySelector("[data-settings-tab='data']") as HTMLElement).click());
+    assert.ok(document.querySelector("[data-settings-data='1']"), "数据页要能打开");
+    await act(async () => {
+        await new Promise(r => setTimeout(r, 30));
+    });
+    // 概览：附件统计异步到位后显示 2 个附件、占用 3 KB
+    assert.match(document.body.textContent ?? "", /附件/, "概览里要有附件格");
+    assert.ok(document.body.textContent!.includes("3 KB"), "附件占用要显示（2KB+1KB）");
+    // 三个动作入口都在
+    assert.ok(document.querySelector("[data-data-action='export-all']"), "导出 JSON 入口在");
+    assert.ok(document.querySelector("[data-data-action='prune']"), "清理未引用附件入口在");
+    assert.ok(document.querySelector("[data-data-action='empty-trash']"), "清空回收站入口在");
 });
 
 test("工具栏：每个下拉都有说人话的 tooltip，菜单项不再只写术语", () => {
@@ -4095,34 +4220,35 @@ test("三栏不能靠写死的像素宽度 + MUI 的 md（用户报：缩放后�
         "要用 usePanelBreakpoint 的三档断点（与 inkstone 的 1180 / 768 一致）"
     );
     // 两屏切换与「回到列表」按钮必须用同一个判据，
-    // 否则会出现「按钮在、列表也在」的矛盾态
+    // 否则会出现「按钮在、列表也在」的矛盾态；2026-10-08 起 tablet 关中栏
+    // （middleHidden）也在这同一个 display 里让整个左区让位（inkstone 模式）。
     assert.ok(
-        src.includes('bp === "mobile" && !mobileDetail ? "none" : "flex"'),
-        "编辑区的两屏切换要用 bp === 'mobile'"
+        src.includes('(bp === "mobile" && mobileDetail) || (bp === "tablet" && middleHidden)'),
+        "左区显隐：mobile 两屏切换 + tablet 关中栏让位，同一个判据"
+    );
+    // 导航列在 tablet 起不再内联挂载（2026-10-08 inkstone 模式）：顶部 44px 栏
+    // + 272px 导航抽屉，桌面列与抽屉共用同一份 navInner（互斥挂载）。
+    assert.ok(
+        src.includes("{!narrowLayout && ("),
+        "导航列 tablet 起不再挂载（走顶栏 + 抽屉）"
     );
     assert.ok(
-        src.includes('mobileDetail && bp === "mobile"'),
-        "「回到列表」按钮要和两屏切换用同一个判据"
+        src.includes("data-tablet-bar='1'") &&
+            src.includes("data-nav-drawer='1'") &&
+            src.includes("setNavDrawerOpen"),
+        "tablet 要有顶部 44px 栏 + 导航抽屉（inkstone AppShell 同款）"
     );
-    // 导航列在 tablet 起要收起来，否则三栏挤不开
-    assert.ok(
-        src.includes('display: narrowLayout ? "none" : "flex"'),
-        "导航列在 tablet/mobile 要 display:none（inkstone 的 showNav = !isMobile && !isTablet）"
-    );
-    // 收掉导航列后搜索框不能跟着消失 —— 必须搬到列表列头部再挂一份。
-    // ⚠️ 数的是**调用处**（2 处）。定义那行是
-    // `const renderSearchField = (inputRef: …) => (`，而 readNotesPage() 会先
-    // stripComments()，JSX 里的 `{/* … */}` 注释被剥掉后定义行也只剩调用点可数 ——
-    // 数成 3 会永远红。别用「定义+调用」去凑数。
+    // 收掉导航列后搜索框不能跟着消失：tablet 在顶栏、mobile 在列表列头部，
+    // 导航列（navInner）里还有一份 —— 3 处调用，互斥挂载、各用各的 ref。
     const searchDefs = (src.match(/renderSearchField\(/g) ?? []).length;
     assert.equal(
         searchDefs,
-        2,
-        "renderSearchField 要有 2 处调用：导航列顶部（searchRef）+ 窄屏时列表列头部（searchRefNarrow）"
+        3,
+        "renderSearchField 要有 3 处调用：导航列顶部（searchRef）+ tablet 顶栏 + mobile 列表列头部（searchRefNarrow）"
     );
     assert.ok(
-        src.includes("{narrowLayout && (") && src.includes("{renderSearchField(searchRefNarrow)}"),
-        "列表列头部要挂一份搜索框（否则窄屏完全搜不了笔记）"
+        src.includes("{bp === \"mobile\" && (") && src.includes("{renderSearchField(searchRefNarrow)}"),
+        "mobile 列表列头部要挂一份搜索框（否则 mobile 完全搜不了笔记）"
     );
     // ⚠️ 两个位置必须各用各的 ref：共用一个 inputRef 会把整个测试文件堆爆内存
     // （FATAL: heap out of memory —— 1992 条断言全过但进程直接死掉）。

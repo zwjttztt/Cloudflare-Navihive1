@@ -141,7 +141,17 @@ export default function NotesOverlay({
             // 而不是点了才报一个看不懂的错误。
             uploadApi={
                 typeof api.uploadAttachment === "function"
-                    ? { uploadAttachment: api.uploadAttachment.bind(api) }
+                    ? {
+                          uploadAttachment: api.uploadAttachment.bind(api),
+                          // 附件统计 / 清理（2026-10-08 设置→数据）：老部署的 api 没有
+                          // 这两个方法，可选透传，设置里相应能力自动隐藏。
+                          ...(typeof api.listAttachments === "function"
+                              ? { listAttachments: api.listAttachments.bind(api) }
+                              : {}),
+                          ...(typeof api.pruneAttachments === "function"
+                              ? { pruneAttachments: api.pruneAttachments.bind(api) }
+                              : {}),
+                      }
                     : undefined
             }
             notes={notes}

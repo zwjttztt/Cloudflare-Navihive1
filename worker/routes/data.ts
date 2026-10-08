@@ -371,6 +371,18 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
         // 用户刷新后看到图裂了却删不掉。
         await deleteAttachmentObject(ctx.env, ok.storage, ok.objectKey);
         return Response.json({ ok: true });
+    } else if (path === "notes/attachments/prune" && method === "POST") {
+        // 清理未引用附件（2026-10-08，设置 → 数据 → 维护，照 inkstone）：
+        // 先删 D1 记录再删对象，与单条 DELETE 同一约定（反了会泄漏或悬空）。
+        const limited = await writeGate();
+        if (limited) return limited;
+        const { removed } = await api.pruneAttachments();
+        for (const a of removed) {
+            await deleteAttachmentObject(ctx.env, a.storage, a.object_key);
+        }
+        return Response.json(
+            { removed: removed.length, freedBytes: removed.reduce((s, a) => s + a.size, 0) }
+        );
     } else if (path === "notes/folders" && method === "POST") {
         const limited = await writeGate();
         if (limited) return limited;

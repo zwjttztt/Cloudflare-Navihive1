@@ -149,6 +149,26 @@ test("data: 协议的图片也挡掉（只放行真的图片类型）", async ()
     assert.equal(host.querySelectorAll("img").length, 0);
 });
 
+test("本站上传的附件图片（/api/notes/attachments/）渲染成真 <img>", async () => {
+    // 2026-10-08 用户报「上传图片后预览窗看不见图片」：上传落进正文的是
+    // 相对路径 /api/notes/attachments/<uuid>.png，之前白名单只放行 http(s)/data/blob，
+    // 图片整张变成了 alt 文本。同源相对路径在 <img> 上会自动带登录 cookie，安全。
+    const host = await renderToDom("![QQ浏览器截图](/api/notes/attachments/db841f8c-1234.png)");
+    const img = host.querySelector("img");
+    assert.ok(img, "上传的附件图片要渲染成 <img>，不是一行 alt 文本");
+    assert.equal(img!.getAttribute("src"), "/api/notes/attachments/db841f8c-1234.png");
+    assert.equal(img!.getAttribute("alt"), "QQ浏览器截图");
+});
+
+test("其它相对路径的图片仍然挡掉（白名单只放开本站附件）", async () => {
+    const host = await renderToDom("![a](/etc/passwd.png) ![b](javascript:alert(1)) ![c](//evil.com/x.png)");
+    assert.equal(
+        host.querySelectorAll("img").length,
+        0,
+        "非 /api/notes/attachments/ 的相对路径不放行"
+    );
+});
+
 test("渲染层源码里不出现任何 innerHTML sink", async () => {
     // 静态守卫：这是 CSP 兼容的**前提**。运行时测不到「将来有人又加了 sink」，
     // 所以这一条必须在源码层面盯着。
