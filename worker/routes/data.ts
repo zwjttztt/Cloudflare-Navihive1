@@ -291,6 +291,17 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
         const headers = { "Cache-Control": "no-store" };
         if (!Number.isSafeInteger(id) || id <= 0) return Response.json({ error: "无效的ID" }, { status: 400, headers });
         if (method === "GET") return Response.json(await api.getNoteShare(id), { headers });
+        if (method === "PUT") {
+            // 更新有效期但保留 token（链接不变）—— inkstone 的「更新设置」同语义
+            const limited = await writeGate();
+            if (limited) return limited;
+            const { days } = await request.json() as { days?: unknown };
+            if (days !== null && days !== 1 && days !== 7 && days !== 30) {
+                return Response.json({ error: "有效期仅支持1、7、30天或永久" }, { status: 400, headers });
+            }
+            const share = await api.updateNoteShare(id, days);
+            return Response.json(share ?? { error: "分享不存在" }, { status: share ? 200 : 404, headers });
+        }
         if (method === "POST" || method === "DELETE") {
             const limited = await writeGate();
             if (limited) return limited;

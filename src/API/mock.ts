@@ -423,6 +423,9 @@ export class MockNavigationClient {
     async revokeNoteShare(_id: number): Promise<{ success: boolean }> {
         return { success: true };
     }
+    async updateNoteShare(_id: number, _days: number | null): Promise<import("./types").NoteShare | null> {
+        throw new Error("演示模式不支持公开分享，请连接真实账号");
+    }
 
     async listNotes(): Promise<Note[]> {
         await new Promise(resolve => setTimeout(resolve, 200));

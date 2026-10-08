@@ -17,6 +17,7 @@
  *   - 受保护路由必须在鉴权中间件**之后**，且排在「强制改密」闸门之后。
  */
 import { BodyLimitError, readBoundedBytes } from "./util";
+import { ATTACHMENT_MAX_BYTES } from "./attachments";
 import { NavigationAPI } from "../src/API/navigationApi";
 import { runScheduledTasks } from "./cron";
 import {
@@ -77,9 +78,23 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
     try {
         // 所有 API 写入统一在解析前限制实际流量，不依赖可缺失的 Content-Length。
         if (!["GET", "HEAD"].includes(request.method)) {
+            // ⚠️ 附件上传**必须单独放额度**（2026-10-08 修「图片传上去却看不见」）：
+            // 它送的是**原始图片字节**，而通用额度只有 256KB —— 一张手机截图就
+            // 轻松超过，readBoundedBytes 直接抛 413，上传压根没进路由。
+            // 前端拿到 413 只提示一句「上传失败」，用户看到的就是「图传上去了但
+            // 预览里没有」。额度与 worker/attachments.ts 的单文件上限一致。
+            const attachment =
+                request.method === "POST" && url.pathname === "/api/notes/attachments";
             const large = /\/api\/(import|webdav\/upload)$/.test(url.pathname);
             const report = /\/api\/(report-error|csp-report)$/.test(url.pathname);
-            const bytes = await readBoundedBytes(request.body, large ? 10 * 1024 * 1024 : report ? 8192 : 256 * 1024);
+            const maxBytes = attachment
+                ? ATTACHMENT_MAX_BYTES
+                : large
+                  ? 10 * 1024 * 1024
+                  : report
+                    ? 8192
+                    : 256 * 1024;
+            const bytes = await readBoundedBytes(request.body, maxBytes);
             request = new Request(request, { body: bytes.byteLength ? bytes : null });
         }
         const api = new NavigationAPI(env);

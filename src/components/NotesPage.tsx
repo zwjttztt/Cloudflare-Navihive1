@@ -150,6 +150,8 @@ export interface NotesPageProps {
             { id: string; size: number; filename: string; mime: string }[]
         >;
         pruneAttachments?(): Promise<{ removed: number; freedBytes: number }>;
+        /** 附件管理器里逐条删除（inkstone 的 AttachmentManager 同款） */
+        deleteAttachment?(id: string): Promise<{ ok: boolean }>;
     };
     notes: Note[];
     onClose: () => void;
@@ -2915,6 +2917,14 @@ export default function NotesPage({
         const s = draft?.content ?? "";
         return s.replace(/\s+/g, "").length;
     }, [draft?.content]);
+    /**
+     * 全站正文总字数（设置→数据→概览的「总字数」，inkstone 的 stats.words 同格）。
+     * 与状态栏那套算法一致（去空白后数字符），两处不许各算各的。
+     */
+    const noteWordTotal = useMemo(
+        () => notes.reduce((sum, n) => sum + (n.content ?? "").replace(/\s+/g, "").length, 0),
+        [notes]
+    );
     /** 当前笔记所在文件夹名（状态栏的位置指示，inkstone 也有这一项） */
     const activeFolderName = useMemo(() => {
         const fid = active?.folder_id;
@@ -3066,9 +3076,6 @@ export default function NotesPage({
                     flexShrink: 0,
                 }}
             >
-                <IconButton aria-label='返回导航站' onClick={onClose} size='small'>
-                    <ArrowBackIcon fontSize='small' />
-                </IconButton>
                 <Typography
                     variant='subtitle2'
                     component='div'
@@ -3076,6 +3083,11 @@ export default function NotesPage({
                 >
                     记事本
                 </Typography>
+                {/* 返回箭头放右上角（2026-10-08 用户要求）：左上角留给标题，
+                    退出动作靠右，与右上角关闭的弹窗习惯一致 */}
+                <IconButton aria-label='返回导航站' onClick={onClose} size='small'>
+                    <ArrowBackIcon fontSize='small' sx={{ transform: "scaleX(-1)" }} />
+                </IconButton>
             </Box>
             {/* 可滚动的上半：搜索框 + 视图导航 + 文件夹 + 标签 */}
             <Box sx={{ flex: 1, minHeight: 0, overflowY: "auto", overflowX: "hidden" }}>
@@ -4208,6 +4220,8 @@ export default function NotesPage({
                         onNotify={onNotify}
                         activeId={active?.id ?? null}
                         onUploadImage={handleUpload}
+                        // 预览模式下编辑器不挂载：上传会成功但插不进正文（见 canInsert 的说明）
+                        canInsert={pane !== "preview"}
                     />
                     )}
 
@@ -4952,7 +4966,15 @@ export default function NotesPage({
             data-notes-density={uiSettings.density}
             style={{ "--accent": uiSettings.accent } as React.CSSProperties}
         >
-            {shareId !== null && shareApi && <NoteShareDialog key={shareId} id={shareId} api={shareApi} onClose={() => setShareId(null)} />}
+            {shareId !== null && shareApi && (
+                <NoteShareDialog
+                    key={shareId}
+                    id={shareId}
+                    api={shareApi}
+                    noteTitle={notes.find(n => n.id === shareId)?.title}
+                    onClose={() => setShareId(null)}
+                />
+            )}
             {/* 设置：记事本自己的外观 / 编辑器设置（不是导航站那个弹窗） */}
             <NotesSettingsDialog
                 open={settingsOpen}
@@ -4967,6 +4989,9 @@ export default function NotesPage({
                         notes: notes.length,
                         folders: folders.length,
                         tags: tags.length,
+                        // 总字数（inkstone 概览里的同一格）：中文按字、英文按词，
+                        // 与状态栏那套算法一致（两处不能各算各的）。
+                        words: noteWordTotal,
                         trashed: Array.isArray(trashedNotes) ? trashedNotes.length : null,
                     },
                     onExportAll: exportAllData,
@@ -4976,6 +5001,9 @@ export default function NotesPage({
                         : undefined,
                     onPruneAttachments: uploadApi?.pruneAttachments
                         ? () => uploadApi.pruneAttachments!()
+                        : undefined,
+                    onDeleteAttachment: uploadApi?.deleteAttachment
+                        ? (id: string) => uploadApi.deleteAttachment!(id).then(() => undefined)
                         : undefined,
                 }}
                 onNotify={onNotify}
@@ -5710,18 +5738,38 @@ export default function NotesPage({
                 anchor='left'
                 open={bp === "tablet" && navDrawerOpen}
                 onClose={() => setNavDrawerOpen(false)}
-                slotProps={{ paper: { sx: { width: 272, bgcolor: "var(--bg-sunken)" } } }}
+                slotProps={{
+                    paper: {
+                        sx: {
+                            width: 272,
+                            // ⚠️ 必须用**实底色**，不能用 --bg-sunken：它是 rgba(15,23,42,0.035)
+                            // 的近透明色，做内嵌列的背景没问题，做浮层纸面会让整个抽屉
+                            // 透明（2026-10-08 用户报「页面透明虚化」）。
+                            bgcolor: (t: { palette: { mode: string } }) =>
+                                t.palette.mode === "light" ? "#eef1f5" : "#171b26",
+                        },
+                    },
+                    backdrop: {
+                        // 遮罩用深色实色，不用毛玻璃（导航站的全局样式会给浮层加
+                        // backdrop-filter，叠在记事本上就成了「透明虚化」）。
+                        sx: {
+                            backgroundColor: "rgba(15, 23, 42, 0.45)",
+                            backdropFilter: "none !important",
+                        },
+                    },
+                }}
             >
                 <Box
                     data-nav-drawer='1'
                     sx={{
                         width: "100%",
-                        height: "100%",
-                        display: "flex",
-                        flexDirection: "column",
-                        py: 1,
-                        overflow: "hidden",
-                    }}
+                    height: "100%",
+                    display: "flex",
+                    flexDirection: "column",
+                    py: 1,
+                    overflow: "hidden",
+                    bgcolor: "transparent",
+                }}
                 >
                     {navInner}
                 </Box>
@@ -6074,6 +6122,7 @@ function MarkdownToolbar({
     onNotify,
     activeId,
     onUploadImage,
+    canInsert,
     onInsertFold,
     onInsertTabs,
     onInsertDivider,
@@ -6133,7 +6182,17 @@ function MarkdownToolbar({
      * 不用起真实后端。
      */
     onUploadImage: (file: File, noteId: number | null) => Promise<{ url: string; filename: string; size: number }>;
+    /**
+     * 编辑器是否真的能接住插入（默认 true）。
+     *
+     * ⚠️ 「预览」模式下编辑器不挂载，insertAtCursor 会**静默 return** ——
+     * 图传上去了正文却没变，用户看到的就是「预览窗里没有这张图」
+     * （2026-10-08 用户连报两轮「上传后看不见图片」的一条真因）。
+     * 主工具栏在预览模式下要传 false：先挡住并说明，别让人白传一次。
+     */
+    canInsert?: boolean;
 }) {
+    const canInsertOk = canInsert !== false;
     const [headingAnchor, setHeadingAnchor] = useState<HTMLElement | null>(null);
     const [linkAnchor, setLinkAnchor] = useState<HTMLElement | null>(null);
     const [imageAnchor, setImageAnchor] = useState<HTMLElement | null>(null);
@@ -6179,6 +6238,19 @@ function MarkdownToolbar({
 
     const handleImagePicked = useCallback(
         async (file: File) => {
+            // ⚠️ 没有编辑器（预览模式）时 insertAtCursor 会**静默 return**：
+            // 图传上去了、正文没变，用户看到的就是「预览窗里没有这张图」。
+            // 所以这里先把话说清楚，而不是让它悄悄过去。
+            if (!canInsertOk) {
+                onNotify?.("预览模式插不进正文：先切回「编辑」或「分栏」再传图", "error");
+                return;
+            }
+            // 先本地挡一道：与后端 ATTACHMENT_MAX_BYTES 一致（25MB）。
+            // 不挡的话要等传完 25MB 才收到 413，用户干等半天还以为卡住了。
+            if (file.size > 25 * 1024 * 1024) {
+                onNotify?.("这张图超过 25MB，换一张小一点的再传", "error");
+                return;
+            }
             setUploading(true);
             try {
                 const uploaded = await onUploadImage(file, activeId ?? null);
@@ -6195,12 +6267,16 @@ function MarkdownToolbar({
                         if (blob.type.startsWith("image/")) {
                             const dataUri = await blobToDataUri(blob);
                             onInsert(`![${uploaded.filename}](`, ")", dataUri);
+                            onNotify?.(`已插入图片「${uploaded.filename}」`, "success");
                             return;
                         }
                         console.warn("附件地址返回的不是图片，改为插入链接", blob.type);
                     }
                 }
                 onInsert(`![${uploaded.filename}](`, ")", uploaded.url);
+                // ⚠️ 必须给一句反馈：之前插入完一点动静都没有，用户在预览里
+                // 没立刻找到图，就以为「上传没生效」（2026-10-08 用户连报两轮）。
+                onNotify?.(`已插入图片「${uploaded.filename}」`, "success");
             } catch (error) {
                 onNotify?.(
                     error instanceof Error ? error.message : "图片上传失败",
@@ -6210,7 +6286,7 @@ function MarkdownToolbar({
                 setUploading(false);
             }
         },
-        [activeId, onInsert, onNotify, onUploadImage]
+        [activeId, canInsertOk, onInsert, onNotify, onUploadImage]
     );
 
     /**
@@ -6535,12 +6611,14 @@ function MarkdownToolbar({
                     title={
                         uploading
                             ? '正在上传…'
-                            : '从本机选一张图片插进来（≤25MB，PNG / JPEG / GIF / WebP / AVIF）'
+                            : !canInsertOk
+                              ? '预览模式插不进正文：先切回「编辑」或「分栏」再传图'
+                              : '从本机选一张图片插进来（≤25MB，PNG / JPEG / GIF / WebP / AVIF）'
                     }
                 >
                 <MenuItem
                     data-image-op='upload'
-                    disabled={uploading}
+                    disabled={uploading || !canInsertOk}
                     onClick={() => {
                         setImageAnchor(null);
                         pickImage();

@@ -757,20 +757,28 @@ test("折叠左栏时搜索框和视图导航要一起藏掉（只藏列表会�
     );
 });
 
-test("顶栏：折叠按钮不能挨着「返回导航站」（两个无文字箭头靠太近会误按）", () => {
+test("顶栏：返回箭头放右上角，且不能挨着折叠按钮（两个无文字箭头靠太近会误按）", () => {
     mountPanel([note({ id: 1, title: "甲", content: "" })]);
     const src = readFileSync(
         resolve(findProjectDir(), "src/components/NotesPage.tsx"),
         "utf-8"
     );
-    // 源码里两者的距离：返回键之后应当先出现标题 Typography，折叠按钮在它右边
-    const backAt = src.indexOf("aria-label='返回导航站'");
-    const foldAt = src.indexOf("收起笔记列表", backAt);
-    const titleAt = src.indexOf("记事本", backAt);
-    assert.ok(backAt > 0 && foldAt > backAt, "折叠按钮要在返回键之后");
+    // 判据：导航列头部那一行的**内部顺序** —— 标题在左、返回箭头在右（最右一个元素）。
+    // 原来返回箭头在最左边、紧跟折叠按钮，两个无文字箭头挨在一起容易误按
+    // （2026-10-08 用户要求把返回箭头挪到右上角）。
+    const headAt = src.indexOf("const navInner = (");
+    assert.ok(headAt > 0, "navInner 要还在（导航列与抽屉共用同一份内容）");
+    const head = src.slice(headAt, headAt + 1200);
+    const titleAt = head.indexOf("记事本");
+    const backAt = head.indexOf("aria-label='返回导航站'");
+    assert.ok(titleAt > 0, "导航列头部要有「记事本」标题");
+    assert.ok(backAt > 0, "导航列头部要有返回箭头");
+    assert.ok(titleAt < backAt, "标题要在返回箭头左边（返回箭头挪到右上角）");
+    // 返回箭头是该行最后一个交互元素：它之后到本行 Box 闭合之间不能再有别的按钮
+    const tail = head.slice(backAt, head.indexOf("</Box>", backAt));
     assert.ok(
-        titleAt > backAt && titleAt < foldAt,
-        "折叠按钮要挪到标题右边那一组，不能紧贴返回键"
+        !/收起笔记列表|展开笔记列表/.test(tail),
+        "折叠按钮不能紧挨着返回箭头"
     );
 });
 
@@ -3803,8 +3811,16 @@ test("分享列表点「管理」打开该笔记的分享设置（inkstone 的 S
     const manage = document.querySelector("[data-share-action='manage']") as HTMLElement;
     assert.ok(manage, "要有「管理」按钮");
     await act(async () => manage.click());
-    // 2026-10-08 照 inkstone：管理 = 打开该笔记的分享设置弹窗（不再是跳回编辑器）
-    assert.match(document.body.textContent ?? "", /只读分享/, "点「管理」要打开分享设置弹窗");
+    // 2026-10-08 照 inkstone：管理 = 打开该笔记的分享设置弹窗（SharePanel 版式）
+    assert.match(
+        document.body.textContent ?? "",
+        /分享笔记/,
+        "点「管理」要打开分享设置弹窗"
+    );
+    assert.ok(
+        document.querySelector("input[aria-label='公开链接']"),
+        "弹窗里要给出可复制的公开链接"
+    );
     assert.ok(asked > 0, "弹窗要真的去读该笔记的分享状态");
 });
 
@@ -3842,6 +3858,113 @@ test("设置新增「数据」页：概览统计 + 导出 + 维护入口", async
     assert.ok(document.querySelector("[data-data-action='export-all']"), "导出 JSON 入口在");
     assert.ok(document.querySelector("[data-data-action='prune']"), "清理未引用附件入口在");
     assert.ok(document.querySelector("[data-data-action='empty-trash']"), "清空回收站入口在");
+});
+
+test("数据页概览有「总字数」（inkstone 的 stats.words 同格，不能只数笔记条数）", async () => {
+    setWide();
+    mountPanel([
+        note({ id: 1, title: "甲", content: "你好 world" }),
+        note({ id: 2, title: "乙", content: "ab cd" }),
+    ]);
+    await act(async () => (document.querySelector("button[data-tool='settings']") as HTMLElement).click());
+    await act(async () => (document.querySelector("[data-settings-tab='data']") as HTMLElement).click());
+    const stat = (label: string) =>
+        document.querySelector(`[data-data-stat='${label}']`)?.textContent ?? "";
+    assert.ok(stat("总字数"), "概览里要有「总字数」这一格");
+    // 「你好 world」去空白 = 7 字符，「ab cd」去空白 = 4 字符 → 合计 11
+    assert.ok(stat("总字数").includes("11"), `总字数应为 11，实际是「${stat("总字数")}」`);
+    assert.ok(stat("笔记").includes("2"), "笔记条数仍是 2");
+});
+
+test("数据页「附件」区能打开管理器，逐条删除走二次确认", async () => {
+    setWide();
+    let deleted: string | null = null;
+    mountPanel([note({ id: 1, title: "甲", content: "a" })], {
+        uploadApi: {
+            uploadAttachment: async () => ({
+                id: "x",
+                url: "",
+                filename: "x.png",
+                mime: "image/png",
+                size: 1,
+            }),
+            listAttachments: async () => [
+                { id: "att-1", size: 2048, filename: "截图.png", mime: "image/png" },
+            ],
+            deleteAttachment: async (id: string) => {
+                deleted = id;
+                return { ok: true };
+            },
+        },
+    });
+    await act(async () => (document.querySelector("button[data-tool='settings']") as HTMLElement).click());
+    await act(async () => (document.querySelector("[data-settings-tab='data']") as HTMLElement).click());
+    await act(async () => {
+        await new Promise(r => setTimeout(r, 30));
+    });
+    const manage = document.querySelector("[data-data-action='manage-attachments']") as HTMLElement;
+    assert.ok(manage, "数据页要有「管理附件」入口");
+    await act(async () => manage.click());
+    const row = document.querySelector("[data-attachment-row='att-1']");
+    assert.ok(row, "管理器里要列出这条附件");
+    assert.ok((row?.textContent ?? "").includes("截图.png"), "附件要显示文件名");
+    const del = document.querySelector("[data-attachment-action='delete']") as HTMLElement;
+    assert.ok(del, "每条附件要有删除按钮");
+    await act(async () => del.click());
+    // 删除是破坏性操作：必须弹二次确认，不能一点就删
+    assert.match(document.body.textContent ?? "", /删除这个附件/, "删除前要二次确认");
+    assert.equal(deleted, null, "确认前不能真的发出删除请求");
+    const confirmBtn = document.querySelector(
+        "[data-confirm-action='confirm']"
+    ) as HTMLElement;
+    assert.ok(confirmBtn, "确认弹窗里要有「删除」按钮");
+    await act(async () => {
+        await confirmBtn.click();
+        await new Promise(r => setTimeout(r, 30));
+    });
+    assert.equal(deleted, "att-1", "确认后才真的删除");
+});
+
+test("分享列表撤销链接要二次确认（inkstone 用 confirm，不能手滑即删）", async () => {
+    setWide();
+    let revoked = 0;
+    mountPanel([note({ id: 1, title: "常用入口", content: "a" })], {
+        shareApi: {
+            getNoteShare: async () => ({ note_id: 1, token: "a".repeat(64), expires_at: null } as never),
+            createNoteShare: async () => null,
+            revokeNoteShare: async () => {
+                revoked += 1;
+                return { success: true };
+            },
+            listNoteShares: async () => [
+                { note_id: 1, title: "常用入口", token: "a".repeat(64), expires_at: null },
+            ],
+        } as never,
+    });
+    await act(async () => (document.querySelector("button[data-tool='settings']") as HTMLElement).click());
+    await act(async () => (document.querySelector("[data-settings-tab='shares']") as HTMLElement).click());
+    await act(async () => {
+        await new Promise(r => setTimeout(r, 30));
+    });
+    // 行头的状态徽章（inkstone 的「生效中 / 已过期」）
+    assert.ok(
+        document.querySelector("[data-share-status='active']"),
+        "分享行要带生效中徽章（inkstone 同款行头）"
+    );
+    const revoke = document.querySelector("[data-share-action='revoke']") as HTMLElement;
+    assert.ok(revoke, "分享行要有撤销按钮");
+    await act(async () => revoke.click());
+    assert.match(document.body.textContent ?? "", /撤销这条公开链接/, "撤销前要二次确认");
+    assert.equal(revoked, 0, "确认前不能真的撤销");
+    const okBtn = document.querySelector(
+        "[data-confirm-action='confirm']"
+    ) as HTMLElement;
+    assert.ok(okBtn, "确认弹窗里要有「撤销链接」按钮");
+    await act(async () => {
+        await okBtn.click();
+        await new Promise(r => setTimeout(r, 30));
+    });
+    assert.equal(revoked, 1, "确认后才真的撤销");
 });
 
 test("工具栏：每个下拉都有说人话的 tooltip，菜单项不再只写术语", () => {
@@ -4589,5 +4712,96 @@ test("附件表随迁移建出来，且不下车（schema 12）", () => {
     assert.ok(
         /idx_attachments_user/.test(internals),
         "要有 user_id 索引（配额按 SUM(size) 算）"
+    );
+});
+
+// ---------------------------------------------------------------------------
+// 2026-10-08 第二轮：图片「传上去了却看不见」的三条链路守卫
+//   （a）上传通道的额度 —— 通用 256KB 会把一张普通截图直接判 413；
+//   （b）预览里 <img> 的带凭据回退 —— 取图挂在鉴权后面，匿名请求会 401；
+//   （c）413 的人话提示 —— 纯文本响应解析不出 message，否则只剩「API错误: 413」。
+// ---------------------------------------------------------------------------
+
+test("附件上传必须单独放开 body 额度（通用 256KB 会把普通截图判成 413）", () => {
+    const index = stripComments(
+        readFileSync(join(findProjectDir(), "worker", "index.ts"), "utf-8")
+    );
+    // ⚠️ 切片要**往前**取：额度是在调 readBoundedBytes **之前**算出来的
+    const at = index.indexOf("readBoundedBytes(request.body");
+    const block = index.slice(Math.max(0, at - 900), at + 400);
+    assert.ok(
+        /ATTACHMENT_MAX_BYTES/.test(block),
+        "附件上传要用 ATTACHMENT_MAX_BYTES 这个额度，不能吃通用的 256KB"
+    );
+    assert.ok(
+        /notes\/attachments/.test(block),
+        "额度分支要认 /api/notes/attachments 这个路径"
+    );
+    // 额度常量本身必须真的存在（别哪天删了还没人发现）
+    const store = stripComments(
+        readFileSync(join(findProjectDir(), "worker", "attachments.ts"), "utf-8")
+    );
+    assert.ok(
+        /export const ATTACHMENT_MAX_BYTES/.test(store),
+        "ATTACHMENT_MAX_BYTES 要从 attachments.ts 导出"
+    );
+});
+
+test("预览图片：直连失败时要带凭据再取一次，并把失败原因写出来", () => {
+    const src = readSrcFile("utils", "markdownToReact.tsx");
+    assert.ok(/function NoteImage/.test(src), "要有独立的 NoteImage 组件");
+    assert.ok(
+        /credentials: *"same-origin"/.test(src),
+        "取附件图必须显式带凭据（same-origin）—— <img> 那次请求不带时就是 401"
+    );
+    assert.ok(
+        /URL.createObjectURL/.test(src),
+        "拿到的字节要转 objectURL 再喂给 <img>"
+    );
+    // 失败不能是静默空白：把状态码 / 原因显示出来
+    assert.ok(
+        /图片加载失败/.test(src),
+        "加载不出来要给明确占位，而不是留一片空白"
+    );
+    assert.ok(
+        /服务器返回\s*\$\{response\.status\}/.test(src),
+        "占位里要带 HTTP 状态码（区分「没权限」和「图没了」）"
+    );
+    // 只有本站附件值得重试；外链跨域 fetch 反而更糟
+    assert.ok(
+        /isProtectedAttachment/.test(src),
+        "要区分「本站附件」与外链，别对外链也做 fetch 重试"
+    );
+});
+
+test("上传被拒（413）要说人话，不能只剩「API错误: 413」", () => {
+    const src = readSrcFile("API", "client.ts");
+    assert.ok(
+        /response\.status === 413/.test(src),
+        "client 要单独处理 413（worker 回的是纯文本，解析不出 message）"
+    );
+    assert.ok(
+        /太大|过大/.test(src),
+        "413 的提示要说明「内容太大」，而不是抛一个状态码"
+    );
+});
+
+test("预览模式下不能上传图片（编辑器不挂载，插了也是静默丢失）", () => {
+    const src = readNotesPage();
+    // 工具栏要收到 canInsert，且预览模式下是 false
+    assert.ok(
+        /canInsert=\{pane !== "preview"\}/.test(src),
+        "主工具栏要按 pane 传 canInsert（预览模式下编辑器不挂载）"
+    );
+    // 上传前必须挡一道并说明原因，不能「传完了才发现没插进去」
+    const picked = src.slice(src.indexOf("const handleImagePicked"), src.indexOf("const handleImagePicked") + 1200);
+    assert.ok(
+        /canInsertOk/.test(picked) && /预览模式插不进正文/.test(picked),
+        "预览模式上传要直接提示，不能让图白传一次"
+    );
+    // 菜单项也要置灰（不是点了才报错）
+    assert.ok(
+        /disabled=\{uploading \|\| !canInsertOk\}/.test(src),
+        "上传菜单项在预览模式下要置灰"
     );
 });

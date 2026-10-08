@@ -404,6 +404,17 @@ export class NavigationClient {
             );
         }
 
+        // 413：worker 的 readBoundedBytes 抛的，body 是纯文本（不是 JSON），
+        // 所以上面 reason 多半是空的。不给一句人话，用户看到的就是「API错误: 413」
+        // —— 上传图片时这就是「传上去了却什么都没有」的另一种面孔。
+        if (response.status === 413) {
+            throw new Error(
+                reason
+                    ? `${reason}（内容过大，服务器拒收）`
+                    : "内容太大，服务器拒收（HTTP 413）"
+            );
+        }
+
         throw new Error(reason ? `${reason} (HTTP ${response.status})` : `API错误: ${response.status}`);
     }
 
@@ -484,6 +495,10 @@ export class NavigationClient {
     }
     async revokeNoteShare(id: number): Promise<{ success: boolean }> {
         return this.request<{ success: boolean }>(`notes/${id}/share`, { method: "DELETE" });
+    }
+    /** 更新有效期但保留 token（链接不变）—— inkstone SharePanel 的「更新设置」 */
+    async updateNoteShare(id: number, days: number | null): Promise<NoteShare | null> {
+        return this.request<NoteShare | null>(`notes/${id}/share`, { method: "PUT", body: JSON.stringify({ days }) });
     }
 
     async listNotes(): Promise<Note[]> {

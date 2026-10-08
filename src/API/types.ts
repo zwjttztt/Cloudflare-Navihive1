@@ -67,6 +67,8 @@ export interface Note {
 export interface NoteShare {
     token: string;
     expires_at: number | null;
+    /** 所属笔记的创建时间（getNoteShare 顺带返回；公开页等其它链路可能没有） */
+    created_at?: string;
 }
 
 /**

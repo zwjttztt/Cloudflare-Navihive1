@@ -223,6 +223,7 @@ export default function ConfirmDialog({
                     color='inherit'
                     size='small'
                     disabled={busy}
+                    data-confirm-action='cancel'
                 >
                     {cancelText}
                 </Button>
@@ -233,6 +234,10 @@ export default function ConfirmDialog({
                     color={danger ? "error" : "primary"}
                     disableElevation
                     disabled={busy}
+                    // ⚠️ 测试要能**精确地**点到确认键：页面上常常同时存在另一个
+                    // 同名按钮（比如附件行里的「删除」），按文字找会点到错的那个，
+                    // 表现是「点了确认却什么都没发生」。
+                    data-confirm-action='confirm'
                     startIcon={busy ? <CircularProgress size={14} color='inherit' /> : undefined}
                 >
                     {busy ? busyText : confirmText}

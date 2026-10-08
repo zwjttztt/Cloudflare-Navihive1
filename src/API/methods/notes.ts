@@ -31,6 +31,12 @@ export interface NotesApi {
     listNoteShares(): Promise<NoteShareListItem[]>;
     createNoteShare(id: number, days: number | null): Promise<NoteShare | null>;
     revokeNoteShare(id: number): Promise<{ success: boolean }>;
+    /**
+     * 更新有效期但**保留 token**（链接不变）—— inkstone SharePanel 的
+     * 「更新设置」同语义；createNoteShare 会轮换令牌，不能拿它改设置。
+     * 没有有效期时返回 null（分享不存在）。
+     */
+    updateNoteShare(id: number, days: number | null): Promise<NoteShare | null>;
     getPublicNote(token: string): Promise<PublicNote | null>;
     listNotes(): Promise<Note[]>;
     getNote(id: number): Promise<Note | null>;
@@ -57,6 +63,8 @@ export interface NotesApi {
      */
     listAttachments(): Promise<NoteAttachment[]>;
     getAttachment(id: string): Promise<NoteAttachment | null>;
+    /** 公开分享页取图：附件必须属于一条**当前有效**的分享，否则 null（防越权枚举） */
+    getPublicAttachment(id: string): Promise<NoteAttachment | null>;
     /** 删记录。**不删对象** —— 对象由调用方拿着 storage/object_key 去删（见 worker/routes/data.ts） */
     deleteAttachment(id: string): Promise<
         | { ok: true; storage: AttachmentStorage; objectKey: string }
@@ -207,7 +215,7 @@ export const notesImpl: NotesApi = {
     },
     getNoteShare: async function (this: NavigationAPI, id: number) {
         await this.migrate();
-        return this.db.prepare(`SELECT s.token, s.expires_at FROM note_share s
+        return this.db.prepare(`SELECT s.token, s.expires_at, n.created_at AS created_at FROM note_share s
             JOIN notes n ON n.id = s.note_id AND n.uuid = s.note_uuid AND n.user_id IS s.user_id
             WHERE n.id = ? AND n.user_id IS ?`)
             .bind(id, this.currentUserId).first<NoteShare>();
@@ -230,6 +238,21 @@ export const notesImpl: NotesApi = {
         await this.db.prepare("DELETE FROM note_share WHERE note_id = ? AND user_id IS ?")
             .bind(id, this.currentUserId).run();
         return { success: true };
+    },
+    updateNoteShare: async function (this: NavigationAPI, id: number, days: number | null) {
+        if (days !== null && ![1, 7, 30].includes(days)) throw new Error("分享有效期无效");
+        await this.migrate();
+        const expires = days === null ? null : Date.now() + days * 86_400_000;
+        // UPDATE 保留 token：链接不变，只改有效期（与 createNoteShare 的
+        // 「重新生成会轮换令牌」刻意区分 —— 对应 inkstone 的「更新设置」）。
+        return this.db
+            .prepare(
+                `UPDATE note_share SET expires_at = ?
+                 WHERE note_id = ? AND user_id IS ?
+                 RETURNING token, expires_at`
+            )
+            .bind(expires, id, this.currentUserId)
+            .first<NoteShare>();
     },
     getPublicNote: async function (this: NavigationAPI, token: string) {
         if (!/^[a-f0-9]{64}$/.test(token)) return null;
@@ -526,6 +549,38 @@ export const notesImpl: NotesApi = {
             const row = await this.db
                 .prepare(`SELECT * FROM attachments WHERE id = ?1 ${this.scopeSql(true)}`)
                 .bind(id)
+                .first<Record<string, unknown>>();
+            return row ? ({ ...row } as unknown as NoteAttachment) : null;
+        });
+    },
+
+    /**
+     * 取一条**公开笔记里的**图片附件（2026-10-08）。
+     *
+     * 公开分享页是匿名访问的（/s/<token>），而 `GET notes/attachments/<id>` 挂在
+     * 鉴权后面 —— 访客拿不到图，笔记里就只剩一个「图片加载失败」占位。
+     * 但直接把取图放开是越权：任何知道 uuid 的人都能把所有人的图拉走。
+     * 所以这里多一道判定：这个附件必须属于**一条当前有效的分享**才能取。
+     * uuid 本身不可猜（128 位随机），链接持有者看到自己那份，边界与分享页一致。
+     */
+    getPublicAttachment: async function (
+        this: NavigationAPI,
+        id: string
+    ): Promise<NoteAttachment | null> {
+        if (!/^[0-9a-z-]{8,64}$/.test(id)) return null;
+        await this.migrate();
+        return this.withSchemaRetry(async () => {
+            const row = await this.db
+                .prepare(
+                    `SELECT a.* FROM attachments a
+                        JOIN note_share s ON s.note_id = a.note_id
+                     WHERE a.id = ?1
+                       AND (s.expires_at IS NULL OR s.expires_at > ?2)
+                       AND (s.user_id IS NULL OR EXISTS (
+                            SELECT 1 FROM users u
+                             WHERE u.id = s.user_id AND COALESCE(u.status, 'active') = 'active'))`
+                )
+                .bind(id, Date.now())
                 .first<Record<string, unknown>>();
             return row ? ({ ...row } as unknown as NoteAttachment) : null;
         });

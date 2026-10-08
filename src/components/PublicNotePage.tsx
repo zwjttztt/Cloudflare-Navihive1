@@ -28,7 +28,13 @@ export default function PublicNotePage({ token }: { token: string }) {
                 });
                 if (!response.ok) throw new Error("分享不存在、已过期或已撤销");
                 const note = await response.json() as { title: string; content: string };
-                const rendered = await renderMarkdownToReact(note.content);
+                // ⚠️ 正文里的图片路径要**改写**：存进笔记的是
+                // `/api/notes/attachments/<id>`，那条挂在登录鉴权后面 —— 访客没有
+                // cookie，取回来是 401，图就显示不出来。公开页走免鉴权那条通道
+                // （后端只放行「属于一条当前有效分享」的附件，见 getPublicAttachment）。
+                const rendered = await renderMarkdownToReact(
+                    note.content.replace(/\/api\/notes\/attachments\//g, "/api/note-shares/attachments/")
+                );
                 if (live) {
                     const shown = note.title || "无标题";
                     setTitle(shown);

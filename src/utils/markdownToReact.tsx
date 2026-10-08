@@ -23,7 +23,7 @@
 import type MarkdownIt from "markdown-it";
 import type { Options as MarkdownItOptions } from "markdown-it";
 import type Token from "markdown-it/lib/token.mjs";
-import type { ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { MathNode } from "./MathNode";
 import { MermaidNode } from "./MermaidNode";
 import { registerMath } from "./markdownMath";
@@ -217,6 +217,98 @@ const INLINE_TAGS: Record<string, string> = {
  * 早先我直接 `children.map()`，结果 strong / em / link **全都渲染不出来**
  * （open/close 都落进了 default 分支，只剩下一堆空 span）。
  */
+/** 图片附件是不是「本站那条需要登录的通道」—— 只有这类才值得带凭据重试 */
+const isProtectedAttachment = (src: string): boolean =>
+    /^\/api\/notes\/attachments\//.test(src);
+
+/**
+ * 预览里的图片（2026-10-08 第二轮）。
+ *
+ * 三态，每一态都能在界面上看出来，不再静默空白：
+ *  1. 正常：<img src> 直连（最省事，浏览器缓存也照常生效）。
+ *  2. 直连失败（onError）且是本站附件 → **带凭据 fetch 一次**，拿到字节转
+ *     objectURL 再显示。这条是给用户报的「上传后预览看不见图」兜底：
+ *     附件 GET 挂在鉴权后面（worker/routes/data.ts:347），`<img>` 那次请求
+ *     在某些部署下带不上会话（自定义域名 + 反代 / cookie 的 Secure 与
+ *     SameSite 组合都可能让它变成匿名请求 → 401），而 fetch 显式带
+ *     `credentials: "same-origin"` 就一定带得上。
+ *     外链图片不做这一步（跨域 fetch 多半反而更糟，直接判失败）。
+ *  3. 还是失败 → 虚线占位，**把状态码/原因写出来**，让人一眼看出是
+ *     「图没了 / 没权限 / 断网」，而不是渲染层坏了。
+ */
+function NoteImage({ src, alt }: { src: string; alt: string }) {
+    const [failed, setFailed] = useState<string | null>(null);
+    const [retrySrc, setRetrySrc] = useState<string | null>(null);
+    const objectUrlRef = useRef<string | null>(null);
+
+    // 组件卸载 / 换图时回收 objectURL，别把整张图留在内存里
+    useEffect(() => {
+        return () => {
+            if (objectUrlRef.current) {
+                URL.revokeObjectURL(objectUrlRef.current);
+                objectUrlRef.current = null;
+            }
+        };
+    }, [src]);
+
+    const retryWithCredentials = () => {
+        if (!isProtectedAttachment(src) || retrySrc) {
+            setFailed(alt || src);
+            return;
+        }
+        void (async () => {
+            try {
+                const response = await fetch(src, { credentials: "same-origin" });
+                if (!response.ok) {
+                    setFailed(`${alt || src}（服务器返回 ${response.status}）`);
+                    return;
+                }
+                const blob = await response.blob();
+                // 401 的登录页 / SPA 兜底也是 200，但类型是 text/html —— 别当图显示
+                if (!blob.type.startsWith("image/")) {
+                    setFailed(`${alt || src}（返回的不是图片：${blob.type || "未知类型"}）`);
+                    return;
+                }
+                const url = URL.createObjectURL(blob);
+                objectUrlRef.current = url;
+                setRetrySrc(url);
+            } catch {
+                setFailed(`${alt || src}（网络请求失败）`);
+            }
+        })();
+    };
+
+    if (failed !== null) {
+        return (
+            <span
+                data-image-failed='1'
+                style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 6,
+                    maxWidth: "100%",
+                    padding: "6px 10px",
+                    border: "1px dashed rgba(128,128,128,0.5)",
+                    borderRadius: 6,
+                    fontSize: 12,
+                    color: "rgba(128,128,128,0.9)",
+                }}
+            >
+                ⚠️ 图片加载失败：{failed}
+            </span>
+        );
+    }
+    return (
+        <img
+            src={retrySrc ?? src}
+            alt={alt}
+            loading='lazy'
+            onError={() => (retrySrc ? setFailed(alt || src) : retryWithCredentials())}
+            style={{ maxWidth: "100%", height: "auto", borderRadius: 4 }}
+        />
+    );
+}
+
 function renderInline(children: Token[] | null, c: Cursor): ReactNode {
     if (!children || children.length === 0) return null;
     const out: ReactNode[] = [];
@@ -380,18 +472,13 @@ function renderLeaf(tok: Token, c: Cursor): ReactNode {
             // 之前没放行 → 预览里整张图变成一行 alt 文本（2026-10-08 用户报
             // 「上传图片后预览窗看不见图片」）。同源相对路径在 <img> 上会自动带上
             // 登录 cookie（鉴权走 httpOnly cookie，GET 无 CSRF 问题），安全尺子不变。
-            if (!/^(https?:|\/api\/notes\/attachments\/|data:image\/(png|jpe?g|gif|webp);|blob:)/i.test(src)) {
+            // ⚠️ `/api/note-shares/attachments/...` 是**公开分享页**那条免鉴权通道
+            // （2026-10-08 补）：匿名访客没有登录 cookie，不能走上面那条；后端只放行
+            // 「属于一条当前有效分享」的附件，所以尺子依然收紧。
+            if (!/^(https?:|\/api\/(notes|note-shares)\/attachments\/|data:image\/(png|jpe?g|gif|webp);|blob:)/i.test(src)) {
                 return <span key={key}>{tok.content}</span>;
             }
-            return (
-                <img
-                    key={key}
-                    src={src}
-                    alt={tok.content || ""}
-                    loading='lazy'
-                    style={{ maxWidth: "100%", height: "auto", borderRadius: 4 }}
-                />
-            );
+            return <NoteImage key={key} src={src} alt={tok.content || ""} />;
         }
         case "html_inline":
         case "html_block":

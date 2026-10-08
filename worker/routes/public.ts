@@ -35,6 +35,14 @@ import {
     writeRecoverGuard,
 } from "../loginGuard";
 import {readBearerToken, readCookie, sessionCookieHeaders, TOKEN_COOKIE} from "../httpUtils";
+import { readAttachmentObject } from "../attachments";
+
+/** 公开取图那几个错误响应的统一头 */
+const PUBLIC_ATTACH_HEADERS = {
+    "Cache-Control": "no-store",
+    "Referrer-Policy": "no-referrer",
+    "X-Robots-Tag": "noindex, nofollow",
+} as const;
 import type { LoginInput, RecoveryInput, RegisterInput } from "../types";
 import { validateLogin } from "../validate";
 import type { RouteCtx } from "./types";
@@ -51,6 +59,31 @@ export async function handlePublicRoutes(ctx: RouteCtx): Promise<Response | null
         secureCookie,
         
     } = ctx;
+
+    // ⚠️ 取图分支必须排在「取笔记」**前面**：`note-shares/attachments/<id>` 也满足
+    // startsWith("note-shares/")，被上面那条抢走就会被当成 token 去查分享。
+    if (/^note-shares\/attachments\/[0-9a-z-]+$/.test(path) && method === "GET") {
+        const id = path.slice("note-shares/attachments/".length);
+        const found = await api.getPublicAttachment(id);
+        // 一律 404（不区分「没有」与「没分享」）：区分了就等于帮人枚举哪些 uuid 存在
+        if (!found || !found.object_key) {
+            return Response.json({ error: "附件不存在" }, { status: 404, headers: PUBLIC_ATTACH_HEADERS });
+        }
+        const bytes = await readAttachmentObject(env, found.storage, found.object_key);
+        if (!bytes) return Response.json({ error: "附件数据已丢失" }, { status: 410, headers: PUBLIC_ATTACH_HEADERS });
+        return new Response(bytes.buffer as ArrayBuffer, {
+            headers: {
+                "Content-Type": found.mime,
+                "Content-Length": String(bytes.byteLength),
+                "Content-Disposition": "inline",
+                // 能被公开链接访问到，但别让中间缓存把它留下来
+                "Cache-Control": "no-store",
+                "X-Content-Type-Options": "nosniff",
+                "Referrer-Policy": "no-referrer",
+                "X-Robots-Tag": "noindex, nofollow",
+            },
+        });
+    }
 
     if (path.startsWith("note-shares/") && method === "GET") {
         const note = await api.getPublicNote(path.slice("note-shares/".length));

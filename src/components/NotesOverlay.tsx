@@ -151,6 +151,10 @@ export default function NotesOverlay({
                           ...(typeof api.pruneAttachments === "function"
                               ? { pruneAttachments: api.pruneAttachments.bind(api) }
                               : {}),
+                          // 附件管理器里逐条删除（2026-10-08 设置→数据→附件）
+                          ...(typeof api.deleteAttachment === "function"
+                              ? { deleteAttachment: api.deleteAttachment.bind(api) }
+                              : {}),
                       }
                     : undefined
             }
