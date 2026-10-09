@@ -35,7 +35,7 @@ import { enforceAuth, type TokenSession } from "./routes/middleware";
 import { handleOpsRoutes } from "./routes/ops";
 import { handlePublicRoutes } from "./routes/public";
 import type { RouteCtx } from "./routes/types";
-import type { Env, ExportedHandler } from "./types";
+import type { Env, ExportedHandler, ScheduledController } from "./types";
 
 // 原来散在别处的导出，测试与别的文件还在引，从这儿原样转出去
 export { requestIsSecure } from "./httpUtils";
@@ -172,10 +172,12 @@ export default {
         return withSecurityHeaders(await handleRequest(request, env));
     },
     /**
-     * 每周定时任务（由 wrangler.jsonc 的 triggers.crons 触发）。
-     * 实现在 ./cron.ts：WebDAV 自动备份 + 死链巡检。
+     * 定时任务（wrangler.jsonc 的 triggers.crons 触发）。
+     * 实现在 ./cron.ts：导航页每周备份 + 记事本自动备份调度 + 死链巡检。
+     * 把本次命中的 cron 表达式传下去：导航备份只认自己的每周那条，
+     * 新加的每小时触发器是给记事本备份调度用的（到没到点由各账号频率配置判定）。
      */
-    async scheduled(_controller: unknown, env: Env): Promise<void> {
-        await runScheduledTasks(env);
+    async scheduled(controller: ScheduledController, env: Env): Promise<void> {
+        await runScheduledTasks(env, undefined, controller.cron);
     },
 } satisfies ExportedHandler;

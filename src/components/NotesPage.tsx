@@ -96,7 +96,14 @@ import SubjectIcon from "@mui/icons-material/Subject";
 import { Kbd } from "./Kbd";
 import { comboFor } from "../utils/editorShortcuts";
 import { readReadingPosition, writeReadingPosition } from "../utils/readingPosition";
-import type { Note, NoteFolder, NoteRevision, NoteTag } from "../API/http";
+import type {
+    Note,
+    NoteFolder,
+    NoteRevision,
+    NoteTag,
+    NotesBackupSavePatch,
+    NotesBackupState,
+} from "../API/http";
 import type { TrashedNote } from "../hooks/useNotes";
 import { renderMarkdownToReact, type RenderFeatures } from "../utils/markdownToReact";
 import type { NoteEmbedTarget } from "./NoteEmbedNode";
@@ -152,6 +159,19 @@ export interface NotesPageProps {
         pruneAttachments?(): Promise<{ removed: number; freedBytes: number }>;
         /** 附件管理器里逐条删除（inkstone 的 AttachmentManager 同款） */
         deleteAttachment?(id: string): Promise<{ ok: boolean }>;
+    };
+    /**
+     * 记事本备份能力（2026-10-09 照 inkstone 的 BackupSettings）。
+     *
+     * ⚠️ 与 shareApi / uploadApi 同一个套路：可选，NotesOverlay 只在 api 实例
+     * 真的有 notesBackupUpload 与 getConfig 时才传。没传时设置里的「备份」页不出现
+     * （老部署没有对应端点），而不是点了才报一个看不懂的错误。
+     */
+    backupApi?: {
+        getState(): Promise<NotesBackupState>;
+        save(patch: NotesBackupSavePatch): Promise<void>;
+        test(): Promise<{ success: boolean; message: string }>;
+        run(): Promise<{ success: boolean; message: string }>;
     };
     notes: Note[];
     onClose: () => void;
@@ -1360,6 +1380,7 @@ function readSplitRatio(): number {
 export default function NotesPage({
     shareApi,
     uploadApi,
+    backupApi,
     notes,
     onClose,
     accountName,
@@ -5056,6 +5077,12 @@ export default function NotesPage({
                     onImportNotes: shareApi?.importNotes
                         ? (payload) => shareApi.importNotes!(payload)
                         : undefined,
+                    // 备份页（2026-10-09 照 inkstone 的 BackupSettings）：能力由
+                    // NotesOverlay 探测好传进来，老部署没有时整页不出现
+                    onNotesBackupGetState: backupApi?.getState,
+                    onNotesBackupSave: backupApi?.save,
+                    onNotesBackupTest: backupApi?.test,
+                    onNotesBackupRun: backupApi?.run,
                 }}
                 onNotify={onNotify}
                 onOpenNote={id => {

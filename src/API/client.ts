@@ -1055,6 +1055,24 @@ export class NavigationClient {
         });
     }
 
+    // ============ 记事本备份（2026-10-09 照 inkstone 的 BackupSettings） ============
+    // 与导航页备份分开：独立目录 / 独立文件名 / 独立频率与保留策略。
+    // 网盘凭据不用传 —— 服务端自动带入导航页已保存的 webdav.* 配置。
+
+    async notesBackupTest(): Promise<WebDavResult> {
+        return this.request<WebDavTestResponse>("webdav/notes/test", {
+            method: "POST",
+            body: "{}",
+        });
+    }
+
+    async notesBackupUpload(): Promise<WebDavResult<{ filename: string; size: number }>> {
+        return this.request<WebDavUploadResponse>("webdav/notes/upload", {
+            method: "POST",
+            body: "{}",
+        });
+    }
+
     // ============ 审计日志（owner 只读） ============
     async getAuditLog(opts: { limit?: number; offset?: number; actor?: string } = {}): Promise<{
         success: boolean;

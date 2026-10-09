@@ -5096,3 +5096,142 @@ test("预览模式下不能上传图片（编辑器不挂载，插了也是静�
         "上传菜单项在预览模式下要置灰"
     );
 });
+
+// ---------- 8. 设置→备份（2026-10-09 照 inkstone 的 BackupSettings） ----------
+
+function makeBackupApi(log: { calls: string[]; saved: Record<string, unknown>[] }) {
+    return {
+        getState: async () => ({
+            webdavUrl: "https://dav.example.com/dav/",
+            webdavUsername: "alice",
+            path: "navihive-notes-backup",
+            backupPassword: "",
+            hasNavBackupPassword: true,
+            schedule: "weekly",
+            retention: 7,
+            runs: [
+                {
+                    id: "r1",
+                    startedAt: "2026-10-09T03:00:00.000Z",
+                    trigger: "auto",
+                    status: "success",
+                    filename: "navihive-notes-backup-auto-20261009-030000-000.json.gz",
+                    noteCount: 5,
+                    bytes: 2048,
+                    durationMs: 900,
+                },
+                {
+                    id: "r2",
+                    startedAt: "2026-10-08T03:00:00.000Z",
+                    trigger: "manual",
+                    status: "failure",
+                    error: "认证失败，请检查 WebDAV 账号或应用密码",
+                },
+            ],
+        }),
+        save: async (patch: Record<string, unknown>) => {
+            log.saved.push(patch);
+        },
+        test: async () => {
+            log.calls.push("test");
+            return { success: true, message: "连接成功，备份目录可用" };
+        },
+        run: async () => {
+            log.calls.push("run");
+            return { success: true, message: "已备份到 WebDAV：navihive-notes-backup-20261009-040000-000.json.gz" };
+        },
+    };
+}
+
+test("设置→备份：带入导航页网盘配置，立即备份 / 测试连接 / 运行记录都能用", async () => {
+    setWide();
+    const log: { calls: string[]; saved: Record<string, unknown>[] } = { calls: [], saved: [] };
+    mountPanel([note({ id: 1, title: "甲", content: "a" })], { backupApi: makeBackupApi(log) });
+    await act(async () =>
+        (document.querySelector("button[data-tool='settings']") as HTMLElement).click()
+    );
+    const dialog = document.querySelector("[data-notes-settings='1']")!;
+    assert.ok(dialog.querySelector("[data-settings-tab='backup']"), "设置里要有「备份」这一页");
+    await act(async () =>
+        (dialog.querySelector("[data-settings-tab='backup']") as HTMLElement).click()
+    );
+
+    // 网盘地址与账号「自动带入」（导航页保存后这里直接显示，不用再填一遍）
+    assert.ok(text().includes("https://dav.example.com/dav/"), "网盘地址要显示出来");
+    assert.ok(text().includes("alice"), "账号要显示出来");
+
+    // 立即备份 → 调用 run
+    await act(async () =>
+        (document.querySelector("[data-backup-action='run-now']") as HTMLElement).click()
+    );
+    assert.ok(log.calls.includes("run"), "立即备份要调到 run");
+
+    // 测试连接 → 结果就地显示
+    await act(async () =>
+        (document.querySelector("[data-backup-action='test']") as HTMLElement).click()
+    );
+    assert.ok(
+        document.querySelector("[data-backup-test-result='ok']"),
+        "测试连接的结果要显示在页面上"
+    );
+
+    // 运行记录：成功一条（条数 · 大小）与失败一条；点开失败那条能看到原因
+    assert.equal(document.querySelectorAll("[data-backup-run]").length, 2, "要有两条运行记录");
+    assert.ok(text().includes("5 条 · 2 KB"), "成功记录要显示笔记条数与体积");
+    await act(async () =>
+        (document.querySelector("[data-backup-run='r2'] button") as HTMLElement).click()
+    );
+    assert.ok(text().includes("认证失败"), "失败记录展开后要能看到原因");
+
+    // 改备份目录 → 失焦保存（写入 notesBackup.path）
+    const pathInput = document.querySelector('input[aria-label="备份目录"]') as HTMLInputElement;
+    await act(async () => {
+        const setter = Object.getOwnPropertyDescriptor(
+            HTMLInputElement.prototype,
+            "value"
+        )?.set;
+        setter?.call(pathInput, "my-notes-dir");
+        pathInput.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    // ⚠️ jsdom 对「没聚焦过的元素」调 blur() 不派发 blur 事件，先 focus 再 blur
+    await act(async () => {
+        pathInput.focus();
+        pathInput.blur();
+    });
+    assert.ok(
+        log.saved.some(p => p.path === "my-notes-dir"),
+        "目录改动失焦后要保存"
+    );
+});
+
+test("设置→备份：频率与保留的当前值要显示（weekly / 最近 7 份）", async () => {
+    setWide();
+    const log: { calls: string[]; saved: Record<string, unknown>[] } = { calls: [], saved: [] };
+    mountPanel([note({ id: 1, title: "甲", content: "a" })], { backupApi: makeBackupApi(log) });
+    await act(async () =>
+        (document.querySelector("button[data-tool='settings']") as HTMLElement).click()
+    );
+    await act(async () =>
+        (document.querySelector("[data-settings-tab='backup']") as HTMLElement).click()
+    );
+    const dialog = document.querySelector("[data-notes-settings='1']")!;
+    const schedule = dialog.querySelector("[data-backup-select='schedule']");
+    assert.ok(schedule, "要有频率选择器");
+    assert.ok(schedule.textContent?.includes("每周"), "频率当前值是每周");
+    const retention = dialog.querySelector("[data-backup-select='retention']");
+    assert.ok(retention, "要有保留份数选择器");
+    assert.ok(retention.textContent?.includes("最近 7 份"), "保留当前值是 7 份");
+});
+
+test("设置→备份：没有备份能力（老部署）时整页不出现", async () => {
+    setWide();
+    mountPanel([note({ id: 1, title: "甲", content: "a" })]);
+    await act(async () =>
+        (document.querySelector("button[data-tool='settings']") as HTMLElement).click()
+    );
+    const dialog = document.querySelector("[data-notes-settings='1']")!;
+    assert.ok(
+        !dialog.querySelector("[data-settings-tab='backup']"),
+        "没有 backupApi 时「备份」这一页不该出现"
+    );
+});

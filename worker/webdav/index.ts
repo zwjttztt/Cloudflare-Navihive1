@@ -136,41 +136,27 @@ export async function webdavTest(config: WebDavConfig): Promise<WebDavResult> {
     }
 }
 
-// 上传备份文件
-export async function webdavUpload(
+/**
+ * 把**已经压缩 / 加密好的最终字节** PUT 上去（404/409 时补建目录重试一次）。
+ * 从 webdavUpload 拆出来：记事本备份（worker/notesBackup.ts）的载荷形状不同
+ * （notes 专用 JSON 而不是 ExportData），但 PUT / 重试 / 结果映射完全一样，没必要抄一份。
+ */
+export async function webdavPutBytes(
     config: WebDavConfig,
     filename: string,
-    data: ExportData,
-    password: string = config.backupPassword ?? ""
+    body: Uint8Array,
+    encrypted: boolean
 ): Promise<WebDavResult<{ filename: string; size: number }>> {
     try {
         const folderUrl = buildWebDavFolderUrl(config);
+        const putHeaders = { "Content-Type": encrypted ? "application/octet-stream" : "application/gzip" };
 
-        // 不缩进 + gzip：比原来的「带缩进明文 JSON」小一个数量级，上传快得多。
-        // 设了备份口令再套一层口令加密（NAVIHIVE-ENC1，PBKDF2 随机盐），备份文件
-        // 落到网盘上也是密文。没设口令就退化为明文 gzip —— 能备份，只是不加密。
-        const gz = await gzipBytes(JSON.stringify(data));
-        const body = password ? await encryptBackup(gz, password) : gz;
-        const putHeaders = { "Content-Type": password ? "application/octet-stream" : "application/gzip" };
-
-        let response = await davFetch(
-            buildWebDavFileUrl(folderUrl, filename),
-            "PUT",
-            config,
-            body,
-            putHeaders
-        );
+        let response = await davFetch(buildWebDavFileUrl(folderUrl, filename), "PUT", config, body, putHeaders);
 
         // 目录不存在时才补建，避免每次备份都先发一次 PROPFIND 预检
         if (response.status === 404 || response.status === 409) {
             await ensureWebDavFolder(config, folderUrl);
-            response = await davFetch(
-                buildWebDavFileUrl(folderUrl, filename),
-                "PUT",
-                config,
-                body,
-                putHeaders
-            );
+            response = await davFetch(buildWebDavFileUrl(folderUrl, filename), "PUT", config, body, putHeaders);
         }
 
         if (response.ok) {
@@ -186,6 +172,25 @@ export async function webdavUpload(
 
         const detail = await response.text().catch(() => "");
         return { success: false, message: `备份失败：HTTP ${response.status} ${detail.slice(0, 120)}` };
+    } catch (error) {
+        return { success: false, message: errorMessage(error, "备份失败") };
+    }
+}
+
+// 上传备份文件
+export async function webdavUpload(
+    config: WebDavConfig,
+    filename: string,
+    data: ExportData,
+    password: string = config.backupPassword ?? ""
+): Promise<WebDavResult<{ filename: string; size: number }>> {
+    try {
+        // 不缩进 + gzip：比原来的「带缩进明文 JSON」小一个数量级，上传快得多。
+        // 设了备份口令再套一层口令加密（NAVIHIVE-ENC1，PBKDF2 随机盐），备份文件
+        // 落到网盘上也是密文。没设口令就退化为明文 gzip —— 能备份，只是不加密。
+        const gz = await gzipBytes(JSON.stringify(data));
+        const body = password ? await encryptBackup(gz, password) : gz;
+        return await webdavPutBytes(config, filename, body, Boolean(password));
     } catch (error) {
         return { success: false, message: errorMessage(error, "备份失败") };
     }

@@ -50,3 +50,49 @@ export function buildBackupFileName(mode: WebDavBackupMode): string {
     const prefix = mode === "auto" ? AUTO_BACKUP_PREFIX : MANUAL_BACKUP_PREFIX;
     return `${prefix}${stamp}.json.gz`;
 }
+
+// ============ 记事本备份（2026-10-09 照 inkstone 的 BackupSettings） ============
+//
+// 与导航页备份「分开」的物理体现就在文件名前缀：navihive-notes-backup-*
+// 与导航备份 navihive-backup-* 同住一个网盘也可能互不干扰，列目录 / 清理各认各的前缀。
+
+const NOTES_AUTO_BACKUP_PREFIX = "navihive-notes-backup-auto-";
+const NOTES_MANUAL_BACKUP_PREFIX = "navihive-notes-backup-";
+
+/** 只有自动备份会被保留策略清理（手动备份是存档，谁都不能动 —— 与导航备份同一条铁律） */
+export function isNotesAutoBackupFileName(filename: string): boolean {
+    return typeof filename === "string" && filename.startsWith(NOTES_AUTO_BACKUP_PREFIX);
+}
+
+export function buildNotesBackupFileName(mode: WebDavBackupMode): string {
+    return buildBackupFileName(mode).replace(
+        mode === "auto" ? AUTO_BACKUP_PREFIX : MANUAL_BACKUP_PREFIX,
+        mode === "auto" ? NOTES_AUTO_BACKUP_PREFIX : NOTES_MANUAL_BACKUP_PREFIX
+    );
+}
+
+/**
+ * 按保留份数挑出要清理的旧自动备份（inkstone 的 retentionCount 同语义）：
+ * - retentionCount <= 0 = 全部保留，一个不删；
+ * - 候选只有 notes 自动备份（手动备份 / 导航备份永远不在清理范围）；
+ * - 「保留 N 份」按**含本次刚上传那份**算：keepFilename 占掉一个名额，
+ *   剩下的名额给最新的 N-1 份旧备份（inkstone 同语义）；
+ * - 按修改时间倒序（时间缺失退回文件名倒序，文件名自带时间戳）。
+ */
+export function selectNotesBackupsToPrune(
+    files: readonly { name: string; lastModified?: string }[],
+    keepFilename: string,
+    retentionCount: number
+): string[] {
+    if (!(retentionCount > 0)) return [];
+    const candidates = files
+        .map(f => ({ name: f?.name ?? "", lastModified: f?.lastModified ?? "" }))
+        .filter(f => f.name && f.name !== keepFilename && isNotesAutoBackupFileName(f.name));
+    candidates.sort((a, b) => {
+        const ta = Date.parse(a.lastModified) || 0;
+        const tb = Date.parse(b.lastModified) || 0;
+        if (ta !== tb) return tb - ta;
+        return b.name < a.name ? -1 : b.name > a.name ? 1 : 0;
+    });
+    return candidates.slice(Math.max(retentionCount - 1, 0)).map(f => f.name);
+}

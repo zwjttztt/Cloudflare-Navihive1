@@ -134,12 +134,19 @@ export interface RegisterInput {
     remember?: boolean;
 }
 // 声明ExportedHandler类型
-// scheduled 是「每周自动备份」的定时入口，由 wrangler.jsonc 的 triggers.crons 触发
-// 声明ExportedHandler类型
-// scheduled 是「每周自动备份」的定时入口，由 wrangler.jsonc 的 triggers.crons 触发
+// scheduled 是定时任务入口，由 wrangler.jsonc 的 triggers.crons 触发。
+// controller 用本地结构化声明而不是全局 ScheduledController：tests 项目
+// （tsconfig.tests.json，types 只有 node）会经 import 链编到本文件，
+// 那边没有 @cloudflare/workers-types 的全局量 —— 与下面 D1Database 同一套路。
+export interface ScheduledController {
+    readonly scheduledTime: number;
+    /** 本次触发命中的 crons 表达式（多触发器时用来分辨是谁叫的） */
+    readonly cron: string;
+    noRetry(): void;
+}
 export interface ExportedHandler {
     fetch(request: Request, env: Env, ctx?: ExecutionContext): Response | Promise<Response>;
-    scheduled?(controller: unknown, env: Env, ctx?: ExecutionContext): void | Promise<void>;
+    scheduled?(controller: ScheduledController, env: Env, ctx?: ExecutionContext): void | Promise<void>;
 }
 
 // 声明Cloudflare Workers的执行上下文类型

@@ -18,6 +18,7 @@ import { useEffect, useMemo, useState } from "react";
 import NotesPage from "./NotesPage";
 import type { NoteShareApi } from "./NoteShareDialog";
 import { useNotes, type NotesApiLike } from "../hooks/useNotes";
+import type { NotesBackupSavePatch, NotesBackupState } from "../API/http";
 
 export interface NotesOverlayProps {
     /**
@@ -132,6 +133,82 @@ export default function NotesOverlay({
         }
     }, [notes.length, lastCount, onCountChange]);
 
+    /**
+     * 记事本备份能力（2026-10-09 照 inkstone 的 BackupSettings）。
+     * 与 shareApi / uploadApi 同一个套路：只在 api 实例真的有这些方法时才传，
+     * 老部署（没有 notesBackup 端点 / 配置读写）设置里不出现「备份」页。
+     */
+    const backupApi = useMemo(() => {
+        if (
+            typeof api.getConfig !== "function" ||
+            typeof api.setConfig !== "function" ||
+            typeof api.notesBackupUpload !== "function" ||
+            typeof api.notesBackupTest !== "function"
+        ) {
+            return undefined;
+        }
+        return {
+            getState: async (): Promise<NotesBackupState> => {
+                const [url, username, path, pwd, navPwd, schedule, retention, runsRaw] =
+                    await Promise.all([
+                        api.getConfig!("webdav.url"),
+                        api.getConfig!("webdav.username"),
+                        api.getConfig!("notesBackup.path"),
+                        api.getConfig!("notesBackup.backupPassword"),
+                        api.getConfig!("webdav.backupPassword"),
+                        api.getConfig!("notesBackup.schedule"),
+                        api.getConfig!("notesBackup.retention"),
+                        api.getConfig!("notesBackup.runs"),
+                    ]);
+                let runs: NotesBackupState["runs"] = [];
+                try {
+                    const parsed: unknown = JSON.parse(runsRaw || "[]");
+                    if (Array.isArray(parsed)) runs = parsed as NotesBackupState["runs"];
+                } catch {
+                    // 记录坏了就当没有，别让整个备份页打不开
+                }
+                const retentionNum = Number(retention);
+                return {
+                    webdavUrl: url || "",
+                    webdavUsername: username || "",
+                    path: path || "navihive-notes-backup",
+                    // 库里没设自己的口令时告诉用户会沿用导航页的那份（占位提示用，
+                    // 不把导航页口令回填进输入框 —— 免得「看着设了其实是空」）
+                    backupPassword: pwd ?? "",
+                    hasNavBackupPassword: Boolean(navPwd),
+                    schedule: schedule || "off",
+                    // retention 可以是 0（全部保留），别用 || 短路成默认值
+                    retention:
+                        retention === null || !Number.isFinite(retentionNum) ? 7 : retentionNum,
+                    runs,
+                };
+            },
+            save: async (patch: NotesBackupSavePatch): Promise<void> => {
+                if (patch.path !== undefined) {
+                    await api.setConfig!("notesBackup.path", patch.path);
+                }
+                if (patch.backupPassword !== undefined) {
+                    await api.setConfig!("notesBackup.backupPassword", patch.backupPassword ?? "");
+                }
+                if (patch.schedule !== undefined) {
+                    await api.setConfig!("notesBackup.schedule", patch.schedule);
+                }
+                if (patch.retention !== undefined) {
+                    await api.setConfig!("notesBackup.retention", String(patch.retention));
+                }
+            },
+            test: async () => {
+                const r = await api.notesBackupTest!();
+                return { success: r.success, message: r.message ?? "" };
+            },
+            run: async () => {
+                const r = await api.notesBackupUpload!();
+                return { success: r.success, message: r.message ?? "" };
+            },
+        };
+        // 依赖只有 api：getState/save/test/run 闭包里用到的都是它自己的方法
+    }, [api]);
+
     return (
         <NotesPage
             shareApi={api.getNoteShare && api.createNoteShare && api.revokeNoteShare ? api as NotesApiLike & NoteShareApi : undefined}
@@ -158,6 +235,7 @@ export default function NotesOverlay({
                       }
                     : undefined
             }
+            backupApi={backupApi}
             notes={notes}
             onClose={onClose}
             accountName={accountName}

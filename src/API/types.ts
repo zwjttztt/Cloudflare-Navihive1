@@ -235,14 +235,66 @@ export interface NoteImportStats {
  * （那条路径会先清空再重建分组/站点，空数组等于清光导航站）。
  */
 export interface NotesImportPayload {
-    /** "navihive-notes-export"（老导出文件没写也接受，按字段形状判） */
+    /** "navihive-notes-export"（老导出文件没写也接受，按字段形状判）；备份文件写 "navihive-notes-backup" */
     kind?: string;
+    /** 服务端导出时间（ISO）；importNotesData 只按笔记自身 updated_at 合并，这个字段仅供人看 */
+    exportedAt?: string;
     notes?: Note[];
     /** 备份内引用的文件夹/标签 id，导入时按「父路径+名称」/「名称」去重重建 */
     folders?: NoteFolder[];
     tags?: NoteTag[];
     /** 导出方笔记 id -> 标签 id 列表（JSON 的键一定是字符串）；导入时翻译到新 id */
     noteTags?: Record<string, number[]>;
+}
+
+/**
+ * 一次笔记备份的运行记录（inkstone 的 BackupRun，精简到单 WebDAV 目标的字段）。
+ * 存在 configs 的 notesBackup.runs（JSON 数组，最多 12 条，新的在前）。
+ */
+export interface NotesBackupRun {
+    id: string;
+    /** 开始时间（ISO 字符串） */
+    startedAt: string;
+    trigger: "manual" | "auto";
+    status: "success" | "failure";
+    /** 成功时：上传的文件名 */
+    filename?: string;
+    /** 成功时：备份包含的笔记条数 */
+    noteCount?: number;
+    /** 成功时：实际上传字节数 */
+    bytes?: number;
+    durationMs?: number;
+    /** 失败时：失败原因 */
+    error?: string;
+}
+
+/**
+ * 设置→备份页的渲染状态（NotesPage 从 configs 拼出来给弹窗画）。
+ * webdavUrl / webdavUsername 是「自动带入」的导航页网盘配置（只读展示）；
+ * 其余是 notesBackup.* 自己的差异项。
+ */
+export interface NotesBackupState {
+    webdavUrl: string;
+    webdavUsername: string;
+    /** 备份目录（默认 navihive-notes-backup，与导航页的 navihive-backup 分开） */
+    path: string;
+    /** notesBackup.backupPassword；空串 = 沿用导航页的 webdav.backupPassword */
+    backupPassword: string;
+    /** 导航页是否设过 webdav.backupPassword（给「留空则沿用导航页口令」的占位提示用） */
+    hasNavBackupPassword?: boolean;
+    /** off / hourly / sixHourly / daily / weekly / monthly / yearly */
+    schedule: string;
+    /** 自动备份保留份数；0 = 全部保留 */
+    retention: number;
+    runs: NotesBackupRun[];
+}
+
+export interface NotesBackupSavePatch {
+    path?: string;
+    /** string = 重设；null/空串 = 清掉（回落导航页备份密码） */
+    backupPassword?: string | null;
+    schedule?: string;
+    retention?: number;
 }
 
 // WebDAV 备份配置

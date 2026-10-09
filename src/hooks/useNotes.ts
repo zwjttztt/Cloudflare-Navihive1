@@ -6,7 +6,7 @@
 // 记事本是「想到就写」的场景，保存要是有 200ms 的延迟，手感会立刻变差；
 // 而失败时回滚到旧值 + 提示，代价远小于「每敲一个字都等一下」。
 import { useCallback, useEffect, useState } from "react";
-import type { Note, NoteAttachment, NoteFolder, NoteRevision, NoteTag } from "../API/http";
+import type { Note, NoteAttachment, NoteFolder, NoteRevision, NoteTag, WebDavResult } from "../API/http";
 import { reportError } from "../utils/errorReporter";
 import type { NotifySeverity } from "./useNotify";
 
@@ -72,6 +72,14 @@ export type NotesApiLike = {
     deleteAttachment?(id: string): Promise<{ ok: boolean }>;
     /** 设置→数据→维护：清理未引用附件（2026-10-08）。可选：老部署没有 */
     pruneAttachments?(): Promise<{ removed: number; freedBytes: number }>;
+
+    // ---------- 记事本备份（2026-10-09 照 inkstone 的 BackupSettings）----------
+    // 同样**可选**：老部署没有 notesBackup 端点 / 配置读写时，设置→备份页自动降级。
+    notesBackupTest?(): Promise<WebDavResult>;
+    notesBackupUpload?(): Promise<WebDavResult<{ filename: string; size: number }>>;
+    /** 备份页的配置读写（notesBackup.* 是账号私有配置，与导航页 webdav.* 同一机制） */
+    getConfig?(key: string): Promise<string | null>;
+    setConfig?(key: string, value: string): Promise<boolean>;
 };
 
 type UseNotesParams = {

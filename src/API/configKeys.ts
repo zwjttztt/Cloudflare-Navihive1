@@ -28,6 +28,14 @@ export const MUST_CHANGE_PASSWORD_KEY = "auth.mustChangePassword";
 // 不用 auth. 前缀——那个前缀的接口一律禁止读写，只能走专用的「校验当前密码」接口。
 export const RECOVERY_PUBLIC_KEY_CONFIG = "recovery.publicKey";
 
+// ---- 记事本备份（2026-10-09 照 inkstone 的 BackupSettings） ----
+// 与导航页的 webdav.* 分开：独立目录 / 独立文件名 / 独立频率与保留策略。
+// 网盘地址 / 账号 / 密码不重复存 —— 服务端直接回落到 webdav.*（导航页保存后自动带入），
+// 这里只存记事本自己的差异项：目录、口令、频率、保留份数、运行记录。
+export const NOTES_BACKUP_CONFIG_PREFIX = "notesBackup.";
+// 记事本备份口令：留空则回落 webdav.backupPassword。同样加密落库（见 configGuards）
+export const NOTES_BACKUP_PASSWORD_KEY = "notesBackup.backupPassword";
+
 // ---- AI 助手配置 ----
 // 前缀统一是 ai.：整组都是「每个账号一份 + 不进备份 + 凭据加密落库」
 // （判定见 configGuards，这里只定键名）。放进备份等于把别人的 API 密钥交给拿到备份文件的人。

@@ -8,15 +8,18 @@ import {
     AI_API_KEY_KEY,
     AI_CF_TOKEN_KEY,
     AI_CONFIG_PREFIX,
+    NOTES_BACKUP_CONFIG_PREFIX,
+    NOTES_BACKUP_PASSWORD_KEY,
     WEBDAV_CONFIG_PREFIX,
     WEBDAV_PASSWORD_KEY,
     WEBDAV_BACKUP_PASSWORD_KEY,
 } from "./configKeys";
 
-// 敏感配置：不参与备份文件的导入导出（管理员 / WebDAV 凭据 / AI 凭据）
+// 敏感配置：不参与备份文件的导入导出（管理员 / WebDAV 凭据 / AI 凭据 / 记事本备份配置）
 // AI 那组必须在这里：备份文件是会传到网盘、会发给别人的，
 // 带上一份 API 密钥等于把付费额度连同凭据一起交出去。
-const SECRET_CONFIG_PREFIXES = ["auth.", "webdav.", AI_CONFIG_PREFIX];
+// notesBackup.runs（运行记录）也在这组里：它该跟着账号走，不该进导航备份文件。
+const SECRET_CONFIG_PREFIXES = ["auth.", "webdav.", AI_CONFIG_PREFIX, NOTES_BACKUP_CONFIG_PREFIX];
 
 /**
  * 同样不进备份文件、但必须整键匹配的几个配置。
@@ -45,6 +48,7 @@ const SECRET_CONFIG_KEYS = [
 const ENCRYPTED_CONFIG_KEYS = [
     WEBDAV_PASSWORD_KEY,
     WEBDAV_BACKUP_PASSWORD_KEY,
+    NOTES_BACKUP_PASSWORD_KEY,
     AI_API_KEY_KEY,
     AI_CF_TOKEN_KEY,
 ];
@@ -66,7 +70,12 @@ export function isEncryptedConfigKey(key: string): boolean {
  *    不会把整站长什么样改掉，也不会因为没配任何东西而看到一片空白。
  */
 // AI 配置同样是「每人一份」：账号 A 填的 DeepSeek 密钥，不该被账号 B 在设置里看到。
-const PRIVATE_USER_CONFIG_PREFIXES = [WEBDAV_CONFIG_PREFIX, AI_CONFIG_PREFIX];
+// notesBackup.* 同理：备份目录 / 口令 / 频率 / 运行记录都是账号自己的东西。
+const PRIVATE_USER_CONFIG_PREFIXES = [
+    WEBDAV_CONFIG_PREFIX,
+    AI_CONFIG_PREFIX,
+    NOTES_BACKUP_CONFIG_PREFIX,
+];
 /**
  * 必须整键匹配的私有键：死链巡检快照。
  * 不能写成前缀 —— `link.health` 会把开关 `link.healthSync` 一起匹配掉，

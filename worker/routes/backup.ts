@@ -31,6 +31,14 @@ import {
     webdavList,
     webdavTest,
 } from "../webdav";
+import {
+    NOTES_BACKUP_NOT_CONFIGURED_MESSAGE,
+    notesWebDavConfigFrom,
+    readNotesBackupStored,
+    resolveNotesWebDavConfig,
+    runNotesWebDavBackup,
+    testNotesWebDav,
+} from "../notesBackup";
 import type { RouteCtx } from "./types";
 
 /**
@@ -333,6 +341,35 @@ export async function handleBackupRoutes(ctx: RouteCtx): Promise<Response | null
         const body = (await safeJson(request)) as { filename?: string };
         const config = await resolveWebDavConfig(api, request, body);
         const result = await webdavDelete(config, body.filename || "");
+        return Response.json(result);
+    }
+
+    // ============ 记事本备份路由（2026-10-09 照 inkstone 的 BackupSettings） ============
+    // 与导航页备份分开：独立目录 / 独立文件名（navihive-notes-backup-*）/ 独立策略；
+    // 网盘凭据自动带入导航页已保存的 webdav.*（见 worker/notesBackup.ts）。
+    // 同样出网、同样吃上面 webdav/ 前缀的出站限速闸门。
+    if (path === "webdav/notes/test" && method === "POST") {
+        const config = await resolveNotesWebDavConfig(api);
+        if (!config.url) {
+            return Response.json(
+                { success: false, message: NOTES_BACKUP_NOT_CONFIGURED_MESSAGE },
+                { status: 400 }
+            );
+        }
+        const result = await testNotesWebDav(config);
+        return Response.json(result);
+    }
+    if (path === "webdav/notes/upload" && method === "POST") {
+        const stored = await readNotesBackupStored(api);
+        const config = notesWebDavConfigFrom(stored);
+        if (!config.url) {
+            return Response.json(
+                { success: false, message: NOTES_BACKUP_NOT_CONFIGURED_MESSAGE },
+                { status: 400 }
+            );
+        }
+        // 手动备份：不删任何已有备份（自动备份才按保留份数清理自己那批）
+        const result = await runNotesWebDavBackup(api, config, { mode: "manual", stored });
         return Response.json(result);
     }
 

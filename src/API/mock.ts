@@ -1008,6 +1008,16 @@ export class MockNavigationClient {
         return { success: false, message: "模拟环境不支持 WebDAV 备份" };
     }
 
+    // ============ 记事本备份（2026-10-09 照 inkstone 的 BackupSettings） ============
+    // 模拟环境没有真网盘，但接口契约要跟真 client 一致（形状守卫盯着）。
+    async notesBackupTest(): Promise<WebDavResult> {
+        return { success: false, message: "模拟环境不支持 WebDAV，请使用真实 API（设置 VITE_USE_REAL_API=true）" };
+    }
+
+    async notesBackupUpload(): Promise<WebDavResult<{ filename: string; size: number }>> {
+        return { success: false, message: "模拟环境不支持 WebDAV 备份" };
+    }
+
     // 数据导入
     async importData(data: ExportData, opts?: ImportOptions): Promise<ImportResult> {
         await new Promise(resolve => setTimeout(resolve, 500));

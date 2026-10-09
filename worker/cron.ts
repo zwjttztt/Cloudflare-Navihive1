@@ -14,6 +14,13 @@ import { CRON_LAST_ERROR_KEY, type Site } from "../src/API/http";
 import { NavigationAPI } from "../src/API/navigationApi";
 import type { Env } from "./types";
 import { configFromStored, readAllConfigs, runWebDavBackup } from "./webdav";
+import {
+    NOTES_BACKUP_NOT_CONFIGURED_MESSAGE,
+    notesWebDavConfigFrom,
+    readNotesBackupStored,
+    runNotesWebDavBackup,
+    shouldRunNotesBackup,
+} from "./notesBackup";
 import { safeFetch } from "./safeFetch";
 import {
     HEALTH_KEY,
@@ -168,6 +175,75 @@ async function backupOneAccount(api: SchedulerDB, uid: number | null): Promise<s
         return result.success ? null : `${label}：${result.message || "上传失败"}`;
     } catch (error) {
         console.error(`${label} 定时备份异常:`, error);
+        return `${label}：${(error as Error)?.message || "备份异常"}`;
+    } finally {
+        if (typeof nav.setCurrentUser === "function") nav.setCurrentUser(null);
+    }
+}
+
+/**
+ * 记事本自动备份调度（2026-10-09 照 inkstone 的频率选项）。
+ *
+ * 触发器每小时打一次（wrangler crons 的 "0 * * * *"），到没到点由
+ * shouldRunNotesBackup 按账号配置的频率 + 上次自动备份时间判定 ——
+ * 所以 hourly/sixHourly/daily/weekly/monthly/yearly 七档共用一个触发器。
+ * 与导航页的每周备份分开：各认各的配置键（notesBackup.* vs webdav.autoBackup）。
+ */
+export async function runNotesBackupSchedule(api: SchedulerDB): Promise<void> {
+    const nav = api as unknown as Partial<NavigationAPI> & SchedulerDB;
+    const failures: string[] = [];
+
+    if (typeof nav.listUsers !== "function" || typeof nav.setCurrentUser !== "function") {
+        const reason = await notesBackupOneAccount(api, null);
+        if (reason) failures.push(reason);
+    } else {
+        const users = await nav.listUsers();
+        const targets: (number | null)[] =
+            users.length > 0
+                ? users.filter(u => u.status !== "disabled").map(u => u.id)
+                : [null];
+        for (const uid of targets) {
+            const reason = await notesBackupOneAccount(api, uid);
+            if (reason) failures.push(reason);
+        }
+    }
+
+    if (failures.length > 0) {
+        await recordCronFailure(api, "notesBackup", `记事本自动备份失败：${failures.join("；")}`);
+    } else {
+        await clearCronError(api, "notesBackup");
+    }
+}
+
+/** 记事本自动备份单个账号。返回失败原因（null = 成功或本来就该跳过） */
+async function notesBackupOneAccount(api: SchedulerDB, uid: number | null): Promise<string | null> {
+    const nav = api as unknown as Partial<NavigationAPI> & SchedulerDB;
+    const label = `账号 ${uid ?? "全局"}`;
+
+    try {
+        if (typeof nav.setCurrentUser === "function") nav.setCurrentUser(uid);
+        const stored = await readNotesBackupStored(nav as unknown as NavigationAPI);
+        const lastAutoAt = stored["notesBackup.lastAutoBackupAt"] || null;
+        if (!shouldRunNotesBackup(stored["notesBackup.schedule"] || "off", lastAutoAt, Date.now())) {
+            return null;
+        }
+        const config = notesWebDavConfigFrom(stored);
+        if (!config.url) {
+            console.log(`记事本定时备份跳过：${label}尚未配置网盘`);
+            return null;
+        }
+        const result = await runNotesWebDavBackup(nav as unknown as NavigationAPI, config, {
+            mode: "auto",
+            stored,
+        });
+        console.log(
+            result.success
+                ? `记事本定时备份完成（${label}）：${result.data?.filename}`
+                : `记事本定时备份失败（${label}）：${result.message}`
+        );
+        return result.success ? null : `${label}：${result.message || NOTES_BACKUP_NOT_CONFIGURED_MESSAGE}`;
+    } catch (error) {
+        console.error(`${label} 记事本定时备份异常:`, error);
         return `${label}：${(error as Error)?.message || "备份异常"}`;
     } finally {
         if (typeof nav.setCurrentUser === "function") nav.setCurrentUser(null);
@@ -333,25 +409,36 @@ export async function runRetentionCleanup(api: SchedulerDB): Promise<void> {
 /**
  * cron 入口：备份优先，巡检兜底，互不拖累。
  * makeApi 默认 new NavigationAPI(env)，与拆分前行为一致；验证脚本可注入假实现。
+ *
+ * cronExpr：本次触发用的是哪条 crons 表达式（worker/index.ts 从 ScheduledController
+ * 传入）。导航页的每周备份只在它自己的 "0 2 * * 1" 里跑 —— 新增每小时触发器后，
+ * 若不加这道闸，导航备份会被每小时带跑一次（行为变化，不能有）；
+ * 记事本备份调度则每次触发都检查（到没到点由各账号自己的频率配置判定）。
+ * cronExpr 缺省（验证脚本直调）时保持老行为：全量任务照跑。
  */
+export const NAV_BACKUP_CRON = "0 2 * * 1";
 export async function runScheduledTasks(
     env: Env,
-    makeApi: (env: Env) => SchedulerDB = (e) => new NavigationAPI(e)
+    makeApi: (env: Env) => SchedulerDB = (e) => new NavigationAPI(e),
+    cronExpr?: string
 ): Promise<void> {
+    const navBackupDue = cronExpr === undefined || cronExpr === NAV_BACKUP_CRON;
     // 外层兜底也要留痕：runWeeklyBackup 只在「按账号循环」内部兜了异常，
     // 取账号列表这一步就炸的话（D1 抽风、listUsers 抛错）里面根本轮不到执行
-    let backupApi: SchedulerDB | undefined;
-    try {
-        backupApi = makeApi(env);
-        await runWeeklyBackup(backupApi);
-    } catch (error) {
-        console.error("定时备份异常:", error);
-        if (backupApi) {
-            await recordCronFailure(
-                backupApi,
-                "backup",
-                `每周自动备份异常：${(error as Error)?.message || "未知错误"}`
-            );
+    if (navBackupDue) {
+        let backupApi: SchedulerDB | undefined;
+        try {
+            backupApi = makeApi(env);
+            await runWeeklyBackup(backupApi);
+        } catch (error) {
+            console.error("定时备份异常:", error);
+            if (backupApi) {
+                await recordCronFailure(
+                    backupApi,
+                    "backup",
+                    `每周自动备份异常：${(error as Error)?.message || "未知错误"}`
+                );
+            }
         }
     }
 
@@ -368,6 +455,14 @@ export async function runScheduledTasks(
                 `死链巡检异常：${(error as Error)?.message || "未知错误"}`
             );
         }
+    }
+
+    // 记事本自动备份调度：到没到点由各账号自己的频率配置判定，任何触发频率下行为都正确
+    try {
+        const api = makeApi(env);
+        await runNotesBackupSchedule(api);
+    } catch (error) {
+        console.error("记事本自动备份调度异常:", error);
     }
 
     try {

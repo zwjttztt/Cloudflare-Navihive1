@@ -53,6 +53,13 @@ export interface NotesApi {
      * 整批一个事务：任何一条失败全部回滚，本地数据一根汗毛都不动。
      */
     importNotesData(payload: NotesImportPayload): Promise<NoteImportStats>;
+    /**
+     * 导出全部笔记数据（**服务端自取**，cron 自动备份与手动备份共用）：
+     * 形状与 importNotesData 的入参对齐（kind: "navihive-notes-backup"），
+     * 所以「备份 → 下载 → 数据页导入」天然是闭环，不需要另一套恢复代码。
+     * 只含当前账号的在册笔记（回收站里的不算）。
+     */
+    exportNotesData(): Promise<NotesImportPayload>;
     listNotes(): Promise<Note[]>;
     getNote(id: number): Promise<Note | null>;
     createNote(draft: Partial<Note>): Promise<Note>;
@@ -348,6 +355,30 @@ export const notesImpl: NotesApi = {
             for (const r of rows.results ?? []) links += countWikiLinks(r.content ?? "");
             return { versions: v?.n ?? 0, links };
         });
+    },
+    exportNotesData: async function (this: NavigationAPI): Promise<NotesImportPayload> {
+        await this.migrate();
+        // 全部走现成的账号隔离读法（scopeSql 在各方法内部处理），不再另写一遍 SQL ——
+        // 「导出什么」必须和「页面上看到什么」一致。
+        const [notes, folders, tags, noteTags] = await Promise.all([
+            this.listNotes(),
+            this.listFolders(),
+            this.listTags(),
+            this.listNoteTags(),
+        ]);
+        // noteTags 的键是数字笔记 id；JSON 里对象键一定是字符串，导入方也按字符串读
+        const noteTagsOut: Record<string, number[]> = {};
+        for (const [noteId, tagIds] of Object.entries(noteTags)) {
+            noteTagsOut[String(noteId)] = tagIds;
+        }
+        return {
+            kind: "navihive-notes-backup",
+            exportedAt: new Date().toISOString(),
+            notes,
+            folders,
+            tags,
+            noteTags: noteTagsOut,
+        };
     },
     importNotesData: async function (this: NavigationAPI, payload: NotesImportPayload): Promise<NoteImportStats> {
         await this.migrate();

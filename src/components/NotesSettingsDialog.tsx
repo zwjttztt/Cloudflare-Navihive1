@@ -16,6 +16,8 @@ import Divider from "@mui/material/Divider";
 import IconButton from "@mui/material/IconButton";
 import Slider from "@mui/material/Slider";
 import TextField from "@mui/material/TextField";
+import Select from "@mui/material/Select";
+import MenuItem from "@mui/material/MenuItem";
 import CircularProgress from "@mui/material/CircularProgress";
 import Switch from "@mui/material/Switch";
 import Typography from "@mui/material/Typography";
@@ -29,6 +31,7 @@ import LaunchIcon from "@mui/icons-material/Launch";
 import LinkOffIcon from "@mui/icons-material/LinkOff";
 import LinkIcon from "@mui/icons-material/Link";
 import StorageIcon from "@mui/icons-material/Storage";
+import CloudUploadIcon from "@mui/icons-material/CloudUpload";
 import FileDownloadIcon from "@mui/icons-material/FileDownload";
 import FileUploadIcon from "@mui/icons-material/FileUpload";
 import DeleteSweepIcon from "@mui/icons-material/DeleteSweep";
@@ -37,9 +40,16 @@ import AttachmentManager from "./AttachmentManager";
 import ConfirmDialog from "./ConfirmDialog";
 import { FOLDER_COLORS } from "../utils/folderAppearance";
 import type { NotesUiSettings } from "../utils/notesSettings";
-import type { NoteImportStats, NotesImportPayload, NoteShareListItem, NoteStats } from "../API/types";
+import type {
+    NoteImportStats,
+    NotesBackupSavePatch,
+    NotesBackupState,
+    NotesImportPayload,
+    NoteShareListItem,
+    NoteStats,
+} from "../API/types";
 
-type SettingsTab = "appearance" | "editor" | "data" | "shares";
+type SettingsTab = "appearance" | "editor" | "data" | "shares" | "backup";
 
 /** 数据页统计（2026-10-08 照 inkstone 的 DataSettings，精简到现有端点能做到的） */
 export interface NotesDataTab {
@@ -76,6 +86,15 @@ export interface NotesDataTab {
      * 可选：老部署没有 notes/import 端点时整行不出现。失败抛错，消息直接给用户。
      */
     onImportNotes?: (payload: NotesImportPayload) => Promise<NoteImportStats>;
+    /**
+     * 备份页（2026-10-09 照 inkstone 的 BackupSettings）。可选：老部署没有
+     * notesBackup 端点 / 配置读写时整页不出现。备份与导航页的分开（独立目录 /
+     * 独立文件名 / 独立频率与保留），网盘配置自动带入导航页已保存的那套。
+     */
+    onNotesBackupGetState?: () => Promise<NotesBackupState>;
+    onNotesBackupSave?: (patch: NotesBackupSavePatch) => Promise<void>;
+    onNotesBackupTest?: () => Promise<{ success: boolean; message: string }>;
+    onNotesBackupRun?: () => Promise<{ success: boolean; message: string }>;
 }
 
 /** 一行设置：左标签（+可选说明）、右控件 —— inkstone 的设置行样式 */
@@ -331,6 +350,86 @@ export default function NotesSettingsDialog({
             live = false;
         };
     }, [open, tab, shareApi, reloadAttStats]);
+
+    // ---- 备份页（2026-10-09 照 inkstone 的 BackupSettings）----
+    const [backupState, setBackupState] = useState<NotesBackupState | null>(null);
+    const [backupError, setBackupError] = useState<string | null>(null);
+    const [backupBusy, setBackupBusy] = useState(false);
+    const [backupTestResult, setBackupTestResult] = useState<{
+        success: boolean;
+        message: string;
+    } | null>(null);
+    /** 展开的那条运行记录（inkstone 的 RunRow 同交互） */
+    const [expandedRun, setExpandedRun] = useState<string | null>(null);
+    /** 目录 / 口令输入框草稿：失焦才写回（不逐键打配置接口） */
+    const [pathDraft, setPathDraft] = useState("");
+    const [pwdDraft, setPwdDraft] = useState("");
+
+    const reloadBackupState = useCallback(async () => {
+        const cur = dataRef.current;
+        if (!cur?.onNotesBackupGetState) return;
+        try {
+            setBackupError(null);
+            const state = await cur.onNotesBackupGetState();
+            setBackupState(state);
+            setPathDraft(state.path);
+            setPwdDraft(state.backupPassword);
+        } catch (error) {
+            setBackupState(null);
+            setBackupError(error instanceof Error ? error.message : "读取备份配置失败");
+        }
+    }, []);
+    // 切到这一页时才拉配置（都是轻量读，但首屏不需要它们）
+    useEffect(() => {
+        if (open && tab === "backup") void reloadBackupState();
+    }, [open, tab, reloadBackupState]);
+
+    const saveBackupField = async (patch: NotesBackupSavePatch) => {
+        const cur = dataRef.current;
+        if (!cur?.onNotesBackupSave) return;
+        setBackupBusy(true);
+        try {
+            await cur.onNotesBackupSave(patch);
+            onNotify?.("备份设置已保存", "success");
+        } catch (error) {
+            onNotify?.("保存失败：" + (error instanceof Error ? error.message : "未知错误"), "error");
+        } finally {
+            setBackupBusy(false);
+        }
+    };
+
+    const runBackupNow = async () => {
+        const cur = dataRef.current;
+        if (!cur?.onNotesBackupRun || backupBusy) return;
+        setBackupBusy(true);
+        try {
+            const r = await cur.onNotesBackupRun();
+            if (r.success) onNotify?.(r.message || "备份完成", "success");
+            else onNotify?.(r.message || "备份失败", "error");
+        } catch (error) {
+            onNotify?.("备份失败：" + (error instanceof Error ? error.message : "未知错误"), "error");
+        } finally {
+            setBackupBusy(false);
+            void reloadBackupState();
+        }
+    };
+
+    const testBackup = async () => {
+        const cur = dataRef.current;
+        if (!cur?.onNotesBackupTest || backupBusy) return;
+        setBackupBusy(true);
+        setBackupTestResult(null);
+        try {
+            setBackupTestResult(await cur.onNotesBackupTest());
+        } catch (error) {
+            setBackupTestResult({
+                success: false,
+                message: error instanceof Error ? error.message : "测试失败",
+            });
+        } finally {
+            setBackupBusy(false);
+        }
+    };
     const filteredShares = useMemo(() => {
         const kw = shareKeyword.trim().toLowerCase();
         if (!kw) return shares ?? [];
@@ -373,6 +472,14 @@ export default function NotesSettingsDialog({
                             ["editor", "编辑器", <TuneIcon fontSize='small' key='e' />],
                             ...(data
                                 ? [["data", "数据", <StorageIcon fontSize='small' key='d' />] as const]
+                                : []),
+                            // 备份页照 inkstone 的 BackupSettings；老部署没能力时整页不出现
+                            ...(data?.onNotesBackupGetState
+                                ? [[
+                                      "backup",
+                                      "备份",
+                                      <CloudUploadIcon fontSize='small' key='b' />,
+                                  ] as const]
                                 : []),
                             ...(shareApi
                                 ? [["shares", "分享列表", <ShareIcon fontSize='small' key='s' />] as const]
@@ -420,7 +527,9 @@ export default function NotesSettingsDialog({
                                   ? "编辑器"
                                   : tab === "data"
                                     ? "数据"
-                                    : "分享列表"}
+                                    : tab === "backup"
+                                      ? "备份"
+                                      : "分享列表"}
                         </Typography>
                         <IconButton size='small' aria-label='关闭设置' onClick={onClose} data-settings-close='1'>
                             <CloseIcon fontSize='small' />
@@ -896,6 +1005,381 @@ export default function NotesSettingsDialog({
                                         清空
                                     </Button>
                                 </SettingRow>
+                            </Box>
+                        ) : tab === "backup" && data ? (
+                            <Box data-settings-backup='1'>
+                                {backupError && (
+                                    <Typography
+                                        data-backup-state='error'
+                                        variant='caption'
+                                        sx={{
+                                            display: "block",
+                                            px: 1.5,
+                                            py: 1,
+                                            mb: 1.5,
+                                            borderRadius: 1.5,
+                                            color: "error.main",
+                                            bgcolor: "rgba(176,67,58,0.08)",
+                                        }}
+                                    >
+                                        {backupError}
+                                    </Typography>
+                                )}
+
+                                {/* 概览 + 立即备份（inkstone 的概览 section） */}
+                                <Box
+                                    sx={{
+                                        display: "flex",
+                                        alignItems: "flex-start",
+                                        gap: 1.5,
+                                        px: 1.5,
+                                        py: 1.25,
+                                        mb: 2,
+                                        borderRadius: 2,
+                                        border: "1px solid rgba(128,128,128,0.2)",
+                                    }}
+                                >
+                                    <CloudUploadIcon sx={{ color: "var(--accent)", fontSize: 20, mt: 0.25 }} />
+                                    <Box sx={{ flex: 1, minWidth: 0 }}>
+                                        <Typography variant='body2' sx={{ fontWeight: 600 }}>
+                                            {backupState?.webdavUrl
+                                                ? "WebDAV 备份目标已配置"
+                                                : "尚未配置网盘"}
+                                        </Typography>
+                                        <Typography
+                                            variant='caption'
+                                            color='text.secondary'
+                                            sx={{ display: "block", mt: 0.25 }}
+                                        >
+                                            备份与导航页的分开：独立目录、独立文件名、独立频率与保留；
+                                            网盘地址与账号自动带入导航页「数据备份」里保存的那套。
+                                        </Typography>
+                                    </Box>
+                                    <Button
+                                        size='small'
+                                        variant='contained'
+                                        disabled={!backupState?.webdavUrl || backupBusy}
+                                        data-backup-action='run-now'
+                                        startIcon={
+                                            backupBusy ? <CircularProgress size={14} /> : undefined
+                                        }
+                                        onClick={() => void runBackupNow()}
+                                    >
+                                        立即备份
+                                    </Button>
+                                </Box>
+
+                                {/* 备份目标（inkstone 的 TargetCard：单 WebDAV 目标，凭据自动带入） */}
+                                <Typography
+                                    variant='caption'
+                                    sx={{
+                                        fontWeight: 600,
+                                        letterSpacing: "0.06em",
+                                        color: "text.disabled",
+                                        display: "block",
+                                        mb: 0.5,
+                                    }}
+                                >
+                                    备份目标
+                                </Typography>
+                                <Box
+                                    data-backup-target='1'
+                                    sx={{
+                                        px: 1.5,
+                                        py: 1.25,
+                                        mb: 2,
+                                        borderRadius: 2,
+                                        border: "1px solid rgba(128,128,128,0.2)",
+                                    }}
+                                >
+                                    <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                                        <StorageIcon sx={{ fontSize: 18, color: "text.secondary" }} />
+                                        <Box sx={{ flex: 1, minWidth: 0 }}>
+                                            <Typography variant='body2' sx={{ fontWeight: 600 }}>
+                                                WebDAV
+                                            </Typography>
+                                            <Typography
+                                                variant='caption'
+                                                color='text.secondary'
+                                                sx={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                                            >
+                                                {backupState?.webdavUrl || "未配置（先在导航页保存网盘地址）"}
+                                                {backupState?.webdavUsername
+                                                    ? ` · ${backupState.webdavUsername}`
+                                                    : ""}
+                                            </Typography>
+                                        </Box>
+                                        <Button
+                                            size='small'
+                                            variant='outlined'
+                                            disabled={backupBusy || !backupState?.webdavUrl}
+                                            data-backup-action='test'
+                                            startIcon={
+                                                backupBusy ? <CircularProgress size={14} /> : <RefreshIcon />
+                                            }
+                                            onClick={() => void testBackup()}
+                                        >
+                                            测试连接
+                                        </Button>
+                                    </Box>
+
+                                    <Box sx={{ display: "flex", gap: 1.5, mt: 1.25, flexWrap: "wrap" }}>
+                                        <TextField
+                                            label='备份目录'
+                                            size='small'
+                                            fullWidth
+                                            value={pathDraft}
+                                            slotProps={{ input: { "aria-label": "备份目录" } }}
+                                            onChange={e => setPathDraft(e.target.value)}
+                                            onBlur={() => {
+                                                const next = pathDraft.trim();
+                                                if (backupState && next && next !== backupState.path) {
+                                                    void saveBackupField({ path: next });
+                                                    setBackupState({ ...backupState, path: next });
+                                                } else {
+                                                    setPathDraft(backupState?.path ?? "");
+                                                }
+                                            }}
+                                        />
+                                        <TextField
+                                            label='备份密码（可选）'
+                                            type='password'
+                                            size='small'
+                                            fullWidth
+                                            value={pwdDraft}
+                                            autoComplete='new-password'
+                                            slotProps={{ input: { "aria-label": "备份密码" } }}
+                                            onChange={e => setPwdDraft(e.target.value)}
+                                            onBlur={() => {
+                                                if (!backupState) return;
+                                                if (pwdDraft !== backupState.backupPassword) {
+                                                    void saveBackupField({
+                                                        backupPassword: pwdDraft,
+                                                    });
+                                                    setBackupState({ ...backupState, backupPassword: pwdDraft });
+                                                }
+                                            }}
+                                        />
+                                    </Box>
+                                    <Typography
+                                        variant='caption'
+                                        color='text.secondary'
+                                        sx={{ display: "block", mt: 0.5 }}
+                                    >
+                                        {backupState?.backupPassword || backupState?.hasNavBackupPassword
+                                            ? "设了口令的备份会加密上传，恢复时要填同一个密码。"
+                                            : "口令留空则明文上传；填了会覆盖导航页那份备份口令。"}
+                                    </Typography>
+
+                                    {backupTestResult && (
+                                        <Typography
+                                            role={backupTestResult.success ? "status" : "alert"}
+                                            data-backup-test-result={
+                                                backupTestResult.success ? "ok" : "fail"
+                                            }
+                                            variant='caption'
+                                            sx={{
+                                                display: "block",
+                                                mt: 1,
+                                                px: 1,
+                                                py: 0.75,
+                                                borderRadius: 1.5,
+                                                color: backupTestResult.success ? "success.main" : "error.main",
+                                                bgcolor: backupTestResult.success
+                                                    ? "rgba(76,175,80,0.10)"
+                                                    : "rgba(176,67,58,0.08)",
+                                            }}
+                                        >
+                                            {backupTestResult.message}
+                                        </Typography>
+                                    )}
+                                </Box>
+
+                                {/* 自动备份（inkstone 的频率 / 保留两个 Select） */}
+                                <Typography
+                                    variant='caption'
+                                    sx={{
+                                        fontWeight: 600,
+                                        letterSpacing: "0.06em",
+                                        color: "text.disabled",
+                                        display: "block",
+                                        mb: 0.5,
+                                    }}
+                                >
+                                    自动备份
+                                </Typography>
+                                <SettingRow
+                                    label='备份频率'
+                                    description='由服务端定时任务执行，页面不用保持打开；到点后到下一次触发之间最多延迟 1 小时。'
+                                >
+                                    <Select
+                                        size='small'
+                                        aria-label='备份频率'
+                                        value={backupState?.schedule ?? "off"}
+                                        disabled={backupBusy}
+                                        data-backup-select='schedule'
+                                        onChange={e => {
+                                            const next = e.target.value;
+                                            setBackupState(s => (s ? { ...s, schedule: next } : s));
+                                            void saveBackupField({ schedule: next });
+                                        }}
+                                        sx={{ minWidth: 110 }}
+                                    >
+                                        <MenuItem value='off'>关闭</MenuItem>
+                                        <MenuItem value='hourly'>每小时</MenuItem>
+                                        <MenuItem value='sixHourly'>每 6 小时</MenuItem>
+                                        <MenuItem value='daily'>每天</MenuItem>
+                                        <MenuItem value='weekly'>每周</MenuItem>
+                                        <MenuItem value='monthly'>每月</MenuItem>
+                                        <MenuItem value='yearly'>每年</MenuItem>
+                                    </Select>
+                                </SettingRow>
+                                <SettingRow
+                                    label='备份保留'
+                                    description='自动备份在网盘上保留的份数；手动备份永远全部保留。'
+                                >
+                                    <Select
+                                        size='small'
+                                        aria-label='备份保留份数'
+                                        value={String(backupState?.retention ?? 7)}
+                                        disabled={backupBusy}
+                                        data-backup-select='retention'
+                                        onChange={e => {
+                                            const next = Number(e.target.value);
+                                            setBackupState(s =>
+                                                s ? { ...s, retention: next } : s
+                                            );
+                                            void saveBackupField({ retention: next });
+                                        }}
+                                        sx={{ minWidth: 110 }}
+                                    >
+                                        <MenuItem value='0'>全部保留</MenuItem>
+                                        <MenuItem value='7'>最近 7 份</MenuItem>
+                                        <MenuItem value='14'>最近 14 份</MenuItem>
+                                        <MenuItem value='30'>最近 30 份</MenuItem>
+                                        <MenuItem value='90'>最近 90 份</MenuItem>
+                                        <MenuItem value='365'>最近 365 份</MenuItem>
+                                    </Select>
+                                </SettingRow>
+
+                                {/* 最近备份（inkstone 的 RunRow 列表，最多 12 条） */}
+                                <Typography
+                                    variant='caption'
+                                    sx={{
+                                        fontWeight: 600,
+                                        letterSpacing: "0.06em",
+                                        color: "text.disabled",
+                                        display: "block",
+                                        mt: 2,
+                                        mb: 0.5,
+                                    }}
+                                >
+                                    最近备份
+                                </Typography>
+                                {!backupState || backupState.runs.length === 0 ? (
+                                    <Typography
+                                        data-backup-runs-empty='1'
+                                        variant='caption'
+                                        color='text.disabled'
+                                        sx={{
+                                            display: "block",
+                                            px: 1.5,
+                                            py: 2,
+                                            borderRadius: 1.5,
+                                            textAlign: "center",
+                                            bgcolor: "rgba(128,128,128,0.05)",
+                                        }}
+                                    >
+                                        还没有备份记录
+                                    </Typography>
+                                ) : (
+                                    <Box component='ul' sx={{ m: 0, p: 0, listStyle: "none" }}>
+                                        {backupState.runs.slice(0, 12).map(run => (
+                                            <Box
+                                                key={run.id}
+                                                component='li'
+                                                data-backup-run={run.id}
+                                                sx={{
+                                                    borderRadius: 1.5,
+                                                    border: "1px solid rgba(128,128,128,0.16)",
+                                                    mb: 0.5,
+                                                    overflow: "hidden",
+                                                }}
+                                            >
+                                                <Box
+                                                    component='button'
+                                                    type='button'
+                                                    aria-expanded={expandedRun === run.id}
+                                                    onClick={() =>
+                                                        setExpandedRun(v => (v === run.id ? null : run.id))
+                                                    }
+                                                    sx={{
+                                                        display: "flex",
+                                                        alignItems: "center",
+                                                        gap: 1,
+                                                        width: "100%",
+                                                        px: 1,
+                                                        py: 0.75,
+                                                        appearance: "none",
+                                                        border: "none",
+                                                        font: "inherit",
+                                                        cursor: "pointer",
+                                                        bgcolor: "transparent",
+                                                        textAlign: "left",
+                                                        "&:hover": { bgcolor: "rgba(128,128,128,0.06)" },
+                                                    }}
+                                                >
+                                                    <Box
+                                                        aria-hidden='true'
+                                                        sx={{
+                                                            width: 6,
+                                                            height: 6,
+                                                            borderRadius: "50%",
+                                                            flexShrink: 0,
+                                                            bgcolor:
+                                                                run.status === "success"
+                                                                    ? "success.main"
+                                                                    : "error.main",
+                                                        }}
+                                                    />
+                                                    <Typography
+                                                        variant='caption'
+                                                        sx={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                                                    >
+                                                        {fmtTime(run.startedAt) || run.startedAt} ·{" "}
+                                                        {run.trigger === "auto" ? "定时" : "手动"}
+                                                    </Typography>
+                                                    <Typography
+                                                        variant='caption'
+                                                        color='text.secondary'
+                                                        sx={{ flexShrink: 0 }}
+                                                    >
+                                                        {run.status === "success"
+                                                            ? `${run.noteCount ?? 0} 条 · ${fmtBytes(run.bytes ?? 0)}`
+                                                            : "失败"}
+                                                    </Typography>
+                                                </Box>
+                                                {expandedRun === run.id && (
+                                                    <Typography
+                                                        variant='caption'
+                                                        color='text.secondary'
+                                                        sx={{
+                                                            display: "block",
+                                                            px: 1.5,
+                                                            py: 0.75,
+                                                            borderTop: "1px solid rgba(128,128,128,0.12)",
+                                                            bgcolor: "rgba(128,128,128,0.04)",
+                                                        }}
+                                                    >
+                                                        {run.status === "success"
+                                                            ? `${run.filename ?? ""} · 用时 ${Math.round((run.durationMs ?? 0) / 100) / 10} 秒`
+                                                            : run.error || "备份失败"}
+                                                    </Typography>
+                                                )}
+                                            </Box>
+                                        ))}
+                                    </Box>
+                                )}
                             </Box>
                         ) : (
                             // 分享列表（inkstone 设置里同名那一页）：列出所有已分享的笔记 ——
