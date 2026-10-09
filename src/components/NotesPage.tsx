@@ -4057,10 +4057,13 @@ export default function NotesPage({
                             }}
                         />
                         {/* 即时渲染（inkstone 顶栏同名开关）。
-                            ⚠️ 窄屏（<900px）藏起来：标题行已经装了「即时渲染 + 三档 + 更多 +
-                            关闭」，窄窗口塞不下。同一个开关在「更多操作」菜单里有一份，
-                            窄屏走那条路（见下面 data-active-op='live-render'）。 */}
-                        <Box sx={{ display: narrowLayout ? "none" : "flex", alignItems: "center", gap: 0.25, flexShrink: 0, mr: 0.5 }}>
+                            ⚠️ 窄屏（<900px）与**分屏态**不渲染（条件渲染，不是 display:none
+                            —— 得真的从 DOM 里卸掉）：半宽的两栏塞不下，同一个开关在
+                            「更多操作」菜单里有一份（见下面 data-active-op='live-render'）。
+                            inkstone 分屏（grouped）时头部也只留「即时渲染 + 三档 + 更多」，
+                            收藏/反链/大纲/版本/导出/分享全进菜单（Workspace.tsx:424-441）。 */}
+                        {!(narrowLayout || sideId !== null) && (
+                        <Box sx={{ display: "flex", alignItems: "center", gap: 0.25, flexShrink: 0, mr: 0.5 }}>
                             <Typography variant='caption' color='text.secondary' sx={{ fontSize: 11, whiteSpace: "nowrap" }}>
                                 即时渲染
                             </Typography>
@@ -4073,6 +4076,7 @@ export default function NotesPage({
                                 sx={{ ml: 0 }}
                             />
                         </Box>
+                        )}
                         {/* 模式切换：**框起来的一组图标**（inkstone 同款）。
                             ⚠️ 之前是「宽屏文字按钮 + 小屏图标」两套，宽屏下三个
                             「编辑/分栏/预览」文字把标题行撑得很宽，两栏并排时
@@ -4128,7 +4132,11 @@ export default function NotesPage({
                             更多 / 收藏 / 反向链接 / 版本历史 / 导出 / 大纲 / 分享。
                             我们把分享/版本/大纲/反链都收进了「⋯」—— 收着不算错（窄栏更合理），
                             但「收藏」和「大纲」是随手要用的，让用户先点开菜单再点一项太绕。
-                            所以只把这两个提成常驻按钮，其余仍留在「⋯」里。 */}
+                            所以只把这两个提成常驻按钮，其余仍留在「⋯」里。
+                            ⚠️ 2026-10-09 用户明确：**分屏（侧边打开）时照 inkstone 收进「更多」** ——
+                            半宽的两栏塞不下这排，头部只留三档 + 保存状态 + 「⋯」。
+                            条件渲染（不是 display:none）：元素要真的从 DOM 卸掉。 */}
+                        {sideId === null && (
                         <Box sx={{ display: "flex", flexShrink: 0, alignItems: "center", gap: 0.25, mr: 0.5 }}>
                             <Tooltip title={active?.pinned ? "取消收藏" : "收藏"}>
                                 <span>
@@ -4166,10 +4174,14 @@ export default function NotesPage({
                                 </IconButton>
                             </Tooltip>
                         </Box>
+                        )}
                         {/* 桌面端把高频操作直接平铺（2026-10-08 照 inkstone Workspace 头部：
                             收藏 / 反链 / 版本历史 / 导出 / 大纲 / 分享直接显示，
-                            「⋯」桌面端不再收纳它们；窄屏标题行窄，不渲染这组，仍走「⋯」）。 */}
-                        {!narrowLayout && (
+                            「⋯」桌面端不再收纳它们；窄屏标题行窄，不渲染这组，仍走「⋯」）。
+                            ⚠️ 2026-10-09：分屏（侧边打开）时同样不渲染 —— 半宽塞不下，
+                            inkstone 分屏也是全收进 groupedItems 菜单，对应菜单项在
+                            分屏时会重新出现（见下面那组 narrowLayout || sideOpen 条件）。 */}
+                        {!narrowLayout && sideId === null && (
                         <Box
                             data-desktop-actions='1'
                             sx={{ flexShrink: 0, alignItems: "center", gap: 0.25, mr: 0.5, display: "flex" }}
@@ -5399,8 +5411,9 @@ export default function NotesPage({
                 {active && (
                     <>
                         {/* 分享 / 版本 / 大纲 / 反链：桌面端已平铺到头部（2026-10-08），
-                            这几项只留给窄屏（标题行放不下）。 */}
-                        {narrowLayout && (
+                            这几项只留给窄屏与**分屏态**（半宽的头部放不下平铺组，
+                            2026-10-09 用户明确照 inkstone 收进菜单）。 */}
+                        {(narrowLayout || sideId !== null) && (
                         <>
                         <MenuItem
                             data-active-op='share'
@@ -5448,9 +5461,9 @@ export default function NotesPage({
                         </>
                         )}
                         <Divider />
-                        {/* 窄屏时标题行放不下「即时渲染」，这里补一个入口（同一个状态）；
-                            桌面端头部已有开关，这项不再重复出现。 */}
-                        {narrowLayout && (
+                        {/* 窄屏与分屏时头部放不下「即时渲染」，这里补一个入口（同一个状态）；
+                            桌面单栏态头部已有开关，这项不再重复出现。 */}
+                        {(narrowLayout || sideId !== null) && (
                         <MenuItem
                             data-active-op='live-render'
                             onClick={() => setLiveRender(v => !v)}
@@ -5512,8 +5525,8 @@ export default function NotesPage({
                             移动到文件夹…
                         </MenuItem>
                         {/* 导出三件套：桌面端已收进头部「导出」下拉（data-tool='export'），
-                            这里只留给窄屏。 */}
-                        {narrowLayout && (
+                            这里只留给窄屏与分屏态。 */}
+                        {(narrowLayout || sideId !== null) && (
                         <>
                         <MenuItem
                             data-active-op='export'

@@ -5235,3 +5235,64 @@ test("设置→备份：没有备份能力（老部署）时整页不出现", as
         "没有 backupApi 时「备份」这一页不该出现"
     );
 });
+
+test("分屏时主栏右上角收进「更多」（照 inkstone grouped）：平铺组消失、菜单项出现", async () => {
+    setWide();
+    mountPanel([
+        note({ id: 1, title: "甲", content: "a" }),
+        note({ id: 2, title: "乙", content: "b" }),
+    ]);
+    await act(async () => {
+        rightClick(document.querySelector("[data-note-list] [data-note-id='2']")!);
+    });
+    await act(async () => (document.querySelector("[data-row-op='open-side']") as HTMLElement).click());
+    assert.ok(document.querySelector("[data-side-editor='1']"), "先打开侧边（分屏态）");
+
+    // 平铺的那排全消失（inkstone 分屏头部只有三档 + 保存状态 + 「⋯」）。
+    // ⚠️ 断言用 `=== null`（布尔），别把 DOM 元素塞给 assert.equal ——
+    // 失败时 node:test 要 inspect 整棵 jsdom 节点树，会直接 OOM（Array buffer allocation failed）。
+    assert.ok(document.querySelector("[data-desktop-actions='1']") === null, "分屏时平铺组不渲染");
+    assert.ok(document.querySelector("button[data-tool='pin']") === null, "分屏时收藏常驻键收进菜单");
+    assert.ok(document.querySelector("button[data-tool='outline']") === null, "分屏时大纲常驻键收进菜单");
+    assert.ok(
+        document.querySelector("button[data-tool='live-render']") === null,
+        "分屏时主栏即时渲染开关收进菜单"
+    );
+    assert.ok(document.querySelector("[data-pane-modes='1']"), "三档模式键保留在头部");
+    assert.ok(
+        document.querySelector("button[data-tool='note-more']"),
+        "「更多操作」保留在头部"
+    );
+
+    // 「更多操作」里这几项重新出现（桌面单栏态它们被平铺取代而不出现）
+    await openNoteMore();
+    for (const op of ["share", "revisions", "backlinks", "outline", "live-render", "export", "pin"]) {
+        assert.ok(
+            document.querySelector(`[data-active-op='${op}']`),
+            `分屏时更多操作里要有 ${op}`
+        );
+    }
+    // 侧栏照 inkstone 分屏同款：即时渲染开关 / 三档 / 更多 / 关闭都在
+    const side = document.querySelector("[data-side-editor='1']")!;
+    assert.ok(side.querySelector("[data-tool='side-live-render']"), "侧栏保留即时渲染开关");
+    assert.ok(side.querySelector("[data-side-modes='1']"), "侧栏保留三档模式键");
+    assert.ok(side.querySelector("[data-tool='side-more']"), "侧栏保留更多操作");
+    assert.ok(side.querySelector("[data-side-close='1']"), "侧栏保留常显关闭键");
+});
+
+test("关掉侧边后主栏头部平铺组恢复（分屏态的收纳是临时的）", async () => {
+    setWide();
+    mountPanel([
+        note({ id: 1, title: "甲", content: "a" }),
+        note({ id: 2, title: "乙", content: "b" }),
+    ]);
+    await act(async () => {
+        rightClick(document.querySelector("[data-note-list] [data-note-id='2']")!);
+    });
+    await act(async () => (document.querySelector("[data-row-op='open-side']") as HTMLElement).click());
+    await act(async () => (document.querySelector("[data-side-close='1']") as HTMLElement).click());
+    assert.equal(document.querySelector("[data-side-editor='1']"), null, "侧边已关");
+    assert.ok(document.querySelector("[data-desktop-actions='1']"), "平铺组恢复");
+    assert.ok(document.querySelector("button[data-tool='pin']"), "收藏常驻键恢复");
+    assert.ok(document.querySelector("button[data-tool='outline']"), "大纲常驻键恢复");
+});
