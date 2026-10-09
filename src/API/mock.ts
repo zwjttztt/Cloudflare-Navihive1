@@ -14,6 +14,7 @@ import {
     WebDavConfig,
     WebDavFile,
     WebDavResult,
+    WebDavErrorCode,
     SiteOrderUpdateResult,
     SiteBatchDeleteResult,
     RecycleBatchRestoreResult,
@@ -1061,16 +1062,24 @@ export class MockNavigationClient {
         return { success: false, message: "模拟环境不支持 WebDAV 备份" };
     }
 
-    async notesBackupListRemote(): Promise<
-        WebDavResult<{ files: { name: string; size: number; lastModified: string }[] }>
-    > {
+    async notesBackupListRemote(): Promise<{
+        success: boolean;
+        message?: string;
+        code?: WebDavErrorCode;
+        files?: { name: string; size: number; lastModified: string }[];
+    }> {
         return { success: false, message: "模拟环境不支持 WebDAV 备份" };
     }
 
     async notesBackupDownload(
         _filename: string,
         _password?: string
-    ): Promise<WebDavResult<{ payload: import("./types").NotesImportPayload }>> {
+    ): Promise<{
+        success: boolean;
+        code?: WebDavErrorCode;
+        message?: string;
+        payload?: import("./types").NotesImportPayload;
+    }> {
         return { success: false, message: "模拟环境不支持 WebDAV 备份" };
     }
 

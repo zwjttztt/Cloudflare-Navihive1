@@ -158,53 +158,6 @@ function SettingRow({
     );
 }
 
-/**
- * WebDAV 服务商预设（2026-10-09）。
- *
- * 各家网盘的 WebDAV 地址长得都不一样，而「地址填错了」在界面上的表现
- * 只是「测试连接失败」四个字 —— 用户不知道该怪地址还是怪密码。
- * 这里给几个常见的抄一份，选了就能复制走。
- *
- * ⚠️ 只列**确认过**的公开地址；拿不准的不写（写错比不写更害人 ——
- * 用户照着填一遍，失败原因就多了一个）。模板里的 `<…>` 要用户自己换。
- */
-const WEBDAV_PRESETS: {
-    id: string;
-    name: string;
-    url: string;
-    signup: string;
-    hint: string;
-}[] = [
-    {
-        id: "jianguoyun",
-        name: "坚果云",
-        url: "https://dav.jianguoyun.com/dav/",
-        signup: "https://www.jianguoyun.com/",
-        hint: "用户名填注册邮箱；密码要用「账户信息 → 安全选项」里生成的**应用密码**，不是登录密码。",
-    },
-    {
-        id: "nextcloud",
-        name: "Nextcloud（自建）",
-        url: "https://你的域名/remote.php/dav/files/你的用户名/",
-        signup: "https://nextcloud.com/",
-        hint: "把「你的域名 / 你的用户名」换成实际的；密码同样用「安全设置」里生成的应用密码。",
-    },
-    {
-        id: "koofr",
-        name: "Koofr",
-        url: "https://app.koofr.net/dav/Koofr",
-        signup: "https://app.koofr.net/signup",
-        hint: "用户名是注册邮箱，密码在「设置 → 密码」里单独生成。",
-    },
-    {
-        id: "own",
-        name: "其它 / 自建",
-        url: "",
-        signup: "",
-        hint: "问你的服务商要 WebDAV 地址，一般形如 https://域名/dav/。",
-    },
-];
-
 /** 附件字节数 → 人类可读（数据页「附件占用」用） */
 /** 时间戳 →「2026-10-08 14:30」。兼容数字与字符串（D1 里两种都可能出现） */
 function fmtTime(value: number | string | null | undefined): string {
@@ -452,8 +405,6 @@ export default function NotesSettingsDialog({
     >(null);
     const [remoteError, setRemoteError] = useState<string | null>(null);
     /** 待恢复的那份：弹口令框用 */
-    /** 网盘服务商预设：选了就把它的 WebDAV 地址显示出来（可一键复制） */
-    const [presetId, setPresetId] = useState(WEBDAV_PRESETS[0].id);
     const [restoreTarget, setRestoreTarget] = useState<string | null>(null);
     const [restorePwd, setRestorePwd] = useState("");
     const [restoreBusy, setRestoreBusy] = useState(false);
@@ -1358,119 +1309,6 @@ export default function NotesSettingsDialog({
                                             {backupTestResult.message}
                                         </Typography>
                                     )}
-                                </Box>
-
-                                {/* 服务商预设（2026-10-09）：网盘地址在导航页「数据备份」里填，
-                                    这里只负责把常见服务商的地址给出来、能复制走 ——
-                                    地址填错的典型症状只是「测试连接失败」，没有这个对照表
-                                    用户根本不知道该怪地址还是怪密码。 */}
-                                <Box
-                                    data-backup-preset='1'
-                                    sx={{
-                                        px: 1.5,
-                                        py: 1.25,
-                                        mb: 2,
-                                        borderRadius: 2,
-                                        border: "1px solid rgba(128,128,128,0.2)",
-                                    }}
-                                >
-                                    <Typography
-                                        variant='caption'
-                                        sx={{
-                                            fontWeight: 600,
-                                            letterSpacing: "0.06em",
-                                            color: "text.disabled",
-                                            display: "block",
-                                            mb: 0.75,
-                                        }}
-                                    >
-                                        网盘地址速查
-                                    </Typography>
-                                    <Select
-                                        size='small'
-                                        fullWidth
-                                        aria-label='网盘服务商'
-                                        data-backup-preset-select='1'
-                                        value={presetId}
-                                        onChange={e => setPresetId(e.target.value)}
-                                    >
-                                        {WEBDAV_PRESETS.map(p => (
-                                            <MenuItem key={p.id} value={p.id}>
-                                                {p.name}
-                                            </MenuItem>
-                                        ))}
-                                    </Select>
-                                    {(() => {
-                                        const preset =
-                                            WEBDAV_PRESETS.find(p => p.id === presetId) ??
-                                            WEBDAV_PRESETS[0];
-                                        return (
-                                            <>
-                                                {preset.url && (
-                                                    <Typography
-                                                        data-backup-preset-url={preset.id}
-                                                        variant='caption'
-                                                        sx={{
-                                                            display: "block",
-                                                            mt: 1,
-                                                            px: 1,
-                                                            py: 0.5,
-                                                            borderRadius: 1,
-                                                            bgcolor: "rgba(128,128,128,0.08)",
-                                                            fontFamily: "monospace",
-                                                            wordBreak: "break-all",
-                                                        }}
-                                                    >
-                                                        {preset.url}
-                                                    </Typography>
-                                                )}
-                                                <Typography
-                                                    variant='caption'
-                                                    color='text.secondary'
-                                                    sx={{ display: "block", mt: 0.5 }}
-                                                >
-                                                    {preset.hint}
-                                                </Typography>
-                                                {preset.url && (
-                                                    <Button
-                                                        size='small'
-                                                        variant='text'
-                                                        data-backup-action='copy-preset-url'
-                                                        onClick={() => {
-                                                            void navigator.clipboard
-                                                                .writeText(preset.url)
-                                                                .then(() =>
-                                                                    onNotify?.(
-                                                                        "网盘地址已复制，去导航页「数据备份」里粘贴",
-                                                                        "success"
-                                                                    )
-                                                                )
-                                                                .catch(() =>
-                                                                    onNotify?.(
-                                                                        "复制失败（浏览器拒绝了剪贴板访问）",
-                                                                        "error"
-                                                                    )
-                                                                );
-                                                        }}
-                                                    >
-                                                        复制地址
-                                                    </Button>
-                                                )}
-                                                {preset.signup && (
-                                                    <Button
-                                                        size='small'
-                                                        variant='text'
-                                                        href={preset.signup}
-                                                        target='_blank'
-                                                        rel='noreferrer'
-                                                        data-backup-preset-signup='1'
-                                                    >
-                                                        去注册
-                                                    </Button>
-                                                )}
-                                            </>
-                                        );
-                                    })()}
                                 </Box>
 
                                 {/* 自动备份（inkstone 的频率 / 保留两个 Select） */}

@@ -1114,13 +1114,22 @@ export class NavigationClient {
     /**
      * 列出网盘上的记事本备份（从网盘恢复的第一步）。
      * 只回 `navihive-notes-backup-` 前缀的那批，导航备份不混进来。
+     *
+     * ⚠️ 返回是**顶层** `files`：`request()` 直接 `response.json()`，不包 `data` 层
+     * （与 WebDavResult 的 `data` 字段是两回事）。前端取数务必用 `r.files`，
+     * 写成 `r.data?.files` 会恒为 undefined —— 2026-10-10 那个「列出备份是空的 /
+     * 备份无法恢复」的 bug 就这么来的。
      */
-    async notesBackupListRemote(): Promise<
-        WebDavResult<{ files: { name: string; size: number; lastModified: string }[] }>
-    > {
+    async notesBackupListRemote(): Promise<{
+        success: boolean;
+        message?: string;
+        code?: WebDavErrorCode;
+        files?: { name: string; size: number; lastModified: string }[];
+    }> {
         return this.request<{
             success: boolean;
             message?: string;
+            code?: WebDavErrorCode;
             files?: { name: string; size: number; lastModified: string }[];
         }>("webdav/notes/list", { method: "POST", body: "{}" });
     }
@@ -1130,11 +1139,17 @@ export class NavigationClient {
      *
      * ⚠️ password 只在**这份备份是口令加密的、且配置里没存口令**时才需要传：
      * 服务端返回 code='encrypted' 时前端弹一个口令框，用户填完再调一次。
+     * ⚠️ 返回是**顶层** `payload`（同上，不包 `data` 层），前端用 `r.payload` 取。
      */
     async notesBackupDownload(
         filename: string,
         password?: string
-    ): Promise<WebDavResult<{ payload: NotesImportPayload }>> {
+    ): Promise<{
+        success: boolean;
+        code?: WebDavErrorCode;
+        message?: string;
+        payload?: NotesImportPayload;
+    }> {
         return this.request<{
             success: boolean;
             code?: WebDavErrorCode;

@@ -1858,8 +1858,9 @@ function App() {
                         onClose={handleCloseBackup}
                         includeCredentials={configs[BACKUP_CREDENTIALS_CONFIG] === "true"}
                         onIncludeCredentialsChange={handleToggleIncludeCredentials}
-                        // 记事本默认**带**（与凭据相反）：它是主要内容，导出后找不到会以为坏了
-                        includeNotes={configs[BACKUP_NOTES_CONFIG] !== "false"}
+                        // 记事本默认**不带**：导航备份与笔记备份是两套独立备份，
+                        // 笔记走自己的 WebDAV 备份；只有显式开 backup.includeNotes 才带。
+                        includeNotes={configs[BACKUP_NOTES_CONFIG] === "true"}
                         onIncludeNotesChange={handleToggleIncludeNotes}
                         // 导入浏览器书签：从「更多选项」挪进「恢复 / 导入」页，和从文件恢复同类
                         onOpenBookmark={() => {

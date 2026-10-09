@@ -16,6 +16,7 @@ import type {
     NotesImportPayload,
     WebDavResult,
 } from "../API/http";
+import type { WebDavErrorCode } from "../API/types";
 import { reportError } from "../utils/errorReporter";
 import { isNoteConflict } from "../utils/noteConflict";
 import type { NotifySeverity } from "./useNotify";
@@ -89,15 +90,24 @@ export type NotesApiLike = {
     // 同样**可选**：老部署没有 notesBackup 端点 / 配置读写时，设置→备份页自动降级。
     notesBackupTest?(): Promise<WebDavResult>;
     notesBackupUpload?(): Promise<WebDavResult<{ filename: string; size: number }>>;
-    /** 列出网盘备份目录里的笔记备份文件（2026-10-09，备份闭环的「取回」一半） */
-    notesBackupListRemote?(): Promise<
-        WebDavResult<{ files: { name: string; size: number; lastModified: string }[] }>
-    >;
-    /** 下载一份网盘备份并解密（加密备份要口令） */
+    /** 列出网盘备份目录里的笔记备份文件（2026-10-09，备份闭环的「取回」一半）。
+     *  ⚠️ 返回顶层 `files`：`request()` 不包 data 层。 */
+    notesBackupListRemote?(): Promise<{
+        success: boolean;
+        message?: string;
+        code?: WebDavErrorCode;
+        files?: { name: string; size: number; lastModified: string }[];
+    }>;
+    /** 下载一份网盘备份并解密（加密备份要口令）。⚠️ 返回顶层 `payload`。 */
     notesBackupDownload?(
         filename: string,
         password?: string
-    ): Promise<WebDavResult<{ payload: NotesImportPayload }>>;
+    ): Promise<{
+        success: boolean;
+        code?: WebDavErrorCode;
+        message?: string;
+        payload?: NotesImportPayload;
+    }>;
     /** 备份页的配置读写（notesBackup.* 是账号私有配置，与导航页 webdav.* 同一机制） */
     getConfig?(key: string): Promise<string | null>;
     setConfig?(key: string, value: string): Promise<boolean>;

@@ -135,10 +135,11 @@ export const transferImpl: TransferApi = {
         // 只有用户主动开启「备份含登录凭据」（backup.includeCredentials=true）才带。
         const withCreds = configs[BACKUP_CREDENTIALS_CONFIG] === "true";
 
-        // 记事本：**默认带上**（它是主要内容），只有显式写成 "false" 才排除。
-        // 与上面的凭据开关刻意分开：那个默认不带（凭据敏感），合成一个开关的话
-        // 用户为了拿笔记就得把密码也导出去。
-        const withNotes = configs[BACKUP_NOTES_CONFIG] !== "false";
+        // 记事本：**默认不带**。导航页备份与记事本备份是两套独立的备份
+        // （见 worker/notesBackup.ts），导航备份只负责站点/分组/配置；
+        // 笔记走自己的 WebDAV 备份。只有显式写成 "true" 才把笔记塞进导航备份。
+        // 与上面的凭据开关一致：都是「默认不带、想带要主动开」。
+        const withNotes = configs[BACKUP_NOTES_CONFIG] === "true";
 
         // 全站设置单独放 sharedConfigs，且只有所有者（或单账号部署）才写进备份文件。
         // 否则「一个账号导出的备份被另一个账号恢复」会把全站外观改掉。

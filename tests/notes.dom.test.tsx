@@ -5221,13 +5221,14 @@ function makeBackupApi(log: { calls: string[]; saved: Record<string, unknown>[] 
 }
 
 /** 带导入能力的 shareApi：网盘恢复的最后一步走 notes/import 同一条链路 */
-function makeImportShareApi(log: { imports: number }) {
+function makeImportShareApi(log: { imports: number; lastPayload?: unknown }) {
     return {
         getNoteShare: async () => null,
         createNoteShare: async () => null,
         revokeNoteShare: async () => ({ success: true }),
-        importNotes: async () => {
+        importNotes: async (payload: unknown) => {
             log.imports += 1;
+            log.lastPayload = payload;
             return { created: 1, updated: 2, skipped: 0 } as never;
         },
     } as never;
@@ -5435,6 +5436,59 @@ test("设置→备份→从网盘恢复：口令错了留在框里让人重填�
         document.querySelector("[data-backup-remote-error='1']") === null,
         "取消后错误提示也要清掉"
     );
+});
+
+test("回归：从网盘恢复读的是顶层 files/payload（request 不包 data 层），退回 r.data?. 会列空且导入拿不到", async () => {
+    // 真 bug（2026-10-10）：后端 notesBackupListRemote/notesBackupDownload 走
+    // `request()`，它直接 return response.json()，后端返回的是**顶层** {success, files} /
+    // {success, payload}。NotesOverlay 若写成 r.data?.files / r.data?.payload，
+    // 因为根本没 data 这层，恒为 undefined —— 列表永远空、导入拿不到 payload，
+    // 表现就是「备份的文件无法恢复」。这里用与真实后端同构（顶层字段）的桩钉死：
+    // 列表要出文件行、导入要真的收到 payload。若有人改回 r.data?.，此用例必红。
+    setWide();
+    const log: { calls: string[]; saved: Record<string, unknown>[] } = { calls: [], saved: [] };
+    const imp: { imports: number; lastPayload?: unknown } = { imports: 0 };
+    mountPanel([note({ id: 1, title: "甲", content: "a" })], {
+        backupApi: makeBackupApi(log),
+        shareApi: makeImportShareApi(imp),
+    });
+    await act(async () =>
+        (document.querySelector("button[data-tool='settings']") as HTMLElement).click()
+    );
+    await act(async () =>
+        (document.querySelector("[data-settings-tab='backup']") as HTMLElement).click()
+    );
+
+    await act(async () =>
+        (document.querySelector("[data-backup-action='list-remote']") as HTMLElement).click()
+    );
+    const fileRow = document.querySelector("[data-backup-remote-file]");
+    assert.ok(fileRow, "顶层 files 必须被读出来 —— 退回 r.data?.files 这里会是空列表");
+    assert.match(
+        fileRow!.textContent ?? "",
+        /navihive-notes-backup-auto-20261009-030000-000\.json\.gz/,
+        "列表行要显示真实文件名"
+    );
+
+    // 缺口令 → encrypted → 就地展开口令框
+    await act(async () =>
+        (document.querySelector("[data-backup-action='restore']") as HTMLElement).click()
+    );
+    const pwd = document.querySelector('input[aria-label="恢复备份密码"]') as HTMLInputElement;
+    assert.ok(pwd, "缺口令要就地展开口令输入框");
+    await act(async () => {
+        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+        setter?.call(pwd, "pw");
+        pwd.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => {
+        await (document.querySelector("[data-backup-action='restore-confirm']") as HTMLElement).click();
+        await new Promise(r => setTimeout(r, 30));
+    });
+    assert.equal(imp.imports, 1, "口令对了要真的走一次导入");
+    const payload = imp.lastPayload as { notes?: unknown[] } | undefined;
+    assert.ok(payload && Array.isArray(payload.notes) && payload.notes.length === 1,
+        "顶层 payload 必须原样送达 importNotes（退回 r.data?.payload 这里会是 undefined）");
 });
 
 test("设置→备份：没有备份能力（老部署）时整页不出现", async () => {
@@ -5794,32 +5848,4 @@ test("关系图谱：更多菜单里有入口，打开后画出节点与连线�
         }
     }
     assert.ok(gone, "点了节点图谱要关掉并跳过去（还开着说明 onClick 没接到）");
-});
-
-test("设置→备份：网盘地址速查给得出服务商的 WebDAV 地址，能一键复制", async () => {
-    setWide();
-    const log: { calls: string[]; saved: Record<string, unknown>[] } = { calls: [], saved: [] };
-    mountPanel([note({ id: 1, title: "甲", content: "a" })], {
-        backupApi: makeBackupApi(log),
-    });
-    await act(async () =>
-        (document.querySelector("button[data-tool='settings']") as HTMLElement).click()
-    );
-    await act(async () =>
-        (document.querySelector("[data-settings-tab='backup']") as HTMLElement).click()
-    );
-    assert.ok(document.querySelector("[data-backup-preset='1']"), "备份页要有网盘地址速查");
-    // 默认第一个（坚果云）的地址要显示出来
-    // ⚠️ 别在这里写正则：bash heredoc 会吃掉反斜杠（/^https:\/\// 会变成 //…）。
-    // 用 startsWith 判同样的东西，还更直白。
-    assert.ok(
-        (document.querySelector("[data-backup-preset-url]")!.textContent ?? "").startsWith(
-            "https://"
-        ),
-        "选了服务商就要把它的 WebDAV 地址显示出来"
-    );
-    assert.ok(
-        document.querySelector("[data-backup-action='copy-preset-url']"),
-        "要能一键复制地址（地址只在导航页填，这里只能给出来）"
-    );
 });

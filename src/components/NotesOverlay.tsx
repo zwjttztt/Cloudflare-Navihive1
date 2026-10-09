@@ -276,7 +276,8 @@ export default function NotesOverlay({
                 const r = await api.notesBackupListRemote();
                 return {
                     success: r.success,
-                    files: r.data?.files ?? [],
+                    // ⚠️ 后端返回顶层 files（request 不包 data 层），别写 r.data?.files
+                    files: r.files ?? [],
                     message: r.message ?? "",
                 };
             },
@@ -288,7 +289,8 @@ export default function NotesOverlay({
                 return {
                     success: r.success,
                     message: r.message ?? "",
-                    payload: r.data?.payload,
+                    // ⚠️ 后端返回顶层 payload（request 不包 data 层），别写 r.data?.payload
+                    payload: r.payload,
                     // 加密备份缺口令时后端回 encrypted / badPassword，前端据此弹口令框
                     code: r.code,
                 };
