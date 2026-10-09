@@ -4111,6 +4111,69 @@ test("数据页「附件」区能打开管理器，逐条删除走二次确认",
     assert.equal(deleted, "att-1", "确认后才真的删除");
 });
 
+test("附件管理器照 inkstone：四档筛选 / 引用数 / 底部计数与清理", async () => {
+    setWide();
+    let pruned = 0;
+    mountPanel(
+        [
+            note({ id: 1, title: "甲", content: "看 [[x]] 与图 /api/notes/attachments/att-1" }),
+            note({ id: 2, title: "乙", content: "也用 /api/notes/attachments/att-1" }),
+        ],
+        {
+            uploadApi: {
+                uploadAttachment: async () => ({ id: "x", url: "", filename: "x.png", mime: "image/png", size: 1 }),
+                listAttachments: async () => [
+                    { id: "att-1", size: 2048, filename: "截图.png", mime: "image/png" },
+                    { id: "att-doc", size: 300, filename: "说明.txt", mime: "text/plain" },
+                    { id: "att-bin", size: 10, filename: "blob.bin", mime: "application/octet-stream" },
+                ],
+                deleteAttachment: async () => ({ ok: true }),
+                pruneAttachments: async () => {
+                    pruned += 1;
+                    return { removed: 1, freedBytes: 10 };
+                },
+            },
+        }
+    );
+    await act(async () => (document.querySelector("button[data-tool='settings']") as HTMLElement).click());
+    await act(async () => (document.querySelector("[data-settings-tab='data']") as HTMLElement).click());
+    await act(async () => {
+        await new Promise(r => setTimeout(r, 30));
+    });
+    await act(async () => (document.querySelector("[data-data-action='manage-attachments']") as HTMLElement).click());
+    // 抽屉形态（照 inkstone 的 Drawer，不是小弹窗）
+    assert.ok(document.querySelector("[data-attachment-manager='1']"), "管理器要是抽屉容器");
+    // 四档筛选都在
+    for (const f of ["all", "image", "document", "other"]) {
+        assert.ok(document.querySelector(`[data-att-filter-option='${f}']`), `要有「${f}」筛选档`);
+    }
+    const rows = () => document.querySelectorAll("[data-attachment-row]");
+    assert.equal(rows().length, 3, "全部档列出 3 条");
+    // 引用数：att-1 被两条笔记引用（按笔记去重），其余未引用
+    const row1 = document.querySelector("[data-attachment-row='att-1']");
+    assert.match(row1?.textContent ?? "", /引用 2 次/, "att-1 要显示「引用 2 次」");
+    assert.match(document.querySelector("[data-attachment-row='att-doc']")?.textContent ?? "", /未引用/);
+    // 文档档只剩 text/plain（octet-stream 归「其他」，inkstone 同口径）
+    await act(async () => (document.querySelector("[data-att-filter-option='document']") as HTMLElement).click());
+    assert.equal(rows().length, 1, "文档档只剩说明.txt");
+    assert.match(rows()[0]?.textContent ?? "", /说明\.txt/);
+    // 其他档：application/octet-stream
+    await act(async () => (document.querySelector("[data-att-filter-option='other']") as HTMLElement).click());
+    assert.equal(rows().length, 1, "其他档只有 blob.bin");
+    // 回到全部，底部计数 + 清理入口
+    await act(async () => (document.querySelector("[data-att-filter-option='all']") as HTMLElement).click());
+    assert.match(document.body.textContent ?? "", /共 3 个/, "底部要显示总数");
+    const pruneBtn = document.querySelector("[data-attachment-action='prune']") as HTMLElement;
+    assert.ok(pruneBtn, "底部要有「清理」入口");
+    await act(async () => pruneBtn.click());
+    assert.match(document.body.textContent ?? "", /清理未引用附件/, "清理要二次确认");
+    await act(async () => (document.querySelector("[data-confirm-action='confirm']") as HTMLElement).click());
+    await act(async () => {
+        await new Promise(r => setTimeout(r, 30));
+    });
+    assert.equal(pruned, 1, "确认后要真的清理");
+});
+
 test("分享列表撤销链接要二次确认（inkstone 用 confirm，不能手滑即删）", async () => {
     setWide();
     let revoked = 0;

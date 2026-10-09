@@ -2517,6 +2517,25 @@ export default function NotesPage({
 
     /** 导出 PDF：调起系统打印（目的地选「另存为 PDF」） */
 
+    /**
+     * 附件引用计数（附件管理器里「引用 N 次 / 未引用」）：扫一遍已加载的正文，
+     * 数每条附件 id 出现在几条笔记里（按笔记去重，一条笔记里写两次也算 1 个引用）。
+     * 与后端 prune 的判据同源（正文里没出现过的才算未引用），两边口径不能各算各的。
+     */
+    const attachmentRefCounts = useMemo(() => {
+        const map = new Map<string, number>();
+        for (const n of notes) {
+            const content = n.content || "";
+            const seen = new Set<string>();
+            for (const m of content.matchAll(/\/api\/notes\/attachments\/([0-9a-zA-Z-]+)/g)) {
+                if (seen.has(m[1])) continue;
+                seen.add(m[1]);
+                map.set(m[1], (map.get(m[1]) ?? 0) + 1);
+            }
+        }
+        return map;
+    }, [notes]);
+
     /** 导出全部笔记（2026-10-08 设置→数据，照 inkstone 的导出）：JSON 一份
      *  （笔记 + 文件夹 + 标签 + 关联），不含附件二进制。前端直接从内存生成，
      *  不需要新端点；导入等后续批次再做。 */
@@ -5022,6 +5041,11 @@ export default function NotesPage({
                         : undefined,
                     onDeleteAttachment: uploadApi?.deleteAttachment
                         ? (id: string) => uploadApi.deleteAttachment!(id).then(() => undefined)
+                        : undefined,
+                    // 附件被多少条笔记引用（管理器里「引用 N 次 / 未引用」那格）：
+                    // 从已加载的正文里现算，按笔记去重（一条笔记里写两次也算 1 个引用）
+                    countAttachmentRefs: attachmentRefCounts
+                        ? (id: string) => attachmentRefCounts.get(id) ?? 0
                         : undefined,
                     // 「双链 / 版本历史」全站计数：shareApi 就是完整的 NavigationClient
                     // （NotesOverlay 传入），老部署没有 notesStats 方法时自动显示「—」

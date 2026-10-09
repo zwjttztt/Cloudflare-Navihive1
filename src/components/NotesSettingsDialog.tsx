@@ -12,9 +12,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Dialog from "@mui/material/Dialog";
-import DialogActions from "@mui/material/DialogActions";
-import DialogContent from "@mui/material/DialogContent";
-import DialogTitle from "@mui/material/DialogTitle";
 import Divider from "@mui/material/Divider";
 import IconButton from "@mui/material/IconButton";
 import Slider from "@mui/material/Slider";
@@ -36,6 +33,7 @@ import FileDownloadIcon from "@mui/icons-material/FileDownload";
 import FileUploadIcon from "@mui/icons-material/FileUpload";
 import DeleteSweepIcon from "@mui/icons-material/DeleteSweep";
 import NoteShareDialog, { type NoteShareApi } from "./NoteShareDialog";
+import AttachmentManager from "./AttachmentManager";
 import ConfirmDialog from "./ConfirmDialog";
 import { FOLDER_COLORS } from "../utils/folderAppearance";
 import type { NotesUiSettings } from "../utils/notesSettings";
@@ -63,6 +61,11 @@ export interface NotesDataTab {
     onPruneAttachments?: () => Promise<{ removed: number; freedBytes: number }>;
     /** 删除单个附件（附件管理器里用）。可选：老部署没有就整个管理器不出现 */
     onDeleteAttachment?: (id: string) => Promise<void>;
+    /**
+     * 附件被多少条笔记引用（0 = 未引用）。NotesPage 从已加载的笔记正文里现算，
+     * 可选：不给的话管理器里不显示引用数（inkstone 的 references 同格）。
+     */
+    countAttachmentRefs?: (id: string) => number;
     /**
      * 「双链 / 版本历史」两格的全站计数（inkstone 的 stats.links / stats.versions）。
      * 可选：老部署的 api 没有 notes/stats 端点，两格自动显示「—」。
@@ -202,12 +205,9 @@ export default function NotesSettingsDialog({
     const [tab, setTab] = useState<SettingsTab>("appearance");
     // ---- 数据页（2026-10-08 照 inkstone 的 DataSettings）----
     const [attStats, setAttStats] = useState<{ count: number; bytes: number } | null>(null);
-    /** 附件管理器（inkstone 的 AttachmentManager 同位）：列表 + 单条删除 */
-    const [attachments, setAttachments] = useState<
-        { id: string; size: number; filename: string; mime: string }[] | null
-    >(null);
+    // 附件管理器（inkstone 的 AttachmentManager 同位）：列表 / 删除 / 清理都在
+    // AttachmentManager 抽屉里自持，这里只留概览统计。
     const [attManagerOpen, setAttManagerOpen] = useState(false);
-    const [deleteAtt, setDeleteAtt] = useState<{ id: string; filename: string } | null>(null);
     /** 分享列表里要撤销的那条（inkstone 的 confirm 同语义） */
     const [revokeTarget, setRevokeTarget] = useState<{ noteId: number; title: string } | null>(
         null
@@ -271,6 +271,20 @@ export default function NotesSettingsDialog({
     // 避免 NotesPage 每次重渲染都重拉）
     const dataRef = useRef(data);
     dataRef.current = data;
+    /** 数据页概览统计要重算时用（管理器里删除/清理后回调） */
+    const reloadAttStats = useCallback(async () => {
+        const cur = dataRef.current;
+        if (!cur?.onLoadAttachments) return;
+        try {
+            const list = await cur.onLoadAttachments();
+            setAttStats({
+                count: list.length,
+                bytes: list.reduce((s, a) => s + (a.size || 0), 0),
+            });
+        } catch {
+            setAttStats(null);
+        }
+    }, []);
     useEffect(() => {
         if (!open || tab !== "data") return;
         let live = true;
@@ -280,7 +294,6 @@ export default function NotesSettingsDialog({
                 .onLoadAttachments()
                 .then(list => {
                     if (!live) return;
-                    setAttachments(list);
                     setAttStats({
                         count: list.length,
                         bytes: list.reduce((s, a) => s + (a.size || 0), 0),
@@ -291,7 +304,6 @@ export default function NotesSettingsDialog({
                 });
         } else {
             setAttStats(null);
-            setAttachments(null);
         }
         if (shareApi) {
             shareApi
@@ -318,7 +330,7 @@ export default function NotesSettingsDialog({
         return () => {
             live = false;
         };
-    }, [open, tab, shareApi]);
+    }, [open, tab, shareApi, reloadAttStats]);
     const filteredShares = useMemo(() => {
         const kw = shareKeyword.trim().toLowerCase();
         if (!kw) return shares ?? [];
@@ -1168,17 +1180,9 @@ export default function NotesSettingsDialog({
                                         : "没有需要清理的附件",
                                     "success"
                                 );
-                                // 重新拉统计 —— ⚠️ 顺带把**列表**也刷了：只刷统计的话
-                                // 附件管理器里还挂着已被删掉的那几条，点进去就是死链接。
-                                const cur2 = dataRef.current;
-                                if (cur2?.onLoadAttachments) {
-                                    const list = await cur2.onLoadAttachments();
-                                    setAttachments(list);
-                                    setAttStats({
-                                        count: list.length,
-                                        bytes: list.reduce((s, a) => s + (a.size || 0), 0),
-                                    });
-                                }
+                                // 重新拉统计 —— 管理器抽屉自己会在收到 onChanged 时重拉列表，
+                                // 这里只把数据页概览的「附件 N 个 · 占用 X」刷掉。
+                                await reloadAttStats();
                             } catch (error) {
                                 onNotify?.(
                                     "清理失败：" + (error instanceof Error ? error.message : "未知错误"),
@@ -1191,83 +1195,26 @@ export default function NotesSettingsDialog({
                     />
                 )}
 
-                {/* 附件管理器（inkstone 的 AttachmentManager 同位）：列出文件名 / 大小 /
-                    类型，可逐条删除。叠在设置弹窗上，关掉时把统计刷一遍。 */}
-                {attManagerOpen && (
-                    <Dialog
+                {/* 附件管理器（照抄 inkstone 的 AttachmentManager：420px 抽屉 +
+                    四档筛选 + 两列卡片 + 引用数 + 加载更多 + 底部清理）。
+                    叠在设置弹窗上，删除/清理后把概览统计刷一遍。 */}
+                {attManagerOpen && data?.onDeleteAttachment && data?.onLoadAttachments && (
+                    <AttachmentManager
                         open
                         onClose={() => setAttManagerOpen(false)}
-                        fullWidth
-                        maxWidth='xs'
-                    >
-                        <DialogTitle sx={{ pb: 0.5 }}>管理附件</DialogTitle>
-                        <DialogContent>
-                            <Typography variant='caption' color='text.secondary' sx={{ display: "block", mb: 1.5 }}>
-                                共 {attachments?.length ?? 0} 个附件
-                                {attStats ? ` · 占用 ${fmtBytes(attStats.bytes)}` : ""}
-                            </Typography>
-                            {attachments === null ? (
-                                <Typography variant='body2' color='text.secondary'>
-                                    正在读取附件列表…
-                                </Typography>
-                            ) : attachments.length === 0 ? (
-                                <Typography variant='body2' color='text.secondary'>
-                                    还没有上传过图片。
-                                </Typography>
-                            ) : (
-                                <Box sx={{ display: "flex", flexDirection: "column", gap: 0.75 }}>
-                                    {attachments.map(item => (
-                                        <Box
-                                            key={item.id}
-                                            data-attachment-row={item.id}
-                                            sx={{
-                                                display: "flex",
-                                                alignItems: "center",
-                                                gap: 1,
-                                                border: "1px solid rgba(128,128,128,0.18)",
-                                                borderRadius: 1.5,
-                                                px: 1.25,
-                                                py: 0.75,
-                                            }}
-                                        >
-                                            <Box sx={{ minWidth: 0, flex: 1 }}>
-                                                <Typography
-                                                    variant='body2'
-                                                    sx={{
-                                                        overflow: "hidden",
-                                                        textOverflow: "ellipsis",
-                                                        whiteSpace: "nowrap",
-                                                    }}
-                                                >
-                                                    {item.filename || "(未命名)"}
-                                                </Typography>
-                                                <Typography variant='caption' color='text.secondary'>
-                                                    {fmtBytes(item.size || 0)}
-                                                    {item.mime ? ` · ${item.mime}` : ""}
-                                                </Typography>
-                                            </Box>
-                                            <Button
-                                                size='small'
-                                                color='error'
-                                                data-attachment-action='delete'
-                                                onClick={() =>
-                                                    setDeleteAtt({
-                                                        id: item.id,
-                                                        filename: item.filename || "这张图",
-                                                    })
-                                                }
-                                            >
-                                                删除
-                                            </Button>
-                                        </Box>
-                                    ))}
-                                </Box>
-                            )}
-                        </DialogContent>
-                        <DialogActions>
-                            <Button onClick={() => setAttManagerOpen(false)}>关闭</Button>
-                        </DialogActions>
-                    </Dialog>
+                        mgr={{
+                            list: () => data.onLoadAttachments!(),
+                            remove: async id => {
+                                await data.onDeleteAttachment!(id);
+                            },
+                            prune: data.onPruneAttachments
+                                ? () => data.onPruneAttachments!()
+                                : undefined,
+                        }}
+                        countRefs={data.countAttachmentRefs}
+                        onNotify={onNotify}
+                        onChanged={() => void reloadAttStats()}
+                    />
                 )}
 
                 {/* 分享列表里撤销链接的二次确认（inkstone 用 confirm，同一语义） */}
@@ -1293,50 +1240,6 @@ export default function NotesSettingsDialog({
                             }
                         }}
                         onClose={() => setRevokeTarget(null)}
-                    />
-                )}
-
-                {/* 单个附件的删除确认 */}
-                {deleteAtt && (
-                    <ConfirmDialog
-                        open
-                        danger
-                        title='删除这个附件？'
-                        description={`「${deleteAtt.filename}」将被永久删除；引用了它的笔记里会显示「图片加载失败」。`}
-                        confirmText='删除'
-                        onConfirm={async () => {
-                            const cur = dataRef.current;
-                            if (!cur?.onDeleteAttachment) return;
-                            try {
-                                await cur.onDeleteAttachment(deleteAtt.id);
-                                let freed = 0;
-                                setAttachments(prev => {
-                                    const next = (prev ?? []).filter(a => a.id !== deleteAtt.id);
-                                    freed =
-                                        (prev ?? []).reduce((s, a) => s + (a.size || 0), 0) -
-                                        next.reduce((s, a) => s + (a.size || 0), 0);
-                                    return next;
-                                });
-                                // ⚠️ 占用也要跟着减：只减条数的话「共 0 个附件 · 占用 2 KB」
-                                // 这种自相矛盾的显示就出来了。
-                                setAttStats(prev =>
-                                    prev
-                                        ? {
-                                              count: Math.max(0, prev.count - 1),
-                                              bytes: Math.max(0, prev.bytes - freed),
-                                          }
-                                        : prev
-                                );
-                                onNotify?.("附件已删除", "success");
-                            } catch (error) {
-                                onNotify?.(
-                                    "删除失败：" + (error instanceof Error ? error.message : "未知错误"),
-                                    "error"
-                                );
-                                throw error;
-                            }
-                        }}
-                        onClose={() => setDeleteAtt(null)}
                     />
                 )}
             </Dialog>
