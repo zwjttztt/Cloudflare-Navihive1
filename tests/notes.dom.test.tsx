@@ -5778,14 +5778,22 @@ test("关系图谱：更多菜单里有入口，打开后画出节点与连线�
     assert.ok(target, "要能按 id 找到《设计稿》那个节点");
     await act(async () => {
         target!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-        // ⚠️ MUI Dialog 关掉后 children 还要等退场动画（默认 ~195ms）才真从 DOM 上摘掉，
-        // 只等 30ms 会读到「还在」而假红。
-        await new Promise(r => setTimeout(r, 320));
     });
-    assert.ok(
-        document.querySelector("[data-graph='1']") === null,
-        "点了节点图谱要关掉并跳过去（还开着说明 onClick 没接到）"
-    );
+    // ⚠️ MUI Dialog 关掉后 children 还要等退场动画（默认 ~195ms）才真从 DOM 上摘掉。
+    // ⚠️ 别用固定 sleep：本机 320ms 够，CI（ubuntu 慢、事件循环挤）不够 ——
+    // 2026-10-10 CI 就红在「点了节点图谱要关掉」这一条，本机全绿。改成轮询等条件，
+    // 最多等 1s，快机器上该是几十毫秒就退出。
+    let gone = false;
+    for (let i = 0; i < 40; i += 1) {
+        await act(async () => {
+            await new Promise(r => setTimeout(r, 25));
+        });
+        if (document.querySelector("[data-graph='1']") === null) {
+            gone = true;
+            break;
+        }
+    }
+    assert.ok(gone, "点了节点图谱要关掉并跳过去（还开着说明 onClick 没接到）");
 });
 
 test("设置→备份：网盘地址速查给得出服务商的 WebDAV 地址，能一键复制", async () => {
