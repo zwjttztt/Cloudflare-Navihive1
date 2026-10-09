@@ -6,6 +6,12 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。---
 
+## 2026-10-09 · 记事本第四轮（续）：编辑区「刚出上下滚动条就抖」的关门一脚（scrollbar-gutter: stable）
+
+- **修「拖到刚出现上下滚动条还是抖」—— 滚动条来去改了内容宽度，图片被等比重算高度**：上一轮修了渲染块高度变化要通知 CM（ResizeObserver）+ 图片结论/尺寸缓存，但用户反馈「拖到刚出上下滚轮时还是抖」。真因还有一层：`.cm-scroller` 是 `overflow:auto`，滚动条「出现/消失」让**内容宽度变 ~10px**，而图片是 `max-width:100%; height:auto`，宽度一变就等比重算高度 → 总高越过临界 → 滚动条又消失 → 宽度回来 → 高度回来 → 滚动条又出现……死循环（文字行也会因换行数变化改总高，同源）。修法：给 `.cm-scroller` 主题加 `scrollbar-gutter: stable`，让滚动条槽位**恒定预留**，出不出滚动条内容宽度都不变，回路直接断开；同时 `overflow-x` 固定成 `hidden`，横向滚动条同理不挤宽度。
+- 验证：真机探针 `probe-b24-edge`（`SHOW_SCROLLBARS=1`，贴着临界点逐像素扫 21 档视口高度）重跑 —— 滚动条宽度（sbw）**恒定 10**（即便 `ovf` 从 10 降到 0 也不变，说明槽位常驻）、图片宽恒定 476、图高恒定 298、`imgAdd=0`、全部 flips=0 → 「没复现」。用户此前看到的「还是抖」是 `802276b` 那次推送还没带这条修复、线上是旧构建所致。
+- 工程（harness）：`dist/client` 里 `scrollbarGutter` 会被 CM 的 style-mod 在运行时序列化成 `scrollbar-gutter`（所以 `grep` 字面量找不到），已在构建产物 `NotesOverlay-*.js` 里确认 `.cm-scroller":{overflowX:"hidden",overflowY:"auto",scrollbarGutter:"stable"` 落地。
+
 ## 2026-10-09 · 记事本第四轮：编辑区图片「不停抽动」的真因（CM 高度表没更新）/ 窄屏返回箭头朝左
 
 - **修「编辑区图片不停抽动」—— 渲染块高度变了没通知 CodeMirror**：编辑区的「即时渲染」把整块 Markdown 换成 widget，而 widget 的高度**会变**（图片加载完把这一块从 20px 撑到 300px）。以前只在 `render()` 的 promise 完成后 `requestMeasure()` 一次 —— 那一刻 React 连 `<img>` 都还没插进 DOM，CM 量到的是「图还没来」的空高度，**之后没有任何人再告诉它高度变了**。于是「CM 以为的高度」与「浏览器真实布局」长期不一致，而 CM 正是靠这张高度表决定视口范围、要不要出滚动条、虚拟化哪些行；编辑区大小拖到**刚好要出上下滚动条的临界点**时，两边互相推翻（按旧高度重排 → 真实高度变 → 滚动条加/去 → 内容宽度变 → 图片等比变高变矮 → 又一次重排），看上去就是图片连着整块内容不停地抖。修法对齐 inkstone 的 `RenderedBlock`（它 `toDOM` 里就挂了 `new ResizeObserver(() => view.requestMeasure())`）：给渲染块的 host 挂 ResizeObserver，高度一变就让 CM 重测，`destroy()` 里 disconnect。用户给的定位线索（「拖到刚出现上下滚轮时才会抖」）正好是这个回路的特征。

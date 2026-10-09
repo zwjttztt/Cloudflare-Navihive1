@@ -21,7 +21,17 @@ const theme = EditorView.theme({
         fontSize: "var(--note-editor-font-size, 14px)",
     },
     ".cm-scroller": {
-        overflow: "auto",
+        // ⚠️ overflow-x 也固定成 hidden：横向滚动条一旦来去，同样会挤窄内容、
+        // 让 max-width:100% 的图片被等比重新缩放 —— 和「刚出现上下滚轮时抖动」同源。
+        overflowX: "hidden",
+        overflowY: "auto",
+        // ⚠️ **这一条才是「编辑区拖到刚出上下滚动条就抖」的关门一脚**：
+        // `overflow:auto` 下滚动条「出现/消失」会让内容宽度变 10px，而图片是
+        // `max-width:100%; height:auto`，文字行也会因换行数变化而改总高 → 总高越过
+        // 临界 → 滚动条又消失 → 宽度回来 → 高度又回来 → 滚动条又出现……无限循环。
+        // `scrollbar-gutter: stable` 让滚动条槽位**恒定预留**，出不出滚动条宽度都不变，
+        // 这个回路直接断开（2026-10-09 上一轮只补了 widget 的 ResizeObserver，没断这层）。
+        scrollbarGutter: "stable",
         fontFamily: "var(--note-editor-font, ui-monospace, monospace)",
         lineHeight: "1.75",
     },
