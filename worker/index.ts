@@ -172,10 +172,12 @@ export default {
         return withSecurityHeaders(await handleRequest(request, env));
     },
     /**
-     * 定时任务（wrangler.jsonc 的 triggers.crons 触发）。
-     * 实现在 ./cron.ts：导航页每周备份 + 记事本自动备份调度 + 死链巡检。
-     * 把本次命中的 cron 表达式传下去：导航备份只认自己的每周那条，
-     * 新加的每小时触发器是给记事本备份调度用的（到没到点由各账号频率配置判定）。
+     * 定时任务（wrangler.jsonc 的 triggers.crons 触发；免费版账号全账号只有 5 个
+     * cron 触发器，所以只有每小时这一条，见 cron.ts 顶上的说明）。
+     * 实现在 ./cron.ts：导航页每周备份（代码里按 UTC 周一 02 点窗口判定）+
+     * 记事本自动备份调度（各账号频率配置判定）+ 死链巡检等。
+     * 把本次命中的 cron 表达式传下去：表达式缺省 / 不是每小时那条时保持老行为
+     * （验证脚本与 cron-e2e 的通配表达式每次触发都全量跑）。
      */
     async scheduled(controller: ScheduledController, env: Env): Promise<void> {
         await runScheduledTasks(env, undefined, controller.cron);

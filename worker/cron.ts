@@ -411,18 +411,40 @@ export async function runRetentionCleanup(api: SchedulerDB): Promise<void> {
  * makeApi 默认 new NavigationAPI(env)，与拆分前行为一致；验证脚本可注入假实现。
  *
  * cronExpr：本次触发用的是哪条 crons 表达式（worker/index.ts 从 ScheduledController
- * 传入）。导航页的每周备份只在它自己的 "0 2 * * 1" 里跑 —— 新增每小时触发器后，
- * 若不加这道闸，导航备份会被每小时带跑一次（行为变化，不能有）；
- * 记事本备份调度则每次触发都检查（到没到点由各账号自己的频率配置判定）。
- * cronExpr 缺省（验证脚本直调）时保持老行为：全量任务照跑。
+ * 传入）。
+ *
+ * ⚠️ 免费版账号的 cron 触发器**全账号总共只有 5 个**（2026-10-09 CI 部署时撞过上限：
+ * 给这个 worker 加第二个触发器直接把 triggers 更新打挂）。所以这里**只有一条每小时
+ * 触发器**（wrangler.jsonc 的 "0 * * * *"），所有任务共用，各认各的到点判定：
+ *   - 记事本备份调度：每次触发都检查，到没到点由各账号的频率配置 + 上次自动备份
+ *     时间判定（shouldRunNotesBackup）；
+ *   - 导航页每周备份：在每小时触发器下按「UTC 周一 02 点」的墙上时钟窗口判定
+ *     （isNavBackupWindow）—— 与原来的每周触发器同一场（北京时间周一 10 点），
+ *     只是判定从「Cloudflare 挑时间」搬到了「代码挑时间」；
+ *   - 其它表达式（验证脚本的通配 "* * * * *"、历史上配过的每周触发器）：保持老
+ *     行为，全量任务照跑 —— cron-e2e 每次触发都必须真的跑一遍导航备份。
+ * cronExpr 缺省（验证脚本直调）同理：全量照跑。
  */
-export const NAV_BACKUP_CRON = "0 2 * * 1";
+export const HOURLY_CRON = "0 * * * *";
+/** 导航页每周备份的窗口：UTC 周一 02:00-02:59（北京时间周一 10 点那一场） */
+export function isNavBackupWindow(now: Date = new Date()): boolean {
+    return now.getUTCDay() === 1 && now.getUTCHours() === 2;
+}
+/**
+ * 这次触发要不要跑导航页每周备份。
+ * 抽成纯函数是为了能单测钉死 cron-e2e 的那类场景：e2e 用通配表达式
+ * "* * * * *" 触发，如果这里把它当成「不是每周触发器」跳过，备份一次都不跑，
+ * 六条断言全在测空气（2026-10-09 CI 实际发生过的红）。
+ */
+export function isNavBackupDue(cronExpr: string | undefined, now: Date = new Date()): boolean {
+    return cronExpr === undefined || cronExpr !== HOURLY_CRON || isNavBackupWindow(now);
+}
 export async function runScheduledTasks(
     env: Env,
     makeApi: (env: Env) => SchedulerDB = (e) => new NavigationAPI(e),
     cronExpr?: string
 ): Promise<void> {
-    const navBackupDue = cronExpr === undefined || cronExpr === NAV_BACKUP_CRON;
+    const navBackupDue = isNavBackupDue(cronExpr);
     // 外层兜底也要留痕：runWeeklyBackup 只在「按账号循环」内部兜了异常，
     // 取账号列表这一步就炸的话（D1 抽风、listUsers 抛错）里面根本轮不到执行
     if (navBackupDue) {

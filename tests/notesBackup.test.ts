@@ -28,6 +28,7 @@ import {
 import type { NotesBackupRun } from "../src/API/types";
 import { NavigationAPI } from "../src/API/navigationApi";
 import { resetMigrationCacheForTests } from "../src/API/http";
+import { isNavBackupDue, isNavBackupWindow } from "../worker/cron";
 
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
@@ -160,6 +161,32 @@ test("配置回落：url/账号/密码取 webdav.*，目录与口令才认 notes
     const empty = notesWebDavConfigFrom({});
     assert.equal(empty.url, "");
     assert.equal(empty.path, "navihive-notes-backup");
+});
+
+// ============ 纯逻辑：导航每周备份的窗口（每小时触发器下的墙上时钟判定） ============
+
+test("导航每周备份窗口：UTC 周一 02 点那一场才跑（= 北京时间周一 10 点）", () => {
+    // 2026-10-05 是周一
+    assert.ok(isNavBackupWindow(new Date("2026-10-05T02:30:00Z")));
+    assert.ok(isNavBackupWindow(new Date("2026-10-05T02:59:00Z")));
+    // 同是周一但不在 02 点档
+    assert.ok(!isNavBackupWindow(new Date("2026-10-05T03:00:00Z")));
+    assert.ok(!isNavBackupWindow(new Date("2026-10-05T01:59:00Z")));
+    // 02 点但不是周一（2026-10-06 是周二）
+    assert.ok(!isNavBackupWindow(new Date("2026-10-06T02:00:00Z")));
+});
+
+test("导航备份到点判定：e2e 通配表达式必须照跑（2026-10-09 CI 六连红的真因）", () => {
+    // 缺省（验证脚本直调）→ 跑
+    assert.ok(isNavBackupDue(undefined));
+    // cron-e2e 用通配表达式触发 → 必须跑，否则备份一次都不执行、断言全在测空气
+    assert.ok(isNavBackupDue("* * * * *"));
+    // 历史上的每周触发器 → 跑
+    assert.ok(isNavBackupDue("0 2 * * 1"));
+    // 唯一的每小时触发器：只在 UTC 周一 02 点档跑（2026-10-05 是周一）
+    assert.ok(isNavBackupDue("0 * * * *", new Date("2026-10-05T02:30:00Z")));
+    assert.ok(!isNavBackupDue("0 * * * *", new Date("2026-10-05T03:00:00Z")));
+    assert.ok(!isNavBackupDue("0 * * * *", new Date("2026-10-06T02:00:00Z")));
 });
 
 // ============ 真实 SQLite：导出形状与导入闭环 ============
