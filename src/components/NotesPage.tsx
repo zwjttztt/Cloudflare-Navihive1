@@ -4538,12 +4538,13 @@ export default function NotesPage({
                             }}
                         />
                         {/* 即时渲染（inkstone 顶栏同名开关）。
-                            ⚠️ 窄屏（<900px）与**分屏态**不渲染（条件渲染，不是 display:none
-                            —— 得真的从 DOM 里卸掉）：半宽的两栏塞不下，同一个开关在
-                            「更多操作」菜单里有一份（见下面 data-active-op='live-render'）。
-                            inkstone 分屏（grouped）时头部也只留「即时渲染 + 三档 + 更多」，
-                            收藏/反链/大纲/版本/导出/分享全进菜单（Workspace.tsx:424-441）。 */}
-                        {!(narrowLayout || sideId !== null) && (
+                            ⚠️ 窄屏（<900px）不渲染（条件渲染，不是 display:none
+                            —— 得真的从 DOM 里卸掉）：同一个开关在「更多操作」菜单里
+                            有一份（见下面 data-active-op='live-render'）。
+                            ⚠️ 2026-10-10 用户明确：分屏（侧边打开）时主栏头部要和
+                            侧边栏头部**一模一样**（只是没有关闭键）—— 侧边栏头部
+                            常显这个开关，主栏也常显，不再收进菜单。 */}
+                        {!narrowLayout && (
                         <Box sx={{ display: "flex", alignItems: "center", gap: 0.25, flexShrink: 0, mr: 0.5 }}>
                             <Typography variant='caption' color='text.secondary' sx={{ fontSize: 11, whiteSpace: "nowrap" }}>
                                 即时渲染
@@ -4563,12 +4564,9 @@ export default function NotesPage({
                             「编辑/分栏/预览」文字把标题行撑得很宽，两栏并排时
                             标题与工具栏都对不齐（用户报）。现在统一成图标 +
                             外框，选中项填底色。aria-label 保持中文，测试与读屏不受影响。
-                            ⚠️ 2026-10-09 补：分屏（侧边打开）时**这一组也要收进「更多」** ——
-                            inkstone 分屏只在这栏 ≥2xl（1536px）时才把三档摆在头部，
-                            常见的 1080/1440 窗口它是**收在 groupedItems 菜单里**的
-                            （Workspace.tsx:407-419 的 `hidden 2xl:block` + 341-343 三个
-                            layout 菜单项）。半宽的两栏塞不下这一组，照做。 */}
-                        {sideId === null && (
+                            ⚠️ 2026-10-10 用户明确：分屏时这一组**回到头部常驻**，
+                            与侧边栏头部一致（侧边栏那组一直常显，半宽塞得下；
+                            之前收进菜单反而造成左右两侧头部不对称）。 */}
                         <Box
                             data-pane-modes='1'
                             sx={{
@@ -4611,7 +4609,6 @@ export default function NotesPage({
                             </Tooltip>
                     ))}
                 </Box>
-                        )}
                         {/* 保存状态（inkstone 的 SaveIndicator 就挂在头部这一排）。
                             之前它写在状态栏右端，于是那一行既报长度又报状态，26px 塞不下。 */}
                         <SaveDot state={saveState} dirty={dirty} savedAt={savedAt} now={tick} />
@@ -5952,36 +5949,6 @@ export default function NotesPage({
                         {/* 分享 / 版本 / 大纲 / 反链：桌面端已平铺到头部（2026-10-08），
                             这几项只留给窄屏与**分屏态**（半宽的头部放不下平铺组，
                             2026-10-09 用户明确照 inkstone 收进菜单）。 */}
-                        {/* 三档（编辑 / 分栏 / 预览）：inkstone 分屏的 groupedItems 前三项
-                            （Workspace.tsx:341-343）。只有分屏态才补 —— 窄屏头部那组三档
-                            还在原位，重复摆一遍是同一件事说两遍。 */}
-                        {sideId !== null && (
-                            <>
-                                {(
-                                    [
-                                        ["edit", "编辑", <EditIcon fontSize='small' key='i' />],
-                                        ["split", "分栏", <VerticalSplitIcon fontSize='small' key='s' />],
-                                        ["preview", "预览", <VisibilityIcon fontSize='small' key='v' />],
-                                    ] as const
-                                ).map(([key, label, icon]) => (
-                                    <MenuItem
-                                        key={key}
-                                        data-active-op={`pane-mode-${key}`}
-                                        selected={pane === key}
-                                        onClick={() => {
-                                            setActiveMenuAnchor(null);
-                                            setPane(key);
-                                        }}
-                                    >
-                                        <Box component='span' sx={{ mr: 1, fontSize: 16, opacity: 0.7, display: "inline-flex" }}>
-                                            {icon}
-                                        </Box>
-                                        {label}
-                                    </MenuItem>
-                                ))}
-                                <Divider />
-                            </>
-                        )}
                         {(narrowLayout || sideId !== null) && (
                         <>
                         <MenuItem
@@ -6045,9 +6012,9 @@ export default function NotesPage({
                         </MenuItem>
                         )}
                         <Divider />
-                        {/* 窄屏与分屏时头部放不下「即时渲染」，这里补一个入口（同一个状态）；
-                            桌面单栏态头部已有开关，这项不再重复出现。 */}
-                        {(narrowLayout || sideId !== null) && (
+                        {/* 窄屏头部放不下「即时渲染」，这里补一个入口（同一个状态）；
+                            桌面态（含分屏，2026-10-10）头部已有开关，这项不再重复出现。 */}
+                        {narrowLayout && (
                         <MenuItem
                             data-active-op='live-render'
                             onClick={() => setLiveRender(v => !v)}

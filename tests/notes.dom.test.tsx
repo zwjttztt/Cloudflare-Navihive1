@@ -5450,7 +5450,7 @@ test("设置→备份：没有备份能力（老部署）时整页不出现", as
     );
 });
 
-test("分屏时主栏右上角收进「更多」（照 inkstone grouped）：平铺组消失、菜单项出现", async () => {
+test("分屏时主栏头部与侧栏同构（即时渲染+三档+保存点+更多，无关闭键）：平铺组收进菜单", async () => {
     setWide();
     mountPanel([
         note({ id: 1, title: "甲", content: "a" }),
@@ -5462,38 +5462,31 @@ test("分屏时主栏右上角收进「更多」（照 inkstone grouped）：平
     await act(async () => (document.querySelector("[data-row-op='open-side']") as HTMLElement).click());
     assert.ok(document.querySelector("[data-side-editor='1']"), "先打开侧边（分屏态）");
 
-    // 平铺的那排全消失（inkstone 分屏头部在常见宽度下只剩「⋯」+ 右侧 ✕）。
-    // ⚠️ 断言用 `=== null`（布尔），别把 DOM 元素塞给 assert.equal ——
-    // 失败时 node:test 要 inspect 整棵 jsdom 节点树，会直接 OOM（Array buffer allocation failed）。
-    assert.ok(document.querySelector("[data-desktop-actions='1']") === null, "分屏时平铺组不渲染");
-    assert.ok(document.querySelector("button[data-tool='pin']") === null, "分屏时收藏常驻键收进菜单");
-    assert.ok(document.querySelector("button[data-tool='outline']") === null, "分屏时大纲常驻键收进菜单");
-    assert.ok(
-        document.querySelector("button[data-tool='live-render']") === null,
-        "分屏时主栏即时渲染开关收进菜单"
-    );
-    // ⚠️ 2026-10-09 补：inkstone 分屏的三档也是收进 groupedItems 的
-    // （头部那组是 `hidden 2xl:block`，1080/1440 窗口根本不显示）。
-    assert.ok(
-        document.querySelector("[data-pane-modes='1']") === null,
-        "分屏时三档模式键也收进菜单"
-    );
+    // 2026-10-10 用户明确：分屏时主栏头部要和侧边栏头部一模一样（只是没有关闭键）
+    // —— 即时渲染开关与三档模式键**常驻头部**，不再收进菜单。
+    // ⚠️ MUI Switch 渲染成 span（不是 button），data-tool 落在根 span 上，
+    // 选择器别写 button[...]。
+    assert.ok(document.querySelector("[data-tool='live-render']"), "分屏时主栏即时渲染开关常驻头部");
+    assert.ok(document.querySelector("[data-pane-modes='1']"), "分屏时三档模式键常驻头部");
     assert.ok(
         document.querySelector("button[data-tool='note-more']"),
         "「更多操作」保留在头部"
     );
 
-    // 「更多操作」里这几项重新出现（桌面单栏态它们被平铺取代而不出现）
+    // 收藏/大纲/反链/版本/导出/分享这排平铺键仍收进菜单（与侧栏头部一致：它们不在头部）
+    assert.ok(document.querySelector("[data-desktop-actions='1']") === null, "分屏时平铺组不渲染");
+    assert.ok(document.querySelector("button[data-tool='pin']") === null, "分屏时置顶常驻键收进菜单");
+    assert.ok(document.querySelector("button[data-tool='star']") === null, "分屏时收藏常驻键收进菜单");
+    assert.ok(document.querySelector("button[data-tool='outline']") === null, "分屏时大纲常驻键收进菜单");
+
+    // 「更多操作」里这几项重新出现（桌面单栏态它们被平铺取代而不出现）；
+    // 三档与即时渲染头部常驻了，菜单里不再重复出现（同一件事不说两遍）。
     await openNoteMore();
     for (const op of [
-        "pane-mode-edit",
-        "pane-mode-split",
-        "pane-mode-preview",
         "share",
         "revisions",
         "backlinks",
         "outline",
-        "live-render",
         "export",
         "pin",
     ]) {
@@ -5502,7 +5495,15 @@ test("分屏时主栏右上角收进「更多」（照 inkstone grouped）：平
             `分屏时更多操作里要有 ${op}`
         );
     }
-    // 侧栏照 inkstone 分屏同款：即时渲染开关 / 三档 / 更多 / 关闭都在
+    assert.ok(
+        document.querySelector("[data-active-op='pane-mode-edit']") === null,
+        "三档头部常驻后菜单里不再重复"
+    );
+    assert.ok(
+        document.querySelector("[data-active-op='live-render']") === null,
+        "即时渲染头部常驻后菜单里不再重复"
+    );
+    // 侧栏头部同款：即时渲染开关 / 三档 / 更多 / 关闭都在
     const side = document.querySelector("[data-side-editor='1']")!;
     assert.ok(side.querySelector("[data-tool='side-live-render']"), "侧栏保留即时渲染开关");
     assert.ok(side.querySelector("[data-side-modes='1']"), "侧栏保留三档模式键");
