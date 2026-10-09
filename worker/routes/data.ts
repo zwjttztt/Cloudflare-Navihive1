@@ -295,22 +295,28 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
             // 更新有效期但保留 token（链接不变）—— inkstone 的「更新设置」同语义
             const limited = await writeGate();
             if (limited) return limited;
-            const { days } = await request.json() as { days?: unknown };
+            const { days, password } = await request.json() as { days?: unknown; password?: unknown };
             if (days !== null && days !== 1 && days !== 7 && days !== 30) {
                 return Response.json({ error: "有效期仅支持1、7、30天或永久" }, { status: 400, headers });
             }
-            const share = await api.updateNoteShare(id, days);
+            // password：string = 重设口令；null = 清除口令；不传 = 保持
+            const pw = password === undefined ? undefined
+                : (typeof password === "string" && password.length > 0 ? password : null);
+            const share = await api.updateNoteShare(id, days, pw);
             return Response.json(share ?? { error: "分享不存在" }, { status: share ? 200 : 404, headers });
         }
         if (method === "POST" || method === "DELETE") {
             const limited = await writeGate();
             if (limited) return limited;
             if (method === "DELETE") return Response.json(await api.revokeNoteShare(id), { headers });
-            const { days } = await request.json() as { days?: unknown };
+            const { days, password } = await request.json() as { days?: unknown; password?: unknown };
             if (days !== null && days !== 1 && days !== 7 && days !== 30) {
                 return Response.json({ error: "有效期仅支持1、7、30天或永久" }, { status: 400, headers });
             }
-            const share = await api.createNoteShare(id, days);
+            // password：非空 string = 设访问口令；null/空/不传 = 不设（公开）
+            const pw = password === undefined ? null
+                : (typeof password === "string" && password.length > 0 ? password : null);
+            const share = await api.createNoteShare(id, days, pw);
             return Response.json(share ?? { error: "笔记不存在" }, { status: share ? 200 : 404, headers });
         }
         return Response.json({ error: "不支持的方法" }, { status: 405, headers });

@@ -417,13 +417,13 @@ export class MockNavigationClient {
     async getNoteShare(_id: number): Promise<import("./types").NoteShare | null> {
         return null;
     }
-    async createNoteShare(_id: number, _days: number | null): Promise<import("./types").NoteShare | null> {
+    async createNoteShare(_id: number, _days: number | null, _password?: string | null): Promise<import("./types").NoteShare | null> {
         throw new Error("演示模式不支持公开分享，请连接真实账号");
     }
     async revokeNoteShare(_id: number): Promise<{ success: boolean }> {
         return { success: true };
     }
-    async updateNoteShare(_id: number, _days: number | null): Promise<import("./types").NoteShare | null> {
+    async updateNoteShare(_id: number, _days: number | null, _password?: string | null): Promise<import("./types").NoteShare | null> {
         throw new Error("演示模式不支持公开分享，请连接真实账号");
     }
 

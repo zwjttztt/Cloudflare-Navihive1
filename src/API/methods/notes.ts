@@ -19,25 +19,28 @@ import type {
     NoteTag,
     NoteShare,
     NoteShareListItem,
-    PublicNote,
+    PublicNoteAccess,
 } from "../types";
 import type { D1PreparedStatement } from "../schema";
 import { newUuid } from "../../utils/uuid";
 import { extractNoteTags } from "../../utils/markdownNoteTags";
+import { hashPassword, verifyPassword } from "../crypto";
 
 export interface NotesApi {
     getNoteShare(id: number): Promise<NoteShare | null>;
     /** 分享列表：主人名下所有已分享的笔记（设置页「分享列表」） */
     listNoteShares(): Promise<NoteShareListItem[]>;
-    createNoteShare(id: number, days: number | null): Promise<NoteShare | null>;
+    /** 创建/轮换分享链接；password 可空（null = 不设/清除访问口令） */
+    createNoteShare(id: number, days: number | null, password?: string | null): Promise<NoteShare | null>;
     revokeNoteShare(id: number): Promise<{ success: boolean }>;
     /**
      * 更新有效期但**保留 token**（链接不变）—— inkstone SharePanel 的
      * 「更新设置」同语义；createNoteShare 会轮换令牌，不能拿它改设置。
+     * password 传 string 则重设口令；传 null 则清除口令；不传则保持原口令。
      * 没有有效期时返回 null（分享不存在）。
      */
-    updateNoteShare(id: number, days: number | null): Promise<NoteShare | null>;
-    getPublicNote(token: string): Promise<PublicNote | null>;
+    updateNoteShare(id: number, days: number | null, password?: string | null): Promise<NoteShare | null>;
+    getPublicNote(token: string, password?: string | null): Promise<PublicNoteAccess>;
     listNotes(): Promise<Note[]>;
     getNote(id: number): Promise<Note | null>;
     createNote(draft: Partial<Note>): Promise<Note>;
@@ -207,7 +210,7 @@ export const notesImpl: NotesApi = {
         // JOIN notes 是必须的：光看 note_share 拿不到标题，而「分享列表」要一眼认出
         // 是哪篇笔记；顺带借 notes.user_id 做归属判定（note_share 自己也有 user_id）。
         return this.db.prepare(`SELECT s.note_id AS note_id, n.title AS title, s.token AS token,
-                s.expires_at AS expires_at, n.created_at AS created_at, n.updated_at AS updated_at
+                s.expires_at AS expires_at, s.views AS views, n.created_at AS created_at, n.updated_at AS updated_at
             FROM note_share s JOIN notes n ON n.id = s.note_id AND n.uuid = s.note_uuid AND n.user_id IS s.user_id
             WHERE s.user_id IS ?
             ORDER BY n.updated_at DESC`)
@@ -215,23 +218,29 @@ export const notesImpl: NotesApi = {
     },
     getNoteShare: async function (this: NavigationAPI, id: number) {
         await this.migrate();
-        return this.db.prepare(`SELECT s.token, s.expires_at, n.created_at AS created_at FROM note_share s
+        return this.db.prepare(`SELECT s.token, s.expires_at, s.views AS views,
+                (s.password IS NOT NULL) AS hasPassword, n.created_at AS created_at
+            FROM note_share s
             JOIN notes n ON n.id = s.note_id AND n.uuid = s.note_uuid AND n.user_id IS s.user_id
             WHERE n.id = ? AND n.user_id IS ?`)
             .bind(id, this.currentUserId).first<NoteShare>();
     },
-    createNoteShare: async function (this: NavigationAPI, id: number, days: number | null) {
+    createNoteShare: async function (this: NavigationAPI, id: number, days: number | null, password?: string | null) {
         if (days !== null && ![1, 7, 30].includes(days)) throw new Error("分享有效期无效");
         await this.migrate();
         const token = Array.from(crypto.getRandomValues(new Uint8Array(32)), b => b.toString(16).padStart(2, "0")).join("");
         const expires = days === null ? null : Date.now() + days * 86_400_000;
+        // 访问口令：传了非空串才哈希落库；传 null/空 = 不设（公开）。
         // INSERT SELECT 直接验证归属；重新生成会轮换令牌，旧链接立即失效。
-        return this.db.prepare(`INSERT INTO note_share (note_id, note_uuid, user_id, token, expires_at)
-            SELECT id, uuid, user_id, ?, ? FROM notes WHERE id = ? AND user_id IS ?
+        const hashed = password && password.length > 0 ? await hashPassword(password) : null;
+        return this.db.prepare(`INSERT INTO note_share (note_id, note_uuid, user_id, token, expires_at, password)
+            SELECT id, uuid, user_id, ?, ?, ?
+            FROM notes WHERE id = ? AND user_id IS ?
             ON CONFLICT(note_id) DO UPDATE SET note_uuid = excluded.note_uuid,
-                user_id = excluded.user_id, token = excluded.token, expires_at = excluded.expires_at
-            RETURNING token, expires_at`)
-            .bind(token, expires, id, this.currentUserId).first<NoteShare>();
+                user_id = excluded.user_id, token = excluded.token, expires_at = excluded.expires_at,
+                password = excluded.password
+            RETURNING token, expires_at, views, (password IS NOT NULL) AS hasPassword`)
+            .bind(token, expires, hashed, id, this.currentUserId).first<NoteShare>();
     },
     revokeNoteShare: async function (this: NavigationAPI, id: number) {
         await this.migrate();
@@ -239,30 +248,58 @@ export const notesImpl: NotesApi = {
             .bind(id, this.currentUserId).run();
         return { success: true };
     },
-    updateNoteShare: async function (this: NavigationAPI, id: number, days: number | null) {
+    updateNoteShare: async function (this: NavigationAPI, id: number, days: number | null, password?: string | null) {
         if (days !== null && ![1, 7, 30].includes(days)) throw new Error("分享有效期无效");
         await this.migrate();
         const expires = days === null ? null : Date.now() + days * 86_400_000;
         // UPDATE 保留 token：链接不变，只改有效期（与 createNoteShare 的
         // 「重新生成会轮换令牌」刻意区分 —— 对应 inkstone 的「更新设置」）。
+        // 口令：传 string 重设；传 null 清除；不传（undefined）保持原值。
+        let setSql = "expires_at = ?";
+        const binds: unknown[] = [expires];
+        if (password !== undefined) {
+            setSql += ", password = ?";
+            binds.push(password && password.length > 0 ? await hashPassword(password) : null);
+        }
+        // user_id IS ? 与 createNoteShare 一样是**内联**写的（不是 scopeSql 生成的），
+        // 所以 uid 要像它那样直接 bind，不能走 scopeParams（否则会多绑一个 uid）。
+        binds.push(id, this.currentUserId);
         return this.db
             .prepare(
-                `UPDATE note_share SET expires_at = ?
+                `UPDATE note_share SET ${setSql}
                  WHERE note_id = ? AND user_id IS ?
-                 RETURNING token, expires_at`
+                 RETURNING token, expires_at, views, (password IS NOT NULL) AS hasPassword`
             )
-            .bind(expires, id, this.currentUserId)
+            .bind(...binds)
             .first<NoteShare>();
     },
-    getPublicNote: async function (this: NavigationAPI, token: string) {
-        if (!/^[a-f0-9]{64}$/.test(token)) return null;
+    getPublicNote: async function (this: NavigationAPI, token: string, password?: string | null): Promise<PublicNoteAccess> {
+        if (!/^[a-f0-9]{64}$/.test(token)) return { status: "not-found" };
         await this.migrate();
-        return this.db.prepare(`SELECT n.title, n.content, n.updated_at FROM note_share s
+        const row = await this.db.prepare(`SELECT n.title AS title, n.content AS content, n.updated_at AS updated_at,
+                s.password AS password, s.views AS views
+            FROM note_share s
             JOIN notes n ON n.id = s.note_id AND n.uuid = s.note_uuid AND n.user_id IS s.user_id
             WHERE s.token = ? AND (s.expires_at IS NULL OR s.expires_at > ?)
             AND (s.user_id IS NULL OR EXISTS (
                 SELECT 1 FROM users u WHERE u.id = s.user_id AND COALESCE(u.status, 'active') = 'active'))`)
-            .bind(token, Date.now()).first<PublicNote>();
+            .bind(token, Date.now()).first<{ title: string; content: string; updated_at?: string; password: string | null; views: number }>();
+        if (!row) return { status: "not-found" };
+        // 设了访问口令：没给 / 给错都拦下（401 让公开页弹出口令框）
+        if (row.password) {
+            const ok = password !== undefined && password !== null && password.length > 0
+                && await verifyPassword(password, row.password);
+            if (!ok) return { status: "need-password" };
+        }
+        // 浏览次数 +1（每次成功打开记一次；并发时 D1 自增原子，不会互相盖掉）
+        const inc = await this.db.prepare(`UPDATE note_share SET views = views + 1 WHERE token = ?`)
+            .bind(token).run();
+        const views = (typeof row.views === "number" ? row.views : 0) + (inc.success ? 1 : 0);
+        return {
+            status: "ok",
+            note: { title: row.title, content: row.content, updated_at: row.updated_at },
+            views,
+        };
     },
     listNotes: async function (this: NavigationAPI): Promise<Note[]> {
         await this.migrate();

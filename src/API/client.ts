@@ -490,15 +490,22 @@ export class NavigationClient {
     async getNoteShare(id: number): Promise<NoteShare | null> {
         return this.request<NoteShare | null>(`notes/${id}/share`);
     }
-    async createNoteShare(id: number, days: number | null): Promise<NoteShare | null> {
-        return this.request<NoteShare | null>(`notes/${id}/share`, { method: "POST", body: JSON.stringify({ days }) });
+    async createNoteShare(id: number, days: number | null, password?: string | null): Promise<NoteShare | null> {
+        return this.request<NoteShare | null>(`notes/${id}/share`, {
+            method: "POST",
+            body: JSON.stringify({ days, password: password ?? null }),
+        });
     }
     async revokeNoteShare(id: number): Promise<{ success: boolean }> {
         return this.request<{ success: boolean }>(`notes/${id}/share`, { method: "DELETE" });
     }
-    /** 更新有效期但保留 token（链接不变）—— inkstone SharePanel 的「更新设置」 */
-    async updateNoteShare(id: number, days: number | null): Promise<NoteShare | null> {
-        return this.request<NoteShare | null>(`notes/${id}/share`, { method: "PUT", body: JSON.stringify({ days }) });
+    /** 更新有效期但保留 token（链接不变）—— inkstone SharePanel 的「更新设置」。
+     *  password 传 string 重设口令、null 清除、不传保持原值。 */
+    async updateNoteShare(id: number, days: number | null, password?: string | null): Promise<NoteShare | null> {
+        return this.request<NoteShare | null>(`notes/${id}/share`, {
+            method: "PUT",
+            body: JSON.stringify({ days, password: password === undefined ? undefined : (password ?? null) }),
+        });
     }
 
     async listNotes(): Promise<Note[]> {

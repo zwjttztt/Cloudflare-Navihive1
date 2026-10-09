@@ -65,7 +65,9 @@ test("真实 SQLite：分享隔离、令牌轮换、到期、撤销与公开字�
     const share = await api.createNoteShare(id, 7);
     assert.ok(share);
     assert.match(share.token, /^[a-f0-9]{64}$/);
-    assert.deepEqual(Object.keys((await api.getPublicNote(share.token))!).sort(), ["content", "title", "updated_at"]);
+    const pub0 = await api.getPublicNote(share.token);
+    assert.equal(pub0.status, "ok");
+    assert.deepEqual(Object.keys(pub0.note).sort(), ["content", "title", "updated_at"]);
     api.setCurrentUser(123);
     assert.equal(await api.getNoteShare(id), null);
     assert.equal(await api.createNoteShare(id, 1), null);
@@ -75,21 +77,90 @@ test("真实 SQLite：分享隔离、令牌轮换、到期、撤销与公开字�
     const rotated = await api.createNoteShare(id, null);
     assert.ok(rotated);
     assert.notEqual(rotated.token, share.token);
-    assert.equal(await api.getPublicNote(share.token), null);
+    assert.equal((await api.getPublicNote(share.token)).status, "not-found");
     await db.prepare("UPDATE note_share SET expires_at = 0 WHERE note_id = ?").bind(id).run();
-    assert.equal(await api.getPublicNote(rotated.token), null);
+    assert.equal((await api.getPublicNote(rotated.token)).status, "not-found");
     const fresh = await api.createNoteShare(id, 1);
     assert.ok(fresh);
     await api.revokeNoteShare(id);
-    assert.equal(await api.getPublicNote(fresh.token), null);
-    assert.equal(await api.getPublicNote("../../notes"), null);
+    assert.equal((await api.getPublicNote(fresh.token)).status, "not-found");
+    assert.equal((await api.getPublicNote("../../notes")).status, "not-found");
     await assert.rejects(api.createNoteShare(id, 2), /有效期/);
     const beforeDelete = await api.createNoteShare(id, null);
     assert.ok(beforeDelete);
     await api.deleteNote(id);
-    assert.equal(await api.getPublicNote(beforeDelete.token), null);
+    assert.equal((await api.getPublicNote(beforeDelete.token)).status, "not-found");
     assert.equal(await db.prepare("SELECT token FROM note_share WHERE note_id = ?").bind(id).first(), null);
 });
+
+test("真实 SQLite：访问口令（need-password / 校验）与浏览次数自增", async () => {
+    // 2026-10-09 补的 SharePanel 能力：分享可设访问口令（公开页弹框）、每次成功打开 +1。
+    // 口令校验失败必须回 need-password 而不是 ok；浏览次数只在「成功打开」时自增，
+    // 被口令拦下不能算一次浏览。
+    resetMigrationCacheForTests();
+    const realDb = makeRealD1();
+    const api = makeApi(realDb);
+    await api.migrate();
+    api.setCurrentUser(null); // 单账号部署
+    const note = await api.createNote({ title: "受口令保护", content: "正文" });
+    const id = note.id!;
+
+    // 建分享时不设口令 → 公开直接可取，浏览次数记 1
+    const open = await api.createNoteShare(id, null);
+    assert.ok(open);
+    assert.equal(!open!.hasPassword, true, "不设口令时 hasPassword 应为假");
+    const first = await api.getPublicNote(open!.token);
+    assert.equal(first.status, "ok", "不设口令应直接出正文");
+    assert.equal(first.status === "ok" ? first.views : 0, 1, "首次打开应记 1 次浏览");
+
+    // 设口令
+    const setPw = await api.updateNoteShare(id, null, "s3cret");
+    assert.ok(setPw);
+    assert.equal(!!setPw!.hasPassword, true, "设口令后 hasPassword 应为真");
+
+    // 没给口令 → need-password（且不计浏览）
+    assert.equal((await api.getPublicNote(open!.token)).status, "need-password");
+    // 错口令 → need-password（且不计浏览）
+    assert.equal((await api.getPublicNote(open!.token, "wrong")).status, "need-password");
+
+    // 对口令 → ok，浏览次数 +1（1 → 2）
+    const ok = await api.getPublicNote(open!.token, "s3cret");
+    assert.equal(ok.status, "ok", "对口令应出正文");
+    assert.equal(ok.status === "ok" ? ok.views : 0, 2, "输对口令打开应再 +1");
+
+    // 清除口令（传 null）→ 又可直接打开，且再 +1（2 → 3）
+    const cleared = await api.updateNoteShare(id, null, null);
+    assert.ok(cleared);
+    assert.equal(!cleared!.hasPassword, true, "清除口令后 hasPassword 应为假");
+    const reopen = await api.getPublicNote(open!.token);
+    assert.equal(reopen.status, "ok", "清除口令后应可直接打开");
+    assert.equal(reopen.status === "ok" ? reopen.views : 0, 3, "再打开应 +1");
+
+    // 令牌格式校验：乱填的 token 永不命中
+    assert.equal((await api.getPublicNote("../../evil")).status, "not-found");
+});
+
+test("真实 SQLite：migrateNoteShareColumns 幂等（password/views 可重复迁移不报错）", async () => {
+    // 升级前老库 note_share 没有 password / views 两列，CREATE TABLE IF NOT EXISTS 不补列，
+    // 必须靠 migrateNoteShareColumns 的 ALTER 补。连跑两次不能因为「列已存在」而崩。
+    resetMigrationCacheForTests();
+    const realDb = makeRealD1();
+    // 手动建一张「老结构」的 note_share（无 password / views），模拟升级前库
+    await realDb.exec(
+        "CREATE TABLE note_share (note_id INTEGER PRIMARY KEY, note_uuid TEXT NOT NULL, user_id INTEGER, token TEXT NOT NULL UNIQUE, expires_at INTEGER);"
+    );
+    const api = makeApi(realDb);
+    await api.migrate();
+    // 再跑一次完整迁移：hasColumn 守卫必须让 ALTER 跳过，不能重复加列报错
+    await api.migrate();
+    // 直接再调一次底层方法，证明 ALTER 守卫本身幂等
+    await api.migrateNoteShareColumns();
+    const cols = (await realDb.prepare("SELECT name FROM pragma_table_info('note_share')").all<{ name: string }>())
+        .results.map(c => c.name);
+    assert.ok(cols.includes("password"), "缺 password 列");
+    assert.ok(cols.includes("views"), "缺 views 列");
+});
+
 
 test("真实 SQLite：附件四方法在登录态（uid≠null）下 bind 数量与占位符必须匹配", async () => {
     // 2026-10-09 线上「图片显示不出（服务器返回 500）」的真因：

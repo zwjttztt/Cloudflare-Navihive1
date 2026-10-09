@@ -3874,6 +3874,47 @@ test("分享列表点「管理」打开该笔记的分享设置（inkstone 的 S
     assert.ok(asked > 0, "弹窗要真的去读该笔记的分享状态");
 });
 
+test("分享设置弹窗：读取后端的访问口令标记与浏览次数", async () => {
+    // 2026-10-09 Part C：后端在 NoteShare 上补了 hasPassword / views 两字段，
+    // 弹窗要据此把「需要访问口令」开关默认打开、并显示出浏览次数。
+    setWide();
+    const shares = [
+        { note_id: 1, title: "常用入口", token: "a".repeat(64), expires_at: null, updated_at: "" },
+    ];
+    mountPanel([note({ id: 1, title: "常用入口", content: "a" })], {
+        shareApi: {
+            getNoteShare: async () =>
+                ({ note_id: 1, token: "a".repeat(64), expires_at: null, hasPassword: true, views: 5 } as never),
+            createNoteShare: async () => null,
+            revokeNoteShare: async () => ({ success: true }),
+            listNoteShares: async () => shares,
+        } as never,
+    });
+    await act(async () => (document.querySelector("button[data-tool='settings']") as HTMLElement).click());
+    await act(async () => (document.querySelector("[data-settings-tab='shares']") as HTMLElement).click());
+    await act(async () => {
+        await new Promise(r => setTimeout(r, 30));
+    });
+    await act(async () => (document.querySelector("[data-share-action='manage']") as HTMLElement).click());
+    await act(async () => {
+        await new Promise(r => setTimeout(r, 30));
+    });
+    // 读到 hasPassword=true → 开关默认开、且口令输入框出现
+    const pwSwitch = document.querySelector("[data-share-pw-switch='1']");
+    assert.ok(pwSwitch, "要有「需要访问口令」开关");
+    const pwCheckbox = pwSwitch!.querySelector("input");
+    assert.ok(pwCheckbox && (pwCheckbox as HTMLInputElement).checked, "后端标记 hasPassword 时开关应默认勾上");
+    assert.ok(
+        document.querySelector("[data-share-pw-input='1']"),
+        "已设口令时要给出口令输入框"
+    );
+    // 读到 views=5 → 状态行展示浏览次数
+    assert.ok(
+        (document.body.textContent ?? "").includes("浏览 5 次"),
+        "状态行要显示后端返回的浏览次数"
+    );
+});
+
 test("设置新增「数据」页：概览统计 + 导出 + 维护入口", async () => {
     setWide();
     mountPanel(

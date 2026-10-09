@@ -7,6 +7,9 @@ import {
     DialogActions,
     DialogContent,
     DialogTitle,
+    FormControlLabel,
+    Switch,
+    TextField,
     Typography,
 } from "@mui/material";
 import CheckIcon from "@mui/icons-material/Check";
@@ -21,10 +24,11 @@ export interface NoteShareApi {
     getNoteShare(id: number): Promise<NoteShare | null>;
     /** 分享列表（设置页「分享列表」用） */
     listNoteShares(): Promise<NoteShareListItem[]>;
-    createNoteShare(id: number, days: number | null): Promise<NoteShare | null>;
+    /** password 可空：string = 重设/设访问口令；null = 清除；不传 = 保持 */
+    createNoteShare(id: number, days: number | null, password?: string | null): Promise<NoteShare | null>;
     revokeNoteShare(id: number): Promise<{ success: boolean }>;
     /** 更新有效期但**保留 token**（链接不变）—— inkstone SharePanel 的「更新设置」 */
-    updateNoteShare(id: number, days: number | null): Promise<NoteShare | null>;
+    updateNoteShare(id: number, days: number | null, password?: string | null): Promise<NoteShare | null>;
 }
 
 type ExpiryKey = "keep" | "0" | "1" | "7" | "30";
@@ -48,8 +52,7 @@ function fullTime(ts: number): string {
  *   链接盒（只读链接 + 复制 + 打开）→ 状态行（到期状态 / 创建时间）→
  *   有效期分段选择（有到期时多一档「保持当前」）→ 只读说明 →
  *   底部：撤销链接（左，危险）/ 完成 / 更新设置。
- * ⚠️ inkstone 还有「访问口令」与「浏览次数」：后端没有口令与计数能力，
- *    按项目「不放假开关」的惯例不渲染，待后端支持后补。
+ * 访问口令（可选，受口令保护时公开页弹出口令框）与浏览次数（每次打开 +1）已补。
  */
 export default function NoteShareDialog({
     id,
@@ -73,6 +76,12 @@ export default function NoteShareDialog({
     const [copied, setCopied] = useState(false);
     const [message, setMessage] = useState("");
     const [confirmRevoke, setConfirmRevoke] = useState(false);
+    // 访问口令：开关「需要访问口令」+ 口令输入框。
+    // pwEnabled 初始跟后端 hasPassword 走；pwTouched 标记用户是否动过口令，
+    // 没动过就按「保持原值」发（undefined），避免一打开就误清空已有口令。
+    const [pwEnabled, setPwEnabled] = useState(false);
+    const [pw, setPw] = useState("");
+    const [pwTouched, setPwTouched] = useState(false);
 
     useEffect(() => {
         let live = true;
@@ -80,12 +89,16 @@ export default function NoteShareDialog({
         setExpiry("0");
         setCopied(false);
         setMessage("");
+        setPw("");
+        setPwTouched(false);
         api.getNoteShare(id)
             .then(value => {
                 if (!live) return;
                 setShare(value);
                 // 已有有效期时默认选中「保持当前」，避免一打开就误改
                 setExpiry(value?.expires_at ? "keep" : "0");
+                // 已有口令则默认开开关；具体口令不回前端（只能重设），空着等用户填
+                setPwEnabled(!!value?.hasPassword);
             })
             .catch(() => {
                 if (live) setMessage("无法读取分享状态，请关闭后重试");
@@ -94,6 +107,19 @@ export default function NoteShareDialog({
             live = false;
         };
     }, [api, id]);
+
+    /**
+     * 算这次要发给后端的 password：
+     *   - 开关关 → null（明确清除）
+     *   - 开关开但没动过 → undefined（保持原值，已有口令不误清、原本没有也不误设）
+     *   - 开关开且填了 → 那个口令（重设/设置）
+     *   - 开关开但清空了 → undefined（保持原值）
+     */
+    const passwordToSend = (): string | null | undefined => {
+        if (!pwEnabled) return null;
+        if (!pwTouched) return undefined;
+        return pw.length > 0 ? pw : undefined;
+    };
 
     const link = share ? `${location.origin}/s/${share.token}` : "";
 
@@ -120,15 +146,22 @@ export default function NoteShareDialog({
         setMessage("");
         try {
             if (expiry === "keep") {
-                setMessage("有效期保持当前设置");
+                // 有效期不动，但仍要把口令状态同步过去（可能改了口令/开关）
+                const value = await api.updateNoteShare(id, null, passwordToSend());
+                if (!value) throw new Error("分享不存在");
+                setShare(value);
+                // 口令已同步，重置「改动」标记；保留有效期「保持当前」
+                setPwTouched(false);
+                setMessage(value.hasPassword ? "分享设置已更新（链接不变，口令已设置）" : "分享设置已更新（链接不变，已取消口令）");
                 return;
             }
-            const value = await api.updateNoteShare(id, daysFor(expiry));
+            const value = await api.updateNoteShare(id, daysFor(expiry), passwordToSend());
             if (!value) throw new Error("分享不存在");
             setShare(value);
             setExpiry("keep");
+            setPwTouched(false);
             onChanged?.();
-            setMessage("分享设置已更新（链接不变）");
+            setMessage(value.hasPassword ? "分享设置已更新（链接不变，口令已设置）" : "分享设置已更新（链接不变）");
         } catch (error) {
             setMessage("操作失败：" + (error instanceof Error ? error.message : "未知错误"));
         } finally {
@@ -140,12 +173,14 @@ export default function NoteShareDialog({
         setBusy("save");
         setMessage("");
         try {
-            const value = await api.createNoteShare(id, daysFor(expiry));
+            const value = await api.createNoteShare(id, daysFor(expiry), passwordToSend());
             if (!value) throw new Error("笔记不存在");
             setShare(value);
             setExpiry("keep");
+            setPwTouched(false);
+            setPwEnabled(!!value.hasPassword);
             onChanged?.();
-            setMessage("公开链接已生成");
+            setMessage(value.hasPassword ? "公开链接已生成（已设置访问口令）" : "公开链接已生成");
         } catch (error) {
             setMessage("操作失败：" + (error instanceof Error ? error.message : "未知错误"));
         } finally {
@@ -272,6 +307,11 @@ export default function NoteShareDialog({
                                         创建于 {fullTime(createdTs)}
                                     </Typography>
                                 )}
+                                {share.views != null && (
+                                    <Typography variant='caption' color='text.secondary'>
+                                        浏览 {share.views} 次
+                                    </Typography>
+                                )}
                             </Box>
                         </Box>
                     </>
@@ -315,6 +355,45 @@ export default function NoteShareDialog({
                             </Box>
                         );
                     })}
+                </Box>
+
+                {/* 访问口令（inkstone SharePanel 同款）：可选，开启后公开页需输口令才能看 */}
+                <Box sx={{ mt: 2.5 }}>
+                    <FormControlLabel
+                        control={
+                            <Switch
+                                checked={pwEnabled}
+                                disabled={busy !== null || share === undefined}
+                                onChange={e => {
+                                    setPwEnabled(e.target.checked);
+                                    setPwTouched(true);
+                                }}
+                                data-share-pw-switch='1'
+                            />
+                        }
+                        label='需要访问口令'
+                    />
+                    {pwEnabled && (
+                        <TextField
+                            type='password'
+                            size='small'
+                            fullWidth
+                            autoComplete='new-password'
+                            value={pw}
+                            disabled={busy !== null}
+                            placeholder={share?.hasPassword && !pwTouched ? "留空则保持当前口令" : "访问者需输入此口令"}
+                            helperText={share?.hasPassword
+                                ? "已设置口令；要更换就重新填入，要取消就关掉上方开关"
+                                : "设置后，拿到链接的人也需要输入此口令才能查看"}
+                            onChange={e => {
+                                setPw(e.target.value);
+                                setPwTouched(true);
+                            }}
+                            slotProps={{ input: { "aria-label": "访问口令" } }}
+                            data-share-pw-input='1'
+                            sx={{ mt: 0.5 }}
+                        />
+                    )}
                 </Box>
 
                 <Alert severity='info' variant='outlined' sx={{ mt: 2.5 }}>

@@ -6,6 +6,14 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。---
 
+## 2026-10-09 · 记事本数据页对齐 inkstone（一）：SharePanel 访问口令 + 浏览次数
+
+- **访问口令（后端无能力 → 补上）**：分享表 `note_share` 新增 `password TEXT`（PBKDF2-SHA256，复用 `hashPassword` / `verifyPassword`，与登录口令同一套哈希）与 `views INTEGER NOT NULL DEFAULT 0`（浏览计数）。`createNoteShare` / `updateNoteShare` 支持 `password` 参数（string=重设、null=清除、不传=保持）；`getPublicNote` 受口令保护时返回 `need-password`，公开页弹出口令框、POST `/api/note-shares/<token>` 带口令重试，校验失败/没给都拦下（401）。
+- **浏览次数**：每次公开页**成功打开** +1（被口令拦下不计），`listNoteShares` / `getNoteShare` / 公开接口都带 `views`；设置页「分享列表」与分享弹窗状态行显示「浏览 N 次」。
+- **迁移幂等**：`migrateNoteShareColumns` 用 `hasColumn` 判定后 `ALTER TABLE` 补两列，老库升级不崩、重复跑不报错（真 SQLite 用例钉死）。
+- **类型与链路**：`NoteShare` / `NoteShareListItem` / `PublicNote` 加 `views` / `hasPassword`；新增判别联合 `PublicNoteAccess`（`ok` / `need-password` / `not-found`）让路由与公开页按 status 分支，不再靠「null 到底是不是没找到」猜。顺手修了一个真 bug：SELECT 别名原先写成 `has_password`，而 TS 类型与前端读的是 `hasPassword` —— D1 返回的是 snake_case 键、前端永远读不到，开关永远不亮；已统一成 `hasPassword`。
+- 验证：tsc `-b --force` / eslint（0 error）/ **2179 单测（2178 pass + 1 本地跳过）** / build / smoke 全绿；新增 3 条真实 SQLite 用例（口令 need-password / 对错口令 / 浏览次数只在成功打开时自增 / 迁移 ALTER 幂等，其中「访问口令→need-password」与「浏览次数自增」都做过回滚验证转红）+ 1 条 DOM 用例（弹窗读到 hasPassword=true 默认勾上开关、显示口令输入框与「浏览 N 次」）。
+
 ## 2026-10-09 · 记事本第四轮（续）：编辑区「刚出上下滚动条就抖」的关门一脚（scrollbar-gutter: stable）
 
 - **修「拖到刚出现上下滚动条还是抖」—— 滚动条来去改了内容宽度，图片被等比重算高度**：上一轮修了渲染块高度变化要通知 CM（ResizeObserver）+ 图片结论/尺寸缓存，但用户反馈「拖到刚出上下滚轮时还是抖」。真因还有一层：`.cm-scroller` 是 `overflow:auto`，滚动条「出现/消失」让**内容宽度变 ~10px**，而图片是 `max-width:100%; height:auto`，宽度一变就等比重算高度 → 总高越过临界 → 滚动条又消失 → 宽度回来 → 高度回来 → 滚动条又出现……死循环（文字行也会因换行数变化改总高，同源）。修法：给 `.cm-scroller` 主题加 `scrollbar-gutter: stable`，让滚动条槽位**恒定预留**，出不出滚动条内容宽度都不变，回路直接断开；同时 `overflow-x` 固定成 `hidden`，横向滚动条同理不挤宽度。

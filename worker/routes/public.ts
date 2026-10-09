@@ -85,10 +85,31 @@ export async function handlePublicRoutes(ctx: RouteCtx): Promise<Response | null
         });
     }
 
-    if (path.startsWith("note-shares/") && method === "GET") {
-        const note = await api.getPublicNote(path.slice("note-shares/".length));
-        return Response.json(note ?? { error: "分享不存在、已过期或已撤销" }, {
-            status: note ? 200 : 404,
+    if (path.startsWith("note-shares/") && (method === "GET" || method === "POST")) {
+        const token = path.slice("note-shares/".length);
+        // POST 带访问口令（受口令保护的分享）；GET 不带（无口令分享直接返回，
+        // 受口令的返回 need-password 让公开页弹出口令框）。两种都走 getPublicNote，
+        // 它在口令不匹配时统一回 need-password。
+        let password: string | null = null;
+        if (method === "POST") {
+            const body = (await request.json().catch(() => ({}))) as { password?: unknown };
+            password = typeof body.password === "string" ? body.password : null;
+        }
+        const result = await api.getPublicNote(token, password);
+        if (result.status === "not-found") {
+            return Response.json({ error: "分享不存在、已过期或已撤销" }, {
+                status: 404,
+                headers: { "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "X-Robots-Tag": "noindex, nofollow" },
+            });
+        }
+        if (result.status === "need-password") {
+            return Response.json({ error: "需要访问口令", needPassword: true }, {
+                status: 401,
+                headers: { "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "X-Robots-Tag": "noindex, nofollow" },
+            });
+        }
+        return Response.json(result.note, {
+            status: 200,
             headers: { "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "X-Robots-Tag": "noindex, nofollow" },
         });
     }

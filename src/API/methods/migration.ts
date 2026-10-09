@@ -69,6 +69,8 @@ export interface MigrationApi {
     migrateFolderTagTables(): Promise<void>;
     /** 2026-07：图片附件元数据表（老库上同样建不出来，必须显式跑） */
     migrateAttachmentsTable(): Promise<void>;
+    /** 2026-10-09：分享表补访问口令（password）与浏览次数（views）两列 */
+    migrateNoteShareColumns(): Promise<void>;
     migrateRecoveryKeyToOwner(ownerId: number): Promise<void>;
     migrateWebdavConfigToOwner(ownerId: number): Promise<void>;
     hasColumn(table: string, column: string): Promise<boolean>;
@@ -221,6 +223,11 @@ export const migrationImpl: MigrationApi = {
         // 同样必须**显式建**，不能指望第 1 步的批量建表 —— 已经部署过的实例上
         // 版本号读得到就整段跳过迁移（见 migrateIfNeeded），新表永远建不出来。
         await this.migrateAttachmentsTable();
+
+        // 6.7) 2026-10-09：分享表补「访问口令」与「浏览次数」两列。
+        // 老库上 note_share 早就建好了，CREATE TABLE IF NOT EXISTS 不会补列，
+        // 必须显式 ALTER（见 migrateNoteShareColumns）。
+        await this.migrateNoteShareColumns();
 
         // 7) 索引：排在最后，因为它依赖上面补出来的 user_id 列（见 INDEX_STATEMENTS 注释）
         await this.createIndexes();
@@ -388,6 +395,29 @@ export const migrationImpl: MigrationApi = {
         for (const sql of ATTACHMENTS_TABLE_STATEMENTS) {
             // 同上：D1 exec 按行拆 SQL，不适合多行 DDL；prepare 整条执行。
             await this.db.prepare(sql).run();
+        }
+    },
+
+    /**
+     * 2026-10-09：分享表补「访问口令」与「浏览次数」两列。
+     * 老库上 note_share 早建好了，CREATE TABLE IF NOT EXISTS 不补列，
+     * 这里用 hasColumn + ALTER 兜底（与 migrateNoteColumns 那套同一个姿势）。
+     * password 可空（没设口令就是公开）；views 默认 0，老数据从 0 计起。
+     */
+    migrateNoteShareColumns: async function (this: NavigationAPI ): Promise<void> {
+        if (!(await this.hasColumn("note_share", "password"))) {
+            try {
+                await this.db.exec("ALTER TABLE note_share ADD COLUMN password TEXT");
+            } catch {
+                // 列已存在（并发迁移）或表不存在，忽略
+            }
+        }
+        if (!(await this.hasColumn("note_share", "views"))) {
+            try {
+                await this.db.exec("ALTER TABLE note_share ADD COLUMN views INTEGER NOT NULL DEFAULT 0");
+            } catch {
+                // 列已存在（并发迁移）或表不存在，忽略
+            }
         }
     },
 

@@ -69,6 +69,10 @@ export interface NoteShare {
     expires_at: number | null;
     /** 所属笔记的创建时间（getNoteShare 顺带返回；公开页等其它链路可能没有） */
     created_at?: string;
+    /** 累计浏览次数（每次公开页成功打开 +1；后端补全站计数） */
+    views?: number;
+    /** 是否设置了访问口令（true = 公开页需要输口令才能看；仅主人接口返回） */
+    hasPassword?: boolean;
 }
 
 /**
@@ -126,12 +130,26 @@ export interface NoteShareListItem {
     expires_at: number | null;
     created_at?: string;
     updated_at?: string;
+    /** 累计浏览次数（后端补全站计数） */
+    views?: number;
 }
 export interface PublicNote {
     title: string;
     content: string;
     updated_at?: string;
+    /** 累计浏览次数（随这次访问 +1 后的值） */
+    views?: number;
 }
+
+/**
+ * 公开取笔记的结果（getPublicNote 的返回）。
+ * 用判别联合把「没找到 / 要口令 / 正文」三态分清楚，路由与公开页都按 status 分支，
+ * 不用再靠「null 到底是没找到还是没权限」这种含糊语义猜。
+ */
+export type PublicNoteAccess =
+    | { status: "ok"; note: PublicNote; views: number }
+    | { status: "need-password" }
+    | { status: "not-found" };
 
 /** 笔记文件夹（row 形状和 note_folder 表一致，count 是查询时顺带算出来的） */
 export interface NoteFolder {

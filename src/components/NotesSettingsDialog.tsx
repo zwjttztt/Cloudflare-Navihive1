@@ -953,6 +953,11 @@ export default function NotesSettingsDialog({
                                                             创建于 {fmtTime(item.created_at)}
                                                         </Typography>
                                                     )}
+                                                    {item.views != null && (
+                                                        <Typography variant='caption' color='text.secondary'>
+                                                            浏览 {item.views} 次
+                                                        </Typography>
+                                                    )}
                                                     <Box sx={{ flex: 1 }} />
                                                     <Button
                                                         size='small'
