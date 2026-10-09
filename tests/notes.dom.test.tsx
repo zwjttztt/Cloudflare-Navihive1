@@ -4877,12 +4877,16 @@ test("附件存储：R2 优先、KV 降级、都没配就禁用（对齐 inkston
     );
 });
 
-test("附件表随迁移建出来，且不下车（schema 12）", () => {
+test("附件表随迁移建出来，且不下车（schema 版本随附件迁移抬升）", () => {
     const migration = readSrcFile("API", "methods", "migration.ts");
     const internals = readSrcFile("API", "methods", "internals.ts");
+    // 📌 判「单调 >= 12」而不是死钉 "12"：附件那次升级把版本抬到 12，
+    // 之后每次新增迁移步骤还会继续 +1（如 13 = note_share 口令/浏览数）。
+    // 死钉具体号只会让下一次升级无意义变红（noteSql.test.ts 里同样的教训）。
+    const version = Number(/\bSCHEMA_VERSION = "(\d+)"/.exec(migration)?.[1]);
     assert.ok(
-        /SCHEMA_VERSION[\s\S]{0,40}"12"/.test(migration),
-        "schema 版本要升到 12"
+        Number.isFinite(version) && version >= 12,
+        `schema 版本要 >= 12（附件表那次升级抬的号），现在是 ${version}`
     );
     // ⚠️ 和当初 migrateFolderTagTables 那个 500 是同一个坑：
     // 「版本号读得到就整段跳过迁移」的快路径会让新表永远建不出来。

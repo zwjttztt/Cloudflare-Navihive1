@@ -31,16 +31,22 @@ function makeRealD1() {
                 bound = args as SQLInputValue[];
                 return prepared;
             },
+            // ⚠️ 真 D1 的 all()/first()/run() 都返回 Promise（哪怕立即 resolve），
+            // 业务代码里有 `.all().then(...)` 这样的链式用法 —— 替身必须包成 Promise，
+            // 否则「分享列表」这类方法在替身上跑不通（真库上反而没问题）。
             all<T = Record<string, unknown>>() {
-                return { results: stmt.all(...bound) as T[], success: true as const };
+                return Promise.resolve({
+                    results: stmt.all(...bound) as T[],
+                    success: true as const,
+                });
             },
             first<T = Record<string, unknown>>() {
                 const row = stmt.get(...bound) as T | undefined;
-                return (row ?? null) as T | null;
+                return Promise.resolve((row ?? null) as T | null);
             },
             run() {
                 const r = stmt.run(...bound);
-                return { success: true as const, meta: { changes: r.changes, last_row_id: Number(r.lastInsertRowid) } };
+                return Promise.resolve({ success: true as const, meta: { changes: r.changes, last_row_id: Number(r.lastInsertRowid) } });
             },
         };
         return prepared;
@@ -283,6 +289,40 @@ test("真实 SQLite：migrateNoteShareColumns 幂等（password/views 可重复�
         .results.map(c => c.name);
     assert.ok(cols.includes("password"), "缺 password 列");
     assert.ok(cols.includes("views"), "缺 views 列");
+});
+
+test("真实 SQLite：已部署老库（版本号已存 12）也必须补出 password/views 列", async () => {
+    // 2026-10-09 线上「分享列表 API错误: 500」的回归钉子：
+    // 补列代码（runMigrations 6.7 步）写了但 SCHEMA_VERSION 忘了 +1 —— 已部署的库
+    // 存着 "12"，新代码也是 "12"，migrateIfNeeded 快路径整段跳过迁移，
+    // views 列永远补不上 → listNoteShares 的 SELECT s.views 500。
+    // 本地/新库是全新迁移必然跑，所以这个坑只有「伪造已部署状态」才测得出。
+    resetMigrationCacheForTests();
+    const realDb = makeRealD1();
+    await realDb.exec(`
+        CREATE TABLE configs (key TEXT PRIMARY KEY, value TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
+        CREATE TABLE note_share (note_id INTEGER PRIMARY KEY, note_uuid TEXT NOT NULL,
+            user_id INTEGER, token TEXT NOT NULL UNIQUE, expires_at INTEGER);
+        INSERT INTO configs (key, value) VALUES ('schema.version', '12');
+    `);
+    const api = makeApi(realDb);
+    await api.migrate();
+    const cols = (await realDb.prepare("SELECT name FROM pragma_table_info('note_share')").all<{ name: string }>())
+        .results.map(c => c.name);
+    assert.ok(cols.includes("views"), "老库（版本号 12）升级后必须补出 views 列");
+    assert.ok(cols.includes("password"), "老库（版本号 12）升级后必须补出 password 列");
+    // 版本号要写到新值，下次冷启动不再重跑
+    const ver = await realDb.prepare("SELECT value FROM configs WHERE key = 'schema.version'").first<{ value: string }>();
+    assert.equal(ver?.value, "13", "迁移完要把版本号写进新值");
+    // 补完列后分享全链路要真的能跑（这正是线上 500 的那条查询）
+    api.setCurrentUser(null);
+    const note = await api.createNote({ title: "升级后", content: "正文" });
+    const share = await api.createNoteShare(note.id!, 7);
+    assert.ok(share);
+    const list = await api.listNoteShares();
+    assert.equal(list.length, 1);
+    assert.equal(list[0].views, 0, "老分享的浏览次数从 0 计起");
 });
 
 

@@ -43,7 +43,13 @@ import {
 //     ⚠️ CREATE TABLE IF NOT EXISTS 对已存在的表**不会补列**（2026-10-06 的
 //     parent_id 500 就是这个坑），所以老库必须走 migrateFolderTagTables 里的
 //     hasColumn + ALTER，版本号必须 +1 让快路径失效。
-export const SCHEMA_VERSION = "12";
+// 13 = note_share.password / note_share.views（访问口令 + 浏览次数）。
+//     ⚠️ 2026-10-09 线上「分享列表 API错误: 500」的真因：补列代码（6.7 步）
+//     写了但版本号忘了 +1 —— 已部署的库存着 "12"，新代码也是 "12"，
+//     migrateIfNeeded 快路径整段跳过迁移，views 列永远补不上，
+//     listNoteShares 的 SELECT s.views 直接 500（本地/新库全新迁移必然跑，
+//     所以单测全绿测不出）。加任何迁移步骤都要动这个号。
+export const SCHEMA_VERSION = "13";
 /** 版本号存在 configs 里的键名 */
 export const SCHEMA_VERSION_KEY = "schema.version";
 
