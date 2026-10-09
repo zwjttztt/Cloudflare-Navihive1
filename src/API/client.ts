@@ -5,6 +5,7 @@ import {
     NoteAttachment,
     NoteFolder,
     NoteRevision,
+    NoteSearchResult,
     NoteTag,
     NoteShare,
     NoteShareListItem,
@@ -16,6 +17,7 @@ import {
     ImportResult,
     BootstrapData,
     WebDavConfig,
+    WebDavErrorCode,
     WebDavFile,
     WebDavResult,
     SiteOrderUpdateResult,
@@ -36,6 +38,7 @@ import {
 // 比直接 console.error 安全（登录相关的 error 对象里可能带着请求上下文），
 // 也省得生产控制台一片噪音。改动前后控制台都不打东西 —— 要看错误去后端日志。
 import { reportError } from "../utils/errorReporter";
+import { NoteConflictError } from "../utils/noteConflict";
 
 // 前端只读标记：真正的令牌在 httpOnly cookie 里，JS 拿不到（XSS 偷不走）。
 // 这条 cookie 只表示「已登录」，不含任何凭据。
@@ -410,6 +413,19 @@ export class NavigationClient {
         // 413：worker 的 readBoundedBytes 抛的，body 是纯文本（不是 JSON），
         // 所以上面 reason 多半是空的。不给一句人话，用户看到的就是「API错误: 413」
         // —— 上传图片时这就是「传上去了却什么都没有」的另一种面孔。
+        // 409 + code:'conflict' = 乐观并发冲突（笔记在别处被改过）。
+        // 单独认出来：它不是「保存失败」，是「要先问用户一句」，
+        // 而且服务端把库里当前那版一起回给了前端（见 worker/routes/data.ts）。
+        if (response.status === 409) {
+            const payload = errorPayload as { code?: string; note?: Note };
+            if (payload.code === "conflict") {
+                throw new NoteConflictError(
+                    reason || "这条笔记在别处被改过了",
+                    payload.note ?? null
+                );
+            }
+        }
+
         if (response.status === 413) {
             throw new Error(
                 reason
@@ -526,7 +542,16 @@ export class NavigationClient {
         });
     }
 
+    /**
+     * 保存笔记。
+     *
+     * ⚠️ `patch.rev` 是**乐观并发**的那一半（2026-10-09）：带上「我改的是哪一版」，
+     * 服务端发现版本对不上就回 409 + 库里当前那版。这时抛的是 NoteConflictError
+     * 而不是普通 Error —— 调用方可以据此弹「这条在别处改过」让用户选，
+     * 而不是把它当成一次普通的保存失败（那会把别人的改动静默盖掉）。
+     */
     async updateNote(id: number, patch: Partial<Note>): Promise<Note | null> {
+        // 冲突（409）由 request 直接抛成 NoteConflictError，这里原样透出
         return this.request<Note | null>(`notes/${id}`, {
             method: "PUT",
             body: JSON.stringify(patch),
@@ -568,6 +593,19 @@ export class NavigationClient {
         return this.request<NoteImportStats>("notes/import", {
             method: "POST",
             body: JSON.stringify(payload),
+        });
+    }
+
+    /**
+     * 服务端全文检索（2026-10-09）。
+     *
+     * 老部署没有 notes/search 这个端点时会 404/500 —— 调用方必须 catch，
+     * 退回本地搜索（前端本来就持有笔记全文，本地搜结果一致、只是没有相关度）。
+     */
+    async notesSearch(query: string, limit = 50): Promise<NoteSearchResult> {
+        return this.request<NoteSearchResult>("notes/search", {
+            method: "POST",
+            body: JSON.stringify({ query, limit }),
         });
     }
 
@@ -1070,6 +1108,41 @@ export class NavigationClient {
         return this.request<WebDavUploadResponse>("webdav/notes/upload", {
             method: "POST",
             body: "{}",
+        });
+    }
+
+    /**
+     * 列出网盘上的记事本备份（从网盘恢复的第一步）。
+     * 只回 `navihive-notes-backup-` 前缀的那批，导航备份不混进来。
+     */
+    async notesBackupListRemote(): Promise<
+        WebDavResult<{ files: { name: string; size: number; lastModified: string }[] }>
+    > {
+        return this.request<{
+            success: boolean;
+            message?: string;
+            files?: { name: string; size: number; lastModified: string }[];
+        }>("webdav/notes/list", { method: "POST", body: "{}" });
+    }
+
+    /**
+     * 下载并解开网盘上的一份记事本备份。
+     *
+     * ⚠️ password 只在**这份备份是口令加密的、且配置里没存口令**时才需要传：
+     * 服务端返回 code='encrypted' 时前端弹一个口令框，用户填完再调一次。
+     */
+    async notesBackupDownload(
+        filename: string,
+        password?: string
+    ): Promise<WebDavResult<{ payload: NotesImportPayload }>> {
+        return this.request<{
+            success: boolean;
+            code?: WebDavErrorCode;
+            message?: string;
+            payload?: NotesImportPayload;
+        }>("webdav/notes/download", {
+            method: "POST",
+            body: JSON.stringify({ filename, password: password || "" }),
         });
     }
 

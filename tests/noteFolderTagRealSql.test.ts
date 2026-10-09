@@ -312,9 +312,14 @@ test("真实 SQLite：已部署老库（版本号已存 12）也必须补出 pas
         .results.map(c => c.name);
     assert.ok(cols.includes("views"), "老库（版本号 12）升级后必须补出 views 列");
     assert.ok(cols.includes("password"), "老库（版本号 12）升级后必须补出 password 列");
-    // 版本号要写到新值，下次冷启动不再重跑
+    // 版本号要写到新值，下次冷启动不再重跑。
+    // ⚠️ 别钉死具体数字：每加一次迁移 SCHEMA_VERSION 就要 +1，钉死的用例会
+    // 变成「每次加迁移都红一次」的噪音（真正要守住的是「比老值 12 大」）。
     const ver = await realDb.prepare("SELECT value FROM configs WHERE key = 'schema.version'").first<{ value: string }>();
-    assert.equal(ver?.value, "13", "迁移完要把版本号写进新值");
+    assert.ok(
+        Number(ver?.value) > 12,
+        "迁移完要把版本号写成比 12 大的新值（当前：" + ver?.value + "）"
+    );
     // 补完列后分享全链路要真的能跑（这正是线上 500 的那条查询）
     api.setCurrentUser(null);
     const note = await api.createNote({ title: "升级后", content: "正文" });

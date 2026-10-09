@@ -430,15 +430,21 @@ test("标题层级下拉：点 H2 是把 `## ` 加在当前行开头", () => {
     assert.equal(ta.selectionStart, 3, "光标跟着落到前缀之后");
 });
 
-test("左栏导航「收藏」只看置顶的那几条", () => {
+test("左栏导航「收藏」只看收藏的那几条（2026-10-09：与置顶分离，不再判 pinned）", () => {
     setWide();
     mountPanel([
-        note({ id: 1, title: "置顶的", content: "a", pinned: true }),
-        note({ id: 2, title: "普通的", content: "b", pinned: false }),
+        // ⚠️ 这一条**只**置顶、没收藏：它正是这次要分开的那两种状态。
+        // 分离以前「收藏」视图判的是 pinned，于是置顶的会被当成收藏的显示出来。
+        note({ id: 1, title: "只置顶的", content: "a", pinned: true, starred: false }),
+        note({ id: 2, title: "收藏了的", content: "b", pinned: false, starred: true }),
+        note({ id: 3, title: "普通的", content: "c", pinned: false, starred: false }),
     ]);
     const list = () =>
         document.querySelector("[data-note-list]")!.textContent || "";
-    assert.ok(list().includes("置顶的") && list().includes("普通的"), "默认全部");
+    assert.ok(
+        list().includes("只置顶的") && list().includes("收藏了的") && list().includes("普通的"),
+        "默认全部"
+    );
 
     const starred = [...document.querySelectorAll("button[data-view]")].find(
         b => b.getAttribute("data-view") === "starred"
@@ -446,8 +452,9 @@ test("左栏导航「收藏」只看置顶的那几条", () => {
     assert.ok(starred, "要有收藏视图按钮");
     act(() => starred!.click());
 
-    assert.ok(list().includes("置顶的"), "收藏里要有置顶的");
-    assert.ok(!list().includes("普通的"), "收藏里不该出现没置顶的");
+    assert.ok(list().includes("收藏了的"), "收藏里要有收藏了的");
+    assert.ok(!list().includes("只置顶的"), "只置顶没收藏的不该出现在收藏里（两件事已分离）");
+    assert.ok(!list().includes("普通的"), "收藏里不该出现没收藏的");
 });
 
 // ---------- 阶段二：左栏折叠 / 月份分组 / ⌘K ----------
@@ -3176,9 +3183,13 @@ test("设置改动落到 localStorage（下次打开还在）", async () => {
 
 // ---------- 8. 右下角那排按键已移除 ----------
 
-test("状态栏不再有 删除 / 置顶 / 归档 那排按键（都进了右键菜单）", () => {
+test("状态栏不再有 删除 / 归档 那排按键（都进了右键菜单）", () => {
+    // ⚠️ 2026-10-09：置顶 / 收藏**不在**这个清单里 —— 它们本来就在头部工具条上
+    // （data-tool='pin' / 'star'），是设计上要常驻的，不是那排状态栏按键。
+    // 之前置顶那颗的 aria-label 写的是「收藏」，所以没撞上这条断言；
+    // 收藏与置顶分离后它改叫「置顶」，清单要跟着改，否则这条用例会开始红。
     mountPanel([note({ id: 1, title: "甲", content: "a" })]);
-    for (const label of ["删除", "置顶", "归档"]) {
+    for (const label of ["删除", "归档"]) {
         assert.equal(
             document.querySelector(`button[aria-label='${label}']`),
             null,
@@ -3187,6 +3198,34 @@ test("状态栏不再有 删除 / 置顶 / 归档 那排按键（都进了右键
     }
     // 但功能没丢：顶栏 ⋯ 与右键菜单里都还在
     assert.ok(document.querySelector("button[data-tool='note-more']"), "顶栏要有「⋯」入口");
+});
+
+test("头部有「置顶」与「收藏」两颗键，点收藏不会动到置顶（两件事分离）", async () => {
+    setWide();
+    const saved: Record<string, unknown>[] = [];
+    mountPanel([note({ id: 1, title: "甲", content: "a", pinned: false, starred: false })], {
+        onUpdate: async (id: number, patch: Record<string, unknown>) => {
+            saved.push({ id, ...patch });
+        },
+        onToggleStar: async (n: Note) => {
+            saved.push({ id: n.id, starred: !(n as Note & { starred?: boolean }).starred });
+        },
+    });
+    await act(async () => {
+        (document.querySelectorAll('[data-note-list] [role="button"]')[0] as HTMLElement).click();
+    });
+    const pin = document.querySelector("button[data-tool='pin']") as HTMLElement | null;
+    const star = document.querySelector("button[data-tool='star']") as HTMLElement | null;
+    assert.ok(pin, "头部要有置顶键");
+    assert.ok(star, "头部要有收藏键（与置顶分开的两颗）");
+    assert.equal(pin.getAttribute("aria-label"), "置顶");
+    assert.equal(star.getAttribute("aria-label"), "收藏");
+
+    await act(async () => star!.click());
+    assert.ok(
+        saved.some(p => p.starred === true && p.pinned === undefined),
+        "点收藏只能带 starred，不能顺手改 pinned（实际：" + JSON.stringify(saved) + "）"
+    );
 });
 
 // ---------- 10. 在侧边打开（两篇同时编辑） ----------
@@ -4031,7 +4070,9 @@ test("数据页有「导入笔记（JSON）」入口（老部署没有 importNot
     const btn = document.querySelector("[data-data-action='import-notes']") as HTMLElement | null;
     assert.ok(btn, "有 importNotes 能力时要给「导入笔记」入口");
     // 隐藏的 file input 存在且 accept JSON
-    const fileInput = document.querySelector("input[aria-label='选择要导入的笔记 JSON 文件']") as HTMLInputElement | null;
+    const fileInput = document.querySelector(
+        "input[aria-label='选择要导入的笔记文件（JSON 或 ZIP）']"
+    ) as HTMLInputElement | null;
     assert.ok(fileInput, "要有隐藏的文件选择框");
     // 直接对 file input 塞文件触发 change（别 click()：无头环境会挂住）。
     // jsdom 没有 DataTransfer，手搓一个最小的 FileList 形状即可 ——
@@ -5140,7 +5181,56 @@ function makeBackupApi(log: { calls: string[]; saved: Record<string, unknown>[] 
             log.calls.push("run");
             return { success: true, message: "已备份到 WebDAV：navihive-notes-backup-20261009-040000-000.json.gz" };
         },
+        // 备份闭环的另一半：从网盘取回（2026-10-09）
+        listRemote: async () => {
+            log.calls.push("listRemote");
+            return {
+                success: true,
+                message: "",
+                files: [
+                    {
+                        name: "navihive-notes-backup-auto-20261009-030000-000.json.gz",
+                        size: 2048,
+                        lastModified: "2026-10-09T03:00:00.000Z",
+                    },
+                ],
+            };
+        },
+        fetch: async (filename: string, password: string) => {
+            log.calls.push("fetch:" + filename + ":" + password);
+            if (!password) {
+                return { success: false, message: "这份备份是加密的", code: "encrypted" as const };
+            }
+            if (password !== "pw") {
+                return { success: false, message: "密码不对", code: "badPassword" as const };
+            }
+            return {
+                success: true,
+                message: "",
+                payload: {
+                    kind: "navihive-notes-export",
+                    exported_at: new Date().toISOString(),
+                    notes: [{ id: 7, uuid: "u7", title: "网盘里那篇", content: "内容" }],
+                    folders: [],
+                    tags: [],
+                    noteTags: {},
+                } as never,
+            };
+        },
     };
+}
+
+/** 带导入能力的 shareApi：网盘恢复的最后一步走 notes/import 同一条链路 */
+function makeImportShareApi(log: { imports: number }) {
+    return {
+        getNoteShare: async () => null,
+        createNoteShare: async () => null,
+        revokeNoteShare: async () => ({ success: true }),
+        importNotes: async () => {
+            log.imports += 1;
+            return { created: 1, updated: 2, skipped: 0 } as never;
+        },
+    } as never;
 }
 
 test("设置→备份：带入导航页网盘配置，立即备份 / 测试连接 / 运行记录都能用", async () => {
@@ -5223,6 +5313,130 @@ test("设置→备份：频率与保留的当前值要显示（weekly / 最近 7
     assert.ok(retention.textContent?.includes("最近 7 份"), "保留当前值是 7 份");
 });
 
+test("设置→备份→从网盘恢复：列出备份文件，选一份就恢复（走导入同一条链路）", async () => {
+    setWide();
+    const log: { calls: string[]; saved: Record<string, unknown>[] } = { calls: [], saved: [] };
+    const imp = { imports: 0 };
+    const notify: string[] = [];
+    mountPanel([note({ id: 1, title: "甲", content: "a" })], {
+        backupApi: makeBackupApi(log),
+        shareApi: makeImportShareApi(imp),
+        onNotify: (m: unknown) => notify.push(String(m)),
+    });
+    await act(async () =>
+        (document.querySelector("button[data-tool='settings']") as HTMLElement).click()
+    );
+    await act(async () =>
+        (document.querySelector("[data-settings-tab='backup']") as HTMLElement).click()
+    );
+    assert.ok(document.querySelector("[data-backup-restore='1']"), "备份页要有「从网盘恢复」这一节");
+
+    // 列出网盘备份
+    await act(async () =>
+        (document.querySelector("[data-backup-action='list-remote']") as HTMLElement).click()
+    );
+    assert.ok(log.calls.includes("listRemote"), "点「列出备份」要调到 listRemote");
+    const fileRow = document.querySelector("[data-backup-remote-file]");
+    assert.ok(fileRow, "列出的每一份都要有一行");
+    assert.match(
+        fileRow!.textContent ?? "",
+        /navihive-notes-backup-auto-20261009-030000-000\.json\.gz/,
+        "行上要显示文件名"
+    );
+
+    // 直接点恢复：备份页上没设口令，后端回 encrypted → 就地展开口令输入框
+    await act(async () =>
+        (document.querySelector("[data-backup-action='restore']") as HTMLElement).click()
+    );
+    assert.equal(imp.imports, 0, "还不知道口令时不能先导入");
+    assert.ok(
+        document.querySelector("[data-backup-restore-pwd='1']"),
+        "缺口令时要就地展开口令输入框"
+    );
+    assert.ok(
+        document.querySelector("[data-backup-remote-error='1']"),
+        "缺口令要给出说明，不能静默失败"
+    );
+
+    // 填上正确口令 → 真恢复
+    const pwd = document.querySelector('input[aria-label="恢复备份密码"]') as HTMLInputElement;
+    await act(async () => {
+        const setter = Object.getOwnPropertyDescriptor(
+            HTMLInputElement.prototype,
+            "value"
+        )?.set;
+        setter?.call(pwd, "pw");
+        pwd.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => {
+        await (document.querySelector("[data-backup-action='restore-confirm']") as HTMLElement).click();
+        await new Promise(r => setTimeout(r, 30));
+    });
+    assert.equal(imp.imports, 1, "口令对了要真的走一次导入");
+    assert.ok(
+        notify.some(m => m.includes("已从网盘恢复")),
+        "恢复完要有提示（实际收到：" + notify.join(" / ") + "）"
+    );
+    assert.ok(
+        document.querySelector("[data-backup-restore-pwd='1']") === null,
+        "恢复成功后口令输入框要收起来"
+    );
+});
+
+test("设置→备份→从网盘恢复：口令错了留在框里让人重填，取消就收起", async () => {
+    setWide();
+    const log: { calls: string[]; saved: Record<string, unknown>[] } = { calls: [], saved: [] };
+    const imp = { imports: 0 };
+    mountPanel([note({ id: 1, title: "甲", content: "a" })], {
+        backupApi: makeBackupApi(log),
+        shareApi: makeImportShareApi(imp),
+    });
+    await act(async () =>
+        (document.querySelector("button[data-tool='settings']") as HTMLElement).click()
+    );
+    await act(async () =>
+        (document.querySelector("[data-settings-tab='backup']") as HTMLElement).click()
+    );
+    await act(async () =>
+        (document.querySelector("[data-backup-action='list-remote']") as HTMLElement).click()
+    );
+    await act(async () =>
+        (document.querySelector("[data-backup-action='restore']") as HTMLElement).click()
+    );
+    const pwd = document.querySelector('input[aria-label="恢复备份密码"]') as HTMLInputElement;
+    await act(async () => {
+        const setter = Object.getOwnPropertyDescriptor(
+            HTMLInputElement.prototype,
+            "value"
+        )?.set;
+        setter?.call(pwd, "wrong");
+        pwd.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => {
+        await (document.querySelector("[data-backup-action='restore-confirm']") as HTMLElement).click();
+        await new Promise(r => setTimeout(r, 30));
+    });
+    assert.equal(imp.imports, 0, "口令不对不能导入");
+    assert.ok(
+        document.querySelector("[data-backup-restore-pwd='1']"),
+        "口令错了输入框要留着让人重填"
+    );
+    assert.match(text(), /密码不对/, "要把后端的原因显示出来");
+
+    // 取消 → 收起输入框与错误
+    await act(async () =>
+        (document.querySelector("[data-backup-action='restore-cancel']") as HTMLElement).click()
+    );
+    assert.ok(
+        document.querySelector("[data-backup-restore-pwd='1']") === null,
+        "取消后口令输入框要收起"
+    );
+    assert.ok(
+        document.querySelector("[data-backup-remote-error='1']") === null,
+        "取消后错误提示也要清掉"
+    );
+});
+
 test("设置→备份：没有备份能力（老部署）时整页不出现", async () => {
     setWide();
     mountPanel([note({ id: 1, title: "甲", content: "a" })]);
@@ -5248,7 +5462,7 @@ test("分屏时主栏右上角收进「更多」（照 inkstone grouped）：平
     await act(async () => (document.querySelector("[data-row-op='open-side']") as HTMLElement).click());
     assert.ok(document.querySelector("[data-side-editor='1']"), "先打开侧边（分屏态）");
 
-    // 平铺的那排全消失（inkstone 分屏头部只有三档 + 保存状态 + 「⋯」）。
+    // 平铺的那排全消失（inkstone 分屏头部在常见宽度下只剩「⋯」+ 右侧 ✕）。
     // ⚠️ 断言用 `=== null`（布尔），别把 DOM 元素塞给 assert.equal ——
     // 失败时 node:test 要 inspect 整棵 jsdom 节点树，会直接 OOM（Array buffer allocation failed）。
     assert.ok(document.querySelector("[data-desktop-actions='1']") === null, "分屏时平铺组不渲染");
@@ -5258,7 +5472,12 @@ test("分屏时主栏右上角收进「更多」（照 inkstone grouped）：平
         document.querySelector("button[data-tool='live-render']") === null,
         "分屏时主栏即时渲染开关收进菜单"
     );
-    assert.ok(document.querySelector("[data-pane-modes='1']"), "三档模式键保留在头部");
+    // ⚠️ 2026-10-09 补：inkstone 分屏的三档也是收进 groupedItems 的
+    // （头部那组是 `hidden 2xl:block`，1080/1440 窗口根本不显示）。
+    assert.ok(
+        document.querySelector("[data-pane-modes='1']") === null,
+        "分屏时三档模式键也收进菜单"
+    );
     assert.ok(
         document.querySelector("button[data-tool='note-more']"),
         "「更多操作」保留在头部"
@@ -5266,7 +5485,18 @@ test("分屏时主栏右上角收进「更多」（照 inkstone grouped）：平
 
     // 「更多操作」里这几项重新出现（桌面单栏态它们被平铺取代而不出现）
     await openNoteMore();
-    for (const op of ["share", "revisions", "backlinks", "outline", "live-render", "export", "pin"]) {
+    for (const op of [
+        "pane-mode-edit",
+        "pane-mode-split",
+        "pane-mode-preview",
+        "share",
+        "revisions",
+        "backlinks",
+        "outline",
+        "live-render",
+        "export",
+        "pin",
+    ]) {
         assert.ok(
             document.querySelector(`[data-active-op='${op}']`),
             `分屏时更多操作里要有 ${op}`
@@ -5295,4 +5525,292 @@ test("关掉侧边后主栏头部平铺组恢复（分屏态的收纳是临时�
     assert.ok(document.querySelector("[data-desktop-actions='1']"), "平铺组恢复");
     assert.ok(document.querySelector("button[data-tool='pin']"), "收藏常驻键恢复");
     assert.ok(document.querySelector("button[data-tool='outline']"), "大纲常驻键恢复");
+    assert.ok(document.querySelector("[data-pane-modes='1']"), "三档模式键恢复");
+});
+
+// ---------- 版本历史面板（2026-10-09 照 inkstone VersionsPanel）----------
+// 之前只是一个 Menu（点了直接恢复），现在要能「先看差别再决定恢不恢复」。
+test("版本历史：面板列出快照，右侧给出与当前正文的行级 diff", async () => {
+    setWide();
+    const restored: number[] = [];
+    mountPanel(
+        [note({ id: 1, title: "甲", content: "一\n二\n三" })],
+        {
+            folderTags: {
+                folders: [],
+                tags: [],
+                noteTags: {},
+                onListRevisions: async () => [
+                    { id: 11, note_id: 1, title: "甲", content: "", created_at: "2026-10-09T10:00:00.000Z", size: 5 },
+                    { id: 10, note_id: 1, title: "甲", content: "", created_at: "2026-10-08T10:00:00.000Z", size: 7 },
+                ],
+                onGetRevision: async (_noteId: number, revisionId: number) =>
+                    revisionId === 11
+                        ? { id: 11, note_id: 1, title: "甲", content: "一\n二改了\n三", created_at: "2026-10-09T10:00:00.000Z" }
+                        : { id: 10, note_id: 1, title: "甲", content: "一\n二\n三\n四", created_at: "2026-10-08T10:00:00.000Z" },
+                onRestoreRevision: async (_noteId: number, revisionId: number) => {
+                    restored.push(revisionId);
+                    return note({ id: 1, title: "甲", content: "一\n二改了\n三" });
+                },
+            },
+        }
+    );
+    // 先选中第一条（没选中时编辑区是空态，版本历史按钮是禁用的）
+    await act(async () => {
+        (document.querySelectorAll("[data-note-list] [role='button']")[0] as HTMLElement).click();
+    });
+
+    await act(async () => {
+        (document.querySelector("button[data-tool='revisions']") as HTMLElement).click();
+    });
+    const dialog = document.querySelector("[data-version-history='1']");
+    assert.ok(dialog, "点版本历史要开面板（不再是下拉菜单）");
+
+    const items = dialog!.querySelectorAll("[data-version-item]");
+    assert.equal(items.length, 2, "左列列出两条快照");
+    // 默认选中最新的那条（列表按 id DESC 回来，第一条就是最新）
+    assert.ok(
+        items[0].getAttribute("aria-current") === "true",
+        "默认选中最新的那条"
+    );
+
+    // diff：当前是「一/二/三」，选中的是「一/二改了/三」→ 1 删 1 加
+    await act(async () => { await new Promise(r => setTimeout(r, 0)); });
+    const summary = dialog!.querySelector("[data-diff-summary='1']");
+    assert.ok(summary, "右栏顶部要有 +/- 汇总");
+    assert.match(summary!.textContent ?? "", /\+1/, "要有 +1");
+    assert.match(summary!.textContent ?? "", /-1/, "要有 -1");
+    assert.ok(
+        dialog!.querySelector("[data-diff-line='add']"),
+        "diff 里要有标成新增的行"
+    );
+    assert.ok(
+        dialog!.querySelector("[data-diff-line='remove']"),
+        "diff 里要有标成删掉的行"
+    );
+
+    // 恢复：走面板底部的按钮，不是列表项
+    const restore = dialog!.querySelector<HTMLElement>("[data-version-restore='1']");
+    assert.ok(restore, "面板底部要有「恢复此版本」");
+    await act(async () => { restore!.click(); });
+    assert.deepEqual(restored, [11], "恢复的是当前选中的那一版");
+});
+
+// ---------- 搜索：模糊匹配 + 命中高亮（2026-10-09 照 inkstone 的 fuzzy + <mark>）----------
+test("搜索：模糊匹配命中，标题里的命中段打上高亮", async () => {
+    setWide();
+    mountPanel([
+        note({ id: 1, title: "数据库设计", content: "表结构" }),
+        note({ id: 2, title: "设计稿", content: "参考" }),
+        note({ id: 3, title: "完全无关", content: "别的" }),
+    ]);
+    const box = document.querySelector("input[aria-label='搜索笔记']") as HTMLInputElement;
+    assert.ok(box, "要有搜索框");
+    await act(async () => {
+        // React 受控输入要走原生 setter + input 事件，直接改 value 不会被 onChange 收到
+        const setter = Object.getOwnPropertyDescriptor(
+            window.HTMLInputElement.prototype,
+            "value"
+        )!.set!;
+        setter.call(box, "设计");
+        box.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    const rows = document.querySelectorAll("[data-note-list] [data-note-id]");
+    assert.equal(rows.length, 2, "只留下命中的两条（「完全无关」被筛掉）");
+    const marked = document.querySelectorAll("[data-note-list] mark[data-hit='1']");
+    assert.ok(marked.length >= 1, "标题里的命中段要有 <mark> 高亮");
+    assert.match(marked[0].textContent ?? "", /设计/, "高亮的正是命中的字");
+});
+
+// ---------- 图片灯箱（2026-10-09 照 inkstone 的 Lightbox）----------
+// 预览层的图片是 markdown-it 异步渲染的产物，jsdom 里拉真图会拖慢整套用例；
+// 这里用**源码守卫**钉住两个必要条件：点图片会开灯箱、灯箱能关。
+test("图片灯箱：点预览里的图片会开，Esc / 点空白 / 关闭键都能关", () => {
+    const src = readFileSync(join(findProjectDir(), "src", "components", "NotesPage.tsx"), "utf-8");
+    const body = stripComments(src);
+    assert.ok(/setLightbox\(\{/.test(body), "点预览里的图片要打开灯箱");
+    assert.ok(/closest\("img"\)/.test(body), "要用事件委托认出点到的是图片");
+    assert.ok(/data-lightbox='1'/.test(body), "灯箱容器要有可定位的标记");
+    assert.ok(/data-lightbox-img='1'/.test(body), "灯箱里要渲染那张图");
+    assert.ok(/data-lightbox-close='1'/.test(body), "灯箱要有关闭键");
+    // Esc 关闭：灯箱不是 MUI Dialog，必须自己听 keydown
+    // （别写「keydown … setLightbox(null)」这种顺序断言 —— 代码里监听器
+    //  注册在 setLightbox(null) **之后**，顺序反了会假红）
+    assert.ok(/addEventListener\("keydown"/.test(body), "灯箱要自己挂 keydown 监听");
+    assert.ok(/e\.key === "Escape"/.test(body), "按 Esc 要关闭灯箱");
+});
+
+// ---------- 多选批量条（2026-10-09，inkstone 的批量操作条）----------
+
+test("多选：开多选才有勾选框与批量条，勾两条能一次归档", async () => {
+    setWide();
+    const archived: number[] = [];
+    mountPanel(
+        [
+            note({ id: 1, title: "甲", content: "a" }),
+            note({ id: 2, title: "乙", content: "b" }),
+        ],
+        {
+            onToggleArchive: async (target: Note) => {
+                archived.push(target.id!);
+            },
+        }
+    );
+    // 平时不该有勾选框：128px 的窄列表里常驻一列会把标题挤没
+    assert.ok(
+        document.querySelector("[data-bulk-bar='1']") === null,
+        "没开多选时不该有批量条"
+    );
+    assert.ok(
+        document.querySelector("input[data-note-check]") === null,
+        "没开多选时不该有勾选框"
+    );
+
+    await act(async () =>
+        (document.querySelector("button[data-tool='multiselect']") as HTMLElement).click()
+    );
+    assert.ok(document.querySelector("[data-bulk-bar='1']"), "开了多选要有批量条");
+    const boxes = document.querySelectorAll<HTMLInputElement>("input[data-note-check]");
+    assert.equal(boxes.length, 2, "每一行都要有勾选框");
+
+    await act(async () => {
+        boxes[0].click();
+        boxes[1].click();
+    });
+    assert.match(
+        document.querySelector("[data-bulk-bar='1']")!.textContent ?? "",
+        /已选 2 条/,
+        "批量条上要显示选了几条"
+    );
+
+    const archiveBtn = document.querySelector("[data-bulk-action='archive']") as HTMLButtonElement;
+    assert.equal(archiveBtn.disabled, false, "勾了之后归档按钮要能用");
+    await act(async () => {
+        archiveBtn.click();
+        await new Promise(r => setTimeout(r, 30));
+    });
+    assert.deepEqual(archived.sort(), [1, 2], "批量归档要对勾上的每一条都生效");
+});
+
+test("多选：批量删除要先确认，取消就一条都不删", async () => {
+    setWide();
+    const deleted: number[] = [];
+    mountPanel(
+        [
+            note({ id: 1, title: "甲", content: "a" }),
+            note({ id: 2, title: "乙", content: "b" }),
+        ],
+        {
+            onDelete: async (target: Note) => {
+                deleted.push(target.id!);
+            },
+        }
+    );
+    await act(async () =>
+        (document.querySelector("button[data-tool='multiselect']") as HTMLElement).click()
+    );
+    const boxes = document.querySelectorAll<HTMLInputElement>("input[data-note-check]");
+    await act(async () => {
+        boxes[0].click();
+    });
+    await act(async () =>
+        (document.querySelector("[data-bulk-action='delete']") as HTMLElement).click()
+    );
+    // 影响面要写出来：几条？能不能撤？
+    assert.match(document.body.textContent ?? "", /删除选中的 1 条笔记/, "确认框要写出条数");
+    assert.match(document.body.textContent ?? "", /回收站/, "要说明还能还原");
+    const cancel = [...document.querySelectorAll("button")].find(
+        b => b.textContent === "取消"
+    ) as HTMLElement | undefined;
+    assert.ok(cancel, "确认框要有取消");
+    await act(async () => {
+        cancel!.click();
+    });
+    assert.equal(deleted.length, 0, "点了取消一条都不能删");
+
+    // 确认了才真的删
+    await act(async () =>
+        (document.querySelector("[data-bulk-action='delete']") as HTMLElement).click()
+    );
+    const ok = document.querySelector("[data-confirm-action='confirm']") as HTMLElement | null;
+    assert.ok(ok, "确认框里要有确认按钮");
+    await act(async () => {
+        await ok!.click();
+        await new Promise(r => setTimeout(r, 20));
+    });
+    assert.deepEqual(deleted, [1], "确认后才真的删掉勾上的那条");
+});
+
+// ---------- 关系图谱（2026-10-09，轻量版 GraphPanel）----------
+
+test("关系图谱：更多菜单里有入口，打开后画出节点与连线，点节点跳过去", async () => {
+    setWide();
+    mountPanel([
+        note({ id: 1, title: "数据库设计", content: "表结构" }),
+        note({ id: 2, title: "设计稿", content: "参考 [[数据库设计]]" }),
+        note({ id: 3, title: "运维手册", content: "备份 [[数据库设计]]" }),
+    ]);
+    await act(async () => {
+        (document.querySelectorAll('[data-note-list] [role="button"]')[0] as HTMLElement).click();
+    });
+    await openNoteMore();
+    const entry = document.querySelector<HTMLElement>("[data-active-op='graph']");
+    assert.ok(entry, "有双链时「更多」里要有关系图谱");
+    await act(async () => entry!.click());
+
+    const graph = document.querySelector("[data-graph='1']");
+    assert.ok(graph, "图谱面板要打开");
+    const nodes = document.querySelectorAll("[data-graph-node]");
+    const edges = document.querySelectorAll("[data-graph-edge]");
+    assert.equal(nodes.length, 3, "本文 + 两条引用它的，共三个节点");
+    assert.equal(edges.length, 2, "两条引用各是一条连线");
+    assert.ok(
+        (graph!.textContent ?? "").includes("数据库设计"),
+        "节点上要写出标题（不然就是一堆认不出来的圆点）"
+    );
+
+    // 点节点 → 跳过去（图谱自己关掉）
+    const target = [...document.querySelectorAll<HTMLElement>("[data-graph-node]")].find(
+        n => n.getAttribute("data-graph-node") === "2"
+    );
+    assert.ok(target, "要能按 id 找到《设计稿》那个节点");
+    await act(async () => {
+        target!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        // ⚠️ MUI Dialog 关掉后 children 还要等退场动画（默认 ~195ms）才真从 DOM 上摘掉，
+        // 只等 30ms 会读到「还在」而假红。
+        await new Promise(r => setTimeout(r, 320));
+    });
+    assert.ok(
+        document.querySelector("[data-graph='1']") === null,
+        "点了节点图谱要关掉并跳过去（还开着说明 onClick 没接到）"
+    );
+});
+
+test("设置→备份：网盘地址速查给得出服务商的 WebDAV 地址，能一键复制", async () => {
+    setWide();
+    const log: { calls: string[]; saved: Record<string, unknown>[] } = { calls: [], saved: [] };
+    mountPanel([note({ id: 1, title: "甲", content: "a" })], {
+        backupApi: makeBackupApi(log),
+    });
+    await act(async () =>
+        (document.querySelector("button[data-tool='settings']") as HTMLElement).click()
+    );
+    await act(async () =>
+        (document.querySelector("[data-settings-tab='backup']") as HTMLElement).click()
+    );
+    assert.ok(document.querySelector("[data-backup-preset='1']"), "备份页要有网盘地址速查");
+    // 默认第一个（坚果云）的地址要显示出来
+    // ⚠️ 别在这里写正则：bash heredoc 会吃掉反斜杠（/^https:\/\// 会变成 //…）。
+    // 用 startsWith 判同样的东西，还更直白。
+    assert.ok(
+        (document.querySelector("[data-backup-preset-url]")!.textContent ?? "").startsWith(
+            "https://"
+        ),
+        "选了服务商就要把它的 WebDAV 地址显示出来"
+    );
+    assert.ok(
+        document.querySelector("[data-backup-action='copy-preset-url']"),
+        "要能一键复制地址（地址只在导航页填，这里只能给出来）"
+    );
 });

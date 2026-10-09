@@ -14,11 +14,12 @@
 //
 // 换句话说：这里的 props 只有「关掉自己」和「通知」两件事，
 // 凡是记事本自己的状态，都由本组件内部持有。
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import NotesPage from "./NotesPage";
 import type { NoteShareApi } from "./NoteShareDialog";
 import { useNotes, type NotesApiLike } from "../hooks/useNotes";
-import type { NotesBackupSavePatch, NotesBackupState } from "../API/http";
+import type { Note, NotesBackupSavePatch, NotesBackupState } from "../API/http";
+import ConfirmDialog from "./ConfirmDialog";
 
 export interface NotesOverlayProps {
     /**
@@ -48,8 +49,41 @@ export default function NotesOverlay({
     onCountChange,
     accountName,
 }: NotesOverlayProps) {
+    /**
+     * 乐观并发冲突的弹框（2026-10-09）。
+     *
+     * 多端 / 多标签页同时编辑同一条笔记时，后保存的那个会撞上 409。
+     * 这里不替用户做决定：弹出来让他选「用我的覆盖」还是「看别人的版本」。
+     *
+     * ⚠️ 用 ref 持有处理函数：useNotes 在下面第一行就要它，而完整的处理逻辑
+     * 又要用到 useNotes 返回的 reload —— 直接写函数会撞上「先声明后使用」。
+     * ref 让两边解耦（组件每次渲染都把最新的闭包写进去）。
+     */
+    const [conflict, setConflict] = useState<{
+        title: string;
+        retry: () => Promise<void>;
+    } | null>(null);
+    /**
+     * ⚠️ 传给 useNotes 的必须是**稳定引用**的包装函数：hook 把 onNoteConflict 放进
+     * 了 updateNote 的依赖数组，直接把 ref.current 传进去的话，它拿到的是
+     * 首次渲染那个空的初始值，之后我们往 ref 里写什么都跟它无关 ——
+     * 冲突就变成「静默什么都不发生」（弹框永远不出来）。包装一层转发即可。
+     */
+    const conflictResolver = useRef<(
+        current: Note,
+        retry: () => Promise<void>
+    ) => Promise<void>>(async () => {});
+    const handleNoteConflict = useCallback(
+        async (current: Note, retry: () => Promise<void>) => {
+            await conflictResolver.current(current, retry);
+        },
+        []
+    );
+    const reloadRef = useRef<() => Promise<void>>(async () => {});
+
     const {
         notes,
+        reload,
         trash,
         loadTrash,
         restoreTrashed,
@@ -60,6 +94,7 @@ export default function NotesOverlay({
         updateNote,
         deleteNote,
         togglePin,
+        toggleStar,
         folders,
         tags,
         noteTags,
@@ -75,7 +110,30 @@ export default function NotesOverlay({
         assignTags,
         listRevisions,
         restoreRevision,
-    } = useNotes({ api, onError, onNotify });
+        getRevision,
+        searchRemote,
+    } = useNotes({ api, onError, onNotify, onNoteConflict: handleNoteConflict });
+
+    // 每次渲染把最新闭包写进 ref：冲突处理要用 reload / onNotify 的最新值
+    reloadRef.current = reload;
+    conflictResolver.current = async (current, retry) => {
+        setConflict({ title: current.title || "无标题", retry });
+    };
+
+    /** 冲突弹框的两个出口：覆盖 / 重新加载 */
+    const resolveConflict = async (overwrite: boolean) => {
+        const pending = conflict;
+        setConflict(null);
+        if (!pending) return;
+        if (overwrite) {
+            await pending.retry();
+            onNotify("已用你的版本覆盖", "success");
+        } else {
+            // 放弃本地改动，重拉一份 —— 用户能马上看到「别人改成了什么」
+            await reloadRef.current();
+            onNotify("已加载最新的版本（你这次的改动没有保存）", "info");
+        }
+    };
 
     /**
      * 打包给左栏第一列的那一套。
@@ -102,6 +160,8 @@ export default function NotesOverlay({
             onAssignTags: assignTags,
             onListRevisions: listRevisions,
             onRestoreRevision: restoreRevision,
+            onGetRevision: getRevision,
+            onSearchRemote: searchRemote,
         }),
         [
             folders,
@@ -119,6 +179,8 @@ export default function NotesOverlay({
             assignTags,
             listRevisions,
             restoreRevision,
+            getRevision,
+            searchRemote,
         ]
     );
 
@@ -205,11 +267,38 @@ export default function NotesOverlay({
                 const r = await api.notesBackupUpload!();
                 return { success: r.success, message: r.message ?? "" };
             },
+            // 备份闭环的另一半：把网盘上那份备份**取回来**恢复（2026-10-09）。
+            // 同样是老部署没有这两个端点时自动不出现，而不是点了才报错。
+            listRemote: async () => {
+                if (typeof api.notesBackupListRemote !== "function") {
+                    return { success: false, files: [], message: "当前部署不支持从网盘恢复" };
+                }
+                const r = await api.notesBackupListRemote();
+                return {
+                    success: r.success,
+                    files: r.data?.files ?? [],
+                    message: r.message ?? "",
+                };
+            },
+            fetch: async (filename: string, password: string) => {
+                if (typeof api.notesBackupDownload !== "function") {
+                    return { success: false, message: "当前部署不支持从网盘恢复" };
+                }
+                const r = await api.notesBackupDownload(filename, password);
+                return {
+                    success: r.success,
+                    message: r.message ?? "",
+                    payload: r.data?.payload,
+                    // 加密备份缺口令时后端回 encrypted / badPassword，前端据此弹口令框
+                    code: r.code,
+                };
+            },
         };
         // 依赖只有 api：getState/save/test/run 闭包里用到的都是它自己的方法
     }, [api]);
 
     return (
+        <>
         <NotesPage
             shareApi={api.getNoteShare && api.createNoteShare && api.revokeNoteShare ? api as NotesApiLike & NoteShareApi : undefined}
             // ⚠️ 与 shareApi 同一个套路：只在这个 api 实例**真的有** uploadAttachment
@@ -249,8 +338,25 @@ export default function NotesOverlay({
             onPurgeTrashed={purgeTrashed}
             onEmptyTrash={emptyTrash}
             onToggleArchive={toggleArchive}
+            onToggleStar={toggleStar}
             onNotify={onNotify}
             folderTags={folderTags}
         />
+
+        {/* 乐观并发冲突：必须挂在根层（Modal 塞进条件块会被一起卸掉） */}
+        <ConfirmDialog
+            open={conflict !== null}
+            title='这条笔记在别处被改过了'
+            confirmText='用我的覆盖'
+            cancelText='看别人的版本'
+            description={
+                conflict
+                    ? `「${conflict.title}」在另一个设备或标签页里刚被保存过。要用你现在的改动覆盖它吗？（选「看别人的版本」会丢弃你这次的改动）`
+                    : ""
+            }
+            onConfirm={() => void resolveConflict(true)}
+            onClose={() => void resolveConflict(false)}
+        />
+        </>
     );
 }

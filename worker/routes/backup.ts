@@ -373,5 +373,60 @@ export async function handleBackupRoutes(ctx: RouteCtx): Promise<Response | null
         return Response.json(result);
     }
 
+    // ---- 从网盘恢复（2026-10-09）：inkstone 没有这条路（它只能从本地文件夹恢复），
+    // 我们零件齐全（webdavList + 既有解密链 + notes/import），把备份从「单向存档」
+    // 补成闭环。两条路由都复用上面 webdav/ 前缀的出站限速闸门。
+    if (path === "webdav/notes/list" && method === "POST") {
+        const config = await resolveNotesWebDavConfig(api);
+        if (!config.url) {
+            return Response.json(
+                { success: false, message: NOTES_BACKUP_NOT_CONFIGURED_MESSAGE },
+                { status: 400 }
+            );
+        }
+        const result = await webdavList(config);
+        if (!result.success || !result.data) {
+            return Response.json({ success: false, message: result.message || "获取备份列表失败" });
+        }
+        // 只给记事本那批：同一个目录里可能还混着导航备份（目录是可配的，
+        // 用户把两者指向同一个目录时不能把导航备份也当成笔记备份端上来）
+        const files = result.data
+            .filter(file => /^navihive-notes-backup-/i.test(file.name))
+            .map(file => ({ name: file.name, size: file.size, lastModified: file.lastModified }));
+        return Response.json({ success: true, files, message: `共 ${files.length} 份` });
+    }
+    if (path === "webdav/notes/download" && method === "POST") {
+        const body = (await safeJson(request)) as { filename?: string; password?: string };
+        const filename = (body.filename || "").trim();
+        if (!filename) {
+            return Response.json({ success: false, message: "未指定要恢复的备份文件" }, { status: 400 });
+        }
+        const config = await resolveNotesWebDavConfig(api);
+        if (!config.url) {
+            return Response.json(
+                { success: false, message: NOTES_BACKUP_NOT_CONFIGURED_MESSAGE },
+                { status: 400 }
+            );
+        }
+        // 口优先级：本次输入 > 记事本备份口令 > 导航备份口令（与上传侧同源）
+        const password = body.password || config.backupPassword || "";
+        const result = await webdavDownload(config, filename, password);
+        if (!result.success || !result.data) {
+            return Response.json(
+                { success: false, code: result.code, message: result.message || "下载备份失败" }
+            );
+        }
+        // ⚠️ 形状要校验：网盘上的文件不受我们控制，万一用户指了一份导航备份，
+        // 直接喂给 notes/import 会写进一堆乱七八糟的东西。
+        const payload = result.data as unknown as { kind?: string; notes?: unknown };
+        if (!payload || !Array.isArray(payload.notes)) {
+            return Response.json({
+                success: false,
+                message: "这份文件里没有笔记数据（请确认选的是记事本备份）",
+            });
+        }
+        return Response.json({ success: true, payload, message: filename });
+    }
+
     return null;
 }

@@ -6,8 +6,18 @@
 // 记事本是「想到就写」的场景，保存要是有 200ms 的延迟，手感会立刻变差；
 // 而失败时回滚到旧值 + 提示，代价远小于「每敲一个字都等一下」。
 import { useCallback, useEffect, useState } from "react";
-import type { Note, NoteAttachment, NoteFolder, NoteRevision, NoteTag, WebDavResult } from "../API/http";
+import type {
+    Note,
+    NoteAttachment,
+    NoteFolder,
+    NoteRevision,
+    NoteSearchResult,
+    NoteTag,
+    NotesImportPayload,
+    WebDavResult,
+} from "../API/http";
 import { reportError } from "../utils/errorReporter";
+import { isNoteConflict } from "../utils/noteConflict";
 import type { NotifySeverity } from "./useNotify";
 
 /** 文件夹排序：先按 order_num，再按名字（和后端 listFolders 的 ORDER BY 一致） */
@@ -60,6 +70,8 @@ export type NotesApiLike = {
     listNoteRevisions?(noteId: number): Promise<NoteRevision[]>;
     getNoteRevision?(noteId: number, revisionId: number): Promise<NoteRevision | null>;
     restoreNoteRevision?(noteId: number, revisionId: number): Promise<Note | null>;
+    /** 服务端全文检索（2026-10-09）。可选：老部署没有 notes/search 时前端退回本地搜 */
+    notesSearch?(query: string, limit?: number): Promise<NoteSearchResult>;
 
     // ---------- 图片附件（2026-07）----------
     // 同样**可选**：后端没配存储（R2 / KV 都没绑）时这个方法不存在，
@@ -77,6 +89,15 @@ export type NotesApiLike = {
     // 同样**可选**：老部署没有 notesBackup 端点 / 配置读写时，设置→备份页自动降级。
     notesBackupTest?(): Promise<WebDavResult>;
     notesBackupUpload?(): Promise<WebDavResult<{ filename: string; size: number }>>;
+    /** 列出网盘备份目录里的笔记备份文件（2026-10-09，备份闭环的「取回」一半） */
+    notesBackupListRemote?(): Promise<
+        WebDavResult<{ files: { name: string; size: number; lastModified: string }[] }>
+    >;
+    /** 下载一份网盘备份并解密（加密备份要口令） */
+    notesBackupDownload?(
+        filename: string,
+        password?: string
+    ): Promise<WebDavResult<{ payload: NotesImportPayload }>>;
     /** 备份页的配置读写（notesBackup.* 是账号私有配置，与导航页 webdav.* 同一机制） */
     getConfig?(key: string): Promise<string | null>;
     setConfig?(key: string, value: string): Promise<boolean>;
@@ -86,9 +107,17 @@ type UseNotesParams = {
     api: NotesApiLike;
     onError: (message: string) => void;
     onNotify: (message: string, level?: NotifySeverity) => void;
+    /**
+     * 乐观并发冲突（2026-10-09）：保存时服务端回 409（这条笔记在别处被改过）。
+     * 上层据此弹框让用户选「用我的覆盖 / 重新加载」；不传就退化成普通的保存失败提示。
+     */
+    onNoteConflict?: (
+        current: Note,
+        retry: () => Promise<void>
+    ) => Promise<void>;
 };
 
-export function useNotes({ api, onError, onNotify }: UseNotesParams) {
+export function useNotes({ api, onError, onNotify, onNoteConflict }: UseNotesParams) {
     const [notes, setNotes] = useState<Note[]>([]);
     const [loaded, setLoaded] = useState(false);
     /** 阶段三：回收站里的笔记（懒加载，进「回收站」视图时才拉） */
@@ -141,12 +170,17 @@ export function useNotes({ api, onError, onNotify }: UseNotesParams) {
 
     /** 乐观更新：先把界面上改掉，失败再回滚到旧值并提示 */
     const updateNote = useCallback(
-        async (id: number, patch: Partial<Note>) => {
+        async (id: number, patch: Partial<Note>, opts: { force?: boolean } = {}) => {
             const before = notes.find(n => n.id === id);
             if (!before) return;
             setNotes(prev => prev.map(n => (n.id === id ? { ...n, ...patch } : n)));
             try {
-                const saved = await api.updateNote(id, patch);
+                // 乐观并发：带上「我改的是哪一版」（force = 用户已确认要覆盖，不校验）
+                const withRev =
+                    !opts.force && typeof before.rev === "number"
+                        ? { ...patch, rev: before.rev }
+                        : patch;
+                const saved = await api.updateNote(id, withRev);
                 if (saved) {
                     setNotes(prev => prev.map(n => (n.id === id ? saved : n)));
                     if (patch.content !== undefined && api.listTags && api.listNoteTags) {
@@ -163,18 +197,36 @@ export function useNotes({ api, onError, onNotify }: UseNotesParams) {
                     throw new Error("笔记不存在或保存失败");
                 }
             } catch (error) {
+                // 乐观并发冲突：不是「保存失败」，是「要先问用户一句」。
+                // 交给上层弹框（覆盖 / 重新加载）；上层没接就退化成老的错误提示。
+                if (isNoteConflict(error) && onNoteConflict) {
+                    setNotes(prev => prev.map(n => (n.id === id ? before : n)));
+                    await onNoteConflict(
+                        error.note ?? before,
+                        () => updateNote(id, patch, { force: true })
+                    );
+                    return;
+                }
                 reportError(error, { source: "note-update" });
                 setNotes(prev => prev.map(n => (n.id === id ? before : n)));
                 onError("保存笔记失败: " + (error instanceof Error ? error.message : "未知错误"));
             }
         },
-        [notes, api, onError]
+        [notes, api, onError, onNoteConflict]
     );
 
     /** 置顶：走同一个 updateNote（服务端白名单里有 pinned） */
     const togglePin = useCallback(
         async (note: Note) => {
             await updateNote(note.id!, { pinned: !note.pinned });
+        },
+        [updateNote]
+    );
+
+    /** 收藏（与置顶分离，2026-10-09）：置顶管排序、收藏管筛选 */
+    const toggleStar = useCallback(
+        async (note: Note) => {
+            await updateNote(note.id!, { starred: !note.starred });
         },
         [updateNote]
     );
@@ -615,6 +667,43 @@ export function useNotes({ api, onError, onNotify }: UseNotesParams) {
         [api, onError]
     );
 
+    /**
+     * 拉某一个历史版本的**完整正文**（列表接口为了省流量只给空串）。
+     * 版本历史面板要拿它跟当前正文做行级 diff，所以必须能单独取一份。
+     */
+    const getRevision = useCallback(
+        async (noteId: number, revisionId: number): Promise<NoteRevision | null> => {
+            if (typeof api.getNoteRevision !== "function") return null;
+            try {
+                return await api.getNoteRevision(noteId, revisionId);
+            } catch (error) {
+                reportError(error, { source: "note-revision-get" });
+                return null;
+            }
+        },
+        [api]
+    );
+
+    /**
+     * 服务端全文检索（2026-10-09）。
+     *
+     * 失败一律回 `null` 而不是抛：老部署没有 notes/search 端点、或者 FTS 表
+     * 建不出来时，前端退回本地模糊搜索（它本来就持有全文，结果一致）。
+     */
+    const searchRemote = useCallback(
+        async (query: string, limit = 50): Promise<NoteSearchResult | null> => {
+            if (typeof api.notesSearch !== "function") return null;
+            try {
+                const res = await api.notesSearch(query, limit);
+                return res && Array.isArray(res.results) ? res : null;
+            } catch (error) {
+                reportError(error, { source: "notes-search" });
+                return null;
+            }
+        },
+        [api]
+    );
+
     return {
         notes,
         loaded,
@@ -623,6 +712,7 @@ export function useNotes({ api, onError, onNotify }: UseNotesParams) {
         updateNote,
         deleteNote,
         togglePin,
+        toggleStar,
         saveOrder,
         trash,
         loadTrash,
@@ -647,5 +737,8 @@ export function useNotes({ api, onError, onNotify }: UseNotesParams) {
         assignTags,
         listRevisions,
         restoreRevision,
+        getRevision,
+        // 服务端全文检索（本地 fuzzy 是它的兜底，不是替代）
+        searchRemote,
     };
 }

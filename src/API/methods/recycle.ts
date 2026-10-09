@@ -155,8 +155,10 @@ export const recycleImpl: RecycleApi = {
         const uuid = (note.uuid as string) || newUuid();
         const inserted = await this.db
             .prepare(
-                `INSERT INTO notes (user_id, uuid, title, content, pinned, order_num, site_id, folder_id, archived)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                // ⚠️ 收藏（starred）也要带回来：删到回收站时存的是整行（SELECT *），
+                // 但还原是**按白名单**逐列写的，漏一列就是「还原后收藏没了」。
+                `INSERT INTO notes (user_id, uuid, title, content, pinned, starred, order_num, site_id, folder_id, archived)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                  RETURNING id`
             )
             .bind(
@@ -165,6 +167,7 @@ export const recycleImpl: RecycleApi = {
                 (note.title as string) ?? "",
                 (note.content as string) ?? "",
                 note.pinned ? 1 : 0,
+                note.starred ? 1 : 0,
                 (note.order_num as number) ?? 0,
                 (note.site_id as number | null) ?? null,
                 (note.folder_id as number | null) ?? null,
@@ -172,6 +175,16 @@ export const recycleImpl: RecycleApi = {
             )
             .first<{ id: number }>();
         const newId = inserted?.id;
+        // 还原出来的笔记要重新进全文索引（删除时已经 drop 过），
+        // 否则「删了再还原」的笔记从此搜不到 —— 界面上有、搜索里没有。
+        if (newId) {
+            // 同上：await，别让索引写入在响应后被掐掉
+            await this.syncNoteFts(
+                newId,
+                (note.title as string) ?? "",
+                (note.content as string) ?? ""
+            );
+        }
         // 标签关联写回新 id。⚠️ 别把 tagIds 直接信到底：删笔记到还原之间，
         // 用户可能已经把那个标签删了 —— 那几条关联照写回去就是新的悬空行。
         const wanted = (Array.isArray(tagIds) ? tagIds : []).filter(

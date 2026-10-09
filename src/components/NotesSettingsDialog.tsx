@@ -32,6 +32,7 @@ import LinkOffIcon from "@mui/icons-material/LinkOff";
 import LinkIcon from "@mui/icons-material/Link";
 import StorageIcon from "@mui/icons-material/Storage";
 import CloudUploadIcon from "@mui/icons-material/CloudUpload";
+import CloudDownloadIcon from "@mui/icons-material/CloudDownload";
 import FileDownloadIcon from "@mui/icons-material/FileDownload";
 import FileUploadIcon from "@mui/icons-material/FileUpload";
 import DeleteSweepIcon from "@mui/icons-material/DeleteSweep";
@@ -47,6 +48,7 @@ import type {
     NotesImportPayload,
     NoteShareListItem,
     NoteStats,
+    WebDavErrorCode,
 } from "../API/types";
 
 type SettingsTab = "appearance" | "editor" | "data" | "shares" | "backup";
@@ -63,6 +65,17 @@ export interface NotesDataTab {
         trashed: number | null;
     };
     onExportAll: () => void;
+    /**
+     * 导出 zip（含图片附件，2026-10-09）。
+     * 可选：后端没配附件存储时没有附件可打包，这一行就不出现。
+     */
+    onExportZip?: () => Promise<void>;
+    /**
+     * 导入一个文件：`.json`（老格式）或 `.zip`（含附件，导出 zip 打出来的那种）。
+     * 与 onImportNotes 的区别：这个接的是**原始文件**，zip 要解包、附件要回传，
+     * 不是前端能直接 JSON.parse 的。
+     */
+    onImportFile?: (file: File) => Promise<NoteImportStats>;
     onEmptyTrash: () => Promise<void>;
     /** 可选：老部署的 api 没有附件方法，相应能力自动隐藏 */
     onLoadAttachments?: () => Promise<
@@ -95,6 +108,21 @@ export interface NotesDataTab {
     onNotesBackupSave?: (patch: NotesBackupSavePatch) => Promise<void>;
     onNotesBackupTest?: () => Promise<{ success: boolean; message: string }>;
     onNotesBackupRun?: () => Promise<{ success: boolean; message: string }>;
+    /**
+     * 备份闭环的另一半：从网盘**取回**备份并恢复（2026-10-09）。
+     * 两个都可选 —— 老部署没有这两个端点时「从网盘恢复」这一节整段不出现。
+     */
+    onNotesBackupListRemote?: () => Promise<{
+        success: boolean;
+        files: { name: string; size: number; lastModified: string }[];
+        message: string;
+    }>;
+    onNotesBackupFetch?: (filename: string, password: string) => Promise<{
+        success: boolean;
+        message: string;
+        payload?: NotesImportPayload;
+        code?: WebDavErrorCode;
+    }>;
 }
 
 /** 一行设置：左标签（+可选说明）、右控件 —— inkstone 的设置行样式 */
@@ -129,6 +157,53 @@ function SettingRow({
         </Box>
     );
 }
+
+/**
+ * WebDAV 服务商预设（2026-10-09）。
+ *
+ * 各家网盘的 WebDAV 地址长得都不一样，而「地址填错了」在界面上的表现
+ * 只是「测试连接失败」四个字 —— 用户不知道该怪地址还是怪密码。
+ * 这里给几个常见的抄一份，选了就能复制走。
+ *
+ * ⚠️ 只列**确认过**的公开地址；拿不准的不写（写错比不写更害人 ——
+ * 用户照着填一遍，失败原因就多了一个）。模板里的 `<…>` 要用户自己换。
+ */
+const WEBDAV_PRESETS: {
+    id: string;
+    name: string;
+    url: string;
+    signup: string;
+    hint: string;
+}[] = [
+    {
+        id: "jianguoyun",
+        name: "坚果云",
+        url: "https://dav.jianguoyun.com/dav/",
+        signup: "https://www.jianguoyun.com/",
+        hint: "用户名填注册邮箱；密码要用「账户信息 → 安全选项」里生成的**应用密码**，不是登录密码。",
+    },
+    {
+        id: "nextcloud",
+        name: "Nextcloud（自建）",
+        url: "https://你的域名/remote.php/dav/files/你的用户名/",
+        signup: "https://nextcloud.com/",
+        hint: "把「你的域名 / 你的用户名」换成实际的；密码同样用「安全设置」里生成的应用密码。",
+    },
+    {
+        id: "koofr",
+        name: "Koofr",
+        url: "https://app.koofr.net/dav/Koofr",
+        signup: "https://app.koofr.net/signup",
+        hint: "用户名是注册邮箱，密码在「设置 → 密码」里单独生成。",
+    },
+    {
+        id: "own",
+        name: "其它 / 自建",
+        url: "",
+        signup: "",
+        hint: "问你的服务商要 WebDAV 地址，一般形如 https://域名/dav/。",
+    },
+];
 
 /** 附件字节数 → 人类可读（数据页「附件占用」用） */
 /** 时间戳 →「2026-10-08 14:30」。兼容数字与字符串（D1 里两种都可能出现） */
@@ -243,16 +318,22 @@ export default function NotesSettingsDialog({
         if (!file || !dataRef.current?.onImportNotes) return;
         setImportBusy(true);
         try {
-            let parsed: NotesImportPayload;
-            try {
-                parsed = JSON.parse(await file.text()) as NotesImportPayload;
-            } catch {
-                throw new Error("文件不是有效的 JSON");
+            let r: NoteImportStats;
+            // zip（含附件）走整条链路：解包 → 附件回传 → id 重映射 → 导入
+            if (dataRef.current.onImportFile && /\.zip$/i.test(file.name)) {
+                r = await dataRef.current.onImportFile(file);
+            } else {
+                let parsed: NotesImportPayload;
+                try {
+                    parsed = JSON.parse(await file.text()) as NotesImportPayload;
+                } catch {
+                    throw new Error("文件不是有效的 JSON");
+                }
+                if (!parsed || !Array.isArray(parsed.notes)) {
+                    throw new Error("文件里没有笔记数据（请选择本工具导出的笔记 JSON）");
+                }
+                r = await dataRef.current.onImportNotes(parsed);
             }
-            if (!parsed || !Array.isArray(parsed.notes)) {
-                throw new Error("文件里没有笔记数据（请选择本工具导出的笔记 JSON）");
-            }
-            const r = await dataRef.current.onImportNotes(parsed);
             onNotify?.(
                 `导入完成：新增 ${r.created} 条，更新 ${r.updated} 条，保留本地 ${r.skipped} 条`,
                 "success"
@@ -364,6 +445,74 @@ export default function NotesSettingsDialog({
     /** 目录 / 口令输入框草稿：失焦才写回（不逐键打配置接口） */
     const [pathDraft, setPathDraft] = useState("");
     const [pwdDraft, setPwdDraft] = useState("");
+    // ---- 从网盘恢复（2026-10-09，备份闭环的另一半）----
+    // 网盘上现在有哪些备份文件；null = 还没列过（不自动列，免得每次进设置页都打网盘）
+    const [remoteFiles, setRemoteFiles] = useState<
+        { name: string; size: number; lastModified: string }[] | null
+    >(null);
+    const [remoteError, setRemoteError] = useState<string | null>(null);
+    /** 待恢复的那份：弹口令框用 */
+    /** 网盘服务商预设：选了就把它的 WebDAV 地址显示出来（可一键复制） */
+    const [presetId, setPresetId] = useState(WEBDAV_PRESETS[0].id);
+    const [restoreTarget, setRestoreTarget] = useState<string | null>(null);
+    const [restorePwd, setRestorePwd] = useState("");
+    const [restoreBusy, setRestoreBusy] = useState(false);
+
+    const listRemoteBackups = async () => {
+        const cur = dataRef.current;
+        if (!cur?.onNotesBackupListRemote || backupBusy || restoreBusy) return;
+        setBackupBusy(true);
+        setRemoteError(null);
+        try {
+            const r = await cur.onNotesBackupListRemote();
+            if (r.success) setRemoteFiles(r.files ?? []);
+            else {
+                setRemoteFiles(null);
+                setRemoteError(r.message || "没能列出网盘备份");
+            }
+        } catch (error) {
+            setRemoteFiles(null);
+            setRemoteError(error instanceof Error ? error.message : "没能列出网盘备份");
+        } finally {
+            setBackupBusy(false);
+        }
+    };
+
+    /**
+     * 真恢复：下载 → 解密 → 交给同一条导入（onImportNotes）。
+     *
+     * ⚠️ 加密备份缺口令时后端回 code==='encrypted'，此时不报错、改成弹口令框；
+     * 口令错了是 'badPassword'，留在框里让用户重填（不清空已输入的文件名）。
+     */
+    const doRestore = async (filename: string, password: string) => {
+        const cur = dataRef.current;
+        if (!cur?.onNotesBackupFetch || !cur.onImportNotes || restoreBusy) return;
+        setRestoreBusy(true);
+        try {
+            const r = await cur.onNotesBackupFetch(filename, password);
+            if (r.code === "encrypted") {
+                setRestoreTarget(filename);
+                setRemoteError(r.message || "这份备份加密了，请输入备份密码");
+                return;
+            }
+            if (!r.success || !r.payload) {
+                setRemoteError(r.message || "取回备份失败");
+                return;
+            }
+            const stats = await cur.onImportNotes(r.payload);
+            setRemoteError(null);
+            setRestoreTarget(null);
+            setRestorePwd("");
+            onNotify?.(
+                `已从网盘恢复：新增 ${stats.created ?? 0} 条、更新 ${stats.updated ?? 0} 条`,
+                "success"
+            );
+        } catch (error) {
+            setRemoteError(error instanceof Error ? error.message : "恢复失败");
+        } finally {
+            setRestoreBusy(false);
+        }
+    };
 
     const reloadBackupState = useCallback(async () => {
         const cur = dataRef.current;
@@ -946,13 +1095,29 @@ export default function NotesSettingsDialog({
                                         下载 JSON
                                     </Button>
                                 </SettingRow>
+                                {data.onExportZip && (
+                                    <SettingRow
+                                        label='导出全部（ZIP，含图片）'
+                                        description='笔记、文件夹、标签与图片附件打包成一份 ZIP —— 导出去的图能原样导回来（JSON 那份只有正文，图片会丢）。'
+                                    >
+                                        <Button
+                                            size='small'
+                                            startIcon={<FileDownloadIcon fontSize='small' />}
+                                            data-data-action='export-zip'
+                                            disabled={importBusy}
+                                            onClick={() => void data.onExportZip?.()}
+                                        >
+                                            下载 ZIP
+                                        </Button>
+                                    </SettingRow>
+                                )}
 
                                 {/* 导入：读回上面导出的那份 JSON，按 uuid 合并（文件较新才覆盖）。
                                     与导出同一条链路，导出的文件保证导得回来。 */}
                                 {data.onImportNotes && (
                                     <SettingRow
-                                        label='导入笔记（JSON）'
-                                        description='选择本工具导出的 JSON：同一条笔记（按内部标识识别）取较新的那份，本地较新的不会被覆盖。'
+                                        label='导入笔记（JSON / ZIP）'
+                                        description='选择本工具导出的 JSON 或 ZIP：同一条笔记（按内部标识识别）取较新的那份，本地较新的不会被覆盖。ZIP 里的图片会一并回传，正文里的引用自动换成新地址。'
                                     >
                                         <Button
                                             size='small'
@@ -969,8 +1134,8 @@ export default function NotesSettingsDialog({
                                     ref={importFileRef}
                                     type='file'
                                     hidden
-                                    accept='.json,application/json'
-                                    aria-label='选择要导入的笔记 JSON 文件'
+                                    accept='.json,.zip,application/json,application/zip'
+                                    aria-label='选择要导入的笔记文件（JSON 或 ZIP）'
                                     onChange={e => void handleImportFile(e.target.files?.[0])}
                                 />
 
@@ -1195,6 +1360,119 @@ export default function NotesSettingsDialog({
                                     )}
                                 </Box>
 
+                                {/* 服务商预设（2026-10-09）：网盘地址在导航页「数据备份」里填，
+                                    这里只负责把常见服务商的地址给出来、能复制走 ——
+                                    地址填错的典型症状只是「测试连接失败」，没有这个对照表
+                                    用户根本不知道该怪地址还是怪密码。 */}
+                                <Box
+                                    data-backup-preset='1'
+                                    sx={{
+                                        px: 1.5,
+                                        py: 1.25,
+                                        mb: 2,
+                                        borderRadius: 2,
+                                        border: "1px solid rgba(128,128,128,0.2)",
+                                    }}
+                                >
+                                    <Typography
+                                        variant='caption'
+                                        sx={{
+                                            fontWeight: 600,
+                                            letterSpacing: "0.06em",
+                                            color: "text.disabled",
+                                            display: "block",
+                                            mb: 0.75,
+                                        }}
+                                    >
+                                        网盘地址速查
+                                    </Typography>
+                                    <Select
+                                        size='small'
+                                        fullWidth
+                                        aria-label='网盘服务商'
+                                        data-backup-preset-select='1'
+                                        value={presetId}
+                                        onChange={e => setPresetId(e.target.value)}
+                                    >
+                                        {WEBDAV_PRESETS.map(p => (
+                                            <MenuItem key={p.id} value={p.id}>
+                                                {p.name}
+                                            </MenuItem>
+                                        ))}
+                                    </Select>
+                                    {(() => {
+                                        const preset =
+                                            WEBDAV_PRESETS.find(p => p.id === presetId) ??
+                                            WEBDAV_PRESETS[0];
+                                        return (
+                                            <>
+                                                {preset.url && (
+                                                    <Typography
+                                                        data-backup-preset-url={preset.id}
+                                                        variant='caption'
+                                                        sx={{
+                                                            display: "block",
+                                                            mt: 1,
+                                                            px: 1,
+                                                            py: 0.5,
+                                                            borderRadius: 1,
+                                                            bgcolor: "rgba(128,128,128,0.08)",
+                                                            fontFamily: "monospace",
+                                                            wordBreak: "break-all",
+                                                        }}
+                                                    >
+                                                        {preset.url}
+                                                    </Typography>
+                                                )}
+                                                <Typography
+                                                    variant='caption'
+                                                    color='text.secondary'
+                                                    sx={{ display: "block", mt: 0.5 }}
+                                                >
+                                                    {preset.hint}
+                                                </Typography>
+                                                {preset.url && (
+                                                    <Button
+                                                        size='small'
+                                                        variant='text'
+                                                        data-backup-action='copy-preset-url'
+                                                        onClick={() => {
+                                                            void navigator.clipboard
+                                                                .writeText(preset.url)
+                                                                .then(() =>
+                                                                    onNotify?.(
+                                                                        "网盘地址已复制，去导航页「数据备份」里粘贴",
+                                                                        "success"
+                                                                    )
+                                                                )
+                                                                .catch(() =>
+                                                                    onNotify?.(
+                                                                        "复制失败（浏览器拒绝了剪贴板访问）",
+                                                                        "error"
+                                                                    )
+                                                                );
+                                                        }}
+                                                    >
+                                                        复制地址
+                                                    </Button>
+                                                )}
+                                                {preset.signup && (
+                                                    <Button
+                                                        size='small'
+                                                        variant='text'
+                                                        href={preset.signup}
+                                                        target='_blank'
+                                                        rel='noreferrer'
+                                                        data-backup-preset-signup='1'
+                                                    >
+                                                        去注册
+                                                    </Button>
+                                                )}
+                                            </>
+                                        );
+                                    })()}
+                                </Box>
+
                                 {/* 自动备份（inkstone 的频率 / 保留两个 Select） */}
                                 <Typography
                                     variant='caption'
@@ -1379,6 +1657,209 @@ export default function NotesSettingsDialog({
                                             </Box>
                                         ))}
                                     </Box>
+                                )}
+
+                                {/* 从网盘恢复（2026-10-09）：备份不能只出不进 ——
+                                    列目录 → 选一份 → 需要口令时弹框 → 下载解密 → 走同一条导入。
+                                    老部署没有 list/download 两个端点时这一节整段不出现。 */}
+                                {(data?.onNotesBackupListRemote || data?.onNotesBackupFetch) && (
+                                    <>
+                                        <Typography
+                                            variant='caption'
+                                            sx={{
+                                                fontWeight: 600,
+                                                letterSpacing: "0.06em",
+                                                color: "text.disabled",
+                                                display: "block",
+                                                mt: 2,
+                                                mb: 0.5,
+                                            }}
+                                        >
+                                            从网盘恢复
+                                        </Typography>
+                                        <Box
+                                            data-backup-restore='1'
+                                            sx={{
+                                                px: 1.5,
+                                                py: 1.25,
+                                                borderRadius: 2,
+                                                border: "1px solid rgba(128,128,128,0.2)",
+                                            }}
+                                        >
+                                            <Box
+                                                sx={{
+                                                    display: "flex",
+                                                    alignItems: "center",
+                                                    gap: 1,
+                                                    mb: remoteFiles && remoteFiles.length > 0 ? 1 : 0,
+                                                }}
+                                            >
+                                                <Typography
+                                                    variant='caption'
+                                                    color='text.secondary'
+                                                    sx={{ flex: 1, minWidth: 0 }}
+                                                >
+                                                    按 uuid 合并、较新者胜；恢复不会删掉现有笔记。
+                                                </Typography>
+                                                <Button
+                                                    size='small'
+                                                    variant='outlined'
+                                                    disabled={backupBusy || restoreBusy || !backupState?.webdavUrl}
+                                                    data-backup-action='list-remote'
+                                                    startIcon={
+                                                        backupBusy ? (
+                                                            <CircularProgress size={14} />
+                                                        ) : (
+                                                            <CloudDownloadIcon />
+                                                        )
+                                                    }
+                                                    onClick={() => void listRemoteBackups()}
+                                                >
+                                                    列出备份
+                                                </Button>
+                                            </Box>
+
+                                            {remoteError && (
+                                                <Typography
+                                                    role='alert'
+                                                    data-backup-remote-error='1'
+                                                    variant='caption'
+                                                    sx={{
+                                                        display: "block",
+                                                        mt: 1,
+                                                        px: 1,
+                                                        py: 0.75,
+                                                        borderRadius: 1.5,
+                                                        color: "error.main",
+                                                        bgcolor: "rgba(176,67,58,0.08)",
+                                                    }}
+                                                >
+                                                    {remoteError}
+                                                </Typography>
+                                            )}
+
+                                            {/* 需要口令时就地展开一行输入框（不套第二层 Dialog：
+                                                嵌套弹窗在 jsdom 里焦点/断言都不好做，而且这里只有
+                                                一个输入框，内联更顺手） */}
+                                            {restoreTarget && (
+                                                <Box
+                                                    data-backup-restore-pwd='1'
+                                                    sx={{
+                                                        display: "flex",
+                                                        alignItems: "center",
+                                                        gap: 1,
+                                                        mt: 1,
+                                                        flexWrap: "wrap",
+                                                    }}
+                                                >
+                                                    <TextField
+                                                        label='备份密码'
+                                                        type='password'
+                                                        size='small'
+                                                        autoComplete='off'
+                                                        value={restorePwd}
+                                                        // ⚠️ aria-label 不能也叫「备份密码」——
+                                                        // 上面备份目标里那个口令框已经占了，
+                                                        // 同名会让 querySelector 取错元素
+                                                        slotProps={{ input: { "aria-label": "恢复备份密码" } }}
+                                                        onChange={e => setRestorePwd(e.target.value)}
+                                                        sx={{ flex: 1, minWidth: 160 }}
+                                                    />
+                                                    <Button
+                                                        size='small'
+                                                        variant='contained'
+                                                        disabled={restoreBusy}
+                                                        data-backup-action='restore-confirm'
+                                                        onClick={() =>
+                                                            void doRestore(restoreTarget, restorePwd)
+                                                        }
+                                                    >
+                                                        恢复
+                                                    </Button>
+                                                    <Button
+                                                        size='small'
+                                                        variant='text'
+                                                        data-backup-action='restore-cancel'
+                                                        onClick={() => {
+                                                            setRestoreTarget(null);
+                                                            setRestorePwd("");
+                                                            setRemoteError(null);
+                                                        }}
+                                                    >
+                                                        取消
+                                                    </Button>
+                                                </Box>
+                                            )}
+
+                                            {remoteFiles && remoteFiles.length === 0 && (
+                                                <Typography
+                                                    data-backup-remote-empty='1'
+                                                    variant='caption'
+                                                    color='text.disabled'
+                                                    sx={{ display: "block", textAlign: "center", py: 1 }}
+                                                >
+                                                    网盘上还没有备份文件
+                                                </Typography>
+                                            )}
+
+                                            {remoteFiles && remoteFiles.length > 0 && (
+                                                <Box component='ul' sx={{ m: 0, p: 0, listStyle: "none" }}>
+                                                    {remoteFiles.map(f => (
+                                                        <Box
+                                                            key={f.name}
+                                                            component='li'
+                                                            data-backup-remote-file={f.name}
+                                                            sx={{
+                                                                display: "flex",
+                                                                alignItems: "center",
+                                                                gap: 1,
+                                                                py: 0.5,
+                                                            }}
+                                                        >
+                                                            <Typography
+                                                                variant='caption'
+                                                                sx={{
+                                                                    flex: 1,
+                                                                    minWidth: 0,
+                                                                    overflow: "hidden",
+                                                                    textOverflow: "ellipsis",
+                                                                    whiteSpace: "nowrap",
+                                                                }}
+                                                            >
+                                                                {f.name}
+                                                            </Typography>
+                                                            <Typography
+                                                                variant='caption'
+                                                                color='text.secondary'
+                                                                sx={{ flexShrink: 0 }}
+                                                            >
+                                                                {fmtBytes(f.size ?? 0)}
+                                                            </Typography>
+                                                            <Button
+                                                                size='small'
+                                                                variant='text'
+                                                                disabled={restoreBusy}
+                                                                data-backup-action='restore'
+                                                                onClick={() => {
+                                                                    // 已设过备份口令的先带上去试一次，
+                                                                    // 仍是加密的就弹框让用户补
+                                                                    setRestorePwd(
+                                                                        backupState?.backupPassword ?? ""
+                                                                    );
+                                                                    void doRestore(
+                                                                        f.name,
+                                                                        backupState?.backupPassword ?? ""
+                                                                    );
+                                                                }}
+                                                            >
+                                                                恢复
+                                                            </Button>
+                                                        </Box>
+                                                    ))}
+                                                </Box>
+                                            )}
+                                        </Box>
+                                    </>
                                 )}
                             </Box>
                         ) : (

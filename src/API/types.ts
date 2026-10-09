@@ -47,8 +47,24 @@ export interface Note {
     title: string;
     /** Markdown 源码，不是 HTML */
     content: string;
-    /** 置顶排在最前 */
+    /** 置顶排在最前（与「收藏」是两回事：置顶管排序，收藏管筛选） */
     pinned?: boolean;
+    /**
+     * 收藏（2026-10-09 与置顶分离）。
+     *
+     * 之前「收藏」视图判的是 `pinned` —— 于是「置顶」和「收藏」其实是同一个开关，
+     * 用户想把一条临时置顶的笔记标记成常用，一点就把它的排序也改了。
+     * inkstone 是两个独立字段：is_pinned 管排序、is_starred 管筛选。
+     */
+    starred?: boolean;
+    /**
+     * 乐观并发版本号（2026-10-09）。
+     *
+     * 每次成功写入 +1；客户端保存时带上「我改的是 rev=N 那版」，服务端发现
+     * 已经是 N+1 就返回 409 + 当前内容 —— 多端同时打开同一条笔记时，
+     * 后写的那个会看见「这条在别处改过」，而不是静默覆盖掉别人的改动。
+     */
+    rev?: number;
     order_num?: number;
     /**
      * 可选：这条笔记是关于哪个站点的。
@@ -146,6 +162,23 @@ export interface NoteStats {
     /** 全站 `[[双链]]` 引用出现次数（不含 `![[嵌入]]`） */
     links: number;
 }
+
+/** 服务端全文检索命中的一条（2026-10-09，FTS5 + LIKE 回退） */
+export interface NoteSearchHit {
+    id: number;
+    title: string;
+    /** 命中位置附近的一段正文（用于列表里的摘要行） */
+    snippet: string;
+    /** 相关度：FTS 是 -bm25（越大越相关），LIKE 回退是「标题命中 + 命中次数」 */
+    score: number;
+    updated_at?: string;
+}
+
+export interface NoteSearchResult {
+    /** 这条结果是怎么搜出来的：fts = 走了 FTS5，like = 索引不可用、退回全表扫 */
+    mode: "fts" | "like";
+    results: NoteSearchHit[];
+}
 export interface PublicNote {
     title: string;
     content: string;
@@ -212,7 +245,10 @@ export interface NoteRevision {
     /** 列表接口返回的正文摘要，给用户一眼认出是哪一版 */
     excerpt?: string;
     created_at?: string;
-    /** 字数差（相对当前正文），比「有多少字」更有用：一眼看出改动大小 */
+    /**
+     * 这一版正文的**字符数**（SQL 里是 `length(content)`）。
+     * ⚠️ 不是「字数差」：列表接口本来就没算差值，别照着旧注释当差值用。
+     */
     size?: number;
 }
 

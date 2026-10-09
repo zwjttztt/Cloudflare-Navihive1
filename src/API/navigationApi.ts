@@ -128,6 +128,14 @@ export class NavigationAPI {
      * 设 NAVIHIVE_SESSION_FAIL_OPEN_ON_ERROR=1 可临时恢复访问（出问题时的逃生口）。
      */
     readonly failOpenOnError: boolean;
+    /**
+     * 全文检索（FTS5 虚拟表 notes_fts）是否可用。
+     *
+     * 由迁移阶段探测（见 migrateNotesFtsTable）：建不出来就是 false，
+     * 搜索退回 LIKE 全表扫。默认 false —— 没跑过迁移时按「不可用」处理，
+     * 走的是一定正确的那条路，而不是「假设表在、然后 500」。
+     */
+    notesFtsReady = false;
 
     /** 绑定当前账号（Worker 验签通过后调用）。传 null 表示系统级调用。 */
     setCurrentUser(id: number | null): void {

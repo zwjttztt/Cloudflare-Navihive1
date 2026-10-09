@@ -72,9 +72,16 @@ import BoltIcon from "@mui/icons-material/Bolt";
 import ListIcon from "@mui/icons-material/List";
 import PushPinIcon from "@mui/icons-material/PushPin";
 import PushPinOutlinedIcon from "@mui/icons-material/PushPinOutlined";
+import StarIcon from "@mui/icons-material/Star";
+import StarBorderIcon from "@mui/icons-material/StarBorder";
 import SearchIcon from "@mui/icons-material/Search";
 import SettingsIcon from "@mui/icons-material/Settings";
 import SortIcon from "@mui/icons-material/Sort";
+import CheckBoxIcon from "@mui/icons-material/CheckBox";
+import CheckBoxOutlineBlankIcon from "@mui/icons-material/CheckBoxOutlineBlank";
+import Checkbox from "@mui/material/Checkbox";
+import HubIcon from "@mui/icons-material/Hub";
+import NoteGraphDialog from "./NoteGraphDialog";
 import StrikethroughIcon from "@mui/icons-material/StrikethroughS";
 import TableRowsIcon from "@mui/icons-material/TableRows";
 import UndoIcon from "@mui/icons-material/Undo";
@@ -99,13 +106,20 @@ import { readReadingPosition, writeReadingPosition } from "../utils/readingPosit
 import type {
     Note,
     NoteFolder,
+    NoteImportStats,
     NoteRevision,
     NoteTag,
     NotesBackupSavePatch,
     NotesBackupState,
+    NoteSearchResult,
+    NotesImportPayload,
+    WebDavErrorCode,
 } from "../API/http";
 import type { TrashedNote } from "../hooks/useNotes";
 import { renderMarkdownToReact, type RenderFeatures } from "../utils/markdownToReact";
+import { fuzzyFilter, fuzzyMatch } from "../utils/fuzzy";
+import { createZip, readZip, type ZipEntry } from "../utils/zip";
+import Highlighted from "./Highlighted";
 import type { NoteEmbedTarget } from "./NoteEmbedNode";
 import { useScrollLock } from "../hooks/useScrollLock";
 import { usePanelBreakpoint } from "../hooks/usePanelBreakpoint";
@@ -132,6 +146,7 @@ import NamePromptDialog from "./NamePromptDialog";
 import FolderAppearanceDialog from "./FolderAppearanceDialog";
 import MoveFolderDrawer from "./MoveFolderDrawer";
 import NotesSettingsDialog from "./NotesSettingsDialog";
+import NoteVersionHistoryDialog from "./NoteVersionHistoryDialog";
 import type { NoteEditorHandle } from "../utils/noteEditorHandle";
 import { useEditorTools, type TableOp, type EditorDraft } from "../hooks/useEditorTools";
 
@@ -172,6 +187,19 @@ export interface NotesPageProps {
         save(patch: NotesBackupSavePatch): Promise<void>;
         test(): Promise<{ success: boolean; message: string }>;
         run(): Promise<{ success: boolean; message: string }>;
+        /** 列出网盘上的笔记备份文件（备份闭环的「取回」一半，2026-10-09） */
+        listRemote(): Promise<{
+            success: boolean;
+            files: { name: string; size: number; lastModified: string }[];
+            message: string;
+        }>;
+        /** 下载并解密一份网盘备份；code 用来判断「要不要口令 / 口令对不对」 */
+        fetch(filename: string, password: string): Promise<{
+            success: boolean;
+            message: string;
+            payload?: NotesImportPayload;
+            code?: WebDavErrorCode;
+        }>;
     };
     notes: Note[];
     onClose: () => void;
@@ -186,6 +214,8 @@ export interface NotesPageProps {
     onUpdate: (id: number, patch: Partial<Note>) => Promise<void>;
     onDelete: (note: Note) => Promise<void>;
     onTogglePin: (note: Note) => Promise<void>;
+    /** 收藏（2026-10-09 与置顶分离）：置顶管排序、收藏管筛选。老部署没传时这个动作不出现 */
+    onToggleStar?: (note: Note) => Promise<void>;
     // ---------- 阶段三：回收站 + 归档 ----------
     /** 回收站里的笔记（只含 kind='note' 的），从 useNotes 传进来 */
     trashedNotes: TrashedNote[];
@@ -238,6 +268,13 @@ export interface NotesPageProps {
         /** 版本历史：列快照 / 恢复 */
         onListRevisions?: (noteId: number) => Promise<NoteRevision[]>;
         onRestoreRevision?: (noteId: number, revisionId: number) => Promise<Note | null>;
+        /** 取某一版的完整正文（列表里只给字符数，要做 diff 得单独拉一份） */
+        onGetRevision?: (noteId: number, revisionId: number) => Promise<NoteRevision | null>;
+        /**
+         * 服务端全文检索（2026-10-09）。
+         * 可选：没传 / 调用失败 → 退回本地模糊搜索（本地本来就持有全文）。
+         */
+        onSearchRemote?: (query: string, limit?: number) => Promise<NoteSearchResult | null>;
     };
 }
 
@@ -1394,10 +1431,16 @@ export default function NotesPage({
     onPurgeTrashed,
     onEmptyTrash,
     onToggleArchive,
+    onToggleStar,
     onNotify,
     folderTags,
 }: NotesPageProps) {
     const [keyword, setKeyword] = useState("");
+    /** 关系图谱（2026-10-09）：双链关系的全貌，从「更多」里开 */
+    const [graphOpen, setGraphOpen] = useState(false);
+    /** 多选批量条（2026-10-09）：只在用户主动开了「多选」时才勾人，退出即清空 */
+    const [multiSelect, setMultiSelect] = useState(false);
+    const [checked, setChecked] = useState<Set<number>>(() => new Set());
     /** 左栏视图：全部 / 最近 / 收藏（回收站要软删字段，留到阶段三） */
     const [view, setView] = useState<NoteView>("all");
     /** 中间栏排序（中栏右上角「排序」菜单）。
@@ -2027,34 +2070,129 @@ export default function NotesPage({
     const noteTags = useMemo(() => folderTags?.noteTags ?? EMPTY_TAG_LINKS, [folderTags]);
 
     /**
-     * 搜索命中的笔记（2026-10-06）。
+     * 一条笔记参与搜索的文本：标题 + 正文 + 标签名。
+     * 标签名必须算进来 —— 用户记不清正文里有没有那个词，但记得「我给标了『合同』的
+     * 那几条」，标签常常是唯一能想起来的线索。
+     */
+    const searchableText = useCallback(
+        (n: Note) =>
+            `${n.title || ""} ${n.content || ""} ${tagNamesOf(n, noteTags, tags).join(" ")}`,
+        [noteTags, tags]
+    );
+
+    /**
+     * 服务端全文检索的结果（2026-10-09）。
      *
-     * 比原来那个「标题 + 正文 includes」多搜了**标签名** —— 用户记不清笔记正文里
-     * 有没有那个词，但记得「我给标了『合同』的那几条」，标签是唯一能想起来的线索。
-     * 归档的笔记也一并搜：找东西的时候不会先想「这条是不是被我收起来了」。
+     * 有 FTS5 时服务端能给 bm25 相关度与命中片段，比本地顺序扫描更准；
+     * 但它只是**增强**：老部署没有 notes/search、或者索引没建起来时
+     * `remoteSearch` 保持 null，下面照旧走本地模糊匹配。
+     *
+     * ⚠️ keyword 一起存进 state：请求是异步的，回来时输入框可能已经变了，
+     * 拿「上一次关键词的结果」给当前关键词用会把列表排错。
+     */
+    const [remoteSearch, setRemoteSearch] = useState<{
+        keyword: string;
+        hits: { id: number; title: string; snippet: string; score: number }[];
+    } | null>(null);
+    const searchEpoch = useRef(0);
+    const searchRemote = folderTags?.onSearchRemote;
+    useEffect(() => {
+        const kw = keyword.trim();
+        if (!searchRemote || !kw) {
+            setRemoteSearch(null);
+            return;
+        }
+        const epoch = ++searchEpoch.current;
+        // 打一个 250ms 的防抖：搜索框每敲一个字都打一次接口太浪费
+        const timer = setTimeout(() => {
+            void searchRemote(kw, 100).then(res => {
+                if (epoch !== searchEpoch.current) return; // 过期结果直接丢
+                setRemoteSearch(
+                    res && Array.isArray(res.results)
+                        ? { keyword: kw, hits: res.results }
+                        : null
+                );
+            }).catch(() => {
+                if (epoch !== searchEpoch.current) return;
+                setRemoteSearch(null); // 失败就退回本地搜，不弹错误
+            });
+        }, 250);
+        return () => clearTimeout(timer);
+    }, [keyword, searchRemote]);
+
+    /** 服务端给的命中片段（按笔记 id 查；只在搜索视图里显示） */
+    const searchSnippets = useMemo(() => {
+        const map = new Map<number, string>();
+        if (remoteSearch && remoteSearch.keyword === keyword.trim()) {
+            for (const hit of remoteSearch.hits) {
+                if (hit.snippet) map.set(hit.id, hit.snippet);
+            }
+        }
+        return map;
+    }, [remoteSearch, keyword]);
+
+    /**
+     * 搜索命中的笔记（2026-10-06 加，2026-10-09 换成模糊匹配）。
+     *
+     * 原来是 `includes`：打错一个字（「数据哭」）就一条都搜不到，而且命中的字眼
+     * 在列表里没有标记。现在照 inkstone 走「模糊匹配 + 命中区间高亮」（utils/fuzzy.ts），
+     * 顺带按相关度排序 —— 标题里直接命中的排在正文里捎带命中的前面。
      */
     const searchHits = useMemo(() => {
-        const kw = keyword.trim().toLowerCase();
+        const kw = keyword.trim();
         if (!kw) return [];
-        return notes.filter(n => {
-            if ((n.title || "").toLowerCase().includes(kw)) return true;
-            if ((n.content || "").toLowerCase().includes(kw)) return true;
-            const names = tagNamesOf(n, noteTags, tags).map(t => t.toLowerCase());
-            return names.some(t => t.includes(kw));
-        });
-    }, [notes, keyword, noteTags, tags]);
+        // 服务端有结果就按它的相关度排（bm25：标题命中权重更高）。
+        // 高亮区间仍然本地算 —— fuzzyMatch 是纯函数，同一份标题两边结果一致。
+        if (remoteSearch && remoteSearch.keyword === kw && remoteSearch.hits.length > 0) {
+            const byId = new Map<number, Note>();
+            for (const n of notes) if (n.id !== undefined) byId.set(n.id, n);
+            const out: { note: Note; ranges: [number, number][] }[] = [];
+            for (const hit of remoteSearch.hits) {
+                const note = byId.get(hit.id);
+                if (!note) continue; // 索引里可能残留已删的
+                const match = fuzzyMatch(note.title || "", kw);
+                out.push({ note, ranges: match?.ranges ?? [] });
+            }
+            if (out.length > 0) return out;
+        }
+        return fuzzyFilter(notes, kw, searchableText, 300).map(({ item, match }) => ({
+            note: item,
+            // ⚠️ 区间要裁到标题长度内：模糊匹配是在「标题 + 正文」上跑的，
+            // 落在正文里的区间拿去标标题会标到别处去（inkstone 同样只标标题）。
+            ranges: match.ranges.filter(([start]) => start < (item.title || "").length),
+        }));
+    }, [notes, keyword, searchableText, remoteSearch]);
+
+    /** 标题高亮区间（按笔记 id 查；没搜东西时是空表） */
+    const highlightRanges = useMemo(() => {
+        const map = new Map<number, [number, number][]>();
+        for (const hit of searchHits) {
+            if (hit.note.id !== undefined && hit.ranges.length) map.set(hit.note.id, hit.ranges);
+        }
+        if (!keyword.trim()) return map;
+        // 非搜索视图里也在列表顶部过滤（见 filtered），那里同样要能高亮
+        for (const n of notes) {
+            if (n.id === undefined || map.has(n.id)) continue;
+            const match = fuzzyMatch(`${n.title || ""}`, keyword.trim());
+            if (match && match.ranges.length) map.set(n.id, match.ranges);
+        }
+        return map;
+    }, [searchHits, notes, keyword]);
 
     const filtered = useMemo(() => {
         // 搜索视图：只给命中列表，不受「文件夹 / 标签选中」叠加影响 ——
         // 用户搜东西时想看的是「所有命中」，再被一个残留的文件夹选中态筛一遍
         // 只会让人以为「搜不到」。没关键词时回落到全部。
         if (view === "search") {
-            return keyword.trim() ? searchHits : notes.filter(n => !n.archived);
+            // ⚠️ searchHits 带命中区间（为了高亮），这里只要笔记本身
+            return keyword.trim() ? searchHits.map(h => h.note) : notes.filter(n => !n.archived);
         }
         // 归档的笔记默认从「全部 / 最近 / 收藏 / 未归类」里隐去，只在「归档」视图露面
         const live = notes.filter(n => !n.archived);
         const byView = live.filter(n => {
-            if (view === "starred") return Boolean(n.pinned);
+            // ⚠️ 2026-10-09：收藏判的是 starred 而不是 pinned —— 之前两个是同一个开关，
+            // 用户想标记常用就把排序也改了（详见 Note.starred 的注释）
+            if (view === "starred") return Boolean(n.starred);
             // 阶段三收尾：选中了某个文件夹（或标签）就只看那一份，
             // 和「全部 / 最近」这些视图是**叠加**关系，不是互斥的。
             // ⚠️ 但文件夹/标签只在 live 里筛 —— 归档的笔记不该出现在任何文件夹视图里，
@@ -2073,25 +2211,15 @@ export default function NotesPage({
                           )
                   )
                 : byView;
-        const kw = keyword.trim().toLowerCase();
+        const kw = keyword.trim();
         const matched = kw
-            ? bySort.filter(
-                  n =>
-                      (n.title || "").toLowerCase().includes(kw) ||
-                      (n.content || "").toLowerCase().includes(kw)
-              )
+            ? fuzzyFilter(bySort, kw, searchableText, 300).map(({ item }) => item)
             : bySort;
         if (view === "archived") {
             // 归档视图看的是**全部**归档笔记（不管收藏不收藏）
-            const kw2 = keyword.trim().toLowerCase();
+            const kw2 = keyword.trim();
             const all = notes.filter(n => n.archived);
-            return kw2
-                ? all.filter(
-                      n =>
-                          (n.title || "").toLowerCase().includes(kw2) ||
-                          (n.content || "").toLowerCase().includes(kw2)
-                  )
-                : all;
+            return kw2 ? fuzzyFilter(all, kw2, searchableText, 300).map(({ item }) => item) : all;
         }
         if (view === "uncategorized") {
             // 「未归类」= **没有归到任何文件夹**的笔记（folder_id 为空）。
@@ -2103,7 +2231,7 @@ export default function NotesPage({
             return matched.filter(n => n.folder_id === null || n.folder_id === undefined);
         }
         return matched;
-    }, [notes, keyword, view, activeFolder, activeTag, noteTags, searchHits]);
+    }, [notes, keyword, view, activeFolder, activeTag, noteTags, searchHits, searchableText]);
 
     /** 阶段二：列表按月份分组（「十月」「九月…」），和 inkstone 一样 */
     /** 中栏「排序」的排序键。default = 置顶优先 + 原始顺序（服务端排序） */
@@ -2263,7 +2391,7 @@ export default function NotesPage({
         () => ({
             all: notes.filter(n => !n.archived).length,
             recent: notes.filter(n => !n.archived).length,
-            starred: notes.filter(n => !n.archived && Boolean(n.pinned)).length,
+            starred: notes.filter(n => !n.archived && Boolean(n.starred)).length,
             archived: notes.filter(n => Boolean(n.archived)).length,
             uncategorized: notes.filter(
                 // 与 filtered 里那个视图同一判据（folder_id 为空 = 没归到任何文件夹）。
@@ -2590,6 +2718,214 @@ export default function NotesPage({
             );
         }
     };
+    /**
+     * 导出 zip（含图片附件，2026-10-09）。
+     *
+     * 之前只有 JSON：笔记正文里的图片是 `/api/notes/attachments/<id>` 这种引用，
+     * JSON 里不带字节 —— 一旦删站或迁移，正文还在、图全没了。inkstone 的
+     * 「导出 zip」把笔记 + 附件一起打包，UI 上直接写「用于完整恢复」。
+     * zip 是我们自己实现的（utils/zip.ts，零依赖），打包不压缩（图片本来就是压过的）。
+     */
+    const exportAllZip = useCallback(async () => {
+        try {
+            const payload = {
+                kind: "navihive-notes-export",
+                exported_at: new Date().toISOString(),
+                notes,
+                folders: folderTags?.folders ?? [],
+                tags: folderTags?.tags ?? [],
+                noteTags: folderTags?.noteTags ?? {},
+            };
+            const entries: ZipEntry[] = [
+                {
+                    path: "notes.json",
+                    data: new TextEncoder().encode(JSON.stringify(payload, null, 2)),
+                },
+            ];
+            const list = uploadApi?.listAttachments ? await uploadApi.listAttachments() : [];
+            let failed = 0;
+            for (const att of list) {
+                try {
+                    const res = await fetch(
+                        `/api/notes/attachments/${encodeURIComponent(att.id)}`,
+                        { credentials: "same-origin" }
+                    );
+                    if (!res.ok) {
+                        failed += 1;
+                        continue;
+                    }
+                    entries.push({
+                        // ⚠️ 文件名里带原始 id：导入时要靠它把正文里的旧引用换成新 id
+                        path: `attachments/${att.id}__${att.filename || "file"}`,
+                        data: new Uint8Array(await res.arrayBuffer()),
+                    });
+                } catch {
+                    failed += 1;
+                }
+            }
+            const packed = createZip(entries);
+            // ⚠️ 直接把 Uint8Array 交给 Blob 在 TS 5.7+ 会挑 ArrayBufferLike/SharedArrayBuffer，
+            // 显式拷一份 ArrayBuffer 绕开（浏览器端 Blob 本来就只接受这一支）。
+            const out = new Uint8Array(packed.byteLength);
+            out.set(packed);
+            const blob = new Blob([out.buffer], { type: "application/zip" });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = `notes-backup-${new Date().toISOString().slice(0, 10)}.zip`;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 4000);
+            onNotify?.(
+                failed === 0
+                    ? `已导出 ${notes.length} 条笔记 + ${list.length} 个附件（ZIP）`
+                    : `已导出，但有 ${failed} 个附件没取到（ZIP）`,
+                failed === 0 ? "success" : "warning" as never
+            );
+        } catch (error) {
+            onNotify?.(
+                "导出失败：" + (error instanceof Error ? error.message : "未知错误"),
+                "error"
+            );
+        }
+    }, [notes, folderTags, uploadApi, onNotify]);
+
+    /**
+     * 导入文件：JSON（老格式）或 zip（含附件）。
+     *
+     * zip 那条路上有个必须处理的坑：附件上传后服务端会给**新的 id**（uuid 是服务端
+     * 生成的），而正文里写的是旧 id。不替换的话恢复出来的笔记每张图都是裂的。
+     * 所以先把附件一个个传上去、记下「旧 id → 新 id」，再把正文里的引用换掉。
+     */
+    // ---------- 批量操作（2026-10-09，配合上面的多选条）----------
+    const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
+    const [bulkBusy, setBulkBusy] = useState(false);
+    /**
+     * 选中集合 → 笔记对象。
+     *
+     * ⚠️ 只在**当前列表（filtered）**里取，不是全量 notes：
+     * 用户是在「看到的这几条」里勾的，切了视图或搜了东西之后再点批量归档，
+     * 结果却动到列表外面的笔记 —— 那是最容易挨骂的一类「删错东西」。
+     */
+    const checkedNotes = useMemo(
+        () => filtered.filter(n => n.id !== undefined && checked.has(n.id)),
+        [filtered, checked]
+    );
+    const bulkArchive = useCallback(async () => {
+        if (bulkBusy) return;
+        setBulkBusy(true);
+        try {
+            // 逐条走现有的归档：混选（有归档有没归档）时按「多数」取向 ——
+            // 只要还有没归档的就全部归档，否则全部取回，避免一次点完变成「反的」
+            const target = checkedNotes.some(n => !n.archived);
+            for (const n of checkedNotes) {
+                // ⚠️ 判据是「当前状态 === 目标」就跳过（已经归档的不用再归档一次）。
+                // 写成 !== 会把**所有**条目都跳过：批量归档变成「点了没反应」
+                //（用例里 archived 一直是空数组才抓出来的）。
+                if (Boolean(n.archived) === target) continue;
+                await onToggleArchive(n);
+            }
+            onNotify?.(
+                target ? `已归档 ${checkedNotes.length} 条` : `已取回 ${checkedNotes.length} 条`,
+                "success"
+            );
+            setChecked(new Set());
+        } catch (error) {
+            onNotify?.("批量归档失败：" + (error instanceof Error ? error.message : "未知错误"), "error");
+        } finally {
+            setBulkBusy(false);
+        }
+    }, [bulkBusy, checkedNotes, onToggleArchive, onNotify]);
+
+    const bulkDelete = useCallback(async () => {
+        if (bulkBusy) return;
+        setBulkBusy(true);
+        try {
+            for (const n of checkedNotes) await onDelete(n);
+            onNotify?.(`已删除 ${checkedNotes.length} 条（可在回收站里还原）`, "success");
+            setChecked(new Set());
+            setBulkDeleteOpen(false);
+        } catch (error) {
+            onNotify?.("批量删除失败：" + (error instanceof Error ? error.message : "未知错误"), "error");
+        } finally {
+            setBulkBusy(false);
+        }
+    }, [bulkBusy, checkedNotes, onDelete, onNotify]);
+
+    const importNotesFile = useCallback(
+        async (file: File): Promise<NoteImportStats> => {
+            const importNotes = shareApi?.importNotes;
+            if (!importNotes) throw new Error("当前部署不支持导入笔记");
+
+            const isZip =
+                /\.zip$/i.test(file.name) ||
+                file.type === "application/zip" ||
+                file.type === "application/x-zip-compressed";
+
+            if (!isZip) {
+                const parsed = JSON.parse(await file.text()) as NotesImportPayload;
+                return importNotes(parsed);
+            }
+
+            const entries = await readZip(new Uint8Array(await file.arrayBuffer()));
+            const notesEntry = entries.find(e => e.path === "notes.json");
+            if (!notesEntry) throw new Error("这个 ZIP 里没有 notes.json");
+            const payload = JSON.parse(
+                new TextDecoder().decode(notesEntry.data)
+            ) as NotesImportPayload;
+
+            // 1) 附件回传，记下 id 变化
+            const idMap = new Map<string, string>();
+            let skipped = 0;
+            for (const entry of entries) {
+                if (!entry.path.startsWith("attachments/")) continue;
+                const name = entry.path.slice("attachments/".length);
+                const sep = name.indexOf("__");
+                if (sep <= 0) continue;
+                const oldId = name.slice(0, sep);
+                const filename = name.slice(sep + 2);
+                if (!uploadApi) {
+                    skipped += 1;
+                    continue;
+                }
+                try {
+                    const uploaded = await uploadApi.uploadAttachment(
+                        new File([entry.data.slice().buffer], filename || "file")
+                    );
+                    if (uploaded?.id && uploaded.id !== oldId) idMap.set(oldId, uploaded.id);
+                } catch {
+                    skipped += 1;
+                }
+            }
+
+            // 2) 正文里的旧 id 换成新 id（只换真发生变化的那些）
+            if (idMap.size > 0 && Array.isArray(payload.notes)) {
+                payload.notes = payload.notes.map((n: Note) =>
+                    n && typeof n.content === "string"
+                        ? {
+                              ...n,
+                              content: n.content.replace(
+                                  /\/api\/notes\/attachments\/([A-Za-z0-9_-]+)/g,
+                                  (whole: string, id: string) =>
+                                      idMap.has(id)
+                                          ? `/api/notes/attachments/${idMap.get(id)}`
+                                          : whole
+                              ),
+                          }
+                        : n
+                );
+            }
+
+            const stats = await importNotes(payload);
+            if (skipped > 0) {
+                onNotify?.(`有 ${skipped} 个附件没能回传（正文里的引用可能还是旧的）`, "warning" as never);
+            }
+            return stats;
+        },
+        [shareApi, uploadApi, onNotify]
+    );
+
     const exportPdfOne = useCallback(
         (note: Note) => {
             void printNoteAsPdf(note.title, note.content).catch(error => {
@@ -2625,45 +2961,65 @@ export default function NotesPage({
     }, [active, draft?.content, notes]);
 
     // ---------- 版本历史（inkstone 顶栏「版本历史」）----------
-    const [revisionAnchor, setRevisionAnchor] = useState<HTMLElement | null>(null);
+    // 2026-10-09 改成 inkstone 同款面板：左列快照 + 右栏与当前正文的行级 diff
+    // （原来只是一个 Menu，点了直接恢复，恢复前看不到这一版改了什么）。
+    const [revisionsOpen, setRevisionsOpen] = useState(false);
+    /** 图片灯箱（inkstone 的 ui.lightbox）：点预览里的图片放大看 */
+    const [lightbox, setLightbox] = useState<{ src: string; alt: string } | null>(null);
     const [shareId, setShareId] = useState<number | null>(null);
     const [revisions, setRevisions] = useState<NoteRevision[] | null>(null);
-    /** 正在恢复的版本 id：期间禁用所有按钮，避免连点重复提交 */
-    const [restoringId, setRestoringId] = useState<number | null>(null);
+    // ⚠️ 不再需要「正在恢复的版本 id」那份 state：面板自己有 busy 态，
+    // 恢复按钮在期间是禁用的（连点重复提交由面板挡住）。
 
     /** 打开面板时才拉列表：不为一条没打开过的笔记请求历史 */
-    const openRevisions = useCallback(
-        async (anchor: HTMLElement) => {
-            setRevisionAnchor(anchor);
+    const openRevisions = useCallback(async () => {
+        setRevisionsOpen(true);
+        const noteId = active?.id;
+        if (noteId === undefined || !folderTags?.onListRevisions) {
+            setRevisions([]);
+            return;
+        }
+        setRevisions(null);
+        setRevisions(await folderTags.onListRevisions(noteId));
+    }, [active?.id, folderTags]);
+
+    /** 取某一版正文：列表里那份是空串，diff 要真的正文 */
+    const loadRevisionContent = useCallback(
+        async (revisionId: number): Promise<string | null> => {
             const noteId = active?.id;
-            if (noteId === undefined || !folderTags?.onListRevisions) {
-                setRevisions([]);
-                return;
-            }
-            setRevisions(null);
-            setRevisions(await folderTags.onListRevisions(noteId));
+            if (noteId === undefined || !folderTags?.onGetRevision) return null;
+            const rev = await folderTags.onGetRevision(noteId, revisionId);
+            return rev ? rev.content : null;
         },
         [active?.id, folderTags]
     );
 
     const doRestoreRevision = useCallback(
-        async (revisionId: number) => {
+        async (revisionId: number): Promise<boolean> => {
             const noteId = active?.id;
-            if (noteId === undefined || !folderTags?.onRestoreRevision) return;
-            setRestoringId(revisionId);
+            if (noteId === undefined || !folderTags?.onRestoreRevision) return false;
             const restored = await folderTags.onRestoreRevision(noteId, revisionId);
-            setRestoringId(null);
-            if (!restored) return;
-            setRevisionAnchor(null);
+            if (!restored) return false;
             setRevisions(null);
             // ⚠️ 必须显式写回草稿：草稿只在「换了笔记」（active.id 变化）时重置，
             // 而版本恢复 id 是一样的 —— 不塞回去的话界面还停在恢复前的内容，
             // 看着像「点了没反应」。
             setDraft({ title: restored.title || "", content: restored.content || "" });
             onNotify?.("已恢复到该版本（恢复前的内容也存了一份快照）", "success");
+            return true;
         },
         [active?.id, folderTags, onNotify]
     );
+    /** 灯箱的 Esc 关闭：它是普通 overlay（不是 MUI Dialog），得自己听键盘 */
+    useEffect(() => {
+        if (!lightbox) return;
+        const onKey = (e: KeyboardEvent) => {
+            if (e.key === "Escape") setLightbox(null);
+        };
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
+    }, [lightbox]);
+
     /** 当前这条笔记的标题层级（草稿内容变就重算） */
     const outline = useMemo(
         () => extractOutline(draft?.content ?? ""),
@@ -3604,7 +3960,31 @@ export default function NotesPage({
                                   : view === "uncategorized"
                                     ? "未归类"
                                     : "归档"}
-                    </Typography>                    <Tooltip title='排序'>
+                    </Typography>                    {/* 多选（2026-10-09，inkstone 的批量条）：开了才在每行显示勾选框，
+                        底部出现批量条。平时不显示 —— 128px 的窄列表里常驻一列勾选框
+                        会把标题挤没，而批量操作（归档 / 删除一批）本来就是低频动作。 */}
+                    <Tooltip title={multiSelect ? "退出多选" : "多选"}>
+                        <IconButton
+                            size='small'
+                            aria-label={multiSelect ? "退出多选" : "多选"}
+                            data-tool='multiselect'
+                            onClick={() => {
+                                setMultiSelect(v => !v);
+                                setChecked(new Set());
+                            }}
+                            sx={{
+                                p: 0.4,
+                                color: multiSelect ? "var(--accent)" : "text.secondary",
+                            }}
+                        >
+                            {multiSelect ? (
+                                <CheckBoxIcon fontSize='inherit' />
+                            ) : (
+                                <CheckBoxOutlineBlankIcon fontSize='inherit' />
+                            )}
+                        </IconButton>
+                    </Tooltip>
+                    <Tooltip title='排序'>
                         <IconButton
                             size='small'
                             aria-label='排序'
@@ -3860,11 +4240,40 @@ export default function NotesPage({
                                         gap: 0.5,
                                     }}
                                 >
+                                    {/* 多选态：行首勾选框。⚠️ 点击必须 stopPropagation ——
+                                        整行自己是 role='button'，不拦住就顺手把笔记打开了。 */}
+                                    {multiSelect && (
+                                        <Checkbox
+                                            size='small'
+                                            slotProps={{
+                                                input: {
+                                                    "aria-label": `选择「${note.title || "无标题"}」`,
+                                                    "data-note-check": String(note.id),
+                                                } as never,
+                                            }}
+                                            checked={note.id !== undefined && checked.has(note.id)}
+                                            onClick={e => e.stopPropagation()}
+                                            onChange={() => {
+                                                if (note.id === undefined) return;
+                                                setChecked(prev => {
+                                                    const next = new Set(prev);
+                                                    if (next.has(note.id!)) next.delete(note.id!);
+                                                    else next.add(note.id!);
+                                                    return next;
+                                                });
+                                            }}
+                                            sx={{ p: 0.25, ml: -0.5, flexShrink: 0 }}
+                                        />
+                                    )}
                                     {/* ⚠️ 必须先转布尔：pinned 存的是 0/1，
                                         `0 && <Icon/>` 在 JS 里返回 0，React 会把它
                                         当文本渲染出来 —— 列表里就冒出一个孤零零的 "0" */}
                                     {Boolean(note.pinned) && (
                                         <PushPinIcon fontSize='inherit' sx={{ color: "var(--accent)" }} />
+                                    )}
+                                    {/* 收藏的星标：与置顶分开显示（2026-10-09） */}
+                                    {Boolean(note.starred) && (
+                                        <StarIcon fontSize='inherit' sx={{ color: "var(--accent)" }} />
                                     )}
                                     <Typography
                                         variant='body2'
@@ -3887,7 +4296,11 @@ export default function NotesPage({
                                             minWidth: 0,
                                         }}
                                     >
-                                        {note.title || "无标题"}
+                                        <Highlighted
+                                            text={note.title || "无标题"}
+                                            query={keyword.trim() || undefined}
+                                            ranges={highlightRanges.get(note.id ?? -1)}
+                                        />
                                     </Typography>
                                     {/* ⚠️ P0-2（2026-10-07）：行尾操作区改**绝对定位**（inkstone 同款）。
                     之前这个「⋯」按钮在标题行的正常流里，hover 时 opacity 0→1 ——
@@ -3945,7 +4358,11 @@ export default function NotesPage({
                                         mt: 0.5,
                                     }}
                                 >
-                                    {summarize(note.content) || "空白笔记"}
+                                    {/* 服务端给了命中片段就优先显示它（能看到**命中在哪**），
+                                        没有就照旧显示正文开头那一段 */}
+                                    {searchSnippets.get(note.id ?? -1) ||
+                                        summarize(note.content) ||
+                                        "空白笔记"}
                                 </Typography>
                                 {/* ⚠️ 这里原来有一行「3分钟前 / 昨天」的行内时间戳，
                                     2026-10-07 按 inkstone 删掉了：时间信息已经由
@@ -3985,6 +4402,70 @@ export default function NotesPage({
                 )}
             </Box>
 
+            {/* 批量条（2026-10-09，inkstone 的批量操作条）：只在多选态出现，
+                逐条走各自的 onToggleArchive / onDelete —— 不新造批量接口，
+                省得「批量归档成功一半」这种中间态没人处理。 */}
+            {multiSelect && (
+                <Box
+                    data-bulk-bar='1'
+                    sx={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 0.5,
+                        px: 1,
+                        py: 0.75,
+                        flexShrink: 0,
+                        // 窄列表里四个按钮排不下会挤成两截 —— 允许换行，别把字压扁
+                        flexWrap: "wrap",
+                        borderTop: "1px solid rgba(128,128,128,0.16)",
+                        bgcolor: "rgba(128,128,128,0.06)",
+                    }}
+                >
+                    <Typography variant='caption' sx={{ flex: 1, minWidth: 0 }}>
+                        已选 {checkedNotes.length} 条
+                    </Typography>
+                    <Button
+                        size='small'
+                        variant='text'
+                        disabled={checked.size === 0}
+                        data-bulk-action='select-all'
+                        onClick={() =>
+                            setChecked(
+                                checkedNotes.length === filtered.length
+                                    ? new Set()
+                                    : new Set(
+                                          filtered
+                                              .map(n => n.id)
+                                              .filter((id): id is number => id !== undefined)
+                                      )
+                            )
+                        }
+                    >
+                        {checkedNotes.length === filtered.length && filtered.length > 0
+                            ? "全不选"
+                            : "全选"}
+                    </Button>
+                    <Button
+                        size='small'
+                        variant='text'
+                        disabled={checked.size === 0}
+                        data-bulk-action='archive'
+                        onClick={() => void bulkArchive()}
+                    >
+                        归档
+                    </Button>
+                    <Button
+                        size='small'
+                        variant='text'
+                        color='error'
+                        disabled={checked.size === 0}
+                        data-bulk-action='delete'
+                        onClick={() => setBulkDeleteOpen(true)}
+                    >
+                        删除
+                    </Button>
+                </Box>
+            )}
 
             </Box>
             {/* 列表列 ↔ 编辑区之间的可拖缝。同样必须在列表列这个 Box **外面** ——
@@ -4081,7 +4562,13 @@ export default function NotesPage({
                             ⚠️ 之前是「宽屏文字按钮 + 小屏图标」两套，宽屏下三个
                             「编辑/分栏/预览」文字把标题行撑得很宽，两栏并排时
                             标题与工具栏都对不齐（用户报）。现在统一成图标 +
-                            外框，选中项填底色。aria-label 保持中文，测试与读屏不受影响。 */}
+                            外框，选中项填底色。aria-label 保持中文，测试与读屏不受影响。
+                            ⚠️ 2026-10-09 补：分屏（侧边打开）时**这一组也要收进「更多」** ——
+                            inkstone 分屏只在这栏 ≥2xl（1536px）时才把三档摆在头部，
+                            常见的 1080/1440 窗口它是**收在 groupedItems 菜单里**的
+                            （Workspace.tsx:407-419 的 `hidden 2xl:block` + 341-343 三个
+                            layout 菜单项）。半宽的两栏塞不下这一组，照做。 */}
+                        {sideId === null && (
                         <Box
                             data-pane-modes='1'
                             sx={{
@@ -4122,8 +4609,9 @@ export default function NotesPage({
                                         {icon}
                                     </IconButton>
                             </Tooltip>
-                            ))}
-                        </Box>
+                    ))}
+                </Box>
+                        )}
                         {/* 保存状态（inkstone 的 SaveIndicator 就挂在头部这一排）。
                             之前它写在状态栏右端，于是那一行既报长度又报状态，26px 塞不下。 */}
                         <SaveDot state={saveState} dirty={dirty} savedAt={savedAt} now={tick} />
@@ -4138,11 +4626,11 @@ export default function NotesPage({
                             条件渲染（不是 display:none）：元素要真的从 DOM 卸掉。 */}
                         {sideId === null && (
                         <Box sx={{ display: "flex", flexShrink: 0, alignItems: "center", gap: 0.25, mr: 0.5 }}>
-                            <Tooltip title={active?.pinned ? "取消收藏" : "收藏"}>
+                            <Tooltip title={active?.pinned ? "取消置顶" : "置顶"}>
                                 <span>
                                     <IconButton
                                         size='small'
-                                        aria-label={active?.pinned ? "取消收藏" : "收藏"}
+                                        aria-label={active?.pinned ? "取消置顶" : "置顶"}
                                         data-tool='pin'
                                         disabled={!active}
                                         onClick={() => active && void onTogglePin(active)}
@@ -4155,6 +4643,27 @@ export default function NotesPage({
                                     </IconButton>
                                 </span>
                             </Tooltip>
+                            {/* 收藏（与置顶分离，2026-10-09）：置顶管排序、收藏管「收藏」视图。
+                                老部署（onToggleStar 没传）不显示这一颗 —— 那时两套是同一个开关。 */}
+                            {onToggleStar && (
+                            <Tooltip title={active?.starred ? "取消收藏" : "收藏"}>
+                                <span>
+                                    <IconButton
+                                        size='small'
+                                        aria-label={active?.starred ? "取消收藏" : "收藏"}
+                                        data-tool='star'
+                                        disabled={!active}
+                                        onClick={() => active && void onToggleStar(active)}
+                                        sx={{
+                                            width: 28, height: 28,
+                                            color: active?.starred ? "var(--accent)" : "text.secondary",
+                                        }}
+                                    >
+                                        {active?.starred ? <StarIcon fontSize='small' /> : <StarBorderIcon fontSize='small' />}
+                                    </IconButton>
+                                </span>
+                            </Tooltip>
+                            )}
                             <Tooltip title='大纲（本文标题列表）'>
                                 <IconButton
                                     size='small'
@@ -4207,7 +4716,7 @@ export default function NotesPage({
                                         aria-label='版本历史'
                                         data-tool='revisions'
                                         disabled={!active || !folderTags?.onListRevisions}
-                                        onClick={e => active && void openRevisions(e.currentTarget)}
+                                        onClick={() => active && void openRevisions()}
                                         sx={{ width: 28, height: 28, color: "text.secondary" }}
                                     >
                                         <HistoryIcon fontSize='small' />
@@ -4482,6 +4991,19 @@ export default function NotesPage({
                                         setActiveTag(tag.id); setActiveFolder(null); setView("all");
                                     }
                                 }} onClick={e => {
+                                    // 图片灯箱（inkstone 的 Preview → ui.lightbox）：
+                                    // 点预览里的图片放大看。用**事件委托**而不是给每个
+                                    // <img> 挂 onClick —— 渲染层是 markdown-it 的产物，
+                                    // 改它的 API 会把导出/嵌入那几条链路一起牵动。
+                                    const img = (e.target as HTMLElement).closest("img");
+                                    if (img) {
+                                        e.preventDefault();
+                                        setLightbox({
+                                            src: img.currentSrc || img.src,
+                                            alt: img.alt || "",
+                                        });
+                                        return;
+                                    }
                                     // `[[双链]]` 单击即跳。它是 <a> 但**没有 href**：
                                     // 真 href 会让浏览器做新页面导航（全屏 overlay 里
                                     // 直接白掉），所以这里只用 data 属性 + 委托点击，
@@ -5065,6 +5587,8 @@ export default function NotesPage({
                         trashed: Array.isArray(trashedNotes) ? trashedNotes.length : null,
                     },
                     onExportAll: exportAllData,
+                    onExportZip: uploadApi?.listAttachments ? () => exportAllZip() : undefined,
+                    onImportFile: importNotesFile,
                     onEmptyTrash: () => onEmptyTrash(),
                     onLoadAttachments: uploadApi?.listAttachments
                         ? () => uploadApi.listAttachments!()
@@ -5095,6 +5619,9 @@ export default function NotesPage({
                     onNotesBackupSave: backupApi?.save,
                     onNotesBackupTest: backupApi?.test,
                     onNotesBackupRun: backupApi?.run,
+                    // 「从网盘恢复」：列出 → 选一份 →（需要时填口令）→ 下载 → 走同一条导入
+                    onNotesBackupListRemote: backupApi?.listRemote,
+                    onNotesBackupFetch: backupApi?.fetch,
                 }}
                 onNotify={onNotify}
                 onOpenNote={id => {
@@ -5145,8 +5672,14 @@ export default function NotesPage({
                                 </MenuItem>
                                 <MenuItem data-row-op='pin' onClick={() => void done(() => onTogglePin(note))}>
                                     <PushPinIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
-                                    {note.pinned ? "取消收藏" : "收藏"}
+                                    {note.pinned ? "取消置顶" : "置顶"}
                                 </MenuItem>
+                                {onToggleStar && (
+                                <MenuItem data-row-op='star' onClick={() => void done(() => onToggleStar!(note))}>
+                                    {note.starred ? <StarIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} /> : <StarBorderIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />}
+                                    {note.starred ? "取消收藏" : "收藏"}
+                                </MenuItem>
+                                )}
                                 <MenuItem data-row-op='folder' onClick={moveToFolder}>
                                     <FolderIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
                                     移动到文件夹…
@@ -5197,8 +5730,14 @@ export default function NotesPage({
                             </MenuItem>
                             <MenuItem data-row-op='pin' onClick={() => void done(() => onTogglePin(note))}>
                                 <PushPinIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
-                                {note.pinned ? "取消收藏" : "收藏"}
+                                {note.pinned ? "取消置顶" : "置顶"}
                             </MenuItem>
+                            {onToggleStar && (
+                            <MenuItem data-row-op='star' onClick={() => void done(() => onToggleStar!(note))}>
+                                {note.starred ? <StarIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} /> : <StarBorderIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />}
+                                {note.starred ? "取消收藏" : "收藏"}
+                            </MenuItem>
+                            )}
                             <MenuItem data-row-op='duplicate' onClick={() => void done(() => duplicateNote(note))}>
                                 <NoteAltIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
                                 创建副本
@@ -5413,6 +5952,36 @@ export default function NotesPage({
                         {/* 分享 / 版本 / 大纲 / 反链：桌面端已平铺到头部（2026-10-08），
                             这几项只留给窄屏与**分屏态**（半宽的头部放不下平铺组，
                             2026-10-09 用户明确照 inkstone 收进菜单）。 */}
+                        {/* 三档（编辑 / 分栏 / 预览）：inkstone 分屏的 groupedItems 前三项
+                            （Workspace.tsx:341-343）。只有分屏态才补 —— 窄屏头部那组三档
+                            还在原位，重复摆一遍是同一件事说两遍。 */}
+                        {sideId !== null && (
+                            <>
+                                {(
+                                    [
+                                        ["edit", "编辑", <EditIcon fontSize='small' key='i' />],
+                                        ["split", "分栏", <VerticalSplitIcon fontSize='small' key='s' />],
+                                        ["preview", "预览", <VisibilityIcon fontSize='small' key='v' />],
+                                    ] as const
+                                ).map(([key, label, icon]) => (
+                                    <MenuItem
+                                        key={key}
+                                        data-active-op={`pane-mode-${key}`}
+                                        selected={pane === key}
+                                        onClick={() => {
+                                            setActiveMenuAnchor(null);
+                                            setPane(key);
+                                        }}
+                                    >
+                                        <Box component='span' sx={{ mr: 1, fontSize: 16, opacity: 0.7, display: "inline-flex" }}>
+                                            {icon}
+                                        </Box>
+                                        {label}
+                                    </MenuItem>
+                                ))}
+                                <Divider />
+                            </>
+                        )}
                         {(narrowLayout || sideId !== null) && (
                         <>
                         <MenuItem
@@ -5429,9 +5998,9 @@ export default function NotesPage({
                         <MenuItem
                             data-active-op='revisions'
                             disabled={!folderTags?.onListRevisions}
-                            onClick={e => {
+                            onClick={() => {
                                 setActiveMenuAnchor(null);
-                                void openRevisions(e.currentTarget);
+                                void openRevisions();
                             }}
                         >
                             <HistoryIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
@@ -5459,6 +6028,21 @@ export default function NotesPage({
                             反向链接（{backlinks.length}）
                         </MenuItem>
                         </>
+                        )}
+                        {/* 关系图谱（2026-10-09）：双链攒多了以后「谁连谁」在列表里是暗的，
+                            这里一次摊开。入口只在有双链时出现 —— 一条链接都没有时
+                            图上就一个孤点，点了只会让人以为坏了。 */}
+                        {(backlinks.length > 0 || outgoingLinks.length > 0) && (
+                        <MenuItem
+                            data-active-op='graph'
+                            onClick={() => {
+                                setActiveMenuAnchor(null);
+                                setGraphOpen(true);
+                            }}
+                        >
+                            <HubIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
+                            关系图谱
+                        </MenuItem>
                         )}
                         <Divider />
                         {/* 窄屏与分屏时头部放不下「即时渲染」，这里补一个入口（同一个状态）；
@@ -5501,8 +6085,20 @@ export default function NotesPage({
                             }}
                         >
                             <PushPinIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
-                            {active.pinned ? "取消收藏" : "收藏"}
+                            {active.pinned ? "取消置顶" : "置顶"}
                         </MenuItem>
+                        {onToggleStar && (
+                        <MenuItem
+                            data-active-op='star'
+                            onClick={() => {
+                                setActiveMenuAnchor(null);
+                                void onToggleStar(active);
+                            }}
+                        >
+                            {active.starred ? <StarIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} /> : <StarBorderIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />}
+                            {active.starred ? "取消收藏" : "收藏"}
+                        </MenuItem>
+                        )}
                         <MenuItem
                             data-active-op='archive'
                             onClick={() => {
@@ -5581,46 +6177,73 @@ export default function NotesPage({
                 )}
             </Menu>
 
-            <Menu
-                open={Boolean(revisionAnchor)}
-                anchorEl={revisionAnchor}
-                onClose={() => setRevisionAnchor(null)}
-                slotProps={{ paper: { sx: { maxHeight: 420, overflowY: "auto", minWidth: 260 } } }}
-            >
-                {revisions === null ? (
-                    <MenuItem disabled data-revisions='loading'>
-                        正在读取历史版本…
-                    </MenuItem>
-                ) : revisions.length === 0 ? (
-                    <MenuItem disabled data-revisions='empty'>
-                        还没有历史版本（改动正文后会自动留档）
-                    </MenuItem>
-                ) : (
-                    revisions.map(r => (
-                        <MenuItem
-                            key={r.id}
-                            data-revision-item={r.id}
-                            disabled={restoringId !== null}
-                            onClick={() => void doRestoreRevision(r.id)}
-                            sx={{ display: "block" }}
-                        >
-                            <Typography component='span' sx={{ display: "block", fontSize: 13 }}>
-                                {restoringId === r.id
-                                    ? "正在恢复…"
-                                    : formatWhenFull(r.created_at) || "某一版"}
-                            </Typography>
-                            <Typography
-                                component='span'
-                                variant='caption'
-                                color='text.secondary'
-                                sx={{ display: "block" }}
-                            >
-                                {r.title || "（无标题）"} · {r.size ?? 0} 字
-                            </Typography>
-                        </MenuItem>
-                    ))
-                )}
-            </Menu>
+            {/* 版本历史面板（inkstone 的 VersionsPanel）：左列快照 + 右栏行级 diff。
+                替换掉原来那个「点了直接恢复」的 Menu —— 恢复前能看清改了什么。 */}
+            <NoteGraphDialog
+                open={graphOpen}
+                notes={notes}
+                activeId={activeId}
+                onOpenNote={id => {
+                    setGraphOpen(false);
+                    void jumpToNote(id);
+                }}
+                onClose={() => setGraphOpen(false)}
+            />
+            <NoteVersionHistoryDialog
+                open={revisionsOpen}
+                noteTitle={active?.title || ""}
+                revisions={revisions}
+                currentContent={draft?.content ?? active?.content ?? ""}
+                onLoad={loadRevisionContent}
+                onRestore={doRestoreRevision}
+                onClose={() => {
+                    setRevisionsOpen(false);
+                    setRevisions(null);
+                }}
+            />
+
+            {/* 图片灯箱（inkstone 的 Lightbox）：点预览里的图片放大看。
+                ⚠️ Esc 关闭走 keydown 监听 —— 它是一个 portal 之外的 overlay，
+                MUI Dialog 的 onClose 拿不到这里；点空白处也关（inkstone 同款）。 */}
+            {lightbox && (
+                <Box
+                    data-lightbox='1'
+                    role='dialog'
+                    aria-modal='true'
+                    aria-label={lightbox.alt || "图片预览"}
+                    onClick={() => setLightbox(null)}
+                    sx={{
+                        position: "fixed",
+                        inset: 0,
+                        zIndex: 1300,
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        p: 3,
+                        bgcolor: "rgba(0,0,0,0.82)",
+                        cursor: "zoom-out",
+                    }}
+                >
+                    <Box
+                        component='img'
+                        src={lightbox.src}
+                        alt={lightbox.alt}
+                        data-lightbox-img='1'
+                        sx={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", borderRadius: 1 }}
+                    />
+                    <IconButton
+                        aria-label='关闭图片预览'
+                        data-lightbox-close='1'
+                        onClick={e => {
+                            e.stopPropagation();
+                            setLightbox(null);
+                        }}
+                        sx={{ position: "absolute", top: 12, right: 12, color: "#fff" }}
+                    >
+                        <CloseIcon fontSize='small' />
+                    </IconButton>
+                </Box>
+            )}
 
             {/* 反向链接面板：谁引用了这条笔记。上半是「链出去的」，
                 下半是「链进来的」—— 两者都是纯前端算的，不查库。 */}
@@ -5916,6 +6539,27 @@ export default function NotesPage({
                 confirmText='删除'
                 onConfirm={submitRemove}
                 onClose={closeRemove}
+            />
+
+            {/* 批量删除的二次确认（2026-10-09）：删的是用户勾的那批，
+                数量必须写在弹框里 —— 「确定删除吗」四个字看不出是 1 条还是 37 条 */}
+            <ConfirmDialog
+                open={bulkDeleteOpen}
+                title={`删除选中的 ${checkedNotes.length} 条笔记`}
+                description={
+                    <>
+                        它们会进回收站，之后还能还原回来。
+                        <br />
+                        {checkedNotes.slice(0, 3).map(n => n.title || "无标题").join("、")}
+                        {checkedNotes.length > 3 ? ` 等 ${checkedNotes.length} 条` : ""}
+                    </>
+                }
+                impact={{ object: "笔记", count: checkedNotes.length, undoable: true }}
+                danger
+                confirmText='删除'
+                busyText='删除中…'
+                onConfirm={() => void bulkDelete()}
+                onClose={() => setBulkDeleteOpen(false)}
             />
         </Box>
     );

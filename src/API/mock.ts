@@ -508,6 +508,49 @@ export class MockNavigationClient {
         return { versions: 0, links };
     }
 
+    /**
+     * 演示模式的全文检索：内存里 LIKE 一遍（没有 FTS5，mode 恒为 like）。
+     * 形状与真实实现一致，前端不用区分。
+     */
+    async notesSearch(query: string, limit = 50): Promise<import("./types").NoteSearchResult> {
+        const kw = (query || "").trim().toLowerCase();
+        if (!kw) return { mode: "like", results: [] };
+        const terms = kw.split(/\s+/).filter(Boolean);
+        const results = mockNotes
+            .map(n => {
+                const title = n.title ?? "";
+                const content = n.content ?? "";
+                const lowerTitle = title.toLowerCase();
+                const lowerContent = content.toLowerCase();
+                let score = 0;
+                for (const term of terms) {
+                    if (lowerTitle.includes(term)) score += 10;
+                    let at = lowerContent.indexOf(term);
+                    while (at >= 0) {
+                        score += 1;
+                        at = lowerContent.indexOf(term, at + term.length);
+                    }
+                }
+                if (score === 0) return null;
+                const at = lowerContent.indexOf(terms[0] ?? "");
+                const start = Math.max(0, at - 40);
+                return {
+                    id: n.id ?? 0,
+                    title,
+                    snippet:
+                        at < 0
+                            ? content.slice(0, 80)
+                            : (start > 0 ? "…" : "") + content.slice(start, start + 80),
+                    score,
+                    updated_at: n.updated_at,
+                };
+            })
+            .filter((x): x is NonNullable<typeof x> => x !== null)
+            .sort((a, b) => b.score - a.score)
+            .slice(0, limit);
+        return { mode: "like", results };
+    }
+
     /** 演示模式的导入：按 uuid 合并进内存数组（与真实实现同一套「较新者胜」判据） */
     async importNotes(payload: import("./types").NotesImportPayload): Promise<import("./types").NoteImportStats> {
         await new Promise(resolve => setTimeout(resolve, 200));
@@ -1015,6 +1058,19 @@ export class MockNavigationClient {
     }
 
     async notesBackupUpload(): Promise<WebDavResult<{ filename: string; size: number }>> {
+        return { success: false, message: "模拟环境不支持 WebDAV 备份" };
+    }
+
+    async notesBackupListRemote(): Promise<
+        WebDavResult<{ files: { name: string; size: number; lastModified: string }[] }>
+    > {
+        return { success: false, message: "模拟环境不支持 WebDAV 备份" };
+    }
+
+    async notesBackupDownload(
+        _filename: string,
+        _password?: string
+    ): Promise<WebDavResult<{ payload: import("./types").NotesImportPayload }>> {
         return { success: false, message: "模拟环境不支持 WebDAV 备份" };
     }
 

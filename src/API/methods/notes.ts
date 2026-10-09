@@ -21,13 +21,22 @@ import type {
     NoteShareListItem,
     NoteStats,
     NoteImportStats,
+    NoteSearchResult,
     NotesImportPayload,
     PublicNoteAccess,
 } from "../types";
 import type { D1PreparedStatement } from "../schema";
 import { newUuid } from "../../utils/uuid";
 import { extractNoteTags } from "../../utils/markdownNoteTags";
+import {
+    buildFtsMatch,
+    escapeLike,
+    FTS_CONTENT_LIMIT,
+    makeSnippet,
+    segmentCJK,
+} from "../../utils/ftsQuery";
 import { hashPassword, verifyPassword } from "../crypto";
+import { NoteConflictError } from "../../utils/noteConflict";
 
 export interface NotesApi {
     getNoteShare(id: number): Promise<NoteShare | null>;
@@ -138,13 +147,38 @@ export interface NotesApi {
     getNoteRevision(noteId: number, revisionId: number): Promise<NoteRevision | null>;
     /** 把某条快照恢复成当前正文（走 updateNote 的同一条路径，自动再存一份快照） */
     restoreNoteRevision(noteId: number, revisionId: number): Promise<Note | null>;
+
+    // ---- 全文检索（2026-10-09，FTS5 + LIKE 回退）----
+    /**
+     * 搜当前账号的笔记。有 notes_fts 就走 FTS5（bm25 排序、标题权重更高），
+     * 没有就退回 LIKE 全表扫 —— 结果一致，只是慢、且没有相关度排序。
+     * 返回按相关度排好的 `id` 列表 + 命中片段，前端拿它排序与显示摘要。
+     */
+    searchNotes(query: string, limit?: number): Promise<NoteSearchResult>;
+    /** 把一条笔记（重）写进全文索引。失败只记日志，绝不打断调用方。 */
+    syncNoteFts(noteId: number, title: string, content: string): Promise<void>;
+    /** 从全文索引里去掉一条笔记（删除 / 清空回收站时） */
+    dropNoteFts(noteId: number): Promise<void>;
 }
 
 // NoteFolder / NoteTag 定义在 ../types（那边的 Note 也在一起）——
 // 前后端、路由层共用同一份形状，别在方法文件里另起一份。
 
 const NOTE_FIELDS =
-    "id, uuid, title, content, pinned, order_num, site_id, archived, folder_id, created_at, updated_at";
+    "id, uuid, title, content, pinned, starred, rev, order_num, site_id, archived, folder_id, created_at, updated_at";
+
+/**
+ * 全文检索那条 JOIN 查询里的账号隔离片段。
+ *
+ * ⚠️ 不能直接用 `scopeSql(true)`：它生成的是**裸的** ` AND user_id = ?`，
+ * 而这条查询是 `notes_fts JOIN notes` —— 两张表都有 user_id 列，SQLite 会报
+ * "ambiguous column name: user_id"（登录态下直接 500）。
+ * 单账号部署（uid = NULL）时那句片段是空串，所以本机怎么点都点不出这个错，
+ * 只有登录态才炸 —— 和之前附件那次「bind 数量不匹配」是同一类坑。
+ */
+function ftsScopeSql(api: NavigationAPI): string {
+    return api.currentUserId === null ? "" : " AND n.user_id = ?";
+}
 
 /**
  * 数出正文里 `[[目标]]` 双链出现的次数（不含 `![[嵌入]]`）。
@@ -469,6 +503,7 @@ export const notesImpl: NotesApi = {
                 title: string;
                 content: string;
                 pinned: boolean;
+                starred: boolean;
                 order_num: number;
                 folderId: number | null | undefined;
                 archived: boolean | undefined;
@@ -482,7 +517,8 @@ export const notesImpl: NotesApi = {
                         id: ++nextNoteId,
                         uuid: n.uuid!,
                         title: n.title, content: n.content,
-                        pinned: Boolean(n.pinned), order_num: n.order_num ?? 0,
+                        pinned: Boolean(n.pinned), starred: Boolean(n.starred),
+                        order_num: n.order_num ?? 0,
                         folderId, archived: n.archived, isNew: true,
                     });
                     stats.created += 1;
@@ -492,7 +528,8 @@ export const notesImpl: NotesApi = {
                         id: local.id,
                         uuid: n.uuid!,
                         title: n.title, content: n.content,
-                        pinned: Boolean(n.pinned), order_num: n.order_num ?? 0,
+                        pinned: Boolean(n.pinned), starred: Boolean(n.starred),
+                        order_num: n.order_num ?? 0,
                         folderId, archived: n.archived, isNew: false,
                     });
                     stats.updated += 1;
@@ -508,26 +545,30 @@ export const notesImpl: NotesApi = {
                 if (p.isNew) {
                     commitStatements.push(
                         this.db.prepare(
-                            `INSERT INTO notes (id, user_id, uuid, title, content, pinned, order_num, site_id, folder_id, archived)
-                             VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`
+                            `INSERT INTO notes (id, user_id, uuid, title, content, pinned, starred, order_num, site_id, folder_id, archived)
+                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`
                         ).bind(
                             p.id,
                             // user_id 只能是导入者自己 —— 文件里那个值是导出方的，
                             // 照抄会把笔记写到别人名下，而这个字段是唯一的隔离依据
                             this.currentUserId,
-                            p.uuid, p.title, p.content, p.pinned ? 1 : 0, p.order_num,
+                            p.uuid, p.title, p.content, p.pinned ? 1 : 0, p.starred ? 1 : 0,
+                            p.order_num,
                             p.folderId ?? null, p.archived ? 1 : 0
                         )
                     );
                 } else {
                     commitStatements.push(
                         this.db.prepare(
+                            // ⚠️ rev 也要 +1：导入是一次真正的写入，不改的话客户端手里的
+                            // rev 会一直对不上（下一次保存被并发守卫挡住 → 「保存不了」）
                             `UPDATE notes SET uuid = ?, title = ?, content = ?, pinned = ?,
+                             starred = ?, rev = rev + 1,
                              order_num = ?, folder_id = CASE WHEN ? THEN ? ELSE folder_id END,
                              archived = COALESCE(?, archived), updated_at = CURRENT_TIMESTAMP
                              WHERE id = ?${this.scopeSql(true)}`
                         ).bind(...this.scopeParams([
-                            p.uuid, p.title, p.content, p.pinned ? 1 : 0,
+                            p.uuid, p.title, p.content, p.pinned ? 1 : 0, p.starred ? 1 : 0,
                             p.order_num, p.folderId !== undefined ? 1 : 0,
                             p.folderId ?? null, p.archived === undefined ? null : p.archived ? 1 : 0,
                             p.id,
@@ -561,6 +602,33 @@ export const notesImpl: NotesApi = {
             }
 
             if (commitStatements.length > 0) await this.db.batch(commitStatements);
+
+            // 全文索引：一次可能进来几百条，逐条 syncNoteFts 是几百次往返 ——
+            // 自己拼一个 batch（同样的「先删后插」两步）。失败只记日志：
+            // 索引不全的结果是「搜不到」，而导入本身已经成功，不能反过来回滚。
+            if (this.notesFtsReady && plan.length > 0) {
+                try {
+                    const ftsStatements: D1PreparedStatement[] = [];
+                    for (const p of plan) {
+                        ftsStatements.push(
+                            this.db.prepare("DELETE FROM notes_fts WHERE note_id = ?").bind(p.id),
+                            this.db
+                                .prepare(
+                                    "INSERT INTO notes_fts (note_id, user_id, title, body) VALUES (?, ?, ?, ?)"
+                                )
+                                .bind(
+                                    p.id,
+                                    this.currentUserId,
+                                    segmentCJK(p.title || ""),
+                                    segmentCJK((p.content || "").slice(0, FTS_CONTENT_LIMIT))
+                                )
+                        );
+                    }
+                    await this.db.batch(ftsStatements);
+                } catch (error) {
+                    console.error("导入后重建全文索引失败:", error);
+                }
+            }
             return stats;
         });
     },
@@ -634,7 +702,15 @@ export const notesImpl: NotesApi = {
             ? (await this.db.batch<Note>([statement, ...tags]))[0]
             : await statement.all<Note>();
         if (!result.success || !result.results?.length) throw new Error("创建笔记失败");
-        return result.results[0];
+        const created = result.results[0];
+        // 全文索引：建完再补，写不进去只影响搜索（见 syncNoteFts 的注释）
+        if (typeof created.id === "number") {
+            // ⚠️ 刻意 await：Workers 在响应返回后会把没完成的 Promise 掐掉，
+            // `void` 出去的索引写入会被静默丢掉（本地测不出来，线上索引缺一大片）。
+            // syncNoteFts 自己吞异常，所以这里不会影响创建结果。
+            await this.syncNoteFts(created.id, created.title ?? "", created.content ?? "");
+        }
+        return created;
     },
 
     updateNote: async function (
@@ -660,6 +736,11 @@ export const notesImpl: NotesApi = {
                 updates.push("pinned = ?");
                 params.push(patch.pinned ? 1 : 0);
             }
+            // 收藏（与置顶分离，见 Note.starred 的注释）
+            if (patch.starred !== undefined) {
+                updates.push("starred = ?");
+                params.push(patch.starred ? 1 : 0);
+            }
             if (patch.order_num !== undefined) {
                 updates.push("order_num = ?");
                 params.push(patch.order_num);
@@ -681,10 +762,22 @@ export const notesImpl: NotesApi = {
                 params.push(patch.folder_id);
             }
 
+            // 乐观并发（2026-10-09）：客户端带上「我改的是 rev = N 那版」，
+            // SQL 里就多一个 `AND rev = N`。库里已经是 N+1 说明**别人在这期间改过**，
+            // 这条 UPDATE 会一条都不命中 —— 据此返回 409 + 当前内容，
+            // 让客户端弹「这条在别处改过」，而不是静默覆盖掉别人的改动。
+            // ⚠️ 不传 rev 就是老行为（无条件覆盖），老客户端/演示模式不受影响。
+            const expectRev = typeof patch.rev === "number" ? patch.rev : null;
+            updates.push("rev = rev + 1");
+
             params.push(id);
-            const statement = this.db
-                .prepare(`UPDATE notes SET ${updates.join(", ")} WHERE id = ?${this.scopeSql(true)}`)
-                .bind(...this.scopeParams(params));
+            const binds = [...this.scopeParams(params)];
+            let sql = `UPDATE notes SET ${updates.join(", ")} WHERE id = ?${this.scopeSql(true)}`;
+            if (expectRev !== null) {
+                sql += " AND rev = ?";
+                binds.push(expectRev);
+            }
+            const statement = this.db.prepare(sql).bind(...binds);
             // 版本历史：**正文/标题真的变了才留快照**。
             // 自动保存是 3 秒一防抖，一次连续改字会触发很多次 update，
             // 每次都存的话一分钟能堆出几十条一模一样的快照（用户回溯时被
@@ -707,6 +800,16 @@ export const notesImpl: NotesApi = {
                 ? (await this.db.batch([statement, ...tags]))[0]
                 : await statement.run();
             if (!result.success) return null;
+            // 一条都没改到：要么是并发冲突（rev 对不上），要么是这条笔记根本不存在
+            // meta 在 D1 的类型里是 unknown（各版形状不一），这里只取一个数字
+            if (expectRev !== null && Number((result.meta as { changes?: number } | undefined)?.changes ?? 1) === 0) {
+                const current = await this.db
+                    .prepare(`SELECT ${NOTE_FIELDS} FROM notes WHERE id = ?${this.scopeSql(true)}`)
+                    .bind(...this.scopeParams([id]))
+                    .first<Note>();
+                if (current) throw new NoteConflictError("这条笔记在别处被改过了", current);
+                return null;
+            }
             // 更新成功后才落快照（存的是**改动前**的内容）。
             // 失败只记日志：历史丢了不该让用户的保存变成失败。
             if (changed && before) {
@@ -721,6 +824,11 @@ export const notesImpl: NotesApi = {
                 .prepare(`SELECT ${NOTE_FIELDS} FROM notes WHERE id = ?${this.scopeSql(true)}`)
                 .bind(...this.scopeParams([id]))
                 .first<Note>();
+            // 正文 / 标题变了才需要重建索引（只改置顶、排序不用动）
+            if (row && typeof row.id === "number" && (patch.content !== undefined || patch.title !== undefined)) {
+                // 同上：必须 await，不能被 Worker 的请求生命周期掐断
+                await this.syncNoteFts(row.id, row.title ?? "", row.content ?? "");
+            }
             return row ?? null;
         });
     },
@@ -773,6 +881,7 @@ export const notesImpl: NotesApi = {
                 .prepare(`DELETE FROM notes WHERE id = ?${this.scopeSql(true)}`)
                 .bind(...this.scopeParams([id]))
                 .run();
+            if (result.success) await this.dropNoteFts(id);
             return { success: result.success, recycleId: result.success ? recycleId : undefined };
         });
     },
@@ -1418,5 +1527,156 @@ export const notesImpl: NotesApi = {
             title: revision.title,
             content: revision.content,
         });
+    },
+
+    // ---- 全文检索（2026-10-09）----
+    //
+    // 为什么要有它：客户端只持有**当前加载到的**笔记列表，列表是分页/懒加载的，
+    // 而且正文里的 Markdown 标记、附件引用都不该被当成正文匹配。
+    // 服务端按 FTS5 索引搜，顺带给出 bm25 相关度与命中片段。
+    //
+    // ⚠️ 索引是**加速件不是功能本体**：notes_fts 建不出来（见 migrateNotesFtsTable）
+    // 就退回 LIKE 全表扫，结果一致、只是没有相关度排序。任何一处出错都降级，
+    // 不让搜索这个动作本身失败。
+
+    syncNoteFts: async function (
+        this: NavigationAPI,
+        noteId: number,
+        title: string,
+        content: string
+    ): Promise<void> {
+        if (!this.notesFtsReady) return;
+        try {
+            // FTS5 表没有主键约束，更新就是「先删后插」两步。
+            // 同一个 batch 里跑，一次往返。
+            await this.db.batch([
+                this.db.prepare("DELETE FROM notes_fts WHERE note_id = ?").bind(noteId),
+                this.db
+                    .prepare(
+                        "INSERT INTO notes_fts (note_id, user_id, title, body) VALUES (?, ?, ?, ?)"
+                    )
+                    .bind(
+                        noteId,
+                        this.currentUserId,
+                        segmentCJK(title || ""),
+                        segmentCJK((content || "").slice(0, FTS_CONTENT_LIMIT))
+                    ),
+            ]);
+        } catch (error) {
+            // 索引写不进去只影响搜索速度，绝不能让「保存笔记」失败
+            console.error("写全文索引失败:", error);
+        }
+    },
+
+    dropNoteFts: async function (this: NavigationAPI, noteId: number): Promise<void> {
+        if (!this.notesFtsReady) return;
+        try {
+            await this.db
+                .prepare("DELETE FROM notes_fts WHERE note_id = ?")
+                .bind(noteId)
+                .run();
+        } catch (error) {
+            console.error("删全文索引失败:", error);
+        }
+    },
+
+    searchNotes: async function (
+        this: NavigationAPI,
+        query: string,
+        limit = 50
+    ): Promise<NoteSearchResult> {
+        await this.migrate();
+        const q = (query || "").trim().slice(0, 512);
+        const max = Math.min(Math.max(Math.floor(limit) || 50, 1), 200);
+        const mode: NoteSearchResult["mode"] = this.notesFtsReady ? "fts" : "like";
+        if (!q) return { mode, results: [] };
+        const terms = q.split(/\s+/).filter(Boolean);
+
+        if (this.notesFtsReady) {
+            try {
+                const match = buildFtsMatch(q);
+                if (match) {
+                    const rows = await this.db
+                        .prepare(
+                            `SELECT n.id AS id, n.title AS title, n.content AS content,
+                                    n.updated_at AS updated_at,
+                                    bm25(notes_fts, 0.0, 0.0, 10.0, 1.0) AS score
+                               FROM notes_fts
+                               JOIN notes n ON n.id = notes_fts.note_id
+                              WHERE notes_fts MATCH ?${ftsScopeSql(this)}
+                              ORDER BY score ASC, n.updated_at DESC, n.id DESC
+                              LIMIT ?`
+                        )
+                        // ⚠️ 参数顺序：match 在前，账号 id 在后（与上面 SQL 的 ? 顺序一致）
+                        .bind(match, ...this.scopeParams([]), max)
+                        .all<{ id: number; title: string; content: string; updated_at: string; score: number }>();
+                    if (rows.results?.length) {
+                        return {
+                            mode: "fts",
+                            results: rows.results.map(row => ({
+                                id: row.id,
+                                title: row.title ?? "",
+                                snippet: makeSnippet(row.content ?? "", terms),
+                                // bm25 返回负数（越小越相关），翻成正的更好读
+                                score: -row.score,
+                                updated_at: row.updated_at,
+                            })),
+                        };
+                    }
+                    // 一条没中：真没这个内容（不是索引坏了），不用再退 LIKE 扫一遍
+                    return { mode: "fts", results: [] };
+                }
+            } catch (error) {
+                // 到这里说明索引虽然建起来了、但真查询时炸了（D1 版本/磁盘格式差异）：
+                // 直接把开关关掉，之后的搜索都走 LIKE，别每次请求都炸一遍。
+                console.error("全文检索失败，本实例改用 LIKE:", error);
+                this.notesFtsReady = false;
+            }
+        }
+
+        // ---- LIKE 回退：多个词 AND，标题命中加权 ----
+        const params: (string | number)[] = [];
+        let where = "1=1";
+        for (const term of terms.slice(0, 8)) {
+            // ESCAPE '\' + escapeLike：用户输入里的 % _ 不当通配符
+            where += ` AND (title LIKE ? ESCAPE '\\' OR content LIKE ? ESCAPE '\\')`;
+            const pat = `%${escapeLike(term)}%`;
+            params.push(pat, pat);
+        }
+        const rows = await this.db
+            .prepare(
+                `SELECT ${NOTE_FIELDS} FROM notes WHERE ${where}${this.scopeSql(
+                    true
+                )} ORDER BY updated_at DESC LIMIT ?`
+            )
+            .bind(...params, ...this.scopeParams([]), max)
+            .all<Note>();
+        const hits = (rows.results || []).map(row => {
+            const title = row.title ?? "";
+            const content = row.content ?? "";
+            const lowerTitle = title.toLowerCase();
+            const lowerContent = content.toLowerCase();
+            let score = 0;
+            for (const term of terms) {
+                const lower = term.toLowerCase();
+                if (lowerTitle.includes(lower)) score += 10;
+                // 正文里出现几次就加几分（粗略相关度：出现得多的大概率更对题）
+                let at = lowerContent.indexOf(lower);
+                while (at >= 0) {
+                    score += 1;
+                    at = lowerContent.indexOf(lower, at + lower.length);
+                    if (score > 200) break;
+                }
+            }
+            return {
+                id: row.id ?? 0,
+                title,
+                snippet: makeSnippet(content, terms),
+                score,
+                updated_at: row.updated_at,
+            };
+        });
+        hits.sort((a, b) => b.score - a.score || (b.updated_at ?? "").localeCompare(a.updated_at ?? ""));
+        return { mode: "like", results: hits };
     },
 };

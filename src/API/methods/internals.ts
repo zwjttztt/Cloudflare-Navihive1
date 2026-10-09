@@ -84,6 +84,29 @@ export const ATTACHMENTS_INDEX_SQL = `CREATE INDEX IF NOT EXISTS idx_attachments
 /** 迁移里逐条执行的「新表」DDL（见 migrateAttachmentsTable） */
 export const ATTACHMENTS_TABLE_STATEMENTS = [ATTACHMENTS_TABLE_SQL, ATTACHMENTS_INDEX_SQL];
 
+/**
+ * 笔记全文检索的 FTS5 虚拟表（2026-10-09，照 inkstone 的 notes_fts）。
+ *
+ * ⚠️ 分词器必须是 unicode61 而不是 trigram：trigram 要求查询串**至少 3 个字符**，
+ * 中文两字词（「设计」「表结」）会一条都搜不到 —— 实测 `t MATCH '设计'` 返回 0 行，
+ * 而这是中文搜索里最常见的输入。unicode61 + 写入/查询两侧统一 segmentCJK
+ * （见 utils/ftsQuery.ts）才能覆盖 1~2 个字的查询。
+ *
+ * ⚠️ note_id / user_id 是 UNINDEXED：它们只用来定位，不参与全文匹配，
+ * 否则数字也会被当成 token 塞进索引。
+ *
+ * ⚠️ 建表失败不能让站点起不来（D1 某些版本/配置下可能没有 FTS5 模块），
+ * 所以这张表走独立的 try/catch（见 migrateNotesFtsTable），
+ * 建不出来就降级成 LIKE 搜索。
+ */
+export const NOTES_FTS_TABLE_SQL = `CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
+    note_id UNINDEXED,
+    user_id UNINDEXED,
+    title,
+    body,
+    tokenize = "unicode61 remove_diacritics 2"
+);`;
+
 /** 迁移里逐条执行的「新表」DDL（见 runMigrations 第 6.5 步） */
 export const FOLDER_TAG_TABLE_STATEMENTS = [
     NOTE_FOLDER_TABLE_SQL,
@@ -149,6 +172,10 @@ export const CREATE_STATEMENTS = [
         site_id INTEGER,
         archived INTEGER NOT NULL DEFAULT 0,
         folder_id INTEGER,
+        -- 收藏（与置顶 pinned 分离：置顶管排序、收藏管筛选）
+        starred INTEGER NOT NULL DEFAULT 0,
+        -- 乐观并发版本号：每次写入 +1，客户端保存时带上「我改的是哪一版」
+        rev INTEGER NOT NULL DEFAULT 1,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );`,

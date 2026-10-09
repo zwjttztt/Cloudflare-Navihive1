@@ -13,6 +13,7 @@ import {
     CREATE_STATEMENTS,
     FOLDER_TAG_TABLE_STATEMENTS,
     INDEX_STATEMENTS,
+    NOTES_FTS_TABLE_SQL,
     migrationState,
 } from "./internals";
 
@@ -49,7 +50,11 @@ import {
 //     migrateIfNeeded 快路径整段跳过迁移，views 列永远补不上，
 //     listNoteShares 的 SELECT s.views 直接 500（本地/新库全新迁移必然跑，
 //     所以单测全绿测不出）。加任何迁移步骤都要动这个号。
-export const SCHEMA_VERSION = "13";
+// 14 = notes_fts（笔记全文检索的 FTS5 虚拟表）。虚拟表同样吃快路径：
+//     老库建不出来 → searchNotes 一律走 LIKE 回退（能搜但慢、且不排序）。
+// 15 = notes.starred（收藏，与置顶分离）+ notes.rev（乐观并发版本号）。
+//     两列都是老库上必须 ALTER 才有的，版本号 +1 让快路径失效。
+export const SCHEMA_VERSION = "15";
 /** 版本号存在 configs 里的键名 */
 export const SCHEMA_VERSION_KEY = "schema.version";
 
@@ -77,6 +82,10 @@ export interface MigrationApi {
     migrateAttachmentsTable(): Promise<void>;
     /** 2026-10-09：分享表补访问口令（password）与浏览次数（views）两列 */
     migrateNoteShareColumns(): Promise<void>;
+    /** 2026-10-09：notes 补收藏（starred）与乐观并发版本号（rev）两列 */
+    migrateNoteStarRevColumns(): Promise<void>;
+    /** 2026-10-09：笔记全文检索的 FTS5 虚拟表（建不出来就降级，不阻断启动） */
+    migrateNotesFtsTable(): Promise<void>;
     migrateRecoveryKeyToOwner(ownerId: number): Promise<void>;
     migrateWebdavConfigToOwner(ownerId: number): Promise<void>;
     hasColumn(table: string, column: string): Promise<boolean>;
@@ -234,6 +243,13 @@ export const migrationImpl: MigrationApi = {
         // 老库上 note_share 早就建好了，CREATE TABLE IF NOT EXISTS 不会补列，
         // 必须显式 ALTER（见 migrateNoteShareColumns）。
         await this.migrateNoteShareColumns();
+
+        // 6.75) 2026-10-09：notes 补 starred（收藏）与 rev（乐观并发版本号）。
+        await this.migrateNoteStarRevColumns();
+
+        // 6.8) 2026-10-09：笔记全文检索的 FTS5 虚拟表。
+        // 同样必须**显式建**（快路径会跳过建表那批），且失败要能降级（见方法注释）。
+        await this.migrateNotesFtsTable();
 
         // 7) 索引：排在最后，因为它依赖上面补出来的 user_id 列（见 INDEX_STATEMENTS 注释）
         await this.createIndexes();
@@ -423,6 +439,61 @@ export const migrationImpl: MigrationApi = {
                 await this.db.exec("ALTER TABLE note_share ADD COLUMN views INTEGER NOT NULL DEFAULT 0");
             } catch {
                 // 列已存在（并发迁移）或表不存在，忽略
+            }
+        }
+    },
+
+    /**
+     * 建笔记全文检索的 FTS5 虚拟表（2026-10-09）。
+     *
+     * ⚠️ 刻意**不抛错**：FTS5 是可选的加速件，不是功能本体。建不出来（D1 没编
+     * FTS5 模块、或者虚拟表的磁盘格式在这版 SQLite 上不受支持）时把
+     * `notesFtsReady` 置 false，searchNotes 自动退回 LIKE 全表扫 ——
+     * 慢一点但结果一样，绝不能因为一张加速表建不出来就让整个站点起不来。
+     */
+    migrateNotesFtsTable: async function (this: NavigationAPI ): Promise<void> {
+        try {
+            await this.db.exec(NOTES_FTS_TABLE_SQL);
+            // 建完立刻探一次：CREATE VIRTUAL TABLE 在某些环境上是「懒失败」，
+            // 真正 MATCH 时才炸。这里先跑一条空查询把失败提前到迁移阶段。
+            await this.db
+                .prepare("SELECT note_id FROM notes_fts WHERE notes_fts MATCH ? LIMIT 1")
+                .bind("\"a\"")
+                .all();
+            this.notesFtsReady = true;
+        } catch (error) {
+            this.notesFtsReady = false;
+            console.error("全文检索表不可用，搜索将退回 LIKE：", error);
+        }
+    },
+
+    /**
+     * notes 补 `starred`（收藏）与 `rev`（乐观并发版本号）两列（2026-10-09）。
+     *
+     * 同样是老库必须 ALTER 才有 —— CREATE TABLE IF NOT EXISTS 不补列，
+     * 而 notes 表在所有已部署实例上早就存在了。
+     * rev 还要给已有行填 1（默认值只对新行生效，老行是 NULL，
+     * `rev = ?` 的并发守卫在 NULL 上永远不成立 → 保存直接 409 变「改不动」）。
+     */
+    migrateNoteStarRevColumns: async function (this: NavigationAPI ): Promise<void> {
+        if (!(await this.hasColumn("notes", "starred"))) {
+            try {
+                await this.db.exec("ALTER TABLE notes ADD COLUMN starred INTEGER NOT NULL DEFAULT 0");
+            } catch {
+                // 列已存在（并发迁移）或表不存在，忽略
+            }
+        }
+        if (!(await this.hasColumn("notes", "rev"))) {
+            try {
+                await this.db.exec("ALTER TABLE notes ADD COLUMN rev INTEGER NOT NULL DEFAULT 1");
+            } catch {
+                // 同上
+            }
+            // 老行的 rev 是 NULL（DEFAULT 只作用于新插入的行），回填成 1
+            try {
+                await this.db.prepare("UPDATE notes SET rev = 1 WHERE rev IS NULL").run();
+            } catch {
+                // 回填失败不该让站点起不来；代价只是那几行第一次保存可能报冲突
             }
         }
     },

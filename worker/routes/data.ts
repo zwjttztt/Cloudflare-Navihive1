@@ -3,6 +3,7 @@
 // 从 worker/index.ts 拆出来。这是站点日常读写量最大的一组，
 // 读到的数据已经按 ctx.api 上绑定的账号过滤过（见 NavigationAPI.setCurrentUser）。
 import type { Group, Note, NoteFolder, NoteTag, Site } from "../../src/API/http";
+import { NoteConflictError } from "../../src/utils/noteConflict";
 import { enforceWriteGuard, writeBucket } from "../loginGuard";
 import { weakEtag } from "../util";
 import type { GroupInput, SiteInput } from "../types";
@@ -289,6 +290,24 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
     } else if (path === "notes/stats" && method === "GET") {
         // 数据页概览「双链 / 版本历史」两格的全站计数（只读，不走 writeGate）
         return Response.json(await api.notesStats());
+    } else if (path === "notes/search" && method === "POST") {
+        // 服务端全文检索（2026-10-09）：有 FTS5 就走索引 + bm25 排序，
+        // 没有就退回 LIKE 全表扫 —— 前端拿到的是同一份形状（id + 摘要 + 分数）。
+        // 只读，不走 writeGate；但它确实查库，所以还是过一次登录守卫。
+        // 请求体可能压根不是 JSON（老客户端 / 探测请求）：解析失败就当空查询，
+        // 别把 500 抛给用户 —— 搜索失败的结果是「列表照常显示」，不是「页面报错」
+        let body: { query?: unknown; limit?: unknown };
+        try {
+            body = (await request.json()) as { query?: unknown; limit?: unknown };
+        } catch {
+            body = {};
+        }
+        const query = typeof body?.query === "string" ? body.query : "";
+        const limit = typeof body?.limit === "number" ? body.limit : 50;
+        if (!query.trim()) return Response.json({ mode: "like", results: [] });
+        return Response.json(await api.searchNotes(query, limit), {
+            headers: { "Cache-Control": "no-store" },
+        });
     } else if (path === "notes/import" && method === "POST") {
         // 导入「记事本导出」JSON：只动记事本，按 uuid 合并（文件较新才覆盖）。
         // 是写操作，走 writeGate 限速；失败由 api 层整批回滚。
@@ -597,6 +616,12 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
         if (typeof data.title === "string") patch.title = data.title;
         if (typeof data.content === "string") patch.content = data.content;
         if (data.pinned !== undefined) patch.pinned = Boolean(data.pinned);
+        // 收藏（2026-10-09 与置顶分离）
+        if (data.starred !== undefined) patch.starred = Boolean(data.starred);
+        // 乐观并发：客户端带上「我改的是哪一版」。老客户端不传 → 不校验（照旧覆盖）
+        if (typeof data.rev === "number" && Number.isInteger(data.rev) && data.rev >= 0) {
+            patch.rev = data.rev;
+        }
         // 显式传 null 才解除与站点的关联
         if (data.site_id !== undefined) {
             patch.site_id = typeof data.site_id === "number" ? data.site_id : null;
@@ -614,9 +639,25 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
                     ? data.folder_id
                     : null;
         }
-        const note = await api.updateNote(id, patch);
-        if (!note) return Response.json({ error: "笔记不存在" }, { status: 404 });
-        return Response.json(note);
+        try {
+            const note = await api.updateNote(id, patch);
+            if (!note) return Response.json({ error: "笔记不存在" }, { status: 404 });
+            return Response.json(note);
+        } catch (error) {
+            // 乐观并发冲突：不是错误，是「有人在别处改过」这句话。
+            // 带上当前内容，前端才能让用户现场决定「覆盖 / 看别人的版本」。
+            if (error instanceof NoteConflictError) {
+                return Response.json(
+                    {
+                        error: error.message,
+                        code: "conflict",
+                        note: error.note,
+                    },
+                    { status: 409 }
+                );
+            }
+            throw error;
+        }
     } else if (path.startsWith("notes/") && method === "DELETE") {
         const limited = await writeGate();
         if (limited) return limited;
