@@ -133,6 +133,19 @@ export interface NoteShareListItem {
     /** 累计浏览次数（后端补全站计数） */
     views?: number;
 }
+
+/**
+ * 数据页概览里「双链」「版本历史」两格需要的全站计数（inkstone 的 settings.stats）。
+ * 这两项是后端现算的：版本历史 = note_revision 总行数；双链 = 全站正文里
+ * `[[目标]]` 引用出现的总次数（不含 `![[...]]` 嵌入）。前端不持有全量正文，
+ * 不能像「笔记/文件夹/标签/总字数」那样在本地现算，必须走这个端点。
+ */
+export interface NoteStats {
+    /** 全部笔记的历史快照总数（note_revision 行数，按账号隔离） */
+    versions: number;
+    /** 全站 `[[双链]]` 引用出现次数（不含 `![[嵌入]]`） */
+    links: number;
+}
 export interface PublicNote {
     title: string;
     content: string;
@@ -213,6 +226,23 @@ export interface NoteImportStats {
     skipped: number;
     /** 完全覆盖模式下被清掉的本地笔记数 */
     removed: number;
+}
+
+/**
+ * 记事本导出文件的形状（NotesPage exportAllData 生成，notes/import 读回）。
+ * 与全站备份（ExportData）**不是一个格式**：这里没有 groups/sites/configs，
+ * 导入只动记事本，绝不碰导航站数据 —— 所以也不能复用 transfer.importData
+ * （那条路径会先清空再重建分组/站点，空数组等于清光导航站）。
+ */
+export interface NotesImportPayload {
+    /** "navihive-notes-export"（老导出文件没写也接受，按字段形状判） */
+    kind?: string;
+    notes?: Note[];
+    /** 备份内引用的文件夹/标签 id，导入时按「父路径+名称」/「名称」去重重建 */
+    folders?: NoteFolder[];
+    tags?: NoteTag[];
+    /** 导出方笔记 id -> 标签 id 列表（JSON 的键一定是字符串）；导入时翻译到新 id */
+    noteTags?: Record<string, number[]>;
 }
 
 // WebDAV 备份配置

@@ -3967,6 +3967,101 @@ test("数据页概览有「总字数」（inkstone 的 stats.words 同格，不�
     assert.ok(stat("笔记").includes("2"), "笔记条数仍是 2");
 });
 
+test("数据页概览有「双链」「版本历史」两格（后端 notes/stats 的全站计数）", async () => {
+    setWide();
+    mountPanel([note({ id: 1, title: "甲", content: "a" })], {
+        shareApi: {
+            getNoteShare: async () => null,
+            createNoteShare: async () => null,
+            revokeNoteShare: async () => ({ success: true }),
+            listNoteShares: async () => [],
+            notesStats: async () => ({ versions: 12, links: 34 }),
+        } as never,
+    });
+    await act(async () => (document.querySelector("button[data-tool='settings']") as HTMLElement).click());
+    await act(async () => (document.querySelector("[data-settings-tab='data']") as HTMLElement).click());
+    await act(async () => {
+        await new Promise(r => setTimeout(r, 30));
+    });
+    const stat = (label: string) =>
+        document.querySelector(`[data-data-stat='${label}']`)?.textContent ?? "";
+    assert.ok(stat("双链").includes("34"), `双链格应显示 34，实际「${stat("双链")}」`);
+    assert.ok(stat("版本历史").includes("12"), `版本历史格应显示 12，实际「${stat("版本历史")}」`);
+});
+
+test("数据页「双链」「版本历史」两格在老部署（无 notesStats）下显示「—」不报错", async () => {
+    setWide();
+    mountPanel([note({ id: 1, title: "甲", content: "a" })]);
+    await act(async () => (document.querySelector("button[data-tool='settings']") as HTMLElement).click());
+    await act(async () => (document.querySelector("[data-settings-tab='data']") as HTMLElement).click());
+    await act(async () => {
+        await new Promise(r => setTimeout(r, 30));
+    });
+    const stat = (label: string) =>
+        document.querySelector(`[data-data-stat='${label}']`)?.textContent ?? "";
+    assert.ok(stat("双链").startsWith("—"), `没有后端计数时双链格显示占位符（实际「${stat("双链")}」）`);
+    assert.ok(stat("版本历史").startsWith("—"), `没有后端计数时版本历史格显示占位符（实际「${stat("版本历史")}」）`);
+});
+
+test("数据页有「导入笔记（JSON）」入口（老部署没有 importNotes 时整行不出现）", async () => {
+    setWide();
+    let imported: unknown = null;
+    const notifications: string[] = [];
+    mountPanel([note({ id: 1, title: "甲", content: "a" })], {
+        onNotify: (message: string) => {
+            notifications.push(message);
+        },
+        shareApi: {
+            getNoteShare: async () => null,
+            createNoteShare: async () => null,
+            revokeNoteShare: async () => ({ success: true }),
+            listNoteShares: async () => [],
+            notesStats: async () => ({ versions: 0, links: 0 }),
+            importNotes: async (payload: unknown) => {
+                imported = payload;
+                return { created: 1, updated: 0, skipped: 0, removed: 0 };
+            },
+        } as never,
+    });
+    await act(async () => (document.querySelector("button[data-tool='settings']") as HTMLElement).click());
+    await act(async () => (document.querySelector("[data-settings-tab='data']") as HTMLElement).click());
+    await act(async () => {
+        await new Promise(r => setTimeout(r, 30));
+    });
+    const btn = document.querySelector("[data-data-action='import-notes']") as HTMLElement | null;
+    assert.ok(btn, "有 importNotes 能力时要给「导入笔记」入口");
+    // 隐藏的 file input 存在且 accept JSON
+    const fileInput = document.querySelector("input[aria-label='选择要导入的笔记 JSON 文件']") as HTMLInputElement | null;
+    assert.ok(fileInput, "要有隐藏的文件选择框");
+    // 直接对 file input 塞文件触发 change（别 click()：无头环境会挂住）。
+    // jsdom 没有 DataTransfer，手搓一个最小的 FileList 形状即可 ——
+    // 组件只读 e.target.files?.[0]。
+    const file = new File([JSON.stringify({ notes: [{ uuid: "u1", title: "乙", content: "c" }] })], "notes.json", { type: "application/json" });
+    const fakeList = { 0: file, length: 1, item: (i: number) => (i === 0 ? file : null) } as unknown as FileList;
+    Object.defineProperty(fileInput!, "files", { value: fakeList, configurable: true });
+    await act(async () => fileInput!.dispatchEvent(new Event("change", { bubbles: true })));
+    await act(async () => {
+        await new Promise(r => setTimeout(r, 30));
+    });
+    assert.ok(imported, "选文件后要把解析出的 JSON 整包交给后端");
+    assert.deepEqual(imported, { notes: [{ uuid: "u1", title: "乙", content: "c" }] }, "交给后端的就是文件里解析出的 JSON");
+    assert.ok(
+        notifications.some(m => m.includes("导入完成")),
+        `成功后要有结果提示（实际通知：${JSON.stringify(notifications)}）`
+    );
+});
+
+test("数据页「导入笔记」行在老部署（无 importNotes）下不出现", async () => {
+    setWide();
+    mountPanel([note({ id: 1, title: "甲", content: "a" })]);
+    await act(async () => (document.querySelector("button[data-tool='settings']") as HTMLElement).click());
+    await act(async () => (document.querySelector("[data-settings-tab='data']") as HTMLElement).click());
+    await act(async () => {
+        await new Promise(r => setTimeout(r, 30));
+    });
+    assert.equal(document.querySelector("[data-data-action='import-notes']"), null, "没有能力就不放假入口");
+});
+
 test("数据页「附件」区能打开管理器，逐条删除走二次确认", async () => {
     setWide();
     let deleted: string | null = null;

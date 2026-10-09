@@ -5023,6 +5023,15 @@ export default function NotesPage({
                     onDeleteAttachment: uploadApi?.deleteAttachment
                         ? (id: string) => uploadApi.deleteAttachment!(id).then(() => undefined)
                         : undefined,
+                    // 「双链 / 版本历史」全站计数：shareApi 就是完整的 NavigationClient
+                    // （NotesOverlay 传入），老部署没有 notesStats 方法时自动显示「—」
+                    onNotesStats: shareApi?.notesStats
+                        ? () => shareApi.notesStats!()
+                        : undefined,
+                    // 导入「记事本导出」JSON：同一条链路（NotesPage 自己导出的文件）
+                    onImportNotes: shareApi?.importNotes
+                        ? (payload) => shareApi.importNotes!(payload)
+                        : undefined,
                 }}
                 onNotify={onNotify}
                 onOpenNote={id => {

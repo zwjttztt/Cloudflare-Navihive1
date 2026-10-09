@@ -17,7 +17,7 @@ import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import LinkIcon from "@mui/icons-material/Link";
 import LinkOffIcon from "@mui/icons-material/LinkOff";
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
-import type { NoteShare, NoteShareListItem } from "../API/types";
+import type { NoteImportStats, NotesImportPayload, NoteShare, NoteShareListItem, NoteStats } from "../API/types";
 import ConfirmDialog from "./ConfirmDialog";
 
 export interface NoteShareApi {
@@ -29,6 +29,16 @@ export interface NoteShareApi {
     revokeNoteShare(id: number): Promise<{ success: boolean }>;
     /** 更新有效期但**保留 token**（链接不变）—— inkstone SharePanel 的「更新设置」 */
     updateNoteShare(id: number, days: number | null, password?: string | null): Promise<NoteShare | null>;
+    /**
+     * 数据页「双链 / 版本历史」两格的全站计数。可选：老部署的 api 没有
+     * 这个方法，两格自动显示「—」，不报错（与 uploadApi 的可选方法同一套路）。
+     */
+    notesStats?(): Promise<NoteStats>;
+    /**
+     * 导入「记事本导出」JSON（exportAllData 的形状）：按 uuid 合并、较新者胜。
+     * 可选：老部署没有 notes/import 端点时数据页的导入行整个不出现。
+     */
+    importNotes?(payload: NotesImportPayload): Promise<NoteImportStats>;
 }
 
 type ExpiryKey = "keep" | "0" | "1" | "7" | "30";

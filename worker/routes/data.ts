@@ -286,6 +286,19 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
         // ⚠️ 必须排在 /^notes\/\d+\/share$/ 之前，也在 notes/folders 那一堆之前：
         // 「notes/shares」不匹配数字正则，但绝不能被后面的前缀分支抢走。
         return Response.json(await api.listNoteShares());
+    } else if (path === "notes/stats" && method === "GET") {
+        // 数据页概览「双链 / 版本历史」两格的全站计数（只读，不走 writeGate）
+        return Response.json(await api.notesStats());
+    } else if (path === "notes/import" && method === "POST") {
+        // 导入「记事本导出」JSON：只动记事本，按 uuid 合并（文件较新才覆盖）。
+        // 是写操作，走 writeGate 限速；失败由 api 层整批回滚。
+        const limited = await writeGate();
+        if (limited) return limited;
+        const body = await request.json() as { kind?: unknown; notes?: unknown };
+        if (!body || !Array.isArray(body.notes)) {
+            return Response.json({ error: "文件里没有笔记数据（这不是记事本导出的 JSON）" }, { status: 400 });
+        }
+        return Response.json(await api.importNotesData(body as never));
     } else if (/^notes\/\d+\/share$/.test(path)) {
         const id = Number(path.split("/")[1]);
         const headers = { "Cache-Control": "no-store" };

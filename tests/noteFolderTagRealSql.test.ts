@@ -140,6 +140,130 @@ test("真实 SQLite：访问口令（need-password / 校验）与浏览次数自
     assert.equal((await api.getPublicNote("../../evil")).status, "not-found");
 });
 
+test("真实 SQLite：notesStats 全站计数（版本历史 = 快照数，双链 = [[引用]] 次数不含嵌入）", async () => {
+    resetMigrationCacheForTests();
+    const realDb = makeRealD1();
+    const api = makeApi(realDb);
+    await api.migrate();
+    api.setCurrentUser(null); // 单账号部署
+
+    // 初始为 0
+    const empty = await api.notesStats();
+    assert.deepEqual(empty, { versions: 0, links: 0 });
+
+    const a = await api.createNote({ title: "甲", content: "见 [[乙]] 与 [[丙]]，嵌入不算 [[...]]".replace("[[...]]", "![[嵌入块]]") });
+    const b = await api.createNote({ title: "乙", content: "没有链接的正文" });
+    assert.ok(a.id && b.id);
+
+    // 每次更新留一份快照（pushRevision，存的是改动前的内容）：改两次 = 2 份
+    await api.updateNote(a.id!, { content: "见 [[乙]]（改）" });
+    await api.updateNote(a.id!, { content: "见 [[乙]] 与 [[丙]]（再改）" });
+
+    const stats = await api.notesStats();
+    // 双链扫的是**当前正文**（不是历史快照）：甲现文 [[乙]]+[[丙]] = 2，乙 = 0 → 共 2
+    assert.equal(stats.links, 2, "双链按当前正文出现次数计（不含 ![[嵌入]]）");
+    assert.equal(stats.versions, 2, "版本历史 = 快照行数（创建不算，更新两次 = 2）");
+
+    // 账号隔离：另一个账号看不到这批计数
+    api.setCurrentUser(777);
+    const other = await api.notesStats();
+    assert.deepEqual(other, { versions: 0, links: 0 }, "别的账号必须看到全 0");
+});
+
+test("真实 SQLite：importNotesData 按 uuid 合并（较新者胜）+ 文件夹/标签重映射", async () => {
+    resetMigrationCacheForTests();
+    const realDb = makeRealD1();
+    const api = makeApi(realDb);
+    await api.migrate();
+    api.setCurrentUser(null); // 单账号部署
+
+    const expFolder = { id: 11, name: "工作", parent_id: null };
+    const expTag = { id: 21, name: "重要", color: "#ff0000" };
+    const base = {
+        kind: "navihive-notes-export",
+        folders: [expFolder],
+        tags: [expTag],
+        noteTags: { "101": [21] },
+    };
+
+    // 1) 首次导入：全部新增，文件夹/标签重建、关联翻译
+    let r = await api.importNotesData({
+        ...base,
+        notes: [{
+            id: 101,
+            uuid: "uuid-a",
+            title: "甲",
+            content: "正文甲",
+            folder_id: 11,
+            updated_at: "2026-10-01T10:00:00.000Z",
+        } as never],
+    });
+    assert.deepEqual({ created: r.created, updated: r.updated, skipped: r.skipped }, { created: 1, updated: 0, skipped: 0 });
+
+    const imported = (await api.listNotes()).find(n => n.uuid === "uuid-a");
+    assert.ok(imported, "导入的笔记要能查到");
+    assert.equal(imported!.folder_id, (await api.listFolders()).find(f => f.name === "工作")?.id, "文件夹要按名称重映射");
+    const tagLinks = await api.listNoteTags();
+    const importedTag = (await api.listTags()).find(t => t.name === "重要");
+    assert.ok(importedTag, "标签要重建");
+    assert.deepEqual(tagLinks[imported!.id!], [importedTag!.id], "标签关联要翻译到新 id");
+
+    // 2) 原样再导一次：同 updated_at → 保留本地，不重复建
+    r = await api.importNotesData({
+        ...base,
+        notes: [{
+            id: 101, uuid: "uuid-a", title: "甲", content: "正文甲", folder_id: 11,
+            updated_at: "2026-10-01T10:00:00.000Z",
+        } as never],
+    });
+    assert.deepEqual({ created: r.created, updated: r.updated, skipped: r.skipped }, { created: 0, updated: 0, skipped: 1 });
+    assert.equal((await api.listNotes()).length, 1, "重复导入不能多出笔记");
+
+    // 3) 文件里较新 → 覆盖本地（本地 updated_at 是导入时的 CURRENT_TIMESTAMP「今天」，
+    //    所以「较新」必须用一个明确的未来日期才立得住）
+    r = await api.importNotesData({
+        ...base,
+        notes: [{
+            id: 101, uuid: "uuid-a", title: "甲（新）", content: "正文甲 v2", folder_id: 11,
+            updated_at: "2027-06-01T00:00:00.000Z",
+        } as never],
+    });
+    assert.deepEqual({ created: r.created, updated: r.updated }, { created: 0, updated: 1 });
+    const after = (await api.listNotes()).find(n => n.uuid === "uuid-a");
+    assert.equal(after!.title, "甲（新）", "文件较新时要覆盖本地");
+    assert.equal((await api.listNotes()).length, 1, "覆盖写回原条目，不能多出一条");
+
+    // 4) 本地较新 → 保留本地
+    r = await api.importNotesData({
+        ...base,
+        notes: [{
+            id: 101, uuid: "uuid-a", title: "甲（旧）", content: "旧内容", folder_id: 11,
+            updated_at: "2020-01-01T00:00:00.000Z",
+        } as never],
+    });
+    assert.equal(r.skipped, 1, "本地较新要跳过");
+    assert.equal((await api.listNotes()).find(n => n.uuid === "uuid-a")!.title, "甲（新）", "跳过时本地内容不动");
+
+    // 5) 脏数据容错：形状不对的条目丢弃，不拖垮整批
+    r = await api.importNotesData({
+        notes: [
+            { uuid: "uuid-b", title: "乙", content: "正文乙" },
+            { title: 123, content: null },
+        ] as never,
+    });
+    assert.equal(r.created, 1, "有效的那条要进来");
+    assert.ok((await api.listNotes()).some(n => n.uuid === "uuid-b"));
+
+    // 6) 账号隔离：另一个账号导入同 uuid 是新增，互不干扰
+    api.setCurrentUser(555);
+    r = await api.importNotesData({
+        notes: [{ id: 101, uuid: "uuid-a", title: "别人的甲", content: "x", updated_at: "2026-10-03T10:00:00.000Z" } as never],
+    });
+    assert.equal(r.created, 1, "别的账号导入同 uuid 应当是新增");
+    api.setCurrentUser(null);
+    assert.equal((await api.listNotes()).find(n => n.uuid === "uuid-a")!.title, "甲（新）", "别的账号的导入不能动本账号数据");
+});
+
 test("真实 SQLite：migrateNoteShareColumns 幂等（password/views 可重复迁移不报错）", async () => {
     // 升级前老库 note_share 没有 password / views 两列，CREATE TABLE IF NOT EXISTS 不补列，
     // 必须靠 migrateNoteShareColumns 的 ALTER 补。连跑两次不能因为「列已存在」而崩。

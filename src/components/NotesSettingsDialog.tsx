@@ -33,12 +33,13 @@ import LinkOffIcon from "@mui/icons-material/LinkOff";
 import LinkIcon from "@mui/icons-material/Link";
 import StorageIcon from "@mui/icons-material/Storage";
 import FileDownloadIcon from "@mui/icons-material/FileDownload";
+import FileUploadIcon from "@mui/icons-material/FileUpload";
 import DeleteSweepIcon from "@mui/icons-material/DeleteSweep";
 import NoteShareDialog, { type NoteShareApi } from "./NoteShareDialog";
 import ConfirmDialog from "./ConfirmDialog";
 import { FOLDER_COLORS } from "../utils/folderAppearance";
 import type { NotesUiSettings } from "../utils/notesSettings";
-import type { NoteShareListItem } from "../API/types";
+import type { NoteImportStats, NotesImportPayload, NoteShareListItem, NoteStats } from "../API/types";
 
 type SettingsTab = "appearance" | "editor" | "data" | "shares";
 
@@ -62,6 +63,16 @@ export interface NotesDataTab {
     onPruneAttachments?: () => Promise<{ removed: number; freedBytes: number }>;
     /** 删除单个附件（附件管理器里用）。可选：老部署没有就整个管理器不出现 */
     onDeleteAttachment?: (id: string) => Promise<void>;
+    /**
+     * 「双链 / 版本历史」两格的全站计数（inkstone 的 stats.links / stats.versions）。
+     * 可选：老部署的 api 没有 notes/stats 端点，两格自动显示「—」。
+     */
+    onNotesStats?: () => Promise<NoteStats>;
+    /**
+     * 导入「记事本导出」JSON（exportAllData 的形状）：按 uuid 合并、较新者胜。
+     * 可选：老部署没有 notes/import 端点时整行不出现。失败抛错，消息直接给用户。
+     */
+    onImportNotes?: (payload: NotesImportPayload) => Promise<NoteImportStats>;
 }
 
 /** 一行设置：左标签（+可选说明）、右控件 —— inkstone 的设置行样式 */
@@ -202,6 +213,39 @@ export default function NotesSettingsDialog({
         null
     );
     const [sharesCount, setSharesCount] = useState<number | null>(null);
+    /** 「双链 / 版本历史」全站计数（后端 notes/stats；老部署没有 → null 显示「—」） */
+    const [noteStats, setNoteStats] = useState<NoteStats | null>(null);
+    // 导入笔记：走隐藏的 file input（真机测 <input type=file> 也不能 input.click()
+    // 之外的方式触发；这里由按钮 ref.click() 调起，读文件后整包交给后端合并）
+    const importFileRef = useRef<HTMLInputElement>(null);
+    const [importBusy, setImportBusy] = useState(false);
+
+    const handleImportFile = async (file: File | null | undefined) => {
+        if (!file || !dataRef.current?.onImportNotes) return;
+        setImportBusy(true);
+        try {
+            let parsed: NotesImportPayload;
+            try {
+                parsed = JSON.parse(await file.text()) as NotesImportPayload;
+            } catch {
+                throw new Error("文件不是有效的 JSON");
+            }
+            if (!parsed || !Array.isArray(parsed.notes)) {
+                throw new Error("文件里没有笔记数据（请选择本工具导出的笔记 JSON）");
+            }
+            const r = await dataRef.current.onImportNotes(parsed);
+            onNotify?.(
+                `导入完成：新增 ${r.created} 条，更新 ${r.updated} 条，保留本地 ${r.skipped} 条`,
+                "success"
+            );
+        } catch (error) {
+            onNotify?.("导入失败：" + (error instanceof Error ? error.message : "未知错误"), "error");
+        } finally {
+            setImportBusy(false);
+            // 清空 value：同一个文件选第二次也要能触发 change
+            if (importFileRef.current) importFileRef.current.value = "";
+        }
+    };
     const [confirmKind, setConfirmKind] = useState<"trash" | "prune" | null>(null);
     // ---- 分享列表（2026-07-07 参考 inkstone 新增）----
     const [shares, setShares] = useState<NoteShareListItem[] | null>(null);
@@ -258,6 +302,18 @@ export default function NotesSettingsDialog({
                 .catch(() => {
                     if (live) setSharesCount(null);
                 });
+            // 「双链 / 版本历史」两格的全站计数：后端现算（前端不持有全量正文）。
+            // 老部署没有 notesStats 方法 → 保持 null，两格显示「—」。
+            if (shareApi.notesStats) {
+                shareApi
+                    .notesStats()
+                    .then(s => {
+                        if (live) setNoteStats(s);
+                    })
+                    .catch(() => {
+                        if (live) setNoteStats(null);
+                    });
+            }
         }
         return () => {
             live = false;
@@ -690,15 +746,16 @@ export default function NotesSettingsDialog({
                                     {(
                                         [
                                             // 顺序照 inkstone 的 stats 网格：笔记 → 文件夹 →
-                                            // 标签 → 总字数 → 附件 → 回收站；「分享」是我们
-                                            // 多出来的（inkstone 没有公开链接这个功能）。
-                                            // ⚠️ inkstone 还有「双链」与「版本历史」两格：
-                                            // 后端没有全站计数端点，按「不放假开关」的惯例
-                                            // 宁缺勿假，等有了再补。
+                                            // 标签 → 双链 → 总字数 → 版本历史 → 附件 → 回收站；
+                                            // 「分享」是我们多出来的（inkstone 没有公开链接这个功能）。
+                                            // 双链/版本历史是后端 notes/stats 现算的全站计数，
+                                            // 老部署没有这个端点时显示「—」（宁缺勿假）。
                                             ["笔记", data.stats.notes],
                                             ["文件夹", data.stats.folders],
                                             ["标签", data.stats.tags],
+                                            ["双链", noteStats ? noteStats.links : null],
                                             ["总字数", data.stats.words],
+                                            ["版本历史", noteStats ? noteStats.versions : null],
                                             ["附件", attStats ? attStats.count : null],
                                             ["回收站", data.stats.trashed],
                                             ["分享", sharesCount],
@@ -768,6 +825,33 @@ export default function NotesSettingsDialog({
                                         下载 JSON
                                     </Button>
                                 </SettingRow>
+
+                                {/* 导入：读回上面导出的那份 JSON，按 uuid 合并（文件较新才覆盖）。
+                                    与导出同一条链路，导出的文件保证导得回来。 */}
+                                {data.onImportNotes && (
+                                    <SettingRow
+                                        label='导入笔记（JSON）'
+                                        description='选择本工具导出的 JSON：同一条笔记（按内部标识识别）取较新的那份，本地较新的不会被覆盖。'
+                                    >
+                                        <Button
+                                            size='small'
+                                            startIcon={<FileUploadIcon fontSize='small' />}
+                                            data-data-action='import-notes'
+                                            disabled={importBusy}
+                                            onClick={() => importFileRef.current?.click()}
+                                        >
+                                            {importBusy ? "导入中…" : "选择文件"}
+                                        </Button>
+                                    </SettingRow>
+                                )}
+                                <input
+                                    ref={importFileRef}
+                                    type='file'
+                                    hidden
+                                    accept='.json,application/json'
+                                    aria-label='选择要导入的笔记 JSON 文件'
+                                    onChange={e => void handleImportFile(e.target.files?.[0])}
+                                />
 
                                 <Typography variant='subtitle2' sx={{ mb: 0.5, mt: 2 }}>
                                     维护

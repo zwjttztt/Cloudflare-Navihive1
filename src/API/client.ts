@@ -8,6 +8,9 @@ import {
     NoteTag,
     NoteShare,
     NoteShareListItem,
+    NoteStats,
+    NoteImportStats,
+    NotesImportPayload,
     LoginResponse,
     ExportData,
     ImportResult,
@@ -549,6 +552,23 @@ export class NavigationClient {
     async countNotes(): Promise<number> {
         const res = await this.request<{ count?: number }>("notes/count");
         return res?.count ?? 0;
+    }
+
+    /** 数据页概览「双链 / 版本历史」两格的全站计数（后端现算） */
+    async notesStats(): Promise<NoteStats> {
+        const res = await this.request<Partial<NoteStats>>("notes/stats");
+        return { versions: res?.versions ?? 0, links: res?.links ?? 0 };
+    }
+
+    /**
+     * 导入「记事本导出」JSON（exportAllData 的形状）：只动记事本，按 uuid 合并。
+     * 失败（形状不对 / 写入失败）抛错，成功返回三态统计。
+     */
+    async importNotes(payload: NotesImportPayload): Promise<NoteImportStats> {
+        return this.request<NoteImportStats>("notes/import", {
+            method: "POST",
+            body: JSON.stringify(payload),
+        });
     }
 
     // ---- 图片附件（2026-07）----

@@ -493,6 +493,45 @@ export class MockNavigationClient {
         return mockNotes.length;
     }
 
+    /** 演示模式没有版本历史，双链按内存笔记现算（与真实实现同一套判据） */
+    async notesStats(): Promise<import("./types").NoteStats> {
+        await new Promise(resolve => setTimeout(resolve, 150));
+        let links = 0;
+        for (const n of mockNotes) {
+            const re = /\[\[([^\]\n]+)\]\]/g;
+            let m: RegExpExecArray | null;
+            while ((m = re.exec(n.content)) !== null) {
+                if (m.index > 0 && n.content[m.index - 1] === "!") continue;
+                links += 1;
+            }
+        }
+        return { versions: 0, links };
+    }
+
+    /** 演示模式的导入：按 uuid 合并进内存数组（与真实实现同一套「较新者胜」判据） */
+    async importNotes(payload: import("./types").NotesImportPayload): Promise<import("./types").NoteImportStats> {
+        await new Promise(resolve => setTimeout(resolve, 200));
+        const stats = { created: 0, updated: 0, skipped: 0, removed: 0 };
+        const incoming = (Array.isArray(payload?.notes) ? payload.notes : [])
+            .filter((n): n is Note => !!n && typeof n.title === "string" && typeof n.content === "string");
+        const byUuid = new Map(mockNotes.map(n => [n.uuid, n]));
+        for (const n of incoming) {
+            const local = n.uuid ? byUuid.get(n.uuid) : undefined;
+            if (!local) {
+                mockNotes.push({ ...n, uuid: n.uuid || `mock-${Date.now()}-${Math.random().toString(36).slice(2)}` });
+                stats.created += 1;
+            } else if (Date.parse(n.updated_at || "") > Date.parse(local.updated_at || "")) {
+                local.title = n.title;
+                local.content = n.content;
+                local.updated_at = n.updated_at;
+                stats.updated += 1;
+            } else {
+                stats.skipped += 1;
+            }
+        }
+        return stats;
+    }
+
     // ---- 图片附件（2026-07，演示模式下的内存实现）----
     // ⚠️ 与 client.ts 一一对应：契约守卫测试盯着两边的方法集合，少一个 mock 就会
     // 在演示模式下抛「不是函数」。

@@ -19,6 +19,9 @@ import type {
     NoteTag,
     NoteShare,
     NoteShareListItem,
+    NoteStats,
+    NoteImportStats,
+    NotesImportPayload,
     PublicNoteAccess,
 } from "../types";
 import type { D1PreparedStatement } from "../schema";
@@ -41,6 +44,15 @@ export interface NotesApi {
      */
     updateNoteShare(id: number, days: number | null, password?: string | null): Promise<NoteShare | null>;
     getPublicNote(token: string, password?: string | null): Promise<PublicNoteAccess>;
+    /** 数据页概览「双链 / 版本历史」两格的全站计数（后端现算，前端不持有全量正文） */
+    notesStats(): Promise<NoteStats>;
+    /**
+     * 导入「记事本导出」JSON（NotesPage exportAllData 的形状），**只动记事本**：
+     * 按 uuid 识别同一条，文件里较新才覆盖，本地较新就保留；文件夹按
+     * 「父路径+名称」、标签按「名称」去重重建，标签关联翻译到新 id。
+     * 整批一个事务：任何一条失败全部回滚，本地数据一根汗毛都不动。
+     */
+    importNotesData(payload: NotesImportPayload): Promise<NoteImportStats>;
     listNotes(): Promise<Note[]>;
     getNote(id: number): Promise<Note | null>;
     createNote(draft: Partial<Note>): Promise<Note>;
@@ -126,6 +138,23 @@ export interface NotesApi {
 
 const NOTE_FIELDS =
     "id, uuid, title, content, pinned, order_num, site_id, archived, folder_id, created_at, updated_at";
+
+/**
+ * 数出正文里 `[[目标]]` 双链出现的次数（不含 `![[嵌入]]`）。
+ * 用来给数据页「双链」一格做全站计数 —— 前端只持有当前账号的笔记列表，
+ * 不持有全量正文，不能像「总字数」那样在本地现算，必须后端扫一遍。
+ */
+function countWikiLinks(text: string): number {
+    const re = /\[\[([^\]\n]+)\]\]/g;
+    let m: RegExpExecArray | null;
+    let n = 0;
+    while ((m = re.exec(text)) !== null) {
+        // 前一个字符是 ! 的就是嵌入 `![[...]]`，不计入双链
+        if (m.index > 0 && text[m.index - 1] === "!") continue;
+        n += 1;
+    }
+    return n;
+}
 
 /**
  * 每条笔记保留多少个历史快照。
@@ -300,6 +329,209 @@ export const notesImpl: NotesApi = {
             note: { title: row.title, content: row.content, updated_at: row.updated_at },
             views,
         };
+    },
+    notesStats: async function (this: NavigationAPI): Promise<NoteStats> {
+        await this.migrate();
+        return this.withSchemaRetry(async () => {
+            // 版本历史 = note_revision 行数（按账号隔离；user_id IS ? 对单账号 null 也成立）
+            const v = await this.db
+                .prepare(`SELECT COUNT(*) AS n FROM note_revision WHERE user_id IS ?`)
+                .bind(this.currentUserId)
+                .first<{ n: number }>();
+            // 双链 = 全站正文里 [[目标]] 的出现次数（不含 ![[嵌入]]）。
+            // 按需现扫一遍正文：数据页打开才算一次，量大时也只是 O(正文总长)。
+            const rows = await this.db
+                .prepare(`SELECT content FROM notes WHERE user_id IS ?`)
+                .bind(this.currentUserId)
+                .all<{ content: string | null }>();
+            let links = 0;
+            for (const r of rows.results ?? []) links += countWikiLinks(r.content ?? "");
+            return { versions: v?.n ?? 0, links };
+        });
+    },
+    importNotesData: async function (this: NavigationAPI, payload: NotesImportPayload): Promise<NoteImportStats> {
+        await this.migrate();
+        return this.withSchemaRetry(async () => {
+            const stats: NoteImportStats = { created: 0, updated: 0, skipped: 0, removed: 0 };
+            // 只收形状完整的那几条：title/content 不是字符串的条目直接丢弃，
+            // 不能让一条脏数据把整批导入拖崩。uuid 缺失（很老的导出）现场补一个，
+            // 让它当成新笔记进来 —— 合并去重靠 uuid，没有它就只能整条新增。
+            const incoming = (Array.isArray(payload?.notes) ? payload.notes : [])
+                .filter((n): n is Note => !!n && typeof n.title === "string" && typeof n.content === "string")
+                .map(n => ({ ...n, uuid: n.uuid || newUuid() }));
+
+            const commitStatements: D1PreparedStatement[] = [];
+
+            // ── 文件夹：按「父路径 + 名称」去重（与 transfer.importData 同一套判据）──
+            const folderMap = new Map<number, number>();
+            if (Array.isArray(payload.folders) && payload.folders.length > 0) {
+                const local = await this.db
+                    .prepare(`SELECT id, name, parent_id FROM note_folder${this.scopeSql(false)}`)
+                    .bind(...this.scopeParams([]))
+                    .all<{ id: number; name: string; parent_id: number | null }>();
+                const max = await this.db.prepare("SELECT COALESCE(MAX(id), 0) AS m FROM note_folder").first<{ m: number }>();
+                let next = max?.m || 0;
+                const byPath = new Map((local.results || []).map(f => [JSON.stringify([f.parent_id ?? null, f.name]), f.id]));
+                const source = new Map(payload.folders.map(f => [f.id, f]));
+                const visiting = new Set<number>();
+                const add = (folder: NoteFolder): number => {
+                    if (folder.id !== undefined && folderMap.has(folder.id)) return folderMap.get(folder.id)!;
+                    if (folder.id !== undefined && visiting.has(folder.id)) throw new Error("文件夹层级存在循环");
+                    if (folder.id !== undefined) visiting.add(folder.id);
+                    const parent = folder.parent_id ? source.get(folder.parent_id) : undefined;
+                    const parentId = parent ? add(parent) : null;
+                    const key = JSON.stringify([parentId, folder.name]);
+                    let id = byPath.get(key);
+                    if (id === undefined) {
+                        id = ++next;
+                        byPath.set(key, id);
+                        commitStatements.push(
+                            this.db.prepare("INSERT INTO note_folder (id, user_id, name, order_num, parent_id) VALUES (?, ?, ?, ?, ?)")
+                                .bind(id, this.currentUserId, folder.name, folder.order_num ?? 0, parentId)
+                        );
+                    }
+                    if (folder.id !== undefined) { folderMap.set(folder.id, id); visiting.delete(folder.id); }
+                    return id;
+                };
+                payload.folders.forEach(add);
+            }
+
+            // ── 标签：按名称去重 ──
+            const tagMap = new Map<number, number>();
+            if (Array.isArray(payload.tags) && payload.tags.length > 0) {
+                const local = await this.db
+                    .prepare(`SELECT id, name FROM note_tag${this.scopeSql(false)}`)
+                    .bind(...this.scopeParams([]))
+                    .all<{ id: number; name: string }>();
+                const byName = new Map((local.results || []).map(r => [r.name, r.id]));
+                const max = await this.db.prepare("SELECT COALESCE(MAX(id), 0) AS m FROM note_tag").first<{ m: number }>();
+                let next = max?.m || 0;
+                for (const row of payload.tags) {
+                    let id = byName.get(row.name);
+                    if (id === undefined) {
+                        id = ++next;
+                        byName.set(row.name, id);
+                        commitStatements.push(
+                            this.db.prepare("INSERT INTO note_tag (id, user_id, name, color) VALUES (?, ?, ?, ?)")
+                                .bind(id, this.currentUserId, row.name, row.color ?? null)
+                        );
+                    }
+                    if (typeof row.id === "number") tagMap.set(row.id, id);
+                }
+            }
+
+            // ── 笔记合并：先读本地算计划（uuid 相同比 updated_at，文件较新才覆盖）──
+            const localRows = await this.db
+                .prepare(`SELECT id, uuid, updated_at FROM notes${this.scopeSql(false)}`)
+                .bind(...this.scopeParams([]))
+                .all<{ id: number; uuid: string | null; updated_at: string | null }>();
+            const localByUuid = new Map<string, { id: number; updated_at: string | null }>();
+            for (const row of localRows.results || []) {
+                if (row.uuid) localByUuid.set(row.uuid, row);
+            }
+            const maxNote = await this.db.prepare("SELECT COALESCE(MAX(id), 0) AS m FROM notes").first<{ m: number }>();
+            let nextNoteId = maxNote?.m || 0;
+
+            const plan: Array<{
+                id: number;
+                uuid: string;
+                title: string;
+                content: string;
+                pinned: boolean;
+                order_num: number;
+                folderId: number | null | undefined;
+                archived: boolean | undefined;
+                isNew: boolean;
+            }> = [];
+            for (const n of incoming) {
+                const local = localByUuid.get(n.uuid!);
+                const folderId = n.folder_id !== undefined ? folderMap.get(n.folder_id ?? 0) ?? null : undefined;
+                if (!local) {
+                    plan.push({
+                        id: ++nextNoteId,
+                        uuid: n.uuid!,
+                        title: n.title, content: n.content,
+                        pinned: Boolean(n.pinned), order_num: n.order_num ?? 0,
+                        folderId, archived: n.archived, isNew: true,
+                    });
+                    stats.created += 1;
+                } else if (Date.parse(n.updated_at || "") > Date.parse(local.updated_at || "")) {
+                    // 覆盖写回原 id —— 新建一条再删旧的会把 updated_at 弄丢
+                    plan.push({
+                        id: local.id,
+                        uuid: n.uuid!,
+                        title: n.title, content: n.content,
+                        pinned: Boolean(n.pinned), order_num: n.order_num ?? 0,
+                        folderId, archived: n.archived, isNew: false,
+                    });
+                    stats.updated += 1;
+                } else {
+                    // 本地较新（或时间解析不出来）：保守保留本地，不冒险覆盖
+                    stats.skipped += 1;
+                }
+            }
+
+            // ── 提交：一个 batch = 一个事务，中途失败全部回滚 ──
+            const planByUuid = new Map(plan.map(p => [p.uuid, p]));
+            for (const p of plan) {
+                if (p.isNew) {
+                    commitStatements.push(
+                        this.db.prepare(
+                            `INSERT INTO notes (id, user_id, uuid, title, content, pinned, order_num, site_id, folder_id, archived)
+                             VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`
+                        ).bind(
+                            p.id,
+                            // user_id 只能是导入者自己 —— 文件里那个值是导出方的，
+                            // 照抄会把笔记写到别人名下，而这个字段是唯一的隔离依据
+                            this.currentUserId,
+                            p.uuid, p.title, p.content, p.pinned ? 1 : 0, p.order_num,
+                            p.folderId ?? null, p.archived ? 1 : 0
+                        )
+                    );
+                } else {
+                    commitStatements.push(
+                        this.db.prepare(
+                            `UPDATE notes SET uuid = ?, title = ?, content = ?, pinned = ?,
+                             order_num = ?, folder_id = CASE WHEN ? THEN ? ELSE folder_id END,
+                             archived = COALESCE(?, archived), updated_at = CURRENT_TIMESTAMP
+                             WHERE id = ?${this.scopeSql(true)}`
+                        ).bind(...this.scopeParams([
+                            p.uuid, p.title, p.content, p.pinned ? 1 : 0,
+                            p.order_num, p.folderId !== undefined ? 1 : 0,
+                            p.folderId ?? null, p.archived === undefined ? null : p.archived ? 1 : 0,
+                            p.id,
+                        ]))
+                    );
+                }
+            }
+
+            // ── 标签关联：noteTags 的键是导出方的笔记 id，经 uuid 翻译到本地 id ──
+            // 只有这批真写进去的笔记才重建关联（skipped 的本地关联本来就在，别动）。
+            if (payload.noteTags && typeof payload.noteTags === "object") {
+                for (const [exportedId, tagIds] of Object.entries(payload.noteTags)) {
+                    const source = incoming.find(n => n.id !== undefined && String(n.id) === exportedId);
+                    if (!source?.uuid) continue;
+                    const p = planByUuid.get(source.uuid);
+                    if (!p) continue;
+                    commitStatements.push(
+                        this.db.prepare(`DELETE FROM note_note_tag WHERE note_id IN
+                            (SELECT id FROM notes WHERE id = ?${this.scopeSql(true)})`)
+                            .bind(...this.scopeParams([p.id]))
+                    );
+                    for (const tagId of Array.isArray(tagIds) ? tagIds : []) {
+                        const mapped = tagMap.get(tagId);
+                        if (mapped === undefined) continue;
+                        commitStatements.push(
+                            this.db.prepare("INSERT OR IGNORE INTO note_note_tag (note_id, tag_id) VALUES (?, ?)")
+                                .bind(p.id, mapped)
+                        );
+                    }
+                }
+            }
+
+            if (commitStatements.length > 0) await this.db.batch(commitStatements);
+            return stats;
+        });
     },
     listNotes: async function (this: NavigationAPI): Promise<Note[]> {
         await this.migrate();
