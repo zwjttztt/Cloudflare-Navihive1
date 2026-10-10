@@ -17,7 +17,7 @@ let root: Root | null = null;
 let host: HTMLDivElement | null = null;
 
 const notes: Note[] = [
-    { id: 1, title: "Alpha 笔记", content: "alpha body" },
+    { id: 1, title: "Alpha 笔记", content: "开头的无关介绍\nAlpha 命中行的上下文\n结尾" },
     { id: 2, title: "Beta 笔记", content: "beta body" },
     { id: 3, title: "Gamma 笔记", content: "gamma body" },
 ];
@@ -127,6 +127,32 @@ test("N1 远端命中：带摘要并上浮", async () => {
     const beta = items.find(t => t.includes("Beta 笔记"));
     assert.ok(beta, "Beta 笔记应出现");
     assert.ok(beta!.includes("远端命中片段"), "应带远端摘要");
+    cleanup();
+});
+
+test("仅输入 > 时不展示最近笔记", () => {
+    mount({ recentNoteIds: [1] });
+    typeInto(">");
+    assert.ok(!rows().some(t => t.includes("Alpha")));
+    assert.ok(rows().some(t => t.includes("新建笔记")));
+    cleanup();
+});
+
+test("本地搜索摘要优先显示关键词命中行", () => {
+    mount();
+    typeInto("Alpha");
+    const item = rows().find(row => row.includes("Alpha 笔记"));
+    assert.ok(item?.includes("Alpha 命中行的上下文"));
+    assert.ok(!item?.includes("开头的无关介绍"));
+    cleanup();
+});
+
+test("输入法选词 Enter 不执行命令", () => {
+    mount({ recentNoteIds: [1] });
+    const input = document.querySelector('.notes-command-palette input')!;
+    const event = new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true, isComposing: true });
+    act(() => { input.dispatchEvent(event); });
+    assert.equal(event.defaultPrevented, false);
     cleanup();
 });
 

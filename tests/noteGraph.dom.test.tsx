@@ -16,7 +16,7 @@ let host: HTMLDivElement | null = null;
 
 const notes: Note[] = [
     { id: 1, title: "A", content: "见 [[B]]" },
-    { id: 2, title: "B", content: "见 [[C]]" },
+    { id: 2, title: "B", content: "见 [[C]] 和 [[待创建]]" },
     { id: 3, title: "C", content: "没有链" },
     { id: 4, title: "孤岛", content: "谁也不连" },
 ];
@@ -70,6 +70,18 @@ test("N9 depth=1（默认）：邻域只有直接邻居，二跳之外的 C 不�
     assert.ok(ids.includes("1") && ids.includes("2"), `A、B 应在图上：${ids}`);
     assert.ok(!ids.includes("3"), "C 是二跳之外，不应出现");
     assert.ok(!ids.includes("4"), "孤岛不应出现在邻域模式");
+    cleanup();
+});
+
+test("未解析虚节点遵守邻域深度并带连线及键盘语义", () => {
+    mount(1);
+    assert.ok(document.querySelector('[data-graph-unresolved="1"]') === null);
+    clickDepth(2);
+    const missing = document.querySelector('[data-graph-unresolved="1"]');
+    assert.ok(missing);
+    assert.equal(missing.getAttribute("role"), "button");
+    assert.equal(missing.getAttribute("aria-label"), "创建笔记 待创建");
+    assert.ok(document.querySelector('[data-graph-edge="2--1"]'));
     cleanup();
 });
 

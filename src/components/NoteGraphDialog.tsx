@@ -23,7 +23,8 @@ import Typography from "@mui/material/Typography";
 import CloseIcon from "@mui/icons-material/Close";
 import HubIcon from "@mui/icons-material/Hub";
 import type { Note } from "../API/types";
-import { resolveWikiLinks } from "../utils/noteWikiLink";
+import { resolveWikiLinks, extractWikiLinks } from "../utils/noteWikiLink";
+import TextField from "@mui/material/TextField";
 
 export interface NoteGraphDialogProps {
     open: boolean;
@@ -31,6 +32,7 @@ export interface NoteGraphDialogProps {
     /** 当前笔记（图谱以它为中心；没有就退化成「全站图」的第一种布局） */
     activeId?: number | null;
     onOpenNote: (id: number) => void;
+    onCreateNote?: (title: string) => void;
     onClose: () => void;
 }
 
@@ -38,6 +40,7 @@ interface GraphNode {
     id: number;
     title: string;
     degree: number;
+    unresolved?: boolean;
     x: number;
     y: number;
 }
@@ -55,6 +58,7 @@ export default function NoteGraphDialog({
     notes,
     activeId,
     onOpenNote,
+    onCreateNote,
     onClose,
 }: NoteGraphDialogProps) {
     /** true = 只画当前笔记的邻域；false = 全站所有笔记（含孤岛） */
@@ -62,6 +66,7 @@ export default function NoteGraphDialog({
     /** 邻域模式的跳数（N9）：1 = 直接邻居（原有行为），2/3 = 沿双链再往外走几跳 */
     const [depth, setDepth] = useState(1);
     const [hover, setHover] = useState<number | null>(null);
+    const [query, setQuery] = useState("");
 
     const graph = useMemo(() => {
         const active = activeId === null || activeId === undefined
@@ -79,9 +84,24 @@ export default function NoteGraphDialog({
             seen.add(key);
             edges.push({ from, to });
         };
+        const knownTitles = new Set(notes.map(n => n.title.trim().toLowerCase()));
+        const unresolved = new Map<number, string>();
+        const missingIds = new Map<string, number>();
+        let nextMissingId = -1;
         for (const note of notes) {
             if (note.id === undefined) continue;
             for (const out of resolveWikiLinks(notes, note)) addEdge(note.id, out.id);
+            for (const title of extractWikiLinks(note.content)) {
+                const key = title.trim().toLowerCase();
+                if (!key || knownTitles.has(key)) continue;
+                let id = missingIds.get(key);
+                if (id === undefined) {
+                    id = nextMissingId--;
+                    missingIds.set(key, id);
+                    unresolved.set(id, title.trim());
+                }
+                addEdge(note.id, id);
+            }
         }
 
         // 2) 邻域模式：从当前笔记 BFS depth 跳，收集可达节点，只留两端都在集合里的边；
@@ -144,7 +164,7 @@ export default function NoteGraphDialog({
             .filter(id => id !== active?.id)
             .map(id => {
                 const note = notes.find(n => n.id === id);
-                return { id, title: note?.title || "无标题", degree: degrees.get(id) ?? 0 };
+                return { id, title: unresolved.get(id) || note?.title || "无标题", unresolved: unresolved.has(id), degree: degrees.get(id) ?? 0 };
             })
             .sort((a, b) => b.degree - a.degree || a.title.localeCompare(b.title));
         ring.forEach((item, index) => {
@@ -157,9 +177,11 @@ export default function NoteGraphDialog({
             });
         });
 
-        const byId = new Map(nodes.map(n => [n.id, n]));
-        return { nodes, edges: drawn.filter(e => byId.has(e.from) && byId.has(e.to)), byId };
-    }, [notes, activeId, localOnly, depth]);
+        const filtered = nodes.filter(n => n.title.toLowerCase().includes(query.toLowerCase()));
+        const limited = filtered.slice(0, 350);
+        const byId = new Map(limited.map(n => [n.id, n]));
+        return { nodes: limited, truncated: filtered.length > 350, edges: drawn.filter(e => byId.has(e.from) && byId.has(e.to)), byId };
+    }, [notes, activeId, localOnly, depth, query]);
 
     const connected = useMemo(() => {
         const set = new Set<number>();
@@ -221,6 +243,9 @@ export default function NoteGraphDialog({
                 </IconButton>
             </DialogTitle>
             <DialogContent sx={{ pt: 0.5 }}>
+                <TextField size='small' fullWidth value={query} onChange={e => setQuery(e.target.value)} label='筛选节点标题' />
+                {graph.truncated && <Typography role='status'>节点过多，仅展示前 350 个，请缩小范围。</Typography>}
+                <Typography variant='caption'>虚线节点代表未创建的链接目标，点击或按 Enter 可创建笔记。</Typography>
                 <Typography variant='caption' color='text.secondary' sx={{ display: "block", mb: 1 }}>
                     {localOnly
                         ? depth === 1
@@ -275,7 +300,19 @@ export default function NoteGraphDialog({
                                 <g
                                     key={node.id}
                                     data-graph-node={node.id}
-                                    onClick={() => onOpenNote(node.id)}
+                                    role='button'
+                                    tabIndex={0}
+                                    aria-label={node.unresolved ? `创建笔记 ${node.title}` : `打开笔记 ${node.title}`}
+                                    aria-disabled={node.unresolved && !onCreateNote ? true : undefined}
+                                    data-graph-unresolved={node.unresolved ? "1" : undefined}
+                                    onClick={() => node.unresolved ? onCreateNote?.(node.title) : onOpenNote(node.id)}
+                                    onKeyDown={e => {
+                                        if (e.key === "Enter" || e.key === " ") {
+                                            e.preventDefault();
+                                            if (node.unresolved) onCreateNote?.(node.title);
+                                            else onOpenNote(node.id);
+                                        }
+                                    }}
                                     onMouseEnter={() => setHover(node.id)}
                                     onMouseLeave={() => setHover(null)}
                                     style={{ cursor: "pointer" }}
@@ -294,6 +331,7 @@ export default function NoteGraphDialog({
                                         }
                                         stroke='var(--accent)'
                                         strokeWidth={1}
+                                        strokeDasharray={node.unresolved ? "3 3" : undefined}
                                     />
                                     <text
                                         x={node.x}

@@ -178,20 +178,28 @@ export function createScrollSync(opts: {
     };
 
     /** 贴边判定：到顶/到底就精确贴边，不做插值（否则边缘会来回抖） */
-    const edge = (top: number): "top" | "bottom" | null => {
-        const max = maxScroll(previewScroller);
+    const edge = (top: number, scroller: HTMLElement): "top" | "bottom" | null => {
+        const max = maxScroll(scroller);
         if (top <= EDGE_EPSILON) return "top";
         if (top >= max - EDGE_EPSILON) return "bottom";
         return null;
     };
 
     const syncFromEditor = () => {
-        const e = edge(editorScroller.scrollTop);
+        const e = edge(editorScroller.scrollTop, editorScroller);
         if (e === "top") return void setTop(previewScroller, 0);
         if (e === "bottom") return void setTop(previewScroller, maxScroll(previewScroller));
-        const line = editorLineAtScroll(editorScroller);
+        const line = Math.max(0, editorLineAtScroll(editorScroller) - 1);
         const pad = parseFloat(getComputedStyle(previewScroller).paddingTop) || 0;
         setTop(previewScroller, previewTopForLine(getCurve(), line) - pad);
+    };
+
+    const syncFromPreview = () => {
+        const e = edge(previewScroller.scrollTop, previewScroller);
+        if (e === "top") return void setTop(editorScroller, 0);
+        if (e === "bottom") return void setTop(editorScroller, maxScroll(editorScroller));
+        const line = sourceLineForPreviewTop(getCurve(), previewScroller.scrollTop + (parseFloat(getComputedStyle(previewScroller).paddingTop) || 0));
+        if (opts.editorScrollForLine) setTop(editorScroller, opts.editorScrollForLine(line));
     };
 
     const releaseLater = (side: ScrollSide) => {
@@ -214,6 +222,7 @@ export function createScrollSync(opts: {
             if (driver !== side) return;
             if (!enabled()) return;
             if (side === "editor") syncFromEditor();
+            else syncFromPreview();
             releaseLater(side);
         });
     };
@@ -222,6 +231,8 @@ export function createScrollSync(opts: {
     const onPointerDown = () => claim("editor");
     const onKeyDown = () => claim("editor");
     const onScroll = () => schedule("editor");
+    const claimPreview = () => claim("preview");
+    const scrollPreview = () => schedule("preview");
 
     const bind = () => {
         const bound = enabled();
@@ -230,6 +241,10 @@ export function createScrollSync(opts: {
         editorScroller.addEventListener("pointerdown", onPointerDown, { passive: true });
         editorScroller.addEventListener("keydown", onKeyDown, true);
         editorScroller.addEventListener("scroll", onScroll, { passive: true });
+        previewScroller.addEventListener("wheel", claimPreview, { passive: true });
+        previewScroller.addEventListener("pointerdown", claimPreview, { passive: true });
+        previewScroller.addEventListener("keydown", claimPreview, true);
+        previewScroller.addEventListener("scroll", scrollPreview, { passive: true });
         // 预览的重新渲染会改高度 → 锚点表作废
         const ro = new ResizeObserver(() => {
             anchors = null;
@@ -247,6 +262,10 @@ export function createScrollSync(opts: {
             editorScroller.removeEventListener("pointerdown", onPointerDown);
             editorScroller.removeEventListener("keydown", onKeyDown, true);
             editorScroller.removeEventListener("scroll", onScroll);
+            previewScroller.removeEventListener("wheel", claimPreview);
+            previewScroller.removeEventListener("pointerdown", claimPreview);
+            previewScroller.removeEventListener("keydown", claimPreview, true);
+            previewScroller.removeEventListener("scroll", scrollPreview);
         };
     };
 

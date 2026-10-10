@@ -60,6 +60,16 @@ export const EDITOR_SHORTCUTS: EditorShortcut[] = [
     { id: "ordered-list", combo: "mod+shift+7", label: "有序列表" },
     { id: "task-list", combo: "mod+shift+9", label: "任务列表" },
     { id: "quote", combo: "mod+shift+.", label: "引用" },
+    { id: "task-done", combo: "mod+shift+enter", label: "切换任务完成" },
+    { id: "move-line-up", combo: "alt+arrowup", label: "上移行" },
+    { id: "move-line-down", combo: "alt+arrowdown", label: "下移行" },
+    { id: "delete-line", combo: "mod+shift+k", label: "删除行" },
+    { id: "indent", combo: "mod+]", label: "缩进" },
+    { id: "outdent", combo: "mod+[", label: "取消缩进" },
+    { id: "undo", combo: "mod+z", label: "撤销" },
+    { id: "redo", combo: IS_MAC ? "mod+shift+z" : "mod+y", label: "重做" },
+    { id: "select-next-occurrence", combo: "mod+d", label: "选择下一相同文本" },
+    { id: "find", combo: "mod+f", label: "查找 / 替换" },
 ];
 
 /** 按 id 查快捷键组合；没有就返回 undefined（UI 据此决定「不显示 kbd」） */

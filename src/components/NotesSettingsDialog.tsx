@@ -1068,7 +1068,7 @@ export default function NotesSettingsDialog({
                                 {data.onImportNotes && (
                                     <SettingRow
                                         label='导入笔记（JSON / ZIP）'
-                                        description='选择本工具导出的 JSON 或 ZIP：同一条笔记（按内部标识识别）取较新的那份，本地较新的不会被覆盖。ZIP 里的图片会一并回传，正文里的引用自动换成新地址。'
+                                        description='支持本工具的 JSON / ZIP 备份，以及 Obsidian 风格的 Markdown 文件夹 ZIP。备份按内部标识取较新版本；Markdown ZIP 创建笔记并保留目录与标签，附件会回传并重写引用（需附件上传能力）。'
                                     >
                                         <Button
                                             size='small'

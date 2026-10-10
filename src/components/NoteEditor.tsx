@@ -9,8 +9,9 @@ import { search, searchKeymap, highlightSelectionMatches } from "@codemirror/sea
 import { Compartment } from "@codemirror/state";
 import { livePreview, type LiveRenderer } from "./NoteEditorLivePreview";
 import { editorHandle, type NoteEditorHandle } from "../utils/noteEditorHandle";
-import { EDITOR_SHORTCUTS, toCodeMirrorKey } from "../utils/editorShortcuts";
-import { htmlToMarkdown } from "../utils/htmlToMarkdown";
+import { EDITOR_SHORTCUTS, comboFor, toCodeMirrorKey } from "../utils/editorShortcuts";
+import { htmlToMarkdown, looksLikeMarkdown, markdownLink } from "../utils/htmlToMarkdown";
+import { moveLineUp, moveLineDown, deleteLine, indentMore, indentLess, undo, redo } from "@codemirror/commands";
 import { typewriter, typewriterCompartment } from "./NoteTypewriter";
 
 // 字体/字号走 CSS 变量而不是把值写死进 theme：设置面板改字号时不用重建编辑器
@@ -126,8 +127,8 @@ function paragraphRange(state: EditorState, pos: number): { from: number; to: nu
 
 /** 在光标处插入文本并把光标移到插入内容之后 */
 function insertText(view: EditorView, text: string): void {
-    const pos = view.state.selection.main.head;
-    view.dispatch({ changes: { from: pos, insert: text }, selection: { anchor: pos + text.length } });
+    const { from, to } = view.state.selection.main;
+    view.dispatch({ changes: { from, to, insert: text }, selection: { anchor: from + text.length }, userEvent: "input.paste" });
 }
 
 /**
@@ -138,10 +139,11 @@ function insertText(view: EditorView, text: string): void {
 async function uploadAndInsertImage(
     view: EditorView,
     file: File,
-    uploadFn: (f: File) => Promise<{ url: string; filename: string }>
+    uploadFn: (f: File) => Promise<{ url: string; filename: string }>,
+    onDetachedUpload?: (placeholder: string, replacement: string) => Promise<void>
 ): Promise<void> {
     const token = `uploading-${Math.random().toString(36).slice(2, 8)}`;
-    const placeholder = `![上传中…](${token})`;
+    const placeholder = `上传中…<!-- ${token} -->`;
     const head = view.state.selection.main.head;
     const line = view.state.doc.lineAt(head);
     const at = line.to;
@@ -149,19 +151,17 @@ async function uploadAndInsertImage(
     const text = (needsLead ? "\n" : "") + placeholder + "\n";
     view.dispatch({ changes: { from: at, insert: text }, selection: { anchor: at + text.length } });
     const replaceToken = (replacement: string) => {
+        if (!view.dom.isConnected) { void onDetachedUpload?.(placeholder, replacement); return; }
         const doc = view.state.doc.toString();
-        const idx = doc.indexOf(token);
+        const idx = doc.indexOf(placeholder);
         if (idx < 0) return;
-        view.dispatch({
-            changes: { from: idx, to: idx + token.length, insert: replacement },
-            selection: { anchor: idx + replacement.length },
-        });
+        view.dispatch({ changes: { from: idx, to: idx + placeholder.length, insert: replacement }, userEvent: "input.paste" });
     };
     try {
-        const { url } = await uploadFn(file);
-        replaceToken(url);
+        const { url, filename } = await uploadFn(file);
+        replaceToken(markdownLink(filename, url, file.type.startsWith("image/")));
     } catch {
-        replaceToken("上传失败");
+        replaceToken(`<!-- 上传失败：${file.name.replace(/[<>\r\n]/g, " ").replace(/--/g, "—")} -->`);
     }
 }
 
@@ -235,6 +235,7 @@ export interface NoteEditorProps {
      * 返回的是「最终可内嵌的 url」（小图可能已是 data URI，由宿主决定）。
      */
     uploadImage?: (file: File) => Promise<{ url: string; filename: string }>;
+    onDetachedUpload?: (placeholder: string, replacement: string) => Promise<void>;
 }
 
 export default function NoteEditor({
@@ -252,6 +253,7 @@ export default function NoteEditor({
     typewriterMode = false,
     shortcutActions,
     uploadImage,
+    onDetachedUpload,
 }: NoteEditorProps) {
     const host = useRef<HTMLDivElement>(null);
     const viewRef = useRef<EditorView | null>(null);
@@ -259,6 +261,8 @@ export default function NoteEditor({
     // 上传能力放进 ref：换回调（比如存储从「没配」变「配了」）不该重建编辑器。
     const uploadRef = useRef(uploadImage);
     uploadRef.current = uploadImage;
+    const detachedUploadRef = useRef(onDetachedUpload);
+    detachedUploadRef.current = onDetachedUpload;
     // 滚动回调放进 ref：换回调不该重建编辑器（会丢撤销历史）
     const scrollRef = useRef(onScrollRatio);
     useLayoutEffect(() => { scrollRef.current = onScrollRatio; }, [onScrollRatio]);
@@ -300,24 +304,40 @@ export default function NoteEditor({
                     // 永远挂上：没传 uploadImage 时处理器直接放行（原生行为），
                     // 传了才走「占位符 → 上传 → 回写」；upload 能力走 uploadRef 读最新值。
                     EditorView.domEventHandlers({
+                        dragover(event) {
+                            if (uploadRef.current && event.dataTransfer?.types.includes("Files")) event.preventDefault();
+                            return false;
+                        },
                         paste(event, view) {
                             const cdt = event.clipboardData;
                             if (!cdt) return false;
                             // N3：图片分支需要 upload 能力；没传 uploadImage 时放行原生行为
                             const upload = uploadRef.current;
-                            const imageFiles = Array.from(cdt.files).filter(f => f.type.startsWith("image/"));
+                            const imageFiles = Array.from(cdt.files);
+                            if (!imageFiles.length && !cdt.getData("text/html") && !cdt.getData("text/plain")) {
+                                for (const item of Array.from(cdt.items ?? [])) {
+                                    const file = item.kind === "file" ? item.getAsFile() : null;
+                                    if (file) imageFiles.push(file);
+                                }
+                            }
                             if (upload && imageFiles.length > 0) {
                                 event.preventDefault();
-                                for (const f of imageFiles) void uploadAndInsertImage(view, f, upload);
+                                for (const f of imageFiles) void uploadAndInsertImage(view, f, upload, detachedUploadRef.current);
                                 return true;
                             }
                             // N5：没图片、有 HTML、且没纯文本时，把 HTML 转 Markdown 粘进来。
                             // ⚠️ 这一支**不依赖** upload 能力 —— 后端没配存储也能粘 HTML。
                             const html = cdt.getData("text/html");
                             const plain = cdt.getData("text/plain");
-                            if (html && !plain.trim()) {
+                            if (/^https?:\/\/\S+$/i.test(plain.trim()) && !view.state.selection.main.empty) {
+                                const range = view.state.selection.main;
+                                event.preventDefault();
+                                insertText(view, markdownLink(view.state.sliceDoc(range.from, range.to), plain.trim()));
+                                return true;
+                            }
+                            if (html && !looksLikeMarkdown(plain)) {
                                 const md = htmlToMarkdown(html);
-                                if (md) {
+                                if (md && md !== plain) {
                                     event.preventDefault();
                                     insertText(view, md);
                                     return true;
@@ -330,12 +350,12 @@ export default function NoteEditor({
                             if (!upload) return false;
                             const dt = event.dataTransfer;
                             if (!dt) return false;
-                            const imageFiles = Array.from(dt.files).filter(f => f.type.startsWith("image/"));
+                            const imageFiles = Array.from(dt.files);
                             if (imageFiles.length > 0) {
                                 event.preventDefault();
                                 const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
                                 if (pos != null) view.dispatch({ selection: { anchor: pos } });
-                                for (const f of imageFiles) void uploadAndInsertImage(view, f, upload);
+                                for (const f of imageFiles) void uploadAndInsertImage(view, f, upload, detachedUploadRef.current);
                                 return true;
                             }
                             return false;
@@ -351,7 +371,7 @@ export default function NoteEditor({
                         // ⚠️ 两个条件都要判：`combo` 在表里是可选的（有些动作只声明
                         // 不绑定，见 editorShortcuts 的说明），只判 run 的话
                         // toCodeMirrorKey 会收到 undefined。
-                        EDITOR_SHORTCUTS.filter(s => s.run && s.combo).map(s => ({
+                        EDITOR_SHORTCUTS.filter(s => s.combo).map(s => ({
                             key: toCodeMirrorKey(s.combo!),
                             preventDefault: true,
                             run: (view: EditorView) => {
@@ -366,6 +386,20 @@ export default function NoteEditor({
                     // 查找/替换 keymap：必须排在 defaultKeymap 之前，否则有些键会被
                     // CM 默认行为抢走（Mod-g / F3 在 defaultKeymap 里没有，但放这里更稳）。
                     // 我们的自定义 keymap 在前、不绑 Mod-f/d，所以这些键自然落到这里。
+                    keymap.of([
+                        { key: toCodeMirrorKey(comboFor("move-line-up")!), run: moveLineUp }, { key: toCodeMirrorKey(comboFor("move-line-down")!), run: moveLineDown },
+                        { key: toCodeMirrorKey(comboFor("delete-line")!), run: deleteLine }, { key: toCodeMirrorKey(comboFor("indent")!), run: indentMore },
+                        { key: toCodeMirrorKey(comboFor("outdent")!), run: indentLess }, { key: toCodeMirrorKey(comboFor("undo")!), run: undo },
+                        { key: toCodeMirrorKey(comboFor("redo")!), run: redo },
+                        { key: toCodeMirrorKey(comboFor("task-done")!), run: view => {
+                            const line = view.state.doc.lineAt(view.state.selection.main.head);
+                            const match = /^\s*[-*+]\s+\[([ xX])\]/.exec(line.text);
+                            if (!match) return false;
+                            const at = line.from + match[0].lastIndexOf("[") + 1;
+                            view.dispatch({ changes: { from: at, to: at + 1, insert: match[1] === " " ? "x" : " " } });
+                            return true;
+                        } },
+                    ]),
                     keymap.of(searchKeymap),
                     keymap.of([...defaultKeymap, ...historyKeymap]),
                     EditorView.contentAttributes.of({

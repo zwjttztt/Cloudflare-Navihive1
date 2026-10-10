@@ -65,8 +65,8 @@ test("快捷键是一张单表：keymap 与菜单显示都从它派生", () => {
     // ⚠️ combo 在表里是**可选**的（有些动作只声明不绑定），所以过滤条件里
     // 必须同时判 combo —— 只判 run 的话 toCodeMirrorKey 会吃到 undefined。
     assert.ok(
-        /filter\(s => s\.run && s\.combo\)/.test(editorSrc),
-        "生成 keymap 时要同时过滤 run 和 combo（combo 可选，漏判就崩）"
+        /filter\(s => s\.combo\)/.test(editorSrc),
+        "combo 可选必须过滤；动作由 shortcutActions 注入，不能按表中不存在的 run 筛掉全部绑定"
     );
 });
 

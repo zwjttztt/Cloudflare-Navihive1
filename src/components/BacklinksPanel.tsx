@@ -8,7 +8,7 @@
 import { useMemo } from "react";
 import { Box, Typography, IconButton, Tooltip } from "@mui/material";
 import CloseIcon from "@mui/icons-material/Close";
-import { buildBacklinks } from "../utils/noteWikiLink";
+import { buildBacklinks, wikiLinkContext } from "../utils/noteWikiLink";
 import type { Note } from "../API/types";
 
 export interface BacklinksPanelProps {
@@ -28,9 +28,8 @@ export interface BacklinksPanelProps {
 export function wikiContextSnippet(sourceContent: string, targetTitle: string, max = 96): string {
     const key = targetTitle.trim().toLowerCase();
     if (!key) return "";
-    const lines = sourceContent.split("\n");
-    for (const line of lines) {
-        if (line.toLowerCase().includes(`[[${key}`)) {
+    const line = wikiLinkContext(sourceContent, targetTitle);
+    if (line) {
             const flat = line
                 .replace(/```[\s\S]*?```/g, " ")
                 .replace(/^#{1,6}\s+/gm, "")
@@ -40,7 +39,6 @@ export function wikiContextSnippet(sourceContent: string, targetTitle: string, m
                 .replace(/\s+/g, " ")
                 .trim();
             return flat.length > max ? `${flat.slice(0, max)}…` : flat;
-        }
     }
     return "";
 }

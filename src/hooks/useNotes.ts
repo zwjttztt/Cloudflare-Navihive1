@@ -180,9 +180,9 @@ export function useNotes({ api, onError, onNotify, onNoteConflict }: UseNotesPar
 
     /** 乐观更新：先把界面上改掉，失败再回滚到旧值并提示 */
     const updateNote = useCallback(
-        async (id: number, patch: Partial<Note>, opts: { force?: boolean } = {}) => {
+        async (id: number, patch: Partial<Note>, opts: { force?: boolean } = {}): Promise<boolean> => {
             const before = notes.find(n => n.id === id);
-            if (!before) return;
+            if (!before) return false;
             setNotes(prev => prev.map(n => (n.id === id ? { ...n, ...patch } : n)));
             try {
                 // 乐观并发：带上「我改的是哪一版」（force = 用户已确认要覆盖，不校验）
@@ -213,14 +213,16 @@ export function useNotes({ api, onError, onNotify, onNoteConflict }: UseNotesPar
                     setNotes(prev => prev.map(n => (n.id === id ? before : n)));
                     await onNoteConflict(
                         error.note ?? before,
-                        () => updateNote(id, patch, { force: true })
+                        async () => { await updateNote(id, patch, { force: true }); }
                     );
-                    return;
+                    return false;
                 }
                 reportError(error, { source: "note-update" });
                 setNotes(prev => prev.map(n => (n.id === id ? before : n)));
                 onError("保存笔记失败: " + (error instanceof Error ? error.message : "未知错误"));
+                return false;
             }
+            return true;
         },
         [notes, api, onError, onNoteConflict]
     );

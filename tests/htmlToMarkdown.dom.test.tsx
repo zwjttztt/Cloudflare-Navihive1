@@ -59,7 +59,36 @@ test("N5 script/style 剥掉不进正文", () => {
     assert.ok(md.includes("正文"), md);
 });
 
+test("严格 Trusted Types 环境不调用 DOMParser HTML sink", () => {
+    const original = DOMParser.prototype.parseFromString;
+    DOMParser.prototype.parseFromString = () => { throw new TypeError("TrustedHTML required"); };
+    try {
+        assert.equal(htmlToMarkdown('<p><strong>正文 &amp; &#20013;</strong></p>'), "**正文 & 中**");
+        assert.equal(htmlToMarkdown('<a href="https://a.test/?x=1>0&amp;y=2">链接</a>'), "[链接](<https://a.test/?x=1%3E0&y=2>)");
+    } finally { DOMParser.prototype.parseFromString = original; }
+});
+
 test("N5 空输入返回空串", () => {
     assert.equal(htmlToMarkdown(""), "");
     assert.equal(htmlToMarkdown("   "), "");
+});
+
+test("富文本协议过滤和目的地转义", () => {
+    const md = htmlToMarkdown('<a href="javascript:alert(1)">危险</a><img src="data:text/html,evil"><a href="https://a.test/a b(x)">安全</a>');
+    assert.ok(!md.includes("javascript:"));
+    assert.ok(!md.includes("data:"));
+    assert.ok(md.includes("https://a.test/a%20b(x)"));
+});
+test("嵌套列表保留层级与起始编号", () => {
+    const md = htmlToMarkdown('<ol start="3"><li>父<ul><li>子</li></ul></li></ol>');
+    assert.ok(md.includes("3. 父\n   - 子"), md);
+});
+test("代码 fence 自适应并保留语言", () => {
+    const md = htmlToMarkdown('<pre><code class="language-js">```\na()</code></pre>');
+    assert.ok(md.includes("````js\n```\na()\n````"), md);
+});
+test("块级容器内标题和换行不被压平", () => {
+    const md = htmlToMarkdown('<div><h2>标题</h2><p>第一<br>第二</p></div>');
+    assert.ok(md.includes("## 标题"), md);
+    assert.ok(md.includes("第一\n第二"), md);
 });

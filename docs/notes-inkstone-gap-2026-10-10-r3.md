@@ -2,7 +2,11 @@
 
 基线：NaviHive `d57a1c8`（记事本对齐 inkstone（四）已推送）对照 `harness/inkstone-src`。
 
-本轮只做审查与方案，未改任何功能代码。前两轮已关闭的差距（查找替换、行级 diff、FTS 检索、
+本报告最初用于审查与方案；用户随后授权三个批次一并实施，三个批次已接入并完成本地验证，交付以 GitHub 提交为准。
+
+实施验收：真实类型检查、lint（0 errors / 5 warnings）、2305 项单测（2304 pass / 1 skip）、build、smoke 通过；真实浏览器粘贴、Ctrl K 冲突与预览反向滚动专项 4/4 通过。原布局探针在新增交互前 26/26 通过。
+
+边界说明：Markdown ZIP 支持目录、正文标签、简单 front-matter tags 与附件引用，不是完整 YAML/Obsidian 插件迁移；附件上传与笔记导入不能组成跨服务事务，导入中断后已上传附件可在附件管理器清理。灯箱下载是否直接保存仍受跨域浏览器规则约束。前两轮已关闭的差距（查找替换、行级 diff、FTS 检索、
 rev 乐观并发、starred/pinned 分离、附件、备份、JSON 导入、多选、fuzzy 高亮、别名、锚点嵌入、
 命令面板/反链/灯箱/滚动同步的"基本款"）不再重复列出。
 
@@ -42,7 +46,9 @@ rev 乐观并发、starred/pinned 分离、附件、备份、JSON 导入、多�
    `replaceDetachedUpload` 兜底；我们对已 destroy 的 view `dispatch` 可能抛错
    （异步上传回来晚于切笔记/关面板时）。
 
-### A2. ⌘K 双触发（P0，源码确认）
+### A2. ⌘K 事件冲突风险与格式绑定失效（P0，实施复核纠正）
+
+实施发现快捷键表没有 run 字段，原过滤条件实际筛掉全部格式绑定，因此下述“双触发”并非已证实的旧行为。真正修复是恢复注入动作的格式绑定，同时增加全局 defaultPrevented 守卫，防止恢复绑定后发生双触发。
 
 `NotesPage.tsx:2007-2018` 的 window keydown 监听**不检查 `e.defaultPrevented`**，
 而编辑器里 `link` 绑定的是 `mod+k`（`editorShortcuts.ts:49`）。CodeMirror 的 keymap
@@ -59,7 +65,9 @@ rev 乐观并发、starred/pinned 分离、附件、备份、JSON 导入、多�
   "先保存再切"，面板应同款。
 - 窄屏不会 `setMobileDetail(true)`，点了像"没反应"。
 
-### A4. 编辑器快捷键少 8 条（P1）
+### A4. 编辑器快捷键显式绑定与展示补齐（P1）
+
+实施纠正：undo/redo 原已由 CodeMirror history/default keymap 提供，并非完全缺失。本轮统一显式绑定、平台显示与帮助面板。
 
 对照 inkstone `editor/shortcuts.ts`，我们没有绑定的：
 `task-done`(mod+shift+enter)、`move-line-up/down`(alt+↑/↓)、`delete-line`(mod+shift+k)、
@@ -79,8 +87,7 @@ wheel/pointerdown/keydown/scroll —— 预览侧滚动不会带动源码。inks
 
 对照 inkstone `GraphPanel.tsx`（675 行，canvas + 物理）：
 - P1：**搜索过滤**（按标题过滤节点）、**未解析链接节点**（写了 `[[不存在]]` 的目标
-  以虚节点出现，右键可直接建笔记 —— 我们 `resolveWikiLinks` 已经能拿到未命中目标，
-  只是图谱不画）、节点数上限（inkstone 350 截断 + truncated 提示；我们全量画，
+  以虚节点出现，可直接建笔记 —— 实施复核确认 resolveWikiLinks 只返回已解析笔记，未命中目标必须另从 extractWikiLinks 提取）、节点数上限（inkstone 350 截断 + truncated 提示；我们全量画，
   几百节点 SVG 会卡）。
 - P2：文件夹/标签过滤、groupBy 着色、缩放/平移/拖拽节点、偏好 localStorage 持久化。
 - 力导向布局：**维持确定环布局**（现状注释已论证：无动画抖动、无 rAF 常驻），
@@ -101,8 +108,7 @@ inkstone `Outline.tsx` 监听预览滚动做 scroll-spy，高亮当前所在标�
 
 ### A9. 反链面板（P1/P2）
 
-- P1：inkstone `BacklinksPanel.tsx` 在 `noteId/rev/cursor` 变化时**自动重拉**
-  并有失败"重试"按钮；我们只在打开面板时算一次，编辑完要手动重开才能刷新。
+- 实施纠正：本仓库反链本来就通过 useMemo 的 notes/currentId/currentTitle 依赖自动更新，无须重开。inkstone 的远端重拉和重试不能直接套用在本地派生数据上，因此不添加假重试入口。
 - P1：反链摘要 `wikiContextSnippet` 按字符串 `[[${target}` 搜行，与 wiki token
   解析（别名、转义、`![[嵌入]]` 排除）不同构 —— 应改成复用 `extractWikiLinks`
   的 token 位置取上下文行。

@@ -4100,6 +4100,33 @@ test("数据页有「导入笔记（JSON）」入口（老部署没有 importNot
     );
 });
 
+test("Markdown ZIP 导入保留父目录与属性标签，忽略隐藏配置及代码标签", async () => {
+    const { createZip } = await import("../src/utils/zip");
+    const encode = (value: string) => new TextEncoder().encode(value);
+    let imported: { notes: Note[]; folders: { name: string }[]; tags: { name: string }[] } | null = null;
+    setWide();
+    mountPanel([note()], { shareApi: {
+        listNoteShares: async () => [],
+        notesStats: async () => ({ versions: 0, links: 0 }),
+        importNotes: async (payload: typeof imported) => { imported = payload; return { created: 1, updated: 0, skipped: 0, removed: 0 }; },
+    } as never });
+    await act(async () => (document.querySelector("button[data-tool='settings']") as HTMLElement).click());
+    await act(async () => (document.querySelector("[data-settings-tab='data']") as HTMLElement).click());
+    const bytes = createZip([
+        { path: "工作/测试.md", data: encode("---\ntags: [项目, review]\n---\n正文 #标签\n```\n#不应识别\n```") },
+        { path: ".obsidian/config.json", data: encode("{}") },
+    ]);
+    const file = new File([bytes.slice().buffer], "vault.zip");
+    const input = document.querySelector("input[aria-label='选择要导入的笔记文件（JSON 或 ZIP）']")!;
+    Object.defineProperty(input, "files", { value: [file], configurable: true });
+    await act(async () => { input.dispatchEvent(new Event("change", { bubbles: true })); });
+    const result = imported as unknown as { notes: Note[]; folders: { name: string }[]; tags: { name: string }[] };
+    assert.ok(result);
+    assert.equal(result.notes[0].title, "测试");
+    assert.equal(result.folders[0].name, "工作");
+    assert.deepEqual(result.tags.map(tag => tag.name).sort(), ["review", "标签", "项目"].sort());
+});
+
 test("数据页「导入笔记」行在老部署（无 importNotes）下不出现", async () => {
     setWide();
     mountPanel([note({ id: 1, title: "甲", content: "a" })]);

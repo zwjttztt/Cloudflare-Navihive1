@@ -102,7 +102,8 @@ import DataObjectIcon from "@mui/icons-material/DataObject";
 import ViewStreamIcon from "@mui/icons-material/ViewStream";
 import SubjectIcon from "@mui/icons-material/Subject";
 import { Kbd } from "./Kbd";
-import { comboFor } from "../utils/editorShortcuts";
+import { comboFor, EDITOR_SHORTCUTS } from "../utils/editorShortcuts";
+import { extractNoteTags } from "../utils/markdownNoteTags";
 import { readReadingPosition, writeReadingPosition } from "../utils/readingPosition";
 import type {
     Note,
@@ -128,6 +129,7 @@ import { usePanelBreakpoint } from "../hooks/usePanelBreakpoint";
 // 直接 `new Date(iso)` 在东八区会差 8 小时（「笔记时间不对」的根因）。
 import { formatRelative, formatWhen, formatWhenFull, groupLabel } from "../utils/noteTime";
 import { extractOutline, outlineIndent } from "../utils/noteOutline";
+import { Dialog, DialogTitle, DialogContent, DialogActions } from "@mui/material";
 import { buildBacklinks, resolveWikiLinks } from "../utils/noteWikiLink";
 import { exportNoteAsMarkdown } from "../utils/noteExport";
 import { exportNoteAsHtml, printNoteAsPdf } from "../utils/noteHtmlExport";
@@ -214,7 +216,7 @@ export interface NotesPageProps {
      */
     accountName?: string;
     onCreate: (draft?: Partial<Note>) => Promise<Note | null>;
-    onUpdate: (id: number, patch: Partial<Note>) => Promise<void>;
+    onUpdate: (id: number, patch: Partial<Note>) => Promise<void | boolean>;
     onDelete: (note: Note) => Promise<void>;
     onTogglePin: (note: Note) => Promise<void>;
     /** 收藏（2026-10-09 与置顶分离）：置顶管排序、收藏管筛选。老部署没传时这个动作不出现 */
@@ -1850,9 +1852,27 @@ export default function NotesPage({
      * 按钮共用同一个模块级 resolveImageUpload（上传 + 小图内嵌解析），行为不会跑偏。
      * noteId 用主栏 activeId（侧栏那条传的图也挂到当前笔记，url 才是关键）。
      */
+    const detachedNotesRef = useRef(notes);
+    detachedNotesRef.current = notes;
+    const detachedUpdateRef = useRef(onUpdate);
+    detachedUpdateRef.current = onUpdate;
+    const replaceDetachedUpload = useCallback(async (noteId: number, placeholder: string, replacement: string) => {
+        const note = detachedNotesRef.current.find(n => n.id === noteId);
+        if (!note?.content.includes(placeholder)) return;
+        try {
+            const saved = await detachedUpdateRef.current(noteId, { content: note.content.replace(placeholder, replacement) });
+            if (saved === false) onNotify?.("附件已上传，但原笔记回写失败，请在附件管理器找回", "error");
+        } catch { onNotify?.("附件已上传，但原笔记回写失败，请在附件管理器找回", "error"); }
+    }, [onNotify]);
+
     const uploadImageForEditor = useCallback(
         (file: File) => resolveImageUpload(file, handleUpload, activeId ?? null),
         [handleUpload, activeId]
+    );
+
+    const uploadFileForSideEditor = useCallback(
+        (file: File) => resolveImageUpload(file, handleUpload, sideId),
+        [handleUpload, sideId]
     );
 
     // 滚动同步控制器：只在「分栏 + 设置里开着」时启用（inkstone 同条件，
@@ -1888,6 +1908,7 @@ export default function NotesPage({
                 editorScroller: edScroll,
                 previewScroller: pvScroll,
                 lineCount: () => textareaRef.current?.lineCount() ?? 1,
+                editorScrollForLine: line => textareaRef.current?.scrollOffsetForLine(line) ?? 0,
                 editorLineAtScroll: () => {
                     // 渲染的 data-line 是 0 基，CM 的行号是 1 基 —— 这里减 1 对齐
                     return Math.max(0, (textareaRef.current?.topLineNumber() ?? 1) - 1);
@@ -1940,7 +1961,7 @@ export default function NotesPage({
     const pageRef = useRef<HTMLDivElement | null>(null);
     const overlayKeyState = useRef({
         dirty: false,
-        save: null as null | (() => Promise<void>),
+        save: null as null | (() => Promise<boolean>),
         blocking: false,
     });
     useEffect(() => {
@@ -2006,7 +2027,7 @@ export default function NotesPage({
     const searchRefNarrow = useRef<HTMLInputElement | null>(null);
     useEffect(() => {
         const onKey = (e: KeyboardEvent) => {
-            if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+            if (!e.defaultPrevented && !e.isComposing && !e.repeat && !e.altKey && !e.shiftKey && (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
                 e.preventDefault();
                 // N1：⌘K 在记事本上下文打开命令面板（搜笔记/文件夹/标签 + 执行命令），
                 // 不再只是聚焦搜索框。面板里也能搜笔记（含远端全文命中），体验更一致。
@@ -2884,7 +2905,83 @@ export default function NotesPage({
 
             const entries = await readZip(new Uint8Array(await file.arrayBuffer()));
             const notesEntry = entries.find(e => e.path === "notes.json");
-            if (!notesEntry) throw new Error("这个 ZIP 里没有 notes.json");
+            if (!notesEntry) {
+                const visibleEntries = entries.filter(e => !e.path.split("/").some(part => part.startsWith(".") || part === "__MACOSX"));
+                const markdownEntries = visibleEntries.filter(e => /\.md$/i.test(e.path));
+                if (!markdownEntries.length) throw new Error("ZIP 中没有 notes.json 或 Markdown 笔记");
+                const folders: NoteFolder[] = [];
+                const folderIds = new Map<string, number>();
+                const ensureFolder = (path: string): number | null => {
+                    if (!path) return null;
+                    if (folderIds.has(path)) return folderIds.get(path)!;
+                    const parts = path.split("/");
+                    const name = parts.pop()!;
+                    const parent_id = ensureFolder(parts.join("/"));
+                    const id = folders.length + 1;
+                    folderIds.set(path, id);
+                    folders.push({ id, name, parent_id });
+                    return id;
+                };
+                const attachments = new Map<string, string>();
+                const paths = new Set<string>();
+                for (const entry of entries) {
+                    if (entry.path.split("/").some(p => p === ".." || p === ".") || entry.path.startsWith("/") || entry.path.includes("\\")) throw new Error("不安全的文件路径");
+                    if (paths.has(entry.path)) throw new Error("ZIP 中存在重复文件路径");
+                    paths.add(entry.path);
+                }
+                for (const entry of visibleEntries) {
+                    if (/\.md$/i.test(entry.path) || !entry.data.length) continue;
+                    if (!uploadApi) throw new Error("ZIP 含附件，需先配置附件上传能力");
+                    const uploaded = await uploadApi.uploadAttachment(new File([entry.data.slice().buffer], entry.path.split("/").pop()!));
+                    if (!uploaded?.url) throw new Error("附件上传失败：" + entry.path);
+                    attachments.set(entry.path, uploaded.url);
+                }
+                const tags: NoteTag[] = [];
+                const tagIds = new Map<string, number>();
+                const noteTags: Record<string, number[]> = {};
+                const imported: Note[] = [];
+                for (const entry of markdownEntries) {
+                    if (entry.path.split("/").some(p => p === ".." || p === ".")) throw new Error("不安全的文件路径");
+                    const parts = entry.path.split("/");
+                    const title = parts.pop()!.replace(/\.md$/i, "");
+                    let content = new TextDecoder().decode(entry.data);
+                    const resolveAsset = (target: string): string | undefined => {
+                        let decoded: string;
+                        try { decoded = decodeURIComponent(target); } catch { return undefined; }
+                        const stack = parts.slice();
+                        for (const p of decoded.split("/")) {
+                            if (p === "..") stack.pop();
+                            else if (p !== "." && p) stack.push(p);
+                        }
+                        return attachments.get(stack.join("/")) ?? attachments.get(decoded);
+                    };
+                    content = content.replace(/!\[\[([^\]\n]+)\]\]/g, (whole, target: string) => {
+                        const path = target.split("|")[0];
+                        const url = resolveAsset(path);
+                        return url ? `![${path.split("/").pop()}](${url})` : whole;
+                    }).replace(/(!?\[[^\]\n]*\]\()([^\s)]+)(\))/g, (whole, lead: string, target: string, end: string) => {
+                        const url = resolveAsset(target);
+                        return url ? lead + url + end : whole;
+                    });
+                    const id = imported.length + 1;
+                    const names = extractNoteTags(content);
+                    const frontMatter = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(content)?.[1];
+                    if (frontMatter) {
+                        const tagField = /^tags:\s*(.*(?:\r?\n[ \t]+-[^\n]*)*)/m.exec(frontMatter)?.[1];
+                        if (tagField) {
+                            for (const name of tagField.replace(/[[\]"']/g, "").split(/[,\r\n]/).map(tag => tag.trim().replace(/^-\s*/, "").replace(/^#/, ""))) {
+                                if (/^[\p{L}\p{N}_][\p{L}\p{N}_-]{0,79}$/u.test(name)) names.push(name);
+                            }
+                        }
+                    }
+                    for (const name of new Set(names)) {
+                        if (!tagIds.has(name)) { const tagId = tags.length + 1; tagIds.set(name, tagId); tags.push({ id: tagId, name }); }
+                    }
+                    noteTags[String(id)] = [...new Set(names)].map(name => tagIds.get(name)!);
+                    imported.push({ id, title, content, folder_id: ensureFolder(parts.join("/")) });
+                }
+                return importNotes({ notes: imported, folders, tags, noteTags });
+            }
             const payload = JSON.parse(
                 new TextDecoder().decode(notesEntry.data)
             ) as NotesImportPayload;
@@ -2980,6 +3077,10 @@ export default function NotesPage({
     const [revisionsOpen, setRevisionsOpen] = useState(false);
     /** 图片灯箱（inkstone 的 ui.lightbox）：点预览里的图片放大看 */
     const [lightbox, setLightbox] = useState<{ src: string; alt: string } | null>(null);
+    const [imageScale, setImageScale] = useState(1);
+    const [imageFailed, setImageFailed] = useState(false);
+    const [shortcutsOpen, setShortcutsOpen] = useState(false);
+    useEffect(() => { setImageScale(1); setImageFailed(false); }, [lightbox?.src]);
     const [shareId, setShareId] = useState<number | null>(null);
     const [revisions, setRevisions] = useState<NoteRevision[] | null>(null);
     // ⚠️ 不再需要「正在恢复的版本 id」那份 state：面板自己有 busy 态，
@@ -3006,6 +3107,7 @@ export default function NotesPage({
      */
     const notesCommands = useMemo<CommandItem[]>(() => {
         const list: CommandItem[] = [
+            { id: "shortcuts", label: "键盘快捷键帮助", section: "帮助", run: () => setShortcutsOpen(true) },
             { id: "new", label: "新建笔记", section: "笔记", keywords: "new create 新建", run: () => void onCreate() },
             { id: "find", label: "查找 / 替换", section: "编辑", keywords: "find search 查找 替换", run: () => textareaRef.current?.openSearch() },
             { id: "insert-frontmatter", label: "插入 front-matter", section: "编辑", keywords: "frontmatter 属性 yaml", run: () => tools.onInsertFrontMatter() },
@@ -3027,8 +3129,14 @@ export default function NotesPage({
                 { id: "delete", label: "删除当前笔记", section: "当前笔记", keywords: "delete 删除", run: () => void onDelete(active) },
             );
         }
-        return list;
-    }, [onCreate, tools, active, onTogglePin, onToggleStar, onToggleArchive, onDelete, setShareId, openRevisions, setGraphOpen]);
+        return list.filter(command => {
+            if (["find", "insert-frontmatter", "insert-wikilink"].includes(command.id)) return !!active && pane !== "preview";
+            if (command.id === "star") return !!onToggleStar;
+            if (command.id === "share") return !!shareApi;
+            if (command.id === "revisions") return !!folderTags?.onGetRevision;
+            return true;
+        });
+    }, [onCreate, tools, active, pane, shareApi, folderTags, onTogglePin, onToggleStar, onToggleArchive, onDelete, setShareId, openRevisions, setGraphOpen]);
 
     /** 取某一版正文：列表里那份是空串，diff 要真的正文 */
     const loadRevisionContent = useCallback(
@@ -3073,15 +3181,43 @@ export default function NotesPage({
         [draft?.content]
     );
 
+    const [outlineActiveLine, setOutlineActiveLine] = useState<number | null>(null);
+    useEffect(() => {
+        if (!outlineOpen) return;
+        const scroller = previewScrollRef.current;
+        if (!scroller) return;
+        let raf = 0;
+        const update = () => {
+            cancelAnimationFrame(raf);
+            raf = requestAnimationFrame(() => {
+                const top = scroller.getBoundingClientRect().top + 60;
+                let current: number | null = null;
+                for (const heading of outline) {
+                    const element = scroller.querySelector<HTMLElement>(`[data-line="${heading.line}"]`);
+                    if (element && element.getBoundingClientRect().top <= top) current = heading.line;
+                }
+                setOutlineActiveLine(current);
+            });
+        };
+        update();
+        scroller.addEventListener("scroll", update, { passive: true });
+        return () => { cancelAnimationFrame(raf); scroller.removeEventListener("scroll", update); };
+    }, [outlineOpen, outline, pane]);
+
     const dirty =
         !!active &&
         !!draft &&
         (draft.title !== (active.title || "") || draft.content !== (active.content || ""));
 
     const save = useCallback(async () => {
-        if (!active?.id || !draft) return;
-        await onUpdate(active.id, { title: draft.title, content: draft.content });
-    }, [active, draft, onUpdate]);
+        if (!active?.id || !draft) return true;
+        try {
+            return (await onUpdate(active.id, { title: draft.title, content: draft.content })) !== false;
+        } catch {
+            onNotify?.("保存失败，已保留当前草稿，请重试", "error");
+            return false;
+        }
+    }, [active, draft, onUpdate, onNotify]);
 
     // ---------- 阶段四第 14 条：自动保存 ----------
     //
@@ -3117,7 +3253,7 @@ export default function NotesPage({
         setSaveState("pending");
         const timer = setTimeout(async () => {
             setSaveState("saving");
-            await saveRef.current();
+            if (!(await saveRef.current())) { setSaveState("pending"); return; }
             setSaveState("saved");
             setSavedAt(Date.now());
             setTick(Date.now());
@@ -3128,7 +3264,7 @@ export default function NotesPage({
     // 关掉记事本时把还没落库的草稿刷一次：debounce 是 3 秒，
     // 打完字立刻关闭的话那 3 秒还没走完。卸载是同步的，await 不上，
     // 只能 fire-and-forget（api 是模块级的实例，组件没了请求照样发得出去）。
-    const flushRef = useRef({ dirty: false, save: async () => {} });
+    const flushRef = useRef<{ dirty: boolean; save: () => Promise<unknown> }>({ dirty: false, save: async () => {} });
     useEffect(() => {
         flushRef.current = { dirty, save };
     });
@@ -3198,8 +3334,9 @@ export default function NotesPage({
     /** 切换笔记前先把当前这条存掉 —— 草稿只存在内存里，不存就丢了 */
     const switchTo = useCallback(
         async (id: number | null) => {
-            if (dirty) await save();
+            if (dirty && !(await save())) return false;
             setActiveId(id);
+            return true;
         },
         [dirty, save]
     );
@@ -3211,8 +3348,9 @@ export default function NotesPage({
      */
     const jumpToNote = useCallback(
         async (id: number) => {
-            await switchTo(id);
+            if (!(await switchTo(id))) return false;
             setMobileDetail(true);
+            return true;
         },
         [switchTo]
     );
@@ -4925,7 +5063,8 @@ export default function NotesPage({
                                     focusMode={uiSettings.focusMode}
                                     typewriterMode={uiSettings.typewriterMode}
                                     shortcutActions={mainShortcutActions}
-                                    uploadImage={uploadImageForEditor}
+                                    uploadImage={uploadApi ? uploadImageForEditor : undefined}
+                                    onDetachedUpload={(placeholder, replacement) => replaceDetachedUpload(active.id!, placeholder, replacement)}
                                 />
                             </Box>
                         )}
@@ -5115,7 +5254,14 @@ export default function NotesPage({
                                         component='button'
                                         type='button'
                                         data-outline-item={item.line}
-                                        onClick={() => jumpToOffset(item.offset)}
+                                        style={outlineActiveLine === item.line ? { color: "var(--accent)", background: "color-mix(in srgb, var(--accent) 12%, transparent)", fontWeight: 600 } : undefined}
+                                        aria-current={outlineActiveLine === item.line ? "location" : undefined}
+                                        className={outlineActiveLine === item.line ? "outline-current" : undefined}
+                                        onClick={() => {
+                                            setOutlineActiveLine(item.line);
+                                            if (pane === "preview") previewScrollRef.current?.querySelector<HTMLElement>(`[data-line="${item.line}"]`)?.scrollIntoView({ block: "start" });
+                                            else jumpToOffset(item.offset);
+                                        }}
                                         sx={{
                                             display: "block",
                                             width: "100%",
@@ -5469,7 +5615,8 @@ export default function NotesPage({
                                 focusMode={uiSettings.focusMode}
                                 typewriterMode={uiSettings.typewriterMode}
                                 shortcutActions={sideShortcutActions}
-                                uploadImage={uploadImageForEditor}
+                                uploadImage={uploadApi ? uploadFileForSideEditor : undefined}
+                                onDetachedUpload={(placeholder, replacement) => replaceDetachedUpload(sideNote.id!, placeholder, replacement)}
                             />
                         </Box>
                         {/* 侧栏分栏里的那条线：与主栏同一套发丝线（1px，hover 加粗）。
@@ -5545,7 +5692,8 @@ export default function NotesPage({
                         focusMode={uiSettings.focusMode}
                         typewriterMode={uiSettings.typewriterMode}
                         shortcutActions={sideShortcutActions}
-                        uploadImage={uploadImageForEditor}
+                        uploadImage={uploadApi ? uploadFileForSideEditor : undefined}
+                                onDetachedUpload={(placeholder, replacement) => replaceDetachedUpload(sideNote.id!, placeholder, replacement)}
                     />
                 )}
             </Box>
@@ -6228,6 +6376,7 @@ export default function NotesPage({
                 替换掉原来那个「点了直接恢复」的 Menu —— 恢复前能看清改了什么。 */}
             <NoteGraphDialog
                 open={graphOpen}
+                onCreateNote={title => { void onCreate({ title }); setGraphOpen(false); }}
                 notes={notes}
                 activeId={activeId}
                 onOpenNote={id => {
@@ -6249,10 +6398,13 @@ export default function NotesPage({
                 recentNoteIds={recentNoteIds}
                 onSearchRemote={folderTags?.onSearchRemote}
                 onOpenNote={note => {
-                    setActiveId(note.id ?? null);
-                    setView("all");
-                    setActiveFolder(null);
-                    setActiveTag(null);
+                    if (note.id == null) return;
+                    void jumpToNote(note.id).then(switched => {
+                        if (!switched) return;
+                        setView("all");
+                        setActiveFolder(null);
+                        setActiveTag(null);
+                    });
                 }}
                 onOpenFolder={id => {
                     setActiveFolder(id);
@@ -6266,6 +6418,19 @@ export default function NotesPage({
                 }}
                 onCreateNote={title => void onCreate({ title })}
             />
+            <Dialog open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} fullWidth maxWidth='sm'>
+                <DialogTitle>键盘快捷键</DialogTitle>
+                <DialogContent>
+                    <Typography>Ctrl / ⌘ K：编辑器内插入链接，编辑器外打开命令面板</Typography>
+                    <Typography>Ctrl / ⌘ S：保存当前笔记</Typography>
+                    {EDITOR_SHORTCUTS.filter(shortcut => shortcut.combo).map(shortcut => (
+                        <Box key={shortcut.id} sx={{ display: "flex", justifyContent: "space-between", gap: 2, py: 0.5 }}>
+                            <Typography>{shortcut.label}</Typography><Kbd combo={shortcut.combo!} />
+                        </Box>
+                    ))}
+                </DialogContent>
+                <DialogActions><Button onClick={() => setShortcutsOpen(false)}>关闭</Button></DialogActions>
+            </Dialog>
             <NoteVersionHistoryDialog
                 open={revisionsOpen}
                 noteTitle={active?.title || ""}
@@ -6285,6 +6450,12 @@ export default function NotesPage({
             {lightbox && (
                 <Box
                     data-lightbox='1'
+                    onWheel={e => {
+                        if (e.ctrlKey || e.metaKey) {
+                            e.preventDefault();
+                            setImageScale(s => Math.max(0.3, Math.min(6, s - e.deltaY * 0.002)));
+                        }
+                    }}
                     role='dialog'
                     aria-modal='true'
                     aria-label={lightbox.alt || "图片预览"}
@@ -6305,9 +6476,21 @@ export default function NotesPage({
                         component='img'
                         src={lightbox.src}
                         alt={lightbox.alt}
+                        onError={() => setImageFailed(true)}
+                        onClick={e => e.stopPropagation()}
+                        onDoubleClick={() => setImageScale(s => s === 1 ? 2 : 1)}
+                        style={{ transform: `scale(${imageScale})` }}
                         data-lightbox-img='1'
                         sx={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", borderRadius: 1 }}
                     />
+                    <Box onClick={e => e.stopPropagation()} sx={{ position: "absolute", top: 12, left: 12, bgcolor: "background.paper", borderRadius: 1, p: 1 }}>
+                        <Button disabled={imageFailed || imageScale <= 0.3} onClick={() => setImageScale(s => Math.max(0.3, s - 0.25))}>缩小</Button>
+                        <Typography component='span' aria-live='polite'>{Math.round(imageScale * 100)}%</Typography>
+                        <Button disabled={imageFailed || imageScale >= 6} onClick={() => setImageScale(s => Math.min(6, s + 0.25))}>放大</Button>
+                        <Button component='a' href={lightbox.src} download target='_blank' rel='noreferrer'>下载原图</Button>
+                        {imageFailed && <Typography role='status'>图片加载失败</Typography>}
+                    </Box>
+                    <Typography sx={{ position: "absolute", bottom: 16, color: "#fff", maxWidth: "80%" }} noWrap>{lightbox.alt}</Typography>
                     <IconButton
                         aria-label='关闭图片预览'
                         data-lightbox-close='1'

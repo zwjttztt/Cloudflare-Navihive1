@@ -72,8 +72,9 @@ const TYPE_RANK: Record<Row["type"], number> = {
 const MAX_ROWS = 14;
 
 /** 一行预览：压掉 Markdown 语法符号，不解析正文 */
-function snippetOf(source: string, max = 80): string {
-    const flat = source
+function snippetOf(source: string, max = 80, query = ""): string {
+    const matchingLine = query && source.split("\n").find(line => line.toLowerCase().includes(query.toLowerCase()));
+    const flat = (matchingLine || source)
         .replace(/```[\s\S]*?```/g, " ")
         .replace(/^#{1,6}\s+/gm, "")
         .replace(/^[-*+]\s+(\[[ xX]\]\s*)?/gm, "")
@@ -102,6 +103,8 @@ export default function NotesCommandPalette({
     const [active, setActive] = useState(0);
     const inputRef = useRef<HTMLInputElement | null>(null);
     const [remoteHits, setRemoteHits] = useState<NoteSearchHit[]>([]);
+    const [remoteQuery, setRemoteQuery] = useState("");
+    const listRef = useRef<HTMLUListElement | null>(null);
 
     // 解析 `>` 前缀：只搜命令
     const onlyCommands = keyword.trim().startsWith(">");
@@ -117,7 +120,7 @@ export default function NotesCommandPalette({
         const timer = setTimeout(async () => {
             try {
                 const res = await onSearchRemote(qText, 12);
-                if (!cancelled && res) setRemoteHits(res.results);
+                if (!cancelled && res) { setRemoteHits(res.results); setRemoteQuery(qText); }
             } catch {
                 if (!cancelled) setRemoteHits([]);
             }
@@ -133,7 +136,9 @@ export default function NotesCommandPalette({
         const noteById = new Map<number, Note>();
         for (const n of notes) if (n.id != null) noteById.set(n.id, n);
 
-        if (!qText) {
+        if (onlyCommands && !qText) {
+            for (const c of commands) out.push({ type: "command", cmd: c, score: 0, key: `cmd:${c.id}` });
+        } else if (!qText) {
             // 空查询：最近打开的笔记 + 几条常用命令
             for (const id of recentNoteIds ?? []) {
                 const n = noteById.get(id);
@@ -145,7 +150,7 @@ export default function NotesCommandPalette({
                 out.push({ type: "command", cmd: item, score: 0, key: `cmd:${item.id}` });
         } else {
             for (const { item, match } of fuzzyFilter(notes, qText, n => n.title, 12))
-                out.push({ type: "note", note: item, snippet: snippetOf(item.content), score: match.score, key: `note:${item.id}` });
+                out.push({ type: "note", note: item, snippet: snippetOf(item.content, 80, qText), score: match.score, key: `note:${item.id}` });
             for (const { item } of fuzzyFilter(folders, qText, f => f.name, 5))
                 out.push({ type: "folder", folder: item, score: 0, key: `folder:${item.id}` });
             for (const { item } of fuzzyFilter(tags, qText, t => t.name, 5))
@@ -155,7 +160,7 @@ export default function NotesCommandPalette({
         }
 
         // 远端命中合并：带摘要、上浮、补漏（本地模糊没排进去的也补一行）
-        if (remoteHits.length) {
+        if (!onlyCommands && remoteQuery === qText && remoteHits.length) {
             const seen = new Set(out.filter(r => r.type === "note").map(r => (r as Extract<Row, { type: "note" }>).note.id));
             for (const hit of remoteHits) {
                 const n = hit.id != null ? noteById.get(hit.id) : undefined;
@@ -181,7 +186,7 @@ export default function NotesCommandPalette({
 
         out.sort((a, b) => (TYPE_RANK[a.type] - TYPE_RANK[b.type]) || (b.score - a.score));
         return out.slice(0, MAX_ROWS);
-    }, [notes, folders, tags, commands, qText, onlyCommands, remoteHits, recentNoteIds]);
+    }, [notes, folders, tags, commands, qText, onlyCommands, remoteHits, remoteQuery, recentNoteIds]);
 
     const runRow = (row: Row) => {
         onClose();
@@ -204,7 +209,11 @@ export default function NotesCommandPalette({
 
     useEffect(() => setActive(0), [keyword]);
 
+    useEffect(() => setActive(i => Math.min(i, Math.max(0, rows.length - 1))), [rows.length]);
+    useEffect(() => { listRef.current?.querySelector<HTMLElement>(`[data-command-index="${active}"]`)?.scrollIntoView?.({ block: "nearest" }); }, [active]);
+
     const handleKeyDown = (e: React.KeyboardEvent) => {
+        if (e.nativeEvent.isComposing || e.keyCode === 229) return;
         if (e.key === "ArrowDown") {
             e.preventDefault();
             setActive(i => (i + 1) % Math.max(rows.length, 1));
@@ -287,7 +296,7 @@ export default function NotesCommandPalette({
                     }} />
             </Box>
 
-            <List dense sx={{ maxHeight: 420, overflowY: "auto", px: 1, pb: 1 }}>
+            <List ref={listRef} role='listbox' aria-label='搜索结果' dense sx={{ maxHeight: 420, overflowY: "auto", px: 1, pb: 1 }}>
                 {rows.length === 0 && (
                     <Box sx={{ px: 2, py: 3, textAlign: "center" }}>
                         <Typography variant='body2' sx={{ color: "text.secondary" }}>
@@ -298,6 +307,9 @@ export default function NotesCommandPalette({
                 {rows.map((row, idx) => (
                     <ListItemButton
                         key={row.key}
+                        role='option'
+                        aria-selected={idx === active}
+                        data-command-index={idx}
                         selected={idx === active}
                         onMouseEnter={() => setActive(idx)}
                         onClick={() => runRow(row)}

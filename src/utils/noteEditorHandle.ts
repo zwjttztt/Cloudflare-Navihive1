@@ -31,6 +31,7 @@ export interface NoteEditorHandle {
     topLineNumber(): number;
     /** 文档总行数（给锚点曲线补末端点用）。 */
     lineCount(): number;
+    scrollOffsetForLine(line: number): number;
     /** 让第 line 行（1 基）贴到视口顶部。 */
     scrollToLineNumber(line: number): void;
 }
@@ -76,20 +77,25 @@ export function editorHandle(view: EditorView): NoteEditorHandle {
             // ⚠️ 用 CM 的 lineBlockAtHeight(0) 拿「视口顶部那个块」。
             // 不能用「scrollTop / 行高」硬算 —— 代码块折行时视觉行 ≠ 文档行，
             // 折行一多就偏（CM 的高度参数都是相对 documentTop 的）。
-            const b = view.lineBlockAtHeight(0);
+            const b = view.lineBlockAtHeight(view.scrollDOM.scrollTop);
             if (!b) return 1;
             return view.state.doc.lineAt(b.from).number; // 转成文档行号（1 基）
         },
         lineCount() {
             return view.state.doc.lines;
         },
+        scrollOffsetForLine(line) {
+            const index = Math.max(0, Math.min(view.state.doc.lines - 1, line));
+            const block = view.lineBlockAt(view.state.doc.line(Math.floor(index) + 1).from);
+            return block.top + (index - Math.floor(index)) * block.height;
+        },
         scrollToLineNumber(line) {
             const total = view.state.doc.lines;
-            const target = Math.max(1, Math.min(total, line));
-            const block = view.lineBlockAt(target);
+            const target = Math.max(1, Math.min(total, Math.floor(line)));
+            const block = view.lineBlockAt(view.state.doc.line(target).from);
             if (!block) return;
             // documentTop 是文档顶部相对滚动容器的偏移，减掉它换算回 scrollTop
-            view.scrollDOM.scrollTop = Math.max(0, block.top - view.documentTop);
+            view.scrollDOM.scrollTop = Math.max(0, block.top);
         },
     };
 }

@@ -34,11 +34,26 @@ export function registerWikiLink(md: MarkdownIt): void {
             // 显示文本在渲染层读 meta.alias（有别名用别名，没有用目标名）。
             const token = state.push("wiki_link", "", 0);
             token.content = target;
-            token.meta = { target, alias };
+            token.meta = { target, alias, offset: start };
         }
         state.pos += match[0].length;
         return true;
     });
+}
+
+export function wikiLinkContext(source: string, title: string): string {
+    extractWikiLinks(source);
+    if (!parser) return "";
+    const lines = source.split("\n");
+    for (const block of parser.parse(source, {})) {
+        const token = block.children?.find(t => t.type === "wiki_link" && normalizeTitle(t.content) === normalizeTitle(title));
+        if (token && block.map) {
+            const offset = (token.meta as { offset?: number })?.offset ?? 0;
+            const localLine = block.content.slice(0, offset).split("\n").length - 1;
+            return lines[block.map[0] + localLine] ?? "";
+        }
+    }
+    return "";
 }
 
 let parser: MarkdownIt | undefined;
