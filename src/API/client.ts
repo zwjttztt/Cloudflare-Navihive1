@@ -1161,6 +1161,17 @@ export class NavigationClient {
         });
     }
 
+    /**
+     * 删除网盘上的一份记事本备份（设置→备份→最近备份的删除按钮）。
+     * 服务端强制校验文件名前缀，只能删 `navihive-notes-backup-` 那批。
+     */
+    async notesBackupDeleteRemote(filename: string): Promise<WebDavResult> {
+        return this.request<WebDavDeleteResponse>("webdav/notes/delete", {
+            method: "POST",
+            body: JSON.stringify({ filename }),
+        });
+    }
+
     // ============ 审计日志（owner 只读） ============
     async getAuditLog(opts: { limit?: number; offset?: number; actor?: string } = {}): Promise<{
         success: boolean;

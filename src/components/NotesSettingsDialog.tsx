@@ -36,6 +36,7 @@ import CloudDownloadIcon from "@mui/icons-material/CloudDownload";
 import FileDownloadIcon from "@mui/icons-material/FileDownload";
 import FileUploadIcon from "@mui/icons-material/FileUpload";
 import DeleteSweepIcon from "@mui/icons-material/DeleteSweep";
+import DeleteIcon from "@mui/icons-material/DeleteOutlined";
 import NoteShareDialog, { type NoteShareApi } from "./NoteShareDialog";
 import AttachmentManager from "./AttachmentManager";
 import ConfirmDialog from "./ConfirmDialog";
@@ -43,6 +44,7 @@ import { FOLDER_COLORS } from "../utils/folderAppearance";
 import type { NotesUiSettings } from "../utils/notesSettings";
 import type {
     NoteImportStats,
+    NotesBackupRun,
     NotesBackupSavePatch,
     NotesBackupState,
     NotesImportPayload,
@@ -122,6 +124,14 @@ export interface NotesDataTab {
         message: string;
         payload?: NotesImportPayload;
         code?: WebDavErrorCode;
+    }>;
+    /**
+     * 删除网盘上的一份备份文件（最近备份的删除按钮，2026-10-10）。
+     * 可选：老部署没有该端点时只删本地记录，不删网盘文件。
+     */
+    onNotesBackupDeleteRemote?: (filename: string) => Promise<{
+        success: boolean;
+        message: string;
     }>;
 }
 
@@ -299,7 +309,11 @@ export default function NotesSettingsDialog({
             if (importFileRef.current) importFileRef.current.value = "";
         }
     };
-    const [confirmKind, setConfirmKind] = useState<"trash" | "prune" | null>(null);
+    const [confirmKind, setConfirmKind] = useState<
+        "trash" | "prune" | "backup-run" | null
+    >(null);
+    /** 待删除的那条「最近备份」记录（ConfirmDialog 里用） */
+    const [deleteRunTarget, setDeleteRunTarget] = useState<NotesBackupRun | null>(null);
     // ---- 分享列表（2026-07-07 参考 inkstone 新增）----
     const [shares, setShares] = useState<NoteShareListItem[] | null>(null);
     const [shareError, setShareError] = useState<string | null>(null);
@@ -1423,28 +1437,35 @@ export default function NotesSettingsDialog({
                                                 }}
                                             >
                                                 <Box
-                                                    component='button'
-                                                    type='button'
-                                                    aria-expanded={expandedRun === run.id}
-                                                    onClick={() =>
-                                                        setExpandedRun(v => (v === run.id ? null : run.id))
-                                                    }
                                                     sx={{
                                                         display: "flex",
                                                         alignItems: "center",
-                                                        gap: 1,
-                                                        width: "100%",
-                                                        px: 1,
-                                                        py: 0.75,
-                                                        appearance: "none",
-                                                        border: "none",
-                                                        font: "inherit",
-                                                        cursor: "pointer",
-                                                        bgcolor: "transparent",
-                                                        textAlign: "left",
-                                                        "&:hover": { bgcolor: "rgba(128,128,128,0.06)" },
                                                     }}
                                                 >
+                                                    <Box
+                                                        component='button'
+                                                        type='button'
+                                                        aria-expanded={expandedRun === run.id}
+                                                        onClick={() =>
+                                                            setExpandedRun(v => (v === run.id ? null : run.id))
+                                                        }
+                                                        sx={{
+                                                            display: "flex",
+                                                            alignItems: "center",
+                                                            gap: 1,
+                                                            flex: 1,
+                                                            minWidth: 0,
+                                                            px: 1,
+                                                            py: 0.75,
+                                                            appearance: "none",
+                                                            border: "none",
+                                                            font: "inherit",
+                                                            cursor: "pointer",
+                                                            bgcolor: "transparent",
+                                                            textAlign: "left",
+                                                            "&:hover": { bgcolor: "rgba(128,128,128,0.06)" },
+                                                        }}
+                                                    >
                                                     <Box
                                                         aria-hidden='true'
                                                         sx={{
@@ -1474,6 +1495,20 @@ export default function NotesSettingsDialog({
                                                             ? `${run.noteCount ?? 0} 条 · ${fmtBytes(run.bytes ?? 0)}`
                                                             : "失败"}
                                                     </Typography>
+                                                    </Box>
+                                                    <IconButton
+                                                        size='small'
+                                                        aria-label={`删除这条备份记录（${fmtTime(run.startedAt) || run.startedAt}）`}
+                                                        title='删除这条备份'
+                                                        disabled={backupBusy}
+                                                        onClick={() => {
+                                                            setDeleteRunTarget(run);
+                                                            setConfirmKind("backup-run");
+                                                        }}
+                                                        sx={{ flexShrink: 0, mr: 0.5 }}
+                                                    >
+                                                        <DeleteIcon fontSize='inherit' />
+                                                    </IconButton>
                                                 </Box>
                                                 {expandedRun === run.id && (
                                                     <Typography
@@ -1995,6 +2030,52 @@ export default function NotesSettingsDialog({
                             }
                         }}
                         onClose={() => setConfirmKind(null)}
+                    />
+                )}
+
+                {/* 删除「最近备份」记录的二次确认（2026-10-10）。
+                    有对应网盘文件的先把文件删掉 —— 文件删不掉就整单不删，
+                    免得留下「记录没了、文件还躺在网盘上」的孤儿备份。 */}
+                {confirmKind === "backup-run" && deleteRunTarget && (
+                    <ConfirmDialog
+                        open
+                        danger
+                        title='删除这条备份？'
+                        description={
+                            deleteRunTarget.filename
+                                ? `「${deleteRunTarget.filename}」将从网盘删除，本条记录一并移除，无法恢复。`
+                                : "这是一条失败的记录，删除后只是从「最近备份」里移除。"
+                        }
+                        confirmText='删除'
+                        onConfirm={async () => {
+                            const cur = dataRef.current;
+                            const run = deleteRunTarget;
+                            if (!cur?.onNotesBackupSave) return;
+                            if (run.filename) {
+                                if (!cur.onNotesBackupDeleteRemote) {
+                                    onNotify?.(
+                                        "当前部署不支持删除网盘备份，这份文件还在网盘上",
+                                        "error"
+                                    );
+                                    throw new Error("unsupported");
+                                }
+                                const r = await cur.onNotesBackupDeleteRemote(run.filename);
+                                if (!r.success) {
+                                    onNotify?.(r.message || "删除网盘备份失败", "error");
+                                    throw new Error(r.message || "delete failed");
+                                }
+                            }
+                            const remaining = (backupState?.runs ?? [])
+                                .filter(item => item.id !== run.id)
+                                .slice(0, 12);
+                            await cur.onNotesBackupSave({ runs: remaining });
+                            onNotify?.("已删除这条备份", "success");
+                            await reloadBackupState();
+                        }}
+                        onClose={() => {
+                            setDeleteRunTarget(null);
+                            setConfirmKind(null);
+                        }}
                     />
                 )}
 

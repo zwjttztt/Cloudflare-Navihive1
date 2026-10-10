@@ -331,6 +331,8 @@ export interface NotesBackupSavePatch {
     backupPassword?: string | null;
     schedule?: string;
     retention?: number;
+    /** 全量写回「最近备份」记录（删除单条时用，2026-10-10） */
+    runs?: NotesBackupRun[];
 }
 
 // WebDAV 备份配置

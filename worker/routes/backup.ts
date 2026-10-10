@@ -428,5 +428,28 @@ export async function handleBackupRoutes(ctx: RouteCtx): Promise<Response | null
         return Response.json({ success: true, payload, message: filename });
     }
 
+    // 删除网盘上的一份记事本备份（设置→备份→最近备份的删除按钮，2026-10-10）。
+    // 同样吃 webdav/ 前缀的出站限速闸门；文件名强制校验前缀，
+    // 同一个目录里混着的导航备份绝不能被这里删掉。
+    if (path === "webdav/notes/delete" && method === "POST") {
+        const body = (await safeJson(request)) as { filename?: string };
+        const filename = (body.filename || "").trim();
+        if (!/^navihive-notes-backup-/i.test(filename)) {
+            return Response.json(
+                { success: false, message: "只能删除记事本备份文件" },
+                { status: 400 }
+            );
+        }
+        const config = await resolveNotesWebDavConfig(api);
+        if (!config.url) {
+            return Response.json(
+                { success: false, message: NOTES_BACKUP_NOT_CONFIGURED_MESSAGE },
+                { status: 400 }
+            );
+        }
+        const result = await webdavDelete(config, filename);
+        return Response.json(result);
+    }
+
     return null;
 }

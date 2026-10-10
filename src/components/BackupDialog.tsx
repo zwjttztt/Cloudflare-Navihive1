@@ -59,9 +59,6 @@ interface BackupDialogProps {
     /** 备份文件里是否带上网站的账号密码（默认带；关掉后本地下载、WebDAV 上传、每周定时备份都不带） */
     includeCredentials: boolean;
     onIncludeCredentialsChange: (enabled: boolean) => void;
-    /** 备份是否带上记事本。默认 true（与凭据相反） */
-    includeNotes: boolean;
-    onIncludeNotesChange: (enabled: boolean) => void;
     /**
      * 打开「导入浏览器书签」。
      *
@@ -113,8 +110,6 @@ export default function BackupDialog({
     onClose,
     includeCredentials,
     onIncludeCredentialsChange,
-    includeNotes,
-    onIncludeNotesChange,
     onOpenBookmark,
     cronError = null,
 }: BackupDialogProps) {
@@ -584,8 +579,6 @@ export default function BackupDialog({
                         remoteFiles={remoteFiles}
                         includeCredentials={includeCredentials}
                         onIncludeCredentialsChange={onIncludeCredentialsChange}
-                        includeNotes={includeNotes}
-                        onIncludeNotesChange={onIncludeNotesChange}
                         encryptLocal={encryptLocal}
                         setEncryptLocal={setEncryptLocal}
                         backupPassword={backupPassword}

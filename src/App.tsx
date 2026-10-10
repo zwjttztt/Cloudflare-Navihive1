@@ -14,7 +14,6 @@ import { MockNavigationClient } from "./API/mock";
 import {
     BootstrapData,
     BACKUP_CREDENTIALS_CONFIG,
-    BACKUP_NOTES_CONFIG,
 } from "./API/http";
 import { RETENTION_DAYS_KEY } from "./API/configKeys";
 import { GroupWithSites } from "./types";
@@ -1013,7 +1012,6 @@ function App() {
         handleDownloadLocal,
         handleSaveWebdavConfig,
         handleToggleAutoBackup,
-        handleToggleIncludeNotes,
         handleToggleIncludeCredentials,
         handleToggleLinkHealthSync,
         handleTogglePrefSync,
@@ -1858,10 +1856,8 @@ function App() {
                         onClose={handleCloseBackup}
                         includeCredentials={configs[BACKUP_CREDENTIALS_CONFIG] === "true"}
                         onIncludeCredentialsChange={handleToggleIncludeCredentials}
-                        // 记事本默认**不带**：导航备份与笔记备份是两套独立备份，
-                        // 笔记走自己的 WebDAV 备份；只有显式开 backup.includeNotes 才带。
-                        includeNotes={configs[BACKUP_NOTES_CONFIG] === "true"}
-                        onIncludeNotesChange={handleToggleIncludeNotes}
+                        // 导航备份与笔记备份是两套独立备份，笔记只走自己的 WebDAV 备份，
+                        // 导航备份文件一律不含笔记（见 transfer.exportData）。
                         // 导入浏览器书签：从「更多选项」挪进「恢复 / 导入」页，和从文件恢复同类
                         onOpenBookmark={() => {
                             setOpenBackup(false);

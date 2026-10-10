@@ -1083,6 +1083,10 @@ export class MockNavigationClient {
         return { success: false, message: "模拟环境不支持 WebDAV 备份" };
     }
 
+    async notesBackupDeleteRemote(_filename: string): Promise<WebDavResult> {
+        return { success: false, message: "模拟环境不支持 WebDAV 备份" };
+    }
+
     // 数据导入
     async importData(data: ExportData, opts?: ImportOptions): Promise<ImportResult> {
         await new Promise(resolve => setTimeout(resolve, 500));

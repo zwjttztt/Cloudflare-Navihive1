@@ -10,8 +10,7 @@ import type { D1PreparedStatement } from "../schema";
 import { computeBackupIntegrity, verifyBackupIntegrity } from "../../utils/backupIntegrity";
 import { normalizeUrl } from "../../utils/url";
 import { isAuthConfigKey, isPerUserAppearanceKey, isSecretConfigKey, isUserScopedConfigKey, stripSecretConfigs } from "../configGuards";
-import { BACKUP_NOTES_CONFIG,
-    BACKUP_CREDENTIALS_CONFIG } from "../configKeys";
+import { BACKUP_CREDENTIALS_CONFIG } from "../configKeys";
 import { encryptSecret } from "../crypto";
 import {
     Config,
@@ -100,10 +99,6 @@ export interface TransferApi {
         groups: Group[];
         sites: Site[];
         configs: Record<string, string>;
-        notes: Note[];
-        noteFolders: NoteFolder[];
-        noteTags: NoteTag[];
-        noteTagLinks: { note_uuid: string; tag_id: number }[];
     }>;
     importData(data: ExportData, opts?: ImportOptions): Promise<ImportResult>;
     /** 批量加密站点密码（限并发 + 进度回调） */
@@ -127,7 +122,7 @@ export const transferImpl: TransferApi = {
     exportData: async function (this: NavigationAPI ): Promise<ExportData> {
         await this.migrate();
         // 一次 batch 取回分组 + 站点 + 配置，只花一次 D1 往返（原来是三次）
-        const { groups, sites, configs, notes, noteFolders, noteTags, noteTagLinks } = await this.withSchemaRetry(() =>
+        const { groups, sites, configs } = await this.withSchemaRetry(() =>
             this.queryExportBundle()
         );
 
@@ -135,11 +130,9 @@ export const transferImpl: TransferApi = {
         // 只有用户主动开启「备份含登录凭据」（backup.includeCredentials=true）才带。
         const withCreds = configs[BACKUP_CREDENTIALS_CONFIG] === "true";
 
-        // 记事本：**默认不带**。导航页备份与记事本备份是两套独立的备份
-        // （见 worker/notesBackup.ts），导航备份只负责站点/分组/配置；
-        // 笔记走自己的 WebDAV 备份。只有显式写成 "true" 才把笔记塞进导航备份。
-        // 与上面的凭据开关一致：都是「默认不带、想带要主动开」。
-        const withNotes = configs[BACKUP_NOTES_CONFIG] === "true";
+        // 记事本：导航备份一律**不带**。导航页备份与记事本备份是两套独立的备份
+        // （见 worker/notesBackup.ts），笔记只走自己的 WebDAV 备份；这样导航备份
+        // 文件里不会出现半份笔记数据，导入时本地笔记也天然保持不动。
 
         // 全站设置单独放 sharedConfigs，且只有所有者（或单账号部署）才写进备份文件。
         // 否则「一个账号导出的备份被另一个账号恢复」会把全站外观改掉。
@@ -164,10 +157,6 @@ export const transferImpl: TransferApi = {
             sites: withCreds ? sites : stripSiteCredentials(sites),
             // 自己的外观；敏感配置（WebDAV 凭据）一律不进备份
             configs: ownConfigs,
-            // 关掉「备份含记事本」时整块不放 notes 字段（而不是放空数组）：
-            // 空数组会被导入当成「备份里有一条笔记都没有」，从而清空本地；
-            // 字段缺失才表示「这份备份与记事本无关」，导入时保持本地不动。
-            ...(withNotes ? { notes, noteFolders, noteTags, noteTagLinks } : {}),
             ...(sharedAllowed ? { sharedConfigs: stripSecretConfigs(configs) } : {}),
             version: EXPORT_VERSION,
             exportDate: new Date().toISOString(),
@@ -182,14 +171,11 @@ export const transferImpl: TransferApi = {
         groups: Group[];
         sites: Site[];
         configs: Record<string, string>;
-        notes: Note[];
-        noteFolders: NoteFolder[];
-        noteTags: NoteTag[];
-        noteTagLinks: { note_uuid: string; tag_id: number }[];
     }> {
-        // 记事本跟着同一次 batch 走 —— 多一张表不该多一次 D1 往返
-        const [groupResult, siteResult, configResult, noteResult, folderResult, tagResult, linkResult] = await this.db.batch<
-            Group | Site | Config | Note | NoteFolder | NoteTag | { note_uuid: string; tag_id: number }
+        // 导航备份只负责站点 / 分组 / 配置；笔记有自己的独立备份
+        // （worker/notesBackup.ts 的 exportNotesData），不跟导航备份混在一起。
+        const [groupResult, siteResult, configResult] = await this.db.batch<
+            Group | Site | Config
         >([
             this.db
                 .prepare(
@@ -206,22 +192,6 @@ export const transferImpl: TransferApi = {
                 )
                 .bind(...this.scopeParams([])),
             this.db.prepare("SELECT key, value FROM configs"),
-            this.db
-                .prepare(
-                    `SELECT id, uuid, title, content, pinned, order_num, site_id, folder_id, archived, created_at, updated_at FROM notes${this.scopeSql(
-                        false
-                    )} ORDER BY pinned DESC, order_num, id`
-                )
-                .bind(...this.scopeParams([])),
-            this.db.prepare(`SELECT * FROM note_folder${this.scopeSql(false)} ORDER BY order_num, id`)
-                .bind(...this.scopeParams([])),
-            this.db.prepare(`SELECT * FROM note_tag${this.scopeSql(false)} ORDER BY id`)
-                .bind(...this.scopeParams([])),
-            this.db.prepare(`SELECT n.uuid AS note_uuid, l.tag_id FROM note_note_tag l
-                JOIN notes n ON n.id = l.note_id
-                WHERE n.id IN (SELECT id FROM notes${this.scopeSql(false)})
-                  AND l.tag_id IN (SELECT id FROM note_tag${this.scopeSql(false)})`)
-                .bind(...this.scopeParams([]), ...this.scopeParams([])),
         ]);
 
         const configs: Record<string, string> = {};
@@ -236,24 +206,6 @@ export const transferImpl: TransferApi = {
             // 库里是密文，导出前解密成明文 JSON（备份文件整体再由 AES-GCM 加密一次）
             sites: await this.decryptSitePasswords((siteResult.results || []) as Site[]),
             configs,
-            // 导出时把 id / user_id 抹掉：id 是对方库里的 AUTOINCREMENT，照搬必撞主键；
-            // user_id 更是只能由导入者自己决定（那是唯一的账号隔离依据）。
-            // uuid 保留 —— 合并导入靠它识别「同一条笔记」。
-            notes: ((noteResult.results || []) as Note[]).map(n => ({
-                uuid: n.uuid,
-                title: n.title,
-                content: n.content,
-                pinned: n.pinned,
-                order_num: n.order_num,
-                site_id: n.site_id,
-                folder_id: n.folder_id ?? null,
-                archived: Boolean(n.archived),
-                created_at: n.created_at,
-                updated_at: n.updated_at,
-            })),
-            noteFolders: ((folderResult.results || []) as NoteFolder[]).map(({ user_id: _uid, count: _count, ...folder }) => folder),
-            noteTags: ((tagResult.results || []) as NoteTag[]).map(({ user_id: _uid, count: _count, ...tag }) => tag),
-            noteTagLinks: (linkResult.results || []) as { note_uuid: string; tag_id: number }[],
         };
     },
 

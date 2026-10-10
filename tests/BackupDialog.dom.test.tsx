@@ -34,8 +34,6 @@ interface Handlers {
         overwrite: boolean
     ) => Promise<ExportData | null>;
     onIncludeCredentialsChange?: (enabled: boolean) => void;
-    includeNotes?: boolean;
-    onIncludeNotesChange?: (enabled: boolean) => void;
     includeCredentials?: boolean;
     initialTab?: number;
 }
@@ -66,8 +64,6 @@ function mount(handlers: Handlers = {}) {
                 onClose={() => {}}
                 includeCredentials={handlers.includeCredentials ?? true}
                 onIncludeCredentialsChange={handlers.onIncludeCredentialsChange ?? (() => {})}
-                includeNotes={handlers.includeNotes ?? true}
-                onIncludeNotesChange={handlers.onIncludeNotesChange ?? (() => {})}
             />
         );
     });
@@ -322,9 +318,8 @@ test("「备份」页能正常渲染（tab 0 曾经整段变成裸文本）", ()
     );
 });
 
-test("「备份」页有「备份包含记事本」开关（tab 0 才看得到）", () => {
+test("「备份」页不再有「备份包含记事本」开关（导航备份一律不含笔记）", () => {
     mount({ initialTab: 0 });
     const sw = document.querySelector<HTMLInputElement>('input[aria-label="备份包含记事本"]');
-    assert.ok(sw, "记事本开关应该在「备份」页");
-    assert.equal(sw!.checked, true, "默认要带上记事本（与凭据开关相反）");
+    assert.ok(sw === null, "记事本开关已移除，不该再出现");
 });

@@ -108,6 +108,8 @@ export type NotesApiLike = {
         message?: string;
         payload?: NotesImportPayload;
     }>;
+    /** 删除网盘上的一份记事本备份（2026-10-10，最近备份的删除按钮）。可选：老部署没有 */
+    notesBackupDeleteRemote?(filename: string): Promise<WebDavResult>;
     /** 备份页的配置读写（notesBackup.* 是账号私有配置，与导航页 webdav.* 同一机制） */
     getConfig?(key: string): Promise<string | null>;
     setConfig?(key: string, value: string): Promise<boolean>;

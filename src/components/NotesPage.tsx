@@ -205,6 +205,8 @@ export interface NotesPageProps {
             payload?: NotesImportPayload;
             code?: WebDavErrorCode;
         }>;
+        /** 删除网盘上的一份备份文件（最近备份的删除按钮，2026-10-10） */
+        deleteRemote?(filename: string): Promise<{ success: boolean; message: string }>;
     };
     notes: Note[];
     onClose: () => void;
@@ -3641,9 +3643,9 @@ export default function NotesPage({
      *  所以 data-view / searchRef / data-nav-col 都不会出现两份。 */
     const navInner = (
             <>
-            {/* 迷你顶栏（2026-10-07）：顶栏只压这一列（inkstone 布局），中栏 / 编辑区
-                直达页面顶部、各带头部。返回 + 应用名留在这里；「收起列表」进左下角
-                （设置左边）；分享 / 版本 / 大纲 / 反链收进编辑区右上角的「更多操作」。 */}
+            {/* 迷你顶栏（2026-10-10 调整）：返回箭头贴左（箭头朝左），「记事本」居中，
+                「收起笔记列表」占返回箭头原来的位置（右上角）。收起 / 展开从左下角
+                挪上来 —— 低频但它本来就是控制这一列的，放列顶比挤在账号行里更直白。 */}
             <Box
                 sx={{
                     display: "flex",
@@ -3655,20 +3657,46 @@ export default function NotesPage({
                     flexShrink: 0,
                 }}
             >
+                {/* 返回箭头（2026-10-10 用户明确）：贴左侧栏最左边、箭头**朝左**（回导航站的方向）；
+                    窄屏（tablet/mobile）的返回箭头仍贴**整页右上角**（顶部 44px 栏最右端），
+                    不落在抽屉里。占位 Box 让标题在两种布局下都居中。 */}
+                {!narrowLayout ? (
+                    <IconButton
+                        aria-label='返回导航站'
+                        onClick={onClose}
+                        size='small'
+                        sx={{ flexShrink: 0, ml: -0.5 }}
+                    >
+                        <ArrowBackIcon fontSize='small' />
+                    </IconButton>
+                ) : (
+                    <Box aria-hidden='true' sx={{ width: 30, flexShrink: 0 }} />
+                )}
                 <Typography
                     variant='subtitle2'
                     component='div'
-                    sx={{ fontWeight: 600, flex: 1, fontSize: 14, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                    sx={{ fontWeight: 600, flex: 1, textAlign: "center", fontSize: 14, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
                 >
                     记事本
                 </Typography>
-                {/* 返回箭头（2026-10-09 用户明确）：只在**桌面**导航列里显示；
-                    窄屏（tablet/mobile）的返回箭头要贴着**整页右上角**（顶部 44px 栏
-                    最右端 / 列表屏头部行最右），不能落在抽屉（最左栏）的右上角。 */}
+                {/* 收起 / 展开整个左栏：从左下角（账号行）挪到顶栏右侧 —— 返回箭头原来的位置。
+                    只在桌面导航列显示；tablet 抽屉里没有「收起」概念（整个抽屉关掉就是收起）。 */}
                 {!narrowLayout && (
-                    <IconButton aria-label='返回导航站' onClick={onClose} size='small'>
-                        <ArrowBackIcon fontSize='small' sx={{ transform: "scaleX(-1)" }} />
-                    </IconButton>
+                    <Tooltip title={listCollapsed ? "展开笔记列表" : "收起笔记列表"}>
+                        <IconButton
+                            size='small'
+                            aria-label={listCollapsed ? "展开笔记列表" : "收起笔记列表"}
+                            data-tool='collapse-pane'
+                            onClick={() => setListCollapsed(c => !c)}
+                            sx={{ flexShrink: 0, mr: -0.5 }}
+                        >
+                            {listCollapsed ? (
+                                <LastPageIcon fontSize='inherit' />
+                            ) : (
+                                <FirstPageIcon fontSize='inherit' />
+                            )}
+                        </IconButton>
+                    </Tooltip>
                 )}
             </Box>
             {/* 可滚动的上半：搜索框 + 视图导航 + 文件夹 + 标签 */}
@@ -3892,24 +3920,8 @@ export default function NotesPage({
                     >
                         {accountName || "未登录"}
                     </Typography>
-                    {/* 收起 / 展开整个左栏（2026-10-07 从顶栏挪到这里，设置左边）：
-                        低频操作和设置是同一类，跟账号挤一行正合适 */}
-                    <Tooltip title={listCollapsed ? "展开笔记列表" : "收起笔记列表"}>
-                        <IconButton
-                            size='small'
-                            aria-label={listCollapsed ? "展开笔记列表" : "收起笔记列表"}
-                            data-tool='collapse-pane'
-                            onClick={() => setListCollapsed(c => !c)}
-                            sx={{ p: 0.25 }}
-                        >
-                            {listCollapsed ? (
-                                <LastPageIcon fontSize='inherit' />
-                            ) : (
-                                <FirstPageIcon fontSize='inherit' />
-                            )}
-                        </IconButton>
-                    </Tooltip>
-                    {/* 设置：打开记事本自己的设置（外观 / 编辑器），不再复用导航站配置 */}
+                    {/* 设置：打开记事本自己的设置（外观 / 编辑器），不再复用导航站配置。
+                        「收起笔记列表」2026-10-10 挪到顶栏右侧（原返回箭头的位置）。 */}
                     <Tooltip title='设置'>
                         <IconButton
                             size='small'
@@ -5834,6 +5846,7 @@ export default function NotesPage({
                     // 「从网盘恢复」：列出 → 选一份 →（需要时填口令）→ 下载 → 走同一条导入
                     onNotesBackupListRemote: backupApi?.listRemote,
                     onNotesBackupFetch: backupApi?.fetch,
+                    onNotesBackupDeleteRemote: backupApi?.deleteRemote,
                 }}
                 onNotify={onNotify}
                 onOpenNote={id => {

@@ -772,28 +772,39 @@ test("折叠左栏时搜索框和视图导航要一起藏掉（只藏列表会�
     );
 });
 
-test("顶栏：返回箭头放右上角，且不能挨着折叠按钮（两个无文字箭头靠太近会误按）", () => {
+test("顶栏：返回箭头贴最左（朝左），「记事本」居中，收起键占右上角", () => {
     mountPanel([note({ id: 1, title: "甲", content: "" })]);
     const src = readFileSync(
         resolve(findProjectDir(), "src/components/NotesPage.tsx"),
         "utf-8"
     );
-    // 判据：导航列头部那一行的**内部顺序** —— 标题在左、返回箭头在右（最右一个元素）。
-    // 原来返回箭头在最左边、紧跟折叠按钮，两个无文字箭头挨在一起容易误按
-    // （2026-10-08 用户要求把返回箭头挪到右上角）。
+    // 判据（2026-10-10 用户要求）：导航列头部那一行的**内部顺序** ——
+    // 返回箭头在最左、标题居中、收起/展开在最右（返回箭头原来的位置）。
     const headAt = src.indexOf("const navInner = (");
     assert.ok(headAt > 0, "navInner 要还在（导航列与抽屉共用同一份内容）");
-    const head = src.slice(headAt, headAt + 1200);
-    const titleAt = head.indexOf("记事本");
+    const head = src.slice(headAt, headAt + 3200);
     const backAt = head.indexOf("aria-label='返回导航站'");
-    assert.ok(titleAt > 0, "导航列头部要有「记事本」标题");
+    // ⚠️ 顶栏注释里也写了「记事本」，标题位置要从返回箭头往后找
+    const titleAt = head.indexOf("记事本", backAt);
+    const collapseAt = head.indexOf("data-tool='collapse-pane'");
     assert.ok(backAt > 0, "导航列头部要有返回箭头");
-    assert.ok(titleAt < backAt, "标题要在返回箭头左边（返回箭头挪到右上角）");
-    // 返回箭头是该行最后一个交互元素：它之后到本行 Box 闭合之间不能再有别的按钮
-    const tail = head.slice(backAt, head.indexOf("</Box>", backAt));
+    assert.ok(titleAt > 0, "导航列头部要有「记事本」标题");
+    assert.ok(collapseAt > 0, "导航列头部要有收起/展开按钮");
     assert.ok(
-        !/收起笔记列表|展开笔记列表/.test(tail),
-        "折叠按钮不能紧挨着返回箭头"
+        backAt < titleAt && titleAt < collapseAt,
+        "顺序必须是：返回箭头（左）→ 标题（中）→ 收起键（右）"
+    );
+    // 返回箭头要朝左：ArrowBackIcon 本身就朝左，不能再套 scaleX(-1) 翻成朝右
+    const backIcon = head.slice(backAt, backAt + 200);
+    assert.ok(
+        !backIcon.includes("scaleX(-1)"),
+        "返回箭头不能再镜像 —— 要直接朝左指着导航站"
+    );
+    // 标题要居中：flex:1 的标题行必须带 textAlign: "center"
+    const titleSx = head.slice(titleAt - 400, collapseAt);
+    assert.ok(
+        /textAlign:\s*"center"/.test(titleSx),
+        "「记事本」标题要居中"
     );
 });
 
@@ -3518,19 +3529,25 @@ test("窄屏头部放不下一排：平铺组不渲染，分享/版本/反链/�
     }
 });
 
-test("「收起笔记列表」挪到左下角、设置左边，且收起后还有返回按钮", async () => {
+test("「收起笔记列表」挪到导航列顶栏右侧，左下角只留账号与设置", async () => {
     setWide();
     mountPanel([note({ id: 1, title: "甲", content: "a" })]);
-    const footer = document.querySelector("[data-nav-footer='1']")!;
-    const collapse = footer.querySelector("[data-tool='collapse-pane']")!;
-    const settings = footer.querySelector("[data-tool='settings']")!;
-    assert.ok(collapse, "左下角要有收起/展开列表");
-    assert.ok(settings, "左下角要有设置");
-    // 顺序：收起在设置左边
+    const nav = document.querySelector("[data-nav-col='1']")!;
+    const collapse = nav.querySelector("[data-tool='collapse-pane']")!;
+    assert.ok(collapse, "收起/展开要在导航列顶栏");
+    // 顶栏里返回箭头在收起键左边（标题夹在中间）
+    const back = nav.querySelector("button[aria-label='返回导航站']")!;
     assert.ok(
-        collapse.compareDocumentPosition(settings) & Node.DOCUMENT_POSITION_FOLLOWING,
-        "收起按钮要在设置左边"
+        back.compareDocumentPosition(collapse) & Node.DOCUMENT_POSITION_FOLLOWING,
+        "返回箭头要在收起键左边"
     );
+    // 左下角（footer）不再有收起键，只剩账号与设置
+    const footer = document.querySelector("[data-nav-footer='1']")!;
+    assert.ok(
+        footer.querySelector("[data-tool='collapse-pane']") === null,
+        "左下角不该再有收起键（已挪到顶栏）"
+    );
+    assert.ok(footer.querySelector("[data-tool='settings']"), "左下角要有设置");
     await act(async () => (collapse as HTMLElement).click());
     assert.equal(
         document.querySelector("[data-nav-col='1']"),
@@ -5175,7 +5192,47 @@ test("预览模式下不能上传图片（编辑器不挂载，插了也是静�
 
 // ---------- 8. 设置→备份（2026-10-09 照 inkstone 的 BackupSettings） ----------
 
-function makeBackupApi(log: { calls: string[]; saved: Record<string, unknown>[] }) {
+interface BackupRunStub {
+    id: string;
+    startedAt: string;
+    trigger: "auto" | "manual";
+    status: "success" | "failure";
+    filename?: string;
+    noteCount?: number;
+    bytes?: number;
+    durationMs?: number;
+    error?: string;
+}
+
+function defaultBackupRuns(): BackupRunStub[] {
+    return [
+        {
+            id: "r1",
+            startedAt: "2026-10-09T03:00:00.000Z",
+            trigger: "auto",
+            status: "success",
+            filename: "navihive-notes-backup-auto-20261009-030000-000.json.gz",
+            noteCount: 5,
+            bytes: 2048,
+            durationMs: 900,
+        },
+        {
+            id: "r2",
+            startedAt: "2026-10-08T03:00:00.000Z",
+            trigger: "manual",
+            status: "failure",
+            error: "认证失败，请检查 WebDAV 账号或应用密码",
+        },
+    ];
+}
+
+function makeBackupApi(log: {
+    calls: string[];
+    saved: Record<string, unknown>[];
+    runs?: BackupRunStub[];
+}) {
+    // 没显式给就预置两条默认记录（一成一败）；save({runs}) 会整组替换
+    if (!log.runs) log.runs = defaultBackupRuns();
     return {
         getState: async () => ({
             webdavUrl: "https://dav.example.com/dav/",
@@ -5185,28 +5242,11 @@ function makeBackupApi(log: { calls: string[]; saved: Record<string, unknown>[] 
             hasNavBackupPassword: true,
             schedule: "weekly",
             retention: 7,
-            runs: [
-                {
-                    id: "r1",
-                    startedAt: "2026-10-09T03:00:00.000Z",
-                    trigger: "auto",
-                    status: "success",
-                    filename: "navihive-notes-backup-auto-20261009-030000-000.json.gz",
-                    noteCount: 5,
-                    bytes: 2048,
-                    durationMs: 900,
-                },
-                {
-                    id: "r2",
-                    startedAt: "2026-10-08T03:00:00.000Z",
-                    trigger: "manual",
-                    status: "failure",
-                    error: "认证失败，请检查 WebDAV 账号或应用密码",
-                },
-            ],
+            runs: log.runs ?? [],
         }),
         save: async (patch: Record<string, unknown>) => {
             log.saved.push(patch);
+            if (Array.isArray(patch.runs)) log.runs = patch.runs as typeof log.runs;
         },
         test: async () => {
             log.calls.push("test");
@@ -5215,6 +5255,11 @@ function makeBackupApi(log: { calls: string[]; saved: Record<string, unknown>[] 
         run: async () => {
             log.calls.push("run");
             return { success: true, message: "已备份到 WebDAV：navihive-notes-backup-20261009-040000-000.json.gz" };
+        },
+        // 删除网盘上的一份备份（2026-10-10，最近备份的删除按钮）
+        deleteRemote: async (filename: string) => {
+            log.calls.push("deleteRemote:" + filename);
+            return { success: true, message: "已删除" };
         },
         // 备份闭环的另一半：从网盘取回（2026-10-09）
         listRemote: async () => {
@@ -5328,6 +5373,111 @@ test("设置→备份：带入导航页网盘配置，立即备份 / 测试连�
         log.saved.some(p => p.path === "my-notes-dir"),
         "目录改动失焦后要保存"
     );
+});
+
+test("设置→备份：删除一条最近备份 —— 先删网盘文件，成功后记录也移除", async () => {
+    setWide();
+    const log: { calls: string[]; saved: Record<string, unknown>[]; runs?: BackupRunStub[] } = {
+        calls: [],
+        saved: [],
+    };
+    mountPanel([note({ id: 1, title: "甲", content: "a" })], { backupApi: makeBackupApi(log) });
+    await act(async () =>
+        (document.querySelector("button[data-tool='settings']") as HTMLElement).click()
+    );
+    await act(async () =>
+        (document.querySelector("[data-settings-tab='backup']") as HTMLElement).click()
+    );
+    assert.equal(document.querySelectorAll("[data-backup-run]").length, 2, "一开始有两条记录");
+
+    // 点成功那条（带网盘文件）的删除按钮 → 弹二次确认
+    await act(async () =>
+        (
+            document.querySelector(
+                "[data-backup-run='r1'] button[aria-label^='删除这条备份']"
+            ) as HTMLElement
+        ).click()
+    );
+    assert.ok(
+        text().includes("删除这条备份？"),
+        "删除要有二次确认（文件会从网盘删掉，不可恢复）"
+    );
+
+    // 确认 → 先调 deleteRemote 删文件，再 save({runs}) 移除记录
+    await act(async () => {
+        await (
+            document.querySelector("[data-confirm-action='confirm']") as HTMLElement
+        ).click();
+        await new Promise(r => setTimeout(r, 30));
+    });
+    assert.ok(
+        log.calls.includes(
+            "deleteRemote:navihive-notes-backup-auto-20261009-030000-000.json.gz"
+        ),
+        "有网盘文件的记录要先删文件"
+    );
+    const runsPatch = log.saved.find(p => Array.isArray(p.runs)) as
+        | { runs: { id: string }[] }
+        | undefined;
+    assert.ok(runsPatch, "删除后要写回剩下的记录");
+    assert.deepEqual(
+        runsPatch.runs.map(r => r.id),
+        ["r2"],
+        "r1 的记录要被移除，r2 保留"
+    );
+    // 刷新后列表只剩一条（等元素消失，别写死 sleep —— CI 慢机会假红）
+    const deadline = Date.now() + 1000;
+    while (document.querySelectorAll("[data-backup-run]").length !== 1 && Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, 25));
+    }
+    assert.equal(document.querySelectorAll("[data-backup-run]").length, 1, "刷新后只剩 r2");
+});
+
+test("设置→备份：网盘文件删不掉时记录不能先没（孤儿备份防线）", async () => {
+    setWide();
+    const log: { calls: string[]; saved: Record<string, unknown>[]; runs?: BackupRunStub[] } = {
+        calls: [],
+        saved: [],
+    };
+    const api = makeBackupApi(log) as Record<string, unknown> & {
+        deleteRemote: (filename: string) => Promise<{ success: boolean; message: string }>;
+    };
+    // 网盘侧删除失败：记录必须原样保留
+    api.deleteRemote = async () => ({ success: false, message: "网盘拒绝了删除" });
+    const notify: string[] = [];
+    mountPanel([note({ id: 1, title: "甲", content: "a" })], {
+        backupApi: api as never,
+        onNotify: (m: unknown) => notify.push(String(m)),
+    });
+    await act(async () =>
+        (document.querySelector("button[data-tool='settings']") as HTMLElement).click()
+    );
+    await act(async () =>
+        (document.querySelector("[data-settings-tab='backup']") as HTMLElement).click()
+    );
+    await act(async () =>
+        (
+            document.querySelector(
+                "[data-backup-run='r1'] button[aria-label^='删除这条备份']"
+            ) as HTMLElement
+        ).click()
+    );
+    await act(async () => {
+        await (
+            document.querySelector("[data-confirm-action='confirm']") as HTMLElement
+        ).click();
+        await new Promise(r => setTimeout(r, 30));
+    });
+    assert.ok(
+        notify.some(m => m.includes("网盘拒绝了删除")),
+        "删除失败要有提示（实际收到：" + notify.join(" / ") + "）"
+    );
+    assert.equal(
+        document.querySelectorAll("[data-backup-run]").length,
+        2,
+        "文件删不掉时记录不能先被移除"
+    );
+    assert.equal(log.saved.length, 0, "失败时不能写回 runs");
 });
 
 test("设置→备份：频率与保留的当前值要显示（weekly / 最近 7 份）", async () => {

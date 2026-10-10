@@ -258,6 +258,10 @@ export default function NotesOverlay({
                 if (patch.retention !== undefined) {
                     await api.setConfig!("notesBackup.retention", String(patch.retention));
                 }
+                if (patch.runs !== undefined) {
+                    // 删除「最近备份」记录时全量写回（Worker 侧同一把钥匙，最多 12 条）
+                    await api.setConfig!("notesBackup.runs", JSON.stringify(patch.runs));
+                }
             },
             test: async () => {
                 const r = await api.notesBackupTest!();
@@ -294,6 +298,15 @@ export default function NotesOverlay({
                     // 加密备份缺口令时后端回 encrypted / badPassword，前端据此弹口令框
                     code: r.code,
                 };
+            },
+            // 删除网盘上的一份备份文件（最近备份的删除按钮，2026-10-10）。
+            // 老部署没有该端点时返回失败，前端保留记录并提示。
+            deleteRemote: async (filename: string) => {
+                if (typeof api.notesBackupDeleteRemote !== "function") {
+                    return { success: false, message: "当前部署不支持删除网盘备份" };
+                }
+                const r = await api.notesBackupDeleteRemote(filename);
+                return { success: r.success, message: r.message ?? "" };
             },
         };
         // 依赖只有 api：getState/save/test/run 闭包里用到的都是它自己的方法
