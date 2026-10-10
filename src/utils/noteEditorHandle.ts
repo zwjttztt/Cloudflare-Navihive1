@@ -1,4 +1,5 @@
 import { EditorView } from "@codemirror/view";
+import { openSearchPanel } from "@codemirror/search";
 
 /** 工具栏同步编辑接口，读取 CM 状态而非滞后的 React 草稿。 */
 export interface NoteEditorHandle {
@@ -7,6 +8,11 @@ export interface NoteEditorHandle {
     readonly selectionEnd: number;
     setSelectionRange(from: number, to: number): void;
     focus(): void;
+    /**
+     * 打开编辑器内「查找/替换」面板（@codemirror/search 的 openSearchPanel）。
+     * 工具栏「查找」按钮和 ⌘F 都走它；面板 UI 样式在 NoteEditor 的 searchPanelTheme。
+     */
+    openSearch(): void;
     /**
      * 滚动比例（0~1）。阅读位置记忆用它存取 ——
      * 记比例而不是像素：窗口大小、面板宽度、是否分屏都会变，
@@ -47,6 +53,7 @@ export function editorHandle(view: EditorView): NoteEditorHandle {
             view.dispatch({ selection: { anchor: Math.max(0, Math.min(max, from)), head: Math.max(0, Math.min(max, to)) }, scrollIntoView: true });
         },
         focus() { view.focus(); },
+        openSearch() { openSearchPanel(view); },
         scrollRatio() {
             const el = view.scrollDOM;
             const max = el.scrollHeight - el.clientHeight;

@@ -79,9 +79,16 @@ export function registerNoteEmbed(md: MarkdownIt): void {
         if ((state as typeof state & { linkLevel?: number }).linkLevel! > 0) return false;
         const ref = parseBracketRef(state.src, start);
         if (!ref || !ref.embed) return false;
+        // N6：嵌入也认别名 `![[目标|显示]]` —— 别名剥掉再当目标名，
+        // 否则 title 会带上 `|显示` 永远匹配不到笔记（嵌入显示的是
+        // 被嵌笔记自己的标题条，别名在这里只保证目标匹配不回归）。
+        const bar = ref.content.indexOf("|");
+        const content = bar >= 0 ? ref.content.slice(0, bar).trim() : ref.content;
+        if (!content) return false;
         if (!silent) {
             const token = state.push("note_embed", "", 0);
-            token.content = ref.content;
+            token.content = content;
+            if (bar >= 0) token.meta = { alias: ref.content.slice(bar + 1).trim() };
         }
         state.pos += ref.length;
         return true;

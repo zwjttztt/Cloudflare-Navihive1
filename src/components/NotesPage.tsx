@@ -82,6 +82,7 @@ import CheckBoxOutlineBlankIcon from "@mui/icons-material/CheckBoxOutlineBlank";
 import Checkbox from "@mui/material/Checkbox";
 import HubIcon from "@mui/icons-material/Hub";
 import NoteGraphDialog from "./NoteGraphDialog";
+import BacklinksPanel from "./BacklinksPanel";
 import StrikethroughIcon from "@mui/icons-material/StrikethroughS";
 import TableRowsIcon from "@mui/icons-material/TableRows";
 import UndoIcon from "@mui/icons-material/Undo";
@@ -139,6 +140,8 @@ import {
 } from "../utils/notesSettings";
 import { reportError } from "../utils/errorReporter";
 import NoteEditor from "./NoteEditor";
+import NotesCommandPalette from "./NotesCommandPalette";
+import type { CommandItem } from "./CommandPalette";
 // 空状态：插画 + 标题 + 说明 + 可选动作，对齐 inkstone 的 <Empty>
 import { EmptyState } from "./EmptyArt";
 import ConfirmDialog from "./ConfirmDialog";
@@ -1438,6 +1441,8 @@ export default function NotesPage({
     const [keyword, setKeyword] = useState("");
     /** 关系图谱（2026-10-09）：双链关系的全貌，从「更多」里开 */
     const [graphOpen, setGraphOpen] = useState(false);
+    /** 反链右侧常驻面板（N4）：与大纲面板同一位置，桌面头部按钮 / 菜单项共同开关 */
+    const [backlinksOpen, setBacklinksOpen] = useState(false);
     /** 多选批量条（2026-10-09）：只在用户主动开了「多选」时才勾人，退出即清空 */
     const [multiSelect, setMultiSelect] = useState(false);
     const [checked, setChecked] = useState<Set<number>>(() => new Set());
@@ -1543,6 +1548,16 @@ export default function NotesPage({
     /** 「编辑标签」二级弹窗的锚点 */
     const [tagPick, setTagPick] = useState<{ el: MenuAnchor; noteId: number } | null>(null);
     const [activeId, setActiveId] = useState<number | null>(notes[0]?.id ?? null);
+    /** 记事本命令面板（N1）开关 */
+    const [notesCmdOpen, setNotesCmdOpen] = useState(false);
+    /** 最近打开的笔记 id（命令面板空查询时优先展示） */
+    const [recentNoteIds, setRecentNoteIds] = useState<number[]>([]);
+    useEffect(() => {
+        if (activeId == null) return;
+        setRecentNoteIds(prev =>
+            [activeId, ...prev.filter(id => id !== activeId)].slice(0, 8)
+        );
+    }, [activeId]);
     /** 用户主动清空过选择（把当前这条移到回收站）—— 见下面那条自动选中的 effect */
     const userClearedRef = useRef(false);
     const [pane, setPane] = useState<Pane>("split");
@@ -1830,6 +1845,16 @@ export default function NotesPage({
         [uploadApi]
     );
 
+    /**
+     * 编辑器粘贴 / 拖拽图片（N3）用的上传函数：与 MarkdownToolbar 的「上传图片」
+     * 按钮共用同一个模块级 resolveImageUpload（上传 + 小图内嵌解析），行为不会跑偏。
+     * noteId 用主栏 activeId（侧栏那条传的图也挂到当前笔记，url 才是关键）。
+     */
+    const uploadImageForEditor = useCallback(
+        (file: File) => resolveImageUpload(file, handleUpload, activeId ?? null),
+        [handleUpload, activeId]
+    );
+
     // 滚动同步控制器：只在「分栏 + 设置里开着」时启用（inkstone 同条件，
     // Workspace.tsx:241 的 `settings.preview.syncScroll && showSplit`）。
     const syncScrollRef = useRef<ReturnType<typeof createScrollSync> | null>(null);
@@ -1975,33 +2000,22 @@ export default function NotesPage({
      * 而条件渲染（`narrowLayout &&`）会让这两个 input 反复互换角色，
      * 于是 attach/detach 永远收敛不了。
      *
-     * 现在是两个独立 ref，⌘K 聚焦**当前可见的那一个**（隐藏的 display:none 聚焦不到）。
+     * 现在是两个独立 ref（⌘K 改去开命令面板，见下面那个 handler）。
      */
     const searchRef = useRef<HTMLInputElement | null>(null);
     const searchRefNarrow = useRef<HTMLInputElement | null>(null);
-    /** 聚焦当前看得见的那个搜索框 */
-    const focusSearch = useCallback(() => {
-        const narrow = searchRefNarrow.current;
-        const wide = searchRef.current;
-        if (narrow && narrow.offsetParent !== null) narrow.focus();
-        else wide?.focus();
-    }, []);
     useEffect(() => {
         const onKey = (e: KeyboardEvent) => {
             if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
                 e.preventDefault();
-                // ⚠️ 必须同时切到「搜索」视图：光聚焦输入框的话，
-                // 用户看到的还是当前视图（比如「归档」）筛出来的列表，
-                // 打完字发现列表纹丝不动 —— 那是「快捷键没生效」的第一印象。
-                setView("search");
-                setActiveFolder(null);
-                setActiveTag(null);
-                focusSearch();
+                // N1：⌘K 在记事本上下文打开命令面板（搜笔记/文件夹/标签 + 执行命令），
+                // 不再只是聚焦搜索框。面板里也能搜笔记（含远端全文命中），体验更一致。
+                setNotesCmdOpen(true);
             }
         };
         window.addEventListener("keydown", onKey);
         return () => window.removeEventListener("keydown", onKey);
-    }, [focusSearch]);
+    }, []);
 
     const active = useMemo(
         () => notes.find(n => n.id === activeId) || null,
@@ -2982,6 +2996,39 @@ export default function NotesPage({
         setRevisions(null);
         setRevisions(await folderTags.onListRevisions(noteId));
     }, [active?.id, folderTags]);
+
+    /**
+     * 记事本命令面板（N1）的命令列表：用现成的回调拼出来。
+     * 不依赖任何新接口 —— 新建/查找/插入/布局切换/分享/导出/删除全都是已有动作。
+     * 「当前笔记」类命令只在有 active 时出现（没选中笔记时执行会崩）。
+     * ⚠️ 必须放在这里：它引用的 active / setShareId / openRevisions / handleUpload
+     * 都在更上面才声明，提到前面会「used before declaration」。
+     */
+    const notesCommands = useMemo<CommandItem[]>(() => {
+        const list: CommandItem[] = [
+            { id: "new", label: "新建笔记", section: "笔记", keywords: "new create 新建", run: () => void onCreate() },
+            { id: "find", label: "查找 / 替换", section: "编辑", keywords: "find search 查找 替换", run: () => textareaRef.current?.openSearch() },
+            { id: "insert-frontmatter", label: "插入 front-matter", section: "编辑", keywords: "frontmatter 属性 yaml", run: () => tools.onInsertFrontMatter() },
+            { id: "insert-wikilink", label: "插入双链", section: "编辑", keywords: "wikilink 双链 链接", run: () => tools.onInsertWikiLink() },
+            { id: "pane-edit", label: "布局：仅编辑", section: "视图", keywords: "edit 编辑", run: () => setPane("edit") },
+            { id: "pane-split", label: "布局：分栏", section: "视图", keywords: "split 分栏", run: () => setPane("split") },
+            { id: "pane-preview", label: "布局：仅预览", section: "视图", keywords: "preview 预览", run: () => setPane("preview") },
+        ];
+        if (active) {
+            list.push(
+                { id: "pin", label: "置顶当前笔记", section: "当前笔记", keywords: "pin 置顶", run: () => void onTogglePin(active) },
+                { id: "star", label: "收藏当前笔记", section: "当前笔记", keywords: "star 收藏", run: () => void onToggleStar?.(active) },
+                { id: "archive", label: "归档当前笔记", section: "当前笔记", keywords: "archive 归档", run: () => void onToggleArchive(active) },
+                { id: "share", label: "分享当前笔记", section: "当前笔记", keywords: "share 分享", run: () => active.id != null && setShareId(active.id) },
+                { id: "revisions", label: "版本历史", section: "当前笔记", keywords: "history 版本", run: () => void openRevisions() },
+                { id: "graph", label: "关系图谱", section: "当前笔记", keywords: "graph 图谱 双链", run: () => setGraphOpen(true) },
+                { id: "export-md", label: "导出 Markdown", section: "当前笔记", keywords: "export md markdown", run: () => void exportNoteAsMarkdown(active.title, active.content) },
+                { id: "export-html", label: "导出 HTML", section: "当前笔记", keywords: "export html", run: () => void exportNoteAsHtml(active.title, active.content) },
+                { id: "delete", label: "删除当前笔记", section: "当前笔记", keywords: "delete 删除", run: () => void onDelete(active) },
+            );
+        }
+        return list;
+    }, [onCreate, tools, active, onTogglePin, onToggleStar, onToggleArchive, onDelete, setShareId, openRevisions, setGraphOpen]);
 
     /** 取某一版正文：列表里那份是空串，diff 要真的正文 */
     const loadRevisionContent = useCallback(
@@ -4698,9 +4745,12 @@ export default function NotesPage({
                                         size='small'
                                         aria-label='反向链接'
                                         data-tool='backlinks'
-                                        disabled={!active || backlinks.length === 0}
-                                        onClick={e => setBacklinkAnchor(e.currentTarget)}
-                                        sx={{ width: 28, height: 28, color: "text.secondary" }}
+                                        disabled={!active}
+                                        onClick={() => setBacklinksOpen(o => !o)}
+                                        sx={{
+                                            width: 28, height: 28,
+                                            color: backlinksOpen ? "var(--accent)" : "text.secondary",
+                                        }}
                                     >
                                         <LinkIcon fontSize='small' />
                                     </IconButton>
@@ -4875,6 +4925,7 @@ export default function NotesPage({
                                     focusMode={uiSettings.focusMode}
                                     typewriterMode={uiSettings.typewriterMode}
                                     shortcutActions={mainShortcutActions}
+                                    uploadImage={uploadImageForEditor}
                                 />
                             </Box>
                         )}
@@ -5107,6 +5158,20 @@ export default function NotesPage({
                                 ))
                             )}
                         </Box>
+                    )}
+                    {/* 反链右侧常驻面板（N4）：与大纲面板同一列位置。
+                        窄屏不渲染（头部那组平铺按钮窄屏本来就不出现，反链仍走「⋯」菜单）。 */}
+                    {backlinksOpen && !narrowLayout && (
+                        <BacklinksPanel
+                            open
+                            onClose={() => setBacklinksOpen(false)}
+                            notes={notes}
+                            currentId={active?.id}
+                            currentTitle={active?.title ?? ""}
+                            onOpenNote={id => {
+                                void jumpToNote(id);
+                            }}
+                        />
                     )}
                     </Box>
 
@@ -5404,6 +5469,7 @@ export default function NotesPage({
                                 focusMode={uiSettings.focusMode}
                                 typewriterMode={uiSettings.typewriterMode}
                                 shortcutActions={sideShortcutActions}
+                                uploadImage={uploadImageForEditor}
                             />
                         </Box>
                         {/* 侧栏分栏里的那条线：与主栏同一套发丝线（1px，hover 加粗）。
@@ -5479,6 +5545,7 @@ export default function NotesPage({
                         focusMode={uiSettings.focusMode}
                         typewriterMode={uiSettings.typewriterMode}
                         shortcutActions={sideShortcutActions}
+                        uploadImage={uploadImageForEditor}
                     />
                 )}
             </Box>
@@ -6011,6 +6078,19 @@ export default function NotesPage({
                             关系图谱
                         </MenuItem>
                         )}
+                        {/* 编辑器内查找/替换（N2）：⌘F 也能开，这里给个鼠标入口。
+                            走 editorRef.openSearch() → @codemirror/search 的 openSearchPanel。 */}
+                        <MenuItem
+                            data-active-op='find'
+                            disabled={pane === "preview"}
+                            onClick={() => {
+                                setActiveMenuAnchor(null);
+                                textareaRef.current?.openSearch();
+                            }}
+                        >
+                            <SearchIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
+                            查找 / 替换…
+                        </MenuItem>
                         <Divider />
                         {/* 窄屏头部放不下「即时渲染」，这里补一个入口（同一个状态）；
                             桌面态（含分屏，2026-10-10）头部已有开关，这项不再重复出现。 */}
@@ -6155,6 +6235,36 @@ export default function NotesPage({
                     void jumpToNote(id);
                 }}
                 onClose={() => setGraphOpen(false)}
+            />
+
+            {/* 记事本命令面板（N1）：⌘K 打开。搜笔记/文件夹/标签 + 执行命令；
+                远端 /search 命中带摘要并上浮；空查询给最近打开；无结果用输入建笔记。 */}
+            <NotesCommandPalette
+                open={notesCmdOpen}
+                onClose={() => setNotesCmdOpen(false)}
+                notes={notes}
+                folders={folderTags?.folders ?? []}
+                tags={folderTags?.tags ?? []}
+                commands={notesCommands}
+                recentNoteIds={recentNoteIds}
+                onSearchRemote={folderTags?.onSearchRemote}
+                onOpenNote={note => {
+                    setActiveId(note.id ?? null);
+                    setView("all");
+                    setActiveFolder(null);
+                    setActiveTag(null);
+                }}
+                onOpenFolder={id => {
+                    setActiveFolder(id);
+                    setActiveTag(null);
+                    setView("all");
+                }}
+                onOpenTag={id => {
+                    setActiveTag(id);
+                    setActiveFolder(null);
+                    setView("all");
+                }}
+                onCreateNote={title => void onCreate({ title })}
             />
             <NoteVersionHistoryDialog
                 open={revisionsOpen}
@@ -6818,6 +6928,39 @@ function blobToDataUri(blob: Blob): Promise<string> {
     });
 }
 
+/**
+ * 上传一张图并解析出「最终可内嵌的 url」（N3 复用点）：
+ * 小图（≤1MB）fetch 成 data URI 内嵌（离线可读），大图或返回非图片只插链接。
+ * 模块级：工具栏「上传图片」按钮和编辑器粘贴/拖拽都走它 —— 同一套逻辑不会跑偏。
+ */
+async function resolveImageUpload(
+    file: File,
+    upload: (file: File, noteId: number | null) => Promise<{ url: string; filename: string; size: number }>,
+    noteId: number | null
+): Promise<{ url: string; filename: string }> {
+    const uploaded = await upload(file, noteId);
+    const INLINE_MAX = 1024 * 1024;
+    if (file.size <= INLINE_MAX) {
+        try {
+            const response = await fetch(uploaded.url, { credentials: "same-origin" });
+            if (response.ok) {
+                const blob = await response.blob();
+                // ⚠️ 光看 response.ok 不够（2026-10-07 实测）：200 也可能是
+                // 错误页 / SPA 兜底的 index.html。内嵌了它，正文里就是一坨
+                // `data:text/html;base64,...`，比裂图还难排查。
+                // 不是图片就退回插 URL，让浏览器自己去裂、至少是个正常链接。
+                if (blob.type.startsWith("image/")) {
+                    return { url: await blobToDataUri(blob), filename: uploaded.filename };
+                }
+                console.warn("附件地址返回的不是图片，改为插入链接", blob.type);
+            }
+        } catch {
+            // fetch 失败（比如跨域）就退回插原链接
+        }
+    }
+    return { url: uploaded.url, filename: uploaded.filename };
+}
+
 function MarkdownToolbar({
     onInsert,
     onLinePrefix,
@@ -6951,6 +7094,12 @@ function MarkdownToolbar({
         fileInputRef.current?.click();
     }, []);
 
+    /** 上传 + 解析最终 url（模块级 resolveImageUpload 的组件内绑定） */
+    const resolveImageUrl = useCallback(
+        (file: File) => resolveImageUpload(file, onUploadImage, activeId ?? null),
+        [onUploadImage, activeId]
+    );
+
     const handleImagePicked = useCallback(
         async (file: File) => {
             // ⚠️ 没有编辑器（预览模式）时 insertAtCursor 会**静默 return**：
@@ -6968,30 +7117,11 @@ function MarkdownToolbar({
             }
             setUploading(true);
             try {
-                const uploaded = await onUploadImage(file, activeId ?? null);
-                // 小图内嵌成 data URI（离线可读），大图只插链接
-                const INLINE_MAX = 1024 * 1024;
-                if (file.size <= INLINE_MAX) {
-                    const response = await fetch(uploaded.url, { credentials: "same-origin" });
-                    if (response.ok) {
-                        const blob = await response.blob();
-                        // ⚠️ 光看 response.ok 不够（2026-10-07 实测）：200 也可能是
-                        // 错误页 / SPA 兜底的 index.html。内嵌了它，正文里就是一坨
-                        // `data:text/html;base64,...`，比裂图还难排查。
-                        // 不是图片就退回插 URL，让浏览器自己去裂、至少是个正常链接。
-                        if (blob.type.startsWith("image/")) {
-                            const dataUri = await blobToDataUri(blob);
-                            onInsert(`![${uploaded.filename}](`, ")", dataUri);
-                            onNotify?.(`已插入图片「${uploaded.filename}」`, "success");
-                            return;
-                        }
-                        console.warn("附件地址返回的不是图片，改为插入链接", blob.type);
-                    }
-                }
-                onInsert(`![${uploaded.filename}](`, ")", uploaded.url);
+                const { url, filename } = await resolveImageUrl(file);
+                onInsert(`![${filename}](`, ")", url);
                 // ⚠️ 必须给一句反馈：之前插入完一点动静都没有，用户在预览里
                 // 没立刻找到图，就以为「上传没生效」（2026-10-08 用户连报两轮）。
-                onNotify?.(`已插入图片「${uploaded.filename}」`, "success");
+                onNotify?.(`已插入图片「${filename}」`, "success");
             } catch (error) {
                 onNotify?.(
                     error instanceof Error ? error.message : "图片上传失败",
@@ -7001,7 +7131,7 @@ function MarkdownToolbar({
                 setUploading(false);
             }
         },
-        [activeId, canInsertOk, onInsert, onNotify, onUploadImage]
+        [canInsertOk, onInsert, onNotify, resolveImageUrl]
     );
 
     /**

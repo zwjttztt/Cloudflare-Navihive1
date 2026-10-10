@@ -39,7 +39,7 @@ import {
     type CalloutType,
 } from "./markdownCallout";
 import { blockIdOf, registerNoteBlocks } from "./markdownNoteBlocks";
-import { parseRefTarget } from "./noteBlocks";
+import { parseEmbedTarget } from "./noteBlocks";
 import { splitFrontMatter, type FrontMatterEntry } from "./noteFrontMatter";
 import { NoteEmbedNode, type NoteEmbedTarget } from "../components/NoteEmbedNode";
 import { NoteTabsNode } from "../components/NoteTabsNode";
@@ -451,21 +451,24 @@ function renderLeaf(tok: Token, c: Cursor): ReactNode {
         case "note_tag":
             return <span key={key} data-inline-tag={tok.content} title="双击查看标签笔记"
                 style={{ color: "var(--accent)", cursor: "pointer" }}>#{tok.content}</span>;
-        // `[[双链]]`：整篇预览的点击事件由 NotesPage 委托处理（按 data-wiki-link 找目标），
+        // `[[双链]]` / `[[目标|显示名]]`：整篇预览的点击事件由 NotesPage 委托处理
+        // （按 data-wiki-link 找目标 —— 永远是**目标名**，别名只管显示），
         // 这里只负责语义与外观。用 <a> 而不是 <span>：读屏会念「链接」，
         // 而且点不动时（目标不存在）样式能明显区分。
-        case "wiki_link":
+        case "wiki_link": {
+            const alias = (tok.meta as { alias?: string } | undefined)?.alias;
             return (
                 <a key={key} data-wiki-link={tok.content}
                     title={`跳到「${tok.content}」`}
                     style={{ color: "var(--accent)", textDecoration: "underline" }}>
-                    {tok.content}
+                    {alias || tok.content}
                 </a>
             );
-        // 笔记嵌入 `![[标题]]` / 块引用 `[[笔记#^块ID]]`（带 `!` 的那种）。
+        }
+        // 笔记嵌入 `![[标题]]` / 块引用 `[[笔记#^块ID]]` / 标题锚点 `![[笔记#某标题]]`（带 `!` 的那种）。
         // 独立组件：内容要再跑一遍渲染（异步），synchronous 的映射函数做不了。
         case "note_embed": {
-            const { title, blockId } = parseRefTarget(tok.content);
+            const { title, blockId, heading } = parseEmbedTarget(tok.content);
             if (!c.ctx.resolveNote) {
                 return (
                     <span key={key} data-note-embed-missing={title} style={{ opacity: 0.7 }}>
@@ -478,6 +481,7 @@ function renderLeaf(tok: Token, c: Cursor): ReactNode {
                     key={key}
                     title={title}
                     blockId={blockId}
+                    heading={heading}
                     depth={c.depth}
                     resolve={c.ctx.resolveNote}
                     render={rendererFor(c)}

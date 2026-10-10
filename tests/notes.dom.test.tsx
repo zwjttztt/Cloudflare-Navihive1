@@ -593,13 +593,21 @@ test("阶段二：顶栏能收起 / 展开左栏", () => {
     assert.ok(document.querySelector("[data-note-list]"), "展开后列表回来");
 });
 
-test("阶段二：搜索框右侧挂 ⌘K 提示", () => {
+test("阶段二：搜索框右侧挂 ⌘K 提示；⌘K 打开记事本命令面板（N1）", () => {
     setWide();
     mountPanel([note({ id: 1, title: "甲", content: "" })]);
     const input = document.querySelector("input[aria-label='搜索笔记']") as HTMLInputElement;
     assert.ok(input.parentElement!.textContent!.includes("⌘K"), "要有 ⌘K 角标");
-    window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", ctrlKey: true }));
-    assert.equal(document.activeElement, input, "Ctrl+K 要聚焦搜索框");
+    // ⚠️ setState 的更新必须包进 act：不包的话渲染被推迟，同步断言时面板还没挂上
+    act(() => {
+        window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", ctrlKey: true }));
+    });
+    // ⌘K 不再聚焦搜索框：改为打开记事本命令面板（搜笔记/文件夹/标签 + 执行命令，
+    // 面板里同样能搜笔记，入口反而更快）。
+    assert.ok(
+        document.querySelector(".notes-command-palette"),
+        "Ctrl+K 应打开记事本命令面板"
+    );
 });
 
 // ---------- 阶段三：回收站 / 归档 / 未归类 ----------

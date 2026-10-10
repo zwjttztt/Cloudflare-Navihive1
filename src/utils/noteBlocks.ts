@@ -62,6 +62,27 @@ export function parseRefTarget(content: string): { title: string; blockId: strin
     return { title: raw, blockId: null };
 }
 
+/**
+ * 嵌入目标（N7）：`标题`、`标题#^块ID`、`标题#标题文本` 三种。
+ *
+ * 判据照 inkstone renderer.ts 的 parseRefTarget：`#` 后以 `^` 开头是块 ID，
+ * 否则是**标题锚点**（嵌入该标题的区段）。注意「最后一个 `#^`」优先 ——
+ * 标题里本身带 `#` 的（`C#^笔记`）不能切错位置。
+ * ⚠️ 与 parseRefTarget 分开：块引用场景（`#` 只是标题一部分）不该被切成 heading。
+ */
+export function parseEmbedTarget(
+    content: string
+): { title: string; blockId: string | null; heading: string | null } {
+    const { title, blockId } = parseRefTarget(content);
+    if (blockId) return { title, blockId, heading: null };
+    const hash = title.indexOf("#");
+    if (hash > 0) {
+        const fragment = title.slice(hash + 1).trim();
+        return { title: title.slice(0, hash).trim(), blockId: null, heading: fragment || null };
+    }
+    return { title, blockId: null, heading: null };
+}
+
 /** 双链 `[[…]]` / 嵌入 `![[…]]` 的方括号对。`![[` 必须先判，否则会从第 2 个字符切出 `![…` */
 export function parseBracketRef(src: string, start: number): { embed: boolean; content: string; length: number } | null {
     const embed = src[start] === "!" && src[start + 1] === "[";

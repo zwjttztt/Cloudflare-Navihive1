@@ -23,7 +23,7 @@ import Typography from "@mui/material/Typography";
 import CloseIcon from "@mui/icons-material/Close";
 import HubIcon from "@mui/icons-material/Hub";
 import type { Note } from "../API/types";
-import { buildBacklinks, resolveWikiLinks } from "../utils/noteWikiLink";
+import { resolveWikiLinks } from "../utils/noteWikiLink";
 
 export interface NoteGraphDialogProps {
     open: boolean;
@@ -59,6 +59,8 @@ export default function NoteGraphDialog({
 }: NoteGraphDialogProps) {
     /** true = 只画当前笔记的邻域；false = 全站所有笔记（含孤岛） */
     const [localOnly, setLocalOnly] = useState(true);
+    /** 邻域模式的跳数（N9）：1 = 直接邻居（原有行为），2/3 = 沿双链再往外走几跳 */
+    const [depth, setDepth] = useState(1);
     const [hover, setHover] = useState<number | null>(null);
 
     const graph = useMemo(() => {
@@ -66,7 +68,8 @@ export default function NoteGraphDialog({
             ? null
             : notes.find(n => n.id === activeId) ?? null;
 
-        // 1) 先算出「谁连谁」：出链 + 入链都算一条边（无向，图上不区分方向）
+        // 1) 先算出「谁连谁」：出链 + 入链都算一条边（无向，图上不区分方向）。
+        // 全量算一次：邻域模式按跳数过滤、全站模式直接用，同一份边表两个模式不吃两遍。
         const edges: { from: number; to: number }[] = [];
         const seen = new Set<string>();
         const addEdge = (from: number, to: number) => {
@@ -76,25 +79,55 @@ export default function NoteGraphDialog({
             seen.add(key);
             edges.push({ from, to });
         };
-        if (localOnly && active) {
-            for (const out of resolveWikiLinks(notes, active)) addEdge(active.id!, out.id);
-            for (const back of buildBacklinks(notes, active)) addEdge(back.id, active.id!);
-        } else {
-            for (const note of notes) {
-                if (note.id === undefined) continue;
-                for (const out of resolveWikiLinks(notes, note)) addEdge(note.id, out.id);
-            }
+        for (const note of notes) {
+            if (note.id === undefined) continue;
+            for (const out of resolveWikiLinks(notes, note)) addEdge(note.id, out.id);
         }
 
-        // 2) 只保留**边上出现过的**节点（孤岛在全站模式下也画出来，否则看不出「它没连任何东西」）
+        // 2) 邻域模式：从当前笔记 BFS depth 跳，收集可达节点，只留两端都在集合里的边；
+        //    全站模式：全部边 + 全部笔记（含孤岛，否则看不出「它没连任何东西」）。
+        let keep: Set<number>;
+        if (localOnly && active?.id !== undefined) {
+            const adj = new Map<number, number[]>();
+            for (const e of edges) {
+                if (!adj.has(e.from)) adj.set(e.from, []);
+                if (!adj.has(e.to)) adj.set(e.to, []);
+                adj.get(e.from)!.push(e.to);
+                adj.get(e.to)!.push(e.from);
+            }
+            keep = new Set<number>([active.id]);
+            let frontier = [active.id];
+            for (let d = 0; d < depth; d++) {
+                const next: number[] = [];
+                for (const id of frontier) {
+                    for (const nb of adj.get(id) ?? []) {
+                        if (!keep.has(nb)) {
+                            keep.add(nb);
+                            next.push(nb);
+                        }
+                    }
+                }
+                frontier = next;
+            }
+        } else {
+            keep = new Set<number>();
+            for (const e of edges) {
+                keep.add(e.from);
+                keep.add(e.to);
+            }
+            for (const n of notes) if (n.id !== undefined) keep.add(n.id);
+        }
+
+        // 3) 过滤出要画的边与节点
+        const drawn = localOnly && active ? edges.filter(e => keep.has(e.from) && keep.has(e.to)) : edges;
         const degrees = new Map<number, number>();
-        for (const edge of edges) {
+        for (const edge of drawn) {
             degrees.set(edge.from, (degrees.get(edge.from) ?? 0) + 1);
             degrees.set(edge.to, (degrees.get(edge.to) ?? 0) + 1);
         }
         const ids = new Set<number>(degrees.keys());
         if (localOnly && active?.id !== undefined) ids.add(active.id);
-        else if (!localOnly) for (const n of notes) if (n.id !== undefined) ids.add(n.id);
+        else for (const n of notes) if (n.id !== undefined) ids.add(n.id);
 
         const nodes: GraphNode[] = [];
         if (active?.id !== undefined && ids.has(active.id)) {
@@ -125,8 +158,8 @@ export default function NoteGraphDialog({
         });
 
         const byId = new Map(nodes.map(n => [n.id, n]));
-        return { nodes, edges: edges.filter(e => byId.has(e.from) && byId.has(e.to)), byId };
-    }, [notes, activeId, localOnly]);
+        return { nodes, edges: drawn.filter(e => byId.has(e.from) && byId.has(e.to)), byId };
+    }, [notes, activeId, localOnly, depth]);
 
     const connected = useMemo(() => {
         const set = new Set<number>();
@@ -166,6 +199,23 @@ export default function NoteGraphDialog({
                 >
                     {localOnly ? "只看本文" : "看全部"}
                 </Button>
+                {/* N9 邻域跳数：只在「只看本文」下有意义（全站模式下隐藏） */}
+                {localOnly && (
+                    <Box sx={{ display: "flex", gap: 0.25 }}>
+                        {[1, 2, 3].map(d => (
+                            <Button
+                                key={d}
+                                size='small'
+                                data-graph-depth={d}
+                                variant={depth === d ? "contained" : "text"}
+                                sx={{ minWidth: 32, px: 0.5 }}
+                                onClick={() => setDepth(d)}
+                            >
+                                {d}跳
+                            </Button>
+                        ))}
+                    </Box>
+                )}
                 <IconButton aria-label='关闭图谱' size='small' onClick={onClose}>
                     <CloseIcon fontSize='small' />
                 </IconButton>
@@ -173,7 +223,9 @@ export default function NoteGraphDialog({
             <DialogContent sx={{ pt: 0.5 }}>
                 <Typography variant='caption' color='text.secondary' sx={{ display: "block", mb: 1 }}>
                     {localOnly
-                        ? "当前笔记与它一跳之内相连的笔记；点节点就跳过去。"
+                        ? depth === 1
+                            ? "当前笔记与它一跳之内相连的笔记；点节点就跳过去。"
+                            : `当前笔记沿双链往外 ${depth} 跳之内的笔记；点节点就跳过去。`
                         : "全站所有笔记之间的双链；灰点是还没有任何链接的笔记。"}
                     共 {graph.nodes.length} 个节点、{graph.edges.length} 条连线。
                 </Typography>

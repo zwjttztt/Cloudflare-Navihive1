@@ -91,3 +91,24 @@ test("正向解析：链到自己不算", () => {
     const self = { id: 5, title: "自链", content: "[[自链]]" };
     assert.deepEqual(resolveWikiLinks([self], self), []);
 });
+
+// ---------- N6 别名语法 `[[目标|显示名]]` ----------
+
+test("N6 别名：extractWikiLinks 只给目标名（别名剥掉）", () => {
+    assert.deepEqual(extractWikiLinks("见 [[目标|显示名]] 一眼"), ["目标"]);
+    // 多个 | 只按第一个切，后面全算显示名
+    assert.deepEqual(extractWikiLinks("[[目标|显示|名]]"), ["目标"]);
+    // 没有别名的普通双链不受影响
+    assert.deepEqual(extractWikiLinks("[[普通]]"), ["普通"]);
+    // 目标名在 | 前面空着 → 不是双链
+    assert.deepEqual(extractWikiLinks("[[|只有别名]]"), []);
+});
+
+test("N6 别名：反链按目标名命中（写别名也能被找到）", () => {
+    const list = [
+        { id: 1, title: "目标页", content: "" },
+        { id: 2, title: "来源", content: "看 [[目标页|这篇]] 就懂了" },
+    ];
+    assert.deepEqual(buildBacklinks(list, list[0]).map(n => n.id), [2]);
+    assert.deepEqual(resolveWikiLinks(list, list[1]).map(n => n.id), [1]);
+});

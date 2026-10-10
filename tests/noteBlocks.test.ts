@@ -16,11 +16,13 @@ import {
     parseContainerOpen,
     parseHiddenComment,
     parseRefTarget,
+    parseEmbedTarget,
     parseTabPages,
     stripBlockId,
     withBlockId,
 } from "../src/utils/noteBlocks";
 import { buildFrontMatter, splitFrontMatter } from "../src/utils/noteFrontMatter";
+import { sliceHeading } from "../src/components/NoteEmbedNode";
 
 // ---------- 块 ID ----------
 
@@ -200,4 +202,34 @@ test("笔记属性：生成器与解析器互逆", () => {
     const fm = splitFrontMatter(src);
     assert.equal(fm.entries[0].value, "甲");
     assert.deepEqual(fm.entries[1].list, ["a", "b"]);
+});
+
+// ---------- N7 嵌入标题锚点 `![[笔记#某标题]]` ----------
+
+test("N7 parseEmbedTarget：块 ID / 标题锚点 / 纯标题三种都能拆", () => {
+    assert.deepEqual(parseEmbedTarget("API"), { title: "API", blockId: null, heading: null });
+    assert.deepEqual(parseEmbedTarget("API#^intro"), { title: "API", blockId: "intro", heading: null });
+    assert.deepEqual(parseEmbedTarget("API#基本用法"), { title: "API", blockId: null, heading: "基本用法" });
+    // 标题里带 # 的优先按块 ID 判（与 parseRefTarget 同判据）
+    assert.deepEqual(parseEmbedTarget("C#^笔记"), { title: "C", blockId: "笔记", heading: null });
+});
+
+test("N7 sliceHeading：截到下一个同级或更高级标题为止", () => {
+    const src = [
+        "# 总览",
+        "开头",
+        "## 基本用法",
+        "用法正文A",
+        "用法正文B",
+        "### 进阶",
+        "进阶正文",
+        "## 下一节",
+        "别的",
+    ].join("\n");
+    const got = sliceHeading(src, "基本用法");
+    assert.ok(got.includes("用法正文A") && got.includes("用法正文B"), got);
+    assert.ok(got.includes("### 进阶") && got.includes("进阶正文"), "应包含下级子标题区段");
+    assert.ok(!got.includes("下一节") && !got.includes("别的"), "同级标题应截断");
+    // 找不到的标题退回整篇
+    assert.equal(sliceHeading(src, "不存在的标题"), src);
 });

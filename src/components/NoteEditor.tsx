@@ -4,11 +4,13 @@ import { EditorView, keymap, lineNumbers, highlightActiveLine, placeholder, Deco
 import { markdown } from "@codemirror/lang-markdown";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { syntaxHighlighting, defaultHighlightStyle, bracketMatching, indentUnit } from "@codemirror/language";
+import { search, searchKeymap, highlightSelectionMatches } from "@codemirror/search";
 
 import { Compartment } from "@codemirror/state";
 import { livePreview, type LiveRenderer } from "./NoteEditorLivePreview";
 import { editorHandle, type NoteEditorHandle } from "../utils/noteEditorHandle";
 import { EDITOR_SHORTCUTS, toCodeMirrorKey } from "../utils/editorShortcuts";
+import { htmlToMarkdown } from "../utils/htmlToMarkdown";
 import { typewriter, typewriterCompartment } from "./NoteTypewriter";
 
 // 字体/字号走 CSS 变量而不是把值写死进 theme：设置面板改字号时不用重建编辑器
@@ -43,6 +45,63 @@ const theme = EditorView.theme({
 });
 
 /**
+ * 编辑器内查找/替换面板（@codemirror/search）的样式。
+ * 走 `currentColor` + 半透明底：文字色跟随宿主（亮/暗色都自动对），
+ * 背景是「当前文字色 10%  tint」的毛玻璃，跟应用其它弹层一个调性。
+ * 不写死亮/暗 —— 编辑器不在 MUI 主题树里，拿不到 darkMode。
+ */
+const searchPanelTheme = EditorView.theme({
+    ".cm-panel.cm-search": {
+        backgroundColor: "color-mix(in srgb, currentColor 9%, transparent)",
+        color: "inherit",
+        border: "1px solid color-mix(in srgb, currentColor 22%, transparent)",
+        borderRadius: "10px",
+        padding: "6px 8px",
+        margin: "6px",
+        backdropFilter: "blur(8px)",
+        WebkitBackdropFilter: "blur(8px)",
+        boxShadow: "0 6px 20px rgba(0,0,0,.18)",
+    },
+    ".cm-search .cm-textfield": {
+        backgroundColor: "color-mix(in srgb, currentColor 12%, transparent)",
+        color: "inherit",
+        border: "1px solid color-mix(in srgb, currentColor 20%, transparent)",
+        borderRadius: "6px",
+        padding: "4px 8px",
+        fontFamily: "inherit",
+        outline: "none",
+    },
+    ".cm-search .cm-textfield:focus": {
+        borderColor: "var(--accent, #5b8def)",
+    },
+    ".cm-search .cm-button": {
+        backgroundColor: "color-mix(in srgb, currentColor 14%, transparent)",
+        color: "inherit",
+        border: "1px solid color-mix(in srgb, currentColor 20%, transparent)",
+        borderRadius: "6px",
+        padding: "3px 10px",
+        fontFamily: "inherit",
+        cursor: "pointer",
+    },
+    ".cm-search .cm-button:hover": {
+        backgroundColor: "color-mix(in srgb, currentColor 22%, transparent)",
+    },
+    ".cm-search .cm-button[aria-disabled='true']": {
+        opacity: ".45",
+        cursor: "default",
+    },
+    // 命中高亮：普通命中 + 当前命中，都用同色系但不同浓度，亮/暗都看得见
+    ".cm-searchMatch": {
+        backgroundColor: "rgba(120,170,255,.28)",
+        outline: "1px solid rgba(120,170,255,.5)",
+    },
+    ".cm-searchMatch.cm-searchMatch-selected": {
+        backgroundColor: "rgba(120,170,255,.6)",
+        outline: "1px solid rgba(120,170,255,.9)",
+    },
+});
+
+/**
  * 取光标所在「段落」的范围：从光标行往上到空行为止、往下到空行为止。
  * 「编辑区实时渲染」与「专注模式」共用这一套判定 —— 两处口径必须一致，
  * 否则会出现「实时渲染的那段正好是被淡化的那段」的怪现象。
@@ -63,6 +122,47 @@ function paragraphRange(state: EditorState, pos: number): { from: number; to: nu
         end = next;
     }
     return { from: start.from, to: end.to };
+}
+
+/** 在光标处插入文本并把光标移到插入内容之后 */
+function insertText(view: EditorView, text: string): void {
+    const pos = view.state.selection.main.head;
+    view.dispatch({ changes: { from: pos, insert: text }, selection: { anchor: pos + text.length } });
+}
+
+/**
+ * 粘贴 / 拖拽图片（N3）：先插「上传中…」占位符（独占一行，避免打断当前段），
+ * 上传完把占位符里的随机 token 换成最终 url。多张图各自带不同 token，互不干扰。
+ * 上传失败则把 token 换成「上传失败」，让用户看得见而不是凭空消失。
+ */
+async function uploadAndInsertImage(
+    view: EditorView,
+    file: File,
+    uploadFn: (f: File) => Promise<{ url: string; filename: string }>
+): Promise<void> {
+    const token = `uploading-${Math.random().toString(36).slice(2, 8)}`;
+    const placeholder = `![上传中…](${token})`;
+    const head = view.state.selection.main.head;
+    const line = view.state.doc.lineAt(head);
+    const at = line.to;
+    const needsLead = at > 0 && view.state.doc.lineAt(at).length > 0;
+    const text = (needsLead ? "\n" : "") + placeholder + "\n";
+    view.dispatch({ changes: { from: at, insert: text }, selection: { anchor: at + text.length } });
+    const replaceToken = (replacement: string) => {
+        const doc = view.state.doc.toString();
+        const idx = doc.indexOf(token);
+        if (idx < 0) return;
+        view.dispatch({
+            changes: { from: idx, to: idx + token.length, insert: replacement },
+            selection: { anchor: idx + replacement.length },
+        });
+    };
+    try {
+        const { url } = await uploadFn(file);
+        replaceToken(url);
+    } catch {
+        replaceToken("上传失败");
+    }
 }
 
 /** 淡化一整行（专注模式用）。用 className 走主题变量，亮/暗色都能看得出层次。 */
@@ -129,6 +229,12 @@ export interface NoteEditorProps {
      * 这样快捷键和工具栏按钮走的是**同一套实现**，不会出现两边行为不一致。
      */
     shortcutActions?: Partial<Record<string, () => void>>;
+    /**
+     * 粘贴 / 拖拽图片进正文（N3）：有图时先插「上传中…」占位符，上传完替换成 `![](url)`。
+     * 不传 = 不走这套（后端没配存储时，粘贴图片就是原生行为）。
+     * 返回的是「最终可内嵌的 url」（小图可能已是 data URI，由宿主决定）。
+     */
+    uploadImage?: (file: File) => Promise<{ url: string; filename: string }>;
 }
 
 export default function NoteEditor({
@@ -145,10 +251,14 @@ export default function NoteEditor({
     focusMode = false,
     typewriterMode = false,
     shortcutActions,
+    uploadImage,
 }: NoteEditorProps) {
     const host = useRef<HTMLDivElement>(null);
     const viewRef = useRef<EditorView | null>(null);
     const changeRef = useRef(onChange);
+    // 上传能力放进 ref：换回调（比如存储从「没配」变「配了」）不该重建编辑器。
+    const uploadRef = useRef(uploadImage);
+    uploadRef.current = uploadImage;
     // 滚动回调放进 ref：换回调不该重建编辑器（会丢撤销历史）
     const scrollRef = useRef(onScrollRatio);
     useLayoutEffect(() => { scrollRef.current = onScrollRatio; }, [onScrollRatio]);
@@ -172,6 +282,11 @@ export default function NoteEditor({
                 doc: value,
                 extensions: [
                     markdown(), history(), bracketMatching(), focusField,
+                    // 编辑器内查找/替换（N2，inkstone 的 mod+f → openSearchPanel）：
+                    // `search()` 自带 searchState 字段 + 面板逻辑；`searchKeymap` 提供
+                    // Mod-f 开面板 / Mod-g、F3 跳下一个 / Mod-h 替换面板 / Mod-d 选下一个相同词。
+                    // 面板 UI 样式在 searchPanelTheme 里（毛玻璃、跟随宿主文字色）。
+                    search(), highlightSelectionMatches(),
                     liveCompartment.of([]),
                     typewriterCompartment.of([]),
                     // 缩进宽度（设置面板）：Tab / 自动缩进都认它
@@ -180,7 +295,52 @@ export default function NoteEditor({
                     // 所以设置里切这一项由调用方用 key 重建本组件（会丢撤销历史，可接受）
                     ...(showLineNumbers ? [lineNumbers()] : []),
                     highlightActiveLine(),
-                    syntaxHighlighting(defaultHighlightStyle), EditorView.lineWrapping, theme,
+                    syntaxHighlighting(defaultHighlightStyle), EditorView.lineWrapping, theme, searchPanelTheme,
+                    // 粘贴 / 拖拽图片进正文 + 富文本 HTML→MD（N3 + N5）。
+                    // 永远挂上：没传 uploadImage 时处理器直接放行（原生行为），
+                    // 传了才走「占位符 → 上传 → 回写」；upload 能力走 uploadRef 读最新值。
+                    EditorView.domEventHandlers({
+                        paste(event, view) {
+                            const cdt = event.clipboardData;
+                            if (!cdt) return false;
+                            // N3：图片分支需要 upload 能力；没传 uploadImage 时放行原生行为
+                            const upload = uploadRef.current;
+                            const imageFiles = Array.from(cdt.files).filter(f => f.type.startsWith("image/"));
+                            if (upload && imageFiles.length > 0) {
+                                event.preventDefault();
+                                for (const f of imageFiles) void uploadAndInsertImage(view, f, upload);
+                                return true;
+                            }
+                            // N5：没图片、有 HTML、且没纯文本时，把 HTML 转 Markdown 粘进来。
+                            // ⚠️ 这一支**不依赖** upload 能力 —— 后端没配存储也能粘 HTML。
+                            const html = cdt.getData("text/html");
+                            const plain = cdt.getData("text/plain");
+                            if (html && !plain.trim()) {
+                                const md = htmlToMarkdown(html);
+                                if (md) {
+                                    event.preventDefault();
+                                    insertText(view, md);
+                                    return true;
+                                }
+                            }
+                            return false;
+                        },
+                        drop(event, view) {
+                            const upload = uploadRef.current;
+                            if (!upload) return false;
+                            const dt = event.dataTransfer;
+                            if (!dt) return false;
+                            const imageFiles = Array.from(dt.files).filter(f => f.type.startsWith("image/"));
+                            if (imageFiles.length > 0) {
+                                event.preventDefault();
+                                const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
+                                if (pos != null) view.dispatch({ selection: { anchor: pos } });
+                                for (const f of imageFiles) void uploadAndInsertImage(view, f, upload);
+                                return true;
+                            }
+                            return false;
+                        },
+                    }),
                     placeholder("支持 Markdown：标题、列表、公式和脚注"),
                     // ⚠️ 快捷键 keymap 必须排在 defaultKeymap/historyKeymap **前面**：
                     // CM 的 keymap 是「数组靠前优先级高」，放后面的话 Mod-B 会被
@@ -203,6 +363,10 @@ export default function NoteEditor({
                             },
                         }))
                     ),
+                    // 查找/替换 keymap：必须排在 defaultKeymap 之前，否则有些键会被
+                    // CM 默认行为抢走（Mod-g / F3 在 defaultKeymap 里没有，但放这里更稳）。
+                    // 我们的自定义 keymap 在前、不绑 Mod-f/d，所以这些键自然落到这里。
+                    keymap.of(searchKeymap),
                     keymap.of([...defaultKeymap, ...historyKeymap]),
                     EditorView.contentAttributes.of({
                         "aria-label": "笔记内容",

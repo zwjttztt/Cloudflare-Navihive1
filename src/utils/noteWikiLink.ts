@@ -21,14 +21,20 @@ export function registerWikiLink(md: MarkdownIt): void {
         if (state.src[start - 1] === "[") return false;
         const match = /^\[\[([^[\]\n]{1,120})\]\]/.exec(state.src.slice(start));
         if (!match) return false;
-        const target = match[1].trim();
+        // N6 别名语法 `[[目标|显示名]]`：只在**第一个** `|` 上切，
+        // 目标名 / 显示名各自 trim。没有 `|` 就是普通双链（alias 空串）。
+        const raw = match[1].trim();
+        const bar = raw.indexOf("|");
+        const target = (bar >= 0 ? raw.slice(0, bar) : raw).trim();
+        const alias = bar >= 0 ? raw.slice(bar + 1).trim() : "";
         if (!target) return false;
         if (!silent) {
-            // 单个叶子 token（nesting 0）：显示文本就是目标名。
-            // 不包 text/close 一对 —— 那样还得让渲染层维护栈，
-            // 而这里没有别名语法（`[[目标|显示]]`），一个 token 就够。
+            // 单个叶子 token（nesting 0）：content 存**目标名** ——
+            // extractWikiLinks / 反链 / 图谱都按 content 判据，别名不参与匹配；
+            // 显示文本在渲染层读 meta.alias（有别名用别名，没有用目标名）。
             const token = state.push("wiki_link", "", 0);
             token.content = target;
+            token.meta = { target, alias };
         }
         state.pos += match[0].length;
         return true;

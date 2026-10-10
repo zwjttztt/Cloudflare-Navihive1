@@ -312,3 +312,19 @@ test("渲染层不依赖 markdown-it 的 renderer（只当解析器用）", asyn
         "必须显式 html: false —— 不解析原始 HTML 是最外层的安全闸"
     );
 });
+
+// ---------- N6 别名 `[[目标|显示名]]`：渲染用显示名，跳转判据仍是目标名 ----------
+
+test("N6 别名渲染：显示别名文本，data-wiki-link 保持目标名", async () => {
+    const host = await renderToDom("见 [[目标页|这篇笔记]] 就懂了");
+    const link = host.querySelector("[data-wiki-link='目标页']");
+    assert.ok(link, "链接应挂 data-wiki-link=目标名");
+    assert.equal(link!.textContent, "这篇笔记", `应显示别名而不是目标名，实际：${link!.textContent}`);
+});
+
+test("N6 别名渲染：没有别名的双链照旧显示目标名", async () => {
+    const host = await renderToDom("见 [[目标页]] 就懂了");
+    const link = host.querySelector("[data-wiki-link='目标页']");
+    assert.ok(link, "链接应存在");
+    assert.equal(link!.textContent, "目标页");
+});

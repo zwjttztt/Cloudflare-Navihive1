@@ -22,6 +22,7 @@ export interface NoteEmbedTarget {
 export function NoteEmbedNode({
     title,
     blockId,
+    heading,
     depth,
     resolve,
     render,
@@ -29,6 +30,8 @@ export function NoteEmbedNode({
 }: {
     title: string;
     blockId: string | null;
+    /** N7 标题锚点：`![[笔记#某标题]]` —— 嵌入该标题的区段（到下一个同级/更高级标题为止） */
+    heading?: string | null;
     depth: number;
     /** 按标题找目标笔记；找不到返回 null */
     resolve: (title: string) => NoteEmbedTarget | null;
@@ -47,8 +50,12 @@ export function NoteEmbedNode({
             setState("missing");
             return;
         }
-        // 只嵌入被点名的那一块（`![[笔记#^块ID]]`），否则整篇塞进来
-        const source = blockId ? sliceBlock(target.content, blockId) : target.content;
+        // 只嵌入被点名的那一块（`![[笔记#^块ID]]` / `![[笔记#某标题]]`），否则整篇塞进来
+        const source = blockId
+            ? sliceBlock(target.content, blockId)
+            : heading
+                ? sliceHeading(target.content, heading)
+                : target.content;
         let alive = true;
         void render(source, depth + 1).then(node => {
             if (!alive) return;
@@ -58,7 +65,7 @@ export function NoteEmbedNode({
         return () => {
             alive = false;
         };
-    }, [title, blockId, depth, resolve, render]);
+    }, [title, blockId, heading, depth, resolve, render]);
 
     return (
         <div
@@ -83,7 +90,7 @@ export function NoteEmbedNode({
                     marginBottom: 4,
                 }}
             >
-                {blockId ? `${title} #${blockId}` : title}
+                {blockId ? `${title} #${blockId}` : heading ? `${title} › ${heading}` : title}
             </button>
             {depth > MAX_EMBED_DEPTH ? (
                 <div style={{ fontSize: 13, opacity: 0.7 }}>（嵌套过深，已停止展开）</div>
@@ -129,4 +136,37 @@ export function sliceBlock(source: string, blockId: string): string {
 
 function escapeRe(s: string): string {
     return s.replace(/[.*+?^${}()|[\]\\-]/g, "\\$&");
+}
+
+/**
+ * 从一篇笔记里裁出「某个标题」的区段（N7：`![[笔记#某标题]]`）。
+ *
+ * 判据：按行找「`#` 前缀 + 标题文本完全相等（忽略大小写与首尾空白）」的那行，
+ * 从它起、到**下一个同级或更高级**标题（`#` 数量 ≤ 它）之前为止。
+ * 找不到就退回整篇（与 sliceBlock 同一宽容策略：宁可多给，不给空白）。
+ */
+export function sliceHeading(source: string, headingText: string): string {
+    const key = headingText.trim().toLowerCase();
+    if (!key) return source;
+    const lines = source.split("\n");
+    let level = 0;
+    let idx = -1;
+    for (let i = 0; i < lines.length; i++) {
+        const m = /^(#{1,6})\s+(.+?)\s*$/.exec(lines[i]);
+        if (m && m[2].toLowerCase() === key) {
+            level = m[1].length;
+            idx = i;
+            break;
+        }
+    }
+    if (idx < 0) return source;
+    let end = lines.length;
+    for (let i = idx + 1; i < lines.length; i++) {
+        const m = /^(#{1,6})\s/.exec(lines[i]);
+        if (m && m[1].length <= level) {
+            end = i;
+            break;
+        }
+    }
+    return lines.slice(idx, end).join("\n");
 }
