@@ -106,6 +106,7 @@ export default function NotesOverlay({
         removeFolder,
         createTag,
         renameTag,
+        styleTag,
         removeTag,
         assignTags,
         listRevisions,
@@ -156,6 +157,10 @@ export default function NotesOverlay({
             onRemoveFolder: removeFolder,
             onCreateTag: createTag,
             onRenameTag: renameTag,
+            // ⚠️ 只有后端真有 updateTag 时才把它交出去：方法存在与否决定 UI 给不给
+            // 「设置颜色」入口，否则按钮点了什么都不发生（比没有这个按钮更糟 ——
+            // 用户会以为「颜色设上了」，换台设备打开又没了）。
+            ...(typeof api.updateTag === "function" ? { onStyleTag: styleTag } : {}),
             onRemoveTag: removeTag,
             onAssignTags: assignTags,
             onListRevisions: listRevisions,
@@ -175,6 +180,7 @@ export default function NotesOverlay({
             removeFolder,
             createTag,
             renameTag,
+            styleTag,
             removeTag,
             assignTags,
             listRevisions,

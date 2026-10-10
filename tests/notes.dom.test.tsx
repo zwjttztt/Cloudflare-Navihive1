@@ -536,7 +536,9 @@ test("笔记行内不再有时间戳（时间已由分组标题承担）", () =>
     const src = stripComments(
         readFileSync(join(findProjectDir(), "src", "components", "NotesPage.tsx"), "utf-8")
     );
-    const row = src.slice(src.indexOf("data-note-id={note.id}"), src.indexOf("data-note-id={note.id}") + 6000);
+    // ⚠️ 窗口要装得下**整行**：2026-10-10 往行里加了「⌘/Ctrl 点 / Shift 点」那三十行，
+    // 6000 就不够了 —— 守卫自己红了而功能一点没坏（这种红比没守卫更糟），取 9000。
+    const row = src.slice(src.indexOf("data-note-id={note.id}"), src.indexOf("data-note-id={note.id}") + 9000);
     assert.equal(
         /formatRelative\(note\.updated_at/.test(row),
         false,
@@ -553,7 +555,9 @@ test("悬停时整行右移 2px，且只在真能 hover 的设备上（inkstone 
     const src = stripComments(
         readFileSync(join(findProjectDir(), "src", "components", "NotesPage.tsx"), "utf-8")
     );
-    const row = src.slice(src.indexOf("data-note-id={note.id}"), src.indexOf("data-note-id={note.id}") + 6000);
+    // ⚠️ 窗口要装得下**整行**：2026-10-10 往行里加了「⌘/Ctrl 点 / Shift 点」那三十行，
+    // 6000 就不够了 —— 守卫自己红了而功能一点没坏（这种红比没守卫更糟），取 9000。
+    const row = src.slice(src.indexOf("data-note-id={note.id}"), src.indexOf("data-note-id={note.id}") + 9000);
     assert.ok(/translateX\(2px\)/.test(row), "悬停要右移 2px");
     assert.ok(
         /@media \(hover: hover\) and \(pointer: fine\)/.test(row),
@@ -3749,7 +3753,7 @@ test("行菜单 / 移动抽屉 / 外观弹窗不能被包在中栏的条件渲�
     assert.ok(src.includes("data-row-op='open-side'"), "行菜单本身要在（根层）");
 });
 
-test("折叠态：顶部是返回，展开箭头在左下角", async () => {
+test("折叠态：顶部是「展开笔记列表」，返回导航站在下面", async () => {
     setWide();
     mountPanel([note({ id: 1, title: "甲", content: "a" })]);
     await act(async () =>
@@ -3759,13 +3763,17 @@ test("折叠态：顶部是返回，展开箭头在左下角", async () => {
     assert.ok(rail, "折叠后是 44px 轨道");
     const back = rail.querySelector("button[aria-label='返回导航站']") as HTMLElement;
     const expand = rail.querySelector("[data-tool='expand-pane']") as HTMLElement;
-    assert.ok(back, "顶部保留返回");
+    assert.ok(back, "轨道里要有返回导航站");
     assert.ok(expand, "展开箭头在轨道里");
-    // 顺序：返回在上、展开在下（=左下角）
+    // 2026-10-10 用户要求：两个按钮**整体互换** —— 展开在上、返回在下。
+    // 样式/尺寸/回调都不变，只有 DOM 顺序变了，所以这里只钉顺序。
     assert.ok(
-        back.compareDocumentPosition(expand) & Node.DOCUMENT_POSITION_FOLLOWING,
-        "展开箭头要排在返回之后（也就是左下角）"
+        expand.compareDocumentPosition(back) & Node.DOCUMENT_POSITION_FOLLOWING,
+        "展开要排在返回之前（也就是 44px 轨道的上半部分）"
     );
+    // 点击行为保持不变（互换不能把回调弄丢）
+    await act(async () => expand.click());
+    assert.ok(!document.querySelector("[data-collapsed-rail='1']"), "点展开要回到导航列");
 });
 
 test("分屏：两栏高度一致（主栏内容区不再有额外垂直内边距）", () => {
@@ -4867,7 +4875,9 @@ test("笔记行选中态不画 3px 左边框（会被拉成贯穿整屏的色带
         "笔记行不要 3px 左边框（inkstone 没有；它会在窄栏里被拉成贯穿整屏的色带）"
     );
     // 反向锚点：改用软底 + 淡描边
-    const row = src.slice(src.indexOf("data-note-id={note.id}"), src.indexOf("data-note-id={note.id}") + 6000);
+    // ⚠️ 窗口要装得下**整行**：2026-10-10 往行里加了「⌘/Ctrl 点 / Shift 点」那三十行，
+    // 6000 就不够了 —— 守卫自己红了而功能一点没坏（这种红比没守卫更糟），取 9000。
+    const row = src.slice(src.indexOf("data-note-id={note.id}"), src.indexOf("data-note-id={note.id}") + 9000);
     assert.ok(
         /border: "1px solid"/.test(row) && /color-mix\(in srgb, var\(--accent\) 40%/.test(row),
         "选中态改用 1px 淡描边（inkstone 的 ring-1）+ 软底"

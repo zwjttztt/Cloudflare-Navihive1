@@ -25,9 +25,15 @@ import type { NotifySeverity } from "./useNotify";
 function sortFolders(a: NoteFolder, b: NoteFolder): number {
     return (a.order_num ?? 0) - (b.order_num ?? 0) || a.name.localeCompare(b.name);
 }
-/** 标签排序：按名字（后端 listTags 也是 ORDER BY name） */
+/**
+ * 标签排序：按名字（后端 listTags 也是 ORDER BY name）。
+ *
+ * ⚠️ 两边都兜一层空串：`createTag` 会 `[...prev, tag].sort(sortTags)`，
+ * 后端要是回了一条没有 name 的记录（桩接口/老数据都可能），`undefined.localeCompare`
+ * 会当场把整个左栏渲染打挂（白屏），比多一个空行严重得多。
+ */
 function sortTags(a: NoteTag, b: NoteTag): number {
-    return a.name.localeCompare(b.name);
+    return (a.name || "").localeCompare(b.name || "");
 }
 
 /** 回收站里的一条（阶段三：只把 kind='note' 的拎出来给记事本用） */
@@ -579,6 +585,27 @@ export function useNotes({ api, onError, onNotify, onNoteConflict }: UseNotesPar
         [api, onError]
     );
 
+    /**
+     * 标签颜色（`note_tag.color`）：与文件夹外观同一套路，走 updateTag 落库。
+     *
+     * 为什么单独一个方法而不是复用 renameTag：它只改 color 一个字段，
+     * 传 diff 更清楚；而且后端 RETURNING 会把 count 一起带回来，
+     * 左栏那条标签的计数顺便就刷新了（省一次 reload）。
+     */
+    const styleTag = useCallback(
+        async (id: number, color: string | null) => {
+            if (typeof api.updateTag !== "function") return;
+            try {
+                const tag = await api.updateTag(id, { color });
+                if (tag) setTags(prev => prev.map(t => (t.id === id ? tag : t)));
+            } catch (error) {
+                reportError(error, { source: "note-tag-style" });
+                onError("设置标签颜色失败: " + (error instanceof Error ? error.message : "未知错误"));
+            }
+        },
+        [api, onError]
+    );
+
     const removeTag = useCallback(
         async (id: number) => {
             if (typeof api.deleteTag !== "function") return;
@@ -747,6 +774,7 @@ export function useNotes({ api, onError, onNotify, onNoteConflict }: UseNotesPar
         removeFolder,
         createTag,
         renameTag,
+        styleTag,
         removeTag,
         assignTags,
         listRevisions,

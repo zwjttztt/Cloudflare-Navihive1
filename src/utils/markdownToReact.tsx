@@ -23,7 +23,7 @@
 import type MarkdownIt from "markdown-it";
 import type { Options as MarkdownItOptions } from "markdown-it";
 import type Token from "markdown-it/lib/token.mjs";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState, type ChangeEvent, type ReactNode } from "react";
 import { MathNode } from "./MathNode";
 import { MermaidNode } from "./MermaidNode";
 import { registerMath } from "./markdownMath";
@@ -52,6 +52,21 @@ export interface RenderContext {
     onOpenNote?: (title: string) => void;
     /** 预览功能开关（设置面板「编辑器」页；不传=全部开启） */
     features?: RenderFeatures;
+    /**
+     * 预览里点任务复选框 → 回写正文（0 基源码行号）。
+     *
+     * 没传 = 复选框只读（公开分享页、导出预览都是这个情况）。
+     * 调用方负责把行号对应到**当前正在渲染的那份源码**上 ——
+     * 嵌入笔记里的复选框看着一样，但它的行号属于被嵌的那篇，
+     * 所以渲染层只对**顶层**文档（depth === 0）开放勾选。
+     */
+    onToggleTask?: (line: number, checked: boolean) => void;
+    /**
+     * @internal front matter 占掉的行数。
+     * `token.map` 是**摘掉 front matter 之后**的行号，回写原材料时要加回这段偏移，
+     * 否则带属性的笔记勾选会改到标题行上去。由 renderMarkdownToReact 填，别手填。
+     */
+    taskLineShift?: number;
 }
 
 /** 预览功能开关：inkstone 设置页里的那几项，对应到我们的渲染层 */
@@ -143,16 +158,22 @@ export async function renderMarkdownToReact(
 ): Promise<ReactNode> {
     if (!source) return null;
     const md = await loadParser();
+    // front matter 在**进解析器之前**摘掉：markdown-it 会把 `---` 那段拆成 hr + 段落，
+    // 到 token 层已经看不出它们本来是一块属性了（详见 noteFrontMatter.ts 头注释）。
+    const fm = splitFrontMatter(source);
+    const depth = options.depth ?? 0;
     const ctx: RenderContext = {
         resolveNote: options.resolveNote,
         onOpenNote: options.onOpenNote,
         features: options.features,
+        onToggleTask: options.onToggleTask,
+        // 有 front matter 时，正文的行号要整体往后挪（闭线之前那几行）。
+        // `token.map` 是相对 `fm.body` 的，回写原材料得加回这段偏移，
+        // 否则带属性的笔记勾选会改到标题行上去。
+        taskLineShift: fm.bodyOffset
+            ? source.slice(0, fm.bodyOffset).split("\n").length - 1
+            : 0,
     };
-    const depth = options.depth ?? 0;
-
-    // front matter 在**进解析器之前**摘掉：markdown-it 会把 `---` 那段拆成 hr + 段落，
-    // 到 token 层已经看不出它们本来是一块属性了（详见 noteFrontMatter.ts 头注释）。
-    const fm = splitFrontMatter(source);
     const tokens = md.parse(fm.body, {});
     const cursor: Cursor = { tokens, i: 0, key: 0, depth, ctx };
     const body = renderBlocks(cursor);
@@ -636,10 +657,13 @@ function renderBlocks(c: Cursor): ReactNode[] {
                 const items: ReactNode[] = [];
                 while (c.i < c.tokens.length && c.tokens[c.i].type !== `${ordered ? "ordered" : "bullet"}_list_close`) {
                     if (c.tokens[c.i].type === "list_item_open") {
+                        // 行号留给任务复选框回写：`list_item_open` 上带的 map[0] 就是这一项
+                        // 在源码里的起始行（0 基）。往下传给 renderListItemBody。
+                        const itemLine = c.tokens[c.i].map?.[0];
                         const body = takeListItem(c);
                         items.push(
                             <li key={`${key}-${items.length}`} style={LI_STYLE}>
-                                {renderListItemBody(body, c)}
+                                {renderListItemBody(body, c, itemLine)}
                             </li>
                         );
                     } else {
@@ -846,7 +870,7 @@ function renderBlocks(c: Cursor): ReactNode[] {
  * `list_item → paragraph → "[ ] x"`，所以要在渲染段落时识别这个前缀。
  * 自己实现而不是用 markdown-it-task-lists（那个插件注册的是 renderer，token 流下无效）。
  */
-function renderListItemBody(body: Token[], c: Cursor): ReactNode {
+function renderListItemBody(body: Token[], c: Cursor, itemLine?: number): ReactNode {
     const sub: Cursor = child(body, c);
     if (body.length >= 2 && body[0].type === "paragraph_open") {
         const inline = body[1];
@@ -856,14 +880,29 @@ function renderListItemBody(body: Token[], c: Cursor): ReactNode {
                 const checked = m[1].toLowerCase() === "x";
                 const rest = inline.content.slice(m[0].length);
                 sub.i = 2; // 跳过 paragraph_open + inline
+                // ⚠️ 只有**顶层文档**（depth === 0）的复选框才回写。
+                // 嵌入 / 标签页里的内容行号属于被嵌的那篇（而且还被 slice 过），
+                // 拿它去改当前笔记的正文会把无关的行改坏 —— inkstone 同样是
+                // 「`.note-embed-body` 内只读」。
+                const line =
+                    c.depth === 0 && c.ctx.onToggleTask
+                        ? (body[0].map?.[0] ?? itemLine ?? -1) + (c.ctx.taskLineShift ?? 0)
+                        : -1;
+                const editable = line >= 0;
                 return (
                     <span style={TASK_ROW}>
                         <input
                             type='checkbox'
                             checked={checked}
-                            readOnly
                             aria-label={checked ? "已完成" : "未完成"}
-                            style={CHECKBOX}
+                            {...(editable
+                                ? {
+                                      "data-task-line": String(line),
+                                      onChange: (e: ChangeEvent<HTMLInputElement>) =>
+                                          c.ctx.onToggleTask?.(line, e.target.checked),
+                                  }
+                                : { readOnly: true })}
+                            style={editable ? { ...CHECKBOX, cursor: "pointer" } : CHECKBOX}
                         />
                         <span>{renderInlineInline(inline.children, rest, sub)}</span>
                     </span>

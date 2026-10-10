@@ -148,9 +148,16 @@ export function createScrollSync(opts: {
     previewScroller: HTMLElement;
     /** 源码总行数（CodeMirror 的 lineCount） */
     lineCount: () => number;
-    /** 取源码当前视口顶部那一行的行号（1 基，CM 的行号） */
+    /**
+     * 取源码当前视口顶部那一行的行号（**0 基**）。
+     * ⚠️ 必须是 0 基：`buildScrollCurve` / `previewTopForLine` 这一整套用的都是
+     * 「渲染出的 `data-line`」，而那是 markdown-it 的 `token.map[0]`（0 基）。
+     * CM 自己的 `topLineNumber()` 是 1 基，**由调用方减 1** —— 以前这里写着
+     * 「1 基」，调用方减完 1 传进来、`syncFromEditor` 里又减一次 1，
+     * 于是同步总是比实际位置晚一行（慢慢积累成肉眼可见的错位）。
+     */
     editorLineAtScroll: (scroller: HTMLElement) => number;
-    /** 给定源码行号（1 基），返回源码里该滚到的像素 */
+    /** 给定源码行号（**0 基**，与上面同一套口径），返回源码里该滚到的像素 */
     editorScrollForLine?: (line: number) => number;
     enabled: () => boolean;
 }): {
@@ -189,7 +196,8 @@ export function createScrollSync(opts: {
         const e = edge(editorScroller.scrollTop, editorScroller);
         if (e === "top") return void setTop(previewScroller, 0);
         if (e === "bottom") return void setTop(previewScroller, maxScroll(previewScroller));
-        const line = Math.max(0, editorLineAtScroll(editorScroller) - 1);
+        // `editorLineAtScroll` 已经是 0 基，直接用；别再减
+        const line = Math.max(0, editorLineAtScroll(editorScroller));
         const pad = parseFloat(getComputedStyle(previewScroller).paddingTop) || 0;
         setTop(previewScroller, previewTopForLine(getCurve(), line) - pad);
     };

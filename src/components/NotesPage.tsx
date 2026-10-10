@@ -119,6 +119,8 @@ import type {
 } from "../API/http";
 import type { TrashedNote } from "../hooks/useNotes";
 import { renderMarkdownToReact, type RenderFeatures } from "../utils/markdownToReact";
+import { toggleTaskLine } from "../utils/noteTasks";
+import type { CompletionSources } from "../utils/noteCompletion";
 import { fuzzyFilter, fuzzyMatch } from "../utils/fuzzy";
 import { createZip, readZip, type ZipEntry } from "../utils/zip";
 import Highlighted from "./Highlighted";
@@ -149,6 +151,7 @@ import { EmptyState } from "./EmptyArt";
 import ConfirmDialog from "./ConfirmDialog";
 import NamePromptDialog from "./NamePromptDialog";
 import FolderAppearanceDialog from "./FolderAppearanceDialog";
+import TagColorDialog from "./TagColorDialog";
 import MoveFolderDrawer from "./MoveFolderDrawer";
 import NotesSettingsDialog from "./NotesSettingsDialog";
 import NoteVersionHistoryDialog from "./NoteVersionHistoryDialog";
@@ -272,6 +275,12 @@ export interface NotesPageProps {
             id: number,
             patch: { icon?: string | null; color?: string | null }
         ) => Promise<void>;
+        /**
+         * 标签颜色（`note_tag.color` 这列早就有了，只是界面没用它）。
+         * 给颜色是为了「一眼扫出旋钮」：几十个标签里，靠颜色分批比逐字读名字快得多
+         * （inkstone 的 NoteList 拿 `tagColors` Map 做同一件事）。
+         */
+        onStyleTag?: (id: number, color: string | null) => Promise<void>;
         /** 版本历史：列快照 / 恢复 */
         onListRevisions?: (noteId: number) => Promise<NoteRevision[]>;
         onRestoreRevision?: (noteId: number, revisionId: number) => Promise<Note | null>;
@@ -536,6 +545,7 @@ function FolderTagSection({
     onCreateNote,
     onAskRename,
     onAskRemove,
+    onAskColor,
     onCreateChild,
     onMove,
     onDropNote,
@@ -577,6 +587,8 @@ function FolderTagSection({
      */
     onAskRename?: (id: number, currentName: string) => void;
     onAskRemove?: (id: number, name: string) => void;
+    /** 标签颜色：打开 TagColorDialog。只给「标签」节传 */
+    onAskColor?: (id: number) => void;
     /**
      * inkstone 的文件夹树：**笔记直接长在文件夹下面**，选中文件夹时中间那栏不出现。
      * 只给「文件夹」这一节传；标签节不传（标签是交叉维度，没有父子归属）。
@@ -726,15 +738,22 @@ function FolderTagSection({
                         // 给一个稳定的测试抓手：文件夹视图的筛选用例和未来的 e2e 都靠它定位，
                         // 别去按文字找（名字是用户自己起的，随时会变）
                         data-folder-id={item.id}
-                        // 文件夹外观：按存的 icon 名找组件；颜色不在调色板里就按默认画
+                        // 文件夹/标签外观：
+                        //   文件夹 → 按存的 icon 名找组件（查不到就用「默认」那枚）
+                        //   标签   → 画一枚米粒大的实心圆点；没设色就什么都不画
+                        // 颜色不在调色板里就按默认画（脏数据不该把左栏画崩）
                         icon={
-                            (() => {
-                                const spec =
-                                    FOLDER_ICONS.find(i => i.key === (item.icon || "")) ??
-                                    FOLDER_ICONS[0];
-                                const Icon = spec.icon;
-                                return <Icon fontSize='inherit' sx={{ fontSize: 14 }} />;
-                            })()
+                            item.icon !== undefined
+                                ? (() => {
+                                      const spec =
+                                          FOLDER_ICONS.find(i => i.key === (item.icon || "")) ??
+                                          FOLDER_ICONS[0];
+                                      const Icon = spec.icon;
+                                      return <Icon fontSize='inherit' sx={{ fontSize: 14 }} />;
+                                  })()
+                                : item.color
+                                  ? <Box data-tag-dot={item.color} sx={{ width: 7, height: 7, borderRadius: "50%", bgcolor: item.color }} />
+                                  : undefined
                         }
                         iconColor={
                             isFolderColor(item.color)
@@ -992,6 +1011,19 @@ function FolderTagSection({
                         }}
                     >
                         文件夹外观
+                    </MenuItem>
+                )}
+                {/* 标签颜色：同一个 delete-rename 菜单里，和文件夹外观平级。
+                    只给「标签」这一节传 —— 文件夹已经有「文件夹外观」那一项了。 */}
+                {onAskColor && (
+                    <MenuItem
+                        data-folder-op='tag-color'
+                        onClick={() => {
+                            const id = menuId; setMenuId(null);
+                            if (id !== null) onAskColor(id);
+                        }}
+                    >
+                        设置颜色
                     </MenuItem>
                 )}
                 {onMove && (
@@ -1450,6 +1482,22 @@ export default function NotesPage({
     /** 多选批量条（2026-10-09）：只在用户主动开了「多选」时才勾人，退出即清空 */
     const [multiSelect, setMultiSelect] = useState(false);
     const [checked, setChecked] = useState<Set<number>>(() => new Set());
+    /**
+     * ⌘/Ctrl+点（切换单选）与 Shift+点（范围选）共用的锚点。
+     *
+     * 平时随便点一行就刷新它 —— 这样「点一条 → Shift 点另一条」天然是从刚看的那条
+     * 开始选；不用先勾选再 Shift，符合多数选择器的肌肉记忆。
+     */
+    const selectAnchorRef = useRef<number | null>(null);
+    /** 勾选 / 取消勾选一条（多行共用的同一个译(setState updater)） */
+    const toggleChecked = useCallback((id: number) => {
+        setChecked(prev => {
+            const next = new Set(prev);
+            if (next.has(id)) next.delete(id);
+            else next.add(id);
+            return next;
+        });
+    }, []);
     /** 左栏视图：全部 / 最近 / 收藏（回收站要软删字段，留到阶段三） */
     const [view, setView] = useState<NoteView>("all");
     /** 中间栏排序（中栏右上角「排序」菜单）。
@@ -1661,7 +1709,10 @@ export default function NotesPage({
     const sideTools = useEditorTools(sideRef, setSideDraft);
 
     /**
-     * 快捷键动作表（inkstone 的 `EDITOR_SHORTCUTS.run`）。
+     * 快捷键动作表（`EDITOR_SHORTCUTS` 的 id → 执行）。
+     * inkstone 把这套动作挂在 `EDITOR_SHORTCUTS[].run` 上；我们这张表只放
+     * 「键 + 名字」（见 utils/editorShortcuts.ts），动作由宿主注入 ——
+     * 编辑器不认识此处任何一个工具函数，也不该认识。
      *
      * ⚠️ 为什么要过一层而不是直接给编辑器：这些动作要作用于**编辑器里真实的选区**，
      * 而 useEditorTools 走的是 textareaRef（宿主 handle），本身就能改 CM 的选区。
@@ -1912,7 +1963,9 @@ export default function NotesPage({
                 lineCount: () => textareaRef.current?.lineCount() ?? 1,
                 editorScrollForLine: line => textareaRef.current?.scrollOffsetForLine(line) ?? 0,
                 editorLineAtScroll: () => {
-                    // 渲染的 data-line 是 0 基，CM 的行号是 1 基 —— 这里减 1 对齐
+                    // 渲染出的 data-line 是 0 基，CM 的 topLineNumber() 是 1 基 —— 这里减 1 对齐。
+                    // ⚠️ 减一次就够了：syncScroll 内部**不再**减（那边的注释也写明了口径），
+                    // 两边各减一次就会整体滞后一行。
                     return Math.max(0, (textareaRef.current?.topLineNumber() ?? 1) - 1);
                 },
                 enabled: () => pane === "split" && uiSettings.scrollSync,
@@ -1931,6 +1984,9 @@ export default function NotesPage({
 
     // ---------- 文件夹外观弹窗（icon / color） ----------
     const [appearanceFolderId, setAppearanceFolderId] = useState<number | null>(null);
+
+    // ---------- 标签颜色弹窗（note_tag.color） ----------
+    const [tagColorId, setTagColorId] = useState<number | null>(null);
 
     // ---------- 「移动到文件夹」右侧抽屉 ----------
     const [moveDrawerNoteId, setMoveDrawerNoteId] = useState<number | null>(null);
@@ -2329,6 +2385,21 @@ export default function NotesPage({
         return groups;
     }, [sorted, sortKey]);
 
+    /**
+     * 列表**当前渲染顺序**里的 id 序列。
+     *
+     * Shift 范围选必须按「屏幕上看到的先后」来选，而不是按 `notes` 的库内顺序 ——
+     * 列表有分组（置顶 / 今天 / 昨天）和排序键，两者顺序并不一致，
+     * 用错的那份会选出一段看起来毫无规律的笔记。
+     */
+    const visibleIds = useMemo(
+        () =>
+            listGroups
+                .flatMap(g => g.items.map(n => n.id))
+                .filter((id): id is number => id !== undefined),
+        [listGroups]
+    );
+
     /** 阶段三：回收站列表。还原是主操作，彻底删除放右边且要二次确认。 */
     const trashPane = (
         <Box sx={{ px: 0.75, pb: 1 }}>
@@ -2464,6 +2535,70 @@ export default function NotesPage({
         }
         return map;
     }, [tags, notes, noteTags]);
+
+    /**
+     * 标签名 → 颜色。列表里的徽章按它着色。
+     *
+     * ⚠️ 按**名字**索引而不是 id：`tagNamesOf` 返回的是名字串（渲染用的是名字），
+     * 再拿名字回查一次 id 会让列表每行多一次线性查表。
+     * 名字重复时取「先出现且有颜色」的那一个 —— 两个同名标签本来就该合并。
+     */
+    const tagColorByName = useMemo(() => {
+        const map = new Map<string, string>();
+        for (const t of tags) {
+            if (!t.name || !isFolderColor(t.color)) continue;
+            const key = t.name.trim();
+            if (!map.has(key)) map.set(key, t.color);
+        }
+        return map;
+    }, [tags]);
+
+    /**
+     * 编辑器输入补全的数据源（`[[` / `#` / 围栏语言）。
+     *
+     * ⚠️ 必须是 **getter 形态**（由 NoteEditor 内部自己调用，而不是这里算好了传过去）：
+     * 笔记与标签随时增删改，传快照的话「刚建的那条在补全里找不到」，
+     * 而 getter 每次弹面板时读的都是最新的 `notes` / `tags`。
+     * 只喂**未归档**的笔记 —— 归档里的东西默认不该再被引用（和列表口径一致）。
+     */
+    const completionSources = useCallback((): CompletionSources => {
+        return {
+            notes: () =>
+                notes
+                    .filter(n => !n.archived)
+                    .map(n => ({
+                        id: n.id,
+                        title: n.title || "",
+                        excerpt: noteExcerpt(n.content || ""),
+                    })),
+            tags: () => tags.map(t => ({ name: t.name, count: tagCounts.get(t.id!) ?? 0 })),
+        };
+    }, [notes, tags, tagCounts]);
+
+    /**
+     * 预览里点任务复选框 → 回写草稿正文（主栏）。
+     *
+     * 写 draft 而不是直接发 API：草稿是「编辑区当前那份」，写完由 3s 自动保存落库，
+     * 和手打字符走的是同一条保存链路 —— 不会出现「预览勾上了、自动保存把正文覆盖回去」。
+     * ⚠️ `toggleTaskLine` 判不出任务项时返回 null（比如行号已经过期），
+     * 这时**什么都不做**，绝不把旧文本写回去（那会丢掉用户刚敲的字）。
+     */
+    const handleToggleTask = useCallback((line: number, checked: boolean) => {
+        setDraft(d => {
+            if (!d) return d;
+            const next = toggleTaskLine(d.content, line, checked);
+            return next === null ? d : { ...d, content: next };
+        });
+    }, []);
+
+    /** 侧边预览的同一套回写（侧栏有自己的草稿，不能改主栏那份） */
+    const handleSideToggleTask = useCallback((line: number, checked: boolean) => {
+        setSideDraft(d => {
+            if (!d) return d;
+            const next = toggleTaskLine(d.content, line, checked);
+            return next === null ? d : { ...d, content: next };
+        });
+    }, []);
     // ⚠️ 下面这些 callback 的引用都取 `folderTags?.xxx`，**不直接写 folderTags 本身进依赖**：
     // folderTags 是调用方每次渲染新造的对象字面量，把它放进行依赖会让每一次渲染都
     // 重跑一遍这些回调、连带下面的 useMemo 全部失效（这是「effect 无限循环 → 内存打满」
@@ -3167,14 +3302,86 @@ export default function NotesPage({
         },
         [active?.id, folderTags, onNotify]
     );
-    /** 灯箱的 Esc 关闭：它是普通 overlay（不是 MUI Dialog），得自己听键盘 */
+    /**
+     * 灯箱的键盘处理（inkstone 的 Lightbox 同样监听 window）：
+     *  Esc 关闭、`+` / `-` 缩放、`0` 回到 100%。
+     *
+     * ⚠️ 为什么 `+` 同时收 `Equal`：`+` 在多数键盘上要和 Shift 一起按，
+     * 而不同的系统/输入法给的 key 值并不一致（有的给 "+"，有的给 "Add"），
+     * 只判 "+" 会出现「这台笔记本上放大键没反应」。
+     */
     useEffect(() => {
         if (!lightbox) return;
         const onKey = (e: KeyboardEvent) => {
-            if (e.key === "Escape") setLightbox(null);
+            if (e.key === "Escape") {
+                e.preventDefault();
+                setLightbox(null);
+                return;
+            }
+            // 输入类按键不要抢：万一将来灯箱里加了输入框
+            const target = e.target as HTMLElement | null;
+            if (target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return;
+            const zoom = (delta: number | "reset") => {
+                e.preventDefault();
+                setImageScale(s =>
+                    delta === "reset" ? 1 : Math.max(0.3, Math.min(6, s + delta))
+                );
+            };
+            if (e.key === "+" || e.key === "Add" || e.code === "Equal") zoom(0.25);
+            else if (e.key === "-" || e.key === "Subtract" || e.code === "Minus") zoom(-0.25);
+            else if (e.key === "0") zoom("reset");
         };
         window.addEventListener("keydown", onKey);
         return () => window.removeEventListener("keydown", onKey);
+    }, [lightbox]);
+
+    /**
+     * 灯箱打开时：锁背景滚动 + 焦点收口 + 关闭后归还焦点。
+     *
+     *   ① 滚动锁：灯箱是 fixed 铺满屏的，**不锁的话滚轮会穿透滚到底下的笔记列表**，
+     *      关掉之后发现「刚才在看的那条跑没了」—— 这是「灯箱很难用」最常见的来源。
+     *   ② 焦点收口：它是 `role=dialog aria-modal`，但自定义 Box 不像 MUI Dialog
+     *      自带 FocusTrap，键盘用户连按 Tab 会跑到底下的列表里去。
+     *   ③ 焦点归还：关闭后把焦点还给打开它的那张图（拿不到就不动），
+     *      否则焦点掉回 body，接着按 Tab 会跳回页面开头，人也「丢位置」了。
+     */
+    const lightboxRef = useRef<HTMLDivElement | null>(null);
+    useEffect(() => {
+        if (!lightbox) return;
+        const opener = document.activeElement as HTMLElement | null;
+        const prevOverflow = document.body.style.overflow;
+        document.body.style.overflow = "hidden";
+        // 焦点交给容器本身（tabIndex=-1 可编程聚焦），Tab 的起点就定了
+        lightboxRef.current?.focus();
+        const trap = (e: KeyboardEvent) => {
+            if (e.key !== "Tab") return;
+            const root = lightboxRef.current;
+            if (!root) return;
+            const focusable = [
+                ...root.querySelectorAll<HTMLElement>(
+                    "button, [href], input, select, textarea, [tabindex]:not([tabindex='-1'])"
+                ),
+            ].filter(el => !el.hasAttribute("disabled"));
+            if (focusable.length === 0) {
+                e.preventDefault();
+                return;
+            }
+            const first = focusable[0];
+            const last = focusable[focusable.length - 1];
+            if (e.shiftKey && document.activeElement === first) {
+                e.preventDefault();
+                last.focus();
+            } else if (!e.shiftKey && document.activeElement === last) {
+                e.preventDefault();
+                first.focus();
+            }
+        };
+        window.addEventListener("keydown", trap);
+        return () => {
+            window.removeEventListener("keydown", trap);
+            document.body.style.overflow = prevOverflow;
+            opener?.focus?.();
+        };
     }, [lightbox]);
 
     /** 当前这条笔记的标题层级（草稿内容变就重算） */
@@ -3813,13 +4020,17 @@ export default function NotesPage({
                 }
                 onNoteContext={(noteId, el) => setRowMenu({ noteId, el, source: "rail" })}
             />
-            <FolderTagSection
-                title='标签'
-                items={tags.map(t => ({
-                    id: t.id!,
-                    name: t.name || "未命名",
-                    count: tagCounts.get(t.id!) ?? 0,
-                }))}
+                {/* ---------- 标签 ----------
+                    `color` 从库里直接带来（note_tag.color 早就有这一列，上一轮之前界面没用它）；
+                    有色就画圆点，列表里那条笔记的标签片也跟着上同一个颜色。 */}
+                <FolderTagSection
+                    title='标签'
+                    items={tags.map(t => ({
+                        id: t.id!,
+                        name: t.name || "未命名",
+                        count: tagCounts.get(t.id!) ?? 0,
+                        color: t.color,
+                    }))}
                 selectedId={activeTag}
                 onSelect={id => {
                     setActiveTag(id);
@@ -3838,6 +4049,11 @@ export default function NotesPage({
                     })
                 }
                 onAskRemove={(id, name) => setRemoveTarget({ kind: "tag", id, name })}
+                onAskColor={
+                    typeof folderTags?.onStyleTag === "function"
+                        ? id => setTagColorId(id)
+                        : undefined
+                }
             />
             </Box>
 
@@ -4009,8 +4225,12 @@ export default function NotesPage({
                 文字直接溢出压到右边的编辑区上（用户报「收齐后文字重叠」）。
                 轨道里只留一个展开按钮。 */}
             {listCollapsed ? (
-                // 折叠态：顶部只留「返回」，**展开箭头放左下角**（2026-10-07 用户要求，
-                // 与 inkstone 一致 —— 收起是低频动作，该待在不碍事、但伸手就能点到的角落）。
+                // 折叠态：44px 轨道里只留两个按钮（2026-10-10 用户要求再调整）：
+                // **「展开笔记列表」在上、「返回导航站」在下**。
+                // 历史沿革：2026-10-07 先按 inkstone 把展开键挪到轨道底部；用户实际用下来
+                // 觉得「返回」更该占底部（和左下角导出/归档那排同一高度、顺手），
+                // 于是两个按钮整体互换。样式/尺寸/间距一律不动（size='small'、gap 0.5、
+                // justifyContent: space-between），只换 DOM 顺序。
                 <Box
                     data-collapsed-rail='1'
                     sx={{
@@ -4022,11 +4242,6 @@ export default function NotesPage({
                         gap: 0.5,
                     }}
                 >
-                    <Tooltip title='返回导航站'>
-                        <IconButton aria-label='返回导航站' onClick={onClose} size='small'>
-                            <ArrowBackIcon fontSize='small' />
-                        </IconButton>
-                    </Tooltip>
                     <Tooltip title='展开笔记列表' placement='right'>
                         <IconButton
                             aria-label='展开笔记列表'
@@ -4035,6 +4250,11 @@ export default function NotesPage({
                             onClick={() => setListCollapsed(false)}
                         >
                             <LastPageIcon fontSize='small' />
+                        </IconButton>
+                    </Tooltip>
+                    <Tooltip title='返回导航站'>
+                        <IconButton aria-label='返回导航站' onClick={onClose} size='small'>
+                            <ArrowBackIcon fontSize='small' />
                         </IconButton>
                     </Tooltip>
                 </Box>
@@ -4362,7 +4582,43 @@ export default function NotesPage({
                                 // 行内时间戳删掉之后，精确时刻改挂到整行上：
                                 // 想要「上周三下午改的」仍然 hover 一下就有。
                                 title={formatWhen(note.updated_at || note.created_at)}
-                                onClick={() => (dirty ? void switchTo(note.id ?? null) : openNote(note))}
+                                onClick={e => {
+                                    const id = note.id;
+                                    if (id === undefined) return;
+                                    // ⌘/Ctrl+点 = 切换这一条选中。
+                                    // 顺手 **进入多选态**：要 Ctrl 点的人就是想选多条，
+                                    // 再让他先去点那个「多选」按钮是多一遍 sneak-preview 的流程。
+                                    if (e.metaKey || e.ctrlKey) {
+                                        e.preventDefault();
+                                        setMultiSelect(true);
+                                        toggleChecked(id);
+                                        selectAnchorRef.current = id;
+                                        return;
+                                    }
+                                    // Shift+点 = 从锚点一路选到这一条（两端都算）。
+                                    // ⚠️ 按**渲染顺序**取、
+                                    // e.preventDefault 是为了不让浏览器选中一屏文字。
+                                    if (e.shiftKey) {
+                                        e.preventDefault();
+                                        const anchor = selectAnchorRef.current;
+                                        const a = anchor === null ? -1 : visibleIds.indexOf(anchor);
+                                        const b = visibleIds.indexOf(id);
+                                        setMultiSelect(true);
+                                        if (a >= 0 && b >= 0) {
+                                            const [lo, hi] = a <= b ? [a, b] : [b, a];
+                                            setChecked(new Set(visibleIds.slice(lo, hi + 1)));
+                                        } else {
+                                            // 没有可用的锚点（刚进页面还没点过行）→ 退化成切这一条
+                                            toggleChecked(id);
+                                        }
+                                        // ⚠️ 锚点**不跟着 Shift 点移动**：连着 Shift 点第三次时，
+                                        // 该从最初那条算起，而不是第二次那条（否则范围会越缩越小）。
+                                        return;
+                                    }
+                                    selectAnchorRef.current = id;
+                                    if (dirty) void switchTo(id);
+                                    else openNote(note);
+                                }}
                                 onKeyDown={e => {
                                     if (e.key === "Enter" || e.key === " ") {
                                         e.preventDefault();
@@ -4387,6 +4643,16 @@ export default function NotesPage({
                                     });
                                 }}
                                 sx={{
+                                    // 列表不在视口里的行跳过渲染（布局仍占位）—— inkstone 的
+                                    // NoteList.tsx:497 同款写法。几百条笔记时这是差别最大的一处：
+                                    // 每次打字/滚动，浏览器都只需要重算「当前这一屏」的行。
+                                    // ⚠️ containIntrinsicSize 必须给：它是「没渲染时先占多高」的
+                                    // 估计值。不给的话离屏行按 0 高算，滚动条长度会随滚动跳动。
+                                    // 数值照 inkstone 的两档（紧凑 42 / 舒适 72），但我们的行
+                                    // 多了标签徽章那一行，所以各放宽到它的合理量级。
+                                    contentVisibility: "auto",
+                                    containIntrinsicSize:
+                                        uiSettings.density === "compact" ? "auto 56px" : "auto 96px",
                                     // ⚠️ P0-2：行内操作按钮改成绝对定位后，行必须是定位上下文
                                     position: "relative",
                                     mx: 0.75,
@@ -4571,24 +4837,39 @@ export default function NotesPage({
                                     不用点进去看。左栏那个标签视图才有意义也靠它。 */}
                                 {tagNamesOf(note, noteTags, tags).length > 0 && (
                                     <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.5, mt: 0.5 }}>
-                                        {tagNamesOf(note, noteTags, tags).map(name => (
+                                        {tagNamesOf(note, noteTags, tags).map(name => {
+                                            // 设了颜色的标签：文字与描边用本色、底色是它 12% 的薄涂 ——
+                                            // 直接填满本色的話，深色标签上的深色文字会看不清。
+                                            const c = tagColorByName.get(name.trim());
+                                            return (
                                             <Box
                                                 key={name}
                                                 data-note-tag={name}
+                                                data-note-tag-color={c ?? ""}
                                                 sx={{
                                                     px: 0.75,
                                                     py: 0.1,
                                                     fontSize: 10.5,
                                                     lineHeight: 1.6,
                                                     borderRadius: 999,
-                                                    border: "1px solid var(--card-border)",
-                                                    color: "text.secondary",
-                                                    bgcolor: "rgba(128,128,128,0.08)",
+                                                    ...(c
+                                                        ? {
+                                                              border: "1px solid transparent",
+                                                              borderColor: c,
+                                                              color: c,
+                                                              bgcolor: `color-mix(in srgb, ${c} 12%, transparent)`,
+                                                          }
+                                                        : {
+                                                              border: "1px solid var(--card-border)",
+                                                              color: "text.secondary",
+                                                              bgcolor: "rgba(128,128,128,0.08)",
+                                                          }),
                                                 }}
                                             >
                                                 {name}
                                             </Box>
-                                        ))}
+                                            );
+                                        })}
                                     </Box>
                                 )}
                             </Box>
@@ -5077,6 +5358,7 @@ export default function NotesPage({
                                     shortcutActions={mainShortcutActions}
                                     uploadImage={uploadApi ? uploadImageForEditor : undefined}
                                     onDetachedUpload={(placeholder, replacement) => replaceDetachedUpload(active.id!, placeholder, replacement)}
+                                    completionSources={completionSources}
                                 />
                             </Box>
                         )}
@@ -5226,6 +5508,8 @@ export default function NotesPage({
                                     resolveNote={resolveNote}
                                     onOpenNote={handleOpenEmbedNote}
                                     features={previewFeatures}
+                                    // 预览里的任务复选框可勾选 → 回写草稿（同上这份 source）
+                                    onToggleTask={handleToggleTask}
                                 /></Box>
                             </Box>
                         )}
@@ -5588,6 +5872,7 @@ export default function NotesPage({
                             resolveNote={resolveNote}
                             onOpenNote={handleOpenEmbedNote}
                             features={previewFeatures}
+                            onToggleTask={handleSideToggleTask}
                         />
                     </Box>
                 ) : sideMode === "split" ? (
@@ -5629,6 +5914,7 @@ export default function NotesPage({
                                 shortcutActions={sideShortcutActions}
                                 uploadImage={uploadApi ? uploadFileForSideEditor : undefined}
                                 onDetachedUpload={(placeholder, replacement) => replaceDetachedUpload(sideNote.id!, placeholder, replacement)}
+                                completionSources={completionSources}
                             />
                         </Box>
                         {/* 侧栏分栏里的那条线：与主栏同一套发丝线（1px，hover 加粗）。
@@ -5686,6 +5972,9 @@ export default function NotesPage({
                                 resolveNote={resolveNote}
                                 onOpenNote={handleOpenEmbedNote}
                                 features={previewFeatures}
+                                // 只有渲染草稿时才允许回写：渲染「已存库那份」时行号属于老文本，
+                                // 勾一下会把草稿尚未保存的内容冲掉（即时渲染关 = 明确不想被重建）。
+                                onToggleTask={sideLiveRender ? handleSideToggleTask : undefined}
                             />
                         </Box>
                     </Box>
@@ -5706,6 +5995,7 @@ export default function NotesPage({
                         shortcutActions={sideShortcutActions}
                         uploadImage={uploadApi ? uploadFileForSideEditor : undefined}
                                 onDetachedUpload={(placeholder, replacement) => replaceDetachedUpload(sideNote.id!, placeholder, replacement)}
+                        completionSources={completionSources}
                     />
                 )}
             </Box>
@@ -6089,6 +6379,23 @@ export default function NotesPage({
                 onClose={() => setAppearanceFolderId(null)}
             />
 
+            {/* 标签颜色弹窗（走 updateTag 落库，与文件夹外观同一组约定色） */}
+            <TagColorDialog
+                open={tagColorId !== null}
+                tag={(() => {
+                    const t = tagColorId !== null ? tags.find(x => x.id === tagColorId) : null;
+                    return t?.id !== undefined
+                        ? { id: t.id, name: t.name || "未命名", color: t.color }
+                        : null;
+                })()}
+                onSave={async color => {
+                    if (tagColorId !== null) {
+                        await folderTags?.onStyleTag?.(tagColorId, color);
+                    }
+                }}
+                onClose={() => setTagColorId(null)}
+            />
+
             {/* ⚠️ 原来这里有一个「归入文件夹」的锚点 Menu，2026-10-06 删掉了：
                 「移动到文件夹」改成 inkstone 那种**右侧抽屉**（见 MoveFolderDrawer），
                 这个 Menu 从此没有任何入口能把它打开 —— 留着就是一段永远不渲染的
@@ -6462,6 +6769,9 @@ export default function NotesPage({
                 MUI Dialog 的 onClose 拿不到这里；点空白处也关（inkstone 同款）。 */}
             {lightbox && (
                 <Box
+                    ref={lightboxRef}
+                    // tabIndex=-1：只能由脚本聚焦（焦点由脚本送进来 ≠ 它自己排队等 Tab）
+                    tabIndex={-1}
                     data-lightbox='1'
                     onWheel={e => {
                         if (e.ctrlKey || e.metaKey) {
@@ -6839,6 +7149,20 @@ export default function NotesPage({
 }
 
 /**
+ * 补全面板里那条笔记的摘要（右侧灰色小字）。
+ * 只要「看一眼就认得出是哪篇」，所以——摘掉 front matter、把 Markdown 记号当空格、
+ * 压缩空白、砍到 80 字。别让它变成第二个解析流程（大意？自动摘要？都不用）。
+ */
+function noteExcerpt(content: string): string {
+    const body = content.replace(/^---\n[\s\S]*?\n---\n/, "");
+    return body
+        .replace(/[#>*`_~[\]()!|-]/g, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 80);
+}
+
+/**
  * Markdown 预览。
  *
  * 渲染是**异步**的：markdown-it 走动态 import（必须 lazy，否则进首屏）。
@@ -6849,6 +7173,7 @@ function MarkdownPreview({
     resolveNote,
     onOpenNote,
     features,
+    onToggleTask,
 }: {
     source: string;
     /** 笔记嵌入 `![[标题]]` 按标题找目标 */
@@ -6857,6 +7182,8 @@ function MarkdownPreview({
     onOpenNote?: (title: string) => void;
     /** 预览功能开关（公式 / 图表 / 折叠代码块），来自设置面板 */
     features?: RenderFeatures;
+    /** 预览里点任务复选框 → 回写那篇源码（0 基行号）。不传 = 只读 */
+    onToggleTask?: (line: number, checked: boolean) => void;
 }) {
     const [node, setNode] = useState<ReactNode>(null);
     const [ready, setReady] = useState(false);
@@ -6867,7 +7194,7 @@ function MarkdownPreview({
             setNode(null);
             return;
         }
-        void renderMarkdownToReact(source, { resolveNote, onOpenNote, features }).then(result => {
+        void renderMarkdownToReact(source, { resolveNote, onOpenNote, features, onToggleTask }).then(result => {
             if (cancelled) return;
             setNode(result);
             setReady(true);
@@ -6876,7 +7203,7 @@ function MarkdownPreview({
             // 输入很快时，旧的解析结果要丢掉，否则会闪回上一版内容
             cancelled = true;
         };
-    }, [source, resolveNote, onOpenNote, features]);
+    }, [source, resolveNote, onOpenNote, features, onToggleTask]);
 
     if (!source) {
         return (

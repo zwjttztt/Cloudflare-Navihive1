@@ -26,11 +26,6 @@ export interface EditorShortcut {
     combo?: string;
     /** 中文名，tooltip 用 */
     label: string;
-    /**
-     * 动作。**不传就是只声明不绑定** —— 有些动作我们还没实现快捷键，
-     * 但工具栏想显示「这个操作将来会有快捷键」时可以不写。
-     */
-    run?: () => void;
 }
 
 /**

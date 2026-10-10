@@ -5,6 +5,7 @@ import { markdown } from "@codemirror/lang-markdown";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { syntaxHighlighting, defaultHighlightStyle, bracketMatching, indentUnit } from "@codemirror/language";
 import { search, searchKeymap, highlightSelectionMatches } from "@codemirror/search";
+import { autocompletion, completionKeymap } from "@codemirror/autocomplete";
 
 import { Compartment } from "@codemirror/state";
 import { livePreview, type LiveRenderer } from "./NoteEditorLivePreview";
@@ -13,6 +14,12 @@ import { EDITOR_SHORTCUTS, comboFor, toCodeMirrorKey } from "../utils/editorShor
 import { htmlToMarkdown, looksLikeMarkdown, markdownLink } from "../utils/htmlToMarkdown";
 import { moveLineUp, moveLineDown, deleteLine, indentMore, indentLess, undo, redo } from "@codemirror/commands";
 import { typewriter, typewriterCompartment } from "./NoteTypewriter";
+import {
+    codeFenceSource,
+    tagSource,
+    wikiLinkSource,
+    type CompletionSources,
+} from "../utils/noteCompletion";
 
 // 字体/字号走 CSS 变量而不是把值写死进 theme：设置面板改字号时不用重建编辑器
 //（重建会丢撤销历史）。变量由宿主元素上的 style 提供。
@@ -101,6 +108,69 @@ const searchPanelTheme = EditorView.theme({
         outline: "1px solid rgba(120,170,255,.9)",
     },
 });
+
+/** 补全面版的样式：与查找面板（searchPanelTheme）同一套调性 —— 「当前文字色 + 半透明底」。 */
+const completionTheme = EditorView.theme({
+    ".cm-tooltip.cm-tooltip-autocomplete": {
+        // ⚠️ tooltip 是**绝对定位在编辑器容器外**的浮层，拿不到 MUI 主题变量，
+        // 所以用 currentColor 派生：文字色跟随宿主，背景是它的 9% tint，
+        // 亮色/暗色主题都能自动对上（写死白色在暗色下会是一块刺眼的白板）。
+        "&": {
+            backgroundColor: "color-mix(in srgb, currentColor 9%, transparent)",
+            color: "inherit",
+            border: "1px solid color-mix(in srgb, currentColor 22%, transparent)",
+            borderRadius: "10px",
+            backdropFilter: "blur(10px)",
+            WebkitBackdropFilter: "blur(10px)",
+            boxShadow: "0 8px 24px rgba(0,0,0,.18)",
+            overflow: "hidden",
+            maxHeight: "16em",
+        },
+        "& > ul": {
+            fontFamily: "inherit",
+            fontSize: "calc(var(--note-editor-font-size, 14px) - 1px)",
+            maxHeight: "16em",
+        },
+        "& > ul > li": {
+            padding: "4px 10px",
+            lineHeight: 1.5,
+            display: "flex",
+            alignItems: "baseline",
+            gap: 6,
+        },
+        "& > ul > li:hover": {
+            backgroundColor: "color-mix(in srgb, currentColor 16%, transparent)",
+        },
+        "& > ul > li[aria-selected]": {
+            backgroundColor: "color-mix(in srgb, currentColor 26%, transparent)",
+            color: "inherit",
+        },
+        // 右侧的补充说明（笔记摘要 / 「N 篇笔记」）：次级信息，压暗一档
+        "& .cm-completionMatchedText": {
+            // 命中的字符：下划线比加粗好读，也不改变字形宽度（不会让候选抖动）
+            textDecoration: "underline",
+            textDecorationThickness: "1px",
+        },
+    },
+    ".cm-completionLabel": { flex: "0 0 auto" },
+    ".cm-completionDetail": {
+        flex: "1 1 auto",
+        minWidth: 0,
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+        whiteSpace: "nowrap",
+        fontStyle: "normal",
+        opacity: 0.62,
+        fontSize: ".92em",
+        textAlign: "right",
+    },
+});
+
+/**
+ * 没传 `completionSources` 时的兜底：补全扩展照样装（钩子和 keymap 都在），
+ * 但一个候选都不吐 —— 免得调用方的 null 分支一路判到底。
+ */
+const EMPTY_SOURCES: CompletionSources = { notes: () => [], tags: () => [] };
 
 /**
  * 取光标所在「段落」的范围：从光标行往上到空行为止、往下到空行为止。
@@ -236,6 +306,14 @@ export interface NoteEditorProps {
      */
     uploadImage?: (file: File) => Promise<{ url: string; filename: string }>;
     onDetachedUpload?: (placeholder: string, replacement: string) => Promise<void>;
+    /**
+     * 输入补全（`[[#`/```三类的候选从哪来）。
+     *
+     * 走 getter 而不是快照：笔记列表与标签会随时增删改，传快照的话
+     * 「刚建的笔记补全里没有」，得等下次重建编辑器才出现。
+     * 不传 = 不装补全扩展（公开分享页那种只读场景本来也不需要）。
+     */
+    completionSources?: () => CompletionSources;
 }
 
 export default function NoteEditor({
@@ -254,10 +332,15 @@ export default function NoteEditor({
     shortcutActions,
     uploadImage,
     onDetachedUpload,
+    completionSources,
 }: NoteEditorProps) {
     const host = useRef<HTMLDivElement>(null);
     const viewRef = useRef<EditorView | null>(null);
     const changeRef = useRef(onChange);
+    // 补全数据源走 ref：笔记列表每次增删改都会换一个新函数，
+    // 进 extensions 依赖的话，随便编辑一条笔记都要重建编辑器（撤销历史全丢）。
+    const completionRef = useRef(completionSources);
+    completionRef.current = completionSources;
     // 上传能力放进 ref：换回调（比如存储从「没配」变「配了」）不该重建编辑器。
     const uploadRef = useRef(uploadImage);
     uploadRef.current = uploadImage;
@@ -299,7 +382,22 @@ export default function NoteEditor({
                     // 所以设置里切这一项由调用方用 key 重建本组件（会丢撤销历史，可接受）
                     ...(showLineNumbers ? [lineNumbers()] : []),
                     highlightActiveLine(),
-                    syntaxHighlighting(defaultHighlightStyle), EditorView.lineWrapping, theme, searchPanelTheme,
+                    syntaxHighlighting(defaultHighlightStyle), EditorView.lineWrapping, theme, searchPanelTheme, completionTheme,
+                    // 输入补全（utils/noteCompletion.ts）：`[[` 双链 / `#` 标签 / 围栏语言。
+                    // 三个 source 内部都用 fuzzyMatch 自己排好序了，所以设 `filter: false`
+                    // —— 再让 CM 过滤一遍会把「没命中子串但模糊命中的候选」吞掉。
+                    // `override` 表示**不用** CM 默认的文档单词补全（写 Markdown 不需要）。
+                    autocompletion({
+                        override: [
+                            wikiLinkSource(() => completionRef.current?.() ?? EMPTY_SOURCES),
+                            tagSource(() => completionRef.current?.() ?? EMPTY_SOURCES),
+                            codeFenceSource,
+                        ],
+                        activateOnTyping: true,
+                        closeOnBlur: true,
+                        maxRenderedOptions: 24,
+                        icons: false,
+                    }),
                     // 粘贴 / 拖拽图片进正文 + 富文本 HTML→MD（N3 + N5）。
                     // 永远挂上：没传 uploadImage 时处理器直接放行（原生行为），
                     // 传了才走「占位符 → 上传 → 回写」；upload 能力走 uploadRef 读最新值。
@@ -368,9 +466,9 @@ export default function NoteEditor({
                     // 组合键字符串由 EDITOR_SHORTCUTS 单表生成（inkstone 同款设计），
                     // 所以「菜单上显示的」和「实际按的」永远一致。
                     keymap.of(
-                        // ⚠️ 两个条件都要判：`combo` 在表里是可选的（有些动作只声明
-                        // 不绑定，见 editorShortcuts 的说明），只判 run 的话
-                        // toCodeMirrorKey 会收到 undefined。
+                        // ⚠️ 必须先把没绑定键的那些条目滤掉：`combo` 是可选的
+                        // （「高亮」这类只声明、没找到不打架的键），只判 run 的存在性的话
+                        // toCodeMirrorKey 会拿到 undefined，整张 keymap 就废了。
                         EDITOR_SHORTCUTS.filter(s => s.combo).map(s => ({
                             key: toCodeMirrorKey(s.combo!),
                             preventDefault: true,
@@ -400,6 +498,10 @@ export default function NoteEditor({
                             return true;
                         } },
                     ]),
+                    // ⚠️ completionKeymap 要排在 defaultKeymap **前面**：它接管
+                    // ↑↓（换候选）/ Enter（接受）/ Esc（关面板）/ Ctrl-Space（手动唤起），
+                    // 面板没打开时这些 `run` 都返回 false，键照旧落到后面的默认行为上。
+                    keymap.of(completionKeymap),
                     keymap.of(searchKeymap),
                     keymap.of([...defaultKeymap, ...historyKeymap]),
                     EditorView.contentAttributes.of({
