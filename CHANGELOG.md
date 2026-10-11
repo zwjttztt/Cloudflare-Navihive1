@@ -6,6 +6,12 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。---
 
+## 2026-10-11 · 浏览次数防刷 + 对比报告滞后信息订正
+
+- **防刷（新增）**：笔记分享与分组分享的「浏览 N 次」此前是**每次成功打开 +1**——F5 一次计一次，脚本刷一晚能刷出几万次，计数失去参考意义。现在用 **HttpOnly cookie 当日戳**去重：首访签发（活到 UTC 换天），同一天同一浏览器的后续打开跳过计数，跨天/清 cookie 自然重计。方法层 `getPublicNote` / `getPublicGroupShare` 增加 `countView` 参数（缺省 true 兼容），去重判定在 worker 路由层做（读 cookie → 传参 → 成功后签戳）。顺带修一处隐患：口令成功签 asset-session cookie 从 `headers.set` 改 `append`，否则会把当日戳覆盖掉。无表无迁移，成本为零；这是尽力而为的防刷（cookie 可清），对展示用计数足够。
+- **订正**：`docs/inkstone-full-compare-2026-10-11.md` 第三节的 P1×2 / P2×3 / P3×1 共六项**实际已在 `723db4d`（P1–P3 补齐批次）全部交付**（share-asset-session / 导出内联图片 / 图谱平移缩放着色 / BroadcastChannel 多标签同步 / 手动重建 FTS / 过期会话清理），报告原文滞后，已加订正说明。
+- **校验**：`tsc -b`（build 内）通过；全量 2388（2387 通过 / 1 跳过 / 0 失败，新增：shareAssetRoutes 防刷 2 + noteShare/groupShare 真库防刷 2）；lint 0 error（8 条既有 warning 与本改动无关）；build、smoke 通过。
+
 ## 2026-10-11 · 导航站侧源码级自查：修 AI 向量跨账号误删 + 两处体验修正 + 两遗留项复核
 
 - **安全（P1，自查揪出）**：AI 语义搜索的向量维护有**跨账号数据丢失级缺陷**——`replaceEmbeddings` 换模型补向量时 `DELETE FROM site_embeddings WHERE model != ?` 没带账号 scope，多账号部署下 B 账号换 embedModel 会把**其他账号全部其它模型的向量静默清光**（语义搜索悄悄退化成普通搜索，无任何报错）。修复：stale 删除与写入都加 site 归属过滤（`site_id IN (SELECT id FROM sites WHERE ... user_id scope)`），`deleteEmbeddings` 同样加 scope 纵深防御；真实 SQLite 双账号用例钉死（root 换模型后 root 的旧向量完好、alice 不受影响；跨账号写入被过滤）。

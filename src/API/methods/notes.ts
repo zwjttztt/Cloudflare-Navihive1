@@ -53,7 +53,7 @@ export interface NotesApi {
      * 没有有效期时返回 null（分享不存在）。
      */
     updateNoteShare(id: number, days: number | null, password?: string | null): Promise<NoteShare | null>;
-    getPublicNote(token: string, password?: string | null): Promise<PublicNoteAccess>;
+    getPublicNote(token: string, password?: string | null, countView?: boolean): Promise<PublicNoteAccess>;
     /** 数据页概览「双链 / 版本历史」两格的全站计数（后端现算，前端不持有全量正文） */
     notesStats(): Promise<NoteStats>;
     /**
@@ -351,7 +351,9 @@ export const notesImpl: NotesApi = {
             .bind(...binds)
             .first<NoteShare>();
     },
-    getPublicNote: async function (this: NavigationAPI, token: string, password?: string | null): Promise<PublicNoteAccess> {
+    // countView=false：路由层已判定「该访客今天计过」（cookie 当日戳），这次跳过 +1。
+    // 缺省 true 保持「每次成功打开计一次」的调用方兼容。
+    getPublicNote: async function (this: NavigationAPI, token: string, password?: string | null, countView?: boolean): Promise<PublicNoteAccess> {
         if (!/^[a-f0-9]{64}$/.test(token)) return { status: "not-found" };
         await this.migrate();
         const row = await this.db.prepare(`SELECT n.title AS title, n.content AS content, n.updated_at AS updated_at,
@@ -369,10 +371,15 @@ export const notesImpl: NotesApi = {
                 && await verifyPassword(password, row.password);
             if (!ok) return { status: "need-password" };
         }
-        // 浏览次数 +1（每次成功打开记一次；并发时 D1 自增原子，不会互相盖掉）
-        const inc = await this.db.prepare(`UPDATE note_share SET views = views + 1 WHERE token = ?`)
-            .bind(token).run();
-        const views = (typeof row.views === "number" ? row.views : 0) + (inc.success ? 1 : 0);
+        // 浏览次数 +1（每次成功打开记一次；并发时 D1 自增原子，不会互相盖掉）。
+        // countView === false 时跳过（防刷去重：同一访客当天已计过，见 shareAssetSession）。
+        let counted = 0;
+        if (countView !== false) {
+            const inc = await this.db.prepare(`UPDATE note_share SET views = views + 1 WHERE token = ?`)
+                .bind(token).run();
+            counted = inc.success ? 1 : 0;
+        }
+        const views = (typeof row.views === "number" ? row.views : 0) + counted;
         return {
             status: "ok",
             note: { title: row.title, content: row.content, updated_at: row.updated_at },

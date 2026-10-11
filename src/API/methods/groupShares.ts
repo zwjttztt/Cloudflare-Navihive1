@@ -21,8 +21,9 @@ export interface GroupShareApi {
     revokeGroupShare(id: number): Promise<{ success: boolean }>;
     /** 主人查当前配置（没分享过返回 null） */
     getGroupShareConfig(id: number): Promise<GroupShareConfig | null>;
-    /** 公开读取（匿名）：口令错统一 need-password；组删了/过期/停用都是 not-found */
-    getPublicGroupShare(token: string, password?: string | null): Promise<PublicGroupAccess>;
+    /** 公开读取（匿名）：口令错统一 need-password；组删了/过期/停用都是 not-found。
+     *  countView=false 供路由层防刷去重（该访客当天已计过）跳过 views+1。 */
+    getPublicGroupShare(token: string, password?: string | null, countView?: boolean): Promise<PublicGroupAccess>;
 }
 
 const SHARE_DAYS_ALLOWED = [1, 7, 30];
@@ -104,7 +105,8 @@ export const groupSharesImpl: GroupShareApi = {
     getPublicGroupShare: async function (
         this: NavigationAPI,
         token: string,
-        password?: string | null
+        password?: string | null,
+        countView?: boolean
     ): Promise<PublicGroupAccess> {
         if (!/^[a-f0-9]{64}$/.test(token)) return { status: "not-found" };
         await this.migrate();
@@ -140,11 +142,16 @@ export const groupSharesImpl: GroupShareApi = {
             )
             .bind(token, row.owner_id)
             .all<{ name: string; url: string; description: string | null; icon: string | null }>();
-        const inc = await this.db
-            .prepare("UPDATE group_share SET views = views + 1 WHERE token = ?")
-            .bind(token)
-            .run();
-        const views = (typeof row.views === "number" ? row.views : 0) + (inc.success ? 1 : 0);
+        // 浏览次数 +1；countView === false 时跳过（cookie 当日戳防刷，见 shareAssetSession）。
+        let counted = 0;
+        if (countView !== false) {
+            const inc = await this.db
+                .prepare("UPDATE group_share SET views = views + 1 WHERE token = ?")
+                .bind(token)
+                .run();
+            counted = inc.success ? 1 : 0;
+        }
+        const views = (typeof row.views === "number" ? row.views : 0) + counted;
         return {
             status: "ok",
             group: { name: row.name },

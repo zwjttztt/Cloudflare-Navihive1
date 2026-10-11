@@ -36,7 +36,8 @@ import {
 } from "../loginGuard";
 import {readBearerToken, readCookie, sessionCookieHeaders, TOKEN_COOKIE} from "../httpUtils";
 import { readAttachmentObject } from "../attachments";
-import { issueShareAssetSession, verifyShareAssetSession, shareAssetCookieName } from "../shareAssetSession";
+import { issueShareAssetSession, verifyShareAssetSession, shareAssetCookieName,
+    shareViewCookieName, utcDayStamp, secondsUntilUtcMidnight } from "../shareAssetSession";
 
 /** 公开取图那几个错误响应的统一头 */
 const PUBLIC_ATTACH_HEADERS = {
@@ -108,10 +109,15 @@ export async function handlePublicRoutes(ctx: RouteCtx): Promise<Response | null
             const body = (await request.json().catch(() => ({}))) as { password?: unknown };
             password = typeof body.password === "string" ? body.password : null;
         }
-        const result = await api.getPublicGroupShare(token, password);
-        return Response.json(result, {
-            headers: { "Cache-Control": "no-store", "X-Robots-Tag": "noindex, nofollow" },
-        });
+        // 防刷去重：cookie 里当天戳还在（同一浏览器今天已计过）就跳过 views+1。
+        const viewedToday = readCookie(request, shareViewCookieName("group", token)) === utcDayStamp();
+        const result = await api.getPublicGroupShare(token, password, !viewedToday);
+        const headers = new Headers({ "Cache-Control": "no-store", "X-Robots-Tag": "noindex, nofollow" });
+        if (result.status === "ok" && !viewedToday) {
+            // 当日戳活到 UTC 换天，过期自然重新计一次
+            headers.append("Set-Cookie", `${shareViewCookieName("group", token)}=${utcDayStamp()}; HttpOnly; SameSite=Strict; Path=/api/; Max-Age=${secondsUntilUtcMidnight()}${secureCookie ? "; Secure" : ""}`);
+        }
+        return Response.json(result, { headers });
     }
 
     if (path.startsWith("note-shares/") && (method === "GET" || method === "POST")) {
@@ -124,8 +130,10 @@ export async function handlePublicRoutes(ctx: RouteCtx): Promise<Response | null
             const body = (await request.json().catch(() => ({}))) as { password?: unknown };
             password = typeof body.password === "string" ? body.password : null;
         }
+        // 防刷去重：cookie 当日戳还在就跳过计数（见 getPublicNote 的 countView 参数）。
+        const viewedToday = readCookie(request, shareViewCookieName("note", token)) === utcDayStamp();
         const verifiedHash = password ? await env.DB.prepare("SELECT password FROM note_share WHERE token = ?").bind(token).first<{ password: string | null }>() : null;
-        const result = await api.getPublicNote(token, password);
+        const result = await api.getPublicNote(token, password, !viewedToday);
         if (result.status === "not-found") {
             return Response.json({ error: "分享不存在、已过期或已撤销" }, {
                 status: 404,
@@ -139,11 +147,16 @@ export async function handlePublicRoutes(ctx: RouteCtx): Promise<Response | null
             });
         }
         const headers = new Headers({ "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "X-Robots-Tag": "noindex, nofollow" });
+        if (!viewedToday) {
+            // 防刷当日戳：活到 UTC 换天；Path=/api/ 覆盖取笔记与取附件两类请求
+            headers.append("Set-Cookie", `${shareViewCookieName("note", token)}=${utcDayStamp()}; HttpOnly; SameSite=Strict; Path=/api/; Max-Age=${secondsUntilUtcMidnight()}${secureCookie ? "; Secure" : ""}`);
+        }
         if (password) {
             const share = await env.DB.prepare("SELECT password FROM note_share WHERE token = ?").bind(token).first<{ password: string | null }>();
             if (share?.password && share.password === verifiedHash?.password) {
                 const session = await issueShareAssetSession(token, share.password);
-                headers.set("Set-Cookie", `${shareAssetCookieName(token)}=${session}; HttpOnly; SameSite=Strict; Path=/api/note-shares/; Max-Age=1800${secureCookie ? "; Secure" : ""}`);
+                // ⚠️ append 不是 set：上面可能已经签了防刷当日戳，set 会把它冲掉
+                headers.append("Set-Cookie", `${shareAssetCookieName(token)}=${session}; HttpOnly; SameSite=Strict; Path=/api/note-shares/; Max-Age=1800${secureCookie ? "; Secure" : ""}`);
             }
         }
         return Response.json(result.note, { status: 200, headers });

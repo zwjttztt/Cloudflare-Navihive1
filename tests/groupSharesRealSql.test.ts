@@ -88,3 +88,22 @@ test("真实 SQLite：重新创建轮换令牌；组删除后公开读取 not-fo
     assert.equal((await api.getPublicGroupShare("not-a-token")).status, "not-found");
     assert.equal((await api.getPublicGroupShare("z".repeat(64))).status, "not-found");
 });
+
+test("真实 SQLite：分组分享浏览次数防刷——countView=false 跳过自增", async () => {
+    resetMigrationCacheForTests();
+    const db = makeRealD1();
+    const api = makeRealApi(db);
+    await api.migrate();
+    const group = await api.createGroup({ name: "防刷组", order_num: 0 } as never);
+    const share = await api.createGroupShare(group.id!, null, null);
+    assert.ok(share?.token);
+    const first = await api.getPublicGroupShare(share!.token);
+    assert.equal(first.status, "ok");
+    if (first.status === "ok") assert.equal(first.views, 1, "缺省调用照常 +1");
+    const again = await api.getPublicGroupShare(share!.token, null, false);
+    assert.equal(again.status, "ok");
+    if (again.status === "ok") assert.equal(again.views, 1, "countView=false 不得自增");
+    const next = await api.getPublicGroupShare(share!.token);
+    assert.equal(next.status, "ok");
+    if (next.status === "ok") assert.equal(next.views, 2, "恢复缺省后照常 +1");
+});

@@ -475,3 +475,23 @@ test("真实 SQLite：删带子文件夹的父文件夹，子文件夹的 parent
     const childAfter = await realDb.prepare("SELECT parent_id FROM note_folder WHERE id = ?").bind(childId).first<{ parent_id: unknown }>();
     assert.equal(childAfter?.parent_id, null, "删父文件夹后，子文件夹的 parent_id 没被置空（会悬空）");
 });
+
+test("真实 SQLite：浏览次数防刷——countView=false 跳过自增（路由层当日戳去重）", async () => {
+    resetMigrationCacheForTests();
+    const api = makeApi(makeRealD1());
+    await api.migrate();
+    const note = await api.createNote({ title: "防刷", content: "正文" });
+    const share = await api.createNoteShare(note.id!, null, null);
+    assert.ok(share?.token);
+    const first = await api.getPublicNote(share!.token);
+    assert.equal(first.status, "ok");
+    if (first.status === "ok") assert.equal(first.views, 1, "缺省调用照常 +1");
+    // 路由层判过「该访客今天计过」（cookie 当日戳）后传 countView=false
+    const again = await api.getPublicNote(share!.token, null, false);
+    assert.equal(again.status, "ok");
+    if (again.status === "ok") assert.equal(again.views, 1, "countView=false 不得自增");
+    // 恢复缺省（跨天 / 新访客）→ 再 +1
+    const next = await api.getPublicNote(share!.token);
+    assert.equal(next.status, "ok");
+    if (next.status === "ok") assert.equal(next.views, 2, "恢复缺省后照常 +1");
+});
