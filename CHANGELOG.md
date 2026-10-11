@@ -16,9 +16,10 @@
 - **图片灯箱无障碍**：`+` / `-` 键盘缩放（兼容多种键盘布局的 key）、`0` 复位、Esc 关闭；容器可聚焦、Tab 收口在灯箱内循环、关闭后把焦点还给打开它的那个元素；打开时锁背景滚动、关闭时还原。
 - **列表渲染性能（inkstone 的 NoteList）**：行加 `content-visibility: auto` + `containIntrinsicSize`（紧凑 56px / 舒适 96px，比 inkstone 放宽一点——我们的行多一行标签徽章），长列表滚动不再为屏外行付布局成本。
 - **修复（真 bug）编辑器打 `#` 时 CodeMirror 补全面板抛异常、把整个补全扩展打挂**：收尾巡检里抓到控制台 `CodeMirror plugin crashed: Cannot read properties of undefined (reading 'length')`。根因是后端/缓存里混进一条**没有 name 的标签**时，`tagSource` 会把 `label: undefined` 交给 CM，默认候选渲染里的 `off < label.length` 当场抛 `TypeError`；而 CM 捕获插件异常后会 `destroy()` + `deactivate()` —— **补全扩展当场下线，之后按 Ctrl-Space 也没反应**。现在名字缺失的标签在 source 里就被拦掉（顺带兜住 `count` 缺失：不再显示「undefined 篇笔记」、boost 不会变成 NaN 搅乱排序）；`useNotes.sortTags` 也补了空串兜底（否则一条脏记录会让左栏整栏渲染崩掉）。新增 2 条用例钉死，摘掉守卫必红。
+- **修复（真 bug）连点两下「置顶」会误弹「这条笔记在别处被修改过了」冲突框**：根因是同一条笔记在极短时间内连续两次 `updateNote`（第一笔保存请求还在飞），第二笔按调用那一刻的 `before.rev` 带着**同一个旧版本号**发出去；服务端第一笔已经把 `rev +1`，第二笔命中 `AND rev = 旧值` 一条都改不到 → 回 409 → 弹框。那个框本意是防**别的设备 / 标签页**抢写，结果自己把自己撞下去了。修法：`useNotes` 给每条笔记加 `revById`（服务端一回就**同步**记下新 rev，不走要等渲染 + effect 才落地的 `notesRef`）；同一条笔记的写入走 `writeQueue` 串行化（第二笔等第一笔落地并把新 rev 回填后再发，带的是新版本号，不会误判）；`togglePin / toggleStar / toggleArchive` 取反按 `notesRef` 里的**最新状态**算（连点第二下若按传进来的快照取反会算出和第一下一样的值——既没翻对又白发一笔旧 rev 的写入，正是冲突框的来源）。新增 3 条用例钉死：连点置顶第二笔带第一笔返回的新 rev、不弹框；连点收藏按最新状态取反（两下落到未收藏）；真有别的设备抢写时守卫**仍**弹框（不为消除误报就关掉守卫）。同一条笔记所有会短时并发的写——置顶 / 收藏 / 归档连点，以及「内容自动保存」与「切笔记 / ⌘S / 关闭兜底 flush」的竞发——都走这唯一的 `updateNote` 入口、`writeQueue` 一并串行化；服务端侧写（`restoreNoteRevision` / `importNotes`）走 worker 内 `updateNote`，不经过前端 hook，不受影响。
 - **顺手订正**：`syncScroll` 的 `editorLineAtScroll` 口径写成 0 基（原注释写 1 基、内部又多减一次 1，双向同步会滞后一行，补了 2 条回归用例）；删掉 `editorShortcuts` 里没人用的死字段；几处照抄 inkstone 时写歪的注释改正。
 - 测试桩补齐建/改/删标签接口（以前 `POST /api/notes/tags` 落到兜底回 `{"success":true}`，于是「新建标签」拿回来的对象既没 name 也没 id —— 上面的崩溃正是被这个假数据引爆的；现在按真后端的 `RETURNING *, 0 AS count` 返回）。
-- 校验：`tsc -b --force` 通过；lint 0 error / 6 warning（既有）；全量单测 **2340 项（2339 通过 / 1 跳过）**；build 通过；smoke 全绿；真机探针（折叠轨道、自动补全、任务勾选回写）全 PASS；收尾巡检 0 条控制台异常。
+- 校验：`tsc -b --force` 通过；lint 0 error / 7 warning（既有：useNotes 的 runUpdate↔updateNote 循环依赖告警，冲突重试有意引用）；全量单测 **2343 项（2342 通过 / 1 跳过）**；build 通过；smoke 全绿。
 
 ## 2026-10-10 · 记事本界面三处调整：导航备份去笔记开关 / 备份记录可删 / 左栏顶栏重排
 

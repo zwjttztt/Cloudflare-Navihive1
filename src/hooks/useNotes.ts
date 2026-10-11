@@ -5,7 +5,7 @@
 // 一个刻意的取舍：**乐观更新 + 失败回滚**，而不是等服务端回来再改界面。
 // 记事本是「想到就写」的场景，保存要是有 200ms 的延迟，手感会立刻变差；
 // 而失败时回滚到旧值 + 提示，代价远小于「每敲一个字都等一下」。
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type {
     Note,
     NoteAttachment,
@@ -146,16 +146,37 @@ export function useNotes({ api, onError, onNotify, onNoteConflict }: UseNotesPar
     /** 笔记 → 标签Id：[noteId]: tagId[] */
     const [noteTags, setNoteTags] = useState<Record<number, number[]>>({});
 
+    /**
+     * 每条笔记**最新已知的版本号**（rev）。
+     *
+     * ⚠️ 为什么不能只读 notes 里的 rev：React 的状态更新要等渲染 + effect 才落进
+     * notesRef，而排队的下一笔写入在**同一轮微任务**里就开跑了（上一笔的网络请求
+     * 一 resolve，`.then` 立刻执行）。等它跑的时候 notesRef 里还是旧 rev ——
+     * 排队就白排了，第二笔照样带着旧版本号发出去。
+     * 所以服务端一回就把新 rev 记在这里，下一笔**同步**就能读到。
+     */
+    const revById = useRef(new Map<number, number>());
+    /** 拉列表 / 重建状态时把 rev 的底账重铺一遍 */
+    const seedRevs = useCallback((list: Note[]) => {
+        const map = new Map<number, number>();
+        for (const item of list) {
+            if (typeof item.id === "number" && typeof item.rev === "number") map.set(item.id, item.rev);
+        }
+        revById.current = map;
+    }, []);
+
     const reload = useCallback(async () => {
         try {
             const list = await api.listNotes();
-            setNotes(Array.isArray(list) ? list : []);
+            const next = Array.isArray(list) ? list : [];
+            seedRevs(next);
+            setNotes(next);
             setLoaded(true);
         } catch (error) {
             reportError(error, { source: "notes-list" });
             onError("加载记事本失败: " + (error instanceof Error ? error.message : "未知错误"));
         }
-    }, [api, onError]);
+    }, [api, onError, seedRevs]);
 
     // 首屏拉一次：笔记条数要显示在顶栏按钮上，不能等用户点开面板才加载
     useEffect(() => {
@@ -186,20 +207,50 @@ export function useNotes({ api, onError, onNotify, onNoteConflict }: UseNotesPar
         [api, onError]
     );
 
+    /**
+     * 最新的 notes。排队中的那笔写入必须**真正执行时**再读它，
+     * 不能拿调用那一刻的快照 —— 快照里的 rev 是上一次保存的版本号，
+     * 拿它去保存就会被并发守卫当成「别处改过」（见下面的 writeQueue）。
+     */
+    const notesRef = useRef(notes);
+    useEffect(() => {
+        notesRef.current = notes;
+    }, [notes]);
+
+    /**
+     * 同一条笔记的写入队列：noteId → 「上一笔写完」的 promise。
+     *
+     * ⚠️ 没有它的时候，「连点两下置顶」会稳定弹出冲突框：
+     * 第二下点击发生在第一笔保存的**请求还在路上**时，`before.rev` 读到的还是
+     * 上一次的版本号，于是带着同一个 rev 又发一笔 —— 服务端第一笔已经把 rev
+     * +1，第二笔命中 `AND rev = 旧值` 一条都改不到，回 409 → 弹「别处被修改过」。
+     * 那个框本意是防**别的设备/标签页**抢写，结果自己把自己撞下去了。
+     *
+     * 排队之后：第二笔等第一笔**落地、并把响应里新的 rev 回填进 notes** 之后才开始，
+     * 带的是新版本号，不会误判；真有别处抢写时才弹框。
+     */
+    const writeQueue = useRef(new Map<number, Promise<void>>());
+
     /** 乐观更新：先把界面上改掉，失败再回滚到旧值并提示 */
-    const updateNote = useCallback(
+    const runUpdate = useCallback(
         async (id: number, patch: Partial<Note>, opts: { force?: boolean } = {}): Promise<boolean> => {
-            const before = notes.find(n => n.id === id);
+            const before = notesRef.current.find(n => n.id === id);
             if (!before) return false;
             setNotes(prev => prev.map(n => (n.id === id ? { ...n, ...patch } : n)));
             try {
                 // 乐观并发：带上「我改的是哪一版」（force = 用户已确认要覆盖，不校验）
+                // ⚠️ rev 以 revById 为准（上一笔保存刚记下的），notesRef 里的可能还没刷新
+                const known = revById.current.get(id);
+                const baseRev = typeof known === "number" ? known : before.rev;
                 const withRev =
-                    !opts.force && typeof before.rev === "number"
-                        ? { ...patch, rev: before.rev }
+                    !opts.force && typeof baseRev === "number"
+                        ? { ...patch, rev: baseRev }
                         : patch;
                 const saved = await api.updateNote(id, withRev);
                 if (saved) {
+                    // 服务端给的新版本号**立刻**记账，下一笔排队写入就能带上它
+                    if (typeof saved.rev === "number") revById.current.set(id, saved.rev);
+                    else revById.current.delete(id);
                     setNotes(prev => prev.map(n => (n.id === id ? saved : n)));
                     if (patch.content !== undefined && api.listTags && api.listNoteTags) {
                         try {
@@ -232,21 +283,57 @@ export function useNotes({ api, onError, onNotify, onNoteConflict }: UseNotesPar
             }
             return true;
         },
-        [notes, api, onError, onNoteConflict]
+        [api, onError, onNoteConflict]
     );
 
-    /** 置顶：走同一个 updateNote（服务端白名单里有 pinned） */
+    /**
+     * 对外那一个 updateNote：**同一条笔记的写入串行化**。
+     * 新来的一笔排到上一笔后面，且真正轮到它时才去读 rev（见 notesRef 的说明）。
+     * 返回的是这一笔自己的结果（不是队列的），调用方语义不变。
+     */
+    const updateNote = useCallback(
+        (id: number, patch: Partial<Note>, opts: { force?: boolean } = {}): Promise<boolean> => {
+            const queue = writeQueue.current;
+            const prev = queue.get(id) ?? Promise.resolve();
+            const run = prev.then(() => runUpdate(id, patch, opts));
+            // 队列里存的是「吞掉结果」的尾巴：任何一笔失败都不能让后续的写入
+            // 永远卡在 rejected 的 promise 上（那会变成「保存彻底不动了」）。
+            const tail = run.then(
+                () => undefined,
+                () => undefined
+            );
+            queue.set(id, tail);
+            void tail.then(() => {
+                if (queue.get(id) === tail) queue.delete(id);
+            });
+            return run;
+        },
+        [runUpdate]
+    );
+
+    /**
+     * 置顶：走同一个 updateNote（服务端白名单里有 pinned）。
+     *
+     * ⚠️ 取反必须**按最新状态**算，不能按传进来的那份 note 快照算：
+     * 连点两下时第二下拿到的还是旧快照（第一笔刚发出去、界面上的乐观更新有可能
+     * 还没回到这一行），按快照取反会得到和第一下一样的值 —— 于是「点两下」净效果是
+     * 停在置顶状态、外加一次带着旧 rev 的写入（那就是冲突框的来源）。
+     */
     const togglePin = useCallback(
         async (note: Note) => {
-            await updateNote(note.id!, { pinned: !note.pinned });
+            const id = note.id!;
+            const cur = notesRef.current.find(n => n.id === id) ?? note;
+            await updateNote(id, { pinned: !cur.pinned });
         },
         [updateNote]
     );
 
-    /** 收藏（与置顶分离，2026-10-09）：置顶管排序、收藏管筛选 */
+    /** 收藏（与置顶分离，2026-10-09）：置顶管排序、收藏管筛选（取反同上按最新状态） */
     const toggleStar = useCallback(
         async (note: Note) => {
-            await updateNote(note.id!, { starred: !note.starred });
+            const id = note.id!;
+            const cur = notesRef.current.find(n => n.id === id) ?? note;
+            await updateNote(id, { starred: !cur.starred });
         },
         [updateNote]
     );
@@ -368,7 +455,9 @@ export function useNotes({ api, onError, onNotify, onNoteConflict }: UseNotesPar
     /** 归档 / 取回归档：乐观更新走 updateNote，归档后不在「全部」里露面 */
     const toggleArchive = useCallback(
         async (note: Note) => {
-            await updateNote(note.id!, { archived: !note.archived });
+            const id = note.id!;
+            const cur = notesRef.current.find(n => n.id === id) ?? note;
+            await updateNote(id, { archived: !cur.archived });
         },
         [updateNote]
     );
