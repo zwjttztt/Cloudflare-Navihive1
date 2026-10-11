@@ -41,6 +41,7 @@ function makeProps(overrides: Partial<MoreMenuProps> = {}): { props: MoreMenuPro
             onLogout: rec("onLogout"),
             onOpenRecycle: rec("onOpenRecycle"),
             onOpenAudit: rec("onOpenAudit"),
+            onOpenStats: rec("onOpenStats"),
             onOpenAccount: rec("onOpenAccount"),
             onOpenAiAssistant: rec("onOpenAiAssistant"),
             isSiteOwner: true,

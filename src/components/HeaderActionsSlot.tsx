@@ -39,6 +39,7 @@ export interface HeaderActionsSlotProps {
     onOpenBackup: () => void;
     onOpenRecycle: () => void;
     onOpenAudit: () => void;
+    onOpenStats: () => void;
     isAuthenticated: boolean;
     onLogout: () => void;
     onOpenAiAssistant: () => void;
@@ -69,6 +70,7 @@ export default function HeaderActionsSlot({
     onOpenBackup,
     onOpenRecycle,
     onOpenAudit,
+    onOpenStats,
     isAuthenticated,
     onLogout,
     onOpenAiAssistant,
@@ -103,6 +105,7 @@ export default function HeaderActionsSlot({
                     onOpenBackup={onOpenBackup}
                     onOpenRecycle={onOpenRecycle}
                     onOpenAudit={onOpenAudit}
+                    onOpenStats={onOpenStats}
                     isAuthenticated={isAuthenticated}
                     onLogout={onLogout}
                     onOpenAiAssistant={onOpenAiAssistant}

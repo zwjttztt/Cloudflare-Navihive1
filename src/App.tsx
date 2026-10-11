@@ -102,6 +102,7 @@ const AccountDialog = lazy(() => import("./components/AccountDialog"));
 const DeleteAccountDialog = lazy(() => import("./components/DeleteAccountDialog"));
 const ImportPreviewDialog = lazy(() => import("./components/ImportPreviewDialog"));
 const AuditDialog = lazy(() => import("./components/AuditDialog"));
+const StatsDashboardDialog = lazy(() => import("./components/StatsDashboardDialog"));
 const RecycleBinDialog = lazy(() => import("./components/RecycleBinDialog"));
 // 记事本：独立页面（参考 inkstone 的工作区布局）。懒加载。
 /** 记事本整块（hook + 视图）懒加载：打开之前一行代码都不进首屏 */
@@ -350,8 +351,9 @@ function App() {
     // 新增状态管理
 
 
-    // 审计日志 / 回收站对话框状态
+    // 审计日志 / 统计看板 / 回收站对话框状态
     const [openAudit, setOpenAudit] = useState(false);
+    const [openStats, setOpenStats] = useState(false);
     const [openRecycle, setOpenRecycle] = useState(false);
 
 
@@ -1493,6 +1495,10 @@ function App() {
                                         handleMenuClose();
                                         setOpenAudit(true);
                                     }}
+                                    onOpenStats={() => {
+                                        handleMenuClose();
+                                        setOpenStats(true);
+                                    }}
                                     isAuthenticated={isAuthenticated}
                                     onLogout={handleLogout}
                                     onOpenAiAssistant={() => {
@@ -1847,6 +1853,15 @@ function App() {
                     onClose={() => setOpenAudit(false)}
                     client={api as unknown as NavigationClient}
                     retentionDays={Number(configs[RETENTION_DAYS_KEY]) || undefined}
+                />
+                </ChunkBoundary>
+
+                {/* 统计看板：仅站点所有者，内容计数 / 审计活跃 / 分享浏览 Top / 链接健康 */}
+                <ChunkBoundary>
+                <StatsDashboardDialog
+                    open={openStats}
+                    onClose={() => setOpenStats(false)}
+                    client={api as unknown as NavigationClient}
                 />
                 </ChunkBoundary>
 

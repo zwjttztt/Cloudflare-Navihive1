@@ -37,6 +37,25 @@ export interface AuditApi {
      */
     getClientErrors(limit?: number): Promise<ClientErrorGroup[]>;
     purgeExpiredAudit(days: number): Promise<number>;
+    /**
+     * 运维统计看板聚合（仅 owner，一次拉全）：内容计数、近 30 天审计活跃、
+     * 分享浏览 Top、链接健康快照。聚合在服务端做，前端只画图。
+     */
+    getOpsStats(): Promise<OpsStats>;
+}
+
+/** 运维统计看板的一次聚合结果 */
+export interface OpsStats {
+    /** 内容计数（按当前账号 scope；audit 是全站审计不分账号） */
+    counts: { sites: number; groups: number; notes: number; attachments: number; attachmentBytes: number };
+    /** 近 30 天审计活跃：缺日补零，day 为 UTC 日期（YYYY-MM-DD） */
+    auditDaily: Array<{ day: string; count: number }>;
+    /** 近 30 天 Top 动作（按次数降序，最多 8 条） */
+    auditTopActions: Array<{ action: string; count: number }>;
+    /** 分享浏览次数 Top（笔记 + 分组合并排序，最多 8 条） */
+    shareTop: Array<{ kind: "note" | "group"; title: string; views: number }>;
+    /** 链接健康：来自 link.health 快照（开启健康同步后才有服务端数据） */
+    health: { total: number; deadCount: number; deadLatest: Array<{ url: string; at: number }> };
 }
 
 export const auditImpl: AuditApi = {
@@ -171,5 +190,155 @@ export const auditImpl: AuditApi = {
             console.error("清理审计日志失败:", error);
             return 0;
         }
+    },
+
+    /**
+     * 运维统计看板聚合。分四块，每块独立容错——一块挂了不影响其余三块
+     * （看板是观测工具，宁可少一块也不能整页 500）。
+     *
+     * ⚠️ JOIN 里计数浏览 Top 时 user_id 必须限表名（n.user_id / g.user_id）：
+     * note_share / group_share 同样有 user_id 列，裸写 user_id 在登录态直接
+     * ambiguous column 500（FTS 那次的老坑）。所以这两条查询不走 scopeSql，
+     * 按当前账号手工拼限定名条件。
+     */
+    getOpsStats: async function (this: NavigationAPI): Promise<OpsStats> {
+        await this.migrate();
+        const stats: OpsStats = {
+            counts: { sites: 0, groups: 0, notes: 0, attachments: 0, attachmentBytes: 0 },
+            auditDaily: [],
+            auditTopActions: [],
+            shareTop: [],
+            health: { total: 0, deadCount: 0, deadLatest: [] },
+        };
+
+        // —— 内容计数：单表查询，scopeSql（uid 为 null 时无条件，单账号部署）——
+        try {
+            const one = async (sql: string): Promise<number> => {
+                const stmt = this.db.prepare(sql);
+                const row =
+                    this.currentUserId === null
+                        ? await stmt.first<{ n: number }>()
+                        : await stmt.bind(this.currentUserId).first<{ n: number }>();
+                return Number(row?.n ?? 0);
+            };
+            stats.counts.sites = await one(`SELECT COUNT(*) AS n FROM sites${this.scopeSql(false)}`);
+            stats.counts.groups = await one(`SELECT COUNT(*) AS n FROM groups${this.scopeSql(false)}`);
+            stats.counts.notes = await one(`SELECT COUNT(*) AS n FROM notes${this.scopeSql(false)}`);
+            const attStmt = this.db.prepare(
+                `SELECT COUNT(*) AS n, COALESCE(SUM(size), 0) AS bytes FROM attachments${this.scopeSql(false)}`
+            );
+            const att =
+                this.currentUserId === null
+                    ? await attStmt.first<{ n: number; bytes: number }>()
+                    : await attStmt.bind(this.currentUserId).first<{ n: number; bytes: number }>();
+            stats.counts.attachments = Number(att?.n ?? 0);
+            stats.counts.attachmentBytes = Number(att?.bytes ?? 0);
+        } catch (error) {
+            console.error("统计内容计数失败:", error);
+        }
+
+        // —— 近 30 天审计活跃 + Top 动作（audit_log 全站共用，不按账号拆）——
+        try {
+            const daily = await this.db
+                .prepare(
+                    "SELECT substr(created_at, 1, 10) AS day, COUNT(*) AS count FROM audit_log WHERE created_at >= datetime('now', '-30 days') GROUP BY day ORDER BY day"
+                )
+                .all<{ day: string; count: number }>();
+            const byDay = new Map<string, number>(
+                (daily.results || []).map(r => [r.day, Number(r.count)])
+            );
+            const out: Array<{ day: string; count: number }> = [];
+            const now = new Date();
+            for (let i = 29; i >= 0; i--) {
+                const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - i));
+                const day = d.toISOString().slice(0, 10);
+                out.push({ day, count: byDay.get(day) ?? 0 });
+            }
+            stats.auditDaily = out;
+
+            const top = await this.db
+                .prepare(
+                    "SELECT action, COUNT(*) AS count FROM audit_log WHERE created_at >= datetime('now', '-30 days') GROUP BY action ORDER BY count DESC, action LIMIT 8"
+                )
+                .all<{ action: string; count: number }>();
+            stats.auditTopActions = (top.results || []).map(r => ({
+                action: r.action,
+                count: Number(r.count),
+            }));
+        } catch (error) {
+            console.error("统计审计活跃失败:", error);
+        }
+
+        // —— 分享浏览 Top：两条 JOIN 各取 8，合并后重排再截 8 ——
+        try {
+            const uid = this.currentUserId;
+            const noteRows =
+                uid === null
+                    ? await this.db
+                          .prepare(
+                              "SELECT n.title AS title, s.views AS views FROM note_share s JOIN notes n ON n.id = s.note_id WHERE s.views > 0 ORDER BY s.views DESC LIMIT 8"
+                          )
+                          .all<{ title: string; views: number }>()
+                    : await this.db
+                          .prepare(
+                              "SELECT n.title AS title, s.views AS views FROM note_share s JOIN notes n ON n.id = s.note_id WHERE s.views > 0 AND n.user_id = ? ORDER BY s.views DESC LIMIT 8"
+                          )
+                          .bind(uid)
+                          .all<{ title: string; views: number }>();
+            const groupRows =
+                uid === null
+                    ? await this.db
+                          .prepare(
+                              "SELECT g.name AS title, s.views AS views FROM group_share s JOIN groups g ON g.id = s.group_id WHERE s.views > 0 ORDER BY s.views DESC LIMIT 8"
+                          )
+                          .all<{ title: string; views: number }>()
+                    : await this.db
+                          .prepare(
+                              "SELECT g.name AS title, s.views AS views FROM group_share s JOIN groups g ON g.id = s.group_id WHERE s.views > 0 AND g.user_id = ? ORDER BY s.views DESC LIMIT 8"
+                          )
+                          .bind(uid)
+                          .all<{ title: string; views: number }>();
+            stats.shareTop = [
+                ...(noteRows.results || []).map(r => ({ kind: "note" as const, title: r.title || "（无标题）", views: Number(r.views) })),
+                ...(groupRows.results || []).map(r => ({ kind: "group" as const, title: r.title || "（未命名分组）", views: Number(r.views) })),
+            ]
+                .sort((a, b) => b.views - a.views)
+                .slice(0, 8);
+        } catch (error) {
+            console.error("统计分享浏览失败:", error);
+        }
+
+        // —— 链接健康：user_configs 里的 link.health 快照（开启同步才有）——
+        try {
+            const uid = this.currentUserId;
+            if (uid !== null) {
+                const raw = await this.getUserConfig(uid, "link.health");
+                if (raw) {
+                    const snap = JSON.parse(raw) as {
+                        dead?: Record<string, number>;
+                        probe?: Record<string, number>;
+                        white?: string[];
+                        suspect?: Record<string, number>;
+                    };
+                    const dead = snap.dead ?? {};
+                    const deadLatest = Object.entries(dead)
+                        .map(([url, at]) => ({ url, at: Number(at) }))
+                        .sort((a, b) => b.at - a.at)
+                        .slice(0, 20);
+                    stats.health = {
+                        deadCount: Object.keys(dead).length,
+                        total:
+                            Object.keys(dead).length +
+                            Object.keys(snap.probe ?? {}).length +
+                            (snap.white?.length ?? 0),
+                        deadLatest,
+                    };
+                }
+            }
+        } catch (error) {
+            console.error("读取链接健康快照失败:", error);
+        }
+
+        return stats;
     },
 };

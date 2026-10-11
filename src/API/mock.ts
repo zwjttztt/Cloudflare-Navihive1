@@ -32,6 +32,7 @@ import {
     IDEMPOTENCY_TTL_MS,
     type IdempotencyRecord,
 } from "./methods/idempotency";
+import type { OpsStats } from "./methods/audit";
 
 /** 演示模式的幂等记录：scope|opId -> 记录 */
 const mockIdempotency = new Map<
@@ -1221,6 +1222,42 @@ export class MockNavigationClient {
         const rows = opts.actor ? mockAuditLog.filter(r => r.actor === opts.actor) : mockAuditLog;
         const page = rows.slice(offset, offset + limit);
         return { success: true, log: page, hasMore: rows.length > offset + limit };
+    }
+
+    /** 运维统计看板（本地演示）：计数取 mock 状态，审计活跃按 mock 流水聚合，分享/健康暂空。 */
+    async getOpsStats(): Promise<OpsStats> {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        const byDay = new Map<string, number>();
+        const byAction = new Map<string, number>();
+        const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+        for (const r of mockAuditLog) {
+            const day = (r.created_at || "").slice(0, 10);
+            if (day) byDay.set(day, (byDay.get(day) ?? 0) + 1);
+            if (day >= cutoff) byAction.set(r.action, (byAction.get(r.action) ?? 0) + 1);
+        }
+        const auditDaily: OpsStats["auditDaily"] = [];
+        const now = new Date();
+        for (let i = 29; i >= 0; i--) {
+            const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - i));
+            const day = d.toISOString().slice(0, 10);
+            auditDaily.push({ day, count: byDay.get(day) ?? 0 });
+        }
+        return {
+            counts: {
+                sites: mockSites.length,
+                groups: mockGroups.length,
+                notes: mockNotes.length,
+                attachments: mockAttachments.length,
+                attachmentBytes: mockAttachments.reduce((sum, a) => sum + (Number(a.size) || 0), 0),
+            },
+            auditDaily,
+            auditTopActions: [...byAction.entries()]
+                .map(([action, count]) => ({ action, count }))
+                .sort((a, b) => b.count - a.count)
+                .slice(0, 8),
+            shareTop: [],
+            health: { total: 0, deadCount: 0, deadLatest: [] },
+        };
     }
 
     async getClientErrors(limit = 200): Promise<{

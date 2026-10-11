@@ -6,6 +6,13 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。---
 
+## 2026-10-11 · 统计看板（仅 owner）+ AVIF 尺寸解析
+
+- **统计看板（新增）**：「更多」菜单新增**统计看板**入口（与审计日志同一把 owner 守卫，后端 403 挡非 owner），一块仪表盘看全站运营状态，四个区块：①**内容概览**——站点/分组/笔记/附件数量与附件占用（按账号 scope 计数）；②**审计活跃**——近 30 天按日聚合的手写 SVG 柱状图（缺日补零，悬停出「日期：次数」）；③**高频动作**——近 30 天 Top 8 动作条形榜；④**分享浏览 Top**——笔记+分组分享按浏览次数合并排序 Top 8；外加**链接健康**——来自 link.health 快照的疑似失效数与最近失效列表。服务端一次拉全：新端点 `GET /api/stats`（owner only），聚合在 worker 侧做（计数/两条 GROUP BY/两条 JOIN），前端零依赖画图——**刻意不引入图表库**（首屏 304KB gzip 预算只剩 5% 余量）。组件懒加载独立 chunk，不进首屏。
+- **实现要点**：①JOIN 里 `user_id` 必须限表名（`n.user_id`/`g.user_id`，note_share 同名列裸写=ambiguous column 500，FTS 老坑），所以浏览 Top 两条查询不走 scopeSql、按账号手工拼限定名条件；②四块各自独立容错——看板是观测工具，一块挂了不能整页 500；③链接健康读 `user_configs` 的 link.health 快照（开启健康同步才有数据，否则显示开启引导）；④mock 按 mock 状态返回同构数据，apiContract 守卫钉死两侧形状。
+- **AVIF 尺寸解析（新增）**：上传链路此前对 `image/avif` 不读尺寸（正文渲染靠浏览器加载后回填）。补上 ISO-BMFF 盒子树解析——`meta`（FullBox）→ `iprp` → `ipco` → `ispe`（version/flags 后两个 uint32），多 `ispe` 取第一个，任何越界/截断都安全返回 null 绝不抛。上传时与 png/jpeg/gif/webp 同一条路存元数据，正文图片位从首帧就占好。inkstone 的图片尺寸探测同样不含 AVIF，此为超越项。
+- **校验**：`tsc -b --force` 通过；全量 2393（2392 通过 / 1 跳过 / 0 失败，新增：opsStatsRealSql 真库 2（含多账号隔离）、statsDashboard DOM 2、imageSize AVIF 1）；lint 0 error（8 条既有 warning 与本改动无关）；build、smoke 通过。
+
 ## 2026-10-11 · 订正：5 个 P3 运维小件核实已在 723db4d 全部交付
 
 - **应用户要求逐项源码复核四维评估中的「5 个 P3 低频小件」，全部已在 `723db4d` 交付，无一真缺**：①备份互斥租约（`worker/notesBackup.ts:330-444`，15 分钟 TTL + renewLease + token 条件删除）；②欢迎笔记（⌘K 命令 + 空状态按钮，`NotesPage.tsx:3350/4631`）；③服务端图片尺寸（`worker/imageSize.ts`，png/jpeg/gif/webp 与 inkstone 同范围，AVIF 两侧均不解析）；④附件删除重试队列（gc 记账 + `retryAttachmentDeletions`，`cron.ts:451` 已接线）；⑤Obsidian 导入三级回退（相对路径→解码路径→全局同名唯一匹配带歧义守卫，`NotesPage.tsx:3176`）。

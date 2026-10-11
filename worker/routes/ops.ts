@@ -36,6 +36,20 @@ export async function handleOpsRoutes(ctx: RouteCtx): Promise<Response | null> {
         return Response.json({ success: true, log, hasMore: log.length === limit });
     }
 
+    // 运维统计看板聚合（仅 owner）：内容计数 / 近 30 天审计活跃 / 分享浏览 Top / 链接健康。
+    if (path === "stats" && method === "GET") {
+        const uid = api.getCurrentUserId();
+        const me = uid !== null ? await api.getUserById(uid) : null;
+        if (!me || me.role !== "owner") {
+            return Response.json(
+                { success: false, message: "仅站点所有者可以查看统计看板" },
+                { status: 403 }
+            );
+        }
+        const stats = await api.getOpsStats();
+        return Response.json({ success: true, stats });
+    }
+
     // 前端错误上报的聚合视图（仅 owner）。
     // 上报本身是公开接口（崩在登录页的错误也要能报上来），所以「看」必须收口：
     // 聚合结果里带着页面路径与错误信息，不该让随便哪个账号都能翻。

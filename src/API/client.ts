@@ -66,6 +66,7 @@ import type {
     ExportResponse,
     GroupListResponse,
     GroupOrdersResponse,
+    OpsStatsResponse,
     RecoveryStatusResponse,
     RecycleListResponse,
     RecyclePurgeBatchResponse,
@@ -1241,6 +1242,11 @@ export class NavigationClient {
         const params = new URLSearchParams();
         params.set("limit", String(limit));
         return this.request<ClientErrorsResponse>(`client-errors?${params.toString()}`);
+    }
+
+    /** 运维统计看板聚合（仅 owner）：内容计数 / 近 30 天审计活跃 / 分享浏览 Top / 链接健康。 */
+    async getOpsStats(): Promise<OpsStatsResponse> {
+        return this.request<OpsStatsResponse>("stats");
     }
 
     // ============ 回收站 ============

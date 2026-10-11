@@ -22,6 +22,7 @@ import type {
     WebDavFile,
     WebDavResult,
 } from "./http";
+import type { OpsStats } from "./methods/audit";
 import type { SiteMetaSuggestion, TagSuggestion } from "../utils/aiMeta";
 
 /** 只回 success 的那一类端点（批量写 / 删除 / 清空） */
@@ -120,6 +121,12 @@ export interface AuditLogResponse {
         created_at: string;
     }>;
     hasMore: boolean;
+}
+
+/** GET stats（owner 只读，运维统计看板聚合） */
+export interface OpsStatsResponse {
+    success: boolean;
+    stats: OpsStats;
 }
 
 /** GET client-errors（owner 只读，前端报错的聚合视图） */

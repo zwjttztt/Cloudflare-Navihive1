@@ -15,6 +15,7 @@ import LogoutIcon from "@mui/icons-material/Logout";
 import ManageAccountsIcon from "@mui/icons-material/ManageAccounts";
 import RestoreFromTrashIcon from "@mui/icons-material/RestoreFromTrash";
 import HistoryIcon from "@mui/icons-material/History";
+import QueryStatsIcon from "@mui/icons-material/QueryStats";
 import AutoAwesomeIcon from "@mui/icons-material/AutoAwesome";
 import KeyboardIcon from "@mui/icons-material/Keyboard";
 
@@ -39,6 +40,8 @@ export interface MoreMenuProps {
     onOpenRecycle: () => void;
     /** 打开审计日志。仅站点所有者可用：不是所有者时整个入口不出现 */
     onOpenAudit: () => void;
+    /** 打开统计看板。同样仅站点所有者可用（后端同一把 403 守卫） */
+    onOpenStats: () => void;
     /** 当前登录者是否为站点所有者（决定「审计日志」入口是否出现） */
     isSiteOwner: boolean;
     /** 打开快捷键说明表（按 ? 也能开，菜单里补一个是为了让新用户与手机用户找得到） */
@@ -59,6 +62,7 @@ export default function MoreMenu({
     onLogout,
     onOpenRecycle,
     onOpenAudit,
+    onOpenStats,
     onOpenAccount,
     onOpenAiAssistant,
     isSiteOwner,
@@ -136,6 +140,20 @@ export default function MoreMenu({
                 </ListItemIcon>
                 <ListItemText>回收站</ListItemText>
             </MenuItem>
+            {/* 统计看板与审计日志同一把守卫：只给站点所有者看，后端同样会挡 */}
+            {isSiteOwner && (
+                <MenuItem
+                    onClick={() => {
+                        onClose();
+                        onOpenStats();
+                    }}
+                >
+                    <ListItemIcon>
+                        <QueryStatsIcon fontSize='small' />
+                    </ListItemIcon>
+                    <ListItemText>统计看板</ListItemText>
+                </MenuItem>
+            )}
             {/* 审计日志只给站点所有者看：后端同样会挡（非 owner 一律 403），
                 这里连入口都不显示，免得点进去只看到一句报错 */}
             {isSiteOwner && (
