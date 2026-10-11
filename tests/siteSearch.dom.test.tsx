@@ -318,7 +318,9 @@ test("星标 / 失效筛选是叠在搜索结果之上的，不是替代", async
     const log: Log = { history: [], opened: [] };
     mount(
         <Harness
-            params={baseParams({ starred: [10], deadLinks: { "https://GitHub.com": 1 } })}
+            // ⚠️ deadLinks 的键必须是归一化后的形态：linkHealth 写入时就归一过
+            // （去掉 #hash、host 转小写），这里跟着用小写，否则模拟不出真实数据形状
+            params={baseParams({ starred: [10], deadLinks: { "https://github.com": 1 } })}
             log={log}
             initial={initial}
         />

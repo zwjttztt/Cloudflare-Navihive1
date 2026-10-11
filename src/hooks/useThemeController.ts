@@ -9,10 +9,35 @@ import type { ThemeMode } from "../components/ThemeToggle";
  *
  * accent 由 App 计算后传入：只允许合法的 #rgb / #rrggbb，避免脏数据把主题搞坏。
  */
+/**
+ * 读 / 写 localStorage 的安全包装。
+ *
+ * 为什么连 get 都要包：这段代码跑在 **useState 的初始化函数里**，也就是首次渲染的同步
+ * 路径上。浏览器在「阻止本站 Cookie / 站点数据」、Safari 无痕模式、以及部分嵌入式
+ * WebView 里，`localStorage` 这个属性存在但**一访问就抛 SecurityError** —— 抛在渲染期
+ * 就是整页白屏，连错误边界都只是在事后擦屁股。这里吞掉异常退化成默认值，主题最多是
+ * 回到「跟随系统」，比白屏划算得多。
+ */
+function safeGet(key: string): string | null {
+    try {
+        return localStorage.getItem(key);
+    } catch {
+        return null;
+    }
+}
+
+function safeSet(key: string, value: string): void {
+    try {
+        localStorage.setItem(key, value);
+    } catch {
+        // 隐私模式 / 配额满：忽略，本次会话内状态仍然生效
+    }
+}
+
 export function useThemeController(accent: string) {
     // 主题模式状态（默认跟随系统；老用户存过的 light/dark 依然兼容）
     const [themeMode, setThemeMode] = useState<ThemeMode>(() => {
-        const saved = localStorage.getItem("theme");
+        const saved = safeGet("theme");
         return saved === "light" || saved === "dark" || saved === "system" ? saved : "system";
     });
     // 系统当前的深浅偏好
@@ -41,7 +66,7 @@ export function useThemeController(accent: string) {
                     ? "light"
                     : "dark";
         setThemeMode(next);
-        localStorage.setItem("theme", next);
+        safeSet("theme", next);
     };
 
     // 创建 Material UI 主题（放在 configs 之后，才能读到自定义主色）

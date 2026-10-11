@@ -6,6 +6,7 @@
 // 别在这个文件里 new NavigationAPI，也别在模块顶层读它的状态。
 
 import type { NavigationAPI } from "../http";
+import { deriveDeadLinks } from "../../utils/linkKey";
 
 /** 前端错误上报按「来源 + 错误信息」聚合后的一组 */
 export interface ClientErrorGroup {
@@ -320,7 +321,10 @@ export const auditImpl: AuditApi = {
                         white?: string[];
                         suspect?: Record<string, number>;
                     };
-                    const dead = snap.dead ?? {};
+                    // ⚠️ 必须走与前端卡片**同一套**推导（deriveDeadLinks）：
+                    // 光数 dead 表的行数会把「之后又探测成功」和「用户标过可访问」的
+                    // 链接也算成失效，看板上的数字就和卡片上的标记对不上。
+                    const dead = deriveDeadLinks(snap.dead ?? {}, snap.probe ?? {}, snap.white ?? []);
                     const deadLatest = Object.entries(dead)
                         .map(([url, at]) => ({ url, at: Number(at) }))
                         .sort((a, b) => b.at - a.at)

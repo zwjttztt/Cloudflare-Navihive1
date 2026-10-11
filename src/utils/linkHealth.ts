@@ -60,6 +60,17 @@ const hostOf = (url: string) => {
     }
 };
 
+/**
+ * 为什么要有键归一化：白名单与「失效 / 探测成功」两张表都是按 URL 字符串当键的。
+ * 用户标了「可访问」之后改一下 URL（补个尾斜杠、带个锚点），精确匹配就失效了 ——
+ * 白名单还在，但这个链接又被当成新链接重新探测一遍，甚至重新贴「失效」。
+ *
+ * 实现放在 ./url（无 DOM 依赖），这样 worker 侧的死链巡检能共用同一套口径；
+ * 这里再转出一次，调用方仍只需认 linkHealth 这一个入口。
+ */
+import { deriveDeadLinks, normalizeKey } from "./linkKey";
+export { deriveDeadLinks, normalizeKey };
+
 const readNumberMap = (key: string): Record<string, number> => {
     try {
         const raw = localStorage.getItem(key);
@@ -67,7 +78,11 @@ const readNumberMap = (key: string): Record<string, number> => {
         if (!parsed || typeof parsed !== "object") return {};
         const clean: Record<string, number> = {};
         for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
-            if (typeof v === "number") clean[k] = v;
+            if (typeof v !== "number") continue;
+            const nk = normalizeKey(k);
+            if (!nk) continue;
+            // 老数据里可能同一个链接存成「带尾斜杠 / 带锚点」两条，取较新的那条
+            if ((clean[nk] ?? 0) < v) clean[nk] = v;
         }
         return clean;
     } catch {
@@ -85,18 +100,7 @@ const writeJson = (key: string, value: unknown) => {
 
 /** 从「最后一次成功 / 最后一次失败」两份时间戳推导出当前失效清单 */
 function computeDead(): DeadLinks {
-    const dead = readNumberMap(KEY);
-    const probe = readNumberMap(PROBE_KEY);
-    const white = new Set(readWhitelist());
-
-    const out: DeadLinks = {};
-    for (const [url, ts] of Object.entries(dead)) {
-        // 用户手动纠偏过的、或之后又探测成功的，都不算失效
-        if (white.has(url)) continue;
-        if ((probe[url] ?? 0) >= ts) continue;
-        out[url] = ts;
-    }
-    return out;
+    return deriveDeadLinks(readNumberMap(KEY), readProbeTimes(), readWhitelist());
 }
 
 export function readDeadLinks(): DeadLinks {
@@ -108,19 +112,20 @@ export function readProbeTimes(): Record<string, number> {
     return readNumberMap(PROBE_KEY);
 }
 
-/** 用户手动标记「能访问」的链接 */
+/** 用户手动标记「能访问」的链接（已归一化去重） */
 export function readWhitelist(): string[] {
     try {
         const raw = localStorage.getItem(WHITELIST_KEY);
         const parsed = raw ? JSON.parse(raw) : null;
-        return Array.isArray(parsed) ? parsed.filter(v => typeof v === "string") : [];
+        const list = Array.isArray(parsed) ? parsed.filter(v => typeof v === "string") : [];
+        return [...new Set(list.map(normalizeKey).filter(Boolean))];
     } catch {
         return [];
     }
 }
 
 function writeWhitelist(list: string[]) {
-    writeJson(WHITELIST_KEY, [...new Set(list)]);
+    writeJson(WHITELIST_KEY, [...new Set(list.map(normalizeKey).filter(Boolean))]);
 }
 
 function writeDeadLinks(map: DeadLinks) {
@@ -201,10 +206,15 @@ export function mergeLinkHealth(snapshot: LinkHealthSnapshot | null | undefined)
 
     const mergeMap = (key: string, incoming: Record<string, number> | undefined) => {
         if (!incoming || typeof incoming !== "object") return;
-        const local = readNumberMap(key);
+        const local = readNumberMap(key); // 读的时候顺带归一化过一遍
         let changed = false;
-        for (const [url, ts] of Object.entries(incoming)) {
+        for (const [rawUrl, ts] of Object.entries(incoming)) {
             if (typeof ts !== "number") continue;
+            // 入站键也要归一化：老版本客户端存的是原始 URL（带 #hash / 尾斜杠 / 大写
+            // host），不归一化的话它和本机同一条链接会被算成两条，fresh 窗口和
+            // 「失效 vs 探测成功」的推导都对不上，跨设备同步等于白同步。
+            const url = normalizeKey(rawUrl);
+            if (!url) continue;
             if ((local[url] ?? 0) < ts) {
                 local[url] = ts;
                 changed = true;
@@ -229,21 +239,22 @@ export function mergeLinkHealth(snapshot: LinkHealthSnapshot | null | undefined)
 
 /** 标记一个链接失效（值为失效时间戳）；alive=true 时清除标记并记录本次探测成功 */
 export function markLink(url: string, alive: boolean): DeadLinks {
+    const key = normalizeKey(url);
     const map = readNumberMap(KEY);
     if (alive) {
-        delete map[url];
+        delete map[key];
         const probes = readProbeTimes();
-        probes[url] = Date.now();
+        probes[key] = Date.now();
         writeProbeTimes(probes);
         // 探测成功过，之前那次「疑似」就不作数了
         const suspects = readSuspectTimes();
-        delete suspects[url];
+        delete suspects[key];
         writeSuspectTimes(suspects);
     } else {
         // 人工标记失效：用户的判断比探测可靠，不需要凑够两次
-        map[url] = Date.now();
+        map[key] = Date.now();
         const suspects = readSuspectTimes();
-        delete suspects[url];
+        delete suspects[key];
         writeSuspectTimes(suspects);
     }
     writeDeadLinks(map);
@@ -329,9 +340,39 @@ export function clearDeadLinks(): DeadLinks {
  */
 export function markLinkAlive(url: string): DeadLinks {
     if (!url) return readDeadLinks();
+    const key = normalizeKey(url);
     const list = readWhitelist();
-    if (!list.includes(url)) writeWhitelist([...list, url]);
+    if (!list.includes(key)) writeWhitelist([...list, key]);
     return markLink(url, true);
+}
+
+/**
+ * 撤销「标记为可访问」：把链接移出白名单，重新纳入批量检测。
+ *
+ * 为什么还要顺手清掉 probe / suspect 两张表的时间戳：白名单豁免只看 white，
+ * 但批量检测还有第二道 fresh 窗口（近期探测成功就跳过）。刚标过「可访问」的链接
+ * probe 时间戳必然是新的，不清掉的话点了「重新检测」会被 fresh 窗口直接跳过 ——
+ * 界面上就是「点了没反应」，比不撤销更让人困惑。清掉后本轮就能真探一次。
+ */
+export function unmarkLinkAlive(url: string): DeadLinks {
+    if (!url) return readDeadLinks();
+    const key = normalizeKey(url);
+    const list = readWhitelist();
+    if (list.includes(key)) writeWhitelist(list.filter(v => v !== key));
+    const probes = readProbeTimes();
+    delete probes[key];
+    writeProbeTimes(probes);
+    const suspects = readSuspectTimes();
+    delete suspects[key];
+    writeSuspectTimes(suspects);
+    emitChange();
+    return computeDead();
+}
+
+/** 该链接是否被用户标过「可访问」（白名单里） */
+export function isLinkWhitelisted(url: string): boolean {
+    if (!url) return false;
+    return readWhitelist().includes(normalizeKey(url));
 }
 
 /** 探测结果怎么说给用户听；App 拿到之后补上「只看失效」的快捷入口 */
@@ -381,8 +422,12 @@ export function collectCheckUrls(
     for (const group of groups || []) {
         for (const site of group.sites || []) {
             const url = (site.url || "").trim();
-            if (!url || seen.has(url)) continue;
-            seen.add(url);
+            if (!url) continue;
+            // 按归一化键去重：`a.com` 与 `a.com/#top` 探测的是同一个目标，
+            // 算两个会让「本次检测 N 个链接」的计数虚高。
+            const key = normalizeKey(url);
+            if (seen.has(key)) continue;
+            seen.add(key);
             out.push(url);
         }
     }
@@ -457,12 +502,13 @@ export async function probeLinks(
     const pending: string[] = [];
     let skipped = 0;
     for (const url of uniq) {
+        const key = normalizeKey(url);
         if (
-            whitelist.has(url) ||
-            (skipFreshMs > 0 && probes[url] && now - probes[url] < skipFreshMs)
+            whitelist.has(key) ||
+            (skipFreshMs > 0 && probes[key] && now - probes[key] < skipFreshMs)
         ) {
-            delete rawDead[url];
-            delete rawSuspect[url];
+            delete rawDead[key];
+            delete rawSuspect[key];
             skipped += 1;
             continue;
         }
@@ -499,17 +545,20 @@ export async function probeLinks(
             const nextSuspect = readSuspectTimes();
             const at = Date.now();
             for (const u of group) {
+                // 两张时间戳表都按归一化键存取：否则「带尾斜杠 / 带锚点」的写法
+                // 永远命中不了之前存的成功记录，fresh 窗口形同虚设
+                const key = normalizeKey(u);
                 if (alive) {
-                    delete nextDead[u];
-                    delete nextSuspect[u];
-                    nextProbes[u] = at;
-                } else if (isConfirmedFailure(nextSuspect[u], at)) {
+                    delete nextDead[key];
+                    delete nextSuspect[key];
+                    nextProbes[key] = at;
+                } else if (isConfirmedFailure(nextSuspect[key], at)) {
                     // 窗口内连续第二次失败 —— 这次才真的贴「失效」
-                    delete nextSuspect[u];
-                    nextDead[u] = at;
+                    delete nextSuspect[key];
+                    nextDead[key] = at;
                 } else {
                     // 第一次失败：只记疑似。站点可能只是这次没连上，别急着标灰
-                    nextSuspect[u] = at;
+                    nextSuspect[key] = at;
                     suspectCount += 1;
                 }
             }

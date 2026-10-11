@@ -41,7 +41,7 @@ function findProjectDir(): string {
     throw new Error("找不到项目根目录");
 }
 
-const BUDGET_KB = 236;
+const BUDGET_KB = 238;
 /**
  * 基线：每次真的把首屏压下来之后都要跟着更新，否则这条用例会一路放任包变大。
  * 222.61 KB —— LoginForm 改 lazy 之后（见 git log）
@@ -55,6 +55,12 @@ const BUDGET_KB = 236;
  *              这两个都是**真条件渲染**，不是把常驻组件硬拆出去骗指标。
  *              （同轮还试过把 HeaderGroupsButton 也改 lazy，能再省 0.4 KB，
  *                但它属于分组栏那条线，按要求整块回退了，所以基线是这个数。）
+ *
+ * 预算 236 → 238 —— 2026-10-11 运维统计看板那批改动。涨的是**首屏真要用到的东西**，
+ * 不是忘了拆：看板弹窗本身走 lazy（独立 chunk），服务端的聚合 SQL 也留在 worker 里
+ * （首屏里搜不到 auditDaily / shareTop 等字段），进首屏的只有三处小改 —— 更多菜单里
+ * 多一个入口项与图标、卡片右键多一个「重新检测该站」、链接健康的键归一化与撤销纠偏。
+ * 涨完余量 5.4%，仍留得住「有人往首屏塞东西」这个信号。
  */
 const BASELINE_KB = 218.2;
 

@@ -252,3 +252,34 @@ test("probeUrl：网络错误 → 失效口径", async () => {
     assert.equal(await (await import("../worker/cron")).probeUrl("https://a.com"), false);
     m.restore();
 });
+
+// ---------------- ⑥ 巡检键归一化（与前端口径必须一致） ----------------
+//
+// 为什么钉这条：客户端写进快照的键是 normalizeKey 处理过的（去 #hash / host 小写 /
+// 去根路径尾斜杠），cron 手里的是 sites 表原始 URL。两边口径不一致 → 白名单与
+// fresh 窗口全部命中不上，用户纠偏过的站每周被重探一遍，探测结果还会写进第三个键。
+test("selectSweepCandidates：白名单与探测表按归一化键匹配（原始 URL 写法）", () => {
+    const snap: LinkHealthSnapshot = {
+        v: 1,
+        dead: {},
+        probe: { "https://a.com": NOW - DAY }, // 一天前探过，归一化键
+        white: ["https://b.com"], // 归一化键
+    };
+    // sites 表里是原始写法：大写 host / 根路径尾斜杠 / 锚点
+    const sites = [
+        site(1, "https://A.com"), // 应被 fresh 窗口跳过
+        site(2, "https://B.com/#top"), // 应被白名单跳过
+        site(3, "https://c.com/"), // 没记录 → 入选
+    ];
+    assert.deepEqual(selectSweepCandidates(sites, snap, NOW), ["https://c.com/"]);
+});
+
+test("applyProbeResult：结果写进归一化键，不与前端裂成两条", () => {
+    const snap = emptySnapshot();
+    const next = applyProbeResult(snap, "https://A.com/faq/#top", false, NOW);
+    assert.deepEqual(
+        next.dead,
+        { "https://a.com/faq/": NOW },
+        "巡检写入的键必须和前端同一套口径（非根路径的尾斜杠保留）"
+    );
+});

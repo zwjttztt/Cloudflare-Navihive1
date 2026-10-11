@@ -120,7 +120,15 @@ export default function StatsDashboardDialog({
         client
             .getOpsStats()
             .then(r => {
-                if (alive) setStats(r.stats);
+                if (!alive) return;
+                // ⚠️ 老部署的 worker 还没这条路由时，兜底会回 `{success:true}`，
+                // stats 是 undefined —— 不拦的话界面就是一个空对话框，既没数据也没报错，
+                // 用户只会以为「这功能坏了」。这里显式说清楚。
+                if (r?.stats) {
+                    setStats(r.stats);
+                } else {
+                    setError("当前部署还没有统计接口，请更新服务端后再试");
+                }
             })
             .catch(e => {
                 if (alive) setError(String((e as Error)?.message || e));

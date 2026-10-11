@@ -16,6 +16,16 @@ export const MAX_SNAPSHOT_ENTRIES = 2000;
 /** link.health 快照在 configs 表里的键名 */
 export const HEALTH_KEY = "link.health";
 
+/**
+ * 探测键归一化：与前端 src/utils/linkHealth.ts 共用同一个实现。
+ *
+ * 为什么这里也要归一化：客户端写进快照的键是归一化后的（去掉 #hash、host 小写、
+ * 去掉根路径尾斜杠），而 cron 手里拿的是 sites 表里的原始 URL。两边口径不一致的话，
+ * 白名单豁免和 fresh 窗口会全部命中不上 —— 巡检每周把用户已经纠偏过的站再探一遍，
+ * 探测结果还写进第三个键，快照越滚越大。
+ */
+import { normalizeKey } from "../src/utils/linkKey";
+
 /** 与 src/utils/linkHealth.ts 的 LinkHealthSnapshot 保持同一份结构 */
 export interface LinkHealthSnapshot {
     v: 1;
@@ -78,14 +88,20 @@ export function selectSweepCandidates(
 ): string[] {
     const maxProbes = opts.maxProbes ?? MAX_PROBES_PER_RUN;
     const freshWindowMs = opts.freshWindowMs ?? FRESH_WINDOW_MS;
-    const whitelist = new Set(snapshot.white);
+    // 入站键也归一化：老快照里的白名单可能是原始 URL 写法
+    const whitelist = new Set(snapshot.white.map(normalizeKey).filter(Boolean));
     return sites
         .filter(site => {
-            if (!site.url || whitelist.has(site.url)) return false;
-            const last = snapshot.probe[site.url] ?? snapshot.dead[site.url] ?? 0;
+            if (!site.url) return false;
+            const key = normalizeKey(site.url);
+            if (whitelist.has(key)) return false;
+            const last = snapshot.probe[key] ?? snapshot.dead[key] ?? 0;
             return now - last >= freshWindowMs;
         })
-        .sort((a, b) => (snapshot.probe[a.url] ?? 0) - (snapshot.probe[b.url] ?? 0))
+        .sort((a, b) =>
+            (snapshot.probe[normalizeKey(a.url)] ?? 0) -
+            (snapshot.probe[normalizeKey(b.url)] ?? 0)
+        )
         .slice(0, maxProbes)
         .map(site => site.url);
 }
@@ -100,6 +116,7 @@ export function applyProbeResult(
     alive: boolean,
     now: number
 ): LinkHealthSnapshot {
+    const key = normalizeKey(url);
     const next: LinkHealthSnapshot = {
         v: 1,
         dead: { ...snapshot.dead },
@@ -107,9 +124,9 @@ export function applyProbeResult(
         white: snapshot.white,
     };
     if (alive) {
-        next.probe[url] = now;
+        next.probe[key] = now;
     } else {
-        next.dead[url] = Math.max(next.dead[url] ?? 0, now);
+        next.dead[key] = Math.max(next.dead[key] ?? 0, now);
     }
     return next;
 }

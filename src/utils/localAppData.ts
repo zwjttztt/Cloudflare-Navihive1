@@ -6,18 +6,22 @@
 const NAV_PREFIXES = ["navihive:"];
 
 export function listLocalAppKeys(): string[] {
-    if (typeof localStorage === "undefined") return [];
     const keys: string[] = [];
-    for (let i = 0; i < localStorage.length; i++) {
-        const k = localStorage.key(i);
-        if (!k) continue;
-        if (NAV_PREFIXES.some(p => k.startsWith(p))) keys.push(k);
-    }
-    // 几个没有前缀但也是本机状态的 key
-    // 注意：不再包含 auth_token —— 令牌已改存 httpOnly cookie，旧值会在启动时清掉，
-    // 更不能进错误报告（会被原样上报出去）
-    for (const extra of ["theme", "collapsedGroups", "rememberedLogin"]) {
-        if (localStorage.getItem(extra) !== null && !keys.includes(extra)) keys.push(extra);
+    try {
+        if (typeof localStorage === "undefined") return [];
+        for (let i = 0; i < localStorage.length; i++) {
+            const k = localStorage.key(i);
+            if (!k) continue;
+            if (NAV_PREFIXES.some(p => k.startsWith(p))) keys.push(k);
+        }
+        // 几个没有前缀但也是本机状态的 key
+        // 注意：不再包含 auth_token —— 令牌已改存 httpOnly cookie，旧值会在启动时清掉，
+        // 更不能进错误报告（会被原样上报出去）
+        for (const extra of ["theme", "collapsedGroups", "rememberedLogin"]) {
+            if (localStorage.getItem(extra) !== null && !keys.includes(extra)) keys.push(extra);
+        }
+    } catch {
+        // 存储被禁用时连 length 都会抛；返回已收集到的部分，别让恢复界面一起崩
     }
     return keys;
 }

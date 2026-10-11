@@ -46,7 +46,14 @@ import { useAppConfig } from "../context/appConfigStore";
 import { useNotify } from "../context/NotifyContext";
 import { canOpenSite, safeOpenSite } from "../utils/safeOpen";
 import { useUIPrefsPrefs, useUIPrefsStable } from "../context/uiPrefsStore";
-import { markLinkAlive } from "../utils/linkHealth";
+import {
+    isLinkWhitelisted,
+    markLink,
+    markLinkAlive,
+    normalizeKey,
+    probeLink,
+    unmarkLinkAlive,
+} from "../utils/linkHealth";
 import { useSiteIcon } from "../hooks/useSiteIcon";
 import { useSiteThumb } from "../hooks/useSiteThumb";
 
@@ -280,7 +287,11 @@ const SiteCard = memo(function SiteCard({
     );
 
     // 失效标记（打开时间与点击次数不再展示，避免卡片右侧信息过载）
-    const isDead = Boolean(site.url && deadLinks[site.url]);
+    // ⚠️ 失效 / 探测成功两张表都按归一化 URL 存键，查表必须用同一个键 ——
+    // 否则「带尾斜杠 / 带锚点」的链接永远查不到已有记录。
+    const isDead = Boolean(site.url && deadLinks[normalizeKey(site.url)]);
+    // 用户是否标过「其实能访问」：标过的站批量检测直接跳过，菜单里给一条撤销入口
+    const isWhitelisted = isLinkWhitelisted(site.url ?? "");
 
     const renderTitle = () => (
         <SiteCardTitle
@@ -372,6 +383,27 @@ const SiteCard = memo(function SiteCard({
         if (!site.url) return;
         setDeadLinks(markLinkAlive(site.url));
         notify(`已把「${site.name || site.url}」标记为可访问`, "success");
+    };
+
+    // 反向纠偏：之前标过「可访问」的链接，重新纳入批量检测并立刻探一次。
+    // 只在这条链接**在白名单里**时才出现 —— 平时菜单里不该多一条看了也没用的项。
+    const handleRecheck = async () => {
+        closeMenu();
+        if (!site.url) return;
+        // 先移出白名单并清掉两张时间戳表：不清的话会被「白名单豁免 / fresh 窗口」
+        // 直接跳过，点了等于没点。
+        setDeadLinks(unmarkLinkAlive(site.url));
+        const alive = await probeLink(site.url);
+        // 用 markLink（不是 markLinkAlive）：前者只记探测结果，后者会重新加回白名单 ——
+        // 刚移出来又加回去，等于白撤销一次。探测结果照老规则走：
+        // 第一次失败只记「疑似」，窗口内再失败一次才贴失效。
+        setDeadLinks(markLink(site.url, alive));
+        const label = site.name || site.url;
+        if (alive) {
+            notify(`「${label}」重新检测：可以访问`, "success");
+        } else {
+            notify(`「${label}」重新检测：这次没连上，再检测一次仍失败才会标失效`, "info");
+        }
     };
 
     // 星标按钮：加星后常显（并在分组里置顶），未加星时悬停才浮出。
@@ -904,6 +936,16 @@ const SiteCard = memo(function SiteCard({
                         <LinkOffIcon fontSize='small' />
                     </ListItemIcon>
                     <ListItemText>标记为可访问</ListItemText>
+                </MenuItem>
+            )}
+            {/* 只在「之前标过可访问」时才给撤销入口：标过 = 已免探测，
+                不给出口的话这条链接就永久脱离巡检了。 */}
+            {isWhitelisted && (
+                <MenuItem onClick={handleRecheck}>
+                    <ListItemIcon>
+                        <LinkIcon fontSize='small' />
+                    </ListItemIcon>
+                    <ListItemText>重新检测该站</ListItemText>
                 </MenuItem>
             )}
             <Divider />

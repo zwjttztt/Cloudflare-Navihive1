@@ -12,7 +12,7 @@ import {
 import type { Site } from "../API/http";
 import type { GroupWithSites } from "../types";
 import type { TagMap } from "../utils/tagOps";
-import type { DeadLinks } from "../utils/linkHealth";
+import { normalizeKey, type DeadLinks } from "../utils/linkHealth";
 import type { VisitStat } from "../context/uiPrefsStore";
 import {
     buildFavoritesGroup,
@@ -135,7 +135,10 @@ export function useSiteSearch({
                         !matchesAdvanced(site, group.name, advancedQuery, {
                             tags: own,
                             starred: starred.includes(site.id as number),
-                            dead: Boolean(deadLinks[site.url ?? ""]),
+                            // ⚠️ 键必须与 linkHealth 写入时一致：那边用 normalizeKey 归一化过
+                            // （去 #hash / host 小写 / 去掉根路径的尾斜杠），这里拿原始 url
+                            // 查表会永远查不到，「is:dead」「只看失效」全部失效。
+                            dead: Boolean(deadLinks[normalizeKey(site.url ?? "")]),
                         })
                     ) {
                         return false;
@@ -186,7 +189,8 @@ export function useSiteSearch({
         (site: Site) => {
             if (starFilter && !starred.includes(site.id as number)) return false;
             // 「只看失效」：只留检测出问题的那些链接
-            if (deadOnly && !deadLinks[site.url ?? ""]) return false;
+            // 同上：查表键必须归一化，否则「只看失效」筛选不出任何东西
+            if (deadOnly && !deadLinks[normalizeKey(site.url ?? "")]) return false;
             if (activeTags.length === 0) return true;
             const own = tags[String(site.id)] ?? [];
             return activeTags.every(tag => own.includes(tag));
