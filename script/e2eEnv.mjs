@@ -143,10 +143,17 @@ export function startWrangler({ config, port, persistDir, vars, logName, extraAr
     return { child, stop, stopAndWait, logFile, getLog: () => log };
 }
 
-/** 等 /api/init 有响应（worker 起来 + D1 迁移跑完） */
-export async function waitReady(base, timeoutMs = 120_000) {
+/**
+ * 等 /api/init 有响应（worker 起来 + D1 迁移跑完）。
+ *
+ * 传 proc 是为了**别白等**：workerd 起不来时（Windows 上典型是 0xc0000005
+ * access violation，二进制当场崩）它不会占着端口重试，而是直接退出。
+ * 不看进程状态就得干等满 timeout（默认 120s）才报错，翻日志才发现早崩了。
+ */
+export async function waitReady(base, timeoutMs = 120_000, proc = null) {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
+        if (proc && proc.exitCode !== null) return false;
         try {
             const res = await fetch(`${base}/init`);
             if (res.ok) return true;

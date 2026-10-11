@@ -41,7 +41,12 @@ function findProjectDir(): string {
     throw new Error("找不到项目根目录");
 }
 
-const BUDGET_KB = 238;
+// ⚠️ 2026-10-12 分块策略变更后，首屏真正用到的 MUI 直接并入 index 块
+//（原来它们在被 preload 的 mui 块里）：index 225.8 → 348.29 KB，
+// 而首屏总字节反而从 943.3 降到 495.1 KB。所以这里不是「放宽预算」，
+// 是**单个块不再是首屏字节的代表** —— 判断首屏请看上面那组 raw / gzip，
+// 这条只用来盯「index 块本身有没有被人塞东西」（余量仍按 ≥5% 判）。
+const BUDGET_KB = 370;
 /**
  * 基线：每次真的把首屏压下来之后都要跟着更新，否则这条用例会一路放任包变大。
  * 222.61 KB —— LoginForm 改 lazy 之后（见 git log）
@@ -62,7 +67,7 @@ const BUDGET_KB = 238;
  * 多一个入口项与图标、卡片右键多一个「重新检测该站」、链接健康的键归一化与撤销纠偏。
  * 涨完余量 5.4%，仍留得住「有人往首屏塞东西」这个信号。
  */
-const BASELINE_KB = 218.2;
+const BASELINE_KB = 348.3;
 
 function indexChunk(): { name: string; kb: number } | null {
     const assets = join(findProjectDir(), "dist", "client", "assets");
@@ -98,11 +103,20 @@ function indexChunk(): { name: string; kb: number } | null {
 // ⚠️ 2026-10-11 依赖例行升级（MUI 9.4→9.5 等 minor/patch）后实测 943.3/304.0，
 // 970/315 只剩 2.8%/3.5% 余量 —— 涨价来自依赖升级而非代码进场，预算抬到 995/322
 //（恢复约 5% 余量的设计意图），基线同步更新到本次实测。
-const FIRST_SCREEN_BUDGET_RAW_KB = 995;
-const FIRST_SCREEN_BUDGET_GZIP_KB = 322;
-/** 实测基线（main @ 67e6efd + 依赖例行升级，2026-10-11）：943.3 KB 原始 / 304.0 KB gzip */
-const FIRST_SCREEN_BASELINE_RAW_KB = 943.3;
-const FIRST_SCREEN_BASELINE_GZIP_KB = 304.0;
+//
+// ⚠️ 2026-10-12 分块策略变更：@mui/@emotion/@popperjs/@floating-ui 不再被强制
+// 塞进同一个 "mui" 块（见 vite.config.ts 那条规则与它的实测数据）。原来首屏
+// modulepreload 整个 422.8 KB 的 mui 块，其中约 300 KB 是弹窗 / 抽屉 / 记事本
+// 专用、首屏根本用不到的组件；交回 Rollup 后它们自动落进各自的 lazy 块，
+// 首屏只剩真正要用到的那部分。
+// 实测：943.3 / 304.0 → **843.4 / 282.7**（raw -10.6%、gzip -7.0%）。
+// 预算按新口径下调到 890 / 300 —— 不是放宽，是首屏真的变小了，
+// 「谁再往首屏塞东西」这个信号照样抓得住（余量仍按 ≥3% 判）。
+const FIRST_SCREEN_BUDGET_RAW_KB = 890;
+const FIRST_SCREEN_BUDGET_GZIP_KB = 300;
+/** 实测基线（分块策略变更后，2026-10-12）：843.4 KB 原始 / 282.7 KB gzip */
+const FIRST_SCREEN_BASELINE_RAW_KB = 843.4;
+const FIRST_SCREEN_BASELINE_GZIP_KB = 282.7;
 
 interface FirstScreen {
     files: { name: string; rawKb: number; gzipKb: number }[];
@@ -208,13 +222,18 @@ test("首屏文件清单要能看出少了谁（防止统计口径悄悄失效�
     }
     const names = fs.files.map(f => f.name);
     const has = (re: RegExp) => names.some(n => re.test(n));
-    // 这四条是当前首屏的固定组成（入口 / 三个 vendor 块 / 样式）。
+    // 这几条是当前首屏的固定组成（入口 / 两个 vendor 块 / 样式）。
     // 少任何一条都说明统计口径坏了 —— 而不是「优化掉了」，
     // 因为入口 HTML 必然引用它们。真要减首屏请先改这里的前提。
+    //
+    // ⚠️ 2026-10-12：原来这里还断言 `^mui-.*\.js$`。分块策略变更后 MUI 不再单独
+    // 成块（见 vite.config.ts），那条断言会恒定失败 —— 它不是「首屏缺了东西」，
+    // 而是「统计口径的前提变了」。现在的首屏由 index + react + vendor + 若干
+    // 小的共享块（utils / TextField / Modal …）+ 样式构成。
     assert.ok(has(/^index-.*\.js$/), "没统计到入口 chunk");
     assert.ok(has(/^react-.*\.js$/), "没统计到 react 块");
-    assert.ok(has(/^mui-.*\.js$/), "没统计到 mui 块");
     assert.ok(has(/^vendor-.*\.js$/), "没统计到 vendor 块");
+    assert.ok(names.filter(n => n.endsWith(".js")).length >= 4, "首屏 JS 块数量异常偏少，口径可能坏了");
     assert.ok(has(/\.css$/), "没统计到样式文件");
 });
 

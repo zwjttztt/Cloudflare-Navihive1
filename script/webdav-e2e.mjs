@@ -76,7 +76,7 @@ process.on("exit", () => {
 });
 
 console.log(`wrangler dev 起在 ${BASE}（持久化目录 ${persistDir}）…`);
-if (!(await waitReady(BASE))) {
+if (!(await waitReady(BASE, 120_000, wrangler.child))) {
     console.error("wrangler 一直没就绪，日志见 " + wrangler.logFile);
     await wrangler.stopAndWait();
     await dav.close();

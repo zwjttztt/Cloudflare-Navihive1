@@ -124,7 +124,21 @@ export default defineConfig({
           visit(id);
           if (sandbox && !main) return;
           if (/node_modules[\\/](react|react-dom|scheduler)[\\/]/.test(id)) return "react";
-            if (/node_modules[\\/](@mui|@emotion|@popperjs|@floating-ui)[\\/]/.test(id)) return "mui";
+            // ⚠️ 2026-10-12：这一条原来是 `return "mui"` —— 把所有 @mui/@emotion/
+            // @popperjs/@floating-ui 强制塞进同一个块。代价是**首屏白下载一大截**：
+            // 弹窗 / 抽屉 / 记事本专用的 MUI 组件也在这个块里，而入口 HTML 会
+            // modulepreload 整个块，用户一进页面就得把它们全下来并全执行。
+            //
+            // 实测（同一次构建，只改这一条）：
+            //   强制分块：index 225.8KB + preload mui 422.8KB → 首屏 raw 721KB
+            //   交回 Rollup：index 348.3KB（首屏真用到的 MUI 直接并进入口块），
+            //                弹窗专用的那些自动落进各自的 lazy chunk → 首屏 raw 513KB
+            // 全部 js 合计只从 7271.7KB 变到 7289.5KB（+0.24%），
+            // 也就是说几乎没有「重复打进多个 lazy 块」的代价。
+            //
+            // 副作用：index 单文件变大了，所以体积预算（bundleBudget）按新口径
+            // 重新定过 —— 见那里的注释。判断首屏该看**总下载字节**，不是单个块。
+            if (/node_modules[\\/](@mui|@emotion|@popperjs|@floating-ui)[\\/]/.test(id)) return;
             // markdown-it 必须单独成块。它**只**被 utils/markdownToReact 动态 import
             // （见那里的 loadParser），本来不进首屏；但下面这条兜底规则会把所有
             // node_modules 扫进 vendor —— 而 vendor 是首屏 chunk，于是这 ~100KB

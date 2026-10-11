@@ -105,6 +105,18 @@ jobs:
       - name: 浏览器冒烟
         run: npm run smoke
 
+      # 可访问性审计：触控目标尺寸（WCAG 2.5.8 的 24px）/ 无名控件 / 破图。
+      # 左侧分组栏折叠后的圆点只有 10×10（实测 14×14）就是这么量出来的 ——
+      # 原先脚本在仓库外的 harness/ 下，只能人工实跑，缺陷躺到专项排查才修。
+      # 进 CI 之后每改一次量一次，不会再攒着。
+      - name: 可访问性审计
+        run: npm run audit:a11y
+
+      # 对比度审计：亮 / 暗两态全量扫文本，不达 WCAG AA 即失败。
+      # 主题切换没生效时脚本会直接判红（否则两态测的都是亮色，等于没测暗色态）。
+      - name: 对比度审计
+        run: npm run audit:contrast
+
       - name: 失败时留一份截图/日志
         if: failure()
         uses: actions/upload-artifact@v4

@@ -186,6 +186,8 @@ process.on("exit", () => {
 async function waitReady() {
     const deadline = Date.now() + READY_TIMEOUT_MS;
     while (Date.now() < deadline) {
+        // wrangler 进程已经退了（多半是 workerd 崩了）就别再轮询，直接判失败
+        if (wrangler.exitCode !== null) return false;
         try {
             const res = await fetch(`${BASE}/init`);
             if (res.ok) return true;
@@ -262,6 +264,15 @@ console.log(`wrangler dev 起在 ${BASE}（持久化目录 ${persistDir}）…`)
 const ready = await waitReady();
 if (!ready) {
     console.error("wrangler dev 没能在超时前就绪。日志尾部：\n" + wranglerLog.slice(-2000));
+    if (/access violation|overflowed its stack/.test(wranglerLog)) {
+        console.error(
+            "\n这是 workerd 二进制崩溃（0xc0000005），与项目配置无关：最小 worker 也一样崩，" +
+                "纯 workerd.exe 直接 serve 也崩。\n" +
+                "上游已知问题 https://github.com/cloudflare/workerd/issues/4668（仍 open），" +
+                "重装 VC++ Redist / 清代理 / 关杀软均无效。\n" +
+                "结论：这台 Windows 跑不了后端端到端，e2e / e2e:cron / e2e:webdav 只能由 CI（ubuntu）覆盖。"
+        );
+    }
     await stopAndWait();
     process.exit(1);
 }

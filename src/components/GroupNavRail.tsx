@@ -177,20 +177,33 @@ export default function GroupNavRail({
                                 data-active={active ? "true" : "false"}
                                 aria-label={group.name}
                                 sx={{
-                                    width: 10,
-                                    height: 10,
+                                    // 触控目标 24×24（WCAG 2.5.8 最小尺寸），可见圆点仍是 10px：
+                                    // 圆点画在 ::before 上、按钮本身透明，尺寸达标而视觉不变。
+                                    // 相邻命中区中心距 = 24 + 容器 gap 4 = 28px > 24，不会互相压住
+                                    // （原来按钮就是 10×10，触屏上很难点中）。
+                                    display: "flex",
+                                    alignItems: "center",
+                                    justifyContent: "center",
+                                    width: 24,
+                                    height: 24,
                                     p: 0,
-                                    my: 0.25,
+                                    flexShrink: 0,
                                     borderRadius: "50%",
                                     border: "1px solid transparent",
+                                    bgcolor: "transparent",
                                     cursor: "pointer",
-                                    flexShrink: 0,
-                                    // 同上：别用 all，否则焦点环会跟着 outline-offset 一起补间
-                                    transition: "opacity .18s ease, transform .18s ease, background-color .18s ease",
-                                    transform: active ? "scale(1.35)" : "scale(1)",
-                                    bgcolor: tone,
-                                    opacity: active ? 1 : 0.45,
-                                    "&:hover": {
+                                    // 圆点自身的缩放/变色动效见 index.css 的 .nav-rail-dot::before
+                                    // （别用 transition: all，否则焦点环会跟着 outline-offset 一起补间）
+                                    "&::before": {
+                                        content: '""',
+                                        width: 10,
+                                        height: 10,
+                                        borderRadius: "50%",
+                                        bgcolor: tone,
+                                        opacity: active ? 1 : 0.45,
+                                        transform: active ? "scale(1.35)" : "scale(1)",
+                                    },
+                                    "&:hover::before": {
                                         opacity: 1,
                                         transform: "scale(1.35)",
                                     },
