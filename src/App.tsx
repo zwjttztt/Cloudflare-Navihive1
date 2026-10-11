@@ -1302,10 +1302,9 @@ function App() {
 
             {/* 顶部滚动进度条：固定贴在最上方，纯装饰 */}
             <ScrollProgress />
-            {/* 断网 / 恢复的浮动提示：断网或有失败项时才挂上（块按需下载） */}
-            {showOfflineBanner && (
-                <ChunkBoundary>
-            {/* 分组分享（2026-10-11 阶段④）：创建/更新/撤销/复制链接 */}
+            {/* 分组分享（2026-10-11 阶段④）：创建/更新/撤销/复制链接。
+                ⚠️ 必须与断网横幅平级——2026-10-11 曾被误嵌进 showOfflineBanner
+                条件内，导致在线时（横幅恒不显示）点「分享分组」永远弹不出对话框。 */}
             {shareGroupId !== null && typeof api.createGroupShare === "function" && (
                 <Suspense fallback={null}>
                     <GroupShareDialog
@@ -1318,7 +1317,9 @@ function App() {
                     />
                 </Suspense>
             )}
-
+            {/* 断网 / 恢复的浮动提示：断网或有失败项时才挂上（块按需下载） */}
+            {showOfflineBanner && (
+                <ChunkBoundary>
                     <OfflineBanner />
                 </ChunkBoundary>
             )}
