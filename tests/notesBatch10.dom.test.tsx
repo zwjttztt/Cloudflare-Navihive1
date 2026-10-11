@@ -418,9 +418,9 @@ test("打字机/阅读位置在设置里有开关，且默认值的取舍说得�
 // #4 分享链接前缀统一 /s/（#2 是响应式断点设计、#5 未复现，不设守卫）
 // ---------------------------------------------------------------------------
 
-test("侧栏分栏：中间那条缝必须真的能拖（onMouseDown + 双击归中 + 比例持久化）", () => {
+test("侧栏分栏：中间那条缝必须真的能拖（onPointerDown + 双击归中 + 比例持久化）", () => {
     const src = readNotesPageForBatch10();
-    // 拖动 handler 本体：与主栏 startSplitDrag 同一套「窗口级 mousemove/mouseup」模式
+    // 拖动 handler 本体：与主栏 startSplitDrag 同一套「窗口级 pointermove/pointerup」模式
     assert.ok(src.includes("const startSideSplitDrag"), "要有 startSideSplitDrag");
     assert.ok(
         src.includes('SIDE_SPLIT_KEY = "notes.sideSplitRatio"'),
@@ -429,8 +429,8 @@ test("侧栏分栏：中间那条缝必须真的能拖（onMouseDown + 双击归
     // 分隔条必须挂上拖动与双击归中 —— 之前只有 role=separator 没有任何 handler，
     // 看着像缝、实际拖不动（2026-10-08 用户报）
     assert.ok(
-        src.includes("onMouseDown={startSideSplitDrag}"),
-        "侧栏分隔条必须挂 onMouseDown"
+        src.includes("onPointerDown={startSideSplitDrag}"),
+        "侧栏分隔条必须挂 onPointerDown"
     );
     assert.ok(src.includes("onDoubleClick"), "双击要回到对半");
     assert.ok(
@@ -446,7 +446,7 @@ test("侧栏分栏：中间那条缝必须真的能拖（onMouseDown + 双击归
         src.includes("sideSplitBoxRef"),
         "拖动量的是分栏容器（ref），不是瞎猜的坐标基准"
     );
-    // 持久化：mouseup 时写回
+    // 持久化：pointerup 时写回
     assert.ok(
         src.includes("localStorage.setItem(SIDE_SPLIT_KEY"),
         "拖完要把比例写回 localStorage"

@@ -6,6 +6,12 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。---
 
+## 2026-10-11 · 触屏支持：面板/列宽分隔条改用 Pointer Events
+
+- **触屏修复**：笔记页四处分隔条（左栏导航列/列表列、主栏↔侧栏比例、编辑器源码↔预览、侧栏源码↔预览）此前挂在 `mousedown/mousemove/mouseup` 上——触屏不会派发等价的连续鼠标事件，等于触屏用户**根本拖不动**分隔条。统一改成 Pointer Events（`pointerdown/pointermove/pointerup`），鼠标/触屏/笔同源，拖拽行为不变；拖动手柄已带 `touch-action:none`（之前主栏两处已加，ColResizeHandle 本就有），触屏手势不再被滚动吃掉。dnd-kit 的站点/分组卡片排序本就配了 PointerSensor+TouchSensor，无需改。
+- **剩余待办复核结论**：①「生产分享创建/撤销实测」——受硬规则限制（不验证 CF 部署、缺线上凭据），改走本地等价保障：分享创建/轮换/过期/撤销/口令访问/防刷计数已由 `noteFolderTagRealSql` + `groupSharesRealSql` + `shareAssetRoutes` 真库/路由用例覆盖，无需线上手动点测。②「8 项不做清单」维持不动。③密码管理器扩展（#88）按用户要求本批不做。
+- **校验**：见本轮检查记录。
+
 ## 2026-10-11 · 浏览次数防刷 + 对比报告滞后信息订正
 
 - **防刷（新增）**：笔记分享与分组分享的「浏览 N 次」此前是**每次成功打开 +1**——F5 一次计一次，脚本刷一晚能刷出几万次，计数失去参考意义。现在用 **HttpOnly cookie 当日戳**去重：首访签发（活到 UTC 换天），同一天同一浏览器的后续打开跳过计数，跨天/清 cookie 自然重计。方法层 `getPublicNote` / `getPublicGroupShare` 增加 `countView` 参数（缺省 true 兼容），去重判定在 worker 路由层做（读 cookie → 传参 → 成功后签戳）。顺带修一处隐患：口令成功签 asset-session cookie 从 `headers.set` 改 `append`，否则会把当日戳覆盖掉。无表无迁移，成本为零；这是尽力而为的防刷（cookie 可清），对展示用计数足够。

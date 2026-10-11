@@ -1161,10 +1161,10 @@ test("分栏是「左栏按比例 + 可拖分隔条」，不是写死的对半",
         source.includes("startSplitDrag"),
         "分隔条要接上拖拽处理"
     );
-    // 拖拽监听必须挂在 window 上：指针移出那条 8px 宽的带子就会丢 mousemove
+    // 拖拽监听必须挂在 window 上：指针移出那条 8px 宽的带子就会丢 pointermove
     assert.ok(
-        source.includes("window.addEventListener(\"mousemove\""),
-        "mousemove/mouseup 要挂在 window 上 —— 只挂分隔条会在拖出边界时卡住"
+        source.includes("window.addEventListener(\"pointermove\""),
+        "pointermove/pointerup 要挂在 window 上 —— 只挂分隔条会在拖出边界时卡住"
     );
 });
 
@@ -2555,7 +2555,7 @@ test("两条分隔条必须是左栏容器的直接子元素（放进去会被�
     // 而那两列是 flex-direction: column → 分隔条被压成 **0 高度**、贴在 x=0，
     // 真实鼠标点不中。
     //
-    // ⚠️ 为什么之前没被抓住：页内 `dispatchEvent(new MouseEvent("mousedown"))`
+    // ⚠️ 为什么之前没被抓住：页内 `dispatchEvent(new MouseEvent("pointerdown"))`
     // **不做浏览器的命中测试**，直接把事件塞给那个元素 —— 单测和合成事件探针都绿，
     // 真机却拖不动。**依赖命中测试的交互，单测里只能验 DOM 结构，不能验事件。**
     //
@@ -2624,12 +2624,12 @@ test("拖动分隔条后宽度落盘，并且夹在上下界之间", async () =>
         assert.ok(sep, `找不到分隔条：${label}`);
         const opts = { bubbles: true, clientX: 100, clientY: 100 };
         await act(async () => {
-            sep.dispatchEvent(new MouseEvent("mousedown", opts));
+            sep.dispatchEvent(new MouseEvent("pointerdown", opts));
             window.dispatchEvent(
-                new MouseEvent("mousemove", { ...opts, clientX: 100 + dx })
+                new MouseEvent("pointermove", { ...opts, clientX: 100 + dx })
             );
             window.dispatchEvent(
-                new MouseEvent("mouseup", { ...opts, clientX: 100 + dx })
+                new MouseEvent("pointerup", { ...opts, clientX: 100 + dx })
             );
         });
     };
@@ -2654,16 +2654,16 @@ test("拖动分隔条后宽度落盘，并且夹在上下界之间", async () =>
     assert.ok(max <= 300, `导航列最大宽度应 ≤300，实际 ${max}`);
 });
 
-test("拖动不能让选区被浏览器抢走（mousedown 要 preventDefault）", () => {
+test("拖动不能让选区被浏览器抢走（pointerdown 要 preventDefault）", () => {
     // 导航列那条分隔条在 tablet 档不渲染（inkstone 同款），测它必须先切到 desktop 宽度
     setWide();
     mountPanel([note({ id: 1, title: "甲", content: "a" })]);
     const sep = document.querySelector(
         "[role='separator'][aria-label='拖动调整导航列宽度']"
     ) as HTMLElement;
-    const ev = new MouseEvent("mousedown", { bubbles: true, cancelable: true });
+    const ev = new MouseEvent("pointerdown", { bubbles: true, cancelable: true });
     sep.dispatchEvent(ev);
-    assert.ok(ev.defaultPrevented, "分隔条 mousedown 必须 preventDefault，否则会选中文本");
+    assert.ok(ev.defaultPrevented, "分隔条 pointerdown 必须 preventDefault，否则会选中文本");
 });
 
 test("双击分隔条回到默认宽度", async () => {
@@ -2676,9 +2676,9 @@ test("双击分隔条回到默认宽度", async () => {
         ) as HTMLElement;
     const opts = { bubbles: true, clientX: 100, clientY: 100 };
     await act(async () => {
-        sepOf().dispatchEvent(new MouseEvent("mousedown", opts));
-        window.dispatchEvent(new MouseEvent("mousemove", { ...opts, clientX: 160 }));
-        window.dispatchEvent(new MouseEvent("mouseup", { ...opts, clientX: 160 }));
+        sepOf().dispatchEvent(new MouseEvent("pointerdown", opts));
+        window.dispatchEvent(new MouseEvent("pointermove", { ...opts, clientX: 160 }));
+        window.dispatchEvent(new MouseEvent("pointerup", { ...opts, clientX: 160 }));
     });
     assert.notEqual(localStorage.getItem("notes.navColW"), "128", "先确认拖动过");
     await act(async () => {

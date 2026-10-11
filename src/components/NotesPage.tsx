@@ -1201,13 +1201,13 @@ function useColumnResize() {
     const listRef = useRef(listW);
 
     /** 拖动哪一列。nav 的起点是它的左边缘，list 的起点是「导航列右边缘」。 */
-    const startDrag = useCallback((which: "nav" | "list") => (e: React.MouseEvent) => {
+    const startDrag = useCallback((which: "nav" | "list") => (e: React.PointerEvent) => {
         e.preventDefault();
         const startX = e.clientX;
         const startNav = navRef.current;
         const startList = listRef.current;
 
-        const onMove = (ev: MouseEvent) => {
+        const onMove = (ev: PointerEvent) => {
             const d = ev.clientX - startX;
             if (which === "nav") {
                 // 导航列不能吃掉整个左栏：给列表列留至少 LIST_W_MIN
@@ -1227,15 +1227,15 @@ function useColumnResize() {
             }
         };
         const onUp = () => {
-            window.removeEventListener("mousemove", onMove);
-            window.removeEventListener("mouseup", onUp);
+            window.removeEventListener("pointermove", onMove);
+            window.removeEventListener("pointerup", onUp);
             document.body.style.userSelect = "";
             if (which === "nav") writeColW(NAV_W_KEY, navRef.current);
             else writeColW(LIST_W_KEY, listRef.current);
         };
         document.body.style.userSelect = "none";
-        window.addEventListener("mousemove", onMove);
-        window.addEventListener("mouseup", onUp);
+        window.addEventListener("pointermove", onMove);
+        window.addEventListener("pointerup", onUp);
     }, []);
 
     /** 双击那条缝 = 回默认宽度（与分隔条双击回对半同一套手势） */
@@ -1274,7 +1274,7 @@ function ColResizeHandle({
     ratio,
 }: {
     label: string;
-    onDrag: (e: React.MouseEvent) => void;
+    onDrag: (e: React.PointerEvent) => void;
     onReset: () => void;
     /** 键盘左右微调（比例）。不传就没有方向键支持。 */
     onNudge?: (delta: number) => void;
@@ -1291,7 +1291,7 @@ function ColResizeHandle({
             aria-valuemax={80}
             tabIndex={0}
             title={`${label}（双击回到默认宽度）`}
-            onMouseDown={onDrag}
+            onPointerDown={onDrag}
             onDoubleClick={onReset}
             onKeyDown={e => {
                 if (!onNudge) return;
@@ -1827,7 +1827,7 @@ export default function NotesPage({
     const [paneRatio, setPaneRatio] = useState(() => readPaneRatio());
     const paneRatioRef = useRef(paneRatio);
     const [sideResizing, setSideResizing] = useState(false);
-    const startPaneDrag = useCallback((e: React.MouseEvent) => {
+    const startPaneDrag = useCallback((e: React.PointerEvent) => {
         e.preventDefault();
         const row = paneRowRef.current;
         if (!row) return;
@@ -1835,15 +1835,15 @@ export default function NotesPage({
         const total = rect.width;
         if (total <= 0) return;
         setSideResizing(true);
-        const onMove = (ev: MouseEvent) => {
+        const onMove = (ev: PointerEvent) => {
             const ratio = (ev.clientX - rect.left) / total;
             const next = Math.min(0.8, Math.max(0.2, ratio));
             paneRatioRef.current = next;
             setPaneRatio(next);
         };
         const onUp = () => {
-            window.removeEventListener("mousemove", onMove);
-            window.removeEventListener("mouseup", onUp);
+            window.removeEventListener("pointermove", onMove);
+            window.removeEventListener("pointerup", onUp);
             document.body.style.userSelect = "";
             document.body.style.cursor = "";
             setSideResizing(false);
@@ -1851,8 +1851,8 @@ export default function NotesPage({
         };
         document.body.style.userSelect = "none";
         document.body.style.cursor = "col-resize";
-        window.addEventListener("mousemove", onMove);
-        window.addEventListener("mouseup", onUp);
+        window.addEventListener("pointermove", onMove);
+        window.addEventListener("pointerup", onUp);
     }, []);
     const resetPaneRatio = useCallback(() => {
         paneRatioRef.current = 0.5;
@@ -3695,7 +3695,7 @@ export default function NotesPage({
      * 拖分隔条。监听挂在 **window** 上而不是分隔条自己身上：指针在拖动中移出
      * 那 4px 宽的条就会丢失 mousemove，光靠元素上的事件会「拖到一半卡住」。
      */
-    const startSplitDrag = (e: React.MouseEvent) => {
+    const startSplitDrag = (e: React.PointerEvent) => {
         e.preventDefault();
         const box = splitBoxRef.current;
         if (!box) return;
@@ -3710,7 +3710,7 @@ export default function NotesPage({
         const contentLeft = rect.left + padL;
         const contentWidth = rect.width - padL - padR;
         if (contentWidth <= 0) return;
-        const onMove = (ev: MouseEvent) => {
+        const onMove = (ev: PointerEvent) => {
             const ratio = (ev.clientX - contentLeft) / contentWidth;
             const clamped = Math.min(MAX_RATIO, Math.max(MIN_RATIO, ratio));
             // 拖动中 setState 不会回头改 onUp 那个闭包里的 splitRatio
@@ -3719,8 +3719,8 @@ export default function NotesPage({
             setSplitRatio(clamped);
         };
         const onUp = () => {
-            window.removeEventListener("mousemove", onMove);
-            window.removeEventListener("mouseup", onUp);
+            window.removeEventListener("pointermove", onMove);
+            window.removeEventListener("pointerup", onUp);
             document.body.style.userSelect = "";
             try {
                 // ⚠️⚠️ 这里原来写的是 `String(readSplitRatio())` —— 那是**从 localStorage 读**，
@@ -3734,12 +3734,12 @@ export default function NotesPage({
             }
         };
         document.body.style.userSelect = "none";
-        window.addEventListener("mousemove", onMove);
-        window.addEventListener("mouseup", onUp);
+        window.addEventListener("pointermove", onMove);
+        window.addEventListener("pointerup", onUp);
     };
 
     /** 侧栏「分栏」那条缝的拖动：与主栏 startSplitDrag 同款，只是量的是 sideSplitBoxRef。 */
-    const startSideSplitDrag = (e: React.MouseEvent) => {
+    const startSideSplitDrag = (e: React.PointerEvent) => {
         e.preventDefault();
         const box = sideSplitBoxRef.current;
         if (!box) return;
@@ -3751,15 +3751,15 @@ export default function NotesPage({
         const contentLeft = rect.left + padL;
         const contentWidth = rect.width - padL - padR;
         if (contentWidth <= 0) return;
-        const onMove = (ev: MouseEvent) => {
+        const onMove = (ev: PointerEvent) => {
             const ratio = (ev.clientX - contentLeft) / contentWidth;
             const clamped = Math.min(MAX_RATIO, Math.max(MIN_RATIO, ratio));
             sideSplitRatioRef.current = clamped;
             setSideSplitRatio(clamped);
         };
         const onUp = () => {
-            window.removeEventListener("mousemove", onMove);
-            window.removeEventListener("mouseup", onUp);
+            window.removeEventListener("pointermove", onMove);
+            window.removeEventListener("pointerup", onUp);
             document.body.style.userSelect = "";
             document.body.style.cursor = "";
             try {
@@ -3770,8 +3770,8 @@ export default function NotesPage({
         };
         document.body.style.userSelect = "none";
         document.body.style.cursor = "col-resize";
-        window.addEventListener("mousemove", onMove);
-        window.addEventListener("mouseup", onUp);
+        window.addEventListener("pointermove", onMove);
+        window.addEventListener("pointerup", onUp);
     };
 
     /**
@@ -5488,7 +5488,7 @@ export default function NotesPage({
                                 aria-orientation='vertical'
                                 aria-label='拖动调整源码与预览的比例'
                                 title='拖动调整比例（双击回到对半）'
-                                onMouseDown={startSplitDrag}
+                                onPointerDown={startSplitDrag}
                                 onDoubleClick={() => {
                                     setSplitRatio(0.5);
                                     // 同步 ref：不然「双击归中 → 立刻再拖 → 松手」这一串里，
@@ -6046,7 +6046,7 @@ export default function NotesPage({
                             aria-orientation='vertical'
                             aria-label='拖动调整侧栏源码与预览的比例'
                             title='拖动调整比例（双击回到对半）'
-                            onMouseDown={startSideSplitDrag}
+                            onPointerDown={startSideSplitDrag}
                             onDoubleClick={() => {
                                 setSideSplitRatio(0.5);
                                 sideSplitRatioRef.current = 0.5;
