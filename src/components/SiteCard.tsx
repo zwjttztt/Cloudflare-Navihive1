@@ -4,6 +4,8 @@ import { Site } from "../API/http";
 // 卡片设置弹窗按需加载：只有点开某一张卡片时才需要它
 const SiteSettingsModal = lazy(() => import("./SiteSettingsModal"));
 import SiteCardAvatar from "./SiteCardAvatar";
+import { toneForName } from "../utils/siteAvatar";
+import { copyToClipboard as copyText } from "../utils/clipboard";
 import { SiteCardTitle, SiteCardDescription } from "./SiteCardText";
 import Highlighted from "./Highlighted";
 import { useSortable } from "@dnd-kit/sortable";
@@ -61,57 +63,6 @@ interface SiteCardProps {
     selected?: boolean;
     onToggleSelect?: (siteId: number) => void;
 }
-
-// 图标取不到时，按站点名哈希出一个稳定的配色，避免所有占位块长得一模一样
-const AVATAR_TONES = [
-    { strong: "#1565C0", soft: "#90CAF9" },
-    { strong: "#6A1B9A", soft: "#CE93D8" },
-    { strong: "#00695C", soft: "#80CBC4" },
-    { strong: "#C62828", soft: "#EF9A9A" },
-    { strong: "#EF6C00", soft: "#FFCC80" },
-    { strong: "#2E7D32", soft: "#A5D6A7" },
-    { strong: "#4527A0", soft: "#B39DDB" },
-    { strong: "#00838F", soft: "#80DEEA" },
-];
-
-const toneForName = (name: string) => {
-    const str = name || "?";
-    let hash = 0;
-    for (let i = 0; i < str.length; i++) {
-        hash = (hash * 31 + str.charCodeAt(i)) | 0;
-    }
-    return AVATAR_TONES[Math.abs(hash) % AVATAR_TONES.length];
-};
-
-/** 复制文本：优先用异步剪贴板 API，失败或无权限时降级到选中 + execCommand */
-const copyText = async (text: string): Promise<boolean> => {
-    if (!text) return false;
-
-    try {
-        if (navigator.clipboard && window.isSecureContext) {
-            await navigator.clipboard.writeText(text);
-            return true;
-        }
-    } catch {
-        // 被浏览器策略拒绝时继续走降级方案
-    }
-
-    try {
-        const ta = document.createElement("textarea");
-        ta.value = text;
-        ta.setAttribute("readonly", "");
-        ta.style.position = "fixed";
-        ta.style.top = "-1000px";
-        ta.style.opacity = "0";
-        document.body.appendChild(ta);
-        ta.select();
-        const ok = document.execCommand("copy");
-        document.body.removeChild(ta);
-        return ok;
-    } catch {
-        return false;
-    }
-};
 
 // 使用memo包装组件以减少不必要的重渲染
 const SiteCard = memo(function SiteCard({

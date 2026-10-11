@@ -42,6 +42,7 @@ import {
     writeCollapsedGroupIds,
 } from "../utils/collapse";
 import { moveSiteByStep } from "../utils/sortable";
+import { enqueueMountTask } from "../utils/mountQueue";
 
 /** 卡片视图的列宽：普通渲染 / 单组编辑 / 跨组排序三种分支必须用同一个值，
  *  否则一点「编辑排序」列数就变了（900px 段 3→2 列、1536px 段 5→4 列），整屏卡片会跳一下。 */
@@ -75,29 +76,6 @@ interface GroupCardProps {
 
 // 卡片多的分组先渲染一批，滚到底再补，避免一次铺几百张卡拖慢首屏
 const PAGE_SIZE = 40;
-
-// ── 挂载调度：把「同一帧里触发的一批挂载/追加」摊到每帧一个 ──
-// 快速滚动时可能同时有多个分组跨进 600px 预挂载圈、或一个分组的哨兵连续
-// 触发追加，若立刻 setState，每组首次渲染的几十张卡会叠成上百毫秒的长任务
-// （perf-probe 实测 300 卡滚动 3s 内 14 个长任务、最长 176ms）。
-// 队列每帧只放行一个，渲染突发被摊平；挂载本身不丢，只是错开几帧。
-const mountTaskQueue: Array<() => void> = [];
-let mountQueueScheduled = false;
-function enqueueMountTask(task: () => void) {
-    mountTaskQueue.push(task);
-    if (mountQueueScheduled) return;
-    mountQueueScheduled = true;
-    const drain = () => {
-        const next = mountTaskQueue.shift();
-        if (next) next();
-        if (mountTaskQueue.length > 0) {
-            requestAnimationFrame(drain);
-        } else {
-            mountQueueScheduled = false;
-        }
-    };
-    requestAnimationFrame(drain);
-}
 
 const GroupCard: React.FC<GroupCardProps> = ({
     group,

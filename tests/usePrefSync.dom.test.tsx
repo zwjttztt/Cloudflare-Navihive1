@@ -233,7 +233,7 @@ test("上传失败要静默：不能把同步的网络问题抛给用户", async
         cleanup();
     });
     installTimers();
-    const { api } = makeApi(() => Promise.reject(new Error("500")));
+    const { api, calls } = makeApi(() => Promise.reject(new Error("500")));
     // 只要这里不抛异常就是对的（hook 内部 .catch(() => {})）
     render({
         api,
@@ -246,7 +246,8 @@ test("上传失败要静默：不能把同步的网络问题抛给用户", async
         await Promise.resolve();
     });
     await flushTimers();
-    assert.ok(true, "失败不应冒泡成未捕获异常");
+    assert.ok(calls.length >= 1, "至少一次上传真的尝试过（失败路径被走到，不是静默跳过）");
+    assert.equal(calls.filter(c => c.value === "").length, 0, "失败后不应把本机偏好清空（宁可留着下次再传）");
 });
 
 test("分组折叠：按开关上传，且内容不变不重复写", async t => {

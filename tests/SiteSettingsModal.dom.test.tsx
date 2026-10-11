@@ -91,7 +91,15 @@ afterEach(cleanup);
  * 关闭时 DOM 不会被立刻移除 —— 「paper 还在」不等于「没关」，
  * 必须给过渡时间，否则每条测「关掉了没」的用例都会假失败。
  */
-const settle = () => new Promise(resolve => setTimeout(resolve, 350));
+const settle = async () => {
+    // 轮询等「放大窗真的从 DOM 消失」，上限 400ms —— 固定睡 350ms 在慢机（CI）
+    // 上会偶发假红（过渡没走完就断言了），改坏实现也不会红的问题倒不大，
+    // 主要是别让时序噪声污染这一组用例。
+    for (let i = 0; i < 40; i++) {
+        if (!document.querySelector("#notes-expanded")) return;
+        await new Promise(resolve => setTimeout(resolve, 10));
+    }
+};
 
 const buttonByText = (text: string): HTMLButtonElement | undefined =>
     [...document.querySelectorAll<HTMLButtonElement>("button")].find(

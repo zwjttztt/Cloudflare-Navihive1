@@ -127,10 +127,11 @@ test("同一个图标地址只建一个 objectURL，重复借还不会提前撤�
 });
 
 test("没借过就还 / 多还几次都不该抛错（组件卸载顺序不保证）", () => {
-    installObjectUrlSpy();
+    const spy = installObjectUrlSpy();
     releaseIconObjectUrl("https://icon.test/never-borrowed.png");
     releaseIconObjectUrl("https://icon.test/never-borrowed.png");
-    assert.ok(true);
+    assert.equal(spy.created.length, 0, "还回没借过的 URL 不该触发新的 objectURL 创建");
+    assert.equal(spy.revoked.length, 0, "没借过就没有引用计数，不该 revoke 任何 URL");
 });
 
 test("空闲的 objectURL 攒太多会按最久没用的撤掉（不会无限涨）", () => {
