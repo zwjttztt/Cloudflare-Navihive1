@@ -5,6 +5,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
     fuzzyMatch,
+    groupBySection,
     pushRecentCommand,
     rankCommands,
     readRecentCommands,
@@ -100,4 +101,43 @@ test("fuzzyMatch：顺序对得上才算，空关键词一律命中", () => {
     assert.equal(fuzzyMatch("GitHub", "hg"), false, "字符顺序反了不算");
     assert.equal(fuzzyMatch("GitHub", ""), true);
     assert.equal(fuzzyMatch("", "a"), false);
+});
+
+// ============ 任务 #30：拼音层与分组展示 ============
+
+test("打分：拼音层命中得 30 分，排在关键词(40)后、跳字(20)前；未注入则不命中", () => {
+    const pinyin = (text: string, key: string) => text === "设置" && key === "sz";
+    assert.equal(scoreCommand(cmd("1", "设置"), "sz", { pinyin }), 30);
+    assert.equal(scoreCommand(cmd("1", "设置"), "sz"), -1, "词典没就位时不能靠拼音命中");
+    // 拼音与跳字同时能命中时，拼音排前
+    const both = (text: string) => text === "设置";
+    assert.equal(scoreCommand(cmd("1", "设置"), "shezhi", { pinyin: both }), 30);
+});
+
+test("rankCommands：拼音命中能进结果，且排在纯跳字之前", () => {
+    const pinyin = (text: string, key: string) => text === "设置" && key === "sz";
+    const ranked = rankCommands(
+        // SuZhou 能被「sz」跳字命中（s→u→z 跳过 u）——两条都进结果才比得出先后
+        [cmd("fuzzy", "SuZhou"), cmd("py", "设置")],
+        "sz",
+        [],
+        { pinyin }
+    );
+    assert.deepEqual(ranked.map(i => i.id), ["py", "fuzzy"], "拼音(30)必须排在跳字(20)前");
+});
+
+test("groupBySection：按首次出现顺序分组，组内保持打分序与扁平下标", () => {
+    const flat = [
+        { id: "1", label: "站点甲", section: "打开网站" },
+        { id: "2", label: "设置", section: "命令" },
+        { id: "3", label: "站点乙", section: "打开网站" },
+    ];
+    const groups = groupBySection(flat);
+    assert.deepEqual(groups.map(g => g.section), ["打开网站", "命令"], "组按首次出现顺序，不按字母序重排");
+    assert.deepEqual(
+        groups[0].entries.map(e => [e.index, e.item.id]),
+        [[0, "1"], [2, "3"]],
+        "扁平下标必须跟 results 对齐（键盘导航靠它）"
+    );
+    assert.deepEqual(groups[1].entries.map(e => e.item.id), ["2"]);
 });

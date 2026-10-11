@@ -12,12 +12,17 @@ import {
     ListItemText,
     Typography,
     InputAdornment,
-    Chip,
 } from "@mui/material";
 import SearchIcon from "@mui/icons-material/Search";
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import BoltIcon from "@mui/icons-material/Bolt";
-import { pushRecentCommand, rankCommands, readRecentCommands } from "../utils/commandMatch";
+import {
+    groupBySection,
+    pushRecentCommand,
+    rankCommands,
+    readRecentCommands,
+} from "../utils/commandMatch";
+import { loadPinyinMatcher, matchesByPinyin } from "../utils/pinyin";
 
 export interface CommandItem {
     id: string;
@@ -48,12 +53,35 @@ export default function CommandPalette({ open, onClose, commands }: CommandPalet
         if (open) setRecent(readRecentCommands());
     }, [open]);
 
-    // 打分排序：完全相等 > 前缀 > 包含 > 跳字（gh → GitHub），同分时用过的靠前。
-    // 以前是纯 includes + 生成顺序，输「设置」时真正想要的常常排在第四五行。
+    // 拼音词典按需加载：第一次打开面板才请求（与首页搜索同一份模块缓存）。
+    // 就位后重算一次结果 —— 「sz → 设置」这类输入才有机会命中。
+    const [pinyinReady, setPinyinReady] = useState(false);
+    useEffect(() => {
+        if (!open || pinyinReady) return;
+        let cancelled = false;
+        void loadPinyinMatcher().then(matcher => {
+            if (!cancelled && matcher) setPinyinReady(true);
+        });
+        return () => {
+            cancelled = true;
+        };
+    }, [open, pinyinReady]);
+
+    // 打分排序：完全相等 > 前缀 > 包含 > 关键词 > 拼音（sz → 设置）> 跳字（gh → GitHub），
+    // 同分时用过的靠前。以前是纯 includes + 生成顺序，输「设置」时真正想要的常常排在第四五行。
     const results = useMemo(
-        () => rankCommands(commands, keyword, recent).slice(0, MAX_ROWS * 2),
-        [commands, keyword, recent]
+        () =>
+            rankCommands(
+                commands,
+                keyword,
+                recent,
+                pinyinReady ? { pinyin: matchesByPinyin } : undefined
+            ).slice(0, MAX_ROWS * 2),
+        [commands, keyword, recent, pinyinReady]
     );
+
+    // 分组展示：组按首次出现顺序，组内保持打分序；键盘导航仍按扁平下标走。
+    const groups = useMemo(() => groupBySection(results), [results]);
 
     const runItem = (item: CommandItem) => {
         pushRecentCommand(item.id);
@@ -163,42 +191,51 @@ export default function CommandPalette({ open, onClose, commands }: CommandPalet
                         最近用过（{Math.min(recent.length, MAX_ROWS * 2)}）
                     </Typography>
                 )}
-                {results.map((item, idx) => (
-                    <ListItemButton
-                        key={item.id}
-                        selected={idx === active}
-                        onMouseEnter={() => setActive(idx)}
-                        onClick={() => runItem(item)}
-                        sx={{ borderRadius: "12px", mb: 0.25 }}
-                    >
-                        <ListItemIcon sx={{ minWidth: 34 }}>
-                            {item.iconUrl ? (
-                                <Box
-                                    component='img'
-                                    src={item.iconUrl}
-                                    alt=''
-                                    sx={{ width: 18, height: 18, objectFit: "contain" }}
-                                />
-                            ) : item.section === "打开网站" ? (
-                                <OpenInNewIcon fontSize='small' />
-                            ) : (
-                                <BoltIcon fontSize='small' />
-                            )}
-                        </ListItemIcon>
-                        <ListItemText
-                            primary={item.label}
-                            secondary={item.hint}
-                            slotProps={{
-                                primary: { noWrap: true },
-                                secondary: { noWrap: true, sx: { fontSize: 11 } }
-                            }} />
-                        <Chip
-                            label={item.section}
-                            size='small'
-                            variant='outlined'
-                            sx={{ ml: 1, fontSize: 10, height: 20 }}
-                        />
-                    </ListItemButton>
+                {groups.map(group => (
+                    <Box key={group.section || "_other"} component='section' data-palette-section={group.section || "_other"}>
+                        <Typography
+                            variant='caption'
+                            sx={{
+                                color: 'text.secondary',
+                                px: 1.5,
+                                pt: 0.5,
+                                pb: 0.25,
+                                display: "block"
+                            }}>
+                            {group.section || "其他"}
+                        </Typography>
+                        {group.entries.map(({ item, index }) => (
+                            <ListItemButton
+                                key={item.id}
+                                selected={index === active}
+                                onMouseEnter={() => setActive(index)}
+                                onClick={() => runItem(item)}
+                                sx={{ borderRadius: "12px", mb: 0.25 }}
+                            >
+                                <ListItemIcon sx={{ minWidth: 34 }}>
+                                    {item.iconUrl ? (
+                                        <Box
+                                            component='img'
+                                            src={item.iconUrl}
+                                            alt=''
+                                            sx={{ width: 18, height: 18, objectFit: "contain" }}
+                                        />
+                                    ) : item.section === "打开网站" ? (
+                                        <OpenInNewIcon fontSize='small' />
+                                    ) : (
+                                        <BoltIcon fontSize='small' />
+                                    )}
+                                </ListItemIcon>
+                                <ListItemText
+                                    primary={item.label}
+                                    secondary={item.hint}
+                                    slotProps={{
+                                        primary: { noWrap: true },
+                                        secondary: { noWrap: true, sx: { fontSize: 11 } }
+                                    }} />
+                            </ListItemButton>
+                        ))}
+                    </Box>
                 ))}
             </List>
 

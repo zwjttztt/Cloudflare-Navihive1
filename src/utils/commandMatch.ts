@@ -30,11 +30,20 @@ export interface MatchCandidate {
     section?: string;
 }
 
+export interface MatchOptions {
+    /**
+     * 拼音匹配函数（词典就位后由调用方注入；未注入 = 不做拼音层）。
+     * 命中得 30 分：排在关键词(40)之后、跳字(20)之前 ——
+     * 「sz → 设置」比「gh 碰巧跳中 GitHub」更像用户想搜的。
+     */
+    pinyin?: (text: string, key: string) => boolean;
+}
+
 /**
  * 打分：越高越靠前，< 0 表示不命中。
  * 输入为空时一律给 0（保持原顺序，由调用方决定最近使用的加权）。
  */
-export function scoreCommand(item: MatchCandidate, key: string): number {
+export function scoreCommand(item: MatchCandidate, key: string, opts?: MatchOptions): number {
     if (!key) return 0;
     const label = (item.label ?? "").toLowerCase();
     const hint = (item.hint ?? "").toLowerCase();
@@ -48,6 +57,9 @@ export function scoreCommand(item: MatchCandidate, key: string): number {
         return 60 + Math.round(10 * (key.length / Math.max(label.length, 1)));
     }
     if (hint.includes(key) || keywords.includes(key)) return 40;
+    if (opts?.pinyin && (opts.pinyin(item.label ?? "", key) || (item.hint ? opts.pinyin(item.hint, key) : false))) {
+        return 30;
+    }
     if (fuzzyMatch(label, key)) return 20;
     return -1;
 }
@@ -59,12 +71,13 @@ export function scoreCommand(item: MatchCandidate, key: string): number {
 export function rankCommands<T extends MatchCandidate>(
     items: T[],
     key: string,
-    recent: string[] = []
+    recent: string[] = [],
+    opts?: MatchOptions
 ): T[] {
     const trimmed = key.trim().toLowerCase();
     const scored = items
         .map((item, index) => {
-            const score = scoreCommand(item, trimmed);
+            const score = scoreCommand(item, trimmed, opts);
             const recentIndex = recent.indexOf(item.id);
             const boost = recentIndex >= 0 ? (recent.length - recentIndex) * 0.5 : 0;
             return { item, index, score, boost };
@@ -78,6 +91,32 @@ export function rankCommands<T extends MatchCandidate>(
         return a.index - b.index;
     });
     return scored.map(entry => entry.item);
+}
+
+export interface CommandGroup<T> {
+    section: string;
+    /** 组内条目连同它在扁平结果里的下标（键盘 active 仍按扁平序号走） */
+    entries: { item: T; index: number }[];
+}
+
+/**
+ * 把已排序的扁平结果按 section 分组展示：组按「首次出现顺序」排，
+ * 组内保持打分排序不变 —— 分组只是视觉归类，不能反过来影响排名。
+ */
+export function groupBySection<T extends MatchCandidate>(items: T[]): CommandGroup<T>[] {
+    const groups: CommandGroup<T>[] = [];
+    const bySection = new Map<string, CommandGroup<T>>();
+    items.forEach((item, index) => {
+        const section = item.section ?? "";
+        let group = bySection.get(section);
+        if (!group) {
+            group = { section, entries: [] };
+            bySection.set(section, group);
+            groups.push(group);
+        }
+        group.entries.push({ item, index });
+    });
+    return groups;
 }
 
 /** 读最近用过的命令 id（最新在前）；存储不可用时返回空数组 */
