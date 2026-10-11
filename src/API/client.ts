@@ -11,6 +11,7 @@ import {
     NoteShareListItem,
     NoteStats,
     NoteImportStats,
+    NotesChangesResult,
     NotesImportPayload,
     LoginResponse,
     ExportData,
@@ -590,6 +591,15 @@ export class NavigationClient {
     }
 
     /**
+     * 跨设备变更轮询（2026-10-11）：自 since 以来的变更计数 + 文件夹/标签快照。
+     * 老部署没有 notes/changes 时会 404/500 —— 调用方必须 catch 并永久停轮询。
+     */
+    async notesChanges(since?: string): Promise<NotesChangesResult> {
+        const params = since ? `?since=${encodeURIComponent(since)}` : "";
+        return this.request<NotesChangesResult>(`notes/changes${params}`);
+    }
+
+    /**
      * 导入「记事本导出」JSON（exportAllData 的形状）：只动记事本，按 uuid 合并。
      * 失败（形状不对 / 写入失败）抛错，成功返回三态统计。
      */
@@ -1153,12 +1163,15 @@ export class NavigationClient {
         code?: WebDavErrorCode;
         message?: string;
         payload?: NotesImportPayload;
+        /** ZIP 备份（2026-10-11 起，含附件）：服务端不解包，回 base64 由前端走附件回传导入 */
+        zipBase64?: string;
     }> {
         return this.request<{
             success: boolean;
             code?: WebDavErrorCode;
             message?: string;
             payload?: NotesImportPayload;
+            zipBase64?: string;
         }>("webdav/notes/download", {
             method: "POST",
             body: JSON.stringify({ filename, password: password || "" }),

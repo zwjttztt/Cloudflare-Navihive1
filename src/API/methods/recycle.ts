@@ -19,6 +19,8 @@ export interface RecycleApi {
     >;
     restoreRecycleItem(id: number): Promise<boolean>;
     restoreRecycleItems(ids: number[]): Promise<RecycleBatchRestoreResult>;
+    /** 待彻底删除的笔记先写墓碑（2026-10-11，跨设备变更轮询用） */
+    writeNoteTombstonesFromRecycle(rows: ReadonlyArray<{ data: string }>): Promise<void>;
     purgeRecycleItems(ids: number[]): Promise<{ purged: number[] }>;
     purgeRecycleItem(id: number): Promise<boolean>;
     emptyRecycleBin(): Promise<boolean>;
@@ -309,6 +311,31 @@ export const recycleImpl: RecycleApi = {
     },
 
     /**
+     * 把回收站里待彻底删除的笔记先写成墓碑（2026-10-11，跨设备变更轮询用）。
+     * 彻底删除对 notes 表是物理删行，没有墓碑其它设备永远看不见。
+     * 解析不出 uuid 的行跳过（老数据可能没有 uuid）。
+     */
+    writeNoteTombstonesFromRecycle: async function (
+        this: NavigationAPI,
+        rows: ReadonlyArray<{ data: string }>
+    ): Promise<void> {
+        for (const row of rows) {
+            try {
+                const parsed = JSON.parse(row.data) as { note?: { uuid?: unknown } };
+                const uuid = parsed?.note?.uuid;
+                if (typeof uuid !== "string" || !uuid) continue;
+                await this.db
+                    .prepare("INSERT INTO note_tombstone (user_id, note_uuid) VALUES (?, ?)")
+                    .bind(this.currentUserId, uuid)
+                    .run();
+            } catch (error) {
+                // 墓碑写不进去只影响其它设备对这次删除的感知，不阻断删除本身
+                console.error("写入笔记墓碑失败:", error);
+            }
+        }
+    },
+
+    /**
      * 批量永久删除回收站记录（撤销后又删一次时用），一次 `DELETE ... IN` 搞定。
      * 返回真正删掉的 id；DELETE 是单条语句，成败一致，所以不逐个区分。
      */
@@ -318,6 +345,14 @@ export const recycleImpl: RecycleApi = {
         if (unique.length === 0) return { purged: [] };
         const inList = unique.map(() => "?").join(", ");
         const ownerIsNull = this.currentUserId === null;
+        // 先把笔记条目的 uuid 抓出来写墓碑，再删（顺序反了就取不到了）
+        const noteRows = await this.db
+            .prepare(
+                `SELECT data FROM recycle_bin WHERE id IN (${inList}) AND kind = 'note' AND owner_user_id ${ownerIsNull ? "IS NULL" : "= ?"}`
+            )
+            .bind(...(ownerIsNull ? unique : [...unique, this.currentUserId]))
+            .all<{ data: string }>();
+        await this.writeNoteTombstonesFromRecycle(noteRows.results || []);
         const result = await this.db
             .prepare(
                 `DELETE FROM recycle_bin WHERE id IN (${inList}) AND owner_user_id ${ownerIsNull ? "IS NULL" : "= ?"}`
@@ -330,6 +365,13 @@ export const recycleImpl: RecycleApi = {
     /** 永久删除一条回收站记录（数据不可恢复） */
     purgeRecycleItem: async function (this: NavigationAPI, id: number): Promise<boolean> {
         await this.migrate();
+        const row = await this.db
+            .prepare(
+                `SELECT data FROM recycle_bin WHERE id = ? AND kind = 'note' AND owner_user_id ${this.currentUserId === null ? "IS NULL" : "= ?"}`
+            )
+            .bind(...(this.currentUserId === null ? [id] : [id, this.currentUserId]))
+            .first<{ data: string }>();
+        if (row) await this.writeNoteTombstonesFromRecycle([row]);
         const result = await this.db
             .prepare(
                 `DELETE FROM recycle_bin WHERE id = ? AND owner_user_id ${this.currentUserId === null ? "IS NULL" : "= ?"}`
@@ -340,8 +382,15 @@ export const recycleImpl: RecycleApi = {
     },
 
     /** 清空当前账号的回收站 */
-    emptyRecycleBin: async function (this: NavigationAPI ): Promise<boolean> {
+    emptyRecycleBin: async function (this: NavigationAPI): Promise<boolean> {
         await this.migrate();
+        const noteRows = await this.db
+            .prepare(
+                `SELECT data FROM recycle_bin WHERE kind = 'note' AND owner_user_id ${this.currentUserId === null ? "IS NULL" : "= ?"}`
+            )
+            .bind(...(this.currentUserId === null ? [] : [this.currentUserId]))
+            .all<{ data: string }>();
+        await this.writeNoteTombstonesFromRecycle(noteRows.results || []);
         const result = await this.db
             .prepare(
                 `DELETE FROM recycle_bin WHERE owner_user_id ${this.currentUserId === null ? "IS NULL" : "= ?"}`
@@ -484,6 +533,14 @@ export const recycleImpl: RecycleApi = {
         nowSec = Math.floor(Date.now() / 1000)
     ): Promise<number> {
         try {
+            // 到期自动清空的笔记同样写墓碑：用户没手动删，但其它设备仍需知道「没了」
+            const expiredNotes = await this.db
+                .prepare(
+                    "SELECT data FROM recycle_bin WHERE kind = 'note' AND deleted_at < ?"
+                )
+                .bind(nowSec - days * 24 * 3600)
+                .all<{ data: string }>();
+            await this.writeNoteTombstonesFromRecycle(expiredNotes.results || []);
             const r = await this.db
                 .prepare("DELETE FROM recycle_bin WHERE deleted_at < ?")
                 .bind(nowSec - days * 24 * 3600)
@@ -522,6 +579,19 @@ export const recycleImpl: RecycleApi = {
 
         counts.audit = await this.purgeExpiredAudit(days);
         counts.recycle = await this.purgeExpiredRecycle(days, nowSec);
+
+        // 笔记删除墓碑（2026-10-11）同样按保留期清：它的唯一使命是让其它设备的
+        // 轮询看见一次删除，超过保留期的墓碑已经没有读者，留着只会线性膨胀。
+        try {
+            await this.db
+                .prepare(
+                    "DELETE FROM note_tombstone WHERE deleted_at < datetime(?, 'unixepoch')"
+                )
+                .bind(nowSec - days * 24 * 3600)
+                .run();
+        } catch (error) {
+            console.error("清理笔记墓碑失败:", error);
+        }
 
         try {
             const r = await this.db

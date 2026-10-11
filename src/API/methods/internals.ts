@@ -123,6 +123,21 @@ export const FOLDER_TAG_TABLE_STATEMENTS = [
         password TEXT,
         views INTEGER NOT NULL DEFAULT 0
     );`,
+    /**
+     * 笔记删除墓碑（2026-10-11，跨设备变更轮询用，schema 17）。
+     *
+     * 软删除与彻底删除都会把行从 notes 表上**物理删掉**（数据搬进 recycle_bin），
+     * 只看 notes.updated_at 的轮询永远看不见「少了哪条」—— 墓碑就是给「删」
+     * 留的一个轻量信号：只记 uuid + 时间，不含正文。过期清理由
+     * cleanupExpiredRows 按回收站保留期一并做（见 recycle.ts）。
+     */
+    `CREATE TABLE IF NOT EXISTS note_tombstone (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        note_uuid TEXT NOT NULL,
+        deleted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_note_tombstone_time ON note_tombstone(user_id, deleted_at);`,
 ];
 
 // 建表 SQL（幂等）

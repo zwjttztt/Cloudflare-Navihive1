@@ -22,6 +22,7 @@ import type {
     NoteStats,
     NoteImportStats,
     NoteSearchResult,
+    NotesChangesResult,
     NotesImportPayload,
     PublicNoteAccess,
 } from "../types";
@@ -137,6 +138,13 @@ export interface NotesApi {
      * 而这份东西就几百行，一次全取回来放在客户端最省事。
      */
     listNoteTags(): Promise<Record<number, number[]>>;
+
+    // ---- 跨设备变更轮询（2026-10-11）----
+    /**
+     * 自上次游标以来的变更信号 + 文件夹/标签全量快照。
+     * 只回计数与轻量结构，**不回笔记正文** —— 客户端发现变更后走既有 reload() 整表重拉。
+     */
+    notesChanges(since?: string): Promise<NotesChangesResult>;
 
     // ---- 版本历史（inkstone 顶栏「版本历史」）----
     /** 存一个快照（updateNote 内部调用；对外暴露是为了测试与批量导入） */
@@ -413,6 +421,55 @@ export const notesImpl: NotesApi = {
             tags,
             noteTags: noteTagsOut,
         };
+    },
+    /**
+     * 跨设备变更轮询（2026-10-11）。
+     *
+     * 游标是 SQLite 的 CURRENT_TIMESTAMP（秒精度），与 notes.updated_at 同一刻度；
+     * 比较用 `>=`：同一秒内的并发变更可能被相邻两轮各看见一次 —— 多触发一次
+     * reload 无害（幂等读），漏看才是问题，所以宁可重复不可遗漏。
+     *
+     * 文件夹/标签没有可靠的 per-row 时间戳，直接全量快照让客户端比对
+     * （这两张表就几十行，比补列 + 回填便宜得多，也不会漏改色/改名）。
+     * 首次轮询（since 为空）只初始化游标，不报变更。
+     */
+    notesChanges: async function (this: NavigationAPI, since?: string): Promise<NotesChangesResult> {
+        await this.migrate();
+        return this.withSchemaRetry(async () => {
+            const nowRow = await this.db
+                .prepare("SELECT strftime('%Y-%m-%d %H:%M:%S', 'now') AS now")
+                .first<{ now: string }>();
+            const now = nowRow?.now || new Date().toISOString().slice(0, 19).replace("T", " ");
+            let notesChanged = 0;
+            if (since) {
+                const updated = await this.db
+                    .prepare(
+                        "SELECT COUNT(*) AS n FROM notes WHERE updated_at >= ?1 AND user_id IS ?2"
+                    )
+                    .bind(since, this.currentUserId)
+                    .first<{ n: number }>();
+                let purged = 0;
+                try {
+                    const row = await this.db
+                        .prepare(
+                            "SELECT COUNT(*) AS n FROM note_tombstone WHERE deleted_at >= ?1 AND user_id IS ?2"
+                        )
+                        .bind(since, this.currentUserId)
+                        .first<{ n: number }>();
+                    purged = row?.n ?? 0;
+                } catch (error) {
+                    // 墓碑表缺失（迁移还没跑到）只影响「彻底删除」的感知，不算致命
+                    console.error("读取笔记墓碑失败:", error);
+                }
+                notesChanged = (updated?.n ?? 0) + purged;
+            }
+            const [folders, tags, noteTags] = await Promise.all([
+                this.listFolders(),
+                this.listTags(),
+                this.listNoteTags(),
+            ]);
+            return { success: true, now, notesChanged, folders, tags, noteTags };
+        });
     },
     importNotesData: async function (this: NavigationAPI, payload: NotesImportPayload): Promise<NoteImportStats> {
         await this.migrate();
@@ -882,6 +939,21 @@ export const notesImpl: NotesApi = {
                 .bind(...this.scopeParams([id]))
                 .run();
             if (result.success) await this.dropNoteFts(id);
+            // 删除墓碑（2026-10-11）：软删除对 notes 表是物理删行，只看 updated_at 的
+            // 轮询看不见「少了哪条」。墓碑让其它设备的轮询能感知到这次删除。
+            // 失败只记日志：漏一条墓碑的代价是其它设备晚一轮刷新，不值得为此回滚。
+            if (result.success && typeof note.uuid === "string" && note.uuid) {
+                try {
+                    await this.db
+                        .prepare(
+                            "INSERT INTO note_tombstone (user_id, note_uuid) VALUES (?, ?)"
+                        )
+                        .bind(this.currentUserId, note.uuid)
+                        .run();
+                } catch (error) {
+                    console.error("写入笔记删除墓碑失败:", error);
+                }
+            }
             return { success: result.success, recycleId: result.success ? recycleId : undefined };
         });
     },

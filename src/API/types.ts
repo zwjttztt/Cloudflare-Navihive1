@@ -299,6 +299,13 @@ export interface NotesBackupRun {
     filename?: string;
     /** 成功时：备份包含的笔记条数 */
     noteCount?: number;
+    /**
+     * 成功时：打包进备份的附件个数（2026-10-11 起 ZIP 备份含正文引用的附件）。
+     * 旧版 gzip JSON 备份没有这个字段。
+     */
+    attachmentCount?: number;
+    /** 成功时：因超出单次备份体积预算没能打包的附件个数（0/缺省 = 全部打进去了） */
+    skippedAttachments?: number;
     /** 成功时：实际上传字节数 */
     bytes?: number;
     durationMs?: number;
@@ -335,6 +342,22 @@ export interface NotesBackupSavePatch {
     retention?: number;
     /** 全量写回「最近备份」记录（删除单条时用，2026-10-10） */
     runs?: NotesBackupRun[];
+}
+
+/**
+ * 跨设备变更轮询的响应（2026-10-11，GET notes/changes）。
+ * 只含轻量信号：变更计数 + 文件夹/标签全量快照（几十行的小表，客户端比对用），
+ * 笔记正文不在其中 —— 客户端发现变更后走既有 reload() 整表重拉。
+ */
+export interface NotesChangesResult {
+    success: boolean;
+    /** 本轮游标（SQLite CURRENT_TIMESTAMP 格式），下一轮作为 since 传回 */
+    now: string;
+    /** 自 since 以来更新/删除（含彻底删除）的笔记条数；首次轮询（无 since）恒 0 */
+    notesChanged: number;
+    folders: NoteFolder[];
+    tags: NoteTag[];
+    noteTags: Record<number, number[]>;
 }
 
 // WebDAV 备份配置

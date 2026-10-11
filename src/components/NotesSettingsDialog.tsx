@@ -31,6 +31,7 @@ import LaunchIcon from "@mui/icons-material/Launch";
 import LinkOffIcon from "@mui/icons-material/LinkOff";
 import LinkIcon from "@mui/icons-material/Link";
 import StorageIcon from "@mui/icons-material/Storage";
+import SyncIcon from "@mui/icons-material/Sync";
 import CloudUploadIcon from "@mui/icons-material/CloudUpload";
 import CloudDownloadIcon from "@mui/icons-material/CloudDownload";
 import FileDownloadIcon from "@mui/icons-material/FileDownload";
@@ -41,6 +42,12 @@ import NoteShareDialog, { type NoteShareApi } from "./NoteShareDialog";
 import AttachmentManager from "./AttachmentManager";
 import ConfirmDialog from "./ConfirmDialog";
 import { FOLDER_COLORS } from "../utils/folderAppearance";
+import { decodeBase64Bytes } from "../utils/zip";
+import {
+    loadNotesSyncPrefs,
+    saveNotesSyncPrefs,
+    type NotesSyncPrefs,
+} from "../utils/notesSync";
 import type { NotesUiSettings } from "../utils/notesSettings";
 import type {
     NoteImportStats,
@@ -53,7 +60,7 @@ import type {
     WebDavErrorCode,
 } from "../API/types";
 
-type SettingsTab = "appearance" | "editor" | "data" | "shares" | "backup";
+type SettingsTab = "appearance" | "editor" | "data" | "sync" | "shares" | "backup";
 
 /** 数据页统计（2026-10-08 照 inkstone 的 DataSettings，精简到现有端点能做到的） */
 export interface NotesDataTab {
@@ -123,6 +130,8 @@ export interface NotesDataTab {
         success: boolean;
         message: string;
         payload?: NotesImportPayload;
+        /** ZIP 备份（2026-10-11 起，含附件）：服务端不解包，回 base64 由前端走 onImportFile */
+        zipBase64?: string;
         code?: WebDavErrorCode;
     }>;
     /**
@@ -425,6 +434,18 @@ export default function NotesSettingsDialog({
     const [restorePwd, setRestorePwd] = useState("");
     const [restoreBusy, setRestoreBusy] = useState(false);
 
+    // ---- 同步（2026-10-11，跨设备变更轮询的本机偏好）----
+    // 偏好是**本机**的（别的设备有自己的开关），存 localStorage 按账号分桶；
+    // 状态在打开设置时读一次，改动立即落盘 + 生效（轮询每轮重读偏好）。
+    const [syncPrefs, setSyncPrefs] = useState<NotesSyncPrefs>(() => loadNotesSyncPrefs());
+    const setSyncPref = (patch: Partial<NotesSyncPrefs>) => {
+        setSyncPrefs(prev => {
+            const next = { ...prev, ...patch };
+            saveNotesSyncPrefs(next);
+            return next;
+        });
+    };
+
     const listRemoteBackups = async () => {
         const cur = dataRef.current;
         if (!cur?.onNotesBackupListRemote || backupBusy || restoreBusy) return;
@@ -453,7 +474,8 @@ export default function NotesSettingsDialog({
      */
     const doRestore = async (filename: string, password: string) => {
         const cur = dataRef.current;
-        if (!cur?.onNotesBackupFetch || !cur.onImportNotes || restoreBusy) return;
+        if (!cur?.onNotesBackupFetch || restoreBusy) return;
+        if (!cur.onImportNotes && !cur.onImportFile) return;
         setRestoreBusy(true);
         try {
             const r = await cur.onNotesBackupFetch(filename, password);
@@ -462,16 +484,37 @@ export default function NotesSettingsDialog({
                 setRemoteError(r.message || "这份备份加密了，请输入备份密码");
                 return;
             }
-            if (!r.success || !r.payload) {
+            if (!r.success) {
                 setRemoteError(r.message || "取回备份失败");
                 return;
             }
-            const stats = await cur.onImportNotes(r.payload);
+            if (r.zipBase64) {
+                // ZIP 备份（含附件）：交给与「数据页导入 zip」完全同一条链路 ——
+                // 解包、附件回传、正文引用改写都在那边，这里不重写一遍。
+                if (!cur.onImportFile) {
+                    setRemoteError("当前部署不支持附件回传，无法恢复含附件的 ZIP 备份");
+                    return;
+                }
+                const bytes = decodeBase64Bytes(r.zipBase64);
+                const out = new Uint8Array(bytes.byteLength);
+                out.set(bytes);
+                const file = new File([out.buffer], filename, { type: "application/zip" });
+                await cur.onImportFile(file);
+            } else if (r.payload) {
+                if (!cur.onImportNotes) {
+                    setRemoteError("当前部署不支持导入笔记");
+                    return;
+                }
+                await cur.onImportNotes(r.payload);
+            } else {
+                setRemoteError(r.message || "取回备份失败");
+                return;
+            }
             setRemoteError(null);
             setRestoreTarget(null);
             setRestorePwd("");
             onNotify?.(
-                `已从网盘恢复：新增 ${stats.created ?? 0} 条、更新 ${stats.updated ?? 0} 条`,
+                `已从网盘恢复「${filename}」（含附件时会逐个回传，请留意后续提示）`,
                 "success"
             );
         } catch (error) {
@@ -589,6 +632,9 @@ export default function NotesSettingsDialog({
                             ...(data
                                 ? [["data", "数据", <StorageIcon fontSize='small' key='d' />] as const]
                                 : []),
+                            // 同步页：跨设备变更轮询的本机偏好（开关 + 间隔）。
+                            // 老部署没有 notes/changes 时轮询本身不会启动，开关开着也无害。
+                            ["sync", "同步", <SyncIcon fontSize='small' key='y' />] as const,
                             // 备份页照 inkstone 的 BackupSettings；老部署没能力时整页不出现
                             ...(data?.onNotesBackupGetState
                                 ? [[
@@ -643,9 +689,11 @@ export default function NotesSettingsDialog({
                                   ? "编辑器"
                                   : tab === "data"
                                     ? "数据"
-                                    : tab === "backup"
-                                      ? "备份"
-                                      : "分享列表"}
+                                    : tab === "sync"
+                                      ? "同步"
+                                      : tab === "backup"
+                                        ? "备份"
+                                        : "分享列表"}
                         </Typography>
                         <IconButton size='small' aria-label='关闭设置' onClick={onClose} data-settings-close='1'>
                             <CloseIcon fontSize='small' />
@@ -1505,7 +1553,15 @@ export default function NotesSettingsDialog({
                                                         sx={{ flexShrink: 0 }}
                                                     >
                                                         {run.status === "success"
-                                                            ? `${run.noteCount ?? 0} 条 · ${fmtBytes(run.bytes ?? 0)}`
+                                                            ? `${run.noteCount ?? 0} 条${
+                                                                  typeof run.attachmentCount === "number"
+                                                                      ? ` · ${run.attachmentCount} 附件`
+                                                                      : ""
+                                                              }${
+                                                                  run.skippedAttachments
+                                                                      ? `（跳过 ${run.skippedAttachments}）`
+                                                                      : ""
+                                                              } · ${fmtBytes(run.bytes ?? 0)}`
                                                             : "失败"}
                                                     </Typography>
                                                     </Box>
@@ -1747,6 +1803,42 @@ export default function NotesSettingsDialog({
                                         </Box>
                                     </>
                                 )}
+                            </Box>
+                        ) : tab === "sync" ? (
+                            // 同步（2026-10-11）：跨设备变更轮询的本机偏好。
+                            // 只回轻量信号，发现变更后走整表重拉；编辑器草稿永不自动覆盖。
+                            <Box data-settings-sync='1'>
+                                <SettingRow
+                                    label='跨设备变更提示'
+                                    description='其他设备新增/修改/删除笔记后，本机自动刷新列表（正在编辑的草稿不会被覆盖）'
+                                >
+                                    <Switch
+                                        checked={syncPrefs.enabled}
+                                        onChange={e => setSyncPref({ enabled: e.target.checked })}
+                                        data-setting='syncEnabled'
+                                        size='small'
+                                    />
+                                </SettingRow>
+                                <SettingRow label='检查间隔' description='多久向服务器问一次「有没有其他设备的改动」'>
+                                    <Slider
+                                        aria-label='同步检查间隔'
+                                        data-setting='syncIntervalSec'
+                                        value={syncPrefs.intervalSec}
+                                        min={30}
+                                        max={600}
+                                        step={30}
+                                        valueLabelDisplay='auto'
+                                        disabled={!syncPrefs.enabled}
+                                        onChange={(_, v) => setSyncPref({ intervalSec: v as number })}
+                                        sx={{ width: 150 }}
+                                    />
+                                    <Typography variant='caption' sx={{ width: 52, textAlign: "right" }}>
+                                        {syncPrefs.intervalSec}s
+                                    </Typography>
+                                </SettingRow>
+                                <Typography variant='caption' color='text.secondary' sx={{ display: "block", mt: 1.5 }}>
+                                    这里的开关只影响本机；其他设备保持各自的设置。同一账号开多个标签页时，只有一个标签页会真正发检查请求。
+                                </Typography>
                             </Box>
                         ) : (
                             // 分享列表（inkstone 设置里同名那一页）：列出所有已分享的笔记 ——

@@ -72,6 +72,15 @@ export function buildNotesBackupFileName(mode: WebDavBackupMode): string {
 }
 
 /**
+ * ZIP 备份的文件名（2026-10-11 起的新格式：notes.json + 正文引用的附件）。
+ * 前缀与旧 gzip JSON 备份一致（列目录 / 清理 / 恢复都只认 navihive-notes-backup-*），
+ * 只是扩展名换成 .zip —— 恢复端按文件头（PK）而不是扩展名分流，两种格式都能恢复。
+ */
+export function buildNotesBackupZipFileName(mode: WebDavBackupMode): string {
+    return buildNotesBackupFileName(mode).replace(/\.json\.gz$/i, ".zip");
+}
+
+/**
  * 按保留份数挑出要清理的旧自动备份（inkstone 的 retentionCount 同语义）：
  * - retentionCount <= 0 = 全部保留，一个不删；
  * - 候选只有 notes 自动备份（手动备份 / 导航备份永远不在清理范围）；

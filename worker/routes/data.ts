@@ -317,6 +317,14 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
     } else if (path === "notes/stats" && method === "GET") {
         // 数据页概览「双链 / 版本历史」两格的全站计数（只读，不走 writeGate）
         return Response.json(await api.notesStats());
+    } else if (path === "notes/changes" && method === "GET") {
+        // 跨设备变更轮询（2026-10-11）：自 since 以来的变更计数 + 文件夹/标签快照。
+        // 只读、轻量（不回正文），客户端发现变更后自己走 reload()。
+        // no-store：轮询响应带游标，缓存了会让其它设备永远看不见变更。
+        const since = ctx.url.searchParams.get("since") || undefined;
+        return Response.json(await api.notesChanges(since || undefined), {
+            headers: { "Cache-Control": "no-store" },
+        });
     } else if (path === "notes/search" && method === "POST") {
         // 服务端全文检索（2026-10-09）：有 FTS5 就走索引 + bm25 排序，
         // 没有就退回 LIKE 全表扫 —— 前端拿到的是同一份形状（id + 摘要 + 分数）。

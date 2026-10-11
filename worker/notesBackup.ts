@@ -14,8 +14,12 @@
 import type { NavigationAPI } from "../src/API/navigationApi";
 import type { NotesBackupRun } from "../src/API/types";
 import { encryptBackup } from "../src/API/crypto";
+import { createZip, type ZipEntry } from "../src/utils/zip";
+import { readAttachmentObject, selectAttachmentStorage } from "./attachments";
+import type { Env } from "./types";
 import {
     buildNotesBackupFileName,
+    buildNotesBackupZipFileName,
     selectNotesBackupsToPrune,
 } from "./webdav/naming";
 import { gzipBytes } from "./webdav/transport";
@@ -35,6 +39,104 @@ export const NOTES_BACKUP_RUNS_CAP = 12;
 
 export const NOTES_BACKUP_RUNS_KEY = "notesBackup.runs";
 export const NOTES_BACKUP_LAST_AUTO_AT_KEY = "notesBackup.lastAutoBackupAt";
+
+/**
+ * 单次备份里附件字节的总预算（24 MB）。
+ *
+ * ZIP 在 Worker 内存里拼装，预算必须给「密文拷贝 + base64」留出余量：
+ * 24MB 附件 + JSON + zip 结构 + 加密副本，峰值仍远低于 Workers 的内存上限。
+ * 超出预算的附件**跳过并计数**（进运行记录与结果消息），绝不让备份整体失败 ——
+ * 一份缺几张图的备份远好于没有备份。
+ */
+export const NOTES_BACKUP_ATTACHMENT_BUDGET_BYTES = 24 * 1024 * 1024;
+
+/**
+ * 从一批笔记正文里收集引用到的附件 id（去重）。
+ *
+ * 判据与前端引用计数同一个正则：`/api/notes/attachments/<uuid>`。
+ * 只备「正文还引用着的」附件 —— 未引用的迟早被 GC 清掉，备了也恢复不出来。
+ * （纯函数，单测直接打这里。）
+ */
+export function collectReferencedAttachmentIds(
+    notes: ReadonlyArray<{ content?: string | null }>
+): Set<string> {
+    const ids = new Set<string>();
+    for (const note of notes) {
+        const content = typeof note?.content === "string" ? note.content : "";
+        if (!content) continue;
+        for (const match of content.matchAll(/\/api\/notes\/attachments\/([0-9a-zA-Z-]+)/g)) {
+            if (match[1]) ids.add(match[1]);
+        }
+    }
+    return ids;
+}
+
+export interface BackupAttachmentRows {
+    id: string;
+    filename: string | null;
+    storage: string;
+    object_key: string;
+}
+
+/**
+ * 把「该进备份的附件」读出来打包成 zip 条目：`attachments/<id>__<文件名>`。
+ *
+ * ⚠️ 条目路径必须与前端导出 zip（NotesPage.exportAllZip）完全一致：
+ * 恢复端按 `<旧id>__<文件名>` 把正文里的引用换成新 id —— 两边各写一套
+ * 格式迟早跑偏，所以这里刻意抄同一条命名规则。
+ *
+ * 超出预算 / 读取失败都跳过并计数，不抛错（同上：宁缺勿失败）。
+ */
+export async function readBackupAttachmentEntries(
+    api: NavigationAPI,
+    env: Env,
+    payload: { notes?: ReadonlyArray<{ content?: string | null }> },
+    budgetBytes: number = NOTES_BACKUP_ATTACHMENT_BUDGET_BYTES
+): Promise<{ entries: ZipEntry[]; skipped: number; bytes: number }> {
+    const entries: ZipEntry[] = [];
+    if (!selectAttachmentStorage(env)) return { entries, skipped: 0, bytes: 0 };
+    const referenced = collectReferencedAttachmentIds(payload.notes ?? []);
+    if (referenced.size === 0) return { entries, skipped: 0, bytes: 0 };
+
+    // 只查引用到的那批：附件表可能远大于正文引用数，全量拉元数据纯属浪费
+    const ids = [...referenced];
+    const placeholders = ids.map(() => "?").join(",");
+    const uid = api.currentUserId;
+    const rowsResult = await api.db
+        .prepare(
+            `SELECT id, filename, storage, object_key FROM attachments
+             WHERE id IN (${placeholders})${uid === null ? " AND user_id IS NULL" : " AND user_id = ?"}`
+        )
+        .bind(...(uid === null ? ids : [...ids, uid]))
+        .all<BackupAttachmentRows>();
+    const rows = rowsResult.results || [];
+
+    let used = 0;
+    let skipped = 0;
+    for (const row of rows) {
+        if (!isAttachmentStorageTag(row.storage)) { skipped += 1; continue; }
+        if (used >= budgetBytes) { skipped += 1; continue; }
+        try {
+            const bytes = await readAttachmentObject(env, row.storage, row.object_key);
+            if (!bytes || bytes.length === 0) { skipped += 1; continue; }
+            if (used + bytes.length > budgetBytes) { skipped += 1; continue; }
+            used += bytes.length;
+            entries.push({
+                path: `attachments/${row.id}__${row.filename || "file"}`,
+                data: bytes,
+            });
+        } catch {
+            skipped += 1;
+        }
+    }
+    // 没查到元数据的引用（行已被删 / 串号）同样算跳过，让运行记录如实反映
+    skipped += Math.max(0, referenced.size - rows.length);
+    return { entries, skipped, bytes: used };
+}
+
+function isAttachmentStorageTag(v: string): v is "r2" | "kv" {
+    return v === "r2" || v === "kv";
+}
 
 // ============ 纯函数（单测直接打这里） ============
 
@@ -184,6 +286,12 @@ export async function runNotesWebDavBackup(
         stored?: Record<string, string>;
         /** 备份口令；不传时用 config.backupPassword */
         password?: string;
+        /**
+         * Worker env（2026-10-11）：传了且配置了附件存储时，备份升级为
+         * ZIP（notes.json + 正文引用的附件）；不传 / 没配存储时保持旧
+         * gzip JSON 格式，行为与历史版本完全一致。
+         */
+        env?: Env;
     }
 ): Promise<WebDavResult<{ filename: string; size: number }>> {
     const leaseKey = `auth.notesBackup.lease.${api.currentUserId ?? 0}`;
@@ -213,10 +321,45 @@ export async function runNotesWebDavBackup(
 
     try {
         const payload = await api.exportNotesData();
-        const gz = await gzipBytes(JSON.stringify(payload));
-        const body = password ? await encryptBackup(gz, password) : gz;
+        // ZIP 条件：传了 env 且配置了附件存储。没配存储的部署保持旧 gzip JSON 格式，
+        // 行为与历史版本完全一致（旧格式恢复链路继续有效）。
+        const zipMode = Boolean(options.env && selectAttachmentStorage(options.env));
+        // 附件收集（有 env 才做）：读到对象字节为止。这一步可能发 N 次 KV/R2 读，
+        // 所以读完立刻续租，别让长任务在「攒附件」的半路把租约耗光。
+        let attachmentEntries: ZipEntry[] = [];
+        let attachmentSkipped = 0;
+        if (zipMode) {
+            try {
+                const collected = await readBackupAttachmentEntries(api, options.env!, payload);
+                attachmentEntries = collected.entries;
+                attachmentSkipped = collected.skipped;
+            } catch (error) {
+                // 附件读失败不拖垮备份：退回纯 JSON（运行记录里没有附件数就是信号）
+                console.error("收集备份附件失败，退回纯 JSON 备份:", error);
+                attachmentEntries = [];
+                attachmentSkipped = 0;
+            }
+            await renewLease();
+        }
+
+        let body: Uint8Array;
+        let filename: string;
+        if (zipMode) {
+            // ZIP：notes.json + attachments/<id>__<文件名>，与前端导出 zip 同一布局 ——
+            // 恢复直接走前端那条已测的「解包 → 附件回传 → 引用改写」链路。
+            const entries: ZipEntry[] = [
+                { path: "notes.json", data: new TextEncoder().encode(JSON.stringify(payload)) },
+                ...attachmentEntries,
+            ];
+            const zip = createZip(entries);
+            body = password ? await encryptBackup(zip, password) : zip;
+            filename = buildNotesBackupZipFileName(mode);
+        } else {
+            const gz = await gzipBytes(JSON.stringify(payload));
+            body = password ? await encryptBackup(gz, password) : gz;
+            filename = buildNotesBackupFileName(mode);
+        }
         await renewLease();
-        const filename = buildNotesBackupFileName(mode);
         const result = await webdavPutBytes(config, filename, body, Boolean(password));
 
         await renewLease();
@@ -224,6 +367,10 @@ export async function runNotesWebDavBackup(
             run.status = "success";
             run.filename = filename;
             run.noteCount = Array.isArray(payload.notes) ? payload.notes.length : 0;
+            if (attachmentEntries.length > 0 || attachmentSkipped > 0) {
+                run.attachmentCount = attachmentEntries.length;
+                if (attachmentSkipped > 0) run.skippedAttachments = attachmentSkipped;
+            }
             run.bytes = body.byteLength;
 
             // 自动备份按保留份数清理旧文件；手动备份一份都不删（与导航备份同一条铁律）

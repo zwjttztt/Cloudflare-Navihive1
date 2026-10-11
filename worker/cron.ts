@@ -190,12 +190,12 @@ async function backupOneAccount(api: SchedulerDB, uid: number | null): Promise<s
  * 所以 hourly/sixHourly/daily/weekly/monthly/yearly 七档共用一个触发器。
  * 与导航页的每周备份分开：各认各的配置键（notesBackup.* vs webdav.autoBackup）。
  */
-export async function runNotesBackupSchedule(api: SchedulerDB): Promise<void> {
+export async function runNotesBackupSchedule(api: SchedulerDB, env?: Env): Promise<void> {
     const nav = api as unknown as Partial<NavigationAPI> & SchedulerDB;
     const failures: string[] = [];
 
     if (typeof nav.listUsers !== "function" || typeof nav.setCurrentUser !== "function") {
-        const reason = await notesBackupOneAccount(api, null);
+        const reason = await notesBackupOneAccount(api, null, env);
         if (reason) failures.push(reason);
     } else {
         const users = await nav.listUsers();
@@ -204,7 +204,7 @@ export async function runNotesBackupSchedule(api: SchedulerDB): Promise<void> {
                 ? users.filter(u => u.status !== "disabled").map(u => u.id)
                 : [null];
         for (const uid of targets) {
-            const reason = await notesBackupOneAccount(api, uid);
+            const reason = await notesBackupOneAccount(api, uid, env);
             if (reason) failures.push(reason);
         }
     }
@@ -217,7 +217,7 @@ export async function runNotesBackupSchedule(api: SchedulerDB): Promise<void> {
 }
 
 /** 记事本自动备份单个账号。返回失败原因（null = 成功或本来就该跳过） */
-async function notesBackupOneAccount(api: SchedulerDB, uid: number | null): Promise<string | null> {
+async function notesBackupOneAccount(api: SchedulerDB, uid: number | null, env?: Env): Promise<string | null> {
     const nav = api as unknown as Partial<NavigationAPI> & SchedulerDB;
     const label = `账号 ${uid ?? "全局"}`;
 
@@ -236,6 +236,8 @@ async function notesBackupOneAccount(api: SchedulerDB, uid: number | null): Prom
         const result = await runNotesWebDavBackup(nav as unknown as NavigationAPI, config, {
             mode: "auto",
             stored,
+            // env 传下去：配置了附件存储时自动备份也是 ZIP（含正文引用的附件）
+            env,
         });
         console.log(
             result.success
@@ -488,7 +490,7 @@ export async function runScheduledTasks(
     // 记事本自动备份调度：到没到点由各账号自己的频率配置判定，任何触发频率下行为都正确
     try {
         const api = makeApi(env);
-        await runNotesBackupSchedule(api);
+        await runNotesBackupSchedule(api, env);
     } catch (error) {
         console.error("记事本自动备份调度异常:", error);
     }

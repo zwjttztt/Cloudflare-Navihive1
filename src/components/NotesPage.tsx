@@ -211,6 +211,11 @@ export interface NotesPageProps {
         /** 删除网盘上的一份备份文件（最近备份的删除按钮，2026-10-10） */
         deleteRemote?(filename: string): Promise<{ success: boolean; message: string }>;
     };
+    /**
+     * 数据集级变更广播（2026-10-11，阶段 2）：导入 / 恢复成功后喊一声，
+     * 让其它标签页能提示刷新。可选：老调用方没传时导入照常，只是少了跨页提醒。
+     */
+    onDatasetChanged?: () => void;
     notes: Note[];
     onClose: () => void;
     /**
@@ -1457,6 +1462,7 @@ export default function NotesPage({
     shareApi,
     uploadApi,
     backupApi,
+    onDatasetChanged,
     notes,
     onClose,
     accountName,
@@ -3037,7 +3043,9 @@ export default function NotesPage({
 
             if (!isZip) {
                 const parsed = JSON.parse(await file.text()) as NotesImportPayload;
-                return importNotes(parsed);
+                const stats = await importNotes(parsed);
+                onDatasetChanged?.();
+                return stats;
             }
 
             const entries = await readZip(new Uint8Array(await file.arrayBuffer()));
@@ -3122,7 +3130,10 @@ export default function NotesPage({
                     noteTags[String(id)] = [...new Set(names)].map(name => tagIds.get(name)!);
                     imported.push({ id, title, content, folder_id: ensureFolder(parts.join("/")) });
                 }
-                return importNotes({ notes: imported, folders, tags, noteTags });
+                return importNotes({ notes: imported, folders, tags, noteTags }).then(stats => {
+                    onDatasetChanged?.();
+                    return stats;
+                });
             }
             const payload = JSON.parse(
                 new TextDecoder().decode(notesEntry.data)
@@ -3174,9 +3185,11 @@ export default function NotesPage({
             if (skipped > 0) {
                 onNotify?.(`有 ${skipped} 个附件没能回传（正文里的引用可能还是旧的）`, "warning" as never);
             }
+            // 导入是一次数据集级变更：其它标签页 / 设备都要能看见（阶段 2）
+            onDatasetChanged?.();
             return stats;
         },
-        [shareApi, uploadApi, onNotify]
+        [shareApi, uploadApi, onNotify, onDatasetChanged]
     );
 
     const exportPdfOne = useCallback(
@@ -6134,9 +6147,15 @@ export default function NotesPage({
                     onNotesStats: shareApi?.notesStats
                         ? () => shareApi.notesStats!()
                         : undefined,
-                    // 导入「记事本导出」JSON：同一条链路（NotesPage 自己导出的文件）
+                    // 导入「记事本导出」JSON：同一条链路（NotesPage 自己导出的文件）。
+                    // 成功后广播一次数据集变更（阶段 2）：网盘恢复不经 useNotes，
+                    // 不广播的话其它标签页对这次恢复一无所知。
                     onImportNotes: shareApi?.importNotes
-                        ? (payload) => shareApi.importNotes!(payload)
+                        ? async (payload) => {
+                              const stats = await shareApi.importNotes!(payload);
+                              onDatasetChanged?.();
+                              return stats;
+                          }
                         : undefined,
                     // 备份页（2026-10-09 照 inkstone 的 BackupSettings）：能力由
                     // NotesOverlay 探测好传进来，老部署没有时整页不出现

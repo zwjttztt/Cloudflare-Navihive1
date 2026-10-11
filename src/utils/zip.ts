@@ -22,6 +22,18 @@ export interface ZipEntry {
     mtime?: number;
 }
 
+/**
+ * base64 → 字节（ZIP 备份从服务端拿回来是 base64 文本，前端解成字节再交给 readZip）。
+ * 与 crypto.ts 里的 b64urlDecode 不同：这里是**标准** base64（不做 URL 安全替换），
+ * 分块解码避免几 MB 的字符串逐字符拼接。
+ */
+export function decodeBase64Bytes(b64: string): Uint8Array {
+    const bin = atob(b64);
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+}
+
 export interface UnzippedEntry {
     path: string;
     data: Uint8Array;

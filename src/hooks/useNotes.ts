@@ -14,12 +14,18 @@ import type {
     NoteRevision,
     NoteSearchResult,
     NoteTag,
+    NotesChangesResult,
     NotesImportPayload,
     WebDavResult,
 } from "../API/http";
 import type { WebDavErrorCode } from "../API/types";
 import { reportError } from "../utils/errorReporter";
 import { isNoteConflict } from "../utils/noteConflict";
+import {
+    loadNotesSyncCursor,
+    loadNotesSyncPrefs,
+    saveNotesSyncCursor,
+} from "../utils/notesSync";
 import type { NotifySeverity } from "./useNotify";
 
 /** 文件夹排序：先按 order_num，再按名字（和后端 listFolders 的 ORDER BY 一致） */
@@ -120,6 +126,8 @@ export type NotesApiLike = {
     /** 备份页的配置读写（notesBackup.* 是账号私有配置，与导航页 webdav.* 同一机制） */
     getConfig?(key: string): Promise<string | null>;
     setConfig?(key: string, value: string): Promise<boolean>;
+    /** 跨设备变更轮询（2026-10-11）。可选：老部署没有 notes/changes 时不轮询 */
+    notesChanges?(since?: string): Promise<NotesChangesResult>;
 };
 
 type UseNotesParams = {
@@ -145,11 +153,83 @@ export function useNotes({ api, onError, onNotify, onNoteConflict }: UseNotesPar
         broadcastRef.current = channel;
         channel.onmessage = event => {
             if (event.data?.type === "changed") { setExternalChange(true); onNotify("其他标签页的笔记已更新，请刷新列表后继续编辑", "info"); }
+            if (event.data?.type === "sync-heartbeat") { lastHeartbeatRef.current = Date.now(); }
         };
         return () => { channel.close(); broadcastRef.current = null; };
     }, [onNotify]);
+
+    /**
+     * 跨设备变更轮询（2026-10-11，阶段 5）。
+     *
+     * 口径（重要，别「顺手升级」）：
+     *   - 只做「发现变更 → reload() 整表重拉」，**绝不自动改编辑器里的草稿**；
+     *     真正的并发保存冲突仍由 rev 守卫（409 + 冲突弹框）兜底。
+     *   - 同一账号开多个标签页时只有「主标签」发请求：靠频道上的
+     *     sync-heartbeat 判活，主标签关闭后其余标签自然接管。短暂的双发无害
+     *     （轮询是幂等读），不做复杂的选举。
+     *   - 首次轮询只初始化游标，不报变更 —— 否则每次打开记事本都会白刷一次。
+     *   - 页面隐藏时跳过（省 D1 读配额）；回前台后的下一轮自然补上。
+     *   - notesChanges 不存在（老部署）时整个 effect 直接退化为空转。
+     */
+    useEffect(() => {
+        if (typeof api.notesChanges !== "function") return;
+        let stopped = false;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const tabId =
+            typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : String(Math.random());
+        const tick = async () => {
+            if (stopped) return;
+            const prefs = loadNotesSyncPrefs();
+            const intervalMs = Math.max(30, prefs.intervalSec) * 1000;
+            try {
+                const hidden = typeof document !== "undefined" && document.visibilityState === "hidden";
+                if (prefs.enabled && !hidden) {
+                    // 主标签判活：最近 intervalMs*1.5 内有其它标签的心跳就让位
+                    const isLeader = Date.now() - lastHeartbeatRef.current >= intervalMs * 1.5;
+                    if (isLeader) {
+                        broadcastRef.current?.postMessage({ type: "sync-heartbeat", tabId });
+                        const since = loadNotesSyncCursor();
+                        const r = await api.notesChanges!(since || undefined);
+                        if (r?.success && r.now && !stopped) {
+                            const shape = JSON.stringify([r.folders, r.tags, r.noteTags]);
+                            const structural =
+                                lastSyncShapeRef.current !== null &&
+                                shape !== lastSyncShapeRef.current;
+                            lastSyncShapeRef.current = shape;
+                            // since 为空 = 首次轮询，只建立基线不触发刷新
+                            const shouldReload = Boolean(since) && (r.notesChanged > 0 || structural);
+                            saveNotesSyncCursor(r.now);
+                            if (shouldReload) {
+                                await reloadForSyncRef.current();
+                                if (!stopped) {
+                                    onNotify("其他设备的笔记更新已同步到列表", "info");
+                                    broadcastRef.current?.postMessage({ type: "changed" });
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (error) {
+                // 轮询失败静默：下一轮再试。连续失败也不 toast —— 断网时每分钟弹一次没人受得了
+                reportError(error, { source: "notes-sync-poll" });
+            }
+            if (!stopped) timer = setTimeout(() => { void tick(); }, intervalMs);
+        };
+        timer = setTimeout(() => { void tick(); }, 5_000);
+        return () => {
+            stopped = true;
+            if (timer) clearTimeout(timer);
+        };
+    }, [api, onNotify]);
     const [notes, setNotes] = useState<Note[]>([]);
     const [loaded, setLoaded] = useState(false);
+    /**
+     * 跨设备轮询的「主标签」判活：最近一次收到其它标签心跳的时间。
+     * 放 ref 不放 state —— 它每轮都在变，进 state 会无谓地重渲染整棵树。
+     */
+    const lastHeartbeatRef = useRef(0);
+    /** 上一轮轮询的文件夹/标签快照（JSON 字符串），用来发现结构性变更 */
+    const lastSyncShapeRef = useRef<string | null>(null);
     /** 阶段三：回收站里的笔记（懒加载，进「回收站」视图时才拉） */
     const [trash, setTrash] = useState<TrashedNote[]>([]);
     /** 阶段三收尾：笔记文件夹 / 标签（左栏第一列要用，所以状态放在这里而不是组件里） */
@@ -194,6 +274,12 @@ export function useNotes({ api, onError, onNotify, onNoteConflict }: UseNotesPar
     // 首屏拉一次：笔记条数要显示在顶栏按钮上，不能等用户点开面板才加载
     useEffect(() => {
         void reload();
+    }, [reload]);
+
+    /** 轮询 effect 里用 ref 读 reload，避免把整条 useNotes 依赖链拖进轮询的依赖数组 */
+    const reloadForSyncRef = useRef(reload);
+    useEffect(() => {
+        reloadForSyncRef.current = reload;
     }, [reload]);
 
     const createNote = useCallback(
@@ -386,6 +472,8 @@ export function useNotes({ api, onError, onNotify, onNoteConflict }: UseNotesPar
                 }).updateNoteOrder(
                     ordered.map((n, i) => ({ id: n.id!, order_num: i }))
                 );
+                // 排序也是一次数据集变更（2026-10-11）：其它标签页 / 同步轮询都要能看见
+                broadcastRef.current?.postMessage({ type: "changed" });
             } catch (error) {
                 reportError(error, { source: "note-order" });
                 onError("保存排序失败，正在重新加载");
@@ -869,6 +957,12 @@ export function useNotes({ api, onError, onNotify, onNoteConflict }: UseNotesPar
         loaded,
         externalChange,
         reload,
+        /**
+         * 数据集级变更广播（2026-10-11）：导入 / 恢复这类不走单个 create/update
+         * 方法的路径成功后手动喊一声，让其它标签页能提示刷新。跨标签页基础
+         * 通道与常规 CRUD 用的是同一条，这里只是把它暴露给上层。
+         */
+        broadcastChange: () => broadcastRef.current?.postMessage({ type: "changed" }),
         createNote,
         updateNote,
         deleteNote,

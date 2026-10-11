@@ -3,7 +3,7 @@
 // 下面这几个函数就是 worker/routes/backup.ts 与 worker/cron.ts 用到的全部入口；
 // 原来的 worker/webdav.ts 拆开后，这里顺手把子模块的导出原样转出去，
 // 所以 `from "../worker/webdav"` 这种老写法一行都不用改。
-import { decryptBackup, encryptBackup, isEncryptedBackup } from "../../src/API/crypto";
+import { decryptBackup, encryptBackup, isEncryptedBackup, type Bytes } from "../../src/API/crypto";
 import type { ExportData } from "../../src/API/http";
 import type { NavigationAPI } from "../../src/API/navigationApi";
 import { withBackupIntegrity } from "../../src/utils/backupIntegrity";
@@ -215,9 +215,9 @@ export async function webdavList(config: WebDavConfig): Promise<WebDavResult<Web
         }
 
         const xml = await response.text();
-        // 兼容压缩备份（.json.gz）与早期明文备份（.json）
+        // 兼容压缩备份（.json.gz）、早期明文备份（.json）与 ZIP 笔记备份（.zip，2026-10-11）
         const files = parseWebDavList(xml).filter(file =>
-            /\.json(\.gz)?$/i.test(file.name)
+            /\.json(\.gz)?$/i.test(file.name) || /\.zip$/i.test(file.name)
         );
 
         // 手动备份会累积多份，而 WebDAV 的返回顺序没有保证 —— 按修改时间倒序，
@@ -236,12 +236,21 @@ export async function webdavList(config: WebDavConfig): Promise<WebDavResult<Web
     }
 }
 
-// 下载指定的远端备份
-export async function webdavDownload(
+/**
+ * 下载一份远端备份并解开口令加密（如有），返回**原始字节**（不 gunzip、不解析）。
+ *
+ * 与 webdavDownload 的分工：这里是「取回 + 解密」这一段；
+ * JSON 备份的 gunzip + 解析仍在 webdavDownload，ZIP 笔记备份（2026-10-11 起）
+ * 则由 notes download 路由直接拿字节转 base64 交给前端解包。
+ *
+ * maxBytes 可调：ZIP 备份带附件，体积上限比纯 JSON 的 32MB 宽（见调用方）。
+ */
+export async function webdavDownloadBytes(
     config: WebDavConfig,
     filename: string,
-    password: string = config.backupPassword ?? ""
-): Promise<WebDavResult<ExportData>> {
+    password: string = config.backupPassword ?? "",
+    maxBytes: number = MAX_BACKUP_DOWNLOAD_BYTES
+): Promise<WebDavResult<{ bytes: Bytes; encrypted: boolean }>> {
     try {
         if (!filename) {
             return { success: false, message: "未指定备份文件" };
@@ -257,17 +266,13 @@ export async function webdavDownload(
             return { success: false, message: `下载备份失败：HTTP ${response.status}` };
         }
 
-        // 按文件头判断格式，兼容历史备份：
-        // - NAVIHIVE-ENC1 开头：口令加密备份（当前默认，用备份密码解，与 AUTH_SECRET 无关）；
-        // - 1f 8b 开头：早期明文 gzip 备份，直接解压；
-        // - 其余：再按明文 JSON 试一次（更早期的未压缩备份），都失败就按旧格式报错。
         // 有界读取：网盘上的东西不受我们控制，对方真返回一个几个 G 的文件，
-        // 直接 arrayBuffer() 会把 Worker 的内存吃干。备份再大也大不过这个数。
-        const rawBytes = new Uint8Array(
-            await readBoundedBytes(response.body, MAX_BACKUP_DOWNLOAD_BYTES, 60_000)
+        // 直接 arrayBuffer() 会把 Worker 的内存吃干。
+        const rawBytes: Bytes = new Uint8Array(
+            await readBoundedBytes(response.body, maxBytes, 60_000)
         );
 
-        let jsonText: string;
+        // 按文件头判断是否口令加密（NAVIHIVE-ENC1/2）。没加密就原样返回。
         if (isEncryptedBackup(rawBytes)) {
             if (!password) {
                 return {
@@ -279,7 +284,11 @@ export async function webdavDownload(
                 };
             }
             try {
-                jsonText = await gunzipToString(await decryptBackup(rawBytes, password));
+                return {
+                    success: true,
+                    data: { bytes: await decryptBackup(rawBytes, password), encrypted: true },
+                    message: filename,
+                };
             } catch (error) {
                 return {
                     success: false,
@@ -287,40 +296,69 @@ export async function webdavDownload(
                     message: errorMessage(error, "备份密码不正确，或备份文件已损坏"),
                 };
             }
-        } else if (rawBytes.length >= 2 && rawBytes[0] === 0x1f && rawBytes[1] === 0x8b) {
-            jsonText = await gunzipToString(rawBytes).catch(() => "");
-        } else {
-            jsonText = new TextDecoder().decode(rawBytes);
         }
-
-        const text = jsonText.replace(/^\uFEFF/, "");
-        let data: ExportData;
-        try {
-            data = JSON.parse(text) as ExportData;
-        } catch {
-            // 走到这里的只有一种常见情况：旧版本用 AUTH_SECRET 加密的备份。那份密钥
-            // 已经和备份解耦，服务端不再用它解密，只能请用户重新备份一份。
-            return {
-                success: false,
-                message: password
-                    ? "备份文件已损坏或口令不匹配，无法解析"
-                    : "这份备份是用旧版服务端密钥（AUTH_SECRET）加密的，现已与备份解耦：请用备份密码重新备份一次",
-            };
-        }
-
-        return { success: true, data, message: filename };
+        return { success: true, data: { bytes: rawBytes, encrypted: false }, message: filename };
     } catch (error) {
         if (error instanceof BodyLimitError) {
             return {
                 success: false,
                 message:
                     error.status === 413
-                        ? "备份文件过大（超过 32 MB），已放弃下载"
+                        ? `备份文件过大（超过 ${Math.round(maxBytes / 1024 / 1024)} MB），已放弃下载`
                         : "下载备份超时，请稍后重试",
             };
         }
         return { success: false, message: errorMessage(error, "下载备份失败") };
     }
+}
+
+// 下载指定的远端备份
+export async function webdavDownload(
+    config: WebDavConfig,
+    filename: string,
+    password: string = config.backupPassword ?? ""
+): Promise<WebDavResult<ExportData>> {
+    // 取回 + 解密这一段共用 webdavDownloadBytes；这里只负责「解开 JSON」。
+    const raw = await webdavDownloadBytes(config, filename, password);
+    if (!raw.success || !raw.data) {
+        // 类型收窄：失败分支没有 data
+        return { success: false, code: raw.code, message: raw.message };
+    }
+    const rawBytes = raw.data.bytes;
+
+    // 按文件头判断格式，兼容历史备份：
+    // - 1f 8b 开头：gzip 备份（加密备份解开之后也是 gzip），直接解压；
+    // - PK 开头：ZIP 笔记备份（2026-10-11 起的新格式）—— 这条路不解析，
+    //   交给前端走带附件回传的导入，这里报一句明确的错而不是含糊的「损坏」；
+    // - 其余：再按明文 JSON 试一次（更早期的未压缩备份）。
+    let jsonText: string;
+    if (rawBytes.length >= 2 && rawBytes[0] === 0x1f && rawBytes[1] === 0x8b) {
+        jsonText = await gunzipToString(rawBytes).catch(() => "");
+    } else if (rawBytes.length >= 2 && rawBytes[0] === 0x50 && rawBytes[1] === 0x4b) {
+        return {
+            success: false,
+            message: "这是新版 ZIP 备份，请刷新页面后再恢复（旧版界面不认识这种格式）",
+        };
+    } else {
+        jsonText = new TextDecoder().decode(rawBytes);
+    }
+
+    const text = jsonText.replace(/^\uFEFF/, "");
+    let data: ExportData;
+    try {
+        data = JSON.parse(text) as ExportData;
+    } catch {
+        // 走到这里的只有一种常见情况：旧版本用 AUTH_SECRET 加密的备份。那份密钥
+        // 已经和备份解耦，服务端不再用它解密，只能请用户重新备份一份。
+        return {
+            success: false,
+            message: password
+                ? "备份文件已损坏或口令不匹配，无法解析"
+                : "这份备份是用旧版服务端密钥（AUTH_SECRET）加密的，现已与备份解耦：请用备份密码重新备份一次",
+        };
+    }
+
+    return { success: true, data, message: filename };
 }
 
 // 删除指定的远端备份

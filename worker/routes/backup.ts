@@ -23,11 +23,13 @@ import {
 } from "../loginGuard";
 import { isBodyTooLarge, safeJson } from "../util";
 import {
+    gunzipToString,
     readAllConfigs,
     resolveWebDavConfig,
     runWebDavBackup,
     webdavDelete,
     webdavDownload,
+    webdavDownloadBytes,
     webdavList,
     webdavTest,
 } from "../webdav";
@@ -49,6 +51,44 @@ import type { RouteCtx } from "./types";
  */
 const MAX_IMPORT_GROUPS = 2_000;
 const MAX_IMPORT_SITES = 20_000;
+
+/** 分块转 base64（几 MB 的 ZIP 用逐字符拼接会慢得没法看，按 32KB 块走 String.fromCharCode） */
+function bytesToBase64(bytes: Uint8Array): string {
+    let binary = "";
+    const CHUNK = 0x8000;
+    for (let i = 0; i < bytes.length; i += CHUNK) {
+        binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+    }
+    return btoa(binary);
+}
+
+/**
+ * 旧格式（gzip JSON / 明文 JSON）备份的解包与形状校验。
+ * 网盘上的文件不受我们控制：用户指错一份导航备份时这里会拦下，
+ * 不让它喂进 notes/import 写一堆乱数据。返回 null = 形状不对。
+ */
+async function decodeNotesBackupJson(bytes: Uint8Array<ArrayBuffer>): Promise<{ kind?: string; notes?: unknown } | null> {
+    let jsonText: string;
+    if (bytes.length >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b) {
+        jsonText = await gunzipToString(bytes).catch(() => "");
+    } else if (bytes.length >= 2 && bytes[0] === 0x50 && bytes[1] === 0x4b) {
+        // ZIP 不该走到这条旧格式分支（入口已按魔数分流）；兜一道防串路
+        return null;
+    } else {
+        jsonText = new TextDecoder().decode(bytes);
+    }
+    try {
+        const payload = JSON.parse(jsonText.replace(/^\uFEFF/, "")) as {
+            kind?: string;
+            notes?: unknown;
+        };
+        if (!payload || !Array.isArray(payload.notes)) return null;
+        return payload;
+    } catch {
+        // 解析失败：口令对不上 / 旧版 AUTH_SECRET 加密的备份 —— 都按「没有笔记数据」处理
+        return null;
+    }
+}
 
 /**
  * 导入审计：唯一能「整体替换全站数据」的入口，必须留痕。
@@ -369,7 +409,8 @@ export async function handleBackupRoutes(ctx: RouteCtx): Promise<Response | null
             );
         }
         // 手动备份：不删任何已有备份（自动备份才按保留份数清理自己那批）
-        const result = await runNotesWebDavBackup(api, config, { mode: "manual", stored });
+        // env 传下去：配置了附件存储时备份升级为 ZIP（含正文引用的附件）
+        const result = await runNotesWebDavBackup(api, config, { mode: "manual", stored, env: ctx.env });
         return Response.json(result);
     }
 
@@ -410,16 +451,25 @@ export async function handleBackupRoutes(ctx: RouteCtx): Promise<Response | null
         }
         // 口优先级：本次输入 > 记事本备份口令 > 导航备份口令（与上传侧同源）
         const password = body.password || config.backupPassword || "";
-        const result = await webdavDownload(config, filename, password);
-        if (!result.success || !result.data) {
+        // 取回 + 解密（如有）拿原始字节：ZIP 备份（2026-10-11 起，含附件）不再由
+        // 服务端解包 —— 附件回传要走前端的 uploadAttachment，服务端解了也用不上。
+        // 体积闸比纯 JSON 的 32MB 宽一档（附件是图片本来就压过，但量可能多），
+        // 仍留在 Worker 内存可承受的范围。
+        const NOTES_BACKUP_ZIP_MAX_BYTES = 64 * 1024 * 1024;
+        const raw = await webdavDownloadBytes(config, filename, password, NOTES_BACKUP_ZIP_MAX_BYTES);
+        if (!raw.success || !raw.data) {
             return Response.json(
-                { success: false, code: result.code, message: result.message || "下载备份失败" }
+                { success: false, code: raw.code, message: raw.message || "下载备份失败" }
             );
         }
-        // ⚠️ 形状要校验：网盘上的文件不受我们控制，万一用户指了一份导航备份，
-        // 直接喂给 notes/import 会写进一堆乱七八糟的东西。
-        const payload = result.data as unknown as { kind?: string; notes?: unknown };
-        if (!payload || !Array.isArray(payload.notes)) {
+        const bytes = raw.data.bytes;
+        // PK 魔数 = ZIP 备份：转 base64 交给前端，走「解包 → 附件回传 → 引用改写」那条已测链路
+        if (bytes.length >= 2 && bytes[0] === 0x50 && bytes[1] === 0x4b) {
+            return Response.json({ success: true, zipBase64: bytesToBase64(bytes), message: filename });
+        }
+        // 旧格式：gzip JSON / 明文 JSON，服务端解开校验后照旧回 payload
+        const payload = await decodeNotesBackupJson(bytes);
+        if (!payload) {
             return Response.json({
                 success: false,
                 message: "这份文件里没有笔记数据（请确认选的是记事本备份）",

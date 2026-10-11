@@ -54,7 +54,10 @@ import {
 //     老库建不出来 → searchNotes 一律走 LIKE 回退（能搜但慢、且不排序）。
 // 15 = notes.starred（收藏，与置顶分离）+ notes.rev（乐观并发版本号）。
 //     两列都是老库上必须 ALTER 才有的，版本号 +1 让快路径失效。
-export const SCHEMA_VERSION = "16";
+// 17 = note_tombstone（笔记删除墓碑，跨设备变更轮询用）。
+//     新表同样吃快路径：老库建不出来 → notes/changes 的墓碑计数恒 0，
+//     「彻底删除」对其他设备不可见。加表必须 +1。
+export const SCHEMA_VERSION = "17";
 /** 版本号存在 configs 里的键名 */
 export const SCHEMA_VERSION_KEY = "schema.version";
 

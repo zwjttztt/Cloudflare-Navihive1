@@ -510,6 +510,23 @@ export class MockNavigationClient {
     }
 
     /**
+     * 演示模式的变更轮询：演示数据只有一个浏览器会话，永远「没有变更」，
+     * 只回快照让客户端初始化游标（形状与真实实现一致，前端不用区分）。
+     */
+    async notesChanges(since?: string): Promise<import("./types").NotesChangesResult> {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        void since;
+        return {
+            success: true,
+            now: new Date().toISOString().slice(0, 19).replace("T", " "),
+            notesChanged: 0,
+            folders: [],
+            tags: [],
+            noteTags: {},
+        };
+    }
+
+    /**
      * 演示模式的全文检索：内存里 LIKE 一遍（没有 FTS5，mode 恒为 like）。
      * 形状与真实实现一致，前端不用区分。
      */
