@@ -57,7 +57,9 @@ import {
 // 17 = note_tombstone（笔记删除墓碑，跨设备变更轮询用）。
 //     新表同样吃快路径：老库建不出来 → notes/changes 的墓碑计数恒 0，
 //     「彻底删除」对其他设备不可见。加表必须 +1。
-export const SCHEMA_VERSION = "17";
+// 18 = group_share（公开分组分享，阶段④）。新表同样吃快路径：
+//     老库建不出来 → 分组分享接口一律 500。加表必须 +1。
+export const SCHEMA_VERSION = "18";
 /** 版本号存在 configs 里的键名 */
 export const SCHEMA_VERSION_KEY = "schema.version";
 
@@ -87,6 +89,8 @@ export interface MigrationApi {
     migrateNoteShareColumns(): Promise<void>;
     /** 2026-10-09：notes 补收藏（starred）与乐观并发版本号（rev）两列 */
     migrateNoteStarRevColumns(): Promise<void>;
+    /** 2026-10-11：group_share（公开分组分享，阶段④） */
+    migrateGroupShareTable(): Promise<void>;
     /** 2026-10-09：笔记全文检索的 FTS5 虚拟表（建不出来就降级，不阻断启动） */
     migrateNotesFtsTable(): Promise<void>;
     migrateRecoveryKeyToOwner(ownerId: number): Promise<void>;
@@ -262,6 +266,10 @@ export const migrationImpl: MigrationApi = {
             }
         }
         await this.migrateNotesFtsTable();
+
+        // 6.85) 2026-10-11：group_share（公开分组分享）。新表必须显式建
+        //（快路径会跳过第 1 步的批量建表），CREATE IF NOT EXISTS 对新表足够。
+        await this.migrateGroupShareTable();
 
         // 7) 索引：排在最后，因为它依赖上面补出来的 user_id 列（见 INDEX_STATEMENTS 注释）
         await this.createIndexes();
@@ -508,6 +516,21 @@ export const migrationImpl: MigrationApi = {
                 // 回填失败不该让站点起不来；代价只是那几行第一次保存可能报冲突
             }
         }
+    },
+
+    migrateGroupShareTable: async function (this: NavigationAPI ): Promise<void> {
+        await this.db.prepare(`CREATE TABLE IF NOT EXISTS group_share (
+            group_id INTEGER PRIMARY KEY,
+            group_uuid TEXT,
+            user_id INTEGER,
+            token TEXT NOT NULL UNIQUE,
+            expires_at INTEGER,
+            password TEXT,
+            views INTEGER NOT NULL DEFAULT 0
+        )`).run();
+        await this.db.prepare(
+            "CREATE INDEX IF NOT EXISTS idx_group_share_user ON group_share(user_id)"
+        ).run();
     },
 
     migrateOwnerColumns: async function (this: NavigationAPI ): Promise<void> {

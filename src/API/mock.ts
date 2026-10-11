@@ -509,6 +509,42 @@ export class MockNavigationClient {
         return { versions: 0, links };
     }
 
+    // 演示模式的分组分享：内存 Map，一个分组一份（真实实现是 group_share 表）
+    private groupShares = new Map<number, { token: string; expires_at: number | null; password: string | null; views: number }>();
+
+    async createGroupShare(id: number, days: number | null, password?: string | null): Promise<import("./types").GroupShareConfig | null> {
+        await new Promise(resolve => setTimeout(resolve, 120));
+        if (!mockGroups.some(g => g.id === id)) return null;
+        const token = Array.from(crypto.getRandomValues(new Uint8Array(32)), b => b.toString(16).padStart(2, "0")).join("");
+        const entry = {
+            token,
+            expires_at: days === null ? null : Date.now() + days * 86_400_000,
+            password: password && password.length > 0 ? password : null,
+            views: 0,
+        };
+        this.groupShares.set(id, entry);
+        return { token: entry.token, expires_at: entry.expires_at, views: entry.views, hasPassword: Boolean(entry.password) };
+    }
+    async updateGroupShare(id: number, days: number | null, password?: string | null): Promise<import("./types").GroupShareConfig | null> {
+        await new Promise(resolve => setTimeout(resolve, 120));
+        const entry = this.groupShares.get(id);
+        if (!entry) return null;
+        entry.expires_at = days === null ? null : Date.now() + days * 86_400_000;
+        if (password !== undefined) entry.password = password && password.length > 0 ? password : null;
+        return { token: entry.token, expires_at: entry.expires_at, views: entry.views, hasPassword: Boolean(entry.password) };
+    }
+    async revokeGroupShare(id: number): Promise<{ success: boolean }> {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        this.groupShares.delete(id);
+        return { success: true };
+    }
+    async getGroupShareConfig(id: number): Promise<import("./types").GroupShareConfig | null> {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        const entry = this.groupShares.get(id);
+        if (!entry) return null;
+        return { token: entry.token, expires_at: entry.expires_at, views: entry.views, hasPassword: Boolean(entry.password) };
+    }
+
     /**
      * 演示模式的变更轮询：演示数据只有一个浏览器会话，永远「没有变更」，
      * 只回快照让客户端初始化游标（形状与真实实现一致，前端不用区分）。
@@ -520,6 +556,7 @@ export class MockNavigationClient {
             success: true,
             now: new Date().toISOString().slice(0, 19).replace("T", " "),
             notesChanged: 0,
+            changedNoteIds: [],
             folders: [],
             tags: [],
             noteTags: {},

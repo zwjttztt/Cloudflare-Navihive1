@@ -198,6 +198,8 @@ export function useNotes({ api, onError, onNotify, onNoteConflict }: UseNotesPar
                             lastSyncShapeRef.current = shape;
                             // since 为空 = 首次轮询，只建立基线不触发刷新
                             const shouldReload = Boolean(since) && (r.notesChanged > 0 || structural);
+                            // 每轮都刷新：无变更时清空，避免旧 ids 让上层提示反复触发
+                            setLastSyncChangedIds(shouldReload ? r.changedNoteIds ?? [] : []);
                             saveNotesSyncCursor(r.now);
                             if (shouldReload) {
                                 await reloadForSyncRef.current();
@@ -223,6 +225,11 @@ export function useNotes({ api, onError, onNotify, onNoteConflict }: UseNotesPar
     }, [api, onNotify]);
     const [notes, setNotes] = useState<Note[]>([]);
     const [loaded, setLoaded] = useState(false);
+    /**
+     * 最近一轮轮询发现的「被其他设备改过的笔记 id」（新的在前，最多 50）。
+     * 上层（NotesPage）用它判断「当前打开的这篇是否被改」，给针对性提示。
+     */
+    const [lastSyncChangedIds, setLastSyncChangedIds] = useState<number[]>([]);
     /**
      * 跨设备轮询的「主标签」判活：最近一次收到其它标签心跳的时间。
      * 放 ref 不放 state —— 它每轮都在变，进 state 会无谓地重渲染整棵树。
@@ -996,5 +1003,6 @@ export function useNotes({ api, onError, onNotify, onNoteConflict }: UseNotesPar
         getRevision,
         // 服务端全文检索（本地 fuzzy 是它的兜底，不是替代）
         searchRemote,
+        lastSyncChangedIds,
     };
 }

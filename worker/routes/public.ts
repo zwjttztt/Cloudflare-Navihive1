@@ -99,6 +99,21 @@ export async function handlePublicRoutes(ctx: RouteCtx): Promise<Response | null
         });
     }
 
+    // 公开分组分享（2026-10-11 阶段④）：group-shares/<token>，GET 直读 /
+    // POST 带口令（受口令的回 need-password 让公开页弹框）。同一套公开页交互。
+    if (path.startsWith("group-shares/") && (method === "GET" || method === "POST")) {
+        const token = path.slice("group-shares/".length);
+        let password: string | null = null;
+        if (method === "POST") {
+            const body = (await request.json().catch(() => ({}))) as { password?: unknown };
+            password = typeof body.password === "string" ? body.password : null;
+        }
+        const result = await api.getPublicGroupShare(token, password);
+        return Response.json(result, {
+            headers: { "Cache-Control": "no-store", "X-Robots-Tag": "noindex, nofollow" },
+        });
+    }
+
     if (path.startsWith("note-shares/") && (method === "GET" || method === "POST")) {
         const token = path.slice("note-shares/".length);
         // POST 带访问口令（受口令保护的分享）；GET 不带（无口令分享直接返回，

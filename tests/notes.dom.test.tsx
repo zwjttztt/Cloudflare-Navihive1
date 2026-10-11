@@ -632,6 +632,7 @@ test("左栏视图齐全（全部/最近/收藏/未归类 + 底部归档/回收�
         "recent",
         "starred",
         "uncategorized",
+        "todo",
         "archived",
         "trash",
     ]);
@@ -2065,7 +2066,7 @@ test("没有 folderTags（老部署）时退化成只有那六个视图，不能
     mountPanel([note({ id: 1, title: "甲", content: "" })]);
     assert.deepEqual(
         [...document.querySelectorAll("button[data-view]")].map(b => b.getAttribute("data-view")),
-        ["all", "recent", "starred", "uncategorized", "archived", "trash"]
+        ["all", "recent", "starred", "uncategorized", "todo", "archived", "trash"]
     );
     assert.ok(document.querySelector("[data-note-list]"), "列表照常渲染");
 });

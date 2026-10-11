@@ -189,3 +189,37 @@ test("真实 SQLite：账号隔离 —— 正文引用到的附件属于别人�
     assert.equal(entries.length, 0, "别人的附件绝不能进我的备份");
     assert.equal(skipped, 1, "引用到了但行不属于我 → 计入跳过，如实反映");
 });
+
+// ============ 阶段③：预上传自检 ============
+
+test("verifyBackupZipBytes：合法 ZIP 通过；丢 notes.json / 条数不符 / 丢附件都拦下", async () => {
+    const { verifyBackupZipBytes } = await import("../worker/notesBackup");
+    const payload = { notes: [{ title: "甲" }, { title: "乙" }] };
+    const zip = createZip([
+        { path: "notes.json", data: new TextEncoder().encode(JSON.stringify(payload)) },
+        { path: "attachments/a__x.png", data: new Uint8Array([1]) },
+        { path: "attachments/b__y.png", data: new Uint8Array([2]) },
+    ]);
+    // 正常：2 笔记 + 2 附件
+    await verifyBackupZipBytes(zip, { notes: 2, attachments: 2 });
+    // 附件丢了一个（收集了 2 个但包里只有 1）→ 拦
+    const bad = createZip([
+        { path: "notes.json", data: new TextEncoder().encode(JSON.stringify(payload)) },
+        { path: "attachments/a__x.png", data: new Uint8Array([1]) },
+    ]);
+    await assert.rejects(
+        () => verifyBackupZipBytes(bad, { notes: 2, attachments: 2 }),
+        /附件条数不符/
+    );
+    // 笔记条数不符（少一条）→ 拦
+    const fewer = createZip([
+        { path: "notes.json", data: new TextEncoder().encode(JSON.stringify({ notes: [payload.notes[0]] })) },
+    ]);
+    await assert.rejects(
+        () => verifyBackupZipBytes(fewer, { notes: 2, attachments: 0 }),
+        /笔记条数不符/
+    );
+    // 没 notes.json → 拦
+    const empty = createZip([{ path: "readme.txt", data: new TextEncoder().encode("hi") }]);
+    await assert.rejects(() => verifyBackupZipBytes(empty, { notes: 0, attachments: 0 }), /notes\.json/);
+});

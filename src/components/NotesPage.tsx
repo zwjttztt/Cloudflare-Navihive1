@@ -82,6 +82,8 @@ import CheckBoxOutlineBlankIcon from "@mui/icons-material/CheckBoxOutlineBlank";
 import Checkbox from "@mui/material/Checkbox";
 import HubIcon from "@mui/icons-material/Hub";
 import NoteGraphDialog from "./NoteGraphDialog";
+import NotesTodoDialog from "./NotesTodoDialog";
+import { todoCounts } from "../utils/noteTodoAgenda";
 import BacklinksPanel from "./BacklinksPanel";
 import StrikethroughIcon from "@mui/icons-material/StrikethroughS";
 import TableRowsIcon from "@mui/icons-material/TableRows";
@@ -118,7 +120,11 @@ import type {
     WebDavErrorCode,
 } from "../API/http";
 import type { TrashedNote } from "../hooks/useNotes";
-import { renderMarkdownToReact, type RenderFeatures } from "../utils/markdownToReact";
+import {
+    renderMarkdownToReact,
+    seedAttachmentDimensions,
+    type RenderFeatures,
+} from "../utils/markdownToReact";
 import { toggleTaskLine } from "../utils/noteTasks";
 import type { CompletionSources } from "../utils/noteCompletion";
 import { fuzzyFilter, fuzzyMatch } from "../utils/fuzzy";
@@ -216,6 +222,11 @@ export interface NotesPageProps {
      * 让其它标签页能提示刷新。可选：老调用方没传时导入照常，只是少了跨页提醒。
      */
     onDatasetChanged?: () => void;
+    /**
+     * 最近一轮跨设备轮询发现的「被改笔记 id」（阶段①）。当前打开的笔记
+     * 命中时给一句定向提示——保存时 rev 守卫仍会拦住静默覆盖。
+     */
+    syncChangedNoteIds?: number[];
     notes: Note[];
     onClose: () => void;
     /**
@@ -1463,6 +1474,7 @@ export default function NotesPage({
     uploadApi,
     backupApi,
     onDatasetChanged,
+    syncChangedNoteIds,
     notes,
     onClose,
     accountName,
@@ -1483,6 +1495,8 @@ export default function NotesPage({
     const [keyword, setKeyword] = useState("");
     /** 关系图谱（2026-10-09）：双链关系的全貌，从「更多」里开 */
     const [graphOpen, setGraphOpen] = useState(false);
+    /** 全库待办面板（2026-10-11 阶段②）：散在各篇里的 `- [ ]` 任务收进一个清单 */
+    const [todoOpen, setTodoOpen] = useState(false);
     /** 反链右侧常驻面板（N4）：与大纲面板同一位置，桌面头部按钮 / 菜单项共同开关 */
     const [backlinksOpen, setBacklinksOpen] = useState(false);
     /** 多选批量条（2026-10-09）：只在用户主动开了「多选」时才勾人，退出即清空 */
@@ -2513,8 +2527,26 @@ export default function NotesPage({
                 n => !n.archived && (n.folder_id === null || n.folder_id === undefined)
             ).length,
             trash: trashedNotes.length,
+            // 待办面板角标：全库未完成任务数（纯文本扫描，围栏代码块不算）
+            todo: todoCounts(notes).open,
         }),
         [notes, trashedNotes]
+    );
+
+    /** 待办面板勾选 → 回写原笔记：与预览勾选同一套判据（toggleTaskLine），
+     *  走 onUpdate（updateNote）链路，rev 守卫 / 自动保存 / 广播自动生效。 */
+    const handleTodoToggle = useCallback(
+        (noteId: number, line: number, checked: boolean) => {
+            const note = notes.find(n => n.id === noteId);
+            if (!note || typeof note.content !== "string") return;
+            const next = toggleTaskLine(note.content, line, checked);
+            if (next === null) {
+                onNotify?.("这条任务在原文里已变化，请打开笔记后重试", "error");
+                return;
+            }
+            void onUpdate(noteId, { content: next });
+        },
+        [notes, onUpdate, onNotify]
     );
 
     // ---------- 阶段三收尾：文件夹 / 标签 ----------
@@ -2849,6 +2881,34 @@ export default function NotesPage({
      * 数每条附件 id 出现在几条笔记里（按笔记去重，一条笔记里写两次也算 1 个引用）。
      * 与后端 prune 的判据同源（正文里没出现过的才算未引用），两边口径不能各算各的。
      */
+    // 定向提示（2026-10-11 阶段①）：当前打开的笔记被其他设备改过时，除了全局
+    // 的列表刷新提示，再给一句「就是这篇」的说明。不弹冲突框——用户可能只是
+    // 在看；真正保存时 rev 守卫会拦住静默覆盖，给覆盖/放弃的选择。
+    useEffect(() => {
+        if (!syncChangedNoteIds?.length) return;
+        if (active?.id === undefined || !syncChangedNoteIds.includes(active.id)) return;
+        onNotify?.("当前打开的笔记在其他设备被修改：保存时会提示冲突（覆盖或放弃）", "info");
+    }, [syncChangedNoteIds, active?.id, onNotify]);
+
+    // 服务端尺寸预注入（2026-10-11 阶段⑤）：挂载后拉一次附件元数据，把
+    // width/height 种进渲染缓存 —— 换设备首开多图笔记时首帧就有尺寸，不再
+    // 「塌缩→撑开」。只种缺失条目，运行时已建立的状态（blob: 兜底等）不覆盖。
+    useEffect(() => {
+        if (!uploadApi?.listAttachments) return;
+        let cancelled = false;
+        void uploadApi
+            .listAttachments()
+            .then(list => {
+                if (!cancelled && Array.isArray(list)) seedAttachmentDimensions(list);
+            })
+            .catch(() => {
+                // 元数据拉不到就退回纯客户端测量，不是错误
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [uploadApi]);
+
     const attachmentRefCounts = useMemo(() => {
         const map = new Map<string, number>();
         for (const n of notes) {
@@ -3280,6 +3340,7 @@ export default function NotesPage({
                 { id: "share", label: "分享当前笔记", section: "当前笔记", keywords: "share 分享", run: () => active.id != null && setShareId(active.id) },
                 { id: "revisions", label: "版本历史", section: "当前笔记", keywords: "history 版本", run: () => void openRevisions() },
                 { id: "graph", label: "关系图谱", section: "当前笔记", keywords: "graph 图谱 双链", run: () => setGraphOpen(true) },
+                { id: "todo", label: "全库待办面板", section: "命令", keywords: "todo 任务 待办 checklist", run: () => setTodoOpen(true) },
                 { id: "export-md", label: "导出 Markdown", section: "当前笔记", keywords: "export md markdown", run: () => void exportNoteAsMarkdown(active.title, active.content) },
                 { id: "export-html", label: "导出 HTML", section: "当前笔记", keywords: "export html", run: () => void exportNoteAsHtml(active.title, active.content) },
                 { id: "delete", label: "删除当前笔记", section: "当前笔记", keywords: "delete 删除", run: () => void onDelete(active) },
@@ -4095,6 +4156,18 @@ export default function NotesPage({
                 }}
             >
                 <Stack sx={{ px: 0.75, gap: 0.25 }}>
+                    {/* 全库待办（2026-10-11 阶段②）：不是视图，是弹面板 ——
+                        点开一个聚合清单，勾选直接回写原笔记。 */}
+                    <NavRow
+                        label="待办"
+                        count={viewCounts.todo}
+                        selected={todoOpen}
+                        onClick={() => {
+                            setTodoOpen(true);
+                            setNavDrawerOpen(false);
+                        }}
+                        data-view="todo"
+                    />
                     {(
                         [
                             ["archived", "归档", viewCounts.archived],
@@ -6737,6 +6810,20 @@ export default function NotesPage({
                     void jumpToNote(id);
                 }}
                 onClose={() => setGraphOpen(false)}
+            />
+
+            {/* 全库待办面板（2026-10-11 阶段②）：勾选回写走 onUpdate 链路 */}
+            <NotesTodoDialog
+                open={todoOpen}
+                notes={notes}
+                onClose={() => setTodoOpen(false)}
+                onToggle={handleTodoToggle}
+                onOpenNote={id => {
+                    void jumpToNote(id).then(switched => {
+                        if (switched) setView("all");
+                    });
+                }}
+                onNotify={onNotify}
             />
 
             {/* 记事本命令面板（N1）：⌘K 打开。搜笔记/文件夹/标签 + 执行命令；

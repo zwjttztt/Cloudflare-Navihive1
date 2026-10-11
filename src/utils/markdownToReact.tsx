@@ -290,6 +290,33 @@ export function resetImageCacheForTests(): void {
 }
 
 /**
+ * 用服务端元数据预注入尺寸（2026-10-11，阶段⑤）。
+ *
+ * 上传时 worker 已经读出 width/height 存在附件表里，但 NoteImage 之前只信
+ * 本机 imageCache——换设备首开时缓存是空的，多图笔记会先塌缩再撑开。
+ * 这里把「附件清单里的尺寸」提前种进缓存：首帧 `<img>` 就带 width/height，
+ * 浏览器据此预留空间，跨设备首开不再跳。
+ *
+ * 只种「还没有缓存条目」的地址：已加载过的（有 blob: 兜底地址或真实尺寸）
+ * 一律不动，避免用元数据覆盖掉运行时更准确的状态。
+ */
+export function seedAttachmentDimensions(
+    list: ReadonlyArray<{ id: string; width?: number | null; height?: number | null }>
+): number {
+    let seeded = 0;
+    for (const att of list) {
+        if (!att?.id) continue;
+        if (!Number.isFinite(att.width) || !Number.isFinite(att.height)) continue;
+        if ((att.width ?? 0) <= 0 || (att.height ?? 0) <= 0) continue;
+        const src = `/api/notes/attachments/${att.id}`;
+        if (imageCache.has(src)) continue;
+        imageCache.set(src, { status: "ok", width: att.width!, height: att.height! });
+        seeded += 1;
+    }
+    return seeded;
+}
+
+/**
  * 预览里的图片（2026-10-08 第二轮，2026-10-09 加缓存与尺寸预留）。
  *
  * 三态，每一态都能在界面上看出来，不再静默空白：

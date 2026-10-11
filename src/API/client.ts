@@ -12,6 +12,7 @@ import {
     NoteStats,
     NoteImportStats,
     NotesChangesResult,
+    GroupShareConfig,
     NotesImportPayload,
     LoginResponse,
     ExportData,
@@ -1187,6 +1188,29 @@ export class NavigationClient {
             method: "POST",
             body: JSON.stringify({ filename }),
         });
+    }
+
+    /**
+     * 分组分享（2026-10-11 阶段④）：创建（轮换令牌）/ 更新（保留令牌）/
+     * 撤销 / 查配置。返回是**顶层**对象（不包 data 层）。
+     */
+    async createGroupShare(id: number, days: number | null, password?: string | null): Promise<GroupShareConfig | null> {
+        return this.request<GroupShareConfig | null>(`groups/${id}/share`, {
+            method: "POST",
+            body: JSON.stringify({ days, password: password ?? null }),
+        });
+    }
+    async updateGroupShare(id: number, days: number | null, password?: string | null): Promise<GroupShareConfig | null> {
+        return this.request<GroupShareConfig | null>(`groups/${id}/share`, {
+            method: "PUT",
+            body: JSON.stringify({ days, password }),
+        });
+    }
+    async revokeGroupShare(id: number): Promise<{ success: boolean }> {
+        return this.request<{ success: boolean }>(`groups/${id}/share`, { method: "DELETE" });
+    }
+    async getGroupShareConfig(id: number): Promise<GroupShareConfig | null> {
+        return this.request<GroupShareConfig | null>(`groups/${id}/share`);
     }
 
     // ============ 审计日志（owner 只读） ============

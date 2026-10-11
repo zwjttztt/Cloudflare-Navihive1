@@ -328,3 +328,41 @@ test("N6 别名渲染：没有别名的双链照旧显示目标名", async () =>
     assert.ok(link, "链接应存在");
     assert.equal(link!.textContent, "目标页");
 });
+
+// ============ 阶段⑤：服务端尺寸预注入 ============
+
+test("seedAttachmentDimensions：预注入后首帧 <img> 直接带 width/height", async () => {
+    const { resetImageCacheForTests, seedAttachmentDimensions } =
+        await import("../src/utils/markdownToReact");
+    resetImageCacheForTests();
+    const seeded = seedAttachmentDimensions([
+        { id: "dim-1", width: 640, height: 360 },
+        { id: "dim-2", width: 0, height: 0 },      // 无效尺寸不种
+        { id: "dim-3", width: null, height: null }, // 老附件没有尺寸不种
+    ]);
+    assert.equal(seeded, 1, "只有带有效尺寸的附件被种进缓存");
+
+    const host = await renderToDom("![图](/api/notes/attachments/dim-1)");
+    const img = host.querySelector("img");
+    assert.ok(img);
+    // 首帧就带尺寸：浏览器据此预留空间，换设备首开不再「塌缩→撑开」
+    assert.equal(img!.getAttribute("width"), "640");
+    assert.equal(img!.getAttribute("height"), "360");
+    resetImageCacheForTests();
+});
+
+test("seedAttachmentDimensions：已有缓存条目（运行时状态）一律不覆盖", async () => {
+    const { resetImageCacheForTests, seedAttachmentDimensions } =
+        await import("../src/utils/markdownToReact");
+    resetImageCacheForTests();
+    // 先种一次（模拟运行时已建立的状态），再种一个不同尺寸：不得覆盖
+    seedAttachmentDimensions([{ id: "dim-live", width: 10, height: 10 }]);
+    const seeded = seedAttachmentDimensions([{ id: "dim-live", width: 1, height: 1 }]);
+    assert.equal(seeded, 0, "已有条目不覆盖");
+
+    const host = await renderToDom("![图](/api/notes/attachments/dim-live)");
+    const img = host.querySelector("img");
+    assert.ok(img);
+    assert.equal(img!.getAttribute("width"), "10", "渲染用的是第一次种下的尺寸");
+    resetImageCacheForTests();
+});

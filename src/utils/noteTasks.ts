@@ -38,3 +38,10 @@ export function isTaskLine(source: string, line: number): boolean {
     const target = source.split("\n")[line];
     return typeof target === "string" && TASK_LINE.test(target);
 }
+
+/** 解析一行任务项：返回勾选状态与任务文本；非任务行返回 null（聚合面板用） */
+export function parseTaskLine(raw: string): { done: boolean; text: string } | null {
+    const m = TASK_LINE.exec(raw);
+    if (!m) return null;
+    return { done: m[2] !== " ", text: raw.slice(m[0].length).trim() };
+}

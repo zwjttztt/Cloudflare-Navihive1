@@ -306,6 +306,8 @@ export interface NotesBackupRun {
     attachmentCount?: number;
     /** 成功时：因超出单次备份体积预算没能打包的附件个数（0/缺省 = 全部打进去了） */
     skippedAttachments?: number;
+    /** ZIP 备份通过预上传自检（解包回读 + 条数核对），2026-10-11 起的新格式备份恒为 true */
+    verified?: boolean;
     /** 成功时：实际上传字节数 */
     bytes?: number;
     durationMs?: number;
@@ -349,12 +351,40 @@ export interface NotesBackupSavePatch {
  * 只含轻量信号：变更计数 + 文件夹/标签全量快照（几十行的小表，客户端比对用），
  * 笔记正文不在其中 —— 客户端发现变更后走既有 reload() 整表重拉。
  */
+/**
+ * 分组分享的主人侧配置（group_share 行的脱敏视图，token 是 64 位 hex）。
+ * hasPassword 用布尔而不是把哈希给出去。
+ */
+export interface GroupShareConfig {
+    token: string;
+    expires_at: number | null;
+    views: number;
+    hasPassword: boolean;
+}
+
+/**
+ * 公开分组页的读取结果（GET /api/group-shares/<token>）。
+ * ok 时 sites 只有 name/url/description/icon 四个脱敏字段——
+ * 站点密码与用户名结构上就不在响应里，不是「前端不显示」。
+ */
+export type PublicGroupAccess =
+    | {
+          status: "ok";
+          group: { name: string };
+          sites: Array<{ name: string; url: string; description: string | null; icon: string | null }>;
+          views: number;
+      }
+    | { status: "need-password" }
+    | { status: "not-found" };
+
 export interface NotesChangesResult {
     success: boolean;
     /** 本轮游标（SQLite CURRENT_TIMESTAMP 格式），下一轮作为 since 传回 */
     now: string;
     /** 自 since 以来更新/删除（含彻底删除）的笔记条数；首次轮询（无 since）恒 0 */
     notesChanged: number;
+    /** 变更笔记的 id（最多 50 条，新的在前）；彻底删除的笔记不在其中（只有墓碑计数） */
+    changedNoteIds: number[];
     folders: NoteFolder[];
     tags: NoteTag[];
     noteTags: Record<number, number[]>;

@@ -42,6 +42,7 @@ import {
     writeCollapsedGroupIds,
 } from "../utils/collapse";
 import { moveSiteByStep } from "../utils/sortable";
+import ShareIcon from "@mui/icons-material/Share";
 import { enqueueMountTask } from "../utils/mountQueue";
 
 /** 卡片视图的列宽：普通渲染 / 单组编辑 / 跨组排序三种分支必须用同一个值，
@@ -64,6 +65,8 @@ interface GroupCardProps {
     onStartSiteSort: (groupId: number) => void;
     onAddSite?: (groupId: number) => void; // 新增添加卡片的可选回调函数
     onUpdateGroup?: (group: Group) => void; // 更新分组的回调函数
+    /** 打开「分享分组」对话框（2026-10-11 阶段④）。可选：没传就不显示入口 */
+    onShareGroup?: (groupId: number) => void;
     onDeleteGroup?: (groupId: number) => void; // 删除分组的回调函数
     searchQuery?: string; // 搜索关键词，命中片段在卡片里高亮
     accentColor?: string; // 分组强调色（留空则用全局主色）
@@ -89,6 +92,7 @@ const GroupCard: React.FC<GroupCardProps> = ({
     onAddSite,
     onUpdateGroup,
     onDeleteGroup,
+    onShareGroup,
     searchQuery = "",
     accentColor = "",
     onAccentChange,
@@ -851,6 +855,20 @@ const GroupCard: React.FC<GroupCardProps> = ({
                                             sx={{ alignSelf: 'center' }}
                                         >
                                             <EditIcon />
+                                        </IconButton>
+                                    </Tooltip>
+                                )}
+                                {onShareGroup && (
+                                    <Tooltip title="分享分组">
+                                        <IconButton
+                                            color="primary"
+                                            onClick={() => onShareGroup(group.id!)}
+                                            size="small"
+                                            aria-label="分享分组"
+                                            data-group-share-entry='1'
+                                            sx={{ alignSelf: 'center' }}
+                                        >
+                                            <ShareIcon fontSize='small' />
                                         </IconButton>
                                     </Tooltip>
                                 )}

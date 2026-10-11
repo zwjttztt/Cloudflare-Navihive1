@@ -46,6 +46,8 @@ export interface SiteListBodyProps {
     onStartSiteSort: (groupId: number) => void;
     onAddSite: (groupId: number) => void;
     onGroupUpdate: (group: Group) => void;
+    /** 打开「分享分组」对话框（2026-10-11 阶段④）。可选：老调用方没传就不显示入口 */
+    onShareGroup?: (groupId: number) => void;
     onGroupDelete: (groupId: number) => void;
 
     /** 真正渲染的分组（已含「常用」置前等派生处理） */
@@ -90,6 +92,7 @@ export default function SiteListBody({
     onStartSiteSort,
     onAddSite,
     onGroupUpdate,
+    onShareGroup,
     onGroupDelete,
     displayedGroups,
     density,
@@ -170,6 +173,7 @@ export default function SiteListBody({
                                 onAddSite={onAddSite}
                                 onUpdateGroup={onGroupUpdate}
                                 onDeleteGroup={onGroupDelete}
+                                onShareGroup={onShareGroup}
                             />
                         ))}
                     </Stack>
@@ -211,6 +215,7 @@ export default function SiteListBody({
                             onAddSite={onAddSite}
                             onUpdateGroup={onGroupUpdate}
                             onDeleteGroup={onGroupDelete}
+                            onShareGroup={onShareGroup}
                             searchQuery={query}
                             accentColor={
                                 configs[`group.color.${group.id}`] ||

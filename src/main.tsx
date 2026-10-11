@@ -2,10 +2,13 @@ import { StrictMode, lazy, Suspense } from "react";
 // 入口不导出组件；此 lazy 只服务公开页路由，不参与热更新边界。
 // eslint-disable-next-line react-refresh/only-export-components
 const PublicNotePage = lazy(() => import("./components/PublicNotePage"));
+// 公开分组页路径前缀是 /sg/（阶段④）：与 /s/ 同一套 single-page 回退与脱敏响应。
+const PublicGroupPage = lazy(() => import("./components/PublicGroupPage"));
 // 公开分享页路径前缀是 /s/（见 components/PublicNotePage.tsx 顶部注释 /s/:token）。
 // 三处必须一致：这里的路由提取、NoteShareDialog 的分享链接、NotesSettingsDialog 的分享列表链接。
 // worker 的 assets 用 single-page-application 回退，/s/<token> 会落到 index.html 再渲染公开页。
 const publicToken = /^\/s\/([a-f0-9]{64})$/.exec(location.pathname)?.[1];
+const publicGroupToken = /^\/sg\/([a-f0-9]{64})$/.exec(location.pathname)?.[1];
 import { createRoot } from "react-dom/client";
 import "./index.css";
 import App from "./App.tsx";
@@ -156,7 +159,9 @@ createRoot(document.getElementById("root")!).render(
         {/* 包在所有内容之外：任何组件渲染抛错都被拦成一张可自助恢复的页面，而不是白屏 */}
         <ErrorBoundary>
             <UIPrefsProvider>
-                {publicToken ? <Suspense fallback={<p>正在加载分享…</p>}><PublicNotePage token={publicToken} /></Suspense> : <App />}
+                {publicGroupToken ? (
+                    <Suspense fallback={<p>正在加载分享…</p>}><PublicGroupPage token={publicGroupToken} /></Suspense>
+                ) : publicToken ? <Suspense fallback={<p>正在加载分享…</p>}><PublicNotePage token={publicToken} /></Suspense> : <App />}
             </UIPrefsProvider>
         </ErrorBoundary>
     </StrictMode>

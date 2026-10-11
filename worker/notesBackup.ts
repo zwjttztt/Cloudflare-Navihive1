@@ -14,7 +14,7 @@
 import type { NavigationAPI } from "../src/API/navigationApi";
 import type { NotesBackupRun } from "../src/API/types";
 import { encryptBackup } from "../src/API/crypto";
-import { createZip, type ZipEntry } from "../src/utils/zip";
+import { createZip, readZip, type ZipEntry } from "../src/utils/zip";
 import { readAttachmentObject, selectAttachmentStorage } from "./attachments";
 import type { Env } from "./types";
 import {
@@ -136,6 +136,39 @@ export async function readBackupAttachmentEntries(
 
 function isAttachmentStorageTag(v: string): v is "r2" | "kv" {
     return v === "r2" || v === "kv";
+}
+
+/**
+ * 预上传自检（2026-10-11 阶段③）：把刚打包的 ZIP 原样解一遍，确认
+ *   ① notes.json 在且能解析、笔记条数与导出一致；
+ *   ② attachments/ 条目数与收集数一致（丢一个附件的备份比没备份更骗人）。
+ * 解包用的 readZip 与恢复端同一条路径 —— 它能读回来，恢复端才读得回来。
+ * 校验失败抛错让本次备份失败：宁可不落档，也不能留一份坏档顶替好档。
+ */
+export async function verifyBackupZipBytes(
+    zip: Uint8Array,
+    expect: { notes: number; attachments: number }
+): Promise<void> {
+    const entries = await readZip(zip);
+    const notesEntry = entries.find(e => e.path === "notes.json");
+    if (!notesEntry) throw new Error("备份自检失败：包里没有 notes.json");
+    let parsed: { notes?: unknown };
+    try {
+        parsed = JSON.parse(new TextDecoder().decode(notesEntry.data)) as { notes?: unknown };
+    } catch {
+        throw new Error("备份自检失败：notes.json 解析失败");
+    }
+    if (!Array.isArray(parsed.notes) || parsed.notes.length !== expect.notes) {
+        throw new Error(
+            `备份自检失败：笔记条数不符（包内 ${Array.isArray(parsed.notes) ? parsed.notes.length : "无"}，应为 ${expect.notes}）`
+        );
+    }
+    const attachments = entries.filter(e => e.path.startsWith("attachments/")).length;
+    if (attachments !== expect.attachments) {
+        throw new Error(
+            `备份自检失败：附件条数不符（包内 ${attachments}，应为 ${expect.attachments}）`
+        );
+    }
 }
 
 // ============ 纯函数（单测直接打这里） ============
@@ -352,6 +385,11 @@ export async function runNotesWebDavBackup(
                 ...attachmentEntries,
             ];
             const zip = createZip(entries);
+            // 预上传自检（阶段③）：解不回来/条数不符就不上传，宁可不落档
+            await verifyBackupZipBytes(zip, {
+                notes: Array.isArray(payload.notes) ? payload.notes.length : 0,
+                attachments: attachmentEntries.length,
+            });
             body = password ? await encryptBackup(zip, password) : zip;
             filename = buildNotesBackupZipFileName(mode);
         } else {
@@ -371,6 +409,7 @@ export async function runNotesWebDavBackup(
                 run.attachmentCount = attachmentEntries.length;
                 if (attachmentSkipped > 0) run.skippedAttachments = attachmentSkipped;
             }
+            if (zipMode) run.verified = true;
             run.bytes = body.byteLength;
 
             // 自动备份按保留份数清理旧文件；手动备份一份都不删（与导航备份同一条铁律）

@@ -1561,7 +1561,7 @@ export default function NotesSettingsDialog({
                                                                   run.skippedAttachments
                                                                       ? `（跳过 ${run.skippedAttachments}）`
                                                                       : ""
-                                                              } · ${fmtBytes(run.bytes ?? 0)}`
+                                                              }${run.verified ? " · 已自检" : ""} · ${fmtBytes(run.bytes ?? 0)}`
                                                             : "失败"}
                                                     </Typography>
                                                     </Box>

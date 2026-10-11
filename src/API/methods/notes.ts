@@ -441,6 +441,7 @@ export const notesImpl: NotesApi = {
                 .first<{ now: string }>();
             const now = nowRow?.now || new Date().toISOString().slice(0, 19).replace("T", " ");
             let notesChanged = 0;
+            let changedNoteIds: number[] = [];
             if (since) {
                 const updated = await this.db
                     .prepare(
@@ -462,13 +463,24 @@ export const notesImpl: NotesApi = {
                     console.error("读取笔记墓碑失败:", error);
                 }
                 notesChanged = (updated?.n ?? 0) + purged;
+                // 变更笔记 id（有界 50）：客户端用它判断「当前打开的这篇是否被改」，
+                // 给出针对性提示，而不是只有一句全局的「列表已刷新」。
+                if (notesChanged > 0) {
+                    const idRows = await this.db
+                        .prepare(
+                            "SELECT id FROM notes WHERE updated_at >= ?1 AND user_id IS ?2 ORDER BY updated_at DESC LIMIT 50"
+                        )
+                        .bind(since, this.currentUserId)
+                        .all<{ id: number }>();
+                    changedNoteIds = (idRows.results || []).map(r => r.id);
+                }
             }
             const [folders, tags, noteTags] = await Promise.all([
                 this.listFolders(),
                 this.listTags(),
                 this.listNoteTags(),
             ]);
-            return { success: true, now, notesChanged, folders, tags, noteTags };
+            return { success: true, now, notesChanged, changedNoteIds, folders, tags, noteTags };
         });
     },
     importNotesData: async function (this: NavigationAPI, payload: NotesImportPayload): Promise<NoteImportStats> {

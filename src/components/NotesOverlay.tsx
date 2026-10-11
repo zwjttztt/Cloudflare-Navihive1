@@ -116,6 +116,7 @@ export default function NotesOverlay({
         getRevision,
         searchRemote,
         broadcastChange,
+        lastSyncChangedIds,
     } = useNotes({ api, onError, onNotify, onNoteConflict: handleNoteConflict });
 
     // 每次渲染把最新闭包写进 ref：冲突处理要用 reload / onNotify 的最新值
@@ -351,6 +352,7 @@ export default function NotesOverlay({
             }
             backupApi={backupApi}
             onDatasetChanged={broadcastChange}
+            syncChangedNoteIds={lastSyncChangedIds}
             notes={notes}
             onClose={onClose}
             accountName={accountName}

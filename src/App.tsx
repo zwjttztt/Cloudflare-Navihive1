@@ -93,6 +93,7 @@ import HeaderGroupsButton from "./components/HeaderGroupsButton";
 // ⚠️ 注意 OverlayHost 里那五个（命令面板 / 书签导入 / 标签管理 / 两个 AI 弹窗）也走 lazy，
 //    但它们写在 OverlayHost 里 —— 别只在这里数 lazy( 的个数，得看每个组件的 import 语句本身。
 const AddSiteDialog = lazy(() => import("./components/AddSiteDialog"));
+const GroupShareDialog = lazy(() => import("./components/GroupShareDialog"));
 const EditGroupDialog = lazy(() => import("./components/EditGroupDialog"));
 const SettingsDialog = lazy(() => import("./components/SettingsDialog"));
 // 账号管理（改账号密码 / 恢复密钥 / 邀请码 / 注销）：从「更多选项」进入，懒加载
@@ -990,6 +991,16 @@ function App() {
     const lastHealthPushRef = useRef("");
     const lastPrefPushRef = useRef("");
 
+    // ---- 分组分享（2026-10-11 阶段④）----
+    const [shareGroupId, setShareGroupId] = useState<number | null>(null);
+    const shareGroupName = useMemo(
+        () => groups.find(g => g.id === shareGroupId)?.name ?? "",
+        [groups, shareGroupId]
+    );
+    const handleShareGroup = useCallback((groupId: number) => {
+        setShareGroupId(groupId);
+    }, []);
+
     // ---------- 记事本 ----------
     //
     // ⚠️⚠️ 这里**刻意不调 useNotes**（2026-10-06 改的）：hooks 不能异步调用，
@@ -1294,6 +1305,20 @@ function App() {
             {/* 断网 / 恢复的浮动提示：断网或有失败项时才挂上（块按需下载） */}
             {showOfflineBanner && (
                 <ChunkBoundary>
+            {/* 分组分享（2026-10-11 阶段④）：创建/更新/撤销/复制链接 */}
+            {shareGroupId !== null && typeof api.createGroupShare === "function" && (
+                <Suspense fallback={null}>
+                    <GroupShareDialog
+                        open
+                        groupId={shareGroupId}
+                        groupName={shareGroupName}
+                        onClose={() => setShareGroupId(null)}
+                        api={api as never}
+                        onNotify={notify}
+                    />
+                </Suspense>
+            )}
+
                     <OfflineBanner />
                 </ChunkBoundary>
             )}
@@ -1574,6 +1599,7 @@ function App() {
                             onStartSiteSort={startSiteSort}
                             onAddSite={handleOpenAddSite}
                             onGroupUpdate={handleGroupUpdate}
+                            onShareGroup={handleShareGroup}
                             onGroupDelete={handleGroupDelete}
                             displayedGroups={displayedGroups}
                             density={density}

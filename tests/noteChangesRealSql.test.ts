@@ -28,10 +28,11 @@ test("真实 SQLite：notes/changes 的变更计数与墓碑语义", async () =>
     const cursor1 = first.now;
     assert.ok(cursor1.length >= 19, "游标必须是 SQLite 时间戳格式");
 
-    // 建一条笔记：下一轮必须看见（updated_at >= cursor1）
-    await api.createNote({ title: "设备A建的", content: "v1" });
+    // 建一条笔记：下一轮必须看见（updated_at >= cursor1），且能拿到变更 id
+    const created = await api.createNote({ title: "设备A建的", content: "v1" });
     const second = await api.notesChanges(cursor1);
     assert.equal(second.notesChanged, 1, "新建的笔记必须被对端看见");
+    assert.deepEqual(second.changedNoteIds, [created.id], "变更 id 列表要能定位到具体笔记（客户端据此做定向提示）");
     assert.deepEqual(second.folders, await api.listFolders());
 
     // 从「上一轮之后」再问：不再重复计数（游标推进到 now 之后就安静了）。

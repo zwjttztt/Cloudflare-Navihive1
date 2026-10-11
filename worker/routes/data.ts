@@ -387,6 +387,39 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
             return Response.json(share ?? { error: "笔记不存在" }, { status: share ? 200 : 404, headers });
         }
         return Response.json({ error: "不支持的方法" }, { status: 405, headers });
+    } else if (/^groups\/\d+\/share$/.test(path)) {
+        // 分组分享（2026-10-11 阶段④）：与 note share 同一套语义
+        //（POST 创建并轮换令牌 / PUT 更新保留令牌 / DELETE 撤销 / GET 查配置）。
+        const id = Number(path.split("/")[1]);
+        const headers = { "Cache-Control": "no-store" };
+        if (!Number.isSafeInteger(id) || id <= 0) return Response.json({ error: "无效的ID" }, { status: 400, headers });
+        if (method === "GET") return Response.json(await api.getGroupShareConfig(id), { headers });
+        if (method === "PUT") {
+            const limited = await writeGate();
+            if (limited) return limited;
+            const { days, password } = await request.json() as { days?: unknown; password?: unknown };
+            if (days !== null && days !== 1 && days !== 7 && days !== 30) {
+                return Response.json({ error: "有效期仅支持1、7、30天或永久" }, { status: 400, headers });
+            }
+            const pw = password === undefined ? undefined
+                : (typeof password === "string" && password.length > 0 ? password : null);
+            const share = await api.updateGroupShare(id, days, pw);
+            return Response.json(share ?? { error: "分享不存在" }, { status: share ? 200 : 404, headers });
+        }
+        if (method === "POST" || method === "DELETE") {
+            const limited = await writeGate();
+            if (limited) return limited;
+            if (method === "DELETE") return Response.json(await api.revokeGroupShare(id), { headers });
+            const { days, password } = await request.json() as { days?: unknown; password?: unknown };
+            if (days !== null && days !== 1 && days !== 7 && days !== 30) {
+                return Response.json({ error: "有效期仅支持1、7、30天或永久" }, { status: 400, headers });
+            }
+            const pw = password === undefined ? null
+                : (typeof password === "string" && password.length > 0 ? password : null);
+            const share = await api.createGroupShare(id, days, pw);
+            return Response.json(share ?? { error: "分组不存在" }, { status: share ? 200 : 404, headers });
+        }
+        return Response.json({ error: "不支持的方法" }, { status: 405, headers });
     } else if (path === "notes" && method === "GET") {
         const notes = await api.listNotes();
         return Response.json(notes);
