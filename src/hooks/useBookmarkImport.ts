@@ -46,12 +46,19 @@ export function useBookmarkImport({
             let created = 0;
             let groupSeq = 0;
             const iconTemplate = (iconApi || "").trim();
+            /**
+             * 同名文件夹复用分组（含**本次新建**的）：书签文件里两个同名文件夹
+             * （如嵌套的「书签栏」）很常见，只查 groups prop 的话 prop 不含
+             * 本轮刚建的分组，第二个同名文件夹会再建一个重复分组。
+             */
+            const resolved = new Map<string, GroupWithSites>();
 
             for (const folder of parsed) {
                 if (folder.items.length === 0) continue;
                 // 同名文件夹复用已有分组：浏览器导出的书签里「书签栏」很常见，
                 // 每次导入都新建一个的话，库里会躺一排同名的分组
-                let target = groups.find(g => g.name === folder.folder);
+                let target =
+                    resolved.get(folder.folder) ?? groups.find(g => g.name === folder.folder);
                 if (!target) {
                     const saved = await api.createGroup({
                         name: folder.folder,
@@ -60,6 +67,7 @@ export function useBookmarkImport({
                     groupSeq += 1;
                     target = { ...saved, sites: [] } as GroupWithSites;
                 }
+                resolved.set(folder.folder, target);
                 const baseOrder = target.sites?.length ?? 0;
                 const groupId = target.id;
                 const done = await mapWithConcurrency(

@@ -2121,6 +2121,28 @@ export default function NotesPage({
         [notes, activeId]
     );
 
+    /**
+     * 编辑器内导出（头部菜单 / ⌘K）用的内容口径：**有未保存修改就导草稿**。
+     *
+     * 草稿的 title / content 都是编辑器当前值，天然同源，不会出现「旧正文 + 新标题」
+     * 的拼接产物；所见即所得——用户刚打的字就在导出文件里。没有草稿或草稿与库里
+     * 一致时导已存版本。列表行菜单 / 右键菜单导的是**没打开**的笔记（没有草稿概念），
+     * 仍走 exportOne 的 note.content 口径（见下方注释）。
+     */
+    const exportTarget = useCallback(
+        (): { title: string; content: string } => {
+            if (
+                active &&
+                draft &&
+                (draft.title !== (active.title || "") || draft.content !== (active.content || ""))
+            ) {
+                return { title: draft.title, content: draft.content };
+            }
+            return { title: active?.title || "", content: active?.content || "" };
+        },
+        [active, draft]
+    );
+
     // 回收站是懒加载：只有真的切到那个视图才去拉（首屏不该为没人看的列表发请求）
     useEffect(() => {
         if (view === "trash") void onLoadTrash();
@@ -2715,9 +2737,10 @@ export default function NotesPage({
     /**
      * 导出一条笔记成 .md（inkstone 的「导出」，我们放在列表行菜单里）。
      *
-     * ⚠️ 导的是 `active.content` 而不是本地草稿 `draft`：草稿可能还有没到 3 秒
-     * 自动保存窗口的改动，而导出的是**已经存进库**的内容 —— 标题和正文必须同源，
-     * 否则用户会拿到「旧正文 + 新标题」这种拼接产物。
+     * ⚠️ 导的是 `note.content`（已存进库的内容）：这里导的是**没在编辑器里打开**的
+     * 笔记，没有草稿概念，标题和正文取同一条记录天然同源。
+     * 编辑器内导出（头部菜单 / ⌘K）走 exportTarget()：有未保存修改时导草稿（所见即所得），
+     * 见 active 定义处的注释。两入口口径不同是有意的。
      */
     const exportOne = useCallback(
         (note: Note) => {
@@ -3341,8 +3364,8 @@ export default function NotesPage({
                 { id: "revisions", label: "版本历史", section: "当前笔记", keywords: "history 版本", run: () => void openRevisions() },
                 { id: "graph", label: "关系图谱", section: "当前笔记", keywords: "graph 图谱 双链", run: () => setGraphOpen(true) },
                 { id: "todo", label: "全库待办面板", section: "命令", keywords: "todo 任务 待办 checklist", run: () => setTodoOpen(true) },
-                { id: "export-md", label: "导出 Markdown", section: "当前笔记", keywords: "export md markdown", run: () => void exportNoteAsMarkdown(active.title, active.content) },
-                { id: "export-html", label: "导出 HTML", section: "当前笔记", keywords: "export html", run: () => void exportNoteAsHtml(active.title, active.content) },
+                { id: "export-md", label: "导出 Markdown", section: "当前笔记", keywords: "export md markdown", run: () => { const t = exportTarget(); void exportNoteAsMarkdown(t.title, t.content); } },
+                { id: "export-html", label: "导出 HTML", section: "当前笔记", keywords: "export html", run: () => { const t = exportTarget(); void exportNoteAsHtml(t.title, t.content); } },
                 { id: "delete", label: "删除当前笔记", section: "当前笔记", keywords: "delete 删除", run: () => void onDelete(active) },
             );
         }
@@ -3353,7 +3376,7 @@ export default function NotesPage({
             if (command.id === "revisions") return !!folderTags?.onGetRevision;
             return true;
         });
-    }, [onCreate, tools, active, pane, shareApi, folderTags, onTogglePin, onToggleStar, onToggleArchive, onDelete, setShareId, openRevisions, setGraphOpen]);
+    }, [onCreate, tools, active, pane, shareApi, folderTags, onTogglePin, onToggleStar, onToggleArchive, onDelete, setShareId, openRevisions, setGraphOpen, exportTarget]);
 
     /** 取某一版正文：列表里那份是空串，diff 要真的正文 */
     const loadRevisionContent = useCallback(
@@ -5516,6 +5539,7 @@ export default function NotesPage({
                         {pane !== "edit" && (
                             <Box
                                 ref={previewScrollRef}
+                                data-preview-scroll='1'
                                 sx={{
                                     // 与源码区同一个 basis（0），两栏才严格对半
                                     flex: 1,
@@ -6548,7 +6572,10 @@ export default function NotesPage({
                         <MenuItem
                             onClick={() => {
                                 setExportAnchor(null);
-                                exportOne(active);
+                                const t = exportTarget();
+                                // 刚打的字还在 3s 自动保存窗口里时，导完顺手把草稿存掉，两边收敛
+                                if (dirty) void save();
+                                exportOne({ ...active, title: t.title, content: t.content });
                             }}
                         >
                             <FileDownloadIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
@@ -6557,7 +6584,9 @@ export default function NotesPage({
                         <MenuItem
                             onClick={() => {
                                 setExportAnchor(null);
-                                exportHtmlOne(active);
+                                const t = exportTarget();
+                                if (dirty) void save();
+                                exportHtmlOne({ ...active, title: t.title, content: t.content });
                             }}
                         >
                             <FileDownloadIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
@@ -6566,7 +6595,9 @@ export default function NotesPage({
                         <MenuItem
                             onClick={() => {
                                 setExportAnchor(null);
-                                exportPdfOne(active);
+                                const t = exportTarget();
+                                if (dirty) void save();
+                                exportPdfOne({ ...active, title: t.title, content: t.content });
                             }}
                         >
                             <FileDownloadIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />

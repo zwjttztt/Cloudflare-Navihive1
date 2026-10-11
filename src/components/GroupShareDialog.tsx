@@ -13,6 +13,7 @@ import Select from "@mui/material/Select";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 import CloseIcon from "@mui/icons-material/Close";
+import ConfirmDialog from "./ConfirmDialog";
 import type { GroupShareConfig } from "../API/types";
 
 export interface GroupShareDialogProps {
@@ -44,6 +45,8 @@ export default function GroupShareDialog({
     const [password, setPassword] = useState("");
     const [busy, setBusy] = useState(false);
     const [loadedOnce, setLoadedOnce] = useState(false);
+    /** 撤销前确认（站内 ConfirmDialog，替代 window.confirm：jsdom 可测、观感与整站一致） */
+    const [revokeConfirm, setRevokeConfirm] = useState(false);
 
     const refresh = useCallback(async () => {
         const current = await api.getGroupShareConfig(groupId);
@@ -101,7 +104,6 @@ export default function GroupShareDialog({
     };
 
     const revoke = async () => {
-        if (!window.confirm("撤销后链接立即失效，确定撤销吗？")) return;
         setBusy(true);
         try {
             await api.revokeGroupShare(groupId);
@@ -182,7 +184,7 @@ export default function GroupShareDialog({
                             <Button variant='contained' data-group-share-update='1' disabled={busy} onClick={() => void update()}>
                                 更新设置
                             </Button>
-                            <Button color='error' data-group-share-revoke='1' disabled={busy} onClick={() => void revoke()}>
+                            <Button color='error' data-group-share-revoke='1' disabled={busy} onClick={() => setRevokeConfirm(true)}>
                                 撤销分享
                             </Button>
                         </Box>
@@ -221,6 +223,20 @@ export default function GroupShareDialog({
                     </>
                 )}
             </Box>
+            {/* 撤销确认：叠在分享对话框上层（MUI Dialog 嵌套天然支持） */}
+            <ConfirmDialog
+                open={revokeConfirm}
+                title="撤销分享"
+                description={`「${groupName}」的公开链接将立即失效，已拿到链接的人也打不开了（撤销后可重新创建，但链接会换新的）。`}
+                impact={{ object: "分组分享", undoable: false }}
+                confirmText="撤销"
+                danger
+                onConfirm={() => {
+                    setRevokeConfirm(false);
+                    void revoke();
+                }}
+                onClose={() => setRevokeConfirm(false)}
+            />
         </Dialog>
     );
 }

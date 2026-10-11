@@ -63,8 +63,16 @@ export const aiImpl: AiApi = {
     ): Promise<number> {
         if (rows.length === 0) return 0;
         const now = new Date().toISOString();
+        // ⚠️ 写入也只认**本人站点**（2026-10-11 自查补）：不做归属校验的话，
+        // 伪造请求可以给别人的站点 upsert 向量（污染他人的语义搜索结果）。
+        // 服务端正常链路传的就是 querySites() 的本人站点，这里过滤是纵深防御。
+        const mine = await this.db
+            .prepare(`SELECT id FROM sites WHERE 1=1 ${this.scopeSql(true)}`)
+            .bind(...this.scopeParams([]))
+            .all<{ id: number }>();
+        const myIds = new Set((mine.results ?? []).map(r => Number(r.id)));
         const statements = rows
-            .filter(row => row.vec.length > 0)
+            .filter(row => row.vec.length > 0 && myIds.has(Number(row.siteId)))
             .map(row =>
                 this.db
                     .prepare(
@@ -88,7 +96,13 @@ export const aiImpl: AiApi = {
         if (statements.length === 0) return 0;
         // 换模型之后旧向量不能留着：不同模型的向量之间比较毫无意义，
         // 留着只会让搜索结果莫名其妙。删旧 + 写新在同一个 batch 里。
-        const stale = this.db.prepare("DELETE FROM site_embeddings WHERE model != ?").bind(model);
+        // ⚠️ 删除必须限定在**本人站点**内（2026-10-11 自查发现）：裸 `WHERE model != ?`
+        // 是全表删——多账号下 B 账号换模型补一次向量，A 账号的向量会被静默清光
+        // （语义搜索悄悄退化成关键词搜索，无报错，没人发现）。
+        const stale = this.db.prepare(
+            `DELETE FROM site_embeddings
+             WHERE model != ? AND site_id IN (SELECT id FROM sites WHERE 1=1 ${this.scopeSql(true)})`
+        ).bind(...this.scopeParams([model]));
         await this.db.batch([stale, ...statements]);
         return statements.length;
     },
@@ -111,8 +125,12 @@ export const aiImpl: AiApi = {
         if (ids.length === 0) return 0;
         const placeholders = ids.map(() => "?").join(",");
         const result = (await this.db
-            .prepare(`DELETE FROM site_embeddings WHERE site_id IN (${placeholders})`)
-            .bind(...ids)
+            .prepare(
+                // 同 replaceEmbeddings：删除只认本人站点（无调用方，纵深防御）
+                `DELETE FROM site_embeddings WHERE site_id IN (${placeholders})
+                 AND site_id IN (SELECT id FROM sites WHERE 1=1 ${this.scopeSql(true)})`
+            )
+            .bind(...this.scopeParams(ids))
             .run()) as { meta?: { changes?: number } };
         return Number(result.meta?.changes ?? 0);
     },

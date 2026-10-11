@@ -6,6 +6,14 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。---
 
+## 2026-10-11 · 导航站侧源码级自查：修 AI 向量跨账号误删 + 两处体验修正 + 两遗留项复核
+
+- **安全（P1，自查揪出）**：AI 语义搜索的向量维护有**跨账号数据丢失级缺陷**——`replaceEmbeddings` 换模型补向量时 `DELETE FROM site_embeddings WHERE model != ?` 没带账号 scope，多账号部署下 B 账号换 embedModel 会把**其他账号全部其它模型的向量静默清光**（语义搜索悄悄退化成普通搜索，无任何报错）。修复：stale 删除与写入都加 site 归属过滤（`site_id IN (SELECT id FROM sites WHERE ... user_id scope)`），`deleteEmbeddings` 同样加 scope 纵深防御；真实 SQLite 双账号用例钉死（root 换模型后 root 的旧向量完好、alice 不受影响；跨账号写入被过滤）。
+- **体验**：①分组分享撤销确认从 `window.confirm` 改站内 ConfirmDialog（danger、标明不可撤销，与全站弹窗风格一致）；②书签导入同名文件夹复用分组时补 resolved Map——含本次循环内新建的分组，此前同名文件夹出现多次会重复建组。
+- **遗留项复核（两个）**：①大纲预览跳转——真机探针全绿（40 条大纲断言齐全；预览点中间条目 gap=0；scroll-spy 顶/底高亮正常，滚到底停在上一个标题属标准行为；编辑器侧跳转滚动到位），此前挂账仅因 jsdom 量不了布局，**结论：无缺陷，销账**。②导出未保存草稿——确认为真实体验缺陷并已修：编辑器内导出（头部三格式 + ⌘K export-md/html）dirty 时导出**当前草稿**并顺手触发保存，clean 时导已存版本，两入口口径统一走 `exportTarget()`。
+- **自查报告**：`docs/nav-site-audit-2026-10-11.md`——P1 向量 scope（已修）；P2 两项（已修）；复核无问题清单（linkHealth / bookmarks / recycle / groupShares / 公开分组页 / 图标代理 / 监听器卫生 / ai 其余方法）。
+- **校验**：`tsc -b`（build 内）通过；全量 2384（2383 通过 / 1 跳过 / 0 失败，新增 aiEmbeddingsRealSql 2）；lint 0 error（8 条既有 warning 与本改动无关）；build、smoke 通过。
+
 ## 2026-10-11 · GUI 验收收口：修「分享分组」弹不出的真缺陷
 
 - **修复（真产品缺陷，GUI 点测揪出）**：「分享分组」对话框的挂载 JSX 在 #272 落地时被误嵌进 `{showOfflineBanner && <ChunkBoundary>}` 条件里——在线时断网横幅恒不渲染，点「分享分组」就永远弹不出框（按钮、接口、对话框本体全都没问题，纯挂载位置错误；类型/lint/单测全绿放行，只有真机点击才暴露）。已移到与横幅平级的顶层，并新增源码级静态守卫 `tests/groupShareMount.test.ts` 两条钉死挂载位置。
