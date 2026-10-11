@@ -137,6 +137,37 @@ async function mountQueue(over: Partial<Note> = {}, holdFirstUpdate = true): Pro
     } as Harness;
 }
 
+test("多标签通知：按账号分频道，仅提示不替换草稿，成功保存才广播", async () => {
+    const original = globalThis.BroadcastChannel;
+    const channels: MockChannel[] = [];
+    class MockChannel {
+        onmessage: ((event: { data: unknown }) => void) | null = null;
+        sent: unknown[] = [];
+        closed = false;
+        constructor(readonly name: string) { channels.push(this); }
+        postMessage(value: unknown) { this.sent.push(value); }
+        close() { this.closed = true; }
+    }
+    globalThis.BroadcastChannel = MockChannel as unknown as typeof BroadcastChannel;
+    localStorage.setItem("navihive:activeAccount", "77");
+    try {
+        const h = await mountQueue({}, false);
+        assert.equal(channels[0].name, "navihive-notes-changed:77");
+        const before = h.hook().notes[0].content;
+        act(() => channels[0].onmessage?.({ data: { type: "changed" } }));
+        assert.equal(h.hook().externalChange, true);
+        assert.equal(h.hook().notes[0].content, before);
+        await act(async () => { await h.hook().updateNote(1, { title: "changed" }); });
+        assert.deepEqual(channels[0].sent, [{ type: "changed" }]);
+        act(() => root?.unmount());
+        root = null;
+        assert.equal(channels[0].closed, true);
+    } finally {
+        globalThis.BroadcastChannel = original;
+        localStorage.removeItem("navihive:activeAccount");
+    }
+});
+
 test("连点两下置顶：第二笔带的是第一笔返回的新 rev，不该弹冲突框", async () => {
     const h = await mountQueue();
     const note = h.hook().notes[0];

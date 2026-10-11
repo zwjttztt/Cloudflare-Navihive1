@@ -22,6 +22,7 @@ import {
     shouldRunNotesBackup,
 } from "./notesBackup";
 import { safeFetch } from "./safeFetch";
+import { retryAttachmentDeletions } from "./attachments";
 import {
     HEALTH_KEY,
     PROBE_TIMEOUT_MS,
@@ -396,12 +397,12 @@ export async function runRetentionCleanup(api: SchedulerDB): Promise<void> {
     if (typeof nav.cleanupExpiredRows !== "function") return;
     const result = await nav.cleanupExpiredRows();
     const total =
-        result.audit + result.recycle + result.blacklist + result.invites + result.recoveryJti;
+        result.audit + result.recycle + result.blacklist + result.invites + result.recoveryJti + (result.sessions ?? 0);
     if (total > 0) {
         console.log(
             `过期数据清理完成：审计 ${result.audit} 条、回收站 ${result.recycle} 条、` +
                 `黑名单 ${result.blacklist} 条、邀请码 ${result.invites} 条、` +
-                `恢复标记 ${result.recoveryJti} 条`
+                `恢复标记 ${result.recoveryJti} 条、过期会话 ${result.sessions ?? 0} 条`
         );
     }
 }
@@ -444,6 +445,11 @@ export async function runScheduledTasks(
     makeApi: (env: Env) => SchedulerDB = (e) => new NavigationAPI(e),
     cronExpr?: string
 ): Promise<void> {
+    try {
+        await retryAttachmentDeletions(env);
+    } catch (error) {
+        console.error("附件延后清理异常:", error);
+    }
     const navBackupDue = isNavBackupDue(cronExpr);
     // 外层兜底也要留痕：runWeeklyBackup 只在「按账号循环」内部兜了异常，
     // 取账号列表这一步就炸的话（D1 抽风、listUsers 抛错）里面根本轮不到执行

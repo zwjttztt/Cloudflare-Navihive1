@@ -941,7 +941,7 @@ export const notesImpl: NotesApi = {
             // 前端也没有理由知道。
             const result = await this.db
                 .prepare(
-                    `SELECT id, note_id, filename, mime, size, storage, created_at
+                    `SELECT id, note_id, filename, mime, size, width, height, storage, created_at
                      FROM attachments
                      ${this.scopeSql(false)}
                      ORDER BY created_at DESC
@@ -1055,11 +1055,16 @@ export const notesImpl: NotesApi = {
                 .bind(...this.scopeParams([id]))
                 .first<{ storage: string; object_key: string }>();
             if (!row) return { ok: false, status: 404, error: "附件不存在" };
-            // 先删记录，成功才让调用方去删对象（反过来会出现「记录没了、对象还在」→ 永久泄漏）
-            const del = (await this.db
-                .prepare(`DELETE FROM attachments WHERE id = ?1 ${this.scopeSql(true)}`)
-                .bind(...this.scopeParams([id]))
-                .run()) as { meta?: { changes?: number } };
+            // 删除元数据与持久化对象清理任务同批提交，进程中断也不会丢失对象 key。
+            const results = await this.db.batch([
+                this.db.prepare(`INSERT OR IGNORE INTO configs (key, value)
+                    SELECT 'auth.attachment.gc.' || id, json_object('storage', storage, 'objectKey', object_key)
+                    FROM attachments WHERE id = ?1 ${this.scopeSql(true)}`)
+                    .bind(...this.scopeParams([id])),
+                this.db.prepare(`DELETE FROM attachments WHERE id = ?1 ${this.scopeSql(true)}`)
+                    .bind(...this.scopeParams([id])),
+            ]);
+            const del = results[1] as { meta?: { changes?: number } };
             if (!del.meta?.changes) return { ok: false, status: 404, error: "附件不存在" };
             return { ok: true, storage: row.storage as AttachmentStorage, objectKey: row.object_key };
         });
@@ -1088,12 +1093,14 @@ export const notesImpl: NotesApi = {
             const corpus = (rows.results || []).map(r => r.content || "").join("\n");
             const removed = (atts.results || []).filter(a => !corpus.includes(a.id));
             for (const a of removed) {
-                await this.db
-                    .prepare(`DELETE FROM attachments WHERE id = ?1 ${this.scopeSql(true)}`)
-                    // scopeSql(true) 追加 " AND user_id = ?"：参数末尾要跟上 uid
-                    // （单账号部署 uid 为 NULL 时 scopeSql/scopeParams 都返回空，正好）。
-                    .bind(...this.scopeParams([a.id]))
-                    .run();
+                await this.db.batch([
+                    this.db.prepare(`INSERT OR IGNORE INTO configs (key, value)
+                        SELECT 'auth.attachment.gc.' || id, json_object('storage', storage, 'objectKey', object_key)
+                        FROM attachments WHERE id = ?1 ${this.scopeSql(true)}`)
+                        .bind(...this.scopeParams([a.id])),
+                    this.db.prepare(`DELETE FROM attachments WHERE id = ?1 ${this.scopeSql(true)}`)
+                        .bind(...this.scopeParams([a.id])),
+                ]);
             }
             return {
                 removed: removed.map(a => ({

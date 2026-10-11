@@ -54,7 +54,7 @@ import {
 //     老库建不出来 → searchNotes 一律走 LIKE 回退（能搜但慢、且不排序）。
 // 15 = notes.starred（收藏，与置顶分离）+ notes.rev（乐观并发版本号）。
 //     两列都是老库上必须 ALTER 才有的，版本号 +1 让快路径失效。
-export const SCHEMA_VERSION = "15";
+export const SCHEMA_VERSION = "16";
 /** 版本号存在 configs 里的键名 */
 export const SCHEMA_VERSION_KEY = "schema.version";
 
@@ -249,6 +249,15 @@ export const migrationImpl: MigrationApi = {
 
         // 6.8) 2026-10-09：笔记全文检索的 FTS5 虚拟表。
         // 同样必须**显式建**（快路径会跳过建表那批），且失败要能降级（见方法注释）。
+        for (const column of ["width", "height"]) {
+            if (!(await this.hasColumn("attachments", column))) {
+                try {
+                    await this.db.prepare(`ALTER TABLE attachments ADD COLUMN ${column} INTEGER`).run();
+                } catch (error) {
+                    if (!(await this.hasColumn("attachments", column))) throw error;
+                }
+            }
+        }
         await this.migrateNotesFtsTable();
 
         // 7) 索引：排在最后，因为它依赖上面补出来的 user_id 列（见 INDEX_STATEMENTS 注释）

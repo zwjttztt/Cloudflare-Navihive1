@@ -270,10 +270,41 @@ export async function deleteAttachmentObject(
     key: string
 ): Promise<void> {
     if (storage === "r2") {
-        if (env.FILES) await env.FILES.delete(key);
+        if (!env.FILES) throw new Error("R2 未配置，保留附件清理任务");
+        await env.FILES.delete(key);
         return;
     }
-    if (env.FILES_KV) await env.FILES_KV.delete(key);
+    if (!env.FILES_KV) throw new Error("KV 未配置，保留附件清理任务");
+    await env.FILES_KV.delete(key);
+}
+
+/** 元数据删除已提交；对象删除失败时保留任务，下一次定时触发重试。 */
+export async function finishAttachmentDeletion(
+    env: Env, id: string, storage: AttachmentStorage, objectKey: string
+): Promise<void> {
+    try {
+        await deleteAttachmentObject(env, storage, objectKey);
+        await env.DB.prepare("DELETE FROM configs WHERE key = ? AND value = ?")
+            .bind(`auth.attachment.gc.${id}`, JSON.stringify({ storage, objectKey })).run();
+    } catch (error) {
+        console.error("附件对象清理延后重试:", id, error);
+    }
+}
+
+/** 每小时最多重试 100 个对象，失败任务不会被丢弃。 */
+export async function retryAttachmentDeletions(env: Env): Promise<void> {
+    const rows = await env.DB.prepare(
+        "SELECT key, value FROM configs WHERE key LIKE 'auth.attachment.gc.%' ORDER BY key LIMIT 100"
+    ).all<{ key: string; value: string }>();
+    for (const row of rows.results ?? []) {
+        try {
+            const task = JSON.parse(row.value) as { storage: AttachmentStorage; objectKey: string };
+            if ((task.storage !== "r2" && task.storage !== "kv") || typeof task.objectKey !== "string") continue;
+            await finishAttachmentDeletion(env, row.key.slice("auth.attachment.gc.".length), task.storage, task.objectKey);
+        } catch (error) {
+            console.error("附件清理任务无效:", row.key, error);
+        }
+    }
 }
 
 // ---------------- 租约（防并发超配额） ----------------

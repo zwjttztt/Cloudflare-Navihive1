@@ -6,6 +6,7 @@
 // 记事本是「想到就写」的场景，保存要是有 200ms 的延迟，手感会立刻变差；
 // 而失败时回滚到旧值 + 提示，代价远小于「每敲一个字都等一下」。
 import { useCallback, useEffect, useRef, useState } from "react";
+import { readActiveAccount } from "../utils/accountScope";
 import type {
     Note,
     NoteAttachment,
@@ -136,6 +137,17 @@ type UseNotesParams = {
 };
 
 export function useNotes({ api, onError, onNotify, onNoteConflict }: UseNotesParams) {
+    const broadcastRef = useRef<BroadcastChannel | null>(null);
+    const [externalChange, setExternalChange] = useState(false);
+    useEffect(() => {
+        if (typeof BroadcastChannel === "undefined") return;
+        const channel = new BroadcastChannel(`navihive-notes-changed:${readActiveAccount() ?? "anon"}`);
+        broadcastRef.current = channel;
+        channel.onmessage = event => {
+            if (event.data?.type === "changed") { setExternalChange(true); onNotify("其他标签页的笔记已更新，请刷新列表后继续编辑", "info"); }
+        };
+        return () => { channel.close(); broadcastRef.current = null; };
+    }, [onNotify]);
     const [notes, setNotes] = useState<Note[]>([]);
     const [loaded, setLoaded] = useState(false);
     /** 阶段三：回收站里的笔记（懒加载，进「回收站」视图时才拉） */
@@ -172,6 +184,7 @@ export function useNotes({ api, onError, onNotify, onNoteConflict }: UseNotesPar
             seedRevs(next);
             setNotes(next);
             setLoaded(true);
+            setExternalChange(false);
         } catch (error) {
             reportError(error, { source: "notes-list" });
             onError("加载记事本失败: " + (error instanceof Error ? error.message : "未知错误"));
@@ -187,6 +200,7 @@ export function useNotes({ api, onError, onNotify, onNoteConflict }: UseNotesPar
         async (draft: Partial<Note> = {}) => {
             try {
                 const created = await api.createNote(draft);
+                broadcastRef.current?.postMessage({ type: "changed" });
                 setNotes(prev => [...prev, created]);
                 if (draft.content && api.listTags && api.listNoteTags) {
                     try {
@@ -248,6 +262,7 @@ export function useNotes({ api, onError, onNotify, onNoteConflict }: UseNotesPar
                         : patch;
                 const saved = await api.updateNote(id, withRev);
                 if (saved) {
+                    broadcastRef.current?.postMessage({ type: "changed" });
                     // 服务端给的新版本号**立刻**记账，下一笔排队写入就能带上它
                     if (typeof saved.rev === "number") revById.current.set(id, saved.rev);
                     else revById.current.delete(id);
@@ -345,6 +360,7 @@ export function useNotes({ api, onError, onNotify, onNoteConflict }: UseNotesPar
             setNotes(prev => prev.filter(n => n.id !== note.id));
             try {
                 const res = await api.deleteNote(note.id!);
+                broadcastRef.current?.postMessage({ type: "changed" });
                 onNotify(
                     res.recycleId
                         ? "笔记已移到回收站，可在「回收站」里还原"
@@ -412,6 +428,7 @@ export function useNotes({ api, onError, onNotify, onNoteConflict }: UseNotesPar
             if (typeof api.restoreRecycleItem !== "function") return;
             try {
                 await api.restoreRecycleItem(recycleId);
+                broadcastRef.current?.postMessage({ type: "changed" });
                 onNotify("已还原到全部笔记", "success");
                 await loadTrash();
                 await reload();
@@ -429,6 +446,7 @@ export function useNotes({ api, onError, onNotify, onNoteConflict }: UseNotesPar
             if (typeof api.purgeRecycleItem !== "function") return;
             try {
                 await api.purgeRecycleItem(recycleId);
+                broadcastRef.current?.postMessage({ type: "changed" });
                 onNotify("已彻底删除", "success");
                 await loadTrash();
             } catch (error) {
@@ -444,6 +462,7 @@ export function useNotes({ api, onError, onNotify, onNoteConflict }: UseNotesPar
         if (typeof api.emptyRecycleBin !== "function") return;
         try {
             await api.emptyRecycleBin();
+            broadcastRef.current?.postMessage({ type: "changed" });
             onNotify("回收站已清空", "success");
             await loadTrash();
         } catch (error) {
@@ -516,6 +535,7 @@ export function useNotes({ api, onError, onNotify, onNoteConflict }: UseNotesPar
             if (typeof api.createFolder !== "function") return null;
             try {
                 const folder = await api.createFolder(name, parentId);
+                broadcastRef.current?.postMessage({ type: "changed" });
                 setFolders(prev => [...prev, folder].sort(sortFolders));
                 onNotify(`已新建文件夹「${folder.name}」`, "success");
                 return folder;
@@ -532,6 +552,7 @@ export function useNotes({ api, onError, onNotify, onNoteConflict }: UseNotesPar
         if (!api.updateFolder) return;
         try {
             const folder = await api.updateFolder(id, { parent_id: parentId });
+            broadcastRef.current?.postMessage({ type: "changed" });
             if (!folder) throw new Error("文件夹不存在");
             setFolders(prev => prev.map(f => f.id === id ? folder : f));
         } catch (error) {
@@ -591,6 +612,7 @@ export function useNotes({ api, onError, onNotify, onNoteConflict }: UseNotesPar
             if (typeof api.updateFolder !== "function") return;
             try {
                 const folder = await api.updateFolder(id, { name });
+                broadcastRef.current?.postMessage({ type: "changed" });
                 if (folder) {
                     setFolders(prev => prev.map(f => (f.id === id ? folder : f)));
                 }
@@ -608,6 +630,7 @@ export function useNotes({ api, onError, onNotify, onNoteConflict }: UseNotesPar
             if (typeof api.updateFolder !== "function") return;
             try {
                 const folder = await api.updateFolder(id, patch);
+                broadcastRef.current?.postMessage({ type: "changed" });
                 if (folder) {
                     setFolders(prev => prev.map(f => (f.id === id ? folder : f)));
                 }
@@ -627,6 +650,7 @@ export function useNotes({ api, onError, onNotify, onNoteConflict }: UseNotesPar
             setFolders(prev => prev.filter(f => f.id !== id));
             try {
                 const res = await api.deleteFolder(id);
+                broadcastRef.current?.postMessage({ type: "changed" });
                 if (!res.success) throw new Error("删除失败");
                 setFolders(prev => prev.map(f => f.parent_id === id ? { ...f, parent_id: null } : f));
                 if (res?.orphaned > 0) {
@@ -648,6 +672,7 @@ export function useNotes({ api, onError, onNotify, onNoteConflict }: UseNotesPar
             if (typeof api.createTag !== "function") return null;
             try {
                 const tag = await api.createTag(name);
+                broadcastRef.current?.postMessage({ type: "changed" });
                 setTags(prev => [...prev, tag].sort(sortTags));
                 onNotify(`已新建标签「${tag.name}」`, "success");
                 return tag;
@@ -665,6 +690,7 @@ export function useNotes({ api, onError, onNotify, onNoteConflict }: UseNotesPar
             if (typeof api.updateTag !== "function") return;
             try {
                 const tag = await api.updateTag(id, { name });
+                broadcastRef.current?.postMessage({ type: "changed" });
                 if (tag) setTags(prev => prev.map(t => (t.id === id ? tag : t)));
             } catch (error) {
                 reportError(error, { source: "note-tag-update" });
@@ -686,6 +712,7 @@ export function useNotes({ api, onError, onNotify, onNoteConflict }: UseNotesPar
             if (typeof api.updateTag !== "function") return;
             try {
                 const tag = await api.updateTag(id, { color });
+                broadcastRef.current?.postMessage({ type: "changed" });
                 if (tag) setTags(prev => prev.map(t => (t.id === id ? tag : t)));
             } catch (error) {
                 reportError(error, { source: "note-tag-style" });
@@ -703,6 +730,7 @@ export function useNotes({ api, onError, onNotify, onNoteConflict }: UseNotesPar
             setTags(prev => prev.filter(t => t.id !== id));
             try {
                 await api.deleteTag(id);
+                broadcastRef.current?.postMessage({ type: "changed" });
                 // ⚠️ 关联表也要一起清：tagCounts 是靠 noteTags 里残留的 tagId 统计的，
                 // 只摘标签行的话，那个 id 还留在每条笔记的关联里 —— 一旦之后有标签
                 // 复用了同一个 id，计数就会串到别的标签上（后端 deleteTag 已在事务里
@@ -733,6 +761,7 @@ export function useNotes({ api, onError, onNotify, onNoteConflict }: UseNotesPar
             if (typeof api.setNoteTags !== "function") return null;
             try {
                 const list = await api.setNoteTags(noteId, tagIds);
+                broadcastRef.current?.postMessage({ type: "changed" });
                 setTags(Array.isArray(list) ? list : []);
                 // 关联表也本地更新一份：否则左栏那个「待办 2」还是旧数字，
                 // 得等下一次首屏才对得上
@@ -782,6 +811,7 @@ export function useNotes({ api, onError, onNotify, onNoteConflict }: UseNotesPar
             if (typeof api.restoreNoteRevision !== "function") return null;
             try {
                 const note = await api.restoreNoteRevision(noteId, revisionId);
+                broadcastRef.current?.postMessage({ type: "changed" });
                 if (!note) {
                     onError("该版本已不存在");
                     return null;
@@ -837,6 +867,7 @@ export function useNotes({ api, onError, onNotify, onNoteConflict }: UseNotesPar
     return {
         notes,
         loaded,
+        externalChange,
         reload,
         createNote,
         updateNote,

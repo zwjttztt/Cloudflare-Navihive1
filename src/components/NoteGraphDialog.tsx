@@ -12,7 +12,7 @@
 // 数据全部来自已有的 utils/noteWikiLink（buildBacklinks / resolveWikiLinks），
 // 与正文渲染用的是同一套 `[[双链]]` 判据，不会出现「图上连了、正文里没连」。
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Dialog from "@mui/material/Dialog";
@@ -22,13 +22,22 @@ import IconButton from "@mui/material/IconButton";
 import Typography from "@mui/material/Typography";
 import CloseIcon from "@mui/icons-material/Close";
 import HubIcon from "@mui/icons-material/Hub";
-import type { Note } from "../API/types";
+import type { Note, NoteFolder, NoteTag } from "../API/types";
 import { resolveWikiLinks, extractWikiLinks } from "../utils/noteWikiLink";
 import TextField from "@mui/material/TextField";
+import { readActiveAccount, scopedKey } from "../utils/accountScope";
+
+function graphPreference(key: string): string | null {
+    try { return localStorage.getItem(scopedKey(`notes.graph.${key}`, readActiveAccount())); }
+    catch { return null; }
+}
 
 export interface NoteGraphDialogProps {
     open: boolean;
     notes: Note[];
+    folders?: NoteFolder[];
+    tags?: NoteTag[];
+    noteTags?: Record<number, number[]>;
     /** 当前笔记（图谱以它为中心；没有就退化成「全站图」的第一种布局） */
     activeId?: number | null;
     onOpenNote: (id: number) => void;
@@ -56,17 +65,44 @@ const NODE_R = 9;
 export default function NoteGraphDialog({
     open,
     notes,
+    folders = [],
+    tags = [],
+    noteTags = {},
     activeId,
     onOpenNote,
     onCreateNote,
     onClose,
 }: NoteGraphDialogProps) {
     /** true = 只画当前笔记的邻域；false = 全站所有笔记（含孤岛） */
-    const [localOnly, setLocalOnly] = useState(true);
+    const [localOnly, setLocalOnly] = useState(() => graphPreference("localOnly") !== "false");
     /** 邻域模式的跳数（N9）：1 = 直接邻居（原有行为），2/3 = 沿双链再往外走几跳 */
-    const [depth, setDepth] = useState(1);
+    const [depth, setDepth] = useState(() => Math.max(1, Math.min(3, Number(graphPreference("depth")) || 1)));
     const [hover, setHover] = useState<number | null>(null);
     const [query, setQuery] = useState("");
+    const [groupBy, setGroupBy] = useState<"none" | "folder" | "tag">(() => {
+        const value = graphPreference("groupBy"); return value === "folder" || value === "tag" ? value : "none";
+    });
+    const [folderFilter, setFolderFilter] = useState(() => graphPreference("folderFilter") ?? "");
+    const [tagFilter, setTagFilter] = useState(() => graphPreference("tagFilter") ?? "");
+    const [camera, setCamera] = useState({ x: 0, y: 0, zoom: 1 });
+    const [positions, setPositions] = useState<Record<number, { x: number; y: number }>>({});
+    const drag = useRef<{ id: number | null; x: number; y: number; moved: boolean } | null>(null);
+    const suppressClick = useRef(false);
+    const pointers = useRef(new Map<number, { x: number; y: number }>());
+    const pinchDistance = useRef<number | null>(null);
+    useEffect(() => {
+        try {
+            for (const [key, value] of Object.entries({ groupBy, localOnly, depth, folderFilter, tagFilter })) {
+                localStorage.setItem(scopedKey(`notes.graph.${key}`, readActiveAccount()), String(value));
+            }
+        } catch { /* Storage may be unavailable. */ }
+    }, [groupBy, localOnly, depth, folderFilter, tagFilter]);
+    const nodeColor = (id: number) => {
+        const note = notes.find(n => n.id === id);
+        const color = groupBy === "folder" ? folders.find(f => f.id === note?.folder_id)?.color
+            : groupBy === "tag" ? tags.find(t => noteTags[id]?.includes(t.id!))?.color : null;
+        return typeof color === "string" && /^#[0-9a-f]{6}$/i.test(color) ? color : "var(--accent)";
+    };
 
     const graph = useMemo(() => {
         const active = activeId === null || activeId === undefined
@@ -177,11 +213,13 @@ export default function NoteGraphDialog({
             });
         });
 
-        const filtered = nodes.filter(n => n.title.toLowerCase().includes(query.toLowerCase()));
+        const filtered = nodes.filter(n => n.title.toLowerCase().includes(query.toLowerCase())
+            && (!folderFilter || String(notes.find(note => note.id === n.id)?.folder_id) === folderFilter)
+            && (!tagFilter || noteTags[n.id]?.includes(Number(tagFilter))));
         const limited = filtered.slice(0, 350);
         const byId = new Map(limited.map(n => [n.id, n]));
         return { nodes: limited, truncated: filtered.length > 350, edges: drawn.filter(e => byId.has(e.from) && byId.has(e.to)), byId };
-    }, [notes, activeId, localOnly, depth, query]);
+    }, [notes, activeId, localOnly, depth, query, folderFilter, tagFilter, noteTags]);
 
     const connected = useMemo(() => {
         const set = new Set<number>();
@@ -244,6 +282,14 @@ export default function NoteGraphDialog({
             </DialogTitle>
             <DialogContent sx={{ pt: 0.5 }}>
                 <TextField size='small' fullWidth value={query} onChange={e => setQuery(e.target.value)} label='筛选节点标题' />
+                <Box sx={{ display: "flex", gap: 1, flexWrap: "wrap", my: 1 }}>
+                    <label>着色 <select aria-label='图谱着色' value={groupBy} onChange={e => setGroupBy(e.target.value as typeof groupBy)}><option value='none'>默认</option><option value='folder'>文件夹</option><option value='tag'>标签</option></select></label>
+                    <label>文件夹 <select aria-label='图谱文件夹过滤' value={folderFilter} onChange={e => setFolderFilter(e.target.value)}><option value=''>全部</option>{folders.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}</select></label>
+                    <label>标签 <select aria-label='图谱标签过滤' value={tagFilter} onChange={e => setTagFilter(e.target.value)}><option value=''>全部</option>{tags.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}</select></label>
+                    <Button size='small' aria-label='图谱缩小' onClick={() => setCamera(c => ({ ...c, zoom: Math.max(0.25, c.zoom / 1.2) }))}>−</Button>
+                    <Button size='small' aria-label='图谱放大' onClick={() => setCamera(c => ({ ...c, zoom: Math.min(4, c.zoom * 1.2) }))}>+</Button>
+                    <Button size='small' onClick={() => { setCamera({ x: 0, y: 0, zoom: 1 }); setPositions({}); }}>重置视图</Button>
+                </Box>
                 {graph.truncated && <Typography role='status'>节点过多，仅展示前 350 个，请缩小范围。</Typography>}
                 <Typography variant='caption'>虚线节点代表未创建的链接目标，点击或按 Enter 可创建笔记。</Typography>
                 <Typography variant='caption' color='text.secondary' sx={{ display: "block", mb: 1 }}>
@@ -270,11 +316,53 @@ export default function NoteGraphDialog({
                         height={HEIGHT}
                         role='img'
                         aria-label='笔记双链关系图'
+                        style={{ touchAction: "none" }}
+                        onWheel={e => setCamera(c => ({ ...c, zoom: Math.min(4, Math.max(0.25, c.zoom * (e.deltaY > 0 ? 0.9 : 1.1))) }))}
+                        onPointerDown={e => {
+                            pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+                            if (pointers.current.size === 2) {
+                                const [a, b] = [...pointers.current.values()];
+                                pinchDistance.current = Math.hypot(a.x - b.x, a.y - b.y);
+                                drag.current = null;
+                                suppressClick.current = true;
+                                e.currentTarget.setPointerCapture?.(e.pointerId);
+                                return;
+                            }
+                            const element = (e.target as Element).closest("[data-graph-node]");
+                            drag.current = { id: element ? Number(element.getAttribute("data-graph-node")) : null, x: e.clientX, y: e.clientY, moved: false };
+                            suppressClick.current = false;
+                            e.currentTarget.setPointerCapture?.(e.pointerId);
+                        }}
+                        onPointerMove={e => {
+                            if (pointers.current.has(e.pointerId)) pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+                            if (pointers.current.size >= 2) {
+                                const [a, b] = [...pointers.current.values()];
+                                const distance = Math.hypot(a.x - b.x, a.y - b.y);
+                                const previous = pinchDistance.current;
+                                if (previous && distance) setCamera(c => ({ ...c, zoom: Math.max(0.25, Math.min(4, c.zoom * distance / previous)) }));
+                                pinchDistance.current = distance;
+                                return;
+                            }
+                            const state = drag.current;
+                            if (!state) return;
+                            const scale = WIDTH / (e.currentTarget.getBoundingClientRect().width || WIDTH);
+                            const dx = (e.clientX - state.x) * scale, dy = (e.clientY - state.y) * scale;
+                            if (Math.abs(dx) + Math.abs(dy) > 2) state.moved = true;
+                            state.x = e.clientX; state.y = e.clientY;
+                            if (state.id === null) setCamera(c => ({ ...c, x: c.x + dx, y: c.y + dy }));
+                            else {
+                                const node = graph.byId.get(state.id);
+                                if (node) setPositions(p => ({ ...p, [node.id]: { x: (p[node.id]?.x ?? node.x) + dx / camera.zoom, y: (p[node.id]?.y ?? node.y) + dy / camera.zoom } }));
+                            }
+                        }}
+                        onPointerUp={e => { pointers.current.delete(e.pointerId); pinchDistance.current = null; suppressClick.current = suppressClick.current || (drag.current?.moved ?? false); drag.current = null; }}
+                        onPointerCancel={e => { pointers.current.delete(e.pointerId); pinchDistance.current = null; drag.current = null; suppressClick.current = true; }}
                     >
+                        <g transform={`translate(${camera.x} ${camera.y}) scale(${camera.zoom})`}>
                         {/* 连线先画（在节点下面），命中高亮时加粗 */}
                         {graph.edges.map(edge => {
-                            const a = graph.byId.get(edge.from);
-                            const b = graph.byId.get(edge.to);
+                            const a = positions[edge.from] ?? graph.byId.get(edge.from);
+                            const b = positions[edge.to] ?? graph.byId.get(edge.to);
                             if (!a || !b) return null;
                             const lit =
                                 hover !== null &&
@@ -299,13 +387,14 @@ export default function NoteGraphDialog({
                             return (
                                 <g
                                     key={node.id}
+                                    transform={positions[node.id] ? `translate(${positions[node.id].x - node.x} ${positions[node.id].y - node.y})` : undefined}
                                     data-graph-node={node.id}
                                     role='button'
                                     tabIndex={0}
                                     aria-label={node.unresolved ? `创建笔记 ${node.title}` : `打开笔记 ${node.title}`}
                                     aria-disabled={node.unresolved && !onCreateNote ? true : undefined}
                                     data-graph-unresolved={node.unresolved ? "1" : undefined}
-                                    onClick={() => node.unresolved ? onCreateNote?.(node.title) : onOpenNote(node.id)}
+                                    onClick={() => { if (!suppressClick.current) { if (node.unresolved) onCreateNote?.(node.title); else onOpenNote(node.id); } }}
                                     onKeyDown={e => {
                                         if (e.key === "Enter" || e.key === " ") {
                                             e.preventDefault();
@@ -325,11 +414,11 @@ export default function NoteGraphDialog({
                                         fill={
                                             isHover
                                                 ? "var(--accent)"
-                                                : node.degree === 0
+                                                : node.degree === 0 && groupBy === "none"
                                                   ? "rgba(128,128,128,0.5)"
-                                                  : "color-mix(in srgb, var(--accent) 55%, transparent)"
+                                                  : nodeColor(node.id)
                                         }
-                                        stroke='var(--accent)'
+                                        stroke={nodeColor(node.id)}
                                         strokeWidth={1}
                                         strokeDasharray={node.unresolved ? "3 3" : undefined}
                                     />
@@ -347,6 +436,7 @@ export default function NoteGraphDialog({
                                 </g>
                             );
                         })}
+                        </g>
                     </svg>
                 </Box>
                 {graph.nodes.length === 0 && (

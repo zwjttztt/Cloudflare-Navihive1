@@ -26,7 +26,7 @@ export default function PublicNotePage({ token }: { token: string }) {
     const load = async (password?: string) => {
         const response = await fetch(`/api/note-shares/${encodeURIComponent(token)}`, {
             method: password ? "POST" : "GET",
-            credentials: "omit",
+            credentials: "same-origin",
             cache: "no-store",
             headers: password ? { "Content-Type": "application/json" } : undefined,
             body: password ? JSON.stringify({ password }) : undefined,
@@ -45,7 +45,7 @@ export default function PublicNotePage({ token }: { token: string }) {
         // cookie，取回来是 401，图就显示不出来。公开页走免鉴权那条通道
         // （后端只放行「属于一条当前有效分享」的附件，见 getPublicAttachment）。
         const rendered = await renderMarkdownToReact(
-            note.content.replace(/\/api\/notes\/attachments\//g, "/api/note-shares/attachments/")
+            note.content.replace(/\/api\/notes\/attachments\/([0-9a-z-]+)/g, (_all, id: string) => `/api/note-shares/attachments/${id}?share=${encodeURIComponent(token)}`)
         );
         const shown = note.title || "无标题";
         setTitle(shown);

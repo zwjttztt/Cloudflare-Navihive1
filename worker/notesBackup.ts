@@ -186,6 +186,21 @@ export async function runNotesWebDavBackup(
         password?: string;
     }
 ): Promise<WebDavResult<{ filename: string; size: number }>> {
+    const leaseKey = `auth.notesBackup.lease.${api.currentUserId ?? 0}`;
+    const leaseToken = crypto.randomUUID();
+    let leaseValue = `${Date.now() + 15 * 60_000}:${leaseToken}`;
+    async function renewLease(): Promise<void> {
+        const next = `${Date.now() + 15 * 60_000}:${leaseToken}`;
+        const result = await api.db.prepare("UPDATE configs SET value = ? WHERE key = ? AND value = ?")
+            .bind(next, leaseKey, leaseValue).run();
+        if (!(result.meta as { changes?: number })?.changes) throw new Error("备份租约已失效，请重试");
+        leaseValue = next;
+    }
+    await api.migrate();
+    const acquired = await api.db.prepare(
+        "INSERT INTO configs (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value WHERE CAST(substr(configs.value, 1, 13) AS INTEGER) < ?"
+    ).bind(leaseKey, leaseValue, Date.now()).run();
+    if (!(acquired.meta as { changes?: number }).changes) return { success: false, message: "已有笔记备份正在进行，请稍后再试" };
     const { mode, stored = {} } = options;
     const password = options.password ?? config.backupPassword ?? "";
     const startedMs = Date.now();
@@ -200,9 +215,11 @@ export async function runNotesWebDavBackup(
         const payload = await api.exportNotesData();
         const gz = await gzipBytes(JSON.stringify(payload));
         const body = password ? await encryptBackup(gz, password) : gz;
+        await renewLease();
         const filename = buildNotesBackupFileName(mode);
         const result = await webdavPutBytes(config, filename, body, Boolean(password));
 
+        await renewLease();
         if (result.success) {
             run.status = "success";
             run.filename = filename;
@@ -236,6 +253,12 @@ export async function runNotesWebDavBackup(
         const runs = await readNotesBackupRuns(api);
         await writeNotesBackupRuns(api, appendNotesBackupRun(runs, run));
         return { success: false, message: run.error };
+    } finally {
+        try {
+            await api.db.prepare("DELETE FROM configs WHERE key = ? AND value = ?").bind(leaseKey, leaseValue).run();
+        } catch (error) {
+            console.error("释放笔记备份租约失败，等待 TTL 回收:", error);
+        }
     }
 }
 

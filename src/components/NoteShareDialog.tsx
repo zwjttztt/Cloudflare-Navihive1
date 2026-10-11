@@ -33,6 +33,7 @@ export interface NoteShareApi {
      * 数据页「双链 / 版本历史」两格的全站计数。可选：老部署的 api 没有
      * 这个方法，两格自动显示「—」，不报错（与 uploadApi 的可选方法同一套路）。
      */
+    reindexNotes?(): Promise<{ success: boolean; count: number }>;
     notesStats?(): Promise<NoteStats>;
     /**
      * 导入「记事本导出」JSON（exportAllData 的形状）：按 uuid 合并、较新者胜。

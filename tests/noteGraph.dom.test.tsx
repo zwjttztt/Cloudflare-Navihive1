@@ -22,6 +22,7 @@ const notes: Note[] = [
 ];
 
 function mount(activeId: number | null = 1) {
+    localStorage.clear();
     host = document.createElement("div");
     document.body.appendChild(host);
     root = createRoot(host);
@@ -101,4 +102,29 @@ test("N9 全站模式：孤岛也画出来；范围切回后 depth 按钮恢复"
     assert.ok(ids.includes("4"), `全站模式应含孤岛：${ids}`);
     assert.ok(document.querySelector("[data-graph-depth='1']") === null, "全站模式不显示 depth 按钮");
     cleanup();
+});
+
+test("图谱：背景拖拽平移、双指缩放，深度偏好按账号持久化", () => {
+    mount();
+    const svg = document.querySelector("svg[viewBox='0 0 640 420']");
+    assert.ok(svg);
+    const dispatch = (type: string, id: number, x: number, y: number) => {
+        const event = new Event(type, { bubbles: true });
+        Object.assign(event, { pointerId: id, clientX: x, clientY: y });
+        act(() => svg.dispatchEvent(event));
+    };
+    try {
+        dispatch("pointerdown", 1, 10, 10);
+        dispatch("pointermove", 1, 30, 20);
+        dispatch("pointerup", 1, 30, 20);
+        assert.ok(svg.querySelector("g")?.getAttribute("transform")?.includes("translate(20 10)"));
+        dispatch("pointerdown", 1, 0, 0);
+        dispatch("pointerdown", 2, 100, 0);
+        dispatch("pointermove", 2, 200, 0);
+        assert.ok(svg.querySelector("g")?.getAttribute("transform")?.includes("scale(2)"));
+        dispatch("pointerup", 1, 0, 0);
+        dispatch("pointerup", 2, 200, 0);
+        clickDepth(2);
+        assert.equal(localStorage.getItem("notes.graph.depth:anon"), "2");
+    } finally { cleanup(); }
 });

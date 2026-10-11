@@ -20,6 +20,7 @@ import type { NoteShareApi } from "./NoteShareDialog";
 import { useNotes, type NotesApiLike } from "../hooks/useNotes";
 import type { Note, NotesBackupSavePatch, NotesBackupState } from "../API/http";
 import ConfirmDialog from "./ConfirmDialog";
+import { Alert, Button } from "@mui/material";
 
 export interface NotesOverlayProps {
     /**
@@ -83,6 +84,7 @@ export default function NotesOverlay({
 
     const {
         notes,
+        externalChange,
         reload,
         trash,
         loadTrash,
@@ -320,6 +322,7 @@ export default function NotesOverlay({
 
     return (
         <>
+        {externalChange && <Alert severity='info' sx={{ position: "fixed", top: 8, left: "25%", zIndex: theme => theme.zIndex.modal + 1 }} action={<Button color='inherit' onClick={() => { if (window.confirm("刷新将重新加载页面，请先保存当前草稿；若其他标签页修改了同一条笔记，保存时请先处理冲突。确定刷新吗？")) window.location.reload(); }}>刷新页面</Button>}>其他标签页已更新笔记，请先保存草稿再刷新。</Alert>}
         <NotesPage
             shareApi={api.getNoteShare && api.createNoteShare && api.revokeNoteShare ? api as NotesApiLike & NoteShareApi : undefined}
             // ⚠️ 与 shareApi 同一个套路：只在这个 api 实例**真的有** uploadAttachment

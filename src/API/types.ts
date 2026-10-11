@@ -116,6 +116,8 @@ export interface NoteAttachment {
     filename: string;
     mime: string;
     size: number;
+    width?: number | null;
+    height?: number | null;
     storage: AttachmentStorage;
     /** 只在服务端用；列给前端时会被剥掉（暴露它等于泄漏存储布局） */
     object_key?: string;

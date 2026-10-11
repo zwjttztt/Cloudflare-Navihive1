@@ -40,7 +40,38 @@ function loadExporter(): Promise<import("markdown-it").default> {
 export async function renderNoteHtmlBody(content: string): Promise<string> {
     const md = await loadExporter();
     // 标题并进正文：导出的 .md 也这么干（buildNoteMarkdown），两边口径一致
-    return md.render(buildNoteMarkdown("", content));
+    const tokens = md.parse(buildNoteMarkdown("", content), {});
+    const cache = new Map<string, Promise<string>>();
+    const pending: Promise<void>[] = [];
+    const visit = (items: typeof tokens) => {
+        for (const token of items) {
+            if (token.type === "image") {
+                const src = token.attrGet("src") ?? "";
+                if (/^\/api\/notes\/attachments\/[0-9a-z-]+$/.test(src)) {
+                    let result = cache.get(src);
+                    if (!result) {
+                        result = fetch(src, { credentials: "same-origin", cache: "no-store" }).then(async response => {
+                            if (!response.ok) throw new Error("导出图片失败，请检查附件是否仍存在");
+                            const blob = await response.blob();
+                            if (!/^image\/(png|jpeg|gif|webp|avif)$/.test(blob.type)) throw new Error("附件不是可导出的图片");
+                            return await new Promise<string>((resolve, reject) => {
+                                const reader = new FileReader();
+                                reader.onload = () => resolve(String(reader.result));
+                                reader.onerror = () => reject(new Error("读取导出图片失败"));
+                                reader.readAsDataURL(blob);
+                            });
+                        });
+                        cache.set(src, result);
+                    }
+                    pending.push(result.then(url => { token.attrSet("src", url); }));
+                }
+            }
+            if (token.children) visit(token.children);
+        }
+    };
+    visit(tokens);
+    await Promise.all(pending);
+    return md.renderer.render(tokens, md.options, {});
 }
 
 /** 导出文档的公共外壳（内联样式，离线打开也有基本排版） */
@@ -107,8 +138,10 @@ export async function printNoteAsPdf(title: string, content: string): Promise<vo
     frame.style.border = "0";
     frame.style.visibility = "hidden";
     frame.src = url;
-    frame.addEventListener("load", () => {
+    frame.addEventListener("load", async () => {
         try {
+            const images = Array.from(frame.contentDocument?.images ?? []);
+            await Promise.all(images.map(image => image.decode?.().catch(() => undefined)));
             frame.contentWindow?.focus();
             frame.contentWindow?.print();
         } finally {

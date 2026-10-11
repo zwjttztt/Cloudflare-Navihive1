@@ -28,6 +28,8 @@ import ConfirmDialog from "./ConfirmDialog";
 export interface AttachmentManagerFile {
     id: string;
     size: number;
+    width?: number | null;
+    height?: number | null;
     filename: string;
     mime: string;
 }
@@ -435,7 +437,7 @@ export default function AttachmentManager({
                                                     color: refs > 0 ? "text.disabled" : "warning.main",
                                                 }}
                                             >
-                                                <span>{fmtBytes(file.size || 0)}</span>
+                                                <span>{fmtBytes(file.size || 0)}{file.width && file.height ? ` · ${file.width}×${file.height}` : ""}</span>
                                                 <span aria-hidden='true'>·</span>
                                                 <span>{refs > 0 ? `引用 ${refs} 次` : "未引用"}</span>
                                             </Typography>

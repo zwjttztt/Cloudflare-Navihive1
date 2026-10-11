@@ -36,6 +36,7 @@ import {
 } from "../loginGuard";
 import {readBearerToken, readCookie, sessionCookieHeaders, TOKEN_COOKIE} from "../httpUtils";
 import { readAttachmentObject } from "../attachments";
+import { issueShareAssetSession, verifyShareAssetSession, shareAssetCookieName } from "../shareAssetSession";
 
 /** 公开取图那几个错误响应的统一头 */
 const PUBLIC_ATTACH_HEADERS = {
@@ -65,6 +66,19 @@ export async function handlePublicRoutes(ctx: RouteCtx): Promise<Response | null
     if (/^note-shares\/attachments\/[0-9a-z-]+$/.test(path) && method === "GET") {
         const id = path.slice("note-shares/attachments/".length);
         const found = await api.getPublicAttachment(id);
+        const shareToken = ctx.url.searchParams.get("share");
+        const shares = found ? await env.DB.prepare(
+            "SELECT token, password FROM note_share WHERE note_id = ? AND (expires_at IS NULL OR expires_at > ?)"
+        ).bind(found.note_id, Date.now()).all<{ token: string; password: string | null }>() : { results: [] };
+        let authorized = false;
+        for (const share of shares.results ?? []) {
+            if (shareToken && share.token !== shareToken) continue;
+            if (!share.password) { authorized = true; break; }
+            if (shareToken === share.token && await verifyShareAssetSession(
+                readCookie(request, shareAssetCookieName(share.token)), share.token, share.password
+            )) { authorized = true; break; }
+        }
+        if (!authorized) return Response.json({ error: "附件不存在" }, { status: 404, headers: PUBLIC_ATTACH_HEADERS });
         // 一律 404（不区分「没有」与「没分享」）：区分了就等于帮人枚举哪些 uuid 存在
         if (!found || !found.object_key) {
             return Response.json({ error: "附件不存在" }, { status: 404, headers: PUBLIC_ATTACH_HEADERS });
@@ -95,6 +109,7 @@ export async function handlePublicRoutes(ctx: RouteCtx): Promise<Response | null
             const body = (await request.json().catch(() => ({}))) as { password?: unknown };
             password = typeof body.password === "string" ? body.password : null;
         }
+        const verifiedHash = password ? await env.DB.prepare("SELECT password FROM note_share WHERE token = ?").bind(token).first<{ password: string | null }>() : null;
         const result = await api.getPublicNote(token, password);
         if (result.status === "not-found") {
             return Response.json({ error: "分享不存在、已过期或已撤销" }, {
@@ -108,10 +123,15 @@ export async function handlePublicRoutes(ctx: RouteCtx): Promise<Response | null
                 headers: { "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "X-Robots-Tag": "noindex, nofollow" },
             });
         }
-        return Response.json(result.note, {
-            status: 200,
-            headers: { "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "X-Robots-Tag": "noindex, nofollow" },
-        });
+        const headers = new Headers({ "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "X-Robots-Tag": "noindex, nofollow" });
+        if (password) {
+            const share = await env.DB.prepare("SELECT password FROM note_share WHERE token = ?").bind(token).first<{ password: string | null }>();
+            if (share?.password && share.password === verifiedHash?.password) {
+                const session = await issueShareAssetSession(token, share.password);
+                headers.set("Set-Cookie", `${shareAssetCookieName(token)}=${session}; HttpOnly; SameSite=Strict; Path=/api/note-shares/; Max-Age=1800${secureCookie ? "; Secure" : ""}`);
+            }
+        }
+        return Response.json(result.note, { status: 200, headers });
     }
 
     // 图标代理 - 公开路由，必须放在鉴权之前：

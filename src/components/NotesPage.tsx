@@ -3090,7 +3090,12 @@ export default function NotesPage({
                             if (p === "..") stack.pop();
                             else if (p !== "." && p) stack.push(p);
                         }
-                        return attachments.get(stack.join("/")) ?? attachments.get(decoded);
+                        const direct = attachments.get(stack.join("/")) ?? attachments.get(decoded);
+                        if (direct) return direct;
+                        const basename = decoded.split("/").pop()?.toLowerCase();
+                        const matches = [...attachments].filter(([path]) => path.split("/").pop()?.toLowerCase() === basename);
+                        // 同名附件有歧义时不猜，保留原引用给用户修正。
+                        return matches.length === 1 ? matches[0][1] : undefined;
                     };
                     content = content.replace(/!\[\[([^\]\n]+)\]\]/g, (whole, target: string) => {
                         const path = target.split("|")[0];
@@ -3246,6 +3251,7 @@ export default function NotesPage({
         const list: CommandItem[] = [
             { id: "shortcuts", label: "键盘快捷键帮助", section: "帮助", run: () => setShortcutsOpen(true) },
             { id: "new", label: "新建笔记", section: "笔记", keywords: "new create 新建", run: () => void onCreate() },
+            { id: "welcome", label: "创建欢迎示例笔记", section: "笔记", keywords: "welcome 教程 示例 帮助", run: () => void onCreate({ title: "欢迎使用记事本", content: "# 从这里开始\n\n用 Markdown 记录想法，编辑与预览会同步滚动。\n\n## 常用语法\n\n- **粗体**与 *斜体*\n- [ ] 点击预览中的复选框完成任务\n- [[我的第一条笔记]] 创建双链，使用图谱查看关系\n- 行内输入 #标签 可以补全标签\n\n## 快捷操作\n\nCtrl/⌘K 打开命令面板；Ctrl/⌘S 保存；图片可以粘贴或上传。\n\n## 数据安全\n\n在设置中导出 ZIP（包含附件），也可配置 WebDAV 备份。" }) },
             { id: "find", label: "查找 / 替换", section: "编辑", keywords: "find search 查找 替换", run: () => textareaRef.current?.openSearch() },
             { id: "insert-frontmatter", label: "插入 front-matter", section: "编辑", keywords: "frontmatter 属性 yaml", run: () => tools.onInsertFrontMatter() },
             { id: "insert-wikilink", label: "插入双链", section: "编辑", keywords: "wikilink 双链 链接", run: () => tools.onInsertWikiLink() },
@@ -4512,6 +4518,10 @@ export default function NotesPage({
                             // 所以这里只需排除「归档」—— 归档是唯一还能走到列表
                             // 却不该给「新建」入口的视图（在归档里新建没有语义）。
                             view !== "archived" ? (
+                                <Box sx={{ display: "flex", gap: 1, justifyContent: "center", flexWrap: "wrap" }}>
+                                {notes.length === 0 && <Button size='small' onClick={() => notesCommands.find(command => command.id === "welcome")?.run()}>
+                                    创建欢迎示例笔记
+                                </Button>}
                                 <Button
                                     size='small'
                                     variant='outlined'
@@ -4520,6 +4530,7 @@ export default function NotesPage({
                                 >
                                     新建笔记
                                 </Button>
+                                </Box>
                             ) : undefined
                         }
                     />
@@ -6695,6 +6706,9 @@ export default function NotesPage({
             {/* 版本历史面板（inkstone 的 VersionsPanel）：左列快照 + 右栏行级 diff。
                 替换掉原来那个「点了直接恢复」的 Menu —— 恢复前能看清改了什么。 */}
             <NoteGraphDialog
+                folders={folders}
+                tags={tags}
+                noteTags={noteTags}
                 open={graphOpen}
                 onCreateNote={title => { void onCreate({ title }); setGraphOpen(false); }}
                 notes={notes}

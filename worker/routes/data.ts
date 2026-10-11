@@ -4,8 +4,10 @@
 // 读到的数据已经按 ctx.api 上绑定的账号过滤过（见 NavigationAPI.setCurrentUser）。
 import type { Group, Note, NoteFolder, NoteTag, Site } from "../../src/API/http";
 import { NoteConflictError } from "../../src/utils/noteConflict";
+import { segmentCJK, FTS_CONTENT_LIMIT } from "../../src/utils/ftsQuery";
 import { enforceWriteGuard, writeBucket } from "../loginGuard";
 import { weakEtag } from "../util";
+import { readImageSize } from "../imageSize";
 import type { GroupInput, SiteInput } from "../types";
 import { validateGroup, validateSite } from "../validate";
 import { readIdempotencyKey, withIdempotency } from "../idempotency";
@@ -13,7 +15,7 @@ import {
     ATTACHMENT_MAX_BYTES,
     attachmentObjectKey,
     checkUploadQuota,
-    deleteAttachmentObject,
+    finishAttachmentDeletion,
     imageExtension,
     putAttachmentObject,
     readAttachmentObject,
@@ -97,6 +99,8 @@ async function handleUploadAttachment(ctx: RouteCtx): Promise<Response> {
         storage: quota.storage,
         object_key: key,
     });
+    const dimensions = readImageSize(bytes, mime);
+    if (dimensions) await env.DB.prepare("UPDATE attachments SET width = ?, height = ? WHERE id = ?").bind(dimensions.width, dimensions.height, id).run();
     await recordUpload(env, currentUserIdOf(ctx));
 
     // 回 URL 而不是字节：前端拿到 URL 就能插进正文。
@@ -287,6 +291,29 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
         // ⚠️ 必须排在 /^notes\/\d+\/share$/ 之前，也在 notes/folders 那一堆之前：
         // 「notes/shares」不匹配数字正则，但绝不能被后面的前缀分支抢走。
         return Response.json(await api.listNoteShares());
+    } else if (path === "notes/reindex" && method === "POST") {
+        const limited = await writeGate();
+        if (limited) return limited;
+        await api.migrate();
+        await api.migrateNotesFtsTable();
+        if (!api.notesFtsReady) return Response.json({ error: "当前数据库不支持全文索引，搜索已使用备用模式" }, { status: 503 });
+        const notes = await api.listNotes();
+        // 每条只重建读取后未被其他请求改写的版本，不能用旧快照覆盖并发保存的新索引。
+        const statements = [ctx.env.DB.prepare(
+            "DELETE FROM notes_fts WHERE user_id IS ? AND NOT EXISTS (SELECT 1 FROM notes n WHERE n.id = notes_fts.note_id AND n.user_id IS notes_fts.user_id)"
+        ).bind(api.currentUserId)];
+        for (const note of notes) {
+            statements.push(ctx.env.DB.prepare(
+                "DELETE FROM notes_fts WHERE user_id IS ? AND note_id = ? AND EXISTS (SELECT 1 FROM notes WHERE id = ? AND user_id IS ? AND rev IS ?)"
+            ).bind(api.currentUserId, note.id, note.id, api.currentUserId, note.rev ?? null));
+            statements.push(ctx.env.DB.prepare(
+                "INSERT INTO notes_fts (note_id, user_id, title, body) SELECT id, user_id, ?, ? FROM notes WHERE id = ? AND user_id IS ? AND rev IS ?"
+            ).bind(segmentCJK(note.title ?? ""), segmentCJK((note.content ?? "").slice(0, FTS_CONTENT_LIMIT)), note.id, api.currentUserId, note.rev ?? null));
+        }
+        // D1 batch 保证同一条删除与插入原子化；控制单批大小，避免大型笔记库超限。
+        for (let i = 1; i < statements.length; i += 80) await ctx.env.DB.batch(statements.slice(i, i + 80));
+        await statements[0].run();
+        return Response.json({ success: true, count: notes.length });
     } else if (path === "notes/stats" && method === "GET") {
         // 数据页概览「双链 / 版本历史」两格的全站计数（只读，不走 writeGate）
         return Response.json(await api.notesStats());
@@ -418,7 +445,7 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
         if (!ok.ok) return Response.json({ error: ok.error }, { status: ok.status });
         // 先删 D1 记录再删对象：反过来会出现「记录还在、对象没了」，
         // 用户刷新后看到图裂了却删不掉。
-        await deleteAttachmentObject(ctx.env, ok.storage, ok.objectKey);
+        await finishAttachmentDeletion(ctx.env, id, ok.storage, ok.objectKey);
         return Response.json({ ok: true });
     } else if (path === "notes/attachments/prune" && method === "POST") {
         // 清理未引用附件（2026-10-08，设置 → 数据 → 维护，照 inkstone）：
@@ -427,7 +454,7 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
         if (limited) return limited;
         const { removed } = await api.pruneAttachments();
         for (const a of removed) {
-            await deleteAttachmentObject(ctx.env, a.storage, a.object_key);
+            await finishAttachmentDeletion(ctx.env, a.id, a.storage, a.object_key);
         }
         return Response.json(
             { removed: removed.length, freedBytes: removed.reduce((s, a) => s + a.size, 0) }

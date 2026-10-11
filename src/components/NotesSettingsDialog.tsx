@@ -276,6 +276,8 @@ export default function NotesSettingsDialog({
     // 之外的方式触发；这里由按钮 ref.click() 调起，读文件后整包交给后端合并）
     const importFileRef = useRef<HTMLInputElement>(null);
     const [importBusy, setImportBusy] = useState(false);
+    const [reindexBusy, setReindexBusy] = useState(false);
+    const [reindexMessage, setReindexMessage] = useState("");
 
     const handleImportFile = async (file: File | null | undefined) => {
         if (!file || !dataRef.current?.onImportNotes) return;
@@ -1107,6 +1109,17 @@ export default function NotesSettingsDialog({
                                 <Typography variant='subtitle2' sx={{ mb: 0.5, mt: 2 }}>
                                     维护
                                 </Typography>
+                                {shareApi?.reindexNotes && (
+                                    <SettingRow label='重建搜索索引' description='搜索结果缺失时重新建立当前账号的全文索引，不修改笔记正文。'>
+                                        <Button size='small' disabled={reindexBusy} onClick={async () => {
+                                            setReindexBusy(true);
+                                            try { const result = await shareApi.reindexNotes?.(); setReindexMessage(`已重建 ${result?.count ?? 0} 条笔记索引`); }
+                                            catch (error) { setReindexMessage(error instanceof Error ? error.message : "重建失败"); }
+                                            finally { setReindexBusy(false); }
+                                        }}>{reindexBusy ? "重建中…" : "重建索引"}</Button>
+                                        <Typography role='status' variant='caption'>{reindexMessage}</Typography>
+                                    </SettingRow>
+                                )}
                                 {data.onPruneAttachments && (
                                     <SettingRow
                                         label='清理未引用附件'

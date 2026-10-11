@@ -580,6 +580,10 @@ export class NavigationClient {
     }
 
     /** 数据页概览「双链 / 版本历史」两格的全站计数（后端现算） */
+    async reindexNotes(): Promise<{ success: boolean; count: number }> {
+        return this.request("notes/reindex", { method: "POST" });
+    }
+
     async notesStats(): Promise<NoteStats> {
         const res = await this.request<Partial<NoteStats>>("notes/stats");
         return { versions: res?.versions ?? 0, links: res?.links ?? 0 };
