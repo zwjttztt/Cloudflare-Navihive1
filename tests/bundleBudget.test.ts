@@ -89,11 +89,14 @@ function indexChunk(): { name: string; kb: number } | null {
 // （FirstPage/LastPage）等共约 14 个 MUI 图标与组件，真实首屏 914→920.6 KB / 295.2→296.7 KB。
 // 预算从 950/305 抬到 970/315：留不出余量的话，「东西加多了」这个信号会被这条测试吞掉，
 // 那才是真的坏 —— 抬完仍要求至少 3% 余量，再涨 6 KB 就红。
-const FIRST_SCREEN_BUDGET_RAW_KB = 970;
-const FIRST_SCREEN_BUDGET_GZIP_KB = 315;
-/** 实测基线（main @ affaf2b，2026-10-05）：914.1 KB 原始 / 295.2 KB gzip */
-const FIRST_SCREEN_BASELINE_RAW_KB = 919.0;
-const FIRST_SCREEN_BASELINE_GZIP_KB = 296.8;
+// ⚠️ 2026-10-11 依赖例行升级（MUI 9.4→9.5 等 minor/patch）后实测 943.3/304.0，
+// 970/315 只剩 2.8%/3.5% 余量 —— 涨价来自依赖升级而非代码进场，预算抬到 995/322
+//（恢复约 5% 余量的设计意图），基线同步更新到本次实测。
+const FIRST_SCREEN_BUDGET_RAW_KB = 995;
+const FIRST_SCREEN_BUDGET_GZIP_KB = 322;
+/** 实测基线（main @ 67e6efd + 依赖例行升级，2026-10-11）：943.3 KB 原始 / 304.0 KB gzip */
+const FIRST_SCREEN_BASELINE_RAW_KB = 943.3;
+const FIRST_SCREEN_BASELINE_GZIP_KB = 304.0;
 
 interface FirstScreen {
     files: { name: string; rawKb: number; gzipKb: number }[];

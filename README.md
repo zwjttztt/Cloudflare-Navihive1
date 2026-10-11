@@ -12,7 +12,7 @@
 
 
 
-![Material UI](https://img.shields.io/badge/Material_UI-9.4-0081cb)
+![Material UI](https://img.shields.io/badge/Material_UI-9.5-0081cb)
 
 ![Cloudflare](https://img.shields.io/badge/Cloudflare-Workers_+_D1-f38020)
 
