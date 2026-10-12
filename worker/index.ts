@@ -31,7 +31,7 @@ import { handleAiRoutes } from "./routes/ai";
 import { handleBackupRoutes } from "./routes/backup";
 import { handleConfigRoutes } from "./routes/config";
 import { handleDataRoutes } from "./routes/data";
-import { enforceAuth, type TokenSession } from "./routes/middleware";
+import { enforceAuth, enforceMaintenance, type TokenSession } from "./routes/middleware";
 import { handleOpsRoutes } from "./routes/ops";
 import { handlePublicRoutes } from "./routes/public";
 import type { RouteCtx } from "./routes/types";
@@ -125,7 +125,12 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
         ctx.currentJti = session.jti;
         ctx.currentTokenExp = session.exp;
 
-        // 3) 确保数据库结构是最新的（迁移结果缓存在模块作用域，同一 isolate 内只执行一次）
+        // 3) 维护模式：写操作拦下（读操作放行，owner 豁免）。排在迁移之前 ——
+        //    迁库本身也是维护动作，别让维护中的写请求先落到旧结构上。
+        const maintaining = await enforceMaintenance(ctx);
+        if (maintaining) return maintaining;
+
+        // 4) 确保数据库结构是最新的（迁移结果缓存在模块作用域，同一 isolate 内只执行一次）
         await api.migrate();
 
         // 4) 首次部署强制改密：种子凭据来自部署变量，等同半公开。

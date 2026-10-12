@@ -132,6 +132,26 @@ async function openNoteMore() {
     });
 }
 
+/**
+ * 记事本相关源码（静态守卫用）：主组件 + 拆出去的文件。
+ *
+ * 2026-10-12 拆文件：Markdown 工具栏与预览渲染从 NotesPage.tsx 搬到了
+ * src/components/notes/markdownToolbar.tsx。守卫如果只读其中一个文件，
+ * 就会因为「代码搬走」而假通过 —— 那比不写守卫更糟（看着全绿，其实没人盯着）。
+ * 所以这里把两份拼起来给守卫用：锚点切片仍在同一份字符串里，
+ * 「不该出现 X」这类断言也照样查得到（搬走的代码只有一份）。
+ */
+function notesSource(): string {
+    const dir = findProjectDir();
+    const mainPath = join(dir, "src", "components", "NotesPage.tsx");
+    const toolbarPath = join(dir, "src", "components", "notes", "markdownToolbar.tsx");
+    // ⚠️ **不剥注释**：一部分守卫是拿 JSX 注释 `{/* 主体：desktop */}` 当锚点的
+    // （剥了就 indexOf 不到，切片变空字符串，守卫反而假失败）。
+    // 要剥注释的调用点自己包 stripComments(notesSource())。
+    return readFileSync(mainPath, "utf-8") + "\n" + readFileSync(toolbarPath, "utf-8");
+}
+
+
 test("反向链接：面板列出引用当前笔记的条目，且能跳过去", async () => {
     mountPanel([
         note({ id: 1, title: "数据库设计", content: "表结构" }),
@@ -468,10 +488,7 @@ test("标题下拉按钮和图标按钮一样大（28×28），不再高一截",
     // ⚠️ jsdom 没有布局，getBoundingClientRect 恒为 0，量不了真实尺寸；
     // 所以这里查源码：标题按钮必须和图标按钮一样是 28×28 —— 它之前是「Button」自带
     // padding + 18px 字，比图标高一截，用户一眼看出大小不一致。
-    const src = readFileSync(
-        resolve(findProjectDir(), "src/components/NotesPage.tsx"),
-        "utf-8"
-    );
+    const src = notesSource();
     // ⚠️ 别拿 `indexOf("标题层级")` 当锚点：源码里「标题层级」这四个字在
     // 大纲注释、菜单项 label 等处出现过好几次，indexOf 命中的是最早那处
     // 注释，切出来的片段跟按钮没关系。锚在 aria-label 上才是这个按钮本身。
@@ -517,7 +534,7 @@ test("阶段二：列表按时间分组，分组标题挂在条目上面", () =>
 
 test("列表分组标题用 inkstone 那套排版（10.5px / 加粗 / 0.06em 字距）", () => {
     const src = stripComments(
-        readFileSync(join(findProjectDir(), "src", "components", "NotesPage.tsx"), "utf-8")
+        notesSource()
     );
     // 从 data-month 一直取到该 Typography 闭合，取够整个 sx 块
     const i = src.indexOf("data-month={group.label}");
@@ -534,7 +551,7 @@ test("列表分组标题用 inkstone 那套排版（10.5px / 加粗 / 0.06em 字
 
 test("笔记行内不再有时间戳（时间已由分组标题承担）", () => {
     const src = stripComments(
-        readFileSync(join(findProjectDir(), "src", "components", "NotesPage.tsx"), "utf-8")
+        notesSource()
     );
     // ⚠️ 窗口要装得下**整行**：2026-10-10 往行里加了「⌘/Ctrl 点 / Shift 点」那三十行，
     // 6000 就不够了 —— 守卫自己红了而功能一点没坏（这种红比没守卫更糟），取 9000。
@@ -553,7 +570,7 @@ test("笔记行内不再有时间戳（时间已由分组标题承担）", () =>
 
 test("悬停时整行右移 2px，且只在真能 hover 的设备上（inkstone 同款）", () => {
     const src = stripComments(
-        readFileSync(join(findProjectDir(), "src", "components", "NotesPage.tsx"), "utf-8")
+        notesSource()
     );
     // ⚠️ 窗口要装得下**整行**：2026-10-10 往行里加了「⌘/Ctrl 点 / Shift 点」那三十行，
     // 6000 就不够了 —— 守卫自己红了而功能一点没坏（这种红比没守卫更糟），取 9000。
@@ -779,10 +796,7 @@ test("折叠左栏时搜索框和视图导航要一起藏掉（只藏列表会�
 
 test("顶栏：返回箭头贴最左（朝左），「记事本」居中，收起键占右上角", () => {
     mountPanel([note({ id: 1, title: "甲", content: "" })]);
-    const src = readFileSync(
-        resolve(findProjectDir(), "src/components/NotesPage.tsx"),
-        "utf-8"
-    );
+    const src = notesSource();
     // 判据（2026-10-10 用户要求）：导航列头部那一行的**内部顺序** ——
     // 返回箭头在最左、标题居中、收起/展开在最右（返回箭头原来的位置）。
     const headAt = src.indexOf("const navInner = (");
@@ -814,10 +828,7 @@ test("顶栏：返回箭头贴最左（朝左），「记事本」居中，收�
 });
 
 test("滚动条样式必须统一走全局（导航页那套），NotesPage 不能再自带一份", () => {
-    const src = readFileSync(
-        resolve(findProjectDir(), "src/components/NotesPage.tsx"),
-        "utf-8"
-    );
+    const src = notesSource();
     // ⚠️ 必须先剥注释：文件里那段解释「为什么不能设 scrollbar-color」的注释
     // 本身就含这些字样，不剥的话守卫会自己把自己判红
     const clean = stripComments(src);
@@ -919,7 +930,7 @@ test("文件夹菜单锚在按钮上（anchorEl 不能是 undefined，否则弹�
     // x:16 y:724，点击点却在左栏上部）。所以这里只钉「锚点必须来自那个 ⋯ 按钮」，
     // 坐标由 harness 的真机脚本量。
     const source = stripComments(
-        readFileSync(join(findProjectDir(), "src", "components", "NotesPage.tsx"), "utf-8")
+        notesSource()
     );
     assert.ok(
         !/anchorEl=\{undefined\}/.test(source),
@@ -1073,10 +1084,7 @@ test("左栏容器不能带 flex:1（会把 300px 的列表撑成两栏宽，中
     // 而它**外层**那个容器又写了 `flex: 1` —— flex 会把外层撑到约 445px，
     // 里面的列表还是 300px，多出来的 145px 就是用户看到的「中间空白」。
     // 宽度只能由一层决定：外层 `flex: 0 0 auto`。
-    const source = readFileSync(
-        join(findProjectDir(), "src", "components", "NotesPage.tsx"),
-        "utf-8"
-    );
+    const source = notesSource();
     const body = source.slice(
         source.indexOf("主体：desktop"),
         source.indexOf("移动端从编辑态回列表")
@@ -1117,10 +1125,7 @@ test("左栏容器不能带 flex:1（会把 300px 的列表撑成两栏宽，中
 });
 
 test("右栏要有 minHeight:0（缺了它内容会顶出视口，出现页面级滚动条）", () => {
-    const source = readFileSync(
-        join(findProjectDir(), "src", "components", "NotesPage.tsx"),
-        "utf-8"
-    );
+    const source = notesSource();
     const body = source.slice(
         source.indexOf("主体：desktop"),
         source.indexOf("移动端从编辑态回列表")
@@ -1140,10 +1145,7 @@ test("分栏是「左栏按比例 + 可拖分隔条」，不是写死的对半",
     // 用户原话是「分栏两边大小不合理，做**可拖拽**的分隔条」——
     // 写死对半只是第一步，能拖才是他要的。
     const source = stripComments(
-        readFileSync(
-            join(findProjectDir(), "src", "components", "NotesPage.tsx"),
-            "utf-8"
-        )
+        notesSource()
     );
     assert.ok(
         source.includes("splitRatio"),
@@ -1171,7 +1173,7 @@ test("分栏是「左栏按比例 + 可拖分隔条」，不是写死的对半",
 test("格式工具栏：存在，且按钮用 onMouseDown preventDefault 保住选区", () => {
     const dir = findProjectDir();
     const source = stripComments(
-        readFileSync(join(dir, "src", "components", "NotesPage.tsx"), "utf-8")
+        notesSource()
     );
     assert.ok(source.includes("MarkdownToolbar"), "要有格式工具栏");
     assert.ok(
@@ -1199,10 +1201,7 @@ test("整页容器不许滚动（页面级滚动条是缺陷，该滚的是预�
     // ⚠️ 索引必须在**同一个字符串**上找：剥掉注释后长度变了，
     // 拿原文的偏移去切清理后的字符串会切错位置（守卫就会误报）。
     const clean = stripComments(
-        readFileSync(
-            join(findProjectDir(), "src", "components", "NotesPage.tsx"),
-            "utf-8"
-        )
+        notesSource()
     );
     const at = clean.indexOf('position: "fixed"');
     assert.ok(at >= 0, "没找到整页容器的 position:fixed —— 检查是否被删改");
@@ -2047,7 +2046,7 @@ test("导航列要自己滚（整块一起滚会把搜索框顶出视野）", ()
     // 静态守卫：jsdom 里 MUI 的 sx 编译成 hash 类名，量不到 overflow-y，
     // 只能把结论钉在源码上（和「左栏容器不能带 flex:1」同一套路）。
     const clean = stripComments(
-        readFileSync(join(findProjectDir(), "src", "components", "NotesPage.tsx"), "utf-8")
+        notesSource()
     );
     // ⚠️ 源码里写的是单引号 `data-nav-col='1'`：找错引号会拿到 -1，
     // slice(-1, -1) 是个空串，断言会报「没这个属性」而不是「这一列没滚」。
@@ -2080,10 +2079,7 @@ test("没有 folderTags（老部署）时退化成只有那六个视图，不能
 //    症状是编辑器里出现又粗又灰的原生条。已删除本地定义，让全局 index.css 生效。
 
 test("编辑区不能自己定义滚动条样式（会顶掉全局那套细圆角条）", () => {
-    const src = readFileSync(
-        resolve(findProjectDir(), "src/components/NotesPage.tsx"),
-        "utf-8"
-    );
+    const src = notesSource();
     // 上一条已经按剥过注释的源码做了完整断言，这里只防「测试本身被整段删掉」：
     const clean = stripComments(src);
     assert.ok(
@@ -2095,10 +2091,7 @@ test("编辑区不能自己定义滚动条样式（会顶掉全局那套细圆�
 });
 
 test("内容区必须有内边距，预览窗不能贴死视口右缘", () => {
-    const src = readFileSync(
-        resolve(findProjectDir(), "src/components/NotesPage.tsx"),
-        "utf-8"
-    );
+    const src = notesSource();
     // ⚠️ 锚点必须用 JSX 注释**开头**那一段：「内容区：源码 | 预览」这串字在文件头的
     // ASCII 示意图里也出现过，只用短串会锚到文件开头，切出来的窗口全是 import。
     // 注释正文会随功能迭代加字（现在多了「| 大纲面板」），所以只锚前 12 个字符。
@@ -2169,10 +2162,7 @@ test("阶段四：没改动就不发请求（别空转刷库）", async () => {
 });
 
 test("阶段四：自动保存的常量与卸载前 flush 都得在（防止有人改回去）", () => {
-    const src = readFileSync(
-        resolve(findProjectDir(), "src/components/NotesPage.tsx"),
-        "utf-8"
-    );
+    const src = notesSource();
     assert.match(src, /AUTO_SAVE_MS\s*=\s*3000/, "自动保存的 debounce 常量没了");
     // 卸载前要把没落库的草稿刷一次 —— 否则打完字立刻关窗口，那 3 秒还没走完就丢了
     assert.ok(
@@ -2586,10 +2576,7 @@ test("两条分隔条必须是左栏容器的直接子元素（放进去会被�
 test("列宽的默认值与上下界都写成了常量（便于以后统一调）", () => {
     // 静态守卫：宽度上下界与命中区宽度是「写死在 sx 里」的，jsdom 量不到，
     // 只能钉在源码上。渲染出来的像素宽由真机 CDP 探针验收。
-    const pageSource = readFileSync(
-        join(findProjectDir(), "src", "components", "NotesPage.tsx"),
-        "utf-8"
-    );
+    const pageSource = notesSource();
     assert.ok(
         /export const NAV_COL_W = \d+;/.test(pageSource),
         "导航列默认宽度要是导出的常量"
@@ -3416,7 +3403,7 @@ test("用户把当前这条移到回收站后不要自作主张顶另一条上�
 
 test("右键菜单锚在鼠标位置（不再钉在行左上角）", () => {
     const src = stripComments(
-        readFileSync(join(findProjectDir(), "src", "components", "NotesPage.tsx"), "utf-8")
+        notesSource()
     );
     // 虚拟锚点：MUI Popover 接受任何带 getBoundingClientRect 的对象
     assert.ok(src.includes("function anchorAtMouse"), "要有鼠标坐标虚拟锚点");
@@ -3505,7 +3492,7 @@ test("桌面头部平铺高频操作：分享/版本/反链/导出直接显示�
     // ⚠️ 不能读 computed style：jsdom 下 emotion 样式不注入，border 恒为 0px。
     // 改成静态守卫 —— 断言源码里那段确实写了 border。
     const srcPane = stripComments(
-        readFileSync(join(findProjectDir(), "src", "components", "NotesPage.tsx"), "utf-8")
+        notesSource()
     );
     const modesSrc = srcPane.slice(
         srcPane.indexOf("data-pane-modes"),
@@ -3701,7 +3688,7 @@ test("自动保存延迟可调（设 500ms 就真的 500ms 左右存）", async 
 
 test("工具栏不再出现竖向滚动：窄容器下换行铺开、高度自适应", () => {
     const src = stripComments(
-        readFileSync(join(findProjectDir(), "src", "components", "NotesPage.tsx"), "utf-8")
+        notesSource()
     );
     const bar = src.slice(src.indexOf("role='toolbar'"), src.indexOf("role='toolbar'") + 700);
     assert.ok(bar.includes('flexWrap: "wrap"'), "工具栏要允许换行（分屏时半个屏宽塞不下二十几个按钮）");
@@ -3723,7 +3710,7 @@ test("右键后不留白色圆点（行内「⋯」按钮不能因为焦点常�
     // 菜单里那个「⋯」按钮靠 opacity 显隐；行拿到焦点时 :focus-within 会把它顶出来。
     // 判据：右键处理里必须先 blur()，否则关掉菜单它还挂着（用户报的「白色圆点」）。
     const src = stripComments(
-        readFileSync(join(findProjectDir(), "src", "components", "NotesPage.tsx"), "utf-8")
+        notesSource()
     );
     const ctxBlock = src.slice(src.indexOf("onContextMenu={e => {", src.indexOf("data-note-id")), src.indexOf("onContextMenu={e => {", src.indexOf("data-note-id")) + 500);
     assert.ok(
@@ -3738,7 +3725,7 @@ test("行菜单 / 移动抽屉 / 外观弹窗不能被包在中栏的条件渲�
     // 选中文件夹时中栏不渲染，左栏内联笔记的右键菜单就**永远渲染不出来**，
     // 表现是「右键没反应，切回列表视图菜单才冒出来还错位」。
     const src = stripComments(
-        readFileSync(join(findProjectDir(), "src", "components", "NotesPage.tsx"), "utf-8")
+        notesSource()
     );
     const start = src.indexOf("const listPane = (");
     const end = src.indexOf("const editorPane = (");
@@ -3779,7 +3766,7 @@ test("折叠态：顶部是「展开笔记列表」，返回导航站在下面",
 
 test("分屏：两栏高度一致（主栏内容区不再有额外垂直内边距）", () => {
     const src = stripComments(
-        readFileSync(join(findProjectDir(), "src", "components", "NotesPage.tsx"), "utf-8")
+        notesSource()
     );
     const box = src.slice(src.indexOf("ref={splitBoxRef}"), src.indexOf("ref={splitBoxRef}") + 700);
     assert.ok(/px: 2/.test(box), "水平内边距要留（否则预览贴死视口右缘）");
@@ -4320,7 +4307,7 @@ test("分享列表撤销链接要二次确认（inkstone 用 confirm，不能手
 
 test("工具栏：每个下拉都有说人话的 tooltip，菜单项不再只写术语", () => {
     const src = stripComments(
-        readFileSync(join(findProjectDir(), "src", "components", "NotesPage.tsx"), "utf-8")
+        notesSource()
     );
     const bar = src.slice(src.indexOf("role='toolbar'"), src.indexOf("role='toolbar'") + 40000);
     // 白话 tooltip：说「会发生什么」，而不是复述名词
@@ -4371,7 +4358,7 @@ test("工具栏：每个下拉都有说人话的 tooltip，菜单项不再只写
 
 const readNotesPage = () =>
     stripComments(
-        readFileSync(join(findProjectDir(), "src", "components", "NotesPage.tsx"), "utf-8")
+        notesSource()
     );
 
 /** 读源码文件（剥注释，避免拿注释里的中文当锚点） */
@@ -4561,7 +4548,7 @@ test("侧栏状态栏与左侧同款：26px 一条，字数/字符/阅读时长/
 
 test("状态栏搬去 inkstone 那套：26px、六项、无行号无光标、保存状态在头部", () => {
     const src = stripComments(
-        readFileSync(join(findProjectDir(), "src", "components", "NotesPage.tsx"), "utf-8")
+        notesSource()
     );
     assert.ok(/const STATUSBAR_H = 26;/.test(src), "状态栏 26px（inkstone 的 --statusbar-h）");
     // 保存状态必须从状态栏里搬走，挂到头部（inkstone 的 SaveIndicator 就在头部）
@@ -4952,10 +4939,7 @@ test("绑定要等预览层挂上再绑（切分栏那一刻 previewScrollRef �
 // ===========================================================================
 
 test("源码静态守卫的「剥注释」不能被注释里的 /* 骗到", () => {
-    const raw = readFileSync(
-        join(findProjectDir(), "src", "components", "NotesPage.tsx"),
-        "utf-8"
-    );
+    const raw = notesSource();
     const stripped = stripComments(raw);
 
     // ⚠️ 这个坑 2026-10-07 真踩过一次，代价是两条毫不相干的守卫同时变红、
@@ -5878,7 +5862,7 @@ test("搜索：模糊匹配命中，标题里的命中段打上高亮", async ()
 // 预览层的图片是 markdown-it 异步渲染的产物，jsdom 里拉真图会拖慢整套用例；
 // 这里用**源码守卫**钉住两个必要条件：点图片会开灯箱、灯箱能关。
 test("图片灯箱：点预览里的图片会开，Esc / 点空白 / 关闭键都能关", () => {
-    const src = readFileSync(join(findProjectDir(), "src", "components", "NotesPage.tsx"), "utf-8");
+    const src = notesSource();
     const body = stripComments(src);
     assert.ok(/setLightbox\(\{/.test(body), "点预览里的图片要打开灯箱");
     assert.ok(/closest\("img"\)/.test(body), "要用事件委托认出点到的是图片");

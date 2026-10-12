@@ -3,6 +3,7 @@
 // 从 worker/index.ts 拆出来。它们必须排在鉴权中间件**之前**（见 index.ts 的分发顺序），
 // 理由各不相同，注释都留在原处 —— 图标是浏览器 <img> 带不上 Authorization，
 // CSP 上报同理，登录 / 注册 / 恢复则是「还没登录才要用的」。
+import { MAINTENANCE_ENABLED_KEY } from "../../shared/maintenance";
 import { DEFAULT_TOKEN_TTL, REMEMBER_TOKEN_TTL, type LoginRequest } from "../../src/API/http";
 import { handleCspReport } from "../csp";
 import { reportError } from "../errorReport";
@@ -477,8 +478,13 @@ export async function handlePublicRoutes(ctx: RouteCtx): Promise<Response | null
         }
 
         // 统一响应：调用方拿不到「这台是否已初始化」的信号
+        //
+        // maintenance 字段：维护模式开着的时候，前端要靠它挂一条常驻横幅
+        // （写操作此时会被 503 拦下，用户需要知道是「维护中」而不是「站坏了」）。
+        // 读这个键是纯读，维护模式下也走得通 —— 否则维护中连「为什么不能写」都看不到。
+        const maintaining = (await api.getConfig(MAINTENANCE_ENABLED_KEY)) === "1";
         return Response.json(
-            { ok: true, initialized: true },
+            { ok: true, initialized: true, maintenance: maintaining },
             {
                 headers: { "Cache-Control": "no-store" },
             }

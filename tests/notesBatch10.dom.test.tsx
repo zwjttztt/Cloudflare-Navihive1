@@ -38,7 +38,17 @@ function findProjectDir(): string {
 const readSrcFile = (...parts: string[]) =>
     stripComments(readFileSync(join(findProjectDir(), "src", ...parts), "utf-8"));
 
-const readNotesPageForBatch10 = () => readSrcFile("components", "NotesPage.tsx");
+/**
+ * 记事本源码（主组件 + 2026-10-12 拆出去的 Markdown 工具栏/预览）。
+ *
+ * ⚠️ 只读 NotesPage.tsx 的话，工具栏那些守卫会因为「代码搬走」而**假通过** ——
+ * 看着全绿其实没人盯着，比不写守卫更糟。两份拼起来，锚点切片与
+ * 「不该出现 X」都照旧查得到。
+ */
+const readNotesPageForBatch10 = () =>
+    readSrcFile("components", "NotesPage.tsx") +
+    "\n" +
+    readSrcFile("components", "notes", "markdownToolbar.tsx");
 
 // ---------------------------------------------------------------------------
 // 快捷键：单表驱动键盘绑定与 UI 显示

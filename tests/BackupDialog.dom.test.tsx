@@ -323,3 +323,68 @@ test("「备份」页不再有「备份包含记事本」开关（导航备份�
     const sw = document.querySelector<HTMLInputElement>('input[aria-label="备份包含记事本"]');
     assert.ok(sw === null, "记事本开关已移除，不该再出现");
 });
+
+// ---- 上次备份详情（webdav.lastBackupInfo）----
+// 备份失败最难排的就是「卡在哪」：只显示一个时间的话，用户既不知道备份多大、
+// 也不知道上次传了多久。详情 JSON 是**服务端写进来的用户配置**（不是编译期常量），
+// 老库没这个键、写入被截断都会让 JSON.parse 抛 —— 而这是在渲染路径上，
+// 抛出去整个备份对话框打不开。所以两条都要锁：正常时显示出来，坏值时安静退化。
+
+function mountBackupTab(handlers: { lastBackupAt?: string; lastBackupInfo?: string } = {}) {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+    act(() => {
+        root!.render(
+            <BackupDialog
+                open
+                initialTab={0}
+                client={{} as unknown as NavigationClient}
+                webdavConfig={WEBDAV}
+                onSaveWebdavConfig={async () => {}}
+                onBuildExportData={makeBackup}
+                onDownloadLocal={() => {}}
+                onImportData={async () => {}}
+                onNotify={() => {}}
+                onClose={() => {}}
+                includeCredentials
+                onIncludeCredentialsChange={() => {}}
+                lastBackupAt={handlers.lastBackupAt ?? ""}
+                lastBackupInfo={handlers.lastBackupInfo ?? ""}
+            />
+        );
+    });
+}
+
+test("备份页展示上次备份的体积与耗时", () => {
+    mountBackupTab({
+        lastBackupAt: "2026-10-12T10:00:00.000Z",
+        lastBackupInfo: JSON.stringify({
+            filename: "navihive-backup-auto-2026-10-12.json.gz",
+            size: 5 * 1024 * 1024,
+            mode: "auto",
+            durationMs: 42_000,
+        }),
+    });
+    const text = document.body.textContent || "";
+    assert.ok(text.includes("上次备份"), "该显示「上次备份」");
+    assert.ok(text.includes("自动"), "该标明是自动备份");
+    assert.ok(text.includes("5.00 MB"), `该显示体积，实际：${text.slice(0, 400)}`);
+    assert.ok(text.includes("42.0 秒"), "该显示耗时");
+});
+
+test("lastBackupInfo 是坏 JSON 时安静退化，只显示时间（不能把对话框搞崩）", () => {
+    mountBackupTab({
+        lastBackupAt: "2026-10-12T10:00:00.000Z",
+        // 老库没这个键 / 写入被截断都会得到这种值
+        lastBackupInfo: '{"filename":"x.json.gz","size":12',
+    });
+    const text = document.body.textContent || "";
+    assert.ok(text.includes("上次备份"), "时间照常显示");
+    assert.ok(!text.includes("MB"), "解析失败就不该硬显示体积");
+});
+
+test("没有备份记录时显示引导文案", () => {
+    mountBackupTab({});
+    assert.ok((document.body.textContent || "").includes("还没有备份记录"));
+});

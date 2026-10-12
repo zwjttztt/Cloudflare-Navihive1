@@ -4,6 +4,7 @@
 // 读到的数据已经按 ctx.api 上绑定的账号过滤过（见 NavigationAPI.setCurrentUser）。
 import type { Group, Note, NoteFolder, NoteTag, Site } from "../../src/API/http";
 import { NoteConflictError } from "../../src/utils/noteConflict";
+import { ApiError, errorResponse } from "../lib/apiError";
 import { segmentCJK, FTS_CONTENT_LIMIT } from "../../src/utils/ftsQuery";
 import { enforceWriteGuard, writeBucket } from "../loginGuard";
 import { weakEtag } from "../util";
@@ -715,13 +716,11 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
             // 乐观并发冲突：不是错误，是「有人在别处改过」这句话。
             // 带上当前内容，前端才能让用户现场决定「覆盖 / 看别人的版本」。
             if (error instanceof NoteConflictError) {
-                return Response.json(
-                    {
-                        error: error.message,
-                        code: "conflict",
-                        note: error.note,
-                    },
-                    { status: 409 }
+                // 走统一的 ApiError：code 是机器可读的，对方的版本放 details.note。
+                // 旧形状（顶层 note + error 是字符串）客户端也仍然认，所以这次替换
+                // 不需要前后端同时上线 —— 老客户端读到新形状照样能弹出冲突框。
+                return errorResponse(
+                    ApiError.conflict(error.message, { note: error.note })
                 );
             }
             throw error;

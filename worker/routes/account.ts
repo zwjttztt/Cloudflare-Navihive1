@@ -2,6 +2,7 @@
 //
 // 从 worker/index.ts 拆出来。这一组的共同点是「都在改账号本身」，
 // 且大量用到 ctx.currentJti（注销 / 退出时要把当前令牌拉黑）。
+import { ApiError, errorResponse } from "../lib/apiError";
 import {expiredCookieHeaders} from "../httpUtils";
 import type { AuthCredentialsInput, RecoveryKeyInput } from "../types";
 import type { RouteCtx } from "./types";
@@ -44,10 +45,9 @@ export async function handleAccountRoutes(ctx: RouteCtx): Promise<Response | nul
         }
         const user = await api.getUserById(uid);
         if (!user) {
-            return Response.json(
-                { success: false, message: "账号不存在或已被注销" },
-                { status: 401 }
-            );
+            // 样板：新的统一错误形状（code + message）。客户端 src/API/apiError.ts
+            // 同时认旧形状，所以这个端点换了形状也不需要前后端同时上线。
+            return errorResponse(ApiError.unauthenticated("账号不存在或已被注销"));
         }
         return Response.json({ id: uid, username: user.username, role: user.role });
     }

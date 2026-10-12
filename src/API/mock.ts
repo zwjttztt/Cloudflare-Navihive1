@@ -403,6 +403,11 @@ export class MockNavigationClient {
         };
     }
 
+    /** 维护模式探测：mock 里永远是「没在维护」（见 client.checkMaintenance） */
+    async checkMaintenance(): Promise<boolean> {
+        return false;
+    }
+
     async getGroup(id: number): Promise<Group | null> {
         await new Promise(resolve => setTimeout(resolve, 200));
         return mockGroups.find(g => g.id === id) || null;

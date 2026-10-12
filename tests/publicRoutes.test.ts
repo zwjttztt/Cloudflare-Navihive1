@@ -535,7 +535,10 @@ test("init：已初始化与未初始化返回**完全一样**的响应（否则
     assert.equal(done.res?.status, 200);
     const freshBody = await fresh.res!.text();
     const doneBody = await done.res!.text();
-    assert.deepEqual(JSON.parse(freshBody), { ok: true, initialized: true });
+    // ⚠️ maintenance 字段（2026-10-12 维护模式）与「初始化没有」无关：它读的是全站
+    // 配置 maintenance.enabled，两种初始化状态下取值相同 —— 所以逐字节相等这条
+    // 防扫描断言照旧成立，只是期望值里多一个恒定的 false。
+    assert.deepEqual(JSON.parse(freshBody), { ok: true, initialized: true, maintenance: false });
     assert.equal(
         freshBody,
         doneBody,

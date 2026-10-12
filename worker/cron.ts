@@ -42,7 +42,33 @@ export interface SchedulerDB {
     setConfig(key: string, value: string): Promise<boolean>;
 }
 
-/** 定时任务失败留痕的键：按任务分开存（cron.lastError.<task>） */
+/**
+ * D1 读操作的重试：D1 偶发 `D1_ERROR` / 网络抖动，重试一次通常就好。
+ *
+ * 为什么值得单独立一项：定时任务**每周一次、无人盯守**，一次抖动就等于这一周
+ * 没有备份/没有巡检。而这些入口读（listUsers / readAllConfigs / getSites）
+ * 都是纯读，重试没有副作用。
+ *
+ * ⚠️ 只包**读**：写操作（setConfig / writeAudit）重试可能重复写，
+ * 而且备份上传本身已有 putWithRetry，不需要在这里再包一层。
+ */
+export async function withD1Retry<T>(fn: () => Promise<T>, attempts = 2, delayMs = 500): Promise<T> {
+    let lastError: unknown;
+    for (let i = 0; i < attempts; i++) {
+        try {
+            return await fn();
+        } catch (error) {
+            lastError = error;
+            if (i < attempts - 1) {
+                console.warn(`D1 读操作第 ${i + 1} 次失败，${delayMs}ms 后重试:`, error);
+                await new Promise(r => setTimeout(r, delayMs));
+            }
+        }
+    }
+    throw lastError;
+}
+
+/** 定时任务失败的留痕的键：按任务分开存（cron.lastError.<task>） */
 function cronErrorKey(task: string): string {
     return `${CRON_LAST_ERROR_KEY}.${task}`;
 }
@@ -118,7 +144,7 @@ export async function runWeeklyBackup(api: SchedulerDB): Promise<void> {
         const reason = await backupOneAccount(api, null);
         if (reason) failures.push(reason);
     } else {
-        const users = await nav.listUsers();
+        const users = await withD1Retry(() => nav.listUsers!());
 
         // 没有 users 表数据（极老的库）时退回「按全局配置备份一次」的旧行为。
         // 已停用的账号跳过：数据还在库里但人已经进不来，每周给它们传一份备份
@@ -154,7 +180,7 @@ async function backupOneAccount(api: SchedulerDB, uid: number | null): Promise<s
 
     try {
         if (typeof nav.setCurrentUser === "function") nav.setCurrentUser(uid);
-        const stored = await readAllConfigs(nav as unknown as NavigationAPI);
+        const stored = await withD1Retry(() => readAllConfigs(nav as unknown as NavigationAPI));
         if (stored["webdav.autoBackup"] === "false") return null;
 
         const config = configFromStored(stored);
@@ -198,7 +224,7 @@ export async function runNotesBackupSchedule(api: SchedulerDB, env?: Env): Promi
         const reason = await notesBackupOneAccount(api, null, env);
         if (reason) failures.push(reason);
     } else {
-        const users = await nav.listUsers();
+        const users = await withD1Retry(() => nav.listUsers!());
         const targets: (number | null)[] =
             users.length > 0
                 ? users.filter(u => u.status !== "disabled").map(u => u.id)
@@ -307,9 +333,9 @@ export async function probeUrl(url: string): Promise<boolean> {
  * 任何失败都不抛出 —— 巡检失败不能影响同一次触发里的备份。
  */
 async function sweepOneAccount(api: SchedulerDB): Promise<void> {
-    let snapshot: LinkHealthSnapshot = parseSnapshot(await api.getConfig(HEALTH_KEY));
+    let snapshot: LinkHealthSnapshot = parseSnapshot(await withD1Retry(() => api.getConfig(HEALTH_KEY)));
 
-    const sites = await api.getSites();
+    const sites = await withD1Retry(() => api.getSites());
     const now = Date.now();
 
     const candidates = selectSweepCandidates(sites as SweepSite[], snapshot, now);
@@ -348,7 +374,7 @@ export async function runLinkSweep(api: SchedulerDB): Promise<void> {
         return;
     }
 
-    const users = await nav.listUsers();
+    const users = await withD1Retry(() => nav.listUsers!());
     // 没有 users 数据（极老的库）时退回「不带账号巡检一次」的旧行为。
     // 已停用的账号跳过：人进不来看不到结果，白烧探测流量。
     const targets: (number | null)[] =
@@ -442,6 +468,87 @@ export function isNavBackupWindow(now: Date = new Date()): boolean {
 export function isNavBackupDue(cronExpr: string | undefined, now: Date = new Date()): boolean {
     return cronExpr === undefined || cronExpr !== HOURLY_CRON || isNavBackupWindow(now);
 }
+/**
+ * 备份任务的耗时上限，按账号数放宽。
+ *
+ * 多账号备份是**串行**的，而且必须是串行的：`setCurrentUser` 是 API 实例上的
+ * 状态，并发共享同一个实例会**串账号**（把 A 的数据传进 B 的网盘）——
+ * 那比「备份慢」严重得多。要并发就得每个账号一个独立 API 实例，
+ * 收益（快几分钟）远小于风险，所以不做。
+ *
+ * 串行的问题是耗时线性叠加：上传封顶 10 分钟/账号，5 个账号就是 50 分钟，
+ * 固定 12 分钟的上限会让后几个账号必然超时。所以按账号数给时间
+ * （每多一个账号 +10 分钟），自身再封顶 30 分钟 —— 真到 30 分钟还传不完，
+ * 该做的是分卷或换网盘，不是继续等。
+ */
+export function backupDeadlineMs(accounts: number): number {
+    const extra = Math.max(0, accounts - 1) * 10 * 60_000;
+    return Math.min(30 * 60_000, CRON_TASK_TIMEOUT_MS.backup + extra);
+}
+
+/**
+ * 单个 cron 任务的耗时上限。
+ *
+ * 为什么需要：五个任务是**串行**跑的，而备份上传最长可占 10 分钟
+ * （`uploadTimeoutMs` 的封顶值）。没有单任务上限的话，后面四项只能干等 ——
+ * 某一项卡住会让当次 cron 整体超时，死链巡检/笔记备份/沉睡扫描/保留清理
+ * 整周都不执行，而它们各自都有独立的 try/catch，本来不该被拖累。
+ *
+ * 备份与笔记备份给 12 分钟（上传封顶 10 分钟 + 导出与列目录的余量）；
+ * 其余三项 5 分钟足够（慢也就慢在网络往返）。
+ */
+export const CRON_TASK_TIMEOUT_MS: Record<string, number> = {
+    backup: 12 * 60_000,
+    linkSweep: 5 * 60_000,
+    notesBackup: 12 * 60_000,
+    inactiveSweep: 5 * 60_000,
+    retention: 5 * 60_000,
+};
+
+/**
+ * 包一层「超时就地失败、继续往下跑」。
+ *
+ * 返回而不是抛：调用方还要根据结果记失败留痕，抛出去就得再包一层 try/catch。
+ *
+ * ⚠️ JS 的 Promise 不能取消：超时后底层任务仍在后台跑完（它的结果不再有人要），
+ * 所以提前挂一个 no-op catch —— 否则它自己 reject 会变成未处理 rejection，
+ * 在 Workers 里直接把这次调用判成失败。
+ */
+export async function withDeadline<T>(
+    task: string,
+    fn: () => Promise<T>,
+    timeoutMs: number = CRON_TASK_TIMEOUT_MS[task] ?? 5 * 60_000
+): Promise<{ ok: boolean; timedOut: boolean; ms: number; error?: unknown }> {
+    const started = Date.now();
+    console.log(`cron 任务开始：${task}（上限 ${(timeoutMs / 1000).toFixed(0)}s）`);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const work = fn();
+    work.catch(() => {
+        // 只防未处理 rejection，结果由下面的 race 决定
+    });
+    try {
+        await Promise.race([
+            work,
+            new Promise<never>((_resolve, reject) => {
+                timer = setTimeout(() => reject(new Error("任务超时")), timeoutMs);
+            }),
+        ]);
+        const ms = Date.now() - started;
+        console.log(`cron 任务完成：${task}，耗时 ${(ms / 1000).toFixed(1)}s`);
+        return { ok: true, timedOut: false, ms };
+    } catch (error) {
+        const ms = Date.now() - started;
+        const timedOut = error instanceof Error && error.message === "任务超时";
+        console.error(
+            `cron 任务失败：${task}，耗时 ${(ms / 1000).toFixed(1)}s${timedOut ? "（超时）" : ""}`,
+            error
+        );
+        return { ok: false, timedOut, ms, error };
+    } finally {
+        if (timer) clearTimeout(timer);
+    }
+}
+
 export async function runScheduledTasks(
     env: Env,
     makeApi: (env: Env) => SchedulerDB = (e) => new NavigationAPI(e),
@@ -453,59 +560,64 @@ export async function runScheduledTasks(
         console.error("附件延后清理异常:", error);
     }
     const navBackupDue = isNavBackupDue(cronExpr);
-    // 外层兜底也要留痕：runWeeklyBackup 只在「按账号循环」内部兜了异常，
-    // 取账号列表这一步就炸的话（D1 抽风、listUsers 抛错）里面根本轮不到执行
+    // 每项都过 withDeadline：单任务超时就地记失败并继续下一项，
+    // 不再让某一项卡住把后面四项整周拖掉（它们各自有 try/catch，本就不该被连坐）
     if (navBackupDue) {
         let backupApi: SchedulerDB | undefined;
+        // 先探一下账号数，把单任务上限按它放宽（多账号串行，耗时线性叠加）
+        let accounts = 1;
         try {
             backupApi = makeApi(env);
-            await runWeeklyBackup(backupApi);
-        } catch (error) {
-            console.error("定时备份异常:", error);
-            if (backupApi) {
-                await recordCronFailure(
-                    backupApi,
-                    "backup",
-                    `每周自动备份异常：${(error as Error)?.message || "未知错误"}`
-                );
+            const nav = backupApi as unknown as Partial<NavigationAPI> & SchedulerDB;
+            if (typeof nav.listUsers === "function") {
+                const users = await withD1Retry(() => nav.listUsers!());
+                accounts = users.filter(u => u.status !== "disabled").length || 1;
             }
+        } catch {
+            // 探不到就按单账号算：withDeadline 里面还会再试一次
+        }
+        const r = await withDeadline(
+            "backup",
+            async () => {
+                backupApi = makeApi(env);
+                await runWeeklyBackup(backupApi);
+            },
+            backupDeadlineMs(accounts)
+        );
+        if (!r.ok && backupApi) {
+            // 超时也要留痕：用户看到「备份失败」时至少知道是超时而不是别的
+            const why = r.timedOut ? "超过单任务耗时上限" : `异常：${(r.error as Error)?.message || "未知错误"}`;
+            await recordCronFailure(backupApi, "backup", `每周自动备份${why}`);
         }
     }
 
-    let sweepApi: SchedulerDB | undefined;
-    try {
-        sweepApi = makeApi(env);
-        await runLinkSweep(sweepApi);
-    } catch (error) {
-        console.error("死链巡检异常:", error);
-        if (sweepApi) {
-            await recordCronFailure(
-                sweepApi,
-                "linkSweep",
-                `死链巡检异常：${(error as Error)?.message || "未知错误"}`
-            );
+    {
+        let sweepApi: SchedulerDB | undefined;
+        const r = await withDeadline("linkSweep", async () => {
+            sweepApi = makeApi(env);
+            await runLinkSweep(sweepApi);
+        });
+        if (!r.ok && sweepApi) {
+            const why = r.timedOut ? "超过单任务耗时上限" : `异常：${(r.error as Error)?.message || "未知错误"}`;
+            await recordCronFailure(sweepApi, "linkSweep", `死链巡检${why}`);
         }
     }
 
     // 记事本自动备份调度：到没到点由各账号自己的频率配置判定，任何触发频率下行为都正确
-    try {
-        const api = makeApi(env);
-        await runNotesBackupSchedule(api, env);
-    } catch (error) {
-        console.error("记事本自动备份调度异常:", error);
+    {
+        const r = await withDeadline("notesBackup", async () => {
+            await runNotesBackupSchedule(makeApi(env), env);
+        });
+        if (!r.ok) console.error("记事本自动备份调度未完成:", r.error);
     }
 
-    try {
-        const api = makeApi(env);
-        await runInactiveSweep(api);
-    } catch (error) {
-        console.error("沉睡账号扫描异常:", error);
+    {
+        const r = await withDeadline("inactiveSweep", () => runInactiveSweep(makeApi(env)));
+        if (!r.ok) console.error("沉睡账号扫描未完成:", r.error);
     }
 
-    try {
-        const api = makeApi(env);
-        await runRetentionCleanup(api);
-    } catch (error) {
-        console.error("过期数据清理异常:", error);
+    {
+        const r = await withDeadline("retention", () => runRetentionCleanup(makeApi(env)));
+        if (!r.ok) console.error("过期数据清理未完成:", r.error);
     }
 }

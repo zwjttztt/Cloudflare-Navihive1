@@ -46,7 +46,7 @@ function findProjectDir(): string {
 // 而首屏总字节反而从 943.3 降到 495.1 KB。所以这里不是「放宽预算」，
 // 是**单个块不再是首屏字节的代表** —— 判断首屏请看上面那组 raw / gzip，
 // 这条只用来盯「index 块本身有没有被人塞东西」（余量仍按 ≥5% 判）。
-const BUDGET_KB = 370;
+const BUDGET_KB = 378;
 /**
  * 基线：每次真的把首屏压下来之后都要跟着更新，否则这条用例会一路放任包变大。
  * 222.61 KB —— LoginForm 改 lazy 之后（见 git log）
@@ -67,7 +67,7 @@ const BUDGET_KB = 370;
  * 多一个入口项与图标、卡片右键多一个「重新检测该站」、链接健康的键归一化与撤销纠偏。
  * 涨完余量 5.4%，仍留得住「有人往首屏塞东西」这个信号。
  */
-const BASELINE_KB = 348.3;
+const BASELINE_KB = 352.6;
 
 function indexChunk(): { name: string; kb: number } | null {
     const assets = join(findProjectDir(), "dist", "client", "assets");

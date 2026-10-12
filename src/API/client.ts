@@ -41,6 +41,23 @@ import {
 // 也省得生产控制台一片噪音。改动前后控制台都不打东西 —— 要看错误去后端日志。
 import { reportError } from "../utils/errorReporter";
 import { NoteConflictError } from "../utils/noteConflict";
+import { API_ERROR_CODES, ApiError, parseApiError, type ApiErrorInfo } from "./apiError";
+
+/** 普通 API 请求的超时：30 秒。上传/下载/导入导出等慢端点不适用（见 request） */
+const REQUEST_TIMEOUT_MS = 30_000;
+
+/**
+ * 冲突时服务端回的那一版笔记在哪：旧形状在响应体顶层 `note`，
+ * 新形状（ApiError.details）在 `error.details.note`。两种都要认 ——
+ * 迁移期内两种形状并存，只认一种会让「冲突弹框显示不出对方的版本」。
+ */
+function conflictNoteFrom(body: unknown, parsed: ApiErrorInfo | null): Note | null {
+    const fromTop = (body as { note?: unknown } | null)?.note;
+    if (fromTop && typeof fromTop === "object") return fromTop as Note;
+    const details = parsed?.details as { note?: unknown } | undefined;
+    if (details && typeof details.note === "object") return details.note as Note;
+    return null;
+}
 
 // 前端只读标记：真正的令牌在 httpOnly cookie 里，JS 拿不到（XSS 偷不走）。
 // 这条 cookie 只表示「已登录」，不含任何凭据。
@@ -373,8 +390,16 @@ export class NavigationClient {
      *
      * 以前默认 any，「外层写 Promise<Group[]>」就能蒙混过关 —— 服务端少给一个字段、
      * 或者字段名拼错，tsc 一句话都不会说，只有运行时炸给你看。
+     *
+     * 超时：普通请求 30 秒。以前**完全没有超时**，弱网下请求能挂几分钟，
+     * 界面看着像卡死（转圈停在哪一步都不动）—— 用户既不知道是网络问题还是站点坏了，
+     * 也不敢刷新（怕丢正在编辑的内容）。上传 / 下载 / 导入导出这类大请求不设默认超时
+     * （它们的体量大，30 秒不够；要限时由调用方显式传 timeoutMs）。
      */
-    private async request<T = unknown>(endpoint: string, options = {}): Promise<T> {
+    private async request<T = unknown>(
+        endpoint: string,
+        options: { signal?: AbortSignal; timeoutMs?: number; [k: string]: unknown } = {}
+    ): Promise<T> {
         const headers: Record<string, string> = {
             "Content-Type": "application/json",
         };
@@ -385,32 +410,61 @@ export class NavigationClient {
             this.idempotencyKey = null;
         }
 
+        // 上传 / 下载 / 备份恢复这类端点天然慢，不吃默认超时
+        const slow = /upload|download|backup|import|export|restore|icon/i.test(endpoint);
+        const timeoutMs = options.timeoutMs ?? (slow ? 0 : REQUEST_TIMEOUT_MS);
+        // 调用方显式给的 signal 优先（它自己知道要不要取消）；否则用超时 signal
+        const signal = options.signal ?? (timeoutMs > 0 ? AbortSignal.timeout(timeoutMs) : undefined);
+        const { signal: _ignored, timeoutMs: _ignored2, ...rest } = options;
+
         // 凭据走 httpOnly cookie，由浏览器自动带上（credentials 默认即 same-origin）。
         // 不再手动塞 Authorization —— 令牌根本不留在 JS 里。
-        const response = await fetch(`${this.baseUrl}/${endpoint}`, {
-            credentials: "same-origin",
-            headers,
-            ...options,
-        });
+        let response: Response;
+        try {
+            response = await fetch(`${this.baseUrl}/${endpoint}`, {
+                credentials: "same-origin",
+                headers,
+                // ⚠️ rest 必须排在 headers **之后**：调用方显式带的头要能覆盖默认值
+                // （比如上传时换 Content-Type）。顺序一反就是静默的行为回归。
+                ...rest,
+                ...(signal ? { signal } : {}),
+            });
+        } catch (error) {
+            // 超时要能和「断网」分开：断网进离线队列等着重放，超时说明网络通但服务端
+            // 不响应 —— 那是要告诉用户「稍后再试」，而不是默默排进队列里重试一遍。
+            if (error instanceof Error && error.name === "TimeoutError") {
+                throw new ApiError({
+                    code: "request_timeout",
+                    message: `请求超时（${Math.round(timeoutMs / 1000)} 秒无响应），请检查网络后重试`,
+                    status: 0,
+                });
+            }
+            throw error;
+        }
 
         if (response.ok) {
             return response.json();
         }
 
         // 非 2xx：优先解析服务端返回的 message/error，让用户看到具体原因（如「密码强度不足」）
-        let errorPayload: { message?: string; error?: string };
+        let errorPayload: unknown;
         try {
-            errorPayload = (await response.json()) as { message?: string; error?: string };
+            errorPayload = await response.json();
         } catch {
-            errorPayload = {};
+            errorPayload = null;
         }
-        const reason = errorPayload.message || errorPayload.error || "";
+        // 新形状 {error:{code,message,details}} 与旧形状 {error:"字符串"}/{message:"..."} 并存
+        const parsed = parseApiError(errorPayload, response.status);
+        const reason = parsed?.message || "";
 
         if (response.status === 401) {
             this.clearToken();
-            throw new Error(
-                reason ? `认证失败：${reason}` : "认证已过期或无效，请重新登录"
-            );
+            throw new ApiError({
+                code: parsed?.code || API_ERROR_CODES.unauthenticated,
+                message: reason ? `认证失败：${reason}` : "认证已过期或无效，请重新登录",
+                status: 401,
+                ...(parsed?.details === undefined ? {} : { details: parsed.details }),
+            });
         }
 
         // 413：worker 的 readBoundedBytes 抛的，body 是纯文本（不是 JSON），
@@ -419,25 +473,31 @@ export class NavigationClient {
         // 409 + code:'conflict' = 乐观并发冲突（笔记在别处被改过）。
         // 单独认出来：它不是「保存失败」，是「要先问用户一句」，
         // 而且服务端把库里当前那版一起回给了前端（见 worker/routes/data.ts）。
-        if (response.status === 409) {
-            const payload = errorPayload as { code?: string; note?: Note };
-            if (payload.code === "conflict") {
-                throw new NoteConflictError(
-                    reason || "这条笔记在别处被改过了",
-                    payload.note ?? null
-                );
-            }
-        }
-
-        if (response.status === 413) {
-            throw new Error(
-                reason
-                    ? `${reason}（内容过大，服务器拒收）`
-                    : "内容太大，服务器拒收（HTTP 413）"
+        if (response.status === 409 && parsed?.code === API_ERROR_CODES.conflict) {
+            throw new NoteConflictError(
+                reason || "这条笔记在别处被改过了",
+                conflictNoteFrom(errorPayload, parsed)
             );
         }
 
-        throw new Error(reason ? `${reason} (HTTP ${response.status})` : `API错误: ${response.status}`);
+        if (response.status === 413) {
+            throw new ApiError({
+                code: parsed?.code || API_ERROR_CODES.payloadTooLarge,
+                message: reason
+                    ? `${reason}（内容过大，服务器拒收）`
+                    : "内容太大，服务器拒收（HTTP 413）",
+                status: 413,
+            });
+        }
+
+        // 其它状态码：message 与历史完全一致（既有 UI 与测试都依赖它），
+        // 只是额外带上 code，UI 想分流时不用再 includes 匹配字符串
+        throw new ApiError({
+            code: parsed?.code || "unknown",
+            message: reason ? `${reason} (HTTP ${response.status})` : `API错误: ${response.status}`,
+            status: response.status,
+            ...(parsed?.details === undefined ? {} : { details: parsed.details }),
+        });
     }
 
     // 检查身份验证状态
@@ -475,6 +535,23 @@ export class NavigationClient {
     // 首屏 / 刷新：一次请求取回分组 + 站点 + 配置（替代 N+1 次请求）
     async bootstrap(): Promise<BootstrapData> {
         return this.request<BootstrapResponse>("bootstrap");
+    }
+
+    /**
+     * 服务端是否开着维护模式（读 /api/init 的 maintenance 字段）。
+     *
+     * 为什么不塞进 bootstrap：bootstrap 的形状有 apiContract 守卫与 mock 钉着，
+     * 加字段要同时改四处；而维护状态是**运维时才变**的东西，单独轮询更合适
+     * （开着维护时用户要能尽快看到横幅，而不是等下一次拉数据）。
+     */
+    async checkMaintenance(): Promise<boolean> {
+        try {
+            const res = await this.request<{ maintenance?: boolean }>("init");
+            return res?.maintenance === true;
+        } catch {
+            // 探测失败不打扰用户：下个周期再试
+            return false;
+        }
     }
 
     async getGroup(id: number): Promise<Group> {

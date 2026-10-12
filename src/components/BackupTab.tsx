@@ -51,6 +51,7 @@ export interface BackupTabProps {
     onToggleAutoBackup?: (enabled: boolean) => Promise<void>;
     /** 上一次备份的时间（ISO 字符串） */
     lastBackupAt: string;
+    lastBackupInfo?: string;
     remoteFiles: WebDavFile[];
     /** 备份文件里是否带网站的账号密码 */
     includeCredentials: boolean;
@@ -71,9 +72,36 @@ export interface BackupTabProps {
     onNotify: (message: string, severity?: "success" | "error" | "info") => void;
 }
 
+/**
+ * 上次备份详情（webdav.lastBackupInfo 的 JSON）。
+ *
+ * ⚠️ 这个值是**服务端写进来的用户配置**，不是编译期常量：老库里没有这个键、
+ * 或者某次写入被截断，JSON.parse 会抛 —— 而这里在渲染路径上，抛出去就是整个
+ * 备份对话框打不开。所以解析失败一律退化成「不知道详情」，只显示时间。
+ */
+function parseLastBackupInfo(raw: string): { size: number; durationMs: number; mode: string } | null {
+    if (!raw) return null;
+    try {
+        const parsed = JSON.parse(raw) as {
+            size?: unknown;
+            durationMs?: unknown;
+            mode?: unknown;
+        };
+        const size = typeof parsed.size === "number" && parsed.size > 0 ? parsed.size : 0;
+        const durationMs =
+            typeof parsed.durationMs === "number" && parsed.durationMs > 0 ? parsed.durationMs : 0;
+        const mode = typeof parsed.mode === "string" ? parsed.mode : "";
+        if (!size && !durationMs) return null;
+        return { size, durationMs, mode };
+    } catch {
+        return null;
+    }
+}
+
 export default function BackupTab({
-    config, setConfig, handleConfigChange, testing, testResult, handleTest, uploading, handleUpload, webdavActionsRef, autoBackup, onToggleAutoBackup, lastBackupAt, remoteFiles, includeCredentials, onIncludeCredentialsChange, encryptLocal, setEncryptLocal, backupPassword, setBackupPassword, backupPasswordConfirm, setBackupPasswordConfirm, showBackupPassword, setShowBackupPassword, showPassword, setShowPassword, showWebdavBackupPassword, setShowWebdavBackupPassword, onDownloadLocal, onNotify,
+    config, setConfig, handleConfigChange, testing, testResult, handleTest, uploading, handleUpload, webdavActionsRef, autoBackup, onToggleAutoBackup, lastBackupAt, lastBackupInfo, remoteFiles, includeCredentials, onIncludeCredentialsChange, encryptLocal, setEncryptLocal, backupPassword, setBackupPassword, backupPasswordConfirm, setBackupPasswordConfirm, showBackupPassword, setShowBackupPassword, showPassword, setShowPassword, showWebdavBackupPassword, setShowWebdavBackupPassword, onDownloadLocal, onNotify,
 }: BackupTabProps) {
+    const lastInfo = parseLastBackupInfo(lastBackupInfo ?? "");
     return (
         <Stack spacing={0.75} sx={{ mt: 0.5, flex: 1, minHeight: 0 }}>
             <Box>
@@ -439,7 +467,17 @@ export default function BackupTab({
                                 display: 'block'
                             }}>
                             每周一上午 10:00 自动备份，会替换掉上一次的自动备份；手动备份不会被删除。
-                            {lastBackupAt ? ` 上次备份：${formatTime(lastBackupAt)}` : " 还没有备份记录。"}
+                            {lastBackupAt
+                                ? ` 上次备份：${formatTime(lastBackupAt)}${
+                                      lastInfo
+                                          ? `（${lastInfo.mode === "auto" ? "自动" : "手动"}，${formatSize(lastInfo.size)}${
+                                                lastInfo.durationMs
+                                                    ? `，耗时 ${(lastInfo.durationMs / 1000).toFixed(1)} 秒`
+                                                    : ""
+                                            }）`
+                                          : ""
+                                  }`
+                                : " 还没有备份记录。"}
                         </Typography>
                     </Box>
 

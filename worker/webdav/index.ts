@@ -55,6 +55,10 @@ export async function runWebDavBackup(
     // 备份口令与 AUTH_SECRET 无关：没设口令只是「不加密」，照样能备份，不再拦着不让传
     const password = options.password ?? config.backupPassword ?? "";
 
+    // 从「开始导出」记到「上传完成」：备份详情要能回答「上次备份多大、花了多久」，
+    // 只记一个文件名的话，用户看到「备份失败」时不知道该改配置还是该换网盘
+    const startedAt = Date.now();
+
     // 摘要按「最终要写进文件的这份」算：传进来的 data 可能已经被前端补过 localPrefs，
     // 服务端自取的 exportData 也可能与第一手不同 —— 统一在这里收口重算一次
     const payload = await withBackupIntegrity(data ?? (await api.exportData()));
@@ -75,6 +79,19 @@ export async function runWebDavBackup(
         if (mode === "auto") {
             await api.setConfig("webdav.lastAutoBackup", filename);
         }
+        // 备份详情：体积 + 耗时 + 自动/手动。前端「上次备份」那行从只显示时间
+        // 变成能看出「这次备份到底多大、花了多久」—— 体积异常增大（附件变多）
+        // 与耗时异常变长（网盘变慢）都是要在出故障前就看见的信号。
+        await api.setConfig(
+            "webdav.lastBackupInfo",
+            JSON.stringify({
+                filename,
+                size: result.data?.size ?? 0,
+                mode,
+                durationMs: Date.now() - startedAt,
+                at: new Date().toISOString(),
+            })
+        );
     } catch (error) {
         console.error("记录备份状态失败:", error);
     }

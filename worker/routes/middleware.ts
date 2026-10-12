@@ -7,6 +7,8 @@
 // 返回 null = 放行；返回 Response = 就地拦截（401 / 403）。
 // 放行时把当前令牌的 jti / exp 写回 session，退出登录与注销账号要用它拉黑。
 
+import { ApiError, errorResponse } from "../lib/apiError";
+import { MAINTENANCE_ENABLED_KEY } from "../../shared/maintenance";
 import {TEXT_HEADERS, TOKEN_COOKIE, isSameOrigin, readCookie} from "../httpUtils";
 import { securityHeaders } from "../util";
 import type { RouteCtx } from "./types";
@@ -130,4 +132,50 @@ export async function enforceAuth(ctx: RouteCtx, session: TokenSession): Promise
     }
 
     return null;
+}
+
+/**
+ * 维护模式：开启后**写操作一律拦下**，读操作放行。
+ *
+ * 为什么需要：备份恢复 / 迁库 / 改配置这类运维动作进行时，用户照常点按钮会写到
+ * 一半的库上 —— 数据错乱比「暂时不能用」严重得多。以前没有开关，只能临时把站点
+ * 整个下线，连看都不让人看。
+ *
+ * 三条刻意留的口子：
+ *   1. GET / HEAD 一律放行 —— 维护中也要能看数据（不然用户以为站挂了）；
+ *   2. 登录 / 改密 / 恢复 / 退出放行 —— 不能把人锁在门外进不来也退不出去；
+ *   3. **owner 放行** —— 否则开了维护模式就连关的地方都没有了（把自己锁死）。
+ *
+ * 配置键 `maintenance.enabled` 存在 configs 表（全站生效，不按账号分）。
+ * 读它用 getConfig：那是纯读，维护模式下也走得通（见上面第 1 条）。
+ */
+export async function enforceMaintenance(ctx: RouteCtx): Promise<Response | null> {
+    const { method, path, api } = ctx;
+    if (method === "GET" || method === "HEAD") return null;
+    // 把人锁在门外比维护本身更糟：认证相关的一律放行
+    if (path === "auth/credentials" || path === "auth/recover" || path === "auth/logout") {
+        return null;
+    }
+
+    let enabled: boolean;
+    try {
+        enabled = (await api.getConfig(MAINTENANCE_ENABLED_KEY)) === "1";
+    } catch {
+        // 读不到配置就不拦：维护是「额外保险」，不能因为它自己坏了把全站写死
+        return null;
+    }
+    if (!enabled) return null;
+
+    // owner 豁免：否则开了维护就没人能关
+    const uid = api.getCurrentUserId();
+    if (uid !== null) {
+        try {
+            const user = await api.getUserById(uid);
+            if (user?.role === "owner") return null;
+        } catch {
+            // 查不到角色就按普通账号处理（保守）
+        }
+    }
+
+    return errorResponse(ApiError.serviceUnavailable());
 }

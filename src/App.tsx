@@ -142,6 +142,8 @@ const SiteListSkeleton = lazy(() => import("./components/SiteListSkeleton"));
 // 断网提示只在断网 / 刚恢复 / 有同步失败项时才看得见，其余时候渲染出来也是 null，
 // 没必要占首屏（实测 3.7 KB）。挂不挂由 useOfflineBannerVisible 决定，块按需下载。
 const OfflineBanner = lazy(() => import("./components/OfflineBanner"));
+// 维护模式横幅：服务端开着 maintenance.enabled 时挂出来（写操作会被 503 拦下）
+const MaintenanceBanner = lazy(() => import("./components/MaintenanceBanner"));
 // 登录页是 lazy chunk（见 components/LoginScreen.tsx）：它不进首屏包，但登录页本身
 // 是首屏 —— 所以配合下面的「预热」，让它的 chunk 与认证检查那次请求并行下载：
 // 等 chunk 到位时正好渲染，用户感觉不到多等一次。
@@ -1304,6 +1306,11 @@ function App() {
 
             {/* 顶部滚动进度条：固定贴在最上方，纯装饰 */}
             <ScrollProgress />
+            {/* 维护模式横幅：服务端维护中时提示「能看不能改」。
+                同样与断网横幅平级 —— 别嵌进任何条件渲染里（分享对话框那个坑） */}
+            <ChunkBoundary>
+                <MaintenanceBanner client={api} />
+            </ChunkBoundary>
             {/* 分组分享（2026-10-11 阶段④）：创建/更新/撤销/复制链接。
                 ⚠️ 必须与断网横幅平级——2026-10-11 曾被误嵌进 showOfflineBanner
                 条件内，导致在线时（横幅恒不显示）点「分享分组」永远弹不出对话框。 */}
@@ -1806,6 +1813,7 @@ function App() {
                         onSaveWebdavConfig={handleSaveWebdavConfig}
                         autoBackup={configs[`${WEBDAV_CONFIG_PREFIX}autoBackup`] !== "false"}
                         lastBackupAt={configs[`${WEBDAV_CONFIG_PREFIX}lastBackupAt`] || ""}
+                        lastBackupInfo={configs[`${WEBDAV_CONFIG_PREFIX}lastBackupInfo`] || ""}
                         onToggleAutoBackup={handleToggleAutoBackup}
                         onBuildExportData={buildExportData}
                         onDownloadLocal={handleDownloadLocal}
