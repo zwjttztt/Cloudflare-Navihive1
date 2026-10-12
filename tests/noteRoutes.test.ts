@@ -12,6 +12,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { handleDataRoutes } from "../worker/routes/data";
+import { errorResponse } from "../worker/lib/apiError";
 import type { RouteCtx } from "../worker/routes/types";
 import type { NavigationAPI } from "../src/API/navigationApi";
 import { readFileSync } from "node:fs";
@@ -109,7 +110,15 @@ async function call(
     });
     // handleDataRoutes 返回 null 表示「这个路由不归我管」；这里只喂 notes 的分支，
     // 拿到的不会是 null，所以断言一下免得将来用例拿 undefined 去读 .status。
-    const res = await handleDataRoutes(c);
+    // ⚠️ 外包 errorResponse 与 worker/index.ts 的外层兕底一致：路由里抛的
+    // ApiError（错误码迁移第一批）在真实运行时由 index.ts 翻译成结构化 JSON。
+    const res = await (async () => {
+        try {
+            return await handleDataRoutes(c);
+        } catch (error) {
+            return errorResponse(error);
+        }
+    })();
     assert.ok(res, `路由没有处理 ${method} ${path}`);
     return res;
 }

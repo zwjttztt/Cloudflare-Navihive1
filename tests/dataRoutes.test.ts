@@ -12,6 +12,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { handleDataRoutes } from "../worker/routes/data";
+import { errorResponse } from "../worker/lib/apiError";
 import { WRITE_GUARD_KEY, writeBucket } from "../worker/loginGuard";
 import type { RouteCtx } from "../worker/routes/types";
 import type { NavigationAPI } from "../src/API/navigationApi";
@@ -124,7 +125,16 @@ async function call(
         currentJti: "",
         currentTokenExp: 0,
     } as unknown as RouteCtx;
-    const res = await handleDataRoutes(ctx);
+    // ⚠️ 与 worker/index.ts 的外层兜底一致：路由里抛的 ApiError 在真实运行时
+    // 由 index.ts 的 catch 接 errorResponse 翻译成结构化 JSON ——
+    // 测试的 dispatch 也要走同一层，否则「抛错变 500」在测试里永远暴露不出来。
+    const res = await (async () => {
+        try {
+            return await handleDataRoutes(ctx);
+        } catch (error) {
+            return errorResponse(error);
+        }
+    })();
     return { res, log };
 }
 
