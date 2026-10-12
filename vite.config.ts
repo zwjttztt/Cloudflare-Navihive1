@@ -218,8 +218,16 @@ export default defineConfig({
             // KaTeX 同理（2026-10-05 加公式时踩到）：它 ~254KB，只被 utils/MathNode
             // 动态 import（而 MathNode 挂在 Markdown 预览这棵 lazy 树上）。
             // 不显式分流就会被下面这条兜底扫进首屏 vendor —— 用户一进页面就得下 254KB，
-            // 而公式往往一篇笔记里只有一个。连带它自己的字体与 katex.min.css 一起进这个块。
-            if (/node_modules[\\/](markdown-it|mdurl|uc\.micro|entities|linkify-it|katex)[\\/]/.test(id)) {
+            // 而公式往往一篇笔记里只有一个。
+            //
+            // ⚠️ 2026-10-13：KaTeX 必须**自己成块**，不能混进 markdown 块。
+            // 实测 markdown 块 345 KB 里 **234.9 KB（71%）是 katex** —— 混在一起的结果是
+            // 「打开任意一篇笔记都要下这 235 KB」，哪怕通篇没有一个公式
+            // （MathNode 里那句 import("katex") 只在渲染公式时才跑，但块已经提前下来了）。
+            // 拆开后：没公式的笔记少下 235 KB JS + 29 KB CSS，
+            // 有公式的笔记多一个请求（换这 264 KB 不必每次都付，很划算）。
+            if (/node_modules[\\/]katex[\\/]/.test(id)) return "katex";
+            if (/node_modules[\\/](markdown-it|mdurl|uc\.micro|entities|linkify-it)[\\/]/.test(id)) {
                 return "markdown";
             }
             if (/node_modules[\\/](@codemirror|@lezer|style-mod|w3c-keyname|crelt)[\\/]/.test(id)) return "note-editor";

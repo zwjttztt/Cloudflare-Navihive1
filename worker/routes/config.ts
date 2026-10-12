@@ -3,6 +3,7 @@
 // 从 worker/index.ts 拆出来。这里最要紧的是那道「全站外观只有站点所有者能改」的门槛，
 // 三个写分支各判了一次 —— 拆出来之后三处挨在一起，改一处不容易漏掉另两处。
 import { isUserScopedConfigKey } from "../../src/API/http";
+import { ApiError } from "../lib/apiError";
 import { enforceConfigGuard, endpointBucket } from "../loginGuard";
 import type { ConfigInput } from "../types";
 import { validateConfig } from "../validate";
@@ -87,10 +88,7 @@ export async function handleConfigRoutes(ctx: RouteCtx): Promise<Response | null
         const key = path.substring("configs/".length);
         // 管理员凭据不允许读取
         if (key.startsWith("auth.")) {
-            return Response.json(
-                { error: "管理员凭据不可读取" },
-                { status: 403 }
-            );
+            throw ApiError.forbidden("管理员凭据不可读取");
         }
         const value = await api.getConfig(key);
         return Response.json({ key, value });

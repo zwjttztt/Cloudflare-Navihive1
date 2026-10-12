@@ -6,6 +6,33 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。---
 
+## 2026-10-13 · 性能：首屏请求 20 → 15、打开记事本 1218 → 965 KB；错误码迁移收尾（30 处 → 0）
+
+接着上一轮「78 → 20」往下挖的两块，加上欠了很久的工程债。
+
+### 一、首屏：JS 请求 10 → 5，总请求 20 → 15
+
+- **`GroupCard` 里那个「假 lazy」残留**：`EditGroupDialog` 外面只是 `<Suspense>`、整段无条件渲染 —— 而 `React.lazy` 只要被**渲染**就会立刻下载那个块，`open={false}` 拦不住。首页有几个分组就白下几次（实测一个 3.9 KB 的请求）。改成 `<ChunkBoundary when={editDialogOpen}>`：只有真点开才挂载，关闭后延迟 320ms 卸载（MUI 退出过渡约 195ms）。⚠️ 上一轮那一批改的是 App / OverlayHost，这一处是漏网的。
+- **`MaintenanceBanner` 改回静态 import**：它必须常驻（自己每 60 秒轮询维护状态），lazy 省不掉下载、只剩一个 790 字节的独立请求 —— 而这条链路上一次往返比这 790 字节贵得多。并进入口块后 index 236.63 → **237.25 KB**（余量 5.4%，仍守得住 5% 那条线），换来少一次往返。
+- **试了并回退的一刀**：把 `preload-helper`（3.2 KB）并进 `vendor`。块确实消失了，但 rolldown 立刻自己冒出一个 `rolldown-runtime` 块（1.1 KB）顶上 —— 它是 rolldown 内部发的运行时块，`manualChunks` 管不到（调试打印确认 manualChunks 回调里根本见不到这个模块 id）。净收益为零，回退。⚠️ 同理，`modulepreload-polyfill` 也别关：老一点的 Safari 认不出 `<link rel=modulepreload>`，关掉会让那些机器上的块晚一步才被发现，在这条链路上那是更贵的代价。
+
+### 二、打开记事本：1218.7 → 965.2 KB（少 253 KB，请求 16 → 15）
+
+- **katex 被硬并进 `markdown` 块，于是每篇笔记都要下它**。用 sourcemap 反推块构成：markdown 块 345 KB 里 **234.9 KB（71%）是 katex**，而 `MathNode` 里那句 `import("katex")` 只在真渲染公式时才跑 —— 块却已经提前下来了。根因在 `vite.config.ts` 的 manualChunks 把 `markdown-it` 与 `katex` 钉进了同一个块。拆成独立块后：没公式的笔记少下 235 KB JS + 29 KB CSS，有公式的笔记多一个请求。
+  双向验证过（新探针 `harness/katex-on-demand-probe.mjs`，给桩加了 `STUB_MATH` 开关）：**无公式时 katex 块与样式 0 请求；有公式时必须请求到且页面出现 `.katex` 元素**。
+- **CodeMirror 那 552 KB —— 结案为「依赖链拿不掉」**：用 sourcemap 拆开是 `@codemirror/view` 169 KB、`@lezer/javascript` **76 KB**、`@codemirror/state` 46 KB、`@lezer/markdown` 35 KB…… 其中约 136 KB（JS / CSS / HTML 三个语法包）来自 `@codemirror/lang-markdown → lang-html → lang-css + lang-javascript` 这条**强制传递依赖**（查了 package.json，lang-html 是 lang-markdown 的 dependencies，不是可选项）。要拿掉就得放弃 markdown 里嵌 HTML/JS/CSS 代码块的语法高亮，而改成按需会把「打开笔记到能打字」这段卡住 —— 在这条链路上不划算。
+- **NotesOverlay 274 KB 里的「点开才用」那批（设置对话框 33 KB、图谱 8.8、附件管理 6.7、zip 6.5 …）—— 不做**：合计约 62 KB，拆出去意味着每次用到都要多一次请求，对「打开笔记就顺手改个设置」的人是把 62 KB 换成 1~3 秒，来回相抵；而 NotesPage 那些弹窗的 props 都不轻，为这点收益动它不值。
+
+### 三、错误码迁移收尾：剩余 30 处 → 0
+
+- **先补能力**：`errorResponse(err, { headers, extra })`。卡住的那批出口正是**带响应头**的（分享与图标端点的 `no-store` / `Referrer-Policy` / `X-Robots-Tag` —— 错误响应被中间缓存留下来、或者把「这条分享存在」泄露给搜索引擎，都是实打实的问题）。`extra` 是为了公开笔记那个 401：它要在**顶层**多带 `needPassword`，塞进 error 对象里客户端就得往下钻一层。顺带把 405 / 410 / 501 / 502 四个状态号与对应 code 补齐（原来这几个出口因为「联合类型里没有」只能继续写裸 `Response.json`）。
+- **迁移 31 处**：`data.ts` 25、`public.ts` 5、`icon.ts` 3，外加静态守卫扫出来的 `config.ts` 1 处（「管理员凭据不可读取」那条 403，我原先的清点漏了它 —— 守卫视而不见的正是这种）。含 4 处藏在成功响应里的 `share ?? { error: "..." }`。**状态码与文案一字未改**，只是多一个机器可读的 code；配额那条（501/400/409/413/429 五种状态号）按号挑 code，状态号照原样回。
+- **客户端唯一需要跟着改的一处**：`PublicNotePage` 那条 401 不走 `client.request`（公开页没有登录态），原来直接读 `data.error` 当字符串 —— 新形状下会拿到对象、界面上显示 `[object Object]`。改成走 `parseApiError`，新旧两种形状都认（老服务端不受影响）。
+- **新增守卫 `tests/errorCodeMigration.test.ts`**：扫 `worker/` 下所有源码（剥注释后）不许再出现 `Response.json({ error: ... })`，并钉住六条文案没被改掉。⚠️ 剥注释是必须的：`worker/lib/apiError.ts` 的文件头注释里就写着 `Response.json({ error: "密码强度不足" })` 这个示例，不剥会永远红在它自己要说明的那段文字上。
+- **跟手修的一处测试基建**：`configRoutes.test.ts` 的 dispatch 没套 `errorResponse`（`dataRoutes.test.ts` 早就套了），于是那条 403 在测试里变成抛异常。补上同一层兜底。
+
+- **校验**：`tsc -b --force` 0；lint 0 error（19 条 warning 均为既有 react-refresh 类噪音）；单测 **2492**（2491 通过 / 1 跳过 / 0 失败，本轮新增 **8** 条：errorResponse 附加头 4、迁移守卫 3，另有 lazyBoundary 与 bundleBudget 各补 1 条防回归）；build 通过；smoke 全 PASS；`check:brand` 一致；`audit:a11y` / `audit:contrast` 0 处不合格。真机探针：首屏清单 5 个 JS / 15 个请求、katex 双向 4 PASS / 0 FAIL。⚠️ `e2e` / `e2e:cron` / `e2e:webdav` 本机跑不了（workerd 0xc0000005，上游 workerd#4668），由 CI（ubuntu）覆盖。
+
 ## 2026-10-13 · 性能：首屏请求数 78 → 20（性能优化方案里的 P0 / P1 / P2 一次做完）
 
 10-12 那份《性能优化方案》待办清单的全部条目。这条链路上**每个请求要付 1~3 秒的固定往返**

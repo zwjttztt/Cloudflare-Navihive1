@@ -4,6 +4,7 @@
 // 理由各不相同，注释都留在原处 —— 图标是浏览器 <img> 带不上 Authorization，
 // CSP 上报同理，登录 / 注册 / 恢复则是「还没登录才要用的」。
 import { MAINTENANCE_ENABLED_KEY } from "../../shared/maintenance";
+import { ApiError, API_ERROR_CODES, errorResponse } from "../lib/apiError";
 import { DEFAULT_TOKEN_TTL, REMEMBER_TOKEN_TTL, type LoginRequest } from "../../src/API/http";
 import { handleCspReport } from "../csp";
 import { reportError } from "../errorReport";
@@ -80,13 +81,13 @@ export async function handlePublicRoutes(ctx: RouteCtx): Promise<Response | null
                 readCookie(request, shareAssetCookieName(share.token)), share.token, share.password
             )) { authorized = true; break; }
         }
-        if (!authorized) return Response.json({ error: "附件不存在" }, { status: 404, headers: PUBLIC_ATTACH_HEADERS });
+        if (!authorized) return errorResponse(ApiError.notFound("附件不存在"), { headers: PUBLIC_ATTACH_HEADERS });
         // 一律 404（不区分「没有」与「没分享」）：区分了就等于帮人枚举哪些 uuid 存在
         if (!found || !found.object_key) {
-            return Response.json({ error: "附件不存在" }, { status: 404, headers: PUBLIC_ATTACH_HEADERS });
+            return errorResponse(ApiError.notFound("附件不存在"), { headers: PUBLIC_ATTACH_HEADERS });
         }
         const bytes = await readAttachmentObject(env, found.storage, found.object_key);
-        if (!bytes) return Response.json({ error: "附件数据已丢失" }, { status: 410, headers: PUBLIC_ATTACH_HEADERS });
+        if (!bytes) return errorResponse(ApiError.gone("附件数据已丢失"), { headers: PUBLIC_ATTACH_HEADERS });
         return new Response(bytes.buffer as ArrayBuffer, {
             headers: {
                 "Content-Type": found.mime,
@@ -136,16 +137,21 @@ export async function handlePublicRoutes(ctx: RouteCtx): Promise<Response | null
         const verifiedHash = password ? await env.DB.prepare("SELECT password FROM note_share WHERE token = ?").bind(token).first<{ password: string | null }>() : null;
         const result = await api.getPublicNote(token, password, !viewedToday);
         if (result.status === "not-found") {
-            return Response.json({ error: "分享不存在、已过期或已撤销" }, {
-                status: 404,
+            return errorResponse(ApiError.notFound("分享不存在、已过期或已撤销"), {
                 headers: { "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "X-Robots-Tag": "noindex, nofollow" },
             });
         }
         if (result.status === "need-password") {
-            return Response.json({ error: "需要访问口令", needPassword: true }, {
-                status: 401,
-                headers: { "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "X-Robots-Tag": "noindex, nofollow" },
-            });
+            // ⚠️ needPassword 留在**顶层**：公开笔记页（PublicNotePage）就是按
+            // `data.error` 是不是字符串来取提示语的，迁移后它读的是新形状，
+            // 所以那个页面也一并改了（同时认新旧两种形状，老服务端不受影响）。
+            return errorResponse(
+                new ApiError(401, API_ERROR_CODES.unauthenticated, "需要访问口令"),
+                {
+                    headers: { "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "X-Robots-Tag": "noindex, nofollow" },
+                    extra: { needPassword: true },
+                }
+            );
         }
         const headers = new Headers({ "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "X-Robots-Tag": "noindex, nofollow" });
         if (!viewedToday) {

@@ -10,6 +10,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { handleConfigRoutes } from "../worker/routes/config";
+import { errorResponse } from "../worker/lib/apiError";
 import { endpointBucket } from "../worker/loginGuard";
 import type { RouteCtx } from "../worker/routes/types";
 import type { NavigationAPI } from "../src/API/navigationApi";
@@ -94,7 +95,17 @@ async function call(
         currentJti: "jti-1",
         currentTokenExp: 0,
     } as unknown as RouteCtx;
-    const res = await handleConfigRoutes(ctx);
+    // ⚠️ 与 worker/index.ts 的外层兜底一致：路由里抛的 ApiError 在真实运行时由
+    // index.ts 的 catch 接 errorResponse 翻译成结构化 JSON（见 dataRoutes.test.ts
+    // 同一处的说明）。测试的 dispatch 不套这一层的话，「管理员凭据不可读取」这条
+    // 403 在测试里会变成抛异常而不是响应。
+    const res = await (async () => {
+        try {
+            return await handleConfigRoutes(ctx);
+        } catch (error) {
+            return errorResponse(error);
+        }
+    })();
     return { res, log };
 }
 

@@ -144,8 +144,12 @@ const SiteListSkeleton = lazy(() => import("./components/SiteListSkeleton"));
 // 断网提示只在断网 / 刚恢复 / 有同步失败项时才看得见，其余时候渲染出来也是 null，
 // 没必要占首屏（实测 3.7 KB）。挂不挂由 useOfflineBannerVisible 决定，块按需下载。
 const OfflineBanner = lazy(() => import("./components/OfflineBanner"));
-// 维护模式横幅：服务端开着 maintenance.enabled 时挂出来（写操作会被 503 拦下）
-const MaintenanceBanner = lazy(() => import("./components/MaintenanceBanner"));
+// 维护模式横幅：服务端开着 maintenance.enabled 时挂出来（写操作会被 503 拦下）。
+//
+// ⚠️ 2026-10-13：这里原来是 lazy，实测**白多一次请求**。它必须常驻（要自己每 60 秒
+// 轮询维护状态），所以 lazy 省不掉下载 —— 只剩一个 790 字节的独立块，而这条链路上
+// 每个请求要另付 1~3 秒固定往返。改回静态 import：+0.9 KB 进 index，换少一次往返。
+import MaintenanceBanner from "./components/MaintenanceBanner";
 // 登录页是 lazy chunk（见 components/LoginScreen.tsx）：它不进首屏包，但登录页本身
 // 是首屏 —— 所以配合下面的「预热」，让它的 chunk 与认证检查那次请求并行下载：
 // 等 chunk 到位时正好渲染，用户感觉不到多等一次。
@@ -1359,9 +1363,7 @@ function App() {
             <ScrollProgress />
             {/* 维护模式横幅：服务端维护中时提示「能看不能改」。
                 同样与断网横幅平级 —— 别嵌进任何条件渲染里（分享对话框那个坑） */}
-            <ChunkBoundary>
-                <MaintenanceBanner client={api} />
-            </ChunkBoundary>
+            <MaintenanceBanner client={api} />
             {/* 分组分享（2026-10-11 阶段④）：创建/更新/撤销/复制链接。
                 ⚠️ 必须与断网横幅平级——2026-10-11 曾被误嵌进 showOfflineBanner
                 条件内，导致在线时（横幅恒不显示）点「分享分组」永远弹不出对话框。 */}

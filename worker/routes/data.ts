@@ -4,7 +4,7 @@
 // 读到的数据已经按 ctx.api 上绑定的账号过滤过（见 NavigationAPI.setCurrentUser）。
 import type { Group, Note, NoteFolder, NoteTag, Site } from "../../src/API/http";
 import { NoteConflictError } from "../../src/utils/noteConflict";
-import { ApiError, errorResponse } from "../lib/apiError";
+import { ApiError, API_ERROR_CODES, errorResponse, type ApiErrorStatus } from "../lib/apiError";
 import { segmentCJK, FTS_CONTENT_LIMIT } from "../../src/utils/ftsQuery";
 import { enforceWriteGuard, writeBucket } from "../loginGuard";
 import { weakEtag } from "../util";
@@ -48,9 +48,8 @@ async function handleUploadAttachment(ctx: RouteCtx): Promise<Response> {
     // Workers 的请求体有上限，超了会直接 413/500，报错还不友好。
     const declared = Number(request.headers.get("Content-Length") ?? "0");
     if (declared > ATTACHMENT_MAX_BYTES) {
-        return Response.json(
-            { error: `单个文件不能超过 ${Math.round(ATTACHMENT_MAX_BYTES / 1024 / 1024)}MB` },
-            { status: 413 }
+        throw ApiError.tooLarge(
+            `单个文件不能超过 ${Math.round(ATTACHMENT_MAX_BYTES / 1024 / 1024)}MB`
         );
     }
 
@@ -58,7 +57,7 @@ async function handleUploadAttachment(ctx: RouteCtx): Promise<Response> {
     // 配额三道闸（存储通道 / 租约 / 每小时次数 / 总量）。租约让同一用户的上传串行化，
     // 否则并发下「都读到已用 900MB、都觉得还能塞 100MB」→ 实际写了 1.1GB。
     const quota = await checkUploadQuota(env, currentUserIdOf(ctx), bytes.byteLength);
-    if (!quota.ok) return Response.json({ error: quota.error }, { status: quota.status });
+    if (!quota.ok) throw quotaError(quota);
 
     // 嗅探文件头定类型
     const mime = sniffImageMime(bytes);
@@ -86,7 +85,7 @@ async function handleUploadAttachment(ctx: RouteCtx): Promise<Response> {
         // ⚠️ 对象写失败**不能**写 D1 记录 —— 否则留下一条指向不存在对象的元数据，
         // 用户刷新后图裂了却删不掉。
         console.error("附件对象写入失败", error);
-        return Response.json({ error: "图片写入存储失败，请稍后重试" }, { status: 502 });
+        throw ApiError.badGateway("图片写入存储失败，请稍后重试");
     }
 
     await api.createAttachment({
@@ -146,6 +145,27 @@ function sanitizeFilename(name: string): string {
 
 /** 幂等闸门只对写方法开：GET / HEAD 没有副作用，认重没有意义，只会白占一行记录 */
 const IDEMPOTENT_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+
+/**
+ * 上传配额那三道闸（worker/attachments.ts 的 checkUploadQuota）返回的是
+ * `{ status: number; error: string }` —— status 有 501 / 400 / 409 / 413 / 429 五种，
+ * 而 ApiError 只收白名单里的状态号。这里按状态号挑对应的 code：
+ * 状态号**照原样回**（迁移前后行为一致，客户端拿到的状态码一个没变），
+ * 认不出的落 bad_request。
+ */
+function quotaError(quota: { status: number; error: string }): ApiError {
+    const code =
+        quota.status === 413
+            ? API_ERROR_CODES.payloadTooLarge
+            : quota.status === 409
+              ? API_ERROR_CODES.conflict
+              : quota.status === 429
+                ? API_ERROR_CODES.rateLimited
+                : quota.status === 501
+                  ? API_ERROR_CODES.notImplemented
+                  : API_ERROR_CODES.badRequest;
+    return new ApiError(quota.status as ApiErrorStatus, code, quota.error);
+}
 
 /**
  * 对外入口：写请求（带 Idempotency-Key 的）先过一遍幂等闸门，再进真正的分发。
@@ -376,7 +396,7 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
     } else if (/^notes\/\d+\/share$/.test(path)) {
         const id = Number(path.split("/")[1]);
         const headers = { "Cache-Control": "no-store" };
-        if (!Number.isSafeInteger(id) || id <= 0) return Response.json({ error: "无效的ID" }, { status: 400, headers });
+        if (!Number.isSafeInteger(id) || id <= 0) return errorResponse(ApiError.badRequest("无效的ID"), { headers });
         if (method === "GET") return Response.json(await api.getNoteShare(id), { headers });
         if (method === "PUT") {
             // 更新有效期但保留 token（链接不变）—— inkstone 的「更新设置」同语义
@@ -384,13 +404,14 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
             if (limited) return limited;
             const { days, password } = await request.json() as { days?: unknown; password?: unknown };
             if (days !== null && days !== 1 && days !== 7 && days !== 30) {
-                return Response.json({ error: "有效期仅支持1、7、30天或永久" }, { status: 400, headers });
+                return errorResponse(ApiError.badRequest("有效期仅支持1、7、30天或永久"), { headers });
             }
             // password：string = 重设口令；null = 清除口令；不传 = 保持
             const pw = password === undefined ? undefined
                 : (typeof password === "string" && password.length > 0 ? password : null);
             const share = await api.updateNoteShare(id, days, pw);
-            return Response.json(share ?? { error: "分享不存在" }, { status: share ? 200 : 404, headers });
+            if (!share) return errorResponse(ApiError.notFound("分享不存在"), { headers });
+            return Response.json(share, { headers });
         }
         if (method === "POST" || method === "DELETE") {
             const limited = await writeGate();
@@ -398,33 +419,35 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
             if (method === "DELETE") return Response.json(await api.revokeNoteShare(id), { headers });
             const { days, password } = await request.json() as { days?: unknown; password?: unknown };
             if (days !== null && days !== 1 && days !== 7 && days !== 30) {
-                return Response.json({ error: "有效期仅支持1、7、30天或永久" }, { status: 400, headers });
+                return errorResponse(ApiError.badRequest("有效期仅支持1、7、30天或永久"), { headers });
             }
             // password：非空 string = 设访问口令；null/空/不传 = 不设（公开）
             const pw = password === undefined ? null
                 : (typeof password === "string" && password.length > 0 ? password : null);
             const share = await api.createNoteShare(id, days, pw);
-            return Response.json(share ?? { error: "笔记不存在" }, { status: share ? 200 : 404, headers });
+            if (!share) return errorResponse(ApiError.notFound("笔记不存在"), { headers });
+            return Response.json(share, { headers });
         }
-        return Response.json({ error: "不支持的方法" }, { status: 405, headers });
+        return errorResponse(ApiError.methodNotAllowed(), { headers });
     } else if (/^groups\/\d+\/share$/.test(path)) {
         // 分组分享（2026-10-11 阶段④）：与 note share 同一套语义
         //（POST 创建并轮换令牌 / PUT 更新保留令牌 / DELETE 撤销 / GET 查配置）。
         const id = Number(path.split("/")[1]);
         const headers = { "Cache-Control": "no-store" };
-        if (!Number.isSafeInteger(id) || id <= 0) return Response.json({ error: "无效的ID" }, { status: 400, headers });
+        if (!Number.isSafeInteger(id) || id <= 0) return errorResponse(ApiError.badRequest("无效的ID"), { headers });
         if (method === "GET") return Response.json(await api.getGroupShareConfig(id), { headers });
         if (method === "PUT") {
             const limited = await writeGate();
             if (limited) return limited;
             const { days, password } = await request.json() as { days?: unknown; password?: unknown };
             if (days !== null && days !== 1 && days !== 7 && days !== 30) {
-                return Response.json({ error: "有效期仅支持1、7、30天或永久" }, { status: 400, headers });
+                return errorResponse(ApiError.badRequest("有效期仅支持1、7、30天或永久"), { headers });
             }
             const pw = password === undefined ? undefined
                 : (typeof password === "string" && password.length > 0 ? password : null);
             const share = await api.updateGroupShare(id, days, pw);
-            return Response.json(share ?? { error: "分享不存在" }, { status: share ? 200 : 404, headers });
+            if (!share) return errorResponse(ApiError.notFound("分享不存在"), { headers });
+            return Response.json(share, { headers });
         }
         if (method === "POST" || method === "DELETE") {
             const limited = await writeGate();
@@ -432,14 +455,15 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
             if (method === "DELETE") return Response.json(await api.revokeGroupShare(id), { headers });
             const { days, password } = await request.json() as { days?: unknown; password?: unknown };
             if (days !== null && days !== 1 && days !== 7 && days !== 30) {
-                return Response.json({ error: "有效期仅支持1、7、30天或永久" }, { status: 400, headers });
+                return errorResponse(ApiError.badRequest("有效期仅支持1、7、30天或永久"), { headers });
             }
             const pw = password === undefined ? null
                 : (typeof password === "string" && password.length > 0 ? password : null);
             const share = await api.createGroupShare(id, days, pw);
-            return Response.json(share ?? { error: "分组不存在" }, { status: share ? 200 : 404, headers });
+            if (!share) return errorResponse(ApiError.notFound("分组不存在"), { headers });
+            return Response.json(share, { headers });
         }
-        return Response.json({ error: "不支持的方法" }, { status: 405, headers });
+        return errorResponse(ApiError.methodNotAllowed(), { headers });
     } else if (path === "notes" && method === "GET") {
         // ?fields=list：列表只要摘要，不回正文（笔记多了以后这一份能到 MB 级）。
         // 不带这个参数就是原来的全量形状，老客户端不受影响。
@@ -482,14 +506,14 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
         const id = path.split("/")[2];
         const headers = { "Cache-Control": "private, no-store" };
         const found = await api.getAttachment(id);
-        if (!found) return Response.json({ error: "附件不存在" }, { status: 404, headers });
+        if (!found) return errorResponse(ApiError.notFound("附件不存在"), { headers });
         // ⚠️ object_key 在 listAttachments 里是**故意剥掉**的（暴露它等于泄漏存储布局），
         // 但单条查询拿得到 —— 这里取不到就说明记录异常，直接判 404 而不是硬传 undefined。
         if (!found.object_key) {
-            return Response.json({ error: "附件记录不完整" }, { status: 500, headers });
+            return errorResponse(new ApiError(500, API_ERROR_CODES.internal, "附件记录不完整"), { headers });
         }
         const bytes = await readAttachmentObject(ctx.env, found.storage, found.object_key);
-        if (!bytes) return Response.json({ error: "附件数据已丢失" }, { status: 410, headers });
+        if (!bytes) return errorResponse(ApiError.gone("附件数据已丢失"), { headers });
         // ⚠️ Response 的 BodyInit 在 Worker 类型里不含 Uint8Array，
         // 用它的 .buffer（零拷贝，不多复制一份 25MB）。
         return new Response(bytes.buffer as ArrayBuffer, {
@@ -508,7 +532,7 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
         if (limited) return limited;
         const id = path.split("/")[2];
         const ok = await api.deleteAttachment(id);
-        if (!ok.ok) return Response.json({ error: ok.error }, { status: ok.status });
+        if (!ok.ok) throw ApiError.notFound(ok.error);
         // 先删 D1 记录再删对象：反过来会出现「记录还在、对象没了」，
         // 用户刷新后看到图裂了却删不掉。
         await finishAttachmentDeletion(ctx.env, id, ok.storage, ok.objectKey);
@@ -587,7 +611,7 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
 
         const data = (await request.json()) as Partial<NoteTag>;
         const name = typeof data.name === "string" ? data.name.trim().slice(0, 40) : "";
-        if (!name) return Response.json({ error: "标签名不能为空" }, { status: 400 });
+        if (!name) throw ApiError.badRequest("标签名不能为空");
         return Response.json(
             await api.createTag({ name, color: typeof data.color === "string" ? data.color : null })
         );
@@ -603,7 +627,7 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
         if (typeof data.name === "string") patch.name = data.name.trim().slice(0, 40) || "";
         if (data.color !== undefined) patch.color = typeof data.color === "string" ? data.color : null;
         const tag = await api.updateTag(id, patch);
-        if (!tag) return Response.json({ error: "标签不存在" }, { status: 404 });
+        if (!tag) throw ApiError.notFound("标签不存在");
         return Response.json(tag);
     } else if (path.startsWith("notes/tags/") && method === "DELETE") {
         const limited = await writeGate();
@@ -638,7 +662,7 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
             throw ApiError.badRequest("无效的ID");
         }
         const revision = await api.getNoteRevision(noteId, revisionId);
-        if (!revision) return Response.json({ error: "该版本不存在" }, { status: 404 });
+        if (!revision) throw ApiError.notFound("该版本不存在");
         return Response.json(revision);
     } else if (path.startsWith("notes/") && path.endsWith("/revisions/") && method === "POST") {
         const limited = await writeGate();
@@ -651,7 +675,7 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
             throw ApiError.badRequest("无效的ID");
         }
         const note = await api.restoreNoteRevision(noteId, revisionId);
-        if (!note) return Response.json({ error: "该版本不存在" }, { status: 404 });
+        if (!note) throw ApiError.notFound("该版本不存在");
         return Response.json(note);
     } else if (path.startsWith("notes/") && method === "GET") {
         const id = parseInt(path.split("/")[1]);
@@ -659,7 +683,7 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
             throw ApiError.badRequest("无效的ID");
         }
         const note = await api.getNote(id);
-        if (!note) return Response.json({ error: "笔记不存在" }, { status: 404 });
+        if (!note) throw ApiError.notFound("笔记不存在");
         return Response.json(note);
     } else if (path === "notes" && method === "POST") {
         const limited = await writeGate();
@@ -689,7 +713,7 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
             ? body
             : (body as { orders?: unknown })?.orders;
         if (!Array.isArray(orders)) {
-            return Response.json({ error: "无效的排序数据" }, { status: 400 });
+            throw ApiError.badRequest("无效的排序数据");
         }
         return Response.json({
             success: await api.updateNoteOrder(
@@ -734,7 +758,7 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
         }
         try {
             const note = await api.updateNote(id, patch);
-            if (!note) return Response.json({ error: "笔记不存在" }, { status: 404 });
+            if (!note) throw ApiError.notFound("笔记不存在");
             return Response.json(note);
         } catch (error) {
             // 乐观并发冲突：不是错误，是「有人在别处改过」这句话。

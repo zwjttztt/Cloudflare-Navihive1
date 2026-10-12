@@ -101,3 +101,71 @@ test("ApiError 静态工厂：unsupportedMedia 带 415 与机器可读 code（�
     const res = errorResponse(err);
     assert.equal(res.status, 415);
 });
+
+// ---------------------------------------------------------------------------
+// 2026-10-13：错误码迁移收尾（data.ts 25 处 / public.ts 5 处 / icon.ts 3 处）
+// ---------------------------------------------------------------------------
+
+test("errorResponse 支持附加头：分享与图标那批端点终于能带着自己的头迁移", async () => {
+    // 为什么必须有这个能力：那批端点的错误响应要带 `Cache-Control: no-store` /
+    // `Referrer-Policy` / `X-Robots-Tag`（错误响应被中间缓存留下来，或者把
+    // 「这条分享存在」泄露给搜索引擎，都是实打实的问题）。errorResponse 不支持
+    // 附加头时，它们只能继续写裸 Response.json({ error: "..." }) —— 这 33 处
+    // 就是这么一直迁不过来的。
+    const res = errorResponse(ServerApiError.notFound("附件不存在"), {
+        headers: { "Cache-Control": "no-store", "X-Robots-Tag": "noindex, nofollow" },
+    });
+    assert.equal(res.status, 404);
+    assert.equal(res.headers.get("Cache-Control"), "no-store");
+    assert.equal(res.headers.get("X-Robots-Tag"), "noindex, nofollow");
+    const body = (await res.json()) as { error: { code: string; message: string } };
+    assert.equal(body.error.code, "not_found");
+});
+
+test("errorResponse 的 extra：顶层额外字段不被 error 对象吞掉（needPassword）", async () => {
+    // 公开笔记那个 401 要在**顶层**多带 needPassword —— 客户端读的是
+    // `data.error` 之外的字段，塞进 error 对象里就得往下钻一层，而旧形状
+    // 本来就在顶层。保持顶层，客户端少改一处。
+    const res = errorResponse(
+        new ServerApiError(401, API_ERROR_CODES.unauthenticated, "需要访问口令"),
+        { headers: { "Cache-Control": "no-store" }, extra: { needPassword: true } }
+    );
+    assert.equal(res.status, 401);
+    const body = (await res.json()) as {
+        error: { code: string; message: string };
+        needPassword?: boolean;
+    };
+    assert.equal(body.error.code, "unauthenticated");
+    assert.equal(body.error.message, "需要访问口令");
+    assert.equal(body.needPassword, true);
+});
+
+test("405 / 410 / 501 / 502：这四个状态号有对应的 code（分享与附件端点用得到）", () => {
+    // 迁移时卡住的正是不在 ApiErrorStatus 联合类型里的那几个状态号 ——
+    // 没有对应的 code，就只能继续写裸 Response.json。
+    const cases: [ReturnType<typeof ServerApiError.methodNotAllowed>, string][] = [
+        [ServerApiError.methodNotAllowed(), "method_not_allowed"],
+        [ServerApiError.gone("附件数据已丢失"), "gone"],
+        [ServerApiError.notImplemented("服务器未配置附件存储"), "not_implemented"],
+        [ServerApiError.badGateway("图片写入存储失败，请稍后重试"), "bad_gateway"],
+    ];
+    for (const [err, code] of cases) {
+        assert.equal(err.code, code, `${code} 的 code 不对`);
+        const res = errorResponse(err);
+        assert.equal(res.status, err.status);
+    }
+    assert.equal(ServerApiError.methodNotAllowed().status, 405);
+    assert.equal(ServerApiError.gone("x").status, 410);
+    assert.equal(ServerApiError.notImplemented("x").status, 501);
+    assert.equal(ServerApiError.badGateway("x").status, 502);
+});
+
+test("未预料的错误走 500 时也要带上附加头（分享端点那条路径）", async () => {
+    // errorResponse 的兜底分支原来写死了 status: 500 且不带 options ——
+    // 那么分享端点一旦走到「没预料到的异常」，no-store 就没了。
+    const res = errorResponse(new Error("boom"), { headers: { "Cache-Control": "no-store" } });
+    assert.equal(res.status, 500);
+    assert.equal(res.headers.get("Cache-Control"), "no-store");
+    const body = (await res.json()) as { error: { code: string } };
+    assert.equal(body.error.code, "internal");
+});

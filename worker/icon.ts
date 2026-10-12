@@ -3,6 +3,7 @@
 import { safeFetch } from "./safeFetch";
 import { createMemoryLimiter } from "./rateLimit";
 import { securityHeaders, readBoundedBytes, BodyLimitError } from "./util";
+import { ApiError, errorResponse } from "./lib/apiError";
 
 /**
  * 图标代理：把第三方 favicon 抓回来当同源响应发出去。
@@ -207,14 +208,12 @@ export async function proxyIcons(
     const targets = url.searchParams.getAll("u").map(v => v.trim()).filter(Boolean);
 
     if (!targets.length) {
-        return Response.json({ error: "缺少 u 参数" }, {
-            status: 400,
+        return errorResponse(ApiError.badRequest("缺少 u 参数"), {
             headers: securityHeaders({ "Cache-Control": "no-store" }),
         });
     }
     if (targets.length > MAX_BATCH) {
-        return Response.json({ error: `一次最多取 ${MAX_BATCH} 个图标` }, {
-            status: 400,
+        return errorResponse(ApiError.badRequest(`一次最多取 ${MAX_BATCH} 个图标`), {
             headers: securityHeaders({ "Cache-Control": "no-store" }),
         });
     }
@@ -223,8 +222,7 @@ export async function proxyIcons(
     // 「刷配额的捷径」—— 单条一窗口 60 次，这里 30 条要一次性扣掉 30 次。
     for (let i = 0; i < targets.length; i++) {
         if (!iconLimiter.allow(clientKey)) {
-            return Response.json({ error: "图标请求过于频繁，请稍后再试" }, {
-                status: 429,
+            return errorResponse(ApiError.rateLimited("图标请求过于频繁，请稍后再试"), {
                 headers: securityHeaders({ "Cache-Control": "no-store", "Retry-After": "60" }),
             });
         }

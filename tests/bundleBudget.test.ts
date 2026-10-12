@@ -89,8 +89,15 @@ const BUDGET_KB = 250;
  * 所以没有多出任何请求 —— 首次点这一下时把登录页那 9 KB 顺带拉下来而已。
  * （顺带排除了另一个候选 `methods/transfer`：它 2.29 KB，但 `filterOwnedGroupIds`
  *   在**拖拽排序**路径上，动态化会让每次排序多等一个 chunk，那笔账是亏的。）
+ *
+ * 237.25 —— 2026-10-13 首屏请求数那一轮：+0.62 KB 换 **-1 个请求**。
+ * `MaintenanceBanner`（790 字节）原来是 lazy 块，但它必须常驻（自己每 60 秒轮询
+ * 维护状态），lazy 省不掉下载、只剩一个独立请求；改回静态 import 后并进入口块。
+ * （同期另外两刀没动 index：`GroupCard` 的 `EditGroupDialog` 由「无条件渲染」
+ *   改成 `ChunkBoundary when={editDialogOpen}`，`preload-helper` 并进 vendor 的尝试
+ *   因为 rolldown 自己发的 `rolldown-runtime` 块填不上那个坑而回退 —— 详见 CHANGELOG。）
  */
-const BASELINE_KB = 235.84;
+const BASELINE_KB = 237.25;
 
 function indexChunk(): { name: string; kb: number } | null {
     const assets = join(findProjectDir(), "dist", "client", "assets");
@@ -146,9 +153,13 @@ function indexChunk(): { name: string; kb: number } | null {
  */
 const FIRST_SCREEN_BUDGET_RAW_KB = 1000;
 const FIRST_SCREEN_BUDGET_GZIP_KB = 325;
-/** 实测基线（第二次分块变更后，2026-10-12）：949.9 KB 原始 / 307.4 KB gzip */
-const FIRST_SCREEN_BASELINE_RAW_KB = 949.9;
-const FIRST_SCREEN_BASELINE_GZIP_KB = 307.4;
+/**
+ * 实测基线（第二次分块变更后，2026-10-12）：949.9 KB 原始 / 307.4 KB gzip
+ * 2026-10-13 首屏请求数那一轮：950.2 / 307.5（MaintenanceBanner 并进入口块，
+ * 字节几乎没动 —— 那一轮省的是**请求数**，不是字节）。
+ */
+const FIRST_SCREEN_BASELINE_RAW_KB = 950.2;
+const FIRST_SCREEN_BASELINE_GZIP_KB = 307.5;
 
 interface FirstScreen {
     files: { name: string; rawKb: number; gzipKb: number }[];
@@ -321,6 +332,43 @@ test("**当前**首屏包也要留 5% 余量，不只是基线留", t => {
     );
 });
 
+
+test("katex 必须自己成块：不能混进 markdown 块", t => {
+    // 2026-10-13 实测：markdown 块 345 KB 里 **234.9 KB（71%）是 katex**。
+    // katex 只被 `utils/MathNode.tsx` 的 import("katex") 用到 —— 但 manualChunks 把
+    // 它和 markdown-it 一起钉进了 "markdown" 块，于是**每打开一篇笔记都要下这 235 KB**，
+    // 哪怕通篇没有一个公式（MathNode 那句动态 import 只在渲染公式时才跑，块却已经下来了）。
+    //
+    // 拆开后实测：打开记事本 JS 1218.7 → 965.2 KB（少 253 KB），请求 16 → 15；
+    // 有公式的笔记仍然下得到（harness/katex-on-demand-probe.mjs 双向验过）。
+    const assets = join(findProjectDir(), "dist", "client", "assets");
+    let files: string[];
+    try {
+        files = readdirSync(assets);
+    } catch {
+        t.skip("没有构建产物，跳过（先跑 npm run build 再跑单测）");
+        return;
+    }
+    // ⚠️ 产物里会有**两个** katex 块：主应用一个、`mermaid-sandbox.html` 那个入口一个
+    // （沙箱里画流程图也可能带公式）。所以这里用 some 而不是 find。
+    const katexChunks = files.filter(f => /^katex-.*\.js$/.test(f));
+    assert.ok(katexChunks.length > 0, "产物里没有独立的 katex-*.js 块 —— 它多半又被并进 markdown 块了");
+
+    // katex 自己的源码里必有这条（错误提示里的品牌名），拿它当指纹比搜 "katex" 稳：
+    // "katex" 这四个字母会出现在很多 import 路径与注释里，而 "KaTeX" 只来自它的源码。
+    const MARKER = "KaTeX";
+    assert.ok(
+        katexChunks.some(f => readFileSync(join(assets, f), "utf-8").includes(MARKER)),
+        `${katexChunks.join("、")} 里没有 KaTeX 的指纹，块的内容可能挪走了（换一个指纹）`
+    );
+    for (const f of files.filter(n => /^markdown(-|$).*\.js$/.test(n))) {
+        assert.ok(
+            !readFileSync(join(assets, f), "utf-8").includes(MARKER),
+            `${f} 里混进了 katex（${MARKER}）—— 每篇笔记都会为此多下 235 KB。` +
+                `去 vite.config.ts 把 katex 单独分流成块。`
+        );
+    }
+});
 
 test("记事本整块不许进首屏（hook 也不能）", t => {
     // 这条钉的是 2026-10-06 的一次疏漏：`NotesPage` 组件确实 lazy 了，

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { renderMarkdownToReact } from "../utils/markdownToReact";
 import { Button, TextField, Typography } from "@mui/material";
+import { parseApiError } from "../API/apiError";
 
 // 公开分享页（/s/:token）：无需登录，只读。
 //
@@ -32,9 +33,13 @@ export default function PublicNotePage({ token }: { token: string }) {
             body: password ? JSON.stringify({ password }) : undefined,
         });
         if (response.status === 401) {
-            const data = (await response.json().catch(() => ({}))) as { error?: string };
+            // ⚠️ 这条响应**不走** client.request（公开页没有登录态），所以得自己解析。
+            // 服务端 2026-10-13 起回的是统一错误形状 { error: { code, message } }
+            // （旧服务端回 { error: "需要访问口令" }）—— parseApiError 两种都认，
+            // 直接读 `data.error` 的话新形状下会拿到对象、界面上显示 [object Object]。
+            const data = await response.json().catch(() => null);
             setNeedPw(true);
-            setPwError(data.error || "需要访问口令");
+            setPwError(parseApiError(data, 401)?.message || "需要访问口令");
             setBody("这条分享受访问口令保护。");
             return;
         }

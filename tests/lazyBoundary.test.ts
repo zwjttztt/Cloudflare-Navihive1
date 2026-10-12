@@ -172,6 +172,60 @@ test("lazy 的弹窗外面得有兜底，否则打开瞬间会报错", () => {
     }
 });
 
+test("lazy 弹窗必须**按需挂载**：光把 open 传 false 不省任何请求", () => {
+    // 为什么单独钉这一条：上面几条只管「引用方式是 lazy」，但 React.lazy **只要被渲染**
+    // 就会立刻去下载那个块 —— `open={false}` 也照下不误。所谓 lazy 只省了解析时间，
+    // 请求与流量一分没省（在这条每个请求 1~3 秒的链路上，请求数才是最贵的）。
+    //
+    // 2026-10-12 修了 App / OverlayHost 的 16 处；2026-10-13 又抓到一处残留：
+    // GroupCard 里 EditGroupDialog 外面只是 `<Suspense>`、且整段无条件渲染，
+    // 首页有几个分组就白下几个请求。所以这里补一条**挂载点**的守卫。
+    //
+    // 判据：`<Xxx` 前面 800 个字符内必须能看到「打开才挂载」的证据 ——
+    //   `when={` （ChunkBoundary 的按需挂载），或一段**提到 open 的**条件渲染。
+    //
+    // ⚠️ 为什么条件渲染那一路还要求「提到 open」：GroupCard 那处残留外面其实也有
+    // `onUpdateGroup && onDeleteGroup && canManageGroup && (...)` 这种条件 ——
+    // 但那是**权限**条件，登录用户恒为真，等于无条件渲染。只判「有没有 && (」
+    // 会把它放过去（这条守卫第一版就是这么写的，是假绿）。区分两者只能看
+    // 条件里说的是不是「打开/关闭」这件事。
+    const hosts = ["App.tsx", "components/OverlayHost.tsx", "components/GroupCard.tsx"];
+    for (const host of hosts) {
+        const file = FILES.find(f => f.path.endsWith(host.replace(/\//g, path.sep)));
+        assert.ok(file, `找不到 ${host}`);
+        for (const c of MUST_BE_LAZY) {
+            const lazyRe = new RegExp(`lazy\\(\\(\\)\\s*=>\\s*import\\([^)]*${c}[^)]*\\)\\)`);
+            if (!lazyRe.test(file.text)) continue;
+            const at = file.text.indexOf(`<${c}`);
+            assert.ok(at >= 0, `${host} 里 lazy 了 ${c} 却找不到 <${c} 的挂载点`);
+            const before = file.text.slice(Math.max(0, at - 800), at);
+            const conditionalOnOpen =
+                /&&\s*\(|\?\s*\(/.test(before) && /\bopen/i.test(before);
+            assert.ok(
+                /when=\{/.test(before) || conditionalOnOpen,
+                `${host} 里的 <${c}> 没有按需挂载的证据：React.lazy 被渲染就会立刻下载那个块，` +
+                    `open={false} 也拦不住。用 <ChunkBoundary when={...}> 包起来，` +
+                    `或者让整段落在**与打开状态有关**的条件渲染里（权限那种恒为真的不算）。`
+            );
+        }
+    }
+
+    // 上面那条靠「条件里提到 open」这种启发式判断，容易被糊弄过去。
+    // 这里再钉一条**确定的**：GroupCard 的编辑弹窗必须挂在 editDialogOpen 上。
+    const groupCard = FILES.find(f => f.path.endsWith(path.join("components", "GroupCard.tsx")));
+    assert.ok(groupCard, "找不到 components/GroupCard.tsx");
+    assert.ok(
+        /<ChunkBoundary\s+when=\{[^}]*editDialogOpen[^}]*\}>/.test(groupCard.text),
+        "GroupCard 里的 EditGroupDialog 必须挂在 `<ChunkBoundary when={editDialogOpen}>` 上 ——" +
+            "首页有几个分组就渲染几份，无条件挂载会让每个访客都白下这个块。"
+    );
+    assert.ok(
+        !/<Suspense[^>]*>[\s\S]{0,200}<EditGroupDialog/.test(groupCard.text),
+        "GroupCard 里又出现 `<Suspense>` 直接包 <EditGroupDialog>：那是 2026-10-13 修掉的" +
+            "「假 lazy」残留，无条件渲染会把块在首屏就拉下来。"
+    );
+});
+
 test("ChunkBoundary 自己内部得有 Suspense，否则套了它其实也没兜住", () => {
     // 上一条把 <ChunkBoundary> 也算作兜底，前提是它真的包了 Suspense。
     // 哪天有人把里面的 Suspense 拿掉（比如改成只认 error 的边界），

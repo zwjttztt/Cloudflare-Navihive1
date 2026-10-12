@@ -1,5 +1,6 @@
-import React, { Suspense, lazy, useEffect, useMemo, useRef, useState, memo } from "react";
+import React, { lazy, useEffect, useMemo, useRef, useState, memo } from "react";
 import { Site, Group } from "../API/http";
+import ChunkBoundary from "./ChunkBoundary";
 import SiteCard from "./SiteCard";
 import { GroupWithSites } from "../types";
 // 「编辑分组」只有在有权限的人点开时才用得到，懒加载。
@@ -883,9 +884,14 @@ const GroupCard: React.FC<GroupCardProps> = ({
                 {sitesMounted ? renderSites() : <Box sx={{ height: placeholderHeight }} />}
             </Collapse>
 
-            {/* 编辑分组弹窗 */}
+            {/* 编辑分组弹窗
+                ⚠️ 2026-10-13：这里原来是 `<Suspense>` 无条件包着，而 React.lazy 只要
+                被**渲染**就会立刻去下载那个块 —— open=false 也照下不误。首页有 N 个分组
+                就白下 N 次（实测首屏为此多发一个 3.9 KB 的请求）。
+                改 `ChunkBoundary when={editDialogOpen}`：只有真点开才挂载、才下载，
+                关闭后延迟 320ms 卸载（MUI 退出过渡约 195ms，别把动画掐掉）。 */}
             {onUpdateGroup && onDeleteGroup && canManageGroup && (
-                <Suspense fallback={null}>
+                <ChunkBoundary when={editDialogOpen}>
                     <EditGroupDialog
                         open={editDialogOpen}
                         group={group}
@@ -899,7 +905,7 @@ const GroupCard: React.FC<GroupCardProps> = ({
                                 : undefined
                         }
                     />
-                </Suspense>
+                </ChunkBoundary>
             )}
         </Paper>
     );

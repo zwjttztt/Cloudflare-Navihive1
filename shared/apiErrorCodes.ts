@@ -15,6 +15,13 @@ export const API_ERROR_CODES = {
     unauthenticated: "unauthenticated",
     forbidden: "forbidden",
     notFound: "not_found",
+    // 2026-10-13 迁移分享/附件端点时补的四个：405 方法不对、410 曾经有过现在没了、
+    // 501 服务端没配这条能力、502 上游（对象存储）写失败。原来这些出口因为
+    // 「没有对应的 code」只能继续写裸 Response.json({ error: "..." })。
+    methodNotAllowed: "method_not_allowed",
+    gone: "gone",
+    notImplemented: "not_implemented",
+    badGateway: "bad_gateway",
     conflict: "conflict",
     payloadTooLarge: "payload_too_large",
     unsupportedMediaType: "unsupported_media_type",
