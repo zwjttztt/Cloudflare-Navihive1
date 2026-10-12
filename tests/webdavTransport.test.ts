@@ -14,8 +14,11 @@ import {
     buildWebDavFileUrl,
     buildWebDavFolderUrl,
     davFetch,
+    describeWebDavError,
     ensureWebDavFolder,
     parseWebDavList,
+    putWithRetry,
+    uploadTimeoutMs,
 } from "../worker/webdav/transport";
 import type { WebDavConfig } from "../worker/webdav/types";
 
@@ -264,4 +267,130 @@ test("默认跳数上限是 4：不传参时也不会无限跳", async () => {
         globalThis.fetch = realFetch;
     }
     assert.ok(sent <= 5, `默认上限下最多 5 次请求，实际 ${sent} 次`);
+});
+
+// ---- 2026-10-12：线上「每周自动备份一次都没成功过」的三个修复点 ----
+// 现象：cron 报「账号 1：The operation was aborted due timeout」。
+// 三件事叠在一起才那么难查：
+//   1. 上传用的是 davFetch 默认 60 秒超时，而备份是「全部笔记+附件」的 gzip，
+//      几 MB~几十 MB，慢网盘必然掐断；
+//   2. webdavPutBytes 的 catch 走 errorMessage() 而不是 describeWebDavError()，
+//      所以用户看到的是英文原始 message，压根没有「超时」两个字；
+//   3. 没有重试 —— 每周一次、无人盯守，一次抖动就等于一周没有备份。
+
+test("上传超时按体积算，不再固定 60 秒", () => {
+    // 小备份：60 秒基线
+    assert.equal(uploadTimeoutMs(0), 60_000);
+    assert.equal(uploadTimeoutMs(1024 * 1024), 90_000, "1MB = 基线 + 30 秒");
+    assert.equal(uploadTimeoutMs(10 * 1024 * 1024), 360_000, "10MB = 基线 + 300 秒");
+    // 按比例而不是向上取整：半个 MB 只该加一半时间
+    assert.ok(
+        uploadTimeoutMs(512 * 1024) > 60_000 && uploadTimeoutMs(512 * 1024) <= 75_000,
+        `512KB 该落在 60~75 秒之间，实际 ${uploadTimeoutMs(512 * 1024)}`
+    );
+    // 封顶 10 分钟：真到上限还传不完，该做的是分卷而不是继续等
+    assert.equal(uploadTimeoutMs(20 * 1024 * 1024), 600_000);
+    assert.equal(uploadTimeoutMs(500 * 1024 * 1024), 600_000);
+});
+
+test("超时文案按实际超时分：探测说『连接超时』，上传说『上传超时』", () => {
+    const timeout = new Error("The operation was aborted due timeout");
+    timeout.name = "TimeoutError";
+    // 探测（15s）走原来的文案，老测试与老用户认知都不变
+    assert.match(describeWebDavError(timeout), /连接超时（15 秒无响应）/);
+    // 上传（按体积算，必然 > 20s）必须说清楚是「传不完」，不是「连不上」
+    const upload = describeWebDavError(timeout, uploadTimeoutMs(20 * 1024 * 1024));
+    assert.match(upload, /上传超时（600 秒内没有传完）/);
+    assert.match(upload, /自动重试/);
+});
+
+test("上传失败重试：第一次超时、第二次成功", async () => {
+    const realFetch = globalThis.fetch;
+    let calls = 0;
+    globalThis.fetch = (async () => {
+        calls += 1;
+        if (calls === 1) {
+            const err = new Error("The operation was aborted due timeout");
+            err.name = "TimeoutError";
+            throw err;
+        }
+        return new Response(null, { status: 201 });
+    }) as typeof fetch;
+    try {
+        const res = await putWithRetry(
+            "https://dav.example.com/b/backup.json.gz",
+            cfg(),
+            new Uint8Array([1, 2, 3]),
+            {},
+            60_000,
+            3,
+            [0, 0]
+        );
+        assert.equal(res.status, 201);
+        assert.equal(calls, 2, `该重试一次后成功，实际发了 ${calls} 次`);
+    } finally {
+        globalThis.fetch = realFetch;
+    }
+});
+
+test("一直超时才抛，且把最后一次错误带出去", async () => {
+    const realFetch = globalThis.fetch;
+    let calls = 0;
+    globalThis.fetch = (async () => {
+        calls += 1;
+        const err = new Error("The operation was aborted due timeout");
+        err.name = "TimeoutError";
+        throw err;
+    }) as typeof fetch;
+    try {
+        await assert.rejects(
+            putWithRetry("https://dav.example.com/b/x.json.gz", cfg(), new Uint8Array([1]), {}, 60_000, 3, [0, 0]),
+            /The operation was aborted/
+        );
+        assert.equal(calls, 3, `三次都该发出去，实际 ${calls} 次`);
+    } finally {
+        globalThis.fetch = realFetch;
+    }
+});
+
+test("429 限流也重试（网盘常见，不是配置问题）", async () => {
+    const realFetch = globalThis.fetch;
+    let calls = 0;
+    globalThis.fetch = (async () => {
+        calls += 1;
+        return calls === 1 ? new Response(null, { status: 429 }) : new Response(null, { status: 201 });
+    }) as typeof fetch;
+    try {
+        const res = await putWithRetry(
+            "https://dav.example.com/b/x.json.gz",
+            cfg(),
+            new Uint8Array([1]),
+            {},
+            60_000,
+            3,
+            [0, 0]
+        );
+        assert.equal(res.status, 201);
+        assert.equal(calls, 2);
+    } finally {
+        globalThis.fetch = realFetch;
+    }
+});
+
+test("地址校验类错误不重试（重试一万次也不会变）", async () => {
+    const realFetch = globalThis.fetch;
+    let calls = 0;
+    globalThis.fetch = (async () => {
+        calls += 1;
+        throw new Error("WebDAV 重定向目标不允许指向内网或本机");
+    }) as typeof fetch;
+    try {
+        await assert.rejects(
+            putWithRetry("https://dav.example.com/b/x.json.gz", cfg(), new Uint8Array([1]), {}, 60_000, 3, [0, 0]),
+            /不允许指向内网/
+        );
+        assert.equal(calls, 1, `校验类错误只该发一次，实际 ${calls} 次`);
+    } finally {
+        globalThis.fetch = realFetch;
+    }
 });

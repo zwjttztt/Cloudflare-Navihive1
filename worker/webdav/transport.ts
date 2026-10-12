@@ -84,6 +84,31 @@ export async function gunzipToString(bytes: Bytes): Promise<string> {
 export const DAV_PROBE_TIMEOUT_MS = 15000;
 
 /**
+ * 上传（PUT）超时：按备份体积算，不再固定 60 秒。
+ *
+ * 为什么改：备份是「全部笔记 + 附件」打成一个 gzip，几 MB 到几十 MB 都正常；
+ * 坚果云 / 群晖这类网盘对单连接还有限速，固定 60 秒**必然**在上传中途被
+ * AbortSignal 掐断。线上表现就是每周自动备份一次都没成功过，错误只有一句
+ * "The operation was aborted due timeout"（用户既看不懂也不知道该改什么）。
+ *
+ * 口径：60 秒基线 + 每 MB 加 30 秒（按比例，不是向上取整 —— 否则 1 字节也加 30 秒），
+ * 封顶 10 分钟（cron 单次执行的余量远大于此，真到 10 分钟还传不完，
+ * 该做的是分卷而不是继续等）。
+ */
+export const DAV_UPLOAD_TIMEOUT_BASE_MS = 60_000;
+export const DAV_UPLOAD_TIMEOUT_PER_MB_MS = 30_000;
+export const DAV_UPLOAD_TIMEOUT_MAX_MS = 600_000;
+
+/** 按上传体积算这次 PUT 允许的最长耗时（纯函数，单测钉死边界） */
+export function uploadTimeoutMs(bytes: number): number {
+    const mb = Math.max(0, bytes) / (1024 * 1024);
+    return Math.min(
+        DAV_UPLOAD_TIMEOUT_MAX_MS,
+        Math.round(DAV_UPLOAD_TIMEOUT_BASE_MS + mb * DAV_UPLOAD_TIMEOUT_PER_MB_MS)
+    );
+}
+
+/**
  * 把 HTTP 状态码翻成「能照着改」的提示（纯函数，单测覆盖）。
  * 原来只回一句「连接失败：HTTP 405」，用户根本不知道该改地址、改账号还是换协议。
  */
@@ -109,13 +134,27 @@ export function describeWebDavStatus(status: number): string {
     return `连接失败：HTTP ${status}`;
 }
 
-/** 把网络层异常翻成人话：超时、地址不通、内网拦截要能一眼分开 */
-export function describeWebDavError(error: unknown): string {
+/**
+ * 把网络层异常翻成人话：超时、地址不通、内网拦截要能一眼分开。
+ *
+ * timeoutMs 是**这次请求实际用的超时**（探测 15s / 上传按体积算），不是写死的 15s ——
+ * 否则上传被掐断时会提示「连接超时（15 秒）」，用户对着一个几分钟的任务去查
+ * 「网络通不通」，方向整个错。
+ */
+export function describeWebDavError(error: unknown, timeoutMs: number = DAV_PROBE_TIMEOUT_MS): string {
     const raw = errorMessage(error, "连接失败");
     // 地址校验类错误（内网拦截 / 协议不对 / 地址不合法）原文已经说清了原因，原样透传
-    if (/不允许指向内网|必须以 http|不合法/.test(raw)) return raw;
+    if (/不允许指向内网|必须以 http|不合法|不允许跨源|不允许 HTTPS 降级|无内嵌凭据/.test(raw)) return raw;
     if (error instanceof Error && error.name === "TimeoutError") {
-        return `连接超时（${DAV_PROBE_TIMEOUT_MS / 1000} 秒无响应）：请确认地址能从公网访问；内网 NAS 要打开「允许内网地址」`;
+        const sec = Math.round(timeoutMs / 1000);
+        if (sec <= 20) {
+            return `连接超时（${sec} 秒无响应）：请确认地址能从公网访问；内网 NAS 要打开「允许内网地址」`;
+        }
+        return (
+            `上传超时（${sec} 秒内没有传完）：备份文件太大或网盘限速。` +
+            `可以分几次手动备份、减少附件数量，或换更快的 WebDAV 服务；` +
+            `同一批次会自动重试，重试仍失败才记这条。`
+        );
     }
     if (/fetch failed|Failed to fetch|ENOTFOUND|getaddrinfo|DNS|NetworkError|ECONNREFUSED|certificate/i.test(raw)) {
         return `连不上服务器（${raw}）：请确认地址正确、端口已开放，且 Cloudflare 能访问到它`;
@@ -188,9 +227,54 @@ export async function davFetch(
     throw new Error("WebDAV 重定向次数过多");
 }
 
+/**
+ * 带重试的 PUT（上传备份用）。
+ *
+ * 为什么需要：备份是每周一次、无人盯守的任务，网络抖动 / 网盘限流（429）/
+ * 服务端 5xx 都是**暂时性**的，原样失败就等于这一周没有备份 —— 而备份的意义
+ * 恰恰在于「出事的时候有得恢复」。重试两次（2s、8s 退避）能把绝大多数
+ * 抖动吃下去。
+ *
+ * 刻意**不**重试的：
+ *   - 地址校验类错误（内网 / 跨源 / 降级）：重试一万次也不会变
+ *   - 401/403/404/409：是配置问题，交给调用方翻成人话
+ *   PUT 同一 URL 是幂等的，重试不会产生重复文件。
+ */
+export async function putWithRetry(
+    url: string,
+    config: WebDavConfig,
+    body: Uint8Array,
+    extraHeaders: Record<string, string>,
+    timeoutMs: number,
+    attempts = 3,
+    /** 每次重试前等多久（毫秒）。默认 2s、8s；测试传 [0, 0] 免得真等 10 秒 */
+    backoffMs: readonly number[] = [2000, 8000]
+): Promise<Response> {
+    let lastError: unknown;
+    for (let attempt = 0; attempt < attempts; attempt++) {
+        if (attempt > 0) await new Promise(r => setTimeout(r, backoffMs[attempt - 1] ?? 0));
+        try {
+            const res = await davFetch(url, "PUT", config, body, extraHeaders, timeoutMs);
+            // 429 限流与 5xx 服务端错误：值得再试一次
+            if (res.status === 429 || res.status >= 500) {
+                lastError = new Error(`HTTP ${res.status}`);
+                continue;
+            }
+            return res;
+        } catch (error) {
+            const raw = errorMessage(error, "");
+            // 配置/校验类错误重试无意义，直接上抛
+            if (/不允许指向内网|不允许跨源|不允许 HTTPS 降级|不合法|无内嵌凭据|重定向次数过多|必须以 http/.test(raw)) {
+                throw error;
+            }
+            lastError = error;
+        }
+    }
+    throw lastError;
+}
+
 // 逐级创建备份目录（已存在时服务器返回 405，忽略即可）
-export async function ensureWebDavFolder(config: WebDavConfig, folderUrl: string): Promise<void> {
-    const base = (config.url || "").trim().replace(/\/+$/, "");
+export async function ensureWebDavFolder(config: WebDavConfig, folderUrl: string): Promise<void> {    const base = (config.url || "").trim().replace(/\/+$/, "");
     const relative = folderUrl.slice(base.length).replace(/^\/+|\/+$/g, "");
     if (!relative) return;
 

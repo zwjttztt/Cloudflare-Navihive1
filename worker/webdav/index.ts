@@ -20,6 +20,8 @@ import {
     gunzipToString,
     gzipBytes,
     parseWebDavList,
+    putWithRetry,
+    uploadTimeoutMs,
 } from "./transport";
 import type {
     WebDavBackupMode,
@@ -147,19 +149,28 @@ export async function webdavPutBytes(
     body: Uint8Array,
     encrypted: boolean
 ): Promise<WebDavResult<{ filename: string; size: number }>> {
+    const folderUrl = buildWebDavFolderUrl(config);
+    const putHeaders = { "Content-Type": encrypted ? "application/octet-stream" : "application/gzip" };
+    const fileUrl = buildWebDavFileUrl(folderUrl, filename);
+    // 上传超时按体积算（见 uploadTimeoutMs）：固定 60 秒时几十 MB 的备份必然被掐断，
+    // 线上表现为每周自动备份一次都没成功过。声明在 try 外面，catch 里要拿它翻错误文案。
+    const timeoutMs = uploadTimeoutMs(body.byteLength);
+    const startedAt = Date.now();
     try {
-        const folderUrl = buildWebDavFolderUrl(config);
-        const putHeaders = { "Content-Type": encrypted ? "application/octet-stream" : "application/gzip" };
-
-        let response = await davFetch(buildWebDavFileUrl(folderUrl, filename), "PUT", config, body, putHeaders);
+        let response = await putWithRetry(fileUrl, config, body, putHeaders, timeoutMs);
 
         // 目录不存在时才补建，避免每次备份都先发一次 PROPFIND 预检
         if (response.status === 404 || response.status === 409) {
             await ensureWebDavFolder(config, folderUrl);
-            response = await davFetch(buildWebDavFileUrl(folderUrl, filename), "PUT", config, body, putHeaders);
+            response = await putWithRetry(fileUrl, config, body, putHeaders, timeoutMs);
         }
 
         if (response.ok) {
+            // 上传耗时落日志：下次再有人报「备份失败」，先看这里是不是真慢
+            console.log(
+                `WebDAV 上传完成：${filename} ${(body.byteLength / 1048576).toFixed(1)}MB，` +
+                    `耗时 ${((Date.now() - startedAt) / 1000).toFixed(1)}s（超时上限 ${timeoutMs / 1000}s）`
+            );
             return {
                 success: true,
                 message: `已备份到 WebDAV：${filename}`,
@@ -173,7 +184,9 @@ export async function webdavPutBytes(
         const detail = await response.text().catch(() => "");
         return { success: false, message: `备份失败：HTTP ${response.status} ${detail.slice(0, 120)}` };
     } catch (error) {
-        return { success: false, message: errorMessage(error, "备份失败") };
+        // ⚠️ 必须走 describeWebDavError：原来这里是 errorMessage()，超时只回一句
+        // "The operation was aborted due timeout"，用户既看不懂也不知道改什么。
+        return { success: false, message: describeWebDavError(error, timeoutMs) };
     }
 }
 
