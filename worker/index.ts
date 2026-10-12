@@ -16,6 +16,7 @@
  *     图标与上报是浏览器 <img> / report-only 发的，压根带不上 Authorization。
  *   - 受保护路由必须在鉴权中间件**之后**，且排在「强制改密」闸门之后。
  */
+import { errorResponse } from "./lib/apiError";
 import { BodyLimitError, readBoundedBytes } from "./util";
 import { ATTACHMENT_MAX_BYTES } from "./attachments";
 import { NavigationAPI } from "../src/API/navigationApi";
@@ -163,12 +164,10 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
         });
     } catch (error) {
         if (error instanceof BodyLimitError) return new Response(error.message, { status: error.status, headers: TEXT_HEADERS() });
-        // 安全处理错误，不暴露内部细节
-        console.error(`API错误: ${error instanceof Error ? error.message : "未知错误"}`);
-        return new Response(`处理请求时发生错误`, {
-            status: 500,
-            headers: TEXT_HEADERS(),
-        });
+        // 统一错误出口：路由里抛的 ApiError 按 code/status 翻译成结构化 JSON；
+        // 未预料的错误在 errorResponse 里打日志 + 回 500，**不把堆栈/内部细节透给客户端**
+        // （以前回纯文本，客户端解析不出结构化错误，只能显示一句笼统的话）。
+        return errorResponse(error);
     }
 }
 

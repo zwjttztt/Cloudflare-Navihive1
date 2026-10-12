@@ -92,3 +92,12 @@ test("两侧 code 常量一致（改一边忘另一边是最容易出的漂移�
     assert.equal(API_ERROR_CODES.unauthenticated, "unauthenticated");
     assert.equal(API_ERROR_CODES.payloadTooLarge, "payload_too_large");
 });
+
+test("ApiError 静态工厂：unsupportedMedia 带 415 与机器可读 code（附件类型嗅探拒绝用）", () => {
+    const err = ServerApiError.unsupportedMedia("只支持 PNG / JPEG / GIF / WebP / AVIF 图片");
+    assert.equal(err.status, 415);
+    assert.equal(err.code, API_ERROR_CODES.unsupportedMediaType);
+    // errorResponse 出来的形状是结构化的，message 原样透出（客户端按它显示）
+    const res = errorResponse(err);
+    assert.equal(res.status, 415);
+});

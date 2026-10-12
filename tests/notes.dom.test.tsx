@@ -143,12 +143,20 @@ async function openNoteMore() {
  */
 function notesSource(): string {
     const dir = findProjectDir();
-    const mainPath = join(dir, "src", "components", "NotesPage.tsx");
-    const toolbarPath = join(dir, "src", "components", "notes", "markdownToolbar.tsx");
+    // ⚠️ 拆出去的文件也要进来：第二批拆分后左栏导航（sidebarSection）与
+    // 分栏 chrome（paneChrome）不在主文件里了 —— 守卫只读主文件会**假通过**
+    // （比如 NAV_COL_W 的正则守卫，代码搬走后就匹配不到了）。
+    const parts = [
+        "NotesPage.tsx",
+        join("notes", "markdownToolbar.tsx"),
+        join("notes", "sidebarSection.tsx"),
+        join("notes", "paneChrome.tsx"),
+        join("notes", "lazyGroup.tsx"),
+    ].map(p => readFileSync(join(dir, "src", "components", p), "utf-8"));
     // ⚠️ **不剥注释**：一部分守卫是拿 JSX 注释 `{/* 主体：desktop */}` 当锚点的
     // （剥了就 indexOf 不到，切片变空字符串，守卫反而假失败）。
     // 要剥注释的调用点自己包 stripComments(notesSource())。
-    return readFileSync(mainPath, "utf-8") + "\n" + readFileSync(toolbarPath, "utf-8");
+    return parts.join("\n");
 }
 
 

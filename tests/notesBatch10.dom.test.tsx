@@ -46,9 +46,12 @@ const readSrcFile = (...parts: string[]) =>
  * 「不该出现 X」都照旧查得到。
  */
 const readNotesPageForBatch10 = () =>
-    readSrcFile("components", "NotesPage.tsx") +
-    "\n" +
-    readSrcFile("components", "notes", "markdownToolbar.tsx");
+    [
+        readSrcFile("components", "NotesPage.tsx"),
+        readSrcFile("components", "notes", "markdownToolbar.tsx"),
+        readSrcFile("components", "notes", "sidebarSection.tsx"),
+        readSrcFile("components", "notes", "paneChrome.tsx"),
+    ].join("\n");
 
 // ---------------------------------------------------------------------------
 // 快捷键：单表驱动键盘绑定与 UI 显示

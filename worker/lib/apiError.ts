@@ -53,6 +53,10 @@ export class ApiError extends Error {
     static tooLarge(message: string) {
         return new ApiError(413, API_ERROR_CODES.payloadTooLarge, message);
     }
+    /** 上传内容类型不被支持（按文件内容判定后拒绝） */
+    static unsupportedMedia(message: string) {
+        return new ApiError(415, API_ERROR_CODES.unsupportedMediaType, message);
+    }
     static rateLimited(message = "操作太频繁，请稍后再试") {
         return new ApiError(429, API_ERROR_CODES.rateLimited, message);
     }

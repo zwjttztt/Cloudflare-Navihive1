@@ -6,6 +6,15 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。---
 
+## 2026-10-12 · 性能/重构：列表组级懒挂载 + NotesPage 第二批拆分 + 错误码迁移第一批
+
+上一批（cron 韧性/错误码/维护模式）的三个遗留项。逐条对照排查报告编号。
+
+- **列表组级懒挂载（B1 接入，`notes/lazyGroup.tsx`）**：上一批做的定高窗口虚拟化（`virtualWindow.ts`）**没有直接接入** —— 真看代码才发现笔记列表是**时间桶分组**结构，行高还随标签徽章浮动，定高窗口的 padTop/totalHeight 会算错（滚动条跳动、组标题被跳过）。硬塞就是「基建做了一半，接入时发现假设不成立」，老老实实换成与 GroupCard 对站点同一套、且已在生产验证过的**组级懒挂载**：视口外的组不建 React 元素 / DOM（只留一个估计高度的占位），IntersectionObserver 进圈 600px 就分帧挂上，挂上不收回。123 条笔记的 stub 实测：首屏只建 27 行 DOM（少 78%），逐段滚动后全部挂上，控制台零错误；条数低于 60 时 `enabled=false` 在**渲染期**短路成全量渲染，小列表的 DOM 结构与从前逐字节一致（292 条既有用例零改动全过）。`computeWindow` 纯函数留着 —— 哪天真出现「无分组 + 定高行」的列表（比如未来的回收站分页），它还是对的。真机探针 `harness/virtual-list-probe.mjs`（STUB_NOTES=120）钉住行为；顺带踩清一个误区：**跳滚跳过的组不挂载是正确行为**（从未与视口相交），探针第一版拿「直接跳底」当判据差点误报。
+- **拆 `NotesPage.tsx` 第二批（B2）**：7287 → **6219 行**。左栏导航（`notes/sidebarSection.tsx`，NavRow/FolderTagSection/标签工具/右键锚点，约 800 行）与分栏 chrome（`notes/paneChrome.tsx`，列宽拖拽/ColResizeHandle/SaveDot/比例持久化，约 350 行）原文搬出、只加 export，逻辑零改动。守卫的合并源码同步加进两个新文件 + lazyGroup —— 没这一步，`NAV_COL_W` 那条正则守卫在代码搬走后就**假通过**了。
+- **错误码迁移第一批（C1，`worker/routes/data.ts` + `worker/index.ts`）**：data.ts 里 23 处规整的错误出口从 `Response.json({error}, {status})` 换成 `throw ApiError.xxx(...)`（无效 ID ×17、文件夹三类、FTS 降级 503、附件类型 415）—— message 一字不差（客户端按它显示），新增的只是机器可读 code。真正让这些 throw 生效的是外层那一处：`index.ts` 的兜底 catch 接上 `errorResponse` —— ApiError 按 code/status 翻成结构化 JSON，未预料的错误打日志 + 回 500 但**不透内部细节**（以前回纯文本，客户端连结构化错误都解析不出）。带 `headers` 的分享类错误出口（405/410/4xx+headers）这批没动：`errorResponse` 还不支持附加头，硬迁会把缓存语义弄丢。
+- **校验**：`tsc -b --force` 0；lint 0 error（19 条 warning 均为 react-refresh 类既有噪音）；单测 **2449**（2448 通过 / 1 跳过 / 0 失败，新增 1 条：unsupportedMedia 工厂；连带把两个路由测试的 dispatch 包上与 index.ts 一致的 errorResponse 兜底 —— 迁移后路由抛 ApiError，测试环境不包这层的话「抛错变 500」根本测不出来）；build 通过；smoke 全 PASS；真机探针 5 项全 PASS（123 条 stub：首屏 27 行 / 滚完全挂 / 打开正常 / 控制台 0 错）。
+
 ## 2026-10-12 · 工程：cron 韧性 / 统一错误码 / 请求超时 / 拆 NotesPage / 维护模式
 
 对 10-12《系统排查与 inkstone 对比》报告里 A/B/C 三档的落实。逐条对照报告编号。

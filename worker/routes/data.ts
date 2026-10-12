@@ -63,10 +63,7 @@ async function handleUploadAttachment(ctx: RouteCtx): Promise<Response> {
     const mime = sniffImageMime(bytes);
     const ext = mime ? imageExtension(mime) : null;
     if (!mime || !ext) {
-        return Response.json(
-            { error: "只支持 PNG / JPEG / GIF / WebP / AVIF 图片（按文件内容判定，不看文件名）" },
-            { status: 415 }
-        );
+        throw ApiError.unsupportedMedia("只支持 PNG / JPEG / GIF / WebP / AVIF 图片（按文件内容判定，不看文件名）");
     }
 
     const id = crypto.randomUUID();
@@ -213,7 +210,7 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
     } else if (path.startsWith("groups/") && method === "GET") {
         const id = parseInt(path.split("/")[1]);
         if (isNaN(id)) {
-            return Response.json({ error: "无效的ID" }, { status: 400 });
+            throw ApiError.badRequest("无效的ID");
         }
         const group = await api.getGroup(id);
         return Response.json(group);
@@ -243,7 +240,7 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
 
         const id = parseInt(path.split("/")[1]);
         if (isNaN(id)) {
-            return Response.json({ error: "无效的ID" }, { status: 400 });
+            throw ApiError.badRequest("无效的ID");
         }
 
         const data = (await request.json()) as Partial<Group>;
@@ -279,7 +276,7 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
 
         const id = parseInt(path.split("/")[1]);
         if (isNaN(id)) {
-            return Response.json({ error: "无效的ID" }, { status: 400 });
+            throw ApiError.badRequest("无效的ID");
         }
 
         const result = await api.deleteGroup(id);
@@ -297,7 +294,7 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
         if (limited) return limited;
         await api.migrate();
         await api.migrateNotesFtsTable();
-        if (!api.notesFtsReady) return Response.json({ error: "当前数据库不支持全文索引，搜索已使用备用模式" }, { status: 503 });
+        if (!api.notesFtsReady) throw ApiError.serviceUnavailable("当前数据库不支持全文索引，搜索已使用备用模式");
         const notes = await api.listNotes();
         // 每条只重建读取后未被其他请求改写的版本，不能用旧快照覆盖并发保存的新索引。
         const statements = [ctx.env.DB.prepare(
@@ -351,7 +348,7 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
         if (limited) return limited;
         const body = await request.json() as { kind?: unknown; notes?: unknown };
         if (!body || !Array.isArray(body.notes)) {
-            return Response.json({ error: "文件里没有笔记数据（这不是记事本导出的 JSON）" }, { status: 400 });
+            throw ApiError.badRequest("文件里没有笔记数据（这不是记事本导出的 JSON）");
         }
         return Response.json(await api.importNotesData(body as never));
     } else if (/^notes\/\d+\/share$/.test(path)) {
@@ -508,9 +505,9 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
         const data = (await request.json()) as Partial<NoteFolder>;
         // 白名单：只有 name / 外观两列是文件夹的字段，其它（id / user_id / count）一律不收
         const name = typeof data.name === "string" ? data.name.trim().slice(0, 80) : "";
-        if (!name) return Response.json({ error: "文件夹名不能为空" }, { status: 400 });
+        if (!name) throw ApiError.badRequest("文件夹名不能为空");
         if (data.parent_id !== undefined && data.parent_id !== null && (!Number.isInteger(data.parent_id) || data.parent_id <= 0)) {
-            return Response.json({ error: "父文件夹 ID 无效" }, { status: 400 });
+            throw ApiError.badRequest("父文件夹 ID 无效");
         }
         return Response.json(
             await api.createFolder({
@@ -525,7 +522,7 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
         if (limited) return limited;
 
         const id = parseInt(path.split("/")[2]);
-        if (isNaN(id)) return Response.json({ error: "无效的ID" }, { status: 400 });
+        if (isNaN(id)) throw ApiError.badRequest("无效的ID");
 
         const data = (await request.json()) as Partial<NoteFolder>;
         const patch: Partial<NoteFolder> = {};
@@ -536,19 +533,19 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
         if (data.color !== undefined) patch.color = typeof data.color === "string" ? data.color.slice(0, 32) : null;
         if (data.parent_id !== undefined) {
             if (data.parent_id !== null && (!Number.isInteger(data.parent_id) || data.parent_id <= 0)) {
-                return Response.json({ error: "父文件夹 ID 无效" }, { status: 400 });
+                throw ApiError.badRequest("父文件夹 ID 无效");
             }
             patch.parent_id = data.parent_id;
         }
         const folder = await api.updateFolder(id, patch);
-        if (!folder) return Response.json({ error: "文件夹不存在" }, { status: 404 });
+        if (!folder) throw ApiError.notFound("文件夹不存在");
         return Response.json(folder);
     } else if (path.startsWith("notes/folders/") && method === "DELETE") {
         const limited = await writeGate();
         if (limited) return limited;
 
         const id = parseInt(path.split("/")[2]);
-        if (isNaN(id)) return Response.json({ error: "无效的ID" }, { status: 400 });
+        if (isNaN(id)) throw ApiError.badRequest("无效的ID");
         // 回收到「未归类」，orphaned 给 UI 提示用
         return Response.json(await api.deleteFolder(id));
     } else if (path === "notes/tag-links" && method === "GET") {
@@ -572,7 +569,7 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
         if (limited) return limited;
 
         const id = parseInt(path.split("/")[2]);
-        if (isNaN(id)) return Response.json({ error: "无效的ID" }, { status: 400 });
+        if (isNaN(id)) throw ApiError.badRequest("无效的ID");
 
         const data = (await request.json()) as Partial<NoteTag>;
         const patch: Partial<NoteTag> = {};
@@ -586,14 +583,14 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
         if (limited) return limited;
 
         const id = parseInt(path.split("/")[2]);
-        if (isNaN(id)) return Response.json({ error: "无效的ID" }, { status: 400 });
+        if (isNaN(id)) throw ApiError.badRequest("无效的ID");
         return Response.json(await api.deleteTag(id));
     } else if (path.startsWith("notes/") && path.endsWith("/tags") && method === "PUT") {
         const limited = await writeGate();
         if (limited) return limited;
 
         const id = parseInt(path.split("/")[1]);
-        if (isNaN(id)) return Response.json({ error: "无效的ID" }, { status: 400 });
+        if (isNaN(id)) throw ApiError.badRequest("无效的ID");
 
         const body = (await request.json()) as { tagIds?: unknown };
         const tagIds = Array.isArray((body as { tagIds?: unknown })?.tagIds)
@@ -604,14 +601,14 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
         // 版本历史列表。⚠️ 必须排在下面那个 `notes/{id}` 的 GET 分支**之前** ——
         //   否则 "notes/5/revisions" 会被当成 id=parseInt("5/revisions") 走掉。
         const id = parseInt(path.split("/")[1]);
-        if (isNaN(id)) return Response.json({ error: "无效的ID" }, { status: 400 });
+        if (isNaN(id)) throw ApiError.badRequest("无效的ID");
         return Response.json(await api.listNoteRevisions(id));
     } else if (path.startsWith("notes/") && path.endsWith("/revisions/") && method === "GET") {
         const [rawNoteId, rawRevId] = path.split("/");
         const noteId = parseInt(rawNoteId);
         const revisionId = parseInt(rawRevId);
         if (isNaN(noteId) || isNaN(revisionId)) {
-            return Response.json({ error: "无效的ID" }, { status: 400 });
+            throw ApiError.badRequest("无效的ID");
         }
         const revision = await api.getNoteRevision(noteId, revisionId);
         if (!revision) return Response.json({ error: "该版本不存在" }, { status: 404 });
@@ -624,7 +621,7 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
         const noteId = parseInt(rawNoteId);
         const revisionId = parseInt(rawRevId);
         if (isNaN(noteId) || isNaN(revisionId)) {
-            return Response.json({ error: "无效的ID" }, { status: 400 });
+            throw ApiError.badRequest("无效的ID");
         }
         const note = await api.restoreNoteRevision(noteId, revisionId);
         if (!note) return Response.json({ error: "该版本不存在" }, { status: 404 });
@@ -632,7 +629,7 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
     } else if (path.startsWith("notes/") && method === "GET") {
         const id = parseInt(path.split("/")[1]);
         if (isNaN(id)) {
-            return Response.json({ error: "无效的ID" }, { status: 400 });
+            throw ApiError.badRequest("无效的ID");
         }
         const note = await api.getNote(id);
         if (!note) return Response.json({ error: "笔记不存在" }, { status: 404 });
@@ -678,7 +675,7 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
 
         const id = parseInt(path.split("/")[1]);
         if (isNaN(id)) {
-            return Response.json({ error: "无效的ID" }, { status: 400 });
+            throw ApiError.badRequest("无效的ID");
         }
         const data = (await request.json()) as Partial<Note>;
         const patch: Partial<Note> = {};
@@ -731,7 +728,7 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
 
         const id = parseInt(path.split("/")[1]);
         if (isNaN(id)) {
-            return Response.json({ error: "无效的ID" }, { status: 400 });
+            throw ApiError.badRequest("无效的ID");
         }
         return Response.json(await api.deleteNote(id));
     }
@@ -743,7 +740,7 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
     } else if (path.startsWith("sites/") && method === "GET") {
         const id = parseInt(path.split("/")[1]);
         if (isNaN(id)) {
-            return Response.json({ error: "无效的ID" }, { status: 400 });
+            throw ApiError.badRequest("无效的ID");
         }
 
         const site = await api.getSite(id);
@@ -774,7 +771,7 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
 
         const id = parseInt(path.split("/")[1]);
         if (isNaN(id)) {
-            return Response.json({ error: "无效的ID" }, { status: 400 });
+            throw ApiError.badRequest("无效的ID");
         }
 
         const data = (await request.json()) as Partial<Site>;
@@ -836,7 +833,7 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
 
         const id = parseInt(path.split("/")[1]);
         if (isNaN(id)) {
-            return Response.json({ error: "无效的ID" }, { status: 400 });
+            throw ApiError.badRequest("无效的ID");
         }
 
         const result = await api.deleteSite(id);
