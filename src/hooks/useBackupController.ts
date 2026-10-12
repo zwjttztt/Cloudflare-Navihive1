@@ -24,8 +24,9 @@ import {
     pickImportConfigEntries,
     remapLocalPrefs,
 } from "../utils/backupScope";
-import { NotifySeverity } from "./useNotify";
+import type { NotifyFn } from "../context/NotifyContext";
 import { exportLinkHealth } from "../utils/linkHealth";
+import { cronErrorDismissed, dismissCronError } from "../utils/cronErrorDismiss";
 
 type CurrentUser = { username: string; role: "owner" | "user" } | null;
 
@@ -53,7 +54,7 @@ interface BackupControllerDeps {
     starred: number[];
     tags: Record<string, string[]>;
     currentUser: CurrentUser;
-    notify: (message: string, severity?: NotifySeverity, duration?: number) => void;
+    notify: NotifyFn;
     handleError: (message: string) => void;
     handleMenuClose: () => void;
     fetchData: () => Promise<boolean>;
@@ -131,13 +132,23 @@ export function useBackupController(deps: BackupControllerDeps) {
     useEffect(() => {
         if (!cronError) return;
         if (cronErrorNotifiedRef.current === cronError.message) return;
+        // 「忽略一周」生效期内不弹：用户明确说知道了的消息别再骚扰。
+        // 留痕本体还在服务端，备份弹窗里仍能看到 —— 只是不再弹全局提示。
+        if (cronErrorDismissed(cronError.message)) return;
         cronErrorNotifiedRef.current = cronError.message;
+        // ⚠️ 三个任务的名字都要列全：notesBackup 之前落进 else 分支被标成「死链巡检」
+        const taskLabel =
+            cronError.task === "backup"
+                ? "每周自动备份"
+                : cronError.task === "notesBackup"
+                  ? "记事本自动备份"
+                  : "死链巡检";
         notify(
-            `${cronError.task === "backup" ? "每周自动备份" : "死链巡检"}未成功：${
-                cronError.message
-            }`,
+            `${taskLabel}未成功：${cronError.message}`,
             "error",
-            8000
+            8000,
+            // 一周备份窗口内这条消息会一直挂在服务端，给个「忽略一周」的出口
+            { label: "忽略一周", onClick: () => dismissCronError(cronError.message) }
         );
     }, [cronError, notify]);
 

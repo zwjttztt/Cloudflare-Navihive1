@@ -3,6 +3,7 @@
 // 从 worker/index.ts 拆出来。导出是「拿到会话后收益最大」的接口（整站数据 + 解密后的
 // 站点密码），导入是「一觉醒来整站被换掉」的入口，所以两者的限速 / 体积上限都在这儿。
 import type { ExportData, Group } from "../../src/API/http";
+import { CRON_LAST_ERROR_KEY } from "../../src/API/http";
 import { IMPORT_PROGRESS_MEDIA } from "../../src/API/types";
 import {
     bumpGuard,
@@ -367,6 +368,14 @@ export async function handleBackupRoutes(ctx: RouteCtx): Promise<Response | null
             data: body.data,
             password: config.backupPassword,
         });
+        if (result.success) {
+            // 手动备份成功 = 备份链路是好的，自动备份的失败留痕已经过时。
+            // 那条 cron.lastError.backup 本来要等下个 cron 窗口（一周后）成功才会被清，
+            // 期间用户每次打开页面都会被弹一次 —— 手动成功立即清掉。
+            // ⚠️ 必须 await：Workers 里响应发出后 void promise 会被掐掉（见 cron.ts 的教训）。
+            // 键名与 cron.ts 的 cronErrorKey("backup") 是同一个字符串。
+            await api.deleteSystemConfig(`${CRON_LAST_ERROR_KEY}.backup`);
+        }
         return Response.json(result);
     } else if (path === "webdav/list" && method === "POST") {
         const config = await resolveWebDavConfig(api, request);
@@ -411,6 +420,10 @@ export async function handleBackupRoutes(ctx: RouteCtx): Promise<Response | null
         // 手动备份：不删任何已有备份（自动备份才按保留份数清理自己那批）
         // env 传下去：配置了附件存储时备份升级为 ZIP（含正文引用的附件）
         const result = await runNotesWebDavBackup(api, config, { mode: "manual", stored, env: ctx.env });
+        if (result.success) {
+            // 同 webdav/upload：手动成功立即清掉过时的自动备份失败留痕
+            await api.deleteSystemConfig(`${CRON_LAST_ERROR_KEY}.notesBackup`);
+        }
         return Response.json(result);
     }
 

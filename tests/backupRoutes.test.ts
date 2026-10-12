@@ -24,6 +24,7 @@ interface Log {
     audits: Array<{ action: string; target: string; detail: string }>;
     imports: Array<{ groups: number }>;
     exportCalls: number;
+    deleted: string[];
 }
 
 type Guards = Record<string, string>;
@@ -53,6 +54,11 @@ function makeApi(log: Log, guards: Guards, auditFails = false): NavigationAPI {
             if (auditFails) throw new Error("审计表写不进去");
             log.audits.push({ action, target, detail });
         },
+        getConfigs: async () => ({ ...guards }),
+        deleteSystemConfig: async (key: string) => {
+            log.deleted.push(key);
+            return true;
+        },
     } as unknown as NavigationAPI;
 }
 
@@ -67,7 +73,7 @@ async function call(
         auditFails?: boolean;
     } = {}
 ): Promise<{ res: Response | null; log: Log; guards: Guards }> {
-    const log: Log = { audits: [], imports: [], exportCalls: 0 };
+    const log: Log = { audits: [], imports: [], exportCalls: 0, deleted: [] };
     const guards: Guards = { ...(o.guards ?? {}) };
     const headers: Record<string, string> = {
         "Content-Type": "application/json",
@@ -232,4 +238,60 @@ test("webdav/*：闸门拦住时 429 —— 且发生在读 body 之前（被限
 test("不归本模块的 path 返回 null", async () => {
     const { res } = await call("bootstrap", "GET");
     assert.equal(res, null);
+});
+
+// ---------------- 手动备份成功清掉过时的 cron 失败留痕 ----------------
+
+// cron.lastError.backup 要等下个 cron 窗口（一周后）成功才会被清，期间前端每次
+// 打开页面都会被弹一次「每周自动备份未成功」。手动备份成功 = 备份链路是好的，
+// 那条留痕已过时，应立即清掉。
+test("手动备份成功：清掉 cron.lastError.backup", async () => {
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response("", { status: 201 })) as typeof fetch;
+    try {
+        const { res, log } = await call("webdav/upload", "POST", {
+            // ⚠️ 非测试连接的 WebDAV 路由目标地址只认库里存的（请求体一概不认）
+            guards: {
+                "webdav.url": "https://dav.example.com/backup/",
+                "webdav.username": "u",
+                "webdav.password": "p",
+            },
+            body: {
+                filename: "手动备份.json.gz",
+                data: { groups: [], sites: [], configs: {} },
+            },
+        });
+        assert.equal(res?.status, 200);
+        const body = await json(res);
+        assert.equal(body.success, true, JSON.stringify(body));
+        assert.ok(
+            log.deleted.includes("cron.lastError.backup"),
+            `手动备份成功必须清掉过时的失败留痕，实际删除了 ${JSON.stringify(log.deleted)}`
+        );
+    } finally {
+        globalThis.fetch = realFetch;
+    }
+});
+
+test("手动备份失败：不清 cron.lastError.backup（链路还是坏的，提示该留着）", async () => {
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response("", { status: 500 })) as typeof fetch;
+    try {
+        const { res, log } = await call("webdav/upload", "POST", {
+            guards: {
+                "webdav.url": "https://dav.example.com/backup/",
+                "webdav.username": "u",
+                "webdav.password": "p",
+            },
+            body: {
+                filename: "手动备份.json.gz",
+                data: { groups: [], sites: [], configs: {} },
+            },
+        });
+        const body = await json(res!);
+        assert.equal(body.success, false);
+        assert.deepEqual(log.deleted, []);
+    } finally {
+        globalThis.fetch = realFetch;
+    }
 });
