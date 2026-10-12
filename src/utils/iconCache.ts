@@ -297,29 +297,49 @@ const isSameOrigin = (url: string) => {
  * 把一张已经加载成功的图标存进本地：下次打开直接用 objectURL，不用再走网络。
  * 只处理同源图标（跨域的 fetch 会触发 CORS 报错，那部分由 Service Worker 缓存兜住）。
  */
-export async function cacheIconBlob(url: string): Promise<void> {
-    // 已经有一份在用的就别重复抓（objectUrlCache 现在存的是带引用数的条目）
-    if (!url || objectUrlCache.has(url)) return;
-    if (!isSameOrigin(url)) return;
+/**
+ * 把一张图标本体写进本地缓存（IndexedDB + 内存 objectURL）。
+ *
+ * 抽出来是因为有两个来源：
+ *   1. <img> 加载成功后自己 fetch 一份（cacheIconBlob）
+ *   2. 批量接口 /api/icons 拿回来的（iconBatch.warmIcons）
+ * 两条路必须写进同一份缓存、用同一个 key（卡片实际请求的地址），
+ * 否则卡片读的时候命中不了，批量取回来的那份就白取了。
+ */
+export async function putIconBlob(url: string, blob: Blob): Promise<void> {
+    if (!url || !blob.size || blob.size > BLOB_MAX_BYTES) return;
+    if (!blob.type.startsWith("image/")) return;
+    // 已经有一份在用的就别覆盖：objectURL 有引用数，换掉会让正在用的那张卡住
+    if (objectUrlCache.has(url)) return;
+
+    // 只建引用数 0 的条目：调用方（卡片）稍后会自己 read 一份并拿走引用，
+    // 这里不该替它占着 —— 否则这张卡片卸载后引用永远归不了零
+    objectUrlCache.set(url, { url: objectUrlFactory(blob), refs: 0, lastUse: Date.now() });
+    trimIdleObjectUrls();
 
     try {
-        const res = await fetch(url, { mode: "cors", credentials: "omit" });
-        if (!res.ok) return;
-        const blob = await res.blob();
-        if (!blob.size || blob.size > BLOB_MAX_BYTES) return;
-        if (!blob.type.startsWith("image/")) return;
-
-        // 只建引用数 0 的条目：调用方（卡片）稍后会自己 read 一份并拿走引用，
-        // 这里不该替它占着 —— 否则这张卡片卸载后引用永远归不了零
-        objectUrlCache.set(url, { url: objectUrlFactory(blob), refs: 0, lastUse: Date.now() });
-        trimIdleObjectUrls();
-
         const db = await openDb();
         if (!db) return;
         const record: IconBlobRecord = { blob, type: blob.type, ts: Date.now() };
         const tx = db.transaction(BLOB_STORE, "readwrite");
         tx.objectStore(BLOB_STORE).put(record, url);
         tx.oncomplete = () => void trimIconBlobs(db);
+    } catch {
+        // IndexedDB 写不进去（隐私模式 / 配额）不影响显示，内存里那份还在
+    }
+}
+
+export async function cacheIconBlob(url: string): Promise<void> {
+    // 已经有一份在用的就别重复抓（objectUrlCache 现在存的是带引用数的条目）
+    if (!url || objectUrlCache.has(url)) return;
+    // 跨域的 fetch 会触发 CORS 报错，那部分由 Service Worker 缓存兜住
+    if (!isSameOrigin(url)) return;
+
+    try {
+        const res = await fetch(url, { mode: "cors", credentials: "omit" });
+        if (!res.ok) return;
+        const blob = await res.blob();
+        await putIconBlob(url, blob);
     } catch {
         // CORS / 网络失败都是预期内的，忽略即可
     }
@@ -335,12 +355,36 @@ const ICON_PROXY = "/api/icon?u=";
  * IndexedDB 里也就存不下 blob；转过一手之后是同源资源，
  * cacheIconBlob 能把它存下来，二次打开这块是零网络请求。
  * 已经是同源的（比如用户自己填的相对路径）不用多绕一圈。
+ *
+ * 导出它是因为批量取图标（utils/iconBatch.ts）要用同一个规则算 key：
+ * 卡片按**代理后的地址**读写缓存，批量接口按**原始地址**去问服务端，
+ * 两边 key 不一致的话，批量取回来的那份卡片永远命中不了。
  */
-const proxied = (url: string): string => {
+export const proxied = (url: string): string => {
     if (!url) return url;
     if (isSameOrigin(url)) return url;
     if (url.startsWith("/")) return url;
     return `${ICON_PROXY}${encodeURIComponent(url)}`;
+};
+
+/** 这个地址要不要走代理（只有需要代理的才值得进批量请求） */
+export const needsProxy = (url: string): boolean => !!url && !isSameOrigin(url) && !url.startsWith("/");
+
+/**
+ * 代理地址还原回**原始地址**（/api/icon?u=xxx -> xxx）。
+ * 不是代理地址（用户填的相对路径、本站地址）返回 null。
+ *
+ * 批量接口要的是原始地址，而前端缓存的 key 是代理地址 ——
+ * 两边必须能对上，否则批量取回来的图标卡片永远命中不了。
+ * 这个换算放在这里（而不是批量那个文件里）是因为只有本文件知道代理地址长什么样。
+ */
+export const unproxied = (url: string): string | null => {
+    if (!url || !url.startsWith(ICON_PROXY)) return null;
+    try {
+        return decodeURIComponent(url.slice(ICON_PROXY.length));
+    } catch {
+        return null;
+    }
 };
 
 /**

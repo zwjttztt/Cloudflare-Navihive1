@@ -47,6 +47,12 @@ export interface Note {
     title: string;
     /** Markdown 源码，不是 HTML */
     content: string;
+    /**
+     * 这条的 **content 只是摘要**（列表用了 ?fields=list，正文被截短）。
+     * 要用全文得再取一次 GET /api/notes/<id>。
+     * 只有真被截短的才会带这个标记 —— 短笔记（不到 200 字）本来就是全文。
+     */
+    content_truncated?: boolean;
     /** 置顶排在最前（与「收藏」是两回事：置顶管排序，收藏管筛选） */
     pinned?: boolean;
     /**
@@ -578,10 +584,19 @@ export interface RecycleBatchRestoreResult {
 }
 
 // 首屏/刷新一次性返回的数据（分组 + 平铺的站点 + 配置）
+//
+// me / recovery 是 ?full=1 时才带的（见 worker/routes/data.ts）：把「我是谁」和
+// 「恢复密钥配没配」并进首屏这一次请求，省掉启动那两个并发请求。
+// **都是可选的** —— 老服务端不认 full 参数，返回的还是上面三个字段，
+// 前端看到没有就得自己再去问一次（所以这两条永远不能当成「一定有」来用）。
 export interface BootstrapData {
     groups: Group[];
     sites: Site[];
     configs: Record<string, string>;
+    /** 当前登录身份（与 auth/me 同形状）；老服务端没有这个字段 */
+    me?: { id: number; username: string; role: "owner" | "user" } | null;
+    /** 恢复密钥是否已配置（与 auth/recovery-status 同形状） */
+    recovery?: { configured: boolean } | null;
 }
 
 // 新增用户登录接口

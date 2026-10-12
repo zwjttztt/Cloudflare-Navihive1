@@ -12,6 +12,7 @@ import { readImageSize } from "../imageSize";
 import type { GroupInput, SiteInput } from "../types";
 import { validateGroup, validateSite } from "../validate";
 import { readIdempotencyKey, withIdempotency } from "../idempotency";
+import { currentUserIdentity } from "./account";
 import {
     ATTACHMENT_MAX_BYTES,
     attachmentObjectKey,
@@ -191,7 +192,28 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
         // 数据没变就只回一个 304 空包，省掉整份 JSON 的下载与解析
         // （站点多的时候这一份能到几百 KB）。
         const data = await api.getBootstrap();
-        const body = JSON.stringify(data);
+
+        // ?full=1：顺带把「我是谁」与「恢复密钥配没配」一起回给前端。
+        //
+        // 这两问原本是 bootstrap 之后**并发**发出的两个请求（auth/me 与
+        // auth/recovery-status，见 src/hooks/useAccountSession）。并发归并发，
+        // 在这条链路上每个请求还是要各付一次 1~3 秒的固定往返，能省就省。
+        //
+        // 不带 full 的旧客户端拿到的还是原来那个形状 —— 所以前后端不需要同时上线：
+        // 老前端照常发那两个请求，新前端省掉它们。
+        // 两处身份取值共用 account.ts 的 currentUserIdentity，避免形状漂移。
+        const full = url.searchParams.get("full") === "1";
+        const payload: Record<string, unknown> = full
+            ? {
+                  ...(data as unknown as Record<string, unknown>),
+                  me: (await currentUserIdentity(api).catch(() => null)) ?? undefined,
+                  recovery: {
+                      configured: await api.hasRecoveryKey().catch(() => false),
+                  },
+              }
+            : (data as unknown as Record<string, unknown>);
+
+        const body = JSON.stringify(payload);
         const etag = weakEtag(body);
         // no-cache（每次都要问一趟服务器）而不是 no-store（不许存），
         // 否则浏览器手头没有副本，ETag 也就无从比较
@@ -419,7 +441,12 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
         }
         return Response.json({ error: "不支持的方法" }, { status: 405, headers });
     } else if (path === "notes" && method === "GET") {
-        const notes = await api.listNotes();
+        // ?fields=list：列表只要摘要，不回正文（笔记多了以后这一份能到 MB 级）。
+        // 不带这个参数就是原来的全量形状，老客户端不受影响。
+        // 前端**现在默认不开**：几十条笔记时列表带正文才 2 KB，开了反而让
+        // 每次点开笔记多一次往返。这是给「笔记涨到几百条」那天准备的阀门。
+        const summary = url.searchParams.get("fields") === "list";
+        const notes = await api.listNotes({ summary });
         return Response.json(notes);
     } else if (path === "notes/count" && method === "GET") {
         return Response.json({ count: await api.countNotes() });

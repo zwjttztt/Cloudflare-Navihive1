@@ -70,6 +70,15 @@ function precacheManifest(): Plugin {
                 if (name.endsWith(".css")) core.add(name);
             }
 
+            // mui-lazy 也在核心清单里。它是**所有懒加载弹窗共用的 MUI 大块**
+            // （见下面 manualChunks 的说明），入口 HTML 本来就会 preload 它 ——
+            // 所以加进清单**不会多下一分流量**，换来的是二次确认框的离线可用性：
+            // ConfirmDialog 自己进了核心，但它依赖的这整块若不在缓存里，
+            // 离线点删除就会卡在「依赖没下载过」上（而删除在离线队列里是允许的）。
+            for (const name of chunks.keys()) {
+                if (/^mui-lazy-[^/\\]*\.js$/.test(name)) core.add(name);
+            }
+
             const toUrl = (name: string) => `/${name}`;
             const coreFiles = [...core].filter(n => n.startsWith("assets/")).map(toUrl);
             const lazyFiles = assets
@@ -90,6 +99,13 @@ function precacheManifest(): Plugin {
     };
 }
 
+/** manualChunks 里 getModuleInfo 返回的模块信息（只取用得上的三个字段） */
+type ModuleInfoLike = {
+    isEntry?: boolean;
+    importers: readonly string[];
+    dynamicImporters: readonly string[];
+};
+
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react(), cloudflare(), precacheManifest()],
@@ -107,8 +123,44 @@ export default defineConfig({
     // 改业务代码时用户不用重新下载体积最大、最稳定的 MUI 那块。
     rollupOptions: {
       output: {
-        manualChunks(id: string, { getModuleInfo }: { getModuleInfo: (id: string) => { importers: readonly string[]; dynamicImporters: readonly string[] } | null }) {
+        manualChunks(id: string, { getModuleInfo }: { getModuleInfo: (id: string) => ModuleInfoLike | null }) {
           if (!id.includes("node_modules")) return;
+
+          /**
+           * 只沿**静态** import 边向上走，看能不能走到目标模块。
+           *
+           * 为什么不把 dynamicImporters 也算进来（下面 sandbox 那条老规则是算的）：
+           * 这里要问的是「打开页面时这个模块会不会被立刻执行」，而动态 import 的那条边
+           * 恰恰意味着「先不加载」——算进来就会把懒加载专用的一堆东西误判成首屏需要。
+           */
+          const reaches = (startId: string, isGoal: (moduleId: string, info: ModuleInfoLike | null) => boolean) => {
+              const seen = new Set<string>();
+              const stack: string[] = [startId];
+              while (stack.length) {
+                  const moduleId = stack.pop()!;
+                  if (seen.has(moduleId)) continue;
+                  seen.add(moduleId);
+                  const info = getModuleInfo(moduleId);
+                  if (moduleId !== startId && isGoal(moduleId, info)) return true;
+                  for (const parent of info?.importers ?? []) stack.push(parent);
+              }
+              return false;
+          };
+
+          /**
+           * 「懒加载边界」：src 下的模块，且**有人动态 import 它**
+           * （比如 lazy(() => import("./SettingsDialog")) 里的那个文件）。
+           * 走到它就说明：从这个模块往上，至少有一条路径是「用户触发才加载」的。
+           *
+           * ⚠️ 为什么不反过来判「能不能走到 src/main.tsx」：实测那样会把 485 个
+           * MUI 模块全部判成首屏 —— 因为 rolldown 在 manualChunks 回调期间给的
+           * `importers` 里混着动态导入者（图还没定型），于是
+           * `Slider ← NotesPage ← NotesOverlay ← App(动态) ← main.tsx` 被当成一条
+           * 纯静态链。用 `dynamicImporters` 认边界则不受影响：它直接回答
+           * 「这个模块是不是某个 lazy() 的目标」。
+           */
+          const isLazyEntry = (moduleId: string, info: ModuleInfoLike | null) =>
+              /src[\\/]/.test(moduleId) && (info?.dynamicImporters?.length ?? 0) > 0;
           // 沙箱独占的传递依赖不能被兜底 vendor 拉回首屏。
           const visited = new Set<string>();
           let sandbox = false;
@@ -138,7 +190,27 @@ export default defineConfig({
             //
             // 副作用：index 单文件变大了，所以体积预算（bundleBudget）按新口径
             // 重新定过 —— 见那里的注释。判断首屏该看**总下载字节**，不是单个块。
-            if (/node_modules[\\/](@mui|@emotion|@popperjs|@floating-ui)[\\/]/.test(id)) return;
+            if (/node_modules[\\/](@mui|@emotion|@popperjs|@floating-ui)[\\/]/.test(id)) {
+                // 够不到任何 lazy 入口 → 首屏就要用，交回 Rollup：
+                // 它会自动并进入口块，用户不多发一个请求。
+                if (!reaches(id, isLazyEntry)) { return; }
+
+                // 二次确认框是**离线也必须能开**的（删除在离线队列里是允许的），
+                // 它走的是 dynamic import，但会被预缓存（见 precacheManifest 的
+                // ALWAYS_PRECACHE）。只有**它独占**的 MUI 依赖才单独成块（跟着进
+                // 预缓存清单）；被别的弹窗也用到的（Dialog / Modal / Fade …）一律
+                // 归下面的 lazy 大块 —— 否则那个块会涨到近 400 KB 还被首屏 preload，
+                // 等于把弹窗专用的东西又塞回首屏（实测首屏因此 842 → 950 KB）。
+                const isConfirmDialog = (moduleId: string) =>
+                    /src[\\/]components[\\/]ConfirmDialog\.tsx$/.test(moduleId);
+                const reachesOtherLazyEntry = reaches(
+                    id,
+                    (moduleId, info) => isLazyEntry(moduleId, info) && !isConfirmDialog(moduleId)
+                );
+                if (reachesOtherLazyEntry) { return "mui-lazy"; }
+                if (reaches(id, isConfirmDialog)) { return "mui-confirm"; }
+                return "mui-lazy";
+            }
             // markdown-it 必须单独成块。它**只**被 utils/markdownToReact 动态 import
             // （见那里的 loadParser），本来不进首屏；但下面这条兜底规则会把所有
             // node_modules 扫进 vendor —— 而 vendor 是首屏 chunk，于是这 ~100KB

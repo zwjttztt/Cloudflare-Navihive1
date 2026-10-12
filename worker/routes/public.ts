@@ -7,7 +7,7 @@ import { MAINTENANCE_ENABLED_KEY } from "../../shared/maintenance";
 import { DEFAULT_TOKEN_TTL, REMEMBER_TOKEN_TTL, type LoginRequest } from "../../src/API/http";
 import { handleCspReport } from "../csp";
 import { reportError } from "../errorReport";
-import { proxyIcon } from "../icon";
+import { proxyIcon, proxyIcons } from "../icon";
 import {
     bumpGuard,
     clientBucket,
@@ -170,6 +170,12 @@ export async function handlePublicRoutes(ctx: RouteCtx): Promise<Response | null
     // 二次打开图标零网络请求。
     if (path === "icon" && method === "GET") {
         return await proxyIcon(request);
+    }
+
+    // 批量取图标：把首屏十几个 <img> 各发一次请求塌缩成一次
+    // （这条链路上每个请求要付 1~3 秒固定往返）。同样是公开路由，理由同上。
+    if (path === "icons" && method === "GET") {
+        return await proxyIcons(request);
     }
 
     // CSP 违规上报 —— 浏览器发报告不带 Authorization，必须是公开路由。

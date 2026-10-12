@@ -5,7 +5,29 @@
 import { ApiError, errorResponse } from "../lib/apiError";
 import {expiredCookieHeaders} from "../httpUtils";
 import type { AuthCredentialsInput, RecoveryKeyInput } from "../types";
+import type { NavigationAPI } from "../../src/API/navigationApi";
 import type { RouteCtx } from "./types";
+
+/**
+ * 当前登录身份（账号 id + 账号名 + 角色），取不到返回 null。
+ *
+ * 抽出来是因为它有两个调用方：auth/me 自己，以及 bootstrap?full=1
+ * （把「我是谁」并进首屏那一次请求）。两处各写一份的话，
+ * 将来改身份的形状一定会有一次漏改 —— 那会比慢更糟（本地数据会串账号）。
+ */
+export async function currentUserIdentity(
+    api: NavigationAPI
+): Promise<{ id: number; username: string; role: string } | null> {
+    const uid = api.getCurrentUserId();
+    if (uid === null) {
+        // 未启用鉴权 / 老令牌：没有账号概念，返回一个 guest 身份让界面照常工作。
+        // id 给 0：稳定、不可变，本地数据据此归到「无账号」这一档。
+        return { id: 0, username: "guest", role: "owner" };
+    }
+    const user = await api.getUserById(uid);
+    if (!user) return null;
+    return { id: uid, username: user.username, role: user.role };
+}
 
 export async function handleAccountRoutes(ctx: RouteCtx): Promise<Response | null> {
     const {
@@ -37,19 +59,13 @@ export async function handleAccountRoutes(ctx: RouteCtx): Promise<Response | nul
     // 也用它给浏览器本地数据（离线队列 / 撤销快照 / 偏好）划分账号边界 ——
     // 只给账号名是不够的：改名之后同一个人的本地数据会认不出来，换个人登录则会串在一起。
     if (path === "auth/me" && method === "GET") {
-        const uid = api.getCurrentUserId();
-        if (uid === null) {
-            // 未启用鉴权 / 老令牌：没有账号概念，返回一个 guest 身份让界面照常工作。
-            // id 给 0：稳定、不可变，本地数据据此归到「无账号」这一档。
-            return Response.json({ id: 0, username: "guest", role: "owner" });
-        }
-        const user = await api.getUserById(uid);
-        if (!user) {
+        const me = await currentUserIdentity(api);
+        if (!me) {
             // 样板：新的统一错误形状（code + message）。客户端 src/API/apiError.ts
             // 同时认旧形状，所以这个端点换了形状也不需要前后端同时上线。
             return errorResponse(ApiError.unauthenticated("账号不存在或已被注销"));
         }
-        return Response.json({ id: uid, username: user.username, role: user.role });
+        return Response.json(me);
     }
 
     // 生成邀请码（站点所有者，30 分钟有效）

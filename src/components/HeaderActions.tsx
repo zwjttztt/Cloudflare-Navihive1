@@ -18,6 +18,24 @@ import LanguageIcon from "@mui/icons-material/Language";
 import CreateNewFolderIcon from "@mui/icons-material/CreateNewFolder";
 import { SortMode, HEADER_CONTROL_H, headerControlSx } from "../constants";
 
+/**
+ * 提前把记事本那块代码拉下来（鼠标移到入口上时调）。
+ *
+ * 只预取**入口块**（NotesOverlay）：编辑器与预览那两块加起来近 900 KB，
+ * 连它们一起预取的话，用户只是把鼠标扫过按钮就下掉 1 MB —— 太浪费。
+ * 入口块本身是「点了必须等」的那一个，预取它就已经把干等消掉了；
+ * 剩下的两块在记事本打开过程中加载，本来就在用户的等待预期里。
+ * 失败一律忽略：这只是加速，取不到就退回「点了再下」。
+ */
+let notesPrefetched = false;
+function prefetchNotes(): void {
+    if (notesPrefetched) return;
+    notesPrefetched = true;
+    void import("./NotesOverlay").catch(() => {
+        // 取不到就退回原来的行为（点开时再取），不影响功能
+    });
+}
+
 export interface HeaderActionsProps {
     sortMode: SortMode;
     onSaveGroupOrder: () => void;
@@ -179,6 +197,16 @@ export default function HeaderActions({
                         color='primary'
                         startIcon={<StickyNote2Icon />}
                         onClick={onOpenNotes}
+                        // 鼠标移上来（或键盘聚焦到它）就把那块代码先下下来。
+                        //
+                        // 为什么是 hover 而不是「页面空闲就预取」：记事本那块近 1.2 MB
+                        // （编辑器 + 预览 + 视图），后台偷偷下完对**不打开记事本**的人
+                        // 是纯浪费。hover 到入口上是很明确的意图信号 ——
+                        // 从悬停到点下去通常有几百毫秒，够把第一个块拉回来了；
+                        // 在这条每请求 1~3 秒的链路上，这一步能把「点了要干等」变成「点了就开」。
+                        // 键盘用户走 onFocus，语义不变（只是提前下载，不改变行为）。
+                        onMouseEnter={prefetchNotes}
+                        onFocus={prefetchNotes}
                         aria-label='打开记事本'
                         size="small"
                         sx={{ ...headerControlSx }}

@@ -400,6 +400,10 @@ export class MockNavigationClient {
             groups: [...mockGroups],
             sites: [...mockSites],
             configs: { ...mockConfigs },
+            // 与真实服务端的 ?full=1 对齐：身份与恢复密钥状态一起回来，
+            // 这样本地用 mock 跑时也是在验「启动少两次请求」那条路径。
+            me: { id: 0, username: "guest", role: "owner" },
+            recovery: { configured: false },
         };
     }
 
@@ -434,10 +438,18 @@ export class MockNavigationClient {
         throw new Error("演示模式不支持公开分享，请连接真实账号");
     }
 
-    async listNotes(): Promise<Note[]> {
+    async listNotes(opts?: { summary?: boolean }): Promise<Note[]> {
         await new Promise(resolve => setTimeout(resolve, 200));
-        return [...mockNotes].sort(
+        const list = [...mockNotes].sort(
             (a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) || (a.order_num || 0) - (b.order_num || 0)
+        );
+        // 与真实服务端的 ?fields=list 对齐：截短正文并打标记，
+        // 这样演示模式下也能看出「摘要条目长什么样」。
+        if (opts?.summary !== true) return list;
+        return list.map(note =>
+            (note.content ?? "").length > 200
+                ? { ...note, content: (note.content ?? "").slice(0, 200), content_truncated: true }
+                : note
         );
     }
 

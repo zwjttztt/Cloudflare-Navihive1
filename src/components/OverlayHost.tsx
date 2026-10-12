@@ -187,7 +187,7 @@ export default function OverlayHost({
             </Menu>
 
             {/* 命令面板：Ctrl / Cmd + K */}
-            <ChunkBoundary>
+            <ChunkBoundary when={commandPalette.open}>
                 <CommandPalette
                     open={commandPalette.open}
                     onClose={commandPalette.onClose}
@@ -196,7 +196,7 @@ export default function OverlayHost({
             </ChunkBoundary>
 
             {/* 浏览器书签批量导入 */}
-            <ChunkBoundary>
+            <ChunkBoundary when={bookmarkImport.open}>
                 <BookmarkImportDialog
                     open={bookmarkImport.open}
                     onClose={bookmarkImport.onClose}
@@ -272,7 +272,7 @@ export default function OverlayHost({
             />
 
             {/* 标签管理：集中删标签，删掉即从所有卡片上摘掉 */}
-            <ChunkBoundary>
+            <ChunkBoundary when={tagManager.open}>
                 <TagManagerDialog
                     open={tagManager.open}
                     tags={tagManager.tags}
@@ -286,7 +286,7 @@ export default function OverlayHost({
             </ChunkBoundary>
 
             {/* AI 标签建议：看完勾一勾再落地，不自动改库 */}
-            <ChunkBoundary>
+            <ChunkBoundary when={aiSuggest.open}>
                 <AiSuggestDialog
                     open={aiSuggest.open}
                     onClose={aiSuggest.onClose}
@@ -299,7 +299,7 @@ export default function OverlayHost({
             </ChunkBoundary>
 
             {/* AI 助手：开关、模型服务、凭据与测试连接（更多选项 → AI 助手） */}
-            <ChunkBoundary>
+            <ChunkBoundary when={aiAssistant.open}>
                 <AiAssistantDialog
                     open={aiAssistant.open}
                     onClose={aiAssistant.onClose}

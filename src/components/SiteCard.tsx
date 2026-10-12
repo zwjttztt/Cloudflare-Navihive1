@@ -116,6 +116,7 @@ const SiteCard = memo(function SiteCard({
         iconError,
         imageLoaded,
         iconObjectUrl,
+        iconWaiting,
         handleIconError,
         handleImageLoad,
     } = useSiteIcon({
@@ -275,6 +276,7 @@ const SiteCard = memo(function SiteCard({
             iconError={iconError}
             imageLoaded={imageLoaded}
             iconObjectUrl={iconObjectUrl}
+            iconWaiting={iconWaiting}
             onIconError={handleIconError}
             onImageLoad={handleImageLoad}
             siteName={site.name}

@@ -46,7 +46,7 @@ function findProjectDir(): string {
 // 而首屏总字节反而从 943.3 降到 495.1 KB。所以这里不是「放宽预算」，
 // 是**单个块不再是首屏字节的代表** —— 判断首屏请看上面那组 raw / gzip，
 // 这条只用来盯「index 块本身有没有被人塞东西」（余量仍按 ≥5% 判）。
-const BUDGET_KB = 378;
+const BUDGET_KB = 250;
 /**
  * 基线：每次真的把首屏压下来之后都要跟着更新，否则这条用例会一路放任包变大。
  * 222.61 KB —— LoginForm 改 lazy 之后（见 git log）
@@ -67,7 +67,30 @@ const BUDGET_KB = 378;
  * 多一个入口项与图标、卡片右键多一个「重新检测该站」、链接健康的键归一化与撤销纠偏。
  * 涨完余量 5.4%，仍留得住「有人往首屏塞东西」这个信号。
  */
-const BASELINE_KB = 352.6;
+/**
+ * ⚠️ 2026-10-12 分块再次变更（同一天里的第二次，方向与早上那次相反）：
+ * 懒加载弹窗共用的 MUI 全部合并成 **mui-lazy** 一个块（约 415 KB），
+ * 于是 index 从 352.6 掉到 **236.7 KB** —— 首屏的 MUI 不在入口块里了，
+ * 而是被 HTML preload 的 mui-lazy 块。
+ *
+ * 为什么这次是「合并」而不是早上那次的「拆开」：这条链路上**每个请求固定 1~3 秒**
+ * （实测 10 字节的接口也要 3.85 秒），请求数比字节贵得多。本地对照实测
+ * （首屏 + 打开记事本两阶段合计）：
+ *   拆开（169 块）  ：94 个请求 / JS 67 个 / 2457 KB
+ *   只修假 lazy     ：56 个请求 / JS 29 个 / 2255 KB
+ *   再合并 mui-lazy ：**42 个请求 / JS 15 个 / 2271 KB**
+ * 也就是说：多下 16 KB，换少 14 个请求 —— 在这条链路上是净赚。
+ * 这条基线跟着落到 236.7，index 块本身不再是首屏字节的代表（仍是有用的子指标）。
+ *
+ * 235.84 —— 同日第三次：`utils/recoveryKey` 那组（约 3 KB）挪出首屏。
+ * 静态 import 它的 `useAccountSession` 在入口块里，而它只有「账号管理 → 生成恢复密钥」
+ * 这一条路径用得到，登录页那份本来就是 lazy。改成**调用时才动态 import** 之后，
+ * rolldown 把它并进 LoginForm 那个块（9589 → 9690 字节，只多 101 字节），
+ * 所以没有多出任何请求 —— 首次点这一下时把登录页那 9 KB 顺带拉下来而已。
+ * （顺带排除了另一个候选 `methods/transfer`：它 2.29 KB，但 `filterOwnedGroupIds`
+ *   在**拖拽排序**路径上，动态化会让每次排序多等一个 chunk，那笔账是亏的。）
+ */
+const BASELINE_KB = 235.84;
 
 function indexChunk(): { name: string; kb: number } | null {
     const assets = join(findProjectDir(), "dist", "client", "assets");
@@ -112,11 +135,20 @@ function indexChunk(): { name: string; kb: number } | null {
 // 实测：943.3 / 304.0 → **843.4 / 282.7**（raw -10.6%、gzip -7.0%）。
 // 预算按新口径下调到 890 / 300 —— 不是放宽，是首屏真的变小了，
 // 「谁再往首屏塞东西」这个信号照样抓得住（余量仍按 ≥3% 判）。
-const FIRST_SCREEN_BUDGET_RAW_KB = 890;
-const FIRST_SCREEN_BUDGET_GZIP_KB = 300;
-/** 实测基线（分块策略变更后，2026-10-12）：843.4 KB 原始 / 282.7 KB gzip */
-const FIRST_SCREEN_BASELINE_RAW_KB = 843.4;
-const FIRST_SCREEN_BASELINE_GZIP_KB = 282.7;
+/**
+ * ⚠️ 2026-10-12 第二次分块变更（lazy 弹窗的 MUI 合并成 mui-lazy 一块）：
+ * 首屏从 843.4 / 282.7 涨到 **949.9 / 307.4 KB**，但首屏文件数从 11 降到 6、
+ * JS 请求从 20 降到 9。在这条「每个请求固定 1~3 秒」的链路上，少 11 个请求
+ * 远比多 107 KB 划算（107 KB 在这条链路上是几秒，11 个请求是十几到三十几秒）。
+ * 所以预算上调到 1000 / 325 —— 不是放任，是**衡量的口径变了**：
+ * 这条链路上的首屏成本 ≈ 请求数 × 固定往返 + 字节 / 吞吐，两边都要盯（下面新增
+ * 的那条「首屏 JS 块不超过 8 个」正是盯住请求数那一半）。
+ */
+const FIRST_SCREEN_BUDGET_RAW_KB = 1000;
+const FIRST_SCREEN_BUDGET_GZIP_KB = 325;
+/** 实测基线（第二次分块变更后，2026-10-12）：949.9 KB 原始 / 307.4 KB gzip */
+const FIRST_SCREEN_BASELINE_RAW_KB = 949.9;
+const FIRST_SCREEN_BASELINE_GZIP_KB = 307.4;
 
 interface FirstScreen {
     files: { name: string; rawKb: number; gzipKb: number }[];
@@ -235,6 +267,18 @@ test("首屏文件清单要能看出少了谁（防止统计口径悄悄失效�
     assert.ok(has(/^vendor-.*\.js$/), "没统计到 vendor 块");
     assert.ok(names.filter(n => n.endsWith(".js")).length >= 4, "首屏 JS 块数量异常偏少，口径可能坏了");
     assert.ok(has(/\.css$/), "没统计到样式文件");
+
+    // 2026-10-12 新增：首屏 JS 块**不能多**。
+    // 体积预算盯的是字节，但这条链路上每个请求还要另付 1~3 秒的固定往返
+    // （实测 10 字节的接口 TTFB 3.85 秒）—— 字节省下来了、块数却涨回去，
+    // 用户只会更慢。实测 6 个块（index / preload-helper / mui-lazy / react / vendor，
+    // 外加样式）；上限给 8，留一点余量给将来新增的共享块。
+    const jsBlocks = names.filter(n => n.endsWith(".js"));
+    assert.ok(
+        jsBlocks.length <= 8,
+        `首屏 JS 块有 ${jsBlocks.length} 个（${jsBlocks.join("、")}），超过 8 个。` +
+            `每个块都是一次独立往返，在这条链路上比字节更贵 —— 先去 vite.config.ts 合块`
+    );
 });
 
 test("首屏包（index chunk）不超过体积预算", t => {

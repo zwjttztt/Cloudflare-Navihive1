@@ -9,7 +9,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { proxyIcon, resetIconRateLimitForTest } from "../worker/icon";
+import { proxyIcon, proxyIcons, resetIconRateLimitForTest } from "../worker/icon";
 
 /** 把全局 fetch 打桩成固定响应 */
 function stubFetch(headers: Record<string, string>, body = "fake-bytes") {
@@ -97,5 +97,142 @@ test("图标代理：没有 u 参数 / 地址不合法不会打出去任何请�
         assert.equal(stub.calls.length, 0);
     } finally {
         stub.restore();
+    }
+});
+
+// ---------------------------------------------------------------------------
+// 批量接口 /api/icons
+// ---------------------------------------------------------------------------
+// 存在的理由：首屏十几个 <img> 各发一次 /api/icon，在这条链路上就是十几次
+// 1~3 秒的固定往返。合并之后塌缩成一次请求。
+// 但它是**批量出网口子**，所以这些用例守的是「批量不等于放宽限制」：
+// 条数上限、按条数计限速、类型白名单，一条都不能比单条接口松。
+
+/** 按 URL 返回不同响应（有的站点给 png、有的给 svg，真实世界就是这样） */
+function stubFetchBy(responder: (url: string) => Response) {
+    const calls: string[] = [];
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+        calls.push(String(input));
+        return responder(String(input));
+    }) as typeof fetch;
+    return { calls, restore: () => { globalThis.fetch = original; } };
+}
+
+const iconsRequest = (urls: string[]) =>
+    new Request(
+        `https://nav.example.com/api/icons?${urls.map(u => `u=${encodeURIComponent(u)}`).join("&")}`
+    );
+
+test("批量取图标：一次拿回多个，key 是原始地址、值是 data URL", async () => {
+    resetIconRateLimitForTest();
+    const stub = stubFetchBy(url =>
+        url.includes(".svg")
+            ? new Response("<svg>", { status: 200, headers: { "content-type": "image/svg+xml" } })
+            : new Response("png-bytes", { status: 200, headers: { "content-type": "image/png" } })
+    );
+    try {
+        const res = await proxyIcons(
+            iconsRequest(["https://a.example/i.png", "https://b.example/i.png"]),
+            "9.9.9.9"
+        );
+        assert.equal(res.status, 200);
+        const body = (await res.json()) as { icons: Record<string, string> };
+        assert.match(body.icons["https://a.example/i.png"], /^data:image\/png;base64,/);
+        assert.match(body.icons["https://b.example/i.png"], /^data:image\/png;base64,/);
+        // base64 内容要能还原成原来的字节，否则前端拿到的就是一堆乱码
+        const b64 = body.icons["https://a.example/i.png"].split(",")[1];
+        assert.equal(atob(b64), "png-bytes");
+    } finally {
+        stub.restore();
+        resetIconRateLimitForTest();
+    }
+});
+
+test("批量取图标：SVG 不进结果（批量也不能放宽类型白名单）", async () => {
+    resetIconRateLimitForTest();
+    const stub = stubFetchBy(() =>
+        new Response("<svg onload=alert(1)>", {
+            status: 200,
+            headers: { "content-type": "image/svg+xml" },
+        })
+    );
+    try {
+        const res = await proxyIcons(iconsRequest(["https://evil.example/x.svg"]), "9.9.9.1");
+        const body = (await res.json()) as { icons: Record<string, string>; failed: Record<string, string> };
+        assert.equal(body.icons["https://evil.example/x.svg"], undefined, "SVG 绝不能进批量结果");
+        assert.ok(body.failed["https://evil.example/x.svg"], "要能在 failed 里看到原因");
+    } finally {
+        stub.restore();
+        resetIconRateLimitForTest();
+    }
+});
+
+test("批量取图标：缺 u / 条数超限都是 400，且一个请求都不往外发", async () => {
+    const stub = stubFetchBy(() => new Response("png", { headers: { "content-type": "image/png" } }));
+    try {
+        const missing = await proxyIcons(new Request("https://nav.example.com/api/icons"), "9.9.9.2");
+        assert.equal(missing.status, 400);
+
+        const tooMany = await proxyIcons(
+            iconsRequest(Array.from({ length: 31 }, (_, i) => `https://x.example/${i}.png`)),
+            "9.9.9.3"
+        );
+        assert.equal(tooMany.status, 400);
+        assert.equal(stub.calls.length, 0, "超限就该当场拒绝，别等抓完再扔");
+    } finally {
+        stub.restore();
+    }
+});
+
+test("批量取图标：限速按**条数**计（批量不是刷出网配额的捷径）", async () => {
+    resetIconRateLimitForTest();
+    const stub = stubFetchBy(() => new Response("png", { headers: { "content-type": "image/png" } }));
+    try {
+        const urls = Array.from({ length: 30 }, (_, i) => `https://x.example/${i}.png`);
+        const first = await proxyIcons(iconsRequest(urls), "8.8.8.8");
+        assert.equal(first.status, 200, "一窗口 60 次，第一批 30 条应当放行");
+        const second = await proxyIcons(iconsRequest(urls), "8.8.8.8");
+        assert.equal(second.status, 200, "第二批 30 条刚好把 60 次窗口用完，仍在额度内");
+        const third = await proxyIcons(iconsRequest(urls), "8.8.8.8");
+        assert.equal(third.status, 429, "第三批就该被拦了 —— 批量不等于无限出网");
+    } finally {
+        stub.restore();
+        resetIconRateLimitForTest();
+    }
+});
+
+test("批量取图标：某几条挂了不影响其它条（整批作废就白搭一次往返）", async () => {
+    resetIconRateLimitForTest();
+    const stub = stubFetchBy(url =>
+        url.includes("bad")
+            ? new Response("boom", { status: 500 })
+            : new Response("png-bytes", { status: 200, headers: { "content-type": "image/png" } })
+    );
+    try {
+        const res = await proxyIcons(
+            iconsRequest(["https://bad.example/i.png", "https://good.example/i.png"]),
+            "7.7.7.7"
+        );
+        assert.equal(res.status, 200);
+        const body = (await res.json()) as { icons: Record<string, string>; failed: Record<string, string> };
+        assert.ok(body.icons["https://good.example/i.png"], "好的那条必须还在");
+        assert.ok(body.failed["https://bad.example/i.png"], "坏的那条单独记原因");
+    } finally {
+        stub.restore();
+        resetIconRateLimitForTest();
+    }
+});
+
+test("批量取图标：响应标记为 private（含的是这个用户的站点列表，不能进共享缓存）", async () => {
+    resetIconRateLimitForTest();
+    const stub = stubFetchBy(() => new Response("png", { headers: { "content-type": "image/png" } }));
+    try {
+        const res = await proxyIcons(iconsRequest(["https://a.example/i.png"]), "6.6.6.6");
+        assert.match(res.headers.get("cache-control") || "", /private/);
+        assert.equal(res.headers.get("vary"), "Cookie");
+    } finally {
+        stub.restore();
+        resetIconRateLimitForTest();
     }
 });

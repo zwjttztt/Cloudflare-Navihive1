@@ -533,8 +533,13 @@ export class NavigationClient {
     }
 
     // 首屏 / 刷新：一次请求取回分组 + 站点 + 配置（替代 N+1 次请求）
+    //
+    // 带 full=1：顺带要回「我是谁」与「恢复密钥配没配」，省掉启动那两个并发请求
+    // （这条链路上每个请求都要各付一次 1~3 秒的固定往返）。
+    // 老服务端不认这个参数，会当它不存在 —— 于是响应里没有 me / recovery，
+    // 调用方（useAccountSession）看到没有就照原样再问一次。前后端因此不必同时上线。
     async bootstrap(): Promise<BootstrapData> {
-        return this.request<BootstrapResponse>("bootstrap");
+        return this.request<BootstrapResponse>("bootstrap?full=1");
     }
 
     /**
@@ -607,8 +612,16 @@ export class NavigationClient {
         });
     }
 
-    async listNotes(): Promise<Note[]> {
-        return this.request<Note[]>("notes");
+    /**
+     * 笔记列表。默认带正文（与老服务端一致）。
+     *
+     * `summary: true` 走 ?fields=list：只回摘要、每条带 content_truncated 标记。
+     * **现在没有调用方用这个开关** —— 它是给「笔记涨到几百条、列表接口变成 MB 级」
+     * 那天准备的（见 worker/routes/data.ts 那条注释）。真要开的时候，
+     * 打开笔记那条路上必须补一次 getNote 拿全文，否则编辑器里会显示成空笔记。
+     */
+    async listNotes(opts?: { summary?: boolean }): Promise<Note[]> {
+        return this.request<Note[]>(opts?.summary ? "notes?fields=list" : "notes");
     }
 
     async getNote(id: number): Promise<Note | null> {

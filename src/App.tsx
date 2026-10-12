@@ -53,6 +53,8 @@ import { useThemeController } from "./hooks/useThemeController";
 import { useSortController } from "./hooks/useSortController";
 import { useSiteCreator } from "./hooks/useSiteCreator";
 import { useBookmarkImport } from "./hooks/useBookmarkImport";
+import { iconCandidates } from "./utils/iconCache";
+import { queueIconWarmup } from "./utils/iconBatch";
 import { useSemanticSearch } from "./hooks/useSemanticSearch";
 import { useSiteActions } from "./hooks/useSiteActions";
 import { useGroupActions } from "./hooks/useGroupActions";
@@ -222,6 +224,20 @@ function App() {
     // applyConfigs / setDeadLinks 等虽在更后面定义，调用时才取值，不会触发 TDZ。
     function applyRemoteExtras(data: BootstrapData) {
         applyConfigs(data.configs);
+
+        // ?full=1 把「我是谁」与「恢复密钥配没配」一起带回来了（见 worker/routes/data.ts）。
+        // 落地之后启动就少两次并发请求；老服务端不带这两个字段，下面那两个 ref 保持 false，
+        // useAccountSession 会照原样各问一次 —— 前后端不必同时上线。
+        // 只有**真的带回来了**才算数：字段是可选的，缺了就不能阻止后面的兜底请求。
+        if (data.me) {
+            identityFromBootstrapRef.current = true;
+            setCurrentUser(data.me);
+            switchAccount(data.me.id ?? null);
+        }
+        if (data.recovery) {
+            recoveryFromBootstrapRef.current = true;
+            setRecoveryConfigured(data.recovery.configured === true);
+        }
         // ---- 可选的多端同步：把服务端那份合并回本机 ----
         // 都是「取并集 / 取较新」，所以重复合并不会丢数据，也不怕和上传打架
         const incoming = data.configs || {};
@@ -290,6 +306,13 @@ function App() {
     // 打开页面同样是 401，这时候去 logout 只会给我们自己再制造一条 401：
     // 浏览器控制台上三条红色报错里有两条就是这么来的，看起来像崩了，其实只是没登录。
     const hadSessionRef = useRef(false);
+
+    // bootstrap?full=1 有没有顺带把「我是谁」「恢复密钥配没配」带回来。
+    // 带回来了，启动就少两次请求（见下面 applyRemoteExtras 与 useAccountSession）。
+    // 放在 App 是因为写它们的是 applyRemoteExtras（useSites 那一侧），
+    // 读它们的是 useAccountSession —— 两边得看同一个引用。
+    const identityFromBootstrapRef = useRef(false);
+    const recoveryFromBootstrapRef = useRef(false);
     const setIsAuthenticatedTracked = (value: SetStateAction<boolean>) => {
         // 没法从 updater 里判断登录态，但函数式更新必然发生在「当前已登录」的前提下
         if (value !== false) hadSessionRef.current = true;
@@ -570,7 +593,9 @@ function App() {
         loginError,
         loginLoading,
         recoveryConfigured,
+        setRecoveryConfigured,
         currentUser,
+        setCurrentUser,
         invite,
         deleteAccountOpen,
         setDeleteAccountOpen,
@@ -612,6 +637,8 @@ function App() {
         isAuthenticated,
         setIsAuthenticated: setIsAuthenticatedTracked,
         setIsAuthRequired,
+        identityFromBootstrap: identityFromBootstrapRef,
+        recoveryFromBootstrap: recoveryFromBootstrapRef,
     });
 
     // 把一次 bootstrap 拉回的数据合并进本地状态
@@ -1267,6 +1294,30 @@ function App() {
         // 只在挂载时判断一次：这是「本次启动要不要预热」的问题，不是跟着状态变的
     }, []);
 
+    // 图标批量取：首屏十几个 <img> 各发一次 /api/icon，在这条链路上就是十几次
+    // 1~3 秒的固定往返（实测 10 字节的接口 TTFB 3.85 秒）。这里改成**一次**请求
+    // 把它们都取回来；卡片会等这一批而不是自己先发（见 utils/iconBatch 与 useSiteIcon），
+    // 否则同一批图标要下两遍，请求数一点没少。
+    // 只在数据真的换代时才补一批（putIconBlob 会跳过本地已有的，所以重复调用不花钱）；
+    // 隐私模式下一条都不发 —— 那个开关的意思就是「别让第三方知道有人在访问」。
+    useEffect(() => {
+        if (iconPrivacy) return;
+        const iconApi = configs["site.iconApi"] || "";
+        const candidates: string[] = [];
+        for (const group of groups) {
+            for (const site of group.sites) {
+                for (const c of iconCandidates({ icon: site.icon, url: site.url }, iconApi)) {
+                    candidates.push(c);
+                }
+            }
+        }
+        // 走 queueIconWarmup 而不是「立刻发一批」：它把这一帧里所有卡片登记的候选
+        // 合成**一个**请求（详见 utils/iconBatch）。卡片自己也会登记，这里登记的是
+        // 同样的地址、会互相跳过，所以不会多出一个请求；
+        // 而「数据先到、卡片还没渲染」那种时序下，是这里先发、卡片等着 —— 反正只发一次。
+        queueIconWarmup(candidates);
+    }, [groups, iconPrivacy, configs]);
+
     // 如果正在检查认证状态，显示加载界面
     if (isAuthChecking) {
         return <LoginScreen theme={theme} checking />;
@@ -1635,7 +1686,7 @@ function App() {
 
                     {/* 新增分组对话框（与「编辑分组」共用同一套样式与尺寸）
                         两个都是 lazy chunk，套一层 Suspense 兜住首次打开时的加载间隙 */}
-                    <ChunkBoundary>
+                    <ChunkBoundary when={openAddGroup || openAddSite}>
                         <EditGroupDialog
                             open={openAddGroup}
                             group={null}
@@ -1663,7 +1714,7 @@ function App() {
                     </ChunkBoundary>
                     {/* 网站配置对话框 */}
                     {/* 全站设置：这一块原来内联在 App 里，抽成 SettingsDialog 单独维护 */}
-                    <ChunkBoundary>
+                    <ChunkBoundary when={openConfig}>
                     <SettingsDialog
                         open={openConfig}
                         onClose={handleCloseConfig}
@@ -1704,7 +1755,7 @@ function App() {
                     {/* 账号管理：改账号密码 / 恢复密钥 / 邀请码 / 注销账号。
                         原先「账户安全」混在网站设置里、注销账号又孤零零挂在更多菜单，
                         现在都收在这里 —— 网站设置只管「站点长什么样」。 */}
-                    <ChunkBoundary>
+                    <ChunkBoundary when={openAccount}>
                     <AccountDialog
                         open={openAccount}
                         onClose={() => setOpenAccount(false)}
@@ -1745,7 +1796,7 @@ function App() {
                         它也是 lazy chunk，同样要有边界 —— 之前漏了这层，
                         块取不到时（断网、或站点刚更新）会一路冒到根上的错误边界，
                         变成「整站挂了」，其实只是这一个弹窗没下来。 */}
-                    <ChunkBoundary>
+                    <ChunkBoundary when={deleteAccountOpen}>
                     <DeleteAccountDialog
                         open={deleteAccountOpen}
                         username={currentUser?.username}
@@ -1762,7 +1813,7 @@ function App() {
                     </ChunkBoundary>
 
                     {/* 访问统计：本机热力图 + Top5 */}
-                    <ChunkBoundary>
+                    <ChunkBoundary when={openVisits}>
                     <VisitsDialog
                         open={openVisits}
                         onClose={() => setOpenVisits(false)}
@@ -1804,7 +1855,7 @@ function App() {
                     )}
 
                     {/* 数据备份与恢复对话框 */}
-                    <ChunkBoundary>
+                    <ChunkBoundary when={openBackup}>
                     <BackupDialog
                         open={openBackup}
                         initialTab={backupTab}
@@ -1835,7 +1886,7 @@ function App() {
                     </ChunkBoundary>
 
                 {/* 快捷键说明表：按 ? 打开，命令面板里也有入口（已不在「更多选项」里占位置） */}
-                <ChunkBoundary>
+                <ChunkBoundary when={openShortcuts}>
                 <ShortcutsDialog
                     open={openShortcuts}
                     onClose={() => setOpenShortcuts(false)}
@@ -1843,7 +1894,7 @@ function App() {
                 </ChunkBoundary>
 
                 {/* 导入预览：恢复前先给用户看差异，勾选后才会真的写库 */}
-                <ChunkBoundary>
+                <ChunkBoundary when={importPreview !== null}>
                 <ImportPreviewDialog
                     open={importPreview !== null}
                     data={importPreview?.data ?? null}
@@ -1855,7 +1906,7 @@ function App() {
                 </ChunkBoundary>
 
                 {/* 审计日志：仅站点所有者可读，事后溯源谁在何时做了什么 */}
-                <ChunkBoundary>
+                <ChunkBoundary when={openAudit}>
                 <AuditDialog
                     open={openAudit}
                     onClose={() => setOpenAudit(false)}
@@ -1865,7 +1916,7 @@ function App() {
                 </ChunkBoundary>
 
                 {/* 统计看板：仅站点所有者，内容计数 / 审计活跃 / 分享浏览 Top / 链接健康 */}
-                <ChunkBoundary>
+                <ChunkBoundary when={openStats}>
                 <StatsDashboardDialog
                     open={openStats}
                     onClose={() => setOpenStats(false)}
@@ -1874,7 +1925,7 @@ function App() {
                 </ChunkBoundary>
 
                 {/* 回收站：还原 / 彻底删除被软删除的站点、分组 */}
-                <ChunkBoundary>
+                <ChunkBoundary when={openRecycle}>
                 <RecycleBinDialog
                     open={openRecycle}
                     onClose={() => setOpenRecycle(false)}

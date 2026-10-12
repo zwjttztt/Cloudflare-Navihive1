@@ -70,7 +70,17 @@ export interface NotesApi {
      * 只含当前账号的在册笔记（回收站里的不算）。
      */
     exportNotesData(): Promise<NotesImportPayload>;
-    listNotes(): Promise<Note[]>;
+    /**
+     * 笔记列表。
+     *
+     * `summary: true` 时**不回正文**，只回开头一段摘要，并在每条上打
+     * `content_truncated: true` —— 点开某条要用 getNote 取全文。
+     * 这是给「笔记多了以后 /api/notes 变成 MB 级」准备的阀门
+     * （正文几 KB~几十 KB × 几百条，在慢链路上要几十秒）。
+     * 现在默认不开：笔记才几十条时，列表里带正文只要 2 KB，
+     * 开了反而让**每次点开笔记多一次往返**。
+     */
+    listNotes(opts?: { summary?: boolean }): Promise<Note[]>;
     getNote(id: number): Promise<Note | null>;
     createNote(draft: Partial<Note>): Promise<Note>;
     updateNote(id: number, patch: Partial<Note>): Promise<Note | null>;
@@ -174,6 +184,9 @@ export interface NotesApi {
 
 const NOTE_FIELDS =
     "id, uuid, title, content, pinned, starred, rev, order_num, site_id, archived, folder_id, created_at, updated_at";
+
+/** 摘要模式里正文保留多少字符（够列表卡片显示一行预览就行） */
+const NOTE_SUMMARY_CHARS = 200;
 
 /**
  * 全文检索那条 JOIN 查询里的账号隔离片段。
@@ -708,18 +721,34 @@ export const notesImpl: NotesApi = {
             return stats;
         });
     },
-    listNotes: async function (this: NavigationAPI): Promise<Note[]> {
+    listNotes: async function (this: NavigationAPI, opts?: { summary?: boolean }): Promise<Note[]> {
         await this.migrate();
+        const summary = opts?.summary === true;
         return this.withSchemaRetry(async () => {
+            // 摘要模式：正文换成开头 200 字符（够列表卡片显示一行预览），
+            // 并打上截断标记，好让调用方知道「这条的正文不是全文」。
+            // 用 SQL 的 substr 而不是取回全量再切：省的是**数据库到 Worker 这一段**，
+            // 在 D1 上这才是大头（取回再切等于白跑一趟）。
+            // ⚠️ 别去改 NOTE_FIELDS 本身：写操作（create/update 的 RETURNING）要用全字段。
+            const fields = summary
+                ? NOTE_FIELDS.replace(
+                      /\bcontent\b/,
+                      `substr(content, 1, ${NOTE_SUMMARY_CHARS}) AS content`
+                  )
+                : NOTE_FIELDS;
             const result = await this.db
                 .prepare(
-                    `SELECT ${NOTE_FIELDS} FROM notes${this.scopeSql(
-                        false
-                    )} ORDER BY pinned DESC, order_num, id`
+                    `SELECT ${fields} FROM notes${this.scopeSql(false)} ORDER BY pinned DESC, order_num, id`
                 )
                 .bind(...this.scopeParams([]))
                 .all<Note>();
-            return result.results || [];
+            const rows = result.results || [];
+            if (!summary) return rows;
+            return rows.map(row =>
+                (row.content ?? "").length >= NOTE_SUMMARY_CHARS
+                    ? { ...row, content_truncated: true }
+                    : row
+            );
         });
     },
 

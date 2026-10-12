@@ -13,12 +13,11 @@ import { setAccountUid } from "../API/offlineQueue";
 import { setUndoAccountUid } from "../utils/undoPersist";
 import { clearSessionBoundary } from "../utils/sessionBoundary";
 import { clearBootstrapCache } from "../utils/firstPaintCache";
-import {
-    algLabel,
-    checkWebCryptoSupport,
-    downloadRecoveryKeyFile,
-    generateRecoveryKeyPair,
-} from "../utils/recoveryKey";
+// ⚠️ 恢复密钥那组工具（utils/recoveryKey，**约 3 KB**）不要在这里静态 import：
+// 本文件在首屏块里，静态 import 会把整块拖进首屏，而它只有「账号管理 → 生成恢复密钥」
+// 这一条路径用得到（登录页那份已经是 lazy）。改成调用时才拉 —— 它和登录页共用，
+// rolldown 会把它并进 LoginForm 那个块（约 9 KB），所以连多一个请求都没有，
+// 只是已登录用户点这一下时多下 9 KB；首屏则实打实少 3 KB。
 import { clearRememberedLogin, saveRememberedLogin } from "../utils/rememberedLogin";
 import {
     classifyAuthFailure,
@@ -57,6 +56,15 @@ type UseAccountSessionParams = {
     isAuthenticated: boolean;
     setIsAuthenticated: Dispatch<SetStateAction<boolean>>;
     setIsAuthRequired: Dispatch<SetStateAction<boolean>>;
+
+    /**
+     * bootstrap?full=1 有没有把「我是谁」一起带回来。
+     * 带回来了就不用再发一次 auth/me（这条链路上每次请求都是 1~3 秒的固定往返）。
+     * 本 hook 每次开查前要把它归零：拿不到就还是得自己问一次。
+     */
+    identityFromBootstrap: { current: boolean };
+    /** 同上，针对 auth/recovery-status */
+    recoveryFromBootstrap: { current: boolean };
 };
 
 export function useAccountSession({
@@ -76,6 +84,8 @@ export function useAccountSession({
     isAuthenticated,
     setIsAuthenticated,
     setIsAuthRequired,
+    identityFromBootstrap,
+    recoveryFromBootstrap,
 }: UseAccountSessionParams) {
     // 新增认证状态
     const [isAuthChecking, setIsAuthChecking] = useState(true);
@@ -365,17 +375,24 @@ export function useAccountSession({
     const checkAuthStatus = async () => {
         try {
             setIsAuthChecking(true);
+            // 每次开查都当作「这次可能拿不到」：只有 bootstrap 真的把这两个字段
+            // 带回来（applyRemoteExtras 里置真）才省掉下面那两个请求。
+            identityFromBootstrap.current = false;
+            recoveryFromBootstrap.current = false;
 
             const ok = await fetchData();
 
-            // 顺带确认是否配置了恢复公钥（未登录也能查，失败就当作未配置，不影响登录）
-            refreshRecoveryStatus();
+            // 顺带确认是否配置了恢复公钥（未登录也能查，失败就当作未配置，不影响登录）。
+            // bootstrap?full=1 已经带回来的话就不用再问一趟（老服务端不带，照旧）。
+            if (!recoveryFromBootstrap.current) refreshRecoveryStatus();
 
             if (ok) {
                 setIsAuthenticated(true);
                 setIsAuthRequired(false);
                 // 拿得到数据 = 已登录，顺带把「我是谁」取回来（失败不影响正常使用）。
                 // id 同时用来给本地数据划账号边界：换账号 / 换浏览器存档都要靠它分辨。
+                // ?full=1 已经在 bootstrap 里带回来了就跳过这一趟。
+                if (identityFromBootstrap.current) return;
                 api.getMe()
                     .then(me => {
                         setCurrentUser(me);
@@ -499,6 +516,9 @@ export function useAccountSession({
         currentPassword: string
     ): Promise<{ success: boolean; message?: string }> => {
         try {
+            // 见本文件顶部注释：这一组只在用户真的点了「生成恢复密钥」时才需要
+            const { algLabel, checkWebCryptoSupport, downloadRecoveryKeyFile, generateRecoveryKeyPair } =
+                await import("../utils/recoveryKey");
             const notSupported = checkWebCryptoSupport();
             if (notSupported) {
                 return { success: false, message: notSupported };
@@ -565,6 +585,9 @@ export function useAccountSession({
         loginError,
         loginLoading,
         recoveryConfigured,
+        // 导出 setter：bootstrap?full=1 把「恢复密钥配没配」一起带回来时，
+        // App 那边的 applyRemoteExtras 要能直接落地，省掉启动那一次 auth/recovery-status。
+        setRecoveryConfigured,
         currentUser,
         setCurrentUser,
         invite,

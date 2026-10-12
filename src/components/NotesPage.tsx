@@ -1767,7 +1767,27 @@ export default function NotesPage({
             setSideSavedAt(Date.now());
             setSideTick(Date.now());
         }, autosaveMs);
-        return () => clearTimeout(timer);
+
+        // 失焦立即落盘（与主栏那处同理，是防抖放宽到 5 秒的补偿）
+        const flush = () => {
+            clearTimeout(timer);
+            void onUpdate(sideId, { title: sideDraft.title, content: sideDraft.content }).then(() => {
+                setSideSaveState("saved");
+                setSideSavedAt(Date.now());
+                setSideTick(Date.now());
+            });
+        };
+        const onVisibility = () => {
+            if (document.visibilityState === "hidden") flush();
+        };
+        window.addEventListener("blur", flush);
+        document.addEventListener("visibilitychange", onVisibility);
+
+        return () => {
+            clearTimeout(timer);
+            window.removeEventListener("blur", flush);
+            document.removeEventListener("visibilitychange", onVisibility);
+        };
     }, [sideDraft, sideId, notes, onUpdate, autosaveMs]);
 
     /** 创建副本：标题加「副本」，归到同一文件夹 */
@@ -2473,11 +2493,34 @@ export default function NotesPage({
             setSavedAt(Date.now());
             setTick(Date.now());
         }, autosaveMs);
-        return () => clearTimeout(timer);
+
+        // 失焦立即落盘：防抖放宽到 5 秒（见 AUTO_SAVE_MS 那条注释）之后，
+        // 「打完字切走」这一下的等待窗口也变长了 —— 这里是它的补偿。
+        // 切标签页 / 点到别的窗口都算失焦，都是低频动作，不会把省下来的往返又花回去。
+        const flush = () => {
+            clearTimeout(timer);
+            void saveRef.current().then(ok => {
+                if (!ok) return;
+                setSaveState("saved");
+                setSavedAt(Date.now());
+                setTick(Date.now());
+            });
+        };
+        const onVisibility = () => {
+            if (document.visibilityState === "hidden") flush();
+        };
+        window.addEventListener("blur", flush);
+        document.addEventListener("visibilitychange", onVisibility);
+
+        return () => {
+            clearTimeout(timer);
+            window.removeEventListener("blur", flush);
+            document.removeEventListener("visibilitychange", onVisibility);
+        };
     }, [dirty, draft, active?.id, autosaveMs]);
 
-    // 关掉记事本时把还没落库的草稿刷一次：debounce 是 3 秒，
-    // 打完字立刻关闭的话那 3 秒还没走完。卸载是同步的，await 不上，
+    // 关掉记事本时把还没落库的草稿刷一次：防抖是 5 秒（见 AUTO_SAVE_MS），
+    // 打完字立刻关闭的话那 5 秒还没走完。卸载是同步的，await 不上，
     // 只能 fire-and-forget（api 是模块级的实例，组件没了请求照样发得出去）。
     const flushRef = useRef<{ dirty: boolean; save: () => Promise<unknown> }>({ dirty: false, save: async () => {} });
     useEffect(() => {

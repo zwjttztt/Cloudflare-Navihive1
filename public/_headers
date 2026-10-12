@@ -74,12 +74,21 @@
   Referrer-Policy: no-referrer
   X-Robots-Tag: noindex, nofollow
 
-# HTML 入口保持每次校验，保证发版后能立即拿到新版本
+# HTML 入口：短缓存 60 秒。
+#
+# 为什么不是「每次校验」：这条链路上一次回源要 2~4.6 秒（实测首页 HTML 首字节 4.58 秒），
+# 而入口 HTML 只有几 KB —— 用户每次进站都在为一个「几乎不变的文件」付一次跨境往返。
+# 60 秒足够覆盖「刷新一下、开两个标签页」这一类连续访问。
+#
+# ⚠️ 代价与配套：缓存期内发版，用户最多拿到 60 秒前的旧 HTML。旧 HTML 引用的是
+# 旧 chunk（内容哈希命名，CDN 上还在），所以**不会白屏**，只是暂时用旧版本。
+# 要立刻生效就在部署后 purge 一次 Cloudflare 缓存；不 purge 的话等 60 秒自动过期。
+# 没上 stale-while-revalidate 是刻意的：那会把「拿到旧版本」的窗口拉到好几分钟。
 /
-  Cache-Control: public, max-age=0, must-revalidate
+  Cache-Control: public, max-age=60
 
 /index.html
-  Cache-Control: public, max-age=0, must-revalidate
+  Cache-Control: public, max-age=60
 
 # Service Worker 不能强缓存，否则发新版后老客户端拿不到新壳子
 /sw.js

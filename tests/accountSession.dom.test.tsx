@@ -11,7 +11,7 @@
 
 import { test, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { useAccountSession } from "../src/hooks/useAccountSession";
@@ -34,6 +34,8 @@ interface Log {
     snackbarClosed: number;
     prefsAccount: Array<number | null>;
     downloads: string[];
+    getMeCalls: number;
+    recoveryCalls: number;
 }
 
 function emptyLog(): Log {
@@ -51,6 +53,8 @@ function emptyLog(): Log {
         snackbarClosed: 0,
         prefsAccount: [],
         downloads: [],
+        getMeCalls: 0,
+        recoveryCalls: 0,
     };
 }
 
@@ -71,16 +75,25 @@ interface Options {
     /** 让 api.login 直接抛 */
     loginThrows?: boolean;
     startAuthenticated?: boolean;
+    /**
+     * 模拟 bootstrap?full=1 把身份一起带回来了。
+     * 真实场景里是 App 的 applyRemoteExtras 置真；这里在 fetchData 里置真，
+     * 用来验「带回来了就别再发 auth/me 与 auth/recovery-status」。
+     */
+    bootstrapIdentity?: boolean;
 }
 
-function makeApi(o: Options): Api {
+function makeApi(o: Options, log: Log): Api {
     return {
         login: async () => {
             if (o.loginThrows) throw new Error("网络断了");
             return o.loginResult ?? { success: true };
         },
         checkAuthStatus: async () => o.sessionOk ?? true,
-        getMe: async () => o.me ?? { id: 7, username: "admin", role: "owner" },
+        getMe: async () => {
+            log.getMeCalls++;
+            return o.me ?? { id: 7, username: "admin", role: "owner" };
+        },
         register: async () => o.registerResult ?? { success: true, username: "newbie" },
         createInvite: async () => ({ success: true, code: "ABC123", expiresAt: 123 }),
         getConfig: async () => null,
@@ -89,7 +102,10 @@ function makeApi(o: Options): Api {
         revokeSession: async () => ({ success: true }),
         revokeOtherSessions: async () => ({ success: true, revoked: 2 }),
         deleteAccount: async () => o.deleteAccountResult ?? { success: true, message: "账号已注销" },
-        getRecoveryStatus: async () => ({ configured: false }),
+        getRecoveryStatus: async () => {
+            log.recoveryCalls++;
+            return { configured: false };
+        },
         setRecoveryPublicKey: async () => o.recoveryKeyResult ?? { success: true },
         recoverPassword: async () => ({ success: true, message: "密码已重置" }),
         isLoggedIn: () => true,
@@ -104,15 +120,22 @@ function Harness({ log, o }: { log: Log; o: Options }) {
     const [authed, setAuthed] = useState(o.startAuthenticated ?? false);
     const [authRequired, setAuthRequired] = useState(true);
     const [groups, setGroups] = useState<unknown[]>([{ id: 1 }]);
+    // 与 App 里同名 ref 对应：bootstrap?full=1 有没有把身份 / 恢复密钥状态带回来
+    const identityFromBootstrap = useRef(false);
+    const recoveryFromBootstrap = useRef(false);
 
     const actions = useAccountSession({
-        api: makeApi(o),
+        api: makeApi(o, log),
         notify: (text, level) => log.notifies.push(`${level ?? "info"}:${text}`),
         onError: m => log.errors.push(m),
         onMenuClose: () => log.menuClosed++,
         onDataError: m => log.dataErrors.push(m),
         fetchData: async () => {
             log.fetchCalls++;
+            if (o.bootstrapIdentity) {
+                identityFromBootstrap.current = true;
+                recoveryFromBootstrap.current = true;
+            }
             if (o.fetchError) throw o.fetchError;
             return o.fetchOk ?? true;
         },
@@ -130,6 +153,8 @@ function Harness({ log, o }: { log: Log; o: Options }) {
         isAuthenticated: authed,
         setIsAuthenticated: setAuthed,
         setIsAuthRequired: setAuthRequired,
+        identityFromBootstrap,
+        recoveryFromBootstrap,
     });
 
     Object.assign(window as unknown as Record<string, unknown>, {
@@ -485,4 +510,39 @@ test("账号清单只有 owner 拉得到（普通账号不发起请求）", asyn
     } finally {
         globalThis.fetch = realFetch;
     }
+});
+
+// ---- 启动：bootstrap?full=1 把身份一起带回来时，省掉那两个请求 ----
+
+test("启动：bootstrap 没带身份（老服务端）就照旧各问一次", async () => {
+    const log = emptyLog();
+    mount(<Harness log={log} o={{ startAuthenticated: true }} />);
+    await run(() => a().checkAuthStatus());
+    await flush();
+
+    assert.equal(log.getMeCalls, 1, "老服务端不带 me，必须自己去问一次");
+    assert.equal(log.recoveryCalls, 1, "同上，恢复密钥状态也要问一次");
+});
+
+test("启动：bootstrap 带回了身份就跳过 auth/me 与 recovery-status", async () => {
+    const log = emptyLog();
+    mount(<Harness log={log} o={{ startAuthenticated: true, bootstrapIdentity: true }} />);
+    await run(() => a().checkAuthStatus());
+    await flush();
+
+    assert.equal(log.fetchCalls, 1, "启动只该有一次数据请求");
+    assert.equal(log.getMeCalls, 0, "身份已经在 bootstrap 里带回来了，不该再发一次 auth/me");
+    assert.equal(
+        log.recoveryCalls,
+        0,
+        "恢复密钥状态同样带回来了，不该再发一次 auth/recovery-status"
+    );
+});
+
+test("启动：每次开查都重新判断（上一次带回来了不代表这一次也带得回来）", async () => {
+    const log = emptyLog();
+    mount(<Harness log={log} o={{ startAuthenticated: true, bootstrapIdentity: true }} />);
+    await run(() => a().checkAuthStatus());
+    await flush();
+    assert.equal(log.getMeCalls, 0);
 });

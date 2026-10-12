@@ -246,3 +246,35 @@ test("两套定界符混排各认各的", async () => {
     assert.equal(inline.length, 2);
     assert.deepEqual(inline.map(t => t.content), ["a", "b"]);
 });
+
+// ---- katex 必须保持「用到才加载」 ----
+
+test("katex 只能动态 import（静态引入会把 ~270KB 顶进首屏）", async () => {
+    // 这条守的是体积而不是功能：katex 一旦被谁改成静态 import，
+    // 它会顺着 MathNode 的引用链进首屏包，tests/bundleBudget 那条会红 ——
+    // 但红在那里只能看到「首屏变大了」，看不出是谁干的。这里直接点名。
+    const { readFileSync } = await import("node:fs");
+    const { fileURLToPath } = await import("node:url");
+    const { dirname, resolve } = await import("node:path");
+    let dir = dirname(fileURLToPath(import.meta.url));
+    // ⚠️ 单测会被复制到 script/tmp-tests/ 下再跑，得逐级向上找真身
+    // （用 try 而不是「读到了就停」：读不到会抛，抛了继续往上一级）
+    for (let i = 0; i < 6; i++) {
+        try {
+            readFileSync(resolve(dir, "package.json"), "utf8");
+            break;
+        } catch {
+            dir = dirname(dir);
+        }
+    }
+    const src = readFileSync(resolve(dir, "src", "utils", "MathNode.tsx"), "utf8");
+
+    assert.ok(
+        /import\(\s*["']katex["']\s*\)/.test(src),
+        "MathNode 里必须是 import(\"katex\") 这种动态形式"
+    );
+    assert.ok(
+        !/^\s*import\s[^()]*["']katex["']/m.test(src),
+        "出现了 katex 的静态 import —— 它会把整包拉进首屏"
+    );
+});

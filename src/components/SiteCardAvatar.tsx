@@ -22,6 +22,8 @@ export interface SiteCardAvatarProps {
     imageLoaded: boolean;
     /** 图标来自本地 blob 缓存时的 objectURL（优先于 icon） */
     iconObjectUrl?: string | null;
+    /** 批量取图标正在路上：src 留空等它，别自己发一个请求（见 utils/iconBatch） */
+    iconWaiting?: boolean;
     onIconError: () => void;
     onImageLoad: () => void;
     /** 图片 alt，也是首字母的取值来源 */
@@ -40,6 +42,7 @@ const SiteCardAvatar = memo(function SiteCardAvatar({
     iconError,
     imageLoaded,
     iconObjectUrl,
+    iconWaiting,
     onIconError,
     onImageLoad,
     siteName,
@@ -84,9 +87,12 @@ const SiteCardAvatar = memo(function SiteCardAvatar({
                     }}
                 />
                 <Fade in={imageLoaded} timeout={400}>
+                    {/* ⚠️ src 必须是 undefined 才代表「不发请求」：写成 src="" 会被浏览器
+                        当成「当前文档 URL」，每张卡片都会把整页再下一遍。
+                        React 收到 undefined 就不渲染这个属性。 */}
                     <Box
                         component='img'
-                        src={iconObjectUrl || icon}
+                        src={iconObjectUrl || (iconWaiting ? undefined : icon)}
                         alt={siteName}
                         loading='lazy'
                         decoding='async'

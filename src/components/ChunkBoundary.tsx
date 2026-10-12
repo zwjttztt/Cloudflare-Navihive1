@@ -14,24 +14,76 @@
 //    出错时才显示的界面，本来也不该为它往首屏里塞组件。
 // 2. **把 <Suspense> 包进来**：用到它的地方原本都是 `<Suspense fallback={null}>`，
 //    少一层嵌套也不容易漏 —— lazy 组件没有 Suspense 会在打开瞬间直接报错。
+//
+// ⚠️ 2026-10-12 补的 `when`：原来所有弹窗都是 `<ChunkBoundary><XDialog open={open}/>`，
+//    **无条件渲染**。而 React.lazy 只要被渲染就会立刻去下载那个 chunk —— open 是 false
+//    也照下不误。实测首屏因此多出 34 个请求 / 1.1 MB：所谓「lazy」只省了解析时间，
+//    下载与请求一个没省（在这条每个请求 1~3 秒的链路上，请求数才是最贵的）。
+//    给了 `when` 就只在为真时挂载子树，chunk 真正变成「打开才下载」。
 import { Component, Suspense, type ReactNode } from "react";
 import { describeChunkFailure, looksLikeChunkLoadError } from "../utils/chunkFailure";
 
+/**
+ * 关闭后延迟多久卸载。MUI 的 Dialog 退出过渡约 195ms，
+ * 父级立刻卸载会把这段动画掐掉（窗口直接消失）。留 320ms 让它播完。
+ */
+const UNMOUNT_DELAY_MS = 320;
+
 interface Props {
     children: ReactNode;
+    /**
+     * 有这个 prop 时才「按需挂载」：为真立刻挂载，转假后延迟一会儿再卸载。
+     * 不传 = 常驻挂载（老行为），给那些**没有打开/关闭概念**的浮层用
+     * （比如维护模式横幅，它要一直在才能自己轮询到维护状态）。
+     */
+    when?: boolean;
 }
 
 interface State {
     error: Error | null;
     /** 每次重试 +1：key 变了才会真的重新挂载子树、重新发一次 import */
     attempt: number;
+    mounted: boolean;
 }
 
 export default class ChunkBoundary extends Component<Props, State> {
-    state: State = { error: null, attempt: 0 };
+    state: State = {
+        error: null,
+        attempt: 0,
+        // 不传 when 的老调用点保持常驻，避免改变它们现在的行为
+        mounted: this.props.when === undefined ? true : this.props.when,
+    };
+
+    private unmountTimer: ReturnType<typeof setTimeout> | null = null;
 
     static getDerivedStateFromError(error: Error): Partial<State> {
         return { error };
+    }
+
+    componentDidUpdate(prevProps: Props) {
+        const when = this.props.when;
+        if (when === undefined) return;
+        if (prevProps.when === when && this.unmountTimer === null) return;
+
+        if (when && !this.state.mounted) {
+            // 重新打开：把上一次的卸载倒计时取消，别让它把刚挂载的子树又卸掉
+            if (this.unmountTimer !== null) {
+                clearTimeout(this.unmountTimer);
+                this.unmountTimer = null;
+            }
+            this.setState({ mounted: true });
+            return;
+        }
+        if (!when && this.state.mounted && this.unmountTimer === null) {
+            this.unmountTimer = setTimeout(() => {
+                this.unmountTimer = null;
+                this.setState({ mounted: false });
+            }, UNMOUNT_DELAY_MS);
+        }
+    }
+
+    componentWillUnmount() {
+        if (this.unmountTimer !== null) clearTimeout(this.unmountTimer);
     }
 
     private retry = () => {
@@ -39,7 +91,9 @@ export default class ChunkBoundary extends Component<Props, State> {
     };
 
     render() {
-        const { error, attempt } = this.state;
+        const { error, attempt, mounted } = this.state;
+        // 卸载期间子树还在（动画要播完），只是外面这层不再主动留它
+        if (!mounted) return null;
         if (!error) {
             return (
                 <Suspense fallback={null} key={attempt}>

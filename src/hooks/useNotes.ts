@@ -54,7 +54,7 @@ export interface TrashedNote {
 
 /** 本域用到的后端方法，单测里可以塞假实现 */
 export type NotesApiLike = {
-    listNotes(): Promise<Note[]>;
+    listNotes(opts?: { summary?: boolean }): Promise<Note[]>;
     createNote(draft: Partial<Note>): Promise<Note>;
     updateNote(id: number, patch: Partial<Note>): Promise<Note | null>;
     deleteNote(id: number): Promise<{ success: boolean; recycleId?: number }>;

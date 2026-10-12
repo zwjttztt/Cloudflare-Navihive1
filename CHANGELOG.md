@@ -6,6 +6,37 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。---
 
+## 2026-10-13 · 性能：首屏请求数 78 → 20（性能优化方案里的 P0 / P1 / P2 一次做完）
+
+10-12 那份《性能优化方案》待办清单的全部条目。这条链路上**每个请求要付 1~3 秒的固定往返**
+（实测一个 10 字节的接口 TTFB 3.85 秒），所以衡量口径是「请求数 × 固定往返 + 字节 / 吞吐」，
+**请求数比字节贵得多** —— 下面几处「多下几 KB 换少十几个请求」都是按这笔账做的。
+
+**总账**（本地探针，绕过 Service Worker、首屏 + 打开记事本两阶段合计）：
+请求 **94 → 37**、其中 JS **67 → 16**、字节 2457 → 2276 KB。
+首屏单独看：78 → **20** 个请求、JS 61 → **10** 个、1160.7 → **998 KB**。
+
+- **P0-1 分块合并，以及比碎片更值钱的「假 lazy」**：`React.lazy` 只要被**渲染**就立刻发请求下载 chunk，和 `open={false}` 无关 —— 所有弹窗都无条件挂着，于是首屏一下就是 61 个 JS 请求。给 `ChunkBoundary` 加 `when` 按需挂载（App 11 处 + OverlayHost 5 处，卸载留 320ms 给退出动画），再把 `@mui/@emotion/@popperjs/@floating-ui` 按**反向判定**（只被动态边界引用的）合并成 `mui-lazy` 一块，首屏真正要用的那部分交回 Rollup。chunk 总数 169 → 134、<10KB 的 109 → 79、首屏文件 18 → 6。⚠️ rolldown 下 `minChunkSize` 不生效（加了完全没变化），`getModuleInfo().isEntry` 在 manualChunks 回调期间也不可靠（实测命中 0 次），别再往这两条路上试。
+- **P0-2 图标批量接口（`/api/icons?u=a&u=b&u=c`）**：首屏十几个 `<img>` 各发一次 `/api/icon`，在这条链路上就是十几次固定往返。服务端一次最多 30 条、并发抓取、按**条数**限速、单条失败不影响其它；响应 `Cache-Control: private, max-age=86400` + `Vary: Cookie`（带凭据的结果不能进共享缓存）。客户端 `utils/iconBatch.ts` 负责 key 对齐（服务端按**原始地址**回、卡片按**代理地址**读）。实测单条 `/api/icon` **6 次 → 0 次**，批量 1 次。
+- **P0-3 首页 HTML 短缓存**：`/` 与 `/index.html` 从 `max-age=0, must-revalidate` 改成 `public, max-age=60`。回源一次要 2~4.6 秒而入口 HTML 只有几 KB，用户不该为一个几乎不变的文件每次付一次跨境往返。代价写在 `_headers` 的注释里：缓存期内发版，用户最多拿到 60 秒前的旧 HTML（它引用的是旧 chunk，CDN 上还在，**不会白屏**），要立刻生效就部署后 purge 一次。
+- **P1-1 启动请求合并**：`bootstrap?full=1` 把「当前账号身份 + 恢复密钥是否已配置」一起带回来，省掉 `auth/me` 与 `auth/recovery-status` 两次请求。用可选字段 + `identityFromBootstrap` / `recoveryFromBootstrap` 两个 ref，老服务端（不带这两个字段）与老前端双向兼容。实测首屏 API 9 → **5** 次，其中图标批量 1 次、`bootstrap` / `init` / `ai/status` 各 1 次。
+- **P1-2 公式与高亮**：现状已经是「渲染到公式才 dynamic import katex」，高亮也没有第三方语言包 —— 没有可改的，改为补静态守卫钉住（`tests/markdownMath.test.ts`），防止哪天被改回同步 import。
+- **P1-3 笔记列表字段裁剪**：`/api/notes?fields=list` 用 SQL `substr(content,1,200)` 取摘要、被截短的打 `content_truncated`。⚠️ **前端暂不启用**：列表要全文才能渲染摘要与搜索，启用反而多一次「点开再取正文」的往返。只落服务端能力与开关，用真 SQLite 测试钉住（3 条），等哪天出现「只显示标题的极简列表」再接。
+- **P1-4 迁移缓存**：模块级 `migrationState.promise` 本来就有，补真 SQLite 计数测试（2 条）钉住「换实例第二次 migrate 一条 SQL 都不发」—— 导航 API 每次请求 new 一个实例，实例字段是跨不了请求的，这个前提被改动时测试要红。
+- **P2-1 自动保存**：3 秒 → **失焦 / 停止输入 5 秒**。3 秒的定时器在这条链路上意味着「一直在打字就一直在发请求」，改成 5 秒 + 窗口失焦 / 切后台立即落盘（`blur` + `visibilitychange`），省下的往返更多而数据一样安全。
+- **P2-2 图标 IndexedDB 持久化**：现状已具备（`icon-blob` store，上限 300 条 / TTL 7 天），无需改动。
+- **P2-3 关键 CSS 内联 —— 不做，三条理据**：① 这是无 SSR 的 SPA，`index.html` 的 body 基本是空的，**不存在「首屏关键 CSS」这个子集**；② CSS 只有 18.1 KB（gzip 4.6 KB）且在 `/assets/*` 下是 `immutable` 一年强缓存，内联会把它拖进刚改成 60 秒 TTL 的 HTML，重复访问反而每次重下这 4.6 KB；③ CSS 与 5 个 JS **并行**下发，不额外占用串行往返。
+- **P2-4 字体 —— 无事项**：全仓零 woff/ttf/otf、无 `@font-face`、无 Google Fonts 外链（Roboto 此前已删，产物少 144 KB）。
+- **P2-5 记事本入口预取**：记事本按钮 hover / 聚焦时预取入口块 `NotesOverlay`，**只预取入口**（编辑器 + 预览那 912 KB 不预取 —— hover 一下就下这么些太贵），模块级标记保证只做一次。
+- **顺手一刀：恢复密钥挪出首屏**：`useAccountSession` 静态 import 了 `utils/recoveryKey`（约 3 KB），而它只有「账号管理 → 生成恢复密钥」这一条路径用得到（登录页那份本来就是 lazy）。改成调用时才 dynamic import 之后 index 块 238.77 → **235.84 KB**（余量从 4.7% 回到 5.7%），而 rolldown 把它并进了 LoginForm 那个块（9589 → 9690 字节），**没有多出任何请求**。顺带排除了另一个候选 `methods/transfer`（2.29 KB）：它的 `filterOwnedGroupIds` 在**拖拽排序**路径上，动态化会让每次排序多等一个 chunk，那笔账是亏的。
+
+**修复的两个真 bug**（都是本地探针量出来的，不是猜的）：
+
+1. **图标批量「取回来了却一张都没进缓存」** —— 解 data URL 用的是 `fetch(dataUrl)`，而本站 CSP 的 `connect-src` 是 `'self' https:`、**不含 `data:`**，请求被直接拒掉。最要命的是它**静默**：批量接口 200，控制台一条 `Failed to fetch`，从外面看只像「批量没生效」，卡片照常各发各的。改成纯 JS 解 base64（`atob`），既不经过网络栈也不受 CSP 管。
+2. **登记晚了一步，批量形同虚设** —— 图标的「在途登记」原本放在 `useEffect` 里，而 `<img>` 的 src 是在**渲染时**就定下来的，effect 跑的时候浏览器已经把请求发出去了，结果同一批图标下两遍。改成渲染期同步登记（`queueIconWarmup`：同步占住「在途」，微任务里把这一帧所有卡片的候选合成**一个**请求），卡片看到在途就把 src 留空等着（`<img>` 的 src 必须是 `undefined` 才代表不发请求 —— 写成 `src=""` 会被浏览器当成「当前文档 URL」）。另外加了「本次会话已取过」的记忆：数据是分阶段到达的（init → bootstrap → 各域数据），每批落地都会让卡片重渲染，实测首屏因此问了 3 次 `/api/icons`。
+
+- **校验**：`tsc -b --force` 0；lint 0 error（19 条 warning 均为 react-refresh 类既有噪音）；单测 **2483**（2482 通过 / 1 跳过 / 0 失败，本轮新增 **27** 条：批量接口 6、iconBatch 12、启动合并 3、katex 守卫 1、列表摘要 3、迁移缓存 2、恢复密钥与自动保存的守卫更新的另计）；build 通过；smoke 36 项全 PASS；`check:brand` 一致；`audit:a11y` / `audit:contrast` 明暗两态 0 处不合格。真机探针：`lazy-open-probe` 13 PASS / 0 FAIL（16 个改成按需挂载的弹窗逐个点开都能挂载，控制台 0 错）、`notes-live-preview-probe` 5/5（记事本编辑 / 行内渲染 / 分栏拖拽缝都正常，其中「分隔线可见」那条判据原本在量伪元素、而实现早就改成子元素 `span`，一并修正）。⚠️ `e2e` / `e2e:cron` / `e2e:webdav` 本机跑不了（workerd 0xc0000005 崩溃，上游 workerd#4668，与本项目配置无关），只能由 CI（ubuntu）覆盖。
+
 ## 2026-10-12 · 修复：过时的备份失败提示骚扰 + 弹窗加「忽略一周」
 
 线上已部署备份超时修复后，用户仍每次打开页面都被弹「每周自动备份未成功：…（英文 timeout）」。

@@ -17,6 +17,7 @@ import {
     writeIconRecord,
     cacheIconBlob,
 } from "../utils/iconCache";
+import { awaitWarmup, pendingWarmup, queueIconWarmup } from "../utils/iconBatch";
 
 export interface UseSiteIconParams {
     /** 站点自带图标地址 */
@@ -41,6 +42,12 @@ export interface SiteIconState {
     imageLoaded: boolean;
     /** 命中本地 blob 缓存时的 objectURL；没有则直接用 currentIcon */
     iconObjectUrl: string | null;
+    /**
+     * 「批量取图标」正在路上，且本地还没有这一张 —— 这时 <img> 的 src 要留空等着，
+     * 否则卡片自己先发一个 /api/icon，和批量那一次撞车（同一张图下两遍）。
+     * 批量失败 / 超时都会回到 false，src 照常用 currentIcon。
+     */
+    iconWaiting: boolean;
     handleIconError: () => void;
     handleImageLoad: () => void;
 }
@@ -61,12 +68,24 @@ export function useSiteIcon({ icon, url, iconApi, privacy }: UseSiteIconParams):
         [primaryIcons, fallbackAdded, url, privacy]
     );
 
+    // 批量取图标：**渲染期**登记。
+    // ⚠️ 不能放到 useEffect 里 —— effect 跑的时候 <img> 已经带着 src 进了 DOM，
+    // 浏览器随即发请求，再想去等批量就晚了，结果同一批图标下两遍。
+    // 这里只登记（同步占住「在途」 + 进队列），真正的请求在微任务里合成**一个**发出去。
+    // 幂等：已在途 / 已排队的会跳过，所以严格模式下的双渲染也只发一次。
+    queueIconWarmup(primaryIcons);
+
     const [iconIdx, setIconIdx] = useState(0);
     const [imageLoaded, setImageLoaded] = useState(false);
     const [iconObjectUrl, setIconObjectUrl] = useState<string | null>(null);
+    /** 这一趟「等批量」已经见分晓（拿到或超时） */
+    const [waitedOut, setWaitedOut] = useState(false);
 
     const iconError = iconIdx >= iconSources.length;
     const currentIcon = iconSources[iconIdx] ?? "";
+    // 渲染期同步判断：本地没有 + 批量在路上 → src 留空等它
+    const iconWaiting =
+        Boolean(currentIcon) && !iconObjectUrl && pendingWarmup(currentIcon) !== null && !waitedOut;
 
     // 图标本体缓存：命中本地 blob 时直接用 objectURL，弱网 / 离线重开也能立刻显示
     useEffect(() => {
@@ -75,8 +94,25 @@ export function useSiteIcon({ icon, url, iconApi, privacy }: UseSiteIconParams):
         // 否则卡片切来切去会把内存里的图标副本越堆越多
         let borrowed = false;
         setIconObjectUrl(null);
+        setWaitedOut(false); // 换源了，这一趟重新等
         if (!currentIcon) return;
-        void readIconObjectUrl(currentIcon).then(cached => {
+        void (async () => {
+            let cached = await readIconObjectUrl(currentIcon);
+
+            // 本地没有 → 先看看「批量取图标」那一次是不是正在路上（见 utils/iconBatch）。
+            // 是的话等它一会儿再读一次，而不是自己立刻发一个请求 ——
+            // 否则同一批图标会被下两遍（批量一份 + 卡片一份），请求数根本没降。
+            // 批量失败 / 到上限都退化成「没拿到」，下面照常走原地址。
+            if (!cached && !cancelled) {
+                await awaitWarmup(currentIcon);
+                if (!cancelled) {
+                    cached = await readIconObjectUrl(currentIcon);
+                    // ⚠️ 不管拿没拿到都要放行：不放行的话 src 会一直留空等这一批，
+                    // 图标永远不显示（批量失败时尤其致命 —— 那时没人会再唤醒它）。
+                    setWaitedOut(true);
+                }
+            }
+
             if (!cached) return;
             // 结果晚到（组件已经换了源 / 已卸载）：立刻还，别占着
             if (cancelled) {
@@ -85,7 +121,7 @@ export function useSiteIcon({ icon, url, iconApi, privacy }: UseSiteIconParams):
             }
             borrowed = true;
             setIconObjectUrl(cached);
-        });
+        })();
         return () => {
             cancelled = true;
             if (borrowed) releaseIconObjectUrl(currentIcon);
@@ -141,6 +177,7 @@ export function useSiteIcon({ icon, url, iconApi, privacy }: UseSiteIconParams):
         iconError,
         imageLoaded,
         iconObjectUrl,
+        iconWaiting,
         handleIconError,
         handleImageLoad,
     };
