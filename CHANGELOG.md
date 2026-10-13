@@ -6,6 +6,61 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。---
 
+## 2026-10-13 · 修复 + 测试：补分享 UI 三件套渲染用例，顺手抓出两个「卡在加载态」的真 bug
+
+覆盖率体检（`docs/coverage-checkup-2026-10-13.md`）的结论是「风险全在前端，最突出的是分享 UI」——
+后端有单测和 `e2e:share` 守着，前端三个文件却是零覆盖。本轮把这三件套补上，共 **32 条**用例。
+
+### 一、新增三个直测文件
+
+- `tests/groupShareDialog.dom.test.tsx`（14 条）
+- `tests/publicNotePage.dom.test.tsx`（9 条）
+- `tests/publicGroupPage.dom.test.tsx`（9 条）
+
+写法照 `addSiteDialog.dom.test.tsx` / `BackupDialog.dom.test.tsx`：`createRoot` + `act` 直接挂载单组件，
+props 摆好就能钉界面行为。等待一律用**轮询**（`waitFor`）而不是固定 sleep —— CI 慢机上固定睡眠会偶发不够用，
+而偶发红的测试比没有测试更糟。
+
+### 二、修掉两个「卡在加载态」的真 bug
+
+两个都是「异步读失败时，标志位在 await 之后才置位」这一类：
+
+1. **`GroupShareDialog` 读配置失败 → 永远停在「读取中…」**
+   `setLoadedOnce(true)` 放在 `await api.getGroupShareConfig()` 之后，一抛错就永远执行不到。
+   用户只看到一条错误提示，弹窗里却连创建按钮都没有，没有任何出路。改成 `finally` 里置位。
+2. **`PublicGroupPage` 网络失败 → 永远停在「正在加载分享…」**
+   `catch` 里只 `setNotFound(true)` 没改 `state`，而渲染分支第一条就是
+   `if (state === "loading")` —— 访客看到一个转不完的加载态。改成同时 `setState("not-found")`。
+
+⚠️ 这两个 bug 有一个共同点：**都不报错，只是让人干等**。静态守卫和类型检查都抓不到，
+只有真把组件拉起来跑一遍才会暴露 —— 这正是这三个文件零覆盖的代价。
+
+### 三、钉住的几条关键契约
+
+- **口令的三种语义**（`GroupShareDialog`）：创建时空串要归一成 **null**（不设口令）；
+  更新时**没动过必须传 `undefined`**（保持原口令）。谁把后者「顺手简化」成 `password || null`，
+  用户只想改有效期、口令却静默被清掉，界面上没有任何提示。
+- **两处 need-password 形状不同**（`PublicNotePage` vs `PublicGroupPage`）：笔记分享在 worker 里转成
+  **HTTP 401 + 顶层 `needPassword`**；分组分享是 `Response.json(result)` 直出，**恒 200**，
+  需要口令时 body 是 `{status:"need-password"}`。给分组分享也加个 HTTP 状态判断，
+  访客在该看到口令框的时候会看到一片空白 —— 专门有一条用例用「反常 HTTP 状态 + 正常 body」钉住它。
+- **两种错误形状都要认**（`PublicNotePage`）：迁移后是 `{error:{code,message}}`，老服务端是
+  `{error:"字符串"}`。直接读 `data.error` 会显示 `[object Object]`（迁移时在这个组件里踩过）。
+- **公开页脱敏是纵深防御**（`PublicGroupPage`）：服务端 SELECT 就不带 username/password，
+  用例仍然在响应里塞这两个字段，断言页面上一个都不出现。
+- 附件路径改写（访客没有 cookie，`/api/notes/attachments/` 会 401）、`/sg/<token>` 路由、
+  撤销必须两次点击、标签页标题随笔记标题变化。
+
+### 四、校验与覆盖率变化
+
+`tsc -b --force` 0；lint 0 error（19 条既有 react-refresh 类噪音）；
+单测 2503 → **2535**（新增 32，0 失败）；`check:brand` 一致；build 通过；smoke 全 PASS；
+`audit:a11y` / `audit:contrast` 0 处不合格。
+
+覆盖率：触及 243 → **246** 个，零覆盖 43 → **40** 个（8635 → 8103 行）。
+三个目标文件全部脱离零覆盖名单。每条关键守卫都做了**双向反向验证**
+（把组件改回旧写法，确认对应用例会红）。
+
 ## 2026-10-13 · 工程：覆盖率体检 + 修好覆盖率脚本（`npm run coverage` 原来是崩的）
 
 完整报告：`docs/coverage-checkup-2026-10-13.md`。

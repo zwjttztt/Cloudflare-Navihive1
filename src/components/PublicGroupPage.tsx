@@ -35,7 +35,13 @@ export default function PublicGroupPage({ token }: { token: string }) {
                     if (result.status === "not-found") setNotFound(true);
                 }
             } catch {
+                // ⚠️ 必须同时改 state：只 setNotFound(true) 的话，渲染分支第一条
+                // 就是 `if (state === "loading")`，state 仍是 "loading" → 页面永远
+                // 停在「正在加载分享…」，访客看到一个转不完的加载态。
+                // 这条是 tests/publicGroupPage.dom.test.tsx 的「网络层抛错」
+                // 钉住的（与 GroupShareDialog 的 loadedOnce 是同一类坑）。
                 setNotFound(true);
+                setState("not-found");
             } finally {
                 setBusy(false);
             }

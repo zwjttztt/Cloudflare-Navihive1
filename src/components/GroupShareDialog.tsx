@@ -49,12 +49,20 @@ export default function GroupShareDialog({
     const [revokeConfirm, setRevokeConfirm] = useState(false);
 
     const refresh = useCallback(async () => {
-        const current = await api.getGroupShareConfig(groupId);
-        setConfig(current);
-        if (current) {
-            setDays(current.expires_at === null ? null : ((current.expires_at - Date.now() > 3 * 86_400_000 ? 30 : 7) as Days));
+        // ⚠️ setLoadedOnce(true) 必须在 **finally** 里：放在 await 之后的话，
+        // getGroupShareConfig 一抛错就永远执行不到 —— 界面卡在「读取中…」，
+        // 用户只看到一条错误提示，弹窗里却没有任何可点的东西（连创建按钮都没有）。
+        // 这条是 tests/groupShareDialog.dom.test.tsx 的「读配置失败要提示，
+        // 且不能卡在读取中」钉住的。
+        try {
+            const current = await api.getGroupShareConfig(groupId);
+            setConfig(current);
+            if (current) {
+                setDays(current.expires_at === null ? null : ((current.expires_at - Date.now() > 3 * 86_400_000 ? 30 : 7) as Days));
+            }
+        } finally {
+            setLoadedOnce(true);
         }
-        setLoadedOnce(true);
     }, [api, groupId]);
 
     useEffect(() => {
