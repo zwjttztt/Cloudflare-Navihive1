@@ -43,6 +43,7 @@ import { usePwaInstall } from "./hooks/usePwaInstall";
 import { useHistoryStack } from "./hooks/useHistoryStack";
 import { useNotify } from "./hooks/useNotify";
 import { useSites } from "./hooks/useSites";
+import { useSiteSync } from "./hooks/useSiteSync";
 import { useMultiSelect } from "./hooks/useMultiSelect";
 import { useBulkActions } from "./hooks/useBulkActions";
 import { useTagOpsActions } from "./hooks/useTagOpsActions";
@@ -794,6 +795,16 @@ function App() {
         fetchData,
     });
 
+    // ---- 卡片侧跨设备增量同步 ----
+    // 其它设备删掉的卡片靠 /api/sites/changes 的墓碑感知（删除是物理删行，
+    // 只看 updated_at 的轮询看不见）。老后端 / mock 没有这个端点时自动不跑。
+    useSiteSync({
+        api,
+        enabled: typeof api.siteChanges === "function",
+        removeSitesLocally,
+        onNotify: notify,
+    });
+
     // ---- 批量操作（多选模式） ----
     // 加星 / 打标签 / 删标签 / 移动 / 删除：整组搬进了 useBulkActions，
     // App 这里只负责把依赖喂进去（纯搬迁，行为不变）。
@@ -1138,6 +1149,19 @@ function App() {
     // （#85 继续拆：这四个都是「输入输出明确的小单元」，与渲染树无关）
     useGroupReveal(loading, sortMode, displayedGroups.length);
 
+    // 锚点导航那一条的数据：每次渲染都 `displayedGroups.map(...)` 会产出新数组，
+    // 于是挂着它的 GroupNavRail 跟着整列重渲染（分组多时这一列不便宜）。
+    // 只在分组集合或各分组卡片数变化时重算。
+    const navRailGroups = useMemo(
+        () =>
+            displayedGroups.map(g => ({
+                id: g.id,
+                name: g.name,
+                count: g.sites.length,
+            })),
+        [displayedGroups]
+    );
+
     const jumpToGroup = useGroupAnchorNav(setMobileGroupsAnchor);
 
     const handleGroupAccentChange = useGroupAccent(api, setConfigs, notify);
@@ -1442,11 +1466,7 @@ function App() {
                     {/* 分组锚点导航：分组多了直接跳，不用一路滚 */}
                     {!loading && sortMode === SortMode.None && (
                         <GroupNavRail
-                            groups={displayedGroups.map(g => ({
-                                id: g.id,
-                                name: g.name,
-                                count: g.sites.length,
-                            }))}
+                            groups={navRailGroups}
                             activeId={activeGroupId}
                             onJump={jumpToGroup}
                             allCollapsed={allGroupsCollapsed}

@@ -82,9 +82,11 @@ export const recycleImpl: RecycleApi = {
         // 过期的先清掉再列：定时任务每周才跑一次，光靠它的话「到期自动删除」并不真的成立
         await this.purgeExpiredRecycle(await this.getRetentionDays());
         try {
+            // LIMIT 200：回收站是「最近的删除」语义，没有翻页需求 —— 不加 LIMIT 的话
+            // 长期不清理 + 大量删除会让每次打开都全表扫并逐行 JSON.parse。
             const result = await this.db
                 .prepare(
-                    `SELECT id, kind, data, deleted_at FROM recycle_bin WHERE owner_user_id ${this.currentUserId === null ? "IS NULL" : "= ?"} ORDER BY id DESC`
+                    `SELECT id, kind, data, deleted_at FROM recycle_bin WHERE owner_user_id ${this.currentUserId === null ? "IS NULL" : "= ?"} ORDER BY id DESC LIMIT 200`
                 )
                 .bind(...(this.currentUserId === null ? [] : [this.currentUserId]))
                 .all<{ id: number; kind: string; data: string; deleted_at: number }>();
@@ -591,6 +593,18 @@ export const recycleImpl: RecycleApi = {
                 .run();
         } catch (error) {
             console.error("清理笔记墓碑失败:", error);
+        }
+
+        // 站点删除墓碑（2026-10-13，卡片侧增量同步用）：同上，按保留期清
+        try {
+            await this.db
+                .prepare(
+                    "DELETE FROM site_tombstone WHERE deleted_at < datetime(?, 'unixepoch')"
+                )
+                .bind(nowSec - days * 24 * 3600)
+                .run();
+        } catch (error) {
+            console.error("清理站点墓碑失败:", error);
         }
 
         try {

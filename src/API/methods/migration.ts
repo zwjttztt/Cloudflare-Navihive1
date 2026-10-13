@@ -7,7 +7,8 @@
 
 import type { NavigationAPI } from "../http";
 import { RECOVERY_PUBLIC_KEY_CONFIG, WEBDAV_CONFIG_PREFIX } from "../configKeys";
-import { hashPassword, isHashedPassword } from "../crypto";
+import { encryptSecret, hashPassword, isHashedPassword } from "../crypto";
+import type { D1PreparedStatement } from "../schema";
 import {
     ATTACHMENTS_TABLE_STATEMENTS,
     CREATE_STATEMENTS,
@@ -61,7 +62,11 @@ import {
 //     老库建不出来 → 分组分享接口一律 500。加表必须 +1。
 // 19 = idx_sites_user_group（sites(user_id, group_id) 复合索引）。
 //     索引步骤同样吃快路径：版本号不 +1 的话老库永远建不上这条索引。
-export const SCHEMA_VERSION = "19";
+// 20 = 历史明文站点凭据一次性加密写回（encryptLegacySitePasswords）。
+//     只动「升级前落库、之后没再编辑过」的那批行；同样吃快路径。
+// 21 = site_tombstone（卡片删除墓碑，跨设备增量同步用）。新表同样吃快路径：
+//     老库建不出来 → /api/sites/changes 一律 0 条变更，删卡对其它设备不可见。
+export const SCHEMA_VERSION = "21";
 /** 版本号存在 configs 里的键名 */
 export const SCHEMA_VERSION_KEY = "schema.version";
 
@@ -93,6 +98,8 @@ export interface MigrationApi {
     migrateNoteStarRevColumns(): Promise<void>;
     /** 2026-10-11：group_share（公开分组分享，阶段④） */
     migrateGroupShareTable(): Promise<void>;
+    /** 2026-10-13：把升级前落库的明文站点凭据一次性加密写回 */
+    encryptLegacySitePasswords(): Promise<void>;
     /** 2026-10-09：笔记全文检索的 FTS5 虚拟表（建不出来就降级，不阻断启动） */
     migrateNotesFtsTable(): Promise<void>;
     migrateRecoveryKeyToOwner(ownerId: number): Promise<void>;
@@ -272,6 +279,13 @@ export const migrationImpl: MigrationApi = {
         // 6.85) 2026-10-11：group_share（公开分组分享）。新表必须显式建
         //（快路径会跳过第 1 步的批量建表），CREATE IF NOT EXISTS 对新表足够。
         await this.migrateGroupShareTable();
+
+        // 6.9) 历史明文站点凭据加密写回（安全加固，失败只记日志不影响启动）
+        try {
+            await this.encryptLegacySitePasswords();
+        } catch (error) {
+            console.error("历史站点凭据加密失败（已忽略，下次迁移会重试）:", error);
+        }
 
         // 7) 索引：排在最后，因为它依赖上面补出来的 user_id 列（见 INDEX_STATEMENTS 注释）
         await this.createIndexes();
@@ -533,6 +547,55 @@ export const migrationImpl: MigrationApi = {
         await this.db.prepare(
             "CREATE INDEX IF NOT EXISTS idx_group_share_user ON group_share(user_id)"
         ).run();
+    },
+
+    /**
+     * 把**升级前**落库的明文站点凭据一次性加密写回（schema 20）。
+     *
+     * 背景：`insertSite` / `updateSiteRow` 早就加密落库了，但**升级前**写进去的老行
+     * 是明文（读出来时 decryptSecretDeep 认不出 enc$ 前缀就原样返回）。那些卡片
+     * 只要被重新保存一次就会自动变密文，剩下的是「建了之后再没编辑过」的那批。
+     * 这是 D1 导出 / 备份文件里唯一可能躺着明文的一段，补上它。
+     *
+     * ⚠️ 必须**先探密钥再动笔**：encryptSecret 在拿不到密钥时返回**空串**
+     * （见 crypto.ts），照写就是把老凭据清空 —— 那比留着明文更糟。探测方式是
+     * 拿一个探针值走一遍真实的加密链路，拿回空串就整批跳过。
+     *
+     * ⚠️ 失败一律只记日志：这一步是安全加固，不该让站点起不来。
+     */
+    encryptLegacySitePasswords: async function (this: NavigationAPI ): Promise<void> {
+        const probe = await encryptSecret("probe", this.keyring);
+        if (!probe) {
+            console.warn("跳过历史站点凭据加密：加密密钥不可用（宁可留明文，也不能写空）");
+            return;
+        }
+        const BATCH = 200;
+        // 上限只是防御死循环：正常情况每批都会把命中的行变成 enc$，扫完自然退出
+        for (let round = 0; round < 50; round += 1) {
+            const rows = await this.db
+                .prepare(
+                    `SELECT id, password FROM sites
+                     WHERE password IS NOT NULL AND password <> '' AND password NOT LIKE 'enc$%'
+                     LIMIT ${BATCH}`
+                )
+                .all<{ id: number; password: string }>();
+            const found = rows.results || [];
+            if (found.length === 0) return;
+
+            const statements: D1PreparedStatement[] = [];
+            for (const row of found) {
+                const cipher = await encryptSecret(row.password, this.keyring);
+                // 加密失败（空串）就不动这一行 —— 绝不能把凭据写成空
+                if (!cipher) continue;
+                statements.push(
+                    this.db
+                        .prepare("UPDATE sites SET password = ? WHERE id = ?")
+                        .bind(cipher, row.id)
+                );
+            }
+            if (statements.length > 0) await this.db.batch(statements);
+            if (found.length < BATCH) return;
+        }
     },
 
     migrateOwnerColumns: async function (this: NavigationAPI ): Promise<void> {

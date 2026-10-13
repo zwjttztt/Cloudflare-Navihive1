@@ -150,6 +150,13 @@ import { shouldVirtualize } from "../utils/virtualWindow";
 export interface NotesPageProps {
     shareApi?: NoteShareApi;
     /**
+     * 摘要模式（?fields=list）下补全文：列表只给了开头 200 字，打开哪条就补哪条。
+     *
+     * 可选：老后端 / mock 没有 getNote 时不传，此时前端阈值也没到（列表永远带全文），
+     * 缺失即退化为老行为，不会多打请求。
+     */
+    onEnsureFullNote?: (id: number) => Promise<Note | null>;
+    /**
      * 图片上传能力（2026-07）。
      *
      * ⚠️ 刻意**可选**：后端没配存储（R2 / KV 都没绑）时这个能力就不存在，
@@ -386,6 +393,7 @@ export default function NotesPage({
     onToggleStar,
     onNotify,
     folderTags,
+    onEnsureFullNote,
 }: NotesPageProps) {
     const [keyword, setKeyword] = useState("");
     /** 关系图谱（2026-10-09）：双链关系的全貌，从「更多」里开 */
@@ -1123,6 +1131,8 @@ export default function NotesPage({
     const [remoteSearch, setRemoteSearch] = useState<{
         keyword: string;
         hits: { id: number; title: string; snippet: string; score: number }[];
+        /** 服务端用的检索方式：fts = 全文索引，like = 降级成 LIKE 全表扫 */
+        mode?: "fts" | "like";
     } | null>(null);
     const searchEpoch = useRef(0);
     const searchRemote = folderTags?.onSearchRemote;
@@ -1139,7 +1149,7 @@ export default function NotesPage({
                 if (epoch !== searchEpoch.current) return; // 过期结果直接丢
                 setRemoteSearch(
                     res && Array.isArray(res.results)
-                        ? { keyword: kw, hits: res.results }
+                        ? { keyword: kw, hits: res.results, mode: res.mode }
                         : null
                 );
             }).catch(() => {
@@ -1672,6 +1682,23 @@ export default function NotesPage({
         },
         [onNotify]
     );
+
+    /**
+     * 摘要模式：打开哪条就补哪条的全文。
+     *
+     * 挂在 activeId / sideId 上而不是逐个改写「点开」的回调 —— 打开笔记的入口有四五处
+     * （列表点击、深链接、侧边栏、新建后定位、搜索结果…），逐个接一定漏。
+     * 这里只认「当前被打开的那条是不是摘要」，是就补，全覆盖且不侵入各条链路。
+     */
+    useEffect(() => {
+        if (!onEnsureFullNote) return;
+        for (const id of [activeId, sideId]) {
+            if (typeof id !== "number") continue;
+            if (notes.find(n => n.id === id)?.content_truncated) {
+                void onEnsureFullNote(id);
+            }
+        }
+    }, [activeId, sideId, notes, onEnsureFullNote]);
 
     /** 笔记的直达链接：打开记事本时带 #note=<id> 就直接定位到这条 */
     const noteLink = useCallback((note: Note): string => {
@@ -2838,6 +2865,7 @@ export default function NotesPage({
     const renderSearchField = (inputRef: React.RefObject<HTMLInputElement | null>) => (
         // 用 TextField + InputAdornment：之前是自己画的绝对定位图标，
         // 那个放大镜飘在框外面右下方，对不齐也很难看。
+        <>
         <TextField
             fullWidth
             size='small'
@@ -2892,6 +2920,20 @@ export default function NotesPage({
                 },
             }}
         />
+        {/* 全文检索降级提示：FTS5 不可用时服务端走 LIKE 全表扫（能搜但慢、且不排序）。
+            以前只写在服务端日志里，用户看到的是「搜得越来越慢 / 有些搜不到」，
+            却不知道是索引没建起来、也不知道能去「设置 → 数据」重建索引。 */}
+        {remoteSearch?.mode === "like" ? (
+            <Typography
+                variant='caption'
+                color='text.secondary'
+                sx={{ display: "block", mt: 0.5, px: 0.5 }}
+            >
+                当前数据库不支持全文索引，搜索已降级为逐条匹配（结果不排序，笔记多时会变慢）。
+                可在「设置 → 数据」里重建索引试试。
+            </Typography>
+        ) : null}
+        </>
     );
 
     /** 导航列内容（2026-10-08 抽出）：桌面导航列与 tablet 导航抽屉共用同一份 JSX。

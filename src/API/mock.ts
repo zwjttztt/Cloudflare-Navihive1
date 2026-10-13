@@ -959,6 +959,16 @@ export class MockNavigationClient {
         return { success: true, recycleId };
     }
 
+    /**
+     * 演示模式的增量同步：演示数据全在本机内存里，没有「其它设备」这回事，
+     * 所以恒回「没有删除」—— 提供这个方法只是为了形状对齐（App 靠
+     * `typeof api.siteChanges === "function"` 决定要不要开轮询）。
+     */
+    async siteChanges(since?: string): Promise<{ deleted: number[]; since: string }> {
+        void since;
+        return { deleted: [], since: new Date().toISOString() };
+    }
+
     async updateGroupOrder(groupOrders: { id: number; order_num: number }[]): Promise<boolean> {
         await new Promise(resolve => setTimeout(resolve, 200));
         for (const order of groupOrders) {

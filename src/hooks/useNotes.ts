@@ -55,6 +55,7 @@ export interface TrashedNote {
 /** 本域用到的后端方法，单测里可以塞假实现 */
 export type NotesApiLike = {
     listNotes(opts?: { summary?: boolean }): Promise<Note[]>;
+    getNote(id: number): Promise<Note | null>;
     createNote(draft: Partial<Note>): Promise<Note>;
     updateNote(id: number, patch: Partial<Note>): Promise<Note | null>;
     deleteNote(id: number): Promise<{ success: boolean; recycleId?: number }>;
@@ -255,7 +256,15 @@ export function useNotes({ api, onError, onNotify, onNoteConflict }: UseNotesPar
      * 所以服务端一回就把新 rev 记在这里，下一笔**同步**就能读到。
      */
     const revById = useRef(new Map<number, number>());
-    /** 拉列表 / 重建状态时把 rev 的底账重铺一遍 */
+    /** 列表是否走摘要（?fields=list）：见 reload 里的注释 */
+    const summaryRef = useRef(false);
+    /**
+ * 列表走摘要的条数阈值：超过这个数，`?fields=list` 才真的省流量。
+ * 阈值以下开了反而更慢 —— 点开笔记要多一次全文请求（见 API 那段注释）。
+ */
+const SUMMARY_LIST_THRESHOLD = 200;
+
+/** 拉列表 / 重建状态时把 rev 的底账重铺一遍 */
     const seedRevs = useCallback((list: Note[]) => {
         const map = new Map<number, number>();
         for (const item of list) {
@@ -266,8 +275,13 @@ export function useNotes({ api, onError, onNotify, onNoteConflict }: UseNotesPar
 
     const reload = useCallback(async () => {
         try {
-            const list = await api.listNotes();
+            // 摘要阀门：笔记多到列表体积成了负担时才走 ?fields=list（只回开头 200 字）。
+            // 判断依据是**上一次**拉到的条数 —— 首屏永远拉全文（还不知道有多少条），
+            // 之后发现超过阈值就切成摘要。切过去之后列表里那条是摘要，
+            // 点开时由 ensureFullNote 补全文（见下）。
+            const list = await api.listNotes({ summary: summaryRef.current });
             const next = Array.isArray(list) ? list : [];
+            summaryRef.current = next.length > SUMMARY_LIST_THRESHOLD;
             seedRevs(next);
             setNotes(next);
             setLoaded(true);
@@ -277,6 +291,31 @@ export function useNotes({ api, onError, onNotify, onNoteConflict }: UseNotesPar
             onError("加载记事本失败: " + (error instanceof Error ? error.message : "未知错误"));
         }
     }, [api, onError, seedRevs]);
+
+    /**
+     * 摘要模式下补全文：列表里那条只有开头 200 字，点开前必须换成真的正文。
+     * 未截断时直接返回本地那份（不发请求）。
+     */
+    const ensureFullNote = useCallback(
+        async (id: number): Promise<Note | null> => {
+            const current = notesRef.current.find(n => n.id === id);
+            if (!current) return null;
+            if (!current.content_truncated) return current;
+            try {
+                const full = await api.getNote(id);
+                if (full) {
+                    setNotes(prev => prev.map(n => (n.id === id ? full : n)));
+                    if (typeof full.rev === "number") revById.current.set(id, full.rev);
+                    return full;
+                }
+            } catch (error) {
+                reportError(error, { source: "note-full" });
+                onError("加载笔记正文失败，请重试");
+            }
+            return current;
+        },
+        [api, onError]
+    );
 
     // 首屏拉一次：笔记条数要显示在顶栏按钮上，不能等用户点开面板才加载
     useEffect(() => {
@@ -343,6 +382,15 @@ export function useNotes({ api, onError, onNotify, onNoteConflict }: UseNotesPar
         async (id: number, patch: Partial<Note>, opts: { force?: boolean } = {}): Promise<boolean> => {
             const before = notesRef.current.find(n => n.id === id);
             if (!before) return false;
+            // ⚠️ 摘要模式的安全闸：正文还是「开头 200 字」就写回库，等于把笔记砍成一段。
+            // 宁可先取全文、让用户再保存一次，也绝不允许截断内容落库。
+            if (patch.content !== undefined && before.content_truncated) {
+                const full = await ensureFullNote(id);
+                if (!full || full.content_truncated) {
+                    onError("笔记正文还没加载完整，已重新获取，请再保存一次");
+                    return false;
+                }
+            }
             setNotes(prev => prev.map(n => (n.id === id ? { ...n, ...patch } : n)));
             try {
                 // 乐观并发：带上「我改的是哪一版」（force = 用户已确认要覆盖，不校验）
@@ -964,6 +1012,7 @@ export function useNotes({ api, onError, onNotify, onNoteConflict }: UseNotesPar
         loaded,
         externalChange,
         reload,
+        ensureFullNote,
         /**
          * 数据集级变更广播（2026-10-11）：导入 / 恢复这类不走单个 create/update
          * 方法的路径成功后手动喊一声，让其它标签页能提示刷新。跨标签页基础

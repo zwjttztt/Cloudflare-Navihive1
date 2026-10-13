@@ -27,6 +27,15 @@ export function auditStatement(api: NavigationAPI, audit?: AuditEntry): D1Prepar
         .bind(audit.action, audit.actor || "", audit.ip || "", audit.detail || "");
 }
 
+/**
+ * 墓碑时间戳：**必须带毫秒**。
+ * CURRENT_TIMESTAMP 只到秒，同一秒里连删两张卡时游标分不出先后 ——
+ * 表现为「第二次删除的墓碑被上一次的游标挡住」。
+ */
+function tombstoneStamp(): string {
+    return new Date().toISOString().replace("T", " ").replace("Z", "");
+}
+
 /** 从 batch 结果里取回收站行 id（拿不到就 undefined，调用方当「没进站」处理） */
 function recycleIdOf(result: { meta?: unknown } | undefined): number | undefined {
     const meta = result?.meta as { last_row_id?: number } | undefined;
@@ -54,6 +63,8 @@ export interface DataApi {
     updateSiteRow(id: number, site: Partial<Site>): Promise<Site | null>;
     deleteSites(ids: number[], audit?: AuditEntry): Promise<SiteBatchDeleteResult>;
     deleteSite(id: number, audit?: AuditEntry): Promise<{ success: boolean; recycleId?: number }>;
+    /** 卡片侧增量同步：自 since 以来被删除的站点 id（跨设备轮询用） */
+    siteChanges(since?: string): Promise<{ deleted: number[]; since: string }>;
     updateGroupOrder(groupOrders: { id: number; order_num: number }[]): Promise<boolean>;
     updateSiteOrder(
         siteOrders: { id: number; order_num: number; group_id?: number }[]
@@ -192,6 +203,46 @@ export const dataImpl: DataApi = {
             return null;
         }
         return result.results[0];
+    },
+
+    /**
+     * 卡片侧的增量变更（跨设备同步用）：自 since 以来被删除的站点 id。
+     *
+     * 与 notes/changes 同一个理由 —— 删除是物理删行，只看 updated_at 的轮询
+     * 永远看不见「少了哪张」，必须靠墓碑。改/增的行本身带 updated_at，
+     * 客户端比对整份 bootstrap 就能发现，所以这里只回删除。
+     */
+    siteChanges: async function (
+        this: NavigationAPI,
+        since?: string
+    ): Promise<{ deleted: number[]; since: string }> {
+        await this.migrate();
+        const cursor = new Date().toISOString();
+        const params: (string | number)[] = [];
+        let where = "";
+        if (since && Date.parse(since)) {
+            // ⚠️ 直接比文本、不走 datetime()：datetime() 会把游标**截断到秒**，
+            // 于是同一秒里发生的旧删除也会被当成「之后的变更」重复下发。
+            // 存进墓碑的是 'YYYY-MM-DD HH:MM:SS.mmm'，游标归一化成同一个格式再比。
+            where = " WHERE deleted_at > ?";
+            params.push(since.replace("T", " ").replace("Z", ""));
+        }
+        try {
+            const rows = await this.db
+                .prepare(
+                    `SELECT site_id FROM site_tombstone${where}${this.scopeSql(where.length > 0)}`
+                )
+                .bind(...this.scopeParams(params))
+                .all<{ site_id: number }>();
+            const deleted = (rows.results || [])
+                .map(row => row?.site_id)
+                .filter((id): id is number => typeof id === "number");
+            return { deleted: [...new Set(deleted)], since: cursor };
+        } catch (error) {
+            // 表不存在（老库还没迁上来）不该让同步端点 500：退化成「没有删除」
+            console.error("读取站点删除墓碑失败:", error);
+            return { deleted: [], since: cursor };
+        }
     },
 
     /**
@@ -477,6 +528,16 @@ export const dataImpl: DataApi = {
                         .prepare(`DELETE FROM sites WHERE id IN (${delList})${this.scopeSql(true)}`)
                         .bind(...this.scopeParams(okIds)),
                 ];
+                // 墓碑：批量删除的每一张都要留一条，其它设备才知道少了哪些
+                for (const id of okIds) {
+                    tail.push(
+                        this.db
+                            .prepare(
+                                "INSERT INTO site_tombstone (user_id, site_id, deleted_at) VALUES (?, ?, ?)"
+                            )
+                            .bind(this.currentUserId, id, tombstoneStamp())
+                    );
+                }
                 const auditStmt = auditStatement(this, audit);
                 if (auditStmt) tail.push(auditStmt);
                 await this.db.batch(tail);
@@ -524,6 +585,14 @@ export const dataImpl: DataApi = {
             ];
             const auditStmt = auditStatement(this, audit);
             if (auditStmt) statements.push(auditStmt);
+            // 删除墓碑：让其它设备的 /api/sites/changes 能看见「少了哪张卡」
+            statements.push(
+                this.db
+                    .prepare(
+                        "INSERT INTO site_tombstone (user_id, site_id, deleted_at) VALUES (?, ?, ?)"
+                    )
+                    .bind(this.currentUserId, id, tombstoneStamp())
+            );
             const results = await this.db.batch(statements);
             return { success: true, recycleId: recycleIdOf(results[0]) };
         });

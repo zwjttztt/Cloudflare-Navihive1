@@ -138,6 +138,20 @@ export const FOLDER_TAG_TABLE_STATEMENTS = [
         deleted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );`,
     `CREATE INDEX IF NOT EXISTS idx_note_tombstone_time ON note_tombstone(user_id, deleted_at);`,
+    /**
+     * 站点删除墓碑（2026-10-13，卡片侧增量同步用）。
+     *
+     * 与笔记墓碑同一个理由：删除是**物理删行**（数据搬进 recycle_bin），
+     * 只看 updated_at 的轮询看不见「少了哪张卡」。墓碑只记 site_id + 时间，
+     * 让其它设备的 `/api/sites/changes` 能感知到这次删除。
+     */
+    `CREATE TABLE IF NOT EXISTS site_tombstone (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        site_id INTEGER NOT NULL,
+        deleted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );`,
+    `CREATE INDEX IF NOT EXISTS idx_site_tombstone_time ON site_tombstone(user_id, deleted_at);`,
 ];
 
 // 建表 SQL（幂等）

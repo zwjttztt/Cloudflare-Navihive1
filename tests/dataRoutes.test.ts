@@ -27,6 +27,8 @@ interface Log {
     batchDeleted: number[][];
     audits: Array<{ action: string; detail: string }>;
     orders: unknown[];
+    /** sites/changes 轮询收到的 since 游标 */
+    changes: (string | null)[];
     /** 拒绝的越权 group_id（filterOwnedGroupIds 返回空集时用） */
     ownedGroupIds: Set<number>;
 }
@@ -39,6 +41,7 @@ function emptyLog(): Log {
         batchDeleted: [],
         audits: [],
         orders: [],
+        changes: [],
         ownedGroupIds: new Set([1, 2]),
     };
 }
@@ -116,6 +119,10 @@ function makeApi(log: Log, o: Options, bucket: string): NavigationAPI {
         updateSiteOrder: async (data: unknown) => {
             log.orders.push(data);
             return { success: true };
+        },
+        siteChanges: async (since?: string) => {
+            log.changes.push(since ?? null);
+            return { deleted: [], since: "cursor-1" };
         },
         writeAudit: async (action: string, _target: string, _ip: string, detail: string) => {
             log.audits.push({ action, detail });
@@ -398,6 +405,17 @@ test("单查不存在的站点/分组回 404（以前是 200 + null，与笔记�
 test("sites?groupId 不是数字回 400（NaN 进 bind 的行为未定义）", async () => {
     const { res } = await call("sites?groupId=abc", "GET", {});
     assert.equal(res?.status, 400);
+});
+
+test("sites/changes 把 since 游标透给 api（卡片侧增量同步）", async () => {
+    const { res, log } = await call("sites/changes?since=2026-10-13T00:00:00.000Z", "GET");
+    assert.equal(res?.status, 200);
+    assert.equal(log.changes.length, 1);
+    assert.equal(log.changes[0], "2026-10-13T00:00:00.000Z");
+    // 不带 since 也是合法的首次同步
+    const first = await call("sites/changes", "GET");
+    assert.equal(first.res?.status, 200);
+    assert.equal(first.log.changes[0], null);
 });
 
 // ---- 不认领的路径 ----

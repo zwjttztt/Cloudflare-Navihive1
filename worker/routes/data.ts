@@ -790,7 +790,18 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
         );
     }
     // 站点相关API
-    if (path === "sites" && method === "GET") {
+    // ⚠️ sites/changes 必须排在 `path.startsWith("sites/")` 那一条**之前**：
+    // 否则会被当成 id=parseInt("changes")（NaN）→ 直接 400「无效的ID」。
+    // 与 notes/shares 排在 notes/{id} 之前是同一类坑。
+    if (path === "sites/changes" && method === "GET") {
+        // 卡片侧增量同步（2026-10-13）：只回「自 since 以来删掉了哪些」。
+        // 增删改里的改与增客户端比对 bootstrap 就能发现，只有删除是物理删行、看不见。
+        // no-store：轮询带游标，缓存了会让其它设备永远看不见变更。
+        const since = url.searchParams.get("since") || undefined;
+        return Response.json(await api.siteChanges(since), {
+            headers: { "Cache-Control": "no-store" },
+        });
+    } else if (path === "sites" && method === "GET") {
         const groupId = url.searchParams.get("groupId");
         // 非法值不能放过去：parseInt("abc") 是 NaN，NaN 进 bind 的行为未定义
         if (groupId !== null && !Number.isSafeInteger(Number(groupId))) {

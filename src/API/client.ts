@@ -874,6 +874,17 @@ export class NavigationClient {
         return this.request<Site>(`sites/${id}`);
     }
 
+    /**
+     * 卡片侧增量同步：自 since 以来被删除的站点 id。
+     * 只回删除 —— 增/改客户端比对 bootstrap 就能发现，删除是物理删行看不见。
+     */
+    async siteChanges(since?: string): Promise<{ deleted: number[]; since: string }> {
+        const endpoint = since
+            ? `sites/changes?since=${encodeURIComponent(since)}`
+            : "sites/changes";
+        return this.request<{ deleted: number[]; since: string }>(endpoint);
+    }
+
     async createSite(site: Site): Promise<Site> {
         return this.request<Site>("sites", {
             method: "POST",
