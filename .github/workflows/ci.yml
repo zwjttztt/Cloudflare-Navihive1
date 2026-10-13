@@ -82,6 +82,15 @@ jobs:
       - name: 后端 API 端到端
         run: npm run e2e
 
+      # 分享功能的端到端：起一个 wrangler dev（本地 D1），建一条带口令的笔记分享和
+      # 一条分组分享，然后用匿名 cookie 真打一遍完整链路：
+      # 匿名访问 401 + needPassword → 口令错 401 → 口令对拿到正文（且账号字段被脱敏）
+      # → PUT 更新 token 不变 → PATCH 405 → DELETE 撤销 → 撤销后 404。
+      # 分享是「线上从未实测、且以前零 e2e 覆盖」的成片功能，而它坏了是静默的：
+      # 链接打不开，只是别人收不到内容。
+      - name: 分享功能端到端
+        run: npm run e2e:share
+
       # 定时备份（cron）的端到端：用 --test-scheduled 把 scheduled handler 挂到
       # /__scheduled 上，真跑一次自动备份。
       # wrangler 本地模式不会真的按 cron 触发，所以「定时备份会不会真的写出一份

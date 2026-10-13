@@ -6,6 +6,50 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。---
 
+## 2026-10-13 · 工程：分享功能端到端（CI 新增 `e2e:share`，补上唯一「线上从未实测、零 e2e 覆盖」的成片功能）
+
+分享是整套系统里唯一一块**从来没在真后端上跑过一遍**的成片功能 —— 而它坏了是静默的：
+链接打不开，只是别人收不到内容，控制台里一片安静。所以这条不是「再加几条断言」，
+是把「建分享 → 访客访问 → 口令校验 → 更新 → 撤销」整条链按**匿名访客**的顺序真打一遍。
+
+### 一、新增 `script/share-e2e.mjs`（约 313 行）
+
+复用 `e2eEnv.mjs` 的 `resolveWorkerConfig` / `pickPort` / `startWrangler` / `waitReady` / `createChecker`，
+起一个 wrangler dev（本地 D1、每次一套全新持久化目录与全新凭据）。分两段：
+
+**笔记分享**（`notes/<id>/share` + 公开端点 `note-shares/<token>`）：
+新库首登要求改密 → 改密后令牌当场失效、重新登录 → 建分组/站点/笔记 →
+非法有效期 `days:3` 回 **400 + `bad_request`** → 建带口令分享 →
+匿名 GET 回 **401 + 顶层 `needPassword`**（公开页靠这个弹框）、**不带正文**、带 `no-store` + `noindex` →
+口令错也 401 且不漏正文 → 口令对拿到正文 + `Set-Cookie` 打上防刷当日戳 →
+`PUT` 更新有效期** token 不变** → `PATCH` 回 **405 + `method_not_allowed`** →
+`DELETE` 撤销 → 同一 token 立刻 **404 + `not_found`**（带正确口令也是）→ `GET` 配置为 `null` → 不存在的 id 404。
+
+**分组分享**（`groups/<id>/share` + `group-shares/<token>`）：匿名读成功且**脱敏**
+（建站点时刻意带上 `username`/`password`，断言公开响应里这两个值一个都不出现）、
+带口令时匿名 GET 回 `need-password`、口令对拿到内容、口令错仍是 `need-password`、撤销后 `not-found`。
+
+⚠️ 两处的错误码形状**不一样**，脚本按实际契约分别断言：笔记分享的 `need-password` 在
+`public.ts` 里被转成 **401 + `extra: { needPassword: true }`**；分组分享那条分支是
+`Response.json(result)` 直出，**恒 200 + `{status:"need-password"}`**。照抄笔记那套断言会假红。
+
+### 二、接线
+
+- `package.json`：新增 `"e2e:share": "node script/share-e2e.mjs"`，插入 `ci` 链的 `e2e` 之后。
+- `.github/workflows/ci.yml`：在「后端 API 端到端」之后加「分享功能端到端」步骤（必须排在构建之后，跑的是 `dist/` 里的产物）。
+
+### 三、校验
+
+`tsc -b --force` 0；lint 0 error；单测 **2492**（2492 通过 / 0 失败，本轮无新增用例）；
+`check:brand` 一致；build 通过；smoke 全 PASS；`audit:a11y` / `audit:contrast` 0 处不合格。
+⚠️ `e2e:share` **本机跑不了**（workerd 0xc0000005，上游 workerd#4668，最小 worker 同样崩），
+与 `e2e` / `e2e:cron` / `e2e:webdav` 一样由 CI（ubuntu）覆盖。
+
+脚本是照着 worker 源码逐条核对写出来的，核出并修掉三处契约偏差（都是脚本侧写错，不是产品 bug）：
+登录路径写成 `auth/login`（实际是 `/api/login`，客户端 `client.ts` 就是这么调的）；
+建分组/建站点漏了 `order_num`（`validateGroup`/`validateSite` 都要求它是安全整数，漏了会 400）；
+防刷 cookie 名写成 `note-view-<数字>`（实际是 `nh_noteview_<token>`，来自 `shareViewCookieName`）。
+
 ## 2026-10-13 · 性能：首屏请求 20 → 15、打开记事本 1218 → 965 KB；错误码迁移收尾（30 处 → 0）
 
 接着上一轮「78 → 20」往下挖的两块，加上欠了很久的工程债。
