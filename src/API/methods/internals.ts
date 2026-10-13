@@ -283,6 +283,9 @@ export const INDEX_STATEMENTS = [
     `CREATE INDEX IF NOT EXISTS idx_sites_group_id ON sites(group_id);`,
     // 账号隔离：SELECT ... FROM sites WHERE user_id = ?
     `CREATE INDEX IF NOT EXISTS idx_sites_user_id ON sites(user_id);`,
+    // 带账号的按分组取站点（getSites(groupId) 在多账号下是 user_id + group_id
+    // 双条件；两个单列索引要回表二次过滤，复合索引一步到位）
+    `CREATE INDEX IF NOT EXISTS idx_sites_user_group ON sites(user_id, group_id);`,
     `CREATE INDEX IF NOT EXISTS idx_groups_user_id ON groups(user_id);`,
     // 回收站：按账号列清单（ORDER BY id DESC）+ 定时清理按时间删
     `CREATE INDEX IF NOT EXISTS idx_recycle_bin_owner ON recycle_bin(owner_user_id);`,

@@ -10,6 +10,8 @@
 //   3. **uuid 在这里生成**：合并导入靠它识别「同一条笔记」（见 transfer.ts 的导入逻辑）。
 //      没有它就只能按标题+内容硬比，用户改过一次的笔记会被当成两条。
 import type { NavigationAPI } from "../http";
+import type { AuditEntry } from "./data";
+import { auditStatement } from "./data";
 import type {
     AttachmentStorage,
     Note,
@@ -85,7 +87,7 @@ export interface NotesApi {
     createNote(draft: Partial<Note>): Promise<Note>;
     updateNote(id: number, patch: Partial<Note>): Promise<Note | null>;
     /** 软删除：先进回收站再删行，返回 recycleId 供撤销 */
-    deleteNote(id: number): Promise<{ success: boolean; recycleId?: number }>;
+    deleteNote(id: number, audit?: AuditEntry): Promise<{ success: boolean; recycleId?: number }>;
     updateNoteOrder(orders: { id: number; order_num: number }[]): Promise<boolean>;
     countNotes(): Promise<number>;
 
@@ -690,7 +692,25 @@ export const notesImpl: NotesApi = {
                 }
             }
 
-            if (commitStatements.length > 0) await this.db.batch(commitStatements);
+            // ── 提交：分批提交，每批仍是一个事务 ──
+            // 以前整批一次性 batch：大导入（几百条笔记 + 标签 + 关联）会撞上
+            // D1 单次 batch 的语句数上限 → 整个导入报 500。按 250 条/批切片，
+            // 与 updateNoteOrder / updateSiteOrder 同一界限。
+            // 中途失败：已提交的批保留，stats.warning 说明情况 —— 重新导入即可续传
+            //（相同 uuid 按「文件较新才覆盖」去重，已写入的不会重复建）。
+            if (commitStatements.length > 0) {
+                const COMMIT_CHUNK = 250;
+                try {
+                    for (let i = 0; i < commitStatements.length; i += COMMIT_CHUNK) {
+                        await this.db.batch(commitStatements.slice(i, i + COMMIT_CHUNK));
+                    }
+                } catch (error) {
+                    console.error("导入提交失败（部分已写入）:", error);
+                    stats.warning =
+                        "部分数据未能写入，重新导入即可续传（相同笔记按「文件较新才覆盖」去重，不会重复建）";
+                    return stats;
+                }
+            }
 
             // 全文索引：一次可能进来几百条，逐条 syncNoteFts 是几百次往返 ——
             // 自己拼一个 batch（同样的「先删后插」两步）。失败只记日志：
@@ -713,7 +733,11 @@ export const notesImpl: NotesApi = {
                                 )
                         );
                     }
-                    await this.db.batch(ftsStatements);
+                    // FTS 语句同样分批（先删后插两条/条，几百条笔记就是近千条语句）
+                    const FTS_CHUNK = 250;
+                    for (let i = 0; i < ftsStatements.length; i += FTS_CHUNK) {
+                        await this.db.batch(ftsStatements.slice(i, i + FTS_CHUNK));
+                    }
                 } catch (error) {
                     console.error("导入后重建全文索引失败:", error);
                 }
@@ -882,6 +906,11 @@ export const notesImpl: NotesApi = {
                 sql += " AND rev = ?";
                 binds.push(expectRev);
             }
+            // RETURNING：省掉「更新后再回读一次」的那趟往返（与 updateSiteRow 同款）。
+            // 更新了 0 行（并发冲突 / 笔记不存在）时 RETURNING 就是空数组，直接据此判定 ——
+            // 不再依赖 meta.changes 的形状（旧写法在拿不到 changes 的环境里会把冲突
+            // 当「改到了」，乐观锁静默失效）。
+            sql += ` RETURNING ${NOTE_FIELDS}`;
             const statement = this.db.prepare(sql).bind(...binds);
             // 版本历史：**正文/标题真的变了才留快照**。
             // 自动保存是 3 秒一防抖，一次连续改字会触发很多次 update，
@@ -903,51 +932,95 @@ export const notesImpl: NotesApi = {
             // （历史是辅助功能，存不上只说明少一个版本，不能反过来把正文丢了）。
             const result = tags.length
                 ? (await this.db.batch([statement, ...tags]))[0]
-                : await statement.run();
+                : await statement.all<Note>();
             if (!result.success) return null;
-            // 一条都没改到：要么是并发冲突（rev 对不上），要么是这条笔记根本不存在
-            // meta 在 D1 的类型里是 unknown（各版形状不一），这里只取一个数字
-            if (expectRev !== null && Number((result.meta as { changes?: number } | undefined)?.changes ?? 1) === 0) {
-                const current = await this.db
-                    .prepare(`SELECT ${NOTE_FIELDS} FROM notes WHERE id = ?${this.scopeSql(true)}`)
-                    .bind(...this.scopeParams([id]))
-                    .first<Note>();
-                if (current) throw new NoteConflictError("这条笔记在别处被改过了", current);
+            const updatedRows = (result.results || []) as Note[];
+            if (updatedRows.length === 0) {
+                // 更新了 0 行：要么并发冲突（rev 对不上），要么这条笔记根本不存在
+                if (expectRev !== null) {
+                    const current = await this.db
+                        .prepare(`SELECT ${NOTE_FIELDS} FROM notes WHERE id = ?${this.scopeSql(true)}`)
+                        .bind(...this.scopeParams([id]))
+                        .first<Note>();
+                    if (current) throw new NoteConflictError("这条笔记在别处被改过了", current);
+                }
                 return null;
             }
-            // 更新成功后才落快照（存的是**改动前**的内容）。
-            // 失败只记日志：历史丢了不该让用户的保存变成失败。
+            const row = updatedRows[0];
+            // 快照（存的是**改动前**的内容）与全文索引合进**同一个 batch** = 一次往返。
+            // 两者都是辅助功能，失败只记日志，不能让用户的保存失败。
+            const titleOrContentTouched =
+                patch.content !== undefined || patch.title !== undefined;
             if (changed && before) {
-                try {
-                    await this.pushRevision(id, before.title, before.content);
-                } catch (error) {
-                    console.error("保存版本快照失败:", error);
+                const followup: D1PreparedStatement[] = [
+                    this.db
+                        .prepare(
+                            "INSERT INTO note_revision (note_id, user_id, title, content) VALUES (?, ?, ?, ?)"
+                        )
+                        .bind(id, this.currentUserId, before.title, before.content),
+                    // 裁剪：每条笔记只留最近 N 版（与 pushRevision 同一条 SQL）
+                    this.db
+                        .prepare(
+                            `DELETE FROM note_revision WHERE note_id = ? AND user_id IS ?
+                             AND id NOT IN (
+                                 SELECT id FROM note_revision WHERE note_id = ? AND user_id IS ?
+                                 ORDER BY id DESC LIMIT ?
+                             )`
+                        )
+                        // ⚠️ `IS ?` 而不是 `= ?`：单账号部署 user_id 是 NULL，`= NULL` 永远不成立
+                        .bind(id, this.currentUserId, id, this.currentUserId, REVISION_KEEP_PER_NOTE),
+                ];
+                if (typeof row.id === "number" && titleOrContentTouched && this.notesFtsReady) {
+                    followup.push(
+                        this.db.prepare("DELETE FROM notes_fts WHERE note_id = ?").bind(row.id),
+                        this.db
+                            .prepare(
+                                "INSERT INTO notes_fts (note_id, user_id, title, body) VALUES (?, ?, ?, ?)"
+                            )
+                            .bind(
+                                row.id,
+                                this.currentUserId,
+                                segmentCJK(row.title ?? ""),
+                                segmentCJK((row.content ?? "").slice(0, FTS_CONTENT_LIMIT))
+                            )
+                    );
                 }
-            }
-            // updated_at 刚被刷新，直接回读一次拿最新值
-            const row = await this.db
-                .prepare(`SELECT ${NOTE_FIELDS} FROM notes WHERE id = ?${this.scopeSql(true)}`)
-                .bind(...this.scopeParams([id]))
-                .first<Note>();
-            // 正文 / 标题变了才需要重建索引（只改置顶、排序不用动）
-            if (row && typeof row.id === "number" && (patch.content !== undefined || patch.title !== undefined)) {
-                // 同上：必须 await，不能被 Worker 的请求生命周期掐断
+                try {
+                    await this.db.batch(followup);
+                } catch (error) {
+                    console.error("保存版本快照/全文索引失败:", error);
+                }
+            } else if (row && typeof row.id === "number" && titleOrContentTouched) {
+                // 内容/标题动了但没快照可存（理论上到不了这里）：索引仍要同步。
+                // 必须写进 notesFtsReady 由 syncNoteFts 自己判断。
                 await this.syncNoteFts(row.id, row.title ?? "", row.content ?? "");
             }
-            return row ?? null;
+            return row;
         });
     },
 
     deleteNote: async function (
         this: NavigationAPI,
-        id: number
+        id: number,
+        audit?: AuditEntry
     ): Promise<{ success: boolean; recycleId?: number }> {
         await this.migrate();
         return this.withSchemaRetry(async () => {
-            const note = await this.db
-                .prepare(`SELECT * FROM notes WHERE id = ?${this.scopeSql(true)}`)
-                .bind(...this.scopeParams([id]))
-                .first<Record<string, unknown>>();
+            // 两个 SELECT 互不依赖，并行发（笔记原始行 + 标签关联）
+            const [note, links] = await Promise.all([
+                this.db
+                    .prepare(`SELECT * FROM notes WHERE id = ?${this.scopeSql(true)}`)
+                    .bind(...this.scopeParams([id]))
+                    .first<Record<string, unknown>>(),
+                this.db
+                    .prepare(
+                        `SELECT l.tag_id FROM note_note_tag l
+                         JOIN notes n ON n.id = l.note_id${this.scopeSql(true)}
+                         WHERE l.note_id = ?`
+                    )
+                    .bind(...this.scopeParams([]), id)
+                    .all<{ tag_id: number }>(),
+            ]);
             if (!note) return { success: false };
 
             // ⚠️ 标签关联必须**跟着笔记一起进回收站**，而且要在删行之前取。
@@ -955,54 +1028,62 @@ export const notesImpl: NotesApi = {
             // （左栏标签计数还照算，读的是全表）；② 还原换新 id，那些关联接不回来，
             // 用户看到的是「删之前有标签，还原后标签没了」。
             // note_note_tag 这张表没有 user_id 列，归属只能靠 JOIN notes 判定。
-            const links = await this.db
-                .prepare(
-                    `SELECT l.tag_id FROM note_note_tag l
-                     JOIN notes n ON n.id = l.note_id${this.scopeSql(true)}
-                     WHERE l.note_id = ?`
-                )
-                .bind(...this.scopeParams([]), id)
-                .all<{ tag_id: number }>();
             const tagIds = (links.results || []).map(r => r.tag_id);
 
-            // 先搬进回收站再删行：顺序反了就救不回来了
-            const recycleId = await this.pushToRecycle(
-                "note",
-                JSON.stringify({ note, tagIds })
-            );
-            if (tagIds.length > 0) {
-                await this.db
+            // 回收站、清关联、吊销分享、删真身、删全文索引、墓碑、审计 ——
+            // 全部合进**同一个 db.batch**（= 一次往返 + 一个事务）。以前是 8 次
+            // 串行往返，而且墓碑/索引失败会留下「行删了但下游没跟上」的中间态。
+            const statements: D1PreparedStatement[] = [
+                // 先搬进回收站再删行：顺序反了就救不回来了
+                this.db
                     .prepare(
-                        `DELETE FROM note_note_tag WHERE note_id IN (
-                             SELECT id FROM notes WHERE id = ?${this.scopeSql(true)}
-                         )`
+                        "INSERT INTO recycle_bin (kind, owner_user_id, data, deleted_at) VALUES (?, ?, ?, ?)"
                     )
-                    .bind(...this.scopeParams([id]))
-                    .run();
+                    .bind(
+                        "note",
+                        this.currentUserId,
+                        JSON.stringify({ note, tagIds }),
+                        Math.floor(Date.now() / 1000)
+                    ),
+            ];
+            if (tagIds.length > 0) {
+                statements.push(
+                    this.db.prepare("DELETE FROM note_note_tag WHERE note_id = ?").bind(id)
+                );
             }
-            // 删除时先吊销链接，恢复笔记也不会重新公开。
-            await this.revokeNoteShare(id);
-            const result = await this.db
-                .prepare(`DELETE FROM notes WHERE id = ?${this.scopeSql(true)}`)
-                .bind(...this.scopeParams([id]))
-                .run();
-            if (result.success) await this.dropNoteFts(id);
+            // 删除时先吊销链接，恢复笔记也不会重新公开（与 revokeNoteShare 同一条 SQL）
+            statements.push(
+                this.db
+                    .prepare("DELETE FROM note_share WHERE note_id = ? AND user_id IS ?")
+                    .bind(id, this.currentUserId)
+            );
+            statements.push(
+                this.db
+                    .prepare(`DELETE FROM notes WHERE id = ?${this.scopeSql(true)}`)
+                    .bind(...this.scopeParams([id]))
+            );
+            if (this.notesFtsReady) {
+                statements.push(
+                    this.db.prepare("DELETE FROM notes_fts WHERE note_id = ?").bind(id)
+                );
+            }
             // 删除墓碑（2026-10-11）：软删除对 notes 表是物理删行，只看 updated_at 的
             // 轮询看不见「少了哪条」。墓碑让其它设备的轮询能感知到这次删除。
-            // 失败只记日志：漏一条墓碑的代价是其它设备晚一轮刷新，不值得为此回滚。
-            if (result.success && typeof note.uuid === "string" && note.uuid) {
-                try {
-                    await this.db
-                        .prepare(
-                            "INSERT INTO note_tombstone (user_id, note_uuid) VALUES (?, ?)"
-                        )
+            if (typeof note.uuid === "string" && note.uuid) {
+                statements.push(
+                    this.db
+                        .prepare("INSERT INTO note_tombstone (user_id, note_uuid) VALUES (?, ?)")
                         .bind(this.currentUserId, note.uuid)
-                        .run();
-                } catch (error) {
-                    console.error("写入笔记删除墓碑失败:", error);
-                }
+                );
             }
-            return { success: result.success, recycleId: result.success ? recycleId : undefined };
+            const auditStmt = auditStatement(this, audit);
+            if (auditStmt) statements.push(auditStmt);
+
+            const results = await this.db.batch(statements);
+            const meta = results[0]?.meta as { last_row_id?: number } | undefined;
+            const recycleId =
+                typeof meta?.last_row_id === "number" ? meta.last_row_id : undefined;
+            return { success: true, recycleId };
         });
     },
 

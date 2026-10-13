@@ -92,7 +92,7 @@ test("deleteNote 要把标签关联一起搬进回收站，并在删行前清掉
     );
     // 顺序：取关联 → 存回收站 → 清关联 → 删笔记
     const selLinks = body.indexOf("SELECT l.tag_id");
-    const pushRecycle = body.indexOf("pushToRecycle");
+    const pushRecycle = body.indexOf("INSERT INTO recycle_bin");
     const delLinks = body.indexOf("DELETE FROM note_note_tag");
     const delNote = body.indexOf("DELETE FROM notes");
     assert.ok(
@@ -100,6 +100,28 @@ test("deleteNote 要把标签关联一起搬进回收站，并在删行前清掉
         "要先取到关联再进回收站（存进去的是那一份）"
     );
     assert.ok(pushRecycle < delLinks && delLinks < delNote, "顺序：存回收站 → 清关联 → 删笔记");
+});
+
+test("deleteNote 的全部删除副作用要进同一个 batch（一次往返 + 一个事务）", () => {
+    const body = methodBody(notesSrc, "deleteNote: async");
+    // 2026-10-13 CRUD 审查：以前是 8 次串行往返（SELECT → 回收站 → 清关联 →
+    // 吊销分享 → 删行 → 删索引 → 墓碑），中途失败会留下「行删了但下游没跟上」
+    // 的中间态。现在合并成一个 db.batch，一次往返且同生同死。
+    const batchAt = body.indexOf("db.batch(statements)");
+    assert.ok(batchAt >= 0, "删除副作用要合进同一个 db.batch(statements)");
+    for (const marker of [
+        "INSERT INTO recycle_bin",
+        "DELETE FROM note_note_tag",
+        "DELETE FROM note_share",
+        "DELETE FROM notes",
+        "note_tombstone",
+    ]) {
+        const at = body.indexOf(marker);
+        assert.ok(
+            at >= 0 && at < batchAt,
+            `${marker} 要在 batch 之前构建并放进 statements（批里不能临时起意）`
+        );
+    }
 });
 
 test("listNoteTags 必须 JOIN notes 限定账号（note_note_tag 没有 user_id 列）", () => {

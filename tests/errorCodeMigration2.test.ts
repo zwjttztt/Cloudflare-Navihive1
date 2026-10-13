@@ -144,12 +144,16 @@ test("迁移确实发生了：errorResponse(ApiError.…) 的出口数没有倒�
     // （data.ts 29 / account.ts 15 / backup.ts 12 / public.ts 10 / config.ts 9 /
     // ops.ts 7 / icon.ts 3 / middleware.ts 3 / loginGuard.ts 2 / idempotency.ts 1 /
     // index.ts 1）。
+    // 2026-10-13 晚 CRUD 审查修复：data.ts 路由的 PUT 校验合并 —— PUT sites 的
+    // 4 处 + PUT groups 的 2 处分散 errorResponse 合并为 validateSitePatch /
+    // validateGroupPatch 之后的 3 处，92 → **89**。这是代码合并不是迁移回退：
+    // 每处出口仍是 errorResponse(ApiError.…)。
     // 只增不减：新增合法迁移会让它变大，回退任意一处就会变小红。
     let total = 0;
     for (const { text } of FILES) total += (text.match(/errorResponse\(ApiError\./g) ?? []).length;
     assert.ok(
-        total >= 92,
-        `只有 ${total} 处 errorResponse(ApiError.…)，少于第二批迁移后的 92 处 —— 有人回退了迁移`
+        total >= 89,
+        `只有 ${total} 处 errorResponse(ApiError.…)，少于当前基线 89 处 —— 有人回退了迁移`
     );
 });
 

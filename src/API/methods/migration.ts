@@ -59,7 +59,9 @@ import {
 //     「彻底删除」对其他设备不可见。加表必须 +1。
 // 18 = group_share（公开分组分享，阶段④）。新表同样吃快路径：
 //     老库建不出来 → 分组分享接口一律 500。加表必须 +1。
-export const SCHEMA_VERSION = "18";
+// 19 = idx_sites_user_group（sites(user_id, group_id) 复合索引）。
+//     索引步骤同样吃快路径：版本号不 +1 的话老库永远建不上这条索引。
+export const SCHEMA_VERSION = "19";
 /** 版本号存在 configs 里的键名 */
 export const SCHEMA_VERSION_KEY = "schema.version";
 

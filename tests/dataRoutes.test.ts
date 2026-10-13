@@ -27,10 +27,20 @@ interface Log {
     batchDeleted: number[][];
     audits: Array<{ action: string; detail: string }>;
     orders: unknown[];
+    /** 拒绝的越权 group_id（filterOwnedGroupIds 返回空集时用） */
+    ownedGroupIds: Set<number>;
 }
 
 function emptyLog(): Log {
-    return { created: [], updated: [], deleted: [], batchDeleted: [], audits: [], orders: [] };
+    return {
+        created: [],
+        updated: [],
+        deleted: [],
+        batchDeleted: [],
+        audits: [],
+        orders: [],
+        ownedGroupIds: new Set([1, 2]),
+    };
 }
 
 interface Options {
@@ -39,6 +49,9 @@ interface Options {
     bootstrap?: unknown;
     /** 让 validateGroup / validateSite 不通过 */
     invalid?: boolean;
+    /** 让单查 getSite / getGroup 返回 null（验证 404） */
+    siteNull?: boolean;
+    groupNull?: boolean;
 }
 
 function makeApi(log: Log, o: Options, bucket: string): NavigationAPI {
@@ -52,7 +65,7 @@ function makeApi(log: Log, o: Options, bucket: string): NavigationAPI {
         getConfig: async (key: string) => (o.lockWrites && key === WRITE_GUARD_KEY ? guardStore : null),
         getBootstrap: async () => o.bootstrap ?? { groups: [], sites: [], configs: {} },
         getGroups: async () => [{ id: 1, name: "g" }],
-        getGroup: async (id: number) => ({ id, name: "g" }),
+        getGroup: async (id: number) => (o.groupNull ? null : { id, name: "g" }),
         createGroup: async (g: unknown) => {
             log.created.push(g);
             return { success: true };
@@ -61,12 +74,16 @@ function makeApi(log: Log, o: Options, bucket: string): NavigationAPI {
             log.updated.push({ id, data });
             return { success: true };
         },
-        deleteGroup: async (id: number) => {
+        deleteGroup: async (id: number, audit?: { action: string; detail?: string }) => {
             log.deleted.push(id);
+            if (audit) log.audits.push({ action: audit.action, detail: audit.detail ?? "" });
             return { success: true, recycleId: 5 };
         },
         getSites: async (groupId?: number) => [{ id: 1, group_id: groupId ?? 1 }],
-        getSite: async (id: number) => ({ id }),
+        getSite: async (id: number) => (o.siteNull ? null : { id }),
+        // 越权校验用：默认 1/2 是自己的，其它 id 不认
+        filterOwnedGroupIds: async (ids: readonly number[]) =>
+            new Set(ids.filter(id => log.ownedGroupIds.has(id))),
         createSite: async (s: unknown) => {
             log.created.push(s);
             return { success: true };
@@ -75,15 +92,24 @@ function makeApi(log: Log, o: Options, bucket: string): NavigationAPI {
             log.updated.push({ id, data });
             return { success: true };
         },
-        deleteSite: async (id: number) => {
+        deleteSite: async (id: number, audit?: { action: string; detail?: string }) => {
             log.deleted.push(id);
+            if (audit) log.audits.push({ action: audit.action, detail: audit.detail ?? "" });
             return { success: true, recycleId: 9 };
         },
-        deleteSites: async (ids: number[]) => {
+        deleteSites: async (
+            ids: number[],
+            audit?: { action: string; detail?: string }
+        ) => {
             log.batchDeleted.push(ids);
+            if (audit) log.audits.push({ action: audit.action, detail: audit.detail ?? "" });
             return { success: true };
         },
         updateGroupOrder: async (data: unknown) => {
+            log.orders.push(data);
+            return true;
+        },
+        updateNoteOrder: async (data: unknown) => {
             log.orders.push(data);
             return true;
         },
@@ -116,7 +142,7 @@ async function call(
         request,
         env: {},
         url: new URL(request.url),
-        path,
+        path: path.split("?")[0],
         method,
         api: makeApi(log, o, bucket),
         ip: IP,
@@ -297,6 +323,81 @@ test("站点排序：合法数据落到 api，且结果原样返回（含「哪�
     ]);
     assert.equal(res?.status, 200);
     assert.equal(log.orders.length, 1);
+});
+
+// ---- CRUD 审查修复（2026-10-13，见 docs/crud-audit-2026-10-13.md） ----
+
+test("编辑站点：group_id 指向别人的分组要拒绝（单条路径的越权洞）", async () => {
+    const { res, log } = await call("sites/1", "PUT", {}, { group_id: 999 });
+    assert.equal(res?.status, 400);
+    assert.deepEqual(log.updated, [], "不属主的分组不能写库");
+});
+
+test("新增站点：group_id 指向别人的分组同样拒绝", async () => {
+    const { res, log } = await call("sites", "POST", {}, {
+        group_id: 999,
+        name: "x",
+        url: "https://a.example/",
+        order_num: 0,
+    });
+    assert.equal(res?.status, 400);
+    assert.deepEqual(log.created, [], "不属主的分组不能建卡");
+});
+
+test("新增/编辑站点：group_id 是自己的分组照常放行", async () => {
+    const put = await call("sites/1", "PUT", {}, { group_id: 2, name: "挪个位置" });
+    assert.equal(put.res?.status, 200);
+    assert.equal(put.log.updated.length, 1);
+
+    const post = await call("sites", "POST", {}, {
+        group_id: 1,
+        name: "新卡",
+        url: "https://a.example/",
+        order_num: 0,
+    });
+    assert.equal(post.res?.status, 200);
+    assert.equal(post.log.created.length, 1);
+});
+
+test("编辑站点：与 POST 同一套清洗 —— 空名拒绝、超长截断、危险图标清空", async () => {
+    const empty = await call("sites/1", "PUT", {}, { name: "   " });
+    assert.equal(empty.res?.status, 400);
+    assert.deepEqual(empty.log.updated, []);
+
+    const long = await call("sites/1", "PUT", {}, { name: "长".repeat(120) });
+    assert.equal(long.res?.status, 200);
+    const saved = long.log.updated[0]!.data as { name: string };
+    assert.equal(saved.name.length, 100, "超长名称截到 100（PUT 以前没有任何截断）");
+
+    const evilIcon = await call("sites/1", "PUT", {}, { icon: "javascript:alert(1)" });
+    assert.equal(evilIcon.res?.status, 200);
+    const iconSaved = evilIcon.log.updated[0]!.data as { icon: string };
+    assert.equal(iconSaved.icon, "", "javascript: 图标要被清洗掉（与 POST/导入同规则）");
+});
+
+test("编辑分组：name 超 100 截断", async () => {
+    const { res, log } = await call("groups/1", "PUT", {}, { name: "长".repeat(120) });
+    assert.equal(res?.status, 200);
+    const saved = log.updated[0]!.data as { name: string };
+    assert.equal(saved.name.length, 100);
+});
+
+test("笔记排序：元素缺 order_num 拒 400（undefined 进 bind 会变 500）", async () => {
+    const { res, log } = await call("note-orders", "PUT", {}, [{ id: 1 }]);
+    assert.equal(res?.status, 400);
+    assert.deepEqual(log.orders, [], "没过校验不能落到 api");
+});
+
+test("单查不存在的站点/分组回 404（以前是 200 + null，与笔记不一致）", async () => {
+    const site = await call("sites/999", "GET", { siteNull: true });
+    assert.equal(site.res?.status, 404);
+    const group = await call("groups/999", "GET", { groupNull: true });
+    assert.equal(group.res?.status, 404);
+});
+
+test("sites?groupId 不是数字回 400（NaN 进 bind 的行为未定义）", async () => {
+    const { res } = await call("sites?groupId=abc", "GET", {});
+    assert.equal(res?.status, 400);
 });
 
 // ---- 不认领的路径 ----

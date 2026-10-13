@@ -268,6 +268,11 @@ export interface NoteImportStats {
     updated: number;
     /** 同 uuid 但本地较新，或内容一致 → 保留本地不动 */
     skipped: number;
+    /**
+     * 提交批分片后，中途失败时已提交的批保留、其余未写入 ——
+     * 带上这句话让前端能如实提示（重新导入可按 uuid 续传）。成功时不存在。
+     */
+    warning?: string;
     /** 完全覆盖模式下被清掉的本地笔记数 */
     removed: number;
 }

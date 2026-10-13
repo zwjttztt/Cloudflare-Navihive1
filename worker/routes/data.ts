@@ -10,7 +10,7 @@ import { enforceWriteGuard, writeBucket } from "../loginGuard";
 import { weakEtag } from "../util";
 import { readImageSize } from "../imageSize";
 import type { GroupInput, SiteInput } from "../types";
-import { validateGroup, validateSite } from "../validate";
+import { validateGroup, validateSite, validateGroupPatch, validateSitePatch } from "../validate";
 import { readIdempotencyKey, withIdempotency } from "../idempotency";
 import { currentUserIdentity } from "./account";
 import {
@@ -255,6 +255,9 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
             throw ApiError.badRequest("无效的ID");
         }
         const group = await api.getGroup(id);
+        // 与 GET /api/notes/{id} 同语义：不存在就 404，不回 200 + null
+        //（200 + null 会让调用方把「没有」当「有了一个空对象」）
+        if (!group) throw ApiError.notFound("分组不存在");
         return Response.json(group);
     } else if (path === "groups" && method === "POST") {
         const limited = await writeGate();
@@ -280,19 +283,14 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
         }
 
         const data = (await request.json()) as Partial<Group>;
-        // 对修改的字段进行验证
-        if (
-            data.name !== undefined &&
-            (typeof data.name !== "string" || data.name.trim() === "")
-        ) {
-            return errorResponse(ApiError.badRequest("分组名称不能为空且必须是字符串"));
+        // PATCH 化校验：与 POST 同一套规则（trim + 截断 100），只校验传了的字段。
+        // 以前只查「非空串」，name 没有长度上限 —— 与 POST 不对称。
+        const validation = validateGroupPatch(data);
+        if (!validation.valid) {
+            return errorResponse(ApiError.badRequest(`验证失败: ${validation.errors?.join(", ")}`));
         }
 
-        if (data.order_num !== undefined && typeof data.order_num !== "number") {
-            return errorResponse(ApiError.badRequest("排序号必须是数字"));
-        }
-
-        const result = await api.updateGroup(id, data);
+        const result = await api.updateGroup(id, validation.sanitizedData as Partial<Group>);
         return Response.json(result);
     } else if (path.startsWith("groups/") && method === "DELETE") {
         const limited = await writeGate();
@@ -303,8 +301,13 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
             throw ApiError.badRequest("无效的ID");
         }
 
-        const result = await api.deleteGroup(id);
-        // 软删除：结果含 recycleId，前端撤销时据此精确还原
+        const result = await api.deleteGroup(id, {
+            action: "group.delete",
+            actor: "",
+            ip,
+            detail: `分组 ${id}`,
+        });
+        // 软删除：结果含 recycleId，前端撤销时据此精确还原（审计已并入删除事务）
         return Response.json(result);
 
     // ---- 记事本 ----
@@ -697,10 +700,22 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
         if (!Array.isArray(orders)) {
             throw ApiError.badRequest("无效的排序数据");
         }
+        // 与 group-orders / site-orders 同一道逐项校验：元素缺 id/order_num 时
+        // undefined 会直接进 bind，D1 报错变成 500 —— 应该是 400。
+        for (const item of orders) {
+            const row = item as { id?: unknown; order_num?: unknown } | null;
+            if (
+                !row ||
+                typeof row.id !== "number" ||
+                !Number.isSafeInteger(row.id) ||
+                row.order_num === undefined ||
+                typeof row.order_num !== "number"
+            ) {
+                throw ApiError.badRequest("排序数据格式无效，每个项目必须包含id和order_num");
+            }
+        }
         return Response.json({
-            success: await api.updateNoteOrder(
-                orders as { id: number; order_num: number }[]
-            ),
+            success: await api.updateNoteOrder(orders as { id: number; order_num: number }[]),
         });
     } else if (path.startsWith("notes/") && method === "PUT") {
         const limited = await writeGate();
@@ -763,11 +778,24 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
         if (isNaN(id)) {
             throw ApiError.badRequest("无效的ID");
         }
-        return Response.json(await api.deleteNote(id));
+        // 审计并入删除事务（api 层同一个 batch）：少一次串行往返，
+        // 且「删了」与「记了审计」同生同死
+        return Response.json(
+            await api.deleteNote(id, {
+                action: "note.delete",
+                actor: "",
+                ip,
+                detail: `笔记 ${id}`,
+            })
+        );
     }
     // 站点相关API
     if (path === "sites" && method === "GET") {
         const groupId = url.searchParams.get("groupId");
+        // 非法值不能放过去：parseInt("abc") 是 NaN，NaN 进 bind 的行为未定义
+        if (groupId !== null && !Number.isSafeInteger(Number(groupId))) {
+            throw ApiError.badRequest("无效的分组ID");
+        }
         const sites = await api.getSites(groupId ? parseInt(groupId) : undefined);
         return Response.json(sites);
     } else if (path.startsWith("sites/") && method === "GET") {
@@ -777,6 +805,8 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
         }
 
         const site = await api.getSite(id);
+        // 与 GET /api/notes/{id} 同语义：不存在就 404，不回 200 + null
+        if (!site) throw ApiError.notFound("站点不存在");
         return Response.json(site);
     } else if (path === "sites" && method === "POST") {
         const limited = await writeGate();
@@ -788,6 +818,14 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
         const validation = validateSite(data);
         if (!validation.valid) {
             return errorResponse(ApiError.badRequest(`验证失败: ${validation.errors?.join(", ")}`));
+        }
+
+        // 目标分组必须是自己的：批量排序路径修过同一个洞（updateSiteOrder 的
+        // filterOwnedGroupIds），POST 这条路不能漏 —— 否则卡片能建进别人的分组，
+        // 从自己视图里消失。
+        const owned = await api.filterOwnedGroupIds([validation.sanitizedData!.group_id]);
+        if (!owned.has(validation.sanitizedData!.group_id)) {
+            return errorResponse(ApiError.badRequest("目标分组不存在"));
         }
 
         const result = await api.createSite(validation.sanitizedData as Site);
@@ -803,32 +841,24 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
 
         const data = (await request.json()) as Partial<Site>;
 
-        // 验证更新的站点数据
-        if (data.url !== undefined) {
-            try {
-                new URL(data.url);
-            } catch {
-                return errorResponse(ApiError.badRequest("无效的URL格式"));
+        // PATCH 化校验：与 POST 同一套规则（trim / 截断 / URL 规范化 / 图标清洗），
+        // 只校验传了的字段。以前只有「URL 能不能 new URL」几条 —— name 可以改成
+        // 空串、description/notes 没有上限、icon 不过 sanitizeIconUrl。
+        const validation = validateSitePatch(data);
+        if (!validation.valid) {
+            return errorResponse(ApiError.badRequest(`验证失败: ${validation.errors?.join(", ")}`));
+        }
+        const sanitized = validation.sanitizedData as Partial<Site>;
+
+        // 目标分组必须是自己的（同 POST；批量排序路径早已修过，这里是补单条编辑这条路）
+        if (sanitized.group_id !== undefined) {
+            const owned = await api.filterOwnedGroupIds([sanitized.group_id]);
+            if (!owned.has(sanitized.group_id)) {
+                return errorResponse(ApiError.badRequest("目标分组不存在"));
             }
         }
 
-        if (data.icon !== undefined && data.icon !== "") {
-            try {
-                new URL(data.icon);
-            } catch {
-                return errorResponse(ApiError.badRequest("无效的图标URL格式"));
-            }
-        }
-
-        if (data.username !== undefined && typeof data.username !== "string") {
-            return errorResponse(ApiError.badRequest("账号必须是字符串"));
-        }
-
-        if (data.password !== undefined && typeof data.password !== "string") {
-            return errorResponse(ApiError.badRequest("密码必须是字符串"));
-        }
-
-        const result = await api.updateSite(id, data);
+        const result = await api.updateSite(id, sanitized);
         return Response.json(result);
     } else if (path.startsWith("sites/") && method === "DELETE") {
         const limited = await writeGate();
@@ -839,8 +869,13 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
             throw ApiError.badRequest("无效的ID");
         }
 
-        const result = await api.deleteSite(id);
-        await api.writeAudit("site.delete", "", ip, `站点 ${id}`);
+        // 审计并入删除事务（api 层同一个 batch）：少一次串行往返
+        const result = await api.deleteSite(id, {
+            action: "site.delete",
+            actor: "",
+            ip,
+            detail: `站点 ${id}`,
+        });
         // 软删除：结果含 recycleId，前端撤销时据此精确还原
         return Response.json(result);
     }
@@ -860,8 +895,13 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
         if (ids.length > 500) {
             return errorResponse(ApiError.badRequest("一次最多删除 500 个"));
         }
-        const result = await api.deleteSites(ids);
-        await api.writeAudit("site.batchDelete", "", ip, `站点 ${ids.length} 个`);
+        // 审计并入删除事务（api 层同一个 batch）
+        const result = await api.deleteSites(ids, {
+            action: "site.batchDelete",
+            actor: "",
+            ip,
+            detail: `站点 ${ids.length} 个`,
+        });
         return Response.json(result);
     }
     // 批量更新排序

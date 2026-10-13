@@ -207,9 +207,14 @@ class InMemoryD1 {
         return make([]);
     }
 
-    async batch(stmts: Array<{ run: () => Promise<unknown> }>): Promise<{ results: unknown[]; success: boolean }> {
-        for (const s of stmts) await s.run();
-        return { results: [], success: true };
+    async batch(stmts: Array<{ run: () => Promise<unknown> }>): Promise<unknown[]> {
+        // ⚠️ 真 D1 的 batch 返回 **D1Result 数组**（每条语句一个，meta.last_row_id
+        // 在里面）—— 以前这里包成 { results, success } 对象，形状就是错的。
+        // 旧代码都是防御式消费（success 标志兜底）所以没炸过；deleteSite/deleteGroup
+        // 现在按真形状从 results[i].meta 取回收站 id，桩必须照真形状回。
+        const results: unknown[] = [];
+        for (const s of stmts) results.push(await s.run());
+        return results;
     }
 
     async exec(): Promise<{ success: boolean }> {

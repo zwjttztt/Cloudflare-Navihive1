@@ -9,6 +9,29 @@ import type { NavigationAPI } from "../http";
 import { isAuthConfigKey, isEncryptedConfigKey, isPrivateUserConfigKey } from "../configGuards";
 import { decryptSecretDeep, encryptSecret } from "../crypto";
 import { BootstrapData, Config, Group, Site, SiteBatchDeleteResult, SiteOrderUpdateResult } from "../types";
+import type { D1PreparedStatement } from "../schema";
+
+/** 随删除事务一起落库的审计条目（不传就不写审计） */
+export interface AuditEntry {
+    action: string;
+    actor: string;
+    ip: string;
+    detail?: string;
+}
+
+/** 审计与删除语句进同一个 batch：少一次串行往返，且「删了」与「记了」同生同死 */
+export function auditStatement(api: NavigationAPI, audit?: AuditEntry): D1PreparedStatement | null {
+    if (!audit) return null;
+    return api.db
+        .prepare("INSERT INTO audit_log (action, actor, ip, detail) VALUES (?, ?, ?, ?)")
+        .bind(audit.action, audit.actor || "", audit.ip || "", audit.detail || "");
+}
+
+/** 从 batch 结果里取回收站行 id（拿不到就 undefined，调用方当「没进站」处理） */
+function recycleIdOf(result: { meta?: unknown } | undefined): number | undefined {
+    const meta = result?.meta as { last_row_id?: number } | undefined;
+    return typeof meta?.last_row_id === "number" ? meta.last_row_id : undefined;
+}
 
 export interface DataApi {
     getGroups(): Promise<Group[]>;
@@ -18,7 +41,7 @@ export interface DataApi {
     getGroup(id: number): Promise<Group | null>;
     createGroup(group: Group): Promise<Group>;
     updateGroup(id: number, group: Partial<Group>): Promise<Group | null>;
-    deleteGroup(id: number): Promise<{ success: boolean; recycleId?: number }>;
+    deleteGroup(id: number, audit?: AuditEntry): Promise<{ success: boolean; recycleId?: number }>;
     getSites(groupId?: number): Promise<Site[]>;
     decryptSitePassword(site: Site): Promise<Site>;
     decryptSitePasswords(sites: Site[]): Promise<Site[]>;
@@ -29,8 +52,8 @@ export interface DataApi {
     insertSite(site: Site): Promise<Site>;
     updateSite(id: number, site: Partial<Site>): Promise<Site | null>;
     updateSiteRow(id: number, site: Partial<Site>): Promise<Site | null>;
-    deleteSites(ids: number[]): Promise<SiteBatchDeleteResult>;
-    deleteSite(id: number): Promise<{ success: boolean; recycleId?: number }>;
+    deleteSites(ids: number[], audit?: AuditEntry): Promise<SiteBatchDeleteResult>;
+    deleteSite(id: number, audit?: AuditEntry): Promise<{ success: boolean; recycleId?: number }>;
     updateGroupOrder(groupOrders: { id: number; order_num: number }[]): Promise<boolean>;
     updateSiteOrder(
         siteOrders: { id: number; order_num: number; group_id?: number }[]
@@ -174,28 +197,48 @@ export const dataImpl: DataApi = {
     /**
      * 删除分组：先连同它的站点一起搬进回收站（软删除），再真正删除。
      * 返回 recycleId 供前端「撤销」时精确还原，避免本地重建产生重复副本。
+     *
+     * 往返优化：两个 SELECT 互不依赖并行发；回收站写入 + 删除真身 + 审计
+     * 合进同一个 db.batch（= 一次往返 + 一个事务），以前是 3~4 次串行往返。
      */
-    deleteGroup: async function (this: NavigationAPI, id: number): Promise<{ success: boolean; recycleId?: number }> {
+    deleteGroup: async function (
+        this: NavigationAPI,
+        id: number,
+        audit?: AuditEntry
+    ): Promise<{ success: boolean; recycleId?: number }> {
         await this.migrate();
         return this.withSchemaRetry(async () => {
-            const group = await this.db
-                .prepare(`SELECT * FROM groups WHERE id = ?${this.scopeSql(true)}`)
-                .bind(...this.scopeParams([id]))
-                .first<Record<string, unknown>>();
+            const [group, sitesResult] = await Promise.all([
+                this.db
+                    .prepare(`SELECT * FROM groups WHERE id = ?${this.scopeSql(true)}`)
+                    .bind(...this.scopeParams([id]))
+                    .first<Record<string, unknown>>(),
+                this.db
+                    .prepare(`SELECT * FROM sites WHERE group_id = ?${this.scopeSql(true)}`)
+                    .bind(...this.scopeParams([id]))
+                    .all<Record<string, unknown>>(),
+            ]);
             if (!group) return { success: false };
-            const sitesResult = await this.db
-                .prepare(`SELECT * FROM sites WHERE group_id = ?${this.scopeSql(true)}`)
-                .bind(...this.scopeParams([id]))
-                .all<Record<string, unknown>>();
-            const recycleId = await this.pushToRecycle(
-                "group",
-                JSON.stringify({ group, sites: sitesResult.results || [] })
-            );
-            const result = await this.db
-                .prepare(`DELETE FROM groups WHERE id = ?${this.scopeSql(true)}`)
-                .bind(...this.scopeParams([id]))
-                .run();
-            return { success: result.success, recycleId: result.success ? recycleId : undefined };
+            const statements: D1PreparedStatement[] = [
+                this.db
+                    .prepare(
+                        "INSERT INTO recycle_bin (kind, owner_user_id, data, deleted_at) VALUES (?, ?, ?, ?)"
+                    )
+                    .bind(
+                        "group",
+                        this.currentUserId,
+                        JSON.stringify({ group, sites: sitesResult.results || [] }),
+                        Math.floor(Date.now() / 1000)
+                    ),
+                this.db
+                    .prepare(`DELETE FROM groups WHERE id = ?${this.scopeSql(true)}`)
+                    .bind(...this.scopeParams([id])),
+            ];
+            const auditStmt = auditStatement(this, audit);
+            if (auditStmt) statements.push(auditStmt);
+            const results = await this.db.batch(statements);
+            const recycleId = recycleIdOf(results[0]);
+            return { success: true, recycleId };
         });
     },
 
@@ -366,11 +409,15 @@ export const dataImpl: DataApi = {
     /**
      * 批量删除站点：一次请求搬完，替代「前端 for 循环逐个 DELETE」。
      *
-     * 多选删 20 张卡，原来是 20 次 HTTP 往返 × 每次 3 条 SQL（读行 / 写回收站 / 删行），
-     * 点下去要等十几秒。现在一次往返：1 次 SELECT 取回全部原始行 → 并发写回收站 →
-     * 1 条 `DELETE ... IN` 删真身。
+     * 往返优化：回收站写入按 200 条/批 chunk（D1 单次 batch 有语句数上限，
+     * 500 张卡的上限下不能一口气塞 500 条 INSERT），全部进站后一个 batch 删真身 + 审计。
+     * 以前是 N 条并发 INSERT，中途失败会留下「部分进站部分硬删」的混合态。
      */
-    deleteSites: async function (this: NavigationAPI, ids: number[]): Promise<SiteBatchDeleteResult> {
+    deleteSites: async function (
+        this: NavigationAPI,
+        ids: number[],
+        audit?: AuditEntry
+    ): Promise<SiteBatchDeleteResult> {
         await this.migrate();
         const unique = [...new Set(ids.filter(id => Number.isInteger(id)))];
         if (unique.length === 0) return { items: [], failed: [] };
@@ -389,36 +436,59 @@ export const dataImpl: DataApi = {
             }
 
             const failed: number[] = [];
-            const pending: Promise<{ id: number; recycleId?: number }>[] = [];
+            const orderedIds: number[] = [];
+            const recycleStatements: D1PreparedStatement[] = [];
             for (const id of unique) {
                 const row = found.get(id);
                 if (!row) {
                     failed.push(id);
                     continue;
                 }
-                pending.push(
-                    this.pushToRecycle("site", JSON.stringify(row)).then(recycleId => ({
-                        id,
-                        recycleId,
-                    }))
+                orderedIds.push(id);
+                recycleStatements.push(
+                    this.db
+                        .prepare(
+                            "INSERT INTO recycle_bin (kind, owner_user_id, data, deleted_at) VALUES (?, ?, ?, ?)"
+                        )
+                        .bind("site", this.currentUserId, JSON.stringify(row), Math.floor(Date.now() / 1000))
                 );
             }
-            const items = await Promise.all(pending);
+            if (orderedIds.length === 0) return { items: [], failed };
 
             // 只有真的进了回收站的才删真身：写回收站失败就当成「没删」，
             // 免得多选删除把卡片变成硬删除（回收站里没有，找不回来）
-            const okIds = items.filter(item => item.recycleId !== undefined).map(item => item.id);
-            if (okIds.length > 0) {
-                const delList = okIds.map(() => "?").join(", ");
-                await this.db
-                    .prepare(`DELETE FROM sites WHERE id IN (${delList})${this.scopeSql(true)}`)
-                    .bind(...this.scopeParams(okIds))
-                    .run();
+            const RECYCLE_CHUNK = 200;
+            const recycleIds: (number | undefined)[] = new Array(orderedIds.length).fill(undefined);
+            for (let i = 0; i < recycleStatements.length; i += RECYCLE_CHUNK) {
+                const results = await this.db.batch(recycleStatements.slice(i, i + RECYCLE_CHUNK));
+                results.forEach((r, j) => {
+                    recycleIds[i + j] = recycleIdOf(r);
+                });
             }
 
+            const okIndex = recycleIds
+                .map((rid, i) => (rid !== undefined ? i : -1))
+                .filter(i => i >= 0);
+            if (okIndex.length > 0) {
+                const okIds = okIndex.map(i => orderedIds[i]);
+                const delList = okIds.map(() => "?").join(", ");
+                const tail: D1PreparedStatement[] = [
+                    this.db
+                        .prepare(`DELETE FROM sites WHERE id IN (${delList})${this.scopeSql(true)}`)
+                        .bind(...this.scopeParams(okIds)),
+                ];
+                const auditStmt = auditStatement(this, audit);
+                if (auditStmt) tail.push(auditStmt);
+                await this.db.batch(tail);
+            }
+
+            const items = orderedIds.map((id, i) => ({ id, recycleId: recycleIds[i] }));
             return {
                 items,
-                failed: [...failed, ...items.filter(item => item.recycleId === undefined).map(i => i.id)],
+                failed: [
+                    ...failed,
+                    ...items.filter(item => item.recycleId === undefined).map(item => item.id),
+                ],
             };
         });
     },
@@ -426,8 +496,15 @@ export const dataImpl: DataApi = {
     /**
      * 删除站点：先搬进回收站（软删除，原样保留含密文密码的原始行），再真正删除。
      * 返回 recycleId 供前端「撤销」精确还原。
+     *
+     * 往返优化：回收站写入 + 删除真身 + 审计合进同一个 db.batch（一次往返 + 事务），
+     * 以前是 SELECT → INSERT 回收站 → DELETE 三次串行往返。
      */
-    deleteSite: async function (this: NavigationAPI, id: number): Promise<{ success: boolean; recycleId?: number }> {
+    deleteSite: async function (
+        this: NavigationAPI,
+        id: number,
+        audit?: AuditEntry
+    ): Promise<{ success: boolean; recycleId?: number }> {
         await this.migrate();
         return this.withSchemaRetry(async () => {
             const row = await this.db
@@ -435,12 +512,20 @@ export const dataImpl: DataApi = {
                 .bind(...this.scopeParams([id]))
                 .first<Record<string, unknown>>();
             if (!row) return { success: false };
-            const recycleId = await this.pushToRecycle("site", JSON.stringify(row));
-            const result = await this.db
-                .prepare(`DELETE FROM sites WHERE id = ?${this.scopeSql(true)}`)
-                .bind(...this.scopeParams([id]))
-                .run();
-            return { success: result.success, recycleId: result.success ? recycleId : undefined };
+            const statements: D1PreparedStatement[] = [
+                this.db
+                    .prepare(
+                        "INSERT INTO recycle_bin (kind, owner_user_id, data, deleted_at) VALUES (?, ?, ?, ?)"
+                    )
+                    .bind("site", this.currentUserId, JSON.stringify(row), Math.floor(Date.now() / 1000)),
+                this.db
+                    .prepare(`DELETE FROM sites WHERE id = ?${this.scopeSql(true)}`)
+                    .bind(...this.scopeParams([id])),
+            ];
+            const auditStmt = auditStatement(this, audit);
+            if (auditStmt) statements.push(auditStmt);
+            const results = await this.db.batch(statements);
+            return { success: true, recycleId: recycleIdOf(results[0]) };
         });
     },
 

@@ -122,6 +122,12 @@ export function useSiteActions(deps: SiteActionsDeps) {
     // 更新站点：保存成功后直接用（本地这份 + 服务端回显）更新本地状态，界面即时生效，不再刷新页面
     const handleSiteUpdate = useCallback(
         async (siteInput: Site) => {
+            // 空名称在编辑这条路上也拦下（新增对话框有「名称和URL不能为空」，
+            // 这里以前漏了 —— 服务端现在同样拒绝，但前端先拦能给出即时反馈）
+            if (!siteInput.name || !siteInput.name.trim()) {
+                handleError("站点名称不能为空");
+                return;
+            }
             // 网址规范化：不写协议时补 https://，javascript: 之类的伪协议直接挡掉
             // （编辑站点这条路径同样不走 type=url 校验，见 utils/url.ts 的说明）
             const urlCheck = normalizeUrl(siteInput.url || "");

@@ -6,6 +6,56 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。---
 
+## 2026-10-13 · 修复：CRUD 审查的全部缺陷一次落完（越权 / 校验 / 往返合并 / 分批）
+
+上一条报告（`docs/crud-audit-2026-10-13.md`）所列问题全部修复。分四组：
+
+### 一、越权与校验（两个 P0）
+
+- **单条编辑/新增站点的 `group_id` 属主校验**：`PUT /api/sites/{id}` 与 `POST /api/sites`
+  现在过 `filterOwnedGroupIds`——目标分组不是自己的直接 400「目标分组不存在」。
+  批量排序路径早修过同一个洞，这是补齐单条路径。
+- **`PUT` sites/groups 与 POST 同一套清洗**：新增 `validateSitePatch` / `validateGroupPatch`
+  （PATCH 化：只校验传了的字段），PUT 现在也做 trim、截断（name≤100/description≤500/
+  notes≤1000/密码≤500）、URL 规范化、图标危险协议清洗。以前 name 能改成空串、
+  备注能写 MB 级、`javascript:` 图标能经编辑入库。凭据字段非字符串**报错**而不是
+  静默转空串——手滑传错类型不该变成清空已存的账号密码。
+- **前端编辑卡片拦空名称**（`useSiteActions`），与新增对话框对齐。
+
+### 二、D1 往返合并（性能大头）
+
+- **删一条笔记 8 次串行往返 → 3 次**：两个 SELECT 并行；回收站写入、清标签关联、
+  吊销分享、删真身、删全文索引、写墓碑、审计全部合进**同一个 `db.batch`**（一次往返 +
+  事务），顺带消掉「行删了但墓碑/索引没跟上」的中间态。
+- **存一条笔记 5 次 → 3 次**：UPDATE 加 `RETURNING` 省掉回读；并发冲突改按
+  「RETURNING 空结果」判定，不再依赖 `meta.changes`（旧写法在拿不到 changes 的环境里
+  会把冲突当「改到了」，乐观锁静默失效）；版本快照 + 裁剪 + FTS 同步合进一个 batch。
+- **删除分组/站点 3 次 → 2 次**：回收站写入 + 删真身 + 审计进同一 batch（分组场景两个
+  SELECT 并行）。**批量删除**的回收站写入从「N 条并发 INSERT」改为按 200 条/批的 batch。
+- **审计并入删除事务**（site.delete / site.batchDelete），并**补齐删除类留痕**：
+  `group.delete` / `note.delete` 现在也写审计（以前数据域只有卡片删除两条）。
+
+### 三、健壮性
+
+- **笔记导入提交批按 250 条/批切片**：以前整批一次性 batch，大导入（几百条笔记+标签+关联）
+  会撞 D1 单次 batch 语句数上限 → 整个导入 500。中途失败已提交的批保留，
+  `stats.warning` 如实提示（重新导入按 uuid 续传，不会重复建）；FTS 重建批同样切片。
+- **`note-orders` PUT 逐项校验**元素形状（缺 id/order_num 现在回 400，以前 undefined 进
+  bind 变 500）。
+- **单查 sites/groups/{id} 不存在回 404**（以前 200 + null，与笔记的 404 不一致）。
+- **`GET /api/sites?groupId=非数字` 回 400**（以前 NaN 进 bind，行为未定义）。
+
+### 四、索引
+
+- 新增 `idx_sites_user_group`（`sites(user_id, group_id)` 复合索引），**SCHEMA_VERSION
+  18 → 19**（索引步骤同样吃版本快路径，不升号老库永远建不上）。
+
+守卫同步升级：`noteRecycle.test.ts` 的 deleteNote 形状守卫改为「全副作用进同一 batch」；
+`dataRoutes.test.ts` 新增 8 条（越权 400 ×2、PUT 清洗 ×3、note-orders 400、单查 404、
+groupId 400）。真 SQLite 用例（含乐观并发冲突、删后还原、FTS 清理）全绿。
+
+---
+
 ## 2026-10-13 · 工程：CRUD 全面审查 + 性能瓶颈分析（报告，不含行为变更）
 
 `docs/crud-audit-2026-10-13.md`。静态审查了站点/分组/笔记（文件夹/标签/版本/附件/分享）、

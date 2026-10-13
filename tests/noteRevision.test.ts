@@ -131,9 +131,20 @@ class MockD1 {
             bind(...a: unknown[]) { args = a; return stmt; },
             async first() { return self.select(sql, args)[0] ?? null; },
             async all() {
-                // all() 既可能是查询，也可能是 INSERT…RETURNING
+                // all() 既可能是查询，也可能是 INSERT/UPDATE…RETURNING
                 if (/^\s*(INSERT|UPDATE|DELETE)/i.test(self.norm(sql))) {
                     self.run(sql, args);
+                    // UPDATE … RETURNING：真 D1 会把**改到的行**回出来（updateNote
+                    // 靠 RETURNING 空不空判「0 行命中 = 并发冲突/不存在」）。
+                    // 照 run() 里同一套约定解析 id（倒数第二个参数）与 uid（末位）。
+                    if (/RETURNING/i.test(sql) && /^\s*UPDATE notes/i.test(self.norm(sql))) {
+                        const id = Number(args[args.length - 2]);
+                        const uid = Number(args[args.length - 1]);
+                        const note = self.notes.find(
+                            n => n.id === id && n.user_id === uid
+                        );
+                        return { results: note ? [note] : [], success: true };
+                    }
                     return { results: [], success: true };
                 }
                 return { results: self.select(sql, args), success: true };
