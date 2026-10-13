@@ -282,8 +282,14 @@ export default function BookmarkImportDialog({
                             >
                                 {plan.groups.map(group => {
                                     const stat = folderStats.get(group.folder);
+                                    // ⚠️ 重复项在「连重复一起导入」打开时是要导入的，不能再算进跳过数：
+                                    // 否则那行会同时显示「2 个将导入 · 跳过 1 个」，自相矛盾
+                                    // （items.length 已经把重复的那条算进去了）。
+                                    // 这条是 tests/bookmarkImportDialog.dom.test.tsx 的
+                                    // 「打开连重复一起导入后重新算计划」钉住的。
                                     const skipped =
-                                        (stat?.duplicate ?? 0) + (stat?.invalid ?? 0);
+                                        (includeDuplicates ? 0 : (stat?.duplicate ?? 0)) +
+                                        (stat?.invalid ?? 0);
                                     return (
                                         <ListItem key={group.folder} disableGutters sx={{ px: 1 }}>
                                             <FormControlLabel
