@@ -77,6 +77,11 @@ const result = await esbuild.build({
     external: ["jsdom"],
     // 用例里有顶层 await（DOM 替身要用），esbuild 需要知道目标支持
     supported: { "top-level-await": true },
+    // ⚠️ 字体 / 样式必须给 loader：和 unit-tests.mjs 同一套理由 ——
+    // 某些用例会连带引入 katex.min.css，里面 url() 指向十几张 woff2/ttf，
+    // esbuild 默认不认这些后缀，一碰就 "No loader is configured for .woff2 files"
+    // 把整份覆盖率报告拖死（2026-10-13 实测：60 个 ERROR，脚本完全跑不出来）。
+    loader: { ".css": "empty", ".woff": "file", ".woff2": "file", ".ttf": "file" },
 });
 
 const touched = new Set();
