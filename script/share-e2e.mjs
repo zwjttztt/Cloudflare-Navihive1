@@ -209,7 +209,9 @@ const created = await call(`notes/${noteId}/share`, "POST", { days: 1, password:
 check("创建带口令的笔记分享", created.status === 200 && /^[a-f0-9]{64}$/.test(created.data?.token ?? ""),
     `status=${created.status} token=${(created.data?.token ?? "").slice(0, 8)}…`);
 const token = created.data?.token;
-check("分享标记为有口令", created.data?.hasPassword === true);
+// ⚠️ hasPassword 过网是 1/0 不是布尔：SQL 里是 (password IS NOT NULL)，SQLite 没有布尔类型。
+// 既有真库测试（groupSharesRealSql.test.ts）与前端（NoteShareDialog 用 !!value?.hasPassword）都按真值判。
+check("分享标记为有口令", !!created.data?.hasPassword);
 
 // 匿名 GET：必须 401 + 顶层 needPassword，且**不带正文**
 const needPw = await anon(`note-shares/${token}`);
@@ -240,7 +242,7 @@ check("成功响应打上防刷当日戳 cookie",
 const updated = await call(`notes/${noteId}/share`, "PUT", { days: 7 });
 check("PUT 更新有效期成功且 token 不变",
     updated.status === 200 && updated.data?.token === token, `status=${updated.status}`);
-check("PUT 之后仍是有口令", updated.data?.hasPassword === true);
+check("PUT 之后仍是有口令", !!updated.data?.hasPassword);
 
 // 方法不对：PATCH 必须 405 + method_not_allowed（迁移后新增的 code）
 const patched = await call(`notes/${noteId}/share`, "PATCH", { days: 7 });
@@ -287,7 +289,7 @@ check("公开分组页带出了站点名", pubText.includes("分享验收站点"
 
 // 分组分享也能带口令
 const gPwCreated = await call(`groups/${groupId}/share`, "POST", { days: 1, password: SHARE_PW });
-check("创建带口令的分组分享", gPwCreated.status === 200 && gPwCreated.data?.hasPassword === true,
+check("创建带口令的分组分享", gPwCreated.status === 200 && !!gPwCreated.data?.hasPassword,
     `status=${gPwCreated.status}`);
 const gPwToken = gPwCreated.data?.token;
 const gNeedPw = await anon(`group-shares/${gPwToken}`);

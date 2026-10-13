@@ -50,6 +50,14 @@
 建分组/建站点漏了 `order_num`（`validateGroup`/`validateSite` 都要求它是安全整数，漏了会 400）；
 防刷 cookie 名写成 `note-view-<数字>`（实际是 `nh_noteview_<token>`，来自 `shareViewCookieName`）。
 
+**第一轮 CI 抓出第四处，也是唯一一处「契约比代码严」的**：`hasPassword` 我按 `=== true` 断言，
+过网实际是 **1/0** —— SQL 里写的是 `(password IS NOT NULL) AS hasPassword`，SQLite 没有布尔类型，
+D1 原样回整数。既有真库测试（`groupSharesRealSql.test.ts:38` 用 `!!created!.hasPassword`）与前端
+（`NoteShareDialog.tsx:112` 用 `!!value?.hasPassword`、`GroupShareDialog.tsx:137` 用三元）都按真值判，
+所以这不是产品 bug，是断言写严了。改成 `!!` 真值判断。⚠️ 顺带记一笔：`src/API/types.ts` 把
+`hasPassword` 声明成 `boolean`，与过网的 1/0 不符 —— 所有调用方都按真值用所以没出事，
+但要改就得同步动前端与一批测试，收益为零，本轮不动。
+
 ## 2026-10-13 · 性能：首屏请求 20 → 15、打开记事本 1218 → 965 KB；错误码迁移收尾（30 处 → 0）
 
 接着上一轮「78 → 20」往下挖的两块，加上欠了很久的工程债。
