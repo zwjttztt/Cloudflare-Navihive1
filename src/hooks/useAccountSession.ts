@@ -25,6 +25,7 @@ import {
     readSweepResult,
     resolveInactivePolicy,
 } from "../utils/authFlow";
+import { parseApiError } from "../API/apiError";
 import { reportError } from "../utils/errorReporter";
 import type { NotifySeverity } from "./useNotify";
 import type { GroupWithSites } from "../types";
@@ -243,7 +244,8 @@ export function useAccountSession({
                     notify("已重新启用该账号", "success");
                     await fetchAccountList();
                 } else {
-                    notify(data.message || "操作失败", "error");
+                    // 服务端迁移后失败体是 { error: { code, message } }，data.message 会没
+                    notify(parseApiError(data, res.status)?.message || "操作失败", "error");
                 }
             } catch (error) {
                 notify("操作失败：" + (error instanceof Error ? error.message : "未知错误"), "error");
@@ -268,7 +270,7 @@ export function useAccountSession({
                 disabled?: number;
                 deleted?: number;
             };
-            const result = readSweepResult(res.ok, data);
+            const result = readSweepResult(res.ok, data, res.status);
             if (result.success) await fetchAccountList();
             return result;
         } catch (error) {

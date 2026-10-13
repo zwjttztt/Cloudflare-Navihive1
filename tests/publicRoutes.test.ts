@@ -25,6 +25,7 @@ import {
 import { REMEMBER_TOKEN_TTL } from "../src/API/http";
 import type { RouteCtx } from "../worker/routes/types";
 import type { NavigationAPI } from "../src/API/navigationApi";
+import { errorBody } from "./helpers/apiErrorBody";
 
 const HOST = "https://nav.example.com";
 const IP = "203.0.113.1";
@@ -221,7 +222,9 @@ test("登录：锁定期内直接 429 + Retry-After，且不调用 api.login", a
     assert.equal(res?.status, 429);
     assert.ok(Number(res?.headers.get("Retry-After")) > 0, "要告诉还要等多久");
     assert.deepEqual(log.logins, [], "锁定期间不该再去跑一次密码校验");
-    assert.ok(String((await json(res!)).message).includes("请"));
+    const loginLocked = await errorBody(res!);
+    assert.equal(loginLocked.code, "rate_limited");
+    assert.ok(loginLocked.message.includes("请"));
 });
 
 test("登录成功：写成功审计、登记设备、令牌只进 cookie 不进响应体", async () => {
@@ -340,7 +343,9 @@ test("注册：未启用鉴权的部署必须拒绝（整站公开时没有「�
     });
     assert.equal(res?.status, 400);
     assert.deepEqual(log.registers, [], "不该真的建号");
-    assert.ok(String((await json(res!)).message).includes("无需注册"));
+    const reg = await errorBody(res!);
+    assert.equal(reg.code, "bad_request");
+    assert.ok(reg.message.includes("无需注册"));
 });
 
 test("注册：锁定期内 429，且不真的建号", async () => {

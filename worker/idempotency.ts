@@ -14,6 +14,7 @@
 //   - **只回放成功响应**。5xx 不缓存也不回放，那本来就该让客户端重试。
 
 import type { NavigationAPI } from "../src/API/http";
+import { ApiError, errorResponse } from "./lib/apiError";
 
 /** 幂等 ID 的长度上限：UUID 是 36 字符，放宽到 128 够任何合理生成器，同时挡掉超长垃圾 */
 const MAX_OP_ID_LEN = 128;
@@ -45,14 +46,7 @@ export function idempotencyScope(api: NavigationAPI, endpoint: string): string {
 
 /** 「已有同伴在跑」：不是错误，客户端稍后再问一次就能拿到结果 */
 function inFlight(): Response {
-    return Response.json(
-        {
-            success: false,
-            message: "该操作正在处理中，请稍后重试",
-            inFlight: true,
-        },
-        { status: 409, headers: { "Retry-After": "2" } }
-    );
+    return errorResponse(ApiError.conflict("该操作正在处理中，请稍后重试"), { headers: { "Retry-After": "2" }, extra: { inFlight: true } });
 }
 
 /**

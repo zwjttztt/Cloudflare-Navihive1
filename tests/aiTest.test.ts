@@ -57,15 +57,23 @@ function ctxFor(payload: unknown): RouteCtx {
     };
 }
 
-const call = async (payload: unknown) => {
+type AiTestBody = {
+    success: boolean;
+    message?: string;
+    text?: { ok: boolean; message?: string };
+    embed?: { ok: boolean; dim?: number; message?: string };
+};
+
+const call = async (payload: unknown): Promise<AiTestBody> => {
     const res = await handleAiRoutes(ctxFor(payload));
     assert.ok(res, "ai/test 应该被认领");
-    return (await res.json()) as {
-        success: boolean;
-        message?: string;
-        text?: { ok: boolean; message?: string };
-        embed?: { ok: boolean; dim?: number; message?: string };
-    };
+    const raw = (await res.json()) as AiTestBody & { error?: { code?: string; message?: string } };
+    // ai.ts 全模块只此一个错误出口（bad()），迁移后失败体是 { error: { code, message } }；
+    // 这个文件的断言读 success / message，这里统一翻回旧形状。
+    if (raw.success === undefined) {
+        return { ...raw, success: false, message: raw.error?.message ?? "" };
+    }
+    return raw;
 };
 
 test("配置没填全：400 且一次外网请求都不发", async () => {

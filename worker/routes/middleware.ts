@@ -84,20 +84,10 @@ export async function enforceAuth(ctx: RouteCtx, session: TokenSession): Promise
             const state = await api.getAccountSessionState(uid);
             if (state === "missing") {
                 // 用 401：客户端见到 401 会清掉登录标记并退回登录页
-                return Response.json(
-                    { success: false, message: "账号已不存在，请重新登录" },
-                    { status: 401 }
-                );
+                return errorResponse(ApiError.unauthenticated("账号已不存在，请重新登录"));
             }
             if (state === "disabled") {
-                return Response.json(
-                    {
-                        success: false,
-                        message:
-                            "账号因长期未登录已被停用；可用恢复密钥找回，或联系站点所有者",
-                    },
-                    { status: 403 }
-                );
+                return errorResponse(ApiError.forbidden("账号因长期未登录已被停用；可用恢复密钥找回，或联系站点所有者"));
             }
         }
     } else if (await api.hasAnyUser()) {

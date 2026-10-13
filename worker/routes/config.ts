@@ -3,7 +3,7 @@
 // 从 worker/index.ts 拆出来。这里最要紧的是那道「全站外观只有站点所有者能改」的门槛，
 // 三个写分支各判了一次 —— 拆出来之后三处挨在一起，改一处不容易漏掉另两处。
 import { isUserScopedConfigKey } from "../../src/API/http";
-import { ApiError } from "../lib/apiError";
+import { ApiError, errorResponse } from "../lib/apiError";
 import { enforceConfigGuard, endpointBucket } from "../loginGuard";
 import type { ConfigInput } from "../types";
 import { validateConfig } from "../validate";
@@ -47,13 +47,7 @@ export async function handleConfigRoutes(ctx: RouteCtx): Promise<Response | null
         // 这里提前判掉，好给前端一句能看懂的提示，而不是静默「保存失败」。
         const needsShared = entries.some(([key]) => !isUserScopedConfigKey(key));
         if (needsShared && !(await api.canManageSharedConfigs())) {
-            return Response.json(
-                {
-                    success: false,
-                    message: "全站外观设置只有站点所有者可以修改",
-                },
-                { status: 403 }
-            );
+            return errorResponse(ApiError.forbidden("全站外观设置只有站点所有者可以修改"));
         }
 
         if (entries.length === 0) {
@@ -63,23 +57,14 @@ export async function handleConfigRoutes(ctx: RouteCtx): Promise<Response | null
         // 管理员凭据同样不允许在这里改（要走校验当前密码的专用接口）
         const blocked = entries.find(([key]) => key.startsWith("auth."));
         if (blocked) {
-            return Response.json(
-                {
-                    success: false,
-                    message: "管理员凭据请通过「更多选项 → 账号管理」修改",
-                },
-                { status: 403 }
-            );
+            return errorResponse(ApiError.forbidden("管理员凭据请通过「更多选项 → 账号管理」修改"));
         }
 
         const bad = entries.find(
             ([, value]) => typeof value !== "string" || value === undefined
         );
         if (bad) {
-            return Response.json(
-                { success: false, message: `配置项 ${bad[0]} 的值不合法` },
-                { status: 400 }
-            );
+            return errorResponse(ApiError.badRequest(`配置项 ${bad[0]} 的值不合法`));
         }
 
         const result = await api.setConfigs(Object.fromEntries(entries));
@@ -96,44 +81,23 @@ export async function handleConfigRoutes(ctx: RouteCtx): Promise<Response | null
         const key = path.substring("configs/".length);
         // 管理员凭据只能通过 /api/auth/credentials 修改（需要校验当前密码）
         if (key.startsWith("auth.")) {
-            return Response.json(
-                {
-                    success: false,
-                    message: "管理员凭据请通过「更多选项 → 账号管理」修改",
-                },
-                { status: 403 }
-            );
+            return errorResponse(ApiError.forbidden("管理员凭据请通过「更多选项 → 账号管理」修改"));
         }
         // 与 configs/batch 同一道门槛：全站设置只有站点所有者能改
         if (!isUserScopedConfigKey(key) && !(await api.canManageSharedConfigs())) {
-            return Response.json(
-                { success: false, message: "全站外观设置只有站点所有者可以修改" },
-                { status: 403 }
-            );
+            return errorResponse(ApiError.forbidden("全站外观设置只有站点所有者可以修改"));
         }
         const data = (await request.json()) as ConfigInput;
 
         // 验证配置数据
         const validation = validateConfig(data);
         if (!validation.valid) {
-            return Response.json(
-                {
-                    success: false,
-                    message: `验证失败: ${validation.errors?.join(", ")}`,
-                },
-                { status: 400 }
-            );
+            return errorResponse(ApiError.badRequest(`验证失败: ${validation.errors?.join(", ")}`));
         }
 
         // 确保value存在
         if (data.value === undefined) {
-            return Response.json(
-                {
-                    success: false,
-                    message: "配置值不能为空",
-                },
-                { status: 400 }
-            );
+            return errorResponse(ApiError.badRequest("配置值不能为空"));
         }
 
         const result = await api.setConfig(key, data.value);
@@ -142,14 +106,13 @@ export async function handleConfigRoutes(ctx: RouteCtx): Promise<Response | null
         const key = path.substring("configs/".length);
         // 不允许删除管理员凭据，避免悄悄退化回默认密码
         if (key.startsWith("auth.")) {
-            return Response.json({ success: false }, { status: 403 });
+            // 这一处原来只有 { success: false }、连 message 都没有（客户端只能显示
+            // 「API错误: 403」）。迁移时补一句人话，是本次唯一新增文案的地方。
+            return errorResponse(ApiError.forbidden("管理员凭据不可删除"));
         }
         // 删除也是写：全站设置同样只归站点所有者
         if (!isUserScopedConfigKey(key) && !(await api.canManageSharedConfigs())) {
-            return Response.json(
-                { success: false, message: "全站外观设置只有站点所有者可以修改" },
-                { status: 403 }
-            );
+            return errorResponse(ApiError.forbidden("全站外观设置只有站点所有者可以修改"));
         }
         const result = await api.deleteConfig(key);
         return Response.json({ success: result });

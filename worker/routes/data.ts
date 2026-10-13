@@ -265,13 +265,7 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
         // 验证分组数据
         const validation = validateGroup(data);
         if (!validation.valid) {
-            return Response.json(
-                {
-                    success: false,
-                    message: `验证失败: ${validation.errors?.join(", ")}`,
-                },
-                { status: 400 }
-            );
+            return errorResponse(ApiError.badRequest(`验证失败: ${validation.errors?.join(", ")}`));
         }
 
         const result = await api.createGroup(validation.sanitizedData as Group);
@@ -291,23 +285,11 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
             data.name !== undefined &&
             (typeof data.name !== "string" || data.name.trim() === "")
         ) {
-            return Response.json(
-                {
-                    success: false,
-                    message: "分组名称不能为空且必须是字符串",
-                },
-                { status: 400 }
-            );
+            return errorResponse(ApiError.badRequest("分组名称不能为空且必须是字符串"));
         }
 
         if (data.order_num !== undefined && typeof data.order_num !== "number") {
-            return Response.json(
-                {
-                    success: false,
-                    message: "排序号必须是数字",
-                },
-                { status: 400 }
-            );
+            return errorResponse(ApiError.badRequest("排序号必须是数字"));
         }
 
         const result = await api.updateGroup(id, data);
@@ -805,13 +787,7 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
         // 验证站点数据
         const validation = validateSite(data);
         if (!validation.valid) {
-            return Response.json(
-                {
-                    success: false,
-                    message: `验证失败: ${validation.errors?.join(", ")}`,
-                },
-                { status: 400 }
-            );
+            return errorResponse(ApiError.badRequest(`验证失败: ${validation.errors?.join(", ")}`));
         }
 
         const result = await api.createSite(validation.sanitizedData as Site);
@@ -832,13 +808,7 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
             try {
                 new URL(data.url);
             } catch {
-                return Response.json(
-                    {
-                        success: false,
-                        message: "无效的URL格式",
-                    },
-                    { status: 400 }
-                );
+                return errorResponse(ApiError.badRequest("无效的URL格式"));
             }
         }
 
@@ -846,34 +816,16 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
             try {
                 new URL(data.icon);
             } catch {
-                return Response.json(
-                    {
-                        success: false,
-                        message: "无效的图标URL格式",
-                    },
-                    { status: 400 }
-                );
+                return errorResponse(ApiError.badRequest("无效的图标URL格式"));
             }
         }
 
         if (data.username !== undefined && typeof data.username !== "string") {
-            return Response.json(
-                {
-                    success: false,
-                    message: "账号必须是字符串",
-                },
-                { status: 400 }
-            );
+            return errorResponse(ApiError.badRequest("账号必须是字符串"));
         }
 
         if (data.password !== undefined && typeof data.password !== "string") {
-            return Response.json(
-                {
-                    success: false,
-                    message: "密码必须是字符串",
-                },
-                { status: 400 }
-            );
+            return errorResponse(ApiError.badRequest("密码必须是字符串"));
         }
 
         const result = await api.updateSite(id, data);
@@ -902,11 +854,11 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
             ? body.ids.filter((v): v is number => typeof v === "number" && Number.isInteger(v))
             : [];
         if (ids.length === 0) {
-            return Response.json({ success: false, message: "缺少要删除的 id" }, { status: 400 });
+            return errorResponse(ApiError.badRequest("缺少要删除的 id"));
         }
         // 一次删太多会把 D1 单次请求顶满，也给误操作留个上限
         if (ids.length > 500) {
-            return Response.json({ success: false, message: "一次最多删除 500 个" }, { status: 400 });
+            return errorResponse(ApiError.badRequest("一次最多删除 500 个"));
         }
         const result = await api.deleteSites(ids);
         await api.writeAudit("site.batchDelete", "", ip, `站点 ${ids.length} 个`);
@@ -921,13 +873,7 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
 
         // 验证排序数据
         if (!Array.isArray(data)) {
-            return Response.json(
-                {
-                    success: false,
-                    message: "排序数据必须是数组",
-                },
-                { status: 400 }
-            );
+            return errorResponse(ApiError.badRequest("排序数据必须是数组"));
         }
 
         for (const item of data) {
@@ -937,13 +883,7 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
                 item.order_num === undefined ||
                 typeof item.order_num !== "number"
             ) {
-                return Response.json(
-                    {
-                        success: false,
-                        message: "排序数据格式无效，每个项目必须包含id和order_num",
-                    },
-                    { status: 400 }
-                );
+                return errorResponse(ApiError.badRequest("排序数据格式无效，每个项目必须包含id和order_num"));
             }
         }
 
@@ -962,13 +902,7 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
 
         // 验证排序数据
         if (!Array.isArray(data)) {
-            return Response.json(
-                {
-                    success: false,
-                    message: "排序数据必须是数组",
-                },
-                { status: 400 }
-            );
+            return errorResponse(ApiError.badRequest("排序数据必须是数组"));
         }
 
         for (const item of data) {
@@ -978,23 +912,11 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
                 item.order_num === undefined ||
                 typeof item.order_num !== "number"
             ) {
-                return Response.json(
-                    {
-                        success: false,
-                        message: "排序数据格式无效，每个项目必须包含id和order_num",
-                    },
-                    { status: 400 }
-                );
+                return errorResponse(ApiError.badRequest("排序数据格式无效，每个项目必须包含id和order_num"));
             }
 
             if (item.group_id !== undefined && typeof item.group_id !== "number") {
-                return Response.json(
-                    {
-                        success: false,
-                        message: "分组ID必须是数字",
-                    },
-                    { status: 400 }
-                );
+                return errorResponse(ApiError.badRequest("分组ID必须是数字"));
             }
         }
 

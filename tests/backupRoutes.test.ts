@@ -13,6 +13,7 @@ import { handleBackupRoutes } from "../worker/routes/backup";
 import { endpointBucket, exportBucket, writeBucket } from "../worker/loginGuard";
 import type { RouteCtx } from "../worker/routes/types";
 import type { NavigationAPI } from "../src/API/navigationApi";
+import { errorBody } from "./helpers/apiErrorBody";
 
 const HOST = "https://nav.example.com";
 const IP = "203.0.113.1";
@@ -143,7 +144,9 @@ test("export：锁定期内 → 429，且不真的去读数据", async () => {
     });
     assert.equal(res?.status, 429);
     assert.equal(log.exportCalls, 0, "被限住就不该再去读一遍全站数据");
-    assert.match(String((await json(res!)).message), /秒后再试/);
+    const exp = await errorBody(res!);
+    assert.equal(exp.code, "rate_limited");
+    assert.match(exp.message, /秒后再试/);
 });
 
 test("export：审计写失败不影响导出结果（留痕是附加价值，不能反过来拖垮主流程）", async () => {

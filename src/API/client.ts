@@ -105,6 +105,21 @@ import type {
 
 const SESSION_COOKIE = "navihive_session";
 
+/**
+ * 裸 fetch 出口统一取错误文案。
+ *
+ * 登录 / 注册 / 恢复 / 邀请码 / 注销账号 / 导入这几个端点不走 `request()`
+ * （它们要么在登录态外，要么要自己读响应体），迁移前直接读 `data.message`；
+ * 服务端迁移到统一错误码后失败体变成 `{ error: { code, message } }`，
+ * `data.message` 就没了 —— 界面会显示一句空话。
+ *
+ * `parseApiError` 同时认新旧两种形状（含旧的 `{ message }` 与 `{ error: "字符串" }`），
+ * 所以这里统一走它。与 `PublicNotePage` 那条 401 是同一套处理。
+ */
+function rawError(body: unknown, status: number): string {
+    return parseApiError(body, status)?.message || "";
+}
+
 // 旧版本把令牌存在 localStorage，这里一次性清掉遗留值，避免它留在浏览器里
 function purgeLegacyToken(): void {
     try {
@@ -204,9 +219,16 @@ export class NavigationClient {
             // 所以判据是「登录成功」而不是「拿到了 token」
             if (data.success) {
                 this.setSessionCookie(remember ? REMEMBER_TOKEN_TTL : DEFAULT_TOKEN_TTL);
+                return data;
             }
 
-            return data;
+            // 失败：服务端迁移后回的是 { error: { code, message } }，而调用方
+            // （useAccountSession 等）只认 success / message。统一翻成旧形状，
+            // 免得「账号密码不对」变成一句空话。
+            return {
+                success: false,
+                message: rawError(data, response.status) || "登录失败，请检查账号密码",
+            };
         } catch (error) {
             reportError(error, { source: "auth-login" });
             // 走到这里说明 fetch 本身就没成功（DNS、TLS、断网、被拦截），
@@ -254,7 +276,7 @@ export class NavigationClient {
                 this.setSessionCookie(remember ? REMEMBER_TOKEN_TTL : DEFAULT_TOKEN_TTL);
                 return { success: true, message: data.message || "注册成功", username: data.user?.username };
             }
-            return { success: false, message: data.message || "注册失败，请稍后再试" };
+            return { success: false, message: rawError(data, response.status) || "注册失败，请稍后再试" };
         } catch (error) {
             reportError(error, { source: "auth-register" });
             return { success: false, message: "注册请求失败，请检查网络连接" };
@@ -271,7 +293,7 @@ export class NavigationClient {
             });
             const data = await response.json().catch(() => ({ success: false }));
             if (!data.success) {
-                return { success: false, message: data.message || "生成邀请码失败，请稍后再试" };
+                return { success: false, message: rawError(data, response.status) || "生成邀请码失败，请稍后再试" };
             }
             return { success: true, code: data.code, expiresAt: data.expiresAt, message: data.message };
         } catch (error) {
@@ -295,7 +317,8 @@ export class NavigationClient {
             if (data.success) this.clearToken();
             return {
                 success: !!data.success,
-                message: data.message || (data.success ? "账号已注销" : "注销失败，请稍后再试"),
+                message: rawError(data, response.status)
+                    || (data.success ? "账号已注销" : "注销失败，请稍后再试"),
             };
         } catch (error) {
             reportError(error, { source: "account-delete" });
@@ -344,10 +367,12 @@ export class NavigationClient {
                 body: JSON.stringify({ token }),
             });
             const data = await response.json().catch(() => ({ success: false }));
-            if (!response.ok && !data.message) {
+            const reason = rawError(data, response.status);
+            if (!response.ok && !reason) {
                 return { success: false, message: "恢复失败，请稍后再试" };
             }
-            return data;
+            // 失败时服务端回新形状，调用方只认 success / message，统一翻过去
+            return response.ok ? data : { success: false, message: reason };
         } catch (error) {
             reportError(error, { source: "auth-recover" });
             return { success: false, message: "恢复请求失败，请检查网络连接" };
@@ -1089,8 +1114,9 @@ export class NavigationClient {
     private async importError(response: Response): Promise<Error> {
         let reason: string;
         try {
-            const payload = (await response.json()) as { message?: string; error?: string };
-            reason = payload.message || payload.error || "";
+            const payload = await response.json();
+            // parseApiError 同时认新形状 {error:{code,message}} 与旧的 {message} / {error:"字符串"}
+            reason = parseApiError(payload, response.status)?.message || "";
         } catch {
             reason = "";
         }

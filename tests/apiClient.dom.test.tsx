@@ -250,3 +250,58 @@ test("clearToken 后 isLoggedIn 变假", async () => {
     api.clearToken();
     assert.equal(api.isLoggedIn(), false);
 });
+
+// ---------- 裸 fetch 端点与统一错误码形状（2026-10-13 第二批迁移） ----------
+//
+// 登录 / 注册 / 邀请码 / 注销账号 / 恢复密码 / 导入这几个端点不走 request()
+// （要么在登录态外，要么要自己读响应体），服务端迁移到 ApiError 后失败体变成
+// { error: { code, message } }。它们的读取处必须同时认新旧两种形状，
+// 否则「账号密码不对」会变成一句空话 —— 而这是迁移里唯一会**丢文案**的地方。
+
+test("登录失败：新错误形状也要把 message 翻成调用方认的 success/message", async () => {
+    responder = () => ({ ...errJson({ error: { code: "unauthenticated", message: "用户名或密码错误" } }, 401), text: async () => JSON.stringify({ error: { code: "unauthenticated", message: "用户名或密码错误" } }) });
+    const api = new NavigationClient("/api");
+    const result = await api.login("u", "p");
+    assert.equal(result.success, false);
+    assert.equal(result.message, "用户名或密码错误", "新形状下文案不能丢");
+});
+
+test("登录失败：旧形状（{ message }）照旧工作", async () => {
+    responder = () => ({ ...errJson({ success: false, message: "用户名或密码错误" }, 401), text: async () => JSON.stringify({ success: false, message: "用户名或密码错误" }) });
+    const api = new NavigationClient("/api");
+    const result = await api.login("u", "p");
+    assert.equal(result.success, false);
+    assert.equal(result.message, "用户名或密码错误");
+});
+
+test("注册失败：新形状下文案不丢", async () => {
+    responder = () => errJson({ error: { code: "forbidden", message: "邀请码无效" } }, 403);
+    const api = new NavigationClient("/api");
+    const result = await api.register("u", "p", "bad");
+    assert.equal(result.success, false);
+    assert.equal(result.message, "邀请码无效");
+});
+
+test("邀请码失败：新形状下文案不丢", async () => {
+    responder = () => errJson({ error: { code: "forbidden", message: "只有站点所有者可以生成邀请码" } }, 403);
+    const api = new NavigationClient("/api");
+    const result = await api.createInvite();
+    assert.equal(result.success, false);
+    assert.equal(result.message, "只有站点所有者可以生成邀请码");
+});
+
+test("注销账号失败：新形状下文案不丢", async () => {
+    responder = () => errJson({ error: { code: "forbidden", message: "当前密码不正确" } }, 403);
+    const api = new NavigationClient("/api");
+    const result = await api.deleteAccount("wrong");
+    assert.equal(result.success, false);
+    assert.equal(result.message, "当前密码不正确");
+});
+
+test("恢复密码失败：新形状下文案不丢", async () => {
+    responder = () => errJson({ error: { code: "bad_request", message: "恢复令牌无效" } }, 400);
+    const api = new NavigationClient("/api");
+    const result = await api.recoverPassword("tok");
+    assert.equal(result.success, false);
+    assert.equal(result.message, "恢复令牌无效");
+});

@@ -75,17 +75,11 @@ export async function handleAccountRoutes(ctx: RouteCtx): Promise<Response | nul
     if (path === "auth/invite" && method === "POST") {
         const uid = api.getCurrentUserId();
         if (uid === null) {
-            return Response.json(
-                { success: false, message: "当前站点未启用登录，无法生成邀请码" },
-                { status: 400 }
-            );
+            return errorResponse(ApiError.badRequest("当前站点未启用登录，无法生成邀请码"));
         }
         const me = await api.getUserById(uid);
         if (!me || me.role !== "owner") {
-            return Response.json(
-                { success: false, message: "只有站点所有者可以生成邀请码" },
-                { status: 403 }
-            );
+            return errorResponse(ApiError.forbidden("只有站点所有者可以生成邀请码"));
         }
         const result = await api.createInvite(uid);
         await api.writeAudit(
@@ -103,10 +97,7 @@ export async function handleAccountRoutes(ctx: RouteCtx): Promise<Response | nul
         const uid = api.getCurrentUserId();
         const me = uid !== null ? await api.getUserById(uid) : null;
         if (!me || me.role !== "owner") {
-            return Response.json(
-                { success: false, message: "仅站点所有者可以查看账号列表" },
-                { status: 403 }
-            );
+            return errorResponse(ApiError.forbidden("仅站点所有者可以查看账号列表"));
         }
         const users = await api.listUsers();
         return Response.json({ success: true, users });
@@ -125,17 +116,11 @@ export async function handleAccountRoutes(ctx: RouteCtx): Promise<Response | nul
     if (path === "users/sweep" && method === "POST") {
         const uid = api.getCurrentUserId();
         if (uid === null) {
-            return Response.json(
-                { success: false, message: "当前站点未启用登录，无法扫描账号" },
-                { status: 400 }
-            );
+            return errorResponse(ApiError.badRequest("当前站点未启用登录，无法扫描账号"));
         }
         const me = await api.getUserById(uid);
         if (!me || me.role !== "owner") {
-            return Response.json(
-                { success: false, message: "仅站点所有者可以扫描账号" },
-                { status: 403 }
-            );
+            return errorResponse(ApiError.forbidden("仅站点所有者可以扫描账号"));
         }
         const result = await api.sweepInactiveUsers();
         await api.writeAudit(
@@ -157,10 +142,7 @@ export async function handleAccountRoutes(ctx: RouteCtx): Promise<Response | nul
     if (path === "sessions" && method === "GET") {
         const uid = api.getCurrentUserId();
         if (uid === null) {
-            return Response.json(
-                { success: false, message: "当前站点未启用登录，没有登录设备可管理" },
-                { status: 400 }
-            );
+            return errorResponse(ApiError.badRequest("当前站点未启用登录，没有登录设备可管理"));
         }
         const sessions = await api.listSessions(uid, currentJti || "");
         return Response.json({ success: true, sessions });
@@ -171,7 +153,7 @@ export async function handleAccountRoutes(ctx: RouteCtx): Promise<Response | nul
         const jti = decodeURIComponent(path.slice("sessions/".length));
         const uid = api.getCurrentUserId();
         if (uid === null || !jti) {
-            return Response.json({ success: false, message: "参数无效" }, { status: 400 });
+            return errorResponse(ApiError.badRequest("参数无效"));
         }
         const result = await api.revokeSession(uid, jti);
         await api.writeAudit(
@@ -191,10 +173,7 @@ export async function handleAccountRoutes(ctx: RouteCtx): Promise<Response | nul
     if (path === "sessions/revoke-others" && method === "POST") {
         const uid = api.getCurrentUserId();
         if (uid === null) {
-            return Response.json(
-                { success: false, message: "当前站点未启用登录" },
-                { status: 400 }
-            );
+            return errorResponse(ApiError.badRequest("当前站点未启用登录"));
         }
         const result = await api.revokeOtherSessions(uid, currentJti || "");
         await api.writeAudit(
@@ -214,21 +193,15 @@ export async function handleAccountRoutes(ctx: RouteCtx): Promise<Response | nul
     if (path.startsWith("users/") && method === "POST") {
         const matched = /^users\/(\d+)\/status$/.exec(path);
         if (!matched) {
-            return Response.json({ success: false, message: "路径无效" }, { status: 400 });
+            return errorResponse(ApiError.badRequest("路径无效"));
         }
         const uid = api.getCurrentUserId();
         if (uid === null) {
-            return Response.json(
-                { success: false, message: "当前站点未启用登录，无法管理账号" },
-                { status: 400 }
-            );
+            return errorResponse(ApiError.badRequest("当前站点未启用登录，无法管理账号"));
         }
         const me = await api.getUserById(uid);
         if (!me || me.role !== "owner") {
-            return Response.json(
-                { success: false, message: "仅站点所有者可以管理账号" },
-                { status: 403 }
-            );
+            return errorResponse(ApiError.forbidden("仅站点所有者可以管理账号"));
         }
         const targetId = parseInt(matched[1], 10);
         const body = (await request.json().catch(() => ({}))) as { status?: string };
@@ -244,10 +217,7 @@ export async function handleAccountRoutes(ctx: RouteCtx): Promise<Response | nul
         };
         const uid = api.getCurrentUserId();
         if (uid === null) {
-            return Response.json(
-                { success: false, message: "当前站点未启用登录，无法注销账号" },
-                { status: 400 }
-            );
+            return errorResponse(ApiError.badRequest("当前站点未启用登录，无法注销账号"));
         }
         // 注销不可逆，且会把自己的数据全清掉，所以必须再验一次密码：
         // 只凭会话就允许注销，等于捡到一台已登录的电脑就能毁掉整个账号。
@@ -260,10 +230,7 @@ export async function handleAccountRoutes(ctx: RouteCtx): Promise<Response | nul
                 ip,
                 "当前密码不正确"
             );
-            return Response.json(
-                { success: false, message: "当前密码不正确" },
-                { status: 403 }
-            );
+            return errorResponse(ApiError.forbidden("当前密码不正确"));
         }
 
         const result = await api.deleteAccount(uid);
@@ -295,10 +262,7 @@ export async function handleAccountRoutes(ctx: RouteCtx): Promise<Response | nul
             typeof data.currentPassword === "string" ? data.currentPassword : "";
 
         if (!username && !password) {
-            return Response.json(
-                { success: false, message: "请填写新的管理员账号或新密码" },
-                { status: 400 }
-            );
+            return errorResponse(ApiError.badRequest("请填写新的管理员账号或新密码"));
         }
 
         // 多账号后改的是「当前账号」的凭据：账号名不能和别人撞，密码只写哈希。

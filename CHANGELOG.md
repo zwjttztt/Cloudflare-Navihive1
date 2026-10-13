@@ -6,6 +6,59 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。---
 
+## 2026-10-13 · 工程：错误码第二批 —— `{ success: false }` 那副老面孔，70 处迁完
+
+第一批（`17149bf` 之前）盯的是 `Response.json({ error: "..." })`。这一批是另一副更隐蔽的面孔：
+`Response.json({ success: false, message })` —— 它看起来像个正常响应体，只是 `success` 是假的，
+客户端只能把 `message` 显示出来，照样拿不到机器可读的 code。
+
+### 一、先清点：98 处不是 98 个错误
+
+拿保行剥注释的扫描器把 `worker/` 下所有 `{ success: false }` 数出来，**按形状分成三类**，
+只迁该迁的那类：
+
+| 形状 | 处数 | 处置 |
+|---|---|---|
+| 真正的失败出口（HTTP 4xx/5xx + `{success:false, message}`） | **70** | 全部迁到 `ApiError` + `errorResponse` |
+| 内部辅助函数的**返回值**（`webdav/index.ts` 22、`notesBackup.ts` 2） | 24 | 不迁：调用方（`backup.ts`）拿它决定下一步、自己挑状态码，迁了就把两层揉成一层 |
+| **结果对象**而非错误 | 4 | 不迁：`ai.ts` 1 处带 `done`/`total` 是「做到第几笔失败了」的部分成功；`backup.ts` 3 处是 **HTTP 200** + `{success, code?, message}`（`webdav/notes` 的 list/download，客户端查 `.success` 和 `.code`，`code='encrypted'` 时弹口令框）——迁成 4xx 会同时改状态码和分流方式 |
+
+⚠️ 这 4 处是这次清点**最重要的发现**：它们和失败出口长得一模一样，只看 `{success:false}`
+会一并迁错，而迁错的表现是「恢复备份弹个错误框但其实成功了」。
+
+### 二、迁移 70 处
+
+`index.ts` 1、`loginGuard.ts` 2、`idempotency.ts` 1、`account.ts` 14、`backup.ts` 12、
+`config.ts` 9、`data.ts` 15、`middleware.ts` 2、`ops.ts` 7、`public.ts` 6、`ai.ts` 1（改 `bad()` 一个函数，覆盖 18 个调用点）。
+**状态码与文案一字未改**，只是多一个 machine-readable 的 code；带 `Retry-After` 的出口头也一并保住。
+
+`ai.ts` 那个 `bad(message, status)` 是全模块唯一出口，改法是查表：状态号 → 工厂，
+表外的号（上游模型可能回任何东西）原样带回状态码、code 归 `internal` —— 保状态码优先于给个漂亮的码。
+
+`config.ts` 有一处原来只有 `{ success: false }`、**连 message 都没有**（客户端只能显示「API错误: 403」）。
+迁移时补了「管理员凭据不可删除」，这是本次唯一新增文案的地方。
+
+### 三、客户端：19 处不走 `request()` 的裸 fetch
+
+迁移对走 `request()` 的 54 处是透明的（它本来就用 `parseApiError` 认两种形状）。
+但登录 / 注册 / 邀请码 / 注销账号 / 恢复密码 / 导入 / 账号清单 / 沉睡扫描这几条是**裸 fetch**，
+原来直接读 `data.message` —— 服务端换成新形状后 `data.message` 就没了，界面会显示一句空话。
+统一改成走 `parseApiError`（`client.ts` 加了一个 `rawError` 助手；`authFlow.ts` 的
+`readSweepResult` 多收一个 `status` 参数）。新增 6 条用例钉住「新形状下文案不丢」。
+
+### 四、守卫：`tests/errorCodeMigration2.test.ts`（5 条）
+
+白名单制而非「一处都不许有」：把每处保留的数量**写死**，多一处会红（又写了旧形状），
+少一处也会红（白名单里那处被顺手迁掉了，回来更新口径）。另钉住 92 处
+`errorResponse(ApiError.…)` 只增不减、12 条文案没被改掉、以及「守卫自身没跑空」。
+已**双向反向验证**：把 `ops.ts` 一处改回旧形状 → 2 条红；删掉 `backup.ts` 一处白名单 → 2 条红。
+
+### 五、校验
+
+`tsc -b --force` 0；lint 0 error（19 条 warning 均为既有 react-refresh 类噪音）；
+单测 **2503**（2492 → 2503，新增 **11** 条：守卫 5、裸 fetch 形状 6）；
+`check:brand` 一致；build 通过；smoke 全 PASS；`audit:a11y` / `audit:contrast` 0 处不合格。
+
 ## 2026-10-13 · 工程：分享功能端到端（CI 新增 `e2e:share`，补上唯一「线上从未实测、零 e2e 覆盖」的成片功能）
 
 分享是整套系统里唯一一块**从来没在真后端上跑过一遍**的成片功能 —— 而它坏了是静默的：

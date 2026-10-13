@@ -14,6 +14,7 @@ import { errorResponse } from "../worker/lib/apiError";
 import { endpointBucket } from "../worker/loginGuard";
 import type { RouteCtx } from "../worker/routes/types";
 import type { NavigationAPI } from "../src/API/navigationApi";
+import { errorBody } from "./helpers/apiErrorBody";
 
 const HOST = "https://nav.example.com";
 const IP = "203.0.113.1";
@@ -179,7 +180,9 @@ test("configs/batch：管理员凭据不许从这里改（否则绕过「校验�
 test("configs/batch：值不是字符串 → 400，并指名是哪个键", async () => {
     const { res, log } = await call("configs/batch", "POST", {}, { configs: { ok: "1", bad: 42 } });
     assert.equal(res?.status, 400);
-    assert.ok(String((await json(res!)).message).includes("bad"), "要说清是哪个键不合法");
+    const batch = await errorBody(res!);
+    assert.equal(batch.code, "bad_request");
+    assert.ok(batch.message.includes("bad"), "要说清是哪个键不合法");
     assert.equal(log.setConfigs.length, 0);
 });
 

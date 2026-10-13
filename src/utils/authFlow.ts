@@ -12,6 +12,7 @@ import {
     INACTIVE_DISABLE_DAYS_DEFAULT,
     INACTIVE_DELETE_GRACE_DAYS_DEFAULT,
 } from "../API/http";
+import { parseApiError } from "../API/apiError";
 
 /**
  * 沉睡治理阈值：读不到（没配过 / 配成了乱七八糟的值）就回落到服务端默认。
@@ -83,15 +84,19 @@ export function cookieRejectedMessage(isHttps: boolean): string {
  * `resOk` 要一起看：服务端也可能在 4xx/5xx 的响应体里带上 success:true，
  * 只看 body 会把一次失败当成成功（界面提示「已扫描」其实什么都没发生）。
  * 两个计数一律补 0 —— 界面上要显示「停用了 N 个」，undefined 会印出 NaN。
+ *
+ * `status` 用来翻错误文案：服务端迁移到统一错误码后失败体是
+ * `{ error: { code, message } }`，`data.message` 就没了（parseApiError 两种形状都认）。
  */
 export function readSweepResult(
     resOk: boolean,
-    data: { success?: boolean; message?: string; disabled?: number; deleted?: number }
+    data: { success?: boolean; message?: string; disabled?: number; deleted?: number },
+    status = 200
 ): { success: boolean; message?: string; disabled: number; deleted: number } {
     if (!resOk || data.success !== true) {
         return {
             success: false,
-            message: data.message || "扫描失败，请稍后再试",
+            message: parseApiError(data, status)?.message || data.message || "扫描失败，请稍后再试",
             disabled: 0,
             deleted: 0,
         };

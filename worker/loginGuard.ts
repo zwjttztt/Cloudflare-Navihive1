@@ -1,6 +1,7 @@
 // worker/loginGuard.ts
 
 import type { NavigationAPI } from "../src/API/navigationApi";
+import { ApiError, errorResponse } from "./lib/apiError";
 
 // ============ 登录失败限速 ============
 // 连续输错会越等越久，避免密码被无限次猜。
@@ -473,10 +474,7 @@ export async function enforceWriteGuard(
 ): Promise<Response | null> {
     const limited = (until: number, now: number) => {
         const retryAfter = Math.max(1, Math.ceil((until - now) / 1000));
-        return Response.json(
-            { success: false, message: `操作太频繁，请 ${retryAfter} 秒后再试` },
-            { status: 429, headers: { "Retry-After": String(retryAfter) } }
-        );
+        return errorResponse(ApiError.rateLimited(`操作太频繁，请 ${retryAfter} 秒后再试`), { headers: { "Retry-After": String(retryAfter) } });
     };
     // 计数必须在每次 CAS 重读后计算，不能重试一个外部算好的固定值。
     //
@@ -583,10 +581,7 @@ async function enforceGuard(
 ): Promise<Response | null> {
     const limited = (until: number, now: number) => {
         const retryAfter = Math.max(1, Math.ceil((until - now) / 1000));
-        return Response.json(
-            { success: false, message: `${opts.message}，请 ${retryAfter} 秒后再试` },
-            { status: 429, headers: { "Retry-After": String(retryAfter) } }
-        );
+        return errorResponse(ApiError.rateLimited(`${opts.message}，请 ${retryAfter} 秒后再试`), { headers: { "Retry-After": String(retryAfter) } });
     };
 
     const result = await bumpGuard(api, key, bucket, prev => {

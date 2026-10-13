@@ -4,6 +4,7 @@
 // 审计只有 owner 能看，回收站按账号隔离。
 import {} from "../httpUtils";
 import type { RouteCtx } from "./types";
+import { ApiError, errorResponse } from "../lib/apiError";
 
 export async function handleOpsRoutes(ctx: RouteCtx): Promise<Response | null> {
     const {
@@ -21,10 +22,7 @@ export async function handleOpsRoutes(ctx: RouteCtx): Promise<Response | null> {
         const uid = api.getCurrentUserId();
         const me = uid !== null ? await api.getUserById(uid) : null;
         if (!me || me.role !== "owner") {
-            return Response.json(
-                { success: false, message: "仅站点所有者可以查看审计日志" },
-                { status: 403 }
-            );
+            return errorResponse(ApiError.forbidden("仅站点所有者可以查看审计日志"));
         }
         const limit = Math.min(
             Math.max(parseInt(url.searchParams.get("limit") || "50", 10) || 50, 1),
@@ -41,10 +39,7 @@ export async function handleOpsRoutes(ctx: RouteCtx): Promise<Response | null> {
         const uid = api.getCurrentUserId();
         const me = uid !== null ? await api.getUserById(uid) : null;
         if (!me || me.role !== "owner") {
-            return Response.json(
-                { success: false, message: "仅站点所有者可以查看统计看板" },
-                { status: 403 }
-            );
+            return errorResponse(ApiError.forbidden("仅站点所有者可以查看统计看板"));
         }
         const stats = await api.getOpsStats();
         return Response.json({ success: true, stats });
@@ -57,10 +52,7 @@ export async function handleOpsRoutes(ctx: RouteCtx): Promise<Response | null> {
         const uid = api.getCurrentUserId();
         const me = uid !== null ? await api.getUserById(uid) : null;
         if (!me || me.role !== "owner") {
-            return Response.json(
-                { success: false, message: "仅站点所有者可以查看错误上报" },
-                { status: 403 }
-            );
+            return errorResponse(ApiError.forbidden("仅站点所有者可以查看错误上报"));
         }
         const limit = Math.min(
             Math.max(parseInt(url.searchParams.get("limit") || "200", 10) || 200, 1),
@@ -80,7 +72,7 @@ export async function handleOpsRoutes(ctx: RouteCtx): Promise<Response | null> {
         const body = (await request.json().catch(() => ({}))) as { id?: number };
         const id = typeof body.id === "number" ? body.id : NaN;
         if (isNaN(id)) {
-            return Response.json({ success: false, message: "缺少有效的 id" }, { status: 400 });
+            return errorResponse(ApiError.badRequest("缺少有效的 id"));
         }
         const ok = await api.restoreRecycleItem(id);
         await api.writeAudit("recycle.restore", "", ip, `回收站条目 ${id}`);
@@ -91,7 +83,7 @@ export async function handleOpsRoutes(ctx: RouteCtx): Promise<Response | null> {
         const body = (await request.json().catch(() => ({}))) as { id?: number };
         const id = typeof body.id === "number" ? body.id : NaN;
         if (isNaN(id)) {
-            return Response.json({ success: false, message: "缺少有效的 id" }, { status: 400 });
+            return errorResponse(ApiError.badRequest("缺少有效的 id"));
         }
         const ok = await api.purgeRecycleItem(id);
         await api.writeAudit("recycle.purge", "", ip, `回收站条目 ${id}`);
@@ -105,7 +97,7 @@ export async function handleOpsRoutes(ctx: RouteCtx): Promise<Response | null> {
             ? body.ids.filter((v): v is number => typeof v === "number" && Number.isInteger(v))
             : [];
         if (ids.length === 0) {
-            return Response.json({ success: false, message: "缺少有效的 id" }, { status: 400 });
+            return errorResponse(ApiError.badRequest("缺少有效的 id"));
         }
         const result = await api.restoreRecycleItems(ids);
         await api.writeAudit("recycle.batchRestore", "", ip, `回收站条目 ${ids.length} 条`);
@@ -118,7 +110,7 @@ export async function handleOpsRoutes(ctx: RouteCtx): Promise<Response | null> {
             ? body.ids.filter((v): v is number => typeof v === "number" && Number.isInteger(v))
             : [];
         if (ids.length === 0) {
-            return Response.json({ success: false, message: "缺少有效的 id" }, { status: 400 });
+            return errorResponse(ApiError.badRequest("缺少有效的 id"));
         }
         await api.purgeRecycleItems(ids);
         await api.writeAudit("recycle.batchPurge", "", ip, `回收站条目 ${ids.length} 条`);

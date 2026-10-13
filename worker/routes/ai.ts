@@ -22,6 +22,7 @@ import {
 } from "../../src/utils/aiMeta";
 import { createMemoryLimiter } from "../rateLimit";
 import type { RouteCtx } from "./types";
+import { ApiError, API_ERROR_CODES, errorResponse, type ApiErrorStatus } from "../lib/apiError";
 
 // 每分钟最多 20 次文本生成 / 30 次搜索：AI 是按量付费的，一个手滑的循环就能刷掉一天额度。
 // 用户维度而不是 IP 维度 —— AI 配置是跟着账号走的。
@@ -52,8 +53,29 @@ interface AiProbe {
     dim?: number;
 }
 
-function bad(message: string, status = 400) {
-    return Response.json({ success: false, message }, { status });
+/**
+ * ai.ts 全模块**唯一**的 HTTP 错误出口：18 个调用点共用，所以迁移只改这一处。
+ * 状态号 → 工厂查表；表外的号（上游模型可能回任何东西）原样带回状态码，
+ * code 归到 internal —— 保状态码一字不改优先于给个漂亮的码。
+ */
+const AI_STATUS_FACTORY: Record<number, (m: string) => ApiError> = {
+    400: ApiError.badRequest,
+    401: ApiError.unauthenticated,
+    403: ApiError.forbidden,
+    404: ApiError.notFound,
+    409: ApiError.conflict,
+    413: ApiError.tooLarge,
+    429: ApiError.rateLimited,
+    501: ApiError.notImplemented,
+    502: ApiError.badGateway,
+    503: ApiError.serviceUnavailable,
+};
+
+function bad(message: string, status: number = 400) {
+    const factory = AI_STATUS_FACTORY[status];
+    return factory
+        ? errorResponse(factory(message))
+        : errorResponse(new ApiError(status as ApiErrorStatus, API_ERROR_CODES.internal, message));
 }
 
 /** 读当前账号的 AI 配置；配置不全时直接给出原因，调用方不用再判一遍 */

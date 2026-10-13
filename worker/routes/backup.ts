@@ -43,6 +43,7 @@ import {
     testNotesWebDav,
 } from "../notesBackup";
 import type { RouteCtx } from "./types";
+import { ApiError, errorResponse } from "../lib/apiError";
 
 /**
  * 单次导入的条数上限。
@@ -195,13 +196,7 @@ export async function handleBackupRoutes(ctx: RouteCtx): Promise<Response | null
         const nowMs = Date.now();
 
         const rejectExport = (ms: number) =>
-            Response.json(
-                {
-                    success: false,
-                    message: `导出太频繁，请 ${Math.ceil(ms / 1000)} 秒后再试`,
-                },
-                { status: 429 }
-            );
+            errorResponse(ApiError.rateLimited(`导出太频繁，请 ${Math.ceil(ms / 1000)} 秒后再试`));
 
         // 还在上一次的锁定期里：直接挡回去
         if (exportGuard.until > nowMs) {
@@ -272,10 +267,7 @@ export async function handleBackupRoutes(ctx: RouteCtx): Promise<Response | null
 
         // 超大备份会拖垮 Worker：先用 Content-Length 拦一道（见 util.isBodyTooLarge）
         if (isBodyTooLarge(request)) {
-            return Response.json(
-                { success: false, message: "备份文件过大（上限 10MB），请精简后重试" },
-                { status: 413 }
-            );
+            return errorResponse(ApiError.tooLarge("备份文件过大（上限 10MB），请精简后重试"));
         }
         const data = (await request.json()) as ExportData;
 
@@ -285,13 +277,7 @@ export async function handleBackupRoutes(ctx: RouteCtx): Promise<Response | null
             !Array.isArray(data.groups) ||
             (data.configs !== undefined && typeof data.configs !== "object")
         ) {
-            return Response.json(
-                {
-                    success: false,
-                    message: "导入数据格式无效",
-                },
-                { status: 400 }
-            );
+            return errorResponse(ApiError.badRequest("导入数据格式无效"));
         }
 
         // 体积之外再限一次条数：10MB 的 JSON 可以塞进几万条短记录，
@@ -302,13 +288,7 @@ export async function handleBackupRoutes(ctx: RouteCtx): Promise<Response | null
             ? data.sites.length
             : data.groups.reduce((sum, group) => sum + (Array.isArray((group as Group & { sites?: unknown[] }).sites) ? (group as Group & { sites: unknown[] }).sites.length : 0), 0);
         if (groupCount > MAX_IMPORT_GROUPS || siteCount > MAX_IMPORT_SITES) {
-            return Response.json(
-                {
-                    success: false,
-                    message: `备份内容过多（分组上限 ${MAX_IMPORT_GROUPS}、站点上限 ${MAX_IMPORT_SITES}），请分批导入`,
-                },
-                { status: 413 }
-            );
+            return errorResponse(ApiError.tooLarge(`备份内容过多（分组上限 ${MAX_IMPORT_GROUPS}、站点上限 ${MAX_IMPORT_SITES}），请分批导入`));
         }
 
         // 导入结果里带新旧 id 映射（前端的星标 / 标签要翻译到新 id 上）
@@ -349,10 +329,7 @@ export async function handleBackupRoutes(ctx: RouteCtx): Promise<Response | null
     } else if (path === "webdav/upload" && method === "POST") {
         // 备份数据整份进请求体，超大备份会拖垮 Worker（见 util.isBodyTooLarge）
         if (isBodyTooLarge(request)) {
-            return Response.json(
-                { success: false, message: "备份文件过大（上限 10MB），请精简后重试" },
-                { status: 413 }
-            );
+            return errorResponse(ApiError.tooLarge("备份文件过大（上限 10MB），请精简后重试"));
         }
         const body = (await safeJson(request)) as {
             filename?: string;
@@ -400,10 +377,7 @@ export async function handleBackupRoutes(ctx: RouteCtx): Promise<Response | null
     if (path === "webdav/notes/test" && method === "POST") {
         const config = await resolveNotesWebDavConfig(api);
         if (!config.url) {
-            return Response.json(
-                { success: false, message: NOTES_BACKUP_NOT_CONFIGURED_MESSAGE },
-                { status: 400 }
-            );
+            return errorResponse(ApiError.badRequest(NOTES_BACKUP_NOT_CONFIGURED_MESSAGE));
         }
         const result = await testNotesWebDav(config);
         return Response.json(result);
@@ -412,10 +386,7 @@ export async function handleBackupRoutes(ctx: RouteCtx): Promise<Response | null
         const stored = await readNotesBackupStored(api);
         const config = notesWebDavConfigFrom(stored);
         if (!config.url) {
-            return Response.json(
-                { success: false, message: NOTES_BACKUP_NOT_CONFIGURED_MESSAGE },
-                { status: 400 }
-            );
+            return errorResponse(ApiError.badRequest(NOTES_BACKUP_NOT_CONFIGURED_MESSAGE));
         }
         // 手动备份：不删任何已有备份（自动备份才按保留份数清理自己那批）
         // env 传下去：配置了附件存储时备份升级为 ZIP（含正文引用的附件）
@@ -433,10 +404,7 @@ export async function handleBackupRoutes(ctx: RouteCtx): Promise<Response | null
     if (path === "webdav/notes/list" && method === "POST") {
         const config = await resolveNotesWebDavConfig(api);
         if (!config.url) {
-            return Response.json(
-                { success: false, message: NOTES_BACKUP_NOT_CONFIGURED_MESSAGE },
-                { status: 400 }
-            );
+            return errorResponse(ApiError.badRequest(NOTES_BACKUP_NOT_CONFIGURED_MESSAGE));
         }
         const result = await webdavList(config);
         if (!result.success || !result.data) {
@@ -453,14 +421,11 @@ export async function handleBackupRoutes(ctx: RouteCtx): Promise<Response | null
         const body = (await safeJson(request)) as { filename?: string; password?: string };
         const filename = (body.filename || "").trim();
         if (!filename) {
-            return Response.json({ success: false, message: "未指定要恢复的备份文件" }, { status: 400 });
+            return errorResponse(ApiError.badRequest("未指定要恢复的备份文件"));
         }
         const config = await resolveNotesWebDavConfig(api);
         if (!config.url) {
-            return Response.json(
-                { success: false, message: NOTES_BACKUP_NOT_CONFIGURED_MESSAGE },
-                { status: 400 }
-            );
+            return errorResponse(ApiError.badRequest(NOTES_BACKUP_NOT_CONFIGURED_MESSAGE));
         }
         // 口优先级：本次输入 > 记事本备份口令 > 导航备份口令（与上传侧同源）
         const password = body.password || config.backupPassword || "";
@@ -498,17 +463,11 @@ export async function handleBackupRoutes(ctx: RouteCtx): Promise<Response | null
         const body = (await safeJson(request)) as { filename?: string };
         const filename = (body.filename || "").trim();
         if (!/^navihive-notes-backup-/i.test(filename)) {
-            return Response.json(
-                { success: false, message: "只能删除记事本备份文件" },
-                { status: 400 }
-            );
+            return errorResponse(ApiError.badRequest("只能删除记事本备份文件"));
         }
         const config = await resolveNotesWebDavConfig(api);
         if (!config.url) {
-            return Response.json(
-                { success: false, message: NOTES_BACKUP_NOT_CONFIGURED_MESSAGE },
-                { status: 400 }
-            );
+            return errorResponse(ApiError.badRequest(NOTES_BACKUP_NOT_CONFIGURED_MESSAGE));
         }
         const result = await webdavDelete(config, filename);
         return Response.json(result);

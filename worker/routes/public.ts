@@ -202,13 +202,7 @@ export async function handlePublicRoutes(ctx: RouteCtx): Promise<Response | null
         // 验证登录数据
         const validation = validateLogin(loginData);
         if (!validation.valid) {
-            return Response.json(
-                {
-                    success: false,
-                    message: `验证失败: ${validation.errors?.join(", ")}`,
-                },
-                { status: 400 }
-            );
+            return errorResponse(ApiError.badRequest(`验证失败: ${validation.errors?.join(", ")}`));
         }
 
         // 还在锁定期就直接回绝，并告诉还要等多久。
@@ -217,13 +211,7 @@ export async function handlePublicRoutes(ctx: RouteCtx): Promise<Response | null
         const now = Date.now();
         if (guard.until > now) {
             const waitSec = Math.ceil((guard.until - now) / 1000);
-            return Response.json(
-                {
-                    success: false,
-                    message: `登录尝试过于频繁，请 ${waitSec} 秒后再试`,
-                },
-                { status: 429, headers: { "Retry-After": String(waitSec) } }
-            );
+            return errorResponse(ApiError.rateLimited(`登录尝试过于频繁，请 ${waitSec} 秒后再试`), { headers: { "Retry-After": String(waitSec) } });
         }
 
         const result = await api.login(loginData as LoginRequest);
@@ -324,10 +312,7 @@ export async function handlePublicRoutes(ctx: RouteCtx): Promise<Response | null
 
         // 未启用鉴权的部署不开放注册：整站本来就是公开的，没有「账号」可言
         if (!api.isAuthEnabled()) {
-            return Response.json(
-                { success: false, message: "当前站点未启用登录，无需注册" },
-                { status: 400 }
-            );
+            return errorResponse(ApiError.badRequest("当前站点未启用登录，无需注册"));
         }
 
         // 注册是唯一「不用任何凭据就能写库」的入口，必须限频：
@@ -338,13 +323,7 @@ export async function handlePublicRoutes(ctx: RouteCtx): Promise<Response | null
         const regNow = Date.now();
         if (regGuard.until > regNow) {
             const waitSec = Math.ceil((regGuard.until - regNow) / 1000);
-            return Response.json(
-                {
-                    success: false,
-                    message: `注册尝试过于频繁，请 ${waitSec} 秒后再试`,
-                },
-                { status: 429, headers: { "Retry-After": String(waitSec) } }
-            );
+            return errorResponse(ApiError.rateLimited(`注册尝试过于频繁，请 ${waitSec} 秒后再试`), { headers: { "Retry-After": String(waitSec) } });
         }
 
         const result = await api.registerUser(username, password, inviteCode);
@@ -395,20 +374,14 @@ export async function handlePublicRoutes(ctx: RouteCtx): Promise<Response | null
         const data = (await request.json().catch(() => ({}))) as RecoveryInput;
         const token = typeof data.token === "string" ? data.token.trim() : "";
         if (!token) {
-            return Response.json(
-                { success: false, message: "请提供恢复令牌" },
-                { status: 400 }
-            );
+            return errorResponse(ApiError.badRequest("请提供恢复令牌"));
         }
         const rBucket = clientBucket(request, trustXFF);
         const rGuard = await readRecoverGuard(api, rBucket);
         const rNow = Date.now();
         if (rGuard.until > rNow) {
             const waitSec = Math.ceil((rGuard.until - rNow) / 1000);
-            return Response.json(
-                { success: false, message: `恢复请求过于频繁，请 ${waitSec} 秒后再试` },
-                { status: 429, headers: { "Retry-After": String(waitSec) } }
-            );
+            return errorResponse(ApiError.rateLimited(`恢复请求过于频繁，请 ${waitSec} 秒后再试`), { headers: { "Retry-After": String(waitSec) } });
         }
         const clientKey =
             request.headers.get("CF-Connecting-IP") ||

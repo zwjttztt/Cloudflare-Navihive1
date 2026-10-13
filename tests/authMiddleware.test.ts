@@ -15,6 +15,7 @@ import assert from "node:assert/strict";
 import { enforceAuth, type TokenSession } from "../worker/routes/middleware";
 import type { RouteCtx } from "../worker/routes/types";
 import type { NavigationAPI } from "../src/API/navigationApi";
+import { errorBody } from "./helpers/apiErrorBody";
 
 const HOST = "https://nav.example.com";
 
@@ -162,7 +163,8 @@ test("账号已被停用：403，并把「可用恢复密钥找回」带过去",
         headers: cookieHeader("good"),
     });
     assert.equal(res?.status, 403);
-    const body = (await res!.json()) as { message: string };
+    const body = await errorBody(res!);
+    assert.equal(body.code, "forbidden", "迁移后要带机器可读的 code");
     assert.ok(body.message.includes("恢复密钥"), `被停用的人得知道还能怎么找回，实际：${body.message}`);
 });
 
@@ -171,8 +173,9 @@ test("账号已不存在：401（客户端见到 401 会清登录标记退回登
         headers: cookieHeader("good"),
     });
     assert.equal(res?.status, 401);
-    const body = (await res!.json()) as { message: string };
-    assert.ok(body.message.includes("不存在"));
+    const missing = await errorBody(res!);
+    assert.equal(missing.code, "unauthenticated", "401 要用 unauthenticated");
+    assert.ok(missing.message.includes("不存在"));
 });
 
 test("logout 不查账号态：被停用的人也要能把自己登出去", async () => {

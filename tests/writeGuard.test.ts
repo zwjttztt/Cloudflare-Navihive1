@@ -14,6 +14,7 @@ import {
     nextDecayedCount,
     writeBucket,
 } from "../worker/loginGuard";
+import { errorBody } from "./helpers/apiErrorBody";
 
 /** 只有 getConfig / setConfig 的最小 api：限速存储就挂在这两个方法上 */
 function fakeApi(): { api: NavigationAPI; raw: () => string | null } {
@@ -72,10 +73,9 @@ test("写操作限速：免罚额度内全放行，超出后 429 且带 Retry-Af
     assert.equal(blocked!.status, 429);
     const retryAfter = Number(blocked!.headers.get("Retry-After"));
     assert.ok(retryAfter >= 1, "Retry-After 至少 1 秒");
-    assert.ok(
-        (await blocked!.json()).message.includes("操作太频繁"),
-        "错误信息要能看懂"
-    );
+    const wg = await errorBody(blocked!);
+    assert.equal(wg.code, "rate_limited");
+    assert.ok(wg.message.includes("操作太频繁"), "错误信息要能看懂");
 });
 
 test("写操作限速：不同账号 / 不同 IP 各算各的，互不牵连", async () => {

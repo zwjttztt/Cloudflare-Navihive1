@@ -16,7 +16,7 @@
  *     图标与上报是浏览器 <img> / report-only 发的，压根带不上 Authorization。
  *   - 受保护路由必须在鉴权中间件**之后**，且排在「强制改密」闸门之后。
  */
-import { errorResponse } from "./lib/apiError";
+import { ApiError, errorResponse } from "./lib/apiError";
 import { BodyLimitError, readBoundedBytes } from "./util";
 import { ATTACHMENT_MAX_BYTES } from "./attachments";
 import { NavigationAPI } from "../src/API/navigationApi";
@@ -146,10 +146,7 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
             ctx.path !== "logout" &&
             (await api.mustChangePassword())
         ) {
-            return Response.json(
-                { success: false, message: "请先修改管理员密码后再进行其它操作" },
-                { status: 403 }
-            );
+            return errorResponse(ApiError.forbidden("请先修改管理员密码后再进行其它操作"));
         }
 
         // 5) 受保护路由
