@@ -2,3 +2,11 @@
 # Windows 上 core.autocrlf=true 会把文本文件检出成 CRLF，一旦这样送进镜像，
 # bash 会把行尾的 CR 当成命令的一部分，启动时报 "\r: command not found"。
 *.sh text eol=lf
+
+# Docker 部署件同理：CRLF 的 .env 会把 \r 一起读进 AUTH_SECRET（令牌签名静默错），
+# Dockerfile 的 RUN 行、compose 的值也都有可能被行尾污染。这几个文件没有默认
+# eol=lf 保护，显式钉住（只在检出时保持 LF，入库本来就是 LF）。
+Dockerfile text eol=lf
+.dockerignore text eol=lf
+docker-compose.yml text eol=lf
+.env.example text eol=lf

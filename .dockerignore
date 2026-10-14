@@ -1,0 +1,33 @@
+# 依赖与构建产物：镜像内重新 npm ci + build，别把宿主机的拷进去
+# （宿主 node_modules 可能是别的平台装的原生二进制，拷进去直接炸）
+node_modules
+dist
+dist-ssr
+dist-server
+.tmp-check
+script/tmp-tests
+.smoke-data
+
+# 数据：SQLite 库和附件含密码哈希与加密凭据，绝不进镜像
+data
+*.db
+*.db-wal
+*.db-shm
+
+# 密钥：.env 是 compose 的密钥来源，进镜像等于把密钥烙进层里
+# （.env.example 是模板，名字不同，不受这两条影响）
+.env
+**/.env
+
+# 版本控制 / CI / 编辑器
+.git
+.github
+.husky
+.vscode
+.idea
+.DS_Store
+
+# 日志
+logs
+*.log
+npm-debug.log*

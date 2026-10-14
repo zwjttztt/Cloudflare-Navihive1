@@ -20,6 +20,8 @@
 | `script/selfhost-smoke.mjs` | 26 项端到端冒烟（登录/改密/CRUD/静态头/SPA/附件/cron/404） |
 | `tests/server*.test.ts` | 35 条单测：事务原子性、RETURNING 行、外键、文件 KV、`_headers` 解析 |
 | `deploy/nginx/sites-available/navihive-selfhost.conf` | 自托管版 Nginx 配置 |
+| `Dockerfile` / `.dockerignore` / `docker-compose.yml` / `.env.example` | 容器化部署件（第四节 B） |
+| `tests/dockerDeploy.test.ts` | Docker 部署件漂移守卫（17 条） |
 | `tsconfig.server.json` | 服务端目录的独立类型检查配置 |
 
 新增脚本：`npm run build:server`、`npm run start:selfhost`、`npm run smoke:selfhost`。
@@ -46,6 +48,8 @@ npm run smoke:selfhost http://127.0.0.1:8787
 并用 `AUTH_USERNAME` / `AUTH_PASSWORD` 种下第一个账号（默认 `root` / 见下方环境变量表）。
 冒烟会覆盖：登录 → 改密 → 重登 → 建分组/站点 → PUT 站点 → 静态响应头 → SPA fallback
 → 附件上传读回 → 结构化 404。
+
+> 想用 Docker？直接跳到**第四节 B**（`docker compose up -d --build` 一把起）。
 
 > ⚠️ `node:sqlite` 在 Node 22.5+ 才可用，且启动会打一条 ExperimentalWarning
 > （`start:selfhost` 已带 `--disable-warning` 静音）。生产建议 **Node 24 LTS**。
@@ -87,7 +91,12 @@ npm run smoke:selfhost http://127.0.0.1:8787
 
 ---
 
-## 四、VPS 部署（systemd）
+## 四、VPS 部署
+
+两种接法二选一：**A. systemd**（Node 直接跑，最小依赖）或 **B. Docker**（容器，升级回滚更干净）。
+数据都在 `data/`（库 + 附件）里，两种接法共用一套备份与迁移步骤。
+
+### A. systemd
 
 ```bash
 # 1) 代码落到 /srv/navihive，构建一次
@@ -150,6 +159,54 @@ curl -fsS http://127.0.0.1:8787/api/init
 > 升级就是 `git pull && npm run build && npm run build:server && sudo systemctl restart navihive`。
 > 库的迁移在启动时自动做，不用手工跑 SQL。
 
+### B. Docker
+
+仓库根四个文件：`Dockerfile`（多阶段，运行镜像只带 `dist/client` + `dist-server/entry.mjs`，
+没有 node_modules 也没有源码）、`.dockerignore`、`docker-compose.yml`、`.env.example`。
+
+```bash
+# 1) 代码落到 /opt/navihive，按需改 .env
+cd /opt/navihive
+cp .env.example .env
+$EDITOR .env            # AUTH_SECRET 必填；从 D1 迁了数据还要填 DATA_ENCRYPTION_KEY / JWT_SECRET
+
+# 2) 构建并起服务（首次构建要编译整个前端，小机器上几分钟）
+docker compose up -d --build
+docker compose logs -f navihive        # 看到「NaviHive 自托管服务已启动」+ 两条自检告警（没有才算对）
+
+# 3) 验证
+curl -fsS http://127.0.0.1:8787/api/init     # → {"ok":true,"initialized":true,...}
+docker inspect --format='{{.State.Health.Status}}' navihive   # → healthy（探活打的就是 /api/init）
+```
+
+几个和 systemd 接法不同、值得记住的点：
+
+- **数据在命名卷 `navihive-data` 里**（容器内 `/app/data`），`docker compose down` 不丢，
+  重建容器也不丢。换机器迁移 = 把这个卷拷走。想用绑定挂载（`./data:/app/data`）也行，
+  但宿主机目录要先 `chown 1000:1000`——容器里是 `node` 用户，不是 root。
+- **compose 强制要求 `AUTH_SECRET`**（`${AUTH_SECRET:?…}` 语法）：没设就直接启动失败，
+  不会给你一个「起来了但登不进去」的服务。`.env` 已在 `.gitignore` 和 `.dockerignore` 里。
+- **端口只绑宿主机回环**（`127.0.0.1:8787`），TLS 仍然交给前面的 Nginx/Caddy。
+  确认过风险才能改成 `8787:8787`，且那时必须 `NAVIHIVE_TRUST_XFF=0`。
+- **小内存机器构建要 swap**：`tsc -b` 全量编译在 512MB 内存的机器上会 OOM
+  （Node 按物理内存把堆上限收到 ~257MB，exit 134）。Dockerfile 已设
+  `NODE_OPTIONS=--max-old-space-size=3072` 兜住，但**至少再给 2G swap**：
+  ```bash
+  fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
+  echo '/swapfile none swap sw 0 0' >> /etc/fstab
+  ```
+  （这只是上限不是预分配，大内存机器上毫无影响。）
+- **备份命令和 systemd 版不同**——容器里没有 `sqlite3` CLI，见第七节。
+- 升级：`git pull && docker compose up -d --build`，迁移照旧在启动时自动做。
+
+> **已实测（2026-10-14）**：Debian 13 / 1 核 / 464MB 内存 / Docker 29.9.0 的 VPS 上
+> 真构建真跑过——镜像构建 8 分 26 秒成功（356MB），端到端验证 29 项全过：
+> 登录 → 首登强制改密 → 重新登录 → bootstrap → 建分组 → 读回 → CSP 三头
+> （`trusted-types navihive-sw` / XFO / XCTO）→ SPA fallback → 未知路由 404 →
+> `POST /__cron` 无 token 404 → healthcheck healthy → 容器以 node(1000) 运行 →
+> 重启后数据还在 → **删掉容器重建后数据还在**（升级路径）→ 旧种子密码已失效。
+> compose 也实测了：不配 `AUTH_SECRET` 直接拒绝启动、`.env` 正确贯通、端口只绑回环。
+
 ---
 
 ## 五、Nginx
@@ -202,6 +259,19 @@ rsync -a /srv/navihive/data/files/ /backup/files-$(date +%F)/
 
 # 异地（示例用 rclone，换成任何你有的对象存储 / 另一台机器都行）
 rclone copy /backup remote:navihive-backup/
+```
+
+Docker 接法容器里没有 `sqlite3` CLI，用 `node:sqlite` 跑同一条 SQL（效果一样，都是快照）：
+
+```bash
+# 库：在容器内 VACUUM INTO，再拷出来、删掉容器里的中间文件（目标必须不存在，下次还要用）
+docker compose exec navihive node --input-type=module -e \
+  "import { DatabaseSync } from 'node:sqlite'; new DatabaseSync('/app/data/navihive.db').exec(\"VACUUM INTO '/app/data/backup.db'\")"
+docker compose cp navihive:/app/data/backup.db ./navihive-$(date +%F).db
+docker compose exec navihive rm /app/data/backup.db
+
+# 附件：tar 流式导出
+docker compose exec navihive tar czf - -C /app/data files > files-$(date +%F).tgz
 ```
 
 建议：每天一次全量、保留 30 天；**先验一遍能恢复**（`sqlite3 备份文件 "PRAGMA integrity_check;"`）
@@ -265,6 +335,11 @@ sudo systemctl start navihive
 | `SQLITE_BUSY` | 有别的进程在写（备份脚本 / 手工 sqlite3）。适配器已开 WAL + 5s 等待；备份请用 `VACUUM INTO` 而不是长事务 |
 | 定时任务没跑 | `NAVIHIVE_CRON=1`？多副本是不是每个都跑了？外部触发就看 `NAVIHIVE_CRON_TOKEN` 配了没 |
 | 改完代码不生效 | `npm run build && npm run build:server` 之后**重启服务**；`dist-server/` 是构建产物，不会热更新 |
+| **Docker：构建 OOM（exit 134 / `Aborted (core dumped)`）** | 小内存机器上 Node 按物理内存把堆上限收到 ~257MB，`tsc -b` 直接爆。Dockerfile 已设 `NODE_OPTIONS=--max-old-space-size=3072`，**但至少要给 2G swap**（`fallocate -l 2G /swapfile && mkswap && swapon`） |
+| **Docker：compose 显示 Up 但宿主连不上** | 上一次 `up` 因端口冲突失败后会留一个半成品容器（PortBindings 有、实际映射没建立）。`docker compose down && docker compose up -d` 重建即可 |
+| **Docker：compose 拒绝启动并提示 AUTH_SECRET** | 设计如此（`${AUTH_SECRET:?…}`）：宁可直接失败，也不给一个「起来了但登不进去」的服务。去 `.env` 配上 |
+| **Docker：绑定挂载（`./data`）写不进** | 容器里是 `node` 用户（uid 1000）不是 root。宿主机目录 `chown 1000:1000`，或改用命名卷 |
+| **Docker：首登后任何写操作 403** | 种子账号首登强制改密是既定行为，不是故障。`PUT /api/auth/credentials` 改完再写 |
 
 ---
 
@@ -272,7 +347,10 @@ sudo systemctl start navihive
 
 - **不要把 8787 直接暴露公网**。默认只听 `127.0.0.1` 是故意的；真要不挡 Nginx，
   必须 `NAVIHIVE_TRUST_XFF=0`（否则改 `X-Forwarded-For` 就能换限速桶）。
+  Docker 接法同理：compose 的端口映射默认只绑 `127.0.0.1`，改直连前先想清楚这条。
 - `AUTH_ENABLED` 不是 `true` 时全站无需登录即可读写，只适合内网调试。
-- 密钥文件（`/etc/navihive/env`）权限 600，别进 git。
-- 服务按最小权限跑（systemd 段已给 `ProtectSystem=strict` + `ReadWritePaths`），
-  它只需要读代码目录、写 `data/`。
+- 密钥文件（`/etc/navihive/env` 或 Docker 的 `.env`）权限 600，别进 git
+  （`.gitignore` 已忽略 `.env`，`.dockerignore` 同样排除——进镜像等于把密钥烙进层里）。
+- 服务按最小权限跑：systemd 段已给 `ProtectSystem=strict` + `ReadWritePaths`；
+  Docker 镜像以 `node` 用户运行，只挂 `/app/data`，它只需要读代码目录、写 `data/`。
+- 数据库文件含密码哈希与加密凭据，备份按敏感数据对待（加密存放、传输用 TLS）。

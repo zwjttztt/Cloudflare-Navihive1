@@ -1,0 +1,64 @@
+# NaviHive 自托管（方案 B）—— 单服务 compose。
+#
+# 用法：
+#   cp .env.example .env   # 改掉 AUTH_SECRET 等（.env 已在 .gitignore / .dockerignore 里）
+#   docker compose up -d --build
+#   docker compose logs -f navihive        # 看启动自检（缺 AUTH_SECRET 会告警）
+#   docker compose exec navihive node -e "console.log(process.version)"
+#
+# 生产形态仍然是「宿主机 Nginx/Caddy 终止 TLS → 反代到 127.0.0.1:8787」，
+# Nginx 配置用 deploy/nginx/sites-available/navihive-selfhost.conf（静态也走 Node，
+# 这样 dist/client/_headers 保持安全头的唯一事实来源）。
+# 手册：deploy/selfhost.md 第四节 B。
+
+services:
+  navihive:
+    build: .
+    image: navihive:latest
+    container_name: navihive
+    restart: unless-stopped
+
+    ports:
+      # 默认只绑宿主机回环：TLS 由前面的反代终止，容器不直接面对公网。
+      # 确认过风险再改成 "8787:8787"（那样就必须把 NAVIHIVE_TRUST_XFF 设 0）。
+      - "127.0.0.1:${NAVIHIVE_PORT:-8787}:8787"
+
+    environment:
+      # 容器内必须听 0.0.0.0，端口映射才通得出去（Dockerfile 里也设了，这里显式再写一遍防漂移）
+      NAVIHIVE_HOST: 0.0.0.0
+      NAVIHIVE_PORT: "8787"
+      # 库与附件落在命名卷里，容器重建不丢
+      NAVIHIVE_DB: /app/data/navihive.db
+      NAVIHIVE_FILES: /app/data/files
+      # 挡着反代才保持 1；端口直接暴露公网必须设 0，否则改 X-Forwarded-For 就能换限速桶
+      NAVIHIVE_TRUST_XFF: ${NAVIHIVE_TRUST_XFF:-1}
+      # 单容器 = 单实例，进程内定时任务放心开；扩容成多副本前必须设 0 并改走 POST /__cron
+      NAVIHIVE_CRON: ${NAVIHIVE_CRON:-1}
+      NAVIHIVE_CRON_TOKEN: ${NAVIHIVE_CRON_TOKEN:-}
+
+      # :? = 没设置就让 compose 直接失败退出——别默默起一个「登录必然失败」的服务
+      AUTH_SECRET: ${AUTH_SECRET:?没设 AUTH_SECRET：先在 .env 里放一个 openssl rand -hex 32}
+      AUTH_ENABLED: ${AUTH_ENABLED:-true}
+      # 只在首次建库时当种子账号；库已存在则以 configs 表为准
+      AUTH_USERNAME: ${AUTH_USERNAME:-root}
+      AUTH_PASSWORD: ${AUTH_PASSWORD:-}
+      # 从 D1 迁了数据就必须与线上一致，否则已加密的站点凭据解不开、老令牌全部失效
+      DATA_ENCRYPTION_KEY: ${DATA_ENCRYPTION_KEY:-}
+      JWT_SECRET: ${JWT_SECRET:-}
+
+    volumes:
+      - navihive-data:/app/data
+
+    # SQLite 单写者：别横向扩副本（每个副本会各写各的库），定时任务也会各跑一遍
+    deploy:
+      replicas: 1
+
+    # 访问日志是每条 API 请求一行，不轮转能把小 VPS 的磁盘写满
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  navihive-data:

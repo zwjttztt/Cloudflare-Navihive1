@@ -6,6 +6,62 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。---
 
+## 2026-10-14（四）· 工程：Docker 部署件——镜像真机构建真机跑通，29 项端到端验证全过
+
+给方案 B 补容器化路径：`docker compose up -d --build` 一把起，与 systemd 接法二选一。
+**没有止步于写文件**——在一台 1 核 / 464MB 内存的 Debian 13 VPS（Docker 29.9.0）上
+真构建、真运行、真压测了一遍，并把踩到的坑修在了交付物里。
+
+### 一、新增部署件
+
+- **`Dockerfile`**（多阶段）：builder 跑 `npm ci` + `npm run build` + `build:server`，
+  runtime 只带 `dist/client` 与 `dist-server/entry.mjs`（自包含单文件，无 node_modules、无源码）。
+  要点：`NAVIHIVE_HOST=0.0.0.0`（默认 127.0.0.1 在容器里等于端口映射全废，且无任何报错）、
+  `USER node` 最小权限、`VOLUME /app/data`、`HEALTHCHECK` 打 `/api/init`
+  （公开路由且真读一次库，比 TCP 探活强）、`--disable-warning=ExperimentalWarning` 与
+  `start:selfhost` 一致。
+- **`docker-compose.yml`**：命名卷 `navihive-data`、端口**只绑宿主机回环**（TLS 交给反代）、
+  `${AUTH_SECRET:?…}` 强制要求密钥（宁可不启动，不给一个「登不进去」的服务）、
+  json-file 日志轮转（API 访问日志每请求一行，不轮转会写满小盘）、锁定单副本
+  （SQLite 单写者）。
+- **`.dockerignore`**：排除 `node_modules`/`dist`/`dist-server`/`data`/`.env`
+  ——本地库与密钥绝不进镜像层。
+- **`.env.example`** + `.gitignore` 补 `.env`。
+- **`.gitattributes`** 给四个部署件钉 `eol=lf`：`core.autocrlf=true` 的 Windows 检出会把
+  `.env` 变 CRLF，`\r` 会被读进 `AUTH_SECRET`（令牌签名静默错）。
+
+### 二、17 条漂移守卫（`tests/dockerDeploy.test.ts`）
+
+镜像和 compose 都是「改坏了没有任何东西会报错」的文件，按仓库惯例钉死：
+两个 Stage 都是 `node:24`、runtime 的 `NAVIHIVE_HOST=0.0.0.0`、COPY 路径与真实产物一致、
+EXPOSE 与 `entry.ts` 的 `NAVIHIVE_PORT` 默认值互锁、HEALTHCHECK 打 `/api/init` 且只打
+127.0.0.1、`.dockerignore` 排除敏感项、compose 的卷/密钥/回环绑定/日志轮转/单副本、
+`.gitattributes` 的 LF 钉。**反向验证**：四处逐个改回旧写法全部如期变红，还原后 17/17 绿。
+
+### 三、VPS 实测（1 核 / 464MB / Debian 13）
+
+- **构建 8 分 26 秒成功**（镜像 356MB）。第一轮直接 OOM（exit 134）：Node 按物理内存把
+  堆上限收到 ~257MB，`tsc -b` 全量编译不够用——修法是 builder 阶段
+  `NODE_OPTIONS=--max-old-space-size=3072`（只是上限不是预分配，大机器无影响）+ 机器加 swap。
+  这条已写进 Dockerfile 注释与手册排障表。
+- **端到端 29 项全过**：登录 → 首登强制改密（种子账号既定行为）→ 重新登录 → bootstrap →
+  建分组 → 读回 → CSP 三头（`trusted-types navihive-sw` / XFO / XCTO）→ SPA fallback →
+  未知路由 404 → `POST /__cron` 无 token 404 → healthcheck healthy → 容器以 node(1000) 运行 →
+  重启后数据还在 → **删容器重建后数据还在**（升级路径）→ 旧种子密码已失效。
+- **compose 实测**：不配 `AUTH_SECRET` 时按预期直接拒绝启动；`.env` 正确贯通；
+  端口只绑回环。踩到一个 Docker 行为：`up` 因端口冲突失败后会留**半成品容器**
+  （PortBindings 有、实际映射没建立，再 `up` 显示 Up 但宿主连不上）——`down` 再 `up` 即恢复，
+  已进手册排障表。
+
+### 四、验证
+
+`tsc -b --force` / `eslint`（0 error，19 warnings 为既有）/ 单测 **2656**（2639 + 17，
+0 失败 0 跳过）/ `check:brand` / `build` / `smoke` / `audit:a11y` / `audit:contrast` 全绿；
+Docker 侧见第三节。VPS 现状：无容器无卷，`navihive:test` 镜像与 `/opt/navihive` 源码保留，
+4G swap 已入 fstab。Workers 部署路径未受影响。
+
+---
+
 ## 2026-10-14（三）· 工程：方案 B 自托管落地件 —— server/ 三件套，26 项端到端冒烟全绿
 
 按 `docs/selfhost-plan-2026-10-14.md` 把整站搬到 VPS 自托管所需要的代码全部落地。
