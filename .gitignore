@@ -53,5 +53,3 @@ data/
 # compose 的密钥来源（.env.example 是模板，要提交）
 .env
 **/.env
-# 单向镜像同步的状态文件（含两端地址，监控看它的 mtime 判定新鲜度）
-mirror-sync-state.json

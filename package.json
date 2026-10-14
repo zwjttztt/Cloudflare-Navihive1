@@ -27,7 +27,6 @@
     "e2e:webdav": "node script/webdav-e2e.mjs",
     "e2e:cron": "node script/cron-e2e.mjs",
     "build:server": "node script/build-server.mjs",
-    "sync:mirror": "node script/sync-mirror.mjs",
     "start:selfhost": "npm run build:server && node --disable-warning=ExperimentalWarning dist-server/entry.mjs"
   },
   "dependencies": {
