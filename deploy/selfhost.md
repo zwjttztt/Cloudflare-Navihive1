@@ -18,7 +18,7 @@
 | `server/static.ts` | 静态资源与 `_headers` 解析（从 entry.ts 抽出，单测覆盖） |
 | `script/build-server.mjs` | esbuild 把入口打成自包含单文件 `dist-server/entry.mjs` |
 | `script/selfhost-smoke.mjs` | 26 项端到端冒烟（登录/改密/CRUD/静态头/SPA/附件/cron/404） |
-| `tests/server*.test.ts` | 39 条单测：事务原子性、RETURNING 行、外键、文件 KV、`_headers` 解析 |
+| `tests/server*.test.ts` | 35 条单测：事务原子性、RETURNING 行、外键、文件 KV、`_headers` 解析 |
 | `deploy/nginx/sites-available/navihive-selfhost.conf` | 自托管版 Nginx 配置 |
 | `tsconfig.server.json` | 服务端目录的独立类型检查配置 |
 

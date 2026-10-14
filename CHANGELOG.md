@@ -46,7 +46,7 @@
   建分组/站点 → **PUT 站点（403 事故同款请求）** → 读回 → 静态响应头（CSP /
   X-Frame-Options / 缓存）→ SPA fallback → POST / 由 worker 回 404 →
   附件上传按 id 读回字节 → cron 端点 → 结构化 404。新库上 26/26 通过。
-- 39 条单测（`tests/server*.test.ts`）：batch 原子性与显式回滚、RETURNING 行与 meta、
+- 35 条单测（`tests/server*.test.ts`）：batch 原子性与显式回滚、RETURNING 行与 meta、
   外键开启与批内推迟校验、`bind(undefined)`、exec 形状、文件 KV 往返与拷贝语义、
   `_headers` 解析与覆盖/删除语义、SPA fallback、穿越 403，外加一条**真 `_headers`
   漂移守卫**（CSP 的 `require-trusted-types-for 'script'` 与 `trusted-types navihive-sw`
