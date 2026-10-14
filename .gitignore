@@ -44,3 +44,9 @@ scripts/recovery-private.key
 
 # 定时任务端到端脚本的 wrangler 本地 state（每次跑新建子目录）
 .wrangler-cron-e2e/
+
+# 自托管（方案 B）服务端打包产物与本地运行数据
+dist-server/
+data/
+# 自托管冒烟脚本的临时库与附件目录
+.smoke-data/

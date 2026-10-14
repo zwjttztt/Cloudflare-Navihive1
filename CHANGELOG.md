@@ -6,6 +6,73 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。---
 
+## 2026-10-14（三）· 工程：方案 B 自托管落地件 —— server/ 三件套，26 项端到端冒烟全绿
+
+按 `docs/selfhost-plan-2026-10-14.md` 把整站搬到 VPS 自托管所需要的代码全部落地。
+**业务代码一行没改**：`worker/` 与 `src/API/` 原本就只依赖 Web 标准 API，
+这里只是把 Cloudflare 平台替我们做的四件事在 `server/` 里重新长出来。
+
+### 一、新增 `server/` 三个文件
+
+- **`sqlite-d1.ts`** —— `node:sqlite` → D1 形状适配器，核心件。与仓库自带的测试替身
+  （`tests/helpers/realSqliteD1.ts`）有六处实质差异，每处都对应一种线上事故形状：
+  ① `batch()` 是**真事务**（替身是 `Promise.all`，而全仓 29 处 `db.batch()` 里有
+  「删站点 + 写回收站 + 写墓碑 + 写审计」这类组合，半提交就是数据半删）；
+  ② `run()` 同时给 meta 和 RETURNING 的行（node:sqlite 的 `run()` 会把行丢掉，
+  而 `notes.ts` 改笔记换标签直接读 batch 第一个结果的 `.results`）；
+  ③ `exec()` 补回 `{count, duration}`；④ 外键默认开启（对齐 D1 官方文档，
+  否则「线上拦得住、本地拦不住」）；⑤ 错误走 **rejection** 通道而不是同步抛出
+  （同步抛会绕过调用方的 `.catch` / `Promise.all`，这条是补单测时抓出来的真缺陷）；
+  ⑥ 行对象拍平成普通对象（node:sqlite 给的是 null-prototype）。
+  外加四个 PRAGMA（WAL / busy_timeout / synchronous=NORMAL / foreign_keys=ON）、
+  `bind(undefined)` 归一成 NULL、batch 重入用 SAVEPOINT 兜底。
+- **`file-kv.ts`** —— 本地目录 → `KVNamespaceLike`，顶掉 KV 装笔记图片附件
+  （全仓只有 `attachments.ts` 四个调用）。路径穿越防护用 `path.relative` 判而不是
+  `startsWith`（Windows 上 resolve 回反斜杠，那样写等于防护失效）；
+  写入拷贝、读回切字节区间（Buffer 底层池可能比它自己大）。
+- **`entry.ts`** —— Node 入口：HTTP 桥接（逐跳头剔除、多条 Set-Cookie 展开、
+  `duplex:"half"`、无正文状态码）+ 静态资源（解析 `dist/client/_headers`，
+  含 SPA fallback）+ 定时任务（进程内对齐 UTC 整点，或 `POST /__cron` 外部触发，
+  未配 token 恒 404）+ 优雅退出（清 timer → 关库 checkpoint WAL → 强制退兜底）。
+  配置全走环境变量，见 `deploy/selfhost.md` 的全表。
+
+`server/static.ts` 是从 entry.ts 抽出来的静态资源与 `_headers` 解析（import entry.ts
+会把整个 HTTP 服务拉起来，单测只要那段纯逻辑）。
+
+### 二、工程配套
+
+- `script/build-server.mjs`：esbuild 打成自包含单文件（752KB，无 npm 依赖）。
+- `script/selfhost-smoke.mjs`：26 项端到端冒烟 —— 登录 → 改密 → 重登 → bootstrap →
+  建分组/站点 → **PUT 站点（403 事故同款请求）** → 读回 → 静态响应头（CSP /
+  X-Frame-Options / 缓存）→ SPA fallback → POST / 由 worker 回 404 →
+  附件上传按 id 读回字节 → cron 端点 → 结构化 404。新库上 26/26 通过。
+- 39 条单测（`tests/server*.test.ts`）：batch 原子性与显式回滚、RETURNING 行与 meta、
+  外键开启与批内推迟校验、`bind(undefined)`、exec 形状、文件 KV 往返与拷贝语义、
+  `_headers` 解析与覆盖/删除语义、SPA fallback、穿越 403，外加一条**真 `_headers`
+  漂移守卫**（CSP 的 `require-trusted-types-for 'script'` 与 `trusted-types navihive-sw`
+  少任何一条都不报错，只能钉住）。
+- `deploy/selfhost.md` 落地手册 + `deploy/nginx/sites-available/navihive-selfhost.conf`
+  （与方案 A 的反代配置同目录，区别只是上游指向本机 Node）。
+- 新脚本：`npm run build:server` / `start:selfhost` / `smoke:selfhost`；
+  `dist-server/`、`data/`、`.smoke-data/` 进 .gitignore；`dist-server` 进 eslint 忽略
+  （产物里带着源码的 eslint-disable 注释，会报一堆「规则未定义」的假错误）。
+
+### 三、几个探针才量出来的 node:sqlite 行为（已写成注释留在代码里）
+
+- 事务内失败后 **COMMIT 仍会提交之前的语句** ⇒ 显式 ROLLBACK 不是摆设。
+- `all()` 跑普通 INSERT 回 `[]` 且不抛 ⇒ RETURNING 正则被字符串字面量里的
+  "returning" 骗到时不会炸，且 `changes` 不能拿行数顶替。
+- 批内开 `PRAGMA defer_foreign_keys = ON` 可精确复刻 D1 batch 的外键校验时机
+  （官方文档：推迟不阻止级联删除）。
+
+### 四、验证
+
+`tsc -b --force` / `eslint`（0 error）/ 单测 **2639 项全过** / `check:brand` /
+`build` / `smoke` / `audit:a11y` / `audit:contrast` 全绿；自托管服务真实起过
+（真 SQLite + 真文件 KV + 真静态资源），冒烟 26/26。Workers 部署路径未受影响。
+
+---
+
 ## 2026-10-14 · 修复：写操作 403 无人话 —— 同源判据改用 Sec-Fetch-Site，拒绝改回结构化 JSON
 
 线上「修改卡片保存后弹 `API错误: 403`」的第二次定位。第一轮归因于反代的

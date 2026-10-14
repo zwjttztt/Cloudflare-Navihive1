@@ -33,7 +33,9 @@ const reactHooksRules = Object.fromEntries(
 export default tseslint.config(
   // dist 是构建产物；script/tmp-tests 与 .tmp-check 是单测/类型检查的临时产物
   // （单测在退出时清理，但沙箱等环境可能清理失败而留下，被误当成源码 lint 出一堆假错误）
-  { ignores: ['dist', 'script/tmp-tests', '.tmp-check'] },
+  // dist-server 同理：自托管入口的 esbuild 产物，里面带着源码里的 eslint-disable
+  // 注释，引用的规则没应用到 .mjs 上，报一堆 "Definition for rule ... was not found"
+  { ignores: ['dist', 'dist-server', 'script/tmp-tests', '.tmp-check'] },
   {
     extends: [js.configs.recommended, ...tseslint.configs.recommended],
     files: ['**/*.{ts,tsx}'],

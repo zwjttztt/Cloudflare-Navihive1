@@ -1,0 +1,14 @@
+{
+    "extends": "./tsconfig.node.json",
+    "compilerOptions": {
+        "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.server.tsbuildinfo",
+        // 自托管入口跑在 Node 上，只认 @types/node（与 tsconfig.tests.json 同一套路：
+        // 不把 @cloudflare/workers-types 拉进来，它的 fetch/Request 定义和 node 的打架）。
+        // lib 必须带 DOM：src/API/crypto.ts 用的 CryptoKey / SubtleCrypto、
+        // worker 侧用的 BodyInit / HeadersInit 这些 Web 标准类型在 DOM lib 里
+        //（@types/node 不提供这几个全局名）。
+        "lib": ["ES2023", "DOM", "DOM.Iterable"],
+        "types": ["node"]
+    },
+    "include": ["server"]
+}
