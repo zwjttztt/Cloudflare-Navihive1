@@ -6,6 +6,63 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。---
 
+## 2026-10-14 · 工程：VPS 反代方案落地件 + 修掉反代下的写操作 403
+
+起因：`myhp.zwjttzt.com` 实测命中 Cloudflare 欧洲节点（MAN/MAD），RTT≈300ms、
+带宽仅 53 KB/s，首屏 4.5s。给出四档加速方案，选定「方案 A：VPS 反向代理」
+（回源仍走 Cloudflare Worker + D1，数据不动、可秒级回滚）。
+
+### 一、`deploy/nginx/`：一套可直接部署的反代配置
+
+- `snippets/navi-proxy.conf` —— 公共回源片段（SNI / keepalive / 头处理）
+- `sites-available/navihive.conf` —— upstream + 静态缓存 + 登录限速 + 分路径策略
+- `README.md` —— 9 步落地手册、10 项验证清单、坑速查表
+
+针对本项目的三处专项处理：
+- **登录限速退化**：`loginGuard.ts` 的 `clientBucket()` 优先读 `CF-Connecting-IP`，
+  反代后所有请求落进同一个桶（= VPS IP）—— 必须在 Nginx 层用 `limit_req` 补限速。
+- **导入进度条**：备份导入是 NDJSON 流式响应，`/api/` 必须 `proxy_buffering off`。
+- **回源 Host**：必须是 `*.workers.dev`，写自定义域名会解析回自己形成死循环。
+
+### 二、修复：反代后一切写操作报「API错误: 403」
+
+**现象**：反代上线后页面、列表、详情都正常，但保存卡片等一切写操作失败，
+提示光秃秃的 `API错误: 403`（没有后半句人话）。
+
+**根因**：`worker/httpUtils.ts` 的 `isSameOrigin()` 要求「`Origin` 头的 host 等于
+`request.url` 的 host」。反代为防回源死循环必须把 `Host` 改写成 `*.workers.dev`
+⇒ Worker 眼里 `request.url` 是源站主机，而浏览器发来的 `Origin` 仍是本站域名，
+两者不相等 ⇒ `middleware.ts` 返回**纯文本** 403「跨站请求已被拒绝」。
+前端 `parseApiError()` 只认 JSON，解析不出 message，就只剩 `API错误: 403`。
+读请求（GET/HEAD）不走这个分支，所以表现为「能看不能写」。
+
+**修复**：`deploy/nginx/snippets/navi-proxy.conf` 增加一行，回源时不转发 `Origin` 头：
+
+```nginx
+proxy_set_header Origin "";
+```
+
+（nginx 规则：`proxy_set_header` 的值为空字符串 = 不发送该头。）
+Worker 因此退回 `Sec-Fetch-Site` 判据 —— 同站 fetch 是 `same-origin` 放行，
+跨站伪造是 `cross-site` 照样拦，防护不减弱；老浏览器没有该头时由
+`SameSite=Strict` cookie 兜底。**改 VPS 上的 nginx 即可，不需要重新部署 Worker。**
+
+README 里补了「API错误: 403」专节，并把它加进验证清单第 4 条。
+
+### 三、三份方案文档（docs/）
+
+- `docs/vps-reverse-proxy-2026-10-14.md` —— 方案 A 详解：收益分段、A1/A2/A3 变体、
+  Nginx 要点、五个坑、VPS 选型、灰度与回滚
+- `docs/selfhost-plan-2026-10-14.md` —— 方案 B（整站搬到 VPS 自托管）完整落地：
+  可行性逐项回查、SQLite 适配器含 4 个坑、可直接运行的桥接代码、数据迁移、工作量估算
+- `docs/dual-deploy-arch-2026-10-14.md` —— CF + 甲骨文东京双部署四方案 × 六维度对比
+
+**方案 A vs B 的结论**（延迟模型 `TTFB ≈ 3×RTT + 处理`）：两者只差 55ms，
+方案 A 拿到总收益的约 85%，剩下 15% 要付 3 倍工作量 + 数据迁移风险 + 失去秒级回滚
+⇒ 先做 A，够用就停。B 真正的优势不在更快，而在不受 Worker CPU/时长配额限制。
+
+---
+
 ## 2026-10-13 · 修复：性能报告剩余项全落完（含三处结论更正）
 
 `docs/perf-status-2026-10-13.md` 里 P1/P2/P3 六项全部落地。**先说更正**：那份报告有
