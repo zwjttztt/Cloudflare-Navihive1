@@ -123,6 +123,48 @@ test("batch 里 UPDATE ... RETURNING 的行不丢（notes.ts 改笔记换标签�
     }
 });
 
+test("batch 里的 SELECT 也要有 results（首页 bootstrap 的形状，错法只有「空首页」）", async () => {
+    // 事故原型（2026-10-14 晚，自托管上线后）：data.ts 的 queryBootstrap 把
+    // 「分组 + 站点 + 配置」三条 SELECT 放进一个 batch，直接读每个结果的 .results。
+    // 早期版本只对 RETURNING 走 all()，SELECT 走了 run() —— run() 不回行，
+    // 于是首页永远 0 分组 0 站点，而单独 GET /api/groups（单条 all()）却有数据。
+    // 没有任何报错，表现只有一个空首页，所以必须钉在这里。
+    const { db, cleanup } = tempDb();
+    try {
+        await db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)");
+        await db.prepare("INSERT INTO t (name) VALUES (?)").bind("豆包").run();
+        await db.prepare("INSERT INTO t (name) VALUES (?)").bind("掘金").run();
+
+        // SELECT 混在写语句之间，且带绑定参数（scope 过滤就是这种形状）
+        const out = await db.batch<{ id: number; name: string }>([
+            db.prepare("SELECT id, name FROM t WHERE name = ?").bind("豆包"),
+            db.prepare("UPDATE t SET name = ? WHERE id = 2").bind("掘金改名"),
+            db.prepare("SELECT id, name FROM t ORDER BY id"),
+        ]);
+        assert.equal(out.length, 3);
+        assert.deepEqual(out[0]!.results, [{ id: 1, name: "豆包" }], "batch 里的 SELECT 丢了行");
+        assert.deepEqual(out[2]!.results, [{ id: 1, name: "豆包" }, { id: 2, name: "掘金改名" }]);
+        // 写语句那条的 meta 不受影响
+        assert.equal(metaOf(out[1]!).changes, 1);
+    } finally {
+        cleanup();
+    }
+});
+
+test("batch 里的 CTE（WITH ... SELECT）同样要有 results", async () => {
+    const { db, cleanup } = tempDb();
+    try {
+        await db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)");
+        await db.prepare("INSERT INTO t (v) VALUES (?)").bind("x").run();
+        const out = await db.batch<{ id: number }>([
+            db.prepare("WITH c AS (SELECT id FROM t) SELECT id FROM c"),
+        ]);
+        assert.deepEqual(out[0]!.results, [{ id: 1 }], "WITH 开头的查询被当成写语句了");
+    } finally {
+        cleanup();
+    }
+});
+
 test("run() 的 meta 三字段：changes / rows_written / last_row_id", async () => {
     const { db, cleanup } = tempDb();
     try {

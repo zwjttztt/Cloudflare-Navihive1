@@ -6,6 +6,39 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。---
 
+## 2026-10-14（五）· 修复：自托管首页空白——batch 里的 SELECT 会被丢掉行
+
+自托管（方案 B）上线后第一次真机使用就撞上：**首页一个分组、一张卡片都没有，但记事本正常**，
+单独 `GET /api/groups` 却又返回 5 个分组。没有任何报错，就是一个空首页。
+
+### 根因
+
+`data.ts` 的 `queryBootstrap` 把「分组 + 站点 + 配置」三条语句塞进一个 `db.batch()`
+直接读每个结果的 `.results`——前两条是 **SELECT**。而适配器 `server/sqlite-d1.ts`
+的 `batch()` 对每条语句统一调 `runSync()`，后者只在 SQL 命中 `RETURNING` 时才走 `all()`
+拿行，其余一律 `run()`：**`run()` 不回行，于是两条 SELECT 的行整批丢失**。
+D1 的 batch 会回每条语句的行，所以这条在 Cloudflare 上从不出问题，只在自托管路径上暴露。
+
+### 修法
+
+`runSync()` 的派发条件从「带 RETURNING」扩成「会返回行」：新增
+`RETURNS_ROWS_RE = /^\s*(select|with|values)\b/i`（CTE 也算），命中的走 `all()` 拿行，
+写语句照旧 `run()`，meta 不受影响。
+
+### 为什么这条必须钉死
+
+它的失败形态是**静默**的：HTTP 200、日志干净、接口数据都在，只有一个空首页。
+新加两条回归用例（`tests/serverSqliteD1.test.ts`：batch 里混 SELECT、batch 里的 CTE），
+并做了反向验证——改回旧写法两条立刻变红。
+
+### 验证
+
+`tsc -b --force` / `eslint`（0 error）/ 单测 **2658**（2656 + 2，0 失败 0 跳过）/
+`check:brand` / `build` / `smoke` / `audit:a11y` / `audit:contrast` 全绿；
+新服务器重建镜像后首页 `GET /api/bootstrap` 由 0 分组 0 站点恢复为 5 分组 13 站点。
+
+---
+
 ## 2026-10-14（四）· 工程：Docker 部署件——镜像真机构建真机跑通，29 项端到端验证全过
 
 给方案 B 补容器化路径：`docker compose up -d --build` 一把起，与 systemd 接法二选一。

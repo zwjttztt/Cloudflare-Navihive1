@@ -82,6 +82,16 @@ function asPromise<T>(fn: () => T): Promise<T> {
 
 // 带 RETURNING 的写语句才需要走 all() 拿行。用 \b 圈住，避免匹配到列名/表名里的 returning。
 const RETURNING_RE = /\breturning\b/i;
+/**
+ * 会返回行的语句：SELECT / WITH（CTE）/ VALUES，外加上面那类带 RETURNING 的写语句。
+ *
+ * ⚠️ 为什么必须有这条：batch() 里混着 SELECT 是常态（data.ts 的 queryBootstrap 就是
+ * 「分组 + 站点 + 配置」三条一批，其中前两条是 SELECT），而 D1 的 batch **会**把每条
+ * 语句的行回在对应的 D1Result.results 里。早期版本只对 RETURNING 走 all()，
+ * 其余一律 run() —— run() 不回行，于是「首页 bootstrap 拿到 0 分组 0 站点，
+ * 但单独 GET /api/groups 却有数据」。没有任何报错，只有一个空首页。
+ */
+const RETURNS_ROWS_RE = /^\s*(select|with|values)\b/i;
 
 /**
  * 绑定参数归一化：
@@ -142,11 +152,15 @@ export function makeSqliteD1(file: string, options: SqliteD1Options = {}): Sqlit
     };
 
     const runSync = <T>(sql: string, stmt: StatementSync, bound: SQLInputValue[]): D1Result<T> => {
-        // node:sqlite 的 run() 只回 { changes, lastInsertRowid }，**会把 RETURNING 的行丢掉**。
-        // 而仓库里 notes.ts 的「改笔记 + 换标签」走 batch，第一个结果直接读 .results 拿更新后的行
-        // （UPDATE ... RETURNING）；data.ts 等处的 last_row_id 也要 meta。所以按语句类型分派：
-        if (RETURNING_RE.test(sql)) {
-            // 带 RETURNING：all() 拿行，meta 用连接级的 changes()/last_insert_rowid() 补。
+        // node:sqlite 的 run() 只回 { changes, lastInsertRowid }，**会把行整批丢掉** ——
+        // 不光 RETURNING 的行，SELECT 的行也一样。所以凡是「会返回行」的语句一律走 all()：
+        //   - notes.ts 的「改笔记 + 换标签」走 batch，第一个结果直接读 .results 拿更新后的行
+        //     （UPDATE ... RETURNING）；
+        //   - data.ts 的 queryBootstrap 把「分组 + 站点」两条 SELECT 塞进 batch 读 .results，
+        //     走 run() 的话首页就是空的（且一声不响）。
+        // 其余（不带 RETURNING 的 INSERT/UPDATE/DELETE）走 run()，meta 现成，省两次 helper 查询。
+        if (RETURNING_RE.test(sql) || RETURNS_ROWS_RE.test(sql)) {
+            // 会返回行：all() 拿行，meta 用连接级的 changes()/last_insert_rowid() 补。
             const rows = (stmt.all(...bound) as T[]).map(plainRow);
             // ⚠️ changes 不能拿 rows.length 顶替：正则可能被字符串字面量里的 "returning" 骗到，
             // 那时 all() 返回空数组但语句确实写了行。changes() 是连接级的，反映的正是刚才那条语句。
