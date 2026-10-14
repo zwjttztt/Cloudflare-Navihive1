@@ -368,6 +368,22 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
         return Response.json(await api.searchNotes(query, limit), {
             headers: { "Cache-Control": "no-store" },
         });
+    } else if (path === "notes/export" && method === "GET") {
+        // 与下面 notes/import 对称的导出口，复用 exportNotesData（记事本 WebDAV
+        // 备份用的就是它）—— 不另写一遍 SQL，「导出的」必须和「页面上看到的」一致。
+        //
+        // 为什么要有这条：单向镜像同步（deploy/mirror-sync.md）要靠它把笔记从
+        // 源站搬到镜像站。导航备份（/api/export）**刻意不含笔记**，只配那条通道
+        // 的话，切到镜像站会发现笔记全空 —— 这是最容易漏的一条。
+        //
+        // 不加限速闸门：全量笔记正文本来就能通过 GET /api/notes（不带 fields=list）
+        // 拿到，这条并没有开出新的口子，只是给了个与 import 同形状的口。
+        return Response.json(await api.exportNotesData(), {
+            headers: {
+                "Content-Disposition": 'attachment; filename="navihive-notes.json"',
+                "Cache-Control": "no-store",
+            },
+        });
     } else if (path === "notes/import" && method === "POST") {
         // 导入「记事本导出」JSON：只动记事本，按 uuid 合并（文件较新才覆盖）。
         // 是写操作，走 writeGate 限速；失败由 api 层整批回滚。

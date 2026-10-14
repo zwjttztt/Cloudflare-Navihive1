@@ -23,9 +23,13 @@
 | `Dockerfile` / `.dockerignore` / `docker-compose.yml` / `.env.example` | 容器化部署件（第四节 B） |
 | `tests/dockerDeploy.test.ts` | Docker 部署件漂移守卫（17 条） |
 | `tsconfig.server.json` | 服务端目录的独立类型检查配置 |
+| `script/sync-mirror.mjs` | 单向镜像同步（自托管主站 → 只读备站），见 `deploy/mirror-sync.md` |
+| `tests/mirrorSync.test.ts` | 镜像同步漂移守卫（11 条） |
 
-新增脚本：`npm run build:server`、`npm run start:selfhost`、`npm run smoke:selfhost`。
-Workers 部署路径（`npm run deploy`）完全不受影响，两条路可以并行跑一段时间。
+新增脚本：`npm run build:server`、`npm run start:selfhost`、`npm run smoke:selfhost`、
+`npm run sync:mirror`。
+Workers 部署路径（`npm run deploy`）完全不受影响，两条路可以并行跑一段时间
+——并行期间用 `deploy/mirror-sync.md` 把自托管那份定时搬到 Cloudflare 当备站。
 
 ---
 

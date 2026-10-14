@@ -6,6 +6,50 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。---
 
+## 2026-10-15（一）· 新增：单向镜像同步（主站 → 只读备站）
+
+VPS 成了日常在用的主站，Cloudflare 那份就停在切换那一刻。这次补上「把主站的数据
+定时搬到备站」这件事，落地的是 `docs/dual-deploy-arch-2026-10-14.md` 里的方案 ②：
+**单向覆盖 + 备站只读**。
+
+### 要点
+
+- 新增 `script/sync-mirror.mjs`（`npm run sync:mirror`）：登录两端 → 校验备站只读 →
+  `/api/export` → `/api/import`（导航，覆盖式）+ `/api/notes/export` → `/api/notes/import`
+  （笔记，按 uuid 合并）→ 导入后按条数对账 → 写状态文件。
+- **备站只读是硬闸门**：脚本开工前先读备站 `/api/init` 的 `maintenance`，
+  不是 `true` 就以退出码 2 拒绝。备站开着维护模式时非所有者写操作 503、所有者豁免，
+  所以脚本用所有者登录仍能写入 —— 不需要为同步再开任何后门。
+- 新增 `GET /api/notes/export`：与既有 `POST /api/notes/import` 对称，复用
+  `api.exportNotesData()`（记事本 WebDAV 备份用的就是它），不新增 SQL。
+  导航备份**刻意不含笔记**，只配导航通道的话切到备站会发现笔记全空。
+- 新增 `deploy/mirror-sync.md`：前置条件、环境变量、systemd timer / crontab、
+  告警与新鲜度监控、切换步骤、验证清单。
+- 新增 `tests/mirrorSync.test.ts`（11 条）+ 反向验证脚本：钉住闸门顺序、端点一致性、
+  `notes/export` 的路由顺序、dry-run 不写、写请求不重试、退出码语义。
+
+### 几处刻意的取舍
+
+- **写请求一律不重试**：`/api/import` 是「先 INSERT 备份内容、成功后才 DELETE 旧数据」，
+  中途失败重来一批就是重复行。读请求才重试（幂等，跨境抖动一次重试是安全的）。
+- **凭据只从环境变量读**，不接命令行参数（`ps` / shell history 看得见）。
+- **`--with-credentials` 是显式开关**：它会临时把源站的 `backup.includeCredentials`
+  置 `true` 再立刻还原，还原失败会大声告警（留着 true 意味着之后的 WebDAV 备份带明文凭据）。
+- **附件不同步**：两端存储不同（KV / 目录）、上传由服务端发 uuid，没有幂等写入口子；
+  当前两端都没有附件，已在手册里列为已知缺口。
+- 非 GET 请求带 `Sec-Fetch-Site: same-origin`：同源判据先看这个头，脚本显式声明比依赖
+  「两个头都没有就放行」这条兜底更稳。⚠️ 反过来不能带 `Origin`，带了必被 CSRF 拦。
+
+### 验证
+
+`tsc -b --force` / `eslint`（0 error）/ 单测 **2669**（2658 + 11，0 失败 0 跳过）/
+`check:brand` / `build` / `smoke` / `audit:a11y` / `audit:contrast` 全绿；
+11 条守卫全部做了反向验证（改成错写法后各自变红）。
+⚠️ 脚本本身**没有实跑过**（需要两端真实账号与网络），首次使用请按
+`deploy/mirror-sync.md` 第八节的验证清单走一遍，先 `--dry-run`。
+
+---
+
 ## 2026-10-14（五）· 修复：自托管首页空白——batch 里的 SELECT 会被丢掉行
 
 自托管（方案 B）上线后第一次真机使用就撞上：**首页一个分组、一张卡片都没有，但记事本正常**，
