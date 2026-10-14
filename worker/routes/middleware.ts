@@ -114,11 +114,17 @@ export async function enforceAuth(ctx: RouteCtx, session: TokenSession): Promise
 
     // CSRF：令牌改成 cookie 后跨站请求会自动带上它，
     // 所以写操作必须确认是本站发起的（判据见 isSameOrigin 注释）。
+    //
+    // ⚠️ 这里必须回**结构化**错误，不能回纯文本：
+    // 纯文本 403 客户端 parseApiError 解析不出 message，用户只看到一句
+    // 「API错误: 403」—— 既不知道发生了什么，也没法排查是反代、是 CDN 还是应用层。
+    // 2026-10-14 线上就这么卡住的：一条 403 三种可能，只能靠猜。
     if (cookieToken && method !== "GET" && method !== "HEAD" && !isSameOrigin(request)) {
-        return new Response("跨站请求已被拒绝", {
-            status: 403,
-            headers: TEXT_HEADERS(),
-        });
+        return errorResponse(
+            ApiError.forbidden(
+                "跨站请求已被拒绝：请从本站页面正常访问，不要在别的网站里嵌入或转发本页地址"
+            )
+        );
     }
 
     return null;

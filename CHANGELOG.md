@@ -6,6 +6,73 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。---
 
+## 2026-10-14 · 修复：写操作 403 无人话 —— 同源判据改用 Sec-Fetch-Site，拒绝改回结构化 JSON
+
+线上「修改卡片保存后弹 `API错误: 403`」的第二次定位。第一轮归因于反代的
+Host 改写（已落 `proxy_set_header Origin "";`），但用户反馈**反代之前就有**，
+且加了那行之后仍然报错 —— 说明归因不完整，于是把整条链路的 403 出口重新穷举了一遍。
+
+### 一、排查：全链路只有一处会吐「没有人话的 403」
+
+- 客户端 `request()` 的格式是 `reason ? "${reason} (HTTP ${status})" : "API错误: ${status}"`，
+  `reason` 来自 `parseApiError()`。⇒ **看到光秃秃的「API错误: N」，只可能是响应体不是 JSON**。
+- Worker 内逐个 `new Response(` / `Response.json(` 数过去：所有 403 出口都带 message
+  （`errorResponse(ApiError.forbidden(...))`、账号停用、强制改密闸门…），
+  **唯一**的纯文本 403 是 `middleware.ts` 的 CSRF 分支「跨站请求已被拒绝」。
+- 排除了：Cloudflare 边缘拦截（用完整浏览器指纹发 PUT，请求确实到了 Worker）、
+  跨域（`baseUrl="/api"` + `credentials:"same-origin"`，源码与线上 bundle 双重确认）、
+  线上是旧版（`/api/note-shares` 已是新错误形状、`/api/init` 带 `maintenance` 字段）。
+- ⇒ 只能是 CSRF 分支。而它只在 `Origin` 的 host ≠ `request.url` 的 host 时触发。
+
+### 二、根因：同源判据问错了对象
+
+反代方案**必须**把回源 `Host` 改写成源站域名（否则 DNS 指向 VPS 自己会死循环），
+于是 Worker 眼里 `request.url` 的主机名永远和浏览器看到的不一样：
+
+```
+浏览器  Origin: https://myhp.zwjttzt.com
+Worker   request.url = https://<WORKERS_DEV_HOST>/api/sites/1   ← Host 被改写过
+```
+
+原来 `isSameOrigin()` 拿这两个 host 相比，**所有写请求**（保存卡片 / 增删改 / 改设置）
+一律判跨站；读请求不走这个分支，所以现象是「页面能看、一保存就报错」。
+第一轮让 nginx 别转发 `Origin` 是对的，但它要求每一层反代都记得配这一行 ——
+漏一层（或像这次一样，用户手里是另一套 nginx 配置）就复发。
+
+### 三、修复：判据换成浏览器自己算的那个头
+
+`isSameOrigin()` 改成 **`Sec-Fetch-Site` 优先**：
+
+1. `Sec-Fetch-Site` —— 浏览器按「发起页面 vs 目标」算出来的，禁伪造头，JS 改不了。
+   关键是它**与中间经过几层反代无关**：不管回源 Host 被改成什么，它回答的都是
+   「浏览器眼里这次请求是不是同源发的」—— 正是这道校验想问的问题。
+2. `Origin` —— 只在没有 `Sec-Fetch-Site` 时才用（老浏览器 / curl），行为与之前完全一致。
+3. 两个都没有：放行，交给 `SameSite=Strict` cookie 兜底。
+
+安全性不降：跨站页面发来的请求 `Sec-Fetch-Site` 是 `cross-site`，照样拦；
+`same-site`（同站不同源，如子域名）也照样拦；伪造的 `Origin` 骗不过它
+（`Sec-Fetch-*` 是禁伪造头，而 `Origin` 非浏览器客户端可以随手加）。
+
+配套把这次拒绝从**纯文本**改成 `errorResponse(ApiError.forbidden(...))`：
+纯文本 403 客户端解析不出 message，用户只看到一句「API错误: 403」，
+既不知道发生了什么、也没法排查是反代、CDN 还是应用层 —— 这次线上就是卡在这一步。
+
+### 四、测试与文档
+
+- `tests/httpUtils.test.ts`：新增「Sec-Fetch-Site 优先于 Origin」与
+  「没有 Sec-Fetch-Site 时才退回 Origin」两组用例（含反代场景与伪造 Origin 两个方向）。
+- `tests/authMiddleware.test.ts`：CSRF 拒绝必须回结构化 JSON；
+  新增「反代改了回源 Host → Origin 对不上但 Sec-Fetch-Site 是同源 → 放行」。
+- `deploy/nginx/README.md`：403 专节补上「Worker 侧已自适应，`Origin ""` 变为可选」。
+- `tests/bundleBudget.test.ts`：基线 237.25 → 238.44、预算 250 → 252。
+  这是**构建产物漂移**不是新代码（`git diff dc46173..HEAD -- src/` 为空），
+  rolldown-vite 换版本后 index 块多 1.19 KB；按用例自己写的出口连同理由一起上调。
+
+单测 2604 全绿；`tsc -b --force` / lint / check:brand / build / smoke /
+audit:a11y / audit:contrast 全过。
+
+---
+
 ## 2026-10-14 · 工程：VPS 反代方案落地件 + 修掉反代下的写操作 403
 
 起因：`myhp.zwjttzt.com` 实测命中 Cloudflare 欧洲节点（MAN/MAD），RTT≈300ms、

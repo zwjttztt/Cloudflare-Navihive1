@@ -46,7 +46,7 @@ function findProjectDir(): string {
 // 而首屏总字节反而从 943.3 降到 495.1 KB。所以这里不是「放宽预算」，
 // 是**单个块不再是首屏字节的代表** —— 判断首屏请看上面那组 raw / gzip，
 // 这条只用来盯「index 块本身有没有被人塞东西」（余量仍按 ≥5% 判）。
-const BUDGET_KB = 250;
+const BUDGET_KB = 252;
 /**
  * 基线：每次真的把首屏压下来之后都要跟着更新，否则这条用例会一路放任包变大。
  * 222.61 KB —— LoginForm 改 lazy 之后（见 git log）
@@ -96,8 +96,14 @@ const BUDGET_KB = 250;
  * （同期另外两刀没动 index：`GroupCard` 的 `EditGroupDialog` 由「无条件渲染」
  *   改成 `ChunkBoundary when={editDialogOpen}`，`preload-helper` 并进 vendor 的尝试
  *   因为 rolldown 自己发的 `rolldown-runtime` 块填不上那个坑而回退 —— 详见 CHANGELOG。）
+ *
+ * 238.44 —— 2026-10-14 复测修正：**不是新代码，是构建产物漂移**。
+ * `git diff dc46173..HEAD -- src/` 是空的（客户端一行没改），重新 build 出来的
+ * index 块却是 244160 字节（238.44 KB），比当时记的 237.25 多 1.19 KB ——
+ *  rolldown-vite 换版本后的输出差异。基线照实更新，预算同步 250 → 252，
+ * 仍然守住「离上限至少 5%」这个信号（现在 5.7%）。
  */
-const BASELINE_KB = 237.25;
+const BASELINE_KB = 238.44;
 
 function indexChunk(): { name: string; kb: number } | null {
     const assets = join(findProjectDir(), "dist", "client", "assets");

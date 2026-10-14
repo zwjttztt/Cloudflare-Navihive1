@@ -192,7 +192,9 @@ EOF
 | 10 | 限速生效 | 连输 5 次错密码，应被 Nginx 挡（503 或慢响应），而不是把源站桶锁死 |
 
 第 2、4、7 三条最容易出问题，**一定要测**。
-其中第 4 条如果报 `API错误: 403`，是 CSRF 同源校验被 Host 改写误伤，见下面「坑速查」的专节。
+其中第 4 条如果报 `API错误: 403`，是 CSRF 同源校验被 Host 改写误伤 ——
+Worker 侧 2026-10-14 已改成按 `Sec-Fetch-Site` 判定（不再看 Host），
+推一次 GitHub 就好；详见下面「坑速查」的专节。
 
 ---
 
@@ -211,7 +213,7 @@ EOF
 | 现象 | 原因 |
 |---|---|
 | 502 Bad Gateway | 源站地址写错；**Host 写成了自定义域名（死循环）**；防火墙没开 |
-| **页面能打开，一保存就弹「API错误: 403」** | **回源 Host 改写成 `*.workers.dev` 后，Worker 的同源校验误判跨站**（见下方专节） |
+| **页面能打开，一保存就弹「API错误: 403」** | **回源 Host 改写成 `*.workers.dev` 后，Worker 的同源校验误判跨站**（Worker 侧已自适应，见下方专节） |
 | 登录 200 但立刻掉线 | Set-Cookie 被合并成一条（检查是否被上游/CDN 二次代理） |
 | 导入进度条卡住 | `/api/` 缺 `proxy_buffering off` |
 | 附件上传失败 | `client_max_body_size` 小于 30m |
@@ -221,21 +223,32 @@ EOF
 
 ### 「API错误: 403」专节：写操作全被 CSRF 拦下
 
-**现象**：反代上线后，首页 / 列表 / 详情都能正常打开，但一切**写操作**——
+**现象**：首页 / 列表 / 详情都能正常打开，但一切**写操作**——
 保存卡片、增删改、改设置——全部失败，提示 `API错误: 403`（没有后半句人话）。
 
-**根因**：`worker/httpUtils.ts` 的 `isSameOrigin()` 要求「`Origin` 头的 host 必须等于
-`request.url` 的 host」。而本方案为了防回源死循环，必须把 `Host` 改写成
+**根因**：`worker/httpUtils.ts` 的 `isSameOrigin()` 原先拿 `Origin` 头的 host 和
+`request.url` 的 host 相比。而本方案为了防回源死循环，必须把 `Host` 改写成
 `*.workers.dev`（见文件头硬性要求第 3 条）。于是：
 
 - 浏览器发来 `Origin: https://<你的域名>`
 - Worker 看到 `request.url = https://<WORKERS_DEV_HOST>/...`
 
-两者不相等 → `middleware.ts` 返回**纯文本** 403「跨站请求已被拒绝」。
-前端 `parseApiError()` 只认 JSON，解析不出 message，就只剩光秃秃的
-`API错误: 403`。读请求（GET/HEAD）不走这个分支，所以「能看不能写」。
+两者不相等 → `middleware.ts` 判跨站并拒绝。前端 `parseApiError()` 只认 JSON，
+解析不出 message，就只剩光秃秃的 `API错误: 403`。
+读请求（GET/HEAD）不走这个分支，所以「能看不能写」。
 
-**修复（改 VPS 上的 nginx，不用重新部署 Worker）**：在
+**修复已落在 Worker 侧（2026-10-14，推 GitHub 即生效）**：`isSameOrigin()`
+改成 **`Sec-Fetch-Site` 优先**。那是浏览器按「发起页面 vs 目标」自己算的禁伪造头，
+**与中间经过几层反代、回源 Host 被改成什么都无关** —— 它回答的就是
+「浏览器眼里这次请求是不是同源发的」。所以只要浏览器是 Chrome 76+/Firefox 90+/
+Safari 16.4+（现在几乎没有更老的），**不需要在 nginx 里做任何事**，
+回源 Host 该改写照改。安全性不降：跨站请求的 `Sec-Fetch-Site` 是 `cross-site`，
+照样拦；`same-site`（子域名）也照样拦。
+
+同时这次拒绝从纯文本改成了结构化 JSON，万一日后还有 403，
+用户看到的会是「跨站请求已被拒绝：…」而不是一句没法排查的 `API错误: 403`。
+
+**nginx 侧那行现在变成可选**（双保险，留着无害）：在
 `snippets/navi-proxy.conf` 里加一行，回源时不转发 `Origin` 头：
 
 ```nginx
@@ -243,7 +256,7 @@ proxy_set_header Origin "";
 ```
 
 （nginx 规则：`proxy_set_header` 的值是空字符串 = 不发送该头。）
-Worker 会因此退回 `Sec-Fetch-Site` 判据：同站 fetch 是 `same-origin` 放行，
+Worker 会因此直接走 `Sec-Fetch-Site` 判据：同站 fetch 是 `same-origin` 放行，
 跨站伪造是 `cross-site` 照样拦，防护不减弱。改完 `nginx -t && systemctl reload nginx`。
 
 **备选做法**（想保留 Worker 的 `Origin` 判据）：用 `map` 只把「自己域名」的 Origin
@@ -261,6 +274,8 @@ map $http_origin $navi_origin {
 
 **自检**：`curl -s -X POST https://<你的域名>/api/sites -H "Cookie: navihive_token=x"`
 应返回 401「请先登录」而不是 403；登录后在浏览器里保存一张卡片，应成功。
+如果仍然 403，看响应正文：写着「跨站请求已被拒绝」= 走到 CSRF 分支；
+是 CF 拦截页 HTML = Cloudflare 层；是 JSON = 应用层，按 message 处理。
 
 
 ---

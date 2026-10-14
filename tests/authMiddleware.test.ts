@@ -193,7 +193,38 @@ test("写操作跨站（cookie 令牌）：403 拒绝", async () => {
         headers: { ...cookieHeader("good"), Origin: "https://evil.example.com" },
     });
     assert.equal(res?.status, 403);
-    assert.ok((await res!.text()).includes("跨站"));
+    const body = await errorBody(res!);
+    assert.equal(body.code, "forbidden");
+    assert.ok(body.message.includes("跨站"), `拒绝理由要说清楚，实际：${body.message}`);
+});
+
+test("CSRF 拒绝必须回结构化 JSON（纯文本会让用户只看到「API错误: 403」）", async () => {
+    const { res } = await call({}, "groups", {
+        method: "POST",
+        headers: { ...cookieHeader("good"), "Sec-Fetch-Site": "cross-site" },
+    });
+    assert.equal(res?.status, 403);
+    assert.ok(
+        (res!.headers.get("Content-Type") || "").includes("application/json"),
+        "2026-10-14 线上事故：纯文本 403 客户端解析不出 message，只剩一句「API错误: 403」"
+    );
+    const body = await errorBody(res!);
+    assert.equal(body.code, "forbidden");
+});
+
+// 反代场景：回源 Host 被改写成源站域名，Worker 眼里 request.url 的主机名
+// 和浏览器看到的不一样，Origin 也就对不上；但 Sec-Fetch-Site 仍然是 same-origin。
+// 这种写操作必须放行 —— 拦了就是「页面能看、一保存就 403」。
+test("反代改了回源 Host：Origin 对不上但 Sec-Fetch-Site 是同源 → 放行", async () => {
+    const { res } = await call({}, "groups", {
+        method: "POST",
+        headers: {
+            ...cookieHeader("good"),
+            Origin: "https://nav.example.com",
+            "Sec-Fetch-Site": "same-origin",
+        },
+    });
+    assert.equal(res, null, "反代不是攻击，不能把所有本站写操作都打成 403");
 });
 
 test("读操作跨站：不拦（只读接口本来就被人直接访问）", async () => {

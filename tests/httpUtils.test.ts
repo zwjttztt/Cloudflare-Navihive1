@@ -183,6 +183,41 @@ test("isSameOrigin：两个头都没有时放行，交给 SameSite=Strict 兜底
     assert.equal(isSameOrigin(post({})), true);
 });
 
+// ---- 判据优先级：Sec-Fetch-Site 赢 Origin ----
+//
+// 2026-10-14 线上事故的复盘用例。反代方案必须把回源 Host 改写成源站域名，
+// Worker 眼里 request.url 的主机名就和浏览器看到的不一样；此时浏览器照旧发来
+// 本站的 Origin，只比 Origin 会把所有写操作打成 403（现象：页面能看、一保存就报错）。
+// Sec-Fetch-Site 是浏览器按「发起页面 vs 目标」算的，与中间经过几层反代无关。
+test("isSameOrigin：Sec-Fetch-Site 优先于 Origin——反代改了 Host 也不误伤", () => {
+    // 反代场景：Origin 还是本站域名，Sec-Fetch-Site 说同源 → 放行
+    assert.equal(
+        isSameOrigin(post({ Origin: "https://nav.example.com", "Sec-Fetch-Site": "same-origin" })),
+        true,
+        "回源 Host 被改写成别的域名时，不能因此把本站写操作全拦下"
+    );
+    // 反过来：Origin 对得上但 Sec-Fetch-Site 说跨站 → 照拦
+    // （Origin 能被非浏览器客户端随手伪造，Sec-Fetch-Site 不能）
+    assert.equal(
+        isSameOrigin(post({ Origin: "https://nav.example.com", "Sec-Fetch-Site": "cross-site" })),
+        false,
+        "伪造的 Origin 骗不过 Sec-Fetch-Site"
+    );
+    assert.equal(
+        isSameOrigin(post({ Origin: "https://nav.example.com", "Sec-Fetch-Site": "same-site" })),
+        false,
+        "同站不同源（子域名）也算跨站"
+    );
+});
+
+test("isSameOrigin：没有 Sec-Fetch-Site 时才退回 Origin（老浏览器 / curl）", () => {
+    // 老浏览器没有 Sec-Fetch-Site，行为必须和调优先级之前完全一致
+    assert.equal(isSameOrigin(post({ Origin: "https://nav.example.com" })), true);
+    assert.equal(isSameOrigin(post({ Origin: "https://nav.example.com:8443" })), false);
+    assert.equal(isSameOrigin(post({ Origin: "https://evil.example.com" })), false);
+    assert.equal(isSameOrigin(post({ Origin: "not-a-url" })), false);
+});
+
 // ---------------- 响应安全头 ----------------
 
 test("withSecurityHeaders 补齐三个安全头", () => {

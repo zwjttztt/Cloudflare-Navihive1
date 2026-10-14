@@ -110,10 +110,27 @@ export function expiredCookieHeaders(secure: boolean): string[] {
 /**
  * 同源校验（CSRF 防护）。
  * 令牌一改成 cookie，跨站请求就会自动带上它，所以写操作必须确认「确实是本站发起的」。
- * 有 Origin 就看 Origin；没有就看 Sec-Fetch-Site；两者都没有（老客户端/curl）时放行，
- * 交给 SameSite=Strict 兜底。
+ *
+ * ⚠️ 判据顺序是 2026-10-14 按一次线上事故调过的（Sec-Fetch-Site 优先）：
+ * 反代方案必须把回源 Host 改写成源站域名（否则 DNS 指向自己会死循环），
+ * 于是 Worker 眼里 request.url 的主机名永远和浏览器看到的不一样，
+ * 拿 Origin 比 host 会把**所有**本站写操作打成 403 —— 而用户描述的现象
+ * 恰恰是「页面能看、一保存就 403、且报错没有人话」。详见 CHANGELOG 2026-10-14。
+ *
+ * 取值优先级：
+ * 1. Sec-Fetch-Site —— 浏览器按「发起页面 vs 目标」自己算的，禁伪造头，JS 改不了。
+ *    关键是它**不受回源 Host 改写影响**：不管中间经过几层反代，它回答的都是
+ *    「浏览器眼里这次请求是不是同源发的」，正是这道校验想问的问题。
+ *    只放行 same-origin / none；same-site、cross-site 一律拦。
+ * 2. Origin —— 只有没有 Sec-Fetch-Site 时才用（老浏览器 / curl）。
+ *    比 host（含端口）不比协议：host 相同只差 scheme 不构成 CSRF，而反代下
+ *    两者的协议经常不一致，把 scheme 加进比较同样会误伤所有本站写操作。
+ * 3. 两个头都没有：放行，交给 SameSite=Strict cookie 兜底。
  */
 export function isSameOrigin(request: Request): boolean {
+    const site = request.headers.get("Sec-Fetch-Site");
+    if (site) return site === "same-origin" || site === "none";
+
     const origin = request.headers.get("Origin");
     if (origin) {
         try {
@@ -122,8 +139,6 @@ export function isSameOrigin(request: Request): boolean {
             return false;
         }
     }
-    const site = request.headers.get("Sec-Fetch-Site");
-    if (site) return site === "same-origin" || site === "none";
     return true;
 }
 
