@@ -96,7 +96,21 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
                     ? 8192
                     : 256 * 1024;
             const bytes = await readBoundedBytes(request.body, maxBytes);
-            request = new Request(request, { body: bytes.byteLength ? bytes : null });
+            // ⚠️ 这里不能写 `new Request(request, { body })`（拿旧 Request 当模板）：
+            // Node 的 undici 在 init.body 为 null 时要从 input 继承 body，而此时
+            // input 的 body 流已被 readBoundedBytes 消费 → 抛
+            // "Cannot construct a Request with a Request object that has already been used"。
+            // 表现：所有「无请求体的写请求」（DELETE、空体 PUT/POST）在自托管端一律 500，
+            // 带 body 的反而没事（init.body 非空时 undici 不碰 input 的 body）——
+            // 所以 CRUD 大多正常，唯独 DELETE /api/configs/webdav.backupPassword 这类
+            // 空体删除炸出来（2026-10-15 实测）。Cloudflare 的 runtime 没有这条检查，
+            // 线上从不出错，只在自托管暴露。
+            // 改成 url + method + headers 重建，两个 runtime 行为一致。
+            request = new Request(request.url, {
+                method: request.method,
+                headers: request.headers,
+                body: bytes.byteLength ? bytes : null,
+            });
         }
         const api = new NavigationAPI(env);
         const ctx: RouteCtx = {

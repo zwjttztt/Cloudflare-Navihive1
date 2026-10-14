@@ -6,6 +6,54 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。---
 
+## 2026-10-15（一）· 修复：自托管空体 DELETE 一律 500（undici Request 重建）
+
+自托管（方案 B）上保存 WebDAV 备份配置时报 **「保存 WebDAV 配置失败: 服务器内部错误 (HTTP 500)」**，
+服务端日志是 `TypeError: Cannot construct a Request with a Request object that has already been used.`。
+
+### 根因
+
+`worker/index.ts` 的 `handleRequest` 为了限速，先用 `readBoundedBytes` 把请求体读成字节，
+再重建一个 `Request` 往下传。旧写法拿**已被消费的旧 Request 当模板**：
+
+```ts
+request = new Request(request, { body: bytes.byteLength ? bytes : null });
+```
+
+Node 的 undici 在 `init.body` 为 `null` 时会去**从模板继承 body**，而此时模板的 body 流已经被
+`readBoundedBytes` 消费掉 → 抛上面的错。**带 body 的 PUT/POST 没事**（init.body 非空时 undici
+不碰模板的 body），所以 CRUD 大多正常，唯独**空体删除**炸——而 WebDAV 配置保存会在清空密码时发一条
+`DELETE /api/configs/webdav.backupPassword`，正好踩中。Cloudflare 的 runtime 没有这条检查，
+所以线上（Workers）从不出错，**只在自托管（Node）暴露**。
+
+### 修复
+
+改成用 **url + method + headers** 重建，两个 runtime 行为一致：
+
+```ts
+request = new Request(request.url, {
+    method: request.method,
+    headers: request.headers,
+    body: bytes.byteLength ? bytes : null,
+});
+```
+
+### 落地的件
+
+- `worker/index.ts`：上面那行重建逻辑；
+- `tests/workerRequestRebuild.test.ts`：2 条源码守卫（禁止 `new Request(request|req)[,)]` 模板写法、
+  必须出现 `new Request(request.url,` + `method: request.method`；并反向验证 `server/entry.ts` 仍保留
+  `hasBody = method !== "GET" && method !== "HEAD"`）；
+- `script/selfhost-smoke.mjs`：第 11 节新增「无 body 的 DELETE 不再 500」回归检查
+  （`DELETE /api/groups/99999999`，断言 `status < 500`）。
+
+### 验证
+
+自托管冒烟全链路 **27/27 通过**；该空体 DELETE 之前回 500，现在回 200（不存在的分组删除是幂等的），
+崩溃路径已消失。
+
+---
+
 ## 2026-10-15（一）· 回退：单向镜像同步（同日新增、同日回退）
 
 上午落地过一版「主站 → 只读备站」的单向镜像同步（`6399599`，含

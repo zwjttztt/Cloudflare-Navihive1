@@ -166,5 +166,15 @@ const missing = await api("GET", "/api/sites/99999999");
 check("不存在的站点 404 且带结构化错误码", missing.status === 404 && typeof missing.json?.error?.code === "string",
     JSON.stringify(missing.json));
 
+// ---- 11. 无请求体的 DELETE ----
+// ⚠️ 这条是 2026-10-15 事故的回归钉：worker/index.ts 读完 body 后用旧 Request 当模板
+// 重建请求，Node undici 在 init.body 为 null 时要从模板继承 body →
+// "Cannot construct a Request with a Request object that has already been used" → 500。
+// 带 body 的 PUT/POST 都没事，唯独空体删除炸（WebDAV 配置保存就是这么挂的）。
+// 修复后这条请求必须不再 500（崩溃消失）；不存在的分组删除是幂等的，正常回 200/404，
+// 与具体 2xx/4xx 无关——只要不是 5xx 就说明 undici 重建路径走通了。
+const del = await api("DELETE", "/api/groups/99999999");
+check("无 body 的 DELETE 不再 500（undici 重建路径走通）", del.status < 500, `status=${del.status}`);
+
 console.log(`\n通过 ${pass} 项，失败 ${fail} 项`);
 process.exit(fail === 0 ? 0 : 1);
