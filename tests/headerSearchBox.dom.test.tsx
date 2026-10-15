@@ -113,6 +113,17 @@ const resultItems = () => [
     ...document.querySelectorAll<HTMLElement>(".MuiListItemButton-root"),
 ];
 
+test("搜索框必须关掉浏览器自动填充（本站源上有登录凭据，不关会被填进账号名）", () => {
+    render({ query: "" });
+    const input = document.querySelector<HTMLInputElement>("input");
+    assert.ok(input, "搜索框要渲染出 input");
+    assert.equal(
+        input!.getAttribute("autocomplete"),
+        "off",
+        "autocomplete=off 缺失时 Chrome 会把保存的登录用户名自动填进搜索框"
+    );
+});
+
 test("有关键词时下列表是搜索结果，显示站点名与所属分组", () => {
     render({
         query: "示例",

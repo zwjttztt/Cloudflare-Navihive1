@@ -120,6 +120,12 @@ export default function HeaderSearchBox({
                 }}
                 slotProps={{
                     input: {
+                        // ⚠️ 必须显式关掉浏览器自动填充：本站同时是登录页所在源，
+                        // Chrome 会把保存的登录用户名自动填进页面上第一个文本框
+                        // （2026-10-15 用户实测：搜索框被填了账号名 zwj，还得手动删掉）。
+                        // 搜索框永远不该被当作用户名输入框。
+                        autoComplete: "off",
+                        name: "site-search",
                         startAdornment: (
                             <InputAdornment position='start'>
                                 <SearchIcon fontSize='small' />
