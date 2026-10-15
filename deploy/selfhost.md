@@ -221,6 +221,8 @@ docker inspect --format='{{.State.Health.Status}}' navihive   # → healthy（�
 - `proxy_set_header X-Forwarded-Proto $scheme` **必须有**：cookie 的 `Secure` 属性靠它判断。
 - `client_max_body_size 30m`：附件单文件上限 25MB，小了会在 Nginx 这层先挂。
 - `/api/webdav/` 超时放到 600s：备份上传封顶 10 分钟。
+- **上游写 `127.0.0.1:8787`，不要写 VPS 公网 IP**。面板类工具默认爱填公网 IP
+  （发卡路径），平时能通，但会把「端口绑回环」这个安全措施直接废掉——详见第九节的陷阱说明。
 
 首次上线证书还不存在时，`nginx -t` 会失败 —— 先只留 80 端口的 acme 块，
 `certbot certonly --webroot` 签完证书再启用 443。
@@ -313,14 +315,37 @@ sudo systemctl start navihive
 
 ---
 
-## 九、灰度切流与回滚
+## 九、切流状态（2026-10-15 已定型）
 
-1. 先按第四节起好服务，用 `npm run smoke:selfhost` 过一遍，再手工点一遍关键路径
-   （登录、改卡片、传一张笔记图片、跑一次 WebDAV 备份）。
-2. DNS 把 `myhp.zwjttzt.com` 的 TTL 提前调到 60s，然后改指 VPS。
-3. **Cloudflare 那套留着别删**，观察至少一周（备份有没有真跑起来、附件能不能读、限速有没有误伤）。
-4. 回滚 = DNS 改回 Cloudflare，一分钟量级。数据方向是「D1 → VPS」单向的，
-   回滚前如果在 VPS 上写过数据，需要再导回来（所以建议观察期内 VPS 侧只读先用）。
+**当前形态：自托管即主站，对外暴露走 Nginx 反代。**
+
+- 域名（生产：`home.zwjttzt.com`）→ Cloudflare → VPS 443 → Nginx → `127.0.0.1:8787` → 容器。
+  Nginx 与 NaviHive 同机（可以是同机的 Nginx 容器，host 网络模式）。
+- **8787 只绑宿主机回环**（`127.0.0.1:8787:8787`），不直接面对公网 —— 裸 HTTP 直连
+  等于绕过 TLS 和 Nginx 的安全/限流层。
+- Cloudflare 那套（Workers + D1）**保留不删**，作为回滚目标；但它不再是主站，
+  上面的数据停留在此刻的状态（**已决定：不把 CF 端数据再重导同步过来**）。
+  两端各自独立，将来要搬数据用备份文件手工导入（导航 `/api/export` → 另一端 `/api/import`；
+  站点密码在导出时解密为明文、导入时用目标库密钥重加密，两端 `AUTH_SECRET` 不同也能搬）。
+- 回滚 = DNS 改回 Cloudflare（分钟级）。注意切流后新写的数据只在 VPS 侧，
+  回滚前需先用备份导出把 VPS 这段时间的数据搬回去——没有自动同步，别以为有。
+
+### ⚠️ 上游指公网 IP 的「发卡」陷阱
+
+把 8787 绑回环之前，**先确认 Nginx 的上游写的是 `127.0.0.1:8787` 而不是 VPS 的公网 IP**
+（`server 131.186.58.86:8787` 这种）。面板类工具（kPanel 等）默认常填公网 IP，
+请求走「本机 → 公网 IP → 本机」的发卡路径——平时能通，一旦把端口收进回环就全站 502。
+生产上就踩过：改绑定后站点挂掉，根因是上游还指着公网 IP。两步必须一起做：
+
+```bash
+# 1) Nginx 上游改回环（容器外是宿主上的配置文件，改完 reload）
+sed -i 's/<公网IP>:8787/127.0.0.1:8787/g' /etc/nginx/conf.d/<站点>.conf
+docker exec nginx nginx -t && docker exec nginx nginx -s reload
+# 2) 再把 compose 的端口映射收进回环，重建容器
+#    "8787:8787" → "127.0.0.1:8787:8787"
+docker compose down && docker compose up -d
+ss -tln | grep 8787        # 应只剩 127.0.0.1:8787
+```
 
 ---
 
@@ -340,6 +365,7 @@ sudo systemctl start navihive
 | **Docker：compose 拒绝启动并提示 AUTH_SECRET** | 设计如此（`${AUTH_SECRET:?…}`）：宁可直接失败，也不给一个「起来了但登不进去」的服务。去 `.env` 配上 |
 | **Docker：绑定挂载（`./data`）写不进** | 容器里是 `node` 用户（uid 1000）不是 root。宿主机目录 `chown 1000:1000`，或改用命名卷 |
 | **Docker：首登后任何写操作 403** | 种子账号首登强制改密是既定行为，不是故障。`PUT /api/auth/credentials` 改完再写 |
+| **把 8787 绑回环后全站 502** | Nginx 上游还指着 VPS 公网 IP（发卡路径），回环一绑就断。上游改 `127.0.0.1:8787` 再 reload，见第九节 |
 
 ---
 
