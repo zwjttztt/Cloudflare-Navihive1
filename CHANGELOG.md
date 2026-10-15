@@ -6,6 +6,24 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。---
 
+## 2026-10-15（二）· 新增：右下角部署版本号徽标
+
+**要点**：每个页面右下角现在有一个极低调的版本号（形如 `v0.1.0+c49c59f`），
+悬浮可见构建时间。以后「线上跑的是哪一版」一眼可查，不用再猜「修没修、部署没部署」。
+
+- 版本号在**构建时**生成：语义版本（package.json）+ commit 短哈希。每次部署
+  （Cloudflare 从 GitHub 自动部署、自托管 `docker build`）都会重新计算，
+  天然做到「每一次部署一个版本号」。
+- Docker 构建上下文刻意不含 `.git`（.dockerignore），取不到哈希时兜底用构建号
+  （毫秒时间戳，同样每次构建必不同）——任何构建方式下版本号都存在且逐次可区分。
+- 徽标 `pointer-events: none`：永不挡右下角点击；`zIndex 1`：任何弹窗都盖过它；
+  颜色走 `--text-muted`，亮暗主题自动跟随；开发模式没烘版本号就不渲染。
+- 落地件：`vite.config.ts`（define 注入 `__NAVIHIVE_APP_VERSION__` / `__NAVIHIVE_BUILD_TIME__`）、
+  `src/utils/appVersion.ts`、`src/components/BuildBadge.tsx`（挂 `src/main.tsx` 根部，
+  主页面与公开分享页都显示）、`tests/BuildBadge.dom.test.tsx`（4 条）。
+
+---
+
 ## 2026-10-15（一）· 修复：自托管空体 DELETE 一律 500（undici Request 重建）
 
 自托管（方案 B）上保存 WebDAV 备份配置时报 **「保存 WebDAV 配置失败: 服务器内部错误 (HTTP 500)」**，

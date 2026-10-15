@@ -1,4 +1,6 @@
 import { defineConfig, type Plugin } from 'vite'
+import { execSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import react from '@vitejs/plugin-react'
 
 import { cloudflare } from "@cloudflare/vite-plugin";
@@ -21,6 +23,43 @@ import { cloudflare } from "@cloudflare/vite-plugin";
  * 页面会每一次加载都判定自己过期。
  */
 const BUILD_VERSION = String(Date.now());
+
+/**
+ * 对用户可见的部署版本号（右下角徽标，见 components/BuildBadge.tsx）。
+ *
+ * 形如 `v0.1.0+c49c59f`：语义版本 + commit 短哈希。
+ * 每次构建（Cloudflare 从 GitHub 自动部署、VPS 上 docker build）都会重新计算，
+ * 所以「每一次部署」天然拿到自己的版本号。
+ *
+ * ⚠️ Docker 构建上下文刻意不含 .git（.dockerignore），里面 `git rev-parse` 会失败
+ * —— 兜底用 BUILD_VERSION（毫秒时间戳，同样每次构建必不同），保证任何构建方式下
+ * 版本号都存在且逐次可区分，只是可读性从「commit 哈希」退化为「构建号」。
+ */
+function gitShortHash(): string {
+    try {
+        return execSync("git rev-parse --short HEAD", {
+            encoding: "utf8",
+            stdio: ["ignore", "pipe", "ignore"],
+        }).trim();
+    } catch {
+        return "";
+    }
+}
+
+const PKG_VERSION = (
+    JSON.parse(readFileSync("./package.json", "utf8")) as { version: string }
+).version;
+const APP_VERSION = `v${PKG_VERSION}+${gitShortHash() || BUILD_VERSION}`;
+
+/** 本地构建时间（展示用，进徽标的 title 提示；不含时区语义，就是构建机的钟） */
+const BUILD_TIME = (() => {
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return (
+        `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ` +
+        `${pad(now.getHours())}:${pad(now.getMinutes())}`
+    );
+})();
 
 function precacheManifest(): Plugin {
     return {
@@ -117,6 +156,9 @@ export default defineConfig({
   // 只在 src 里读得到（worker 侧的 tsconfig 不认识这个全局，那边也不该读它）。
   define: {
     __NAVIHIVE_BUILD_VERSION__: JSON.stringify(BUILD_VERSION),
+    // 右下角版本徽标用（components/BuildBadge.tsx）；只在 src 里读，worker 侧不该读它
+    __NAVIHIVE_APP_VERSION__: JSON.stringify(APP_VERSION),
+    __NAVIHIVE_BUILD_TIME__: JSON.stringify(BUILD_TIME),
   },
   build: {
     // 分包：react / mui 各自成块，其余依赖归 vendor。

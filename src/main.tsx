@@ -12,6 +12,7 @@ const publicGroupToken = /^\/sg\/([a-f0-9]{64})$/.exec(location.pathname)?.[1];
 import { createRoot } from "react-dom/client";
 import "./index.css";
 import App from "./App.tsx";
+import BuildBadge from "./components/BuildBadge";
 import { readRememberedLogin } from "./utils/rememberedLogin";
 import { UIPrefsProvider } from "./context/UIPrefsContext";
 import ErrorBoundary from "./components/ErrorBoundary";
@@ -163,6 +164,8 @@ createRoot(document.getElementById("root")!).render(
                     <Suspense fallback={<p>正在加载分享…</p>}><PublicGroupPage token={publicGroupToken} /></Suspense>
                 ) : publicToken ? <Suspense fallback={<p>正在加载分享…</p>}><PublicNotePage token={publicToken} /></Suspense> : <App />}
             </UIPrefsProvider>
+            {/* 部署版本徽标（右下角）：主页面与公开分享页都显示，方便核对「跑的是哪一版」 */}
+            <BuildBadge />
         </ErrorBoundary>
     </StrictMode>
 );
