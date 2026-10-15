@@ -174,6 +174,17 @@ const shared = {
     // 而测试环境根本不去取字体（CSS 用 empty loader 丢掉即可）。
     loader: { ".css": "empty", ".woff": "file", ".woff2": "file", ".ttf": "file" },
     external: ["react-dom/server"],
+    // import.meta.env 平时由 Vite 在构建时注入；单测是 esbuild 直接打包，
+    // 不定义就是 undefined，一读 .DEV 就炸（App.tsx 的 api 单例在模块加载时读它）。
+    // 语义对齐「被测的就是构建产物」：DEV=false → api 走 "/api" 真实客户端，
+    // 用例里用 fetch 桩接住；VITE_USE_REAL_API 空串 → 不切 mock。
+    define: {
+        "import.meta.env.DEV": "false",
+        "import.meta.env.PROD": "true",
+        "import.meta.env.SSR": "false",
+        "import.meta.env.MODE": '"test"',
+        "import.meta.env.VITE_USE_REAL_API": '""',
+    },
     ...(coverageMode ? { sourcemap: "external" } : {}),
 };
 
