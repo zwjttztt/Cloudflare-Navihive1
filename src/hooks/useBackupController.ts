@@ -474,8 +474,15 @@ export function useBackupController(deps: BackupControllerDeps) {
                 // 老备份的全站设置混在 configs 里，新备份放在 sharedConfigs，
                 // 两边都按「共享键只有所有者能写」过滤一遍
                 const configEntries = pickImportConfigEntries(normalized, currentUser);
-                for (const [key, value] of configEntries) {
-                    await api.setConfig(key, value);
+                // ⚠️ 必须走 **batch**（configs/batch 允许空串），不能逐键 setConfig——
+                // 备份里「未设置」的配置就是空字符串（如 site.iconApi: ""），而
+                // 单键接口按设计拒绝空值（configs/{key} 400「配置值不能为空」），
+                // 逐键写会在第一个空配置上把整个合并导入炸掉（2026-10-15 用户实测：
+                // WebDAV 恢复合并模式必 400）。batch 的空串语义与覆盖恢复的
+                // 服务端批量写入完全一致。auth.*/webdav.* 已被 pickImportConfigEntries 滤掉，
+                // batch 路由的 auth. 禁写不会触发。
+                if (configEntries.length > 0) {
+                    await api.setConfigs(Object.fromEntries(configEntries));
                 }
             }
 

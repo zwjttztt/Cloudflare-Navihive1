@@ -259,6 +259,28 @@ test("DELETE configs/xxx：所有者可删", async () => {
     assert.deepEqual(log.deleted, ["link.healthSync"]);
 });
 
+// ---------------- 空值契约：batch 收空串、单键拒空串 ----------------
+// 备份里「未设置」的配置就是空字符串（如 site.iconApi: ""）。覆盖恢复走服务端
+// 批量写入（收空串）；合并导入曾经逐键 setConfig，撞上第一个空配置就 400
+// 「配置值不能为空且必须是字符串」，整个合并恢复报废（2026-10-15 用户实测）。
+// 修复 = 合并导入改走 batch。这组用例钉住两条路由的契约差，防有人「统一」掉。
+
+test("batch 允许空字符串值（「未设置」的配置恢复成空是合法语义）", async () => {
+    const { res, log } = await call("configs/batch", "POST", { owner: true }, {
+        configs: { "site.iconApi": "", "site.customCss": "" },
+    });
+    assert.equal(res?.status, 200);
+    assert.deepEqual(log.setConfigs, [{ "site.iconApi": "", "site.customCss": "" }]);
+    assert.equal(log.setConfig.length, 0, "batch 不得退化成逐键写");
+});
+
+test("单键 PUT 空值被拒（400）——合并导入因此必须走 batch", async () => {
+    const { res, log } = await call("configs/site.iconApi", "PUT", { owner: true }, { value: "" });
+    assert.equal(res?.status, 400);
+    assert.match(await res!.text(), /配置值不能为空/);
+    assert.equal(log.setConfig.length, 0);
+});
+
 // ---------------- 不认领 ----------------
 
 test("不归本模块的 path 返回 null", async () => {
