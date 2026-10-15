@@ -16,6 +16,7 @@ import {
     Config,
     ExportData,
     Group,
+    ImportMode,
     ImportOptions,
     ImportResult,
     ImportStage,
@@ -27,7 +28,7 @@ import {
     NoteTag,
     Site,
 } from "../types";
-import { sanitizeIconUrl, sanitizeLocalPrefs, stripSiteCredentials } from "./internals";
+import { sanitizeIconUrl, sanitizeLocalPrefs, stripSiteCredentials, tombstoneStamp } from "./internals";
 
 /**
  * 恢复锁的存活时间。
@@ -231,17 +232,22 @@ export const transferImpl: TransferApi = {
     },
 
     /**
-     * 导入所有数据（**增量合并 upsert**）。
+     * 导入所有数据。两种模式：
      *
-     * ⚠️ 硬约束：**这条链路里没有任何一行 DELETE**。既不清空、也不整体覆盖，
-     * 更不会因为「备份里没有就把本地那条删掉」。库里已有的数据永远是加法：
-     * 能认出是同一条的就更新/跳过，认不出是同一条的才新建，本地多出来的原样保留。
+     * - `merge`（默认，**增量合并**）：这条链路里没有任何一行 DELETE。既不清空、
+     *   也不整体覆盖，更不会因为「备份里没有就把本地那条删掉」。库里已有的数据
+     *   永远是加法：能认出是同一条的就更新/跳过，认不出是同一条的才新建，
+     *   本地多出来的原样保留。
+     * - `overwrite`（**覆盖导入**，必须用户显式勾选）：在合并的基础上，
+     *   额外删掉「本地有、而这份备份里没有」的分组 / 卡片 / 笔记，
+     *   把整站还原成备份那一刻的样子。
      *
-     * 为什么要这么改：过去有两种语义——「覆盖恢复」会把当前账号的分组与站点
-     * 整批删掉再按备份重建，「合并导入」则逐条 create 又叠一遍。
-     * 前者在文件选错 / 传输中断时会把账号清空（恢复失败比不恢复更糟），
-     * 后者重复导入同一份备份会长出一堆同名的分组和重复的卡片。
-     * 现在两者收敛成一个 upsert 语义，重复导入是幂等的。
+     * 覆盖模式与老的「先清空再重建」有三点本质区别，都是冲着「别把人清空」去的：
+     *   1. **只删备份里没有的**，认得出是同一条的照样就地更新 —— 卡片 id 不变，
+     *      本机星标 / 标签 / 访问统计不会因为一次恢复全部掉线；
+     *   2. **删除与写入同一个事务**，整批失败由数据库整批回滚，不存在「删完了没写进去」；
+     *   3. **空备份不许覆盖**：一份没有分组也没有卡片的备份多半是选错文件了，
+     *      直接拒绝，而不是把站点清空。
      *
      * 匹配口径（同一账号范围内）：
      *   - 分组：按**名称**
@@ -276,6 +282,12 @@ export const transferImpl: TransferApi = {
                 // 进度回调出错不能把导入拖垮
             }
         };
+        /**
+         * 合并（默认）还是覆盖。
+         * 覆盖是唯一会删东西的模式，所以它必须由调用方显式传进来 —— 不传就是合并。
+         */
+        const mode: ImportMode = opts?.mode === "overwrite" ? "overwrite" : "merge";
+        const overwrite = mode === "overwrite";
         const groupIdMap: Record<string, number> = {};
         /**
          * 笔记三态统计。声明在 try 之外：成功路径要返回它，
@@ -359,6 +371,21 @@ export const transferImpl: TransferApi = {
 
             const normalized = normalizeImportData(data);
 
+            // ── 覆盖模式的空备份闸门 ──
+            //
+            // 一份没有分组也没有卡片的备份，覆盖进去等于把站点清空。这不是「导入成功」
+            // 而是「导入事故」，而它最常见的成因只是选错了文件 / 解析没成功。
+            // 合并模式不受影响：那种模式下一份空备份本来就不会动任何东西。
+            if (overwrite && normalized.groups.length === 0 && normalized.sites.length === 0) {
+                return {
+                    success: false,
+                    message:
+                        "这份备份里没有任何分组或卡片，覆盖导入已取消（现有数据未改动）",
+                    groupIdMap,
+                    siteIdMap,
+                };
+            }
+
             // ── 现有数据索引（只读）──
             //
             // 增量导入全靠这张表认「是不是同一条」。只读不写，所以这一段永远不会
@@ -406,11 +433,20 @@ export const transferImpl: TransferApi = {
             // 第一阶段：把要写什么算清楚（加密、权限判定这些含 await 的都在这里做完），
             // 第二阶段只负责往 batch 里塞纯 SQL —— 保证事务里没有「等待」。
             const groupPlan: GroupPlan[] = [];
+            /**
+             * 本次认出来的已有分组 id（覆盖模式下这些分组保命）。
+             *
+             * 另外单独记一份 incomingSiteKeys：两张表一起才能算出
+             * 「本地有、而备份里没有」的那些行 —— 光看名字会漏掉「卡片被搬走了」。
+             */
+            const matchedGroupIds = new Set<number>();
+            const incomingSiteKeys = new Set<string>();
             let nextGroupId = groupBase + 1;
             for (const group of normalized.groups) {
                 const name = String(group.name ?? "").trim();
                 const existingId = name ? groupIdByName.get(name) : undefined;
                 if (existingId !== undefined) {
+                    matchedGroupIds.add(existingId);
                     // 同名分组已经存在：认出来就复用，不顺手改它的排序 / 名字 ——
                     // 用户在本地调过的顺序不该被一份备份悄悄覆盖掉
                     if (group.id !== undefined) groupIdMap[String(group.id)] = existingId;
@@ -441,6 +477,8 @@ export const transferImpl: TransferApi = {
                 const existingId = groupIdByName.get(ORPHAN_GROUP_NAME);
                 if (existingId !== undefined) {
                     orphanGroupId = existingId;
+                    // 兜底分组被复用 = 这次它装了东西，覆盖模式下不能把它删掉
+                    matchedGroupIds.add(existingId);
                 } else {
                     orphanGroupId = nextGroupId++;
                     groupPlan.push({ id: orphanGroupId, name: ORPHAN_GROUP_NAME, order_num: 999999 });
@@ -465,6 +503,10 @@ export const transferImpl: TransferApi = {
                     throw new Error(`站点「${site.name}」找不到所属分组`);
                 }
                 const key = siteMatchKey(groupId, site.url, site.name);
+                // 记进「备份里有哪几张卡」：覆盖模式删除时用得上。
+                // 放在匹配之前 —— 重复的、要新建的、要去更新的，全都要算进这张清单，
+                // 否则「备份里明明有」的卡片会被当成没有而删掉。
+                incomingSiteKeys.add(key);
                 const existingId = siteIdByKey.get(key);
 
                 if (existingId !== undefined && !plannedSiteIds.has(existingId)) {
@@ -516,6 +558,63 @@ export const transferImpl: TransferApi = {
                 siteIdByKey.set(key, id);
                 if (site.id !== undefined) siteIdMap[String(site.id)] = id;
                 stats.sitesCreated += 1;
+            }
+
+            // ── 覆盖模式：算出「本地有、备份里没有」的那些行 ──
+            //
+            // 只删这一类，不是「先清空再重建」。两种做法差别很大：
+            //   - 认得出是同一条的卡片**保住 id**：本机星标 / 标签、访问统计不会因为
+            //     一次恢复全部掉线（老的做法是给每一行重新发号，代价是这些全没了）；
+            //   - 卡片内容仍然按 merge 那套「谁新谁赢」，不硬灌旧的：
+            //     备份里没带登录凭据时（导出开关关着）覆盖进去也不会把本地存的账号密码清空。
+            //
+            // 合并模式下这两段恒为空，整个 importData 依旧没有任何 DELETE。
+            const removalStatements: D1PreparedStatement[] = [];
+            if (overwrite) {
+                const staleSiteIds: number[] = [];
+                const staleGroupIds: number[] = [];
+                for (const row of existingSiteRows.results || []) {
+                    // 分组都被删了的话，它下面的卡片不必单独判断 —— 整个分组一起走
+                    if (matchedGroupIds.has(row.group_id)) {
+                        const key = siteMatchKey(row.group_id, row.url, row.name);
+                        if (incomingSiteKeys.has(key)) continue;
+                    }
+                    staleSiteIds.push(row.id);
+                }
+                for (const row of existingGroupRows.results || []) {
+                    if (matchedGroupIds.has(row.id)) continue;
+                    staleGroupIds.push(row.id);
+                }
+
+                // 删卡片前先留墓碑：其它设备靠 /api/sites/changes 才知道少了哪几张，
+                // 否则它们本地那几张会一直留着，谁都看不出已经被删了
+                for (const id of staleSiteIds) {
+                    removalStatements.push(
+                        this.db
+                            .prepare("INSERT INTO site_tombstone (user_id, site_id, deleted_at) VALUES (?, ?, ?)")
+                            .bind(this.currentUserId, id, tombstoneStamp())
+                    );
+                }
+                // ⚠️ 先删卡片再删分组：sites.group_id 有外键（ON DELETE CASCADE 在
+                // 外键开关没打开的环境里不生效），顺序反了会在事务提交时撞外键约束，
+                // 整批回滚 —— 表现为「覆盖导入总是失败」。
+                for (const id of staleSiteIds) {
+                    removalStatements.push(
+                        this.db
+                            .prepare(`DELETE FROM sites WHERE id = ?${this.scopeSql(true)}`)
+                            .bind(...this.scopeParams([id]))
+                    );
+                }
+                for (const id of staleGroupIds) {
+                    removalStatements.push(
+                        this.db
+                            .prepare(`DELETE FROM groups WHERE id = ?${this.scopeSql(true)}`)
+                            .bind(...this.scopeParams([id]))
+                    );
+                }
+
+                stats.groupsRemoved = staleGroupIds.length;
+                stats.sitesRemoved = staleSiteIds.length;
             }
 
             // 密码加密放在计划阶段之后、SQL 之前：几千条逐个 await 会把这一段拖成串行
@@ -644,6 +743,9 @@ export const transferImpl: TransferApi = {
             });
             /** 本地已存在、需要就地覆盖的笔记 id（区别于新分配的 nextNoteId 段） */
             const existingNoteIds = new Set<number>();
+            /** 覆盖模式要删的本地笔记 id（合并模式恒为空，一条都不动） */
+            const staleNoteIds: number[] = [];
+            const staleNoteTagLinks: number[] = [];
 
             if (incomingNotes) {
                 // 合并：先读本地现有的，按 uuid 认同一条
@@ -700,16 +802,71 @@ export const transferImpl: TransferApi = {
                         noteStats.skipped += 1;
                     }
                 }
-                // 本地多出来的笔记原样保留：removed 恒为 0
-                noteStats.removed = 0;
+                // 覆盖模式：本地有、而这份备份里没有的笔记也要清掉。
+                //
+                // 仍然是「只删备份里没有的」，与卡片同一口径 —— 认得出是同一条的
+                // 按 merge 那套比新旧（上面那段），认不出的才删。
+                // 没有 uuid 的老笔记无法参与去重，覆盖模式下会被一起清掉：
+                // 无从判断它是不是备份里那一条，留在库里就成了孤儿。
+                if (overwrite) {
+                    const incomingUuids = new Set(
+                        incomingNotes.map(n => n.uuid).filter((u): u is string => !!u)
+                    );
+                    for (const row of localRows.results || []) {
+                        if (row.uuid && incomingUuids.has(row.uuid)) continue;
+                        if (typeof row.id !== "number") continue;
+                        staleNoteIds.push(row.id);
+                        // 标签关联跟着走：留下一批指向已删笔记的关联，
+                        // 其它设备同步时会拿到引用不存在的行
+                        staleNoteTagLinks.push(row.id);
+                    }
+                    noteStats.removed = staleNoteIds.length;
+                } else {
+                    // 本地多出来的笔记原样保留：removed 恒为 0
+                    noteStats.removed = 0;
+                }
+            }
+
+            // 覆盖模式要删的笔记：先掐掉标签关联，再删笔记本身。
+            // 分块（每块 90 个 id）是给绑定参数上限留余量 —— D1 一条语句最多 100 个参数，
+            // 一次删几百条笔记拼成一整条 IN(...) 会直接被拒。
+            const noteRemovalStatements: D1PreparedStatement[] = [];
+            for (let offset = 0; offset < staleNoteTagLinks.length; offset += 90) {
+                const chunk = staleNoteTagLinks.slice(offset, offset + 90);
+                noteRemovalStatements.push(
+                    this.db
+                        .prepare(
+                            `DELETE FROM note_note_tag WHERE note_id IN (${chunk
+                                .map(() => "?")
+                                .join(",")})`
+                        )
+                        .bind(...chunk)
+                );
+            }
+            for (let offset = 0; offset < staleNoteIds.length; offset += 90) {
+                const chunk = staleNoteIds.slice(offset, offset + 90);
+                noteRemovalStatements.push(
+                    this.db
+                        .prepare(
+                            `DELETE FROM notes WHERE id IN (${chunk
+                                .map(() => "?")
+                                .join(",")})${this.scopeSql(true)}`
+                        )
+                        .bind(...this.scopeParams(chunk))
+                );
             }
 
             // ── 第二阶段：整批提交（一个 D1 事务 = 原子切换）──
             //
-            // 这里只有 INSERT / UPDATE，没有任何 DELETE —— 连「先删后插」的
+            // 合并模式下这里只有 INSERT / UPDATE，没有任何 DELETE —— 连「先删后插」的
             // 关联重建都不做（ note_note_tag 用的是 INSERT OR IGNORE）。
-            // 中途任何一步失败由数据库整批回滚，本地数据一个字节都不会变。
-            const commitStatements: D1PreparedStatement[] = [...metadataStatements];
+            // 覆盖模式下会多出一批删除语句，它们与写入**同一个事务**提交：
+            // 要么整份备份生效，要么一个字节都不变，不存在「删完了没写进去」。
+            const commitStatements: D1PreparedStatement[] = [
+                ...metadataStatements,
+                ...noteRemovalStatements,
+                ...removalStatements,
+            ];
             for (const n of notePlan) {
                 // 同一个 uuid 既可能是「新建」也可能是「覆盖本地那条」——
                 // 用 ON CONFLICT 的话需要 uuid 上有唯一索引，而老库里可能有重复

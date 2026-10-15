@@ -13,6 +13,9 @@
 import type { ChangeEvent, Dispatch, RefObject, SetStateAction } from "react";
 import type { WebDavConfig, WebDavFile } from "../API/http";
 import { formatSize, formatTime } from "../utils/backupFormat";
+// 口令类输入框统一走「text + CSS 遮蔽」：type=password 会被浏览器当成登录表单
+// 自动填充（还连带把顶栏搜索框当用户名框），见 utils/secretInput.ts 的结论。
+import { SECRET_IGNORE_ATTRS, secretInputSx, secretInputType } from "../utils/secretInput";
 import {
     Alert,
     Box,
@@ -211,24 +214,30 @@ export default function BackupTab({
                             <TextField
                                 id='backup-encrypt-password'
                                 label='备份密码'
-                                type={showBackupPassword ? "text" : "password"}
+                                name='backup-passphrase-new'
+                                type={secretInputType(showBackupPassword)}
                                 size='small'
                                 fullWidth
                                 value={backupPassword}
                                 onChange={e => setBackupPassword(e.target.value)}
-                                autoComplete='new-password'
+                                autoComplete='off'
+                                sx={secretInputSx(showBackupPassword)}
+                                slotProps={{ input: { ...SECRET_IGNORE_ATTRS } }}
                             />
                             <TextField
                                 id='backup-encrypt-password-confirm'
                                 label='确认备份密码'
-                                type={showBackupPassword ? "text" : "password"}
+                                name='backup-passphrase-confirm'
+                                type={secretInputType(showBackupPassword)}
                                 size='small'
                                 fullWidth
                                 value={backupPasswordConfirm}
                                 onChange={e => setBackupPasswordConfirm(e.target.value)}
-                                autoComplete='new-password'
+                                autoComplete='off'
+                                sx={secretInputSx(showBackupPassword)}
                                 slotProps={{
                                     input: {
+                                        ...SECRET_IGNORE_ATTRS,
                                         endAdornment: (
                                             <InputAdornment position='end'>
                                                 <IconButton
@@ -331,17 +340,20 @@ export default function BackupTab({
                         />
                         <TextField
                             label='密码 / 应用密码'
-                            type={showPassword ? "text" : "password"}
+                            name='webdav-app-passphrase'
+                            type={secretInputType(showPassword)}
                             placeholder='建议使用应用专用密码'
                             value={config.password}
                             onChange={handleConfigChange("password")}
                             size='small'
                             fullWidth
-                            autoComplete='new-password'
+                            autoComplete='off'
+                            sx={secretInputSx(showPassword)}
                             // 应用密码一长串随机字符，粘进去看不到内容很容易粘错；
                             // 点眼睛就能核对。默认仍然遮住
                             slotProps={{
                                 input: {
+                                    ...SECRET_IGNORE_ATTRS,
                                     endAdornment: (
                                         <InputAdornment position='end'>
                                             <IconButton
@@ -377,15 +389,18 @@ export default function BackupTab({
                     <TextField
                         id='webdav-backup-password'
                         label='备份密码（可选）'
-                        type={showWebdavBackupPassword ? "text" : "password"}
+                        name='webdav-backup-passphrase'
+                        type={secretInputType(showWebdavBackupPassword)}
                         placeholder='留空则备份不加密'
                         value={config.backupPassword || ""}
                         onChange={handleConfigChange("backupPassword")}
                         size='small'
                         fullWidth
-                        autoComplete='new-password'
+                        autoComplete='off'
+                        sx={secretInputSx(showWebdavBackupPassword)}
                         slotProps={{
                             input: {
+                                ...SECRET_IGNORE_ATTRS,
                                 endAdornment: (
                                     <InputAdornment position='end'>
                                         <IconButton

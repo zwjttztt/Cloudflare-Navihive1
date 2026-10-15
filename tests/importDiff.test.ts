@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import {
     applyImportSelection,
     computeImportDiff,
+    computeImportRemovals,
     defaultSelection,
     diffSiteFields,
     summarizeFieldDiff,
@@ -267,4 +268,43 @@ test("分组改名 / 改排序也算更新，并给出字段差异", () => {
     assert.deepEqual(labels, ["名称", "排序"], `实际 ${labels}`);
     assert.equal(entry.fields?.[0].before, "常用工具");
     assert.equal(entry.fields?.[0].after, "常用工具（改名）");
+});
+
+// ==================== 覆盖导入的「将删除」清单 ====================
+
+test("computeImportRemovals：本地有、备份里没有的分组与卡片都列出来", () => {
+    const removals = computeImportRemovals(current, incoming);
+    // incoming 里没有「开发」分组 → 整组删除，它下面的示例三跟着走，不重复列
+    assert.deepEqual(removals.groups, ["开发"]);
+    // 「示例二」虽然改了名，但同 id 同链接还在备份里 → 保 id 不删
+    assert.deepEqual(removals.sites, []);
+});
+
+test("computeImportRemovals：链接不在备份里的卡片单独列（分组还在）", () => {
+    const removals = computeImportRemovals(current, {
+        ...incoming,
+        sites: incoming.sites.filter(s => s.url !== "https://example.com"),
+    });
+    assert.deepEqual(removals.groups, ["开发"]);
+    assert.deepEqual(removals.sites, ["示例二"], "这张卡的链接备份里没有，覆盖时要删");
+});
+
+test("computeImportRemovals：备份里的分组在本地不存在时，它的卡片不会连累任何现有卡片", () => {
+    const removals = computeImportRemovals(current, {
+        ...incoming,
+        groups: [{ id: 9, name: "全新分组", order_num: 0 }],
+        sites: [site({ id: 91, group_id: 9, name: "新卡片", url: "https://new.example.com" })],
+    });
+    assert.deepEqual(removals.groups, ["常用工具", "开发"], "两个本地分组都不在备份里");
+    assert.deepEqual(removals.sites, [], "新分组的卡片落不进任何现有分组，不构成删除依据");
+});
+
+test("defaultSelection：覆盖导入默认全选（没勾的会被删，默认值必须保守）", () => {
+    const diff = computeImportDiff(current, incoming);
+    const selected = defaultSelection(diff, true);
+    assert.equal(selected.size, diff.groupEntries.length + diff.siteEntries.length);
+    // 合并导入维持原样：只勾新增与更新
+    const mergeSelected = defaultSelection(diff, false);
+    assert.ok(!mergeSelected.has(diff.groupEntries[0].key), "无变化的分组合并不勾");
+    assert.ok(mergeSelected.has(diff.groupEntries[1].key), "新增的要勾");
 });

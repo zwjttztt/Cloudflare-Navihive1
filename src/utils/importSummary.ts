@@ -11,8 +11,26 @@ import type { ImportStats } from "../API/types";
  */
 export function summarizeImportStats(stats?: ImportStats | null): string | null {
     if (!stats) return null;
-    const { groupsCreated, groupsMatched, sitesCreated, sitesUpdated, sitesSkipped } = stats;
-    if (groupsCreated === 0 && sitesCreated === 0 && sitesUpdated === 0 && groupsMatched === 0 && sitesSkipped === 0) {
+    const {
+        groupsCreated,
+        groupsMatched,
+        sitesCreated,
+        sitesUpdated,
+        sitesSkipped,
+        groupsRemoved,
+        sitesRemoved,
+    } = stats;
+    const removed = groupsRemoved ?? 0;
+    const removedSites = sitesRemoved ?? 0;
+    if (
+        groupsCreated === 0 &&
+        sitesCreated === 0 &&
+        sitesUpdated === 0 &&
+        groupsMatched === 0 &&
+        sitesSkipped === 0 &&
+        removed === 0 &&
+        removedSites === 0
+    ) {
         // 一次都没动：多半是这份备份里没有任何分组 / 卡片
         return "导入完成：没有需要新增的内容";
     }
@@ -23,6 +41,10 @@ export function summarizeImportStats(stats?: ImportStats | null): string | null 
     if (sitesUpdated > 0) parts.push(`更新 ${sitesUpdated} 张`);
     if (sitesSkipped > 0 || groupsMatched > 0) {
         parts.push(`${groupsMatched} 个分组与 ${sitesSkipped} 张卡片已存在，原样保留`);
+    }
+    // 覆盖导入删掉的条目必须给个数：删了多少要说在前头，不能只报「导入完成」
+    if (removed > 0 || removedSites > 0) {
+        parts.push(`删除 ${removed} 个分组、${removedSites} 张卡片`);
     }
     if (parts.length === 0) return null;
     return `导入完成：${parts.join("，")}`;

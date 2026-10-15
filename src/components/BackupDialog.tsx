@@ -45,19 +45,24 @@ interface BackupDialogProps {
     /** 传了口令就用它加密备份文件再下载，不传则下载明文 JSON（兼容老备份） */
     onDownloadLocal: (password?: string) => void | Promise<void>;
     /**
-     * 增量导入。返回值里带着服务端数出来的统计（新增 / 复用 / 跳过各多少），
-     * 用来给一句「到底导进去多少」的交代 —— 重复导入时「新增 0」就是幂等的证据。
+     * 导入。默认增量合并；`overwrite` 为 true 时额外删掉备份里没有的条目
+     * （服务端与写入同一个事务）。返回值里带着服务端数出来的统计
+     * （新增 / 复用 / 跳过 / 删除各多少），用来给一句「到底动了多少」的交代 ——
+     * 重复导入时「新增 0」就是幂等的证据。
      */
     onImportData: (
         data: ExportData,
+        overwrite: boolean,
         onProgress?: (progress: ImportProgress) => void
     ) => Promise<unknown>;
     /**
      * 导入前先弹一次差异预览，返回用户确认后真正要导入的数据；
      * 返回 null 表示用户在预览里取消了。不传则直接导入（老行为）。
+     * 第二个参数告诉预览当前是不是覆盖导入 —— 预览要据此列出「将删除」清单。
      */
     onRequestImportPreview?: (
-        data: ExportData
+        data: ExportData,
+        overwrite: boolean
     ) => Promise<ExportData | null>;
     onNotify: (message: string, severity?: "success" | "error" | "info") => void;
     onClose: () => void;
@@ -94,7 +99,7 @@ const IMPORT_STAGE_LABEL: Record<ImportProgress["stage"], string> = {
     verify: "正在校验备份文件…",
     encrypt: "正在加密站点密码…",
     write: "正在写入数据…",
-    // 以前这里还有个 cleanup「正在清理旧数据」阶段 —— 增量导入不再删任何东西，阶段也就没了
+    // 删除与写入同一个事务（没有独立的 cleanup 阶段可报），合并导入则根本不删
     done: "正在收尾…",
 };
 
@@ -168,6 +173,9 @@ export default function BackupDialog({
     // 导入的真实进度（由服务端流式推回，或合并导入时本地逐条数出来）。
     // 没有进度时保持 null —— 界面只转圈，不画假进度条
     const [importProgress, setImportProgress] = useState<ImportProgress | null>(null);
+    // 默认合并而不是覆盖：覆盖会删掉备份里没有的条目，是这一页里唯一有删除的动作。
+    // 真要「整站还原成备份那样」再手动切过去，切过去时下面会给出红色提示。
+    const [overwrite, setOverwrite] = useState(false);
     // 密码默认遮住，点眼睛才明文显示（仅影响本机显示）
     const [showPassword, setShowPassword] = useState(false);
     // 本地备份是否用口令加密 + 口令本身（不落盘、不上传，只用于当次下载）
@@ -212,6 +220,7 @@ export default function BackupDialog({
             setNeedsRemotePassword(false);
             setRemoteError(null);
             setShowWebdavBackupPassword(false);
+            setOverwrite(false);
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [open, initialTab]);
@@ -389,9 +398,10 @@ export default function BackupDialog({
         }
     };
 
-    // 导入前先过一遍差异预览：用户可以在预览里挑要导入哪些，取消则返回 null
+    // 导入前先过一遍差异预览：用户可以在预览里挑要导入哪些，取消则返回 null。
+    // 把 overwrite 一起带过去：覆盖模式下预览要列出「将删除」清单并要求二次确认
     const resolveImportData = async (data: ExportData) =>
-        onRequestImportPreview ? await onRequestImportPreview(data) : data;
+        onRequestImportPreview ? await onRequestImportPreview(data, overwrite) : data;
 
     // 从本地文件恢复
     const handleRestoreLocal = async () => {
@@ -407,7 +417,7 @@ export default function BackupDialog({
         try {
             const finalData = await resolveImportData(localData);
             if (!finalData) return; // 用户在预览里点了取消
-            const result = await onImportData(finalData, setImportProgress);
+            const result = await onImportData(finalData, overwrite, setImportProgress);
             onNotify(summarizeImport(result) ?? "已从本地备份恢复数据", "success");
             onClose();
         } catch (error) {
@@ -446,7 +456,7 @@ export default function BackupDialog({
             }
             const finalData = await resolveImportData(result.data);
             if (!finalData) return; // 用户在预览里点了取消
-            const imported = await onImportData(finalData, setImportProgress);
+            const imported = await onImportData(finalData, overwrite, setImportProgress);
             onNotify(
                 `${summarizeImport(imported) ?? "已恢复数据"}（来自 ${selectedRemote}）`,
                 "success"
@@ -615,6 +625,8 @@ export default function BackupDialog({
                 ) : (
                     <RestoreTab
                         setTab={setTab}
+                        overwrite={overwrite}
+                        setOverwrite={setOverwrite}
                         localFile={localFile}
                         localData={localData}
                         localError={localError}

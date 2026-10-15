@@ -238,29 +238,31 @@ test("BackupDialog：预览确认后才真导入", async t => {
     assert.equal(imported.count, 1, "预览确认后应导入一次");
 });
 
-test("BackupDialog：不再有「覆盖恢复」开关，只说明增量合并语义", async t => {
+test("BackupDialog：默认合并导入；覆盖导入是显式开关且默认关", async t => {
     t.after(cleanup);
     mount();
 
     const text = document.body.textContent || "";
-    // 以前这里是一对互斥开关（覆盖 / 合并）。覆盖那条会把现有分组与站点删干净，
-    // 属「UI 上不该存在的不可逆按钮」，已经整条下掉。
+    // 默认语义是「不删任何数据」的合并导入 —— 这句必须写在动作之前
     assert.ok(
-        text.includes("增量合并导入"),
-        "应写明是增量合并导入"
+        text.includes("合并导入（不会删除任何现有数据）"),
+        "默认态要写明是合并导入"
     );
-    assert.ok(
-        text.includes("不会删除任何现有数据"),
-        "把「不删数据」写在动作之前"
+    // 覆盖导入的开关回来了（用户要求保留这个选项），但必须默认关、
+    // 且开着时给红色警示 —— 它是这一页唯一会删数据的动作
+    const overwriteSwitch = document.querySelector<HTMLInputElement>(
+        'input[aria-label="覆盖导入"]'
     );
+    assert.ok(overwriteSwitch, "要保留覆盖导入的开关（用户明确要求）");
+    assert.equal(
+        overwriteSwitch!.checked,
+        false,
+        "覆盖导入默认必须关着 —— 打开是要有意识的选择"
+    );
+    // Switch 是 checkbox 的角色，但勾选态由 checked 而非 checkbox 数量体现
     assert.ok(
         !text.includes("覆盖恢复"),
-        "页面里不该再出现覆盖恢复的入口"
-    );
-    assert.equal(
-        document.querySelectorAll('input[type="checkbox"]').length,
-        0,
-        "恢复页不再有「覆盖 / 合并」开关"
+        "老的「覆盖恢复」叫法不该回来（现在的措辞是覆盖导入）"
     );
 });
 

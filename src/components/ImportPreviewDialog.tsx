@@ -18,10 +18,12 @@ import {
     Typography,
     TextField,
     FormControlLabel,
+    Alert,
 } from "@mui/material";
 import CloseIcon from "@mui/icons-material/Close";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import ExpandLessIcon from "@mui/icons-material/ExpandLess";
+import WarningAmberIcon from "@mui/icons-material/WarningAmber";
 import { ExportData } from "../API/http";
 import { GroupWithSites } from "../types";
 import {
@@ -30,6 +32,7 @@ import {
     STATUS_LABEL,
     applyImportSelection,
     computeImportDiff,
+    computeImportRemovals,
     defaultSelection,
 } from "../utils/importDiff";
 import { dialogActionsSx, dialogContentSx, dialogPaperSx, dialogTitleSx } from "./dialogShell";
@@ -45,14 +48,24 @@ interface ImportPreviewDialogProps {
     open: boolean;
     data: ExportData | null;
     current: GroupWithSites[];
+    /**
+     * 覆盖导入。会删掉「本地有、而（勾选后的）备份里没有」的条目：
+     * 预览必须把这份清单摊开，并让用户显式确认后才放行。
+     * 默认 false（合并导入，一个字节都不删）。
+     */
+    overwrite?: boolean;
     onCancel: () => void;
     onConfirm: (data: ExportData) => void;
 }
+
+/** 「将删除」清单最多摊开几条，再多就收成「等 N 项」 */
+const REMOVAL_LIST_LIMIT = 8;
 
 export default function ImportPreviewDialog({
     open,
     data,
     current,
+    overwrite = false,
     onCancel,
     onConfirm,
 }: ImportPreviewDialogProps) {
@@ -67,14 +80,33 @@ export default function ImportPreviewDialog({
     const [changedOnly, setChangedOnly] = useState(false);
     // 展开看字段差异的条目
     const [expanded, setExpanded] = useState<Set<string>>(new Set());
-    // 备份数据换了就重新按默认规则勾一遍（默认「新增 + 更新」，见 defaultSelection）
+    // 备份数据换了就重新按默认规则勾一遍（合并「新增+更新」/ 覆盖全选，见 defaultSelection）
     const [seededFor, setSeededFor] = useState<ExportData | null>(null);
+    // 覆盖模式的删除确认：不勾这句话，「导入」按钮不放行。
+    // 数据或勾选变了要重新确认 —— 清单是新的，确认也必须是新的
+    const [removalAcked, setRemovalAcked] = useState(false);
     if (diff && data && seededFor !== data) {
         setSeededFor(data);
-        setSelected(defaultSelection(diff));
+        setSelected(defaultSelection(diff, overwrite));
+        setRemovalAcked(false);
     }
 
-    if (!data || !diff) return null;
+    // 按勾选结果裁剪出真正要导入的那份数据（勾选项一变就重算）
+    const preview = useMemo(
+        () => (data && diff ? applyImportSelection(data, diff, selected) : null),
+        [data, diff, selected]
+    );
+    // 覆盖模式的删除清单按**勾选后**的数据算：勾掉一项 = 它不在要导入的数据里 =
+    // 覆盖时会被删掉。这里必须跟着勾选实时变，不然预览就是在撒谎。
+    const removals = useMemo(
+        () => (overwrite && preview ? computeImportRemovals(current, preview) : null),
+        [overwrite, current, preview]
+    );
+
+    if (!data || !diff || !preview) return null;
+
+    const total = diff.groupEntries.length + diff.siteEntries.length;
+    const removalCount = removals ? removals.groups.length + removals.sites.length : 0;
 
     const toggle = (key: string) => {
         setSelected(prev => {
@@ -114,9 +146,6 @@ export default function ImportPreviewDialog({
         });
     const visibleGroups = visible(diff.groupEntries);
     const visibleSites = visible(diff.siteEntries);
-
-    const preview = applyImportSelection(data, diff, selected);
-    const total = diff.groupEntries.length + diff.siteEntries.length;
 
     const renderRow = (entry: DiffEntry) => (
         <Box
@@ -260,15 +289,62 @@ export default function ImportPreviewDialog({
                         display: "block",
                         mb: 1
                     }}>
-                    增量合并：勾选的内容会写进现有数据 —— 认得出是同一条的就更新，
-                    认不出的才新建。没勾选的、本地多出来的分组与卡片一个都不会动。
+                    {overwrite
+                        ? "覆盖导入：勾选的内容会写进现有数据 —— 认得出是同一条的就按新旧更新，认不出的才新建；下面还会列出会被删掉的条目。"
+                        : "增量合并：勾选的内容会写进现有数据 —— 认得出是同一条的就更新，认不出的才新建。没勾选的、本地多出来的分组与卡片一个都不会动。"}
                 </Typography>
 
                 <Stack direction='row' spacing={0.75} sx={{ flexWrap: "wrap", gap: 0.75, mb: 1 }}>
                     <Chip size='small' color='success' label={`新增 ${diff.counts.added}`} />
                     <Chip size='small' color='warning' label={`更新 ${diff.counts.updated}`} />
                     <Chip size='small' variant='outlined' label={`无变化 ${diff.counts.unchanged}`} />
+                    {overwrite && (
+                        <Chip
+                            size='small'
+                            color={removalCount > 0 ? "error" : "default"}
+                            variant={removalCount > 0 ? "filled" : "outlined"}
+                            label={`将删除 ${removalCount}`}
+                        />
+                    )}
                 </Stack>
+
+                {/* 覆盖模式的「将删除」清单：删什么必须一条条看得见，且要显式确认 */}
+                {overwrite && removals && removalCount > 0 && (
+                    <Alert
+                        severity='error'
+                        icon={<WarningAmberIcon fontSize='inherit' />}
+                        sx={{ mb: 1 }}
+                    >
+                        <Typography variant='body2' sx={{ fontWeight: 600 }}>
+                            覆盖导入会删掉下面这 {removalCount} 项（{removals.groups.length} 个分组、
+                            {removals.sites.length} 张卡片），删除不可恢复：
+                        </Typography>
+                        <Typography variant='caption' sx={{ display: "block", color: "text.secondary" }}>
+                            {[...removals.groups, ...removals.sites]
+                                .slice(0, REMOVAL_LIST_LIMIT)
+                                .join("、")}
+                            {removalCount > REMOVAL_LIST_LIMIT
+                                ? ` 等 ${removalCount} 项`
+                                : ""}
+                        </Typography>
+                        <FormControlLabel
+                            sx={{ mt: 0.5 }}
+                            control={
+                                <Checkbox
+                                    size='small'
+                                    checked={removalAcked}
+                                    onChange={e => setRemovalAcked(e.target.checked)}
+                                    slotProps={{ input: { "aria-label": "确认删除这些条目" } }}
+                                />
+                            }
+                            label={
+                                <Typography variant='body2'>
+                                    我已确认删除这 {removalCount} 项
+                                </Typography>
+                            }
+                        />
+                    </Alert>
+                )}
 
                 <Stack direction='row' spacing={1} sx={{ mb: 1 }}>
                     <Button size='small' onClick={selectAll}>
@@ -377,9 +453,16 @@ export default function ImportPreviewDialog({
                     variant='contained'
                     size='small'
                     disableElevation
-                    disabled={preview.groups.length === 0 && preview.sites.length === 0}
+                    color={overwrite && removalCount > 0 ? "error" : "primary"}
+                    disabled={
+                        (preview.groups.length === 0 && preview.sites.length === 0) ||
+                        // 覆盖模式有删除时必须先勾确认：这是唯一的刹车，不能省
+                        (overwrite && removalCount > 0 && !removalAcked)
+                    }
                 >
-                    导入 {preview.groups.length + preview.sites.length} / {total} 项
+                    {overwrite && removalCount > 0
+                        ? `覆盖导入 ${preview.groups.length + preview.sites.length} / ${total} 项（删除 ${removalCount}）`
+                        : `导入 ${preview.groups.length + preview.sites.length} / ${total} 项`}
                 </Button>
             </DialogActions>
         </Dialog>

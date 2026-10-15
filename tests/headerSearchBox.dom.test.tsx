@@ -124,6 +124,20 @@ test("搜索框必须关掉浏览器自动填充（本站源上有登录凭据�
     );
 });
 
+test("挂载时只读、聚焦即解锁（Chrome 对 readonly 输入框不做任何自动填充）", () => {
+    // autoComplete=off 挡不住 Chrome 的「用户名+密码」配对：页面上只要出现
+    // password 字段（备份弹窗里有），搜索框就会被填上登录账号名。
+    // 它唯一遵守的信号是 readOnly —— 所以先锁后放，聚焦的瞬间解锁。
+    render({ query: "" });
+    const input = document.querySelector<HTMLInputElement>("input");
+    assert.ok(input);
+    assert.equal(input!.readOnly, true, "挂载时必须只读，否则还是会被填");
+    act(() => {
+        input!.focus();
+    });
+    assert.equal(input!.readOnly, false, "聚焦后必须解锁，不能真把用户挡在输入之外");
+});
+
 test("有关键词时下列表是搜索结果，显示站点名与所属分组", () => {
     render({
         query: "示例",

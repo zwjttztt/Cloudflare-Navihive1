@@ -4,7 +4,7 @@
 // 站点密码），导入是「一觉醒来整站被换掉」的入口，所以两者的限速 / 体积上限都在这儿。
 import type { ExportData, Group } from "../../src/API/http";
 import { CRON_LAST_ERROR_KEY } from "../../src/API/http";
-import { IMPORT_PROGRESS_MEDIA } from "../../src/API/types";
+import { IMPORT_PROGRESS_MEDIA, type ImportMode } from "../../src/API/types";
 import {
     bumpGuard,
     computeLockAfterFailure,
@@ -124,6 +124,17 @@ function wantsImportProgress(request: Request): boolean {
 }
 
 /**
+ * 导入模式：默认 merge（增量合并，不删任何东西），只有显式带上
+ * `?mode=overwrite` 才切到覆盖。
+ *
+ * 未知值一律按合并处理，绝不猜 —— 看不懂的参数宁可当没传，
+ * 也不能把「也许想删」当成「确实想删」。
+ */
+export function importModeOf(request: Request): ImportMode {
+    return new URL(request.url).searchParams.get("mode") === "overwrite" ? "overwrite" : "merge";
+}
+
+/**
  * 把导入过程变成一条 NDJSON 流：每行一个事件 ——
  * `{"type":"progress",stage,done,total}` 若干行，最后一行 `{"type":"result",...}`
  * （失败则是 `{"type":"error",message}`）。
@@ -135,6 +146,7 @@ function wantsImportProgress(request: Request): boolean {
 function streamImportProgress(
     ctx: RouteCtx,
     data: ExportData,
+    mode: ImportMode,
     groupCount: number,
     siteCount: number
 ): Response {
@@ -147,6 +159,7 @@ function streamImportProgress(
             };
             try {
                 const result = await api.importData(data, {
+                    mode,
                     onProgress: progress => send({ type: "progress", ...progress }),
                 });
                 send({ type: "result", result });
@@ -297,10 +310,13 @@ export async function handleBackupRoutes(ctx: RouteCtx): Promise<Response | null
         // 真实阶段进度推下去，最后一行是结果。几千条站点要跑好几秒，一个不带动的
         // 转圈会让人以为卡死了；但进度必须是服务端数出来的，不能是前端编的百分比。
         if (wantsImportProgress(request)) {
-            return streamImportProgress(ctx, data as ExportData, groupCount, siteCount);
+            const mode = importModeOf(request);
+            return streamImportProgress(ctx, data as ExportData, mode, groupCount, siteCount);
         }
 
-        const result = await api.importData(data as ExportData);
+        const result = await api.importData(data as ExportData, {
+            mode: importModeOf(request),
+        });
         await writeImportAudit(api, ctx.ip, groupCount, siteCount);
         return Response.json(result);
     }

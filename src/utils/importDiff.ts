@@ -2,7 +2,8 @@
 // 导入备份前的差异计算：先告诉用户「这份备份会带来什么」，再让他挑要导入哪些。
 // 比对口径：
 // - 分组按 id 比；站点先按 id 比，id 对不上再退回「同链接 + 同分组」
-// - 没有「将删除」这一档了：增量导入绝不删任何现有条目（这正是预览要说清楚的事）
+// - 合并导入没有「将删除」这一档；覆盖导入会删「本地有、备份里没有」的条目，
+//   那份清单由 computeImportRemovals 按**裁剪后**的数据现算（见函数注释）
 import { ExportData, Site } from "../API/http";
 import { GroupWithSites } from "../types";
 import { urlKey } from "./duplicate";
@@ -205,13 +206,17 @@ export function computeImportDiff(
 }
 
 /**
- * 默认勾选：只勾「新增 + 更新」—— 无变化的条目导进去也是白导一遍，默认不勾更清爽。
+ * 默认勾选。
  *
- * 以前覆盖模式还要「必须全选」（没勾的会被当成备份里没有而清掉），那种语义已经去掉了：
- * 现在没勾就是不动，不存在被删的风险。
+ * 合并导入：只勾「新增 + 更新」—— 无变化的条目导进去也是白导一遍，默认不勾更清爽。
+ * 覆盖导入：**默认全选**。覆盖的语义是「以这份备份为准」，没勾的条目会被当成
+ * 「不在备份里」而清掉（预览里会把它们列成「将删除」）；沿用合并那套默认值的话，
+ * 用户什么都没动就会把所有没变化的分组和卡片删掉。
  */
-export function defaultSelection(diff: ImportDiff): Set<string> {
+export function defaultSelection(diff: ImportDiff, overwrite = false): Set<string> {
     const all = [...diff.groupEntries, ...diff.siteEntries];
+
+    if (overwrite) return new Set(all.map(entry => entry.key));
 
     const selected = new Set<string>();
     for (const entry of all) {
@@ -222,6 +227,67 @@ export function defaultSelection(diff: ImportDiff): Set<string> {
         for (const entry of all) selected.add(entry.key);
     }
     return selected;
+}
+
+/** 覆盖导入会被清掉的现有条目（只是名字清单，给预览「将删除」一栏用） */
+export interface ImportRemovals {
+    groups: string[];
+    sites: string[];
+}
+
+/**
+ * 覆盖导入会把本地哪些东西清掉：本地有、而这份备份里没有的分组 / 卡片。
+ *
+ * 口径与服务端一致（分组按名、卡片按「分组 + 链接归一，没链接退回名称」），
+ * 两边对不上预览就是在撒谎。传 `previewData`（用户勾选裁剪后的那份）而不是
+ * 原始备份：勾掉一项 = 它不在要导入的数据里 = 覆盖时会被删掉，预览必须如实反映。
+ *
+ * @param current 本地现有数据
+ * @param previewData 实际要导入的那份数据（通常是 applyImportSelection 的产物）
+ */
+export function computeImportRemovals(
+    current: GroupWithSites[],
+    previewData: ExportData
+): ImportRemovals {
+    const incomingGroupNames = new Set(
+        (previewData.groups ?? []).map(g => String(g.name ?? "").trim()).filter(Boolean)
+    );
+    // 备份里的卡片会落到哪个**本地**分组：按分组名认（服务端就是这么映射的）。
+    const localGroupByName = new Map(
+        current.map(g => [String(g.name ?? "").trim(), g] as const)
+    );
+    const siteKey = (groupId: number, site: { url?: string | null; name?: string | null }) => {
+        const key = urlKey(site.url);
+        return key
+            ? `${groupId}|u:${key}`
+            : `${groupId}|n:${String(site.name ?? "").trim().toLowerCase()}`;
+    };
+    const incomingKeys = new Set<string>();
+    for (const site of previewData.sites ?? []) {
+        const owner = (previewData.groups ?? []).find(g => g.id === site.group_id);
+        const local = owner ? localGroupByName.get(String(owner.name ?? "").trim()) : undefined;
+        // 归属分组在本地不存在 → 卡片会落到新分组，不可能跟已有卡片撞上，
+        // 也就不会导致任何一张现有卡片被删
+        if (!local || local.id == null) continue;
+        incomingKeys.add(siteKey(local.id, site));
+    }
+
+    const groups: string[] = [];
+    const sites: string[] = [];
+    for (const group of current) {
+        const name = String(group.name ?? "").trim();
+        if (name && !incomingGroupNames.has(name)) {
+            groups.push(group.name || "未命名分组");
+            continue; // 整个分组都要没了，它下面的卡片不必再数一遍
+        }
+        if (group.id == null) continue;
+        for (const site of group.sites ?? []) {
+            if (!incomingKeys.has(siteKey(group.id, site))) {
+                sites.push(site.name || site.url || "未命名站点");
+            }
+        }
+    }
+    return { groups, sites };
 }
 
 /** 按勾选结果裁剪备份数据，得到真正要导入的那份 */

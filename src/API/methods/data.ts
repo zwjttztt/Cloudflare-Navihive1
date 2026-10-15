@@ -10,6 +10,7 @@ import { isAuthConfigKey, isEncryptedConfigKey, isPrivateUserConfigKey } from ".
 import { decryptSecretDeep, encryptSecret } from "../crypto";
 import { BootstrapData, Config, Group, Site, SiteBatchDeleteResult, SiteOrderUpdateResult } from "../types";
 import type { D1PreparedStatement } from "../schema";
+import { tombstoneStamp } from "./internals";
 
 /** 随删除事务一起落库的审计条目（不传就不写审计） */
 export interface AuditEntry {
@@ -25,15 +26,6 @@ export function auditStatement(api: NavigationAPI, audit?: AuditEntry): D1Prepar
     return api.db
         .prepare("INSERT INTO audit_log (action, actor, ip, detail) VALUES (?, ?, ?, ?)")
         .bind(audit.action, audit.actor || "", audit.ip || "", audit.detail || "");
-}
-
-/**
- * 墓碑时间戳：**必须带毫秒**。
- * CURRENT_TIMESTAMP 只到秒，同一秒里连删两张卡时游标分不出先后 ——
- * 表现为「第二次删除的墓碑被上一次的游标挡住」。
- */
-function tombstoneStamp(): string {
-    return new Date().toISOString().replace("T", " ").replace("Z", "");
 }
 
 /** 从 batch 结果里取回收站行 id（拿不到就 undefined，调用方当「没进站」处理） */

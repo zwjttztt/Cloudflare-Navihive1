@@ -411,7 +411,7 @@ test("空备份当成失败：导入完什么都没变，要把原因说清楚",
     } as ExportData);
 
     await act(async () => {
-        await c.handleImportBackup(empty).catch(() => {});
+        await c.handleImportBackup(empty, false).catch(() => {});
     });
     assert.deepEqual(state.current.apiLog.imports, [], "空备份不该真的写库");
     assert.ok(
@@ -427,7 +427,7 @@ test("导入：传给服务端的是原始数据（不是归一化后的）", as
     const backup = await withBackupIntegrity(sampleBackup());
 
     await act(async () => {
-        await c.handleImportBackup(backup);
+        await c.handleImportBackup(backup, false);
     });
     assert.equal(state.current.apiLog.imports.length, 1);
     const sent = state.current.apiLog.imports[0];
@@ -441,7 +441,7 @@ test("导入失败（服务端说不行）要报错，且不刷新", async () =>
     const c = controllerRef!;
     const backup = await withBackupIntegrity(sampleBackup());
     await act(async () => {
-        await c.handleImportBackup(backup).catch(() => {});
+        await c.handleImportBackup(backup, false).catch(() => {});
     });
     assert.ok(
         state.current.errors.join(" | ").includes("导入失败"),
@@ -455,7 +455,7 @@ test("只有一条导入路径：不再逐条 create，全部交给服务端 ups
     const { state } = await setup();
     const backup = await withBackupIntegrity(sampleBackup());
     await act(async () => {
-        await controllerRef!.handleImportBackup(backup);
+        await controllerRef!.handleImportBackup(backup, false);
     });
     // 逐条 create 是老做法：N 次请求、重复导入还会长出重复的分组与卡片。
     // 现在必须一次请求交给服务端认「是不是同一条」。
@@ -470,7 +470,7 @@ test("本机偏好只做合并：不会因为备份里没有某颗星标就把�
     const { state } = await setup();
     const backup = await withBackupIntegrity(sampleBackup());
     await act(async () => {
-        await controllerRef!.handleImportBackup(backup);
+        await controllerRef!.handleImportBackup(backup, false);
     });
     const entry = state.current.restoredPrefs.at(-1) as { value?: unknown; mode?: string } | undefined;
     assert.ok(entry, "应当把备份里的星标 / 标签写回本机");
@@ -485,7 +485,7 @@ test("损坏的备份：校验不过就不动现有数据", async () => {
     const broken = { ...backup, integrity: { algo: "SHA-256", value: "0".repeat(64) } };
 
     await act(async () => {
-        await c.handleImportBackup(broken).catch(() => {});
+        await c.handleImportBackup(broken, false).catch(() => {});
     });
     assert.deepEqual(state.current.apiLog.imports, [], "摘要对不上就不该导入");
     assert.ok(

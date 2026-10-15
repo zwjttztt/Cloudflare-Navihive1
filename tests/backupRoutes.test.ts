@@ -23,7 +23,7 @@ const WRITE_GUARD_KEY = "auth.writeGuard";
 
 interface Log {
     audits: Array<{ action: string; target: string; detail: string }>;
-    imports: Array<{ groups: number }>;
+    imports: Array<{ groups: number; mode?: string }>;
     exportCalls: number;
     deleted: string[];
 }
@@ -47,8 +47,11 @@ function makeApi(log: Log, guards: Guards, auditFails = false): NavigationAPI {
             log.exportCalls += 1;
             return { groups: [], sites: [], configs: {} };
         },
-        importData: async (data: { groups?: unknown[] }) => {
-            log.imports.push({ groups: data.groups?.length ?? 0 });
+        importData: async (
+            data: { groups?: unknown[] },
+            opts?: { mode?: string }
+        ) => {
+            log.imports.push({ groups: data.groups?.length ?? 0, mode: opts?.mode });
             return { success: true };
         },
         writeAudit: async (action: string, target: string, _ip: string, detail = "") => {
@@ -82,6 +85,9 @@ async function call(
         ...(o.headers ?? {}),
     };
     if (o.contentLength) headers["Content-Length"] = o.contentLength;
+    // path 里允许带 query（如 import?mode=overwrite）：Request 用完整 URL，
+    // ctx.path 只留裸路径 —— 真实路由分发器就是这么拆的
+    const [barePath] = path.split("?");
     const request = new Request(`${HOST}/api/${path}`, {
         method,
         headers,
@@ -91,7 +97,7 @@ async function call(
         request,
         env: {},
         url: new URL(request.url),
-        path,
+        path: barePath,
         method,
         api: makeApi(log, guards, o.auditFails ?? false),
         ip: IP,
@@ -218,6 +224,22 @@ test("import：写限速拦住时 → 429，不开始导入", async () => {
     });
     assert.equal(res?.status, 429);
     assert.equal(log.imports.length, 0);
+});
+
+test("import：不带 mode 时按增量合并传给 api（默认绝不删数据）", async () => {
+    const { log } = await call("import", "POST", { body: validBody });
+    assert.equal(log.imports.length, 1);
+    assert.equal(log.imports[0].mode, "merge", "默认必须是 merge，猜不得");
+});
+
+test("import：?mode=overwrite 才切到覆盖模式", async () => {
+    const { log } = await call("import?mode=overwrite", "POST", { body: validBody });
+    assert.equal(log.imports[0].mode, "overwrite");
+});
+
+test("import：未知 mode 值按合并处理（看不懂的参数宁可当没传）", async () => {
+    const { log } = await call("import?mode=replace-all-please", "POST", { body: validBody });
+    assert.equal(log.imports[0].mode, "merge");
 });
 
 // ---------------- WebDAV：只测闸门（后面会真的出网，单测里不碰） ----------------

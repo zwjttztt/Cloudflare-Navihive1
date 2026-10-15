@@ -104,6 +104,8 @@ export function useBackupController(deps: BackupControllerDeps) {
     // 导入预览：备份导入前先摊开差异让用户挑，确认/取消都通过 promise 回传给备份弹窗
     const [importPreview, setImportPreview] = useState<{
         data: ExportData;
+        /** 预览要按覆盖口径列「将删除」清单（值本身仍以确认导入时的调用为准） */
+        overwrite?: boolean;
     } | null>(null);
     const importPreviewResolve = useRef<((result: ExportData | null) => void) | null>(null);
 
@@ -374,9 +376,10 @@ export function useBackupController(deps: BackupControllerDeps) {
         }
     };
 
-    // 导入前的差异预览：弹出预览框，等用户确认（返回裁剪后的数据）或取消（返回 null）
-    const requestImportPreview = (data: ExportData) => {
-        setImportPreview({ data });
+    // 导入前的差异预览：弹出预览框，等用户确认（返回裁剪后的数据）或取消（返回 null）。
+    // overwrite 一起带进预览：覆盖模式下预览要列出「将删除」清单并要求二次确认
+    const requestImportPreview = (data: ExportData, overwrite: boolean) => {
+        setImportPreview({ data, overwrite });
         return new Promise<ExportData | null>(resolve => {
             importPreviewResolve.current = resolve;
         });
@@ -389,16 +392,17 @@ export function useBackupController(deps: BackupControllerDeps) {
         resolve?.(result);
     };
 
-    // 导入 / 恢复数据：**一律增量合并 upsert**。
+    // 导入 / 恢复数据。
     //
-    // 以前这里有两条路：overwrite 调服务端「清空当前账号再重建」，false 则在这边
-    // 一条一条 createGroup / createSite 追加。两条都出问题：
-    //   - 覆盖那条会在「文件选错 / 传输中断 / 中途报错」时把账号清空；
-    //   - 追加那条重复导同一份备份会长出一堆同名分组与重复卡片。
-    // 现在统一走服务端 importData 的 upsert：认得出是同一条的就更新或跳过，
+    // 默认（overwrite=false）走**增量合并 upsert**：认得出是同一条的就更新或跳过，
     // 认不出的才新建，本地多出来的一根汗毛都不动 —— 重复导入是幂等的。
+    //
+    // overwrite=true（用户在恢复页显式勾了「覆盖导入」，且在预览里确认过删除清单）
+    // 会额外让服务端删掉「备份里没有」的分组 / 卡片 / 笔记 —— 删除与写入在同一个
+    // 事务里，要么整份生效要么一个字节都不变。界面默认永远是合并。
     const handleImportBackup = async (
         data: ExportData,
+        overwrite: boolean,
         onProgress?: (progress: ImportProgress) => void
     ) => {
         try {
@@ -423,8 +427,12 @@ export function useBackupController(deps: BackupControllerDeps) {
             // 传原始 data（不是 normalized）：服务端会自己归一化，
             // 而完整性校验必须在归一化之前做，否则摘要永远对不上。
             // onProgress 让服务端把真实阶段进度流式推回来 —— 几千条站点要跑好几秒，
-            // 一个不带动的转圈跟卡死没区别。
-            const result = await api.importData(data, onProgress ? { onProgress } : undefined);
+            // 一个不带动的转圈跟卡死没区别。模式走 opts（不塞进 body：文件摘要是对
+            // 整份 payload 算的，多一个字段好文件也会被拦）。
+            const result = await api.importData(data, {
+                ...(overwrite ? { mode: "overwrite" as const } : {}),
+                ...(onProgress ? { onProgress } : {}),
+            });
             if (!result.success) {
                 throw new Error(result.message || "服务端导入失败");
             }
@@ -436,9 +444,9 @@ export function useBackupController(deps: BackupControllerDeps) {
             // 服务端可能重新发号（也可能认出同一条沿用原 id），按映射翻译一遍就两种都对。
             const prefs = normalized.localPrefs;
             const remapped = remapLocalPrefs(prefs, siteIdMap);
-            // ⚠️ 本机偏好也只做合并：从来不用备份里的记录把本地星标擦掉
+            // 合并导入只补缺不删；覆盖导入按备份整份替换（与覆盖的语义一致）
             if (remapped) {
-                restoreLocalPrefs(remapped, "merge");
+                restoreLocalPrefs(remapped, overwrite ? "replace" : "merge");
             }
 
             // 恢复/导入是低频重操作，这里同步刷新一次（一次 bootstrap 请求）

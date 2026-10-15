@@ -518,6 +518,15 @@ export interface ImportStats {
     sitesUpdated: number;
     /** 已存在且本地更新/无法比新的卡片数（原样保留） */
     sitesSkipped: number;
+    /**
+     * 覆盖导入删掉的分组数。**只有覆盖模式才有值**（增量合并恒为 0）。
+     *
+     * 选成可选字段而不是必填：老前端构造的这个对象里没有这两项，
+     * 「没有这两项」就等于「没有删除这一说」，读到的地方按 0 处理即可。
+     */
+    groupsRemoved?: number;
+    /** 覆盖导入删掉的卡片数（同上，只有覆盖模式才有值） */
+    sitesRemoved?: number;
 }
 
 /** 导入结果：成功与否 + 新旧 id 映射（前端的星标 / 标签记的是旧 id，要翻译一遍） */
@@ -534,7 +543,8 @@ export interface ImportResult {
      * 为什么必须有：合并模式下「本地较新就不动」是**正确行为**，但不给用户一个数字，
      * 他会以为导入没生效。老备份没有笔记时全为 0。
      *
-     * `removed` 恒为 0，留着只是为了让老前端不用改 —— 增量导入不删任何一条笔记。
+     * `removed` 在增量合并下恒为 0、覆盖导入下是「本地有而备份里没有」的笔记数
+     * （备份里没有 notes 字段时一律不删 —— 那时候无从判断「备份里没有」是什么意思）。
      */
     noteStats?: NoteImportStats;
     /** 分组 / 站点的增量统计（新增多少、复用多少、跳过多少） */
@@ -551,12 +561,29 @@ export interface ImportProgress {
     total: number;
 }
 
+/**
+ * 导入模式。
+ *
+ * - `merge`（默认，增量合并）：只做加法和就地更新，**不删任何一行**。
+ * - `overwrite`（覆盖导入）：在合并的基础上，额外删掉「本地有、而这份备份里没有」的
+ *   分组 / 卡片 / 笔记 —— 用于「把整站还原成备份那一刻的样子」。
+ *
+ * ⚠️ 覆盖模式的删除与写入在**同一个事务**里（见 transfer.importData），
+ * 而且必须先由用户在预览里显式确认（界面上默认是 merge）。
+ */
+export type ImportMode = "merge" | "overwrite";
+
 export interface ImportOptions {
     /**
      * 阶段进度回调。只在前端确实要显示进度时才传 —— 传了会走流式响应，
      * 服务端边跑边推真实进度；不传就是普通的一问一答。
      */
     onProgress?: (progress: ImportProgress) => void;
+    /**
+     * 导入模式，默认 `merge`（增量合并，不删任何东西）。
+     * `overwrite` 会额外删掉备份里没有的条目 —— 只有用户显式勾选时才该传。
+     */
+    mode?: ImportMode;
 }
 
 /**

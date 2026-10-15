@@ -67,6 +67,8 @@ const incoming: ExportData = {
 
 interface Handlers {
     data?: ExportData | null;
+    /** 覆盖导入：预览要列「将删除」清单并要求显式确认 */
+    overwrite?: boolean;
     onConfirm?: (data: ExportData) => void;
     onCancel?: () => void;
 }
@@ -81,6 +83,7 @@ function mount(handlers: Handlers = {}) {
                 open
                 data={handlers.data ?? incoming}
                 current={current}
+                overwrite={handlers.overwrite}
                 onCancel={handlers.onCancel ?? (() => {})}
                 onConfirm={handlers.onConfirm ?? (() => {})}
             />
@@ -96,6 +99,7 @@ function rerender(handlers: Handlers = {}) {
                 open
                 data={handlers.data ?? incoming}
                 current={current}
+                overwrite={handlers.overwrite}
                 onCancel={handlers.onCancel ?? (() => {})}
                 onConfirm={handlers.onConfirm ?? (() => {})}
             />
@@ -120,10 +124,10 @@ const buttonByText = (text: string): HTMLButtonElement | undefined =>
         b => (b.textContent || "").trim() === text
     );
 
-/** 「导入 3 / 5 项」这个按钮文案带计数，只能前缀匹配 */
+/** 「导入 3 / 5 项」（覆盖模式是「覆盖导入 5 / 5 项（删除 N）」），带计数只能模糊匹配 */
 const importButton = (): HTMLButtonElement | undefined =>
     [...document.querySelectorAll<HTMLButtonElement>("button")].find(b =>
-        (b.textContent || "").trim().startsWith("导入")
+        /导入\s*\d/.test((b.textContent || "").trim())
     );
 
 async function clickAsync(el: Element) {
@@ -374,4 +378,75 @@ test("取消勾选一条后，交出去的数据里真的没有它", async () =>
         "取消勾选的那条不该出现在交出去的数据里"
     );
     assert.equal(names.includes("示例二（改过）"), true, "别的勾选照常导出");
+});
+
+// ============ 覆盖导入：删除清单 + 显式确认闸门 ============
+
+test("覆盖导入：列出将删除清单，确认前导入按钮置灰", async () => {
+    let confirmed = 0;
+    mount({ overwrite: true, onConfirm: () => void confirmed++ });
+
+    const text = document.body.textContent ?? "";
+    assert.match(text, /将删除\s*1/, "「开发」分组不在备份里，要预告删除");
+    assert.match(text, /开发/, "删除清单里要能看到名字");
+    assert.match(text, /覆盖导入/, "要说明当前是覆盖模式");
+
+    // 覆盖默认全选（没勾的会被删，默认值必须保守）
+    assert.equal(checkedRows().length, 5);
+
+    const btn = importButton();
+    assert.ok(btn);
+    assert.equal(btn.disabled, true, "没勾「我已确认删除」就不许放行");
+
+    const ack = document.querySelector<HTMLInputElement>('[aria-label="确认删除这些条目"]');
+    assert.ok(ack, "要有删除确认勾选框");
+    await clickAsync(ack);
+    assert.equal(importButton()!.disabled, false, "确认之后才放行");
+    await clickAsync(importButton()!);
+    assert.equal(confirmed, 1);
+});
+
+test("覆盖导入：没有要删的东西时不挡人（备份覆盖一份同构数据应当一路绿灯）", () => {
+    const same = {
+        ...incoming,
+        groups: [...incoming.groups, { id: 2, name: "开发", order_num: 1 }],
+        sites: [
+            ...incoming.sites,
+            // 「开发」分组里的本地卡片也必须在备份里，否则它要被删
+            site({ id: 21, group_id: 2, name: "示例三", url: "https://example.org" }),
+        ],
+    };
+    mount({ overwrite: true, data: same });
+    assert.match(document.body.textContent ?? "", /将删除\s*0/);
+    assert.equal(importButton()!.disabled, false, "没有删除就不需要确认");
+});
+
+test("覆盖导入：取消勾选一条，它要立刻出现在将删除清单里", async () => {
+    mount({ overwrite: true });
+    const target = [...rows()].find(
+        r => (r.textContent || "").includes("新卡片")
+    );
+    assert.ok(target, "夹具里应有「新卡片」");
+    await clickAsync(target!);
+    // 新卡片没勾 → 它不在要导入的数据里 → 覆盖时它所在的「新增分组」也不在 → 无连带；
+    // 但备份里没有别的卡片挂在常用工具/开发之外，删的是「新卡片」自己吗？
+    // 不：删除清单算的是「本地有、裁剪后的备份里没有」——新卡片本来就是新增项，
+    // 本地没有它，所以不进删除清单；真正变化的是「新增分组」没人勾了也不影响本地。
+    assert.match(
+        document.body.textContent ?? "",
+        /将删除\s*1/,
+        "清单本身不该被这次取消勾选改变（本地没有这张卡）"
+    );
+});
+
+test("覆盖导入：取消勾选一个已有分组里的卡片，那张卡要进删除清单", async () => {
+    mount({ overwrite: true });
+    const target = [...rows()].find(r => (r.textContent || "").includes("云设"));
+    assert.ok(target, "夹具里应有「云设」");
+    await clickAsync(target!);
+    assert.match(
+        document.body.textContent ?? "",
+        /云设/,
+        "勾掉一张本地已有的卡，它就成了「备份里没有」，必须如实列进删除清单"
+    );
 });

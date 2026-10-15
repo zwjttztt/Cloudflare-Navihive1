@@ -421,3 +421,16 @@ export function sanitizeIconUrl(icon: string): string {
     if (/^(javascript|vbscript|file|data:text\/html)/i.test(v)) return "";
     return v;
 }
+
+/**
+ * 墓碑时间戳：**必须带毫秒**。
+ *
+ * CURRENT_TIMESTAMP 只到秒，同一秒里连删两张卡时游标分不出先后 ——
+ * 表现为「第二次删除的墓碑被上一次的游标挡住」。
+ *
+ * 放在这里是因为删除卡片的地方不止一处（单张删除、批量删除、覆盖导入的清理），
+ * 三处必须用同一把尺子，否则墓碑的先后就对不上了。
+ */
+export function tombstoneStamp(): string {
+    return new Date().toISOString().replace("T", " ").replace("Z", "");
+}

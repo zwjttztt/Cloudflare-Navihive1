@@ -1086,7 +1086,9 @@ export class NavigationClient {
     }
     
     /**
-     * 数据导入（覆盖式恢复）。回传的新旧 id 映射用来把本机的星标 / 标签翻译到新 id 上。
+     * 数据导入。默认增量合并；`opts.mode = "overwrite"` 时额外删掉备份里没有的条目
+     * （服务端与写入同一个事务，界面上必须让用户显式勾选）。
+     * 回传的新旧 id 映射用来把本机的星标 / 标签翻译到新 id 上。
      *
      * 传了 `onProgress` 就要流式响应：服务端边跑边把真实阶段进度推下来，最后一行才是
      * 结果。不传就是普通的一问一答（离线重放走这条）。服务端不认这个 Accept 时
@@ -1100,12 +1102,18 @@ export class NavigationClient {
         }
         if (opts?.onProgress) headers["Accept"] = IMPORT_PROGRESS_MEDIA;
 
-        const response = await fetch(`${this.baseUrl}/import`, {
-            method: "POST",
-            credentials: "same-origin",
-            headers,
-            body: JSON.stringify(data),
-        });
+        // 模式走 query 而不是塞进 body：body 是备份文件原文，多一个字段就会让
+        // 文件里那道内容摘要对不上（integrity 是对整份 payload 算的），好文件也被拦。
+        const mode = opts?.mode === "overwrite" ? "overwrite" : "merge";
+        const response = await fetch(
+            `${this.baseUrl}/import${mode === "overwrite" ? "?mode=overwrite" : ""}`,
+            {
+                method: "POST",
+                credentials: "same-origin",
+                headers,
+                body: JSON.stringify(data),
+            }
+        );
 
         const isStream =
             !!response.body &&

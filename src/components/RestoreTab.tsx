@@ -7,17 +7,23 @@
 import type { ChangeEvent, Dispatch, SetStateAction } from "react";
 import type { ExportData, WebDavConfig, WebDavFile } from "../API/http";
 import { formatSize, formatTime } from "../utils/backupFormat";
+// 备份密码框要用「text + CSS 遮蔽」而不是 type=password：
+// 见 utils/secretInput.ts 头部说明 —— type=password 会被浏览器当成登录表单，
+// 自动填入已保存的密码，还会连带把页面上的文本框（顶栏搜索框）当用户名框填。
+import { SECRET_IGNORE_ATTRS, secretInputSx, secretInputType } from "../utils/secretInput";
 import {
     Alert,
     Box,
     Button,
     CircularProgress,
     Divider,
+    FormControlLabel,
     IconButton,
     List,
     ListItemButton,
     ListItemText,
     Stack,
+    Switch,
     TextField,
     Typography,
 } from "@mui/material";
@@ -29,6 +35,13 @@ import UploadFileIcon from "@mui/icons-material/UploadFile";
 export interface RestoreTabProps {
     /** 切到「备份」页：导入书签那一节会用到 */
     setTab: Dispatch<SetStateAction<number>>;
+    /**
+     * 导入模式。默认合并（不删任何现有数据）；覆盖会额外删掉「备份里没有」的
+     * 分组 / 卡片 —— 唯一会删东西的选项，所以默认关、开着时有红色警示，
+     * 且真正动手前还要在预览里确认一遍「将删除」清单。
+     */
+    overwrite: boolean;
+    setOverwrite: Dispatch<SetStateAction<boolean>>;
     // ---- 从本地文件恢复 ----
     localFile: File | null;
     localData: ExportData | null;
@@ -61,22 +74,56 @@ export interface RestoreTabProps {
 }
 
 export default function RestoreTab({
-    setTab, localFile, localData, localError, handleFileSelect, encryptedBytes, restorePassword, setRestorePassword, decrypting, handleDecryptBackup, handleRestoreLocal, config, remoteFiles, listLoading, loadRemoteFiles, selectedRemote, setSelectedRemote, handleRestoreRemote, handleDeleteRemote, deletingFiles, needsRemotePassword, remotePassword, setRemotePassword, remoteError, restoring, onOpenBookmark,
+    setTab, overwrite, setOverwrite, localFile, localData, localError, handleFileSelect, encryptedBytes, restorePassword, setRestorePassword, decrypting, handleDecryptBackup, handleRestoreLocal, config, remoteFiles, listLoading, loadRemoteFiles, selectedRemote, setSelectedRemote, handleRestoreRemote, handleDeleteRemote, deletingFiles, needsRemotePassword, remotePassword, setRemotePassword, remoteError, restoring, onOpenBookmark,
 }: RestoreTabProps) {
     return (
         <Stack spacing={1.5} sx={{ mt: 0.5, flex: 1, minHeight: 0 }}>
-            {/* 增量导入的说明要写在动作之前：这一页以前有个「覆盖恢复」开关，
-                勾上会把现有分组与站点整批清掉 —— 那种不可逆的按钮不该存在在 UI 上。
-                现在的语义只有一种：认得出是同一条的更新 / 跳过，认不出的才新建。 */}
-            <Alert severity='info' sx={{ mt: 0.5 }}>
-                <Typography variant='body2' sx={{ fontWeight: '600' }}>
-                    增量合并导入（不会删除任何现有数据）
-                </Typography>
-                <Typography variant='caption' sx={{ display: "block", color: 'text.secondary' }}>
-                    按「分组名」「分组内同链接」认同一条：已有的不会重复新建，只有备份里那条更新时才会覆盖；
-                    本地多出来的分组与卡片原样保留。重复导入同一份备份不会产生重复数据。
-                </Typography>
-            </Alert>
+            {/* 默认合并导入。覆盖是这一页里唯一会删数据的选项：
+                开关默认关、开着时给红色警示，动手前预览里还要再确认一遍删除清单 */}
+            <FormControlLabel
+                control={
+                    <Switch
+                        checked={overwrite}
+                        onChange={e => setOverwrite(e.target.checked)}
+                        color={overwrite ? "error" : "primary"}
+                        size='small'
+                        slotProps={{ input: { "aria-label": "覆盖导入" } }}
+                    />
+                }
+                label={
+                    <Box>
+                        <Typography
+                            variant='body2'
+                            color={overwrite ? "error.main" : "text.primary"}
+                            sx={{ fontWeight: '600' }}
+                        >
+                            {overwrite
+                                ? "覆盖导入（删除备份里没有的条目）"
+                                : "合并导入（不会删除任何现有数据）"}
+                        </Typography>
+                        <Typography variant='caption' sx={{ color: 'text.secondary' }}>
+                            {overwrite
+                                ? "把整站还原成备份那一刻的样子：备份里没有的分组 / 卡片 / 笔记会被删掉，认得出是同一条的照常按新旧覆盖"
+                                : "按「分组名」「分组内同链接」认同一条：已有的不会重复新建，只有备份里那条更新时才会覆盖；本地多出来的原样保留"}
+                        </Typography>
+                    </Box>
+                }
+            />
+            {/* 把话说在动作之前，而不是等用户点了才发现 */}
+            {overwrite && (
+                <Alert severity='warning' sx={{ mt: -0.5 }}>
+                    覆盖导入会删除备份里没有的分组、卡片和笔记（本机星标 / 标签不受影响）。
+                    备份里没带账号密码时（导出开关关着），已有卡片的凭据不会被清掉。
+                    点「开始恢复」后预览里会列出具体删哪些，确认才会动手。
+                </Alert>
+            )}
+            {!overwrite && (
+                <Alert severity='info' sx={{ mt: -0.5 }}>
+                    <Typography variant='caption' sx={{ display: "block", color: 'text.secondary' }}>
+                        重复导入同一份备份不会产生重复数据。
+                    </Typography>
+                </Alert>
+            )}
 
             <Divider />
 
@@ -124,12 +171,17 @@ export default function RestoreTab({
                         <TextField
                             id='backup-restore-password'
                             label='备份密码'
-                            type='password'
+                            // name/id 不带 password 字样 + type 走 text + CSS 遮蔽：
+                            // 三样一起上，浏览器才认不出这是密码框（2026-10-16 用户实测
+                            // type=password + autoComplete=off 会被填进已保存的登录密码）
+                            name='backup-passphrase-local'
+                            type={secretInputType(false)}
                             size='small'
                             value={restorePassword}
                             onChange={e => setRestorePassword(e.target.value)}
                             autoComplete='off'
-                            sx={{ flex: 1 }}
+                            sx={{ flex: 1, ...secretInputSx(false) }}
+                            slotProps={{ input: { ...SECRET_IGNORE_ATTRS } }}
                         />
                         <Button
                             variant='outlined'
@@ -298,12 +350,14 @@ export default function RestoreTab({
                         <TextField
                             id='backup-remote-restore-password'
                             label='备份密码'
-                            type='password'
+                            name='backup-passphrase-remote'
+                            type={secretInputType(false)}
                             size='small'
                             value={remotePassword}
                             onChange={e => setRemotePassword(e.target.value)}
                             autoComplete='off'
-                            sx={{ flex: 1 }}
+                            sx={secretInputSx(false)}
+                            slotProps={{ input: { ...SECRET_IGNORE_ATTRS } }}
                         />
                         <Button
                             variant='outlined'

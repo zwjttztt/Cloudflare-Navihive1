@@ -1895,12 +1895,14 @@ function App() {
                 />
                 </ChunkBoundary>
 
-                {/* 导入预览：恢复前先给用户看差异，勾选后才会真的写库 */}
+                {/* 导入预览：恢复前先给用户看差异，勾选后才会真的写库。
+                    覆盖导入时预览要多列一份「将删除」清单并要求显式确认 */}
                 <ChunkBoundary when={importPreview !== null}>
                 <ImportPreviewDialog
                     open={importPreview !== null}
                     data={importPreview?.data ?? null}
                     current={groups}
+                    overwrite={importPreview?.overwrite ?? false}
                     onCancel={() => closeImportPreview(null)}
                     onConfirm={data => closeImportPreview(data)}
                 />

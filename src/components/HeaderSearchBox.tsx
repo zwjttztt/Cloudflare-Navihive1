@@ -1,6 +1,6 @@
 // src/components/HeaderSearchBox.tsx
 // 顶栏搜索框 + 结果下拉面板（含搜索历史）。原来内联在 App.tsx 里 152 行。
-import type { RefObject } from "react";
+import { useState, type RefObject } from "react";
 import {
     Box,
     Button,
@@ -85,6 +85,18 @@ export default function HeaderSearchBox({
     headerCompact,
     semantic,
 }: HeaderSearchBoxProps) {
+    // ⚠️ 自动填充的最后一道保险：挂载时先锁成只读，用户真正要输入时再放开。
+    //
+    // 光有 autoComplete="off" 挡不住 Chrome —— 只要页面上同时出现了 password 字段
+    // （备份弹窗、账号弹窗里都有），它就会做「用户名 + 密码」配对，把保存的登录
+    // 账号填进页面上第一个文本框（2026-10-16 用户实测：搜索框又被填了 zwj）。
+    // 浏览器对 readOnly 的输入框不做任何自动填充，这是它唯一老老实实遵守的信号。
+    //
+    // 解锁要抢在 focus 之前（mousedown / touchstart / keydown 都先于 focus）：
+    // 移动端键盘是否弹出是按「聚焦那一刻输入框可不可编辑」决定的，
+    // 等 onFocus 再解锁会第一次点不出键盘。
+    const [autofillLocked, setAutofillLocked] = useState(true);
+    const unlockAutofill = () => setAutofillLocked(false);
     return (
         <Box ref={setSearchAnchor} sx={{ position: "relative" }}>
             <TextField
@@ -96,7 +108,10 @@ export default function HeaderSearchBox({
                     // 输入即展开面板（不只依赖 onFocus，避免程序化赋值时面板不出现）
                     setSearchFocused(true);
                 }}
-                onFocus={() => setSearchFocused(true)}
+                onFocus={() => {
+                    unlockAutofill();
+                    setSearchFocused(true);
+                }}
                 placeholder='搜索网站（按 /）'
                 size='small'
                 variant='outlined'
@@ -184,6 +199,12 @@ export default function HeaderSearchBox({
                         "aria-label": "搜索网站",
                         title:
                             "支持条件筛选：tag:标签、group:分组、url:链接、is:starred（星标）、is:dead（失效）、-排除词",
+                        // 防自动填充的锁挂在这里（htmlInput 才是原生 <input>，
+                        // 挂到 TextField 顶层会被丢到外层 div 上不起作用）
+                        readOnly: autofillLocked,
+                        onMouseDown: unlockAutofill,
+                        onTouchStart: unlockAutofill,
+                        onKeyDown: unlockAutofill,
                     }
                 }} />
 

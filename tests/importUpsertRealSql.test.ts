@@ -237,3 +237,118 @@ test("真实 SQLite：校验不过就一行都不写（失败发生在动笔之�
     assert.equal(await countRows(api, "groups"), beforeGroups, "失败后分组数不变");
     assert.equal(await countRows(api, "sites"), beforeSites, "失败后卡片数不变");
 });
+
+// ==================== 覆盖导入（mode: "overwrite"）====================
+//
+// 覆盖 = 合并 upsert + 删掉「本地有、备份里没有」的行。
+// 界面上默认是合并，覆盖必须显式勾选并在预览里确认 —— 这里钉的是服务端语义。
+
+test("真实 SQLite：覆盖导入删掉备份里没有的分组与卡片，认得出的保 id", async () => {
+    const { api } = await setup();
+    const local = await seedLocal(api);
+    // 本地那张「常用工具」里的卡（url 与备份里的 id=10 相同）会被认成同一条，
+    // 记下它的 id：覆盖之后必须原封不动（星标 / 访问统计都挂在 id 上）
+    const kept = await api.db
+        .prepare("SELECT id FROM sites WHERE url = ?")
+        .bind("https://example.com/")
+        .first<{ id: number }>();
+    assert.ok(kept?.id);
+
+    const result = await api.importData(backup(), { mode: "overwrite" });
+    assert.equal(result.success, true, `覆盖导入应成功：${result.message ?? ""}`);
+
+    // 「本地独有分组」+ 它的卡片被删；剩常用工具 + 开发 两个分组、两张卡片
+    const gone = await api.db
+        .prepare("SELECT COUNT(*) AS c FROM groups WHERE id = ?")
+        .bind(local.otherId)
+        .first<{ c: number }>();
+    assert.equal(Number(gone?.c ?? 0), 0, "备份里没有的分组要被覆盖掉");
+    assert.equal(await countRows(api, "groups"), 2);
+    assert.equal(await countRows(api, "sites"), 2, "备份里没有的卡片要被覆盖掉");
+
+    const still = await api.db
+        .prepare("SELECT id FROM sites WHERE url = ?")
+        .bind("https://example.com/")
+        .first<{ id: number }>();
+    assert.equal(still?.id, kept!.id, "认得出是同一条的卡片必须保住 id");
+
+    assert.equal(result.stats?.groupsRemoved, 1);
+    assert.equal(result.stats?.sitesRemoved, 1);
+
+    // 删掉的卡片要留墓碑：其它设备靠 /api/sites/changes 才知道少了哪张
+    const tomb = await api.db
+        .prepare("SELECT COUNT(*) AS c FROM site_tombstone WHERE site_id = ?")
+        .bind(local.otherId)
+        .first<{ c: number }>();
+    assert.ok(Number(tomb?.c ?? 0) >= 1, "被删卡片的墓碑必须留下");
+    // 删掉的分组不应留墓碑（墓碑只服务卡片同步）
+});
+
+test("真实 SQLite：覆盖导入拒绝空备份（现有数据一个字节都不动）", async () => {
+    const { api } = await setup();
+    await seedLocal(api);
+    const beforeGroups = await countRows(api, "groups");
+    const beforeSites = await countRows(api, "sites");
+
+    const result = await api.importData(
+        { ...backup([]), groups: [] },
+        { mode: "overwrite" }
+    );
+    assert.equal(result.success, false, "空备份 + 覆盖 = 清空站点，必须拒绝");
+    assert.ok(
+        (result.message || "").includes("覆盖导入"),
+        `要说清楚为什么拒绝：${result.message ?? ""}`
+    );
+    assert.equal(await countRows(api, "groups"), beforeGroups, "分组不能少");
+    assert.equal(await countRows(api, "sites"), beforeSites, "卡片不能少");
+});
+
+test("真实 SQLite：备份里没有 notes 字段时，覆盖导入也不动本地笔记", async () => {
+    const { api } = await setup();
+    const note = await api.createNote({ title: "本地笔记", content: "内容" });
+    assert.ok(note.uuid);
+
+    // backup() 不带 notes 字段（老备份的样子）
+    const result = await api.importData(backup(), { mode: "overwrite" });
+    assert.equal(result.success, true);
+    const row = await api.db
+        .prepare("SELECT COUNT(*) AS c FROM notes WHERE uuid = ?")
+        .bind(note.uuid)
+        .first<{ c: number }>();
+    assert.equal(Number(row?.c ?? 0), 1, "无从判断「备份里没有」是什么意思时，一根汗毛都不动");
+});
+
+test("真实 SQLite：备份带 notes 时，覆盖导入删掉备份里没有的笔记", async () => {
+    const { api } = await setup();
+    const kept = await api.createNote({ title: "备份里也有的笔记", content: "keep" });
+    const stale = await api.createNote({ title: "本地独有的笔记", content: "drop" });
+
+    const result = await api.importData(
+        {
+            ...backup(),
+            notes: [
+                {
+                    uuid: kept.uuid!,
+                    title: "备份里也有的笔记",
+                    content: "keep",
+                    updated_at: new Date(Date.now() + 60_000).toISOString(),
+                },
+            ],
+        },
+        { mode: "overwrite" }
+    );
+    assert.equal(result.success, true, `导入应成功：${result.message ?? ""}`);
+
+    const keepRow = await api.db
+        .prepare("SELECT COUNT(*) AS c FROM notes WHERE uuid = ?")
+        .bind(kept.uuid!)
+        .first<{ c: number }>();
+    assert.equal(Number(keepRow?.c ?? 0), 1, "备份里有的笔记要留着");
+
+    const dropRow = await api.db
+        .prepare("SELECT COUNT(*) AS c FROM notes WHERE uuid = ?")
+        .bind(stale.uuid!)
+        .first<{ c: number }>();
+    assert.equal(Number(dropRow?.c ?? 0), 0, "备份里没有的笔记要被清掉");
+    assert.equal(result.noteStats?.removed, 1);
+});
