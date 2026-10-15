@@ -32,6 +32,9 @@ import type { SessionsApi } from "./methods/sessions";
 import type { IdempotencyApi } from "./methods/idempotency";
 import type { AiApi } from "./methods/ai";
 import { migrationImpl } from "./methods/migration";
+// notesFtsReady 的getter 读它（真值放模块级，理由见 internals.ts 的注释）。
+// internals.ts 不反向依赖本文件，这里不构成环。
+import { migrationState } from "./methods/internals";
 import { authImpl } from "./methods/auth";
 import { recoveryImpl } from "./methods/recovery";
 import { accountsImpl } from "./methods/accounts";
@@ -137,8 +140,14 @@ export class NavigationAPI {
      * 由迁移阶段探测（见 migrateNotesFtsTable）：建不出来就是 false，
      * 搜索退回 LIKE 全表扫。默认 false —— 没跑过迁移时按「不可用」处理，
      * 走的是一定正确的那条路，而不是「假设表在、然后 500」。
+     *
+     * ⚠️ 只读：真值存在 migrationState.ftsReady（模块级）。迁移只在 isolate 的
+     * 第一个请求里跑，而 NavigationAPI 每个请求 new 一个 —— 存实例上会让
+     * 「第一个请求之后」全部静默退化成 LIKE。见 internals.ts 的注释。
      */
-    notesFtsReady = false;
+    get notesFtsReady(): boolean {
+        return migrationState.ftsReady;
+    }
 
     /** 绑定当前账号（Worker 验签通过后调用）。传 null 表示系统级调用。 */
     setCurrentUser(id: number | null): void {

@@ -344,15 +344,33 @@ export const GROUP_RESTORE_COLUMNS = [
 // 注意：NavigationAPI 是每个请求 new 出来的，实例字段无法跨请求复用，
 // 之前迁移挂在实例上导致「每个请求都跑一遍 DDL」，这是接口变慢的主因，所以缓存放在模块作用域。
 // 包一层对象是为了让别的文件也能读写（模块级的 let 没法从外部赋值）。
-export const migrationState: { promise: Promise<void> | null } = { promise: null };
+export const migrationState: {
+    promise: Promise<void> | null;
+    /**
+     * 全文检索（FTS5 虚拟表 notes_fts）是否可用。
+     *
+     * ⚠️ 为什么是**模块级**而不是实例级：迁移只在每个 isolate 的**第一个**请求里
+     * 真正跑一次（promise 缓存），而 NavigationAPI 是**每个请求 new 一个**。
+     * 放在实例上（2026-10-15 之前就是）的结果是：只有冷启动后第一个请求知道
+     * FTS 可用，之后所有请求的 notesFtsReady 都是初始值 false ——
+     * 搜索静默退化成 LIKE 全表扫（没有 bm25 相关度排序，笔记多了还慢），
+     * 而控制台一声不响，只能从响应里的 mode 字段看出来。
+     * 与 promise 同级放，才是「这套库结构探测过一次，大家都照这个结果来」。
+     */
+    ftsReady: boolean;
+} = { promise: null, ftsReady: false };
 
 /**
  * 仅供测试：清掉迁移缓存。
  * 生产环境每个 isolate 只应迁移一次（缓存是有意为之），但测试里每个用例都要换一套
  * 全新的内存数据库，不重置的话第二个用例起就永远跑不到建表 / 迁移逻辑。
+ *
+ * ⚠️ ftsReady **也要一起清**：它是模块级的，否则上一个用例探到「可用」会把
+ * 结果带给下一个用「没有 FTS5 的假库」的用例，断言变成看运气。
  */
 export function resetMigrationCacheForTests(): void {
     migrationState.promise = null;
+    migrationState.ftsReady = false;
 }
 
 // 邀请码取自「去掉易混字符」的字母表：没有 0/O、1/I，口头转述也不容易错。

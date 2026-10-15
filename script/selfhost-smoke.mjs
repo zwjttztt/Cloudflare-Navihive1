@@ -140,6 +140,16 @@ check("GET /s/<token> SPA fallback 回 index.html", spa.status === 200 && spaTex
 const postRoot = await fetch(`${BASE}/`, { method: "POST" });
 check("POST / 由 worker 回 404 文本", postRoot.status === 404, `status=${postRoot.status}`);
 
+// ⚠️ 2026-10-15 修：SPA fallback 原来「任何没命中的路径都回 index.html」，
+// 于是浏览器按缓存里的旧 index.html 去请求一条早被删掉的 chunk 时，
+// 拿到的是 200 + text/html 的一整页 HTML → 浏览器拒绝执行 module script
+// （"Expected a JavaScript module script but the server responded with a MIME
+// type of text/html"），表现为发版后随机白屏。带扩展名的一律 404。
+const goneAsset = await fetch(`${BASE}/assets/index-DEADBEEF.js`);
+check("缺失的静态资源 404，不拿 index.html 顶替（MIME 事故回归钉）", goneAsset.status === 404, `status=${goneAsset.status}`);
+const goneType = goneAsset.headers.get("content-type") ?? "";
+check("缺失的静态资源不带 text/html", !goneType.includes("text/html"), goneType);
+
 // ---- 8. 附件上传（走文件 KV + D1 元数据） ----
 // 1x1 透明 PNG
 const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
@@ -175,6 +185,27 @@ check("不存在的站点 404 且带结构化错误码", missing.status === 404 
 // 与具体 2xx/4xx 无关——只要不是 5xx 就说明 undici 重建路径走通了。
 const del = await api("DELETE", "/api/groups/99999999");
 check("无 body 的 DELETE 不再 500（undici 重建路径走通）", del.status < 500, `status=${del.status}`);
+
+// ---- 12. 撤销分组分享不能把分组一起删掉 ----
+// ⚠️ 2026-10-15 P0：worker/routes/data.ts 里 `path.startsWith("groups/")` 那三条
+// 排在 /^groups\/\d+\/share$/ 之前，而 id 取 parseInt("7/share") 得 7 且不报 NaN ——
+// DELETE 静默落到「删分组」上，用户点一下「撤销分享」，整个分组连卡片进了回收站。
+// 路由顺序的单元守卫在 tests/dataRoutes.test.ts，这里钉端到端的结果。
+const shareGroup = await api("POST", "/api/groups", { name: "分享回归组", order_num: 77 });
+const shareGroupId = shareGroup.json?.id;
+if (shareGroupId) {
+    const created = await api("POST", `/api/groups/${shareGroupId}/share`, { days: 7 });
+    check("创建分组分享拿到 token", created.status === 200 && typeof created.json?.token === "string", `status=${created.status}`);
+    const cfg = await api("GET", `/api/groups/${shareGroupId}/share`);
+    check("查分享配置返回的是分享对象（含 token），不是分组对象", typeof cfg.json?.token === "string" && cfg.json?.name === undefined, JSON.stringify(cfg.json));
+    const revoked = await api("DELETE", `/api/groups/${shareGroupId}/share`);
+    check("撤销分享 200", revoked.status === 200, `status=${revoked.status}`);
+    const still = await api("GET", "/api/groups");
+    const names = (still.json ?? []).map(g => g.name);
+    check("撤销分享之后分组还在（事故就是这里被删了）", names.includes("分享回归组"), names.join(","));
+} else {
+    check("建分组用于分享回归", false, JSON.stringify(shareGroup.json));
+}
 
 console.log(`\n通过 ${pass} 项，失败 ${fail} 项`);
 process.exit(fail === 0 ? 0 : 1);

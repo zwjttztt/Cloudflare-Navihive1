@@ -31,6 +31,8 @@ interface Log {
     changes: (string | null)[];
     /** 拒绝的越权 group_id（filterOwnedGroupIds 返回空集时用） */
     ownedGroupIds: Set<number>;
+    /** 分组分享（groups/{id}/share）落到 api 的调用 */
+    shares: Array<{ op: "get" | "create" | "update" | "revoke"; id: number; args?: unknown }>;
 }
 
 function emptyLog(): Log {
@@ -43,8 +45,12 @@ function emptyLog(): Log {
         orders: [],
         changes: [],
         ownedGroupIds: new Set([1, 2]),
+        shares: [],
     };
 }
+
+/** 分组分享的假配置；token 字段是前端判断「已经分享过」的唯一依据 */
+const SHARE_CONFIG = { token: "t".repeat(64), expires_at: null, views: 3, hasPassword: 0 };
 
 interface Options {
     /** 返回一段「正在锁定期」的限速记录，用来验证写请求被挡、读请求不受影响 */
@@ -126,6 +132,22 @@ function makeApi(log: Log, o: Options, bucket: string): NavigationAPI {
         },
         writeAudit: async (action: string, _target: string, _ip: string, detail: string) => {
             log.audits.push({ action, detail });
+        },
+        getGroupShareConfig: async (id: number) => {
+            log.shares.push({ op: "get", id });
+            return SHARE_CONFIG;
+        },
+        createGroupShare: async (id: number, days: unknown, pw: unknown) => {
+            log.shares.push({ op: "create", id, args: { days, pw } });
+            return SHARE_CONFIG;
+        },
+        updateGroupShare: async (id: number, days: unknown, pw: unknown) => {
+            log.shares.push({ op: "update", id, args: { days, pw } });
+            return SHARE_CONFIG;
+        },
+        revokeGroupShare: async (id: number) => {
+            log.shares.push({ op: "revoke", id });
+            return { success: true };
         },
     } as unknown as NavigationAPI;
 }
@@ -416,6 +438,64 @@ test("sites/changes 把 since 游标透给 api（卡片侧增量同步）", asyn
     const first = await call("sites/changes", "GET");
     assert.equal(first.res?.status, 200);
     assert.equal(first.log.changes[0], null);
+});
+
+// ---- 分组分享：路由顺序 ----
+//
+// 2026-10-15 事故：`groups/{id}/share` 原先排在 `path.startsWith("groups/")` 那三条
+// （GET / PUT / DELETE）**之后**，被前缀分支整条吞掉。id 取 `parseInt("7/share")`
+// 得 7、不报 NaN，所以冲突一声不响：
+//   DELETE → 落到「删分组」，用户点「撤销分享」把整个分组连卡片删进回收站；
+//   GET    → 落到「查分组」，返回的是分组对象，前端看不到 token 就以为没分享过；
+//   PUT    → 落到「改分组」，有效期/口令根本没传下去。
+// 下面四条逐个钉住「走的是分享分支、且没碰到分组的 CRUD」。
+
+test("撤销分组分享走分享分支，绝不落到「删分组」（2026-10-15 P0）", async () => {
+    const { res, log } = await call("groups/7/share", "DELETE");
+    assert.equal(res?.status, 200);
+    // 走的是 revokeGroupShare
+    assert.deepEqual(log.shares, [{ op: "revoke", id: 7 }]);
+    // 分组一条都没被删 —— 事故现场就是这里多了个 7
+    assert.deepEqual(log.deleted, []);
+    // 也没被当成改分组
+    assert.deepEqual(log.updated, []);
+    assert.deepEqual(log.audits, []);
+});
+
+test("查分组分享配置返回分享对象（含 token），不是分组对象", async () => {
+    const { res, log } = await call("groups/7/share", "GET");
+    assert.equal(res?.status, 200);
+    assert.deepEqual(log.shares, [{ op: "get", id: 7 }]);
+    const body = (await res.json()) as Record<string, unknown>;
+    // 前端靠 token 判断「已经分享过」；拿到分组对象时会是 undefined
+    assert.equal(body.token, SHARE_CONFIG.token);
+    assert.equal(body.id, undefined);
+});
+
+test("更新分组分享（有效期/口令）走分享分支，不是改分组", async () => {
+    const { res, log } = await call("groups/7/share", "PUT", {}, { days: 30, password: "pw" });
+    assert.equal(res?.status, 200);
+    assert.deepEqual(log.shares, [{ op: "update", id: 7, args: { days: 30, pw: "pw" } }]);
+    // 没被 validateGroupPatch / updateGroup 接走
+    assert.deepEqual(log.updated, []);
+});
+
+test("创建分组分享走分享分支（轮换令牌）", async () => {
+    const { res, log } = await call("groups/7/share", "POST", {}, { days: 7 });
+    assert.equal(res?.status, 200);
+    assert.deepEqual(log.shares, [{ op: "create", id: 7, args: { days: 7, pw: null } }]);
+});
+
+test("分组分享的有效期只认 1/7/30/永久", async () => {
+    const { res } = await call("groups/7/share", "POST", {}, { days: 3 });
+    assert.equal(res?.status, 400);
+});
+
+test("删分组本身照旧（不能被分享分支抢走）", async () => {
+    const { res, log } = await call("groups/7", "DELETE");
+    assert.equal(res?.status, 200);
+    assert.deepEqual(log.deleted, [7]);
+    assert.deepEqual(log.shares, []);
 });
 
 // ---- 不认领的路径 ----

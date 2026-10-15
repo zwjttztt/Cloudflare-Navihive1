@@ -13,6 +13,17 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { makeRealApi, makeRealD1 } from "./helpers/realSqliteD1";
 import { resetMigrationCacheForTests } from "../src/API/http";
+import { migrationState } from "../src/API/methods/internals";
+
+/**
+ * 模拟「这个实例上 FTS 建不出来」：把就绪开关关掉。
+ * ⚠️ 它是**模块级**的（migrationState.ftsReady），不是 api 实例上的字段 ——
+ * 迁移只在第一个请求里跑一次，跟着实例走会让之后的请求全部静默退化成 LIKE
+ * （2026-10-15 修的那条）。关掉之后记得靠 fresh() 里的 reset 复位。
+ */
+function disableFts(): void {
+    migrationState.ftsReady = false;
+}
 
 /** 每个用例都要一张干净的真库（内存库 + 清空迁移缓存） */
 async function fresh() {
@@ -34,6 +45,23 @@ test("真实 SQLite：迁移后 notes_fts 建出来，且 MATCH 真能跑（不�
     const empty = await api.searchNotes("随便搜点什么");
     assert.equal(empty.mode, "fts", "有索引就该走 FTS 分支");
     assert.deepEqual(empty.results, []);
+});
+
+test("第二个请求（新 new 出来的 api 实例）也知道 FTS 可用（2026-10-15 修的静默降级）", async () => {
+    // 真实形态：Worker 每个请求 new 一个 NavigationAPI，而 migrate() 的 promise
+    // 是**模块级**缓存的 —— 只有冷启动后第一个请求会真的跑 migrateNotesFtsTable。
+    // 早先 notesFtsReady 是实例字段，于是第一个请求之后所有搜索都悄悄退回
+    // LIKE 全表扫：结果还在（所以没人报 bug），但没有 bm25 排序、笔记多了还慢，
+    // 唯一的线索是响应里的 mode 从 "fts" 变成 "like"。
+    const { db } = await fresh();
+    const second = makeRealApi(db);
+    await second.migrate(); // 命中缓存，不会再跑一遍迁移
+    assert.equal(second.notesFtsReady, true, "迁移缓存命中后，新实例也该知道 FTS 可用");
+
+    await second.createNote({ title: "第二个请求写的笔记", content: "正文里有个独特词 朱雀" });
+    const hit = await second.searchNotes("朱雀");
+    assert.equal(hit.mode, "fts", "新实例上的搜索要走 FTS，不是 LIKE");
+    assert.equal(hit.results.length, 1);
 });
 
 test("真实 SQLite：中文两字词能搜到（trigram 分词器在这里会一条都搜不到）", async () => {
@@ -111,7 +139,7 @@ test("真实 SQLite：多个词是 AND，且索引不可用时退回 LIKE（结�
 
     // 手动关掉 FTS（模拟 D1 上建不出虚拟表的实例）：必须自动回退到 LIKE，
     // 而且搜出来的东西跟 FTS 一致 —— 降级不能变成「搜不到」
-    api.notesFtsReady = false;
+    disableFts();
     const like = await api.searchNotes("设计");
     assert.equal(like.mode, "like", "FTS 关掉后要走 LIKE 分支");
     assert.equal(like.results.length, 2, "LIKE 回退要能搜出两条（降级不能少结果）");
@@ -120,7 +148,7 @@ test("真实 SQLite：多个词是 AND，且索引不可用时退回 LIKE（结�
 
 test("真实 SQLite：LIKE 回退下输入 % 和 _ 不当通配符（转义过的）", async () => {
     const { api } = await fresh();
-    api.notesFtsReady = false;
+    disableFts();
     await api.createNote({ title: "百分比", content: "进度 100% 完成" });
     await api.createNote({ title: "别的", content: "一点关系都没有" });
     // 不转义的话 `%` 匹配任意串 → 第二条也会被搜出来
@@ -176,7 +204,7 @@ test("真实 SQLite：登录态（uid≠null）下搜索也能跑通（JOIN 里 
 
     // LIKE 回退那条路同样要在登录态下通
     api.setCurrentUser(42);
-    api.notesFtsReady = false;
+    disableFts();
     const like = await api.searchNotes("玄武");
     assert.equal(like.mode, "like");
     assert.equal(like.results.length, 1, "登录态下 LIKE 回退也要搜得到");

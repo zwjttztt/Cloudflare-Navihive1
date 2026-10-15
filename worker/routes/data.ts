@@ -246,6 +246,51 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
             return new Response(null, { status: 304, headers });
         }
         return new Response(body, { headers });
+    } else if (/^groups\/\d+\/share$/.test(path)) {
+        // 分组分享（2026-10-11 阶段④）：与 note share 同一套语义
+        //（POST 创建并轮换令牌 / PUT 更新保留令牌 / DELETE 撤销 / GET 查配置）。
+        //
+        // ⚠️ 必须排在 `path.startsWith("groups/")` 那三条（GET/PUT/DELETE）之前。
+        // 2026-10-15 修：之前它排在后面，被前缀分支整条吞掉 —— 表现是
+        //   DELETE /api/groups/{id}/share（撤销分享）落到了「删分组」上，
+        //   用户点一下「撤销分享」，整个分组连同里面的卡片一起进了回收站；
+        //   GET 查分享配置返回的是分组对象（没有 token/expires），前端以为没分享过；
+        //   PUT 更新有效期则变成了改分组。
+        // 前缀分支的 id 取 `parseInt(path.split("/")[1])`，"1/share" 会被 parseInt
+        // 读成 1 且不报 NaN，所以这类冲突**不会报错**，只是静默走错分支 ——
+        // 新增 groups/ 子资源时，一律把更具体的分支放在前缀分支之前。
+        const id = Number(path.split("/")[1]);
+        const headers = { "Cache-Control": "no-store" };
+        if (!Number.isSafeInteger(id) || id <= 0) return errorResponse(ApiError.badRequest("无效的ID"), { headers });
+        if (method === "GET") return Response.json(await api.getGroupShareConfig(id), { headers });
+        if (method === "PUT") {
+            const limited = await writeGate();
+            if (limited) return limited;
+            const { days, password } = await request.json() as { days?: unknown; password?: unknown };
+            if (days !== null && days !== 1 && days !== 7 && days !== 30) {
+                return errorResponse(ApiError.badRequest("有效期仅支持1、7、30天或永久"), { headers });
+            }
+            const pw = password === undefined ? undefined
+                : (typeof password === "string" && password.length > 0 ? password : null);
+            const share = await api.updateGroupShare(id, days, pw);
+            if (!share) return errorResponse(ApiError.notFound("分享不存在"), { headers });
+            return Response.json(share, { headers });
+        }
+        if (method === "POST" || method === "DELETE") {
+            const limited = await writeGate();
+            if (limited) return limited;
+            if (method === "DELETE") return Response.json(await api.revokeGroupShare(id), { headers });
+            const { days, password } = await request.json() as { days?: unknown; password?: unknown };
+            if (days !== null && days !== 1 && days !== 7 && days !== 30) {
+                return errorResponse(ApiError.badRequest("有效期仅支持1、7、30天或永久"), { headers });
+            }
+            const pw = password === undefined ? null
+                : (typeof password === "string" && password.length > 0 ? password : null);
+            const share = await api.createGroupShare(id, days, pw);
+            if (!share) return errorResponse(ApiError.notFound("分组不存在"), { headers });
+            return Response.json(share, { headers });
+        }
+        return errorResponse(ApiError.methodNotAllowed(), { headers });
     } else if (path === "groups" && method === "GET") {
         const groups = await api.getGroups();
         return Response.json(groups);
@@ -411,41 +456,6 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
                 : (typeof password === "string" && password.length > 0 ? password : null);
             const share = await api.createNoteShare(id, days, pw);
             if (!share) return errorResponse(ApiError.notFound("笔记不存在"), { headers });
-            return Response.json(share, { headers });
-        }
-        return errorResponse(ApiError.methodNotAllowed(), { headers });
-    } else if (/^groups\/\d+\/share$/.test(path)) {
-        // 分组分享（2026-10-11 阶段④）：与 note share 同一套语义
-        //（POST 创建并轮换令牌 / PUT 更新保留令牌 / DELETE 撤销 / GET 查配置）。
-        const id = Number(path.split("/")[1]);
-        const headers = { "Cache-Control": "no-store" };
-        if (!Number.isSafeInteger(id) || id <= 0) return errorResponse(ApiError.badRequest("无效的ID"), { headers });
-        if (method === "GET") return Response.json(await api.getGroupShareConfig(id), { headers });
-        if (method === "PUT") {
-            const limited = await writeGate();
-            if (limited) return limited;
-            const { days, password } = await request.json() as { days?: unknown; password?: unknown };
-            if (days !== null && days !== 1 && days !== 7 && days !== 30) {
-                return errorResponse(ApiError.badRequest("有效期仅支持1、7、30天或永久"), { headers });
-            }
-            const pw = password === undefined ? undefined
-                : (typeof password === "string" && password.length > 0 ? password : null);
-            const share = await api.updateGroupShare(id, days, pw);
-            if (!share) return errorResponse(ApiError.notFound("分享不存在"), { headers });
-            return Response.json(share, { headers });
-        }
-        if (method === "POST" || method === "DELETE") {
-            const limited = await writeGate();
-            if (limited) return limited;
-            if (method === "DELETE") return Response.json(await api.revokeGroupShare(id), { headers });
-            const { days, password } = await request.json() as { days?: unknown; password?: unknown };
-            if (days !== null && days !== 1 && days !== 7 && days !== 30) {
-                return errorResponse(ApiError.badRequest("有效期仅支持1、7、30天或永久"), { headers });
-            }
-            const pw = password === undefined ? null
-                : (typeof password === "string" && password.length > 0 ? password : null);
-            const share = await api.createGroupShare(id, days, pw);
-            if (!share) return errorResponse(ApiError.notFound("分组不存在"), { headers });
             return Response.json(share, { headers });
         }
         return errorResponse(ApiError.methodNotAllowed(), { headers });

@@ -21,6 +21,7 @@ import { runScheduledTasks } from "../worker/cron";
 import { makeSqliteD1 } from "./sqlite-d1";
 import { makeFileKv } from "./file-kv";
 import { parseHeaderRules, serveStatic, type HeaderRule } from "./static";
+import { isPublicHost, normalizeRemoteAddress } from "./net";
 import type { Env } from "../worker/types";
 
 // ============ CONFIG ============
@@ -144,6 +145,20 @@ async function proxyToWorker(req: IncomingMessage, res: ServerResponse): Promise
         headers.set(name, Array.isArray(value) ? value.join(", ") : String(value));
     }
 
+    // 客户端真实 IP：worker 侧只认 CF-Connecting-IP 与 X-Forwarded-For 两个头
+    // （worker/httpUtils.ts clientIp、worker/loginGuard.ts clientBucket）。
+    // 挡一层 Nginx 时由它填 XFF，一切正常；但**直接把端口暴露出去**时一个头都没有，
+    // 于是所有人的 IP 都是 "unknown"：
+    //   - 审计日志 / 会话列表里的来源全是 unknown，事后排查无线索；
+    //   - 登录爆破限速按 IP 分桶，unknown 意味着全场共用一个桶 ——
+    //     一个人试错 5 次，所有人在同一台机器上都跟着被锁。
+    // 这里用 socket 地址补上，worker 代码一行不改。已有的 XFF 不覆盖（反代链更长时
+    // 由最外层那条说话，worker 侧本来就取逗号分隔的第一段）。
+    if (!headers.has("x-forwarded-for")) {
+        const remote = req.socket.remoteAddress;
+        if (remote) headers.set("x-forwarded-for", normalizeRemoteAddress(remote));
+    }
+
     const hasBody = method !== "GET" && method !== "HEAD";
     const request = new Request(url, {
         method,
@@ -256,6 +271,15 @@ server.listen(PORT, HOST, () => {
     console.log(`  静态目录   ${STATIC_DIR}`);
     console.log(`  定时任务   ${CRON_IN_PROCESS ? "进程内每小时（NAVIHIVE_CRON=0 关闭，改用 POST /__cron）" : "关闭（用 POST /__cron 外部触发）"}`);
     console.log(`  XFF 信任   ${TRUST_XFF === "1" ? "开（取 X-Forwarded-For 作为真实 IP）" : "关（限速共用一个 unknown 桶）"}`);
+    // 「配置本身能跑但跑错了」的两类情况，不报错、不阻断启动，只在这里说一句：
+    // 它们的共同点是**现象离原因很远**（定时任务悄悄不跑 / 一个人输错密码全站被锁），
+    // 等发现时往往已经过了很久。
+    if (!CRON_IN_PROCESS && !CRON_TOKEN) {
+        console.warn("⚠️ NAVIHIVE_CRON=0 且没配 NAVIHIVE_CRON_TOKEN：定时任务既不在进程内跑、也没有外部触发口，等于全关。二选一：去掉 NAVIHIVE_CRON=0，或配 token 后用 crontab/systemd timer 打 POST /__cron。");
+    }
+    if (isPublicHost(HOST) && TRUST_XFF === "1") {
+        console.warn(`⚠️ 监听地址是 ${HOST}（非回环），而 XFF 信任是开的：客户端随手加一个 X-Forwarded-For 就能换一个限速桶，把登录爆破限速绕过去。前面确实挡了可信反代就忽略本条；直接暴露到公网请设 NAVIHIVE_TRUST_XFF=0。`);
+    }
     if (serverEnv.AUTH_ENABLED === "true" && !process.env.AUTH_SECRET) {
         console.warn("⚠️ AUTH_ENABLED=true 但没配 AUTH_SECRET：令牌签发/校验会 fail-closed，登录必然失败。请通过 .env 或 systemd EnvironmentFile 提供。");
     }

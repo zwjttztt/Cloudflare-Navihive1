@@ -84,6 +84,33 @@ export function isInside(root: string, target: string): boolean {
     return rel !== ".." && !rel.startsWith(".." + path.sep) && !path.isAbsolute(rel);
 }
 
+/**
+ * 未命中的路径是否「像静态资源」：最后一节带扩展名（.js / .css / .png / .woff2 …）就算。
+ *
+ * ⚠️ 为什么必须有这条：早期实现是「任何没命中文件的路径都回 index.html」，
+ * 于是浏览器按缓存里的旧 index.html 去请求一个**早已被新版本删掉**的 chunk 时，
+ * 拿到的是 200 + `Content-Type: text/html` 的一整页 HTML。浏览器对 module script
+ * 有严格 MIME 检查，直接拒绝执行并报
+ *   "Failed to load module script: Expected a JavaScript module script but the
+ *    server responded with a MIME type of text/html"
+ * —— 表现为「发版后有几率白屏」，而刷新也不一定救得回来（Service Worker 可能
+ * 已经把这个 HTML 当成脚本缓存下来了）。
+ *
+ * 顺带这也才是 Cloudflare 的真行为：官方对 `single-page-application` 的描述是
+ * 「为**导航请求**（带 Sec-Fetch-Mode: navigate）回 index.html」，
+ * 脚本/样式/图片这类子资源请求照样 404。
+ *
+ * 只按路径判断、不看 Sec-Fetch-Mode：分享短链（/sg/<64 位 hex>）常被
+ * curl / 抓预览的机器人 / 微信内置浏览器直接打开，它们未必带那个头，
+ * 一刀切会让分享页在这些客户端上变成 404。而带扩展名的路径不可能是业务路由。
+ */
+const ASSET_EXT_RE = /\.[a-z0-9]{1,8}$/i;
+
+export function looksLikeAsset(pathname: string): boolean {
+    const last = pathname.split("/").pop() ?? "";
+    return ASSET_EXT_RE.test(last);
+}
+
 export function applyHeaderRules(rules: HeaderRule[], pathname: string, headers: Record<string, string>): void {
     for (const rule of rules) {
         if (!rule.match.test(pathname)) continue;
@@ -95,8 +122,9 @@ export function applyHeaderRules(rules: HeaderRule[], pathname: string, headers:
 /**
  * 静态资源 + SPA fallback。返回 false 表示「这事不归我管」（目录不存在等），
  * 调用方接着把请求交给 worker —— 与 CF 上「非 GET/HEAD 落给 Worker」的行为一致。
- * SPA fallback 对齐 wrangler.jsonc 的 assets.not_found_handling = "single-page-application"：
- * 任何没命中文件的路径都回 index.html（分享短链 /s/<token> 靠这个）。
+ * SPA fallback 对齐 wrangler.jsonc 的 assets.not_found_handling = "single-page-application"，
+ * 但**只对不像静态资源的路径**回退 index.html（分享短链 /sg/<token> 靠这个）——
+ * 带扩展名的未命中请求回 404，理由见 looksLikeAsset。
  */
 export async function serveStatic(
     staticDir: string,
@@ -126,6 +154,18 @@ export async function serveStatic(
         info = await stat(filePath).catch(() => null);
     }
     if (!info?.isFile()) {
+        // 像静态资源（带扩展名）就直接 404 —— 用一整页 HTML 顶替脚本 / 样式 / 图片
+        // 是 MIME 事故，理由见 looksLikeAsset 的注释。
+        if (looksLikeAsset(decoded)) {
+            const missHeaders: Record<string, string> = {
+                "Content-Type": "text/plain; charset=utf-8",
+            };
+            applyHeaderRules(rules, pathname, missHeaders);
+            res.writeHead(404, missHeaders);
+            if (method === "HEAD") res.end();
+            else res.end("Not Found");
+            return true;
+        }
         // SPA fallback
         filePath = path.join(staticDir, "index.html");
         info = await stat(filePath).catch(() => null);

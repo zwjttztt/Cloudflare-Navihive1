@@ -29,6 +29,7 @@ import type {
     PublicNoteAccess,
 } from "../types";
 import type { D1PreparedStatement } from "../schema";
+import { migrationState } from "./internals";
 import { newUuid } from "../../utils/uuid";
 import { extractNoteTags } from "../../utils/markdownNoteTags";
 import {
@@ -1837,8 +1838,8 @@ export const notesImpl: NotesApi = {
             } catch (error) {
                 // 到这里说明索引虽然建起来了、但真查询时炸了（D1 版本/磁盘格式差异）：
                 // 直接把开关关掉，之后的搜索都走 LIKE，别每次请求都炸一遍。
-                console.error("全文检索失败，本实例改用 LIKE:", error);
-                this.notesFtsReady = false;
+                console.error("全文检索失败，改用 LIKE:", error);
+                migrationState.ftsReady = false;
             }
         }
 

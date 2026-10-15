@@ -496,9 +496,9 @@ export const migrationImpl: MigrationApi = {
                 .prepare("SELECT note_id FROM notes_fts WHERE notes_fts MATCH ? LIMIT 1")
                 .bind("\"a\"")
                 .all();
-            this.notesFtsReady = true;
+            migrationState.ftsReady = true;
         } catch (error) {
-            this.notesFtsReady = false;
+            migrationState.ftsReady = false;
             console.error("全文检索表不可用，搜索将退回 LIKE：", error);
         }
     },

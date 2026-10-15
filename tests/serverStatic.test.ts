@@ -218,6 +218,54 @@ test("serveStatic：SPA fallback —— 没命中的路径回 index.html（分�
     }
 });
 
+test("serveStatic：缺失的静态资源回 404，绝不拿 index.html 顶替（MIME 事故）", async () => {
+    const { dir, cleanup } = fixture();
+    try {
+        // 发版后被删掉的旧 chunk：缓存里的 index.html 还在指着它
+        for (const p of ["/assets/index-OLD.js", "/favicon.ico", "/assets/app.css", "/icons/x.webp"]) {
+            const r = fakeRes();
+            await serveStatic(dir, RULES, p, "GET", r.res);
+            await finish(`miss ${p}`, r.done);
+            assert.equal(r.status(), 404, `${p} 应当 404`);
+            assert.ok(!r.text().includes("<!doctype html>"), `${p} 不能回 HTML`);
+            // 404 也走一遍规则（与 CF 上 assets 的响应一致）：/assets/* 那条
+            // 把 X-Frame-Options 删掉了，说明规则确实按请求路径套过
+            assert.equal(r.headers()["Cache-Control"], p.startsWith("/assets/") ? "public, max-age=31536000, immutable" : "max-age=60");
+            assert.equal(r.headers()["X-Frame-Options"], p.startsWith("/assets/") ? undefined : "DENY");
+        }
+    } finally {
+        cleanup();
+    }
+});
+
+test("serveStatic：带扩展名的未命中请求，HEAD 也 404 且不带正文", async () => {
+    const { dir, cleanup } = fixture();
+    try {
+        const r = fakeRes();
+        await serveStatic(dir, RULES, "/assets/gone.js", "HEAD", r.res);
+        await finish("head-miss", r.done);
+        assert.equal(r.status(), 404);
+        assert.equal(r.text(), "");
+    } finally {
+        cleanup();
+    }
+});
+
+test("serveStatic：不带扩展名的路径照旧走 SPA fallback（分享页 / 笔记页靠这个）", async () => {
+    const { dir, cleanup } = fixture();
+    try {
+        for (const p of ["/sg/9f3c".padEnd(70, "a"), "/notes", "/settings/account"]) {
+            const r = fakeRes();
+            await serveStatic(dir, RULES, p, "GET", r.res);
+            await finish(`spa ${p}`, r.done);
+            assert.equal(r.status(), 200, `${p} 应当走 SPA fallback`);
+            assert.equal(r.text(), "<!doctype html><title>fixture</title>");
+        }
+    } finally {
+        cleanup();
+    }
+});
+
 test("serveStatic：目录回自己的 index.html", async () => {
     const { dir, cleanup } = fixture();
     try {
