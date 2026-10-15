@@ -1,14 +1,16 @@
 // tests/statsDashboard.dom.test.tsx
-// 统计看板（StatsDashboardDialog）渲染语义：
+// 「运营看板」面板（StatsPanel）渲染语义：
 //   - 四个区块齐全，计数/Top 榜/健康列表按数据渲染；
 //   - 30 天柱状图固定 30 根柱（SVG rect），空数据有占位文案；
 //   - 接口失败显示错误文案而不是白屏。
+// 面板原先是一个独立弹窗（StatsDashboardDialog），2026-10-15 与「访问统计」
+// 合并成 StatsHubDialog 的标签页，内容抽成面板 —— 断言整体搬过来，外壳换成面板。
 // 图表是零依赖手写 SVG —— 这里同时守住「没人偷偷引入图表库」。
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import StatsDashboardDialog from "../src/components/StatsDashboardDialog";
+import StatsPanel from "../src/components/StatsPanel";
 import type { NavigationClient } from "../src/API/client";
 import type { OpsStats } from "../src/API/methods/audit";
 import type { OpsStatsResponse } from "../src/API/responses";
@@ -53,27 +55,24 @@ async function mount(client: NavigationClient) {
     document.body.appendChild(host);
     root = createRoot(host);
     await act(async () => {
-        root!.render(
-            <StatsDashboardDialog open onClose={() => { }} client={client} />
-        );
+        root!.render(<StatsPanel client={client} />);
     });
     // 数据在 effect 里异步拉：轮询到出现「内容概览」或错误文案为止（CI 慢机友好）。
-    // ⚠️ MUI Dialog 传送门挂到 document.body，不在 host 里，必须查 document。
-    const queryDialog = () => document.querySelector("[aria-label='统计看板']");
+    const queryPanel = () => document.querySelector("[aria-label='运营看板']");
     for (let i = 0; i < 40; i++) {
-        const text = queryDialog()?.textContent ?? "";
+        const text = queryPanel()?.textContent ?? "";
         if (text.includes("内容概览") || text.includes("仅站点所有者")) break;
         await new Promise(r => setTimeout(r, 25));
     }
-    return queryDialog;
+    return queryPanel;
 }
 
-test("统计看板：四区块按数据渲染，柱状图 30 根柱", async () => {
+test("运营看板：四区块按数据渲染，柱状图 30 根柱", async () => {
     try {
-        const queryDialog = await mount(makeClient(() => Promise.resolve({ success: true, stats: sample })));
-        const dialog = queryDialog();
-        assert.ok(dialog, "对话框应渲染且带 aria-label");
-        const text = dialog!.textContent ?? "";
+        const queryPanel = await mount(makeClient(() => Promise.resolve({ success: true, stats: sample })));
+        const panel = queryPanel();
+        assert.ok(panel, "面板应渲染且带 aria-label");
+        const text = panel!.textContent ?? "";
         assert.ok(text.includes("站点 12"), "内容概览应含站点计数");
         assert.ok(text.includes("附件 7（2.0 MB）"));
         assert.ok(text.includes("高频动作"));
@@ -82,22 +81,22 @@ test("统计看板：四区块按数据渲染，柱状图 30 根柱", async () =
         assert.ok(text.includes("笔记 · 读书笔记"));
         assert.ok(text.includes("疑似失效 1"));
         assert.ok(text.includes("https://dead.example"));
-        const rects = dialog!.querySelectorAll("svg rect");
+        const rects = panel!.querySelectorAll("svg rect");
         assert.equal(rects.length, 30, "30 天柱状图固定 30 根柱");
     } finally {
         cleanup();
     }
 });
 
-test("统计看板：接口失败显示错误文案；空数据显示占位", async () => {
+test("运营看板：接口失败显示错误文案；空数据显示占位", async () => {
     try {
-        const queryDialog = await mount(makeClient(() => Promise.reject(new Error("仅站点所有者可以查看统计看板"))));
-        const text = queryDialog()?.textContent ?? "";
+        const queryPanel = await mount(makeClient(() => Promise.reject(new Error("仅站点所有者可以查看统计看板"))));
+        const text = queryPanel()?.textContent ?? "";
         assert.ok(text.includes("仅站点所有者可以查看统计看板"), "错误要可见，不能白屏");
         assert.ok(!text.includes("站点 12"));
 
         cleanup();
-        const queryDialog2 = await mount(makeClient(() =>
+        const queryPanel2 = await mount(makeClient(() =>
             Promise.resolve({
                 success: true,
                 stats: {
@@ -109,7 +108,7 @@ test("统计看板：接口失败显示错误文案；空数据显示占位", as
                 } satisfies OpsStats,
             })
         ));
-        const text2 = queryDialog2()?.textContent ?? "";
+        const text2 = queryPanel2()?.textContent ?? "";
         assert.ok(text2.includes("近 30 天没有审计记录"));
         assert.ok(text2.includes("暂无数据"));
         assert.ok(text2.includes("还没有产生浏览的分享"));

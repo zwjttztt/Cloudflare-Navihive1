@@ -118,14 +118,14 @@ function DialogHarness() {
     return (
         <div>
             <span data-testid="cmd">{d.commandOpen ? "1" : "0"}</span>
-            <span data-testid="vis">{d.openVisits ? "1" : "0"}</span>
+            <span data-testid="stats">{d.openStatsHub ? "1" : "0"}</span>
             <span data-testid="dup">{d.dupPrompt ? "1" : "0"}</span>
             <button data-testid="openCmd" onClick={() => d.setCommandOpen(true)}>openCmd</button>
             <button data-testid="setDup" onClick={() => d.setDupPrompt({ url: "https://x.com", hit: dummyHit, run: () => {} })}>
                 setDup
             </button>
             <button data-testid="clearDup" onClick={() => d.setDupPrompt(null)}>clearDup</button>
-            <button data-testid="openVis" onClick={() => d.setOpenVisits(true)}>openVis</button>
+            <button data-testid="openStats" onClick={() => d.setOpenStatsHub(true)}>openStats</button>
         </div>
     );
 }
@@ -134,7 +134,7 @@ test("useAppDialogs：初始全关、无重复确认", t => {
     t.after(cleanup);
     mount(<DialogHarness />);
     assert.equal(text("cmd"), "0");
-    assert.equal(text("vis"), "0");
+    assert.equal(text("stats"), "0");
     assert.equal(text("dup"), "0");
 });
 
@@ -158,9 +158,9 @@ test("useAppDialogs：各弹窗开关相互独立", async t => {
     t.after(cleanup);
     mount(<DialogHarness />);
     await click("openCmd");
-    await click("openVis");
+    await click("openStats");
     await click("setDup");
     assert.equal(text("cmd"), "1");
-    assert.equal(text("vis"), "1");
+    assert.equal(text("stats"), "1");
     assert.equal(text("dup"), "1", "三个开关应互不影响");
 });

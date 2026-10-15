@@ -17,8 +17,8 @@ export interface DupPrompt {
 export interface AppDialogsState {
     /** 命令面板（Ctrl / Cmd + K） */
     commandOpen: boolean;
-    /** 访问统计弹窗（热力图 + Top5） */
-    openVisits: boolean;
+    /** 统计弹窗（访问统计 + 运营看板，一个弹窗两个标签页） */
+    openStatsHub: boolean;
     /** 快捷键说明表（按 ? 打开） */
     openShortcuts: boolean;
     /** 浏览器书签导入 */
@@ -28,7 +28,7 @@ export interface AppDialogsState {
     /** 重复网址确认弹窗的内容（null = 关闭） */
     dupPrompt: DupPrompt | null;
     setCommandOpen: (value: boolean) => void;
-    setOpenVisits: (value: boolean) => void;
+    setOpenStatsHub: (value: boolean) => void;
     setOpenShortcuts: (value: boolean) => void;
     setBookmarkOpen: (value: boolean) => void;
     setTagManagerOpen: (value: boolean) => void;
@@ -37,7 +37,7 @@ export interface AppDialogsState {
 
 export function useAppDialogs(): AppDialogsState {
     const [commandOpen, setCommandOpen] = useState(false);
-    const [openVisits, setOpenVisits] = useState(false);
+    const [openStatsHub, setOpenStatsHub] = useState(false);
     const [openShortcuts, setOpenShortcuts] = useState(false);
     const [bookmarkOpen, setBookmarkOpen] = useState(false);
     const [tagManagerOpen, setTagManagerOpen] = useState(false);
@@ -45,13 +45,13 @@ export function useAppDialogs(): AppDialogsState {
 
     return {
         commandOpen,
-        openVisits,
+        openStatsHub,
         openShortcuts,
         bookmarkOpen,
         tagManagerOpen,
         dupPrompt,
         setCommandOpen,
-        setOpenVisits,
+        setOpenStatsHub,
         setOpenShortcuts,
         setBookmarkOpen,
         setTagManagerOpen,

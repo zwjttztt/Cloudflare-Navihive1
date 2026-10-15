@@ -33,13 +33,10 @@ export interface HeaderActionsSlotProps {
     onOpenConfig: () => void;
     onOpenAccount: () => void;
     onStartGroupSort: () => void;
-    canInstall: boolean;
-    onInstallApp: () => void;
-    onOpenVisits: () => void;
+    onOpenStats: () => void;
     onOpenBackup: () => void;
     onOpenRecycle: () => void;
     onOpenAudit: () => void;
-    onOpenStats: () => void;
     isAuthenticated: boolean;
     onLogout: () => void;
     onOpenAiAssistant: () => void;
@@ -64,13 +61,10 @@ export default function HeaderActionsSlot({
     onOpenConfig,
     onOpenAccount,
     onStartGroupSort,
-    canInstall,
-    onInstallApp,
-    onOpenVisits,
+    onOpenStats,
     onOpenBackup,
     onOpenRecycle,
     onOpenAudit,
-    onOpenStats,
     isAuthenticated,
     onLogout,
     onOpenAiAssistant,
@@ -99,13 +93,10 @@ export default function HeaderActionsSlot({
                     onOpenConfig={onOpenConfig}
                     onOpenAccount={onOpenAccount}
                     onStartGroupSort={onStartGroupSort}
-                    canInstall={canInstall}
-                    onInstallApp={onInstallApp}
-                    onOpenVisits={onOpenVisits}
+                    onOpenStats={onOpenStats}
                     onOpenBackup={onOpenBackup}
                     onOpenRecycle={onOpenRecycle}
                     onOpenAudit={onOpenAudit}
-                    onOpenStats={onOpenStats}
                     isAuthenticated={isAuthenticated}
                     onLogout={onLogout}
                     onOpenAiAssistant={onOpenAiAssistant}

@@ -34,7 +34,7 @@ export interface AppCommandActions {
     handleOpenBackup: (tab: number) => void;
     setBookmarkOpen: (open: boolean) => void;
     runLinkCheck: () => Promise<void> | void;
-    setOpenVisits: (open: boolean) => void;
+    setOpenStatsHub: (open: boolean) => void;
     toggleCollapseAll: () => void;
     allGroupsCollapsed: boolean;
     multiSelect: boolean;
@@ -90,7 +90,7 @@ export function useAppCommands(input: AppCommandsInput): CommandItem[] {
         handleOpenBackup,
         setBookmarkOpen,
         runLinkCheck,
-        setOpenVisits,
+        setOpenStatsHub,
         toggleCollapseAll,
         exitMultiSelect,
         setMultiSelect,
@@ -225,9 +225,9 @@ export function useAppCommands(input: AppCommandsInput): CommandItem[] {
             },
             {
                 id: "cmd-visits",
-                label: "查看访问统计",
+                label: "查看统计",
                 section: "显示",
-                run: () => setOpenVisits(true),
+                run: () => setOpenStatsHub(true),
             },
             {
                 id: "cmd-collapse-all",
@@ -294,7 +294,7 @@ export function useAppCommands(input: AppCommandsInput): CommandItem[] {
         handleOpenBackup,
         setBookmarkOpen,
         runLinkCheck,
-        setOpenVisits,
+        setOpenStatsHub,
         toggleCollapseAll,
         exitMultiSelect,
         setMultiSelect,

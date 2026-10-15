@@ -1,13 +1,16 @@
 // tests/moreMenu.dom.test.tsx
 // 顶栏「更多选项」菜单。
 //
-// 为什么补它：这一列十几项的重排（分区、顺序、出现条件）此前**只有仓库外的 ui-smoke 盯着**，
+// 为什么补它：这一列多项的重排（分区、顺序、出现条件）此前**只有仓库外的 ui-smoke 盯着**，
 // CI 里没有任何东西守着。而这里最容易写坏的两处都不报错：
 //   1. **回调顺序** —— 每一项都必须是「先 onClose() 再执行动作」，反过来的话
 //      弹窗会在菜单还开着的时候打开，菜单失去锚点飘到左上角，关掉弹窗后菜单还在；
-//   2. **出现条件** —— 审计日志只给 owner、账号与安全和退出登录只在登录后、
-//      安装到桌面只在浏览器给了安装事件时。少一个条件判断不会崩，
-//      只是「普通账号点进去看到一句 403」或者「没登录也有退出登录」。
+//   2. **出现条件** —— 审计日志只给 owner、账号与安全和退出登录只在登录后。
+//      少一个条件判断不会崩，只是「普通账号点进去看到一句 403」或者「没登录也有退出登录」。
+//
+// 2026-10-15 瘦身后的菜单（9 项）：访问统计 + 统计看板已合并成「统计」
+// （StatsHubDialog 里两个标签页），快捷键 + 安装到桌面合并成「帮助」
+// （安装按钮在 ShortcutsDialog 底部）—— 本测试跟着改标签。
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { act } from "react";
@@ -33,15 +36,12 @@ function makeProps(overrides: Partial<MoreMenuProps> = {}): { props: MoreMenuPro
             onClose: rec("onClose"),
             onOpenConfig: rec("onOpenConfig"),
             onStartGroupSort: rec("onStartGroupSort"),
-            canInstall: false,
-            onInstallApp: rec("onInstallApp"),
-            onOpenVisits: rec("onOpenVisits"),
+            onOpenStats: rec("onOpenStats"),
             onOpenBackup: (tab: number) => void log.calls.push(`onOpenBackup(${tab})`),
             isAuthenticated: true,
             onLogout: rec("onLogout"),
             onOpenRecycle: rec("onOpenRecycle"),
             onOpenAudit: rec("onOpenAudit"),
-            onOpenStats: rec("onOpenStats"),
             onOpenAccount: rec("onOpenAccount"),
             onOpenAiAssistant: rec("onOpenAiAssistant"),
             isSiteOwner: true,
@@ -88,7 +88,7 @@ async function clickItem(label: string) {
     });
 }
 
-test("四个分区按「整理与数据 → 设置与账号 → 帮助与安装 → 会话」排列", t => {
+test("三个分区按「整理与数据 → 设置与账号 → 帮助」排列", t => {
     t.after(cleanup);
     const { props } = makeProps();
     mount(props);
@@ -97,9 +97,8 @@ test("四个分区按「整理与数据 → 设置与账号 → 帮助与安装 
     assert.ok(at("整理与数据") >= 0, "应有分区小标题");
     assert.ok(
         at("整理与数据") < at("设置与账号") &&
-            at("设置与账号") < at("帮助与安装") &&
-            at("帮助与安装") < at("会话"),
-        "分区顺序应是「整理与数据 → 设置与账号 → 帮助与安装 → 会话」"
+            at("设置与账号") < at("帮助"),
+        "分区顺序应是「整理与数据 → 设置与账号 → 帮助」"
     );
 });
 
@@ -115,7 +114,7 @@ test("点每一项：先关菜单再执行动作（反过来的话菜单会飘�
     t.after(cleanup);
     const cases: Array<[string, string]> = [
         ["分组排序", "onStartGroupSort"],
-        ["访问统计", "onOpenVisits"],
+        ["统计", "onOpenStats"],
         ["备份与恢复", "onOpenBackup(0)"],
         ["回收站", "onOpenRecycle"],
         ["审计日志", "onOpenAudit"],
@@ -158,6 +157,9 @@ test("审计日志：非站点所有者时整个入口不出现（后端也会 4
         !labels().includes("审计日志"),
         `普通账号不该有审计日志入口，实际 ${JSON.stringify(labels())}`
     );
+    // 「统计」入口对所有人都在：里面第一个标签页就是人人都有的访问统计，
+    // 运营看板那个标签页由 hub 按 isSiteOwner 决定显不显示（不是菜单的事）
+    assert.ok(labels().includes("统计"), "统计入口与身份无关，普通账号也要在");
 });
 
 test("未登录：没有「账号与安全」和「退出登录」，但整理类还在", t => {
@@ -171,16 +173,26 @@ test("未登录：没有「账号与安全」和「退出登录」，但整理�
     assert.ok(!list.includes("会话"), "没有会话区就不该留一个「会话」小标题");
 });
 
-test("安装到桌面：只有浏览器真的给了安装事件时才出现", t => {
+test("菜单项总数收敛：统计/帮助各自合并后，owner 登录态共 10 项（labels() 含 4 个小标题）", t => {
     t.after(cleanup);
-    const withInstall = makeProps({ canInstall: true });
-    mount(withInstall.props);
-    assert.ok(labels().includes("安装到桌面"));
-    cleanup();
-
-    const without = makeProps({ canInstall: false });
-    mount(without.props);
-    assert.ok(!labels().includes("安装到桌面"), `实际 ${JSON.stringify(labels())}`);
+    const { props } = makeProps();
+    mount(props);
+    // 4 个小标题 + 10 个菜单项：分组排序 / 统计 / 备份与恢复 / 回收站 / 审计日志 /
+    // 网站设置 / AI 设置 / 账号与安全 / 快捷键与操作帮助 / 退出登录
+    // ⚠️ labels() 把分区小标题也数进来（它按 li 文本取），所以是 14 不是 10
+    assert.deepEqual(
+        labels(),
+        [
+            "整理与数据", "分组排序", "统计", "备份与恢复", "回收站", "审计日志",
+            "设置与账号", "网站设置", "AI 设置", "账号与安全",
+            "帮助", "快捷键与操作帮助",
+            "会话", "退出登录",
+        ],
+        "菜单结构应固定成这样；改名 / 合并先改这里"
+    );
+    assert.ok(!labels().includes("访问统计"), "访问统计已并入「统计」");
+    assert.ok(!labels().includes("统计看板"), "统计看板已并入「统计」");
+    assert.ok(!labels().includes("安装到桌面"), "安装到桌面已并入帮助弹窗");
 });
 
 test("菜单关着的时候不渲染任何菜单项（省掉一整屏隐藏 DOM）", t => {

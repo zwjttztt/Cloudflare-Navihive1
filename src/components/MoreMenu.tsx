@@ -2,20 +2,21 @@
 // 顶栏「更多选项」的下拉菜单。
 //
 // 分区原则是「按用户来这里干什么」而不是「按功能写在哪个文件里」：
-//   整理与数据 → 设置与账号 → 帮助与安装 → 会话（退出登录单独一区、沉底）。
+//   整理与数据 → 设置与账号 → 帮助 → 会话（退出登录单独一区、沉底）。
 // 每区一个轻量小标题，找东西不用整列扫一遍。浏览类偏好（最近访问置前）不在这儿，
 // 它们属于「当下怎么看这个列表」，收进了顶栏的显示面板。
+// 2026-10-15 瘦身：访问统计 + 统计看板合并成「统计」（弹窗内两个标签页），
+// 快捷键帮助 + 安装到桌面合并成「帮助」（安装按钮在帮助弹窗底部）——
+// 菜单从 11 项降到 9 项，功能一个没少。
 import { Menu, MenuItem, ListItemIcon, ListItemText, Divider, ListSubheader } from "@mui/material";
 import SettingsIcon from "@mui/icons-material/Settings";
 import SortIcon from "@mui/icons-material/Sort";
-import InstallDesktopIcon from "@mui/icons-material/InstallDesktop";
 import InsightsIcon from "@mui/icons-material/Insights";
 import SettingsBackupRestoreIcon from "@mui/icons-material/SettingsBackupRestore";
 import LogoutIcon from "@mui/icons-material/Logout";
 import ManageAccountsIcon from "@mui/icons-material/ManageAccounts";
 import RestoreFromTrashIcon from "@mui/icons-material/RestoreFromTrash";
 import HistoryIcon from "@mui/icons-material/History";
-import QueryStatsIcon from "@mui/icons-material/QueryStats";
 import AutoAwesomeIcon from "@mui/icons-material/AutoAwesome";
 import KeyboardIcon from "@mui/icons-material/Keyboard";
 
@@ -25,9 +26,8 @@ export interface MoreMenuProps {
     onClose: () => void;
     onOpenConfig: () => void;
     onStartGroupSort: () => void;
-    canInstall: boolean;
-    onInstallApp: () => void;
-    onOpenVisits: () => void;
+    /** 打开「统计」（访问统计 + 运营看板，一个弹窗两个标签页） */
+    onOpenStats: () => void;
     /** tab: 0 = 备份，1 = 恢复 / 导入 */
     onOpenBackup: (tab: number) => void;
     isAuthenticated: boolean;
@@ -40,11 +40,9 @@ export interface MoreMenuProps {
     onOpenRecycle: () => void;
     /** 打开审计日志。仅站点所有者可用：不是所有者时整个入口不出现 */
     onOpenAudit: () => void;
-    /** 打开统计看板。同样仅站点所有者可用（后端同一把 403 守卫） */
-    onOpenStats: () => void;
     /** 当前登录者是否为站点所有者（决定「审计日志」入口是否出现） */
     isSiteOwner: boolean;
-    /** 打开快捷键说明表（按 ? 也能开，菜单里补一个是为了让新用户与手机用户找得到） */
+    /** 打开「帮助」（快捷键说明表；浏览器给了安装事件时表底带「安装到桌面」） */
     onOpenShortcuts: () => void;
 }
 
@@ -54,15 +52,12 @@ export default function MoreMenu({
     onClose,
     onOpenConfig,
     onStartGroupSort,
-    canInstall,
-    onInstallApp,
-    onOpenVisits,
+    onOpenStats,
     onOpenBackup,
     isAuthenticated,
     onLogout,
     onOpenRecycle,
     onOpenAudit,
-    onOpenStats,
     onOpenAccount,
     onOpenAiAssistant,
     isSiteOwner,
@@ -105,16 +100,18 @@ export default function MoreMenu({
                 </ListItemIcon>
                 <ListItemText>分组排序</ListItemText>
             </MenuItem>
+            {/* 访问统计（本机）与运营看板（服务端，owner）合并成一个「统计」入口，
+                进去按标签页切 —— 原先两项分列，用户得逐个点开才知道哪个是哪个 */}
             <MenuItem
                 onClick={() => {
                     onClose();
-                    onOpenVisits();
+                    onOpenStats();
                 }}
             >
                 <ListItemIcon>
                     <InsightsIcon fontSize='small' />
                 </ListItemIcon>
-                <ListItemText>访问统计</ListItemText>
+                <ListItemText>统计</ListItemText>
             </MenuItem>
             {/* 备份 / 恢复 / 导入浏览器书签是同一件事的三个方向，合成一个入口，
                 进去再选「备份」还是「恢复 / 导入」 */}
@@ -140,22 +137,8 @@ export default function MoreMenu({
                 </ListItemIcon>
                 <ListItemText>回收站</ListItemText>
             </MenuItem>
-            {/* 统计看板与审计日志同一把守卫：只给站点所有者看，后端同样会挡 */}
-            {isSiteOwner && (
-                <MenuItem
-                    onClick={() => {
-                        onClose();
-                        onOpenStats();
-                    }}
-                >
-                    <ListItemIcon>
-                        <QueryStatsIcon fontSize='small' />
-                    </ListItemIcon>
-                    <ListItemText>统计看板</ListItemText>
-                </MenuItem>
-            )}
-            {/* 审计日志只给站点所有者看：后端同样会挡（非 owner 一律 403），
-                这里连入口都不显示，免得点进去只看到一句报错 */}
+            {/* 统计看板与审计日志同一把守卫：只给站点所有者看，后端同样会挡。
+                统计看板已并入上面的「统计」入口（标签页），这里只剩审计日志 */}
             {isSiteOwner && (
                 <MenuItem
                     onClick={() => {
@@ -214,8 +197,10 @@ export default function MoreMenu({
 
             <Divider />
 
-            {/* 三、帮助与安装：一次性动作，出现条件还各不相同 */}
-            <ListSubheader>帮助与安装</ListSubheader>
+            {/* 三、帮助：快捷键说明表；浏览器给了安装事件时，弹窗底部带「安装到桌面」
+                —— 安装是一次性动作，挂在帮助里比在菜单里单占一项好找。
+                ⚠️ 菜单项别跟小标题同名（都叫「帮助」的话，按文案点菜单会点到小标题上） */}
+            <ListSubheader>帮助</ListSubheader>
             <MenuItem
                 onClick={() => {
                     onClose();
@@ -227,21 +212,6 @@ export default function MoreMenu({
                 </ListItemIcon>
                 <ListItemText>快捷键与操作帮助</ListItemText>
             </MenuItem>
-            {/* 装到桌面：只有浏览器真的给了安装事件时才出现
-                （Chrome/Edge 认为用户用得够多才会抛 beforeinstallprompt） */}
-            {canInstall && (
-                <MenuItem
-                    onClick={() => {
-                        onClose();
-                        void onInstallApp();
-                    }}
-                >
-                    <ListItemIcon>
-                        <InstallDesktopIcon fontSize='small' />
-                    </ListItemIcon>
-                    <ListItemText>安装到桌面</ListItemText>
-                </MenuItem>
-            )}
 
             {/* 四、会话：退出登录不是删除数据，但它是这一排里唯一的「离开当前状态」，
                 单独一区 + error 色，避免和上面的数据操作混在一起误点 */}

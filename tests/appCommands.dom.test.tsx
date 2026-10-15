@@ -50,7 +50,7 @@ function fakeInput(calls: Calls, over: Partial<AppCommandsInput> = {}): AppComma
         handleOpenBackup: () => {},
         setBookmarkOpen: () => {},
         runLinkCheck: () => {},
-        setOpenVisits: () => {},
+        setOpenStatsHub: () => {},
         toggleCollapseAll: () => {},
         allGroupsCollapsed: false,
         multiSelect: false,

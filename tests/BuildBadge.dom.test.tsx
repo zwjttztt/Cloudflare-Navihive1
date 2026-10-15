@@ -3,7 +3,8 @@
 //
 // 关键约束：
 // - 版本号为空（开发模式 / 单测没有 define）→ 不渲染，右下角不留杂物
-// - 渲染时要带版本号文本，title 提示里带上构建时间
+// - **可见文字只显示语义版本**（v0.1.0）：+hash/构建号收进 title 悬浮提示，
+//   「右下角常驻要短」和「每一次部署可区分」两边都照顾到
 // - pointer-events 必须是 none：徽标贴着右下角，那里常有翻页/悬浮操作，
 //   一层看不见的 div 挡住点击就是「点了没反应」的灵异故障
 
@@ -38,13 +39,15 @@ function cleanup() {
     document.body.innerHTML = "";
 }
 
-test("渲染版本号与构建时间提示", t => {
+test("可见文字只显示语义版本；完整版本与构建时间进 title", t => {
     t.after(cleanup);
     mount(<BuildBadge version="v0.1.0+c49c59f" builtAt="2026-10-15 17:30" />);
 
     const el = document.querySelector("[title]") as HTMLElement | null;
     assert.ok(el !== null, "应渲染出带 title 的徽标节点");
-    assert.equal(el.textContent, "v0.1.0+c49c59f");
+    // 右下角常驻的只有 v0.1.0，+hash 那串不往屏幕上堆
+    assert.equal(el.textContent, "v0.1.0");
+    // 但 title 里保留完整部署版本 + 构建时间：较真时悬浮就能看到是哪一版
     assert.equal(el.getAttribute("title"), "部署版本 v0.1.0+c49c59f · 构建于 2026-10-15 17:30");
 });
 

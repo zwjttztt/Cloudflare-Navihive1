@@ -105,14 +105,14 @@ const AccountDialog = lazy(() => import("./components/AccountDialog"));
 const DeleteAccountDialog = lazy(() => import("./components/DeleteAccountDialog"));
 const ImportPreviewDialog = lazy(() => import("./components/ImportPreviewDialog"));
 const AuditDialog = lazy(() => import("./components/AuditDialog"));
-const StatsDashboardDialog = lazy(() => import("./components/StatsDashboardDialog"));
+// 统计（访问统计 + 运营看板，一个弹窗两个标签页）：从「更多选项」进入，懒加载
+const StatsHubDialog = lazy(() => import("./components/StatsHubDialog"));
 const RecycleBinDialog = lazy(() => import("./components/RecycleBinDialog"));
 // 记事本：独立页面（参考 inkstone 的工作区布局）。懒加载。
 /** 记事本整块（hook + 视图）懒加载：打开之前一行代码都不进首屏 */
 const NotesOverlay = lazy(() => import("./components/NotesOverlay"));
 import HeaderClock from "./components/HeaderClock";
 import SiteListHeader from "./components/SiteListHeader";
-const VisitsDialog = lazy(() => import("./components/VisitsDialog"));
 import { writeCollapsedGroupIds } from "./utils/collapse";
 import { loadPinyinMatcher } from "./utils/pinyin";
 import {
@@ -381,9 +381,8 @@ function App() {
     // 新增状态管理
 
 
-    // 审计日志 / 统计看板 / 回收站对话框状态
+    // 审计日志 / 回收站对话框状态（统计走 useAppDialogs 的 openStatsHub）
     const [openAudit, setOpenAudit] = useState(false);
-    const [openStats, setOpenStats] = useState(false);
     const [openRecycle, setOpenRecycle] = useState(false);
 
 
@@ -497,17 +496,17 @@ function App() {
         toggleSelect,
         clearSelection,
     } = useMultiSelect();
-    // App 级弹窗的开关集中收进 useAppDialogs（命令面板/访问统计/快捷键/
+    // App 级弹窗的开关集中收进 useAppDialogs（命令面板/统计/快捷键/
     // 书签导入/标签管理/重复网址确认），各自的数据与提交逻辑仍留在本组件。
     const {
         commandOpen,
-        openVisits,
+        openStatsHub,
         openShortcuts,
         bookmarkOpen,
         tagManagerOpen,
         dupPrompt,
         setCommandOpen,
-        setOpenVisits,
+        setOpenStatsHub,
         setOpenShortcuts,
         setBookmarkOpen,
         setTagManagerOpen,
@@ -1237,7 +1236,7 @@ function App() {
         handleOpenBackup,
         setBookmarkOpen,
         runLinkCheck,
-        setOpenVisits,
+        setOpenStatsHub,
         toggleCollapseAll,
         exitMultiSelect,
         setMultiSelect,
@@ -1563,9 +1562,10 @@ function App() {
                                         void fetchSessions();
                                     }}
                                     onStartGroupSort={startGroupSort}
-                                    canInstall={canInstall}
-                                    onInstallApp={() => void handleInstallApp()}
-                                    onOpenVisits={() => setOpenVisits(true)}
+                                    onOpenStats={() => {
+                                        handleMenuClose();
+                                        setOpenStatsHub(true);
+                                    }}
                                     onOpenBackup={handleOpenBackup}
                                     onOpenRecycle={() => {
                                         handleMenuClose();
@@ -1574,10 +1574,6 @@ function App() {
                                     onOpenAudit={() => {
                                         handleMenuClose();
                                         setOpenAudit(true);
-                                    }}
-                                    onOpenStats={() => {
-                                        handleMenuClose();
-                                        setOpenStats(true);
                                     }}
                                     isAuthenticated={isAuthenticated}
                                     onLogout={handleLogout}
@@ -1834,11 +1830,13 @@ function App() {
                     />
                     </ChunkBoundary>
 
-                    {/* 访问统计：本机热力图 + Top5 */}
-                    <ChunkBoundary when={openVisits}>
-                    <VisitsDialog
-                        open={openVisits}
-                        onClose={() => setOpenVisits(false)}
+                    {/* 统计：一个弹窗两个标签页 —— 访问统计（本机）+ 运营看板（服务端，仅 owner） */}
+                    <ChunkBoundary when={openStatsHub}>
+                    <StatsHubDialog
+                        open={openStatsHub}
+                        onClose={() => setOpenStatsHub(false)}
+                        client={api as unknown as NavigationClient}
+                        isSiteOwner={currentUser?.role === "owner"}
                         nameOf={id => {
                             for (const group of groups) {
                                 const hit = group.sites.find(s => String(s.id) === id);
@@ -1907,11 +1905,13 @@ function App() {
                     />
                     </ChunkBoundary>
 
-                {/* 快捷键说明表：按 ? 打开，命令面板里也有入口（已不在「更多选项」里占位置） */}
+                {/* 快捷键说明表：按 ? 打开，命令面板里也有入口；浏览器给了安装事件时底部带「安装到桌面」 */}
                 <ChunkBoundary when={openShortcuts}>
                 <ShortcutsDialog
                     open={openShortcuts}
                     onClose={() => setOpenShortcuts(false)}
+                    canInstall={canInstall}
+                    onInstallApp={() => void handleInstallApp()}
                 />
                 </ChunkBoundary>
 
@@ -1934,15 +1934,6 @@ function App() {
                     onClose={() => setOpenAudit(false)}
                     client={api as unknown as NavigationClient}
                     retentionDays={Number(configs[RETENTION_DAYS_KEY]) || undefined}
-                />
-                </ChunkBoundary>
-
-                {/* 统计看板：仅站点所有者，内容计数 / 审计活跃 / 分享浏览 Top / 链接健康 */}
-                <ChunkBoundary when={openStats}>
-                <StatsDashboardDialog
-                    open={openStats}
-                    onClose={() => setOpenStats(false)}
-                    client={api as unknown as NavigationClient}
                 />
                 </ChunkBoundary>
 

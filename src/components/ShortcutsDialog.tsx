@@ -1,7 +1,9 @@
 // src/components/ShortcutsDialog.tsx
-// 快捷键说明表：按 ? 打开。
+// 帮助弹窗：快捷键说明表（按 ? 也能开）+ 安装到桌面。
 // 单独一个文件而不是塞进 App.tsx —— 顶栏和逻辑已经够长了，这类纯展示弹窗没有副作用，
 // 适合按需加载（Suspense + lazy）。
+// 「安装到桌面」原先在「更多选项」菜单里单占一项，2026-10-15 菜单瘦身时并入这里：
+// 它和快捷键一样属于「一次性、找的时候才会找」的入口，挂在帮助里比单列一项好找。
 import {
     Dialog,
     DialogTitle,
@@ -19,6 +21,7 @@ import {
     useTheme,
 } from "@mui/material";
 import CloseIcon from "@mui/icons-material/Close";
+import InstallDesktopIcon from "@mui/icons-material/InstallDesktop";
 
 interface Shortcut {
     keys: string[];
@@ -56,9 +59,13 @@ const SHORTCUTS: Shortcut[] = [
 interface ShortcutsDialogProps {
     open: boolean;
     onClose: () => void;
+    /** 浏览器真的给了安装事件时才显示「安装到桌面」
+     * （Chrome/Edge 认为用户用得够多才会抛 beforeinstallprompt） */
+    canInstall?: boolean;
+    onInstallApp?: () => void;
 }
 
-export default function ShortcutsDialog({ open, onClose }: ShortcutsDialogProps) {
+export default function ShortcutsDialog({ open, onClose, canInstall = false, onInstallApp }: ShortcutsDialogProps) {
     const theme = useTheme();
     const isNarrow = useMediaQuery(theme.breakpoints.down("sm"));
 
@@ -78,7 +85,7 @@ export default function ShortcutsDialog({ open, onClose }: ShortcutsDialogProps)
                 <Typography variant='h6' component='div' sx={{
                     fontWeight: '600'
                 }}>
-                    键盘快捷键
+                    帮助
                 </Typography>
                 <IconButton color='inherit' onClick={onClose} aria-label='关闭' size='small'>
                     <CloseIcon />
@@ -173,6 +180,17 @@ export default function ShortcutsDialog({ open, onClose }: ShortcutsDialogProps)
             </DialogContent>
 
             <DialogActions sx={{ px: 3, pb: 2.5 }}>
+                {/* 安装入口：只在浏览器给了安装事件时出现（见 props 说明） */}
+                {canInstall && onInstallApp && (
+                    <Button
+                        onClick={() => void onInstallApp()}
+                        size='small'
+                        startIcon={<InstallDesktopIcon fontSize='small' />}
+                        sx={{ mr: "auto" }}
+                    >
+                        安装到桌面
+                    </Button>
+                )}
                 <Button onClick={onClose} size='small'>
                     知道了
                 </Button>
