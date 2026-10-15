@@ -13,7 +13,12 @@ import type { ExportData } from "../src/API/http";
 import { NavigationAPI } from "../src/API/navigationApi";
 
 interface GroupRow { id: number; user_id: number; name: string; order_num: number }
-interface SiteRow { id: number; group_id: number; user_id: number; name: string }
+interface SiteRow {
+    id: number; group_id: number; user_id: number; name: string;
+    /** 增量导入按「分组 + 链接」认同一条卡片，还要拿时间戳比新旧 */
+    url?: string;
+    updated_at?: string;
+}
 
 /** 让某条语句失败：按 SQL 归一化后的前缀匹配 */
 type FailRule = { when: RegExp; error: string };
@@ -57,11 +62,18 @@ class MockD1 {
         if (s.startsWith("INSERT INTO sites")) {
             const hasId = /^INSERT INTO sites \(id,/.test(s);
             const id = hasId ? Number(args[0]) : this.maxId(this.sites) + 1;
+            // ⚠️ url 必须存下来：增量导入按「分组 + 链接」认同一条卡片，
+            // 存不进去的话第二次读索引时这张卡就没有链接，会被当成另一条再插一遍
+            const urlIdx = hasId ? 3 : 2;
             this.sites.push({
                 id,
                 group_id: Number(args[hasId ? 1 : 0]),
                 user_id: Number(args[hasId ? 10 : 9]),
                 name: String(args[hasId ? 2 : 1]),
+                url: String(args[urlIdx] ?? ""),
+                // SQL 里写的是 CURRENT_TIMESTAMP：用一个现实的时间盖上，让
+                // 「本地较新 → 跳过」这条规则在重复导入时真的成立
+                updated_at: new Date().toISOString(),
             });
             return { rows: [{ id }], changed: 1 };
         }
@@ -102,6 +114,18 @@ class MockD1 {
             this.sites = this.sites.filter(x => !ids.includes(x.id));
             return { rows: [], changed: before - this.sites.length };
         }
+        // 增量导入命中「备份里那条更新」时走 UPDATE：就地改，不换 id
+        if (s.startsWith("UPDATE sites SET")) {
+            const scoped = s.includes("user_id = ?");
+            const id = Number(args[args.length - (scoped ? 2 : 1)]);
+            const row = this.sites.find(x => x.id === id);
+            if (!row) return { rows: [], changed: 0 };
+            row.group_id = Number(args[0]);
+            row.name = String(args[1] ?? "");
+            row.url = String(args[2] ?? "");
+            row.updated_at = new Date().toISOString();
+            return { rows: [], changed: 1 };
+        }
         // 建表 / 迁移 / 审计写入一律当成功
         return { rows: [], changed: 0 };
     }
@@ -129,6 +153,25 @@ class MockD1 {
         if (s.startsWith("SELECT id FROM sites")) {
             const uid = s.includes("user_id = ?") ? Number(args.at(-1)) : null;
             return this.sites.filter(x => uid === null || x.user_id === uid).map(x => ({ id: x.id }));
+        }
+        // 增量导入的两张索引表：**只认当前账号**（多账号部署不能拿别人的分组去重）
+        if (s.startsWith("SELECT id, name FROM groups")) {
+            const uid = s.includes("user_id = ?") ? Number(args.at(-1)) : null;
+            return this.groups
+                .filter(g => uid === null || g.user_id === uid)
+                .map(g => ({ id: g.id, name: g.name }));
+        }
+        if (s.startsWith("SELECT id, group_id, name, url, updated_at FROM sites")) {
+            const uid = s.includes("user_id = ?") ? Number(args.at(-1)) : null;
+            return this.sites
+                .filter(x => uid === null || x.user_id === uid)
+                .map(x => ({
+                    id: x.id,
+                    group_id: x.group_id,
+                    name: x.name,
+                    url: x.url ?? "",
+                    updated_at: x.updated_at ?? "",
+                }));
         }
         if (s === "SELECT key, value FROM configs") {
             return [...this.configs.entries()].map(([key, value]) => ({ key, value }));
@@ -269,8 +312,11 @@ const failPoints: { label: string; rule: FailRule }[] = [
     { label: "插入站点时失败", rule: { when: /^INSERT INTO sites/, error: "模拟站点写入失败" } },
     // 配置按归属可能落到 configs（全站）或 user_configs（按账号），两个都要能炸
     { label: "写入配置时失败", rule: { when: /^INSERT INTO (?:configs|user_configs)/, error: "模拟配置写入失败" } },
-    { label: "删除旧站点后失败", rule: { when: /^DELETE FROM sites WHERE id IN/, error: "模拟旧站点清理失败" } },
-    { label: "删除旧分组时失败", rule: { when: /^DELETE FROM groups WHERE id IN/, error: "模拟旧分组清理失败" } },
+    // 以前这里有两个「清理旧数据」注入点，那两条 DELETE 已经不存在了 ——
+    // 现在的失败点必须落在**读写链路本身**上，才能继续验证「失败后库里还是原样」。
+    { label: "读取现有卡片索引时失败", rule: { when: /^SELECT id, group_id, name, url, updated_at FROM sites/, error: "模拟读取现有数据失败" } },
+    // 「就地更新已存在卡片」也是条写路径，但它要先有匹配项才跑得起来，
+    // 单独一条用例在下面用专门的夹具验（这里的通用夹具故意一组都不匹配）。
 ];
 
 for (const { label, rule } of failPoints) {
@@ -292,23 +338,128 @@ for (const { label, rule } of failPoints) {
     });
 }
 
-test("恢复故障注入 · 成功路径：旧数据清掉、新数据就位，且真的只提交了一个事务", async () => {
+test("增量导入成功路径：一个事务提交，旧数据**原样保留**、新数据就位", async () => {
     const db = new MockD1();
     seed(db);
 
     const api = apiWith(db, 2);
     const result = await api.importData(makeBackup());
 
-    assert.equal(result.success, true, "正常备份应当恢复成功");
-    // 「旧数据清理 + 新数据写入」在同一个 batch 里：切过去是一步，不存在中间态
-    assert.equal(db.batchCalls, 1, `整份恢复应只提交一个事务，实际 ${db.batchCalls} 次`);
+    assert.equal(result.success, true, "正常备份应当导入成功");
+    // 所有写入（新建 + 就地更新 + 配置）在同一个 batch 里：全是 adult（要么全成、要么全不变）
+    assert.equal(db.batchCalls, 1, `整份导入应只提交一个事务，实际 ${db.batchCalls} 次`);
     assert.ok(db.groups.some(g => g.name === "备份分组A"), "新分组该就位");
     assert.ok(db.sites.some(x => x.name === "备份站点1"), "新站点该就位");
-    assert.ok(!db.groups.some(g => g.id === 5), "旧分组该被清掉");
-    assert.ok(!db.sites.some(x => x.id === 7 || x.id === 8), "旧站点该被清掉");
+    // ⚠️ 这是这次改动的硬约束：以前这一段是「旧分组 / 旧站点该被清掉」，
+    // 现在反过来 —— 导入只能做加法，旧的一条都不能少。
+    assert.ok(db.groups.some(g => g.id === 5 && g.name === "我的旧分组"), "旧分组必须还在");
+    assert.ok(db.sites.some(x => x.id === 7) && db.sites.some(x => x.id === 8), "两个旧站点都必须在");
+    // 账目要能自证：这份备份两组两卡全是新的，所以一次都没有命中已有的
+    assert.deepEqual(result.stats, {
+        groupsCreated: 2,
+        groupsMatched: 0,
+        sitesCreated: 2,
+        sitesUpdated: 0,
+        sitesSkipped: 0,
+    });
     // id 映射要回传给前端（星标/标签是按旧 id 存在本机的）
     assert.equal(Object.keys(result.groupIdMap).length, 2);
     assert.equal(Object.keys(result.siteIdMap).length, 2);
+});
+
+test("重复导入同一份备份：第二次一行都不新增（幂等）", async () => {
+    const db = new MockD1();
+    seed(db);
+    const api = apiWith(db, 2);
+    const backup = makeBackup();
+
+    await api.importData(backup);
+    const after1 = db.groups.length + db.sites.length;
+    const second = await api.importData(backup);
+
+    assert.equal(second.success, true, "第二次导入同样该成功");
+    assert.equal(
+        db.groups.length + db.sites.length,
+        after1,
+        `重复导入不该再长出新行（实际 ${JSON.stringify({ groups: db.groups, sites: db.sites })}）`
+    );
+    assert.deepEqual(second.stats, {
+        groupsCreated: 0,
+        groupsMatched: 2,
+        sitesCreated: 0,
+        sitesUpdated: 0,
+        // 本地那条没有 updated_at（万能夹具造的行），判「本地较新」→ 保守跳过
+        sitesSkipped: 2,
+    }, "第二次必须全都认出是同一条");
+});
+
+test("备份里那条更新时才覆盖，本地较新就跳过", async () => {
+    const db = new MockD1();
+    db.users.set(2, { id: 2, username: "u2", role: "user" });
+    db.groups.push({ id: 5, user_id: 2, name: "我的旧分组", order_num: 0 });
+    db.sites.push({
+        id: 9, group_id: 5, user_id: 2, name: "本地改过的名字",
+        url: "https://c.com", updated_at: "2030-01-01T00:00:00.000Z",
+    });
+
+    const api = apiWith(db, 2);
+    const result = await api.importData({
+        groups: [{ id: 1, name: "我的旧分组", order_num: 0 }],
+        sites: [{
+            id: 20, group_id: 1, name: "备份里的名字", url: "https://c.com",
+            icon: "", description: "", notes: "", username: "", password: "",
+            order_num: 0, updated_at: "2026-01-01T00:00:00.000Z",
+        }],
+        configs: {},
+        version: "1.3",
+        exportDate: new Date().toISOString(),
+    } as ExportData);
+
+    assert.equal(result.success, true);
+    assert.equal(
+        db.sites.find(x => x.id === 9)?.name,
+        "本地改过的名字",
+        "本地那条更新（2030 > 2026），不能被备份悄悄覆盖"
+    );
+    assert.deepEqual(result.stats, {
+        groupsCreated: 0,
+        groupsMatched: 1,
+        sitesCreated: 0,
+        sitesUpdated: 0,
+        sitesSkipped: 1,
+    });
+});
+
+test("就地更新失败时，本地那条必须原封不动", async () => {
+    const db = new MockD1();
+    db.users.set(2, { id: 2, username: "u2", role: "user" });
+    db.groups.push({ id: 5, user_id: 2, name: "我的旧分组", order_num: 0 });
+    db.sites.push({
+        id: 9, group_id: 5, user_id: 2, name: "本地旧名字",
+        url: "https://c.com", updated_at: "2020-01-01T00:00:00.000Z",
+    });
+    db.failRules = [{ when: /^UPDATE sites SET/, error: "模拟卡片就地更新失败" }];
+
+    const api = apiWith(db, 2);
+    const result = await api.importData({
+        groups: [{ id: 1, name: "我的旧分组", order_num: 0 }],
+        sites: [{
+            id: 20, group_id: 1, name: "备份里的新名字", url: "https://c.com",
+            icon: "", description: "", notes: "", username: "", password: "",
+            order_num: 0, updated_at: "2026-01-01T00:00:00.000Z",
+        }],
+        configs: {},
+        version: "1.3",
+        exportDate: new Date().toISOString(),
+    } as ExportData);
+
+    assert.equal(result.success, false, "就地更新炸了必须报失败");
+    assert.ok(result.message?.includes("就地更新"), `失败要说得出原因，实际：${result.message}`);
+    assert.equal(
+        db.sites.find(x => x.id === 9)?.name,
+        "本地旧名字",
+        "事务整批回滚：本地那条连半个字都不该改"
+    );
 });
 
 test("站点挂到重新发号的分组上（旧 group_id 翻译正确）", async () => {

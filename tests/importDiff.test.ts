@@ -64,7 +64,7 @@ const incoming: ExportData = {
 };
 
 test("按 id 认得出「无变化 / 更新 / 新增」", () => {
-    const diff = computeImportDiff(current, incoming, false);
+    const diff = computeImportDiff(current, incoming);
     assert.equal(diff.groupEntries[0].status, "unchanged");
     assert.equal(diff.groupEntries[1].status, "added");
     assert.equal(diff.siteEntries[0].status, "unchanged");
@@ -72,44 +72,45 @@ test("按 id 认得出「无变化 / 更新 / 新增」", () => {
     assert.equal(diff.siteEntries[2].status, "added");
 });
 
-test("非覆盖模式下不算「将删除」", () => {
-    const diff = computeImportDiff(current, incoming, false);
-    assert.equal(diff.counts.removed, 0);
-    assert.equal(diff.removedSites.length, 0);
-});
-
-test("覆盖模式下：现有数据里备份没有的，都列进「将删除」", () => {
-    const diff = computeImportDiff(current, incoming, true);
-    // 现有 3 张卡里，只有 id 11/12 出现在备份里，21 会被清掉
-    assert.equal(diff.removedSites.length, 1);
-    // 分组 2 也不在备份里
-    assert.equal(diff.removedGroups.length, 1);
-    assert.equal(diff.counts.removed, 2);
+test("预览里没有「将删除」这一档了：增量导入不清任何本地条目", () => {
+    const diff = computeImportDiff(current, incoming);
+    // 这是硬约束的可见面：以前的 diff 会列出「覆盖后会清掉哪些」，那份名单已经下线：本地多出来的分组与卡片原地保留，不进任何删除清单。
+    assert.equal(
+        "removed" in diff.counts,
+        false,
+        "DiffStatus 里不该再有 removed 这个状态"
+    );
+    assert.equal(
+        Object.hasOwn(diff, "removedSites") || Object.hasOwn(diff, "removedGroups"),
+        false,
+        "diff 不该再算删除清单"
+    );
 });
 
 test("合并导入：默认勾选跳过「无变化」，但不是全空", () => {
-    const diff = computeImportDiff(current, incoming, false);
-    const selected = defaultSelection(diff, false);
+    const diff = computeImportDiff(current, incoming);
+    const selected = defaultSelection(diff);
     assert.ok(selected.size > 0, "默认不应一个都不勾");
     assert.equal(selected.has(diff.siteEntries[0].key), false, "无变化的条目默认不勾");
     assert.equal(selected.has(diff.siteEntries[2].key), true);
 });
 
-test("覆盖恢复：默认必须全选（没勾的会被当成「不在备份里」删掉）", () => {
-    const diff = computeImportDiff(current, incoming, true);
-    const selected = defaultSelection(diff, true);
-    assert.equal(
-        selected.size,
-        diff.groupEntries.length + diff.siteEntries.length,
-        "覆盖恢复默认全选，否则用户什么都没动就会丢掉所有没变过的分组和卡片"
+test("不勾选 ≠ 删除：默认勾选里没有「全选」这条铁律了", () => {
+    const diff = computeImportDiff(current, incoming);
+    // 以前覆盖模式必须全选（没勾的会被当成「备份里没有」清掉）。
+    // 现在没勾就是原地不动，所以「默认不勾无变化」在任何情况下都是安全的。
+    const selected = defaultSelection(diff);
+    assert.ok(
+        selected.size < diff.groupEntries.length + diff.siteEntries.length,
+        "默认不再全选 —— 无变化的条目不写第二遍"
     );
 });
 
 test("合并导入：老分组下内容有改动的卡片不会被连带丢掉", () => {
     // 「示例二（改过）」挂在已有的「常用工具」下，而那个分组本身没变化、默认不勾。
     // 它必须照样能导进来 —— 之前会被「分组没勾」这条规则连带过滤掉。
-    const diff = computeImportDiff(current, incoming, false);
-    const selected = defaultSelection(diff, false);
+    const diff = computeImportDiff(current, incoming);
+    const selected = defaultSelection(diff);
     const trimmed = applyImportSelection(incoming, diff, selected);
     assert.deepEqual(trimmed.sites.map(s => s.name).sort(), ["新卡片", "示例二（改过）"].sort());
 });
@@ -120,13 +121,13 @@ test("全都没变化时默认全选（否则用户会以为出错了）", () =>
         groups: [{ id: 1, name: "常用工具", order_num: 0 }],
         sites: [site({ id: 11, group_id: 1, name: "云设", url: "https://yunso.net" })],
     };
-    const diff = computeImportDiff(current, sameData, false);
+    const diff = computeImportDiff(current, sameData);
     const selected = defaultSelection(diff);
     assert.equal(selected.size, diff.groupEntries.length + diff.siteEntries.length);
 });
 
 test("取消勾选分组时，它下面的卡片一起不导入", () => {
-    const diff = computeImportDiff(current, incoming, false);
+    const diff = computeImportDiff(current, incoming);
     // 分组（第二个分组是新增的，本例刻意不选它）：只勾它下面的卡片、不勾分组本身
     const siteKey = diff.siteEntries[2].key;
     const selected = new Set([siteKey]); // 只勾卡片、不勾分组
@@ -137,7 +138,7 @@ test("取消勾选分组时，它下面的卡片一起不导入", () => {
 });
 
 test("勾选结果与输出一一对应（顺序不被打乱）", () => {
-    const diff = computeImportDiff(current, incoming, false);
+    const diff = computeImportDiff(current, incoming);
     const selected = defaultSelection(diff);
     const trimmed = applyImportSelection(incoming, diff, selected);
 
@@ -173,7 +174,7 @@ test("更新项给出字段级差异：改了哪些字段、从什么改成什�
             }),
         ],
     };
-    const diff = computeImportDiff(current, incoming, false);
+    const diff = computeImportDiff(current, incoming);
     const entry = diff.siteEntries[0];
     assert.equal(entry.status, "updated");
     assert.ok(entry.fields, "更新项应带字段差异");
@@ -202,7 +203,7 @@ test("账号与密码只说「有变化」，取值不进预览", () => {
             }),
         ],
     };
-    const diff = computeImportDiff(current, incoming, false);
+    const diff = computeImportDiff(current, incoming);
     const entry = diff.siteEntries.find(e => e.key === "site:11");
     assert.equal(entry?.status, "updated");
     const dumped = JSON.stringify(entry?.fields ?? []);
@@ -235,7 +236,7 @@ test("无变化的条目不带字段差异，新增条目也不带（没有可�
         groups: [{ id: 1, name: "常用工具", order_num: 0 }],
         sites: [site({ id: 11, group_id: 1, name: "云设", url: "https://yunso.net" })],
     };
-    const diff = computeImportDiff(current, same, false);
+    const diff = computeImportDiff(current, same);
     assert.equal(diff.siteEntries[0].status, "unchanged");
     assert.equal(diff.siteEntries[0].fields, undefined);
 
@@ -246,7 +247,7 @@ test("无变化的条目不带字段差异，新增条目也不带（没有可�
         groups: [{ id: 1, name: "常用工具", order_num: 0 }],
         sites: [site({ id: 99, group_id: 1, name: "新站", url: "https://new.com" })],
     };
-    const diff2 = computeImportDiff(current, brandNew, false);
+    const diff2 = computeImportDiff(current, brandNew);
     assert.equal(diff2.siteEntries[0].status, "added");
     assert.equal(diff2.siteEntries[0].fields, undefined);
 });
@@ -259,7 +260,7 @@ test("分组改名 / 改排序也算更新，并给出字段差异", () => {
         groups: [{ id: 1, name: "常用工具（改名）", order_num: 3 }],
         sites: [],
     };
-    const diff = computeImportDiff(current, incoming, false);
+    const diff = computeImportDiff(current, incoming);
     const entry = diff.groupEntries[0];
     assert.equal(entry.status, "updated");
     const labels = entry.fields?.map(f => f.label) ?? [];

@@ -501,6 +501,25 @@ export interface ExportData {
     integrity?: BackupIntegrity;
 }
 
+/**
+ * 分组 / 站点的增量统计。
+ *
+ * 重复导入同一份备份时，`groupsCreated` / `sitesCreated` / `sitesUpdated` 必须是 0 ——
+ * 这是导入幂等性唯一能被肉眼（和被测试）验证的地方。
+ */
+export interface ImportStats {
+    /** 新建的分组数 */
+    groupsCreated: number;
+    /** 认出已存在、直接复用（不改名不改排序）的分组数 */
+    groupsMatched: number;
+    /** 新建的卡片数 */
+    sitesCreated: number;
+    /** 已存在且备份里那条更新的卡片数（就地 UPDATE，不换 id） */
+    sitesUpdated: number;
+    /** 已存在且本地更新/无法比新的卡片数（原样保留） */
+    sitesSkipped: number;
+}
+
 /** 导入结果：成功与否 + 新旧 id 映射（前端的星标 / 标签记的是旧 id，要翻译一遍） */
 export interface ImportResult {
     success: boolean;
@@ -514,12 +533,16 @@ export interface ImportResult {
      *
      * 为什么必须有：合并模式下「本地较新就不动」是**正确行为**，但不给用户一个数字，
      * 他会以为导入没生效。老备份没有笔记时全为 0。
+     *
+     * `removed` 恒为 0，留着只是为了让老前端不用改 —— 增量导入不删任何一条笔记。
      */
     noteStats?: NoteImportStats;
+    /** 分组 / 站点的增量统计（新增多少、复用多少、跳过多少） */
+    stats?: ImportStats;
 }
 
 /** 导入的阶段，顺序与服务端真实推进的顺序一致 */
-export type ImportStage = "verify" | "encrypt" | "write" | "cleanup" | "done";
+export type ImportStage = "verify" | "encrypt" | "write" | "done";
 
 /** 一次导入的阶段进度。done/total 是服务端数出来的真实条数，不是估算。 */
 export interface ImportProgress {
@@ -534,19 +557,6 @@ export interface ImportOptions {
      * 服务端边跑边推真实进度；不传就是普通的一问一答。
      */
     onProgress?: (progress: ImportProgress) => void;
-    /**
-     * 备份里的笔记怎么处理。默认 `merge`。
-     *
-     * - `merge`（默认）：按 uuid 识别同一条笔记，本地没有就插入；同 uuid 时
-     *   比 updated_at，**文件里较新才覆盖，本地较新就保留本地**。
-     *   本地多出来的笔记原样保留 —— 合并的意思就是不动本地多余的。
-     * - `replace`：先清空本地笔记再插入（与卡片的行为一致）。用于「用一份旧备份
-     *   真正回滚」，所以 UI 上要用 destructive 的措辞提示「本地笔记会被清掉」。
-     *
-     * 备份里**没有** notes 字段时（老备份 / 用户关了「备份含记事本」），
-     * 无论哪种模式都**保持本地笔记原样不动** —— 清空不可逆，宁可什么都不做。
-     */
-    notesMode?: "merge" | "replace";
 }
 
 /**

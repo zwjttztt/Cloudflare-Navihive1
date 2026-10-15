@@ -321,12 +321,16 @@ test("大备份：超过旧分块阈值仍原子提交，且数据一条不少",
     assert.equal(db.batchCalls, 1, "新旧数据必须在同一个事务内切换");
     assert.ok(db.batchSizes[0] > COMMIT_CHUNK_STATEMENTS, "超过旧分块阈值也不能拆开事务");
     assert.equal(db.sites.filter(s => s.name.startsWith("站点")).length, siteCount, "站点一条都不能少");
-    assert.ok(!db.sites.some(s => s.name === "旧站点"), "旧数据该被清掉");
+    // ⚠️ 过去这里断言的是「旧数据该被清掉」：增量导入不再删任何东西，
+    // 本地那条旧站点必须原样留在库里。
+    assert.ok(db.sites.some(s => s.name === "旧站点"), "旧数据必须还在");
 
     // 进度：必须覆盖全部阶段，且 write 阶段的 done 单调推进到总数
-    for (const stage of ["verify", "encrypt", "write", "cleanup", "done"]) {
+    // （cleanup 阶段随「清理旧数据」一起下掉了，不该再出现）
+    for (const stage of ["verify", "encrypt", "write", "done"]) {
         assert.ok(stages.includes(stage), `进度里缺 ${stage} 阶段`);
     }
+    assert.ok(!stages.includes("cleanup"), "没有清理旧数据这一阶段了");
     const lastWrite = writes.at(-1);
     assert.ok(typeof lastWrite === "number" && lastWrite > 0, "write 阶段要报出真实条数");
     for (let i = 1; i < writes.length; i++) {

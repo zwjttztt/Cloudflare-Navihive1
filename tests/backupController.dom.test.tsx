@@ -9,9 +9,11 @@
 //    这类错觉比直接失败糟得多，因为它不会报错。
 // 2. **WebDAV 口令清空要 DELETE 而不是写空串** —— worker 的 PUT 会拒空值（400），
 //    而备份口令是可选的，留空才是常态。
-// 3. **空备份必须当失败** —— 覆盖恢复的语义是「以这份备份为准」，
-//    拿一份没有分组也没有卡片的备份去覆盖 = 把账号清空，多半是文件选错了。
-// 4. **覆盖恢复要传原始数据** —— 完整性校验必须在归一化之前做，否则摘要永远对不上。
+// 3. **空备份必须当失败** —— 一份没有分组也没有卡片的备份导进来什么都不会发生，
+//    多半是文件选错了；必须把「已取消，现有数据未改动」说清楚。
+// 4. **导入要传原始数据** —— 完整性校验必须在归一化之前做，否则摘要永远对不上。
+// 5. **导入只有一条路** —— 以前合并模式在前端一条条 createGroup/createSite（N 次请求、
+//    重复导入还会长出重复数据），现在与服务端 importData 的 upsert 并成一条。
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -67,7 +69,7 @@ interface ApiOptions {
     failKeys?: string[];
     /** 这些键的写入先挂住，等用例调 release() 才继续（用来验证乐观更新） */
     holdKeys?: string[];
-    /** 覆盖恢复的返回 */
+    /** 服务端整体导入的返回 */
     importResult?: { success: boolean; message?: string; siteIdMap?: Record<string, number> };
 }
 
@@ -176,9 +178,11 @@ function Harness(props: {
             fetched.current += 1;
             return true;
         },
-        restoreLocalPrefs: (value: unknown) => {
-            restoredPrefs.push(value);
-            state.current.restoredPrefs.push(value);
+        // 记下「本机偏好是按什么模式写回的」：覆盖恢复时这里传的是 replace，
+        // 会把本地星标/标签整个换掉 —— 增量导入之后必须永远只有 merge。
+        restoreLocalPrefs: (value: unknown, mode?: string) => {
+            restoredPrefs.push({ value, mode });
+            state.current.restoredPrefs.push({ value, mode });
         },
         setConfigs: setConfigs as never,
         setWebdavConfig,
@@ -395,7 +399,7 @@ function sampleBackup(): ExportData {
     };
 }
 
-test("空备份当成失败：覆盖恢复的语义是「以这份备份为准」", async () => {
+test("空备份当成失败：导入完什么都没变，要把原因说清楚", async () => {
     const { state } = await setup();
     const c = controllerRef!;
     const empty = await withBackupIntegrity({
@@ -407,9 +411,9 @@ test("空备份当成失败：覆盖恢复的语义是「以这份备份为准�
     } as ExportData);
 
     await act(async () => {
-        await c.handleImportBackup(empty, true).catch(() => {});
+        await c.handleImportBackup(empty).catch(() => {});
     });
-    assert.deepEqual(state.current.apiLog.imports, [], "不该真的去覆盖");
+    assert.deepEqual(state.current.apiLog.imports, [], "空备份不该真的写库");
     assert.ok(
         state.current.errors.join(" | ").includes("没有任何分组或卡片"),
         `要说明为什么取消了，实际：${state.current.errors.join(" | ")}`
@@ -417,13 +421,13 @@ test("空备份当成失败：覆盖恢复的语义是「以这份备份为准�
     cleanup();
 });
 
-test("覆盖恢复：传给服务端的是原始数据（不是归一化后的）", async () => {
+test("导入：传给服务端的是原始数据（不是归一化后的）", async () => {
     const { state } = await setup();
     const c = controllerRef!;
     const backup = await withBackupIntegrity(sampleBackup());
 
     await act(async () => {
-        await c.handleImportBackup(backup, true);
+        await c.handleImportBackup(backup);
     });
     assert.equal(state.current.apiLog.imports.length, 1);
     const sent = state.current.apiLog.imports[0];
@@ -432,12 +436,12 @@ test("覆盖恢复：传给服务端的是原始数据（不是归一化后的�
     cleanup();
 });
 
-test("覆盖失败（服务端说不行）要报错，且不刷新", async () => {
+test("导入失败（服务端说不行）要报错，且不刷新", async () => {
     const { state } = await setup({ api: { importResult: { success: false, message: "导入失败" } } });
     const c = controllerRef!;
     const backup = await withBackupIntegrity(sampleBackup());
     await act(async () => {
-        await c.handleImportBackup(backup, true).catch(() => {});
+        await c.handleImportBackup(backup).catch(() => {});
     });
     assert.ok(
         state.current.errors.join(" | ").includes("导入失败"),
@@ -447,15 +451,30 @@ test("覆盖失败（服务端说不行）要报错，且不刷新", async () =>
     cleanup();
 });
 
-test("合并导入：分组与站点一条条建，且站点挂到新建的分组上", async () => {
+test("只有一条导入路径：不再逐条 create，全部交给服务端 upsert", async () => {
     const { state } = await setup();
     const backup = await withBackupIntegrity(sampleBackup());
     await act(async () => {
-        await controllerRef!.handleImportBackup(backup, false);
+        await controllerRef!.handleImportBackup(backup);
     });
-    assert.deepEqual(state.current.apiLog.createdGroups, ["常用"]);
-    assert.deepEqual(state.current.apiLog.createdSites, ["A"]);
-    assert.deepEqual(state.current.apiLog.imports, [], "合并模式不走整体导入");
+    // 逐条 create 是老做法：N 次请求、重复导入还会长出重复的分组与卡片。
+    // 现在必须一次请求交给服务端认「是不是同一条」。
+    assert.equal(state.current.apiLog.imports.length, 1, "只发一次服务端导入");
+    assert.deepEqual(state.current.apiLog.createdGroups, [], "不该再逐条建分组");
+    assert.deepEqual(state.current.apiLog.createdSites, [], "不该再逐条建卡片");
+    assert.deepEqual(state.current.apiLog.setConfigs, [], "配置由服务端在一次事务里写，不再另发");
+    cleanup();
+});
+
+test("本机偏好只做合并：不会因为备份里没有某颗星标就把它擦掉", async () => {
+    const { state } = await setup();
+    const backup = await withBackupIntegrity(sampleBackup());
+    await act(async () => {
+        await controllerRef!.handleImportBackup(backup);
+    });
+    const entry = state.current.restoredPrefs.at(-1) as { value?: unknown; mode?: string } | undefined;
+    assert.ok(entry, "应当把备份里的星标 / 标签写回本机");
+    assert.equal(entry?.mode, "merge", "本机星标 / 标签永远走合并，没有 replace 了");
     cleanup();
 });
 
@@ -466,7 +485,7 @@ test("损坏的备份：校验不过就不动现有数据", async () => {
     const broken = { ...backup, integrity: { algo: "SHA-256", value: "0".repeat(64) } };
 
     await act(async () => {
-        await c.handleImportBackup(broken, true).catch(() => {});
+        await c.handleImportBackup(broken).catch(() => {});
     });
     assert.deepEqual(state.current.apiLog.imports, [], "摘要对不上就不该导入");
     assert.ok(

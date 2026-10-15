@@ -34,18 +34,16 @@ import {
 } from "../utils/importDiff";
 import { dialogActionsSx, dialogContentSx, dialogPaperSx, dialogTitleSx } from "./dialogShell";
 
-const STATUS_COLOR: Record<DiffStatus, "success" | "warning" | "default" | "error"> = {
+const STATUS_COLOR: Record<DiffStatus, "success" | "warning" | "default"> = {
     added: "success",
     updated: "warning",
+    // 无变化 = 认出是同一条、且本地那份更新：不会被覆盖，所以也是「安全」色
     unchanged: "default",
-    removed: "error",
 };
 
 interface ImportPreviewDialogProps {
     open: boolean;
     data: ExportData | null;
-    /** true=覆盖恢复，false=合并追加 */
-    overwrite: boolean;
     current: GroupWithSites[];
     onCancel: () => void;
     onConfirm: (data: ExportData) => void;
@@ -54,14 +52,13 @@ interface ImportPreviewDialogProps {
 export default function ImportPreviewDialog({
     open,
     data,
-    overwrite,
     current,
     onCancel,
     onConfirm,
 }: ImportPreviewDialogProps) {
     const diff = useMemo(
-        () => (data ? computeImportDiff(current, data, overwrite) : null),
-        [current, data, overwrite]
+        () => (data ? computeImportDiff(current, data) : null),
+        [current, data]
     );
 
     const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -70,16 +67,11 @@ export default function ImportPreviewDialog({
     const [changedOnly, setChangedOnly] = useState(false);
     // 展开看字段差异的条目
     const [expanded, setExpanded] = useState<Set<string>>(new Set());
-    // 备份数据换了就重新按默认规则勾一遍：
-    // 合并导入默认「新增 + 更新」，覆盖恢复默认全选（见 defaultSelection 的说明）。
-    // 模式也要算进播种键 —— 覆盖模式下没勾的那部分会被当成「备份里没有」直接删掉，
-    // 沿用合并模式那套勾选等于让人什么都没动就丢数据。
+    // 备份数据换了就重新按默认规则勾一遍（默认「新增 + 更新」，见 defaultSelection）
     const [seededFor, setSeededFor] = useState<ExportData | null>(null);
-    const [seededMode, setSeededMode] = useState(false);
-    if (diff && data && (seededFor !== data || seededMode !== overwrite)) {
+    if (diff && data && seededFor !== data) {
         setSeededFor(data);
-        setSeededMode(overwrite);
-        setSelected(defaultSelection(diff, overwrite));
+        setSelected(defaultSelection(diff));
     }
 
     if (!data || !diff) return null;
@@ -268,18 +260,14 @@ export default function ImportPreviewDialog({
                         display: "block",
                         mb: 1
                     }}>
-                    {overwrite
-                        ? "覆盖恢复：勾选的内容会替换现有数据，没被这份备份包含的分组和卡片会被清掉。"
-                        : "合并导入：勾选的内容会追加到现有数据后面，已有的分组和卡片不会被改动。"}
+                    增量合并：勾选的内容会写进现有数据 —— 认得出是同一条的就更新，
+                    认不出的才新建。没勾选的、本地多出来的分组与卡片一个都不会动。
                 </Typography>
 
                 <Stack direction='row' spacing={0.75} sx={{ flexWrap: "wrap", gap: 0.75, mb: 1 }}>
                     <Chip size='small' color='success' label={`新增 ${diff.counts.added}`} />
                     <Chip size='small' color='warning' label={`更新 ${diff.counts.updated}`} />
                     <Chip size='small' variant='outlined' label={`无变化 ${diff.counts.unchanged}`} />
-                    {overwrite && (
-                        <Chip size='small' color='error' label={`将删除 ${diff.counts.removed}`} />
-                    )}
                 </Stack>
 
                 <Stack direction='row' spacing={1} sx={{ mb: 1 }}>
@@ -378,20 +366,6 @@ export default function ImportPreviewDialog({
                     )}
                 </Box>
 
-                {overwrite && (diff.removedGroups.length > 0 || diff.removedSites.length > 0) && (
-                    <Typography
-                        variant='caption'
-                        sx={{
-                            color: 'error.main',
-                            display: "block",
-                            mt: 1
-                        }}>
-                        覆盖后还会删掉 {diff.removedGroups.length} 个分组、{diff.removedSites.length} 张卡片
-                        {diff.removedSites.length > 0
-                            ? `（如 ${diff.removedSites.slice(0, 3).join("、")}${diff.removedSites.length > 3 ? " 等" : ""}）`
-                            : ""}
-                    </Typography>
-                )}
             </DialogContent>
 
             <DialogActions sx={dialogActionsSx}>

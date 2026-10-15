@@ -28,11 +28,8 @@ function makeBackup(): ExportData {
 }
 
 interface Handlers {
-    onImportData?: (data: ExportData, overwrite: boolean) => Promise<void>;
-    onRequestImportPreview?: (
-        data: ExportData,
-        overwrite: boolean
-    ) => Promise<ExportData | null>;
+    onImportData?: (data: ExportData) => Promise<unknown>;
+    onRequestImportPreview?: (data: ExportData) => Promise<ExportData | null>;
     onIncludeCredentialsChange?: (enabled: boolean) => void;
     includeCredentials?: boolean;
     initialTab?: number;
@@ -85,14 +82,6 @@ const buttonByText = (text: string): HTMLButtonElement | undefined =>
     [...document.querySelectorAll<HTMLButtonElement>("button")].find(
         b => (b.textContent || "").trim() === text
     );
-
-/** 按 label 文案找开关（覆盖/合并那个 Switch 没有 aria-label，只能靠文案） */
-function switchByLabelText(text: string): HTMLInputElement | null {
-    const label = [...document.querySelectorAll("label")].find(el =>
-        (el.textContent || "").includes(text)
-    );
-    return label ? label.querySelector("input") : null;
-}
 
 async function clickAsync(el: Element) {
     await act(async () => {
@@ -156,7 +145,7 @@ function counter<T = unknown>() {
     const calls: T[] = [];
     return {
         calls,
-        // rest 参数而不是写死几个：这样 fn 既能接 (data, overwrite) 这种多参回调，
+        // rest 参数而不是写死几个：这样 fn 既能接 (data, onProgress) 这种多参回调，
         // 也能赋给零参数的 props（onClose）——形参比目标签名多会不兼容
         fn: (...args: unknown[]) => void calls.push(args as unknown as T),
         get count() {
@@ -171,7 +160,7 @@ test("BackupDialog：没选备份文件时「开始恢复」是禁用的（防�
 
     const restoreBtn = buttonByText("开始恢复");
     assert.ok(restoreBtn, "应有「开始恢复」按钮");
-    assert.equal(restoreBtn!.disabled, true, "没选文件时不该能点——点了会覆盖全部数据");
+    assert.equal(restoreBtn!.disabled, true, "没选文件时不该能点");
 });
 
 test("BackupDialog：选中合法备份文件后，恢复按钮才可用", async t => {
@@ -231,51 +220,47 @@ test("BackupDialog：预览里点了取消（返回 null）→ 绝不导入", as
     );
 });
 
-test("BackupDialog：预览确认后才真导入，并带上覆盖开关的状态", async t => {
+test("BackupDialog：预览确认后才真导入", async t => {
     t.after(cleanup);
-    const imported = counter<[ExportData, boolean]>();
+    const imported = counter<[ExportData]>();
     mount({
         onRequestImportPreview: async data => data,
-        onImportData: async (data, overwrite) => {
-            imported.fn(data, overwrite);
+        onImportData: async data => {
+            imported.fn(data);
         },
     });
     await selectBackupFile(JSON.stringify(makeBackup()));
     await waitRestoreEnabled();
 
-    // 默认是合并导入，点一下切成「覆盖恢复」
-    const mergeSwitch = switchByLabelText("合并导入（保留现有数据并追加）");
-    assert.ok(mergeSwitch, "应能找到覆盖/合并开关");
-    await clickAsync(mergeSwitch!);
-
     await clickAsync(buttonByText("开始恢复")!);
     await waitFor("预览确认后导入一次", () => imported.count === 1);
 
     assert.equal(imported.count, 1, "预览确认后应导入一次");
-    const [, overwrite] = imported.calls[0] as unknown as [ExportData, boolean];
-    assert.equal(overwrite, true, "切成覆盖恢复后，overwrite 应为 true");
 });
 
-test("BackupDialog：默认合并导入，切到覆盖后文案与警告一起变", async t => {
+test("BackupDialog：不再有「覆盖恢复」开关，只说明增量合并语义", async t => {
     t.after(cleanup);
     mount();
 
-    // 默认是合并：覆盖会清空现有数据，不该是默认值
-    assert.ok(
-        (document.body.textContent || "").includes("合并导入（保留现有数据并追加）"),
-        "默认应是合并导入"
-    );
-
-    const sw = switchByLabelText("合并导入（保留现有数据并追加）");
-    assert.ok(sw, "应能找到覆盖/合并开关");
-    await clickAsync(sw!);
-
     const text = document.body.textContent || "";
-    assert.ok(text.includes("覆盖恢复（清空现有数据后导入）"), "切换后应变覆盖文案");
-    assert.ok(!text.includes("合并导入（保留现有数据并追加）"), "旧文案应消失");
+    // 以前这里是一对互斥开关（覆盖 / 合并）。覆盖那条会把现有分组与站点删干净，
+    // 属「UI 上不该存在的不可逆按钮」，已经整条下掉。
     assert.ok(
-        text.includes("覆盖恢复会先清空现有的分组与站点"),
-        "切成覆盖时要给出不可逆提示"
+        text.includes("增量合并导入"),
+        "应写明是增量合并导入"
+    );
+    assert.ok(
+        text.includes("不会删除任何现有数据"),
+        "把「不删数据」写在动作之前"
+    );
+    assert.ok(
+        !text.includes("覆盖恢复"),
+        "页面里不该再出现覆盖恢复的入口"
+    );
+    assert.equal(
+        document.querySelectorAll('input[type="checkbox"]').length,
+        0,
+        "恢复页不再有「覆盖 / 合并」开关"
     );
 });
 

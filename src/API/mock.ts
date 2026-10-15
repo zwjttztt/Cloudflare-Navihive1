@@ -1227,7 +1227,7 @@ export class MockNavigationClient {
             configEntries.forEach(([key, value]) => {
                 mockConfigs[key] = value;
             });
-            report("cleanup", groupTotal + siteTotal, groupTotal + siteTotal);
+            // 没有 cleanup 阶段了：增量导入只做加法和就地更新，不清任何旧数据
             report("done", groupTotal + siteTotal, groupTotal + siteTotal);
 
             return { success: true, groupIdMap, siteIdMap };

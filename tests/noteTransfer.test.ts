@@ -368,13 +368,13 @@ test("合并：本地多出来的笔记原样保留", async () => {
     assert.ok(db.notes.some(n => n.uuid === "from-file"));
 });
 
-test("完全覆盖：先清本地再插备份里的，removed 统计本地条数", async () => {
+test("增量导入不删任何本地笔记（早先的「完全覆盖」模式已下线）", async () => {
     const db = new MockD1([
         {
             id: 1,
             user_id: 7,
             uuid: "old-1",
-            title: "会被清掉",
+            title: "本地写的",
             content: "",
             pinned: 0,
             order_num: 0,
@@ -385,7 +385,7 @@ test("完全覆盖：先清本地再插备份里的，removed 统计本地条数
             id: 2,
             user_id: 7,
             uuid: "old-2",
-            title: "也会被清掉",
+            title: "也是本地写的",
             content: "",
             pinned: 0,
             order_num: 1,
@@ -396,18 +396,16 @@ test("完全覆盖：先清本地再插备份里的，removed 统计本地条数
     const api = makeApi(db);
     const result = await transferImpl.importData.call(
         api,
-        backup([note({ uuid: "from-file" })]),
-        { notesMode: "replace" }
+        backup([note({ uuid: "from-file" })])
     );
 
-    assert.equal(db.notes.length, 1, "只剩备份里那一条");
-    assert.equal(db.notes[0].uuid, "from-file");
-    assert.deepEqual(db.deletedNotes.sort(), [1, 2]);
-    assert.equal(result.noteStats?.removed, 2);
-    assert.equal(result.noteStats?.created, 1);
+    assert.equal(db.notes.length, 3, "本地两条必须还在 —— 导入只能做加法");
+    assert.deepEqual(db.deletedNotes, [], "这条链路里不该出现任何删除");
+    assert.equal(result.noteStats?.removed, 0, "removed 恒为 0");
+    assert.equal(result.noteStats?.created, 1, "备份里那条是新的，应当插入");
 });
 
-test("备份里没有 notes 字段时，即使选了「完全覆盖」也不清本地", async () => {
+test("备份里没有 notes 字段时本地笔记原样不动", async () => {
     const db = new MockD1([
         {
             id: 1,
@@ -422,7 +420,7 @@ test("备份里没有 notes 字段时，即使选了「完全覆盖」也不清�
         },
     ]);
     const api = makeApi(db);
-    await transferImpl.importData.call(api, backup(), { notesMode: "replace" });
+    await transferImpl.importData.call(api, backup());
     assert.equal(db.notes.length, 1, "备份里没有笔记 ≠ 「备份里一条笔记都没有」");
     assert.deepEqual(db.deletedNotes, []);
 });

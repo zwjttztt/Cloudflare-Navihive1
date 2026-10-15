@@ -66,7 +66,6 @@ const incoming: ExportData = {
 };
 
 interface Handlers {
-    overwrite?: boolean;
     data?: ExportData | null;
     onConfirm?: (data: ExportData) => void;
     onCancel?: () => void;
@@ -81,7 +80,6 @@ function mount(handlers: Handlers = {}) {
             <ImportPreviewDialog
                 open
                 data={handlers.data ?? incoming}
-                overwrite={handlers.overwrite ?? false}
                 current={current}
                 onCancel={handlers.onCancel ?? (() => {})}
                 onConfirm={handlers.onConfirm ?? (() => {})}
@@ -90,14 +88,13 @@ function mount(handlers: Handlers = {}) {
     });
 }
 
-/** 换一份备份 / 换模式：模拟用户重新选了文件或切了「覆盖恢复」 */
+/** 换一份备份：模拟用户重新选了文件 */
 function rerender(handlers: Handlers = {}) {
     act(() => {
         root!.render(
             <ImportPreviewDialog
                 open
                 data={handlers.data ?? incoming}
-                overwrite={handlers.overwrite ?? false}
                 current={current}
                 onCancel={handlers.onCancel ?? (() => {})}
                 onConfirm={handlers.onConfirm ?? (() => {})}
@@ -183,8 +180,8 @@ test("关掉弹窗（右上 X）也走取消，不写库", async () => {
     cleanup();
 });
 
-test("合并导入：默认只勾「新增 + 更新」，无变化的不勾", () => {
-    mount({ overwrite: false });
+test("增量导入：默认只勾「新增 + 更新」，无变化的不勾", () => {
+    mount();
     const checked = [...rows()].filter(r => r.getAttribute("data-status") !== "unchanged");
     const unchecked = [...rows()].filter(r => r.getAttribute("data-status") === "unchanged");
     assert.ok(checked.length > 0);
@@ -272,11 +269,12 @@ test("筛选只影响显示，不影响勾选（最容易写反的一条）", as
     cleanup();
 });
 
-test("覆盖恢复：会额外提示将要删除多少分组/卡片", () => {
-    mount({ overwrite: true });
+test("预览里不再预告任何删除：这一页以前会说「覆盖后还会删掉 N 个分组」", () => {
+    mount();
     const text = document.body.textContent ?? "";
-    assert.match(text, /覆盖恢复/, "覆盖模式要说清楚是替换");
-    assert.match(text, /覆盖后还会删掉 \d+ 个分组/, "覆盖会删东西，必须提前讲明白");
+    assert.doesNotMatch(text, /覆盖/, "不该再有覆盖的说法");
+    assert.doesNotMatch(text, /还会删掉/, "不该预告会删任何东西");
+    assert.match(text, /增量合并/, "要说明现在是不删数据的增量合并");
     cleanup();
 });
 
@@ -289,7 +287,6 @@ test("data 为空时不渲染（没有备份却弹个空窗会让人以为导入
             <ImportPreviewDialog
                 open
                 data={null}
-                overwrite={false}
                 current={current}
                 onCancel={() => {}}
                 onConfirm={() => {}}
@@ -302,16 +299,18 @@ test("data 为空时不渲染（没有备份却弹个空窗会让人以为导入
 
 // ============ 下面这半边是后补的：默认勾选的**播种时机**与批量按钮 ============
 // 上面已经盯住了「筛选不改勾选」和「全不选要置灰」，但还差两类：
-//   1. 覆盖恢复的默认必须全选 —— 没勾的那部分会被当成「备份里没有」直接删掉，
-//      用户什么都没动就丢数据，而且界面上完全看不出来；
-//   2. 换一份备份 / 切模式时要按新规则重新勾一遍（seededFor 那段渲染期 setState）。
+//   1. 换一份备份时要按新规则重新勾一遍（seededFor 那段渲染期 setState）。
 //      写错的表现是「上一次的勾选莫名其妙留到了这一份备份上」。
+//   2. 「不勾选」= 那条不动，绝不是「那条会被删」——以前覆盖模式下还得靠全选来自救。
 
-test("覆盖恢复：默认全选（没勾的会被当成「不在备份里」删掉）", () => {
-    mount({ overwrite: true });
+test("没有覆盖模式了：不再存在「必须全选否则丢数据」的压力", () => {
+    mount();
     assert.equal(rows().length, 5, "2 个分组 + 3 张卡片");
-    assert.equal(checkedRows().length, 5, "一条都不能漏勾");
-    assert.match(importButton()?.textContent ?? "", /导入\s*5\s*\//);
+    assert.equal(
+        checkedRows().length,
+        3,
+        "默认只勾新增 + 更新；没勾的那两条是无变化，导入时原位不动（不是被删）"
+    );
 });
 
 test("换一份备份：按新数据的默认规则重新勾一遍", async () => {
@@ -331,11 +330,11 @@ test("换一份备份：按新数据的默认规则重新勾一遍", async () =>
     );
 });
 
-test("切到覆盖恢复也要重新播种（默认规则本身变了）", () => {
-    mount({ overwrite: false });
+test("同一份数据反复渲染不重新播种（勾选状态要稳）", () => {
+    mount();
     assert.equal(checkedRows().length, 3);
-    rerender({ overwrite: true });
-    assert.equal(checkedRows().length, 5);
+    rerender({ data: incoming });
+    assert.equal(checkedRows().length, 3, "数据对象没换，勾选不该被重置");
 });
 
 test("「只看新增与更新」只勾这两类，无变化的留空", async () => {

@@ -1900,7 +1900,6 @@ function App() {
                 <ImportPreviewDialog
                     open={importPreview !== null}
                     data={importPreview?.data ?? null}
-                    overwrite={importPreview?.overwrite ?? false}
                     current={groups}
                     onCancel={() => closeImportPreview(null)}
                     onConfirm={data => closeImportPreview(data)}

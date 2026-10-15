@@ -1,6 +1,7 @@
 // src/utils/duplicate.ts
 // 重复网址检测：新增/编辑卡片时，先看看这个链接是不是已经加过了。
 // 同一个站点在多个分组里各存一份，删的时候很容易漏删，所以提前拦一下。
+import { urlIdentityKey } from "./url";
 import { Site } from "../API/http";
 import { GroupWithSites } from "../types";
 
@@ -8,23 +9,10 @@ import { GroupWithSites } from "../types";
  * 网址归一：抹掉协议头、www.、大小写与末尾斜杠的差异，只留「是不是同一个地址」的信息。
  * 例：https://www.A.com/Path/ 与 a.com/path 会归一成同一个 key。
  *
- * ⚠️ 只抹「差异」，不能抹「分隔」：早先是先把非字母数字全换成空格、再把空格删掉，
- * 于是 a.com/a/b、a.com/ab、a.com/a-b 三个地址算出同一个 key，
- * 新增第二张卡时会被判成「链接已存在」直接拦下来（误报）。
- * 现在把连续的非字母数字压成一个 "/"，路径层级留住；"?" 和 "#" 保持原样，
- * 免得查询串 / 锚点和路径层级混在一起（p?x=1 与 p/x/1 因此仍然不同）。
+ * 实现放在 utils/url 的 urlIdentityKey：导入链路也要按同一把尺子判「是不是同一个站点」，
+ * 若两处各写一份，迟早会出现「前端提示重复、导入照样再建一条」。
  */
-export const urlKey = (url?: string | null): string => {
-    const raw = (url || "").trim();
-    if (!raw) return "";
-    return raw
-        .toLowerCase()
-        .replace(/^https?:\/\//, "")
-        .replace(/^www\./, "")
-        .replace(/[^\p{L}\p{N}?#]+/gu, "/")
-        .replace(/^\/+/, "")
-        .replace(/[/?#]+$/, "");
-};
+export const urlKey = urlIdentityKey;
 
 export interface DuplicateHit {
     site: Site;

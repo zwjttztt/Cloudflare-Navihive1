@@ -13,13 +13,11 @@ import {
     Button,
     CircularProgress,
     Divider,
-    FormControlLabel,
     IconButton,
     List,
     ListItemButton,
     ListItemText,
     Stack,
-    Switch,
     TextField,
     Typography,
 } from "@mui/material";
@@ -31,9 +29,6 @@ import UploadFileIcon from "@mui/icons-material/UploadFile";
 export interface RestoreTabProps {
     /** 切到「备份」页：导入书签那一节会用到 */
     setTab: Dispatch<SetStateAction<number>>;
-    /** 默认合并；覆盖会先清空现有数据，是这一页里唯一不可逆的动作 */
-    overwrite: boolean;
-    setOverwrite: Dispatch<SetStateAction<boolean>>;
     // ---- 从本地文件恢复 ----
     localFile: File | null;
     localData: ExportData | null;
@@ -66,46 +61,22 @@ export interface RestoreTabProps {
 }
 
 export default function RestoreTab({
-    setTab, overwrite, setOverwrite, localFile, localData, localError, handleFileSelect, encryptedBytes, restorePassword, setRestorePassword, decrypting, handleDecryptBackup, handleRestoreLocal, config, remoteFiles, listLoading, loadRemoteFiles, selectedRemote, setSelectedRemote, handleRestoreRemote, handleDeleteRemote, deletingFiles, needsRemotePassword, remotePassword, setRemotePassword, remoteError, restoring, onOpenBookmark,
+    setTab, localFile, localData, localError, handleFileSelect, encryptedBytes, restorePassword, setRestorePassword, decrypting, handleDecryptBackup, handleRestoreLocal, config, remoteFiles, listLoading, loadRemoteFiles, selectedRemote, setSelectedRemote, handleRestoreRemote, handleDeleteRemote, deletingFiles, needsRemotePassword, remotePassword, setRemotePassword, remoteError, restoring, onOpenBookmark,
 }: RestoreTabProps) {
     return (
         <Stack spacing={1.5} sx={{ mt: 0.5, flex: 1, minHeight: 0 }}>
-            <FormControlLabel
-                control={
-                    <Switch
-                        checked={overwrite}
-                        onChange={e => setOverwrite(e.target.checked)}
-                        color={overwrite ? "error" : "primary"}
-                        size='small'
-                    />
-                }
-                label={
-                    <Box>
-                        <Typography
-                            variant='body2'
-                            color={overwrite ? "error.main" : "text.primary"}
-                            sx={{
-                                fontWeight: '600'
-                            }}
-                        >
-                            {overwrite ? "覆盖恢复（清空现有数据后导入）" : "合并导入（保留现有数据并追加）"}
-                        </Typography>
-                        <Typography variant='caption' sx={{
-                            color: 'text.secondary'
-                        }}>
-                            {overwrite
-                                ? "先清空现在的分组与站点，再按备份重建；保留原有 ID 与星标 / 标签，用于把整站还原成备份那一刻的样子"
-                                : "备份内容追加到现有数据后面，已有的分组与站点不动，重复链接会跳过"}
-                        </Typography>
-                    </Box>
-                }
-            />
-            {/* 覆盖会删掉现有数据，把话说在动作之前，而不是等用户点了才发现 */}
-            {overwrite && (
-                <Alert severity='warning' sx={{ mt: -0.5 }}>
-                    覆盖恢复会先清空现有的分组与站点，再导入备份内容。确定现在的导航站数据已经不需要了吗？
-                </Alert>
-            )}
+            {/* 增量导入的说明要写在动作之前：这一页以前有个「覆盖恢复」开关，
+                勾上会把现有分组与站点整批清掉 —— 那种不可逆的按钮不该存在在 UI 上。
+                现在的语义只有一种：认得出是同一条的更新 / 跳过，认不出的才新建。 */}
+            <Alert severity='info' sx={{ mt: 0.5 }}>
+                <Typography variant='body2' sx={{ fontWeight: '600' }}>
+                    增量合并导入（不会删除任何现有数据）
+                </Typography>
+                <Typography variant='caption' sx={{ display: "block", color: 'text.secondary' }}>
+                    按「分组名」「分组内同链接」认同一条：已有的不会重复新建，只有备份里那条更新时才会覆盖；
+                    本地多出来的分组与卡片原样保留。重复导入同一份备份不会产生重复数据。
+                </Typography>
+            </Alert>
 
             <Divider />
 

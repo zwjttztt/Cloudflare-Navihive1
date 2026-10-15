@@ -9,6 +9,14 @@
 // 所以涉及表结构的功能必须真连一个会执行 SQL 的引擎。
 //
 // ⚠️ 这个文件**不是**用例（名字不带 .test.ts），不会被运行器当测试收集。
+//
+// ⚠️ 替身与自托管真适配器（server/sqlite-d1.ts）必须保持同一套形状，
+// 差一处就等于「线上跑一套、测试验另一套」——已经踩过两回：
+//   1) run() 漏了 meta.rows_written → claimIdempotency 永远抢不到锁，
+//      导入/恢复在替身上被误判成「上一次恢复还没结束」（真库上是好的）；
+//   2) batch() 只是 Promise.all → 没有事务，所以「失败整批回滚」在替身上
+//      根本验不出来（真 D1 与自托管适配器都是整批一个事务）。
+// 这两条已补上，改动替身时先想清楚它替的是哪一边的真实行为。
 
 import { DatabaseSync, type StatementSync, type SQLInputValue } from "node:sqlite";
 import { NavigationAPI } from "../../src/API/navigationApi";
@@ -18,6 +26,9 @@ export type RealD1 = ReturnType<typeof makeRealD1>;
 /** 把 node:sqlite 包成 D1 形状的替身：prepare/bind/all/first/run/batch/exec 都对得上 */
 export function makeRealD1() {
     const db = new DatabaseSync(":memory:");
+    db.exec("PRAGMA foreign_keys = ON");
+    // 与自托管适配器对齐：批内外键检查推迟到提交那一刻（见 server/sqlite-d1.ts）
+    const deferral = db.prepare("PRAGMA defer_foreign_keys = ON");
     const wrap = (stmt: StatementSync) => {
         let bound: SQLInputValue[] = [];
         const prepared = {
@@ -42,7 +53,14 @@ export function makeRealD1() {
                 const r = stmt.run(...bound);
                 return Promise.resolve({
                     success: true as const,
-                    meta: { changes: r.changes, last_row_id: Number(r.lastInsertRowid) },
+                    // ⚠️ rows_written 必须给：抢占幂等锁（claimIdempotency）靠它
+                    // 判断「这次 INSERT 到底落没落」。缺了这个字段，所有依赖互斥锁的
+                    // 路径（恢复锁、离线重放）在替身上都走「抢不到」的分支。
+                    meta: {
+                        changes: r.changes,
+                        rows_written: r.changes,
+                        last_row_id: Number(r.lastInsertRowid),
+                    },
                 });
             },
         };
@@ -50,8 +68,26 @@ export function makeRealD1() {
     };
     return {
         prepare: (sql: string) => wrap(db.prepare(sql)),
-        batch: async (stmts: Array<{ run: () => Promise<{ success: boolean }> }>) =>
-            Promise.all(stmts.map(s => s.run())),
+        /**
+         * ⚠️ 真 D1 的 batch 是一个事务：要么整批生效、要么一个字节都不变。
+         * 替身必须照做 —— 「导入失败后旧数据一条不少」这类断言靠的就是这个语义，
+         * 用 Promise.all 的话前几条已经写进去了，测试反而会假绿到另一头（以为是回滚了）。
+         */
+        batch: async (stmts: Array<{ run: () => Promise<{ success: boolean }> }>) => {
+            db.exec("BEGIN");
+            try {
+                // 与自托管适配器一致：批内开启外键延迟，外键冲突在 COMMIT 时才报
+                deferral.run();
+                const results = [];
+                for (const stmt of stmts) results.push(await stmt.run());
+                db.exec("COMMIT");
+                return results;
+            } catch (error) {
+                // ⚠️ 事务里失败之后 COMMIT 仍会把前面的语句提交掉 —— 必须显式 ROLLBACK
+                db.exec("ROLLBACK");
+                throw error;
+            }
+        },
         async exec(sql: string) {
             db.exec(sql);
         },

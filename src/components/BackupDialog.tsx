@@ -1,7 +1,8 @@
 // src/components/BackupDialog.tsx
 // 数据备份与恢复：支持备份到本地文件 / WebDAV，并支持从本地或 WebDAV 恢复
 import { useState, useEffect, useRef } from "react";
-import { ExportData, WebDavConfig, WebDavFile, type ImportProgress } from "../API/http";
+import { ExportData, WebDavConfig, WebDavFile, type ImportProgress, type ImportStats } from "../API/http";
+import { summarizeImportStats } from "../utils/importSummary";
 import { NavigationClient } from "../API/client";
 import { MockNavigationClient } from "../API/mock";
 import { decryptBackup, isEncryptedBackup } from "../API/crypto";
@@ -43,18 +44,20 @@ interface BackupDialogProps {
     onBuildExportData: () => ExportData;
     /** 传了口令就用它加密备份文件再下载，不传则下载明文 JSON（兼容老备份） */
     onDownloadLocal: (password?: string) => void | Promise<void>;
+    /**
+     * 增量导入。返回值里带着服务端数出来的统计（新增 / 复用 / 跳过各多少），
+     * 用来给一句「到底导进去多少」的交代 —— 重复导入时「新增 0」就是幂等的证据。
+     */
     onImportData: (
         data: ExportData,
-        overwrite: boolean,
         onProgress?: (progress: ImportProgress) => void
-    ) => Promise<void>;
+    ) => Promise<unknown>;
     /**
      * 导入前先弹一次差异预览，返回用户确认后真正要导入的数据；
      * 返回 null 表示用户在预览里取消了。不传则直接导入（老行为）。
      */
     onRequestImportPreview?: (
-        data: ExportData,
-        overwrite: boolean
+        data: ExportData
     ) => Promise<ExportData | null>;
     onNotify: (message: string, severity?: "success" | "error" | "info") => void;
     onClose: () => void;
@@ -91,8 +94,19 @@ const IMPORT_STAGE_LABEL: Record<ImportProgress["stage"], string> = {
     verify: "正在校验备份文件…",
     encrypt: "正在加密站点密码…",
     write: "正在写入数据…",
-    cleanup: "正在清理旧数据…",
+    // 以前这里还有个 cleanup「正在清理旧数据」阶段 —— 增量导入不再删任何东西，阶段也就没了
     done: "正在收尾…",
+};
+
+/**
+ * 把服务端数出来的账说成人话。
+ *
+ * 「导入成功」这四个字什么都没说明：重复导入同一份备份时，新增是 0、
+ * 全部命中已有的 —— 不明说，用户会怀疑是不是压根没导进去。
+ */
+const summarizeImport = (result: unknown): string | null => {
+    const stats = (result as { stats?: ImportStats } | null | undefined)?.stats;
+    return summarizeImportStats(stats);
 };
 
 export default function BackupDialog({
@@ -154,9 +168,6 @@ export default function BackupDialog({
     // 导入的真实进度（由服务端流式推回，或合并导入时本地逐条数出来）。
     // 没有进度时保持 null —— 界面只转圈，不画假进度条
     const [importProgress, setImportProgress] = useState<ImportProgress | null>(null);
-    // 默认合并而不是覆盖：覆盖会先清空现有数据，是这一页里唯一不可逆的动作。
-    // 真要「整站还原成备份那样」再手动切过去，切过去时下面会给出红色提示。
-    const [overwrite, setOverwrite] = useState(false);
     // 密码默认遮住，点眼睛才明文显示（仅影响本机显示）
     const [showPassword, setShowPassword] = useState(false);
     // 本地备份是否用口令加密 + 口令本身（不落盘、不上传，只用于当次下载）
@@ -379,8 +390,8 @@ export default function BackupDialog({
     };
 
     // 导入前先过一遍差异预览：用户可以在预览里挑要导入哪些，取消则返回 null
-    const resolveImportData = async (data: ExportData, overwriteMode: boolean) =>
-        onRequestImportPreview ? await onRequestImportPreview(data, overwriteMode) : data;
+    const resolveImportData = async (data: ExportData) =>
+        onRequestImportPreview ? await onRequestImportPreview(data) : data;
 
     // 从本地文件恢复
     const handleRestoreLocal = async () => {
@@ -394,10 +405,10 @@ export default function BackupDialog({
         setRestoring(true);
         setImportProgress(null);
         try {
-            const finalData = await resolveImportData(localData, overwrite);
+            const finalData = await resolveImportData(localData);
             if (!finalData) return; // 用户在预览里点了取消
-            await onImportData(finalData, overwrite, setImportProgress);
-            onNotify("已从本地备份恢复数据", "success");
+            const result = await onImportData(finalData, setImportProgress);
+            onNotify(summarizeImport(result) ?? "已从本地备份恢复数据", "success");
             onClose();
         } catch (error) {
             onNotify(error instanceof Error ? error.message : "恢复失败", "error");
@@ -433,10 +444,13 @@ export default function BackupDialog({
                 onNotify(result.message || "下载备份失败", "error");
                 return;
             }
-            const finalData = await resolveImportData(result.data, overwrite);
+            const finalData = await resolveImportData(result.data);
             if (!finalData) return; // 用户在预览里点了取消
-            await onImportData(finalData, overwrite, setImportProgress);
-            onNotify(`已从 ${selectedRemote} 恢复数据`, "success");
+            const imported = await onImportData(finalData, setImportProgress);
+            onNotify(
+                `${summarizeImport(imported) ?? "已恢复数据"}（来自 ${selectedRemote}）`,
+                "success"
+            );
             onClose();
         } catch (error) {
             onNotify(error instanceof Error ? error.message : "恢复失败", "error");
@@ -601,8 +615,6 @@ export default function BackupDialog({
                 ) : (
                     <RestoreTab
                         setTab={setTab}
-                        overwrite={overwrite}
-                        setOverwrite={setOverwrite}
                         localFile={localFile}
                         localData={localData}
                         localError={localError}

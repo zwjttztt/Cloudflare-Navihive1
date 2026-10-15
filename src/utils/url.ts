@@ -115,3 +115,30 @@ export const hostOfUrl = (url?: string | null): string => {
         return "";
     }
 };
+
+/**
+ * 网址身份键：抹掉「同一个地址的写法差异」，用来判断两张卡片是不是同一个站点。
+ *
+ * 去重（新增卡片时提示「链接已存在」）与增量导入（判断这条要不要新建）共用同一把尺子 ——
+ * 两边判定不一致就会出现「前端说重复、导入还是又建一条」。
+ *
+ * ⚠️ 只抹「差异」，不能抹「分隔」：早先是先把非字母数字全换成空格、再把空格删掉，
+ * 于是 a.com/a/b、a.com/ab、a.com/a-b 三个地址算出同一个 key，
+ * 会被误判成同一张卡（duplicate.ts 的实测教训）。
+ * 现在把连续的非字母数字压成一个 "/"，路径层级留住；"?" 和 "#" 保持原样，
+ * 免得查询串 / 锚点和路径层级混在一起（p?x=1 与 p/x/1 因此仍然不同）。
+ *
+ * 放在 utils/url 而不是 utils/duplicate：导入那几条链路也要用它，
+ * 而 duplicate.ts 依赖 SVG / 组件层的类型，绕过去会产生循环引用。
+ */
+export const urlIdentityKey = (url?: string | null): string => {
+    const raw = (url || "").trim();
+    if (!raw) return "";
+    return raw
+        .toLowerCase()
+        .replace(/^https?:\/\//, "")
+        .replace(/^www\./, "")
+        .replace(/[^\p{L}\p{N}?#]+/gu, "/")
+        .replace(/^\/+/, "")
+        .replace(/[/?#]+$/, "");
+};

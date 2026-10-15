@@ -2,12 +2,12 @@
 // 导入备份前的差异计算：先告诉用户「这份备份会带来什么」，再让他挑要导入哪些。
 // 比对口径：
 // - 分组按 id 比；站点先按 id 比，id 对不上再退回「同链接 + 同分组」
-// - 「将删除」只在覆盖恢复（overwrite）时才有意义：现有数据里没出现在这份备份中的条目
+// - 没有「将删除」这一档了：增量导入绝不删任何现有条目（这正是预览要说清楚的事）
 import { ExportData, Site } from "../API/http";
 import { GroupWithSites } from "../types";
 import { urlKey } from "./duplicate";
 
-export type DiffStatus = "added" | "updated" | "unchanged" | "removed";
+export type DiffStatus = "added" | "updated" | "unchanged";
 
 /** 一个字段的变化。敏感字段（账号 / 密码）只说「有变化」，不带上任何取值 */
 export interface FieldDiff {
@@ -40,9 +40,6 @@ export interface ImportDiff {
     groupEntries: DiffEntry[];
     /** 与 incoming.sites 一一对应 */
     siteEntries: DiffEntry[];
-    /** 覆盖恢复时会被清掉的现有条目（只是提示，不参与勾选） */
-    removedGroups: string[];
-    removedSites: string[];
     counts: Record<DiffStatus, number>;
 }
 
@@ -50,7 +47,6 @@ export const STATUS_LABEL: Record<DiffStatus, string> = {
     added: "新增",
     updated: "更新",
     unchanged: "无变化",
-    removed: "将删除",
 };
 
 /** 参与比对与展示的字段。账号 / 密码单独标 sensitive：值不进界面 */
@@ -115,8 +111,7 @@ const siteFingerprint = (site: Site) =>
 
 export function computeImportDiff(
     current: GroupWithSites[],
-    incoming: ExportData,
-    overwrite: boolean
+    incoming: ExportData
 ): ImportDiff {
     const currentGroups = current;
     const currentSites = current.flatMap(group => group.sites ?? []);
@@ -132,7 +127,6 @@ export function computeImportDiff(
         added: 0,
         updated: 0,
         unchanged: 0,
-        removed: 0,
     };
     const bump = (status: DiffStatus) => {
         counts[status] += 1;
@@ -205,43 +199,19 @@ export function computeImportDiff(
         };
     });
 
-    // ---- 覆盖恢复会被清掉的现有数据 ----
-    const removedGroups: string[] = [];
-    const removedSites: string[] = [];
-    if (overwrite) {
-        const incomingGroupIds = new Set(
-            (incoming.groups ?? []).map(g => (g.id != null ? String(g.id) : ""))
-        );
-        const incomingSiteKeys = new Set(
-            (incoming.sites ?? []).map(s => `${s.group_id ?? ""}|${urlKey(s.url)}`)
-        );
-
-        for (const group of currentGroups) {
-            if (!incomingGroupIds.has(String(group.id))) removedGroups.push(group.name || "未命名分组");
-        }
-        for (const site of currentSites) {
-            if (!incomingSiteKeys.has(`${site.group_id ?? ""}|${urlKey(site.url)}`)) {
-                removedSites.push(site.name || site.url || "未命名站点");
-            }
-        }
-        counts.removed = removedGroups.length + removedSites.length;
-    }
-
-    return { groupEntries, siteEntries, removedGroups, removedSites, counts };
+    // 没有「要把本地哪些删掉」这一栏了：
+    // 增量导入本地多出来的条目原样保留，预览里也就没有东西值得预告删除。
+    return { groupEntries, siteEntries, counts };
 }
 
 /**
- * 默认勾选。
+ * 默认勾选：只勾「新增 + 更新」—— 无变化的条目导进去也是白导一遍，默认不勾更清爽。
  *
- * 合并导入：只勾新增和更新 —— 无变化的条目导进去也是白导一遍，默认不勾更清爽。
- * 覆盖恢复：**必须全选**。覆盖的语义是「以这份备份为准」，没勾的条目会被当成
- * 「不在备份里」清掉；如果沿用合并那套默认值，用户什么都没动就会丢掉所有
- * 名字没变过的分组和卡片。
+ * 以前覆盖模式还要「必须全选」（没勾的会被当成备份里没有而清掉），那种语义已经去掉了：
+ * 现在没勾就是不动，不存在被删的风险。
  */
-export function defaultSelection(diff: ImportDiff, overwrite = false): Set<string> {
+export function defaultSelection(diff: ImportDiff): Set<string> {
     const all = [...diff.groupEntries, ...diff.siteEntries];
-
-    if (overwrite) return new Set(all.map(entry => entry.key));
 
     const selected = new Set<string>();
     for (const entry of all) {

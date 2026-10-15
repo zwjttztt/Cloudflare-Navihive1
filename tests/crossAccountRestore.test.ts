@@ -26,6 +26,9 @@ interface SiteRow {
     group_id: number;
     user_id: number;
     name: string;
+    /** 增量导入按「分组 + 链接」认同一条卡片，还要拿时间戳比新旧 */
+    url?: string;
+    updated_at?: string;
 }
 
 /** 只实现导入/导出链路用到的语句：id 由「数据库」分配，撞号会真的抛错 */
@@ -94,6 +97,26 @@ class MockD1 {
             return [...this.configs.entries()].map(([key, value]) => ({ key, value }));
         }
         // 分组 / 站点列表：导出时按账号过滤
+        if (s.startsWith("SELECT id, name FROM groups")) {
+            // 增量导入的分组索引：按名字认同一条，**只认当前账号**
+            const uid = this.userIdOf(s, args);
+            return this.groups
+                .filter(g => uid === null || g.user_id === uid)
+                .map(g => ({ id: g.id, name: g.name }));
+        }
+        if (s.startsWith("SELECT id, group_id, name, url, updated_at FROM sites")) {
+            // 增量导入的卡片索引：「分组 + 链接」+ 时间戳，同样只认当前账号
+            const uid = this.userIdOf(s, args);
+            return this.sites
+                .filter((x: SiteRow) => uid === null || x.user_id === uid)
+                .map((x: SiteRow) => ({
+                    id: x.id,
+                    group_id: x.group_id,
+                    name: x.name,
+                    url: x.url ?? "",
+                    updated_at: x.updated_at ?? "",
+                }));
+        }
         if (s.startsWith("SELECT id, name, order_num") && s.includes("FROM groups")) {
             return this.groups.map(g => ({ ...g }));
         }
@@ -402,7 +425,7 @@ test("导入中途失败：现有数据一条都不能少（新写入的行要�
     );
 });
 
-test("覆盖恢复成功：备份就位后才清掉旧数据", async () => {
+test("增量导入成功：旧数据一条不少，备份内容并行追加", async () => {
     const db = new MockD1();
     db.groups.push({ id: 5, user_id: 2, name: "旧分组" });
     db.sites.push({ id: 7, group_id: 5, user_id: 2, name: "旧站点" });
@@ -413,10 +436,15 @@ test("覆盖恢复成功：备份就位后才清掉旧数据", async () => {
     const result = await api.importData(backup);
 
     assert.equal(result.success, true);
-    assert.ok(!db.groups.some(g => g.id === 5), "旧分组应已被覆盖");
-    assert.ok(!db.sites.some(s => s.id === 7), "旧站点应已被覆盖");
-    assert.equal(db.groups.filter(g => g.user_id === 2).length, 2, "新数据应为备份里的两个分组");
+    // ⚠️ 这里过去断言的是「旧分组 / 旧站点应已被覆盖」——
+    // 那条删数据的语义已经整条下掉了，现在导入只能做加法。
+    assert.ok(db.groups.some(g => g.id === 5 && g.user_id === 2), "旧分组必须还在");
+    assert.ok(db.sites.some(x => x.id === 7 && x.user_id === 2), "旧站点必须还在");
+    assert.equal(db.groups.filter(g => g.user_id === 2).length, 3, "旧分组 + 备份里两个新分组");
     assert.ok(db.groups.some(g => g.id === 8 && g.user_id === 1), "别的账号的数据不受影响");
+    assert.equal(result.stats?.groupsCreated, 2, "备份里两个分组是新建的");
+    assert.equal(result.stats?.groupsMatched, 0, "没有同名的已有分组");
+    assert.equal(result.stats?.sitesCreated, 1);
 });
 
 test("导出：普通账号的备份里不带全站设置，owner 的才带", async () => {

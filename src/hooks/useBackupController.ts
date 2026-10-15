@@ -6,8 +6,6 @@ import {
     EXPORT_VERSION,
     normalizeImportData,
     type ExportData,
-    type Group,
-    type Site,
     type WebDavConfig,
     type LocalPrefsBackup,
     type ImportProgress,
@@ -21,7 +19,6 @@ import {
     canWriteSharedConfigs,
     pickCronError,
     pickExportConfigs,
-    pickImportConfigEntries,
     remapLocalPrefs,
 } from "../utils/backupScope";
 import type { NotifyFn } from "../context/NotifyContext";
@@ -104,10 +101,9 @@ export function useBackupController(deps: BackupControllerDeps) {
     const [openBackup, setOpenBackup] = useState(false);
     const [backupTab, setBackupTab] = useState(0);
 
-    // 导入预览：备份恢复前先摊开差异让用户挑，确认/取消都通过 promise 回传给备份弹窗
+    // 导入预览：备份导入前先摊开差异让用户挑，确认/取消都通过 promise 回传给备份弹窗
     const [importPreview, setImportPreview] = useState<{
         data: ExportData;
-        overwrite: boolean;
     } | null>(null);
     const importPreviewResolve = useRef<((result: ExportData | null) => void) | null>(null);
 
@@ -379,8 +375,8 @@ export function useBackupController(deps: BackupControllerDeps) {
     };
 
     // 导入前的差异预览：弹出预览框，等用户确认（返回裁剪后的数据）或取消（返回 null）
-    const requestImportPreview = (data: ExportData, overwrite: boolean) => {
-        setImportPreview({ data, overwrite });
+    const requestImportPreview = (data: ExportData) => {
+        setImportPreview({ data });
         return new Promise<ExportData | null>(resolve => {
             importPreviewResolve.current = resolve;
         });
@@ -393,10 +389,16 @@ export function useBackupController(deps: BackupControllerDeps) {
         resolve?.(result);
     };
 
-    // 导入/恢复数据：overwrite=true 覆盖恢复（服务端整体导入），false 合并追加
+    // 导入 / 恢复数据：**一律增量合并 upsert**。
+    //
+    // 以前这里有两条路：overwrite 调服务端「清空当前账号再重建」，false 则在这边
+    // 一条一条 createGroup / createSite 追加。两条都出问题：
+    //   - 覆盖那条会在「文件选错 / 传输中断 / 中途报错」时把账号清空；
+    //   - 追加那条重复导同一份备份会长出一堆同名分组与重复卡片。
+    // 现在统一走服务端 importData 的 upsert：认得出是同一条的就更新或跳过，
+    // 认不出的才新建，本地多出来的一根汗毛都不动 —— 重复导入是幂等的。
     const handleImportBackup = async (
         data: ExportData,
-        overwrite: boolean,
         onProgress?: (progress: ImportProgress) => void
     ) => {
         try {
@@ -408,95 +410,41 @@ export function useBackupController(deps: BackupControllerDeps) {
             }
 
             const normalized = normalizeImportData(data);
-            // 站点 id 映射：覆盖恢复由服务端重新发号并回传映射，合并导入在下面自己建，
-            // 两种模式都要它来把备份里的星标 / 标签翻译到新 id 上
+            // 站点 id 映射：服务端认出「同一条」时不换 id，新建时会重发号并回传映射，
+            // 两种情形都要它来把备份里的星标 / 标签翻译到库里的 id 上
             const siteIdMap = new Map<number, number>();
-            // 全站共享配置只有所有者（或未启用登录的单账号部署）能改，
-            // 免得普通账号拿别人的备份恢复时把整站外观改掉
-            // 能不能改全站外观由 pickImportConfigEntries 判定（见 utils/backupScope）
 
-            // 空备份当成失败处理：覆盖恢复的语义是「以这份备份为准」，拿一份没有分组
-            // 也没有卡片的备份去覆盖，等于把账号清空 —— 多半是文件选错了 / 解析没成功。
-            // 宁可报错让人重选，也不要「恢复成功」后一片空白。
+            // 空备份当成失败处理：一份没有分组也没有卡片的备份导进来不会动任何东西，
+            // 多半是文件选错了 / 解析没成功。宁可报错让人重选，也不要「导入成功」后一片安静。
             if (normalized.groups.length === 0 && normalized.sites.length === 0) {
                 throw new Error("这份备份里没有任何分组或卡片，已取消导入（现有数据未改动）");
             }
 
-            if (overwrite) {
-                // 传原始 data（不是 normalized）：服务端会自己归一化，
-                // 而完整性校验必须在归一化之前做，否则摘要永远对不上。
-                // onProgress 让服务端把真实阶段进度流式推回来 —— 覆盖恢复可能要跑好几秒，
-                // 一个不带动的转圈跟卡死没区别。
-                const result = await api.importData(data, onProgress ? { onProgress } : undefined);
-                if (!result.success) {
-                    throw new Error(result.message || "服务端导入失败");
-                }
-                for (const [oldId, newId] of Object.entries(result.siteIdMap || {})) {
-                    siteIdMap.set(Number(oldId), newId);
-                }
-            } else {
-                // 合并导入：新建分组并记录新旧ID映射，再追加站点
-                const groupIdMap = new Map<number, number>();
-
-                // 合并是一条一条建的，条数自己就数得出来 —— 进度用真实计数推，
-                // 不用「看起来在动」的假动画糊弄
-                const mergeTotal = normalized.groups.length + normalized.sites.length;
-                let mergeDone = 0;
-                const reportMerge = () => {
-                    onProgress?.({ stage: "write", done: ++mergeDone, total: mergeTotal });
-                };
-
-                for (const group of normalized.groups) {
-                    const created = await api.createGroup({
-                        name: group.name,
-                        order_num: group.order_num ?? 0,
-                    } as Group);
-
-                    if (group.id !== undefined && created && created.id !== undefined) {
-                        groupIdMap.set(group.id, created.id);
-                    }
-                    reportMerge();
-                }
-
-                for (const site of normalized.sites) {
-                    const created = await api.createSite({
-                        ...site,
-                        id: undefined,
-                        group_id: groupIdMap.get(site.group_id) ?? site.group_id,
-                    } as Site);
-
-                    if (site.id !== undefined && created && created.id !== undefined) {
-                        siteIdMap.set(site.id, created.id);
-                    }
-                    reportMerge();
-                }
-
-                // 老备份的全站设置混在 configs 里，新备份放在 sharedConfigs，
-                // 两边都按「共享键只有所有者能写」过滤一遍
-                const configEntries = pickImportConfigEntries(normalized, currentUser);
-                // ⚠️ 必须走 **batch**（configs/batch 允许空串），不能逐键 setConfig——
-                // 备份里「未设置」的配置就是空字符串（如 site.iconApi: ""），而
-                // 单键接口按设计拒绝空值（configs/{key} 400「配置值不能为空」），
-                // 逐键写会在第一个空配置上把整个合并导入炸掉（2026-10-15 用户实测：
-                // WebDAV 恢复合并模式必 400）。batch 的空串语义与覆盖恢复的
-                // 服务端批量写入完全一致。auth.*/webdav.* 已被 pickImportConfigEntries 滤掉，
-                // batch 路由的 auth. 禁写不会触发。
-                if (configEntries.length > 0) {
-                    await api.setConfigs(Object.fromEntries(configEntries));
-                }
+            // 传原始 data（不是 normalized）：服务端会自己归一化，
+            // 而完整性校验必须在归一化之前做，否则摘要永远对不上。
+            // onProgress 让服务端把真实阶段进度流式推回来 —— 几千条站点要跑好几秒，
+            // 一个不带动的转圈跟卡死没区别。
+            const result = await api.importData(data, onProgress ? { onProgress } : undefined);
+            if (!result.success) {
+                throw new Error(result.message || "服务端导入失败");
+            }
+            for (const [oldId, newId] of Object.entries(result.siteIdMap || {})) {
+                siteIdMap.set(Number(oldId), newId);
             }
 
             // 把备份里的星标 / 标签写回本机 localStorage：
-            // 服务端现在会重新发号（不再保留备份里的 id），所以两种模式都按映射翻译一遍。
-            // 老备份/无 id 的备份拿不到映射，就只能照原样写回。
+            // 服务端可能重新发号（也可能认出同一条沿用原 id），按映射翻译一遍就两种都对。
             const prefs = normalized.localPrefs;
             const remapped = remapLocalPrefs(prefs, siteIdMap);
+            // ⚠️ 本机偏好也只做合并：从来不用备份里的记录把本地星标擦掉
             if (remapped) {
-                restoreLocalPrefs(remapped, overwrite ? "replace" : "merge");
+                restoreLocalPrefs(remapped, "merge");
             }
 
             // 恢复/导入是低频重操作，这里同步刷新一次（一次 bootstrap 请求）
             await fetchData();
+            // 把服务端数出来的账交给调用方：重复导入时「新增 0」是幂等性唯一可见的证据
+            return result;
         } catch (error) {
             reportError(error, { source: "backup-import" });
             handleError("导入数据失败: " + (error instanceof Error ? error.message : "未知错误"));
