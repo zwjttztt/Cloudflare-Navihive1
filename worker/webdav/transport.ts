@@ -196,6 +196,10 @@ export async function davFetch(
 
     const original = new URL(url);
     let currentHref = url;
+    // 每跳的请求头单独拷贝：跨源那一跳要剥掉 Authorization（凭据只属于用户配置的
+    // 那台服务器），同源跳保持原样。
+    const hopHeaders = { ...headers };
+    let previousOrigin = original.origin;
     for (let hop = 0; hop <= maxRedirects; hop++) {
         const target = new URL(currentHref);
         if (!['http:', 'https:'].includes(target.protocol) || target.username || target.password) {
@@ -204,23 +208,44 @@ export async function davFetch(
         if (original.protocol === "https:" && target.protocol !== "https:") {
             throw new Error("WebDAV 不允许 HTTPS 降级重定向");
         }
-        if (target.origin !== original.origin) {
-            throw new Error("WebDAV 不允许跨源重定向，请保存最终服务器地址");
+        const crossOrigin = target.origin !== previousOrigin;
+        if (crossOrigin) {
+            // 带请求体的方法（PUT / MKCOL / DELETE…）跨源重定向：保持拒绝。
+            // 301/302/303 的标准语义就是换 GET 重发、丢掉 body —— 上传被静默
+            // 重定向等于丢备份；DELETE 被重定向则可能在别的服务器上删东西。
+            if (!["GET", "HEAD", "OPTIONS", "PROPFIND"].includes(method)) {
+                throw new Error("WebDAV 不允许跨源重定向，请保存最终服务器地址");
+            }
+            // 只读方法（GET / PROPFIND / HEAD / OPTIONS）跨源：**跟随**。
+            // openlist/Alist 挂了云存储时，GET 备份文件就是 302 到签名直链
+            // （2026-10-15 用户实测：列表、上传都正常，唯独恢复被旧逻辑挡死）。
+            // 但剥掉 Authorization —— Basic 凭据只属于配置的那台服务器，
+            // 签名直链不需要它，也不该把它送到另一个域上（安全不变式，见
+            // tests/webdav.test.ts 的重定向一组）。
+            delete hopHeaders.Authorization;
         }
         if (!config.allowPrivateNetwork && isBlockedHost(target.hostname)) {
             throw new Error("WebDAV 重定向目标不允许指向内网或本机");
         }
         // 网络层错误原样上抛，由 describeWebDavError 翻成人话（这里不包 try/catch：
         // 包了也只是原样 rethrow）
-        const res = await fetch(currentHref, init);
+        const res = await fetch(currentHref, { ...init, headers: hopHeaders });
         if (res.status >= 300 && res.status < 400) {
             const loc = res.headers.get("location");
             if (!loc) return res; // 缺 Location：把 3xx 原样返回给调用方处理
             if (hop === maxRedirects) {
                 throw new Error("WebDAV 重定向次数过多");
             }
+            previousOrigin = target.origin;
             currentHref = new URL(loc, currentHref).href;
             continue;
+        }
+        if (crossOrigin && !hopHeaders.Authorization && (res.status === 401 || res.status === 403)) {
+            // 跨源那一跳已经剥了凭据还 401：重定向目标自己也认登录 ——
+            // 指路：把最终地址直接填进配置（回到同源，凭据就能正常带上）。
+            throw new Error(
+                "重定向目标要求登录（跨源跟随按安全规则不带凭据）：请把重定向后的最终地址直接填进 WebDAV 配置"
+            );
         }
         return res;
     }

@@ -227,26 +227,35 @@ test("isAutoBackupFileName：只有 auto 前缀算自动备份", () => {
 
 // ---- 重定向：凭据绝不能跟着跳走 ----
 // 早先是「每跳都复用 Authorization + 只检查主机」：网盘只要回一个 302 到别的域，
-// Basic 凭据就被原样送到那个域上（还能跳进内网）。现在改成同源 + 不降级。
+// Basic 凭据就被原样送到那个域上（还能跳进内网）。
+// 2026-10-15 起放宽为「**只读方法**跨源可跟随、但剥掉凭据」：openlist/Alist 挂云存储
+// 时 GET 备份文件就是 302 到签名直链，一刀切拒绝把「恢复」全堵死了（用户实测）。
+// 不变的安全不变式：**跨源那一跳不带 Authorization**；PUT/MKCOL/DELETE 等
+// 带 body 或有副作用的方法跨源仍然拒绝（301/302 丢 body / 副作用落到别的服务器）。
 
 /** 用一个可编排的假 fetch 跑 davFetch，返回实际发出去的请求 */
 async function traceRedirect(
     startUrl: string,
-    hops: Array<{ status: number; location?: string }>
+    hops: Array<{ status: number; location?: string; body?: string }>,
+    method: "GET" | "PUT" = "GET"
 ) {
     const realFetch = globalThis.fetch;
-    const sent: Array<{ url: string; authorization?: string | null }> = [];
+    const sent: Array<{ url: string; authorization?: string | null; body?: string }> = [];
     globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
         const url = typeof input === "string" ? input : String((input as Request).url ?? input);
         const headers = new Headers((init?.headers as Record<string, string>) ?? {});
-        sent.push({ url, authorization: headers.get("authorization") });
+        sent.push({
+            url,
+            authorization: headers.get("authorization"),
+            body: typeof init?.body === "string" ? init.body : undefined,
+        });
         const hop = hops[Math.min(sent.length - 1, hops.length - 1)];
         const resHeaders = new Headers();
         if (hop.location) resHeaders.set("location", hop.location);
-        return new Response(null, { status: hop.status, headers: resHeaders });
+        return new Response(hop.body ?? null, { status: hop.status, headers: resHeaders });
     }) as typeof fetch;
     try {
-        await davFetch(startUrl, "GET", cfg("https://dav.example.com"));
+        await davFetch(startUrl, method, cfg("https://dav.example.com"));
         return { sent, error: null as string | null };
     } catch (error) {
         return { sent, error: error instanceof Error ? error.message : String(error) };
@@ -266,13 +275,48 @@ test("同源重定向：正常跟着跳，凭据只在自己域上", async () =>
     assert.equal(sent[1].url, "https://dav.example.com/b");
 });
 
-test("跨源重定向直接拒绝：凭据不会送到别的域", async () => {
+test("跨源重定向（GET）：跟过去，但 Authorization 不出自己域", async () => {
     const { sent, error } = await traceRedirect("https://dav.example.com/a", [
-        { status: 302, location: "https://evil.example.net/steal" },
-        { status: 200 },
+        { status: 302, location: "https://cdn.example.net/real-file" },
+        { status: 200, body: "file-bytes" },
     ]);
+    assert.equal(error, null, "openlist/Alist 挂云存储时 GET 就是 302 到签名直链，必须能跟");
+    assert.equal(sent.length, 2);
+    assert.ok(sent[0].authorization, "第一跳（自己域）要带凭据");
+    assert.equal(sent[1].url, "https://cdn.example.net/real-file");
+    assert.equal(sent[1].authorization, null, "跨源那一跳绝不能带 Authorization");
+});
+
+test("跨源重定向（PUT）：仍然拒绝（301/302 丢 body = 丢备份）", async () => {
+    const { sent, error } = await traceRedirect(
+        "https://dav.example.com/a",
+        [
+            { status: 302, location: "https://cdn.example.net/upload" },
+            { status: 200 },
+        ],
+        "PUT"
+    );
     assert.match(error ?? "", /跨源重定向/);
     assert.equal(sent.length, 1, "第二跳根本不该发出去");
+});
+
+test("跨源重定向目标自己要登录（401）：报出可操作的指路错误", async () => {
+    const { sent, error } = await traceRedirect("https://dav.example.com/a", [
+        { status: 302, location: "https://other.example.net/dav/file" },
+        { status: 401 },
+    ]);
+    assert.match(error ?? "", /重定向目标要求登录/);
+    assert.equal(sent.length, 2);
+    assert.equal(sent[1].authorization, null, "401 之前凭据也不该送到别的域");
+});
+
+test("跨源重定向目标指向内网：仍然被挡（SSRF 不因放宽跨源而放开）", async () => {
+    const { sent, error } = await traceRedirect("https://dav.example.com/a", [
+        { status: 302, location: "https://192.168.1.1/steal" },
+        { status: 200 },
+    ]);
+    assert.match(error ?? "", /内网或本机/);
+    assert.equal(sent.length, 1);
 });
 
 test("HTTPS 降级重定向被拒绝（不允许退回 http）", async () => {
