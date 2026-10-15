@@ -8,8 +8,14 @@
 // 别合并成一个 openDialog(id)：这批弹窗各有各的附加动作（开账号要顺带拉一次
 // 账号列表与会话列表），合成一个分发函数反而要把这些差异塞进去。
 
+import { lazy, Suspense } from "react";
 import HeaderActions from "./HeaderActions";
-import MoreMenu from "./MoreMenu";
+// 「更多选项」菜单按需加载：它用的是 MUI 的 Menu/Popover/Popper 一大家子，
+// 只在点「更多选项」时才出现 —— 静态引入会把这套机器焊进首屏关键路径
+// （打包器把懒弹窗共用的 MUI 归成一个块，首屏组件一 import 就被 modulepreload，
+// 2026-10-15 审计实测白下 425KB / gzip 128KB，见 docs/site-audit-2026-10-15.md）。
+// 关着的时候整个组件不挂载（菜单本就是点开的瞬间才需要，淡出动画让位于首屏字节）。
+const MoreMenu = lazy(() => import("./MoreMenu"));
 import { SortMode } from "../constants";
 
 export interface HeaderActionsSlotProps {
@@ -85,24 +91,28 @@ export default function HeaderActionsSlot({
             onMenuOpen={onMenuOpen}
             menuOpen={menuOpen}
             menu={
-                <MoreMenu
-                    anchorEl={menuAnchorEl}
-                    // 排序模式下整组动作都换成「保存 / 取消」，菜单不该还开着
-                    open={menuOpen && sortMode === SortMode.None}
-                    onClose={onMenuClose}
-                    onOpenConfig={onOpenConfig}
-                    onOpenAccount={onOpenAccount}
-                    onStartGroupSort={onStartGroupSort}
-                    onOpenStats={onOpenStats}
-                    onOpenBackup={onOpenBackup}
-                    onOpenRecycle={onOpenRecycle}
-                    onOpenAudit={onOpenAudit}
-                    isAuthenticated={isAuthenticated}
-                    onLogout={onLogout}
-                    onOpenAiAssistant={onOpenAiAssistant}
-                    onOpenShortcuts={onOpenShortcuts}
-                    isSiteOwner={isSiteOwner}
-                />
+                menuOpen ? (
+                    <Suspense fallback={null}>
+                        <MoreMenu
+                            anchorEl={menuAnchorEl}
+                            // 排序模式下整组动作都换成「保存 / 取消」，菜单不该还开着
+                            open={menuOpen && sortMode === SortMode.None}
+                            onClose={onMenuClose}
+                            onOpenConfig={onOpenConfig}
+                            onOpenAccount={onOpenAccount}
+                            onStartGroupSort={onStartGroupSort}
+                            onOpenStats={onOpenStats}
+                            onOpenBackup={onOpenBackup}
+                            onOpenRecycle={onOpenRecycle}
+                            onOpenAudit={onOpenAudit}
+                            isAuthenticated={isAuthenticated}
+                            onLogout={onLogout}
+                            onOpenAiAssistant={onOpenAiAssistant}
+                            onOpenShortcuts={onOpenShortcuts}
+                            isSiteOwner={isSiteOwner}
+                        />
+                    </Suspense>
+                ) : null
             }
         />
     );

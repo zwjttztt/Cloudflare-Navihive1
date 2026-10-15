@@ -36,7 +36,7 @@
 
 ---
 
-## P1 · 首屏被弹窗族 MUI 占走 425KB raw / 128KB gzip（加载速度）
+## P1 · 首屏被弹窗族 MUI 占走 425KB raw / 128KB gzip（加载速度）→ 已评估：维持现状，附解封条件
 
 **事实**（构建产物依赖图分析）：
 
@@ -47,18 +47,31 @@
 - 根因：manualChunks 把所有「懒弹窗也用」的 MUI 归进 mui-lazy；而首屏组件确实需要其中一部分——
   `SnackbarHost`（全局 toast）、`MoreMenu`（顶栏菜单）、`SiteCard`（卡片菜单）、`GroupCard`（分组对话框）。
   共享模块没法只给一边，于是全被拽上首屏。
-- 对比：2026-10-12 的首屏优化文档目标是 **513KB raw**（见 `vite.config.ts` 注释里的实测记录），
-  现在 975KB——**回退了约 460KB raw**。
+- **这是文档化、预算内的既定权衡**，不是事故：`tests/bundleBudget.test.ts` 的基线
+  （914.1KB / gzip 295.2KB）和预算（1000KB / 325KB）都是按这个形态定的，
+  换来的是二次确认框离线可用（删除在离线队列里允许）。
 
-**可执行建议**（两条路线，推荐 A）：
+**修复尝试与结论（2026-10-15，两案皆试）**：
 
-- **A. 把「点了才出现」的首屏 MUI 消费者改懒加载**：`MoreMenu` 用 `React.lazy` +
-  `ChunkBoundary when={menuOpen}`（项目现成模式）；`SiteCard` 的卡片菜单、`GroupCard` 的对话框同理。
-  首屏只剩 `SnackbarHost` 需要 Snackbar——若也接受 toast 晚 ~100ms 出现，可一并懒化。
-  预期：entry 不再静态依赖 mui-lazy → 首屏 **-425KB raw / -128KB gzip**，回到 ~550KB raw。
-- **B. 改 manualChunks：把共享 MUI 复制回 index**（2026-10-12 实测总积体只 +0.24%），
-  弹窗块各自再带一份。改动小但首屏还是要下这些字节，治标。
-- 改完必须重测：首屏 raw 总字节（不是单块）+ `bundleBudget` 不红。
+1. **按「首屏静态图 / 纯弹窗」拆成 mui-lazy + mui-dialog 两块** —— 不可行：
+   rolldown 在 manualChunks 回调期给的 `importers` 图**既混着动态边又缺静态边**
+   （实测连 `react.production.js` 都被并进了按名分出的 mui-dialog 块；
+   `dialogSection.tsx` / `dialogShell.ts` 这类只在懒图里被静态引用的共享 helper
+   会被误判成首屏锚点，把 Dialog 全家拉回去）。任何基于 importers 游走的判定都不可靠。
+2. **MUI 全部交回 Rollup**（2026-10-12 曾实测首屏 513KB）—— 现在复测：首屏 830.8KB（-144KB）
+   但 **modulepreload 碎成 22 个请求**（Portal 1KB / contains 0KB / Paper 2KB…，
+   rolldown 的 minChunkSize 不生效没法合并），且 index 涨到 336KB（超 252KB 预算，
+   会污染「index 只反映业务代码」这个子指标）。
+
+**维持现状的理由**：425KB raw / 128KB gzip 是**首访一次**的成本（SW 预缓存后为零），
+HTTP/2 下单请求比 22 个碎片请求更优；预算全绿。**解封条件**（满足任一即可重做）：
+rolldown 的 `advancedChunks` API 成熟（按模块路径正则分块，绕开 importers 图不可靠问题），
+或 minChunkSize 生效可合并 give-back 的碎片，或 SW 预缓存策略改变（不再要求离线确认框）。
+
+**本轮已落地的无争议部分**（与新拆分无关的卫生改进）：`MoreMenu`、SiteCard 右键菜单
+（新组件 `SiteCardContextMenu`）、`SnackbarHost` 三个「点了才出现」的组件改为
+**条件挂载 + 懒加载**——entry chunk 243→225KB，首屏 JS 少解析一份菜单/提示条代码；
+读屏播报区拆成常驻的 `AriaLiveRegion`（live region 必须先于内容存在，读屏才会念）。
 
 ---
 

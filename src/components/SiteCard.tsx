@@ -3,6 +3,8 @@ import { useState, memo, lazy, Suspense } from "react";
 import { Site } from "../API/http";
 // 卡片设置弹窗按需加载：只有点开某一张卡片时才需要它
 const SiteSettingsModal = lazy(() => import("./SiteSettingsModal"));
+// 右键 / 更多操作菜单按需加载：MUI Menu/Popover/Popper 不进首屏（见该文件顶部注释）
+const SiteCardContextMenu = lazy(() => import("./SiteCardContextMenu"));
 import SiteCardAvatar from "./SiteCardAvatar";
 import { toneForName } from "../utils/siteAvatar";
 import { copyToClipboard as copyText } from "../utils/clipboard";
@@ -20,11 +22,6 @@ import {
     IconButton,
     Box,
     Tooltip,
-    Menu,
-    MenuItem,
-    ListItemIcon,
-    ListItemText,
-    Divider,
     useTheme,
     alpha,
 } from "@mui/material";
@@ -34,14 +31,9 @@ import StarBorderIcon from "@mui/icons-material/StarBorder";
 import CheckCircleIcon from "@mui/icons-material/CheckCircle";
 import RadioButtonUncheckedIcon from "@mui/icons-material/RadioButtonUnchecked";
 import DragIndicatorIcon from "@mui/icons-material/DragIndicator";
-import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import LinkIcon from "@mui/icons-material/Link";
 import PersonIcon from "@mui/icons-material/Person";
 import KeyIcon from "@mui/icons-material/Key";
-import EditIcon from "@mui/icons-material/Edit";
-import NotesIcon from "@mui/icons-material/Notes";
-import DeleteOutlineIcon from "@mui/icons-material/DeleteOutlined";
-import LinkOffIcon from "@mui/icons-material/LinkOff";
 import { useAppConfig } from "../context/appConfigStore";
 import { useNotify } from "../context/NotifyContext";
 import { canOpenSite, safeOpenSite } from "../utils/safeOpen";
@@ -877,100 +869,6 @@ const SiteCard = memo(function SiteCard({
         </Box>
     );
 
-    // 右键菜单（与卡片本体共用一套打开/复制/编辑/删除动作）
-    const contextMenu = (
-        <Menu
-            open={menuPos !== null}
-            onClose={closeMenu}
-            anchorReference='anchorPosition'
-            anchorPosition={menuPos ? { top: menuPos.top, left: menuPos.left } : undefined}
-            slotProps={{ paper: { sx: { minWidth: 190, borderRadius: "14px" } } }}
-            aria-label={`${site.name || "卡片"}操作菜单`}
-        >
-            <MenuItem onClick={handleMenuOpen} disabled={!site.url}>
-                <ListItemIcon>
-                    <OpenInNewIcon fontSize='small' />
-                </ListItemIcon>
-                <ListItemText>新标签打开</ListItemText>
-            </MenuItem>
-            <MenuItem
-                onClick={() => {
-                    closeMenu();
-                    toggleStar(site.id);
-                }}
-            >
-                <ListItemIcon>
-                    {starred ? (
-                        <StarIcon fontSize='small' sx={{ color: "var(--accent)" }} />
-                    ) : (
-                        <StarBorderIcon fontSize='small' />
-                    )}
-                </ListItemIcon>
-                <ListItemText>{starred ? "取消星标" : "加星标置顶"}</ListItemText>
-            </MenuItem>
-            <MenuItem onClick={e => handleQuickCopy(e, "链接", site.url)} disabled={!site.url}>
-                <ListItemIcon>
-                    <LinkIcon sx={{
-                        fontSize: 'small'
-                    }} />
-                </ListItemIcon>
-                <ListItemText>复制链接</ListItemText>
-            </MenuItem>
-            {hasUsername && (
-                <MenuItem onClick={e => handleQuickCopy(e, "账号", site.username)}>
-                    <ListItemIcon>
-                        <PersonIcon fontSize='small' />
-                    </ListItemIcon>
-                    <ListItemText>复制账号</ListItemText>
-                </MenuItem>
-            )}
-            {hasPassword && (
-                <MenuItem onClick={e => handleQuickCopy(e, "密码", site.password)}>
-                    <ListItemIcon>
-                        <KeyIcon fontSize='small' />
-                    </ListItemIcon>
-                    <ListItemText>复制密码</ListItemText>
-                </MenuItem>
-            )}
-            {isDead && (
-                <MenuItem onClick={handleMarkAlive}>
-                    <ListItemIcon>
-                        <LinkOffIcon fontSize='small' />
-                    </ListItemIcon>
-                    <ListItemText>标记为可访问</ListItemText>
-                </MenuItem>
-            )}
-            {/* 只在「之前标过可访问」时才给撤销入口：标过 = 已免探测，
-                不给出口的话这条链接就永久脱离巡检了。 */}
-            {isWhitelisted && (
-                <MenuItem onClick={handleRecheck}>
-                    <ListItemIcon>
-                        <LinkIcon fontSize='small' />
-                    </ListItemIcon>
-                    <ListItemText>重新检测该站</ListItemText>
-                </MenuItem>
-            )}
-            <Divider />
-            <MenuItem onClick={handleMenuNotes}>
-                <ListItemIcon>
-                    <NotesIcon fontSize='small' />
-                </ListItemIcon>
-                <ListItemText>编辑备注</ListItemText>
-            </MenuItem>
-            <MenuItem onClick={handleMenuEdit}>
-                <ListItemIcon>
-                    <EditIcon fontSize='small' />
-                </ListItemIcon>
-                <ListItemText>编辑</ListItemText>
-            </MenuItem>
-            <MenuItem onClick={handleMenuDelete} sx={{ color: "error.main" }}>
-                <ListItemIcon>
-                    <DeleteOutlineIcon fontSize='small' color='error' />
-                </ListItemIcon>
-                <ListItemText>删除</ListItemText>
-            </MenuItem>
-        </Menu>
-    );
 
     if (isEditMode) {
         return (
@@ -998,7 +896,34 @@ const SiteCard = memo(function SiteCard({
     return (
         <>
             {cardContent}
-            {contextMenu}
+
+            {/* 右键 / 更多操作菜单：抽成懒组件且只在打开时挂载 ——
+                MUI 的 Menu/Popover/Popper 一大家子不该进首屏关键路径
+                （见 SiteCardContextMenu 顶部注释与 docs/site-audit-2026-10-15.md） */}
+            {menuPos !== null && (
+                <Suspense fallback={null}>
+                    <SiteCardContextMenu
+                        open
+                        position={menuPos}
+                        siteName={site.name}
+                        url={site.url}
+                        username={site.username}
+                        password={site.password}
+                        starred={starred}
+                        isDead={isDead}
+                        isWhitelisted={isWhitelisted}
+                        onClose={closeMenu}
+                        onOpen={handleMenuOpen}
+                        onToggleStar={() => toggleStar(site.id)}
+                        onQuickCopy={handleQuickCopy}
+                        onMarkAlive={handleMarkAlive}
+                        onRecheck={handleRecheck}
+                        onNotes={handleMenuNotes}
+                        onEdit={handleMenuEdit}
+                        onDelete={handleMenuDelete}
+                    />
+                </Suspense>
+            )}
 
             {showSettings && (
                 <Suspense fallback={null}>

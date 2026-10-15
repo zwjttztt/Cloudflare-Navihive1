@@ -30,7 +30,6 @@ import { useOfflineBannerVisible } from "./hooks/useOfflineBannerVisible";
 // 二次确认走按需入口：它只在用户点了删除之后才出现，不该占首屏
 import ConfirmDialog from "./components/ConfirmDialogGate";
 // 提示条 / 背景装饰 / 浮层挂载点：三段纯渲染的 JSX，从 App 的渲染树里抽出来
-import SnackbarHost from "./components/SnackbarHost";
 import BackgroundLayers from "./components/BackgroundLayers";
 import OverlayHost from "./components/OverlayHost";
 import { useDocumentEffects } from "./hooks/useDocumentEffects";
@@ -172,6 +171,10 @@ import {
     CssBaseline,
 } from "@mui/material";
 import ChunkBoundary from "./components/ChunkBoundary";
+// 顶部提示条：懒加载 + 有提示才挂载（Snackbar 那套不进首屏关键路径，
+// 见 docs/site-audit-2026-10-15.md P1）；读屏播报区是常驻的 AriaLiveRegion
+const SnackbarHost = lazy(() => import("./components/SnackbarHost"));
+import AriaLiveRegion from "./components/AriaLiveRegion";
 const ShortcutsDialog = lazy(() => import("./components/ShortcutsDialog"));
 
 // 根据环境选择使用真实API还是模拟API
@@ -1410,15 +1413,22 @@ function App() {
             {/* 回到顶部：滚过一屏才出现 */}
             <BackToTop />
 
-            <SnackbarHost
-                open={snackbarOpen}
-                message={snackbarMessage}
-                severity={snackbarSeverity}
-                duration={snackbarDuration}
-                action={snackbarAction}
-                liveMessage={liveMessage}
-                onClose={handleCloseSnackbar}
-            />
+            {/* 读屏播报区常驻：live region 要先于内容存在，读屏才会念出来 */}
+            <AriaLiveRegion message={liveMessage} />
+
+            {/* 顶部提示条：有提示才挂载，且整块懒加载（Snackbar 不进首屏关键路径） */}
+            {snackbarOpen && (
+                <Suspense fallback={null}>
+                    <SnackbarHost
+                        open={snackbarOpen}
+                        message={snackbarMessage}
+                        severity={snackbarSeverity}
+                        duration={snackbarDuration}
+                        action={snackbarAction}
+                        onClose={handleCloseSnackbar}
+                    />
+                </Suspense>
+            )}
 
             <BackgroundLayers
                 imageUrl={backgroundImageUrl}

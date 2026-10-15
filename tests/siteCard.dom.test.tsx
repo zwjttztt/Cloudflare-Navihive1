@@ -272,14 +272,21 @@ test("焦点在里面的链接上：回车/空格都不会被 ButtonBase 重复�
 // 右键「编辑备注」：直达放大窗
 // ---------------------------------------------------------------------------
 
-/** 打开卡片右键菜单（真实右键事件走的是同一条路径） */
-function openContextMenu() {
+/** 打开卡片右键菜单（真实右键事件走的是同一条路径）。
+ *  ⚠️ 菜单是 2026-10-15 起的懒组件（MUI Menu/Popper 不进首屏），
+ *  右键后要等 chunk 解析完菜单才渲染 —— 轮询到出现为止。 */
+async function openContextMenu() {
     const shell = document.querySelector(".nav-site-card") || document.querySelector("a") || document.body;
     act(() => {
         shell.dispatchEvent(
             new MouseEvent("contextmenu", { bubbles: true, clientX: 120, clientY: 160 })
         );
     });
+    for (let i = 0; i < 80 && !menuItem("新标签打开"); i++) {
+        await act(async () => {
+            await new Promise(r => setTimeout(r, 25));
+        });
+    }
 }
 
 const menuItem = (label: string) =>
@@ -287,18 +294,18 @@ const menuItem = (label: string) =>
         (li.textContent || "").trim() === label
     );
 
-test("右键菜单里有「编辑备注」", () => {
+test("右键菜单里有「编辑备注」", async () => {
     renderCard();
-    openContextMenu();
+    await openContextMenu();
     assert.ok(
         menuItem("编辑备注"),
         "右键菜单要有一项「编辑备注」—— 不然想改备注得先进设置再找放大按钮"
     );
 });
 
-test("「编辑备注」排在「编辑」前面（同属修改类，位置要好找）", () => {
+test("「编辑备注」排在「编辑」前面（同属修改类，位置要好找）", async () => {
     renderCard();
-    openContextMenu();
+    await openContextMenu();
     const labels = [...document.querySelectorAll<HTMLElement>("li")].map(li =>
         (li.textContent || "").trim()
     );
@@ -320,7 +327,7 @@ test("点「编辑备注」直达放大窗；点「编辑」进的是主窗（�
     const openVia = async (label: string) => {
         cleanup();
         renderCard({ site: { ...makeSite(), id: 5, name: "带备注的站", notes: "原来的备注" } });
-        openContextMenu();
+        await openContextMenu();
         const item = menuItem(label);
         assert.ok(item, `菜单里要有「${label}」`);
         // 设置弹窗是 lazy(() => import(...))，要点 + 等 Suspense 把 chunk 解析完。
@@ -383,7 +390,7 @@ test("右键那条路点「保存」会直接写库（没有主窗替你提交�
             </AppConfigProvider>
         );
     });
-    openContextMenu();
+    await openContextMenu();
     await act(async () => {
         menuItem("编辑备注")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
         await new Promise(r => setTimeout(r, 80));

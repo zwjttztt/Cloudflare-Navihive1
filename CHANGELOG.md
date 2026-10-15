@@ -6,6 +6,24 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。---
 
+## 2026-10-15（七）· 性能 + 工程：首屏交互组件懒化；读屏播报区常驻化
+
+**要点**：「更多选项」菜单、卡片右键菜单、全局提示条三个**点了才出现**的组件改为
+**条件挂载 + 懒加载**——entry chunk 243→225KB，首屏少解析一份菜单/提示条代码；
+读屏播报区拆成常驻小组件（live region 必须先于内容存在，读屏才会念）。
+
+- 新组件：`SiteCardContextMenu`（从 SiteCard 抽出的右键菜单）、`AriaLiveRegion`（无依赖 div）。
+- `MoreMenu` 在 HeaderActionsSlot 里改为 `lazy` + 仅 `menuOpen` 时挂载（关闭动画让位于首屏字节）。
+- **背景**：全站审查（`docs/site-audit-2026-10-15.md` P1）曾尝试把弹窗族 MUI 从首屏 preload 里
+  拆出去——两案皆止步：rolldown 的 manualChunks 回调期 `importers` 图既污染又缺失
+  （连 react.production.js 都会被并进按名分出的块），give-back 方案又把 preload 碎成 22 个
+  不可合并的小请求（minChunkSize 不生效）且 index 超 252KB 预算。结论：**维持
+  mui-lazy 块 preload 的既定权衡**（425KB raw / 128KB gzip，首访一次、SW 预缓存后为零，
+  预算 1000KB 内全绿），解封条件见审计报告。这三个懒化是与该权衡无关的卫生改进。
+- `tests/siteCard.dom.test.tsx`：右键菜单用例改为轮询等懒 chunk（菜单出现是异步的了）。
+
+---
+
 ## 2026-10-15（六）· 工程：App.tsx 启动门控有了单测（补测试清单收尾）
 
 **要点**：补测试清单上最后一个文件——App.tsx（2056 行）的启动门控现在有 3 条 DOM 用例。

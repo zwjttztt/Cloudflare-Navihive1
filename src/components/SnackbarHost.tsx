@@ -1,9 +1,8 @@
 // src/components/SnackbarHost.tsx
-// 顶部提示条 + 读屏播报区。原来内联在 App.tsx 里 121 行。
-//
-// 抽出来的理由很单纯：这两块只依赖 7 个值，全是「提示状态 + 一个关闭回调」，
-// 不碰任何业务状态。留在 App 里纯粹是占地方。
-import { Box, Snackbar, Alert, Button, IconButton } from "@mui/material";
+// 顶部提示条（视觉部分）。读屏播报区已拆去 AriaLiveRegion.tsx ——
+// 它必须常驻（live region 要先于内容存在），而本组件为了首屏字节改成
+// 懒加载 + 有提示才挂载（2026-10-15 审计 P1，见 docs/site-audit-2026-10-15.md）。
+import { Snackbar, Alert, Button, IconButton } from "@mui/material";
 import { alpha } from "@mui/material/styles";
 import CheckCircleRoundedIcon from "@mui/icons-material/CheckCircleRounded";
 import InfoRoundedIcon from "@mui/icons-material/InfoRounded";
@@ -20,8 +19,6 @@ export interface SnackbarHostProps {
     duration: number;
     /** 提示上挂的操作按钮（目前用于「删除后撤销」） */
     action?: NotifyAction | null;
-    /** 同步给读屏的那一份文案（页面上有 sr-only 的 aria-live 区） */
-    liveMessage: string;
     onClose: () => void;
 }
 
@@ -31,31 +28,10 @@ export default function SnackbarHost({
     severity,
     duration,
     action,
-    liveMessage,
     onClose,
 }: SnackbarHostProps) {
     return (
         <>
-            {/* 读屏播报区：视觉上不可见，但每次提示都会同步到这里（aria-live） */}
-            <Box
-                role='status'
-                aria-live='polite'
-                aria-atomic='true'
-                sx={{
-                    position: "absolute",
-                    width: 1,
-                    height: 1,
-                    m: -1,
-                    p: 0,
-                    border: 0,
-                    overflow: "hidden",
-                    whiteSpace: "nowrap",
-                    clip: "rect(0 0 0 0)",
-                }}
-            >
-                {liveMessage}
-            </Box>
-
             {/* 错误/成功提示 Snackbar：顶部居中，成功类短暂停留、错误类停留更久 */}
             <Snackbar
                 open={open}
