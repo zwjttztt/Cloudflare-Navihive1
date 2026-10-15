@@ -167,9 +167,7 @@ import { sortableKeyboardCoordinates } from "@dnd-kit/sortable";
 // Material UI 导入
 import {
     Container,
-    Typography,
     Box,
-    Button,
     ThemeProvider,
     CssBaseline,
 } from "@mui/material";
@@ -1628,34 +1626,6 @@ function App() {
                         semanticBusy={semanticBusy}
                         onBuildSemanticIndex={() => void buildSemanticIndex(true)}
                     />
-
-                    {/* 语义搜索的两句话：没索引就教他建一个，搜不到就说清楚下面的是关键词结果 */}
-                    {semanticSearch && (
-                        <Typography
-                            variant='caption'
-                            sx={{
-                                color: 'text.secondary',
-                                display: "block",
-                                mt: -2,
-                                mb: 2
-                            }}>
-                            {semanticNote ? `${semanticNote}。` : null}
-                            {ai.ready && (ai.status?.embedded ?? 0) === 0 ? (
-                                <>
-                                    {" "}
-                                    语义搜索要先给站点建一次索引。
-                                    <Button
-                                        size='small'
-                                        disabled={semanticBusy}
-                                        onClick={() => void buildSemanticIndex(true)}
-                                        sx={{ minWidth: 0, px: 0.5, fontSize: 12 }}
-                                    >
-                                        {semanticBusy ? "正在生成…" : "现在生成"}
-                                    </Button>
-                                </>
-                            ) : null}
-                        </Typography>
-                    )}
 
                     {loading && (
                         <ChunkBoundary>
