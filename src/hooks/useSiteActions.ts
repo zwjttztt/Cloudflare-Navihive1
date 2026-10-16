@@ -271,7 +271,10 @@ export function useSiteActions(deps: SiteActionsDeps) {
                 const label = `删除「${snapshot.name || "该网站"}」`;
                 // 压进操作栈后，即使提示条已经消失，Ctrl+Z 还能把卡片找回来
                 pushHistory({ label, undo: restore, redo: removeAgain });
-                notify(`已删除「${snapshot.name || "该网站"}」（可在回收站恢复）`, "info", 8000, {
+                // 15 秒：删错往往不是当场发现的（整理完一批才发现少了一张），
+                // 8 秒窗口在这条链路上偏短（docs/dialogs-audit-2026-10-16.md P3-2）。
+                // 提示条消失了也还能 Ctrl+Z —— 操作栈里那份撤销不受时长影响。
+                notify(`已删除「${snapshot.name || "该网站"}」（可在回收站恢复）`, "info", 15000, {
                     label: "撤销",
                     onClick: () => void runUndo(),
                 });
@@ -398,7 +401,8 @@ export function useSiteActions(deps: SiteActionsDeps) {
                         "error"
                     );
                 } else {
-                    notify(`已删除 ${deletedIds.length} 个网站（可在回收站恢复）`, "info", 8000, {
+                    // 同上：批量删除的撤销窗口也给到 15 秒
+                    notify(`已删除 ${deletedIds.length} 个网站（可在回收站恢复）`, "info", 15000, {
                         label: "撤销",
                         onClick: () => void runUndo(),
                     });

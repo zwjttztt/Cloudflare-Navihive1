@@ -467,6 +467,18 @@ export default function SiteSettingsModal({
                         onClick={() => toggleStar(site.id)}
                         className='nav-settings-star'
                     />
+                    {/* 窄屏专用：删除收成标题行的图标钮。操作区只留取消/保存，
+                        否则三个按钮在 301px 里换行成 116px 高，吃掉小屏六分之一
+                        （docs/dialogs-audit-2026-10-16.md P2-2） */}
+                    <IconButton
+                        color='error'
+                        onClick={handleDeleteClick}
+                        aria-label='删除这个网站'
+                        size='small'
+                        sx={{ display: { xs: "inline-flex", sm: "none" } }}
+                    >
+                        <DeleteIcon fontSize='small' />
+                    </IconButton>
                     <IconButton
                         color='inherit'
                         onClick={onClose}
@@ -949,11 +961,13 @@ export default function SiteSettingsModal({
                 </DialogContent>
 
                 <DialogActions sx={{ px: 3, pb: 2.5, pt: 1, justifyContent: "space-between" }}>
+                    {/* sm 以上才占操作区的位置；窄屏那一个在标题行（见上） */}
                     <Button
                         onClick={handleDeleteClick}
                         color='error'
                         variant='contained'
                         startIcon={<DeleteIcon />}
+                        sx={{ display: { xs: "none", sm: "inline-flex" } }}
                     >
                         删除
                     </Button>

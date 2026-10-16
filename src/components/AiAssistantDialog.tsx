@@ -246,7 +246,9 @@ export default function AiAssistantDialog({
             open={open}
             onClose={onClose}
             fullWidth
-            maxWidth='xs'
+            // xs(444) 放「开关 / 模型服务 / 凭据 / 测试连接」四组太挤，
+            // 升到 sm(600)（docs/dialogs-audit-2026-10-16.md P3-3）
+            maxWidth='sm'
             slotProps={{ paper: { sx: dialogPaperSx } }}
         >
             <DialogTitle sx={dialogTitleSx}>

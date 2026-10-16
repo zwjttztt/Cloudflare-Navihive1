@@ -38,6 +38,9 @@ export interface OverlayHostProps {
         onGroups: (event: React.MouseEvent<HTMLElement>) => void;
         onAdd: () => void;
         onMore: (event: React.MouseEvent<HTMLElement>) => void;
+        /** 打开记事本（窄屏唯一入口：顶栏那个 md 以下不显示） */
+        onNotes?: () => void;
+        notesBadge?: number;
         onToggleStar: () => void;
         starActive: boolean;
         badge: number;
@@ -147,6 +150,8 @@ export default function OverlayHost({
                 onGroups={mobile.onGroups}
                 onAdd={mobile.onAdd}
                 onMore={mobile.onMore}
+                onNotes={mobile.onNotes}
+                notesBadge={mobile.notesBadge}
                 onToggleStar={mobile.onToggleStar}
                 starActive={mobile.starActive}
                 badge={mobile.badge}

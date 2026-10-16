@@ -14,6 +14,7 @@ import AddCircleOutlineIcon from "@mui/icons-material/AddCircleOutlined";
 import MoreHorizIcon from "@mui/icons-material/MoreHoriz";
 import StarIcon from "@mui/icons-material/Star";
 import StarBorderIcon from "@mui/icons-material/StarBorder";
+import StickyNote2Icon from "@mui/icons-material/StickyNote2";
 
 // <=899.98px 才出现（.98 是为了吃掉 899.5 这类亚像素宽度）。
 // 900~1343.98px 由顶栏的「分组」按钮接管分组入口，>=1344px 由左栏接管。
@@ -24,6 +25,11 @@ interface MobileTabBarProps {
     onGroups: (event: React.MouseEvent<HTMLElement>) => void;
     onAdd: () => void;
     onMore: (event: React.MouseEvent<HTMLElement>) => void;
+    /** 打开记事本。顶栏那个入口在 md 以下被隐藏，窄屏全靠这一项
+     * （2026-10-16 弹窗排查：P1 —— 之前窄屏完全打不开记事本） */
+    onNotes?: () => void;
+    /** 记事本条目数，>0 时在图标上贴角标（不传或 0 不显示） */
+    notesBadge?: number;
     /** 切换「只看星标」（窄屏上顶栏那颗胶囊要滚到顶才点得到，这里补一个） */
     onToggleStar?: () => void;
     starActive?: boolean;
@@ -39,6 +45,8 @@ export default function MobileTabBar({
     onGroups,
     onAdd,
     onMore,
+    onNotes,
+    notesBadge = 0,
     onToggleStar,
     starActive = false,
     badge = 0,
@@ -56,10 +64,23 @@ export default function MobileTabBar({
         icon: React.ReactNode;
         onClick: (event: React.MouseEvent<HTMLElement>) => void;
         active?: boolean;
+        badge?: number;
     }[] = [
         { key: "search", label: "搜索", icon: <SearchIcon fontSize='small' />, onClick: onSearch },
-        { key: "groups", label: "分组", icon: <DashboardIcon fontSize='small' />, onClick: onGroups },
+        { key: "groups", label: "分组", icon: <DashboardIcon fontSize='small' />, onClick: onGroups, badge },
         { key: "add", label: "新增", icon: <AddCircleOutlineIcon fontSize='small' />, onClick: onAdd },
+        // 记事本：跟「新增」挨着，都是「造内容」的动作；星标是筛选，放它右边
+        ...(onNotes
+            ? [
+                  {
+                      key: "notes",
+                      label: "笔记",
+                      icon: <StickyNote2Icon fontSize='small' />,
+                      onClick: () => onNotes(),
+                      badge: notesBadge,
+                  },
+              ]
+            : []),
         ...(onToggleStar
             ? [
                   {
@@ -129,7 +150,7 @@ export default function MobileTabBar({
                         "&:hover": { bgcolor: "action.hover", color: "text.primary" },
                     }}
                 >
-                    {item.key === "groups" ? (
+                    {item.badge ? (
                         // 角标贴在**图标**右上角，不是按钮右上角（按钮 flex:1 占一整格，
                         // 贴按钮边角会离图标老远）。包裹层必须是定位基准：
                         // 以前角标直接 absolute 挂在按钮里，按钮却没有 position:relative，
@@ -137,7 +158,7 @@ export default function MobileTabBar({
                         // 换个屏宽位置还跟着变
                         <Box sx={{ position: "relative", display: "inline-flex" }}>
                             {item.icon}
-                            {badge > 0 && (
+                            {item.badge! > 0 && (
                                 <Box
                                     sx={{
                                         position: "absolute",
@@ -154,7 +175,7 @@ export default function MobileTabBar({
                                         color: "#fff",
                                     }}
                                 >
-                                    {badge > 99 ? "99+" : badge}
+                                    {item.badge! > 99 ? "99+" : item.badge!}
                                 </Box>
                             )}
                         </Box>

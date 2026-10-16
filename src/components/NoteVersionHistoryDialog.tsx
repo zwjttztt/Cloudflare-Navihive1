@@ -103,7 +103,9 @@ export default function NoteVersionHistoryDialog({
             open={open}
             onClose={() => !busy && onClose()}
             fullWidth
-            maxWidth='md'
+            // 内容只是版本列表，md(900) 让行宽浪费；sm(600) 足够
+            // （docs/dialogs-audit-2026-10-16.md P3-3）
+            maxWidth='sm'
             aria-label='版本历史'
             data-version-history='1'
         >

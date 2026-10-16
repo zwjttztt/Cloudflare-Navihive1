@@ -34,6 +34,13 @@ export const dialogTitleSx: SxProps<Theme> = {
 export const dialogContentSx: SxProps<Theme> = {
     pt: 0,
     pb: 1.5,
+    // 帮助文字里常带长 URL / 长 token（占位符示例之类），默认只在空白处换行，
+    // 窄屏下会整段伸出输入框——375 视口实测溢出 16px。
+    // 统一在这里断词，所有用公共外壳的弹窗都受益（docs/dialogs-audit-2026-10-16.md P2-1）。
+    "& .MuiFormHelperText-root": {
+        overflowWrap: "anywhere",
+        wordBreak: "break-word",
+    },
 };
 
 /** 底部操作区：按钮右对齐，间距统一 */

@@ -1973,6 +1973,10 @@ function App() {
                         onAdd: handleQuickAdd,
                         onMore: event =>
                             handleMenuOpen(event as React.MouseEvent<HTMLButtonElement>),
+                        // 窄屏（<=899.98px）顶栏没有记事本入口，底栏补一项 ——
+                        // 之前那一档完全打不开记事本（2026-10-16 弹窗排查 P1）
+                        onNotes: () => setNotesOpen(true),
+                        notesBadge: notesCount,
                         onExitViewport: handleExitMobileViewport,
                         onToggleStar: () => setStarFilter(!starFilter),
                         starActive: starFilter,

@@ -572,6 +572,14 @@ export default function SettingsDialog({
                                     onChange={onConfigInputChange}
                                     placeholder={DEFAULT_ICON_API}
                                     helperText='域名字符串用 {domain} 占位，例：https://www.faviconextractor.com/favicon/{domain}'
+                                    // 帮助文字里带长 URL，不断行会伸出输入框
+                                    // （375 视口下实测溢出 16px，见 docs/dialogs-audit-2026-10-16.md）
+                                    sx={{
+                                        "& .MuiFormHelperText-root": {
+                                            overflowWrap: "anywhere",
+                                            wordBreak: "break-word",
+                                        },
+                                    }}
                                 />
                                 <TextField
                                     margin='dense'
@@ -586,6 +594,13 @@ export default function SettingsDialog({
                                     onChange={onConfigInputChange}
                                     placeholder={DEFAULT_THUMB_API}
                                     helperText='留空则不显示缩略图（也不向第三方发请求）。占位符：{url} 完整链接、{domain} 域名、{origin} 协议+域名'
+                                    // 同上：占位符示例里有长 token，统一断词
+                                    sx={{
+                                        "& .MuiFormHelperText-root": {
+                                            overflowWrap: "anywhere",
+                                            wordBreak: "break-word",
+                                        },
+                                    }}
                                 />
                             </TwoCol>
                             {/* 图标隐私跟着「取图标」这件事走，所以放在这一节，
