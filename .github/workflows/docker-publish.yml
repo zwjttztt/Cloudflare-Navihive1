@@ -1,0 +1,58 @@
+# 镜像发布 —— 构建自托管 Docker 镜像并推到 ghcr.io。
+#
+# 为什么要有这份：自托管（方案 B）的 kPanel / compose 部署都引用
+# ghcr.io/zwjttztt/navihive:latest，这条流水线是镜像的唯一生产端。
+# 本地或测试机不再需要手动 build + push。
+#
+# 触发：
+#   - workflow_dispatch：Actions 页手动点 Run workflow
+#   - push 到 main 且改动了镜像相关文件（Dockerfile / 服务端与 worker 源码 / 依赖清单）
+#     —— 镜像里打包的就是这些文件，它们变了镜像就必须重发，否则新服务器
+#     拉到的一直是旧版本。前端 src/（非 API 部分）不进镜像，不触发。
+#
+# 包可见性：Actions 的 GITHUB_TOKEN 推上来的包默认 private，
+# 要让新服务器匿名 docker pull，需在 GitHub → Packages → navihive →
+# Package settings → Danger Zone → Change visibility 改成 Public（一次性）。
+name: docker-publish
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "Dockerfile"
+      - ".dockerignore"
+      - "server/**"
+      - "worker/**"
+      - "src/API/**"
+      - "shared/**"
+      - "package.json"
+      - "package-lock.json"
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/zwjttztt/navihive:latest
+            ghcr.io/zwjttztt/navihive:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

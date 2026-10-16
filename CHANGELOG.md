@@ -6,6 +6,29 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。---
 
+## 2026-10-16（四）· 工程：VPS 重装重建部署件（kPanel compose + 镜像流水线 + 数据搬运单）
+
+**要点**：VPS 重装后 20 分钟内可完整重建。补三件东西：
+① kPanel「部署 Docker 应用」直接粘贴即用的 compose（端口只绑回环、密钥字面量不玩插值、
+日志轮转、命名卷）；② 把一直躺在本地的 `docker-publish.yml` 提交进仓库 ——
+自托管镜像改由 GitHub Actions 构建推到 `ghcr.io/zwjttztt/navihive:latest`，
+VPS 不再需要本地编译（小内存机器编译正是 OOM 高发区）；③ 一份重建 Runbook，
+含「从 Cloudflare 端把数据搬到自托管」的完整步骤与坑位。
+
+- **新增** `deploy/kpanel-compose.yaml`：kPanel 粘贴即用。两个无声坑写在了注释里 ——
+  端口写成 `8787:8787` 会直接暴露公网，而 `NAVIHIVE_HOST=127.0.0.1` 会让端口映射整个废掉；
+  compose 里出现 `${VAR}` 在 kPanel 的部署目录里必然起不来（没有 .env）。
+- **工程** `.github/workflows/docker-publish.yml` 入库：push 到 main 且动了
+  Dockerfile / server / worker / src/API / shared / 依赖清单时自动重发镜像，
+  也支持 Actions 页手动 Run workflow。镜像推 GHCR，包默认 private，
+  要匿名 `docker pull` 需在 Package settings 里改一次 Public（Runbook 第一节有写）。
+- **新增** `deploy/vps-redeploy-runbook-2026-10-16.md`：IP/DNS 核对 → 镜像两条路 →
+  kPanel 部署 → 反代与证书 → **Cloudflare → 自托管数据搬运**（导航备份 + 笔记 zip 两条线，
+  星标/标签依赖「下载备份的那台浏览器」这个坑单独标了）→ 验证清单 → 不会自动跟过来的
+  配置（WebDAV、AI 凭据需重填）→ 故障速查表。
+
+---
+
 ## 2026-10-16（三）· 修复：备份密码框被浏览器自动填入 + 加回「覆盖导入」选项
 
 **要点**：两件事。其一，恢复页 / 备份页的「备份密码」框被浏览器当成登录表单，
