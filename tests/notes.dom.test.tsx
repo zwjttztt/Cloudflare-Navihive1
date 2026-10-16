@@ -5687,6 +5687,67 @@ test("回归：从网盘恢复读的是顶层 files/payload（request 不包 dat
         "顶层 payload 必须原样送达 importNotes（退回 r.data?.payload 这里会是 undefined）");
 });
 
+test("回归：ZIP 备份（zipBase64）从网盘恢复要走附件回传导入链路（2026-10-16 包装层漏透传）", async () => {
+    // 真 bug（2026-10-16 用户报「笔记 WebDAV 恢复失败」）：ZIP 备份（2026-10-11 起
+    // 默认格式）后端不解包，回的是顶层 zipBase64 + message=文件名。NotesOverlay 的
+    // fetch 包装漏传 zipBase64 → doRestore 里 payload/zipBase64 双空 → 走 else 把
+    // message（文件名）当错误亮出来。这里用与真实后端同构的桩钉死：恢复要真的
+    // 解包 ZIP 并走一次导入，且不出现错误框。若有人再漏透传，此用例必红。
+    setWide();
+    const { createZip } = await import("../src/utils/zip");
+    const log: { calls: string[]; saved: Record<string, unknown>[] } = { calls: [], saved: [] };
+    const imp: { imports: number; lastPayload?: unknown } = { imports: 0 };
+    const zipBytes = createZip([
+        {
+            path: "notes.json",
+            data: new TextEncoder().encode(JSON.stringify({
+                kind: "navihive-notes-export",
+                exported_at: new Date().toISOString(),
+                notes: [{ id: 7, uuid: "u7", title: "网盘里那篇", content: "内容" }],
+                folders: [],
+                tags: [],
+                noteTags: {},
+            })),
+        },
+    ]);
+    const zipB64 = Buffer.from(zipBytes).toString("base64");
+    const backupApi = {
+        ...makeBackupApi(log),
+        fetch: async (filename: string, password: string) => {
+            log.calls.push("fetch:" + filename + ":" + password);
+            // 与真实后端同构：ZIP 备份回顶层 zipBase64，message 是文件名
+            return { success: true, message: filename, zipBase64: zipB64 };
+        },
+    };
+    mountPanel([note({ id: 1, title: "甲", content: "a" })], {
+        backupApi,
+        shareApi: makeImportShareApi(imp),
+    });
+    await act(async () =>
+        (document.querySelector("button[data-tool='settings']") as HTMLElement).click()
+    );
+    await act(async () =>
+        (document.querySelector("[data-settings-tab='backup']") as HTMLElement).click()
+    );
+    await act(async () =>
+        (document.querySelector("[data-backup-action='list-remote']") as HTMLElement).click()
+    );
+    await act(async () =>
+        (document.querySelector("[data-backup-action='restore']") as HTMLElement).click()
+    );
+    await act(async () => { await new Promise(r => setTimeout(r, 30)); });
+    assert.equal(imp.imports, 1, "ZIP 备份要解开并真的走一次导入（漏透传 zipBase64 时这里是 0）");
+    const payload = imp.lastPayload as { notes?: { title?: string }[] } | undefined;
+    assert.ok(
+        payload?.notes?.[0]?.title === "网盘里那篇",
+        "导入收到的要是 ZIP 里 notes.json 解出的内容"
+    );
+    assert.ok(
+        document.querySelector("[data-backup-remote-error='1']") === null,
+        "恢复成功不该出现错误框（漏透传时这里会亮出文件名当错误）"
+    );
+});
+
 test("设置→备份：没有备份能力（老部署）时整页不出现", async () => {
     setWide();
     mountPanel([note({ id: 1, title: "甲", content: "a" })]);

@@ -19,6 +19,7 @@ import NotesPage from "./NotesPage";
 import type { NoteShareApi } from "./NoteShareDialog";
 import { useNotes, type NotesApiLike } from "../hooks/useNotes";
 import type { Note, NotesBackupSavePatch, NotesBackupState } from "../API/http";
+import { notesBackupFetchResult } from "../utils/notesBackupAdapter";
 import ConfirmDialog from "./ConfirmDialog";
 import { Alert, Button } from "@mui/material";
 
@@ -301,14 +302,10 @@ export default function NotesOverlay({
                     return { success: false, message: "当前部署不支持从网盘恢复" };
                 }
                 const r = await api.notesBackupDownload(filename, password);
-                return {
-                    success: r.success,
-                    message: r.message ?? "",
-                    // ⚠️ 后端返回顶层 payload（request 不包 data 层），别写 r.data?.payload
-                    payload: r.payload,
-                    // 加密备份缺口令时后端回 encrypted / badPassword，前端据此弹口令框
-                    code: r.code,
-                };
+                // 形状的换算全在 notesBackupFetchResult 里（含 zipBase64 的透传），
+                // 别在局部再手抄一遍 —— 2026-10-16 的「笔记 WebDAV 恢复失败」
+                // 就是手抄时漏了一个字段。
+                return notesBackupFetchResult(r);
             },
             // 删除网盘上的一份备份文件（最近备份的删除按钮，2026-10-10）。
             // 老部署没有该端点时返回失败，前端保留记录并提示。

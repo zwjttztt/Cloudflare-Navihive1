@@ -363,3 +363,71 @@ test("标题栏关闭按钮与「关闭」按钮都触发 onClose", async () => 
     await click(buttonByText("关闭"));
     assert.equal(closed, 2);
 });
+
+// ⚠️ 2026-10-16 用户报「ai 助手弹窗滚动条滑到顶部或底部会出现加载条」的根因守卫。
+// 真实链路：MuiDialog 默认 disableScrollLock:true，弹窗内容滚到两头时滚动链穿透到
+// 背景页面 → 背景一滚 App 重渲染 → 父组件传来**新引用的 api** → 本弹窗「打开时读一次
+// 配置」的 effect 依赖列表里有 api → 整趟重跑（加载条闪一次 + 一次 /api/configs）。
+// 实测背景滚动 3.5 秒发了 157 次请求。这里用「同一个 open、换一个新 api 对象」
+// 复刻父组件重渲染，钉死：重渲染不得再读配置、不得再冒加载条；而关掉再打开必须重读。
+test("父组件重渲染（新引用的 api）不再重读配置也不再闪加载条；关掉再打开必须重读", async () => {
+    let reads = 0;
+    const getConfigs = async () => {
+        reads += 1;
+        return { [AI_ENABLED_KEY]: "true", [AI_TEXT_MODEL_KEY]: "deepseek-chat" };
+    };
+    const setConfigs = async () => true;
+    const apiA = { getConfigs, setConfigs };
+    const ai = fakeAi(async () => ({ ok: true, message: "通", text: { ok: true } }));
+    const renderWith = (api: ConfigClientLike) =>
+        act(() => {
+            root!.render(
+                <AiAssistantDialog open onClose={() => {}} api={api} ai={ai} />
+            );
+        });
+
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+    act(() => {
+        root!.render(
+            <AiAssistantDialog open onClose={() => {}} api={apiA} ai={ai} />
+        );
+    });
+    await act(async () => { await new Promise(r => setTimeout(r, 0)); });
+    assert.equal(reads, 1, "打开时读一次配置");
+    assert.ok(
+        document.querySelector(".MuiLinearProgress-root") === null,
+        "配置读完后加载条要收掉"
+    );
+
+    // 父组件因背景滚动等重渲染：props 值一模一样，但 api 是个新对象
+    await renderWith({ getConfigs, setConfigs });
+    await act(async () => { await new Promise(r => setTimeout(r, 0)); });
+    assert.equal(reads, 1, "重渲染绝不能再读一次配置（多了就是反复打 /api/configs）");
+    assert.ok(
+        document.querySelector(".MuiLinearProgress-root") === null,
+        "重渲染不能把加载条再闪出来 —— 这正是用户看到的那个 bug"
+    );
+    // 用户正在填的东西也不能被冲掉（重读一次会把表单覆盖回服务端旧值）
+    await typeInto(inputOf("文本模型（补全与整理用）"), "my-model", "文本模型输入框要在");
+    await renderWith({ getConfigs, setConfigs });
+    await act(async () => { await new Promise(r => setTimeout(r, 0)); });
+    assert.equal(
+        inputOf("文本模型（补全与整理用）")?.value,
+        "my-model",
+        "重渲染后用户填的内容要在（重读配置会把它冲掉）"
+    );
+    assert.equal(reads, 1, "这次重渲染也没再读配置");
+
+    // 反向确认：关掉再打开仍然要重读（不能因为改了依赖就永远只读一次）
+    await act(() => {
+        root!.render(<AiAssistantDialog open={false} onClose={() => {}} api={apiA} ai={ai} />);
+    });
+    await act(async () => { await new Promise(r => setTimeout(r, 0)); });
+    await renderWith({ getConfigs, setConfigs });
+    await act(async () => { await new Promise(r => setTimeout(r, 0)); });
+    assert.equal(reads, 2, "关掉再打开要重读一次（配置可能被别的设备改过）");
+
+    cleanup();
+});

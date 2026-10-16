@@ -847,6 +847,21 @@ function App() {
         return `已就绪（${provider} · ${st.textModel}）· 已建语义索引 ${st.embedded} 条`;
     }, [ai.status]);
 
+    // ⚠️ 必须 memo：AI 弹窗的「打开时读一次配置」effect 把 api 放进依赖数组，
+    // 每次渲染新建对象的话，**任何一次 App 重渲染都会让它重跑一遍**——
+    // 表现为顶部加载条反复闪 + /api/configs 被打爆（实测背景页面滚动 3.5 秒
+    // 发了 157 次）。弹窗开着时把滚动条拖到两头，滚动链穿透到背景页面
+    // （MuiDialog 默认 disableScrollLock:true，见 useThemeController），
+    // 背景一滚 App 就重渲染，于是用户看到「滑到顶部或底部会出现加载条」。
+    const aiConfigClient = useMemo(
+        () => ({
+            // 只给读写配置这两个方法：AI 弹窗不该摸到别的 API
+            getConfigs: () => api.getConfigs(),
+            setConfigs: (configs: Record<string, string>) => api.setConfigs(configs),
+        }),
+        [api]
+    );
+
     // 语义搜索用原始输入（不小写、不拆词）：模型见到的是用户真正打的那句话
     const aiQuery = searchQuery.trim();
 
@@ -2040,11 +2055,8 @@ function App() {
                     aiAssistant={{
                         open: openAiAssistant,
                         onClose: () => setOpenAiAssistant(false),
-                        // 只传读写配置那两个方法：AI 弹窗不该摸到别的 API
-                        api: {
-                            getConfigs: () => api.getConfigs(),
-                            setConfigs: (configs: Record<string, string>) => api.setConfigs(configs),
-                        },
+                        // ⚠️ 引用必须稳定（上面的 useMemo），弹窗的读取 effect 依赖它
+                        api: aiConfigClient,
                         ai,
                         onSaved: () => void ai.refresh(),
                         statusText: aiStatusText,

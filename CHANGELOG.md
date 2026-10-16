@@ -6,6 +6,30 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。---
 
+## 2026-10-16（六）· 修复：AI 弹窗反复闪加载条 / 笔记网盘恢复失败（用户实测反馈）
+
+**要点**：用户在新部署的 https://home.zwjttzt.com 上实测反馈的两条，都不是「看着别扭」，
+而是真的影响使用：一个把背景页面的一次滚动放大成上百次配置请求，一个让备份只能出不进。
+
+- **AI 助手弹窗滚动到底/顶会冒加载条**（`App.tsx` / `AiAssistantDialog.tsx`）：
+  链路是三件事叠在一起 —— ① 弹窗不锁背景滚动（`MuiDialog` 默认 `disableScrollLock: true`），
+  内容滚到两头时滚动链穿透到背景页面；② 背景一滚 App 就重渲染（`useViewportUi` 更新当前分组）；
+  ③ App 传给弹窗的 `api` 是**每次渲染新建的对象字面量**，而弹窗「打开时读一次配置」的
+  effect 把 `api` 放进依赖数组 —— 于是每重渲染一次就重读一遍配置、闪一次加载条。
+  实测背景滚动 3.5 秒发了 **157 次** `/api/configs`。现在 `api` 用 `useMemo` 固定，
+  弹窗那边的 effect 也只认 `open`（`api` 走 ref），双保险。
+  守卫 `tests/aiAssistantDialog.dom.test.tsx` 最后一条（父组件换 api 引用重渲染不得再读配置、
+  不得再冒加载条、不得冲掉用户填的内容；关掉再打开仍要重读）。
+- **笔记 WebDAV 恢复失败**（`NotesOverlay.tsx`）：服务端对 ZIP 备份（2026-10-11 起默认格式，
+  含附件）不解包，回的是顶层 `zipBase64`；NotesOverlay 把返回值换算成 NotesPage 要的
+  形状时**漏了这一个字段**，导致 `payload` / `zipBase64` 双空，界面只能把 `message`
+  （服务端那里放的是文件名）当错误亮出来 —— 红框里一行文件名，看起来像下载失败。
+  换算逻辑抽到 `src/utils/notesBackupAdapter.ts`，补了纯函数用例
+  `tests/notesBackupFetch.test.ts`（去掉 `zipBase64` 一行必红），并在
+  `tests/notes.dom.test.tsx` 补了「ZIP 恢复要真的走一次导入」的端到端用例。
+
+---
+
 ## 2026-10-16（五）· 修复：弹窗排查报告的问题清单（P1 ×1 / P2 ×2 / P3 ×3）
 
 **要点**：按 `docs/dialogs-audit-2026-10-16.md` 的问题清单逐条落地，修完用同一套

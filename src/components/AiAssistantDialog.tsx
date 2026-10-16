@@ -10,7 +10,7 @@
 //   1. 默认关。开关没显式打开，一个字节都不往外发。
 //   2. 测试连接用**当前填的这份**（不必先保存）—— 用户就是想先试通再决定要不要存。
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
     Alert,
     Box,
@@ -169,6 +169,15 @@ export default function AiAssistantDialog({
     // 嵌入模型那一栏默认收起；已经配过值就展开，免得用户以为配置丢了
     const [showEmbed, setShowEmbed] = useState(false);
 
+    // 每一次父组件重渲染都会送来一个新引用的 api 对象（就算 App 那边 memo 了，
+    // 这里也不能赌）——把最新的那份放进 ref，下面的读取 effect 就只认 open。
+    // 2026-10-16 的「背景页面一滚，加载条就闪」就是 effect 依赖了 api 引用：
+    // 那时候每滚一下都重新拉一次配置，加载条跟着闪，/api/configs 被打爆。
+    const apiRef = useRef(api);
+    useEffect(() => {
+        apiRef.current = api;
+    }, [api]);
+
     // 每次打开重读：配置可能被别的设备改过，拿一份旧的来编辑会覆盖掉新的
     useEffect(() => {
         if (!open) return;
@@ -177,7 +186,7 @@ export default function AiAssistantDialog({
         setSaveError(null);
         setTestResult(null);
         void (async () => {
-            const all = await api.getConfigs().catch(() => ({} as Record<string, string>));
+            const all = await apiRef.current.getConfigs().catch(() => ({} as Record<string, string>));
             if (cancelled) return;
             const next: Record<string, string> = {};
             for (const key of AI_KEYS) next[key] = all[key] ?? "";
@@ -190,9 +199,10 @@ export default function AiAssistantDialog({
         };
         // 只在打开时读一次配置：打开期间表单本身就是唯一真实来源，
         // 父组件重渲染不该把用户正在填的内容冲掉。
-        // （api 是 App 顶层的模块级常量、引用稳定，放进 deps 不会导致重跑 ——
-        //   以前这里写着「api 每次渲染都是新引用」，是错的，按那句话去「修」反而会跑偏。）
-    }, [open, api]);
+        // ⚠️ 依赖里不能出现 api：父组件每次渲染都可能给一个新引用，
+        // 那样「打开时读一次」就变成「每次重渲染都读一次」——上面的 apiRef
+        // 就是为了让这里只盯 open（2026-10-16：背景页面一滚就闪加载条）
+    }, [open]);
 
     const set = useCallback((key: string) => (value: string) => {
         setForm(prev => ({ ...prev, [key]: value }));

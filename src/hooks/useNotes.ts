@@ -112,7 +112,7 @@ export type NotesApiLike = {
         code?: WebDavErrorCode;
         files?: { name: string; size: number; lastModified: string }[];
     }>;
-    /** 下载一份网盘备份并解密（加密备份要口令）。⚠️ 返回顶层 `payload`。 */
+    /** 下载一份网盘备份并解密（加密备份要口令）。⚠️ 返回顶层 `payload`；ZIP 备份回顶层 `zipBase64`。 */
     notesBackupDownload?(
         filename: string,
         password?: string
@@ -121,6 +121,7 @@ export type NotesApiLike = {
         code?: WebDavErrorCode;
         message?: string;
         payload?: NotesImportPayload;
+        zipBase64?: string;
     }>;
     /** 删除网盘上的一份记事本备份（2026-10-10，最近备份的删除按钮）。可选：老部署没有 */
     notesBackupDeleteRemote?(filename: string): Promise<WebDavResult>;

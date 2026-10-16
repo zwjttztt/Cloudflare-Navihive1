@@ -200,6 +200,8 @@ export interface NotesPageProps {
             success: boolean;
             message: string;
             payload?: NotesImportPayload;
+            /** ZIP 备份（2026-10-11 起默认格式）：base64，交给 onImportFile 走附件回传链路 */
+            zipBase64?: string;
             code?: WebDavErrorCode;
         }>;
         /** 删除网盘上的一份备份文件（最近备份的删除按钮，2026-10-10） */

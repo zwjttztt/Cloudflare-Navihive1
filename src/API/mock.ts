@@ -1161,6 +1161,7 @@ export class MockNavigationClient {
         code?: WebDavErrorCode;
         message?: string;
         payload?: import("./types").NotesImportPayload;
+        zipBase64?: string;
     }> {
         return { success: false, message: "模拟环境不支持 WebDAV 备份" };
     }
