@@ -45,6 +45,8 @@ export const dialogChunks = {
     snackbar: () => import("../components/SnackbarHost"),
     bulk: () => import("../components/BulkActionBar"),
     aiSuggest: () => import("../components/AiSuggestDialog"),
+    // 注销确认弹窗：只对普通账号渲染（站点所有者没有入口），块照旧备着
+    deleteAccount: () => import("../components/DeleteAccountDialog"),
     tagBar: () => import("../components/TagBar"),
     siteSkeleton: () => import("../components/SiteListSkeleton"),
 };

@@ -1,8 +1,9 @@
-// 认证与账号治理：注册 / 登录 / 登出 / 恢复密钥、邀请码、会话踢线。
+// 认证与账号治理：注册 / 登录 / 登出 / 恢复密钥、邀请码、会话踢线、注销账号。
 // 原来内联在 App 里（约 465 行），连它自己的一组 state 一起搬出来；App 只剩一次调用。
 // 搬迁是原样搬运（只做整词改名）。
-// 「沉睡治理」与「注销账号」两段 2026-10-17 按站点所有者要求整体下线（入口 +
-// cron 自动扫描都关了），当时的相关 state / 处理器已随之移除。
+// 「注销账号」只对普通账号开放（2026-10-17 用户要求：站点所有者本人不提供入口，
+// 后端 deleteAccount 对 owner 也一律拒绝）；「沉睡治理」的界面入口同样不对所有者
+// 开放，但后端扫描保留、继续对普通账号生效。
 import { useCallback, useState, type Dispatch, type SetStateAction } from "react";
 import type { NavigationClient } from "../API/client";
 import type { MockNavigationClient } from "../API/mock";
@@ -10,6 +11,7 @@ import type { SessionInfo } from "../API/http";
 import { setAccountUid } from "../API/offlineQueue";
 import { setUndoAccountUid } from "../utils/undoPersist";
 import { clearSessionBoundary } from "../utils/sessionBoundary";
+import { clearBootstrapCache } from "../utils/firstPaintCache";
 // ⚠️ 恢复密钥那组工具（utils/recoveryKey，**约 3 KB**）不要在这里静态 import：
 // 本文件在首屏块里，静态 import 会把整块拖进首屏，而它只有「账号管理 → 生成恢复密钥」
 // 这一条路径用得到（登录页那份已经是 lazy）。改成调用时才拉 —— 它和登录页共用，
@@ -97,6 +99,11 @@ export function useAccountSession({
     } | null>(null);
     // 生成的邀请码（含过期时间），只留在内存里，刷新页面即消失
     const [invite, setInvite] = useState<{ code: string; expiresAt: number } | null>(null);
+    // 注销账号：二次确认弹窗 + 确认密码。⚠️ 只对普通账号开放（站点所有者不传入口，
+    // 后端也拒 owner）—— 见 App.tsx 的 onDeleteAccount 与 accounts.ts 的 deleteAccount。
+    const [deleteAccountOpen, setDeleteAccountOpen] = useState(false);
+    const [deleteAccountPassword, setDeleteAccountPassword] = useState("");
+    const [deleteAccountBusy, setDeleteAccountBusy] = useState(false);
 
     // 登录设备（当前账号自己的会话）：有了它才能只踢某一台设备，
     // 不用靠改密把自己其它设备一起踢掉
@@ -213,6 +220,39 @@ export function useAccountSession({
             notify("操作失败：" + (error instanceof Error ? error.message : "未知错误"), "error");
         }
     }, [api, fetchSessions, notify]);
+
+    /** 注销账号：确认密码 → 服务端删号删数据 → 本地回到登录页。
+     *  ⚠️ 只对普通账号：站点所有者在界面上没有入口；后端对 owner 的请求也一律拒绝。 */
+    const handleDeleteAccount = async (): Promise<{ success: boolean; message?: string }> => {
+        if (!deleteAccountPassword) {
+            return { success: false, message: "请输入当前密码以确认注销" };
+        }
+        try {
+            setDeleteAccountBusy(true);
+            const result = await api.deleteAccount(deleteAccountPassword);
+            if (result.success) {
+                setDeleteAccountOpen(false);
+                setDeleteAccountPassword("");
+                setInvite(null);
+                // 账号都没了，本地数据必须一起清空，否则会看到上一个账号的残留
+                clearRememberedLogin();
+                setGroups([]);
+                setIsAuthenticated(false);
+                setIsAuthRequired(true);
+                setCurrentUser(null);
+                clearBootstrapCache();
+                onDataError(result.message || "账号已注销");
+            }
+            return result;
+        } catch (error) {
+            return {
+                success: false,
+                message: "注销失败：" + (error instanceof Error ? error.message : "未知错误"),
+            };
+        } finally {
+            setDeleteAccountBusy(false);
+        }
+    };
 
     /**
      * 重新问一次「当前账号有没有配恢复密钥」。
@@ -449,12 +489,18 @@ export function useAccountSession({
         setCurrentUser,
         invite,
         setInvite,
+        deleteAccountOpen,
+        setDeleteAccountOpen,
+        deleteAccountPassword,
+        setDeleteAccountPassword,
+        deleteAccountBusy,
         sessions,
         handleRegister,
         handleCreateInvite,
         fetchSessions,
         handleRevokeSession,
         handleRevokeOthers,
+        handleDeleteAccount,
         refreshRecoveryStatus,
         checkAuthStatus,
         handleLogin,

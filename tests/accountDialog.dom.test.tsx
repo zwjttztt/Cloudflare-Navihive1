@@ -3,8 +3,10 @@
 // 改密按钮的脏检查（没填新账号/新密码就不该能提交）、生成私钥要先验当前密码、
 // 邀请码的显示时机，以及「登录设备」一节的渲染。
 //
-// 另有一条回归守卫：「不活跃停用」与「注销当前账号」两个功能 2026-10-17 按站点
-// 所有者要求整体关闭（入口 + cron 自动扫描一并停），用例钉住它们不再出现。
+// 角色边界（2026-10-17 用户要求，v3.1.0 起）：「注销当前账号」与「不活跃停用 /
+// 沉睡治理」都**只不对站点所有者开放**——功能本身保留（普通账号照样能注销、
+// 照样被沉睡治理），只是 owner 的弹窗里没有这些入口。用例钉住两侧：
+// owner 看不到、普通账号看得到。
 //
 // 组件所有值都由父组件持有（auth / invite / sessions），所以用一个 Harness 持有状态，
 // 尽量贴近 App 里的真实用法。
@@ -46,6 +48,7 @@ type Calls = {
     invites: number;
     revoked: string[];
     revokeOthers: number;
+    deletes: number;
     closes: number;
 };
 
@@ -71,6 +74,7 @@ function emptyCalls(): Calls {
         invites: 0,
         revoked: [],
         revokeOthers: 0,
+        deletes: 0,
         closes: 0,
     };
 }
@@ -118,6 +122,12 @@ function Harness(o: Opts) {
             sessions={o.withSessions === false ? undefined : (o.sessions ?? [makeSession()])}
             onRevokeSession={jti => calls.revoked.push(jti)}
             onRevokeOthers={() => calls.revokeOthers++}
+            // 与 App 同一条门控：站点所有者不传 onDeleteAccount
+            onDeleteAccount={
+                (o.currentUser ?? { username: "admin", role: "owner" }).role === "owner"
+                    ? undefined
+                    : () => calls.deletes++
+            }
         />
     );
 }
@@ -340,20 +350,35 @@ test("账号：没有其它设备时「退出其它设备」置灰但保留入�
     assert.equal(revokeOthers!.disabled, true, "没有其它设备可踢时置灰");
 });
 
-// ---------------- 回归守卫：两个功能已按站点所有者要求关闭（2026-10-17） ----------------
+// ---------------- 角色边界：「注销账号」只给普通账号（2026-10-17 用户要求） ----------------
 
-test("账号：「注销当前账号」入口已移除（单账号部署不该能把自己删了）", () => {
-    render();
-    assert.equal(button("注销当前账号"), undefined, "注销入口必须不再出现");
-    assert.equal(pageText().includes("注销账号"), false, "整节都不该渲染");
+test("账号：站点所有者看不到「注销当前账号」入口（站点不能没有管理者）", () => {
+    // owner 时父组件不传 onDeleteAccount（App 里的门控），弹窗里就不该有这一节
+    render({ currentUser: { username: "admin", role: "owner" } });
+    assert.equal(button("注销当前账号"), undefined, "所有者不该有注销入口");
+    assert.equal(
+        pageText().includes("删除当前账号及其全部分组、卡片与备份配置，无法恢复"),
+        false,
+        "注销那一节不该渲染（说明文案里提到「注销账号」三个字不算）"
+    );
+    assert.ok(
+        pageText().includes("「注销账号」只对普通账号开放"),
+        "要跟所有者说清为什么没有这个入口"
+    );
 });
 
-test("账号：「不活跃停用 / 沉睡治理」整节已移除", () => {
+test("账号：普通账号有「注销当前账号」入口，点了只触发、二次确认交给父组件", () => {
+    render({ currentUser: { username: "alice", role: "user" } });
+    const del = button("注销当前账号")!;
+    assert.ok(del, "普通账号该有注销入口");
+    click(del);
+    assert.equal(calls.deletes, 1, "注销只负责触发，二次确认交给父组件");
+});
+
+test("账号：「不活跃停用 / 沉睡治理」对所有者不开放（后端扫描照旧对普通账号生效）", () => {
     render();
-    assert.equal(pageText().includes("账号与沉睡治理"), false, "治理节必须不再出现");
+    assert.equal(pageText().includes("账号与沉睡治理"), false, "治理节对所有者不渲染");
     assert.equal(pageText().includes("沉睡"), false, "相关文案一并清掉");
     assert.equal(button("立即扫描"), undefined, "手动扫描入口不再有");
     assert.equal(button("重新启用"), undefined, "豁免入口不再有");
-    // 顶部说明也不再提「注销 / 站点治理」
-    assert.equal(pageText().includes("再往下是站点治理"), false);
 });

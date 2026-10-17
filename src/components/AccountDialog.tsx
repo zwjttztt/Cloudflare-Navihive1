@@ -25,6 +25,7 @@ import {
 } from "@mui/material";
 import CloseIcon from "@mui/icons-material/Close";
 import VpnKeyIcon from "@mui/icons-material/VpnKey";
+import PersonRemoveIcon from "@mui/icons-material/PersonRemove";
 import { PasswordField } from "./PasswordField";
 import type { SessionInfo } from "../API/http";
 
@@ -113,6 +114,12 @@ interface AccountDialogProps {
     onRevokeSession?: (jti: string) => void;
     /** 退出其它设备：除当前这台之外全部吊销 */
     onRevokeOthers?: () => void;
+    /**
+     * 注销当前账号：这里只负责触发，二次确认弹窗由父组件接管。
+     * ⚠️ 只给**普通账号**（2026-10-17 用户要求）：站点所有者不传这个 prop，
+     * 后端对 owner 的注销请求也一律拒绝 —— 站点不能没有管理者。
+     */
+    onDeleteAccount?: () => void;
 }
 
 /** 分组：左侧一小段主色竖条 + 组标题，可选一行组说明 */
@@ -193,6 +200,7 @@ export default function AccountDialog({
     sessions,
     onRevokeSession,
     onRevokeOthers,
+    onDeleteAccount,
 }: AccountDialogProps) {
     // 恢复密钥的生成结果提示（成功/失败都就地反馈，私钥由浏览器直接下载）
     const [recoveryBusy, setRecoveryBusy] = useState(false);
@@ -312,7 +320,10 @@ export default function AccountDialog({
                                 component='span'
                                 sx={{ display: "block", mt: 0.5, color: "text.secondary" }}
                             >
-                                这里管「我自己」的安全设置：账号密码 / 恢复密钥 / 登录设备。
+                                这里管「我自己」的安全设置：账号密码 / 恢复密钥 / 登录设备
+                                {currentUser.role === "owner"
+                                    ? "。「注销账号」只对普通账号开放，站点所有者不提供该入口。"
+                                    : "、注销账号。"}
                             </Box>
                         </DialogContentText>
                     ) : (
@@ -598,6 +609,26 @@ export default function AccountDialog({
                                 </Typography>
                             ) : null}
                         </Section>
+
+                        {/* 4. 注销：破坏性操作沉底。只给普通账号 —— 站点所有者不传
+                            onDeleteAccount（后端同样拒绝 owner），站点不能没有管理者。 */}
+                        {onDeleteAccount ? (
+                            <Section
+                                title='注销账号'
+                                hint='删除当前账号及其全部分组、卡片与备份配置，无法恢复。'
+                            >
+                                <Button
+                                    variant='outlined'
+                                    color='error'
+                                    size='small'
+                                    startIcon={<PersonRemoveIcon fontSize='small' />}
+                                    onClick={onDeleteAccount}
+                                    sx={{ alignSelf: "flex-start" }}
+                                >
+                                    注销当前账号
+                                </Button>
+                            </Section>
+                        ) : null}
                     </Stack>
                 </DialogContent>
                 <DialogActions sx={{ px: 3, pb: 2, pt: 1 }}>

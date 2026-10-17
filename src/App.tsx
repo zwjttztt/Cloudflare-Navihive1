@@ -101,8 +101,11 @@ const AddSiteDialog = lazy(() => import("./components/AddSiteDialog"));
 const GroupShareDialog = lazy(() => import("./components/GroupShareDialog"));
 const EditGroupDialog = lazy(() => import("./components/EditGroupDialog"));
 const SettingsDialog = lazy(() => import("./components/SettingsDialog"));
-// 账号管理（改账号密码 / 恢复密钥 / 邀请码 / 登录设备）：从「更多选项」进入，懒加载
+// 账号管理（改账号密码 / 恢复密钥 / 邀请码 / 登录设备 / 注销）：从「更多选项」进入，懒加载
 const AccountDialog = lazy(() => import("./components/AccountDialog"));
+// 注销确认弹窗只有点「注销当前账号」才会用到，懒加载省首屏体积。
+// ⚠️ 只给普通账号：站点所有者不渲染这个入口（后端也拒 owner），见下面 onDeleteAccount。
+const DeleteAccountDialog = lazy(() => import("./components/DeleteAccountDialog"));
 const ImportPreviewDialog = lazy(() => import("./components/ImportPreviewDialog"));
 const AuditDialog = lazy(() => import("./components/AuditDialog"));
 // 统计（访问统计 + 运营看板，一个弹窗两个标签页）：从「更多选项」进入，懒加载
@@ -334,11 +337,12 @@ function App() {
             ["importPreview", dialogChunks.importPreview],
             ["commandPalette", dialogChunks.commandPalette],
             // 第二轮排查补进的小件：首次触发（删除确认 / 首个 toast / 多选 / AI 建议 /
-            // 标签栏）原本要现场等 1 个 RTT，登录后错峰备齐即 0 请求。
+            // 注销账号 / 标签栏）原本要现场等 1 个 RTT，登录后错峰备齐即 0 请求。
             ["confirm", dialogChunks.confirm],
             ["snackbar", dialogChunks.snackbar],
             ["bulk", dialogChunks.bulk],
             ["aiSuggest", dialogChunks.aiSuggest],
+            ["deleteAccount", dialogChunks.deleteAccount],
             ["tagBar", dialogChunks.tagBar],
             ["siteSkeleton", dialogChunks.siteSkeleton],
         ]);
@@ -639,12 +643,18 @@ function App() {
         currentUser,
         setCurrentUser,
         invite,
+        deleteAccountOpen,
+        setDeleteAccountOpen,
+        deleteAccountPassword,
+        setDeleteAccountPassword,
+        deleteAccountBusy,
         sessions,
         handleRegister,
         handleCreateInvite,
         fetchSessions,
         handleRevokeSession,
         handleRevokeOthers,
+        handleDeleteAccount,
         checkAuthStatus,
         handleLogin,
         handleRecover,
@@ -1789,11 +1799,13 @@ function App() {
                     />
                     </ChunkBoundary>
 
-                    {/* 账号管理：改账号密码 / 恢复密钥 / 邀请码 / 登录设备。
+                    {/* 账号管理：改账号密码 / 恢复密钥 / 邀请码 / 登录设备 / 注销。
                         原先「账户安全」混在网站设置里、注销账号又孤零零挂在更多菜单，
                         现在都收在这里 —— 网站设置只管「站点长什么样」。
-                        「不活跃停用」与「注销当前账号」已按站点所有者要求关闭（2026-10-17）：
-                        沉睡治理整节下线，cron 也不再自动扫描。 */}
+                        「注销当前账号」只给普通账号（2026-10-17 用户要求：站点所有者
+                        本人不提供该入口，后端 deleteAccount 对 owner 也一律拒绝）；
+                        「不活跃停用」同样对所有者不开放（后端扫描本就跳过 owner），
+                        普通账号仍会被自动治理。 */}
                     <ChunkBoundary when={openAccount}>
                     <AccountDialog
                         open={openAccount}
@@ -1818,6 +1830,35 @@ function App() {
                         sessions={sessions}
                         onRevokeSession={jti => void handleRevokeSession(jti)}
                         onRevokeOthers={() => void handleRevokeOthers()}
+                        onDeleteAccount={
+                            currentUser && currentUser.role !== "owner"
+                                ? () => {
+                                      handleMenuClose();
+                                      setOpenAccount(false);
+                                      setDeleteAccountOpen(true);
+                                  }
+                                : undefined
+                        }
+                    />
+                    </ChunkBoundary>
+
+                    {/* 注销账号：二次确认 + 当前密码（入口在「账号与安全」，仅普通账号）。
+                        它也是 lazy chunk，同样要有边界 —— 之前漏了这层，
+                        块取不到时（断网、或站点刚更新）会一路冒到根上的错误边界，
+                        变成「整站挂了」，其实只是这一个弹窗没下来。 */}
+                    <ChunkBoundary when={deleteAccountOpen}>
+                    <DeleteAccountDialog
+                        open={deleteAccountOpen}
+                        username={currentUser?.username}
+                        busy={deleteAccountBusy}
+                        password={deleteAccountPassword}
+                        onPasswordChange={setDeleteAccountPassword}
+                        onConfirm={() => void handleDeleteAccount()}
+                        onClose={() => {
+                            if (deleteAccountBusy) return;
+                            setDeleteAccountOpen(false);
+                            setDeleteAccountPassword("");
+                        }}
                     />
                     </ChunkBoundary>
 

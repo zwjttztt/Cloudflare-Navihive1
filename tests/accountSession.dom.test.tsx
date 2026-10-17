@@ -1,6 +1,6 @@
 // tests/accountSession.dom.test.tsx
 // useAccountSession（全仓最大的 hook）的用例：注册 / 登录 / 登出 / 恢复密钥 /
-// 会话踢线这几条路上，发生的事和**没发生的事**。
+// 注销账号 / 会话踢线这几条路上，发生的事和**没发生的事**。
 //
 // 这里最有价值的几条都是「防串号 / 防静默失败」：
 // - 登录接口 200 但 cookie 没存上 —— 必须明确报错并留在登录页，否则界面闪一下就弹回来，
@@ -9,7 +9,8 @@
 // - 登出要清干净 —— 邀请码、恢复密钥状态、批量多选态留着，换个人登录就看到了上一个人的东西；
 // - 生成恢复密钥必须「先落库成功、再下载私钥」—— 反过来会出现私钥存了但服务器不认。
 //
-// （注销账号 / 沉睡治理 / 账号清单 2026-10-17 随功能关闭一并删除。）
+// （沉睡治理的阈值 / 扫描 / 账号清单 UI 2026-10-17 起对站点所有者不再开放；
+// 注销账号保留但只对普通账号开放，用例照旧盯它的行为。）
 
 import { test, afterEach } from "node:test";
 import assert from "node:assert/strict";
@@ -72,6 +73,7 @@ interface Options {
     /** fetchData 抛出的错误 */
     fetchError?: unknown;
     registerResult?: { success: boolean; message?: string; username?: string };
+    deleteAccountResult?: { success: boolean; message?: string };
     recoveryKeyResult?: { success: boolean; message?: string };
     /** 让 api.login 直接抛 */
     loginThrows?: boolean;
@@ -102,6 +104,7 @@ function makeApi(o: Options, log: Log): Api {
         getSessions: async () => [] as SessionInfo[],
         revokeSession: async () => ({ success: true }),
         revokeOtherSessions: async () => ({ success: true, revoked: 2 }),
+        deleteAccount: async () => o.deleteAccountResult ?? { success: true, message: "账号已注销" },
         getRecoveryStatus: async () => {
             log.recoveryCalls++;
             return { configured: false };
@@ -325,6 +328,32 @@ test("注册失败：返回服务端原因，不切进应用", async () => {
     const res = await a().handleRegister("newbie", "pw", "CODE");
     assert.deepEqual(res, { success: false, message: "邀请码已过期" });
     assert.equal(state().authed, false);
+});
+
+// ---- 注销账号（只对普通账号开放：owner 在界面上没有入口，后端也拒）----
+
+test("注销账号：不填密码直接拦下，不调接口", async () => {
+    const log = emptyLog();
+    mount(<Harness log={log} o={{ startAuthenticated: true }} />);
+    const res = await a().handleDeleteAccount();
+    assert.deepEqual(res, { success: false, message: "请输入当前密码以确认注销" });
+});
+
+test("注销账号成功：回到登录页、清空数据、清掉记住的登录名", async () => {
+    const log = emptyLog();
+    mount(<Harness log={log} o={{ startAuthenticated: true }} />);
+    await run(() => a().setDeleteAccountPassword("pw"));
+
+    const res = await a().handleDeleteAccount();
+    await flush();
+
+    assert.equal(res.success, true);
+    assert.equal(state().authed, false);
+    assert.equal(state().authRequired, true);
+    assert.ok(log.groups.some(g => Array.isArray(g) && g.length === 0));
+    assert.ok(log.dataErrors.some(m => m.includes("账号已注销")));
+    assert.equal(a().deleteAccountOpen, false);
+    assert.equal(a().deleteAccountPassword, "");
 });
 
 // ---- 恢复密钥 ----

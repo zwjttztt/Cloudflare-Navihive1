@@ -368,7 +368,7 @@ export async function runLinkSweep(api: SchedulerDB): Promise<void> {
     const nav = api as unknown as Partial<NavigationAPI> & SchedulerDB;
 
     // 验证脚本注入的假实现没有 listUsers / setCurrentUser，退回单账号的旧行为，
-    // 免得污染既有用例（沉睡扫描 2026-10-17 下线前也是这个套路）。
+    // 免得污染既有用例（与沉睡扫描同一套路）。
     if (typeof nav.listUsers !== "function" || typeof nav.setCurrentUser !== "function") {
         await sweepOneAccount(api);
         return;
@@ -402,17 +402,25 @@ export async function runLinkSweep(api: SchedulerDB): Promise<void> {
 }
 
 /**
- * 沉睡账号扫描：**已按站点所有者要求关闭（2026-10-17）**。
+ * 沉睡账号扫描：长期不登录的账号先停用（数据留着），宽限期满再清除，把 D1 行数还回来。
  *
- * 原实现：长期不登录的账号先停用（数据留着），宽限期满再清除。原来挂在下面的
- * 每小时触发器里，每周跑一次。关闭时把任务块与这个函数一并删掉 ——
- * 只删调用点的话，函数和它的测试会变成「挂着但没人跑」的半死代码，
- * 下一个人读 cron 入口时会以为沉睡治理还在自动跑。
+ * ⚠️ 角色边界（2026-10-17 用户澄清后恢复）：这个功能**继续对普通账号生效**，
+ * 只是不对站点所有者开放 —— 后端的 sweepInactiveUsers 本来就跳过 owner
+ * （`role != 'owner'`），前端也不再给 owner 治理入口（账号清单 / 手动扫描 /
+ * 阈值配置）。二者互不相干：别再把「所有者不开放」实现成「把 cron 停掉」，
+ * 那样普通账号的沉睡治理也跟着死了（v3.0.0 就这么误关过，v3.1.0 改回）。
  *
- * 服务端能力（sweepInactiveUsers / setUserStatus / DELETE /api/account 等）
- * 一并保留但不再有可达路径：账号体系与登录拦截（403 停用态）依赖它们，
- * 真到要恢复那天，把任务块加回来就行。
+ * 只用到 NavigationAPI 里的方法，不属于 SchedulerDB 那三件套 ——
+ * 验证脚本注入的假实现没有它们，这里探测一下直接跳过，免得污染既有用例。
  */
+export async function runInactiveSweep(api: SchedulerDB): Promise<void> {
+    const nav = api as unknown as Partial<NavigationAPI>;
+    if (typeof nav.sweepInactiveUsers !== "function") return;
+    const result = await nav.sweepInactiveUsers();
+    if (result.disabled > 0 || result.deleted > 0) {
+        console.log(`沉睡账号扫描完成：停用 ${result.disabled} 个、清除 ${result.deleted} 个`);
+    }
+}
 
 /**
  * 过期数据清理：审计日志、回收站、令牌黑名单、用过的恢复令牌标记、过期邀请码。
@@ -487,18 +495,19 @@ export function backupDeadlineMs(accounts: number): number {
 /**
  * 单个 cron 任务的耗时上限。
  *
- * 为什么需要：剩下的几个任务是**串行**跑的，而备份上传最长可占 10 分钟
+ * 为什么需要：几个任务是**串行**跑的，而备份上传最长可占 10 分钟
  * （`uploadTimeoutMs` 的封顶值）。没有单任务上限的话，后面几项只能干等 ——
- * 某一项卡住会让当次 cron 整体超时，死链巡检/笔记备份/保留清理
+ * 某一项卡住会让当次 cron 整体超时，死链巡检/笔记备份/沉睡扫描/保留清理
  * 整周都不执行，而它们各自都有独立的 try/catch，本来不该被拖累。
  *
  * 备份与笔记备份给 12 分钟（上传封顶 10 分钟 + 导出与列目录的余量）；
- * 其余两项 5 分钟足够（慢也就慢在网络往返）。
+ * 其余三项 5 分钟足够（慢也就慢在网络往返）。
  */
 export const CRON_TASK_TIMEOUT_MS: Record<string, number> = {
     backup: 12 * 60_000,
     linkSweep: 5 * 60_000,
     notesBackup: 12 * 60_000,
+    inactiveSweep: 5 * 60_000,
     retention: 5 * 60_000,
 };
 
@@ -606,6 +615,12 @@ export async function runScheduledTasks(
             await runNotesBackupSchedule(makeApi(env), env);
         });
         if (!r.ok) console.error("记事本自动备份调度未完成:", r.error);
+    }
+
+    // 沉睡账号扫描：对普通账号继续生效（owner 在后端就被排除，见 runInactiveSweep 注释）
+    {
+        const r = await withDeadline("inactiveSweep", () => runInactiveSweep(makeApi(env)));
+        if (!r.ok) console.error("沉睡账号扫描未完成:", r.error);
     }
 
     {

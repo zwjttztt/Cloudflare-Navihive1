@@ -49,7 +49,6 @@ export interface AccountsApi {
     ): Promise<{ id: number; username: string; role: "owner" | "user" } | null>;
     verifyPasswordOfUser(userId: number, plain: string): Promise<boolean>;
     setUserPassword(userId: number, plain: string): Promise<boolean>;
-    countOwners(): Promise<number>;
     registerUser(
         username: string,
         password: string,
@@ -608,18 +607,6 @@ export const accountsImpl: AccountsApi = {
         return result.success;
     },
 
-    /** 还剩几个 owner：最后一个 owner 不允许注销，否则站点无人可管 */
-    countOwners: async function (this: NavigationAPI ): Promise<number> {
-        try {
-            const row = await this.db
-                .prepare("SELECT COUNT(*) AS total FROM users WHERE role = 'owner'")
-                .first<{ total: number }>();
-            return row?.total ?? 0;
-        } catch {
-            return 0;
-        }
-    },
-
     /**
      * 注册新账号。必须带一枚有效邀请码 —— 注册入口是公开的，
      * 没有邀请码就等于任何人都能建号（邀请码是唯一的准入门槛）。
@@ -784,16 +771,18 @@ export const accountsImpl: AccountsApi = {
 
     /**
      * 注销账号：分组、站点、账号记录全部删除，不留任何残留。
-     * 最后一个 owner 不让注销 —— 否则站点变成没人能管的孤儿。
+     * 站点所有者不让注销（2026-10-17 用户要求）—— 站点不能没有管理者。
+     * 前端同样不給 owner 入口，但这里必须兜底：只藏入口的话，脚本照样能调
+     * API 把 owner 删掉，站点就成了没人能管的孤儿。
      */
     deleteAccount: async function (this: NavigationAPI, userId: number): Promise<{ success: boolean; message: string }> {
         const user = await this.getUserById(userId);
         if (!user) return { success: false, message: "账号不存在" };
 
-        if (user.role === "owner" && (await this.countOwners()) <= 1) {
+        if (user.role === "owner") {
             return {
                 success: false,
-                message: "这是最后一个管理员账号，注销后将无人能管理站点；请先用邀请码注册一个新账号再注销",
+                message: "站点所有者账号不允许注销（普通账号可在「账号与安全 → 注销账号」自助注销）",
             };
         }
 

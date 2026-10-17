@@ -15,7 +15,7 @@ test("备份任务的耗时上限比上传封顶还宽（10 分钟上传 + 导�
     assert.ok(CRON_TASK_TIMEOUT_MS.backup > 10 * 60_000, "备份上限必须宽过上传封顶");
     assert.ok(CRON_TASK_TIMEOUT_MS.notesBackup > 10 * 60_000);
     // 其余几项不该比备份还宽，否则「某一项卡住拖垮后面」又回来了
-    for (const key of ["linkSweep", "retention"]) {
+    for (const key of ["linkSweep", "inactiveSweep", "retention"]) {
         assert.ok(CRON_TASK_TIMEOUT_MS[key] < CRON_TASK_TIMEOUT_MS.backup, `${key} 上限该比备份短`);
     }
 });

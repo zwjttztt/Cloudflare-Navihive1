@@ -687,7 +687,7 @@ test("卡片跨组移动不能塞进别人的分组", async () => {
     assert.equal(moved.order_num, 2, "排序照常生效");
 });
 
-test("注销账号：数据一起删除；最后一个 owner 不允许注销", async () => {
+test("注销账号：数据一起删除；站点所有者一律不允许注销", async () => {
     const store = freshStore();
     resetMigrationCacheForTests();
     const api = makeApi(store);
@@ -697,10 +697,12 @@ test("注销账号：数据一起删除；最后一个 owner 不允许注销", a
     api.setCurrentUser(ownerId);
     await api.createGroup({ name: "要被删掉的分组", order_num: 0 });
 
-    // 只有一个 owner 时不给注销
+    // 2026-10-17 用户要求：注销只对普通账号开放。后端必须兜底拒绝 owner ——
+    // 只在前端藏入口的话，脚本照样能调 API 把站点唯一的管理者删掉。
     const denied = await api.deleteAccount(ownerId);
     assert.equal(denied.success, false);
-    assert.match(denied.message, /最后一个管理员/);
+    assert.match(denied.message, /站点所有者账号不允许注销/);
+    assert.ok(store.users.some(u => u.id === ownerId), "被拒后 owner 行必须还在");
 
     // 邀请一个新账号进来，再注销它
     const invite = await api.createInvite(ownerId);
