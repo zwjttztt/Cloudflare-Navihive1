@@ -74,7 +74,11 @@ test("prefetchOnIdle：重复调度是幂等的，任务最终全部执行", asy
 test("App：登录后有空闲预取，且覆盖「更多选项」菜单与常用弹窗", () => {
     const code = strip(readSrc("App.tsx"));
     assert.match(code, /prefetchOnIdle\(\[/, "App 要在登录后调度空闲预取");
-    for (const key of ["moreMenu", "siteCardContextMenu", "addSite", "siteSettings", "settings", "stats", "backup", "recycle"]) {
+    for (const key of [
+        "moreMenu", "siteCardContextMenu", "addSite", "siteSettings", "settings", "stats",
+        "backup", "recycle", "confirm", "snackbar", "bulk", "aiSuggest", "deleteAccount",
+        "tagBar", "siteSkeleton",
+    ]) {
         assert.match(code, new RegExp(`\\["${key}", dialogChunks\\.${key}\\]`), `空闲预取清单缺 ${key}`);
     }
     assert.match(code, /if \(!isAuthenticated\) return;/, "访客视图不该预取管理弹窗");

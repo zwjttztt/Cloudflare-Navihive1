@@ -37,4 +37,15 @@ export const dialogChunks = {
     bookmarkImport: () => import("../components/BookmarkImportDialog"),
     importPreview: () => import("../components/ImportPreviewDialog"),
     commandPalette: () => import("../components/CommandPalette"),
+    // 二次确认 / 操作反馈 / 批量操作等「小而高频」件（2026-10-17 第二轮排查补进）：
+    // 块本体都只有 1~10 KB，但首次触发要现场等 1 个 RTT —— 在慢链路上就是
+    // 「点了删除确认没反应」「操作成功了提示条半天不出来」。全部转静态会撞
+    // 首屏预算的 5% 余量红线，所以走 idle 预取：登录后错峰备齐，首次触发 0 请求。
+    confirm: () => import("../components/ConfirmDialog"),
+    snackbar: () => import("../components/SnackbarHost"),
+    bulk: () => import("../components/BulkActionBar"),
+    aiSuggest: () => import("../components/AiSuggestDialog"),
+    deleteAccount: () => import("../components/DeleteAccountDialog"),
+    tagBar: () => import("../components/TagBar"),
+    siteSkeleton: () => import("../components/SiteListSkeleton"),
 };

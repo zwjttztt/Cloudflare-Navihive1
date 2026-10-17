@@ -335,6 +335,15 @@ function App() {
             ["bookmarkImport", dialogChunks.bookmarkImport],
             ["importPreview", dialogChunks.importPreview],
             ["commandPalette", dialogChunks.commandPalette],
+            // 第二轮排查补进的小件：首次触发（删除确认 / 首个 toast / 多选 / AI 建议 /
+            // 注销账号 / 标签栏）原本要现场等 1 个 RTT，登录后错峰备齐即 0 请求。
+            ["confirm", dialogChunks.confirm],
+            ["snackbar", dialogChunks.snackbar],
+            ["bulk", dialogChunks.bulk],
+            ["aiSuggest", dialogChunks.aiSuggest],
+            ["deleteAccount", dialogChunks.deleteAccount],
+            ["tagBar", dialogChunks.tagBar],
+            ["siteSkeleton", dialogChunks.siteSkeleton],
         ]);
     }, [isAuthenticated]);
 
