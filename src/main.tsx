@@ -160,12 +160,13 @@ createRoot(document.getElementById("root")!).render(
         {/* 包在所有内容之外：任何组件渲染抛错都被拦成一张可自助恢复的页面，而不是白屏 */}
         <ErrorBoundary>
             <UIPrefsProvider>
-                {publicGroupToken ? (
-                    <Suspense fallback={<p>正在加载分享…</p>}><PublicGroupPage token={publicGroupToken} /></Suspense>
-                ) : publicToken ? <Suspense fallback={<p>正在加载分享…</p>}><PublicNotePage token={publicToken} /></Suspense> : <App />}
+            {publicGroupToken ? (
+                <Suspense fallback={<p>正在加载分享…</p>}><PublicGroupPage token={publicGroupToken} /></Suspense>
+            ) : publicToken ? <Suspense fallback={<p>正在加载分享…</p>}><PublicNotePage token={publicToken} /></Suspense> : <App />}
             </UIPrefsProvider>
-            {/* 部署版本徽标（右下角）：主页面与公开分享页都显示，方便核对「跑的是哪一版」 */}
-            <BuildBadge />
+            {/* 部署版本徽标（右下角）：公开分享页仍显示，方便核对「跑的是哪一版」；
+                主页面改由 App 内部渲染——记事本页整屏覆盖时隐藏，避免压在正文上。 */}
+            {publicGroupToken || publicToken ? <BuildBadge /> : null}
         </ErrorBoundary>
     </StrictMode>
 );

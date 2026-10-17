@@ -32,6 +32,7 @@ import ConfirmDialog from "./components/ConfirmDialogGate";
 // 提示条 / 背景装饰 / 浮层挂载点：三段纯渲染的 JSX，从 App 的渲染树里抽出来
 import BackgroundLayers from "./components/BackgroundLayers";
 import OverlayHost from "./components/OverlayHost";
+import BuildBadge from "./components/BuildBadge";
 import { useDocumentEffects } from "./hooks/useDocumentEffects";
 import { useConfigController } from "./hooks/useConfigController";
 import { useSiteSettings } from "./hooks/useSiteSettings";
@@ -2072,6 +2073,9 @@ function App() {
                         onClose: () => setTagManagerOpen(false),
                     }}
                 />
+                {/* 部署版本徽标（右下角）：记事本页是整屏覆盖，徽标会压在正文上，
+                    打开时隐藏（公开分享页仍在 main.tsx 渲染）。 */}
+                {!notesOpen && <BuildBadge />}
             </Box>
         </ThemeProvider>
             </AiContext.Provider>

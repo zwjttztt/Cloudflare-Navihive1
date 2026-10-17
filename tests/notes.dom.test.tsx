@@ -5748,6 +5748,70 @@ test("回归：ZIP 备份（zipBase64）从网盘恢复要走附件回传导入�
     );
 });
 
+test("回归：从网盘恢复（ZIP）调 importNotes 必须保留 this（2026-10-17 漏绑 this 导致 this.request 报错）", async () => {
+    // 真 bug（2026-10-17 用户报「从网盘恢复笔记还是报错：Cannot read properties
+    // of undefined (reading 'request')」）：importNotesFile 里把方法抽成裸引用
+    // `const importNotes = shareApi?.importNotes` 再 `importNotes(payload)` 调用，
+    // this 丢失 → 真实 client 的 importNotes 内部 `this.request` 抛错。这里用
+    // 「方法简写」定义 importNotes（与真实 client 同构，依赖 this），把 this 必须是
+    // api 实例本身这条不变量钉死。若再漏绑 this，importNotes 会抛错、imports 停在 0。
+    setWide();
+    const { createZip } = await import("../src/utils/zip");
+    const imp: { imports: number; lastPayload?: unknown } = { imports: 0 };
+    const zipBytes = createZip([
+        {
+            path: "notes.json",
+            data: new TextEncoder().encode(JSON.stringify({
+                kind: "navihive-notes-export",
+                exported_at: new Date().toISOString(),
+                notes: [{ id: 7, uuid: "u7", title: "网盘里那篇", content: "内容" }],
+                folders: [],
+                tags: [],
+                noteTags: {},
+            })),
+        },
+    ]);
+    const zipB64 = Buffer.from(zipBytes).toString("base64");
+    const shareApi: Record<string, unknown> = {
+        getNoteShare: async () => null,
+        createNoteShare: async () => null,
+        revokeNoteShare: async () => ({ success: true }),
+        // 方法简写：调用时 this 应指向 shareApi 自身（真实 client 的 importNotes
+        // 内部走 this.request，this 一丢就抛「…reading 'request'」）
+        importNotes(this: unknown, payload: unknown) {
+            if (this !== shareApi) {
+                throw new Error("importNotes 的 this 丢失（应指向 api 实例，却收到 " + String(this) + "）");
+            }
+            imp.imports += 1;
+            imp.lastPayload = payload;
+            return { created: 1, updated: 2, skipped: 0 } as never;
+        },
+    };
+    const backupApi = {
+        ...makeBackupApi({ calls: [], saved: [] }),
+        fetch: async (filename: string) => ({ success: true, message: filename, zipBase64: zipB64 }),
+    };
+    mountPanel([note({ id: 1, title: "甲", content: "a" })], { backupApi, shareApi: shareApi as never });
+    await act(async () =>
+        (document.querySelector("button[data-tool='settings']") as HTMLElement).click()
+    );
+    await act(async () =>
+        (document.querySelector("[data-settings-tab='backup']") as HTMLElement).click()
+    );
+    await act(async () =>
+        (document.querySelector("[data-backup-action='list-remote']") as HTMLElement).click()
+    );
+    await act(async () =>
+        (document.querySelector("[data-backup-action='restore']") as HTMLElement).click()
+    );
+    await act(async () => { await new Promise(r => setTimeout(r, 30)); });
+    assert.equal(imp.imports, 1, "ZIP 恢复要真的走一次 importNotes（this 丢失时会抛错、imports 停在 0）");
+    assert.ok(
+        document.querySelector("[data-backup-remote-error='1']") === null,
+        "恢复成功不该出现错误框（this 丢失时会亮出 this.request 报错）"
+    );
+});
+
 test("设置→备份：没有备份能力（老部署）时整页不出现", async () => {
     setWide();
     mountPanel([note({ id: 1, title: "甲", content: "a" })]);

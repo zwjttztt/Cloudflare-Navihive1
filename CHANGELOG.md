@@ -6,6 +6,31 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。---
 
+## 2026-10-17（日）· 修复：从网盘恢复仍报 this.request / 笔记页版本号压住正文
+
+**要点**：昨天那版修完 `zipBase64` 透传后，ZIP 备份终于能进「解包 → 导入」链路了；
+但这条链路在 `NotesPage.tsx` 的 `importNotesFile` 里把 `importNotes` 抽成**裸引用**再调用，
+`this` 丢失，真实 client 的 `importNotes` 内部 `this.request` 直接抛
+`Cannot read properties of undefined (reading 'request')`。等于「漏传字段」修好了，
+「调导入时丢了 this」又冒出来 —— 用户实测恢复还是报错。顺手把右下角部署版本徽标在
+记事本整屏页里藏起来（之前压在正文上）。
+
+- **从网盘恢复（ZIP）报 `this.request` 错误**（`NotesPage.tsx` 的 `importNotesFile`）：
+  旧写法 `const importNotes = shareApi?.importNotes; … importNotes(payload)` 把方法从对象上
+  **摘下来当独立函数调**，`this` 变 `undefined` → 真实 client 的 `importNotes` 一进
+  `this.request<NoteImportStats>(...)` 就抛。JSON 备份走 `importNotes(parsed)`、Markdown
+  目录 ZIP 走 `importNotes({...})`、附件 ZIP 走 `importNotes(payload)` —— 三条分支全中招
+  （数据页「导入笔记」文件的 JSON / ZIP 入口同理），所以这是**通用的导入崩溃**，不只网盘恢复。
+  改法：不再摘引用，直接 `shareApi.importNotes(...)`，调用时 `this` 自然绑回 api 实例。
+  守卫 `tests/notes.dom.test.tsx` 新增「ZIP 恢复调 importNotes 必须保留 this」——
+  `importNotes` 用方法简写、内部断言 `this === shareApi`，改回裸引用必红（已反向验证）。
+- **笔记页版本号与文字重叠**（`BuildBadge.tsx` / `App.tsx` / `main.tsx`）：
+  右下角部署版本徽标是 `position: fixed` 常驻，记事本是整屏覆盖，正文右下角被压住。
+  把 `<BuildBadge />` 从 `main.tsx` 根部挪进 `App.tsx`，`notesOpen` 时**不渲染**；
+  公开分享页仍在 `main.tsx` 渲染（方便核对分享页跑的是哪一版）。仅隐藏、不删组件。
+
+---
+
 ## 2026-10-16（六）· 修复：AI 弹窗反复闪加载条 / 笔记网盘恢复失败（用户实测反馈）
 
 **要点**：用户在新部署的 https://home.zwjttzt.com 上实测反馈的两条，都不是「看着别扭」，

@@ -2068,8 +2068,7 @@ export default function NotesPage({
 
     const importNotesFile = useCallback(
         async (file: File): Promise<NoteImportStats> => {
-            const importNotes = shareApi?.importNotes;
-            if (!importNotes) throw new Error("当前部署不支持导入笔记");
+            if (!shareApi?.importNotes) throw new Error("当前部署不支持导入笔记");
 
             const isZip =
                 /\.zip$/i.test(file.name) ||
@@ -2078,7 +2077,7 @@ export default function NotesPage({
 
             if (!isZip) {
                 const parsed = JSON.parse(await file.text()) as NotesImportPayload;
-                const stats = await importNotes(parsed);
+                const stats = await shareApi.importNotes(parsed);
                 onDatasetChanged?.();
                 return stats;
             }
@@ -2165,7 +2164,7 @@ export default function NotesPage({
                     noteTags[String(id)] = [...new Set(names)].map(name => tagIds.get(name)!);
                     imported.push({ id, title, content, folder_id: ensureFolder(parts.join("/")) });
                 }
-                return importNotes({ notes: imported, folders, tags, noteTags }).then(stats => {
+                return shareApi.importNotes({ notes: imported, folders, tags, noteTags }).then(stats => {
                     onDatasetChanged?.();
                     return stats;
                 });
@@ -2216,7 +2215,7 @@ export default function NotesPage({
                 );
             }
 
-            const stats = await importNotes(payload);
+            const stats = await shareApi.importNotes(payload);
             if (skipped > 0) {
                 onNotify?.(`有 ${skipped} 个附件没能回传（正文里的引用可能还是旧的）`, "warning" as never);
             }
