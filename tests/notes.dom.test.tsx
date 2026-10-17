@@ -4211,6 +4211,60 @@ test("数据页导入带附件 ZIP 时进度条要报出「上传附件」阶段
     assert.equal(document.querySelector("[data-import-progress='1']"), null, "导入完成后进度条应消失");
 });
 
+test("导入后成功提示必须等当前页列表刷新完才弹（2026-10-17：提示弹了列表半天才更新）", async () => {
+    // 真 bug：onDatasetChanged 原实现只 postMessage 广播给**其它**标签页，
+    // 当前标签页要等跨设备轮询的下个周期才重拉 —— 用户报「成功提示出现后还要
+    // 很久才能成功恢复」就是这个空窗。修复后：导入方 await onDatasetChanged
+    // （NotesOverlay 里 = 广播 + await reload），成功提示推迟到列表刷新完才弹，
+    // 进度条多出一个「刷新列表」阶段。本用例用 120ms 的假重拉钉死这个时序。
+    setWide();
+    let reloadDoneAt = 0;
+    let notifiedAt = 0;
+    const notifications: string[] = [];
+    mountPanel([note({ id: 1, title: "甲", content: "a" })], {
+        shareApi: {
+            listNoteShares: async () => [],
+            notesStats: async () => ({ versions: 0, links: 0 }),
+            importNotes: async () => ({ created: 1, updated: 0, skipped: 0, removed: 0 }),
+        } as never,
+        onNotify: (message: string, kind?: string) => {
+            if (kind === "success") notifiedAt = Date.now();
+            notifications.push(message);
+        },
+        onDatasetChanged: async () => {
+            await new Promise(r => setTimeout(r, 120));
+            reloadDoneAt = Date.now();
+        },
+    });
+    await act(async () => (document.querySelector("button[data-tool='settings']") as HTMLElement).click());
+    await act(async () => (document.querySelector("[data-settings-tab='data']") as HTMLElement).click());
+    const payload = {
+        kind: "navihive-notes-export",
+        exported_at: new Date().toISOString(),
+        notes: [{ id: 7, uuid: "u7", title: "恢复进来", content: "正文" }],
+        folders: [], tags: [], noteTags: {},
+    };
+    const file = new File([JSON.stringify(payload)], "notes.json", { type: "application/json" });
+    const input = document.querySelector("input[aria-label='选择要导入的笔记文件（JSON 或 ZIP）']")!;
+    Object.defineProperty(input, "files", { value: [file], configurable: true });
+    await act(async () => { input.dispatchEvent(new Event("change", { bubbles: true })); });
+
+    let sawRefreshPhase = false;
+    for (let i = 0; i < 50; i++) {
+        const el = document.querySelector("[data-import-progress='1']");
+        if (el && /刷新列表/.test(el.textContent || "")) { sawRefreshPhase = true; break; }
+        await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+    }
+    assert.ok(sawRefreshPhase, "导入后进度条应显示「刷新列表」阶段");
+    await act(async () => { await new Promise(r => setTimeout(r, 300)); });
+    assert.ok(reloadDoneAt > 0, "onDatasetChanged（重拉列表）要真的被等到完成");
+    assert.ok(
+        notifiedAt >= reloadDoneAt,
+        "成功提示必须等列表刷新完成后才弹（提示先弹、列表后更新就是这个断言红了）"
+    );
+    assert.ok(notifications.some(m => m.includes("导入完成")), "提示文案保留");
+});
+
 test("数据页「导入笔记」行在老部署（无 importNotes）下不出现", async () => {
     setWide();
     mountPanel([note({ id: 1, title: "甲", content: "a" })]);

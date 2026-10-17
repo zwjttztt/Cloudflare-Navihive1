@@ -108,8 +108,13 @@ export interface NotesDataTab {
     /**
      * 导入「记事本导出」JSON（exportAllData 的形状）：按 uuid 合并、较新者胜。
      * 可选：老部署没有 notes/import 端点时整行不出现。失败抛错，消息直接给用户。
+     * onProgress（2026-10-17）：实现方在重拉列表前上报「刷新列表」阶段，
+     * 调用方据此把进度条一直展示到列表真正刷新完。
      */
-    onImportNotes?: (payload: NotesImportPayload) => Promise<NoteImportStats>;
+    onImportNotes?: (
+        payload: NotesImportPayload,
+        onProgress?: (p: NoteImportProgress) => void
+    ) => Promise<NoteImportStats>;
     /**
      * 备份页（2026-10-09 照 inkstone 的 BackupSettings）。可选：老部署没有
      * notesBackup 端点 / 配置读写时整页不出现。备份与导航页的分开（独立目录 /
@@ -310,7 +315,7 @@ export default function NotesSettingsDialog({
                 if (!parsed || !Array.isArray(parsed.notes)) {
                     throw new Error("文件里没有笔记数据（请选择本工具导出的笔记 JSON）");
                 }
-                r = await dataRef.current.onImportNotes(parsed);
+                r = await dataRef.current.onImportNotes(parsed, setImportProgress);
             }
             onNotify?.(
                 `导入完成：新增 ${r.created} 条，更新 ${r.updated} 条，保留本地 ${r.skipped} 条`,
@@ -524,7 +529,7 @@ export default function NotesSettingsDialog({
                     return;
                 }
                 setRestoreProgress({ phase: "写入笔记", current: 0, total: 0 });
-                await cur.onImportNotes(r.payload);
+                await cur.onImportNotes(r.payload, setRestoreProgress);
             } else {
                 setRemoteError(r.message || "取回备份失败");
                 return;
@@ -533,7 +538,7 @@ export default function NotesSettingsDialog({
             setRestoreTarget(null);
             setRestorePwd("");
             onNotify?.(
-                `已从网盘恢复「${filename}」（含附件时会逐个回传，请留意后续提示）`,
+                `已从网盘恢复「${filename}」，列表已刷新`,
                 "success"
             );
         } catch (error) {

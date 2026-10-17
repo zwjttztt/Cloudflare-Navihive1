@@ -212,7 +212,7 @@ export interface NotesPageProps {
      * 数据集级变更广播（2026-10-11，阶段 2）：导入 / 恢复成功后喊一声，
      * 让其它标签页能提示刷新。可选：老调用方没传时导入照常，只是少了跨页提醒。
      */
-    onDatasetChanged?: () => void;
+    onDatasetChanged?: () => void | Promise<void>;
     /**
      * 最近一轮跨设备轮询发现的「被改笔记 id」（阶段①）。当前打开的笔记
      * 命中时给一句定向提示——保存时 rev 守卫仍会拦住静默覆盖。
@@ -2083,7 +2083,11 @@ export default function NotesPage({
                 const parsed = JSON.parse(await file.text()) as NotesImportPayload;
                 onProgress?.({ phase: "写入笔记", current: 0, total: 0 });
                 const stats = await shareApi.importNotes(parsed);
-                onDatasetChanged?.();
+                // 当前标签页必须自己重拉（2026-10-17：此前只广播给其它标签页，
+                // 本页要等跨设备轮询的下个周期才看见恢复结果 —— 用户报「提示弹了
+                // 还要很久才恢复完」就是这个空窗）。等重拉完才让上层弹成功提示。
+                onProgress?.({ phase: "刷新列表", current: 0, total: 0 });
+                await onDatasetChanged?.();
                 return stats;
             }
 
@@ -2181,10 +2185,11 @@ export default function NotesPage({
                     imported.push({ id, title, content, folder_id: ensureFolder(parts.join("/")) });
                 }
                 onProgress?.({ phase: "写入笔记", current: attachmentEntries.length, total: attachmentEntries.length });
-                return shareApi.importNotes({ notes: imported, folders, tags, noteTags }).then(stats => {
-                    onDatasetChanged?.();
-                    return stats;
-                });
+                const stats = await shareApi.importNotes({ notes: imported, folders, tags, noteTags });
+                // 同上：等当前页重拉完再返回，成功提示弹出时列表已经是新的
+                onProgress?.({ phase: "刷新列表", current: 0, total: 0 });
+                await onDatasetChanged?.();
+                return stats;
             }
             const payload = JSON.parse(
                 new TextDecoder().decode(notesEntry.data)
@@ -2251,8 +2256,10 @@ export default function NotesPage({
             if (skipped > 0) {
                 onNotify?.(`有 ${skipped} 个附件没能回传（正文里的引用可能还是旧的）`, "warning" as never);
             }
-            // 导入是一次数据集级变更：其它标签页 / 设备都要能看见（阶段 2）
-            onDatasetChanged?.();
+            // 导入是一次数据集级变更：广播给其它标签页 + 当前页立刻重拉
+            // （此前只广播，本页要等轮询下个周期才看见 —— 同 2026-10-17 的空窗问题）
+            onProgress?.({ phase: "刷新列表", current: 0, total: 0 });
+            await onDatasetChanged?.();
             return stats;
         },
         [shareApi, uploadApi, onNotify, onDatasetChanged]
@@ -5279,9 +5286,12 @@ export default function NotesPage({
                     // 成功后广播一次数据集变更（阶段 2）：网盘恢复不经 useNotes，
                     // 不广播的话其它标签页对这次恢复一无所知。
                     onImportNotes: shareApi?.importNotes
-                        ? async (payload) => {
+                        ? async (payload, onProgress) => {
                               const stats = await shareApi.importNotes!(payload);
-                              onDatasetChanged?.();
+                              // 数据页 JSON 直导 / 网盘恢复旧格式都走这条：同样等重拉完
+                              // 才返回，上层成功提示弹出时列表已更新（同 2026-10-17 空窗）
+                              onProgress?.({ phase: "刷新列表", current: 0, total: 0 });
+                              await onDatasetChanged?.();
                               return stats;
                           }
                         : undefined,

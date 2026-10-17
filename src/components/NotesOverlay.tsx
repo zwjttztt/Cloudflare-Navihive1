@@ -127,6 +127,16 @@ export default function NotesOverlay({
         setConflict({ title: current.title || "无标题", retry });
     };
 
+    // 导入/恢复后的数据集级变更（2026-10-17 改）：除了广播给**其它**标签页，
+    // 当前标签页也必须立刻重拉 —— 此前只广播，本页要等跨设备轮询的下个周期
+    // 才看见恢复结果，用户看到的就是「成功提示弹了，列表半天才更新」。
+    // await reload 让上层把成功提示推迟到列表真正刷新完再弹。
+    // （reload 经 ref 转发拿最新闭包，这里引用稳定不搅动下游 useCallback 依赖）
+    const handleDatasetChanged = useCallback(async () => {
+        broadcastChange();
+        await reloadRef.current();
+    }, [broadcastChange]);
+
     /** 冲突弹框的两个出口：覆盖 / 重新加载 */
     const resolveConflict = async (overwrite: boolean) => {
         const pending = conflict;
@@ -349,7 +359,7 @@ export default function NotesOverlay({
                     : undefined
             }
             backupApi={backupApi}
-            onDatasetChanged={broadcastChange}
+            onDatasetChanged={handleDatasetChanged}
             syncChangedNoteIds={lastSyncChangedIds}
             notes={notes}
             onClose={onClose}
