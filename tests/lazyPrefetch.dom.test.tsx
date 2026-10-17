@@ -3,21 +3,17 @@
 // 2026-10-17 首开延迟排查的修复件守卫：
 // 「更多选项」菜单 / 卡片菜单 / 各弹窗全是条件挂载的 lazy 块，首次点击要现场
 // 下载块，慢链路上数秒空窗且毫无反馈（用户实测「首次点击反馈延迟很久、关闭后
-// 再次打开才恢复正常」）。修复是三层预取 + 加载指示，这里把每层都钉住：
+// 再次打开才恢复正常」）。修复是三层预取（同日用户要求去除 LazyFallback 转圈，
+// ChunkBoundary fallback 已回退为 null，不加回），这里把每层都钉住：
 //   1. prefetchChunk 的幂等 / 失败重试语义（lazyPrefetch.ts）；
-//   2. LazyFallback 的 200ms 延迟显示 + 不用 MUI（快路径不闪、不抬首屏）；
-//   3. 静态守卫：三层挂载点（App 空闲预取 / HeaderActions 悬停 / MoreMenu 展开
+//   2. 静态守卫：三层挂载点（App 空闲预取 / HeaderActions 悬停 / MoreMenu 展开
 //      时预取目标弹窗 / SiteCard 卡片设置悬停）与 dialogChunks 只含动态 import。
-//   4. ChunkBoundary 的 Suspense fallback 换成了 LazyFallback（点击即有反馈）。
-import { test, afterEach } from "node:test";
+import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve, join } from "node:path";
-import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
 import { prefetchChunk, isPrefetched, prefetchOnIdle } from "../src/utils/lazyPrefetch";
-import LazyFallback from "../src/components/LazyFallback";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -40,30 +36,6 @@ const readSrc = (...parts: string[]) =>
 /** 剥注释（守卫扫源码的老规矩：注释里的示例代码不算实现） */
 const strip = (code: string) =>
     code.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/^[ \t]*\/\/.*$/gm, " ");
-
-let host: HTMLDivElement | null = null;
-let root: Root | null = null;
-
-afterEach(() => {
-    if (root) {
-        act(() => root!.unmount());
-        root = null;
-    }
-    if (host) {
-        host.remove();
-        host = null;
-    }
-    document.body.innerHTML = "";
-});
-
-function mount(ui: React.ReactNode) {
-    host = document.createElement("div");
-    document.body.appendChild(host);
-    root = createRoot(host);
-    act(() => {
-        root!.render(ui);
-    });
-}
 
 test("prefetchChunk：同 key 只取一次，失败后允许重试", async () => {
     let calls = 0;
@@ -97,23 +69,6 @@ test("prefetchOnIdle：重复调度是幂等的，任务最终全部执行", asy
     prefetchOnIdle([["t3", () => { ran += "3"; return Promise.resolve(); }]]);
     await new Promise(r => setTimeout(r, 2500));
     assert.equal(ran, "12", "第二次调度要被幂等吞掉；首个任务列表要全部跑完");
-});
-
-test("LazyFallback：200ms 内不显示，之后出现加载指示且不带 MUI 痕迹", async () => {
-    mount(<LazyFallback />);
-    assert.equal(document.querySelector("[data-lazy-fallback]"), null, "快路径（200ms 内）完全不闪");
-    await act(async () => {
-        await new Promise(r => setTimeout(r, 320));
-    });
-    const el = document.querySelector("[data-lazy-fallback='1']");
-    assert.ok(el !== null, "慢路径要有「加载中」指示");
-    assert.equal(el!.querySelectorAll("[class*='Mui']").length, 0, "不许用 MUI（会抬首屏）");
-    assert.equal(el!.getAttribute("role"), "status");
-});
-
-test("ChunkBoundary 的加载反馈换成了 LazyFallback（不再是无反馈的 null）", () => {
-    const code = strip(readSrc("components", "ChunkBoundary.tsx"));
-    assert.match(code, /fallback=\{<LazyFallback \/>\}/, "Suspense fallback 要给加载指示");
 });
 
 test("App：登录后有空闲预取，且覆盖「更多选项」菜单与常用弹窗", () => {

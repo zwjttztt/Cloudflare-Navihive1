@@ -22,7 +22,6 @@
 //    给了 `when` 就只在为真时挂载子树，chunk 真正变成「打开才下载」。
 import { Component, Suspense, type ReactNode } from "react";
 import { describeChunkFailure, looksLikeChunkLoadError } from "../utils/chunkFailure";
-import LazyFallback from "./LazyFallback";
 
 /**
  * 关闭后延迟多久卸载。MUI 的 Dialog 退出过渡约 195ms，
@@ -97,11 +96,10 @@ export default class ChunkBoundary extends Component<Props, State> {
         if (!mounted) return null;
         if (!error) {
             return (
-                // fallback 从 null 换成 LazyFallback（2026-10-17 首开延迟排查）：
-                // 首次打开要现场下载块，慢链路上数秒的空窗里用户什么都看不到，
-                // 感知就是「按键坏了」。LazyFallback 延迟 200ms 才显示，
-                // 预取/命中的快路径完全不闪；不用 MUI，不抬首屏。
-                <Suspense fallback={<LazyFallback />} key={attempt}>
+                // fallback 保持 null（2026-10-17 用户要求去除转圈）：三层预取把
+                // 「点击时下载」提前到点击前，正常路径首开就是 0 请求、无需加载指示；
+                // 真网抖动时宁可短暂空窗，也不闪转圈。
+                <Suspense fallback={null} key={attempt}>
                     {this.props.children}
                 </Suspense>
             );
