@@ -28,6 +28,32 @@ import {
 } from "../utils/notesSync";
 import type { NotifySeverity } from "./useNotify";
 
+/**
+ * 记事本列表的模块级 SWR 缓存（2026-10-17）。
+ *
+ * 为什么放模块级：NotesOverlay 是「关掉即卸载」的，组件级状态活不过一次关闭；
+ * 模块级缓存跨挂载存活，第二次打开记事本时先把上次的列表渲染出来（0 等待），
+ * 挂载后的 reload() 照常在后台校准 —— 语义仍是「每次都向服务端对表」，
+ * 只是「先给看旧的、再换成新的」，不再让用户干等 1 个 RTT。
+ *
+ * ⚠️ 按账号分桶（readActiveAccount()）：切账号不会串数据。只在内存里、
+ * 不进 localStorage —— 刷新页面后自然失效，不为低频场景增加复杂度。
+ */
+interface NotesSwrEntry {
+    notes: Note[];
+    folders: NoteFolder[];
+    tags: NoteTag[];
+    noteTags: Record<number, number[]>;
+    /** 缓存列表当时走的摘要档（?fields=list），下次打开直接沿用 */
+    summary: boolean;
+}
+const notesSwrCache = new Map<string, NotesSwrEntry>();
+
+/** 测试用：清空 SWR 缓存（跨用例隔离；登录/登出不需要调 —— 按账号分桶已隔离） */
+export function clearNotesSwrCache(): void {
+    notesSwrCache.clear();
+}
+
 /** 文件夹排序：先按 order_num，再按名字（和后端 listFolders 的 ORDER BY 一致） */
 function sortFolders(a: NoteFolder, b: NoteFolder): number {
     return (a.order_num ?? 0) - (b.order_num ?? 0) || a.name.localeCompare(b.name);
@@ -227,8 +253,10 @@ export function useNotes({ api, onError, onNotify, onNoteConflict }: UseNotesPar
             if (timer) clearTimeout(timer);
         };
     }, [api, onNotify]);
-    const [notes, setNotes] = useState<Note[]>([]);
-    const [loaded, setLoaded] = useState(false);
+    const swrKey = String(readActiveAccount() ?? "anon");
+    const swrHit = notesSwrCache.get(swrKey);
+    const [notes, setNotes] = useState<Note[]>(swrHit?.notes ?? []);
+    const [loaded, setLoaded] = useState(Boolean(swrHit));
     /**
      * 最近一轮轮询发现的「被其他设备改过的笔记 id」（新的在前，最多 50）。
      * 上层（NotesPage）用它判断「当前打开的这篇是否被改」，给针对性提示。
@@ -244,10 +272,10 @@ export function useNotes({ api, onError, onNotify, onNoteConflict }: UseNotesPar
     /** 阶段三：回收站里的笔记（懒加载，进「回收站」视图时才拉） */
     const [trash, setTrash] = useState<TrashedNote[]>([]);
     /** 阶段三收尾：笔记文件夹 / 标签（左栏第一列要用，所以状态放在这里而不是组件里） */
-    const [folders, setFolders] = useState<NoteFolder[]>([]);
-    const [tags, setTags] = useState<NoteTag[]>([]);
+    const [folders, setFolders] = useState<NoteFolder[]>(swrHit?.folders ?? []);
+    const [tags, setTags] = useState<NoteTag[]>(swrHit?.tags ?? []);
     /** 笔记 → 标签Id：[noteId]: tagId[] */
-    const [noteTags, setNoteTags] = useState<Record<number, number[]>>({});
+    const [noteTags, setNoteTags] = useState<Record<number, number[]>>(swrHit?.noteTags ?? {});
 
     /**
      * 每条笔记**最新已知的版本号**（rev）。
@@ -259,8 +287,8 @@ export function useNotes({ api, onError, onNotify, onNoteConflict }: UseNotesPar
      * 所以服务端一回就把新 rev 记在这里，下一笔**同步**就能读到。
      */
     const revById = useRef(new Map<number, number>());
-    /** 列表是否走摘要（?fields=list）：见 reload 里的注释 */
-    const summaryRef = useRef(false);
+    /** 列表是否走摘要（?fields=list）：见 reload 里的注释。SWR 命中时沿用缓存的那档 */
+    const summaryRef = useRef(swrHit?.summary ?? false);
     /** 首拉前的 count 探测只做一次：老部署 404 / 网络抖动也不再反复试 */
     const countProbedRef = useRef(false);
     /**
@@ -276,6 +304,15 @@ const SUMMARY_LIST_THRESHOLD = 200;
             if (typeof item.id === "number" && typeof item.rev === "number") map.set(item.id, item.rev);
         }
         revById.current = map;
+    }, []);
+
+    // SWR 命中时先把缓存列表的 rev 底账铺好：用户可能在 mount 的 reload 完成前
+    // 就开始编辑，没有底账的话第一笔保存拿不到 rev（走 baseRev=快照的旧路径）。
+    // 必须在声明顺序上早于 mount-reload 那个 effect：先铺底账、再后台校准。
+    useEffect(() => {
+        if (swrHit) seedRevs(swrHit.notes);
+        // 只在挂载时铺一次；之后由 reload / 写入回填维护
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     const reload = useCallback(async () => {
@@ -302,7 +339,11 @@ const SUMMARY_LIST_THRESHOLD = 200;
             setExternalChange(false);
         } catch (error) {
             reportError(error, { source: "notes-list" });
-            onError("加载记事本失败: " + (error instanceof Error ? error.message : "未知错误"));
+            // SWR 命中时列表已经可见（旧数据），「加载失败」的提示反而误导 ——
+            // 后续轮询 / 手动刷新会再试。只有真的一无所有时才弹。
+            if (notesRef.current.length === 0) {
+                onError("加载记事本失败: " + (error instanceof Error ? error.message : "未知错误"));
+            }
         }
     }, [api, onError, seedRevs]);
 
@@ -376,6 +417,23 @@ const SUMMARY_LIST_THRESHOLD = 200;
     useEffect(() => {
         notesRef.current = notes;
     }, [notes]);
+
+    /**
+     * SWR 缓存回写：任何一轮真实数据落地后（reload / 乐观更新 / 增删），
+     * 把当前状态镜像进缓存。放 effect 而不是塞进 reload —— reload 拿不到
+     * folders/tags 的最新值，而乐观更新后的列表同样值得缓存。
+     * loaded 为 false 时绝不写（不把「还没拿到过服务端数据」的空态当缓存）。
+     */
+    useEffect(() => {
+        if (!loaded) return;
+        notesSwrCache.set(swrKey, {
+            notes,
+            folders,
+            tags,
+            noteTags,
+            summary: summaryRef.current,
+        });
+    }, [loaded, notes, folders, tags, noteTags, swrKey]);
 
     /**
      * 同一条笔记的写入队列：noteId → 「上一笔写完」的 promise。
