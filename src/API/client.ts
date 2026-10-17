@@ -1385,11 +1385,14 @@ export class NavigationClient {
     }
 
     // ============ 回收站 ============
-    async getRecycleBin(): Promise<{
+    /** 回收站列表。scope 分家：nav=站点/分组，note=笔记（不传看全部，兼容旧调用） */
+    async getRecycleBin(scope?: "nav" | "note"): Promise<{
         success: boolean;
         items: Array<{ id: number; kind: "site" | "group" | "note"; name: string; deletedAt: number }>;
     }> {
-        return this.request<RecycleListResponse>("recycle");
+        return this.request<RecycleListResponse>(
+            scope ? `recycle?kind=${scope}` : "recycle"
+        );
     }
 
     async restoreRecycleItem(id: number): Promise<{ success: boolean }> {
@@ -1432,8 +1435,12 @@ export class NavigationClient {
         });
     }
 
-    async emptyRecycleBin(): Promise<{ success: boolean }> {
-        const res = await this.request<RecycleSimpleResponse>("recycle", { method: "DELETE" });
+    /** 清空回收站。scope 同 getRecycleBin：两边分家，清空互不误伤 */
+    async emptyRecycleBin(scope?: "nav" | "note"): Promise<{ success: boolean }> {
+        const res = await this.request<RecycleSimpleResponse>(
+            scope ? `recycle?kind=${scope}` : "recycle",
+            { method: "DELETE" }
+        );
         return { success: res?.success !== false };
     }
 

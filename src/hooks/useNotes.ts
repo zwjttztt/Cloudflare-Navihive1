@@ -89,12 +89,12 @@ export type NotesApiLike = {
     deleteNote(id: number): Promise<{ success: boolean; recycleId?: number }>;
     // 阶段三：回收站。⚠️ 这几个是**可选**的 —— 老 mock / 老调用方没实现时，
     // 记事本要能优雅降级成「回收站视图不可用」，而不是整个页面崩。
-    getRecycleBin?(): Promise<{
+    getRecycleBin?(scope?: "nav" | "note"): Promise<{
         items?: Array<{ id: number; kind: "site" | "group" | "note"; name: string; deletedAt: number }>;
     }>;
     restoreRecycleItem?(id: number): Promise<{ success: boolean }>;
     purgeRecycleItem?(id: number): Promise<{ success: boolean }>;
-    emptyRecycleBin?(): Promise<{ success: boolean }>;
+    emptyRecycleBin?(scope?: "nav" | "note"): Promise<{ success: boolean }>;
     // ---------- 阶段三收尾：文件夹 / 标签 ----------
     // 同样全部可选：老部署 / 老 mock 上没这几个方法时，界面退化成「没有文件夹、没有标签」，
     // 而不是整个记事本打不开。
@@ -624,7 +624,8 @@ const SUMMARY_LIST_THRESHOLD = 200;
             return;
         }
         try {
-            const res = await api.getRecycleBin();
+            // 只取笔记（scope=note）：导航站回收站与记事本回收站已分家
+            const res = await api.getRecycleBin("note");
             setTrash(
                 (res?.items || [])
                     .filter(i => i.kind === "note")
@@ -672,11 +673,11 @@ const SUMMARY_LIST_THRESHOLD = 200;
         [api, onNotify, onError, loadTrash]
     );
 
-    /** 清空回收站（只清笔记，不动卡片和分组） */
+    /** 清空回收站（只清笔记，不动卡片和分组 —— scope=note，服务端分家） */
     const emptyTrash = useCallback(async () => {
         if (typeof api.emptyRecycleBin !== "function") return;
         try {
-            await api.emptyRecycleBin();
+            await api.emptyRecycleBin("note");
             broadcastRef.current?.postMessage({ type: "changed" });
             onNotify("回收站已清空", "success");
             await loadTrash();

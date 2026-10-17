@@ -13,7 +13,6 @@ import { Menu, MenuItem, ListItemIcon, ListItemText, Divider, ListSubheader } fr
 import { prefetchChunk } from "../utils/lazyPrefetch";
 import { dialogChunks } from "../utils/dialogChunks";
 import SettingsIcon from "@mui/icons-material/Settings";
-import SortIcon from "@mui/icons-material/Sort";
 import InsightsIcon from "@mui/icons-material/Insights";
 import SettingsBackupRestoreIcon from "@mui/icons-material/SettingsBackupRestore";
 import LogoutIcon from "@mui/icons-material/Logout";
@@ -28,7 +27,6 @@ export interface MoreMenuProps {
     open: boolean;
     onClose: () => void;
     onOpenConfig: () => void;
-    onStartGroupSort: () => void;
     /** 打开「统计」（访问统计 + 运营看板，一个弹窗两个标签页） */
     onOpenStats: () => void;
     /** tab: 0 = 备份，1 = 恢复 / 导入 */
@@ -54,7 +52,6 @@ export default function MoreMenu({
     open,
     onClose,
     onOpenConfig,
-    onStartGroupSort,
     onOpenStats,
     onOpenBackup,
     isAuthenticated,
@@ -104,19 +101,9 @@ export default function MoreMenu({
                     "aria-labelledby": "navigation-button",
                 }
             }}>
-            {/* 一、整理与数据：改结构的、看数据的、搬数据的都在这里，是菜单里最常用的半区 */}
+            {/* 一、整理与数据：改结构的、看数据的、搬数据的都在这里，是菜单里最常用的半区
+                （「分组排序」已挪到显示面板的排序区 —— 排序类操作归拢一处，2026-10-17） */}
             <ListSubheader>整理与数据</ListSubheader>
-            <MenuItem
-                onClick={() => {
-                    onClose();
-                    onStartGroupSort();
-                }}
-            >
-                <ListItemIcon>
-                    <SortIcon fontSize='small' />
-                </ListItemIcon>
-                <ListItemText>分组排序</ListItemText>
-            </MenuItem>
             {/* 访问统计（本机）与运营看板（服务端，owner）合并成一个「统计」入口，
                 进去按标签页切 —— 原先两项分列，用户得逐个点开才知道哪个是哪个 */}
             <MenuItem

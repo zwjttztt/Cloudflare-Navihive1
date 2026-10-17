@@ -62,9 +62,12 @@ export async function handleOpsRoutes(ctx: RouteCtx): Promise<Response | null> {
         return Response.json({ success: true, groups });
     }
 
-    // 回收站：列出当前账号软删除的站点 / 分组
+    // 回收站：列出当前账号软删除的站点 / 分组（?kind=nav|note 分家：
+    // 导航站的回收站只看站点/分组，记事本的回收站只看笔记 —— 互不可见互不误伤）
     if (path === "recycle" && method === "GET") {
-        const items = await api.listRecycleBin();
+        const kind = url.searchParams.get("kind");
+        const scope = kind === "nav" || kind === "note" ? kind : undefined;
+        const items = await api.listRecycleBin(scope);
         return Response.json({ success: true, items });
     }
     // 回收站：还原一条
@@ -116,9 +119,11 @@ export async function handleOpsRoutes(ctx: RouteCtx): Promise<Response | null> {
         await api.writeAudit("recycle.batchPurge", "", ip, `回收站条目 ${ids.length} 条`);
         return Response.json({ success: true });
     }
-    // 回收站：清空
+    // 回收站：清空（?kind=nav|note 同上：清空也分家，导航站清空不动笔记）
     if (path === "recycle" && method === "DELETE") {
-        const ok = await api.emptyRecycleBin();
+        const kind = url.searchParams.get("kind");
+        const scope = kind === "nav" || kind === "note" ? kind : undefined;
+        const ok = await api.emptyRecycleBin(scope);
         await api.writeAudit("recycle.empty", "", ip);
         return Response.json({ success: ok });
     }

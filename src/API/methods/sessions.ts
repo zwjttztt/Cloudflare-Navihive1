@@ -79,6 +79,33 @@ export const sessionsImpl: SessionsApi = {
                     exp
                 )
                 .run();
+
+            // 同设备重登去重（用户 2026-10-17 报告「登录设备重复显示」）：
+            // 同一账号 + 同一 UA + 同一 IP 的旧会话是同一台设备的历史登录，
+            // 把它们拉黑并删行 —— 列表里一台设备只留最新一条。
+            // ⚠️ 必须先拉黑再删：旧令牌在过期前仍能通过验签，只删行的话
+            // 界面看不见它、它却照样能用，比不清理更糟。
+            if (typeof uid === "number") {
+                const old = await this.db
+                    .prepare(
+                        `SELECT jti, expires_at FROM user_sessions
+                         WHERE user_id = ? AND user_agent = ? AND ip = ? AND jti != ?`
+                    )
+                    .bind(uid, (userAgent || "").slice(0, MAX_UA_LEN), ip || "", jti)
+                    .all<{ jti: string; expires_at: number }>();
+                for (const row of old.results || []) {
+                    await this.blacklistToken(row.jti, row.expires_at);
+                }
+                if ((old.results || []).length > 0) {
+                    await this.db
+                        .prepare(
+                            `DELETE FROM user_sessions
+                             WHERE user_id = ? AND user_agent = ? AND ip = ? AND jti != ?`
+                        )
+                        .bind(uid, (userAgent || "").slice(0, MAX_UA_LEN), ip || "", jti)
+                        .run();
+                }
+            }
         } catch (error) {
             console.error("登记登录会话失败:", error);
         }
@@ -108,6 +135,10 @@ export const sessionsImpl: SessionsApi = {
      *
      * 过期的直接不返回：令牌过期后这张会话已经不能再用了，列出来只会让人以为
      * 「还有一台设备登着」，实际点吊销也是空操作。
+     *
+     * 同设备去重（2026-10-17）：recordSession 现在会在重登时顶掉同设备旧会话，
+     * 但历史遗留的重复行还在库里 —— 列表时按（UA + IP）折叠，只留最近活跃的
+ * 一条；被折叠的旧行顺手拉黑 + 删行自愈（当前会话那一行永不折叠）。
      */
     listSessions: async function (
         this: NavigationAPI,
@@ -132,15 +163,53 @@ export const sessionsImpl: SessionsApi = {
                     last_seen_at: number;
                     expires_at: number;
                 }>();
-            return (result.results || []).map(row => ({
-                jti: row.jti,
-                userAgent: row.user_agent || "",
-                ip: row.ip || "",
-                createdAt: row.created_at,
-                lastSeenAt: row.last_seen_at,
-                expiresAt: row.expires_at,
-                current: row.jti === currentJti,
-            }));
+            const rows = result.results || [];
+
+            // 折叠同设备重复：键 = UA + IP（last_seen 倒序，第一条就是最近的）。
+            // 当前会话永不折叠：否则「退出其它设备」后当前行可能被同设备新登录吃掉。
+            const seenDevices = new Set<string>();
+            const out: SessionInfo[] = [];
+            const stale: Array<{ jti: string; expires_at: number }> = [];
+            for (const row of rows) {
+                const isCurrent = row.jti === currentJti;
+                const key = `${row.user_agent || ""}|${row.ip || ""}`;
+                if (!isCurrent && seenDevices.has(key)) {
+                    stale.push({ jti: row.jti, expires_at: row.expires_at });
+                    continue;
+                }
+                seenDevices.add(key);
+                out.push({
+                    jti: row.jti,
+                    userAgent: row.user_agent || "",
+                    ip: row.ip || "",
+                    createdAt: row.created_at,
+                    lastSeenAt: row.last_seen_at,
+                    expiresAt: row.expires_at,
+                    current: isCurrent,
+                });
+            }
+
+            // 自愈：被折叠的旧会话拉黑 + 删行。拉黑失败不阻塞列表（那行已从视图消失，
+            // 最坏情况是旧令牌活到过期 —— 与修复前的行为一致，不倒退）。
+            for (const s of stale) {
+                try {
+                    await this.blacklistToken(s.jti, s.expires_at);
+                } catch {
+                    // 拉黑失败：下次列表还会再试
+                }
+            }
+            if (stale.length > 0) {
+                await this.db
+                    .prepare(
+                        `DELETE FROM user_sessions WHERE user_id = ? AND jti IN (${stale
+                            .map(() => "?")
+                            .join(",")})`
+                    )
+                    .bind(uid, ...stale.map(s => s.jti))
+                    .run();
+            }
+
+            return out;
         } catch {
             // 表还没建好：返回空列表，界面上那段直接不显示
             return [];

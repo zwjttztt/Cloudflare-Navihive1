@@ -38,7 +38,6 @@ export interface HeaderActionsSlotProps {
     onMenuClose: () => void;
     onOpenConfig: () => void;
     onOpenAccount: () => void;
-    onStartGroupSort: () => void;
     onOpenStats: () => void;
     onOpenBackup: () => void;
     onOpenRecycle: () => void;
@@ -66,7 +65,6 @@ export default function HeaderActionsSlot({
     onMenuClose,
     onOpenConfig,
     onOpenAccount,
-    onStartGroupSort,
     onOpenStats,
     onOpenBackup,
     onOpenRecycle,
@@ -100,7 +98,6 @@ export default function HeaderActionsSlot({
                             onClose={onMenuClose}
                             onOpenConfig={onOpenConfig}
                             onOpenAccount={onOpenAccount}
-                            onStartGroupSort={onStartGroupSort}
                             onOpenStats={onOpenStats}
                             onOpenBackup={onOpenBackup}
                             onOpenRecycle={onOpenRecycle}

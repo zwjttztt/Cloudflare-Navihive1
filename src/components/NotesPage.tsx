@@ -69,9 +69,7 @@ import NotesTodoDialog from "./NotesTodoDialog";
 import { todoCounts } from "../utils/noteTodoAgenda";
 import BacklinksPanel from "./BacklinksPanel";
 import UndoIcon from "@mui/icons-material/Undo";
-import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import DriveFileRenameOutlineIcon from "@mui/icons-material/DriveFileRenameOutline";
-import NoteAltIcon from "@mui/icons-material/NoteAlt";
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import PaletteIcon from "@mui/icons-material/Palette";
 import FileDownloadIcon from "@mui/icons-material/FileDownload";
@@ -525,6 +523,8 @@ export default function NotesPage({
     const [draggingNoteId, setDraggingNoteId] = useState<number | null>(null);
     /** 「编辑标签」二级弹窗的锚点 */
     const [tagPick, setTagPick] = useState<{ el: MenuAnchor; noteId: number } | null>(null);
+    /** 「导出」二级菜单的锚点（2026-10-17 精简右键菜单：三个导出格式收进一个入口） */
+    const [exportPick, setExportPick] = useState<{ el: MenuAnchor; noteId: number } | null>(null);
     const [activeId, setActiveId] = useState<number | null>(notes[0]?.id ?? null);
     /** 记事本命令面板（N1）开关 */
     const [notesCmdOpen, setNotesCmdOpen] = useState(false);
@@ -1819,23 +1819,6 @@ export default function NotesPage({
             document.removeEventListener("visibilitychange", onVisibility);
         };
     }, [sideDraft, sideId, notes, onUpdate, autosaveMs]);
-
-    /** 创建副本：标题加「副本」，归到同一文件夹 */
-    const duplicateNote = useCallback(
-        async (note: Note) => {
-            const created = await onCreate({
-                title: `${note.title || "无标题"} 副本`,
-                content: note.content || "",
-                folder_id: note.folder_id ?? null,
-            });
-            if (created?.id) {
-                setActiveId(created.id);
-                setDraft({ title: created.title || "", content: created.content || "" });
-            }
-            onNotify?.("已创建副本", "success");
-        },
-        [onCreate, onNotify]
-    );
 
     /** 导出 HTML（markdown-it 渲染成离线可看的单文件） */
     const exportHtmlOne = useCallback(
@@ -5321,9 +5304,10 @@ export default function NotesPage({
                 而且位置还是错的」（用户 2026-10-07 报的）。
                 MUI 的 Menu/Drawer/Dialog 默认 portal 到 body，放根层不影响定位。 */}
             {/* ---------- 笔记的操作菜单（右键 / hover「⋯」都能打开） ----------
-                与 inkstone 对齐的两套菜单：
-                  - list（中栏列表行，右键或 ⋯）：复制标题/ID/直链、在侧边打开、收藏、
-                    创建副本、归档、移动到文件夹、导出三件套、移到回收站；
+                与 inkstone 对齐的两套菜单（2026-10-17 精简：去掉复制标题/ID/直链、
+                创建副本这几个低频项；三个导出格式收进「导出」二级菜单）：
+                  - list（中栏列表行，右键或 ⋯）：在侧边打开、置顶、收藏、归档、
+                    移动到文件夹、编辑标签、导出、移到回收站；
                   - rail（左栏内联笔记右键）：精简版 —— 在侧边打开/收藏/移动到文件夹/
                     归档/移到回收站。
                 菜单带图标（inkstone 的菜单行是「图标 + 文字」）。 */}
@@ -5385,28 +5369,6 @@ export default function NotesPage({
                     }
                     return (
                         <>
-                            <MenuItem
-                                data-row-op='copy-title'
-                                onClick={() => void done(() => copyText(note.title || "", "已复制标题"))}
-                            >
-                                <DriveFileRenameOutlineIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
-                                复制标题
-                            </MenuItem>
-                            <MenuItem
-                                data-row-op='copy-id'
-                                onClick={() => void done(() => copyText(String(note.id ?? ""), "已复制 ID"))}
-                            >
-                                <ContentCopyIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
-                                复制 ID
-                            </MenuItem>
-                            <MenuItem
-                                data-row-op='copy-link'
-                                onClick={() => void done(() => copyText(noteLink(note), "已复制直链"))}
-                            >
-                                <LinkIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
-                                复制直链
-                            </MenuItem>
-                            <Divider />
                             <MenuItem data-row-op='open-side' onClick={() => void done(() => openInSide(note))}>
                                 <OpenInNewIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
                                 在侧边打开
@@ -5421,10 +5383,6 @@ export default function NotesPage({
                                 {note.starred ? "取消收藏" : "收藏"}
                             </MenuItem>
                             )}
-                            <MenuItem data-row-op='duplicate' onClick={() => void done(() => duplicateNote(note))}>
-                                <NoteAltIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
-                                创建副本
-                            </MenuItem>
                             <MenuItem data-row-op='archive' onClick={() => void done(() => onToggleArchive(note))}>
                                 <ArchiveIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
                                 {note.archived ? "取消归档" : "归档"}
@@ -5448,17 +5406,19 @@ export default function NotesPage({
                                 编辑标签…
                             </MenuItem>
                             <Divider />
-                            <MenuItem data-row-op='export' onClick={() => void done(() => exportOne(note))}>
+                            <MenuItem
+                                data-row-op='export'
+                                onClick={() => {
+                                    const pick = rowMenu;
+                                    const id = note.id;
+                                    setRowMenu(null);
+                                    if (pick && id !== undefined) {
+                                        setExportPick({ el: pick.el, noteId: id });
+                                    }
+                                }}
+                            >
                                 <FileDownloadIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
-                                导出 Markdown
-                            </MenuItem>
-                            <MenuItem data-row-op='export-html' onClick={() => void done(() => exportHtmlOne(note))}>
-                                <FileDownloadIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
-                                导出 HTML
-                            </MenuItem>
-                            <MenuItem data-row-op='export-pdf' onClick={() => void done(() => exportPdfOne(note))}>
-                                <FileDownloadIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
-                                导出 PDF
+                                导出…
                             </MenuItem>
                             <Divider />
                             <MenuItem
@@ -5646,6 +5606,52 @@ export default function NotesPage({
                         </MenuItem>
                     </>
                 )}
+            </Menu>
+
+            {/* 列表行右键的「导出」二级菜单（2026-10-17 精简：三个格式收进一个入口） */}
+            <Menu
+                open={Boolean(exportPick)}
+                anchorEl={exportPick?.el ?? null}
+                onClose={() => setExportPick(null)}
+            >
+                {(() => {
+                    const target = notes.find(n => n.id === exportPick?.noteId);
+                    if (!target) return null;
+                    return (
+                        <>
+                            <MenuItem
+                                data-export-op='md'
+                                onClick={() => {
+                                    setExportPick(null);
+                                    void exportOne(target);
+                                }}
+                            >
+                                <FileDownloadIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
+                                导出 Markdown
+                            </MenuItem>
+                            <MenuItem
+                                data-export-op='html'
+                                onClick={() => {
+                                    setExportPick(null);
+                                    void exportHtmlOne(target);
+                                }}
+                            >
+                                <FileDownloadIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
+                                导出 HTML
+                            </MenuItem>
+                            <MenuItem
+                                data-export-op='pdf'
+                                onClick={() => {
+                                    setExportPick(null);
+                                    void exportPdfOne(target);
+                                }}
+                            >
+                                <FileDownloadIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
+                                导出 PDF
+                            </MenuItem>
+                        </>
+                    );
+                })()}
             </Menu>
 
             {/* 当前笔记的「⋯」菜单：与右键菜单同一套（全量版）。 */}

@@ -6,6 +6,7 @@
 //   2. 前端错误 —— 前端崩过什么，按「来源 + 错误信息」归并后看次数与最近发生时间
 //      上报落库时是一小段 JSON，直接在流水里翻没人看得懂，所以单开一个视图。
 import { useCallback, useEffect, useRef, useState } from "react";
+import { actionLabel } from "../utils/auditActionLabels";
 import {
     Button,
     Dialog,
@@ -60,29 +61,6 @@ const DEFAULT_RETENTION_DAYS = 7;
 const PAGE_SIZE = 50;
 
 type AuditTab = "log" | "errors";
-
-// 常见动作的中文名，其余原样展示
-const ACTION_LABELS: Record<string, string> = {
-    "login.success": "登录成功",
-    "login.failed": "登录失败",
-    "auth.recover": "密钥找回密码",
-    "auth.recover.failed": "找回密码失败",
-    "auth.register": "注册账号",
-    "auth.register.failed": "注册失败",
-    "auth.credentials": "修改凭据",
-    "auth.credentials.failed": "修改凭据失败",
-    "auth.recoveryKey": "更新恢复密钥",
-    "auth.invite": "生成邀请码",
-    "site.delete": "删除站点",
-    "site.batchDelete": "批量删除站点",
-    "auth.deleteAccount": "注销账号",
-    "recycle.restore": "回收站还原",
-    "recycle.purge": "回收站彻底删除",
-    "recycle.empty": "清空回收站",
-    "data-export": "导出数据",
-    "data-import": "导入数据",
-    "client-error": "前端错误上报",
-};
 
 function formatTime(iso: string): string {
     // D1 返回形如 2024-01-01 12:00:00（本地时区）
@@ -311,7 +289,7 @@ export default function AuditDialog({
                                             sx={{ m: 0 }}
                                             primary={
                                                 <span>
-                                                    <b>{ACTION_LABELS[row.action] || row.action}</b>
+                                                    <b>{actionLabel(row.action)}</b>
                                                     {row.actor ? ` · ${row.actor}` : ""}
                                                 </span>
                                             }

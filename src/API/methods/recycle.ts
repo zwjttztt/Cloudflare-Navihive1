@@ -14,7 +14,14 @@ import { GROUP_RESTORE_COLUMNS, SITE_RESTORE_COLUMNS } from "./internals";
 
 export interface RecycleApi {
     pushToRecycle(kind: string, data: string): Promise<number | undefined>;
-    listRecycleBin(): Promise<
+    /**
+     * 列出当前账号软删除的条目。
+     *
+     * scope（2026-10-17 回收站分家）：导航站的回收站与记事本的回收站
+     * 共用一张 recycle_bin 表（kind 区分），但两边互不可见、互不误伤 ——
+     * 传 "nav" 只看站点/分组，传 "note" 只看笔记，不传看全部（兼容旧调用）。
+     */
+    listRecycleBin(scope?: "nav" | "note"): Promise<
         Array<{ id: number; kind: "site" | "group" | "note"; name: string; deletedAt: number }>
     >;
     restoreRecycleItem(id: number): Promise<boolean>;
@@ -23,7 +30,12 @@ export interface RecycleApi {
     writeNoteTombstonesFromRecycle(rows: ReadonlyArray<{ data: string }>): Promise<void>;
     purgeRecycleItems(ids: number[]): Promise<{ purged: number[] }>;
     purgeRecycleItem(id: number): Promise<boolean>;
-    emptyRecycleBin(): Promise<boolean>;
+    /**
+     * 清空回收站。scope 同 listRecycleBin：导航站清空只清站点/分组，
+     * 记事本清空只清笔记（先写墓碑再删）—— 之前无 scope 的实现会把
+     * 另一边的待恢复条目一起抹掉（用户 2026-10-17 要求两边分家）。
+     */
+    emptyRecycleBin(scope?: "nav" | "note"): Promise<boolean>;
     tableColumns(table: string): Promise<Set<string> | null>;
     reinsertRow(
         table: "sites" | "groups",
@@ -75,18 +87,25 @@ export const recycleImpl: RecycleApi = {
 
     // ============ 回收站（软删除的兜底恢复） ============
     /** 当前账号在回收站里的条目（owner 看到自己删的；普通账号只看自己的） */
-    listRecycleBin: async function (this: NavigationAPI ): Promise<
+    listRecycleBin: async function (this: NavigationAPI, scope?: "nav" | "note"): Promise<
         Array<{ id: number; kind: "site" | "group" | "note"; name: string; deletedAt: number }>
     > {
         await this.migrate();
         // 过期的先清掉再列：定时任务每周才跑一次，光靠它的话「到期自动删除」并不真的成立
         await this.purgeExpiredRecycle(await this.getRetentionDays());
+        // 回收站分家：导航站只看站点/分组，记事本只看笔记（共用一张表，kind 区分）
+        const kindFilter =
+            scope === "nav"
+                ? " AND kind IN ('site', 'group')"
+                : scope === "note"
+                  ? " AND kind = 'note'"
+                  : "";
         try {
             // LIMIT 200：回收站是「最近的删除」语义，没有翻页需求 —— 不加 LIMIT 的话
             // 长期不清理 + 大量删除会让每次打开都全表扫并逐行 JSON.parse。
             const result = await this.db
                 .prepare(
-                    `SELECT id, kind, data, deleted_at FROM recycle_bin WHERE owner_user_id ${this.currentUserId === null ? "IS NULL" : "= ?"} ORDER BY id DESC LIMIT 200`
+                    `SELECT id, kind, data, deleted_at FROM recycle_bin WHERE owner_user_id ${this.currentUserId === null ? "IS NULL" : "= ?"}${kindFilter} ORDER BY id DESC LIMIT 200`
                 )
                 .bind(...(this.currentUserId === null ? [] : [this.currentUserId]))
                 .all<{ id: number; kind: string; data: string; deleted_at: number }>();
@@ -383,19 +402,28 @@ export const recycleImpl: RecycleApi = {
         return result.success;
     },
 
-    /** 清空当前账号的回收站 */
-    emptyRecycleBin: async function (this: NavigationAPI): Promise<boolean> {
+    /** 清空当前账号的回收站（scope 决定清哪一类：导航站清站点/分组，记事本只清笔记） */
+    emptyRecycleBin: async function (this: NavigationAPI, scope?: "nav" | "note"): Promise<boolean> {
         await this.migrate();
-        const noteRows = await this.db
-            .prepare(
-                `SELECT data FROM recycle_bin WHERE kind = 'note' AND owner_user_id ${this.currentUserId === null ? "IS NULL" : "= ?"}`
-            )
-            .bind(...(this.currentUserId === null ? [] : [this.currentUserId]))
-            .all<{ data: string }>();
-        await this.writeNoteTombstonesFromRecycle(noteRows.results || []);
+        const kindFilter =
+            scope === "nav"
+                ? " AND kind IN ('site', 'group')"
+                : scope === "note"
+                  ? " AND kind = 'note'"
+                  : "";
+        // 记事本范围（或兼容模式的全部）要先给笔记写墓碑：跨设备变更轮询靠它感知
+        if (!scope || scope === "note") {
+            const noteRows = await this.db
+                .prepare(
+                    `SELECT data FROM recycle_bin WHERE kind = 'note' AND owner_user_id ${this.currentUserId === null ? "IS NULL" : "= ?"}`
+                )
+                .bind(...(this.currentUserId === null ? [] : [this.currentUserId]))
+                .all<{ data: string }>();
+            await this.writeNoteTombstonesFromRecycle(noteRows.results || []);
+        }
         const result = await this.db
             .prepare(
-                `DELETE FROM recycle_bin WHERE owner_user_id ${this.currentUserId === null ? "IS NULL" : "= ?"}`
+                `DELETE FROM recycle_bin WHERE owner_user_id ${this.currentUserId === null ? "IS NULL" : "= ?"}${kindFilter}`
             )
             .bind(...(this.currentUserId === null ? [] : [this.currentUserId]))
             .run();

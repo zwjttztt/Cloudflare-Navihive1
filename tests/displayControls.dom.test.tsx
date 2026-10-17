@@ -43,6 +43,7 @@ function makeProps(overrides: Partial<DisplayControlsProps> = {}): {
             setThemeMode: m => void log.calls.push(`setThemeMode(${m})`),
             favoritesEnabled: false,
             onFavoritesEnabledChange: v => void log.calls.push(`onFavoritesEnabledChange(${v})`),
+            onStartGroupSort: () => void log.calls.push("onStartGroupSort"),
             ...overrides,
         },
     };

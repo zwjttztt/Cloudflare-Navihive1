@@ -11,6 +11,8 @@
 // 2026-10-15 瘦身后的菜单（9 项）：访问统计 + 统计看板已合并成「统计」
 // （StatsHubDialog 里两个标签页），快捷键 + 安装到桌面合并成「帮助」
 // （安装按钮在 ShortcutsDialog 底部）—— 本测试跟着改标签。
+// 2026-10-17：「分组排序」挪到 DisplayControls 的排序区（用户要求排序类操作归拢），
+// 菜单变 8 项。
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { act } from "react";
@@ -35,7 +37,6 @@ function makeProps(overrides: Partial<MoreMenuProps> = {}): { props: MoreMenuPro
             open: true,
             onClose: rec("onClose"),
             onOpenConfig: rec("onOpenConfig"),
-            onStartGroupSort: rec("onStartGroupSort"),
             onOpenStats: rec("onOpenStats"),
             onOpenBackup: (tab: number) => void log.calls.push(`onOpenBackup(${tab})`),
             isAuthenticated: true,
@@ -113,7 +114,6 @@ test("退出登录沉在最底部，且和上面的数据操作隔着一条分�
 test("点每一项：先关菜单再执行动作（反过来的话菜单会飘到左上角、关不掉）", async t => {
     t.after(cleanup);
     const cases: Array<[string, string]> = [
-        ["分组排序", "onStartGroupSort"],
         ["统计", "onOpenStats"],
         ["备份与恢复", "onOpenBackup(0)"],
         ["回收站", "onOpenRecycle"],
@@ -173,23 +173,25 @@ test("未登录：没有「账号与安全」和「退出登录」，但整理�
     assert.ok(!list.includes("会话"), "没有会话区就不该留一个「会话」小标题");
 });
 
-test("菜单项总数收敛：统计/帮助各自合并后，owner 登录态共 10 项（labels() 含 4 个小标题）", t => {
+test("菜单项总数收敛：分组排序挪进显示面板后，owner 登录态共 9 项（labels() 含 4 个小标题）", t => {
     t.after(cleanup);
     const { props } = makeProps();
     mount(props);
-    // 4 个小标题 + 10 个菜单项：分组排序 / 统计 / 备份与恢复 / 回收站 / 审计日志 /
+    // 4 个小标题 + 9 个菜单项：统计 / 备份与恢复 / 回收站 / 审计日志 /
     // 网站设置 / AI 设置 / 账号与安全 / 快捷键与操作帮助 / 退出登录
-    // ⚠️ labels() 把分区小标题也数进来（它按 li 文本取），所以是 14 不是 10
+    // （「分组排序」2026-10-17 挪进 DisplayControls 的排序区）
+    // ⚠️ labels() 把分区小标题也数进来（它按 li 文本取），所以是 13 不是 9
     assert.deepEqual(
         labels(),
         [
-            "整理与数据", "分组排序", "统计", "备份与恢复", "回收站", "审计日志",
+            "整理与数据", "统计", "备份与恢复", "回收站", "审计日志",
             "设置与账号", "网站设置", "AI 设置", "账号与安全",
             "帮助", "快捷键与操作帮助",
             "会话", "退出登录",
         ],
         "菜单结构应固定成这样；改名 / 合并先改这里"
     );
+    assert.ok(!labels().includes("分组排序"), "分组排序已挪到显示面板的排序区");
     assert.ok(!labels().includes("访问统计"), "访问统计已并入「统计」");
     assert.ok(!labels().includes("统计看板"), "统计看板已并入「统计」");
     assert.ok(!labels().includes("安装到桌面"), "安装到桌面已并入帮助弹窗");

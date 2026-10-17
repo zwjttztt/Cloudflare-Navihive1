@@ -1601,6 +1601,7 @@ function App() {
                                         setThemeMode={setThemeMode}
                                         favoritesEnabled={favoritesEnabled}
                                         onFavoritesEnabledChange={setFavoritesEnabled}
+                                        onStartGroupSort={startGroupSort}
                                     />
                                 )}
                                 <HeaderActionsSlot
@@ -1624,7 +1625,6 @@ function App() {
                                         void fetchAccountList();
                                         void fetchSessions();
                                     }}
-                                    onStartGroupSort={startGroupSort}
                                     onOpenStats={() => {
                                         handleMenuClose();
                                         setOpenStatsHub(true);
@@ -1879,6 +1879,7 @@ function App() {
                             }
                             return `已删除的网站 #${id}`;
                         }}
+                        exists={id => groups.some(g => g.sites.some(s => String(s.id) === id))}
                         syncEnabled={configs[PREF_SYNC_CONFIG] === "true"}
                         onClear={() => {
                             clearVisits();

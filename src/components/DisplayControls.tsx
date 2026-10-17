@@ -32,6 +32,7 @@ import LightModeIcon from "@mui/icons-material/LightMode";
 import DarkModeIcon from "@mui/icons-material/DarkMode";
 import SettingsBrightnessIcon from "@mui/icons-material/SettingsBrightness";
 import HistoryIcon from "@mui/icons-material/History";
+import SortIcon from "@mui/icons-material/Sort";
 import type { Density, ViewMode } from "../context/uiPrefsStore";
 import { HEADER_CONTROL_H, HEADER_RADIUS } from "../constants";
 import type { ThemeMode } from "./ThemeToggle";
@@ -53,6 +54,11 @@ export interface DisplayControlsProps {
     /** 「最近访问置前」：浏览偏好，原来混在「更多选项」里，和星标那种筛选不是一回事 */
     favoritesEnabled: boolean;
     onFavoritesEnabledChange: (enabled: boolean) => void;
+    /**
+     * 进入分组拖拽排序模式（2026-10-17 从「更多选项」挪过来）：
+     * 排序类操作归拢到同一个「排序」区，菜单里不用再留一个结构类入口。
+     */
+    onStartGroupSort: () => void;
 }
 
 const VIEW_META: Record<ViewMode, { label: string; icon: typeof ViewModuleIcon }> = {
@@ -86,6 +92,7 @@ export default function DisplayControls({
     setThemeMode,
     favoritesEnabled,
     onFavoritesEnabledChange,
+    onStartGroupSort,
 }: DisplayControlsProps) {
     const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
     const panelOpen = Boolean(anchorEl);
@@ -313,6 +320,17 @@ export default function DisplayControls({
                 <Divider />
 
                 <ListSubheader>排序</ListSubheader>
+                <MenuItem
+                    onClick={() => {
+                        setAnchorEl(null);
+                        onStartGroupSort();
+                    }}
+                >
+                    <ListItemIcon>
+                        <SortIcon fontSize='small' />
+                    </ListItemIcon>
+                    <ListItemText>分组排序</ListItemText>
+                </MenuItem>
                 <MenuItem
                     onClick={() => onFavoritesEnabledChange(!favoritesEnabled)}
                     aria-pressed={favoritesEnabled}

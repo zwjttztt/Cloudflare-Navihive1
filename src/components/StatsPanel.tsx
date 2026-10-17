@@ -18,6 +18,7 @@ import {
 } from "@mui/material";
 import { NavigationClient } from "../API/client";
 import type { OpsStats } from "../API/methods/audit";
+import { actionLabel } from "../utils/auditActionLabels";
 
 /** UTC 时间戳 -> YYYY-MM-DD（健康快照里的 at 是毫秒时间戳，不用 Intl，CI small-icu 也稳） */
 function dayOf(at: number): string {
@@ -172,7 +173,7 @@ export default function StatsPanel({ client }: { client: NavigationClient }) {
                     <SectionTitle>高频动作</SectionTitle>
                     {stats.auditTopActions.length > 0 ? (
                         stats.auditTopActions.map(a => (
-                            <BarRow key={a.action} label={a.action} value={a.count} max={actionMax} />
+                            <BarRow key={a.action} label={actionLabel(a.action)} value={a.count} max={actionMax} />
                         ))
                     ) : (
                         <Typography variant='body2' color='text.secondary'>

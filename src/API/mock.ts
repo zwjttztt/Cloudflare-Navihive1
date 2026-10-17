@@ -1332,15 +1332,17 @@ export class MockNavigationClient {
     }
 
     // ============ 回收站（与真实实现一致：软删除后可还原 / 彻底删除 / 清空） ============
-    async getRecycleBin(): Promise<{
+    async getRecycleBin(scope?: "nav" | "note"): Promise<{
         success: boolean;
         items: Array<{ id: number; kind: "site" | "group" | "note"; name: string; deletedAt: number }>;
     }> {
         await new Promise(resolve => setTimeout(resolve, 100));
-        return {
-            success: true,
-            items: mockRecycleBin.map(r => ({ id: r.id, kind: r.kind, name: r.name, deletedAt: r.deletedAt })),
-        };
+        const items = mockRecycleBin
+            .filter(r =>
+                scope === "nav" ? r.kind !== "note" : scope === "note" ? r.kind === "note" : true
+            )
+            .map(r => ({ id: r.id, kind: r.kind, name: r.name, deletedAt: r.deletedAt }));
+        return { success: true, items };
     }
 
     async restoreRecycleItem(id: number): Promise<{ success: boolean }> {
@@ -1403,9 +1405,19 @@ export class MockNavigationClient {
         return { success: true };
     }
 
-    async emptyRecycleBin(): Promise<{ success: boolean }> {
+    async emptyRecycleBin(scope?: "nav" | "note"): Promise<{ success: boolean }> {
         await new Promise(resolve => setTimeout(resolve, 100));
-        mockRecycleBin.length = 0;
+        if (scope === "nav") {
+            for (let i = mockRecycleBin.length - 1; i >= 0; i--) {
+                if (mockRecycleBin[i].kind !== "note") mockRecycleBin.splice(i, 1);
+            }
+        } else if (scope === "note") {
+            for (let i = mockRecycleBin.length - 1; i >= 0; i--) {
+                if (mockRecycleBin[i].kind === "note") mockRecycleBin.splice(i, 1);
+            }
+        } else {
+            mockRecycleBin.length = 0;
+        }
         return { success: true };
     }
 

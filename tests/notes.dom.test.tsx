@@ -3155,24 +3155,20 @@ test("大纲：没有标题时给一句说明，不给一块空白", async () =>
 
 // ---------- 6. 右键菜单 ----------
 
-test("列表行右键：完整菜单（复制三件套 / 侧边打开 / 副本 / 导出 / 回收站）", async () => {
+test("列表行右键：精简菜单（侧边打开/置顶/归档/文件夹/标签/导出入口/回收站）", async () => {
     mountPanel([note({ id: 1, title: "甲", content: "a" })], { folderTags: folderTagsOf() });
     await act(async () => {
         rightClick(document.querySelector("[data-note-list] [data-note-id='1']")!);
     });
+    // 2026-10-17 精简：复制标题/ID/直链、创建副本移除；三个导出收进「导出」二级菜单
+    //（二级菜单要点了「导出」才渲染，这里只断入口存在）。
     for (const op of [
-        "copy-title",
-        "copy-id",
-        "copy-link",
         "open-side",
         "pin",
-        "duplicate",
         "archive",
         "folder",
         "tags",
         "export",
-        "export-html",
-        "export-pdf",
         "delete",
     ]) {
         assert.ok(
@@ -3180,10 +3176,33 @@ test("列表行右键：完整菜单（复制三件套 / 侧边打开 / 副本 /
             `中栏右键菜单里要有 data-row-op='${op}'`
         );
     }
+    for (const gone of ["copy-title", "copy-id", "copy-link", "duplicate", "export-html", "export-pdf"]) {
+        assert.equal(
+            document.querySelector(`[data-row-op='${gone}']`),
+            null,
+            `精简后右键菜单不应再有 data-row-op='${gone}'`
+        );
+    }
     assert.ok(
         text().includes("移到回收站"),
         "删除那一项的措辞是「移到回收站」（可恢复，不是彻底删）"
     );
+});
+
+test("列表行右键：点「导出…」展开二级菜单（Markdown/HTML/PDF 三格式）", async () => {
+    mountPanel([note({ id: 1, title: "甲", content: "a" })], { folderTags: folderTagsOf() });
+    await act(async () => {
+        rightClick(document.querySelector("[data-note-list] [data-note-id='1']")!);
+    });
+    await act(async () => {
+        (document.querySelector("[data-row-op='export']") as HTMLElement).click();
+    });
+    for (const fmt of ["md", "html", "pdf"]) {
+        assert.ok(
+            document.querySelector(`[data-export-op='${fmt}']`),
+            `导出二级菜单里要有 ${fmt}`
+        );
+    }
 });
 
 test("左栏内联笔记右键：精简菜单（没有复制/导出那一堆）", async () => {
@@ -3663,11 +3682,11 @@ test("侧边栏：自己的查看模式 + 更多操作 + 常显关闭键", async
     assert.ok(preview, "点一下切到侧边预览");
     await new Promise(r => setTimeout(r, 600));
     assert.match(preview!.textContent ?? "", /乙标题/, "侧边预览渲染的是侧边那篇的内容");
-    // 更多操作弹的是全量菜单，且作用在侧边这条（id=2）
+    // 更多操作弹的是列表行那套菜单（2026-10-17 精简后导出收进二级入口），且作用在侧边这条（id=2）
     await act(async () => more.click());
     assert.ok(
-        document.querySelector("[data-row-op='export-html']"),
-        "侧边栏的更多操作给出的是列表行那套全量菜单"
+        document.querySelector("[data-row-op='export']"),
+        "侧边栏的更多操作给出的是列表行那套精简菜单"
     );
     await act(async () => (document.querySelector("[data-row-op='archive']") as HTMLElement).click());
 });

@@ -74,7 +74,9 @@ export default function RecycleBinDialog({
         setLoading(true);
         setLoadError("");
         try {
-            const result = await client.getRecycleBin();
+            // 回收站分家（2026-10-17）：导航站的回收站只管站点/分组，
+            // 笔记的删除与还原归记事本自己的回收站管 —— 两边互不可见互不误伤。
+            const result = await client.getRecycleBin("nav");
             setItems(result.items || []);
         } catch (error) {
             setItems([]);
@@ -125,7 +127,7 @@ export default function RecycleBinDialog({
         setBusyId(-1);
         let ok = false;
         try {
-            const r = await client.emptyRecycleBin();
+            const r = await client.emptyRecycleBin("nav");
             ok = Boolean(r.success);
             if (ok) {
                 setItems([]);

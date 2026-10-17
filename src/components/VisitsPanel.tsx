@@ -21,6 +21,12 @@ import ConfirmDialog from "./ConfirmDialog";
 export interface VisitsPanelProps {
     /** 站点 id -> 名称，用来把统计里的数字翻译成人看得懂的名字 */
     nameOf: (siteId: string) => string;
+    /**
+     * 站点是否还存在（可选）。传了就把已删除网站的访问记录从统计里剔除 ——
+     * 访问记录记在 localStorage / 偏好同步里，删站不会自动清，不滤的话
+     * Top 榜会一直挂着「已删除的网站 #N」（用户 2026-10-17 报告）。
+     */
+    exists?: (siteId: string) => boolean;
     /** 清空访问记录（可选）；不传则不显示清空按钮 */
     onClear?: () => void;
     /** 是否开了偏好同步（决定「记在哪」这句说明怎么写） */
@@ -39,13 +45,15 @@ const levelOf = (count: number): number => {
     return 4;
 };
 
-export default function VisitsPanel({ nameOf, onClear, syncEnabled = false }: VisitsPanelProps) {
+export default function VisitsPanel({ nameOf, exists, onClear, syncEnabled = false }: VisitsPanelProps) {
     const { visits } = useUIPrefsVisits();
     // 清空是不可逆的（没有回收站），点一下之前先问一句
     const [confirmClear, setConfirmClear] = useState(false);
 
     const summary = useMemo(() => {
-        const entries = Object.entries(visits).filter(([, v]) => v && v.count > 0);
+        const entries = Object.entries(visits).filter(
+            ([id, v]) => v && v.count > 0 && (!exists || exists(id))
+        );
         const total = entries.reduce((sum, [, v]) => sum + v.count, 0);
         const today = entries.reduce((sum, [, v]) => sum + (v.days?.[dayKey()] ?? 0), 0);
         const top = entries
@@ -53,7 +61,7 @@ export default function VisitsPanel({ nameOf, onClear, syncEnabled = false }: Vi
             .sort((a, b) => b.count - a.count || b.last - a.last)
             .slice(0, 5);
         return { total, sites: entries.length, today, top };
-    }, [visits]);
+    }, [visits, exists]);
 
     // 热力图：按「周」为列、周一~周日为行，最后一列是本周
     const weeks = useMemo(() => {
@@ -62,10 +70,11 @@ export default function VisitsPanel({ nameOf, onClear, syncEnabled = false }: Vi
         const weekday = (today.getDay() + 6) % 7;
         const lastMonday = new Date(today.getFullYear(), today.getMonth(), today.getDate() - weekday);
 
-        // 每天的访问次数：把所有站点的 days 合并成一份「按天总量」
+        // 每天的访问次数：把所有站点的 days 合并成一份「按天总量」（已删站点的同样剔除）
         const perDay: Record<string, number> = {};
-        for (const stat of Object.values(visits)) {
+        for (const [id, stat] of Object.entries(visits)) {
             if (!stat?.days) continue;
+            if (exists && !exists(id)) continue;
             for (const [k, v] of Object.entries(stat.days)) {
                 perDay[k] = (perDay[k] ?? 0) + v;
             }
@@ -91,7 +100,7 @@ export default function VisitsPanel({ nameOf, onClear, syncEnabled = false }: Vi
             cols.push(col);
         }
         return cols;
-    }, [visits]);
+    }, [visits, exists]);
 
     return (
         <Stack spacing={0}>

@@ -34,6 +34,8 @@ export interface StatsHubDialogProps {
     isSiteOwner: boolean;
     /** 站点 id -> 名称（访问统计的 Top 榜要把 id 翻译成名字） */
     nameOf: (siteId: string) => string;
+    /** 站点是否还存在（访问统计要把已删站点的记录剔除） */
+    exists?: (siteId: string) => boolean;
     /** 清空访问记录（可选）；不传则不显示清空按钮 */
     onClear?: () => void;
     /** 是否开了偏好同步（决定访问统计里「记在哪」那句说明怎么写） */
@@ -46,6 +48,7 @@ export default function StatsHubDialog({
     client,
     isSiteOwner,
     nameOf,
+    exists,
     onClear,
     syncEnabled = false,
 }: StatsHubDialogProps) {
@@ -81,6 +84,7 @@ export default function StatsHubDialog({
                     <Box role='tabpanel' aria-label='访问统计'>
                         <VisitsPanel
                             nameOf={nameOf}
+                            exists={exists}
                             onClear={onClear}
                             syncEnabled={syncEnabled}
                         />
