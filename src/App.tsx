@@ -1,4 +1,6 @@
 import { reportError } from "./utils/errorReporter";
+import { prefetchOnIdle } from "./utils/lazyPrefetch";
+import { dialogChunks } from "./utils/dialogChunks";
 import {
     useState,
     useEffect,
@@ -304,9 +306,37 @@ function App() {
         groupsRef.current = groups;
     }, [groups]);
 
+
     // 新增认证状态（这两个开关留在 App：useSites 的鉴权失败回调比账号 hook 更早用到它们的 setter）
     const [isAuthRequired, setIsAuthRequired] = useState(false);
     const [isAuthenticated, setIsAuthenticated] = useState(false);
+    // 懒弹窗块的空闲预取（2026-10-17 首开延迟排查）：首屏渲染完、浏览器空闲时，
+    // 按「常用优先」把「更多选项」菜单、卡片菜单与各弹窗的块逐个备齐 ——
+    // 用户第一次点击任何按键都不用再现场等块下载（详见 utils/lazyPrefetch.ts 头注）。
+    // 只在登录后跑：访客视图用不到管理弹窗，白下载。
+    useEffect(() => {
+        if (!isAuthenticated) return;
+        prefetchOnIdle([
+            ["moreMenu", dialogChunks.moreMenu],
+            ["siteCardContextMenu", dialogChunks.siteCardContextMenu],
+            ["addSite", dialogChunks.addSite],
+            ["siteSettings", dialogChunks.siteSettings],
+            ["settings", dialogChunks.settings],
+            ["stats", dialogChunks.stats],
+            ["backup", dialogChunks.backup],
+            ["recycle", dialogChunks.recycle],
+            ["shortcuts", dialogChunks.shortcuts],
+            ["editGroup", dialogChunks.editGroup],
+            ["account", dialogChunks.account],
+            ["audit", dialogChunks.audit],
+            ["aiAssistant", dialogChunks.aiAssistant],
+            ["tagManager", dialogChunks.tagManager],
+            ["groupShare", dialogChunks.groupShare],
+            ["bookmarkImport", dialogChunks.bookmarkImport],
+            ["importPreview", dialogChunks.importPreview],
+            ["commandPalette", dialogChunks.commandPalette],
+        ]);
+    }, [isAuthenticated]);
 
     // 「这一轮会话里到底有没有登录过」。
     // 鉴权失败时（bootstrap 401）要调 logout 把服务端会话吊销 —— 但从未登录过的访客

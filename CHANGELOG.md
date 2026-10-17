@@ -6,6 +6,43 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。---
 
+## 2026-10-17（日）· 修复：弹窗/菜单首次点击反馈延迟 —— 三层预取 + 加载反馈
+
+**要点**：用户报告「卡片设置-更多选项里各按键首次点击后反馈延迟很久、关闭后再次打开
+才恢复正常」。根因实锤：全部弹窗/菜单都是「条件挂载 + lazy」（`ChunkBoundary when=`、
+`menuOpen ? <Suspense fallback={null}><MoreMenu/> : null`），首次点击要**现场下载**
+弹窗块 + MUI 依赖块（1 跳并行瀑布），且 fallback 为 null —— 弱网下表现就是
+「点了没反应」；第二次打开命中模块缓存瞬时恢复。真实 Chrome + CDP 弱网模拟
+（300ms RTT / 1.5Mbps）实测：更多选项首开 394ms / 3 请求，统计首开 602ms / 6 请求，
+二开 10ms / 0 请求；用户真实链路每请求 1~3 秒 → 数秒空窗零反馈。
+
+修复（三层预取，把「点击时下载」提前到「点击前」）：
+
+- **悬停预取**（`HeaderActions.tsx` / `SiteCard.tsx`）：「新增」「更多选项」「⚙ 设置」
+  按钮 `onPointerEnter` / `onFocus` 即预取目标块 —— 手移到按钮的几百毫秒足够下载完成。
+- **展开预取**（`MoreMenu.tsx` / `SiteCard.tsx`）：菜单/右键菜单 mount 时并行预取全部
+  目标弹窗块（设置/统计/备份/回收站/审计/AI/账号/快捷键/编辑分组），菜单本身加载的
+  时间就够把子项全预热。
+- **空闲预取**（`App.tsx`）：登录后 `requestIdleCallback` 错峰逐个预取 18 个常用块，
+  不抢首屏带宽（idle + timeout 3s 兜底）。
+- 预取入口集中在 `src/utils/dialogChunks.ts`（18 个动态 import，与各处 `lazy()` 指向
+  同一模块 → 同一 chunk，不重复下载）；`src/utils/lazyPrefetch.ts` 做幂等（Set 去重、
+  失败摘出允许重试）。
+- **加载反馈兜底**（`LazyFallback.tsx`）：即使预取失败（如网络抖动），`ChunkBoundary`
+  的 fallback 从 `null` 换成 200ms 延迟显示的纯 DOM spinner —— 不用 MUI（不抬首屏）、
+  `pointer-events:none`（不挡点击）、只在真等待超过 200ms 才出现，避免闪烁。
+
+验证：修复后同条件弱网探针 —— 全部弹窗/菜单**首开 0 网络请求、9~337ms**（残余为
+MUI 开启动画）；守卫 `tests/lazyPrefetch.dom.test.tsx`（9 用例：幂等/失败重试/idle
+调度/LazyFallback 时序，加上静态守卫钉住 ChunkBoundary fallback、App 预取清单、
+HeaderActions/MoreMenu/SiteCard 三处预取挂点、dialogChunks 无静态 import），
+反向验证（删掉预取挂点）守卫可红。
+
+- **工程**：`docker-publish.yml` 补 arm64 —— QEMU + `platforms: linux/amd64,linux/arm64`，
+  GHCR 镜像从此双架构（ARM VPS 部署从「本地构建」退化为 `docker pull`）。
+
+---
+
 ## 2026-10-17（日）· 性能：全站性能排查落地 —— 笔记首拉摘要阀门提前生效 / 首屏 preload 拆分
 
 **要点**：全站性能排查（34 个 API 端点计时 + SQLite EXPLAIN + 前端产物盘点）确认两处

@@ -1,6 +1,7 @@
 // src/components/SiteCard.tsx
-import { useState, memo, lazy, Suspense } from "react";
+import { useState, useEffect, memo, lazy, Suspense } from "react";
 import { Site } from "../API/http";
+import { prefetchChunk } from "../utils/lazyPrefetch";
 // 卡片设置弹窗按需加载：只有点开某一张卡片时才需要它
 const SiteSettingsModal = lazy(() => import("./SiteSettingsModal"));
 // 右键 / 更多操作菜单按需加载：MUI Menu/Popover/Popper 不进首屏（见该文件顶部注释）
@@ -154,6 +155,10 @@ const SiteCard = memo(function SiteCard({
         setShowSettings(true);
     };
 
+    // 悬停/聚焦卡片设置按钮就预取设置弹窗块（2026-10-17 首开延迟排查）：
+    // 首次点击不再现场等块下载。与上面的 lazy() 指向同一模块，不会重复下载。
+    const prefetchSiteSettings = () => prefetchChunk("siteSettings", () => import("./SiteSettingsModal"));
+
     // 处理关闭设置
     const handleCloseSettings = () => {
         setShowSettings(false);
@@ -215,6 +220,12 @@ const SiteCard = memo(function SiteCard({
         e.preventDefault();
         setMenuPos({ left: e.clientX, top: e.clientY });
     };
+
+    // 右键菜单展开时预取「编辑」的目标块（卡片设置弹窗）：
+    // 用户看菜单的那几秒里，点「编辑」不用再现场等块（2026-10-17 首开延迟排查）
+    useEffect(() => {
+        if (menuPos !== null) prefetchSiteSettings();
+    }, [menuPos]);
 
     const closeMenu = () => setMenuPos(null);
 
@@ -364,6 +375,8 @@ const SiteCard = memo(function SiteCard({
                     },
                 }}
                 onClick={handleSettingsClick}
+                onPointerEnter={prefetchSiteSettings}
+                onFocus={prefetchSiteSettings}
                 aria-label='网站设置'
             >
                 <SettingsIcon fontSize='small' />

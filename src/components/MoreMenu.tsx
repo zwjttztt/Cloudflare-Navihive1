@@ -8,7 +8,10 @@
 // 2026-10-15 瘦身：访问统计 + 统计看板合并成「统计」（弹窗内两个标签页），
 // 快捷键帮助 + 安装到桌面合并成「帮助」（安装按钮在帮助弹窗底部）——
 // 菜单从 11 项降到 9 项，功能一个没少。
+import { useEffect } from "react";
 import { Menu, MenuItem, ListItemIcon, ListItemText, Divider, ListSubheader } from "@mui/material";
+import { prefetchChunk } from "../utils/lazyPrefetch";
+import { dialogChunks } from "../utils/dialogChunks";
 import SettingsIcon from "@mui/icons-material/Settings";
 import SortIcon from "@mui/icons-material/Sort";
 import InsightsIcon from "@mui/icons-material/Insights";
@@ -63,6 +66,20 @@ export default function MoreMenu({
     isSiteOwner,
     onOpenShortcuts,
 }: MoreMenuProps) {
+    // 菜单展开时预取全部菜单项的目标弹窗块（2026-10-17 首开延迟排查）：
+    // 用户读菜单的那几秒里，点哪个弹窗都不用再现场等块下载。
+    // 这些 import 与 App.tsx 里的 lazy() 指向同一模块，落到同一块，不会重复下载。
+    useEffect(() => {
+        prefetchChunk("settings", dialogChunks.settings);
+        prefetchChunk("stats", dialogChunks.stats);
+        prefetchChunk("backup", dialogChunks.backup);
+        prefetchChunk("recycle", dialogChunks.recycle);
+        prefetchChunk("audit", dialogChunks.audit);
+        prefetchChunk("aiAssistant", dialogChunks.aiAssistant);
+        prefetchChunk("account", dialogChunks.account);
+        prefetchChunk("shortcuts", dialogChunks.shortcuts);
+        prefetchChunk("editGroup", dialogChunks.editGroup);
+    }, []);
     return (
         <Menu
             id='navigation-menu'

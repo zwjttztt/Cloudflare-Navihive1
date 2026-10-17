@@ -8,6 +8,8 @@
 import { useState } from "react";
 import type { ReactNode } from "react";
 import { Button, ButtonGroup, Menu, MenuItem } from "@mui/material";
+import { prefetchChunk } from "../utils/lazyPrefetch";
+import { dialogChunks } from "../utils/dialogChunks";
 import SaveIcon from "@mui/icons-material/Save";
 import CancelIcon from "@mui/icons-material/Cancel";
 import AddIcon from "@mui/icons-material/Add";
@@ -131,6 +133,10 @@ export default function HeaderActions({
                         <Button
                             startIcon={<AddIcon />}
                             onClick={onQuickAdd}
+                            // 悬停预取（2026-10-17 首开延迟排查）：新增弹窗块在点下去
+                            // 之前就开始下载，首开不再等块
+                            onPointerEnter={() => prefetchChunk("addSite", dialogChunks.addSite)}
+                            onFocus={() => prefetchChunk("addSite", dialogChunks.addSite)}
                             aria-label={
                                 addTargetName
                                     ? `新增网站到「${addTargetName}」`
@@ -220,6 +226,11 @@ export default function HeaderActions({
                         color='primary'
                         startIcon={<MenuIcon />}
                         onClick={onMenuOpen}
+                        // 悬停预取（2026-10-17 首开延迟排查）：菜单块 + 它的 MUI Menu
+                        // 机器在点下去之前就开始下载；菜单展开后 MoreMenu 自己再预取
+                        // 全部菜单项的目标弹窗块（见 MoreMenu 的 mount effect）
+                        onPointerEnter={() => prefetchChunk("moreMenu", dialogChunks.moreMenu)}
+                        onFocus={() => prefetchChunk("moreMenu", dialogChunks.moreMenu)}
                         // MoreMenu 用 aria-labelledby="navigation-button" 指回这个按钮
                         id='navigation-button'
                         aria-controls={menuOpen ? "navigation-menu" : undefined}
