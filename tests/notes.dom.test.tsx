@@ -4156,6 +4156,61 @@ test("Markdown ZIP 导入保留父目录与属性标签，忽略隐藏配置及�
     assert.deepEqual(result.tags.map(tag => tag.name).sort(), ["review", "标签", "项目"].sort());
 });
 
+test("数据页导入带附件 ZIP 时进度条要报出「上传附件」阶段（2026-10-17 进度反馈）", async () => {
+    // 用户报「笔记恢复太慢，能否加进度条」：导入带附件的 ZIP 要逐个回传附件，
+    // 这一步最慢、最该有反馈。把附件上传拖慢 60ms，确保「上传附件」阶段在 DOM 上停留得够久，
+    // 测试能稳定抓到进度条（data-import-progress）；导入完成后进度条必须消失。
+    const { createZip } = await import("../src/utils/zip");
+    const encode = (value: string) => new TextEncoder().encode(value);
+    let imported: unknown = null;
+    const uploaded: string[] = [];
+    setWide();
+    mountPanel([note({ id: 1, title: "甲", content: "a" })], {
+        shareApi: {
+            listNoteShares: async () => [],
+            notesStats: async () => ({ versions: 0, links: 0 }),
+            importNotes: async (payload: unknown) => { imported = payload; return { created: 1, updated: 0, skipped: 0, removed: 0 }; },
+        } as never,
+        uploadApi: {
+            uploadAttachment: async (file: File) => {
+                uploaded.push(file.name);
+                await new Promise(r => setTimeout(r, 60));
+                return { id: "new-" + uploaded.length, url: "http://x/" + file.name };
+            },
+        } as never,
+    });
+    await act(async () => (document.querySelector("button[data-tool='settings']") as HTMLElement).click());
+    await act(async () => (document.querySelector("[data-settings-tab='data']") as HTMLElement).click());
+    const bytes = createZip([
+        {
+            path: "notes.json",
+            data: encode(JSON.stringify({
+                kind: "navihive-notes-export",
+                exported_at: new Date().toISOString(),
+                notes: [{ id: 7, uuid: "u7", title: "带图", content: "![p](/api/notes/attachments/OLDID) ![q](/api/notes/attachments/OLDID2)" }],
+                folders: [], tags: [], noteTags: {},
+            })),
+        },
+        { path: "attachments/OLDID__a.png", data: encode("binary") },
+        { path: "attachments/OLDID2__b.png", data: encode("binary") },
+    ]);
+    const file = new File([bytes.slice().buffer], "notes.zip");
+    const input = document.querySelector("input[aria-label='选择要导入的笔记文件（JSON 或 ZIP）']")!;
+    Object.defineProperty(input, "files", { value: [file], configurable: true });
+    await act(async () => { input.dispatchEvent(new Event("change", { bubbles: true })); });
+
+    let sawUploadPhase = false;
+    for (let i = 0; i < 50; i++) {
+        const el = document.querySelector("[data-import-progress='1']");
+        if (el && /上传附件/.test(el.textContent || "")) { sawUploadPhase = true; break; }
+        await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+    }
+    assert.ok(sawUploadPhase, "导入带附件 ZIP 时进度条应显示「上传附件」阶段");
+    await act(async () => { await new Promise(r => setTimeout(r, 200)); });
+    assert.ok(imported, "带附件 ZIP 要真走 importNotes");
+    assert.equal(document.querySelector("[data-import-progress='1']"), null, "导入完成后进度条应消失");
+});
+
 test("数据页「导入笔记」行在老部署（无 importNotes）下不出现", async () => {
     setWide();
     mountPanel([note({ id: 1, title: "甲", content: "a" })]);
@@ -5810,6 +5865,76 @@ test("回归：从网盘恢复（ZIP）调 importNotes 必须保留 this（2026-
         document.querySelector("[data-backup-remote-error='1']") === null,
         "恢复成功不该出现错误框（this 丢失时会亮出 this.request 报错）"
     );
+});
+
+test("从网盘恢复带附件 ZIP 时进度条要报出「上传附件」阶段（2026-10-17 进度反馈）", async () => {
+    // 用户实际场景：从网盘恢复一份含附件的 ZIP 备份。解包后逐个回传附件最慢，
+    // 进度条（data-backup-progress）必须在「上传附件」阶段给出可见反馈；恢复完成后清空。
+    setWide();
+    const { createZip } = await import("../src/utils/zip");
+    const encode = (value: string) => new TextEncoder().encode(value);
+    const uploaded: string[] = [];
+    const zipBytes = createZip([
+        {
+            path: "notes.json",
+            data: encode(JSON.stringify({
+                kind: "navihive-notes-export",
+                exported_at: new Date().toISOString(),
+                notes: [{ id: 7, uuid: "u7", title: "网盘里那篇带图", content: "![p](/api/notes/attachments/OLDID) ![q](/api/notes/attachments/OLDID2)" }],
+                folders: [], tags: [], noteTags: {},
+            })),
+        },
+        { path: "attachments/OLDID__a.png", data: encode("binary") },
+        { path: "attachments/OLDID2__b.png", data: encode("binary") },
+    ]);
+    const zipB64 = Buffer.from(zipBytes).toString("base64");
+    const shareApi: Record<string, unknown> = {
+        getNoteShare: async () => null,
+        createNoteShare: async () => null,
+        revokeNoteShare: async () => ({ success: true }),
+        importNotes(this: unknown, _payload: unknown) {
+            if (this !== shareApi) throw new Error("importNotes 的 this 丢失（应指向 api 实例，却收到 " + String(this) + "）");
+            return { created: 1, updated: 0, skipped: 0, removed: 0 } as never;
+        },
+    };
+    const backupApi = {
+        ...makeBackupApi({ calls: [], saved: [] }),
+        fetch: async (filename: string) => ({ success: true, message: filename, zipBase64: zipB64 }),
+    };
+    mountPanel([note({ id: 1, title: "甲", content: "a" })], {
+        backupApi,
+        shareApi: shareApi as never,
+        uploadApi: {
+            uploadAttachment: async (file: File) => {
+                uploaded.push(file.name);
+                await new Promise(r => setTimeout(r, 60));
+                return { id: "new-" + uploaded.length, url: "http://x/" + file.name };
+            },
+        } as never,
+    });
+    await act(async () =>
+        (document.querySelector("button[data-tool='settings']") as HTMLElement).click()
+    );
+    await act(async () =>
+        (document.querySelector("[data-settings-tab='backup']") as HTMLElement).click()
+    );
+    await act(async () =>
+        (document.querySelector("[data-backup-action='list-remote']") as HTMLElement).click()
+    );
+    await act(async () =>
+        (document.querySelector("[data-backup-action='restore']") as HTMLElement).click()
+    );
+
+    let sawUploadPhase = false;
+    for (let i = 0; i < 50; i++) {
+        const el = document.querySelector("[data-backup-progress='1']");
+        if (el && /上传附件/.test(el.textContent || "")) { sawUploadPhase = true; break; }
+        await act(async () => { await new Promise(r => setTimeout(r, 10)); });
+    }
+    assert.ok(sawUploadPhase, "从网盘恢复带附件 ZIP 时进度条应显示「上传附件」阶段");
+    await act(async () => { await new Promise(r => setTimeout(r, 200)); });
+    assert.ok(uploaded.length >= 1, "带附件 ZIP 恢复要真回传附件（进度条的来源）");
+    assert.equal(document.querySelector("[data-backup-progress='1']"), null, "恢复完成后进度条应消失");
 });
 
 test("设置→备份：没有备份能力（老部署）时整页不出现", async () => {

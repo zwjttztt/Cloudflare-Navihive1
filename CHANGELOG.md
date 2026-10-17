@@ -31,6 +31,31 @@
 
 ---
 
+## 2026-10-17（日）· 新增：笔记导入 / 恢复进度条（用户反馈「恢复太慢没提示」）
+
+**要点**：从网盘恢复、或数据页导入带附件的 ZIP 备份，要走「解包 → 逐个回传附件 → 写入笔记」
+三段，附件一多十几秒没有任何反馈，用户以为卡死。现在 `importNotesFile`（`NotesPage.tsx`）
+在这三个分支里上报 `onProgress` 回调（阶段：下载备份 / 解包备份 / 上传附件 / 写入笔记），
+`NotesSettingsDialog` 的「数据页导入」和「从网盘恢复」两处各挂一条 `LinearProgress`
+（带 `data-import-progress` / `data-backup-progress` 属性；附件回传按 `current/total` 走
+**确定**百分比，无法估算比例的阶段走**不确定**条）。恢复 / 导入完成后进度条自动消失。
+
+- **进度回调接口**（`src/API/types.ts`）：新增 `NoteImportProgress { phase; current; total }`。
+  注意：站点导入用的 `ImportProgress` 是 `{ stage; done; total }` 形状，两个接口**重名会被
+  TS 合并**成必须同时满足两套字段、两边调用点全红 —— 所以笔记这边特意叫 `NoteImportProgress`，
+  避免和 `BackupDialog` / `client.ts` / `useBackupController` / `transfer.ts` 那套撞名。
+- **三处阶段上报**（`NotesPage.tsx` 的 `importNotesFile`）：非 zip JSON 直接「写入笔记」；
+  Markdown 目录 ZIP 与 notes.json ZIP 都先「解包备份」→ 循环回传附件时逐个报「上传附件
+  （已传/总数）」→ 收尾「写入笔记」。`onImportFile` 的签名加 `onProgress?` 可选参数。
+- **两处 UI 进度条**（`NotesSettingsDialog.tsx`）：新增 `importProgress` / `restoreProgress`
+  两个 state，分别驱动数据页导入区与网盘恢复区的 `LinearProgress`；`handleImportFile` 与
+  `doRestore` 在 `finally` 里清掉进度（成功 / 失败都清，含需要口令时弹框的中途）。
+- 守卫 `tests/notes.dom.test.tsx` 新增两条：数据页导入带附件 ZIP、从网盘恢复带附件 ZIP，
+  都断言进度条（DOM）出现过「上传附件」阶段且完成后消失。用 **2 个附件**制造约 60ms 可视窗口——
+  单附件会因「上传附件」与紧随的「写入笔记」在同一次同步 tick 里被后者覆盖、永不落 DOM，抓不到。
+
+---
+
 ## 2026-10-16（六）· 修复：AI 弹窗反复闪加载条 / 笔记网盘恢复失败（用户实测反馈）
 
 **要点**：用户在新部署的 https://home.zwjttzt.com 上实测反馈的两条，都不是「看着别扭」，

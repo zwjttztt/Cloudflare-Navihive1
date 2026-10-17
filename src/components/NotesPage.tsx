@@ -92,6 +92,7 @@ import type {
     NotesImportPayload,
     WebDavErrorCode,
 } from "../API/http";
+import type { NoteImportProgress } from "../API/types";
 import type { TrashedNote } from "../hooks/useNotes";
 import {
     renderMarkdownToReact,
@@ -2067,7 +2068,10 @@ export default function NotesPage({
     }, [bulkBusy, checkedNotes, onDelete, onNotify]);
 
     const importNotesFile = useCallback(
-        async (file: File): Promise<NoteImportStats> => {
+        async (
+            file: File,
+            onProgress?: (p: NoteImportProgress) => void,
+        ): Promise<NoteImportStats> => {
             if (!shareApi?.importNotes) throw new Error("当前部署不支持导入笔记");
 
             const isZip =
@@ -2077,6 +2081,7 @@ export default function NotesPage({
 
             if (!isZip) {
                 const parsed = JSON.parse(await file.text()) as NotesImportPayload;
+                onProgress?.({ phase: "写入笔记", current: 0, total: 0 });
                 const stats = await shareApi.importNotes(parsed);
                 onDatasetChanged?.();
                 return stats;
@@ -2108,12 +2113,16 @@ export default function NotesPage({
                     if (paths.has(entry.path)) throw new Error("ZIP 中存在重复文件路径");
                     paths.add(entry.path);
                 }
-                for (const entry of visibleEntries) {
-                    if (/\.md$/i.test(entry.path) || !entry.data.length) continue;
+                const attachmentEntries = visibleEntries.filter(e => !/\.md$/i.test(e.path) && e.data.length);
+                onProgress?.({ phase: "解包备份", current: 0, total: 0 });
+                let uploadedCount = 0;
+                for (const entry of attachmentEntries) {
                     if (!uploadApi) throw new Error("ZIP 含附件，需先配置附件上传能力");
                     const uploaded = await uploadApi.uploadAttachment(new File([entry.data.slice().buffer], entry.path.split("/").pop()!));
                     if (!uploaded?.url) throw new Error("附件上传失败：" + entry.path);
                     attachments.set(entry.path, uploaded.url);
+                    uploadedCount += 1;
+                    onProgress?.({ phase: "上传附件", current: uploadedCount, total: attachmentEntries.length });
                 }
                 const tags: NoteTag[] = [];
                 const tagIds = new Map<string, number>();
@@ -2164,6 +2173,7 @@ export default function NotesPage({
                     noteTags[String(id)] = [...new Set(names)].map(name => tagIds.get(name)!);
                     imported.push({ id, title, content, folder_id: ensureFolder(parts.join("/")) });
                 }
+                onProgress?.({ phase: "写入笔记", current: attachmentEntries.length, total: attachmentEntries.length });
                 return shareApi.importNotes({ notes: imported, folders, tags, noteTags }).then(stats => {
                     onDatasetChanged?.();
                     return stats;
@@ -2176,8 +2186,14 @@ export default function NotesPage({
             // 1) 附件回传，记下 id 变化
             const idMap = new Map<string, string>();
             let skipped = 0;
-            for (const entry of entries) {
-                if (!entry.path.startsWith("attachments/")) continue;
+            const attachmentEntries = entries.filter(e => {
+                if (!e.path.startsWith("attachments/")) return false;
+                const name = e.path.slice("attachments/".length);
+                return name.indexOf("__") > 0;
+            });
+            let done = 0;
+            onProgress?.({ phase: "解包备份", current: 0, total: 0 });
+            for (const entry of attachmentEntries) {
                 const name = entry.path.slice("attachments/".length);
                 const sep = name.indexOf("__");
                 if (sep <= 0) continue;
@@ -2185,16 +2201,18 @@ export default function NotesPage({
                 const filename = name.slice(sep + 2);
                 if (!uploadApi) {
                     skipped += 1;
-                    continue;
+                } else {
+                    try {
+                        const uploaded = await uploadApi.uploadAttachment(
+                            new File([entry.data.slice().buffer], filename || "file")
+                        );
+                        if (uploaded?.id && uploaded.id !== oldId) idMap.set(oldId, uploaded.id);
+                    } catch {
+                        skipped += 1;
+                    }
                 }
-                try {
-                    const uploaded = await uploadApi.uploadAttachment(
-                        new File([entry.data.slice().buffer], filename || "file")
-                    );
-                    if (uploaded?.id && uploaded.id !== oldId) idMap.set(oldId, uploaded.id);
-                } catch {
-                    skipped += 1;
-                }
+                done += 1;
+                onProgress?.({ phase: "上传附件", current: done, total: attachmentEntries.length });
             }
 
             // 2) 正文里的旧 id 换成新 id（只换真发生变化的那些）
@@ -2215,6 +2233,7 @@ export default function NotesPage({
                 );
             }
 
+            onProgress?.({ phase: "写入笔记", current: attachmentEntries.length, total: attachmentEntries.length });
             const stats = await shareApi.importNotes(payload);
             if (skipped > 0) {
                 onNotify?.(`有 ${skipped} 个附件没能回传（正文里的引用可能还是旧的）`, "warning" as never);

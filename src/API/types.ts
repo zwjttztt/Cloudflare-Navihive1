@@ -278,6 +278,20 @@ export interface NoteImportStats {
 }
 
 /**
+ * 笔记导入（从文件 / 从网盘恢复）进行中的进度。
+ * total 为 0 时表示「这一阶段没法估算比例」，UI 显示不确定进度条 + phase 文案即可。
+ * ⚠️ 与站点导入用的 ImportProgress（{stage,done,total}）是两个不同的接口，别混用。
+ */
+export interface NoteImportProgress {
+    /** 当前阶段的中文文案，如「下载备份」「解包备份」「上传附件」「写入笔记」 */
+    phase: string;
+    /** 当前阶段已完成步数（附件上传时为已上传个数） */
+    current: number;
+    /** 当前阶段总步数（附件上传时为附件总数）；为 0 表示未知 */
+    total: number;
+}
+
+/**
  * 记事本导出文件的形状（NotesPage exportAllData 生成，notes/import 读回）。
  * 与全站备份（ExportData）**不是一个格式**：这里没有 groups/sites/configs，
  * 导入只动记事本，绝不碰导航站数据 —— 所以也不能复用 transfer.importData

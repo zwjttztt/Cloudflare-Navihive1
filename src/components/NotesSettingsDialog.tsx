@@ -19,6 +19,7 @@ import TextField from "@mui/material/TextField";
 import Select from "@mui/material/Select";
 import MenuItem from "@mui/material/MenuItem";
 import CircularProgress from "@mui/material/CircularProgress";
+import LinearProgress from "@mui/material/LinearProgress";
 import Switch from "@mui/material/Switch";
 import Typography from "@mui/material/Typography";
 import CloseIcon from "@mui/icons-material/Close";
@@ -57,6 +58,7 @@ import type {
     NotesImportPayload,
     NoteShareListItem,
     NoteStats,
+    NoteImportProgress,
     WebDavErrorCode,
 } from "../API/types";
 
@@ -84,7 +86,7 @@ export interface NotesDataTab {
      * 与 onImportNotes 的区别：这个接的是**原始文件**，zip 要解包、附件要回传，
      * 不是前端能直接 JSON.parse 的。
      */
-    onImportFile?: (file: File) => Promise<NoteImportStats>;
+    onImportFile?: (file: File, onProgress?: (p: NoteImportProgress) => void) => Promise<NoteImportStats>;
     onEmptyTrash: () => Promise<void>;
     /** 可选：老部署的 api 没有附件方法，相应能力自动隐藏 */
     onLoadAttachments?: () => Promise<
@@ -285,6 +287,8 @@ export default function NotesSettingsDialog({
     // 之外的方式触发；这里由按钮 ref.click() 调起，读文件后整包交给后端合并）
     const importFileRef = useRef<HTMLInputElement>(null);
     const [importBusy, setImportBusy] = useState(false);
+    /** 「导入笔记」文件的进行中进度 */
+    const [importProgress, setImportProgress] = useState<NoteImportProgress | null>(null);
     const [reindexBusy, setReindexBusy] = useState(false);
     const [reindexMessage, setReindexMessage] = useState("");
 
@@ -295,7 +299,7 @@ export default function NotesSettingsDialog({
             let r: NoteImportStats;
             // zip（含附件）走整条链路：解包 → 附件回传 → id 重映射 → 导入
             if (dataRef.current.onImportFile && /\.zip$/i.test(file.name)) {
-                r = await dataRef.current.onImportFile(file);
+                r = await dataRef.current.onImportFile(file, setImportProgress);
             } else {
                 let parsed: NotesImportPayload;
                 try {
@@ -316,6 +320,7 @@ export default function NotesSettingsDialog({
             onNotify?.("导入失败：" + (error instanceof Error ? error.message : "未知错误"), "error");
         } finally {
             setImportBusy(false);
+            setImportProgress(null);
             // 清空 value：同一个文件选第二次也要能触发 change
             if (importFileRef.current) importFileRef.current.value = "";
         }
@@ -433,6 +438,8 @@ export default function NotesSettingsDialog({
     const [restoreTarget, setRestoreTarget] = useState<string | null>(null);
     const [restorePwd, setRestorePwd] = useState("");
     const [restoreBusy, setRestoreBusy] = useState(false);
+    /** 从网盘恢复的进行中进度（下载 / 解包 / 上传附件 / 写入笔记） */
+    const [restoreProgress, setRestoreProgress] = useState<NoteImportProgress | null>(null);
 
     // ---- 同步（2026-10-11，跨设备变更轮询的本机偏好）----
     // 偏好是**本机**的（别的设备有自己的开关），存 localStorage 按账号分桶；
@@ -478,6 +485,7 @@ export default function NotesSettingsDialog({
         if (!cur.onImportNotes && !cur.onImportFile) return;
         setRestoreBusy(true);
         try {
+            setRestoreProgress({ phase: "下载备份", current: 0, total: 0 });
             const r = await cur.onNotesBackupFetch(filename, password);
             if (r.code === "encrypted") {
                 setRestoreTarget(filename);
@@ -499,12 +507,13 @@ export default function NotesSettingsDialog({
                 const out = new Uint8Array(bytes.byteLength);
                 out.set(bytes);
                 const file = new File([out.buffer], filename, { type: "application/zip" });
-                await cur.onImportFile(file);
+                await cur.onImportFile(file, setRestoreProgress);
             } else if (r.payload) {
                 if (!cur.onImportNotes) {
                     setRemoteError("当前部署不支持导入笔记");
                     return;
                 }
+                setRestoreProgress({ phase: "写入笔记", current: 0, total: 0 });
                 await cur.onImportNotes(r.payload);
             } else {
                 setRemoteError(r.message || "取回备份失败");
@@ -521,6 +530,7 @@ export default function NotesSettingsDialog({
             setRemoteError(error instanceof Error ? error.message : "恢复失败");
         } finally {
             setRestoreBusy(false);
+            setRestoreProgress(null);
         }
     };
 
@@ -1144,6 +1154,33 @@ export default function NotesSettingsDialog({
                                             {importBusy ? "导入中…" : "选择文件"}
                                         </Button>
                                     </SettingRow>
+                                )}
+                                {importProgress && (
+                                    <Box sx={{ mt: 1 }} data-import-progress='1'>
+                                        <LinearProgress
+                                            variant={importProgress.total > 0 ? "determinate" : "indeterminate"}
+                                            value={
+                                                importProgress.total > 0
+                                                    ? Math.min(
+                                                          100,
+                                                          Math.round(
+                                                              (importProgress.current / importProgress.total) * 100
+                                                          )
+                                                      )
+                                                    : undefined
+                                            }
+                                        />
+                                        <Typography
+                                            variant='caption'
+                                            color='text.secondary'
+                                            sx={{ display: "block", mt: 0.5 }}
+                                        >
+                                            {importProgress.phase}
+                                            {importProgress.total > 0
+                                                ? `（${importProgress.current}/${importProgress.total}）`
+                                                : ""}
+                                        </Typography>
+                                    </Box>
                                 )}
                                 <input
                                     ref={importFileRef}
@@ -1801,6 +1838,37 @@ export default function NotesSettingsDialog({
                                                 </Box>
                                             )}
                                         </Box>
+                                        {restoreProgress && (
+                                            <Box sx={{ mt: 1 }} data-backup-progress='1'>
+                                                <LinearProgress
+                                                    variant={
+                                                        restoreProgress.total > 0 ? "determinate" : "indeterminate"
+                                                    }
+                                                    value={
+                                                        restoreProgress.total > 0
+                                                            ? Math.min(
+                                                                  100,
+                                                                  Math.round(
+                                                                      (restoreProgress.current /
+                                                                          restoreProgress.total) *
+                                                                          100
+                                                                  )
+                                                              )
+                                                            : undefined
+                                                    }
+                                                />
+                                                <Typography
+                                                    variant='caption'
+                                                    color='text.secondary'
+                                                    sx={{ display: "block", mt: 0.5 }}
+                                                >
+                                                    {restoreProgress.phase}
+                                                    {restoreProgress.total > 0
+                                                        ? `（${restoreProgress.current}/${restoreProgress.total}）`
+                                                        : ""}
+                                                </Typography>
+                                            </Box>
+                                        )}
                                     </>
                                 )}
                             </Box>
