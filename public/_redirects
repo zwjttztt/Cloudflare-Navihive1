@@ -1,0 +1,16 @@
+# Cloudflare Pages 的 SPA 回退规则。
+#
+# 为什么只写这两条、而不是常见的 `/*  /index.html  200`：
+# 本项目只有两个公开路由是纯前端渲染的：
+#   /s/<64 位十六进制>  —— 笔记公开分享页（components/PublicNotePage.tsx）
+#   /sg/<64 位十六进制> —— 分组公开分享页（components/PublicGroupPage.tsx）
+# 其余路径要么是真实静态资源，要么由后端接口直接响应。用通配的 `/*` 会把不该回退的
+# 路径也吞成 index.html（接口一旦被吞成 HTML，前端拿到的就是伪 200），风险远大于收益。
+#
+# 为什么需要它：Workers 部署看 wrangler.jsonc 的 assets.not_found_handling，
+# 但 **Pages 形态不读那份配置**——缺了这个文件时无扩展名路径一律 404，
+# 表现就是「自己打开站点正常，别人点分享链接全是 404」。
+# _redirects 会被 Vite 从 public/ 原样拷到 dist/client/，两种形态都不会误伤。
+
+/s/*   /index.html   200
+/sg/*  /index.html   200
