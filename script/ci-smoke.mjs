@@ -101,8 +101,11 @@ const SITES = [
         icon: "",
         description: "示例站点一",
         notes: "",
-        username: "",
-        password: "",
+        // 第一张卡必须带凭据：下面第 4 / 7 步量的是右下角快捷操作条
+        // （复制账号 / 复制密码）的悬停显隐与触屏常显，没凭据时整条不渲染
+        // （2026-10-17 去掉「复制链接」后加了内容守卫），量到 null 会假红。
+        username: "alice",
+        password: "pw",
         order_num: 0,
     },
     {
