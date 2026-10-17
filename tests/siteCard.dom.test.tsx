@@ -418,3 +418,29 @@ test("右键那条路点「保存」会直接写库（没有主窗替你提交�
     assert.equal(updates.length, 1, "notesOnly 下点保存要直接写库 —— 没人替它提交");
     assert.equal(updates[0].notes, "新备注");
 });
+
+// ---------------- 右下角悬停操作条（2026-10-17：去「复制链接」） ----------------
+
+test("悬停操作条只有「复制账号 / 复制密码」，没有「复制链接」", () => {
+    renderCard({ site: makeSite({ username: "alice", password: "pw" }) });
+    assert.ok(byLabel("复制账号"), "有账号要有「复制账号」");
+    assert.ok(byLabel("复制密码"), "有密码要有「复制密码」");
+    assert.equal(byLabel("复制链接"), null, "「复制链接」已按用户要求移除（点卡片就是打开链接）");
+});
+
+test("悬停操作条按内容出按钮：只有账号就不出复制密码", () => {
+    renderCard({ site: makeSite({ username: "alice" }) });
+    assert.ok(byLabel("复制账号"));
+    assert.equal(byLabel("复制密码"), null, "没存密码就不该给复制密码");
+});
+
+test("没存账号也没存密码：整条悬停操作不渲染（别留一个空玻璃 pill）", () => {
+    renderCard();
+    assert.equal(byLabel("复制账号"), null);
+    assert.equal(byLabel("复制密码"), null);
+    assert.equal(
+        q(".nav-card-actions"),
+        null,
+        "复制链接移除后它不再是「永远非空」的那一个，两颗都没有时整条要不渲染"
+    );
+});

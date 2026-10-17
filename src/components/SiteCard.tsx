@@ -607,6 +607,8 @@ const SiteCard = memo(function SiteCard({
     // always=true 时（列表视图）常显，否则悬停才浮出
     // 「复制链接」已移除（2026-10-17 用户要求）：点卡片本身就是打开链接，
     // 再给一个复制按钮只会让右下角这条更挤。
+    // ⚠️ 调用点必须带 (hasUsername || hasPassword) 守卫：复制链接移除后它不再是
+    // 「永远非空」的那一个，两个都没有时悬停会看到一个空的玻璃 pill。
     const renderQuickActions = (always: boolean) => (
         <Box
             className={
@@ -869,7 +871,7 @@ const SiteCard = memo(function SiteCard({
             {renderStarBadge()}
 
             {/* 快捷操作条 */}
-            {!isEditMode && !selectMode && renderQuickActions(isList)}
+            {!isEditMode && !selectMode && (hasUsername || hasPassword) && renderQuickActions(isList)}
         </Box>
     );
 
