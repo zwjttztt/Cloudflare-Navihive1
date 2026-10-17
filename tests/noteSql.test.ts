@@ -213,6 +213,30 @@ test("阶段三：建表语句里有 archived，且老库有 ALTER 补列（否�
     );
 });
 
+test("性能：listNotes 排序覆盖索引 idx_notes_user_order 存在且 SCHEMA_VERSION 已升号（2026-10-17 排查）", () => {
+    // listNotes 的真实排序是 `ORDER BY pinned DESC, order_num, id`，
+    // 旧索引 idx_notes_user 只到 (user_id, pinned, order_num) —— EXPLAIN 实测
+    // `USE TEMP B-TREE FOR LAST 2 TERMS OF ORDER BY`，万条级每次列表都做一次临时排序。
+    // 这条守卫钉住两件事：索引语句存在 + SCHEMA_VERSION 升号（索引步骤吃快路径，同 19 先例）。
+    const internals = readFileSync(
+        join(findProjectDir(), "src", "API", "methods", "internals.ts"),
+        "utf-8"
+    );
+    assert.ok(
+        /CREATE INDEX IF NOT EXISTS idx_notes_user_order ON notes\(user_id, pinned, order_num, id\)/.test(internals),
+        "INDEX_STATEMENTS 里必须有 idx_notes_user_order（补 id 尾列消除列表排序的 TEMP B-TREE）"
+    );
+    const migration = readFileSync(
+        join(findProjectDir(), "src", "API", "methods", "migration.ts"),
+        "utf-8"
+    );
+    const version = /\bSCHEMA_VERSION = "(\d+)"/.exec(migration)?.[1];
+    assert.ok(
+        version !== undefined && Number(version) >= 22,
+        `SCHEMA_VERSION 要 >= 22（新增索引步骤必须升号，否则老库快路径跳过、索引永远建不上），现在是 ${version}`
+    );
+});
+
 test("阶段三收尾：notes.folder_id 建表有、老库也要 ALTER 补列", () => {
     const internals = readFileSync(
         join(findProjectDir(), "src", "API", "methods", "internals.ts"),

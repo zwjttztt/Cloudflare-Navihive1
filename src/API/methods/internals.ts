@@ -308,6 +308,11 @@ export const INDEX_STATEMENTS = [
     // 不写 `pinned DESC`：SQLite 的索引本来就能反向扫描满足 DESC 排序，
     // 写上去只会让「按列名解析索引」的校验工具误判（把 "pinned DESC" 当成一个列名）。
     `CREATE INDEX IF NOT EXISTS idx_notes_user ON notes(user_id, pinned, order_num);`,
+    // 列表排序全覆盖（2026-10-17 性能排查）：listNotes 的真实排序是
+    // `ORDER BY pinned DESC, order_num, id`，旧索引差 id 一列 —— 万条级每次列表
+    // 都要 `USE TEMP B-TREE FOR LAST 2 TERMS OF ORDER BY`（EXPLAIN 实测）。
+    // 补上 id 尾列后整个排序都能走索引序，免去临时 B 树。旧索引保留不删（保守）。
+    `CREATE INDEX IF NOT EXISTS idx_notes_user_order ON notes(user_id, pinned, order_num, id);`,
     `CREATE INDEX IF NOT EXISTS idx_notes_archived ON notes(user_id, archived, updated_at);`,
     `CREATE INDEX IF NOT EXISTS idx_notes_uuid ON notes(user_id, uuid);`,
     // 文件夹视图：WHERE folder_id = ? ORDER BY updated_at，两个条件都得能走索引

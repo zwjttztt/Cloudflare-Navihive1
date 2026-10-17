@@ -157,15 +157,18 @@ function indexChunk(): { name: string; kb: number } | null {
  * 这条链路上的首屏成本 ≈ 请求数 × 固定往返 + 字节 / 吞吐，两边都要盯（下面新增
  * 的那条「首屏 JS 块不超过 8 个」正是盯住请求数那一半）。
  */
-const FIRST_SCREEN_BUDGET_RAW_KB = 1000;
-const FIRST_SCREEN_BUDGET_GZIP_KB = 325;
+const FIRST_SCREEN_BUDGET_RAW_KB = 900;
+const FIRST_SCREEN_BUDGET_GZIP_KB = 300;
 /**
- * 实测基线（第二次分块变更后，2026-10-12）：949.9 KB 原始 / 307.4 KB gzip
- * 2026-10-13 首屏请求数那一轮：950.2 / 307.5（MaintenanceBanner 并进入口块，
- * 字节几乎没动 —— 那一轮省的是**请求数**，不是字节）。
+ * 实测基线（2026-10-17 P2-2 第三次分块变更）：852.4 KB 原始 / 280.1 KB gzip。
+ * mui-lazy 大块（417KB，内含大量弹窗专用组件）被彻底拆掉：首屏 preload 改为
+ * 源码层扫描出的「首屏真用到的 @mui/material 闭包」单一 mui-core 块（328KB），
+ * 弹窗专用的 MUI 只被动态 import，不再出现在 index.html 的 preload 列表里。
+ * 首屏请求数仍为 6（JS 5 个），字节 -10%。
+ * 同轮 P2-1：笔记首拉先探 count（?fields=list 摘要阀门提前生效），不影响体积。
  */
-const FIRST_SCREEN_BASELINE_RAW_KB = 950.2;
-const FIRST_SCREEN_BASELINE_GZIP_KB = 307.5;
+const FIRST_SCREEN_BASELINE_RAW_KB = 852.4;
+const FIRST_SCREEN_BASELINE_GZIP_KB = 280.1;
 
 interface FirstScreen {
     files: { name: string; rawKb: number; gzipKb: number }[];

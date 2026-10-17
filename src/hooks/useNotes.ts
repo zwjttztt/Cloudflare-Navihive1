@@ -55,6 +55,8 @@ export interface TrashedNote {
 /** 本域用到的后端方法，单测里可以塞假实现 */
 export type NotesApiLike = {
     listNotes(opts?: { summary?: boolean }): Promise<Note[]>;
+    /** 笔记总数（2026-10-17 性能排查）。可选：老部署没有 notes/count 时前端跳过探测 */
+    countNotes?(): Promise<number>;
     getNote(id: number): Promise<Note | null>;
     createNote(draft: Partial<Note>): Promise<Note>;
     updateNote(id: number, patch: Partial<Note>): Promise<Note | null>;
@@ -259,6 +261,8 @@ export function useNotes({ api, onError, onNotify, onNoteConflict }: UseNotesPar
     const revById = useRef(new Map<number, number>());
     /** 列表是否走摘要（?fields=list）：见 reload 里的注释 */
     const summaryRef = useRef(false);
+    /** 首拉前的 count 探测只做一次：老部署 404 / 网络抖动也不再反复试 */
+    const countProbedRef = useRef(false);
     /**
  * 列表走摘要的条数阈值：超过这个数，`?fields=list` 才真的省流量。
  * 阈值以下开了反而更慢 —— 点开笔记要多一次全文请求（见 API 那段注释）。
@@ -277,9 +281,18 @@ const SUMMARY_LIST_THRESHOLD = 200;
     const reload = useCallback(async () => {
         try {
             // 摘要阀门：笔记多到列表体积成了负担时才走 ?fields=list（只回开头 200 字）。
-            // 判断依据是**上一次**拉到的条数 —— 首屏永远拉全文（还不知道有多少条），
-            // 之后发现超过阈值就切成摘要。切过去之后列表里那条是摘要，
-            // 点开时由 ensureFullNote 补全文（见下）。
+            // 判断依据是**上一次**拉到的条数；首拉改由 count 端点先探（2026-10-17 性能排查）：
+            // 万条级时「首屏永远拉全文」会白拖几 MB，而 count 实测 ~1ms。
+            // 老部署没有 notes/count（404）或 mock 没实现 countNotes 时退回旧行为 ——
+            // 探测只做一次，失败也标记已探（后续仍按拉到的条数切档）。
+            if (api.countNotes && !countProbedRef.current) {
+                countProbedRef.current = true;
+                try {
+                    if ((await api.countNotes()) > SUMMARY_LIST_THRESHOLD) summaryRef.current = true;
+                } catch {
+                    // 404 / 抖动：保持全文首拉
+                }
+            }
             const list = await api.listNotes({ summary: summaryRef.current });
             const next = Array.isArray(list) ? list : [];
             summaryRef.current = next.length > SUMMARY_LIST_THRESHOLD;

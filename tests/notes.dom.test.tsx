@@ -1003,6 +1003,63 @@ test("useNotes：首屏就拉一次列表（顶栏按钮要显示条数）", asy
     assert.equal(calls, 1, "列表要在挂载时就拉，不能等用户点开面板");
 });
 
+test("useNotes：首拉前先探 count，超过阈值直接走摘要（2026-10-17 性能排查）", async () => {
+    const listArgs: Array<{ summary?: boolean } | undefined> = [];
+    await mountHook({
+        countNotes: async () => 501,
+        listNotes: async (opts?: { summary?: boolean }) => {
+            listArgs.push(opts);
+            return [];
+        },
+    });
+    // count 探测给「effect → reload → listNotes」这条链多加了几跳微任务，
+    // mountHook 里那一轮 flush 不够，这里再确定性冲几轮（纯微任务，无定时器）
+    for (let i = 0; i < 5 && listArgs.length === 0; i += 1) {
+        await act(async () => {
+            await Promise.resolve();
+        });
+    }
+    assert.deepEqual(listArgs[0], { summary: true }, "count>200 时首拉就该带 summary，不该先白拉一遍全文");
+});
+
+test("useNotes：没有 countNotes（老部署 / 老 mock）时首拉照旧走全文", async () => {
+    const listArgs: Array<{ summary?: boolean } | undefined> = [];
+    await mountHook({
+        listNotes: async (opts?: { summary?: boolean }) => {
+            listArgs.push(opts);
+            return [];
+        },
+    });
+    assert.deepEqual(listArgs[0], { summary: false }, "没有 count 端点时要优雅退回旧行为");
+});
+
+test("useNotes：count 探测失败（老部署 404）不炸首拉也不弹加载失败", async () => {
+    const listArgs: Array<{ summary?: boolean } | undefined> = [];
+    const errors: string[] = [];
+    await mountHook(
+        {
+            countNotes: async () => {
+                throw new Error("404");
+            },
+            listNotes: async (opts?: { summary?: boolean }) => {
+                listArgs.push(opts);
+                return [note()];
+            },
+        },
+        message => errors.push(message)
+    );
+    for (let i = 0; i < 5 && listArgs.length === 0; i += 1) {
+        await act(async () => {
+            await Promise.resolve();
+        });
+    }
+    assert.deepEqual(listArgs[0], { summary: false }, "探测失败要保持全文首拉");
+    assert.ok(
+        !errors.some(e => e.includes("加载记事本失败")),
+        "count 404 是兼容性探测，不能当「加载记事本失败」弹给用户"
+    );
+});
+
 test("useNotes：删除失败要把笔记放回列表", async () => {
     const seen = await mountHook({
         listNotes: async () => [note({ id: 1, title: "别删我" })],

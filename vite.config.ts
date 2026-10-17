@@ -1,6 +1,7 @@
 import { defineConfig, type Plugin } from 'vite'
 import { execSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync, statSync } from 'node:fs'
+import path from 'node:path'
 import react from '@vitejs/plugin-react'
 
 import { cloudflare } from "@cloudflare/vite-plugin";
@@ -109,14 +110,10 @@ function precacheManifest(): Plugin {
                 if (name.endsWith(".css")) core.add(name);
             }
 
-            // mui-lazy 也在核心清单里。它是**所有懒加载弹窗共用的 MUI 大块**
-            // （见下面 manualChunks 的说明），入口 HTML 本来就会 preload 它 ——
-            // 所以加进清单**不会多下一分流量**，换来的是二次确认框的离线可用性：
-            // ConfirmDialog 自己进了核心，但它依赖的这整块若不在缓存里，
-            // 离线点删除就会卡在「依赖没下载过」上（而删除在离线队列里是允许的）。
-            for (const name of chunks.keys()) {
-                if (/^mui-lazy-[^/\\]*\.js$/.test(name)) core.add(name);
-            }
+            // （2026-10-17）MUI 改为交回 rolldown 自然分包后不再有固定名字的
+            // mui-lazy 块。ConfirmDialog 依赖的 MUI 共享块靠上面的 imports 行走
+            // 自然进核心清单，不需要再按块名特判 —— 双向对齐由
+            // tests/precacheManifest.test.ts 的「清单与磁盘产物双向对齐」守着。
 
             const toUrl = (name: string) => `/${name}`;
             const coreFiles = [...core].filter(n => n.startsWith("assets/")).map(toUrl);
@@ -145,6 +142,203 @@ type ModuleInfoLike = {
     dynamicImporters: readonly string[];
 };
 
+/**
+ * 首屏 @mui/material 闭包扫描（2026-10-17 性能排查 P2-2）。
+ *
+ * 为什么不沿 rolldown 的模块图判：manualChunks 回调期拿到的 `importers` 混着
+ * 动态导入边（图还没定型），「沿图上溯判首屏」必然误判 —— 上一版就是因此把
+ * Button / Typography 这类首屏组件判进 mui-lazy，入口 chunk 静态依赖它，
+ * index.html modulepreload 整块 417KB，首屏关键路径白背一大截。
+ *
+ * 这里改成在**源码层**从 main.tsx 只沿静态 import 走（import/export ... from
+ * 与副作用 import "x"；动态 import() 没有这些形态，天然不跟 —— 那正是懒加载
+ * 边界）。遇到 @mui/material 就把对应文件连同它的相对依赖闭包**逐文件**记下来
+ * （按目录段标会把 tree-shake 掉的兄弟文件也拖进预加载，实测多背 40KB）。
+ *
+ * 用途只是**归桶**：集合内的并成一个稳定的 mui-core 块（首屏 preload 一发命中、
+ * 业务代码改动不失效），集合外的交回 rolldown 自然落到懒加载侧。归错也无害 ——
+ * 集合外的首屏模块 rolldown 本来就会并进它的静态导入者（入口侧），
+ * 集合内多标的只会多几个 KB 进预加载，不影响正确性。
+ */
+function scanFirstScreenMui(): { material: Set<string>; icons: Set<string> } {
+    // material：@mui/material 包内**文件**的包内相对路径（正斜杠，如 "Button/index.js"）
+    const material = new Set<string>();
+    const icons = new Set<string>();
+    const visited = new Set<string>();
+    const srcRoot = path.resolve(process.cwd(), "src");
+    const materialRoot = path.resolve(process.cwd(), "node_modules", "@mui", "material");
+    const localExts = [".tsx", ".ts", ".jsx", ".js", "/index.tsx", "/index.ts", "/index.jsx", "/index.js"];
+
+    const firstExistingFile = (...candidates: string[]): string | null => {
+        for (const candidate of candidates) {
+            try {
+                if (statSync(candidate).isFile()) return candidate;
+            } catch {
+                // 不存在，试下一个形态
+            }
+        }
+        return null;
+    };
+
+    const resolveLocal = (from: string, spec: string): string | null => {
+        const base = path.resolve(path.dirname(from), spec);
+        // 先试 base 本身（导入常自带扩展名，如 "./App.tsx"），再试补扩展名的形态
+        return firstExistingFile(base, ...localExts.map(ext => base + ext));
+    };
+
+    /** @mui/material 的子路径 → 真实文件。Vite 走 exports 的 import 条件 →
+     *  ESM 的 .mjs 才是真实进 bundle 的形态（.js 是 CJS，require 形态抓不到） */
+    const resolveMaterial = (sub: string): string | null => {
+        const base = path.join(materialRoot, sub);
+        return firstExistingFile(
+            path.join(base, "index.mjs"),
+            base + ".mjs",
+            path.join(base, "index.js"),
+            base + ".js"
+        );
+    };
+
+    const markMaterialFile = (file: string): void => {
+        if (!file.startsWith(materialRoot + path.sep)) return;
+        material.add(file.slice(materialRoot.length + 1).split(path.sep).join("/"));
+    };
+
+    const clauseNames = (clause: string | undefined): string[] => {
+        if (!clause || !clause.startsWith("{")) return [];
+        return clause
+            .slice(1, -1)
+            .split(",")
+            .map(s => s.trim().replace(/^type\s+/, "").split(/\s+as\s+/)[0].trim())
+            .filter(Boolean);
+    };
+
+    // 子句只能是花括号块 / * as x / 单个标识符，花括号内不会嵌套 —— 用惰性匹配防跨语句误捕
+    const STATIC_IMPORT_RE =
+        /\b(?:import|export)\s+(?:type\s+)?(\{[\s\S]*?\}|\*[\s\S]*?|\w+)(?:\s*,\s*(\{[\s\S]*?\}))?\s*from\s*["']([^"']+)["']/g;
+    const SIDE_EFFECT_RE = /(?:^|[;\r\n])\s*import\s*["']([^"']+)["']/g;
+
+    /**
+     * barrel（@mui/material）的 name → 来源路径映射。
+     * 首屏代码里 `import { useTheme } from "@mui/material"` 这类导出，真实文件
+     * 不一定在 @mui/material/<name>/（可能从 styles/ 等子目录转发），直接按名猜
+     * 会丢闭包 —— 从包根 index.js 的 re-export 行反查真实来源。
+     */
+    const barrelSources = (() => {
+        const map = new Map<string, string>();
+        const barrel = firstExistingFile(
+            path.join(materialRoot, "index.mjs"),
+            path.join(materialRoot, "index.js")
+        );
+        if (!barrel) return map;
+        let code: string;
+        try {
+            code = readFileSync(barrel, "utf8");
+        } catch {
+            return map;
+        }
+        // 每行形如 `export { default as X } from "./X";` 或 `export * from "./X";`
+        for (const line of code.split("\n")) {
+            const from = line.match(/from\s*["'](\.[^"']+)["']/);
+            if (!from) continue;
+            const names = clauseNames(line);
+            for (const name of names) map.set(name, from[1]);
+        }
+        return map;
+    })();
+
+    const visitMaterialPath = (sub: string): void => {
+        const direct = resolveMaterial(sub);
+        if (direct) {
+            visitFile(direct);
+            return;
+        }
+        // 按名猜不到 → 查 barrel 转发（如 useTheme 实际在 styles/ 下）
+        const forwarded = barrelSources.get(sub.split("/")[0]);
+        if (forwarded) {
+            const resolved = resolveMaterial(forwarded.replace(/^\.\//, ""));
+            if (resolved) visitFile(resolved);
+        }
+    };
+
+    const handleSpec = (file: string, spec: string, names: string[]): void => {
+        if (spec === "@mui/material") {
+            for (const name of names) visitMaterialPath(name);
+        } else if (spec.startsWith("@mui/material/")) {
+            visitMaterialPath(spec.slice("@mui/material/".length));
+        } else if (spec.startsWith("@mui/icons-material/")) {
+            icons.add(spec.slice("@mui/icons-material/".length).split("/")[0]);
+        } else if (spec === "@mui/icons-material") {
+            for (const name of names) icons.add(name);
+        } else if (spec.startsWith(".")) {
+            // node_modules 里的相对导入（MUI 组件间互引）：只追仍在 @mui/material
+            // 包内的，这正是「组件 → 内部件」的传递闭包；src 文件的相对导入由
+            // walkSrc 自己追（限定在 srcRoot 里）
+            if (file.startsWith(materialRoot + path.sep)) {
+                const resolved = resolveLocal(file, spec);
+                if (resolved && resolved.startsWith(materialRoot)) visitFile(resolved);
+            }
+        }
+        // 其它 bare specifier（react / @emotion / 业务依赖）不追：它们不引出新的
+        // src 模块，也不参与 mui-core 归桶（rolldown 会把它们放到正确的共享位置）
+    };
+
+    const visitFile = (file: string): void => {
+        if (visited.has(file)) return;
+        visited.add(file);
+        markMaterialFile(file);
+        let code: string;
+        try {
+            code = readFileSync(file, "utf8");
+        } catch {
+            return;
+        }
+        // 剥注释：注释里的 `from "./x"` 不是导入（守卫扫源码的老规矩）
+        code = code.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/^[ \t]*\/\/.*$/gm, " ");
+        for (const re of [STATIC_IMPORT_RE, SIDE_EFFECT_RE]) {
+            re.lastIndex = 0;
+            for (const m of code.matchAll(re)) {
+                const isStatic = re === STATIC_IMPORT_RE;
+                const spec = (isStatic ? m[3] : m[1]) as string;
+                if (!spec) continue;
+                const names = isStatic ? [...clauseNames(m[1]), ...clauseNames(m[2])] : [];
+                handleSpec(file, spec, names);
+            }
+        }
+    };
+
+    const walkSrc = (file: string): void => {
+        if (visited.has(file)) return;
+        visited.add(file);
+        let code: string;
+        try {
+            code = readFileSync(file, "utf8");
+        } catch {
+            return;
+        }
+        code = code.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/^[ \t]*\/\/.*$/gm, " ");
+        for (const re of [STATIC_IMPORT_RE, SIDE_EFFECT_RE]) {
+            re.lastIndex = 0;
+            for (const m of code.matchAll(re)) {
+                const isStatic = re === STATIC_IMPORT_RE;
+                const spec = (isStatic ? m[3] : m[1]) as string;
+                if (!spec) continue;
+                const names = isStatic ? [...clauseNames(m[1]), ...clauseNames(m[2])] : [];
+                handleSpec(file, spec, names);
+                if (spec.startsWith(".")) {
+                    const resolved = resolveLocal(file, spec);
+                    if (resolved && resolved.startsWith(srcRoot)) walkSrc(resolved);
+                }
+            }
+        }
+    };
+
+    const mainEntry = path.join(srcRoot, "main.tsx");
+    if (existsSync(mainEntry)) walkSrc(mainEntry);
+    return { material, icons };
+}
+
+const FIRST_SCREEN_MUI = scanFirstScreenMui();
+
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react(), cloudflare(), precacheManifest()],
@@ -169,40 +363,11 @@ export default defineConfig({
           if (!id.includes("node_modules")) return;
 
           /**
-           * 只沿**静态** import 边向上走，看能不能走到目标模块。
-           *
-           * 为什么不把 dynamicImporters 也算进来（下面 sandbox 那条老规则是算的）：
-           * 这里要问的是「打开页面时这个模块会不会被立刻执行」，而动态 import 的那条边
-           * 恰恰意味着「先不加载」——算进来就会把懒加载专用的一堆东西误判成首屏需要。
+           * 「懒加载边界」注：rolldown 在 manualChunks 回调期间给的 `importers`
+           * 里混着动态导入者（图还没定型）—— 所以**任何**靠沿 importers 上溯来判
+           * 「首屏 / 懒加载」的启发式都不可靠，2026-10-17 已废弃（见下面 MUI 分支
+           * 的注释）。现在只在沙箱判定里用 importers / dynamicImporters。
            */
-          const reaches = (startId: string, isGoal: (moduleId: string, info: ModuleInfoLike | null) => boolean) => {
-              const seen = new Set<string>();
-              const stack: string[] = [startId];
-              while (stack.length) {
-                  const moduleId = stack.pop()!;
-                  if (seen.has(moduleId)) continue;
-                  seen.add(moduleId);
-                  const info = getModuleInfo(moduleId);
-                  if (moduleId !== startId && isGoal(moduleId, info)) return true;
-                  for (const parent of info?.importers ?? []) stack.push(parent);
-              }
-              return false;
-          };
-
-          /**
-           * 「懒加载边界」：src 下的模块，且**有人动态 import 它**
-           * （比如 lazy(() => import("./SettingsDialog")) 里的那个文件）。
-           * 走到它就说明：从这个模块往上，至少有一条路径是「用户触发才加载」的。
-           *
-           * ⚠️ 为什么不反过来判「能不能走到 src/main.tsx」：实测那样会把 485 个
-           * MUI 模块全部判成首屏 —— 因为 rolldown 在 manualChunks 回调期间给的
-           * `importers` 里混着动态导入者（图还没定型），于是
-           * `Slider ← NotesPage ← NotesOverlay ← App(动态) ← main.tsx` 被当成一条
-           * 纯静态链。用 `dynamicImporters` 认边界则不受影响：它直接回答
-           * 「这个模块是不是某个 lazy() 的目标」。
-           */
-          const isLazyEntry = (moduleId: string, info: ModuleInfoLike | null) =>
-              /src[\\/]/.test(moduleId) && (info?.dynamicImporters?.length ?? 0) > 0;
           // 沙箱独占的传递依赖不能被兜底 vendor 拉回首屏。
           const visited = new Set<string>();
           let sandbox = false;
@@ -218,40 +383,39 @@ export default defineConfig({
           visit(id);
           if (sandbox && !main) return;
           if (/node_modules[\\/](react|react-dom|scheduler)[\\/]/.test(id)) return "react";
-            // ⚠️ 2026-10-12：这一条原来是 `return "mui"` —— 把所有 @mui/@emotion/
-            // @popperjs/@floating-ui 强制塞进同一个块。代价是**首屏白下载一大截**：
-            // 弹窗 / 抽屉 / 记事本专用的 MUI 组件也在这个块里，而入口 HTML 会
-            // modulepreload 整个块，用户一进页面就得把它们全下来并全执行。
+            // ⚠️ 2026-10-12：把 @mui/@emotion/@popperjs/@floating-ui 强制塞进同一个块
+            // 的代价是首屏白下载一大截（实测首屏 raw 721 → 513 KB）。
             //
-            // 实测（同一次构建，只改这一条）：
-            //   强制分块：index 225.8KB + preload mui 422.8KB → 首屏 raw 721KB
-            //   交回 Rollup：index 348.3KB（首屏真用到的 MUI 直接并进入口块），
-            //                弹窗专用的那些自动落进各自的 lazy chunk → 首屏 raw 513KB
-            // 全部 js 合计只从 7271.7KB 变到 7289.5KB（+0.24%），
-            // 也就是说几乎没有「重复打进多个 lazy 块」的代价。
+            // ⚠️ 2026-10-17（P2-2 性能排查）：中间态的「reaches 启发式 + 强制命名
+            // mui-lazy」也有致命伤 —— rolldown 在回调期给的 importers 混着动态导入边，
+            // 凡是「首屏 src 静态用到 + 任意弹窗也用到」的 MUI 组件（Button /
+            // Typography 这类）都被误判进 mui-lazy → 入口 chunk 静态依赖它 →
+            // index.html modulepreload 整块 417 KB，首屏关键路径白白多背一截。
             //
-            // 副作用：index 单文件变大了，所以体积预算（bundleBudget）按新口径
-            // 重新定过 —— 见那里的注释。判断首屏该看**总下载字节**，不是单个块。
+            // 现在按**源码层扫描出的首屏闭包**（见 scanFirstScreenMui）归桶：
+            //   - 首屏真用到的 @mui/material 组件 + 内部件 → mui-core 一块
+            //     （preload 一发命中、业务改动不失效、总请求不回弹）；
+            //   - 其余（弹窗专用组件、@mui/system、emotion、popper…）交回 rolldown
+            //     自然分包：首屏用的并进入口侧，弹窗专用的只被动态 import，
+            //     不会再出现在 index.html 的 preload 列表里；
+            //   - 每个模块仍只进一个块，总 JS 体积几乎不变（2026-10-12 实测 +0.24%）。
+            //
+            // ConfirmDialog 的离线可用性不受影响：precacheManifest 从 ConfirmDialog
+            // 块沿静态 imports 走，它依赖的 MUI 共享块会自然跟进核心清单（见上面
+            // ALWAYS_PRECACHE 的说明），不再需要按块名特判。
+            if (/node_modules[\\/]@mui[\\/]material[\\/]/.test(id)) {
+                const rest = id.split(/[\\/]@mui[\\/]material[\\/]/)[1] ?? "";
+                const rel = rest.split(/[\\/]/).join("/");
+                if (rel && FIRST_SCREEN_MUI.material.has(rel)) { return "mui-core"; }
+                return; // 懒加载树专用的组件 / 内部件：交回 rolldown 落 lazy 侧
+            }
+            if (/node_modules[\\/]@mui[\\/]icons-material[\\/]/.test(id)) {
+                const seg = (id.split(/[\\/]@mui[\\/]icons-material[\\/]/)[1] ?? "").replace(/\.(m|c)?js$/, "");
+                if (seg && FIRST_SCREEN_MUI.icons.has(seg)) { return "mui-core"; }
+                return;
+            }
             if (/node_modules[\\/](@mui|@emotion|@popperjs|@floating-ui)[\\/]/.test(id)) {
-                // 够不到任何 lazy 入口 → 首屏就要用，交回 Rollup：
-                // 它会自动并进入口块，用户不多发一个请求。
-                if (!reaches(id, isLazyEntry)) { return; }
-
-                // 二次确认框是**离线也必须能开**的（删除在离线队列里是允许的），
-                // 它走的是 dynamic import，但会被预缓存（见 precacheManifest 的
-                // ALWAYS_PRECACHE）。只有**它独占**的 MUI 依赖才单独成块（跟着进
-                // 预缓存清单）；被别的弹窗也用到的（Dialog / Modal / Fade …）一律
-                // 归下面的 lazy 大块 —— 否则那个块会涨到近 400 KB 还被首屏 preload，
-                // 等于把弹窗专用的东西又塞回首屏（实测首屏因此 842 → 950 KB）。
-                const isConfirmDialog = (moduleId: string) =>
-                    /src[\\/]components[\\/]ConfirmDialog\.tsx$/.test(moduleId);
-                const reachesOtherLazyEntry = reaches(
-                    id,
-                    (moduleId, info) => isLazyEntry(moduleId, info) && !isConfirmDialog(moduleId)
-                );
-                if (reachesOtherLazyEntry) { return "mui-lazy"; }
-                if (reaches(id, isConfirmDialog)) { return "mui-confirm"; }
-                return "mui-lazy";
+                return;
             }
             // markdown-it 必须单独成块。它**只**被 utils/markdownToReact 动态 import
             // （见那里的 loadParser），本来不进首屏；但下面这条兜底规则会把所有

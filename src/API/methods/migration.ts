@@ -66,7 +66,9 @@ import {
 //     只动「升级前落库、之后没再编辑过」的那批行；同样吃快路径。
 // 21 = site_tombstone（卡片删除墓碑，跨设备增量同步用）。新表同样吃快路径：
 //     老库建不出来 → /api/sites/changes 一律 0 条变更，删卡对其它设备不可见。
-export const SCHEMA_VERSION = "21";
+// 22 = idx_notes_user_order（notes(user_id, pinned, order_num, id) 列表排序覆盖索引）。
+//     索引步骤同样吃快路径：版本号不 +1 的话老库永远建不上这条索引（同 19 的先例）。
+export const SCHEMA_VERSION = "22";
 /** 版本号存在 configs 里的键名 */
 export const SCHEMA_VERSION_KEY = "schema.version";
 

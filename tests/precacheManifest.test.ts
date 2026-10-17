@@ -52,6 +52,48 @@ const LAZY_ONLY_MARKERS: Array<{ marker: string; of: string }> = [
     { marker: "nav-command-palette", of: "CommandPalette（按快捷键才打开）" },
 ];
 
+/**
+ * 弹窗专用 MUI 组件的样式标记（2026-10-17 性能排查 P2-2 守卫）。
+ *
+ * 这些组件只被懒加载树（NotesOverlay / 各设置弹窗）使用；它们一旦出现在
+ * index.html **modulepreload** 的块里，就说明分包把弹窗专用的东西又塞回首屏了
+ * ——上一版 mui-lazy 就是这么把整个 417KB 钉回首屏 preload 的。
+ * 记 Mui* 类名标记而不是块名：块名随分包策略变，样式标记跟着组件走。
+ */
+const LAZY_ONLY_MUI_MARKERS: Array<{ marker: string; of: string }> = [
+    { marker: "MuiSlider-root", of: "Slider（只在记事本懒加载树里用）" },
+    { marker: "MuiModal-root", of: "Modal（只被各弹窗用）" },
+    { marker: "MuiPopover-root", of: "Popover（只被菜单 / 弹窗用）" },
+];
+
+test("首屏 modulepreload 的块里没有懒加载专用组件的标记", t => {
+    const distClient = join(findProjectDir(), "dist", "client");
+    let html: string;
+    try {
+        html = readFileSync(join(distClient, "index.html"), "utf8");
+    } catch {
+        t.skip("没有构建产物，跳过（先跑 npm run build）");
+        return;
+    }
+    const preloaded = [...html.matchAll(/modulepreload" crossorigin href="(\/assets\/[^"]+\.js)"/g)].map(
+        m => m[1].replace(/^\/assets\//, "")
+    );
+    assert.ok(preloaded.length > 0, "index.html 里居然没有 modulepreload，构建产物不对");
+    const leaked: string[] = [];
+    for (const name of preloaded) {
+        const code = readFileSync(join(distClient, "assets", name), "utf8");
+        for (const m of [...LAZY_ONLY_MARKERS, ...LAZY_ONLY_MUI_MARKERS]) {
+            if (code.includes(m.marker)) leaked.push(`${m.of} → ${name}`);
+        }
+    }
+    assert.deepEqual(
+        leaked,
+        [],
+        `这些只该在用户触发后才下载的东西出现在了首屏 preload 的块里：${leaked.join("、")}。` +
+            `分包把懒加载专用的模块并进了首屏可达的块（参考 vite.config.ts 里 scanFirstScreenMui 的说明）`
+    );
+});
+
 test("首屏包里没有只该在触发后才出现的标记", t => {
     const assets = join(findProjectDir(), "dist", "client", "assets");
     let hit: string;

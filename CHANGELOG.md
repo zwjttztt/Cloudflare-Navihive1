@@ -6,6 +6,51 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。---
 
+## 2026-10-17（日）· 性能：全站性能排查落地 —— 笔记首拉摘要阀门提前生效 / 首屏 preload 拆分
+
+**要点**：全站性能排查（34 个 API 端点计时 + SQLite EXPLAIN + 前端产物盘点）确认两处
+真瓶颈并全部落地。① 数据库侧：`listNotes` 的真实排序是 `ORDER BY pinned DESC, order_num, id`，
+旧索引差 `id` 一列，万条级每次列表都要 `USE TEMP B-TREE FOR ORDER BY`（EXPLAIN 实测），
+补 `idx_notes_user_order` 复合索引（SCHEMA_VERSION 21→22，首次打开自动迁移）。
+② 前端侧：`index.html` 此前 modulepreload 整个 417KB 的 mui-lazy 大块（内含大量弹窗
+专用组件，Button/Typography 这类首屏组件被 rolldown 未定型的 importers 图误判进去了），
+现在改为在**配置期从 main.tsx 沿静态 import 源码扫描**出「首屏真正会执行的 @mui/material
+文件闭包」，归并成单一 mui-core 块（328KB）—— 首屏关键路径 **945.7 → 852.4 KB（-10%）**、
+请求数保持 6 个，弹窗专用 MUI（Slider/Modal/Popover…）只被动态 import，不再出现在
+preload 列表里。③ 笔记首拉：原来「首屏永远拉全文、下一轮才切摘要」，万条级首拉白拖
+几 MB；现在先探 `notes/count`（实测 ~1ms），超过 200 条首拉就带 `?fields=list` 走摘要，
+老部署没有 count 端点时优雅退回旧行为。
+
+- **P1-1 列表排序覆盖索引**（`src/API/methods/internals.ts` / `migration.ts`）：
+  `CREATE INDEX IF NOT EXISTS idx_notes_user_order ON notes(user_id, pinned, order_num, id)`。
+  EXPLAIN 实测：加索引前多账号路径 `USE TEMP B-TREE FOR LAST 2 TERMS OF ORDER BY`，
+  之后消失。⚠️ 排查时曾把排序误判成 `updated_at DESC`，回查 `notes.ts` 真实 SQL 后修正
+  —— 性能结论必须回查代码。守卫 `tests/noteSql.test.ts`：索引语句与版本号缺一即红。
+- **P2-2 首屏 preload 拆分**（`vite.config.ts` / `tests/precacheManifest.test.ts` /
+  `tests/bundleBudget.test.ts`）：
+  - 废弃「沿 rolldown importers 上溯判首屏」的启发式 —— manualChunks 回调期 importers
+    混着动态导入边（图未定型），Button 这类「首屏 + 弹窗都用」的组件必被误判。
+  - 新增 `scanFirstScreenMui()`：配置期从 `src/main.tsx` 只沿静态 import（`from` 与副作用
+    import；动态 `import()` 天然不跟）走源码图，@mui/material 按文件级记录闭包（按目录段
+    标会把 tree-shake 掉的兄弟文件拖进 preload，实测多背 40KB）；解析走 exports 的
+    **import 条件**（`.mjs`，`.js` 是 CJS 抓不到 re-export）；barrel 转发导出
+    （如 useTheme 实际在 styles/ 下）从包根 index.mjs 反查。归桶判错无害：集合外的
+    首屏模块 rolldown 本来就会并进它的静态导入者。
+  - mui-lazy / mui-confirm 块与 precacheManifest 的按名特判一并移除；ConfirmDialog 的
+    离线可用性改由核心清单沿 imports 行走自然覆盖（双向对齐测试守着）。
+  - 实测（同机 A/B）：首屏 raw 945.7 → 852.4 KB / gzip 307.5 → 280.1 KB，请求 6 → 6；
+    全部 JS 7287.7 → 7293.5 KB（+0.08%，无重复打包代价）。
+  - 守卫：`precacheManifest.test.ts` 新增「首屏 modulepreload 的块里没有懒加载专用组件
+    标记」（MuiSlider-root / MuiModal-root / MuiPopover-root，改回强制大块必红）；
+    bundleBudget 基线更新为 852.4 / 280.1，预算同步收紧到 900 / 300（余量 ≥5%）。
+- **P2-1 笔记首拉先 count 再决定摘要**（`src/hooks/useNotes.ts` / `tests/notes.dom.test.tsx`）：
+  `reload()` 首拉前先调可选的 `countNotes()`（只探一次，失败/缺失都标记已探），
+  count > 200 直接带 `?summary` 拉摘要列表；之后仍按「上次拉到的条数」动态切档。
+  守卫三条：count>200 首拉即摘要 / 无 countNotes 退回全文 / 探测 404 不炸首拉也不弹
+  「加载记事本失败」。
+
+---
+
 ## 2026-10-17（日）· 修复：从网盘恢复仍报 this.request / 笔记页版本号压住正文
 
 **要点**：昨天那版修完 `zipBase64` 透传后，ZIP 备份终于能进「解包 → 导入」链路了；
