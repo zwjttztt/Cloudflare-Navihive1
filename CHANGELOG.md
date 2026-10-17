@@ -15,11 +15,21 @@
 等）都 404、`/index.html` 被 307 到 `/`，均是 Pages 缺 `_redirects` 的典型表现。
 后果是**别人点开分享链接直接 404**，而自己从首页进站点一切正常，所以极难被发现。
 
-修复：新增 `public/_redirects`，对 `/s/*` 与 `/sg/*` 两个前缀回退到 `/index.html 200`。
-之所以不用通行的 `/* /index.html 200`——本项目只有这两个纯前端路由，通配会把不该回退的
-路径（含接口）也吞成 HTML，风险大于收益。Vite 会把该文件原样拷进 `dist/client/`（已验证）。
+**⚠️ 上述"Pages 形态"的判断是错的，对应的修复已撤回。** 我据「无扩展名路径 404、
+`/index.html` 被 307」判定为 Pages，于是加了 `public/_redirects`（`/s/*`、`/sg/*` →
+`/index.html 200`）。结果 Workers Builds 直接拒绝部署，构建日志给出：
 
-（同批次测试还确认了两处待修行为，见测试报告：非法/空 JSON body 返回 500 而非 400；
+    Invalid _redirects configuration:
+      Line 15/16: Infinite loop detected in this rule.  [code: 100324]
+
+—— Workers 静态资产会把 `/index.html` 的 `.html` / `/index` 剥掉后再次触发同一规则，
+构成死循环。更根本的是**这个文件本就多余**：myhp 实际是 **Workers Builds**（日志里是
+`npx wrangler deploy` + `dist/cloudflare_navihive1/wrangler.json` + D1 绑定 `navigation-db`），
+而那份生成的配置里**一直有** `"not_found_handling": "single-page-application"`（自 2025-04 起）。
+推论随之修正：**myhp 一直在随推送自动部署；v3.2.1 之后之所以"没更新"，是被这个非法文件卡死。**
+处置：删除 `public/_redirects` 先恢复部署通道；分享页 404 另案排查，不再靠 _redirects 兜。
+
+（同批次测试还确认了两处待修行为：非法/空 JSON body 返回 500 而非 400；
 `POST /` 在两环境的响应码不一致 404 vs 405。）
 
 ---
