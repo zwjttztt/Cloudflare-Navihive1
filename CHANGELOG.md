@@ -6,7 +6,7 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。---
 
-## 2026-10-17（日）· 修复：公开分享页在 Cloudflare(Pages) 形态下 404（两环境首次对照测试发现）
+## 2026-10-18（日）· 修复：公开分享页在 Cloudflare(Pages) 形态下 404（两环境首次对照测试发现）
 
 **背景**：对 home.zwjttzt.com（VPS 自托管 / SQLite）与 myhp.zwjttzt.com（Cloudflare / D1）
 做逐项对照测试时发现：**home 上 `/s/<token>` 与 `/sg/<token>` 回 index.html（200），myhp 上一律 404**。
