@@ -4174,7 +4174,7 @@ test("数据页导入带附件 ZIP 时进度条要报出「上传附件」阶段
         uploadApi: {
             uploadAttachment: async (file: File) => {
                 uploaded.push(file.name);
-                await new Promise(r => setTimeout(r, 60));
+                await new Promise(r => setTimeout(r, 60 * uploaded.length)); // 递增延迟：并发下第1个60ms、第2个120ms完成，「上传附件」窗口够宽
                 return { id: "new-" + uploaded.length, url: "http://x/" + file.name };
             },
         } as never,
@@ -5907,7 +5907,7 @@ test("从网盘恢复带附件 ZIP 时进度条要报出「上传附件」阶段
         uploadApi: {
             uploadAttachment: async (file: File) => {
                 uploaded.push(file.name);
-                await new Promise(r => setTimeout(r, 60));
+                await new Promise(r => setTimeout(r, 60 * uploaded.length)); // 递增延迟：并发下第1个60ms、第2个120ms完成，「上传附件」窗口够宽
                 return { id: "new-" + uploaded.length, url: "http://x/" + file.name };
             },
         } as never,

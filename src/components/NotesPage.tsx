@@ -2115,15 +2115,22 @@ export default function NotesPage({
                 }
                 const attachmentEntries = visibleEntries.filter(e => !/\.md$/i.test(e.path) && e.data.length);
                 onProgress?.({ phase: "解包备份", current: 0, total: 0 });
+                if (attachmentEntries.length && !uploadApi) throw new Error("ZIP 含附件，需先配置附件上传能力");
+                // 附件之间互不依赖（路径→url 各写各的），并发回传比串行快数倍 ——
+                // 附件一多时这正是「恢复太慢」的大头。并发 6：再多对单线用户带宽没增益。
                 let uploadedCount = 0;
-                for (const entry of attachmentEntries) {
-                    if (!uploadApi) throw new Error("ZIP 含附件，需先配置附件上传能力");
-                    const uploaded = await uploadApi.uploadAttachment(new File([entry.data.slice().buffer], entry.path.split("/").pop()!));
-                    if (!uploaded?.url) throw new Error("附件上传失败：" + entry.path);
-                    attachments.set(entry.path, uploaded.url);
-                    uploadedCount += 1;
-                    onProgress?.({ phase: "上传附件", current: uploadedCount, total: attachmentEntries.length });
-                }
+                let next = 0;
+                const uploadWorker = async () => {
+                    while (next < attachmentEntries.length) {
+                        const entry = attachmentEntries[next++];
+                        const uploaded = await uploadApi!.uploadAttachment(new File([entry.data.slice().buffer], entry.path.split("/").pop()!));
+                        if (!uploaded?.url) throw new Error("附件上传失败：" + entry.path);
+                        attachments.set(entry.path, uploaded.url);
+                        uploadedCount += 1;
+                        onProgress?.({ phase: "上传附件", current: uploadedCount, total: attachmentEntries.length });
+                    }
+                };
+                await Promise.all(Array.from({ length: Math.min(6, attachmentEntries.length) }, uploadWorker));
                 const tags: NoteTag[] = [];
                 const tagIds = new Map<string, number>();
                 const noteTags: Record<string, number[]> = {};
@@ -2192,28 +2199,34 @@ export default function NotesPage({
                 return name.indexOf("__") > 0;
             });
             let done = 0;
+            let next = 0;
             onProgress?.({ phase: "解包备份", current: 0, total: 0 });
-            for (const entry of attachmentEntries) {
-                const name = entry.path.slice("attachments/".length);
-                const sep = name.indexOf("__");
-                if (sep <= 0) continue;
-                const oldId = name.slice(0, sep);
-                const filename = name.slice(sep + 2);
-                if (!uploadApi) {
-                    skipped += 1;
-                } else {
-                    try {
-                        const uploaded = await uploadApi.uploadAttachment(
-                            new File([entry.data.slice().buffer], filename || "file")
-                        );
-                        if (uploaded?.id && uploaded.id !== oldId) idMap.set(oldId, uploaded.id);
-                    } catch {
+            // 同上：附件回传并发 6（idMap 各写各的键，无顺序依赖）
+            const uploadWorker = async () => {
+                while (next < attachmentEntries.length) {
+                    const entry = attachmentEntries[next++];
+                    const name = entry.path.slice("attachments/".length);
+                    const sep = name.indexOf("__");
+                    if (sep <= 0) { done += 1; continue; }
+                    const oldId = name.slice(0, sep);
+                    const filename = name.slice(sep + 2);
+                    if (!uploadApi) {
                         skipped += 1;
+                    } else {
+                        try {
+                            const uploaded = await uploadApi.uploadAttachment(
+                                new File([entry.data.slice().buffer], filename || "file")
+                            );
+                            if (uploaded?.id && uploaded.id !== oldId) idMap.set(oldId, uploaded.id);
+                        } catch {
+                            skipped += 1;
+                        }
                     }
+                    done += 1;
+                    onProgress?.({ phase: "上传附件", current: done, total: attachmentEntries.length });
                 }
-                done += 1;
-                onProgress?.({ phase: "上传附件", current: done, total: attachmentEntries.length });
-            }
+            };
+            await Promise.all(Array.from({ length: Math.min(6, attachmentEntries.length) }, uploadWorker));
 
             // 2) 正文里的旧 id 换成新 id（只换真发生变化的那些）
             if (idMap.size > 0 && Array.isArray(payload.notes)) {

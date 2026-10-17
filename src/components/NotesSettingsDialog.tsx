@@ -484,6 +484,16 @@ export default function NotesSettingsDialog({
         if (!cur?.onNotesBackupFetch || restoreBusy) return;
         if (!cur.onImportNotes && !cur.onImportFile) return;
         setRestoreBusy(true);
+        // 下载阶段前端拿不到百分比（服务端从 WebDAV 整包下完才一次性返回），
+        // 但大备份能等十几秒——挂个秒表让用户知道没卡死，比一根纹丝不动的不确定条强。
+        const t0 = Date.now();
+        const tick = window.setInterval(() => {
+            setRestoreProgress(p =>
+                p && p.phase.startsWith("下载备份")
+                    ? { ...p, phase: `下载备份…（${Math.round((Date.now() - t0) / 1000)} 秒）` }
+                    : p
+            );
+        }, 1000);
         try {
             setRestoreProgress({ phase: "下载备份", current: 0, total: 0 });
             const r = await cur.onNotesBackupFetch(filename, password);
@@ -529,6 +539,7 @@ export default function NotesSettingsDialog({
         } catch (error) {
             setRemoteError(error instanceof Error ? error.message : "恢复失败");
         } finally {
+            window.clearInterval(tick);
             setRestoreBusy(false);
             setRestoreProgress(null);
         }
