@@ -1,9 +1,12 @@
 // tests/accountDialog.dom.test.tsx
-// 账号管理弹窗 739 行，之前零覆盖。这里盯的是几条「改坏了不会报错、但会坑到人」的分支：
+// 账号管理弹窗，之前零覆盖。这里盯的是几条「改坏了不会报错、但会坑到人」的分支：
 // 改密按钮的脏检查（没填新账号/新密码就不该能提交）、生成私钥要先验当前密码、
-// 沉睡治理阈值填 0 时的本地拦截、以及非所有者不该看到账号清单。
+// 邀请码的显示时机，以及「登录设备」一节的渲染。
 //
-// 组件所有值都由父组件持有（auth / invite / accounts），所以用一个 Harness 持有状态，
+// 另有一条回归守卫：「不活跃停用」与「注销当前账号」两个功能 2026-10-17 按站点
+// 所有者要求整体关闭（入口 + cron 自动扫描一并停），用例钉住它们不再出现。
+//
+// 组件所有值都由父组件持有（auth / invite / sessions），所以用一个 Harness 持有状态，
 // 尽量贴近 App 里的真实用法。
 
 import { test } from "node:test";
@@ -11,7 +14,7 @@ import assert from "node:assert/strict";
 import { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import AccountDialog, { type AccountAuthDraft } from "../src/components/AccountDialog";
-import type { AccountInfo, InviteInfo } from "../src/API/http";
+import type { InviteInfo, SessionInfo } from "../src/API/http";
 
 if (typeof globalThis.localStorage === "undefined") {
     Object.defineProperty(globalThis, "localStorage", {
@@ -21,20 +24,17 @@ if (typeof globalThis.localStorage === "undefined") {
     });
 }
 
-const DAY = 24 * 60 * 60;
 const now = () => Math.floor(Date.now() / 1000);
 
-function makeAccount(over: Partial<AccountInfo> = {}): AccountInfo {
+function makeSession(over: Partial<SessionInfo> = {}): SessionInfo {
     return {
-        id: 7,
-        username: "alice",
-        role: "user",
-        status: "active",
-        lastActiveAt: now() - 3 * DAY,
-        disabledAt: null,
-        createdAt: now() - 100 * DAY,
-        willDisableAt: now() + 20 * DAY,
-        willDeleteAt: null,
+        jti: "jti-1",
+        userAgent: "Mozilla/5.0 (Windows NT 10.0) Chrome/141.0.0.0 Safari/537.36",
+        ip: "1.2.3.4",
+        createdAt: now() - 3600,
+        lastSeenAt: now() - 60,
+        expiresAt: now() + 30 * 24 * 3600,
+        current: false,
         ...over,
     };
 }
@@ -44,9 +44,8 @@ type Calls = {
     saves: number;
     generateKeys: string[];
     invites: number;
-    exempts: number[];
-    policies: Array<{ disableDays: number; graceDays: number }>;
-    deletes: number;
+    revoked: string[];
+    revokeOthers: number;
     closes: number;
 };
 
@@ -55,9 +54,8 @@ type Opts = {
     recoveryKeyConfigured?: boolean;
     generateResult?: { success: boolean; message?: string };
     inviteResult?: { success: boolean; message?: string; code?: string; expiresAt?: number };
-    accounts?: AccountInfo[];
-    withDelete?: boolean;
-    withPolicy?: boolean;
+    sessions?: SessionInfo[];
+    withSessions?: boolean;
     withInvite?: boolean;
 };
 
@@ -71,9 +69,8 @@ function emptyCalls(): Calls {
         saves: 0,
         generateKeys: [],
         invites: 0,
-        exempts: [],
-        policies: [],
-        deletes: 0,
+        revoked: [],
+        revokeOthers: 0,
         closes: 0,
     };
 }
@@ -118,14 +115,9 @@ function Harness(o: Opts) {
                           return r;
                       }
             }
-            onDeleteAccount={o.withDelete ? () => calls.deletes++ : undefined}
-            accounts={o.accounts}
-            onExemptUser={uid => calls.exempts.push(uid)}
-            inactivePolicy={o.withPolicy === false ? undefined : { disableDays: 180, graceDays: 30 }}
-            onSaveInactivePolicy={async p => {
-                calls.policies.push(p);
-                return { success: true };
-            }}
+            sessions={o.withSessions === false ? undefined : (o.sessions ?? [makeSession()])}
+            onRevokeSession={jti => calls.revoked.push(jti)}
+            onRevokeOthers={() => calls.revokeOthers++}
         />
     );
 }
@@ -159,15 +151,6 @@ const buttonExact = (text: string) =>
     );
 
 const inputById = (id: string) => document.querySelector<HTMLInputElement>(`#${id}`);
-
-/** 按 MUI 的 label 找输入框（label 后面可能带「*」，比对前抹掉） */
-function inputByLabel(label: string): HTMLInputElement | null {
-    const norm = (s: string) => (s ?? "").trim().replace(/\s*\*\s*$/, "").trim();
-    const fc = [...document.querySelectorAll(".MuiFormControl-root")].find(
-        el => norm(el.querySelector("label")?.textContent ?? "") === norm(label)
-    );
-    return fc ? fc.querySelector("input") : null;
-}
 
 /** 弹窗正文里所有可见文字（两个 Dialog 都会挂到 body 上，一起搜） */
 const pageText = () => document.body.textContent ?? "";
@@ -319,75 +302,58 @@ test("账号：邀请码生成成功后显示码本身，失败只显示原因",
     assert.equal(pageText().includes("A2BC3DEF"), false, "失败时不该显示任何码");
 });
 
-test("账号：非所有者看不到账号清单与沉睡治理", () => {
+test("账号：登录设备一节列出设备、标出当前这台、别的可踢", () => {
     render({
-        currentUser: { username: "alice", role: "user" },
-        accounts: [makeAccount()],
-    });
-    assert.equal(pageText().includes("账号与沉睡治理"), false, "账号清单只有所有者能看");
-    assert.equal(button("重新启用"), undefined);
-});
-
-test("账号：所有者的清单里只给已停用的账号「重新启用」", () => {
-    render({
-        accounts: [
-            makeAccount({ id: 7, username: "alice", status: "active" }),
-            makeAccount({
-                id: 8,
-                username: "bob",
-                status: "disabled",
-                disabledAt: now() - 5 * DAY,
-                willDisableAt: null,
-                willDeleteAt: now() + 25 * DAY,
-            }),
+        sessions: [
+            makeSession({ jti: "jti-a", current: true, ip: "1.2.3.4" }),
+            makeSession({ jti: "jti-b", userAgent: "Mozilla/5.0 (iPhone) Version/17.4 Safari/604.1", ip: "5.6.7.8" }),
         ],
     });
-    assert.ok(pageText().includes("账号与沉睡治理"), "所有者应该看得到这一节");
-    assert.ok(pageText().includes("bob"));
-    assert.ok(pageText().includes("已停用"), "停用账号要标出状态与倒计时");
+    assert.ok(pageText().includes("登录设备"), "有设备时要渲染这一节");
+    assert.ok(pageText().includes("（当前设备）"), "当前这台要标出来");
+    assert.ok(pageText().includes("1.2.3.4"), "设备要带 IP");
+    assert.ok(pageText().includes("5.6.7.8"), "第二台设备也要在");
 
-    const revive = [...document.querySelectorAll("button")].filter(
-        b => (b.textContent ?? "").trim() === "重新启用"
+    // 当前这台不给踢（踢了等于把自己踢下线），另一台给
+    const kicks = [...document.querySelectorAll("button")].filter(
+        b => (b.textContent ?? "").trim() === "踢下线"
     );
-    assert.equal(revive.length, 1, "只有 bob 是停用的，不该给 alice 也来一个按钮");
-    click(revive[0]);
-    assert.deepEqual(calls.exempts, [8]);
+    assert.equal(kicks.length, 1, "只有非当前设备有「踢下线」");
+    click(kicks[0]);
+    assert.deepEqual(calls.revoked, ["jti-b"], "踢的必须是非当前那台");
+
+    const revokeOthers = [...document.querySelectorAll("button")].find(
+        b => (b.textContent ?? "").trim() === "退出其它设备"
+    );
+    assert.ok(revokeOthers, "要有「退出其它设备」入口");
+    assert.equal(revokeOthers!.disabled, false, "有其它设备时不该置灰");
+    click(revokeOthers!);
+    assert.equal(calls.revokeOthers, 1);
 });
 
-test("账号：沉睡阈值只展示不在这儿改（编辑入口统一在网站设置）", async () => {
-    // 成员与治理整块只在「所有者 + 有账号清单」时才渲染，所以这里必须带上 accounts
-    render({ accounts: [makeAccount()] });
-
-    // 阈值显示的是父组件（服务端）读回来的值
-    const disableInput = inputByLabel("多久没登录就停用（天）");
-    const graceInput = inputByLabel("停用后保留多久再清除（天）");
-    assert.ok(disableInput, "应显示停用阈值");
-    assert.ok(graceInput, "应显示清除宽限期");
-    assert.equal(disableInput!.value, "180");
-    assert.equal(graceInput!.value, "30");
-
-    // 两个输入框都是只读，且不再有「保存阈值」按钮 —— 改配置的入口只有「网站设置 → 数据保留」一处
-    assert.equal(disableInput!.disabled, true, "停用阈值应为只读");
-    assert.equal(graceInput!.disabled, true, "清除宽限期应为只读");
-    assert.equal(button("保存阈值"), undefined, "这里不该再提供保存阈值的按钮");
-    assert.ok(
-        pageText().includes("网站设置 → 数据保留"),
-        "要说明去哪儿改这两个天数"
+test("账号：没有其它设备时「退出其它设备」置灰但保留入口", () => {
+    render({ sessions: [makeSession({ current: true })] });
+    const revokeOthers = [...document.querySelectorAll("button")].find(
+        b => (b.textContent ?? "").trim() === "退出其它设备"
     );
-
-    // 阈值不再往父组件回写（onSaveInactivePolicy 这一段已经没人调了）
-    assert.equal(calls.policies.length, 0, "这一页不该再提交阈值");
-    await flush();
+    assert.ok(revokeOthers, "入口要在，否则用户会以为没有这个功能");
+    assert.equal(revokeOthers!.disabled, true, "没有其它设备可踢时置灰");
 });
 
-test("账号：不传 onDeleteAccount 就不给注销入口（单账号部署不该能把自己删了）", () => {
-    render({ withDelete: false });
-    assert.equal(button("注销当前账号"), undefined);
+// ---------------- 回归守卫：两个功能已按站点所有者要求关闭（2026-10-17） ----------------
 
-    cleanup();
-    render({ withDelete: true });
-    const del = button("注销当前账号")!;
-    assert.ok(del);
-    click(del);
-    assert.equal(calls.deletes, 1, "注销只负责触发，二次确认交给父组件");
+test("账号：「注销当前账号」入口已移除（单账号部署不该能把自己删了）", () => {
+    render();
+    assert.equal(button("注销当前账号"), undefined, "注销入口必须不再出现");
+    assert.equal(pageText().includes("注销账号"), false, "整节都不该渲染");
+});
+
+test("账号：「不活跃停用 / 沉睡治理」整节已移除", () => {
+    render();
+    assert.equal(pageText().includes("账号与沉睡治理"), false, "治理节必须不再出现");
+    assert.equal(pageText().includes("沉睡"), false, "相关文案一并清掉");
+    assert.equal(button("立即扫描"), undefined, "手动扫描入口不再有");
+    assert.equal(button("重新启用"), undefined, "豁免入口不再有");
+    // 顶部说明也不再提「注销 / 站点治理」
+    assert.equal(pageText().includes("再往下是站点治理"), false);
 });

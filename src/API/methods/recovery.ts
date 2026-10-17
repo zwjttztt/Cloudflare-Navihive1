@@ -76,7 +76,8 @@ export const recoveryImpl: RecoveryApi = {
 
     /**
      * 解除停用：状态恢复 active、清掉停用时间，并把活跃时间刷成现在。
-     * 活跃时间必须刷 —— 沉睡扫描每周都跑，不刷的话下周还会被判成沉睡账号。
+     * 活跃时间必须刷 —— 否则账号一恢复就又顶着一段很久以前的活跃时间，
+     * 治理判定（沉睡扫描已下线，保留此口径备恢复）会立刻再判它一次。
      */
     reactivateUser: async function (this: NavigationAPI, userId: number): Promise<void> {
         try {

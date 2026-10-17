@@ -1,6 +1,6 @@
 // tests/accountSession.dom.test.tsx
-// useAccountSession（604 行，全仓最大的 hook）的用例：注册 / 登录 / 登出 / 恢复密钥 /
-// 注销账号这几条路上，发生的事和**没发生的事**。
+// useAccountSession（全仓最大的 hook）的用例：注册 / 登录 / 登出 / 恢复密钥 /
+// 会话踢线这几条路上，发生的事和**没发生的事**。
 //
 // 这里最有价值的几条都是「防串号 / 防静默失败」：
 // - 登录接口 200 但 cookie 没存上 —— 必须明确报错并留在登录页，否则界面闪一下就弹回来，
@@ -8,6 +8,8 @@
 // - 登录失败只在表单内提示 —— 弹全局 toast 的话，提示会残留到下一次成功登录之后；
 // - 登出要清干净 —— 邀请码、恢复密钥状态、批量多选态留着，换个人登录就看到了上一个人的东西；
 // - 生成恢复密钥必须「先落库成功、再下载私钥」—— 反过来会出现私钥存了但服务器不认。
+//
+// （注销账号 / 沉睡治理 / 账号清单 2026-10-17 随功能关闭一并删除。）
 
 import { test, afterEach } from "node:test";
 import assert from "node:assert/strict";
@@ -15,7 +17,7 @@ import { useRef, useState } from "react";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { useAccountSession } from "../src/hooks/useAccountSession";
-import type { AccountInfo, SessionInfo } from "../src/API/http";
+import type { SessionInfo } from "../src/API/http";
 
 type Params = Parameters<typeof useAccountSession>[0];
 type Api = Params["api"];
@@ -70,7 +72,6 @@ interface Options {
     /** fetchData 抛出的错误 */
     fetchError?: unknown;
     registerResult?: { success: boolean; message?: string; username?: string };
-    deleteAccountResult?: { success: boolean; message?: string };
     recoveryKeyResult?: { success: boolean; message?: string };
     /** 让 api.login 直接抛 */
     loginThrows?: boolean;
@@ -101,7 +102,6 @@ function makeApi(o: Options, log: Log): Api {
         getSessions: async () => [] as SessionInfo[],
         revokeSession: async () => ({ success: true }),
         revokeOtherSessions: async () => ({ success: true, revoked: 2 }),
-        deleteAccount: async () => o.deleteAccountResult ?? { success: true, message: "账号已注销" },
         getRecoveryStatus: async () => {
             log.recoveryCalls++;
             return { configured: false };
@@ -327,32 +327,6 @@ test("注册失败：返回服务端原因，不切进应用", async () => {
     assert.equal(state().authed, false);
 });
 
-// ---- 注销账号 ----
-
-test("注销账号：不填密码直接拦下，不调接口", async () => {
-    const log = emptyLog();
-    mount(<Harness log={log} o={{ startAuthenticated: true }} />);
-    const res = await a().handleDeleteAccount();
-    assert.deepEqual(res, { success: false, message: "请输入当前密码以确认注销" });
-});
-
-test("注销账号成功：回到登录页、清空数据、清掉记住的登录名", async () => {
-    const log = emptyLog();
-    mount(<Harness log={log} o={{ startAuthenticated: true }} />);
-    await run(() => a().setDeleteAccountPassword("pw"));
-
-    const res = await a().handleDeleteAccount();
-    await flush();
-
-    assert.equal(res.success, true);
-    assert.equal(state().authed, false);
-    assert.equal(state().authRequired, true);
-    assert.ok(log.groups.some(g => Array.isArray(g) && g.length === 0));
-    assert.ok(log.dataErrors.some(m => m.includes("账号已注销")));
-    assert.equal(a().deleteAccountOpen, false);
-    assert.equal(a().deleteAccountPassword, "");
-});
-
 // ---- 恢复密钥 ----
 
 test("生成恢复密钥：公钥没落库成功就不下载私钥（否则会出现私钥存了但服务器不认）", async () => {
@@ -435,81 +409,6 @@ test("退出其它设备：把退掉的台数说清楚", async () => {
     await run(() => a().handleRevokeOthers());
     await flush();
     assert.ok(log.notifies.some(n => n.includes("2 台")), `实际：${log.notifies}`);
-});
-
-// ---- 沉睡账号扫描（走 fetch，需要打桩）----
-
-test("手动扫描沉睡账号：成功时把停用了多少、清除了多少报出来", async () => {
-    const log = emptyLog();
-    const realFetch = globalThis.fetch;
-    globalThis.fetch = (async () =>
-        new Response(JSON.stringify({ success: true, disabled: 2, deleted: 1 }), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-        })) as typeof fetch;
-    try {
-        mount(<Harness log={log} o={{ startAuthenticated: true }} />);
-        const res = await a().handleSweepInactive();
-        assert.deepEqual(res, { success: true, disabled: 2, deleted: 1 });
-    } finally {
-        globalThis.fetch = realFetch;
-    }
-});
-
-test("手动扫描：响应 500 但 body 里写了 success 也不算成功", async () => {
-    const log = emptyLog();
-    const realFetch = globalThis.fetch;
-    globalThis.fetch = (async () =>
-        new Response(JSON.stringify({ success: true, disabled: 9 }), {
-            status: 500,
-            headers: { "Content-Type": "application/json" },
-        })) as typeof fetch;
-    try {
-        mount(<Harness log={log} o={{ startAuthenticated: true }} />);
-        const res = await a().handleSweepInactive();
-        assert.equal(res.success, false);
-    } finally {
-        globalThis.fetch = realFetch;
-    }
-});
-
-test("重新启用账号：失败时把服务端原因转述出来", async () => {
-    const log = emptyLog();
-    const realFetch = globalThis.fetch;
-    globalThis.fetch = (async () =>
-        new Response(JSON.stringify({ success: false, message: "该账号已被清除" }), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-        })) as typeof fetch;
-    try {
-        mount(<Harness log={log} o={{ startAuthenticated: true }} />);
-        await run(() => a().handleExemptUser(3));
-        await flush();
-        assert.ok(log.notifies.some(n => n.includes("已被清除")), `实际：${log.notifies}`);
-    } finally {
-        globalThis.fetch = realFetch;
-    }
-});
-
-test("账号清单只有 owner 拉得到（普通账号不发起请求）", async () => {
-    const log = emptyLog();
-    const realFetch = globalThis.fetch;
-    let called = 0;
-    globalThis.fetch = (async () => {
-        called++;
-        return new Response(JSON.stringify({ success: true, users: [] as AccountInfo[] }), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-        });
-    }) as typeof fetch;
-    try {
-        mount(<Harness log={log} o={{ me: { id: 5, username: "u", role: "user" } }} />);
-        await run(() => a().fetchAccountList());
-        await flush();
-        assert.equal(called, 0, "普通账号不该去拉 /api/users");
-    } finally {
-        globalThis.fetch = realFetch;
-    }
 });
 
 // ---- 启动：bootstrap?full=1 把身份一起带回来时，省掉那两个请求 ----

@@ -46,8 +46,6 @@ function baseConfigs(over: Record<string, string> = {}): Record<string, string> 
         "site.thumbApi": "",
         "site.customCss": "",
         "retention.days": "7",
-        "inactive.disableDays": "",
-        "inactive.deleteGraceDays": "",
         ...over,
     };
 }
@@ -200,7 +198,7 @@ const sliders = () => [...document.querySelectorAll(".MuiSlider-root")];
 
 test.afterEach(cleanup);
 
-test("设置：站点所有者看不到「外观按账号保存」提示，数据保留三项可编辑", () => {
+test("设置：站点所有者看不到「外观按账号保存」提示，数据保留可编辑", () => {
     render({ isSiteOwner: true });
     assert.equal(
         alerts().some(t => t.includes("外观按账号保存")),
@@ -208,12 +206,13 @@ test("设置：站点所有者看不到「外观按账号保存」提示，数�
         "所有者不该看到这条按账号保存的说明"
     );
     assert.equal(alerts().some(t => t.includes("只有站点所有者可以修改")), false);
-    for (const id of ["retention-days", "inactive-disable-days", "inactive-grace-days"]) {
-        assert.equal(inputById(id)?.disabled, false, `${id} 对所有者应该可编辑`);
-    }
+    // 沉睡治理两个阈值 2026-10-17 随功能下线，数据保留只剩审计与回收站这一项
+    assert.equal(inputById("retention-days")?.disabled, false, "retention-days 对所有者应该可编辑");
+    assert.equal(inputById("inactive-disable-days"), null, "沉睡停用阈值入口已移除");
+    assert.equal(inputById("inactive-grace-days"), null, "沉睡宽限期入口已移除");
 });
 
-test("设置：非所有者会降级 —— 数据保留三项禁用，且两处都写清原因", () => {
+test("设置：非所有者会降级 —— 数据保留禁用，且两处都写清原因", () => {
     render({ isSiteOwner: false });
     assert.ok(
         alerts().some(t => t.includes("外观按账号保存")),
@@ -223,9 +222,7 @@ test("设置：非所有者会降级 —— 数据保留三项禁用，且两处
         alerts().some(t => t.includes("只有站点所有者可以修改")),
         "数据保留区要说明为什么改不了"
     );
-    for (const id of ["retention-days", "inactive-disable-days", "inactive-grace-days"]) {
-        assert.equal(inputById(id)?.disabled, true, `${id} 对非所有者应该禁用`);
-    }
+    assert.equal(inputById("retention-days")?.disabled, true, "retention-days 对非所有者应该禁用");
     // 外观类字段不受影响：非所有者照样能改自己那份
     assert.equal(inputById("site-title")?.disabled, false, "标题这类外观项非所有者也能改");
 });

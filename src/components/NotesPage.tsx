@@ -3163,6 +3163,9 @@ export default function NotesPage({
                     })
                 }
                 onAskRemove={(id, name) => setRemoveTarget({ kind: "tag", id, name })}
+                // 这个组件被文件夹 / 标签两节共用，删除项的文案按节区分 ——
+                // 2026-10-17 用户报「标签右键菜单里写着删除文件夹」
+                removeLabel='删除标签'
                 onAskColor={
                     typeof folderTags?.onStyleTag === "function"
                         ? id => setTagColorId(id)

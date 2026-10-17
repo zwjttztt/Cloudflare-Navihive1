@@ -4,11 +4,14 @@
 //   2. 隔离：A 账号列不到 B 账号的设备；
 //   3. 吊销 = 拉黑 + 删行：**只删行等于没吊销**（JWT 自包含，令牌照样能用到过期）；
 //   4. 归属：猜到别人的 jti 也踢不掉（WHERE 里带 user_id）；
-//   5. 「退出其它设备」保留当前这台。
+//   5. 「退出其它设备」保留当前这台；
+//   6. 同设备去重（2026-10-17 用户报「登录设备重复显示」）：一台设备只留一行 ——
+//      浏览器版本升级（UA 变）、IP 漂移（双栈 / 重拨）都不能把它裂成两行。
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { NavigationAPI } from "../src/API/navigationApi";
 import { peekJwtClaim } from "../src/API/crypto";
+import { deviceKeyOf } from "../src/API/methods/sessions";
 
 type Row = Record<string, unknown>;
 
@@ -47,6 +50,13 @@ class SessionsD1 {
                 .filter(r => r.user_id === uid && (r.expires_at as number) > now)
                 .sort((a, b) => (b.last_seen_at as number) - (a.last_seen_at as number));
             return mode === "first" ? (rows[0] ?? null) : rows;
+        }
+        // recordSession 的同设备去重：按 user_id 拉全部行（UA 要在 JS 里归一化）
+        if (/SELECT jti, expires_at, user_agent FROM user_sessions\s+WHERE user_id = \? AND jti != \?/.test(sql)) {
+            const [uid, keep] = args as [number, string];
+            return this.sessions
+                .filter(r => r.user_id === uid && r.jti !== keep)
+                .map(r => ({ jti: r.jti, expires_at: r.expires_at, user_agent: r.user_agent }));
         }
         if (/SELECT jti, expires_at FROM user_sessions WHERE jti = \? AND user_id = \?/.test(sql)) {
             const [jti, uid] = args as [string, number];
@@ -110,6 +120,14 @@ class SessionsD1 {
             const [uid, keep] = args as [number, string];
             const before = this.sessions.length;
             this.sessions = this.sessions.filter(r => !(r.user_id === uid && r.jti !== keep));
+            changes = before - this.sessions.length;
+        } else if (/DELETE FROM user_sessions\s+WHERE user_id = \? AND jti IN \(/.test(sql)) {
+            // 同设备去重的删行：bind 是 (uid, ...jtis)
+            const [uid, ...jtis] = args as [number, ...string[]];
+            const before = this.sessions.length;
+            this.sessions = this.sessions.filter(
+                r => !(r.user_id === uid && jtis.includes(r.jti as string))
+            );
             changes = before - this.sessions.length;
         }
 
@@ -227,4 +245,134 @@ test("会话：touchSession 限频 —— 一小时内的重复刷新不写库",
     db.sessions[0].last_seen_at = before - 2 * 3600;
     await api.touchSession(jti);
     assert.notEqual(db.sessions[0].last_seen_at, before - 2 * 3600, "超过限频窗口才会更新");
+});
+
+// ---------------- 同设备去重（2026-10-17） ----------------
+// 用户两次报「登录设备列表有重复」。根因：v2.0.0 按「UA + IP」判重，而
+//   - Chrome 大版本升级 UA 就变（141 → 142），IP 没变也不算同一行；
+//   - 家庭宽带 IPv4/IPv6 双栈、重拨换 IP，UA 没变也不算同一行。
+// 两种漂移任意撞一个，列表里就多出一行看着一模一样的「Chrome · Windows」。
+// 判据改成归一化设备键（deviceKeyOf：浏览器 + 系统，不计版本与 IP）。
+
+const UA_CHROME_141 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36";
+const UA_CHROME_142 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36";
+
+test("会话：同一台设备重登（浏览器升级 + IP 漂移）—— 库里只留最新一行，旧令牌拉黑", async () => {
+    const db = new SessionsD1();
+    const api = newApi(db);
+    const old = await loginDevice(api, 7, UA_CHROME_141, "1.2.3.4");
+    // Chrome 自动升级后再次登录：UA 版本号变了，出口也从 IPv4 漂到 IPv6
+    const next = await loginDevice(api, 7, UA_CHROME_142, "2404:1234::1");
+
+    assert.equal(db.sessions.length, 1, "一台设备在库里只留一行");
+    assert.equal(db.sessions[0].jti, next.jti, "留的是最新那次登录");
+    assert.ok(
+        db.blacklist.some(r => r.jti === old.jti),
+        "旧令牌必须同时拉黑 —— 只删行的话它还能用到过期"
+    );
+
+    const list = await api.listSessions(7, next.jti);
+    assert.equal(list.length, 1, "列表里一台设备只出一条");
+    assert.equal(list[0].ip, "2404:1234::1", "显示的是最新登录的 IP");
+    assert.equal(list[0].current, true);
+});
+
+test("会话：列表折叠自愈 —— 历史遗留的同设备重复行（老判重漏下的）列表时清掉", async () => {
+    const db = new SessionsD1();
+    const api = newApi(db);
+    const current = await loginDevice(api, 7, UA_CHROME_141, "1.2.3.4");
+    // 直接往库里塞陈行：UA 版本号与 IP 都不同（正是 v2.0.0「UA+IP」判重漏掉的形态），
+    // 且 last_seen 故意比当前行还新 —— 当前会话永远不能被它挤掉
+    db.sessions.push({
+        jti: "legacy-stale",
+        user_id: 7,
+        user_agent: UA_CHROME_142,
+        ip: "9.9.9.9",
+        created_at: 100,
+        last_seen_at: (db.sessions[0].last_seen_at as number) + 999,
+        expires_at: Math.floor(Date.now() / 1000) + 3600,
+    });
+
+    const list = await api.listSessions(7, current.jti);
+    assert.equal(list.length, 1, "折叠后一台设备只出一条");
+    assert.equal(list[0].jti, current.jti, "当前会话那一行永不折叠，陈行再新也吃不到它");
+    assert.ok(
+        db.blacklist.some(r => r.jti === "legacy-stale"),
+        "被折叠的旧会话要顺手拉黑"
+    );
+    assert.ok(
+        !db.sessions.some(r => r.jti === "legacy-stale"),
+        "并删行自愈：下次不用再折一次"
+    );
+});
+
+test("会话：不同设备不互相折叠（浏览器不同 / 系统不同各是各的）", async () => {
+    const db = new SessionsD1();
+    const api = newApi(db);
+    const pc = await loginDevice(api, 7, UA_CHROME_141, "1.2.3.4");
+    const edge = await loginDevice(api, 7, UA_CHROME_141.replace("Chrome/", "Edg/"), "1.2.3.4");
+    const phone = await loginDevice(
+        api,
+        7,
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1",
+        "1.2.3.4"
+    );
+
+    const list = await api.listSessions(7, pc.jti);
+    assert.equal(list.length, 3, "Chrome / Edge / Safari 是三台设备，一台都不能少");
+    assert.deepEqual(
+        list.map(s => s.jti).sort(),
+        [pc.jti, edge.jti, phone.jti].sort()
+    );
+});
+
+test("会话：同设备去重不跨账号（A 账号的折叠清不到 B 账号的行）", async () => {
+    const db = new SessionsD1();
+    const api = newApi(db);
+    const a1 = await loginDevice(api, 7, UA_CHROME_141, "1.2.3.4");
+    const a2 = await loginDevice(api, 7, UA_CHROME_142, "5.6.7.8");
+    const b1 = await loginDevice(api, 8, UA_CHROME_141, "1.2.3.4");
+
+    assert.equal(db.sessions.length, 2, "7 号折叠成一台，8 号那台原样留着");
+    assert.ok(
+        db.blacklist.some(r => r.jti === a1.jti),
+        "被折叠的是 7 号自己的旧会话，与 8 号无关"
+    );
+    assert.equal((await api.listSessions(7, a2.jti)).length, 1);
+    assert.equal((await api.listSessions(8, b1.jti)).length, 1);
+    assert.equal((await api.listSessions(8, b1.jti))[0].jti, b1.jti);
+});
+
+// ---------------- 归一化设备键（deviceKeyOf） ----------------
+
+test("deviceKeyOf：同一浏览器只认家族与系统，版本号一概不计", () => {
+    assert.equal(deviceKeyOf(UA_CHROME_141), deviceKeyOf(UA_CHROME_142), "141 → 142 还是同一台");
+    assert.equal(deviceKeyOf(UA_CHROME_141), "Chrome|Windows");
+    // Edge 的 UA 里也含 Chrome/、Chrome 的里面也含 Safari/ —— 顺序必须 Edge 优先
+    assert.equal(
+        deviceKeyOf(UA_CHROME_141.replace("Chrome/", "Edg/")),
+        "Edge|Windows",
+        "含 Edg/ 的必须先判 Edge"
+    );
+    // iOS 上所有浏览器都是 WebKit：CriOS（Chrome）也归 Safari · iOS
+    assert.equal(
+        deviceKeyOf("Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) CriOS/141.0.7390.8 Mobile/15E148 Safari/604.1"),
+        "Safari|iOS"
+    );
+    assert.equal(
+        deviceKeyOf("Mozilla/5.0 (X11; Linux x86_64; rv:121.0) Gecko/20100101 Firefox/121.0"),
+        "Firefox|Linux"
+    );
+    assert.equal(deviceKeyOf(""), "unknown", "空 UA（脚本客户端）也有个稳定键");
+});
+
+test("deviceKeyOf：认不出的 UA 抹掉版本号再比（至少升级不裂行）", () => {
+    const v1 = "SomeAgent/1.2.3 (Foo 9; Bar 8)";
+    const v2 = "SomeAgent/1.3.0 (Foo 9; Bar 8)";
+    assert.equal(deviceKeyOf(v1), deviceKeyOf(v2), "同一家族的版本升级仍是一台");
+    assert.notEqual(
+        deviceKeyOf(v1),
+        deviceKeyOf("OtherAgent/1.2.3 (Foo 9; Bar 8)"),
+        "不同客户端不混一家"
+    );
 });

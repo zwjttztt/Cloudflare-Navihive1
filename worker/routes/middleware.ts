@@ -102,7 +102,8 @@ export async function enforceAuth(ctx: RouteCtx, session: TokenSession): Promise
     }
 
     // 活跃时间：令牌一验过就算在用 —— 「记住我」的人每次回来只是静默恢复，
-    // 根本不经过登录页，不在这里刷新就会被误判成沉睡账号。
+    // 根本不经过登录页。刷它既是账号治理判定的依据（沉睡扫描已按站点所有者
+    // 要求于 2026-10-17 下线，这里保留是为恢复那天留口径），也是审计线索。
     // 内部限频为每天最多写一次，不会每个请求都往 D1 落一行。
     if (typeof uid === "number") {
         await api.touchLastActive(uid);

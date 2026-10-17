@@ -1,13 +1,16 @@
 // src/components/HeaderActions.tsx
-// 顶栏工具行的「动作区」：排序模式下的「保存 / 取消编辑」，平时的「新增 + 更多选项」。
+// 顶栏工具行的「动作区」：平时的「新增 + 更多选项」。
 //
 // 「新增」现在是默认动作 + 下拉的组合：主按钮直接开「新增网站」（导航站最常用的动作），
 // 右边的小箭头里才有「新增分组」—— 建分组是搭结构时才做的事，不该和加网址平起平坐。
 // 菜单本身不在这里渲染 —— 由 App 以 menu 插槽传进来，省得把十几个菜单动作
 // 再从这里转发一遍。
+//
+// 排序模式下这里只渲染一颗**钉在页面右侧的固定工具条**（保存 / 取消编辑），
+// 不在顶栏占位 —— 理由见下面 sortMode 分支里的注释。
 import { useState } from "react";
 import type { ReactNode } from "react";
-import { Button, ButtonGroup, Menu, MenuItem } from "@mui/material";
+import { Box, Button, ButtonGroup, Menu, MenuItem } from "@mui/material";
 import { prefetchChunk } from "../utils/lazyPrefetch";
 import { dialogChunks } from "../utils/dialogChunks";
 import SaveIcon from "@mui/icons-material/Save";
@@ -18,7 +21,7 @@ import StickyNote2Icon from "@mui/icons-material/StickyNote2";
 import ArrowDropDownIcon from "@mui/icons-material/ArrowDropDown";
 import LanguageIcon from "@mui/icons-material/Language";
 import CreateNewFolderIcon from "@mui/icons-material/CreateNewFolder";
-import { SortMode, HEADER_CONTROL_H, headerControlSx } from "../constants";
+import { SortMode, HEADER_CONTROL_H, HEADER_RADIUS, headerControlSx } from "../constants";
 
 /**
  * 提前把记事本那块代码拉下来（鼠标移到入口上时调）。
@@ -80,7 +83,35 @@ export default function HeaderActions({
     return (
         <>
             {sortMode !== SortMode.None ? (
-                <>
+                /* 排序模式的「保存 / 取消编辑」（2026-10-17 用户要求改位置）：
+                   从顶栏挪到页面右侧，position:fixed 让滚动时始终跟着视口。
+                   排序是「边走边看」的动作 —— 按钮留在顶栏的话，滚两屏就得先
+                   滚回顶部才能保存；钉在右侧随手可达，视线不用离开列表。
+                   竖排 + 右缘居中：两颗按钮文字都短（2~6 字），横排会横向
+                   伸进卡片区；玻璃底是为了让透明描边的「取消编辑」在
+                   多色多图的列表上依然看得清字。 */
+                <Box
+                    data-sort-dock='1'
+                    sx={{
+                        position: "fixed",
+                        right: { xs: 10, sm: 16 },
+                        top: "50%",
+                        transform: "translateY(-50%)",
+                        // 抽屉级：压在卡片与回到顶部之上，仍在弹窗 / 提示条之下
+                        zIndex: t => t.zIndex.drawer,
+                        display: "flex",
+                        flexDirection: "column",
+                        alignItems: "stretch",
+                        gap: 1,
+                        p: 0.5,
+                        borderRadius: HEADER_RADIUS,
+                        bgcolor: "var(--glass-bg-hover)",
+                        border: "1px solid var(--glass-border)",
+                        backdropFilter: "blur(8px)",
+                        WebkitBackdropFilter: "blur(8px)",
+                        boxShadow: "0 2px 10px rgba(15,23,42,0.14)",
+                    }}
+                >
                     {sortMode === SortMode.GroupSort && (
                         <Button
                             variant='contained'
@@ -115,7 +146,7 @@ export default function HeaderActions({
                     >
                         取消编辑
                     </Button>
-                </>
+                </Box>
             ) : (
                 <>
                     {/* 新增：主按钮 + 下拉。

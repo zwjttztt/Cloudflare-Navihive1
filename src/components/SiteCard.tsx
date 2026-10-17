@@ -32,7 +32,6 @@ import StarBorderIcon from "@mui/icons-material/StarBorder";
 import CheckCircleIcon from "@mui/icons-material/CheckCircle";
 import RadioButtonUncheckedIcon from "@mui/icons-material/RadioButtonUnchecked";
 import DragIndicatorIcon from "@mui/icons-material/DragIndicator";
-import LinkIcon from "@mui/icons-material/Link";
 import PersonIcon from "@mui/icons-material/Person";
 import KeyIcon from "@mui/icons-material/Key";
 import { useAppConfig } from "../context/appConfigStore";
@@ -603,9 +602,11 @@ const SiteCard = memo(function SiteCard({
         );
     };
 
-    // 悬停快捷操作条：复制链接 / 复制账号 / 复制密码
+    // 悬停快捷操作条：复制账号 / 复制密码
     // （打开动作已交给卡片本体：左键普通新标签，中键后台打开）
     // always=true 时（列表视图）常显，否则悬停才浮出
+    // 「复制链接」已移除（2026-10-17 用户要求）：点卡片本身就是打开链接，
+    // 再给一个复制按钮只会让右下角这条更挤。
     const renderQuickActions = (always: boolean) => (
         <Box
             className={
@@ -635,16 +636,6 @@ const SiteCard = memo(function SiteCard({
                 zIndex: 2,
             }}
         >
-            <Tooltip title='复制链接'>
-                <IconButton
-                    size='small'
-                    aria-label='复制链接'
-                    onClick={e => handleQuickCopy(e, "链接", site.url)}
-                    sx={{ minWidth: { xs: 32, sm: 26 }, minHeight: { xs: 32, sm: 26 }, p: 0 }}
-                >
-                    <LinkIcon sx={{ fontSize: 16 }} />
-                </IconButton>
-            </Tooltip>
             {hasUsername && (
                 <Tooltip title='复制账号'>
                     <IconButton

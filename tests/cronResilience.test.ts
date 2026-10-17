@@ -4,7 +4,7 @@
 // 为什么值得单测：这两个函数都是**故障路径**才有行为的代码 ——
 // 正常时候它们只是透明地转发结果，改坏了（比如超时了还继续 await、
 // 或者重试把写操作也包进去）在绿色 CI 上一点看不出来，
-// 只有线上真的卡住那周才会发现后面四项整周没跑。
+// 只有线上真的卡住那周才会发现后面几项整周没跑。
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -14,8 +14,8 @@ import { CRON_TASK_TIMEOUT_MS, backupDeadlineMs, withD1Retry, withDeadline } fro
 test("备份任务的耗时上限比上传封顶还宽（10 分钟上传 + 导出余量）", () => {
     assert.ok(CRON_TASK_TIMEOUT_MS.backup > 10 * 60_000, "备份上限必须宽过上传封顶");
     assert.ok(CRON_TASK_TIMEOUT_MS.notesBackup > 10 * 60_000);
-    // 其余四项不该比备份还宽，否则「某一项卡住拖垮后面」又回来了
-    for (const key of ["linkSweep", "inactiveSweep", "retention"]) {
+    // 其余几项不该比备份还宽，否则「某一项卡住拖垮后面」又回来了
+    for (const key of ["linkSweep", "retention"]) {
         assert.ok(CRON_TASK_TIMEOUT_MS[key] < CRON_TASK_TIMEOUT_MS.backup, `${key} 上限该比备份短`);
     }
 });

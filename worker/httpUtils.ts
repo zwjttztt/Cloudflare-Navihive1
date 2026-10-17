@@ -19,13 +19,18 @@ export const SESSION_COOKIE = "navihive_session";
  */
 export const TEXT_HEADERS = () => securityHeaders({ "Content-Type": "text/plain; charset=utf-8" });
 
-/** 取客户端 IP（审计日志用） */
+/** 取客户端 IP（审计日志 / 登录设备显示用） */
 export function clientIp(request: Request): string {
-    return (
-        request.headers.get("CF-Connecting-IP") ||
-        request.headers.get("X-Forwarded-For") ||
-        "unknown"
-    );
+    const cf = request.headers.get("CF-Connecting-IP");
+    if (cf) return cf;
+    const xff = request.headers.get("X-Forwarded-For");
+    if (xff) {
+        // XFF 是链式头：「客户端, 代理1, 代理2」—— 第一个才是真实客户端。
+        // 整条存下来，登录设备列表里的 IP 会显示成「1.2.3.4, 5.6.7.8」一串。
+        const first = xff.split(",")[0].trim();
+        if (first) return first;
+    }
+    return "unknown";
 }
 
 /** 从 Cookie 头部里取出指定 cookie */

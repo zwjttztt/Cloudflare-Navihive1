@@ -1987,6 +1987,12 @@ test("文件夹菜单补齐 inkstone 那几项：在此新建笔记 / 移动到�
             `文件夹菜单要有 ${op}（inkstone 的「更多操作」有 9 项，我们不能只有 4 项）`
         );
     }
+    // 删除项文案按节区分：文件夹节是「删除文件夹」（默认值，2026-10-17 起标签节传「删除标签」）
+    assert.equal(
+        (document.querySelector('[data-folder-op="remove"]') as HTMLElement).textContent,
+        "删除文件夹",
+        "文件夹节的删除项保持「删除文件夹」"
+    );
     // 在此新建笔记 → folder_id 落在这个文件夹
     await act(async () => {
         (document.querySelector('[data-folder-op="new-note-here"]') as HTMLElement).click();

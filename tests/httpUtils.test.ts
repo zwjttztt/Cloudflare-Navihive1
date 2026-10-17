@@ -140,6 +140,18 @@ test("clientIp 优先取 CF-Connecting-IP，其次是 XFF，都没有记 unknown
     assert.equal(clientIp(req({})), "unknown");
 });
 
+test("clientIp：XFF 是链式头，只取第一段（客户端），别把代理链整条显示出来", () => {
+    const req = (headers: Record<string, string>) => new Request("https://nav.example.com/", { headers });
+    // 反代链：真实客户端 → CF → nginx，XFF = "客户端, cf, nginx"
+    assert.equal(
+        clientIp(req({ "X-Forwarded-For": "1.2.3.4, 5.6.7.8, 9.9.9.9" })),
+        "1.2.3.4",
+        "登录设备列表里的 IP 该是客户端地址，不是一整条代理链"
+    );
+    // 带头尾空格的也要剥掉（有的代理会写成 " 1.2.3.4 , 5.6.7.8"）
+    assert.equal(clientIp(req({ "X-Forwarded-For": " 1.2.3.4 , 5.6.7.8" })), "1.2.3.4");
+});
+
 // ---------------- 同源校验（CSRF 闸门） ----------------
 
 const post = (headers: Record<string, string>) =>

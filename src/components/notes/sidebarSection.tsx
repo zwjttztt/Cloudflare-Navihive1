@@ -202,6 +202,7 @@ export function FolderTagSection({
     onCreateNote,
     onAskRename,
     onAskRemove,
+    removeLabel = "删除文件夹",
     onAskColor,
     onCreateChild,
     onMove,
@@ -244,6 +245,12 @@ export function FolderTagSection({
      */
     onAskRename?: (id: number, currentName: string) => void;
     onAskRemove?: (id: number, name: string) => void;
+    /**
+     * 删除菜单项的文案。这个组件同时服务「文件夹」与「标签」两节，
+     * 文件夹节用默认的「删除文件夹」；标签节传「删除标签」——
+     * 2026-10-17 用户报：标签右键里写着「删除文件夹」，张冠李戴。
+     */
+    removeLabel?: string;
     /** 标签颜色：打开 TagColorDialog。只给「标签」节传 */
     onAskColor?: (id: number) => void;
     /**
@@ -735,7 +742,7 @@ export function FolderTagSection({
                         // 删除是危险动作：跟 inkstone 一样用红色示警
                         sx={{ color: "error.main" }}
                     >
-                        删除文件夹
+                        {removeLabel}
                     </MenuItem>
                 )}
             </Menu>

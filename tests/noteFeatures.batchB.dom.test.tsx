@@ -219,6 +219,32 @@ test("标签菜单里要有「设置颜色」，点了要把颜色发出去", as
     assert.deepEqual(styled, [{ id: 5, color: "#22c55e" }], "选中色要走 onStyleTag 落库");
 });
 
+test("标签菜单里的删除项写「删除标签」，不是「删除文件夹」", async () => {
+    // 2026-10-17 用户报：记事本左栏「标签」的右键菜单里写着「删除文件夹」——
+    // 这个菜单组件被文件夹 / 标签两节共用，文案按节区分。
+    mountPanel([note({ id: 1, title: "甲", content: "a" })], {
+        folderTags: {
+            folders: [],
+            tags: [{ id: 5, name: "合同" }],
+            noteTags: {},
+            onCreateFolder: async () => null,
+            onRenameFolder: async () => {},
+            onRemoveFolder: async () => {},
+            onCreateTag: async () => null,
+            onRenameTag: async () => {},
+            onRemoveTag: async () => {},
+            onAssignTags: async () => null,
+            onStyleTag: async () => {},
+        },
+    });
+    const dots = document.querySelector<HTMLElement>('button[aria-label="合同 操作"]');
+    assert.ok(dots, "标签行要有「⋯」按钮");
+    await act(async () => { dots!.click(); });
+    const item = document.querySelector<HTMLElement>("[data-folder-op='remove']");
+    assert.ok(item, "标签菜单里要有删除项");
+    assert.equal(item!.textContent, "删除标签", "标签节的删除项必须是「删除标签」");
+});
+
 test("TagColorDialog：脏数据（不在调色板里的色值）按默认起手，选「空」= 清掉颜色", async () => {
     host = document.createElement("div");
     document.body.appendChild(host);

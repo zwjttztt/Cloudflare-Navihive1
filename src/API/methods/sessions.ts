@@ -21,6 +21,56 @@ const SESSION_TOUCH_INTERVAL_SEC = 60 * 60;
 /** UA 存库前截断：恶意客户端可以塞超长 UA，别让它把行撑爆 */
 const MAX_UA_LEN = 300;
 
+/**
+ * 设备标识的归一化：**浏览器家族 + 系统家族**，版本号一概不计。
+ *
+ * 为什么不能拿整条 UA 当设备标识：Chrome 每次大版本升级，UA 里的版本号就变
+ * （Chrome/141.0.x → Chrome/142.0.x）；Android 大版本升级 likewise。
+ * 同一台设备的两次登录于是被判成两台设备，「登录设备」列表里出现两行
+ * 看着一模一样的条目 —— 2026-10-17 用户报的「重复设备」就是这么来的。
+ * 为什么不能再用 UA + IP（v2.0.0 的做法，已证明不够）：出口 IP 会漂 ——
+ * 家庭宽带 IPv4/IPv6 双栈各记一个地址、重拨换地址、经过不同代理链记下的
+ * 段位也不同。同一台设备照样裂成两行。
+ *
+ * 归一化成「浏览器 · 系统」后，版本升级与 IP 漂移都不再制造重复行。
+ * 这也是界面上实际显示的身份（AccountDialog 的 describeUserAgent 就认这两样），
+ * 一行一台「看得出来的设备」。
+ *
+ * 代价（已知且接受）：同一台电脑上的 Chrome 稳定版与 Canary 共用一把键，
+ * 后登录的会把先登录的顶下线；两台同型号手机也只留一行。对这个个人站点
+ * 「一台设备一个活跃会话」的定位，这正是期望行为。
+ */
+export function deviceKeyOf(ua: string): string {
+    if (!ua) return "unknown";
+    // 判定顺序要紧：Edge 的 UA 里也含 "Chrome"、Chrome 的里面也含 "Safari"。
+    const browser = /Edg\//.test(ua)
+        ? "Edge"
+        : /OPR\//.test(ua)
+          ? "Opera"
+          : /Firefox\//.test(ua)
+            ? "Firefox"
+            : /Chrome\//.test(ua)
+              ? "Chrome"
+              : /Safari\//.test(ua)
+                ? "Safari"
+                : "";
+    const os = /Windows NT/.test(ua)
+        ? "Windows"
+        : /iPhone|iPad/.test(ua)
+          ? "iOS"
+          : /Android/.test(ua)
+            ? "Android"
+            : /Macintosh/.test(ua)
+              ? "macOS"
+              : /Linux/.test(ua)
+                ? "Linux"
+                : "";
+    if (browser || os) return `${browser}|${os}`;
+    // 认不出的 UA（脚本客户端 / 小众内置浏览器）：抹掉版本号再比，
+    // 至少同一客户端的升级不会裂成两行
+    return ua.replace(/\d+(\.\d+)*/g, "#").slice(0, 80);
+}
+
 export interface SessionsApi {
     /** 登录成功后登记这张令牌（jti / 过期时间 / 账号都从 token 里解，调用方不必知道） */
     recordSession(token: string, userAgent: string, ip: string): Promise<void>;
@@ -81,28 +131,32 @@ export const sessionsImpl: SessionsApi = {
                 .run();
 
             // 同设备重登去重（用户 2026-10-17 报告「登录设备重复显示」）：
-            // 同一账号 + 同一 UA + 同一 IP 的旧会话是同一台设备的历史登录，
-            // 把它们拉黑并删行 —— 列表里一台设备只留最新一条。
+            // 同一账号 + 同一台设备（归一化 UA，见 deviceKeyOf）的旧会话是
+            // 同一台设备的历史登录，把它们拉黑并删行 —— 列表里一台设备只留最新一条。
             // ⚠️ 必须先拉黑再删：旧令牌在过期前仍能通过验签，只删行的话
             // 界面看不见它、它却照样能用，比不清理更糟。
             if (typeof uid === "number") {
                 const old = await this.db
                     .prepare(
-                        `SELECT jti, expires_at FROM user_sessions
-                         WHERE user_id = ? AND user_agent = ? AND ip = ? AND jti != ?`
+                        `SELECT jti, expires_at, user_agent FROM user_sessions
+                         WHERE user_id = ? AND jti != ?`
                     )
-                    .bind(uid, (userAgent || "").slice(0, MAX_UA_LEN), ip || "", jti)
-                    .all<{ jti: string; expires_at: number }>();
-                for (const row of old.results || []) {
+                    .bind(uid, jti)
+                    .all<{ jti: string; expires_at: number; user_agent: string | null }>();
+                const key = deviceKeyOf((userAgent || "").slice(0, MAX_UA_LEN));
+                const stale = (old.results || []).filter(
+                    row => deviceKeyOf(row.user_agent || "") === key
+                );
+                for (const row of stale) {
                     await this.blacklistToken(row.jti, row.expires_at);
                 }
-                if ((old.results || []).length > 0) {
+                if (stale.length > 0) {
                     await this.db
                         .prepare(
                             `DELETE FROM user_sessions
-                             WHERE user_id = ? AND user_agent = ? AND ip = ? AND jti != ?`
+                             WHERE user_id = ? AND jti IN (${stale.map(() => "?").join(",")})`
                         )
-                        .bind(uid, (userAgent || "").slice(0, MAX_UA_LEN), ip || "", jti)
+                        .bind(uid, ...stale.map(row => row.jti))
                         .run();
                 }
             }
@@ -136,9 +190,11 @@ export const sessionsImpl: SessionsApi = {
      * 过期的直接不返回：令牌过期后这张会话已经不能再用了，列出来只会让人以为
      * 「还有一台设备登着」，实际点吊销也是空操作。
      *
-     * 同设备去重（2026-10-17）：recordSession 现在会在重登时顶掉同设备旧会话，
-     * 但历史遗留的重复行还在库里 —— 列表时按（UA + IP）折叠，只留最近活跃的
- * 一条；被折叠的旧行顺手拉黑 + 删行自愈（当前会话那一行永不折叠）。
+     * 同设备去重（2026-10-17，v2.0.0 起）：recordSession 会在重登时顶掉同设备
+     * 旧会话，但历史遗留的重复行还在库里（旧版按 UA+IP 判重，版本升级 / IP 漂移
+     * 漏掉的）—— 列表时按**归一化设备键**折叠（deviceKeyOf：浏览器 + 系统，
+     * 不计版本号与 IP），只留最近活跃的一条；被折叠的旧行顺手拉黑 + 删行自愈
+     * （当前会话那一行永不折叠）。
      */
     listSessions: async function (
         this: NavigationAPI,
@@ -165,28 +221,45 @@ export const sessionsImpl: SessionsApi = {
                 }>();
             const rows = result.results || [];
 
-            // 折叠同设备重复：键 = UA + IP（last_seen 倒序，第一条就是最近的）。
-            // 当前会话永不折叠：否则「退出其它设备」后当前行可能被同设备新登录吃掉。
+            // 折叠同设备重复：键 = deviceKeyOf(UA)（浏览器 + 系统，不计版本与 IP）。
+            // 两轮走：第一轮让**当前会话**先占掉它的设备键（它永远不被折叠），
+            // 第二轮其余行按 last_seen 倒序（SQL 已排好）各认各的键。
+            // 为什么不能一轮顺着排：万一某条陈行的 last_seen 比当前行还新
+            // （手工改库 / 极端竞态），一轮会把陈行先放进去、当前行再进来，
+            // 同一设备就漏折叠成两行。
             const seenDevices = new Set<string>();
             const out: SessionInfo[] = [];
             const stale: Array<{ jti: string; expires_at: number }> = [];
+            const toInfo = (row: {
+                jti: string;
+                user_agent: string | null;
+                ip: string | null;
+                created_at: number;
+                last_seen_at: number;
+                expires_at: number;
+            }, current: boolean): SessionInfo => ({
+                jti: row.jti,
+                userAgent: row.user_agent || "",
+                ip: row.ip || "",
+                createdAt: row.created_at,
+                lastSeenAt: row.last_seen_at,
+                expiresAt: row.expires_at,
+                current,
+            });
             for (const row of rows) {
-                const isCurrent = row.jti === currentJti;
-                const key = `${row.user_agent || ""}|${row.ip || ""}`;
-                if (!isCurrent && seenDevices.has(key)) {
+                if (row.jti !== currentJti) continue;
+                seenDevices.add(deviceKeyOf(row.user_agent || ""));
+                out.push(toInfo(row, true));
+            }
+            for (const row of rows) {
+                if (row.jti === currentJti) continue;
+                const key = deviceKeyOf(row.user_agent || "");
+                if (seenDevices.has(key)) {
                     stale.push({ jti: row.jti, expires_at: row.expires_at });
                     continue;
                 }
                 seenDevices.add(key);
-                out.push({
-                    jti: row.jti,
-                    userAgent: row.user_agent || "",
-                    ip: row.ip || "",
-                    createdAt: row.created_at,
-                    lastSeenAt: row.last_seen_at,
-                    expiresAt: row.expires_at,
-                    current: isCurrent,
-                });
+                out.push(toInfo(row, false));
             }
 
             // 自愈：被折叠的旧会话拉黑 + 删行。拉黑失败不阻塞列表（那行已从视图消失，

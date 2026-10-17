@@ -6,34 +6,7 @@
 // 一眼能看完，也能直接写用例钉住。
 //
 // 这些判定的共同点是**错了不会报错，只会让人对着界面干瞪眼** ——
-// 登录成功却立刻弹回登录页、阈值显示 90 天实际跑的是 30 天、被停用的账号看到一片空白。
-
-import {
-    INACTIVE_DISABLE_DAYS_DEFAULT,
-    INACTIVE_DELETE_GRACE_DAYS_DEFAULT,
-} from "../API/http";
-import { parseApiError } from "../API/apiError";
-
-/**
- * 沉睡治理阈值：读不到（没配过 / 配成了乱七八糟的值）就回落到服务端默认。
- *
- * 为什么要 > 0 而不是 >= 0：0 天意味着「今天注册明天就停用」，配成 0 基本都是误操作，
- * 按默认处理比照办安全。界面上显示的数字必须和实际生效的一致，否则 owner 会以为改了没用。
- */
-export function resolveInactivePolicy(
-    disableRaw: string | null | undefined,
-    graceRaw: string | null | undefined
-): { disableDays: number; graceDays: number } {
-    return {
-        disableDays: toPositiveDays(disableRaw, INACTIVE_DISABLE_DAYS_DEFAULT),
-        graceDays: toPositiveDays(graceRaw, INACTIVE_DELETE_GRACE_DAYS_DEFAULT),
-    };
-}
-
-function toPositiveDays(raw: string | null | undefined, fallback: number): number {
-    const parsed = Number.parseInt(raw ?? "", 10);
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-}
+// 登录成功却立刻弹回登录页、被停用的账号看到一片空白。
 
 /** 认证检查失败之后该怎么处置 */
 export interface AuthFailure {
@@ -76,35 +49,4 @@ export function cookieRejectedMessage(isHttps: boolean): string {
     return isHttps
         ? "登录状态没能保存，请检查浏览器是否禁用了 Cookie 或拦截了本站 Cookie"
         : "登录状态没能保存：当前通过 HTTP 访问，浏览器拒绝保存安全 Cookie。请改用 HTTPS（或 localhost）访问";
-}
-
-/**
- * 手动扫描沉睡账号的结果。
- *
- * `resOk` 要一起看：服务端也可能在 4xx/5xx 的响应体里带上 success:true，
- * 只看 body 会把一次失败当成成功（界面提示「已扫描」其实什么都没发生）。
- * 两个计数一律补 0 —— 界面上要显示「停用了 N 个」，undefined 会印出 NaN。
- *
- * `status` 用来翻错误文案：服务端迁移到统一错误码后失败体是
- * `{ error: { code, message } }`，`data.message` 就没了（parseApiError 两种形状都认）。
- */
-export function readSweepResult(
-    resOk: boolean,
-    data: { success?: boolean; message?: string; disabled?: number; deleted?: number },
-    status = 200
-): { success: boolean; message?: string; disabled: number; deleted: number } {
-    if (!resOk || data.success !== true) {
-        return {
-            success: false,
-            message: parseApiError(data, status)?.message || data.message || "扫描失败，请稍后再试",
-            disabled: 0,
-            deleted: 0,
-        };
-    }
-    return {
-        success: true,
-        ...(data.message === undefined ? {} : { message: data.message }),
-        disabled: data.disabled ?? 0,
-        deleted: data.deleted ?? 0,
-    };
 }

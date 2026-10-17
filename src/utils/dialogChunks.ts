@@ -45,7 +45,6 @@ export const dialogChunks = {
     snackbar: () => import("../components/SnackbarHost"),
     bulk: () => import("../components/BulkActionBar"),
     aiSuggest: () => import("../components/AiSuggestDialog"),
-    deleteAccount: () => import("../components/DeleteAccountDialog"),
     tagBar: () => import("../components/TagBar"),
     siteSkeleton: () => import("../components/SiteListSkeleton"),
 };
