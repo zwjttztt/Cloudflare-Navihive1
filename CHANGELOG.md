@@ -6,6 +6,35 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。---
 
+## 2026-10-17（日）· 修正：复活站点所有者的沉睡治理可见性与阈值配置（v3.1.0 误读续）
+
+**背景**：v3.1.0 把「沉睡治理界面只对所有者不开放」理解成了「owner 完全看不到治理」。
+用户澄清：**站点所有者应当看得到其它账号的沉睡状态（只读）、并能在网站设置里配置停用 /
+清除阈值**；只是 owner 自己永不参与治理，也不能在账号弹窗里改阈值（改阈值入口统一在
+「网站设置 → 数据保留」）。本条目把这部分救回来（与 v3.1.0「注销账号仅对普通账号开放」
+的口径互不冲突，是正交的两件事）：
+
+1. **账号弹窗恢复「账号与沉睡治理」一节（仅 owner 可见）**：AccountDialog 加回账号清单
+   （按 willDisableAt / willDeleteAt 倒计时，停用账号临清 7 天内显红、否则黄）、已停用账号
+   的「重新启用」按钮（调 `POST /api/users/{id}/status {status:"active"}`，服务端顺带刷新
+   活跃时间）、只读的阈值展示（多久没登录就停用 / 停用后保留多久再清除），以及「立即扫描」
+   按钮（调 `POST /api/users/sweep`，回显「停用 N 个、清除 M 个」）。
+   普通账号依旧看不到这一节——App 只在 `role === "owner"` 时传 `accounts`。
+   数据来自 useAccountSession 的 `fetchAccountList / handleExemptUser / handleSweepInactive`，
+   其中 `fetchAccountList` 内部按角色拦截，普通账号不发 `/api/users` 请求。
+2. **网站设置恢复两个沉睡阈值输入框**：SettingsDialog 加回 `inactive-disable-days` /
+   `inactive-grace-days`，仅 owner 可编辑（非 owner 的框 `disabled`），与「数据保留」阈值入口一致。
+3. **纯函数回归**：authFlow.ts 加回 `resolveInactivePolicy`（读不到阈值回落服务端默认）/
+   `readSweepResult`（4xx/5xx 响应体里带 `success:true` 也不算成功，避免假绿）。
+4. **命令面板开账号管理时一并拉治理清单**：useAppCommands 的「打开账号管理」额外调
+   `fetchAccountList`（owner 才真正发请求）。
+
+守卫：accountDialog 3 例（非 owner 看不到 / owner 清单只给停用账号「重新启用」/ 阈值只读且在此不改）、
+accountSession 4 例（扫描成功报条数 / 500 带 success 仍失败 / 重新启用失败转述原因 / 清单仅 owner 拉得到）、
+appCommands 补 Harness 的 `fetchAccountList`；全量 2774 单测 + `tsc -b --force` + lint + build + smoke + 双审计全绿。
+
+---
+
 ## 2026-10-17（日）· 修正：两个功能改为「仅对站点所有者不开放」（用户澄清需求）
 
 **背景**：v3.0.0 把「不活跃停用」和「注销当前账号」按「整体关闭」实现（入口全删 + cron 停扫）。
@@ -22,6 +51,7 @@
    加回，普通账号继续被自动停用/清除（后端 `sweepInactiveUsers` 本就 `role != 'owner'`，
    所有者永不被治理这一点无需改动）。所有者的治理界面（账号清单 / 手动扫描 /
    阈值配置）保持不开放——它本来就是 owner-only 的界面，对所有者不开放即等同下线。
+   （注：同日后续条目修正了这半句——站点所有者恢复**可见**沉睡治理清单与阈值配置，只是仍不能在本节改阈值、自己也不参与治理。）
 3. **README 第 7/8 项重写**为角色边界口径。
 
 ---

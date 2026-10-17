@@ -31,6 +31,7 @@ export interface AppCommandActions {
     handleOpenConfig: () => void;
     setOpenAccount: (open: boolean) => void;
     fetchSessions: () => Promise<void> | void;
+    fetchAccountList: () => Promise<void> | void;
     handleOpenBackup: (tab: number) => void;
     setBookmarkOpen: (open: boolean) => void;
     runLinkCheck: () => Promise<void> | void;
@@ -87,6 +88,7 @@ export function useAppCommands(input: AppCommandsInput): CommandItem[] {
         handleOpenConfig,
         setOpenAccount,
         fetchSessions,
+        fetchAccountList,
         handleOpenBackup,
         setBookmarkOpen,
         runLinkCheck,
@@ -202,9 +204,11 @@ export function useAppCommands(input: AppCommandsInput): CommandItem[] {
                 section: "操作",
                 run: () => {
                     setOpenAccount(true);
-                    // 账号管理里还要「登录设备」一节（账号清单 2026-10-17 随沉睡治理下线），
-                    // 开面板时把设备列表拉回来
+                    // 账号管理里「登录设备」一节要先拉回来；owner 还能看「账号与沉睡治理」，
+                    // 顺带把账号清单 + 治理阈值也拉回来（fetchAccountList 内部按角色拦截，
+                    // 普通账号不会发请求）
                     void fetchSessions();
+                    void fetchAccountList();
                 },
             },
             {
@@ -293,6 +297,7 @@ export function useAppCommands(input: AppCommandsInput): CommandItem[] {
         handleOpenConfig,
         setOpenAccount,
         fetchSessions,
+        fetchAccountList,
         handleOpenBackup,
         setBookmarkOpen,
         runLinkCheck,

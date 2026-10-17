@@ -33,6 +33,8 @@ import {
     RETENTION_DAYS,
     RETENTION_DAYS_MIN,
     RETENTION_DAYS_MAX,
+    INACTIVE_DISABLE_DAYS_DEFAULT,
+    INACTIVE_DELETE_GRACE_DAYS_DEFAULT,
 } from "../API/http";
 import type { FontScale, RadiusStyle } from "../context/uiPrefsStore";
 
@@ -688,34 +690,72 @@ export default function SettingsDialog({
                             它的配置跟着登录账号走、凭据加密且不进备份，
                             跟这里管的「站点长什么样」不是一回事，混在一起容易误改。 */}
 
-                        {/* 7. 数据保留：这一项决定「审计与回收站的过期数据什么时候真的消失」，
-                            是全站共享配置 —— 服务端只认站点所有者，这里同步禁用并说明原因。
-                            「不活跃停用」原在这一节（沉睡治理两个阈值），2026-10-17 按站点
-                            所有者要求整体关闭：入口与 cron 自动扫描一并停用，这里不再给改法。 */}
+                        {/* 7. 数据保留：这三项决定「过期数据什么时候真的消失」，
+                            都是全站共享配置 —— 服务端只认站点所有者，这里同步禁用并说明原因。
+                            沉睡治理两个阈值（v3.1.1 按用户要求恢复给所有者配置）：普通账号
+                            仍会被自动停用/清除，所有者本人永不被治理，但阈值归所有者调。 */}
                         <Section
                             title='数据保留'
-                            hint='决定审计日志与回收站保留多久。每周的定时任务按这里的天数清理。'
+                            hint='决定审计日志、回收站与长期不登录的账号各自保留多久。每周的定时任务按这里的天数清理。'
                         >
                             {!isSiteOwner ? (
                                 <Alert severity='info' sx={{ mb: 1 }}>
                                     这几项是全站设置，只有站点所有者可以修改；保存时服务端也会拒绝。
                                 </Alert>
                             ) : null}
+                            <TwoCol>
+                                <TextField
+                                    margin='dense'
+                                    size='small'
+                                    id='retention-days'
+                                    name='retention.days'
+                                    label='审计与回收站保留（天）'
+                                    type='number'
+                                    fullWidth
+                                    variant='outlined'
+                                    disabled={!isSiteOwner}
+                                    value={tempConfigs["retention.days"] ?? String(RETENTION_DAYS)}
+                                    onChange={onConfigInputChange}
+                                    helperText={`删掉的站点与审计日志留这么多天，到期自动清除（${RETENTION_DAYS_MIN}-${RETENTION_DAYS_MAX}，默认 ${RETENTION_DAYS}）`}
+                                    slotProps={{
+                                        htmlInput: { min: RETENTION_DAYS_MIN, max: RETENTION_DAYS_MAX }
+                                    }}
+                                />
+                                <TextField
+                                    margin='dense'
+                                    size='small'
+                                    id='inactive-disable-days'
+                                    name='inactive.disableDays'
+                                    label='多久没登录算沉睡（天）'
+                                    type='number'
+                                    fullWidth
+                                    variant='outlined'
+                                    disabled={!isSiteOwner}
+                                    value={tempConfigs["inactive.disableDays"] ?? ""}
+                                    onChange={onConfigInputChange}
+                                    placeholder={String(INACTIVE_DISABLE_DAYS_DEFAULT)}
+                                    helperText={`超过这个天数没活跃的普通账号会被停用（数据保留，默认 ${INACTIVE_DISABLE_DAYS_DEFAULT} 天）。站点所有者本人不受影响`}
+                                    slotProps={{
+                                        htmlInput: { min: 30 }
+                                    }}
+                                />
+                            </TwoCol>
                             <TextField
                                 margin='dense'
                                 size='small'
-                                id='retention-days'
-                                name='retention.days'
-                                label='审计与回收站保留（天）'
+                                id='inactive-grace-days'
+                                name='inactive.deleteGraceDays'
+                                label='停用后再过多久彻底删除（天）'
                                 type='number'
                                 fullWidth
                                 variant='outlined'
                                 disabled={!isSiteOwner}
-                                value={tempConfigs["retention.days"] ?? String(RETENTION_DAYS)}
+                                value={tempConfigs["inactive.deleteGraceDays"] ?? ""}
                                 onChange={onConfigInputChange}
-                                helperText={`删掉的站点与审计日志留这么多天，到期自动清除（${RETENTION_DAYS_MIN}-${RETENTION_DAYS_MAX}，默认 ${RETENTION_DAYS}）`}
+                                placeholder={String(INACTIVE_DELETE_GRACE_DAYS_DEFAULT)}
+                                helperText={`停用之后还有这么长的反悔期，期间重新登录（或用恢复密钥重置密码）即可恢复；到期才真正删除并释放数据库空间（默认 ${INACTIVE_DELETE_GRACE_DAYS_DEFAULT} 天）`}
                                 slotProps={{
-                                    htmlInput: { min: RETENTION_DAYS_MIN, max: RETENTION_DAYS_MAX }
+                                    htmlInput: { min: 1 }
                                 }}
                             />
                         </Section>

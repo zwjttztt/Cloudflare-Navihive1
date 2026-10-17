@@ -46,6 +46,8 @@ function baseConfigs(over: Record<string, string> = {}): Record<string, string> 
         "site.thumbApi": "",
         "site.customCss": "",
         "retention.days": "7",
+        "inactive.disableDays": "90",
+        "inactive.deleteGraceDays": "14",
         ...over,
     };
 }
@@ -198,7 +200,7 @@ const sliders = () => [...document.querySelectorAll(".MuiSlider-root")];
 
 test.afterEach(cleanup);
 
-test("设置：站点所有者看不到「外观按账号保存」提示，数据保留可编辑", () => {
+test("设置：站点所有者看不到「外观按账号保存」提示，数据保留三项可编辑", () => {
     render({ isSiteOwner: true });
     assert.equal(
         alerts().some(t => t.includes("外观按账号保存")),
@@ -206,13 +208,14 @@ test("设置：站点所有者看不到「外观按账号保存」提示，数�
         "所有者不该看到这条按账号保存的说明"
     );
     assert.equal(alerts().some(t => t.includes("只有站点所有者可以修改")), false);
-    // 沉睡治理两个阈值 2026-10-17 随功能下线，数据保留只剩审计与回收站这一项
-    assert.equal(inputById("retention-days")?.disabled, false, "retention-days 对所有者应该可编辑");
-    assert.equal(inputById("inactive-disable-days"), null, "沉睡停用阈值入口已移除");
-    assert.equal(inputById("inactive-grace-days"), null, "沉睡宽限期入口已移除");
+    // 沉睡治理两个阈值 2026-10-17（v3.1.1）恢复给所有者配置：普通账号继续被治理，
+    // 所有者本人永不被治理，但这两个天数归所有者调
+    for (const id of ["retention-days", "inactive-disable-days", "inactive-grace-days"]) {
+        assert.equal(inputById(id)?.disabled, false, `${id} 对所有者应该可编辑`);
+    }
 });
 
-test("设置：非所有者会降级 —— 数据保留禁用，且两处都写清原因", () => {
+test("设置：非所有者会降级 —— 数据保留三项禁用，且两处都写清原因", () => {
     render({ isSiteOwner: false });
     assert.ok(
         alerts().some(t => t.includes("外观按账号保存")),
@@ -222,7 +225,9 @@ test("设置：非所有者会降级 —— 数据保留禁用，且两处都写
         alerts().some(t => t.includes("只有站点所有者可以修改")),
         "数据保留区要说明为什么改不了"
     );
-    assert.equal(inputById("retention-days")?.disabled, true, "retention-days 对非所有者应该禁用");
+    for (const id of ["retention-days", "inactive-disable-days", "inactive-grace-days"]) {
+        assert.equal(inputById(id)?.disabled, true, `${id} 对非所有者应该禁用`);
+    }
     // 外观类字段不受影响：非所有者照样能改自己那份
     assert.equal(inputById("site-title")?.disabled, false, "标题这类外观项非所有者也能改");
 });
@@ -231,9 +236,15 @@ test("设置：输入框改动带上配置键名（name），保存才落库靠�
     render();
     setInputValue(inputById("site-title")!, "新标题");
     setInputValue(inputById("retention-days")!, "30");
+    // 沉睡治理两个阈值（v3.1.1 恢复给所有者配置）：键名错了服务端就存到别处，
+    //  cron 读的还是旧值 —— 界面看着改了、实际没生效
+    setInputValue(inputById("inactive-disable-days")!, "60");
+    setInputValue(inputById("inactive-grace-days")!, "10");
     assert.deepEqual(calls.configChanges, [
         { name: "site.title", value: "新标题" },
         { name: "retention.days", value: "30" },
+        { name: "inactive.disableDays", value: "60" },
+        { name: "inactive.deleteGraceDays", value: "10" },
     ]);
 });
 

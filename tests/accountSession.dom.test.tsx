@@ -9,7 +9,8 @@
 // - 登出要清干净 —— 邀请码、恢复密钥状态、批量多选态留着，换个人登录就看到了上一个人的东西；
 // - 生成恢复密钥必须「先落库成功、再下载私钥」—— 反过来会出现私钥存了但服务器不认。
 //
-// （沉睡治理的阈值 / 扫描 / 账号清单 UI 2026-10-17 起对站点所有者不再开放；
+// （沉睡治理的阈值 / 扫描 / 账号清单 UI 在 v3.1.1 恢复给站点所有者可见——只读展示 +
+// 手动扫描 + 重新启用，改阈值统一在「网站设置 → 数据保留」；后端扫描照旧对普通账号生效。
 // 注销账号保留但只对普通账号开放，用例照旧盯它的行为。）
 
 import { test, afterEach } from "node:test";
@@ -18,7 +19,7 @@ import { useRef, useState } from "react";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { useAccountSession } from "../src/hooks/useAccountSession";
-import type { SessionInfo } from "../src/API/http";
+import type { AccountInfo, SessionInfo } from "../src/API/http";
 
 type Params = Parameters<typeof useAccountSession>[0];
 type Api = Params["api"];
@@ -438,6 +439,81 @@ test("退出其它设备：把退掉的台数说清楚", async () => {
     await run(() => a().handleRevokeOthers());
     await flush();
     assert.ok(log.notifies.some(n => n.includes("2 台")), `实际：${log.notifies}`);
+});
+
+// ---- 沉睡账号治理（走 fetch，需要打桩）----
+
+test("手动扫描沉睡账号：成功时把停用了多少、清除了多少报出来", async () => {
+    const log = emptyLog();
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+        new Response(JSON.stringify({ success: true, disabled: 2, deleted: 1 }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+        })) as typeof fetch;
+    try {
+        mount(<Harness log={log} o={{ startAuthenticated: true }} />);
+        const res = await a().handleSweepInactive();
+        assert.deepEqual(res, { success: true, disabled: 2, deleted: 1 });
+    } finally {
+        globalThis.fetch = realFetch;
+    }
+});
+
+test("手动扫描：响应 500 但 body 里写了 success 也不算成功", async () => {
+    const log = emptyLog();
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+        new Response(JSON.stringify({ success: true, disabled: 9 }), {
+            status: 500,
+            headers: { "Content-Type": "application/json" },
+        })) as typeof fetch;
+    try {
+        mount(<Harness log={log} o={{ startAuthenticated: true }} />);
+        const res = await a().handleSweepInactive();
+        assert.equal(res.success, false);
+    } finally {
+        globalThis.fetch = realFetch;
+    }
+});
+
+test("重新启用账号：失败时把服务端原因转述出来", async () => {
+    const log = emptyLog();
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+        new Response(JSON.stringify({ success: false, message: "该账号已被清除" }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+        })) as typeof fetch;
+    try {
+        mount(<Harness log={log} o={{ startAuthenticated: true }} />);
+        await run(() => a().handleExemptUser(3));
+        await flush();
+        assert.ok(log.notifies.some(n => n.includes("已被清除")), `实际：${log.notifies}`);
+    } finally {
+        globalThis.fetch = realFetch;
+    }
+});
+
+test("账号清单只有 owner 拉得到（普通账号不发起请求）", async () => {
+    const log = emptyLog();
+    const realFetch = globalThis.fetch;
+    let called = 0;
+    globalThis.fetch = (async () => {
+        called++;
+        return new Response(JSON.stringify({ success: true, users: [] as AccountInfo[] }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+        });
+    }) as typeof fetch;
+    try {
+        mount(<Harness log={log} o={{ me: { id: 5, username: "u", role: "user" } }} />);
+        await run(() => a().fetchAccountList());
+        await flush();
+        assert.equal(called, 0, "普通账号不该去拉 /api/users");
+    } finally {
+        globalThis.fetch = realFetch;
+    }
 });
 
 // ---- 启动：bootstrap?full=1 把身份一起带回来时，省掉那两个请求 ----

@@ -47,6 +47,7 @@ function fakeInput(calls: Calls, over: Partial<AppCommandsInput> = {}): AppComma
         handleOpenConfig: () => {},
         setOpenAccount: () => {},
         fetchSessions: () => {},
+        fetchAccountList: () => {},
         handleOpenBackup: () => {},
         setBookmarkOpen: () => {},
         runLinkCheck: () => {},

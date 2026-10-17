@@ -3,10 +3,11 @@
 // 改密按钮的脏检查（没填新账号/新密码就不该能提交）、生成私钥要先验当前密码、
 // 邀请码的显示时机，以及「登录设备」一节的渲染。
 //
-// 角色边界（2026-10-17 用户要求，v3.1.0 起）：「注销当前账号」与「不活跃停用 /
-// 沉睡治理」都**只不对站点所有者开放**——功能本身保留（普通账号照样能注销、
-// 照样被沉睡治理），只是 owner 的弹窗里没有这些入口。用例钉住两侧：
-// owner 看不到、普通账号看得到。
+// 角色边界（2026-10-17 用户要求，v3.1.0 起）：「注销当前账号」只对普通账号开放——
+// 站点所有者不提供入口（后端也拒绝 owner），站点不能没有管理者。而「沉睡治理」在
+// v3.1.1 恢复给所有者可见：owner 在「账号管理」里能看到其它账号多久没登录、谁快被
+// 停用/清除（只读 + 手动扫描 + 重新启用），但**不能在此改阈值**（改阈值的入口统一
+// 在「网站设置 → 数据保留」）。用例钉住：owner 看得到治理清单、普通账号看不到。
 //
 // 组件所有值都由父组件持有（auth / invite / sessions），所以用一个 Harness 持有状态，
 // 尽量贴近 App 里的真实用法。
@@ -16,7 +17,7 @@ import assert from "node:assert/strict";
 import { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import AccountDialog, { type AccountAuthDraft } from "../src/components/AccountDialog";
-import type { InviteInfo, SessionInfo } from "../src/API/http";
+import type { AccountInfo, InviteInfo, SessionInfo } from "../src/API/http";
 
 if (typeof globalThis.localStorage === "undefined") {
     Object.defineProperty(globalThis, "localStorage", {
@@ -26,7 +27,23 @@ if (typeof globalThis.localStorage === "undefined") {
     });
 }
 
+const DAY = 24 * 60 * 60;
 const now = () => Math.floor(Date.now() / 1000);
+
+function makeAccount(over: Partial<AccountInfo> = {}): AccountInfo {
+    return {
+        id: 7,
+        username: "alice",
+        role: "user",
+        status: "active",
+        lastActiveAt: now() - 3 * DAY,
+        disabledAt: null,
+        createdAt: now() - 100 * DAY,
+        willDisableAt: now() + 20 * DAY,
+        willDeleteAt: null,
+        ...over,
+    };
+}
 
 function makeSession(over: Partial<SessionInfo> = {}): SessionInfo {
     return {
@@ -48,6 +65,8 @@ type Calls = {
     invites: number;
     revoked: string[];
     revokeOthers: number;
+    exempts: number[];
+    policies: Array<{ disableDays: number; graceDays: number }>;
     deletes: number;
     closes: number;
 };
@@ -59,6 +78,8 @@ type Opts = {
     inviteResult?: { success: boolean; message?: string; code?: string; expiresAt?: number };
     sessions?: SessionInfo[];
     withSessions?: boolean;
+    accounts?: AccountInfo[];
+    withPolicy?: boolean;
     withInvite?: boolean;
 };
 
@@ -74,6 +95,8 @@ function emptyCalls(): Calls {
         invites: 0,
         revoked: [],
         revokeOthers: 0,
+        exempts: [],
+        policies: [],
         deletes: 0,
         closes: 0,
     };
@@ -128,6 +151,13 @@ function Harness(o: Opts) {
                     ? undefined
                     : () => calls.deletes++
             }
+            accounts={o.accounts}
+            onExemptUser={uid => calls.exempts.push(uid)}
+            inactivePolicy={o.withPolicy === false ? undefined : { disableDays: 180, graceDays: 30 }}
+            onSaveInactivePolicy={async p => {
+                calls.policies.push(p);
+                return { success: true };
+            }}
         />
     );
 }
@@ -161,6 +191,15 @@ const buttonExact = (text: string) =>
     );
 
 const inputById = (id: string) => document.querySelector<HTMLInputElement>(`#${id}`);
+
+/** 按 MUI 的 label 找输入框（label 后面可能带「*」，比对前抹掉） */
+function inputByLabel(label: string): HTMLInputElement | null {
+    const norm = (s: string) => (s ?? "").trim().replace(/\s*\*\s*$/, "").trim();
+    const fc = [...document.querySelectorAll(".MuiFormControl-root")].find(
+        el => norm(el.querySelector("label")?.textContent ?? "") === norm(label)
+    );
+    return fc ? fc.querySelector("input") : null;
+}
 
 /** 弹窗正文里所有可见文字（两个 Dialog 都会挂到 body 上，一起搜） */
 const pageText = () => document.body.textContent ?? "";
@@ -375,10 +414,66 @@ test("账号：普通账号有「注销当前账号」入口，点了只触发�
     assert.equal(calls.deletes, 1, "注销只负责触发，二次确认交给父组件");
 });
 
-test("账号：「不活跃停用 / 沉睡治理」对所有者不开放（后端扫描照旧对普通账号生效）", () => {
-    render();
-    assert.equal(pageText().includes("账号与沉睡治理"), false, "治理节对所有者不渲染");
-    assert.equal(pageText().includes("沉睡"), false, "相关文案一并清掉");
-    assert.equal(button("立即扫描"), undefined, "手动扫描入口不再有");
-    assert.equal(button("重新启用"), undefined, "豁免入口不再有");
+// ---------------- 角色边界：沉睡治理清单只给站点所有者（2026-10-17 用户要求：功能保留，
+// 普通账号照样被治理，只是 owner 的弹窗里要能看到「其他账号多久没登录」） ----------------
+
+test("账号：非所有者看不到账号清单与沉睡治理", () => {
+    // 普通账号即使父组件误传了 accounts，也不该渲染治理小节（App 里 owner 才传，这里守边界）
+    render({
+        currentUser: { username: "alice", role: "user" },
+        accounts: [makeAccount()],
+    });
+    assert.equal(pageText().includes("账号与沉睡治理"), false, "账号清单只有所有者能看");
+    assert.equal(button("重新启用"), undefined);
+});
+
+test("账号：所有者的清单里只给已停用的账号「重新启用」", () => {
+    render({
+        accounts: [
+            makeAccount({ id: 7, username: "alice", status: "active" }),
+            makeAccount({
+                id: 8,
+                username: "bob",
+                status: "disabled",
+                disabledAt: now() - 5 * DAY,
+                willDisableAt: null,
+                willDeleteAt: now() + 25 * DAY,
+            }),
+        ],
+    });
+    assert.ok(pageText().includes("账号与沉睡治理"), "所有者应该看得到这一节");
+    assert.ok(pageText().includes("bob"));
+    assert.ok(pageText().includes("已停用"), "停用账号要标出状态与倒计时");
+
+    const revive = [...document.querySelectorAll("button")].filter(
+        b => (b.textContent ?? "").trim() === "重新启用"
+    );
+    assert.equal(revive.length, 1, "只有 bob 是停用的，不该给 alice 也来一个按钮");
+    click(revive[0]);
+    assert.deepEqual(calls.exempts, [8]);
+});
+
+test("账号：沉睡阈值只展示不在这儿改（编辑入口统一在网站设置）", () => {
+    // 整块只在「所有者 + 有账号清单」时才渲染，所以这里必须带上 accounts
+    render({ accounts: [makeAccount()] });
+
+    // 阈值显示的是父组件（服务端）读回来的值
+    const disableInput = inputByLabel("多久没登录就停用（天）");
+    const graceInput = inputByLabel("停用后保留多久再清除（天）");
+    assert.ok(disableInput, "应显示停用阈值");
+    assert.ok(graceInput, "应显示清除宽限期");
+    assert.equal(disableInput!.value, "180");
+    assert.equal(graceInput!.value, "30");
+
+    // 两个输入框都是只读，且不再有「保存阈值」按钮 —— 改配置的入口只有「网站设置 → 数据保留」一处
+    assert.equal(disableInput!.disabled, true, "停用阈值应为只读");
+    assert.equal(graceInput!.disabled, true, "清除宽限期应为只读");
+    assert.equal(button("保存阈值"), undefined, "这里不该再提供保存阈值的按钮");
+    assert.ok(
+        pageText().includes("网站设置 → 数据保留"),
+        "要说明去哪儿改这两个天数"
+    );
+
+    // 阈值不再往父组件回写（onSaveInactivePolicy 这一段已经没人调了）
+    assert.equal(calls.policies.length, 0, "这一页不该再提交阈值");
 });

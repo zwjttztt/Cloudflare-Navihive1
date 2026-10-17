@@ -648,9 +648,15 @@ function App() {
         deleteAccountPassword,
         setDeleteAccountPassword,
         deleteAccountBusy,
+        accountList,
         sessions,
+        inactivePolicy,
         handleRegister,
         handleCreateInvite,
+        fetchAccountList,
+        handleSaveInactivePolicy,
+        handleExemptUser,
+        handleSweepInactive,
         fetchSessions,
         handleRevokeSession,
         handleRevokeOthers,
@@ -1284,6 +1290,7 @@ function App() {
         handleOpenConfig,
         setOpenAccount,
         fetchSessions,
+        fetchAccountList,
         handleOpenBackup,
         setBookmarkOpen,
         runLinkCheck,
@@ -1618,6 +1625,7 @@ function App() {
                                         handleMenuClose();
                                         setOpenAccount(true);
                                         void fetchSessions();
+                                        void fetchAccountList();
                                     }}
                                     onOpenStats={() => {
                                         handleMenuClose();
@@ -1830,6 +1838,11 @@ function App() {
                         sessions={sessions}
                         onRevokeSession={jti => void handleRevokeSession(jti)}
                         onRevokeOthers={() => void handleRevokeOthers()}
+                        accounts={accountList}
+                        onExemptUser={uid => void handleExemptUser(uid)}
+                        inactivePolicy={inactivePolicy ?? undefined}
+                        onSaveInactivePolicy={handleSaveInactivePolicy}
+                        onSweepInactive={handleSweepInactive}
                         onDeleteAccount={
                             currentUser && currentUser.role !== "owner"
                                 ? () => {

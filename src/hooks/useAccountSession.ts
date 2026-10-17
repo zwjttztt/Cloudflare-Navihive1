@@ -2,12 +2,17 @@
 // 原来内联在 App 里（约 465 行），连它自己的一组 state 一起搬出来；App 只剩一次调用。
 // 搬迁是原样搬运（只做整词改名）。
 // 「注销账号」只对普通账号开放（2026-10-17 用户要求：站点所有者本人不提供入口，
-// 后端 deleteAccount 对 owner 也一律拒绝）；「沉睡治理」的界面入口同样不对所有者
-// 开放，但后端扫描保留、继续对普通账号生效。
+// 后端 deleteAccount 对 owner 也一律拒绝）；「沉睡治理」的清单与手动扫描在 v3.1.1
+// 恢复给所有者可见（仅只读 + 重新启用，改阈值的入口统一在「网站设置 → 数据保留」），
+// 后端扫描保留、继续对普通账号生效。
 import { useCallback, useState, type Dispatch, type SetStateAction } from "react";
 import type { NavigationClient } from "../API/client";
 import type { MockNavigationClient } from "../API/mock";
-import type { SessionInfo } from "../API/http";
+import type { AccountInfo, SessionInfo } from "../API/http";
+import {
+    INACTIVE_DISABLE_DAYS_KEY,
+    INACTIVE_DELETE_GRACE_DAYS_KEY,
+} from "../API/http";
 import { setAccountUid } from "../API/offlineQueue";
 import { setUndoAccountUid } from "../utils/undoPersist";
 import { clearSessionBoundary } from "../utils/sessionBoundary";
@@ -21,7 +26,10 @@ import { clearRememberedLogin, saveRememberedLogin } from "../utils/rememberedLo
 import {
     classifyAuthFailure,
     cookieRejectedMessage,
+    readSweepResult,
+    resolveInactivePolicy,
 } from "../utils/authFlow";
+import { parseApiError } from "../API/apiError";
 import { reportError } from "../utils/errorReporter";
 import type { NotifySeverity } from "./useNotify";
 import type { GroupWithSites } from "../types";
@@ -105,6 +113,14 @@ export function useAccountSession({
     const [deleteAccountPassword, setDeleteAccountPassword] = useState("");
     const [deleteAccountBusy, setDeleteAccountBusy] = useState(false);
 
+    // 账号清单（仅 owner 拿得到）：每个账号的沉睡治理状态，给「账号管理」里那份列表用
+    const [accountList, setAccountList] = useState<AccountInfo[]>([]);
+    /** 沉睡治理阈值（天）：owner 在「账号管理」里可改，读不到就按服务端默认显示 */
+    const [inactivePolicy, setInactivePolicy] = useState<{
+        disableDays: number;
+        graceDays: number;
+    } | null>(null);
+
     // 登录设备（当前账号自己的会话）：有了它才能只踢某一台设备，
     // 不用靠改密把自己其它设备一起踢掉
     const [sessions, setSessions] = useState<SessionInfo[]>([]);
@@ -174,6 +190,102 @@ export function useAccountSession({
             };
         }
     };
+
+    /** 拉账号清单（仅 owner）：打开「账号管理」时调一次，用来看哪些账号快被停用/清除 */
+    const fetchAccountList = useCallback(async () => {
+        if (currentUser?.role !== "owner") return;
+        try {
+            const res = await fetch("/api/users", { credentials: "same-origin" });
+            if (!res.ok) return;
+            const data = (await res.json()) as { success?: boolean; users?: AccountInfo[] };
+            if (data.success) setAccountList(data.users || []);
+        } catch {
+            // 拉不到就当没有：账号管理里那一段直接不显示，不打扰正常功能
+        }
+        // 顺带把治理阈值读回来 —— 没配过就用服务端默认值，界面上显示的数字要和实际跑的一致
+        const [disableRaw, graceRaw] = await Promise.all([
+            api.getConfig(INACTIVE_DISABLE_DAYS_KEY),
+            api.getConfig(INACTIVE_DELETE_GRACE_DAYS_KEY),
+        ]);
+        setInactivePolicy(resolveInactivePolicy(disableRaw, graceRaw));
+    }, [api, currentUser?.role]);
+
+    /**
+     * 保存沉睡治理阈值。这两个键属于全站配置，服务端只放 owner 写
+     * （configs/batch 里非 webdav. 前缀的键都会校验 owner），普通账号调不动。
+     */
+    const handleSaveInactivePolicy = useCallback(
+        async (policy: { disableDays: number; graceDays: number }) => {
+            try {
+                const ok = await api.setConfigs({
+                    [INACTIVE_DISABLE_DAYS_KEY]: String(policy.disableDays),
+                    [INACTIVE_DELETE_GRACE_DAYS_KEY]: String(policy.graceDays),
+                });
+                if (!ok) return { success: false, message: "保存失败，请重试" };
+                setInactivePolicy(policy);
+                await fetchAccountList(); // 清单里的「约 N 天后停用」要跟着新阈值重算
+                return { success: true };
+            } catch (error) {
+                return {
+                    success: false,
+                    message: "保存失败：" + (error instanceof Error ? error.message : "未知错误"),
+                };
+            }
+        },
+        [api, fetchAccountList]
+    );
+
+    /** 重新启用某个账号 = 给它豁免沉睡治理（服务端会顺带把活跃时间刷成现在） */
+    const handleExemptUser = useCallback(
+        async (uid: number) => {
+            try {
+                const res = await fetch(`/api/users/${uid}/status`, {
+                    method: "POST",
+                    credentials: "same-origin",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ status: "active" }),
+                });
+                const data = (await res.json()) as { success?: boolean; message?: string };
+                if (data.success) {
+                    notify("已重新启用该账号", "success");
+                    await fetchAccountList();
+                } else {
+                    // 服务端迁移后失败体是 { error: { code, message } }，data.message 会没
+                    notify(parseApiError(data, res.status)?.message || "操作失败", "error");
+                }
+            } catch (error) {
+                notify("操作失败：" + (error instanceof Error ? error.message : "未知错误"), "error");
+            }
+        },
+        [fetchAccountList, notify]
+    );
+
+    /**
+     * 手动跑一次沉睡账号扫描（仅 owner）：等不及每周 cron 时用。
+     * 扫完一定重拉清单 —— 有人刚被停用/清除，界面还停在扫描前的状态会让人以为没生效。
+     */
+    const handleSweepInactive = useCallback(async () => {
+        try {
+            const res = await fetch("/api/users/sweep", {
+                method: "POST",
+                credentials: "same-origin",
+            });
+            const data = (await res.json().catch(() => ({}))) as {
+                success?: boolean;
+                message?: string;
+                disabled?: number;
+                deleted?: number;
+            };
+            const result = readSweepResult(res.ok, data, res.status);
+            if (result.success) await fetchAccountList();
+            return result;
+        } catch (error) {
+            return {
+                success: false,
+                message: "扫描失败：" + (error instanceof Error ? error.message : "未知错误"),
+            };
+        }
+    }, [fetchAccountList]);
 
     /** 拉登录设备列表（当前账号自己的）：打开「账号管理」时调一次 */
     const fetchSessions = useCallback(async () => {
@@ -494,9 +606,15 @@ export function useAccountSession({
         deleteAccountPassword,
         setDeleteAccountPassword,
         deleteAccountBusy,
+        accountList,
         sessions,
+        inactivePolicy,
         handleRegister,
         handleCreateInvite,
+        fetchAccountList,
+        handleSaveInactivePolicy,
+        handleExemptUser,
+        handleSweepInactive,
         fetchSessions,
         handleRevokeSession,
         handleRevokeOthers,

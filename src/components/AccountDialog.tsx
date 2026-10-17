@@ -7,6 +7,7 @@
 // 也容易让人以为「保存设置」会顺带改密码（其实两回事）。
 //
 // 组件本身不碰 API：改密提交、生成私钥、生成邀请码、注销都通过回调交给父组件。
+
 import type { ChangeEvent } from "react";
 import { useState } from "react";
 import {
@@ -27,7 +28,18 @@ import CloseIcon from "@mui/icons-material/Close";
 import VpnKeyIcon from "@mui/icons-material/VpnKey";
 import PersonRemoveIcon from "@mui/icons-material/PersonRemove";
 import { PasswordField } from "./PasswordField";
-import type { SessionInfo } from "../API/http";
+import type { AccountInfo, SessionInfo } from "../API/http";
+import {
+    INACTIVE_DISABLE_DAYS_DEFAULT,
+    INACTIVE_DELETE_GRACE_DAYS_DEFAULT,
+} from "../API/http";
+
+/** 距某个时间点还有几天（向上取整；null = 服务端没给推算依据） */
+function daysUntil(ts: number | null): number | null {
+    if (ts === null) return null;
+    const now = Math.floor(Date.now() / 1000);
+    return Math.max(0, Math.ceil((ts - now) / (24 * 60 * 60)));
+}
 
 /** 「最后活跃」的可读描述 */
 function formatLastActive(ts: number | null): string {
@@ -120,6 +132,27 @@ interface AccountDialogProps {
      * 后端对 owner 的注销请求也一律拒绝 —— 站点不能没有管理者。
      */
     onDeleteAccount?: () => void;
+    /** 账号清单（仅站点所有者能拿到）：每个账号的沉睡治理状态 */
+    accounts?: AccountInfo[];
+    /** 重新启用某个被停用的账号 = 豁免沉睡治理（服务端会顺带刷新活跃时间） */
+    onExemptUser?: (uid: number) => void;
+    /** 沉睡治理阈值（天）：没配就按服务端默认 180 / 30 显示 */
+    inactivePolicy?: { disableDays: number; graceDays: number };
+    /** 保存阈值：父组件负责调接口，这里只做输入与反馈 */
+    onSaveInactivePolicy?: (policy: {
+        disableDays: number;
+        graceDays: number;
+    }) => Promise<{ success: boolean; message?: string }>;
+    /**
+     * 手动跑一次沉睡扫描：等不及每周 cron 时用（刚调完阈值、或想立刻看清谁会被清）。
+     * 父组件负责调接口，这里只做反馈；回传的停用/清除条数直接显示出来。
+     */
+    onSweepInactive?: () => Promise<{
+        success: boolean;
+        message?: string;
+        disabled?: number;
+        deleted?: number;
+    }>;
 }
 
 /** 分组：左侧一小段主色竖条 + 组标题，可选一行组说明 */
@@ -201,6 +234,11 @@ export default function AccountDialog({
     onRevokeSession,
     onRevokeOthers,
     onDeleteAccount,
+    accounts,
+    onExemptUser,
+    inactivePolicy,
+    onSaveInactivePolicy,
+    onSweepInactive,
 }: AccountDialogProps) {
     // 恢复密钥的生成结果提示（成功/失败都就地反馈，私钥由浏览器直接下载）
     const [recoveryBusy, setRecoveryBusy] = useState(false);
@@ -217,6 +255,43 @@ export default function AccountDialog({
     // 否则只是想下载私钥的人被迫先填「当前密码」，再点保存会被判成「没填新密码」。
     const [recoveryPwdOpen, setRecoveryPwdOpen] = useState(false);
     const [recoveryPwd, setRecoveryPwd] = useState("");
+
+    // 沉睡治理阈值在这里只读展示：改它的入口统一放在「网站设置 → 数据保留」，
+    // 两处读写的是同一份全站配置，开两个编辑框只会让人不知道该信哪一个
+    // 手动扫描：与「保存阈值」分开 —— 它是一次性动作，结果要把停用/清除的条数报出来
+    const [sweepBusy, setSweepBusy] = useState(false);
+    const [sweepMsg, setSweepMsg] = useState<{
+        type: "success" | "error";
+        text: string;
+    } | null>(null);
+
+    const handleSweep = async () => {
+        setSweepBusy(true);
+        setSweepMsg(null);
+        try {
+            const result = await onSweepInactive?.();
+            if (result?.success === false) {
+                setSweepMsg({ type: "error", text: result.message || "扫描失败" });
+                return;
+            }
+            const disabled = result?.disabled ?? 0;
+            const deleted = result?.deleted ?? 0;
+            setSweepMsg({
+                type: "success",
+                text:
+                    disabled === 0 && deleted === 0
+                        ? "扫描完成，暂无需要停用或清除的账号"
+                        : `扫描完成：停用 ${disabled} 个、清除 ${deleted} 个`,
+            });
+        } catch (error) {
+            setSweepMsg({
+                type: "error",
+                text: "扫描失败：" + (error instanceof Error ? error.message : "未知错误"),
+            });
+        } finally {
+            setSweepBusy(false);
+        }
+    };
 
     const authDirty = Boolean(auth.username.trim() || auth.newPassword);
 
@@ -609,6 +684,147 @@ export default function AccountDialog({
                                 </Typography>
                             ) : null}
                         </Section>
+
+                        {/* 4. 账号清单：只有站点所有者看得到 —— 谁快被停用、谁快被清除。
+                            沉睡治理是自动跑的，这里是人工兜底：认出是真人在用的账号就给豁免。 */}
+                        {currentUser?.role === "owner" && accounts && accounts.length > 0 ? (
+                            <Section
+                                title='账号与沉睡治理'
+                                hint='这一段属于全站治理，只有站点所有者能操作。长期不登录的账号会先被停用（数据一条不删），宽限期满后自动清除以释放空间。认出是真人在用的，可以提前豁免。'
+                            >
+                                <Stack spacing={1}>
+                                    {accounts.map(account => {
+                                        const disabled = account.status === "disabled";
+                                        const daysToDisable = daysUntil(account.willDisableAt);
+                                        const daysToDelete = daysUntil(account.willDeleteAt);
+                                        return (
+                                            <Stack
+                                                key={account.id}
+                                                direction={{ xs: "column", sm: "row" }}
+                                                spacing={1}
+                                                sx={{
+                                                    alignItems: { xs: "stretch", sm: "center" },
+                                                    justifyContent: 'space-between',
+                                                    px: 1.25,
+                                                    py: 1,
+                                                    borderRadius: 1,
+                                                    bgcolor: "action.hover"
+                                                }}>
+                                                <Box>
+                                                    <Typography variant='body2' sx={{
+                                                        fontWeight: '600'
+                                                    }}>
+                                                        {account.username}
+                                                        {account.role === "owner"
+                                                            ? "（站点所有者）"
+                                                            : ""}
+                                                    </Typography>
+                                                    <Typography
+                                                        variant='caption'
+                                                        color={
+                                                            disabled
+                                                                ? disabled && daysToDelete !== null && daysToDelete <= 7
+                                                                    ? "error.main"
+                                                                    : "warning.main"
+                                                                : "text.secondary"
+                                                        }
+                                                    >
+                                                        {disabled
+                                                            ? `已停用${daysToDelete !== null ? `，约 ${daysToDelete} 天后清除` : "，等待清除"}`
+                                                            : `最近活跃：${formatLastActive(account.lastActiveAt)}${daysToDisable !== null ? ` · 约 ${daysToDisable} 天后停用` : ""}`}
+                                                    </Typography>
+                                                </Box>
+                                                {disabled ? (
+                                                    <Button
+                                                        variant='outlined'
+                                                        size='small'
+                                                        onClick={() => onExemptUser?.(account.id)}
+                                                        sx={{ flex: "none", whiteSpace: "nowrap" }}
+                                                    >
+                                                        重新启用
+                                                    </Button>
+                                                ) : null}
+                                            </Stack>
+                                        );
+                                    })}
+                                </Stack>
+
+                                {onSaveInactivePolicy ? (
+                                    <Box sx={{ mt: 1.5 }}>
+                                        <Divider sx={{ mb: 1.5 }} />
+                                        <TwoCol>
+                                            <TextField
+                                                label='多久没登录就停用（天）'
+                                                size='small'
+                                                value={String(
+                                                    inactivePolicy?.disableDays ??
+                                                        INACTIVE_DISABLE_DAYS_DEFAULT
+                                                )}
+                                                disabled
+                                            />
+                                            <TextField
+                                                label='停用后保留多久再清除（天）'
+                                                size='small'
+                                                value={String(
+                                                    inactivePolicy?.graceDays ??
+                                                        INACTIVE_DELETE_GRACE_DAYS_DEFAULT
+                                                )}
+                                                disabled
+                                            />
+                                        </TwoCol>
+                                        <Typography
+                                            variant='caption'
+                                            sx={{
+                                                color: 'text.secondary',
+                                                display: "block",
+                                                mt: 0.5
+                                            }}>
+                                            要改这两个天数，去「网站设置 → 数据保留」；这里显示的是同一份配置，只是不在这里改。
+                                        </Typography>
+                                        <Stack
+                                            direction='row'
+                                            spacing={1.25}
+                                            sx={{
+                                                alignItems: 'center',
+                                                mt: 1.25,
+                                                flexWrap: "wrap",
+                                                rowGap: 1
+                                            }}>
+                                            {/* 立刻跑一遍：不用等每周 cron，停用/清除条数直接回显 */}
+                                            {onSweepInactive ? (
+                                                <Button
+                                                    variant='text'
+                                                    size='small'
+                                                    onClick={() => void handleSweep()}
+                                                    disabled={sweepBusy}
+                                                    sx={{ flex: "none" }}
+                                                >
+                                                    {sweepBusy ? "扫描中…" : "立即扫描"}
+                                                </Button>
+                                            ) : null}
+                                            <Typography variant='caption' sx={{
+                                                color: 'text.secondary'
+                                            }}>
+                                                站点所有者账号永不参与治理；清除前会先停用并保留数据
+                                            </Typography>
+                                        </Stack>
+                                        {sweepMsg ? (
+                                            <Typography
+                                                variant='caption'
+                                                color={
+                                                    sweepMsg.type === "error"
+                                                        ? "error.main"
+                                                        : "success.main"
+                                                }
+                                                sx={{ display: "block", mt: 0.75 }}
+                                            >
+                                                {sweepMsg.text}
+                                            </Typography>
+                                        ) : null}
+                                    </Box>
+                                ) : null}
+                            </Section>
+                        ) : null}
 
                         {/* 4. 注销：破坏性操作沉底。只给普通账号 —— 站点所有者不传
                             onDeleteAccount（后端同样拒绝 owner），站点不能没有管理者。 */}
