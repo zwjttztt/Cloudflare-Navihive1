@@ -494,6 +494,10 @@ export function FolderTagSection({
                                     onContextMenu={e => {
                                         if (!onNoteContext) return;
                                         e.preventDefault();
+                                        // 同列表行：开菜单前摘掉焦点（菜单关闭时 Modal 会
+                                        // 把焦点还原到打开前的元素，残留就会挂出来）
+                                        (e.currentTarget as HTMLElement).blur();
+                                        (document.activeElement as HTMLElement | null)?.blur?.();
                                         // 菜单弹在鼠标处（原来锚整行顶部，右键行中下部会「错位」）
                                         onNoteContext(n.id, anchorAtMouse(e.clientX, e.clientY));
                                     }}
@@ -569,6 +573,9 @@ export function FolderTagSection({
                             onContextMenu={e => {
                                 if (!onNoteContext) return;
                                 e.preventDefault();
+                                // 同列表行：开菜单前摘掉焦点，防菜单关闭时焦点还原造成残留
+                                (e.currentTarget as HTMLElement).blur();
+                                (document.activeElement as HTMLElement | null)?.blur?.();
                                 // 菜单弹在鼠标处（同上）
                                 onNoteContext(n.id, anchorAtMouse(e.clientX, e.clientY));
                             }}

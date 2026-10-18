@@ -67,7 +67,10 @@ function mountSync(opts: { prefs?: Record<string, unknown>; withNotesChanges?: b
     const api: Record<string, unknown> = {
         listNotes: async () => {
             listCalls += 1;
-            return [{ ...note }];
+            // ⚠️ changed>0 时 rev 递增（模拟外部设备真的改了内容）：乐观锁下外部
+            // 变更必然推 rev，新轮询逻辑靠「reload 前后 rev 是否变化」区分
+            // 本设备写入与外部变更 —— 桩不递增的话变更会被当成已同步的写入过滤掉
+            return [{ ...note, rev: changed > 0 ? (note.rev ?? 0) + 1 : note.rev }];
         },
         updateNote: async () => note,
     };
@@ -78,6 +81,8 @@ function mountSync(opts: { prefs?: Record<string, unknown>; withNotesChanges?: b
                 success: true,
                 now: `2030-01-01 00:00:${String(10 + sincStent.length).padStart(2, "0")}`,
                 notesChanged: changed,
+                // 与后端一致：notesChanged>0 时必须给出变更笔记 id
+                changedNoteIds: changed > 0 ? [1] : [],
                 folders: [],
                 tags: [],
                 noteTags: {},

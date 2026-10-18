@@ -110,9 +110,14 @@ export default function VersionUpgradeSection({ version }: { version?: string })
                         component='span'
                         variant='body2'
                         sx={{ fontWeight: 600 }}
-                        data-current-version={localVersion || "dev"}
+                        title={localVersion || undefined}
+                        data-current-version={
+                            (localVersion ? localVersion.split("+")[0] : "") || "dev"
+                        }
                     >
-                        {localVersion || "开发模式（未构建）"}
+                        {/* 只显示语义版本（v3.5.0）：+短哈希/构建号收进 title 悬浮提示，
+                            与右下角徽标同口径 —— 「常驻要短」的尺子是同一把 */}
+                        {localVersion ? localVersion.split("+")[0] : "开发模式（未构建）"}
                     </Typography>
                 </Typography>
                 <Box sx={{ mt: 1, display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>

@@ -144,7 +144,10 @@ test("渲染当前版本号与检查按钮", t => {
 
     const el = document.querySelector("[data-current-version]");
     assert.ok(el !== null, "应有当前版本节点");
-    assert.equal(el.textContent, "v3.4.0+abc123");
+    // ⚠️ 只显示语义版本（v3.4.0）：+短哈希/构建号收进 title 悬浮提示，
+    // 与右下角徽标同口径 —— 用户要求「v3.5.0 后面的不要显示」
+    assert.equal(el.textContent, "v3.4.0");
+    assert.equal(el.getAttribute("title"), "v3.4.0+abc123", "完整版本进 title 可悬浮查看");
     assert.ok(document.querySelector("[data-check-update]"), "应有检查更新按钮");
     assert.equal(
         document.querySelector("[data-update-result]"),

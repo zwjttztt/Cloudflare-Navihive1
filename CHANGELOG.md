@@ -6,6 +6,21 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。---
 
+## 2026-10-18（日）· 修复：跨设备同步提示四连误报 + 版本号显示收敛
+
+四条用户实测报的提示噪音，同一个根：**「跨设备变更」没有区分「是别的设备改的」还是「本设备自己改的」**，外加两处焦点/显示残留。
+
+1. **每次刷新弹「其它设备删除了 N 张卡片，已同步」**（`useSiteSync`）：轮询游标原来只存在内存 ref 里，刷新后第一次轮询 since 为空，后端把 site_tombstone **全量**倒回来，历史删除被当成刚发生的。现在游标持久化到 localStorage（按账号隔离，`utils/siteSync.ts`），刷新接着上次的位置增量；游标也为空（第一次用/清了存储）时只建基线不提示——与笔记侧 notesChanges 同口径。
+2. **自己删的卡片也弹「其它设备删除了」**：删除会写墓碑，下一轮轮询命中自己的删除。`client.deleteSite/deleteSites` 成功后把 id 记入本设备删除集合（24h 过期自清，批删只记 items 里真删掉的），提示前过滤——自己删的不再弹，界面当时就挂着撤销提示条，再来一条「其它设备删除了」纯属误导。
+3. **每次打开笔记弹「当前打开的笔记在其他设备被修改：保存时会提示冲突」**（`useNotes` 轮询）：本设备自己保存也会推 updated_at，下一轮轮询照样命中 `updated_at >= since` 窗口。现在 reload 前快照本设备已知 rev（revById，保存成功时回填的就是服务端新 rev），reload 后比对服务端 rev：相等 = 本设备已同步的写入，不算外部变更；只有 rev 真的变了的才进 `lastSyncChangedIds`、才弹「其他设备的笔记更新已同步到列表」。真正的外部变更照常提示，保存冲突守卫（409）不变。
+4. **右键笔记菜单关闭后残留白色圆圈**（列表行 ⋯ 按钮）：菜单关闭时 MUI Modal 会把焦点**还原**给打开前的元素（之前点过 ⋯ 按钮就是它），行内 `:focus-within` 命中 → 22×22 的圆形按钮常显成一颗白点。显隐规则改用 `:has(.note-row-actions:focus-visible)`：程序化还原不匹配（最后交互是指针）、键盘 Tab 进按钮仍匹配（可达性不丢）；右键 handler 同步把行内活动焦点一并摘掉（之前点过 ⋯ 再右键时光 blur 行容器摘不掉按钮上的焦点）；左栏 rail 行右键补齐同款焦点摘除。
+
+另：网站设置「版本与升级」的当前版本改为**只显示语义版本**（`v3.5.0`），`+短哈希/构建号`收进悬浮提示——与右下角徽标同口径。
+
+守卫：`tests/siteSync.test.ts`（游标与删除记录 5 例）、`tests/siteSyncHook.dom.test.tsx`（挂闸逐轮驱动：首轮静默/游标持久化/本设备删除过滤 3 例）、`tests/useNotesSyncFilter.dom.test.tsx`（rev 比对：首轮建基线/自己保存不弹/外部变更照常弹/游标推进 4 例）、`tests/syncNotifyGuard.test.ts`（静态守卫 5 例，剥注释 + 反向验证）、`tests/versionUpgrade.dom.test.tsx` 更新 1 例（语义版本 + title 完整版）。
+
+---
+
 ## 2026-10-18（日）· 修复+新增：分享口令框挡浏览器自动填充全站排查 · 移动抽屉新建文件夹 · 网站设置「版本与升级」
 
 **1. 分享口令框不再被浏览器自动带入密码（全站排查 + 守卫）。** 「分享分组口令」输入框会被浏览器 formless 自动填充把保存的站点密码带进来——`autocomplete='off'` 对 password 类字段是规范级无效的，有效的是 `autoComplete='new-password'`。修复四处：`GroupShareDialog` 两处口令框、`PublicGroupPage`、`PublicNotePage` 公开口令框，以及 `NotesSettingsDialog` 恢复备份口令框（off → new-password）。全站排查结论：站点密码/备份相关字段本就走 secretInput 方案（type=text + CSS 遮蔽），无同类问题；登录表单刻意保留 `username/current-password` 语义让密码管理器正常工作。新增全站守卫 `tests/passwordFieldGuard.test.ts`：递归扫 `src/**/*.tsx`，每个裸 `type='password'` 必须就近带 `autoComplete='new-password' | 'current-password'`（LoginForm 白名单），含反向验证。

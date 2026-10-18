@@ -40,6 +40,7 @@ import {
 // 比直接 console.error 安全（登录相关的 error 对象里可能带着请求上下文），
 // 也省得生产控制台一片噪音。改动前后控制台都不打东西 —— 要看错误去后端日志。
 import { reportError } from "../utils/errorReporter";
+import { markLocalSiteDeletes } from "../utils/siteSync";
 import { NoteConflictError } from "../utils/noteConflict";
 import { API_ERROR_CODES, ApiError, parseApiError, type ApiErrorInfo } from "./apiError";
 
@@ -903,15 +904,25 @@ export class NavigationClient {
         const res = await this.request<SoftDeleteResponse>(`sites/${id}`, {
             method: "DELETE",
         });
+        if (res?.success !== false) {
+            // 记下「这是本设备删的」：轮询同步过滤掉，不弹「其它设备删除了 N 张卡片」
+            markLocalSiteDeletes([id]);
+        }
         return { success: res?.success !== false, recycleId: res?.recycleId };
     }
 
     /** 批量删除：一次往返代替 N 次 DELETE（多选删除慢就慢在那 N 次往返） */
     async deleteSites(ids: number[]): Promise<SiteBatchDeleteResult> {
-        return this.request<SiteBatchDeleteResponse>("sites/batch-delete", {
+        const result = await this.request<SiteBatchDeleteResponse>("sites/batch-delete", {
             method: "POST",
             body: JSON.stringify({ ids }),
         });
+        // 同单删：本设备删的不让同步轮询误报成「其它设备删的」。
+        // 只记 items 里真删掉的；failed 的本来就没删，不该记。
+        if (Array.isArray(result?.items) && result.items.length > 0) {
+            markLocalSiteDeletes(result.items.map(i => i.id));
+        }
+        return result;
     }
 
     // 配置相关API

@@ -81,7 +81,9 @@ export default function NotesOverlay({
         },
         []
     );
-    const reloadRef = useRef<() => Promise<void>>(async () => {});
+    // 返回值放宽到 unknown：reload 现在把新列表回给轮询做「外部删除」感知，
+    // 这里只关心「重拉完成」，不消费返回值
+    const reloadRef = useRef<() => Promise<unknown>>(async () => {});
 
     const {
         notes,

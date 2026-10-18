@@ -172,9 +172,16 @@ type UseNotesParams = {
         current: Note,
         retry: () => Promise<void>
     ) => Promise<void>;
+    /** 首轮轮询延迟（毫秒），默认 5 秒 —— 测试注入小值用 */
+    firstDelayMs?: number;
+    /**
+     * 轮询间隔 override（毫秒）。不传按用户配置（loadNotesSyncPrefs，最小 30s）。
+     * 只为测试注入小值：生产路径永远走 prefs，别传这个。
+     */
+    pollIntervalMs?: number;
 };
 
-export function useNotes({ api, onError, onNotify, onNoteConflict }: UseNotesParams) {
+export function useNotes({ api, onError, onNotify, onNoteConflict, firstDelayMs = 5_000, pollIntervalMs }: UseNotesParams) {
     const broadcastRef = useRef<BroadcastChannel | null>(null);
     const [externalChange, setExternalChange] = useState(false);
     useEffect(() => {
@@ -210,7 +217,8 @@ export function useNotes({ api, onError, onNotify, onNoteConflict }: UseNotesPar
         const tick = async () => {
             if (stopped) return;
             const prefs = loadNotesSyncPrefs();
-            const intervalMs = Math.max(30, prefs.intervalSec) * 1000;
+            // pollIntervalMs 是测试注入的 override；生产路径永远走 prefs
+            const intervalMs = pollIntervalMs ?? Math.max(30, prefs.intervalSec) * 1000;
             try {
                 const hidden = typeof document !== "undefined" && document.visibilityState === "hidden";
                 if (prefs.enabled && !hidden) {
@@ -228,15 +236,52 @@ export function useNotes({ api, onError, onNotify, onNoteConflict }: UseNotesPar
                             lastSyncShapeRef.current = shape;
                             // since 为空 = 首次轮询，只建立基线不触发刷新
                             const shouldReload = Boolean(since) && (r.notesChanged > 0 || structural);
-                            // 每轮都刷新：无变更时清空，避免旧 ids 让上层提示反复触发
-                            setLastSyncChangedIds(shouldReload ? r.changedNoteIds ?? [] : []);
                             saveNotesSyncCursor(r.now);
                             if (shouldReload) {
-                                await reloadForSyncRef.current();
+                                // 本设备已知 rev 快照（2026-10-18 修「每次打开笔记都弹
+                                // 『在其他设备被修改』」）：本设备自己保存也会推 updated_at，
+                                // 下一轮轮询照样命中窗口 —— 不区分的话，自己刚保存的笔记
+                                // 会被当成「其他设备改的」。保存成功时 revById 里记的就是
+                                // 服务端新 rev，reload 后 seedRevs 铺的也是同一份 ——
+                                // 两边相等 = 本设备已同步的写入；rev 真的变了的才是外部变更。
+                                const knownRevs = new Map(revById.current);
+                                // 外部删除感知：notesChanged 含墓碑计数，但 changedNoteIds
+                                // 只回「改过的」——别的设备删了笔记时它可能为空。用本地
+                                // 列表对比：reload 前有、reload 后没了的 id = 外部删除。
+                                const idsBefore = new Set(
+                                    notesRef.current
+                                        .map(n => n.id)
+                                        .filter((id): id is number => typeof id === "number")
+                                );
+                                const nextList = await reloadForSyncRef.current();
                                 if (!stopped) {
-                                    onNotify("其他设备的笔记更新已同步到列表", "info");
-                                    broadcastRef.current?.postMessage({ type: "changed" });
+                                    const idsAfter = new Set(
+                                        (nextList ?? [])
+                                            .map(n => n.id)
+                                            .filter((id): id is number => typeof id === "number")
+                                    );
+                                    let externallyDeleted = false;
+                                    for (const id of idsBefore) {
+                                        if (!idsAfter.has(id)) {
+                                            externallyDeleted = true;
+                                            break;
+                                        }
+                                    }
+                                    const externalIds = (r.changedNoteIds ?? []).filter(id => {
+                                        const known = knownRevs.get(id);
+                                        const latest = revById.current.get(id);
+                                        if (typeof known !== "number" || typeof latest !== "number") return true;
+                                        return latest !== known;
+                                    });
+                                    setLastSyncChangedIds(externalIds);
+                                    if (structural || externallyDeleted || externalIds.length > 0) {
+                                        onNotify("其他设备的笔记更新已同步到列表", "info");
+                                        broadcastRef.current?.postMessage({ type: "changed" });
+                                    }
                                 }
+                            } else {
+                                // 每轮都刷新：无变更时清空，避免旧 ids 让上层提示反复触发
+                                setLastSyncChangedIds([]);
                             }
                         }
                     }
@@ -247,12 +292,12 @@ export function useNotes({ api, onError, onNotify, onNoteConflict }: UseNotesPar
             }
             if (!stopped) timer = setTimeout(() => { void tick(); }, intervalMs);
         };
-        timer = setTimeout(() => { void tick(); }, 5_000);
+        timer = setTimeout(() => { void tick(); }, firstDelayMs);
         return () => {
             stopped = true;
             if (timer) clearTimeout(timer);
         };
-    }, [api, onNotify]);
+    }, [api, onNotify, firstDelayMs, pollIntervalMs]);
     const swrKey = String(readActiveAccount() ?? "anon");
     const swrHit = notesSwrCache.get(swrKey);
     const [notes, setNotes] = useState<Note[]>(swrHit?.notes ?? []);
@@ -337,6 +382,8 @@ const SUMMARY_LIST_THRESHOLD = 200;
             setNotes(next);
             setLoaded(true);
             setExternalChange(false);
+            // 返回新列表：轮询用它做「外部删除」感知（reload 原有调用方都不用返回值，无破坏）
+            return next;
         } catch (error) {
             reportError(error, { source: "notes-list" });
             // SWR 命中时列表已经可见（旧数据），「加载失败」的提示反而误导 ——
@@ -378,7 +425,7 @@ const SUMMARY_LIST_THRESHOLD = 200;
     }, [reload]);
 
     /** 轮询 effect 里用 ref 读 reload，避免把整条 useNotes 依赖链拖进轮询的依赖数组 */
-    const reloadForSyncRef = useRef(reload);
+    const reloadForSyncRef = useRef<() => Promise<Note[] | undefined>>(reload);
     useEffect(() => {
         reloadForSyncRef.current = reload;
     }, [reload]);

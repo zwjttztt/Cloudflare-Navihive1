@@ -3771,12 +3771,12 @@ export default function NotesPage({
                                 onContextMenu={e => {
                                     // 右键行 = 打开完整操作菜单（inkstone 同款交互）
                                     e.preventDefault();
-                                    // ⚠️ 必须先把焦点从行上拿走（2026-10-07 用户报「右键后
-                                    // 留下一颗白色圆点」）：行是 tabIndex=0 的 role=button，
-                                    // 右键会让它拿到焦点，行内的「⋯」按钮靠
-                                    // `:focus-within` 常显 —— 菜单关掉后焦点还在，
-                                    // 那颗按钮就一直挂在行右侧（22×22 的圆形 IconButton）。
+                                    // ⚠️ 开菜单前必须把焦点摘掉（2026-10-07/10-18 两轮
+                                    // 「白色圆点」）：焦点停在行或行内「⋯」按钮上时，
+                                    // 菜单关掉后 Modal 把焦点还原回来，圆形按钮常显。
+                                    // 活动元素可能是行内按钮，行自身 blur 摘不掉它。
                                     (e.currentTarget as HTMLElement).blur();
+                                    (document.activeElement as HTMLElement | null)?.blur?.();
                                     if (note.id === undefined) return;
                                     // ⚠️ 锚在鼠标处：锚整行左上角的话菜单跟指针没关系（用户报「固定位置」）
                                     setRowMenu({
@@ -3823,9 +3823,15 @@ export default function NotesPage({
                                     // 拖起来的那一行半透明：告诉用户「手上抓的是这条」
                                     opacity: draggingNoteId === note.id ? 0.45 : 1,
                                     transition: "background-color 120ms ease, opacity 120ms ease, transform var(--dur-base, 220ms) var(--ease-out, ease)",
-                                    // 菜单按钮平时藏起来，hover / 聚焦才出 —— 和 inkstone 一致，
+                                    // 菜单按钮平时藏起来，hover / 键盘聚焦才出 —— 和 inkstone 一致，
                                     // 128px 的窄列里常驻一个按钮会把标题挤没。
-                                    "&:hover .note-row-actions, &:focus-within .note-row-actions": {
+                                    // ⚠️ 不能用 :focus-within（2026-10-18 用户再报「右键菜单关掉
+                                    // 后留一颗白色圆圈」）：菜单关闭时 MUI Modal 会把焦点**还原**
+                                    // 给打开前的元素（之前点过 ⋯ 按钮就是它），还原焦点虽是
+                                    // 程序化 focus，:focus-within 一样命中 → ⋯ 常显成一颗圆点。
+                                    // 改用 :has(:focus-visible)：程序化还原不匹配（最后一次
+                                    // 交互是指针），键盘 Tab 进按钮仍然匹配 —— 两头都对。
+                                    "&:hover .note-row-actions, &:has(.note-row-actions:focus-visible) .note-row-actions": {
                                         opacity: 1,
                                     },
                                     "&:hover": { bgcolor: "rgba(128,128,128,0.08)" },
