@@ -1,7 +1,7 @@
 {
   "name": "navihive",
   "private": true,
-  "version": "3.3.1",
+  "version": "3.4.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -17,7 +17,8 @@
     "coverage": "node script/coverage.mjs",
     "e2e": "node script/api-e2e.mjs",
     "e2e:share": "node script/share-e2e.mjs",
-    "ci": "npm run typecheck && npm run lint && npm run test && npm run check:brand && npm run build && npm run e2e && npm run e2e:share && npm run e2e:cron && npm run smoke && npm run audit:a11y && npm run audit:contrast && npm run e2e:webdav",
+    "e2e:share-extra": "npm run build:server && node script/share-e2e-extra.mjs",
+    "ci": "npm run typecheck && npm run lint && npm run test && npm run check:brand && npm run build && npm run e2e && npm run e2e:share && npm run e2e:share-extra && npm run e2e:cron && npm run smoke && npm run audit:a11y && npm run audit:contrast && npm run e2e:webdav",
     "lint": "eslint .",
     "preview": "npm run build && vite preview",
     "deploy": "npm run build && wrangler deploy",

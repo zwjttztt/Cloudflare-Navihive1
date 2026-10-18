@@ -91,6 +91,15 @@ jobs:
       - name: 分享功能端到端
         run: npm run e2e:share
 
+      # 分享补充面端到端：跑在自托管 server/（Node + SQLite）上，与上一条互补 ——
+      # 那条在 workerd 上覆盖「创建 → 401 needPassword → 口令错/对 → 撤销后 404」主干，
+      # 这条补它没碰的三块：浏览计数防刷（cookie 当日戳去重）、附件公开取图
+      # （无口令分享匿名可取；受口令分享必须先验对口令拿会话 cookie 且带 ?share）、
+      # 分组分享的口令流程与字段脱敏（sites 只回 name/url/description/icon）。
+      # 另外它也是 home 部署形态（自托管）自己的链路验证。
+      - name: 分享补充面端到端
+        run: npm run e2e:share-extra
+
       # 定时备份（cron）的端到端：用 --test-scheduled 把 scheduled handler 挂到
       # /__scheduled 上，真跑一次自动备份。
       # wrangler 本地模式不会真的按 cron 触发，所以「定时备份会不会真的写出一份
