@@ -28,7 +28,8 @@
     "e2e:webdav": "node script/webdav-e2e.mjs",
     "e2e:cron": "node script/cron-e2e.mjs",
     "build:server": "node script/build-server.mjs",
-    "start:selfhost": "npm run build:server && node --disable-warning=ExperimentalWarning dist-server/entry.mjs"
+    "start:selfhost": "npm run build:server && node --disable-warning=ExperimentalWarning dist-server/entry.mjs",
+    "check:whitedot": "node script/white-dot-check.mjs"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.3",

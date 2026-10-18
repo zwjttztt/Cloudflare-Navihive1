@@ -127,4 +127,16 @@ test("NotesPage：行内 ⋯ 按钮显隐不得用 :focus-within（菜单关闭�
         /document\.activeElement as HTMLElement \| null\)\?\.blur/,
         "右键 handler 必须先 blur 当前活动元素再开菜单",
     );
+    // 焦点兜底：MUI Modal 关闭时把焦点还原给打开前的元素（onClose 里 blur 太早，
+    // 还原在退出动画之后），必须挂 transition 的 onExited 摘掉落在 ⋯ 按钮上的还原焦点
+    assert.match(
+        src,
+        /transition: \{\s*onExited:/,
+        "行菜单必须挂 slotProps.transition.onExited（还原焦点兜底）",
+    );
+    assert.match(
+        src,
+        /classList\.contains\("note-row-actions"\)\) el\.blur\(\)/,
+        "onExited 里要把落在 ⋯ 按钮上的焦点摘掉",
+    );
 });

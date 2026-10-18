@@ -6,8 +6,11 @@ import { useCallback, useEffect, useState } from "react";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Dialog from "@mui/material/Dialog";
+import DialogActions from "@mui/material/DialogActions";
 import DialogTitle from "@mui/material/DialogTitle";
+import Divider from "@mui/material/Divider";
 import IconButton from "@mui/material/IconButton";
+import Stack from "@mui/material/Stack";
 import MenuItem from "@mui/material/MenuItem";
 import Select from "@mui/material/Select";
 import TextField from "@mui/material/TextField";
@@ -125,7 +128,7 @@ export default function GroupShareDialog({
     };
 
     return (
-        <Dialog open={open} onClose={onClose} fullWidth maxWidth='xs'>
+        <Dialog open={open} onClose={onClose} fullWidth maxWidth='sm'>
             <DialogTitle sx={{ display: "flex", alignItems: "center", pr: 1 }}>
                 <Typography variant='subtitle1' sx={{ flex: 1, fontWeight: 600 }}>
                     分享分组「{groupName}」
@@ -134,44 +137,54 @@ export default function GroupShareDialog({
                     <CloseIcon fontSize='small' />
                 </IconButton>
             </DialogTitle>
-            <Box sx={{ px: 3, pb: 3 }} data-group-share='1'>
+            <Box sx={{ px: 3, pb: 2.5, pt: 1 }} data-group-share='1'>
                 {!loadedOnce ? (
                     <Typography variant='body2' color='text.secondary'>
                         读取中…
                     </Typography>
                 ) : config ? (
-                    <>
-                        <Typography variant='body2' sx={{ mb: 1 }}>
-                            链接已生效（浏览 {config.views} 次{config.hasPassword ? " · 受口令保护" : ""}）：
-                        </Typography>
-                        <TextField
-                            fullWidth
-                            size='small'
-                            value={shareUrl}
-                            data-group-share-link='1'
-                            slotProps={{ input: { "aria-label": "分享链接", readOnly: true } as never }}
-                            onClick={e => (e.target as HTMLInputElement).select()}
-                            sx={{ mb: 1.5 }}
-                        />
-                        <Button
-                            size='small'
-                            data-group-share-copy='1'
-                            onClick={() => {
-                                void navigator.clipboard?.writeText(shareUrl).then(
-                                    () => onNotify?.("链接已复制", "success"),
-                                    () => onNotify?.("复制失败，请手动选择复制", "error")
-                                );
-                            }}
-                        >
-                            复制链接
-                        </Button>
-                        <Box sx={{ display: "flex", alignItems: "center", gap: 1, mt: 2 }}>
+                    <Stack spacing={2}>
+                        {/* 1. 链接区：链接框与「复制链接」同行 —— 原来复制按钮独占一行、
+                            下方空一大块；窄屏（xs）自动换行不会挤爆 */}
+                        <Box>
+                            <Typography variant='body2' color='text.secondary' sx={{ mb: 1 }}>
+                                链接已生效（浏览 {config.views} 次{config.hasPassword ? " · 受口令保护" : ""}）
+                            </Typography>
+                            <Box sx={{ display: "flex", alignItems: "flex-start", gap: 1 }}>
+                                <TextField
+                                    fullWidth
+                                    size='small'
+                                    value={shareUrl}
+                                    data-group-share-link='1'
+                                    slotProps={{ input: { "aria-label": "分享链接", readOnly: true } as never }}
+                                    onClick={e => (e.target as HTMLInputElement).select()}
+                                />
+                                <Button
+                                    size='small'
+                                    variant='outlined'
+                                    data-group-share-copy='1'
+                                    sx={{ flexShrink: 0, height: 40 }}
+                                    onClick={() => {
+                                        void navigator.clipboard?.writeText(shareUrl).then(
+                                            () => onNotify?.("链接已复制", "success"),
+                                            () => onNotify?.("复制失败，请手动选择复制", "error")
+                                        );
+                                    }}
+                                >
+                                    复制链接
+                                </Button>
+                            </Box>
+                        </Box>
+                        <Divider />
+                        {/* 2. 设置区：有效期与口令一行两列 —— 原 minWidth110 + flex1
+                            挤在 xs 弹窗里口令框只剩半截；sm 宽度 + 两列栅格 */}
+                        <Box sx={{ display: "grid", gap: 1.5, gridTemplateColumns: { xs: "1fr", sm: "5.5rem 1fr" } }}>
                             <Select
                                 size='small'
                                 value={days === null ? "forever" : String(days)}
                                 onChange={e => setDays(e.target.value === "forever" ? null : (Number(e.target.value) as Days))}
                                 slotProps={{ input: { "aria-label": "有效期" } }}
-                                sx={{ minWidth: 110 }}
+                                fullWidth
                             >
                                 <MenuItem value='1'>1 天</MenuItem>
                                 <MenuItem value='7'>7 天</MenuItem>
@@ -189,30 +202,21 @@ export default function GroupShareDialog({
                                 value={password}
                                 onChange={e => setPassword(e.target.value)}
                                 slotProps={{ input: { "aria-label": "访问口令" } }}
-                                sx={{ flex: 1 }}
                             />
                         </Box>
-                        <Box sx={{ display: "flex", gap: 1, mt: 2 }}>
-                            <Button variant='contained' data-group-share-update='1' disabled={busy} onClick={() => void update()}>
-                                更新设置
-                            </Button>
-                            <Button color='error' data-group-share-revoke='1' disabled={busy} onClick={() => setRevokeConfirm(true)}>
-                                撤销分享
-                            </Button>
-                        </Box>
-                    </>
+                    </Stack>
                 ) : (
-                    <>
-                        <Typography variant='body2' color='text.secondary' sx={{ mb: 1.5 }}>
+                    <Stack spacing={2}>
+                        <Typography variant='body2' color='text.secondary'>
                             创建一个只读公开页：访问者能看到组内卡片的名称、链接与描述（不含站点密码），不能修改任何内容。
                         </Typography>
-                        <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 2 }}>
+                        <Box sx={{ display: "grid", gap: 1.5, gridTemplateColumns: { xs: "1fr", sm: "5.5rem 1fr" } }}>
                             <Select
                                 size='small'
                                 value={days === null ? "forever" : String(days)}
                                 onChange={e => setDays(e.target.value === "forever" ? null : (Number(e.target.value) as Days))}
                                 slotProps={{ input: { "aria-label": "有效期" } }}
-                                sx={{ minWidth: 110 }}
+                                fullWidth
                             >
                                 <MenuItem value='1'>1 天</MenuItem>
                                 <MenuItem value='7'>7 天</MenuItem>
@@ -228,15 +232,33 @@ export default function GroupShareDialog({
                                 value={password}
                                 onChange={e => setPassword(e.target.value)}
                                 slotProps={{ input: { "aria-label": "访问口令" } }}
-                                sx={{ flex: 1 }}
                             />
                         </Box>
+                    </Stack>
+                )}
+            </Box>
+            {/* 按钮区：收进 DialogActions（右对齐、与内容分隔）—— 原来按钮组左对齐
+                裸挂在内容底部，「更新设置」与「撤销分享」并排一样重，没有主次。
+                ⚠️ loadedOnce 之前不渲染按钮：读取中就给按钮 = 点了没反应
+                （getGroupShareConfig 还没回来，create/update 都是瞎猜） */}
+            {loadedOnce && (
+                <DialogActions sx={{ px: 3, pb: 2.5 }}>
+                    {config ? (
+                        <>
+                            <Button color='error' data-group-share-revoke='1' disabled={busy} onClick={() => setRevokeConfirm(true)}>
+                                撤销分享
+                            </Button>
+                            <Button variant='contained' data-group-share-update='1' disabled={busy} onClick={() => void update()}>
+                                更新设置
+                            </Button>
+                        </>
+                    ) : (
                         <Button variant='contained' data-group-share-create='1' disabled={busy} onClick={() => void create()}>
                             创建分享链接
                         </Button>
-                    </>
-                )}
-            </Box>
+                    )}
+                </DialogActions>
+            )}
             {/* 撤销确认：叠在分享对话框上层（MUI Dialog 嵌套天然支持） */}
             <ConfirmDialog
                 open={revokeConfirm}

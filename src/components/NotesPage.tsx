@@ -5324,6 +5324,20 @@ export default function NotesPage({
                 open={Boolean(rowMenu)}
                 anchorEl={rowMenu?.el ?? null}
                 onClose={() => setRowMenu(null)}
+                // ⚠️ 焦点兜底（2026-10-18 用户第三次报「右键菜单关闭后白色圆圈」）：
+                // MUI Modal 关闭时会把焦点**还原**给打开前的元素。onClose 里 blur
+                // 太早（还原发生在退出动画之后），所以挂 transition 的 onExited：
+                // 菜单彻底消失后若焦点还落在行内「⋯」按钮上（程序化还原的焦点），
+                // 摘掉它 —— 否则行级显隐规则把按钮顶出来成一颗白圈。键盘用户 Tab
+                // 进按钮的 focus-visible 不受影响（那是主动焦点，不是还原的）。
+                slotProps={{
+                    transition: {
+                        onExited: () => {
+                            const el = document.activeElement as HTMLElement | null;
+                            if (el && el.classList.contains("note-row-actions")) el.blur();
+                        },
+                    },
+                }}
             >
                 {(() => {
                     const note = rowMenu ? notes.find(n => n.id === rowMenu.noteId) : null;

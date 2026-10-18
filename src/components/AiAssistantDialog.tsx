@@ -166,6 +166,22 @@ export default function AiAssistantDialog({
     const [saveError, setSaveError] = useState<string | null>(null);
     const [testing, setTesting] = useState(false);
     const [testResult, setTestResult] = useState<AiTestOutcome | null>(null);
+    // 测试连接的结果 Alert 排在按钮下方，且带两条模型明细（内容不短）。
+    // 矮视口 / 长配置下它会停在弹窗内容折叠线下面 —— 出结果时把按钮行滚进
+    // 可视区（同 BackupDialog 的 webdavActionsRef 模式）。
+    const testRowRef = useRef<HTMLDivElement>(null);
+    useEffect(() => {
+        if (!testResult) return;
+        const el = testRowRef.current;
+        if (!el) return;
+        const scroller = el.closest(".MuiDialogContent-root");
+        // scrollTo 在 jsdom 等环境不存在：防御一下，别让「滚动兜底」本身抛错
+        if (scroller && typeof scroller.scrollTo === "function") {
+            scroller.scrollTo({ top: scroller.scrollHeight, behavior: "smooth" });
+        } else if (typeof el.scrollIntoView === "function") {
+            el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+        }
+    }, [testResult]);
     // 嵌入模型那一栏默认收起；已经配过值就展开，免得用户以为配置丢了
     const [showEmbed, setShowEmbed] = useState(false);
 
@@ -423,7 +439,7 @@ export default function AiAssistantDialog({
                 </Box>
 
                 {/* 测试连接：用上面填的这份真跑一次，不用先保存 */}
-                <Box sx={{ mt: 2 }}>
+                <Box sx={{ mt: 2 }} ref={testRowRef}>
                     <Button
                         size='small'
                         variant='outlined'

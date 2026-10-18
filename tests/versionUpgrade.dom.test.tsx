@@ -8,7 +8,7 @@
 // - 检查失败（网络不通 / GitHub 5xx / 响应没版本号）要落成可见文案，不能空转
 // - 发现新版本时必须给出两种部署形态的升级指引（Docker pull / Workers 自动部署）
 
-import { test } from "node:test";
+import { test, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import type { ReactElement } from "react";
 import { act } from "react";
@@ -75,6 +75,19 @@ type FakeResponse = {
 };
 
 const realFetch = globalThis.fetch;
+// jsdom 不实现 scrollIntoView：「出结果时滚进可视区」的兜底路径会调它。
+// ⚠️ afterEach 不能把它恢复成 undefined（jsdom 压根没有这个方法），
+// 否则第二个用例触发滚动时就 TypeError —— 保持 stub，只重置计数。
+let scrollCalls = 0;
+function scrollIntoViewStub(this: Element) {
+    scrollCalls += 1;
+    void this;
+}
+Element.prototype.scrollIntoView = scrollIntoViewStub;
+afterEach(() => {
+    Element.prototype.scrollIntoView = scrollIntoViewStub;
+    scrollCalls = 0;
+});
 
 // ---------- parseSemver：纯函数，先钉住边界 ----------
 
@@ -179,6 +192,16 @@ test("远端版本更高 → 显示新版本与两种部署形态的升级指引
         assert.ok(result.textContent!.includes("docker pull"), "要有 Docker 升级指引");
         assert.ok(result.textContent!.includes("Workers"), "要有 Workers 部署说明");
         assert.ok(result.querySelector("a[href*='/releases']"), "要给发版页链接");
+        // ⚠️ 结果必须与按钮**同一行**（用户报「提示框还要往下移动很不方便」）：
+        // 网站设置是最长的弹窗、版本节在最底部，Alert 排在按钮下方就停在
+        // 内容折叠线下面。父容器即按钮所在的 flex 行。
+        const row = document.querySelector("[data-check-update]")!.parentElement!;
+        assert.ok(
+            row.contains(result),
+            "结果 Alert 必须与「检查更新」按钮在同一行容器里",
+        );
+        // 滚动兜底：出结果时把这一行滚进可视区（无 DialogContent 时走 scrollIntoView）
+        assert.ok(scrollCalls > 0, "出结果应触发滚动兜底");
     } finally {
         globalThis.fetch = realFetch;
     }
