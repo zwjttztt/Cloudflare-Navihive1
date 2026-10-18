@@ -48,6 +48,16 @@ export interface Env {
     // 这里按各自真实签名分别声明。
     FILES?: R2BucketLike;
     FILES_KV?: KVNamespaceLike;
+    /**
+     * 静态资产绑定（wrangler assets 自动注入，绑定名默认 ASSETS）。
+     * 仅 Cloudflare 部署有；自托管经 server/entry.ts 的 serveStatic 处理静态资源，
+     * worker 侧拿不到也不需要这个绑定。
+     * 用途：非 API 路径（/s/<token> 等纯前端路由）转发给它，由
+     * assets.not_found_handling=single-page-application 回退到 index.html ——
+     * 否则这些路径（fetch / curl / 爬虫 / 探针等非导航请求）会落到本文件的
+     * 非 API 分支被当成 404（两环境对照 e2e 实测：home 200、myhp 404）。
+     */
+    ASSETS?: AssetsBinding;
 }
 
 /**
@@ -76,6 +86,14 @@ export interface R2BucketLike {
     get(key: string): Promise<R2ObjectBodyLike | null>;
     put(key: string, value: ArrayBuffer | ArrayBufferView, options?: R2PutOptionsLike): Promise<unknown>;
     delete(key: string): Promise<void>;
+}
+
+/**
+ * 静态资产绑定最小能力面（仅用得到 fetch 转发，不引 SDK 类型，理由见 Env.FILES）。
+ * 把非 API 的纯前端路由请求转发给它，由资产层按 not_found_handling 回退到 index.html。
+ */
+export interface AssetsBinding {
+    fetch(request: Request): Promise<Response>;
 }
 
 // 验证用接口

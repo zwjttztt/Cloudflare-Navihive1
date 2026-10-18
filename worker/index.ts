@@ -68,8 +68,29 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
     const secureCookie =
         env?.NAVIHIVE_COOKIE_SECURE !== "0" && requestIsSecure(request, url, trustXFF);
 
-    // 非 API 路径（静态资源由 assets 兜底），走到这儿就是没匹配上
+    // 非 API 路径：交给静态资产层做 SPA 回退（not_found_handling=single-page-application）。
+    // ⚠️ 为什么不能直接 404：
+    //   Cloudflare Workers + Assets 形态下，compatibility_date >= 2025-04-01 会启用
+    //   assets_navigation_prefers_asset_serving —— 浏览器「导航请求」(带 Sec-Fetch-Mode: navigate)
+    //   由资产层直接回 index.html、根本不进 Worker；但 fetch / curl / 爬虫 / 探针这类
+    //   「非导航请求」会被路由进 Worker，若这里直接 404，/s/<token>、/sg/<token> 这类
+    //   纯前端分享路由就全部 404（两环境对照 e2e 实测：home 200、myhp 404）。
+    //   转发给 env.ASSETS，资产层按 not_found_handling 回退到 index.html，与自托管
+    //   (server/entry.ts 的 serveStatic SPA fallback) 行为一致。
+    // 只对「不带扩展名」的路径回退：带扩展名的未命中（旧 chunk / 误拼的 .js）必须 404，
+    // 否则会拿一整页 HTML 顶替脚本（MIME 类型不符 → 模块脚本被浏览器拒绝、发版白屏），
+    // 这部分对齐 server/static.ts 的 looksLikeAsset。
+    // 自托管没有 ASSETS 绑定，且 server/entry.ts 已经先用 serveStatic 处理了 GET/HEAD 非 API
+    // 路径，所以这里只会收到非 GET/HEAD 的非 API 路径（如 POST /），没有回退意义，保持 404。
     if (!url.pathname.startsWith("/api/")) {
+        const assets = env.ASSETS;
+        const lastSeg = url.pathname.split("/").pop() ?? "";
+        const hasExt = /\.[a-z0-9]{1,8}$/i.test(lastSeg);
+        if (assets && (request.method === "GET" || request.method === "HEAD") && !hasExt) {
+            return assets.fetch(
+                new Request(request.url, { method: request.method, headers: request.headers })
+            );
+        }
         return new Response("Not Found", {
             status: 404,
             headers: TEXT_HEADERS(),
@@ -175,6 +196,13 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
         });
     } catch (error) {
         if (error instanceof BodyLimitError) return new Response(error.message, { status: error.status, headers: TEXT_HEADERS() });
+        // 请求体不是合法 JSON（非法字符 / 空体）时 request.json() 抛 SyntaxError：
+        // 这是客户端输入错误，应回 400 而不是 500（两环境对照 e2e 的 A4 错误密码登录、
+        // B6 空 body 建分组都曾 500）。各路由的 request.json() 没有逐个包 try/catch，
+        // 在这里统一兜底最省事、也最全（覆盖所有写接口）。
+        if (error instanceof SyntaxError) {
+            return errorResponse(ApiError.badRequest("请求体不是合法的 JSON"));
+        }
         // 统一错误出口：路由里抛的 ApiError 按 code/status 翻译成结构化 JSON；
         // 未预料的错误在 errorResponse 里打日志 + 回 500，**不把堆栈/内部细节透给客户端**
         // （以前回纯文本，客户端解析不出结构化错误，只能显示一句笼统的话）。

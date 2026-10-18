@@ -6,6 +6,38 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。---
 
+## 2026-10-18（日）· 修复：分享页 404 真正根因 + 非法 JSON 回 400（续两环境对照测试）
+
+**背景**：上一节把 myhp 误判成 Pages 形态、又用违法的 `_redirects` 把 Workers 部署卡死，
+分享页 404 其实一直没修。撤回 `_redirects` 恢复部署后，重新定位根因：
+
+myhp 是 **Workers Builds**，`worker/index.ts` 的 `fetch` 对非 `/api/` 路径**一律返回 404**。
+Cloudflare Workers + Assets 在 `compatibility_date >= 2025-04-01` 下启用
+`assets_navigation_prefers_asset_serving`：浏览器「导航请求」（带 `Sec-Fetch-Mode: navigate`）
+由资产层直接回 `index.html`、不进 Worker —— 所以**真人点开分享链接其实能正常显示**；
+但 `fetch` / `curl` / 爬虫 / 探针这类「非导航请求」会进 Worker，被那句 404 拦死，
+表现为 `/s/<token>`、`/sg/<token>` 在非浏览器客户端一律 404（与 home 的 200 不一致）。
+
+**修复**：`worker/index.ts` 非 `/api/` 分支改为——对「无扩展名」的 GET/HEAD 请求转发给
+`env.ASSETS.fetch()`，由 `assets.not_found_handling=single-page-application` 回退到 `index.html`；
+「带扩展名」的未命中静态路径（旧 chunk / 误拼的 `.js`）与 POST / 等非 GET/HEAD 路径保持 404。
+逻辑对齐 `server/static.ts` 的 `looksLikeAsset`：带扩展名的未命中绝不能回 HTML（否则 MIME 不符、
+模块脚本被拒、发版白屏）。自托管没有 `ASSETS` 绑定，且 `server/entry.ts` 已先用 `serveStatic`
+兜住 GET/HEAD 非 API 路径，所以 Worker 侧分支对自托管无副作用。
+
+顺带修了两处同批次发现的接口问题：
+- 请求体非法 / 空 JSON 时 `request.json()` 抛 `SyntaxError`，原本漏到顶层 catch 变 500；
+  统一改成回 **400 bad_request**（覆盖所有写接口，不再逐个包 try/catch）。
+- `POST /` 在两环境响应码不一致（404 vs 405）：修完 `env.ASSETS` 分支后，非导航的 `POST /`
+  走 404 分支，两环境一致回 **404**。
+
+**守卫**：`tests/workerSpaFallback.test.ts` 7 例——无扩展名 GET 转发 ASSETS 且 URL 透传、
+根路径走回退、带扩展名未命中不转发且 404、POST / 不转发且 404、无 ASSETS 绑定时回 404、
+非法 JSON 与空 body 均回 400（非 500）。全量 2774 单测 + tsc -b --force + lint + build +
+smoke + 双审计全绿；两环境对照 e2e 复测 `/s/` 两环境均 200、非法 JSON 均 400。
+
+---
+
 ## 2026-10-18（日）· 修复：公开分享页在 Cloudflare(Pages) 形态下 404（两环境首次对照测试发现）
 
 **背景**：对 home.zwjttzt.com（VPS 自托管 / SQLite）与 myhp.zwjttzt.com（Cloudflare / D1）
