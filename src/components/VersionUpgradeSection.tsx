@@ -79,8 +79,14 @@ export async function fetchUpstreamVersion(
 
 export default function VersionUpgradeSection({ version }: { version?: string }) {
     const [state, setState] = useState<CheckState>({ kind: "idle" });
-    /** 「更新」按钮的复制结果：true=已复制 / false=复制失败（给命令原文手动复制） */
-    const [copyState, setCopyState] = useState<boolean | null>(null);
+    /**
+     * 「更新」按钮的三态结果：
+     *  - true：升级命令已复制（回落路径）
+     *  - false：复制失败（命令原文摆出来）
+     *  - "upgrading"：网页直接升级已触发（自托管 + docker.sock）
+     *  - null：没动作
+     */
+    const [copyState, setCopyState] = useState<boolean | "upgrading" | null>(null);
     /** 按钮 + 结果行：结果 Alert 会把它撑高，出结果时滚进可视区（同 BackupDialog 的 webdavActionsRef 模式） */
     const rowRef = useRef<HTMLDivElement>(null);
 
@@ -105,20 +111,41 @@ export default function VersionUpgradeSection({ version }: { version?: string })
         }
     }, [state]);
 
-    /** 「更新」按钮（2026-10-18 用户报「发现新版本能否加上一个更新按键」）：
-     *  自托管部署 = 复制 docker pull 命令，用户到服务器粘贴执行（前端点不到
-     *  用户的服务器，这是能做的最短路径）；复制失败时命令原文直接摆出来。
-     *  Workers 部署不用操作（推 main 即自动构建），命令区的文字指引里已说明。 */
-    const onUpdate = () => {
-        const cmd = UPGRADE_CMD;
-        if (!navigator.clipboard?.writeText) {
-            setCopyState(false);
-            return;
+    /**
+     * 「更新」按钮（2026-10-18 用户报「发现新版本能否加上一个更新按键」，
+     * 再报「能否直接在网页升级版本」）：
+     *  1. **优先网页直接升级**：POST /api/system/upgrade（自托管 + docker.sock
+     *     才有；owner only）。服务端先响应再 detached 执行 pull && compose up
+     *     —— 容器会把自己换掉，约 10-30s 后服务短暂重启。
+     *  2. 回落：404（Workers 部署没有这个端点）/ 501（没挂 docker.sock）/
+     *     任何网络错误 → 复制 docker pull 命令，用户到服务器粘贴执行；
+     *     复制失败时命令原文直接摆出来。
+     */
+    const onUpdate = async () => {
+        try {
+            const res = await fetch("/api/system/upgrade", {
+                method: "POST",
+                credentials: "same-origin",
+            });
+            if (res.status === 404 || res.status === 501) throw new Error("unsupported");
+            const data = (await res.json().catch(() => null)) as { ok?: boolean } | null;
+            if (res.ok && data?.ok) {
+                setCopyState("upgrading");
+                return;
+            }
+            throw new Error("upgrade-failed");
+        } catch {
+            // 回落：复制命令（原路径）
+            const cmd = UPGRADE_CMD;
+            if (!navigator.clipboard?.writeText) {
+                setCopyState(false);
+                return;
+            }
+            void navigator.clipboard.writeText(cmd).then(
+                () => setCopyState(true),
+                () => setCopyState(false),
+            );
         }
-        void navigator.clipboard.writeText(cmd).then(
-            () => setCopyState(true),
-            () => setCopyState(false),
-        );
     };
 
     const onCheck = async () => {
@@ -185,7 +212,7 @@ export default function VersionUpgradeSection({ version }: { version?: string })
                             size='small'
                             variant='contained'
                             startIcon={<SystemUpdateAltIcon fontSize='small' />}
-                            onClick={onUpdate}
+                            onClick={() => void onUpdate()}
                             data-update-action='1'
                             sx={{ flexShrink: 0 }}
                         >
@@ -227,6 +254,11 @@ export default function VersionUpgradeSection({ version }: { version?: string })
                     )}
                     {/* 「更新」按钮的复制反馈：成功一句确认；失败把命令原文
                         摆出来（用户还能手动复制）*/}
+                    {copyState === "upgrading" && (
+                        <Alert severity='info' data-update-running='1' sx={{ py: 0, flex: 1, minWidth: 220 }}>
+                            升级已启动：正在拉取镜像并重建容器，约 10-30 秒后服务会短暂重启，页面稍后自动恢复（若长时间无响应请手动刷新）。
+                        </Alert>
+                    )}
                     {copyState === true && (
                         <Alert severity='success' data-update-copied='1' sx={{ py: 0 }}>
                             更新命令已复制，到服务器粘贴执行；Workers 部署推送 main 即自动构建。

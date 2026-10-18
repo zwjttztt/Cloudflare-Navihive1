@@ -524,15 +524,29 @@ export default function NotesPage({
         source: "list" | "rail";
     } | null>(null);
     /**
-     * 行菜单正在关闭（退出动画那 ~200ms）：期间给行内「⋯」按钮打 --closing
-     * 硬压 opacity —— 否则 rowMenu 还挂着、menuOpen 显式 opacity:1，用户看到
-     * 「弹窗消失的瞬间冒出白圈」（2026-10-18 第四报）。onClose 置位、300ms 后自清。
+     * 行菜单正在关闭（退出动画那 ~200ms + 焦点还原窗口，共 300ms）：
+     *  - 给行内「⋯」按钮打 --closing 硬压 opacity（否则 rowMenu 还挂着、
+     *    menuOpen 显式 opacity:1，「弹窗消失的瞬间冒出白圈」——第四报）；
+     *  - **focusin 捕获**：MUI Modal 关闭时会把焦点还原给打开前的元素，
+     *    而 Chromium 里被还原的焦点会匹配 :focus-visible（pointer 交互也算），
+     *    行级 :has(:focus-visible) 随即把「⋯」顶出来。前三轮（onExited blur /
+     *    disableRestoreFocus prop）都失败——前者早于还原、后者 MUI Menu 根本不
+     *    转发。事件驱动不赌时序：窗口内任何落在 ⋯ 上的焦点立即 blur。
+     * onClose 置位、300ms 后自清。
      */
     const [menuClosing, setMenuClosing] = useState(false);
     useEffect(() => {
         if (!menuClosing) return;
-        const t = setTimeout(() => setMenuClosing(false), 300);
-        return () => clearTimeout(t);
+        const onFocusIn = (e: Event) => {
+            const el = e.target as HTMLElement | null;
+            if (el && el.classList.contains("note-row-actions")) el.blur();
+        };
+        document.addEventListener("focusin", onFocusIn, true);
+        const timer = setTimeout(() => setMenuClosing(false), 300);
+        return () => {
+            document.removeEventListener("focusin", onFocusIn, true);
+            clearTimeout(timer);
+        };
     }, [menuClosing]);
     /** 正在拖的笔记行（半透明反馈，与文件夹那边同一套观感） */
     const [draggingNoteId, setDraggingNoteId] = useState<number | null>(null);
@@ -3096,18 +3110,22 @@ export default function NotesPage({
                     count: folderCounts.get(f.id!) ?? 0,
                     icon: f.icon,
                     color: f.color,
+                    // 同级排序位：菜单的「向前/向后移动」按它算能不能移、移几位
+                    order_num: f.order_num,
                 }))}
                 selectedId={activeFolder}
                 onSelect={id => {
                     setActiveFolder(id);
                     setActiveTag(null);
-                    setMiddleHidden(false);
                     setNavDrawerOpen(false);
                     // ⚠️ 点文件夹 = 进入该文件夹的视图（2026-10-18 用户报
                     // 「标题名为 123 的笔记属于 123 文件夹但不在 123 文件夹下方」）：
                     // 原来非 null 时不切 view，「全部 3」行还高亮着，中栏却只剩
                     // 该文件夹的一条 —— 视觉上像没切过去。清空（点「全部」同义）才回 all。
                     setView(id === null ? "all" : "folder");
+                    // ⚠️ 不 setMiddleHidden(false)：用户明示「中间栏不需要出现」——
+                    // 点文件夹不该把用户收起的列表又放出来。中栏显示与否交给用户
+                    // 自己的「收起列表」控制；显示着时就显示该文件夹的笔记。
                 }}
                 onCreate={() => askName("folder")}
                 onCreateChild={id => askName("folder", { parentId: id })}
@@ -5090,7 +5108,7 @@ export default function NotesPage({
                                 font={uiSettings.editorFont}
                                 fontSize={uiSettings.editorFontSize}
                                 indentWidth={uiSettings.indentWidth}
-                                liveRender={liveRender ? liveRenderer : null}
+                                liveRender={sideLiveRender ? liveRenderer : null}
                                 focusMode={uiSettings.focusMode}
                                 typewriterMode={uiSettings.typewriterMode}
                                 shortcutActions={sideShortcutActions}
@@ -5171,7 +5189,7 @@ export default function NotesPage({
                         font={uiSettings.editorFont}
                         fontSize={uiSettings.editorFontSize}
                         indentWidth={uiSettings.indentWidth}
-                        liveRender={liveRender ? liveRenderer : null}
+                        liveRender={sideLiveRender ? liveRenderer : null}
                         focusMode={uiSettings.focusMode}
                         typewriterMode={uiSettings.typewriterMode}
                         shortcutActions={sideShortcutActions}
@@ -5358,17 +5376,11 @@ export default function NotesPage({
                     setRowMenu(null);
                     setMenuClosing(true);
                 }}
-                // ⚠️ 白圈根治三连（2026-10-18 用户第四报「点其他位置关闭后瞬间
-                // 还是出现白圈」）：
-                // ① disableRestoreFocus —— MUI Modal 默认在关闭后把焦点还原给
-                //    打开前的元素，而还原焦点在 Chromium 里会匹配 :focus-visible
-                //    （即便最后一次交互是鼠标），行级显隐规则 :has(:focus-visible)
-                //    随即把「⋯」顶出来。不还原 = 没有还原焦点这回事。
-                // ② slotProps.transition.onExited —— 兜底：万一焦点仍落在按钮上
-                //    （onClose 里 blur 太早，还原发生在退出动画之后），菜单彻底
-                //    消失后摘掉它。
-                // ③ menuClosing 类压掉退出动画期间的显式 opacity:1（CSS !important）。
-                disableRestoreFocus
+                // ⚠️ 白圈根治（2026-10-18 用户第四报「点其他位置关闭后瞬间还是
+                // 出现白圈」）：还原焦点发生在退出动画之后，onExited 里 blur 太早
+                // （会被随后的还原覆盖），MUI Menu 也不转发 disableRestoreFocus
+                // （加了是死代码）——真正兜底是 menuClosing  effect 里的 focusin
+                // 捕获（见状态声明处）。这里只保留 onExited 兜底。
                 slotProps={{
                     transition: {
                         onExited: () => {

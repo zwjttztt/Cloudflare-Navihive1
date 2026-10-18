@@ -1972,13 +1972,14 @@ test("文件夹菜单补齐 inkstone 那几项：在此新建笔记 / 移动到�
             },
         }
     );
-    const openMenu = () => {
+    const openMenuFor = (folderId: number, label = folderId === 7 ? "工作" : "生活") => {
         const btn = document.querySelector(
-            'button[aria-label="工作 操作"]'
+            `button[aria-label="${label} 操作"]`
         ) as HTMLElement | null;
-        assert.ok(btn, "文件夹行要有「⋯」按钮");
+        assert.ok(btn, `文件夹 ${folderId} 行要有「⋯」按钮`);
         act(() => btn!.click());
     };
+    const openMenu = () => openMenuFor(7);
     openMenu();
     // 菜单项齐不齐
     for (const op of ["rename", "new-note-here", "new-child", "move-to", "move-up", "move-down", "move-root", "remove"]) {
@@ -2010,16 +2011,24 @@ test("文件夹菜单补齐 inkstone 那几项：在此新建笔记 / 移动到�
     });
     assert.deepEqual(moves, [{ id: 7, parent: 8 }], "移动到目标文件夹");
 
-    // 前后移动
+    // 前后移动：7 是同级第一个（向前置灰、向后有效）；8 是最后一个（相反）
+    // ⚠️ 2026-10-18 用户报「向前移动向后移动也没用」：每层唯一/到头/到尾时
+    // 原来静默无反应。现在置灰（inkstone 同款），这里钉住置灰与可用方向。
     openMenu();
+    const upItem = document.querySelector('[data-folder-op="move-up"]') as HTMLElement;
+    const downItem = document.querySelector('[data-folder-op="move-down"]') as HTMLElement;
+    assert.equal(upItem.getAttribute("aria-disabled"), "true", "7 是第一个：向前应置灰");
+    assert.notEqual(downItem.getAttribute("aria-disabled"), "true", "7 还能向后");
     await act(async () => {
-        (document.querySelector('[data-folder-op="move-up"]') as HTMLElement).click();
+        downItem.click();
     });
-    openMenu();
-    await act(async () => {
-        (document.querySelector('[data-folder-op="move-down"]') as HTMLElement).click();
-    });
-    assert.deepEqual(reorders, [{ id: 7, dir: -1 }, { id: 7, dir: 1 }], "前后移动要带方向");
+    assert.deepEqual(reorders, [{ id: 7, dir: 1 }], "向后移动要带方向");
+    // 8（最后一个）：向前可用、向后置灰
+    openMenuFor(8);
+    const up8 = document.querySelector('[data-folder-op="move-up"]') as HTMLElement;
+    const down8 = document.querySelector('[data-folder-op="move-down"]') as HTMLElement;
+    assert.notEqual(up8.getAttribute("aria-disabled"), "true", "8 不是第一个：向前可用");
+    assert.equal(down8.getAttribute("aria-disabled"), "true", "8 是最后一个：向后应置灰");
 });
 
 test("插入内容以 textarea 的 DOM 值为准，不能读 draft", () => {
@@ -4924,7 +4933,7 @@ test("文件夹内笔记标题靠左：缩进必须写像素，不能用 MUI 间
     // ⚠️ 这条踩过：pl 写成 1.25 + (depth+1)*10 会被当成「间距单位」→ 1.25*8 + 80 = 90px，
     // 128px 宽的左栏里文字只剩 25px，看起来就像「标题居中了」（用户报）。
     assert.ok(
-        block.includes("pl: `${22 + Math.min(depth, 4) * 12}px`"),
+        block.includes("pl: `${22 + Math.min(item.depth, 4) * 12}px`"),
         "内联笔记的左缩进要用像素字符串，起步 22px（与「未归类」齐平）"
     );
     assert.equal(
@@ -5477,7 +5486,7 @@ test("上传被拒（413）要说人话，不能只剩「API错误: 413」", () 
     );
 });
 
-test("预览模式下不能上传图片（编辑器不挂载，插了也是静默丢失）", () => {
+test("预览模式下不能上传文件（编辑器不挂载，插了也是静默丢失）", () => {
     const src = readNotesPage();
     // 工具栏要收到 canInsert，且预览模式下是 false
     assert.ok(
@@ -5485,10 +5494,12 @@ test("预览模式下不能上传图片（编辑器不挂载，插了也是静�
         "主工具栏要按 pane 传 canInsert（预览模式下编辑器不挂载）"
     );
     // 上传前必须挡一道并说明原因，不能「传完了才发现没插进去」
-    const picked = src.slice(src.indexOf("const handleImagePicked"), src.indexOf("const handleImagePicked") + 1200);
+    // ⚠️ 2026-10-18 支持 txt/json 后 handleImagePicked 改名为 handleFilePicked
+    // （图片插 ![]()、文本插 []() 下载链接），守卫锚点同步更新。
+    const picked = src.slice(src.indexOf("const handleFilePicked"), src.indexOf("const handleFilePicked") + 1200);
     assert.ok(
         /canInsertOk/.test(picked) && /预览模式插不进正文/.test(picked),
-        "预览模式上传要直接提示，不能让图白传一次"
+        "预览模式上传要直接提示，不能让文件白传一次"
     );
     // 菜单项也要置灰（不是点了才报错）
     assert.ok(

@@ -88,6 +88,67 @@ export function imageExtension(mime: string): string | null {
 }
 
 /**
+ * 纯文本附件（2026-10-18 用户要「笔记里上传 txt/json」）：只放行
+ * text/plain 与 application/json，**按内容判定**（不是按扩展名/Content-Type）：
+ *  - JSON：去掉 BOM 与空白后首字符是 { 或 [，且整体 JSON.parse 成功；
+ *  - 纯文本：UTF-8 可解码、无 NUL 字节、无高比例控制字符（二进制文件混不进）。
+ * ⚠️ 安全边界：这类附件**永远不当 HTML 执行** —— 下载/预览按 text/plain
+ * （charset=utf-8）出，浏览器只当纯文本显示；正文里也只插下载链接，不插
+ * `<img>`/`<script>`。SVG / HTML 故意不收（前者能带脚本，后者无正向用途）。
+ */
+export const SAFE_TEXT_MIME: Record<string, string> = {
+    "text/plain": "txt",
+    "application/json": "json",
+};
+
+/** 文本类的扩展名白名单（与 imageExtension 对偶） */
+export function textExtension(mime: string): string | null {
+    return SAFE_TEXT_MIME[mime] ?? null;
+}
+
+/** 控制字符占比上限：超过它当二进制拒掉（正常文本不会有一成控制字符） */
+const TEXT_MAX_CONTROL_RATIO = 0.1;
+/** 只嗅探前 64KB：够判类型，又不把大文件整个读进内存 */
+const TEXT_SNIFF_BYTES = 64 * 1024;
+
+export function sniffTextMime(bytes: Uint8Array): string | null {
+    if (bytes.length === 0) return null;
+    const head = bytes.subarray(0, TEXT_SNIFF_BYTES);
+    // NUL 字节 = 二进制（UTF-8 文本不会有）
+    for (const b of head) {
+        if (b === 0x00) return null;
+    }
+    let control = 0;
+    for (const b of head) {
+        // \t \n \r 是正常文本字符，不算控制
+        if (b < 0x20 && b !== 0x09 && b !== 0x0a && b !== 0x0d) control += 1;
+        else if (b === 0x7f) control += 1;
+    }
+    if (control / head.length > TEXT_MAX_CONTROL_RATIO) return null;
+
+    // 先试 JSON：剥 BOM，trim 后首字符 { / [
+    let text: string;
+    try {
+        text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(head);
+    } catch {
+        return null; // 不是合法 UTF-8
+    }
+    const trimmed = text.replace(/^\uFEFF/, "").trim();
+    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+        // 头部 64KB 可能截断了大 JSON：截得下就整体 parse，截不下按 json 收
+        // （后半截只会是更多同类文本，没有新风险面）
+        if (head.length < bytes.length) return "application/json";
+        try {
+            JSON.parse(trimmed);
+            return "application/json";
+        } catch {
+            // 首字符像 JSON 但 parse 不了：当普通文本收（用户粘了半截 json 也合理）
+        }
+    }
+    return "text/plain";
+}
+
+/**
  * **按文件头**判定图片类型，不信客户端给的 Content-Type。
  * 只信 Content-Type 的话，传 `image/png` 但内容是 HTML/脚本就绕过了类型限制。
  * （我们最终只把图片渲染进 `<img src>`，不是 innerHTML，风险面比 inkstone 小，

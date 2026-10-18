@@ -510,31 +510,38 @@ export function MarkdownToolbar({
         [onUploadImage, activeId]
     );
 
-    const handleImagePicked = useCallback(
+    const handleFilePicked = useCallback(
         async (file: File) => {
             // ⚠️ 没有编辑器（预览模式）时 insertAtCursor 会**静默 return**：
-            // 图传上去了、正文没变，用户看到的就是「预览窗里没有这张图」。
+            // 文件传上去了、正文没变，用户看到的就是「预览窗里什么都没有」。
             // 所以这里先把话说清楚，而不是让它悄悄过去。
             if (!canInsertOk) {
-                onNotify?.("预览模式插不进正文：先切回「编辑」或「分栏」再传图", "error");
+                onNotify?.("预览模式插不进正文：先切回「编辑」或「分栏」再传文件", "error");
                 return;
             }
             // 先本地挡一道：与后端 ATTACHMENT_MAX_BYTES 一致（25MB）。
             // 不挡的话要等传完 25MB 才收到 413，用户干等半天还以为卡住了。
             if (file.size > 25 * 1024 * 1024) {
-                onNotify?.("这张图超过 25MB，换一张小一点的再传", "error");
+                onNotify?.("这个文件超过 25MB，换一个小一点的再传", "error");
                 return;
             }
+            // 纯文本（txt/json）插**下载链接**：markdown 图片语法对文本没有意义，
+            // `![x](a.txt)` 在预览里只是一张裂开的图。图片仍走 `![]()`。
+            const isText = file.type === "text/plain" || file.type === "application/json";
             setUploading(true);
             try {
                 const { url, filename } = await resolveImageUrl(file);
-                onInsert(`![${filename}](`, ")", url);
+                if (isText) {
+                    onInsert(`[${filename}](`, ")", url);
+                } else {
+                    onInsert(`![${filename}](`, ")", url);
+                }
                 // ⚠️ 必须给一句反馈：之前插入完一点动静都没有，用户在预览里
-                // 没立刻找到图，就以为「上传没生效」（2026-10-08 用户连报两轮）。
-                onNotify?.(`已插入图片「${filename}」`, "success");
+                // 没立刻找到内容，就以为「上传没生效」（2026-10-08 用户连报两轮）。
+                onNotify?.(isText ? `已插入文件「${filename}」（点击可下载）` : `已插入图片「${filename}」`, "success");
             } catch (error) {
                 onNotify?.(
-                    error instanceof Error ? error.message : "图片上传失败",
+                    error instanceof Error ? error.message : "文件上传失败",
                     "error"
                 );
             } finally {
@@ -584,14 +591,16 @@ export function MarkdownToolbar({
         <input
             ref={fileInputRef}
             type='file'
-            accept='image/png,image/jpeg,image/gif,image/webp,image/avif'
+            // 2026-10-18 起支持纯文本（txt/json）：图片照旧插 markdown 图片，
+            // 文本插下载链接（见 handleFilePicked）
+            accept='image/png,image/jpeg,image/gif,image/webp,image/avif,text/plain,.txt,application/json,.json'
             style={{ display: "none" }}
             data-file-input='1'
             onChange={e => {
                 const file = e.target.files?.[0];
                 // ⚠️ 读完立刻清空 value：否则选同一张图第二次不会触发 change
                 e.target.value = "";
-                if (file) void handleImagePicked(file);
+                if (file) void handleFilePicked(file);
             }}
         />
         <Box

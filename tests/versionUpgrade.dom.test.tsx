@@ -256,6 +256,51 @@ test("发现新版本时才出现「更新」按钮，点击复制升级命令�
     }
 });
 
+test("「更新」按钮优先走网页直接升级；端点不可用时回落复制命令", async t => {
+    t.after(cleanup);
+    const writes: string[] = [];
+    Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: { writeText: async (text: string) => { writes.push(text); } },
+    });
+    t.after(() => { Reflect.deleteProperty(navigator, "clipboard"); });
+
+    // fetch 桩：按用例切状态
+    let mode: "upgrade" | "unsupported" = "upgrade";
+    globalThis.fetch = (async (url: string) => {
+        if (String(url).includes("/api/system/upgrade")) {
+            if (mode === "unsupported") {
+                return { ok: false, status: 501, json: async () => ({ ok: false, reason: "unsupported" }) };
+            }
+            return { ok: true, status: 200, json: async () => ({ ok: true, message: "升级已启动" }) };
+        }
+        // 版本检查走 upstream
+        return { ok: true, status: 200, json: async () => ({ version: "3.5.0" }) };
+    }) as unknown as typeof fetch;
+    try {
+        mount(<VersionUpgradeSection version="v3.4.0+abc123" />);
+        await click(document.querySelector("[data-check-update]"));
+        await flushAsync();
+        assert.ok(document.querySelector("[data-update-action]"), "要有更新按钮");
+
+        // ① 网页直接升级：显示升级中提示，不复制命令
+        await click(document.querySelector("[data-update-action]"));
+        await flushAsync();
+        assert.ok(document.querySelector("[data-update-running]"), "升级已触发要有运行提示");
+        assert.deepEqual(writes, [], "走了网页升级就不该再复制命令");
+
+        // ② 端点 501（没挂 docker.sock / Workers 部署）→ 回落复制命令
+        writes.length = 0;
+        mode = "unsupported";
+        await click(document.querySelector("[data-update-action]"));
+        await flushAsync();
+        assert.equal(document.querySelector("[data-update-running]"), null, "回落后不该有运行提示");
+        assert.deepEqual(writes, ["docker pull ghcr.io/zwjttztt/navihive:latest"], "回落要复制升级命令");
+    } finally {
+        globalThis.fetch = realFetch;
+    }
+});
+
 test("远端版本相同或更低 → 已是最新", async t => {
     t.after(cleanup);
     globalThis.fetch = (async () =>

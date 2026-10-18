@@ -23,6 +23,8 @@ import {
     readAttachmentObject,
     recordUpload,
     sniffImageMime,
+    sniffTextMime,
+    textExtension,
 } from "../attachments";
 import type { RouteCtx } from "./types";
 
@@ -40,6 +42,9 @@ import type { RouteCtx } from "./types";
  * （sniffImageMime），只放行 PNG/JPEG/GIF/WebP/AVIF。
  * SVG 故意不在白名单里 —— 它能带脚本，正文里的 `<img src=…svg>` 由浏览器原生解析，
  * 绕过我们的渲染层。
+ * 2026-10-18 起追加纯文本（sniffTextMime）：txt / json，按内容判定
+ * （UTF-8 + 无 NUL + 控制字符占比；JSON 还要整体 parse 通过）。文本附件
+ * 下载时按 text/plain;charset=utf-8 出，浏览器只当纯文本，不构成 XSS 面。
  */
 async function handleUploadAttachment(ctx: RouteCtx): Promise<Response> {
     const { request, api, env } = ctx;
@@ -59,11 +64,19 @@ async function handleUploadAttachment(ctx: RouteCtx): Promise<Response> {
     const quota = await checkUploadQuota(env, currentUserIdOf(ctx), bytes.byteLength);
     if (!quota.ok) throw quotaError(quota);
 
-    // 嗅探文件头定类型
-    const mime = sniffImageMime(bytes);
-    const ext = mime ? imageExtension(mime) : null;
+    // 嗅探文件头定类型：先试图片，再试纯文本（txt/json，2026-10-18）
+    let mime = sniffImageMime(bytes);
+    let ext = mime ? imageExtension(mime) : null;
     if (!mime || !ext) {
-        throw ApiError.unsupportedMedia("只支持 PNG / JPEG / GIF / WebP / AVIF 图片（按文件内容判定，不看文件名）");
+        const textMime = sniffTextMime(bytes);
+        const textExt = textMime ? textExtension(textMime) : null;
+        if (textMime && textExt) {
+            mime = textMime;
+            ext = textExt;
+        }
+    }
+    if (!mime || !ext) {
+        throw ApiError.unsupportedMedia("只支持 PNG / JPEG / GIF / WebP / AVIF 图片与 txt / json 纯文本（按文件内容判定，不看文件名）");
     }
 
     const id = crypto.randomUUID();
@@ -511,9 +524,14 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
         if (!bytes) return errorResponse(ApiError.gone("附件数据已丢失"), { headers });
         // ⚠️ Response 的 BodyInit 在 Worker 类型里不含 Uint8Array，
         // 用它的 .buffer（零拷贝，不多复制一份 25MB）。
+        // 文本附件（txt/json）补 charset=utf-8：不补的话中文按浏览器默认编码
+        // 猜，UTF-8 的文件会显示成乱码（2026-10-18 加纯文本附件时一并修）。
+        const contentType = found.mime.startsWith("text/")
+            ? `${found.mime}; charset=utf-8`
+            : found.mime;
         return new Response(bytes.buffer as ArrayBuffer, {
             headers: {
-                "Content-Type": found.mime,
+                "Content-Type": contentType,
                 "Content-Length": String(bytes.byteLength),
                 // private, no-store：图片是登录后才可见的，走任何中间缓存都会
                 // 把它发给别人。文件名不外泄，所以用 inline + 通用类型。

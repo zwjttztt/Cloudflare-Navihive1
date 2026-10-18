@@ -14,6 +14,8 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { Readable } from "node:stream";
 import { mkdir, readFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { spawn } from "node:child_process";
 import { timingSafeEqual } from "node:crypto";
 import path from "node:path";
 import handler from "../worker/index";
@@ -128,6 +130,17 @@ function firstHeaderValue(value: string | string[] | undefined): string | undefi
     return raw.split(",")[0].trim();
 }
 
+/** 升级端点的内部鉴权用：只转发浏览器凭证（cookie / Authorization）。
+ *  内部问 worker 的 auth/me，复用整套令牌校验 —— server 侧不自己解 session。 */
+function toHeaders(req: IncomingMessage): Headers {
+    const headers = new Headers();
+    const cookie = req.headers.cookie;
+    if (cookie) headers.set("cookie", Array.isArray(cookie) ? cookie.join("; ") : cookie);
+    const auth = req.headers.authorization;
+    if (auth) headers.set("authorization", String(auth));
+    return headers;
+}
+
 async function proxyToWorker(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const method = req.method ?? "GET";
     const trustXFF = serverEnv.NAVIHIVE_TRUST_XFF === "1";
@@ -240,6 +253,66 @@ const server = createServer((req, res) => {
                 }
                 await runScheduledTasks(serverEnv, undefined, CRON_EXPR);
                 res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" }).end('{"ok":true}');
+                return;
+            }
+
+            // POST /api/system/upgrade：网页端直接升级（2026-10-18 用户要
+            // 「加个升级按键直接在网页升级版本」）。只在**自托管 + 挂了
+            // docker.sock** 的部署可用； Workers 部署 / 没挂 sock 的一律 501，
+            // 前端回落成「复制 docker pull 命令手动执行」。
+            //
+            // 三道闸：① owner only（内部问 worker 的 auth/me 复用同一套鉴权）；
+            // ② docker.sock 可访问；③ 升级目录里有 docker-compose.yml。
+            // ⚠️ 执行顺序：**先响应再升级** —— compose up 会把这个容器自己换掉，
+            // 升级命令跑起来后本进程随时会被杀，响应发不出去。1.5s 后 detached
+            // 执行 pull && up：pull 失败就不 up（旧容器继续服务，不会留下半份）。
+            if (pathname === "/api/system/upgrade" && method === "POST") {
+                const meRes = await handler.fetch(
+                    new Request("http://internal/api/auth/me", { method: "GET", headers: toHeaders(req) }),
+                    serverEnv
+                );                const me = meRes.ok ? ((await meRes.json()) as { role?: string }) : null;
+                if (!me || me.role !== "owner") {
+                    res.writeHead(403, { "Content-Type": "application/json; charset=utf-8" });
+                    res.end(JSON.stringify({ ok: false, error: "只有站点所有者可以执行升级" }));
+                    return;
+                }
+                const upgradeDir = process.env.NAVIHIVE_UPGRADE_DIR ?? "";
+                const hasSock = existsSync("/var/run/docker.sock");
+                const hasCompose = Boolean(upgradeDir) && existsSync(path.join(upgradeDir, "docker-compose.yml"));
+                if (!hasSock || !hasCompose) {
+                    res.writeHead(501, { "Content-Type": "application/json; charset=utf-8" });
+                    res.end(
+                        JSON.stringify({
+                            ok: false,
+                            reason: "unsupported",
+                            error:
+                                "当前部署不支持网页直接升级：需要以 Docker 自托管、挂载 /var/run/docker.sock，" +
+                                "并设置 NAVIHIVE_UPGRADE_DIR 指向 compose 目录。可手动执行升级命令。",
+                        })
+                    );
+                    return;
+                }
+                res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+                res.end(
+                    JSON.stringify({
+                        ok: true,
+                        message: "升级已启动：正在拉取镜像并重建容器，约 10-30 秒后服务会短暂重启，页面稍后自动恢复。",
+                    })
+                );
+                const script = `docker pull ${process.env.NAVIHIVE_IMAGE ?? "ghcr.io/zwjttztt/navihive:latest"} && cd ${JSON.stringify(upgradeDir)} && docker compose up -d --force-recreate`;
+                setTimeout(() => {
+                    try {
+                        const child = spawn("/bin/sh", ["-c", script], {
+                            detached: true,
+                            stdio: "ignore",
+                            env: process.env,
+                        });
+                        child.unref();
+                        console.log(`[upgrade] 已触发：${script}`);
+                    } catch (error) {
+                        console.error("[upgrade] 触发失败:", error);
+                    }
+                }, 1500);
                 return;
             }
 

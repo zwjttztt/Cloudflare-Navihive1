@@ -222,6 +222,8 @@ export function FolderTagSection({
         name: string;
         count: number;
         parent_id?: number | null;
+        /** 同级排序位：「向前/向后移动」按它算位置（没有就按数组序） */
+        order_num?: number | null;
         /** 文件夹外观（icon 名 / 颜色）—— 只有文件夹节会传 */
         icon?: string | null;
         color?: string | null;
@@ -444,6 +446,67 @@ export function FolderTagSection({
                             setAnchorEl(anchorAtMouse(e.clientX, e.clientY));
                         }}
                     />
+                    {/* 选中文件夹的笔记**紧贴它的文件夹行**（2026-10-18 用户报
+                        「123 笔记和 123 文件夹中间夹了 321 文件夹，应该贴着」）。
+                        原来这块渲染在整棵树末尾，子文件夹把笔记和它的文件夹隔开了。
+                        ⚠️ 仍只展开当前选中的那一个：全展开左栏会被几十条笔记撑爆。 */}
+                    {childrenOf && selectedId === item.id && (() => {
+                        const kids = childrenOf(item.id);
+                        if (kids.length === 0) return null;
+                        return (
+                            <Box data-folder-notes='1' sx={{ pb: 0.5 }}>
+                                {kids.map(n => (
+                                    <Box
+                                        key={n.id}
+                                        component='button'
+                                        type='button'
+                                        data-folder-note={n.id}
+                                        className='note-dense-row'
+                                        aria-label={`打开笔记 ${n.title || "无标题"}`}
+                                        onClick={() => onOpenNote?.(n.id)}
+                                        onContextMenu={e => {
+                                            if (!onNoteContext) return;
+                                            e.preventDefault();
+                                            // 同列表行：开菜单前摘掉焦点，防菜单关闭时
+                                            // 焦点还原造成残留
+                                            (e.currentTarget as HTMLElement).blur();
+                                            (document.activeElement as HTMLElement | null)?.blur?.();
+                                            // 菜单弹在鼠标处（同上）
+                                            onNoteContext(n.id, anchorAtMouse(e.clientX, e.clientY));
+                                        }}
+                                        sx={{
+                                            display: "block",
+                                            width: "100%",
+                                            textAlign: "left",
+                                            appearance: "none",
+                                            border: "none",
+                                            m: 0,
+                                            font: "inherit",
+                                            cursor: "pointer",
+                                            minWidth: 0,
+                                            px: 1.25,
+                                            // 比文件夹行再缩进一档，父子关系一眼看得出。
+                                            // ⚠️⚠️ 必须写**像素字符串**（历史坑见 git log）：
+                                            // pl 是 MUI 间距单位（1=8px），写成 1.25 + depth*10
+                                            // 第一层就 90px 缩进，128px 左栏里文字只剩 25px。
+                                            pl: `${22 + Math.min(item.depth, 4) * 12}px`,
+                                            py: 0.35,
+                                            borderRadius: 1.25,
+                                            bgcolor:
+                                                activeNoteId === n.id
+                                                    ? "rgba(128,128,128,0.14)"
+                                                    : "transparent",
+                                            color:
+                                                activeNoteId === n.id ? "text.primary" : "text.secondary",
+                                            "&:hover": { bgcolor: "rgba(128,128,128,0.1)" },
+                                        }}
+                                    >
+                                        {n.title || "无标题"}
+                                    </Box>
+                                ))}
+                            </Box>
+                        );
+                    })()}
                     <IconButton
                         size='small'
                         aria-label={`${item.name} 操作`}
@@ -470,89 +533,6 @@ export function FolderTagSection({
                     </IconButton>
                 </Box>
             ))}
-            {/* 选中的文件夹把它的笔记直接列在下面（inkstone 的文件夹树）。
-                ⚠️ 只展开**当前选中**的那一个：全展开的话左栏会被几十条笔记撑爆，
-                而用户点开文件夹的目的就是「我要看这一份」。 */}
-            {childrenOf &&
-                selectedId !== null &&
-                (() => {
-                    const kids = childrenOf(selectedId);
-                    if (kids.length === 0) return null;
-                    const depth =
-                        treeItems.find(i => i.id === selectedId)?.depth ?? 0;
-                    return (
-                        <Box data-folder-notes='1' sx={{ pb: 0.5 }}>
-                            {kids.map(n => (
-                                <Box
-                                    key={n.id}
-                                    component='button'
-                                    type='button'
-                                    data-folder-note={n.id}
-                                    className='note-dense-row'
-                                    aria-label={`打开笔记 ${n.title || "无标题"}`}
-                                    onClick={() => onOpenNote?.(n.id)}
-                                    onContextMenu={e => {
-                                        if (!onNoteContext) return;
-                                        e.preventDefault();
-                                        // 同列表行：开菜单前摘掉焦点（菜单关闭时 Modal 会
-                                        // 把焦点还原到打开前的元素，残留就会挂出来）
-                                        (e.currentTarget as HTMLElement).blur();
-                                        (document.activeElement as HTMLElement | null)?.blur?.();
-                                        // 菜单弹在鼠标处（原来锚整行顶部，右键行中下部会「错位」）
-                                        onNoteContext(n.id, anchorAtMouse(e.clientX, e.clientY));
-                                    }}
-                                    sx={{
-                                        display: "block",
-                                        width: "100%",
-                                        textAlign: "left",
-                                        appearance: "none",
-                                        border: "none",
-                                        m: 0,
-                                        font: "inherit",
-                                        cursor: "pointer",
-                                        minWidth: 0,
-                                        px: 1.25,
-                                        // 比文件夹行再缩进一档，父子关系一眼看得出。
-                                        // ⚠️⚠️ 必须写**像素字符串**：这里的 pl 是 MUI 间距单位
-                                        // （1 个单位 = 8px）。之前写成 1.25 + (depth+1)*10
-                                        // → 第一层就是 90px 缩进，128px 宽的左栏里文字只剩
-                                        // 25px，看起来就像「标题居中了」（用户报）。
-                                        // 现在 22px 起步（与「未归类」那组基本齐平），每深一层 +12px。
-                                        pl: `${22 + Math.min(depth, 4) * 12}px`,
-                                        py: 0.35,
-                                        borderRadius: 1.25,
-                                        bgcolor:
-                                            activeNoteId === n.id
-                                                ? "rgba(128,128,128,0.14)"
-                                                : "transparent",
-                                        color:
-                                            activeNoteId === n.id ? "text.primary" : "text.secondary",
-                                        "&:hover": { bgcolor: "rgba(128,128,128,0.1)" },
-                                        "&:focus-visible": {
-                                            outline: "2px solid var(--accent)",
-                                            outlineOffset: 1,
-                                        },
-                                    }}
-                                >
-                                    <Typography
-                                        component='span'
-                                        sx={{
-                                            display: "block",
-                                            fontSize: 12.5,
-                                            overflow: "hidden",
-                                            textOverflow: "ellipsis",
-                                            whiteSpace: "nowrap",
-                                        }}
-                                    >
-                                        {n.title || "无标题"}
-                                    </Typography>
-                                </Box>
-                            ))}
-                        </Box>
-                    );
-                })()}
-            {/* 未归入任何文件夹的笔记（inkstone：直接列在文件夹树下，不占中间那栏）。
-                右键可移动到文件夹（右侧抽屉）/归档/移到回收站。 */}
             {unfiledNotes && unfiledNotes.length > 0 && (
                 <Box data-unfiled-notes='1' sx={{ pb: 0.5 }}>
                     <Typography
@@ -709,28 +689,48 @@ export function FolderTagSection({
                         移动到…
                     </MenuItem>
                 )}
-                {onReorder && (
-                    <MenuItem
-                        data-folder-op='move-up'
-                        onClick={() => {
-                            const id = menuId; setMenuId(null);
-                            if (id !== null) void onReorder(id, -1);
-                        }}
-                    >
-                        向前移动
-                    </MenuItem>
-                )}
-                {onReorder && (
-                    <MenuItem
-                        data-folder-op='move-down'
-                        onClick={() => {
-                            const id = menuId; setMenuId(null);
-                            if (id !== null) void onReorder(id, 1);
-                        }}
-                    >
-                        向后移动
-                    </MenuItem>
-                )}
+                {onReorder && (() => {
+                    // 同级里排第几：到头/到尾就没得移，菜单项置灰（2026-10-18
+                    // 用户报「向前移动向后移动也没用」——每层只有一个项时点了
+                    // 静默无反应，得像 inkstone 那样置灰并说清为什么）。
+                    const target = menuId !== null ? items.find(i => i.id === menuId) : undefined;
+                    const siblings = target
+                        ? items
+                              .filter(i => (i.parent_id ?? null) === (target.parent_id ?? null))
+                              .sort(
+                                  (a, b) =>
+                                      (a.order_num ?? 0) - (b.order_num ?? 0) ||
+                                      a.name.localeCompare(b.name)
+                              )
+                        : [];
+                    const at = target ? siblings.findIndex(i => i.id === target.id) : -1;
+                    const canUp = at > 0;
+                    const canDown = at >= 0 && at < siblings.length - 1;
+                    return (
+                        <>
+                            <MenuItem
+                                data-folder-op='move-up'
+                                disabled={!canUp}
+                                onClick={() => {
+                                    const id = menuId; setMenuId(null);
+                                    if (id !== null) void onReorder(id, -1);
+                                }}
+                            >
+                                向前移动
+                            </MenuItem>
+                            <MenuItem
+                                data-folder-op='move-down'
+                                disabled={!canDown}
+                                onClick={() => {
+                                    const id = menuId; setMenuId(null);
+                                    if (id !== null) void onReorder(id, 1);
+                                }}
+                            >
+                                向后移动
+                            </MenuItem>
+                        </>
+                    );
+                })()}
                 {onMove && (
                     <MenuItem data-folder-op='move-root' onClick={() => {
                         const id = menuId; setMenuId(null);

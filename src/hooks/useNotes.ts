@@ -846,8 +846,11 @@ const SUMMARY_LIST_THRESHOLD = 200;
             const swapWith = siblings[idx + dir];
             // 已经在最前 / 最后：不报错也不动（inkstone 同样是把这一项置灰）
             if (idx < 0 || !swapWith) return;
-            const aOrder = target.order_num ?? idx;
-            const bOrder = swapWith.order_num ?? idx + dir;
+            // ⚠️ order_num 用**同级索引**而不是存量值：存量可能有重复（两次创建
+            // 撞同一个值）或空洞，两个一样的话交换完排序还是乱的 —— 用户报
+            // 「向前移动向后移动也没用」的一种正是这个。索引必然不同。
+            const aOrder = idx;
+            const bOrder = idx + dir;
             const before = folders;
             try {
                 const [fa, fb] = await Promise.all([
