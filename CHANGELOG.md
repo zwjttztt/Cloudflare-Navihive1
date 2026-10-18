@@ -6,6 +6,27 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。---
 
+## 2026-10-18（日）· 修复：myhp 分享页仍 404 / POST / 仍 405（ASSETS 绑定 + run_worker_first）
+
+v3.2.4/3.2.5 把 Worker 非 API 分支改成转发 `env.ASSETS` 做 SPA 回退，但部署后实测
+myhp 上 `/s/<token>` 非导航请求**仍 404**、`POST /` **仍 405**——单测因为 mock 了
+`env.ASSETS` 没暴露这个缺口。根因两点：
+
+1. `wrangler.jsonc` 的 `assets` 没显式写 `binding`，生产 `env.ASSETS` 实际未绑定，
+   非 API 分支的 `if (assets && …)` 恒为 false → 直接走 404；
+2. `run_worker_first` 默认 false：资产层先接管，`POST /` 命中 `index.html` 被当成
+   静态资源回 **405**、非导航的 `/s/<token>` 被资产层按 404 打回后 Worker 又没有
+   ASSETS 可转发，于是两处都修不上。
+
+修复：`assets` 显式 `binding: "ASSETS"` + `run_worker_first: true`，让**所有请求先进
+Worker** 统一路由——非 API 的 GET/HEAD 全部转发 `env.ASSETS.fetch()` 做 SPA 回退，
+`POST /` 等非 GET/HEAD 非 API 路径回 404。`worker/index.ts` 相应去掉「带扩展名不转发」
+的守卫（run_worker_first 下静态资源 GET/HEAD 都进 Worker 再转发，资产层对带扩展名未命中
+按 not_found_handling 回 404，MIME 不符白屏由资产层兜底，无需 Worker 侧再判）。
+复测 myhp：非导航 `/s/<token>` 与导航请求均 200、非法 JSON 400、`POST /` 404，与 home 一致。
+
+---
+
 ## 2026-10-18（日）· 工程：修正 workerSpaFallback 单测类型错误（阻断 tsc -b 与 CI verify）
 
 `tests/workerSpaFallback.test.ts` 初版用 `delegated!.method` 断言 Worker 转发给 ASSETS 的

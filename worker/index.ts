@@ -69,24 +69,23 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
         env?.NAVIHIVE_COOKIE_SECURE !== "0" && requestIsSecure(request, url, trustXFF);
 
     // 非 API 路径：交给静态资产层做 SPA 回退（not_found_handling=single-page-application）。
-    // ⚠️ 为什么不能直接 404：
-    //   Cloudflare Workers + Assets 形态下，compatibility_date >= 2025-04-01 会启用
-    //   assets_navigation_prefers_asset_serving —— 浏览器「导航请求」(带 Sec-Fetch-Mode: navigate)
-    //   由资产层直接回 index.html、根本不进 Worker；但 fetch / curl / 爬虫 / 探针这类
-    //   「非导航请求」会被路由进 Worker，若这里直接 404，/s/<token>、/sg/<token> 这类
-    //   纯前端分享路由就全部 404（两环境对照 e2e 实测：home 200、myhp 404）。
-    //   转发给 env.ASSETS，资产层按 not_found_handling 回退到 index.html，与自托管
-    //   (server/entry.ts 的 serveStatic SPA fallback) 行为一致。
-    // 只对「不带扩展名」的路径回退：带扩展名的未命中（旧 chunk / 误拼的 .js）必须 404，
-    // 否则会拿一整页 HTML 顶替脚本（MIME 类型不符 → 模块脚本被浏览器拒绝、发版白屏），
-    // 这部分对齐 server/static.ts 的 looksLikeAsset。
-    // 自托管没有 ASSETS 绑定，且 server/entry.ts 已经先用 serveStatic 处理了 GET/HEAD 非 API
-    // 路径，所以这里只会收到非 GET/HEAD 的非 API 路径（如 POST /），没有回退意义，保持 404。
+    // ⚠️ 为什么用 run_worker_first + 显式 ASSETS 绑定：
+    //   wrangler.jsonc 设了 `run_worker_first: true` + `assets.binding: "ASSETS"`，
+    //   这样**所有请求先进 Worker**，由这里统一决定：非 API 的 GET/HEAD 全部转发
+    //   env.ASSETS.fetch()，由资产层按 not_found_handling 回退到 index.html；其余（POST /
+    //   等非 GET/HEAD 的非 API 路径）直接 404。好处是行为完全可控、与自托管
+    //   (server/entry.ts 的 serveStatic SPA fallback) 一致，且不再依赖
+    //   assets_navigation_prefers_asset_serving 那条「导航请求才进资产层」的隐式规则——
+    //   否则 fetch / curl / 爬虫 / 探针这类非导航请求会被资产层按 404 打回、再由 Worker
+    //   兜底时若 env.ASSETS 未绑定就直接 404，导致 /s/<token>、/sg/<token> 在非浏览器客户端
+    //   一律 404（两环境对照 e2e 实测：home 200、myhp 404）。
+    // 不再对「带扩展名」单独拦截：run_worker_first 下所有静态资源 GET/HEAD 都进 Worker 再转发
+    // 给资产层，资产层对「带扩展名但不存在」的路径按 not_found_handling 回 404（不会拿整页
+    // HTML 顶替脚本，MIME 类型不符 → 模块脚本被拒、发版白屏的问题由资产层兜底，无需 Worker 侧
+    // 再判扩展名），这部分仍对齐 server/static.ts 的 looksLikeAsset 意图。
     if (!url.pathname.startsWith("/api/")) {
         const assets = env.ASSETS;
-        const lastSeg = url.pathname.split("/").pop() ?? "";
-        const hasExt = /\.[a-z0-9]{1,8}$/i.test(lastSeg);
-        if (assets && (request.method === "GET" || request.method === "HEAD") && !hasExt) {
+        if (assets && (request.method === "GET" || request.method === "HEAD")) {
             return assets.fetch(
                 new Request(request.url, { method: request.method, headers: request.headers })
             );

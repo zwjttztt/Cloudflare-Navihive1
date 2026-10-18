@@ -48,17 +48,17 @@ test("根路径 / (GET) 也走 ASSETS 回退到 index.html", async () => {
     assert.equal(res.status, 200);
 });
 
-test("带扩展名的未命中静态路径不转发 ASSETS、直接 404", async () => {
+test("带扩展名的未命中静态路径转发 ASSETS、由资产层回 404（不返回 HTML，避免 MIME 不符）", async () => {
     let called = false;
     const env = envWithAssets(async () => {
         called = true;
-        return new Response("x");
+        return new Response("not found", { status: 404, headers: { "Content-Type": "text/plain" } });
     });
     const res = await worker.fetch(
         new Request("https://nav.example.com/assets/missing-DOESNOTEXIST.js"),
         env
     );
-    assert.equal(called, false, "带扩展名的未命中路径不应走 SPA 回退");
+    assert.equal(called, true, "run_worker_first 下所有静态资源 GET/HEAD 都进 Worker 再转发 ASSETS");
     assert.equal(res.status, 404);
 });
 
