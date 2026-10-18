@@ -180,7 +180,7 @@ const EditGroupDialog: React.FC<EditGroupDialogProps> = ({
 
                 {showDeleteConfirm && group && (
                     <Alert severity='warning' sx={{ mt: 2 }}>
-                        <Typography variant='body2'>
+                        <Typography variant='body2' sx={{ wordBreak: 'break-all' }}>
                             确定要删除分组 "{group.name}" 吗？
                             <strong>删除此分组将同时删除该分组下的所有网站。</strong>
                             此操作无法撤销。
@@ -215,6 +215,9 @@ const EditGroupDialog: React.FC<EditGroupDialogProps> = ({
                                     border: "1px dashed",
                                     borderColor: "currentColor",
                                     transition: "background-color .18s ease",
+                                    // 超长分组名在确认框里也要断行，不能把弹窗撑破
+                                    wordBreak: 'break-all',
+                                    maxWidth: '100%',
                                     "&:hover, &:focus-visible": {
                                         bgcolor: "action.selected",
                                     },

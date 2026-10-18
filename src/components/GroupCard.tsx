@@ -657,6 +657,12 @@ const GroupCard: React.FC<GroupCardProps> = ({
                         alignItems: "center",
                         flexWrap: "wrap",
                         gap: 0.5,
+                        // ⚠️ 必须能收缩：超长分组名（连续无空格字符）在 flex 行里默认
+                        // min-width:auto 拒绝收缩，会把整条头部连同右侧「编辑/分享」
+                        // 工具条一起撑出视口 —— 用户就再也点不到「编辑分组」了
+                        // （2026-10-18 用户报告「整个分组不能编辑」）。
+                        minWidth: 0,
+                        flex: "1 1 auto",
                     }}
                 >
                     {/* 分组强调色条：没单独设色时按分组 id 自动给一个稳定色 */}
@@ -693,7 +699,11 @@ const GroupCard: React.FC<GroupCardProps> = ({
                         sx={{
                             fontWeight: '600',
                             color: 'text.primary',
-                            mb: { xs: 1, sm: 0 }
+                            mb: { xs: 1, sm: 0 },
+                            // 超长 / 连续无空格的分组名在标题处断行，不横向撑破头部
+                            wordBreak: 'break-all',
+                            overflowWrap: 'anywhere',
+                            minWidth: 0,
                         }}>
                         {group.name}
                     </Typography>
