@@ -104,6 +104,9 @@ export default function PublicNotePage({ token }: { token: string }) {
                 <form onSubmit={submitPw} style={{ display: "flex", flexDirection: "column", gap: 12, marginTop: 8 }}>
                     <TextField
                         type='password'
+                        // 公开页口令框：阻止浏览器自动带入保存的站点密码（同 PublicGroupPage）
+                        autoComplete='new-password'
+                        name='share-passphrase'
                         label='访问口令'
                         value={pw}
                         autoFocus

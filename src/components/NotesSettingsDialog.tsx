@@ -1751,7 +1751,8 @@ export default function NotesSettingsDialog({
                                                         label='备份密码'
                                                         type='password'
                                                         size='small'
-                                                        autoComplete='off'
+                                                        // off 对 password 字段无效，浏览器照样填；new-password 才是挡板
+                                                        autoComplete='new-password'
                                                         value={restorePwd}
                                                         // ⚠️ aria-label 不能也叫「备份密码」——
                                                         // 上面备份目标里那个口令框已经占了，

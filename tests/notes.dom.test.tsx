@@ -2571,6 +2571,111 @@ test("「移动到文件夹」走右侧抽屉，选完就真归进去（onUpdate
     assert.equal(updates[1].patch.folder_id, null, "「未归类」要把 folder_id 置空");
 });
 
+test("移动抽屉里可就地新建文件夹：创建后自动把笔记移进去并关抽屉", async () => {
+    const created: string[] = [];
+    const updates: Array<{ id: number; patch: Record<string, unknown> }> = [];
+    mountPanel([note({ id: 6, title: "乙", content: "b" })], {
+        onUpdate: async (id: number, patch: Record<string, unknown>) => {
+            updates.push({ id, patch });
+        },
+        folderTags: {
+            folders: [] as never,
+            tags: [],
+            onCreateFolder: async (name: string) => {
+                created.push(name);
+                return { id: 9, user_id: null, name, order_num: 0, created_at: "", updated_at: "" };
+            },
+            onRenameFolder: async () => {},
+            onRemoveFolder: async () => {},
+            onCreateTag: async () => null,
+            onRenameTag: async () => {},
+            onRemoveTag: async () => {},
+            onAssignTags: async () => [],
+        },
+    });
+    await act(async () => {
+        (document.querySelector("button[data-note-menu='6']") as HTMLElement).click();
+    });
+    await act(async () => {
+        (document.querySelector("[data-row-op='folder']") as HTMLElement).click();
+    });
+    // 抽屉底部要有「新建文件夹」入口
+    const newBtn = document.querySelector("[data-new-folder='1']") as HTMLElement;
+    assert.ok(newBtn, "抽屉底部要有「新建文件夹」入口");
+    await act(async () => {
+        newBtn.click();
+    });
+    const input = document.querySelector("[data-new-folder-input='1'] input") as HTMLInputElement
+        ?? (document.querySelector("[data-new-folder-input='1']") as HTMLInputElement);
+    assert.ok(input, "点开后要有名称输入行");
+    await act(async () => {
+        const set = Object.getOwnPropertyDescriptor(
+            window.HTMLInputElement.prototype, "value"
+        )!.set!;
+        set.call(input, "新家");
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => {
+        (document.querySelector("[data-new-folder-submit='1']") as HTMLElement).click();
+    });
+    assert.deepEqual(created, ["新家"], "要用输入的名字创建文件夹");
+    assert.equal(updates.length, 1, "创建成功后要把当前笔记移进去");
+    assert.equal(updates[0].id, 6);
+    assert.equal(updates[0].patch.folder_id, 9, "folder_id 要指向新建的文件夹");
+    // ⚠️ 不在这里断言「抽屉 DOM 已消失」：MUI Drawer 关闭有退出动画，
+    // act 结束时 DOM 还在（几帧后才卸载），断言必然落空且其失败路径
+    // 会撞上 React/jsdom 的卸载时序坑（实测 35 秒内存疯耗直至 OOM）。
+    // 「关抽屉」由 onPick 里的 setMoveDrawerNoteId(null) 保证（上面 patch 已证明走到）。
+});
+
+test("移动抽屉新建失败时不移动笔记、抽屉不关、错误可见", async () => {
+    const updates: Array<{ id: number; patch: Record<string, unknown> }> = [];
+    mountPanel([note({ id: 7, title: "丙", content: "c" })], {
+        onUpdate: async (id: number, patch: Record<string, unknown>) => {
+            updates.push({ id, patch });
+        },
+        folderTags: {
+            folders: [] as never,
+            tags: [],
+            onCreateFolder: async () => {
+                throw new Error("重名了");
+            },
+            onRenameFolder: async () => {},
+            onRemoveFolder: async () => {},
+            onCreateTag: async () => null,
+            onRenameTag: async () => {},
+            onRemoveTag: async () => {},
+            onAssignTags: async () => [],
+        },
+    });
+    await act(async () => {
+        (document.querySelector("button[data-note-menu='7']") as HTMLElement).click();
+    });
+    await act(async () => {
+        (document.querySelector("[data-row-op='folder']") as HTMLElement).click();
+    });
+    await act(async () => {
+        (document.querySelector("[data-new-folder='1']") as HTMLElement).click();
+    });
+    const input = document.querySelector("[data-new-folder-input='1'] input") as HTMLInputElement
+        ?? (document.querySelector("[data-new-folder-input='1']") as HTMLInputElement);
+    await act(async () => {
+        const set = Object.getOwnPropertyDescriptor(
+            window.HTMLInputElement.prototype, "value"
+        )!.set!;
+        set.call(input, "重复名");
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => {
+        (document.querySelector("[data-new-folder-submit='1']") as HTMLElement).click();
+    });
+    assert.equal(updates.length, 0, "创建失败不能移动笔记");
+    assert.ok(document.querySelector("[data-move-drawer='1']"), "抽屉仍然开着");
+    // jsdom 不实现 innerText（恒 undefined），取文本要用 textContent
+    const err = document.body.textContent || "";
+    assert.ok(err.includes("重名了"), `要显示创建失败的错误信息（实际：${err.slice(-120)}）`);
+});
+
 test("列表行显示标签徽章（不用点进去才知道打了哪些标签）", () => {
     mountPanel([note({ id: 1, title: "甲", content: "a" })], {
         folderTags: {

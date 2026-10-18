@@ -6,6 +6,16 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。---
 
+## 2026-10-18（日）· 修复+新增：分享口令框挡浏览器自动填充全站排查 · 移动抽屉新建文件夹 · 网站设置「版本与升级」
+
+**1. 分享口令框不再被浏览器自动带入密码（全站排查 + 守卫）。** 「分享分组口令」输入框会被浏览器 formless 自动填充把保存的站点密码带进来——`autocomplete='off'` 对 password 类字段是规范级无效的，有效的是 `autoComplete='new-password'`。修复四处：`GroupShareDialog` 两处口令框、`PublicGroupPage`、`PublicNotePage` 公开口令框，以及 `NotesSettingsDialog` 恢复备份口令框（off → new-password）。全站排查结论：站点密码/备份相关字段本就走 secretInput 方案（type=text + CSS 遮蔽），无同类问题；登录表单刻意保留 `username/current-password` 语义让密码管理器正常工作。新增全站守卫 `tests/passwordFieldGuard.test.ts`：递归扫 `src/**/*.tsx`，每个裸 `type='password'` 必须就近带 `autoComplete='new-password' | 'current-password'`（LoginForm 白名单），含反向验证。
+
+**2. 「移动到文件夹」抽屉支持新建文件夹。** 右键笔记 → 移动到文件夹的侧栏底部新增「新建文件夹」：搜索无命中时提示可就地新建（搜索词自动带入当初始名）；创建成功自动选中并把笔记移入新文件夹、关闭抽屉；失败（如重名）时抽屉不关、错误可见、笔记不动。入口是新增的 `onCreateFolder` 可选 prop，不传不显示（其它调用方零影响）。焦点管理用 ref + useEffect 手动聚焦（autoFocus 与 MUI Modal 焦点陷阱在 jsdom 下行为不稳）。守卫：`tests/notes.dom.test.tsx` 新增 2 例（创建后自动移入并关抽屉 / 失败时不动且错误可见）。
+
+**3. 网站设置新增「版本与升级」一节。** 显示当前运行版本（与右下角徽标同源，`v{semver}+短哈希`），提供「检查更新」按钮：从 GitHub raw 取仓库 main 分支 package.json 比对语义版本（raw 域名 CORS 友好、不吃 api.github.com 匿名配额；本站 CSP `connect-src 'self' https:` 放行），发现新版本时给出两种部署形态的升级指引（Docker：`docker pull ghcr.io/zwjttztt/navihive:latest` 后重建容器；Workers：推送 main 自动构建）+ 发版页链接；拉不到或版本号解析失败落成可见错误文案，失败后可重试。自包含组件 `VersionUpgradeSection`（不碰本站 API、无必填 props），Docker 构建号兜底（无 `X.Y.Z` 三段）时不瞎比、直接引导去发版页。守卫：`tests/versionUpgrade.dom.test.tsx` 8 例（parseSemver 边界 / raw 域名 / 5xx 与缺版本号抛错 / 发现新版含双形态指引 / 已是最新 / 失败可重试）。
+
+---
+
 ## 2026-10-18（日）· 工程：分享链路补充面 E2E 进 CI（46 断言）+ 公开页 UI 实测 + 回收站节流守卫
 
 **分享链路从未被浏览器级实测的欠账补上了。** 原有 `e2e:share`（workerd）只覆盖「创建 → 401 needPassword → 口令错/对 → 撤销后 404」主干；本次新增 `script/share-e2e-extra.mjs`，跑在**自托管 server/**（Node + SQLite，与 home 部署形态同构）上，补三块没人测过的面（46 断言全绿）：

@@ -5484,6 +5484,14 @@ export default function NotesPage({
                     setMoveDrawerNoteId(null);
                     if (id !== null) void onUpdate(id, { folder_id: folderId });
                 }}
+                onCreateFolder={async (name) => {
+                    // 直接走 folderTags（不经过 createFolder 包装）：那层会顺手把左栏
+                    // 视图切到新文件夹，而这里创建完马上就把笔记移进去并关抽屉，
+                    // 抢视图只会让「我明明没点左栏」的跳动显得莫名。创建是根目录级别，
+                    // 子文件夹场景先不支持（左栏建子夹入口已够用）。
+                    const created = await folderTags?.onCreateFolder(name, null);
+                    return created?.id ?? null;
+                }}
                 onClose={() => setMoveDrawerNoteId(null)}
             />
 

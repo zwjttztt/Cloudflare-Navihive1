@@ -82,6 +82,10 @@ export default function PublicGroupPage({ token }: { token: string }) {
                 >
                     <TextField
                         type='password'
+                        // 公开页口令框：阻止浏览器把访问者保存的站点密码自动填进来
+                        //（有 <form> 时 formless 检测更积极，new-password 是有效挡板）
+                        autoComplete='new-password'
+                        name='share-passphrase'
                         label='访问口令'
                         value={password}
                         onChange={e => setPassword(e.target.value)}

@@ -181,6 +181,10 @@ export default function GroupShareDialog({
                             <TextField
                                 size='small'
                                 type='password'
+                                // 浏览器 formless 自动填充会把保存的站点密码带进分享口令框：
+                                // new-password 明确「这不是已有登录字段」，name 也不含 password 字样
+                                autoComplete='new-password'
+                                name='share-passphrase'
                                 label='访问口令（留空=不改）'
                                 value={password}
                                 onChange={e => setPassword(e.target.value)}
@@ -218,6 +222,8 @@ export default function GroupShareDialog({
                             <TextField
                                 size='small'
                                 type='password'
+                                autoComplete='new-password'
+                                name='share-passphrase'
                                 label='访问口令（可选）'
                                 value={password}
                                 onChange={e => setPassword(e.target.value)}
