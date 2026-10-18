@@ -858,8 +858,13 @@ const SUMMARY_LIST_THRESHOLD = 200;
                     api.updateFolder(swapWith.id!, { order_num: aOrder }),
                 ]);
                 if (!fa || !fb) throw new Error("排序失败");
+                // ⚠️ 必须**重排序**：树的渲染按数组顺序 DFS（sidebarSection 的
+                // treeItems 不再按 order_num 排），只换 order_num 不重排数组，
+                // 界面上位置纹丝不动 —— 用户报「文件夹向前后实际位置没换」的根因。
                 setFolders(prev =>
-                    prev.map(f => (f.id === id ? fa : f.id === swapWith.id ? fb : f))
+                    prev
+                        .map(f => (f.id === id ? fa : f.id === swapWith.id ? fb : f))
+                        .sort(sortFolders)
                 );
             } catch (error) {
                 reportError(error, { source: "note-folder-reorder" });

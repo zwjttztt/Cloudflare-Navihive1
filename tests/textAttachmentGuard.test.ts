@@ -78,3 +78,25 @@ test("下载端点：文本附件补 charset=utf-8（否则中文乱码）", () 
         "text/* 的 Content-Type 要补 charset=utf-8",
     );
 });
+
+test("工具栏「添加附件」按键：真附件链路，不插正文（2026-10-18 第五批）", () => {
+    const tb = readSrc("src/components/notes/markdownToolbar.tsx");
+    // 按钮与选择框存在
+    assert.match(tb, /data-tool='attach'/, "工具栏要有「添加附件」按钮");
+    assert.match(tb, /data-attach-input='1'/, "要有附件隐藏选择框");
+    assert.match(tb, /AttachFileIcon/, "要用回形针图标");
+    // 附件选择框只收 txt/json（与上传图片的 accept 分开）
+    const attachAccept = /ref=\{attachInputRef\}[\s\S]{0,300}?accept='([^']+)'/.exec(tb);
+    assert.ok(attachAccept, "附件 input 要有 accept");
+    for (const part of ["text/plain", ".txt", "application/json", ".json"]) {
+        assert.ok(attachAccept[1].includes(part), `附件 accept 要含 ${part}`);
+    }
+    assert.ok(!attachAccept[1].includes("image/"), "附件入口不收图片（那是上传图片的事）");
+    // 上传后不插正文：附件链路不得调用 onInsert
+    const attachBlock = tb.slice(tb.indexOf("handleAttachPicked"), tb.indexOf("handleAttachPicked") + 900);
+    assert.ok(!/onInsert/.test(attachBlock), "附件上传不得插正文（与 handleFilePicked 分开）");
+    // 宿主接线：没配存储时不渲染按钮
+    const page = readSrc("src/components/NotesPage.tsx");
+    assert.match(page, /onAttachFile=\{uploadApi \? handleAttach : undefined\}/, "主/侧工具栏要接 onAttachFile（无存储不渲染）");
+    assert.match(page, /已添加附件「/, "成功要有反馈（告知去附件列表看）");
+});

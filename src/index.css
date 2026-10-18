@@ -1251,4 +1251,11 @@ html.nav-touch .nav-star-btn[data-starred="false"] {
 .note-live-block > *:last-child {
     margin-bottom: 0;
 }
+/* 超长代码块横向滚（用户报「开启渲染后代码过长无横向滚轮」）：
+   pre 以宿主宽度为界，自己出横向滚动条；长词/长串也在 pre 内部滚，
+   不再向外撑宽（撑宽会被 .cm-scroller 的 overflow-x:hidden 裁掉）。 */
+.note-live-block pre {
+    max-width: 100%;
+    overflow-x: auto;
+}
 

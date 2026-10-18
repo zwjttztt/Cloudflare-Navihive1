@@ -482,6 +482,10 @@ export function FolderTagSection({
                                             border: "none",
                                             m: 0,
                                             font: "inherit",
+                                            // ⚠️ 必须显式 12.5px：左栏是 128px 窄列，
+                                            // 只写 font: inherit 会继承父级正文号
+                                            // （明显比同级文件夹行大，用户报「字号过大」）。
+                                            fontSize: 12.5,
                                             cursor: "pointer",
                                             minWidth: 0,
                                             px: 1.25,

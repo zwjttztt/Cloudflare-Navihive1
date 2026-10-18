@@ -360,6 +360,14 @@ import {
     FolderTagSection,
     type MenuAnchor,
 } from "./notes/sidebarSection";
+
+/**
+ * 「引用次数」的空表：模块级常量，别在渲染里 new Map()
+ * —— 那会让下游 props 每次都是新引用（2026-10-18 性能批次）。
+ */
+const EMPTY_REF_COUNTS: ReadonlyMap<string, number> = new Map();
+/** 空的内联笔记列表：同上，保证 notesInFolder 返回的引用稳定 */
+const EMPTY_NOTE_LINKS: { id: number; title: string }[] = [];
 import {
     AUTO_SAVE_MS,
     MAX_RATIO,
@@ -548,6 +556,21 @@ export default function NotesPage({
             clearTimeout(timer);
         };
     }, [menuClosing]);
+    /**
+     * 菜单关闭后**悬停显隐抑制**的行（第五报「右键弹窗消失的瞬间起初右键的
+     * 点位还是会闪过白圈」）：菜单关闭时指针通常还停在那行上（右键点多在
+     * 行右侧、正是「⋯」的位置），300ms 抑制一过 `&:hover` 规则就把「⋯」
+     * 弹出来 —— 用户看到的就是「关闭瞬间冒白圈」。这里在关闭时记下该行，
+     * 悬停显隐对它失效，直到指针**离开这一行**（onMouseLeave 清除）才恢复。
+     * 离开再进来是新的悬停意图，正常显示。
+     */
+    const [rowActionsSuppressed, setRowActionsSuppressed] = useState<number | null>(null);
+    /** 统一的行菜单关闭：置抑制行 + menuClosing（各关闭路径共用，防漏） */
+    const closeRowMenu = useCallback(() => {
+        setRowActionsSuppressed(rowMenu?.noteId ?? null);
+        setRowMenu(null);
+        setMenuClosing(true);
+    }, [rowMenu]);
     /** 正在拖的笔记行（半透明反馈，与文件夹那边同一套观感） */
     const [draggingNoteId, setDraggingNoteId] = useState<number | null>(null);
     /** 「编辑标签」二级弹窗的锚点 */
@@ -856,6 +879,23 @@ export default function NotesPage({
             return { url: result.url, filename: result.filename, size: result.size };
         },
         [uploadApi]
+    );
+
+    /**
+     * 「添加附件」（2026-10-18 用户报「工具栏加上添加附件按键可以选择 txt/json」）：
+     * 与 handleUpload 同一条上传链路（真附件、挂到当前笔记名下），但**不插正文**
+     * —— 附件是资源，传完在附件管理器里看。成功/失败都给一句人话反馈。
+     */
+    const handleAttach = useCallback(
+        async (file: File, noteId: number | null) => {
+            try {
+                const { filename } = await handleUpload(file, noteId);
+                onNotify?.(`已添加附件「${filename}」，在笔记的附件列表里查看`, "success");
+            } catch (error) {
+                onNotify?.(error instanceof Error ? error.message : "附件上传失败", "error");
+            }
+        },
+        [handleUpload, onNotify]
     );
 
     /**
@@ -1525,21 +1565,43 @@ export default function NotesPage({
 
     /** 每条笔记的计数：服务端 listFolders/listTags 也带了 count，但那要等接口回来，
         本地 notes 一变就应该立刻反映到左栏，所以这里按本地数据算（同号重算）。 */
+    /**
+     * 每个文件夹下的笔记数（左栏那个灰色小数字）。
+     *
+     * ⚠️ 必须**一次遍历** notes：原来是「外层遍历 folders × 内层 filter 全量 notes」，
+     * 置顶 / 移动 / 保存时这里要跑 `folders.length × notes.length` 次判断
+     * （用户报「文件夹下方置顶笔记等操作卡顿」的组成部分之一，2026-10-18 修）。
+     */
     const folderCounts = useMemo(() => {
         const map = new Map<number, number>();
+        for (const n of notes) {
+            if (n.archived || n.folder_id === null || n.folder_id === undefined) continue;
+            map.set(n.folder_id, (map.get(n.folder_id) ?? 0) + 1);
+        }
+        // 没笔记的文件夹也要有 0，否则左栏读不到值（Map.get 返回 undefined）
         for (const f of folders) {
-            map.set(f.id!, notes.filter(n => !n.archived && n.folder_id === f.id).length);
+            if (f.id !== undefined && !map.has(f.id)) map.set(f.id, 0);
         }
         return map;
     }, [folders, notes]);
 
+    /**
+     * 每个标签下的笔记数。
+     *
+     * ⚠️ 同样必须一次遍历：原来外层 tags × 内层 notes，每次还调 `tagOf` 新建一个 Set
+     * —— `tags.length × notes.length` 次 Set 分配，这是置顶卡顿里最贵的一块
+     * （2026-10-18 修）。现在每条笔记只解析一次标签集，去累加它命中的那些标签。
+     */
     const tagCounts = useMemo(() => {
         const map = new Map<number, number>();
         for (const t of tags) {
-            map.set(
-                t.id!,
-                notes.filter(n => !n.archived && tagOf(n, noteTags).has(t.id!)).length
-            );
+            if (typeof t.id === "number") map.set(t.id, 0);
+        }
+        for (const n of notes) {
+            if (n.archived) continue;
+            for (const id of tagOf(n, noteTags)) {
+                map.set(id, (map.get(id) ?? 0) + 1);
+            }
         }
         return map;
     }, [tags, notes, noteTags]);
@@ -1906,10 +1968,20 @@ export default function NotesPage({
         };
     }, [uploadApi]);
 
+    /**
+     * 附件被多少条笔记引用（设置→数据→附件管理器那格「引用 N 次」）。
+     *
+     * ⚠️ 只在**数据面板真的打开**时才算（2026-10-18 修「置顶笔记卡顿」）：
+     * 原来无条件扫全部正文，置顶/保存时这一段要跑好几毫秒的正则，而结果
+     * 99% 的时间根本没人看。面板一开（settingsOpen 变 true）当帧就会算出来。
+     * ⚠️ 每条笔记先用 `includes` 兜一道：没有附件链接的正文不进正则。
+     */
     const attachmentRefCounts = useMemo(() => {
+        if (!settingsOpen) return EMPTY_REF_COUNTS;
         const map = new Map<string, number>();
         for (const n of notes) {
             const content = n.content || "";
+            if (!content.includes("/api/notes/attachments/")) continue;
             const seen = new Set<string>();
             for (const m of content.matchAll(/\/api\/notes\/attachments\/([0-9a-zA-Z-]+)/g)) {
                 if (seen.has(m[1])) continue;
@@ -1918,7 +1990,7 @@ export default function NotesPage({
             }
         }
         return map;
-    }, [notes]);
+    }, [notes, settingsOpen]);
 
     /** 导出全部笔记（2026-10-08 设置→数据，照 inkstone 的导出）：JSON 一份
      *  （笔记 + 文件夹 + 标签 + 关联），不含附件二进制。前端直接从内存生成，
@@ -2664,17 +2736,41 @@ export default function NotesPage({
      * 某个文件夹下的笔记（左栏内联显示用）。
      * 归档的笔记不算 —— 它们只该出现在「归档」视图里。
      */
-    const notesInFolder = useCallback(
-        (folderId: number) =>
-            notes
-                .filter(n => !n.archived && n.folder_id === folderId)
-                .sort((a, b) =>
-                    String(b.updated_at || b.created_at || "").localeCompare(
-                        String(a.updated_at || a.created_at || "")
-                    )
+    /**
+     * folder_id → 这个文件夹下的笔记（左栏内联显示用）。
+     *
+     * ⚠️ 必须**一次遍历分组**（2026-10-18 修「文件夹下方置顶笔记等操作卡顿」）：
+     * 原来 `notesInFolder(id)` 每次调用都 `filter + sort` 全量 notes，而且 `notes`
+     * 一变整个函数就换新引用，把左栏文件夹树连着整棵树一起重渲。现在改成
+     * notes 变才重算一次，拿到的数组引用在没有相关改动时保持稳定。
+     * ⚠️ 归档的笔记不算 —— 它们只该出现在「归档」视图里。
+     */
+    const notesByFolder = useMemo(() => {
+        const raw = new Map<number, Note[]>();
+        for (const n of notes) {
+            if (n.archived || n.folder_id === null || n.folder_id === undefined) continue;
+            const list = raw.get(n.folder_id);
+            if (list) list.push(n);
+            else raw.set(n.folder_id, [n]);
+        }
+        const map = new Map<number, { id: number; title: string }[]>();
+        for (const [folderId, list] of raw) {
+            list.sort((a, b) =>
+                String(b.updated_at || b.created_at || "").localeCompare(
+                    String(a.updated_at || a.created_at || "")
                 )
-                .map(n => ({ id: n.id!, title: n.title || "" })),
-        [notes]
+            );
+            map.set(
+                folderId,
+                list.map(n => ({ id: n.id!, title: n.title || "" }))
+            );
+        }
+        return map;
+    }, [notes]);
+
+    const notesInFolder = useCallback(
+        (folderId: number) => notesByFolder.get(folderId) ?? EMPTY_NOTE_LINKS,
+        [notesByFolder]
     );
 
     /** 切换笔记前先把当前这条存掉 —— 草稿只存在内存里，不存就丢了 */
@@ -2847,8 +2943,13 @@ export default function NotesPage({
      * 与状态栏那套算法一致（去空白后数字符），两处不许各算各的。
      */
     const noteWordTotal = useMemo(
-        () => notes.reduce((sum, n) => sum + (n.content ?? "").replace(/\s+/g, "").length, 0),
-        [notes]
+        () =>
+            // ⚠️ 同批处理：只在数据面板打开时才扫全部正文（每条笔记都要 replace 出一份
+            // 去空白的新字符串 = 按字节数分配一遍内存），置顶/保存时不该付这笔钱。
+            settingsOpen
+                ? notes.reduce((sum, n) => sum + (n.content ?? "").replace(/\s+/g, "").length, 0)
+                : 0,
+        [notes, settingsOpen]
     );
     /** 当前笔记所在文件夹名（状态栏的位置指示，inkstone 也有这一项） */
     const activeFolderName = useMemo(() => {
@@ -3831,6 +3932,11 @@ export default function NotesPage({
                                         source: "list",
                                     });
                                 }}
+                                onMouseLeave={() => {
+                                    // 菜单关闭后的悬停抑制到「离开这一行」为止：
+                                    // 离开再进来是新的悬停意图（见 rowActionsSuppressed）
+                                    setRowActionsSuppressed(prev => (prev === note.id ? null : prev));
+                                }}
                                 sx={{
                                     // 列表不在视口里的行跳过渲染（布局仍占位）—— inkstone 的
                                     // NoteList.tsx:497 同款写法。几百条笔记时这是差别最大的一处：
@@ -3877,7 +3983,15 @@ export default function NotesPage({
                                     // 程序化 focus，:focus-within 一样命中 → ⋯ 常显成一颗圆点。
                                     // 改用 :has(:focus-visible)：程序化还原不匹配（最后一次
                                     // 交互是指针），键盘 Tab 进按钮仍然匹配 —— 两头都对。
-                                    "&:hover .note-row-actions, &:has(.note-row-actions:focus-visible) .note-row-actions": {
+                                    // ⚠️ hover 显隐还要看行级抑制（第五报）：菜单关闭时指针
+                                    // 仍停在该行，300ms 抑制一过 hover 规则会把「⋯」突然
+                                    // 弹出来（右键点多在行右侧 = ⋯ 的位置，用户看着就是
+                                    // 「关闭瞬间闪白圈」）。被抑制的行 hover 不显示，
+                                    // 直到 onMouseLeave 清除。
+                                    "&:hover .note-row-actions": {
+                                        opacity: rowActionsSuppressed === note.id ? 0 : 1,
+                                    },
+                                    "&:has(.note-row-actions:focus-visible) .note-row-actions": {
                                         opacity: 1,
                                     },
                                     "&:hover": { bgcolor: "rgba(128,128,128,0.08)" },
@@ -4476,6 +4590,7 @@ export default function NotesPage({
                         onNotify={onNotify}
                         activeId={active?.id ?? null}
                         onUploadImage={handleUpload}
+                        onAttachFile={uploadApi ? handleAttach : undefined}
                         // 预览模式下编辑器不挂载：上传会成功但插不进正文（见 canInsert 的说明）
                         canInsert={pane !== "preview"}
                     />
@@ -5048,6 +5163,7 @@ export default function NotesPage({
                     onNotify={onNotify}
                     activeId={sideNote?.id ?? null}
                     onUploadImage={handleUpload}
+                    onAttachFile={uploadApi ? handleAttach : undefined}
                 />
             )}
             <Box
@@ -5373,8 +5489,7 @@ export default function NotesPage({
                 open={Boolean(rowMenu)}
                 anchorEl={rowMenu?.el ?? null}
                 onClose={() => {
-                    setRowMenu(null);
-                    setMenuClosing(true);
+                    closeRowMenu();
                 }}
                 // ⚠️ 白圈根治（2026-10-18 用户第四报「点其他位置关闭后瞬间还是
                 // 出现白圈」）：还原焦点发生在退出动画之后，onExited 里 blur 太早
@@ -5395,13 +5510,12 @@ export default function NotesPage({
                     if (!note) return null;
                     const source = rowMenu?.source ?? "list";
                     const done = async (fn: () => Promise<unknown> | void) => {
-                        setRowMenu(null);
+                        closeRowMenu();
                         await fn();
                     };
                     const moveToFolder = () => {
-                        const id = note.id;
-                        setRowMenu(null);
-                        if (id !== undefined) setMoveDrawerNoteId(id);
+                        closeRowMenu();
+                        if (note.id !== undefined) setMoveDrawerNoteId(note.id);
                     };
                     // 左栏内联笔记的精简菜单（inkstone 的左栏右键）
                     if (source === "rail") {
@@ -5470,7 +5584,7 @@ export default function NotesPage({
                                 onClick={() => {
                                     const pick = rowMenu;
                                     const id = note.id;
-                                    setRowMenu(null);
+                                    closeRowMenu();
                                     if (pick && id !== undefined) {
                                         setTagPick({ el: pick.el, noteId: id });
                                     }
@@ -5485,7 +5599,7 @@ export default function NotesPage({
                                 onClick={() => {
                                     const pick = rowMenu;
                                     const id = note.id;
-                                    setRowMenu(null);
+                                    closeRowMenu();
                                     if (pick && id !== undefined) {
                                         setExportPick({ el: pick.el, noteId: id });
                                     }

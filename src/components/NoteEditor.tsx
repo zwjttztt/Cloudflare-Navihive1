@@ -45,7 +45,18 @@ const theme = EditorView.theme({
         fontFamily: "var(--note-editor-font, ui-monospace, monospace)",
         lineHeight: "1.75",
     },
-    ".cm-content": { padding: "16px 8px", minHeight: "100%", caretColor: "currentColor" },
+    ".cm-content": {
+        padding: "16px 8px",
+        minHeight: "100%",
+        caretColor: "currentColor",
+        // ⚠️ 必须钳住宽度（用户报「开启渲染后代码长度过长未出现横向滚轮」）：
+        // .cm-scroller 是 flex 容器，cm-content 作为 flex 子项默认 min-width:auto，
+        // 会被超长行/渲染块撑到内容宽 —— 即时渲染 widget 里的 <pre>（width:auto）
+        // 跟着等宽，内部 overflow-x:auto 永远不触发，长代码被
+        // .cm-scroller{overflow-x:hidden} 直接裁掉、无任何滚动条。
+        // 钳到 100% 后 pre 以视口宽为界，自己出横向滚动条。
+        maxWidth: "100%",
+    },
     ".cm-gutters": { backgroundColor: "transparent", color: "inherit", opacity: "0.55", borderRight: "1px solid rgba(128,128,128,.2)" },
     ".cm-activeLine": { backgroundColor: "rgba(128,128,128,.08)" },
     "&.cm-focused": { outline: "none" },

@@ -17,6 +17,7 @@ import MenuItem from "@mui/material/MenuItem";
 import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 import DataObjectIcon from "@mui/icons-material/DataObject";
+import AttachFileIcon from "@mui/icons-material/AttachFile";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import FormatColorTextIcon from "@mui/icons-material/FormatColorText";
 import FormatListBulletedIcon from "@mui/icons-material/FormatListBulleted";
@@ -390,6 +391,7 @@ export function MarkdownToolbar({
     onNotify,
     activeId,
     onUploadImage,
+    onAttachFile,
     canInsert,
     onInsertFold,
     onInsertTabs,
@@ -451,6 +453,13 @@ export function MarkdownToolbar({
      */
     onUploadImage: (file: File, noteId: number | null) => Promise<{ url: string; filename: string; size: number }>;
     /**
+     * 添加**真附件**（2026-10-18 用户报「工具栏加上添加附件按键可以选择 txt/json」）：
+     * 走 notes/attachments 接口进附件管理器，**不插正文**（与「上传图片」插
+     * markdown 的路径分开 —— 附件是资源，不是内容）。可选：不传则按钮不渲染
+     * （后端没配存储时 uploadApi 不存在）。
+     */
+    onAttachFile?: (file: File, noteId: number | null) => Promise<void>;
+    /**
      * 编辑器是否真的能接住插入（默认 true）。
      *
      * ⚠️ 「预览」模式下编辑器不挂载，insertAtCursor 会**静默 return** ——
@@ -481,8 +490,12 @@ export function MarkdownToolbar({
     const [formulaAnchor, setFormulaAnchor] = useState<HTMLElement | null>(null);
     /** 隐藏的 `<input type=file>`：点「上传图片」时用它弹系统选择框 */
     const fileInputRef = useRef<HTMLInputElement | null>(null);
+    /** 隐藏的 `<input type=file>`：「添加附件」用（txt / json，进附件管理器不插正文） */
+    const attachInputRef = useRef<HTMLInputElement | null>(null);
     /** 上传中：禁掉菜单项，避免连点把同一张图传两遍 */
     const [uploading, setUploading] = useState(false);
+    /** 附件上传中：同样禁按钮防连点 */
+    const [attaching, setAttaching] = useState(false);
 
     /**
      * 选一张图 → 上传 → 把 Markdown 插进正文。
@@ -508,6 +521,25 @@ export function MarkdownToolbar({
     const resolveImageUrl = useCallback(
         (file: File) => resolveImageUpload(file, onUploadImage, activeId ?? null),
         [onUploadImage, activeId]
+    );
+
+    /**
+     * 「添加附件」：选 txt/json → **真附件**接口（notes/attachments）→
+     * 附件管理器可见。与 handleFilePicked（插正文）是两条路：附件是资源，
+     * 不是内容 —— 不占正文体积、不进 markdown，管理器里统一看。
+     * 成功/失败提示由宿主的 onAttachFile 实现负责（它知道附件列表在哪）。
+     */
+    const handleAttachPicked = useCallback(
+        async (file: File) => {
+            if (!onAttachFile) return;
+            setAttaching(true);
+            try {
+                await onAttachFile(file, activeId ?? null);
+            } finally {
+                setAttaching(false);
+            }
+        },
+        [onAttachFile, activeId]
     );
 
     const handleFilePicked = useCallback(
@@ -601,6 +633,19 @@ export function MarkdownToolbar({
                 // ⚠️ 读完立刻清空 value：否则选同一张图第二次不会触发 change
                 e.target.value = "";
                 if (file) void handleFilePicked(file);
+            }}
+        />
+        {/* 「添加附件」的隐藏选择框：txt / json（与上传图片分开的一条链路） */}
+        <input
+            ref={attachInputRef}
+            type='file'
+            accept='.txt,text/plain,.json,application/json'
+            style={{ display: "none" }}
+            data-attach-input='1'
+            onChange={e => {
+                const file = e.target.files?.[0];
+                e.target.value = "";
+                if (file && onAttachFile) void handleAttachPicked(file);
             }}
         />
         <Box
@@ -858,6 +903,27 @@ export function MarkdownToolbar({
                 </IconButton>
                     </Tooltip>
             </Box>
+
+            {/* 添加附件（2026-10-18 用户报「工具栏上加上添加附件按键可以选择 txt 或 json」）：
+                走真附件接口进附件管理器，不插正文 —— 与「上传图片」的插 markdown
+                是两条路。没配存储（onAttachFile 缺席）时按钮整个不渲染。 */}
+            {onAttachFile && (
+                <Tooltip title='添加附件：选择 txt / json 文件上传，在笔记的附件列表里查看'>
+                    <span>
+                        <IconButton
+                            size='small'
+                            aria-label='添加附件'
+                            data-tool='attach'
+                            disabled={attaching}
+                            onMouseDown={e => e.preventDefault()}
+                            onClick={() => attachInputRef.current?.click()}
+                            sx={{ ...toolBtnSx }}
+                        >
+                            <AttachFileIcon fontSize='small' />
+                        </IconButton>
+                    </span>
+                </Tooltip>
+            )}
             <Menu
                 open={Boolean(imageAnchor)}
                 anchorEl={imageAnchor}

@@ -305,7 +305,7 @@ export async function openBrowser({ cdpPort, windowSize = "1440,950" }) {
         process.exit(code);
     };
 
-    return { evaluate, send, done, chromePath: chrome, getErrors: () => pageErrors.slice() };
+    return { evaluate, send, done, ws, chromePath: chrome, getErrors: () => pageErrors.slice() };
 }
 
 /**

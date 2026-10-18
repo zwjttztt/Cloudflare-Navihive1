@@ -6,6 +6,28 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。---
 
+## 2026-10-18（日）· 修复+性能：代码块横向滚动 · 白圈（右键点位）· 文件夹前/后移位 · 置顶卡顿 · 内联字号 · 添加附件按钮 · 全站体检脚本
+
+**1. 渲染态代码块超长没有横向滚动条（用户报「笔记编辑栏开启渲染后代码长度过长未出现横向滚轮」）。** 根因是 flex 子项的 `min-width:auto`：`.cm-content` 被超宽内容撑开后，内部 `<pre>` 跟着等宽，`overflow-x:auto` 永远不会触发，长代码最后被 `.cm-scroller` 的 `overflow-x:hidden` 直接裁掉。三处一起钳：`.cm-content` 加 `maxWidth:100%`、`PRE_STYLE` 加 `maxWidth:100%`、`index.css` 补 `.note-live-block pre { max-width:100%; overflow-x:auto }`。真机实测：`<pre>` 可视宽 499px、内容宽 2236px、`overflow-x: auto` —— 滚动条真的出来了。
+
+**2. 右键菜单关闭瞬间在**右键点位**闪白圈（用户第五报，「还是有一闪而过的白圈」）。** 这一报的点位不是「⋯」按钮而是**右键的那个位置**：300ms 抑制窗口一过，鼠标还悬在这一行，行级 `&:hover` 规则又把「⋯」按钮顶出来——用户右键多半点在行右侧，那正是「⋯」的位置。改法是把 hover 显隐**按行抑制**：新增 `rowActionsSuppressed` 状态，所有关闭路径统一走 `closeRowMenu()`（置抑制行 + 置 `menuClosing`），hover 规则改成 `opacity: rowActionsSuppressed === note.id ? 0 : 1`（键盘 `:focus-visible` 那条规则保持独立，可达性不掉），鼠标离开该行即清除抑制。
+
+**3. 文件夹「向前/向后移动」这次真的换位了（用户重报「实际位置没换」）。** 上一轮修的了索引换序与服务器持久化，漏了**渲染侧**：左栏文件夹树是**按 `folders` 数组顺序 DFS** 渲染的，`reorderFolder` 里 `setFolders(prev.map(...))` 只换了 `order_num`、数组顺序纹丝不动，界面自然没反应。现在 `map` 之后补 `.sort(sortFolders)`。
+
+**4. 文件夹下方置顶等操作的卡顿修复（用户报「卡顿，优化速度」）。** `notes` 每变一次（置顶/保存/移动的乐观更新）就要全量重算一串派生值，其中最贵的三处：`tagCounts` 是「标签 × 笔记」双重循环且每条现开一个 `Set`；`attachmentRefCounts` 无条件对所有正文跑正则；`noteWordTotal` 对每条正文 `replace` 出一份新字符串。改法：①`folderCounts` / `tagCounts` 改成**单趟遍历**（`$O(f×n)$`、O(t×n) → O(n)）；②总字数与附件引用计数加 **`settingsOpen` 闸门**（只有数据面板真的打开才算），附件计数正则前再用 `includes` 兜一道；③左栏内联笔记从「每次调用 filter+sort」改成 `notesByFolder` 分组表（引用稳定，不再带着整棵树重渲）。真机实测置顶点击到 UI 反馈 **23-29ms**。
+
+**5. 左栏文件夹下的笔记标题字号过大（用户报「字号过大」）。** 内联笔记原来是 `font: "inherit"`，会继承父级正文号；128px 窄列里明显比同级文件夹行大。现在显式 `fontSize: 12.5`（与同级一致）。真机实测量到 `12.5px`。
+
+**6. 工具栏新增「添加附件」按键（用户报「工具栏上加上添加附件按键可以选择 txt 或 json」）。** 与已有的「上传图片」分成两条路：**上传图片**插 `![]()` 进正文；**添加附件**走 `notes/attachments` 进附件管理器、不插正文（附件是资源不是内容）。按钮 `data-tool='attach'`，隐藏 input 的 accept 为 `.txt,text/plain,.json,application/json`，上传后 toast 提示「已添加附件「X」，在笔记的附件列表里查看」；没给上传能力时不渲染这个按钮。真实后端端到端复测：txt / json 都能传（白名单按文件内容嗅探）、下载字节一致、文本补 `charset=utf-8`。
+
+**7. 新增全站体检脚本 `script/site-audit.mjs`（工程）。** 之前的两个审计量的是**静态样式**（对比度 / 可访问名），这个跑**真实链路**：真后端（自托管服务）+ 真登录态 + 4 档视口（1440 / 864 / 768 / 390），逐页采集「控制台报错 / 未捕获异常 / 4xx-5xx 请求 / 横向溢出 / 越界元素」；路由覆盖 `/`、`/s/<token>`、`/sg/<token>`、未知路径（SPA 兜底）；交互上会真的去开设置 / 搜索 / 更多选项 / 账号弹窗，并复核本批六项修复（代码块滚动、内联字号、置顶耗时、添加附件按钮）。跑法见脚本头注释。⚠️ 本轮就靠它撞出一个陷阱：**`dist-server` 是旧产物**（没有 `build:server` 就直接起服务）会让接口层面全是假象——先看到「txt/json 415 不支持」，重build 后立刻正常，不是产品 bug。
+
+守卫：本批新增 8 例静态/契约断言（`folderViewGuard` +3：单趟计数、settingsOpen 闸门、`notesByFolder` 分组表、reorder 排序、内联字号、代码块钳宽、行抑制；`textAttachmentGuard` +1：添加附件按钮链路）。另把一批 `useNotes.ts` 的 `useCallback` 依赖补严。
+
+另：单测 **2854**（原 2846，+8）。
+
+---
+
 ## 2026-10-18（日）· 修复+新增：网页直接升级 · 笔记上传 txt/json · 文件夹树贴附 · 即时渲染独立修复 · 白圈根治 · 前/后移动
 
 **1. 「更新」按钮能在网页直接升级了（用户报「发现新版本能否加个升级按键直接在网页升级版本」）。** 自托管部署（Docker + docker.sock）下，「版本与升级」里的「更新」优先 POST `/api/system/upgrade`：服务端三道闸（owner / docker.sock 存在 / compose 目录），**先响应 200 再 detached 执行** `docker pull && docker compose up -d --force-recreate`——容器会把自己换掉，不先响应命令就发不出去，约 10-30 秒后服务短暂重启、页面自动恢复。Workers 部署没有该端点（404）/ 没挂 sock（501）→ 回落复制 `docker pull ghcr.io/zwjttztt/navihive:latest` 命令，复制失败命令原文可手动复制。守卫：`tests/systemUpgradeGuard.test.ts` 3 例（端点三道闸 + 先响应后执行 + 前端回落）。

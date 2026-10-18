@@ -1019,6 +1019,9 @@ const PRE_STYLE: React.CSSProperties = {
     borderRadius: 8,
     padding: 12,
     overflowX: "auto",
+    // ⚠️ 防御 flex/网格父容器（min-width:auto 链）：不钳 100% 时 pre 会被
+    // 超长行撑开、自身 overflow-x 永不触发（同 cm-content 的坑）。
+    maxWidth: "100%",
     margin: "8px 0",
 };
 const CODE_STYLE: React.CSSProperties = {
