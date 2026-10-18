@@ -21,29 +21,30 @@ function envWithAssets(fetchImpl: (req: Request) => Response | Promise<Response>
 const HEX64 = "a".repeat(64);
 
 test("非 API 无扩展名路径(GET) 转发给 env.ASSETS 做 SPA 回退", async () => {
-    let delegated: Request | null = null;
+    let seenMethod = "";
+    let seenUrl = "";
     const env = envWithAssets(async (req) => {
-        delegated = req;
+        seenMethod = req.method;
+        seenUrl = req.url;
         return new Response("<!doctype html><html><body>app</body></html>", {
             status: 200,
             headers: { "Content-Type": "text/html; charset=utf-8" },
         });
     });
     const res = await worker.fetch(new Request(`https://nav.example.com/s/${HEX64}`), env);
-    assert.ok(delegated, "应当转发给 env.ASSETS.fetch");
-    assert.equal(delegated!.method, "GET");
-    assert.equal(delegated!.url, `https://nav.example.com/s/${HEX64}`);
+    assert.equal(seenMethod, "GET");
+    assert.equal(seenUrl, `https://nav.example.com/s/${HEX64}`);
     assert.equal(res.status, 200);
 });
 
 test("根路径 / (GET) 也走 ASSETS 回退到 index.html", async () => {
-    let delegated: Request | null = null;
-    const env = envWithAssets(async (req) => {
-        delegated = req;
+    let called = false;
+    const env = envWithAssets(async () => {
+        called = true;
         return new Response("<!doctype html>", { status: 200, headers: { "Content-Type": "text/html" } });
     });
     const res = await worker.fetch(new Request("https://nav.example.com/"), env);
-    assert.ok(delegated, "根路径应转发给 env.ASSETS.fetch");
+    assert.ok(called, "根路径应转发给 env.ASSETS.fetch");
     assert.equal(res.status, 200);
 });
 

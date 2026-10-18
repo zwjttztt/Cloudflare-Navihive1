@@ -6,6 +6,18 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。---
 
+## 2026-10-18（日）· 工程：修正 workerSpaFallback 单测类型错误（阻断 tsc -b 与 CI verify）
+
+`tests/workerSpaFallback.test.ts` 初版用 `delegated!.method` 断言 Worker 转发给 ASSETS 的
+请求，`assert.ok` 配合闭包里的 `delegated = req` 让 TypeScript 把 `delegated` 收窄成
+`never`，`tsc -b` 直接报 `Property 'method' does not exist on type 'never'`——
+既挡住 `npm run build`（myhp 手动部署走这条），也导致 `docker-publish.yml` 的 `verify`
+阶段类型检查失败、home 的镜像因此没发出来。改成在闭包里直接记录 `method` / `url` 字符串
+再断言，消除收窄歧义；`tsc -b --force` 与全部门禁（lint / test / build / smoke / 双审计）
+重新全绿。版本随之 bump 到 v3.2.5。
+
+---
+
 ## 2026-10-18（日）· 修复：分享页 404 真正根因 + 非法 JSON 回 400（续两环境对照测试）
 
 **背景**：上一节把 myhp 误判成 Pages 形态、又用违法的 `_redirects` 把 Workers 部署卡死，
