@@ -139,4 +139,29 @@ test("NotesPage：行内 ⋯ 按钮显隐不得用 :focus-within（菜单关闭�
         /classList\.contains\("note-row-actions"\)\) el\.blur\(\)/,
         "onExited 里要把落在 ⋯ 按钮上的焦点摘掉",
     );
+    // 根治（2026-10-18 第四报「点其他位置关闭后瞬间还是出现白圈」）：
+    // disableRestoreFocus —— Chromium 里被还原的焦点会匹配 :focus-visible，
+    // 行级 :has(:focus-visible) 显隐规则随即把 ⋯ 顶出来。不还原才断根。
+    assert.match(
+        src,
+        /disableRestoreFocus/,
+        "行菜单必须 disableRestoreFocus（还原焦点会触发 focus-visible → 白圈）",
+    );
+    // 关闭动画期间（~200ms）rowMenu 还挂着、menuOpen 显式 opacity:1：
+    // menuClosing 类把按钮硬压掉，防「弹窗消失的瞬间冒出白圈」
+    assert.match(src, /menuClosing/, "关闭动画期要有 menuClosing 状态");
+    assert.match(
+        src,
+        /note-row-actions\$\{menuClosing \? " note-row-actions--closing" : ""\}/,
+        "closing 期间按钮要打 --closing 类",
+    );
+});
+
+test("index.css：closing 类必须用 !important 压掉 hover/focus 显隐", () => {
+    const src = readSrc("src/index.css");
+    assert.match(
+        src,
+        /\.note-dense-row \.note-row-actions--closing \{\s*opacity: 0 !important;\s*\}/,
+        "closing 类要 !important 压 opacity（hover / :has(:focus-visible) 特殊度再高也盖不住它）",
+    );
 });

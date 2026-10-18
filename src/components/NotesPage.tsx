@@ -324,6 +324,10 @@ type NoteView =
     | "archived"
     | "uncategorized"
     | "trash"
+    // 「选中某个文件夹」的视图键（2026-10-18）：点文件夹时切到这里，
+    // 左栏「全部 / 最近」等行不再保持高亮 —— 否则计数还显示「全部 3」
+    // 而中栏只有该文件夹的 1 条，用户以为没切过去（报「笔记不在文件夹下方」）。
+    | "folder"
     // 「搜索」是 2026-10-06 加的独立视图：inkstone 左栏第一项就是它。
     // 之前只有列表上方那个输入框（搜标题+正文），搜不到标签、也不给命中数。
     | "search";
@@ -519,6 +523,17 @@ export default function NotesPage({
         /** 菜单从哪里打开：列表行菜单全量；左栏内联笔记给精简菜单（inkstone 同款） */
         source: "list" | "rail";
     } | null>(null);
+    /**
+     * 行菜单正在关闭（退出动画那 ~200ms）：期间给行内「⋯」按钮打 --closing
+     * 硬压 opacity —— 否则 rowMenu 还挂着、menuOpen 显式 opacity:1，用户看到
+     * 「弹窗消失的瞬间冒出白圈」（2026-10-18 第四报）。onClose 置位、300ms 后自清。
+     */
+    const [menuClosing, setMenuClosing] = useState(false);
+    useEffect(() => {
+        if (!menuClosing) return;
+        const t = setTimeout(() => setMenuClosing(false), 300);
+        return () => clearTimeout(t);
+    }, [menuClosing]);
     /** 正在拖的笔记行（半透明反馈，与文件夹那边同一套观感） */
     const [draggingNoteId, setDraggingNoteId] = useState<number | null>(null);
     /** 「编辑标签」二级弹窗的锚点 */
@@ -703,8 +718,11 @@ export default function NotesPage({
             ...cur,
             liveRender: typeof updater === "function" ? updater(cur.liveRender) : updater,
         }));
-    const sideLiveRender = uiSettings.liveRender;
-    const setSideLiveRender = setLiveRender;
+    // 侧边栏的「即时渲染」独立于主栏（2026-10-18 用户报「在侧边打开时两个
+    // 笔记的即时渲染不要同步打开和关闭」）：初值跟主设置，之后各管各 ——
+    // 主栏那颗开关仍写全局设置（设置面板可改、跨会话保留），侧边这颗只动
+    // 自己的 state，不再写回 uiSettings。
+    const [sideLiveRender, setSideLiveRender] = useState(uiSettings.liveRender);
     const [settingsOpen, setSettingsOpen] = useState(false);
     useEffect(() => {
         saveNotesSettings(uiSettings);
@@ -1584,7 +1602,12 @@ export default function NotesPage({
             const created = await folderTags?.onCreateFolder(name, parentId);
             // 只在建的是**根目录**文件夹时才自动切过去：新建子文件夹就把左栏
             // 跳到那个子文件夹，会让「我只是想加一个子项」变成视图被抢走。
-            if (created?.id !== undefined && parentId === null) setActiveFolder(created.id);
+            if (created?.id !== undefined && parentId === null) {
+                setActiveFolder(created.id);
+                // 切过去就连视图一起切（同点文件夹：否则「全部 N」行还高亮着，
+                // 中栏却只剩这一个空文件夹 —— 2026-10-18 用户报的同类困惑）
+                setView("folder");
+            }
         },
         [folderTags]
     );
@@ -1599,6 +1622,7 @@ export default function NotesPage({
             await folderTags?.onRemoveFolder(id);
             // 删掉的是当前选中的那个，就得跟着回到「全部」，否则左栏停在一个空视图上
             setActiveFolder(cur => (cur === id ? null : cur));
+            setView(cur => (cur === "folder" ? "all" : cur));
         },
         [folderTags]
     );
@@ -3079,7 +3103,11 @@ export default function NotesPage({
                     setActiveTag(null);
                     setMiddleHidden(false);
                     setNavDrawerOpen(false);
-                    if (id === null) setView("all");
+                    // ⚠️ 点文件夹 = 进入该文件夹的视图（2026-10-18 用户报
+                    // 「标题名为 123 的笔记属于 123 文件夹但不在 123 文件夹下方」）：
+                    // 原来非 null 时不切 view，「全部 3」行还高亮着，中栏却只剩
+                    // 该文件夹的一条 —— 视觉上像没切过去。清空（点「全部」同义）才回 all。
+                    setView(id === null ? "all" : "folder");
                 }}
                 onCreate={() => askName("folder")}
                 onCreateChild={id => askName("folder", { parentId: id })}
@@ -3923,7 +3951,10 @@ export default function NotesPage({
                     `absolute top-1.5 right-1.5 opacity-0 group-hover:opacity-100`。
                     这样标题宽度恒定，只有按钮在淡入。 */}
                                     <IconButton
-                                        className='note-row-actions'
+                                        // 菜单关闭动画期间打 --closing 硬压 opacity
+                                        // （CSS !important，见 index.css）—— 防「弹窗
+                                        // 消失的瞬间冒出白圈」（2026-10-18 第四报）
+                                        className={`note-row-actions${menuClosing ? " note-row-actions--closing" : ""}`}
                                         data-note-menu={note.id}
                                         aria-label={`${note.title || "无标题"} 的操作`}
                                         size='small'
@@ -5323,13 +5354,21 @@ export default function NotesPage({
             <Menu
                 open={Boolean(rowMenu)}
                 anchorEl={rowMenu?.el ?? null}
-                onClose={() => setRowMenu(null)}
-                // ⚠️ 焦点兜底（2026-10-18 用户第三次报「右键菜单关闭后白色圆圈」）：
-                // MUI Modal 关闭时会把焦点**还原**给打开前的元素。onClose 里 blur
-                // 太早（还原发生在退出动画之后），所以挂 transition 的 onExited：
-                // 菜单彻底消失后若焦点还落在行内「⋯」按钮上（程序化还原的焦点），
-                // 摘掉它 —— 否则行级显隐规则把按钮顶出来成一颗白圈。键盘用户 Tab
-                // 进按钮的 focus-visible 不受影响（那是主动焦点，不是还原的）。
+                onClose={() => {
+                    setRowMenu(null);
+                    setMenuClosing(true);
+                }}
+                // ⚠️ 白圈根治三连（2026-10-18 用户第四报「点其他位置关闭后瞬间
+                // 还是出现白圈」）：
+                // ① disableRestoreFocus —— MUI Modal 默认在关闭后把焦点还原给
+                //    打开前的元素，而还原焦点在 Chromium 里会匹配 :focus-visible
+                //    （即便最后一次交互是鼠标），行级显隐规则 :has(:focus-visible)
+                //    随即把「⋯」顶出来。不还原 = 没有还原焦点这回事。
+                // ② slotProps.transition.onExited —— 兜底：万一焦点仍落在按钮上
+                //    （onClose 里 blur 太早，还原发生在退出动画之后），菜单彻底
+                //    消失后摘掉它。
+                // ③ menuClosing 类压掉退出动画期间的显式 opacity:1（CSS !important）。
+                disableRestoreFocus
                 slotProps={{
                     transition: {
                         onExited: () => {

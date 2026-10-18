@@ -35,6 +35,9 @@ function hasResult(s: CheckState): boolean {
     return s.kind === "latest" || s.kind === "available" || s.kind === "error";
 }
 
+/** 自托管（Docker）的一键升级命令：「更新」按钮复制它 */
+const UPGRADE_CMD = "docker pull ghcr.io/zwjttztt/navihive:latest";
+
 /**
  * 从 `v3.4.0+abc123` / `3.4.0` 这类串里抽出 (major, minor, patch)。
  * Docker 无 .git 时构建号兜底形如 `v1234+...`，解析不出三段就返回 null，
@@ -76,6 +79,8 @@ export async function fetchUpstreamVersion(
 
 export default function VersionUpgradeSection({ version }: { version?: string }) {
     const [state, setState] = useState<CheckState>({ kind: "idle" });
+    /** 「更新」按钮的复制结果：true=已复制 / false=复制失败（给命令原文手动复制） */
+    const [copyState, setCopyState] = useState<boolean | null>(null);
     /** 按钮 + 结果行：结果 Alert 会把它撑高，出结果时滚进可视区（同 BackupDialog 的 webdavActionsRef 模式） */
     const rowRef = useRef<HTMLDivElement>(null);
 
@@ -100,8 +105,25 @@ export default function VersionUpgradeSection({ version }: { version?: string })
         }
     }, [state]);
 
+    /** 「更新」按钮（2026-10-18 用户报「发现新版本能否加上一个更新按键」）：
+     *  自托管部署 = 复制 docker pull 命令，用户到服务器粘贴执行（前端点不到
+     *  用户的服务器，这是能做的最短路径）；复制失败时命令原文直接摆出来。
+     *  Workers 部署不用操作（推 main 即自动构建），命令区的文字指引里已说明。 */
+    const onUpdate = () => {
+        const cmd = UPGRADE_CMD;
+        if (!navigator.clipboard?.writeText) {
+            setCopyState(false);
+            return;
+        }
+        void navigator.clipboard.writeText(cmd).then(
+            () => setCopyState(true),
+            () => setCopyState(false),
+        );
+    };
+
     const onCheck = async () => {
         setState({ kind: "checking" });
+        setCopyState(null);
         try {
             const remote = await fetchUpstreamVersion();
             const remoteSemver = parseSemver(remote);
@@ -154,6 +176,22 @@ export default function VersionUpgradeSection({ version }: { version?: string })
                     >
                         {state.kind === "checking" ? "检查中…" : "检查更新"}
                     </Button>
+                    {/* 「更新」按钮：只在发现新版本时出现（2026-10-18 用户报
+                        「发现新版本能否加上一个更新按键」）。一键复制升级命令 ——
+                        自托管部署到服务器粘贴执行即可；Workers 部署推 main
+                        自动构建、无需操作（下方指引里有说明）。 */}
+                    {state.kind === "available" && (
+                        <Button
+                            size='small'
+                            variant='contained'
+                            startIcon={<SystemUpdateAltIcon fontSize='small' />}
+                            onClick={onUpdate}
+                            data-update-action='1'
+                            sx={{ flexShrink: 0 }}
+                        >
+                            更新
+                        </Button>
+                    )}
                     {/* 结果与按钮同一行：原来 Alert 排在按钮正下方，网站设置弹窗
                         长、本节又在最底部，结果停在内容折叠线下面要手动滚 */}
                     {state.kind === "latest" && (
@@ -185,6 +223,18 @@ export default function VersionUpgradeSection({ version }: { version?: string })
                     {state.kind === "error" && (
                         <Alert severity='warning' data-update-result='error' sx={{ py: 0 }}>
                             检查失败：{state.message}
+                        </Alert>
+                    )}
+                    {/* 「更新」按钮的复制反馈：成功一句确认；失败把命令原文
+                        摆出来（用户还能手动复制）*/}
+                    {copyState === true && (
+                        <Alert severity='success' data-update-copied='1' sx={{ py: 0 }}>
+                            更新命令已复制，到服务器粘贴执行；Workers 部署推送 main 即自动构建。
+                        </Alert>
+                    )}
+                    {copyState === false && (
+                        <Alert severity='warning' data-update-copy-failed='1' sx={{ py: 0 }}>
+                            复制失败，请手动复制：<Box component='code' sx={{ px: 0.5 }}>{UPGRADE_CMD}</Box>
                         </Alert>
                     )}
                 </Box>

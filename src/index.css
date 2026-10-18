@@ -1215,6 +1215,15 @@ html.nav-touch .nav-star-btn[data-starred="false"] {
     padding-bottom: 2px !important;
 }
 
+/* ---- 行内「⋯」按钮关闭动画期间强制隐藏（2026-10-18 白圈第四报）----
+   右键/点击打开行菜单后关闭时，退出动画那 ~200ms 里 rowMenu 仍挂着
+   （menuOpen → opacity:1 显式可见），用户看到「弹窗消失的瞬间冒出白圈」。
+   关闭一开始就给按钮打 --closing 类硬压 opacity，动画结束类自动摘掉。
+   hover / focus-visible 的显隐规则特殊度再高也压不过 !important。 */
+.note-dense-row .note-row-actions--closing {
+    opacity: 0 !important;
+}
+
 /* 专注模式：淡化光标所在段落之外的行（inkstone 编辑器页同名功能）。
    用 opacity 而不是改颜色 —— 颜色在亮/暗两种主题下都要重新挑，透明度不用。 */
 .cm-content .cm-line.cm-focus-dimmed {

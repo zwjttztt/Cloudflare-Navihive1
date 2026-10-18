@@ -207,6 +207,55 @@ test("远端版本更高 → 显示新版本与两种部署形态的升级指引
     }
 });
 
+test("发现新版本时才出现「更新」按钮，点击复制升级命令（失败给原文）", async t => {
+    t.after(cleanup);
+    // clipboard 桩：第一次成功、第二次失败（覆盖两条反馈分支）
+    let writes: string[] = [];
+    let mode: "ok" | "fail" = "ok";
+    Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: {
+            writeText: async (text: string) => {
+                if (mode === "fail") throw new Error("denied");
+                writes.push(text);
+            },
+        },
+    });
+    t.after(() => {
+        Reflect.deleteProperty(navigator, "clipboard");
+    });
+
+    const d = deferred<FakeResponse>();
+    globalThis.fetch = (async () => d.promise) as unknown as typeof fetch;
+    try {
+        mount(<VersionUpgradeSection version="v3.4.0+abc123" />);
+        // 「更新」按钮只在发现新版本前不出现
+        assert.equal(document.querySelector("[data-update-action]"), null, "未检查前不应有更新按钮");
+        await click(document.querySelector("[data-check-update]"));
+        d.resolve({ ok: true, status: 200, json: async () => ({ version: "3.5.0" }) });
+        await flushAsync();
+
+        const updateBtn = document.querySelector("[data-update-action]");
+        assert.ok(updateBtn !== null, "发现新版本应出现「更新」按钮");
+        await click(updateBtn);
+        await flushAsync();
+        assert.deepEqual(writes, ["docker pull ghcr.io/zwjttztt/navihive:latest"], "应复制升级命令");
+        assert.ok(document.querySelector("[data-update-copied]"), "复制成功要有确认");
+
+        // 复制失败：命令原文摆出来（用户还能手动复制）
+        writes = [];
+        mode = "fail";
+        await click(document.querySelector("[data-update-action]"));
+        await flushAsync();
+        assert.ok(
+            document.querySelector("[data-update-copy-failed]")?.textContent?.includes("docker pull"),
+            "复制失败要把命令原文摆出来",
+        );
+    } finally {
+        globalThis.fetch = realFetch;
+    }
+});
+
 test("远端版本相同或更低 → 已是最新", async t => {
     t.after(cleanup);
     globalThis.fetch = (async () =>
