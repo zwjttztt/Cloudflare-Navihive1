@@ -225,8 +225,21 @@ export function useSiteSearch({
         [setActiveTags]
     );
 
-    // 检出失效的链接条数：决定是否显示「只看失效」入口
-    const deadCount = Object.keys(deadLinks).length;
+    // 检出失效的链接条数：决定是否显示「只看失效」入口。
+    // ⚠️ 必须按「当前站点里被标失效的数量」计，而不是 deadLinks 的键数——
+    // 探测结果里可能留着已删除 / 已改址站点的陈旧条目，按键数计会出现
+    // 「只看失效 1」点进去却筛出 0 的自相矛盾（2026-10-18 用户报告）。
+    // 这里与 visibleGroups 的筛选完全同一判据（normalizeKey(url) 查表），两边永远自洽。
+    const deadCount = useMemo(() => {
+        if (Object.keys(deadLinks).length === 0) return 0;
+        let n = 0;
+        for (const group of groups) {
+            for (const site of group.sites) {
+                if (deadLinks[normalizeKey(site.url ?? "")]) n += 1;
+            }
+        }
+        return n;
+    }, [groups, deadLinks]);
 
     // 筛选生效时页面里还剩多少张卡片（搜索结果计数要用）
     const matchedCount = useMemo(

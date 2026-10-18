@@ -163,6 +163,21 @@ test("空状态：筛没了（有标签筛选）时给的是「清除筛选」�
     );
 });
 
+test("筛选激活且筛空：文案是「没有符合筛选条件的网站」，不再谎报「还没有任何分组」", t => {
+    // 2026-10-18 用户报告：开着只看星标/只看失效筛到 0 时空态说「还没有任何分组」，
+    // 让人以为分组丢了——空态必须区分「真没分组」与「有数据但被筛空」
+    t.after(cleanup);
+    const { props } = makeProps({ displayedGroups: [], starFilter: true, deadOnly: true, query: "" });
+    mount(props);
+    const text = bodyText();
+    assert.ok(text.includes("没有符合筛选条件的网站"), `实际 ${text.slice(0, 160)}`);
+    assert.ok(!text.includes("还没有任何分组"), "筛空不该说还没有任何分组");
+    assert.ok(
+        [...document.querySelectorAll("button")].some(b => (b.textContent || "").includes("清除筛选")),
+        "要有一键清除筛选的出路"
+    );
+});
+
 test("卡片太多时整体关掉入场动画（nav-static-entry）", t => {
     t.after(cleanup);
     const on = makeProps({ reduceEntryAnimation: true });

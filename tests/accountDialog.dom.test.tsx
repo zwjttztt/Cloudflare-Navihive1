@@ -244,6 +244,26 @@ test("账号：显示当前账号名与所有者标注，普通账号不标", ()
     assert.equal(pageText().includes("（站点所有者）"), false, "普通账号不该标所有者");
 });
 
+test("治理清单：owner 行不显示「约 N 天后停用」（历史残留 willDisableAt 不外显）", () => {
+    render({
+        accounts: [
+            makeAccount({
+                id: 1,
+                username: "boss",
+                role: "owner",
+                willDisableAt: now() + 180 * DAY,
+            }),
+            makeAccount({ id: 2, username: "alice", willDisableAt: now() + 20 * DAY }),
+        ],
+    });
+    const t = pageText();
+    const bossPart = t.slice(t.indexOf("boss"), t.indexOf("alice"));
+    assert.ok(bossPart.includes("最近活跃"), "owner 行仍显示最近活跃");
+    assert.ok(!bossPart.includes("天后停用"), "owner 不参与停用，不该显示倒计时");
+    const alicePart = t.slice(t.indexOf("alice"));
+    assert.ok(alicePart.includes("约 20 天后停用"), "普通账号照常显示");
+});
+
 test("账号：没填新账号或新密码时「保存」禁用，填任一即可用", () => {
     render();
     const save = button("保存账号与密码")!;

@@ -729,9 +729,11 @@ export default function AccountDialog({
                                                                 : "text.secondary"
                                                         }
                                                     >
+                                                        {/* owner 不参与沉睡治理（v3.1.0 定稿），行上的 willDisableAt
+                                                            只是历史残留，不该再对用户显示「约 N 天后停用」 */}
                                                         {disabled
                                                             ? `已停用${daysToDelete !== null ? `，约 ${daysToDelete} 天后清除` : "，等待清除"}`
-                                                            : `最近活跃：${formatLastActive(account.lastActiveAt)}${daysToDisable !== null ? ` · 约 ${daysToDisable} 天后停用` : ""}`}
+                                                            : `最近活跃：${formatLastActive(account.lastActiveAt)}${account.role !== "owner" && daysToDisable !== null ? ` · 约 ${daysToDisable} 天后停用` : ""}`}
                                                     </Typography>
                                                 </Box>
                                                 {disabled ? (

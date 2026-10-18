@@ -28,6 +28,22 @@ export default function SiteListEmptyState({
     onClearFilters,
 }: SiteListEmptyStateProps) {
     const hasFilter = starFilter || deadOnly || hasTagFilter;
+    // 空态三分：搜索没命中 / 筛选没命中 / 真的还没建分组。
+    // 以前只看 query——开着「只看星标 / 只看失效」筛到 0 时会谎报「还没有任何分组」，
+    // 让人以为分组丢了（2026-10-18 用户报告）。
+    const emptyKind = query ? "search" : hasFilter ? "filter" : "empty";
+    const title =
+        emptyKind === "search"
+            ? "没有找到匹配的网站"
+            : emptyKind === "filter"
+                ? "没有符合筛选条件的网站"
+                : "还没有任何分组";
+    const desc =
+        emptyKind === "search"
+            ? "换个关键词试试，或清空搜索框查看全部网站"
+            : emptyKind === "filter"
+                ? "当前筛选下没有剩下的网站，清除筛选可查看全部"
+                : "点击左上角「新增分组」开始搭建你的导航页";
     return (
         <Box
             sx={{
@@ -42,18 +58,16 @@ export default function SiteListEmptyState({
                 borderColor: "divider",
             }}
         >
-            <EmptyArt variant={query ? "search" : "empty"} size={132} />
+            <EmptyArt variant={emptyKind === "empty" ? "empty" : "search"} size={132} />
             <Typography variant='subtitle1' sx={{
                 fontWeight: '600'
             }}>
-                {query ? "没有找到匹配的网站" : "还没有任何分组"}
+                {title}
             </Typography>
             <Typography variant='body2' sx={{
                 color: 'text.secondary'
             }}>
-                {query
-                    ? "换个关键词试试，或清空搜索框查看全部网站"
-                    : "点击左上角「新增分组」开始搭建你的导航页"}
+                {desc}
             </Typography>
             {/* 搜不到的时候才提语法：平时不占地方，需要时正好在眼前 */}
             {query && (

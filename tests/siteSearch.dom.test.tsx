@@ -112,6 +112,7 @@ function Harness({
     return (
         <div>
             <span data-testid='matched'>{s.matchedCount}</span>
+            <span data-testid='deadCount'>{s.deadCount}</span>
             <span data-testid='rendered'>{s.renderedCount}</span>
             <span data-testid='truncated'>{String(s.searchTruncated)}</span>
             <span data-testid='expanded'>{String(s.searchExpanded)}</span>
@@ -335,6 +336,27 @@ test("星标 / 失效筛选是叠在搜索结果之上的，不是替代", async
     await patch({ starFilter: false, deadOnly: true });
     await flush();
     assert.equal(text("matched"), "1", "只看失效");
+    cleanup();
+});
+
+test("deadCount 按当前站点计：陈旧死链条目（站点已删/改址）不进计数，与筛选自洽", async () => {
+    const log: Log = { history: [], opened: [] };
+    mount(
+        <Harness
+            // 两条死链记录里只有 github.com 还在站点列表里：另一条是站点已删后
+            // 留在探测结果里的陈旧键。以前按键数计会出现「只看失效 1」筛出 0 的矛盾
+            params={baseParams({
+                deadLinks: { "https://github.com": 1, "https://deleted-old.example.com": 1 },
+            })}
+            log={log}
+            initial={initial}
+        />
+    );
+    await flush();
+    assert.equal(text("deadCount"), "1", "陈旧条目不算数");
+    await patch({ deadOnly: true });
+    await flush();
+    assert.equal(text("matched"), "1", "chip 计数与筛出数量一致");
     cleanup();
 });
 
