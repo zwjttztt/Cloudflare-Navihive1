@@ -6,6 +6,24 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。---
 
+## 2026-10-18（日）· 修复：myhp 全站 500（1101）——withSecurityHeaders 改 immutable headers 响应
+
+v3.2.7 经 Workers Builds 于当日 01:45 UTC 自动部署 myhp 后**全站 500**（`/`、`/s/<token>`、`/assets/*`、`/favicon.ico` 全中，API 路径正常）——Workers Observability 里真实异常：
+
+```
+TypeError: Can't modify immutable headers.
+    at withSecurityHeaders (index.js:8532)
+    at Object.fetch (index.js:11913)
+```
+
+根因：Workers 运行时里 `env.ASSETS.fetch()` 返回的 Response **headers 是 immutable 的**，而 `worker/index.ts` 的 fetch 出口统一包 `withSecurityHeaders(...)`，`headers.set()` 直接抛 TypeError → 平台级 1101。API 分支的响应是 Worker 自己 `new Response()`（可变）所以幸免；**本地单测 mock 的 ASSETS 也返回可变 Response，真机语义从未被测到**；自托管（home）不经 ASSETS 绑定所以正常——这就是门禁全绿但真机全炸的原因。
+
+修复（`worker/httpUtils.ts`）：`withSecurityHeaders` 先 `new Response(response.body, response)` 重建一份**可变副本**再补安全头——对普通 Response 无害（幂等透传 status/headers/body），对 immutable 救命。`tests/workerSpaFallback.test.ts` 的 ASSETS mock 改为模拟真机 immutable 语义（set/append/delete 抛 TypeError），并新增守卫用例：immutable 响应不炸、安全头补齐、body 原样透传。
+
+门禁（tsc -b --force / lint / 单测 / build / smoke / 双审计）全绿。教训：**mock 必须模拟真机运行时语义**（immutable headers、可变/不可变边界），而不是「恰好能编译的最小桩」。
+
+---
+
 ## 2026-10-18（日）· 修复：myhp 分享页 1101 / 真实静态资源 MIME 不符（扩展名路由 + /index.html 回退）
 
 v3.2.4/3.2.5 给 `assets` 显式 `binding: "ASSETS"` + `run_worker_first: true`，但 v3.2.6 在非 API 分支对**所有** GET/HEAD 一律取 `/index.html` 转发——在 `run_worker_first` 下，真实静态资源（如 `/assets/xxx.js`）也被改写成整页 HTML 回吐，浏览器按脚本加载却拿到 `text/html` → MIME 不符白屏；同时 SPA 路由（无扩展名 `/s/<token>`）转发「原始路径」会在 Cloudflare 触发 SPA 回退再入保护、抛平台级 **1101**（Worker 未处理异常→500），非导航客户端仍 404。

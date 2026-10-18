@@ -20,6 +20,23 @@ function envWithAssets(fetchImpl: (req: Request) => Response | Promise<Response>
     return { ASSETS: { fetch: fetchImpl } } as never;
 }
 
+/**
+ * 模拟 Workers 运行时 ASSETS.fetch() 返回的 Response：headers immutable——
+ * set/append/delete 抛 "Can't modify immutable headers."（TypeError）。
+ * 2026-10-18 myhp 全站 500（1101）的根因：mock 用普通可变 Response，
+ * withSecurityHeaders 对 immutable headers 直接 set 就炸，真机语义从未被测到。
+ */
+function immutableResponse(body: string, init?: ResponseInit): Response {
+    const res = new Response(body, init);
+    const boom = () => {
+        throw new TypeError("Can't modify immutable headers.");
+    };
+    for (const m of ["set", "append", "delete"] as const) {
+        Object.defineProperty(res.headers, m, { value: boom });
+    }
+    return res;
+}
+
 const HEX64 = "a".repeat(64);
 
 test("非 API 无扩展名路径(GET) 取入口 /index.html 做 SPA 回退（规避 1101）", async () => {
@@ -28,7 +45,8 @@ test("非 API 无扩展名路径(GET) 取入口 /index.html 做 SPA 回退（规
     const env = envWithAssets(async (req) => {
         seenMethod = req.method;
         seenUrl = req.url;
-        return new Response("<!doctype html><html><body>app</body></html>", {
+        // 真机语义：ASSETS.fetch 返回 immutable headers 的 Response
+        return immutableResponse("<!doctype html><html><body>app</body></html>", {
             status: 200,
             headers: { "Content-Type": "text/html; charset=utf-8" },
         });
@@ -39,24 +57,28 @@ test("非 API 无扩展名路径(GET) 取入口 /index.html 做 SPA 回退（规
     // —— 后者在 run_worker_first 下会触发 Cloudflare SPA 回退再入保护（平台级 1101）。
     assert.equal(seenUrl, `https://nav.example.com/index.html`);
     assert.equal(res.status, 200);
+    // immutable 响应经 withSecurityHeaders 重建后仍能补安全头、body 原样透传
+    assert.equal(res.headers.get("X-Content-Type-Options"), "nosniff");
+    assert.ok((await res.text()).includes("app"));
 });
 
 test("根路径 / (GET) 也取 /index.html 回退", async () => {
     let seenUrl = "";
     const env = envWithAssets(async (req) => {
         seenUrl = req.url;
-        return new Response("<!doctype html>", { status: 200, headers: { "Content-Type": "text/html" } });
+        return immutableResponse("<!doctype html>", { status: 200, headers: { "Content-Type": "text/html" } });
     });
     const res = await worker.fetch(new Request("https://nav.example.com/"), env);
     assert.equal(seenUrl, "https://nav.example.com/index.html");
     assert.equal(res.status, 200);
+    assert.equal(res.headers.get("X-Content-Type-Options"), "nosniff");
 });
 
 test("带扩展名的未命中静态路径转发 ASSETS、由资产层回 404（不返回 HTML，避免 MIME 不符）", async () => {
     let called = false;
     const env = envWithAssets(async () => {
         called = true;
-        return new Response("not found", { status: 404, headers: { "Content-Type": "text/plain" } });
+        return immutableResponse("not found", { status: 404, headers: { "Content-Type": "text/plain" } });
     });
     const res = await worker.fetch(
         new Request("https://nav.example.com/assets/missing-DOESNOTEXIST.js"),
@@ -64,6 +86,7 @@ test("带扩展名的未命中静态路径转发 ASSETS、由资产层回 404（
     );
     assert.equal(called, true, "run_worker_first 下所有静态资源 GET/HEAD 都进 Worker 再转发 ASSETS");
     assert.equal(res.status, 404);
+    assert.equal(res.headers.get("X-Content-Type-Options"), "nosniff");
 });
 
 test("POST / 非 API 非 GET/HEAD 直接 404（不走 ASSETS）", async () => {
@@ -82,6 +105,21 @@ test("自托管形态（无 ASSETS 绑定）非 API 无扩展名路径回 404", 
     // Worker 只会收到非 GET/HEAD 非 API 路径；这里验证无 ASSETS 时保持 404。
     const res = await worker.fetch(new Request(`https://nav.example.com/s/${HEX64}`), {} as never);
     assert.equal(res.status, 404);
+});
+
+test("ASSETS 返回 immutable headers 的 Response 不炸（真机 Workers 语义，2026-10-18 1101 根因守卫）", async () => {
+    const env = envWithAssets(async () =>
+        immutableResponse("<!doctype html><html><body>asset</body></html>", {
+            status: 200,
+            headers: { "Content-Type": "text/html; charset=utf-8" },
+        })
+    );
+    const res = await worker.fetch(new Request("https://nav.example.com/"), env);
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get("X-Content-Type-Options"), "nosniff");
+    assert.equal(res.headers.get("X-Frame-Options"), "DENY");
+    assert.equal(res.headers.get("Referrer-Policy"), "no-referrer");
+    assert.ok((await res.text()).includes("asset"));
 });
 
 test("非法 JSON 请求体回 400 而非 500", async () => {

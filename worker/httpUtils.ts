@@ -155,8 +155,14 @@ export function isSameOrigin(request: Request): boolean {
  * 所以在 fetch 出口统一加一层。已经设过的不覆盖（图标代理那条 CSP sandbox 更严格）。
  */
 export function withSecurityHeaders(response: Response): Response {
-    response.headers.set("X-Content-Type-Options", "nosniff");
-    if (!response.headers.has("X-Frame-Options")) response.headers.set("X-Frame-Options", "DENY");
-    if (!response.headers.has("Referrer-Policy")) response.headers.set("Referrer-Policy", "no-referrer");
-    return response;
+    // ⚠️ Workers 运行时里 env.ASSETS.fetch()（以及 Cache API 命中）返回的 Response
+    // headers 是 immutable 的，直接 set 会抛 "Can't modify immutable headers."
+    // （TypeError → 平台级 1101；2026-10-18 myhp 全站 500 的根因——本地单测 mock 的
+    // ASSETS 返回可变 Response，没暴露这个真机语义）。用 body+init 重建一份
+    // 可变副本再加头：对普通 Response 无害，对 immutable 是救命。
+    const out = new Response(response.body, response);
+    out.headers.set("X-Content-Type-Options", "nosniff");
+    if (!out.headers.has("X-Frame-Options")) out.headers.set("X-Frame-Options", "DENY");
+    if (!out.headers.has("Referrer-Policy")) out.headers.set("Referrer-Policy", "no-referrer");
+    return out;
 }
