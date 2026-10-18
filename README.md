@@ -3,9 +3,9 @@
 # NaviHive · 个人导航站 + 记事本
 
 ![NaviHive](https://img.shields.io/badge/NaviHive-导航站_+_记事本-blue)
-![React](https://img.shields.io/badge/React-19-61dafb)
-![TypeScript](https://img.shields.io/badge/TypeScript-6-3178c6)
-![Material UI](https://img.shields.io/badge/Material_UI-9-0081cb)
+![React](https://img.shields.io/badge/React-19.3-61dafb)
+![TypeScript](https://img.shields.io/badge/TypeScript-6.0-3178c6)
+![Material UI](https://img.shields.io/badge/Material_UI-9.5-0081cb)
 ![Cloudflare](https://img.shields.io/badge/Cloudflare-Workers_+_D1-f38020)
 ![Docker](https://img.shields.io/badge/Docker-selfhost-2496ed)
 
@@ -26,6 +26,7 @@
 - **卡片信息** — 站点账号密码（加密落库、一键复制）、描述、自动获取图标（图标 API 模板，`{domain}` 占位符）
 - **外观** — 亮/暗/跟随系统、主题色、玻璃效果、清爽模式、背景图 + 蒙版透明度、自定义 CSS、按账号保存
 - **命令面板 / 统计看板** — 访问统计热力图、运营看板（站点所有者）
+- **更多选项菜单** — 卡片右上角「⋯」打开：更多选项 → 统计 即访问热力图与运营看板；备份与恢复、回收站、审计日志、网站设置、快捷键与操作帮助等入口也在这里
 
 ### 📓 记事本
 
