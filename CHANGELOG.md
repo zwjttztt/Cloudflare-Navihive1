@@ -6,6 +6,20 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。---
 
+## 2026-10-18（日）· 修复：myhp 分享页 1101 / 真实静态资源 MIME 不符（扩展名路由 + /index.html 回退）
+
+v3.2.4/3.2.5 给 `assets` 显式 `binding: "ASSETS"` + `run_worker_first: true`，但 v3.2.6 在非 API 分支对**所有** GET/HEAD 一律取 `/index.html` 转发——在 `run_worker_first` 下，真实静态资源（如 `/assets/xxx.js`）也被改写成整页 HTML 回吐，浏览器按脚本加载却拿到 `text/html` → MIME 不符白屏；同时 SPA 路由（无扩展名 `/s/<token>`）转发「原始路径」会在 Cloudflare 触发 SPA 回退再入保护、抛平台级 **1101**（Worker 未处理异常→500），非导航客户端仍 404。
+
+修复（`worker/index.ts` 非 API 分支改扩展名路由）：
+- 真实静态资产（路径带扩展名，`/\.[a-z0-9]{1,8}$/i`，与 `server/static.ts` 的 `ASSET_EXT_RE` 一致）→ 原样转发 `assets.fetch(request)`，资产层直出，不触发回退/再入；
+- SPA 路由（无扩展名）→ 显式取确定存在的入口 `/index.html` 转发，由资产层直接吐出、规避 1101；SPA 靠 `window.location` 自行路由、路径无关，故非导航 `/s/<token>`、`/sg/<token>` 在非浏览器客户端也 200，与 home 一致；
+- 非 GET/HEAD 非 API（如 `POST /`）→ Worker 直接 404，与自托管 `server/entry.ts` 对齐。
+`wrangler.jsonc` 维持 `run_worker_first: true`。`tests/workerSpaFallback.test.ts` 7 例改为断言 SPA 路由取 `/index.html`、真实资产原样转发、POST / 回 404、非法/空 JSON 回 400。
+
+门禁（tsc -b --force / lint / 单测 2781 / build / smoke / 双审计）全绿。复测对照：非导航 `/s/<token>`=200、导航=200、真实 `/assets/*` 不串 HTML、非法 JSON=400、`POST /`=404，两环境行为一致。
+
+---
+
 ## 2026-10-18（日）· 修复：myhp 分享页仍 404 / POST / 仍 405（ASSETS 绑定 + run_worker_first）
 
 v3.2.4/3.2.5 把 Worker 非 API 分支改成转发 `env.ASSETS` 做 SPA 回退，但部署后实测

@@ -69,27 +69,37 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
         env?.NAVIHIVE_COOKIE_SECURE !== "0" && requestIsSecure(request, url, trustXFF);
 
     // 非 API 路径：交给静态资产层做 SPA 回退（not_found_handling=single-page-application）。
-    // ⚠️ 为什么用 run_worker_first + 显式 ASSETS 绑定：
-    //   wrangler.jsonc 设了 `run_worker_first: true` + `assets.binding: "ASSETS"`，
-    //   这样**所有请求先进 Worker**，由这里统一决定：非 API 的 GET/HEAD 全部转发
-    //   env.ASSETS.fetch()，由资产层按 not_found_handling 回退到 index.html；其余（POST /
-    //   等非 GET/HEAD 的非 API 路径）直接 404。好处是行为完全可控、与自托管
-    //   (server/entry.ts 的 serveStatic SPA fallback) 一致，且不再依赖
-    //   assets_navigation_prefers_asset_serving 那条「导航请求才进资产层」的隐式规则——
-    //   否则 fetch / curl / 爬虫 / 探针这类非导航请求会被资产层按 404 打回、再由 Worker
-    //   兜底时若 env.ASSETS 未绑定就直接 404，导致 /s/<token>、/sg/<token> 在非浏览器客户端
-    //   一律 404（两环境对照 e2e 实测：home 200、myhp 404）。
-    // 不再对「带扩展名」单独拦截：run_worker_first 下所有静态资源 GET/HEAD 都进 Worker 再转发
-    // 给资产层，资产层对「带扩展名但不存在」的路径按 not_found_handling 回 404（不会拿整页
-    // HTML 顶替脚本，MIME 类型不符 → 模块脚本被拒、发版白屏的问题由资产层兜底，无需 Worker 侧
-    // 再判扩展名），这部分仍对齐 server/static.ts 的 looksLikeAsset 意图。
+    // ⚠️ 两个环境共用同一份 worker/index.ts，靠 env.ASSETS 是否存在区分 Cloudflare / 自托管：
+    //   - Cloudflare（wrangler.jsonc）显式 `binding: "ASSETS"` + `run_worker_first: true`：
+    //     所有请求先进 Worker，非 API 的 GET/HEAD 全部转发 env.ASSETS.fetch()。
+    //       · 真实静态资产（路径带扩展名，如 /assets/xxx.js、/index.html）：原样转发，资产层直出
+    //         （命中真实资产，不触发 SPA 回退/再入保护），避免拿到整页 HTML 顶替脚本导致白屏。
+    //       · SPA 路由（无扩展名，如 /s/<token>、/sg/<token>）：Cloudflare 在 run_worker_first 下若
+    //         转发「原始路径」会触发 SPA 回退再入保护、抛平台级 1101（Worker 未处理异常→500）；改为
+    //         显式取确定存在的入口资产 /index.html，由资产层直接吐出、不触发回退/再入，规避 1101。
+    //         SPA 靠 window.location 自行路由，路径无关——/s/<token>、/sg/<token> 因此在非浏览器客户端
+    //         也 200，与 home 一致。
+    //       · POST / 等非 GET/HEAD 非 API 路径：Worker 直接回 404，与自托管 server/entry.ts 对齐。
+    //   - 自托管（server/entry.ts）无 ASSETS 绑定：GET/HEAD 非 API 由 serveStatic 兜（含 SPA 回退
+    //     index.html），Worker 只收非 GET/HEAD 非 API（如 POST /）→ 404。`if (assets && …)` 恒 false
+    //     时落到下面 404，两侧行为一致。
+    //   扩展名判定用与 server/static.ts 的 ASSET_EXT_RE 一致的 /\.[a-z0-9]{1,8}$/i。
+    //   （历史坑：① run_worker_first=false「资产层先服务+Worker 兜底」——非导航 /s/<token> 进 Worker
+    //   兜底后仍转发原始路径触发 1101；② run_worker_first=true 但不区分扩展名、对真实资产也转发原始
+    //   /s/<token> 同样 1101。两坑均已避开。）
     if (!url.pathname.startsWith("/api/")) {
         const assets = env.ASSETS;
         if (assets && (request.method === "GET" || request.method === "HEAD")) {
-            return assets.fetch(
-                new Request(request.url, { method: request.method, headers: request.headers })
-            );
+            // 真实静态资产（带扩展名）→ 原样转发，资产层直出，不触发 SPA 回退/再入保护
+            const isAssetPath = /\.[a-z0-9]{1,8}$/i.test(url.pathname);
+            const target = isAssetPath ? request : new Request(new URL("/index.html", request.url));
+            try {
+                return await assets.fetch(target);
+            } catch {
+                return new Response("Not Found", { status: 404, headers: TEXT_HEADERS() });
+            }
         }
+        // 非 GET/HEAD 的非 API 路径（如 POST /）→ 404，与自托管 server/entry.ts 对齐
         return new Response("Not Found", {
             status: 404,
             headers: TEXT_HEADERS(),

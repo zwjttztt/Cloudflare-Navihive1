@@ -4,8 +4,10 @@
 // assets_navigation_prefers_asset_serving —— 浏览器「导航请求」(带 Sec-Fetch-Mode: navigate)
 // 由资产层直接回 index.html、不进 Worker；但 fetch / curl / 爬虫 / 探针这类「非导航请求」
 // 会进 Worker。若 Worker 对非 /api/ 路径一律 404，/s/<token>、/sg/<token> 这类纯前端
-// 分享路由就全部 404（实测 home 200、myhp 404）。修复：非 API 的「无扩展名」GET/HEAD
-// 转发给 env.ASSETS 做 SPA 回退；带扩展名的未命中静态路径与 POST / 等保持 404。
+// 分享路由就全部 404（实测 home 200、myhp 404）。修复：run_worker_first: true 让所有请求
+// 先进 Worker，非 API 的 GET/HEAD 转发 env.ASSETS.fetch()——真实静态资产（带扩展名）原样转发、
+// SPA 路由（无扩展名，如 /s/<token>）显式取 /index.html 做回退（绕开 Cloudflare 在
+// run_worker_first 下对「转发原始 SPA 路径」的再入保护 1101）；POST / 等非 GET/HEAD 回 404。
 //
 // 另外：请求体非法 / 空 JSON 时 request.json() 抛 SyntaxError，应回 400 而非 500。
 
@@ -20,7 +22,7 @@ function envWithAssets(fetchImpl: (req: Request) => Response | Promise<Response>
 
 const HEX64 = "a".repeat(64);
 
-test("非 API 无扩展名路径(GET) 转发给 env.ASSETS 做 SPA 回退", async () => {
+test("非 API 无扩展名路径(GET) 取入口 /index.html 做 SPA 回退（规避 1101）", async () => {
     let seenMethod = "";
     let seenUrl = "";
     const env = envWithAssets(async (req) => {
@@ -33,18 +35,20 @@ test("非 API 无扩展名路径(GET) 转发给 env.ASSETS 做 SPA 回退", asyn
     });
     const res = await worker.fetch(new Request(`https://nav.example.com/s/${HEX64}`), env);
     assert.equal(seenMethod, "GET");
-    assert.equal(seenUrl, `https://nav.example.com/s/${HEX64}`);
+    // SPA 路由（无扩展名）必须显式取 /index.html，不能转发原始 /s/<token> 路径
+    // —— 后者在 run_worker_first 下会触发 Cloudflare SPA 回退再入保护（平台级 1101）。
+    assert.equal(seenUrl, `https://nav.example.com/index.html`);
     assert.equal(res.status, 200);
 });
 
-test("根路径 / (GET) 也走 ASSETS 回退到 index.html", async () => {
-    let called = false;
-    const env = envWithAssets(async () => {
-        called = true;
+test("根路径 / (GET) 也取 /index.html 回退", async () => {
+    let seenUrl = "";
+    const env = envWithAssets(async (req) => {
+        seenUrl = req.url;
         return new Response("<!doctype html>", { status: 200, headers: { "Content-Type": "text/html" } });
     });
     const res = await worker.fetch(new Request("https://nav.example.com/"), env);
-    assert.ok(called, "根路径应转发给 env.ASSETS.fetch");
+    assert.equal(seenUrl, "https://nav.example.com/index.html");
     assert.equal(res.status, 200);
 });
 
