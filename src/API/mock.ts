@@ -688,6 +688,35 @@ export class MockNavigationClient {
         return { ok: i >= 0 };
     }
 
+    /**
+     * 重命名（2026-10-19）。演示模式同样只改元数据，id 不变。
+     * ⚠️ 正文同步在 mock 里返回 0：演示模式没有服务端那套「扫正文改 label」，
+     * 编一个假数字只会让人以为它真的改了。
+     */
+    async renameAttachment(
+        id: string,
+        filename: string
+    ): Promise<{ id: string; filename: string; updatedNotes: number }> {
+        await new Promise(resolve => setTimeout(resolve, 80));
+        const att = mockAttachments.find(a => a.id === id);
+        if (!att) throw new Error("附件不存在");
+        att.filename = filename;
+        return { id, filename, updatedNotes: 0 };
+    }
+
+    /** 原地改写内容（2026-10-19）：演示模式只更新元数据里的 size */
+    async updateAttachmentContent(
+        id: string,
+        text: string
+    ): Promise<{ id: string; size: number; mime: string }> {
+        await new Promise(resolve => setTimeout(resolve, 80));
+        const att = mockAttachments.find(a => a.id === id);
+        if (!att) throw new Error("附件不存在");
+        const size = new TextEncoder().encode(text).byteLength;
+        att.size = size;
+        return { id, size, mime: att.mime };
+    }
+
     /** 设置→数据→维护：演示模式下所有附件都挂在示例笔记里，无未引用 → 空清理 */
     async pruneAttachments(): Promise<{ removed: number; freedBytes: number }> {
         await new Promise(resolve => setTimeout(resolve, 120));

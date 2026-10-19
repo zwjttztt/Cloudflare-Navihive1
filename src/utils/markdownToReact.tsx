@@ -26,6 +26,7 @@ import type Token from "markdown-it/lib/token.mjs";
 import { useEffect, useState, type ChangeEvent, type ReactNode } from "react";
 import { MathNode } from "./MathNode";
 import { MermaidNode } from "./MermaidNode";
+import AttachmentLink from "./AttachmentLink";
 import { registerMath } from "./markdownMath";
 import { registerMark } from "./markdownMark";
 import footnote from "markdown-it-footnote";
@@ -423,6 +424,20 @@ function NoteImage({ src, alt }: { src: string; alt: string }) {
     );
 }
 
+/**
+ * 本站附件链接（2026-10-19 用户需求）：点它**开预览弹窗**，而不是整页跳到 `/api/...`。
+ *
+ * 组件本体在 ./AttachmentLink.tsx（那边解释了两个「为什么」：为什么必须做成组件、
+ * 为什么单独一个文件）。这里只是把 token 映射过去。
+ */
+function renderAttachmentLink(id: string, href: string, kids: ReactNode, key: string): ReactNode {
+    return (
+        <AttachmentLink key={key} id={id} href={href}>
+            {kids}
+        </AttachmentLink>
+    );
+}
+
 function renderInline(children: Token[] | null, c: Cursor): ReactNode {
     if (!children || children.length === 0) return null;
     const out: ReactNode[] = [];
@@ -444,6 +459,12 @@ function renderInline(children: Token[] | null, c: Cursor): ReactNode {
             if (!/^(https?:|mailto:|#|\/)/i.test(href)) {
                 // 危险协议（javascript: / data: …）降级成纯文本，不给可点击的 <a>
                 return <span key={key}>{frame.kids}</span>;
+            }
+            // 本站附件链接单独走预览弹窗（2026-10-19）。只认「绝对路径 + 附件 id」，
+            // 带 query / hash 的（比如分享页的 ?share=）不拦，照旧整页打开。
+            const attachment = /^\/api\/notes\/attachments\/([0-9a-z-]+)$/i.exec(href);
+            if (attachment) {
+                return renderAttachmentLink(attachment[1], href, frame.kids, key);
             }
             const external = /^https?:/i.test(href);
             return (

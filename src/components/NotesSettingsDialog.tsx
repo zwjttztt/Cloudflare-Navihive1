@@ -41,6 +41,7 @@ import DeleteSweepIcon from "@mui/icons-material/DeleteSweep";
 import DeleteIcon from "@mui/icons-material/DeleteOutlined";
 import NoteShareDialog, { type NoteShareApi } from "./NoteShareDialog";
 import AttachmentManager from "./AttachmentManager";
+import AttachmentPreviewDialog from "./AttachmentPreviewDialog";
 import ConfirmDialog from "./ConfirmDialog";
 import { FOLDER_COLORS } from "../utils/folderAppearance";
 import { decodeBase64Bytes } from "../utils/zip";
@@ -95,6 +96,18 @@ export interface NotesDataTab {
     onPruneAttachments?: () => Promise<{ removed: number; freedBytes: number }>;
     /** 删除单个附件（附件管理器里用）。可选：老部署没有就整个管理器不出现 */
     onDeleteAttachment?: (id: string) => Promise<void>;
+    /**
+     * 附件预览 / 编辑 / 重命名（2026-10-19）。
+     *
+     * 这一组**只在设置页的管理器里用**：不传时那里点文件名退回纯文本（不预览），
+     * 弹窗里也没有编辑 / 重命名按钮 —— 老部署的能力降级走的就是这条路。
+     * 传了之后，管理器里点文件名会开一个和记事本里**同一个**预览弹窗。
+     */
+    onSaveAttachmentContent?: (id: string, text: string) => Promise<{ size: number }>;
+    onRenameAttachment?: (
+        id: string,
+        filename: string
+    ) => Promise<{ filename: string; updatedNotes: number }>;
     /**
      * 附件被多少条笔记引用（0 = 未引用）。NotesPage 从已加载的笔记正文里现算，
      * 可选：不给的话管理器里不显示引用数（inkstone 的 references 同格）。
@@ -281,6 +294,10 @@ export default function NotesSettingsDialog({
     // 附件管理器（inkstone 的 AttachmentManager 同位）：列表 / 删除 / 清理都在
     // AttachmentManager 抽屉里自持，这里只留概览统计。
     const [attManagerOpen, setAttManagerOpen] = useState(false);
+    /** 设置页里点附件文件名要预览的那条（2026-10-19，与记事本里同一个弹窗组件） */
+    const [attPreview, setAttPreview] = useState<{ id: string; filename: string; mime: string } | null>(
+        null
+    );
     /** 分享列表里要撤销的那条（inkstone 的 confirm 同语义） */
     const [revokeTarget, setRevokeTarget] = useState<{ noteId: number; title: string } | null>(
         null
@@ -1106,7 +1123,7 @@ export default function NotesSettingsDialog({
                                         </Typography>
                                         <SettingRow
                                             label='管理附件'
-                                            description='按文件名查看已上传的图片，可以逐条删除；删掉后引用它的笔记里会显示「图片加载失败」。'
+                                            description='按文件名查看已上传的附件，可以逐条删除；删掉后引用它的笔记里会显示加载失败的占位。'
                                         >
                                             <Button
                                                 size='small'
@@ -2195,7 +2212,8 @@ export default function NotesSettingsDialog({
                         open
                         danger
                         title='清理未引用附件？'
-                        description='只删除不再出现在任何笔记正文里的图片；正在使用的图片不受影响。'
+                        // 文案与 AttachmentManager 保持一字不差（同一判据，与文件类型无关）
+                        description='只删除不再出现在任何笔记正文里的附件（图片、txt / json 文档等）；正在使用的附件不受影响。'
                         confirmText='清理'
                         onConfirm={async () => {
                             try {
@@ -2288,8 +2306,27 @@ export default function NotesSettingsDialog({
                         countRefs={data.countAttachmentRefs}
                         onNotify={onNotify}
                         onChanged={() => void reloadAttStats()}
+                        // 点文件名 → 预览（2026-10-19）：这里与记事本左下角那个
+                        // 入口是**同一个**管理器，行为必须一致，否则会出现
+                        // 「同样的界面，一个点得开一个点不动」。
+                        // 不按能力门控：只读预览不需要任何写权限，老部署上照样能用。
+                        onPreview={file =>
+                            setAttPreview({ id: file.id, filename: file.filename, mime: file.mime })
+                        }
                     />
                 )}
+
+                {/* 附件预览 / 编辑 / 重命名（设置页这条入口）：与 NotesPage 里
+                    那个是同一个组件、同一套能力。 */}
+                <AttachmentPreviewDialog
+                    target={attPreview}
+                    onClose={() => setAttPreview(null)}
+                    onNotify={onNotify}
+                    onSaveContent={data?.onSaveAttachmentContent}
+                    onRename={data?.onRenameAttachment}
+                    // 内容 / 名字变了 → 概览统计里的条数与占用要重算
+                    onChanged={() => void reloadAttStats()}
+                />
 
                 {/* 分享列表里撤销链接的二次确认（inkstone 用 confirm，同一语义） */}
                 {revokeTarget && (

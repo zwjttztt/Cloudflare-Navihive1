@@ -357,6 +357,14 @@ export default function NotesOverlay({
                           ...(typeof api.deleteAttachment === "function"
                               ? { deleteAttachment: api.deleteAttachment.bind(api) }
                               : {}),
+                          // 重命名 / 原地编辑（2026-10-19）：同样是「有才传」，
+                          // 老部署上附件预览弹窗就只剩只读预览。
+                          ...(typeof api.renameAttachment === "function"
+                              ? { renameAttachment: api.renameAttachment.bind(api) }
+                              : {}),
+                          ...(typeof api.updateAttachmentContent === "function"
+                              ? { updateAttachmentContent: api.updateAttachmentContent.bind(api) }
+                              : {}),
                       }
                     : undefined
             }

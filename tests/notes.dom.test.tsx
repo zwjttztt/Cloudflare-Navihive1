@@ -113,9 +113,27 @@ test("添加 TXT 附件会在原笔记正文插入可见链接", async () => {
     assert.ok(getEditor().value.includes("内容"), "附件插入不得删掉原正文");
 });
 
+/**
+ * 最小可用的附件能力（2026-10-19）。
+ *
+ * 左下角那行「附件」入口是**按能力出现**的：没有 uploadApi.listAttachments 就
+ * 连按钮都不渲染（老部署上点开一个必然报错的抽屉，比没有入口更糟）。
+ * 所以想断言这个入口存在，必须把能力给上。
+ */
+const attachmentsApi = {
+    uploadAttachment: async () => ({
+        id: "att-1",
+        url: "/api/notes/attachments/att-1",
+        filename: "说明.txt",
+        mime: "text/plain",
+        size: 3,
+    }),
+    listAttachments: async () => [],
+    deleteAttachment: async () => ({ ok: true }),
+};
+
 function mountPanel(notes: Note[], handlers: Record<string, unknown> = {}) {
-    host = document.createElement("div");
-    document.body.appendChild(host);
+    host = document.createElement("div");    document.body.appendChild(host);
     root = createRoot(host);
     act(() => {
         root!.render(
@@ -664,7 +682,7 @@ test("阶段二：搜索框右侧挂 ⌘K 提示；⌘K 打开记事本命令面
 
 test("左栏视图齐全（全部/最近/收藏/未归类 + 底部归档/回收站，搜索不再占一行）", () => {
     setWide();
-    mountPanel([note({ id: 1, title: "甲", content: "" })]);
+    mountPanel([note({ id: 1, title: "甲", content: "" })], { uploadApi: attachmentsApi });
     const views = [...document.querySelectorAll("button[data-view]")].map(b =>
         b.getAttribute("data-view")
     );
@@ -678,10 +696,15 @@ test("左栏视图齐全（全部/最近/收藏/未归类 + 底部归档/回收�
         "recent",
         "starred",
         "uncategorized",
-        "todo",
         "archived",
         "trash",
     ]);
+    // 2026-10-19：左下角那一行从「待办」换成了「附件」。它不是视图，
+    // 所以刻意**不带** data-view（以前 todo 带了一个，导致视图清单里混进非视图条目）。
+    assert.ok(
+        document.querySelector("[data-nav-attachments='1']"),
+        "左下角要有附件管理入口"
+    );
     // 顶上那四个要在导航列表里；归档 / 回收站在底部固定区
     const top = [...document.querySelectorAll("button[data-view]")].filter(
         b => !b.closest("[data-nav-footer='1']")
@@ -2163,10 +2186,11 @@ test("导航列要自己滚（整块一起滚会把搜索框顶出视野）", ()
 
 test("没有 folderTags（老部署）时退化成只有那六个视图，不能崩", () => {
     setWide();
-    mountPanel([note({ id: 1, title: "甲", content: "" })]);
+    mountPanel([note({ id: 1, title: "甲", content: "" })], { uploadApi: attachmentsApi });
     assert.deepEqual(
         [...document.querySelectorAll("button[data-view]")].map(b => b.getAttribute("data-view")),
-        ["all", "recent", "starred", "uncategorized", "todo", "archived", "trash"]
+        // 2026-10-19：「待办」面板按用户要求彻底去掉，这里不再有 data-view="todo"
+        ["all", "recent", "starred", "uncategorized", "archived", "trash"]
     );
     assert.ok(document.querySelector("[data-note-list]"), "列表照常渲染");
 });

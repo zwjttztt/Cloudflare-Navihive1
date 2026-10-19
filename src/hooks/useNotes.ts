@@ -127,6 +127,16 @@ export type NotesApiLike = {
     deleteAttachment?(id: string): Promise<{ ok: boolean }>;
     /** 设置→数据→维护：清理未引用附件（2026-10-08）。可选：老部署没有 */
     pruneAttachments?(): Promise<{ removed: number; freedBytes: number }>;
+    /** 附件重命名（2026-10-19）：只改 filename，id 不变，正文链接不失效 */
+    renameAttachment?(
+        id: string,
+        filename: string
+    ): Promise<{ id: string; filename: string; updatedNotes: number }>;
+    /** 原地改写 txt / json 附件内容（2026-10-19 预览弹窗的编辑） */
+    updateAttachmentContent?(
+        id: string,
+        text: string
+    ): Promise<{ id: string; size: number; mime: string }>;
 
     // ---------- 记事本备份（2026-10-09 照 inkstone 的 BackupSettings）----------
     // 同样**可选**：老部署没有 notesBackup 端点 / 配置读写时，设置→备份页自动降级。

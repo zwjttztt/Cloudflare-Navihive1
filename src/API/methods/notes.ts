@@ -116,6 +116,22 @@ export interface NotesApi {
         | { ok: false; status: 404; error: string }
     >;
     /**
+     * 重命名附件（2026-10-19 用户要「上传后的 txt / json 能重命名」）。
+     *
+     * **只改元数据里的 filename，不动 object_key** —— 正文里那张链接是
+     * `/api/notes/attachments/<id>`，id 不变，所以笔记里的链接照样打得开。
+     * 代价是「文件名」与「存储 key」从此解耦：key 一直是最初上传时的 uuid，
+     * 谁也看不到，也无所谓。
+     *
+     * 顺带把正文里 `[旧名字](/api/notes/attachments/<id>)` 的**方括号部分**换成
+     * 新名字（只替换 label，不碰 URL）—— 否则管理器里改了名，笔记里还显示旧名，
+     * 用户会以为没生效。改过正文的笔记 rev +1，其它设备下一轮轮询就能感知。
+     */
+    renameAttachment(id: string, filename: string): Promise<
+        | { ok: true; filename: string; updatedNotes: { id: number; content: string }[] }
+        | { ok: false; status: 404 | 400; error: string }
+    >;
+    /**
      * 清理未引用附件（2026-10-08，设置 → 数据 → 维护，照 inkstone）：
      * 扫全部笔记正文（含回收站/归档，还原后图片还要能用），把 id 没在任何
      * 正文里出现过的附件删掉。**只删 D1 记录** —— 对象由 worker 路由拿着
@@ -219,6 +235,28 @@ function countWikiLinks(text: string): number {
         n += 1;
     }
     return n;
+}
+
+/**
+ * 把正文里指向某个附件的 Markdown 链接的**显示文本**换掉（2026-10-19 附件重命名）。
+ *
+ * 只动方括号里那一段，括号里的 URL 一个字都不碰 —— URL 里是附件 id，
+ * 改了就点不开了。上传时插的是 `[名字](<url>)`（带尖括号，见 NotesPage handleAttach），
+ * 用户手写的可能是 `[名字](url)`，两种都要认。
+ *
+ * ⚠️ 图片语法 `![alt](url)` 故意跳过：重命名只对 txt / json 开放，
+ * 一个文本附件被当图片嵌进正文属于脏数据，别顺手把它改成链接。
+ */
+function relabelAttachmentLink(content: string, id: string, filename: string): string {
+    const needle = `/api/notes/attachments/${id}`;
+    if (!content.includes(needle)) return content;
+    return content.replace(/!?\[[^\]\n]*\]\([^)\n]*\)/g, whole => {
+        if (!whole.includes(needle)) return whole;
+        if (whole.startsWith("!")) return whole;
+        const at = whole.indexOf("](");
+        const target = whole.slice(at + 2, -1);
+        return `[${filename}](${target})`;
+    });
 }
 
 /**
@@ -1269,6 +1307,67 @@ export const notesImpl: NotesApi = {
             const del = results[1] as { meta?: { changes?: number } };
             if (!del.meta?.changes) return { ok: false, status: 404, error: "附件不存在" };
             return { ok: true, storage: row.storage as AttachmentStorage, objectKey: row.object_key };
+        });
+    },
+
+    renameAttachment: async function (
+        this: NavigationAPI,
+        id: string,
+        filename: string
+    ): Promise<
+        | { ok: true; filename: string; updatedNotes: { id: number; content: string }[] }
+        | { ok: false; status: 404 | 400; error: string }
+    > {
+        await this.migrate();
+        return this.withSchemaRetry(async () => {
+            const row = await this.db
+                // ⚠️ 同 getAttachment：scopeSql(true) 多一个占位符，必须 scopeParams 补 uid
+                .prepare(`SELECT filename, mime FROM attachments WHERE id = ?1 ${this.scopeSql(true)}`)
+                .bind(...this.scopeParams([id]))
+                .first<{ filename: string; mime: string }>();
+            if (!row) return { ok: false, status: 404, error: "附件不存在" };
+
+            // ① 元数据改名。object_key 一个字都不动 —— 正文里的链接靠 id，
+            //    id 不变就永远打得开（见接口注释）。
+            await this.db
+                .prepare(`UPDATE attachments SET filename = ?1 WHERE id = ?2 ${this.scopeSql(true)}`)
+                .bind(...this.scopeParams([filename, id]))
+                .run();
+
+            // ② 正文同步：把引用了这个附件的笔记里、`[旧文本](…<id>…)` 的**方括号
+            //    部分**换成新名字。只动 label，不动 URL —— URL 里是 id，改了就打不开。
+            const pattern = `%/api/notes/attachments/${id}%`;
+            const found = await this.db
+                .prepare(`SELECT id, content FROM notes WHERE content LIKE ?1 ${this.scopeSql(true)}`)
+                .bind(...this.scopeParams([pattern]))
+                .all<{ id: number; content: string | null }>();
+
+            const updatedNotes: { id: number; content: string }[] = [];
+            for (const note of found.results || []) {
+                const before = note.content || "";
+                const after = relabelAttachmentLink(before, id, filename);
+                // 记的是「正文里出现了 id」的笔记，但可能只出现在图片语法 / 纯文本里，
+                // 没有可替换的 label —— 那样 after === before，跳过，别白白 rev+1。
+                if (after === before) continue;
+                updatedNotes.push({ id: note.id, content: after });
+            }
+
+            if (updatedNotes.length) {
+                // ⚠️ rev 必须 +1：正文真的变了，别的设备靠 rev 感知「这条被改过」。
+                // 不 +1 的话它们会一直拿着旧正文，直到自己下一次编辑把它覆盖回去。
+                await this.db.batch(
+                    updatedNotes.map(note =>
+                        this.db
+                            .prepare(
+                                `UPDATE notes SET content = ?1, rev = rev + 1, updated_at = CURRENT_TIMESTAMP
+                                  WHERE id = ?2${this.scopeSql(true)}`
+                            )
+                            .bind(...this.scopeParams([note.content, note.id]))
+                    )
+                );
+            }
+
+            return { ok: true, filename, updatedNotes };
         });
     },
 

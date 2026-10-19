@@ -785,6 +785,37 @@ export class NavigationClient {
         return this.request<{ ok: boolean }>(`notes/attachments/${id}`, { method: "DELETE" });
     }
 
+    /**
+     * 重命名附件（2026-10-19）。只改元数据里的 filename，id / object_key 不动，
+     * 所以正文里已有的链接一条都不会失效。服务端还会把正文里 `[旧名](…)`
+     * 的显示文本一起换掉，`updatedNotes` 是有几条笔记被改了。
+     */
+    async renameAttachment(
+        id: string,
+        filename: string
+    ): Promise<{ id: string; filename: string; updatedNotes: number }> {
+        return this.request<{ id: string; filename: string; updatedNotes: number }>(
+            `notes/attachments/${id}`,
+            { method: "PATCH", body: JSON.stringify({ filename }) }
+        );
+    }
+
+    /** 原地改写 txt / json 附件的内容（2026-10-19 预览弹窗的编辑）。 */
+    async updateAttachmentContent(
+        id: string,
+        text: string
+    ): Promise<{ id: string; size: number; mime: string }> {
+        return this.request<{ id: string; size: number; mime: string }>(
+            `notes/attachments/${id}/content`,
+            {
+                method: "PUT",
+                body: text,
+                // 纯文本；charset 只是自我描述，服务端仍按文件头嗅探
+                headers: { "Content-Type": "text/plain; charset=utf-8" },
+            }
+        );
+    }
+
     /** 设置→数据→维护：清理未被任何笔记正文引用的附件（2026-10-08，照 inkstone） */
     async pruneAttachments(): Promise<{ removed: number; freedBytes: number }> {
         return this.request<{ removed: number; freedBytes: number }>("notes/attachments/prune", {

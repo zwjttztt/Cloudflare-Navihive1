@@ -245,6 +245,41 @@ export async function checkUploadQuota(env: Env, userId: number, size: number): 
     }
 }
 
+/**
+ * 原地改写一份已有的文本附件（2026-10-19 附件预览弹窗的「编辑」）。
+ *
+ * 与 checkUploadQuota 的两处刻意差别：
+ *  1. **不占每小时上传次数** —— 编辑不是上传，把「每小时 100 次」算在保存头上
+ *     会让用户改到第 101 次被拦，情绪上完全无法理解；
+ *  2. **不拿租约** —— 用的是「增量」判据（已用 + 这次多出来的字节），
+ *     两个并发编辑最多让配额多算一次增量，最坏是超一点点；
+ *     而拿租约意味着一次保存要抢锁，失败就 409，对纯写文本来说太重。
+ *
+ * 大小仍然按**单文件上限**卡：改完不能比能上传的还大。
+ */
+export async function checkReplaceQuota(
+    env: Env,
+    userId: number,
+    growBy: number
+): Promise<QuotaResult> {
+    const storage = selectAttachmentStorage(env);
+    if (!storage) {
+        return { ok: false, status: 501, error: "服务器未配置附件存储（R2 或 KV），附件编辑暂不可用" };
+    }
+    if (growBy > 0) {
+        const used = await usedBytes(env, userId);
+        if (used + growBy > ATTACHMENT_QUOTA_BYTES) {
+            const free = Math.max(0, ATTACHMENT_QUOTA_BYTES - used);
+            return {
+                ok: false,
+                status: 413,
+                error: `存储空间不足（每账号 ${Math.round(ATTACHMENT_QUOTA_BYTES / 1024 / 1024)}MB，还能涨 ${Math.floor(free / 1024 / 1024)}MB）`,
+            };
+        }
+    }
+    return { ok: true, storage };
+}
+
 /** 已用字节数：实时聚合 attachments 表 */
 async function usedBytes(env: Env, userId: number): Promise<number> {
     const row = await env.DB.prepare(

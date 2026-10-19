@@ -40,7 +40,6 @@ export interface AttachmentManagerApi {
     /** 可选：老部署没有 pruneAttachments 时「清理」按钮不出现 */
     prune?(): Promise<{ removed: number; freedBytes: number }>;
 }
-
 type FilterKind = "all" | "image" | "document" | "other";
 
 const FILTERS: { value: FilterKind; label: string }[] = [
@@ -195,6 +194,7 @@ export default function AttachmentManager({
     countRefs,
     onNotify,
     onChanged,
+    onPreview,
 }: {
     open: boolean;
     onClose: () => void;
@@ -206,6 +206,11 @@ export default function AttachmentManager({
     onNotify?: (message: string, severity?: "success" | "error" | "info") => void;
     /** 删除 / 清理后回调：数据页要刷新概览统计 */
     onChanged?: () => void;
+    /**
+     * 点文件名 / 缩略图 → 打开预览弹窗（2026-10-19 用户要求「点击文件名也改成
+     * 弹窗预览」）。不传时文件名退回纯文本 —— 分享页 / 老部署没有这个能力。
+     */
+    onPreview?: (file: AttachmentManagerFile) => void;
 }) {
     const [files, setFiles] = useState<AttachmentManagerFile[] | null>(null);
     const [error, setError] = useState<string | null>(null);
@@ -340,7 +345,7 @@ export default function AttachmentManager({
                         </Typography>
                     ) : files.length === 0 ? (
                         <Typography data-att-state='empty' sx={{ px: 3, py: 10, textAlign: "center", fontSize: 12, color: "text.disabled" }}>
-                            还没有上传过图片。
+                            还没有上传过任何附件。
                         </Typography>
                     ) : filtered.length === 0 ? (
                         <Typography data-att-state='none-match' sx={{ px: 3, py: 10, textAlign: "center", fontSize: 12, color: "text.disabled" }}>
@@ -418,17 +423,55 @@ export default function AttachmentManager({
                                             </Box>
                                         </Box>
                                         <Box sx={{ px: 1, py: 0.75 }}>
-                                            <Typography
-                                                sx={{
-                                                    fontSize: 11.5,
-                                                    color: "text.secondary",
-                                                    overflow: "hidden",
-                                                    textOverflow: "ellipsis",
-                                                    whiteSpace: "nowrap",
-                                                }}
-                                            >
-                                                {file.filename || "(未命名)"}
-                                            </Typography>
+                                            {/* 文件名 = 预览入口（2026-10-19）。
+                                                ⚠️ 用真 <button> 而不是给 Typography 挂 onClick：
+                                                键盘用户要能 Tab 到它、回车打开，与 NavRow 同一套道理。
+                                                没有 onPreview 时退回纯文本，不出现「看得见点不动」的死按钮。 */}
+                                            {onPreview ? (
+                                                <Box
+                                                    component='button'
+                                                    type='button'
+                                                    data-attachment-action='preview'
+                                                    title={`预览 ${file.filename || "附件"}`}
+                                                    onClick={() => onPreview(file)}
+                                                    sx={{
+                                                        display: "block",
+                                                        width: "100%",
+                                                        p: 0,
+                                                        m: 0,
+                                                        border: "none",
+                                                        background: "none",
+                                                        font: "inherit",
+                                                        textAlign: "left",
+                                                        cursor: "pointer",
+                                                        fontSize: 11.5,
+                                                        color: "text.secondary",
+                                                        overflow: "hidden",
+                                                        textOverflow: "ellipsis",
+                                                        whiteSpace: "nowrap",
+                                                        borderRadius: 0.5,
+                                                        "&:hover": { color: "primary.main" },
+                                                        "&:focus-visible": {
+                                                            outline: "2px solid var(--accent)",
+                                                            outlineOffset: 1,
+                                                        },
+                                                    }}
+                                                >
+                                                    {file.filename || "(未命名)"}
+                                                </Box>
+                                            ) : (
+                                                <Typography
+                                                    sx={{
+                                                        fontSize: 11.5,
+                                                        color: "text.secondary",
+                                                        overflow: "hidden",
+                                                        textOverflow: "ellipsis",
+                                                        whiteSpace: "nowrap",
+                                                    }}
+                                                >
+                                                    {file.filename || "(未命名)"}
+                                                </Typography>
+                                            )}
                                             <Typography
                                                 sx={{
                                                     fontSize: 10.5,
@@ -499,7 +542,7 @@ export default function AttachmentManager({
                     open
                     danger
                     title='删除这个附件？'
-                    description={`「${deleteTarget.filename}」将被永久删除；引用了它的笔记里会显示「图片加载失败」。`}
+                    description={`「${deleteTarget.filename}」将被永久删除；引用了它的笔记里会显示加载失败的占位。`}
                     confirmText='删除'
                     onConfirm={doDelete}
                     onClose={() => setDeleteTarget(null)}
@@ -512,7 +555,10 @@ export default function AttachmentManager({
                     open
                     danger
                     title='清理未引用附件？'
-                    description='只删除不再出现在任何笔记正文里的图片；正在使用的图片不受影响。'
+                    // ⚠️ 文案别写「图片」：清理判据是 `corpus.includes(id)`（见
+                    // API/methods/notes.ts 的 pruneAttachments），**与文件类型无关**，
+                    // txt / json 一样会被清。2026-10-19 用户指出提示漏了文档。
+                    description='只删除不再出现在任何笔记正文里的附件（图片、txt / json 文档等）；正在使用的附件不受影响。'
                     confirmText='清理'
                     onConfirm={doPrune}
                     onClose={() => setConfirmPrune(false)}

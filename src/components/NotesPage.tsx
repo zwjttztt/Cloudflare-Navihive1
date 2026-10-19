@@ -64,9 +64,11 @@ import CheckBoxIcon from "@mui/icons-material/CheckBox";
 import CheckBoxOutlineBlankIcon from "@mui/icons-material/CheckBoxOutlineBlank";
 import Checkbox from "@mui/material/Checkbox";
 import HubIcon from "@mui/icons-material/Hub";
+import AttachmentIcon from "@mui/icons-material/AttachFile";
 import NoteGraphDialog from "./NoteGraphDialog";
-import NotesTodoDialog from "./NotesTodoDialog";
-import { todoCounts } from "../utils/noteTodoAgenda";
+import AttachmentManager from "./AttachmentManager";
+import AttachmentPreviewDialog from "./AttachmentPreviewDialog";
+import { AttachmentPreviewProvider, type AttachmentPreviewRequest } from "../utils/attachmentPreview";
 import BacklinksPanel from "./BacklinksPanel";
 import UndoIcon from "@mui/icons-material/Undo";
 import DriveFileRenameOutlineIcon from "@mui/icons-material/DriveFileRenameOutline";
@@ -175,6 +177,16 @@ export interface NotesPageProps {
         pruneAttachments?(): Promise<{ removed: number; freedBytes: number }>;
         /** 附件管理器里逐条删除（inkstone 的 AttachmentManager 同款） */
         deleteAttachment?(id: string): Promise<{ ok: boolean }>;
+        /**
+         * 附件重命名（2026-10-19）。只改 filename，id / object_key 不动，
+         * 正文链接因此不会失效；服务端顺手把正文里的显示名同步掉。
+         */
+        renameAttachment?(
+            id: string,
+            filename: string
+        ): Promise<{ filename: string; updatedNotes: number }>;
+        /** 原地改写 txt / json 内容（预览弹窗的「编辑」）。 */
+        updateAttachmentContent?(id: string, text: string): Promise<{ size: number; mime: string }>;
     };
     /**
      * 记事本备份能力（2026-10-09 照 inkstone 的 BackupSettings）。
@@ -411,8 +423,30 @@ export default function NotesPage({
     const [keyword, setKeyword] = useState("");
     /** 关系图谱（2026-10-09）：双链关系的全貌，从「更多」里开 */
     const [graphOpen, setGraphOpen] = useState(false);
-    /** 全库待办面板（2026-10-11 阶段②）：散在各篇里的 `- [ ]` 任务收进一个清单 */
-    const [todoOpen, setTodoOpen] = useState(false);
+    /**
+     * 附件管理器抽屉（2026-10-19 从左下角进来）。
+     *
+     * 原来是「全库待办面板」占着这个位置，用户要求那个功能**彻底去掉**、
+     * 把附件管理放过来：待办清单的价值全在「勾一下回写原文」，而正文里的
+     * `- [ ]` 本来就能点（预览与源码两处都支持），聚合面板属于重复入口；
+     * 附件管理器则恰恰缺一个随手可点的入口 —— 之前藏在「设置 → 数据」两级菜单后面。
+     */
+    const [attManagerOpen, setAttManagerOpen] = useState(false);
+    /**
+     * 当前要预览的附件（2026-10-19）。两个入口共用同一个弹窗：
+     *   - 正文里点附件链接（markdownToReact → context → 这里）
+     *   - 附件管理器里点文件名
+     * null = 关着。
+     */
+    const [previewTarget, setPreviewTarget] = useState<AttachmentPreviewRequest | null>(null);
+    /**
+     * 给 context 的控制器。⚠️ 空依赖 + useMemo：对象引用必须稳定，
+     * 否则每次渲染都是新 value，整棵预览子树跟着重渲染（树很大）。
+     */
+    const previewController = useMemo(
+        () => ({ open: (request: AttachmentPreviewRequest) => setPreviewTarget(request) }),
+        []
+    );
     /** 反链右侧常驻面板（N4）：与大纲面板同一位置，桌面头部按钮 / 菜单项共同开关 */
     const [backlinksOpen, setBacklinksOpen] = useState(false);
     /** 多选批量条（2026-10-09）：只在用户主动开了「多选」时才勾人，退出即清空 */
@@ -1558,26 +1592,8 @@ export default function NotesPage({
                 n => !n.archived && (n.folder_id === null || n.folder_id === undefined)
             ).length,
             trash: trashedNotes.length,
-            // 待办面板角标：全库未完成任务数（纯文本扫描，围栏代码块不算）
-            todo: todoCounts(notes).open,
         }),
         [notes, trashedNotes]
-    );
-
-    /** 待办面板勾选 → 回写原笔记：与预览勾选同一套判据（toggleTaskLine），
-     *  走 onUpdate（updateNote）链路，rev 守卫 / 自动保存 / 广播自动生效。 */
-    const handleTodoToggle = useCallback(
-        (noteId: number, line: number, checked: boolean) => {
-            const note = notes.find(n => n.id === noteId);
-            if (!note || typeof note.content !== "string") return;
-            const next = toggleTaskLine(note.content, line, checked);
-            if (next === null) {
-                onNotify?.("这条任务在原文里已变化，请打开笔记后重试", "error");
-                return;
-            }
-            void onUpdate(noteId, { content: next });
-        },
-        [notes, onUpdate, onNotify]
     );
 
     // ---------- 阶段三收尾：文件夹 / 标签 ----------
@@ -1992,13 +2008,15 @@ export default function NotesPage({
     /**
      * 附件被多少条笔记引用（设置→数据→附件管理器那格「引用 N 次」）。
      *
-     * ⚠️ 只在**数据面板真的打开**时才算（2026-10-18 修「置顶笔记卡顿」）：
+     * ⚠️ 只在**面板真的打开**时才算（2026-10-18 修「置顶笔记卡顿」）：
      * 原来无条件扫全部正文，置顶/保存时这一段要跑好几毫秒的正则，而结果
      * 99% 的时间根本没人看。面板一开（settingsOpen 变 true）当帧就会算出来。
+     * ⚠️ 每个入口都要算进去：设置 → 数据、以及左下角「附件」（2026-10-19 新增）。
+     * 漏一个的后果是那个入口的「引用 N 次 / 未引用」全是 0 —— 看着像全部未引用。
      * ⚠️ 每条笔记先用 `includes` 兜一道：没有附件链接的正文不进正则。
      */
     const attachmentRefCounts = useMemo(() => {
-        if (!settingsOpen) return EMPTY_REF_COUNTS;
+        if (!settingsOpen && !attManagerOpen) return EMPTY_REF_COUNTS;
         const map = new Map<string, number>();
         for (const n of notes) {
             const content = n.content || "";
@@ -2011,7 +2029,7 @@ export default function NotesPage({
             }
         }
         return map;
-    }, [notes, settingsOpen]);
+    }, [notes, settingsOpen, attManagerOpen]);
 
     /** 导出全部笔记（2026-10-08 设置→数据，照 inkstone 的导出）：JSON 一份
      *  （笔记 + 文件夹 + 标签 + 关联），不含附件二进制。前端直接从内存生成，
@@ -2467,7 +2485,6 @@ export default function NotesPage({
                 { id: "share", label: "分享当前笔记", section: "当前笔记", keywords: "share 分享", run: () => active.id != null && setShareId(active.id) },
                 { id: "revisions", label: "版本历史", section: "当前笔记", keywords: "history 版本", run: () => void openRevisions() },
                 { id: "graph", label: "关系图谱", section: "当前笔记", keywords: "graph 图谱 双链", run: () => setGraphOpen(true) },
-                { id: "todo", label: "全库待办面板", section: "命令", keywords: "todo 任务 待办 checklist", run: () => setTodoOpen(true) },
                 { id: "export-md", label: "导出 Markdown", section: "当前笔记", keywords: "export md markdown", run: () => { const t = exportTarget(); void exportNoteAsMarkdown(t.title, t.content); } },
                 { id: "export-html", label: "导出 HTML", section: "当前笔记", keywords: "export html", run: () => { const t = exportTarget(); void exportNoteAsHtml(t.title, t.content); } },
                 { id: "delete", label: "删除当前笔记", section: "当前笔记", keywords: "delete 删除", run: () => void onDelete(active) },
@@ -3361,19 +3378,28 @@ export default function NotesPage({
                 }}
             >
                 <Stack sx={{ px: 0.75, gap: 0.25 }}>
-                    {/* 全库待办（2026-10-11 阶段②）：不是视图，是弹面板 ——
-                        点开一个聚合清单，勾选直接回写原笔记。 */}
-                    <NavRow
-                        label="待办"
-                        count={viewCounts.todo}
-                        selected={todoOpen}
-                        onClick={() => {
-                            setTodoOpen(true);
-                            setNavDrawerOpen(false);
-                        }}
-                        data-view="todo"
-                    />
-                    {(
+                    {/* 附件管理（2026-10-19 取代原来的「待办」行）：点开右侧抽屉，
+                        列表 / 预览 / 重命名 / 删除 / 清理全在里面。
+                        ⚠️ 门控要和管理器本体一致（list + delete 都得有）：
+                        只按 listAttachments 判断的话，老部署上会出现一个入口，
+                        点开却因为删除能力缺失而整个抽屉挂掉。
+                        ⚠️ 这里刻意**不给 data-view**：它不是视图，选中态也就没有意义
+                        （原来那行待办也不是视图，但挂了 data-view="todo"，
+                        导致 `button[data-view]` 的视图清单里混进一个非视图）。 */}
+                    {uploadApi?.listAttachments && uploadApi?.deleteAttachment && (
+                        <NavRow
+                            label="附件"
+                            count={0}
+                            icon={<AttachmentIcon sx={{ fontSize: 15 }} />}
+                            selected={attManagerOpen}
+                            onClick={() => {
+                                setAttManagerOpen(true);
+                                setNavDrawerOpen(false);
+                            }}
+                            data-nav-attachments='1'
+                            title='管理附件（预览 / 重命名 / 删除 / 清理未引用）'
+                        />
+                    )}                    {(
                         [
                             ["archived", "归档", viewCounts.archived],
                             ["trash", "回收站", viewCounts.trash],
@@ -5371,6 +5397,10 @@ export default function NotesPage({
     ) : null;
 
     return (
+        // 附件预览弹窗的控制器（2026-10-19）：正文渲染层（markdownToReact）隔着好几层，
+        // 靠 context 才能「点链接 → 开这里这个弹窗」，不必把回调一路透传下去。
+        // ⚠️ value 必须稳定（useMemo 空依赖）：一变就会让整棵预览子树重渲染。
+        <AttachmentPreviewProvider value={previewController}>
         <Box
             ref={pageRef}
             data-notes-root=''
@@ -5451,6 +5481,15 @@ export default function NotesPage({
                         : undefined,
                     onDeleteAttachment: uploadApi?.deleteAttachment
                         ? (id: string) => uploadApi.deleteAttachment!(id).then(() => undefined)
+                        : undefined,
+                    // 预览 / 编辑 / 重命名（2026-10-19）：设置页那条入口与左下角
+                    // 那个管理器共用同一套能力，不给的话设置页里点文件名只会是死文本。
+                    onSaveAttachmentContent: uploadApi?.updateAttachmentContent
+                        ? (id: string, text: string) =>
+                              uploadApi.updateAttachmentContent!(id, text).then(r => ({ size: r.size }))
+                        : undefined,
+                    onRenameAttachment: uploadApi?.renameAttachment
+                        ? (id: string, filename: string) => uploadApi.renameAttachment!(id, filename)
                         : undefined,
                     // 附件被多少条笔记引用（管理器里「引用 N 次 / 未引用」那格）：
                     // 从已加载的正文里现算，按笔记去重（一条笔记里写两次也算 1 个引用）
@@ -6119,18 +6158,55 @@ export default function NotesPage({
                 onClose={() => setGraphOpen(false)}
             />
 
-            {/* 全库待办面板（2026-10-11 阶段②）：勾选回写走 onUpdate 链路 */}
-            <NotesTodoDialog
-                open={todoOpen}
-                notes={notes}
-                onClose={() => setTodoOpen(false)}
-                onToggle={handleTodoToggle}
-                onOpenNote={id => {
-                    void jumpToNote(id).then(switched => {
-                        if (switched) setView("all");
-                    });
-                }}
+            {/* 全库待办面板已按用户要求彻底去掉（2026-10-19）；正文里的
+                `- [ ]` 勾选能力不受影响（预览 / 源码两处照旧）。 */}
+
+            {/* 附件管理器（2026-10-19 从设置 → 数据搬到这里常驻）：
+                右下角滑出的抽屉（anchor='right'），列表 / 预览 / 重命名 / 删除 /
+                清理都在里面自持。数据源与设置页那处**同一个** uploadApi，
+                引用计数也共用 attachmentRefCounts，两处口径不会各算各的。
+                ⚠️ 只在三个方法都齐时才挂：老部署没有对应端点时不该出现入口
+                （上面那行 NavRow 已经用 listAttachments 做过门控，这里再兜一次）。 */}
+            {attManagerOpen && uploadApi?.listAttachments && uploadApi?.deleteAttachment && (
+                <AttachmentManager
+                    open
+                    onClose={() => setAttManagerOpen(false)}
+                    mgr={{
+                        list: () => uploadApi.listAttachments!(),
+                        remove: async id => {
+                            await uploadApi.deleteAttachment!(id);
+                        },
+                        prune: uploadApi.pruneAttachments
+                            ? () => uploadApi.pruneAttachments!()
+                            : undefined,
+                    }}
+                    countRefs={id => attachmentRefCounts.get(id) ?? 0}
+                    onNotify={onNotify}
+                    onPreview={file => setPreviewTarget({ id: file.id, filename: file.filename, mime: file.mime })}
+                />
+            )}
+
+            {/* 附件预览 / 编辑弹窗（2026-10-19）：正文点链接与附件管理器点文件名
+                共用这一个。能力按「有没有方法」降级 —— 老部署只有只读预览。 */}
+            <AttachmentPreviewDialog
+                target={previewTarget}
+                onClose={() => setPreviewTarget(null)}
                 onNotify={onNotify}
+                onSaveContent={
+                    uploadApi?.updateAttachmentContent
+                        ? (id, text) => uploadApi.updateAttachmentContent!(id, text).then(r => ({ size: r.size }))
+                        : undefined
+                }
+                onRename={
+                    uploadApi?.renameAttachment
+                        ? (id, filename) => uploadApi.renameAttachment!(id, filename)
+                        : undefined
+                }
+                // 重命名会改正文里的链接文字 → 本地 notes 还是旧的，必须重拉，
+                // 否则用户在这条笔记里再保存一次就把服务端的新名字覆盖回去了。
+                onChanged={reason => {
+                    if (reason === "rename") void onDatasetChanged?.();
+                }}
             />
 
             {/* 记事本命令面板（N1）：⌘K 打开。搜笔记/文件夹/标签 + 执行命令；
@@ -6572,6 +6648,7 @@ export default function NotesPage({
                 onClose={() => setBulkDeleteOpen(false)}
             />
         </Box>
+        </AttachmentPreviewProvider>
     );
 }
 

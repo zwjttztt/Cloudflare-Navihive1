@@ -16,6 +16,7 @@ import { currentUserIdentity } from "./account";
 import {
     ATTACHMENT_MAX_BYTES,
     attachmentObjectKey,
+    checkReplaceQuota,
     checkUploadQuota,
     finishAttachmentDeletion,
     imageExtension,
@@ -154,6 +155,132 @@ function sanitizeFilename(name: string): string {
         .replace(/^\.+/, "")
         .trim();
     return (cleaned || "file").slice(0, 180);
+}
+
+/**
+ * 重命名用的文件名归一（2026-10-19）：先按上传那套净化，再**锁定扩展名**。
+ *
+ * 为什么锁扩展名：附件类型是上传那一刻按内容嗅探定死的（mime 存在 D1 里），
+ * 用户把 `data.json` 改成 `data.txt` 并不会让正文变文本、也不会让下载类型改掉，
+ * 只会让「名字说的」和「实际是」对不上 —— 下次打开就是「明明是 txt 却按 json 解析」。
+ * 所以扩展名跟着 mime 走，用户只改主名。
+ */
+function normalizeAttachmentFilename(raw: string, mime: string): string {
+    const locked = textExtension(mime) ?? imageExtension(mime) ?? "";
+    // sanitizeFilename 已经处理了路径分隔符 / 控制字符 / 前导点，并兜了空名
+    const base = sanitizeFilename(raw).replace(/\.[A-Za-z0-9]+$/, "").trim() || "file";
+    if (!locked) return base.slice(0, 120);
+    // 先给扩展名留位置再截断，否则长名字会把 `.json` 切掉
+    return `${base.slice(0, 120 - locked.length - 1)}.${locked}`;
+}
+
+/**
+ * 重命名附件（2026-10-19，用户要「上传后的 txt / json 能重命名」）。
+ *
+ * 只改 D1 里的 `filename`，对象 key 与附件 id 都不动 —— 正文里的链接是
+ * `/api/notes/attachments/<id>`，所以笔记里的链接不会失效（这是整个方案的地基）。
+ * 正文里那行链接的**显示名**由 api.renameAttachment 顺手同步。
+ *
+ * 带确认过的原文件名回来（可能被净化 / 锁定扩展名），UI 直接显示返回值，
+ * 不要拿用户输入的字符串当结果。
+ */
+async function handleRenameAttachment(ctx: RouteCtx, id: string): Promise<Response> {
+    const { request, api } = ctx;
+    const body = (await request.json().catch(() => ({}))) as { filename?: unknown };
+    if (typeof body.filename !== "string" || !body.filename.trim()) {
+        throw ApiError.badRequest("文件名不能为空");
+    }
+    // 先查一条拿 mime（决定扩展名锁哪个），顺便做归属校验（scopeSql 在 api 层）
+    const found = await api.getAttachment(id);
+    if (!found) throw ApiError.notFound("附件不存在");
+
+    const filename = normalizeAttachmentFilename(body.filename, found.mime);
+    const result = await api.renameAttachment(id, filename);
+    if (!result.ok) throw ApiError.notFound(result.error);
+    return Response.json({ id, filename: result.filename, updatedNotes: result.updatedNotes.length });
+}
+
+/**
+ * 原地改写文本附件的内容（2026-10-19 附件预览弹窗的「编辑」）。
+ *
+ * 只在 **txt / json** 上开放：图片改内容没有意义（改完也不是合法图片），
+ * 而类型边界不能靠「前端只对文本显示编辑按钮」——必须后端拒绝。
+ *
+ * 写的是**同一个对象 key**（覆盖），所以附件 id、正文链接全都不变。
+ * 大小按增量算配额：改大才检查（改小永远放行）。
+ */
+async function handleUpdateAttachmentContent(ctx: RouteCtx, id: string): Promise<Response> {
+    const { request, api, env } = ctx;
+    const declared = Number(request.headers.get("Content-Length") ?? "0");
+    if (declared > ATTACHMENT_MAX_BYTES) {
+        throw ApiError.tooLarge(
+            `单个文件不能超过 ${Math.round(ATTACHMENT_MAX_BYTES / 1024 / 1024)}MB`
+        );
+    }
+
+    const found = await api.getAttachment(id);
+    if (!found) throw ApiError.notFound("附件不存在");
+    // 只有纯文本可以编辑（扩展名白名单与上传同一份，不另立一套）
+    const lockedExt = textExtension(found.mime);
+    if (!lockedExt) throw ApiError.badRequest("只有 txt / json 附件可以直接编辑");
+    if (!found.object_key) {
+        throw new ApiError(500, API_ERROR_CODES.internal, "附件记录不完整");
+    }
+
+    const bytes = new Uint8Array(await request.arrayBuffer());
+    if (bytes.byteLength === 0) throw ApiError.badRequest("内容不能为空");
+    if (bytes.byteLength > ATTACHMENT_MAX_BYTES) {
+        throw ApiError.tooLarge(
+            `单个文件不能超过 ${Math.round(ATTACHMENT_MAX_BYTES / 1024 / 1024)}MB`
+        );
+    }
+    // ⚠️ 编辑后的内容也要过嗅探：否则能把二进制塞进一个 txt 附件里，
+    // 于是「文本附件只当纯文本出」这条边界被从后门绕开。
+    const sniffed = sniffTextMime(bytes);
+    if (!sniffed) throw ApiError.unsupportedMedia("内容不是合法的 UTF-8 文本");
+
+    const quota = await checkReplaceQuota(env, currentUserIdOf(ctx), bytes.byteLength - Number(found.size ?? 0));
+    if (!quota.ok) throw quotaError(quota);
+
+    try {
+        await putAttachmentObject(env, found.storage, found.object_key, bytes, {
+            userId: currentUserIdOf(ctx),
+            mime: found.mime,
+        });
+    } catch (error) {
+        console.error("附件内容改写失败", error);
+        throw ApiError.badGateway("内容写入存储失败，请稍后重试");
+    }
+
+    // 对象已换，元数据跟进（size 影响配额与列表显示）。
+    // mime 故意保持原值：扩展名锁定了，类型不能因为「这次内容长得像 json」就漂移。
+    await env.DB.prepare("UPDATE attachments SET size = ?1 WHERE id = ?2")
+        .bind(bytes.byteLength, id)
+        .run();
+    return Response.json({ id, size: bytes.byteLength, mime: found.mime });
+}
+
+/**
+ * 附件下载头（2026-10-19）。
+ *
+ * `inline` 保持原样（点开链接直接在标签页里看文本，而不是掉进下载栏）——
+ * 前端的预览弹窗走 fetch，不依赖这个头；它只负责「另存为」时的默认文件名。
+ *
+ * ⚠️ 三处细节：
+ *  1. `filename*` 是 RFC 5987 的百分号编码形式，中文名靠它；
+ *  2. 同时给纯 ASCII 的 `filename="..."` 兜底：不认识 `filename*` 的老客户端
+ *     会退回这一份，总比拿到 uuid 强；
+ *  3. `encodeURIComponent` 不转义 `!'()*`，而 RFC 5987 的 attr-char 不允许
+ *     `'()*` —— 文件名里带个括号就会让整个头被解析器丢弃，这里手动补转义。
+ */
+function contentDisposition(filename: string): string {
+    const name = (filename || "file").slice(0, 120);
+    const ascii = name.replace(/[^\x20-\x7e]/g, "_").replace(/["\\]/g, "_") || "file";
+    const encoded = encodeURIComponent(name).replace(
+        /['()*]/g,
+        ch => `%${ch.charCodeAt(0).toString(16).toUpperCase()}`
+    );
+    return `inline; filename="${ascii}"; filename*=UTF-8''${encoded}`;
 }
 
 /** 幂等闸门只对写方法开：GET / HEAD 没有副作用，认重没有意义，只会白占一行记录 */
@@ -533,13 +660,27 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
             headers: {
                 "Content-Type": contentType,
                 "Content-Length": String(bytes.byteLength),
-                // private, no-store：图片是登录后才可见的，走任何中间缓存都会
-                // 把它发给别人。文件名不外泄，所以用 inline + 通用类型。
-                "Content-Disposition": "inline",
+                // private, no-store：附件是登录后才可见的，走任何中间缓存都会
+                // 把它发给别人。
+                //
+                // ⚠️ 2026-10-19 补上文件名（原来只有裸 `inline`）：用户点「另存为」
+                // 拿到的是 uuid，重命名功能等于白做。RFC 6266 的标准写法是
+                // `filename*=UTF-8''<百分号编码>`，再给一个纯 ASCII 兜底名
+                // 给不认识 filename* 的老客户端。两者都只出现文件名，
+                // 不含 object_key（存储布局照旧不外泄）。
+                "Content-Disposition": contentDisposition(found.filename),
                 "Cache-Control": "private, no-store",
                 "X-Content-Type-Options": "nosniff",
             },
         });
+    } else if (/^notes\/attachments\/[0-9a-z-]+$/.test(path) && method === "PATCH") {
+        const limited = await writeGate();
+        if (limited) return limited;
+        return await handleRenameAttachment(ctx, path.split("/")[2]);
+    } else if (/^notes\/attachments\/[0-9a-z-]+\/content$/.test(path) && method === "PUT") {
+        const limited = await writeGate();
+        if (limited) return limited;
+        return await handleUpdateAttachmentContent(ctx, path.split("/")[2]);
     } else if (/^notes\/attachments\/[0-9a-z-]+$/.test(path) && method === "DELETE") {
         const limited = await writeGate();
         if (limited) return limited;
