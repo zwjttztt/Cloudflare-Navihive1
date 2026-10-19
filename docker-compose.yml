@@ -17,6 +17,14 @@ services:
     image: navihive:latest
     container_name: navihive
     restart: unless-stopped
+    # 网页端一键升级（POST /api/system/upgrade）要连 /var/run/docker.sock，而 sock 属
+    # root:docker(<宿主机 docker 组 GID>)。镜像默认以 node(1000) 运行，连它会被
+    # EACCES —— 所以挂了 sock 就必须显式给权限，二选一：
+    #   A. user: "0:0"（下面这行，最省事，代价是容器内进程有 root 权限）
+    #   B. 保留非 root：删掉 user，改用
+    #        group_add: ["<getent group docker 得到的 GID>"]
+    #      容器进程仍是 node，只多拿一个附加组。
+    user: "${NAVIHIVE_RUN_AS:-0:0}"
 
     ports:
       # 默认只绑宿主机回环：TLS 由前面的反代终止，容器不直接面对公网。

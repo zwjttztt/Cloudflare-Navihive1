@@ -84,9 +84,12 @@ test("server：先响应再执行 + 失败能自救", () => {
     assert.match(block, /catch \(restoreError\)/, "恢复也要兜底，不能把异常吞掉就算了");
 });
 
-test("compose：要挂 docker.sock 并告知容器自己的名字", () => {
+test("compose：要挂 docker.sock、给权限，并告知容器自己的名字", () => {
     const src = readSrc("docker-compose.yml");
     assert.match(src, /\/var\/run\/docker\.sock:\/var\/run\/docker\.sock/, "要挂 docker.sock 才能网页升级");
+    // ⚠️ sock 属 root:docker(987)，镜像默认以 node(1000) 跑 —— 不显式给权限就是
+    // connect EACCES（文件看得见、连不上）。这条是 VPS 上重建后跑只读调用才暴露的。
+    assert.match(src, /NAVIHIVE_RUN_AS|group_add/, "必须显式给访问 sock 的身份/组");
     assert.match(src, /NAVIHIVE_CONTAINER_NAME/, "要告诉服务自己要重建的容器名");
     assert.match(src, /NAVIHIVE_IMAGE/, "要可配置升级目标镜像");
 });

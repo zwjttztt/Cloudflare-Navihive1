@@ -56,6 +56,11 @@ Node 原生 `http.request` 的 `socketPath` 就能打 sock，零额外依赖。�
 `NAVIHIVE_CONTAINER_NAME` / `NAVIHIVE_IMAGE`。
 　另外补了两个此前没有的兜底：重建前先把容器规格存底（`lastKnownSpec`），失败时用它把原容器
 **原样拉回来** —— 否则旧容器已停已删，站点会直接停摆（用户看到的就是「点完升级网站打不开了」）。
+　⚠️ **部署侧还有一个只看 `ls` 发现不了的坑**：`docker.sock` 属 `root:docker(987)`，而镜像默认
+以 `node(1000)` 运行 —— `ls` 看得见文件，真连是 `connect EACCES`。所以挂了 sock 还必须给权限，
+二选一：`user: "0:0"`（模板默认，代价是容器内进程有 root 权限）或
+`group_add: ["<宿主机 docker 组 GID>"]`（保留非 root）。这个坑是在 VPS 上**重建后跑一次容器内
+只读 Docker API 调用**才暴露的，光看文件权限会以为已经通了。
 
 守卫：`tests/systemUpgradeGuard.test.ts` 5 例（两道闸、不再要求 compose 目录、走 socket
 不依赖 CLI、先响应后执行、失败自救）+ compose 挂载与容器名 + 前端回落路径。
