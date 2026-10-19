@@ -140,18 +140,18 @@ test("NotesPage：行内 ⋯ 按钮显隐不得用 :focus-within（菜单关闭�
         "onExited 里要把落在 ⋯ 按钮上的焦点摘掉",
     );
     // 根治（2026-10-18 第四报「点其他位置关闭后瞬间还是出现白圈」）：
-    // MUI Menu **不转发** disableRestoreFocus（实测加了是死代码），onExited 里
-    // blur 又早于还原 —— 真正兜底是 menuClosing effect 里的 focusin 捕获：
+    // MUI Menu 会透传 disableRestoreFocus；指针菜单应禁用还原，同时保留
+    // menuClosing effect 里的 focusin 捕获作为按钮菜单关闭窗口防护：
     // 还原到「⋯」上的焦点立即 blur，事件驱动不赌时序。
     assert.match(
         src,
         /document\.addEventListener\("focusin", onFocusIn, true\)/,
         "关闭窗口内必须捕获 focusin（还原到 ⋯ 的焦点立即 blur）",
     );
-    assert.doesNotMatch(
+    assert.match(
         src,
-        /disableRestoreFocus/,
-        "不得留 disableRestoreFocus（MUI Menu 不转发，死代码会误导后人）",
+        /disableRestoreFocus=\{!\(rowMenu\?\.el instanceof HTMLElement\)\}/,
+        "右键菜单禁止焦点还原，按钮菜单保留键盘返回路径",
     );
     // 关闭动画期间（~200ms）rowMenu 还挂着、menuOpen 显式 opacity:1：
     // menuClosing 类把按钮硬压掉，防「弹窗消失的瞬间冒出白圈」

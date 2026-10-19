@@ -1,5 +1,5 @@
 // src/components/SiteSettingsModal.tsx
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Site, Group } from "../API/http";
 import ConfirmDialog from "./ConfirmDialog";
 // Material UI 导入
@@ -253,29 +253,50 @@ export default function SiteSettingsModal({
      * 而且建议的新分组名还会诱导「自动建分组」这种写操作。分组交给用户自己选。
      * 填进去了就安静地填（值本身看得见）；只有失败才显示原因。
      */
+    const aiRequestId = useRef(0);
+    const aiTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+    useEffect(() => {
+        aiRequestId.current += 1;
+        clearTimeout(aiTimer.current);
+        setAiBusy(false);
+        setAiMessage("");
+        setAiMessageError(false);
+        return () => {
+            aiRequestId.current += 1;
+            clearTimeout(aiTimer.current);
+        };
+    }, [formData.url]);
     const handleAiComplete = async () => {
-        if (!ai || !formData.url) return;
+        if (!ai || !formData.url || aiBusy) return;
+        const requestId = ++aiRequestId.current;
         setAiBusy(true);
         setAiMessage("");
         setAiMessageError(false);
-        const groupNames = groups.map(g => g.name);
-        const res = await ai.siteMeta(formData.url, {
-            name: formData.name || undefined,
-            groups: groupNames,
-            tags: allTags,
-        });
-        setAiBusy(false);
-        if (!res.ok) {
-            setAiMessage(res.message);
+        try {
+            const res = await Promise.race([
+                ai.siteMeta(formData.url, {
+                    name: formData.name || undefined,
+                    groups: groups.map(g => g.name),
+                    tags: allTags,
+                }),
+                new Promise<never>((_resolve, reject) => {
+                    aiTimer.current = setTimeout(() => reject(new Error("AI 补全超时，请检查网络或稍后重试")), 30_000);
+                }),
+            ]);
+            if (requestId !== aiRequestId.current) return;
+            if (!res.ok) throw new Error(res.message);
+            const { name, description } = res.data;
+            setFormData(prev => ({ ...prev, name: name || prev.name, description: description || prev.description }));
+        } catch (error) {
+            if (requestId !== aiRequestId.current) return;
+            setAiMessage(error instanceof Error ? error.message : "AI 补全失败，请重试");
             setAiMessageError(true);
-            return;
+        } finally {
+            if (requestId === aiRequestId.current) {
+                clearTimeout(aiTimer.current);
+                setAiBusy(false);
+            }
         }
-        const { name, description } = res.data;
-        setFormData(prev => ({
-            ...prev,
-            name: name || prev.name,
-            description: description || prev.description,
-        }));
     };
 
     // 一键根据「网站链接」生成图标 URL

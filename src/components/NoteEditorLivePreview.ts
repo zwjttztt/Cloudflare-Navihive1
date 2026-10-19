@@ -128,6 +128,9 @@ class LiveBlockWidget extends WidgetType {
     toDOM(view: EditorView): HTMLElement {
         const host = document.createElement("div");
         host.className = "note-live-block";
+        // 原生滚动条按下时浏览器会聚焦最近的可聚焦祖先。不能让它落到
+        // contenteditable 上，否则 focusChanged 会把当前块直接拆回源码。
+        host.tabIndex = -1;
         host.dataset.liveStart = String(this.block.startLine);
         host.title = "点击这一块即可回到源码编辑";
         const container = document.createElement("div");
@@ -157,7 +160,25 @@ class LiveBlockWidget extends WidgetType {
             this.observer.observe(host);
         }
         host.addEventListener("mousedown", event => {
-            // 让浏览器先把这次点击当普通点击处理，我们只负责把光标送回去
+            // 代码块的原生横向滚动条及其内容必须可操作；把点击转成选区会卸载 widget，
+            // 使滚动条拖动中断。只对渲染内容空白/文字区域执行“回源码编辑”。
+            const target = event.target;
+            if (target instanceof Element && target.closest("a, button, input, textarea, select, [role=button]")) return;
+            if (event.button !== 0) return;
+            const pre = target instanceof Element ? target.closest("pre") : null;
+            if (pre instanceof HTMLElement) {
+                const rect = pre.getBoundingClientRect();
+                // overlay 滚动条不占布局高度（offsetHeight-clientHeight 为 0），
+                // 仍须保留底部命中带，否则按下时 widget 会被卸载。
+                const scrollbarHeight = Math.max(14, pre.offsetHeight - pre.clientHeight - pre.clientTop);
+                const onHorizontalScrollbar = event.clientX >= rect.left && event.clientX <= rect.right &&
+                    event.clientY >= rect.bottom - scrollbarHeight && event.clientY <= rect.bottom;
+                if (pre.scrollWidth > pre.clientWidth && onHorizontalScrollbar) {
+                    host.focus({ preventScroll: true });
+                    event.stopPropagation();
+                    return;
+                }
+            }
             event.preventDefault();
             const lineNo = Math.min(this.block.startLine + 1, view.state.doc.lines);
             const line = view.state.doc.line(lineNo);
@@ -180,7 +201,7 @@ class LiveBlockWidget extends WidgetType {
 
     // 事件由 widget 自己处理（点渲染块回到源码），CM 不要拦截
     ignoreEvent(): boolean {
-        return false;
+        return true;
     }
 }
 

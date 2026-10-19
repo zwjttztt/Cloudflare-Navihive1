@@ -238,6 +238,15 @@ test("siteMeta：成功透传建议、参数原样进 api", async () => {
     });
 });
 
+test("siteMeta：无协议的雀魂网址补 https，网络异常转成可见失败结果", async () => {
+    const { api, calls } = makeApi({ aiSiteMeta: async () => { throw new Error("网络超时"); } });
+    const latest: Latest = { ai: null, site: null, render: 0 };
+    await mountHarness(api, latest);
+    const result = await latest.ai!.siteMeta("game.maj-soul.com/1/", { groups: [], tags: [] });
+    assert.deepEqual(calls.siteMeta.at(-1), { url: "https://game.maj-soul.com/1/", groups: [], tags: [] });
+    assert.deepEqual(result, { ok: false, message: "网络超时" });
+});
+
 test("siteMeta：失败带原因；成功但没建议也算失败", async () => {
     const { api: failApi } = makeApi({
         aiSiteMeta: async () => ({ success: false, message: "模型没配好" }),

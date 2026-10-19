@@ -79,7 +79,7 @@ test("下载端点：文本附件补 charset=utf-8（否则中文乱码）", () 
     );
 });
 
-test("工具栏「添加附件」按键：真附件链路，不插正文（2026-10-18 第五批）", () => {
+test("工具栏「添加附件」按键：真附件上传后在当前笔记插入可见链接", () => {
     const tb = readSrc("src/components/notes/markdownToolbar.tsx");
     // 按钮与选择框存在
     assert.match(tb, /data-tool='attach'/, "工具栏要有「添加附件」按钮");
@@ -92,11 +92,11 @@ test("工具栏「添加附件」按键：真附件链路，不插正文（2026-
         assert.ok(attachAccept[1].includes(part), `附件 accept 要含 ${part}`);
     }
     assert.ok(!attachAccept[1].includes("image/"), "附件入口不收图片（那是上传图片的事）");
-    // 上传后不插正文：附件链路不得调用 onInsert
-    const attachBlock = tb.slice(tb.indexOf("handleAttachPicked"), tb.indexOf("handleAttachPicked") + 900);
-    assert.ok(!/onInsert/.test(attachBlock), "附件上传不得插正文（与 handleFilePicked 分开）");
-    // 宿主接线：没配存储时不渲染按钮
+    // 附件仍走独立上传回调，但 NotesPage 必须将返回链接插入当前笔记正文。
     const page = readSrc("src/components/NotesPage.tsx");
-    assert.match(page, /onAttachFile=\{uploadApi \? handleAttach : undefined\}/, "主/侧工具栏要接 onAttachFile（无存储不渲染）");
-    assert.match(page, /已添加附件「/, "成功要有反馈（告知去附件列表看）");
+    assert.match(page, /handleAttach\(file, noteId, false\)/, "主工具栏绑定主编辑器");
+    assert.match(page, /handleAttach\(file, noteId, true\)/, "侧工具栏绑定侧编辑器");
+    assert.ok(page.includes("[${safeFilename}](<${uploaded.url}>)"), "上传完成要生成可见下载链接");
+    assert.match(page, /ref\.current === editor/, "异步上传后检查原编辑器身份");
+    assert.match(page, /并在笔记中插入下载链接/, "成功提示要说明正文已插入链接");
 });

@@ -92,6 +92,27 @@ function note(over: Partial<Note> = {}): Note {
     };
 }
 
+test("添加 TXT 附件会在原笔记正文插入可见链接", async () => {
+    setWide();
+    const calls: Array<number | null> = [];
+    mountPanel([note()], {
+        uploadApi: {
+            uploadAttachment: async (_file: File, noteId: number | null) => {
+                calls.push(noteId);
+                return { url: "/api/attachments/txt-test", filename: "说明[一].txt", size: 3 };
+            },
+        },
+    });
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 80)); });
+    const input = document.querySelector<HTMLInputElement>("[data-attach-input='1']");
+    assert.ok(input);
+    Object.defineProperty(input, "files", { configurable: true, value: [new File(["abc"], "说明[一].txt", { type: "text/plain" })] });
+    await act(async () => { input.dispatchEvent(new Event("change", { bubbles: true })); });
+    assert.deepEqual(calls, [1]);
+    assert.ok(getEditor().value.includes("[说明 一 .txt](</api/attachments/txt-test>)"));
+    assert.ok(getEditor().value.includes("内容"), "附件插入不得删掉原正文");
+});
+
 function mountPanel(notes: Note[], handlers: Record<string, unknown> = {}) {
     host = document.createElement("div");
     document.body.appendChild(host);

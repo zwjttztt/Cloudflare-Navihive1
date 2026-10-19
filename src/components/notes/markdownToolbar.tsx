@@ -905,16 +905,16 @@ export function MarkdownToolbar({
             </Box>
 
             {/* 添加附件（2026-10-18 用户报「工具栏上加上添加附件按键可以选择 txt 或 json」）：
-                走真附件接口进附件管理器，不插正文 —— 与「上传图片」的插 markdown
-                是两条路。没配存储（onAttachFile 缺席）时按钮整个不渲染。 */}
+                走真附件接口，并由宿主把下载链接插入目标笔记正文。
+                没配存储（onAttachFile 缺席）时按钮整个不渲染。 */}
             {onAttachFile && (
-                <Tooltip title='添加附件：选择 txt / json 文件上传，在笔记的附件列表里查看'>
+                <Tooltip title={canInsertOk ? '添加附件：上传 txt / json 并在笔记中插入下载链接' : '请切换到编辑或分栏模式添加附件'}>
                     <span>
                         <IconButton
                             size='small'
                             aria-label='添加附件'
                             data-tool='attach'
-                            disabled={attaching}
+                            disabled={attaching || !canInsertOk}
                             onMouseDown={e => e.preventDefault()}
                             onClick={() => attachInputRef.current?.click()}
                             sx={{ ...toolBtnSx }}

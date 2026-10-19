@@ -193,7 +193,7 @@ export async function startSiteServer(port = 0) {
  * 起 headless Chrome 并连上 CDP。
  * 返回 { evaluate, done }：done(code) 会收掉浏览器并退出进程。
  */
-export async function openBrowser({ cdpPort, windowSize = "1440,950" }) {
+export async function openBrowser({ cdpPort, windowSize = "1440,950", hideScrollbars = true }) {
     const chrome = findChrome();
     if (!chrome) {
         console.error("没找到 Chrome，可用 CHROME_PATH 指定");
@@ -211,7 +211,7 @@ export async function openBrowser({ cdpPort, windowSize = "1440,950" }) {
             "--no-first-run",
             "--no-default-browser-check",
             "--disable-gpu",
-            "--hide-scrollbars",
+            ...(hideScrollbars ? ["--hide-scrollbars"] : ["--disable-features=OverlayScrollbar"]),
             "--no-sandbox",
             "--disable-dev-shm-usage",
             `--window-size=${windowSize}`,

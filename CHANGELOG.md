@@ -6,8 +6,32 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。---
 
+## 2026-10-19（一）· 修订：四项交互回归的二次根治（滚动条拖动 · 白圈 · TXT 附件可见 · AI 补全挂起）
+
+上一批（v3.10.1）按用户原话做了六项修复，用户复测后明确回「**这四项还在**」。这批不是小修，是逐项在真实浏览器里复现后的根治；每一条后面都附了**实测数字**，不是「改了就算修好」。
+
+**8. 渲染态代码块的横向滚动条点一下就跳回编辑、根本拖不动（用户第一报「一点就切换编辑状态，无法拖动」）。** 两条原因叠在一起：① `LiveBlockWidget` 对块内所有 `mousedown` 一律 `preventDefault()` + 派发选区，滚动条按下那一瞬 widget 就被卸载，拖动自然断；② 更隐蔽的是——即使放行了 `mousedown`，**浏览器在滚动条上按下时会把焦点交给最近的可聚焦祖先**，也就是编辑器的 `contenteditable`，`focusChanged` 效果一样把当前块拆回源码。修法三件套：`ignoreEvent()` 改回 `true`（CM 不拦这个 widget 的事件）；命中 `pre` 的横向滚动条区域时**放行**且 `stopPropagation`；给 widget 宿主加 `tabIndex=-1` 并在放行时把焦点拉到宿主上，让浏览器的默认聚焦落不到编辑器里。实测（`script/verify-fixes.mjs`，真 Chrome + 实体滚动条）：`scrollLeft` 0 → **963/972**，`<pre>` 仍在 `.note-live-block` 内（渲染态没被拆）。
+　⚠️ 顺带修了**只在 headless 下才暴露的假象**：之前一版判定用 `offsetHeight - clientHeight > 0`，而 headless Chrome 默认开 `--hide-scrollbars` + overlay 滚动条，滚动条**不占布局高度**，于是判定恒为 false，看着像「没有滚动条可拖」。现在 overlay 分支单独走「底部按下不退出 + 横向 wheel」验收，实体滚动条分支才判几何。
+
+**9. 右键菜单关闭瞬间在**右键点位**闪白圈（用户第二报，已是第**五**次上报）。** 前三轮分别试过 onExited blur、`disableRestoreFocus`、hover 抑制，都只堵住一条路径。这轮在真实浏览器里**逐帧采样**（36 帧 / 600ms）才看清还剩两条：① MUI Menu 关服时会把焦点**还原**给打开前的元素，而 Chromium 里被程序化还原的焦点也会命中 `:focus-visible`，行级 `:has(:focus-visible)` 随即把圆形「⋯」按钮点亮；② 关闭动画里按钮走的是 `opacity` 过渡，**淡出那几帧本身就是用户看到的「一闪而过」**。修法：右键菜单（锚点是 `anchorAtMouse` 造的虚拟元素）显式禁焦点还原，按钮菜单保留键盘返回路径；关闭窗口内按钮从「淡出」改成 **`visibility:hidden` 硬压**（`transition:none`），不再有可见帧。实测：36 帧全部 `visibility:hidden`、`opacity:0`、`document.activeElement` 不在按钮上，菜单确认已关闭。
+　⚠️ 这里还翻了一个**文档坑**：`tests/syncNotifyGuard.test.ts` 里原本断言「MUI Menu 不转发 `disableRestoreFocus`（加了是死代码）」。核对当前 `@mui/material` 源码（Menu → Popover → Modal 一路 `...other` 透传）后确认**是转发的**，旧注释和守卫都改掉了——死守错的结论比没有结论更糟。
+
+**10. 添加 TXT 附件后在笔记里看不到（用户第三报）。** 上一批把「添加附件」做成了只上传、只提示「去附件列表查看」，正文里什么都不留——用户当然看不到。现在上传成功后把下载链接**插进触发上传的那个编辑器正文**（主栏/侧栏分别绑，不串），并把文件名里的 `[` `]` 换行替换为空格（否则 Markdown 链接语法会被破坏）。三个此前没处理的坑一并补上：① 上传是异步的，期间切到别的笔记时**绝不能**把链接写进新笔记（按编辑器身份 + 当前 noteId 双重校验，不符则回写原笔记）；② 直接走 CM 句柄赋值而**不是** `insertAtCursor`——后者带「同工具再点一次撤销上次插入」的语义，连续加两个附件会把上一个链接撤掉；③ 预览态下没有编辑器，此时按钮置灰并给对应 tooltip。实测：真机选文件上传 → 正文渲染出 `[验收附件-一-.txt](/api/notes/attachments/…)` 且**已落库**（自动保存后从 `/api/notes` 读回）。
+　⚠️ 验收时还踩过一次自己的坑：`.cm-content` 的 `textContent` 里看不到 `[` `]` `(` `)`——行内渲染把它们藏了，照 textContent 判会误判「没插进去」。终审改看渲染出的 `<a>` + 后端正文。
+
+**11. 新增站点用站点 URL 补全 `game.maj-soul.com/1/` 时长时间无反应，关窗重开按钮还在转（用户第四报）。** 原逻辑直接 `await siteAi.siteMeta(...)`，没有 try/finally、没有超时、没有取消：请求一挂 `aiBusy` 永远是 `true`，关窗重开按钮就一直转。四件事一起补：① 30 秒 UI 超时（与底层 30 秒请求超时对齐，超时给人话提示）；② 请求序号，旧结果/旧错误**不回写**新表单；③ 定时器在成功/失败/关闭/换 URL 四条路径上都清；④ `useEffect` 依赖 `[openAddSite, newSite.url]`，**打开状态或 URL 一变就整体重置**——这就是「关窗重开还在转」的正根。顺手把「网站设置」弹窗里同款缺陷（`SiteSettingsModal` 的 `handleAiComplete` 连 `finally` 都没有）一起修了；`useAiAssistant.siteMeta` 也补了 try/catch 与缺协议 URL 补 `https://`（`game.maj-soul.com/1/` 原来会被后端以「需要一个 http(s) 网址」直接拒掉，这才是「长时间无反应」里最快的那种）。守卫：`tests/addSiteDialogAi.dom.test.tsx` 3 例（真实渲染 + 挂起请求 + 关闭重开 + 旧结果不污染）+ `tests/useAiAssistant.dom.test.tsx` +1（无协议规范化 + 网络异常转可见失败）。
+
+**12. 新增 `script/verify-fixes.mjs`（工程）——四项回归的专用真实浏览器验收。** `site-audit` 跑全站一分多钟，改一处想复验一次太慢；而且它默认 `--hide-scrollbars`（headless 走 overlay 滚动条），**量不到实体滚动条的几何**。这个脚本只钉本批四项中最容易假绿的三项：实体滚动条**按住-拖动-松手**后 `scrollLeft` 真的变且 widget 没被拆、右键菜单关闭**逐帧采样**、TXT 附件**真走文件选择**后 DOM 与后端双重确认。另给 `auditEnv.mjs` 的 `openBrowser` 加了 `hideScrollbars` 开关（默认不变，a11y/contrast 那两个审计不受影响）。
+
+守卫：本批新增 4 例行为/契约断言（`addSiteDialogAi` 3 + `useAiAssistant` 1），改订 2 例（`syncNotifyGuard` 的 `disableRestoreFocus` 判定、`textAttachmentGuard` 的插入契约与正则）。
+
+另：单测 **2859**（原 2854，+5）。
+
+---
+
 ## 2026-10-19（一）· 修复+性能：代码块横向滚动 · 白圈（右键点位）· 文件夹前/后移位 · 置顶卡顿 · 内联字号 · 添加附件按钮 · 全站体检脚本
 
+> **同日二次修订（v3.10.2）——上一批四项修复的复报与根治，见文末「2026-10-19（一）· 修订」段。**
 **1. 渲染态代码块超长没有横向滚动条（用户报「笔记编辑栏开启渲染后代码长度过长未出现横向滚轮」）。** 根因是 flex 子项的 `min-width:auto`：`.cm-content` 被超宽内容撑开后，内部 `<pre>` 跟着等宽，`overflow-x:auto` 永远不会触发，长代码最后被 `.cm-scroller` 的 `overflow-x:hidden` 直接裁掉。三处一起钳：`.cm-content` 加 `maxWidth:100%`、`PRE_STYLE` 加 `maxWidth:100%`、`index.css` 补 `.note-live-block pre { max-width:100%; overflow-x:auto }`。真机实测：`<pre>` 可视宽 499px、内容宽 2236px、`overflow-x: auto` —— 滚动条真的出来了。
 
 **2. 右键菜单关闭瞬间在**右键点位**闪白圈（用户第五报，「还是有一闪而过的白圈」）。** 这一报的点位不是「⋯」按钮而是**右键的那个位置**：300ms 抑制窗口一过，鼠标还悬在这一行，行级 `&:hover` 规则又把「⋯」按钮顶出来——用户右键多半点在行右侧，那正是「⋯」的位置。改法是把 hover 显隐**按行抑制**：新增 `rowActionsSuppressed` 状态，所有关闭路径统一走 `closeRowMenu()`（置抑制行 + 置 `menuClosing`），hover 规则改成 `opacity: rowActionsSuppressed === note.id ? 0 : 1`（键盘 `:focus-visible` 那条规则保持独立，可达性不掉），鼠标离开该行即清除抑制。

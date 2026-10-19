@@ -111,11 +111,17 @@ export function useAiAssistant({ api }: { api: AiApiLike }): AiAssistant {
             url: string,
             opts: { name?: string; groups: string[]; tags: string[] }
         ): Promise<AiOutcome<SiteMetaSuggestion>> => {
-            const res = await api.aiSiteMeta({ url, ...opts });
-            if (!res.success || !res.suggestion) {
-                return { ok: false, message: res.message || "AI 没给出建议" };
+            try {
+                // 与新增站点保存一致，允许用户直接粘贴不含协议的域名。
+                const normalizedUrl = /^https?:\/\//i.test(url.trim()) ? url.trim() : `https://${url.trim()}`;
+                const res = await api.aiSiteMeta({ url: normalizedUrl, ...opts });
+                if (!res.success || !res.suggestion) {
+                    return { ok: false, message: res.message || "AI 没给出建议" };
+                }
+                return { ok: true, data: res.suggestion };
+            } catch (error) {
+                return { ok: false, message: error instanceof Error ? error.message : "AI 补全失败，请重试" };
             }
-            return { ok: true, data: res.suggestion };
         },
         [api]
     );

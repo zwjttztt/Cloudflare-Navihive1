@@ -151,6 +151,7 @@ ok("铺数据完成（分组 / 站点 / 文件夹 / 笔记 / 标签）");
 const { evaluate, send, done, ws, getErrors } = await openBrowser({
     cdpPort: CDP_PORT,
     windowSize: "1440,950",
+    hideScrollbars: false,
 });
 const bail = err => {
     console.error("体检脚本异常：", err?.stack || err);
@@ -357,6 +358,44 @@ if (!opened) {
     await setViewport(VIEWPORTS[0]);
     await sleep(800);
     console.log(`  info   code pre = ${JSON.stringify(preScroll)}`);
+    // 回归：必须操作即时渲染 widget 的原生滚动条，不以「有 overflow」冒充可拖动。
+    // ⚠️ scrollIntoView 之后**必须等一帧再取坐标**：同一次 evaluate 里紧接着
+    // getBoundingClientRect 拿到的是滚动前的布局，之后所有鼠标事件都打在空中
+    // （症状：scrollLeft 恒为 0，看着像「产品拖不动」，其实是坐标没对上）。
+    await safeEval(`document.querySelector('.note-live-block pre')?.scrollIntoView({ block: 'center' })`);
+    await sleep(400);
+    const liveScroll = await safeEval(`(() => {
+      const pre = document.querySelector('.note-live-block pre');
+      if (!pre) return { missing: true };
+      pre.scrollLeft = 0;
+      const r = pre.getBoundingClientRect();
+      return { x: r.left + 30, y: r.bottom - 5, width: r.width,
+               gutter: pre.offsetHeight - pre.clientHeight };
+    })()`);
+    if (!liveScroll?.missing && liveScroll?.gutter === 0) {
+        // Headless Chrome 使用 overlay 滚动条；用真实横向 wheel 验证原生滚动，
+        // 另验证底部按下不退出 widget，但不将它报告为实体滚动条拖动通过。
+        await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: liveScroll.x, y: liveScroll.y, button: 'left', clickCount: 1 });
+        await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: liveScroll.x, y: liveScroll.y, button: 'left', clickCount: 1 });
+        await send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: liveScroll.x + 50, y: liveScroll.y - 20, deltaX: 240, deltaY: 0 });
+        await sleep(300);
+        const moved = await safeEval(`(() => { const pre = document.querySelector('.note-live-block pre'); return { exists: !!pre, left: pre?.scrollLeft ?? 0 }; })()`);
+        if (moved?.exists && moved.left > 0) ok('overlay 代码滚动：底部按下保持渲染、横向 wheel 生效（非实体拖动验收）', JSON.stringify(moved));
+        else note('交互', 'overlay 代码滚动', JSON.stringify(moved));
+    } else if (!liveScroll?.missing && liveScroll?.gutter > 0) {
+        const toX = Math.min(liveScroll.x + 200, liveScroll.x + liveScroll.width - 10);
+        await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: liveScroll.x, y: liveScroll.y, button: 'left', clickCount: 1 });
+        await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: toX, y: liveScroll.y, button: 'left', buttons: 1 });
+        await sleep(150);
+        await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: toX, y: liveScroll.y, button: 'left', buttons: 1 });
+        await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: toX, y: liveScroll.y, button: 'left', clickCount: 1 });
+        await sleep(400);
+        const moved = await safeEval(`(() => { const pre = document.querySelector('.note-live-block pre'); return { exists: !!pre, inLive: !!pre?.closest('.note-live-block'), left: pre?.scrollLeft ?? 0 }; })()`);
+        if (moved?.exists && moved.inLive && moved.left > 0) ok('即时渲染代码块横向滚动条可拖动且未切回源码', JSON.stringify(moved));
+        else note('交互', '即时渲染代码滚动条', JSON.stringify(moved));
+    } else {
+        note('验收缺口', '即时渲染代码滚动条', JSON.stringify(liveScroll));
+    }
 }
 
 console.log("\n== D. 交互深挖：弹窗 / 搜索 / 菜单 ==");
@@ -427,6 +466,42 @@ if (!attach.btn) note("交互", "记事本工具栏", "没有 [data-tool='attach
 else if (!attach.input) note("交互", "记事本工具栏", "有按钮但没有隐藏的 file input");
 else if (!String(attach.accept ?? "").includes("json")) note("交互", "记事本工具栏", `accept 不含 json：${attach.accept}`);
 else ok("工具栏添加附件按钮就绪", `accept=${attach.accept}`);
+
+// 右键菜单关闭：逐帧记录焦点/圆形操作按钮显隐（不是只看最终一帧）。
+const contextFocus = await safeEval(`(async () => {
+  const row = document.querySelector('[data-note-id]');
+  if (!row) return { missing: true };
+  const r = row.getBoundingClientRect();
+  row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.left + 20, clientY: r.top + 15 }));
+  await new Promise(resolve => setTimeout(resolve, 100));
+  const menu = [...document.querySelectorAll('[role=menu]')].find(m => m.querySelector('[data-row-op]'));
+  if (!menu) return { noMenu: true };
+  const samples = [];
+  // ⚠️ 计时起点必须在关闭动作**之后**：先把 end 设好再 dispatch，会把「菜单
+  // 还开着」的那几帧一起算进去，opacity=1 被当成白圈误报（本脚本自己撞过）。
+  menu.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  const started = performance.now();
+  do {
+    await new Promise(requestAnimationFrame);
+    const btn = row.querySelector('.note-row-actions');
+    if (!btn) { samples.push({ gone: true }); continue; }
+    const cs = getComputedStyle(btn);
+    samples.push({
+      focused: btn === document.activeElement,
+      visibility: cs.visibility,
+      opacity: Number(cs.opacity),
+    });
+  } while (performance.now() - started < 600);
+  return {
+    samples: samples.length,
+    stillOpen: !!document.querySelector('[role=menu] [data-row-op]'),
+    anyFocused: samples.some(s => s.focused),
+    anyVisible: samples.some(s => s.visibility !== 'hidden' && s.opacity > 0),
+    first: samples.slice(0, 3),
+  };
+})()`);
+if (contextFocus && !contextFocus.missing && !contextFocus.noMenu && !contextFocus.anyFocused && !contextFocus.anyVisible) ok('右键菜单关闭逐帧检查：操作按钮未被焦点还原点亮', JSON.stringify(contextFocus));
+else note('交互', '右键菜单关闭焦点检查', JSON.stringify(contextFocus));
 
 // ② 置顶耗时（用户报卡顿那一项）：从点击到 pinned 状态落回 DOM 的时间
 const pinTiming = await safeEval(`(async () => {

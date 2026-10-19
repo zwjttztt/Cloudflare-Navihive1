@@ -537,9 +537,8 @@ export default function NotesPage({
      *    menuOpen 显式 opacity:1，「弹窗消失的瞬间冒出白圈」——第四报）；
      *  - **focusin 捕获**：MUI Modal 关闭时会把焦点还原给打开前的元素，
      *    而 Chromium 里被还原的焦点会匹配 :focus-visible（pointer 交互也算），
-     *    行级 :has(:focus-visible) 随即把「⋯」顶出来。前三轮（onExited blur /
-     *    disableRestoreFocus prop）都失败——前者早于还原、后者 MUI Menu 根本不
-     *    转发。事件驱动不赌时序：窗口内任何落在 ⋯ 上的焦点立即 blur。
+     *    行级 :has(:focus-visible) 随即把「⋯」顶出来。
+     *    指针菜单另禁焦点还原；这里保留关闭窗口内的 focusin 防护。
      * onClose 置位、300ms 后自清。
      */
     const [menuClosing, setMenuClosing] = useState(false);
@@ -883,14 +882,36 @@ export default function NotesPage({
 
     /**
      * 「添加附件」（2026-10-18 用户报「工具栏加上添加附件按键可以选择 txt/json」）：
-     * 与 handleUpload 同一条上传链路（真附件、挂到当前笔记名下），但**不插正文**
-     * —— 附件是资源，传完在附件管理器里看。成功/失败都给一句人话反馈。
+     * 与 handleUpload 同一条上传链路（真附件、挂到当前笔记名下），成功后把下载链接
+     * 插入对应编辑器正文，让附件在笔记里可见；成功/失败都给一句人话反馈。
      */
+    const attachmentTargets = useRef({ activeId, sideId, notes, onUpdate });
+    attachmentTargets.current = { activeId, sideId, notes, onUpdate };
     const handleAttach = useCallback(
-        async (file: File, noteId: number | null) => {
+        async (file: File, noteId: number | null, side: boolean) => {
+            const ref = side ? sideRef : textareaRef;
+            const editor = ref.current;
             try {
-                const { filename } = await handleUpload(file, noteId);
-                onNotify?.(`已添加附件「${filename}」，在笔记的附件列表里查看`, "success");
+                if (noteId === null || !editor) throw new Error("请先打开笔记并切换到编辑模式");
+                const uploaded = await handleUpload(file, noteId);
+                const safeFilename = uploaded.filename.replace(/[\\[\]\n\r]/g, " ");
+                const link = `\n[${safeFilename}](<${uploaded.url}>)\n`;
+                const current = attachmentTargets.current;
+                if ((side ? current.sideId : current.activeId) === noteId && ref.current === editor) {
+                    // 上传不是格式开关：直接插入，避免再次添加同一附件时撤掉旧链接。
+                    const at = editor.selectionEnd ?? editor.value.length;
+                    const content = editor.value.slice(0, at) + link + editor.value.slice(at);
+                    editor.value = content;
+                    editor.setSelectionRange(at + link.length, at + link.length);
+                    (side ? setSideDraft : setDraft)(d => d ? { ...d, content } : d);
+                } else {
+                    // 上传期间切换笔记，绝不把附件写到新打开的笔记。
+                    const original = current.notes.find(note => note.id === noteId);
+                    if (!original || await current.onUpdate(noteId, { content: original.content + link }) === false) {
+                        throw new Error("附件已上传，但原笔记回写失败，请在附件管理器找回");
+                    }
+                }
+                onNotify?.(`已添加附件「${uploaded.filename}」，并在笔记中插入下载链接`, "success");
             } catch (error) {
                 onNotify?.(error instanceof Error ? error.message : "附件上传失败", "error");
             }
@@ -4107,7 +4128,9 @@ export default function NotesPage({
                                             top: 6,
                                             right: 4,
                                             opacity: menuOpen ? 1 : 0,
-                                            transition: "opacity 120ms ease",
+                                            // 关闭时不能淡出：淡出帧本身就是用户看到的闪白圈。
+                                            transition: menuClosing || rowActionsSuppressed === note.id ? "none" : "opacity 120ms ease",
+                                            visibility: menuClosing || rowActionsSuppressed === note.id ? "hidden" : "visible",
                                             flexShrink: 0,
                                             p: 0.25,
                                             color: "text.secondary",
@@ -4590,7 +4613,7 @@ export default function NotesPage({
                         onNotify={onNotify}
                         activeId={active?.id ?? null}
                         onUploadImage={handleUpload}
-                        onAttachFile={uploadApi ? handleAttach : undefined}
+                        onAttachFile={uploadApi ? (file, noteId) => handleAttach(file, noteId, false) : undefined}
                         // 预览模式下编辑器不挂载：上传会成功但插不进正文（见 canInsert 的说明）
                         canInsert={pane !== "preview"}
                     />
@@ -5163,7 +5186,7 @@ export default function NotesPage({
                     onNotify={onNotify}
                     activeId={sideNote?.id ?? null}
                     onUploadImage={handleUpload}
-                    onAttachFile={uploadApi ? handleAttach : undefined}
+                    onAttachFile={uploadApi ? (file, noteId) => handleAttach(file, noteId, true) : undefined}
                 />
             )}
             <Box
@@ -5491,11 +5514,9 @@ export default function NotesPage({
                 onClose={() => {
                     closeRowMenu();
                 }}
-                // ⚠️ 白圈根治（2026-10-18 用户第四报「点其他位置关闭后瞬间还是
-                // 出现白圈」）：还原焦点发生在退出动画之后，onExited 里 blur 太早
-                // （会被随后的还原覆盖），MUI Menu 也不转发 disableRestoreFocus
-                // （加了是死代码）——真正兜底是 menuClosing  effect 里的 focusin
-                // 捕获（见状态声明处）。这里只保留 onExited 兜底。
+                // 右键菜单无键盘触发器，不还原指针点位的焦点；普通 ⋯ 菜单保留键盘焦点返回。
+                // Menu → Popover → Modal 会透传此属性（已核对当前 MUI 实现）。
+                disableRestoreFocus={!(rowMenu?.el instanceof HTMLElement)}
                 slotProps={{
                     transition: {
                         onExited: () => {
