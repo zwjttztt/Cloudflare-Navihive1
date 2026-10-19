@@ -36,6 +36,12 @@ services:
       NAVIHIVE_CRON: ${NAVIHIVE_CRON:-1}
       NAVIHIVE_CRON_TOKEN: ${NAVIHIVE_CRON_TOKEN:-}
 
+      # 网页端「检查更新 → 更新」要重建的容器名。改了 container_name 就必须一并改这里，
+      # 否则升级端点找不到自己（501 之外的另一种「升级没反应」）。
+      NAVIHIVE_CONTAINER_NAME: ${NAVIHIVE_CONTAINER_NAME:-navihive}
+      # 升级时拉取的目标镜像；不设走 ghcr.io/zwjttztt/navihive:latest
+      NAVIHIVE_IMAGE: ${NAVIHIVE_IMAGE:-ghcr.io/zwjttztt/navihive:latest}
+
       # :? = 没设置就让 compose 直接失败退出——别默默起一个「登录必然失败」的服务
       AUTH_SECRET: ${AUTH_SECRET:?没设 AUTH_SECRET：先在 .env 里放一个 openssl rand -hex 32}
       AUTH_ENABLED: ${AUTH_ENABLED:-true}
@@ -48,6 +54,11 @@ services:
 
     volumes:
       - navihive-data:/app/data
+      # 网页端一键升级（POST /api/system/upgrade）走 Docker Engine API 重建本容器，
+      # 需要能碰到 docker.sock。**这是把宿主机的 Docker 控制权交给这个容器** ——
+      # 确认过风险再加；不加也能跑，只是设置里点「更新」会回落成复制命令手动执行。
+      # ⚠️ 加了之后容器内进程以 root 等效权限操作宿主机 Docker，端口别直接暴露公网。
+      - /var/run/docker.sock:/var/run/docker.sock
 
     # SQLite 单写者：别横向扩副本（每个副本会各写各的库），定时任务也会各跑一遍
     deploy:

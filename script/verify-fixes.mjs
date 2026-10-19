@@ -173,9 +173,10 @@ const menu = await safeEval(`(async () => {
   row.scrollIntoView({ block: 'center' });
   await new Promise(res => setTimeout(res, 200));
   const r2 = row.getBoundingClientRect();
-  row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r2.left + 24, clientY: r2.top + 14 }));
+  const CX = Math.round(r2.left + 14), CY = Math.round(r2.top + r2.height / 2);
+  row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: CX, clientY: CY }));
   await new Promise(res => setTimeout(res, 150));
-  const menu = document.querySelector('[role=menu]');
+  const menu = [...document.querySelectorAll('[role=menu]')].find(m => m.querySelector('[data-row-op]'));
   if (!menu) return { noMenu: true };
   const samples = [];
   const started = performance.now();
@@ -185,23 +186,31 @@ const menu = await safeEval(`(async () => {
     const btn = row.querySelector('.note-row-actions');
     if (!btn) { samples.push({ gone: true }); continue; }
     const cs = getComputedStyle(btn);
+    // 白圈第六报：退出过渡 Grow 会把 paper 缩到锚点（= 鼠标点）上，
+    // 「覆盖锚点且 opacity>0」的帧就是用户看到的「一闪而过的白圈」。
+    const open = document.querySelector('[role=menu]');
+    const paper = open ? (open.closest('.MuiPopover-paper') || open) : null;
+    const pr = paper?.getBoundingClientRect();
+    const pcs = paper ? getComputedStyle(paper) : null;
     samples.push({
       focused: btn === document.activeElement,
       visibility: cs.visibility,
       opacity: Number(cs.opacity),
+      paperAtAnchor: !!pr && !!pcs && pr.left <= CX && pr.left + pr.width >= CX && pr.top <= CY && pr.top + pr.height >= CY && Number(pcs.opacity) > 0,
     });
   } while (performance.now() - started < 600);
   return {
     samples: samples.length,
-    stillOpen: !!document.querySelector('[role=menu]'),
+    stillOpen: !!document.querySelector('[role=menu] [data-row-op]'),
     anyFocused: samples.some(s => s.focused),
     anyVisible: samples.some(s => s.visibility !== 'hidden' && s.opacity > 0),
+    anyPaperAtAnchor: samples.some(s => s.paperAtAnchor),
     first: samples.slice(0, 3),
   };
 })()`);
 if (!menu || menu.missing || menu.noMenu) {
     bad("验收缺口", "右键菜单", JSON.stringify(menu));
-} else if (menu.anyFocused || menu.anyVisible) {
+} else if (menu.anyFocused || menu.anyVisible || menu.anyPaperAtAnchor) {
     bad("交互", "右键关闭白圈", JSON.stringify(menu));
 } else {
     ok("右键菜单关闭逐帧无白圈", JSON.stringify(menu));

@@ -161,12 +161,17 @@ process.on("uncaughtException", bail);
 process.on("unhandledRejection", bail);
 
 await send("Network.enable");
-// 越界请求单独记账：接口打错、表缺列、鉴权漏口径，全在这一条上现形
+// 越界请求单独记账：接口打错、表缺列、鉴权漏口径，全在这一条上现形。
+// ⚠️ /api/icon 例外：它是**代理外部网站的 favicon**，成败取决于第三方站点
+// （example.com/favicon.ico 自己就回 404，我们如实回 502）。这是外网可达性问题，
+// 不是本站逻辑缺陷，本地/CI 环境没有外网出口时必然一片红 —— 计进来只会训练人
+// 忽略这条信号。真实图标链路另由图标专项覆盖。
 let netFails = [];
 ws.addEventListener("message", ev => {
     const m = JSON.parse(ev.data);
     if (m.method !== "Network.responseReceived") return;
     const r = m.params?.response ?? {};
+    if (String(r.url ?? "").includes("/api/icon")) return;
     if (r.status >= 400) netFails.push({ url: String(r.url), status: r.status });
 });
 

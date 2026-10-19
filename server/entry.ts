@@ -12,10 +12,10 @@
 // 配置全部走环境变量（.env 或 systemd EnvironmentFile），见文件底部的 CONFIG。
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { request as httpRequest } from "node:http";
 import { Readable } from "node:stream";
 import { mkdir, readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { spawn } from "node:child_process";
 import { timingSafeEqual } from "node:crypto";
 import path from "node:path";
 import handler from "../worker/index";
@@ -232,7 +232,171 @@ function scheduleCron(): void {
 
 const server = createServer((req, res) => {
     const started = Date.now();
-    const finish = (): void => {
+// ============ 网页端直接升级（Docker Engine API over unix socket） ============
+//
+// 为什么不用 `docker` CLI：镜像是 node:24-slim，里面**没有** docker 二进制；
+// 而把宿主机的 /usr/bin/docker 挂进容器要连带挂 cli-plugins（`docker compose`
+// 是插件不是内建命令），还要挂 compose 目录，链路长且动态库容易不兼容。
+// Docker Engine 的 HTTP API 走 /var/run/docker.sock，Node 原生就能发请求
+// （http.request 的 socketPath 选项），零额外依赖、也不需要 compose。
+//
+// ⚠️ 这个文件在容器里跑，升级的正是**它自己所在的容器**：整条序列必须
+// 「先把 200 响应发出去，再动手」，否则 compose 换容器时进程被杀，
+// 用户等不到任何反馈。调用方（下面的路由）已保证顺序。
+const DOCKER_SOCK = "/var/run/docker.sock";
+/** API 版本写死：不跟着 daemon 版本漂，行为才可预期（v1.47 ≈ Docker 25/26） */
+const DOCKER_API_VERSION = "v1.47";
+const UPGRADE_CONTAINER = process.env.NAVIHIVE_CONTAINER_NAME || "navihive";
+const UPGRADE_IMAGE = process.env.NAVIHIVE_IMAGE || "ghcr.io/zwjttztt/navihive:latest";
+
+interface DockerCall {
+    status: number;
+    body: string;
+}
+
+/** 打一次 Docker Engine API。socketPath 走 unix socket，不需要 TCP 端口。 */
+function dockerApi(
+    method: string,
+    apiPath: string,
+    payload?: unknown,
+): Promise<DockerCall> {
+    return new Promise((resolve, reject) => {
+        const body = payload === undefined ? undefined : JSON.stringify(payload);
+        const req = httpRequest(
+            {
+                socketPath: DOCKER_SOCK,
+                method,
+                path: `/${DOCKER_API_VERSION}${apiPath}`,
+                headers: {
+                    ...(body ? { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) } : {}),
+                    Host: "docker",
+                },
+            },
+            res => {
+                const chunks: Buffer[] = [];
+                res.on("data", c => chunks.push(c as Buffer));
+                res.on("end", () =>
+                    resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString("utf8") }),
+                );
+            },
+        );
+        req.on("error", reject);
+        // 拉镜像可能几分钟：别让 socket 级别的超时把它掐了
+        req.setTimeout(0);
+        if (body) req.write(body);
+        req.end();
+    });
+}
+
+/** 拉镜像。POST /images/create 回的是 NDJSON 进度流，要读到流结束才算拉完。 */
+async function dockerPull(image: string): Promise<void> {
+    const sep = image.lastIndexOf(":");
+    const fromImage = sep > image.lastIndexOf("/") ? image.slice(0, sep) : image;
+    const tag = sep > image.lastIndexOf("/") ? image.slice(sep + 1) : "latest";
+    await new Promise<void>((resolve, reject) => {
+        const req = httpRequest(
+            {
+                socketPath: DOCKER_SOCK,
+                method: "POST",
+                path: `/${DOCKER_API_VERSION}/images/create?fromImage=${encodeURIComponent(fromImage)}&tag=${encodeURIComponent(tag)}`,
+                headers: { Host: "docker" },
+            },
+            res => {
+                if ((res.statusCode ?? 0) >= 300) {
+                    res.resume();
+                    res.on("end", () => reject(new Error(`拉取镜像失败 HTTP ${res.statusCode}`)));
+                    return;
+                }
+                // 进度流：逐行读，只为把 socket 读完（内容只用于报错）
+                let buf = "";
+                res.on("data", c => {
+                    buf += c.toString();
+                    if (buf.length > 1 << 20) buf = buf.slice(-4096);
+                });
+                res.on("end", () => {
+                    if (/"error"\s*:/.test(buf)) reject(new Error("拉取镜像时 daemon 报了错"));
+                    else resolve();
+                });
+            },
+        );
+        req.on("error", reject);
+        req.setTimeout(0);
+        req.end();
+    });
+}
+
+/**
+ * 用新镜像重建**这个容器**：停 → 删 → 用原配置建 → 启。
+ * 配置全部取自原容器（env / cmd / 卷 / 端口 / 重启策略 / 健康检查原样保留），
+ * 只把 Image 换成新的 —— 等价于 `compose up -d --force-recreate` 对单服务的效果。
+ */
+/**
+ * 最近一次读到的容器规格（env / cmd / 卷 / 端口 / 重启策略…）。
+ * 重建失败时旧容器已经停了甚至删了，那时候**再也读不到它的配置** —— 所以
+ * 在读到的第一时间就存下来，恢复路径直接用它，不用再问 daemon。
+ */
+let lastKnownSpec: {
+    config: Record<string, unknown>;
+    hostConfig: Record<string, unknown>;
+    networking: Record<string, unknown>;
+} | null = null;
+
+/**
+ * 用新镜像重建**这个容器**：停 → 删 → 按原配置建 → 启。
+ * 配置全部取自原容器（env / cmd / 卷 / 端口 / 重启策略 / 健康检查原样保留），
+ * 只把 Image 换成新的 —— 等价于 `compose up -d --force-recreate` 对单服务的效果。
+ */
+async function dockerRecreateSelf(image: string): Promise<void> {
+    const name = UPGRADE_CONTAINER;
+    const { status, body } = await dockerApi("GET", `/containers/${name}/json`);
+    if (status >= 300) throw new Error(`读不到容器 ${name}（HTTP ${status}）`);
+    const old = JSON.parse(body) as {
+        Config?: Record<string, unknown>;
+        HostConfig?: Record<string, unknown>;
+        NetworkSettings?: { Networks?: Record<string, unknown> };
+    };
+    const config = { ...(old.Config ?? {}) };
+    config.Image = image;
+    // Hostname / Domainname 在建容器时会重算，带着旧的会冲突
+    delete config.Hostname;
+    delete config.Domainname;
+    const hostConfig = { ...(old.HostConfig ?? {}) };
+    const networking = { EndpointsConfig: old.NetworkSettings?.Networks ?? {} };
+    // 先存底：下一步就要 stop + delete，失败时靠它把原容器拉回来
+    lastKnownSpec = { config, hostConfig, networking };
+    const createBody = { ...config, HostConfig: hostConfig, NetworkingConfig: networking };
+    // 停 → 删 → 建 → 启。旧容器还占着名字，必须先让位。
+    await dockerApi("POST", `/containers/${name}/stop?t=10`).catch(() => undefined);
+    const removed = await dockerApi("DELETE", `/containers/${name}?force=true`);
+    if (removed.status >= 300 && removed.status !== 404) {
+        throw new Error(`删除旧容器失败 HTTP ${removed.status} ${removed.body.slice(0, 200)}`);
+    }
+    const created = await dockerApi("POST", `/containers/create?name=${encodeURIComponent(name)}`, createBody);
+    if (created.status >= 300) throw new Error(`创建新容器失败 HTTP ${created.status} ${created.body.slice(0, 200)}`);
+    const started = await dockerApi("POST", `/containers/${name}/start`);
+    if (started.status >= 300 && started.status !== 304) {
+        throw new Error(`启动新容器失败 HTTP ${started.status} ${started.body.slice(0, 200)}`);
+    }
+}
+
+/** 升级失败后的自救：用**升级前那份规格**把容器原样拉回来（不读 daemon，容器可能已不在） */
+async function dockerRestoreLastSpec(): Promise<void> {
+    if (!lastKnownSpec) throw new Error("没有可用的原容器规格");
+    const name = UPGRADE_CONTAINER;
+    await dockerApi("DELETE", `/containers/${name}?force=true`).catch(() => undefined);
+    const created = await dockerApi("POST", `/containers/create?name=${encodeURIComponent(name)}`, {
+        ...lastKnownSpec.config,
+        HostConfig: lastKnownSpec.hostConfig,
+        NetworkingConfig: lastKnownSpec.networking,
+    });
+    if (created.status >= 300) throw new Error(`恢复：创建容器失败 HTTP ${created.status} ${created.body.slice(0, 200)}`);
+    const started = await dockerApi("POST", `/containers/${name}/start`);
+    if (started.status >= 300 && started.status !== 304) {
+        throw new Error(`恢复：启动容器失败 HTTP ${started.status} ${started.body.slice(0, 200)}`);
+    }
+}
+
+const finish = (): void => {
         const ms = Date.now() - started;
         if (ms > 1000) console.warn(`慢请求 ${req.method} ${new URL(req.url ?? "/", "http://x").pathname} ${res.statusCode} ${ms}ms`);
     };
@@ -257,37 +421,40 @@ const server = createServer((req, res) => {
             }
 
             // POST /api/system/upgrade：网页端直接升级（2026-10-18 用户要
-            // 「加个升级按键直接在网页升级版本」）。只在**自托管 + 挂了
-            // docker.sock** 的部署可用； Workers 部署 / 没挂 sock 的一律 501，
-            // 前端回落成「复制 docker pull 命令手动执行」。
+            // 「加个升级按键直接在网页升级版本」；2026-10-19 再报「改成点击后
+            // 直接在网页端升级，不要再复制代码去后台升级」—— 上一版虽已写成
+            // 网页触发，但部署侧没挂 docker.sock、又要求 NAVIHIVE_UPGRADE_DIR，
+            // 于是端点一律 501，用户看到的仍是「复制命令去后台」）。
             //
-            // 三道闸：① owner only（内部问 worker 的 auth/me 复用同一套鉴权）；
-            // ② docker.sock 可访问；③ 升级目录里有 docker-compose.yml。
-            // ⚠️ 执行顺序：**先响应再升级** —— compose up 会把这个容器自己换掉，
-            // 升级命令跑起来后本进程随时会被杀，响应发不出去。1.5s 后 detached
-            // 执行 pull && up：pull 失败就不 up（旧容器继续服务，不会留下半份）。
+            // 实现走 **Docker Engine API（unix socket）**，不依赖容器内的 docker
+            // CLI：镜像是 node:24-slim，没有 docker 二进制；挂宿主 CLI 还要连带挂
+            // cli-plugins（`docker compose` 是插件）与 compose 目录，链路长且动态库
+            // 容易不兼容。Node 原生 http.request 的 socketPath 就能打 sock。
+            // 序列：拉镜像 → 停 → 删 → 按原配置重建 → 启。
+            //
+            // 两道闸：① owner only（复用 worker 的 auth/me）；② docker.sock 可访问。
+            // ⚠️ 执行顺序：**先响应再升级** —— 重建的正是这个容器自己，命令跑起来后
+            // 本进程随时会被杀，响应发不出去用户就什么都看不到。1.5s 后再动手。
             if (pathname === "/api/system/upgrade" && method === "POST") {
                 const meRes = await handler.fetch(
                     new Request("http://internal/api/auth/me", { method: "GET", headers: toHeaders(req) }),
                     serverEnv
-                );                const me = meRes.ok ? ((await meRes.json()) as { role?: string }) : null;
+                );
+                const me = meRes.ok ? ((await meRes.json()) as { role?: string }) : null;
                 if (!me || me.role !== "owner") {
                     res.writeHead(403, { "Content-Type": "application/json; charset=utf-8" });
                     res.end(JSON.stringify({ ok: false, error: "只有站点所有者可以执行升级" }));
                     return;
                 }
-                const upgradeDir = process.env.NAVIHIVE_UPGRADE_DIR ?? "";
-                const hasSock = existsSync("/var/run/docker.sock");
-                const hasCompose = Boolean(upgradeDir) && existsSync(path.join(upgradeDir, "docker-compose.yml"));
-                if (!hasSock || !hasCompose) {
+                if (!existsSync(DOCKER_SOCK)) {
                     res.writeHead(501, { "Content-Type": "application/json; charset=utf-8" });
                     res.end(
                         JSON.stringify({
                             ok: false,
                             reason: "unsupported",
                             error:
-                                "当前部署不支持网页直接升级：需要以 Docker 自托管、挂载 /var/run/docker.sock，" +
-                                "并设置 NAVIHIVE_UPGRADE_DIR 指向 compose 目录。可手动执行升级命令。",
+                                "当前部署不支持网页直接升级：需要以 Docker 自托管，并把 /var/run/docker.sock " +
+                                "挂进容器（见 docker-compose.yml 的 volumes）。可手动执行升级命令。",
                         })
                     );
                     return;
@@ -296,22 +463,30 @@ const server = createServer((req, res) => {
                 res.end(
                     JSON.stringify({
                         ok: true,
-                        message: "升级已启动：正在拉取镜像并重建容器，约 10-30 秒后服务会短暂重启，页面稍后自动恢复。",
+                        message:
+                            "升级已启动：正在拉取镜像并重建容器，约 10-30 秒后服务会短暂重启，页面稍后自动恢复" +
+                            "（若长时间无响应请手动刷新）。",
                     })
                 );
-                const script = `docker pull ${process.env.NAVIHIVE_IMAGE ?? "ghcr.io/zwjttztt/navihive:latest"} && cd ${JSON.stringify(upgradeDir)} && docker compose up -d --force-recreate`;
+                const image = UPGRADE_IMAGE;
                 setTimeout(() => {
-                    try {
-                        const child = spawn("/bin/sh", ["-c", script], {
-                            detached: true,
-                            stdio: "ignore",
-                            env: process.env,
-                        });
-                        child.unref();
-                        console.log(`[upgrade] 已触发：${script}`);
-                    } catch (error) {
-                        console.error("[upgrade] 触发失败:", error);
-                    }
+                    void (async () => {
+                        try {
+                            await dockerPull(image);
+                            await dockerRecreateSelf(image);
+                            console.log(`[upgrade] 完成：容器已按 ${image} 重建`);
+                        } catch (error) {
+                            // 拉取/重建失败时旧容器已停或已删 —— 用升级前存下的规格把它
+                            // 原样拉回来，否则站点会停摆（用户看到的就是「点升级后网站打不开」）。
+                            console.error("[upgrade] 失败，尝试恢复原容器:", error);
+                            try {
+                                await dockerRestoreLastSpec();
+                                console.log("[upgrade] 已按原规格恢复容器");
+                            } catch (restoreError) {
+                                console.error("[upgrade] 恢复失败，请在宿主机上手动重建该容器:", restoreError);
+                            }
+                        }
+                    })();
                 }, 1500);
                 return;
             }

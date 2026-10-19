@@ -198,6 +198,15 @@ docker inspect --format='{{.State.Health.Status}}' navihive   # → healthy（�
   （这只是上限不是预分配，大内存机器上毫无影响。）
 - **备份命令和 systemd 版不同**——容器里没有 `sqlite3` CLI，见第七节。
 - 升级：`git pull && docker compose up -d --build`，迁移照旧在启动时自动做。
+- **网页端一键升级**：设置 →「版本与升级」→ 检查更新 → 更新。走 Docker Engine API
+  （unix socket）重建本容器，**不需要容器里有 docker CLI**（镜像是 node:24-slim，
+  没有 docker 二进制；也不依赖 `docker compose`，compose 是插件）。要生效得满足两条：
+  1. compose 的 `volumes` 挂上 `/var/run/docker.sock:/var/run/docker.sock`
+     （仓库模板已带上；这是把宿主机 Docker 控制权交给容器，确认过风险再加）；
+  2. `NAVIHIVE_CONTAINER_NAME` 与 `container_name` 一致（模板已带上，默认 `navihive`）。
+  两条任一不满足 → 端点回 501 → 前端回落成「复制 docker pull 命令手动执行」。
+  ⚠️ 升级会**把这个容器自己换掉**：服务先回 200 再执行，约 10-30 秒后短暂重启；
+  中途失败会用升级前存下的容器规格把原容器拉回来，站点不会停摆。
 
 > **已实测（2026-10-14）**：Debian 13 / 1 核 / 464MB 内存 / Docker 29.9.0 的 VPS 上
 > 真构建真跑过——镜像构建 8 分 26 秒成功（356MB），端到端验证 29 项全过：

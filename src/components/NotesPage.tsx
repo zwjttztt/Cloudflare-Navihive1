@@ -5511,6 +5511,18 @@ export default function NotesPage({
             <Menu
                 open={Boolean(rowMenu)}
                 anchorEl={rowMenu?.el ?? null}
+                // ⚠️ 白圈**第六报**（2026-10-19 用户：「白圈出现的地方是之前右键
+                // 点击的地方」）的正根在这里。右键菜单的锚点是 `anchorAtMouse`
+                // 造的 0×0 虚拟元素，而 MUI Menu 的退出过渡是 Grow（scale）：
+                // paper 从 161×329 一路缩到 12×9，transform-origin 又正好落在
+                // 锚点上 —— 于是**鼠标点位置始终被 paper 覆盖**，那十几帧里
+                // 用户看到的就是一个白色小圆点一闪而过。
+                // 实测记录（script/probe-white-dot.mjs）：覆盖锚点的帧 12 个、
+                // 宽度 16→12px、opacity 0.79→0，paper 到 207ms 才卸载。
+                // 前五轮修的「⋯ 按钮被焦点还原点亮」是**另一条**路径，两者叠加
+                // 才让这个 bug 报了六次。修法：退出不缩放（enter 保留默认动画，
+                // 用户没有抱怨「出现」时难看）。
+                transitionDuration={{ enter: 225, exit: 0 }}
                 onClose={() => {
                     closeRowMenu();
                 }}
