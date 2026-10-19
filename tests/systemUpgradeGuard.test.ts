@@ -53,21 +53,30 @@ test("server：upgrade 路由两道闸（owner / docker.sock）", () => {
     assert.doesNotMatch(src, /NAVIHIVE_UPGRADE_DIR/, "不得再要求 compose 目录（那是上一版 501 的根因）");
 });
 
-test("server：升级走 Docker Engine API，不依赖容器内 docker CLI", () => {
+test("server：升级走 Docker Engine API，且用 restart 而非 recreate", () => {
     const src = readSrc("server/entry.ts");
     assert.match(src, /socketPath: DOCKER_SOCK/, "要经 unix socket 打 Docker API");
     assert.match(src, /DOCKER_API_VERSION = "v1\.47"/, "API 版本写死，行为才可预期");
     // 不能再回到 spawn docker / docker compose：容器里没有这些二进制
     assert.doesNotMatch(src, /child_process/, "不得再引入子进程（容器里没有 docker CLI 可调）");
-    assert.doesNotMatch(src, /docker compose up/, "不得再依赖 docker compose（那是插件，容器里没有）");
-    // 序列：拉镜像 → 停 → 删 → 建 → 启
+    // ⚠️ 不断言「不出现 docker compose」字样：兜底日志里要**告诉用户**去宿主机执行
+    // `docker compose up -d --force-recreate`（见下面那条 match）。执行层面由上面
+    // 的 child_process 断言堵死 —— 没有子进程就调不到任何 CLI。
+    // ⚠️ 核心不变量：绝不能自己去 stop / delete 这个容器 —— 执行升级的进程就在
+    // 容器里，stop 一发出去本进程立刻死，后面的步骤一行都不会执行（线上实测过：
+    // 点更新 → 502，容器停在 Exited(0)）。stop+start 必须交给 daemon 的 restart。
+    assert.doesNotMatch(src, /\/containers\/\$\{name\}\/stop/, "不得自己 stop 容器（会杀掉执行升级的本进程）");
+    assert.doesNotMatch(src, /\/containers\/\$\{name\}\/\?force=true/, "不得自己 delete 容器（同上）");
+    assert.match(src, /\/containers\/\$\{name\}\/restart\?t=10/, "必须用 restart 让 daemon 完成停+起");
     assert.match(src, /dockerPull\(/, "要拉镜像");
-    assert.match(src, /\/containers\/\$\{name\}\/stop\?t=10/, "要停旧容器");
-    assert.match(src, /\/containers\/\$\{name\}\?force=true/, "要删旧容器");
-    assert.match(src, /\/containers\/create\?name=/, "要按原配置建新容器");
-    assert.match(src, /\/containers\/\$\{name\}\/start/, "要启动新容器");
+    // 拉镜像必须在 restart 之前：拉不动就别碰容器
+    const pullAt = src.indexOf("await dockerPull(image);");
+    const restartAt = src.indexOf("/restart?t=10");
+    assert.ok(pullAt > 0 && restartAt > pullAt, "必须先拉镜像再重启（拉失败时旧代码继续服务）");
     // 拉镜像是流，必须读到结束
     assert.match(src, /res\.on\("end", \(\) => \{[\s\S]{0,200}resolve\(\)/, "拉镜像要等进度流结束");
+    // 兜底：重启没成也要保证容器活着
+    assert.match(src, /dockerEnsureRunning\(\)/, "失败路径要确保容器在跑（站点停摆比升级失败严重）");
 });
 
 test("server：先响应再执行 + 失败能自救", () => {
@@ -78,10 +87,9 @@ test("server：先响应再执行 + 失败能自救", () => {
     const runAt = block.indexOf("dockerPull(");
     assert.ok(respAt > 0 && runAt > respAt, "必须先把 200 写回去，再在 setTimeout 里执行升级");
     assert.match(block, /setTimeout\(/, "升级执行要延迟（等响应 flush）");
-    // 重建失败时旧容器已停/已删：必须用升级前存下的规格拉回来，否则站点停摆
-    assert.match(src, /lastKnownSpec/, "要把原容器规格先存底");
-    assert.match(src, /dockerRestoreLastSpec\(\)/, "失败要按原规格恢复容器");
-    assert.match(block, /catch \(restoreError\)/, "恢复也要兜底，不能把异常吞掉就算了");
+    // 重启没成也要保证容器活着
+    assert.match(block, /catch \(restoreError\)/, "兜底也要兜住，不能把异常吞掉就算了");
+    assert.match(block, /docker compose up -d --force-recreate/, "兜底日志要给出宿主机上的恢复命令");
 });
 
 test("compose：要挂 docker.sock、给权限，并告知容器自己的名字", () => {

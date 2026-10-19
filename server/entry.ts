@@ -326,73 +326,53 @@ async function dockerPull(image: string): Promise<void> {
 }
 
 /**
- * 用新镜像重建**这个容器**：停 → 删 → 用原配置建 → 启。
- * 配置全部取自原容器（env / cmd / 卷 / 端口 / 重启策略 / 健康检查原样保留），
- * 只把 Image 换成新的 —— 等价于 `compose up -d --force-recreate` 对单服务的效果。
+ * 把**这个容器**升级到新镜像：拉镜像 → 重启容器。
+ *
+ * ⚠️⚠️ 为什么是 restart 而不是「停 → 删 → 建 → 启」（2026-10-19 线上实测的坑）：
+ * 执行升级的 Node 进程**就在被升级的这个容器里**。第一版按 recreate 写，
+ * `POST /containers/{name}/stop` 一发出去，容器收到 SIGTERM → entry.ts 的优雅退出
+ * 跑完 → 本进程立刻死，后面的 DELETE / CREATE / START **一行都不会执行**。
+ * 线上症状：点「更新」后长时间无反应、刷新变 502，容器停在 `Exited (0)`。
+ *
+ * `restart` 没有这个问题：stop + start 都由 **Docker daemon** 完成，不依赖容器内
+ * 进程活着。而 start 时 daemon 按 `Config.Image`（这里是 tag，如 `…:latest`）
+ * 重新解析 —— 我们刚刚把新镜像拉到本地、latest 已指向它，于是容器起来就是新代码。
+ * 环境变量 / 卷 / 端口 / 重启策略全部原样保留（restart 不改配置），
+ * 比 recreate 更稳；代价是「compose 里新增的配置项不会生效」——
+ * 那种升级仍需在宿主机手动 `docker compose up -d --force-recreate`（见 selfhost.md）。
+ *
+ * 顺序上先把所有可能失败的都做完（读规格、拉镜像），最后一步才 restart：
+ * 拉取失败就绝不去动容器，旧容器继续服务。
  */
-/**
- * 最近一次读到的容器规格（env / cmd / 卷 / 端口 / 重启策略…）。
- * 重建失败时旧容器已经停了甚至删了，那时候**再也读不到它的配置** —— 所以
- * 在读到的第一时间就存下来，恢复路径直接用它，不用再问 daemon。
- */
-let lastKnownSpec: {
-    config: Record<string, unknown>;
-    hostConfig: Record<string, unknown>;
-    networking: Record<string, unknown>;
-} | null = null;
-
-/**
- * 用新镜像重建**这个容器**：停 → 删 → 按原配置建 → 启。
- * 配置全部取自原容器（env / cmd / 卷 / 端口 / 重启策略 / 健康检查原样保留），
- * 只把 Image 换成新的 —— 等价于 `compose up -d --force-recreate` 对单服务的效果。
- */
-async function dockerRecreateSelf(image: string): Promise<void> {
+async function dockerUpgradeSelf(image: string): Promise<void> {
     const name = UPGRADE_CONTAINER;
     const { status, body } = await dockerApi("GET", `/containers/${name}/json`);
     if (status >= 300) throw new Error(`读不到容器 ${name}（HTTP ${status}）`);
-    const old = JSON.parse(body) as {
-        Config?: Record<string, unknown>;
-        HostConfig?: Record<string, unknown>;
-        NetworkSettings?: { Networks?: Record<string, unknown> };
-    };
-    const config = { ...(old.Config ?? {}) };
-    config.Image = image;
-    // Hostname / Domainname 在建容器时会重算，带着旧的会冲突
-    delete config.Hostname;
-    delete config.Domainname;
-    const hostConfig = { ...(old.HostConfig ?? {}) };
-    const networking = { EndpointsConfig: old.NetworkSettings?.Networks ?? {} };
-    // 先存底：下一步就要 stop + delete，失败时靠它把原容器拉回来
-    lastKnownSpec = { config, hostConfig, networking };
-    const createBody = { ...config, HostConfig: hostConfig, NetworkingConfig: networking };
-    // 停 → 删 → 建 → 启。旧容器还占着名字，必须先让位。
-    await dockerApi("POST", `/containers/${name}/stop?t=10`).catch(() => undefined);
-    const removed = await dockerApi("DELETE", `/containers/${name}?force=true`);
-    if (removed.status >= 300 && removed.status !== 404) {
-        throw new Error(`删除旧容器失败 HTTP ${removed.status} ${removed.body.slice(0, 200)}`);
+    const old = JSON.parse(body) as { Config?: Record<string, unknown> };
+    // 只接受 tag 形式（`repo:tag`）：digest 形式（`repo@sha256:…`）restart 后仍指向
+    // 旧镜像，升级就白做了 —— 这种情况直接报错，别假装成功。
+    const currentImage = String(old.Config?.Image ?? "");
+    if (!currentImage.includes(":")) {
+        throw new Error(`容器镜像不是 tag 形式（${currentImage}），无法用重启方式升级`);
     }
-    const created = await dockerApi("POST", `/containers/create?name=${encodeURIComponent(name)}`, createBody);
-    if (created.status >= 300) throw new Error(`创建新容器失败 HTTP ${created.status} ${created.body.slice(0, 200)}`);
-    const started = await dockerApi("POST", `/containers/${name}/start`);
-    if (started.status >= 300 && started.status !== 304) {
-        throw new Error(`启动新容器失败 HTTP ${started.status} ${started.body.slice(0, 200)}`);
+    await dockerPull(image);
+    const restarted = await dockerApi("POST", `/containers/${name}/restart?t=10`);
+    // 304 = 容器本来就停着（无需重启），也算成功
+    if (restarted.status >= 300 && restarted.status !== 304) {
+        throw new Error(`重启容器失败 HTTP ${restarted.status} ${restarted.body.slice(0, 200)}`);
     }
 }
 
-/** 升级失败后的自救：用**升级前那份规格**把容器原样拉回来（不读 daemon，容器可能已不在） */
-async function dockerRestoreLastSpec(): Promise<void> {
-    if (!lastKnownSpec) throw new Error("没有可用的原容器规格");
+/** 升级后的兜底：确认容器真的在跑，不在就拉起来（restart 失败时旧容器可能停着） */
+async function dockerEnsureRunning(): Promise<void> {
     const name = UPGRADE_CONTAINER;
-    await dockerApi("DELETE", `/containers/${name}?force=true`).catch(() => undefined);
-    const created = await dockerApi("POST", `/containers/create?name=${encodeURIComponent(name)}`, {
-        ...lastKnownSpec.config,
-        HostConfig: lastKnownSpec.hostConfig,
-        NetworkingConfig: lastKnownSpec.networking,
-    });
-    if (created.status >= 300) throw new Error(`恢复：创建容器失败 HTTP ${created.status} ${created.body.slice(0, 200)}`);
+    const { status, body } = await dockerApi("GET", `/containers/${name}/json`);
+    if (status >= 300) throw new Error(`读不到容器 ${name}（HTTP ${status}）`);
+    const state = (JSON.parse(body) as { State?: { Running?: boolean } }).State ?? {};
+    if (state.Running) return;
     const started = await dockerApi("POST", `/containers/${name}/start`);
     if (started.status >= 300 && started.status !== 304) {
-        throw new Error(`恢复：启动容器失败 HTTP ${started.status} ${started.body.slice(0, 200)}`);
+        throw new Error(`启动容器失败 HTTP ${started.status} ${started.body.slice(0, 200)}`);
     }
 }
 
@@ -430,10 +410,11 @@ const finish = (): void => {
             // CLI：镜像是 node:24-slim，没有 docker 二进制；挂宿主 CLI 还要连带挂
             // cli-plugins（`docker compose` 是插件）与 compose 目录，链路长且动态库
             // 容易不兼容。Node 原生 http.request 的 socketPath 就能打 sock。
-            // 序列：拉镜像 → 停 → 删 → 按原配置重建 → 启。
+            // 序列：拉镜像 → **重启容器**（restart，不是 recreate —— 原因见
+            // dockerUpgradeSelf 的注释：stop 一发出去本进程就死了）。
             //
             // 两道闸：① owner only（复用 worker 的 auth/me）；② docker.sock 可访问。
-            // ⚠️ 执行顺序：**先响应再升级** —— 重建的正是这个容器自己，命令跑起来后
+            // ⚠️ 执行顺序：**先响应再升级** —— 动的是这个容器自己，命令跑起来后
             // 本进程随时会被杀，响应发不出去用户就什么都看不到。1.5s 后再动手。
             if (pathname === "/api/system/upgrade" && method === "POST") {
                 const meRes = await handler.fetch(
@@ -464,7 +445,7 @@ const finish = (): void => {
                     JSON.stringify({
                         ok: true,
                         message:
-                            "升级已启动：正在拉取镜像并重建容器，约 10-30 秒后服务会短暂重启，页面稍后自动恢复" +
+                            "升级已启动：正在拉取镜像并重启服务，约 10-30 秒后页面会自动恢复" +
                             "（若长时间无响应请手动刷新）。",
                     })
                 );
@@ -472,18 +453,23 @@ const finish = (): void => {
                 setTimeout(() => {
                     void (async () => {
                         try {
+                            // 最后一步才会重启容器（重启会杀掉本进程），所以拉取放在
+                            // 前面：拉不动就绝不去碰容器，旧代码继续服务。
                             await dockerPull(image);
-                            await dockerRecreateSelf(image);
-                            console.log(`[upgrade] 完成：容器已按 ${image} 重建`);
+                            await dockerUpgradeSelf(image);
+                            // 能走到这里说明 restart 已返回；本进程随时可能被 SIGTERM
+                            // 收走，所以「确认在跑」放在 try 里、失败也不抛给调用方。
+                            await dockerEnsureRunning();
+                            console.log(`[upgrade] 完成：容器已按 ${image} 重启`);
                         } catch (error) {
-                            // 拉取/重建失败时旧容器已停或已删 —— 用升级前存下的规格把它
-                            // 原样拉回来，否则站点会停摆（用户看到的就是「点升级后网站打不开」）。
-                            console.error("[upgrade] 失败，尝试恢复原容器:", error);
+                            // 重启没成功时容器可能停着：确认它活着，不在就拉起来。
+                            // 站点停摆是比升级失败严重得多的事故。
+                            console.error("[upgrade] 失败，尝试确保容器在跑:", error);
                             try {
-                                await dockerRestoreLastSpec();
-                                console.log("[upgrade] 已按原规格恢复容器");
+                                await dockerEnsureRunning();
+                                console.log("[upgrade] 已确保容器在跑（仍是原版本）");
                             } catch (restoreError) {
-                                console.error("[upgrade] 恢复失败，请在宿主机上手动重建该容器:", restoreError);
+                                console.error("[upgrade] 容器仍未起来，请立即上宿主机执行 docker compose up -d --force-recreate:", restoreError);
                             }
                         }
                     })();
