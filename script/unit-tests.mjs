@@ -70,6 +70,9 @@ define("history", win.history);
 // 是裸的 localStorage.xxx（如 utils/undoPersist），漏了这行会静默读写失败
 // （那些地方都包了 try/catch，表现为「存了但读不出来」，很难查）
 if (typeof globalThis.localStorage === "undefined") define("localStorage", win.localStorage);
+// sessionStorage 同理（jsdom 挂在 window 上，全局没有）。main.tsx 的「只重载一次」
+// 令牌就存在这儿，缺了它那条逻辑在测试里静默失效。
+if (typeof globalThis.sessionStorage === "undefined") define("sessionStorage", win.sessionStorage);
 define("getComputedStyle", win.getComputedStyle.bind(win));
 define("requestAnimationFrame", win.requestAnimationFrame.bind(win));
 define("cancelAnimationFrame", win.cancelAnimationFrame.bind(win));
@@ -184,6 +187,12 @@ const shared = {
         "import.meta.env.SSR": "false",
         "import.meta.env.MODE": '"test"',
         "import.meta.env.VITE_USE_REAL_API": '""',
+        // ⚠️ 这两个平时由 vite.config.ts 的 define 烘进产物，单测是 esbuild 直接打包，
+        // 不定义就是 undefined —— 于是 localBuildVersion() 恒为空串，
+        // 「本机版本 vs 服务端版本」这类判断被整条跳过（main.tsx 的版本漂移自愈
+        // 就是这么一直没被单测覆盖的）。给一个固定值，让那套逻辑在测试里真的跑起来。
+        "__NAVIHIVE_BUILD_VERSION__": '"test-build-0001"',
+        "__NAVIHIVE_APP_VERSION__": '"v9.9.9+test"',
     },
     ...(coverageMode ? { sourcemap: "external" } : {}),
 };

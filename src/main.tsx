@@ -45,59 +45,11 @@ readRememberedLogin();
 setupGlobalHandlers();
 
 import { fetchServerVersion, isStaleBuild, localBuildVersion } from "./utils/buildVersion";
-import { shouldRecoverAssets } from "./utils/assetRecovery";
+import { recoverFromStaleAssets } from "./utils/staleRecovery";
 
-/**
- * 站点刚更新完最容易撞上的一种白屏：
- * 浏览器里还留着上一版的 Service Worker 缓存，旧页面引用的 JS 块带内容 hash，
- * 新版本里那个文件已经不存在了 —— 取回来是 404，React 根本没机会渲染，页面全白。
- *
- * 这里接住「脚本 / 样式加载失败」和「动态 import 拿不到模块」两类错误，
- * 清掉本站缓存与旧 SW，然后重载一次。只重载一次（用 sessionStorage 记一笔），
- * 否则网络真的不通时会变成无限刷新。
- */
+// 两个令牌分开记：版本漂移与「资源取不到」是两件事，不该互相顶掉名额
 const ASSET_RECOVER_KEY = "navihive:asset-recover";
-/** 版本漂移单独记一笔：它和「资源取不到」是两件事，不该互相顶掉名额 */
 const BUILD_RECOVER_KEY = "navihive:build-recover";
-
-/** 已经在重载了 —— 两条路同时发现问题时只刷一次，别竞态刷两遍 */
-let recovering = false;
-
-function recoverFromStaleAssets(reason: string, key: string = ASSET_RECOVER_KEY) {
-    if (recovering) return;
-    // 真离线时不要动：懒加载块默认不预缓存，断网点开弹窗本来就取不到，
-    // 这时清缓存 + 重载会把一个还能用的离线页面换成浏览器的错误页。
-    if (!shouldRecoverAssets({ online: navigator.onLine })) return;
-    recovering = true;
-    try {
-        if (sessionStorage.getItem(key)) return;
-        sessionStorage.setItem(key, String(Date.now()));
-    } catch {
-        // 隐私模式下 sessionStorage 可能不可用，那就直接重载一次
-    }
-    // 这一处 console 是**故意留的**：它不是错误上报，而是给正在看控制台的人
-    // （自己调试、或用户截图过来）一条「页面为什么闪了一下」的说明。
-    // 其余浏览器端的 console.error 都已经换成 utils/errorReporter 的 reportError
-    // —— 那个会先 sanitize 掉 password / token 再上报。
-    console.warn("检测到旧版本资源加载失败，清缓存后重试一次：", reason);
-    void (async () => {
-        try {
-            if ("caches" in window) {
-                const keys = await caches.keys();
-                await Promise.all(
-                    keys.filter(k => k.startsWith("navihive-")).map(k => caches.delete(k))
-                );
-            }
-            if ("serviceWorker" in navigator) {
-                const regs = await navigator.serviceWorker.getRegistrations();
-                await Promise.all(regs.map(r => r.unregister()));
-            }
-        } catch {
-            // 清理失败也照常重载：只要拿到新 HTML 就能自己恢复
-        }
-        window.location.reload();
-    })();
-}
 
 /**
  * 版本漂移的自查：Service Worker 把上一版的 HTML 外壳喂给浏览器时，
@@ -110,14 +62,18 @@ function recoverFromStaleAssets(reason: string, key: string = ASSET_RECOVER_KEY)
  *
  * 只在拿到确切结论时才动作：清单拉不到、版本号读不出来，都当作「不知道」不刷页面；
  * 刷之前先清 SW 缓存并注销 SW，否则重载回来的还是那份缓存里的旧外壳。
+ * 清缓存 / 闩锁 / 令牌这些真正会咬人的逻辑在 utils/staleRecovery.ts（有单测）。
  */
 async function reloadOnStaleBuild() {
     const local = localBuildVersion();
-    // 没有烘进构建号（开发模式 / 老产物）：不做判断，交给下面那两条兜底
+    // 没有烘进构建号（开发模式 / 老产物）：不做判断
     if (!local) return;
     const server = await fetchServerVersion();
     if (!isStaleBuild(local, server)) return;
-    recoverFromStaleAssets(`版本落后（本机 ${local} / 服务端 ${server}）`, BUILD_RECOVER_KEY);
+    await recoverFromStaleAssets({
+        reason: `版本落后（本机 ${local} / 服务端 ${server}）`,
+        key: BUILD_RECOVER_KEY,
+    });
 }
 
 // 与首屏资源并发地发一个几字节的请求：结论出来得越早，越能在用户动手之前刷好。
@@ -136,7 +92,7 @@ window.addEventListener(
         const src =
             (target as HTMLScriptElement).src || (target as HTMLLinkElement).href || "";
         if (!src.includes("/assets/")) return;
-        recoverFromStaleAssets(src);
+        void recoverFromStaleAssets({ reason: src, key: ASSET_RECOVER_KEY });
     },
     true
 );
@@ -151,7 +107,7 @@ window.addEventListener("unhandledrejection", event => {
         message.includes("Failed to fetch dynamically imported module") ||
         message.includes("Importing a module script failed")
     ) {
-        recoverFromStaleAssets(message || name);
+        void recoverFromStaleAssets({ reason: message || name, key: ASSET_RECOVER_KEY });
     }
 });
 

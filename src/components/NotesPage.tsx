@@ -76,8 +76,8 @@ import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import PaletteIcon from "@mui/icons-material/Palette";
 import FileDownloadIcon from "@mui/icons-material/FileDownload";
 // —— 格式工具栏（对齐 inkstone 的 EditorToolbar：7 个下拉 + 独立图标组）——
-import { Kbd } from "./Kbd";
-import { EDITOR_SHORTCUTS } from "../utils/editorShortcuts";
+import NotesShortcutsDialog from "./NotesShortcutsDialog";
+import { summarize } from "../utils/noteSummary";
 import { extractNoteTags } from "../utils/markdownNoteTags";
 import { readReadingPosition, writeReadingPosition } from "../utils/readingPosition";
 import type {
@@ -111,7 +111,6 @@ import { usePanelBreakpoint } from "../hooks/usePanelBreakpoint";
 // 直接 `new Date(iso)` 在东八区会差 8 小时（「笔记时间不对」的根因）。
 import { formatRelative, formatWhen, formatWhenFull, groupLabel } from "../utils/noteTime";
 import { extractOutline, outlineIndent } from "../utils/noteOutline";
-import { Dialog, DialogTitle, DialogContent, DialogActions } from "@mui/material";
 import { buildBacklinks, resolveWikiLinks } from "../utils/noteWikiLink";
 import { exportNoteAsMarkdown } from "../utils/noteExport";
 import { exportNoteAsHtml, printNoteAsPdf } from "../utils/noteHtmlExport";
@@ -309,19 +308,6 @@ export interface NotesPageProps {
          */
         onSearchRemote?: (query: string, limit?: number) => Promise<NoteSearchResult | null>;
     };
-}
-
-/** 摘要：把 Markdown 源码压成一行预览（去掉语法符号，不解析） */
-function summarize(source: string, max = 90): string {
-    const flat = source
-        .replace(/```[\s\S]*?```/g, " ")
-        .replace(/^#{1,6}\s+/gm, "")
-        .replace(/^[-*+]\s+(\[[ xX]\]\s*)?/gm, "")
-        .replace(/^>\s?/gm, "")
-        .replace(/[*_`~]/g, "")
-        .replace(/\s+/g, " ")
-        .trim();
-    return flat.length > max ? `${flat.slice(0, max)}…` : flat;
 }
 
 
@@ -6258,19 +6244,7 @@ export default function NotesPage({
                 }}
                 onCreateNote={title => void onCreate({ title })}
             />
-            <Dialog open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} fullWidth maxWidth='sm'>
-                <DialogTitle>键盘快捷键</DialogTitle>
-                <DialogContent>
-                    <Typography>Ctrl / ⌘ K：编辑器内插入链接，编辑器外打开命令面板</Typography>
-                    <Typography>Ctrl / ⌘ S：保存当前笔记</Typography>
-                    {EDITOR_SHORTCUTS.filter(shortcut => shortcut.combo).map(shortcut => (
-                        <Box key={shortcut.id} sx={{ display: "flex", justifyContent: "space-between", gap: 2, py: 0.5 }}>
-                            <Typography>{shortcut.label}</Typography><Kbd combo={shortcut.combo!} />
-                        </Box>
-                    ))}
-                </DialogContent>
-                <DialogActions><Button onClick={() => setShortcutsOpen(false)}>关闭</Button></DialogActions>
-            </Dialog>
+            <NotesShortcutsDialog open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
             <NoteVersionHistoryDialog
                 open={revisionsOpen}
                 noteTitle={active?.title || ""}

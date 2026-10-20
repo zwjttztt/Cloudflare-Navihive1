@@ -1,7 +1,7 @@
 {
   "name": "navihive",
   "private": true,
-  "version": "4.4.0",
+  "version": "4.5.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -57,7 +57,10 @@
     "react-dom": "^19.0.0"
   },
   "overrides": {
-    "source-map-js": "^1.2.2"
+    "source-map-js": "^1.2.2",
+    "mermaid": {
+      "katex": "0.19.0"
+    }
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "^1.62.4",

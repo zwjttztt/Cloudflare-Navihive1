@@ -6,6 +6,51 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。---
 
+## 2026-10-20（五）· 优化：质量评估 8 条行动项落地 6 条
+
+承接同日发布的《全站质量评估报告》（`docs/quality-audit-2026-10-20.md`），逐条做完能做的。
+
+**1. katex 重复打包 + 依赖漏洞，一次解决。** 原来 `npm ls katex` 有**两份不同版本**：
+顶层 `katex@0.19.0`（公式用）+ mermaid 12.1.0 嵌套的 `katex@0.16.47`（它的范围 `^0.16.47` 不含 0.19，
+而 mermaid 最高 12.2.0 也只要 `^0.18.0`）。用 `overrides` 强制 mermaid 也用 0.19.0 后只剩一份，
+katex JS chunk 从两份 250KB 变成一份 259KB；且 0.19.0 不在 advisory 受影响范围（0.11.0–0.18.1）内，
+`npm audit` 从 2 low 变成 **0 vulnerabilities**。
+
+**2. 键盘焦点环：查明了是「判据假」不是「页面坏」，并把判据升真。** 老 a11y 脚本用 `el.focus()`
+测量，而它**不触发 `:focus-visible`**，量出来恒为不可见——那一屏数字全是假数据。改用 CDP 发
+**真 Tab 键**（`Input.dispatchKeyEvent`）后，全局 `:focus-visible` 对所有控件（含 Chip）一直有效。
+第 4 节随之升为判据；输入框单独判「MUI 聚焦边框是否出现」（项目刻意不给输入框补 outline，
+会与聚焦边框叠成双红圈）。过程中据此加过一个 MuiChip 补丁，**反向验证发现移除后审计照样绿**
+（不可观测=没修复实际问题），已撤掉并在主题里写明不要再加。
+⚠️ 顺带抓到判据本身的一个真问题：标签栏在无标签时整条不渲染，Chip 根本进不了 Tab 序列——
+不塞数据的话「一片绿其实什么都没验」。现在用 `Page.addScriptToEvaluateOnNewDocument`
+在文档加载前往 localStorage 塞两个标签。
+
+**3. 给「升级后不白屏」那套逻辑补上单测（+16 例）。** 它原来住在 `main.tsx`，import 即执行副作用、
+单测根本够不着，被评估列为「9 个从未被用例引入的源文件」之首。现在自愈逻辑抽成
+`src/utils/staleRecovery.ts`（清缓存 / 闩锁 / 一次性令牌 / 离线判断），配 6 例：
+只清本站缓存、两条路径共用闩只刷一次、令牌已存在不重复刷、真离线什么都不做、
+拿不到在线状态按在线处理、清缓存抛错也照常重载。`ErrorBoundary` 补 4 例（含
+「清理本机数据」**不动记住的账号名**这条越界防护）。同时修掉两个让单测够不着的原因：
+单测环境补 `__NAVIHIVE_BUILD_VERSION__` 等 esbuild define、补 `sessionStorage` 全局。
+
+**4. `NotesPage.tsx` 拆分第一期。** 6675 → 6649 行：快捷键弹窗外移成 `NotesShortcutsDialog.tsx`、
+摘要生成外移成 `utils/noteSummary.ts`（配 6 例单测）。剩余侧栏 / 右键菜单 / 批量操作条 /
+弹窗控制器群需要专门批次，报告里写了建议顺序。
+
+**5. `deploy/selfhost.md` 新增 sock 风险独立小节。** 讲透「挂 docker.sock = 容器内 root 可控
+宿主机 Docker」，给出三种选法（不挂最稳 / 挂+只绑回环 / 套 docker-socket-proxy 只放行必要端点），
+连放行与禁用的端点清单都列了。**没有**真的上 proxy：那会改升级链路的连接方式，需真机验证，风险收益不成比例。
+
+**6. 新增 `docs/pitfalls.md`。** 20 条线上真出过事的坑，按「症状 → 根因 → 现在怎么防」写
+（routes 前缀顺序、immutable headers、rolldown importers、弹窗 fallback 禁 null、
+`el.focus()` 量不出焦点环、jsdom 里 window≠globalThis、esbuild 提前执行常量路径的动态 import、
+升级三种错误做法、回归必须连跑两次、静态守卫必须反向验证……）。
+
+门禁：tsc 0 错 / eslint 0 error / 单测 **2896** 全绿 / build 通过 / 全站体检 28 项 0 问题 /
+无障碍 0 不合格（焦点环新增为判据）/ 亮暗对比度 0 不合格 / npm audit 0 vulnerabilities。
+
+
 ## 2026-10-20（五）· 新增：全站质量评估报告
 
 按视觉呈现 / 功能完整性 / 架构设计 / 安全性 / 运行速度五个维度做了一次**实测优先**的评估

@@ -28,13 +28,24 @@ CI + docker-publish 全绿。
 
 ## 1. 视觉呈现
 
-### 1.1 键盘焦点环在部分控件上不可见 🟡 中
-- **现象**：无障碍审计的焦点参考项显示——「回到顶部」`outlineWidth: 0px`（靠 box-shadow 兜底）、
-  「跳到网站列表」`outlineStyle: none`（同样靠 box-shadow）、
-  **「只看星标」`outlineWidth: 0px` + `boxShadow: none`，即完全没有任何可见焦点反馈**。
-- **影响**：键盘 / 读屏用户无法判断焦点位置；该审计项目前标注「仅参考，不作为判据」，
-  所以门禁一直是绿的——属于「门禁没覆盖的真实缺陷」。
-- **优先级**：P2｜**预期收益**：键盘可用性达标，顺手把这项从「参考」升级为判据。
+### 1.1 键盘焦点环 —— ✅ 已查明：是判据假，不是页面坏 🟢
+- **原判断（错）**：无障碍审计的焦点参考项显示「只看星标」`outlineWidth: 0px` +
+  `boxShadow: none`，据此认为「这一排 chip 键盘焦点完全不可见」。
+- **真相**：老审计脚本用 `el.focus()` 测量，而**它不触发 `:focus-visible`**，
+  量出来恒为「不可见」—— 那一屏数字全是假数据（连「常用工具」都是
+  `outlineWidth: 3px` 而 `outlineStyle: none`，等于全员不可见）。
+  改用 CDP 发**真 Tab 键**（`Input.dispatchKeyEvent`）后，index.css 的全局
+  `:focus-visible { outline: 2px solid var(--accent) }` 对所有控件（含 Chip）一直有效。
+- **本轮动作**：a11y 脚本第 4 节改成真 Tab 键测量并**升为判据**
+  （Tab 30 个可聚焦元素，任一个量不到轮廓/阴影即失败）；输入框单独判
+  「MUI 聚焦边框是否出现」（项目刻意不给输入框补 outline，会与聚焦边框叠成双环，
+  见 `useThemeController` 的 MuiInputBase 注释）。
+- **顺手抓到的真问题**：判据升真后才发现它**整类漏测** —— 标签栏在无标签时整条不渲染，
+  Chip 根本进不了 Tab 序列，量出来一片绿其实什么都没验。现在用
+  `Page.addScriptToEvaluateOnNewDocument` 在文档加载前往 localStorage 塞两个标签。
+- **教训**：曾据此加过一个 `MuiChip` 焦点环补丁，**反向验证时发现移除后审计照样绿**，
+  说明它不可观测、没修复任何实际问题，已撤掉并在主题里写明「不要再加」。
+  「没验证过的修复不说已修复」——这条对自己的判断同样适用。
 
 ### 1.2 设计令牌双轨制 🟢 低
 MUI theme 与 `index.css` 的 CSS 变量各管一套（有 `script/sync-brand.mjs --check` 守着品牌色漂移）。
@@ -58,9 +69,20 @@ MUI theme 与 `index.css` 的 CSS 变量各管一套（有 `script/sync-brand.mj
 | `src/API/schema.ts` / `src/types.ts` | 60 | 类型定义，可接受 |
 | `src/mermaidSandbox.ts` | 35 | mermaid 独立渲染沙箱 |
 
-- **影响**：`main.tsx` 那三条路径正是「站点升级后不白屏」的唯一保障，现在**只靠真机验证**。
+- **影响**：`main.tsx` 那三条路径正是「站点升级后不白屏」的唯一保障，原来**只靠真机验证**。
   这类代码的特点是「改动无声、回归致命」——v2.0.0 登录设备去重没写单测导致无声回归，是同一类教训。
-- **优先级**：P1｜**收益**：把「升级后自愈」从侥幸变成有守卫的属性。
+- **本轮已处理（两个最大的）**：
+  - 自愈逻辑从入口抽成 `src/utils/staleRecovery.ts`（清缓存 / 闩锁 / 一次性令牌 / 离线判断），
+    配 `tests/staleRecovery.dom.test.tsx` **6 例**：只清本站缓存、两条路径共用闩只刷一次、
+    令牌已存在不重复刷、**真离线什么都不做**、拿不到在线状态按在线处理、清缓存抛错也照常重载。
+  - `tests/errorBoundary.dom.test.tsx` **4 例**：抛错时渲染自助恢复页（三个按钮 + 错误详情）、
+    没抛错原样渲染 children、「清理本机数据」**不动记住的账号名**（越界）、
+    「连登录一起清理」才清、不碰别人的 localStorage key。
+  - 顺带修掉两个让单测够不着它们的原因：单测环境补 `__NAVIHIVE_BUILD_VERSION__` /
+    `__NAVIHIVE_APP_VERSION__` 的 esbuild define（否则 `localBuildVersion()` 恒为空串，
+    整套版本判断被跳过）、补 `sessionStorage` 全局。
+- **优先级**：P1（已完成 2/9，剩 `API/responses.ts`、`ThemeToggle` 等）｜
+  **收益**：把「升级后自愈」从侥幸变成有守卫的属性。
 
 ### 2.2 发版页是死链 🟡 中
 设置里写着「更新内容见[发版页]」，但 GitHub Releases 只有 **v0.1.0（3 周前）**——
@@ -86,8 +108,15 @@ MUI theme 与 `index.css` 的 CSS 变量各管一套（有 `script/sync-brand.mj
 
 - **影响**：单文件承载侧栏 / 列表 / 编辑器 / 预览 / 各类弹窗控制器。改任一角落都要全量 typecheck、
   review 成本高、合并冲突概率大；也是「改 A 坏 B」类回归的温床（本批附件弹窗修复就动到它三处）。
-- **优先级**：P1（但需分期）｜**收益**：首期只做**外移**——把弹窗控制器、附件预览 Provider、
-  设置弹窗群抽成独立模块，不动渲染逻辑，风险最低、收益立即显现（文件降到 ~3000 行量级）。
+- **本轮已完成第一期（低风险外移）**：
+  - `NotesShortcutsDialog.tsx`（键盘快捷键弹窗，原本占父文件 13 行 JSX，只依赖 EDITOR_SHORTCUTS + Kbd）
+  - `src/utils/noteSummary.ts`（列表预览摘要，纯函数）+ `tests/noteSummary.test.ts` **6 例**
+  - `NotesPage.tsx` 6675 → 6649 行
+- **剩余工作（需专门批次，建议顺序）**：① 侧栏 section（`components/notes/sidebarSection.tsx`
+  已有雏形，把渲染与状态接过去）② 右键菜单动作表（1826 行起那一大段）③ 批量操作条
+  ④ 各弹窗控制器群。每步只外移、不动渲染逻辑，配一次全量回归。
+- **优先级**：P1（第一期已落地）｜**收益**：首期收益是「能单独看、单独测」；
+  全部完成后文件降到 ~3000 行量级，回归面骤降。
 
 ### 3.2 双轨运行时的抽象成本 🟢 低
 `worker/`（CF Workers + D1）与 `server/entry.ts`（Node + SQLite）共用同一份 handler，
@@ -117,18 +146,23 @@ rolldown 回调期 `importers` 混动态边、弹窗 fallback 禁 `null`……�
 读写所有卷**。
 - **现有缓解**：端口只绑 `127.0.0.1:8787`（不直接暴露公网）、owner-only 端点、compose 注释里写明了代价。
 - **风险残余**：一旦应用层被突破（XSS + owner 会话），就是宿主机 root。
-- **优先级**：P2｜**收益**：上 `docker-socket-proxy`（只放行 `/containers/*`、`/images/create`、
-  `/images/*/json` 等必要端点，禁 `/exec`、`/images/*/tag` 等）；或至少在 `deploy/selfhost.md`
-  用独立小节把风险讲透，让用户自己选。
+- **本轮已做**：`deploy/selfhost.md` 新增独立小节讲透风险，并给出三种选法
+  （不挂 sock 最稳 / 挂 sock + 只绑回环 / 套 `docker-socket-proxy` 只放行必要端点），
+  连「放行哪些、禁哪些」都列清了。**没有**真的上 proxy —— 那会改变升级链路的连接方式
+  （代码里 `DOCKER_SOCK` 是硬编码 unix socket），需相应改造加真机验证，风险收益不成比例，
+  交给用户按文档自己决策。
+- **优先级**：P2（文档已交付）
 
 ### 4.2 依赖漏洞：2 处 low（katex 原型污染）🟢 低
 ```
 katex 0.11.0-0.18.1  Existing prototype pollution can bypass trust restrictions
 mermaid 10.9.0-rc.1-12.1.0  Depends on vulnerable versions of katex
 ```
-触发条件是渲染**不可信**的 LaTeX。笔记内容本人写、分享页只读，
-实际可利用面很小；`npm audit fix` 可解。
-- **优先级**：P3｜**收益**：消掉审计噪音，避免将来升级时被卡。
+触发条件是渲染**不可信**的 LaTeX。笔记内容本人写、分享页只读，实际可利用面很小。
+- **本轮已修**：`npm audit` 报的是嵌套那份 `mermaid/node_modules/katex@0.16.47`；
+用 overrides 统一到 0.19.0 后，**0.19.0 不在 advisory 受影响范围（0.11.0–0.18.1）内**，
+`npm audit` 现在 **0 vulnerabilities** —— 和上一条一次解决。
+- **优先级**：P3（已修）
 
 ### 4.3 做得好的部分（应保持）
 - CSP 全栈：`default-src 'self'`、`object-src 'none'`、`base-uri 'self'`、`form-action 'self'`、
@@ -152,8 +186,11 @@ assets/katex-DJhrJSbw.js   250KB  含 render   CJS/IIFE 入口（markdown-it-kat
 ```
 两个 chunk **都含完整 render 逻辑**，却是同一个库。根因是两条 import 路径分别解析到 ESM 与 CJS 入口，
 rolldown 各打一份。懒加载时才付这 250KB，但这是**没有任何收益的纯重复**。
-- **优先级**：P2｜**收益**：约 250KB 传输 / 解析 / 执行全免；改法是统一 import 入口或加
-  `resolve.dedupe` / 别名指向同一文件。
+- **本轮已修**：根因不是打包器，是 **npm 装了两份不同版本** —— 顶层 `katex@0.19.0`
+  （公式用）+ mermaid 12.1.0 嵌套的 `katex@0.16.47`（其依赖范围 `^0.16.47` 不含 0.19）。
+  mermaid 最高 12.2.0（要 `^0.18.0`）仍不含 0.19，于是用 `overrides` 强制 mermaid 也用 0.19.0：
+  `npm ls katex` 现在只剩一份，katex JS chunk 从两份 250KB 变成一份 259KB。
+- **优先级**：P2（已修）｜**收益**：约 250KB 懒加载体积全免。
 
 ### 5.2 首屏 core 891KB（JS 843.9KB）偏重 🟡 中
 core 9 个文件里 `mui-core` 328KB 是大头。项目已经做了能做的：manualChunks 归桶、

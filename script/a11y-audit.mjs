@@ -9,9 +9,7 @@
 //   - 无名按钮 / 无 alt 图片 / 无 label 输入
 //   - 可点元素 < 24px（WCAG 2.5.8 底线）
 //   - 破图
-// 只打印不作为判据的：
-//   - 焦点可见性：脚本的 el.focus() 不触发 :focus-visible，量出来恒为「不可见」，
-//     是真·假红（smoke 里用真 Tab 键的「搜索框有焦点环」是 PASS 的）。
+// 焦点可见性也是判据（用 CDP 发真 Tab 键触发 :focus-visible，见第 4 节）。
 //   - 滚动帧耗时 / 堆内存：CI 机器性能差异太大，钉死阈值只会偶发假红。
 //
 // 用法：npm run audit:a11y（需要先 npm run build；CHROME_PATH 可指定浏览器）
@@ -29,7 +27,7 @@ const SITE_PORT = Number(process.env.AUDIT_SITE_PORT || 0);
 const CDP_PORT = Number(process.env.AUDIT_CDP_PORT || 9516);
 
 const site = await startSiteServer(SITE_PORT);
-const { evaluate, done, chromePath, getErrors } = await openBrowser({ cdpPort: CDP_PORT });
+const { evaluate, send, done, chromePath, getErrors } = await openBrowser({ cdpPort: CDP_PORT });
 
 // 这两个脚本是「一路顶层 await 写下来」的，中途抛错不会进任何 try/catch：
 // 不兜住的话脚本崩在半路，Chrome 与本地服务会变成孤儿进程留在后台
@@ -50,6 +48,15 @@ console.log(`Chrome: ${chromePath}`);
 console.log(`页面: ${site.url}\n`);
 
 await evaluate(`location.href = ${JSON.stringify(site.url + "/?t=" + Date.now())}`);
+// 标签栏（TagBar）在「没有标签、没有失效链接、没开星标筛选」时整条不渲染，
+// 而它里面全是没有焦点环的 MuiChip —— 不塞数据的话焦点判据会**整类漏测**，
+// 量出来一片绿其实什么都没验（2026-10-20 反向验证时就是这么被骗过去的）。
+// 用 addScriptToEvaluateOnDocument 在**文档加载前**把标签写进 localStorage：
+// 先 setItem 再 location.reload() 那条路走不通 —— reload 会让后续的
+// Runtime.evaluate 撞上导航中，waitRendered 直接 30s 超时（实测）。
+await send("Page.addScriptToEvaluateOnNewDocument", {
+    source: `try{localStorage.setItem("navihive:tags",${JSON.stringify(JSON.stringify({ 11: ["工具"], 12: ["工具", "开发"] }))})}catch(e){}`,
+});
 const buttons = await waitRendered(evaluate);
 console.log(`页面已渲染（button ${buttons} 个）\n`);
 
@@ -126,27 +133,66 @@ const broken = await evaluate(`(async () => {
 console.log("=== 图片加载 ===");
 console.log(JSON.stringify(broken, null, 1));
 
-// ---------- 4. 焦点可见性（只打印：见文件头说明，是已知假红）----------
-const focusVis = await evaluate(`(async () => {
-  const wait = ms => new Promise(r => setTimeout(r, ms));
-  const out = [];
-  for (let i = 0; i < 6; i++) {
-      const f = [...document.querySelectorAll('a[href], button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])')];
-      if (!f[i]) break;
-      f[i].focus();
-      await wait(60);
-      const s = getComputedStyle(document.activeElement);
-      out.push({
-          tag: document.activeElement.tagName,
-          label: (document.activeElement.getAttribute('aria-label') || document.activeElement.textContent || '').trim().slice(0, 18),
+// ---------- 4. 焦点可见性（真 Tab 键 → :focus-visible，作为判据）----------
+//
+// ⚠️ 曾经这一节「只打印不判据」，理由是 `el.focus()` 不触发 `:focus-visible`，
+// 量出来恒为不可见 —— 那是**测量方法错了**，不是页面没问题。老脚本量出来的
+// 「常用工具」outlineWidth 3px 而 outlineStyle none，等于全员不可见，纯假数据。
+// 现在改用 CDP 发真 Tab 键（Input.dispatchKeyEvent）：由浏览器按真实键盘规则
+// 决定什么时候挂 :focus-visible，量出来的才是用户看到的样子。
+const focusVis = [];
+for (let i = 0; i < 30; i++) {
+    await send("Input.dispatchKeyEvent", {
+        type: "rawKeyDown",
+        key: "Tab",
+        code: "Tab",
+        windowsVirtualKeyCode: 9,
+        nativeVirtualKeyCode: 9,
+    });
+    await send("Input.dispatchKeyEvent", {
+        type: "keyUp",
+        key: "Tab",
+        code: "Tab",
+        windowsVirtualKeyCode: 9,
+        nativeVirtualKeyCode: 9,
+    });
+    await new Promise(r => setTimeout(r, 70));
+    const info = await evaluate(`(() => {
+      const el = document.activeElement;
+      if (!el || el === document.body) return null;
+      const s = getComputedStyle(el);
+      const outlineVisible = s.outlineStyle !== 'none' && parseFloat(s.outlineWidth || '0') > 0;
+      // 输入框是例外：项目刻意不给它补外圈 outline（会与 MUI 的聚焦边框叠成
+      // 双红圈，见 useThemeController 的 MuiInputBase 注释），焦点指示是
+      // 「边框 1px 灰 → 2px 主色」。所以这里认 .Mui-focused + fieldset 加粗，
+      // 不认 outline/boxShadow —— 否则输入框永远假红。
+      let via = 'outline/boxShadow';
+      if (el.tagName === 'INPUT' && !outlineVisible && s.boxShadow === 'none') {
+        const root = el.closest('.MuiOutlinedInput-root, .MuiInputBase-root');
+        const fs = root && root.querySelector('fieldset');
+        const focused = !!root && root.classList.contains('Mui-focused');
+        const w = fs ? parseFloat(getComputedStyle(fs).borderTopWidth || '0') : 0;
+        if (focused && w >= 2) { via = 'focus-border'; }
+        return {
+          tag: el.tagName,
+          label: (el.getAttribute('aria-label') || el.textContent || '').trim().slice(0, 18),
           outlineWidth: s.outlineWidth, outlineStyle: s.outlineStyle,
-          boxShadow: s.boxShadow === 'none' ? 'none' : 'has',
-      });
-  }
-  return out;
-})()`);
-console.log("=== 焦点可见性（仅参考，不作为判据）===");
-focusVis.forEach(f => console.log("  ", JSON.stringify(f)));
+          boxShadow: 'none',
+          visible: true, via,
+        };
+      }
+      return {
+        tag: el.tagName,
+        label: (el.getAttribute('aria-label') || el.textContent || '').trim().slice(0, 18),
+        outlineWidth: s.outlineWidth, outlineStyle: s.outlineStyle,
+        boxShadow: s.boxShadow === 'none' ? 'none' : 'has',
+        visible: outlineVisible || s.boxShadow !== 'none', via,
+      };
+    })()`);
+    if (info) focusVis.push(info);
+}
+console.log("=== 焦点可见性（真 Tab 键，作为判据）===");
+focusVis.forEach(f => console.log("  ", f.visible ? "ok  " : "MISS", JSON.stringify(f)));
 
 // ---------- 判定 ----------
 const failures = [];
@@ -155,6 +201,11 @@ if (a11y.noAltImgs > 0) failures.push(`无 alt 图片 ${a11y.noAltImgs} 张`);
 if (a11y.inputsNoLabel > 0) failures.push(`无 label 输入 ${a11y.inputsNoLabel} 个`);
 if (touch.tooSmall > 0) failures.push(`触控目标小于 24px 的 ${touch.tooSmall} 个`);
 if (broken.broken > 0) failures.push(`破图 ${broken.broken} 张`);
+// 键盘焦点环：Tab 一遍，任何控件量不到轮廓/阴影就是 keyboard 用户找不到焦点
+const noRing = focusVis.filter(f => !f.visible);
+if (noRing.length > 0) {
+    failures.push(`焦点环不可见 ${noRing.length} 个：${noRing.slice(0, 3).map(f => `${f.tag}「${f.label}」`).join(" / ")}`);
+}
 
 console.log("");
 if (failures.length) {

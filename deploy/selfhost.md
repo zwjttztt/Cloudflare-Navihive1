@@ -187,6 +187,28 @@ docker inspect --format='{{.State.Health.Status}}' navihive   # → healthy（�
 - **compose 强制要求 `AUTH_SECRET`**（`${AUTH_SECRET:?…}` 语法）：没设就直接启动失败，
   不会给你一个「起来了但登不进去」的服务。`.env` 已在 `.gitignore` 和 `.dockerignore` 里。
 - **端口只绑宿主机回环**（`127.0.0.1:8787`），TLS 仍然交给前面的 Nginx/Caddy。
+
+#### ⚠️ 挂 `docker.sock` 前必须知道的风险（网页一键升级的前提）
+
+设置里「版本与升级 → 更新」要把 `/var/run/docker.sock` 挂进容器，并以 `user: "0:0"` 跑
+（sock 属 `root:docker`，非 root 连不上）。**这等价于把宿主机的 Docker 控制权交给这个容器**：
+
+- 容器内进程可以起**特权容器**、把宿主任意路径挂进去、读写所有卷（包括别的容器的）；
+- 换句话说：**应用层一旦被突破（XSS + owner 会话），拿到的是宿主机 root**；
+- 已有缓解：端口只绑回环（不直接暴露公网）、升级端点 owner-only、`docker compose` 里显式写了代价注释。
+
+按风险从低到高，三种选法：
+
+1. **不挂 sock**（最稳）：设置里点「更新」会回落成「复制 docker pull 命令」，你到服务器粘贴执行。
+   适合把站点当生产环境、不希望它有这条能力的人。
+2. **挂 sock + 只绑回环**（当前默认）：方便，接受上面的风险。**端口千万别改成 `8787:8787`
+   直接暴露公网**，那等于把宿主机 Docker 挂在公网上。
+3. **挂 sock 但套一层 `docker-socket-proxy`**（想两者兼顾）：proxy 只放行升级需要的端点
+   （`/containers/json`、`/containers/create`、`/images/create`、`/images/*/json`、
+   `/containers/{id}/(start|wait|json|logs)`、`DELETE /containers/{id}`），
+   禁掉 `/exec`、`/images/*/tag`、`/volumes/*` 这些能直接逃逸的。
+   代价是要多起一个容器，并且升级链路要改走 `http://proxy:2375` 而不是 unix socket。
+
   确认过风险才能改成 `8787:8787`，且那时必须 `NAVIHIVE_TRUST_XFF=0`。
 - **小内存机器构建要 swap**：`tsc -b` 全量编译在 512MB 内存的机器上会 OOM
   （Node 按物理内存把堆上限收到 ~257MB，exit 134）。Dockerfile 已设

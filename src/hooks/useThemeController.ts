@@ -126,6 +126,14 @@ export function useThemeController(accent: string) {
                             },
                         },
                     },
+                    // ⚠️ **不要**给 Chip 单独补 focus-visible：2026-10-20 评估时以为
+                    // 「只看星标 / 各标签」这些 chip 没有焦点环，实测是**测量方法错了** ——
+                    // 老 a11y 脚本用 el.focus()，而它不触发 :focus-visible，量出来恒为
+                    // 「outlineWidth 0 + boxShadow none」，看着像全员不可见。真 Tab 键
+                    // （CDP Input.dispatchKeyEvent）一量，index.css 的全局
+                    // `:focus-visible { outline: 2px solid var(--accent) }` 对 Chip
+                    // 一直有效。补了也验不出区别（反向验证过：移除后审计照样绿），
+                    // 所以不加。真出问题的话 a11y 的 Tab 判据会立刻红。
                     // 所有弹窗默认走同一套毛玻璃面板：半透明底 + 模糊 + 细边框 + 柔和投影，
                     // 单个弹窗自己写了 paper sx 的话会覆盖这里（比如确认弹窗、命令面板）
                     MuiDialog: {
@@ -185,6 +193,9 @@ export function useThemeController(accent: string) {
                                 // 统一交给 MUI 的边框后，任何主题、带不带 label 都只有一圈，
                                 // 顺带也不再需要「带 label 的输入框单独排除 outline」那条例外
                                 // （label 骑在边框线上、外圈横穿文字的问题一并消失）。
+                                // ⚠️ a11y 审计因此对 INPUT 单独判据：量的是「MUI 聚焦边框
+                                // 有没有真的出现」（.Mui-focused + fieldset 边框加粗到 2px），
+                                // 而不是 outline/boxShadow —— 见 script/a11y-audit.mjs 第 4 节。
                             },
                         },
                     },

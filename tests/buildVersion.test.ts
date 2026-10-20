@@ -13,15 +13,26 @@ import assert from "node:assert/strict";
 import {
     localBuildVersion,
     readServerVersion,
-    isStaleBuild,
     fetchServerVersion,
     PRECACHE_MANIFEST_URL,
+    isStaleBuild,
 } from "../src/utils/buildVersion";
 
 // ---------------- 本机版本号 ----------------
 
-test("单测环境没有 define，本机版本号是空串（空串 = 不参与判断）", () => {
-    assert.equal(localBuildVersion(), "");
+// ⚠️ 2026-10-20 改：这条原本断言「单测环境没有 define → 空串」，而空串会让
+// 「本机版本 vs 服务端版本」这套判断被整条跳过 —— 版本漂移自愈（main.tsx /
+// utils/staleRecovery.ts）因此一直没法在单测里跑。现在 script/unit-tests.mjs 的
+// esbuild define 给了固定值 test-build-0001，那套逻辑才真的被测到。
+// 「没烘进构建号时不参与判断」这条语义由 staleRecovery/buildVersion 的调用方
+// （`if (!local) return`）保证，这里只钉住 define 生效。
+test("单测环境有 define：本机版本号取到固定值（否则版本漂移逻辑会被整条跳过）", () => {
+    assert.equal(localBuildVersion(), "test-build-0001");
+});
+
+test("isStaleBuild：空的本机版本不参与判断（拿不到构建号时不能误伤正常页面）", () => {
+    assert.equal(isStaleBuild("", "whatever"), false);
+    assert.equal(isStaleBuild("", null), false);
 });
 
 // ---------------- 读服务端版本号 ----------------
