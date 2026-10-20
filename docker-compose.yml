@@ -76,6 +76,10 @@ services:
       # 需要能碰到 docker.sock。**这是把宿主机的 Docker 控制权交给这个容器** ——
       # 确认过风险再加；不加也能跑，只是设置里点「更新」会回落成复制命令手动执行。
       # ⚠️ 加了之后容器内进程以 root 等效权限操作宿主机 Docker，端口别直接暴露公网。
+      #
+      # 想保留网页升级又不把 sock 全权交出去，改用最小权限代理（推荐）：
+      #   docker compose -f docker-compose.yml -f deploy/docker-socket-proxy.yml up -d
+      # 那样这一行会被覆盖掉，改由代理容器持有 sock、只放行升级必需的几个端点。
       - /var/run/docker.sock:/var/run/docker.sock
 
     # SQLite 单写者：别横向扩副本（每个副本会各写各的库），定时任务也会各跑一遍

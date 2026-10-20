@@ -107,12 +107,17 @@ export function useSiteCreator({
 
     // ---- 新建站点 ----
 
-    const handleOpenAddSite = useCallback((groupId: number) => {
+    /**
+     * @param prefill 站外带进来的初值（浏览器扩展的「一键收藏」走 `?add-site=` 深链）。
+     *   放在展开的最后：链接/名称/图标这些由外部决定，分组与排序仍由本页决定。
+     */
+    const handleOpenAddSite = useCallback((groupId: number, prefill?: Partial<Site>) => {
         const group = groupsRef.current.find(g => g.id === groupId);
         setNewSite({
             ...emptySiteDraft(),
             group_id: groupId,
             order_num: nextSiteOrderNum(group),
+            ...prefill,
         });
         // 每次打开都从「密码隐藏」状态开始，并清掉上一次的提交锁
         setShowNewSitePassword(false);

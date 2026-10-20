@@ -20,7 +20,7 @@
 // 移动端按 inkstone 的做法切成「列表 / 编辑」两屏，而不是硬塞双栏。
 import { createElement, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import Box from "@mui/material/Box";
-import Avatar from "@mui/material/Avatar";
+
 import Button from "@mui/material/Button";
 import Divider from "@mui/material/Divider";
 import Drawer from "@mui/material/Drawer";
@@ -29,56 +29,31 @@ import InputAdornment from "@mui/material/InputAdornment";
 import Menu from "@mui/material/Menu";
 import MenuItem from "@mui/material/MenuItem";
 import TextField from "@mui/material/TextField";
-import Stack from "@mui/material/Stack";
-import Switch from "@mui/material/Switch";
-import Tooltip from "@mui/material/Tooltip";
+
 import Typography from "@mui/material/Typography";
-import NoteAddIcon from "@mui/icons-material/NoteAdd";
-import FolderIcon from "@mui/icons-material/Folder";
-import ArchiveIcon from "@mui/icons-material/Archive";
+
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import CloseIcon from "@mui/icons-material/Close";
-import DeleteForeverIcon from "@mui/icons-material/DeleteForever";
-import DeleteOutlineIcon from "@mui/icons-material/DeleteOutlined";
-import MoreVertIcon from "@mui/icons-material/MoreVert";
+
 import EditIcon from "@mui/icons-material/Edit";
-import VerticalSplitIcon from "@mui/icons-material/VerticalSplit";
-import VisibilityIcon from "@mui/icons-material/VisibilityOutlined";
-import FirstPageIcon from "@mui/icons-material/FirstPage";
+
 import MenuIcon from "@mui/icons-material/Menu";
-import LastPageIcon from "@mui/icons-material/LastPage";
+
 import LinkIcon from "@mui/icons-material/Link";
 import LinkOffIcon from "@mui/icons-material/LinkOff";
-import HistoryIcon from "@mui/icons-material/History";
-import ShareIcon from "@mui/icons-material/Share";
-import BoltIcon from "@mui/icons-material/Bolt";
-import ListIcon from "@mui/icons-material/List";
-import PushPinIcon from "@mui/icons-material/PushPin";
-import PushPinOutlinedIcon from "@mui/icons-material/PushPinOutlined";
-import StarIcon from "@mui/icons-material/Star";
-import StarBorderIcon from "@mui/icons-material/StarBorder";
+
 import SearchIcon from "@mui/icons-material/Search";
-import SettingsIcon from "@mui/icons-material/Settings";
-import SortIcon from "@mui/icons-material/Sort";
-import CheckBoxIcon from "@mui/icons-material/CheckBox";
-import CheckBoxOutlineBlankIcon from "@mui/icons-material/CheckBoxOutlineBlank";
-import Checkbox from "@mui/material/Checkbox";
-import HubIcon from "@mui/icons-material/Hub";
-import AttachmentIcon from "@mui/icons-material/AttachFile";
+
 import NoteGraphDialog from "./NoteGraphDialog";
 import AttachmentManager from "./AttachmentManager";
 import AttachmentPreviewDialog from "./AttachmentPreviewDialog";
 import { AttachmentPreviewProvider, type AttachmentPreviewRequest } from "../utils/attachmentPreview";
-import BacklinksPanel from "./BacklinksPanel";
-import UndoIcon from "@mui/icons-material/Undo";
-import DriveFileRenameOutlineIcon from "@mui/icons-material/DriveFileRenameOutline";
-import OpenInNewIcon from "@mui/icons-material/OpenInNew";
-import PaletteIcon from "@mui/icons-material/Palette";
-import FileDownloadIcon from "@mui/icons-material/FileDownload";
+
 // —— 格式工具栏（对齐 inkstone 的 EditorToolbar：7 个下拉 + 独立图标组）——
 import NotesShortcutsDialog from "./NotesShortcutsDialog";
-import { summarize } from "../utils/noteSummary";
+
 import { extractNoteTags } from "../utils/markdownNoteTags";
+import { getSiteIndex } from "../utils/siteIndex";
 import { readReadingPosition, writeReadingPosition } from "../utils/readingPosition";
 import type {
     Note,
@@ -103,14 +78,14 @@ import { toggleTaskLine } from "../utils/noteTasks";
 import type { CompletionSources } from "../utils/noteCompletion";
 import { fuzzyFilter, fuzzyMatch } from "../utils/fuzzy";
 import { createZip, readZip, type ZipEntry } from "../utils/zip";
-import Highlighted from "./Highlighted";
+
 import type { NoteEmbedTarget } from "./NoteEmbedNode";
 import { useScrollLock } from "../hooks/useScrollLock";
 import { usePanelBreakpoint } from "../hooks/usePanelBreakpoint";
 // 笔记时间统一走这里：SQLite 的 UTC 无时区串必须按 UTC 解释，
 // 直接 `new Date(iso)` 在东八区会差 8 小时（「笔记时间不对」的根因）。
-import { formatRelative, formatWhen, formatWhenFull, groupLabel } from "../utils/noteTime";
-import { extractOutline, outlineIndent } from "../utils/noteOutline";
+import { groupLabel } from "../utils/noteTime";
+import { extractOutline } from "../utils/noteOutline";
 import { buildBacklinks, resolveWikiLinks } from "../utils/noteWikiLink";
 import { exportNoteAsMarkdown } from "../utils/noteExport";
 import { exportNoteAsHtml, printNoteAsPdf } from "../utils/noteHtmlExport";
@@ -122,29 +97,18 @@ import {
     type NotesUiSettings,
 } from "../utils/notesSettings";
 import { reportError } from "../utils/errorReporter";
-import NoteEditor from "./NoteEditor";
+
 import NotesCommandPalette from "./NotesCommandPalette";
 import type { CommandItem } from "./CommandPalette";
 // 空状态：插画 + 标题 + 说明 + 可选动作，对齐 inkstone 的 <Empty>
-import { EmptyState } from "./EmptyArt";
-import ConfirmDialog from "./ConfirmDialog";
-import NamePromptDialog from "./NamePromptDialog";
-import FolderAppearanceDialog from "./FolderAppearanceDialog";
-import TagColorDialog from "./TagColorDialog";
-import MoveFolderDrawer from "./MoveFolderDrawer";
-import NotesSettingsDialog from "./NotesSettingsDialog";
+
 import NoteVersionHistoryDialog from "./NoteVersionHistoryDialog";
 import type { NoteEditorHandle } from "../utils/noteEditorHandle";
 import { useEditorTools, type EditorDraft } from "../hooks/useEditorTools";
 
 import NoteShareDialog, { type NoteShareApi } from "./NoteShareDialog";
-import {
-    MarkdownPreview,
-    MarkdownToolbar,
-    noteExcerpt,
-    resolveImageUpload,
-} from "./notes/markdownToolbar";
-import { LazyGroup } from "./notes/lazyGroup";
+import { noteExcerpt, resolveImageUpload } from "./notes/markdownToolbar";
+
 import { shouldVirtualize } from "../utils/virtualWindow";
 
 export interface NotesPageProps {
@@ -187,6 +151,13 @@ export interface NotesPageProps {
         /** 原地改写 txt / json 内容（预览弹窗的「编辑」）。 */
         updateAttachmentContent?(id: string, text: string): Promise<{ size: number; mime: string }>;
     };
+    /**
+     * 打开就直接跳到这条笔记（D2 双向绑定：站点设置里点「相关笔记」）。
+     *
+     * 只在本次挂载里生效一次 —— 之后用户点别的笔记完全不受它影响。
+     * 不传 = 照常打开（选中上次那条 / 列表第一条）。
+     */
+    focusNoteId?: number;
     /**
      * 记事本备份能力（2026-10-09 照 inkstone 的 BackupSettings）。
      *
@@ -310,26 +281,6 @@ export interface NotesPageProps {
     };
 }
 
-
-/** 把编辑区拆成「源码 | 预览」两栏 */
-type Pane = "edit" | "split" | "preview";
-
-/** 左栏视图 */
-type NoteView =
-    | "all"
-    | "recent"
-    | "starred"
-    | "archived"
-    | "uncategorized"
-    | "trash"
-    // 「选中某个文件夹」的视图键（2026-10-18）：点文件夹时切到这里，
-    // 左栏「全部 / 最近」等行不再保持高亮 —— 否则计数还显示「全部 3」
-    // 而中栏只有该文件夹的 1 条，用户以为没切过去（报「笔记不在文件夹下方」）。
-    | "folder"
-    // 「搜索」是 2026-10-06 加的独立视图：inkstone 左栏第一项就是它。
-    // 之前只有列表上方那个输入框（搜标题+正文），搜不到标签、也不给命中数。
-    | "search";
-
 /**
  * 编辑区（以及左栏 / 列表 / 工具栏）的滚动条**不再本地定义**，直接吃
  * src/index.css 里那套全局规则 —— 也就是导航页看到的那根细圆角条。
@@ -345,20 +296,10 @@ type NoteView =
  * 各滚动容器自己有 `overflow-y: auto` 就够了。
  */
 
-
 // —— 第二批拆分（2026-10-12）：左栏导航与分栏 chrome 搬到独立文件 ——
 // FolderTagSection / NavRow / ColResizeHandle 这些本来就是纯 props 驱动的组件，
 // 留在主文件只会撑行数；拆出后主文件只留页面装配逻辑。
-import {
-    EMPTY_TAG_LINKS,
-    tagOf,
-    tagNamesOf,
-    NavRow,
-    anchorAtMouse,
-    FolderTagSection,
-    type MenuAnchor,
-} from "./notes/sidebarSection";
-
+import { EMPTY_TAG_LINKS, tagOf, tagNamesOf, type MenuAnchor } from "./notes/sidebarSection";
 /**
  * 「引用次数」的空表：模块级常量，别在渲染里 new Map()
  * —— 那会让下游 props 每次都是新引用（2026-10-18 性能批次）。
@@ -366,22 +307,18 @@ import {
 const EMPTY_REF_COUNTS: ReadonlyMap<string, number> = new Map();
 /** 空的内联笔记列表：同上，保证 notesInFolder 返回的引用稳定 */
 const EMPTY_NOTE_LINKS: { id: number; title: string }[] = [];
-import {
-    AUTO_SAVE_MS,
-    MAX_RATIO,
-    MIN_RATIO,
-    PANE_HEADER_H,
-    SPLIT_KEY,
-    STATUSBAR_H,
-    ColResizeHandle,
-    SaveDot,
-    readPaneRatio,
-    readSplitRatio,
-    useColumnResize,
-    writePaneRatio,
-} from "./notes/paneChrome";
+// 记事本五个面板：从本文件拆出去的子组件（2026-10-20）
 
+import NotesNavPanel from "./notes/NotesNavPanel";
+import NotesListPane from "./notes/NotesListPane";
+import NotesEditorPane from "./notes/NotesEditorPane";
+import NotesSidePane from "./notes/NotesSidePane";
+import NotesOverlayLayer from "./notes/NotesOverlayLayer";
+import NotesConfirmLayer from "./notes/NotesConfirmLayer";
+import type { NotesPageCtx } from "./notes/notesPageCtx";
+import type { NoteView, Pane } from "./notes/notesPageCtx";
 
+import { AUTO_SAVE_MS, MAX_RATIO, MIN_RATIO, SPLIT_KEY, ColResizeHandle, readPaneRatio, readSplitRatio, useColumnResize, writePaneRatio } from "./notes/paneChrome";
 export default function NotesPage({
     shareApi,
     uploadApi,
@@ -405,6 +342,7 @@ export default function NotesPage({
     onNotify,
     folderTags,
     onEnsureFullNote,
+    focusNoteId,
 }: NotesPageProps) {
     const [keyword, setKeyword] = useState("");
     /** 关系图谱（2026-10-09）：双链关系的全貌，从「更多」里开 */
@@ -1487,100 +1425,6 @@ export default function NotesPage({
     );
 
     /** 阶段三：回收站列表。还原是主操作，彻底删除放右边且要二次确认。 */
-    const trashPane = (
-        <Box sx={{ px: 0.75, pb: 1 }}>
-            <Box sx={{ display: "flex", alignItems: "center", gap: 1, px: 1.25, py: 0.75 }}>
-                <Typography variant='caption' color='text.secondary' sx={{ flex: 1 }}>
-                    删除的笔记会先放到这里，保留 30 天
-                </Typography>
-                {trashedNotes.length > 0 && (
-                    <Button
-                        size='small'
-                        color='error'
-                        data-action='empty-trash'
-                        onClick={() => {
-                            if (window.confirm(`彻底删除这 ${trashedNotes.length} 条笔记？删了就找不回来了。`)) {
-                                void onEmptyTrash();
-                            }
-                        }}
-                        sx={{ fontSize: 12, py: 0.25 }}
-                    >
-                        清空
-                    </Button>
-                )}
-            </Box>
-            {trashedNotes.length === 0 ? (
-                <Typography variant='body2' color='text.secondary' sx={{ p: 2 }}>
-                    回收站是空的。
-                </Typography>
-            ) : (
-                trashedNotes.map(item => (
-                    <Box
-                        key={item.recycleId}
-                        data-trash-id={item.recycleId}
-                        sx={{
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 0.5,
-                            px: 1.25,
-                            py: 0.9,
-                            borderRadius: 1.5,
-                            "&:hover": { bgcolor: "rgba(128,128,128,0.08)" },
-                        }}
-                    >
-                        <Box sx={{ minWidth: 0, flex: 1 }}>
-                            <Typography
-                                variant='body2'
-                                sx={{
-                                    overflow: "hidden",
-                                    textOverflow: "ellipsis",
-                                    whiteSpace: "nowrap",
-                                }}
-                            >
-                                {item.title}
-                            </Typography>
-                            <Typography
-                                variant='caption'
-                                color='text.disabled'
-                                sx={{ fontSize: 11 }}
-                                title={formatWhen(item.deletedAt)}
-                            >
-                                {/* deletedAt 是毫秒时间戳，同样要走统一的解析入口 */}
-                                {formatRelative(item.deletedAt)}
-                            </Typography>
-                        </Box>
-                        <Tooltip title='还原到全部笔记'>
-                            <IconButton
-                                size='small'
-                                aria-label={`还原 ${item.title}`}
-                                data-action='restore'
-                                onClick={() => void onRestoreTrashed(item.recycleId)}
-                            >
-                                <UndoIcon fontSize='small' />
-                            </IconButton>
-                    </Tooltip>
-                        <Tooltip title='彻底删除（找不回来）'>
-                            <IconButton
-                                size='small'
-                                color='error'
-                                aria-label={`彻底删除 ${item.title}`}
-                                data-action='purge'
-                                onClick={() => {
-                                    if (window.confirm(`彻底删除「${item.title}」？删了就找不回来了。`)) {
-                                        void onPurgeTrashed(item.recycleId);
-                                    }
-                                }}
-                            >
-                                <DeleteForeverIcon fontSize='small' />
-                            </IconButton>
-                    </Tooltip>
-                    </Box>
-                ))
-            )}
-        </Box>
-    );
-
-    /** 左栏导航上挂的三个数 */
     const viewCounts = useMemo(
         () => ({
             all: notes.filter(n => !n.archived).length,
@@ -1680,6 +1524,10 @@ export default function NotesPage({
                         excerpt: noteExcerpt(n.content || ""),
                     })),
             tags: () => tags.map(t => ({ name: t.name, count: tagCounts.get(t.id!) ?? 0 })),
+            // 站点（D2 双向绑定）：`[[站名]]` 写完点了会打开那个站点。
+            // 读模块级索引（导航站加载站点时写进去的），读不到就是空数组 ——
+            // 少一种补全而已，不报错、也不影响笔记双链。
+            sites: () => getSiteIndex().map(s => ({ name: s.name, url: s.url })),
         };
     }, [notes, tags, tagCounts]);
 
@@ -2837,6 +2685,24 @@ export default function NotesPage({
     );
 
     /**
+     * D2 双向绑定：从站点设置里点「相关笔记」进来时直接跳到那条。
+     *
+     * ⚠️ 两个「只做一次」的闸门都不能少：
+     *   ① ref 记下已处理过的 id —— 否则 notes 一变（3 秒自动保存 / 轮询）就会
+     *      把用户后来自己选中的笔记抢回目标那条，表现为「怎么点都跳回去」；
+     *   ② 列表里还没有这条时（notes 首帧还没到）什么都不做，等下一帧 ——
+     *      不能因为「没找到」就报错，那只是加载时序问题。
+     */
+    const focusedRef = useRef<number | null>(null);
+    useEffect(() => {
+        if (focusNoteId == null) return;
+        if (focusedRef.current === focusNoteId) return;
+        if (!notes.some(n => n.id === focusNoteId)) return;
+        focusedRef.current = focusNoteId;
+        void jumpToNote(focusNoteId);
+    }, [focusNoteId, notes, jumpToNote]);
+
+    /**
      * 笔记嵌入 `![[标题]]` / 块引用 `![[标题#^块ID]]` 在预览里按标题找目标笔记。
      * 大小写不敏感、去首尾空白 —— 用户写 `[[API]]` 能命中「api」。
      */
@@ -3140,2264 +3006,224 @@ export default function NotesPage({
     /** 导航列内容（2026-10-08 抽出）：桌面导航列与 tablet 导航抽屉共用同一份 JSX。
      *  两者互斥挂载（桌面列 !narrowLayout 才挂、抽屉仅 tablet 开），
      *  所以 data-view / searchRef / data-nav-col 都不会出现两份。 */
-    const navInner = (
-            <>
-            {/* 迷你顶栏（2026-10-10 调整）：返回箭头贴左（箭头朝左），「记事本」居中，
-                「收起笔记列表」占返回箭头原来的位置（右上角）。收起 / 展开从左下角
-                挪上来 —— 低频但它本来就是控制这一列的，放列顶比挤在账号行里更直白。 */}
-            <Box
-                sx={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 0.5,
-                    px: 1,
-                    pt: 0.25,
-                    pb: 0.75,
-                    flexShrink: 0,
-                }}
-            >
-                {/* 返回箭头（2026-10-10 用户明确）：贴左侧栏最左边、箭头**朝左**（回导航站的方向）；
-                    窄屏（tablet/mobile）的返回箭头仍贴**整页右上角**（顶部 44px 栏最右端），
-                    不落在抽屉里。占位 Box 让标题在两种布局下都居中。 */}
-                {!narrowLayout ? (
-                    <IconButton
-                        aria-label='返回导航站'
-                        onClick={onClose}
-                        size='small'
-                        sx={{ flexShrink: 0, ml: -0.5 }}
-                    >
-                        <ArrowBackIcon fontSize='small' />
-                    </IconButton>
-                ) : (
-                    <Box aria-hidden='true' sx={{ width: 30, flexShrink: 0 }} />
-                )}
-                <Typography
-                    variant='subtitle2'
-                    component='div'
-                    sx={{ fontWeight: 600, flex: 1, textAlign: "center", fontSize: 14, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
-                >
-                    记事本
-                </Typography>
-                {/* 收起 / 展开整个左栏：从左下角（账号行）挪到顶栏右侧 —— 返回箭头原来的位置。
-                    只在桌面导航列显示；tablet 抽屉里没有「收起」概念（整个抽屉关掉就是收起）。 */}
-                {!narrowLayout && (
-                    <Tooltip title={listCollapsed ? "展开笔记列表" : "收起笔记列表"}>
-                        <IconButton
-                            size='small'
-                            aria-label={listCollapsed ? "展开笔记列表" : "收起笔记列表"}
-                            data-tool='collapse-pane'
-                            onClick={() => setListCollapsed(c => !c)}
-                            sx={{ flexShrink: 0, mr: -0.5 }}
-                        >
-                            {listCollapsed ? (
-                                <LastPageIcon fontSize='inherit' />
-                            ) : (
-                                <FirstPageIcon fontSize='inherit' />
-                            )}
-                        </IconButton>
-                    </Tooltip>
-                )}
-            </Box>
-            {/* 可滚动的上半：搜索框 + 视图导航 + 文件夹 + 标签 */}
-            <Box sx={{ flex: 1, minHeight: 0, overflowY: "auto", overflowX: "hidden" }}>
-            {/* 搜索框：桌面导航列与 tablet 导航抽屉共用这一份 navInner（两者互斥挂载，
-                searchRef 不会打架）；mobile 的搜索在列表列头部（searchRefNarrow）。 */}
-            <Box sx={{ px: 1.5, pb: 1 }}>
-                {renderSearchField(searchRef)}
-            </Box>
-
-            {/* 左栏视图导航：inkstone 那种纵向条目 —— 一个入口一行、名字靠左、
-                条数靠右一行。
-                ⚠️ 「搜索」不再占一行（2026-10-06 去掉）：上面那个搜索框本身就是
-                全文搜索的入口（聚焦即打开全文搜索中栏），重复的两行只会让人
-                分不清哪个管哪个。
-                ⚠️ 归档 / 回收站也不在这一组里：它们是低频入口，压在导航列表中间
-                会把「全部 / 最近 / 收藏」这些高频的挤开。挪到左下角单独一组
-                （与 inkstone 一致），见本列底部。 */}
-            <Stack sx={{ px: 0.75, gap: 0.25, pb: 1 }}>
-                {(
-                    [
-                        ["all", "全部", viewCounts.all],
-                        ["recent", "最近", viewCounts.recent],
-                        ["starred", "收藏", viewCounts.starred],
-                        ["uncategorized", "未归类", viewCounts.uncategorized],
-                    ] as const
-                ).map(([key, label, count]) => (
-                    <NavRow
-                        key={key}
-                        label={label}
-                        count={count}
-                        selected={view === key}
-                        onClick={() => {
-                            setView(key);
-                            setActiveFolder(null);
-                            setActiveTag(null);
-                            setMiddleHidden(false);
-                            setNavDrawerOpen(false);
-                        }}
-                        data-view={key}
-                    />
-                ))}
-            </Stack>
-
-            {/* 文件夹 / 标签两节：阶段三收尾，左栏第一列现在真正成了「导航列」 */}
-            <FolderTagSection
-                title='文件夹'
-                items={folders.map(f => ({
-                    id: f.id!,
-                    name: f.name || "未命名",
-                    parent_id: f.parent_id,
-                    count: folderCounts.get(f.id!) ?? 0,
-                    icon: f.icon,
-                    color: f.color,
-                    // 同级排序位：菜单的「向前/向后移动」按它算能不能移、移几位
-                    order_num: f.order_num,
-                }))}
-                selectedId={activeFolder}
-                onSelect={id => {
-                    setActiveFolder(id);
-                    setActiveTag(null);
-                    setNavDrawerOpen(false);
-                    // ⚠️ 点文件夹 = 进入该文件夹的视图（2026-10-18 用户报
-                    // 「标题名为 123 的笔记属于 123 文件夹但不在 123 文件夹下方」）：
-                    // 原来非 null 时不切 view，「全部 3」行还高亮着，中栏却只剩
-                    // 该文件夹的一条 —— 视觉上像没切过去。清空（点「全部」同义）才回 all。
-                    setView(id === null ? "all" : "folder");
-                    // ⚠️ 不 setMiddleHidden(false)：用户明示「中间栏不需要出现」——
-                    // 点文件夹不该把用户收起的列表又放出来。中栏显示与否交给用户
-                    // 自己的「收起列表」控制；显示着时就显示该文件夹的笔记。
-                }}
-                onCreate={() => askName("folder")}
-                onCreateChild={id => askName("folder", { parentId: id })}
-                onMove={folderTags?.onMoveFolder ? (id, parent) => void folderTags.onMoveFolder?.(id, parent) : undefined}
-                onDropNote={(id, folder) => void onUpdate(id, { folder_id: folder })}
-                onAskRename={(id, currentName) =>
-                    askName("folder", {
-                        renameId: id,
-                        defaultValue: currentName,
-                        title: "重命名文件夹",
-                        description: "改完立刻生效，笔记的归类不受影响。",
-                    })
-                }
-                onAskRemove={(id, name) => setRemoveTarget({ kind: "folder", id, name })}
-                onCreateNote={() => void startCreateInFolder(activeFolder)}
-                childrenOf={notesInFolder}
-                activeNoteId={activeId}
-                onOpenNote={id => { setNavDrawerOpen(false); void jumpToNote(id); }}
-                onCreateNoteIn={id => void startCreateInFolder(id)}
-                onReorder={
-                    folderTags?.onReorderFolder
-                        ? (id, dir) => void folderTags.onReorderFolder?.(id, dir)
-                        : undefined
-                }
-                onAppearance={
-                    folderTags?.onStyleFolder
-                        ? id => setAppearanceFolderId(id)
-                        : undefined
-                }
-                // 未归入任何文件夹的笔记直接列在文件夹树下（inkstone 布局）
-                unfiledNotes={
-                    notes
-                        .filter(n => !n.archived && (n.folder_id === null || n.folder_id === undefined))
-                        // ⚠️ 搜索时这一组也要跟着筛（2026-10-06）：左栏留着没命中的
-                        // 笔记、中栏却只剩命中的，用户会以为「搜索坏了」。
-                        // 判据与 searchHits 一致：标题 / 正文 / 标签名任一命中。
-                        .filter(n => {
-                            const kw = keyword.trim().toLowerCase();
-                            if (!kw) return true;
-                            if ((n.title || "").toLowerCase().includes(kw)) return true;
-                            if ((n.content || "").toLowerCase().includes(kw)) return true;
-                            return tagNamesOf(n, noteTags, tags).some(t =>
-                                t.toLowerCase().includes(kw)
-                            );
-                        })
-                        .sort((a, b) =>
-                            String(b.updated_at || b.created_at || "").localeCompare(
-                                String(a.updated_at || a.created_at || "")
-                            )
-                        )
-                        .map(n => ({ id: n.id!, title: n.title || "" }))
-                }
-                onNoteContext={(noteId, el) => setRowMenu({ noteId, el, source: "rail" })}
-            />
-                {/* ---------- 标签 ----------
-                    `color` 从库里直接带来（note_tag.color 早就有这一列，上一轮之前界面没用它）；
-                    有色就画圆点，列表里那条笔记的标签片也跟着上同一个颜色。 */}
-                <FolderTagSection
-                    title='标签'
-                    items={tags.map(t => ({
-                        id: t.id!,
-                        name: t.name || "未命名",
-                        count: tagCounts.get(t.id!) ?? 0,
-                        color: t.color,
-                    }))}
-                selectedId={activeTag}
-                onSelect={id => {
-                    setActiveTag(id);
-                    setActiveFolder(null);
-                    setMiddleHidden(false);
-                    setNavDrawerOpen(false);
-                    if (id === null) setView("all");
-                }}
-                onCreate={() => askName("tag")}
-                onAskRename={(id, currentName) =>
-                    askName("tag", {
-                        renameId: id,
-                        defaultValue: currentName,
-                        title: "重命名标签",
-                        description: "已经打上这个标签的笔记会跟着改名，不用重新分类。",
-                    })
-                }
-                onAskRemove={(id, name) => setRemoveTarget({ kind: "tag", id, name })}
-                // 这个组件被文件夹 / 标签两节共用，删除项的文案按节区分 ——
-                // 2026-10-17 用户报「标签右键菜单里写着删除文件夹」
-                removeLabel='删除标签'
-                onAskColor={
-                    typeof folderTags?.onStyleTag === "function"
-                        ? id => setTagColorId(id)
-                        : undefined
-                }
-            />
-            </Box>
-
-            {/* ---------- 左下角：归档 / 回收站 / 账号 / 设置（inkstone 布局） ----------
-                固定在底部不跟着滚：这几个都是「平时不动、出事才找」的低频入口，
-                之前混在导航列表中间，文件夹一多就被顶出视野了。 */}
-            <Box
-                data-nav-footer='1'
-                sx={{
-                    flexShrink: 0,
-                    borderTop: "1px solid rgba(128,128,128,0.18)",
-                    pt: 0.5,
-                    pb: 0.5,
-                    position: "sticky",
-                    bottom: 0,
-                    // ⚠️ 同上：这块以前写死 background.paper，于是「背景色」设置
-                    // （暖白 / 纯白）对它无效 —— 用户报「左下角归档和用户名那一块
-                    // 的颜色不会变」。透明即可跟随页面根背景。
-                    bgcolor: "transparent",
-                }}
-            >
-                <Stack sx={{ px: 0.75, gap: 0.25 }}>
-                    {/* 附件管理（2026-10-19 取代原来的「待办」行）：点开右侧抽屉，
-                        列表 / 预览 / 重命名 / 删除 / 清理全在里面。
-                        ⚠️ 门控要和管理器本体一致（list + delete 都得有）：
-                        只按 listAttachments 判断的话，老部署上会出现一个入口，
-                        点开却因为删除能力缺失而整个抽屉挂掉。
-                        ⚠️ 这里刻意**不给 data-view**：它不是视图，选中态也就没有意义
-                        （原来那行待办也不是视图，但挂了 data-view="todo"，
-                        导致 `button[data-view]` 的视图清单里混进一个非视图）。 */}
-                    {uploadApi?.listAttachments && uploadApi?.deleteAttachment && (
-                        <NavRow
-                            label="附件"
-                            count={0}
-                            icon={<AttachmentIcon sx={{ fontSize: 15 }} />}
-                            selected={attManagerOpen}
-                            onClick={() => {
-                                setAttManagerOpen(true);
-                                setNavDrawerOpen(false);
-                            }}
-                            data-nav-attachments='1'
-                            title='管理附件（预览 / 重命名 / 删除 / 清理未引用）'
-                        />
-                    )}                    {(
-                        [
-                            ["archived", "归档", viewCounts.archived],
-                            ["trash", "回收站", viewCounts.trash],
-                        ] as const
-                    ).map(([key, label, count]) => (
-                        <NavRow
-                            key={key}
-                            label={label}
-                            count={count}
-                            selected={view === key}
-                            onClick={() => {
-                                setView(key);
-                                setActiveFolder(null);
-                                setActiveTag(null);
-                                // ⚠️ 这两个入口也要把中栏放出来：用户刚点过「收起列表」，
-                                // 再点归档 / 回收站会只剩导航列 —— 屏幕上什么都没有，
-                                // 看着就像这两个入口坏了（顶部四个入口已经处理过）。
-                                setMiddleHidden(false);
-                                setNavDrawerOpen(false);
-                            }}
-                            data-view={key}
-                        />
-                    ))}
-                </Stack>
-                {/* 账号 + 设置：inkstone 左下角那一行。没传账号名就显示「未登录」，
-                    点设置没回调就不给按钮（老部署/未登录都不该是死按钮）。 */}
-                <Box
-                    sx={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 0.5,
-                        px: 0.75,
-                        pt: 0.5,
-                        mt: 0.25,
-                        borderTop: "1px solid rgba(128,128,128,0.12)",
-                    }}
-                >
-                    <Avatar
-                        data-nav-account='1'
-                        alt={accountName || "未登录"}
-                        sx={{ width: 22, height: 22, fontSize: 11, bgcolor: "var(--accent)" }}
-                    >
-                        {(accountName || "?").slice(0, 1).toUpperCase()}
-                    </Avatar>
-                    <Typography
-                        variant='body2'
-                        data-account-name='1'
-                        sx={{
-                            flex: 1,
-                            minWidth: 0,
-                            fontSize: 12,
-                            color: "text.secondary",
-                            overflow: "hidden",
-                            textOverflow: "ellipsis",
-                            whiteSpace: "nowrap",
-                        }}
-                    >
-                        {accountName || "未登录"}
-                    </Typography>
-                    {/* 设置：打开记事本自己的设置（外观 / 编辑器），不再复用导航站配置。
-                        「收起笔记列表」2026-10-10 挪到顶栏右侧（原返回箭头的位置）。 */}
-                    <Tooltip title='设置'>
-                        <IconButton
-                            size='small'
-                            aria-label='设置'
-                            data-tool='settings'
-                            onClick={() => setSettingsOpen(true)}
-                            sx={{ p: 0.25 }}
-                        >
-                            <SettingsIcon fontSize='inherit' />
-                        </IconButton>
-                    </Tooltip>
-                </Box>
-            </Box>
-            </>
-    );
-
-    const listPane = (        <Box
-            sx={{
-                // 阶段二：折叠后收成 44px 的图标轨（平时是【导航列 + 列表列】两列并排）
-                // ⚠️ 两条缝（9px 命中区）也算进总宽，否则拖到最宽时右边界会溢出一点。
-                // 选中文件夹时只剩导航列一栏（笔记内联在里面），总宽要把列表列那份让出来。
-                //
-                // ⚠️ 2026-10-07 重写：原来写的是 `{ xs: "100%", md: navW + listW + 14 }`。
-                // `xs: "100%"` 是个**陷阱**：窄屏下它让左栏吃掉整行，编辑区就被压成 0 宽
-                // （真机量到 edW=0，整块看不见）。而 MUI 的 md 是 900px，
-                // 跟 inkstone 的 1180/768 两条线根本不是一回事。
-                // 现在按 usePanelBreakpoint 的三档显式给宽度：
-                //   mobile  100%（两屏切换时它就是整屏）
-                //   tablet  只有列表列（导航列不内联渲染，走顶部 44px 栏 + 抽屉；
-                //           中栏关掉时整个左区让位给编辑区，见主行那层的 display）
-                //   desktop listHidden → 只剩导航列；否则导航 + 列表
-                //
-                // ⚠️⚠️ 「两条缝」只值 **1px**，不是 9px，更不是 18px（2026-10-07 用户报
-                // 「拖动绿线右边有一条竖长条」，红框圈的就是这段空隙）。
-                //
-                // 几何账：每条把手 `width: 9px` + `mx: -4px` —— 负边距让它向两侧各溢出 4px，
-                // 所以它**净占 9 − 4 − 4 = 1px**。之前这里写 `+18`（= 9 + 9，把两条把手
-                // 都按满宽算），于是：
-                //   真实右边界 = navW + listW + 5   （最后一条把手只露 5px）
-                //   给定宽度   = navW + listW + 18
-                //   多出 13px 的**空白带**，夹在列表列与编辑区之间。真机逐列读像素确认：
-                //   列表列 right=336 → 编辑区 left=354，中间 337..353 什么都没有，
-                //   而发丝线在 337 —— 视觉上就是「一条竖长条」。
-                //
-                // inkstone 那边压根不给这个数（AppShell.tsx:95-107：每列各自
-                // `shrink-0` + 定宽，Resizer 是它们之间的兄弟节点，浏览器自然排布，
-                // 零死空间）。我们把两列塞进同一个容器，只能自己算这个账，
-                // 那就按 `每条把手净占 1px` 来算：
-                //   两条把手 = +2；最后一条把手还会往右露 5px（9 − 4），那 5px 归容器。
-                // 所以总数 = navW + listW + 9 - 4 + 1×1 = navW + listW + 6。
-                width: bp === "mobile"
-                    ? "100%"
-                    : bp === "tablet"
-                      ? listCollapsed
-                        ? 44
-                        : listW + 5
-                      : listCollapsed
-                        ? 44
-                        : listHidden
-                          ? navW + 5
-                          : navW + listW + 6,
-                flexShrink: 0,
-                // 折叠成 44px 轨道时，任何子元素都不许溢出压到右边的编辑区
-                overflow: "hidden",
-                // ⚠️ 这里**不能**再画右边框（2026-10-07 用户报「分割线太粗」）。
-                // 两条缝（nav|list、list|editor）各自有一个 9px 命中区 + 1px 发丝线，
-                // 线就画在命中区正中；这个盒子是它们的**共同祖先**，它的 borderRight
-                // 落在最右那条命中区的右边 12px 处，于是屏幕上出现两条线：
-                //   x=487 发丝线（list|editor 那条）
-                //   x=500 本行的 borderRight
-                // 看着就是「分割线粗了一截」。inkstone 那边同理 —— AppShell 的
-                // flex 容器不带边框，边框只由 Resizer 的那根 span 负责。
-                // 真机量过：去掉之后 list|editor 边界上只剩 1 条 1px 线。
-                // borderRight: { md: "1px solid var(--card-border)" },
-                // ⚠️ 这里改成了**横向**排列：左栏现在自己就是两列（导航 | 列表）。
-                // 原来是一整个竖列里塞「搜索框 + 六个视图按钮 + 笔记列表」——
-                // 300px 宽里三样挤一起，列表只剩 200 出头，月份分组标题一换行就漏字。
-                display: "flex",
-                alignItems: "stretch",
-                minHeight: 0,
-            }}
-        >
-            {/* ⚠️ 折叠态必须把**搜索框和视图导航也一起藏掉**：
-                之前只藏了计数和列表，44px 宽的轨道里塞着三个「全部/最近/收藏」按钮，
-                文字直接溢出压到右边的编辑区上（用户报「收齐后文字重叠」）。
-                轨道里只留一个展开按钮。 */}
-            {listCollapsed ? (
-                // 折叠态：44px 轨道里只留两个按钮（2026-10-10 用户要求再调整）：
-                // **「展开笔记列表」在上、「返回导航站」在下**。
-                // 历史沿革：2026-10-07 先按 inkstone 把展开键挪到轨道底部；用户实际用下来
-                // 觉得「返回」更该占底部（和左下角导出/归档那排同一高度、顺手），
-                // 于是两个按钮整体互换。样式/尺寸/间距一律不动（size='small'、gap 0.5、
-                // justifyContent: space-between），只换 DOM 顺序。
-                <Box
-                    data-collapsed-rail='1'
-                    sx={{
-                        display: "flex",
-                        flexDirection: "column",
-                        alignItems: "center",
-                        justifyContent: "space-between",
-                        py: 1,
-                        gap: 0.5,
-                    }}
-                >
-                    <Tooltip title='展开笔记列表' placement='right'>
-                        <IconButton
-                            aria-label='展开笔记列表'
-                            data-tool='expand-pane'
-                            size='small'
-                            onClick={() => setListCollapsed(false)}
-                        >
-                            <LastPageIcon fontSize='small' />
-                        </IconButton>
-                    </Tooltip>
-                    <Tooltip title='返回导航站'>
-                        <IconButton aria-label='返回导航站' onClick={onClose} size='small'>
-                            <ArrowBackIcon fontSize='small' />
-                        </IconButton>
-                    </Tooltip>
-                </Box>
-            ) : (
-            <>
-            {/* ================= 第一列：导航 / 文件夹 / 标签 =================
-                这一列自己滚（overflowY: auto）：整块一起滚会把搜索框顶出视野，
-                而搜索框是「随时都想用得上」的，不能被笔记列表推走。 */}
-            {!narrowLayout && (
-            <Box
-                data-nav-col='1'
-                sx={{
-                    width: navW,
-                    flexShrink: 0,
-                    // 导航列 desktop 常驻；窄屏走顶部 44px 栏 + 272px 导航抽屉（内容同 navInner）。
-                    display: "flex",
-                    flexDirection: "column",
-                    minHeight: 0,
-                    // ⚠️ 这里原来有 borderRight，已去掉（2026-10-07）。
-                    // 右边已经有「拖动调整导航列宽度」那条带发丝线的把手了，
-                    // 两者叠在一起 = 2px 粗线。inkstone 的 Sidebar 也没有边框
-                    // （`bg-[var(--bg-sunken)]` 而已），线只由 Resizer 负责。
-                    // 真机量过：nav|list 边界只剩 1 条 1px 线。
-                    // borderRight: "1px solid var(--card-border)",
-                    // ⚠️ 这一列**自己不再滚**：改成「上半可滚 + 底部固定」。
-                    // 之前整列 overflowY:auto，归档/回收站/账号被文件夹挤到视野外。
-                    overflow: "hidden",
-                    py: 1,
-                    // 三栏背景分层（inkstone）：导航站最沉（--bg-sunken）
-                    bgcolor: "var(--bg-sunken)",
-                }}
-            >
-            {navInner}
-            </Box>
-            )}
-            {/* 导航列 ↔ 列表列之间的可拖缝。
-                ⚠️⚠️ 它必须在导航列这个 Box **外面**：里面是 flex-direction: column，
-                放进去会被压成 0 高度、贴到 x=0，真实鼠标根本点不中 ——
-                而页内 dispatchEvent 合成事件是直接派发给元素的、不做命中测试，
-                所以单测和合成事件探针都会「通过」，真机却拖不动（2026-10-06 踩过）。
-                ⚠️ 选中文件夹时中间栏整个不渲染，但这条缝**仍要保留** ——
-                否则关闭列表后导航列就再也拖不宽了（2026-10-08 用户报）。
-                只有「导航列本身不显示」时才收：tablet 起整列 display:none、收起态只剩 44px 轨道。
-                ⚠️ tablet 起导航列整列 display:none，这条缝也要一起收 ——
-                否则左边凭空多出一条 9px 命中区，视觉上像「还有第三栏」。 */}
-            {!listCollapsed && !narrowLayout && (
-                <ColResizeHandle
-                    label='拖动调整导航列宽度'
-                    onDrag={startDrag('nav')}
-                    onReset={reset('nav')}
-                />
-            )}
-
-            {/* ================= 第二列：笔记列表 =================
-                ⚠️ 选中文件夹时**整列不渲染**（inkstone 的文件夹树）：
-                笔记已经直接列在左栏那个文件夹下面了，中间再来一栏是同一批内容，
-                白占 200 多 px，还会让人以为是两份不同的笔记。
-                ⚠️ mobile（<768）例外：**永远渲染**这一列。关中栏/聚焦文件夹都是
-                桌面/平板态，mobile 没有导航抽屉可回，列表列是唯一入口 ——
-                就算带着残留状态缩到 mobile，也不能藏成空白带。 */}
-            {(!listHidden || bp === "mobile") && (
-            <>
-            <Box
-                data-list-col='1'
-                sx={{
-                    width: listW,
-                    // ⚠️ 不能留 `flex: 1`：那会让浏览器按容器剩余空间重新分配，
-                    // 实测「设定 208 → 量出来 221」，于是拖完存进 localStorage 的值
-                    // 和真正渲染出来的宽度差 13px，刷新后列宽会莫名其妙跳一下。
-                    // 宽度既然由用户拖定了，就让它**设定即所得**。
-                    flexShrink: 0,
-                    minWidth: 0,
-                    minHeight: 0,
-                    display: "flex",
-                    flexDirection: "column",
-                    // ⚠️ 2026-10-07：原来这里是 py:1（上下各 8px）。顶栏拆掉后
-                    // 「直达页顶」就靠这一栏 —— 留着上内边距的话，中栏头部会比
-                    // 导航列低一截，看着还是像被什么压着。留 pb 就行。
-                    pb: 1,
-                    // 三栏背景分层（inkstone）：中栏是 --bg-base，夹在
-                    // 导航站的 --bg-sunken 与编辑区的 --bg-editor 之间。
-                    bgcolor: "var(--bg-base)",
-                }}
-            >
-            {/* ⚠️ 搜索框只在 mobile 挂在列表列头部；tablet 的搜索搬到了顶部
-                44px 栏（见 data-tablet-bar，与 inkstone 的顶栏同位）。两个位置
-                互斥挂载，共用 searchRefNarrow 不会打架。 */}
-            {bp === "mobile" && (
-                <Box sx={{ px: 1.5, pt: 1, pb: 0.5, flexShrink: 0 }}>
-                    {renderSearchField(searchRefNarrow)}
-                </Box>
-            )}
-            {/* 中栏头部（inkstone：视图名 + 右上角 排序 / 新建 / 收起）。
-                回收站视图不給这三个按钮（那里没有「新建」语义，排序无意义）。 */}
-            {view !== "trash" && (
-                <Box
-                    data-list-header='1'
-                    sx={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 0.25,
-                        px: 1.5,
-                        pt: 1,
-                        pb: 0.5,
-                        flexShrink: 0,
-                    }}
-                >
-                    <Typography
-                        variant='body2'
-                        sx={{ flex: 1, fontWeight: 600, fontSize: 13.5, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
-                    >
-                        {view === "search"
-                            ? "全文搜索"
-                            : view === "all"
-                              ? "所有笔记"
-                              : view === "recent"
-                                ? "最近"
-                                : view === "starred"
-                                  ? "收藏"
-                                  : view === "uncategorized"
-                                    ? "未归类"
-                                    : "归档"}
-                    </Typography>                    {/* 多选（2026-10-09，inkstone 的批量条）：开了才在每行显示勾选框，
-                        底部出现批量条。平时不显示 —— 128px 的窄列表里常驻一列勾选框
-                        会把标题挤没，而批量操作（归档 / 删除一批）本来就是低频动作。 */}
-                    <Tooltip title={multiSelect ? "退出多选" : "多选"}>
-                        <IconButton
-                            size='small'
-                            aria-label={multiSelect ? "退出多选" : "多选"}
-                            data-tool='multiselect'
-                            onClick={() => {
-                                setMultiSelect(v => !v);
-                                setChecked(new Set());
-                            }}
-                            sx={{
-                                p: 0.4,
-                                color: multiSelect ? "var(--accent)" : "text.secondary",
-                            }}
-                        >
-                            {multiSelect ? (
-                                <CheckBoxIcon fontSize='inherit' />
-                            ) : (
-                                <CheckBoxOutlineBlankIcon fontSize='inherit' />
-                            )}
-                        </IconButton>
-                    </Tooltip>
-                    <Tooltip title='排序'>
-                        <IconButton
-                            size='small'
-                            aria-label='排序'
-                            data-tool='sort'
-                            onClick={e => setSortAnchor(e.currentTarget)}
-                            sx={{ p: 0.4 }}
-                        >
-                            <SortIcon fontSize='inherit' />
-                        </IconButton>
-                    </Tooltip>
-                    <Tooltip title='新建笔记'>
-                        <IconButton
-                            size='small'
-                            aria-label='新建笔记'
-                            data-tool='list-new-note'
-                            onClick={() => void startCreateInFolder(activeFolder)}
-                            sx={{ p: 0.4 }}
-                        >
-                            <NoteAddIcon fontSize='inherit' />
-                        </IconButton>
-                    </Tooltip>
-                    <Tooltip title='收起列表'>
-                        <IconButton
-                            size='small'
-                            aria-label='收起列表'
-                            data-tool='collapse-list'
-                            // mobile 不给这个入口：mobile 没有导航抽屉可回，
-                            // 关掉列表列 = 屏幕上没有任何导航入口（inkstone 同）。
-                            // tablet 关掉后左区让位给编辑区，导航走顶部 44px 栏的
-                            // 「导航栏」按钮手动开（2026-10-09 用户明确：不要自动弹抽屉）。
-                            onClick={() => setMiddleHidden(true)}
-                            sx={{ p: 0.4, ...(bp === "mobile" ? { display: "none" } : {}) }}
-                        >
-                            <CloseIcon fontSize='inherit' />
-                        </IconButton>
-                    </Tooltip>
-                    {/* 返回箭头贴页面右上角（2026-10-09 用户明确）：mobile 列表屏的
-                        退出入口挂在中栏头部行最右（tablet 在顶部 44px 栏最右）。 */}
-                    {bp === "mobile" && (
-                        <Tooltip title='返回导航站'>
-                            <IconButton
-                                size='small'
-                                aria-label='返回导航站'
-                                data-tool='back-out'
-                                onClick={onClose}
-                                sx={{ p: 0.4 }}
-                            >
-                                {/* ⚠️ 箭头**朝左**（2026-10-09 用户明确）：这里是「返回导航站」，
-                                    ArrowBackIcon 本身就是朝左的，不要再 scaleX(-1) 翻成朝右。 */}
-                                <ArrowBackIcon fontSize='inherit' />
-                            </IconButton>
-                        </Tooltip>
-                    )}
-                </Box>
-            )}
-
-            {notes.length > 0 && (                <Typography
-                    variant='caption'
-                    color='text.secondary'
-                    sx={{ px: 2, pb: 0.75 }}
-                >
-                    {view === "search" && keyword.trim()
-                        ? `搜到 ${filtered.length} 条`
-                        : `共 ${filtered.length} 条`}
-                    {pinnedCount > 0 ? `，${pinnedCount} 条置顶` : ""}
-                </Typography>
-            )}
-
-            <Box
-                data-note-list='1'
-                sx={{
-                    flex: 1,
-                    overflowY: "auto",
-                    minHeight: 0,
-                    pb: 1,
-                    // ⚠️ P1-5：切视图 / 切文件夹时整列淡入（inkstone 同款）。
-                    // 注意 inkstone 是把动画挂在**列表容器**上（NoteList.tsx:310
-                    // `anim-view-content`），不是每一行 —— 逐行动画会让长列表像在逐个蹦。
-                    // key 用 view + 文件夹 + 标签，跟 inkstone 的
-                    // `key={`${view}:${folderId ?? ''}:${tag ?? ''}`}` 一致。
-                    animation: "noteListFadeIn 220ms cubic-bezier(0.2, 0, 0, 1) both",
-                }}
-                key={`${view}:${activeFolder ?? ''}:${activeTag ?? ''}`}
-            >
-                {view === "trash" ? (
-                    // 阶段三：回收站。条目不能点开编辑（它已经不在 notes 表里了），
-                    // 只给「还原」和「彻底删除」两个动作。
-                    trashPane
-                ) : filtered.length === 0 ? (
-                    // 空状态：照 inkstone 的 8 种场景各给一句文案 + 一张手绘插画。
-                    // ⚠️ 之前只有一句「还没有笔记 / 没有匹配的笔记」，
-                    // 同一个空白出现在 6 种情况下，用户不知道是「没笔记」还是「筛没了」。
-                    <EmptyState
-                        art={emptyArt}
-                        title={emptyCopy.title}
-                        description={emptyCopy.desc}
-                        action={
-                            // ⚠️ P1-7（2026-10-07）：条件对齐 inkstone（NoteList.tsx:684）
-                            //   `view !== 'trash' && view !== 'archived'`
-                            // 之前只有 `all` / `search` 两个视图给按钮，于是
-                            // 「最近」「收藏」「未归类」「某个文件夹」空的时候
-                            // 只有一句说明、没有下一步入口 —— 而这几种视图里
-                            // 「新建一条」完全合理（甚至更该给）。
-                            //
-                            // ⚠️ `view !== "trash"` 这个判断在**这个分支里是恒真的**：
-                            // 回收站在进列表之前就被 `view === "trash"` 提前短路了
-                            //（TS2367 会报 "no overlap"，它说得对）。
-                            // 所以这里只需排除「归档」—— 归档是唯一还能走到列表
-                            // 却不该给「新建」入口的视图（在归档里新建没有语义）。
-                            view !== "archived" ? (
-                                <Box sx={{ display: "flex", gap: 1, justifyContent: "center", flexWrap: "wrap" }}>
-                                {notes.length === 0 && <Button size='small' onClick={() => notesCommands.find(command => command.id === "welcome")?.run()}>
-                                    创建欢迎示例笔记
-                                </Button>}
-                                <Button
-                                    size='small'
-                                    variant='outlined'
-                                    startIcon={<NoteAddIcon fontSize='inherit' />}
-                                    onClick={() => void startCreateInFolder(activeFolder)}
-                                >
-                                    新建笔记
-                                </Button>
-                                </Box>
-                            ) : undefined
-                        }
-                    />
-                ) : (
-                    listGroups.map(group => (
-                        <Box key={group.key}>
-                            {/* 分组标题：10.5px / 加粗 / 0.06em 字距（inkstone 的
-                                `text-[10.5px] font-semibold tracking-[0.06em]`）。
-                                中文没有「全大写」，靠字距 + 更淡的颜色区分层次。
-                                ⚠️ label 为空 = 按标题排序时的「不分组」，整条不渲染 ——
-                                inkstone 那边也是 label 为 null 就不画标题。 */}
-                            {group.label && (
-                                <Typography
-                                    variant='caption'
-                                    color='text.disabled'
-                                    data-month={group.label}
-                                    sx={{
-                                        display: "block",
-                                        px: 2,
-                                        pt: 1.5,
-                                        pb: 0.5,
-                                        fontSize: 10.5,
-                                        fontWeight: 600,
-                                        letterSpacing: "0.06em",
-                                        borderRadius: "6px",
-                                        // ⚠️ P1-4：分组标题加一点 hover 反馈。
-                                        // inkstone 的分组标题是纯静态的（NoteList.tsx:312），
-                                        // 没有 hover —— 它靠 `motion-note-row` 的入场动画
-                                        // 表达「这批是新的」。我们补一个极轻的底色，
-                                        // 纯装饰、不改字号（改字号会让整列在 hover 时抖）。
-                                        transition: "background-color 120ms ease",
-                                        "@media (hover: hover) and (pointer: fine)": {
-                                            "&:hover": { bgcolor: "rgba(128,128,128,0.06)" },
-                                        },
-                                    }}
-                                >
-                                    {group.label}
-                                </Typography>
-                            )}
-                            {/* 组级懒挂载：长列表里视口外的组先不建 React 元素 / DOM。
-                                条数低于阈值时 enabled=false，渲染期直接短路成全量渲染。 */}
-                            <LazyGroup
-                                enabled={lazyListGroups}
-                                placeholderHeight={
-                                    group.items.length *
-                                    (uiSettings.density === "compact" ? 56 : 96)
-                                }
-                            >
-                            {group.items.map(note => {
-                        const isActive = note.id === activeId;
-                        // ⚠️ 菜单锚点状态必须挂在组件上，**不能**在 map 回调里 useState：
-                        // map 是普通回调不是组件，hooks 在里面就是违反规则
-                        // （渲染顺序一变，状态就会串到别的行上）。
-                        const menuOpen = rowMenu?.noteId === note.id;
-                        return (
-                            <Box
-                                key={note.id}
-                                data-note-id={note.id}
-                                className='note-dense-row'
-                                draggable={note.id !== undefined}
-                                onDragStart={e => {
-                                    e.dataTransfer.setData("application/navihive-note", String(note.id));
-                                    e.dataTransfer.effectAllowed = "move";
-                                    setDraggingNoteId(note.id ?? null);
-                                }}
-                                onDragEnd={() => setDraggingNoteId(null)}
-                                role='button'
-                                tabIndex={0}
-                                // 行内时间戳删掉之后，精确时刻改挂到整行上：
-                                // 想要「上周三下午改的」仍然 hover 一下就有。
-                                title={formatWhen(note.updated_at || note.created_at)}
-                                onClick={e => {
-                                    const id = note.id;
-                                    if (id === undefined) return;
-                                    // ⌘/Ctrl+点 = 切换这一条选中。
-                                    // 顺手 **进入多选态**：要 Ctrl 点的人就是想选多条，
-                                    // 再让他先去点那个「多选」按钮是多一遍 sneak-preview 的流程。
-                                    if (e.metaKey || e.ctrlKey) {
-                                        e.preventDefault();
-                                        setMultiSelect(true);
-                                        toggleChecked(id);
-                                        selectAnchorRef.current = id;
-                                        return;
-                                    }
-                                    // Shift+点 = 从锚点一路选到这一条（两端都算）。
-                                    // ⚠️ 按**渲染顺序**取、
-                                    // e.preventDefault 是为了不让浏览器选中一屏文字。
-                                    if (e.shiftKey) {
-                                        e.preventDefault();
-                                        const anchor = selectAnchorRef.current;
-                                        const a = anchor === null ? -1 : visibleIds.indexOf(anchor);
-                                        const b = visibleIds.indexOf(id);
-                                        setMultiSelect(true);
-                                        if (a >= 0 && b >= 0) {
-                                            const [lo, hi] = a <= b ? [a, b] : [b, a];
-                                            setChecked(new Set(visibleIds.slice(lo, hi + 1)));
-                                        } else {
-                                            // 没有可用的锚点（刚进页面还没点过行）→ 退化成切这一条
-                                            toggleChecked(id);
-                                        }
-                                        // ⚠️ 锚点**不跟着 Shift 点移动**：连着 Shift 点第三次时，
-                                        // 该从最初那条算起，而不是第二次那条（否则范围会越缩越小）。
-                                        return;
-                                    }
-                                    selectAnchorRef.current = id;
-                                    if (dirty) void switchTo(id);
-                                    else openNote(note);
-                                }}
-                                onKeyDown={e => {
-                                    if (e.key === "Enter" || e.key === " ") {
-                                        e.preventDefault();
-                                        openNote(note);
-                                    }
-                                }}
-                                onContextMenu={e => {
-                                    // 右键行 = 打开完整操作菜单（inkstone 同款交互）
-                                    e.preventDefault();
-                                    // ⚠️ 开菜单前必须把焦点摘掉（2026-10-07/10-18 两轮
-                                    // 「白色圆点」）：焦点停在行或行内「⋯」按钮上时，
-                                    // 菜单关掉后 Modal 把焦点还原回来，圆形按钮常显。
-                                    // 活动元素可能是行内按钮，行自身 blur 摘不掉它。
-                                    (e.currentTarget as HTMLElement).blur();
-                                    (document.activeElement as HTMLElement | null)?.blur?.();
-                                    if (note.id === undefined) return;
-                                    // ⚠️ 锚在鼠标处：锚整行左上角的话菜单跟指针没关系（用户报「固定位置」）
-                                    setRowMenu({
-                                        noteId: note.id,
-                                        el: anchorAtMouse(e.clientX, e.clientY),
-                                        source: "list",
-                                    });
-                                }}
-                                onMouseLeave={() => {
-                                    // 菜单关闭后的悬停抑制到「离开这一行」为止：
-                                    // 离开再进来是新的悬停意图（见 rowActionsSuppressed）
-                                    setRowActionsSuppressed(prev => (prev === note.id ? null : prev));
-                                }}
-                                sx={{
-                                    // 列表不在视口里的行跳过渲染（布局仍占位）—— inkstone 的
-                                    // NoteList.tsx:497 同款写法。几百条笔记时这是差别最大的一处：
-                                    // 每次打字/滚动，浏览器都只需要重算「当前这一屏」的行。
-                                    // ⚠️ containIntrinsicSize 必须给：它是「没渲染时先占多高」的
-                                    // 估计值。不给的话离屏行按 0 高算，滚动条长度会随滚动跳动。
-                                    // 数值照 inkstone 的两档（紧凑 42 / 舒适 72），但我们的行
-                                    // 多了标签徽章那一行，所以各放宽到它的合理量级。
-                                    contentVisibility: "auto",
-                                    containIntrinsicSize:
-                                        uiSettings.density === "compact" ? "auto 56px" : "auto 96px",
-                                    // ⚠️ P0-2：行内操作按钮改成绝对定位后，行必须是定位上下文
-                                    position: "relative",
-                                    mx: 0.75,
-                                    mb: 0.25,
-                                    px: 1.25,
-                                    // 右侧给绝对定位的「⋯」预留位置（inkstone 的 pr-11）——
-                                    // 不预留的话标题会顶到按钮底下
-                                    pr: 5,
-                                    py: 0.9,
-                                    borderRadius: 1.5,
-                                    cursor: "pointer",
-                                    // ⚠️ 2026-10-07 去掉 3px 左边框 + 强调色：它在「选中文件夹 →
-                                    // 笔记内联在左栏」时被拉成贯穿整屏的青绿色带（真机读像素：
-                                    // rgb(20,184,166)，y=0..911 全中，x=599..601）。用户原话
-                                    // 「拖动绿线的右边笔记编辑的左边有一竖长条去除他」。
-                                    // inkstone 的选中行没有左边框（NoteList.tsx:519-523），
-                                    // 靠软底 + 淡描边表达选中 —— 照它改。
-                                    border: "1px solid",
-                                    borderColor: isActive
-                                        ? "color-mix(in srgb, var(--accent) 40%, transparent)"
-                                        : "transparent",
-                                    bgcolor: isActive
-                                        ? "color-mix(in srgb, var(--accent) 12%, transparent)"
-                                        : "transparent",
-                                    // 拖起来的那一行半透明：告诉用户「手上抓的是这条」
-                                    opacity: draggingNoteId === note.id ? 0.45 : 1,
-                                    transition: "background-color 120ms ease, opacity 120ms ease, transform var(--dur-base, 220ms) var(--ease-out, ease)",
-                                    // 菜单按钮平时藏起来，hover / 键盘聚焦才出 —— 和 inkstone 一致，
-                                    // 128px 的窄列里常驻一个按钮会把标题挤没。
-                                    // ⚠️ 不能用 :focus-within（2026-10-18 用户再报「右键菜单关掉
-                                    // 后留一颗白色圆圈」）：菜单关闭时 MUI Modal 会把焦点**还原**
-                                    // 给打开前的元素（之前点过 ⋯ 按钮就是它），还原焦点虽是
-                                    // 程序化 focus，:focus-within 一样命中 → ⋯ 常显成一颗圆点。
-                                    // 改用 :has(:focus-visible)：程序化还原不匹配（最后一次
-                                    // 交互是指针），键盘 Tab 进按钮仍然匹配 —— 两头都对。
-                                    // ⚠️ hover 显隐还要看行级抑制（第五报）：菜单关闭时指针
-                                    // 仍停在该行，300ms 抑制一过 hover 规则会把「⋯」突然
-                                    // 弹出来（右键点多在行右侧 = ⋯ 的位置，用户看着就是
-                                    // 「关闭瞬间闪白圈」）。被抑制的行 hover 不显示，
-                                    // 直到 onMouseLeave 清除。
-                                    "&:hover .note-row-actions": {
-                                        opacity: rowActionsSuppressed === note.id ? 0 : 1,
-                                    },
-                                    "&:has(.note-row-actions:focus-visible) .note-row-actions": {
-                                        opacity: 1,
-                                    },
-                                    "&:hover": { bgcolor: "rgba(128,128,128,0.08)" },
-                                    // inkstone 的「悬停时整行右移 2px」——
-                                    // 一个很小的动作，但让列表「活」起来：指针扫过去时
-                                    // 能看出当前落在哪一条上，光靠底色变化是不够的。
-                                    // ⚠️ 必须限在 `@media (hover: hover) and (pointer: fine)`：
-                                    // 触屏上 sticky hover 会在点完那一瞬间还生效，行会歪一下。
-                                    "@media (hover: hover) and (pointer: fine)": {
-                                        "&:hover": { transform: "translateX(2px)" },
-                                    },
-                                }}
-                            >
-                                <Box
-                                    sx={{
-                                        display: "flex",
-                                        alignItems: "center",
-                                        gap: 0.5,
-                                    }}
-                                >
-                                    {/* 多选态：行首勾选框。⚠️ 点击必须 stopPropagation ——
-                                        整行自己是 role='button'，不拦住就顺手把笔记打开了。 */}
-                                    {multiSelect && (
-                                        <Checkbox
-                                            size='small'
-                                            slotProps={{
-                                                input: {
-                                                    "aria-label": `选择「${note.title || "无标题"}」`,
-                                                    "data-note-check": String(note.id),
-                                                } as never,
-                                            }}
-                                            checked={note.id !== undefined && checked.has(note.id)}
-                                            onClick={e => e.stopPropagation()}
-                                            onChange={() => {
-                                                if (note.id === undefined) return;
-                                                setChecked(prev => {
-                                                    const next = new Set(prev);
-                                                    if (next.has(note.id!)) next.delete(note.id!);
-                                                    else next.add(note.id!);
-                                                    return next;
-                                                });
-                                            }}
-                                            sx={{ p: 0.25, ml: -0.5, flexShrink: 0 }}
-                                        />
-                                    )}
-                                    {/* ⚠️ 必须先转布尔：pinned 存的是 0/1，
-                                        `0 && <Icon/>` 在 JS 里返回 0，React 会把它
-                                        当文本渲染出来 —— 列表里就冒出一个孤零零的 "0" */}
-                                    {Boolean(note.pinned) && (
-                                        <PushPinIcon fontSize='inherit' sx={{ color: "var(--accent)" }} />
-                                    )}
-                                    {/* 收藏的星标：与置顶分开显示（2026-10-09） */}
-                                    {Boolean(note.starred) && (
-                                        <StarIcon fontSize='inherit' sx={{ color: "var(--accent)" }} />
-                                    )}
-                                    <Typography
-                                        variant='body2'
-                                        // ⚠️ P0-1（2026-10-07）：字号对齐 inkstone 的四档阶梯
-                                        // （NoteList.tsx:530/539/544）：
-                                        //   标题 13px / 摘要 11.5px / 标签 10.5px
-                                        // 我们之前全交给 MUI 的 variant.body2/caption，在
-                                        // 128px 窄列里显得偏大 —— 摘要是两行、标签换行，
-                                        // 一行笔记能占掉 3~4 行，列表密度明显比 inkstone 稀。
-                                        sx={{
-                                            fontSize: 13,
-                                            lineHeight: 1.375,
-                                            // inkstone：选中用 semibold + accent 色，未选中 medium + 主色
-                                            fontWeight: isActive ? 600 : 500,
-                                            color: isActive ? "var(--accent)" : "var(--text-primary)",
-                                            overflow: "hidden",
-                                            textOverflow: "ellipsis",
-                                            whiteSpace: "nowrap",
-                                            flex: 1,
-                                            minWidth: 0,
-                                        }}
-                                    >
-                                        <Highlighted
-                                            text={note.title || "无标题"}
-                                            query={keyword.trim() || undefined}
-                                            ranges={highlightRanges.get(note.id ?? -1)}
-                                        />
-                                    </Typography>
-                                    {/* ⚠️ P0-2（2026-10-07）：行尾操作区改**绝对定位**（inkstone 同款）。
-                    之前这个「⋯」按钮在标题行的正常流里，hover 时 opacity 0→1 ——
-                    按钮「出现」会占位，把标题/摘要/标签**挤窄一点再重排**，
-                    于是指针扫过列表时每行都在抖。
-                    inkstone 的做法（NoteList.tsx:519 + 555）：
-                    行上 `pr-11 md:pr-10` **给按钮预留固定空间**，按钮本身
-                    `absolute top-1.5 right-1.5 opacity-0 group-hover:opacity-100`。
-                    这样标题宽度恒定，只有按钮在淡入。 */}
-                                    <IconButton
-                                        // 菜单关闭动画期间打 --closing 硬压 opacity
-                                        // （CSS !important，见 index.css）—— 防「弹窗
-                                        // 消失的瞬间冒出白圈」（2026-10-18 第四报）
-                                        className={`note-row-actions${menuClosing ? " note-row-actions--closing" : ""}`}
-                                        data-note-menu={note.id}
-                                        aria-label={`${note.title || "无标题"} 的操作`}
-                                        size='small'
-                                        onClick={e => {
-                                            // ⚠️ 必须 stopPropagation：这一行自己是 role='button'，
-                                            // 不拦住的话点菜单会顺带把笔记打开/切换过去。
-                                            e.stopPropagation();
-                                            // note.id 是可选类型（新建出来的那一瞬可能还没有），
-                                            // 这里窄化一次再用，别让 undefined 混进 state。
-                                            const id = note.id;
-                                            if (id === undefined) return;
-                                            setRowMenu(
-                                                menuOpen ? null : { noteId: id, el: e.currentTarget, source: "list" }
-                                            );
-                                        }}
-                                        sx={{
-                                            position: "absolute",
-                                            top: 6,
-                                            right: 4,
-                                            opacity: menuOpen ? 1 : 0,
-                                            // 关闭时不能淡出：淡出帧本身就是用户看到的闪白圈。
-                                            transition: menuClosing || rowActionsSuppressed === note.id ? "none" : "opacity 120ms ease",
-                                            visibility: menuClosing || rowActionsSuppressed === note.id ? "hidden" : "visible",
-                                            flexShrink: 0,
-                                            p: 0.25,
-                                            color: "text.secondary",
-                                            bgcolor: "var(--bg-base)",
-                                            borderRadius: "50%",
-                                        }}
-                                    >
-                                        <MoreVertIcon fontSize='inherit' />
-                                    </IconButton>
-                                </Box>
-                                <Typography
-                                    variant='caption'
-                                    color='text.secondary'
-                                    sx={{
-                                        display: "-webkit-box",
-                                        WebkitLineClamp: 2,
-                                        WebkitBoxOrient: "vertical",
-                                        overflow: "hidden",
-                                        // ⚠️ P0-1：inkstone 的摘要是 11.5px/1.5（NoteList.tsx:539），
-                                        // 我们跟着走 —— 之前用 caption（12px）偏大，两行就顶满一行笔记的高度
-                                        fontSize: 11.5,
-                                        lineHeight: 1.5,
-                                        mt: 0.5,
-                                    }}
-                                >
-                                    {/* 服务端给了命中片段就优先显示它（能看到**命中在哪**），
-                                        没有就照旧显示正文开头那一段 */}
-                                    {searchSnippets.get(note.id ?? -1) ||
-                                        summarize(note.content) ||
-                                        "空白笔记"}
-                                </Typography>
-                                {/* ⚠️ 这里原来有一行「3分钟前 / 昨天」的行内时间戳，
-                                    2026-10-07 按 inkstone 删掉了：时间信息已经由
-                                    **分组标题**承担（今天 / 昨天 / 本周 / 本月…），
-                                    每行再重复一遍就是同一句话说两遍 ——
-                                    而且窄列里这行字会把标签徽章挤到第二行。
-                                    精确时刻仍然拿得到：整行的 title 上有。 */}
-                                {/* 标签小徽章：让「这条笔记打了哪些标签」在列表里直接看得见，
-                                    不用点进去看。左栏那个标签视图才有意义也靠它。 */}
-                                {tagNamesOf(note, noteTags, tags).length > 0 && (
-                                    <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.5, mt: 0.5 }}>
-                                        {tagNamesOf(note, noteTags, tags).map(name => {
-                                            // 设了颜色的标签：文字与描边用本色、底色是它 12% 的薄涂 ——
-                                            // 直接填满本色的話，深色标签上的深色文字会看不清。
-                                            const c = tagColorByName.get(name.trim());
-                                            return (
-                                            <Box
-                                                key={name}
-                                                data-note-tag={name}
-                                                data-note-tag-color={c ?? ""}
-                                                sx={{
-                                                    px: 0.75,
-                                                    py: 0.1,
-                                                    fontSize: 10.5,
-                                                    lineHeight: 1.6,
-                                                    borderRadius: 999,
-                                                    ...(c
-                                                        ? {
-                                                              border: "1px solid transparent",
-                                                              borderColor: c,
-                                                              color: c,
-                                                              bgcolor: `color-mix(in srgb, ${c} 12%, transparent)`,
-                                                          }
-                                                        : {
-                                                              border: "1px solid var(--card-border)",
-                                                              color: "text.secondary",
-                                                              bgcolor: "rgba(128,128,128,0.08)",
-                                                          }),
-                                                }}
-                                            >
-                                                {name}
-                                            </Box>
-                                            );
-                                        })}
-                                    </Box>
-                                )}
-                            </Box>
-                        );
-                    })}
-                            </LazyGroup>
-                        </Box>
-                    ))
-                )}
-            </Box>
-
-            {/* 批量条（2026-10-09，inkstone 的批量操作条）：只在多选态出现，
-                逐条走各自的 onToggleArchive / onDelete —— 不新造批量接口，
-                省得「批量归档成功一半」这种中间态没人处理。 */}
-            {multiSelect && (
-                <Box
-                    data-bulk-bar='1'
-                    sx={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 0.5,
-                        px: 1,
-                        py: 0.75,
-                        flexShrink: 0,
-                        // 窄列表里四个按钮排不下会挤成两截 —— 允许换行，别把字压扁
-                        flexWrap: "wrap",
-                        borderTop: "1px solid rgba(128,128,128,0.16)",
-                        bgcolor: "rgba(128,128,128,0.06)",
-                    }}
-                >
-                    <Typography variant='caption' sx={{ flex: 1, minWidth: 0 }}>
-                        已选 {checkedNotes.length} 条
-                    </Typography>
-                    <Button
-                        size='small'
-                        variant='text'
-                        disabled={checked.size === 0}
-                        data-bulk-action='select-all'
-                        onClick={() =>
-                            setChecked(
-                                checkedNotes.length === filtered.length
-                                    ? new Set()
-                                    : new Set(
-                                          filtered
-                                              .map(n => n.id)
-                                              .filter((id): id is number => id !== undefined)
-                                      )
-                            )
-                        }
-                    >
-                        {checkedNotes.length === filtered.length && filtered.length > 0
-                            ? "全不选"
-                            : "全选"}
-                    </Button>
-                    <Button
-                        size='small'
-                        variant='text'
-                        disabled={checked.size === 0}
-                        data-bulk-action='archive'
-                        onClick={() => void bulkArchive()}
-                    >
-                        归档
-                    </Button>
-                    <Button
-                        size='small'
-                        variant='text'
-                        color='error'
-                        disabled={checked.size === 0}
-                        data-bulk-action='delete'
-                        onClick={() => setBulkDeleteOpen(true)}
-                    >
-                        删除
-                    </Button>
-                </Box>
-            )}
-
-            </Box>
-            {/* 列表列 ↔ 编辑区之间的可拖缝。同样必须在列表列这个 Box **外面** ——
-                里面是 flex-direction: column，放进去会塌成 0 高度、真实鼠标点不中。 */}
-            <ColResizeHandle
-                label='拖动调整笔记列表宽度'
-                onDrag={startDrag('list')}
-                onReset={reset('list')}
-            />
-            </>
-            )}
-            </>
-            )}
-        </Box>
-    );
-
-    const editorPane = (
-        <Box
-            data-editor-pane='1'
-            sx={{
-                flex: 1,
-                display: "flex",
-                flexDirection: "column",
-                minWidth: 0,
-                minHeight: 0,
-                // 三栏背景分层（inkstone）：编辑区最亮（--bg-editor）——
-                // 写字的那块板要最「平」，不然正文像贴在别的卡片上。
-                bgcolor: "var(--bg-editor)",
-            }}
-        >
-            {view === "trash" ? (
-                <Box sx={{ flex: 1, minHeight: 0 }}>
-                    <EmptyState
-                        art='trash'
-                        title='回收站里的笔记不能直接编辑'
-                        description='先「还原」回全部笔记，或者「彻底删除」。'
-                    />
-                </Box>
-            ) : !active ? (
-                <Box sx={{ flex: 1, minHeight: 0 }}>
-                    <EmptyState
-                        art='select'
-                        title='左边选一条笔记，或者新建一条'
-                        description='从中间那列点开就能编辑；按 Ctrl/⌘ + N 直接新建。'
-                    />
-                </Box>
-            ) : (
-                <>
-                    {/* 标题行（2026-10-07）：右侧是**这一栏自己的**按键栏 ——
-                        模式切换（编辑/分栏/预览）+「更多操作」。分屏时每栏各有一套，
-                        顶栏那排只对当前笔记生效的问题就没了（inkstone 同款布局）。 */}
-                    <Box data-pane-header='main' sx={{ display: "flex", alignItems: "center", flexShrink: 0, pr: 1, height: PANE_HEADER_H }}>
-                        <TextField
-                            variant='standard'
-                            value={draft?.title ?? ""}
-                            onChange={e =>
-                                setDraft(d => (d ? { ...d, title: e.target.value } : d))
-                            }
-                            placeholder='无标题'
-                            slotProps={{ input: { "aria-label": "笔记标题" } }}
-                            sx={{
-                                flex: 1,
-                                minWidth: 0,
-                                px: 2,
-                                // ⚠️ 高度/字号要与侧栏**完全一致**（PANE_HEADER_H / 18px）：
-                                // 两栏并排时头部一高一低，标题与工具栏就错位（用户报）。
-                                height: PANE_HEADER_H,
-                                "& .MuiInputBase-root": { fontSize: 18, fontWeight: 600 },
-                                "& .MuiInput-input": { padding: "6px 0" },
-                            }}
-                        />
-                        {/* 即时渲染（inkstone 顶栏同名开关）。
-                            ⚠️ 窄屏（<900px）不渲染（条件渲染，不是 display:none
-                            —— 得真的从 DOM 里卸掉）：同一个开关在「更多操作」菜单里
-                            有一份（见下面 data-active-op='live-render'）。
-                            ⚠️ 2026-10-10 用户明确：分屏（侧边打开）时主栏头部要和
-                            侧边栏头部**一模一样**（只是没有关闭键）—— 侧边栏头部
-                            常显这个开关，主栏也常显，不再收进菜单。 */}
-                        {!narrowLayout && (
-                        <Box sx={{ display: "flex", alignItems: "center", gap: 0.25, flexShrink: 0, mr: 0.5 }}>
-                            <Typography variant='caption' color='text.secondary' sx={{ fontSize: 11, whiteSpace: "nowrap" }}>
-                                即时渲染
-                            </Typography>
-                            <Switch
-                                size='small'
-                                checked={liveRender}
-                                onChange={e => setLiveRender(e.target.checked)}
-                                slotProps={{ input: { "aria-label": "即时渲染" } }}
-                                data-tool='live-render'
-                                sx={{ ml: 0 }}
-                            />
-                        </Box>
-                        )}
-                        {/* 模式切换：**框起来的一组图标**（inkstone 同款）。
-                            ⚠️ 之前是「宽屏文字按钮 + 小屏图标」两套，宽屏下三个
-                            「编辑/分栏/预览」文字把标题行撑得很宽，两栏并排时
-                            标题与工具栏都对不齐（用户报）。现在统一成图标 +
-                            外框，选中项填底色。aria-label 保持中文，测试与读屏不受影响。
-                            ⚠️ 2026-10-10 用户明确：分屏时这一组**回到头部常驻**，
-                            与侧边栏头部一致（侧边栏那组一直常显，半宽塞得下；
-                            之前收进菜单反而造成左右两侧头部不对称）。 */}
-                        <Box
-                            data-pane-modes='1'
-                            sx={{
-                                display: "flex",
-                                flexShrink: 0,
-                                border: "1px solid var(--card-border)",
-                                borderRadius: 1.5,
-                                overflow: "hidden",
-                            }}
-                        >
-                            {(
-                                [
-                                    ["edit", "编辑", <EditIcon fontSize='inherit' key='i' />],
-                                    ["split", "分栏", <VerticalSplitIcon fontSize='inherit' key='s' />],
-                                    ["preview", "预览", <VisibilityIcon fontSize='inherit' key='v' />],
-                                ] as const
-                            ).map(([key, label, icon]) => (
-                                <Tooltip key={key} title={label}>
-                                    <IconButton
-                                        aria-label={label}
-                                        title={label}
-                                        size='small'
-                                        onClick={() => setPane(key)}
-                                        sx={{
-                                            width: 30,
-                                            height: 28,
-                                            p: 0,
-                                            borderRadius: 0,
-                                            color: pane === key ? "var(--accent)" : "text.secondary",
-                                            bgcolor:
-                                                pane === key
-                                                    ? "color-mix(in srgb, var(--accent) 12%, transparent)"
-                                                    : "transparent",
-                                            "&:hover": { bgcolor: "rgba(128,128,128,0.12)" },
-                                            "& + &": { borderLeft: "1px solid var(--card-border)" },
-                                        }}
-                                    >
-                                        {icon}
-                                    </IconButton>
-                            </Tooltip>
-                    ))}
-                </Box>
-                        {/* 保存状态（inkstone 的 SaveIndicator 就挂在头部这一排）。
-                            之前它写在状态栏右端，于是那一行既报长度又报状态，26px 塞不下。 */}
-                        <SaveDot state={saveState} dirty={dirty} savedAt={savedAt} now={tick} />
-                        {/* ⚠️ P0-3（2026-10-07）：把两个高频动作从「⋯」里提到头部常驻。
-                            inkstone 的头部右侧是平铺的一排图标（Workspace.tsx:425-472）：
-                            更多 / 收藏 / 反向链接 / 版本历史 / 导出 / 大纲 / 分享。
-                            我们把分享/版本/大纲/反链都收进了「⋯」—— 收着不算错（窄栏更合理），
-                            但「收藏」和「大纲」是随手要用的，让用户先点开菜单再点一项太绕。
-                            所以只把这两个提成常驻按钮，其余仍留在「⋯」里。
-                            ⚠️ 2026-10-09 用户明确：**分屏（侧边打开）时照 inkstone 收进「更多」** ——
-                            半宽的两栏塞不下这排，头部只留三档 + 保存状态 + 「⋯」。
-                            条件渲染（不是 display:none）：元素要真的从 DOM 卸掉。 */}
-                        {sideId === null && (
-                        <Box sx={{ display: "flex", flexShrink: 0, alignItems: "center", gap: 0.25, mr: 0.5 }}>
-                            <Tooltip title={active?.pinned ? "取消置顶" : "置顶"}>
-                                <span>
-                                    <IconButton
-                                        size='small'
-                                        aria-label={active?.pinned ? "取消置顶" : "置顶"}
-                                        data-tool='pin'
-                                        disabled={!active}
-                                        onClick={() => active && void onTogglePin(active)}
-                                        sx={{
-                                            width: 28, height: 28,
-                                            color: active?.pinned ? "var(--accent)" : "text.secondary",
-                                        }}
-                                    >
-                                        {active?.pinned ? <PushPinIcon fontSize='small' /> : <PushPinOutlinedIcon fontSize='small' />}
-                                    </IconButton>
-                                </span>
-                            </Tooltip>
-                            {/* 收藏（与置顶分离，2026-10-09）：置顶管排序、收藏管「收藏」视图。
-                                老部署（onToggleStar 没传）不显示这一颗 —— 那时两套是同一个开关。 */}
-                            {onToggleStar && (
-                            <Tooltip title={active?.starred ? "取消收藏" : "收藏"}>
-                                <span>
-                                    <IconButton
-                                        size='small'
-                                        aria-label={active?.starred ? "取消收藏" : "收藏"}
-                                        data-tool='star'
-                                        disabled={!active}
-                                        onClick={() => active && void onToggleStar(active)}
-                                        sx={{
-                                            width: 28, height: 28,
-                                            color: active?.starred ? "var(--accent)" : "text.secondary",
-                                        }}
-                                    >
-                                        {active?.starred ? <StarIcon fontSize='small' /> : <StarBorderIcon fontSize='small' />}
-                                    </IconButton>
-                                </span>
-                            </Tooltip>
-                            )}
-                            <Tooltip title='大纲（本文标题列表）'>
-                                <IconButton
-                                    size='small'
-                                    aria-label='大纲'
-                                    data-tool='outline'
-                                    disabled={!active}
-                                    onClick={() => {
-                                        setOutlineOpen(o => !o);
-                                        setActiveMenuAnchor(null);
-                                    }}
-                                    sx={{
-                                        width: 28, height: 28,
-                                        color: outlineOpen ? "var(--accent)" : "text.secondary",
-                                    }}
-                                >
-                                    <ListIcon fontSize='small' />
-                                </IconButton>
-                            </Tooltip>
-                        </Box>
-                        )}
-                        {/* 桌面端把高频操作直接平铺（2026-10-08 照 inkstone Workspace 头部：
-                            收藏 / 反链 / 版本历史 / 导出 / 大纲 / 分享直接显示，
-                            「⋯」桌面端不再收纳它们；窄屏标题行窄，不渲染这组，仍走「⋯」）。
-                            ⚠️ 2026-10-09：分屏（侧边打开）时同样不渲染 —— 半宽塞不下，
-                            inkstone 分屏也是全收进 groupedItems 菜单，对应菜单项在
-                            分屏时会重新出现（见下面那组 narrowLayout || sideOpen 条件）。 */}
-                        {!narrowLayout && sideId === null && (
-                        <Box
-                            data-desktop-actions='1'
-                            sx={{ flexShrink: 0, alignItems: "center", gap: 0.25, mr: 0.5, display: "flex" }}
-                        >
-                            <Tooltip title={`反向链接（${backlinks.length}）`}>
-                                <span>
-                                    <IconButton
-                                        size='small'
-                                        aria-label='反向链接'
-                                        data-tool='backlinks'
-                                        disabled={!active}
-                                        onClick={() => setBacklinksOpen(o => !o)}
-                                        sx={{
-                                            width: 28, height: 28,
-                                            color: backlinksOpen ? "var(--accent)" : "text.secondary",
-                                        }}
-                                    >
-                                        <LinkIcon fontSize='small' />
-                                    </IconButton>
-                                </span>
-                            </Tooltip>
-                            <Tooltip title='版本历史'>
-                                <span>
-                                    <IconButton
-                                        size='small'
-                                        aria-label='版本历史'
-                                        data-tool='revisions'
-                                        disabled={!active || !folderTags?.onListRevisions}
-                                        onClick={() => active && void openRevisions()}
-                                        sx={{ width: 28, height: 28, color: "text.secondary" }}
-                                    >
-                                        <HistoryIcon fontSize='small' />
-                                    </IconButton>
-                                </span>
-                            </Tooltip>
-                            <Tooltip title='导出'>
-                                <span>
-                                    <IconButton
-                                        size='small'
-                                        aria-label='导出'
-                                        data-tool='export'
-                                        disabled={!active}
-                                        onClick={e => setExportAnchor(e.currentTarget)}
-                                        sx={{ width: 28, height: 28, color: "text.secondary" }}
-                                    >
-                                        <FileDownloadIcon fontSize='small' />
-                                    </IconButton>
-                                </span>
-                            </Tooltip>
-                            <Tooltip title='只读分享'>
-                                <span>
-                                    <IconButton
-                                        size='small'
-                                        aria-label='只读分享'
-                                        data-tool='share'
-                                        disabled={!active || !shareApi || (active.id ?? 0) <= 0}
-                                        onClick={() => active.id && setShareId(active.id)}
-                                        sx={{ width: 28, height: 28, color: "text.secondary" }}
-                                    >
-                                        <ShareIcon fontSize='small' />
-                                    </IconButton>
-                                </span>
-                            </Tooltip>
-                        </Box>
-                        )}
-                        {/* 当前笔记的操作入口。顶栏拆掉后，只读分享 / 版本历史 / 大纲 /
-                            反向链接也收进了这个菜单（见下面 data-active-op 那几项）。 */}
-                        {/* 「更多操作」独立成组，紧贴模式控件右侧 */}
-                        <Box sx={{ display: "flex", flexShrink: 0 }}>
-                            <Tooltip title='更多操作'>
-                                <IconButton
-                                    size='small'
-                                    data-tool='note-more'
-                                    aria-label='更多操作'
-                                    aria-haspopup='menu'
-                                    disabled={!active}
-                                    onClick={e => setActiveMenuAnchor(e.currentTarget)}
-                                    sx={{ width: 28, height: 28, color: "text.secondary" }}
-                                >
-                                    <MoreVertIcon fontSize='small' />
-                                </IconButton>
-                        </Tooltip>
-                        </Box>
-                    </Box>
-
-                    {/* 格式工具栏：照 inkstone 那一排。放在标题与内容区之间，
-                        点一下在光标处插入语法 —— 省得手打 `**` 和 `- [ ]`。
-                        设置里可以整个关掉（uiSettings.showToolbar）。 */}
-                    {uiSettings.showToolbar && (
-                    <MarkdownToolbar
-                        onInsert={tools.insertAtCursor}
-                        onLinePrefix={tools.toggleLinePrefix}
-                        onSetHeading={tools.setHeadingLevel}
-                        onCodeLanguage={tools.applyCodeLanguage}
-                        onTable={tools.applyTable}
-                        onFormula={tools.applyFormula}
-                        onFootnoteRef={tools.insertFootnoteRef}
-                        onCallout={tools.insertCallout}
-                        onInsertEmbed={tools.onInsertEmbed}
-                        onInsertBlockRef={tools.onInsertBlockRef}
-                        onInsertBlockId={tools.onInsertBlockId}
-                        onInsertFrontMatter={tools.onInsertFrontMatter}
-                        onInsertTag={tools.onInsertTag}
-                        onInsertWikiLink={tools.onInsertWikiLink}
-                        onInsertHiddenComment={tools.onInsertHiddenComment}
-                        onInsertFold={tools.onInsertFold}
-                        onInsertTabs={tools.onInsertTabs}
-                        onInsertDivider={tools.onInsertDivider}
-                        onNotify={onNotify}
-                        activeId={active?.id ?? null}
-                        onUploadImage={handleUpload}
-                        onAttachFile={uploadApi ? (file, noteId) => handleAttach(file, noteId, false) : undefined}
-                        // 预览模式下编辑器不挂载：上传会成功但插不进正文（见 canInsert 的说明）
-                        canInsert={pane !== "preview"}
-                    />
-                    )}
-
-                    {/* 内容区：源码 | 预览 | 大纲面板。外层再包一行，
-                        大纲面板（outlineOpen）作为第三列贴在预览右侧（inkstone 布局）。 */}
-                    <Box sx={{ flex: 1, display: "flex", minHeight: 0, minWidth: 0 }}>
-                    <Box
-                        ref={splitBoxRef}
-                        sx={{
-                            flex: 1,
-                            display: "flex",
-                            minHeight: 0,
-                            minWidth: 0,
-                            // ⚠️ 这里必须有水平内边距。编辑区是 `flex:1` 吃掉整条剩余宽度的，
-                            // 而记事本这层全屏又铺到 100vw —— 不留边距的话源码 / 预览
-                            // 两栏会**贴死视口右边缘**：预览的右边框和滚动条被顶出屏幕，
-                            // 看起来就是「右边显示不全」。px:2 与标题 / 工具栏 / 状态栏对齐。
-                            //
-                            // ⚠️⚠️ 垂直内边距必须去掉（2026-10-07 用户报「分屏两侧高度不一致」）：
-                            // 主编辑区这一层有 py:1 而侧边栏没有，于是主栏的状态栏比
-                            // 侧边栏高 16px，两栏底部对不齐。改成只留 px，交给各自的
-                            // 头部 / 工具栏 / 状态栏负责上下留白。
-                            px: 2,
-                        }}
-                    >
-                        {pane !== "preview" && (
-                            <Box
-                                sx={{
-                                    // ⚠️ 两栏都用 `flex: 1 1 0`（basis 0）才会严格对半。
-                                    // 之前一边是 `1 1 50%`（basis 445）一边是 `1`（basis 0），
-                                    // 剩余空间再按 grow 分 —— 结果源码 667px、预览 222px，
-                                    // 看着就像「预览被挤没了」。
-                                    // 分栏时用 flexBasis 吃比例；单栏时独占
-                                    ...(pane === "edit"
-                                        ? { flex: 1 }
-                                        : {
-                                              flex: "0 0 auto",
-                                              width: `${splitRatio * 100}%`,
-                                          }),
-                                    minWidth: 0,
-                                    // ⚠️ 之前分屏时给两栏都加了**完整边框 + 圆角 + 淡底色**，
-                                    // 看着像「两张卡片拼在一起」，边界又粗又脏（用户报「太丑」）。
-                                    // inkstone 的分栏是**无框**的：只有中间那根 1px 发丝线，
-                                    // 两栏共用同一层背景。分隔由那条线负责就够了。
-                                    border: "none",
-                                    borderRadius: 0,
-                                    outline: "none",
-                                    resize: "none",
-                                    // 常显滚动条：默认 overlay 会让人以为「预览窗没滚轮」
-                                    p: 0,
-                                    minHeight: 0,
-                                    overflow: "hidden",
-                                    font: "inherit",
-                                    fontFamily: "ui-monospace, monospace",
-                                    fontSize: 14,
-                                    lineHeight: 1.75,
-                                    color: "inherit",
-                                    bgcolor: "transparent",
-                                }}
-                            >
-                                <NoteEditor
-                                    // 行号/拼写/缩进开关会重建编辑器（CodeMirror 的扩展只能在建时定），
-                                    // 拼进 key；字体/字号走 CSS 变量，不用重建。
-                                    key={`${active.id}|${uiSettings.lineNumbers ? 1 : 0}|${uiSettings.spellcheck ? 1 : 0}|${uiSettings.indentWidth}`}
-                                    editorRef={textareaRef}
-                                    value={draft?.content ?? ""}
-                                    onChange={content => setDraft(d => d ? { ...d, content } : d)}
-                                    lineNumbers={uiSettings.lineNumbers}
-                                    spellcheck={uiSettings.spellcheck}
-                                    font={uiSettings.editorFont}
-                                    fontSize={uiSettings.editorFontSize}
-                                    indentWidth={uiSettings.indentWidth}
-                                    onScrollRatio={syncPreviewScroll}
-                                    liveRender={liveRender ? liveRenderer : null}
-                                    onOpenAttachmentLink={openAttachmentFromEditor}
-                                    focusMode={uiSettings.focusMode}
-                                    typewriterMode={uiSettings.typewriterMode}
-                                    shortcutActions={mainShortcutActions}
-                                    uploadImage={uploadApi ? uploadImageForEditor : undefined}
-                                    onDetachedUpload={(placeholder, replacement) => replaceDetachedUpload(active.id!, placeholder, replacement)}
-                                    completionSources={completionSources}
-                                />
-                            </Box>
-                        )}
-                        {pane === "split" && (
-                            <Box
-                                role='separator'
-                                aria-orientation='vertical'
-                                aria-label='拖动调整源码与预览的比例'
-                                title='拖动调整比例（双击回到对半）'
-                                onPointerDown={startSplitDrag}
-                                onDoubleClick={() => {
-                                    setSplitRatio(0.5);
-                                    // 同步 ref：不然「双击归中 → 立刻再拖 → 松手」这一串里，
-                                    // 松手存的还是归中之前那个旧值。
-                                    splitRatioRef.current = 0.5;
-                                    try {
-                                        localStorage.setItem(SPLIT_KEY, "0.5");
-                                    } catch {
-                                        /* 隐私模式写不了，忽略 */
-                                    }
-                                }}
-                                sx={{
-                                    // 与 ColResizeHandle 同一套（inkstone 的 Resizer）：
-                                    // 命中区 9px + 负边距 −4px，内含 1px 发丝线，
-                                    // hover/拖动变 2px 强调色。之前这里是「透明 + hover 才出色块」，
-                                    // 静止时看不见线，和右边的分隔条长得也不一样。
-                                    width: 9,
-                                    mx: "-4px",
-                                    flexShrink: 0,
-                                    cursor: "col-resize",
-                                    position: "relative",
-                                    zIndex: 1,
-                                    alignSelf: "stretch",
-                                    touchAction: "none",
-                                    userSelect: "none",
-                                    "& > span": {
-                                        position: "absolute",
-                                        top: 0,
-                                        bottom: 0,
-                                        left: "50%",
-                                        // 同上：写 '1px'，别写 1（MUI 会当 100%）
-                                        width: "1px",
-                                        transform: "translateX(-50%)",
-                                        bgcolor: "var(--card-border)",
-                                        transition:
-                                            "background-color var(--dur-base, 220ms) var(--ease-out, ease), width var(--dur-base, 220ms) var(--ease-out, ease)",
-                                        pointerEvents: "none",
-                                    },
-                                    "&:hover > span, &:active > span": {
-                                        width: "2px",
-                                        bgcolor: "var(--accent)",
-                                    },
-                                }}
-                            >
-                                <span aria-hidden="true" />
-                            </Box>
-                        )}
-                        {pane !== "edit" && (
-                            <Box
-                                ref={previewScrollRef}
-                                data-preview-scroll='1'
-                                sx={{
-                                    // 与源码区同一个 basis（0），两栏才严格对半
-                                    flex: 1,
-                                    minWidth: 0,
-                                    // ⚠️ minHeight:0 不能少：flex 子项默认 min-height:auto，
-                                    // Markdown 一长就把这一层撑高、连带整页出现滚动条。
-                                    minHeight: 0,
-                                    overflowY: "auto",
-                                    p: 2.5,
-                                    // 设置面板「外观」：预览正文字号 / 行高 / 字体直接在这里生效
-                                    fontSize: uiSettings.previewFontSize,
-                                    lineHeight: uiSettings.lineHeight,
-                                    fontFamily:
-                                        uiSettings.previewFont === "serif"
-                                            ? 'Georgia, "Songti SC", "Noto Serif CJK SC", serif'
-                                            : "inherit",
-                                    // 同源码区：分屏无框，只有中间那根线（inkstone 同款）
-                                    border: "none",
-                                    borderRadius: 0,
-                                    bgcolor: "transparent",
-                                }}
-                            >
-                                {/* 「即时渲染」只作用于**编辑区**：预览区永远是渲染后的结果，
-                                    始终跟随编辑内容（2026-10-07 用户澄清）。 */}
-                                <Box
-                                    data-preview-content='1'
-                                    sx={{
-                                        // 设置面板「内容宽度」：窄/标准/宽/满 四档，
-                                        // 窄于可用宽度时居中（inkstone 的预览排版同款）
-                                        width: "100%",
-                                        maxWidth:
-                                            uiSettings.contentWidth === "narrow"
-                                                ? 560
-                                                : uiSettings.contentWidth === "standard"
-                                                  ? 760
-                                                  : uiSettings.contentWidth === "wide"
-                                                    ? 980
-                                                    : "100%",
-                                        mx: "auto",
-                                        // ⚠️ 光有 break-word 不够：中文长句没有空格，
-                                        // 会被当成一个超长单词而不断行（同下面预览层
-                                        // 的注释）。要 `anywhere` 才在任意字符间断。
-                                        overflowWrap: "anywhere",
-                                        wordBreak: "break-word",
-                                    }}
-                                
-                                onDoubleClick={e => {
-                                    const target = (e.target as HTMLElement).closest<HTMLElement>("[data-inline-tag]");
-                                    const tag = tags.find(t => t.name === target?.dataset.inlineTag);
-                                    if (tag?.id !== undefined) {
-                                        setActiveTag(tag.id); setActiveFolder(null); setView("all");
-                                    }
-                                }} onClick={e => {
-                                    // 图片灯箱（inkstone 的 Preview → ui.lightbox）：
-                                    // 点预览里的图片放大看。用**事件委托**而不是给每个
-                                    // <img> 挂 onClick —— 渲染层是 markdown-it 的产物，
-                                    // 改它的 API 会把导出/嵌入那几条链路一起牵动。
-                                    const img = (e.target as HTMLElement).closest("img");
-                                    if (img) {
-                                        e.preventDefault();
-                                        setLightbox({
-                                            src: img.currentSrc || img.src,
-                                            alt: img.alt || "",
-                                        });
-                                        return;
-                                    }
-                                    // `[[双链]]` 单击即跳。它是 <a> 但**没有 href**：
-                                    // 真 href 会让浏览器做新页面导航（全屏 overlay 里
-                                    // 直接白掉），所以这里只用 data 属性 + 委托点击，
-                                    // 保留 <a> 的语义与可点外观。
-                                    const link = (e.target as HTMLElement).closest<HTMLElement>("[data-wiki-link]");
-                                    const title = link?.dataset.wikiLink;
-                                    if (!title) return;
-                                    const hit = notes.find(n => (n.title || "").trim().toLowerCase() === title.trim().toLowerCase());
-                                    if (hit?.id !== undefined) {
-                                        e.preventDefault();
-                                        void jumpToNote(hit.id);
-                                    } else {
-                                        // ⚠️ 死链必须给反馈，不能点了毫无反应 ——
-                                        // 用户会以为是按钮坏了。多数情况是标题改了或还没建。
-                                        e.preventDefault();
-                                        onNotify?.(`没有找到名为「${title}」的笔记`, "error");
-                                    }
-                                }}><MarkdownPreview
-                                    // 预览区**始终**渲染编辑区（草稿）的内容，不受「即时渲染」影响
-                                    source={draft?.content || ""}
-                                    resolveNote={resolveNote}
-                                    onOpenNote={handleOpenEmbedNote}
-                                    features={previewFeatures}
-                                    // 预览里的任务复选框可勾选 → 回写草稿（同上这份 source）
-                                    onToggleTask={handleToggleTask}
-                                /></Box>
-                            </Box>
-                        )}
-                    </Box>
-                    {/* 大纲面板：当前这条笔记的标题层级，常驻在预览右侧。
-                        没标题时给一句说明，别给一块空白让人以为功能坏了。 */}
-                    {outlineOpen && (
-                        <Box
-                            data-outline-panel='1'
-                            sx={{
-                                width: 190,
-                                flexShrink: 0,
-                                borderLeft: "1px solid rgba(128,128,128,0.18)",
-                                overflowY: "auto",
-                                py: 1,
-                                px: 0.75,
-                                display: narrowLayout ? "none" : "block",
-                            }}
-                        >
-                            <Typography
-                                variant='caption'
-                                sx={{ display: "block", px: 1, pb: 0.5, fontSize: 11, color: "text.disabled" }}
-                            >
-                                大纲
-                            </Typography>
-                            {outline.length === 0 ? (
-                                <Typography
-                                    variant='caption'
-                                    data-outline='empty'
-                                    sx={{ display: "block", px: 1, fontSize: 11.5, color: "text.secondary" }}
-                                >
-                                    这条笔记还没有标题（用 # 标题 就能出现在这里）
-                                </Typography>
-                            ) : (
-                                outline.map(item => (
-                                    <Box
-                                        key={`${item.line}-${item.offset}`}
-                                        component='button'
-                                        type='button'
-                                        data-outline-item={item.line}
-                                        style={outlineActiveLine === item.line ? { color: "var(--accent)", background: "color-mix(in srgb, var(--accent) 12%, transparent)", fontWeight: 600 } : undefined}
-                                        aria-current={outlineActiveLine === item.line ? "location" : undefined}
-                                        className={outlineActiveLine === item.line ? "outline-current" : undefined}
-                                        onClick={() => {
-                                            setOutlineActiveLine(item.line);
-                                            if (pane === "preview") previewScrollRef.current?.querySelector<HTMLElement>(`[data-line="${item.line}"]`)?.scrollIntoView({ block: "start" });
-                                            else jumpToOffset(item.offset);
-                                        }}
-                                        sx={{
-                                            display: "block",
-                                            width: "100%",
-                                            appearance: "none",
-                                            border: "none",
-                                            m: 0,
-                                            font: "inherit",
-                                            cursor: "pointer",
-                                            textAlign: "left",
-                                            minWidth: 0,
-                                            pl: 1 + Math.min(outlineIndent(item.level), 6),
-                                            pr: 0.5,
-                                            py: 0.4,
-                                            borderRadius: 1,
-                                            bgcolor: "transparent",
-                                            color: "text.secondary",
-                                            fontWeight: item.level <= 2 ? 600 : 400,
-                                            fontSize: 12.5,
-                                            "&:hover": {
-                                                bgcolor: "rgba(128,128,128,0.1)",
-                                                color: "text.primary",
-                                            },
-                                        }}
-                                    >
-                                        <Typography
-                                            component='span'
-                                            sx={{
-                                                display: "block",
-                                                overflow: "hidden",
-                                                textOverflow: "ellipsis",
-                                                whiteSpace: "nowrap",
-                                                font: "inherit",
-                                                fontWeight: "inherit",
-                                                fontSize: "inherit",
-                                            }}
-                                        >
-                                            {item.text}
-                                        </Typography>
-                                    </Box>
-                                ))
-                            )}
-                        </Box>
-                    )}
-                    {/* 反链右侧常驻面板（N4）：与大纲面板同一列位置。
-                        窄屏不渲染（头部那组平铺按钮窄屏本来就不出现，反链仍走「⋯」菜单）。 */}
-                    {backlinksOpen && !narrowLayout && (
-                        <BacklinksPanel
-                            open
-                            onClose={() => setBacklinksOpen(false)}
-                            notes={notes}
-                            currentId={active?.id}
-                            currentTitle={active?.title ?? ""}
-                            onOpenNote={id => {
-                                void jumpToNote(id);
-                            }}
-                        />
-                    )}
-                    </Box>
-
-                    {/* 状态栏：照 inkstone 的 footer —— **26px 一条**，
-                        内容就六项：字数 / 字符 / 读完要几分钟 / 所在文件夹 / 标签 / 创建于。
-                        ⚠️ 两处刻意与之前不同：
-                        ① 不再显示行号与光标位置（inkstone 也没有，行号是编辑器的东西，
-                           摆在状态栏只会跟 CodeMirror 的行号槽重复）；
-                        ② 保存状态搬去了标题行（inkstone 的 SaveIndicator 就在头部），
-                           这里只管「这篇多长、它是谁」。 */}
-                    <Box
-                        data-statusbar='1'
-                        sx={{
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 1.5,
-                            px: 1.5,
-                            height: STATUSBAR_H,
-                            flexShrink: 0,
-                            borderTop: "1px solid var(--card-border)",
-                            fontSize: 11,
-                            color: "text.disabled",
-                            overflow: "hidden",
-                        }}
-                    >
-                        <span>{wordCount} 字</span>
-                        <span>{charCount} 字符</span>
-                        <span>约 {Math.max(1, Math.ceil(wordCount / 400))} 分钟读完</span>
-                        {/* 所在文件夹：相当于一个位置指示 —— 这篇是从哪儿打开的。
-                            没归类的不显示（inkstone 同样只在该笔记真在文件夹里时给）。 */}
-                        {activeFolderName && (
-                            <span
-                                data-note-folder
-                                style={{ opacity: 0.85, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 160 }}
-                            >
-                                {activeFolderName}
-                            </span>
-                        )}
-                        {/* 标签（inkstone 状态栏有，最多摆 4 个） */}
-                        {activeTagNames.length > 0 && (
-                            <Box sx={{ display: "flex", gap: 0.75, minWidth: 0, overflow: "hidden" }}>
-                                {activeTagNames.slice(0, 4).map(name => (
-                                    <span
-                                        key={name}
-                                        data-status-tag={name}
-                                        style={{ color: "var(--accent)", whiteSpace: "nowrap" }}
-                                    >
-                                        #{name}
-                                    </span>
-                                ))}
-                            </Box>
-                        )}
-                        <Box sx={{ flex: 1 }} />
-                        {/* 右端：创建时间。解析不出就不显示 —— 宁可少一项，也别给「Invalid Date」。 */}
-                        {active.created_at && formatWhenFull(active.created_at) && (
-                            <span data-note-created style={{ whiteSpace: "nowrap" }}>
-                                创建于 {formatWhenFull(active.created_at)}
-                            </span>
-                        )}
-                    </Box>
-                </>
-            )}
-        </Box>
-    );
-
-    /**
-     * 侧边编辑器（「在侧边打开」）：第二台**完整可编辑**的编辑器 ——
-     * 自己的标题框、自己的工具栏（sideTools，撤销状态与主编辑器互相隔离）、
-     * 自己的 3 秒自动保存。关闭时先把没落库的草稿刷掉。
-     */
     const sideNote = sideId !== null ? notes.find(n => n.id === sideId) ?? null : null;
-    const sidePane = sideNote ? (
-        <Box
-            data-side-editor='1'
-            sx={{
-                // ⚠️ 必须是 `flex: 1`（吃掉把手之外剩下的全部），不能写
-                // `1 1 ${(1 - paneRatio) * 100}%` —— 那样两个 basis 加起来超过 100%，
-                // 浏览器会按 shrink 回缩两栏，侧栏内容一变（切分栏/切预览）分割线就跳。
-                flex: 1,
-                minWidth: 0,
-                minHeight: 0,
-                display: "flex",
-                flexDirection: "column",
-                // ⚠️ 2026-10-07 补上底色（用户报「侧边打开时框颜色不一样」）。
-                // 主编辑区那一层写了 `bgcolor: var(--bg-editor)`，侧边这层没写 →
-                // 它透出父容器（--bg-base / --bg-sunken），于是两栏底色深浅不同，
-                // 看着像「两个框」。
-                // inkstone 两栏是**同一个**底色：Workspace.tsx:378
-                //   `flex h-full min-col-0 flex-col bg-[var(--bg-editor)]`
-                // 唯一差别是「当前激活的那栏」顶部多一道 2px 强调色
-                // （shadow-[inset_0_2px_0_var(--accent)]），靠 pointer/focus 捕获切换。
-                // 那道激活条需要一套「哪栏是激活态」的状态，本批只修用户报的颜色不一致，
-                // 激活条留到后续（见交付报告 P1）。
-                bgcolor: "var(--bg-editor)",
-            }}
-        >
-            {/* 头部（2026-10-07）：inkstone 每栏右上角都有自己的按键栏 ——
-                标题 + 编辑/预览 + 更多操作（作用于**侧边这条**）+ 关闭。 */}
-            <Box data-pane-header='side' sx={{ display: "flex", alignItems: "center", gap: 0.25, pr: 0.75, flexShrink: 0, height: PANE_HEADER_H }}>
-                <TextField
-                    variant='standard'
-                    value={sideDraft?.title ?? ""}
-                    onChange={e => setSideDraft(d => (d ? { ...d, title: e.target.value } : d))}
-                    placeholder='无标题'
-                    slotProps={{ input: { "aria-label": "侧边笔记标题" } }}
-                    sx={{
-                        flex: 1,
-                        minWidth: 0,
-                        px: 2,
-                        // 与主栏同一个高度常量，两栏头部齐平（否则工具栏错位）
-                        height: PANE_HEADER_H,
-                        "& .MuiInputBase-root": { fontSize: 18, fontWeight: 600 },
-                        "& .MuiInput-input": { padding: "6px 0" },
-                    }}
-                />
-                {/* 即时渲染（inkstone 同名开关）：关掉后预览停在「已存库的内容」，
-                    打字不再触发整篇重解析 —— 长文里体感差别很大。 */}
-                <Box sx={{ display: narrowLayout ? "none" : "flex", alignItems: "center", gap: 0.25, flexShrink: 0, mr: 0.5 }}>
-                    <Typography variant='caption' color='text.secondary' sx={{ fontSize: 11, whiteSpace: "nowrap" }}>
-                        即时渲染
-                    </Typography>
-                    <Switch
-                        size='small'
-                        checked={sideLiveRender}
-                        onChange={e => setSideLiveRender(e.target.checked)}
-                        slotProps={{ input: { "aria-label": "侧边即时渲染" } }}
-                        data-tool='side-live-render'
-                        sx={{ ml: 0 }}
-                    />
-                </Box>
-                {/* 模式：编辑 / 分栏 / 预览（与主栏同款：框起来的一组图标） */}
-                <Box
-                    data-side-modes='1'
-                    sx={{
-                        display: "flex",
-                        flexShrink: 0,
-                        border: "1px solid var(--card-border)",
-                        borderRadius: 1.5,
-                        overflow: "hidden",
-                    }}
-                >
-                    {(
-                        [
-                            ["edit", "编辑", <EditIcon fontSize='inherit' key='i' />],
-                            ["split", "分栏", <VerticalSplitIcon fontSize='inherit' key='s' />],
-                            ["preview", "预览", <VisibilityIcon fontSize='inherit' key='v' />],
-                        ] as const
-                    ).map(([key, label, icon]) => (
-                        <Tooltip key={key} title={label}>
-                            <IconButton
-                                size='small'
-                                aria-label={`侧边${label}`}
-                                data-tool={`side-mode-${key}`}
-                                aria-pressed={sideMode === key}
-                                onClick={() => setSideMode(key)}
-                                sx={{
-                                    width: 30,
-                                    height: 28,
-                                    p: 0,
-                                    borderRadius: 0,
-                                    color: sideMode === key ? "var(--accent)" : "text.secondary",
-                                    bgcolor:
-                                        sideMode === key
-                                            ? "color-mix(in srgb, var(--accent) 12%, transparent)"
-                                            : "transparent",
-                                    "&:hover": { bgcolor: "rgba(128,128,128,0.12)" },
-                                    "& + &": { borderLeft: "1px solid var(--card-border)" },
-                                }}
-                            >
-                                {icon}
-                            </IconButton>
-                    </Tooltip>
-                    ))}
-                </Box>
-                {/* 保存状态：与主栏同款，也挂在头部（inkstone 每栏各自一份） */}
-                <SaveDot
-                    state={sideSaveState}
-                    dirty={sideDirty}
-                    savedAt={sideSavedAt}
-                    now={sideTick}
-                />
-                {/* 更多操作：直接复用列表行的全量菜单，只是锚在侧边栏头部、
-                    作用于侧边这条笔记（顶栏那套只管主编辑区的问题到此为止）。 */}
-                <Tooltip title='更多操作'>
-                    <IconButton
-                        size='small'
-                        data-tool='side-more'
-                        aria-label='侧边笔记更多操作'
-                        aria-haspopup='menu'
-                        onClick={e =>
-                            sideNote.id !== undefined &&
-                            setRowMenu({ noteId: sideNote.id, el: e.currentTarget, source: "list" })
-                        }
-                        sx={{ width: 28, height: 28, flexShrink: 0, color: "text.secondary" }}
-                    >
-                        <MoreVertIcon fontSize='small' />
-                    </IconButton>
-                    </Tooltip>
-                {/* 关闭键常显（inkstone 同款 ✕）：藏在 hover 里的话分屏时根本找不到 */}
-                <Tooltip title='关闭侧边编辑器'>
-                    <IconButton
-                        size='small'
-                        aria-label='关闭侧边编辑器'
-                        data-side-close='1'
-                        onClick={closeSide}
-                        sx={{ flexShrink: 0, color: "text.secondary" }}
-                    >
-                        <CloseIcon fontSize='small' />
-                    </IconButton>
-                    </Tooltip>
-            </Box>
-            {uiSettings.showToolbar && sideMode !== "preview" && (
-                <MarkdownToolbar
-                    onInsert={sideTools.insertAtCursor}
-                    onLinePrefix={sideTools.toggleLinePrefix}
-                    onSetHeading={sideTools.setHeadingLevel}
-                    onCodeLanguage={sideTools.applyCodeLanguage}
-                    onTable={sideTools.applyTable}
-                    onFormula={sideTools.applyFormula}
-                    onFootnoteRef={sideTools.insertFootnoteRef}
-                    onCallout={sideTools.insertCallout}
-                    onInsertEmbed={sideTools.onInsertEmbed}
-                    onInsertBlockRef={sideTools.onInsertBlockRef}
-                    onInsertBlockId={sideTools.onInsertBlockId}
-                    onInsertFrontMatter={sideTools.onInsertFrontMatter}
-                    onInsertTag={sideTools.onInsertTag}
-                    onInsertWikiLink={sideTools.onInsertWikiLink}
-                    onInsertHiddenComment={sideTools.onInsertHiddenComment}
-                    onInsertFold={sideTools.onInsertFold}
-                    onInsertTabs={sideTools.onInsertTabs}
-                    onInsertDivider={sideTools.onInsertDivider}
-                    onNotify={onNotify}
-                    activeId={sideNote?.id ?? null}
-                    onUploadImage={handleUpload}
-                    onAttachFile={uploadApi ? (file, noteId) => handleAttach(file, noteId, true) : undefined}
-                />
-            )}
-            <Box
-                sx={{
-                    flex: 1,
-                    minHeight: 0,
-                    minWidth: 0,
-                    overflow: "hidden",
-                    borderLeft: "none",
-                    borderRight: "none",
-                    borderTop: "none",
-                    borderBottom: "none",
-                }}
-            >
-                {sideMode === "preview" ? (
-                    /* 侧边预览：与主编辑区同一套 Markdown 渲染（token→React，无 HTML sink）。
-                       关掉「即时渲染」时渲染的是**已存库**的那份，不是草稿 —— 这正是
-                       那个开关的意义（打字时不再整篇重解析）。 */
-                    <Box data-side-preview='1' sx={{ height: "100%", overflowY: "auto", px: 2, py: 1, fontSize: uiSettings.previewFontSize, lineHeight: uiSettings.lineHeight }}>
-                        <MarkdownPreview
-                            source={sideDraft?.content ?? ""}
-                            resolveNote={resolveNote}
-                            onOpenNote={handleOpenEmbedNote}
-                            features={previewFeatures}
-                            onToggleTask={handleSideToggleTask}
-                        />
-                    </Box>
-                ) : sideMode === "split" ? (
-                    /* 「分栏」= 源码在左、预览在右（2026-10-07 用户要求：之前是上下排，
-                       和主栏的左右排不一致，两栏并排看时习惯会打架）。
-                       2026-10-08：中间那条缝现在能拖（startSideSplitDrag），比例存 localStorage。 */
-                    <Box
-                        ref={sideSplitBoxRef}
-                        sx={{ display: "flex", flexDirection: "row", height: "100%", minHeight: 0, minWidth: 0 }}
-                    >
-                        {/* ⚠️ minWidth: 0 不能少（2026-10-07 用户报「右边显示不全」）。
-                            flex 子项默认 min-width:auto = 内容的 min-content 宽度；
-                            CodeMirror 的 .cm-content 一旦比这半栏宽，左边这一格就拒绝收缩，
-                            把右边的预览推出可视区 —— 右边就被裁掉一块。
-                            inkstone 从根到右栏每一层都写 min-w-0，就是防这个。
-                            ⚠️ 分栏时用 `0 0 auto` + 百分比宽度吃比例（和主栏 split 同款），
-                            双击缝归中、拖动改比例、松手记住。 */}
-                        <Box sx={{
-                            ...(sideMode === "split"
-                                ? { flex: "0 0 auto", width: `${sideSplitRatio * 100}%` }
-                                : { flex: 1 }),
-                            minWidth: 0,
-                            minHeight: 0,
-                            overflow: "hidden",
-                        }}>
-                            <NoteEditor
-                                key={`side-${sideNote.id}|${uiSettings.lineNumbers ? 1 : 0}|${uiSettings.spellcheck ? 1 : 0}|${uiSettings.indentWidth}`}
-                                editorRef={sideRef}
-                                value={sideDraft?.content ?? ""}
-                                onChange={content => setSideDraft(d => (d ? { ...d, content } : d))}
-                                lineNumbers={uiSettings.lineNumbers}
-                                spellcheck={uiSettings.spellcheck}
-                                font={uiSettings.editorFont}
-                                fontSize={uiSettings.editorFontSize}
-                                indentWidth={uiSettings.indentWidth}
-                                liveRender={sideLiveRender ? liveRenderer : null}
-                                onOpenAttachmentLink={openAttachmentFromEditor}
-                                focusMode={uiSettings.focusMode}
-                                typewriterMode={uiSettings.typewriterMode}
-                                shortcutActions={sideShortcutActions}
-                                uploadImage={uploadApi ? uploadFileForSideEditor : undefined}
-                                onDetachedUpload={(placeholder, replacement) => replaceDetachedUpload(sideNote.id!, placeholder, replacement)}
-                                completionSources={completionSources}
-                            />
-                        </Box>
-                        {/* 侧栏分栏里的那条线：与主栏同一套发丝线（1px，hover 加粗）。
-                            之前只写了一条 borderLeft，与主栏的分隔条粗细不一，看着不齐。
-                            2026-10-08：补上拖动（startSideSplitDrag）+ 双击归中，和主栏 split 一样能调比例。 */}
-                        <Box
-                            role='separator'
-                            aria-orientation='vertical'
-                            aria-label='拖动调整侧栏源码与预览的比例'
-                            title='拖动调整比例（双击回到对半）'
-                            onPointerDown={startSideSplitDrag}
-                            onDoubleClick={() => {
-                                setSideSplitRatio(0.5);
-                                sideSplitRatioRef.current = 0.5;
-                                try {
-                                    localStorage.setItem(SIDE_SPLIT_KEY, "0.5");
-                                } catch {
-                                    /* 隐私模式下写不了，忽略 */
-                                }
-                            }}
-                            sx={{
-                                width: 9,
-                                mx: "-4px",
-                                flexShrink: 0,
-                                cursor: "col-resize",
-                                position: "relative",
-                                zIndex: 1,
-                                alignSelf: "stretch",
-                                touchAction: "none",
-                                userSelect: "none",
-                                "& > span": {
-                                    position: "absolute",
-                                    top: 0,
-                                    bottom: 0,
-                                    left: "50%",
-                                    // 同上：写 '1px'，别写 1（MUI 会当 100%）
-                                    width: "1px",
-                                    transform: "translateX(-50%)",
-                                    bgcolor: "var(--card-border)",
-                                    transition:
-                                        "background-color var(--dur-base, 220ms) var(--ease-out, ease), width var(--dur-base, 220ms) var(--ease-out, ease)",
-                                    pointerEvents: "none",
-                                },
-                                "&:hover > span, &:active > span": {
-                                    width: "2px",
-                                    bgcolor: "var(--accent)",
-                                },
-                            }}
-                        >
-                            <span aria-hidden="true" />
-                        </Box>
-                        <Box data-side-preview='1' sx={{ flex: 1, minWidth: 0, minHeight: 0, overflowY: "auto", px: 1.5, py: 1, fontSize: uiSettings.previewFontSize, lineHeight: uiSettings.lineHeight }}>
-                            <MarkdownPreview
-                                source={sideLiveRender ? (sideDraft?.content ?? "") : (sideNote.content || "")}
-                                resolveNote={resolveNote}
-                                onOpenNote={handleOpenEmbedNote}
-                                features={previewFeatures}
-                                // 只有渲染草稿时才允许回写：渲染「已存库那份」时行号属于老文本，
-                                // 勾一下会把草稿尚未保存的内容冲掉（即时渲染关 = 明确不想被重建）。
-                                onToggleTask={sideLiveRender ? handleSideToggleTask : undefined}
-                            />
-                        </Box>
-                    </Box>
-                ) : (
-                    <NoteEditor
-                        key={`side-${sideNote.id}|${uiSettings.lineNumbers ? 1 : 0}|${uiSettings.spellcheck ? 1 : 0}`}
-                        editorRef={sideRef}
-                        value={sideDraft?.content ?? ""}
-                        onChange={content => setSideDraft(d => (d ? { ...d, content } : d))}
-                        lineNumbers={uiSettings.lineNumbers}
-                        spellcheck={uiSettings.spellcheck}
-                        font={uiSettings.editorFont}
-                        fontSize={uiSettings.editorFontSize}
-                        indentWidth={uiSettings.indentWidth}
-                        liveRender={sideLiveRender ? liveRenderer : null}
-                        focusMode={uiSettings.focusMode}
-                        typewriterMode={uiSettings.typewriterMode}
-                        shortcutActions={sideShortcutActions}
-                        uploadImage={uploadApi ? uploadFileForSideEditor : undefined}
-                                onDetachedUpload={(placeholder, replacement) => replaceDetachedUpload(sideNote.id!, placeholder, replacement)}
-                        completionSources={completionSources}
-                    />
-                )}
-            </Box>
-            {/* 侧栏状态栏：与主栏**完全同款**（inkstone 的 footer）。
-                高度、内边距、字号都取同一批常量，两栏并排时脚下齐平。 */}
-            <Box
-                data-side-statusbar='1'
-                sx={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 1.5,
-                    px: 1.5,
-                    height: STATUSBAR_H,
-                    flexShrink: 0,
-                    borderTop: "1px solid var(--card-border)",
-                    fontSize: 11,
-                    color: "text.disabled",
-                    overflow: "hidden",
-                }}
-            >
-                <span>{(sideDraft?.content ?? "").replace(/\s+/g, "").length} 字</span>
-                <span>{(sideDraft?.content ?? "").length} 字符</span>
-                <span>
-                    约 {Math.max(1, Math.ceil((sideDraft?.content ?? "").replace(/\s+/g, "").length / 400))} 分钟读完
-                </span>
-                <Box sx={{ flex: 1 }} />
-                {sideNote.created_at && formatWhenFull(sideNote.created_at) && (
-                    <span data-side-created style={{ whiteSpace: "nowrap" }}>
-                        创建于 {formatWhenFull(sideNote.created_at)}
-                    </span>
-                )}
-            </Box>
-        </Box>
-    ) : null;
+    /**
+     * 五个面板共享的上下文：这里组装一次，各面板按 Pick 各取所需。
+     * 类型在 ./notes/notesPageCtx.ts（由编译器从真实代码导出）。
+     *
+     * ⚠️ navInner 是**导航列元素**而不是数据：窄屏抽屉里的列表要把它整块渲染进去，
+     * 所以先组装不含它的 paneBase，造出 navInner，再合成最终的 paneCtx ——
+     * 顺序反了就会变成「自己引用自己」。
+     */
+    const paneBase = {
+        SIDE_SPLIT_KEY,
+        accountName,
+        active,
+        activeFolder,
+        activeFolderName,
+        activeId,
+        activeMenuAnchor,
+        activeTag,
+        activeTagNames,
+        appearanceFolderId,
+        askName,
+        attManagerOpen,
+        attachmentRefCounts,
+        backlinks,
+        backlinksOpen,
+        backupApi,
+        bp,
+        bulkArchive,
+        bulkDelete,
+        bulkDeleteOpen,
+        charCount,
+        checked,
+        checkedNotes,
+        closeNamePrompt,
+        closeRemove,
+        closeRowMenu,
+        closeSide,
+        completionSources,
+        copyText,
+        dirty,
+        draft,
+        draggingNoteId,
+        emptyArt,
+        emptyCopy,
+        exportAllData,
+        exportAllZip,
+        exportAnchor,
+        exportHtmlOne,
+        exportOne,
+        exportPdfOne,
+        exportPick,
+        exportTarget,
+        filtered,
+        folderCounts,
+        folderTags,
+        folders,
+        handleAttach,
+        handleOpenEmbedNote,
+        handleSideToggleTask,
+        handleToggleTask,
+        handleUpload,
+        highlightRanges,
+        importNotesFile,
+        jumpToNote,
+        jumpToOffset,
+        keyword,
+        lazyListGroups,
+        listCollapsed,
+        listGroups,
+        listHidden,
+        listW,
+        liveRender,
+        liveRenderer,
+        mainShortcutActions,
+        menuClosing,
+        moveDrawerNoteId,
+        multiSelect,
+        namePrompt,
+        narrowLayout,
+        navW,
+        noteLink,
+        noteTags,
+        noteWordTotal,
+        notes,
+        notesCommands,
+        notesInFolder,
+        onClose,
+        onCreate,
+        onDatasetChanged,
+        onDelete,
+        onEmptyTrash,
+        onNotify,
+        onPurgeTrashed,
+        onRestoreTrashed,
+        onToggleArchive,
+        onTogglePin,
+        onToggleStar,
+        onUpdate,
+        openAttachmentFromEditor,
+        openInSide,
+        openNote,
+        openRevisions,
+        outgoingLinks,
+        outline,
+        outlineActiveLine,
+        outlineOpen,
+        pane,
+        pinnedCount,
+        previewFeatures,
+        previewScrollRef,
+        removeTarget,
+        renderSearchField,
+        replaceDetachedUpload,
+        reset,
+        resolveNote,
+        rowActionsSuppressed,
+        rowMenu,
+        save,
+        saveState,
+        savedAt,
+        searchRef,
+        searchRefNarrow,
+        searchSnippets,
+        selectAnchorRef,
+        setActiveFolder,
+        setActiveId,
+        setActiveMenuAnchor,
+        setActiveTag,
+        setAppearanceFolderId,
+        setAttManagerOpen,
+        setBacklinkAnchor,
+        setBacklinksOpen,
+        setBulkDeleteOpen,
+        setChecked,
+        setDraft,
+        setDraggingNoteId,
+        setExportAnchor,
+        setExportPick,
+        setGraphOpen,
+        setLightbox,
+        setListCollapsed,
+        setLiveRender,
+        setMiddleHidden,
+        setMobileDetail,
+        setMoveDrawerNoteId,
+        setMultiSelect,
+        setNavDrawerOpen,
+        setOutlineActiveLine,
+        setOutlineOpen,
+        setPane,
+        setRemoveTarget,
+        setRowActionsSuppressed,
+        setRowMenu,
+        setSettingsOpen,
+        setShareId,
+        setSideDraft,
+        setSideLiveRender,
+        setSideMode,
+        setSideSplitRatio,
+        setSortAnchor,
+        setSortKey,
+        setSplitRatio,
+        setTagColorId,
+        setTagPick,
+        setUiSettings,
+        setView,
+        settingsOpen,
+        shareApi,
+        sideDirty,
+        sideDraft,
+        sideId,
+        sideLiveRender,
+        sideMode,
+        sideNote,
+        sideRef,
+        sideSaveState,
+        sideSavedAt,
+        sideShortcutActions,
+        sideSplitBoxRef,
+        sideSplitRatio,
+        sideSplitRatioRef,
+        sideTick,
+        sideTools,
+        sortAnchor,
+        sortKey,
+        splitBoxRef,
+        splitRatio,
+        splitRatioRef,
+        startCreateInFolder,
+        startDrag,
+        startSideSplitDrag,
+        startSplitDrag,
+        submitNamePrompt,
+        submitRemove,
+        switchTo,
+        syncPreviewScroll,
+        tagColorByName,
+        tagColorId,
+        tagCounts,
+        tagPick,
+        tags,
+        textareaRef,
+        tick,
+        toggleChecked,
+        tools,
+        trashedNotes,
+        uiSettings,
+        uploadApi,
+        uploadFileForSideEditor,
+        uploadImageForEditor,
+        userClearedRef,
+        view,
+        viewCounts,
+        visibleIds,
+        wordCount,
+    };
+    const navInner = <NotesNavPanel {...paneBase} />;
+    const paneCtx: NotesPageCtx = { ...paneBase, navInner };
 
     return (
         // 附件预览弹窗的控制器（2026-10-19）：正文渲染层（markdownToReact）隔着好几层，
@@ -5454,698 +3280,7 @@ export default function NotesPage({
                 />
             )}
             {/* 设置：记事本自己的外观 / 编辑器设置（不是导航站那个弹窗） */}
-            <NotesSettingsDialog
-                open={settingsOpen}
-                settings={uiSettings}
-                onChange={setUiSettings}
-                onClose={() => setSettingsOpen(false)}
-                // 分享列表页要用的三个方法（老部署/未登录时 shareApi 为空，那一页自动不出现）
-                shareApi={shareApi ?? null}
-                // 数据页（2026-10-08 照 inkstone 的 DataSettings）：概览 / 导出 / 维护。
-                data={{
-                    stats: {
-                        notes: notes.length,
-                        folders: folders.length,
-                        tags: tags.length,
-                        // 总字数（inkstone 概览里的同一格）：中文按字、英文按词，
-                        // 与状态栏那套算法一致（两处不能各算各的）。
-                        words: noteWordTotal,
-                        trashed: Array.isArray(trashedNotes) ? trashedNotes.length : null,
-                    },
-                    onExportAll: exportAllData,
-                    onExportZip: uploadApi?.listAttachments ? () => exportAllZip() : undefined,
-                    onImportFile: importNotesFile,
-                    onEmptyTrash: () => onEmptyTrash(),
-                    onLoadAttachments: uploadApi?.listAttachments
-                        ? () => uploadApi.listAttachments!()
-                        : undefined,
-                    onPruneAttachments: uploadApi?.pruneAttachments
-                        ? () => uploadApi.pruneAttachments!()
-                        : undefined,
-                    onDeleteAttachment: uploadApi?.deleteAttachment
-                        ? (id: string) => uploadApi.deleteAttachment!(id).then(() => undefined)
-                        : undefined,
-                    // 预览 / 编辑 / 重命名（2026-10-19）：设置页那条入口与左下角
-                    // 那个管理器共用同一套能力，不给的话设置页里点文件名只会是死文本。
-                    onSaveAttachmentContent: uploadApi?.updateAttachmentContent
-                        ? (id: string, text: string) =>
-                              uploadApi.updateAttachmentContent!(id, text).then(r => ({ size: r.size }))
-                        : undefined,
-                    onRenameAttachment: uploadApi?.renameAttachment
-                        ? (id: string, filename: string) => uploadApi.renameAttachment!(id, filename)
-                        : undefined,
-                    // 附件被多少条笔记引用（管理器里「引用 N 次 / 未引用」那格）：
-                    // 从已加载的正文里现算，按笔记去重（一条笔记里写两次也算 1 个引用）
-                    countAttachmentRefs: attachmentRefCounts
-                        ? (id: string) => attachmentRefCounts.get(id) ?? 0
-                        : undefined,
-                    // 「双链 / 版本历史」全站计数：shareApi 就是完整的 NavigationClient
-                    // （NotesOverlay 传入），老部署没有 notesStats 方法时自动显示「—」
-                    onNotesStats: shareApi?.notesStats
-                        ? () => shareApi.notesStats!()
-                        : undefined,
-                    // 导入「记事本导出」JSON：同一条链路（NotesPage 自己导出的文件）。
-                    // 成功后广播一次数据集变更（阶段 2）：网盘恢复不经 useNotes，
-                    // 不广播的话其它标签页对这次恢复一无所知。
-                    onImportNotes: shareApi?.importNotes
-                        ? async (payload, onProgress) => {
-                              const stats = await shareApi.importNotes!(payload);
-                              // 数据页 JSON 直导 / 网盘恢复旧格式都走这条：同样等重拉完
-                              // 才返回，上层成功提示弹出时列表已更新（同 2026-10-17 空窗）
-                              onProgress?.({ phase: "刷新列表", current: 0, total: 0 });
-                              await onDatasetChanged?.();
-                              return stats;
-                          }
-                        : undefined,
-                    // 备份页（2026-10-09 照 inkstone 的 BackupSettings）：能力由
-                    // NotesOverlay 探测好传进来，老部署没有时整页不出现
-                    onNotesBackupGetState: backupApi?.getState,
-                    onNotesBackupSave: backupApi?.save,
-                    onNotesBackupTest: backupApi?.test,
-                    onNotesBackupRun: backupApi?.run,
-                    // 「从网盘恢复」：列出 → 选一份 →（需要时填口令）→ 下载 → 走同一条导入
-                    onNotesBackupListRemote: backupApi?.listRemote,
-                    onNotesBackupFetch: backupApi?.fetch,
-                    onNotesBackupDeleteRemote: backupApi?.deleteRemote,
-                }}
-                onNotify={onNotify}
-                onOpenNote={id => {
-                    setSettingsOpen(false);
-                    void jumpToNote(id);
-                }}
-            />
-
-            {/* ---------- 浮层：菜单 / 抽屉 / 弹窗 ----------
-                ⚠️⚠️ 2026-10-07：这组必须待在**根层**，不能放进中栏那个
-                `{!listHidden && …}` 里。选中文件夹时中栏整列不渲染（笔记内联在左栏），
-                而左栏内联笔记的右键菜单正是靠它们渲染 —— 一旦被条件块裹进去，
-                表现就是「右键左栏笔记没反应，等点别处、切回列表视图菜单才冒出来，
-                而且位置还是错的」（用户 2026-10-07 报的）。
-                MUI 的 Menu/Drawer/Dialog 默认 portal 到 body，放根层不影响定位。 */}
-            {/* ---------- 笔记的操作菜单（右键 / hover「⋯」都能打开） ----------
-                与 inkstone 对齐的两套菜单（2026-10-17 精简：去掉复制标题/ID/直链、
-                创建副本这几个低频项；三个导出格式收进「导出」二级菜单）：
-                  - list（中栏列表行，右键或 ⋯）：在侧边打开、置顶、收藏、归档、
-                    移动到文件夹、编辑标签、导出、移到回收站；
-                  - rail（左栏内联笔记右键）：精简版 —— 在侧边打开/收藏/移动到文件夹/
-                    归档/移到回收站。
-                菜单带图标（inkstone 的菜单行是「图标 + 文字」）。 */}
-            <Menu
-                open={Boolean(rowMenu)}
-                anchorEl={rowMenu?.el ?? null}
-                // ⚠️ 白圈**第六报**（2026-10-19 用户：「白圈出现的地方是之前右键
-                // 点击的地方」）的正根在这里。右键菜单的锚点是 `anchorAtMouse`
-                // 造的 0×0 虚拟元素，而 MUI Menu 的退出过渡是 Grow（scale）：
-                // paper 从 161×329 一路缩到 12×9，transform-origin 又正好落在
-                // 锚点上 —— 于是**鼠标点位置始终被 paper 覆盖**，那十几帧里
-                // 用户看到的就是一个白色小圆点一闪而过。
-                // 实测记录（script/probe-white-dot.mjs）：覆盖锚点的帧 12 个、
-                // 宽度 16→12px、opacity 0.79→0，paper 到 207ms 才卸载。
-                // 前五轮修的「⋯ 按钮被焦点还原点亮」是**另一条**路径，两者叠加
-                // 才让这个 bug 报了六次。修法：退出不缩放（enter 保留默认动画，
-                // 用户没有抱怨「出现」时难看）。
-                transitionDuration={{ enter: 225, exit: 0 }}
-                onClose={() => {
-                    closeRowMenu();
-                }}
-                // 右键菜单无键盘触发器，不还原指针点位的焦点；普通 ⋯ 菜单保留键盘焦点返回。
-                // Menu → Popover → Modal 会透传此属性（已核对当前 MUI 实现）。
-                disableRestoreFocus={!(rowMenu?.el instanceof HTMLElement)}
-                slotProps={{
-                    transition: {
-                        onExited: () => {
-                            const el = document.activeElement as HTMLElement | null;
-                            if (el && el.classList.contains("note-row-actions")) el.blur();
-                        },
-                    },
-                }}
-            >
-                {(() => {
-                    const note = rowMenu ? notes.find(n => n.id === rowMenu.noteId) : null;
-                    if (!note) return null;
-                    const source = rowMenu?.source ?? "list";
-                    const done = async (fn: () => Promise<unknown> | void) => {
-                        closeRowMenu();
-                        await fn();
-                    };
-                    const moveToFolder = () => {
-                        closeRowMenu();
-                        if (note.id !== undefined) setMoveDrawerNoteId(note.id);
-                    };
-                    // 左栏内联笔记的精简菜单（inkstone 的左栏右键）
-                    if (source === "rail") {
-                        return (
-                            <>
-                                <MenuItem data-row-op='open-side' onClick={() => void done(() => openInSide(note))}>
-                                    <OpenInNewIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
-                                    在侧边打开
-                                </MenuItem>
-                                <MenuItem data-row-op='pin' onClick={() => void done(() => onTogglePin(note))}>
-                                    <PushPinIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
-                                    {note.pinned ? "取消置顶" : "置顶"}
-                                </MenuItem>
-                                {onToggleStar && (
-                                <MenuItem data-row-op='star' onClick={() => void done(() => onToggleStar!(note))}>
-                                    {note.starred ? <StarIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} /> : <StarBorderIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />}
-                                    {note.starred ? "取消收藏" : "收藏"}
-                                </MenuItem>
-                                )}
-                                <MenuItem data-row-op='folder' onClick={moveToFolder}>
-                                    <FolderIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
-                                    移动到文件夹…
-                                </MenuItem>
-                                <MenuItem data-row-op='archive' onClick={() => void done(() => onToggleArchive(note))}>
-                                    <ArchiveIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
-                                    {note.archived ? "取消归档" : "归档"}
-                                </MenuItem>
-                                <Divider />
-                                <MenuItem
-                                    data-row-op='delete'
-                                    onClick={() => void done(() => onDelete(note))}
-                                    sx={{ color: "error.main" }}
-                                >
-                                    <DeleteOutlineIcon fontSize='small' sx={{ mr: 1, fontSize: 16 }} />
-                                    移到回收站
-                                </MenuItem>
-                            </>
-                        );
-                    }
-                    return (
-                        <>
-                            <MenuItem data-row-op='open-side' onClick={() => void done(() => openInSide(note))}>
-                                <OpenInNewIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
-                                在侧边打开
-                            </MenuItem>
-                            <MenuItem data-row-op='pin' onClick={() => void done(() => onTogglePin(note))}>
-                                <PushPinIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
-                                {note.pinned ? "取消置顶" : "置顶"}
-                            </MenuItem>
-                            {onToggleStar && (
-                            <MenuItem data-row-op='star' onClick={() => void done(() => onToggleStar!(note))}>
-                                {note.starred ? <StarIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} /> : <StarBorderIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />}
-                                {note.starred ? "取消收藏" : "收藏"}
-                            </MenuItem>
-                            )}
-                            <MenuItem data-row-op='archive' onClick={() => void done(() => onToggleArchive(note))}>
-                                <ArchiveIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
-                                {note.archived ? "取消归档" : "归档"}
-                            </MenuItem>
-                            <MenuItem data-row-op='folder' onClick={moveToFolder}>
-                                <FolderIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
-                                移动到文件夹…
-                            </MenuItem>
-                            <MenuItem
-                                data-row-op='tags'
-                                onClick={() => {
-                                    const pick = rowMenu;
-                                    const id = note.id;
-                                    closeRowMenu();
-                                    if (pick && id !== undefined) {
-                                        setTagPick({ el: pick.el, noteId: id });
-                                    }
-                                }}
-                            >
-                                <PaletteIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
-                                编辑标签…
-                            </MenuItem>
-                            <Divider />
-                            <MenuItem
-                                data-row-op='export'
-                                onClick={() => {
-                                    const pick = rowMenu;
-                                    const id = note.id;
-                                    closeRowMenu();
-                                    if (pick && id !== undefined) {
-                                        setExportPick({ el: pick.el, noteId: id });
-                                    }
-                                }}
-                            >
-                                <FileDownloadIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
-                                导出…
-                            </MenuItem>
-                            <Divider />
-                            <MenuItem
-                                data-row-op='delete'
-                                onClick={() => void done(() => onDelete(note))}
-                                sx={{ color: "error.main" }}
-                            >
-                                <DeleteOutlineIcon fontSize='small' sx={{ mr: 1, fontSize: 16 }} />
-                                移到回收站
-                            </MenuItem>
-                        </>
-                    );
-                })()}
-            </Menu>
-
-            {/* 「排序」菜单（中栏头部） */}
-            <Menu
-                open={Boolean(sortAnchor)}
-                anchorEl={sortAnchor}
-                onClose={() => setSortAnchor(null)}
-            >
-                {(
-                    [
-                        ["default", "默认（置顶优先）"],
-                        ["title", "按标题"],
-                        ["created", "按创建时间"],
-                    ] as const
-                ).map(([key, label]) => (
-                    <MenuItem
-                        key={key}
-                        data-sort-op={key}
-                        selected={sortKey === key}
-                        onClick={() => {
-                            setSortKey(key);
-                            setSortAnchor(null);
-                        }}
-                    >
-                        {sortKey === key ? "✓ " : ""}
-                        {label}
-                    </MenuItem>
-                ))}
-            </Menu>
-
-            {/* 「移动到文件夹」右侧抽屉（inkstone 的做法：右侧滑出、带搜索） */}
-            <MoveFolderDrawer
-                open={moveDrawerNoteId !== null}
-                noteTitle={
-                    moveDrawerNoteId !== null
-                        ? notes.find(n => n.id === moveDrawerNoteId)?.title || ""
-                        : ""
-                }
-                folders={folders.map(f => ({ id: f.id!, name: f.name || "未命名", icon: f.icon, color: f.color }))}
-                currentFolderId={
-                    moveDrawerNoteId !== null
-                        ? notes.find(n => n.id === moveDrawerNoteId)?.folder_id ?? null
-                        : null
-                }
-                onPick={(folderId) => {
-                    const id = moveDrawerNoteId;
-                    setMoveDrawerNoteId(null);
-                    if (id !== null) void onUpdate(id, { folder_id: folderId });
-                }}
-                onCreateFolder={async (name) => {
-                    // 直接走 folderTags（不经过 createFolder 包装）：那层会顺手把左栏
-                    // 视图切到新文件夹，而这里创建完马上就把笔记移进去并关抽屉，
-                    // 抢视图只会让「我明明没点左栏」的跳动显得莫名。创建是根目录级别，
-                    // 子文件夹场景先不支持（左栏建子夹入口已够用）。
-                    const created = await folderTags?.onCreateFolder(name, null);
-                    return created?.id ?? null;
-                }}
-                onClose={() => setMoveDrawerNoteId(null)}
-            />
-
-            {/* 文件夹外观弹窗（icon / color，走 updateFolder 落库） */}
-            <FolderAppearanceDialog
-                open={appearanceFolderId !== null}
-                folder={
-                    (() => {
-                        const f =
-                            appearanceFolderId !== null
-                                ? folders.find(x => x.id === appearanceFolderId)
-                                : null;
-                        // 弹窗要的是「确定存在」的形状（id: number），这里窄化一次
-                        return f?.id !== undefined
-                            ? { id: f.id, name: f.name || "未命名", icon: f.icon, color: f.color }
-                            : null;
-                    })()
-                }
-                onSave={async (icon, color) => {
-                    if (appearanceFolderId !== null) {
-                        await folderTags?.onStyleFolder?.(appearanceFolderId, { icon, color });
-                    }
-                }}
-                onClose={() => setAppearanceFolderId(null)}
-            />
-
-            {/* 标签颜色弹窗（走 updateTag 落库，与文件夹外观同一组约定色） */}
-            <TagColorDialog
-                open={tagColorId !== null}
-                tag={(() => {
-                    const t = tagColorId !== null ? tags.find(x => x.id === tagColorId) : null;
-                    return t?.id !== undefined
-                        ? { id: t.id, name: t.name || "未命名", color: t.color }
-                        : null;
-                })()}
-                onSave={async color => {
-                    if (tagColorId !== null) {
-                        await folderTags?.onStyleTag?.(tagColorId, color);
-                    }
-                }}
-                onClose={() => setTagColorId(null)}
-            />
-
-            {/* ⚠️ 原来这里有一个「归入文件夹」的锚点 Menu，2026-10-06 删掉了：
-                「移动到文件夹」改成 inkstone 那种**右侧抽屉**（见 MoveFolderDrawer），
-                这个 Menu 从此没有任何入口能把它打开 —— 留着就是一段永远不渲染的
-                死代码，改文件夹逻辑时很容易改错地方。 */}
-
-            {/* 编辑标签：勾选式多选，一次性整组保存（后端就是「整组替换」语义） */}
-            <Menu
-                open={Boolean(tagPick)}
-                anchorEl={tagPick?.el ?? null}
-                onClose={() => setTagPick(null)}
-            >
-                {tags.length === 0 && (
-                    <MenuItem disabled>还没有标签（左栏「标签」右边 + 新建）</MenuItem>
-                )}
-                {tags.map(t => {
-                    const target = notes.find(n => n.id === tagPick?.noteId);
-                    const on = target ? tagOf(target, noteTags).has(t.id!) : false;
-                    return (
-                        <MenuItem
-                            key={t.id}
-                            data-tag-pick={t.id}
-                            onClick={async () => {
-                                const pick = tagPick;
-                                if (!pick || t.id === undefined) return;
-                                const current = notes.find(n => n.id === pick.noteId);
-                                const next = new Set(current ? tagOf(current, noteTags) : []);
-                                if (on) next.delete(t.id);
-                                else next.add(t.id);
-                                await folderTags?.onAssignTags?.(pick.noteId, [...next]);
-                            }}
-                        >
-                            {on ? "✓ " : ""}
-                            {t.name}
-                        </MenuItem>
-                    );
-                })}
-            </Menu>
-            {/* 导出下拉（2026-10-08）：桌面头部「导出」按钮（data-tool='export'）用，
-                三格式与 inkstone 的导出菜单一致；窄屏仍走「⋯」里的三件套。 */}
-            <Menu
-                open={Boolean(exportAnchor)}
-                anchorEl={exportAnchor}
-                onClose={() => setExportAnchor(null)}
-            >
-                {active && (
-                    <>
-                        <MenuItem
-                            onClick={() => {
-                                setExportAnchor(null);
-                                const t = exportTarget();
-                                // 刚打的字还在 3s 自动保存窗口里时，导完顺手把草稿存掉，两边收敛
-                                if (dirty) void save();
-                                exportOne({ ...active, title: t.title, content: t.content });
-                            }}
-                        >
-                            <FileDownloadIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
-                            导出 Markdown
-                        </MenuItem>
-                        <MenuItem
-                            onClick={() => {
-                                setExportAnchor(null);
-                                const t = exportTarget();
-                                if (dirty) void save();
-                                exportHtmlOne({ ...active, title: t.title, content: t.content });
-                            }}
-                        >
-                            <FileDownloadIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
-                            导出 HTML
-                        </MenuItem>
-                        <MenuItem
-                            onClick={() => {
-                                setExportAnchor(null);
-                                const t = exportTarget();
-                                if (dirty) void save();
-                                exportPdfOne({ ...active, title: t.title, content: t.content });
-                            }}
-                        >
-                            <FileDownloadIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
-                            导出 PDF
-                        </MenuItem>
-                    </>
-                )}
-            </Menu>
-
-            {/* 列表行右键的「导出」二级菜单（2026-10-17 精简：三个格式收进一个入口） */}
-            <Menu
-                open={Boolean(exportPick)}
-                anchorEl={exportPick?.el ?? null}
-                onClose={() => setExportPick(null)}
-            >
-                {(() => {
-                    const target = notes.find(n => n.id === exportPick?.noteId);
-                    if (!target) return null;
-                    return (
-                        <>
-                            <MenuItem
-                                data-export-op='md'
-                                onClick={() => {
-                                    setExportPick(null);
-                                    void exportOne(target);
-                                }}
-                            >
-                                <FileDownloadIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
-                                导出 Markdown
-                            </MenuItem>
-                            <MenuItem
-                                data-export-op='html'
-                                onClick={() => {
-                                    setExportPick(null);
-                                    void exportHtmlOne(target);
-                                }}
-                            >
-                                <FileDownloadIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
-                                导出 HTML
-                            </MenuItem>
-                            <MenuItem
-                                data-export-op='pdf'
-                                onClick={() => {
-                                    setExportPick(null);
-                                    void exportPdfOne(target);
-                                }}
-                            >
-                                <FileDownloadIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
-                                导出 PDF
-                            </MenuItem>
-                        </>
-                    );
-                })()}
-            </Menu>
-
-            {/* 当前笔记的「⋯」菜单：与右键菜单同一套（全量版）。 */}
-            <Menu
-                open={Boolean(activeMenuAnchor)}
-                anchorEl={activeMenuAnchor}
-                onClose={() => setActiveMenuAnchor(null)}
-            >
-                {active && (
-                    <>
-                        {/* 分享 / 版本 / 大纲 / 反链：桌面端已平铺到头部（2026-10-08），
-                            这几项只留给窄屏与**分屏态**（半宽的头部放不下平铺组，
-                            2026-10-09 用户明确照 inkstone 收进菜单）。 */}
-                        {(narrowLayout || sideId !== null) && (
-                        <>
-                        <MenuItem
-                            data-active-op='share'
-                            disabled={!shareApi || (active.id ?? 0) <= 0}
-                            onClick={() => {
-                                setActiveMenuAnchor(null);
-                                if (active.id) setShareId(active.id);
-                            }}
-                        >
-                            <ShareIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
-                            只读分享…
-                        </MenuItem>
-                        <MenuItem
-                            data-active-op='revisions'
-                            disabled={!folderTags?.onListRevisions}
-                            onClick={() => {
-                                setActiveMenuAnchor(null);
-                                void openRevisions();
-                            }}
-                        >
-                            <HistoryIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
-                            版本历史…
-                        </MenuItem>
-                        <MenuItem
-                            data-active-op='outline'
-                            onClick={() => {
-                                setActiveMenuAnchor(null);
-                                setOutlineOpen(o => !o);
-                            }}
-                        >
-                            <ListIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
-                            {outlineOpen ? "收起大纲" : "大纲"}
-                        </MenuItem>
-                        <MenuItem
-                            data-active-op='backlinks'
-                            disabled={backlinks.length === 0}
-                            onClick={e => {
-                                setActiveMenuAnchor(null);
-                                setBacklinkAnchor(e.currentTarget);
-                            }}
-                        >
-                            <LinkIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
-                            反向链接（{backlinks.length}）
-                        </MenuItem>
-                        </>
-                        )}
-                        {/* 关系图谱（2026-10-09）：双链攒多了以后「谁连谁」在列表里是暗的，
-                            这里一次摊开。入口只在有双链时出现 —— 一条链接都没有时
-                            图上就一个孤点，点了只会让人以为坏了。 */}
-                        {(backlinks.length > 0 || outgoingLinks.length > 0) && (
-                        <MenuItem
-                            data-active-op='graph'
-                            onClick={() => {
-                                setActiveMenuAnchor(null);
-                                setGraphOpen(true);
-                            }}
-                        >
-                            <HubIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
-                            关系图谱
-                        </MenuItem>
-                        )}
-                        {/* 编辑器内查找/替换（N2）：⌘F 也能开，这里给个鼠标入口。
-                            走 editorRef.openSearch() → @codemirror/search 的 openSearchPanel。 */}
-                        <MenuItem
-                            data-active-op='find'
-                            disabled={pane === "preview"}
-                            onClick={() => {
-                                setActiveMenuAnchor(null);
-                                textareaRef.current?.openSearch();
-                            }}
-                        >
-                            <SearchIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
-                            查找 / 替换…
-                        </MenuItem>
-                        <Divider />
-                        {/* 窄屏头部放不下「即时渲染」，这里补一个入口（同一个状态）；
-                            桌面态（含分屏，2026-10-10）头部已有开关，这项不再重复出现。 */}
-                        {narrowLayout && (
-                        <MenuItem
-                            data-active-op='live-render'
-                            onClick={() => setLiveRender(v => !v)}
-                        >
-                            <BoltIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
-                            {liveRender ? "关掉编辑区实时渲染" : "打开编辑区实时渲染"}
-                        </MenuItem>
-                        )}
-                        <MenuItem
-                            data-active-op='copy-title'
-                            onClick={() => {
-                                setActiveMenuAnchor(null);
-                                void copyText(active.title || "", "已复制标题");
-                            }}
-                        >
-                            <DriveFileRenameOutlineIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
-                            复制标题
-                        </MenuItem>
-                        <MenuItem
-                            data-active-op='copy-link'
-                            onClick={() => {
-                                setActiveMenuAnchor(null);
-                                void copyText(noteLink(active), "已复制直链");
-                            }}
-                        >
-                            <LinkIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
-                            复制直链
-                        </MenuItem>
-                        <Divider />
-                        <MenuItem
-                            data-active-op='pin'
-                            onClick={() => {
-                                setActiveMenuAnchor(null);
-                                void onTogglePin(active);
-                            }}
-                        >
-                            <PushPinIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
-                            {active.pinned ? "取消置顶" : "置顶"}
-                        </MenuItem>
-                        {onToggleStar && (
-                        <MenuItem
-                            data-active-op='star'
-                            onClick={() => {
-                                setActiveMenuAnchor(null);
-                                void onToggleStar(active);
-                            }}
-                        >
-                            {active.starred ? <StarIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} /> : <StarBorderIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />}
-                            {active.starred ? "取消收藏" : "收藏"}
-                        </MenuItem>
-                        )}
-                        <MenuItem
-                            data-active-op='archive'
-                            onClick={() => {
-                                setActiveMenuAnchor(null);
-                                void onToggleArchive(active);
-                            }}
-                        >
-                            <ArchiveIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
-                            {active.archived ? "取消归档" : "归档"}
-                        </MenuItem>
-                        <MenuItem
-                            data-active-op='folder'
-                            onClick={() => {
-                                const id = active.id;
-                                setActiveMenuAnchor(null);
-                                if (id !== undefined) setMoveDrawerNoteId(id);
-                            }}
-                        >
-                            <FolderIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
-                            移动到文件夹…
-                        </MenuItem>
-                        {/* 导出三件套：桌面端已收进头部「导出」下拉（data-tool='export'），
-                            这里只留给窄屏与分屏态。 */}
-                        {(narrowLayout || sideId !== null) && (
-                        <>
-                        <MenuItem
-                            data-active-op='export'
-                            onClick={() => {
-                                setActiveMenuAnchor(null);
-                                exportOne(active);
-                            }}
-                        >
-                            <FileDownloadIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
-                            导出 Markdown
-                        </MenuItem>
-                        <MenuItem
-                            data-active-op='export-html'
-                            onClick={() => {
-                                setActiveMenuAnchor(null);
-                                exportHtmlOne(active);
-                            }}
-                        >
-                            <FileDownloadIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
-                            导出 HTML
-                        </MenuItem>
-                        <MenuItem
-                            data-active-op='export-pdf'
-                            onClick={() => {
-                                setActiveMenuAnchor(null);
-                                exportPdfOne(active);
-                            }}
-                        >
-                            <FileDownloadIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
-                            导出 PDF
-                        </MenuItem>
-                        </>
-                        )}
-                        <Divider />
-                        <MenuItem
-                            data-active-op='delete'
-                            onClick={async () => {
-                                setActiveMenuAnchor(null);
-                                await onDelete(active);
-                                // ⚠️ 这是用户**主动**清空选择：标记一下，别让自动选中
-                                // 立刻把另一条顶上来（他要的是空状态，自己挑下一条）。
-                                userClearedRef.current = true;
-                                setActiveId(null);
-                                setMobileDetail(false);
-                            }}
-                            sx={{ color: "error.main" }}
-                        >
-                            <DeleteOutlineIcon fontSize='small' sx={{ mr: 1, fontSize: 16 }} />
-                            移到回收站
-                        </MenuItem>
-                    </>
-                )}
-            </Menu>
-
-            {/* 版本历史面板（inkstone 的 VersionsPanel）：左列快照 + 右栏行级 diff。
-                替换掉原来那个「点了直接恢复」的 Menu —— 恢复前能看清改了什么。 */}
+            <NotesOverlayLayer {...paneCtx} />
             <NoteGraphDialog
                 folders={folders}
                 tags={tags}
@@ -6452,7 +3587,7 @@ export default function NotesPage({
                         minHeight: 0,
                     }}
                 >
-                    {listPane}
+                    <NotesListPane {...paneCtx} />
                 </Box>
                 {/* 右栏占满剩余空间。minHeight:0 同样要加：缺了它，内部内容会把这层
                     撑高、进而把最外层的 fixed 容器顶出视口 —— 表现就是页面级滚动条。
@@ -6482,13 +3617,13 @@ export default function NotesPage({
                         }}
                     >
                         {/* 侧边编辑器打开时主编辑器让出一半（两个文档同时编辑，inkstone 的分屏）
-                            ⚠️ 判据用 sidePane（= 侧边那条笔记真的还在），不能用 sideId：
+                            ⚠️ 判据用 sideNote（= 侧边那条笔记真的还在），不能用 sideId：
                             侧边那条被删掉/回收后 sideId 还留着，按它分屏会让主编辑区
                             白白让出一半、右边空着一条（2026-10-06）
                             ⚠️ 比例可拖（2026-10-07 用户要求）：默认 50/50，中间那条缝能拖，
                             拖完记住（notes.paneRatio）；双击回 50/50。 */}
                         <Box
-                            data-pane-divider={sidePane !== null ? "drag" : undefined}
+                            data-pane-divider={sideNote !== null ? "drag" : undefined}
                             sx={{
                                 // ⚠️ 宽度必须写成 `0 0 auto` + 百分比，**不能**写 `1 1 X%`。
                                 // `1 1 X%` 的两个 flex-basis 加起来正好 100%，再加上中间那条
@@ -6497,7 +3632,7 @@ export default function NotesPage({
                                 // 于是「点一下侧边的分栏、内容重排、分割线就跳一下」。
                                 // inkstone 的写法是左栏 `width: X%`、右栏 `flex: 1`：
                                 // 左栏宽度**只由比例决定**，右栏吃剩下的，分割线位置恒定。
-                                ...(sidePane !== null
+                                ...(sideNote !== null
                                     ? { flex: "0 0 auto", width: `${paneRatio * 100}%` }
                                     : { flex: 1 }),
                                 minWidth: 0,
@@ -6505,9 +3640,9 @@ export default function NotesPage({
                                 display: "flex",
                             }}
                         >
-                            {editorPane}
+                            <NotesEditorPane {...paneCtx} />
                         </Box>
-                        {sidePane !== null && (
+                        {sideNote !== null && (
                             <ColResizeHandle
                                 label='拖动调整两栏的比例（双击回到对半）'
                                 onDrag={startPaneDrag}
@@ -6516,7 +3651,7 @@ export default function NotesPage({
                                 ratio={paneRatio}
                             />
                         )}
-                        {sidePane}
+                        {sideNote ? <NotesSidePane {...paneCtx} /> : null}
                     </Box>
                     {/* 移动端从编辑态回列表。
                         ⚠️ 同样不能用 `md:`（900px）：两屏切换现在由 bp === "mobile"（768）
@@ -6575,69 +3710,14 @@ export default function NotesPage({
                     bgcolor: "transparent",
                 }}
                 >
-                    {navInner}
+                    <NotesNavPanel {...paneCtx} />
                 </Box>
             </Drawer>
 
             {/* 分类相关的弹窗：新建 / 重命名（NamePromptDialog）与删除二次确认
                 （ConfirmDialog）。原来这些走的是 window.prompt / window.confirm ——
                 样式突兀，且部分 WebView 直接拦掉，表现为「点了没反应」。 */}
-            <NamePromptDialog
-                open={namePrompt !== null}
-                title={namePrompt?.title ?? ''}
-                description={namePrompt?.description}
-                defaultValue={namePrompt?.defaultValue ?? ''}
-                confirmText={namePrompt?.confirmText ?? '确定'}
-                placeholder={namePrompt?.kind === 'folder' ? '文件夹名字' : '标签名字'}
-                onConfirm={submitNamePrompt}
-                onClose={closeNamePrompt}
-            />
-            <ConfirmDialog
-                open={removeTarget !== null}
-                title={`删除${removeTarget?.kind === 'folder' ? '文件夹' : '标签'}`}
-                description={
-                    removeTarget?.kind === 'folder' ? (
-                        <>
-                            真的要删除「{removeTarget?.name}」吗？
-                            <br />
-                            里面的笔记**不会被删**，只是回到「未归类」；直接挂在它下面的子文件夹会升到根目录。
-                        </>
-                    ) : (
-                        <>
-                            真的要删除标签「{removeTarget?.name}」吗？笔记本身不会动，只是不再带这个标签。
-                        </>
-                    )
-                }
-                impact={{
-                    object: removeTarget?.kind === 'folder' ? '文件夹' : '标签',
-                    undoable: false,
-                }}
-                danger
-                confirmText='删除'
-                onConfirm={submitRemove}
-                onClose={closeRemove}
-            />
-
-            {/* 批量删除的二次确认（2026-10-09）：删的是用户勾的那批，
-                数量必须写在弹框里 —— 「确定删除吗」四个字看不出是 1 条还是 37 条 */}
-            <ConfirmDialog
-                open={bulkDeleteOpen}
-                title={`删除选中的 ${checkedNotes.length} 条笔记`}
-                description={
-                    <>
-                        它们会进回收站，之后还能还原回来。
-                        <br />
-                        {checkedNotes.slice(0, 3).map(n => n.title || "无标题").join("、")}
-                        {checkedNotes.length > 3 ? ` 等 ${checkedNotes.length} 条` : ""}
-                    </>
-                }
-                impact={{ object: "笔记", count: checkedNotes.length, undoable: true }}
-                danger
-                confirmText='删除'
-                busyText='删除中…'
-                onConfirm={() => void bulkDelete()}
-                onClose={() => setBulkDeleteOpen(false)}
-            />
+            <NotesConfirmLayer {...paneCtx} />
         </Box>
         </AttachmentPreviewProvider>
     );

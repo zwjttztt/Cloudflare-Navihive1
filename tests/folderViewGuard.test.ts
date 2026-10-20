@@ -10,39 +10,35 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
+import {
+    notesSource as notesSourceAll,
+    projectDir as findProjectDir,
+    stripComments,
+} from "./helpers/notesSource";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
 function projectDir(): string {
-    for (let dir = here, i = 0; i < 6; i++) {
-        try {
-            readFileSync(resolve(dir, "package.json"), "utf8");
-            return dir;
-        } catch {
-            dir = dirname(dir);
-        }
-    }
-    throw new Error("找不到项目根目录");
-}
-
-function stripComments(src: string): string {
-    return src
-        .replace(/\/\*[\s\S]*?\*\//g, "")
-        .split("\n")
-        .filter(line => !line.trim().startsWith("//"))
-        .join("\n");
+    return findProjectDir(here);
 }
 
 const readSrc = (rel: string) =>
     stripComments(readFileSync(resolve(projectDir(), rel), "utf8"));
 
+/**
+ * 读记事本全部源码（主文件 + notes/ 下所有子组件）。
+ * ⚠️ 2026-10-21：NotesPage 按职责拆成了 NotesListPane/NotesEditorPane/
+ * NotesOverlayLayer 等，守卫只读主文件会因「代码搬走」而**假通过**。
+ */
+const readNotesSrc = () => stripComments(notesSourceAll(here));
+
 test("NoteView 必须有 folder 视图键（点文件夹时切过去）", () => {
-    const src = readSrc("src/components/NotesPage.tsx");
+    const src = readNotesSrc();
     assert.match(src, /\| "folder"/, "NoteView 要含 folder 键");
 });
 
 test("点文件夹：选中切 folder 视图、清空回 all（防「全部」行双高亮）", () => {
-    const src = readSrc("src/components/NotesPage.tsx");
+    const src = readNotesSrc();
     // FolderTagSection 的 onSelect
     assert.match(
         src,
@@ -64,7 +60,7 @@ test("点文件夹：选中切 folder 视图、清空回 all（防「全部」�
 });
 
 test("中栏过滤：folder 视图靠 activeFolder 筛，且不进「未归类」特例", () => {
-    const src = readSrc("src/components/NotesPage.tsx");
+    const src = readNotesSrc();
     // folder 视图没有专属分支，走默认（byView 里 activeFolder 已筛 folder_id）
     assert.doesNotMatch(
         src,
@@ -105,7 +101,7 @@ test("代码块横向滚动：cm-content 钳宽 + pre maxWidth（渲染块不再
 });
 
 test("行菜单关闭后悬停显隐按行抑制（防「关闭瞬间在右键点位闪白圈」）", () => {
-    const src = readSrc("src/components/NotesPage.tsx");
+    const src = readNotesSrc();
     assert.match(src, /rowActionsSuppressed/, "要有行级抑制状态");
     // 关闭路径统一走 closeRowMenu（置抑制 + menuClosing）
     assert.match(src, /const closeRowMenu = useCallback/, "要有统一关闭助手");
@@ -126,7 +122,7 @@ test("文件夹/标签计数必须一次遍历（原 O(文件夹×笔记) 是置
     // 2026-10-18 第六批用户报「文件夹下方置顶笔记等操作卡顿」：
     // folderCounts = folders × notes.filter(...)，tagCounts 还每条现开一个 Set，
     // notes 每变一次（置顶/保存/移动的乐观更新）这里就全量重算一遍。
-    const src = readSrc("src/components/NotesPage.tsx");
+    const src = readNotesSrc();
     for (const name of ["folderCounts", "tagCounts"]) {
         const at = src.indexOf(`const ${name} = useMemo`);
         assert.ok(at > 0, `要能定位 ${name}`);
@@ -137,7 +133,7 @@ test("文件夹/标签计数必须一次遍历（原 O(文件夹×笔记) 是置
 });
 
 test("总字数/附件引用计数只在数据面板打开时算（不挡置顶这类即时操作）", () => {
-    const src = readSrc("src/components/NotesPage.tsx");
+    const src = readNotesSrc();
     const wordAt = src.indexOf("const noteWordTotal = useMemo");
     assert.ok(wordAt > 0, "要能定位 noteWordTotal");
     assert.match(src.slice(wordAt, wordAt + 500), /settingsOpen/, "总字数要有 settingsOpen 闸门");
@@ -149,7 +145,7 @@ test("总字数/附件引用计数只在数据面板打开时算（不挡置顶�
 });
 
 test("左栏内联笔记走分组表 notesByFolder（引用稳定、不每次 filter+sort）", () => {
-    const src = readSrc("src/components/NotesPage.tsx");
+    const src = readNotesSrc();
     assert.match(src, /const notesByFolder = useMemo/, "要按 folder_id 一次分组");
     const at = src.indexOf("const notesInFolder = useCallback");
     assert.ok(at > 0, "要能定位 notesInFolder");

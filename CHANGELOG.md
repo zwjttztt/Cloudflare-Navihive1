@@ -6,6 +6,98 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。---
 
+## 2026-10-21（三）· 优化：第二份质量评估的 10 条高优先级行动项全部落地
+
+承接《全站质量评估与优化分析（第二份，独立重做）》（`docs/quality-review-2026-10-20-full.md`）
+第 10 节那张表，**10 条一次做完**，含被列为 P1 的 `NotesPage.tsx` 拆分。
+
+**1. `index.html` 内联纯 CSS 骨架（A1，全篇性价比最高的一条）。** 首屏 JS 到达前
+（282 KB gzip 的下载窗口）原本是**纯白屏**——`SiteListSkeleton` 自己是懒加载的，
+根本来不及占位。现在外壳里直接内联几十行 CSS 画骨架（顶栏 + 两列卡片，带 shimmer，
+跟随亮/暗配色、`prefers-reduced-motion` 下不动），首帧就有东西看。
+`main.tsx` 在 `requestAnimationFrame` 里摘掉它：React 19 的 `createRoot` 首次提交会清空
+容器子节点（正常路径查到的是 null），留着是为兜住换成 `hydrateRoot`、
+或挂载抛错被 ErrorBoundary 之外拦下这两种情况；放 rAF 里避免并发渲染首帧未提交就先闪一下底色。
+
+**2. `NotesPage.tsx` 拆分：6675 → 3668 行。** 按职责拆成 7 个子组件
+（`NotesNavPanel` 354 / `NotesTrashPane` 106 / `NotesListPane` 880 / `NotesEditorPane` 752 /
+`NotesSidePane` 372 / `NotesOverlayLayer` 734 / `NotesConfirmLayer` 74），
+共享入参抽成类型模块 `notes/notesPageCtx.ts`（用 TS 编译器 API 从真实代码**导出**出来的，
+不是手抄的——手抄的接口一旦与实现漂移，报错会指向完全不着调的地方）。
+⚠️ 迁移过程本身抓到一类**比不写守卫更糟**的问题：33 个静态守卫原本只读主文件，
+代码一搬走就**假通过**（看着全绿其实没人盯）。现在守卫统一走 `tests/helpers/notesSource.ts`
+**动态扫** `src/components/notes/` 全目录——以后再拆新文件守卫自动跟上，不用回来改清单；
+跨文件切片的那几条（顶栏顺序、导航列自己滚、浮层不能包在中栏里）改按「锚点在哪个子组件」
+分别钉，顺手把「搜索框在可滚区里、底部固定区在可滚区外」这条原始意图也补上了。
+
+**3. 浏览器扩展（`extension/`，MV3，无构建步骤）。** 只申请 `activeTab` + `storage`
+（不要 `<all_urls>`、不要 `cookies`），点一下把当前页标题/网址/备注编成
+`?add-site=<base64url>` 深链打开本站并预填新增卡片弹窗（填完自己确认，扩展不持有任何凭据）。
+判据在 `src/utils/addSiteDeepLink.ts`（5 例）；`App` 读一次参数就把 URL 里的参数抹掉，
+避免刷新或前进后退时反复弹窗。
+
+**4. PBKDF2 迭代数：Workers 上限 10 万 → 自托管 60 万。** 迭代数**写进哈希串**
+（`pbkdf2$<iters>$salt$hash`），校验时按串里存的来——老库里 10 万的哈希照常能登，
+不用改密。Workers 侧受平台硬上限（100 000）约束仍是 10 万；可用 `NAVIHIVE_PBKDF2_ITERS`
+覆盖（10 万~100 万，只自托管生效），并加了 `isWeakPbkdf2Hash()` 认出弱哈希。
+⚠️ 顺带挖出一个**真 bug**：迭代数变高后，多端并发首登的 owner 竞态从「几乎不会撞」
+变成「必撞」——`claimIdempotency` 把「锁被别人拿着」和「表不可用」都压成 `false`，
+于是首登会死锁。现在拆成三态（`acquired` / `busy` / `unavailable`），
+`busy` 时**等到对方释放**而不是只偷看 120 ms。这个 bug 在改迭代数之前一直潜伏着。
+
+**5. `AUTH_SECRET` 没配时拒绝启动。** 开了 `AUTH_ENABLED` 却没有 `AUTH_SECRET`
+（或短于 16 字符）时：前者直接退出码 1 并打印怎么修，后者警告。
+以前只是「启动后打一行日志」，部署漏配就等于凭据接近明文。
+
+**6. 产物体积预算进 CI 硬门禁。** 新增 `npm run check:budget`，插在 CI 的 `build` **之后**
+——`npm run test` 在 build 之前跑，而 `bundleBudget` 没有 `dist` 时会自己跳过，
+也就是说这条守卫**此前在 CI 里从来没真正生效过**（本地全绿，CI 白跑）。
+⚠️ 接上就立刻抓到本次改动的一个回归：站点索引从 `siteNoteLink` 引了 `findSiteByTarget`，
+而 `siteNoteLink` 依赖 markdown-it → **首屏 852 → 971 KB（gzip +50 KB）**。
+拆法：名字/网址匹配（不碰 Markdown）单独放 `utils/siteMatch.ts`，
+需要解析 Markdown 的留在 `siteNoteLink.ts` 且**只能被懒加载组件引**。
+
+**7. `deploy/docker-socket-proxy.yml`（可选叠加）。** 用 `tecnativa/docker-socket-proxy`
+只放行 `CONTAINERS/IMAGES/POST` 且禁 `ALLOW_STOP/ALLOW_RESTARTS`，navihive 不再挂 sock、
+改走 `NAVIHIVE_DOCKER_HOST`。容器失守的后果从「宿主机 root」压成「只能重建本容器」。
+
+**8. i18n 骨架（zh/en）。** `src/i18n/`：`locale.ts`（认语言/存语言/取文案，纯函数）、
+`messages.ts`（文案表，**zh 列与界面原文逐字一致**，接入不允许顺手改字）、
+`localeStore.ts` + `LocaleProvider.tsx`（按项目既有约定拆成「只导出组件」+「只有 context/hook」，
+避免热更新降级）。回落链是 当前语言 → zh → 兜底 → key：缺翻译最多是「这一处还是中文」，
+不会显示 undefined 或空白。第一个接入口是设置里的「界面语言」——它本身就是语言开关，
+自成闭环，接上之后 `t()` 这条链路才算真在跑。语言只存本机，不进 configs（换设备不该连界面语言一起换）。
+
+**9. `.prettierrc` + `.editorconfig` + `.nvmrc`。** 4 空格 / 100 宽 / 单引号 / lf，
+Node 22 锁版本，`yml|json` 单独 2 空格，`*.md` 不裁行尾空格（Markdown 行尾两空格是换行）。
+
+**10. D2 站点 ↔ 笔记双向绑定。** 两边共用**同一套判据**（`utils/siteMatch.ts` + `siteNoteLink.ts`），
+否则会出现「笔记里点得开、站点里列不出」这种两边单看都正常、合起来才是 bug 的情况。
+  - 笔记 → 站点：预览里点 `[[GitHub]]`，没有同名笔记但有同名（或同网址）站点时，
+    **打开那个站点**（新标签，`noopener,noreferrer`）并提示；`[[` 补全里一并给出站名候选
+    （boost 比笔记低 5，同名时笔记优先——双链原本指的是笔记，不能被抢）。
+    ⚠️ 这是**退化路径**：原本这类链接点了只会报「没找到」，现有笔记双链行为一字未改。
+  - 站点 → 笔记：站点设置新增「相关笔记」小节，列出正文里写了 `[[站名]]` / 写了网址 /
+    出现站名的笔记，点一下打开记事本并跳到那条（新增 `focusNoteId` 一次性跳转，
+    用 ref 记住「已处理过哪个 id」，否则 3 秒自动保存一触发就会把用户自己选中的笔记抢回去）。
+    判据剥掉代码块（示例代码里的网址不算「我提到了这个站」），单字站名不做名字子串匹配
+    （叫「A」的站会把半本笔记都认领）。
+  - 站点索引走**模块级**（`utils/siteIndex.ts`）：记事本的渲染链路已经有五层深，
+    为一个点击把 props 全改一遍不划算；代价是没打开过首页时索引为空，
+    那时 `[[站点]]` 退化成原来的死链提示（只是不认，不报错）。
+    站点侧的两个能力（搜一下 / 跳过去）走 `AppConfigContext.notesBridge`——
+    链路是 App → GroupCard → SiteCard → SiteSettingsModal，五层透传不划算；
+    没接上时那一小节**整节不渲染**，而不是渲染出一个点了没反应的空壳。
+
+⚠️ 顺带修掉一个因迭代数变高而暴露的**用例时序**问题：登录页「找回」那条原来
+`await settle()` 等固定 6×10ms，PBKDF2 变慢 + 跑全量套件时 CPU 被抢会偶发不够用。
+改成轮询等到条件成立——判据本身没错，只是不该靠猜时间。
+
+门禁：tsc 0 错 / eslint 0 error / 单测 **2922** 全绿 / build 通过 / 首屏体积预算 10 项全绿
+（实测首屏 863 KB / gzip 283 KB，在 900 KB 预算与 852 KB 基线内）/ 无障碍 0 不合格 /
+亮暗对比度 0 不合格 / npm audit 0 vulnerabilities。
+
+
 ## 2026-10-20（五）· 优化：质量评估 8 条行动项落地 6 条
 
 承接同日发布的《全站质量评估报告》（`docs/quality-audit-2026-10-20.md`），逐条做完能做的。

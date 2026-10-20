@@ -7,6 +7,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { notesSource as notesSourceAll } from "./helpers/notesSource";
 import { fileURLToPath } from "node:url";
 
 /** 剥掉注释，避免扫到「为什么不用 X」这类说明文字（否则守卫永远红） */
@@ -46,12 +47,11 @@ const readSrcFile = (...parts: string[]) =>
  * 「不该出现 X」都照旧查得到。
  */
 const readNotesPageForBatch10 = () =>
-    [
-        readSrcFile("components", "NotesPage.tsx"),
-        readSrcFile("components", "notes", "markdownToolbar.tsx"),
-        readSrcFile("components", "notes", "sidebarSection.tsx"),
-        readSrcFile("components", "notes", "paneChrome.tsx"),
-    ].join("\n");
+    // ⚠️ 2026-10-21：NotesPage 又拆出了一批子组件（NotesListPane /
+    // NotesEditorPane / NotesOverlayLayer / NotesNavPanel / NotesSidePane /
+    // NotesConfirmLayer / NotesTrashPane），写死清单会漏 —— 改走助手，
+    // 动态扫 src/components/notes/ 全目录。
+    stripComments(notesSourceAll());
 
 // ---------------------------------------------------------------------------
 // 快捷键：单表驱动键盘绑定与 UI 显示

@@ -140,11 +140,21 @@ async function submitForm() {
  * 是**宏任务**，光 `await` 一次只 drain 完微任务队列，回调还没回来。
  * 所以要空转几轮 setTimeout 把宏任务也等掉。
  */
-async function settle(rounds = 6) {
-    for (let i = 0; i < rounds; i++) {
+/**
+ * 等到某个条件成立（而不是等固定几轮）。
+ *
+ * ⚠️ 2026-10-21：PBKDF2 迭代数提到 60 万之后，「本地算哈希」这一步在跑全量套件
+ * （几十个文件并发、CPU 被抢）时明显变慢 —— 原来那个 6×10ms 的固定等待窗口
+ * 偶发不够用，用例会随机红。判据本身是正确的，只是不该靠猜时间：
+ * 轮询到条件成立为止，超时才算失败（报的是真问题，不是时序运气）。
+ */
+async function waitUntil(cond: () => boolean, timeoutMs = 10_000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
         await act(async () => {
             await new Promise<void>(r => setTimeout(r, 10));
         });
+        if (cond()) return;
     }
 }
 
@@ -377,7 +387,9 @@ test("找回：走完本地签名后交给 onRecover，且令牌里没有密码�
     setInputValue(inputById("recover-new-password")!, "brand-new-pass");
     setInputValue(inputById("recover-confirm-password")!, "brand-new-pass");
     await submitForm();
-    await settle();
+    // 本地算 PBKDF2 是异步的、迭代数又高（自托管 60 万）：轮询等它算完，
+    // 不用固定轮数的 settle —— 那个窗口在跑全量套件时会偶发不够用
+    await waitUntil(() => token !== "");
     assert.ok(token, "onRecover 应该收到令牌");
     const parts = token.split(".");
     assert.equal(parts.length, 3, `令牌应是 JWS compact 三段式，实际：${token.slice(0, 40)}…`);

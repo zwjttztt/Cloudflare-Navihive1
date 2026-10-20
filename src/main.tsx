@@ -15,6 +15,7 @@ import App from "./App.tsx";
 import BuildBadge from "./components/BuildBadge";
 import { readRememberedLogin } from "./utils/rememberedLogin";
 import { UIPrefsProvider } from "./context/UIPrefsContext";
+import { LocaleProvider } from "./i18n/LocaleProvider";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { applyInputModeClass } from "./utils/device";
 import { setupGlobalHandlers } from "./utils/errorReporter";
@@ -115,17 +116,33 @@ createRoot(document.getElementById("root")!).render(
     <StrictMode>
         {/* 包在所有内容之外：任何组件渲染抛错都被拦成一张可自助恢复的页面，而不是白屏 */}
         <ErrorBoundary>
+            {/* 语言在最外层：t() 是全局只读的，换语言才会引起整棵树重渲染，
+                所以单独一层，不塞进「每项偏好都带同步逻辑」的 UIPrefs 里。 */}
+            <LocaleProvider>
             <UIPrefsProvider>
             {publicGroupToken ? (
                 <Suspense fallback={<p>正在加载分享…</p>}><PublicGroupPage token={publicGroupToken} /></Suspense>
             ) : publicToken ? <Suspense fallback={<p>正在加载分享…</p>}><PublicNotePage token={publicToken} /></Suspense> : <App />}
             </UIPrefsProvider>
+            </LocaleProvider>
             {/* 部署版本徽标（右下角）：公开分享页仍显示，方便核对「跑的是哪一版」；
                 主页面改由 App 内部渲染——记事本页整屏覆盖时隐藏，避免压在正文上。 */}
             {publicGroupToken || publicToken ? <BuildBadge /> : null}
         </ErrorBoundary>
     </StrictMode>
 );
+
+/**
+ * 拆掉 index.html 里那段内联骨架。
+ *
+ * React 19 的 createRoot 在首次提交时会清空容器子节点，所以正常路径下这里查到的是
+ * null、什么都不做；留着它是为了兜住另外两种可能：
+ *   - 将来换成 hydrateRoot（不会清空容器），骨架会永远压在界面下面；
+ *   - 挂载抛错被 ErrorBoundary 之外的路径拦下，界面没起来但骨架还在。
+ * 放在 rAF 里而不是紧跟 render()：并发渲染的首帧未必已提交，立刻删会在界面出现前
+ * 先闪一下底色；等一帧既不影响体感，也保证「骨架 → 界面」是无缝接上的。
+ */
+requestAnimationFrame(() => document.getElementById("boot-skeleton")?.remove());
 
 // PWA：注册 service worker（只在生产构建里注册，避免开发时被缓存干扰）
 //

@@ -128,6 +128,8 @@ import {
     switchAccountBoundary,
 } from "./utils/sessionBoundary";
 import { domCardEnv, focusCardByDirection as focusCardByDirectionImpl } from "./utils/cardFocus";
+import { clearAddSiteParam, readAddSitePrefill } from "./utils/addSiteDeepLink";
+import { setSiteIndex } from "./utils/siteIndex";
 import {
     WEBDAV_CONFIG_PREFIX,
     LINK_HEALTH_CONFIG,
@@ -305,6 +307,16 @@ function App() {
 
     useEffect(() => {
         groupsRef.current = groups;
+    }, [groups]);
+
+    // D2 双向绑定：把站点列表喂给模块级索引，记事本那边 `[[站名]]` 才认得出来。
+    // 只存 id / name / url 三个字段的最小快照 —— 索引只用于「名字/网址匹配」，
+    // 存整个 Site 对象会让这份模块级引用拖住整棵 groups 树不释放。
+    useEffect(() => {
+        const flat = groups.flatMap(g =>
+            (g.sites ?? []).map(s => ({ id: s.id, name: s.name || "", url: s.url || "" }))
+        );
+        setSiteIndex(flat);
     }, [groups]);
 
 
@@ -1152,6 +1164,11 @@ function App() {
     // 现在改成：hook 与视图一起塞在 lazy 的 NotesOverlay 里，
     // 打开记事本才下载那个 chunk；App 这边只留一个「条数」数字给顶栏菜单显示。
     const [notesOpen, setNotesOpen] = useState(false);
+    /**
+     * 打开记事本时要直接跳过去的那条笔记（D2：站点设置里点「相关笔记」）。
+     * 空 = 照常打开（选中上次那条）。
+     */
+    const [notesFocusId, setNotesFocusId] = useState<number | null>(null);
     /** 顶栏菜单上那个「记事本（N）」的 N。进面板时由 NotesOverlay 回报。 */
     const [notesCount, setNotesCount] = useState(0);
 
@@ -1362,6 +1379,28 @@ function App() {
         handleOpenAddGroup();
     }, [groups, activeGroupId, handleOpenAddSite, handleOpenAddGroup]);
 
+    /**
+     * 站外「一键收藏」深链（浏览器扩展用）：`?add-site=<base64url>` 直接开新增弹窗并填好。
+     *
+     * 为什么等 groups 到了才动手：分组列表是异步拉的，参数一进来就开弹窗的话，
+     * 落点分组只能瞎猜一个。所以这里把 groups 放进依赖，分组没到就什么都不做
+     * （参数也留着），分组一到位就兑现 —— 兑现完立刻抹掉参数，刷新不会再来一次。
+     *
+     * 落在哪个分组与「新增」主按钮同规则：当前正在看的那个，没有就第一个。
+     */
+    useEffect(() => {
+        const prefill = readAddSitePrefill(location.search);
+        if (!prefill) return;
+        const current =
+            activeGroupId === null
+                ? undefined
+                : groups.find(g => g.id === activeGroupId && g.id !== undefined);
+        const target = current ?? groups.find(g => g.id !== undefined);
+        if (!target) return; // 分组还没加载出来：参数留着，等下一次
+        handleOpenAddSite(target.id as number, prefill);
+        clearAddSiteParam();
+    }, [groups, activeGroupId, handleOpenAddSite]);
+
     // 「新增」按钮上的目标分组名：让用户点之前就知道卡片会落到哪
     const quickAddTargetName = useMemo(() => {
         const current =
@@ -1407,8 +1446,35 @@ function App() {
             thumbApi: (configs["site.thumbApi"] || "").trim(),
             backgroundImage: (configs["site.backgroundImage"] || "").trim(),
             backgroundMaskOpacity: configs["site.backgroundMaskOpacity"] || "0.15",
+            // D2 双向绑定：给深层组件（站点设置）用的记事本桥 —— 搜一下 / 跳过去。
+            // 走 context 而不是 props：App → GroupCard → SiteCard → SiteSettingsModal
+            // 五层透传只为两个函数不划算。
+            notesBridge: {
+                search: async (query: string, limit = 50) => {
+                    try {
+                        const res = await api.notesSearch(query, limit);
+                        // ⚠️ 搜索端点只回**片段**（snippet），不回全文 ——
+                        // 站点那边拿它做「有没有提到这个站」的判据足够
+                        // （片段是围着命中位置截的，站名/网址就在里面），
+                        // 换来的是不用把所有笔记正文拉一遍。
+                        return (res?.results ?? []).map(hit => ({
+                            id: hit.id,
+                            title: hit.title || "",
+                            content: hit.snippet || "",
+                        }));
+                    } catch {
+                        // 老部署没有 notes/search 端点（404/500）：返回空，
+                        // 站点设置里那小节显示「还没有笔记提到它」，不弹错
+                        return [];
+                    }
+                },
+                open: (noteId: number) => {
+                    setNotesFocusId(noteId);
+                    setNotesOpen(true);
+                },
+            },
         }),
-        [configs]
+        [configs, api]
     );
 
     // 渲染登录页面
@@ -1948,7 +2014,12 @@ function App() {
                         <Suspense fallback={null}>
                             <NotesOverlay
                                 api={api}
-                                onClose={() => setNotesOpen(false)}
+                                // 站点设置里点「相关笔记」时带上目标笔记 id
+                                focusNoteId={notesFocusId ?? undefined}
+                                onClose={() => {
+                                    setNotesOpen(false);
+                                    setNotesFocusId(null);
+                                }}
                                 onError={handleError}
                                 onNotify={notify}
                                 onCountChange={setNotesCount}

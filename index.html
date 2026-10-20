@@ -25,9 +25,143 @@
     <meta name="twitter:image" content="/icons/icon-512.png" />
 
     <title>Navihive 导航站</title>
+
+    <!--
+      启动骨架（纯 CSS，无 JS / 无外链）。
+
+      为什么必须有这一段：`<div id="root">` 原本是空的，而真正的骨架屏
+      `SiteListSkeleton` 自己也是 lazy 组件 —— 它要等首屏那批 JS（gzip 约 282 KB）
+      下载完才会渲染。也就是说从 HTML 到达到 React 挂载之间是**纯白屏**，弱网下能白几秒。
+
+      这里用几十行内联 CSS 在 HTML 里先画出结构（顶栏 + 两组卡片占位），
+      React 一挂载就把它整块清掉，视觉上「结构先出现、内容后填充」，不再有白屏。
+      内联是刻意的：外链 CSS 又是一次往返，而这段必须在 HTML 到达的同一帧就能画出来。
+
+      CSP 允许 `style-src 'self' 'unsafe-inline'`（MUI/emotion 运行时插样式需要），
+      所以这里不需要 nonce。骨架本身无任何文本，不参与对比度/焦点审计。
+    -->
+    <style>
+      #boot-skeleton {
+        --bs-bg: #f7f8fa;
+        --bs-surface: #ffffff;
+        --bs-line: #e8ecf1;
+        --bs-brand: #1976d2;
+        position: fixed;
+        inset: 0;
+        z-index: 0;
+        background: var(--bs-bg);
+        padding: 20px 20px 40px;
+        box-sizing: border-box;
+        overflow: hidden;
+        font-family: Inter, "Segoe UI", system-ui, "PingFang SC", "Microsoft YaHei", sans-serif;
+      }
+      @media (prefers-color-scheme: dark) {
+        #boot-skeleton {
+          --bs-bg: #12161c;
+          --bs-surface: #1b212a;
+          --bs-line: #262e39;
+          --bs-brand: #90caf9;
+        }
+      }
+      #boot-skeleton .bs-bar {
+        height: 56px;
+        border-radius: 14px;
+        background: var(--bs-surface);
+        margin-bottom: 28px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 0 16px;
+      }
+      #boot-skeleton .bs-dot {
+        width: 22px;
+        height: 22px;
+        border-radius: 7px;
+        background: var(--bs-brand);
+        flex: none;
+      }
+      #boot-skeleton .bs-search {
+        height: 30px;
+        flex: 1;
+        max-width: 320px;
+        border-radius: 15px;
+        background: var(--bs-line);
+      }
+      #boot-skeleton .bs-title {
+        width: 150px;
+        height: 26px;
+        border-radius: 8px;
+        background: var(--bs-line);
+        margin: 0 0 16px 4px;
+      }
+      #boot-skeleton .bs-grid {
+        display: flex;
+        flex-wrap: wrap;
+        margin: -8px;
+      }
+      #boot-skeleton .bs-card {
+        box-sizing: border-box;
+        padding: 8px;
+        width: 50%;
+      }
+      @media (min-width: 600px) {
+        #boot-skeleton .bs-card { width: 33.33%; }
+      }
+      @media (min-width: 900px) {
+        #boot-skeleton .bs-card { width: 25%; }
+      }
+      @media (min-width: 1536px) {
+        #boot-skeleton .bs-card { width: 20%; }
+      }
+      #boot-skeleton .bs-card > i {
+        display: block;
+        height: 104px;
+        border-radius: 12px;
+        background: var(--bs-surface);
+      }
+      #boot-skeleton .bs-shimmer {
+        background-image: linear-gradient(
+          90deg,
+          transparent 0%,
+          color-mix(in srgb, var(--bs-brand) 10%, transparent) 50%,
+          transparent 100%
+        );
+        background-size: 200% 100%;
+        animation: bs-sweep 1.4s ease-in-out infinite;
+      }
+      @keyframes bs-sweep {
+        from { background-position: 150% 0; }
+        to { background-position: -50% 0; }
+      }
+      /* 尊重系统的「减少动效」：只留静态色块，呼吸灯会让人分心 */
+      @media (prefers-reduced-motion: reduce) {
+        #boot-skeleton .bs-shimmer { animation: none; }
+      }
+    </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <!-- 与上面的 #boot-skeleton 样式配套；React 挂载后由 main.tsx 兜底移除 -->
+      <div id="boot-skeleton" aria-hidden="true">
+        <div class="bs-bar bs-shimmer"><span class="bs-dot"></span><span class="bs-search"></span></div>
+        <div class="bs-title bs-shimmer"></div>
+        <div class="bs-grid">
+          <div class="bs-card"><i class="bs-shimmer"></i></div>
+          <div class="bs-card"><i class="bs-shimmer"></i></div>
+          <div class="bs-card"><i class="bs-shimmer"></i></div>
+          <div class="bs-card"><i class="bs-shimmer"></i></div>
+          <div class="bs-card"><i class="bs-shimmer"></i></div>
+        </div>
+        <div class="bs-title bs-shimmer" style="margin-top: 28px"></div>
+        <div class="bs-grid">
+          <div class="bs-card"><i class="bs-shimmer"></i></div>
+          <div class="bs-card"><i class="bs-shimmer"></i></div>
+          <div class="bs-card"><i class="bs-shimmer"></i></div>
+          <div class="bs-card"><i class="bs-shimmer"></i></div>
+          <div class="bs-card"><i class="bs-shimmer"></i></div>
+        </div>
+      </div>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

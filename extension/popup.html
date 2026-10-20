@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<!--
+  NaviHive 一键收藏 —— 弹窗页面。
+
+  刻意做成「零构建、零依赖」：三个文件（manifest / html / js）直接文件夹加载就能用，
+  不需要 npm、不需要打包。改一行刷新一下就见效，也方便照着自己的习惯改。
+
+  ⚠️ MV3 的扩展页面不许内联脚本（CSP），所有逻辑都在 popup.js 里，别搬回 HTML。
+-->
+<html lang="zh-CN">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>存到 NaviHive</title>
+        <style>
+            :root {
+                color-scheme: light dark;
+            }
+            body {
+                margin: 0;
+                padding: 14px;
+                width: 340px;
+                box-sizing: border-box;
+                font-family: system-ui, "PingFang SC", "Microsoft YaHei", sans-serif;
+                font-size: 13px;
+                background: #fff;
+                color: #1f2933;
+            }
+            @media (prefers-color-scheme: dark) {
+                body {
+                    background: #161b22;
+                    color: #e6edf3;
+                }
+            }
+            h1 {
+                margin: 0 0 10px;
+                font-size: 14px;
+                font-weight: 600;
+            }
+            label {
+                display: block;
+                margin: 8px 0 3px;
+                font-size: 12px;
+                opacity: 0.75;
+            }
+            input {
+                width: 100%;
+                box-sizing: border-box;
+                padding: 6px 8px;
+                font: inherit;
+                border: 1px solid #cbd5e1;
+                border-radius: 6px;
+                background: transparent;
+                color: inherit;
+            }
+            input:focus-visible {
+                outline: 2px solid #1976d2;
+                outline-offset: 1px;
+            }
+            button {
+                width: 100%;
+                margin-top: 12px;
+                padding: 8px 10px;
+                font: inherit;
+                font-weight: 600;
+                color: #fff;
+                background: #1976d2;
+                border: 0;
+                border-radius: 6px;
+                cursor: pointer;
+            }
+            button:hover {
+                background: #1565c0;
+            }
+            button[disabled] {
+                opacity: 0.55;
+                cursor: default;
+            }
+            #tip {
+                margin-top: 10px;
+                font-size: 12px;
+                line-height: 1.5;
+                opacity: 0.8;
+                min-height: 1em;
+            }
+            #tip.err {
+                color: #d32f2f;
+                opacity: 1;
+            }
+            .row {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+            }
+            .row img {
+                width: 20px;
+                height: 20px;
+                flex: none;
+            }
+        </style>
+    </head>
+    <body>
+        <h1>存到 NaviHive</h1>
+
+        <label for="site">你的导航站地址</label>
+        <input id="site" type="url" placeholder="https://home.example.com" autocomplete="off" />
+
+        <label for="name">名称</label>
+        <input id="name" type="text" placeholder="网页标题" autocomplete="off" />
+
+        <label for="url">链接</label>
+        <input id="url" type="text" placeholder="https://…" autocomplete="off" />
+
+        <label for="icon">图标（可留空，站点会自己抓）</label>
+        <input id="icon" type="text" placeholder="https://…/favicon.ico" autocomplete="off" />
+
+        <button id="save" type="button">保存</button>
+        <div id="tip"></div>
+
+        <script src="popup.js"></script>
+    </body>
+</html>

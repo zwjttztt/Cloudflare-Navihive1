@@ -8,9 +8,10 @@ import { test, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import { dirname, join, resolve } from "node:path";
+import {
+    notesSource as notesSourceAll,
+    stripComments,
+} from "./helpers/notesSource";
 import NotesPage from "../src/components/NotesPage";
 import TagColorDialog from "../src/components/TagColorDialog";
 import { UIPrefsProvider } from "../src/context/UIPrefsContext";
@@ -280,24 +281,9 @@ test("TagColorDialog：脏数据（不在调色板里的色值）按默认起手
 // jsdom 没有布局，css invoices 不了效果；这里钉住「两个必须成对出现」。
 // 只写 contentVisibility 不写 containIntrinsicSize 是最坏的一种优化：
 // 离屏行按 0 高占位 → 滚动条长度随滚动跳 → 列表根本滑不动。
-function projectDir(): string {
-    let dir = dirname(fileURLToPath(import.meta.url));
-    for (let i = 0; i < 6; i++) {
-        try {
-            readFileSync(resolve(dir, "package.json"), "utf-8");
-            return dir;
-        } catch {
-            dir = dirname(dir);
-        }
-    }
-    throw new Error("找不到项目根目录");
-}
-
 test("笔记列表行：content-visibility 必须配上 contain-intrinsic-size", () => {
-    const src = readFileSync(
-        join(projectDir(), "src", "components", "NotesPage.tsx"),
-        "utf-8"
-    );
+    // ⚠️ 2026-10-21：列表行已搬到 notes/NotesListPane.tsx，只读主文件会假通过
+    const src = readNotesSrcForBatchB();
     const at = src.indexOf("contentVisibility");
     assert.ok(at > 0, "列表行要开 content-visibility（几百条笔记时差别最大的一处）");
     // ⚠️ 窗口取 contentVisibility 的**两侧**，不取整行：行里还会不断加东西
@@ -375,3 +361,6 @@ test("灯箱：+ / - / 0 缩放；Esc 关闭；焦点锁在里面、关掉后还
         `关闭后焦点要还给打开前焦点所在的那个元素，实际是 ${document.activeElement?.getAttribute?.("aria-label") ?? document.activeElement?.tagName}`
     );
 });
+
+/** 记事本全部源码（主文件 + notes/ 下所有子组件），动态扫目录 */
+const readNotesSrcForBatchB = () => stripComments(notesSourceAll());

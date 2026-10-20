@@ -8,19 +8,15 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
+import {
+    notesSource as notesSourceAll,
+    projectDir as findProjectDir,
+} from "./helpers/notesSource";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
 function projectDir(): string {
-    for (let dir = here, i = 0; i < 6; i++) {
-        try {
-            readFileSync(resolve(dir, "package.json"), "utf8");
-            return dir;
-        } catch {
-            dir = dirname(dir);
-        }
-    }
-    throw new Error("找不到项目根目录");
+    return findProjectDir(here);
 }
 
 function stripComments(src: string): string {
@@ -93,10 +89,17 @@ test("工具栏「添加附件」按键：真附件上传后在当前笔记插�
     }
     assert.ok(!attachAccept[1].includes("image/"), "附件入口不收图片（那是上传图片的事）");
     // 附件仍走独立上传回调，但 NotesPage 必须将返回链接插入当前笔记正文。
-    const page = readSrc("src/components/NotesPage.tsx");
+    const page = readNotesSrc();
     assert.match(page, /handleAttach\(file, noteId, false\)/, "主工具栏绑定主编辑器");
     assert.match(page, /handleAttach\(file, noteId, true\)/, "侧工具栏绑定侧编辑器");
     assert.ok(page.includes("[${safeFilename}](<${uploaded.url}>)"), "上传完成要生成可见下载链接");
     assert.match(page, /ref\.current === editor/, "异步上传后检查原编辑器身份");
     assert.match(page, /并在笔记中插入下载链接/, "成功提示要说明正文已插入链接");
 });
+
+/**
+ * 读记事本全部源码（主文件 + notes/ 下所有子组件）。
+ * ⚠️ 2026-10-21：NotesPage 已按职责拆出多个子组件，守卫只读主文件
+ * 会因「代码搬走」而**假通过**（看着全绿其实没人盯）。
+ */
+const readNotesSrc = () => stripComments(notesSourceAll(here));

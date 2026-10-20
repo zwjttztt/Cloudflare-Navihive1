@@ -12,7 +12,7 @@
 // 配置全部走环境变量（.env 或 systemd EnvironmentFile），见文件底部的 CONFIG。
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { request as httpRequest } from "node:http";
+import { request as httpRequest, type RequestOptions } from "node:http";
 import { Readable } from "node:stream";
 import { mkdir, readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
@@ -241,9 +241,37 @@ function scheduleCron(): void {
 // ⚠️ 这个文件在容器里跑，升级的正是**它自己所在的容器**：整条序列必须
 // 「先把 200 响应发出去，再动手」，否则 compose 换容器时进程被杀，
 // 用户等不到任何反馈。调用方（下面的路由）已保证顺序。
-const DOCKER_SOCK = "/var/run/docker.sock";
+/**
+ * Docker daemon 的访问方式。两种，按 `NAVIHIVE_DOCKER_HOST` 是否配置自动选：
+ *
+ *   1. 没配（默认）—— 走 unix socket `/var/run/docker.sock`
+ *      （路径可用 `NAVIHIVE_DOCKER_SOCK` 改）。等价于把宿主机 Docker 的完整控制权
+ *      交给这个容器。
+ *   2. 配了 —— 走 TCP，接的是 `docker-socket-proxy` 一类的最小权限代理，
+ *      只能碰升级必需的几个端点（拉镜像 / 建启删容器 / 读日志），
+ *      容器失守也不等于拿到宿主机 root。
+ *      compose 片段见 `deploy/docker-socket-proxy.yml`。
+ *
+ * ⚠️ 代理模式下 helper 容器**不再挂 sock**，改为给它注入 `DOCKER_HOST`，
+ * 让里面的 `docker compose` 也走同一个代理（见 runUpgraderContainer）。
+ */
+const DOCKER_SOCK = process.env.NAVIHIVE_DOCKER_SOCK || "/var/run/docker.sock";
+const DOCKER_HOST = (process.env.NAVIHIVE_DOCKER_HOST || "").trim();
 /** API 版本写死：不跟着 daemon 版本漂，行为才可预期（v1.47 ≈ Docker 25/26） */
 const DOCKER_API_VERSION = "v1.47";
+
+/** 拼 http.request 的连接参数：代理模式给 host/port，否则给 socketPath */
+function dockerEndpoint(): RequestOptions {
+    if (!DOCKER_HOST) return { socketPath: DOCKER_SOCK };
+    // 形如 http://docker-socket-proxy:2375；代理只开 http，端口缺省 2375
+    const url = new URL(DOCKER_HOST);
+    return { host: url.hostname, port: Number(url.port) || 2375 };
+}
+
+/** 「升级可用」的判据：走代理时不需要本机能看到 sock */
+function dockerAvailable(): boolean {
+    return DOCKER_HOST ? true : existsSync(DOCKER_SOCK);
+}
 const UPGRADE_CONTAINER = process.env.NAVIHIVE_CONTAINER_NAME || "navihive";
 const UPGRADE_IMAGE = process.env.NAVIHIVE_IMAGE || "ghcr.io/zwjttztt/navihive:latest";
 
@@ -262,7 +290,7 @@ function dockerApi(
         const body = payload === undefined ? undefined : JSON.stringify(payload);
         const req = httpRequest(
             {
-                socketPath: DOCKER_SOCK,
+                ...dockerEndpoint(),
                 method,
                 path: `/${DOCKER_API_VERSION}${apiPath}`,
                 headers: {
@@ -294,7 +322,7 @@ async function dockerPull(image: string): Promise<void> {
     await new Promise<void>((resolve, reject) => {
         const req = httpRequest(
             {
-                socketPath: DOCKER_SOCK,
+                ...dockerEndpoint(),
                 method: "POST",
                 path: `/${DOCKER_API_VERSION}/images/create?fromImage=${encodeURIComponent(fromImage)}&tag=${encodeURIComponent(tag)}`,
                 headers: { Host: "docker" },
@@ -348,6 +376,11 @@ interface ComposeInfo {
     project: string;
     workingDir: string;
     files: string[];
+    /**
+     * 本容器所在的网络名。只有代理模式才用得上：helper 必须和 docker-socket-proxy
+     * 在同一个网络里才能按名字解析到它（默认 bridge 网里没有 proxy 这个别名）。
+     */
+    network: string;
 }
 
 /**
@@ -377,6 +410,7 @@ function readComposeInfo(labels: Record<string, string>): ComposeInfo | null {
             .split(",")
             .map(s => s.trim())
             .filter(Boolean),
+        network: "",
     };
 }
 
@@ -486,10 +520,18 @@ async function runUpgraderContainer(image: string, info: ComposeInfo): Promise<v
         User: "0:0",
         Tty: true,
         Labels: { "com.navihive.upgrader": "1" },
+        // 代理模式：helper 里的 docker CLI 也要走同一个代理，否则它回头去找
+        // /var/run/docker.sock（代理模式下根本没挂进去）而连不上 daemon。
+        ...(DOCKER_HOST ? { Env: [`DOCKER_HOST=${DOCKER_HOST}`] } : {}),
+        // 同理，只有代理模式才需要显式加入 proxy 所在的网络（默认 bridge 里没有它）
+        ...(DOCKER_HOST && info.network
+            ? { NetworkingConfig: { EndpointsConfig: { [info.network]: {} } } }
+            : {}),
         HostConfig: {
             AutoRemove: false,
             Binds: [
-                `${DOCKER_SOCK}:${DOCKER_SOCK}`,
+                // 代理模式下**不挂 sock**：代理的意义就是别把 daemon 的完整控制权交出去
+                ...(DOCKER_HOST ? [] : [`${DOCKER_SOCK}:${DOCKER_SOCK}`]),
                 // ⚠️ 源和目标写成**同一个宿主路径**：见 upgraderCommand 上方的长注释。
                 // 挂在 /compose 会让 compose 把 /compose 写进新容器的 working_dir 标签，
                 // 下一轮升级就再也找不到真正的 compose 目录（线上实测：第二次必失败）。
@@ -546,7 +588,10 @@ async function dockerUpgradeSelf(image: string): Promise<void> {
     const name = UPGRADE_CONTAINER;
     const { status, body } = await dockerApi("GET", `/containers/${name}/json`);
     if (status >= 300) throw new Error(`读不到容器 ${name}（HTTP ${status}）`);
-    const info = JSON.parse(body) as { Config?: { Labels?: Record<string, string> } };
+    const info = JSON.parse(body) as {
+        Config?: { Labels?: Record<string, string> };
+        NetworkSettings?: { Networks?: Record<string, unknown> };
+    };
     const labels = info.Config?.Labels ?? {};
     const compose = readComposeInfo(labels);
     if (!compose) {
@@ -559,6 +604,15 @@ async function dockerUpgradeSelf(image: string): Promise<void> {
                       "或在 compose 的 environment 里加 NAVIHIVE_COMPOSE_DIR 指向真实目录。"
                 : "读不到 compose 部署信息（容器标签里没有 com.docker.compose.*）：本容器不是 docker compose 启动的。" +
                       "网页一键升级只支持 compose 部署，请到宿主机执行 docker compose up -d --force-recreate。"
+        );
+    }
+    // 网络名从本容器身上读：helper 要跟它在同一个网里才解析得到代理。
+    // 有多个网时取第一个 —— 代理模式的标准形态是单网。
+    compose.network = Object.keys(info.NetworkSettings?.Networks ?? {})[0] ?? "";
+    if (DOCKER_HOST && !compose.network) {
+        throw new Error(
+            "配了 NAVIHIVE_DOCKER_HOST 但读不到本容器的网络名：helper 会进默认 bridge，" +
+                "解析不到代理地址。请确认本容器在 compose 网络里（docker inspect 看 NetworkSettings.Networks）。"
         );
     }
     upgradeStatus.phase = "pulling";
@@ -597,7 +651,7 @@ async function dockerEnsureRunning(): Promise<void> {
  * 删正在跑的那个会把升级现场弄丢，而删别人的容器是绝对不行的。
  */
 async function cleanupUpgraderContainer(): Promise<void> {
-    if (!existsSync(DOCKER_SOCK)) return;
+    if (!dockerAvailable()) return;
     try {
         const filters = encodeURIComponent(JSON.stringify({ label: ["com.navihive.upgrader=1"] }));
         const { status, body } = await dockerApi("GET", `/containers/json?all=1&filters=${filters}`);
@@ -669,7 +723,7 @@ const server = createServer((req, res) => {
                     res.end(JSON.stringify({ ok: false, error: "只有站点所有者可以执行升级" }));
                     return;
                 }
-                if (!existsSync(DOCKER_SOCK)) {
+                if (!dockerAvailable()) {
                     res.writeHead(501, { "Content-Type": "application/json; charset=utf-8" });
                     res.end(
                         JSON.stringify({
@@ -745,7 +799,7 @@ const server = createServer((req, res) => {
                 res.end(
                     JSON.stringify({
                         ok: true,
-                        supported: existsSync(DOCKER_SOCK),
+                        supported: dockerAvailable(),
                         phase: upgradeStatus.phase,
                         image: upgradeStatus.image,
                         error: upgradeStatus.error,
@@ -776,6 +830,52 @@ const server = createServer((req, res) => {
     })();
 });
 
+/**
+ * 启动前的鉴权配置自检（2026-10-20）：`AUTH_ENABLED=true` 却没配 `AUTH_SECRET`
+ * **直接退出**，不再只是打一行告警。
+ *
+ * 为什么从「告警」升级成「拒绝启动」：没配这个变量时令牌签发/校验会 fail-closed，
+ * 服务看起来是起来了（端口在听、静态页能开），但**登录永远失败** —— 现象离原因极远，
+ * 排查的人会先去查密码、查库、查反代，而不是看一眼启动日志里那行被刷走的告警。
+ * 更糟的是「静态页能开」会让人以为部署成功，等到要登录才发现整站不可用。
+ *
+ * 宁可起不来，也不给一个「起来了但登不进去」的服务 —— 这正是 compose 里
+ * `${AUTH_SECRET:?…}` 那条语法的同一个判断，只是把它搬到了不用 compose 的形态
+ * （`npm run start:selfhost` / systemd）上，两条路径行为一致。
+ *
+ * 不设环境变量豁免开关：真要免鉴权就把 `AUTH_ENABLED=false`，那是唯一且明确的入口。
+ */
+function assertAuthConfigOrExit(): void {
+    if (serverEnv.AUTH_ENABLED !== "true") return;
+    const secret = process.env.AUTH_SECRET ?? "";
+    if (!secret) {
+        console.error(
+            [
+                "",
+                "✖ 启动中止：AUTH_ENABLED=true 但没有 AUTH_SECRET。",
+                "  没配它时令牌签发/校验会 fail-closed —— 服务能起、页面能开，但登录必然失败，",
+                "  而现象离原因极远（会先去查密码/查库/查反代）。所以这里直接退出。",
+                "",
+                "  生成一个并配上去即可：",
+                "    AUTH_SECRET=$(openssl rand -hex 32) npm run start:selfhost",
+                "  systemd 用 EnvironmentFile=，Docker 用 .env（compose 里已经是 :? 必填）。",
+                "  确实要免鉴权调试就把 AUTH_ENABLED=false —— 那是唯一明确的入口。",
+                "",
+            ].join("\n")
+        );
+        process.exit(1);
+    }
+    // 长度只警告、不拦：HS256 的密钥短了不是「立刻不可用」，而是抗爆破能力弱。
+    // 但同样是「配了却配错」的类型，值不当场挡人，值得当场说一句。
+    if (secret.length < 16) {
+        console.warn(
+            `⚠️ AUTH_SECRET 只有 ${secret.length} 个字符：建议至少 16 位随机串（openssl rand -hex 32 给 64 位）。`
+        );
+    }
+}
+
+assertAuthConfigOrExit();
+
 server.listen(PORT, HOST, () => {
     console.log("NaviHive 自托管服务已启动");
     // 顺手清掉上一轮升级留下的 helper（异步、失败静默，不拖启动）
@@ -795,9 +895,7 @@ server.listen(PORT, HOST, () => {
     if (isPublicHost(HOST) && TRUST_XFF === "1") {
         console.warn(`⚠️ 监听地址是 ${HOST}（非回环），而 XFF 信任是开的：客户端随手加一个 X-Forwarded-For 就能换一个限速桶，把登录爆破限速绕过去。前面确实挡了可信反代就忽略本条；直接暴露到公网请设 NAVIHIVE_TRUST_XFF=0。`);
     }
-    if (serverEnv.AUTH_ENABLED === "true" && !process.env.AUTH_SECRET) {
-        console.warn("⚠️ AUTH_ENABLED=true 但没配 AUTH_SECRET：令牌签发/校验会 fail-closed，登录必然失败。请通过 .env 或 systemd EnvironmentFile 提供。");
-    }
+    // AUTH_SECRET 缺失已在启动前 assertAuthConfigOrExit() 挡掉（直接退出），这里不再重复
     if (serverEnv.AUTH_ENABLED !== "true") {
         console.warn("⚠️ AUTH_ENABLED 不是 true：站点当前无需登录即可读写，仅建议内网调试时这么用。");
     }

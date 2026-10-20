@@ -30,6 +30,15 @@ type Row = Record<string, unknown>;
 class MockD1 {
     /** Map<"scope|opId", Row>，模拟主键 (scope, op_id) */
     idem = new Map<string, Row>();
+    /** 幂等表是否抛错（建表之前 / 表不可用）—— 用来验证锁「不可用」与「被占」要分开 */
+    idemFail = false;
+
+    /** 统一入口：表不可用时所有语句都抛，模拟缺表 */
+    private guard(sql: string) {
+        if (this.idemFail && /idempotency_keys/.test(sql)) {
+            throw new Error("no such table: idempotency_keys");
+        }
+    }
 
     prepare(sql: string) {
         const self = this;
@@ -37,14 +46,19 @@ class MockD1 {
         const make = (args: unknown[]) => ({
             bind: (...a: unknown[]) => make(a),
             first: async () => {
+                self.guard(sql);
                 // 注意 SELECT 子句与 FROM 跨行，`.` 不吃换行，得用 [\s\S]
                 if (/SELECT[\s\S]*FROM idempotency_keys/.test(sql)) {
                     return self.idem.get(keyOf(args)) ?? null;
                 }
                 return null;
             },
-            all: async () => ({ results: [], success: true }),
+            all: async () => {
+                self.guard(sql);
+                return { results: [], success: true };
+            },
             run: async () => {
+                self.guard(sql);
                 let written = 0;
                 if (/INSERT INTO idempotency_keys/.test(sql)) {
                     const k = keyOf(args);
@@ -299,6 +313,26 @@ test("当锁用：释放后立刻能再抢，且不同 scope 互不干扰", asyn
 
     // 幂等键与锁共用一张表，靠 scope 隔开：锁不该被幂等记录顶掉，反之亦然
     assert.equal(await api.claimIdempotency("POST sites", "op-lock-a-0001"), true);
+});
+
+// 三态的意义：等的一方要能分清「同伴有在干活」和「锁压根用不了」。
+// 只有两态时它只能拍一个固定等待时间 —— 首次建 owner 那次就是这么超时的
+// （同伴在做口令哈希，迭代数上调后 120 ms 不够了，于是两个请求各建一个 owner）。
+test("claimIdempotencyDetailed：acquired / busy / unavailable 三态要分开", async () => {
+    const { api, db } = newApi();
+    const scope = "owner.bootstrap";
+    const key = "global";
+
+    assert.equal(await api.claimIdempotencyDetailed(scope, key, 60_000), "acquired");
+    assert.equal(await api.claimIdempotencyDetailed(scope, key, 60_000), "busy", "别人占着");
+    await api.releaseIdempotency(scope, key);
+    assert.equal(await api.claimIdempotencyDetailed(scope, key, 60_000), "acquired", "放手后能再抢");
+
+    // 幂等表不可用：不是「有人占着」，而是「锁不生效」—— 调用方必须照常执行
+    db.idemFail = true;
+    assert.equal(await api.claimIdempotencyDetailed(scope, key, 60_000), "unavailable");
+    // 两态版本把它压成 false，正是当年混同的根源，这里钉住这个映射关系
+    assert.equal(await api.claimIdempotency(scope, key, 60_000), false);
 });
 
 // ============ 缓存上限 ============

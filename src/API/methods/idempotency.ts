@@ -27,6 +27,15 @@ export const IDEMPOTENCY_PENDING_MS = 2 * 60 * 1000;
 
 export type IdempotencyState = "pending" | "done";
 
+/** 抢占位/抢锁的三种结果（claimIdempotencyDetailed 的返回值） */
+export type ClaimIdempotencyResult =
+    /** 抢到了，由本次调用负责执行 */
+    | "acquired"
+    /** 别人正占着：应该等它干完（它会在收尾时释放，或 TTL 到点自动失效） */
+    | "busy"
+    /** 幂等表不可用（还没建 / D1 抽风）：锁不生效，按没有锁照常执行 */
+    | "unavailable";
+
 export interface IdempotencyRecord {
     state: IdempotencyState;
     /** done 才有：上次响应的状态码 */
@@ -50,6 +59,20 @@ export interface IdempotencyApi {
      * 进程崩了也不会把后续操作永久堵死。
      */
     claimIdempotency(scope: string, opId: string, ttlMs?: number): Promise<boolean>;
+    /**
+     * 同上，但把「抢到了 / 别人占着 / 幂等表不可用」三种结果分开（2026-10-20）。
+     *
+     * 为什么需要三态：`claimIdempotency` 的 `false` 混了两件性质完全不同的事 ——
+     * 「同伴正在执行，你该等它」和「锁根本用不了，你该照常执行」。
+     * 拿锁当互斥锁用时这个混同会直接变成 bug：等的一方不知道该等到什么时候，
+     * 只能拍一个固定等待时间，而同伴实际要干多久是不知道的
+     * （首次建 owner 要先做一次口令哈希，迭代数上调后这里就超时过）。
+     */
+    claimIdempotencyDetailed(
+        scope: string,
+        opId: string,
+        ttlMs?: number
+    ): Promise<ClaimIdempotencyResult>;
     /**
      * 执行完落结果。state=done 记状态码与正文；state=pending 是把占位刷新成新的
      * 时间戳（长时间操作续租用）。
@@ -97,12 +120,12 @@ export const idempotencyImpl: IdempotencyApi = {
         };
     },
 
-    claimIdempotency: async function (
+    claimIdempotencyDetailed: async function (
         this: NavigationAPI,
         scope: string,
         opId: string,
         ttlMs = IDEMPOTENCY_TTL_MS
-    ): Promise<boolean> {
+    ): Promise<ClaimIdempotencyResult> {
         const now = Date.now();
         const expiresAt = now + ttlMs;
         try {
@@ -130,12 +153,26 @@ export const idempotencyImpl: IdempotencyApi = {
                 .run();
             const written = (result as { meta?: { rows_written?: number } } | undefined)?.meta
                 ?.rows_written;
-            return written === 1;
+            if (written === 1) return "acquired";
+            if (written === 0) return "busy";
+            // 拿不到 rows_written（有的驱动 / 测试桩不回这个字段）：**不能**当成
+            // 「别人占着」—— 那会让初次初始化白等一轮再放弃，等于把站点卡死在建库前。
+            // 按「锁不生效」处理，退回不幂等的老行为，与 catch 分支一致。
+            return "unavailable";
         } catch {
             // 表还没建好 / D1 抽风：拿不到锁就干脆不生效，退回「不幂等」的老行为，
             // 总比把一次正常的写操作拦下来强
-            return false;
+            return "unavailable";
         }
+    },
+
+    claimIdempotency: async function (
+        this: NavigationAPI,
+        scope: string,
+        opId: string,
+        ttlMs = IDEMPOTENCY_TTL_MS
+    ): Promise<boolean> {
+        return (await this.claimIdempotencyDetailed(scope, opId, ttlMs)) === "acquired";
     },
 
     completeIdempotency: async function (

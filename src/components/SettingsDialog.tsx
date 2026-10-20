@@ -29,6 +29,7 @@ import {
 import CloseIcon from "@mui/icons-material/Close";
 import LinkOffIcon from "@mui/icons-material/LinkOff";
 import VersionUpgradeSection from "./VersionUpgradeSection";
+import LanguageSection from "./LanguageSection";
 import { DEFAULT_ICON_API, DEFAULT_THUMB_API } from "../utils/iconApi";
 import {
     RETENTION_DAYS,
@@ -773,7 +774,11 @@ export default function SettingsDialog({
                                 placeholder={'/* 自定义样式 */\nbody { }'}
                             />
                         </Section>
-                        {/* 9. 版本与升级：显示当前运行版本 + 检查 GitHub 最新版本。
+                        {/* 9. 界面语言：i18n 骨架的开关（2026-10-20）。
+                            语言只存本机、不进 configs —— 换设备不该连界面语言一起换。
+                            没 Provider 时（单测直接渲染）也能跑：t() 回落 zh。 */}
+                        <LanguageSection />
+                        {/* 10. 版本与升级：显示当前运行版本 + 检查 GitHub 最新版本。
                             自包含组件（不碰本站 API、无 props），放最后 —— 低频操作。 */}
                         <VersionUpgradeSection />
                     </Stack>

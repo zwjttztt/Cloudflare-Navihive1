@@ -1,0 +1,26 @@
+# EditorConfig：让任何编辑器在「新建文件」这一步就对齐本仓库的基本格式，
+# 缩进/换行这类差异不需要等到 lint 或 review 才发现。
+# https://editorconfig.org
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+# Markdown 的尾随双空格是换行语义，别让编辑器顺手清掉
+[*.md]
+trim_trailing_whitespace = false
+
+# YAML / JSON / 构建配置普遍用 2 空格，与 TS/TSX 的 4 空格分开
+[*.{yml,yaml,json,jsonc}]
+indent_size = 2
+
+[*.{md,markdown}]
+indent_size = 2
+
+[Makefile]
+indent_style = tab

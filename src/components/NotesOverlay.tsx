@@ -41,6 +41,14 @@ export interface NotesOverlayProps {
     onCountChange: (count: number) => void;
     /** 左下角显示的账号名（inkstone 布局）。没传就不显示具体用户名 */
     accountName?: string;
+    /**
+     * 打开就直接跳到这条笔记（D2：站点设置里点「相关笔记」）。
+     *
+     * 没传 = 照常打开（选中上次那条 / 列表第一条）。
+     * ⚠️ 只在**这次挂载**里生效一次：进来之后用户再点别的笔记不受它影响
+     * （NotesPage 内部用 ref 记「已经处理过哪个 id」）。
+     */
+    focusNoteId?: number;
 }
 
 export default function NotesOverlay({
@@ -50,6 +58,7 @@ export default function NotesOverlay({
     onNotify,
     onCountChange,
     accountName,
+    focusNoteId,
 }: NotesOverlayProps) {
     /**
      * 乐观并发冲突的弹框（2026-10-09）。
@@ -369,6 +378,7 @@ export default function NotesOverlay({
                     : undefined
             }
             backupApi={backupApi}
+            focusNoteId={focusNoteId}
             onDatasetChanged={handleDatasetChanged}
             syncChangedNoteIds={lastSyncChangedIds}
             notes={notes}

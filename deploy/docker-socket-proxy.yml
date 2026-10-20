@@ -1,0 +1,55 @@
+# docker-socket-proxy 叠加文件（可选，推荐开了网页一键升级的部署用）
+#
+# 背景：默认形态是把宿主机的 /var/run/docker.sock 挂进 navihive 容器。
+# 那等于把宿主机 Docker 的**完整**控制权交给这个容器 —— 它能起任意容器、
+# 挂任意目录，容器一旦失守就是宿主机 root 级别的事故。
+#
+# 这个叠加文件把权限压到最小：navihive 不再直接碰 sock，改 talking 到一个
+# 只放行「升级必需端点」的代理容器：
+#   拉镜像（POST /images/create）
+#   建/启/等/读日志/删容器（helper 容器那几个调用）
+#   读本容器规格（GET /containers/{name}/json）
+# 除此之外（比如 exec 进任意容器、挂 / 目录起新容器）一律 403。
+#
+# 用法（compose 叠加文件，后面那个覆盖前面那个）：
+#   docker compose -f docker-compose.yml -f deploy/docker-socket-proxy.yml up -d
+# 之后在 navihive 的 environment 里会自动带上 NAVIHIVE_DOCKER_HOST
+# （本文件已写好），设置页点「更新」走的还是同一条链路，行为不变。
+#
+# ⚠️ 两处必须与主 compose 保持一致：
+#   1. 两个服务必须在**同一个 compose 工程**里（同一个 project 网络），
+#      否则 helper 容器解析不到 docker-socket-proxy 这个名字；
+#   2. 升级时用的 compose 命令必须**同时带这两个 -f**（见下面注释）。
+services:
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy:0.3.0
+    container_name: navihive-docker-proxy
+    restart: unless-stopped
+    environment:
+      # —— 只放开网页升级真正用到的两类资源 ——
+      CONTAINERS: 1 # 建 helper / 启 / 等退出 / 读日志 / 删
+      IMAGES: 1 # docker pull 新镜像
+      # —— 允许写操作（POST/DELETE）；默认代理只放行 GET ——
+      POST: 1
+      # —— 逐个动作再收一道：升级不需要停/重启别的容器 ——
+      ALLOW_START: 1
+      ALLOW_STOP: 0
+      ALLOW_RESTARTS: 0
+    volumes:
+      # 代理自己持有 sock（只读），navihive 容器不再挂它
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    # 不对外暴露端口：只在本工程的网络里可达
+    ports: []
+
+  navihive:
+    # 覆盖掉主 compose 里的 volumes —— 关键就是不再挂 sock
+    volumes:
+      - navihive-data:/app/data
+    environment:
+      # 让服务端与 helper 都改走代理（server/entry.ts 的 dockerEndpoint 读它）
+      NAVIHIVE_DOCKER_HOST: http://docker-socket-proxy:2375
+    depends_on:
+      - docker-socket-proxy
+
+volumes:
+  navihive-data:

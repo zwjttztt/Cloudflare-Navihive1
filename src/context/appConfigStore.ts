@@ -14,6 +14,25 @@ export interface AppConfigContextValue {
     backgroundImage: string;
     /** 背景蒙版透明度 0~1 */
     backgroundMaskOpacity: string;
+    /**
+     * 与**记事本**打交道的桥（D2 站点↔笔记双向绑定）。
+     *
+     * 站点卡片要显示「关于它的笔记」，需要两件记事本的能力：搜一下、跳过去。
+     * 这里走 context 而不是 props：链路是 App → GroupCard → SiteListBody →
+     * SiteCard → SiteSettingsModal，五层 props 只为传两个函数不划算
+     * （这个文件本身存在的理由就是「别一层层往下传」）。
+     *
+     * ⚠️ 刻意**可选**：没接上时站点设置里那小节直接不渲染，而不是渲染出一个
+     * 点了没反应的空壳 —— 「没有这个功能」比「有个坏掉的功能」好。
+     */
+    notesBridge?: {
+        /** 按关键词搜笔记（服务端 FTS / like，取不到时返回空数组） */
+        search: (query: string, limit?: number) => Promise<
+            { id?: number; title: string; content: string }[]
+        >;
+        /** 打开记事本并跳到这条笔记 */
+        open: (noteId: number) => void;
+    };
 }
 
 export const APP_CONFIG_DEFAULT: AppConfigContextValue = {

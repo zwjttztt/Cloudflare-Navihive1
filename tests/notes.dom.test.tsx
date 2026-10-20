@@ -22,6 +22,10 @@ import type { Note } from "../src/API/http";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
+import {
+    notesSource as notesSourceAll,
+    readNotesFile,
+} from "./helpers/notesSource";
 
 /** 剥掉注释，避免扫到「为什么不用 X」这类说明文字（否则守卫永远红） */
 function stripComments(source: string): string {
@@ -181,21 +185,11 @@ async function openNoteMore() {
  * 「不该出现 X」这类断言也照样查得到（搬走的代码只有一份）。
  */
 function notesSource(): string {
-    const dir = findProjectDir();
-    // ⚠️ 拆出去的文件也要进来：第二批拆分后左栏导航（sidebarSection）与
-    // 分栏 chrome（paneChrome）不在主文件里了 —— 守卫只读主文件会**假通过**
-    // （比如 NAV_COL_W 的正则守卫，代码搬走后就匹配不到了）。
-    const parts = [
-        "NotesPage.tsx",
-        join("notes", "markdownToolbar.tsx"),
-        join("notes", "sidebarSection.tsx"),
-        join("notes", "paneChrome.tsx"),
-        join("notes", "lazyGroup.tsx"),
-    ].map(p => readFileSync(join(dir, "src", "components", p), "utf-8"));
-    // ⚠️ **不剥注释**：一部分守卫是拿 JSX 注释 `{/* 主体：desktop */}` 当锚点的
-    // （剥了就 indexOf 不到，切片变空字符串，守卫反而假失败）。
-    // 要剥注释的调用点自己包 stripComments(notesSource())。
-    return parts.join("\n");
+    // ⚠️ 拆出去的文件也要进来：多批拆分后左栏导航（sidebarSection）、分栏
+    // chrome（paneChrome）、列表/编辑/浮层（Notes*Pane）都不在主文件里了 ——
+    // 守卫只读主文件会**假通过**（代码搬走后正则就匹配不到了）。
+    // 助手动态扫 src/components/notes/ 全目录，以后再拆新文件自动跟上。
+    return notesSourceAll();
 }
 
 
@@ -848,31 +842,32 @@ test("折叠左栏时搜索框和视图导航要一起藏掉（只藏列表会�
 
 test("顶栏：返回箭头贴最左（朝左），「记事本」居中，收起键占右上角", () => {
     mountPanel([note({ id: 1, title: "甲", content: "" })]);
-    const src = notesSource();
+    // ⚠️ 2026-10-21：导航列头部搬到了 notes/NotesNavPanel.tsx —— 主文件里的
+    // navInner 现在只是一句 <NotesNavPanel …/>，从它切片会切到别的组件上去。
+    // 直接锚在这一份子组件上（三处标记都在里面、彼此相邻）。
+    const src = readNotesFile("NotesNavPanel.tsx");
     // 判据（2026-10-10 用户要求）：导航列头部那一行的**内部顺序** ——
     // 返回箭头在最左、标题居中、收起/展开在最右（返回箭头原来的位置）。
-    const headAt = src.indexOf("const navInner = (");
-    assert.ok(headAt > 0, "navInner 要还在（导航列与抽屉共用同一份内容）");
-    const head = src.slice(headAt, headAt + 3200);
-    const backAt = head.indexOf("aria-label='返回导航站'");
+    const backAt = src.indexOf("aria-label='返回导航站'");
+    const head = src.slice(backAt, backAt + 3200);
     // ⚠️ 顶栏注释里也写了「记事本」，标题位置要从返回箭头往后找
-    const titleAt = head.indexOf("记事本", backAt);
+    const titleAt = head.indexOf("记事本");
     const collapseAt = head.indexOf("data-tool='collapse-pane'");
     assert.ok(backAt > 0, "导航列头部要有返回箭头");
     assert.ok(titleAt > 0, "导航列头部要有「记事本」标题");
     assert.ok(collapseAt > 0, "导航列头部要有收起/展开按钮");
     assert.ok(
-        backAt < titleAt && titleAt < collapseAt,
+        titleAt < collapseAt,
         "顺序必须是：返回箭头（左）→ 标题（中）→ 收起键（右）"
     );
     // 返回箭头要朝左：ArrowBackIcon 本身就朝左，不能再套 scaleX(-1) 翻成朝右
-    const backIcon = head.slice(backAt, backAt + 200);
+    const backIcon = head.slice(0, 200);
     assert.ok(
         !backIcon.includes("scaleX(-1)"),
         "返回箭头不能再镜像 —— 要直接朝左指着导航站"
     );
     // 标题要居中：flex:1 的标题行必须带 textAlign: "center"
-    const titleSx = head.slice(titleAt - 400, collapseAt);
+    const titleSx = head.slice(Math.max(0, titleAt - 400), collapseAt);
     assert.ok(
         /textAlign:\s*"center"/.test(titleSx),
         "「记事本」标题要居中"
@@ -2169,18 +2164,32 @@ test("导航列要自己滚（整块一起滚会把搜索框顶出视野）", ()
     setWide();
     // 静态守卫：jsdom 里 MUI 的 sx 编译成 hash 类名，量不到 overflow-y，
     // 只能把结论钉在源码上（和「左栏容器不能带 flex:1」同一套路）。
-    const clean = stripComments(
-        notesSource()
-    );
+    //
+    // ⚠️ 2026-10-21：导航列拆成了两处 —— 定宽外层盒（data-nav-col）在
+    // notes/NotesListPane.tsx，里面的「上半可滚 + 底部固定」在 notes/NotesNavPanel.tsx。
+    // 跨文件一刀切会漏掉其中一半（守卫会假失败），所以两边分开钉；
+    // 顺手把「搜索框在可滚区里、底部固定区在可滚区外」这条原始意图也钉上。
+    const col = stripComments(readNotesFile("NotesListPane.tsx"));
     // ⚠️ 源码里写的是单引号 `data-nav-col='1'`：找错引号会拿到 -1，
     // slice(-1, -1) 是个空串，断言会报「没这个属性」而不是「这一列没滚」。
-    // 2026-10-08 起内容抽成了 navInner（滚动盒在里面），切片要从 navInner 开始，
-    // 到 data-list-col 为止 —— 这样才同时盖住滚动盒与外层定宽盒。
-    const navCol = clean.slice(clean.indexOf("const navInner = ("), clean.indexOf("data-list-col='1'"));
-    assert.ok(navCol.includes("overflowY: \"auto\""), "导航列得住自己那一列滚");
+    const colAt = col.indexOf("data-nav-col='1'");
+    assert.ok(colAt > 0, "定位不到导航列外层盒");
+    const navCol = col.slice(colAt, colAt + 700);
     assert.ok(
         navCol.includes("flexShrink: 0"),
         "导航列要定宽不收缩，否则会被列表挤掉"
+    );
+
+    const nav = stripComments(readNotesFile("NotesNavPanel.tsx"));
+    const scrollAt = nav.indexOf('overflowY: "auto"');
+    assert.ok(scrollAt > 0, "导航列得住自己那一列滚（上半可滚、底部固定）");
+    assert.ok(
+        nav.indexOf("renderSearchField(searchRef)") > scrollAt,
+        "搜索框要在可滚区里（整块一起滚会把它顶出视野）"
+    );
+    assert.ok(
+        nav.indexOf("data-nav-footer='1'") > scrollAt,
+        "底部固定区（归档/回收站/账号）要在可滚区**之后**，不能被滚走"
     );
 });
 
@@ -3981,21 +3990,30 @@ test("行菜单 / 移动抽屉 / 外观弹窗不能被包在中栏的条件渲�
     // 行菜单、排序菜单、移动抽屉、外观弹窗、标签菜单全裹了进去 ——
     // 选中文件夹时中栏不渲染，左栏内联笔记的右键菜单就**永远渲染不出来**，
     // 表现是「右键没反应，切回列表视图菜单才冒出来还错位」。
-    const src = stripComments(
-        notesSource()
-    );
-    const start = src.indexOf("const listPane = (");
-    const end = src.indexOf("const editorPane = (");
-    assert.ok(start > 0 && end > start, "定位不到 listPane 区间");
-    const pane = src.slice(start, end);
+    // ⚠️ 2026-10-21：中栏抽成了 notes/NotesListPane.tsx，所有浮层抽成了
+    // notes/NotesOverlayLayer.tsx（挂在主文件根层、无条件渲染）。
+    // 判据不变：**这些浮层一个都不能在中栏组件里** —— 中栏在 mobile 详情态 /
+    // tablet 收起态会 display:none，被裹进去就永远渲染不出来。
+    const pane = stripComments(readNotesFile("NotesListPane.tsx"));
+    const overlay = stripComments(readNotesFile("NotesOverlayLayer.tsx"));
     for (const marker of ["data-row-op='open-side'", "data-move-drawer", "data-appearance-save", "data-sort-op"]) {
         assert.equal(
             pane.includes(marker),
             false,
-            `「${marker}」不能写在 listPane（中栏条件块）里 —— 选中文件夹时它会被一起卸载`
+            `「${marker}」不能写在中栏组件里 —— 中栏被收起时它会被一起卸载`
         );
     }
-    assert.ok(src.includes("data-row-op='open-side'"), "行菜单本身要在（根层）");
+    // 都在浮层里（根层无条件渲染）才作数
+    for (const marker of ["data-row-op='open-side'", "data-sort-op"]) {
+        assert.ok(
+            overlay.includes(marker),
+            `「${marker}」要挂在根层浮层（NotesOverlayLayer）里`
+        );
+    }
+    assert.ok(
+        notesSource().includes("data-row-op='open-side'"),
+        "行菜单本身要在（根层）"
+    );
 });
 
 test("折叠态：顶部是「展开笔记列表」，返回导航站在下面", async () => {

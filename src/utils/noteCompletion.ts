@@ -17,6 +17,13 @@ import { fuzzyMatch } from "./fuzzy";
 export interface CompletionSources {
     notes: () => { id?: number; title: string; excerpt?: string }[];
     tags: () => { name: string; count: number }[];
+    /**
+     * 站点（D2 双向绑定）：`[[` 之后一并给出站名候选，选中就写成 `[[站名]]`，
+     * 预览里点了会打开那个站点。
+     *
+     * 可选：导航站那边的索引还没建立时不给候选（只是少一种补全，不报错）。
+     */
+    sites?: () => { name: string; url?: string }[];
 }
 
 /** 标题比较统一走这里：`[[API]]` 要能命中标题是「api」的那条 */
@@ -66,6 +73,28 @@ export function wikiLinkSource(
                     // ⚠️ 必须把右括号一起写上：只写标题的话，用户还得手打 `]]`，
                     // 而补全的意义就在于「一次按键交付完整语法」。光标落在 `]]` 之后。
                     const insert = `${note.title}]]`;
+                    view.dispatch({
+                        changes: { from, to, insert },
+                        selection: { anchor: from + insert.length },
+                    });
+                },
+            });
+        }
+        // 站点候选（D2）：`[[GitHub]]` 写完点了是**打开那个站点**，不是新建笔记。
+        // boost 比笔记低 5：同名时笔记排前面 —— 双链原本指的是笔记，这条不能抢。
+        for (const site of getSources().sites?.() ?? []) {
+            if (!site.name) continue;
+            const siteKey = normalizeLinkKey(site.name);
+            if (seenTitles.has(siteKey)) continue;
+            const sm = query ? fuzzyMatch(site.name, query) : { score: 0, ranges: [] };
+            if (!sm) continue;
+            seenTitles.add(siteKey);
+            options.push({
+                label: site.name,
+                detail: site.url || "站点",
+                boost: sm.score / 10 - 5,
+                apply: (view, _completion, from, to) => {
+                    const insert = `${site.name}]]`;
                     view.dispatch({
                         changes: { from, to, insert },
                         selection: { anchor: from + insert.length },

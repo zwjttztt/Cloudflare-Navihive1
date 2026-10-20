@@ -1,0 +1,21 @@
+{
+    "manifest_version": 3,
+    "name": "NaviHive 一键收藏",
+    "version": "1.0.0",
+    "description": "把当前网页一键存进自己的 NaviHive 导航站（自动带入标题、链接与图标）",
+    "action": {
+        "default_title": "存到 NaviHive",
+        "default_popup": "popup.html"
+    },
+    "commands": {
+        "_execute_action": {
+            "suggested_key": {
+                "default": "Alt+Shift+N",
+                "mac": "Alt+Shift+N"
+            },
+            "description": "把当前网页存到 NaviHive"
+        }
+    },
+    "permissions": ["activeTab", "storage"],
+    "host_permissions": []
+}

@@ -76,6 +76,13 @@ export const SCHEMA_VERSION_KEY = "schema.version";
 export const OWNER_BOOTSTRAP_LOCK_TTL_MS = 30_000;
 /** 没抢到锁时等同伴写完再读一次的间隔 */
 export const OWNER_BOOTSTRAP_RETRY_MS = 120;
+/**
+ * 等同伴放手的最长时间。
+ * 取 10 秒的理由：正常 bootstrap 是「一次口令哈希 + 一次 INSERT」，自托管即便按 60 万
+ * 次迭代也就几百毫秒；10 秒足够兜住慢机器与冷启动，又短于锁本身的 30 秒 TTL ——
+ * 同伴真崩了要等 TTL 过期，那就交给下一次请求，本次不抢。
+ */
+export const OWNER_BOOTSTRAP_LOCK_WAIT_MS = 10_000;
 
 export interface MigrationApi {
     initDB(): Promise<{ success: boolean; alreadyInitialized: boolean }>;
@@ -758,18 +765,35 @@ export const migrationImpl: MigrationApi = {
             // 跨请求的锁 —— 拿不到锁的那个先等等再读，读出同伴的成果就直接用。
             const lockScope = "owner.bootstrap";
             const lockKey = "global";
-            const got = await this.claimIdempotency(lockScope, lockKey, OWNER_BOOTSTRAP_LOCK_TTL_MS);
+            const claim = () =>
+                this.claimIdempotencyDetailed(lockScope, lockKey, OWNER_BOOTSTRAP_LOCK_TTL_MS);
+            let state = await claim();
+            if (state === "busy") {
+                // 同伴正在建。**等到它放手，而不是等一个固定时长**（2026-10-20 改）：
+                // 建 owner 要先做一次口令哈希，那一步要多久是配置决定的
+                // （自托管默认 60 万次迭代 ≈ 几百毫秒）。原先只等 120 ms 再瞄一眼，
+                // 迭代数一上调就瞄早了 —— 看到还是空表，于是两个请求各建一个 owner。
+                // 同伴是在收尾的 finally 里才释放锁，所以「能抢到锁」才是它真干完了的
+                // 判据，比任何拍脑袋的等待时间都可靠。
+                const deadline = Date.now() + OWNER_BOOTSTRAP_LOCK_WAIT_MS;
+                while (Date.now() < deadline) {
+                    await new Promise((r) => setTimeout(r, OWNER_BOOTSTRAP_RETRY_MS));
+                    const waited = await readOwner();
+                    if (waited) return waited;
+                    state = await claim();
+                    if (state !== "busy") break;
+                }
+                // 等满了同伴还没放手（多半是它崩了、要等 TTL 过期）：
+                // 这次返回 null，让下一次请求接手 —— 宁可晚一点，也不建第二个 owner。
+                if (state === "busy") return null;
+            }
+            // 幂等表不可用（建表之前那一次）时 state 是 "unavailable"：锁不生效，
+            // 按老行为照常往下建，不能因为锁用不了就把初始化卡住。
+            const got = state === "acquired";
             try {
                 // 拿到锁也要重读一次：可能在我们读空表和抢到锁之间，同伴已经建好了
                 const again = await readOwner();
                 if (again) return again;
-                if (!got) {
-                    // 同伴还在建（或幂等表此刻用不了）：等一小会儿再看，
-                    // 拿到了就直接用，绝不抢着建第二个 owner。
-                    await new Promise((r) => setTimeout(r, OWNER_BOOTSTRAP_RETRY_MS));
-                    const waited = await readOwner();
-                    if (waited) return waited;
-                }
 
                 const creds = await this.readAuthCredentials();
                 // 没有凭据说明站点还没初始化（连种子账号都没有），等第一次真正写凭据时再建

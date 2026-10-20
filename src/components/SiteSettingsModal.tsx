@@ -46,6 +46,7 @@ import { copyToClipboard } from "../utils/clipboard";
 import { resolveIconApiUrl } from "../utils/iconApi";
 import { pickExistingTags, pickRecommendedTags } from "../utils/tagSuggest";
 import { useAppConfig } from "../context/appConfigStore";
+import SiteNotesSection from "./SiteNotesSection";
 import {
     formDataKey,
     secretInputSx,
@@ -978,6 +979,10 @@ export default function SiteSettingsModal({
                                     }} />
                             </Stack>
                         </Box>
+                        {/* D2 双向绑定：提到这个站点的笔记。站名/网址归一化与笔记侧
+                            点 `[[站名]]` 用同一份（utils/siteMatch.ts），两边不会各说各话。
+                            没接上记事本那座桥时整节不渲染（见 SiteNotesSection）。 */}
+                        <SiteNotesSection site={site} />
                     </Stack>
                 </DialogContent>
 

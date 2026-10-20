@@ -1,0 +1,8 @@
+# 格式化排除项：产物、依赖、以及「格式被数据决定」的文件。
+dist/
+dist-server/
+node_modules/
+coverage/
+package-lock.json
+CHANGELOG.md
+.workbuddy/

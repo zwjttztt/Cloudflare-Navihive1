@@ -11,20 +11,16 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
+import {
+    notesSource as notesSourceAll,
+    projectDir as findProjectDir,
+} from "./helpers/notesSource";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
 /** 单测会被复制到 script/tmp-tests/ 下再跑，逐级向上找真身 */
 function projectDir(): string {
-    for (let dir = here, i = 0; i < 6; i++) {
-        try {
-            readFileSync(resolve(dir, "package.json"), "utf8");
-            return dir;
-        } catch {
-            dir = dirname(dir);
-        }
-    }
-    throw new Error("找不到项目根目录");
+    return findProjectDir(here);
 }
 
 /** 剥掉块注释与整行行注释 */
@@ -111,7 +107,7 @@ test("useNotes：轮询提示必须按 rev 比对过滤本设备写入（否则�
 });
 
 test("NotesPage：行内 ⋯ 按钮显隐不得用 :focus-within（菜单关闭焦点还原会残留白圈）", () => {
-    const src = readSrc("src/components/NotesPage.tsx");
+    const src = readNotesSrc();
     assert.ok(
         !src.includes(":focus-within .note-row-actions"),
         ":focus-within 会被 Modal 的程序化焦点还原命中 → ⋯ 常显成白色圆圈",
@@ -171,3 +167,10 @@ test("index.css：closing 类必须用 !important 压掉 hover/focus 显隐", ()
         "closing 类要 !important 压 opacity（hover / :has(:focus-visible) 特殊度再高也盖不住它）",
     );
 });
+
+/**
+ * 读记事本全部源码（主文件 + notes/ 下所有子组件）。
+ * ⚠️ 2026-10-21：NotesPage 已按职责拆出多个子组件，守卫只读主文件
+ * 会因「代码搬走」而**假通过**（看着全绿其实没人盯）。
+ */
+const readNotesSrc = () => stripComments(notesSourceAll(here));

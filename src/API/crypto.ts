@@ -139,19 +139,91 @@ async function hmac(secret: string, data: Uint8Array): Promise<Bytes> {
 }
 
 // ---------------- 密码哈希 (PBKDF2-SHA256) ----------------
-// Workers 没有 scrypt/bcrypt，WebCrypto 只给 PBKDF2。迭代数在「扛离线爆破」
-// 与「Worker 50ms CPU 预算」之间取折中；个人站足够，之后可上调。
-const PBKDF2_ITERS = 100_000;
+// Workers 没有 scrypt/bcrypt，WebCrypto 只给 PBKDF2。
+//
+// 迭代数**按运行时取值**（2026-10-20）：
+//   - Cloudflare Workers：硬上限 10 万，超过直接抛「iteration counts above 100000
+//     are not supported」（线上真踩过，见下面备份那段）。所以那边只能 10 万。
+//   - 自托管（Node）：没有这个上限，取 OWASP 2023 对 PBKDF2-HMAC-SHA256 的建议值
+//     60 万 —— 库被拖走后的离线爆破成本提高 6 倍，登录时多花两三百毫秒，这个交换划算。
+//   - 浏览器：同样按 10 万（它只是偶尔参与加密，哈希一律由服务端写）。
+//
+// 迁移是「新旧并存」而不是「一次性升级」：**迭代数写在哈希串里**（pbkdf2$<iters>$…），
+// 校验时按串里记的数算，所以老哈希（10 万）照旧能登、新写的用新值，改一次密码就自动
+// 升上去。这与密钥环 keyId 的轮换思路一致：不搞停机迁移。
+//
+// ⚠️ 只有在 Workers 上才会被夹到 10 万，所以不存在「自托管写了 60 万、搬到 Workers
+// 登不进去」这种隐式陷阱 —— 但反过来，把自托管库搬到 Workers 之前要先把密码改一遍。
+export const WORKERS_PBKDF2_MAX_ITERS = 100_000;
+export const DEFAULT_PBKDF2_ITERS = 600_000;
+export const PBKDF2_MIN_ITERS = 100_000;
+export const PBKDF2_MAX_ITERS = 1_000_000;
 const PWD_PREFIX = "pbkdf2$";
+
+/** 是否跑在 Node 上（自托管）。Workers 与浏览器都是 false。 */
+export function isNodeRuntime(): boolean {
+    const g = globalThis as { process?: { versions?: { node?: string } } };
+    return typeof g.process?.versions?.node === "string";
+}
+
+/**
+ * 算出「这次该用多少迭代」。纯函数、可单测。
+ *
+ * Workers 恒为 10 万（硬上限，env 也不放行 —— 给了只会让每次哈希直接抛错）；
+ * Node 侧取 env `NAVIHIVE_PBKDF2_ITERS`，缺省 60 万，并夹进 [10 万, 100 万]。
+ */
+export function resolvePbkdf2Iterations(
+    requested?: number | string | null,
+    opts: { node?: boolean } = {}
+): number {
+    const node = opts.node ?? isNodeRuntime();
+    const parsed = typeof requested === "number" ? requested : Number(requested ?? "");
+    const wanted = Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : NaN;
+    const fallback = node ? DEFAULT_PBKDF2_ITERS : WORKERS_PBKDF2_MAX_ITERS;
+    const base = Number.isNaN(wanted) ? fallback : wanted;
+    // 非 Node（Workers / 浏览器）：env 一律无效，直接钉在上限
+    if (!node) return Math.min(base, WORKERS_PBKDF2_MAX_ITERS);
+    return Math.min(Math.max(base, PBKDF2_MIN_ITERS), PBKDF2_MAX_ITERS);
+}
+
+function readEnvIterations(): number | string | undefined {
+    // Workers 的 vars 在模块作用域拿不到（只在 handler 的 env 参数里），而它本来就被
+    // 夹在 10 万，所以这里只在 Node 侧读。
+    if (!isNodeRuntime()) return undefined;
+    const g = globalThis as { process?: { env?: Record<string, string | undefined> } };
+    return g.process?.env?.NAVIHIVE_PBKDF2_ITERS;
+}
+
+/** 当前运行时写新哈希时用的迭代数 */
+export function currentPbkdf2Iterations(): number {
+    return resolvePbkdf2Iterations(readEnvIterations());
+}
+
+/** 读出哈希串里记的迭代数；不是 pbkdf2$ 格式或格式坏了返回 null */
+export function storedPbkdf2Iterations(stored: string): number | null {
+    if (!isHashedPassword(stored)) return null;
+    const iters = Number(stored.slice(PWD_PREFIX.length).split("$")[0]);
+    return Number.isFinite(iters) && iters > 0 ? iters : null;
+}
+
+/**
+ * 这个哈希是不是「低于当前标准」—— 用于将来做登录时静默升级。
+ * 现在只是给运维一个可查询的判断，登录链路**没有**自动重写（改写登录路径不值得）。
+ */
+export function isWeakPbkdf2Hash(stored: string): boolean {
+    const iters = storedPbkdf2Iterations(stored);
+    return iters !== null && iters < currentPbkdf2Iterations();
+}
 
 export function isHashedPassword(stored: string): boolean {
     return stored.startsWith(PWD_PREFIX);
 }
 
 export async function hashPassword(password: string): Promise<string> {
+    const iters = currentPbkdf2Iterations();
     const salt = crypto.getRandomValues(new Uint8Array(16));
-    const derived = await pbkdf2(password, salt, PBKDF2_ITERS, 32);
-    return `${PWD_PREFIX}${PBKDF2_ITERS}$${b64urlEncode(salt)}$${b64urlEncode(derived)}`;
+    const derived = await pbkdf2(password, salt, iters, 32);
+    return `${PWD_PREFIX}${iters}$${b64urlEncode(salt)}$${b64urlEncode(derived)}`;
 }
 
 export async function verifyPassword(password: string, stored: string): Promise<boolean> {
