@@ -230,8 +230,6 @@ function scheduleCron(): void {
 
 // ============ HTTP 服务 ============
 
-const server = createServer((req, res) => {
-    const started = Date.now();
 // ============ 网页端直接升级（Docker Engine API over unix socket） ============
 //
 // 为什么不用 `docker` CLI：镜像是 node:24-slim，里面**没有** docker 二进制；
@@ -558,7 +556,38 @@ async function dockerEnsureRunning(): Promise<void> {
     }
 }
 
-const finish = (): void => {
+/**
+ * 启动时清掉上一轮升级留下的 helper 容器。
+ *
+ * 成功升级会把本进程连同容器一起换掉，helper 没机会自己收尾 —— 它会留下一个
+ * 已退出的 `navihive-upgrader`。下次启动顺手删掉，daemon 里不留垃圾
+ * （升级失败时另一条路径已经在 runUpgraderContainer 里删过了）。
+ * 只管带 `com.navihive.upgrader=1` 标签、且**不在运行**的容器：
+ * 删正在跑的那个会把升级现场弄丢，而删别人的容器是绝对不行的。
+ */
+async function cleanupUpgraderContainer(): Promise<void> {
+    if (!existsSync(DOCKER_SOCK)) return;
+    try {
+        const filters = encodeURIComponent(JSON.stringify({ label: ["com.navihive.upgrader=1"] }));
+        const { status, body } = await dockerApi("GET", `/containers/json?all=1&filters=${filters}`);
+        if (status >= 300) return;
+        const list = JSON.parse(body) as { Id: string; State?: string }[];
+        for (const item of list) {
+            if (item.State === "running") continue;
+            await dockerApi("DELETE", `/containers/${item.Id}?force=true`).catch(() => undefined);
+            console.log(`[upgrade] 已清理上一轮升级的 helper 容器 ${item.Id.slice(0, 12)}`);
+        }
+    } catch (error) {
+        // 清理是顺手的家务，失败绝不阻断启动
+        console.warn("[upgrade] 清理 helper 容器失败（不影响运行）:", error);
+    }
+}
+
+
+const server = createServer((req, res) => {
+    const started = Date.now();
+
+    const finish = (): void => {
         const ms = Date.now() - started;
         if (ms > 1000) console.warn(`慢请求 ${req.method} ${new URL(req.url ?? "/", "http://x").pathname} ${res.statusCode} ${ms}ms`);
     };
@@ -718,6 +747,8 @@ const finish = (): void => {
 
 server.listen(PORT, HOST, () => {
     console.log("NaviHive 自托管服务已启动");
+    // 顺手清掉上一轮升级留下的 helper（异步、失败静默，不拖启动）
+    void cleanupUpgraderContainer();
     console.log(`  监听       http://${HOST}:${PORT}`);
     console.log(`  数据库     ${path.resolve(DB_FILE)}`);
     console.log(`  附件目录   ${path.resolve(FILES_DIR)}`);

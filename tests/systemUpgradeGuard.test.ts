@@ -63,6 +63,19 @@ test("server：upgrade 路由两道闸（owner / docker.sock），并给出 GET 
     );
     assert.match(src, /phase: upgradeStatus\.phase/, "GET 要把 phase 交出去");
     assert.match(src, /error: upgradeStatus\.error/, "GET 要把失败原因交出去");
+    // ⚠️ 状态必须模块级。写在 createServer 回调里的话每个请求都是一份新对象，
+    // GET 永远读到初始值（POST 记的失败原因白记）—— 静态检查一次，别再犯。
+    const statusAt = src.indexOf("const upgradeStatus");
+    const serverAt = src.indexOf("const server = createServer(");
+    assert.ok(statusAt > 0, "upgradeStatus 要存在");
+    assert.ok(
+        serverAt > 0 && statusAt < serverAt,
+        "upgradeStatus（连同整套 docker helper）必须在 createServer 之外：写在请求回调里就是每请求一份新对象",
+    );
+    assert.ok(
+        src.indexOf("async function dockerUpgradeSelf") < serverAt,
+        "dockerUpgradeSelf 也要在模块级（同一类坑）",
+    );
 });
 
 test("server：换镜像交给容器外的 helper，绝不自己 stop / restart 本容器", () => {
@@ -104,6 +117,10 @@ test("server：换镜像交给容器外的 helper，绝不自己 stop / restart 
     assert.match(src, /res\.on\("end", \(\) => \{[\s\S]{0,200}resolve\(\)/, "拉镜像要等进度流结束");
     // 兜底：万一容器没起来也要拉起来
     assert.match(src, /dockerEnsureRunning\(\)/, "失败路径要确保容器在跑（站点停摆比升级失败严重）");
+    // helper 成功后本进程没了，清理只能在下一次启动做；且只清「带标签 + 没在跑」的
+    assert.match(src, /cleanupUpgraderContainer\(\)/, "启动时要清理上一轮升级留下的 helper");
+    assert.match(src, /label: \["com\.navihive\.upgrader=1"\]/, "只清自己家的 helper（按标签过滤）");
+    assert.match(src, /item\.State === "running"\) continue/, "正在跑的 helper 不能删（会弄丢升级现场）");
 });
 
 test("server：先响应再执行 + 失败原因可查", () => {

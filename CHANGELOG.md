@@ -6,6 +6,14 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。---
 
+## 2026-10-20（五）· 工程：升级状态提到模块级 + 启动清理上一轮 helper
+
+上一批（v4.3.0）交付后自查发现一个作用域 bug：整套「网页直接升级」代码（含 `upgradeStatus`）被写在 `createServer` 的请求回调里，等于**每个请求一份新对象**。表现是 POST 记下的 pulling / recreating / failed 状态，GET 永远读到初始的 idle —— 换镜像本身不受影响（那是 POST 那条链自己走完的），但「失败原因」这条通道是断的。整块（拉镜像 / helper / 兜底 / 状态）已提到模块级。
+
+顺带收尾：升级成功后本进程会连同容器一起被换掉，helper 没机会自己清理，会在 daemon 里留下一个已退出的 `navihive-upgrader`。现在**启动时**按标签 `com.navihive.upgrader=1` 删掉「不在运行」的那些（正在跑的不动 —— 删它会弄丢升级现场）。
+
+守卫：`tests/systemUpgradeGuard.test.ts` 新增一条静态检查 —— `upgradeStatus` 与 `dockerUpgradeSelf` 必须出现在 `const server = createServer(` 之前。反向验证过：v4.3.0 的 `entry.ts` 会被这条挡下（`createServer` 在 233 行、`upgradeStatus` 在 340 行）。
+
 ## 2026-10-20（五）· 修复：网页一键升级不换镜像（restart 不重新解析 :latest）
 
 用户报「点击更新长时间无反应，刷新后还是原来版本」。上一版（10-19）为绕开「容器内 stop 自己 → 执行升级的进程当场死」，把升级做成了 `POST /containers/{name}/restart`。restart 是 stop+start，由 daemon 完成、不怕进程被杀，看着完美 —— 但它**按容器创建时记录的 ImageID 启动，不重新解析 `:latest` 标签**。于是 `docker pull` 明明拉到了新镜像、容器也确实重启了（`StartedAt` 变了），跑的还是旧代码。线上症状就是「版本号不动」。
