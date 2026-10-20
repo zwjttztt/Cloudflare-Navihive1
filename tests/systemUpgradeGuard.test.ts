@@ -100,6 +100,21 @@ test("server：换镜像交给容器外的 helper，绝不自己 stop / restart 
     assert.match(src, /CODE=\$\?/, "要留住 compose 的退出码");
     assert.match(src, /containers\/create\?name=\$\{name\}/, "要建一次性 helper 容器");
     assert.match(src, /Entrypoint: \["\/bin\/sh", "-c"\]/, "helper 借新镜像的 sh 跑脚本");
+    // ⚠️⚠️ v4.3.0/v4.3.1 线上「第一次升级成功、第二次必失败」的根因：
+    // compose 把自己运行时的工作目录写进新容器的
+    // com.docker.compose.project.working_dir 标签，而那是下一轮读坐标的唯一来源。
+    // 挂在容器内的 /compose → 标签被写成 /compose → 下一轮 bind 的源变成
+    // 宿主机上不存在的 /compose（docker 还顺手建个空目录）→ compose 找不到文件。
+    // 所以必须挂在**宿主原路径**，让容器内外看到同一个目录。
+    assert.match(
+        src,
+        /`\$\{info\.workingDir\}:\$\{info\.workingDir\}`/,
+        "helper 必须把 compose 目录挂在宿主原路径（同一路径），否则会污染下一轮的标签",
+    );
+    assert.match(src, /WorkingDir: info\.workingDir/, "helper 的工作目录也必须是宿主原路径");
+    assert.match(src, /workingDir === "\/compose"/, "要能认出被旧版污染的 /compose 标签并明确报错");
+    // compose 的报错是排查的唯一线索，别在 Node 侧狠命截断
+    assert.match(src, /slice\(0, 4000\)/, "helper 日志要保留足够长（截太短等于没留线索）");
     // compose 坐标从容器标签读，不要求用户额外配环境变量
     assert.match(src, /com\.docker\.compose\.project\.working_dir/, "工作目录来自 compose 标签");
     assert.match(src, /com\.docker\.compose\.project\.config_files/, "配置文件来自 compose 标签");

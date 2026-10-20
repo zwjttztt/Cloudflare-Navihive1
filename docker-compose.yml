@@ -49,9 +49,14 @@ services:
       NAVIHIVE_CONTAINER_NAME: ${NAVIHIVE_CONTAINER_NAME:-navihive}
       # 升级时拉取的目标镜像；不设走 ghcr.io/zwjttztt/navihive:latest
       NAVIHIVE_IMAGE: ${NAVIHIVE_IMAGE:-ghcr.io/zwjttztt/navihive:latest}
-      # 升级靠「一次性 helper 容器在容器外跑 docker compose up -d --force-recreate」，
-      # 需要借宿主机的 docker CLI 与 compose 插件。装在别处时改这两个路径。
-      # 工程名/目录/配置文件由 compose 自己打在容器标签上，服务端直接读，无需配置。
+      # compose 工程的工作目录。升级时 helper 会用它当挂载点与工作目录 ——
+      # 必须和宿主机上的真实路径一致（compose 会把它写进新容器的
+      # com.docker.compose.project.working_dir 标签，那是下一轮读坐标的唯一来源）。
+      # 留空时服务端从容器标签自动读；只有标签被写歪（旧版曾写成容器内的 /compose）
+      # 才需要显式指定。改了部署目录就必须一并改这里。
+      NAVIHIVE_COMPOSE_DIR: ${NAVIHIVE_COMPOSE_DIR:-/home/docker/navihive}
+      # 宿主 docker CLI 与 compose 插件（`docker compose` 是插件，不是内建命令）
+      # 装在别处时改这两个路径。工程名/目录/配置文件由 compose 自己打在容器标签上。
       # NAVIHIVE_HOST_DOCKER: /usr/bin/docker
       # NAVIHIVE_HOST_DOCKER_PLUGINS: /usr/libexec/docker/cli-plugins
 

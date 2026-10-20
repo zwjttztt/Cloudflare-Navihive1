@@ -353,16 +353,23 @@ interface ComposeInfo {
 /**
  * 从容器标签里读出 compose 部署坐标。
  *
- * 为什么不要求用户配 `NAVIHIVE_COMPOSE_DIR`：上一版就是因为多要一个环境变量，
- * 端口/路径一写错端点就一律 501，用户永远看不到网页升级。compose 自己会在
- * 容器上打 `com.docker.compose.project{,.working_dir,.config_files}` 三个标签，
- * 直接读它比自己猜可靠得多。读不到（纯 `docker run` 起的）→ 返回 null，
+ * 为什么不要求用户配 `NAVIHIVE_COMPOSE_DIR`：compose 自己会在容器上打
+ * `com.docker.compose.project{,.working_dir,.config_files}` 三个标签，直接读它
+ * 比自己猜可靠得多。读不到（纯 `docker run` 起的）→ 返回 null，
  * 由调用方明确报错，不假装成功。
+ *
+ * ⚠️ `/compose` 是旧版（v4.3.0/v4.3.1）helper 的挂载点：那两版把目录挂在容器内的
+ * `/compose`，compose 于是把 `/compose` 写进新容器的 working_dir 标签，宿主机上
+ * 并没有这个目录。见到它就说明标签被污染了 —— 照它 bind 只会得到一个空目录，
+ * 升级必然失败。此时宁可不升级，把话说明，让用户去宿主机 `docker compose up -d`
+ * 把标签改回来（或在 compose 里设 `NAVIHIVE_COMPOSE_DIR`）。
  */
 function readComposeInfo(labels: Record<string, string>): ComposeInfo | null {
-    const workingDir = (process.env.NAVIHIVE_COMPOSE_DIR || labels["com.docker.compose.project.working_dir"] || "")
-        .replace(/\/+$/, "");
-    if (!workingDir) return null;
+    const fromEnv = process.env.NAVIHIVE_COMPOSE_DIR || "";
+    const workingDir = (fromEnv || labels["com.docker.compose.project.working_dir"] || "").replace(/\/+$/, "");
+    // 必须是绝对路径：空串（没标签）/ 相对路径都没法当 bind 源
+    if (!workingDir.startsWith("/")) return null;
+    if (!fromEnv && workingDir === "/compose") return null;
     return {
         project: labels["com.docker.compose.project"] || UPGRADE_CONTAINER,
         workingDir,
@@ -373,25 +380,37 @@ function readComposeInfo(labels: Record<string, string>): ComposeInfo | null {
     };
 }
 
-/** helper 容器里要跑的脚本：在**容器外**（daemon 侧）用新镜像重建本容器 */
+/**
+ * helper 里跑 compose 用的路径。**必须和宿主机上的原路径一字不差**。
+ *
+ * ⚠️⚠️ 这是 v4.3.0/v4.3.1 线上「第一次升级成功、第二次必失败」的根因：
+ * compose 会把自己运行时的工作目录写进新容器的
+ * `com.docker.compose.project.working_dir` 标签，而那个标签是下一轮升级
+ * 读坐标的**唯一**来源。早先把目录挂在 `/compose`（容器内路径），
+ * 于是重建后标签变成 `/compose`；下一轮照着它 bind，源就变成宿主机上
+ * 并不存在的 `/compose`，docker 还会顺手创建一个**空目录**挂进去 ——
+ * compose 找不到配置文件，退出码 1，升级静默失败。
+ * 挂在宿主原路径上，compose 记录的才是宿主的真实路径，下一轮才接得上。
+ */
 function upgraderCommand(info: ComposeInfo): string {
-    const base = `${info.workingDir}/`;
-    // 只认落在工作目录里的配置文件：helper 只挂这一个目录
-    const inside = info.files.filter(f => f.startsWith(base)).map(f => `/compose/${f.slice(base.length)}`);
+    const dir = info.workingDir;
+    const base = `${dir}/`;
+    // 只认落在工作目录里的配置文件
+    const inside = info.files.filter(f => f.startsWith(base)).map(f => `${dir}/${f.slice(base.length)}`);
     const project = info.project;
     return [
         `CFG="${inside.map(f => `-f ${f}`).join(" ")}"`,
         'if [ -z "$CFG" ]; then',
-        "  for f in docker-compose.yml docker-compose.yaml compose.yml compose.yaml; do",
-        '    if [ -f "/compose/$f" ]; then CFG="-f /compose/$f"; break; fi',
+        `  for f in ${dir}/docker-compose.yml ${dir}/docker-compose.yaml ${dir}/compose.yml ${dir}/compose.yaml; do`,
+        `    if [ -f "$f" ]; then CFG="-f $f"; break; fi`,
         "  done",
         "fi",
-        'if [ -z "$CFG" ]; then echo "[upgrader] 在 /compose 里找不到 compose 配置文件（挂载目录不对？）"; exit 21; fi',
+        `if [ -z "$CFG" ]; then echo "[upgrader] 在 ${dir} 里找不到 compose 配置文件（挂载目录不对？）"; exit 21; fi`,
         'if [ ! -x /usr/bin/docker ]; then echo "[upgrader] 宿主机 docker CLI 不可用：/usr/bin/docker 没挂进来"; exit 22; fi',
-        "cd /compose",
+        `cd "${dir}"`,
         // 往宿主机的 compose 目录记一笔：重建会把容器自身的日志一起换掉，
-        // 出问题时这份文件是最后一份现场（/home/docker/navihive/.navihive-upgrade.log）
-        "LOG=/compose/.navihive-upgrade.log",
+        // 出问题时这份文件是最后一份现场
+        `LOG="${dir}/.navihive-upgrade.log"`,
         `echo "[upgrader] $(date -u +%FT%TZ) 开始 $CFG -p ${project}" >> "$LOG"`,
         `echo "[upgrader] docker compose $CFG -p ${project} up -d --force-recreate"`,
         // 不用管道：$? 必须来自 docker compose 本身
@@ -434,11 +453,13 @@ function waitForHelperExit(id: string): Promise<number | null> {
 /** 读 helper 的日志尾巴（失败时把真实原因带给用户，而不是一句「升级失败」） */
 async function readHelperLogs(id: string): Promise<string> {
     try {
-        const res = await dockerApi("GET", `/containers/${id}/logs?stdout=1&stderr=1&tail=40`);
+        const res = await dockerApi("GET", `/containers/${id}/logs?stdout=1&stderr=1&tail=200`);
         if (res.status >= 300) return "";
         // helper 带 Tty 创建：日志是纯文本（非 TTY 才是 8 字节头复用的多路流）
         // 兜掉可能混进来的 NUL（eslint 的 no-control-regex 也不让写正则）
-        return res.body.split("\u0000").join("").trim().slice(-600);
+        // ⚠️ 别在这里狠命截断：compose 的报错是排查的唯一线索，截太短等于没留。
+        // 上限 4000 字符（前端 Alert 撑得住），且**保留开头**——头几行往往就是原因。
+        return res.body.split("\u0000").join("").trim().slice(0, 4000);
     } catch {
         return "";
     }
@@ -460,7 +481,7 @@ async function runUpgraderContainer(image: string, info: ComposeInfo): Promise<v
         Image: image,
         Entrypoint: ["/bin/sh", "-c"],
         Cmd: [upgraderCommand(info)],
-        WorkingDir: "/compose",
+        WorkingDir: info.workingDir,
         // 和主容器同样的身份：sock 属 root:docker，非 root 连不上
         User: "0:0",
         Tty: true,
@@ -469,7 +490,10 @@ async function runUpgraderContainer(image: string, info: ComposeInfo): Promise<v
             AutoRemove: false,
             Binds: [
                 `${DOCKER_SOCK}:${DOCKER_SOCK}`,
-                `${info.workingDir}:/compose`,
+                // ⚠️ 源和目标写成**同一个宿主路径**：见 upgraderCommand 上方的长注释。
+                // 挂在 /compose 会让 compose 把 /compose 写进新容器的 working_dir 标签，
+                // 下一轮升级就再也找不到真正的 compose 目录（线上实测：第二次必失败）。
+                `${info.workingDir}:${info.workingDir}`,
                 `${HOST_DOCKER_BIN}:/usr/bin/docker:ro`,
                 `${HOST_DOCKER_PLUGINS}:/usr/libexec/docker/cli-plugins:ro`,
             ],
@@ -523,11 +547,18 @@ async function dockerUpgradeSelf(image: string): Promise<void> {
     const { status, body } = await dockerApi("GET", `/containers/${name}/json`);
     if (status >= 300) throw new Error(`读不到容器 ${name}（HTTP ${status}）`);
     const info = JSON.parse(body) as { Config?: { Labels?: Record<string, string> } };
-    const compose = readComposeInfo(info.Config?.Labels ?? {});
+    const labels = info.Config?.Labels ?? {};
+    const compose = readComposeInfo(labels);
     if (!compose) {
+        // 两种读不到坐标的情况给不同的处方：被旧版污染 vs 根本不是 compose 起的
+        const polluted = labels["com.docker.compose.project.working_dir"] === "/compose";
         throw new Error(
-            "读不到 compose 部署信息（容器标签里没有 com.docker.compose.*）：本容器不是 docker compose 启动的。" +
-                "网页一键升级只支持 compose 部署，请到宿主机执行 docker compose up -d --force-recreate。"
+            polluted
+                ? "compose 目录标签被旧版写成 /compose（v4.3.0/v4.3.1 的已知问题）：" +
+                      "请到宿主机进入 compose 目录执行 docker compose up -d --force-recreate 修正标签，" +
+                      "或在 compose 的 environment 里加 NAVIHIVE_COMPOSE_DIR 指向真实目录。"
+                : "读不到 compose 部署信息（容器标签里没有 com.docker.compose.*）：本容器不是 docker compose 启动的。" +
+                      "网页一键升级只支持 compose 部署，请到宿主机执行 docker compose up -d --force-recreate。"
         );
     }
     upgradeStatus.phase = "pulling";
