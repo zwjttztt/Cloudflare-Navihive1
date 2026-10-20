@@ -199,9 +199,9 @@ docker inspect --format='{{.State.Health.Status}}' navihive   # → healthy（�
 - **备份命令和 systemd 版不同**——容器里没有 `sqlite3` CLI，见第七节。
 - 升级：`git pull && docker compose up -d --build`，迁移照旧在启动时自动做。
 - **网页端一键升级**：设置 →「版本与升级」→ 检查更新 → 更新。走 Docker Engine API
-  （unix socket）：**拉新镜像 → `restart` 容器**。不需要容器里有 docker CLI（镜像是
-  node:24-slim，没有 docker 二进制），也不依赖 `docker compose`（那是插件）。
-  要生效得满足两条：
+  （unix socket）**拉新镜像**，然后起一个**一次性 helper 容器**，由它在容器外执行
+  `docker compose up -d --force-recreate` 完成换镜像。
+  要生效得满足三条：
   1. compose 的 `volumes` 挂上 `/var/run/docker.sock:/var/run/docker.sock`
      （仓库模板已带上；这是把宿主机 Docker 控制权交给容器，确认过风险再加）；
   2. **给访问 sock 的权限** —— sock 属 `root:docker`，而镜像默认以 `node(1000)` 跑，
@@ -209,14 +209,23 @@ docker inspect --format='{{.State.Health.Status}}' navihive   # → healthy（�
      `user: "${NAVIHIVE_RUN_AS:-0:0}"`；想保留非 root 就改用
      `group_add: ["<getent group docker 得到的 GID>"]`。
   3. `NAVIHIVE_CONTAINER_NAME` 与 `container_name` 一致（模板默认 `navihive`）。
-  两条前置不满足 → 端点回 501 → 前端回落成「复制 docker pull 命令手动执行」。
-  ⚠️ 为什么是 `restart` 而不是「停→删→建→启」：执行升级的进程就在这个容器里，
+  前置不满足 → 端点回 501 → 前端回落成「复制 docker pull 命令手动执行」。
+  helper 会从**容器标签**（`com.docker.compose.project{,.working_dir,.config_files}`）
+  自动读到工程名/目录/配置文件，无需额外配置；宿主 docker CLI 默认按
+  `/usr/bin/docker` + `/usr/libexec/docker/cli-plugins` 挂进去，装在别处时用
+  `NAVIHIVE_HOST_DOCKER` / `NAVIHIVE_HOST_DOCKER_PLUGINS` 覆盖。
+  ⚠️ 为什么不在容器里自己「停→删→建→启」：执行升级的进程就在这个容器里，
   `stop` 一发出去本进程就死了，后面的步骤一行都不会执行（线上真的发生过：点更新 → 502，
-  容器停在 `Exited(0)`）。`restart` 的 stop+start 由 daemon 完成，不依赖容器内进程。
-  ⚠️ 代价：`restart` 不改容器配置，所以**改了 compose（新增环境变量/卷/端口）不会生效**，
-  那种升级仍需 `docker compose up -d --force-recreate`。
-  ⚠️ 升级会短暂中断（约 10-30 秒）：服务先回 200 再执行；重启失败时会确认容器在跑，
-  不会让站点停着不管。
+  容器停在 `Exited(0)`）。
+  ⚠️ 为什么也不能用 `restart`：restart **按容器创建时记录的 ImageID 启动**，不重新解析
+  `:latest` —— 镜像拉到了、容器也重启了，跑的还是旧代码（2026-10-20 线上就是「点更新
+  长时间无反应、刷新后版本号不变」）。所以换镜像必须由容器外的进程做。
+  ✅ 走 compose 重建还有个额外好处：**改过 compose（新增环境变量/卷/端口）也会一起生效**。
+  ⚠️ 升级会短暂中断（约 10-30 秒）：服务先回 200 再执行；前端会轮询
+  `GET /api/system/upgrade` 拿进度，版本真换了就清 SW 缓存自动刷到新版，失败会把原因
+  摆出来。每次升级的时间与 compose 输出会追加到宿主机的
+  `<compose 目录>/.navihive-upgrade.log`（重建会换掉容器日志，出问题时看这份）。
+  ⚠️ 升级失败时会确认容器在跑，不会让站点停着不管。
 
 > **已实测（2026-10-14）**：Debian 13 / 1 核 / 464MB 内存 / Docker 29.9.0 的 VPS 上
 > 真构建真跑过——镜像构建 8 分 26 秒成功（356MB），端到端验证 29 项全过：

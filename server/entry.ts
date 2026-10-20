@@ -325,45 +325,227 @@ async function dockerPull(image: string): Promise<void> {
     });
 }
 
+/** 一次性 helper 容器的名字（daemon 里一眼能认出是升级用的，别和主容器混） */
+const UPGRADE_HELPER = `${UPGRADE_CONTAINER}-upgrader`;
+/** 从建 helper 到它退出的最长等待。重建一个单容器服务只要几秒，2 分钟兜慢盘 */
+const UPGRADE_HELPER_TIMEOUT_MS = 120_000;
+/** 宿主机 docker CLI 与 compose 插件（`docker compose` 是插件，不是内建命令） */
+const HOST_DOCKER_BIN = env("NAVIHIVE_HOST_DOCKER", "/usr/bin/docker");
+const HOST_DOCKER_PLUGINS = env("NAVIHIVE_HOST_DOCKER_PLUGINS", "/usr/libexec/docker/cli-plugins");
+
 /**
- * 把**这个容器**升级到新镜像：拉镜像 → 重启容器。
+ * 升级过程的状态。**模块级**：POST 触发、GET 读取，两边必须看到同一份。
+ * 进程被 compose 换掉后自然清零（成功后前端靠版本号判断，不靠它）。
+ */
+const upgradeStatus: {
+    phase: "idle" | "pulling" | "recreating" | "failed";
+    image: string;
+    error: string;
+    startedAt: number;
+    finishedAt: number;
+} = { phase: "idle", image: "", error: "", startedAt: 0, finishedAt: 0 };
+
+/** compose 部署坐标：工程名 / 工作目录 / 配置文件（全部来自容器标签，无需额外配置） */
+interface ComposeInfo {
+    project: string;
+    workingDir: string;
+    files: string[];
+}
+
+/**
+ * 从容器标签里读出 compose 部署坐标。
  *
- * ⚠️⚠️ 为什么是 restart 而不是「停 → 删 → 建 → 启」（2026-10-19 线上实测的坑）：
- * 执行升级的 Node 进程**就在被升级的这个容器里**。第一版按 recreate 写，
- * `POST /containers/{name}/stop` 一发出去，容器收到 SIGTERM → entry.ts 的优雅退出
- * 跑完 → 本进程立刻死，后面的 DELETE / CREATE / START **一行都不会执行**。
- * 线上症状：点「更新」后长时间无反应、刷新变 502，容器停在 `Exited (0)`。
+ * 为什么不要求用户配 `NAVIHIVE_COMPOSE_DIR`：上一版就是因为多要一个环境变量，
+ * 端口/路径一写错端点就一律 501，用户永远看不到网页升级。compose 自己会在
+ * 容器上打 `com.docker.compose.project{,.working_dir,.config_files}` 三个标签，
+ * 直接读它比自己猜可靠得多。读不到（纯 `docker run` 起的）→ 返回 null，
+ * 由调用方明确报错，不假装成功。
+ */
+function readComposeInfo(labels: Record<string, string>): ComposeInfo | null {
+    const workingDir = (process.env.NAVIHIVE_COMPOSE_DIR || labels["com.docker.compose.project.working_dir"] || "")
+        .replace(/\/+$/, "");
+    if (!workingDir) return null;
+    return {
+        project: labels["com.docker.compose.project"] || UPGRADE_CONTAINER,
+        workingDir,
+        files: (labels["com.docker.compose.project.config_files"] || "")
+            .split(",")
+            .map(s => s.trim())
+            .filter(Boolean),
+    };
+}
+
+/** helper 容器里要跑的脚本：在**容器外**（daemon 侧）用新镜像重建本容器 */
+function upgraderCommand(info: ComposeInfo): string {
+    const base = `${info.workingDir}/`;
+    // 只认落在工作目录里的配置文件：helper 只挂这一个目录
+    const inside = info.files.filter(f => f.startsWith(base)).map(f => `/compose/${f.slice(base.length)}`);
+    const project = info.project;
+    return [
+        `CFG="${inside.map(f => `-f ${f}`).join(" ")}"`,
+        'if [ -z "$CFG" ]; then',
+        "  for f in docker-compose.yml docker-compose.yaml compose.yml compose.yaml; do",
+        '    if [ -f "/compose/$f" ]; then CFG="-f /compose/$f"; break; fi',
+        "  done",
+        "fi",
+        'if [ -z "$CFG" ]; then echo "[upgrader] 在 /compose 里找不到 compose 配置文件（挂载目录不对？）"; exit 21; fi',
+        'if [ ! -x /usr/bin/docker ]; then echo "[upgrader] 宿主机 docker CLI 不可用：/usr/bin/docker 没挂进来"; exit 22; fi',
+        "cd /compose",
+        // 往宿主机的 compose 目录记一笔：重建会把容器自身的日志一起换掉，
+        // 出问题时这份文件是最后一份现场（/home/docker/navihive/.navihive-upgrade.log）
+        "LOG=/compose/.navihive-upgrade.log",
+        `echo "[upgrader] $(date -u +%FT%TZ) 开始 $CFG -p ${project}" >> "$LOG"`,
+        `echo "[upgrader] docker compose $CFG -p ${project} up -d --force-recreate"`,
+        // 不用管道：$? 必须来自 docker compose 本身
+        `OUT=$(docker compose $CFG -p ${project} up -d --force-recreate 2>&1) ; CODE=$?`,
+        'printf "%s\\n" "$OUT"',
+        'printf "%s\\n" "$OUT" >> "$LOG"',
+        'if [ "$CODE" -ne 0 ]; then',
+        `  echo "[upgrader] $(date -u +%FT%TZ) 失败（退出码 $CODE）" >> "$LOG"`,
+        '  echo "[upgrader] 重建失败：docker compose 返回非 0 退出码"',
+        "  exit 1",
+        "fi",
+        `echo "[upgrader] $(date -u +%FT%TZ) 成功" >> "$LOG"`,
+        'echo "[upgrader] 完成：容器已按新镜像重建"',
+    ].join("\n");
+}
+
+/** 等 helper 退出。返回退出码；超时（多半是本进程已被换掉）返回 null */
+function waitForHelperExit(id: string): Promise<number | null> {
+    return new Promise(resolve => {
+        let settled = false;
+        const done = (code: number | null) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            resolve(code);
+        };
+        const timer = setTimeout(() => done(null), UPGRADE_HELPER_TIMEOUT_MS);
+        timer.unref?.();
+        dockerApi("POST", `/containers/${id}/wait?condition=not-running`).then(
+            res => {
+                if (res.status >= 300) return done(-1);
+                const code = (JSON.parse(res.body) as { StatusCode?: number }).StatusCode;
+                done(typeof code === "number" ? code : -1);
+            },
+            () => done(-1),
+        );
+    });
+}
+
+/** 读 helper 的日志尾巴（失败时把真实原因带给用户，而不是一句「升级失败」） */
+async function readHelperLogs(id: string): Promise<string> {
+    try {
+        const res = await dockerApi("GET", `/containers/${id}/logs?stdout=1&stderr=1&tail=40`);
+        if (res.status >= 300) return "";
+        // helper 带 Tty 创建：日志是纯文本（非 TTY 才是 8 字节头复用的多路流）
+        // 兜掉可能混进来的 NUL（eslint 的 no-control-regex 也不让写正则）
+        return res.body.split("\u0000").join("").trim().slice(-600);
+    } catch {
+        return "";
+    }
+}
+
+/**
+ * 起一个一次性 helper 容器，让它在**容器外面**执行 `docker compose up -d --force-recreate`。
  *
- * `restart` 没有这个问题：stop + start 都由 **Docker daemon** 完成，不依赖容器内
- * 进程活着。而 start 时 daemon 按 `Config.Image`（这里是 tag，如 `…:latest`）
- * 重新解析 —— 我们刚刚把新镜像拉到本地、latest 已指向它，于是容器起来就是新代码。
- * 环境变量 / 卷 / 端口 / 重启策略全部原样保留（restart 不改配置），
- * 比 recreate 更稳；代价是「compose 里新增的配置项不会生效」——
- * 那种升级仍需在宿主机手动 `docker compose up -d --force-recreate`（见 selfhost.md）。
+ * 为什么必须是容器外：执行升级的进程就在被升级的这个容器里，任何「自己停/删自己」
+ * 的动作都会把它当场杀死（见 dockerUpgradeSelf 的注释）。daemon 侧的 helper 不受影响。
+ * 借用的只是新镜像的 `/bin/sh` + 宿主机挂进来的 docker CLI，
+ * 所以镜像是 node:slim 也没关系（以前正是「容器里没有 docker 二进制」才走了纯 API）。
+ */
+async function runUpgraderContainer(image: string, info: ComposeInfo): Promise<void> {
+    const name = UPGRADE_HELPER;
+    // 上一轮失败留下的 helper：先清掉，否则 create 会 409
+    await dockerApi("DELETE", `/containers/${name}?force=true`).catch(() => undefined);
+    const created = await dockerApi("POST", `/containers/create?name=${name}`, {
+        Image: image,
+        Entrypoint: ["/bin/sh", "-c"],
+        Cmd: [upgraderCommand(info)],
+        WorkingDir: "/compose",
+        // 和主容器同样的身份：sock 属 root:docker，非 root 连不上
+        User: "0:0",
+        Tty: true,
+        Labels: { "com.navihive.upgrader": "1" },
+        HostConfig: {
+            AutoRemove: false,
+            Binds: [
+                `${DOCKER_SOCK}:${DOCKER_SOCK}`,
+                `${info.workingDir}:/compose`,
+                `${HOST_DOCKER_BIN}:/usr/bin/docker:ro`,
+                `${HOST_DOCKER_PLUGINS}:/usr/libexec/docker/cli-plugins:ro`,
+            ],
+        },
+    });
+    if (created.status >= 300) {
+        throw new Error(`创建升级容器失败 HTTP ${created.status} ${created.body.slice(0, 200)}`);
+    }
+    const id = (JSON.parse(created.body) as { Id?: string }).Id || name;
+    const started = await dockerApi("POST", `/containers/${id}/start`);
+    if (started.status >= 300 && started.status !== 304) {
+        throw new Error(`启动升级容器失败 HTTP ${started.status} ${started.body.slice(0, 200)}`);
+    }
+
+    const code = await waitForHelperExit(id);
+    if (code === null) {
+        // 收不到结果：本进程已经在 compose 重建时被换掉了 —— 这正是成功的样子
+        return;
+    }
+    const logs = await readHelperLogs(id);
+    await dockerApi("DELETE", `/containers/${id}?force=true`).catch(() => undefined);
+    if (code !== 0) {
+        throw new Error(`重建容器失败（退出码 ${code}）：${logs || "helper 没有输出"}`);
+    }
+}
+
+/**
+ * 把**这个容器**升级到新镜像：拉镜像 → 交给 compose 用新镜像重建本容器。
  *
- * 顺序上先把所有可能失败的都做完（读规格、拉镜像），最后一步才 restart：
- * 拉取失败就绝不去动容器，旧容器继续服务。
+ * ⚠️⚠️ 两段都踩过线上坑，别再退回任何一段：
+ *
+ * ① 「容器内自己 stop → rm → create → start」：执行升级的 Node 进程就在被升级的
+ *    容器里。`POST /containers/{name}/stop` 一发出去容器收到 SIGTERM、本进程立刻死，
+ *    后面的 DELETE / CREATE / START **一行都不会执行**。线上症状：
+ *    点「更新」后长时间无反应、刷新变 502，容器停在 `Exited (0)`。
+ *
+ * ② 「restart」（2026-10-19 为了绕开①改用）：restart 是 stop + start，由 daemon
+ *    完成、不依赖容器内进程活着，看起来完美 —— 但它**按容器创建时记录的 ImageID
+ *    启动**，不重新解析 `:latest` 标签。于是 `docker pull` 明明拉到了新镜像、
+ *    容器也确实重启了，跑的还是旧代码。线上症状（2026-10-20 用户报）：
+ *    「点击更新长时间无反应，刷新后还是原来版本」。
+ *
+ * 结论：换镜像必须由**容器外面的进程**做 → helper 容器执行 `docker compose up -d
+ * --force-recreate`（顺便把 compose 里新增的配置项也带上，restart 做不到这点）。
+ *
+ * 顺序上先把所有可能失败的都做完（读规格、拉镜像），最后才动容器：
+ * 拉取失败、读不到 compose 坐标，都绝不去碰容器，旧容器继续服务。
  */
 async function dockerUpgradeSelf(image: string): Promise<void> {
     const name = UPGRADE_CONTAINER;
     const { status, body } = await dockerApi("GET", `/containers/${name}/json`);
     if (status >= 300) throw new Error(`读不到容器 ${name}（HTTP ${status}）`);
-    const old = JSON.parse(body) as { Config?: Record<string, unknown> };
-    // 只接受 tag 形式（`repo:tag`）：digest 形式（`repo@sha256:…`）restart 后仍指向
-    // 旧镜像，升级就白做了 —— 这种情况直接报错，别假装成功。
-    const currentImage = String(old.Config?.Image ?? "");
-    if (!currentImage.includes(":")) {
-        throw new Error(`容器镜像不是 tag 形式（${currentImage}），无法用重启方式升级`);
+    const info = JSON.parse(body) as { Config?: { Labels?: Record<string, string> } };
+    const compose = readComposeInfo(info.Config?.Labels ?? {});
+    if (!compose) {
+        throw new Error(
+            "读不到 compose 部署信息（容器标签里没有 com.docker.compose.*）：本容器不是 docker compose 启动的。" +
+                "网页一键升级只支持 compose 部署，请到宿主机执行 docker compose up -d --force-recreate。"
+        );
     }
+    upgradeStatus.phase = "pulling";
     await dockerPull(image);
-    const restarted = await dockerApi("POST", `/containers/${name}/restart?t=10`);
-    // 304 = 容器本来就停着（无需重启），也算成功
-    if (restarted.status >= 300 && restarted.status !== 304) {
-        throw new Error(`重启容器失败 HTTP ${restarted.status} ${restarted.body.slice(0, 200)}`);
-    }
+    upgradeStatus.phase = "recreating";
+    await runUpgraderContainer(image, compose);
 }
 
-/** 升级后的兜底：确认容器真的在跑，不在就拉起来（restart 失败时旧容器可能停着） */
+/**
+ * 升级后的兜底：确认容器真的在跑，不在就拉起来。
+ *
+ * 正常路径用不上（helper 失败时 compose 一般还没动到旧容器，我们还活着）；
+ * 但「旧容器被停掉、新容器没起来」的那种半途状态只能靠它救 —— 而且只有在
+ * 本进程侥幸没被杀（比如 compose 在 stop 之前就报错退出）时才轮得到它。
+ * 站点停摆比升级失败严重得多，多这一跳不亏。
+ */
 async function dockerEnsureRunning(): Promise<void> {
     const name = UPGRADE_CONTAINER;
     const { status, body } = await dockerApi("GET", `/containers/${name}/json`);
@@ -405,13 +587,13 @@ const finish = (): void => {
             // 直接在网页端升级，不要再复制代码去后台升级」—— 上一版虽已写成
             // 网页触发，但部署侧没挂 docker.sock、又要求 NAVIHIVE_UPGRADE_DIR，
             // 于是端点一律 501，用户看到的仍是「复制命令去后台」）。
+            // GET 同一路径 = 查升级进度（2026-10-20 用户报「点击更新长时间无反应」，
+            // 前端要能问到「到底走到哪一步、失败在哪」，而不是只转圈）。
             //
-            // 实现走 **Docker Engine API（unix socket）**，不依赖容器内的 docker
-            // CLI：镜像是 node:24-slim，没有 docker 二进制；挂宿主 CLI 还要连带挂
-            // cli-plugins（`docker compose` 是插件）与 compose 目录，链路长且动态库
-            // 容易不兼容。Node 原生 http.request 的 socketPath 就能打 sock。
-            // 序列：拉镜像 → **重启容器**（restart，不是 recreate —— 原因见
-            // dockerUpgradeSelf 的注释：stop 一发出去本进程就死了）。
+            // 实现走 **Docker Engine API（unix socket）**：拉镜像、读规格都由 Node
+            // 直接打 sock 完成；只有「换掉镜像重建容器」这一步交给一次性 helper 容器
+            // 在容器外执行 compose —— 原因见 dockerUpgradeSelf 的注释
+            // （restart 不重新解析 :latest 标签，就是「升级完版本号不变」的根因）。
             //
             // 两道闸：① owner only（复用 worker 的 auth/me）；② docker.sock 可访问。
             // ⚠️ 执行顺序：**先响应再升级** —— 动的是这个容器自己，命令跑起来后
@@ -440,31 +622,39 @@ const finish = (): void => {
                     );
                     return;
                 }
+                const image = UPGRADE_IMAGE;
+                upgradeStatus.phase = "pulling";
+                upgradeStatus.image = image;
+                upgradeStatus.error = "";
+                upgradeStatus.startedAt = Date.now();
+                upgradeStatus.finishedAt = 0;
                 res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
                 res.end(
                     JSON.stringify({
                         ok: true,
-                        message:
-                            "升级已启动：正在拉取镜像并重启服务，约 10-30 秒后页面会自动恢复" +
-                            "（若长时间无响应请手动刷新）。",
+                        message: "升级已启动：正在拉取镜像并重建容器，约 10-30 秒后页面会自动恢复。",
                     })
                 );
-                const image = UPGRADE_IMAGE;
                 setTimeout(() => {
                     void (async () => {
                         try {
-                            // 最后一步才会重启容器（重启会杀掉本进程），所以拉取放在
-                            // 前面：拉不动就绝不去碰容器，旧代码继续服务。
-                            await dockerPull(image);
+                            // 拉取 + 读规格都在动容器之前：拉不动就绝不去碰容器，
+                            // 旧代码继续服务。
                             await dockerUpgradeSelf(image);
-                            // 能走到这里说明 restart 已返回；本进程随时可能被 SIGTERM
-                            // 收走，所以「确认在跑」放在 try 里、失败也不抛给调用方。
+                            // 能走到这里说明 helper 正常退出且没换掉我们（罕见：
+                            // 说明 compose 认为无须重建）。确认在跑再报告成功。
                             await dockerEnsureRunning();
-                            console.log(`[upgrade] 完成：容器已按 ${image} 重启`);
+                            upgradeStatus.phase = "idle";
+                            upgradeStatus.finishedAt = Date.now();
+                            console.log(`[upgrade] 完成：容器已按 ${image} 重建`);
                         } catch (error) {
-                            // 重启没成功时容器可能停着：确认它活着，不在就拉起来。
+                            const message = error instanceof Error ? error.message : String(error);
+                            upgradeStatus.phase = "failed";
+                            upgradeStatus.error = message;
+                            upgradeStatus.finishedAt = Date.now();
+                            console.error("[upgrade] 失败:", message);
+                            // 失败时容器可能停着：确认它活着，不在就拉起来。
                             // 站点停摆是比升级失败严重得多的事故。
-                            console.error("[upgrade] 失败，尝试确保容器在跑:", error);
                             try {
                                 await dockerEnsureRunning();
                                 console.log("[upgrade] 已确保容器在跑（仍是原版本）");
@@ -474,6 +664,35 @@ const finish = (): void => {
                         }
                     })();
                 }, 1500);
+                return;
+            }
+
+            // GET /api/system/upgrade：升级进度（owner only）。
+            // 前端在点完「更新」后轮询它：能读到 failed + 具体原因就不再干等。
+            // 成功路径读不到（进程已被换掉，phase 回到 idle）—— 那时靠版本号判断。
+            if (pathname === "/api/system/upgrade" && method === "GET") {
+                const meRes = await handler.fetch(
+                    new Request("http://internal/api/auth/me", { method: "GET", headers: toHeaders(req) }),
+                    serverEnv
+                );
+                const me = meRes.ok ? ((await meRes.json()) as { role?: string }) : null;
+                if (!me || me.role !== "owner") {
+                    res.writeHead(403, { "Content-Type": "application/json; charset=utf-8" });
+                    res.end(JSON.stringify({ ok: false, error: "只有站点所有者可以查看升级状态" }));
+                    return;
+                }
+                res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+                res.end(
+                    JSON.stringify({
+                        ok: true,
+                        supported: existsSync(DOCKER_SOCK),
+                        phase: upgradeStatus.phase,
+                        image: upgradeStatus.image,
+                        error: upgradeStatus.error,
+                        startedAt: upgradeStatus.startedAt,
+                        finishedAt: upgradeStatus.finishedAt,
+                    })
+                );
                 return;
             }
 

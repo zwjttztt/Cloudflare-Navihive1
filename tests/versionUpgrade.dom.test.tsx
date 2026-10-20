@@ -277,24 +277,36 @@ test("「更新」按钮优先走网页直接升级；端点不可用时回落�
         return { ok: true, status: 200, json: async () => ({ version: "3.5.0" }) };
     }) as unknown as typeof fetch;
     try {
+        // ① 端点 501（没挂 docker.sock / Workers 部署）→ 回落复制命令
+        mode = "unsupported";
         mount(<VersionUpgradeSection version="v3.4.0+abc123" />);
         await click(document.querySelector("[data-check-update]"));
         await flushAsync();
         assert.ok(document.querySelector("[data-update-action]"), "要有更新按钮");
+        await click(document.querySelector("[data-update-action]"));
+        await flushAsync();
+        assert.deepEqual(writes, ["docker pull ghcr.io/zwjttztt/navihive:latest"], "回落要复制升级命令");
+        assert.equal(document.querySelector("[data-update-running]"), null, "端点不支持时不该有运行提示");
 
-        // ① 网页直接升级：显示升级中提示，不复制命令
+        // ② 网页直接升级：显示升级中提示，不复制命令
+        //    （单测环境没有烘进来的构建号，跟进逻辑会停在「升级中」——
+        //     这正是「拿不到构建号就不瞎判断」的预期行为）
+        cleanup();
+        writes.length = 0;
+        mode = "upgrade";
+        mount(<VersionUpgradeSection version="v3.4.0+abc123" />);
+        await click(document.querySelector("[data-check-update]"));
+        await flushAsync();
         await click(document.querySelector("[data-update-action]"));
         await flushAsync();
         assert.ok(document.querySelector("[data-update-running]"), "升级已触发要有运行提示");
         assert.deepEqual(writes, [], "走了网页升级就不该再复制命令");
-
-        // ② 端点 501（没挂 docker.sock / Workers 部署）→ 回落复制命令
-        writes.length = 0;
-        mode = "unsupported";
-        await click(document.querySelector("[data-update-action]"));
-        await flushAsync();
-        assert.equal(document.querySelector("[data-update-running]"), null, "回落后不该有运行提示");
-        assert.deepEqual(writes, ["docker pull ghcr.io/zwjttztt/navihive:latest"], "回落要复制升级命令");
+        // 升级进行中按钮禁用：避免重复触发第二次重建
+        assert.equal(
+            (document.querySelector("[data-update-action]") as HTMLButtonElement).disabled,
+            true,
+            "升级中要禁用「更新」按钮",
+        );
     } finally {
         globalThis.fetch = realFetch;
     }

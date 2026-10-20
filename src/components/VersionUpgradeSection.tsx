@@ -15,6 +15,8 @@ import { Alert, Box, Button, Typography } from "@mui/material";
 import SystemUpdateAltIcon from "@mui/icons-material/SystemUpdateAlt";
 import { Section } from "./dialogSection";
 import { appVersion } from "../utils/appVersion";
+import { localBuildVersion } from "../utils/buildVersion";
+import { reloadWithFreshCache, waitForUpgrade } from "../utils/upgradeWait";
 
 /** 仓库 main 分支的 package.json：version 字段即最新发布版本 */
 const UPSTREAM_PACKAGE_URL =
@@ -87,6 +89,15 @@ export default function VersionUpgradeSection({ version }: { version?: string })
      *  - null：没动作
      */
     const [copyState, setCopyState] = useState<boolean | "upgrading" | null>(null);
+    /**
+     * 网页升级的终局：跑完才知道成没成。
+     * 以前点完只挂一句「升级中」，成了不吭声、败了也不说 —— 用户只能自己去刷新
+     * 然后发现「还是原来版本」（2026-10-20 的报障就是这么来的）。
+     * null = 还没结论（对应上面的 "upgrading"）。
+     */
+    const [upgradeOutcome, setUpgradeOutcome] = useState<
+        { kind: "done" } | { kind: "failed"; message: string } | null
+    >(null);
     /** 按钮 + 结果行：结果 Alert 会把它撑高，出结果时滚进可视区（同 BackupDialog 的 webdavActionsRef 模式） */
     const rowRef = useRef<HTMLDivElement>(null);
 
@@ -112,11 +123,41 @@ export default function VersionUpgradeSection({ version }: { version?: string })
     }, [state]);
 
     /**
+     * 升级触发后的跟进：等服务端换成新版本，再清缓存重载。
+     *
+     * 没有构建号（开发模式 / 老产物）时无从判断版本，只能停在「升级中」——
+     * 这时用户自己刷新即可，不去猜。
+     */
+    const watchUpgrade = async () => {
+        const local = localBuildVersion();
+        if (!local) return;
+        const result = await waitForUpgrade({ localVersion: local });
+        if (result.kind === "upgraded") {
+            setUpgradeOutcome({ kind: "done" });
+            // 让「升级完成」先露一眼再刷，否则页面直接闪掉，用户看不出发生了什么
+            await new Promise<void>(resolve => setTimeout(resolve, 1200));
+            await reloadWithFreshCache();
+            return;
+        }
+        // 失败/超时：把按钮放回可用状态（能重试），原因如实摆出来
+        setCopyState(null);
+        setUpgradeOutcome({
+            kind: "failed",
+            message:
+                result.kind === "failed"
+                    ? result.message
+                    : "等了 2 分钟没检测到新版本，可能还在拉取；稍后刷新再看，或到服务器执行 docker compose up -d --force-recreate。",
+        });
+    };
+
+    /**
      * 「更新」按钮（2026-10-18 用户报「发现新版本能否加上一个更新按键」，
      * 再报「能否直接在网页升级版本」）：
      *  1. **优先网页直接升级**：POST /api/system/upgrade（自托管 + docker.sock
-     *     才有；owner only）。服务端先响应再 detached 执行 pull && compose up
-     *     —— 容器会把自己换掉，约 10-30s 后服务短暂重启。
+     *     才有；owner only）。服务端先响应再 detached 执行「拉镜像 → helper 容器
+     *     里 compose 重建本容器」—— 约 10-30s 后服务短暂重启。
+     *     拿到 200 后立刻开始跟进（watchUpgrade）：成功就自动刷到新版，
+     *     失败就把服务端给的原因摆出来，不再让用户对着「升级中」干等。
      *  2. 回落：404（Workers 部署没有这个端点）/ 501（没挂 docker.sock）/
      *     任何网络错误 → 复制 docker pull 命令，用户到服务器粘贴执行；
      *     复制失败时命令原文直接摆出来。
@@ -131,6 +172,8 @@ export default function VersionUpgradeSection({ version }: { version?: string })
             const data = (await res.json().catch(() => null)) as { ok?: boolean } | null;
             if (res.ok && data?.ok) {
                 setCopyState("upgrading");
+                setUpgradeOutcome(null);
+                void watchUpgrade();
                 return;
             }
             throw new Error("upgrade-failed");
@@ -213,6 +256,7 @@ export default function VersionUpgradeSection({ version }: { version?: string })
                             variant='contained'
                             startIcon={<SystemUpdateAltIcon fontSize='small' />}
                             onClick={() => void onUpdate()}
+                            disabled={copyState === "upgrading"}
                             data-update-action='1'
                             sx={{ flexShrink: 0 }}
                         >
@@ -240,11 +284,21 @@ export default function VersionUpgradeSection({ version }: { version?: string })
                             检查失败：{state.message}
                         </Alert>
                     )}
-                    {/* 「更新」按钮的复制反馈：成功一句确认；失败把命令原文
-                        摆出来（用户还能手动复制）*/}
-                    {copyState === "upgrading" && (
+                    {/* 「更新」按钮的反馈：网页升级有「进行中 / 完成 / 未完成」三态，
+                        复制回落有「已复制 / 复制失败」两态 */}
+                    {copyState === "upgrading" && upgradeOutcome === null && (
                         <Alert severity='info' data-update-running='1' sx={{ py: 0, flex: 1, minWidth: 220 }}>
-                            升级中：正在拉取镜像并重启，约 10–30 秒后自动恢复。
+                            升级中：正在拉取镜像并重建容器，约 10–30 秒后页面会自动刷新。请勿关闭。
+                        </Alert>
+                    )}
+                    {upgradeOutcome?.kind === "done" && (
+                        <Alert severity='success' data-update-done='1' sx={{ py: 0, flex: 1, minWidth: 220 }}>
+                            升级完成，正在刷新到新版本…
+                        </Alert>
+                    )}
+                    {upgradeOutcome?.kind === "failed" && (
+                        <Alert severity='warning' data-update-failed='1' sx={{ py: 0, flex: 1, minWidth: 220 }}>
+                            升级未完成：{upgradeOutcome.message}
                         </Alert>
                     )}
                     {copyState === true && (

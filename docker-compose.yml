@@ -49,6 +49,11 @@ services:
       NAVIHIVE_CONTAINER_NAME: ${NAVIHIVE_CONTAINER_NAME:-navihive}
       # 升级时拉取的目标镜像；不设走 ghcr.io/zwjttztt/navihive:latest
       NAVIHIVE_IMAGE: ${NAVIHIVE_IMAGE:-ghcr.io/zwjttztt/navihive:latest}
+      # 升级靠「一次性 helper 容器在容器外跑 docker compose up -d --force-recreate」，
+      # 需要借宿主机的 docker CLI 与 compose 插件。装在别处时改这两个路径。
+      # 工程名/目录/配置文件由 compose 自己打在容器标签上，服务端直接读，无需配置。
+      # NAVIHIVE_HOST_DOCKER: /usr/bin/docker
+      # NAVIHIVE_HOST_DOCKER_PLUGINS: /usr/libexec/docker/cli-plugins
 
       # :? = 没设置就让 compose 直接失败退出——别默默起一个「登录必然失败」的服务
       AUTH_SECRET: ${AUTH_SECRET:?没设 AUTH_SECRET：先在 .env 里放一个 openssl rand -hex 32}

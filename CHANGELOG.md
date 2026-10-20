@@ -6,6 +6,20 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。---
 
+## 2026-10-20（五）· 修复：网页一键升级不换镜像（restart 不重新解析 :latest）
+
+用户报「点击更新长时间无反应，刷新后还是原来版本」。上一版（10-19）为绕开「容器内 stop 自己 → 执行升级的进程当场死」，把升级做成了 `POST /containers/{name}/restart`。restart 是 stop+start，由 daemon 完成、不怕进程被杀，看着完美 —— 但它**按容器创建时记录的 ImageID 启动，不重新解析 `:latest` 标签**。于是 `docker pull` 明明拉到了新镜像、容器也确实重启了（`StartedAt` 变了），跑的还是旧代码。线上症状就是「版本号不动」。
+
+**换镜像必须由容器外的进程做。** 现在拉完镜像后起一个一次性 helper 容器（复用刚拉到的新镜像，只借它的 `/bin/sh` + 宿主机挂进来的 `docker` CLI 与 cli-plugins），由它在容器外执行 `docker compose up -d --force-recreate`：既真正换了镜像，又不会把发起升级的本进程提前杀掉；顺带让 compose 里新增的配置项也一起生效（restart 做不到这点）。
+
+**compose 坐标零配置。** 工程名 / 工作目录 / 配置文件全部从容器标签 `com.docker.compose.*` 读取，不再要求用户多配一个环境变量（上一版正是多要 `NAVIHIVE_UPGRADE_DIR`，写错就一律 501）。纯 `docker run` 起的容器读不到 → 明确报错并给出手动命令，不假装成功。可用 `NAVIHIVE_COMPOSE_DIR` / `NAVIHIVE_HOST_DOCKER` / `NAVIHIVE_HOST_DOCKER_PLUGINS` 覆盖。
+
+**不再让用户对着「升级中」干等。** 新增 `GET /api/system/upgrade`（owner only）回报 phase（pulling / recreating / failed + 原因）；前端点完「更新」立刻跟进轮询：版本真换了就清掉 SW 缓存自动刷到新版，失败就把它给的原因摆出来，2 分钟没结论也会如实说「没等到」并给出手动命令，而不是转完圈什么也不说。升级中「更新」按钮禁用，避免重复触发第二次重建。
+
+**留一份现场。** helper 会把每次升级的时间与 compose 输出追加到宿主机的 `<compose 目录>/.navihive-upgrade.log` —— 重建会把容器自身的日志一起换掉，出问题时这份文件是最后一份现场。helper 带 `Tty` 创建，失败时它的输出会原样带进给用户看的错误文案。
+
+守卫：重写 `tests/systemUpgradeGuard.test.ts`（永久封死 `stop` / `restart` 两条历史根因，钉住「拉镜像先于动容器」「先响应再执行」「$? 不能走管道」），新增 `tests/upgradeWait.test.ts`（upgraded / failed / timeout 三个出口 + 清缓存重载）。单测 2879 全绿。
+
 ## 2026-10-20（五）· 优化：弹窗说明文案精简（版本升级区 + 各设置/账号/笔记弹窗）
 
 用户反馈「弹窗里的提示词太多太乱」，逐处收敛：只留关键事实，砍掉解释性长句。
