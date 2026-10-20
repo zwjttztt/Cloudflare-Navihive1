@@ -174,7 +174,7 @@ export default function VersionUpgradeSection({ version }: { version?: string })
     };
 
     return (
-        <Section title='版本与升级' hint='检查更新会向 GitHub 发一次匿名请求，只取最新版本号。'>
+        <Section title='版本与升级' hint='只比对版本号，不上传任何数据。'>
             <Box data-version-section='1'>
                 <Typography variant='body2' component='div'>
                     当前版本：
@@ -228,23 +228,11 @@ export default function VersionUpgradeSection({ version }: { version?: string })
                     )}
                     {state.kind === "available" && (
                         <Alert severity='info' data-update-result='available' sx={{ py: 0, flex: 1, minWidth: 220 }}>
-                            发现新版本 {state.version}。
-                            <Box component='span' sx={{ display: "block", mt: 0.5 }}>
-                                Docker 部署：在服务器上执行
-                                <Box
-                                    component='code'
-                                    sx={{ mx: 0.5, px: 0.5, bgcolor: "action.hover", borderRadius: 0.5 }}
-                                >
-                                    docker pull ghcr.io/zwjttztt/navihive:latest
-                                </Box>
-                                然后重建容器即可。
-                                Workers 部署：推送 main 分支后由 Cloudflare 自动构建，无需手动操作。
-                                更新内容见
-                                <a href={RELEASES_URL} target='_blank' rel='noreferrer'>
-                                    发版页
-                                </a>
-                                。
-                            </Box>
+                            发现新版本 {state.version}，点「更新」自动升级。更新内容见
+                            <a href={RELEASES_URL} target='_blank' rel='noreferrer'>
+                                发版页
+                            </a>
+                            。
                         </Alert>
                     )}
                     {state.kind === "error" && (
@@ -256,12 +244,12 @@ export default function VersionUpgradeSection({ version }: { version?: string })
                         摆出来（用户还能手动复制）*/}
                     {copyState === "upgrading" && (
                         <Alert severity='info' data-update-running='1' sx={{ py: 0, flex: 1, minWidth: 220 }}>
-                            升级已启动：正在拉取镜像并重建容器，约 10-30 秒后服务会短暂重启，页面稍后自动恢复（若长时间无响应请手动刷新）。
+                            升级中：正在拉取镜像并重启，约 10–30 秒后自动恢复。
                         </Alert>
                     )}
                     {copyState === true && (
                         <Alert severity='success' data-update-copied='1' sx={{ py: 0 }}>
-                            更新命令已复制，到服务器粘贴执行；Workers 部署推送 main 即自动构建。
+                            更新命令已复制，到服务器执行即可。
                         </Alert>
                     )}
                     {copyState === false && (

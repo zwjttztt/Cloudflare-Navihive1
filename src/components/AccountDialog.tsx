@@ -390,15 +390,13 @@ export default function AccountDialog({
                                 {currentUser.username}
                             </Box>
                             {currentUser.role === "owner" ? "（站点所有者）" : ""}
-                            。每个账号只看到自己的分组、卡片与备份配置。
                             <Box
                                 component='span'
                                 sx={{ display: "block", mt: 0.5, color: "text.secondary" }}
                             >
-                                这里管「我自己」的安全设置：账号密码 / 恢复密钥 / 登录设备
                                 {currentUser.role === "owner"
-                                    ? "。「注销账号」只对普通账号开放，站点所有者不提供该入口。"
-                                    : "、注销账号。"}
+                                    ? "管理密码、恢复密钥与登录设备；站点所有者不提供注销入口。"
+                                    : "管理密码、恢复密钥、登录设备与注销账号。"}
                             </Box>
                         </DialogContentText>
                     ) : (
@@ -411,7 +409,7 @@ export default function AccountDialog({
                         {/* 1. 账号与密码 */}
                         <Section
                             title='账号与密码'
-                            hint='留空表示不修改。修改前必须先填当前密码；改完会立即退出登录，需要用新凭据重新登录。'
+                            hint='留空表示不修改；改完会退出登录，需用新密码重新登录。'
                         >
                             <TextField
                                 margin='dense'
@@ -473,7 +471,7 @@ export default function AccountDialog({
                         {/* 2. 恢复密钥：忘记密码时用它重置。私钥只在本地生成并下载 */}
                         <Section
                             title='恢复密钥'
-                            hint='每个账号一份：谁生成的私钥只能重置谁的密码，别的账号看不到、也用不上。'
+                            hint='私钥只能重置本账号密码，别的账号用不上。'
                         >
                             <Stack
                                 direction={{ xs: "column", sm: "row" }}
@@ -540,7 +538,7 @@ export default function AccountDialog({
                         {sessions && sessions.length > 0 ? (
                             <Section
                                 title='登录设备'
-                                hint='列出当前账号登录过的设备。怀疑某台设备被人用过，可以只把它踢下线，其它设备不受影响。'
+                                hint='可单独把可疑设备踢下线，其它设备不受影响。'
                             >
                                 <Stack spacing={1}>
                                     {sessions.map(item => (
@@ -690,7 +688,7 @@ export default function AccountDialog({
                         {currentUser?.role === "owner" && accounts && accounts.length > 0 ? (
                             <Section
                                 title='账号与沉睡治理'
-                                hint='这一段属于全站治理，只有站点所有者能操作。长期不登录的账号会先被停用（数据一条不删），宽限期满后自动清除以释放空间。认出是真人在用的，可以提前豁免。'
+                                hint='仅所有者可见。沉睡账号先停用（数据保留），宽限期满后清除；可提前豁免。'
                             >
                                 <Stack spacing={1}>
                                     {accounts.map(account => {

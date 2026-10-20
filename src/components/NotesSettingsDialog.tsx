@@ -945,7 +945,7 @@ export default function NotesSettingsDialog({
                                         size='small'
                                     />
                                 </SettingRow>
-                                <SettingRow label='打字机模式' description='光标所在的那一行始终停在屏幕中间，写作时眼睛不用来回跳'>
+                                <SettingRow label='打字机模式' description='光标行始终居中'>
                                     <Switch
                                         checked={settings.typewriterMode}
                                         onChange={e => set("typewriterMode", e.target.checked)}
@@ -1123,7 +1123,7 @@ export default function NotesSettingsDialog({
                                         </Typography>
                                         <SettingRow
                                             label='管理附件'
-                                            description='按文件名查看已上传的附件，可以逐条删除；删掉后引用它的笔记里会显示加载失败的占位。'
+                                            description='按文件名查看并删除附件；删后引用处显示占位。'
                                         >
                                             <Button
                                                 size='small'
@@ -1156,7 +1156,7 @@ export default function NotesSettingsDialog({
                                 {data.onExportZip && (
                                     <SettingRow
                                         label='导出全部（ZIP，含图片）'
-                                        description='笔记、文件夹、标签与图片附件打包成一份 ZIP —— 导出去的图能原样导回来（JSON 那份只有正文，图片会丢）。'
+                                        description='含图片附件的完整 ZIP（JSON 只有正文，图片会丢）。'
                                     >
                                         <Button
                                             size='small'
@@ -1175,7 +1175,7 @@ export default function NotesSettingsDialog({
                                 {data.onImportNotes && (
                                     <SettingRow
                                         label='导入笔记（JSON / ZIP）'
-                                        description='支持本工具的 JSON / ZIP 备份，以及 Obsidian 风格的 Markdown 文件夹 ZIP。备份按内部标识取较新版本；Markdown ZIP 创建笔记并保留目录与标签，附件会回传并重写引用（需附件上传能力）。'
+                                        description='支持 JSON / ZIP 与 Obsidian Markdown 文件夹 ZIP，按内部标识取较新版本。'
                                     >
                                         <Button
                                             size='small'
@@ -1228,7 +1228,7 @@ export default function NotesSettingsDialog({
                                     维护
                                 </Typography>
                                 {shareApi?.reindexNotes && (
-                                    <SettingRow label='重建搜索索引' description='搜索结果缺失时重新建立当前账号的全文索引，不修改笔记正文。'>
+                                    <SettingRow label='重建搜索索引' description='重建当前账号的全文索引，不改正文。'>
                                         <Button size='small' disabled={reindexBusy} onClick={async () => {
                                             setReindexBusy(true);
                                             try { const result = await shareApi.reindexNotes?.(); setReindexMessage(`已重建 ${result?.count ?? 0} 条笔记索引`); }
@@ -1241,7 +1241,7 @@ export default function NotesSettingsDialog({
                                 {data.onPruneAttachments && (
                                     <SettingRow
                                         label='清理未引用附件'
-                                        description='删除不再出现在任何笔记正文里的图片，释放存储；正在使用的图片不受影响。'
+                                        description='仅删除未被引用的图片，在用图片不受影响。'
                                     >
                                         <Button
                                             size='small'
@@ -1428,8 +1428,8 @@ export default function NotesSettingsDialog({
                                         sx={{ display: "block", mt: 0.5 }}
                                     >
                                         {backupState?.backupPassword || backupState?.hasNavBackupPassword
-                                            ? "设了口令的备份会加密上传，恢复时要填同一个密码。"
-                                            : "口令留空则明文上传；填了会覆盖导航页那份备份口令。"}
+                                            ? "设口令的备份加密上传，恢复需同一密码。"
+                                            : "留空则明文上传；填了会覆盖导航页的备份口令。"}
                                     </Typography>
 
                                     {backupTestResult && (
@@ -1471,7 +1471,7 @@ export default function NotesSettingsDialog({
                                 </Typography>
                                 <SettingRow
                                     label='备份频率'
-                                    description='由服务端定时任务执行，页面不用保持打开；到点后到下一次触发之间最多延迟 1 小时。'
+                                    description='服务端定时执行，页面无需打开；最多延迟 1 小时。'
                                 >
                                     <Select
                                         size='small'
@@ -1497,7 +1497,7 @@ export default function NotesSettingsDialog({
                                 </SettingRow>
                                 <SettingRow
                                     label='备份保留'
-                                    description='自动备份在网盘上保留的份数；手动备份永远全部保留。'
+                                    description='网盘保留的自动备份份数；手动备份全保留。'
                                 >
                                     <Select
                                         size='small'
@@ -1912,7 +1912,7 @@ export default function NotesSettingsDialog({
                             <Box data-settings-sync='1'>
                                 <SettingRow
                                     label='跨设备变更提示'
-                                    description='其他设备新增/修改/删除笔记后，本机自动刷新列表（正在编辑的草稿不会被覆盖）'
+                                    description='其他设备改动后本机自动刷新（不覆盖编辑中的草稿）'
                                 >
                                     <Switch
                                         checked={syncPrefs.enabled}
@@ -2213,7 +2213,7 @@ export default function NotesSettingsDialog({
                         danger
                         title='清理未引用附件？'
                         // 文案与 AttachmentManager 保持一字不差（同一判据，与文件类型无关）
-                        description='只删除不再出现在任何笔记正文里的附件（图片、txt / json 文档等）；正在使用的附件不受影响。'
+                        description='仅删除未被引用的附件，在用附件不受影响。'
                         confirmText='清理'
                         onConfirm={async () => {
                             try {

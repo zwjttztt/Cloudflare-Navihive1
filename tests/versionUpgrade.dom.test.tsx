@@ -6,7 +6,7 @@
 //   Docker 无 .git 时构建号兜底（`v1234`）解析不出三段 → 不能瞎比，报「无法比较」
 // - 远端取 raw.githubusercontent.com 的 package.json（CORS 友好、不吃 api 配额）
 // - 检查失败（网络不通 / GitHub 5xx / 响应没版本号）要落成可见文案，不能空转
-// - 发现新版本时必须给出两种部署形态的升级指引（Docker pull / Workers 自动部署）
+// - 发现新版本时给一句精简的自动升级提示 + 发版页链接（不再罗列 Docker/Workers 长指引）
 
 import { test, afterEach } from "node:test";
 import assert from "node:assert/strict";
@@ -189,8 +189,7 @@ test("远端版本更高 → 显示新版本与两种部署形态的升级指引
         const result = document.querySelector("[data-update-result='available']");
         assert.ok(result !== null, "应显示发现新版本");
         assert.ok(result.textContent!.includes("3.5.0"), "文案要带新版本号");
-        assert.ok(result.textContent!.includes("docker pull"), "要有 Docker 升级指引");
-        assert.ok(result.textContent!.includes("Workers"), "要有 Workers 部署说明");
+        assert.ok(result.textContent!.includes("更新"), "要提示可点「更新」自动升级");
         assert.ok(result.querySelector("a[href*='/releases']"), "要给发版页链接");
         // ⚠️ 结果必须与按钮**同一行**（用户报「提示框还要往下移动很不方便」）：
         // 网站设置是最长的弹窗、版本节在最底部，Alert 排在按钮下方就停在

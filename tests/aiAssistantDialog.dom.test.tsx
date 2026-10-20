@@ -351,7 +351,7 @@ test("嵌入模型的展开/收起按钮状态跟着配置走（Collapse 收起�
     assert.ok(collapse, "点开后按钮换文案");
     assert.equal(collapse!.getAttribute("aria-expanded"), "true");
     assert.ok(
-        (document.body.textContent || "").includes("一个字节都不会往外发"),
+        (document.body.textContent || "").includes("不会发出任何请求"),
         "默认关的说明要摆在界面上"
     );
 });

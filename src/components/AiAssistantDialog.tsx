@@ -310,7 +310,7 @@ export default function AiAssistantDialog({
                         onChange={checked => set(AI_ENABLED_KEY)(checked ? "true" : "false")}
                         label='启用 AI 助手'
                         ariaLabel='启用 AI 助手'
-                        caption='没开的时候，所有 AI 按钮都只是置灰，一个字节都不会往外发。'
+                        caption='未开启时 AI 按钮置灰，不会发出任何请求。'
                     />
                     {statusText ? (
                         <Typography
@@ -375,7 +375,7 @@ export default function AiAssistantDialog({
                                     value={form[AI_CF_TOKEN_KEY] || ""}
                                     onChange={set(AI_CF_TOKEN_KEY)}
                                     secret
-                                    caption='需要有 Workers AI 的读取与运行权限。点右边的眼睛可以核对填没填错。'
+                                    caption='需要 Workers AI 读取与运行权限；点眼睛可核对。'
                                 />
                             </>
                         ) : (
@@ -430,7 +430,7 @@ export default function AiAssistantDialog({
                                                 ? "@cf/baai/bge-base-en-v1.5"
                                                 : "text-embedding-3-small"
                                         }
-                                        caption='留空则用服务商默认模型。换了模型就要重算一次语义索引（旧的向量跟新的比不了）。'
+                                        caption='留空用服务商默认模型；换模型需重算语义索引。'
                                     />
                                 </Box>
                             </Collapse>
@@ -458,7 +458,7 @@ export default function AiAssistantDialog({
                         }}>
                         {problem
                             ? `还不能测：${problem}`
-                            : "用上面填的内容试一次（不用先保存），会各发一条最短的请求。"}
+                            : "用当前填写的内容各试一次（不保存）。"}
                     </Typography>
 
                     {testing && <LinearProgress sx={{ mt: 1, borderRadius: 1 }} />}
