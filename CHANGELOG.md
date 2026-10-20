@@ -6,6 +6,22 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。---
 
+## 2026-10-20（五）· 修复：登录态跨重启保留；编辑区附件点击开弹窗；弹窗直接可编辑 + 复制按钮
+
+用户三条一起提的修复，逐条落在这批里。
+
+**1. 自托管登录态跨关机保留（用户报「每次开电脑第一次开网页都是登录页面」）。** 根因是 `LoginForm` 里 `remember` 默认 `false`，普通登录只拿到 24 小时的 `DEFAULT_TOKEN_TTL` cookie；关机过夜超过 24h cookie 就过期，开机进首页自然是登录页。现在默认勾选「记住我」，登录走 30 天的 `REMEMBER_TOKEN_TTL`——在保留期内（最长 30 天）再开网页，会话 cookie 仍有效，直接进已登录态，不再弹登录页。复选框文案本来就是「记住账号名（不保存密码，登录状态保留一个月）」，行为与文案现在一致。
+
+**2. 笔记编辑区里的附件链接点了开弹窗（用户报「不是弹窗打开」）。** 两个入口都修：
+　① **即时渲染块**：那块内容是 `LiveBlockWidget` 里 `createRoot` 起的**独立 React root**，`NotesPage` 顶层那个 `AttachmentPreviewProvider` 穿透不过去，于是块里的 `AttachmentLink` 读到的 `useAttachmentPreview()` 是 `null`，退回整页跳走的 `<a>`。现在 `NotesPage` 的 `liveRenderer` 把渲染结果整体用 `AttachmentPreviewProvider` 包一层，编辑器内的链接才接得上弹窗控制器。
+　② **源码态**：链接是纯文本 `[名称](/api/notes/attachments/<id>)`，没有可点的 `<a>`。给 `NoteEditor` 的 `EditorView.domEventHandlers` 加了 `mousedown` 拦截：命中链接 URL 那段就 `preventDefault` + 开弹窗；方括号里的文字照常放光标可编辑（避免「想改名字却把弹窗点开」）；已渲染态的真 `<a data-attachment-link>` 交给 `AttachmentLink` 的 onClick 接手，不会重复打开。三个 `NoteEditor`（主栏 + 双分栏）共用同一个回调。
+
+**3. 附件弹窗打开就是可编辑态，且文本框右上角加「复制内容」按钮（用户追加要求）。** `editing` 初始态从 `false` 改成「文本可编辑即 `true`」——只在 `onSaveContent` 存在 + 文本类型 + 不超 40 万字符阈值时进编辑态；图片 / 二进制 / 超大只读仍不进。文本框（`<pre>` 与 `<TextField>` 共用的容器）右上角加了带 `ContentCopy` 图标的按钮，`navigator.clipboard.writeText` 写全文 + 轻提示「已复制附件内容」；剪贴板被拒时提示失败。
+
+守卫：改订 `tests/attachmentPreview.dom.test.tsx`（默认可编辑态下内容在 `[data-att-editor]` textarea、`data-att-body='text'` 不再出现；原「点编辑」步骤作废，避免断言抛错后没清场拖垮后面的重命名用例）、`tests/loginForm.dom.test.tsx`（默认 remember=true；取消勾选才变 false）。单测 2873 全绿。
+
+**4. 顺带自查一处回归风险。** 第 2 条的 `mousedown` 拦截要识别 markdown 链接，正则与 `markdownToReact.tsx` 里 `AttachmentLink` 用的同一把尺子（`/api/notes/attachments/<id>`，带 query/hash 的分享链接不拦），避免两边口径漂移。
+
 ## 2026-10-19（四）· 新增：附件弹窗预览 / 原地编辑 / 重命名，左下角「待办」换成「附件」
 
 用户四条一起提的改造，逐条落在这批里。

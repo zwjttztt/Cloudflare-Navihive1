@@ -153,23 +153,25 @@ const alerts = () =>
 
 test.afterEach(cleanup);
 
-test("登录：填好账号密码提交，onLogin 收到 Remember=false", async () => {
+test("登录：填好账号密码提交，remember 默认就是 true（登录态保留一个月）", async () => {
     render();
     setInputValue(inputById("username")!, "admin");
     setInputValue(inputById("password")!, "s3cret-pass");
-    await submitForm();
-    assert.deepEqual(loginCalls, [["admin", "s3cret-pass", false]]);
-});
-
-test("登录：勾选「记住我」后提交，remember 如实传成 true", async () => {
-    render();
-    setInputValue(inputById("username")!, "admin");
-    setInputValue(inputById("password")!, "s3cret-pass");
-    const box = document.querySelector<HTMLInputElement>('input[aria-label="记住我"]')!;
-    assert.ok(box, "没找到「记住我」勾选框");
-    click(box);
     await submitForm();
     assert.deepEqual(loginCalls, [["admin", "s3cret-pass", true]]);
+});
+
+test("登录：「记住我」默认勾选，取消勾选后提交 remember 变 false", async () => {
+    render();
+    const box = document.querySelector<HTMLInputElement>('input[aria-label="记住我"]')!;
+    assert.ok(box, "没找到「记住我」勾选框");
+    assert.equal(box.checked, true, "默认就该勾上（保留登录态一个月）");
+    setInputValue(inputById("username")!, "admin");
+    setInputValue(inputById("password")!, "s3cret-pass");
+    click(box);
+    assert.equal(box.checked, false, "点一下应取消勾选");
+    await submitForm();
+    assert.deepEqual(loginCalls, [["admin", "s3cret-pass", false]]);
 });
 
 test("登录：打开时只回填账号名，历史明文密码不回填且被清掉", () => {

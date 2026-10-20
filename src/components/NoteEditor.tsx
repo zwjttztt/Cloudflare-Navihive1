@@ -325,6 +325,11 @@ export interface NoteEditorProps {
      * 不传 = 不装补全扩展（公开分享页那种只读场景本来也不需要）。
      */
     completionSources?: () => CompletionSources;
+    /**
+     * 源码态点附件链接时回调（命中 `[名称](/api/notes/attachments/<id>)` 的 URL 部分）。
+     * 即时渲染态不需要它——那边链接是真正的 <a>，由 AttachmentLink 的 onClick 接手。
+     */
+    onOpenAttachmentLink?: (id: string) => void;
 }
 
 export default function NoteEditor({
@@ -344,6 +349,7 @@ export default function NoteEditor({
     uploadImage,
     onDetachedUpload,
     completionSources,
+    onOpenAttachmentLink,
 }: NoteEditorProps) {
     const host = useRef<HTMLDivElement>(null);
     const viewRef = useRef<EditorView | null>(null);
@@ -352,6 +358,9 @@ export default function NoteEditor({
     // 进 extensions 依赖的话，随便编辑一条笔记都要重建编辑器（撤销历史全丢）。
     const completionRef = useRef(completionSources);
     completionRef.current = completionSources;
+    // 源码态点附件链接的回调走 ref：换回调不该重建编辑器（撤销历史全丢）。
+    const openAttRef = useRef<((id: string) => void) | undefined>(onOpenAttachmentLink);
+    openAttRef.current = onOpenAttachmentLink;
     // 上传能力放进 ref：换回调（比如存储从「没配」变「配了」）不该重建编辑器。
     const uploadRef = useRef(uploadImage);
     uploadRef.current = uploadImage;
@@ -413,6 +422,33 @@ export default function NoteEditor({
                     // 永远挂上：没传 uploadImage 时处理器直接放行（原生行为），
                     // 传了才走「占位符 → 上传 → 回写」；upload 能力走 uploadRef 读最新值。
                     EditorView.domEventHandlers({
+                        mousedown(event, view) {
+                            // 源码态里附件链接是纯文本 `[名称](/api/notes/attachments/<id>)`，
+                            // 没有可点的 <a>，这里在 mousedown 时识别命中并直接开预览弹窗。
+                            // 即时渲染态的已渲染链接由 AttachmentLink 的 onClick 接手——
+                            // 那是真正的 <a data-attachment-link>，命中就放手交给 React，
+                            // 否则会重复打开。只拦 URL 那段，方括号里的文字照常放光标可编辑。
+                            if (event.button !== 0) return false;
+                            if (event.target instanceof Element && event.target.closest("a[data-attachment-link]")) return false;
+                            const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
+                            if (pos == null) return false;
+                            const line = view.state.doc.lineAt(pos);
+                            const text = line.text;
+                            const re = /\[[^\]]*\]\((\/api\/notes\/attachments\/[0-9a-z-]+)\)/gi;
+                            let m: RegExpExecArray | null;
+                            while ((m = re.exec(text))) {
+                                const urlStart = m.index + m[0].indexOf("(") + 1;
+                                const urlEnd = m.index + m[0].length - 1;
+                                const col = pos - line.from;
+                                if (col >= urlStart && col <= urlEnd) {
+                                    const id = m[1].slice("/api/notes/attachments/".length);
+                                    event.preventDefault();
+                                    openAttRef.current?.(id);
+                                    return true;
+                                }
+                            }
+                            return false;
+                        },
                         dragover(event) {
                             if (uploadRef.current && event.dataTransfer?.types.includes("Files")) event.preventDefault();
                             return false;

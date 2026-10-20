@@ -18,7 +18,7 @@
 //
 // 为什么全 Flex 而不是 Grid：和 inkstone 一致，且和项目里现有布局同源。
 // 移动端按 inkstone 的做法切成「列表 / 编辑」两屏，而不是硬塞双栏。
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createElement, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import Box from "@mui/material/Box";
 import Avatar from "@mui/material/Avatar";
 import Button from "@mui/material/Button";
@@ -447,6 +447,14 @@ export default function NotesPage({
         () => ({ open: (request: AttachmentPreviewRequest) => setPreviewTarget(request) }),
         []
     );
+    /**
+     * 编辑器里点附件链接时走这里（源码态没有 React context，没法用 AttachmentLink 的
+     * useAttachmentPreview）。引用稳定，三个 NoteEditor 共用一份。
+     */
+    const openAttachmentFromEditor = useCallback(
+        (id: string) => previewController.open({ id, filename: "" }),
+        [previewController]
+    );
     /** 反链右侧常驻面板（N4）：与大纲面板同一位置，桌面头部按钮 / 菜单项共同开关 */
     const [backlinksOpen, setBacklinksOpen] = useState(false);
     /** 多选批量条（2026-10-09）：只在用户主动开了「多选」时才勾人，退出即清空 */
@@ -711,8 +719,15 @@ export default function NotesPage({
      * 关掉时传 null，编辑器就是纯源码。
      */
     const liveRenderer = useCallback(
-        (source: string): Promise<ReactNode> => renderMarkdownToReact(source, {}),
-        []
+        (source: string): Promise<ReactNode> =>
+            // ⚠️ 即时渲染块是 LiveBlockWidget 里 createRoot 起的**独立 React root**，
+            // NotesPage 顶层那个 AttachmentPreviewProvider 穿透不过去；不包一层的话，
+            // 块里的 AttachmentLink 读到的 useAttachmentPreview() 是 null，会退回整页
+            // 跳走的 <a>。这里把渲染结果整体用 Provider 包起来，编辑器内点链接才开弹窗。
+            renderMarkdownToReact(source, {}).then(node =>
+                createElement(AttachmentPreviewProvider, { value: previewController }, node)
+            ),
+        [previewController]
     );
     const tools = useEditorTools(textareaRef, setDraft);
     /** 大纲跳转 = 主编辑器的光标跳转（原局部实现已抽进 hook） */
@@ -4716,6 +4731,7 @@ export default function NotesPage({
                                     indentWidth={uiSettings.indentWidth}
                                     onScrollRatio={syncPreviewScroll}
                                     liveRender={liveRender ? liveRenderer : null}
+                                    onOpenAttachmentLink={openAttachmentFromEditor}
                                     focusMode={uiSettings.focusMode}
                                     typewriterMode={uiSettings.typewriterMode}
                                     shortcutActions={mainShortcutActions}
@@ -5274,6 +5290,7 @@ export default function NotesPage({
                                 fontSize={uiSettings.editorFontSize}
                                 indentWidth={uiSettings.indentWidth}
                                 liveRender={sideLiveRender ? liveRenderer : null}
+                                onOpenAttachmentLink={openAttachmentFromEditor}
                                 focusMode={uiSettings.focusMode}
                                 typewriterMode={uiSettings.typewriterMode}
                                 shortcutActions={sideShortcutActions}

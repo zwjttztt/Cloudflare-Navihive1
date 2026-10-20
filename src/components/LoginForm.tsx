@@ -153,7 +153,9 @@ const LoginForm: React.FC<LoginFormProps> = ({
 }) => {
     const [username, setUsername] = useState("");
     const [password, setPassword] = useState("");
-    const [remember, setRemember] = useState(false);
+    // 自托管默认勾选「记住账号名」=> 会话 TTL 走 30 天（REMEMBER_TOKEN_TTL），
+    // 关机等过夜后再开仍在保留期内，进首页直接是已登录态而非登录页。
+    const [remember, setRemember] = useState(true);
 
     // 登录 / 注册 / 恢复账号 三个视图
     const [mode, setMode] = useState<"login" | "register" | "recover">("login");

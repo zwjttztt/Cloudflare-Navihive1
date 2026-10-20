@@ -17,7 +17,7 @@
 //     少让用户白点。
 //  3. **重命名走独立字段而不是改标题**：标题同时承担「显示名」和「保存后刷新」
 //     两件事，直接在标题上编辑会让「改完没保存就关掉」变成静默丢失。
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
     Box,
     Button,
@@ -32,6 +32,7 @@ import {
     CircularProgress,
 } from "@mui/material";
 import CloseIcon from "@mui/icons-material/Close";
+import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import DescriptionIcon from "@mui/icons-material/Description";
 import EditIcon from "@mui/icons-material/Edit";
 import DriveFileRenameOutlineIcon from "@mui/icons-material/DriveFileRenameOutline";
@@ -162,6 +163,9 @@ export default function AttachmentPreviewDialog({
                 setText(body);
                 setSaved(body);
                 setStatus("ready");
+                // 用户需求：弹窗打开附件直接就是可编辑状态（不必先点「编辑」）。
+                // 仅在「给了保存能力 + 文本可编辑」时进编辑态；图片 / 二进制 / 超大只读不进。
+                if (onSaveContent && isTextMime(type) && body.length <= EDITABLE_MAX_CHARS) setEditing(true);
             } catch (err) {
                 if (!live) return;
                 setStatus("error");
@@ -210,6 +214,17 @@ export default function AttachmentPreviewDialog({
             setBusy(false);
         }
     };
+
+    /** 复制附件正文到剪贴板（2026-10-20 用户需求：文本框右上角加「复制内容」） */
+    const copyContent = useCallback(async () => {
+        if (!text) return;
+        try {
+            await navigator.clipboard.writeText(text);
+            onNotify?.("已复制附件内容", "success");
+        } catch {
+            onNotify?.("复制失败：浏览器拒绝了剪贴板访问", "error");
+        }
+    }, [text, onNotify]);
 
     const doRename = async () => {
         if (!id || !onRename || busy) return;
@@ -397,26 +412,75 @@ export default function AttachmentPreviewDialog({
                     </Box>
                 )}
 
-                {status === "ready" && !isImage && !editing && (
-                    <Box
-                        component='pre'
-                        data-att-body='text'
-                        sx={{
-                            m: 0,
-                            p: 1.5,
-                            maxHeight: "60vh",
-                            overflow: "auto",
-                            borderRadius: 2,
-                            bgcolor: "rgba(128,128,128,0.06)",
-                            fontFamily:
-                                'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',
-                            fontSize: 12.5,
-                            lineHeight: 1.65,
-                            whiteSpace: "pre-wrap",
-                            wordBreak: "break-word",
-                        }}
-                    >
-                        {shownText}
+                {status === "ready" && !isImage && (
+                    <Box sx={{ position: "relative" }}>
+                        <Tooltip title='复制内容'>
+                            <IconButton
+                                size='small'
+                                onClick={copyContent}
+                                disabled={!text}
+                                aria-label='复制附件内容'
+                                data-att-action='copy'
+                                sx={{
+                                    position: "absolute",
+                                    right: 6,
+                                    top: 6,
+                                    zIndex: 2,
+                                    bgcolor: "background.paper",
+                                    border: "1px solid",
+                                    borderColor: "divider",
+                                    "&:hover": { bgcolor: "action.hover" },
+                                }}
+                            >
+                                <ContentCopyIcon fontSize='small' />
+                            </IconButton>
+                        </Tooltip>
+                        {editing ? (
+                            <TextField
+                                multiline
+                                fullWidth
+                                // 16 行起步：文本附件通常是一份配置 / 一段日志，
+                                // 给的框太小会让人先在弹窗里滚来滚去才看到自己写的位置
+                                minRows={16}
+                                maxRows={30}
+                                value={text}
+                                onChange={event => setText(event.target.value)}
+                                data-att-editor='1'
+                                slotProps={{
+                                    htmlInput: {
+                                        autoComplete: "off",
+                                        spellCheck: false,
+                                        style: {
+                                            fontFamily:
+                                                'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',
+                                            fontSize: 12.5,
+                                            lineHeight: 1.65,
+                                        },
+                                    },
+                                }}
+                            />
+                        ) : (
+                            <Box
+                                component='pre'
+                                data-att-body='text'
+                                sx={{
+                                    m: 0,
+                                    p: 1.5,
+                                    maxHeight: "60vh",
+                                    overflow: "auto",
+                                    borderRadius: 2,
+                                    bgcolor: "rgba(128,128,128,0.06)",
+                                    fontFamily:
+                                        'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',
+                                    fontSize: 12.5,
+                                    lineHeight: 1.65,
+                                    whiteSpace: "pre-wrap",
+                                    wordBreak: "break-word",
+                                }}
+                            >
+                                {shownText}
+                            </Box>
+                        )}
                     </Box>
                 )}
 
@@ -424,32 +488,6 @@ export default function AttachmentPreviewDialog({
                     <Typography sx={{ mt: 1, fontSize: 11.5, color: "warning.main" }} data-att-too-large='1'>
                         文件较大（{text.length} 个字符），这里只显示前 {EDITABLE_MAX_CHARS} 个，且不支持在线编辑。
                     </Typography>
-                )}
-
-                {status === "ready" && !isImage && editing && (
-                    <TextField
-                        multiline
-                        fullWidth
-                        // 16 行起步：文本附件通常是一份配置 / 一段日志，
-                        // 给的框太小会让人先在弹窗里滚来滚去才看到自己写的位置
-                        minRows={16}
-                        maxRows={30}
-                        value={text}
-                        onChange={event => setText(event.target.value)}
-                        data-att-editor='1'
-                        slotProps={{
-                            htmlInput: {
-                                autoComplete: "off",
-                                spellCheck: false,
-                                style: {
-                                    fontFamily:
-                                        'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',
-                                    fontSize: 12.5,
-                                    lineHeight: 1.65,
-                                },
-                            },
-                        }}
-                    />
                 )}
             </DialogContent>
 

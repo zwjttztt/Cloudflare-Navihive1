@@ -134,7 +134,7 @@ function stubTextFetch(body: string) {
     };
 }
 
-test("预览弹窗：把附件内容显示出来，编辑后保存接得上", async () => {
+test("预览弹窗：把附件内容显示出来，默认就是可编辑状态，改完保存接得上", async () => {
     const restore = stubTextFetch("原始内容");
     const saved: Array<{ id: string; text: string }> = [];
     mount(
@@ -148,20 +148,19 @@ test("预览弹窗：把附件内容显示出来，编辑后保存接得上", as
         />
     );
     await flush(60);
-    const body = document.querySelector("[data-att-body='text']");
-    assert.ok(body, "文本附件要能直接读到内容");
-    assert.match(body!.textContent || "", /原始内容/);
-
-    act(() => {
-        (document.querySelector("[data-att-action='edit']") as HTMLElement).click();
-    });
+    // 用户需求（2026-10-20）：文本附件打开就是可编辑态，正文直接在 textarea 里，
+    // 不必先点「编辑」。所以内容现在在 [data-att-editor] 的 textarea，而非只读 <pre>。
     const editor = document.querySelector<HTMLTextAreaElement>("[data-att-editor='1'] textarea");
-    assert.ok(editor, "点「编辑」要出现可写区域");
+    assert.ok(editor, "可编辑文本附件打开就该是 textarea，不必先点编辑");
+    assert.match(editor!.value || "", /原始内容/);
+
     act(() => {
         typeInto(editor!, "改过的内容");
     });
+    const save = document.querySelector<HTMLElement>("[data-att-action='save']");
+    assert.ok(save, "内容改过之后该出现「保存」按钮");
     act(() => {
-        (document.querySelector("[data-att-action='save']") as HTMLElement).click();
+        save!.click();
     });
     await flush(60);
     assert.deepEqual(saved, [{ id: ATT_ID, text: "改过的内容" }]);
