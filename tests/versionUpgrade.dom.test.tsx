@@ -312,6 +312,31 @@ test("「更新」按钮优先走网页直接升级；端点不可用时回落�
     }
 });
 
+test("升级进行中要显示「已等 N 秒」，别让人以为卡死了", async t => {
+    t.after(cleanup);
+    globalThis.fetch = (async (url: string) => {
+        if (String(url).includes("/api/system/upgrade")) {
+            return { ok: true, status: 200, json: async () => ({ ok: true, message: "升级已启动" }) };
+        }
+        return { ok: true, status: 200, json: async () => ({ version: "3.5.0" }) };
+    }) as unknown as typeof fetch;
+    try {
+        mount(<VersionUpgradeSection version="v3.4.0+abc123" />);
+        await click(document.querySelector("[data-check-update]"));
+        await flushAsync();
+        await click(document.querySelector("[data-update-action]"));
+        await flushAsync();
+        const running = document.querySelector("[data-update-running]");
+        assert.ok(running, "要有运行提示");
+        const text = running!.textContent ?? "";
+        assert.ok(text.includes("已等"), `要显示已等秒数，实际：${text}`);
+        // 用户报的是「长时间没反应」—— 光转不说明什么时候给结论，等于还是在干等
+        assert.ok(text.includes("2 分钟"), "要讲清最多多久会给结论");
+    } finally {
+        globalThis.fetch = realFetch;
+    }
+});
+
 test("远端版本相同或更低 → 已是最新", async t => {
     t.after(cleanup);
     globalThis.fetch = (async () =>

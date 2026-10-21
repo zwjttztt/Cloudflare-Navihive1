@@ -351,6 +351,25 @@ async function dockerPull(image: string): Promise<void> {
     });
 }
 
+/**
+ * 某个镜像引用（`repo:tag`）在当前 daemon 里的镜像 ID（`sha256:…`）。
+ *
+ * 用来回答一个很实际的问题：**这次拉取真的有新东西吗**。
+ * 拉取失败 / 没有这个镜像时返回空串 —— 调用方按「不知道」处理，不拿它拦升级。
+ * 路径里的 `/` 与 `:` 原样传：daemon 的 `/images/{name}/json` 认这种写法，
+ * 编码成 %2F 反而会被当成镜像名的一部分。
+ */
+async function dockerImageId(image: string): Promise<string> {
+    const res = await dockerApi("GET", `/images/${image}/json`).catch(() => null);
+    if (!res || res.status >= 300) return "";
+    try {
+        const id = (JSON.parse(res.body) as { Id?: string }).Id;
+        return typeof id === "string" ? id : "";
+    } catch {
+        return "";
+    }
+}
+
 /** 一次性 helper 容器的名字（daemon 里一眼能认出是升级用的，别和主容器混） */
 const UPGRADE_HELPER = `${UPGRADE_CONTAINER}-upgrader`;
 /** 从建 helper 到它退出的最长等待。重建一个单容器服务只要几秒，2 分钟兜慢盘 */
@@ -591,7 +610,10 @@ async function dockerUpgradeSelf(image: string): Promise<void> {
     const info = JSON.parse(body) as {
         Config?: { Labels?: Record<string, string> };
         NetworkSettings?: { Networks?: Record<string, unknown> };
+        /** 容器当前在跑的镜像 ID（sha256:…）—— 升级成功与否的**唯一硬判据** */
+        Image?: string;
     };
+    const runningImageId = info.Image || "";
     const labels = info.Config?.Labels ?? {};
     const compose = readComposeInfo(labels);
     if (!compose) {
@@ -617,8 +639,46 @@ async function dockerUpgradeSelf(image: string): Promise<void> {
     }
     upgradeStatus.phase = "pulling";
     await dockerPull(image);
+
+    // ⚠️⚠️ 拉完先比一次镜像 ID（2026-10-21 用户报「点更新又长时间没反应」，线上排查
+    // 发现：点了之后容器确实重建过，但**跑的还是旧镜像**，页面等满两分钟才报「没检测到
+    // 新版本」）。根因是「有新版本」这个判断来自仓库里的 package.json，而镜像要在
+    // GHCR 上构建好几分钟 —— 于是存在一个窗口：
+    //   仓库里已经是 5.1.0（前端说「发现新版本」）→ registry 上 :latest 还是上一版 →
+    //   pull 拉到的还是旧的 → compose 重建了个一模一样的容器。
+    // 白等两分钟还是小事，站点白白抖一次才是。
+    // 这种情况**绝不能动容器**：直接如实说「镜像还没更新，容器没动，过几分钟再点」。
+    const pulledImageId = await dockerImageId(image);
+    if (pulledImageId && runningImageId && pulledImageId === runningImageId) {
+        upgradeStatus.phase = "idle";
+        throw new Error(
+            `镜像没有更新：registry 上的 ${image} 仍是当前运行的这一版。` +
+                "「发现新版本」比的是仓库里的 package.json，而镜像要在 GitHub 上构建（本仓库是 " +
+                "multi-arch，要模拟 arm64，**通常 10 分钟以上**）—— 版本号先到、镜像后到，这个空档里" +
+                "点「更新」只会拉回旧镜像。容器没有重建、站点没受影响；等镜像构建完成（GitHub → " +
+                "Actions → docker-publish 变绿）后再点一次。"
+        );
+    }
+
     upgradeStatus.phase = "recreating";
     await runUpgraderContainer(image, compose);
+
+    // ⚠️ helper「退出码 0」不等于升级成功：compose 可能认为无须重建直接退 0，
+    // `wait` 也可能拿不到结果被当成成功（见 runUpgraderContainer 的 null 分支）。
+    // 真正的判据只有一个 —— **容器现在跑的镜像变了没有**。没变就如实报失败，
+    // 别让前端去等一个永远不会变的版本号。
+    if (runningImageId) {
+        const after = await dockerApi("GET", `/containers/${name}/json`).catch(() => null);
+        if (after && after.status < 300) {
+            const afterImageId = (JSON.parse(after.body) as { Image?: string }).Image || "";
+            if (afterImageId && afterImageId === runningImageId) {
+                throw new Error(
+                    "容器重建后仍在跑旧镜像（compose 没有换成新镜像）。站点仍在服务，" +
+                        "请到宿主机 compose 目录执行 docker compose pull && docker compose up -d --force-recreate。"
+                );
+            }
+        }
+    }
 }
 
 /**

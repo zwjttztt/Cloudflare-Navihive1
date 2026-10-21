@@ -98,8 +98,24 @@ export default function VersionUpgradeSection({ version }: { version?: string })
     const [upgradeOutcome, setUpgradeOutcome] = useState<
         { kind: "done" } | { kind: "failed"; message: string } | null
     >(null);
+    /**
+     * 「升级中」已经等了多少秒。
+     * 2026-10-21 用户报「点更新又长时间没反应」—— 服务端那边现在会在几秒内给出结论
+     * （见 dockerUpgradeSelf 的镜像 ID 比对），但只要还在跑，这一行就该**看得出在动**，
+     * 否则跟卡死没区别。纯展示，不参与任何判断。
+     */
+    const [waitedSec, setWaitedSec] = useState(0);
     /** 按钮 + 结果行：结果 Alert 会把它撑高，出结果时滚进可视区（同 BackupDialog 的 webdavActionsRef 模式） */
     const rowRef = useRef<HTMLDivElement>(null);
+
+    useEffect(() => {
+        if (copyState !== "upgrading" || upgradeOutcome !== null) {
+            setWaitedSec(0);
+            return;
+        }
+        const timer = setInterval(() => setWaitedSec(n => n + 1), 1000);
+        return () => clearInterval(timer);
+    }, [copyState, upgradeOutcome]);
 
     // 版本号可注入（单测没有 vite define，appVersion() 是空串）；
     // 不传时走真实来源，与右下角 BuildBadge 同源。
@@ -146,7 +162,7 @@ export default function VersionUpgradeSection({ version }: { version?: string })
             message:
                 result.kind === "failed"
                     ? result.message
-                    : "等了 2 分钟没检测到新版本，可能还在拉取；稍后刷新再看，或到服务器执行 docker compose up -d --force-recreate。",
+                    : "等了 2 分钟没检测到新版本：镜像可能还在构建（仓库版本比镜像早几分钟）。稍后刷新再看，或到服务器 compose 目录执行 docker compose pull && docker compose up -d --force-recreate。",
         });
     };
 
@@ -288,7 +304,8 @@ export default function VersionUpgradeSection({ version }: { version?: string })
                         复制回落有「已复制 / 复制失败」两态 */}
                     {copyState === "upgrading" && upgradeOutcome === null && (
                         <Alert severity='info' data-update-running='1' sx={{ py: 0, flex: 1, minWidth: 220 }}>
-                            升级中：正在拉取镜像并重建容器，约 10–30 秒后页面会自动刷新。请勿关闭。
+                            升级中：正在拉取镜像并重建容器（已等 {waitedSec} 秒，最多 2 分钟会给结论）。
+                            页面自动刷新前请勿关闭。
                         </Alert>
                     )}
                     {upgradeOutcome?.kind === "done" && (
