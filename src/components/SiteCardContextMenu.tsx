@@ -19,7 +19,7 @@ import StarIcon from "@mui/icons-material/Star";
 import StarBorderIcon from "@mui/icons-material/StarBorder";
 import LinkIcon from "@mui/icons-material/Link";
 import LinkOffIcon from "@mui/icons-material/LinkOff";
-import PersonIcon from "@mui/icons-material/Person";
+import PersonIcon from "@mui/icons-material/PersonOutlined";
 import KeyIcon from "@mui/icons-material/Key";
 import NotesIcon from "@mui/icons-material/Notes";
 import EditIcon from "@mui/icons-material/Edit";

@@ -21,6 +21,12 @@ import path from "node:path";
 import handler from "../worker/index";
 import { runScheduledTasks } from "../worker/cron";
 import { makeSqliteD1 } from "./sqlite-d1";
+import {
+    slowQueryEnabled,
+    slowQuerySnapshot,
+    slowQuerySummary,
+    slowQueryThresholdMs,
+} from "./slowQuery";
 import { makeFileKv } from "./file-kv";
 import { parseHeaderRules, serveStatic, type HeaderRule } from "./static";
 import { isPublicHost, normalizeRemoteAddress } from "./net";
@@ -865,6 +871,34 @@ const server = createServer((req, res) => {
                         error: upgradeStatus.error,
                         startedAt: upgradeStatus.startedAt,
                         finishedAt: upgradeStatus.finishedAt,
+                    })
+                );
+                return;
+            }
+
+            // GET /api/system/slow-queries：慢查询清单（owner only，2026-10-22 C5）。
+            // 日志里只有「哪个接口慢」，这里补上「哪条 SQL 慢、慢多少次、最近一次什么时候」。
+            // ⚠️ 只有 owner 能看：SQL 摘要里带着表名与查询形态，属于内部结构。
+            // ⚠️ 只回摘要（字面量与绑定值都不落盘），所以没有数据泄露面。
+            if (pathname === "/api/system/slow-queries" && method === "GET") {
+                const meRes = await handler.fetch(
+                    new Request("http://internal/api/auth/me", { method: "GET", headers: toHeaders(req) }),
+                    serverEnv
+                );
+                const me = meRes.ok ? ((await meRes.json()) as { role?: string }) : null;
+                if (!me || me.role !== "owner") {
+                    res.writeHead(403, { "Content-Type": "application/json; charset=utf-8" });
+                    res.end(JSON.stringify({ ok: false, error: "只有站点所有者可以查看慢查询" }));
+                    return;
+                }
+                res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+                res.end(
+                    JSON.stringify({
+                        ok: true,
+                        thresholdMs: slowQueryThresholdMs(),
+                        enabled: slowQueryEnabled(),
+                        recent: slowQuerySnapshot(50),
+                        summary: slowQuerySummary(10),
                     })
                 );
                 return;

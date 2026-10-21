@@ -7,6 +7,7 @@ import StarBorderIcon from "@mui/icons-material/StarBorder";
 import ClearIcon from "@mui/icons-material/Clear";
 import TuneIcon from "@mui/icons-material/Tune";
 import BrokenImageIcon from "@mui/icons-material/BrokenImage";
+import { buildTagTree, flattenTagTree, hasHierarchy, matchesAnySelected } from "../utils/tagTree";
 
 interface TagBarProps {
     /** 全部用过的标签名 */
@@ -85,21 +86,32 @@ export default function TagBar({
                 </Tooltip>
             )}
 
-            {tags.map(tag => {
-                const active = activeTags.includes(tag);
-                return (
-                    <Chip
-                        key={tag}
-                        label={tag}
-                        size='small'
-                        variant={active ? "filled" : "outlined"}
-                        color={active ? "primary" : "default"}
-                        onClick={() => onToggleTag(tag)}
-                        className='nav-tag-filter'
-                        data-active={active ? "true" : "false"}
-                    />
-                );
-            })}
+            {/* B4 标签层级（2026-10-22）：有层级时按树排版 —— 父级 chip 后面跟着
+                缩进的子级；点父级即筛它和它下面全部子标签（语义在 utils/tagTree）。
+                全是一级标签时树形排版纯属添乱，所以走原来的平铺。 */}
+            {(hasHierarchy(tags) ? flattenTagTree(buildTagTree(tags)) : tags.map(t => ({ path: t, label: t, depth: 1, children: [] }))).map(
+                node => {
+                    // ⚠️ 选中判定也走层级：父级被选中时，子级 chip 一同高亮，
+                    //    否则会出现「筛出来了但 chip 没亮」的错位感。
+                    const active = activeTags.includes(node.path) || matchesAnySelected(node.path, activeTags);
+                    return (
+                        <Chip
+                            key={node.path}
+                            label={node.label}
+                            size='small'
+                            variant={active ? "filled" : "outlined"}
+                            color={active ? "primary" : "default"}
+                            onClick={() => onToggleTag(node.path)}
+                            className='nav-tag-filter'
+                            data-tag-path={node.path}
+                            data-tag-depth={String(node.depth)}
+                            data-active={active ? "true" : "false"}
+                            title={node.path}
+                            sx={node.depth > 1 ? { ml: `${(node.depth - 1) * 12}px` } : undefined}
+                        />
+                    );
+                }
+            )}
 
             {hasFilter && (
                 <Tooltip title='清除筛选'>

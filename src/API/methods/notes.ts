@@ -41,6 +41,7 @@ import {
 } from "../../utils/ftsQuery";
 import { hashPassword, verifyPassword } from "../crypto";
 import { NoteConflictError } from "../../utils/noteConflict";
+import { validateFolderMove } from "../../utils/folderTree";
 
 export interface NotesApi {
     getNoteShare(id: number): Promise<NoteShare | null>;
@@ -268,20 +269,20 @@ function relabelAttachmentLink(content: string, id: string, filename: string): s
  */
 const REVISION_KEEP_PER_NOTE = 60;
 
+// 3.3 同源化（2026-10-22）：环路判定本身搬到 utils/folderTree，与 mock 侧共用同一份
+// —— 这里只剩「怎么查父 id」（要带账号 scope，越权访问按「查不到」处理，不泄露存在性）。
 async function validateFolderParent(api: NavigationAPI, parent: number | null, moving?: number): Promise<void> {
-    if (parent === null) return;
-    if (!Number.isInteger(parent) || parent <= 0) throw new Error("文件夹 ID 无效");
-    const seen = new Set<number>(moving === undefined ? [] : [moving]);
-    let cursor: number | null = parent;
-    while (cursor !== null) {
-        if (seen.has(cursor)) throw new Error("文件夹不能移入自身或子文件夹");
-        seen.add(cursor);
-        const row: { parent_id: number | null } | null = await api.db
-            .prepare(`SELECT parent_id FROM note_folder WHERE id = ?${api.scopeSql(true)}`)
-            .bind(...api.scopeParams([cursor])).first<{ parent_id: number | null }>();
-        if (!row) throw new Error("目标文件夹不存在或不属于当前账号");
-        cursor = row.parent_id ?? null;
-    }
+    await validateFolderMove({
+        parent,
+        moving,
+        lookup: async id => {
+            const row: { parent_id: number | null } | null = await api.db
+                .prepare(`SELECT parent_id FROM note_folder WHERE id = ?${api.scopeSql(true)}`)
+                .bind(...api.scopeParams([id])).first<{ parent_id: number | null }>();
+            // ⚠️ 查不到时返回 undefined（= 这一级不存在），null 是「存在但它是根」
+            return row ? (row.parent_id ?? null) : undefined;
+        },
+    });
 }
 
 function inlineTagStatements(api: NavigationAPI, noteKey: number | string, content: string): D1PreparedStatement[] {

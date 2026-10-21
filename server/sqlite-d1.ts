@@ -24,6 +24,29 @@
 
 import { DatabaseSync, type SQLInputValue, type StatementSync } from "node:sqlite";
 import type { D1Database, D1PreparedStatement, D1Result } from "../src/API/schema";
+import { recordSlowQuery, slowQueryEnabled, slowQueryThresholdMs } from "./slowQuery";
+
+/**
+ * 慢查询计时（C5，2026-10-22）。
+ *
+ * ⚠️ 为什么挂在这里而不是散在各条 SQL 上：本文件是全库唯一的执行出口
+ * （first / run / all / batch→runSync 全从这儿走），挂一次覆盖所有语句，
+ * 以后新加接口自动生效；散在业务代码里则每加一个查询就可能漏一个。
+ *
+ * ⚠️ 为什么在**同步**路径上计时：node:sqlite 是同步 API，performance.now()
+ *    包住的就是真实执行时间，不含事件循环等待 —— 这正是要量的东西
+ *    （异步等待属于请求排队，不是「这条 SQL 慢」）。
+ *
+ * ⚠️ 绑定值一个都不传给 recordSlowQuery：慢查询日志是要留存的，里面出现
+ *    笔记正文 / 邮箱就是数据事故。只给参数个数。
+ *
+ * 关掉打点时（阈值 ≤ 0）这里只剩一次布尔判断，不给热路径加负担。
+ */
+function noteIfSlow(sql: string, params: number, rows: number, ms: number): void {
+    if (!slowQueryEnabled()) return;
+    if (ms < slowQueryThresholdMs()) return;
+    recordSlowQuery({ sql, ms, rows, params });
+}
 
 /** D1PreparedStatement + 一个同步执行入口。batch 专用，理由见 batch() 注释 */
 interface SyncPreparedStatement extends D1PreparedStatement {
@@ -139,8 +162,10 @@ export function makeSqliteD1(file: string, options: SqliteD1Options = {}): Sqlit
         return { changes, rows_written: changes, last_row_id: Number(rowidStmt.get()?.last_row_id ?? 0) };
     };
 
-    const firstSync = <T>(stmt: StatementSync, bound: SQLInputValue[], column?: string): T | null => {
+    const firstSync = <T>(sql: string, stmt: StatementSync, bound: SQLInputValue[], column?: string): T | null => {
+        const started = slowQueryEnabled() ? performance.now() : 0;
         const row = stmt.get(...bound) as Record<string, unknown> | undefined;
+        noteIfSlow(sql, bound.length, row === undefined ? 0 : 1, performance.now() - started);
         if (row === undefined) return null;
         // D1 的 first("列名") 返回该列的值而不是整行。仓库里没人传列名（全仓 .first( 零参数），
         // 但对齐形状，免得以后踩空。
@@ -159,15 +184,18 @@ export function makeSqliteD1(file: string, options: SqliteD1Options = {}): Sqlit
         //   - data.ts 的 queryBootstrap 把「分组 + 站点」两条 SELECT 塞进 batch 读 .results，
         //     走 run() 的话首页就是空的（且一声不响）。
         // 其余（不带 RETURNING 的 INSERT/UPDATE/DELETE）走 run()，meta 现成，省两次 helper 查询。
+        const started = slowQueryEnabled() ? performance.now() : 0;
         if (RETURNING_RE.test(sql) || RETURNS_ROWS_RE.test(sql)) {
             // 会返回行：all() 拿行，meta 用连接级的 changes()/last_insert_rowid() 补。
             const rows = (stmt.all(...bound) as T[]).map(plainRow);
+            noteIfSlow(sql, bound.length, rows.length, performance.now() - started);
             // ⚠️ changes 不能拿 rows.length 顶替：正则可能被字符串字面量里的 "returning" 骗到，
             // 那时 all() 返回空数组但语句确实写了行。changes() 是连接级的，反映的正是刚才那条语句。
             return { results: rows, success: true, meta: readMeta() };
         }
         // 普通写语句：run() 一把梭，meta 现成，省掉两次 helper 查询。
         const r = stmt.run(...bound);
+        noteIfSlow(sql, bound.length, Number(r.changes), performance.now() - started);
         return {
             results: [],
             success: true,
@@ -183,7 +211,7 @@ export function makeSqliteD1(file: string, options: SqliteD1Options = {}): Sqlit
                 return prepared;
             },
             first<T = unknown>(column?: string) {
-                return asPromise(() => firstSync<T>(stmt, bound, column));
+                return asPromise(() => firstSync<T>(sql, stmt, bound, column));
             },
             run<T = unknown>() {
                 return asPromise(() => runSync<T>(sql, stmt, bound));
@@ -195,7 +223,9 @@ export function makeSqliteD1(file: string, options: SqliteD1Options = {}): Sqlit
                 return asPromise(() => {
                     // ⚠️ node:sqlite 回的行是 null-prototype 对象（plainRow 里说明了），
                     // 另外无 RETURNING 的写语句走 all() 返回 [] 而不是抛错，与 D1 一致。
+                    const started = slowQueryEnabled() ? performance.now() : 0;
                     const rows = (stmt.all(...bound) as T[]).map(plainRow);
+                    noteIfSlow(sql, bound.length, rows.length, performance.now() - started);
                     return { results: rows, success: true as const };
                 });
             },
@@ -249,6 +279,9 @@ export function makeSqliteD1(file: string, options: SqliteD1Options = {}): Sqlit
             // node:sqlite 的 exec 支持多条语句（migration.ts 的批量建表回退路径靠这个），
             // 语句里的 SELECT 结果会被丢弃、不抛错。
             db.exec(sql);
+            // 建表 / 加索引这类 DDL 走 exec，慢起来同样会卡住启动，一并打点
+            // （rows 记 0：exec 不回行，行数这个概念对它没意义）
+            noteIfSlow(sql, 0, 0, performance.now() - started);
             // D1 的 exec 回 { count, duration }。count 在 D1 文档里没定义清楚（执行的语句条数），
             // 仓库里 10 处调用全当 void 用，这里给 0 + 真实耗时，形状对齐即可。
             return { success: true, count: 0, duration: performance.now() - started };

@@ -19,6 +19,7 @@ import {
 import { NavigationClient } from "../API/client";
 import type { OpsStats } from "../API/methods/audit";
 import { actionLabel } from "../utils/auditActionLabels";
+import { dailySummary, deltaText, shareOf, weekOverWeek } from "../utils/statsInsights";
 
 /** UTC 时间戳 -> YYYY-MM-DD（健康快照里的 at 是毫秒时间戳，不用 Intl，CI small-icu 也稳） */
 function dayOf(at: number): string {
@@ -136,6 +137,15 @@ export default function StatsPanel({ client }: { client: NavigationClient }) {
     const actionMax = Math.max(1, ...(stats?.auditTopActions.map(a => a.count) ?? [1]));
     const shareMax = Math.max(1, ...(stats?.shareTop.map(s => s.views) ?? [1]));
 
+    // B9 看板增强（2026-10-22）：下面三个视角全部由已有数据派生，不动服务端接口。
+    // 原始计数只回答「有多少」，回答不了「是变好还是变差」——
+    // 环比看趋势、占比看结构、活跃度看使用强度，三者互补。
+    const wow = stats ? weekOverWeek(stats.auditDaily) : null;
+    const daily = stats ? dailySummary(stats.auditDaily) : null;
+    const actionShares = stats
+        ? shareOf(stats.auditTopActions.map(a => ({ key: a.action, count: a.count })))
+        : [];
+
     return (
         <Box aria-label='运营看板'>
             {loading && (
@@ -170,10 +180,52 @@ export default function StatsPanel({ client }: { client: NavigationClient }) {
                         </Typography>
                     )}
 
-                    <SectionTitle>高频动作</SectionTitle>
+                    {/* 趋势与强度：柱子给的是「每天多少」，这里补「整体往哪走」 */}
+                    <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1, mt: 1 }}>
+                        {wow && (
+                            <Chip
+                                size='small'
+                                variant='outlined'
+                                label={`近 7 天 ${wow.last7} 次 · ${deltaText(wow)}`}
+                                color={
+                                    wow.deltaPct === null || wow.deltaPct === 0
+                                        ? "default"
+                                        : wow.deltaPct > 0
+                                          ? "success"
+                                          : "warning"
+                                }
+                            />
+                        )}
+                        {daily && (
+                            <>
+                                <Chip size='small' variant='outlined' label={`活跃 ${daily.activeDays} 天`} />
+                                <Chip size='small' variant='outlined' label={`日均 ${daily.avgOnActiveDays} 次`} />
+                                {daily.peak && (
+                                    <Chip
+                                        size='small'
+                                        variant='outlined'
+                                        label={`峰值 ${daily.peak.count} 次 · ${daily.peak.day}`}
+                                    />
+                                )}
+                            </>
+                        )}
+                    </Box>
+                    {wow && !wow.enough && (
+                        <Typography variant='caption' color='text.secondary'>
+                            数据不足 14 天，环比只作参考
+                        </Typography>
+                    )}
+
+                    <SectionTitle>高频动作（右侧为该动作占比）</SectionTitle>
                     {stats.auditTopActions.length > 0 ? (
                         stats.auditTopActions.map(a => (
-                            <BarRow key={a.action} label={actionLabel(a.action)} value={a.count} max={actionMax} />
+                            <BarRow
+                                key={a.action}
+                                label={actionLabel(a.action)}
+                                value={a.count}
+                                max={actionMax}
+                                hint={`${a.count} · ${actionShares.find(x => x.key === a.action)?.pct ?? 0}%`}
+                            />
                         ))
                     ) : (
                         <Typography variant='body2' color='text.secondary'>

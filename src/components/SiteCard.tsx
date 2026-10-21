@@ -33,7 +33,7 @@ import StarBorderIcon from "@mui/icons-material/StarBorder";
 import CheckCircleIcon from "@mui/icons-material/CheckCircle";
 import RadioButtonUncheckedIcon from "@mui/icons-material/RadioButtonUnchecked";
 import DragIndicatorIcon from "@mui/icons-material/DragIndicator";
-import PersonIcon from "@mui/icons-material/Person";
+import PersonIcon from "@mui/icons-material/PersonOutlined";
 import KeyIcon from "@mui/icons-material/Key";
 import { useAppConfig } from "../context/appConfigStore";
 import { useNotify } from "../context/NotifyContext";

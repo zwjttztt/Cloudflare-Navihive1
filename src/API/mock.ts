@@ -33,6 +33,7 @@ import {
     type IdempotencyRecord,
 } from "./methods/idempotency";
 import type { OpsStats } from "./methods/audit";
+import { validateFolderMove } from "../utils/folderTree";
 
 /** 演示模式的幂等记录：scope|opId -> 记录 */
 const mockIdempotency = new Map<
@@ -236,16 +237,23 @@ type MockAuditEntry = {
 const mockAuditLog: MockAuditEntry[] = [];
 
 // 模拟API实现
-function validateMockParent(parent: number | null, moving?: number): void {
-    const seen = new Set<number>(moving === undefined ? [] : [moving]);
-    let cursor = parent;
-    while (cursor !== null) {
-        if (!Number.isInteger(cursor) || cursor <= 0 || seen.has(cursor)) throw new Error("文件夹不能移入自身或子文件夹");
-        seen.add(cursor);
-        const folder = mockFolders.find(f => f.id === cursor);
-        if (!folder) throw new Error("目标文件夹不存在");
-        cursor = folder.parent_id ?? null;
-    }
+// 3.3 同源化（2026-10-22）：这条规则原先在这里有一份自己的实现，与
+// src/API/methods/notes.ts 那份**文案都不一样**（这里把「ID 无效」并进循环里抛，
+// 那边是单独一条）。现在两侧都调 utils/folderTree 的同一份 ——
+// 规则只有一条，改的时候不会只改一半。
+async function validateMockParent(parent: number | null, moving?: number): Promise<void> {
+    await validateFolderMove({
+        parent,
+        moving,
+        lookup: id => {
+            const folder = mockFolders.find(f => f.id === id);
+            // ⚠️ 不能写 `folder?.parent_id ?? undefined` —— 那会把「存在但它是根」
+            //    （parent_id 是 null）也变成 undefined，于是把根下的文件夹判成不存在。
+            return folder ? (folder.parent_id ?? null) : undefined;
+        },
+        // mock 没有账号概念，父级不存在的说法不带「不属于当前账号」
+        notFoundMessage: "目标文件夹不存在",
+    });
 }
 
 async function syncMockInlineTags(note: Note): Promise<void> {
@@ -469,7 +477,7 @@ export class MockNavigationClient {
             order_num: Math.max(0, ...mockNotes.map(n => n.order_num || 0)) + 1,
             site_id: draft.site_id ?? null,
         };
-        validateMockParent(draft.folder_id ?? null);
+        await validateMockParent(draft.folder_id ?? null);
         note.folder_id = draft.folder_id ?? null;
         mockNotes.push(note);
         await syncMockInlineTags(note);
@@ -480,7 +488,7 @@ export class MockNavigationClient {
         await new Promise(resolve => setTimeout(resolve, 200));
         const note = mockNotes.find(n => n.id === id);
         if (!note) return null;
-        if (patch.folder_id !== undefined) validateMockParent(patch.folder_id);
+        if (patch.folder_id !== undefined) await validateMockParent(patch.folder_id);
         // 版本历史：改动前先存一份（与后端 updateNote 同一时机与判据）
         if (patch.content !== undefined && patch.content !== note.content) {
             await this.pushRevision(id, note.title, note.content);
@@ -733,7 +741,7 @@ export class MockNavigationClient {
 
     async createFolder(name: string, parent_id: number | null = null): Promise<NoteFolder> {
         await new Promise(resolve => setTimeout(resolve, 120));
-        validateMockParent(parent_id);
+        await validateMockParent(parent_id);
         const folder: NoteFolder = {
             id: mockFolderSeq++,
             name,
@@ -749,7 +757,7 @@ export class MockNavigationClient {
         await new Promise(resolve => setTimeout(resolve, 120));
         const folder = mockFolders.find(f => f.id === id);
         if (!folder) return null;
-        if (patch.parent_id !== undefined) validateMockParent(patch.parent_id, id);
+        if (patch.parent_id !== undefined) await validateMockParent(patch.parent_id, id);
         Object.assign(folder, patch);
         return folder;
     }

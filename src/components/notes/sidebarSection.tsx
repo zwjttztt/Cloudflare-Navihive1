@@ -14,7 +14,7 @@ import MenuItem from "@mui/material/MenuItem";
 import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 import AddIcon from "@mui/icons-material/Add";
-import NoteAddIcon from "@mui/icons-material/NoteAdd";
+import NoteAddIcon from "@mui/icons-material/NoteAddOutlined";
 import MoreVertIcon from "@mui/icons-material/MoreVert";
 import { isFolderColor, FOLDER_ICONS } from "../../utils/folderAppearance";
 import type { Note, NoteTag } from "../../API/http";

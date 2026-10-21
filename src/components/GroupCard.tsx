@@ -4,7 +4,6 @@ import ChunkBoundary from "./ChunkBoundary";
 import SiteCard from "./SiteCard";
 import { GroupWithSites } from "../types";
 import { densityMetrics } from "../utils/densityMetrics";
-import { toneForName } from "../utils/siteAvatar";
 // 「编辑分组」只有在有权限的人点开时才用得到，懒加载。
 // ⚠️ App.tsx 里那个「新建分组」用的是同一个组件，那边也是 lazy —— 改回静态 import
 //    会让它重新进首屏包，tests/lazyBoundary.test.ts 会红。
@@ -603,11 +602,6 @@ const GroupCard: React.FC<GroupCardProps> = ({
         onSaveSiteOrder(group.id!, sites);
     };
 
-    /** A3 分组横幅的取色：分组自己的强调色优先，没设就按组名哈希（同名同色） */
-    const bannerTone = accentColor || toneForName(group.name).strong;
-    /** 横幅右下角那个水印字：组名首字（中文取第一个字，不做 toUpperCase） */
-    const bannerInitial = (group.name || "").trim().charAt(0) || "?";
-
     // 正常模式或站点排序模式下渲染完整的分组卡片
     return (
         <Paper
@@ -639,48 +633,6 @@ const GroupCard: React.FC<GroupCardProps> = ({
                 },
             }}
         >
-            {/* A3 分组横幅（2026-10-22）：一条按分组取色的渐变带 + 首字水印。
-                「分组长得不一样」这件事以前只有左角一根 3px 色条，扫过去一整屏
-                分组都一个样。这里给的是**纯 CSS 装饰** —— 不存任何数据、
-                不改任何接口：颜色优先用分组自己的强调色，没设就按组名哈希
-                （与站点图标占位块同一套 toneForName），所以同名同色、稳定可辨。
-                将来真想换真封面图，把这一块换成 <img> 就行，布局不用动。
-                ⚠️ aria-hidden + 首字 opacity 0.4：它是装饰，读屏不该念
-                （对比度审计也按 opacity<0.5 跳过装饰文字，不会误报）。 */}
-            <Box
-                data-group-banner='1'
-                aria-hidden='true'
-                sx={{
-                    height: 36,
-                    flexShrink: 0,
-                    // 抵掉 Paper 的 padding，让色带贴满左右上三边（满铺才有「头图」感）
-                    mx: { xs: -2, sm: -3 },
-                    mt: { xs: -2, sm: -3 },
-                    mb: 2,
-                    borderRadius: "var(--radius-lg) var(--radius-lg) 0 0",
-                    // 115deg 斜向：从左上一角淡出到右下，比水平渐变更像一张「图」
-                    background: `linear-gradient(115deg, ${bannerTone}38 0%, ${bannerTone}14 42%, transparent 76%)`,
-                    display: "flex",
-                    alignItems: "center",
-                    px: 2,
-                    overflow: "hidden",
-                    userSelect: "none",
-                }}
-            >
-                <Typography
-                    component='span'
-                    sx={{
-                        fontSize: 22,
-                        fontWeight: 800,
-                        lineHeight: 1,
-                        color: bannerTone,
-                        // 0.4：水印该有的存在感 —— 看得见但不抢标题
-                        opacity: 0.4,
-                    }}
-                >
-                    {bannerInitial}
-                </Typography>
-            </Box>
             <Box
                 className='nav-sticky'
                 sx={{

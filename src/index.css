@@ -33,7 +33,7 @@
     border: 2px solid transparent;
     border-radius: 999px;
     background-clip: content-box;
-    transition: background-color 0.2s ease;
+    transition: background-color var(--dur-base) ease;
 }
 
 *::-webkit-scrollbar-thumb:hover {
@@ -114,12 +114,33 @@
     /* 触控目标下限：移动端所有可点区域不得小于这个值 */
     --touch-min: 44px;
 
-    /* —— 动效（duration / easing）——
-       对齐 inkstone 的 --dur-* / --ease-*：分隔线与工具栏的过渡统一走这里，
-       避免同一个交互在两处写出两套时长。 */
+    /* —— 动效（duration / easing）—
+       A6 动效规范化（2026-10-22）：全站过渡只准用这里的取值，
+       不再在各处写 0.18s / 0.22s / 0.12s 这种「差不多」的数字 ——
+       同一个 hover 在不同组件里差 40ms 看不出来，但**同一个组件里
+       两处差 40ms 就会显得一顿一顿**（例如卡片边框与阴影各走各的）。
+
+       三档时长，按「这个反馈要等多久才显得跟手」分：
+         --dur-fast  130ms  纯视觉反馈：hover 变色、图标点亮。
+                            再长就显得「黏」，再短会看不出是过渡。
+         --dur-base  220ms  默认档：尺寸/位移/阴影这类**能看出东西在动**的。
+         --dur-slow  320ms  大面积或长距离：抽屉、面板展开、整块淡入。
+                            ⚠️ 超过 320ms 就开始「等界面」，别再往上加。
+
+       两条曲线：
+         --ease-out       cubic-bezier(0.22,1,0.36,1)  进场用：起步快、收尾稳
+                          （元素「到位」而不是「冲过去再弹回来」）。
+         --ease-in-out    cubic-bezier(0.4,0,0.2,1)    来回用：展开/收起这种
+                          同一条路要走两遍的，进场出场对称才不别扭。
+
+       ⚠️ 减弱动效：不用在每条 transition 上各写一遍 —— 文件末尾有全局
+          @media (prefers-reduced-motion: reduce) 把 transition-duration
+          压到 0.001ms。用 token 的好处就在这里：将来调档改一处即可。 */
     --dur-fast: 130ms;
     --dur-base: 220ms;
+    --dur-slow: 320ms;
     --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+    --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
 
     /* —— 三栏背景分层（对齐 inkstone 的 --bg-sunken / --bg-base / --bg-editor）——
        inkstone 把三栏画成**三个递进的层次**：导航站最沉、笔记列表居中、
@@ -159,8 +180,11 @@
     --glass-shadow: var(--shadow-2);
     --glass-shadow-hover: var(--shadow-3);
     --glass-blur: var(--blur-md);
+    /* 玻璃面板的边框：单独一档语义 token，因为玻璃压在未知背景上，
+       定界全靠这根线，不能与实色面板共用（实色面板有自己的底色）。见 .dark 里的说明。 */
+    --border-glass: var(--border-subtle);
     --glass-panel-bg: var(--surface-panel);
-    --glass-panel-border: var(--border-subtle);
+    --glass-panel-border: var(--border-glass);
 
     /* 自定义主色（默认即 MUI 亮色主题的 primary） */
     --accent: #1976d2;
@@ -186,6 +210,14 @@
     --border-subtle: rgba(255, 255, 255, 0.1);
     --border-default: rgba(255, 255, 255, 0.12);
     --card-border: var(--border-hairline);
+
+    /* A7 暗色玻璃边界（2026-10-22）：玻璃面板压在**未知**的背景上（可能是深色墙纸、
+       也可能是亮色网页），面板本身又只有 34% 不透明 —— 「面板到哪儿为止」全靠那一根
+       边框说清楚，而暗色下 0.10 的白几乎等于没有：边界糊在背景里，圆角处还会透出一圈
+       更暗的采样边（backdrop-filter 采样补不齐）。
+       ⚠️ 只改语义 token --border-glass 的取值，**不直接覆盖 --glass-panel-border** ——
+       那条别名有两个来源（:root 与 .dark）就会打架，tests/designTokens.test.ts 钉着。 */
+    --border-glass: rgba(255, 255, 255, 0.16);
 
     --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.3);
     --shadow-2: 0 4px 16px rgba(0, 0, 0, 0.42);
@@ -328,7 +360,7 @@ body {
     border-radius: 10px;
     box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
     transform: translateY(-220%);
-    transition: transform 0.18s ease;
+    transition: transform var(--dur-base) ease;
 }
 
 html.dark .nav-skip-link {
@@ -436,7 +468,7 @@ html.dark .nav-skip-link {
    延迟期间先保持隐藏（避免闪一下），动画结束回到基础样式，
    这样悬停的抬升 transform 才不会被动画的 fill 状态压住 */
 .nav-card-in {
-    animation: navCardIn 0.42s cubic-bezier(0.22, 0.61, 0.36, 1) backwards;
+    animation: navCardIn 0.42s var(--ease-out) backwards;
     /* 隔离每张卡片的布局：某张卡片内部变化不会把整页拖进重排。
        这里刻意不加 paint —— 快捷条会探出卡片边界，加了会被裁掉。 */
     contain: layout style;
@@ -451,7 +483,7 @@ html.dark .nav-skip-link {
 
 /* 悬停抬升放在外层容器上：卡片本体 + 右上角设置按钮 + 右下角快捷条会一起动 */
 .nav-card-in[data-hover-lift] {
-    transition: transform 0.22s cubic-bezier(0.22, 0.61, 0.36, 1);
+    transition: transform var(--dur-base) var(--ease-out);
 }
 .nav-card-in[data-hover-lift]:hover {
     transform: var(--nav-hover-lift, translateY(-6px));
@@ -480,7 +512,7 @@ mark.nav-hl {
 .nav-card-actions {
     opacity: 0;
     transform: translateY(4px);
-    transition: opacity 0.18s ease, transform 0.18s ease;
+    transition: opacity var(--dur-base) ease, transform var(--dur-base) ease;
     pointer-events: none;
 }
 
@@ -512,7 +544,7 @@ mark.nav-hl {
 .nav-group-tools {
     opacity: 0;
     pointer-events: none;
-    transition: opacity 0.18s ease;
+    transition: opacity var(--dur-base) ease;
 }
 .nav-group-panel:hover .nav-group-tools,
 .nav-group-panel:focus-within .nav-group-tools,
@@ -578,7 +610,7 @@ html.nav-touch .nav-group-tools {
 /* 分组强调色：有自定义色时用自定义，没有则按分组 id 自动分配 */
 .nav-group-accent-bar {
     background: var(--group-accent);
-    transition: background-color 0.22s ease;
+    transition: background-color var(--dur-base) ease;
 }
 
 /* 失效标记：原来只是个灰点，看不出是「坏了」，改成带文字的小标签 */
@@ -608,8 +640,8 @@ html.nav-touch .nav-group-tools {
 /* 滚动时头部收缩：标题变小、间距收紧 */
 .nav-header-compact {
     transition:
-        padding 0.25s ease,
-        background 0.25s ease;
+        padding var(--dur-base) ease,
+        background var(--dur-base) ease;
 }
 
 /* 字号档位：只缩放正文，不影响图标尺寸 */
@@ -688,7 +720,7 @@ html.nav-touch .nav-group-tools {
         var(--accent)
     );
     box-shadow: 0 0 10px color-mix(in srgb, var(--accent) 55%, transparent);
-    transition: width 0.12s linear, opacity 0.25s ease;
+    transition: width var(--dur-fast) linear, opacity var(--dur-base) ease;
 }
 .nav-scroll-progress[data-idle="true"] > span {
     opacity: 0;
@@ -735,7 +767,7 @@ html.nav-touch .nav-group-tools {
     font-size: 12px;
     padding: 2px 9px;
     border-radius: 999px;
-    transition: background-color 0.18s ease, border-color 0.18s ease;
+    transition: background-color var(--dur-base) ease, border-color var(--dur-base) ease;
 }
 .nav-history-chip:hover {
     background: color-mix(in srgb, var(--accent) 16%, transparent);
@@ -781,8 +813,8 @@ html.nav-touch .nav-group-tools {
 /* 统一的按压反馈：按钮、图标按钮被按下时缩一点点，手感更实。
    卡片本体（CardActionArea）排除在外 —— 点开网页时整张卡缩一下会很突兀 */
 .MuiButtonBase-root:not(.MuiCardActionArea-root) {
-    transition: transform 0.12s cubic-bezier(0.22, 0.61, 0.36, 1),
-        background-color 0.2s ease, color 0.2s ease;
+    transition: transform var(--dur-fast) var(--ease-out),
+        background-color var(--dur-base) ease, color var(--dur-base) ease;
 }
 .MuiButtonBase-root:not(.MuiCardActionArea-root):active:not(:disabled) {
     transform: scale(0.94);
@@ -830,7 +862,7 @@ html.nav-touch .nav-group-tools {
    而且动画状态还会压住 :hover 的 transform。backwards 播完即归还样式控制权。
    另外 JS 侧在 animationend 里会把 class 摘掉，双保险。 */
 .nav-group-panel.nav-reveal-in {
-    animation: navReveal 0.5s cubic-bezier(0.22, 0.61, 0.36, 1) backwards;
+    animation: navReveal 0.5s var(--ease-out) backwards;
 }
 
 /* 星标按钮：加星后常显，点下去有一下「弹」的反馈 */
@@ -903,7 +935,7 @@ html.nav-touch .nav-star-btn[data-starred="false"] {
 
 /* 标签筛选栏：chip 之间留一点呼吸，选中态用主色 */
 .nav-tag-bar .MuiChip-root {
-    transition: background-color 0.18s ease, color 0.18s ease, transform 0.18s ease;
+    transition: background-color var(--dur-base) ease, color var(--dur-base) ease, transform var(--dur-base) ease;
 }
 .nav-tag-bar .MuiChip-root:active {
     transform: scale(0.94);
@@ -922,7 +954,7 @@ html.nav-touch .nav-star-btn[data-starred="false"] {
     border-style: dashed;
     border-color: color-mix(in srgb, var(--accent) 45%, transparent);
     color: color-mix(in srgb, var(--accent) 88%, transparent);
-    transition: background-color 0.18s ease, transform 0.18s ease, border-color 0.18s ease;
+    transition: background-color var(--dur-base) ease, transform var(--dur-base) ease, border-color var(--dur-base) ease;
 }
 .nav-tag-suggest.MuiChip-root .MuiChip-label {
     padding-left: 8px;
@@ -957,14 +989,14 @@ html.nav-touch .nav-star-btn[data-starred="false"] {
 
 /* 标签管理弹窗：一行一个标签，右侧是删除按钮 */
 .nav-tag-manager-row {
-    transition: background-color 0.18s ease, border-color 0.18s ease;
+    transition: background-color var(--dur-base) ease, border-color var(--dur-base) ease;
 }
 .nav-tag-manager-row:hover {
     border-color: color-mix(in srgb, var(--accent) 45%, transparent);
 }
 .nav-tag-manager-row .nav-tag-manager-del {
     opacity: 0.7;
-    transition: opacity 0.18s ease, color 0.18s ease;
+    transition: opacity var(--dur-base) ease, color var(--dur-base) ease;
 }
 .nav-tag-manager-row:hover .nav-tag-manager-del,
 .nav-tag-manager-row .nav-tag-manager-del:focus-visible {
@@ -1010,12 +1042,12 @@ html.nav-touch .nav-star-btn[data-starred="false"] {
 /* 同理用 backwards：批量条本身也是毛玻璃，动画一直挂着会一直占一个合成层。
    这里安全，因为条子自己的 sx 已经写了 transform: translateX(-50%) 来居中。 */
 .nav-bulk-bar {
-    animation: navBulkIn 0.28s cubic-bezier(0.22, 0.61, 0.36, 1) backwards;
+    animation: navBulkIn 0.28s var(--ease-out) backwards;
 }
 
 /* 左侧分组栏：宽度变化走过渡，收起后是一根只留圆点的窄条 */
 .nav-group-rail {
-    transition: width 0.22s ease, padding 0.22s ease;
+    transition: width var(--dur-base) ease, padding var(--dur-base) ease;
 }
 .nav-group-rail[data-collapsed="true"] {
     width: 34px;
@@ -1023,14 +1055,14 @@ html.nav-touch .nav-star-btn[data-starred="false"] {
 /* 可见圆点是 .nav-rail-dot 的 ::before（按钮本体 24×24 只是触控热区），
    缩放/变色都发生在伪元素上，所以动效也要挂到伪元素才生效 */
 .nav-rail-dot::before {
-    transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1), background-color 0.2s ease,
-        opacity 0.2s ease;
+    transition: transform var(--dur-base) cubic-bezier(0.34, 1.56, 0.64, 1), background-color var(--dur-base) ease,
+        opacity var(--dur-base) ease;
 }
 
 /* 卡片图标悬停微动效：轻轻上浮 + 放大，给静态页面一点反馈 */
 .nav-card-icon {
-    transition: transform 0.22s cubic-bezier(0.22, 0.61, 0.36, 1),
-        filter 0.22s ease;
+    transition: transform var(--dur-base) var(--ease-out),
+        filter var(--dur-base) ease;
 }
 .nav-card-in:hover .nav-card-icon {
     transform: translateY(-2px) scale(1.07);
@@ -1228,29 +1260,38 @@ html.nav-touch .nav-star-btn[data-starred="false"] {
    用 opacity 而不是改颜色 —— 颜色在亮/暗两种主题下都要重新挑，透明度不用。 */
 .cm-content .cm-line.cm-focus-dimmed {
     opacity: 0.38;
-    transition: opacity 120ms ease;
+    transition: opacity var(--dur-fast) ease;
 }
 
-/* 编辑区的光标颜色与鼠标指针（2026-10-21 用户报「鼠标在第八行里是白的、外面是蓝的，
-   有时候干脆看不见」）。
-   ⚠️ 根因是 `caret-color` 可继承、而 `currentColor` 是在**使用它的那个元素**上解析的：
-   编辑器装了 markdown 语法高亮，光标一旦落进被高亮成蓝色的链接/URL token，光标自己
-   也变成那个 token 的颜色；落进浅色 token 就发白，白底上等于消失。
-   所以这里把颜色**钉死在编辑器这一层**，不让它跟 token 走；亮/暗两态各一个固定值，
-   与正文同色（亮色近黑、暗色近白），任何 token 配色都影响不到它。
+/* 编辑区的光标颜色与鼠标指针（2026-10-21 首报「第八行里看不见」；2026-10-22 用户
+   复报并点名方案：「灰色渲染块内是浅色、块外是蓝的，把它都变成蓝色显眼一些」）。
+   ⚠️ 根因一：`caret-color` 可继承、而 `currentColor` 是在**使用它的那个元素**上解析的 ——
+   编辑器装了 markdown 语法高亮，光标一旦落进被高亮成浅色的 token 自己也跟着变浅。
+   所以上一版把颜色钉死在编辑器这一层；但钉的是「与正文同色」（亮色近黑），而块外
+   用户看到的是系统指针的蓝色 —— 同一根光标两种颜色，用户判定为不一致。
+   现按用户要求统一钉成**显眼的蓝**（亮色主题 #1a73e8、暗色主题 #6cb2ff），
+   亮暗两态都保证在白底/灰块/暗底上 ≥3:1 可辨。
 
-   ⚠️ 指针那条是同一类问题：CodeMirror 的装饰块与空白区默认回落到**系统箭头**，
-   而那套箭头在白色底上几乎看不见。编辑器内部一律用文本指针，只有真正能点的
-   元素（链接 / 按钮）才是指针 —— 让「这块能不能点」由指针形状说清楚。 */
+   ⚠️ 根因二：鼠标指针本身是系统 I 字，颜色不受页面控制，在浅灰渲染块上发浅。
+   这里给编辑区换一支**自带白描边的蓝色 I 字 SVG 光标**（data URI，无网络请求），
+   整个编辑区（含灰色渲染块内）一律同一支蓝针 —— 「显眼」由白描边保证，
+   亮暗底上都压得住。只在 .cm-editor 内生效，全站其它区域不换指针。
+   ⚠️ cursor 是可继承属性，子元素一律 inherit（不能用 cursor:text 重钉 —— 那会把
+   自定义蓝针打回系统黑针）；只有真正能点的元素（链接/按钮）才是手型。 */
 .cm-editor .cm-content {
-    caret-color: #1f2937 !important;
-    cursor: text;
+    caret-color: #1a73e8 !important;
+    cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'%3E%3Cg fill='none' stroke-linecap='round'%3E%3Cpath d='M8 4h8M12 4v16M8 20h8' stroke='%23ffffff' stroke-width='4.5'/%3E%3Cpath d='M8 4h8M12 4v16M8 20h8' stroke='%231a73e8' stroke-width='2.2'/%3E%3C/g%3E%3C/svg%3E")
+            12 4,
+        text;
 }
 html.dark .cm-editor .cm-content {
-    caret-color: #f4f4f5 !important;
+    caret-color: #6cb2ff !important;
+    cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'%3E%3Cg fill='none' stroke-linecap='round'%3E%3Cpath d='M8 4h8M12 4v16M8 20h8' stroke='%23ffffff' stroke-width='4.5'/%3E%3Cpath d='M8 4h8M12 4v16M8 20h8' stroke='%236cb2ff' stroke-width='2.2'/%3E%3C/g%3E%3C/svg%3E")
+            12 4,
+        text;
 }
 .cm-editor .cm-content * {
-    cursor: text;
+    cursor: inherit;
 }
 .cm-editor .cm-content a,
 .cm-editor .cm-content button,
@@ -1266,7 +1307,7 @@ html.dark .cm-editor .cm-content {
     margin: 2px 0;
     border-radius: var(--radius-xs, 6px);
     cursor: text;
-    transition: box-shadow var(--dur-base, 220ms) var(--ease-out, ease);
+    transition: box-shadow var(--dur-base) var(--ease-out, ease);
 }
 .note-live-block:hover {
     box-shadow: inset 0 0 0 1px var(--card-border, rgba(128, 128, 128, 0.35));

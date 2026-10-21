@@ -29,7 +29,7 @@ import {
 } from "@mui/material";
 import BookmarkAddedIcon from "@mui/icons-material/BookmarkAdded";
 import CloudDownloadIcon from "@mui/icons-material/CloudDownload";
-import DeleteIcon from "@mui/icons-material/Delete";
+import DeleteIcon from "@mui/icons-material/DeleteOutlined";
 import UploadFileIcon from "@mui/icons-material/UploadFile";
 
 export interface RestoreTabProps {

@@ -27,6 +27,7 @@ import {
 } from "../utils/advancedSearch";
 import { buildSearchIndex, matchesPrepared, prepareQuery, siteHaystack } from "../utils/search";
 import { safeOpenSite } from "../utils/safeOpen";
+import { tagMatches } from "../utils/tagTree";
 
 export type UseSiteSearchParams = {
     groups: GroupWithSites[];
@@ -193,7 +194,10 @@ export function useSiteSearch({
             if (deadOnly && !deadLinks[normalizeKey(site.url ?? "")]) return false;
             if (activeTags.length === 0) return true;
             const own = tags[String(site.id)] ?? [];
-            return activeTags.every(tag => own.includes(tag));
+            // B4 标签层级（2026-10-22）：选中项之间仍是「且」，但**每个选中项内部**
+            // 走层级匹配 —— 选「工作」= 命中「工作」及「工作/xxx」全部子标签，
+            // 否则用户得把每个子标签都点一遍。老标签没有 / ，行为与原来完全一致。
+            return activeTags.every(sel => own.some(t => tagMatches(t, sel)));
         },
         [starFilter, starred, deadOnly, deadLinks, activeTags, tags]
     );

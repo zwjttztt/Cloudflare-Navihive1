@@ -8,8 +8,8 @@
 import type { ChangeEvent, KeyboardEvent } from "react";
 import { useState } from "react";
 import { IconButton, InputAdornment, TextField } from "@mui/material";
-import VisibilityIcon from "@mui/icons-material/Visibility";
-import VisibilityOffIcon from "@mui/icons-material/VisibilityOff";
+import VisibilityIcon from "@mui/icons-material/VisibilityOutlined";
+import VisibilityOffIcon from "@mui/icons-material/VisibilityOffOutlined";
 
 interface PasswordFieldProps {
     id?: string;
