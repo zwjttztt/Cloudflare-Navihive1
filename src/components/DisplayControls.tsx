@@ -20,6 +20,7 @@ import {
 import ViewModuleIcon from "@mui/icons-material/ViewModule";
 import ViewListIcon from "@mui/icons-material/ViewList";
 import ViewCompactIcon from "@mui/icons-material/ViewCompact";
+import DensityLargeIcon from "@mui/icons-material/DensityLarge";
 import DensityMediumIcon from "@mui/icons-material/DensityMedium";
 import DensitySmallIcon from "@mui/icons-material/DensitySmall";
 import CheckBoxIcon from "@mui/icons-material/CheckBox";
@@ -68,8 +69,12 @@ const VIEW_META: Record<ViewMode, { label: string; icon: typeof ViewModuleIcon }
 };
 
 const DENSITY_META: Record<Density, { label: string; icon: typeof DensityMediumIcon }> = {
-    comfortable: { label: "舒适", icon: DensityMediumIcon },
-    compact: { label: "紧凑", icon: DensitySmallIcon },
+    // 图标按「线越密」排：Large 最疏、Small 最挤，和档位顺序一致。
+    // 2026-10-21 加了 ultra，顺带把前两档换成 Large/Medium —— 原来
+    // comfortable 与 compact 分别是 Medium/Small，中间没位置留给第三档。
+    comfortable: { label: "舒适", icon: DensityLargeIcon },
+    compact: { label: "紧凑", icon: DensityMediumIcon },
+    ultra: { label: "超紧凑", icon: DensitySmallIcon },
 };
 
 const THEME_META: Record<ThemeMode, { label: string; icon: typeof LightModeIcon }> = {

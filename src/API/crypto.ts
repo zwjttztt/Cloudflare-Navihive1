@@ -275,23 +275,60 @@ const ENC_PREFIX = "enc$";
 const AES_SALT_LEGACY = enc.encode("navihive-aes-v1");
 const AES_SALT_DATA = enc.encode("navihive-aes-k1");
 const AES_ITERS = 50_000;
+/** keyId 2/3 的盐长度：随每条密文一起存，GCM 的 nonce 安全性不影响它 */
+const SALT_LEN = 16;
 
 export const KEY_ID_LEGACY = 0;
 export const KEY_ID_DATA = 1;
-export type KeyId = typeof KEY_ID_LEGACY | typeof KEY_ID_DATA;
+/**
+ * 2026-10-21（质量评估 4.3）：**随机盐**版本，盐随密文存。
+ *
+ * 固定盐的问题不是「强度不够」——源密钥本身是 32 字节随机 hex，损失有限 ——
+ * 而是**任何人都能预先算好**：拿到一份密文 + 知道盐是常量，就能离线跑
+ * PBKDF2 逐个试候选密钥（`navihive-aes-v1` 这种字符串就写在仓库里）。
+ * 每条密文一个随机盐，这条路直接断掉。
+ *
+ * 为什么分成两个编号而不是一个：keyId 必须能表达「这条密文是用哪把源密钥派生的」。
+ * 用同一把 AUTH_SECRET 派生的 salted 密文，在后来配上 DATA_ENCRYPTION_KEY 之后
+ * 仍要能解 —— 所以 salted 版也按源密钥分 2 / 3。
+ */
+export const KEY_ID_LEGACY_SALTED = 2;
+export const KEY_ID_DATA_SALTED = 3;
+export type KeyId =
+    | typeof KEY_ID_LEGACY
+    | typeof KEY_ID_DATA
+    | typeof KEY_ID_LEGACY_SALTED
+    | typeof KEY_ID_DATA_SALTED;
 
-const KEY_SALTS: Record<KeyId, Uint8Array> = {
+/** 这个编号的密文里是不是自带盐（盐在最前面 16 字节） */
+export function isSaltedKeyId(id: KeyId): boolean {
+    return id === KEY_ID_LEGACY_SALTED || id === KEY_ID_DATA_SALTED;
+}
+
+/** 固定盐：只有 0 / 1 用得到（salted 版的盐来自密文本身） */
+const KEY_SALTS: Record<typeof KEY_ID_LEGACY | typeof KEY_ID_DATA, Uint8Array> = {
     [KEY_ID_LEGACY]: AES_SALT_LEGACY,
     [KEY_ID_DATA]: AES_SALT_DATA,
 };
 
 export interface Keyring {
-    /** 新密文一律用它加密 */
+    /** 新**文本**密文一律用它加密（salted 编号） */
     readonly writeKeyId: KeyId;
+    /**
+     * 整包二进制（备份文件）用的编号 —— **固定盐**那一个。
+     * 二进制格式里没有地方写 keyId，也不会把盐塞进去：备份文件的格式一旦变，
+     * 老备份就再也导不回来了。所以这条维持原样（0 或 1）。
+     */
+    readonly bytesKeyId: KeyId;
     /** 已注册的钥匙编号，第一个是 writeKeyId（解密时按这个顺序兜底） */
     readonly ids: readonly KeyId[];
-    /** 取某把钥匙；没注册返回 null（不是抛错——缺钥要能优雅降级） */
-    keyFor(id: KeyId): Promise<CryptoKey | null>;
+    /** 固定盐的那几个编号（二进制解密用：没有盐可读） */
+    readonly fixedIds: readonly KeyId[];
+    /**
+     * 取某把钥匙；没注册返回 null（不是抛错——缺钥要能优雅降级）。
+     * `salt` 只对 salted 编号有意义，由调用方从密文头上取。
+     */
+    keyFor(id: KeyId, salt?: Uint8Array): Promise<CryptoKey | null>;
 }
 
 export function createKeyring(opts: {
@@ -302,27 +339,40 @@ export function createKeyring(opts: {
 }): Keyring {
     const dataKey = opts.dataKey ?? "";
     const legacySecret = opts.legacySecret ?? "";
-    const pending = new Map<KeyId, Promise<CryptoKey>>();
-    // 走 aesKey 缓存而不是直接 deriveAesKey：API 实例是每请求新建的，
-    // 不缓存的话每个请求都要重跑一次五万次迭代的 PBKDF2。
-    if (dataKey) pending.set(KEY_ID_DATA, aesKey(KEY_ID_DATA, dataKey));
+    // 编号 → 源密钥。salted 版与固定盐版**共用同一个源密钥**，只是盐的来源不同。
+    const secrets = new Map<KeyId, string>();
     // legacy 永远注册：升级前没配 AUTH_SECRET 时也是拿空串当密钥用的，
     // 这里保持一致，免得「未配置」场景下加密突然变成不可解。
-    pending.set(KEY_ID_LEGACY, aesKey(KEY_ID_LEGACY, legacySecret));
+    secrets.set(KEY_ID_LEGACY, legacySecret);
+    secrets.set(KEY_ID_LEGACY_SALTED, legacySecret);
+    if (dataKey) {
+        secrets.set(KEY_ID_DATA, dataKey);
+        secrets.set(KEY_ID_DATA_SALTED, dataKey);
+    }
 
-    const writeKeyId: KeyId = dataKey ? KEY_ID_DATA : KEY_ID_LEGACY;
-    const ids: KeyId[] = writeKeyId === KEY_ID_DATA ? [KEY_ID_DATA, KEY_ID_LEGACY] : [KEY_ID_LEGACY];
+    const writeKeyId: KeyId = dataKey ? KEY_ID_DATA_SALTED : KEY_ID_LEGACY_SALTED;
+    const bytesKeyId: KeyId = dataKey ? KEY_ID_DATA : KEY_ID_LEGACY;
+    // 解密兜底顺序：新写入的 → 整包用的 → 剩下那些历史编号
+    const all: KeyId[] = [writeKeyId, bytesKeyId, KEY_ID_DATA_SALTED, KEY_ID_LEGACY_SALTED, KEY_ID_DATA, KEY_ID_LEGACY];
+    const ids = [...new Set(all)].filter(id => secrets.has(id));
+    const fixedIds = ids.filter(id => !isSaltedKeyId(id));
     return {
         writeKeyId,
+        bytesKeyId,
         ids,
-        async keyFor(id) {
-            const p = pending.get(id);
-            if (!p) return null;
+        fixedIds,
+        async keyFor(id, salt) {
+            const secret = secrets.get(id);
+            if (secret === undefined) return null;
+            // 走 aesKey 缓存而不是直接 deriveAesKey：API 实例是每请求新建的，
+            // 不缓存的话每个请求都要重跑一次五万次迭代的 PBKDF2（首屏要解 N 个站点密码）。
+            // salted 版的缓存键里带盐，否则不同密文会撞到同一把钥匙。
+            const effective = isSaltedKeyId(id) ? salt : undefined;
+            if (isSaltedKeyId(id) && !effective) return null;
             try {
-                return await p;
+                return await aesKey(id, secret, effective);
             } catch {
-                // 派生失败别把坏结果留在环里反复失败
-                pending.delete(id);
+                // 派生失败别把坏结果留在缓存里反复失败（aesKey 内部已清）
                 return null;
             }
         },
@@ -352,10 +402,10 @@ export function isEncrypted(stored: string): boolean {
     return stored.startsWith(ENC_PREFIX);
 }
 
-/** 拆密文：`enc$<keyId>$<b64>`（新）或 `enc$<b64>`（旧，等价于 keyId 0） */
+/** 拆密文：`enc$<keyId>$<b64>`（带编号）或 `enc$<b64>`（旧，等价于 keyId 0） */
 function parseEnc(cipher: string): { keyId: KeyId; payload: string } | null {
     const rest = cipher.slice(ENC_PREFIX.length);
-    const m = /^([01])\$/.exec(rest);
+    const m = /^([0-3])\$/.exec(rest);
     if (!m) return { keyId: KEY_ID_LEGACY, payload: rest };
     return { keyId: Number(m[1]) as KeyId, payload: rest.slice(m[0].length) };
 }
@@ -364,15 +414,19 @@ export async function encryptSecret(plain: string, src: SecretSource): Promise<s
     if (!plain) return "";
     const ring = resolveKeyring(src);
     const keyId = ring.writeKeyId;
-    const key = await ring.keyFor(keyId);
+    const salted = isSaltedKeyId(keyId);
+    // 每条密文一个新盐（salted 编号）：断掉「固定盐 → 可预计算」这条路
+    const salt = salted ? crypto.getRandomValues(new Uint8Array(SALT_LEN)) : undefined;
+    const key = await ring.keyFor(keyId, salt);
     if (!key) return "";
     const iv = crypto.getRandomValues(new Uint8Array(12));
     const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, enc.encode(plain));
-    const out = new Uint8Array(12 + ct.byteLength);
-    out.set(iv, 0);
-    out.set(new Uint8Array(ct), 12);
-    const prefix = keyId === KEY_ID_LEGACY ? "" : `${keyId}$`;
-    return `${ENC_PREFIX}${prefix}${b64urlEncode(out)}`;
+    const head = salt ? SALT_LEN : 0;
+    const out = new Uint8Array(head + 12 + ct.byteLength);
+    if (salt) out.set(salt, 0);
+    out.set(iv, head);
+    out.set(new Uint8Array(ct), head + 12);
+    return `${ENC_PREFIX}${keyId === KEY_ID_LEGACY ? "" : `${keyId}$`}${b64urlEncode(out)}`;
 }
 
 export async function decryptSecret(cipher: string, src: SecretSource): Promise<string> {
@@ -380,14 +434,21 @@ export async function decryptSecret(cipher: string, src: SecretSource): Promise<
     const parsed = parseEnc(cipher);
     if (!parsed) return "";
     const raw = b64urlDecode(parsed.payload);
-    if (raw.length <= 12) return "";
-    const iv = raw.subarray(0, 12);
-    const ct = raw.subarray(12);
     const ring = resolveKeyring(src);
+    // salted 编号：盐在 payload 最前面 16 字节；固定盐编号：盐来自常量
+    const head = isSaltedKeyId(parsed.keyId) ? SALT_LEN : 0;
+    if (raw.length <= head + 12) return "";
+    const salt = head ? raw.subarray(0, head) : undefined;
+    const iv = raw.subarray(head, head + 12);
+    const ct = raw.subarray(head + 12);
     // 先按密文自带的编号解；解不开再依次试其它已注册的钥匙 ——
     // 历史上存在「换过 AUTH_SECRET 后旧密文没重加密」的存量，兜底能让这些数据自愈。
+    // ⚠️ 兜底试 salted 编号时**只能用它自己的盐**：盐是逐条随机的，
+    // 拿别的盐去试一定失败，白花一次 PBKDF2（五万次迭代，首屏上很贵）。
     for (const id of [parsed.keyId, ...ring.ids.filter((x) => x !== parsed.keyId)]) {
-        const key = await ring.keyFor(id);
+        const keySalt = isSaltedKeyId(id) ? salt : undefined;
+        if (isSaltedKeyId(id) && !keySalt) continue;
+        const key = await ring.keyFor(id, keySalt);
         if (!key) continue;
         try {
             return dec.decode(await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct));
@@ -429,11 +490,13 @@ export async function decryptSecretDeep(
 // 顺带让 decryptSecretDeep 的多层解密（每层都要一次派生）也只付一次代价。
 const aesKeyCache = new Map<string, Promise<CryptoKey>>();
 
-function aesKey(keyId: KeyId, secret: string): Promise<CryptoKey> {
-    const cacheKey = `${keyId}:${secret}`;
+function aesKey(keyId: KeyId, secret: string, salt?: Uint8Array): Promise<CryptoKey> {
+    // 缓存键必须带盐：salted 编号下「同一个 keyId + 同一个 secret」对应的是**每条密文各一把**钥匙，
+    // 不带盐就会把不同密文的钥匙混成一把，解密直接错。
+    const cacheKey = `${keyId}:${secret}:${salt ? b64urlEncode(salt) : ""}`;
     let cached = aesKeyCache.get(cacheKey);
     if (!cached) {
-        cached = deriveAesKey(keyId, secret);
+        cached = deriveAesKey(keyId, secret, salt);
         aesKeyCache.set(cacheKey, cached);
         // 派生失败别把坏结果永久留在缓存里
         cached.catch(() => aesKeyCache.delete(cacheKey));
@@ -441,8 +504,13 @@ function aesKey(keyId: KeyId, secret: string): Promise<CryptoKey> {
     return cached;
 }
 
-async function deriveAesKey(keyId: KeyId, secret: string): Promise<CryptoKey> {
-    const raw = await pbkdf2(secret, KEY_SALTS[keyId], AES_ITERS, 32);
+async function deriveAesKey(keyId: KeyId, secret: string, salt?: Uint8Array): Promise<CryptoKey> {
+    // salted 编号必须带盐；固定盐编号忽略传入的盐（保持老密文的口径不变）
+    const useSalt = isSaltedKeyId(keyId)
+        ? (salt as Uint8Array)
+        : KEY_SALTS[keyId as typeof KEY_ID_LEGACY | typeof KEY_ID_DATA];
+    if (!useSalt) throw new Error("salted keyId 缺少盐");
+    const raw = await pbkdf2(secret, useSalt, AES_ITERS, 32);
     return crypto.subtle.importKey("raw", raw, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
 }
 
@@ -450,7 +518,8 @@ async function deriveAesKey(keyId: KeyId, secret: string): Promise<CryptoKey> {
 // 裸字节没有地方写 keyId，所以解密时按密钥环里的顺序依次试。
 export async function encryptBytes(plain: Uint8Array, src: SecretSource): Promise<Bytes> {
     const ring = resolveKeyring(src);
-    const key = await ring.keyFor(ring.writeKeyId);
+    // 整包二进制用**固定盐**那把：文件里没有地方写 keyId 与盐，格式必须与历史一致
+    const key = await ring.keyFor(ring.bytesKeyId);
     if (!key) throw new Error("没有可用的加密密钥");
     const iv = crypto.getRandomValues(new Uint8Array(12));
     const ct = new Uint8Array(
@@ -468,7 +537,8 @@ export async function decryptBytes(cipher: Uint8Array, src: SecretSource): Promi
     const iv = buf.subarray(0, 12);
     const ct = buf.subarray(12);
     const ring = resolveKeyring(src);
-    for (const id of ring.ids) {
+    // 只试固定盐的编号：salted 那把的盐在密文里根本没存（格式没变），试了必然失败
+    for (const id of ring.fixedIds) {
         const key = await ring.keyFor(id);
         if (!key) continue;
         try {

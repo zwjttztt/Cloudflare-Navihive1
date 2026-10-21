@@ -13,6 +13,7 @@ import {
 } from "@dnd-kit/core";
 import { SortableContext, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { SortMode } from "../constants";
+import { densityMetrics } from "../utils/densityMetrics";
 import type { Group, Site } from "../API/http";
 import type { GroupWithSites } from "../types";
 import type { Density } from "../context/uiPrefsStore";
@@ -197,7 +198,7 @@ export default function SiteListBody({
                 </DndContext>
             ) : displayedGroups.length > 0 ? (
                 <Stack
-                    spacing={density === "compact" ? 3 : 5}
+                    spacing={densityMetrics(density).listSpacing}
                     className={reduceEntryAnimation ? "nav-static-entry" : undefined}
                 >
                     {displayedGroups.map(group => (

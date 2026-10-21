@@ -219,8 +219,45 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
     }
 }
 
+/**
+ * 鉴权开着却没配密钥 → **整个站点拒绝服务**（2026-10-21，质量评估 4.4 的另一半）。
+ *
+ * 原先只在「登录」与「换钥」那两条路上 fail-closed，剩下的路照常跑 ——
+ * 其中最难察觉的是**凭据加密**：`createKeyring` 在 AUTH_SECRET 为空时会注册
+ * 一把由 `PBKDF2("")` 派生的钥匙（那是升级前的老行为，为了不让已有密文突然解不开）。
+ * 也就是说漏配的部署里，webdav 密码这类字段的「加密」等于人人可算。
+ *
+ * 自托管侧早就是启动即中止（`assertAuthConfigOrExit`）；Workers 没有「启动」这个概念，
+ * 所以把同一道闸放在入口：与其带着等价于明文的密钥继续服务，不如明确报错让人去补配置。
+ * 只在真正缺密钥时开火 —— 配了任一把就不影响。
+ */
+export function missingAuthSecret(
+    // 只依赖这两个字段：收窄参数类型，单测就不必造一整套 Env（DB / ASSETS …）
+    env: Pick<Env, "AUTH_ENABLED"> & { AUTH_SECRET?: string }
+): boolean {
+    if (env.AUTH_ENABLED !== "true") return false;
+    // 判据只看 AUTH_SECRET：凭据加密的源密钥就是它（`keyring.legacySecret`），
+    // 配了 JWT_SECRET 也补不上这个洞 —— 那种部署的 JWT 能签，但密文照样人人可算。
+    return !env.AUTH_SECRET;
+}
+
 export default {
     async fetch(request: Request, env: Env): Promise<Response> {
+        if (missingAuthSecret(env)) {
+            // 走统一错误出口（errorCodeMigration 那条守卫：worker/ 下不许裸写 Response.json({error})）。
+            // 用 serviceUnavailable 而不是新造一个码：客户端只显示 message，
+            // 503 也已经在前端的兜底分支里，没必要为一次性配置错误扩散错误码表。
+            return withSecurityHeaders(
+                errorResponse(
+                    ApiError.serviceUnavailable(
+                        "站点鉴权已开启，但没有配置 AUTH_SECRET。" +
+                            "缺少密钥时凭据加密等价于明文，因此本站拒绝服务。" +
+                            "请在部署环境里设置 AUTH_SECRET（openssl rand -hex 32）后重新部署。"
+                    ),
+                    { headers: { "Cache-Control": "no-store" } }
+                )
+            );
+        }
         return withSecurityHeaders(await handleRequest(request, env));
     },
     /**

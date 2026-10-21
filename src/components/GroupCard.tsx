@@ -3,6 +3,7 @@ import { Site, Group } from "../API/http";
 import ChunkBoundary from "./ChunkBoundary";
 import SiteCard from "./SiteCard";
 import { GroupWithSites } from "../types";
+import { densityMetrics } from "../utils/densityMetrics";
 // 「编辑分组」只有在有权限的人点开时才用得到，懒加载。
 // ⚠️ App.tsx 里那个「新建分组」用的是同一个组件，那边也是 lazy —— 改回静态 import
 //    会让它重新进首屏包，tests/lazyBoundary.test.ts 会红。
@@ -111,7 +112,8 @@ const GroupCard: React.FC<GroupCardProps> = ({
     const handleClearRecent = () => {
         clearVisits();
     };
-    const isCompact = density === "compact";
+    // 三档的数值统一来自 utils/densityMetrics.ts（加第四档时只改那张表）
+    const metrics = densityMetrics(density);
 
     // 分组懒挂载：视口外的分组先不创建卡片（只留占位高度），
     // content-visibility 只省了布局与绘制，React 元素和 DOM 节点照样是全量建的，
@@ -147,11 +149,11 @@ const GroupCard: React.FC<GroupCardProps> = ({
     const placeholderHeight = useMemo(() => {
         const count = group.sites.length || 1;
         const perRow = viewMode === "list" ? 1 : 3;
-        const cardH = viewMode === "list" ? 64 : isCompact ? 120 : 150;
+        const cardH = viewMode === "list" ? 64 : metrics.groupCardHeight;
         return Math.max(120, Math.ceil(count / perRow) * cardH);
-    }, [group.sites.length, viewMode, isCompact]);
+    }, [group.sites.length, viewMode, metrics.groupCardHeight]);
     // 列表视图下卡片挨得更紧，分组内间距同步收一档
-    const gridGap = viewMode === "list" ? (isCompact ? -0.25 : 0) : isCompact ? -0.5 : -1;
+    const gridGap = viewMode === "list" ? (metrics.gridGap === -1 ? 0 : -0.25) : metrics.gridGap;
     // 添加本地状态来管理站点排序
     const [sites, setSites] = useState<Site[]>(group.sites);
     // 添加编辑弹窗的状态
@@ -318,7 +320,7 @@ const GroupCard: React.FC<GroupCardProps> = ({
                 : viewMode === "wall"
                   ? { xs: "33.33%", sm: "25%", md: "16.66%", lg: "12.5%", xl: "10%" }
                   : CARD_VIEW_WIDTH,
-        padding: isCompact ? 0.5 : 1, // 内部间距，更均匀的分布
+        padding: metrics.cellPadding, // 内部间距，更均匀的分布
         boxSizing: "border-box" as const, // 确保padding不影响宽度计算
     };
 
@@ -357,7 +359,7 @@ const GroupCard: React.FC<GroupCardProps> = ({
                                         // 列宽必须和普通模式保持一致（GroupCard 顶部的 cardItemSx）：
                                         // 否则一点「编辑排序」列数就变（3→2 列 / 5→4 列），卡片会整体跳一下
                                         width: CARD_VIEW_WIDTH,
-                                        padding: isCompact ? 0.5 : 1, // 内部间距，更均匀的分布
+                                        padding: metrics.cellPadding, // 内部间距，更均匀的分布
                                         boxSizing: "border-box", // 确保padding不影响宽度计算
                                     }}
                                 >
@@ -425,7 +427,7 @@ const GroupCard: React.FC<GroupCardProps> = ({
                                         key={site.id || idx}
                                         sx={{
                                             width: CARD_VIEW_WIDTH,
-                                            padding: isCompact ? 0.5 : 1, // 内部间距，更均匀的分布
+                                            padding: metrics.cellPadding, // 内部间距，更均匀的分布
                                             boxSizing: "border-box", // 确保padding不影响宽度计算
                                         }}
                                     >

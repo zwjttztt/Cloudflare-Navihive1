@@ -8,6 +8,7 @@ const SiteSettingsModal = lazy(() => import("./SiteSettingsModal"));
 const SiteCardContextMenu = lazy(() => import("./SiteCardContextMenu"));
 import SiteCardAvatar from "./SiteCardAvatar";
 import { toneForName } from "../utils/siteAvatar";
+import { densityMetrics } from "../utils/densityMetrics";
 import { copyToClipboard as copyText } from "../utils/clipboard";
 import { SiteCardTitle, SiteCardDescription } from "./SiteCardText";
 import Highlighted from "./Highlighted";
@@ -93,7 +94,8 @@ const SiteCard = memo(function SiteCard({
     // 版式与密度：编辑模式始终用标准卡片，避免拖拽时尺寸乱跳
     const isList = viewMode === "list" && !isEditMode;
     const isWall = viewMode === "wall" && !isEditMode;
-    const isCompact = density === "compact";
+    // 三档的数值统一来自 utils/densityMetrics.ts（加第四档时只改那张表）
+    const metrics = densityMetrics(density);
 
     // 图标候选源：自带图标 → 图标 API → 根目录 favicon → 公共图标服务，
     // 哪个先加载成功用哪个，失败的会记进本地缓存，下次直接跳过。
@@ -311,7 +313,7 @@ const SiteCard = memo(function SiteCard({
         <SiteCardDescription
             description={site.description}
             highlight={highlight}
-            compact={isCompact}
+            compact={metrics.compactDescription}
             withThumb={useThumb}
         />
     );
@@ -765,17 +767,17 @@ const SiteCard = memo(function SiteCard({
                             alignItems: "center",
                             gap: 1.5,
                             px: 1.5,
-                            py: isCompact ? 0.5 : 1,
+                            py: metrics.listPaddingY,
                             cursor: "pointer",
                             textDecoration: "none",
                             color: "inherit",
                         }}
                     >
-                        {renderAvatar(0, isCompact ? 28 : 36)}
+                        {renderAvatar(0, metrics.listAvatar)}
                         <Box sx={{ minWidth: 0, flexGrow: 1 }}>
                             {renderTitle()}
                             {renderTagChips()}
-                            {!isCompact && (
+                            {metrics.showListDescription && (
                                 <Typography
                                     variant='caption'
                                     noWrap
@@ -800,18 +802,18 @@ const SiteCard = memo(function SiteCard({
                     >
                         <Box
                             sx={{
-                                p: isCompact ? 1 : 1.5,
+                                p: metrics.wallPadding,
                                 display: "flex",
                                 flexDirection: "column",
                                 alignItems: "center",
                                 gap: 0.75,
                             }}
                         >
-                            {renderAvatar(0, isCompact ? 40 : 48)}
+                            {renderAvatar(0, metrics.wallAvatar)}
                             <Typography
                                 variant='caption'
                                 noWrap
-                                sx={{ maxWidth: "100%", fontSize: isCompact ? 10 : 12 }}
+                                sx={{ maxWidth: "100%", fontSize: metrics.wallFontSize }}
                             >
                                 <Highlighted text={site.name} query={highlight} />
                             </Typography>
@@ -838,8 +840,8 @@ const SiteCard = memo(function SiteCard({
                                 flexGrow: 1,
                                 display: "flex",
                                 flexDirection: "column",
-                                p: isCompact ? 1.25 : { xs: 1.5, sm: 2 },
-                                "&:last-child": { pb: isCompact ? 1.25 : { xs: 1.5, sm: 2 } },
+                                p: metrics.cardContentPadding,
+                                "&:last-child": { pb: metrics.cardContentPadding },
                             }}
                         >
                             {/* 图标和名称 */}
@@ -847,7 +849,7 @@ const SiteCard = memo(function SiteCard({
                                 sx={{
                                     display: 'flex',
                                     alignItems: 'center',
-                                    mb: isCompact ? 0.5 : 1
+                                    mb: metrics.cardTitleGap
                                 }}>
                                 {renderAvatar()}
                                 {renderTitle()}

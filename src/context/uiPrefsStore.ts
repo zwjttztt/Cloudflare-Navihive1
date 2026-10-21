@@ -29,7 +29,14 @@ export const emitPrefsChange = () => {
 };
 
 export type ViewMode = "card" | "list" | "wall";
-export type Density = "comfortable" | "compact";
+/**
+ * 卡片密度档位（2026-10-21 加第三档「超紧凑」，质量评估 A2）。
+ * 三档的差别现在集中写在 `utils/densityMetrics.ts` 里 —— 以前是散在
+ * SiteCard / GroupCard 里的 `isCompact ? A : B`，加一档就得挨个改成三元嵌套。
+ * ⚠️ 与记事本自己的 `settings.density`（`utils/notesSettings.ts`）**不是同一套**：
+ * 那个只有舒适/紧凑两档，别混。
+ */
+export type Density = "comfortable" | "compact" | "ultra";
 /** 圆角风格：圆润 / 标准 / 锐利 */
 export type RadiusStyle = "soft" | "standard" | "sharp";
 /** 字号档位：紧凑 / 标准 / 宽松 */

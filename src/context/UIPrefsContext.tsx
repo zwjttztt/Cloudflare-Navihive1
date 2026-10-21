@@ -10,6 +10,7 @@
 // 那会把 Provider 组件拖进它们的模块图（还顺带绕开了这次的拆分）。
 
 import React, { useMemo, useState, useCallback, useEffect } from "react";
+import { normalizeDensity } from "../utils/densityMetrics";
 import {
     DENSITY_KEY,
     FAVORITES_KEY,
@@ -64,7 +65,9 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
         return v === "list" || v === "wall" ? v : "card";
     });
     const [density, setDensityState] = useState<Density>(() =>
-        readString(DENSITY_KEY, "comfortable") === "compact" ? "compact" : "comfortable"
+        // ⚠️ 必须是白名单而不是 `=== "compact" ? … : …`：加第三档之后，
+        // 二元判断会把 "ultra" 悄悄压回 comfortable（刷新一次设置就丢）。
+        normalizeDensity(readString(DENSITY_KEY, "comfortable"))
     );
     const [favoritesEnabled, setFavoritesState] = useState<boolean>(
         () => readString(FAVORITES_KEY, "1") !== "0"
@@ -508,7 +511,7 @@ export function UIPrefsProvider({ children }: { children: React.ReactNode }) {
                 const v = e.newValue ?? "card";
                 setViewModeState(v === "list" || v === "wall" ? v : "card");
             } else if (e.key === DENSITY_KEY) {
-                setDensityState(e.newValue === "compact" ? "compact" : "comfortable");
+                setDensityState(normalizeDensity(e.newValue));
             } else if (e.key === FAVORITES_KEY) {
                 setFavoritesState((e.newValue ?? "1") !== "0");
             } else if (e.key === PINYIN_KEY) {
