@@ -122,8 +122,55 @@ test("附件管理器：点文件名开预览（不直接下载）", async () =>
     cleanup();
 });
 
-// ---------------------------------------------------------------- 弹窗
+test("附件管理器：点缩略图那一大块也开预览（不只是文件名）", async () => {
+    // 用户报「只有点文档名才弹窗口，点上面红框也要弹」。卡片长得像个按钮，
+    // 点上去却什么都不发生，比没有按钮更让人困惑 —— 所以整张卡片都是入口。
+    const seen: string[] = [];
+    mount(
+        <AttachmentManager
+            open
+            onClose={() => {}}
+            mgr={{ list: async () => [
+                { id: ATT_ID, filename: "说明.txt", mime: "text/plain", size: 12 },
+            ], remove: async () => {} }}
+            onPreview={file => seen.push(file.id)}
+        />
+    );
+    await flush(60);
+    const row = document.querySelector<HTMLElement>(`[data-attachment-row='${ATT_ID}']`);
+    assert.ok(row, "要有附件卡片");
+    // 点在卡片上（不是文件名按钮）：缩略图那块区域
+    act(() => {
+        row!.click();
+    });
+    assert.deepEqual(seen, [ATT_ID], "整张卡片都该能开预览");
+    cleanup();
+});
 
+test("附件管理器：点删除不该顺手把预览也打开", async () => {
+    // 卡片整块可点之后，删除按钮必须掐断冒泡 —— 否则「点删除」会先弹预览再弹确认框
+    const seen: string[] = [];
+    mount(
+        <AttachmentManager
+            open
+            onClose={() => {}}
+            mgr={{ list: async () => [
+                { id: ATT_ID, filename: "说明.txt", mime: "text/plain", size: 12 },
+            ], remove: async () => {} }}
+            onPreview={file => seen.push(file.id)}
+        />
+    );
+    await flush(60);
+    const del = document.querySelector<HTMLElement>("[data-attachment-action='delete']");
+    assert.ok(del, "要有删除按钮");
+    act(() => {
+        del!.click();
+    });
+    assert.deepEqual(seen, [], "点删除只该弹删除确认，不该同时开预览");
+    cleanup();
+});
+
+// ---------------------------------------------------------------- 弹窗
 /** 把附件内容请求打个桩：返回一份纯文本 */
 function stubTextFetch(body: string) {
     const realFetch = globalThis.fetch;
