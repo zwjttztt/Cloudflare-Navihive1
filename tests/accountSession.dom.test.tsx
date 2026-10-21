@@ -71,6 +71,8 @@ interface Options {
     me?: { id: number; username: string; role: "owner" | "user" } | null;
     /** bootstrap 的返回（true = 已登录） */
     fetchOk?: boolean;
+    /** bootstrap 前 N 次失败、之后成功（模拟开机冷启动那两跳） */
+    fetchFailTimes?: number;
     /** fetchData 抛出的错误 */
     fetchError?: unknown;
     registerResult?: { success: boolean; message?: string; username?: string };
@@ -134,13 +136,19 @@ function Harness({ log, o }: { log: Log; o: Options }) {
         onError: m => log.errors.push(m),
         onMenuClose: () => log.menuClosed++,
         onDataError: m => log.dataErrors.push(m),
-        fetchData: async () => {
+        fetchData: async ({ silent }: { silent?: boolean } = {}) => {
             log.fetchCalls++;
             if (o.bootstrapIdentity) {
                 identityFromBootstrap.current = true;
                 recoveryFromBootstrap.current = true;
             }
             if (o.fetchError) throw o.fetchError;
+            // 前 fetchFailTimes 次按失败算，之后成功
+            if (o.fetchFailTimes && o.fetchFailTimes > 0) {
+                o.fetchFailTimes -= 1;
+                if (!silent) log.errors.push("加载数据失败: 网络冷启动");
+                return false;
+            }
             return o.fetchOk ?? true;
         },
         onCloseSnackbar: () => log.snackbarClosed++,
@@ -421,6 +429,41 @@ test("启动检查：网络抖动之类的错误不把人踢出登录页", async
 
     assert.deepEqual(log.dataErrors, []);
     assert.equal(a().isAuthChecking, false);
+});
+
+test("启动检查：开机冷启动失败会重试，重试成功照样进主界面", async () => {
+    // 用户报「每次电脑开机后第一次打开这个网站还是需要登录」—— 老逻辑一次失败
+    // 就判未登录，而开机那一刻恰恰是 DNS/TLS/Cloudflare 边缘最冷的时候。
+    const log = emptyLog();
+    mount(<Harness log={log} o={{ fetchFailTimes: 2 }} />);
+    await run(() => a().checkAuthStatus());
+    await flush();
+
+    assert.equal(log.fetchCalls, 3, "第一次 + 两次静默重试");
+    assert.equal(state().authed, true, "重试拿到数据就该算已登录，不该把人按在登录页");
+    assert.equal(state().authRequired, false);
+    assert.equal(a().isAuthChecking, false);
+});
+
+test("启动检查：重试也失败时问服务端，会话还活着就保持已登录", async () => {
+    const log = emptyLog();
+    mount(<Harness log={log} o={{ fetchFailTimes: 5, sessionOk: true }} />);
+    await run(() => a().checkAuthStatus());
+    await flush();
+
+    assert.equal(log.fetchCalls, 3, "最多重试两次，不死循环");
+    assert.equal(state().authed, true, "服务端还认这张会话 —— 标记丢不丢都不该回登录页");
+    assert.equal(state().authRequired, false);
+});
+
+test("启动检查：重试也失败且服务端不认会话，才回登录页", async () => {
+    const log = emptyLog();
+    mount(<Harness log={log} o={{ fetchFailTimes: 5, sessionOk: false }} />);
+    await run(() => a().checkAuthStatus());
+    await flush();
+
+    assert.equal(state().authed, false);
+    assert.equal(state().authRequired, true, "令牌真的没了才回登录页");
 });
 
 // ---- 会话管理 ----

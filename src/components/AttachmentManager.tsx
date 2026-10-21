@@ -359,11 +359,19 @@ export default function AttachmentManager({
                                     <Box
                                         key={file.id}
                                         data-attachment-row={file.id}
+                                        // 整张卡片都是预览入口（2026-10-21 用户要求）：
+                                        // 之前只有下面那行文件名能点，缩略图那一大块点了没反应 ——
+                                        // 卡片长得像个按钮，点上去却什么都不发生，比没有按钮更让人困惑。
+                                        // ⚠️ 键盘可达性由下面那个真 <button> 负责（Tab 只停一次），
+                                        // 这里只补指针点击，不再加 tabIndex/role —— 否则同一个动作会
+                                        // 在 Tab 序列里出现两次。
+                                        onClick={onPreview ? () => onPreview(file) : undefined}
                                         sx={{
                                             overflow: "hidden",
                                             borderRadius: 2,
                                             border: "1px solid rgba(128,128,128,0.2)",
                                             bgcolor: "rgba(128,128,128,0.04)",
+                                            cursor: onPreview ? "pointer" : "default",
                                             "&:hover .att-del, &:focus-within .att-del": { opacity: 1 },
                                         }}
                                     >
@@ -411,7 +419,12 @@ export default function AttachmentManager({
                                                     aria-label={`删除 ${file.filename}`}
                                                     data-attachment-action='delete'
                                                     disabled={busy}
-                                                    onClick={() => setDeleteTarget(file)}
+                                                    onClick={event => {
+                                                        // 卡片整块可点了，删除按钮必须掐断冒泡，
+                                                        // 否则「点删除」会先弹出预览窗再弹确认框
+                                                        event.stopPropagation();
+                                                        setDeleteTarget(file);
+                                                    }}
                                                     sx={{
                                                         bgcolor: "background.paper",
                                                         border: "1px solid rgba(128,128,128,0.3)",
@@ -433,7 +446,11 @@ export default function AttachmentManager({
                                                     type='button'
                                                     data-attachment-action='preview'
                                                     title={`预览 ${file.filename || "附件"}`}
-                                                    onClick={() => onPreview(file)}
+                                                    onClick={event => {
+                                                        // 卡片外层也挂了同一个动作，这里掐掉冒泡，避免调两次
+                                                        event.stopPropagation();
+                                                        onPreview(file);
+                                                    }}
                                                     sx={{
                                                         display: "block",
                                                         width: "100%",

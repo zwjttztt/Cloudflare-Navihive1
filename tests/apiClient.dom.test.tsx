@@ -183,10 +183,24 @@ test("baseUrl 末尾不带斜杠时也不会拼出双斜杠", async () => {
 
 // ---------- checkAuthStatus 的判定 ----------
 
-test("本地没有登录标记时直接算未认证，且一个请求都不发", async () => {
+test("本地没有登录标记时也照样问一次服务端：会话还活着就补回标记", async () => {
+    // ⚠️ 2026-10-21 改的判定：老逻辑「没标记就一个请求都不发、直接算未登录」，
+    // 会把「httpOnly 令牌还有效、只是 JS 可读的那条标记丢了」的用户挡在登录页外
+    // （用户报「每次开机第一次打开都要重新登录」）。现在先问服务端。
+    responder = () => okJson({});
+    const api = new NavigationClient("/api");
+    assert.equal(await api.checkAuthStatus(), true, "服务端认这张令牌，就该算已登录");
+    assert.equal(calls.length, 1, "没标记也要问一次 —— 问得动就知道令牌还活着");
+    // 顺手把标记补回来，否则下次刷新又回到「没标记」的老问题
+    assert.ok(api.isLoggedIn(), "补回登录标记，刷新后不必再问一次");
+});
+
+test("真的未登录时问一次服务端、撞 401 就清干净并返回 false", async () => {
+    responder = () => errJson({ message: "认证失败：令牌过期" }, 401);
     const api = new NavigationClient("/api");
     assert.equal(await api.checkAuthStatus(), false);
-    assert.equal(calls.length, 0, "没标记就没必要发请求 —— 省掉一次无谓的往返");
+    assert.equal(api.isLoggedIn(), false);
+    assert.equal(calls.length, 1, "未登录也就多这一个 401，登录页本来就在转圈");
 });
 
 test("网络抖动（非认证错误）时保持已登录，不把用户踢下线", async () => {

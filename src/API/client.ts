@@ -529,13 +529,26 @@ export class NavigationClient {
     // 检查身份验证状态
     async checkAuthStatus(): Promise<boolean> {
         try {
-            // 本地没有登录标记就直接算未认证（令牌本身在 httpOnly cookie 里，JS 看不到）
-            if (!this.isLoggedIn()) {
-                return false;
-            }
-
-            // 尝试获取配置，如果成功则表示已认证
+            // ⚠️ 2026-10-21：**标记没了也照样问一次服务端**，不再直接判未登录。
+            //
+            // 那个 JS 可读的 navihive_session 只是「刷新后能立刻知道已登录」的附属物，
+            // 真正的会话在 httpOnly 的 navihive_token 里（「记住我」30 天）。
+            // 两者一旦不同步，老逻辑会把还有一个好会话的用户直接挡在登录页外：
+            //   - 隐私工具 / 「退出时清除 Cookie」只清掉非 HttpOnly 的那条；
+            //   - 两条 cookie 的写入时机差了一拍（服务端 Set-Cookie 与前端
+            //     document.cookie 各写一次），任一条没落盘就少一个；
+            //   - 换防火墙策略 / 换浏览器配置后规则与老 cookie 不匹配。
+            // 用户描述的现象正是「隔一夜回来就要重新登录」—— 令牌多半还有效，
+            // 死的只是那个标记。所以：先问服务端，问得动就说明会话还活着，
+            // 顺手把标记补回来，用户根本看不到登录页。
+            //
+            // 代价是「真的未登录」时多一个必然 401 的请求：登录页本来就在转圈
+            // （isAuthChecking），这一个请求换来的确定性是值得的。
             await this.getConfigs();
+            // 会话还有效但标记不在：补上。时长取「记住我」那一档 —— 那是登录页
+            // 复选框的默认勾选状态；真令牌只剩一天时它会在下次 401 时被清掉，
+            // 结局与今天一样（回登录页），不会把已失效的会话伪装成有效。
+            if (!this.isLoggedIn()) this.setSessionCookie(REMEMBER_TOKEN_TTL);
             return true;
         } catch (error) {
             // 不往外打日志：离线 / 网络抖动时这里每次启动都会走一遍，
@@ -547,7 +560,7 @@ export class NavigationClient {
                     return false;
                 }
             }
-            
+
             // 其他错误不影响认证状态，本地有登录标记就认为已认证
             return this.isLoggedIn();
         }

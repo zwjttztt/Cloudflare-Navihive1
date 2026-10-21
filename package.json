@@ -1,7 +1,7 @@
 {
   "name": "navihive",
   "private": true,
-  "version": "5.0.0",
+  "version": "5.1.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -10,7 +10,7 @@
     "sync:brand": "node script/sync-brand.mjs",
     "check:brand": "node script/sync-brand.mjs --check",
     "test": "node script/unit-tests.mjs",
- "check:budget": "node script/unit-tests.mjs bundleBudget",
+    "check:budget": "node script/unit-tests.mjs bundleBudget",
     "smoke": "node script/ci-smoke.mjs",
     "smoke:selfhost": "node script/selfhost-smoke.mjs",
     "audit:a11y": "node script/a11y-audit.mjs",
@@ -50,7 +50,7 @@
     "@types/markdown-it": "^14.2.0",
     "@types/markdown-it-footnote": "^3.0.4",
     "katex": "^0.19.0",
-    "markdown-it": "^14.3.2",
+    "markdown-it": "^14.3.3",
     "markdown-it-footnote": "^4.0.0",
     "mermaid": "^12.1.0",
     "pinyin-match": "^1.2.10",

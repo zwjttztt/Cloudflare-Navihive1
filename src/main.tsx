@@ -15,7 +15,6 @@ import App from "./App.tsx";
 import BuildBadge from "./components/BuildBadge";
 import { readRememberedLogin } from "./utils/rememberedLogin";
 import { UIPrefsProvider } from "./context/UIPrefsContext";
-import { LocaleProvider } from "./i18n/LocaleProvider";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { applyInputModeClass } from "./utils/device";
 import { setupGlobalHandlers } from "./utils/errorReporter";
@@ -116,15 +115,11 @@ createRoot(document.getElementById("root")!).render(
     <StrictMode>
         {/* 包在所有内容之外：任何组件渲染抛错都被拦成一张可自助恢复的页面，而不是白屏 */}
         <ErrorBoundary>
-            {/* 语言在最外层：t() 是全局只读的，换语言才会引起整棵树重渲染，
-                所以单独一层，不塞进「每项偏好都带同步逻辑」的 UIPrefs 里。 */}
-            <LocaleProvider>
             <UIPrefsProvider>
             {publicGroupToken ? (
                 <Suspense fallback={<p>正在加载分享…</p>}><PublicGroupPage token={publicGroupToken} /></Suspense>
             ) : publicToken ? <Suspense fallback={<p>正在加载分享…</p>}><PublicNotePage token={publicToken} /></Suspense> : <App />}
             </UIPrefsProvider>
-            </LocaleProvider>
             {/* 部署版本徽标（右下角）：公开分享页仍显示，方便核对「跑的是哪一版」；
                 主页面改由 App 内部渲染——记事本页整屏覆盖时隐藏，避免压在正文上。 */}
             {publicGroupToken || publicToken ? <BuildBadge /> : null}

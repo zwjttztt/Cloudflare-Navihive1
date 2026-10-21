@@ -1231,6 +1231,33 @@ html.nav-touch .nav-star-btn[data-starred="false"] {
     transition: opacity 120ms ease;
 }
 
+/* 编辑区的光标颜色与鼠标指针（2026-10-21 用户报「鼠标在第八行里是白的、外面是蓝的，
+   有时候干脆看不见」）。
+   ⚠️ 根因是 `caret-color` 可继承、而 `currentColor` 是在**使用它的那个元素**上解析的：
+   编辑器装了 markdown 语法高亮，光标一旦落进被高亮成蓝色的链接/URL token，光标自己
+   也变成那个 token 的颜色；落进浅色 token 就发白，白底上等于消失。
+   所以这里把颜色**钉死在编辑器这一层**，不让它跟 token 走；亮/暗两态各一个固定值，
+   与正文同色（亮色近黑、暗色近白），任何 token 配色都影响不到它。
+
+   ⚠️ 指针那条是同一类问题：CodeMirror 的装饰块与空白区默认回落到**系统箭头**，
+   而那套箭头在白色底上几乎看不见。编辑器内部一律用文本指针，只有真正能点的
+   元素（链接 / 按钮）才是指针 —— 让「这块能不能点」由指针形状说清楚。 */
+.cm-editor .cm-content {
+    caret-color: #1f2937 !important;
+    cursor: text;
+}
+html.dark .cm-editor .cm-content {
+    caret-color: #f4f4f5 !important;
+}
+.cm-editor .cm-content * {
+    cursor: text;
+}
+.cm-editor .cm-content a,
+.cm-editor .cm-content button,
+.cm-editor .cm-content [role="button"] {
+    cursor: pointer;
+}
+
 /* 编辑区「即时渲染」的渲染块（inkstone 的 .cm-live-block）。
    块内是 React root（Markdown token → ReactNode，无 innerHTML），
    所以这里只管外框的呼吸感与 hover 反馈。 */

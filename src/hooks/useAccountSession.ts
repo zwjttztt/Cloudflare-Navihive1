@@ -389,7 +389,21 @@ export function useAccountSession({
             identityFromBootstrap.current = false;
             recoveryFromBootstrap.current = false;
 
-            const ok = await fetchData();
+            // ⚠️ 2026-10-21：开机后第一次打开要重试。
+            //
+            // 「电脑开机后第一次打开这个网站」恰恰是网络最冷的时刻：DNS 缓存是空的、
+            // TLS 要重新握手、Cloudflare 到这个边缘节点可能还没握过手。老逻辑
+            // **一次失败就下结论**，于是用户看到一个还好好的会话被按在登录页上
+            // （用户原话：「每次电脑开机后第一次打开这个网站还是需要登录」）。
+            //
+            // 前两次静默重试（间隔 900ms，够冷启动的那一两跳缓过来），
+            // 仍然拿不到才走下面的结论。真的会话失效（401）不会因为重试变好，
+            // 所以这不影响「令牌过期该回登录页」那条正确路径。
+            let ok = await fetchData();
+            for (let attempt = 0; !ok && attempt < 2; attempt += 1) {
+                await new Promise(resolve => setTimeout(resolve, 900));
+                ok = await fetchData({ silent: true });
+            }
 
             // 顺带确认是否配置了恢复公钥（未登录也能查，失败就当作未配置，不影响登录）。
             // bootstrap?full=1 已经带回来的话就不用再问一趟（老服务端不带，照旧）。
@@ -408,8 +422,22 @@ export function useAccountSession({
                         onSwitchAccount(me ? me.id : null);
                     })
                     .catch(() => setCurrentUser(null));
-            } else if (!api.isLoggedIn()) {
-                // 本地没有可用令牌
+            } else if (api.isLoggedIn()) {
+                // bootstrap 三次都没拿到数据，但本地标记还在 —— 说明这次失败**不是**
+                // 401（真 401 时 client 的 importError 会把标记清掉，onAuthFail 也已经
+                // 把我们送回登录页了）。多半是网络抖动 / 上游 5xx。
+                // 问一次服务端确认：它还认这张会话就保持已登录（数据交给轮询与离线队列补），
+                // 不认才回登录页。
+                const sessionAlive = await api.checkAuthStatus();
+                if (sessionAlive) {
+                    setIsAuthenticated(true);
+                    setIsAuthRequired(false);
+                } else {
+                    setIsAuthenticated(false);
+                    setIsAuthRequired(true);
+                }
+            } else {
+                // 标记都没了：会话确实不在了（或者这个浏览器从没登录过）
                 setIsAuthenticated(false);
                 setIsAuthRequired(true);
             }

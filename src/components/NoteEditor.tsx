@@ -48,7 +48,9 @@ const theme = EditorView.theme({
     ".cm-content": {
         padding: "16px 8px",
         minHeight: "100%",
-        caretColor: "currentColor",
+        // ⚠️ 这里**不设** caretColor：交给 index.css 的 `.cm-editor .cm-content` 钉死。
+        // 原因见那边注释 —— `currentColor` 会在光标所在的 token 元素上解析，
+        // 于是光标会跟着语法高亮变色（链接 token 里变蓝、浅色 token 里发白到看不见）。
         // ⚠️ 必须钳住宽度（用户报「开启渲染后代码长度过长未出现横向滚轮」）：
         // .cm-scroller 是 flex 容器，cm-content 作为 flex 子项默认 min-width:auto，
         // 会被超长行/渲染块撑到内容宽 —— 即时渲染 widget 里的 <pre>（width:auto）
