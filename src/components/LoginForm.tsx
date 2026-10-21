@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
     TextField,
     Button,
@@ -14,13 +14,13 @@ import {
     Divider,
     InputAdornment,
 } from "@mui/material";
-import LockOutlinedIcon from "@mui/icons-material/LockOutlined";
 import UploadFileIcon from "@mui/icons-material/UploadFile";
 import PersonOutlineIcon from "@mui/icons-material/PersonOutlined";
 import PersonAddAltIcon from "@mui/icons-material/PersonAddAlt";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import { readRememberedLogin } from "../utils/rememberedLogin";
 import { BRAND } from "../brand";
+import { BrandMark } from "./BrandMark";
 import { PasswordField } from "./PasswordField";
 import {
     algLabel,
@@ -33,6 +33,9 @@ import {
 interface LoginFormProps {
     /** 站点名：改过「网站设置 → 标题」就用改过的，没改过回落到品牌名 */
     brandName?: string;
+    /** 品牌区图标下面那句话；默认取 BRAND.description（改站点标题不带动它，
+     *  因为描述存在服务端配置里、要登录后才能取 —— 与 brandName 同思路兜底） */
+    brandTagline?: string;
     /** 提交登录；remember 为是否勾选「记住我」（只延长会话 Cookie，不存密码） */
     onLogin: (username: string, password: string, remember: boolean) => void;
     loading?: boolean;
@@ -61,89 +64,9 @@ interface LoadedKey {
  * （index.html / manifest 里也是同一个名字）。
  */
 
-
-/** 图标候选的等待上限：图标 API 卡住时不能让图标一直空着 */
-const ICON_FALLBACK_MS = 3000;
-
-/**
- * 站点图标候选，按序回落：
- *   1. 本站自带的 favicon.svg / favicon.ico —— 换域名部署图标自动跟着换，不用改代码；
- *   2. 默认图标 API 按当前域名抓一份（本地开发时 hostname 是 localhost，抓不到，跳过）；
- *   3. 都拿不到才回到锁图标。
- */
-function buildIconCandidates(): string[] {
-    if (typeof window === "undefined") return [];
-    const list = ["/favicon.svg", "/favicon.ico"];
-    const host = window.location.hostname;
-    if (host && !/^(localhost|127\.0\.0\.1|\[::1\])$/i.test(host)) {
-        list.push(`https://www.faviconextractor.com/favicon/${host}?larger=true`);
-    }
-    return list;
-}
-
-/** 顶部居中的站点图标：自动取 favicon，取不到逐级回落，最后才是锁图标 */
-const BrandMark: React.FC<{ size?: number }> = ({ size = 64 }) => {
-    const candidates = useMemo(buildIconCandidates, []);
-    const [index, setIndex] = useState(0);
-    const [loaded, setLoaded] = useState(false);
-
-    // 超时或加载失败都换下一个候选；加载成功就撤掉计时器，别把好图标换掉
-    useEffect(() => {
-        if (loaded || index >= candidates.length) return;
-        const timer = window.setTimeout(() => {
-            setLoaded(false);
-            setIndex(i => i + 1);
-        }, ICON_FALLBACK_MS);
-        return () => window.clearTimeout(timer);
-    }, [index, loaded, candidates.length]);
-
-    const src = candidates[index];
-
-    if (!src) {
-        return (
-            <Box
-                sx={{
-                    width: size,
-                    height: size,
-                    borderRadius: 2,
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    bgcolor: "primary.main",
-                    color: "common.white",
-                }}
-            >
-                <LockOutlinedIcon fontSize='large' />
-            </Box>
-        );
-    }
-
-    return (
-        <Box
-            component='img'
-            src={src}
-            alt=''
-            onLoad={() => setLoaded(true)}
-            onError={() => {
-                setLoaded(false);
-                setIndex(i => i + 1);
-            }}
-            sx={{
-                width: size,
-                height: size,
-                borderRadius: 2,
-                objectFit: "contain",
-                p: 0.5,
-                bgcolor: "background.paper",
-                border: "1px solid",
-                borderColor: "divider",
-            }}
-        />
-    );
-};
-
 const LoginForm: React.FC<LoginFormProps> = ({
     brandName = BRAND.name,
+    brandTagline = BRAND.description,
     onLogin,
     loading = false,
     error = null,
@@ -348,7 +271,10 @@ const LoginForm: React.FC<LoginFormProps> = ({
                 p: { xs: 2, sm: 3 },
             }}
         >
-            {/* 品牌区：图标 + 名字一律居中，三个视图共用 */}
+            {/* 品牌区：图标 + 名字 + 一句话介绍一律居中，三个视图共用。
+                A8（2026-10-22）：那句话是「第一屏的产品感」的一半 ——
+                只放一个图标和名字，访客知道这是什么站点但不知道它是干嘛的；
+                一句话说清楚「个人导航站」这个定位，登录框就不再是凭空出现。 */}
             <Stack
                 spacing={0.75}
                 sx={{
@@ -365,6 +291,14 @@ const LoginForm: React.FC<LoginFormProps> = ({
                         letterSpacing: 0.5
                     }}>
                     {brandName}
+                </Typography>
+                <Typography
+                    variant='body2'
+                    color='text.secondary'
+                    data-brand-tagline='1'
+                    sx={{ maxWidth: 320, fontSize: 13 }}
+                >
+                    {brandTagline}
                 </Typography>
             </Stack>
 

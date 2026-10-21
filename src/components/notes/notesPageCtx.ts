@@ -138,6 +138,12 @@ export interface NotesPageCtx {
     openAttachmentFromEditor: (id: string) => void;
     openInSide: (note: Note) => void;
     openNote: (note: Note) => void;
+    /**
+     * 打开「新建笔记」的模板选择菜单（B3）。anchor 是触发那颗按钮 ——
+     * 菜单要贴在它旁边；传 null 时菜单会退到页面左上角（只在没有锚点的
+     * 老入口上用，正常路径都有按钮）。
+     */
+    openTemplatePicker: (anchor: HTMLElement | null, folderId: number | null) => void;
     openRevisions: () => Promise<void>;
     outgoingLinks: Array<ResolvedWikiLink>;
     outline: Array<OutlineItem>;
@@ -252,4 +258,9 @@ export interface NotesPageCtx {
     viewCounts: { all: number; recent: number; starred: number; archived: number; uncategorized: number; trash: number; };
     visibleIds: Array<number>;
     wordCount: number;
+    /** 真·专注模式（A9，2026-10-22）：隐藏导航列 / 列表列 / 工具栏 / 状态栏，只留标题与正文。
+     *  与 uiSettings.focusMode（淡化非当前行）是**两个独立开关**，可以同时开。
+     *  页面级状态、不持久化：刷新或退出记事本自然恢复。 */
+    zenMode: boolean;
+    setZenMode: React.Dispatch<React.SetStateAction<boolean>>;
 }

@@ -1929,13 +1929,23 @@ test("点内联笔记能打开它；文件夹视图里新建笔记会落进该�
     });
     assert.equal(getEditor().value, "x", "点内联笔记要切到那条笔记");
 
-    // 新建笔记 → folder_id 落在这个文件夹上
+    // 新建笔记 → 先弹模板选择（B3，2026-10-22），选「空白笔记」才真建，
+    // 且 folder_id 落在当前选中的文件夹上
     const newBtn = document.querySelector('button[aria-label="新建笔记"]') as HTMLElement;
     assert.ok(newBtn, "左栏文件夹那节要有新建笔记");
     await act(async () => {
         newBtn.click();
     });
-    assert.equal(created.length, 1, "应新建了一条");
+    // B3：点开的是模板菜单，不是直接建（「先选再建」是本条要守的新行为）
+    assert.equal(created.length, 0, "B3 起点开模板菜单，不该直接建");
+    assert.ok(
+        document.querySelector('[data-template="blank"]'),
+        "模板菜单要有「空白笔记」这一项"
+    );
+    await act(async () => {
+        (document.querySelector('[data-template="blank"]') as HTMLElement).click();
+    });
+    assert.equal(created.length, 1, "选了空白笔记才建");
     assert.equal(created[0]?.folder_id, 7, "新建的笔记要落进当前文件夹，实际 " + JSON.stringify(created[0]));
 });
 
@@ -3239,11 +3249,16 @@ test("中栏头部有 排序 / 新建笔记 / 收起，收起后中栏真的消�
     assert.ok(byTitle, "排序菜单里要有「按标题」");
     await act(async () => byTitle.click());
 
-    // 新建笔记
+    // 新建笔记：B3（2026-10-22）起先弹模板选择，选「空白笔记」才真建
     await act(async () =>
         (document.querySelector("[data-tool='list-new-note']") as HTMLElement).click()
     );
-    assert.equal(created, 1, "点中栏的新建笔记要真的建一条");
+    assert.equal(created, 0, "B3：点开的是模板菜单，不该直接建");
+    assert.ok(document.querySelector("[data-template='blank']"), "菜单里要有「空白笔记」");
+    await act(async () =>
+        (document.querySelector("[data-template='blank']") as HTMLElement).click()
+    );
+    assert.equal(created, 1, "选了空白笔记才真的建一条");
 
     // 收起
     await act(async () =>
@@ -5202,7 +5217,10 @@ test("主行必须 minWidth:0（否则超长代码块把整行顶出视口）", 
     // 注释里的「主体：desktop」早就被剥掉了，indexOf 返回 −1、slice 出空串，
     // 断言会永远红（这条测试第一版就这么栽了）。
     const body = src.slice(
-        src.indexOf('display: bp === "mobile" && !mobileDetail ? "none" : "flex"'),
+        // ⚠️ 锚点跟着源码走：2026-10-22 A9 给这个判据补了 && !zenMode
+        // （专注模式下 mobile 也要显示编辑区），锚点字符串必须同步改，
+        // 不然 indexOf 返回 −1、slice 出空串，这条断言会永远红。
+        src.indexOf('display: bp === "mobile" && !mobileDetail && !zenMode ? "none" : "flex"'),
         src.indexOf("data-pane-divider")
     );
     assert.ok(body.length > 0, "定位不到主体那一段");

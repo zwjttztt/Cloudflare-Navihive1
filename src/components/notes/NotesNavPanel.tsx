@@ -12,8 +12,8 @@ import AttachmentIcon from "@mui/icons-material/AttachFile";
 import { tagNamesOf, NavRow, FolderTagSection } from "../notes/sidebarSection";
 import type { NotesPageCtx } from "./notesPageCtx";
 
-export default function NotesNavPanel(props: Pick<NotesPageCtx, "accountName" | "activeFolder" | "activeId" | "activeTag" | "askName" | "attManagerOpen" | "folderCounts" | "folderTags" | "folders" | "jumpToNote" | "keyword" | "listCollapsed" | "narrowLayout" | "noteTags" | "notes" | "notesInFolder" | "onClose" | "onCreate" | "onUpdate" | "renderSearchField" | "searchRef" | "setActiveFolder" | "setActiveTag" | "setAppearanceFolderId" | "setAttManagerOpen" | "setListCollapsed" | "setMiddleHidden" | "setNavDrawerOpen" | "setRemoveTarget" | "setRowMenu" | "setSettingsOpen" | "setTagColorId" | "setView" | "startCreateInFolder" | "tagCounts" | "tags" | "uploadApi" | "view" | "viewCounts">) {
-    const { accountName, activeFolder, activeId, activeTag, askName, attManagerOpen, folderCounts, folderTags, folders, jumpToNote, keyword, listCollapsed, narrowLayout, noteTags, notes, notesInFolder, onClose, onUpdate, renderSearchField, searchRef, setActiveFolder, setActiveTag, setAppearanceFolderId, setAttManagerOpen, setListCollapsed, setMiddleHidden, setNavDrawerOpen, setRemoveTarget, setRowMenu, setSettingsOpen, setTagColorId, setView, startCreateInFolder, tagCounts, tags, uploadApi, view, viewCounts } = props;
+export default function NotesNavPanel(props: Pick<NotesPageCtx, "accountName" | "activeFolder" | "activeId" | "activeTag" | "askName" | "attManagerOpen" | "folderCounts" | "folderTags" | "folders" | "jumpToNote" | "keyword" | "listCollapsed" | "narrowLayout" | "noteTags" | "notes" | "notesInFolder" | "onClose" | "onCreate" | "onUpdate" | "openTemplatePicker" | "renderSearchField" | "searchRef" | "setActiveFolder" | "setActiveTag" | "setAppearanceFolderId" | "setAttManagerOpen" | "setListCollapsed" | "setMiddleHidden" | "setNavDrawerOpen" | "setRemoveTarget" | "setRowMenu" | "setSettingsOpen" | "setTagColorId" | "setView" | "startCreateInFolder" | "tagCounts" | "tags" | "uploadApi" | "view" | "viewCounts">) {
+    const { accountName, activeFolder, activeId, activeTag, askName, attManagerOpen, folderCounts, folderTags, folders, jumpToNote, keyword, listCollapsed, narrowLayout, noteTags, notes, notesInFolder, onClose, onUpdate, openTemplatePicker, renderSearchField, searchRef, setActiveFolder, setActiveTag, setAppearanceFolderId, setAttManagerOpen, setListCollapsed, setMiddleHidden, setNavDrawerOpen, setRemoveTarget, setRowMenu, setSettingsOpen, setTagColorId, setView, startCreateInFolder, tagCounts, tags, uploadApi, view, viewCounts } = props;
     return (
             <>
             {/* 迷你顶栏（2026-10-10 调整）：返回箭头贴左（箭头朝左），「记事本」居中，
@@ -154,7 +154,8 @@ export default function NotesNavPanel(props: Pick<NotesPageCtx, "accountName" | 
                     })
                 }
                 onAskRemove={(id, name) => setRemoveTarget({ kind: "folder", id, name })}
-                onCreateNote={() => void startCreateInFolder(activeFolder)}
+                // B3：左栏这颗也走模板选择（anchor 由 sidebarSection 传进来）
+                onCreateNote={anchor => openTemplatePicker(anchor, activeFolder)}
                 childrenOf={notesInFolder}
                 activeNoteId={activeId}
                 onOpenNote={id => { setNavDrawerOpen(false); void jumpToNote(id); }}

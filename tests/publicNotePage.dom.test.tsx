@@ -125,8 +125,10 @@ test("匿名 GET 成功：显示标题与正文，并把标签页标题换成笔
 test("正文里的附件路径被改写成免鉴权通道（访客没有 cookie，原路径会 401）", async () => {
     stubFetch([okNote({ content: "![图](/api/notes/attachments/ab12-cd34)" })]);
     mount();
-    await waitFor("图片出现", () => !!document.querySelector("img"));
-    const src = document.querySelector("img")!.getAttribute("src");
+    // ⚠️ 限定在 article 里找：2026-10-22 B5 加了品牌头，页面顶部那颗 favicon
+    // 也是 <img>，不加限定的 querySelector("img") 会先命中它。
+    await waitFor("图片出现", () => !!document.querySelector("article img"));
+    const src = document.querySelector("article img")!.getAttribute("src");
     // 必须是 /api/note-shares/attachments/<id>?share=<token>：老路径挂在登录鉴权后面
     assert.equal(
         src,
@@ -220,4 +222,86 @@ test("提交口令时网络层抛错：提示错误且不崩", async () => {
     await submitPw("whatever");
     await waitFor("错误提示出现", () => formError().length > 0);
     assert.equal(formError(), "网络层失败", "网络错误要把原因显示出来");
+});
+
+// ---------- B5 分享页增强（2026-10-22）：品牌头 + 复制为 Markdown ----------
+
+/** 把 navigator.clipboard 换成记录桩（jsdom 没有它，且非安全上下文会走降级路径） */
+function stubClipboard() {
+    const written: string[] = [];
+    Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: { writeText: async (text: string) => { written.push(text); } },
+    });
+    Object.defineProperty(window, "isSecureContext", { configurable: true, value: true });
+    return {
+        written,
+        restore() {
+            Object.defineProperty(window, "isSecureContext", { configurable: true, value: false });
+            // @ts-expect-error 测试替身，删掉即可
+            delete navigator.clipboard;
+        },
+    };
+}
+
+test("品牌头：图标 + 站点名 + 「记事本 · 只读分享」", async () => {
+    stubFetch([okNote()]);
+    mount();
+    await waitFor("正文出现", () => pageText().includes("正文里有 E2E 标记"));
+    const header = document.querySelector("[data-share-brand='1']");
+    assert.ok(header, "分享页要有品牌头（分享出去得让人知道这是谁家的东西）");
+    assert.ok((header?.textContent ?? "").includes("Navihive 导航站"), "品牌头要带站点名");
+    assert.ok((header?.textContent ?? "").includes("记事本"), "品牌头要说明这是记事本分享");
+    assert.ok((header?.textContent ?? "").includes("只读"), "品牌头要说明只读性质");
+});
+
+test("「复制为 Markdown」：把原始源码写进剪贴板，并播报结果", async () => {
+    const clip = stubClipboard();
+    try {
+        stubFetch([okNote({ content: "# 标题\n\n**加粗**的正文。" })]);
+        mount();
+        await waitFor("正文出现", () => pageText().includes("加粗"));
+        const btn = document.querySelector<HTMLButtonElement>("[data-tool='copy-markdown']");
+        assert.ok(btn, "要有「复制为 Markdown」按钮");
+        await act(async () => { btn!.click(); await Promise.resolve(); });
+        assert.equal(clip.written.length, 1, "要写一次剪贴板");
+        assert.equal(clip.written[0], "# 标题\n\n**加粗**的正文。", "复制的是**原始 Markdown**，不是渲染后的 HTML");
+        const hint = document.querySelector("[data-copy-hint='1']");
+        assert.equal(hint?.textContent, "已复制 Markdown 原文", "成功要给反馈");
+        assert.equal(hint?.getAttribute("aria-live"), "polite", "反馈要能被读屏播报");
+    } finally {
+        clip.restore();
+    }
+});
+
+test("复制失败（剪贴板被拒）：提示手动复制，不静默", async () => {
+    Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: { writeText: async () => { throw new Error("denied"); } },
+    });
+    Object.defineProperty(window, "isSecureContext", { configurable: true, value: true });
+    try {
+        stubFetch([okNote()]);
+        mount();
+        await waitFor("正文出现", () => pageText().includes("正文里有 E2E 标记"));
+        await act(async () => {
+            document.querySelector<HTMLButtonElement>("[data-tool='copy-markdown']")!.click();
+            await Promise.resolve();
+        });
+        const hint = document.querySelector("[data-copy-hint='1']");
+        assert.equal(hint?.textContent, "复制失败，请手动选择正文复制", "失败要说清楚，别让用户以为复制成功了");
+    } finally {
+        Object.defineProperty(window, "isSecureContext", { configurable: true, value: false });
+        // @ts-expect-error 测试替身，删掉即可
+        delete navigator.clipboard;
+    }
+});
+
+test("空正文不给复制按钮（没什么可复制的）", async () => {
+    stubFetch([okNote({ content: "" })]);
+    mount();
+    await waitFor("标题出现", () => pageText().includes("分享验收笔记"));
+    const btn = document.querySelector<HTMLButtonElement>("[data-tool='copy-markdown']");
+    assert.ok(btn, "按钮还在（布局不跳）");
+    assert.equal(btn!.disabled, true, "但要点不动 —— 空笔记复制过去是空的");
 });

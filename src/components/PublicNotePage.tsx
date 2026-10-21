@@ -2,19 +2,31 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { renderMarkdownToReact } from "../utils/markdownToReact";
 import { Button, TextField, Typography } from "@mui/material";
 import { parseApiError } from "../API/apiError";
+import { copyToClipboard } from "../utils/clipboard";
+import { BrandMark } from "./BrandMark";
+import { BRAND } from "../brand";
 
 // 公开分享页（/s/:token）：无需登录，只读。
 //
 // 为什么单独一个页面而不是复用 NotesPage：这一页要能被聊天软件抓成预览卡片，
 // 所以不能带任何登录态外壳；后端那边也明确回 noindex + no-store
 // （分享链接等同于私密链接，不该被索引）。
+//
+// B5（2026-10-22）分享页增强：① 顶部品牌头（图标 + 站点名 + 「记事本 · 只读分享」）
+// —— 分享出去首先得让人知道这是谁家的东西，而不是一块裸正文；
+// ② 「复制为 Markdown」—— 收到分享的人最常见的动作就是「抄走改改用」，
+// 给他原文比让他对着渲染结果手打强。阅读进度条按计划后置，先不做。
 export default function PublicNotePage({ token }: { token: string }) {
     const [title, setTitle] = useState("只读分享");
     const [body, setBody] = useState<ReactNode>("正在加载…");
+    /** 原始 Markdown 源码：只给「复制为 Markdown」用（渲染走的是 body） */
+    const [rawContent, setRawContent] = useState("");
     const [needPw, setNeedPw] = useState(false);
     const [pw, setPw] = useState("");
     const [pwError, setPwError] = useState("");
     const [pwBusy, setPwBusy] = useState(false);
+    /** 复制按钮的反馈（aria-live 播报） */
+    const [copyHint, setCopyHint] = useState("");
     // 标签页标题换成笔记标题（对齐 inkstone 的 SharePage）——
     // 否则一串分享链接在浏览器里全叫「Navihive 导航站」，根本分不出是哪条笔记。
     //
@@ -55,6 +67,7 @@ export default function PublicNotePage({ token }: { token: string }) {
         const shown = note.title || "无标题";
         setTitle(shown);
         setBody(rendered);
+        setRawContent(note.content);
         document.title = shown;
         appliedTitle.current = shown;
         setNeedPw(false);
@@ -90,16 +103,26 @@ export default function PublicNotePage({ token }: { token: string }) {
         try {
             await load(pw);
         } catch (error) {
-            setPwError(error instanceof Error ? error.message : "无法加载分享");
+            setPwError(error instanceof Error ? error.message : "无法加载口令");
         } finally {
             setPwBusy(false);
         }
     };
 
+    /** 复制为 Markdown：给「收到分享想抄走改改用」的人。空正文不给按钮 */
+    const copyMarkdown = async () => {
+        if (!rawContent) {
+            setCopyHint("这条笔记是空的，没什么可复制");
+            return;
+        }
+        const ok = await copyToClipboard(rawContent);
+        setCopyHint(ok ? "已复制 Markdown 原文" : "复制失败，请手动选择正文复制");
+    };
+
     if (needPw) {
         return (
             <main style={{ maxWidth: 420, margin: "0 auto", padding: "24px", overflowWrap: "anywhere" }}>
-                <p>记事本 · 只读分享</p>
+                <BrandHeader />
                 <h1>需要访问口令</h1>
                 <form onSubmit={submitPw} style={{ display: "flex", flexDirection: "column", gap: 12, marginTop: 8 }}>
                     <TextField
@@ -127,7 +150,58 @@ export default function PublicNotePage({ token }: { token: string }) {
         );
     }
 
-    return <main style={{ maxWidth: 900, margin: "0 auto", padding: "24px", overflowWrap: "anywhere" }}>
-        <p>记事本 · 只读分享</p><h1>{title}</h1><article>{body}</article>
-    </main>;
+    return (
+        <main style={{ maxWidth: 900, margin: "0 auto", padding: "24px", overflowWrap: "anywhere" }}>
+            <BrandHeader />
+            <div style={{ display: "flex", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
+                <h1 style={{ margin: 0, flex: 1, minWidth: 240 }}>{title}</h1>
+                <Button
+                    size='small'
+                    variant='outlined'
+                    data-tool='copy-markdown'
+                    onClick={() => void copyMarkdown()}
+                    disabled={!rawContent}
+                >
+                    复制为 Markdown
+                </Button>
+            </div>
+            {/* 复制反馈：aria-live 让读屏也播得到；文字同时给看得见的人 */}
+            <Typography
+                variant='caption'
+                data-copy-hint='1'
+                aria-live='polite'
+                sx={{ display: "block", minHeight: 18, color: "text.secondary" }}
+            >
+                {copyHint}
+            </Typography>
+            <article>{body}</article>
+        </main>
+    );
+}
+
+/**
+ * 品牌头图：图标 + 站点名 + 页面性质。
+ * 「记事本 · 只读分享」这半句必须留着 —— 它告诉访客「这是别人分享给你的一篇
+ * 笔记，不是这个网站的公开内容」，省得有人以为闯进了别人的主页。
+ */
+function BrandHeader() {
+    return (
+        <header
+            data-share-brand='1'
+            style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 10,
+                marginBottom: 16,
+                paddingBottom: 12,
+                borderBottom: "1px solid rgba(128,128,128,0.2)",
+            }}
+        >
+            <BrandMark size={32} />
+            <div style={{ minWidth: 0 }}>
+                <div style={{ fontWeight: 600, fontSize: 14, lineHeight: 1.3 }}>{BRAND.fullName}</div>
+                <div style={{ fontSize: 12, opacity: 0.65 }}>记事本 · 只读分享</div>
+            </div>
+        </header>
+    );
 }

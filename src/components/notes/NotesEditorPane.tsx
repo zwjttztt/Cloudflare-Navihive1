@@ -14,6 +14,8 @@ import ShareIcon from "@mui/icons-material/Share";
 import ListIcon from "@mui/icons-material/List";
 import PushPinIcon from "@mui/icons-material/PushPin";
 import PushPinOutlinedIcon from "@mui/icons-material/PushPinOutlined";
+import CenterFocusStrongIcon from "@mui/icons-material/CenterFocusStrong";
+import FullscreenExitIcon from "@mui/icons-material/FullscreenExit";
 import StarIcon from "@mui/icons-material/Star";
 import StarBorderIcon from "@mui/icons-material/StarBorder";
 import BacklinksPanel from "../BacklinksPanel";
@@ -27,8 +29,8 @@ import { PANE_HEADER_H, SPLIT_KEY, STATUSBAR_H, SaveDot } from "../notes/paneChr
 import { findIndexedSite } from "../../utils/siteIndex";
 import type { NotesPageCtx } from "./notesPageCtx";
 
-export default function NotesEditorPane(props: Pick<NotesPageCtx, "active" | "activeFolderName" | "activeId" | "activeTagNames" | "backlinks" | "backlinksOpen" | "charCount" | "checked" | "completionSources" | "dirty" | "draft" | "folderTags" | "handleAttach" | "handleOpenEmbedNote" | "handleToggleTask" | "handleUpload" | "jumpToNote" | "jumpToOffset" | "liveRender" | "liveRenderer" | "mainShortcutActions" | "narrowLayout" | "notes" | "onClose" | "onNotify" | "onTogglePin" | "onToggleStar" | "openAttachmentFromEditor" | "openRevisions" | "outline" | "outlineActiveLine" | "outlineOpen" | "pane" | "previewFeatures" | "previewScrollRef" | "replaceDetachedUpload" | "resolveNote" | "saveState" | "savedAt" | "setActiveFolder" | "setActiveMenuAnchor" | "setActiveTag" | "setBacklinksOpen" | "setDraft" | "setExportAnchor" | "setLightbox" | "setLiveRender" | "setOutlineActiveLine" | "setOutlineOpen" | "setPane" | "setShareId" | "setSplitRatio" | "setView" | "shareApi" | "sideId" | "splitBoxRef" | "splitRatio" | "splitRatioRef" | "startSplitDrag" | "syncPreviewScroll" | "tags" | "textareaRef" | "tick" | "tools" | "uiSettings" | "uploadApi" | "uploadImageForEditor" | "view" | "wordCount">) {
-    const { active, activeFolderName, activeTagNames, backlinks, backlinksOpen, charCount, completionSources, dirty, draft, folderTags, handleAttach, handleOpenEmbedNote, handleToggleTask, handleUpload, jumpToNote, jumpToOffset, liveRender, liveRenderer, mainShortcutActions, narrowLayout, notes, onNotify, onTogglePin, onToggleStar, openAttachmentFromEditor, openRevisions, outline, outlineActiveLine, outlineOpen, pane, previewFeatures, previewScrollRef, replaceDetachedUpload, resolveNote, saveState, savedAt, setActiveFolder, setActiveMenuAnchor, setActiveTag, setBacklinksOpen, setDraft, setExportAnchor, setLightbox, setLiveRender, setOutlineActiveLine, setOutlineOpen, setPane, setShareId, setSplitRatio, setView, shareApi, sideId, splitBoxRef, splitRatio, splitRatioRef, startSplitDrag, syncPreviewScroll, tags, textareaRef, tick, tools, uiSettings, uploadApi, uploadImageForEditor, view, wordCount } = props;
+export default function NotesEditorPane(props: Pick<NotesPageCtx, "active" | "activeFolderName" | "activeId" | "activeTagNames" | "backlinks" | "backlinksOpen" | "charCount" | "checked" | "completionSources" | "dirty" | "draft" | "folderTags" | "handleAttach" | "handleOpenEmbedNote" | "handleToggleTask" | "handleUpload" | "jumpToNote" | "jumpToOffset" | "liveRender" | "liveRenderer" | "mainShortcutActions" | "narrowLayout" | "notes" | "onClose" | "onNotify" | "onTogglePin" | "onToggleStar" | "openAttachmentFromEditor" | "openRevisions" | "outline" | "outlineActiveLine" | "outlineOpen" | "pane" | "previewFeatures" | "previewScrollRef" | "replaceDetachedUpload" | "resolveNote" | "saveState" | "savedAt" | "setActiveFolder" | "setActiveMenuAnchor" | "setActiveTag" | "setBacklinksOpen" | "setDraft" | "setExportAnchor" | "setLightbox" | "setLiveRender" | "setOutlineActiveLine" | "setOutlineOpen" | "setPane" | "setShareId" | "setSplitRatio" | "setView" | "shareApi" | "sideId" | "splitBoxRef" | "splitRatio" | "splitRatioRef" | "startSplitDrag" | "syncPreviewScroll" | "tags" | "textareaRef" | "tick" | "tools" | "uiSettings" | "uploadApi" | "uploadImageForEditor" | "view" | "wordCount" | "zenMode" | "setZenMode">) {
+    const { active, activeFolderName, activeTagNames, backlinks, backlinksOpen, charCount, completionSources, dirty, draft, folderTags, handleAttach, handleOpenEmbedNote, handleToggleTask, handleUpload, jumpToNote, jumpToOffset, liveRender, liveRenderer, mainShortcutActions, narrowLayout, notes, onNotify, onTogglePin, onToggleStar, openAttachmentFromEditor, openRevisions, outline, outlineActiveLine, outlineOpen, pane, previewFeatures, previewScrollRef, replaceDetachedUpload, resolveNote, saveState, savedAt, setActiveFolder, setActiveMenuAnchor, setActiveTag, setBacklinksOpen, setDraft, setExportAnchor, setLightbox, setLiveRender, setOutlineActiveLine, setOutlineOpen, setPane, setShareId, setSplitRatio, setView, shareApi, sideId, splitBoxRef, splitRatio, splitRatioRef, startSplitDrag, syncPreviewScroll, tags, textareaRef, tick, tools, uiSettings, uploadApi, uploadImageForEditor, view, wordCount, zenMode, setZenMode } = props;
     return (
         <Box
             data-editor-pane='1'
@@ -90,8 +92,9 @@ export default function NotesEditorPane(props: Pick<NotesPageCtx, "active" | "ac
                             有一份（见下面 data-active-op='live-render'）。
                             ⚠️ 2026-10-10 用户明确：分屏（侧边打开）时主栏头部要和
                             侧边栏头部**一模一样**（只是没有关闭键）—— 侧边栏头部
-                            常显这个开关，主栏也常显，不再收进菜单。 */}
-                        {!narrowLayout && (
+                            常显这个开关，主栏也常显，不再收进菜单。
+                            ⚠️ 专注模式（A9）下不渲染：头部只留标题 + 退出键。 */}
+                        {!narrowLayout && !zenMode && (
                         <Box sx={{ display: "flex", alignItems: "center", gap: 0.25, flexShrink: 0, mr: 0.5 }}>
                             <Typography variant='caption' color='text.secondary' sx={{ fontSize: 11, whiteSpace: "nowrap" }}>
                                 即时渲染
@@ -106,6 +109,29 @@ export default function NotesEditorPane(props: Pick<NotesPageCtx, "active" | "ac
                             />
                         </Box>
                         )}
+                        {/* 真·专注模式（A9）入口。与设置里那个「专注模式」（淡化非当前行）
+                            是两个独立开关：那个在**编辑器内部**管注意力，这个把**页面外围**
+                            （导航列 / 列表列 / 工具栏 / 状态栏）整个收掉，只留标题与正文。
+                            Esc 退出，所以 tooltip 要把这句说出来 —— 不然用户不知道咋出去。 */}
+                        {!zenMode && (
+                            <Tooltip title='专注模式（Esc 退出）'>
+                                <span>
+                                    <IconButton
+                                        size='small'
+                                        aria-label='专注模式'
+                                        data-tool='zen'
+                                        disabled={!active}
+                                        onClick={() => setZenMode(true)}
+                                        sx={{
+                                            width: 28, height: 28, flexShrink: 0,
+                                            color: "text.secondary",
+                                        }}
+                                    >
+                                        <CenterFocusStrongIcon fontSize='small' />
+                                    </IconButton>
+                                </span>
+                            </Tooltip>
+                        )}
                         {/* 模式切换：**框起来的一组图标**（inkstone 同款）。
                             ⚠️ 之前是「宽屏文字按钮 + 小屏图标」两套，宽屏下三个
                             「编辑/分栏/预览」文字把标题行撑得很宽，两栏并排时
@@ -113,7 +139,9 @@ export default function NotesEditorPane(props: Pick<NotesPageCtx, "active" | "ac
                             外框，选中项填底色。aria-label 保持中文，测试与读屏不受影响。
                             ⚠️ 2026-10-10 用户明确：分屏时这一组**回到头部常驻**，
                             与侧边栏头部一致（侧边栏那组一直常显，半宽塞得下；
-                            之前收进菜单反而造成左右两侧头部不对称）。 */}
+                            之前收进菜单反而造成左右两侧头部不对称）。
+                            ⚠️ 专注模式（A9）下不渲染。 */}
+                        {!zenMode && (
                         <Box
                             data-pane-modes='1'
                             sx={{
@@ -156,9 +184,31 @@ export default function NotesEditorPane(props: Pick<NotesPageCtx, "active" | "ac
                             </Tooltip>
                     ))}
                 </Box>
+                        )}
                         {/* 保存状态（inkstone 的 SaveIndicator 就挂在头部这一排）。
-                            之前它写在状态栏右端，于是那一行既报长度又报状态，26px 塞不下。 */}
+                            之前它写在状态栏右端，于是那一行既报长度又报状态，26px 塞不下。
+                            ⚠️ 专注模式（A9）下**保留**：它是唯一还在报「存没存」的东西，
+                            藏了用户会以为专注模式下不自动保存、写完不敢退。 */}
                         <SaveDot state={saveState} dirty={dirty} savedAt={savedAt} now={tick} />
+                        {/* 专注模式退出键： Esc 的同义词，给不用键盘的人。
+                            放在 SaveDot 右边（原来 pin 组的位置）—— 头部 zen 态就
+                            「标题 + 保存状态 + 这一颗」。 */}
+                        {zenMode && (
+                            <Tooltip title='退出专注模式（Esc）'>
+                                <IconButton
+                                    size='small'
+                                    aria-label='退出专注模式'
+                                    data-tool='zen-exit'
+                                    onClick={() => setZenMode(false)}
+                                    sx={{
+                                        width: 28, height: 28, flexShrink: 0, mr: 0.5,
+                                        color: "var(--accent)",
+                                    }}
+                                >
+                                    <FullscreenExitIcon fontSize='small' />
+                                </IconButton>
+                            </Tooltip>
+                        )}
                         {/* ⚠️ P0-3（2026-10-07）：把两个高频动作从「⋯」里提到头部常驻。
                             inkstone 的头部右侧是平铺的一排图标（Workspace.tsx:425-472）：
                             更多 / 收藏 / 反向链接 / 版本历史 / 导出 / 大纲 / 分享。
@@ -168,7 +218,7 @@ export default function NotesEditorPane(props: Pick<NotesPageCtx, "active" | "ac
                             ⚠️ 2026-10-09 用户明确：**分屏（侧边打开）时照 inkstone 收进「更多」** ——
                             半宽的两栏塞不下这排，头部只留三档 + 保存状态 + 「⋯」。
                             条件渲染（不是 display:none）：元素要真的从 DOM 卸掉。 */}
-                        {sideId === null && (
+                        {sideId === null && !zenMode && (
                         <Box sx={{ display: "flex", flexShrink: 0, alignItems: "center", gap: 0.25, mr: 0.5 }}>
                             <Tooltip title={active?.pinned ? "取消置顶" : "置顶"}>
                                 <span>
@@ -234,7 +284,7 @@ export default function NotesEditorPane(props: Pick<NotesPageCtx, "active" | "ac
                             ⚠️ 2026-10-09：分屏（侧边打开）时同样不渲染 —— 半宽塞不下，
                             inkstone 分屏也是全收进 groupedItems 菜单，对应菜单项在
                             分屏时会重新出现（见下面那组 narrowLayout || sideOpen 条件）。 */}
-                        {!narrowLayout && sideId === null && (
+                        {!narrowLayout && sideId === null && !zenMode && (
                         <Box
                             data-desktop-actions='1'
                             sx={{ flexShrink: 0, alignItems: "center", gap: 0.25, mr: 0.5, display: "flex" }}
@@ -301,8 +351,10 @@ export default function NotesEditorPane(props: Pick<NotesPageCtx, "active" | "ac
                         </Box>
                         )}
                         {/* 当前笔记的操作入口。顶栏拆掉后，只读分享 / 版本历史 / 大纲 /
-                            反向链接也收进了这个菜单（见下面 data-active-op 那几项）。 */}
+                            反向链接也收进了这个菜单（见下面 data-active-op 那几项）。
+                            专注模式（A9）下不渲染。 */}
                         {/* 「更多操作」独立成组，紧贴模式控件右侧 */}
+                        {!zenMode && (
                         <Box sx={{ display: "flex", flexShrink: 0 }}>
                             <Tooltip title='更多操作'>
                                 <IconButton
@@ -318,12 +370,14 @@ export default function NotesEditorPane(props: Pick<NotesPageCtx, "active" | "ac
                                 </IconButton>
                         </Tooltip>
                         </Box>
+                        )}
                     </Box>
 
                     {/* 格式工具栏：照 inkstone 那一排。放在标题与内容区之间，
                         点一下在光标处插入语法 —— 省得手打 `**` 和 `- [ ]`。
-                        设置里可以整个关掉（uiSettings.showToolbar）。 */}
-                    {uiSettings.showToolbar && (
+                        设置里可以整个关掉（uiSettings.showToolbar）；
+                        专注模式（A9）下同样不渲染（「只留正文」包括这条）。 */}
+                    {uiSettings.showToolbar && !zenMode && (
                     <MarkdownToolbar
                         onInsert={tools.insertAtCursor}
                         onLinePrefix={tools.toggleLinePrefix}
@@ -599,8 +653,9 @@ export default function NotesEditorPane(props: Pick<NotesPageCtx, "active" | "ac
                         )}
                     </Box>
                     {/* 大纲面板：当前这条笔记的标题层级，常驻在预览右侧。
-                        没标题时给一句说明，别给一块空白让人以为功能坏了。 */}
-                    {outlineOpen && (
+                        没标题时给一句说明，别给一块空白让人以为功能坏了。
+                        专注模式（A9）下不渲染。 */}
+                    {outlineOpen && !zenMode && (
                         <Box
                             data-outline-panel='1'
                             sx={{
@@ -686,8 +741,9 @@ export default function NotesEditorPane(props: Pick<NotesPageCtx, "active" | "ac
                         </Box>
                     )}
                     {/* 反链右侧常驻面板（N4）：与大纲面板同一列位置。
-                        窄屏不渲染（头部那组平铺按钮窄屏本来就不出现，反链仍走「⋯」菜单）。 */}
-                    {backlinksOpen && !narrowLayout && (
+                        窄屏不渲染（头部那组平铺按钮窄屏本来就不出现，反链仍走「⋯」菜单）。
+                        专注模式（A9）下不渲染。 */}
+                    {backlinksOpen && !narrowLayout && !zenMode && (
                         <BacklinksPanel
                             open
                             onClose={() => setBacklinksOpen(false)}
@@ -707,7 +763,9 @@ export default function NotesEditorPane(props: Pick<NotesPageCtx, "active" | "ac
                         ① 不再显示行号与光标位置（inkstone 也没有，行号是编辑器的东西，
                            摆在状态栏只会跟 CodeMirror 的行号槽重复）；
                         ② 保存状态搬去了标题行（inkstone 的 SaveIndicator 就在头部），
-                           这里只管「这篇多长、它是谁」。 */}
+                           这里只管「这篇多长、它是谁」。
+                        ⚠️ 专注模式（A9）下整条不渲染：「只留正文」就只剩标题 + 正文 + 保存点。 */}
+                    {!zenMode && (
                     <Box
                         data-statusbar='1'
                         sx={{
@@ -758,6 +816,7 @@ export default function NotesEditorPane(props: Pick<NotesPageCtx, "active" | "ac
                             </span>
                         )}
                     </Box>
+                    )}
                 </>
             )}
         </Box>

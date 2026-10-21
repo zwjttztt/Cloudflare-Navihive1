@@ -237,8 +237,12 @@ export function FolderTagSection({
     /**
      * 只有「文件夹」这一节传：把「新建笔记」挪到左栏文件夹标题右侧，
      * 和「新建文件夹」并排（参考 inkstone 布局），顶栏那个原位按钮就去掉了。
+     *
+     * B3（2026-10-22）起带 anchor 参数：上层拿它去弹「模板选择」菜单
+     * （空白 / 日报 / 会议 / 读书笔记）。不想选模板的快捷路径是
+     * 右键菜单里的「在此新建笔记」（onCreateNoteIn）。
      */
-    onCreateNote?: () => void;
+    onCreateNote?: (anchor: HTMLElement) => void;
     /**
      * 「重命名 / 删除」交给上层弹窗处理。
      * 之前这个组件内部直接调 window.prompt / window.confirm ——
@@ -340,7 +344,11 @@ export function FolderTagSection({
                         <IconButton
                             size='small'
                             aria-label='新建笔记'
-                            onClick={onCreateNote}
+                            data-tool='nav-new-note'
+                            // B3：anchor 交给上层弹模板选择（空白 / 日报 / 会议 / 读书）。
+                            // 之前这里直接建空白笔记 —— 现在改成「先选模板」，
+                            // 直接建空白的那条路还在右键菜单「在此新建笔记」。
+                            onClick={e => onCreateNote(e.currentTarget)}
                             sx={{ p: 0.25 }}
                         >
                             <NoteAddIcon fontSize='inherit' />

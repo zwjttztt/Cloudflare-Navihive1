@@ -315,6 +315,8 @@ import NotesEditorPane from "./notes/NotesEditorPane";
 import NotesSidePane from "./notes/NotesSidePane";
 import NotesOverlayLayer from "./notes/NotesOverlayLayer";
 import NotesConfirmLayer from "./notes/NotesConfirmLayer";
+import NoteTemplateMenu from "./notes/NoteTemplateMenu";
+import { noteTemplateDraft, type NoteTemplateId } from "../utils/noteTemplates";
 import type { NotesPageCtx } from "./notes/notesPageCtx";
 import type { NoteView, Pane } from "./notes/notesPageCtx";
 
@@ -570,6 +572,34 @@ export default function NotesPage({
     /** 草稿：编辑期间不立刻写库（点「保存」或切走才提交） */
     const [draft, setDraft] = useState<{ title: string; content: string } | null>(null);
     const [mobileDetail, setMobileDetail] = useState(false);
+    /**
+     * 真·专注模式（A9，2026-10-22）：只留标题与正文。
+     *
+     * 为什么是页面级 state 而不是又一个 uiSettings 开关：它是「现在想安静写一会儿」
+     * 的临时状态，Esc 就该没；存进 localStorage 的话，下次打开记事本莫名其妙少两栏，
+     * 而且没有可见的退出提示。与设置里那个「专注模式」（淡化非当前行）是两个东西，
+     * 那个管的是**编辑器内部**的注意力，这个管的是**页面外围**的干扰。
+     *
+     * 触发：标题行「专注模式」按钮 / 「更多操作」菜单同名项；退出：Esc 或退出按钮。
+     */
+    const [zenMode, setZenMode] = useState(false);
+    /**
+     * Esc 退出专注模式。
+     * ⚠️ 必须让位给浮层：命令面板、设置、灯箱、菜单开着的时候，Esc 是它们的
+     * （用户期望 Esc 先关手头那个浮层，不是把整个页面布局掀了）。
+     * 所以先探一遍 DOM 上有没有 [role=dialog] / [role=menu] / 灯箱 —— 有就什么都不做。
+     */
+    useEffect(() => {
+        if (!zenMode) return;
+        const onKey = (e: KeyboardEvent) => {
+            if (e.key !== "Escape") return;
+            if (document.querySelector('[role="dialog"], [role="menu"], [data-lightbox]')) return;
+            e.preventDefault();
+            setZenMode(false);
+        };
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
+    }, [zenMode]);
     /**
      * 三栏断点（2026-10-07）：desktop 三栏 / tablet 收导航 / mobile 两屏。
      *
@@ -2600,6 +2630,11 @@ export default function NotesPage({
     /**
      * 在**当前选中的文件夹**里直接新建（inkstone：文件夹那一栏就是笔记的落点）。
      * 没选中文件夹时 folder_id 留空 —— 落在「未归类」，和之前的行为一致。
+     *
+     * ⚠️ 这是「不选模板、直接建空白」的那条路：右键菜单「在此新建笔记」、
+     * 图谱、命令面板输入建笔记都走它。**有按钮的主入口**（中栏头部、
+     * 空态、左栏文件夹标题旁）走 openTemplatePicker —— 那些位置用户
+     * 有时间挑模板，快捷通道则一秒都不该多花。
      */
     const startCreateInFolder = useCallback(
         async (folderId: number | null) => {
@@ -2617,6 +2652,34 @@ export default function NotesPage({
             }
         },
         [onCreate]
+    );
+
+    /**
+     * 「新建笔记」的模板选择（B3，2026-10-22）。
+     * state 里存 folderId 而不是把文件夹写进回调闭包 —— 同一个 picker
+     * 实例服务多个入口，文件夹以「点开那一刻的选中态」为准。
+     */
+    const [templatePick, setTemplatePick] = useState<{ folderId: number | null; el: HTMLElement | null } | null>(null);
+    const openTemplatePicker = useCallback((anchor: HTMLElement | null, folderId: number | null) => {
+        setTemplatePick({ folderId, el: anchor });
+    }, []);
+    /** 选了模板（或「空白笔记」）→ 建库 + 切成编辑态。草稿与库里同一份内容 */
+    const createFromTemplate = useCallback(
+        async (templateId: NoteTemplateId | null) => {
+            const folderId = templatePick?.folderId ?? null;
+            const seeded = templateId ? noteTemplateDraft(templateId) : { title: "", content: "" };
+            const created = await onCreate(
+                folderId === null
+                    ? { title: seeded.title, content: seeded.content }
+                    : { title: seeded.title, content: seeded.content, folder_id: folderId }
+            );
+            if (created?.id) {
+                setActiveId(created.id);
+                setDraft({ title: seeded.title, content: seeded.content });
+                setMobileDetail(true);
+            }
+        },
+        [onCreate, templatePick]
     );
 
     /**
@@ -3195,6 +3258,7 @@ export default function NotesPage({
         splitRatio,
         splitRatioRef,
         startCreateInFolder,
+        openTemplatePicker,
         startDrag,
         startSideSplitDrag,
         startSplitDrag,
@@ -3221,6 +3285,8 @@ export default function NotesPage({
         viewCounts,
         visibleIds,
         wordCount,
+        zenMode,
+        setZenMode,
     };
     const navInner = <NotesNavPanel {...paneBase} />;
     const paneCtx: NotesPageCtx = { ...paneBase, navInner };
@@ -3281,6 +3347,14 @@ export default function NotesPage({
             )}
             {/* 设置：记事本自己的外观 / 编辑器设置（不是导航站那个弹窗） */}
             <NotesOverlayLayer {...paneCtx} />
+            {/* 「新建笔记」的模板选择（B3）：中栏头部 / 空态 / 左栏文件夹标题旁
+                三处按钮都开这一个菜单，落点用当前选中文件夹。 */}
+            <NoteTemplateMenu
+                open={templatePick !== null}
+                anchorEl={templatePick?.el ?? null}
+                onPick={id => void createFromTemplate(id)}
+                onClose={() => setTemplatePick(null)}
+            />
             <NoteGraphDialog
                 folders={folders}
                 tags={tags}
@@ -3514,8 +3588,9 @@ export default function NotesPage({
 
             {/* ⚠️ tablet（768~1180）：44px 全宽顶栏（inkstone AppShell 同款）——
                 左边「导航栏」按钮开/关 272px 左侧抽屉（内容与桌面导航列同源），
-                右边搜索框（与 mobile 列表列头部那份互斥挂载，共用 searchRefNarrow）。 */}
-            {bp === "tablet" && (
+                右边搜索框（与 mobile 列表列头部那份互斥挂载，共用 searchRefNarrow）。
+                专注模式（A9）下整条顶栏也让位：外围一概不露，只留正文。 */}
+            {bp === "tablet" && !zenMode && (
                 <Box
                     data-tablet-bar='1'
                     sx={{
@@ -3571,7 +3646,12 @@ export default function NotesPage({
             <Box sx={{ flex: 1, display: "flex", minHeight: 0, minWidth: 0 }}>
                 {/* 左栏**不能**加 flex:1 —— 它内部已经定宽了（flexShrink:0）。
                     外层再来一个 flex:1，容器会被 flex 撑开，而里面的列表是定宽的，
-                    剩下的就是「中间那块空白」。宽度只由内层决定：flex: 0 0 auto。 */}
+                    剩下的就是「中间那块空白」。宽度只由内层决定：flex: 0 0 auto。
+                    ⚠️ 专注模式（A9）下整块左区（导航列 + 列表列）**不渲染**（条件渲染，
+                    不是 display:none —— 卸载掉连里面的副作用都停掉：图标批量请求、
+                    搜索防抖、SWR 校准，一样都不该在「只留正文」的时候还活着）。
+                    退出即原样恢复，各列宽度/折叠态都没动过。 */}
+                {!zenMode && (
                 <Box
                     sx={{
                         // mobile：两屏切换（列表 ⇄ 编辑）；tablet/desktop：常驻。
@@ -3589,6 +3669,7 @@ export default function NotesPage({
                 >
                     <NotesListPane {...paneCtx} />
                 </Box>
+                )}
                 {/* 右栏占满剩余空间。minHeight:0 同样要加：缺了它，内部内容会把这层
                     撑高、进而把最外层的 fixed 容器顶出视口 —— 表现就是页面级滚动条。
                     ⚠️ 外层改成了**列**方向：编辑区本体在上，移动端的「回到列表」压在底下
@@ -3597,7 +3678,9 @@ export default function NotesPage({
                     sx={{
                         // mobile 且没打开笔记时，右边不占位（否则会把 0 宽的 flex 项
                         // 留在行里，列表被挤窄）。tablet/desktop 永远显示。
-                        display: bp === "mobile" && !mobileDetail ? "none" : "flex",
+                        // ⚠️ 专注模式（A9）下 mobile 也要显示编辑区：zenMode 进得去，
+                        // 就得看得见里面的内容（mobileDetail 此时可能还是 false）。
+                        display: bp === "mobile" && !mobileDetail && !zenMode ? "none" : "flex",
                         flex: 1,
                         minWidth: 0,
                         minHeight: 0,
@@ -3642,7 +3725,7 @@ export default function NotesPage({
                         >
                             <NotesEditorPane {...paneCtx} />
                         </Box>
-                        {sideNote !== null && (
+                        {sideNote !== null && !zenMode && (
                             <ColResizeHandle
                                 label='拖动调整两栏的比例（双击回到对半）'
                                 onDrag={startPaneDrag}
@@ -3651,12 +3734,17 @@ export default function NotesPage({
                                 ratio={paneRatio}
                             />
                         )}
-                        {sideNote ? <NotesSidePane {...paneCtx} /> : null}
+                        {/* 专注模式（A9）下侧边编辑器也让位：分屏是「两篇对照着改」的
+                            场景，与「只留一篇安静写」互斥。sideNote 状态不动，
+                            退出专注自然回来。 */}
+                        {sideNote && !zenMode ? <NotesSidePane {...paneCtx} /> : null}
                     </Box>
                     {/* 移动端从编辑态回列表。
                         ⚠️ 同样不能用 `md:`（900px）：两屏切换现在由 bp === "mobile"（768）
-                        决定，按钮要跟它**同一个判据**，否则会出现「按钮在、列表也在」的矛盾态。 */}
-                    {mobileDetail && bp === "mobile" && (
+                        决定，按钮要跟它**同一个判据**，否则会出现「按钮在、列表也在」的矛盾态。
+                        ⚠️ 专注模式（A9）下不渲染：列表列整个卸载了，「回到列表」没有去处，
+                        要回去先退出专注（Esc 或标题行那颗退出键）。 */}
+                    {mobileDetail && bp === "mobile" && !zenMode && (
                         <Box sx={{ display: "flex", p: 1, borderTop: "1px solid rgba(128,128,128,0.25)", flexShrink: 0 }}>
                             <Button
                                 startIcon={<EditIcon />}

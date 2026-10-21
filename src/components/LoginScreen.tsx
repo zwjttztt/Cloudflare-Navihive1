@@ -10,7 +10,7 @@
 import Box from "@mui/material/Box";
 import CircularProgress from "@mui/material/CircularProgress";
 import CssBaseline from "@mui/material/CssBaseline";
-import { ThemeProvider, type Theme } from "@mui/material/styles";
+import { ThemeProvider, alpha, type Theme } from "@mui/material/styles";
 import { lazy, Suspense } from "react";
 
 // 登录页必须 lazy：它是首屏唯一的大组件（732 行），同步引入会把它整份拖进首屏包
@@ -25,6 +25,8 @@ export interface LoginScreenProps {
     checking?: boolean;
     // ---- 登录表单需要的 ----
     brandName?: string;
+    /** 品牌区图标下面那句话（默认取 BRAND.description） */
+    brandTagline?: string;
     onLogin?: (username: string, password: string, remember: boolean) => void;
     loading?: boolean;
     error?: string | null;
@@ -38,10 +40,30 @@ export interface LoginScreenProps {
     ) => Promise<{ success: boolean; message?: string }>;
 }
 
+/**
+ * A8（2026-10-22）登录页品牌化的「背景」那一半。
+ *
+ * 为什么是**静态**渐变而不是主界面那套极光动画（nav-aurora）：
+ * ① 登录页是 lazy chunk，多挂一个 26 秒的 infinite 动画等于让没登录的人
+ *    一进站就烧 CPU/GPU，而这一屏的 KPI 是「尽快进去」；
+ * ② 渐变只是「告诉眼睛这是什么地方」的底色，不需要会动。
+ * 两个光斑都取主题主色、透明度压到 0.06/0.04 —— 深色模式下同样成立
+ * （alpha 跟着 palette.mode 反色，不会出现白底白光斑）。
+ */
+function brandBackdrop(theme: Theme): string {
+    const tint = alpha(theme.palette.primary.main, 0.07);
+    const tintSoft = alpha(theme.palette.primary.main, 0.04);
+    return [
+        `radial-gradient(1100px 560px at 50% -12%, ${tint}, transparent 62%)`,
+        `radial-gradient(760px 420px at 88% 112%, ${tintSoft}, transparent 60%)`,
+    ].join(", ");
+}
+
 export default function LoginScreen({
     theme,
     checking = false,
     brandName = "",
+    brandTagline,
     onLogin,
     loading = false,
     error,
@@ -72,12 +94,19 @@ export default function LoginScreen({
                         alignItems: "center",
                         justifyContent: "center",
                         bgcolor: "background.default",
+                        // A8：主色光斑（静态，见 brandBackdrop 注释）
+                        backgroundImage: brandBackdrop(theme),
+                        backgroundRepeat: "no-repeat",
+                        // 光斑钉在视口上：这一屏不滚，但真滚（小窗口 + 软键盘）时
+                        // 不希望背景跟着内容窜
+                        backgroundAttachment: "fixed",
                     }}
                 >
                     {/* 登录页是 lazy chunk：没登录的人不该为主界面的代码付流量 */}
                     <Suspense fallback={<CircularProgress size={60} thickness={4} />}>
                         <LoginForm
                             brandName={brandName}
+                            brandTagline={brandTagline}
                             onLogin={onLogin ?? (() => {})}
                             loading={loading}
                             error={error}

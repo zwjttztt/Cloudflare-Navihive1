@@ -25,8 +25,8 @@ import type { NotesPageCtx } from "./notesPageCtx";
 import NotesTrashPane from "./NotesTrashPane";
 
 
-export default function NotesListPane(props: Pick<NotesPageCtx, "activeFolder" | "activeId" | "activeTag" | "bp" | "bulkArchive" | "checked" | "checkedNotes" | "dirty" | "draggingNoteId" | "emptyArt" | "emptyCopy" | "filtered" | "highlightRanges" | "keyword" | "lazyListGroups" | "listCollapsed" | "listGroups" | "listHidden" | "listW" | "menuClosing" | "multiSelect" | "narrowLayout" | "navInner" | "navW" | "noteTags" | "notes" | "notesCommands" | "onClose" | "onEmptyTrash" | "onPurgeTrashed" | "onRestoreTrashed" | "openNote" | "pinnedCount" | "renderSearchField" | "reset" | "rowActionsSuppressed" | "rowMenu" | "searchRefNarrow" | "searchSnippets" | "selectAnchorRef" | "setBulkDeleteOpen" | "setChecked" | "setDraggingNoteId" | "setListCollapsed" | "setMiddleHidden" | "setMultiSelect" | "setRowActionsSuppressed" | "setRowMenu" | "setSortAnchor" | "startCreateInFolder" | "startDrag" | "switchTo" | "tagColorByName" | "tags" | "toggleChecked" | "trashedNotes" | "uiSettings" | "view" | "visibleIds">) {
-    const { activeFolder, activeId, activeTag, bp, bulkArchive, checked, checkedNotes, dirty, draggingNoteId, emptyArt, emptyCopy, filtered, highlightRanges, keyword, lazyListGroups, listCollapsed, listGroups, listHidden, listW, menuClosing, multiSelect, narrowLayout, navInner, navW, noteTags, notes, notesCommands, onClose, onEmptyTrash, onPurgeTrashed, onRestoreTrashed, openNote, pinnedCount, renderSearchField, reset, rowActionsSuppressed, rowMenu, searchRefNarrow, searchSnippets, selectAnchorRef, setBulkDeleteOpen, setChecked, setDraggingNoteId, setListCollapsed, setMiddleHidden, setMultiSelect, setRowActionsSuppressed, setRowMenu, setSortAnchor, startCreateInFolder, startDrag, switchTo, tagColorByName, tags, toggleChecked, trashedNotes, uiSettings, view, visibleIds } = props;
+export default function NotesListPane(props: Pick<NotesPageCtx, "activeFolder" | "activeId" | "activeTag" | "bp" | "bulkArchive" | "checked" | "checkedNotes" | "dirty" | "draggingNoteId" | "emptyArt" | "emptyCopy" | "filtered" | "highlightRanges" | "keyword" | "lazyListGroups" | "listCollapsed" | "listGroups" | "listHidden" | "listW" | "menuClosing" | "multiSelect" | "narrowLayout" | "navInner" | "navW" | "noteTags" | "notes" | "notesCommands" | "onClose" | "onEmptyTrash" | "onPurgeTrashed" | "onRestoreTrashed" | "openNote" | "openTemplatePicker" | "pinnedCount" | "renderSearchField" | "reset" | "rowActionsSuppressed" | "rowMenu" | "searchRefNarrow" | "searchSnippets" | "selectAnchorRef" | "setBulkDeleteOpen" | "setChecked" | "setDraggingNoteId" | "setListCollapsed" | "setMiddleHidden" | "setMultiSelect" | "setRowActionsSuppressed" | "setRowMenu" | "setSortAnchor" | "startDrag" | "switchTo" | "tagColorByName" | "tags" | "toggleChecked" | "trashedNotes" | "uiSettings" | "view" | "visibleIds">) {
+    const { activeFolder, activeId, activeTag, bp, bulkArchive, checked, checkedNotes, dirty, draggingNoteId, emptyArt, emptyCopy, filtered, highlightRanges, keyword, lazyListGroups, listCollapsed, listGroups, listHidden, listW, menuClosing, multiSelect, narrowLayout, navInner, navW, noteTags, notes, notesCommands, onClose, onEmptyTrash, onPurgeTrashed, onRestoreTrashed, openNote, openTemplatePicker, pinnedCount, renderSearchField, reset, rowActionsSuppressed, rowMenu, searchRefNarrow, searchSnippets, selectAnchorRef, setBulkDeleteOpen, setChecked, setDraggingNoteId, setListCollapsed, setMiddleHidden, setMultiSelect, setRowActionsSuppressed, setRowMenu, setSortAnchor, startDrag, switchTo, tagColorByName, tags, toggleChecked, trashedNotes, uiSettings, view, visibleIds } = props;
     return (
         <Box
             sx={{
@@ -291,7 +291,10 @@ export default function NotesListPane(props: Pick<NotesPageCtx, "activeFolder" |
                             size='small'
                             aria-label='新建笔记'
                             data-tool='list-new-note'
-                            onClick={() => void startCreateInFolder(activeFolder)}
+                            // B3：先开模板选择（空白 / 日报 / 会议 / 读书），
+                            // 选中文件夹作为落点。「不选模板直接建」的快捷通道
+                            // 在右键菜单「在此新建笔记」与命令面板里。
+                            onClick={e => openTemplatePicker(e.currentTarget, activeFolder)}
                             sx={{ p: 0.4 }}
                         >
                             <NoteAddIcon fontSize='inherit' />
@@ -399,7 +402,8 @@ export default function NotesListPane(props: Pick<NotesPageCtx, "activeFolder" |
                                     size='small'
                                     variant='outlined'
                                     startIcon={<NoteAddIcon fontSize='inherit' />}
-                                    onClick={() => void startCreateInFolder(activeFolder)}
+                                    data-tool='list-new-note-empty'
+                                    onClick={e => openTemplatePicker(e.currentTarget, activeFolder)}
                                 >
                                     新建笔记
                                 </Button>

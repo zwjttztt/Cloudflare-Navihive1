@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import LoginForm from "../src/components/LoginForm";
+import { BRAND } from "../src/brand";
 import { generateRecoveryKeyPair } from "../src/utils/recoveryKey";
 
 if (typeof globalThis.localStorage === "undefined") {
@@ -423,3 +424,27 @@ async function pickKeyFile() {
         input!.dispatchEvent(new Event("change", { bubbles: true }));
     });
 }
+
+// ---------- A8 登录页品牌化（2026-10-22） ----------
+
+test("品牌区：图标 + 站点名 + 一句话介绍（默认取 BRAND.description）", () => {
+    render();
+    const tagline = document.querySelector("[data-brand-tagline='1']");
+    assert.ok(tagline, "品牌区要有一句话介绍 —— 只放图标和名字，访客不知道这站是干嘛的");
+    assert.equal(
+        tagline?.textContent,
+        BRAND.description,
+        "不传 brandTagline 时用品牌配置里那句话"
+    );
+    assert.ok(
+        (document.body.textContent ?? "").includes("Navihive"),
+        "站点名照旧在（默认 BRAND.name）"
+    );
+});
+
+test("三个视图都带这句话（登录 / 注册 / 找回共用同一个品牌区）", async () => {
+    render({ onRegister: async () => ({ success: true }) });
+    assert.ok(document.querySelector("[data-brand-tagline='1']"), "登录视图要有");
+    await act(async () => { button("注册账号")?.click(); });
+    assert.ok(document.querySelector("[data-brand-tagline='1']"), "注册视图也要有（同一块品牌区）");
+});

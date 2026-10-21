@@ -18,6 +18,7 @@ import BoltIcon from "@mui/icons-material/Bolt";
 import ListIcon from "@mui/icons-material/List";
 import PushPinIcon from "@mui/icons-material/PushPin";
 import StarIcon from "@mui/icons-material/Star";
+import CenterFocusStrongIcon from "@mui/icons-material/CenterFocusStrong";
 import StarBorderIcon from "@mui/icons-material/StarBorder";
 import SearchIcon from "@mui/icons-material/Search";
 import HubIcon from "@mui/icons-material/Hub";
@@ -33,8 +34,8 @@ import { tagOf } from "../notes/sidebarSection";
 
 import type { NotesPageCtx } from "./notesPageCtx";
 
-export default function NotesOverlayLayer(props: Pick<NotesPageCtx, "active" | "activeMenuAnchor" | "appearanceFolderId" | "attachmentRefCounts" | "backlinks" | "backupApi" | "closeRowMenu" | "copyText" | "dirty" | "exportAllData" | "exportAllZip" | "exportAnchor" | "exportHtmlOne" | "exportOne" | "exportPdfOne" | "exportPick" | "exportTarget" | "folderTags" | "folders" | "importNotesFile" | "jumpToNote" | "liveRender" | "moveDrawerNoteId" | "narrowLayout" | "noteLink" | "noteTags" | "noteWordTotal" | "notes" | "onClose" | "onDatasetChanged" | "onDelete" | "onEmptyTrash" | "onNotify" | "onToggleArchive" | "onTogglePin" | "onToggleStar" | "onUpdate" | "openInSide" | "openRevisions" | "outgoingLinks" | "outlineOpen" | "pane" | "rowMenu" | "save" | "setActiveId" | "setActiveMenuAnchor" | "setAppearanceFolderId" | "setBacklinkAnchor" | "setExportAnchor" | "setExportPick" | "setGraphOpen" | "setLiveRender" | "setMobileDetail" | "setMoveDrawerNoteId" | "setOutlineOpen" | "setSettingsOpen" | "setShareId" | "setSortAnchor" | "setSortKey" | "setTagColorId" | "setTagPick" | "setUiSettings" | "settingsOpen" | "shareApi" | "sideId" | "sortAnchor" | "sortKey" | "tagColorId" | "tagPick" | "tags" | "textareaRef" | "trashedNotes" | "uiSettings" | "uploadApi" | "userClearedRef">) {
-    const { active, activeMenuAnchor, appearanceFolderId, attachmentRefCounts, backlinks, backupApi, closeRowMenu, copyText, dirty, exportAllData, exportAllZip, exportAnchor, exportHtmlOne, exportOne, exportPdfOne, exportPick, exportTarget, folderTags, folders, importNotesFile, jumpToNote, liveRender, moveDrawerNoteId, narrowLayout, noteLink, noteTags, noteWordTotal, notes, onDatasetChanged, onDelete, onEmptyTrash, onNotify, onToggleArchive, onTogglePin, onToggleStar, onUpdate, openInSide, openRevisions, outgoingLinks, outlineOpen, pane, rowMenu, save, setActiveId, setActiveMenuAnchor, setAppearanceFolderId, setBacklinkAnchor, setExportAnchor, setExportPick, setGraphOpen, setLiveRender, setMobileDetail, setMoveDrawerNoteId, setOutlineOpen, setSettingsOpen, setShareId, setSortAnchor, setSortKey, setTagColorId, setTagPick, setUiSettings, settingsOpen, shareApi, sideId, sortAnchor, sortKey, tagColorId, tagPick, tags, textareaRef, trashedNotes, uiSettings, uploadApi, userClearedRef } = props;
+export default function NotesOverlayLayer(props: Pick<NotesPageCtx, "active" | "activeMenuAnchor" | "appearanceFolderId" | "attachmentRefCounts" | "backlinks" | "backupApi" | "closeRowMenu" | "copyText" | "dirty" | "exportAllData" | "exportAllZip" | "exportAnchor" | "exportHtmlOne" | "exportOne" | "exportPdfOne" | "exportPick" | "exportTarget" | "folderTags" | "folders" | "importNotesFile" | "jumpToNote" | "liveRender" | "moveDrawerNoteId" | "narrowLayout" | "noteLink" | "noteTags" | "noteWordTotal" | "notes" | "onClose" | "onDatasetChanged" | "onDelete" | "onEmptyTrash" | "onNotify" | "onToggleArchive" | "onTogglePin" | "onToggleStar" | "onUpdate" | "openInSide" | "openRevisions" | "outgoingLinks" | "outlineOpen" | "pane" | "rowMenu" | "save" | "setActiveId" | "setActiveMenuAnchor" | "setAppearanceFolderId" | "setBacklinkAnchor" | "setExportAnchor" | "setExportPick" | "setGraphOpen" | "setLiveRender" | "setMobileDetail" | "setMoveDrawerNoteId" | "setOutlineOpen" | "setSettingsOpen" | "setShareId" | "setSortAnchor" | "setSortKey" | "setTagColorId" | "setTagPick" | "setUiSettings" | "settingsOpen" | "shareApi" | "sideId" | "sortAnchor" | "sortKey" | "tagColorId" | "tagPick" | "tags" | "textareaRef" | "trashedNotes" | "uiSettings" | "uploadApi" | "userClearedRef" | "setZenMode">) {
+    const { active, activeMenuAnchor, appearanceFolderId, attachmentRefCounts, backlinks, backupApi, closeRowMenu, copyText, dirty, exportAllData, exportAllZip, exportAnchor, exportHtmlOne, exportOne, exportPdfOne, exportPick, exportTarget, folderTags, folders, importNotesFile, jumpToNote, liveRender, moveDrawerNoteId, narrowLayout, noteLink, noteTags, noteWordTotal, notes, onDatasetChanged, onDelete, onEmptyTrash, onNotify, onToggleArchive, onTogglePin, onToggleStar, onUpdate, openInSide, openRevisions, outgoingLinks, outlineOpen, pane, rowMenu, save, setActiveId, setActiveMenuAnchor, setAppearanceFolderId, setBacklinkAnchor, setExportAnchor, setExportPick, setGraphOpen, setLiveRender, setMobileDetail, setMoveDrawerNoteId, setOutlineOpen, setSettingsOpen, setShareId, setSortAnchor, setSortKey, setTagColorId, setTagPick, setUiSettings, settingsOpen, shareApi, sideId, sortAnchor, sortKey, tagColorId, tagPick, tags, textareaRef, trashedNotes, uiSettings, uploadApi, userClearedRef, setZenMode } = props;
     return (
         <>
             <NotesSettingsDialog
@@ -516,6 +517,19 @@ export default function NotesOverlayLayer(props: Pick<NotesPageCtx, "active" | "
             >
                 {active && (
                     <>
+                        {/* 真·专注模式（A9）：标题行那颗图标钮的菜单版。
+                            放在第一项 —— 它跟「写」直接相关，且 Esc 退出这点必须
+                            在文案里说出来（不然用户进了专注不知道怎么出来）。 */}
+                        <MenuItem
+                            data-active-op='zen'
+                            onClick={() => {
+                                setActiveMenuAnchor(null);
+                                setZenMode(true);
+                            }}
+                        >
+                            <CenterFocusStrongIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
+                            专注模式（Esc 退出）
+                        </MenuItem>
                         {/* 分享 / 版本 / 大纲 / 反链：桌面端已平铺到头部（2026-10-08），
                             这几项只留给窄屏与**分屏态**（半宽的头部放不下平铺组，
                             2026-10-09 用户明确照 inkstone 收进菜单）。 */}
