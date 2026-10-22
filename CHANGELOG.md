@@ -6,6 +6,37 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。---
 
+## 2026-10-22（八）· 结论：4.5 socket-proxy 不可行，已回滚（挂回 sock）
+
+**结论先说：`deploy/docker-socket-proxy.yml` 跑不通网页一键升级，已从线上撤下，
+navihive 继续挂 `/var/run/docker.sock`。** 那份文件顶部现在写清了原因，别再用。
+
+**怎么发现的**：启用代理后点「更新」，先撞到 `DOCKER_HOST` 协议错（上一段修了），
+修完再点仍然挂 —— 用 `tcp://` 形状直接跑一次 `docker compose up -d` 验证，
+第一次就 `403 Forbidden`：
+- 代理只开了 `CONTAINERS` / `IMAGES`，而 **compose 还要读 NETWORKS（并可能建
+  project 网络）、读 VOLUMES**；`--force-recreate` 还要 `ALLOW_STOP`（停旧容器）。
+- 这些原本是**刻意关掉**的 —— 放开它们不是「加个开关」，而是把权限面摊开。
+
+**更根本的矛盾（这才是放弃的理由）**：只要保留「在容器里驱动 compose 重建自己」，
+就必须允许 `POST /containers/create`；而这个端点一放开，**攻击者就能建一个把 `/`
+挂进来（或 `--privileged`）的容器 —— 容器失守仍然是宿主机 root，加固等于零**。
+换句话说，「网页一键升级」与「不给完整 daemon 权限」在 docker 上是互斥的。
+
+**真要做隔离，得换升级形态**：让宿主机侧去拉镜像并重建（systemd timer / watchtower /
+一个宿主机小 agent），容器里只写一个「请升级」的标记，根本不碰 daemon。
+这是个独立设计，不在「加个 overlay 文件」的量级里。
+
+**保留的成果**：`server/entry.ts` 的 `dockerCliHost()`（`http(s)://` → `tcp://`）
+是对的也必须留着 —— 只要有人把 `NAVIHIVE_DOCKER_HOST` 指到真 daemon 的 TCP 端口，
+helper 里的 CLI 就必须拿到 `tcp://` 形状，否则报 `invalid bind address format`。
+另外「宿主 `/usr/bin/docker` 是 glibc 二进制，alpine 里跑不了，验证要用 navihive 镜像」
+这条也记进了备忘。
+
+**线上状态**：已回滚（`docker-compose.yml.bak-20261022` 恢复 → 单 `-f` 重建），
+容器只挂 `/app/data` + `/var/run/docker.sock`，`config_files` 标签回到单文件，
+站点 200 healthy。
+
 ## 2026-10-22（七）· 修复：4.5 启用后网页升级挂了（DOCKER_HOST 协议错）+ 3.3 第二批同源化
 
 **先说那个 bug（我上一轮引入的）**：启用 socket-proxy 后点网页「更新」，helper 里报

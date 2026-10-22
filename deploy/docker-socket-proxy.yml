@@ -1,3 +1,27 @@
+# ⚠️⚠️ 2026-10-22 实测结论：**这份叠加文件跑不通网页一键升级，不要启用。**
+#
+# 两条硬伤，都不是调开关能解决的：
+#
+#   1. **compose 需要的权限远多于「升级必需端点」。** 第一次 `up -d` 就 403：
+#      代理只开了 CONTAINERS / IMAGES，而 compose 还要读 NETWORKS（并可能建
+#      project 网络）、读 VOLUMES。放开这些还不够 —— `--force-recreate` 还要
+#      ALLOW_STOP（停旧容器），这些原本是刻意关掉的。
+#
+#   2. **更根本：一旦为了让 compose 跑通而放开 `POST /containers/create`，
+#      攻击者就能建一个把 `/` 挂进来（或 --privileged）的容器 —— 容器失守
+#      仍然是宿主机 root，加固等于零。**「在容器里驱动 compose 重建自己」与
+#      「不给完整 daemon 权限」在 docker 上互斥。
+#
+# 所以当前形态是：navihive 继续挂 /var/run/docker.sock（见 docker-compose.yml）。
+# 想要真正的隔离，得换升级形态 —— 让**宿主机侧**去拉镜像并重建（systemd timer /
+# watchtower / 一个宿主机小 agent），容器里只写一个「请升级」的标记，根本不碰 daemon。
+# 这个文件保留下来是为了记住试过、以及为什么不行。
+#
+# 另外：`server/entry.ts` 的 dockerCliHost()（http(s):: → tcp:://）依然是正确且必要的 ——
+# 只要有人把 NAVIHIVE_DOCKER_HOST 指到真 daemon 的 TCP 端口，helper 里的 CLI 就必须
+# 拿到 tcp:// 形状，http:// 会被判 `invalid bind address format`。
+#
+# —— 以下为原设计说明（保留，但请先读上面的结论）——
 # docker-socket-proxy 叠加文件（可选，推荐开了网页一键升级的部署用）
 #
 # 背景：默认形态是把宿主机的 /var/run/docker.sock 挂进 navihive 容器。
