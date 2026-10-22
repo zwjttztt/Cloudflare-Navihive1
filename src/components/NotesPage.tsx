@@ -314,6 +314,7 @@ import NotesListPane from "./notes/NotesListPane";
 import NotesEditorPane from "./notes/NotesEditorPane";
 import { useNotesPanels } from "./notes/useNotesPanels";
 import { useNoteAutoSave } from "./notes/useNoteAutoSave";
+import { useNotesFilters } from "./notes/useNotesFilters";
 import { useNotesRowActions } from "./notes/useNotesRowActions";
 import NotesSidePane from "./notes/NotesSidePane";
 import NotesOverlayLayer from "./notes/NotesOverlayLayer";
@@ -321,7 +322,7 @@ import NotesConfirmLayer from "./notes/NotesConfirmLayer";
 import NoteTemplateMenu from "./notes/NoteTemplateMenu";
 import { noteTemplateDraft, type NoteTemplateId } from "../utils/noteTemplates";
 import type { NotesPageCtx } from "./notes/notesPageCtx";
-import type { NoteView, Pane } from "./notes/notesPageCtx";
+import type { Pane } from "./notes/notesPageCtx";
 
 import { AUTO_SAVE_MS, MAX_RATIO, MIN_RATIO, SPLIT_KEY, ColResizeHandle, readPaneRatio, readSplitRatio, useColumnResize, writePaneRatio } from "./notes/paneChrome";
 export default function NotesPage({
@@ -349,8 +350,24 @@ export default function NotesPage({
     onEnsureFullNote,
     focusNoteId,
 }: NotesPageProps) {
-    const [keyword, setKeyword] = useState("");
     /** 关系图谱（2026-10-09）：双链关系的全貌，从「更多」里开 */
+    // ============ 筛选与排序条件（2026-10-22 抽到 notes/useNotesFilters）============
+    // 只搬「用户此刻的筛选意图」（搜索词/视图/排序/选中的文件夹与标签/远端结果/最近打开），
+    // 全是纯输入态、不依赖 props，所以放在这里不会影响 hooks 顺序。
+    // ⚠️ notes 列表本身与那些派生 useMemo 还留在下面 —— 它们和分组树/拖拽/虚拟列表缠在一起，
+    //    要搬得连派生一起搬，是独立一轮的事。
+    const filters = useNotesFilters();
+    const {
+        keyword, setKeyword,
+        view, setView,
+        sortKey, setSortKey,
+        sortAnchor, setSortAnchor,
+        activeFolder, setActiveFolder,
+        activeTag, setActiveTag,
+        remoteSearch, setRemoteSearch,
+        recentNoteIds, setRecentNoteIds,
+    } = filters;
+
     const [graphOpen, setGraphOpen] = useState(false);
     /**
      * 附件管理器抽屉（2026-10-19 从左下角进来）。
@@ -404,11 +421,8 @@ export default function NotesPage({
         });
     }, []);
     /** 左栏视图：全部 / 最近 / 收藏（回收站要软删字段，留到阶段三） */
-    const [view, setView] = useState<NoteView>("all");
     /** 中间栏排序（中栏右上角「排序」菜单）。
      *  default = 置顶优先 + 原始顺序；title/created 按字面排序。 */
-    const [sortKey, setSortKey] = useState<"default" | "title" | "created">("default");
-    const [sortAnchor, setSortAnchor] = useState<HTMLElement | null>(null);
     /** 「收起」：中栏右上角把列表收起；切视图 / 选文件夹 / 点搜索框时自动展开 */
     const [middleHidden, setMiddleHidden] = useState(false);
     /**
@@ -419,8 +433,6 @@ export default function NotesPage({
     const [navDrawerOpen, setNavDrawerOpen] = useState(false);
     /** 编辑区头部「导出」下拉（2026-10-08 照 inkstone：Download 按钮 + 三格式菜单） */
     /** 阶段三收尾：导航列里选中的文件夹 / 标签（选中任一个就只看那一份） */
-    const [activeFolder, setActiveFolder] = useState<number | null>(null);
-    const [activeTag, setActiveTag] = useState<number | null>(null);
     /**
      * 新建文件夹/标签 —— 走站内的 NamePromptDialog，不再用 window.prompt。
      * `parentId` 有值就是「新建子文件夹」，两个入口共用同一个弹窗，行为一致。
@@ -531,7 +543,6 @@ export default function NotesPage({
     /** 记事本命令面板（N1）开关 */
     const [notesCmdOpen, setNotesCmdOpen] = useState(false);
     /** 最近打开的笔记 id（命令面板空查询时优先展示） */
-    const [recentNoteIds, setRecentNoteIds] = useState<number[]>([]);
     useEffect(() => {
         if (activeId == null) return;
         setRecentNoteIds(prev =>
@@ -1220,12 +1231,6 @@ export default function NotesPage({
      * ⚠️ keyword 一起存进 state：请求是异步的，回来时输入框可能已经变了，
      * 拿「上一次关键词的结果」给当前关键词用会把列表排错。
      */
-    const [remoteSearch, setRemoteSearch] = useState<{
-        keyword: string;
-        hits: { id: number; title: string; snippet: string; score: number }[];
-        /** 服务端用的检索方式：fts = 全文索引，like = 降级成 LIKE 全表扫 */
-        mode?: "fts" | "like";
-    } | null>(null);
     const searchEpoch = useRef(0);
     const searchRemote = folderTags?.onSearchRemote;
     useEffect(() => {
