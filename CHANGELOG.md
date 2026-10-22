@@ -6,6 +6,37 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。---
 
+## 2026-10-22（十）· 安全：应用容器不再握 docker.sock（升级器独立成服务）
+
+**这是评估报告里那条 P1 的落地**：应用容器挂 `/var/run/docker.sock` 等于把宿主机 Docker
+的完整控制权交出去 —— 容器一旦被攻破，攻击者能起特权容器、挂宿主目录、读全部数据，
+等于宿主机 root。
+
+**试过但走不通的路**（记下来免得再试）：用 socket-proxy 收权限（`deploy/docker-socket-proxy.yml`），
+实测跑不通 —— compose 要做 create/stop/networks/volumes，而一旦放开
+`POST /containers/create`，就等于把 daemon 全权交出去，加固归零。**「在容器里驱动 compose
+重建自己」与「不给完整 daemon 权限」在 docker 上互斥。**
+
+**所以改的是「谁来执行重建」**：
+- `navihive` 容器**不再挂 sock**，只挂一个 `upgrade-spool` 共享卷；
+- 新增 `upgrader` 服务（`docker:27-cli`）持有 sock —— **不开端口、不跑业务代码、
+  不渲染用户内容**，只从共享卷收指令；
+- 应用侧进 **spool 模式**（`NAVIHIVE_UPGRADE_SPOOL`）：`POST /api/system/upgrade` 只写
+  `/spool/request`（临时文件 + `rename` 原子替换，避免升级器读到半截 JSON），
+  `GET` 读 `/spool/state.json` 并按**原有字段形状**返回 —— 前端 `upgradeWait.ts` 一行都不用改。
+
+**顺带的收益**：原来那套「起 helper 容器 → 挂宿主 docker CLI + cli-plugins + 原路径 compose
+目录 → 跑 compose」的机制被整个绕开了，`DOCKER_HOST` 协议转换、compose 标签坐标读取那些
+踩过坑的地方都不再走。
+
+⚠️ 升级器脚本里三条不能改的细节（都写在 compose 注释里）：
+1. 只重建 navihive 自己（`up -d --force-recreate --no-deps navihive`）——
+   不带服务名会连 upgrader 一起重建，那是让执行升级的进程自杀；
+2. 挂载点必须是**宿主原路径**（`/home/docker/navihive` 挂到同名路径）——
+   否则 compose 把运行时工作目录写进新容器的 `working_dir` 标签，下一轮升级就读歪了；
+3. pull 用完整镜像名再 `tag` 成 compose 里的 `image` 名 —— 不同部署的 `image:` 写法不同
+   （`navihive:latest` 或 `ghcr.io/...`），`pull navihive:latest` 会去 Hub 找、必失败。
+
 ## 2026-10-22（九）· 工程：镜像发布从 QEMU 模拟改成双原生 runner（~13min → 预期 ~5min）
 
 **为什么慢**：`docker-publish` 用 `--platform linux/amd64,linux/arm64` 单 job 构建，

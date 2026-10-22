@@ -150,14 +150,44 @@ test("server：先响应再执行 + 失败原因可查", () => {
     assert.match(block, /catch \(restoreError\)/, "兜底也要兜住，不能把异常吞掉就算了");
 });
 
-test("compose：要挂 docker.sock、给权限，并告知容器自己的名字", () => {
+test("compose：sock 只给 upgrader，应用容器零 daemon 权限（2026-10-22 改）", () => {
     const src = readSrc("docker-compose.yml");
-    assert.match(src, /\/var\/run\/docker\.sock:\/var\/run\/docker\.sock/, "要挂 docker.sock 才能网页升级");
-    // ⚠️ sock 属 root:docker(987)，镜像默认以 node(1000) 跑 —— 不显式给权限就是
-    // connect EACCES（文件看得见、连不上）。这条是 VPS 上重建后跑只读调用才暴露的。
-    assert.match(src, /NAVIHIVE_RUN_AS|group_add/, "必须显式给访问 sock 的身份/组");
-    assert.match(src, /NAVIHIVE_CONTAINER_NAME/, "要告诉服务自己要重建的容器名");
-    assert.match(src, /NAVIHIVE_IMAGE/, "要可配置升级目标镜像");
+    const appBlock = src.slice(src.indexOf("  navihive:"), src.indexOf("  upgrader:"));
+    const upBlock = src.slice(src.indexOf("  upgrader:"));
+    /**
+     * 剥注释：两个块的注释里都会提到 docker.sock（一个讲为什么不再挂、一个讲为什么它挂），
+     * 不剥的话断言会被自己写的说明文字骗过去。
+     */
+    const strip = (t: string) => t.replace(/#.*$/gm, "");
+
+    assert.ok(appBlock.length > 0 && upBlock.length > 0, "compose 里要有 navihive 与 upgrader 两个服务");
+    // ① 应用容器不再挂 sock —— 挂 sock 等于把宿主机 Docker 全权交出去
+    assert.equal(
+        strip(appBlock).includes("/var/run/docker.sock"),
+        false,
+        "navihive 的 volumes 里不该再有 docker.sock（注释里解释原因可以）"
+    );
+    // ② 必须有独立的 upgrader，且 sock 只给它
+    assert.equal(strip(upBlock).includes("/var/run/docker.sock"), true, "sock 要挂给 upgrader");
+    // ③ 应用侧靠共享卷递指令
+    assert.equal(appBlock.includes("NAVIHIVE_UPGRADE_SPOOL"), true, "要告诉应用走 spool 模式");
+    assert.equal(strip(appBlock).includes("upgrade-spool:/spool"), true, "应用要挂上共享卷");
+    assert.equal(strip(upBlock).includes("upgrade-spool:/spool"), true, "upgrader 也要挂共享卷");
+    // ④ 只重建 navihive 自己：不带服务名会把 upgrader 一起重建 = 执行升级的进程自杀
+    assert.equal(
+        strip(upBlock).includes("up -d --force-recreate --no-deps navihive"),
+        true,
+        "只重建 navihive，别碰 upgrader 自己"
+    );
+    // ⑤ 挂载点必须是宿主原路径：否则 compose 把工作目录写进 working_dir 标签，下一轮读歪
+    assert.equal(
+        strip(upBlock).includes("/home/docker/navihive:/home/docker/navihive"),
+        true,
+        "compose 目录要按宿主原路径同名挂载"
+    );
+    // ⑥ 不开端口：它只从共享卷收指令，不该有任何网络入口
+    assert.equal(/^\s+ports:/m.test(strip(upBlock)), false, "upgrader 不该开端口");
+    assert.equal(src.includes("NAVIHIVE_IMAGE"), true, "要可配置升级目标镜像");
 });
 
 test("前端：更新按钮优先调端点，404/501 回落复制命令，升级后要跟进结果", () => {

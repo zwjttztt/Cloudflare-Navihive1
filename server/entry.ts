@@ -15,7 +15,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { request as httpRequest, type RequestOptions } from "node:http";
 import { Readable } from "node:stream";
 import { mkdir, readFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { timingSafeEqual } from "node:crypto";
 import path from "node:path";
 import handler from "../worker/index";
@@ -293,7 +293,58 @@ function dockerCliHost(): string {
 }
 
 /** 「升级可用」的判据：走代理时不需要本机能看到 sock */
+/**
+ * spool 模式（2026-10-22）：把「执行重建」挪出本进程。
+ *
+ * 为什么：原先本进程直接调 Docker API、再起 helper 容器跑 `docker compose up`，
+ * 代价是**必须把 /var/run/docker.sock 挂进应用容器** —— 而 sock 等于宿主机 root：
+ * 容器一旦被攻破，攻击者能起特权容器、挂宿主目录、读全部数据。
+ * 试过用 socket-proxy 收权限（4.5），实测不可行：compose 需要 create/stop/networks/volumes，
+ * 而放开 `POST /containers/create` 的那一刻，加固就归零了。
+ *
+ * 所以变成：应用容器只往共享卷写一个请求文件，由独立的 upgrader 容器
+ * （持 sock、不开端口、不跑业务代码、不渲染用户内容）执行 compose。
+ * 应用容器从此**零 daemon 权限**。配了 NAVIHIVE_UPGRADE_SPOOL 就启用。
+ */
+const UPGRADE_SPOOL = (process.env.NAVIHIVE_UPGRADE_SPOOL || "").trim();
+
+interface SpoolState {
+    phase?: string;
+    image?: string;
+    error?: string;
+    startedAt?: number;
+    finishedAt?: number;
+}
+
+function spoolEnabled(): boolean {
+    return UPGRADE_SPOOL.length > 0;
+}
+
+/** 读升级器写的状态；读不到/坏掉一律当 idle（前端会退化成「看版本号变没变」） */
+function readSpoolState(): SpoolState {
+    if (!spoolEnabled()) return {};
+    try {
+        const parsed = JSON.parse(readFileSync(`${UPGRADE_SPOOL}/state.json`, "utf8")) as SpoolState;
+        return parsed && typeof parsed === "object" ? parsed : {};
+    } catch {
+        return {};
+    }
+}
+
+/**
+ * 提交升级请求。
+ * ⚠️ 先写临时文件再 rename：升级器可能在同一瞬间读到半截 JSON，
+ *    原子替换能保证它要么看到完整文件、要么看不到。
+ */
+function requestUpgradeViaSpool(by: string): void {
+    const tmp = `${UPGRADE_SPOOL}/request.tmp`;
+    writeFileSync(tmp, JSON.stringify({ at: Date.now(), by }), "utf8");
+    renameSync(tmp, `${UPGRADE_SPOOL}/request`);
+}
+
 function dockerAvailable(): boolean {
+    // spool 模式：重建由升级器容器做，本进程不需要 daemon
+    if (spoolEnabled()) return true;
     return DOCKER_HOST ? true : existsSync(DOCKER_SOCK);
 }
 const UPGRADE_CONTAINER = process.env.NAVIHIVE_CONTAINER_NAME || "navihive";
@@ -807,6 +858,26 @@ const server = createServer((req, res) => {
                     res.end(JSON.stringify({ ok: false, error: "只有站点所有者可以执行升级" }));
                     return;
                 }
+                if (spoolEnabled()) {
+                    // 交给升级器：本进程只写请求文件，绝不碰 daemon
+                    try {
+                        requestUpgradeViaSpool("owner");
+                        res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+                        res.end(
+                            JSON.stringify({
+                                ok: true,
+                                message:
+                                    "升级已提交：由宿主机上的升级器执行重建，约 10–60 秒后页面会自动恢复。",
+                            })
+                        );
+                    } catch (error) {
+                        const message = error instanceof Error ? error.message : String(error);
+                        console.error("[upgrade] 提交 spool 请求失败:", message);
+                        res.writeHead(500, { "Content-Type": "application/json; charset=utf-8" });
+                        res.end(JSON.stringify({ ok: false, error: `提交升级请求失败：${message}` }));
+                    }
+                    return;
+                }
                 if (!dockerAvailable()) {
                     res.writeHead(501, { "Content-Type": "application/json; charset=utf-8" });
                     res.end(
@@ -877,6 +948,23 @@ const server = createServer((req, res) => {
                 if (!me || me.role !== "owner") {
                     res.writeHead(403, { "Content-Type": "application/json; charset=utf-8" });
                     res.end(JSON.stringify({ ok: false, error: "只有站点所有者可以查看升级状态" }));
+                    return;
+                }
+                if (spoolEnabled()) {
+                    // 状态由升级器写；形状与旧路径完全一致，前端不用改
+                    const state = readSpoolState();
+                    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+                    res.end(
+                        JSON.stringify({
+                            ok: true,
+                            supported: true,
+                            phase: typeof state.phase === "string" ? state.phase : "idle",
+                            image: typeof state.image === "string" ? state.image : "",
+                            error: typeof state.error === "string" ? state.error : "",
+                            startedAt: typeof state.startedAt === "number" ? state.startedAt : 0,
+                            finishedAt: typeof state.finishedAt === "number" ? state.finishedAt : 0,
+                        })
+                    );
                     return;
                 }
                 res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });

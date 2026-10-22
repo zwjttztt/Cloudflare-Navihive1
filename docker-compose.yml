@@ -1,4 +1,4 @@
-# NaviHive 自托管（方案 B）—— 单服务 compose。
+# NaviHive 自托管（方案 B）—— compose。
 #
 # 用法：
 #   cp .env.example .env   # 改掉 AUTH_SECRET 等（.env 已在 .gitignore / .dockerignore 里）
@@ -10,6 +10,8 @@
 # Nginx 配置用 deploy/nginx/sites-available/navihive-selfhost.conf（静态也走 Node，
 # 这样 dist/client/_headers 保持安全头的唯一事实来源）。
 # 手册：deploy/selfhost.md 第四节 B。
+#
+# 两个服务：navihive（业务）+ upgrader（唯一的特权点，见文件末尾）。
 
 services:
   navihive:
@@ -17,13 +19,11 @@ services:
     image: navihive:latest
     container_name: navihive
     restart: unless-stopped
-    # 网页端一键升级（POST /api/system/upgrade）要连 /var/run/docker.sock，而 sock 属
-    # root:docker(<宿主机 docker 组 GID>)。镜像默认以 node(1000) 运行，连它会被
-    # EACCES —— 所以挂了 sock 就必须显式给权限，二选一：
-    #   A. user: "0:0"（下面这行，最省事，代价是容器内进程有 root 权限）
-    #   B. 保留非 root：删掉 user，改用
-    #        group_add: ["<getent group docker 得到的 GID>"]
-    #      容器进程仍是 node，只多拿一个附加组。
+    # 历史上加 root 是为了让容器能碰 docker.sock（sock 属 root:docker）。
+    # 2026-10-22 起**不再挂 sock**（改由 upgrader 服务持有），但这里保留 root 是有意的：
+    # 现有数据卷里的文件属主就是 root，改成 node(1000) 会让库和附件突然写不进去。
+    # 现在容器内 root 只在它自己的命名空间里有效，拿不到宿主机 root。
+    # 想收紧可改成 user: "1000:1000"，但**必须**先把卷里文件 chown 到 1000。
     user: "${NAVIHIVE_RUN_AS:-0:0}"
 
     ports:
@@ -44,21 +44,13 @@ services:
       NAVIHIVE_CRON: ${NAVIHIVE_CRON:-1}
       NAVIHIVE_CRON_TOKEN: ${NAVIHIVE_CRON_TOKEN:-}
 
-      # 网页端「检查更新 → 更新」要重建的容器名。改了 container_name 就必须一并改这里，
-      # 否则升级端点找不到自己（501 之外的另一种「升级没反应」）。
-      NAVIHIVE_CONTAINER_NAME: ${NAVIHIVE_CONTAINER_NAME:-navihive}
-      # 升级时拉取的目标镜像；不设走 ghcr.io/zwjttztt/navihive:latest
+      # 升级时拉取的目标镜像；不设走 ghcr.io/zwjttztt/navihive:latest。
+      # 升级器读同一个变量（见文件末尾），两边必须一致。
       NAVIHIVE_IMAGE: ${NAVIHIVE_IMAGE:-ghcr.io/zwjttztt/navihive:latest}
-      # compose 工程的工作目录。升级时 helper 会用它当挂载点与工作目录 ——
-      # 必须和宿主机上的真实路径一致（compose 会把它写进新容器的
-      # com.docker.compose.project.working_dir 标签，那是下一轮读坐标的唯一来源）。
-      # 留空时服务端从容器标签自动读；只有标签被写歪（旧版曾写成容器内的 /compose）
-      # 才需要显式指定。改了部署目录就必须一并改这里。
-      NAVIHIVE_COMPOSE_DIR: ${NAVIHIVE_COMPOSE_DIR:-/home/docker/navihive}
-      # 宿主 docker CLI 与 compose 插件（`docker compose` 是插件，不是内建命令）
-      # 装在别处时改这两个路径。工程名/目录/配置文件由 compose 自己打在容器标签上。
-      # NAVIHIVE_HOST_DOCKER: /usr/bin/docker
-      # NAVIHIVE_HOST_DOCKER_PLUGINS: /usr/libexec/docker/cli-plugins
+
+      # 升级请求写到这个共享卷，由 upgrader 服务消费（见文件末尾）。
+      # 设了它就进入 spool 模式：本进程不再碰 Docker daemon，只写一个请求文件。
+      NAVIHIVE_UPGRADE_SPOOL: /spool
 
       # :? = 没设置就让 compose 直接失败退出——别默默起一个「登录必然失败」的服务
       AUTH_SECRET: ${AUTH_SECRET:?没设 AUTH_SECRET：先在 .env 里放一个 openssl rand -hex 32}
@@ -72,15 +64,16 @@ services:
 
     volumes:
       - navihive-data:/app/data
-      # 网页端一键升级（POST /api/system/upgrade）走 Docker Engine API 重建本容器，
-      # 需要能碰到 docker.sock。**这是把宿主机的 Docker 控制权交给这个容器** ——
-      # 确认过风险再加；不加也能跑，只是设置里点「更新」会回落成复制命令手动执行。
-      # ⚠️ 加了之后容器内进程以 root 等效权限操作宿主机 Docker，端口别直接暴露公网。
+      # ⚠️ 这里**不再挂 /var/run/docker.sock**（2026-10-22）。
+      # 挂 sock 等于把宿主机 Docker 的完整控制权交给这个容器：容器一旦被攻破，
+      # 攻击者就能起特权容器、挂宿主目录、读全部数据 —— 等于宿主机 root。
+      # 试过用 socket-proxy 收权限（deploy/docker-socket-proxy.yml），实测跑不通：
+      # compose 需要 create/stop/networks/volumes，而一旦放开 POST /containers/create，
+      # 就等于把 daemon 全权交出去，加固归零。
       #
-      # 想保留网页升级又不把 sock 全权交出去，改用最小权限代理（推荐）：
-      #   docker compose -f docker-compose.yml -f deploy/docker-socket-proxy.yml up -d
-      # 那样这一行会被覆盖掉，改由代理容器持有 sock、只放行升级必需的几个端点。
-      - /var/run/docker.sock:/var/run/docker.sock
+      # 现在「执行重建」由独立的 upgrader 服务做（见文件末尾）：本容器只往共享卷
+      # 写一个请求文件，从此零 daemon 权限。
+      - upgrade-spool:/spool
 
     # SQLite 单写者：别横向扩副本（每个副本会各写各的库），定时任务也会各跑一遍
     deploy:
@@ -93,5 +86,68 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # ============ 升级器（2026-10-22）============
+  # 为什么不放在应用容器里：那需要挂 /var/run/docker.sock，等于宿主机 root。
+  # 把「执行重建」挪到这里之后：应用容器零 daemon 权限，只写 /spool/request；
+  # 升级器持 sock，但**不开端口、不跑业务代码、不渲染用户内容**，攻击面极小。
+  #
+  # ⚠️ 四条不能改的细节：
+  #   1. 只重建 navihive 自己（`up -d --force-recreate --no-deps navihive`）。
+  #      不带服务名时 compose 会连 upgrader 一起检查/重建 —— 那是让执行升级的进程自杀。
+  #   2. 挂载点必须是**宿主原路径**（/home/docker/navihive 挂到同名路径）。
+  #      compose 会把运行时工作目录写进新容器的 com.docker.compose.project.working_dir
+  #      标签，那是下一轮升级读坐标的唯一来源；挂到 /compose 会写歪，第二轮必失败。
+  #   3. pull 用完整镜像名，再 tag 成 compose 里的 image 名：
+  #      不同部署的 compose 里 image 可能是 navihive:latest 或 ghcr.io/...:latest，
+  #      先 pull 真名再 tag，两种都能 up 成功（pull navihive:latest 会去 Hub 找，必失败）。
+  #   4. 轮询而不是 inotify：共享卷在 overlayfs 上，事件不保证触发。
+  upgrader:
+    image: docker:27-cli
+    container_name: navihive-upgrader
+    restart: unless-stopped
+    working_dir: /home/docker/navihive
+    environment:
+      NAVIHIVE_IMAGE: ${NAVIHIVE_IMAGE:-ghcr.io/zwjttztt/navihive:latest}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -u
+        IMAGE="${NAVIHIVE_IMAGE}"
+        echo "[upgrader] 就绪：轮询 /spool/request（image=$IMAGE）"
+        while true; do
+          if [ ! -f /spool/request ]; then sleep 2; continue; fi
+          rm -f /spool/request
+          started=$(date +%s)000
+          printf '{"phase":"pulling","image":"%s","error":"","startedAt":%s,"finishedAt":0}' "$IMAGE" "$started" > /spool/state.json
+          echo "[upgrader] 拉取 $IMAGE"
+          if ! docker pull "$IMAGE"; then
+            printf '{"phase":"failed","image":"","error":"拉取镜像失败（详见 upgrader 容器日志）","startedAt":%s,"finishedAt":%s}' "$started" "$(date +%s)000" > /spool/state.json
+            continue
+          fi
+          docker tag "$IMAGE" navihive:latest 2>/dev/null || true
+          printf '{"phase":"recreating","image":"","error":"","startedAt":%s,"finishedAt":0}' "$started" > /spool/state.json
+          echo "[upgrader] 重建 navihive"
+          if docker compose -f docker-compose.yml -p navihive up -d --force-recreate --no-deps navihive; then
+            printf '{"phase":"done","image":"","error":"","startedAt":%s,"finishedAt":%s}' "$started" "$(date +%s)000" > /spool/state.json
+            echo "[upgrader] 完成"
+          else
+            printf '{"phase":"failed","image":"","error":"重建失败（详见 upgrader 容器日志）","startedAt":%s,"finishedAt":%s}' "$started" "$(date +%s)000" > /spool/state.json
+            echo "[upgrader] 失败"
+          fi
+        done
+    volumes:
+      # 只有这个容器持有 sock
+      - /var/run/docker.sock:/var/run/docker.sock
+      # 宿主原路径同名挂载：见上面第 2 条
+      - /home/docker/navihive:/home/docker/navihive
+      - upgrade-spool:/spool
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "2"
+
 volumes:
   navihive-data:
+  # 升级请求/状态在应用容器与升级器之间传递，只有这两个容器挂它
+  upgrade-spool:
