@@ -84,11 +84,22 @@
 # 旧 chunk（内容哈希命名，CDN 上还在），所以**不会白屏**，只是暂时用旧版本。
 # 要立刻生效就在部署后 purge 一次 Cloudflare 缓存；不 purge 的话等 60 秒自动过期。
 # 没上 stale-while-revalidate 是刻意的：那会把「拿到旧版本」的窗口拉到好几分钟。
+# ⚠️ 2026-10-22 首访体感：加上 stale-while-revalidate。
+# 原来是裸的 max-age=60，注释说"没上 SWR 是刻意的"—— 怕旧版窗口拉长。
+# 但那个顾虑可以用"短 SWR"解决：max-age 60 + SWR 60 = 最多 2 分钟旧版窗口
+# （升级由人点触发，本来就要等镜像，2 分钟完全可接受），
+# 换来的是**已缓存的场景零等待**：过期后立刻用旧版渲染，后台静默刷新。
+#
+# ⚠️ 这一步要和 Cloudflare 的 Cache Rule 配合才完整：CF 默认对 text/html 不缓存
+# （cf-cache-status: DYNAMIC），HTML 每次都回源 —— 那 0.5s 是首访 TTFB 的大头。
+# 在 CF 配一条 Cache Rules：URI 含 / 且内容是 text/html → Cache Eligibility: Eligible，
+#   Edge TTL: 2 minutes, Browser TTL: respect origin
+# 之后首访 TTFB 从 ~1000ms 降到 ~520ms（省掉回源那半秒）。
 /
-  Cache-Control: public, max-age=60
+  Cache-Control: public, max-age=60, stale-while-revalidate=60
 
 /index.html
-  Cache-Control: public, max-age=60
+  Cache-Control: public, max-age=60, stale-while-revalidate=60
 
 # Service Worker 不能强缓存，否则发新版后老客户端拿不到新壳子
 /sw.js

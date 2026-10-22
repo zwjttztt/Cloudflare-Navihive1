@@ -6,6 +6,36 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。---
 
+## 2026-10-22（十七）· 性能：首访体感 —— HTML 加 stale-while-revalidate
+
+**先量化**（`npm run audit:perf`，移动端 Slow-4G + 4× CPU 节流）：
+FCP 4964 / LCP 5736 / TTFB 10 / DCL 4826 / 传输 876KB / 79 请求。
+TTFB 只有 10ms —— 说明本地侧 4.9s **全花在下载 + 解析执行**，不是服务端。
+而线上首访那 1 秒 TTFB 拆开来是：TLS 握手 0.52s + CF 回源 0.5s。
+
+**诊断过的、确认不用动的**：
+- 332 处图标全是命名引入，tree-shaking 正常（`mui-core` chunk 里没有 createSvgIcon）；
+- `modulepreload` 已覆盖首屏 4 个关键 chunk；
+- 静态资源早已是 `max-age=31536000, immutable` 且实测 CF `HIT`；
+- 重依赖（mermaid 614KB / CodeMirror 550KB / cytoscape 424KB / elk 1428KB / katex 253KB）**全部不在首屏**。
+
+**本次改动**：`public/_headers` 里 HTML 的 `Cache-Control` 从裸 `max-age=60`
+改成 `max-age=60, stale-while-revalidate=60`。
+原来注释写着"没上 SWR 是刻意的"，怕旧版窗口拉长 —— 但那个顾虑可以用**短 SWR**解决：
+窗口锁死最多 2 分钟（升级本来就要等镜像，2 分钟可接受），换来的收益是
+**已缓存的场景零等待**：过期后立刻用旧版渲染，后台静默刷新，用户不再等回源。
+
+验证：改完重跑 `audit:perf`，FCP 5012 / LCP 5772（基线 4964/5736），在噪声范围内，**无退步**。
+
+⚠️ **这一步要和 Cloudflare 配合才拿满**：CF 默认对 text/html 不缓存
+（实测 `cf-cache-status: DYNAMIC`），HTML 每次都回源 —— 那 0.5s 是首访 TTFB 的大头。
+在 CF 加一条 Cache Rules：URI 含 `/`、内容是 text/html → Eligibility: Eligible、
+Edge TTL: 2 minutes、Browser TTL: respect origin。配完之后首访 TTFB 约 1000ms → 520ms。
+
+**下一档（本次没做，收益与风险都记在这）**：把 `@dnd-kit`（75KB raw，首屏）挪出首屏。
+它是唯一明确可移出的大块，但牵动 `App.tsx` / `GroupCard` / `SiteCard` / `SiteListBody` 四处，
+且切排序模式会整列表重挂载 —— 需要单独一轮 + 拖拽功能的真机验收。
+
 ## 2026-10-22（十六）· 重构：NotesPage 拆出第六个 hook（useNotesList）—— 收尾
 
 搬走列表派生链 `filtered → sorted → listGroups → visibleIds`（外加 `lazyListGroups` 懒挂载判定）。
