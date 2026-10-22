@@ -6,6 +6,36 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。---
 
+## 2026-10-22（十二）· 重构：NotesPage 拆出前两个 hook（useNotesPanels / useNotesRowActions）
+
+**为什么不是按 JSX 切**：实测这个文件 3,818 行里 **JSX 只占 524 行**（第 3294 行之后），
+其余约 2,970 行是逻辑，而且有 **67 个 useState**、56 个 useCallback、34 个 useEffect。
+JSX 早就拆过了（`src/components/notes/` 下已有 13 个子组件）。继续按 JSX 切，
+文件还是 3,600 行，收益极低 —— 真正该拆的是**状态归属**。
+
+**另外作者自己在 2347 行附近留过警告**：「引用的 active / setShareId / openRevisions
+都在更上面才声明，提到前面会 `used before declaration`」—— 声明顺序本身就是隐含契约，
+所以每一步搬完都要重新过一遍 `tsc` + 全量测试，不能攒到最后。
+
+**本轮完成两步**（每步都单独跑过 `tsc -b --force` + 全量 3,029 条 + 无回归）：
+
+| hook | 搬走什么 | 依赖 |
+|---|---|---|
+| `notes/useNotesPanels` | 版本历史、图片灯箱（含换图复位的 effect）、快捷键帮助、分享、文件夹外观、标签颜色、移动抽屉、大纲开关、顶栏 ⋯ 菜单 | 只读 `activeId` 与 `onListRevisions` |
+| `notes/useNotesRowActions` | 多选集合、批量删除确认与忙碌态、右键菜单锚点与关闭动画、行内标签/导出浮层、删除确认、新建重命名提示框 | **零外部依赖**（全是开关与锚点） |
+
+**踩到的坑**（都已处理）：
+- `useNotesRowActions` 的解构一开始放在组件前部，结果 `closeRowMenu`（依赖 `rowMenu`）
+  和菜单关闭的 effect（依赖 `menuClosing`）报 `used before declaration` ——
+  这正是作者警告的那类问题，最后把解构挪回**原声明位置**才解决。
+- 多行泛型 state（`namePrompt`）用字符串匹配删除时匹配到了别处的 `>(`，
+  留下一个 `null);` 残尾导致语法错误；改成按位置切片处理。
+
+**还剩两步**（方案已写进 `deliverables/notespage-split-plan-2026-10-22.md`）：
+- ③ `useNoteDraft`：草稿、脏标记、自动保存 debounce、侧边编辑。**高耦合** ——
+  `save` 依赖 `onUpdate`，而 `onUpdate` 又依赖 `notes`，原实现用「ref 塞进定时器」绕开身份变化，搬的时候必须原样保留。
+- ④ `useNotesData`：列表、搜索、筛选、排序、文件夹树。**耦合最高**，其余全都依赖它。
+
 ## 2026-10-22（十一）· 修复：点「更新」后的提示文字被切掉半截
 
 **现象**（用户截图）：「网站设置 → 版本与升级」里点了更新，两个提示卡片（「发现新版本 v7.3.1…」

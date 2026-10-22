@@ -299,7 +299,7 @@ export interface NotesPageProps {
 // —— 第二批拆分（2026-10-12）：左栏导航与分栏 chrome 搬到独立文件 ——
 // FolderTagSection / NavRow / ColResizeHandle 这些本来就是纯 props 驱动的组件，
 // 留在主文件只会撑行数；拆出后主文件只留页面装配逻辑。
-import { EMPTY_TAG_LINKS, tagOf, tagNamesOf, type MenuAnchor } from "./notes/sidebarSection";
+import { EMPTY_TAG_LINKS, tagOf, tagNamesOf } from "./notes/sidebarSection";
 /**
  * 「引用次数」的空表：模块级常量，别在渲染里 new Map()
  * —— 那会让下游 props 每次都是新引用（2026-10-18 性能批次）。
@@ -312,6 +312,8 @@ const EMPTY_NOTE_LINKS: { id: number; title: string }[] = [];
 import NotesNavPanel from "./notes/NotesNavPanel";
 import NotesListPane from "./notes/NotesListPane";
 import NotesEditorPane from "./notes/NotesEditorPane";
+import { useNotesPanels } from "./notes/useNotesPanels";
+import { useNotesRowActions } from "./notes/useNotesRowActions";
 import NotesSidePane from "./notes/NotesSidePane";
 import NotesOverlayLayer from "./notes/NotesOverlayLayer";
 import NotesConfirmLayer from "./notes/NotesConfirmLayer";
@@ -384,8 +386,6 @@ export default function NotesPage({
     /** 反链右侧常驻面板（N4）：与大纲面板同一位置，桌面头部按钮 / 菜单项共同开关 */
     const [backlinksOpen, setBacklinksOpen] = useState(false);
     /** 多选批量条（2026-10-09）：只在用户主动开了「多选」时才勾人，退出即清空 */
-    const [multiSelect, setMultiSelect] = useState(false);
-    const [checked, setChecked] = useState<Set<number>>(() => new Set());
     /**
      * ⌘/Ctrl+点（切换单选）与 Shift+点（范围选）共用的锚点。
      *
@@ -417,28 +417,14 @@ export default function NotesPage({
      */
     const [navDrawerOpen, setNavDrawerOpen] = useState(false);
     /** 编辑区头部「导出」下拉（2026-10-08 照 inkstone：Download 按钮 + 三格式菜单） */
-    const [exportAnchor, setExportAnchor] = useState<HTMLElement | null>(null);
     /** 阶段三收尾：导航列里选中的文件夹 / 标签（选中任一个就只看那一份） */
     const [activeFolder, setActiveFolder] = useState<number | null>(null);
     const [activeTag, setActiveTag] = useState<number | null>(null);
     /**
      * 新建文件夹/标签 —— 走站内的 NamePromptDialog，不再用 window.prompt。
      * `parentId` 有值就是「新建子文件夹」，两个入口共用同一个弹窗，行为一致。
+     * ⚠️ namePrompt 这个 state 已搬到 useNotesRowActions（2026-10-22），下面只剩填它的函数。
      */
-    const [namePrompt, setNamePrompt] = useState<
-        | {
-              kind: "folder" | "tag";
-              title: string;
-              description?: string;
-              defaultValue?: string;
-              confirmText: string;
-              /** 只有文件夹有：新建子文件夹时要挂到谁下面 */
-              parentId: number | null;
-              /** 重命名时：要改的是哪一个 */
-              renameId?: number;
-          }
-        | null
-    >(null);
     const askName = useCallback(
         (
             kind: "folder" | "tag",
@@ -476,12 +462,19 @@ export default function NotesPage({
      * 说清影响面：文件夹里的笔记**不会**被删，只是回到「未归类」——
      * 这点必须写出来，否则用户会以为连带笔记一起没了而不敢点。
      */
-    const [removeTarget, setRemoveTarget] = useState<{
-        kind: "folder" | "tag";
-        id: number;
-        name: string;
-    } | null>(null);
-    const closeRemove = useCallback(() => setRemoveTarget(null), []);
+    // ============ 行操作 / 多选 / 删除确认（2026-10-22 抽到 notes/useNotesRowActions）============
+    // 零外部依赖：全是开关与锚点，不碰列表数据，所以放在哪儿都不影响 hooks 顺序。
+    const rowActions = useNotesRowActions();
+    const {
+        multiSelect, setMultiSelect, checked, setChecked,
+        exportAnchor, setExportAnchor,
+        namePrompt, setNamePrompt,
+        removeTarget, setRemoveTarget, closeRemove,
+        rowMenu, setRowMenu, menuClosing, setMenuClosing,
+        rowActionsSuppressed, setRowActionsSuppressed,
+        tagPick, setTagPick, exportPick, setExportPick,
+        bulkDeleteOpen, setBulkDeleteOpen, bulkBusy, setBulkBusy,
+    } = rowActions;
     /** 阶段二：左栏可折叠（照 inkstone 的 196↔9，我们这边是 300↔44 的图标轨） */
     const [listCollapsed, setListCollapsed] = useState(false);
     /** 左两列的宽度（可拖动，持久化到 localStorage） */
@@ -492,13 +485,6 @@ export default function NotesPage({
      * ⚠️ 存 noteId 而不是 note 本身：菜单开着的时候那条笔记可能被自动保存刷新成
      * 新对象，存旧引用会拿过期数据去渲染菜单项。
      */
-    const [rowMenu, setRowMenu] = useState<{
-        noteId: number;
-        /** ⋯按钮打开=元素本身；右键打开=鼠标坐标虚拟元素（见 anchorAtMouse） */
-        el: MenuAnchor;
-        /** 菜单从哪里打开：列表行菜单全量；左栏内联笔记给精简菜单（inkstone 同款） */
-        source: "list" | "rail";
-    } | null>(null);
     /**
      * 行菜单正在关闭（退出动画那 ~200ms + 焦点还原窗口，共 300ms）：
      *  - 给行内「⋯」按钮打 --closing 硬压 opacity（否则 rowMenu 还挂着、
@@ -509,7 +495,6 @@ export default function NotesPage({
      *    指针菜单另禁焦点还原；这里保留关闭窗口内的 focusin 防护。
      * onClose 置位、300ms 后自清。
      */
-    const [menuClosing, setMenuClosing] = useState(false);
     useEffect(() => {
         if (!menuClosing) return;
         const onFocusIn = (e: Event) => {
@@ -531,7 +516,6 @@ export default function NotesPage({
      * 悬停显隐对它失效，直到指针**离开这一行**（onMouseLeave 清除）才恢复。
      * 离开再进来是新的悬停意图，正常显示。
      */
-    const [rowActionsSuppressed, setRowActionsSuppressed] = useState<number | null>(null);
     /** 统一的行菜单关闭：置抑制行 + menuClosing（各关闭路径共用，防漏） */
     const closeRowMenu = useCallback(() => {
         setRowActionsSuppressed(rowMenu?.noteId ?? null);
@@ -541,9 +525,7 @@ export default function NotesPage({
     /** 正在拖的笔记行（半透明反馈，与文件夹那边同一套观感） */
     const [draggingNoteId, setDraggingNoteId] = useState<number | null>(null);
     /** 「编辑标签」二级弹窗的锚点 */
-    const [tagPick, setTagPick] = useState<{ el: MenuAnchor; noteId: number } | null>(null);
     /** 「导出」二级菜单的锚点（2026-10-17 精简右键菜单：三个导出格式收进一个入口） */
-    const [exportPick, setExportPick] = useState<{ el: MenuAnchor; noteId: number } | null>(null);
     const [activeId, setActiveId] = useState<number | null>(notes[0]?.id ?? null);
     /** 记事本命令面板（N1）开关 */
     const [notesCmdOpen, setNotesCmdOpen] = useState(false);
@@ -1004,23 +986,11 @@ export default function NotesPage({
         };
     }, [pane, uiSettings.scrollSync, activeId]);
 
-    // ---------- 文件夹外观弹窗（icon / color） ----------
-    const [appearanceFolderId, setAppearanceFolderId] = useState<number | null>(null);
 
-    // ---------- 标签颜色弹窗（note_tag.color） ----------
-    const [tagColorId, setTagColorId] = useState<number | null>(null);
-
-    // ---------- 「移动到文件夹」右侧抽屉 ----------
-    const [moveDrawerNoteId, setMoveDrawerNoteId] = useState<number | null>(null);
 
     // ---------- 在侧边打开（两个文档同时编辑） ----------
     // sideId / sideDraft / sideRef 已随工具集声明（hooks 顺序要求），这里只有派生状态
 
-    // ---------- 大纲面板（预览窗右侧，inkstone 的「大纲」） ----------
-    const [outlineOpen, setOutlineOpen] = useState(loadNotesSettings().defaultOutline);
-
-    /** 顶栏「⋯」：对**当前打开的笔记**弹出与右键同一套操作菜单（右下角按键已并入） */
-    const [activeMenuAnchor, setActiveMenuAnchor] = useState<HTMLElement | null>(null);
 
     // ⚠️ 这一行不能省。记事本自己是 `position: fixed` 的全屏层，压根不占文档流，
     // 但**底下的导航站主界面还挂载着**（卡片网格一两千像素高），document照样能滚。
@@ -1122,6 +1092,28 @@ export default function NotesPage({
         () => notes.find(n => n.id === activeId) || null,
         [notes, activeId]
     );
+
+
+    // ============ 弹层 / 浮层状态（2026-10-22 抽到 notes/useNotesPanels）============
+    // 版本历史、灯箱、快捷键、分享、文件夹外观、标签颜色、移动抽屉、大纲开关、顶栏 ⋯ 菜单。
+    // 这些状态只影响各自那块 UI，与列表 / 草稿 / 保存无关，所以聚成一个 hook。
+    // ⚠️ 放这里是为了满足声明顺序：下面的命令面板（notesCommands）要引用 openRevisions。
+    const panels = useNotesPanels({ activeId: active?.id, onListRevisions: folderTags?.onListRevisions });
+    const {
+        appearanceFolderId, setAppearanceFolderId,
+        tagColorId, setTagColorId,
+        moveDrawerNoteId, setMoveDrawerNoteId,
+        outlineOpen, setOutlineOpen,
+        activeMenuAnchor, setActiveMenuAnchor,
+        revisionsOpen, setRevisionsOpen,
+        revisions, setRevisions,
+        openRevisions,
+        lightbox, setLightbox,
+        imageScale, setImageScale,
+        imageFailed, setImageFailed,
+        shortcutsOpen, setShortcutsOpen,
+        shareId, setShareId,
+    } = panels;
 
     /**
      * 编辑器内导出（头部菜单 / ⌘K）用的内容口径：**有未保存修改就导草稿**。
@@ -2024,8 +2016,6 @@ export default function NotesPage({
      * 所以先把附件一个个传上去、记下「旧 id → 新 id」，再把正文里的引用换掉。
      */
     // ---------- 批量操作（2026-10-09，配合上面的多选条）----------
-    const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
-    const [bulkBusy, setBulkBusy] = useState(false);
     /**
      * 选中集合 → 笔记对象。
      *
@@ -2310,32 +2300,6 @@ export default function NotesPage({
         });
     }, [active, draft?.content, notes]);
 
-    // ---------- 版本历史（inkstone 顶栏「版本历史」）----------
-    // 2026-10-09 改成 inkstone 同款面板：左列快照 + 右栏与当前正文的行级 diff
-    // （原来只是一个 Menu，点了直接恢复，恢复前看不到这一版改了什么）。
-    const [revisionsOpen, setRevisionsOpen] = useState(false);
-    /** 图片灯箱（inkstone 的 ui.lightbox）：点预览里的图片放大看 */
-    const [lightbox, setLightbox] = useState<{ src: string; alt: string } | null>(null);
-    const [imageScale, setImageScale] = useState(1);
-    const [imageFailed, setImageFailed] = useState(false);
-    const [shortcutsOpen, setShortcutsOpen] = useState(false);
-    useEffect(() => { setImageScale(1); setImageFailed(false); }, [lightbox?.src]);
-    const [shareId, setShareId] = useState<number | null>(null);
-    const [revisions, setRevisions] = useState<NoteRevision[] | null>(null);
-    // ⚠️ 不再需要「正在恢复的版本 id」那份 state：面板自己有 busy 态，
-    // 恢复按钮在期间是禁用的（连点重复提交由面板挡住）。
-
-    /** 打开面板时才拉列表：不为一条没打开过的笔记请求历史 */
-    const openRevisions = useCallback(async () => {
-        setRevisionsOpen(true);
-        const noteId = active?.id;
-        if (noteId === undefined || !folderTags?.onListRevisions) {
-            setRevisions([]);
-            return;
-        }
-        setRevisions(null);
-        setRevisions(await folderTags.onListRevisions(noteId));
-    }, [active?.id, folderTags]);
 
     /**
      * 记事本命令面板（N1）的命令列表：用现成的回调拼出来。
