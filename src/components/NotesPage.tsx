@@ -313,6 +313,7 @@ import NotesNavPanel from "./notes/NotesNavPanel";
 import NotesListPane from "./notes/NotesListPane";
 import NotesEditorPane from "./notes/NotesEditorPane";
 import { useNotesPanels } from "./notes/useNotesPanels";
+import { useNoteAutoSave } from "./notes/useNoteAutoSave";
 import { useNotesRowActions } from "./notes/useNotesRowActions";
 import NotesSidePane from "./notes/NotesSidePane";
 import NotesOverlayLayer from "./notes/NotesOverlayLayer";
@@ -2495,96 +2496,19 @@ export default function NotesPage({
         }
     }, [active, draft, onUpdate, onNotify]);
 
-    // ---------- 阶段四第 14 条：自动保存 ----------
-    //
-    // 之前**既没有保存按钮也没有自动保存**，草稿只在「切到另一条笔记」时才写库 ——
-    // 改完直接关掉记事本，内容就没了。这里补 debounce 3s 自动存 + 状态指示。
-    //
-    // ⚠️ 为什么 save 要走 ref 塞进定时器：save 依赖 onUpdate，而 onUpdate（= updateNote）
-    // 依赖 notes —— notes 每保存一次就换一个引用，save 的身份也跟着换。
-    // 直接把 save 写进下面那个 effect 的依赖，debounce 定时器会被反复重置，
-    // 打字正好赶上保存完成的那一下就会被清掉、拖到下一次按键才重新计时。
-    // 用 ref 存最新的 save，effect 只认 dirty / draft / active.id 这三样。
-    const [saveState, setSaveState] = useState<"idle" | "pending" | "saving" | "saved">("idle");
-    const [savedAt, setSavedAt] = useState<number | null>(null);
-    // 「已保存 · 刚刚」这句得自己走：formatRelative 只在渲染时算一次，
-    // 不刷新它会永远停在「刚刚」（放那儿二十分钟也一样）。只在显示已保存时起这个定时器。
-    const [tick, setTick] = useState(() => Date.now());
-    useEffect(() => {
-        if (saveState !== "saved") return;
-        const timer = setInterval(() => setTick(Date.now()), 30_000);
-        return () => clearInterval(timer);
-    }, [saveState]);
-    const saveRef = useRef(save);
-    useEffect(() => {
-        saveRef.current = save;
-    }, [save]);
-
-    useEffect(() => {
-        // 还没拿到 id 的新笔记不能存（onCreate 是异步的，那一瞬间 id 还是空的）
-        if (!dirty || !active?.id) {
-            setSaveState(cur => (cur === "pending" ? "idle" : cur));
-            return;
-        }
-        setSaveState("pending");
-        const timer = setTimeout(async () => {
-            setSaveState("saving");
-            if (!(await saveRef.current())) { setSaveState("pending"); return; }
-            setSaveState("saved");
-            setSavedAt(Date.now());
-            setTick(Date.now());
-        }, autosaveMs);
-
-        // 失焦立即落盘：防抖放宽到 5 秒（见 AUTO_SAVE_MS 那条注释）之后，
-        // 「打完字切走」这一下的等待窗口也变长了 —— 这里是它的补偿。
-        // 切标签页 / 点到别的窗口都算失焦，都是低频动作，不会把省下来的往返又花回去。
-        const flush = () => {
-            clearTimeout(timer);
-            void saveRef.current().then(ok => {
-                if (!ok) return;
-                setSaveState("saved");
-                setSavedAt(Date.now());
-                setTick(Date.now());
-            });
-        };
-        const onVisibility = () => {
-            if (document.visibilityState === "hidden") flush();
-        };
-        window.addEventListener("blur", flush);
-        document.addEventListener("visibilitychange", onVisibility);
-
-        return () => {
-            clearTimeout(timer);
-            window.removeEventListener("blur", flush);
-            document.removeEventListener("visibilitychange", onVisibility);
-        };
-    }, [dirty, draft, active?.id, autosaveMs]);
-
-    // 关掉记事本时把还没落库的草稿刷一次：防抖是 5 秒（见 AUTO_SAVE_MS），
-    // 打完字立刻关闭的话那 5 秒还没走完。卸载是同步的，await 不上，
-    // 只能 fire-and-forget（api 是模块级的实例，组件没了请求照样发得出去）。
-    const flushRef = useRef<{ dirty: boolean; save: () => Promise<unknown> }>({ dirty: false, save: async () => {} });
-    useEffect(() => {
-        flushRef.current = { dirty, save };
+    // ============ 自动保存（2026-10-22 抽到 notes/useNoteAutoSave）============
+    // ⚠️ dirty 与 save 都不搬进去：dirty 还被「关闭前的未保存确认」用，
+    //    save 依赖外层传进来的 onUpdate / onNotify。
+    // ⚠️ hook 内部用 saveRef 绕开 save 身份变化（save 依赖 onUpdate → notes，每次保存都换引用），
+    //    这样 effect 的依赖数组只认 dirty / draft / active.id 三样，防抖不会被打断。
+    const { saveState, savedAt, tick } = useNoteAutoSave({
+        dirty,
+        draft,
+        noteId: active?.id,
+        autosaveMs,
+        save,
     });
-    useEffect(
-        () => () => {
-            if (flushRef.current.dirty) void flushRef.current.save();
-        },
-        []
-    );
 
-    /** ⌘/Ctrl+S 手动存一下：自动保存已经兜底，但有人就是想立刻存 */
-    useEffect(() => {
-        const onKey = (e: KeyboardEvent) => {
-            if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
-                e.preventDefault();
-                void saveRef.current();
-            }
-        };
-        window.addEventListener("keydown", onKey);
-        return () => window.removeEventListener("keydown", onKey);
-    }, []);
 
     const openNote = useCallback((note: Note) => {
         setActiveId(note.id ?? null);

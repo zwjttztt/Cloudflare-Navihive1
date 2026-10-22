@@ -6,6 +6,24 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。---
 
+## 2026-10-22（十三）· 重构：NotesPage 拆出第三个 hook（useNoteAutoSave）
+
+搬走「草稿自动保存」：3 个 state（`saveState` / `savedAt` / `tick`）+ 4 个 effect
+（30 秒 tick、防抖主逻辑、失焦/切走 flush、卸载 flush、⌘/Ctrl+S），净减 90 行。
+
+**原样保留的三处技巧**（注释一并搬了过去，这是这段代码的灵魂）：
+1. `saveRef`：`save` 的身份随 `onUpdate` → `notes` 变化，effect 的依赖数组只认
+   `dirty / draft / noteId` 三样，用 ref 存最新 save，防抖才不会被打断；
+2. 卸载 flush 用**第二个** ref：卸载是同步的 await 不上，只能 fire-and-forget，
+   再套一层是为了让「卸载那一刻」拿到最新的 dirty/save；
+3. 失焦 / `visibilitychange` 立即落盘：防抖放宽到 5 秒后，这是「打完字切走」的补偿。
+
+**`dirty` 与 `save` 刻意不搬进来**：`dirty` 还被「关闭前的未保存确认」用，
+`save` 依赖调用方的 `onUpdate` / `onNotify`，都由外层以参数传入。
+`draft` 在 hook 里类型是 `unknown` —— 它只用于进依赖数组，hook 不读它的字段。
+
+验证：`tsc -b --force` + 全量 3,029 全绿 + build + 冒烟 38 项。
+
 ## 2026-10-22（十二）· 重构：NotesPage 拆出前两个 hook（useNotesPanels / useNotesRowActions）
 
 **为什么不是按 JSX 切**：实测这个文件 3,818 行里 **JSX 只占 524 行**（第 3294 行之后），
