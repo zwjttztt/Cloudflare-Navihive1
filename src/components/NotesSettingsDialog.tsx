@@ -181,7 +181,7 @@ function SettingRow({
                 alignItems: "center",
                 gap: 2,
                 py: 1.25,
-                borderBottom: "1px solid rgba(128,128,128,0.12)",
+                borderBottom: "1px solid var(--neutral-hover)",
             }}
         >
             <Box sx={{ flex: 1, minWidth: 0 }}>
@@ -245,8 +245,8 @@ function SegOptions<T extends string>({
                             cursor: "pointer",
                             appearance: "none",
                             font: "inherit",
-                            border: active ? "1px solid var(--accent)" : "1px solid rgba(128,128,128,0.35)",
-                            bgcolor: active ? "rgba(176,67,58,0.08)" : "transparent",
+                            border: active ? "1px solid var(--accent)" : "1px solid var(--neutral-border)",
+                            bgcolor: active ? "var(--accent-wash)" : "transparent",
                             color: active ? "var(--accent)" : "text.secondary",
                         }}
                     >
@@ -657,12 +657,12 @@ export default function NotesSettingsDialog({
                     sx={{
                         width: 148,
                         flexShrink: 0,
-                        borderRight: "1px solid rgba(128,128,128,0.12)",
+                        borderRight: "1px solid var(--neutral-hover)",
                         py: 2,
                         display: "flex",
                         flexDirection: "column",
                         gap: 0.5,
-                        bgcolor: "rgba(128,128,128,0.04)",
+                        bgcolor: "var(--neutral-wash)",
                     }}
                 >
                     <Typography variant='subtitle1' sx={{ px: 2, pb: 1, fontWeight: 600 }}>
@@ -711,9 +711,9 @@ export default function NotesSettingsDialog({
                                 borderRadius: 1.5,
                                 textAlign: "left",
                                 fontSize: 13.5,
-                                bgcolor: tab === key ? "rgba(176,67,58,0.10)" : "transparent",
+                                bgcolor: tab === key ? "var(--accent-wash)" : "transparent",
                                 color: tab === key ? "var(--accent)" : "text.secondary",
-                                "&:hover": { bgcolor: "rgba(128,128,128,0.08)" },
+                                "&:hover": { bgcolor: "var(--neutral-wash)" },
                             }}
                         >
                             {icon}
@@ -766,7 +766,7 @@ export default function NotesSettingsDialog({
                                                         settings.accent === c
                                                             ? "2px solid var(--accent)"
                                                             : "2px solid transparent",
-                                                    outline: "1px solid rgba(128,128,128,0.25)",
+                                                    outline: "1px solid var(--neutral-border)",
                                                 }}
                                             />
                                         ))}
@@ -859,7 +859,7 @@ export default function NotesSettingsDialog({
                                     <Box
                                         data-settings-preview='1'
                                         sx={{
-                                            border: "1px solid rgba(128,128,128,0.2)",
+                                            border: "1px solid var(--neutral-hairline)",
                                             borderRadius: 2,
                                             p: 1.5,
                                             maxWidth:
@@ -1093,7 +1093,7 @@ export default function NotesSettingsDialog({
                                             key={label}
                                             data-data-stat={label}
                                             sx={{
-                                                border: "1px solid rgba(128,128,128,0.18)",
+                                                border: "1px solid var(--neutral-hairline)",
                                                 borderRadius: 2,
                                                 px: 1.5,
                                                 py: 1.25,
@@ -1280,7 +1280,7 @@ export default function NotesSettingsDialog({
                                             mb: 1.5,
                                             borderRadius: 1.5,
                                             color: "error.main",
-                                            bgcolor: "rgba(176,67,58,0.08)",
+                                            bgcolor: "var(--accent-wash)",
                                         }}
                                     >
                                         {backupError}
@@ -1297,7 +1297,7 @@ export default function NotesSettingsDialog({
                                         py: 1.25,
                                         mb: 2,
                                         borderRadius: 2,
-                                        border: "1px solid rgba(128,128,128,0.2)",
+                                        border: "1px solid var(--neutral-hairline)",
                                     }}
                                 >
                                     <CloudUploadIcon sx={{ color: "var(--accent)", fontSize: 20, mt: 0.25 }} />
@@ -1350,7 +1350,7 @@ export default function NotesSettingsDialog({
                                         py: 1.25,
                                         mb: 2,
                                         borderRadius: 2,
-                                        border: "1px solid rgba(128,128,128,0.2)",
+                                        border: "1px solid var(--neutral-hairline)",
                                     }}
                                 >
                                     <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
@@ -1447,8 +1447,8 @@ export default function NotesSettingsDialog({
                                                 borderRadius: 1.5,
                                                 color: backupTestResult.success ? "success.main" : "error.main",
                                                 bgcolor: backupTestResult.success
-                                                    ? "rgba(76,175,80,0.10)"
-                                                    : "rgba(176,67,58,0.08)",
+                                                    ? "color-mix(in srgb, var(--success) 10%, transparent)"
+                                                    : "var(--accent-wash)",
                                             }}
                                         >
                                             {backupTestResult.message}
@@ -1548,7 +1548,7 @@ export default function NotesSettingsDialog({
                                             py: 2,
                                             borderRadius: 1.5,
                                             textAlign: "center",
-                                            bgcolor: "rgba(128,128,128,0.05)",
+                                            bgcolor: "var(--neutral-wash)",
                                         }}
                                     >
                                         还没有备份记录
@@ -1562,7 +1562,7 @@ export default function NotesSettingsDialog({
                                                 data-backup-run={run.id}
                                                 sx={{
                                                     borderRadius: 1.5,
-                                                    border: "1px solid rgba(128,128,128,0.16)",
+                                                    border: "1px solid var(--neutral-hover)",
                                                     mb: 0.5,
                                                     overflow: "hidden",
                                                 }}
@@ -1594,7 +1594,7 @@ export default function NotesSettingsDialog({
                                                             cursor: "pointer",
                                                             bgcolor: "transparent",
                                                             textAlign: "left",
-                                                            "&:hover": { bgcolor: "rgba(128,128,128,0.06)" },
+                                                            "&:hover": { bgcolor: "var(--neutral-wash)" },
                                                         }}
                                                     >
                                                     <Box
@@ -1657,8 +1657,8 @@ export default function NotesSettingsDialog({
                                                             display: "block",
                                                             px: 1.5,
                                                             py: 0.75,
-                                                            borderTop: "1px solid rgba(128,128,128,0.12)",
-                                                            bgcolor: "rgba(128,128,128,0.04)",
+                                                            borderTop: "1px solid var(--neutral-hover)",
+                                                            bgcolor: "var(--neutral-wash)",
                                                         }}
                                                     >
                                                         {run.status === "success"
@@ -1695,7 +1695,7 @@ export default function NotesSettingsDialog({
                                                 px: 1.5,
                                                 py: 1.25,
                                                 borderRadius: 2,
-                                                border: "1px solid rgba(128,128,128,0.2)",
+                                                border: "1px solid var(--neutral-hairline)",
                                             }}
                                         >
                                             <Box
@@ -1743,7 +1743,7 @@ export default function NotesSettingsDialog({
                                                         py: 0.75,
                                                         borderRadius: 1.5,
                                                         color: "error.main",
-                                                        bgcolor: "rgba(176,67,58,0.08)",
+                                                        bgcolor: "var(--accent-wash)",
                                                     }}
                                                 >
                                                     {remoteError}
@@ -1980,7 +1980,7 @@ export default function NotesSettingsDialog({
                                             ),
                                         },
                                     }}
-                                    sx={{ mb: 1.5, borderRadius: 2, bgcolor: "rgba(128,128,128,0.06)" }}
+                                    sx={{ mb: 1.5, borderRadius: 2, bgcolor: "var(--neutral-wash)" }}
                                 />
                                 {shareError && (
                                     <Typography variant='body2' color='error' sx={{ mb: 1 }}>
@@ -2004,7 +2004,7 @@ export default function NotesSettingsDialog({
                                                 key={item.note_id}
                                                 data-share-row={item.note_id}
                                                 sx={{
-                                                    border: "1px solid var(--card-border, rgba(128,128,128,0.22))",
+                                                    border: "1px solid var(--card-border, var(--neutral-hairline))",
                                                     borderRadius: 2,
                                                     px: 1.5,
                                                     py: 1.25,
@@ -2053,8 +2053,8 @@ export default function NotesSettingsDialog({
                                                             fontWeight: 600,
                                                             color: expired ? "text.tertiary" : "var(--accent)",
                                                             bgcolor: expired
-                                                                ? "rgba(128,128,128,0.12)"
-                                                                : "rgba(176,67,58,0.10)",
+                                                                ? "var(--neutral-hover)"
+                                                                : "var(--accent-wash)",
                                                         }}
                                                     >
                                                         {expired ? "已过期" : "生效中"}
@@ -2162,7 +2162,7 @@ export default function NotesSettingsDialog({
                             </Box>
                         )}
                     </Box>
-                    <Box sx={{ display: "flex", justifyContent: "flex-end", px: 2.5, py: 1.5, borderTop: "1px solid rgba(128,128,128,0.12)" }}>
+                    <Box sx={{ display: "flex", justifyContent: "flex-end", px: 2.5, py: 1.5, borderTop: "1px solid var(--neutral-hover)" }}>
                         <Button size='small' variant='contained' onClick={onClose} data-settings-done='1'>
                             完成
                         </Button>

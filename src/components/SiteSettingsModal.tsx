@@ -3,7 +3,6 @@ import { useEffect, useRef, useState } from "react";
 import { Site, Group } from "../API/http";
 import ConfirmDialog from "./ConfirmDialog";
 // Material UI 导入
-import type { Theme } from "@mui/material";
 import {
     Dialog,
     DialogTitle,
@@ -22,7 +21,6 @@ import {
     Divider,
     Avatar,
     CircularProgress,
-    useTheme,
     SelectChangeEvent,
     InputAdornment,
     Tooltip,
@@ -91,7 +89,7 @@ interface SiteSettingsModalProps {
  * 这类「两个窗口要长得一样」的约定，最容易在只改了一处时悄悄漂移，
  * 所以让它们**共用同一个对象**，以后改主题只改这一处。
  */
-function settingsPaper(theme: Theme) {
+function settingsPaper() {
     return {
         className: "nav-settings-dialog",
         sx: {
@@ -112,10 +110,7 @@ function settingsPaper(theme: Theme) {
             WebkitBackdropFilter: "blur(var(--glass-blur)) saturate(1.4)",
             border: "1px solid var(--glass-panel-border)",
             boxShadow: "var(--glass-shadow-hover)",
-            backgroundColor:
-                theme.palette.mode === "dark"
-                    ? "rgba(23,27,38,0.94)"
-                    : "rgba(255,255,255,0.94)",
+            backgroundColor: "var(--surface-modal)",
         },
     };
 }
@@ -127,8 +122,8 @@ function settingsPaper(theme: Theme) {
  * 而放大窗天生就该是大个子。共用一份样式必然给主窗强加一个高度下限 —— 那正是用户
  * 连续几轮抱怨的「网站设置下面空出一段」。底色等仍来自同一个 settingsPaper，两窗一套。
  */
-function notesPaper(theme: Theme) {
-    const base = settingsPaper(theme);
+function notesPaper() {
+    const base = settingsPaper();
     return {
         ...base,
         sx: {
@@ -149,7 +144,6 @@ export default function SiteSettingsModal({
     initiallyExpandNotes,
     notesOnly = false,
 }: SiteSettingsModalProps) {
-    const theme = useTheme();
     // 全局「网站设置」里的获取图标 API 模板
     const { iconApi } = useAppConfig();
     // 星标与标签存本机（不在数据库表里），但会随备份文件一起导出/恢复
@@ -453,7 +447,7 @@ export default function SiteSettingsModal({
             onClose={onClose}
             fullWidth
             maxWidth='sm'
-            slotProps={{ paper: notesPaper(theme) }}
+            slotProps={{ paper: notesPaper() }}
         >
             <DialogTitle
                 sx={{
@@ -1046,7 +1040,7 @@ export default function SiteSettingsModal({
             onClose={closeNotes}
             fullWidth
             maxWidth='sm'
-            slotProps={{ paper: settingsPaper(theme) }}
+            slotProps={{ paper: settingsPaper() }}
         >
             <DialogTitle
                 sx={{

@@ -54,7 +54,7 @@ export function NoteTabsNode({
 
     return (
         <div data-note-tabs={pages.length} style={{ margin: "8px 0" }}>
-            <div role="tablist" aria-label="标签页" style={{ display: "flex", gap: 4, borderBottom: "1px solid rgba(128,128,128,0.3)" }}>
+            <div role="tablist" aria-label="标签页" style={{ display: "flex", gap: 4, borderBottom: "1px solid var(--neutral-border)" }}>
                 {pages.map((p, i) => (
                     <button
                         key={`${p.title}-${i}`}

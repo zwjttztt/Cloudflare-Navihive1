@@ -126,7 +126,7 @@ export default function PublicGroupPage({ token }: { token: string }) {
                             gap: 1.5,
                             p: 1.25,
                             borderRadius: 2,
-                            border: "1px solid rgba(128,128,128,0.2)",
+                            border: "1px solid var(--neutral-hairline)",
                             textDecoration: "none",
                             color: "inherit",
                         }}

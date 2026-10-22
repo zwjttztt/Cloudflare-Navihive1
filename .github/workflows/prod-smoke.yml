@@ -1,0 +1,48 @@
+# 线上只读冒烟：每天一次 + 可手动触发，对**真实实例**打一遍 GET/HEAD。
+#
+# 与 CI 里那些端到端的分工：CI 跑的是本地 wrangler dev / 本地自托管，证明「代码对」；
+# 这条证明的是「线上跑的是不是这份代码、有没有被环境改坏」。反代吃掉 CSP、
+# CDN 缓存了旧 HTML、卷权限导致资产 403、SPA 回退被平台覆盖 —— 这些在 2026-10
+# 连续出过，每次都是人肉 curl 才发现的，因为本地链路根本碰不到那一层。
+#
+# ⚠️ 只读是硬约束：脚本只发 GET/HEAD，不需要也不接受任何口令/令牌。
+# 线上可能是正在使用的实例，冒烟脚本不许写数据。tests/prodSmokeGuard.test.ts 盯着这条。
+#
+# 地址走**仓库变量**（Settings → Variables）`NAVIHIVE_PROD_URL`，不是 Secrets：
+# 打的都是不需要鉴权的公开接口，没有东西要保密；放 Secrets 反而让人误以为有凭据在流转。
+name: 线上只读冒烟
+
+on:
+  schedule:
+    # 每天 01:00 UTC（北京时间 09:00）跑一次
+    - cron: "0 1 * * *"
+  workflow_dispatch:
+    inputs:
+      url:
+        description: 要打的线上地址（留空用仓库变量 NAVIHIVE_PROD_URL）
+        required: false
+        type: string
+      min_version:
+        description: 要求线上构建号不低于它（如 7.8.0），留空不校验
+        required: false
+        type: string
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: 打一遍线上（只读）
+        env:
+          NAVIHIVE_PROD_URL: ${{ inputs.url || vars.NAVIHIVE_PROD_URL }}
+          NAVIHIVE_PROD_MIN_VERSION: ${{ inputs.min_version }}
+        # 故意**不加** `--tolerate-down`：定时任务的价值恰恰在于「线上挂了也要红」。
+        # （--tolerate-down 只在临时排查、不想被通知淹没时手动加。）
+        run: node script/prod-smoke.mjs

@@ -440,7 +440,7 @@ export default function NotesListPane(props: Pick<NotesPageCtx, "activeFolder" |
                                         // 纯装饰、不改字号（改字号会让整列在 hover 时抖）。
                                         transition: "background-color 120ms ease",
                                         "@media (hover: hover) and (pointer: fine)": {
-                                            "&:hover": { bgcolor: "rgba(128,128,128,0.06)" },
+                                            "&:hover": { bgcolor: "var(--neutral-wash)" },
                                         },
                                     }}
                                 >
@@ -601,7 +601,7 @@ export default function NotesListPane(props: Pick<NotesPageCtx, "activeFolder" |
                                     "&:has(.note-row-actions:focus-visible) .note-row-actions": {
                                         opacity: 1,
                                     },
-                                    "&:hover": { bgcolor: "rgba(128,128,128,0.08)" },
+                                    "&:hover": { bgcolor: "var(--neutral-wash)" },
                                     // inkstone 的「悬停时整行右移 2px」——
                                     // 一个很小的动作，但让列表「活」起来：指针扫过去时
                                     // 能看出当前落在哪一条上，光靠底色变化是不够的。
@@ -783,7 +783,7 @@ export default function NotesListPane(props: Pick<NotesPageCtx, "activeFolder" |
                                                         : {
                                                               border: "1px solid var(--card-border)",
                                                               color: "text.secondary",
-                                                              bgcolor: "rgba(128,128,128,0.08)",
+                                                              bgcolor: "var(--neutral-wash)",
                                                           }),
                                                 }}
                                             >
@@ -817,8 +817,8 @@ export default function NotesListPane(props: Pick<NotesPageCtx, "activeFolder" |
                         flexShrink: 0,
                         // 窄列表里四个按钮排不下会挤成两截 —— 允许换行，别把字压扁
                         flexWrap: "wrap",
-                        borderTop: "1px solid rgba(128,128,128,0.16)",
-                        bgcolor: "rgba(128,128,128,0.06)",
+                        borderTop: "1px solid var(--neutral-hover)",
+                        bgcolor: "var(--neutral-wash)",
                     }}
                 >
                     <Typography variant='caption' sx={{ flex: 1, minWidth: 0 }}>

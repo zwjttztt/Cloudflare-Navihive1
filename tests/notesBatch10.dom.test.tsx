@@ -490,9 +490,15 @@ test("关闭中栏后导航列的拖缝仍在：守卫条件是 listCollapsed �
 
 test("分享链接前缀三处必须一致是 /s/（main 路由 / 分享弹窗 / 设置列表）", () => {
     const mainSrc = readSrcFile("main.tsx");
+    // P2-8：正则收进 shared/spaRoutes.ts（worker / 自托管 / 前端三处共用一张表），
+    // main.tsx 只负责取，不再自己写正则 —— 这里钉的是「确实从共享表取」。
     assert.ok(
-        mainSrc.includes("/^\\/s\\/([a-f0-9]{64})$/"),
-        "main.tsx 的公开页路由必须认 /s/<token>"
+        mainSrc.includes("shared/spaRoutes"),
+        "main.tsx 的公开页路由必须取自 shared/spaRoutes（后端 SPA 回退用的是同一张表）"
+    );
+    assert.ok(
+        !mainSrc.includes("[a-f0-9]{64}"),
+        "main.tsx 不能再内联 64 位 hex 正则（与后端漂移就是静默 404）"
     );
     assert.ok(
         !mainSrc.includes("/^\\/n\\/([a-f0-9]{64})$/"),

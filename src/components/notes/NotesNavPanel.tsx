@@ -242,7 +242,7 @@ export default function NotesNavPanel(props: Pick<NotesPageCtx, "accountName" | 
                 data-nav-footer='1'
                 sx={{
                     flexShrink: 0,
-                    borderTop: "1px solid rgba(128,128,128,0.18)",
+                    borderTop: "1px solid var(--neutral-hairline)",
                     pt: 0.5,
                     pb: 0.5,
                     position: "sticky",
@@ -310,7 +310,7 @@ export default function NotesNavPanel(props: Pick<NotesPageCtx, "accountName" | 
                         px: 0.75,
                         pt: 0.5,
                         mt: 0.25,
-                        borderTop: "1px solid rgba(128,128,128,0.12)",
+                        borderTop: "1px solid var(--neutral-hover)",
                     }}
                 >
                     <Avatar

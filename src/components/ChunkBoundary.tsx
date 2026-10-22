@@ -117,15 +117,15 @@ export default class ChunkBoundary extends Component<Props, State> {
                     margin: 12,
                     padding: "12px 14px",
                     borderRadius: 10,
-                    border: "1px solid #e3e5e8",
-                    background: "#fff",
-                    color: "#1f2329",
+                    border: "1px solid var(--border-default, #d0d3d8)",
+                    background: "var(--surface-raised, #fff)",
+                    color: "var(--text-primary, #1f2329)",
                     fontSize: 14,
                     lineHeight: 1.7,
                 }}
             >
                 <div style={{ fontWeight: 600, marginBottom: 4 }}>{text.title}</div>
-                <div style={{ color: "#55595f" }}>{text.hint}</div>
+                <div style={{ color: "var(--text-secondary, #55595f)" }}>{text.hint}</div>
                 {text.retryable && (
                     <button
                         onClick={this.retry}
@@ -134,9 +134,9 @@ export default class ChunkBoundary extends Component<Props, State> {
                             padding: "6px 14px",
                             fontSize: 14,
                             borderRadius: 8,
-                            border: "1px solid #d0d3d8",
-                            background: "#1976d2",
-                            color: "#fff",
+                            border: "1px solid var(--border-default, #d0d3d8)",
+                            background: "var(--accent, #1976d2)",
+                            color: "var(--on-accent, #fff)",
                             cursor: "pointer",
                         }}
                     >

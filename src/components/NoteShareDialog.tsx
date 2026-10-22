@@ -247,9 +247,9 @@ export default function NoteShareDialog({
                         <Box
                             data-share-link-box='1'
                             sx={{
-                                border: "1px solid rgba(128,128,128,0.25)",
+                                border: "1px solid var(--neutral-border)",
                                 borderRadius: 2,
-                                bgcolor: "rgba(128,128,128,0.06)",
+                                bgcolor: "var(--neutral-wash)",
                                 p: 1.25,
                             }}
                         >
@@ -296,7 +296,7 @@ export default function NoteShareDialog({
                                     flexWrap: "wrap",
                                     alignItems: "center",
                                     gap: 1.5,
-                                    borderTop: "1px solid rgba(128,128,128,0.18)",
+                                    borderTop: "1px solid var(--neutral-hairline)",
                                     mt: 1.25,
                                     pt: 1.25,
                                 }}
@@ -357,8 +357,8 @@ export default function NoteShareDialog({
                                     font: "inherit",
                                     border: active
                                         ? "1px solid var(--accent)"
-                                        : "1px solid rgba(128,128,128,0.35)",
-                                    bgcolor: active ? "rgba(176,67,58,0.08)" : "transparent",
+                                        : "1px solid var(--neutral-border)",
+                                    bgcolor: active ? "var(--accent-wash)" : "transparent",
                                     color: active ? "var(--accent)" : "text.secondary",
                                 }}
                             >

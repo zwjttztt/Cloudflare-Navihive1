@@ -59,10 +59,10 @@ const theme = EditorView.theme({
         // 钳到 100% 后 pre 以视口宽为界，自己出横向滚动条。
         maxWidth: "100%",
     },
-    ".cm-gutters": { backgroundColor: "transparent", color: "inherit", opacity: "0.55", borderRight: "1px solid rgba(128,128,128,.2)" },
-    ".cm-activeLine": { backgroundColor: "rgba(128,128,128,.08)" },
+    ".cm-gutters": { backgroundColor: "transparent", color: "inherit", opacity: "0.55", borderRight: "1px solid var(--neutral-hairline)" },
+    ".cm-activeLine": { backgroundColor: "var(--neutral-wash)" },
     "&.cm-focused": { outline: "none" },
-    ".cm-selectionBackground, &.cm-focused .cm-selectionBackground": { backgroundColor: "rgba(100,140,220,.3)" },
+    ".cm-selectionBackground, &.cm-focused .cm-selectionBackground": { backgroundColor: "var(--editor-selection)" },
 });
 
 /**
@@ -81,7 +81,7 @@ const searchPanelTheme = EditorView.theme({
         margin: "6px",
         backdropFilter: "blur(8px)",
         WebkitBackdropFilter: "blur(8px)",
-        boxShadow: "0 6px 20px rgba(0,0,0,.18)",
+        boxShadow: "var(--shadow-float)",
     },
     ".cm-search .cm-textfield": {
         backgroundColor: "color-mix(in srgb, currentColor 12%, transparent)",
@@ -113,12 +113,12 @@ const searchPanelTheme = EditorView.theme({
     },
     // 命中高亮：普通命中 + 当前命中，都用同色系但不同浓度，亮/暗都看得见
     ".cm-searchMatch": {
-        backgroundColor: "rgba(120,170,255,.28)",
-        outline: "1px solid rgba(120,170,255,.5)",
+        backgroundColor: "var(--editor-match)",
+        outline: "1px solid var(--editor-match-active)",
     },
     ".cm-searchMatch.cm-searchMatch-selected": {
-        backgroundColor: "rgba(120,170,255,.6)",
-        outline: "1px solid rgba(120,170,255,.9)",
+        backgroundColor: "var(--editor-match-active)",
+        outline: "1px solid var(--editor-match-ring)",
     },
 });
 
@@ -135,7 +135,7 @@ const completionTheme = EditorView.theme({
             borderRadius: "10px",
             backdropFilter: "blur(10px)",
             WebkitBackdropFilter: "blur(10px)",
-            boxShadow: "0 8px 24px rgba(0,0,0,.18)",
+            boxShadow: "var(--shadow-float)",
             overflow: "hidden",
             maxHeight: "16em",
         },

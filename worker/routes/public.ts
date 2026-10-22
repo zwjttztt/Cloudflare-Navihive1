@@ -50,6 +50,7 @@ const PUBLIC_ATTACH_HEADERS = {
 import type { LoginInput, RecoveryInput, RegisterInput } from "../types";
 import { validateLogin } from "../validate";
 import type { RouteCtx } from "./types";
+import { readJsonBody } from "./jsonBody";
 
 
 /**
@@ -211,7 +212,9 @@ export async function handlePublicRoutes(ctx: RouteCtx): Promise<Response | null
 
     // 登录路由 - 不需要验证
     if (path === "login" && method === "POST") {
-        const loginData = (await request.json()) as LoginInput;
+        // 请求体可能是 `null`（合法 JSON 但不是对象）：validateLogin 会去读 .username，
+        // 直接抛 TypeError → 500。走统一入口，早在入口就回 400。
+        const loginData = await readJsonBody<LoginInput>(request);
 
         // 验证登录数据
         const validation = validateLogin(loginData);

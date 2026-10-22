@@ -157,6 +157,48 @@ if (pureEntries.length === 0 && domEntries.length === 0) {
     process.exit(1);
 }
 
+/**
+ * 独占锁：同一时间只允许一个运行器用 OUT_DIR。
+ *
+ * ⚠️ 为什么要锁：下面「进来先 rm -rf OUT_DIR、跑完再 rm -rf」这套是**共享目录**，
+ * 两个运行器并发时后一个把前一个刚打好的 bundle 删掉，node:test 那边就报
+ * MODULE_NOT_FOUND —— 表面是「152 条用例失败」，其实一条都没真跑，是**假红**。
+ * 实测踩到过：把 `npm test` 与 `npm run check:budget`（同一个脚本的另一个入口）
+ * 并行跑，就能稳定复现。用 O_EXCL 建文件拿锁：内核保证只有一个进程建得成。
+ */
+const LOCK_FILE = path.join(HERE, ".unit-tests.lock");
+try {
+    fs.writeFileSync(LOCK_FILE, `${process.pid}\n`, { flag: "wx" });
+} catch {
+    let holder = "";
+    try {
+        holder = fs.readFileSync(LOCK_FILE, "utf8").trim();
+    } catch {
+        /* 锁文件刚好被对方删了：算并发，照样退出 */
+    }
+    console.error(
+        `已有单测运行器在跑${holder ? `（pid ${holder}）` : ""}：` +
+            `两份运行器共用 ${path.relative(ROOT, OUT_DIR)}，并发会互相删产物、` +
+            `报出一堆并不存在的失败。等它跑完再试。\n` +
+            `如果确认没有别的运行器（上次是被强杀的），删掉 ${path.relative(ROOT, LOCK_FILE)} 再来。`
+    );
+    process.exit(1);
+}
+const releaseLock = () => {
+    try {
+        fs.rmSync(LOCK_FILE, { force: true });
+    } catch {
+        /* 退出路上清不掉就算了，下次靠上面那句提示人工处理 */
+    }
+};
+// 被 Ctrl+C / 信号打断也要放锁，否则下一次运行会一直被一句「已有运行器在跑」挡住
+for (const sig of ["SIGINT", "SIGTERM"]) {
+    process.on(sig, () => {
+        releaseLock();
+        process.exit(1);
+    });
+}
+
 fs.rmSync(OUT_DIR, { recursive: true, force: true });
 
 // 覆盖率模式（由 script/coverage.mjs 打开）：多生成一份 sourcemap，并保留打包产物。
@@ -256,5 +298,10 @@ const child = spawn(process.execPath, ["--test", "--test-force-exit", ...bundles
 });
 child.on("exit", code => {
     if (!coverageMode) fs.rmSync(OUT_DIR, { recursive: true, force: true });
+    releaseLock();
     process.exit(code ?? 1);
+});
+child.on("error", () => {
+    releaseLock();
+    process.exit(1);
 });

@@ -7,6 +7,7 @@ import {expiredCookieHeaders} from "../httpUtils";
 import type { AuthCredentialsInput, RecoveryKeyInput } from "../types";
 import type { NavigationAPI } from "../../src/API/navigationApi";
 import type { RouteCtx } from "./types";
+import { readJsonBody } from "./jsonBody";
 
 /**
  * 当前登录身份（账号 id + 账号名 + 角色），取不到返回 null。
@@ -254,7 +255,7 @@ export async function handleAccountRoutes(ctx: RouteCtx): Promise<Response | nul
 
     // 修改管理员账号密码（保存在数据库中，重新部署不会被覆盖）
     if (path === "auth/credentials" && method === "PUT") {
-        const data = (await request.json()) as AuthCredentialsInput;
+        const data = await readJsonBody<AuthCredentialsInput>(request);
 
         const username = typeof data.username === "string" ? data.username.trim() : "";
         const password = typeof data.password === "string" ? data.password : "";

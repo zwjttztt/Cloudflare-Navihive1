@@ -288,7 +288,7 @@ export default function SettingsDialog({
                                                     borderColor: picked ? "text.primary" : "transparent",
                                                     boxShadow: picked
                                                         ? `0 0 0 2px ${color}55`
-                                                        : "0 1px 3px rgba(15,23,42,0.18)",
+                                                        : "var(--shadow-chip)",
                                                     "&:hover": { bgcolor: color },
                                                 }}
                                             />

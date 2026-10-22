@@ -13,8 +13,7 @@ export const dialogPaperSx: SxProps<Theme> = {
     border: "1px solid var(--border-subtle)",
     boxShadow: "var(--shadow-3)",
     // 毛玻璃面板本身是半透明的，铺一层高不透明度底色保证文字对比度
-    backgroundColor: theme =>
-        theme.palette.mode === "dark" ? "rgba(23,27,38,0.94)" : "rgba(255,255,255,0.94)",
+    backgroundColor: "var(--surface-modal)",
 };
 
 /** 标题区：17px / 600，右侧留出关闭按钮的位置。

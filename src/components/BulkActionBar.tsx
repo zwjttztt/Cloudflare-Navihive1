@@ -288,10 +288,7 @@ export default function BulkActionBar({
                         sx: {
                             borderRadius: "var(--card-radius)",
                             p: 0.5,
-                            backgroundColor: theme =>
-                                theme.palette.mode === "dark"
-                                    ? "rgba(23,27,38,0.94)"
-                                    : "rgba(255,255,255,0.94)",
+                            backgroundColor: "var(--surface-modal)",
                             backdropFilter: "blur(var(--glass-blur))",
                             WebkitBackdropFilter: "blur(var(--glass-blur))",
                         },

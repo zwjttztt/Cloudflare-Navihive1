@@ -28,6 +28,7 @@ import {
     textExtension,
 } from "../attachments";
 import type { RouteCtx } from "./types";
+import { readJsonArray, readJsonBody, readJsonValue } from "./jsonBody";
 
 /**
  * 图片上传（2026-07）。
@@ -406,7 +407,7 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
         if (method === "PUT") {
             const limited = await writeGate();
             if (limited) return limited;
-            const { days, password } = await request.json() as { days?: unknown; password?: unknown };
+            const { days, password } = await readJsonBody<{ days?: unknown; password?: unknown }>(request);
             if (days !== null && days !== 1 && days !== 7 && days !== 30) {
                 return errorResponse(ApiError.badRequest("有效期仅支持1、7、30天或永久"), { headers });
             }
@@ -420,7 +421,7 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
             const limited = await writeGate();
             if (limited) return limited;
             if (method === "DELETE") return Response.json(await api.revokeGroupShare(id), { headers });
-            const { days, password } = await request.json() as { days?: unknown; password?: unknown };
+            const { days, password } = await readJsonBody<{ days?: unknown; password?: unknown }>(request);
             if (days !== null && days !== 1 && days !== 7 && days !== 30) {
                 return errorResponse(ApiError.badRequest("有效期仅支持1、7、30天或永久"), { headers });
             }
@@ -448,7 +449,7 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
         const limited = await writeGate();
         if (limited) return limited;
 
-        const data = (await request.json()) as GroupInput;
+        const data = await readJsonBody<GroupInput>(request);
 
         // 验证分组数据
         const validation = validateGroup(data);
@@ -467,7 +468,7 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
             throw ApiError.badRequest("无效的ID");
         }
 
-        const data = (await request.json()) as Partial<Group>;
+        const data = await readJsonBody<Partial<Group>>(request);
         // PATCH 化校验：与 POST 同一套规则（trim + 截断 100），只校验传了的字段。
         // 以前只查「非空串」，name 没有长度上限 —— 与 POST 不对称。
         const validation = validateGroupPatch(data);
@@ -543,7 +544,7 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
         // 别把 500 抛给用户 —— 搜索失败的结果是「列表照常显示」，不是「页面报错」
         let body: { query?: unknown; limit?: unknown };
         try {
-            body = (await request.json()) as { query?: unknown; limit?: unknown };
+            body = await readJsonBody<{ query?: unknown; limit?: unknown }>(request);
         } catch {
             body = {};
         }
@@ -558,7 +559,7 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
         // 是写操作，走 writeGate 限速；失败由 api 层整批回滚。
         const limited = await writeGate();
         if (limited) return limited;
-        const body = await request.json() as { kind?: unknown; notes?: unknown };
+        const body = await readJsonBody<{ kind?: unknown; notes?: unknown }>(request);
         if (!body || !Array.isArray(body.notes)) {
             throw ApiError.badRequest("文件里没有笔记数据（这不是记事本导出的 JSON）");
         }
@@ -572,7 +573,7 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
             // 更新有效期但保留 token（链接不变）—— inkstone 的「更新设置」同语义
             const limited = await writeGate();
             if (limited) return limited;
-            const { days, password } = await request.json() as { days?: unknown; password?: unknown };
+            const { days, password } = await readJsonBody<{ days?: unknown; password?: unknown }>(request);
             if (days !== null && days !== 1 && days !== 7 && days !== 30) {
                 return errorResponse(ApiError.badRequest("有效期仅支持1、7、30天或永久"), { headers });
             }
@@ -587,7 +588,7 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
             const limited = await writeGate();
             if (limited) return limited;
             if (method === "DELETE") return Response.json(await api.revokeNoteShare(id), { headers });
-            const { days, password } = await request.json() as { days?: unknown; password?: unknown };
+            const { days, password } = await readJsonBody<{ days?: unknown; password?: unknown }>(request);
             if (days !== null && days !== 1 && days !== 7 && days !== 30) {
                 return errorResponse(ApiError.badRequest("有效期仅支持1、7、30天或永久"), { headers });
             }
@@ -707,7 +708,7 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
         const limited = await writeGate();
         if (limited) return limited;
 
-        const data = (await request.json()) as Partial<NoteFolder>;
+        const data = await readJsonBody<Partial<NoteFolder>>(request);
         // 白名单：只有 name / 外观两列是文件夹的字段，其它（id / user_id / count）一律不收
         const name = typeof data.name === "string" ? data.name.trim().slice(0, 80) : "";
         if (!name) throw ApiError.badRequest("文件夹名不能为空");
@@ -729,7 +730,7 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
         const id = parseInt(path.split("/")[2]);
         if (isNaN(id)) throw ApiError.badRequest("无效的ID");
 
-        const data = (await request.json()) as Partial<NoteFolder>;
+        const data = await readJsonBody<Partial<NoteFolder>>(request);
         const patch: Partial<NoteFolder> = {};
         if (typeof data.name === "string") patch.name = data.name.trim().slice(0, 80) || "";
         if (data.order_num !== undefined) patch.order_num = Number(data.order_num) || 0;
@@ -763,7 +764,7 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
         const limited = await writeGate();
         if (limited) return limited;
 
-        const data = (await request.json()) as Partial<NoteTag>;
+        const data = await readJsonBody<Partial<NoteTag>>(request);
         const name = typeof data.name === "string" ? data.name.trim().slice(0, 40) : "";
         if (!name) throw ApiError.badRequest("标签名不能为空");
         return Response.json(
@@ -776,7 +777,7 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
         const id = parseInt(path.split("/")[2]);
         if (isNaN(id)) throw ApiError.badRequest("无效的ID");
 
-        const data = (await request.json()) as Partial<NoteTag>;
+        const data = await readJsonBody<Partial<NoteTag>>(request);
         const patch: Partial<NoteTag> = {};
         if (typeof data.name === "string") patch.name = data.name.trim().slice(0, 40) || "";
         if (data.color !== undefined) patch.color = typeof data.color === "string" ? data.color : null;
@@ -797,7 +798,7 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
         const id = parseInt(path.split("/")[1]);
         if (isNaN(id)) throw ApiError.badRequest("无效的ID");
 
-        const body = (await request.json()) as { tagIds?: unknown };
+        const body = await readJsonBody<{ tagIds?: unknown }>(request);
         const tagIds = Array.isArray((body as { tagIds?: unknown })?.tagIds)
             ? ((body as { tagIds?: unknown[] }).tagIds as unknown[]).map(Number).filter(n => Number.isInteger(n) && n > 0)
             : [];
@@ -843,7 +844,7 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
         const limited = await writeGate();
         if (limited) return limited;
 
-        const data = (await request.json()) as Partial<Note>;
+        const data = await readJsonBody<Partial<Note>>(request);
         // 只留认识的字段：请求体是用户可控的，不能让它决定往哪几列写值
         const draft: Partial<Note> = {
             title: typeof data.title === "string" ? data.title : "",
@@ -862,10 +863,12 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
         const limited = await writeGate();
         if (limited) return limited;
 
-        const body = (await request.json()) as unknown;
+        // ⚠️ 这个接口两种形状都认（顶层数组 / { orders }），所以不能用 readJsonBody
+        // （它会把数组形状挡掉，等于把原来能用的请求改成 400 —— 改错过一次）。
+        const body = await readJsonValue(request);
         const orders = Array.isArray(body)
             ? body
-            : (body as { orders?: unknown })?.orders;
+            : (body as { orders?: unknown }).orders;
         if (!Array.isArray(orders)) {
             throw ApiError.badRequest("无效的排序数据");
         }
@@ -894,7 +897,7 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
         if (isNaN(id)) {
             throw ApiError.badRequest("无效的ID");
         }
-        const data = (await request.json()) as Partial<Note>;
+        const data = await readJsonBody<Partial<Note>>(request);
         const patch: Partial<Note> = {};
         if (typeof data.title === "string") patch.title = data.title;
         if (typeof data.content === "string") patch.content = data.content;
@@ -992,7 +995,7 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
         const limited = await writeGate();
         if (limited) return limited;
 
-        const data = (await request.json()) as SiteInput;
+        const data = await readJsonBody<SiteInput>(request);
 
         // 验证站点数据
         const validation = validateSite(data);
@@ -1019,7 +1022,7 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
             throw ApiError.badRequest("无效的ID");
         }
 
-        const data = (await request.json()) as Partial<Site>;
+        const data = await readJsonBody<Partial<Site>>(request);
 
         // PATCH 化校验：与 POST 同一套规则（trim / 截断 / URL 规范化 / 图标清洗），
         // 只校验传了的字段。以前只有「URL 能不能 new URL」几条 —— name 可以改成
@@ -1089,7 +1092,7 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
         const limited = await writeGate();
         if (limited) return limited;
 
-        const data = (await request.json()) as Array<{ id: number; order_num: number }>;
+        const data = await readJsonArray<{ id: number; order_num: number }>(request);
 
         // 验证排序数据
         if (!Array.isArray(data)) {
@@ -1114,11 +1117,11 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
         if (limited) return limited;
 
         // 支持一次提交「顺序 + 所属分组」，拖拽跨组移动不必再逐个请求
-        const data = (await request.json()) as Array<{
+        const data = await readJsonArray<{
             id: number;
             order_num: number;
             group_id?: number;
-        }>;
+        }>(request);
 
         // 验证排序数据
         if (!Array.isArray(data)) {

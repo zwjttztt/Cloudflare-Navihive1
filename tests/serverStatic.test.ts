@@ -21,6 +21,9 @@ import { PassThrough } from "node:stream";
 import type { ServerResponse } from "node:http";
 import { applyHeaderRules, isInside, parseHeaderRules, serveStatic } from "../server/static";
 
+/** 64 位小写 hex，与真实分享令牌同形（路由表只认这个形状） */
+const TOKEN = "a1b2c3d4".repeat(8);
+
 // ============ 测试替身 ============
 
 /** 收集 writeHead / 响应体的假 ServerResponse（serveStatic 只用到 writeHead/end/pipe/destroy） */
@@ -206,7 +209,7 @@ test("serveStatic：SPA fallback —— 没命中的路径回 index.html（分�
     const { dir, cleanup } = fixture();
     try {
         const r = fakeRes();
-        await serveStatic(dir, RULES, "/s/abc123token", "GET", r.res);
+        await serveStatic(dir, RULES, `/s/${TOKEN}`, "GET", r.res);
         await finish("spa", r.done);
         assert.equal(r.status(), 200);
         assert.equal(r.text(), "<!doctype html><title>fixture</title>");
@@ -251,16 +254,49 @@ test("serveStatic：带扩展名的未命中请求，HEAD 也 404 且不带正�
     }
 });
 
-test("serveStatic：不带扩展名的路径照旧走 SPA fallback（分享页 / 笔记页靠这个）", async () => {
+test("serveStatic：路由表内的路径走 SPA fallback（分享页 / 分组分享页靠这个）", async () => {
     const { dir, cleanup } = fixture();
     try {
-        for (const p of ["/sg/9f3c".padEnd(70, "a"), "/notes", "/settings/account"]) {
+        for (const p of ["/", `/s/${TOKEN}`, `/sg/${TOKEN}`]) {
             const r = fakeRes();
             await serveStatic(dir, RULES, p, "GET", r.res);
             await finish(`spa ${p}`, r.done);
             assert.equal(r.status(), 200, `${p} 应当走 SPA fallback`);
             assert.equal(r.text(), "<!doctype html><title>fixture</title>");
         }
+    } finally {
+        cleanup();
+    }
+});
+
+test("serveStatic：无扩展名但不在路由表里的未知路径回 404（P2-8，不再一律回整页 HTML）", async () => {
+    const { dir, cleanup } = fixture();
+    try {
+        // 前端没有 react-router，URL 上根本不存在这些路径 —— 以前它们一律 200 吐整页 HTML
+        // ⚠️ 只列**无扩展名**的：带扩展名走的是下面那条「像静态资源」分支（早就有 404）
+        for (const p of ["/notes", "/settings/account", "/.git/config", "/admin", `/s/not-a-token`]) {
+            const r = fakeRes();
+            const handled = await serveStatic(dir, RULES, p, "GET", r.res);
+            await finish(`404 ${p}`, r.done);
+            assert.equal(handled, true, `${p} 应由静态层自己收掉`);
+            assert.equal(r.status(), 404, `${p} 应当 404`);
+            assert.ok(!r.text().includes("<!doctype html>"), `${p} 不能回 HTML`);
+            // 404 也走规则：与 CF 上 assets 的响应一致（/assets/* 那条会删掉 X-Frame-Options）
+            assert.equal(r.headers()["Content-Type"], "text/plain; charset=utf-8");
+        }
+    } finally {
+        cleanup();
+    }
+});
+
+test("serveStatic：未知无扩展名路径的 HEAD 请求也 404 且不带正文", async () => {
+    const { dir, cleanup } = fixture();
+    try {
+        const r = fakeRes();
+        await serveStatic(dir, RULES, "/notes", "HEAD", r.res);
+        await finish("head-404", r.done);
+        assert.equal(r.status(), 404);
+        assert.equal(r.text(), "");
     } finally {
         cleanup();
     }
@@ -331,7 +367,9 @@ test("serveStatic：静态目录里没有 index.html 时返回 false（交给 wo
     try {
         writeFileSync(path.join(dir, "only.txt"), "x");
         const r = fakeRes();
-        assert.equal(await serveStatic(dir, RULES, "/whatever", "GET", r.res), false);
+        // 用 /（路由表内的路径）：未知路径现在直接 404，只有「路由命中但 index.html 不在」
+        // 才轮到「交回 worker」这条兜底
+        assert.equal(await serveStatic(dir, RULES, "/", "GET", r.res), false);
         assert.equal(r.status(), 0, "没写过任何状态码");
     } finally {
         rmSync(dir, { recursive: true, force: true });

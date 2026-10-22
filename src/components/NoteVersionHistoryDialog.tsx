@@ -178,7 +178,7 @@ export default function NoteVersionHistoryDialog({
                                             cursor: "pointer",
                                             bgcolor: active ? "var(--accent-soft)" : "transparent",
                                             color: active ? "text.primary" : "text.secondary",
-                                            "&:hover": { bgcolor: "rgba(128,128,128,0.12)" },
+                                            "&:hover": { bgcolor: "var(--neutral-hover)" },
                                         }}
                                     >
                                         <Typography sx={{ fontSize: 12.5, fontWeight: 600 }}>
@@ -233,10 +233,10 @@ export default function NoteVersionHistoryDialog({
                                         }}
                                     >
                                         <span>与当前正文的差别</span>
-                                        <span data-diff-added style={{ color: "var(--success, #2e7d32)" }}>
+                                        <span data-diff-added style={{ color: "var(--success)" }}>
                                             +{diff.added}
                                         </span>
-                                        <span data-diff-removed style={{ color: "var(--danger, #d32f2f)" }}>
+                                        <span data-diff-removed style={{ color: "var(--danger)" }}>
                                             -{diff.removed}
                                         </span>
                                         {diff.simplified && <span>内容较大，用了快速比对</span>}
@@ -261,10 +261,10 @@ export default function NoteVersionHistoryDialog({
                                                 sx={{
                                                     px: 0.5,
                                                     ...(line.kind === "add" && {
-                                                        bgcolor: "color-mix(in srgb, #2e7d32 14%, transparent)",
+                                                        bgcolor: "color-mix(in srgb, var(--success) 14%, transparent)",
                                                     }),
                                                     ...(line.kind === "remove" && {
-                                                        bgcolor: "color-mix(in srgb, #d32f2f 14%, transparent)",
+                                                        bgcolor: "color-mix(in srgb, var(--danger) 14%, transparent)",
                                                     }),
                                                     ...(line.kind === "same" && { color: "text.disabled" }),
                                                 }}

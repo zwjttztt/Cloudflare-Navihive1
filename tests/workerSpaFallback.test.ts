@@ -89,6 +89,37 @@ test("带扩展名的未命中静态路径转发 ASSETS、由资产层回 404（
     assert.equal(res.headers.get("X-Content-Type-Options"), "nosniff");
 });
 
+test("无扩展名但不在前端路由表里的未知路径回 404，不吐整页 HTML（P2-8）", async () => {
+    let called = false;
+    const env = envWithAssets(async () => {
+        called = true;
+        return immutableResponse("<!doctype html>", { status: 200, headers: { "Content-Type": "text/html" } });
+    });
+    // 前端没有 react-router，URL 上只有 /、/s/<token>、/sg/<token>；
+    // 以前这些一律回退 index.html，扫描器眼里「本站什么都存在」。
+    // ⚠️ 只列**无扩展名**的路径：带扩展名（如 /wp-login.php）属于静态资产分支，
+    // 由资产层自己回 404（mock 里它会回 200），不归路由表管。
+    for (const p of ["/notes", "/settings/account", "/.git/config", "/admin", "/s/not-a-token"]) {
+        const res = await worker.fetch(new Request(`https://nav.example.com${p}`), env);
+        assert.equal(res.status, 404, `${p} 应当 404`);
+    }
+    assert.equal(called, false, "未知路径不该再去问 ASSETS");
+});
+
+test("路由表内的三条路径都取 /index.html（表在 shared/spaRoutes.ts）", async () => {
+    const seen: string[] = [];
+    const env = envWithAssets(async (req) => {
+        seen.push(new URL(req.url).pathname);
+        return immutableResponse("<!doctype html>", { status: 200, headers: { "Content-Type": "text/html" } });
+    });
+    const paths = ["/", `/s/${HEX64}`, `/sg/${HEX64}`];
+    for (const p of paths) {
+        const res = await worker.fetch(new Request(`https://nav.example.com${p}`), env);
+        assert.equal(res.status, 200, `${p} 应当 200`);
+    }
+    assert.deepEqual(seen, ["/index.html", "/index.html", "/index.html"]);
+});
+
 test("POST / 非 API 非 GET/HEAD 直接 404（不走 ASSETS）", async () => {
     let called = false;
     const env = envWithAssets(async () => {

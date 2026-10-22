@@ -1,0 +1,64 @@
+# 视觉回归（布局指纹比对）：**仅手动触发**，不进 npm run ci。
+#
+# 为什么不常驻 CI：比的是**几何**，而几何由字体决定 —— ubuntu 镜像里装的中文字体
+# 与开发机不是一个，同一个页面量出来天然差几像素，常驻就是每天一次稳定的假红。
+# 假红的门禁比没有门禁更糟：没人再去看它红的原因。
+#
+# 所以它的定位是**人工确认通道**：改了一批样式之后，用同一台机器
+# `npm run audit:visual -- --update` 重录基线，再在这里跑一次比对，
+# 确认「不是只有我本机看着没事」。
+#
+# ⚠️ 只读：脚本只发 GET，不登录、不写库。tests/visualRegressionGuard.test.ts 盯着这条。
+name: 视觉回归（手动）
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: compare = 与基线比对（默认）；update = 在本环境重录基线
+        required: false
+        default: compare
+        type: choice
+        options:
+          - compare
+          - update
+      filter:
+        description: 只跑名字含它的用例（如 mobile / desktop-home-dark），留空跑全部
+        required: false
+        type: string
+      tolerance:
+        description: 几何容差（像素，默认 2；跨机器比对可临时放宽到 6~10）
+        required: false
+        default: "2"
+        type: string
+
+jobs:
+  visual:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - run: npm ci
+
+      # 量的是 dist 产物 —— 不 build 就会拿上一轮的旧产物比对，结果全是假的
+      - run: npm run build
+
+      - name: 视觉回归
+        run: |
+          args=""
+          [ "${{ inputs.mode }}" = "update" ] && args="$args --update"
+          [ -n "${{ inputs.filter }}" ] && args="$args --filter ${{ inputs.filter }}"
+          npm run audit:visual -- $args --tolerance ${{ inputs.tolerance }}
+
+      - name: 上传基线（重录模式）
+        if: ${{ inputs.mode == 'update' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: visual-baseline-${{ github.run_number }}
+          path: tests/visual-baseline/

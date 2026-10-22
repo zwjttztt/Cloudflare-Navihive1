@@ -306,8 +306,8 @@ export default function NoteGraphDialog({
                         width: "100%",
                         overflow: "auto",
                         borderRadius: 2,
-                        border: "1px solid rgba(128,128,128,0.16)",
-                        bgcolor: "rgba(128,128,128,0.03)",
+                        border: "1px solid var(--neutral-hover)",
+                        bgcolor: "var(--neutral-wash)",
                     }}
                 >
                     <svg
@@ -375,7 +375,7 @@ export default function NoteGraphDialog({
                                     y1={a.y}
                                     x2={b.x}
                                     y2={b.y}
-                                    stroke={lit ? "var(--accent)" : "rgba(128,128,128,0.45)"}
+                                    stroke={lit ? "var(--accent)" : "var(--neutral-strong)"}
                                     strokeWidth={lit ? 2 : 1}
                                 />
                             );
@@ -415,7 +415,7 @@ export default function NoteGraphDialog({
                                             isHover
                                                 ? "var(--accent)"
                                                 : node.degree === 0 && groupBy === "none"
-                                                  ? "rgba(128,128,128,0.5)"
+                                                  ? "var(--neutral-strong)"
                                                   : nodeColor(node.id)
                                         }
                                         stroke={nodeColor(node.id)}

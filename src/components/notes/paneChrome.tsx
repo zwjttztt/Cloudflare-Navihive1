@@ -272,7 +272,7 @@ export function SaveDot({
             ? "var(--accent)"
             : dirty || state === "pending"
               ? "text.disabled"
-              : "#2e9e6b";
+              : "var(--success)";
     return (
         <Tooltip title={label}>
             <Box

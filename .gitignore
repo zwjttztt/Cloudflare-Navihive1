@@ -53,3 +53,7 @@ data/
 # compose 的密钥来源（.env.example 是模板，要提交）
 .env
 **/.env
+# 编辑器 / 助手在本仓库里留下的会话目录（不是项目产物）
+.workbuddy/
+# 单测运行器的独占锁（跑完自己删；被强杀时才残留）
+script/.unit-tests.lock

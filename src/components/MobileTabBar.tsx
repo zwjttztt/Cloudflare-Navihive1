@@ -121,7 +121,7 @@ export default function MobileTabBar({
                 border: "1px solid var(--glass-border)",
                 backdropFilter: "blur(16px) saturate(1.5)",
                 WebkitBackdropFilter: "blur(16px) saturate(1.5)",
-                boxShadow: "0 6px 24px rgba(15,23,42,0.18)",
+                boxShadow: "var(--shadow-float)",
             }}
         >
             {items.map(item => (
@@ -172,7 +172,7 @@ export default function MobileTabBar({
                                         lineHeight: "16px",
                                         textAlign: "center",
                                         bgcolor: "var(--accent)",
-                                        color: "#fff",
+                                        color: "var(--on-accent)",
                                     }}
                                 >
                                     {item.badge! > 99 ? "99+" : item.badge!}

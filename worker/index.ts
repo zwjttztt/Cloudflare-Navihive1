@@ -37,6 +37,7 @@ import { handleOpsRoutes } from "./routes/ops";
 import { handlePublicRoutes } from "./routes/public";
 import type { RouteCtx } from "./routes/types";
 import type { Env, ExportedHandler, ScheduledController } from "./types";
+import { isSpaRoute, looksLikeAsset } from "../shared/spaRoutes";
 
 // 原来散在别处的导出，测试与别的文件还在引，从这儿原样转出去
 export { requestIsSecure } from "./httpUtils";
@@ -83,18 +84,34 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
     //   - 自托管（server/entry.ts）无 ASSETS 绑定：GET/HEAD 非 API 由 serveStatic 兜（含 SPA 回退
     //     index.html），Worker 只收非 GET/HEAD 非 API（如 POST /）→ 404。`if (assets && …)` 恒 false
     //     时落到下面 404，两侧行为一致。
-    //   扩展名判定用与 server/static.ts 的 ASSET_EXT_RE 一致的 /\.[a-z0-9]{1,8}$/i。
+    //   扩展名判定与「哪些路由该回退」都取自 shared/spaRoutes.ts（单一事实来源）：
+    //   looksLikeAsset 与 server/static.ts 用的是同一个函数，isSpaRoute 是前端路由表。
     //   （历史坑：① run_worker_first=false「资产层先服务+Worker 兜底」——非导航 /s/<token> 进 Worker
     //   兜底后仍转发原始路径触发 1101；② run_worker_first=true 但不区分扩展名、对真实资产也转发原始
     //   /s/<token> 同样 1101。两坑均已避开。）
+    //
+    // ⚠️ P2-8：回退条件从「无扩展名一律回退」收紧成「命中路由表才回退」。以前
+    //   /notes、/wp-login.php、/.git/config 这类无扩展名的未知路径一律 200 吐整页 HTML，
+    //   扫描器看到的是「什么都存在」，而真实业务根本没有这些路由（前端没有
+    //   react-router，URL 上只有 /、/s/<token>、/sg/<token>）。现在它们回 404。
+    //   表在 shared/spaRoutes.ts —— 新增前端 URL 路由必须同步加进去，否则两端都 404。
     if (!url.pathname.startsWith("/api/")) {
         const assets = env.ASSETS;
         if (assets && (request.method === "GET" || request.method === "HEAD")) {
             // 真实静态资产（带扩展名）→ 原样转发，资产层直出，不触发 SPA 回退/再入保护
-            const isAssetPath = /\.[a-z0-9]{1,8}$/i.test(url.pathname);
-            const target = isAssetPath ? request : new Request(new URL("/index.html", request.url));
+            if (looksLikeAsset(url.pathname)) {
+                try {
+                    return await assets.fetch(request);
+                } catch {
+                    return new Response("Not Found", { status: 404, headers: TEXT_HEADERS() });
+                }
+            }
+            // 命中前端路由表 → 显式取 /index.html（不能转发原始路径，会触发 1101）
+            if (!isSpaRoute(url.pathname)) {
+                return new Response("Not Found", { status: 404, headers: TEXT_HEADERS() });
+            }
             try {
-                return await assets.fetch(target);
+                return await assets.fetch(new Request(new URL("/index.html", request.url)));
             } catch {
                 return new Response("Not Found", { status: 404, headers: TEXT_HEADERS() });
             }

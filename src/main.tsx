@@ -7,9 +7,14 @@ const PublicGroupPage = lazy(() => import("./components/PublicGroupPage"));
 // 公开分享页路径前缀是 /s/（见 components/PublicNotePage.tsx 顶部注释 /s/:token）。
 // 三处必须一致：这里的路由提取、NoteShareDialog 的分享链接、NotesSettingsDialog 的分享列表链接。
 // worker 的 assets 用 single-page-application 回退，/s/<token> 会落到 index.html 再渲染公开页。
-const publicToken = /^\/s\/([a-f0-9]{64})$/.exec(location.pathname)?.[1];
-const publicGroupToken = /^\/sg\/([a-f0-9]{64})$/.exec(location.pathname)?.[1];
+//
+// ⚠️ 正则不再写在这里：worker/index.ts 与 server/static.ts 的 SPA 回退要用同一张表
+// 决定「哪些路径回 index.html、哪些回 404」。以前三处各写一份，前端加路由而后端
+// 没跟就是静默 404。现在统一从 shared/spaRoutes.ts 取（P2-8）。
+const publicToken = publicNoteTokenFromPath(location.pathname);
+const publicGroupToken = publicGroupTokenFromPath(location.pathname);
 import { createRoot } from "react-dom/client";
+import { publicGroupTokenFromPath, publicNoteTokenFromPath } from "../shared/spaRoutes";
 import "./index.css";
 import App from "./App.tsx";
 import BuildBadge from "./components/BuildBadge";

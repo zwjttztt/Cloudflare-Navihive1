@@ -194,7 +194,7 @@ function BrandHeader() {
                 gap: 10,
                 marginBottom: 16,
                 paddingBottom: 12,
-                borderBottom: "1px solid rgba(128,128,128,0.2)",
+                borderBottom: "1px solid var(--neutral-hairline)",
             }}
         >
             <BrandMark size={32} />

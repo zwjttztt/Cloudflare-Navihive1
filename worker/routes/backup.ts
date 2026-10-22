@@ -43,6 +43,7 @@ import {
     testNotesWebDav,
 } from "../notesBackup";
 import type { RouteCtx } from "./types";
+import { readJsonBody } from "./jsonBody";
 import { ApiError, errorResponse } from "../lib/apiError";
 
 /**
@@ -282,7 +283,7 @@ export async function handleBackupRoutes(ctx: RouteCtx): Promise<Response | null
         if (isBodyTooLarge(request)) {
             return errorResponse(ApiError.tooLarge("备份文件过大（上限 10MB），请精简后重试"));
         }
-        const data = (await request.json()) as ExportData;
+        const data = await readJsonBody<ExportData>(request);
 
         // 验证导入数据（站点允许嵌套在分组中，兼容旧版备份格式）
         if (

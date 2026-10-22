@@ -83,10 +83,10 @@ export default function FolderAppearanceDialog({ open, folder, onSave, onClose }
                                         borderRadius: 1.5,
                                         cursor: "pointer",
                                         appearance: "none",
-                                        border: active ? "2px solid var(--accent)" : "1px solid rgba(128,128,128,0.3)",
-                                        bgcolor: active ? "rgba(176,67,58,0.08)" : "transparent",
+                                        border: active ? "2px solid var(--accent)" : "1px solid var(--neutral-border)",
+                                        bgcolor: active ? "var(--accent-wash)" : "transparent",
                                         color: color || "text.secondary",
-                                        "&:hover": { bgcolor: "rgba(128,128,128,0.08)" },
+                                        "&:hover": { bgcolor: "var(--neutral-wash)" },
                                     }}
                                 >
                                     <Icon fontSize='small' />
@@ -112,7 +112,7 @@ export default function FolderAppearanceDialog({ open, folder, onSave, onClose }
                             borderRadius: "50%",
                             cursor: "pointer",
                             appearance: "none",
-                            border: color === null ? "2px solid var(--accent)" : "1px solid rgba(128,128,128,0.4)",
+                            border: color === null ? "2px solid var(--accent)" : "1px solid var(--neutral-border)",
                             bgcolor: "transparent",
                             fontSize: 11,
                             color: "text.secondary",
@@ -138,7 +138,7 @@ export default function FolderAppearanceDialog({ open, folder, onSave, onClose }
                                 appearance: "none",
                                 bgcolor: c,
                                 border: color === c ? "2px solid var(--accent)" : "2px solid transparent",
-                                outline: "1px solid rgba(128,128,128,0.25)",
+                                outline: "1px solid var(--neutral-border)",
                             }}
                         />
                     ))}

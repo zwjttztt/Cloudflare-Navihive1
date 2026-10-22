@@ -74,8 +74,8 @@ export function NoteEmbedNode({
                 margin: "8px 0",
                 padding: "8px 12px",
                 borderRadius: 8,
-                border: "1px solid rgba(128,128,128,0.3)",
-                background: "rgba(128,128,128,0.05)",
+                border: "1px solid var(--neutral-border)",
+                background: "var(--neutral-wash)",
             }}
         >
             <button

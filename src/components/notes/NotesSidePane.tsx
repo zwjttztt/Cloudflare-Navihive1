@@ -116,7 +116,7 @@ export default function NotesSidePane(props: Pick<NotesPageCtx, "SIDE_SPLIT_KEY"
                                         sideMode === key
                                             ? "color-mix(in srgb, var(--accent) 12%, transparent)"
                                             : "transparent",
-                                    "&:hover": { bgcolor: "rgba(128,128,128,0.12)" },
+                                    "&:hover": { bgcolor: "var(--neutral-hover)" },
                                     "& + &": { borderLeft: "1px solid var(--card-border)" },
                                 }}
                             >

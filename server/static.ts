@@ -9,6 +9,7 @@ import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import path from "node:path";
 import type { ServerResponse } from "node:http";
+import { isSpaRoute, looksLikeAsset } from "../shared/spaRoutes";
 
 export interface HeaderRule {
     match: RegExp;
@@ -104,12 +105,9 @@ export function isInside(root: string, target: string): boolean {
  * curl / 抓预览的机器人 / 微信内置浏览器直接打开，它们未必带那个头，
  * 一刀切会让分享页在这些客户端上变成 404。而带扩展名的路径不可能是业务路由。
  */
-const ASSET_EXT_RE = /\.[a-z0-9]{1,8}$/i;
-
-export function looksLikeAsset(pathname: string): boolean {
-    const last = pathname.split("/").pop() ?? "";
-    return ASSET_EXT_RE.test(last);
-}
+// 判定搬到 shared/spaRoutes.ts（worker 与前端共用同一份），这里只做转出——
+// 老调用方 import 的是这个名字，别让它们跟着改。
+export { looksLikeAsset } from "../shared/spaRoutes";
 
 export function applyHeaderRules(rules: HeaderRule[], pathname: string, headers: Record<string, string>): void {
     for (const rule of rules) {
@@ -123,9 +121,26 @@ export function applyHeaderRules(rules: HeaderRule[], pathname: string, headers:
  * 静态资源 + SPA fallback。返回 false 表示「这事不归我管」（目录不存在等），
  * 调用方接着把请求交给 worker —— 与 CF 上「非 GET/HEAD 落给 Worker」的行为一致。
  * SPA fallback 对齐 wrangler.jsonc 的 assets.not_found_handling = "single-page-application"，
- * 但**只对不像静态资源的路径**回退 index.html（分享短链 /sg/<token> 靠这个）——
- * 带扩展名的未命中请求回 404，理由见 looksLikeAsset。
+ * 但**只对命中前端路由表的路径**回退 index.html（分享短链 /sg/<token> 靠这个）——
+ * 带扩展名的未命中请求回 404（理由见 looksLikeAsset），无扩展名但不在路由表里的
+ * 未知路径同样回 404（P2-8，理由见函数内注释）。路由表在 shared/spaRoutes.ts。
  */
+/** 统一写 404：规则照旧按**请求路径**套（与 CF 上 assets 的响应一致） */
+function writeNotFound(
+    rules: HeaderRule[],
+    pathname: string,
+    method: string,
+    res: ServerResponse
+): void {
+    const missHeaders: Record<string, string> = {
+        "Content-Type": "text/plain; charset=utf-8",
+    };
+    applyHeaderRules(rules, pathname, missHeaders);
+    res.writeHead(404, missHeaders);
+    if (method === "HEAD") res.end();
+    else res.end("Not Found");
+}
+
 export async function serveStatic(
     staticDir: string,
     rules: HeaderRule[],
@@ -157,13 +172,15 @@ export async function serveStatic(
         // 像静态资源（带扩展名）就直接 404 —— 用一整页 HTML 顶替脚本 / 样式 / 图片
         // 是 MIME 事故，理由见 looksLikeAsset 的注释。
         if (looksLikeAsset(decoded)) {
-            const missHeaders: Record<string, string> = {
-                "Content-Type": "text/plain; charset=utf-8",
-            };
-            applyHeaderRules(rules, pathname, missHeaders);
-            res.writeHead(404, missHeaders);
-            if (method === "HEAD") res.end();
-            else res.end("Not Found");
+            writeNotFound(rules, pathname, method, res);
+            return true;
+        }
+        // ⚠️ P2-8：无扩展名也不再一律回退 —— 只有命中前端路由表（shared/spaRoutes.ts
+        // 的 /、/s/<token>、/sg/<token>）才回 index.html。前端没有 react-router，
+        // URL 上不存在别的路由，所以 /notes、/wp-login.php、/.git/config 这类
+        // 未知无扩展名路径一律 404（以前是 200 吐整页 HTML，扫描器眼里什么都存在）。
+        if (!isSpaRoute(decoded)) {
+            writeNotFound(rules, pathname, method, res);
             return true;
         }
         // SPA fallback

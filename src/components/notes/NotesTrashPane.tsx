@@ -49,7 +49,7 @@ export default function NotesTrashPane(props: Pick<NotesPageCtx, "onEmptyTrash" 
                             px: 1.25,
                             py: 0.9,
                             borderRadius: 1.5,
-                            "&:hover": { bgcolor: "rgba(128,128,128,0.08)" },
+                            "&:hover": { bgcolor: "var(--neutral-wash)" },
                         }}
                     >
                         <Box sx={{ minWidth: 0, flex: 1 }}>

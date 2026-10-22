@@ -482,8 +482,8 @@ const SiteCard = memo(function SiteCard({
                     borderRadius: "50%",
                     zIndex: 3,
                     color: selected ? "var(--accent)" : "text.disabled",
-                    bgcolor: selected ? "background.paper" : "rgba(127,127,127,0.16)",
-                    boxShadow: selected ? "0 1px 6px rgba(15,23,42,0.2)" : "none",
+                    bgcolor: selected ? "background.paper" : "var(--neutral-hover)",
+                    boxShadow: selected ? "var(--shadow-chip)" : "none",
                     transition: "all .18s cubic-bezier(.22,.61,.36,1)",
                 }}
             >
@@ -516,8 +516,8 @@ const SiteCard = memo(function SiteCard({
                     zIndex: 3,
                     pointerEvents: "none",
                     color: starred ? "var(--accent)" : "text.disabled",
-                    bgcolor: starred ? "var(--glass-bg-hover)" : "rgba(127,127,127,0.12)",
-                    boxShadow: starred ? "0 1px 6px rgba(15,23,42,0.18)" : "none",
+                    bgcolor: starred ? "var(--glass-bg-hover)" : "var(--neutral-hover)",
+                    boxShadow: starred ? "var(--shadow-chip)" : "none",
                     opacity: starred ? 1 : 0.55,
                 }}
             >
@@ -636,7 +636,7 @@ const SiteCard = memo(function SiteCard({
                 border: "1px solid var(--glass-border)",
                 backdropFilter: "blur(8px)",
                 WebkitBackdropFilter: "blur(8px)",
-                boxShadow: "0 2px 10px rgba(15,23,42,0.14)",
+                boxShadow: "var(--shadow-pop)",
                 zIndex: 2,
             }}
         >

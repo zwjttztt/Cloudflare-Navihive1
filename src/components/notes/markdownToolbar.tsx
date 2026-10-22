@@ -593,7 +593,7 @@ export function MarkdownToolbar({
         height: 28,
         color: "text.secondary",
         flexShrink: 0,
-        "&:hover": { bgcolor: "rgba(128,128,128,0.14)", color: "text.primary" },
+        "&:hover": { bgcolor: "var(--neutral-hover)", color: "text.primary" },
     } as const;
     /** 带下拉箭头的按钮：图标 + ChevronDown，整体一个圆角 hover 底 */
     const menuBtnSx = (open: boolean) => ({
@@ -607,8 +607,8 @@ export function MarkdownToolbar({
         gap: 0.25,
         borderRadius: "8px",
         color: "text.secondary",
-        ...(open ? { bgcolor: "rgba(128,128,128,0.16)", color: "text.primary" } : {}),
-        "&:hover": { bgcolor: "rgba(128,128,128,0.14)", color: "text.primary" },
+        ...(open ? { bgcolor: "var(--neutral-hover)", color: "text.primary" } : {}),
+        "&:hover": { bgcolor: "var(--neutral-hover)", color: "text.primary" },
     }) as const;
     /** 分组之间的竖线（inkstone 的 Divider：mx-1、16px 高、1px 宽） */
     const divider = <Divider orientation='vertical' flexItem sx={{ mx: 0.5, my: 0.5 }} />;
@@ -689,7 +689,7 @@ export function MarkdownToolbar({
                     gap: 0.25,
                     borderRadius: "8px",
                     color: "text.secondary",
-                    "&:hover": { bgcolor: "rgba(128,128,128,0.14)", color: "text.primary" },
+                    "&:hover": { bgcolor: "var(--neutral-hover)", color: "text.primary" },
                 }}
             >
                 <ViewHeadlineIcon sx={{ fontSize: 15 }} />
@@ -1289,7 +1289,7 @@ export function MarkdownToolbar({
                         width: 28,
                         height: 28,
                         color: "text.secondary",
-                        "&:hover": { bgcolor: "rgba(128,128,128,0.14)", color: "text.primary" },
+                        "&:hover": { bgcolor: "var(--neutral-hover)", color: "text.primary" },
                     }}
                 >
                     <CalculateIcon fontSize='small' />
@@ -1338,7 +1338,7 @@ export function MarkdownToolbar({
                         width: 28,
                         height: 28,
                         color: "text.secondary",
-                        "&:hover": { bgcolor: "rgba(128,128,128,0.14)", color: "text.primary" },
+                        "&:hover": { bgcolor: "var(--neutral-hover)", color: "text.primary" },
                     }}
                 >
                     <TableRowsIcon fontSize='small' />

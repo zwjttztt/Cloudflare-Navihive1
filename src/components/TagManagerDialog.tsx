@@ -92,10 +92,7 @@ export default function TagManagerDialog({
                             justifyContent: "center",
                             borderRadius: "10px",
                             color: "primary.main",
-                            bgcolor: theme =>
-                                theme.palette.mode === "dark"
-                                    ? "rgba(255,255,255,0.08)"
-                                    : "rgba(15,23,42,0.05)",
+                            bgcolor: "var(--surface-inset)",
                         }}
                     >
                         <LabelIcon fontSize='small' />

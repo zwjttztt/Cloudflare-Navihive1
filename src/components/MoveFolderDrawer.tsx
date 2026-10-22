@@ -137,7 +137,7 @@ export default function MoveFolderDrawer({
                                 // `input[aria-label=...]` 选择器都找不到它。
                                 "aria-label": '搜索文件夹',
                                 startAdornment: <SearchIcon fontSize='small' sx={{ mr: 0.75, color: "text.disabled" }} />,
-                                sx: { borderRadius: 2, bgcolor: "rgba(128,128,128,0.06)" },
+                                sx: { borderRadius: 2, bgcolor: "var(--neutral-wash)" },
                             },
                         }}
                     />
@@ -169,8 +169,8 @@ export default function MoveFolderDrawer({
                             minWidth: 0,
                             textAlign: "left",
                             bgcolor:
-                                currentFolderId === null ? "rgba(176,67,58,0.10)" : "transparent",
-                            "&:hover": { bgcolor: "rgba(128,128,128,0.08)" },
+                                currentFolderId === null ? "var(--accent-wash)" : "transparent",
+                            "&:hover": { bgcolor: "var(--neutral-wash)" },
                         }}
                     >
                         <FolderOffIcon
@@ -213,8 +213,8 @@ export default function MoveFolderDrawer({
                                         borderRadius: 1.5,
                                         minWidth: 0,
                                         textAlign: "left",
-                                        bgcolor: active ? "rgba(176,67,58,0.10)" : "transparent",
-                                        "&:hover": { bgcolor: "rgba(128,128,128,0.08)" },
+                                        bgcolor: active ? "var(--accent-wash)" : "transparent",
+                                        "&:hover": { bgcolor: "var(--neutral-wash)" },
                                     }}
                                 >
                                     <FolderIcon
@@ -317,7 +317,7 @@ export default function MoveFolderDrawer({
                                         textAlign: "left",
                                         bgcolor: "transparent",
                                         color: "text.secondary",
-                                        "&:hover": { bgcolor: "rgba(128,128,128,0.08)" },
+                                        "&:hover": { bgcolor: "var(--neutral-wash)" },
                                     }}
                                 >
                                     <CreateNewFolderIcon fontSize='small' />

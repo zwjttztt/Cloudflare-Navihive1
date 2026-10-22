@@ -66,7 +66,7 @@ export default function BacklinksPanel({
             sx={{
                 width: 230,
                 flexShrink: 0,
-                borderLeft: "1px solid rgba(128,128,128,0.18)",
+                borderLeft: "1px solid var(--neutral-hairline)",
                 overflowY: "auto",
                 py: 1,
                 px: 0.75,
@@ -125,7 +125,7 @@ export default function BacklinksPanel({
                             bgcolor: "transparent",
                             color: "text.secondary",
                             "&:hover": {
-                                bgcolor: "rgba(128,128,128,0.1)",
+                                bgcolor: "var(--neutral-hover)",
                                 color: "text.primary",
                             },
                         }}

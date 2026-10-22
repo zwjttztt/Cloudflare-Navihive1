@@ -1,0 +1,135 @@
+// src/API/transport.ts
+// 前端 HTTP 客户端的**传输层**：超时预算、幂等头、错误形状翻译，以及那条
+// JS 可读的「已登录」标记 cookie 的读写。
+//
+// 为什么单独出来（P2-10）：以前这些和 90 个业务方法一起躺在 client.ts 里。
+// 业务方法按域搬去 clientMethods/*.ts 之后，它们（登录、导入、WebDAV…）都要用
+// 同一套 cookie 与错误翻译 —— 留在类里就得把 private 全放开、跨文件互相看见，
+// 抽成纯函数反而更干净：不碰实例状态，单测能直接调。
+//
+// ⚠️ 这里**没有**任何凭据：真正的令牌在 httpOnly cookie 里，JS 拿不到。
+// 这条 `navihive_session` 只是个布尔标记，让刷新后界面立刻知道「已登录」。
+
+import type { Note } from "./http";
+import { parseApiError, type ApiErrorInfo } from "./apiError";
+
+/** 普通 API 请求的超时：30 秒。上传/下载/导入导出等慢端点不适用（见 client.ts 的 request） */
+/**
+ * 域方法体（clientMethods/*.ts）需要的那点 `this`。
+ *
+ * ⚠️ 刻意**不是** NavigationClient 本身：App / useAccountSession / useBackupController
+ * 里两个客户端是联合类型 `NavigationClient | MockNavigationClient`。若把 `this` 写成
+ * NavigationClient，TS 会要求 Mock 与真客户端**逐方法**同形 —— 任何一处签名差异
+ * （返回类型、是否 async）都会让**所有**调用点一起红，改一个方法要顺带修十个文件。
+ * 而「两侧形状是否一致」这件事本身该被盯住，只是不该用编译错误来盯：
+ * tests/clientSurface.test.ts 在运行时逐个方法比对，报错只报那一条。
+ */
+export interface ClientThis {
+    baseUrl: string;
+    idempotencyKey: string | null;
+    request<T = unknown>(
+        endpoint: string,
+        options?: { signal?: AbortSignal; timeoutMs?: number; [k: string]: unknown }
+    ): Promise<T>;
+    isLoggedIn(): boolean;
+    clearToken(): void;
+    setSessionCookie(ttlSeconds: number): void;
+    /**
+     * 下面三个是**跨域调用**用的：checkAuthStatus 拿 getConfigs 当「会话还活着吗」的探针、
+     * compareAndSetConfig 读/写单键配置。它们本不属于传输层，列在这里是因为
+     * 域方法体之间确实互相调用，而 `this` 又不能写成完整的 NavigationClient
+     * （理由见上面）。Mock 里这三个都有实现，所以联合类型照样成立。
+     */
+    getConfigs(): Promise<Record<string, string>>;
+    getConfig(key: string): Promise<string | null>;
+    setConfig(key: string, value: string): Promise<boolean>;
+}
+
+/**
+ * 「只写一个配置键」的那点能力。
+ *
+ * usePrefSync / useGroupAccent 只需要 setConfig，参数类型就只该要求 setConfig。
+ * ⚠️ 不能写成 `Pick<NavigationClient, "setConfig">`：Pick 会把域方法体上的
+ * `this: ClientThis` 一起带过来，于是调用点被迫凑齐整个 ClientThis（baseUrl、
+ * request…），而那里传进来的只是个 hook 参数 —— 只想写一个键却要假装成客户端。
+ * 这里刻意**不声明 this**，target 不带 this 时 TS 不检查 source 的 this，
+ * 真客户端与演示客户端都能直接传进来。
+ */
+export interface ConfigWriter {
+    setConfig(key: string, value: string): Promise<boolean>;
+}
+
+export const REQUEST_TIMEOUT_MS = 30_000;
+
+export const SESSION_COOKIE = "navihive_session";
+
+/**
+ * 本地登录标记要不要带 Secure —— 必须和服务端那条 httpOnly 令牌 cookie 保持一致。
+ * 不一致会造出「标记在、令牌不在」的半登录态：isLoggedIn() 为真于是直接渲染主界面，
+ * 紧接着第一个接口 401，界面又弹回登录页，看起来就像刚登录成功就闪退。
+ * （典型触发：先用 https 登录过，之后改从 http 访问同一个域名。）
+ */
+export function secureAttr(): string {
+    return typeof location !== "undefined" && location.protocol === "https:" ? "; Secure" : "";
+}
+
+export function hasSessionCookie(): boolean {
+    if (typeof document === "undefined") return false;
+    return document.cookie
+        .split(";")
+        .some(part => part.trim().startsWith(`${SESSION_COOKIE}=1`));
+}
+
+/**
+ * 写登录标记。
+ *
+ * 必须带上和服务端一致的 Max-Age，否则会把服务端那条持久 cookie 覆盖成会话 cookie，
+ * 「记住我」勾选了却在关掉浏览器后被登出。
+ */
+export function setSessionCookie(ttlSeconds: number): void {
+    if (typeof document === "undefined") return;
+    document.cookie = `${SESSION_COOKIE}=1; Path=/; SameSite=Strict; Max-Age=${ttlSeconds}${secureAttr()}`;
+}
+
+/** 清掉本地登录标记（令牌本身由服务端 /api/logout 清掉） */
+export function clearSessionCookie(): void {
+    if (typeof document === "undefined") return;
+    document.cookie = `${SESSION_COOKIE}=; Path=/; SameSite=Strict; Max-Age=0${secureAttr()}`;
+}
+
+// 旧版本把令牌存在 localStorage，这里一次性清掉遗留值，避免它留在浏览器里
+export function purgeLegacyToken(): void {
+    try {
+        localStorage.removeItem("auth_token");
+    } catch {
+        // localStorage 不可用时忽略
+    }
+}
+
+/**
+ * 裸 fetch 出口统一取错误文案。
+ *
+ * 登录 / 注册 / 恢复 / 邀请码 / 注销账号 / 导入这几个端点不走 `request()`
+ * （它们要么在登录态外，要么要自己读响应体），迁移前直接读 `data.message`；
+ * 服务端迁移到统一错误码后失败体变成 `{ error: { code, message } }`，
+ * `data.message` 就没了 —— 界面会显示一句空话。
+ *
+ * `parseApiError` 同时认新旧两种形状（含旧的 `{ message }` 与 `{ error: "字符串" }`），
+ * 所以这里统一走它。与 `PublicNotePage` 那条 401 是同一套处理。
+ */
+export function rawError(body: unknown, status: number): string {
+    return parseApiError(body, status)?.message || "";
+}
+
+/**
+ * 冲突时服务端回的那一版笔记在哪：旧形状在响应体顶层 `note`，
+ * 新形状（ApiError.details）在 `error.details.note`。两种都要认 ——
+ * 迁移期内两种形状并存，只认一种会让「冲突弹框显示不出对方的版本」。
+ */
+export function conflictNoteFrom(body: unknown, parsed: ApiErrorInfo | null): Note | null {
+    const fromTop = (body as { note?: unknown } | null)?.note;
+    if (fromTop && typeof fromTop === "object") return fromTop as Note;
+    const details = parsed?.details as { note?: unknown } | undefined;
+    if (details && typeof details.note === "object") return details.note as Note;
+    return null;
+}

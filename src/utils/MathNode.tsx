@@ -121,7 +121,7 @@ export function MathNode({ tex, block = false }: { tex: string; block?: boolean 
                 data-math-error='1'
                 style={{
                     ...(block ? { display: "block", textAlign: "center", margin: "10px 0" } : {}),
-                    background: "rgba(128,128,128,0.18)",
+                    background: "var(--neutral-hairline)",
                     borderRadius: 4,
                     padding: "1px 5px",
                     fontFamily: "ui-monospace, monospace",

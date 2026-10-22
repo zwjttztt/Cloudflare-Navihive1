@@ -160,7 +160,7 @@ const EditGroupDialog: React.FC<EditGroupDialogProps> = ({
                                             color.toLowerCase() === c.toLowerCase()
                                                 ? "text.primary"
                                                 : "transparent",
-                                        boxShadow: "0 1px 4px rgba(15,23,42,0.18)",
+                                        boxShadow: "var(--shadow-chip)",
                                         transition: "transform .15s ease",
                                         "&:hover": { transform: "scale(1.08)" },
                                     }}

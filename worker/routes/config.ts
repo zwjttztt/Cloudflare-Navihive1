@@ -8,6 +8,7 @@ import { enforceConfigGuard, endpointBucket } from "../loginGuard";
 import type { ConfigInput } from "../types";
 import { validateConfig } from "../validate";
 import type { RouteCtx } from "./types";
+import { readJsonBody } from "./jsonBody";
 
 export async function handleConfigRoutes(ctx: RouteCtx): Promise<Response | null> {
     const {
@@ -39,7 +40,7 @@ export async function handleConfigRoutes(ctx: RouteCtx): Promise<Response | null
     }
     // 批量写入配置：保存网站设置时一次请求搞定，省掉 N 个网络往返
     else if (path === "configs/batch" && method === "POST") {
-        const data = (await request.json()) as { configs?: Record<string, string> };
+        const data = await readJsonBody<{ configs?: Record<string, string> }>(request);
         const entries = Object.entries(data.configs || {});
 
         // 全站设置（标题 / 主题 / 背景…）是所有人共用的，只有站点所有者能写。
@@ -87,7 +88,7 @@ export async function handleConfigRoutes(ctx: RouteCtx): Promise<Response | null
         if (!isUserScopedConfigKey(key) && !(await api.canManageSharedConfigs())) {
             return errorResponse(ApiError.forbidden("全站外观设置只有站点所有者可以修改"));
         }
-        const data = (await request.json()) as ConfigInput;
+        const data = await readJsonBody<ConfigInput>(request);
 
         // 验证配置数据
         const validation = validateConfig(data);

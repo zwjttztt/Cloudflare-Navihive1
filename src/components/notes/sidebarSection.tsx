@@ -90,7 +90,7 @@ export function NavRow({
                 bgcolor: selected ? "color-mix(in srgb, var(--accent) 10%, transparent)" : "transparent",
                 color: selected ? "text.primary" : "text.secondary",
                 transition: "background-color 120ms ease",
-                "&:hover": { bgcolor: "rgba(128,128,128,0.1)" },
+                "&:hover": { bgcolor: "var(--neutral-hover)" },
                 "&:focus-visible": { outline: "2px solid var(--accent)", outlineOffset: 1 },
             }}
             {...rest}
@@ -371,7 +371,7 @@ export function FolderTagSection({
                         // 拖动中的目标行高亮 —— 这是「能不能放」的唯一直观信号
                         bgcolor:
                             dropTarget === item.id
-                                ? "rgba(128,128,128,0.18)"
+                                ? "var(--neutral-hairline)"
                                 : "transparent",
                         outline: dropTarget === item.id ? "1px dashed var(--accent)" : "none",
                         outlineOffset: -1,
@@ -506,11 +506,11 @@ export function FolderTagSection({
                                             borderRadius: 1.25,
                                             bgcolor:
                                                 activeNoteId === n.id
-                                                    ? "rgba(128,128,128,0.14)"
+                                                    ? "var(--neutral-hover)"
                                                     : "transparent",
                                             color:
                                                 activeNoteId === n.id ? "text.primary" : "text.secondary",
-                                            "&:hover": { bgcolor: "rgba(128,128,128,0.1)" },
+                                            "&:hover": { bgcolor: "var(--neutral-hover)" },
                                         }}
                                     >
                                         {n.title || "无标题"}
@@ -591,7 +591,7 @@ export function FolderTagSection({
                                         : "transparent",
                                 color:
                                     activeNoteId === n.id ? "text.primary" : "text.secondary",
-                                "&:hover": { bgcolor: "rgba(128,128,128,0.1)" },
+                                "&:hover": { bgcolor: "var(--neutral-hover)" },
                                 "&:focus-visible": {
                                     outline: "2px solid var(--accent)",
                                     outlineOffset: 1,

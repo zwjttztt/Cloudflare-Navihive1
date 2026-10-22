@@ -175,7 +175,7 @@ export default function NotesEditorPane(props: Pick<NotesPageCtx, "active" | "ac
                                                 pane === key
                                                     ? "color-mix(in srgb, var(--accent) 12%, transparent)"
                                                     : "transparent",
-                                            "&:hover": { bgcolor: "rgba(128,128,128,0.12)" },
+                                            "&:hover": { bgcolor: "var(--neutral-hover)" },
                                             "& + &": { borderLeft: "1px solid var(--card-border)" },
                                         }}
                                     >
@@ -661,7 +661,7 @@ export default function NotesEditorPane(props: Pick<NotesPageCtx, "active" | "ac
                             sx={{
                                 width: 190,
                                 flexShrink: 0,
-                                borderLeft: "1px solid rgba(128,128,128,0.18)",
+                                borderLeft: "1px solid var(--neutral-hairline)",
                                 overflowY: "auto",
                                 py: 1,
                                 px: 0.75,
@@ -716,7 +716,7 @@ export default function NotesEditorPane(props: Pick<NotesPageCtx, "active" | "ac
                                             fontWeight: item.level <= 2 ? 600 : 400,
                                             fontSize: 12.5,
                                             "&:hover": {
-                                                bgcolor: "rgba(128,128,128,0.1)",
+                                                bgcolor: "var(--neutral-hover)",
                                                 color: "text.primary",
                                             },
                                         }}

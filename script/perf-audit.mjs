@@ -20,6 +20,7 @@
 // 用法：
 //   node script/perf-audit.mjs            采集并断言
 //   node script/perf-audit.mjs --json     只输出 JSON（给别的脚本用）
+import { appendFileSync } from "node:fs";
 import { startSiteServer, openBrowser, waitRendered } from "./auditEnv.mjs";
 import { setTimeout as sleep } from "node:timers/promises";
 
@@ -125,6 +126,30 @@ async function main() {
             resources: perf.resources,
             pageErrors: errors,
         };
+
+        // CI 上把数字写进「步骤摘要」：日志会随 runner 一起消失，而摘要在 PR 页面上
+        // 一直挂着 —— 「这次改动把首屏拖慢了多少」要能一眼看到，不是翻日志才看得到。
+        // （GITHUB_STEP_SUMMARY 只有 GitHub Actions 会设，本地跑到这里是 undefined，直接跳过。）
+        if (process.env.GITHUB_STEP_SUMMARY) {
+            const margin = (v, b) => `${Math.round((1 - v / b) * 100)}%`;
+            appendFileSync(
+                process.env.GITHUB_STEP_SUMMARY,
+                [
+                    "## 首屏体感（移动端 Slow-4G + CPU " + CPU_SLOWDOWN + "×）",
+                    "",
+                    "| 指标 | 实测 | 预算 | 余量 |",
+                    "| --- | --- | --- | --- |",
+                    `| FCP | ${report.fcp} ms | ${BUDGET_MS.fcp} ms | ${margin(report.fcp, BUDGET_MS.fcp)} |`,
+                    `| LCP | ${report.lcp} ms | ${BUDGET_MS.lcp} ms | ${margin(report.lcp, BUDGET_MS.lcp)} |`,
+                    `| TTFB | ${report.ttfb} ms | — | — |`,
+                    `| 传输量 | ${report.transferredKb} KB | — | — |`,
+                    `| 请求数 | ${report.resources} | — | — |`,
+                    `| CLS | ${report.cls} | — | 只报告 |`,
+                    "",
+                ].join("\n"),
+                "utf8"
+            );
+        }
 
         if (JSON_ONLY) {
             console.log(JSON.stringify(report, null, 2));

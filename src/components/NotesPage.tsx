@@ -2760,7 +2760,7 @@ export default function NotesPage({
                                     px: 0.5,
                                     py: 0.1,
                                     borderRadius: 0.75,
-                                    border: "1px solid rgba(128,128,128,0.35)",
+                                    border: "1px solid var(--neutral-border)",
                                     color: "text.disabled",
                                 }}
                             >
@@ -3215,7 +3215,7 @@ export default function NotesPage({
                         alignItems: "center",
                         justifyContent: "center",
                         p: 3,
-                        bgcolor: "rgba(0,0,0,0.82)",
+                        bgcolor: "var(--scrim)",
                         cursor: "zoom-out",
                     }}
                 >
@@ -3237,7 +3237,7 @@ export default function NotesPage({
                         <Button component='a' href={lightbox.src} download target='_blank' rel='noreferrer'>下载原图</Button>
                         {imageFailed && <Typography role='status'>图片加载失败</Typography>}
                     </Box>
-                    <Typography sx={{ position: "absolute", bottom: 16, color: "#fff", maxWidth: "80%" }} noWrap>{lightbox.alt}</Typography>
+                    <Typography sx={{ position: "absolute", bottom: 16, color: "var(--on-scrim)", maxWidth: "80%" }} noWrap>{lightbox.alt}</Typography>
                     <IconButton
                         aria-label='关闭图片预览'
                         data-lightbox-close='1'
@@ -3245,7 +3245,7 @@ export default function NotesPage({
                             e.stopPropagation();
                             setLightbox(null);
                         }}
-                        sx={{ position: "absolute", top: 12, right: 12, color: "#fff" }}
+                        sx={{ position: "absolute", top: 12, right: 12, color: "var(--on-scrim)" }}
                     >
                         <CloseIcon fontSize='small' />
                     </IconButton>
@@ -3322,7 +3322,7 @@ export default function NotesPage({
                         height: 44,
                         flexShrink: 0,
                         bgcolor: "var(--bg-sunken)",
-                        borderBottom: "1px solid rgba(128,128,128,0.18)",
+                        borderBottom: "1px solid var(--neutral-hairline)",
                     }}
                 >
                     <IconButton
@@ -3466,7 +3466,7 @@ export default function NotesPage({
                         ⚠️ 专注模式（A9）下不渲染：列表列整个卸载了，「回到列表」没有去处，
                         要回去先退出专注（Esc 或标题行那颗退出键）。 */}
                     {mobileDetail && bp === "mobile" && !zenMode && (
-                        <Box sx={{ display: "flex", p: 1, borderTop: "1px solid rgba(128,128,128,0.25)", flexShrink: 0 }}>
+                        <Box sx={{ display: "flex", p: 1, borderTop: "1px solid var(--neutral-border)", flexShrink: 0 }}>
                             <Button
                                 startIcon={<EditIcon />}
                                 onClick={() => setMobileDetail(false)}
@@ -3501,7 +3501,7 @@ export default function NotesPage({
                         // 遮罩用深色实色，不用毛玻璃（导航站的全局样式会给浮层加
                         // backdrop-filter，叠在记事本上就成了「透明虚化」）。
                         sx: {
-                            backgroundColor: "rgba(15, 23, 42, 0.45)",
+                            backgroundColor: "var(--scrim)",
                             backdropFilter: "none !important",
                         },
                     },

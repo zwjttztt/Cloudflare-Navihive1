@@ -8,7 +8,7 @@
 
 import { useCallback, useEffect } from "react";
 import { SortMode } from "../constants";
-import type { NavigationClient } from "../API/client";
+import type { ConfigWriter } from "../API/transport";
 import type { GroupWithSites } from "../types";
 import type { NotifyAction } from "../context/NotifyContext";
 import {
@@ -92,7 +92,7 @@ export function useGroupAnchorNav(
  * 先乐观改本机（界面立即变色），服务端保存失败再提示。
  */
 export function useGroupAccent(
-    api: Pick<NavigationClient, "setConfig">,
+    api: ConfigWriter,
     setConfigs: React.Dispatch<React.SetStateAction<Record<string, string>>>,
     notify: NotifyFnLike
 ): (groupId: number, color: string) => Promise<void> {

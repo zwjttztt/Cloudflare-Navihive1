@@ -12,7 +12,7 @@
 //   - 防抖而不是直接发：拖星标、连着点十几张卡片都只合并成一次请求。
 import { useEffect, useRef, type MutableRefObject } from "react";
 
-import type { NavigationClient } from "../API/client";
+import type { ConfigWriter } from "../API/transport";
 import type { VisitStat } from "../context/uiPrefsStore";
 import { onLocalPrefsChange } from "../context/uiPrefsStore";
 import { exportLinkHealth, onLinkHealthChange } from "../utils/linkHealth";
@@ -30,7 +30,7 @@ export interface PrefSyncOptions {
      * 只要 `setConfig` 就行：真实客户端与本地演示客户端都有这个方法，
      * 写成结构化类型两边都能传（App 里 api 本身就是这两者的联合类型）。
      */
-    api: Pick<NavigationClient, "setConfig">;
+    api: ConfigWriter;
     /**
      * 「上次推上去的内容」缓存。由 App 创建并同时交给 useBackupController：
      * 打开同步开关时那边会立刻推一次并记下内容，这里才不会转头又原样推一遍。

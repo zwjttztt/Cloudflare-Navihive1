@@ -285,10 +285,7 @@ export default function AttachmentPreviewDialog({
                             justifyContent: "center",
                             borderRadius: "10px",
                             color: "primary.main",
-                            bgcolor: theme =>
-                                theme.palette.mode === "dark"
-                                    ? "rgba(255,255,255,0.08)"
-                                    : "rgba(15,23,42,0.05)",
+                            bgcolor: "var(--surface-inset)",
                         }}
                     >
                         <DescriptionIcon fontSize='small' />
@@ -399,7 +396,7 @@ export default function AttachmentPreviewDialog({
                             display: "flex",
                             alignItems: "center",
                             justifyContent: "center",
-                            bgcolor: "rgba(128,128,128,0.06)",
+                            bgcolor: "var(--neutral-wash)",
                             borderRadius: 2,
                             p: 1,
                         }}
@@ -469,7 +466,7 @@ export default function AttachmentPreviewDialog({
                                     maxHeight: "60vh",
                                     overflow: "auto",
                                     borderRadius: 2,
-                                    bgcolor: "rgba(128,128,128,0.06)",
+                                    bgcolor: "var(--neutral-wash)",
                                     fontFamily:
                                         'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',
                                     fontSize: 12.5,

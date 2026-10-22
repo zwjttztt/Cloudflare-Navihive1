@@ -161,8 +161,8 @@ function Segmented({
                             font: "inherit",
                             border: active
                                 ? "1px solid var(--accent)"
-                                : "1px solid rgba(128,128,128,0.35)",
-                            bgcolor: active ? "rgba(176,67,58,0.08)" : "transparent",
+                                : "1px solid var(--neutral-border)",
+                            bgcolor: active ? "var(--accent-wash)" : "transparent",
                             color: active ? "var(--accent)" : "text.secondary",
                         }}
                     >
@@ -325,7 +325,7 @@ export default function AttachmentManager({
         >
             <Box sx={{ display: "flex", flexDirection: "column", height: "100%" }}>
                 {/* 顶部：标题 + 四档筛选 */}
-                <Box sx={{ flexShrink: 0, px: 1.5, pt: 1.5, pb: 1, borderBottom: "1px solid rgba(128,128,128,0.14)" }}>
+                <Box sx={{ flexShrink: 0, px: 1.5, pt: 1.5, pb: 1, borderBottom: "1px solid var(--neutral-hover)" }}>
                     <Typography sx={{ fontWeight: 600, mb: 1 }}>管理附件</Typography>
                     <Segmented value={filter} onChange={setFilter} disabled={busy} />
                 </Box>
@@ -369,8 +369,8 @@ export default function AttachmentManager({
                                         sx={{
                                             overflow: "hidden",
                                             borderRadius: 2,
-                                            border: "1px solid rgba(128,128,128,0.2)",
-                                            bgcolor: "rgba(128,128,128,0.04)",
+                                            border: "1px solid var(--neutral-hairline)",
+                                            bgcolor: "var(--neutral-wash)",
                                             cursor: onPreview ? "pointer" : "default",
                                             "&:hover .att-del, &:focus-within .att-del": { opacity: 1 },
                                         }}
@@ -383,7 +383,7 @@ export default function AttachmentManager({
                                                 alignItems: "center",
                                                 justifyContent: "center",
                                                 overflow: "hidden",
-                                                bgcolor: "rgba(128,128,128,0.08)",
+                                                bgcolor: "var(--neutral-wash)",
                                             }}
                                         >
                                             {isImage(file) ? (
@@ -427,7 +427,7 @@ export default function AttachmentManager({
                                                     }}
                                                     sx={{
                                                         bgcolor: "background.paper",
-                                                        border: "1px solid rgba(128,128,128,0.3)",
+                                                        border: "1px solid var(--neutral-border)",
                                                         "&:hover": { color: "error.main" },
                                                     }}
                                                 >
@@ -518,7 +518,7 @@ export default function AttachmentManager({
                         alignItems: "center",
                         justifyContent: "space-between",
                         gap: 1,
-                        borderTop: "1px solid rgba(128,128,128,0.14)",
+                        borderTop: "1px solid var(--neutral-hover)",
                         px: 1.5,
                         py: 1,
                     }}

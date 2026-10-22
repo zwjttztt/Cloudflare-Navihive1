@@ -87,6 +87,15 @@
     --surface-card: rgba(255, 255, 255, 0.66);
     --surface-card-hover: rgba(255, 255, 255, 0.82);
     --surface-raised: rgba(255, 255, 255, 0.9);
+    /* 弹窗/浮层实底色（dialogShell、底部批量条、Snackbar 各自抄过一份 rgba(·,0.94)）
+       与卡片内嵌底（ConfirmDialog 等抄过一份 rgba(15,23,42,0.05)）—— 收敛成一对 token，
+       换肤时改一处即可，不用再逐个弹窗找。 */
+    --surface-modal: rgba(255, 255, 255, 0.94);
+    --surface-inset: rgba(15, 23, 42, 0.05);
+    /* 图标托底板：图标自身明暗差别很大，底板必须压住它又不能糊住它，
+       这两档是调出来的、与主题底色不是一回事，故单列。 */
+    --logo-plate: rgba(255, 255, 255, 0.94);
+    --logo-plate-border: rgba(15, 23, 42, 0.09);
 
     /* —— 描边（border）：hairline 分隔线 / subtle 面板 / default 卡片 —— */
     --border-hairline: rgba(15, 23, 42, 0.08);
@@ -160,6 +169,12 @@
     --shadow-1: 0 1px 2px rgba(15, 23, 42, 0.06);
     --shadow-2: 0 4px 16px rgba(15, 23, 42, 0.08);
     --shadow-3: 0 14px 32px rgba(15, 23, 42, 0.16);
+    /* float 悬浮浮层（底部标签栏等）/ chip 小色片（强调色圆点等）。
+       以前这两档在组件里各写一份 rgba(15,23,42,0.18)，深浅两套主题都得手改 —— 收敛成
+       token 后暗色可以整档换成纯黑阴影（暗底上打深色阴影原本几乎看不见）。 */
+    --shadow-float: 0 6px 24px rgba(15, 23, 42, 0.18);
+    --shadow-chip: 0 1px 4px rgba(15, 23, 42, 0.18);
+    --shadow-pop: 0 2px 10px rgba(15, 23, 42, 0.14);
 
     /* —— 模糊（blur）：sm 局部 / md 卡片 —— */
     --blur-sm: 8px;
@@ -169,6 +184,36 @@
     --text-primary: rgba(15, 23, 42, 0.92);
     --text-secondary: rgba(15, 23, 42, 0.68);
     --text-muted: rgba(15, 23, 42, 0.48);
+
+    /* —— 语义状态色（success / danger）：diff 增删、保存状态点 ——
+       以前散在组件里写成 `var(--success, #2e7d32)`（带 fallback 说明 token 根本不存在），
+       等于每个组件自己兜一份、暗色下不会跟着变。现在真有这个 token 了。 */
+    --success: #2e7d32;
+    --danger: #d32f2f;
+
+    /* —— 中性灰线（neutral）：亮暗通用的分隔线 / 描边 / 悬停 ——
+       用 128 灰而不是黑或白，是因为同一个值在深底浅底上都看得见，
+       组件里因此攒下了 0.08 / 0.12 / 0.18 / 0.35 四五个 alpha，收敛成三档。*/
+    /* 五档是按组件里实际用到的 17 种 alpha 归并出来的（取各档中点，视觉差在噪声内）：
+         wash 极淡底 / hover 悬停底 / hairline 细分隔线 / border 描边 / strong 明显线 */
+    --neutral-wash: rgba(128, 128, 128, 0.05);
+    --neutral-hover: rgba(128, 128, 128, 0.12);
+    --neutral-hairline: rgba(128, 128, 128, 0.18);
+    --neutral-border: rgba(128, 128, 128, 0.3);
+    --neutral-strong: rgba(128, 128, 128, 0.5);
+
+    /* 遮罩（图片灯箱等全屏浮层）与遮罩上的文字。
+       遮罩恒为深色，所以上面只能配白字 —— 与主题明暗无关，故暗色下不覆盖。 */
+    --scrim: rgba(0, 0, 0, 0.82);
+    --on-scrim: #fff;
+
+    /* 编辑器（CodeMirror）内部高亮：选区 / 搜索命中 / 当前命中。
+       .cm-* 是第三方类名，只能从外面覆盖，颜色因此必须能在主题层调 ——
+       放在这里而不是组件里，暗色才能整体换档。 */
+    --editor-selection: rgba(100, 140, 220, 0.3);
+    --editor-match: rgba(120, 170, 255, 0.28);
+    --editor-match-active: rgba(120, 170, 255, 0.6);
+    --editor-match-ring: rgba(120, 170, 255, 0.9);
 
     /* 高光：卡片顶部那道极淡的内高光 */
     --glass-highlight: var(--border-hairline);
@@ -188,6 +233,11 @@
 
     /* 自定义主色（默认即 MUI 亮色主题的 primary） */
     --accent: #1976d2;
+    /* 强调色**底上**的文字（角标、实底按钮）。
+       ⚠️ 必须是独立 token 而不是写死 #fff：暗色主题的 --accent 是浅蓝 #90caf9，
+       白字压上去对比度只有 1.9:1（远低于 4.5:1），角标数字基本看不清。
+       以前 MobileTabBar 的角标就写死 #fff —— 暗色下是真·看不见。 */
+    --on-accent: #fff;
 
     /* 圆角风格 / 字号档位：由「外观」设置写入，默认圆润 + 标准 */
     --card-radius: 22px;
@@ -198,6 +248,10 @@
        不做整块高饱和背景——那样会压过内容、也破坏明暗两套主题的对比度。 */
     --group-accent: var(--accent);
     --group-accent-width: 3px;
+    /* 强调色淡底：选中态 / 当前项的背景染色。
+       以前在 7 个组件里各写一份 rgba(176,67,58,0.08~0.10)（把默认强调色的 RGB 抄死），
+       用户换主色后这块底色不会跟着变 —— 用 color-mix 让它恒等于「当前主色的 10%」。 */
+    --accent-wash: color-mix(in srgb, var(--accent) 10%, transparent);
 }
 
 .dark {
@@ -205,6 +259,10 @@
     --surface-card: rgba(23, 27, 38, 0.58);
     --surface-card-hover: rgba(30, 35, 48, 0.72);
     --surface-raised: rgba(30, 35, 48, 0.92);
+    --surface-modal: rgba(23, 27, 38, 0.94);
+    --surface-inset: rgba(255, 255, 255, 0.08);
+    --logo-plate: rgba(255, 255, 255, 0.09);
+    --logo-plate-border: rgba(255, 255, 255, 0.14);
 
     --border-hairline: rgba(255, 255, 255, 0.1);
     --border-subtle: rgba(255, 255, 255, 0.1);
@@ -222,10 +280,23 @@
     --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.3);
     --shadow-2: 0 4px 16px rgba(0, 0, 0, 0.42);
     --shadow-3: 0 14px 32px rgba(0, 0, 0, 0.6);
+    /* 暗底上再打 rgba(15,23,42,·)（近乎黑的深蓝）等于没打阴影，整档换成纯黑 */
+    --shadow-float: 0 6px 24px rgba(0, 0, 0, 0.5);
+    --shadow-chip: 0 1px 4px rgba(0, 0, 0, 0.45);
+    --shadow-pop: 0 2px 10px rgba(0, 0, 0, 0.45);
 
     --text-primary: rgba(255, 255, 255, 0.92);
     --text-secondary: rgba(255, 255, 255, 0.7);
     --text-muted: rgba(255, 255, 255, 0.5);
+
+    /* 暗底上的绿 / 红要提亮，否则 diff 的增删行在深底上发闷 */
+    --success: #66bb6a;
+    --danger: #ef5350;
+
+    /* 编辑器高亮在暗底上要压暗，不然选区会盖过正文 */
+    --editor-selection: rgba(120, 160, 240, 0.32);
+    --editor-match: rgba(120, 170, 255, 0.22);
+    --editor-match-active: rgba(120, 170, 255, 0.5);
 
     /* 暗色下三栏仍然分层，但方向反过来：越靠里的越亮 */
     --bg-sunken: rgba(0, 0, 0, 0.22);
@@ -235,6 +306,8 @@
     --glass-highlight: rgba(255, 255, 255, 0.16);
 
     --accent: #90caf9;
+    /* 浅蓝底上必须换深字（见 :root 里 --on-accent 的说明） */
+    --on-accent: #0d1b2a;
 }
 
 /* 关闭毛玻璃（更多选项 → 特效开关）：

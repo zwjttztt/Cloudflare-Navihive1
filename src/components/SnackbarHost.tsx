@@ -70,10 +70,7 @@ export default function SnackbarHost({
                             py: 0.75,
                             borderRadius: "var(--card-radius)",
                             color: "text.primary",
-                            backgroundColor:
-                                theme.palette.mode === "dark"
-                                    ? "rgba(23,27,38,0.92)"
-                                    : "rgba(255,255,255,0.92)",
+                            backgroundColor: "var(--surface-modal)",
                             backdropFilter: "blur(var(--glass-blur)) saturate(1.4)",
                             WebkitBackdropFilter: "blur(var(--glass-blur)) saturate(1.4)",
                             border: "1px solid var(--glass-panel-border)",

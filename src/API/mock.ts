@@ -24,6 +24,7 @@ import {
     AiStatus,
     AiSuggestResponse,
     AiTestResponse,
+    DEFAULT_TOKEN_TTL,
 } from "./http";
 import { verifyBackupIntegrity, withBackupIntegrity } from "../utils/backupIntegrity";
 import type { SiteMetaSuggestion, TagSuggestion } from "../utils/aiMeta";
@@ -37,6 +38,9 @@ import { validateFolderMove } from "../utils/folderTree";
 import { groupClientErrors } from "../utils/clientErrorGroups";
 import { REVISION_KEEP_PER_NOTE, needsSummary, summarizeContent } from "../utils/noteLimits";
 import { sqlNow } from "../utils/sqlTime";
+// 会话标记 cookie 的读写与真客户端共用同一份实现（见 transport.ts 的说明）：
+// 演示模式以前自己拼字符串、还漏了 Max-Age，和真机行为分叉且不会报错。
+import { clearSessionCookie, hasSessionCookie, setSessionCookie } from "./transport";
 
 /** 演示模式的幂等记录：scope|opId -> 记录 */
 const mockIdempotency = new Map<
@@ -50,11 +54,6 @@ const mockIdempotency = new Map<
     }
 >();
 
-// 登录标记的 Secure 属性要和服务端那条令牌 cookie 一致，否则会出现
-// 「标记在、令牌不在」的半登录态（详见 NavigationClient.secureAttr）。
-function secureAttr(): string {
-    return typeof location !== "undefined" && location.protocol === "https:" ? "; Secure" : "";
-}
 
 // 模拟数据
 const mockGroups: Group[] = [
@@ -275,6 +274,30 @@ async function syncMockInlineTags(note: Note): Promise<void> {
 }
 
 export class MockNavigationClient {
+    /**
+     * 传输层成员的**同形实现**：只为与 NavigationClient 保持同一个对外形状。
+     *
+     * App / useAccountSession / useBackupController 里两个客户端是联合类型
+     * `NavigationClient | MockNavigationClient`，而域方法体在 clientMethods/*.ts 里
+     * 声明了 `this: NavigationClient` —— Mock 少任何一个成员，TS 就不让在联合类型上
+     * 调方法（TS2684）。演示模式不发 HTTP，所以 request 直接抛：真被调用到说明
+     * 有个域方法忘了在 Mock 里实现，早报错比静默走空好。
+     */
+    baseUrl = "/api";
+    idempotencyKey: string | null = null;
+
+    setIdempotencyKey(key: string | null): void {
+        this.idempotencyKey = key;
+    }
+
+    async request<T = unknown>(_endpoint?: string, _options?: unknown): Promise<T> {
+        throw new Error("演示模式不发 HTTP 请求（这个域方法应该在 MockNavigationClient 里实现）");
+    }
+
+    setSessionCookie(ttlSeconds: number): void {
+        setSessionCookie(ttlSeconds);
+    }
+
     // 与真实 client 保持一致：登录态看可读的 session cookie，令牌本身不落 JS
     constructor() {
         if (typeof localStorage !== 'undefined') {
@@ -283,25 +306,22 @@ export class MockNavigationClient {
     }
 
     // 检查是否已登录
+    //
+    // ⚠️ 读写**不再自己拼 cookie 字符串**：以前这里漏了 Max-Age（落成会话 cookie），
+    // 真客户端那条是带 Max-Age 的持久 cookie —— 同一个「记住我」在演示模式和真机上
+    // 表现不同，而这种差异没有任何东西会报错。现在两侧都调 transport.ts 的同一份实现。
     isLoggedIn(): boolean {
-        if (typeof document === 'undefined') return false;
-        return document.cookie
-            .split(';')
-            .some(part => part.trim().startsWith('navihive_session=1'));
+        return hasSessionCookie();
     }
 
     // 设置认证令牌（Secure 属性同 NavigationClient：与服务端那条令牌 cookie 保持一致）
     setToken(_token: string): void {
-        if (typeof document !== 'undefined') {
-            document.cookie = `navihive_session=1; Path=/; SameSite=Strict${secureAttr()}`;
-        }
+        setSessionCookie(DEFAULT_TOKEN_TTL);
     }
 
     // 清除认证令牌
     clearToken(): void {
-        if (typeof document !== 'undefined') {
-            document.cookie = `navihive_session=; Path=/; SameSite=Strict; Max-Age=0${secureAttr()}`;
-        }
+        clearSessionCookie();
     }
 
     // 登录API
@@ -323,7 +343,13 @@ export class MockNavigationClient {
     }
 
     // 登出
-    logout(): void {
+    /**
+     * ⚠️ 必须与真客户端同为 async：真机的 logout 要先通知服务端拉黑令牌（await fetch），
+     * 返回 Promise<void>；这里以前是同步的 —— 调用方 `await api.logout()` 在两种模式下
+     * 都能编译（await void 合法），但真机上「登出后立刻刷新」与演示模式的时序不同。
+     * 现在两侧形状一致，谁改了一边 TS 立刻说。
+     */
+    async logout(): Promise<void> {
         this.clearToken();
     }
 
@@ -525,6 +551,18 @@ export class MockNavigationClient {
     }
 
     /** 演示模式没有版本历史，双链按内存笔记现算（与真实实现同一套判据） */
+    /**
+     * 重建全文索引：演示模式没有 FTS 表，这里只能是个空操作。
+     *
+     * 真客户端有这个方法、Mock 以前没有 —— 调用方（NotesSettingsDialog）用
+     * `shareApi?.reindexNotes &&` 挡着，所以一直没炸，但那意味着「Mock 少了方法」
+     * 这类缺口没有任何东西会报错。现在两侧形状必须一致（见 MockNavigationClient
+     * 顶部注释），缺一个 TS 就拦下。
+     */
+    async reindexNotes(): Promise<{ success: boolean; count: number }> {
+        return { success: true, count: 0 };
+    }
+
     async notesStats(): Promise<import("./types").NoteStats> {
         await new Promise(resolve => setTimeout(resolve, 150));
         let links = 0;

@@ -69,10 +69,10 @@ const SiteCardAvatar = memo(function SiteCardAvatar({
                     alignItems: "center",
                     justifyContent: "center",
                     borderRadius: "11px",
-                    bgcolor: isDark ? "rgba(255,255,255,0.09)" : "rgba(255,255,255,0.94)",
+                    bgcolor: "var(--logo-plate)",
                     border: "1px solid",
-                    borderColor: isDark ? "rgba(255,255,255,0.14)" : "rgba(15,23,42,0.09)",
-                    boxShadow: isDark ? "none" : "0 1px 3px rgba(15,23,42,0.08)",
+                    borderColor: "var(--logo-plate-border)",
+                    boxShadow: "var(--shadow-1)",
                     transition: "transform .22s cubic-bezier(.22,.61,.36,1)"
                 }}>
                 <Skeleton

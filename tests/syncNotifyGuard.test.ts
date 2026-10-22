@@ -8,7 +8,7 @@
 // 剥注释 + 反向验证（注释里写正确写法不算数）。
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import {
@@ -34,6 +34,24 @@ function stripComments(src: string): string {
 
 const readSrc = (rel: string) =>
     stripComments(readFileSync(resolve(projectDir(), rel), "utf8"));
+
+/**
+ * 前端 API 客户端的全部源码：client.ts + clientMethods/ 整个目录。
+ *
+ * ⚠️ 2026-10-22：client.ts 拆过了，业务方法体搬去了 src/API/clientMethods/*.ts。
+ * 只读 client.ts 的话，搬走的方法就没人盯 —— 守卫会**假通过**（看着全绿其实没检查到）。
+ * 与 tests/helpers/notesSource.ts 同样的教训：拆文件必须先查有没有守卫在扫老文件。
+ */
+function clientSource(): string {
+    const dir = resolve(projectDir(), "src/API/clientMethods");
+    const files = [
+        "src/API/client.ts",
+        ...readdirSync(dir)
+            .filter(f => f.endsWith(".ts"))
+            .map(f => `src/API/clientMethods/${f}`),
+    ];
+    return files.map(readSrc).join("\n");
+}
 
 test("useSiteSync：游标必须从 localStorage 恢复并随轮询落盘（否则每次刷新全量重放墓碑）", () => {
     const src = readSrc("src/hooks/useSiteSync.ts");
@@ -69,10 +87,10 @@ test("useSiteSync：首轮（游标为空）只建基线不提示，且提示前
 });
 
 test("client：单删/批删成功后必须记录本设备删除（防同步轮询误报）", () => {
-    const src = readSrc("src/API/client.ts");
-    const deleteSite = src.match(/async deleteSite\(id: number\)[\s\S]*?\n\s{4}\}/)?.[0] ?? "";
+    const src = clientSource();
+    const deleteSite = src.match(/async deleteSite\([\s\S]*?\n\s{4}\}/)?.[0] ?? "";
     assert.match(deleteSite, /markLocalSiteDeletes\(\[id\]\)/, "单删成功后必须埋点");
-    const deleteSites = src.match(/async deleteSites\(ids: number\[\]\): [\s\S]*?\n\s{4}\}/)?.[0] ?? "";
+    const deleteSites = src.match(/async deleteSites\([\s\S]*?\n\s{4}\}/)?.[0] ?? "";
     assert.match(deleteSites, /markLocalSiteDeletes/, "批删成功后必须埋点");
     assert.match(
         deleteSites,
