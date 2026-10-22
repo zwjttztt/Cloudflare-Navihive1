@@ -71,9 +71,51 @@ export function deviceKeyOf(ua: string): string {
     return ua.replace(/\d+(\.\d+)*/g, "#").slice(0, 80);
 }
 
+/**
+ * 「这两行是不是同一台设备」（2026-10-22，修互踢下线）。
+ *
+ * ⚠️ 为什么不能只用归一化 UA：`Chrome|Windows` 这一把键会被**所有**
+ *    「Windows + Chrome」客户端共用 —— 另一台电脑、另一个 Chrome 配置文件、
+ *    虚拟机里的系统，全都是同一把键。后登录的据此把先登录的令牌拉黑，
+ *    两台机器就互相顶下线（线上实证：每次开机第一次必 401，
+ *    还出现过「登录→57 秒后 401→再登录→26 秒后 401」的循环）。
+ *
+ * 判定：**只有两边都有 device_id 且相等**，才算同一台设备。
+ *   - device_id 是客户端持久化的随机 UUID（utils/deviceId.ts），同一台电脑的
+ *     同一个浏览器配置才相同；换电脑 / 换 profile / 清缓存都会变。
+ *   - 缺一边（老会话行、隐私模式客户端）→ 判**不同**。代价是列表里可能多一行，
+ *     收益是绝不误踢 —— 被踢下线意味着「每次开机都要重新登录」，
+ *     而多一行只是界面上多个条目，老行还会在 30 天内自然过期。
+ *     ⚠️ 这里刻意**不**回退到 UA：回退就等于把「一台旧版 + 一台新版」
+ *        这种最常见的过渡组合继续留在互踢里，修了等于没修。
+ *
+ * ⚠️ device_id 由客户端提供、可伪造，所以它**不是凭证**：唯一用途是
+ *    「别把别人的设备误判成自己」。伪造最多让自己的会话在列表里合并显示。
+ */
+function sameDevice(
+    rowDeviceId: string | null | undefined,
+    _rowUserAgent: string | null | undefined,
+    currentDeviceId: string | null | undefined,
+    _currentUserAgent: string
+): boolean {
+    if (!rowDeviceId || !currentDeviceId) return false;
+    return rowDeviceId === currentDeviceId;
+}
+
 export interface SessionsApi {
     /** 登录成功后登记这张令牌（jti / 过期时间 / 账号都从 token 里解，调用方不必知道） */
-    recordSession(token: string, userAgent: string, ip: string): Promise<void>;
+    /**
+     * 登录成功后登记这张令牌。
+     *
+     * @param deviceId 客户端持久设备 ID（见 utils/deviceId.ts）。**判「是不是同一台
+     *   设备」只认它**；为 null（老客户端 / 隐私模式）时才回退到归一化 UA。
+     */
+    recordSession(
+        token: string,
+        userAgent: string,
+        ip: string,
+        deviceId?: string | null
+    ): Promise<void>;
     /** 验签通过后刷新「最后活跃」（限频） */
     touchSession(jti: string): Promise<void>;
     /** 列出某账号仍然有效的会话；currentJti 用来标出「当前这一台」 */
@@ -99,7 +141,8 @@ export const sessionsImpl: SessionsApi = {
         this: NavigationAPI,
         token: string,
         userAgent: string,
-        ip: string
+        ip: string,
+        deviceId?: string | null
     ): Promise<void> {
         if (!token) return;
         try {
@@ -110,12 +153,14 @@ export const sessionsImpl: SessionsApi = {
             if (typeof exp !== "number") return;
 
             const now = Math.floor(Date.now() / 1000);
+            // device_id 落库：老库里这一列可能是 NULL（迁移补的），所以写入时允许 null。
+            const did = typeof deviceId === "string" && deviceId ? deviceId.slice(0, 64) : null;
             // ON CONFLICT：同一 jti 重复登记（重试 / 重放登录）时只更新时间，不插第二行
             await this.db
                 .prepare(
-                    `INSERT INTO user_sessions (jti, user_id, user_agent, ip, created_at, last_seen_at, expires_at)
-                     VALUES (?, ?, ?, ?, ?, ?, ?)
-                     ON CONFLICT(jti) DO UPDATE SET last_seen_at = ?, expires_at = ?`
+                    `INSERT INTO user_sessions (jti, user_id, user_agent, ip, created_at, last_seen_at, expires_at, device_id)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                     ON CONFLICT(jti) DO UPDATE SET last_seen_at = ?, expires_at = ?, device_id = COALESCE(excluded.device_id, user_sessions.device_id)`
                 )
                 .bind(
                     jti,
@@ -125,6 +170,7 @@ export const sessionsImpl: SessionsApi = {
                     now,
                     now,
                     exp,
+                    did,
                     now,
                     exp
                 )
@@ -138,14 +184,18 @@ export const sessionsImpl: SessionsApi = {
             if (typeof uid === "number") {
                 const old = await this.db
                     .prepare(
-                        `SELECT jti, expires_at, user_agent FROM user_sessions
+                        `SELECT jti, expires_at, user_agent, device_id FROM user_sessions
                          WHERE user_id = ? AND jti != ?`
                     )
                     .bind(uid, jti)
-                    .all<{ jti: string; expires_at: number; user_agent: string | null }>();
-                const key = deviceKeyOf((userAgent || "").slice(0, MAX_UA_LEN));
-                const stale = (old.results || []).filter(
-                    row => deviceKeyOf(row.user_agent || "") === key
+                    .all<{
+                        jti: string;
+                        expires_at: number;
+                        user_agent: string | null;
+                        device_id: string | null;
+                    }>();
+                const stale = (old.results || []).filter(row =>
+                    sameDevice(row.device_id, row.user_agent, did, userAgent)
                 );
                 for (const row of stale) {
                     await this.blacklistToken(row.jti, row.expires_at);
@@ -205,7 +255,9 @@ export const sessionsImpl: SessionsApi = {
         try {
             const result = await this.db
                 .prepare(
-                    `SELECT jti, user_agent, ip, created_at, last_seen_at, expires_at
+                    // ⚠️ device_id 必须一起选出来：折叠键优先用它（见下面的 deviceKey）。
+                    //    漏了它就会静默回退到归一化 UA —— 而那正是互踢下线的根因。
+                    `SELECT jti, user_agent, device_id, ip, created_at, last_seen_at, expires_at
                      FROM user_sessions
                      WHERE user_id = ? AND expires_at > ?
                      ORDER BY last_seen_at DESC`
@@ -214,6 +266,7 @@ export const sessionsImpl: SessionsApi = {
                 .all<{
                     jti: string;
                     user_agent: string | null;
+                    device_id: string | null;
                     ip: string | null;
                     created_at: number;
                     last_seen_at: number;
@@ -227,7 +280,12 @@ export const sessionsImpl: SessionsApi = {
             // 为什么不能一轮顺着排：万一某条陈行的 last_seen 比当前行还新
             // （手工改库 / 极端竞态），一轮会把陈行先放进去、当前行再进来，
             // 同一设备就漏折叠成两行。
+            // 折叠键（2026-10-22）：优先 device_id，老行回退归一化 UA。
+            // 用 device_id 做键才不会被「另一台 Windows+Chrome」误折叠 ——
+            // 那正是互踢下线的根因（见 sameDevice 注释）。
             const seenDevices = new Set<string>();
+            const deviceKey = (row: { user_agent: string | null; device_id: string | null }): string =>
+                row.device_id ? `did:${row.device_id}` : `ua:${deviceKeyOf(row.user_agent || "")}`;
             const out: SessionInfo[] = [];
             const stale: Array<{ jti: string; expires_at: number }> = [];
             const toInfo = (row: {
@@ -248,12 +306,12 @@ export const sessionsImpl: SessionsApi = {
             });
             for (const row of rows) {
                 if (row.jti !== currentJti) continue;
-                seenDevices.add(deviceKeyOf(row.user_agent || ""));
+                seenDevices.add(deviceKey(row));
                 out.push(toInfo(row, true));
             }
             for (const row of rows) {
                 if (row.jti === currentJti) continue;
-                const key = deviceKeyOf(row.user_agent || "");
+                const key = deviceKey(row);
                 if (seenDevices.has(key)) {
                     stale.push({ jti: row.jti, expires_at: row.expires_at });
                     continue;

@@ -238,7 +238,11 @@ export const CREATE_STATEMENTS = [
         ip TEXT,
         created_at INTEGER NOT NULL,
         last_seen_at INTEGER NOT NULL,
-        expires_at INTEGER NOT NULL
+        expires_at INTEGER NOT NULL,
+        -- 客户端持久设备 ID（utils/deviceId.ts）。判「是不是同一台设备」只认它，
+        -- 归一化 UA 会把另一台 Windows+Chrome 误判成同一台 → 互踢下线（2026-10-22 修）。
+        -- 老库这一列由 migrateSessionDeviceColumn 补，允许 NULL。
+        device_id TEXT
     );`,
     // 幂等键：离线队列重放 / 网络超时重试时，客户端给每次「意图」发一个不重复的 ID，
     // 服务端据此认出「这一条其实已经执行过了」，直接把上次的响应回放回去，

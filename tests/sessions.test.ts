@@ -51,12 +51,20 @@ class SessionsD1 {
                 .sort((a, b) => (b.last_seen_at as number) - (a.last_seen_at as number));
             return mode === "first" ? (rows[0] ?? null) : rows;
         }
-        // recordSession 的同设备去重：按 user_id 拉全部行（UA 要在 JS 里归一化）
-        if (/SELECT jti, expires_at, user_agent FROM user_sessions\s+WHERE user_id = \? AND jti != \?/.test(sql)) {
+        // recordSession 的同设备去重：按 user_id 拉全部行。
+        // ⚠️ 匹配只看「表 + 条件」，不钉列名 —— 2026-10-22 起这条 SQL 多了
+        //    device_id（判「同一台设备」只认它），钉列名会让替身匹配不上、
+        //    于是「同设备去重」在测试里静默失效（返回空数组 = 没有旧会话）。
+        if (/FROM user_sessions\s+WHERE user_id = \? AND jti != \?/.test(sql)) {
             const [uid, keep] = args as [number, string];
             return this.sessions
                 .filter(r => r.user_id === uid && r.jti !== keep)
-                .map(r => ({ jti: r.jti, expires_at: r.expires_at, user_agent: r.user_agent }));
+                .map(r => ({
+                    jti: r.jti,
+                    expires_at: r.expires_at,
+                    user_agent: r.user_agent,
+                    device_id: r.device_id ?? null,
+                }));
         }
         if (/SELECT jti, expires_at FROM user_sessions WHERE jti = \? AND user_id = \?/.test(sql)) {
             const [jti, uid] = args as [string, number];
@@ -77,12 +85,16 @@ class SessionsD1 {
         let changes = 0;
 
         if (/INSERT INTO user_sessions/.test(sql)) {
-            const [jti, uid, ua, ip, createdAt, lastSeenAt, expiresAt] = args as unknown[];
+            // 参数顺序与实现一致：jti, user_id, user_agent, ip, created_at,
+            // last_seen_at, expires_at, device_id（2026-10-22 起多一个）
+            const [jti, uid, ua, ip, createdAt, lastSeenAt, expiresAt, deviceId] = args as unknown[];
             const existing = this.sessions.find(r => r.jti === jti);
             if (existing) {
                 // ON CONFLICT DO UPDATE SET last_seen_at = ?, expires_at = ?（第 8、9 个参数）
                 existing.last_seen_at = args[7];
                 existing.expires_at = args[8];
+                // device_id 用 COALESCE(excluded, 原值)：老行补登时不丢
+                if (deviceId) existing.device_id = deviceId;
             } else {
                 this.sessions.push({
                     jti,
@@ -92,6 +104,7 @@ class SessionsD1 {
                     created_at: createdAt,
                     last_seen_at: lastSeenAt,
                     expires_at: expiresAt,
+                    device_id: deviceId ?? null,
                 });
             }
             changes = 1;
@@ -145,10 +158,26 @@ function newApi(db: SessionsD1): NavigationAPI {
     } as unknown as ConstructorParameters<typeof NavigationAPI>[0]);
 }
 
-/** 签一张令牌并登记成会话，返回它的 jti */
-async function loginDevice(api: NavigationAPI, uid: number, ua: string, ip: string) {
+/**
+ * 签一张令牌并登记成会话，返回它的 jti。
+ *
+ * @param deviceId 客户端持久设备 ID。**同一台设备重登要传同一个值** ——
+ *   2026-10-22 起「是不是同一台设备」只认它（归一化 UA 会把另一台
+ *   Windows+Chrome 误判成同一台，导致互踢下线，见 sameDevice 注释）。
+ *   默认按 uid + ua 派生，让老用例「同一台设备重登」的语义保持不变。
+ */
+async function loginDevice(
+    api: NavigationAPI,
+    uid: number,
+    ua: string,
+    ip: string,
+    // ⚠️ 必须短：服务端会把 device_id 截断到 64 字符（防止有人塞几 KB），
+    //    拿整条 UA 拼的话两台不同设备的前 64 字符完全一样 → 被判成同一台。
+    //    真实客户端是 crypto.randomUUID()，36 字符。
+    deviceId: string | null = `dev-${uid}-${deviceKeyOf(ua)}`
+) {
     const token = await api.generateToken({ username: `u${uid}`, uid }, 3600);
-    await api.recordSession(token, ua, ip);
+    await api.recordSession(token, ua, ip, deviceId);
     return { token, jti: peekJwtClaim(token, "jti") as string };
 }
 
@@ -260,9 +289,11 @@ const UA_CHROME_142 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537
 test("会话：同一台设备重登（浏览器升级 + IP 漂移）—— 库里只留最新一行，旧令牌拉黑", async () => {
     const db = new SessionsD1();
     const api = newApi(db);
-    const old = await loginDevice(api, 7, UA_CHROME_141, "1.2.3.4");
+    // ⚠️ 同一个 deviceId：真实客户端存在 localStorage 里，浏览器升级不会变 ——
+    //    「同一台设备」现在只认它（UA 版本号会变，不能再当判据）。
+    const old = await loginDevice(api, 7, UA_CHROME_141, "1.2.3.4", "dev-stable");
     // Chrome 自动升级后再次登录：UA 版本号变了，出口也从 IPv4 漂到 IPv6
-    const next = await loginDevice(api, 7, UA_CHROME_142, "2404:1234::1");
+    const next = await loginDevice(api, 7, UA_CHROME_142, "2404:1234::1", "dev-stable");
 
     assert.equal(db.sessions.length, 1, "一台设备在库里只留一行");
     assert.equal(db.sessions[0].jti, next.jti, "留的是最新那次登录");
@@ -280,9 +311,11 @@ test("会话：同一台设备重登（浏览器升级 + IP 漂移）—— 库�
 test("会话：列表折叠自愈 —— 历史遗留的同设备重复行（老判重漏下的）列表时清掉", async () => {
     const db = new SessionsD1();
     const api = newApi(db);
-    const current = await loginDevice(api, 7, UA_CHROME_141, "1.2.3.4");
+    const current = await loginDevice(api, 7, UA_CHROME_141, "1.2.3.4", "dev-stable");
     // 直接往库里塞陈行：UA 版本号与 IP 都不同（正是 v2.0.0「UA+IP」判重漏掉的形态），
-    // 且 last_seen 故意比当前行还新 —— 当前会话永远不能被它挤掉
+    // 且 last_seen 故意比当前行还新 —— 当前会话永远不能被它挤掉。
+    // ⚠️ device_id 与当前行相同：陈行就是「同一台设备的历史登录」，
+    //    折叠判定只认 device_id（UA 版本不同不再是判据，见 sameDevice）。
     db.sessions.push({
         jti: "legacy-stale",
         user_id: 7,
@@ -291,6 +324,7 @@ test("会话：列表折叠自愈 —— 历史遗留的同设备重复行（老
         created_at: 100,
         last_seen_at: (db.sessions[0].last_seen_at as number) + 999,
         expires_at: Math.floor(Date.now() / 1000) + 3600,
+        device_id: "dev-stable",
     });
 
     const list = await api.listSessions(7, current.jti);

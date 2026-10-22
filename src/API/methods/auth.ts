@@ -84,12 +84,16 @@ export const authImpl: AuthApi = {
     blacklistToken: async function (this: NavigationAPI, jti: string, exp: number): Promise<void> {
         if (!jti) return;
         try {
+            // ⚠️ created_at 必须显式给：这一列没有 DEFAULT，老库里全是 NULL
+            //    （2026-10-22 查线上库时发现，13 条拉黑记录没一条有创建时间，
+            //     于是「这条是什么时候拉黑的」根本答不出来，排障时很碍事）。
+            const now = Math.floor(Date.now() / 1000);
             await this.db
                 .prepare(
-                    `INSERT INTO token_blacklist (jti, exp) VALUES (?, ?)
+                    `INSERT INTO token_blacklist (jti, exp, created_at) VALUES (?, ?, ?)
                      ON CONFLICT(jti) DO UPDATE SET exp = ?`
                 )
-                .bind(jti, exp, exp)
+                .bind(jti, exp, now, exp)
                 .run();
         } catch (error) {
             console.error("拉黑令牌失败:", error);

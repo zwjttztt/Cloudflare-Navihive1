@@ -1,3 +1,4 @@
+import { deviceIdField } from "../utils/deviceId";
 import {
     Group,
     Site,
@@ -198,7 +199,7 @@ export class NavigationClient {
                 headers: {
                     'Content-Type': 'application/json'
                 },
-                body: JSON.stringify({ username, password, remember })
+                body: JSON.stringify({ username, password, remember, ...deviceIdField() })
             });
 
             // 先取文本再自己解析：登录页要能分清「账号密码不对」和「压根没连上服务器」。
@@ -270,7 +271,7 @@ export class NavigationClient {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 credentials: "same-origin",
-                body: JSON.stringify({ username, password, inviteCode, remember }),
+                body: JSON.stringify({ username, password, inviteCode, remember, ...deviceIdField() }),
             });
             const data = await response.json().catch(() => ({ success: false }));
             if (data.success) {

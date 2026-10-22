@@ -51,6 +51,20 @@ import type { LoginInput, RecoveryInput, RegisterInput } from "../types";
 import { validateLogin } from "../validate";
 import type { RouteCtx } from "./types";
 
+
+/**
+ * 从登录 / 注册请求体里取客户端设备 ID（见 src/utils/deviceId.ts）。
+ *
+ * ⚠️ 只取字符串、截断到 64：这值是客户端随便能伪造的，长度不限的话
+ *    有人塞个几 KB 进来就白占一行存储。它的用途只是「别误踢别人的设备」。
+ */
+function readDeviceId(body: unknown): string | null {
+    const raw = (body as { deviceId?: unknown } | null)?.deviceId;
+    if (typeof raw !== "string") return null;
+    const trimmed = raw.trim();
+    return trimmed ? trimmed.slice(0, 64) : null;
+}
+
 export async function handlePublicRoutes(ctx: RouteCtx): Promise<Response | null> {
     const {
         request,
@@ -224,7 +238,14 @@ export async function handlePublicRoutes(ctx: RouteCtx): Promise<Response | null
             // 登记这台设备：之后才好在「账号管理 → 登录设备」里把它单独踢下线。
             // 失败不影响登录（recordSession 内部吞异常）—— 记不上只是列表里少一行。
             if (result.token) {
-                await api.recordSession(result.token, request.headers.get("User-Agent") || "", ip);
+                // deviceId：客户端持久设备 ID。判「是不是同一台设备」只认它 ——
+                // 只用归一化 UA 会把另一台 Windows+Chrome 误判成同一台，互踢下线。
+                await api.recordSession(
+                    result.token,
+                    request.headers.get("User-Agent") || "",
+                    ip,
+                    readDeviceId(loginData)
+                );
             }
 
             // 令牌只放进 httpOnly cookie，不再回传给 JS（响应体里也不带 token）
@@ -356,6 +377,12 @@ export async function handlePublicRoutes(ctx: RouteCtx): Promise<Response | null
         for (const cookie of sessionCookieHeaders(token, ttl, secure)) {
             headers.append("Set-Cookie", cookie);
         }
+        await api.recordSession(
+            token,
+            request.headers.get("User-Agent") || "",
+            ip,
+            readDeviceId(data)
+        );
         await api.writeAudit("auth.register", username, ip, "注册成功");
         return Response.json(
             {

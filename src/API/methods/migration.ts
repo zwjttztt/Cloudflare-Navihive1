@@ -68,7 +68,7 @@ import {
 //     老库建不出来 → /api/sites/changes 一律 0 条变更，删卡对其它设备不可见。
 // 22 = idx_notes_user_order（notes(user_id, pinned, order_num, id) 列表排序覆盖索引）。
 //     索引步骤同样吃快路径：版本号不 +1 的话老库永远建不上这条索引（同 19 的先例）。
-export const SCHEMA_VERSION = "22";
+export const SCHEMA_VERSION = "23";
 /** 版本号存在 configs 里的键名 */
 export const SCHEMA_VERSION_KEY = "schema.version";
 
@@ -94,6 +94,8 @@ export interface MigrationApi {
     runMigrations(): Promise<void>;
     createIndexes(): Promise<void>;
     migrateAccountSecurityColumns(): Promise<void>;
+    /** user_sessions 补 device_id 列（2026-10-22） */
+    migrateSessionDeviceColumn(): Promise<void>;
     migrateInactiveColumns(): Promise<void>;
     migrateOwnerColumns(): Promise<void>;
     migrateNoteColumns(): Promise<void>;
@@ -244,6 +246,10 @@ export const migrationImpl: MigrationApi = {
         // 5) 账号各自的令牌版本：见 bumpTokenVersion 的注释
         await this.migrateAccountSecurityColumns();
 
+        // 5.5) user_sessions 补 device_id：设备判重从归一化 UA 改成客户端持久 ID
+        //      （2026-10-22，修「两台 Windows+Chrome 互踢下线」）
+        await this.migrateSessionDeviceColumn();
+
         // 6) 阶段三：notes 补 archived 列（老库必须 ALTER 才会有，见 migrateNoteColumns）
         await this.migrateNoteColumns();
 
@@ -353,6 +359,22 @@ export const migrationImpl: MigrationApi = {
      *   status         —— active / disabled，停用的账号登录会被拒但数据保留；
      *   disabledAt     —— 被停用的时间，清除倒计时的锚点。
      */
+    /**
+     * user_sessions 补 device_id 列（2026-10-22，幂等）。
+     *
+     * 为什么必须补列：判「是不是同一台设备」从归一化 UA 改成客户端持久设备 ID。
+     * 老库里没有这一列，SELECT 会直接报错（不是返回 NULL），所以必须先 ALTER。
+     * 版本号已 +1，快路径（版本相等就跳过）会失效一次，补完即恢复。
+     */
+    migrateSessionDeviceColumn: async function (this: NavigationAPI ): Promise<void> {
+        if (await this.hasColumn("user_sessions", "device_id")) return;
+        try {
+            await this.db.exec("ALTER TABLE user_sessions ADD COLUMN device_id TEXT");
+        } catch {
+            // 并发迁移时列可能已存在，忽略
+        }
+    },
+
     migrateInactiveColumns: async function (this: NavigationAPI ): Promise<void> {
         const wanted: { name: string; type: string }[] = [
             { name: "last_active_at", type: "INTEGER" },
