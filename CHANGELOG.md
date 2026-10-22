@@ -6,6 +6,37 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。---
 
+## 2026-10-22（十六）· 重构：NotesPage 拆出第六个 hook（useNotesList）—— 收尾
+
+搬走列表派生链 `filtered → sorted → listGroups → visibleIds`（外加 `lazyListGroups` 懒挂载判定）。
+
+**踩到一个真问题，值得记下来**：这条链和搜索子系统**互相依赖** ——
+`filtered` 在搜索视图下要吃 `searchHits`（搜索子系统的产出），而搜索子系统里的
+`searchHits` 又要用 `searchableText`（原本和 `filtered` 写在一起）。
+第一版把 `searchableText` 也搬进 hook，直接构成**循环依赖**：hook 要放搜索前面
+（搜索用 searchableText），却又需要搜索的产物。tsc 报了一串
+`used before declaration` 才发现。
+
+**解法**：`searchableText` 留在 NotesPage，改成 hook 的**入参`；hook 调用放回搜索子系统之后。
+两边都不动，只是把「谁定义、谁使用」分清楚。
+
+**搜索子系统整体不搬**：`searchEpoch` / 拉远端搜索的 effect / `searchSnippets` /
+`highlightRanges` 都留在原处 —— 那里面有 abort 与竞态处理，跟列表派生不是一件事。
+
+**累计成果**：`NotesPage.tsx` **3,818 → 3,539 行**，六个 hook 全部落在 `src/components/notes/`：
+
+```
+useNotesPanels     弹层开关
+useNotesRowActions 行操作 / 多选 / 删除确认
+useNoteAutoSave    草稿自动保存
+useNotesFilters    搜索 / 视图 / 排序 / 选中项
+useNotesData       纯数据派生（active / 各计数 / 配色 / 按文件夹分组）
+useNotesList       列表派生链（filtered → sorted → listGroups → visibleIds）
+```
+
+剩下的 3,539 行是：编排逻辑（打开/切换/删除笔记的回调）、搜索子系统、JSX。
+**拆分到此告一段落** —— 再往下就不是"拆文件"而是"重新设计这个组件的状态流"了。
+
 ## 2026-10-22（十五）· 重构：NotesPage 拆出第五个 hook（useNotesData）
 
 搬走 5 个**与筛选无关**的纯数据派生：`active`（当前笔记）、`folderCounts`、
