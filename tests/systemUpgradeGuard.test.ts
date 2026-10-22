@@ -206,3 +206,15 @@ test("前端：更新按钮优先调端点，404/501 回落复制命令，升级
     assert.match(util, /\/api\/system\/upgrade/, "跟进要读服务端 phase（失败原因是它给的）");
     assert.match(util, /precache-manifest|PRECACHE_MANIFEST_URL/, "跟进要靠构建号判断换没换版本");
 });
+
+test("upgrader 脚本里的 $ 必须写成 $$（否则 compose 静默插值成空）", () => {
+    const src = readSrc("docker-compose.yml");
+    const upBlock = src.slice(src.indexOf("  upgrader:"), src.indexOf("\nvolumes:"));
+    // ⚠️ 2026-10-22 踩到：command 里的 $IMAGE / $(date) 被 compose 当成变量替换成空字符串，
+    //    运行时 `docker pull ""` 直接失败 —— 而 compose 只打 warning 不报错，很容易漏。
+    assert.equal(upBlock.includes("$$IMAGE"), true, "脚本里引用镜像名要写 $$IMAGE");
+    assert.equal(upBlock.includes("$$(date"), true, "命令替换要写 $$(date …)");
+    assert.equal(upBlock.includes("$$started"), true, "变量赋值/引用要写 $$started");
+    // 反向验证：environment 那行必须保持单 $（那是真要 compose 去插值的）
+    assert.equal(/NAVIHIVE_IMAGE: \$\{/.test(upBlock), true, "environment 仍用单 $ 让 compose 插值");
+});

@@ -36,6 +36,16 @@
    否则 compose 把运行时工作目录写进新容器的 `working_dir` 标签，下一轮升级就读歪了；
 3. pull 用完整镜像名再 `tag` 成 compose 里的 `image` 名 —— 不同部署的 `image:` 写法不同
    （`navihive:latest` 或 `ghcr.io/...`），`pull navihive:latest` 会去 Hub 找、必失败。
+4. **脚本里的 `$` 必须写成 `$$`** —— compose 会对 `command:` 做变量插值，`$IMAGE` / `$(date)`
+   会被替换成空字符串，运行时变成 `docker pull ""` 直接失败，而 compose **只打 warning 不报错**
+   （本轮就踩了，`config -q` 照样通过）。守卫里钉了这条。
+
+**真机验收（两轮，这才是 4.5 一直缺的那步）**：
+第一轮 3 秒完成（镜像已最新）；第二轮同样成功，且关键标签没有被写歪 ——
+`project.config_files` 仍是 `/home/docker/navihive/docker-compose.yml`、
+`project.working_dir` 仍是 `/home/docker/navihive`（4.4 那个「第一次成功后第二次必失败」
+的坑依赖的正是这两个标签，没复现）。navihive 的挂载始终是 `/spool` + `/app/data`，
+sock 只在 upgrader 里。
 
 ## 2026-10-22（九）· 工程：镜像发布从 QEMU 模拟改成双原生 runner（~13min → 预期 ~5min）
 

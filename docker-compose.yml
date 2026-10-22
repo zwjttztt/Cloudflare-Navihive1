@@ -112,26 +112,26 @@ services:
     command:
       - |
         set -u
-        IMAGE="${NAVIHIVE_IMAGE}"
-        echo "[upgrader] 就绪：轮询 /spool/request（image=$IMAGE）"
+        IMAGE="$${NAVIHIVE_IMAGE}"
+        echo "[upgrader] 就绪：轮询 /spool/request（image=$$IMAGE）"
         while true; do
           if [ ! -f /spool/request ]; then sleep 2; continue; fi
           rm -f /spool/request
-          started=$(date +%s)000
-          printf '{"phase":"pulling","image":"%s","error":"","startedAt":%s,"finishedAt":0}' "$IMAGE" "$started" > /spool/state.json
-          echo "[upgrader] 拉取 $IMAGE"
-          if ! docker pull "$IMAGE"; then
-            printf '{"phase":"failed","image":"","error":"拉取镜像失败（详见 upgrader 容器日志）","startedAt":%s,"finishedAt":%s}' "$started" "$(date +%s)000" > /spool/state.json
+          started=$$(date +%s)000
+          printf '{"phase":"pulling","image":"%s","error":"","startedAt":%s,"finishedAt":0}' "$$IMAGE" "$$started" > /spool/state.json
+          echo "[upgrader] 拉取 $$IMAGE"
+          if ! docker pull "$$IMAGE"; then
+            printf '{"phase":"failed","image":"","error":"拉取镜像失败（详见 upgrader 容器日志）","startedAt":%s,"finishedAt":%s}' "$$started" "$$(date +%s)000" > /spool/state.json
             continue
           fi
-          docker tag "$IMAGE" navihive:latest 2>/dev/null || true
-          printf '{"phase":"recreating","image":"","error":"","startedAt":%s,"finishedAt":0}' "$started" > /spool/state.json
+          docker tag "$$IMAGE" navihive:latest 2>/dev/null || true
+          printf '{"phase":"recreating","image":"","error":"","startedAt":%s,"finishedAt":0}' "$$started" > /spool/state.json
           echo "[upgrader] 重建 navihive"
           if docker compose -f docker-compose.yml -p navihive up -d --force-recreate --no-deps navihive; then
-            printf '{"phase":"done","image":"","error":"","startedAt":%s,"finishedAt":%s}' "$started" "$(date +%s)000" > /spool/state.json
+            printf '{"phase":"done","image":"","error":"","startedAt":%s,"finishedAt":%s}' "$$started" "$$(date +%s)000" > /spool/state.json
             echo "[upgrader] 完成"
           else
-            printf '{"phase":"failed","image":"","error":"重建失败（详见 upgrader 容器日志）","startedAt":%s,"finishedAt":%s}' "$started" "$(date +%s)000" > /spool/state.json
+            printf '{"phase":"failed","image":"","error":"重建失败（详见 upgrader 容器日志）","startedAt":%s,"finishedAt":%s}' "$$started" "$$(date +%s)000" > /spool/state.json
             echo "[upgrader] 失败"
           fi
         done
