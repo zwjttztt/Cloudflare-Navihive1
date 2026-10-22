@@ -89,7 +89,6 @@ import { extractOutline } from "../utils/noteOutline";
 import { buildBacklinks, resolveWikiLinks } from "../utils/noteWikiLink";
 import { exportNoteAsMarkdown } from "../utils/noteExport";
 import { exportNoteAsHtml, printNoteAsPdf } from "../utils/noteHtmlExport";
-import { isFolderColor } from "../utils/folderAppearance";
 import { createScrollSync } from "../utils/syncScroll";
 import {
     loadNotesSettings,
@@ -315,6 +314,7 @@ import NotesEditorPane from "./notes/NotesEditorPane";
 import { useNotesPanels } from "./notes/useNotesPanels";
 import { useNoteAutoSave } from "./notes/useNoteAutoSave";
 import { useNotesFilters } from "./notes/useNotesFilters";
+import { useNotesData } from "./notes/useNotesData";
 import { useNotesRowActions } from "./notes/useNotesRowActions";
 import NotesSidePane from "./notes/NotesSidePane";
 import NotesOverlayLayer from "./notes/NotesOverlayLayer";
@@ -1100,10 +1100,24 @@ export default function NotesPage({
         return () => window.removeEventListener("keydown", onKey);
     }, []);
 
-    const active = useMemo(
-        () => notes.find(n => n.id === activeId) || null,
-        [notes, activeId]
-    );
+    // folders/tags/noteTags 只是 folderTags 的空值兜底，零依赖 —— 为满足
+    // 「active 必须早于 panels hook（它要 active?.id）」而上移到此处。
+    const folders = useMemo(() => folderTags?.folders ?? [], [folderTags]);
+    const tags = useMemo(() => folderTags?.tags ?? [], [folderTags]);
+    const noteTags = useMemo(() => folderTags?.noteTags ?? EMPTY_TAG_LINKS, [folderTags]);
+
+    // ============ 与筛选无关的纯数据派生（2026-10-22 抽到 notes/useNotesData）============
+    // active / 文件夹计数 / 标签计数 / 标签配色 / 每个文件夹下的笔记。
+    // ⚠️ filtered/sorted/listGroups/viewCounts/attachmentRefCounts 仍留在下面：
+    //    前三个依赖搜索与排序；viewCounts 牵连回收站派生；attachmentRefCounts 依赖两个开关。
+    const { active, folderCounts, tagCounts, tagColorByName, notesByFolder } = useNotesData({
+        notes,
+        folders,
+        tags,
+        noteTags,
+        activeId,
+    });
+
 
 
     // ============ 弹层 / 浮层状态（2026-10-22 抽到 notes/useNotesPanels）============
@@ -1200,15 +1214,6 @@ export default function NotesPage({
         const first = notes.find(n => n.id !== undefined && !n.archived) ?? notes.find(n => n.id !== undefined);
         if (first?.id !== undefined) setActiveId(first.id);
     }, [activeId, notes]);
-
-    // ---------- 阶段三收尾：文件夹 / 标签 ----------
-    // ⚠️ 这三个必须在 `filtered` **之前**声明：过滤链要用 noteTags 判断「这条笔记挂了哪个标签」，
-    // 放在下面就是 TDZ（used before its declaration）。
-    // ⚠️ 三处 `?? []` 都必须包 useMemo：直接写 `?? []` 得到的是**每次渲染一个全新数组**，
-    // 下游 folderCounts / tagCounts 两个 useMemo 会跟着每次渲染重算（lint 也会盯这条）。
-    const folders = useMemo(() => folderTags?.folders ?? [], [folderTags]);
-    const tags = useMemo(() => folderTags?.tags ?? [], [folderTags]);
-    const noteTags = useMemo(() => folderTags?.noteTags ?? EMPTY_TAG_LINKS, [folderTags]);
 
     /**
      * 一条笔记参与搜索的文本：标题 + 正文 + 标签名。
@@ -1481,65 +1486,6 @@ export default function NotesPage({
      * ⚠️ 必须**一次遍历** notes：原来是「外层遍历 folders × 内层 filter 全量 notes」，
      * 置顶 / 移动 / 保存时这里要跑 `folders.length × notes.length` 次判断
      * （用户报「文件夹下方置顶笔记等操作卡顿」的组成部分之一，2026-10-18 修）。
-     */
-    const folderCounts = useMemo(() => {
-        const map = new Map<number, number>();
-        for (const n of notes) {
-            if (n.archived || n.folder_id === null || n.folder_id === undefined) continue;
-            map.set(n.folder_id, (map.get(n.folder_id) ?? 0) + 1);
-        }
-        // 没笔记的文件夹也要有 0，否则左栏读不到值（Map.get 返回 undefined）
-        for (const f of folders) {
-            if (f.id !== undefined && !map.has(f.id)) map.set(f.id, 0);
-        }
-        return map;
-    }, [folders, notes]);
-
-    /**
-     * 每个标签下的笔记数。
-     *
-     * ⚠️ 同样必须一次遍历：原来外层 tags × 内层 notes，每次还调 `tagOf` 新建一个 Set
-     * —— `tags.length × notes.length` 次 Set 分配，这是置顶卡顿里最贵的一块
-     * （2026-10-18 修）。现在每条笔记只解析一次标签集，去累加它命中的那些标签。
-     */
-    const tagCounts = useMemo(() => {
-        const map = new Map<number, number>();
-        for (const t of tags) {
-            if (typeof t.id === "number") map.set(t.id, 0);
-        }
-        for (const n of notes) {
-            if (n.archived) continue;
-            for (const id of tagOf(n, noteTags)) {
-                map.set(id, (map.get(id) ?? 0) + 1);
-            }
-        }
-        return map;
-    }, [tags, notes, noteTags]);
-
-    /**
-     * 标签名 → 颜色。列表里的徽章按它着色。
-     *
-     * ⚠️ 按**名字**索引而不是 id：`tagNamesOf` 返回的是名字串（渲染用的是名字），
-     * 再拿名字回查一次 id 会让列表每行多一次线性查表。
-     * 名字重复时取「先出现且有颜色」的那一个 —— 两个同名标签本来就该合并。
-     */
-    const tagColorByName = useMemo(() => {
-        const map = new Map<string, string>();
-        for (const t of tags) {
-            if (!t.name || !isFolderColor(t.color)) continue;
-            const key = t.name.trim();
-            if (!map.has(key)) map.set(key, t.color);
-        }
-        return map;
-    }, [tags]);
-
-    /**
-     * 编辑器输入补全的数据源（`[[` / `#` / 围栏语言）。
-     *
-     * ⚠️ 必须是 **getter 形态**（由 NoteEditor 内部自己调用，而不是这里算好了传过去）：
-     * 笔记与标签随时增删改，传快照的话「刚建的那条在补全里找不到」，
-     * 而 getter 每次弹面板时读的都是最新的 `notes` / `tags`。
-     * 只喂**未归档**的笔记 —— 归档里的东西默认不该再被引用（和列表口径一致）。
      */
     const completionSources = useCallback((): CompletionSources => {
         return {
@@ -2588,29 +2534,6 @@ export default function NotesPage({
      * notes 变才重算一次，拿到的数组引用在没有相关改动时保持稳定。
      * ⚠️ 归档的笔记不算 —— 它们只该出现在「归档」视图里。
      */
-    const notesByFolder = useMemo(() => {
-        const raw = new Map<number, Note[]>();
-        for (const n of notes) {
-            if (n.archived || n.folder_id === null || n.folder_id === undefined) continue;
-            const list = raw.get(n.folder_id);
-            if (list) list.push(n);
-            else raw.set(n.folder_id, [n]);
-        }
-        const map = new Map<number, { id: number; title: string }[]>();
-        for (const [folderId, list] of raw) {
-            list.sort((a, b) =>
-                String(b.updated_at || b.created_at || "").localeCompare(
-                    String(a.updated_at || a.created_at || "")
-                )
-            );
-            map.set(
-                folderId,
-                list.map(n => ({ id: n.id!, title: n.title || "" }))
-            );
-        }
-        return map;
-    }, [notes]);
-
     const notesInFolder = useCallback(
         (folderId: number) => notesByFolder.get(folderId) ?? EMPTY_NOTE_LINKS,
         [notesByFolder]

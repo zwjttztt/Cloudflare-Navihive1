@@ -6,6 +6,22 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。---
 
+## 2026-10-22（十五）· 重构：NotesPage 拆出第五个 hook（useNotesData）
+
+搬走 5 个**与筛选无关**的纯数据派生：`active`（当前笔记）、`folderCounts`、
+`tagCounts`、`tagColorByName`、`notesByFolder`，并把 `folders/tags/noteTags`
+（只是 `folderTags` 的空值兜底）一并收进 hook。
+
+**边界为什么这么切**：这几個只依赖 `notes + folders/tags/noteTags`，与搜索词、视图、
+排序、选中的文件夹都无关 —— 所以不会和 `useNotesFilters` 打架。而：
+- `filtered` / `sorted` / `listGroups` / `visibleIds` **留下**：依赖搜索词、视图、排序键，
+  且 `filtered` 要吃 `searchHits`（带高亮区间），那是一整条链；
+- `viewCounts` **留下**：依赖 `trashedNotes`（回收站派生），搬它会把回收站逻辑一起拖出来；
+- `attachmentRefCounts` **留下**：依赖 `settingsOpen` / `attManagerOpen` 两个开关 + 模块级常量。
+
+**累计**：`NotesPage.tsx` **3,818 → 3,634 行**，五个 hook 全部落在 `src/components/notes/`。
+剩下的 `filtered/sorted/listGroups` 链条是最后一块，也是耦合最高的一块 —— 建议单独一轮。
+
 ## 2026-10-22（十四）· 重构：NotesPage 拆出第四个 hook（useNotesFilters）
 
 搬走 8 个**纯筛选条件** state：搜索词、视图、排序键与排序菜单锚点、选中的文件夹/标签、
