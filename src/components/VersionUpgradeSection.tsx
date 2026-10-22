@@ -251,7 +251,24 @@ export default function VersionUpgradeSection({ version }: { version?: string })
                         {localVersion ? localVersion.split("+")[0] : "开发模式（未构建）"}
                     </Typography>
                 </Typography>
-                <Box sx={{ mt: 1, display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }} ref={rowRef}>
+                {/* ⚠️ alignItems 必须是 flex-start（2026-10-22 用户报「点更新后弹出的字显示不全」）：
+                    center + 多行文案时，两个提示卡片会被压成「一行半」，第二行字被切掉半截。
+                    改成 flex-start 后每个卡片各按自己内容的高度排，多行也不会被挤。 */}
+                <Box
+                    sx={{
+                        mt: 1,
+                        display: "flex",
+                        alignItems: "flex-start",
+                        gap: 1,
+                        flexWrap: "wrap",
+                        // ⚠️ MUI 的 AlertMessage 自带 overflow: auto（见 @mui/material/Alert：
+                        //    AlertMessage 样式里就有）。只要祖先给的高度差一点点，多出来的那行
+                        //    就变成「内部滚动」——肉眼看到的就是字被切掉半截，而且**没有任何滚动条
+                        //    提示**（滚在 message 内部，不是弹窗）。这里统一放开，让它溢出显示。
+                        "& .MuiAlert-message": { overflow: "visible" },
+                    }}
+                    ref={rowRef}
+                >
                     <Button
                         size='small'
                         variant='outlined'
@@ -282,49 +299,47 @@ export default function VersionUpgradeSection({ version }: { version?: string })
                     {/* 结果与按钮同一行：原来 Alert 排在按钮正下方，网站设置弹窗
                         长、本节又在最底部，结果停在内容折叠线下面要手动滚 */}
                     {state.kind === "latest" && (
-                        <Alert severity='success' data-update-result='latest' sx={{ py: 0 }}>
+                        <Alert severity='success' data-update-result='latest' sx={{ py: 0.25, lineHeight: 1.5 }}>
                             已是最新版本。
                         </Alert>
                     )}
                     {state.kind === "available" && (
-                        <Alert severity='info' data-update-result='available' sx={{ py: 0, flex: 1, minWidth: 220 }}>
-                            发现新版本 {state.version}，点「更新」自动升级。更新内容见
+                        <Alert severity='info' data-update-result='available' sx={{ py: 0.25, flex: 1, minWidth: 220, lineHeight: 1.5 }}>
+                            发现新版本 {state.version} · 点「更新」自动升级 ·{' '}
                             <a href={RELEASES_URL} target='_blank' rel='noreferrer'>
-                                发版页
+                                发版说明
                             </a>
-                            。
                         </Alert>
                     )}
                     {state.kind === "error" && (
-                        <Alert severity='warning' data-update-result='error' sx={{ py: 0 }}>
+                        <Alert severity='warning' data-update-result='error' sx={{ py: 0.25, lineHeight: 1.5 }}>
                             检查失败：{state.message}
                         </Alert>
                     )}
                     {/* 「更新」按钮的反馈：网页升级有「进行中 / 完成 / 未完成」三态，
                         复制回落有「已复制 / 复制失败」两态 */}
                     {copyState === "upgrading" && upgradeOutcome === null && (
-                        <Alert severity='info' data-update-running='1' sx={{ py: 0, flex: 1, minWidth: 220 }}>
-                            升级中：正在拉取镜像并重建容器（已等 {waitedSec} 秒，最多 2 分钟会给结论）。
-                            页面自动刷新前请勿关闭。
+                        <Alert severity='info' data-update-running='1' sx={{ py: 0.25, flex: 1, minWidth: 220, lineHeight: 1.5 }}>
+                            升级中：拉取镜像并重建容器（已等 {waitedSec} 秒，最多 2 分钟）· 完成后自动刷新
                         </Alert>
                     )}
                     {upgradeOutcome?.kind === "done" && (
-                        <Alert severity='success' data-update-done='1' sx={{ py: 0, flex: 1, minWidth: 220 }}>
+                        <Alert severity='success' data-update-done='1' sx={{ py: 0.25, flex: 1, minWidth: 220, lineHeight: 1.5 }}>
                             升级完成，正在刷新到新版本…
                         </Alert>
                     )}
                     {upgradeOutcome?.kind === "failed" && (
-                        <Alert severity='warning' data-update-failed='1' sx={{ py: 0, flex: 1, minWidth: 220 }}>
+                        <Alert severity='warning' data-update-failed='1' sx={{ py: 0.25, flex: 1, minWidth: 220, lineHeight: 1.5 }}>
                             升级未完成：{upgradeOutcome.message}
                         </Alert>
                     )}
                     {copyState === true && (
-                        <Alert severity='success' data-update-copied='1' sx={{ py: 0 }}>
+                        <Alert severity='success' data-update-copied='1' sx={{ py: 0.25, lineHeight: 1.5 }}>
                             更新命令已复制，到服务器执行即可。
                         </Alert>
                     )}
                     {copyState === false && (
-                        <Alert severity='warning' data-update-copy-failed='1' sx={{ py: 0 }}>
+                        <Alert severity='warning' data-update-copy-failed='1' sx={{ py: 0.25, lineHeight: 1.5 }}>
                             复制失败，请手动复制：<Box component='code' sx={{ px: 0.5 }}>{UPGRADE_CMD}</Box>
                         </Alert>
                     )}
