@@ -34,6 +34,9 @@ import {
 } from "./methods/idempotency";
 import type { OpsStats } from "./methods/audit";
 import { validateFolderMove } from "../utils/folderTree";
+import { groupClientErrors } from "../utils/clientErrorGroups";
+import { REVISION_KEEP_PER_NOTE, needsSummary, summarizeContent } from "../utils/noteLimits";
+import { sqlNow } from "../utils/sqlTime";
 
 /** 演示模式的幂等记录：scope|opId -> 记录 */
 const mockIdempotency = new Map<
@@ -455,8 +458,9 @@ export class MockNavigationClient {
         // 这样演示模式下也能看出「摘要条目长什么样」。
         if (opts?.summary !== true) return list;
         return list.map(note =>
-            (note.content ?? "").length > 200
-                ? { ...note, content: (note.content ?? "").slice(0, 200), content_truncated: true }
+            // 阈值与标记规则和真机共用（原先这里是 >200 且自己截，真机是 >= 且只打标记）
+            needsSummary(note.content)
+                ? { ...note, content: summarizeContent(note.content), content_truncated: true }
                 : note
         );
     }
@@ -580,7 +584,7 @@ export class MockNavigationClient {
         void since;
         return {
             success: true,
-            now: new Date().toISOString().slice(0, 19).replace("T", " "),
+            now: sqlNow(),
             notesChanged: 0,
             changedNoteIds: [],
             folders: [],
@@ -839,11 +843,12 @@ export class MockNavigationClient {
             note_id: noteId,
             title,
             content,
-            created_at: new Date().toISOString().slice(0, 19).replace("T", " "),
+            created_at: sqlNow(),
         });
         const mine = mockRevisions.filter(r => r.note_id === noteId);
         // 与后端 REVISION_KEEP_PER_NOTE 一致：超出的从最旧开始裁
-        for (const old of mine.slice(0, Math.max(0, mine.length - 60))) {
+        // 上限与真机共用同一个常量（原先这里硬编码 60，只靠注释维系一致）
+        for (const old of mine.slice(0, Math.max(0, mine.length - REVISION_KEEP_PER_NOTE))) {
             const at = mockRevisions.indexOf(old);
             if (at >= 0) mockRevisions.splice(at, 1);
         }
@@ -1337,35 +1342,14 @@ export class MockNavigationClient {
         }>;
     }> {
         await new Promise(resolve => setTimeout(resolve, 100));
-        // 本地演示用：把 mock 的 client-error 记录按真实那套规则归并一遍
-        const rows = mockAuditLog.filter(r => r.action === "client-error");
-        const groups = new Map<string, { key: string; source: string; message: string; count: number; lastAt: string; paths: string[] }>();
-        for (const row of rows.slice(0, limit)) {
-            let parsed: { source?: string; message?: string; path?: string } = {};
-            try {
-                parsed = JSON.parse(row.detail || "{}") as typeof parsed;
-            } catch {
-                parsed = { message: (row.detail || "").slice(0, 200) };
-            }
-            const source = parsed.source || "unknown";
-            const message = parsed.message || (row.detail || "（无错误信息）").slice(0, 200);
-            const key = `${source}|${message.slice(0, 120)}`;
-            const found = groups.get(key);
-            if (found) {
-                found.count += 1;
-                if (row.created_at > found.lastAt) found.lastAt = row.created_at;
-                continue;
-            }
-            groups.set(key, {
-                key,
-                source,
-                message,
-                count: 1,
-                lastAt: row.created_at,
-                paths: parsed.path ? [parsed.path] : [],
-            });
-        }
-        return { success: true, groups: [...groups.values()] };
+        // 3.3 同源化（2026-10-22）：归并规则与真机共用 utils/clientErrorGroups。
+        // 原先这里手写了一遍，且**漏了 paths 收集**（真机版有、这里没有）——
+        // 本地看着正常，其实少了一整列信息。现在没有「本地一套、线上一套」这回事。
+        const rows = mockAuditLog
+            .filter(r => r.action === "client-error")
+            .slice(0, limit)
+            .map(r => ({ detail: r.detail, created_at: r.created_at }));
+        return { success: true, groups: groupClientErrors(rows) };
     }
 
     // ============ 回收站（与真实实现一致：软删除后可还原 / 彻底删除 / 清空） ============

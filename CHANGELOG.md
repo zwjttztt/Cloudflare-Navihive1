@@ -6,6 +6,48 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。---
 
+## 2026-10-22（七）· 修复：4.5 启用后网页升级挂了（DOCKER_HOST 协议错）+ 3.3 第二批同源化
+
+**先说那个 bug（我上一轮引入的）**：启用 socket-proxy 后点网页「更新」，helper 里报
+
+```
+Failed to initialize: unable to resolve docker endpoint:
+invalid bind address format: http://docker-socket-proxy:2375
+```
+
+根因：**同一个地址，两种写法**。服务端自己读 Docker API 用 `http://host:2375`，
+但 **docker CLI / compose 的 `DOCKER_HOST` 只接受 `unix://` 与 `tcp://`**，
+`http://` 会被直接判非法。我把前者原样塞进了 helper 容器的 `DOCKER_HOST`。
+修法：新增 `dockerCliHost()`，把 `http(s)://` 映射成 `tcp://` 再给 CLI，
+服务端自己 fetch 仍然用 `http://`。两处派生，互不影响。
+（`https://` 也映射成 `tcp://` 不带 TLS —— socket-proxy 只监听明文 2375。）
+
+**3.3 mock 同源化第二批**：思路是「规则只准有一份实现」，不是把 1500 行 mock 删掉。
+这轮清掉三处，**每一处都已经是分叉状态**，不只是重复：
+
+1. **SQLite 时间格式**（新增 `utils/sqlTime.ts`）：原先 4 处手写、3 种写法。
+   这些字符串是拿来做比较和排序的（墓碑游标、审计 `since` 过滤），
+   秒级和毫秒级混进同一列，同一秒内的先后就分不出来 —— 而且不会报错。
+   现在 `sqlNow()`（秒级，与 CURRENT_TIMESTAMP 一致）/ `sqlNowMs()`（墓碑要毫秒）/
+   `toSqlTimeLoose()`（外部传入的 since 归一）。
+2. **前端错误上报归并**（新增 `utils/clientErrorGroups.ts`）：真机版收集出错路径
+   （最多 3 条），**mock 版压根没收集**，`paths` 永远是空数组 —— 本地看着一切正常，
+   其实少了一整列信息。另外 source 的类型防御两边不一致（数字会被 mock 当成来源名）。
+   现在两侧调同一个 `groupClientErrors()`。
+3. **笔记规则值**（新增 `utils/noteLimits.ts`）：`REVISION_KEEP_PER_NOTE` 在 mock 里
+   硬编码 `60`，只靠一句注释「与后端一致」维系；摘要截断一边 `>=` 一边 `>`，
+   恰好等于 200 字时判断相反。现在常量与判定都只有一份。
+
+**a11y / 对比度审计的端口改成自动挑**：原先各脚本写死一个 CDP 端口（9516/9517/9521…），
+Windows 上被别的进程独占时，Chrome 直接 `bind() returned an error: 0x271D`，
+脚本只会说「连不上调试端口」—— 于是**代码明明是好的，审计整条红**。
+今天就被这么误判了一次（9516 被占，换 9633 立刻全过）。现在 `openBrowser` 自己从起点
+往后找一个能 bind 的端口，各脚本不用改；被替换时会打一行
+`[audit] 调试端口 9516 被占用，改用 9517`。
+
+守卫 `tests/apiMockParity.test.ts`（12 条）：静态钉「两侧都引共享模块、没有内联手写」，
+行为钉「毫秒能分先后 / paths 要收集 / 恰好等于上限算截断 / 数字 source 不算来源名」。
+
 ## 2026-10-22（六）· 修复：自托管「每次电脑开机第一次都要重新登录」
 
 **现象**：自托管站点每次电脑开机后第一次打开都要求登录，之后关掉浏览器再打开就不用；

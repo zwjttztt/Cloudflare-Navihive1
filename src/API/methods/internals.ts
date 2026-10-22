@@ -3,6 +3,7 @@
 // 只给 src/API/methods/* 和 http.ts 自己用，不是对外 API（对外仍从 ../http 走）。
 
 import { LocalPrefsBackup, Site } from "../types";
+import { sqlNowMs } from "../../utils/sqlTime";
 
 // 笔记文件夹 / 标签这三张表的 DDL 单独提出来：
 // 它们**只在迁移里逐条建**（runMigrations 第 6.5 步），不进 CREATE_STATEMENTS 那个 batch。
@@ -441,5 +442,6 @@ export function sanitizeIconUrl(icon: string): string {
  * 三处必须用同一把尺子，否则墓碑的先后就对不上了。
  */
 export function tombstoneStamp(): string {
-    return new Date().toISOString().replace("T", " ").replace("Z", "");
+    // 3.3 同源化（2026-10-22）：格式定义搬到 utils/sqlTime，别处不再手写
+    return sqlNowMs();
 }

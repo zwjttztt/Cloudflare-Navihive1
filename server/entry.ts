@@ -274,6 +274,24 @@ function dockerEndpoint(): RequestOptions {
     return { host: url.hostname, port: Number(url.port) || 2375 };
 }
 
+/**
+ * 给 **docker CLI / compose** 用的 DOCKER_HOST。
+ *
+ * ⚠️⚠️ CLI 只接受 `unix://` 与 `tcp://` 两种形状，`http://` 会被直接判非法：
+ *   `Failed to initialize: unable to resolve docker endpoint:
+ *    invalid bind address format: http://docker-socket-proxy:2375`
+ *   2026-10-22 网页一键升级就是这么挂的 —— 我把给自己 fetch 用的 http:// 地址
+ *   原样塞进了 helper 的 DOCKER_HOST。自己读 api 要 http://，CLI 要 tcp://，
+ *   **同一个地址两种写法**，所以这里必须分开派生，不能共用 DOCKER_HOST。
+ *
+ * ⚠️ https:// 也映射到 tcp://，不带 TLS：socket-proxy 只监听明文 TCP（2375）。
+ *    真要上 TLS 得给 CLI 配 --tlsverify 与证书目录，不在当前形态里。
+ */
+function dockerCliHost(): string {
+    if (!DOCKER_HOST) return "";
+    return DOCKER_HOST.replace(/^https?:\/\//i, "tcp://");
+}
+
 /** 「升级可用」的判据：走代理时不需要本机能看到 sock */
 function dockerAvailable(): boolean {
     return DOCKER_HOST ? true : existsSync(DOCKER_SOCK);
@@ -547,7 +565,7 @@ async function runUpgraderContainer(image: string, info: ComposeInfo): Promise<v
         Labels: { "com.navihive.upgrader": "1" },
         // 代理模式：helper 里的 docker CLI 也要走同一个代理，否则它回头去找
         // /var/run/docker.sock（代理模式下根本没挂进去）而连不上 daemon。
-        ...(DOCKER_HOST ? { Env: [`DOCKER_HOST=${DOCKER_HOST}`] } : {}),
+        ...(DOCKER_HOST ? { Env: [`DOCKER_HOST=${dockerCliHost()}`] } : {}),
         // 同理，只有代理模式才需要显式加入 proxy 所在的网络（默认 bridge 里没有它）
         ...(DOCKER_HOST && info.network
             ? { NetworkingConfig: { EndpointsConfig: { [info.network]: {} } } }

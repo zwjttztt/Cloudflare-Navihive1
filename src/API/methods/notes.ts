@@ -42,6 +42,8 @@ import {
 import { hashPassword, verifyPassword } from "../crypto";
 import { NoteConflictError } from "../../utils/noteConflict";
 import { validateFolderMove } from "../../utils/folderTree";
+import { NOTE_SUMMARY_CHARS, REVISION_KEEP_PER_NOTE, needsSummary } from "../../utils/noteLimits";
+import { sqlNow } from "../../utils/sqlTime";
 
 export interface NotesApi {
     getNoteShare(id: number): Promise<NoteShare | null>;
@@ -206,7 +208,8 @@ const NOTE_FIELDS =
     "id, uuid, title, content, pinned, starred, rev, order_num, site_id, archived, folder_id, created_at, updated_at";
 
 /** 摘要模式里正文保留多少字符（够列表卡片显示一行预览就行） */
-const NOTE_SUMMARY_CHARS = 200;
+// 3.3 同源化（2026-10-22）：规则值搬到 utils/noteLimits，与 mock 侧共用
+
 
 /**
  * 全文检索那条 JOIN 查询里的账号隔离片段。
@@ -267,7 +270,8 @@ function relabelAttachmentLink(content: string, id: string, filename: string): s
  * 单条快照按 2KB 算 → 每条笔记最多约 120KB，一百条笔记约 12MB，
  * 在 D1 的额度里可接受。超出的从最旧开始裁。
  */
-const REVISION_KEEP_PER_NOTE = 60;
+// 3.3 同源化：REVISION_KEEP_PER_NOTE 见 utils/noteLimits（mock 也用它）
+
 
 // 3.3 同源化（2026-10-22）：环路判定本身搬到 utils/folderTree，与 mock 侧共用同一份
 // —— 这里只剩「怎么查父 id」（要带账号 scope，越权访问按「查不到」处理，不泄露存在性）。
@@ -501,7 +505,7 @@ export const notesImpl: NotesApi = {
             const nowRow = await this.db
                 .prepare("SELECT strftime('%Y-%m-%d %H:%M:%S', 'now') AS now")
                 .first<{ now: string }>();
-            const now = nowRow?.now || new Date().toISOString().slice(0, 19).replace("T", " ");
+            const now = nowRow?.now || sqlNow();
             let notesChanged = 0;
             let changedNoteIds: number[] = [];
             if (since) {
@@ -809,9 +813,7 @@ export const notesImpl: NotesApi = {
             const rows = result.results || [];
             if (!summary) return rows;
             return rows.map(row =>
-                (row.content ?? "").length >= NOTE_SUMMARY_CHARS
-                    ? { ...row, content_truncated: true }
-                    : row
+                needsSummary(row.content) ? { ...row, content_truncated: true } : row
             );
         });
     },

@@ -7,6 +7,7 @@
 
 import type { NavigationAPI } from "../http";
 import { deriveDeadLinks } from "../../utils/linkKey";
+import { groupClientErrors } from "../../utils/clientErrorGroups";
 
 /** 前端错误上报按「来源 + 错误信息」聚合后的一组 */
 export interface ClientErrorGroup {
@@ -133,48 +134,9 @@ export const auditImpl: AuditApi = {
             return [];
         }
 
-        const groups = new Map<string, ClientErrorGroup>();
-        for (const row of rows) {
-            let parsed: { source?: unknown; message?: unknown; path?: unknown } = {};
-            try {
-                parsed = JSON.parse(row.detail || "{}") as typeof parsed;
-            } catch {
-                // 老记录 / 手写记录可能不是 JSON：整条当消息，至少还能看见
-                parsed = { message: (row.detail || "").slice(0, 200) };
-            }
-            const source =
-                typeof parsed.source === "string" && parsed.source ? parsed.source : "unknown";
-            const message =
-                typeof parsed.message === "string" && parsed.message
-                    ? parsed.message
-                    : (row.detail || "（无错误信息）").slice(0, 200);
-            const key = `${source}|${message.slice(0, 120)}`;
-
-            const existing = groups.get(key);
-            if (existing) {
-                existing.count += 1;
-                if (row.created_at > existing.lastAt) existing.lastAt = row.created_at;
-                if (typeof parsed.path === "string" && parsed.path) {
-                    if (!existing.paths.includes(parsed.path) && existing.paths.length < 3) {
-                        existing.paths.push(parsed.path);
-                    }
-                }
-                continue;
-            }
-            groups.set(key, {
-                key,
-                source,
-                message,
-                count: 1,
-                lastAt: row.created_at || "",
-                paths: typeof parsed.path === "string" && parsed.path ? [parsed.path] : [],
-            });
-        }
-
-        // 出现最多的排前面，同样多的最近发生的排前面
-        return [...groups.values()].sort(
-            (a, b) => b.count - a.count || b.lastAt.localeCompare(a.lastAt)
-        );
+        // 3.3 同源化（2026-10-22）：归并规则搬到 utils/clientErrorGroups，与 mock 侧共用。
+        // 原先两份实现不只是重复 —— mock 那份压根没收集 paths，本地看着「正常」而已。
+        return groupClientErrors(rows);
     },
 
     /** 清掉超过保留期的审计日志，返回清掉的行数 */

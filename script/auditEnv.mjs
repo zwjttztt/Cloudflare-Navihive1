@@ -11,6 +11,7 @@
 // 错的 CSP 会把样式挡掉** —— 那时候量出来的尺寸/对比度全是假的。
 
 import http from "node:http";
+import net from "node:net";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -190,14 +191,55 @@ export async function startSiteServer(port = 0) {
 }
 
 /**
+ * 端口能不能 bind 在 127.0.0.1 上（能就说明没人独占）。
+ *
+ * ⚠️ 为什么需要这个：CDP 端口原先在各脚本里写死一个（9516/9517/9521/…）。
+ *    Windows 上端口被别的进程独占时，Chrome 的 devtools http server 直接
+ *    `bind() returned an error: 0x271D (WSAEACCES)`，脚本只会看到
+ *    「连不上 Chrome 的调试端口」—— 于是**代码明明是好的，审计整条红**。
+ *    2026-10-22 就是这么误判了一次（9516 被占，换 9633 立刻全过）。
+ *    审计是用来判断代码的，不该被本机端口状况干扰，所以这里自己挑一个。
+ */
+function canBind(port) {
+    return new Promise(resolve => {
+        const srv = net.createServer();
+        srv.once("error", () => resolve(false));
+        srv.once("listening", () => srv.close(() => resolve(true)));
+        srv.listen(port, "127.0.0.1");
+    });
+}
+
+/**
+ * 从首选端口往后找一个能用的（默认最多试 40 个）。
+ * @param {number} preferred 各脚本原本写死的端口，作为起点
+ */
+export async function pickCdpPort(preferred, span = 40) {
+    const start = Number.isInteger(preferred) && preferred > 0 ? preferred : 9516;
+    for (let p = start; p < start + span && p <= 65535; p++) {
+        if (await canBind(p)) return p;
+    }
+    throw new Error(
+        `找不到可用的调试端口：从 ${start} 起试了 ${span} 个全被占用。` +
+            `可以关掉占用端口的进程，或用 AUDIT_CDP_PORT 指定别的起点。`
+    );
+}
+
+/**
  * 起 headless Chrome 并连上 CDP。
  * 返回 { evaluate, done }：done(code) 会收掉浏览器并退出进程。
+ *
+ * ⚠️ cdpPort 现在只是**起点**：真正用哪个由 pickCdpPort 决定（见上面的说明）。
  */
 export async function openBrowser({ cdpPort, windowSize = "1440,950", hideScrollbars = true }) {
     const chrome = findChrome();
     if (!chrome) {
         console.error("没找到 Chrome，可用 CHROME_PATH 指定");
         process.exit(1);
+    }
+    // 真正用哪个端口由这里决定：传进来那个只是起点（见 pickCdpPort 的说明）
+    const listenPort = await pickCdpPort(cdpPort);
+    if (listenPort !== cdpPort) {
+        console.log(`[audit] 调试端口 ${cdpPort} 被占用，改用 ${listenPort}`);
     }
     const profile = fs.mkdtempSync(path.join(os.tmpdir(), "cdp-audit-"));
     // ⚠️ 这两条是照抄 ci-smoke 的：CI 容器里多半是 root，没有 --no-sandbox
@@ -206,7 +248,7 @@ export async function openBrowser({ cdpPort, windowSize = "1440,950", hideScroll
         chrome,
         [
             "--headless=new",
-            `--remote-debugging-port=${cdpPort}`,
+            `--remote-debugging-port=${listenPort}`,
             `--user-data-dir=${profile}`,
             "--no-first-run",
             "--no-default-browser-check",
@@ -230,7 +272,7 @@ export async function openBrowser({ cdpPort, windowSize = "1440,950", hideScroll
     for (let i = 0; i < 40 && !target; i++) {
         await sleep(300);
         try {
-            const list = await (await fetch(`http://127.0.0.1:${cdpPort}/json/list`)).json();
+            const list = await (await fetch(`http://127.0.0.1:${listenPort}/json/list`)).json();
             target = list.find(t => t.type === "page");
         } catch {
             // 还没起来
