@@ -6,6 +6,29 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。---
 
+## 2026-10-22（九）· 工程：镜像发布从 QEMU 模拟改成双原生 runner（~13min → 预期 ~5min）
+
+**为什么慢**：`docker-publish` 用 `--platform linux/amd64,linux/arm64` 单 job 构建，
+buildx 会为**每个平台各跑一遍** builder 阶段。而 Dockerfile 的 builder 要
+`npm ci` + `tsc -b` + `vite build` + `esbuild` —— 也就是说 arm64 那一遍是在
+**QEMU 模拟的 CPU 上把类型检查和打包器完整重跑一次**，这是全流程最重的部分，
+模拟下慢一个数量级。平时 13 分钟，2026-10-22 那天 cache 冷，跑过 35 分钟还没完。
+
+**改法**：拆成「两个平台各自原生构建 → 合并 manifest」。
+- amd64 上 `ubuntu-24.04`，arm64 上 **`ubuntu-24.04-arm`**（GitHub 原生 arm64 hosted
+  runner，public 仓库免费 —— 本仓库确认是 public）。两边并行、都是原生编译，**没有 QEMU**。
+- 构建 job 只按 digest 推送（`push-by-digest=true`，不打 tag —— 否则两个单平台
+  manifest 会互相覆盖 `latest`）。
+- 最后一个 `merge` job 用 `docker buildx imagetools create` 把两个 digest 合成
+  multi-arch index，再打 `latest` 与 `$sha` 两个 tag。纯 registry 侧操作，秒级。
+- 缓存 scope 按平台分开（`type=gha,scope=linux/amd64` / `linux/arm64`）：
+  共用一个 scope 时两边互相覆盖条目，命中率反而下降。
+
+**顺带记一笔**：本文件自身的改动不会触发构建（`paths` 里没有 `.github/workflows/**`），
+所以改完要么手动 `workflow_dispatch`，要么随下一次源码改动一起生效。
+若哪天 arm runner 不可用，回退方式是把 runner 换回 `ubuntu-24.04`、恢复
+`docker/setup-qemu-action` + 单 job multi-platform（即旧做法）。
+
 ## 2026-10-22（八）· 结论：4.5 socket-proxy 不可行，已回滚（挂回 sock）
 
 **结论先说：`deploy/docker-socket-proxy.yml` 跑不通网页一键升级，已从线上撤下，
