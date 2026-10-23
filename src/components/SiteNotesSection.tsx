@@ -6,13 +6,16 @@
 // （原来那套启发式「正文里提到了站名或网址就算相关」已整个删掉：它靠不住，
 //   用户还会疑惑「我明明没绑，它怎么冒出来了」。）
 //
+// 点已绑定的那个标题 → **弹只读预览**（与卡片角上那颗按钮同一个弹窗），
+// 想要改再在预览里点「编辑」跳进记事本（2026-10-23 用户要求：这里也别直接跳走）。
+//
 // 为什么绑定入口要在三个地方都有（卡片按钮 / 笔记右键 / 这一节）：
 // 用户的念头可能从任意一头起 —— 「这个站我记过笔记」「这条笔记是给哪个站写的」
 // 「我在编辑这个站，顺手绑一篇」。三处落库都是同一条 `notes.site_id`。
 //
 // ⚠️ 没接上记事本那座桥时不渲染（不是渲染空壳）：功能缺失要看得出来是「没有」，
 // 而不是「有但坏了」。
-import { useEffect, useMemo, useState } from "react";
+import { lazy, useEffect, useMemo, useState } from "react";
 import { Box, Button, CircularProgress, Stack, TextField, Typography } from "@mui/material";
 import NotesIcon from "@mui/icons-material/Notes";
 import LinkOffIcon from "@mui/icons-material/LinkOff";
@@ -20,6 +23,13 @@ import SwapHorizIcon from "@mui/icons-material/SwapHoriz";
 import type { Site } from "../API/http";
 import { useAppConfig } from "../context/appConfigStore";
 import { Section } from "./dialogSection";
+import ChunkBoundary from "./ChunkBoundary";
+import { prefetchChunk } from "../utils/lazyPrefetch";
+import { dialogChunks } from "../utils/dialogChunks";
+
+// 预览弹窗按需加载：它带 markdown 渲染层，静态 import 会把那一整包拽进站点设置块。
+// 与 SiteCard 里那个 lazy() 指向同一个模块，rolldown 会归进同一个 chunk。
+const SiteNoteDialog = lazy(dialogChunks.siteNote);
 
 type NoteRow = { id?: number; title: string; site_id?: number | null };
 
@@ -29,6 +39,8 @@ export default function SiteNotesSection({ site }: { site: Site }) {
     const [query, setQuery] = useState("");
     const [picking, setPicking] = useState(false);
     const [busy, setBusy] = useState(false);
+    /** 点标题 → 弹只读预览（不是直接跳进记事本） */
+    const [previewOpen, setPreviewOpen] = useState(false);
     const [bound, setBound] = useState<{ id: number; title: string } | null>(
         site.note_id != null ? { id: site.note_id, title: site.note_title || "" } : null
     );
@@ -86,17 +98,15 @@ export default function SiteNotesSection({ site }: { site: Site }) {
     };
 
     return (
-        <Section
-            title='相关笔记'
-            hint='一个网站只绑一篇笔记。绑上之后，卡片右上角那枚笔记按钮点开就是它。'
-        >
+        <Section title='相关笔记'>
             {bound ? (
                 <Stack direction='row' spacing={0.5} sx={{ mt: 0.5, alignItems: "center", flexWrap: "wrap" }}>
                     <Button
                         size='small'
                         color='inherit'
                         data-site-note-bound={bound.id}
-                        onClick={() => notesBridge.open(bound.id)}
+                        onMouseEnter={() => prefetchChunk("siteNote", dialogChunks.siteNote)}
+                        onClick={() => setPreviewOpen(true)}
                         sx={{ justifyContent: "flex-start", textAlign: "left", px: 1, minWidth: 0, maxWidth: 260 }}
                         startIcon={<NotesIcon fontSize='small' color='primary' />}
                     >
@@ -218,6 +228,17 @@ export default function SiteNotesSection({ site }: { site: Site }) {
                         )}
                     </Box>
                 </Box>
+            )}
+
+            {previewOpen && (
+                <ChunkBoundary>
+                    {/* 用当前这一节显示的绑定关系（刚绑完、App 还没重取完时，
+                        site.note_id 可能是旧的）*/}
+                    <SiteNoteDialog
+                        site={bound ? { ...site, note_id: bound.id, note_title: bound.title } : site}
+                        onClose={() => setPreviewOpen(false)}
+                    />
+                </ChunkBoundary>
             )}
         </Section>
     );

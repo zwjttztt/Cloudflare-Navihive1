@@ -61,7 +61,7 @@ function makeBridge(rows: NoteRow[], calls: Calls): AppConfigContextValue {
                 calls.bound.push([noteId, siteId]);
             },
             createAndBind: async (_siteId: number, title: string) => ({ id: 999, title }),
-            get: async () => null,
+            get: async () => ({ title: "这个站的登录方式", content: "账号 admin\n密码 123456" }),
         },
     };
 }
@@ -97,15 +97,32 @@ const click = async (el: HTMLElement) => {
     });
 };
 
-test("已绑定：显示那篇笔记、标「已绑定」，点它跳过去", async () => {
+test("已绑定：显示那篇笔记、标「已绑定」，点标题先弹预览、点「编辑」才跳", async () => {
     const calls = await mount({ ...SITE, note_id: 42, note_title: "这个站的登录方式" });
     const bound = q('[data-site-note-bound="42"]');
     assert.ok(bound, "已绑定的那篇必须出现在这一节里");
     assert.ok((bound!.textContent || "").includes("这个站的登录方式"), "要显示标题");
     assert.ok(document.body.textContent?.includes("已绑定"), "要标明这是绑定关系");
 
-    await click(bound!);
-    assert.deepEqual(calls.opened, [42], "点它直接跳到那条笔记");
+    // 2026-10-23 用户要求：这里点标题也先弹预览（与卡片角上那颗按钮一致），
+    // 不要点一下就把人从站点设置里扔进记事本。
+    await act(async () => {
+        bound!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        // 预览弹窗是 lazy chunk，且要等一次 getNote + 一次 markdown 渲染
+        await new Promise(r => setTimeout(r, 160));
+    });
+    assert.deepEqual(calls.opened, [], "点标题只是预览，不该这时候就跳走");
+    assert.ok(
+        document.body.textContent?.includes("账号 admin"),
+        "预览窗里要能看到正文"
+    );
+
+    const edit = [...document.querySelectorAll<HTMLButtonElement>("button")].find(
+        b => (b.textContent || "").trim() === "编辑"
+    );
+    assert.ok(edit, "预览窗里要有「编辑」");
+    await click(edit!);
+    assert.deepEqual(calls.opened, [42], "点「编辑」才跳进记事本并定位到这条");
     cleanup();
 });
 
@@ -135,6 +152,18 @@ test("已绑定时能解除", async () => {
     assert.ok(unbind, "已绑定时要能解除");
     await click(unbind!);
     assert.deepEqual(calls.bound, [[42, null]], "解除 = 把这篇笔记的 site_id 清掉");
+    cleanup();
+});
+
+test("那句说明文字已经去掉（用户点名删的那句）", async () => {
+    await mount({ ...SITE, note_id: 42, note_title: "这个站的登录方式" });
+    const text = document.body.textContent || "";
+    assert.equal(
+        text.includes("绑上之后，卡片右上角"),
+        false,
+        "用户点名要去掉的就是这句"
+    );
+    assert.equal(text.includes("一个网站只绑一篇笔记"), false, "这句一起删");
     cleanup();
 });
 
