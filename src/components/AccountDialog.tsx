@@ -19,15 +19,14 @@ import {
     DialogContentText,
     DialogTitle,
     Divider,
-    IconButton,
     Stack,
     TextField,
     Typography,
 } from "@mui/material";
-import CloseIcon from "@mui/icons-material/Close";
 import VpnKeyIcon from "@mui/icons-material/VpnKey";
 import PersonRemoveIcon from "@mui/icons-material/PersonRemove";
 import { PasswordField } from "./PasswordField";
+import DialogCloseButton from "./DialogCloseButton";
 import type { AccountInfo, SessionInfo } from "../API/http";
 import {
     INACTIVE_DISABLE_DAYS_DEFAULT,
@@ -367,13 +366,8 @@ export default function AccountDialog({
             >
                 <DialogTitle sx={{ px: 3, pt: 2, pb: 0.5 }}>
                     账号与安全
-                    <IconButton
-                        aria-label='close'
-                        onClick={onClose}
-                        sx={{ position: "absolute", right: 8, top: 8 }}
-                    >
-                        <CloseIcon />
-                    </IconButton>
+                    {/* 原来是英文 aria-label='close'，读屏念出来是英文 —— 统一走外壳组件 */}
+                    <DialogCloseButton onClose={onClose} sx={{ right: 8, top: 8 }} />
                 </DialogTitle>
                 <DialogContent
                     sx={{

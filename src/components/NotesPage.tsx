@@ -3019,7 +3019,7 @@ export default function NotesPage({
                 open={Boolean(backlinkAnchor)}
                 anchorEl={backlinkAnchor}
                 onClose={() => setBacklinkAnchor(null)}
-                slotProps={{ paper: { sx: { maxHeight: 380, overflowY: "auto", minWidth: 240 } } }}
+                slotProps={{ paper: { sx: { maxHeight: "min(380px, 45dvh)", overflowY: "auto", minWidth: 240 } } }}
             >
                 <MenuItem disabled data-backlinks='outgoing-label'>
                     链出去的笔记（{outgoingLinks.length}）

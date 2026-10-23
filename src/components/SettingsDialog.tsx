@@ -5,6 +5,7 @@
 // 所有值都走「临时副本 + 点保存才落库」，所以组件本身不碰 API，只负责渲染和回调。
 import type { ChangeEvent } from "react";
 import { Section, SwitchRow } from "./dialogSection";
+import DialogCloseButton from "./DialogCloseButton";
 import {
     Alert,
     Box,
@@ -26,7 +27,6 @@ import {
     Tooltip,
     Typography,
 } from "@mui/material";
-import CloseIcon from "@mui/icons-material/Close";
 import LinkOffIcon from "@mui/icons-material/LinkOff";
 import VersionUpgradeSection from "./VersionUpgradeSection";
 import { DEFAULT_ICON_API, DEFAULT_THUMB_API } from "../utils/iconApi";
@@ -192,15 +192,13 @@ export default function SettingsDialog({
                     }
                 }}
             >
+                {/* 标题原来也叫「网站设置」，和卡片齿轮那个一模一样 —— 两个弹窗
+                    作用域完全不同（这里管整个站，那个管单个网站），同名必然走错门。
+                    改名「全站设置」，顶栏入口同步改（见 MoreMenu）。 */}
                 <DialogTitle sx={{ px: 3, pt: 2, pb: 0.5 }}>
-                    网站设置
-                    <IconButton
-                        aria-label='close'
-                        onClick={onClose}
-                        sx={{ position: "absolute", right: 8, top: 8 }}
-                    >
-                        <CloseIcon />
-                    </IconButton>
+                    全站设置
+                    {/* 原来是英文 aria-label='close'，读屏念出来是英文 —— 统一走外壳组件 */}
+                    <DialogCloseButton onClose={onClose} sx={{ right: 8, top: 8 }} />
                 </DialogTitle>
                 <DialogContent
                     sx={{
@@ -213,6 +211,11 @@ export default function SettingsDialog({
                         "& .MuiSlider-root": { py: 0.75 },
                     }}
                 >
+                    {/* 作用域说明：改完发现不对的人，多半是进错门了 —— 一句话把
+                        「这里管什么 / 单个网站去哪儿改」说清楚，比让用户试错便宜 */}
+                    <DialogContentText sx={{ mb: 0.75, fontSize: 13.5 }}>
+                        这里改的是<strong>整个站</strong>；单个网站的名称、图标、账号密码，请点卡片右上角的齿轮。
+                    </DialogContentText>
                     <DialogContentText sx={{ mb: 1.5, fontSize: 13.5 }}>
                         带「即时生效」的开关改完立刻生效；其余为草稿，需点「保存设置」。
                     </DialogContentText>

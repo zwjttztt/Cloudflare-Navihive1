@@ -28,6 +28,7 @@ import AddIcon from "@mui/icons-material/Add";
 import type { Note, NoteFolder, NoteTag, NoteSearchResult, NoteSearchHit } from "../API/types";
 import type { CommandItem } from "./CommandPalette";
 import { fuzzyFilter } from "../utils/fuzzy";
+import { commandPalettePaperSx } from "./dialogShell";
 
 export interface NotesCommandPaletteProps {
     open: boolean;
@@ -258,20 +259,9 @@ export default function NotesCommandPalette({
             fullWidth
             maxWidth='sm'
             className='notes-command-palette'
-            slotProps={{
-                paper: {
-                    sx: {
-                        borderRadius: "18px",
-                        overflow: "hidden",
-                        bgcolor: "var(--glass-bg-hover)",
-                        border: "1px solid var(--glass-border)",
-                        backdropFilter: "blur(18px) saturate(1.5)",
-                        WebkitBackdropFilter: "blur(18px) saturate(1.5)",
-                        mt: "8vh",
-                        alignSelf: "flex-start",
-                    },
-                },
-            }}
+            // 纸面与另一个命令面板共用一份（dialogShell.commandPalettePaperSx）：
+            // 之前两边各抄一遍，改一处忘一处就会漂成两种浮层
+            slotProps={{ paper: { sx: commandPalettePaperSx } }}
         >
             <Box sx={{ px: 2, pt: 2, pb: 1 }}>
                 <TextField
@@ -296,7 +286,7 @@ export default function NotesCommandPalette({
                     }} />
             </Box>
 
-            <List ref={listRef} role='listbox' aria-label='搜索结果' dense sx={{ maxHeight: 420, overflowY: "auto", px: 1, pb: 1 }}>
+            <List ref={listRef} role='listbox' aria-label='搜索结果' dense sx={{ maxHeight: "min(420px, 45dvh)", overflowY: "auto", px: 1, pb: 1 }}>
                 {rows.length === 0 && (
                     <Box sx={{ px: 2, py: 3, textAlign: "center" }}>
                         <Typography variant='body2' sx={{ color: "text.secondary" }}>

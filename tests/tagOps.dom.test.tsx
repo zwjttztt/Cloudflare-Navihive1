@@ -93,11 +93,10 @@ test("重命名：改名后回调收到（旧名, 新名）", t => {
     );
 
     click(byLabel("重命名标签 AI")!);
-    assert.ok(bodyText().includes("重命名标签"), "应弹出重命名框");
-    assert.ok(bodyText().includes("AI"), "应说明当前是哪个标签");
-
+    // 内联改名：不再弹第二个窗口，输入框就长在「AI」那一行里
+    // （byLabel 只找 button，这里要用属性选择器直接找输入框）
     const input = document.querySelector<HTMLInputElement>(
-        ".nav-tag-rename-dialog input"
+        'input[aria-label="把标签 AI 改名为"]'
     );
     assert.ok(input, "应有新名字输入框");
     typeInto(input!, "人工智能（旧）");
@@ -120,7 +119,7 @@ test("重命名：新名字撞上已有标签时，弹窗明说这是合并", t 
     );
     click(byLabel("重命名标签 AI")!);
     const input = document.querySelector<HTMLInputElement>(
-        ".nav-tag-rename-dialog input"
+        ".nav-tag-rename-input input"
     )!;
     typeInto(input, "人工智能");
     const text = bodyText();
@@ -143,7 +142,7 @@ test("重命名：新名字为空时确定按钮禁用，不会改出空标签",
     );
     click(byLabel("重命名标签 AI")!);
     const input = document.querySelector<HTMLInputElement>(
-        ".nav-tag-rename-dialog input"
+        ".nav-tag-rename-input input"
     )!;
     typeInto(input, "   ");
     assert.ok(byText("确定")!.disabled, "空名字不能提交");

@@ -12,6 +12,7 @@ import {
 } from "@mui/material";
 import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import { Group } from "../API/http";
+import DialogCloseButton from "./DialogCloseButton";
 import { useNotify } from "../context/NotifyContext";
 import { copyToClipboard } from "../utils/clipboard";
 
@@ -117,7 +118,11 @@ const EditGroupDialog: React.FC<EditGroupDialogProps> = ({
 
     return (
         <Dialog open={open} onClose={onClose} maxWidth='sm' fullWidth>
-            <DialogTitle>{isCreate ? "新增分组" : "编辑分组"}</DialogTitle>
+            {/* pr 给右上角那枚 × 让位 */}
+            <DialogTitle sx={{ pr: 5 }}>
+                {isCreate ? "新增分组" : "编辑分组"}
+                <DialogCloseButton onClose={onClose} label={isCreate ? "关闭新增分组" : "关闭编辑分组"} />
+            </DialogTitle>
             <DialogContent>
                 <Box sx={{ mb: 2, mt: 1 }}>
                     <TextField

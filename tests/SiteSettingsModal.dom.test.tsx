@@ -518,8 +518,10 @@ test("放大窗的高度下限写在 notesPaper 里，且带视口兜底", () =>
     const body = source.slice(start, source.indexOf("export default function"));
     assert.ok(body.includes("minHeight:"), "notesPaper 里要给放大窗一个高度下限");
     assert.ok(
-        body.includes("calc(100vh"),
-        "要用 min(…, calc(100vh …)) 收窄，否则小屏上弹窗会超出屏幕"
+        // dvh 而不是 vh：手机软键盘弹起来时视口真的会变矮，vh 不跟着变 ——
+        // 写 vh 的话「保存」会被键盘顶到屏幕外
+        body.includes("calc(100dvh"),
+        "要用 min(…, calc(100dvh …)) 收窄，否则小屏 / 软键盘下弹窗会超出屏幕"
     );
     assert.ok(
         !/\n\s+height:/.test(body),

@@ -17,8 +17,6 @@ import {
     TextField,
     Typography,
     List,
-    ListItem,
-    ListItemText,
     Divider,
     Chip,
     CircularProgress,
@@ -28,6 +26,8 @@ import {
 import HistoryIcon from "@mui/icons-material/History";
 import BugReportIcon from "@mui/icons-material/BugReport";
 import { NavigationClient } from "../API/client";
+import DialogCloseButton from "./DialogCloseButton";
+import { DialogEmptyState, DialogListRow } from "./DialogListRow";
 
 interface AuditEntry {
     id: number;
@@ -182,7 +182,8 @@ export default function AuditDialog({
 
     return (
         <Dialog open={open} onClose={onClose} maxWidth='sm' fullWidth className='nav-dialog'>
-            <DialogTitle sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+            {/* pr 给右上角那枚 × 让位，不然「仅保留 N 天」会和它叠在一起 */}
+            <DialogTitle sx={{ display: "flex", alignItems: "center", gap: 1, pr: 5 }}>
                 <HistoryIcon fontSize='small' />
                 审计日志
                 <Typography
@@ -194,6 +195,7 @@ export default function AuditDialog({
                     }}>
                     仅保留 {retentionDays ?? DEFAULT_RETENTION_DAYS} 天
                 </Typography>
+                <DialogCloseButton onClose={onClose} label='关闭审计日志' />
             </DialogTitle>
             <DialogContent dividers sx={{ p: 0 }}>
                 <Box sx={{ p: 2, pb: 1.5 }}>
@@ -260,23 +262,29 @@ export default function AuditDialog({
                                 </Button>
                             </Box>
                         ) : rows.length === 0 ? (
-                            <Box sx={{ p: 4, textAlign: "center" }}>
-                                <Typography variant='body2' sx={{
-                                    color: 'text.secondary'
-                                }}>
-                                    暂无审计记录
-                                </Typography>
-                            </Box>
+                            <DialogEmptyState
+                                title='暂无审计记录'
+                                hint='有人改动分组 / 卡片 / 配置之后，这里会按时间倒序留下一条'
+                            />
                         ) : (
                             <List dense sx={{ py: 0 }}>
                                 {rows.map(row => (
-                                    <ListItem
+                                    <DialogListRow
                                         key={row.id}
-                                        divider
-                                        // 右侧的 IP 是 secondaryAction，MUI 不会自动给它腾地方，
-                                        // 正文不预留这段宽度就会被压在它下面（看起来像重叠）。
-                                        sx={{ pr: 19, alignItems: "flex-start" }}
-                                        secondaryAction={
+                                        alignItems='flex-start'
+                                        primary={
+                                            <span>
+                                                <b>{actionLabel(row.action)}</b>
+                                                {row.actor ? ` · ${row.actor}` : ""}
+                                            </span>
+                                        }
+                                        secondary={
+                                            <span>
+                                                {row.detail ? `${row.detail} · ` : ""}
+                                                {formatTime(row.created_at)}
+                                            </span>
+                                        }
+                                        actions={
                                             <Chip
                                                 size='small'
                                                 variant='outlined'
@@ -284,31 +292,8 @@ export default function AuditDialog({
                                                 sx={{ maxWidth: 132 }}
                                             />
                                         }
-                                    >
-                                        <ListItemText
-                                            sx={{ m: 0 }}
-                                            primary={
-                                                <span>
-                                                    <b>{actionLabel(row.action)}</b>
-                                                    {row.actor ? ` · ${row.actor}` : ""}
-                                                </span>
-                                            }
-                                            secondary={
-                                                <span>
-                                                    {row.detail ? `${row.detail} · ` : ""}
-                                                    {formatTime(row.created_at)}
-                                                </span>
-                                            }
-                                            slotProps={{
-                                                primary: {
-                                                    sx: { display: "block", wordBreak: "break-word" },
-                                                },
-
-                                                secondary: {
-                                                    sx: { display: "block", wordBreak: "break-word" },
-                                                }
-                                            }} />
-                                    </ListItem>
+                                        actionsWidth={144}
+                                    />
                                 ))}
                             </List>
                         )}
@@ -362,11 +347,23 @@ export default function AuditDialog({
                         <Divider />
                         <List dense sx={{ py: 0 }}>
                             {errorGroups.map(group => (
-                                <ListItem
+                                <DialogListRow
                                     key={group.key}
-                                    divider
-                                    sx={{ pr: 8, alignItems: "flex-start" }}
-                                    secondaryAction={
+                                    alignItems='flex-start'
+                                    primary={
+                                        <span>
+                                            <b>{group.source}</b>
+                                            {group.paths.length > 0
+                                                ? ` · ${group.paths.join("、")}`
+                                                : ""}
+                                        </span>
+                                    }
+                                    secondary={
+                                        <span>
+                                            {group.message} · 最近 {formatTime(group.lastAt)}
+                                        </span>
+                                    }
+                                    actions={
                                         <Chip
                                             size='small'
                                             color={group.count > 5 ? "warning" : "default"}
@@ -374,32 +371,8 @@ export default function AuditDialog({
                                             label={`${group.count} 次`}
                                         />
                                     }
-                                >
-                                    <ListItemText
-                                        sx={{ m: 0 }}
-                                        primary={
-                                            <span>
-                                                <b>{group.source}</b>
-                                                {group.paths.length > 0
-                                                    ? ` · ${group.paths.join("、")}`
-                                                    : ""}
-                                            </span>
-                                        }
-                                        secondary={
-                                            <span>
-                                                {group.message} · 最近 {formatTime(group.lastAt)}
-                                            </span>
-                                        }
-                                        slotProps={{
-                                            primary: {
-                                                sx: { display: "block", wordBreak: "break-word" },
-                                            },
-
-                                            secondary: {
-                                                sx: { display: "block", wordBreak: "break-word" },
-                                            }
-                                        }} />
-                                </ListItem>
+                                    actionsWidth={64}
+                                />
                             ))}
                         </List>
                     </>

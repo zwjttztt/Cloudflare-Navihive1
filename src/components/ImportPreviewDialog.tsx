@@ -390,7 +390,7 @@ export default function ImportPreviewDialog({
                     />
                 </Stack>
 
-                <Box sx={{ maxHeight: 320, overflowY: "auto", pr: 0.5 }}>
+                <Box sx={{ maxHeight: "min(320px, 45dvh)", overflowY: "auto", pr: 0.5 }}>
                     {visibleGroups.length > 0 && (
                         <Box sx={{ mb: 1 }}>
                             <Typography

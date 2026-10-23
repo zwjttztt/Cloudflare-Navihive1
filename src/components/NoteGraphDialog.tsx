@@ -26,6 +26,8 @@ import type { Note, NoteFolder, NoteTag } from "../API/types";
 import { resolveWikiLinks, extractWikiLinks } from "../utils/noteWikiLink";
 import TextField from "@mui/material/TextField";
 import { readActiveAccount, scopedKey } from "../utils/accountScope";
+import useMediaQuery from "@mui/material/useMediaQuery";
+import { useTheme } from "@mui/material/styles";
 
 function graphPreference(key: string): string | null {
     try { return localStorage.getItem(scopedKey(`notes.graph.${key}`, readActiveAccount())); }
@@ -231,13 +233,20 @@ export default function NoteGraphDialog({
         return set;
     }, [graph.edges, hover]);
 
+    // 断点是 sm 下沿（<600px）：和全局 CSS 里「小屏走底部面板」同一条线
+    const theme = useTheme();
+    const isNarrow = useMediaQuery(theme.breakpoints.down("sm"));
+
     return (
         <Dialog
             open={open}
             onClose={onClose}
             maxWidth='md'
             fullWidth
-            slotProps={{ paper: { sx: { borderRadius: 3 } } }}
+            // 小屏整屏：375 下 md 纸面只有 301 宽，节点文字会叠在一起。
+            // 关系图是全场唯一确实需要整屏的弹窗（docs/dialogs-audit-2026-10-23.md B5）。
+            fullScreen={isNarrow}
+            slotProps={{ paper: { sx: { borderRadius: isNarrow ? 0 : 3 } } }}
         >
             <DialogTitle
                 sx={{

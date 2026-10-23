@@ -9,6 +9,7 @@
 // 把站点唯一的 owner 删掉，站点就成了没人能管的孤儿。
 import { Dialog, DialogActions, DialogContent, DialogTitle, Button, Typography, Alert } from "@mui/material";
 import { PasswordField } from "./PasswordField";
+import DialogCloseButton from "./DialogCloseButton";
 
 interface DeleteAccountDialogProps {
     open: boolean;
@@ -37,7 +38,11 @@ export default function DeleteAccountDialog({
             maxWidth='xs'
             fullWidth
         >
-            <DialogTitle sx={{ pb: 1 }}>注销账号</DialogTitle>
+            {/* pr 给右上角那枚 × 让位；注销提交中禁用，免得「点关闭」和「正在提交」打架 */}
+            <DialogTitle sx={{ pb: 1, pr: 5 }}>
+                注销账号
+                <DialogCloseButton onClose={onClose} label='关闭注销弹窗' disabled={busy} />
+            </DialogTitle>
             <DialogContent>
                 <Alert severity='warning' sx={{ mb: 2 }}>
                     注销后，这个账号的<strong>全部分组、卡片与保存的账号密码都会被删除</strong>，

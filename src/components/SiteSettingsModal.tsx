@@ -45,6 +45,8 @@ import { resolveIconApiUrl } from "../utils/iconApi";
 import { pickExistingTags, pickRecommendedTags } from "../utils/tagSuggest";
 import { useAppConfig } from "../context/appConfigStore";
 import SiteNotesSection from "./SiteNotesSection";
+import { Section } from "./dialogSection";
+import { dialogPaperTokens } from "./dialogShell";
 import {
     formDataKey,
     secretInputSx,
@@ -104,13 +106,9 @@ function settingsPaper() {
             // 「两窗严格等大」与「主窗不留空白」本质冲突：等大只能写死高度，而写死高度
             // 就是给主窗强加空白。用户明确要**恢复原来的自适应**，所以这里彻底不管高度 ——
             // 放大窗改由自己的 notesPaper 给下限、并用 rows 把输入框撑大（见那两处）。
-            // 和确认弹窗/提示条同一套毛玻璃面板，视觉统一
-            borderRadius: "var(--card-radius)",
-            backdropFilter: "blur(var(--glass-blur)) saturate(1.4)",
-            WebkitBackdropFilter: "blur(var(--glass-blur)) saturate(1.4)",
-            border: "1px solid var(--glass-panel-border)",
-            boxShadow: "var(--glass-shadow-hover)",
-            backgroundColor: "var(--surface-modal)",
+            // 材质走 dialogShell 的 dialogPaperTokens —— 参考样式与公共外壳从此只有
+            // 一份定义（docs/dialogs-audit-2026-10-23.md G3）：改 token 时不会分裂
+            ...dialogPaperTokens,
         },
     };
 }
@@ -130,7 +128,9 @@ function notesPaper() {
             ...base.sx,
             // 备注窗内容就是一个大输入框，给个下限让点击区域更舒服。
             // 真正的「撑满」由 TextField 的 rows 决定 —— 见那里的注释。
-            minHeight: "min(560px, calc(100vh - 104px))",
+            // dvh 而不是 vh：手机软键盘弹起来时视口真的会变矮，vh 不跟着变 ——
+            // 写 vh 的话「保存」会被键盘顶到屏幕外（docs/dialogs-audit-2026-10-23.md A2）
+            minHeight: "min(560px, calc(100dvh - 104px))",
         },
     };
 }
@@ -544,7 +544,10 @@ export default function SiteSettingsModal({
                         "& .MuiFormHelperText-root": { fontSize: 12 },
                     }}
                 >
-                    <Stack spacing={1.25}>
+                    {/* 分组骨架照参考样式（dialogSection 的 Section）：原来是一整列平铺
+                        字段，只有「登录凭据」一个小标题，找东西全靠逐行扫读 */}
+                    <Stack spacing={2}>
+                        <Section title='基本信息'>
                         {/* 网站名称 */}
                         <TextField
                             id='name'
@@ -621,7 +624,10 @@ export default function SiteSettingsModal({
                             </Typography>
                         ) : null}
 
+                        </Section>
+
                         {/* 网站图标：原来的「图标 URL」小标题直接做成输入框的浮动 label，省一整行 */}
+                        <Section title='图标'>
                         <Box sx={{ display: "flex", gap: 1.25, alignItems: "center" }}>
                             {iconPreview ? (
                                 <Avatar
@@ -694,7 +700,9 @@ export default function SiteSettingsModal({
                                     inputLabel: { shrink: true }
                                 }} />
                         </Box>
+                        </Section>
 
+                        <Section title='分组与标签'>
                         {/* 分组选择 */}
                         {groups.length > 0 && (
                             <FormControl fullWidth size='small'>
@@ -825,6 +833,9 @@ export default function SiteSettingsModal({
                             </Typography>
                         </Box>
 
+                        </Section>
+
+                        <Section title='描述与备注'>
                         {/* 网站描述：单行，长度与网站名称一致 */}
                         <TextField
                             id='description'
@@ -873,35 +884,15 @@ export default function SiteSettingsModal({
                             }}
                         />
 
-                        <Divider />
+                        </Section>
 
-                        {/* 登录凭据：账号 / 密码 + 一键复制；说明文字挪到标题右侧，不再单独占一行 */}
-                        <Box>
-                            <Box
-                                sx={{
-                                    display: "flex",
-                                    alignItems: "baseline",
-                                    justifyContent: "space-between",
-                                    gap: 1,
-                                    flexWrap: "wrap",
-                                    mb: 1,
-                                }}
-                            >
-                                <Typography variant='subtitle2' sx={{
-                                    fontWeight: '600'
-                                }}>
-                                    登录凭据
-                                </Typography>
-                                <Typography
-                                    variant='caption'
-                                    sx={{
-                                        color: 'text.secondary',
-                                        textAlign: "right",
-                                        flex: "1 1 auto"
-                                    }}>
-                                    保存后可随时一键复制；凭据会随备份文件一起导出，请妥善保管备份。
-                                </Typography>
-                            </Box>
+                        {/* 登录凭据：账号 / 密码 + 一键复制。
+                            原来这里手写了一个「标题 + 说明」行，和别处的 Section 不是一套视觉，
+                            换成 Section 之后说明统一缩进到标题下方 */}
+                        <Section
+                            title='登录凭据'
+                            hint='保存后可随时一键复制；凭据会随备份文件一起导出，请妥善保管备份。'
+                        >
                             <Stack
                                 direction={{ xs: "column", sm: "row" }}
                                 spacing={1.5}
@@ -972,7 +963,7 @@ export default function SiteSettingsModal({
                                         htmlInput: { ...SECRET_IGNORE_ATTRS }
                                     }} />
                             </Stack>
-                        </Box>
+                        </Section>
                         {/* D2 双向绑定：提到这个站点的笔记。站名/网址归一化与笔记侧
                             点 `[[站名]]` 用同一份（utils/siteMatch.ts），两边不会各说各话。
                             没接上记事本那座桥时整节不渲染（见 SiteNotesSection）。 */}

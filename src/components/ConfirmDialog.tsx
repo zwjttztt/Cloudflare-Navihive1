@@ -214,31 +214,68 @@ export default function ConfirmDialog({
                         {extraAction.label}
                     </Button>
                 )}
-                <Button
-                    onClick={handleClose}
-                    variant='outlined'
-                    color='inherit'
-                    size='small'
-                    disabled={busy}
-                    data-confirm-action='cancel'
-                >
-                    {cancelText}
-                </Button>
-                <Button
-                    onClick={() => void handleConfirm()}
-                    variant='contained'
-                    size='small'
-                    color={danger ? "error" : "primary"}
-                    disableElevation
-                    disabled={busy}
-                    // ⚠️ 测试要能**精确地**点到确认键：页面上常常同时存在另一个
-                    // 同名按钮（比如附件行里的「删除」），按文字找会点到错的那个，
-                    // 表现是「点了确认却什么都没发生」。
-                    data-confirm-action='confirm'
-                    startIcon={busy ? <CircularProgress size={14} color='inherit' /> : undefined}
-                >
-                    {busy ? busyText : confirmText}
-                </Button>
+                {/*
+                  危险键的位置：全站统一「靠左」，和普通确认弹窗相反。
+                  理由（docs/dialogs-audit-2026-10-23.md G6）：站点设置里「删除」在
+                  操作区最左、确认框里「删除」却在最右，同一个危险动作两个位置 ——
+                  肌肉记忆点过去，一次点到删除、一次点到取消。现在危险键一律靠左，
+                  并用 mr:auto 把它顶到操作区左侧，取消留在右边。
+                */}
+                {danger ? (
+                    <>
+                        <Button
+                            onClick={() => void handleConfirm()}
+                            variant='contained'
+                            size='small'
+                            color='error'
+                            disableElevation
+                            disabled={busy}
+                            // ⚠️ 测试要能**精确地**点到确认键：页面上常常同时存在另一个
+                            // 同名按钮（比如附件行里的「删除」），按文字找会点到错的那个，
+                            // 表现是「点了确认却什么都没发生」。
+                            data-confirm-action='confirm'
+                            sx={{ mr: "auto" }}
+                            startIcon={busy ? <CircularProgress size={14} color='inherit' /> : undefined}
+                        >
+                            {busy ? busyText : confirmText}
+                        </Button>
+                        <Button
+                            onClick={handleClose}
+                            variant='outlined'
+                            color='inherit'
+                            size='small'
+                            disabled={busy}
+                            data-confirm-action='cancel'
+                        >
+                            {cancelText}
+                        </Button>
+                    </>
+                ) : (
+                    <>
+                        <Button
+                            onClick={handleClose}
+                            variant='outlined'
+                            color='inherit'
+                            size='small'
+                            disabled={busy}
+                            data-confirm-action='cancel'
+                        >
+                            {cancelText}
+                        </Button>
+                        <Button
+                            onClick={() => void handleConfirm()}
+                            variant='contained'
+                            size='small'
+                            color='primary'
+                            disableElevation
+                            disabled={busy}
+                            data-confirm-action='confirm'
+                            startIcon={busy ? <CircularProgress size={14} color='inherit' /> : undefined}
+                        >
+                            {busy ? busyText : confirmText}
+                        </Button>
+                    </>
+                )}
             </DialogActions>
         </Dialog>
     );

@@ -10,14 +10,14 @@ import {
     Box,
     Typography,
     List,
-    ListItem,
-    ListItemText,
     IconButton,
     CircularProgress,
     Tooltip,
     useTheme,
 } from "@mui/material";
 import RestoreFromTrashIcon from "@mui/icons-material/RestoreFromTrash";
+import DialogCloseButton from "./DialogCloseButton";
+import { DialogEmptyState, DialogListRow } from "./DialogListRow";
 import DeleteForeverIcon from "@mui/icons-material/DeleteForever";
 import DeleteSweepIcon from "@mui/icons-material/DeleteSweep";
 import { NavigationClient } from "../API/client";
@@ -145,7 +145,8 @@ export default function RecycleBinDialog({
 
     return (
         <Dialog open={open} onClose={onClose} maxWidth='sm' fullWidth className='nav-dialog'>
-            <DialogTitle sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+            {/* pr 给右上角那枚 × 让位，不然「仅保留 N 天」会和它叠在一起 */}
+            <DialogTitle sx={{ display: "flex", alignItems: "center", gap: 1, pr: 5 }}>
                 <RestoreFromTrashIcon fontSize='small' />
                 回收站
                 <Typography
@@ -157,6 +158,7 @@ export default function RecycleBinDialog({
                     }}>
                     仅保留 {retentionDays ?? DEFAULT_RETENTION_DAYS} 天，超期自动清除
                 </Typography>
+                <DialogCloseButton onClose={onClose} label='关闭回收站' />
             </DialogTitle>
             <DialogContent dividers sx={{ p: 0, minHeight: 120 }}>
                 {loading && items.length === 0 ? (
@@ -173,24 +175,38 @@ export default function RecycleBinDialog({
                         </Button>
                     </Box>
                 ) : items.length === 0 ? (
-                    <Box sx={{ p: 4, textAlign: "center" }}>
-                        <Typography variant='body2' sx={{
-                            color: 'text.secondary'
-                        }}>
-                            回收站是空的
-                        </Typography>
-                    </Box>
+                    <DialogEmptyState
+                        title='回收站是空的'
+                        hint='删掉的分组 / 卡片会先到这里，保留期内随时可以还原'
+                    />
                 ) : (
                     <List dense sx={{ py: 0 }}>
                         {items.map(item => (
-                            <ListItem
+                            <DialogListRow
                                 key={item.id}
-                                divider
-                                secondaryAction={
+                                primary={
+                                    <span>
+                                        <b>{item.name}</b>
+                                        <Typography
+                                            component='span'
+                                            variant='caption'
+                                            sx={{
+                                                color: 'text.secondary',
+                                                ml: 1
+                                            }}>
+                                            {item.kind === "group" ? "分组" : item.kind === "note" ? "笔记" : "站点"}
+                                        </Typography>
+                                    </span>
+                                }
+                                secondary={`删除于 ${formatTime(item.deletedAt)}`}
+                                // 还原 + 彻底删除两个按钮约 160px；不留位的话长条目名
+                                // 会被压在按钮下面（MUI 的 secondaryAction 不占流）
+                                actionsWidth={160}
+                                actions={
                                     // 还原是这一行的主要动作，做成带文字的按钮；
                                     // 彻底删除不可逆，弱化成一个红色图标并与还原拉开距离，
                                     // 两个动作紧挨着时手指很容易点错
-                                    <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
+                                    <>
                                         <Button
                                             size='small'
                                             startIcon={<RestoreFromTrashIcon fontSize='small' />}
@@ -212,27 +228,9 @@ export default function RecycleBinDialog({
                                                 <DeleteForeverIcon fontSize='small' />
                                             </IconButton>
                                         </Tooltip>
-                                    </Box>
+                                    </>
                                 }
-                            >
-                                <ListItemText
-                                    primary={
-                                        <span>
-                                            <b>{item.name}</b>
-                                            <Typography
-                                                component='span'
-                                                variant='caption'
-                                                sx={{
-                                                    color: 'text.secondary',
-                                                    ml: 1
-                                                }}>
-                                                {item.kind === "group" ? "分组" : item.kind === "note" ? "笔记" : "站点"}
-                                            </Typography>
-                                        </span>
-                                    }
-                                    secondary={`删除于 ${formatTime(item.deletedAt)}`}
-                                />
-                            </ListItem>
+                            />
                         ))}
                     </List>
                 )}

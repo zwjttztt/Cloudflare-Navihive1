@@ -19,6 +19,7 @@ import DialogTitle from "@mui/material/DialogTitle";
 import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 import { FOLDER_COLORS, isFolderColor } from "../utils/folderAppearance";
+import DialogCloseButton from "./DialogCloseButton";
 
 export interface TagColorDialogProps {
     open: boolean;
@@ -61,8 +62,10 @@ export default function TagColorDialog({ open, tag, onSave, onClose }: TagColorD
             fullWidth
             slotProps={{ paper: { sx: { borderRadius: 2.5 } } }}
         >
-            <DialogTitle sx={{ fontSize: 16, pb: 1 }}>
+            {/* pr 给右上角那枚 × 让位 */}
+            <DialogTitle sx={{ fontSize: 16, pb: 1, pr: 5 }}>
                 标签颜色{tag?.name ? ` · ${tag.name}` : ""}
+                <DialogCloseButton onClose={onClose} label='关闭标签颜色' />
             </DialogTitle>
             <DialogContent sx={{ pt: "4px!important" }}>
                 <Typography variant='caption' sx={{ display: "block", mb: 1, color: "text.secondary" }}>

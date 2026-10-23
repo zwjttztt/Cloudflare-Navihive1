@@ -51,6 +51,7 @@ import {
     type NotesSyncPrefs,
 } from "../utils/notesSync";
 import type { NotesUiSettings } from "../utils/notesSettings";
+import { dialogPaperTokens } from "./dialogShell";
 import type {
     NoteImportStats,
     NotesBackupRun,
@@ -649,7 +650,20 @@ export default function NotesSettingsDialog({
             onClose={onClose}
             maxWidth='md'
             fullWidth
-            slotProps={{ paper: { sx: { height: 560, maxHeight: "86vh", borderRadius: 3 } } }}
+            slotProps={{
+                paper: {
+                    sx: {
+                        // 纸面换成统一外壳（docs/dialogs-audit-2026-10-23.md A3）：
+                        // 原来这里写死 height: 560 + maxHeight: "86vh" + borderRadius: 3，
+                        // 既没有毛玻璃/底色（和其它弹窗不是一种材质），vh 也不跟软键盘变。
+                        // 现在材质走 dialogPaperTokens，高度分档：小屏贴近底部面板，
+                        // 桌面固定 560（左列导航 + 右列表单，高度稳定才好用）。
+                        ...dialogPaperTokens,
+                        p: 0.5,
+                        height: { xs: "86dvh", sm: 560 },
+                    },
+                },
+            }}
         >
             <Box data-notes-settings='1' sx={{ display: "flex", height: "100%", minHeight: 0 }}>
                 {/* 左列小节导航（inkstone 设置的样子） */}

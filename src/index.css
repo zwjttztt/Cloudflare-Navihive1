@@ -606,9 +606,12 @@ mark.nav-hl {
    按钮在不同弹窗里看着像两个产品。这里给一份默认，个别弹窗仍可用 sx 覆盖。
    背景浓度不在这里统一（有的弹窗要更实一点保证长表单可读）。 */
 .MuiDialog-paper {
-    border-radius: var(--radius-lg);
-    border: 1px solid var(--border-subtle);
-    box-shadow: var(--shadow-3);
+    /* token 名跟 dialogShell.ts 的 dialogPaperTokens 保持一致（同一套玻璃面板语义
+       token），别再写回 --radius-lg / --border-subtle / --shadow-3 —— 那套名字
+       将来一改就会和用外壳的弹窗分裂成两种材质 */
+    border-radius: var(--card-radius);
+    border: 1px solid var(--glass-panel-border);
+    box-shadow: var(--glass-shadow-hover);
 }
 
 /* 分组工具条（添加卡片 / 排序 / 编辑）：平时安静，指到分组或键盘走进来才浮出。
@@ -1200,21 +1203,30 @@ html.nav-touch .nav-star-btn[data-starred="false"] {
 
     /* 设置 / 编辑类弹窗在小屏走底部面板：
        拇指够得到，也比居中弹窗少一次「抬头找按钮」。
-       MUI 的 Dialog 容器是 flex 居中，改成贴底即可，不用换组件。 */
-    .MuiDialog-container {
+       MUI 的 Dialog 容器是 flex 居中，改成贴底即可，不用换组件。
+
+       ⚠️ 选择器必须带前缀（0,2,0），不能只用单类（0,1,0）：
+       MUI 的组件样式由 emotion 在运行时注入到 <head> 末尾，排在 index.css 之后。
+       同权重下后插入的胜出 —— 这段就曾经这么静默失效过：样式在构建产物里明明
+       存在，375×800 实测纸面仍是「居中卡片」，上下各留 32px、宽 301px。
+       提到 0,2,0 才能稳定压过 emotion，与加载顺序无关。 */
+    .MuiDialog-root .MuiDialog-container {
         align-items: flex-end;
     }
-    .MuiDialog-paper {
+    .MuiDialog-container .MuiDialog-paper:not(.MuiDialog-paperFullScreen) {
         margin: 0;
         width: 100%;
         max-width: 100%;
+        /* align-self 再兜一手：容器是 flex（横向），align-self 优先于容器的
+           align-items，就算哪天容器被别处覆写，贴底照样成立 */
+        align-self: flex-end;
         /* dvh 而不是 vh：软键盘弹出时视口真的会变矮，vh 不跟着变，
            dvh 会 —— 弹窗跟着收，提交按钮就不会被键盘顶到屏幕外 */
         max-height: 92dvh;
-        border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+        border-radius: var(--card-radius) var(--card-radius) 0 0;
     }
     /* 底部操作区粘在可视区底边：正文能滚，确定 / 保存始终露在外面 */
-    .MuiDialog-paper .MuiDialogActions-root {
+    .MuiDialog-container .MuiDialog-paper .MuiDialogActions-root {
         position: sticky;
         bottom: 0;
         z-index: 1;
@@ -1229,13 +1241,14 @@ html.nav-touch .nav-star-btn[data-starred="false"] {
         bottom: calc(56px + env(safe-area-inset-bottom, 0px)) !important;
     }
 
-    /* 320px 宽（iPhone SE 一类）：再收一层内边距，别让内容顶到边上 */
+    /* 320px 宽（iPhone SE 一类）：再收一层内边距，别让内容顶到边上
+       （选择器带前缀的理由同上：压过 emotion 运行时注入的同名单类样式） */
     @media (max-width: 359.98px) {
-        .MuiDialog-paper {
+        .MuiDialog-container .MuiDialog-paper {
             padding-left: 0;
             padding-right: 0;
         }
-        .MuiDialogContent-root {
+        .MuiDialog-container .MuiDialogContent-root {
             padding-left: 12px;
             padding-right: 12px;
         }
@@ -1249,10 +1262,10 @@ html.nav-touch .nav-star-btn[data-starred="false"] {
 
 /* 横屏矮屏（手机横过来 / 分屏）：弹窗最高只留 88%，正文自己滚 */
 @media (max-height: 480px) and (max-width: 899.95px) {
-    .MuiDialog-paper {
+    .MuiDialog-container .MuiDialog-paper:not(.MuiDialog-paperFullScreen) {
         max-height: 88dvh;
     }
-    .MuiDialogContent-root {
+    .MuiDialog-container .MuiDialogContent-root {
         overflow-y: auto;
     }
 }

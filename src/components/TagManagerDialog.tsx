@@ -58,6 +58,18 @@ export default function TagManagerDialog({
     // 重命名：正在改哪个标签 + 输入框里的新名字
     const [renaming, setRenaming] = useState<string | null>(null);
     const [renameTo, setRenameTo] = useState("");
+    /** 新名字撞上已有标签 == 合并，输入框要当场说清楚（不是等提交后才报错） */
+    const renameCollides =
+        renameTo.trim() !== "" &&
+        renameTo.trim() !== renaming &&
+        tags.includes(renameTo.trim());
+    const commitRename = (from: string) => {
+        const to = renameTo.trim();
+        if (!to || to === from) return;
+        onRenameTag?.(from, to);
+        setRenaming(null);
+        setRenameTo("");
+    };
     // 合并：源标签 + 目标标签
     const [merging, setMerging] = useState<string | null>(null);
     const [mergeTarget, setMergeTarget] = useState("");
@@ -160,12 +172,72 @@ export default function TagManagerDialog({
                                             bgcolor: "action.hover",
                                         }}
                                     >
-                                        <Chip
-                                            label={tag}
-                                            size='small'
-                                            variant='outlined'
-                                            className='nav-tag-manager-chip'
-                                        />
+                                        {renaming === tag ? (
+                                            // 内联改名：就在这行里改，不再弹第二个窗口。
+                                            // 改一个标签等于改几十张卡片，所以撞车提示
+                                            // 直接跟在输入框下面，不指望用户先记住旧名
+                                            <>
+                                                <TextField
+                                                    autoFocus
+                                                    size='small'
+                                                    value={renameTo}
+                                                    onChange={e => setRenameTo(e.target.value)}
+                                                    onKeyDown={e => {
+                                                        if (e.key === "Enter") {
+                                                            e.preventDefault();
+                                                            commitRename(tag);
+                                                        }
+                                                        if (e.key === "Escape") {
+                                                            e.preventDefault();
+                                                            setRenaming(null);
+                                                            setRenameTo("");
+                                                        }
+                                                    }}
+                                                    placeholder='新的标签名'
+                                                    className='nav-tag-rename-input'
+                                                    sx={{ width: 168, "& .MuiInputBase-input": { fontSize: 13 } }}
+                                                    slotProps={{
+                                                        // aria-label 要挂到真正的 <input> 上：
+                                                        // 写在 TextField 顶层会落到 FormControl 根 div，
+                                                        // 读屏与测试都找不到它
+                                                        htmlInput: { "aria-label": `把标签 ${tag} 改名为` },
+                                                    }}
+                                                    error={renameCollides}
+                                                    helperText={
+                                                        renameCollides
+                                                            ? `「${renameTo.trim()}」已经有 ${counts[renameTo.trim()] ?? 0} 个网站在用了，这次操作等于把两个标签合并。`
+                                                            : undefined
+                                                    }
+                                                />
+                                                <Button
+                                                    size='small'
+                                                    variant='contained'
+                                                    className='nav-tag-rename-submit'
+                                                    disabled={!renameTo.trim() || renameTo.trim() === tag}
+                                                    onClick={() => commitRename(tag)}
+                                                >
+                                                    确定
+                                                </Button>
+                                                <Button
+                                                    size='small'
+                                                    variant='text'
+                                                    color='inherit'
+                                                    onClick={() => {
+                                                        setRenaming(null);
+                                                        setRenameTo("");
+                                                    }}
+                                                >
+                                                    取消
+                                                </Button>
+                                            </>
+                                        ) : (
+                                            <Chip
+                                                label={tag}
+                                                size='small'
+                                                variant='outlined'
+                                                className='nav-tag-manager-chip'
+                                            />
+                                        )}
                                         <Typography
                                             variant='caption'
                                             sx={{
@@ -249,72 +321,6 @@ export default function TagManagerDialog({
                     }}
                     onClose={() => setPending(null)}
                 />
-
-                {/* 重命名：改一个标签等于改几十张卡片，所以要说清影响面，
-                    新名字撞上已有标签时明确写成「合并」而不是「改名」 */}
-                <Dialog
-                    open={renaming !== null}
-                    onClose={() => setRenaming(null)}
-                    maxWidth='xs'
-                    fullWidth
-                    className='nav-tag-rename-dialog'
-                    slotProps={{ paper: { sx: dialogPaperSx } }}
-                >
-                    <DialogTitle sx={dialogTitleSx}>重命名标签</DialogTitle>
-                    <DialogContent sx={dialogContentSx}>
-                        <TextField
-                            autoFocus
-                            size='small'
-                            fullWidth
-                            label='新的标签名'
-                            value={renameTo}
-                            onChange={e => setRenameTo(e.target.value)}
-                            onKeyDown={e => {
-                                if (e.key === "Enter" && renameTo.trim()) {
-                                    e.preventDefault();
-                                    onRenameTag?.(renaming!, renameTo);
-                                    setRenaming(null);
-                                }
-                            }}
-                            sx={{ mt: 0.5 }}
-                        />
-                        {renaming && (
-                            <Typography
-                                variant='caption'
-                                sx={{
-                                    color: 'text.secondary',
-                                    display: "block",
-                                    mt: 1
-                                }}>
-                                「{renaming}」现在用于 {counts[renaming] ?? 0} 个网站，改名后这些卡片一起变。
-                                {renameTo.trim() &&
-                                renameTo.trim() !== renaming &&
-                                tags.includes(renameTo.trim())
-                                    ? ` 「${renameTo.trim()}」已经有 ${
-                                          counts[renameTo.trim()] ?? 0
-                                      } 个网站在用了，这次操作等于把两个标签合并。`
-                                    : ""}
-                            </Typography>
-                        )}
-                    </DialogContent>
-                    <DialogActions sx={dialogActionsSx}>
-                        <Button size='small' variant='outlined' color='inherit' onClick={() => setRenaming(null)}>
-                            取消
-                        </Button>
-                        <Button
-                            size='small'
-                            variant='contained'
-                            className='nav-tag-rename-submit'
-                            disabled={!renameTo.trim()}
-                            onClick={() => {
-                                if (renaming) onRenameTag?.(renaming, renameTo);
-                                setRenaming(null);
-                            }}
-                        >
-                            确定
-                        </Button>
-                    </DialogActions>
-                </Dialog>
 
                 {/* 合并：选一个目标标签，源标签从此消失 */}
                 <Dialog

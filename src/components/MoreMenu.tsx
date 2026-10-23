@@ -170,7 +170,9 @@ export default function MoreMenu({
                 <ListItemIcon>
                     <SettingsIcon fontSize='small' />
                 </ListItemIcon>
-                <ListItemText>网站设置</ListItemText>
+                {/* 叫「全站设置」而不是「网站设置」：卡片齿轮那个弹窗也叫网站设置，
+                    两者同名会让人走错门（想改单个站的密码却先点顶栏齿轮） */}
+                <ListItemText>全站设置</ListItemText>
             </MenuItem>
             {/* 叫「AI 设置」而不是「AI 助手」：点进去是配置模型服务与凭据，
                 不是能直接对话的助手界面 */}

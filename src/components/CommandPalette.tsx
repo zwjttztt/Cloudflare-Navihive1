@@ -23,6 +23,7 @@ import {
     readRecentCommands,
 } from "../utils/commandMatch";
 import { loadPinyinMatcher, matchesByPinyin } from "../utils/pinyin";
+import { commandPalettePaperSx } from "./dialogShell";
 
 export interface CommandItem {
     id: string;
@@ -124,20 +125,9 @@ export default function CommandPalette({ open, onClose, commands }: CommandPalet
             fullWidth
             maxWidth='sm'
             className='nav-command-palette'
-            slotProps={{
-                paper: {
-                    sx: {
-                        borderRadius: "18px",
-                        overflow: "hidden",
-                        bgcolor: "var(--glass-bg-hover)",
-                        border: "1px solid var(--glass-border)",
-                        backdropFilter: "blur(18px) saturate(1.5)",
-                        WebkitBackdropFilter: "blur(18px) saturate(1.5)",
-                        mt: "8vh",
-                        alignSelf: "flex-start",
-                    },
-                },
-            }}
+            // 纸面与另一个命令面板共用一份（dialogShell.commandPalettePaperSx）：
+            // 之前两边各抄一遍，改一处忘一处就会漂成两种浮层
+            slotProps={{ paper: { sx: commandPalettePaperSx } }}
         >
             <Box sx={{ px: 2, pt: 2, pb: 1 }}>
                 <TextField
@@ -163,7 +153,7 @@ export default function CommandPalette({ open, onClose, commands }: CommandPalet
                     }} />
             </Box>
 
-            <List dense sx={{ maxHeight: 380, overflowY: "auto", px: 1, pb: 1 }}>
+            <List dense sx={{ maxHeight: "min(380px, 45dvh)", overflowY: "auto", px: 1, pb: 1 }}>
                 {results.length === 0 && (
                     <Box sx={{ px: 2, py: 3, textAlign: "center" }}>
                         <Typography variant='body2' sx={{

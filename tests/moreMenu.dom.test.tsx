@@ -118,7 +118,7 @@ test("点每一项：先关菜单再执行动作（反过来的话菜单会飘�
         ["备份与恢复", "onOpenBackup(0)"],
         ["回收站", "onOpenRecycle"],
         ["审计日志", "onOpenAudit"],
-        ["网站设置", "onOpenConfig"],
+        ["全站设置", "onOpenConfig"],
         ["AI 设置", "onOpenAiAssistant"],
         ["账号与安全", "onOpenAccount"],
         ["快捷键与操作帮助", "onOpenShortcuts"],
@@ -169,7 +169,7 @@ test("未登录：没有「账号与安全」和「退出登录」，但整理�
     const list = labels();
     assert.ok(!list.includes("账号与安全"), `实际 ${JSON.stringify(list)}`);
     assert.ok(!list.includes("退出登录"), `实际 ${JSON.stringify(list)}`);
-    assert.ok(list.includes("网站设置"), "网站设置跟登录无关，未登录也要在");
+    assert.ok(list.includes("全站设置"), "全站设置跟登录无关，未登录也要在");
     assert.ok(!list.includes("会话"), "没有会话区就不该留一个「会话」小标题");
 });
 
@@ -185,7 +185,7 @@ test("菜单项总数收敛：分组排序挪进显示面板后，owner 登录�
         labels(),
         [
             "整理与数据", "统计", "备份与恢复", "回收站", "审计日志",
-            "设置与账号", "网站设置", "AI 设置", "账号与安全",
+            "设置与账号", "全站设置", "AI 设置", "账号与安全",
             "帮助", "快捷键与操作帮助",
             "会话", "退出登录",
         ],

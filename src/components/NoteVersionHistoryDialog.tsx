@@ -28,6 +28,7 @@ import RestoreIcon from "@mui/icons-material/Restore";
 import type { NoteRevision } from "../API/types";
 import { computeLineDiff } from "../utils/noteDiff";
 import { formatWhen, formatWhenFull } from "../utils/noteTime";
+import { DialogEmptyState } from "./DialogListRow";
 
 export interface NoteVersionHistoryDialogProps {
     open: boolean;
@@ -130,17 +131,16 @@ export default function NoteVersionHistoryDialog({
                         <CircularProgress size={22} aria-label='正在读取历史版本' />
                     </Box>
                 ) : list.length === 0 ? (
-                    <Box sx={{ px: 3, py: 6, textAlign: "center" }}>
-                        <Typography variant='body2' color='text.secondary'>
-                            还没有历史版本（改动正文后会自动留档）
-                        </Typography>
-                    </Box>
+                    <DialogEmptyState
+                        title='还没有历史版本'
+                        hint='改动正文后会自动留档，之后可以在这里回看 / 恢复'
+                    />
                 ) : (
                     <Box
                         sx={{
                             display: "flex",
-                            minHeight: 320,
-                            maxHeight: "min(60vh, 460px)",
+                            minHeight: "min(320px, 45dvh)",
+                            maxHeight: "min(60dvh, 460px)",
                             overflow: "hidden",
                         }}
                     >

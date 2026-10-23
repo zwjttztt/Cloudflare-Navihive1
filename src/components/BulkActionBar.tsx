@@ -27,6 +27,8 @@ import CloseIcon from "@mui/icons-material/Close";
 import CheckCircleIcon from "@mui/icons-material/CheckCircle";
 import { pickBulkTagSuggestions } from "../utils/tagSuggest";
 import { parseTagInput, toggleTagInInput } from "../utils/tagInput";
+import DialogCloseButton from "./DialogCloseButton";
+import { dialogPaperSx } from "./dialogShell";
 
 export interface BulkGroupOption {
     id: number;
@@ -283,20 +285,12 @@ export default function BulkActionBar({
                 maxWidth='xs'
                 fullWidth
                 className='nav-tag-dialog'
-                slotProps={{
-                    paper: {
-                        sx: {
-                            borderRadius: "var(--card-radius)",
-                            p: 0.5,
-                            backgroundColor: "var(--surface-modal)",
-                            backdropFilter: "blur(var(--glass-blur))",
-                            WebkitBackdropFilter: "blur(var(--glass-blur))",
-                        },
-                    },
-                }}
+                slotProps={{ paper: { sx: dialogPaperSx } }}
             >
-                <DialogTitle sx={{ fontSize: 16, fontWeight: 600, pb: 0.5 }}>
+                {/* pr 给右上角那枚 × 让位 */}
+                <DialogTitle sx={{ fontSize: 16, fontWeight: 600, pb: 0.5, pr: 5 }}>
                     给 {count} 个网站打标签
+                    <DialogCloseButton onClose={() => setTagOpen(false)} label='关闭打标签弹窗' />
                 </DialogTitle>
                 <DialogContent sx={{ pt: 0 }}>
                     {/* MUI 会把「标题 + 内容」相邻时的内容区上内边距归零，

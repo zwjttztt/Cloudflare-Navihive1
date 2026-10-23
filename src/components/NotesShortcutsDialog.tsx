@@ -8,6 +8,7 @@
 import { Box, Button, Dialog, DialogActions, DialogContent, DialogTitle, Typography } from "@mui/material";
 import { Kbd } from "./Kbd";
 import { EDITOR_SHORTCUTS } from "../utils/editorShortcuts";
+import DialogCloseButton from "./DialogCloseButton";
 
 export interface NotesShortcutsDialogProps {
     open: boolean;
@@ -17,7 +18,11 @@ export interface NotesShortcutsDialogProps {
 export default function NotesShortcutsDialog({ open, onClose }: NotesShortcutsDialogProps) {
     return (
         <Dialog open={open} onClose={onClose} fullWidth maxWidth='sm'>
-            <DialogTitle>键盘快捷键</DialogTitle>
+            {/* pr 给右上角那枚 × 让位 */}
+            <DialogTitle sx={{ pr: 5 }}>
+                键盘快捷键
+                <DialogCloseButton onClose={onClose} label='关闭快捷键说明' />
+            </DialogTitle>
             <DialogContent>
                 <Typography>Ctrl / ⌘ K：编辑器内插入链接，编辑器外打开命令面板</Typography>
                 <Typography>Ctrl / ⌘ S：保存当前笔记</Typography>
