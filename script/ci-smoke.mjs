@@ -453,6 +453,8 @@ const overlay = () =>
         bar: g('.nav-card-actions:not(.nav-card-actions-always)'),
         settings: g('.nav-settings-btn'),
         star: g('.nav-star-btn[data-starred="false"]'),
+        // #477 卡片角上的笔记入口：与设置同一套悬停显隐，漏了它就等于没守卫
+        note: g('.nav-note-btn'),
         touch: document.documentElement.classList.contains('nav-touch'),
         // 诊断：CI 上真的红了时，一眼看出是「被判成触屏」还是「cascade 被别人压住」
         media: matchMedia('(hover: none)').matches ? 'hover:none' : 'hover:hover',
@@ -466,6 +468,7 @@ check(
     overlayBefore?.bar === 0 &&
         overlayBefore?.settings === 0 &&
         overlayBefore?.star === 0 &&
+        overlayBefore?.note === 0 &&
         overlayBefore?.touch === false,
     JSON.stringify(overlayBefore)
 );
@@ -478,9 +481,11 @@ if (cardBox) {
     });
     await sleep(500);
     check("悬停卡片后浮层出现", (await overlay()).bar === 1);
+    check("悬停卡片后笔记入口也浮出", (await overlay()).note === 1);
     await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 5, y: 5, buttons: 0 });
     await sleep(500);
     check("鼠标移开后浮层收回", (await overlay()).bar === 0);
+    check("鼠标移开后笔记入口必须收回", (await overlay()).note === 0);
 }
 
 // 5) 键盘焦点环：真的按 Tab，不用 el.focus()（后者在 headless 里不触发 :focus-visible）

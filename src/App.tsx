@@ -1531,6 +1531,17 @@ function App() {
                     void fetchDataRef.current({ silent: true });
                     return { id: created.id, title: created.title || title };
                 },
+                // 卡片上点「笔记」先弹预览（2026-10-23 用户要求）：预览要正文，
+                // 而站点列表里带的是标题，正文得按 id 单独取一次。
+                get: async (noteId: number) => {
+                    try {
+                        const note = await api.getNote(noteId);
+                        if (!note) return null;
+                        return { title: note.title || "", content: note.content || "" };
+                    } catch {
+                        return null;
+                    }
+                },
             },
         }),
         [configs, api]

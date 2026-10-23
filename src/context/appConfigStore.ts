@@ -47,6 +47,12 @@ export interface AppConfigContextValue {
         bind: (noteId: number, siteId: number | null) => Promise<void>;
         /** 新建一条笔记并直接绑到该站点（标题默认取站名），返回新笔记 */
         createAndBind: (siteId: number, title: string) => Promise<{ id?: number; title: string }>;
+        /**
+         * 取一条笔记的标题与正文（预览弹窗用，2026-10-23 用户要求
+         * 「点卡片上的笔记按钮先弹预览，点编辑再跳转」）。
+         * 取不到（已被删 / 网络不通）返回 null，弹窗据此提示而不是空白。
+         */
+        get: (noteId: number) => Promise<{ title: string; content: string } | null>;
     };
 }
 

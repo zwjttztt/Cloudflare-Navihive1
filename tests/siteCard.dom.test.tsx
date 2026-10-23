@@ -458,6 +458,7 @@ function renderCardWithBridge(
         listed: number;
         bound: Array<[number, number | null]>;
         created: Array<[number, string]>;
+        got: number[];
     }
 ) {
     localStorage.clear();
@@ -476,6 +477,10 @@ function renderCardWithBridge(
         createAndBind: async (siteId: number, title: string) => {
             calls.created.push([siteId, title]);
             return { id: 88, title };
+        },
+        get: async (noteId: number) => {
+            calls.got.push(noteId);
+            return { title: "这个站的登录方式", content: "账号 admin\n密码 123456" };
         },
     };
     host = document.createElement("div");
@@ -500,7 +505,7 @@ function renderCardWithBridge(
     });
 }
 
-const emptyCalls = () => ({ opened: [] as number[], listed: 0, bound: [], created: [] });
+const emptyCalls = () => ({ opened: [] as number[], listed: 0, bound: [], created: [], got: [] as number[] });
 
 test("#477 未绑定：卡片角上有「绑定笔记」入口", () => {
     const calls = emptyCalls();
@@ -510,17 +515,34 @@ test("#477 未绑定：卡片角上有「绑定笔记」入口", () => {
     assert.equal(btn!.getAttribute("data-bound"), "false");
 });
 
-test("#477 已绑定：入口变成「打开笔记：标题」，点一下直接打开那篇笔记", () => {
+test("#477 已绑定：点一下先弹预览，点「编辑」才跳进记事本", async () => {
     const calls = emptyCalls();
     renderCardWithBridge({ note_id: 42, note_title: "这个站的登录方式" }, calls);
-    const btn = byLabel("打开笔记：这个站的登录方式");
+    const btn = byLabel("查看笔记：这个站的登录方式");
     assert.ok(btn, "已绑定时 aria-label 要带上笔记标题（读屏也能听出绑了哪篇）");
-    assert.equal(btn!.getAttribute("data-bound"), "true", "data-bound 驱动 CSS：已绑定的常显");
+    assert.equal(btn!.getAttribute("data-bound"), "true");
 
-    act(() => {
+    await act(async () => {
         btn!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        // 弹窗是 lazy chunk，且要等一次 getNote + 一次 markdown 渲染
+        await new Promise(r => setTimeout(r, 120));
     });
-    assert.deepEqual(calls.opened, [42], "已绑定就不该再开选择器，直接打开笔记");
+    assert.deepEqual(calls.got, [42], "预览要按 id 取一次正文");
+    assert.deepEqual(calls.opened, [], "点开只是预览，绝不能这时候就把人扔进记事本");
+    assert.ok(
+        document.body.textContent?.includes("账号 admin"),
+        "预览窗口里要能看到正文"
+    );
+
+    // 预览窗里的「编辑」才是跳转入口
+    const edit = [...document.querySelectorAll<HTMLButtonElement>("button")].find(
+        b => (b.textContent || "").trim() === "编辑"
+    );
+    assert.ok(edit, "预览窗里要有「编辑」按钮");
+    act(() => {
+        edit!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    assert.deepEqual(calls.opened, [42], "点「编辑」才跳进记事本并定位到这条");
 });
 
 test("#477 没接上记事本桥：整个入口不渲染（不给自己造一个点了没反应的按钮）", () => {
@@ -540,5 +562,5 @@ test("#477 未绑定时点入口打开选择器，把笔记列出来", async () 
         await new Promise(r => setTimeout(r, 60));
     });
     assert.ok(calls.listed >= 1, "弹窗打开后要拉一次笔记列表");
-    assert.ok(document.body.textContent?.includes("站点笔记"), "弹窗标题要出现");
+    assert.ok(document.body.textContent?.includes("绑定笔记"), "未绑定时弹窗标题是「绑定笔记」");
 });

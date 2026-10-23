@@ -1,10 +1,12 @@
 // src/components/SiteNoteDialog.tsx
-// 站点卡片上的「笔记」入口（#477 站点↔笔记双向绑定）—— 绑定 / 换绑 / 解除绑定。
+// 站点卡片上的「笔记」入口（#477 站点↔笔记双向绑定）。
 //
-// 为什么这里选笔记、而不是在笔记里选站点：用户看到一张卡片，脑子里想的是
-// 「这个站点我记过笔记」，从卡片出发最直接；笔记那一侧只做**反查展示**
-// （编辑器头部显示它属于哪个站点），不做选择器 —— 两头都放选择器只会让人
-// 疑惑「我在哪儿绑的来着」。
+// 两种面孔，同一个弹窗（都从卡片角上那枚按钮进来）：
+//   - **预览**：这张卡片已经绑了某篇笔记 → 先把正文只读地摆出来，
+//     想看细节再点「编辑」跳进记事本。用户明确要求「先弹预览、点编辑再跳转」
+//     （2026-10-23），所以「点一下就把人扔进记事本」那条不做了 ——
+//     在导航页上点一下就被换掉页面，比多点一次更烦人。
+//   - **选择**：还没绑（或点了「换一篇」）→ 列出笔记、可搜标题、可新建即绑。
 //
 // 数据面两件要紧的事：
 //   - 绑定关系存在**笔记侧**（notes.site_id），站点上的 note_id / note_title 是
@@ -12,7 +14,11 @@
 //     「卡片删了笔记还在」因此不需要级联，也不会出现两份真相。
 //   - 「一个站点最多一篇」由服务端 updateNote 收口。界面照这个前提做：
 //     换绑直接覆盖，不追问「要不要先解绑」。
-import { useEffect, useMemo, useState } from "react";
+//
+// ⚠️ 这里 import 了 markdown 渲染层（markdownToReact）。这在**首屏**是禁忌
+// （它会把 markdown-it 整包拖进首页），但本文件只被 SiteCard 用 lazy() 引，
+// 属于「打开才下载」的块 —— 体积预算那条守卫盯的是首屏，这里安全。
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
     Box,
     Button,
@@ -31,11 +37,14 @@ import {
 } from "@mui/material";
 import CloseIcon from "@mui/icons-material/Close";
 import DescriptionOutlinedIcon from "@mui/icons-material/DescriptionOutlined";
+import EditIcon from "@mui/icons-material/Edit";
 import LinkOffIcon from "@mui/icons-material/LinkOff";
+import SwapHorizIcon from "@mui/icons-material/SwapHoriz";
 import AddIcon from "@mui/icons-material/Add";
 import type { Site } from "../API/http";
 import { useAppConfig } from "../context/appConfigStore";
 import { useNotify } from "../context/NotifyContext";
+import { renderMarkdownToReact } from "../utils/markdownToReact";
 import {
     dialogActionsSx,
     dialogContentSx,
@@ -50,17 +59,27 @@ interface Props {
 
 type NoteRow = { id?: number; title: string; site_id?: number | null };
 
+/** 预览区三态：加载中 / 有内容 / 那条笔记已经不在了 */
+type Preview =
+    | { status: "loading" }
+    | { status: "missing" }
+    | { status: "ok"; title: string; body: ReactNode; empty: boolean };
+
 export default function SiteNoteDialog({ site, onClose }: Props) {
     const { notesBridge } = useAppConfig();
     const notify = useNotify();
+    const boundId = site.note_id ?? null;
+    const boundTitle = site.note_title || "";
+    // 绑过就先给预览；没绑直接进选择器
+    const [mode, setMode] = useState<"preview" | "picker">(boundId != null ? "preview" : "picker");
     const [notes, setNotes] = useState<NoteRow[] | null>(null);
     const [query, setQuery] = useState("");
     const [busy, setBusy] = useState(false);
+    const [preview, setPreview] = useState<Preview>({ status: "loading" });
 
-    // 打开时拉一次列表。拿不到就当作「列表为空」并给一句说明 ——
-    // 这只是一份附加信息，不该因为它挡住整屏。
+    // 选择器列表：只在真的切到「选择」时才拉（只是看看预览就不该多打一次请求）
     useEffect(() => {
-        if (!notesBridge) return;
+        if (mode !== "picker" || !notesBridge || notes) return;
         let alive = true;
         void (async () => {
             const rows = await notesBridge.list();
@@ -69,7 +88,45 @@ export default function SiteNoteDialog({ site, onClose }: Props) {
         return () => {
             alive = false;
         };
-    }, [notesBridge]);
+    }, [mode, notesBridge, notes]);
+
+    // 预览正文：按 id 取一次全文，再交给渲染层
+    useEffect(() => {
+        if (mode !== "preview" || boundId == null || !notesBridge) return;
+        let alive = true;
+        setPreview({ status: "loading" });
+        void (async () => {
+            const note = await notesBridge.get(boundId);
+            if (!alive) return;
+            if (!note) {
+                setPreview({ status: "missing" });
+                return;
+            }
+            let body: ReactNode;
+            try {
+                body = await renderMarkdownToReact(note.content);
+            } catch {
+                // 渲染层挂了不该让整窗空白：退回纯文本，用户至少还能读到内容
+                body = (
+                    <Box component='pre' sx={{ whiteSpace: "pre-wrap", m: 0, fontFamily: "inherit" }}>
+                        {note.content}
+                    </Box>
+                );
+            }
+            if (!alive) return;
+            setPreview({
+                status: "ok",
+                title: note.title || boundTitle || "未命名笔记",
+                body,
+                empty: !note.content.trim(),
+            });
+        })();
+        return () => {
+            alive = false;
+        };
+        // boundTitle 只在兜底标题时用到，不该作为依赖触发重取
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [mode, boundId, notesBridge]);
 
     const filtered = useMemo(() => {
         if (!notes) return [];
@@ -77,9 +134,6 @@ export default function SiteNoteDialog({ site, onClose }: Props) {
         if (!q) return notes;
         return notes.filter(n => (n.title || "").toLowerCase().includes(q));
     }, [notes, query]);
-
-    const boundId = site.note_id ?? null;
-    const boundTitle = site.note_title || "";
 
     const run = async (label: string, action: () => Promise<void>) => {
         if (busy) return;
@@ -109,9 +163,7 @@ export default function SiteNoteDialog({ site, onClose }: Props) {
 
     const handleUnbind = () => {
         if (!notesBridge || boundId == null) return;
-        void run(`已解除与「${boundTitle || "笔记"}」的绑定`, () =>
-            notesBridge.bind(boundId, null)
-        );
+        void run(`已解除与「${boundTitle || "笔记"}」的绑定`, () => notesBridge.bind(boundId, null));
     };
 
     const handleCreate = () => {
@@ -122,24 +174,36 @@ export default function SiteNoteDialog({ site, onClose }: Props) {
         });
     };
 
-    const handleOpenBound = () => {
-        if (notesBridge && boundId != null) {
-            notesBridge.open(boundId);
-            onClose();
-        }
+    const handleEdit = () => {
+        if (!notesBridge || boundId == null) return;
+        // 用户点的是「编辑」：这时候才跳进记事本，并直接定位到这条
+        notesBridge.open(boundId);
+        onClose();
     };
+
+    const titleText = mode === "preview" ? previewTitle(preview, boundTitle) : "绑定笔记";
 
     return (
         <Dialog
             open
             onClose={onClose}
-            maxWidth='xs'
+            maxWidth={mode === "preview" ? "sm" : "xs"}
             fullWidth
             slotProps={{ paper: { sx: dialogPaperSx } }}
         >
             <DialogTitle sx={dialogTitleSx}>
-                <Box component='span' sx={{ flexGrow: 1 }}>
-                    站点笔记
+                <Box
+                    component='span'
+                    sx={{
+                        flexGrow: 1,
+                        minWidth: 0,
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                    }}
+                    title={titleText}
+                >
+                    {titleText}
                 </Box>
                 <Tooltip title='关闭'>
                     <IconButton
@@ -153,66 +217,54 @@ export default function SiteNoteDialog({ site, onClose }: Props) {
                 </Tooltip>
             </DialogTitle>
             <DialogContent sx={dialogContentSx}>
-                <Typography variant='caption' component='div' color='text.secondary' sx={{ mb: 1.5 }}>
-                    「{site.name || "这个站点"}」最多绑一篇笔记。换绑会替换掉原来那篇（笔记本身不会删）。
+                <Typography variant='caption' component='div' color='text.secondary' sx={{ mb: 1.25 }}>
+                    绑定在「{site.name || "这个站点"}」上的笔记。一个站点最多绑一篇，换绑会替换掉原来那篇（笔记本身不会删）。
                 </Typography>
 
                 {!notesBridge ? (
                     <Typography variant='body2' color='text.secondary'>
                         记事本还没就绪，暂时不能绑定笔记。
                     </Typography>
-                ) : (
-                    <>
-                        {boundId != null && (
-                            <Box
-                                sx={{
-                                    display: "flex",
-                                    alignItems: "center",
-                                    gap: 1,
-                                    px: 1,
-                                    py: 0.75,
-                                    mb: 1.5,
-                                    borderRadius: "var(--radius-md)",
-                                    border: "1px solid var(--border-subtle)",
-                                    bgcolor: "action.hover",
-                                }}
+                ) : mode === "preview" ? (
+                    <Box
+                        data-site-note-preview
+                        sx={{
+                            maxHeight: "52vh",
+                            overflowY: "auto",
+                            px: 1.5,
+                            py: 1,
+                            borderRadius: "var(--radius-md)",
+                            border: "1px solid var(--border-subtle)",
+                            bgcolor: "background.paper",
+                        }}
+                    >
+                        {preview.status === "loading" ? (
+                            <Stack
+                                direction='row'
+                                spacing={1}
+                                sx={{ alignItems: "center", py: 3, justifyContent: "center" }}
                             >
-                                <DescriptionOutlinedIcon fontSize='small' color='primary' />
-                                <Box
-                                    component='button'
-                                    type='button'
-                                    onClick={handleOpenBound}
-                                    sx={{
-                                        flexGrow: 1,
-                                        minWidth: 0,
-                                        textAlign: "left",
-                                        border: 0,
-                                        background: "none",
-                                        p: 0,
-                                        cursor: "pointer",
-                                        font: "inherit",
-                                        color: "inherit",
-                                        overflow: "hidden",
-                                        textOverflow: "ellipsis",
-                                        whiteSpace: "nowrap",
-                                    }}
-                                    title={boundTitle}
-                                >
-                                    {boundTitle || "未命名笔记"}
-                                </Box>
-                                <Tooltip title='解除绑定'>
-                                    <IconButton
-                                        size='small'
-                                        aria-label='解除绑定'
-                                        disabled={busy}
-                                        onClick={handleUnbind}
-                                    >
-                                        <LinkOffIcon fontSize='small' />
-                                    </IconButton>
-                                </Tooltip>
+                                <CircularProgress size={16} />
+                                <Typography variant='caption' color='text.secondary'>
+                                    正在读取笔记…
+                                </Typography>
+                            </Stack>
+                        ) : preview.status === "missing" ? (
+                            <Typography variant='body2' color='text.secondary' sx={{ py: 2 }}>
+                                这篇笔记已经不在了（可能被删掉了）。可以换一篇重新绑定。
+                            </Typography>
+                        ) : preview.empty ? (
+                            <Typography variant='body2' color='text.secondary' sx={{ py: 2 }}>
+                                这篇笔记还是空的。点「编辑」去写点什么。
+                            </Typography>
+                        ) : (
+                            <Box className='note-preview-body' sx={{ fontSize: 14, lineHeight: 1.75 }}>
+                                {preview.body}
                             </Box>
                         )}
-
+                    </Box>
+                ) : (
+                    <>
                         <TextField
                             size='small'
                             fullWidth
@@ -297,19 +349,69 @@ export default function SiteNoteDialog({ site, onClose }: Props) {
                 )}
             </DialogContent>
             <DialogActions sx={dialogActionsSx}>
-                <Button
-                    size='small'
-                    startIcon={<AddIcon />}
-                    onClick={handleCreate}
-                    disabled={!notesBridge || busy || site.id == null}
-                >
-                    新建笔记并绑定
-                </Button>
+                {mode === "preview" ? (
+                    <>
+                        <Button
+                            size='small'
+                            startIcon={<EditIcon />}
+                            variant='contained'
+                            disableElevation
+                            onClick={handleEdit}
+                            disabled={boundId == null || busy}
+                        >
+                            编辑
+                        </Button>
+                        <Button
+                            size='small'
+                            startIcon={<SwapHorizIcon />}
+                            onClick={() => setMode("picker")}
+                            disabled={busy}
+                        >
+                            换一篇
+                        </Button>
+                        <Button
+                            size='small'
+                            color='inherit'
+                            startIcon={<LinkOffIcon />}
+                            onClick={handleUnbind}
+                            disabled={boundId == null || busy}
+                        >
+                            解除绑定
+                        </Button>
+                    </>
+                ) : (
+                    <Button
+                        size='small'
+                        startIcon={<AddIcon />}
+                        onClick={handleCreate}
+                        disabled={!notesBridge || busy || site.id == null}
+                    >
+                        新建笔记并绑定
+                    </Button>
+                )}
                 <Box sx={{ flexGrow: 1 }} />
-                <Button size='small' color='inherit' onClick={onClose} disabled={busy}>
-                    取消
-                </Button>
+                {mode === "picker" ? (
+                    <Button
+                        size='small'
+                        color='inherit'
+                        onClick={() => (boundId != null ? setMode("preview") : onClose())}
+                        disabled={busy}
+                    >
+                        {boundId != null ? "返回预览" : "取消"}
+                    </Button>
+                ) : (
+                    <Button size='small' color='inherit' onClick={onClose} disabled={busy}>
+                        关闭
+                    </Button>
+                )}
             </DialogActions>
         </Dialog>
     );
+}
+
+/** 预览态标题：加载中先用站点侧带来的标题兜底，免得标题栏先空一下 */
+function previewTitle(p: Preview, fallbackTitle: string): string {
+    if (p.status === "ok") return p.title;
+    if (p.status === "missing") return fallbackTitle || "笔记已删除";
+    return fallbackTitle || "笔记";
 }

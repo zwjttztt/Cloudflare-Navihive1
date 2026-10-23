@@ -641,14 +641,17 @@ html.nav-touch .nav-group-tools {
     opacity: 1;
 }
 
-/* 站点笔记入口（#477）：与设置同一套「悬停浮出」，
-   但**已绑定的那张卡常显** —— 绑了却不显示，用户永远不知道自己绑过。 */
+/* 站点笔记入口（#477）：与设置按钮同一套「悬停 / 键盘聚焦才浮出」。
+   ⚠️ 2026-10-23 用户实测反馈「鼠标不在卡片上时它不消失」—— 根因不是这条规则，
+   是下面 `html.nav-touch` 那套触屏常显：带触摸屏的 Windows 笔记本会同时满足
+   「无悬停指针 + 有触摸点」，于是被判成触屏、三颗浮层按钮全部常显。
+   修法是在文件末尾补一段 `@media (hover: hover)` 反制（见那里），
+   并且**去掉了「已绑定就常显」** —— 用户要的是「不悬停就不显示」。 */
 .nav-note-btn {
     opacity: 0;
 }
 .nav-card-in:hover .nav-note-btn,
-.nav-note-btn:focus-visible,
-.nav-note-btn[data-bound="true"] {
+.nav-note-btn:focus-visible {
     opacity: 1;
 }
 
@@ -1414,3 +1417,23 @@ html.dark .cm-editor .cm-content {
     overflow-x: auto;
 }
 
+/* ⚠️ 2026-10-23：触屏常显那套的兜底反制（用户反馈「鼠标离开卡片后来笔记按钮不消失」）。
+   起因：utils/device.ts 要求「无悬停指针 + 有触摸点」两条都成立才判触屏，
+   而带触摸屏的 Windows 笔记本在触控优先时会同时满足这两条 —— 于是三颗浮层按钮
+   在**明明有鼠标**的机器上常显。判据没法在 JS 里再收紧（那两条就是最可靠的信号），
+   所以在 CSS 里补一层：只要这个环境此刻**真的能悬停**（@media (hover: hover)），
+   就按悬停规则走，忽略 nav-touch。
+   特异性与 nav-touch 那几条相同（0,2,1），靠「排在后面」胜出；
+   真触屏（hover: none）里这段整体不生效，常显照旧。 */
+@media (hover: hover) {
+    html.nav-touch .nav-note-btn,
+    html.nav-touch .nav-settings-btn {
+        opacity: 0;
+    }
+    html.nav-touch .nav-card-in:hover .nav-note-btn,
+    html.nav-touch .nav-note-btn:focus-visible,
+    html.nav-touch .nav-card-in:hover .nav-settings-btn,
+    html.nav-touch .nav-settings-btn:focus-visible {
+        opacity: 1;
+    }
+}

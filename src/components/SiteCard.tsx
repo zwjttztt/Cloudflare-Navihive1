@@ -470,9 +470,10 @@ const SiteCard = memo(function SiteCard({
         );
 
     // 站点笔记入口（#477）：右上角第三个浮层控件，排在星标左边（right = 8 + 28 + 6 + 28 + 6）。
-    //   - 已绑定：常显 + 强调色，点一下直接打开那篇笔记。**常显是刻意的** ——
-    //     否则「这张卡片有没有笔记」只能靠逐个悬停才发现，等于白绑。
-    //   - 未绑定：悬停浮出（与设置/星标同一套），点一下打开选择器。
+    //   - 已绑定：强调色，点一下**先弹预览**（正文只读），弹窗里点「编辑」才跳进记事本。
+    //   - 未绑定：点一下打开选择器。
+    // 两种状态都是「悬停 / 键盘聚焦才浮出」—— 用户明确要求不要常显（2026-10-23）：
+    // 原来「已绑定就常显」被当成「鼠标移开了按钮还不消失」报了回来。
     // 与设置、星标一样只在卡片/图标墙两种版式出现：列表视图那一行窄到放不下第三个
     // 浮层控件（浮出来的快捷条就占着右侧了）。
     const boundNoteId = site.note_id ?? null;
@@ -482,10 +483,8 @@ const SiteCard = memo(function SiteCard({
         e.stopPropagation(); // 不要冒泡到 CardActionArea，否则会顺带打开网页
         e.preventDefault();
         if (!notesBridge) return;
-        if (boundNoteId != null) {
-            notesBridge.open(boundNoteId);
-            return;
-        }
+        // 已绑定时**不再**直接跳进记事本：先弹预览，让用户在导航页上看一眼正文
+        // （2026-10-23 用户要求）。跳转发生在预览弹窗的「编辑」按钮上。
         setShowNoteDialog(true);
     };
 
@@ -501,10 +500,10 @@ const SiteCard = memo(function SiteCard({
                 size='small'
                 aria-label={
                     boundNoteId != null
-                        ? `打开笔记：${boundNoteTitle || "未命名笔记"}`
+                        ? `查看笔记：${boundNoteTitle || "未命名笔记"}`
                         : "绑定笔记"
                 }
-                title={boundNoteId != null ? boundNoteTitle || "未命名笔记" : "绑定笔记"}
+                title={boundNoteId != null ? `笔记：${boundNoteTitle || "未命名笔记"}` : "绑定笔记"}
                 onClick={handleNoteClick}
                 onPointerEnter={prefetchSiteNote}
                 onFocus={prefetchSiteNote}
