@@ -1352,6 +1352,14 @@ html.nav-touch .nav-star-btn[data-starred="false"] {
     opacity: 0.38;
     transition: opacity var(--dur-fast) ease;
 }
+/* 专注模式 + 即时渲染（2026-10-23 用户报「专注模式没效果」）：
+   当前段落以外的段落被整块换成 widget，那些行没有 .cm-line 可挂淡化类，
+   所以淡化要直接落在 widget 本体上（NoteEditor 在编辑器根上开关 .cm-focus-on）。
+   同一档 0.38：两种渲染态看起来才是一回事。 */
+.cm-editor.cm-focus-on .note-live-block {
+    opacity: 0.38;
+    transition: opacity var(--dur-fast) ease;
+}
 
 /* 编辑区的光标颜色与鼠标指针（2026-10-21 首报「第八行里看不见」；2026-10-22 用户
    复报并点名方案：「灰色渲染块内是浅色、块外是蓝的，把它都变成蓝色显眼一些」）。

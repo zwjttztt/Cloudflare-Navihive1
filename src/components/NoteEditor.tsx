@@ -596,9 +596,19 @@ export default function NoteEditor({
         const view = viewRef.current;
         if (!view) return;
         if (!focusMode) {
+            view.dom.classList.remove("cm-focus-on");
             view.dispatch({ effects: setFocusEffect.of(null) });
             return;
         }
+        /**
+         * ⚠️ 2026-10-23 用户报「专注模式没效果」—— 只在**即时渲染开着**时复现：
+         * 当前段落以外的段落被整块换成 widget（`.note-live-block`），那些行连
+         * `.cm-line` 元素都没有了，`Decoration.line` 挂的 `.cm-focus-dimmed`
+         * 自然无处可挂。所以这里额外在编辑器根上开一个 `cm-focus-on`，
+         * 由 CSS 把 widget 本体一起淡化（同样 0.38，与源码行同一档）。
+         * 用 class 而不是给 widget 加装饰：widget 由另一个 StateField 产出，
+         * 两者耦合反而更容易漂。 */
+        view.dom.classList.add("cm-focus-on");
         const rebuild = () => {
             const range = paragraphRange(view.state, view.state.selection.main.head);
             // ⚠️ 必须用 Decoration.set(...) 造出真正的 **DecorationSet**。
@@ -622,6 +632,7 @@ export default function NoteEditor({
         view.dom.addEventListener("mouseup", onChange);
         return () => {
             focusRebuildRef.current = null;
+            view.dom.classList.remove("cm-focus-on");
             view.dom.removeEventListener("keyup", onChange);
             view.dom.removeEventListener("mouseup", onChange);
         };
