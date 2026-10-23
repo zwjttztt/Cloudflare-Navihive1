@@ -459,7 +459,9 @@ function renderCardWithBridge(
         bound: Array<[number, number | null]>;
         created: Array<[number, string]>;
         got: number[];
-    }
+    },
+    /** 预览正文（默认一段纯文本；附件那条用例会传带附件链接的 markdown） */
+    content = "账号 admin\n密码 123456"
 ) {
     localStorage.clear();
     const bridge: AppConfigContextValue["notesBridge"] = {
@@ -480,7 +482,7 @@ function renderCardWithBridge(
         },
         get: async (noteId: number) => {
             calls.got.push(noteId);
-            return { title: "这个站的登录方式", content: "账号 admin\n密码 123456" };
+            return { title: "这个站的登录方式", content };
         },
     };
     host = document.createElement("div");
@@ -563,4 +565,33 @@ test("#477 未绑定时点入口打开选择器，把笔记列出来", async () 
     });
     assert.ok(calls.listed >= 1, "弹窗打开后要拉一次笔记列表");
     assert.ok(document.body.textContent?.includes("绑定笔记"), "未绑定时弹窗标题是「绑定笔记」");
+});
+
+test("#477 预览里的附件链接要开附件预览弹窗，而不是整页跳走", async () => {
+    // 用户实测（2026-10-23）：预览窗里点 txt 附件，浏览器地址栏直接指向
+    // /api/notes/attachments/<id> —— 因为渲染层那条链路**没挂 AttachmentPreviewProvider**，
+    // AttachmentLink 退回成裸 <a>，点击既不弹窗也不拦默认行为。
+    const calls = emptyCalls();
+    renderCardWithBridge({ note_id: 42, note_title: "带附件的笔记" }, calls, [
+        "看这个附件：[文本文件.txt](/api/notes/attachments/abc123)",
+    ].join(""));
+
+    await act(async () => {
+        byLabel("查看笔记：带附件的笔记")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        await new Promise(r => setTimeout(r, 120));
+    });
+
+    const link = document.querySelector<HTMLAnchorElement>('[data-attachment-link="abc123"]');
+    assert.ok(link, "正文里的本站附件链接要被渲染成 AttachmentLink");
+
+    const event = new MouseEvent("click", { bubbles: true, cancelable: true });
+    await act(async () => {
+        link!.dispatchEvent(event);
+        await new Promise(r => setTimeout(r, 120));
+    });
+    assert.equal(
+        event.defaultPrevented,
+        true,
+        "必须拦下默认行为 —— 不拦的话浏览器整页跳到 /api/notes/attachments/…，记事本都被顶掉"
+    );
 });

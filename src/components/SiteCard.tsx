@@ -2,6 +2,7 @@
 import { useState, useEffect, memo, lazy, Suspense } from "react";
 import { Site } from "../API/http";
 import { prefetchChunk } from "../utils/lazyPrefetch";
+import { dialogChunks } from "../utils/dialogChunks";
 // 卡片设置弹窗按需加载：只有点开某一张卡片时才需要它
 const SiteSettingsModal = lazy(() => import("./SiteSettingsModal"));
 // 右键 / 更多操作菜单按需加载：MUI Menu/Popover/Popper 不进首屏（见该文件顶部注释）
@@ -478,7 +479,14 @@ const SiteCard = memo(function SiteCard({
     // 浮层控件（浮出来的快捷条就占着右侧了）。
     const boundNoteId = site.note_id ?? null;
     const boundNoteTitle = site.note_title || "";
-    const prefetchSiteNote = () => prefetchChunk("siteNote", () => import("./SiteNoteDialog"));
+    const prefetchSiteNote = () => {
+        prefetchChunk("siteNote", dialogChunks.siteNote);
+        // ⚠️ 同时预取**记事本整块**（330 KB + 编辑器 / markdown 依赖）。
+        // 不预取的话，用户读完预览点「编辑」才开始下载那一串，体感就是
+        // 「点了没反应、几秒后才跳」（2026-10-23 用户实测）。悬停这一刻
+        // 已经是明确的意图信号，而且 prefetchChunk 幂等，多调几次不重复下。
+        prefetchChunk("notesOverlay", dialogChunks.notesOverlay);
+    };
     const handleNoteClick = (e: React.MouseEvent) => {
         e.stopPropagation(); // 不要冒泡到 CardActionArea，否则会顺带打开网页
         e.preventDefault();

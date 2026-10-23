@@ -33,6 +33,15 @@ export const dialogChunks = {
     siteSettings: () => import("../components/SiteSettingsModal"),
     // 卡片上的「笔记」入口（#477 站点↔笔记绑定）—— 悬停卡片角上那个笔记按钮时取
     siteNote: () => import("../components/SiteNoteDialog"),
+    /**
+     * 记事本整块（#477 预览窗的「编辑」要跳进去）。
+     *
+     * ⚠️ 这块是**最贵的一次跳转**：NotesOverlay 本体 330 KB，还会连带拉
+     * 编辑器（564 KB）与 markdown 依赖。不预取的话点「编辑」才开始下载，
+     * 用户看到的就是「点了没反应、过好几秒才跳」。
+     * 悬停笔记按钮（= 有意图）与预览窗一打开就取，点下去那天基本已经备好。
+     */
+    notesOverlay: () => import("../components/NotesOverlay"),
     // 其余低频弹窗（idle 兜底预取用）
     groupShare: () => import("../components/GroupShareDialog"),
     tagManager: () => import("../components/TagManagerDialog"),

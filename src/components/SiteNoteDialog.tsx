@@ -46,6 +46,13 @@ import { useAppConfig } from "../context/appConfigStore";
 import { useNotify } from "../context/NotifyContext";
 import { renderMarkdownToReact } from "../utils/markdownToReact";
 import {
+    AttachmentPreviewProvider,
+    type AttachmentPreviewRequest,
+} from "../utils/attachmentPreview";
+import AttachmentPreviewDialog from "./AttachmentPreviewDialog";
+import { prefetchChunk } from "../utils/lazyPrefetch";
+import { dialogChunks } from "../utils/dialogChunks";
+import {
     dialogActionsSx,
     dialogContentSx,
     dialogPaperSx,
@@ -76,6 +83,26 @@ export default function SiteNoteDialog({ site, onClose }: Props) {
     const [query, setQuery] = useState("");
     const [busy, setBusy] = useState(false);
     const [preview, setPreview] = useState<Preview>({ status: "loading" });
+
+    /**
+     * 正文里点附件链接（txt / json / 图片…）走这个弹窗 —— 与记事本里那一套**同一个组件**。
+     *
+     * ⚠️ 不挂 Provider 的话，`AttachmentLink` 会退回成裸 `<a href="/api/notes/attachments/…">`：
+     * 点一下既不开预览、也没人拦默认行为，整页会被顶走（2026-10-23 用户实测
+     * 「预览里的 txt 附件点了还是停在预览窗」就是这个 —— 因为没有 Provider 时
+     * 那条点击根本没被接管）。控制器对象引用必须稳定，否则整棵渲染树跟着重渲染。
+     */
+    const [attachmentTarget, setAttachmentTarget] = useState<AttachmentPreviewRequest | null>(null);
+    const attachmentController = useMemo(
+        () => ({ open: (request: AttachmentPreviewRequest) => setAttachmentTarget(request) }),
+        []
+    );
+
+    // 触屏上没有 hover，卡片那颗按钮的预取永远不会触发 —— 预览窗一打开就先备好记事本
+    // 整块（「编辑」要跳进去，是这里最贵的一次下载）。
+    useEffect(() => {
+        prefetchChunk("notesOverlay", dialogChunks.notesOverlay);
+    }, []);
 
     // 选择器列表：只在真的切到「选择」时才拉（只是看看预览就不该多打一次请求）
     useEffect(() => {
@@ -258,9 +285,11 @@ export default function SiteNoteDialog({ site, onClose }: Props) {
                                 这篇笔记还是空的。点「编辑」去写点什么。
                             </Typography>
                         ) : (
-                            <Box className='note-preview-body' sx={{ fontSize: 14, lineHeight: 1.75 }}>
-                                {preview.body}
-                            </Box>
+                            <AttachmentPreviewProvider value={attachmentController}>
+                                <Box className='note-preview-body' sx={{ fontSize: 14, lineHeight: 1.75 }}>
+                                    {preview.body}
+                                </Box>
+                            </AttachmentPreviewProvider>
                         )}
                     </Box>
                 ) : (
@@ -405,6 +434,14 @@ export default function SiteNoteDialog({ site, onClose }: Props) {
                     </Button>
                 )}
             </DialogActions>
+
+            {/* 附件预览（只读）：这个弹窗没有 uploadApi，所以不给「编辑 / 重命名」，
+                正文预览本来也强调是「看一眼」，要改就点「编辑」进记事本。 */}
+            <AttachmentPreviewDialog
+                target={attachmentTarget}
+                onClose={() => setAttachmentTarget(null)}
+                onNotify={notify}
+            />
         </Dialog>
     );
 }

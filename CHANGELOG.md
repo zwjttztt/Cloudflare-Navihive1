@@ -6,6 +6,44 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。---
 
+## 2026-10-23 · 修复：预览窗「编辑」跳转慢 + 预览里的附件链接整页跳走
+
+**要点**
+- 点预览窗的「编辑」不再干等：悬停卡片上那颗笔记按钮时就把记事本整块预取下来。
+- 预览正文里的 txt / json 等附件，点开**在弹窗里看**，不再把整页顶到 `/api/notes/attachments/…`。
+
+**修复一：点「编辑」要等很久**
+记事本是一整块懒加载：`NotesOverlay` 本体 315 KB，还会连带拉编辑器（564 KB）
+与 markdown 依赖。原来点「编辑」才开始下载那一串，用户看到的就是「点了没反应、
+几秒后才跳」。而 App 那层的 `ChunkBoundary` 用的是 `fallback={null}`
+（2026-10-17 用户明确要求「不要转圈」），所以这段时间连个指示都没有。
+
+修法沿用同一套思路 —— **把下载挪到点击之前**，而不是加转圈：
+- 悬停（或键盘聚焦）卡片上那颗笔记按钮时，`prefetchChunk` 同时取
+  `siteNote`（弹窗本体）与 `notesOverlay`（记事本整块）。悬停已经是明确的意图信号。
+- 预览窗一挂载再补一次 `notesOverlay`：触屏上没有 hover，那次预取永远不会发生。
+- `prefetchChunk` 幂等，两条路重复调不会重复下载。
+核对过产物：`NotesOverlay` 仍然只有一个块（314.7 KB），没有因为多一条动态边而复制。
+
+**修复二：预览里的附件点了整页跳走**
+预览正文是用 `renderMarkdownToReact` 渲的，而这条链路**没挂
+`AttachmentPreviewProvider`** —— `AttachmentLink` 于是按设计退回成裸
+`<a href="/api/notes/attachments/…">`（那是给分享页用的分支），点击既不弹窗、
+也没人拦默认行为，浏览器整页跳到附件地址。
+现在预览窗里挂上同一个 Provider + 同一个 `AttachmentPreviewDialog`
+（与记事本里点附件是**同一个组件**），只是不给 `onSaveContent` / `onRename`
+—— 预览本来就是只读的，要改点「编辑」进记事本。
+
+**守卫**
+`tests/siteCard.dom.test.tsx` 新增一条：预览正文里放一个
+`[文本文件.txt](/api/notes/attachments/abc123)`，点它必须
+`defaultPrevented === true`（不拦就是整页跳走），并断言它被渲染成
+`AttachmentLink` 而不是裸 `<a>`。
+
+**门禁**
+`tsc -b --force` 0 error；lint 0 error；单测全绿（+1）；build；体积预算 10/10；
+冒烟全通过。
+
 ## 2026-10-23 · 修复：卡片笔记入口浮层不消失 + 交互改成「先预览再编辑」
 
 **要点**
