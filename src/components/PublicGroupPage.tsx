@@ -63,7 +63,9 @@ export default function PublicGroupPage({ token }: { token: string }) {
     if (state === "not-found" || notFound) {
         return (
             <Centered>
-                <Typography variant='h6'>分享不存在或已过期</Typography>
+                {/* 与笔记分享页（PublicNotePage）用同一句：同一个处境两种说法，
+                    用户会以为「已过期」和「已撤销」是两回事 */}
+                <Typography variant='h6'>分享不存在、已过期或已撤销</Typography>
                 <Typography variant='body2' color='text.secondary'>
                     链接可能已被撤销，或内容已被删除。
                 </Typography>

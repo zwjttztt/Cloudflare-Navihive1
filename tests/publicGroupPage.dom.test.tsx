@@ -174,7 +174,7 @@ test("组件不看 HTTP 状态码：就算响应带 401，只要 body.status 是
     mount();
     await waitFor("分组内容出现", () => pageText().includes("分享验收分组"));
     assert.equal(document.querySelector("input[aria-label='访问口令']"), null, "不该弹口令框");
-    assert.ok(!pageText().includes("分享不存在或已过期"), "不该判成不存在");
+    assert.ok(!pageText().includes("分享不存在、已过期或已撤销"), "不该判成不存在");
 });
 
 test("口令对：POST 成功 → 显示分组内容", async () => {
@@ -216,7 +216,7 @@ test("撤销或过期：HTTP 200 + { status: 'not-found' } → 显示不存在",
     // 同样是 200：照笔记分享那套「404 才算不存在」的写法这里会漏判。
     stubFetch([{ status: "not-found" }]);
     mount();
-    await waitFor("不存在提示出现", () => pageText().includes("分享不存在或已过期"));
+    await waitFor("不存在提示出现", () => pageText().includes("分享不存在、已过期或已撤销"));
     assert.equal(document.querySelector("input[aria-label='访问口令']"), null, "不存在不该弹口令框");
 });
 
@@ -226,5 +226,5 @@ test("网络层抛错：也走「不存在」分支，不白屏", async () => {
     }) as unknown as typeof fetch;
     mount();
     for (let i=0;i<3;i++){ await act(async()=>{await new Promise(r=>setTimeout(r,30));}); console.error("DBG text=", JSON.stringify(pageText().slice(0,200))); }
-    await waitFor("不存在提示出现", () => pageText().includes("分享不存在或已过期"));
+    await waitFor("不存在提示出现", () => pageText().includes("分享不存在、已过期或已撤销"));
 });
