@@ -162,12 +162,7 @@ export interface NotesPageProps {
      *
      * 不传 = 状态栏不显示站点那一项（老调用方照常工作）。
      */
-    siteLinkApi?: {
-        /** 站点还存在就返回名字；站点已被删（site_id 悬空）返回 null */
-        resolve: (siteId: number) => { id?: number; name: string } | null;
-        /** 关掉记事本并滚到那张卡片（App 的 jumpToSite，会闪一下轮廓） */
-        open: (siteId: number) => void;
-    };
+    siteLinkApi?: NotesSiteLinkApi;
     /**
      * 记事本备份能力（2026-10-09 照 inkstone 的 BackupSettings）。
      *
@@ -333,7 +328,7 @@ import NotesOverlayLayer from "./notes/NotesOverlayLayer";
 import NotesConfirmLayer from "./notes/NotesConfirmLayer";
 import NoteTemplateMenu from "./notes/NoteTemplateMenu";
 import { noteTemplateDraft, type NoteTemplateId } from "../utils/noteTemplates";
-import type { NotesPageCtx } from "./notes/notesPageCtx";
+import type { NotesPageCtx, NotesSiteLinkApi } from "./notes/notesPageCtx";
 import type { Pane } from "./notes/notesPageCtx";
 
 import { AUTO_SAVE_MS, MAX_RATIO, MIN_RATIO, SPLIT_KEY, ColResizeHandle, readPaneRatio, readSplitRatio, useColumnResize, writePaneRatio } from "./notes/paneChrome";
@@ -398,6 +393,11 @@ export default function NotesPage({
      * null = 关着。
      */
     const [previewTarget, setPreviewTarget] = useState<AttachmentPreviewRequest | null>(null);
+    /**
+     * 右键「绑定网站…」选中的那条笔记（2026-10-23 用户要求：绑定不止能从卡片发起）。
+     * null = 弹窗关着。真正的选择器在 notes/NoteSiteDialog.tsx。
+     */
+    const [bindSiteNoteId, setBindSiteNoteId] = useState<number | null>(null);
     /**
      * 给 context 的控制器。⚠️ 空依赖 + useMemo：对象引用必须稳定，
      * 否则每次渲染都是新 value，整棵预览子树跟着重渲染（树很大）。
@@ -2555,6 +2555,8 @@ export default function NotesPage({
      */
     const paneBase = {
         SIDE_SPLIT_KEY,
+        bindSiteNoteId,
+        setBindSiteNoteId,
         accountName,
         active,
         activeFolder,
@@ -2716,6 +2718,7 @@ export default function NotesPage({
         setView,
         settingsOpen,
         shareApi,
+        siteLinkApi,
         sideDirty,
         sideDraft,
         sideId,

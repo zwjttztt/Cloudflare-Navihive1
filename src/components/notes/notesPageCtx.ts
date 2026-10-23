@@ -26,6 +26,31 @@ import type { NoteShareApi } from "../NoteShareDialog";
 import type { NoteEditorHandle } from "../../utils/noteEditorHandle";
 import type { TrashedNote } from "../../hooks/useNotes";
 
+/**
+ * 站点侧提供给记事本的能力（#477 双向绑定的**笔记那一侧**）。
+ *
+ * 站名 / 站点清单都不在记事本手里 —— 那是 App 的分组树。所以两边通过这个口子
+ * 对接：记事本负责「我要什么」，App 负责「从内存里查」。
+ *
+ * 2026-10-23 扩了 list / bind：笔记右键加了「绑定网站…」，方向反过来也要能绑。
+ */
+export interface NotesSiteLinkApi {
+    /** 站点还存在就返回名字；站点已被删（site_id 悬空）返回 null */
+    resolve: (siteId: number) => { id?: number; name: string } | null;
+    /** 关掉记事本并滚到那张卡片（App 的 jumpToSite，会闪一下轮廓） */
+    open: (siteId: number) => void;
+    /** 全部网站；带 note_id / note_title 便于选择器提示「这个站已经绑了『X』」 */
+    list: () => { id?: number; name: string; note_id?: number | null; note_title?: string | null }[];
+    /**
+     * 绑定关系变了，让 App 重取一次卡片数据。
+     *
+     * ⚠️ 这里**只刷新、不写入**：写库由笔记自己走 `onUpdate(noteId, { site_id })` ——
+     * 那条路会同时更新记事本本地的 notes 状态（状态栏那行「绑在哪个站」立刻变），
+     * 再在这里二次写一遍只会多打一次请求，还会让两边的乐观更新打架。
+     */
+    refresh: () => void;
+}
+
 /** 把编辑区拆成「源码 | 预览」两栏 */
 export type Pane = "edit" | "split" | "preview";
 
@@ -179,7 +204,10 @@ export interface NotesPageCtx {
     setActiveTag: React.Dispatch<React.SetStateAction<number | null>>;
     setAppearanceFolderId: React.Dispatch<React.SetStateAction<number | null>>;
     setAttManagerOpen: React.Dispatch<React.SetStateAction<boolean>>;
+    /** 右键「绑定网站…」选中的笔记 id（null = 弹窗关着） */
+    bindSiteNoteId: number | null;
     setBacklinkAnchor: React.Dispatch<React.SetStateAction<HTMLElement | null>>;
+    setBindSiteNoteId: React.Dispatch<React.SetStateAction<number | null>>;
     setBacklinksOpen: React.Dispatch<React.SetStateAction<boolean>>;
     setBulkDeleteOpen: React.Dispatch<React.SetStateAction<boolean>>;
     setChecked: React.Dispatch<React.SetStateAction<Set<number>>>;
@@ -232,6 +260,8 @@ export interface NotesPageCtx {
     sideSplitRatioRef: React.RefObject<number>;
     sideTick: number;
     sideTools: { undoableInsert: (tool: string, build: (value: string) => { next: string; at: number; snippet: string; caret: number; selEnd: number; } | null) => void; insertAtCursor: (before: string, after: string, placeholder: string) => void; setHeadingLevel: (level: number) => void; insertCallout: (type: string) => void; insertFootnoteRef: () => void; applyCodeLanguage: (lang: string) => void; applyTable: (op: TableOp) => void; applyFormula: (kind: "inline" | "block" | "inlineTex" | "blockTex") => void; toggleLinePrefix: (prefix: string) => void; insertBlock: (tool: string, block: string) => void; onInsertEmbed: () => void; onInsertBlockRef: () => void; onInsertBlockId: () => void; onInsertFrontMatter: () => void; onInsertTag: () => void; onInsertWikiLink: () => void; onInsertHiddenComment: () => void; onInsertFold: () => void; onInsertTabs: () => void; onInsertDivider: () => void; jumpToOffset: (offset: number) => void; };
+    /** 站点侧能力（#477）：状态栏反查 + 右键「绑定网站…」的选择器都要它 */
+    siteLinkApi: NotesSiteLinkApi | undefined;
     sortAnchor: HTMLElement | null;
     sortKey: "title" | "default" | "created";
     splitBoxRef: React.RefObject<HTMLDivElement | null>;

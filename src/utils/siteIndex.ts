@@ -13,8 +13,9 @@
 //
 // ⚠️ 别在这个文件里 import 任何会带进 Markdown / 编辑器的东西：
 // App（首屏）直接 import 本模块，加一个 markdown-it 就是首屏 +105 KB。
-// ⚠️ 只从 siteMatch 引（不碰 Markdown）：本模块被 App 直接 import，
-// 引了 siteNoteLink 会把 markdown-it 拽进首屏（详见 siteMatch.ts 头注）。
+// ⚠️ 只从 siteMatch 引（不碰 Markdown）：本模块被 App 直接 import。
+// （2026-10-23 起「正文提到站名就算相关」那套已删 —— 用户要的是显式绑定，
+//  所以这里更没理由去碰 Markdown 了，详见 siteMatch.ts 头注。）
 import { findSiteByTarget, type SiteLinkRef } from "./siteMatch";
 
 let index: readonly SiteLinkRef[] = [];

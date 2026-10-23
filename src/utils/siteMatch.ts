@@ -3,10 +3,11 @@
 //
 // ⚠️ 为什么它必须是一个**独立文件**、而且不许 import 任何东西：
 // `src/utils/siteIndex.ts`（模块级站点索引）要用到这里的 `findSiteByTarget`，
-// 而 siteIndex 是 **App（首屏）** 直接 import 的。「笔记正文里有没有提到站点」
-// 那种要解析 Markdown 的判据在 `siteNoteLink.ts` 里（它依赖 markdown-it，约 105 KB），
-// 两者放在同一个文件的话，首屏就会因为「只是想在点击时认出站名」而背上整个
-// markdown-it —— 实测首屏从 852 KB 涨到 971 KB（gzip +50 KB）。
+// 而 siteIndex 是 **App（首屏）** 直接 import 的。任何要解析 Markdown 的判据
+// （历史上那个 `siteNoteLink.ts` 就是）都不能并进来：首屏会为了「点击时认出站名」
+// 背上整个 markdown-it —— 实测首屏从 852 KB 涨到 971 KB（gzip +50 KB）。
+// ⚠️ 2026-10-23 起那套「正文提到站名就算相关」的启发式已整个删掉（用户要显式绑定），
+// 但这条约束继续有效：以后谁想往这里加 Markdown 逻辑，先读这段。
 //
 // 一句话：**名字/网址匹配不碰 Markdown，碰 Markdown 的不许进首屏。**
 /** 站点侧需要的最小信息 */

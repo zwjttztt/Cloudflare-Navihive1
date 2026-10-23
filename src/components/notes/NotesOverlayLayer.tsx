@@ -8,6 +8,7 @@ import Divider from "@mui/material/Divider";
 import Menu from "@mui/material/Menu";
 import MenuItem from "@mui/material/MenuItem";
 import FolderIcon from "@mui/icons-material/Folder";
+import LanguageIcon from "@mui/icons-material/Language";
 import ArchiveIcon from "@mui/icons-material/Archive";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutlined";
 
@@ -29,13 +30,14 @@ import FileDownloadIcon from "@mui/icons-material/FileDownload";
 import FolderAppearanceDialog from "../FolderAppearanceDialog";
 import TagColorDialog from "../TagColorDialog";
 import MoveFolderDrawer from "../MoveFolderDrawer";
+import NoteSiteDialog from "./NoteSiteDialog";
 import NotesSettingsDialog from "../NotesSettingsDialog";
 import { tagOf } from "../notes/sidebarSection";
 
 import type { NotesPageCtx } from "./notesPageCtx";
 
-export default function NotesOverlayLayer(props: Pick<NotesPageCtx, "active" | "activeMenuAnchor" | "appearanceFolderId" | "attachmentRefCounts" | "backlinks" | "backupApi" | "closeRowMenu" | "copyText" | "dirty" | "exportAllData" | "exportAllZip" | "exportAnchor" | "exportHtmlOne" | "exportOne" | "exportPdfOne" | "exportPick" | "exportTarget" | "folderTags" | "folders" | "importNotesFile" | "jumpToNote" | "liveRender" | "moveDrawerNoteId" | "narrowLayout" | "noteLink" | "noteTags" | "noteWordTotal" | "notes" | "onClose" | "onDatasetChanged" | "onDelete" | "onEmptyTrash" | "onNotify" | "onToggleArchive" | "onTogglePin" | "onToggleStar" | "onUpdate" | "openInSide" | "openRevisions" | "outgoingLinks" | "outlineOpen" | "pane" | "rowMenu" | "save" | "setActiveId" | "setActiveMenuAnchor" | "setAppearanceFolderId" | "setBacklinkAnchor" | "setExportAnchor" | "setExportPick" | "setGraphOpen" | "setLiveRender" | "setMobileDetail" | "setMoveDrawerNoteId" | "setOutlineOpen" | "setSettingsOpen" | "setShareId" | "setSortAnchor" | "setSortKey" | "setTagColorId" | "setTagPick" | "setUiSettings" | "settingsOpen" | "shareApi" | "sideId" | "sortAnchor" | "sortKey" | "tagColorId" | "tagPick" | "tags" | "textareaRef" | "trashedNotes" | "uiSettings" | "uploadApi" | "userClearedRef" | "setZenMode">) {
-    const { active, activeMenuAnchor, appearanceFolderId, attachmentRefCounts, backlinks, backupApi, closeRowMenu, copyText, dirty, exportAllData, exportAllZip, exportAnchor, exportHtmlOne, exportOne, exportPdfOne, exportPick, exportTarget, folderTags, folders, importNotesFile, jumpToNote, liveRender, moveDrawerNoteId, narrowLayout, noteLink, noteTags, noteWordTotal, notes, onDatasetChanged, onDelete, onEmptyTrash, onNotify, onToggleArchive, onTogglePin, onToggleStar, onUpdate, openInSide, openRevisions, outgoingLinks, outlineOpen, pane, rowMenu, save, setActiveId, setActiveMenuAnchor, setAppearanceFolderId, setBacklinkAnchor, setExportAnchor, setExportPick, setGraphOpen, setLiveRender, setMobileDetail, setMoveDrawerNoteId, setOutlineOpen, setSettingsOpen, setShareId, setSortAnchor, setSortKey, setTagColorId, setTagPick, setUiSettings, settingsOpen, shareApi, sideId, sortAnchor, sortKey, tagColorId, tagPick, tags, textareaRef, trashedNotes, uiSettings, uploadApi, userClearedRef, setZenMode } = props;
+export default function NotesOverlayLayer(props: Pick<NotesPageCtx, "active" | "activeMenuAnchor" | "appearanceFolderId" | "attachmentRefCounts" | "backlinks" | "backupApi" | "bindSiteNoteId" | "closeRowMenu" | "copyText" | "dirty" | "exportAllData" | "exportAllZip" | "exportAnchor" | "exportHtmlOne" | "exportOne" | "exportPdfOne" | "exportPick" | "exportTarget" | "folderTags" | "folders" | "importNotesFile" | "jumpToNote" | "liveRender" | "moveDrawerNoteId" | "narrowLayout" | "noteLink" | "noteTags" | "noteWordTotal" | "notes" | "onClose" | "onDatasetChanged" | "onDelete" | "onEmptyTrash" | "onNotify" | "onToggleArchive" | "onTogglePin" | "onToggleStar" | "onUpdate" | "openInSide" | "openRevisions" | "outgoingLinks" | "outlineOpen" | "pane" | "rowMenu" | "save" | "setActiveId" | "setActiveMenuAnchor" | "setAppearanceFolderId" | "setBacklinkAnchor" | "setBindSiteNoteId" | "setExportAnchor" | "setExportPick" | "setGraphOpen" | "setLiveRender" | "setMobileDetail" | "setMoveDrawerNoteId" | "setOutlineOpen" | "setSettingsOpen" | "setShareId" | "setSortAnchor" | "setSortKey" | "setTagColorId" | "setTagPick" | "setUiSettings" | "settingsOpen" | "shareApi" | "sideId" | "siteLinkApi" | "sortAnchor" | "sortKey" | "tagColorId" | "tagPick" | "tags" | "textareaRef" | "trashedNotes" | "uiSettings" | "uploadApi" | "userClearedRef" | "setZenMode">) {
+    const { active, activeMenuAnchor, appearanceFolderId, attachmentRefCounts, backlinks, backupApi, bindSiteNoteId, closeRowMenu, copyText, dirty, exportAllData, exportAllZip, exportAnchor, exportHtmlOne, exportOne, exportPdfOne, exportPick, exportTarget, folderTags, folders, importNotesFile, jumpToNote, liveRender, moveDrawerNoteId, narrowLayout, noteLink, noteTags, noteWordTotal, notes, onDatasetChanged, onDelete, onEmptyTrash, onNotify, onToggleArchive, onTogglePin, onToggleStar, onUpdate, openInSide, openRevisions, outgoingLinks, outlineOpen, pane, rowMenu, save, setActiveId, setActiveMenuAnchor, setAppearanceFolderId, setBacklinkAnchor, setBindSiteNoteId, setExportAnchor, setExportPick, setGraphOpen, setLiveRender, setMobileDetail, setMoveDrawerNoteId, setOutlineOpen, setSettingsOpen, setShareId, setSortAnchor, setSortKey, setTagColorId, setTagPick, setUiSettings, settingsOpen, shareApi, sideId, siteLinkApi, sortAnchor, sortKey, tagColorId, tagPick, tags, textareaRef, trashedNotes, uiSettings, uploadApi, userClearedRef, setZenMode } = props;
     return (
         <>
             <NotesSettingsDialog
@@ -198,6 +200,17 @@ export default function NotesOverlayLayer(props: Pick<NotesPageCtx, "active" | "
                                     <FolderIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
                                     移动到文件夹…
                                 </MenuItem>
+                                <MenuItem
+                                    data-row-op='bind-site'
+                                    onClick={() => {
+                                        const id = note.id;
+                                        closeRowMenu();
+                                        if (id !== undefined) setBindSiteNoteId(id);
+                                    }}
+                                >
+                                    <LanguageIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
+                                    绑定网站…
+                                </MenuItem>
                                 <MenuItem data-row-op='archive' onClick={() => void done(() => onToggleArchive(note))}>
                                     <ArchiveIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
                                     {note.archived ? "取消归档" : "归档"}
@@ -237,6 +250,17 @@ export default function NotesOverlayLayer(props: Pick<NotesPageCtx, "active" | "
                             <MenuItem data-row-op='folder' onClick={moveToFolder}>
                                 <FolderIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
                                 移动到文件夹…
+                            </MenuItem>
+                            <MenuItem
+                                data-row-op='bind-site'
+                                onClick={() => {
+                                    const id = note.id;
+                                    closeRowMenu();
+                                    if (id !== undefined) setBindSiteNoteId(id);
+                                }}
+                            >
+                                <LanguageIcon fontSize='small' sx={{ mr: 1, fontSize: 16, opacity: 0.7 }} />
+                                绑定网站…
                             </MenuItem>
                             <MenuItem
                                 data-row-op='tags'
@@ -308,6 +332,37 @@ export default function NotesOverlayLayer(props: Pick<NotesPageCtx, "active" | "
                     </MenuItem>
                 ))}
             </Menu>
+
+            {/* 笔记 → 网站的绑定弹窗（2026-10-23 用户要求：右键菜单里也能绑）。
+                与卡片那一侧同一件事、同一个真相（notes.site_id），只是方向相反。 */}
+            {bindSiteNoteId !== null && siteLinkApi
+                ? (() => {
+                      const target = notes.find(n => n.id === bindSiteNoteId);
+                      if (!target) return null;
+                      return (
+                          <NoteSiteDialog
+                              note={target}
+                              siteLinkApi={siteLinkApi}
+                              onBind={async siteId => {
+                                  // 走笔记自己的更新通道：库 + 本地 notes 一起变
+                                  const ok = await onUpdate(target.id as number, { site_id: siteId });
+                                  // ⚠️ onUpdate 撞上并发冲突会返回 false —— 那时候
+                                  // 库没改成，不能给「已绑定」的假回执
+                                  if (ok === false) throw new Error("保存失败：这条笔记可能刚在别处被改过");
+                                  // 卡片上的 note_id / note_title 是查出来的，得重取
+                                  siteLinkApi.refresh();
+                              }}
+                              onUnbind={async () => {
+                                  const ok = await onUpdate(target.id as number, { site_id: null });
+                                  if (ok === false) throw new Error("保存失败：这条笔记可能刚在别处被改过");
+                                  siteLinkApi.refresh();
+                              }}
+                              onClose={() => setBindSiteNoteId(null)}
+                              onNotify={onNotify}
+                          />
+                      );
+                  })()
+                : null}
 
             {/* 「移动到文件夹」右侧抽屉（inkstone 的做法：右侧滑出、带搜索） */}
             <MoveFolderDrawer

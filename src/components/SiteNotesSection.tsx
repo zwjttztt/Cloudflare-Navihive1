@@ -1,92 +1,107 @@
 // src/components/SiteNotesSection.tsx
-// 站点设置里的「相关笔记」一小节 —— D2 双向绑定的**站点那一侧**。
+// 站点设置里的「相关笔记」一小节 —— 站点↔笔记绑定的**站点那一侧**。
 //
-// 两种「相关」，**先说绑定、再说提到**：
-//   ① 真绑定（#477）：卡片上绑的那一篇，`site.note_id` / `note_title` 直接给，
-//      不走搜索。2026-10-23 用户报「卡片绑了笔记、编辑窗口却没相关笔记」——
-//      这一节原来只列「正文里提到它的」，把用户亲手绑的那篇漏在外面。
-//   ② 提到（启发式）：判据在 utils/siteNoteLink.ts —— 笔记正文里写了
-//      `[[这个站名]]`、写了它的网址，或者出现了站名，就算相关。站名/网址的归一化与笔记侧点 `[[站点]]` 时
-// 用的是同一份（utils/siteMatch.ts）—— 两边不会各说各话
-// （「笔记里点得开、站点里列不出」这种最难查）。
+// 2026-10-23 用户定的口径：**每个网站只绑一篇笔记，并且去掉「[[站名]] 自动关联」那套**。
+// 所以这里只剩一件事：显示当前绑的那篇，并且能在这一节里换 / 绑 / 解除。
+// （原来那套启发式「正文里提到了站名或网址就算相关」已整个删掉：它靠不住，
+//   用户还会疑惑「我明明没绑，它怎么冒出来了」。）
+//
+// 为什么绑定入口要在三个地方都有（卡片按钮 / 笔记右键 / 这一节）：
+// 用户的念头可能从任意一头起 —— 「这个站我记过笔记」「这条笔记是给哪个站写的」
+// 「我在编辑这个站，顺手绑一篇」。三处落库都是同一条 `notes.site_id`。
 //
 // ⚠️ 没接上记事本那座桥时不渲染（不是渲染空壳）：功能缺失要看得出来是「没有」，
 // 而不是「有但坏了」。
-import { useEffect, useState } from "react";
-import { Box, Button, CircularProgress, Stack, Typography } from "@mui/material";
+import { useEffect, useMemo, useState } from "react";
+import { Box, Button, CircularProgress, Stack, TextField, Typography } from "@mui/material";
 import NotesIcon from "@mui/icons-material/Notes";
+import LinkOffIcon from "@mui/icons-material/LinkOff";
+import SwapHorizIcon from "@mui/icons-material/SwapHoriz";
 import type { Site } from "../API/http";
 import { useAppConfig } from "../context/appConfigStore";
-import { notesMentioningSite } from "../utils/siteNoteLink";
 import { Section } from "./dialogSection";
 
-interface RelatedNote {
-    id: number;
-    title: string;
-}
+type NoteRow = { id?: number; title: string; site_id?: number | null };
 
 export default function SiteNotesSection({ site }: { site: Site }) {
     const { notesBridge } = useAppConfig();
-    const [notes, setNotes] = useState<RelatedNote[] | null>(null);
-    const [loading, setLoading] = useState(false);
+    const [notes, setNotes] = useState<NoteRow[] | null>(null);
+    const [query, setQuery] = useState("");
+    const [picking, setPicking] = useState(false);
+    const [busy, setBusy] = useState(false);
+    const [bound, setBound] = useState<{ id: number; title: string } | null>(
+        site.note_id != null ? { id: site.note_id, title: site.note_title || "" } : null
+    );
 
-    // 站名 / 网址任一变化都要重算：改了站名之后，老笔记里的 `[[老名字]]`
-    // 就不再指向它了 —— 这是预期的（用户改名就是要切断这条关联）。
-    const name = site.name || "";
-    const url = site.url || "";
+    // 绑完 App 会静默重取卡片数据，site 会带着新的 note_id / note_title 回来
     useEffect(() => {
-        if (!notesBridge || !name) {
-            setNotes(null);
-            return;
-        }
+        setBound(site.note_id != null ? { id: site.note_id, title: site.note_title || "" } : null);
+    }, [site.note_id, site.note_title]);
+
+    // 列表只在真的要选的时候拉（只是看看当前绑了哪篇就不该多发一次请求）
+    useEffect(() => {
+        if (!picking || !notesBridge || notes) return;
         let alive = true;
-        setLoading(true);
         void (async () => {
-            try {
-                const hits = await notesBridge.search(name, 50);
-                if (!alive) return;
-                setNotes(notesMentioningSite(hits, { id: site.id, name, url }));
-            } catch {
-                // 搜索端点不存在 / 网络不通：显示为空，不弹错 ——
-                // 这只是一小节附加信息，不该因为它挡住整屏设置
-                if (alive) setNotes([]);
-            } finally {
-                if (alive) setLoading(false);
-            }
+            const rows = await notesBridge.list();
+            if (alive) setNotes(rows);
         })();
         return () => {
             alive = false;
         };
-    }, [notesBridge, site.id, name, url]);
+    }, [picking, notesBridge, notes]);
+
+    const filtered = useMemo(() => {
+        if (!notes) return [];
+        const q = query.trim().toLowerCase();
+        if (!q) return notes;
+        return notes.filter(n => (n.title || "").toLowerCase().includes(q));
+    }, [notes, query]);
 
     // 没有桥（记事本能力没接上）就整节不渲染
     if (!notesBridge) return null;
 
-    const boundId = site.note_id ?? null;
-    const boundTitle = site.note_title || "";
-    // 已绑定的那篇不再重复出现在「提到它」里（同一个标题出现两次只会让人以为绑了两篇）
-    const mentioned = (notes ?? []).filter(n => n.id !== boundId);
+    const bind = async (note: NoteRow) => {
+        if (busy || note.id == null || site.id == null) return;
+        setBusy(true);
+        try {
+            await notesBridge.bind(note.id, site.id);
+            setBound({ id: note.id, title: note.title || "" });
+            setPicking(false);
+            setQuery("");
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    const unbind = async () => {
+        if (busy || bound == null) return;
+        setBusy(true);
+        try {
+            await notesBridge.bind(bound.id, null);
+            setBound(null);
+        } finally {
+            setBusy(false);
+        }
+    };
 
     return (
         <Section
             title='相关笔记'
-            hint='上面那篇是卡片上绑定的（一个站点最多一篇）；下面列出正文里提到这个站名或网址的笔记。点一下直接跳到那条。'
+            hint='一个网站只绑一篇笔记。绑上之后，卡片右上角那枚笔记按钮点开就是它。'
         >
-            {boundId != null && (
-                <Stack direction='row' spacing={0.75} sx={{ mt: 0.5, alignItems: "center" }}>
+            {bound ? (
+                <Stack direction='row' spacing={0.5} sx={{ mt: 0.5, alignItems: "center", flexWrap: "wrap" }}>
                     <Button
                         size='small'
                         color='inherit'
-                        data-site-note-bound={boundId}
-                        onClick={() => notesBridge.open(boundId)}
-                        sx={{ justifyContent: "flex-start", textAlign: "left", px: 1, minWidth: 0 }}
+                        data-site-note-bound={bound.id}
+                        onClick={() => notesBridge.open(bound.id)}
+                        sx={{ justifyContent: "flex-start", textAlign: "left", px: 1, minWidth: 0, maxWidth: 260 }}
                         startIcon={<NotesIcon fontSize='small' color='primary' />}
                     >
-                        <Box
-                            component='span'
-                            sx={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
-                        >
-                            {boundTitle || "未命名笔记"}
+                        <Box component='span' sx={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {bound.title || "未命名笔记"}
                         </Box>
                     </Button>
                     <Box
@@ -103,46 +118,106 @@ export default function SiteNotesSection({ site }: { site: Site }) {
                     >
                         已绑定
                     </Box>
+                    <Box sx={{ flex: 1 }} />
+                    <Button
+                        size='small'
+                        color='inherit'
+                        startIcon={<SwapHorizIcon />}
+                        data-site-note-swap
+                        onClick={() => setPicking(v => !v)}
+                        disabled={busy}
+                    >
+                        {picking ? "收起" : "换一篇"}
+                    </Button>
+                    <Button
+                        size='small'
+                        color='inherit'
+                        startIcon={<LinkOffIcon />}
+                        data-site-note-unbind
+                        onClick={() => void unbind()}
+                        disabled={busy}
+                    >
+                        解除
+                    </Button>
+                </Stack>
+            ) : (
+                <Stack direction='row' spacing={1} sx={{ mt: 0.5, alignItems: "center" }}>
+                    <Typography variant='caption' color='text.secondary'>
+                        还没有绑定笔记。
+                    </Typography>
+                    <Button
+                        size='small'
+                        data-site-note-bind
+                        onClick={() => setPicking(true)}
+                        disabled={busy || picking}
+                    >
+                        绑定笔记
+                    </Button>
                 </Stack>
             )}
-            {loading && notes === null ? (
-                <Stack direction='row' spacing={1} sx={{ mt: 0.5, alignItems: "center" }}>
-                    <CircularProgress size={14} />
-                    <Typography variant='caption' color='text.secondary'>
-                        正在找提到它的笔记…
-                    </Typography>
-                </Stack>
-            ) : mentioned.length === 0 ? (
-                <Typography variant='caption' color='text.secondary' sx={{ display: "block", mt: 0.75 }}>
-                    {boundId != null ? "没有别的笔记提到它。" : "还没有笔记提到它。"}在笔记里打{" "}
-                    <Box component='span' sx={{ fontFamily: "monospace" }}>[[{name || "站名"}]]</Box>{" "}
-                    可以关联；想让它固定跟着这张卡片，用卡片右上角那颗笔记按钮绑定。
-                </Typography>
-            ) : (
-                <Stack spacing={0.25} sx={{ mt: 0.5 }}>
-                    {mentioned.map(note => (
-                        <Button
-                            key={note.id}
-                            size='small'
-                            color='inherit'
-                            data-site-note={note.id}
-                            onClick={() => notesBridge.open(note.id)}
-                            sx={{ justifyContent: "flex-start", textAlign: "left", px: 1 }}
-                            startIcon={<NotesIcon fontSize='small' />}
-                        >
-                            <Box
-                                component='span'
-                                sx={{
-                                    overflow: "hidden",
-                                    textOverflow: "ellipsis",
-                                    whiteSpace: "nowrap",
-                                }}
+
+            {picking && (
+                <Box sx={{ mt: 1 }}>
+                    <TextField
+                        size='small'
+                        fullWidth
+                        value={query}
+                        onChange={e => setQuery(e.target.value)}
+                        placeholder='按标题筛选笔记'
+                        slotProps={{ htmlInput: { "aria-label": "按标题筛选笔记" } }}
+                    />
+                    <Box
+                        sx={{
+                            mt: 1,
+                            maxHeight: 200,
+                            overflowY: "auto",
+                            border: "1px solid var(--border-subtle)",
+                            borderRadius: "var(--radius-md)",
+                        }}
+                    >
+                        {notes === null ? (
+                            <Stack
+                                direction='row'
+                                spacing={1}
+                                sx={{ alignItems: "center", justifyContent: "center", py: 2.5 }}
                             >
-                                {note.title}
-                            </Box>
-                        </Button>
-                    ))}
-                </Stack>
+                                <CircularProgress size={14} />
+                                <Typography variant='caption' color='text.secondary'>
+                                    正在读取笔记…
+                                </Typography>
+                            </Stack>
+                        ) : filtered.length === 0 ? (
+                            <Typography
+                                variant='caption'
+                                color='text.secondary'
+                                sx={{ display: "block", py: 2.5, textAlign: "center" }}
+                            >
+                                {notes.length === 0 ? "记事本里还没有笔记" : "没有匹配的笔记"}
+                            </Typography>
+                        ) : (
+                            filtered.map(note => (
+                                <Button
+                                    key={note.id}
+                                    size='small'
+                                    color='inherit'
+                                    fullWidth
+                                    data-site-note-pick={note.id}
+                                    disabled={busy || note.id === bound?.id}
+                                    onClick={() => void bind(note)}
+                                    startIcon={<NotesIcon fontSize='small' />}
+                                    sx={{ justifyContent: "flex-start", textAlign: "left", px: 1, borderRadius: 0 }}
+                                >
+                                    <Box
+                                        component='span'
+                                        sx={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                                    >
+                                        {note.title || "未命名笔记"}
+                                    </Box>
+                                </Button>
+                            ))
+                        )}
+                    </Box>
+                </Box>
             )}
         </Section>
     );

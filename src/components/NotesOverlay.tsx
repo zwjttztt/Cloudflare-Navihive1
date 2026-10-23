@@ -18,6 +18,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import NotesPage from "./NotesPage";
 import type { NoteShareApi } from "./NoteShareDialog";
 import { useNotes, type NotesApiLike } from "../hooks/useNotes";
+import type { NotesSiteLinkApi } from "./notes/notesPageCtx";
 import type { Note, NotesBackupSavePatch, NotesBackupState } from "../API/http";
 import { notesBackupFetchResult } from "../utils/notesBackupAdapter";
 import ConfirmDialog from "./ConfirmDialog";
@@ -53,10 +54,7 @@ export interface NotesOverlayProps {
      * 站点侧的两个能力（#477 双向绑定的笔记那一侧）：站名解析 + 跳回卡片。
      * 原样透传给 NotesPage（见那边的 siteLinkApi 注释）。不传就没有状态栏那一项。
      */
-    siteLinkApi?: {
-        resolve: (siteId: number) => { id?: number; name: string } | null;
-        open: (siteId: number) => void;
-    };
+    siteLinkApi?: NotesSiteLinkApi;
 }
 
 export default function NotesOverlay({

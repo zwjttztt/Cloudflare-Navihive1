@@ -1196,8 +1196,29 @@ function App() {
                 setNotesOpen(false);
                 window.setTimeout(() => jumpToSite(siteId), 60);
             },
+            /**
+             * 笔记右键「绑定网站」的选择器要用这份清单（2026-10-23）。
+             * 直接从内存的分组树摊平，不发请求；带上 note_id / note_title 是为了
+             * 在选择器里提醒「这个站已经绑了『X』，绑上会把它换下来」。
+             */
+            list: () =>
+                groups.flatMap(group =>
+                    (group.sites ?? []).map(site => ({
+                        id: site.id,
+                        name: site.name,
+                        note_id: site.note_id ?? null,
+                        note_title: site.note_title ?? null,
+                    }))
+                ),
+            /**
+             * 绑定关系变了 → 重取卡片。写入本身在记事本那边（`onUpdate`），
+             * 这里只负责让卡片上的 note_id / note_title 跟上，别留旧状态。
+             */
+            refresh: () => {
+                void fetchDataRef.current({ silent: true });
+            },
         }),
-        [groups, jumpToSite]
+        [groups, jumpToSite, api]
     );
 
     // 打开备份对话框（0=备份，1=恢复）

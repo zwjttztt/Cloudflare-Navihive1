@@ -2,26 +2,30 @@
 //
 // 站点设置里那一节「相关笔记」。
 //
-// 2026-10-23 用户报「卡片绑了笔记，编辑窗口却没相关笔记」：这一节原来只列
-// **正文里提到它的**笔记（走搜索 + 启发式判据），把用户亲手在卡片上绑的那篇
-// 漏在外面 —— 明明绑成功了，打开设置却像没绑。现在的口径：
-//   ① 已绑定的那篇直接用 site.note_id / note_title 摆在最上面，标「已绑定」，不走搜索；
-//   ② 下面才是「提到它的」，并且**排掉已绑定的那篇**（同一个标题出现两次会让人
-//      以为绑了两篇）；
-//   ③ 一篇都没有时，空态要区分「已绑定但没别的笔记提到」和「一篇都没有」。
+// 2026-10-23 用户定了新口径：**每个网站只绑一篇笔记**，并且**去掉「[[站名]] 自动关联」**。
+// 所以这一节只剩三件事：显示当前绑的那篇、能在这一节里换 / 绑、能解除。
+//
+// 这个文件钉住：
+//   ① 已绑定的那篇要出现、标「已绑定」、点它跳过去；
+//   ② 没绑时给「绑定笔记」入口，点开能列出笔记并选中绑定；
+//   ③ 能解除；
+//   ④ **不许再出现「提到它的笔记」那套启发式**（用户明确要去掉：靠不住，还让人
+//      以为「我没绑它怎么冒出来了」）。
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import SiteNotesSection from "../src/components/SiteNotesSection";
 import { AppConfigProvider } from "../src/context/AppConfigContext";
 import type { AppConfigContextValue } from "../src/context/appConfigStore";
 import type { Site } from "../src/API/http";
+import { readSrcFile, stripComments } from "./helpers/notesSource";
 
 let root: Root | null = null;
 let host: HTMLDivElement | null = null;
 
-type Hit = { id?: number; title: string; content: string };
+type NoteRow = { id?: number; title: string; site_id?: number | null };
 
 const SITE: Site = {
     id: 101,
@@ -34,38 +38,48 @@ const SITE: Site = {
     order_num: 0,
 };
 
-function makeBridge(hits: Hit[], opened: number[]): AppConfigContextValue {
+type Calls = {
+    opened: number[];
+    bound: Array<[number, number | null]>;
+    listed: number;
+};
+
+function makeBridge(rows: NoteRow[], calls: Calls): AppConfigContextValue {
     return {
         iconApi: "",
         thumbApi: "",
         backgroundImage: "",
         backgroundMaskOpacity: "0.15",
         notesBridge: {
-            search: async () => hits,
-            open: (id: number) => opened.push(id),
-            list: async () => hits.map(h => ({ id: h.id, title: h.title, site_id: null })),
-            bind: async () => {},
+            search: async () => [],
+            open: (id: number) => calls.opened.push(id),
+            list: async () => {
+                calls.listed += 1;
+                return rows;
+            },
+            bind: async (noteId: number, siteId: number | null) => {
+                calls.bound.push([noteId, siteId]);
+            },
             createAndBind: async (_siteId: number, title: string) => ({ id: 999, title }),
             get: async () => null,
         },
     };
 }
 
-async function mount(site: Site, hits: Hit[] = []) {
-    const opened: number[] = [];
+async function mount(site: Site, rows: NoteRow[] = []) {
+    const calls: Calls = { opened: [], bound: [], listed: 0 };
     host = document.createElement("div");
     document.body.appendChild(host);
     root = createRoot(host);
     await act(async () => {
         root!.render(
-            <AppConfigProvider value={makeBridge(hits, opened)}>
+            <AppConfigProvider value={makeBridge(rows, calls)}>
                 <SiteNotesSection site={site} />
             </AppConfigProvider>
         );
-        // 那一节要等一次 search 回来
         await new Promise(r => setTimeout(r, 30));
     });
-    return opened;
+    return calls;
 }
 
 function cleanup() {
@@ -76,47 +90,71 @@ function cleanup() {
 }
 
 const q = (sel: string) => document.querySelector<HTMLElement>(sel);
+const click = async (el: HTMLElement) => {
+    await act(async () => {
+        el.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        await new Promise(r => setTimeout(r, 30));
+    });
+};
 
-test("卡片绑了笔记：设置里的「相关笔记」要把它列出来（标「已绑定」）", async () => {
-    const opened = await mount({ ...SITE, note_id: 42, note_title: "这个站的登录方式" }, []);
+test("已绑定：显示那篇笔记、标「已绑定」，点它跳过去", async () => {
+    const calls = await mount({ ...SITE, note_id: 42, note_title: "这个站的登录方式" });
     const bound = q('[data-site-note-bound="42"]');
-    assert.ok(bound, "已绑定的那篇必须出现在这一节里 —— 不然用户以为绑定没成功");
-    assert.ok(
-        (bound!.textContent || "").includes("这个站的登录方式"),
-        "要显示笔记标题，而不是一个空行"
-    );
+    assert.ok(bound, "已绑定的那篇必须出现在这一节里");
+    assert.ok((bound!.textContent || "").includes("这个站的登录方式"), "要显示标题");
     assert.ok(document.body.textContent?.includes("已绑定"), "要标明这是绑定关系");
 
-    act(() => {
-        bound!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    assert.deepEqual(opened, [42], "点它直接跳到那条笔记");
+    await click(bound!);
+    assert.deepEqual(calls.opened, [42], "点它直接跳到那条笔记");
     cleanup();
 });
 
-test("已绑定的那篇不会在「提到它」里重复出现", async () => {
-    // 绑定的笔记正文里往往就写着站名 —— 不去重的话同一个标题会出现两次
-    const hits: Hit[] = [
-        { id: 42, title: "这个站的登录方式", content: "示例站点 的登录方式" },
-        { id: 7, title: "另一条也提到它的", content: "顺便记了 示例站点 的地址" },
-    ];
-    const opened = await mount({ ...SITE, note_id: 42, note_title: "这个站的登录方式" }, hits);
+test("没绑定时点「绑定笔记」：列出笔记并选中绑定", async () => {
+    const calls = await mount(SITE, [
+        { id: 7, title: "第一条", site_id: null },
+        { id: 8, title: "第二条", site_id: null },
+    ]);
+    assert.ok(document.body.textContent?.includes("还没有绑定笔记"), "空态要有");
+    assert.equal(calls.listed, 0, "只是看看就不该拉列表");
 
-    assert.ok(q('[data-site-note-bound="42"]'), "绑定的那篇在最上面");
-    assert.equal(q('[data-site-note="42"]'), null, "它不该再出现在下面的「提到」列表里");
-    assert.ok(
-        q('[data-site-note="7"]'),
-        "别的提到它的笔记照常列出来（去重只去掉已绑定的那一条）"
+    const openBtn = q("[data-site-note-bind]");
+    assert.ok(openBtn, "没绑定时要有「绑定笔记」入口（用户要求这一节里也能绑）");
+    await click(openBtn!);
+    assert.equal(calls.listed, 1, "展开选择器才拉列表");
+
+    const pick = q('[data-site-note-pick="8"]');
+    assert.ok(pick, "列表里要有可选的笔记");
+    await click(pick!);
+    assert.deepEqual(calls.bound, [[8, 101]], "选中即以「笔记 8 → 站点 101」落库");
+    cleanup();
+});
+
+test("已绑定时能解除", async () => {
+    const calls = await mount({ ...SITE, note_id: 42, note_title: "这个站的登录方式" });
+    const unbind = q("[data-site-note-unbind]");
+    assert.ok(unbind, "已绑定时要能解除");
+    await click(unbind!);
+    assert.deepEqual(calls.bound, [[42, null]], "解除 = 把这篇笔记的 site_id 清掉");
+    cleanup();
+});
+
+test("不再有「提到它的笔记」那套启发式（反向守卫）", () => {
+    // 用户明确去掉：[[站名]] 自动关联靠不住，还会让人以为「我没绑怎么冒出来了」。
+    // 谁把启发式加回来，这条先红。
+    // 只看代码，不看注释 —— 文件头正好在解释「为什么把提到那套删了」
+    const src = stripComments(readSrcFile("src/components/SiteNotesSection.tsx"));
+    assert.equal(
+        /notesMentioningSite|noteMentionsSite|siteNoteLink/.test(src),
+        false,
+        "这一节不该再引用「正文提到站名」那套判据"
     );
-    assert.equal(opened.length, 0, "列表渲染本身不该触发跳转");
-    cleanup();
-});
-
-test("没有绑定、也没人提到：空态要说清「怎么绑」", async () => {
-    await mount(SITE, []);
-    assert.equal(q("[data-site-note-bound]"), null);
-    const text = document.body.textContent || "";
-    assert.ok(text.includes("还没有笔记提到它"), "空态文案要在");
-    assert.ok(text.includes("笔记按钮"), "空态要指路到卡片上那颗按钮（新用户唯一的绑定入口）");
-    cleanup();
+    assert.equal(src.includes("提到"), false, "不该再出现「提到它的笔记」这类文案");
+    // 被删掉的那个模块不该又冒出来
+    let stillThere = true;
+    try {
+        readFileSync(new URL("../src/utils/siteNoteLink.ts", import.meta.url), "utf-8");
+    } catch {
+        stillThere = false;
+    }
+    assert.equal(stillThere, false, "utils/siteNoteLink.ts 应该已经被删掉");
 });
