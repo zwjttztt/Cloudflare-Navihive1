@@ -31,6 +31,8 @@ export const dialogChunks = {
     editGroup: () => import("../components/EditGroupDialog"),
     // 卡片设置 / 卡片右键菜单的目标弹窗
     siteSettings: () => import("../components/SiteSettingsModal"),
+    // 卡片上的「笔记」入口（#477 站点↔笔记绑定）—— 悬停卡片角上那个笔记按钮时取
+    siteNote: () => import("../components/SiteNoteDialog"),
     // 其余低频弹窗（idle 兜底预取用）
     groupShare: () => import("../components/GroupShareDialog"),
     tagManager: () => import("../components/TagManagerDialog"),

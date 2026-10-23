@@ -227,6 +227,31 @@ let mockTagSeq = mockTags.length;
 const mockRevisions: NoteRevision[] = [];
 let mockRevisionSeq = 0;
 
+/**
+ * 站点侧带出「绑定的那篇笔记」（#477）—— 与真机 SITE_SELECT_WITH_NOTE 对齐。
+ *
+ * 真机是 SQL 相关子查询，这里就是在内存里查一遍；规则必须一致：
+ * 同一个站点有多条时取「最近更新的那条」（真机 ORDER BY updated_at DESC, id DESC）。
+ * 演示模式如果偷懒直接 find() 第一个，就会出现「演示里显示 A、真机上显示 B」。
+ */
+function withBoundNote(site: Site): Site {
+    const bound = mockNotes
+        .filter(n => typeof n.site_id === "number" && n.site_id === site.id)
+        .sort(
+            (a, b) =>
+                String(b.updated_at || "").localeCompare(String(a.updated_at || "")) ||
+                (b.id || 0) - (a.id || 0)
+        )[0];
+    return { ...site, note_id: bound?.id ?? null, note_title: bound?.title ?? null };
+}
+
+/** 一站一笔记：把同一个站点上除 keepNoteId 之外的笔记全部解绑（keepNoteId=null 表示全解） */
+function releaseMockSiteBinding(siteId: number, keepNoteId: number | null): void {
+    for (const n of mockNotes) {
+        if (n.site_id === siteId && n.id !== keepNoteId) n.site_id = null;
+    }
+}
+
 // 本地没有服务端审计流水，这里保持空列表（接口形状与真实实现一致）
 type MockAuditEntry = {
     id: number;
@@ -435,7 +460,9 @@ export class MockNavigationClient {
         await new Promise(resolve => setTimeout(resolve, 200));
         return {
             groups: [...mockGroups],
-            sites: [...mockSites],
+            // 与真机 bootstrap 对齐：站点带着 note_id / note_title 回来
+            // （否则绑定后演示模式要刷新一次才看得到，真机不会这样）
+            sites: mockSites.map(withBoundNote),
             configs: { ...mockConfigs },
             // 与真实服务端的 ?full=1 对齐：身份与恢复密钥状态一起回来，
             // 这样本地用 mock 跑时也是在验「启动少两次请求」那条路径。
@@ -498,6 +525,8 @@ export class MockNavigationClient {
 
     async createNote(draft: Partial<Note>): Promise<Note> {
         await new Promise(resolve => setTimeout(resolve, 200));
+        // 一站一笔记（#477）：与真机 updateNote/createNote 同一约束
+        if (typeof draft.site_id === "number") releaseMockSiteBinding(draft.site_id, null);
         const note: Note = {
             id: Math.max(0, ...mockNotes.map(n => n.id || 0)) + 1,
             uuid: draft.uuid || `m1-${Date.now().toString(36)}`,
@@ -518,6 +547,8 @@ export class MockNavigationClient {
         await new Promise(resolve => setTimeout(resolve, 200));
         const note = mockNotes.find(n => n.id === id);
         if (!note) return null;
+        // 一站一笔记（#477）：换绑先把同一个站点上的别的笔记解绑（与真机同一语义）
+        if (typeof patch.site_id === "number") releaseMockSiteBinding(patch.site_id, id);
         if (patch.folder_id !== undefined) await validateMockParent(patch.folder_id);
         // 版本历史：改动前先存一份（与后端 updateNote 同一时机与判据）
         if (patch.content !== undefined && patch.content !== note.content) {
@@ -959,16 +990,15 @@ export class MockNavigationClient {
 
     async getSites(groupId?: number): Promise<Site[]> {
         await new Promise(resolve => setTimeout(resolve, 200));
-        if (groupId) {
-            return mockSites.filter(site => site.group_id === groupId);
-        }
-        return [...mockSites];
+        const list = groupId ? mockSites.filter(site => site.group_id === groupId) : [...mockSites];
+        return list.map(withBoundNote);
     }
 
     // 实现其他方法，与NavigationClient保持一致的接口...
     async getSite(id: number): Promise<Site | null> {
         await new Promise(resolve => setTimeout(resolve, 200));
-        return mockSites.find(s => s.id === id) || null;
+        const site = mockSites.find(s => s.id === id);
+        return site ? withBoundNote(site) : null;
     }
 
     async createSite(site: Site): Promise<Site> {

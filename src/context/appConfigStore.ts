@@ -32,6 +32,21 @@ export interface AppConfigContextValue {
         >;
         /** 打开记事本并跳到这条笔记 */
         open: (noteId: number) => void;
+        /**
+         * 全部笔记的「id + 标题 + 已绑站点」（#477 绑定选择器用，**不含正文**）。
+         * 只在用户真的点开选择器时调一次，不进首屏。
+         */
+        list: () => Promise<{ id?: number; title: string; site_id?: number | null }[]>;
+        /**
+         * 把笔记绑到某站点；`siteId = null` 表示解除绑定。
+         *
+         * 一个站点最多一篇的约束在服务端（updateNote 的收口），这里不改；
+         * 落库后桥会自己重取一次卡片数据，把**同一屏上原来绑着它的那张卡**
+         * 一起纠正过来（不重取的话那张卡还挂着旧标题）。
+         */
+        bind: (noteId: number, siteId: number | null) => Promise<void>;
+        /** 新建一条笔记并直接绑到该站点（标题默认取站名），返回新笔记 */
+        createAndBind: (siteId: number, title: string) => Promise<{ id?: number; title: string }>;
     };
 }
 

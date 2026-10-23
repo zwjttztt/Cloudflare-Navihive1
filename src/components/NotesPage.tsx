@@ -52,13 +52,11 @@ import { AttachmentPreviewProvider, type AttachmentPreviewRequest } from "../uti
 // —— 格式工具栏（对齐 inkstone 的 EditorToolbar：7 个下拉 + 独立图标组）——
 import NotesShortcutsDialog from "./NotesShortcutsDialog";
 
-import { extractNoteTags } from "../utils/markdownNoteTags";
 import { getSiteIndex } from "../utils/siteIndex";
 import { readReadingPosition, writeReadingPosition } from "../utils/readingPosition";
 import type {
     Note,
     NoteFolder,
-    NoteImportStats,
     NoteRevision,
     NoteTag,
     NotesBackupSavePatch,
@@ -77,7 +75,6 @@ import {
 import { toggleTaskLine } from "../utils/noteTasks";
 import type { CompletionSources } from "../utils/noteCompletion";
 import { fuzzyFilter, fuzzyMatch } from "../utils/fuzzy";
-import { createZip, readZip, type ZipEntry } from "../utils/zip";
 
 import type { NoteEmbedTarget } from "./NoteEmbedNode";
 import { useScrollLock } from "../hooks/useScrollLock";
@@ -106,6 +103,8 @@ import { useEditorTools, type EditorDraft } from "../hooks/useEditorTools";
 
 import NoteShareDialog, { type NoteShareApi } from "./NoteShareDialog";
 import { noteExcerpt, resolveImageUpload } from "./notes/markdownToolbar";
+import { importNotesFile as runImportNotesFile } from "./notes/importNotesFile";
+import { exportAllNotesJson, exportAllNotesZip } from "./notes/exportNotes";
 
 
 export interface NotesPageProps {
@@ -155,6 +154,20 @@ export interface NotesPageProps {
      * 不传 = 照常打开（选中上次那条 / 列表第一条）。
      */
     focusNoteId?: number;
+    /**
+     * 站点侧的两个能力（#477 站点↔笔记双向绑定的**笔记那一侧**）。
+     *
+     * 站名不在记事本手里 —— 为了一个名字去拉一遍站点列表不值得，所以由 App
+     * 通过这个口子回答「这个 id 是哪个站」和「跳回导航页并定位到那张卡片」。
+     *
+     * 不传 = 状态栏不显示站点那一项（老调用方照常工作）。
+     */
+    siteLinkApi?: {
+        /** 站点还存在就返回名字；站点已被删（site_id 悬空）返回 null */
+        resolve: (siteId: number) => { id?: number; name: string } | null;
+        /** 关掉记事本并滚到那张卡片（App 的 jumpToSite，会闪一下轮廓） */
+        open: (siteId: number) => void;
+    };
     /**
      * 记事本备份能力（2026-10-09 照 inkstone 的 BackupSettings）。
      *
@@ -348,6 +361,7 @@ export default function NotesPage({
     folderTags,
     onEnsureFullNote,
     focusNoteId,
+    siteLinkApi,
 }: NotesPageProps) {
     /** 关系图谱（2026-10-09）：双链关系的全貌，从「更多」里开 */
     // ============ 筛选与排序条件（2026-10-22 抽到 notes/useNotesFilters）============
@@ -1117,6 +1131,21 @@ export default function NotesPage({
         activeId,
     });
 
+    /**
+     * 反查（#477 笔记那一侧）：当前这篇绑在哪个站点上。
+     *
+     * 站名由 App 通过 siteLinkApi 回答（记事本不该为一个名字去拉站点列表）。
+     * `site_id` 有值但问不到站点 = 那张卡片已被删 —— 这是**刻意保留**的悬空
+     * 引用（卡片删了笔记要留下），所以照实显示「站点已删除」，不静默藏起来、
+     * 也不自动清理：用户可能只是想先看看再决定要不要重新绑。
+     */
+    const boundSiteId = active?.site_id ?? null;
+    const boundSite = boundSiteId != null ? (siteLinkApi?.resolve(boundSiteId) ?? null) : null;
+    const boundSiteMissing = boundSiteId != null && Boolean(siteLinkApi) && boundSite === null;
+    const onOpenBoundSite = useCallback(() => {
+        if (boundSiteId != null) siteLinkApi?.open(boundSiteId);
+    }, [boundSiteId, siteLinkApi]);
+
 
 
     // ============ 弹层 / 浮层状态（2026-10-22 抽到 notes/useNotesPanels）============
@@ -1759,111 +1788,12 @@ export default function NotesPage({
         return map;
     }, [notes, settingsOpen, attManagerOpen]);
 
-    /** 导出全部笔记（2026-10-08 设置→数据，照 inkstone 的导出）：JSON 一份
-     *  （笔记 + 文件夹 + 标签 + 关联），不含附件二进制。前端直接从内存生成，
-     *  不需要新端点；导入等后续批次再做。 */
-    const exportAllData = () => {
-        try {
-            const payload = {
-                kind: "navihive-notes-export",
-                exported_at: new Date().toISOString(),
-                notes,
-                folders: folderTags?.folders ?? [],
-                tags: folderTags?.tags ?? [],
-                noteTags: folderTags?.noteTags ?? {},
-            };
-            const blob = new Blob([JSON.stringify(payload, null, 2)], {
-                type: "application/json",
-            });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement("a");
-            a.href = url;
-            a.download = `notes-export-${new Date().toISOString().slice(0, 10)}.json`;
-            document.body.appendChild(a);
-            a.click();
-            a.remove();
-            // 下载已触发后再回收；立刻 revoke 在部分浏览器会打断下载
-            setTimeout(() => URL.revokeObjectURL(url), 4000);
-            onNotify?.(`已导出 ${notes.length} 条笔记（JSON，不含附件）`, "success");
-        } catch (error) {
-            onNotify?.(
-                "导出失败：" + (error instanceof Error ? error.message : "未知错误"),
-                "error"
-            );
-        }
-    };
-    /**
-     * 导出 zip（含图片附件，2026-10-09）。
-     *
-     * 之前只有 JSON：笔记正文里的图片是 `/api/notes/attachments/<id>` 这种引用，
-     * JSON 里不带字节 —— 一旦删站或迁移，正文还在、图全没了。inkstone 的
-     * 「导出 zip」把笔记 + 附件一起打包，UI 上直接写「用于完整恢复」。
-     * zip 是我们自己实现的（utils/zip.ts，零依赖），打包不压缩（图片本来就是压过的）。
-     */
-    const exportAllZip = useCallback(async () => {
-        try {
-            const payload = {
-                kind: "navihive-notes-export",
-                exported_at: new Date().toISOString(),
-                notes,
-                folders: folderTags?.folders ?? [],
-                tags: folderTags?.tags ?? [],
-                noteTags: folderTags?.noteTags ?? {},
-            };
-            const entries: ZipEntry[] = [
-                {
-                    path: "notes.json",
-                    data: new TextEncoder().encode(JSON.stringify(payload, null, 2)),
-                },
-            ];
-            const list = uploadApi?.listAttachments ? await uploadApi.listAttachments() : [];
-            let failed = 0;
-            for (const att of list) {
-                try {
-                    const res = await fetch(
-                        `/api/notes/attachments/${encodeURIComponent(att.id)}`,
-                        { credentials: "same-origin" }
-                    );
-                    if (!res.ok) {
-                        failed += 1;
-                        continue;
-                    }
-                    entries.push({
-                        // ⚠️ 文件名里带原始 id：导入时要靠它把正文里的旧引用换成新 id
-                        path: `attachments/${att.id}__${att.filename || "file"}`,
-                        data: new Uint8Array(await res.arrayBuffer()),
-                    });
-                } catch {
-                    failed += 1;
-                }
-            }
-            const packed = createZip(entries);
-            // ⚠️ 直接把 Uint8Array 交给 Blob 在 TS 5.7+ 会挑 ArrayBufferLike/SharedArrayBuffer，
-            // 显式拷一份 ArrayBuffer 绕开（浏览器端 Blob 本来就只接受这一支）。
-            const out = new Uint8Array(packed.byteLength);
-            out.set(packed);
-            const blob = new Blob([out.buffer], { type: "application/zip" });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement("a");
-            a.href = url;
-            a.download = `notes-backup-${new Date().toISOString().slice(0, 10)}.zip`;
-            document.body.appendChild(a);
-            a.click();
-            a.remove();
-            setTimeout(() => URL.revokeObjectURL(url), 4000);
-            onNotify?.(
-                failed === 0
-                    ? `已导出 ${notes.length} 条笔记 + ${list.length} 个附件（ZIP）`
-                    : `已导出，但有 ${failed} 个附件没取到（ZIP）`,
-                failed === 0 ? "success" : "warning" as never
-            );
-        } catch (error) {
-            onNotify?.(
-                "导出失败：" + (error instanceof Error ? error.message : "未知错误"),
-                "error"
-            );
-        }
-    }, [notes, folderTags, uploadApi, onNotify]);
+    // 整库导出（JSON / ZIP 含附件）2026-10-23 搬到 notes/exportNotes.ts：
+    // 拼 payload、取附件、打 zip、触发下载，全程不碰 React 状态。
+    // 这里只保留「把当前数据递进去」这层壳。
+    const exportDeps = { notes, folderTags, uploadApi, onNotify };
+    const exportAllData = () => exportAllNotesJson(exportDeps);
+    const exportAllZip = async () => exportAllNotesZip(exportDeps);
 
     /**
      * 导入文件：JSON（老格式）或 zip（含附件）。
@@ -1925,201 +1855,25 @@ export default function NotesPage({
         }
     }, [bulkBusy, checkedNotes, onDelete, onNotify]);
 
+    // 导入整条链路（解包 / 附件回传 / 正文链接改写 / 写库 / 重拉）2026-10-23
+    // 搬到 notes/importNotesFile.ts：那块没有一处 React 状态，纯过程代码，
+    // 留在这里只会把「面板与状态怎么编排」的主干埋掉。这里只剩「把能力递进去」。
     const importNotesFile = useCallback(
-        async (
-            file: File,
-            onProgress?: (p: NoteImportProgress) => void,
-        ): Promise<NoteImportStats> => {
-            if (!shareApi?.importNotes) throw new Error("当前部署不支持导入笔记");
-
-            const isZip =
-                /\.zip$/i.test(file.name) ||
-                file.type === "application/zip" ||
-                file.type === "application/x-zip-compressed";
-
-            if (!isZip) {
-                const parsed = JSON.parse(await file.text()) as NotesImportPayload;
-                onProgress?.({ phase: "写入笔记", current: 0, total: 0 });
-                const stats = await shareApi.importNotes(parsed);
-                // 当前标签页必须自己重拉（2026-10-17：此前只广播给其它标签页，
-                // 本页要等跨设备轮询的下个周期才看见恢复结果 —— 用户报「提示弹了
-                // 还要很久才恢复完」就是这个空窗）。等重拉完才让上层弹成功提示。
-                onProgress?.({ phase: "刷新列表", current: 0, total: 0 });
-                await onDatasetChanged?.();
-                return stats;
-            }
-
-            const entries = await readZip(new Uint8Array(await file.arrayBuffer()));
-            const notesEntry = entries.find(e => e.path === "notes.json");
-            if (!notesEntry) {
-                const visibleEntries = entries.filter(e => !e.path.split("/").some(part => part.startsWith(".") || part === "__MACOSX"));
-                const markdownEntries = visibleEntries.filter(e => /\.md$/i.test(e.path));
-                if (!markdownEntries.length) throw new Error("ZIP 中没有 notes.json 或 Markdown 笔记");
-                const folders: NoteFolder[] = [];
-                const folderIds = new Map<string, number>();
-                const ensureFolder = (path: string): number | null => {
-                    if (!path) return null;
-                    if (folderIds.has(path)) return folderIds.get(path)!;
-                    const parts = path.split("/");
-                    const name = parts.pop()!;
-                    const parent_id = ensureFolder(parts.join("/"));
-                    const id = folders.length + 1;
-                    folderIds.set(path, id);
-                    folders.push({ id, name, parent_id });
-                    return id;
-                };
-                const attachments = new Map<string, string>();
-                const paths = new Set<string>();
-                for (const entry of entries) {
-                    if (entry.path.split("/").some(p => p === ".." || p === ".") || entry.path.startsWith("/") || entry.path.includes("\\")) throw new Error("不安全的文件路径");
-                    if (paths.has(entry.path)) throw new Error("ZIP 中存在重复文件路径");
-                    paths.add(entry.path);
-                }
-                const attachmentEntries = visibleEntries.filter(e => !/\.md$/i.test(e.path) && e.data.length);
-                onProgress?.({ phase: "解包备份", current: 0, total: 0 });
-                if (attachmentEntries.length && !uploadApi) throw new Error("ZIP 含附件，需先配置附件上传能力");
-                // 附件之间互不依赖（路径→url 各写各的），并发回传比串行快数倍 ——
-                // 附件一多时这正是「恢复太慢」的大头。并发 6：再多对单线用户带宽没增益。
-                let uploadedCount = 0;
-                let next = 0;
-                const uploadWorker = async () => {
-                    while (next < attachmentEntries.length) {
-                        const entry = attachmentEntries[next++];
-                        const uploaded = await uploadApi!.uploadAttachment(new File([entry.data.slice().buffer], entry.path.split("/").pop()!));
-                        if (!uploaded?.url) throw new Error("附件上传失败：" + entry.path);
-                        attachments.set(entry.path, uploaded.url);
-                        uploadedCount += 1;
-                        onProgress?.({ phase: "上传附件", current: uploadedCount, total: attachmentEntries.length });
-                    }
-                };
-                await Promise.all(Array.from({ length: Math.min(6, attachmentEntries.length) }, uploadWorker));
-                const tags: NoteTag[] = [];
-                const tagIds = new Map<string, number>();
-                const noteTags: Record<string, number[]> = {};
-                const imported: Note[] = [];
-                for (const entry of markdownEntries) {
-                    if (entry.path.split("/").some(p => p === ".." || p === ".")) throw new Error("不安全的文件路径");
-                    const parts = entry.path.split("/");
-                    const title = parts.pop()!.replace(/\.md$/i, "");
-                    let content = new TextDecoder().decode(entry.data);
-                    const resolveAsset = (target: string): string | undefined => {
-                        let decoded: string;
-                        try { decoded = decodeURIComponent(target); } catch { return undefined; }
-                        const stack = parts.slice();
-                        for (const p of decoded.split("/")) {
-                            if (p === "..") stack.pop();
-                            else if (p !== "." && p) stack.push(p);
-                        }
-                        const direct = attachments.get(stack.join("/")) ?? attachments.get(decoded);
-                        if (direct) return direct;
-                        const basename = decoded.split("/").pop()?.toLowerCase();
-                        const matches = [...attachments].filter(([path]) => path.split("/").pop()?.toLowerCase() === basename);
-                        // 同名附件有歧义时不猜，保留原引用给用户修正。
-                        return matches.length === 1 ? matches[0][1] : undefined;
-                    };
-                    content = content.replace(/!\[\[([^\]\n]+)\]\]/g, (whole, target: string) => {
-                        const path = target.split("|")[0];
-                        const url = resolveAsset(path);
-                        return url ? `![${path.split("/").pop()}](${url})` : whole;
-                    }).replace(/(!?\[[^\]\n]*\]\()([^\s)]+)(\))/g, (whole, lead: string, target: string, end: string) => {
-                        const url = resolveAsset(target);
-                        return url ? lead + url + end : whole;
-                    });
-                    const id = imported.length + 1;
-                    const names = extractNoteTags(content);
-                    const frontMatter = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(content)?.[1];
-                    if (frontMatter) {
-                        const tagField = /^tags:\s*(.*(?:\r?\n[ \t]+-[^\n]*)*)/m.exec(frontMatter)?.[1];
-                        if (tagField) {
-                            for (const name of tagField.replace(/[[\]"']/g, "").split(/[,\r\n]/).map(tag => tag.trim().replace(/^-\s*/, "").replace(/^#/, ""))) {
-                                if (/^[\p{L}\p{N}_][\p{L}\p{N}_-]{0,79}$/u.test(name)) names.push(name);
-                            }
-                        }
-                    }
-                    for (const name of new Set(names)) {
-                        if (!tagIds.has(name)) { const tagId = tags.length + 1; tagIds.set(name, tagId); tags.push({ id: tagId, name }); }
-                    }
-                    noteTags[String(id)] = [...new Set(names)].map(name => tagIds.get(name)!);
-                    imported.push({ id, title, content, folder_id: ensureFolder(parts.join("/")) });
-                }
-                onProgress?.({ phase: "写入笔记", current: attachmentEntries.length, total: attachmentEntries.length });
-                const stats = await shareApi.importNotes({ notes: imported, folders, tags, noteTags });
-                // 同上：等当前页重拉完再返回，成功提示弹出时列表已经是新的
-                onProgress?.({ phase: "刷新列表", current: 0, total: 0 });
-                await onDatasetChanged?.();
-                return stats;
-            }
-            const payload = JSON.parse(
-                new TextDecoder().decode(notesEntry.data)
-            ) as NotesImportPayload;
-
-            // 1) 附件回传，记下 id 变化
-            const idMap = new Map<string, string>();
-            let skipped = 0;
-            const attachmentEntries = entries.filter(e => {
-                if (!e.path.startsWith("attachments/")) return false;
-                const name = e.path.slice("attachments/".length);
-                return name.indexOf("__") > 0;
-            });
-            let done = 0;
-            let next = 0;
-            onProgress?.({ phase: "解包备份", current: 0, total: 0 });
-            // 同上：附件回传并发 6（idMap 各写各的键，无顺序依赖）
-            const uploadWorker = async () => {
-                while (next < attachmentEntries.length) {
-                    const entry = attachmentEntries[next++];
-                    const name = entry.path.slice("attachments/".length);
-                    const sep = name.indexOf("__");
-                    if (sep <= 0) { done += 1; continue; }
-                    const oldId = name.slice(0, sep);
-                    const filename = name.slice(sep + 2);
-                    if (!uploadApi) {
-                        skipped += 1;
-                    } else {
-                        try {
-                            const uploaded = await uploadApi.uploadAttachment(
-                                new File([entry.data.slice().buffer], filename || "file")
-                            );
-                            if (uploaded?.id && uploaded.id !== oldId) idMap.set(oldId, uploaded.id);
-                        } catch {
-                            skipped += 1;
-                        }
-                    }
-                    done += 1;
-                    onProgress?.({ phase: "上传附件", current: done, total: attachmentEntries.length });
-                }
-            };
-            await Promise.all(Array.from({ length: Math.min(6, attachmentEntries.length) }, uploadWorker));
-
-            // 2) 正文里的旧 id 换成新 id（只换真发生变化的那些）
-            if (idMap.size > 0 && Array.isArray(payload.notes)) {
-                payload.notes = payload.notes.map((n: Note) =>
-                    n && typeof n.content === "string"
-                        ? {
-                              ...n,
-                              content: n.content.replace(
-                                  /\/api\/notes\/attachments\/([A-Za-z0-9_-]+)/g,
-                                  (whole: string, id: string) =>
-                                      idMap.has(id)
-                                          ? `/api/notes/attachments/${idMap.get(id)}`
-                                          : whole
-                              ),
-                          }
-                        : n
-                );
-            }
-
-            onProgress?.({ phase: "写入笔记", current: attachmentEntries.length, total: attachmentEntries.length });
-            const stats = await shareApi.importNotes(payload);
-            if (skipped > 0) {
-                onNotify?.(`有 ${skipped} 个附件没能回传（正文里的引用可能还是旧的）`, "warning" as never);
-            }
-            // 导入是一次数据集级变更：广播给其它标签页 + 当前页立刻重拉
-            // （此前只广播，本页要等轮询下个周期才看见 —— 同 2026-10-17 的空窗问题）
-            onProgress?.({ phase: "刷新列表", current: 0, total: 0 });
-            await onDatasetChanged?.();
-            return stats;
-        },
+        (file: File, onProgress?: (p: NoteImportProgress) => void) =>
+            runImportNotesFile(
+                {
+                    // ⚠️ 包一层箭头函数：importNotes 是类方法（内部用 this.request），
+                    // 直接传 `shareApi.importNotes` 会把这个引用 detached，this 变 undefined
+                    importNotes: shareApi?.importNotes
+                        ? (payload: NotesImportPayload) => shareApi.importNotes!(payload)
+                        : undefined,
+                    uploadApi,
+                    onNotify,
+                    onDatasetChanged,
+                },
+                file,
+                onProgress
+            ),
         [shareApi, uploadApi, onNotify, onDatasetChanged]
     );
 
@@ -2816,6 +2570,9 @@ export default function NotesPage({
         backlinks,
         backlinksOpen,
         backupApi,
+        // #477 笔记侧反查：这篇绑在哪个站点上（boundSiteMissing = 那张卡片已被删）
+        boundSite,
+        boundSiteMissing,
         bp,
         bulkArchive,
         bulkDelete,
@@ -2882,6 +2639,7 @@ export default function NotesPage({
         onDelete,
         onEmptyTrash,
         onNotify,
+        onOpenBoundSite,
         onPurgeTrashed,
         onRestoreTrashed,
         onToggleArchive,

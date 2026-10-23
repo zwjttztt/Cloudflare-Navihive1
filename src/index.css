@@ -641,6 +641,17 @@ html.nav-touch .nav-group-tools {
     opacity: 1;
 }
 
+/* 站点笔记入口（#477）：与设置同一套「悬停浮出」，
+   但**已绑定的那张卡常显** —— 绑了却不显示，用户永远不知道自己绑过。 */
+.nav-note-btn {
+    opacity: 0;
+}
+.nav-card-in:hover .nav-note-btn,
+.nav-note-btn:focus-visible,
+.nav-note-btn[data-bound="true"] {
+    opacity: 1;
+}
+
 /* 列表视图里快捷操作常显，省去悬停这一步 */
 .nav-card-actions-always {
     opacity: 1;
@@ -983,6 +994,9 @@ html.nav-touch .nav-card-actions {
     pointer-events: auto;
 }
 html.nav-touch .nav-settings-btn {
+    opacity: 1;
+}
+html.nav-touch .nav-note-btn {
     opacity: 1;
 }
 html.nav-touch .nav-star-btn[data-starred="false"] {

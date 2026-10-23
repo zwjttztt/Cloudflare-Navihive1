@@ -309,6 +309,38 @@ function inlineTagStatements(api: NavigationAPI, noteKey: number | string, conte
 }
 
 /**
+ * 「一个站点最多绑一篇笔记」（#477）的**唯一收口**。
+ *
+ * 绑定关系存在 `notes.site_id` 上，所以「换绑」等于：先把同一个站点上**别的**
+ * 笔记解绑，再把自己设上去。不这么做的话，站点侧那两个相关子查询
+ * （data.ts SITE_SELECT_WITH_NOTE）就只能靠 ORDER BY 猜「该显示哪一篇」——
+ * 数据是能读，但「一张卡片挂着一篇笔记」的语义就没了。
+ *
+ * 返回一条 UPDATE，调用方要把它塞进**同一个 batch、排在主语句之前**：
+ *   顺序反了会把刚绑好的又清掉（先设后清 = 白设一次）。
+ *
+ * `keepNoteId` 传 null 表示「新建笔记那条路」—— 此刻新笔记还没有 id，
+ * 站点上原有的那篇就该被让位（不可能保留自己）。
+ * 带账号隔离，动不到别人的笔记。
+ */
+function releaseSiteBindingStatement(
+    api: NavigationAPI,
+    siteId: number,
+    keepNoteId: number | null
+): D1PreparedStatement {
+    if (keepNoteId === null) {
+        return api.db
+            .prepare(`UPDATE notes SET site_id = NULL WHERE site_id = ?${api.scopeSql(true)}`)
+            .bind(...api.scopeParams([siteId]));
+    }
+    return api.db
+        .prepare(
+            `UPDATE notes SET site_id = NULL WHERE site_id = ? AND id != ?${api.scopeSql(true)}`
+        )
+        .bind(...api.scopeParams([siteId, keepNoteId]));
+}
+
+/**
  * 记一个版本快照，并裁掉超出上限的旧版本。
  *
  * 两步必须都在：只插不裁，这张表就会随使用时间无限增长（D1 有容量上限，
@@ -868,10 +900,16 @@ export const notesImpl: NotesApi = {
                 // 未指定就落 NULL（= 未归类），而不是 0 —— 0 会被当成「有个 id 为 0 的文件夹」
                 draft.folder_id ?? null
             );
+        // 一站一笔记：新建时若直接指定了站点，站点上原来那篇要让位（见 helper 注释）
+        const pre: D1PreparedStatement[] =
+            typeof draft.site_id === "number"
+                ? [releaseSiteBindingStatement(this, draft.site_id, null)]
+                : [];
         const tags = inlineTagStatements(this, uuid, draft.content || "");
-        const result = tags.length
-            ? (await this.db.batch<Note>([statement, ...tags]))[0]
-            : await statement.all<Note>();
+        const all = [...pre, statement, ...tags];
+        // 只有一条语句时走 all()，省掉 batch 那层包装（与拆分前一致）
+        const result =
+            all.length === 1 ? await statement.all<Note>() : (await this.db.batch<Note>(all))[pre.length];
         if (!result.success || !result.results?.length) throw new Error("创建笔记失败");
         const created = result.results[0];
         // 全文索引：建完再补，写不进去只影响搜索（见 syncNoteFts 的注释）
@@ -970,11 +1008,17 @@ export const notesImpl: NotesApi = {
                 (before.content !== (patch.content ?? before.content) ||
                     before.title !== (patch.title ?? before.title));
             const tags = patch.content === undefined ? [] : inlineTagStatements(this, id, patch.content);
+            // 一站一笔记：换绑时把同一站点上别的笔记先解绑（排在本条 UPDATE 之前，
+            // 顺序反了会把刚设上的 site_id 又清掉）。约束只在这两处收口。
+            const pre: D1PreparedStatement[] =
+                typeof patch.site_id === "number"
+                    ? [releaseSiteBindingStatement(this, patch.site_id, id)]
+                    : [];
+            const all = [...pre, statement, ...tags];
             // 快照与正文更新**不在同一个事务**里：快照失败不该让用户的保存失败
             // （历史是辅助功能，存不上只说明少一个版本，不能反过来把正文丢了）。
-            const result = tags.length
-                ? (await this.db.batch([statement, ...tags]))[0]
-                : await statement.all<Note>();
+            const result =
+                all.length === 1 ? await statement.all<Note>() : (await this.db.batch(all))[pre.length];
             if (!result.success) return null;
             const updatedRows = (result.results || []) as Note[];
             if (updatedRows.length === 0) {

@@ -68,7 +68,10 @@ import {
 //     老库建不出来 → /api/sites/changes 一律 0 条变更，删卡对其它设备不可见。
 // 22 = idx_notes_user_order（notes(user_id, pinned, order_num, id) 列表排序覆盖索引）。
 //     索引步骤同样吃快路径：版本号不 +1 的话老库永远建不上这条索引（同 19 的先例）。
-export const SCHEMA_VERSION = "23";
+// 23 = user_sessions.device_id（设备判重改客户端持久 ID，修两台 Windows+Chrome 互踢）。
+// 24 = idx_notes_site（notes(site_id) 站点↔笔记绑定反查索引，#477）。
+//     同样吃快路径，同样必须 +1 —— 否则老库上站点列表那两个相关子查询永远是全表扫。
+export const SCHEMA_VERSION = "24";
 /** 版本号存在 configs 里的键名 */
 export const SCHEMA_VERSION_KEY = "schema.version";
 

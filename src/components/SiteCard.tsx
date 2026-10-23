@@ -6,6 +6,9 @@ import { prefetchChunk } from "../utils/lazyPrefetch";
 const SiteSettingsModal = lazy(() => import("./SiteSettingsModal"));
 // 右键 / 更多操作菜单按需加载：MUI Menu/Popover/Popper 不进首屏（见该文件顶部注释）
 const SiteCardContextMenu = lazy(() => import("./SiteCardContextMenu"));
+// 站点笔记（#477）：绑定/换绑/解除 —— 只有点卡片角上那个笔记按钮时才需要
+const SiteNoteDialog = lazy(() => import("./SiteNoteDialog"));
+import ChunkBoundary from "./ChunkBoundary";
 import SiteCardAvatar from "./SiteCardAvatar";
 import { toneForName } from "../utils/siteAvatar";
 import { densityMetrics } from "../utils/densityMetrics";
@@ -35,6 +38,7 @@ import RadioButtonUncheckedIcon from "@mui/icons-material/RadioButtonUnchecked";
 import DragIndicatorIcon from "@mui/icons-material/DragIndicator";
 import PersonIcon from "@mui/icons-material/PersonOutlined";
 import KeyIcon from "@mui/icons-material/Key";
+import DescriptionOutlinedIcon from "@mui/icons-material/DescriptionOutlined";
 import { useAppConfig } from "../context/appConfigStore";
 import { useNotify } from "../context/NotifyContext";
 import { canOpenSite, safeOpenSite } from "../utils/safeOpen";
@@ -77,7 +81,7 @@ const SiteCard = memo(function SiteCard({
     onToggleSelect,
 }: SiteCardProps) {
     const theme = useTheme();
-    const { thumbApi, iconApi } = useAppConfig();
+    const { thumbApi, iconApi, notesBridge } = useAppConfig();
     const notify = useNotify();
     // 卡片不显示访问次数，所以只订阅「设置 + 写操作」和「星标 / 标签 / 死链」两份，
     // 不订阅访问统计 —— 以前每点一次卡片，几百张卡片都会因为那份状态变化重渲染一遍
@@ -88,6 +92,8 @@ const SiteCard = memo(function SiteCard({
     const starred = isStarred(site.id);
     const siteTags = tags[String(site.id)] ?? [];
     const [showSettings, setShowSettings] = useState(false);
+    // 站点笔记弹窗（#477）：已绑定则点开是「打开那篇笔记」，未绑定则点开是选择器
+    const [showNoteDialog, setShowNoteDialog] = useState(false);
     // 右键菜单的锚点位置（null 表示未打开）
     const [menuPos, setMenuPos] = useState<{ left: number; top: number } | null>(null);
 
@@ -460,6 +466,68 @@ const SiteCard = memo(function SiteCard({
                 ) : (
                     <StarBorderIcon sx={{ fontSize: 17 }} />
                 )}
+            </IconButton>
+        );
+
+    // 站点笔记入口（#477）：右上角第三个浮层控件，排在星标左边（right = 8 + 28 + 6 + 28 + 6）。
+    //   - 已绑定：常显 + 强调色，点一下直接打开那篇笔记。**常显是刻意的** ——
+    //     否则「这张卡片有没有笔记」只能靠逐个悬停才发现，等于白绑。
+    //   - 未绑定：悬停浮出（与设置/星标同一套），点一下打开选择器。
+    // 与设置、星标一样只在卡片/图标墙两种版式出现：列表视图那一行窄到放不下第三个
+    // 浮层控件（浮出来的快捷条就占着右侧了）。
+    const boundNoteId = site.note_id ?? null;
+    const boundNoteTitle = site.note_title || "";
+    const prefetchSiteNote = () => prefetchChunk("siteNote", () => import("./SiteNoteDialog"));
+    const handleNoteClick = (e: React.MouseEvent) => {
+        e.stopPropagation(); // 不要冒泡到 CardActionArea，否则会顺带打开网页
+        e.preventDefault();
+        if (!notesBridge) return;
+        if (boundNoteId != null) {
+            notesBridge.open(boundNoteId);
+            return;
+        }
+        setShowNoteDialog(true);
+    };
+
+    const renderNoteButton = () =>
+        !isEditMode &&
+        !isList &&
+        !isWall &&
+        !selectMode &&
+        Boolean(notesBridge) && (
+            <IconButton
+                className='nav-note-btn'
+                data-bound={boundNoteId != null ? "true" : "false"}
+                size='small'
+                aria-label={
+                    boundNoteId != null
+                        ? `打开笔记：${boundNoteTitle || "未命名笔记"}`
+                        : "绑定笔记"
+                }
+                title={boundNoteId != null ? boundNoteTitle || "未命名笔记" : "绑定笔记"}
+                onClick={handleNoteClick}
+                onPointerEnter={prefetchSiteNote}
+                onFocus={prefetchSiteNote}
+                sx={{
+                    position: "absolute",
+                    top: 8,
+                    // 右边距 8 + 设置按钮 28 + 6 + 星标 28 + 6，小屏两档按钮都是 32
+                    right: { xs: 84, sm: 76 },
+                    minWidth: { xs: 32, sm: 28 },
+                    minHeight: { xs: 32, sm: 28 },
+                    p: 0,
+                    // 透明度不写在这里（sx 会压过 CSS 的 opacity:0 → 触屏常显那套失效，
+                    // 设置按钮踩过这个坑）：基础 0 / 悬停 1 / 已绑定常显都在 .nav-note-btn 里
+                    color: boundNoteId != null ? "var(--accent)" : "text.secondary",
+                    bgcolor: "var(--glass-bg-hover)",
+                    backdropFilter: "blur(6px)",
+                    WebkitBackdropFilter: "blur(6px)",
+                    transition: "opacity .2s, background-color .2s",
+                    zIndex: 2,
+                    "&:hover": { bgcolor: "action.selected" },
+                }}
+            >
+                <DescriptionOutlinedIcon sx={{ fontSize: 17 }} />
             </IconButton>
         );
 
@@ -869,6 +937,7 @@ const SiteCard = memo(function SiteCard({
 
             {/* 星标与多选勾选都浮在卡片上，不进链接内部 */}
             {renderStarButton()}
+            {renderNoteButton()}
             {renderSelectMark()}
             {renderStarBadge()}
 
@@ -945,6 +1014,15 @@ const SiteCard = memo(function SiteCard({
                 />
                 </Suspense>
             )}
+
+            {/* 站点笔记（#477）：走 ChunkBoundary 而不是裸 Suspense(fallback=null) ——
+                块没取到（断网 / 首次点开）时要给一句能重试的提示，而不是「点了没反应」
+                或者把整站换成「页面出了点问题」。when 让它在关着的时候不下载 */}
+            <ChunkBoundary when={showNoteDialog}>
+                {notesBridge && (
+                    <SiteNoteDialog site={site} onClose={() => setShowNoteDialog(false)} />
+                )}
+            </ChunkBoundary>
         </>
     );
 });

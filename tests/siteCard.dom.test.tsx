@@ -444,3 +444,101 @@ test("没存账号也没存密码：整条悬停操作不渲染（别留一个�
         "复制链接移除后它不再是「永远非空」的那一个，两颗都没有时整条要不渲染"
     );
 });
+
+// ---------------- #477 站点↔笔记：卡片角上的笔记入口 ----------------
+
+/**
+ * 带记事本桥的渲染。桥是可选的（没接上就不渲染入口），所以这里单独走一遍挂载，
+ * 不复用 renderCard —— 那个写死了不带 notesBridge 的 APP_CONFIG。
+ */
+function renderCardWithBridge(
+    over: Partial<Site>,
+    calls: {
+        opened: number[];
+        listed: number;
+        bound: Array<[number, number | null]>;
+        created: Array<[number, string]>;
+    }
+) {
+    localStorage.clear();
+    const bridge: AppConfigContextValue["notesBridge"] = {
+        search: async () => [],
+        open: (id: number) => {
+            calls.opened.push(id);
+        },
+        list: async () => {
+            calls.listed += 1;
+            return [{ id: 77, title: "示例站点 · 笔记", site_id: null }];
+        },
+        bind: async (noteId: number, siteId: number | null) => {
+            calls.bound.push([noteId, siteId]);
+        },
+        createAndBind: async (siteId: number, title: string) => {
+            calls.created.push([siteId, title]);
+            return { id: 88, title };
+        },
+    };
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+    act(() => {
+        root!.render(
+            <AppConfigProvider
+                value={{
+                    iconApi: "",
+                    thumbApi: "",
+                    backgroundImage: "",
+                    backgroundMaskOpacity: "0.15",
+                    notesBridge: bridge,
+                }}
+            >
+                <UIPrefsProvider>
+                    <SiteCard site={makeSite(over)} onUpdate={() => {}} onDelete={() => {}} />
+                </UIPrefsProvider>
+            </AppConfigProvider>
+        );
+    });
+}
+
+const emptyCalls = () => ({ opened: [] as number[], listed: 0, bound: [], created: [] });
+
+test("#477 未绑定：卡片角上有「绑定笔记」入口", () => {
+    const calls = emptyCalls();
+    renderCardWithBridge({}, calls);
+    const btn = byLabel("绑定笔记");
+    assert.ok(btn, "未绑定时要有一个「绑定笔记」入口");
+    assert.equal(btn!.getAttribute("data-bound"), "false");
+});
+
+test("#477 已绑定：入口变成「打开笔记：标题」，点一下直接打开那篇笔记", () => {
+    const calls = emptyCalls();
+    renderCardWithBridge({ note_id: 42, note_title: "这个站的登录方式" }, calls);
+    const btn = byLabel("打开笔记：这个站的登录方式");
+    assert.ok(btn, "已绑定时 aria-label 要带上笔记标题（读屏也能听出绑了哪篇）");
+    assert.equal(btn!.getAttribute("data-bound"), "true", "data-bound 驱动 CSS：已绑定的常显");
+
+    act(() => {
+        btn!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    assert.deepEqual(calls.opened, [42], "已绑定就不该再开选择器，直接打开笔记");
+});
+
+test("#477 没接上记事本桥：整个入口不渲染（不给自己造一个点了没反应的按钮）", () => {
+    renderCard();
+    assert.equal(byLabel("绑定笔记"), null);
+    assert.equal(q(".nav-note-btn"), null);
+});
+
+test("#477 未绑定时点入口打开选择器，把笔记列出来", async () => {
+    const calls = emptyCalls();
+    renderCardWithBridge({}, calls);
+    const btn = byLabel("绑定笔记");
+    assert.ok(btn);
+    await act(async () => {
+        btn!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        // 弹窗是 lazy chunk：等它 import 完并挂上
+        await new Promise(r => setTimeout(r, 60));
+    });
+    assert.ok(calls.listed >= 1, "弹窗打开后要拉一次笔记列表");
+    assert.ok(document.body.textContent?.includes("站点笔记"), "弹窗标题要出现");
+});

@@ -34,6 +34,29 @@ function recycleIdOf(result: { meta?: unknown } | undefined): number | undefined
     return typeof meta?.last_row_id === "number" ? meta.last_row_id : undefined;
 }
 
+/**
+ * 站点列表 / 单条的 SELECT：顺带带出「绑定的那篇笔记」（#477 站点↔笔记双向绑定）。
+ *
+ * 绑定关系存在 `notes.site_id` 上（一个站点最多一篇，约束由 updateNote 收口），
+ * 所以这里用两个相关子查询取「最近更新的那条」：
+ *   - **不用 LEFT JOIN**：万一库里有多条指向同一站点（历史导入、手工改库、约束上线
+ *     之前的数据），JOIN 会让同一张卡片在列表里出现多行 —— 比没标题严重得多；
+ *   - 子查询必须带 `ORDER BY ... LIMIT 1` 才有确定结果，否则「显示哪条的标题」
+ *     取决于扫描顺序，同一份数据两次请求能给出不同答案；
+ *   - `n.user_id IS s.user_id`：单账号部署两边都是 NULL，写 `= ` 会永远不成立
+ *     （和 note_revision 那条 `IS ?` 是同一个坑）。
+ *
+ * 走 idx_notes_site(site_id)，每次是一条索引探测 —— 几十张卡的开销可忽略。
+ */
+const SITE_SELECT_WITH_NOTE = `SELECT
+        s.id, s.group_id, s.name, s.url, s.icon, s.description, s.notes, s.username, s.password,
+        s.order_num, s.created_at, s.updated_at,
+        (SELECT n.id FROM notes n WHERE n.site_id = s.id AND n.user_id IS s.user_id
+            ORDER BY n.updated_at DESC, n.id DESC LIMIT 1) AS note_id,
+        (SELECT n.title FROM notes n WHERE n.site_id = s.id AND n.user_id IS s.user_id
+            ORDER BY n.updated_at DESC, n.id DESC LIMIT 1) AS note_title
+    FROM sites s`;
+
 export interface DataApi {
     getGroups(): Promise<Group[]>;
     queryGroups(): Promise<Group[]>;
@@ -99,11 +122,7 @@ export const dataImpl: DataApi = {
                 )
                 .bind(...this.scopeParams([])),
             this.db
-                .prepare(
-                    `SELECT id, group_id, name, url, icon, description, notes, username, password, order_num, created_at, updated_at FROM sites${this.scopeSql(
-                        false
-                    )} ORDER BY order_num`
-                )
+                .prepare(`${SITE_SELECT_WITH_NOTE}${this.scopeSql(false)} ORDER BY order_num`)
                 .bind(...this.scopeParams([])),
             this.db.prepare("SELECT key, value FROM configs"),
         ]);
@@ -304,8 +323,7 @@ export const dataImpl: DataApi = {
         return Promise.all(sites.map(site => this.decryptSitePassword(site)));
     },
     querySites: async function (this: NavigationAPI, groupId?: number): Promise<Site[]> {
-        let query =
-            "SELECT id, group_id, name, url, icon, description, notes, username, password, order_num, created_at, updated_at FROM sites";
+        let query = SITE_SELECT_WITH_NOTE;
         const params: (string | number)[] = [];
 
         if (groupId !== undefined) {
@@ -330,11 +348,7 @@ export const dataImpl: DataApi = {
     },
     querySite: async function (this: NavigationAPI, id: number): Promise<Site | null> {
         const result = await this.db
-            .prepare(
-                `SELECT id, group_id, name, url, icon, description, notes, username, password, order_num, created_at, updated_at FROM sites WHERE id = ?${this.scopeSql(
-                    true
-                )}`
-            )
+            .prepare(`${SITE_SELECT_WITH_NOTE} WHERE id = ?${this.scopeSql(true)}`)
             .bind(...this.scopeParams([id]))
             .first<Site>();
         return result ? this.decryptSitePassword(result) : result;

@@ -28,6 +28,18 @@ export interface Site {
     order_num: number;
     created_at?: string;
     updated_at?: string;
+    /**
+     * **只读**：绑定到这张卡片的那篇笔记（#477，一个站点最多一篇）。
+     *
+     * 这个字段**不在 sites 表里**，是 querySites / querySite 用相关子查询从
+     * `notes.site_id` 反查出来的（见 data.ts 的 SITE_SELECT_WITH_NOTE）。
+     * 写入请走 `updateNote(noteId, { site_id })` —— 绑定关系只存在笔记那一侧，
+     * 这样「卡片删了笔记还在」不需要级联，也不会出现两份真相。
+     * 没绑定时是 null。
+     */
+    note_id?: number | null;
+    /** **只读**：绑定笔记的标题（列表上直接显示，省一次往返）。没绑定时是 null */
+    note_title?: string | null;
 }
 
 /**

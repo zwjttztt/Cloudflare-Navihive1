@@ -62,6 +62,10 @@ export interface NotesPageCtx {
     backlinks: Array<ResolvedWikiLink>;
     backlinksOpen: boolean;
     backupApi: { getState(): Promise<NotesBackupState>; save(patch: NotesBackupSavePatch): Promise<void>; test(): Promise<{ success: boolean; message: string; }>; run(): Promise<{ success: boolean; message: string; }>; listRemote(): Promise<{ success: boolean; files: { name: string; size: number; lastModified: string; }[]; message: string; }>; fetch(filename: string, password: string): Promise<{ success: boolean; message: string; payload?: NotesImportPayload; zipBase64?: string; code?: WebDavErrorCode; }>; deleteRemote?(filename: string): Promise<{ success: boolean; message: string; }>; } | undefined;
+    /** #477 笔记侧反查：这篇笔记绑在哪个站点上；null = 没绑 */
+    boundSite: { id?: number; name: string } | null;
+    /** #477：site_id 有值但站点已不存在（卡片被删，悬空引用照实显示） */
+    boundSiteMissing: boolean;
     bp: PanelBreakpoint;
     bulkArchive: () => Promise<void>;
     bulkDelete: () => Promise<void>;
@@ -129,6 +133,8 @@ export interface NotesPageCtx {
     onDelete: (note: Note) => Promise<void>;
     onEmptyTrash: () => Promise<void>;
     onNotify: ((message: string, severity?: "success" | "error" | "info") => void) | undefined;
+    /** #477：关掉记事本并滚到绑定的那张卡片（App 的 jumpToSite） */
+    onOpenBoundSite: () => void;
     onPurgeTrashed: (recycleId: number) => Promise<void>;
     onRestoreTrashed: (recycleId: number) => Promise<void>;
     onToggleArchive: (note: Note) => Promise<void>;

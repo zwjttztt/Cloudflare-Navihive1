@@ -1172,6 +1172,34 @@ function App() {
     /** 顶栏菜单上那个「记事本（N）」的 N。进面板时由 NotesOverlay 回报。 */
     const [notesCount, setNotesCount] = useState(0);
 
+    /**
+     * 记事本里「这篇笔记属于哪个站点」的反查（#477 双向绑定的笔记那一侧）。
+     *
+     * 站名直接从内存里的分组树查（几十张卡的一次线性扫），不额外发请求 ——
+     * 为了显示一个名字去拉一遍 /api/sites 不值当。
+     *
+     * 跳转复用 jumpToSite：先关掉记事本层（它盖在页面上，先滚也看不见），
+     * 隔一小段再滚 —— 等那一层卸载、布局稳定下来，滚到的位置才是对的。
+     */
+    const notesSiteLinkApi = useMemo(
+        () => ({
+            resolve: (siteId: number) => {
+                for (const group of groups) {
+                    const hit = group.sites?.find(s => s.id === siteId);
+                    if (hit) return { id: hit.id, name: hit.name };
+                }
+                // 查不到 = 那张卡片已经被删了。悬空引用是刻意的（笔记要留下），
+                // 记事本那边会显示成「站点已删除」。
+                return null;
+            },
+            open: (siteId: number) => {
+                setNotesOpen(false);
+                window.setTimeout(() => jumpToSite(siteId), 60);
+            },
+        }),
+        [groups, jumpToSite]
+    );
+
     // 打开备份对话框（0=备份，1=恢复）
     const {
         openBackup,
@@ -1440,6 +1468,10 @@ function App() {
     });
 
     // context value 记忆化：只有相关配置真正变化时才通知消费方，避免无谓重渲染
+    // notesBridge 的写操作（绑定 / 新建并绑定）落库后要重取一次卡片数据，否则
+    // 同一屏上「原来绑着这篇笔记的那张卡」还挂着旧标题。取数据复用上面那个
+    // fetchDataRef（它就是为了「fetchData 每次渲染都是新函数」而存在的）——
+    // 直接把 fetchData 放进下面的依赖数组会让 appConfigValue 每渲染一次就变。
     const appConfigValue = useMemo(
         () => ({
             iconApi: configs["site.iconApi"] || "",
@@ -1471,6 +1503,33 @@ function App() {
                 open: (noteId: number) => {
                     setNotesFocusId(noteId);
                     setNotesOpen(true);
+                },
+                // ---- #477 站点↔笔记绑定的三条写操作 ----
+                // 绑定关系存在笔记侧（notes.site_id），站点那边的 note_id / note_title
+                // 是查出来的，所以每次落库后都得重取一次卡片。
+                list: async () => {
+                    try {
+                        // summary 模式：正文只取开头一小段，这里只用到 id / 标题 / 绑定站点
+                        const rows = await api.listNotes({ summary: true });
+                        return rows.map(n => ({
+                            id: n.id,
+                            title: n.title || "",
+                            site_id: n.site_id ?? null,
+                        }));
+                    } catch {
+                        return [];
+                    }
+                },
+                bind: async (noteId: number, siteId: number | null) => {
+                    await api.updateNote(noteId, { site_id: siteId });
+                    void fetchDataRef.current({ silent: true });
+                },
+                createAndBind: async (siteId: number, title: string) => {
+                    // createNote 已经认 site_id，且服务端会在插入前把该站点上
+                    // 原来那篇解绑 —— 一步到位，不需要「先建再绑」两次往返
+                    const created = await api.createNote({ title, content: "", site_id: siteId });
+                    void fetchDataRef.current({ silent: true });
+                    return { id: created.id, title: created.title || title };
                 },
             },
         }),
@@ -2016,6 +2075,8 @@ function App() {
                                 api={api}
                                 // 站点设置里点「相关笔记」时带上目标笔记 id
                                 focusNoteId={notesFocusId ?? undefined}
+                                // #477 笔记侧反查：状态栏显示「这篇绑在哪个站」并支持跳回卡片
+                                siteLinkApi={notesSiteLinkApi}
                                 onClose={() => {
                                     setNotesOpen(false);
                                     setNotesFocusId(null);

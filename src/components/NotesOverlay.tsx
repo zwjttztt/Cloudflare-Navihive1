@@ -49,6 +49,14 @@ export interface NotesOverlayProps {
      * （NotesPage 内部用 ref 记「已经处理过哪个 id」）。
      */
     focusNoteId?: number;
+    /**
+     * 站点侧的两个能力（#477 双向绑定的笔记那一侧）：站名解析 + 跳回卡片。
+     * 原样透传给 NotesPage（见那边的 siteLinkApi 注释）。不传就没有状态栏那一项。
+     */
+    siteLinkApi?: {
+        resolve: (siteId: number) => { id?: number; name: string } | null;
+        open: (siteId: number) => void;
+    };
 }
 
 export default function NotesOverlay({
@@ -59,6 +67,7 @@ export default function NotesOverlay({
     onCountChange,
     accountName,
     focusNoteId,
+    siteLinkApi,
 }: NotesOverlayProps) {
     /**
      * 乐观并发冲突的弹框（2026-10-09）。
@@ -379,6 +388,7 @@ export default function NotesOverlay({
             }
             backupApi={backupApi}
             focusNoteId={focusNoteId}
+            siteLinkApi={siteLinkApi}
             onDatasetChanged={handleDatasetChanged}
             syncChangedNoteIds={lastSyncChangedIds}
             notes={notes}

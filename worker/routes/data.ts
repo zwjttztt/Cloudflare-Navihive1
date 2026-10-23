@@ -288,6 +288,22 @@ function contentDisposition(filename: string): string {
 const IDEMPOTENT_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
 /**
+ * 笔记绑定站点前，先确认这张卡片是自己的（#477）。
+ *
+ * 与 `POST /api/sites` 里「目标分组必须是自己的」是同一个洞：绑定关系存在
+ * 笔记那一侧（`notes.site_id`），如果这里不校验，任何人都能把自己的笔记挂到
+ * **别人的站点 id** 上。危害不只是脏数据 —— 那位用户在自��的卡片上会看到
+ * 一篇莫名其妙的笔记标题，点开还能读到正文，等于一个反向的信息泄露口。
+ *
+ * getSite 走 scopeSql，读不到（不存在 / 不是自己的）一律 400：
+ * 用 404 会把「这个 id 存在但不属于你」和「压根没有」区分开。
+ */
+async function assertOwnedSiteForNote(api: RouteCtx["api"], siteId: number): Promise<void> {
+    const site = await api.getSite(siteId);
+    if (!site) throw ApiError.badRequest("目标站点不存在");
+}
+
+/**
  * 上传配额那三道闸（worker/attachments.ts 的 checkUploadQuota）返回的是
  * `{ status: number; error: string }` —— status 有 501 / 400 / 409 / 413 / 429 五种，
  * 而 ApiError 只收白名单里的状态号。这里按状态号挑对应的 code：
@@ -845,6 +861,8 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
         if (limited) return limited;
 
         const data = await readJsonBody<Partial<Note>>(request);
+        // 绑定的站点必须是自己的（#477，见 assertOwnedSiteForNote）
+        if (typeof data.site_id === "number") await assertOwnedSiteForNote(api, data.site_id);
         // 只留认识的字段：请求体是用户可控的，不能让它决定往哪几列写值
         const draft: Partial<Note> = {
             title: typeof data.title === "string" ? data.title : "",
@@ -911,6 +929,8 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
         // 显式传 null 才解除与站点的关联
         if (data.site_id !== undefined) {
             patch.site_id = typeof data.site_id === "number" ? data.site_id : null;
+            // 绑定的站点必须是自己的（#477，见 assertOwnedSiteForNote）
+            if (typeof patch.site_id === "number") await assertOwnedSiteForNote(api, patch.site_id);
         }
         // ⚠️ 阶段三的归档列。**漏了这一行就是「点了归档按钮，刷新又变回来」**：
         // 路由层白名单是照抄字段的，notes.ts 里认 archived 这里没认，

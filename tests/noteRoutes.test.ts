@@ -45,10 +45,26 @@ interface Log {
     ordered: Array<{ id: number; order_num: number }[]>;
 }
 
-function makeApi(log: Log, opts: { note?: unknown } = {}): NavigationAPI {
+function makeApi(log: Log, opts: { note?: unknown; ownedSiteIds?: number[] } = {}): NavigationAPI {
     return {
         // writeGate 内部要问「当前是谁」才能按账号限速，stub 得给一个
         getCurrentUserId: () => 1,
+        // #477：笔记绑定站点前，路由会问一句「这张卡片是不是你的」。
+        // 默认「都算自己的」（绝大多数用例只是顺带传了个 site_id）；
+        // 要测越权就传 ownedSiteIds: [] 把所有站点挡掉。
+        getSite: async (id: number) => {
+            if (opts.ownedSiteIds && !opts.ownedSiteIds.includes(id)) return null;
+            return {
+                id,
+                group_id: 1,
+                name: `站点${id}`,
+                url: "https://example.com",
+                icon: "",
+                description: "",
+                notes: "",
+                order_num: 0,
+            };
+        },
         listNotes: async () => {
             log.list += 1;
             return [];
@@ -174,8 +190,7 @@ test("POST notes 只把认识的字段交给 api", async () => {
     assert.equal("order_num" in draft, false, "排序由服务端接新行时自己算");
 });
 
-test("POST notes 忽略非字符串的 title/content（不把对象当文本存进去）", async () => {
-    const log = withLog();
+test("POST notes 忽略非字符串的 title/content（不把对象当文本存进去）", async () => {    const log = withLog();
     await call(makeApi(log), "notes", "POST", {
         title: { evil: true },
         content: ["a", "b"],
@@ -212,6 +227,25 @@ test("site_id 显式传 null 是「解除关联」，与「不传」区分得开
         false,
         "不传 site_id 就不该出现在 patch 里（否则会把关联误解除）"
     );
+});
+
+test("#477 绑定站点前要确认那张卡片是自己的（否则能把笔记挂到别人卡上）", async () => {
+    // 绑定关系存在笔记侧（notes.site_id），不校验就等于开了个反向信息泄露口：
+    // 别人的卡片上会冒出我的笔记标题，点开还能读到正文。
+    const log = withLog();
+    const outsider = makeApi(log, { ownedSiteIds: [] });
+
+    const postRes = await call(outsider, "notes", "POST", { title: "t", site_id: 5 });
+    assert.equal(postRes.status, 400, "POST 带别人的站点 → 400");
+    assert.equal(log.created.length, 0, "校验不过就不该建笔记");
+
+    const putRes = await call(outsider, "notes/9", "PUT", { site_id: 5 });
+    assert.equal(putRes.status, 400, "PUT 带别人的站点 → 400");
+    assert.equal(log.updated.length, 0, "校验不过就不该发更新");
+
+    // 解除绑定（null）不需要站点存在 —— 它本来就是把悬空引用清掉的那条路
+    const clearRes = await call(outsider, "notes/9", "PUT", { site_id: null });
+    assert.equal(clearRes.status, 200, "传 null 是解除，不该被站点校验挡住");
 });
 
 test("PUT note-orders 接受数组或 { orders } 两种形状", async () => {

@@ -29,8 +29,8 @@ import { PANE_HEADER_H, SPLIT_KEY, STATUSBAR_H, SaveDot } from "../notes/paneChr
 import { findIndexedSite } from "../../utils/siteIndex";
 import type { NotesPageCtx } from "./notesPageCtx";
 
-export default function NotesEditorPane(props: Pick<NotesPageCtx, "active" | "activeFolderName" | "activeId" | "activeTagNames" | "backlinks" | "backlinksOpen" | "charCount" | "checked" | "completionSources" | "dirty" | "draft" | "folderTags" | "handleAttach" | "handleOpenEmbedNote" | "handleToggleTask" | "handleUpload" | "jumpToNote" | "jumpToOffset" | "liveRender" | "liveRenderer" | "mainShortcutActions" | "narrowLayout" | "notes" | "onClose" | "onNotify" | "onTogglePin" | "onToggleStar" | "openAttachmentFromEditor" | "openRevisions" | "outline" | "outlineActiveLine" | "outlineOpen" | "pane" | "previewFeatures" | "previewScrollRef" | "replaceDetachedUpload" | "resolveNote" | "saveState" | "savedAt" | "setActiveFolder" | "setActiveMenuAnchor" | "setActiveTag" | "setBacklinksOpen" | "setDraft" | "setExportAnchor" | "setLightbox" | "setLiveRender" | "setOutlineActiveLine" | "setOutlineOpen" | "setPane" | "setShareId" | "setSplitRatio" | "setView" | "shareApi" | "sideId" | "splitBoxRef" | "splitRatio" | "splitRatioRef" | "startSplitDrag" | "syncPreviewScroll" | "tags" | "textareaRef" | "tick" | "tools" | "uiSettings" | "uploadApi" | "uploadImageForEditor" | "view" | "wordCount" | "zenMode" | "setZenMode">) {
-    const { active, activeFolderName, activeTagNames, backlinks, backlinksOpen, charCount, completionSources, dirty, draft, folderTags, handleAttach, handleOpenEmbedNote, handleToggleTask, handleUpload, jumpToNote, jumpToOffset, liveRender, liveRenderer, mainShortcutActions, narrowLayout, notes, onNotify, onTogglePin, onToggleStar, openAttachmentFromEditor, openRevisions, outline, outlineActiveLine, outlineOpen, pane, previewFeatures, previewScrollRef, replaceDetachedUpload, resolveNote, saveState, savedAt, setActiveFolder, setActiveMenuAnchor, setActiveTag, setBacklinksOpen, setDraft, setExportAnchor, setLightbox, setLiveRender, setOutlineActiveLine, setOutlineOpen, setPane, setShareId, setSplitRatio, setView, shareApi, sideId, splitBoxRef, splitRatio, splitRatioRef, startSplitDrag, syncPreviewScroll, tags, textareaRef, tick, tools, uiSettings, uploadApi, uploadImageForEditor, view, wordCount, zenMode, setZenMode } = props;
+export default function NotesEditorPane(props: Pick<NotesPageCtx, "active" | "activeFolderName" | "activeId" | "activeTagNames" | "backlinks" | "backlinksOpen" | "boundSite" | "boundSiteMissing" | "charCount" | "checked" | "completionSources" | "dirty" | "draft" | "folderTags" | "handleAttach" | "handleOpenEmbedNote" | "handleToggleTask" | "handleUpload" | "jumpToNote" | "jumpToOffset" | "liveRender" | "liveRenderer" | "mainShortcutActions" | "narrowLayout" | "notes" | "onClose" | "onNotify" | "onOpenBoundSite" | "onTogglePin" | "onToggleStar" | "openAttachmentFromEditor" | "openRevisions" | "outline" | "outlineActiveLine" | "outlineOpen" | "pane" | "previewFeatures" | "previewScrollRef" | "replaceDetachedUpload" | "resolveNote" | "saveState" | "savedAt" | "setActiveFolder" | "setActiveMenuAnchor" | "setActiveTag" | "setBacklinksOpen" | "setDraft" | "setExportAnchor" | "setLightbox" | "setLiveRender" | "setOutlineActiveLine" | "setOutlineOpen" | "setPane" | "setShareId" | "setSplitRatio" | "setView" | "shareApi" | "sideId" | "splitBoxRef" | "splitRatio" | "splitRatioRef" | "startSplitDrag" | "syncPreviewScroll" | "tags" | "textareaRef" | "tick" | "tools" | "uiSettings" | "uploadApi" | "uploadImageForEditor" | "view" | "wordCount" | "zenMode" | "setZenMode">) {
+    const { active, activeFolderName, activeTagNames, backlinks, backlinksOpen, boundSite, boundSiteMissing, charCount, completionSources, dirty, draft, folderTags, handleAttach, handleOpenEmbedNote, handleToggleTask, handleUpload, jumpToNote, jumpToOffset, liveRender, liveRenderer, mainShortcutActions, narrowLayout, notes, onNotify, onOpenBoundSite, onTogglePin, onToggleStar, openAttachmentFromEditor, openRevisions, outline, outlineActiveLine, outlineOpen, pane, previewFeatures, previewScrollRef, replaceDetachedUpload, resolveNote, saveState, savedAt, setActiveFolder, setActiveMenuAnchor, setActiveTag, setBacklinksOpen, setDraft, setExportAnchor, setLightbox, setLiveRender, setOutlineActiveLine, setOutlineOpen, setPane, setShareId, setSplitRatio, setView, shareApi, sideId, splitBoxRef, splitRatio, splitRatioRef, startSplitDrag, syncPreviewScroll, tags, textareaRef, tick, tools, uiSettings, uploadApi, uploadImageForEditor, view, wordCount, zenMode, setZenMode } = props;
     return (
         <Box
             data-editor-pane='1'
@@ -792,6 +792,43 @@ export default function NotesEditorPane(props: Pick<NotesPageCtx, "active" | "ac
                                 style={{ opacity: 0.85, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 160 }}
                             >
                                 {activeFolderName}
+                            </span>
+                        )}
+                        {/* 所在站点（#477 双向绑定的笔记那一侧）：点一下关掉记事本、
+                            滚到那张卡片并闪一下轮廓（App 的 jumpToSite）。
+                            站点已删时照实写「站点已删除」—— 悬空引用是刻意保留的
+                            （卡片删了笔记要留下），藏起来反而让人以为绑定丢了。 */}
+                        {boundSite && (
+                            <Box
+                                component='button'
+                                type='button'
+                                data-note-site={boundSite.id ?? ""}
+                                onClick={onOpenBoundSite}
+                                title={`打开站点卡片：${boundSite.name}`}
+                                sx={{
+                                    border: 0,
+                                    background: "none",
+                                    p: 0,
+                                    font: "inherit",
+                                    color: "var(--accent)",
+                                    cursor: "pointer",
+                                    maxWidth: 160,
+                                    overflow: "hidden",
+                                    textOverflow: "ellipsis",
+                                    whiteSpace: "nowrap",
+                                    "&:hover": { textDecoration: "underline" },
+                                }}
+                            >
+                                {boundSite.name}
+                            </Box>
+                        )}
+                        {boundSiteMissing && (
+                            <span
+                                data-note-site-missing
+                                style={{ opacity: 0.85, whiteSpace: "nowrap" }}
+                                title='绑定的站点已被删除，笔记本身不受影响'
+                            >
+                                站点已删除
                             </span>
                         )}
                         {/* 标签（inkstone 状态栏有，最多摆 4 个） */}

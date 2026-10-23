@@ -322,6 +322,10 @@ export const INDEX_STATEMENTS = [
     `CREATE INDEX IF NOT EXISTS idx_notes_uuid ON notes(user_id, uuid);`,
     // 文件夹视图：WHERE folder_id = ? ORDER BY updated_at，两个条件都得能走索引
     `CREATE INDEX IF NOT EXISTS idx_notes_folder ON notes(user_id, folder_id, updated_at);`,
+    // 站点↔笔记绑定（#477）：站点侧取「绑定的那篇笔记」是按 site_id 反查
+    // （见 data.ts 的 SITE_SELECT_WITH_NOTE）。没有这条索引时那两个相关子查询
+    // 会退化成「每张卡片一次笔记全表扫」—— 卡片一多，首页就跟着慢。
+    `CREATE INDEX IF NOT EXISTS idx_notes_site ON notes(site_id);`,
     // 文件夹 / 标签清单：列表查询都带 user_id 过滤
     `CREATE INDEX IF NOT EXISTS idx_note_folder_user ON note_folder(user_id, order_num);`,
     `CREATE INDEX IF NOT EXISTS idx_note_tag_user ON note_tag(user_id, name);`,
