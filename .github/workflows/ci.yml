@@ -167,6 +167,16 @@ jobs:
       - name: 首屏体感审计
         run: npm run audit:perf
 
+      # 视觉回归：3 视口 × 5 场景的布局指纹比对（几何 / 样式 / 元素数 / 主题态）。
+      # ⚠️ 先以**非阻断**方式接入（2026-10-24 全站复查行动项）：基线是在开发机上录的，
+      # CI 是另一台机器，字体渲染/亚像素差异会让它在两边都「绿」不了 ——
+      # 一上来就卡门只会训练出「随手 --update 重录」的坏习惯，那等于把回归网拆了。
+      # 现在的用途是**让它天天跑、把差异暴露在日志里**，等基线改在统一容器里重录
+      # （或把容差与采样收稳）之后再摘掉 continue-on-error 变真门禁。
+      - name: 视觉回归（观察期，暂不卡门）
+        run: npm run audit:visual
+        continue-on-error: true
+
       - name: 失败时留一份截图/日志
         if: failure()
         uses: actions/upload-artifact@v4

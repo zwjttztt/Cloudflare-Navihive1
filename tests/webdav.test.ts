@@ -17,6 +17,7 @@ import {
     runWebDavBackup,
     davFetch,
 } from "../worker/webdav";
+import { setEgressResolver } from "../worker/safeFetch";
 
 /** 造一份配置：默认关内网豁免，path 走默认值 */
 function cfg(url: string, allowPrivateNetwork?: boolean) {
@@ -392,12 +393,25 @@ test("没设备份口令：照常上传（明文 gzip），不再拦着不让备
         return new Response("{}", { status: 201 });
     }) as typeof fetch;
     try {
+        const written: Record<string, string> = {};
         const result = await runWebDavBackup(
-            { exportData: async () => ({ groups: [], sites: [], configs: {} }) } as never,
+            {
+                exportData: async () => ({ groups: [], sites: [], configs: {} }),
+                // ⚠️ 以前这个桩没有 setConfig，备份状态那段被 try/catch 吞成一行 console.error，
+                // 用例照样绿 —— 「状态到底写没写」从来没被断言过（2026-10-24 全站复查发现）。
+                setConfig: async (k: string, v: string) => {
+                    written[k] = v;
+                    return true;
+                },
+            } as never,
             cfg("https://dav.example.com/dav/"),
             { mode: "manual", stored: {} }
         );
         assert.equal(result.success, true, "没口令也要能备份");
+        assert.ok(written["webdav.lastBackup"], "备份成功必须把文件名记下来（前端「上次备份」要用）");
+        const info = JSON.parse(written["webdav.lastBackupInfo"] ?? "{}");
+        assert.equal(info.mode, "manual");
+        assert.ok(typeof info.durationMs === "number", "详情里要有耗时");
         assert.ok(fetchCalls > 0, "没口令也该真的发出上传请求");
         // 明文 gzip：以 1f 8b 开头，绝不能是口令加密头
         assert.deepEqual([...(sentBody as Uint8Array).subarray(0, 2)], [0x1f, 0x8b]);
@@ -416,12 +430,20 @@ test("设备份口令：上传的是口令加密文件（NAVIHIVE-ENC2 头，Wor
         return new Response("{}", { status: 201 });
     }) as typeof fetch;
     try {
+        const written: Record<string, string> = {};
         const result = await runWebDavBackup(
-            { exportData: async () => ({ groups: [], sites: [], configs: {} }) } as never,
+            {
+                exportData: async () => ({ groups: [], sites: [], configs: {} }),
+                setConfig: async (k: string, v: string) => {
+                    written[k] = v;
+                    return true;
+                },
+            } as never,
             cfg("https://dav.example.com/dav/"),
             { mode: "manual", password: "my-backup-pass", stored: {} }
         );
         assert.equal(result.success, true);
+        assert.ok(written["webdav.lastBackup"], "加密备份一样要记状态");
         assert.ok(fetchCalls > 0, "有口令就该真的发出上传请求");
         assert.equal(
             new TextDecoder().decode((sentBody as Uint8Array).subarray(0, 13)),
@@ -449,4 +471,88 @@ test("resolveWebDavConfig：备份口令不 trim（首尾空格是用户有意�
     } as never;
     const r = await resolveWebDavConfig(fakeApi, {} as Request, {});
     assert.equal(r.backupPassword, "  spaced  ");
+});
+
+// ==================== 出站解析复核（WebDAV 也过同一道，2026-10-24 P1） ====================
+// 背景：davFetch 不走 safeFetch（要支持非标准端口 / 内嵌凭据 / WebDAV 方法语义），
+// 但它同样会被 DNS rebinding 利用。以前这条路径完全不复核，等于自托管注册的那道
+// DNS 校验只覆盖了图标与 AI。下面两条把这层接线钉住，改坏了会红。
+
+test("WebDAV 出站也过解析复核：resolver 说不行的域名根本不发请求", async () => {
+    const seen: string[] = [];
+    setEgressResolver(async hostname => {
+        seen.push(hostname);
+        return hostname !== "evil.com";
+    });
+    const realFetch = globalThis.fetch;
+    let calls = 0;
+    globalThis.fetch = (async () => {
+        calls++;
+        return new Response("x", { status: 200 });
+    }) as typeof fetch;
+    try {
+        let thrown = "";
+        try {
+            await davFetch("https://evil.com/dav/", "GET", cfg("https://evil.com/dav/"));
+        } catch (error) {
+            thrown = error instanceof Error ? error.message : String(error);
+        }
+        assert.match(thrown, /解析到不允许的地址/, "解析复核不通过必须抛错");
+        assert.deepEqual(seen, ["evil.com"]);
+        assert.equal(calls, 0, "被拒的请求不该到达 fetch");
+    } finally {
+        globalThis.fetch = realFetch;
+        setEgressResolver(null);
+    }
+});
+
+test("WebDAV 开了 allowPrivateNetwork 就不再解析复核（否则内网 NAS 全废）", async () => {
+    let seen = 0;
+    setEgressResolver(async () => {
+        seen++;
+        return false; // 一律拒绝也能通 => 说明确实没复核
+    });
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response("ok", { status: 200 })) as typeof fetch;
+    try {
+        await davFetch("https://nas.local/dav/", "GET", cfg("https://nas.local/dav/", true));
+        assert.equal(seen, 0, "显式放行内网时不应再问 resolver");
+    } finally {
+        globalThis.fetch = realFetch;
+        setEgressResolver(null);
+    }
+});
+
+test("备份状态写不进去：备份本身仍算成功（这点必须显式钉住，别让 catch 变成静默假绿）", async () => {
+    // 语义确认：文件已经传到网盘了，只是「上次备份」那行没更新。
+    // 这时让整个备份失败反而更糟（用户会以为没备份成，还可能重复上传）。
+    // 但也正因为被 catch 吞掉，桩缺 setConfig 时用例全绿 —— 所以这里把两条都断言到：
+    // ① 抛错不往上冒；② 错误被记进日志（可观测，不是无声无息）。
+    const realFetch = globalThis.fetch;
+    const realError = console.error;
+    const logged: unknown[] = [];
+    globalThis.fetch = (async () => new Response("{}", { status: 201 })) as typeof fetch;
+    console.error = (...args: unknown[]) => {
+        logged.push(args[0]);
+    };
+    try {
+        const result = await runWebDavBackup(
+            {
+                exportData: async () => ({ groups: [], sites: [], configs: {} }),
+                setConfig: async () => {
+                    throw new Error("boom");
+                },
+            } as never,
+            cfg("https://dav.example.com/dav/"),
+            { mode: "manual", stored: {} }
+        );
+        assert.equal(result.success, true, "文件传上去了就该算备份成功");
+        assert.ok(
+            logged.some(m => typeof m === "string" && m.includes("记录备份状态失败")),
+            "失败必须留下日志，不能静默"
+        );
+    } finally {
+        globalThis.fetch = realFetch;
+        console.error = realError;
+    }
 });

@@ -3,6 +3,7 @@
 // 内网拦截放在这里而不是配置层：判定的是「这个地址能不能发」，
 // 而真正要发的是 davFetch，放在一起不容易漏。
 import { errorMessage, isBlockedHost, readBoundedBytes } from "../util";
+import { isEgressAllowed } from "../safeFetch";
 import type { Bytes } from "../../src/API/crypto";
 import { DEFAULT_WEBDAV_PATH, type WebDavConfig, type WebDavFile } from "./types";
 
@@ -226,6 +227,17 @@ export async function davFetch(
         }
         if (!config.allowPrivateNetwork && isBlockedHost(target.hostname)) {
             throw new Error("WebDAV 重定向目标不允许指向内网或本机");
+        }
+        // 第二道：把 hostname 解析出来的 IP 逐条复核（DNS rebinding —— hostname 是
+        // 公网域名、实际连出去却是内网 IP 的情况）。这条路径以前完全没有，等于自托管
+        // 注册的那道校验只覆盖了图标与 AI；现在 WebDAV 也过同一道。
+        //   - 开了 allowPrivateNetwork 是管理员显式放行内网，不再复核（否则 NAS 全废）；
+        //   - IPv6 的 URL.hostname 带方括号，先剥掉再交给解析器，免得 lookup 失败被当成放行。
+        if (!config.allowPrivateNetwork) {
+            const hostForResolve = target.hostname.replace(/^\[|\]$/g, "");
+            if (!(await isEgressAllowed(hostForResolve))) {
+                throw new Error("WebDAV 目标解析到不允许的地址（内网或本机）");
+            }
         }
         // 网络层错误原样上抛，由 describeWebDavError 翻成人话（这里不包 try/catch：
         // 包了也只是原样 rethrow）

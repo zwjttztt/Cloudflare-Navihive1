@@ -6,6 +6,22 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。---
 
+## 2026-10-25 · P1/P2 收口：WebDAV 出站闭环、依赖清零、覆盖率补到 100%
+
+**要点**
+- **（安全）WebDAV 出站也过 DNS 解析复核**：davFetch 因为要支持非标准端口 / 内嵌凭据 / WebDAV 方法语义，一直没走 safeFetch，于是自托管注册的「解析 IP 复核」只覆盖了图标与 AI 两条路 —— 这条路径对 DNS rebinding 是**裸的**。现在 worker/safeFetch.ts 导出 isEgressAllowed()，WebDAV 每一跳（含初始地址）都会复核；显式开了 allowPrivateNetwork 时不复核（否则家里 NAS 全废）；Cloudflare 侧不注册 resolver，行为零变化。两条用例把接线钉住。
+- **（安全）依赖漏洞清零**：npm audit 的 6 个命中（1 critical / 2 high / 3 moderate）全部处置 —— 用 overrides 精准升 dompurify 3.4.17（mermaid 生产依赖）、zod 4.6.7（ESLint 插件链）、undici 按来源分别升 7.30.1（miniflare）与 8.12.3（jsdom）。**没有**跑 audit fix --force —— 它给的建议是把 @cloudflare/vite-plugin 降到大版本，那会拆掉工具链。现在 npm audit 报 0 vulnerabilities。
+- **（工程）覆盖率统计不再漏掉 server / shared**：script/coverage.mjs 以前只扫 src 与 worker，自托管适配层和前后端共享契约在报表上「不存在」。现在两层进统计并各设 100% 下限；server/entry.ts（Node 进程入口，由 smoke:selfhost 覆盖）显式排除并写明理由。
+- **（修复）备份状态「假绿」**：runWebDavBackup 写完文件后记 webdav.lastBackup* 的那段被 try/catch 包着，测试桩没给 setConfig 时报错只落一行 console.error、用例照样绿 —— 「到底写没写」从来没被断言过。桩补齐 + 三条断言（成功要写、详情含耗时、写失败仍算备份成功但必须留日志）。
+- **（修复）AI 标签建议的站点指纹只拼 id**：改了站名/网址而 id 不变时依赖数组纹丝不动，弹窗里显示的还是旧名字、建议也按旧内容算。现在指纹含 id + 站名 + 网址，分隔符改用 \u0000（站名里出现逗号是常事）。顺带把文件里两处**字面 NUL 字节**改成转义写法 —— 它让整个文件被 grep/git 当成二进制。
+
+**工程**
+- 体积预算口径统一：tests/bundleBudget.test.ts 那条用例标题写着「留 5% 余量」、实际断言是 3%，报告里的「还有 5%」是假的。现在标题与断言一致写 3%，并在注释里记下「设计目标是 5%，当前实测 3.3% / 5.0%，差约 14 KB」—— 没有靠抬预算把数字做漂亮。
+- 覆盖率补到 **100%**：新增 tests/ThemeToggle.dom.test.tsx（三档可访问名 + 点击回调）；notesPageCtx.ts 经确认为纯类型文件后按既有约定排除，并由新增的 tests/pureTypeFiles.test.ts 反向守着「被排除的文件必须真的是纯类型」，防止以后有人往里塞运行时代码就悄悄退出所有统计。components 下限回到 100%。
+- 本地 npm run ci 与 CI 工作流对齐：补上工作流单独跑的 check:coverage / probe:edge，以及本机一直在跑的 audit:visual。
+- 视觉回归进 CI（**观察期，暂不卡门**）：基线在开发机录的，跨机器字体差异会让它两边都绿不了；先让它天天跑、把差异暴露在日志里（continue-on-error），等基线与容差收稳再摘掉。
+
+---
 ## 2026-10-24 · P1-8 & P1-9：覆盖率分层门禁 + data.ts 表驱动
 
 **要点**

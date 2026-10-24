@@ -95,9 +95,18 @@ for (const input of Object.keys(result.metafile.inputs)) {
     const abs = path.resolve(ROOT, input);
     if (abs.startsWith(path.join(ROOT, "src") + path.sep)) touched.add(abs);
     if (abs.startsWith(path.join(ROOT, "worker") + path.sep)) touched.add(abs);
+    // server/ 与 shared/ 以前根本不在统计里 —— 自托管适配层和前后端共享契约
+    // 明明有运行时逻辑，却在覆盖率报表上「不存在」（2026-10-24 全站复查发现）。
+    if (abs.startsWith(path.join(ROOT, "server") + path.sep)) touched.add(abs);
+    if (abs.startsWith(path.join(ROOT, "shared") + path.sep)) touched.add(abs);
 }
 
-const sources = [...walk(path.join(ROOT, "src")), ...walk(path.join(ROOT, "worker"))];
+const sources = [
+    ...walk(path.join(ROOT, "src")),
+    ...walk(path.join(ROOT, "worker")),
+    ...walk(path.join(ROOT, "server")),
+    ...walk(path.join(ROOT, "shared")),
+];
 const lines = p => fs.readFileSync(p, "utf-8").split("\n").length;
 
 // 这些文件是「纯类型声明」或「应用 / 沙箱入口」，没有运行时逻辑可被用例执行，
@@ -110,6 +119,15 @@ const EXCLUDE = new Set([
     "worker/routes/types.ts", // RouteCtx 接口
     "src/main.tsx",           // 应用入口
     "src/mermaidSandbox.ts",  // 流程图沙箱入口
+    // 纯类型文件：只有 import type / interface / type，运行时一行都不产生
+    //（里面的字段类型是 tsc 从 NotesPage 真实代码导出来的）。硬算进门禁只会逼出
+    // 无意义的测试 —— 但「它必须保持纯类型」由 tests/pureTypeFiles.test.ts 守着。
+    "src/components/notes/notesPageCtx.ts",
+    // 自托管 Node 进程入口：它由「起真实例 + 走 HTTP」的 smoke:selfhost 覆盖，
+    // 不是 jsdom 单测能引入的东西（硬塞会把浏览器侧打包拖进 node:sqlite / fs）。
+    // 以前它连统计都不进 —— 现在进统计但显式排除，免得它 1165 行永远挂在
+    // 「未触及名单」第一名、把真正该补测的小文件挤出视野。
+    "server/entry.ts",
 ]);
 
 // 粗粒度分层：把零散的 src 顶层文件归到「其他(src 顶层)」，便于一眼看出哪层是短板。
@@ -120,6 +138,8 @@ const LAYER_GROUPS = {
     "hooks": ["src/hooks"],
     "utils": ["src/utils"],
     "context": ["src/context"],
+    "server": ["server"],
+    "shared": ["shared"],
     "其他(src 顶层)": ["src"],
 };
 function layerOf(abs) {
@@ -133,9 +153,9 @@ function layerOf(abs) {
 // 每层文件触及率下限（防回归门禁）。初值取**当前实测值**当地板：
 // 现在就红没有任何意义，门禁要抓的是「以后往某个层塞了没测的文件」。
 // utils/hooks/context/API/worker/其他 当前逻辑文件 100% 触及，定 1.0；
-// components 因 ThemeToggle / notesPageCtx 两处暂未测，定 0.98（再掉一个就红）。
-const MIN_TOUCH = {
-    "API": 1.0, "worker": 1.0, "components": 0.98,
+// components：ThemeToggle 已补 DOM 用例、notesPageCtx 是纯类型已排除，回到 1.0。
+const MIN_TOUCH = { "server": 1.0, "shared": 1.0,
+    "API": 1.0, "worker": 1.0, "components": 1.0,
     "hooks": 1.0, "utils": 1.0, "context": 1.0, "其他(src 顶层)": 1.0,
 };
 
@@ -152,7 +172,7 @@ for (const s of sources) {
 const untouch = sources.filter(p => !touched.has(p) && !EXCLUDE.has(rel(p)));
 untouch.sort((a, b) => lines(b) - lines(a));
 
-const LAYER_ORDER = ["API", "worker", "components", "hooks", "utils", "context", "其他(src 顶层)"];
+const LAYER_ORDER = ["API", "worker", "components", "hooks", "utils", "context", "server", "shared", "其他(src 顶层)"];
 let gateFailed = false;
 const breaches = [];
 

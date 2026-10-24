@@ -91,6 +91,19 @@ export function setEgressResolver(fn: EgressResolver | null): void {
     egressResolver = fn;
 }
 
+/**
+ * 供 safeFetch **之外**的出站路径（目前是 WebDAV 的 davFetch）复用同一份复核。
+ *
+ * 为什么需要这个导出：davFetch 因为要支持非标准端口、内嵌凭据与 WebDAV 方法语义，
+ * 没有走 safeFetch，但它同样面临「hostname 挡得住、解析结果挡不住」的问题。
+ * 以前这条路径完全不复核，等于自托管注册的那道 DNS 校验只覆盖了图标与 AI。
+ * 没注册 resolver 时（Cloudflare / 测试）返回 true —— 行为零变化。
+ */
+export async function isEgressAllowed(hostname: string): Promise<boolean> {
+    if (!egressResolver) return true;
+    return await egressResolver(hostname);
+}
+
 export interface SafeFetchOptions {
     /** 自定义最大跳数（默认 4） */
     maxRedirects?: number;
