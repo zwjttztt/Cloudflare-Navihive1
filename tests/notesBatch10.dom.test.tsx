@@ -509,10 +509,10 @@ test("分享链接前缀三处必须一致是 /s/（main 路由 / 分享弹窗 /
         dialog.includes("/s/${share.token}"),
         "分享弹窗生成的链接必须是 /s/<token>"
     );
-    const settings = readSrcFile("components", "NotesSettingsDialog.tsx");
+    const settings = readSrcFile("components", "notes", "NotesSharesTab.tsx");
     assert.ok(
         settings.includes("/s/${token}"),
-        "设置里分享列表的链接必须是 /s/<token>"
+        "设置里分享列表的链接必须是 /s/<token>（2026-10-24 拆分后住在 NotesSharesTab）"
     );
     assert.ok(
         !settings.includes("/note/${token}"),

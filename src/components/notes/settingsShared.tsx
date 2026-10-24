@@ -1,0 +1,102 @@
+// src/components/notes/settingsShared.tsx
+// 记事本设置弹窗的共享小组件（2026-10-24 从 NotesSettingsDialog.tsx 拆出）。
+//
+// 为什么单独一个文件：这几个件被六个设置页（外观/编辑器/数据/同步/分享/备份）
+// 共用，留在主文件里会让「拆页」变成「把依赖一起剪不断」。放这里之后，
+// 每个设置页 import 自己那一份，主文件只剩框架与分发。
+
+import Box from "@mui/material/Box";
+import Typography from "@mui/material/Typography";
+
+export function SettingRow({
+    label,
+    description,
+    children,
+}: {
+    label: string;
+    description?: string;
+    children: React.ReactNode;
+}) {
+    return (
+        <Box
+            sx={{
+                display: "flex",
+                alignItems: "center",
+                gap: 2,
+                py: 1.25,
+                borderBottom: "1px solid var(--neutral-hover)",
+            }}
+        >
+            <Box sx={{ flex: 1, minWidth: 0 }}>
+                <Typography variant='body2'>{label}</Typography>
+                {description && (
+                    <Typography variant='caption' color='text.secondary' sx={{ display: "block", mt: 0.25 }}>
+                        {description}
+                    </Typography>
+                )}
+            </Box>
+            <Box sx={{ flexShrink: 0, display: "flex", alignItems: "center", gap: 0.75 }}>{children}</Box>
+        </Box>
+    );
+}
+
+/** 附件字节数 → 人类可读（数据页「附件占用」用） */
+/** 时间戳 →「2026-10-08 14:30」。兼容数字与字符串（D1 里两种都可能出现） */
+export function fmtTime(value: number | string | null | undefined): string {
+    if (value === null || value === undefined || value === "") return "";
+    const ts = typeof value === "number" ? value : Date.parse(String(value));
+    if (!Number.isFinite(ts)) return "";
+    const d = new Date(ts);
+    const p = (n: number) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+export function fmtBytes(n: number): string {
+    if (n >= 1048576) return `${(n / 1048576).toFixed(1)} MB`;
+    if (n >= 1024) return `${Math.round(n / 1024)} KB`;
+    return `${n} B`;
+}
+
+/** 一组互斥的小段选择（暖纸/纯白 那种样式）：选中项描强调色 */
+export function SegOptions<T extends string>({
+    value,
+    options,
+    onChange,
+    dataKey,
+}: {
+    value: T;
+    options: { value: T; label: string }[];
+    onChange: (v: T) => void;
+    dataKey: string;
+}) {
+    return (
+        <Box sx={{ display: "flex", gap: 0.5 }}>
+            {options.map(opt => {
+                const active = opt.value === value;
+                return (
+                    <Box
+                        key={opt.value}
+                        component='button'
+                        type='button'
+                        data-setting={`${dataKey}:${opt.value}`}
+                        onClick={() => onChange(opt.value)}
+                        sx={{
+                            px: 1.25,
+                            py: 0.4,
+                            fontSize: 12,
+                            borderRadius: 1.5,
+                            cursor: "pointer",
+                            appearance: "none",
+                            font: "inherit",
+                            border: active ? "1px solid var(--accent)" : "1px solid var(--neutral-border)",
+                            bgcolor: active ? "var(--accent-wash)" : "transparent",
+                            color: active ? "var(--accent)" : "text.secondary",
+                        }}
+                    >
+                        {opt.label}
+                    </Box>
+                );
+            })}
+        </Box>
+    );
+}
