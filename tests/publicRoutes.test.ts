@@ -25,6 +25,7 @@ import {
 import { REMEMBER_TOKEN_TTL } from "../src/API/http";
 import type { RouteCtx } from "../worker/routes/types";
 import type { NavigationAPI } from "../src/API/navigationApi";
+import { ApiError } from "../worker/lib/apiError";
 import { errorBody } from "./helpers/apiErrorBody";
 
 const HOST = "https://nav.example.com";
@@ -408,22 +409,27 @@ test("注册成功直接签令牌（不用回登录页再输一遍）", async ()
     assert.deepEqual(log.issued, [{ uid: 7, ttl: 24 * 60 * 60 }]);
 });
 
-test("注册：请求体不是 JSON 也不能崩 —— catch 成空对象后老老实实往下传", async () => {
+test("注册：请求体不是 JSON 就明确 400（2026-10-24 起不再静默规整成空对象）", async () => {
     const log = emptyLog();
     const api = makeApi(log, { authEnabled: true }, BUCKET);
     const request = new Request(`${HOST}/api/auth/register`, {
         method: "POST",
         body: "not-json",
     });
-    const res = await handlePublicRoutes(makeCtx(api, request, "auth/register", "POST"));
-    assert.ok(res, "要给出响应，不能抛异常");
-    // 路由层不做字段校验（长度 / 字符 / 邀请码都在 registerUser 里），
-    // 所以这里只能保证：脏输入被规整成空串继续往下走，而不是 undefined 一路带进 SQL
-    assert.deepEqual(
-        log.registers,
-        [{ username: "", inviteCode: "" }],
-        "脏请求体要被规整成空串，不能把 undefined 传下去"
+    // 老行为：catch 成空对象后拿空串继续往下建号 —— 与「没守」无异，
+    // 还把「客户端发错了」包装成「服务端处理完了」。现在 readJsonBody 抛
+    // ApiError(400)，由入口（worker/index.ts 的 catch-all）翻译成响应。
+    let thrown: unknown = null;
+    try {
+        await handlePublicRoutes(makeCtx(api, request, "auth/register", "POST"));
+    } catch (error) {
+        thrown = error;
+    }
+    assert.ok(
+        thrown instanceof ApiError && thrown.status === 400,
+        `坏 JSON 必须抛 400，实际：${String(thrown)}`
     );
+    assert.deepEqual(log.registers, [], "400 之后不该走到建号那一步");
 });
 
 test("注册：用户名前后空格要 trim（'  admin  ' 不该建成另一个账号）", async () => {

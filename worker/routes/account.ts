@@ -205,7 +205,7 @@ export async function handleAccountRoutes(ctx: RouteCtx): Promise<Response | nul
             return errorResponse(ApiError.forbidden("仅站点所有者可以管理账号"));
         }
         const targetId = parseInt(matched[1], 10);
-        const body = (await request.json().catch(() => ({}))) as { status?: string };
+        const body = (await readJsonBody(request)) as { status?: string };
         const status = body.status === "disabled" ? "disabled" : "active";
         const result = await api.setUserStatus(targetId, status, uid);
         return Response.json(result, { status: result.success ? 200 : 400 });
@@ -213,7 +213,7 @@ export async function handleAccountRoutes(ctx: RouteCtx): Promise<Response | nul
 
     // 注销账号：删掉账号名下所有数据 + 账号本身
     if (path === "account" && method === "DELETE") {
-        const body = (await request.json().catch(() => ({}))) as {
+        const body = (await readJsonBody(request)) as {
             currentPassword?: string;
         };
         const uid = api.getCurrentUserId();
@@ -287,7 +287,7 @@ export async function handleAccountRoutes(ctx: RouteCtx): Promise<Response | nul
     // 保存 / 更换恢复公钥（网页端「生成并下载私钥」时调用）
     // 必须校验当前密码：否则拿到会话的人能塞进自己的公钥，留一个改密也清不掉的后门。
     else if (path === "auth/recovery-key" && method === "PUT") {
-        const data = (await request.json().catch(() => ({}))) as RecoveryKeyInput;
+        const data = (await readJsonBody(request)) as RecoveryKeyInput;
         const publicKey =
             typeof data.publicKey === "string" ? data.publicKey.trim() : "";
         const currentPassword =

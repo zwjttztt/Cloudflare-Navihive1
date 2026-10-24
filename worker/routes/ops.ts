@@ -5,6 +5,7 @@
 import {} from "../httpUtils";
 import type { RouteCtx } from "./types";
 import { ApiError, errorResponse } from "../lib/apiError";
+import { readJsonBody } from "./jsonBody";
 
 export async function handleOpsRoutes(ctx: RouteCtx): Promise<Response | null> {
     const {
@@ -72,7 +73,7 @@ export async function handleOpsRoutes(ctx: RouteCtx): Promise<Response | null> {
     }
     // 回收站：还原一条
     if (path === "recycle/restore" && method === "POST") {
-        const body = (await request.json().catch(() => ({}))) as { id?: number };
+        const body = (await readJsonBody(request)) as { id?: number };
         const id = typeof body.id === "number" ? body.id : NaN;
         if (isNaN(id)) {
             return errorResponse(ApiError.badRequest("缺少有效的 id"));
@@ -83,7 +84,7 @@ export async function handleOpsRoutes(ctx: RouteCtx): Promise<Response | null> {
     }
     // 回收站：永久删除一条
     if (path === "recycle/purge" && method === "POST") {
-        const body = (await request.json().catch(() => ({}))) as { id?: number };
+        const body = (await readJsonBody(request)) as { id?: number };
         const id = typeof body.id === "number" ? body.id : NaN;
         if (isNaN(id)) {
             return errorResponse(ApiError.badRequest("缺少有效的 id"));
@@ -95,7 +96,7 @@ export async function handleOpsRoutes(ctx: RouteCtx): Promise<Response | null> {
     // 回收站：批量还原（撤销多选删除时一次请求搞定，并带回还原出来的卡片，
     // 前端直接插回界面，不必再 bootstrap 全量重拉）
     if (path === "recycle/restore-batch" && method === "POST") {
-        const body = (await request.json().catch(() => ({}))) as { ids?: unknown };
+        const body = (await readJsonBody(request)) as { ids?: unknown };
         const ids = Array.isArray(body.ids)
             ? body.ids.filter((v): v is number => typeof v === "number" && Number.isInteger(v))
             : [];
@@ -108,7 +109,7 @@ export async function handleOpsRoutes(ctx: RouteCtx): Promise<Response | null> {
     }
     // 回收站：批量永久删除（撤销后又删一次）
     if (path === "recycle/purge-batch" && method === "POST") {
-        const body = (await request.json().catch(() => ({}))) as { ids?: unknown };
+        const body = (await readJsonBody(request)) as { ids?: unknown };
         const ids = Array.isArray(body.ids)
             ? body.ids.filter((v): v is number => typeof v === "number" && Number.isInteger(v))
             : [];

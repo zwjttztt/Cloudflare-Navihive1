@@ -123,7 +123,7 @@ export async function handlePublicRoutes(ctx: RouteCtx): Promise<Response | null
         const token = path.slice("group-shares/".length);
         let password: string | null = null;
         if (method === "POST") {
-            const body = (await request.json().catch(() => ({}))) as { password?: unknown };
+            const body = (await readJsonBody(request)) as { password?: unknown };
             password = typeof body.password === "string" ? body.password : null;
         }
         // 防刷去重：cookie 里当天戳还在（同一浏览器今天已计过）就跳过 views+1。
@@ -144,7 +144,7 @@ export async function handlePublicRoutes(ctx: RouteCtx): Promise<Response | null
         // 它在口令不匹配时统一回 need-password。
         let password: string | null = null;
         if (method === "POST") {
-            const body = (await request.json().catch(() => ({}))) as { password?: unknown };
+            const body = (await readJsonBody(request)) as { password?: unknown };
             password = typeof body.password === "string" ? body.password : null;
         }
         // 防刷去重：cookie 当日戳还在就跳过计数（见 getPublicNote 的 countView 参数）。
@@ -328,7 +328,7 @@ export async function handlePublicRoutes(ctx: RouteCtx): Promise<Response | null
     // 注册：公开路由，唯一的准入门槛是邀请码。
     // 放在鉴权之前（还没登录才要注册），但必须在邀请码校验上把好关。
     if (path === "auth/register" && method === "POST") {
-        const data = (await request.json().catch(() => ({}))) as RegisterInput;
+        const data = (await readJsonBody(request)) as RegisterInput;
         const username = typeof data.username === "string" ? data.username.trim() : "";
         const password = typeof data.password === "string" ? data.password : "";
         const inviteCode =
@@ -401,7 +401,7 @@ export async function handlePublicRoutes(ctx: RouteCtx): Promise<Response | null
     // 服务器只持公钥、验签，没有私钥造不出合法 token，故公网入口安全。
     // 私钥一旦泄露仍可能被高频重试，所以按来源 IP 加一道短时熔断（见 loginGuard）。
     if (path === "auth/recover" && method === "POST") {
-        const data = (await request.json().catch(() => ({}))) as RecoveryInput;
+        const data = (await readJsonBody(request)) as RecoveryInput;
         const token = typeof data.token === "string" ? data.token.trim() : "";
         if (!token) {
             return errorResponse(ApiError.badRequest("请提供恢复令牌"));

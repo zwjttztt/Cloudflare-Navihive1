@@ -187,7 +187,7 @@ function normalizeAttachmentFilename(raw: string, mime: string): string {
  */
 async function handleRenameAttachment(ctx: RouteCtx, id: string): Promise<Response> {
     const { request, api } = ctx;
-    const body = (await request.json().catch(() => ({}))) as { filename?: unknown };
+    const body = (await readJsonBody(request)) as { filename?: unknown };
     if (typeof body.filename !== "string" || !body.filename.trim()) {
         throw ApiError.badRequest("文件名不能为空");
     }
@@ -1087,7 +1087,7 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
         const limited = await writeGate();
         if (limited) return limited;
 
-        const body = (await request.json().catch(() => ({}))) as { ids?: unknown };
+        const body = (await readJsonBody(request)) as { ids?: unknown };
         const ids = Array.isArray(body.ids)
             ? body.ids.filter((v): v is number => typeof v === "number" && Number.isInteger(v))
             : [];

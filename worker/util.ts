@@ -101,6 +101,12 @@ export async function readBoundedBytes(body: ReadableStream<Uint8Array> | null, 
 }
 
 // 安全地读取请求体（无 body 时返回空对象）
+// ⚠️ 宽松语义是**有意保留**的：它的调用方（resolveWebDavConfig 等）在 GET 请求上
+// 也会被调到（列表 / 下载只认已保存配置，但函数签名上仍收 request），那种请求
+// 根本没有 body —— 换 readJsonBody 会把所有 GET 打成 400。
+// 自身有防护：非对象 / 解析失败一律回 {}，不会把垃圾喂给调用方。
+// 写接口要的是「非对象 body → 400」，那是 readJsonBody 的职责，别混用。
+// 静态扫描见 tests/jsonBodyGuard.test.ts：routes/ 下不允许再出现直调 request.json()。
 export async function safeJson(request: Request): Promise<Record<string, unknown>> {
     try {
         const body = (await request.json()) as unknown;

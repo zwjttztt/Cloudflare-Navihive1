@@ -21,6 +21,7 @@ import {
     type PromptSite,
 } from "../../src/utils/aiMeta";
 import { createMemoryLimiter } from "../rateLimit";
+import { readJsonBody } from "./jsonBody";
 import type { RouteCtx } from "./types";
 import { ApiError, API_ERROR_CODES, errorResponse, type ApiErrorStatus } from "../lib/apiError";
 
@@ -134,7 +135,7 @@ export async function handleAiRoutes(ctx: RouteCtx): Promise<Response | null> {
         if (!textLimiter.allow(limiterKey(ctx, "text"))) {
             return bad("刚用了太多次 AI，歇一分钟再试", 429);
         }
-        const body = (await request.json().catch(() => null)) as
+        const body = (await readJsonBody(request)) as
             | Record<string, unknown>
             | null;
         const values: Record<string, string> = {};
@@ -182,7 +183,7 @@ export async function handleAiRoutes(ctx: RouteCtx): Promise<Response | null> {
         if (!textLimiter.allow(limiterKey(ctx, "text"))) {
             return bad("刚用了太多次 AI，歇一分钟再试", 429);
         }
-        const body = (await request.json().catch(() => null)) as
+        const body = (await readJsonBody(request)) as
             | { url?: string; name?: string; groups?: string[]; tags?: string[] }
             | null;
         const url = (body?.url || "").trim();
@@ -210,7 +211,7 @@ export async function handleAiRoutes(ctx: RouteCtx): Promise<Response | null> {
         if (!textLimiter.allow(limiterKey(ctx, "text"))) {
             return bad("刚用了太多次 AI，歇一分钟再试", 429);
         }
-        const body = (await request.json().catch(() => null)) as
+        const body = (await readJsonBody(request)) as
             | { sites?: PromptSite[]; groups?: string[]; tags?: string[] }
             | null;
         const sites = Array.isArray(body?.sites) ? body!.sites : [];
@@ -239,7 +240,7 @@ export async function handleAiRoutes(ctx: RouteCtx): Promise<Response | null> {
         if (!embedLimiter.allow(limiterKey(ctx, "embed"))) {
             return bad("刚补过向量，歇一分钟再试", 429);
         }
-        const body = (await request.json().catch(() => null)) as { force?: boolean } | null;
+        const body = (await readJsonBody(request)) as { force?: boolean } | null;
         const sites = await ctx.api.querySites();
         const existing = await ctx.api.listEmbeddings(settings.embedModel);
         const doneIds = new Set(existing.map(e => e.id));
@@ -290,7 +291,7 @@ export async function handleAiRoutes(ctx: RouteCtx): Promise<Response | null> {
         if (!searchLimiter.allow(limiterKey(ctx, "search"))) {
             return bad("搜得太快了，歇一分钟再试", 429);
         }
-        const body = (await request.json().catch(() => null)) as
+        const body = (await readJsonBody(request)) as
             | { query?: string; limit?: number }
             | null;
         const query = (body?.query || "").trim();
