@@ -8,7 +8,13 @@
 #   - workflow_dispatch：Actions 页手动点 Run workflow
 #   - push 到 main 且改动了镜像相关文件（Dockerfile / 服务端与 worker 源码 / 依赖清单）
 #     —— 镜像里打包的就是这些文件，它们变了镜像就必须重发，否则新服务器
-#     拉到的一直是旧版本。前端 src/（非 API 部分）不进镜像，不触发。
+#     拉到的一直是旧版本。
+#
+#     ⚠️ 2026-10-24 修正：原来这里只有 src/API/**，注释声称「前端 src/（非
+#     API 部分）不进镜像」——**错的**：Dockerfile 的 builder 跑 vite build，
+#     dist/client（含全部前端）整体打进镜像；纯前端批次（只改 src/components
+#     之类）因此不上 VPS（实测：设置弹窗拆分批次后，VPS 前端落后一个 commit）。
+#     收成 src/** 并补 index.html / vite.config.ts / public/**。
 #
 # ⚠️ 本文件自身的改动**不会**触发构建（paths 里没有 .github/workflows/**）：
 #    改完要么手动 dispatch，要么随下一次源码改动一起生效。
@@ -45,8 +51,11 @@ on:
       - ".dockerignore"
       - "server/**"
       - "worker/**"
-      - "src/API/**"
+      - "src/**"
       - "shared/**"
+      - "index.html"
+      - "vite.config.ts"
+      - "public/**"
       - "package.json"
       - "package-lock.json"
 
