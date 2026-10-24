@@ -6,6 +6,18 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。---
 
+## 2026-10-24 · P1-8 & P1-9：覆盖率分层门禁 + data.ts 表驱动
+
+**要点**
+- **（P1-8）覆盖率分层门禁上线**（`npm run check:coverage`，实现见 `script/coverage.mjs`）：按 API / worker / components / hooks / utils / context / 其他(src 顶层) 七层分别统计源文件「触及率」（被任意用例间接引入即算触及），并对每层设下限（components 98%、其余 100%）；任一层跌破即退出码 1、CI 红。纯类型声明与入口文件（`responses` / `schema` / `types` / `main` 等 7 个）已排除，不会逼出无意义的测试。这道门禁抓的是「以后往某层塞了没测的文件」，而不是凭空定个 95%。
+- **（P1-9）`src/API/methods/data.ts` 表驱动收口**：把 6 处重复的 `await this.migrate(); return this.withSchemaRetry(() => this.queryX(...))` 模板收成一个类型安全的 `delegate<R, A extends unknown[]>` 转发器（传具体方法引用而非字符串键，`this.queryX.apply(self)` 与原闭包等价），未破坏 `DataApi` 接口契约，tsc 干净通过。
+
+**工程**
+- `package.json` 新增脚本 `check:coverage`；`.github/workflows/ci.yml` 在「纯函数单测」之后、「构建」之前插入「覆盖率分层门禁」步骤（零依赖，不依赖构建产物）。
+- 当前实测：API / worker / hooks / utils / context / 其他 均 100%，components 98.4%（下限 98%），合计 99.4%；未触及的逻辑文件仅 `notesPageCtx.ts(303)` 与 `ThemeToggle.tsx(60)`，列为下一批补测名单。
+
+---
+
 ## 2026-10-24 · P1-2：后端两处「为一个小数字扫全表正文」改成 O(1)
 
 **要点**

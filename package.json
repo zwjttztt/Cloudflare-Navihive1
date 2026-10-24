@@ -1,7 +1,7 @@
 {
   "name": "navihive",
   "private": true,
-  "version": "12.2.0",
+  "version": "12.3.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -34,7 +34,8 @@
     "e2e:cron": "node script/cron-e2e.mjs",
     "build:server": "node script/build-server.mjs",
     "start:selfhost": "npm run build:server && node --disable-warning=ExperimentalWarning dist-server/entry.mjs",
-    "check:whitedot": "node script/white-dot-check.mjs"
+    "check:whitedot": "node script/white-dot-check.mjs",
+    "check:coverage": "node script/coverage.mjs"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.3",

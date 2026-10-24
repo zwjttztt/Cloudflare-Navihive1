@@ -72,6 +72,13 @@ jobs:
       - name: 纯函数单测
         run: npm run test
 
+      # 覆盖率分层门禁（零依赖，不依赖构建产物）：
+      # 按层统计「哪个源文件从未被任何用例间接引入」，并对每个层设文件触及率下限。
+      # 现在绿，抓的是以后往某个层塞了没测的文件。纯类型声明 / 入口文件已排除，
+      # 不会逼出无意义测试（详见 script/coverage.mjs 的 EXCLUDE 与 MIN_TOUCH）。
+      - name: 覆盖率分层门禁
+        run: npm run check:coverage
+
       - name: 构建
         run: npm run build
 

@@ -86,12 +86,24 @@ export interface DataApi {
     ): Promise<SiteOrderUpdateResult>;
 }
 
+// 把「先 migrate、再 withSchemaRetry 转发到 query 方法」这套重复模板收成一处。
+// 六个 getX/createX/updateX 都是同一形状：`await this.migrate(); return this.withSchemaRetry(() => this.queryX(...args))`。
+// 用带类型的转发器表达：去掉重复、又不丢掉 DataApi 接口对每个方法签名的约束
+// （运行时按表循环生成方法会牺牲 tsc 检查，本项目以类型检查为第一道关，不取）。
+// 每次调用传具体的 query 方法引用，于是 R / A 在调用点被推成该方法的真实签名，而非全接口联合。
+function delegate<R, A extends unknown[]>(
+    self: NavigationAPI,
+    query: (this: NavigationAPI, ...a: A) => Promise<R>,
+    ...args: A
+): Promise<R> {
+    return self.migrate().then(() => self.withSchemaRetry(() => query.apply(self, args)));
+}
+
 export const dataImpl: DataApi = {
 
     // 分组相关 API
-    getGroups: async function (this: NavigationAPI ): Promise<Group[]> {
-        await this.migrate();
-        return this.withSchemaRetry(() => this.queryGroups());
+    getGroups: function (this: NavigationAPI): Promise<Group[]> {
+        return delegate(this, this.queryGroups);
     },
     queryGroups: async function (this: NavigationAPI ): Promise<Group[]> {
         // 多账号：只看自己的分组（系统级调用不带上用户上下文，照旧看全量）
@@ -108,9 +120,8 @@ export const dataImpl: DataApi = {
 
     // 首屏 / 刷新：一次请求取回全部分组、站点与配置。
     // 用 db.batch 把 3 条查询合并为一次 D1 往返，替代原先「1 次分组 + 每个分组一次站点」的 N+1 请求。
-    getBootstrap: async function (this: NavigationAPI ): Promise<BootstrapData> {
-        await this.migrate();
-        return this.withSchemaRetry(() => this.queryBootstrap());
+    getBootstrap: function (this: NavigationAPI): Promise<BootstrapData> {
+        return delegate(this, this.queryBootstrap);
     },
     queryBootstrap: async function (this: NavigationAPI ): Promise<BootstrapData> {
         const [groupsResult, sitesResult, configsResult] = await this.db.batch<unknown>([
@@ -305,9 +316,8 @@ export const dataImpl: DataApi = {
     },
 
     // 网站相关 API
-    getSites: async function (this: NavigationAPI, groupId?: number): Promise<Site[]> {
-        await this.migrate();
-        return this.withSchemaRetry(() => this.querySites(groupId));
+    getSites: function (this: NavigationAPI, groupId?: number): Promise<Site[]> {
+        return delegate(this, this.querySites, groupId);
     },
 
     /**
@@ -342,9 +352,8 @@ export const dataImpl: DataApi = {
             .all<Site>();
         return this.decryptSitePasswords(result.results || []);
     },
-    getSite: async function (this: NavigationAPI, id: number): Promise<Site | null> {
-        await this.migrate();
-        return this.withSchemaRetry(() => this.querySite(id));
+    getSite: function (this: NavigationAPI, id: number): Promise<Site | null> {
+        return delegate(this, this.querySite, id);
     },
     querySite: async function (this: NavigationAPI, id: number): Promise<Site | null> {
         const result = await this.db
@@ -353,9 +362,8 @@ export const dataImpl: DataApi = {
             .first<Site>();
         return result ? this.decryptSitePassword(result) : result;
     },
-    createSite: async function (this: NavigationAPI, site: Site): Promise<Site> {
-        await this.migrate();
-        return this.withSchemaRetry(() => this.insertSite(site));
+    createSite: function (this: NavigationAPI, site: Site): Promise<Site> {
+        return delegate(this, this.insertSite, site);
     },
     insertSite: async function (this: NavigationAPI, site: Site): Promise<Site> {
         const result = await this.db
@@ -387,9 +395,8 @@ export const dataImpl: DataApi = {
         // RETURNING 取回的是库里的密文，解密后再返回给前端
         return this.decryptSitePassword(result.results[0]);
     },
-    updateSite: async function (this: NavigationAPI, id: number, site: Partial<Site>): Promise<Site | null> {
-        await this.migrate();
-        return this.withSchemaRetry(() => this.updateSiteRow(id, site));
+    updateSite: function (this: NavigationAPI, id: number, site: Partial<Site>): Promise<Site | null> {
+        return delegate(this, this.updateSiteRow, id, site);
     },
     updateSiteRow: async function (this: NavigationAPI, id: number, site: Partial<Site>): Promise<Site | null> {
         // 使用参数化查询，避免SQL注入

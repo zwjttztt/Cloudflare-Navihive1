@@ -1,12 +1,18 @@
-// 覆盖率：让「哪些代码从来没被用例碰到过」变成一张能查的表。
+// 覆盖率：让「哪些代码从来没被用例碰到过」变成一张能查、能卡的表。
 //
-// 用法：npm run coverage
+// 用法：npm run coverage      （只出第 1 层，零依赖）
+//       npm run check:coverage（同上，但任意层跌破下限会退出码 1，供 CI 当门禁）
 //
 // 输出两层，从粗到细：
-//   1. **触及率**（零依赖，秒级）：用 esbuild 打包所有用例，从 metafile 反推
+//   1. **触及率（按层，零依赖，秒级）**：用 esbuild 打包所有用例，从 metafile 反推
 //      哪些 src/ / worker/ 下的文件被**任何**用例间接引入了。没被引入的 = 零覆盖候选。
 //      粒度是「文件」不是「行」—— 一个文件只被 import 了一行也算触及，
 //      所以它回答不了「这个文件覆盖了百分之几」，但能回答「哪个模块压根没人碰」。
+//      这一层额外按**粗粒度分层**（API / worker / components / hooks / utils / context /
+//      其他）汇总每个层的文件触及率，并对每个层设一个下限（防回归门禁）：
+//      现在就红没意义，门禁要抓的是「以后往某个层塞了没测的文件」。
+//      纯类型声明文件与应用 / 沙箱入口没有运行时逻辑可被用例执行，从统计与门禁里剔除
+//      （见下方 EXCLUDE 列表），否则只会逼出一堆无意义的测试。
 //   2. **行覆盖率**（需 c8）：c8 会拿 sourcemap 把 V8 的覆盖率重映射回源文件。
 //      装了 c8 就自动多跑一层，没装就只出第 1 层。
 //
@@ -17,7 +23,7 @@
 //   无关文件，那个百分比对 src/ 毫无意义。
 //
 // 刻意不做的事：
-//   - 不设门槛、不卡 CI：覆盖率是导航用的，先有数据再谈数字。
+//   - 第 1 层不设行级门槛：文件触及率是「有没有人碰」的粗信号，不当成精确数字考核。
 //   - 不上传报告：本项目没有覆盖率平台。
 import { spawn } from "node:child_process";
 import fs from "node:fs";
@@ -92,23 +98,104 @@ for (const input of Object.keys(result.metafile.inputs)) {
 }
 
 const sources = [...walk(path.join(ROOT, "src")), ...walk(path.join(ROOT, "worker"))];
-const untouch = sources.filter(p => !touched.has(p));
 const lines = p => fs.readFileSync(p, "utf-8").split("\n").length;
 
+// 这些文件是「纯类型声明」或「应用 / 沙箱入口」，没有运行时逻辑可被用例执行，
+// 硬算进门禁只会逼出一堆无意义的测试。从分层统计与门禁里剔除（每条都标注了理由）。
+const EXCLUDE = new Set([
+    "src/API/responses.ts",   // 端点返回形状的类型表（import type 为主，无运行时）
+    "src/API/schema.ts",      // D1 类型声明
+    "src/types.ts",           // 共享类型
+    "worker/types.ts",        // Env / 运行时类型声明
+    "worker/routes/types.ts", // RouteCtx 接口
+    "src/main.tsx",           // 应用入口
+    "src/mermaidSandbox.ts",  // 流程图沙箱入口
+]);
+
+// 粗粒度分层：把零散的 src 顶层文件归到「其他(src 顶层)」，便于一眼看出哪层是短板。
+const LAYER_GROUPS = {
+    "API": ["src/API"],
+    "worker": ["worker"],
+    "components": ["src/components"],
+    "hooks": ["src/hooks"],
+    "utils": ["src/utils"],
+    "context": ["src/context"],
+    "其他(src 顶层)": ["src"],
+};
+function layerOf(abs) {
+    const x = rel(abs);
+    for (const [name, prefixes] of Object.entries(LAYER_GROUPS)) {
+        if (prefixes.some(p => x === p || x.startsWith(p + "/"))) return name;
+    }
+    return "其他(src 顶层)";
+}
+
+// 每层文件触及率下限（防回归门禁）。初值取**当前实测值**当地板：
+// 现在就红没有任何意义，门禁要抓的是「以后往某个层塞了没测的文件」。
+// utils/hooks/context/API/worker/其他 当前逻辑文件 100% 触及，定 1.0；
+// components 因 ThemeToggle / notesPageCtx 两处暂未测，定 0.98（再掉一个就红）。
+const MIN_TOUCH = {
+    "API": 1.0, "worker": 1.0, "components": 0.98,
+    "hooks": 1.0, "utils": 1.0, "context": 1.0, "其他(src 顶层)": 1.0,
+};
+
+// 按层聚合（仅非排除文件）
+const byLayer = {};
+for (const s of sources) {
+    if (EXCLUDE.has(rel(s))) continue;
+    const L = layerOf(s);
+    const stat = byLayer[L] || (byLayer[L] = { tot: 0, touch: 0, untouchLines: 0 });
+    stat.tot++;
+    if (touched.has(s)) stat.touch++;
+    else stat.untouchLines += lines(s);
+}
+const untouch = sources.filter(p => !touched.has(p) && !EXCLUDE.has(rel(p)));
 untouch.sort((a, b) => lines(b) - lines(a));
 
+const LAYER_ORDER = ["API", "worker", "components", "hooks", "utils", "context", "其他(src 顶层)"];
+let gateFailed = false;
+const breaches = [];
+
 console.log("完成\n");
-console.log("=== 第 1 层：文件触及率（被任何用例间接引入就算触及）===");
-console.log(`源文件 ${sources.length} 个，被触及 ${sources.length - untouch.length} 个`);
-console.log(
-    `从未被任何用例引入：${untouch.length} 个` +
-        (untouch.length ? `（合计 ${untouch.reduce((n, p) => n + lines(p), 0)} 行）` : "")
+console.log("=== 第 1 层：文件触及率（按层，被任何用例间接引入就算触及）===");
+console.log("层 | 文件数 | 已触及 | 未触及 | 未触及行数 | 触及率 | 下限");
+for (const L of LAYER_ORDER) {
+    const s = byLayer[L];
+    if (!s) continue;
+    const ratio = s.touch / s.tot;
+    const min = MIN_TOUCH[L] ?? 0.9;
+    const ok = ratio >= min;
+    if (!ok) {
+        gateFailed = true;
+        breaches.push(`${L} 触及率 ${(ratio * 100).toFixed(1)}% < 下限 ${(min * 100).toFixed(0)}%`);
+    }
+    console.log(
+        `${L.padEnd(16)} | ${String(s.tot).padStart(4)} | ${String(s.touch).padStart(4)} | ` +
+            `${String(s.tot - s.touch).padStart(4)} | ${String(s.untouchLines).padStart(5)} | ` +
+            `${(ratio * 100).toFixed(1)}% | ${(min * 100).toFixed(0)}%${ok ? "" : "  ❌"}`
+    );
+}
+const total = Object.values(byLayer).reduce(
+    (a, s) => ({ tot: a.tot + s.tot, touch: a.touch + s.touch }),
+    { tot: 0, touch: 0 }
 );
+console.log(
+    `合计          | ${String(total.tot).padStart(4)} | ${String(total.touch).padStart(4)} | ` +
+        `${String(total.tot - total.touch).padStart(4)} | —      | ` +
+        `${(total.touch / total.tot * 100).toFixed(1)}% | —`
+);
+
 if (untouch.length > 0) {
-    console.log("\n按行数从大到小 —— 这就是「下一个该补谁的测试」的候选名单：");
+    console.log("\n未触及的逻辑文件（按行数，这就是「下一个该补测试」的名单）：");
     for (const p of untouch) console.log(`  ${String(lines(p)).padStart(5)} 行  ${rel(p)}`);
 } else {
-    console.log("每个文件都至少被一个用例引入过。");
+    console.log("\n每个逻辑文件都至少被一个用例引入过。");
+}
+if (breaches.length) {
+    console.log("\n❌ 覆盖率分层门禁未通过：");
+    for (const b of breaches) console.log("  - " + b);
+} else {
+    console.log("\n✅ 覆盖率分层门禁通过（任一层的文件触及率未跌破下限）。");
 }
 
 // ---------- 第 2 层：装了 c8 就再跑真正的行覆盖率 ----------
@@ -124,7 +211,7 @@ if (!c8Bin) {
     console.log(
         "\n（第 2 层行覆盖率需要 c8：npm install --ignore-scripts -D c8；没装也能用上面的清单）"
     );
-    process.exit(0);
+    process.exit(gateFailed ? 1 : 0);
 }
 
 console.log("\n=== 第 2 层：行覆盖率（c8 + sourcemap 重映射）===");
@@ -169,5 +256,5 @@ const child = spawn(process.execPath, args, {
 
 child.on("exit", code => {
     fs.rmSync(path.join(HERE, "tmp-tests"), { recursive: true, force: true });
-    process.exit(code ?? 1);
+    process.exit(gateFailed ? 1 : (code ?? 1));
 });
