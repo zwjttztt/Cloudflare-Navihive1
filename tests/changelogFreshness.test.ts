@@ -84,6 +84,18 @@ test("CHANGELOG 里解析得到日期分段（守卫本身要站得住）", () =
     assert.equal(dates.slice().sort().at(-1), dates[0], "CHANGELOG 不是按日期倒序排的");
 });
 
+test("CHANGELOG 还是那份更新日志（没被别的东西覆盖成同一个文件）", () => {
+    const text = readFileSync(join(findProjectDir(), "CHANGELOG.md"), "utf8");
+    // 真实事故（2026-10-24）：REST 推送脚本里「取内容的源路径」和「写回的路径」
+    // 张冠李戴 —— 取的是 docker-publish.yml 的内容，却写到 CHANGELOG.md 上，
+    // 4924 行历史被 142 行 workflow 注释覆盖。上面那条「解析出 ≥3 段」抓住了它，
+    // 但只要被覆盖的内容里**恰好**带 `## 2026-10-24` 这样的行就会漏判。
+    // 所以这里钉住文件**本身的身份**：首行是本仓库的固定抬头，正文不含 YAML 键。
+    const firstLine = text.split(/\r?\n/, 1)[0].trim();
+    assert.equal(firstLine, "# 更新日志", `CHANGELOG 首行是「${firstLine}」，不是「# 更新日志」——文件可能被别的东西覆盖了`);
+    assert.ok(!/^name:\s+docker-publish/m.test(text), "CHANGELOG 里出现了 workflow 的 YAML 内容");
+});
+
 test("CHANGELOG 最新一段不落后于最近一次提交", t => {
     const projectDir = findProjectDir();
     const commitDate = latestCommitDate(projectDir);
