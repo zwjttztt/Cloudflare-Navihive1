@@ -9,7 +9,7 @@ import type { NavigationAPI } from "../http";
 import type { D1PreparedStatement } from "../schema";
 import { computeBackupIntegrity, verifyBackupIntegrity } from "../../utils/backupIntegrity";
 import { normalizeUrl, urlIdentityKey } from "../../utils/url";
-import { isAuthConfigKey, isPerUserAppearanceKey, isSecretConfigKey, isUserScopedConfigKey, stripSecretConfigs } from "../configGuards";
+import { isAuthConfigKey, isAiConfigKey, isImportableConfigValue, isPerUserAppearanceKey, isSecretConfigKey, isUserScopedConfigKey, stripSecretConfigs } from "../configGuards";
 import { BACKUP_CREDENTIALS_CONFIG } from "../configKeys";
 import { encryptSecret } from "../crypto";
 import {
@@ -163,12 +163,18 @@ export const transferImpl: TransferApi = {
         // 普通账号自己的外观（标题 / 背景…）也进备份：那是「我看到的站点长什么样」，
         // 恢复时理应回到自己这份。所有者那份本来就在全站 configs 里（见 sharedConfigs），
         // 不必重复写一遍 —— 否则别的账号恢复他的备份会把全站外观一起改掉。
+        //
+        // 2026-10-24：AI 设置整组（ai.*）跟着备份走（用户要求），所有角色都带。
+        // 它和外观一样存在自己那份 user_configs 里，所以这里对所有登录账号都查一次，
+        // 只是放行的键多一组 —— 结果进 configs（账号私有通道），恢复时由 scopeFor
+        // 落回导入者自己的 user_configs，不会碰别人的。
         let ownConfigs: Record<string, string> = {};
-        if (!sharedAllowed && this.currentUserId !== null) {
+        if (this.currentUserId !== null) {
             const own = await this.queryUserConfigs(this.currentUserId);
             for (const [key, value] of Object.entries(own)) {
-                if (isPerUserAppearanceKey(key)) ownConfigs[key] = value;
+                if (isPerUserAppearanceKey(key) || isAiConfigKey(key)) ownConfigs[key] = value;
             }
+            // 纵深防御：放行条件将来若写错，也别把 webdav.* 带进备份文件
             ownConfigs = stripSecretConfigs(ownConfigs);
         }
 
@@ -177,7 +183,7 @@ export const transferImpl: TransferApi = {
             // 关掉「备份含登录凭据」时把账号密码抹掉：备份文件是明文 JSON，
             // 又会被 WebDAV 同步到网盘，凭据一旦进去就等于跟着走了
             sites: withCreds ? sites : stripSiteCredentials(sites),
-            // 自己的外观；敏感配置（WebDAV 凭据）一律不进备份
+            // 自己的外观与 AI 设置；敏感配置（WebDAV 凭据）一律不进备份
             configs: ownConfigs,
             ...(sharedAllowed ? { sharedConfigs: stripSecretConfigs(configs) } : {}),
             version: EXPORT_VERSION,
@@ -643,7 +649,13 @@ export const transferImpl: TransferApi = {
                     continue;
                 }
                 if (isSecretConfigKey(key)) {
-                    // 恢复备份不覆盖管理员账号密码和 WebDAV 凭据
+                    // 恢复备份不覆盖管理员账号密码和 WebDAV 凭据。
+                    // （AI 那组不在此列：2026-10-24 起整组跟着备份走。）
+                    continue;
+                }
+                // 值形态校验：ai.endpoint 必须是 http(s):// —— 备份文件可能被改过，
+                // 不挡的话下次用 AI 功能时请求就发到别人服务器上去了
+                if (!isImportableConfigValue(key, value)) {
                     continue;
                 }
                 if (!isUserScopedConfigKey(key) && !mayWriteShared) {

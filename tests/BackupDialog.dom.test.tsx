@@ -308,13 +308,18 @@ test("「备份」页能正常渲染（tab 0 曾经整段变成裸文本）", ()
 test("「备份」页要写清哪些内容跟着备份走、哪些不会（AI 设置 / 凭据）", () => {
     // 用户 2026-10-24 直接问「ai 设置、全站设置等内容是否会随着导入导出」——
     // 说明界面上原来一个字都没写。规则本身在 utils/backupScope 里有单测，
-    // 这条只盯「用户看不看得见」。
+    // 这条只盯「用户看不看得见」。当天用户进一步要求 AI 整组进备份，
+    // 于是文案里它从「不会跟着走」挪到了「会跟着走」，并带上密钥提醒。
     mount({ initialTab: 0 });
     const text = document.body.textContent || "";
     assert.ok(text.includes("会跟着走"), "要有「哪些会跟着走」");
+    assert.ok(text.includes("AI 设置整组"), "AI 设置整组进备份，必须点名");
     assert.ok(text.includes("不会跟着走"), "要有「哪些不会跟着走」");
-    assert.ok(text.includes("AI 设置整组"), "AI 设置整组不进备份，必须点名");
     assert.ok(text.includes("记事本"), "笔记走独立备份，要说清楚");
+    assert.ok(
+        text.includes("妥善保管") || text.includes("备份口令"),
+        "密钥会进文件，必须提醒设口令 / 保管文件"
+    );
 });
 
 test("「备份」页不再有「备份包含记事本」开关（导航备份一律不含笔记）", () => {

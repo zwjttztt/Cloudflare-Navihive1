@@ -3,9 +3,13 @@
 //
 // 备份文件是会传到网盘、会发给别人的，这两条规则写错的后果都不轻：
 //
-// 1. **带多了** —— WebDAV 凭据 / AI 密钥跟着文件走 = 把别人的网盘和付费额度一起交出去；
+// 1. **带多了** —— WebDAV 凭据跟着文件走 = 把别人的网盘交出去；
 //    普通账号把整站外观带出去 = 恢复时把整站长什么样改掉。
 // 2. **带少了** —— 恢复完发现主题、背景、自定义 CSS 全没了，白备份一次。
+//
+// 2026-10-24 起 AI 设置整组（ai.*，含密钥）跟着备份走（用户要求），所以
+// 「AI 密钥是敏感键」这条老断言整组作废，改成「AI 走账号私有通道」——
+// 见下面「AI 那组」一节。
 //
 // 而且导出与导入是**两个方向**：同一个「敏感键不进备份」的判定，只在导出处写了、
 // 导入处漏了，就成了「备份文件里没有，但别人的备份里可以有」—— 所以两边共用
@@ -57,7 +61,7 @@ test("导出（所有者）：全站配置进 shared，但不带任何敏感键"
     assert.equal(shared["site.title"], "我的导航");
     assert.equal(shared["link.healthSync"], "true", "开关要跟着备份走，换设备也保持原样");
 
-    const secretPrefixes = ["webdav.", "auth.", "ai."];
+    const secretPrefixes = ["webdav.", "auth."];
     const secretExact = ["link.health", "pref.tags"];
     for (const key of Object.keys(shared)) {
         assert.equal(
@@ -66,7 +70,49 @@ test("导出（所有者）：全站配置进 shared，但不带任何敏感键"
             `${key} 是敏感键，不该进备份文件`
         );
     }
-    assert.deepEqual(own, {}, "所有者那份直接在全站 configs 里，不重复抄一遍");
+    assert.deepEqual(own, { "ai.apiKey": "sk-xxx" }, "AI 那组走账号私有通道，不进 shared");
+});
+
+// ==================== AI 那组（2026-10-24 起跟着备份走） ====================
+
+const AI_CONFIGS = {
+    "ai.enabled": "true",
+    "ai.provider": "openai-compatible",
+    "ai.endpoint": "https://api.deepseek.com",
+    "ai.textModel": "deepseek-chat",
+    "ai.embedModel": "text-embedding-3-small",
+    "ai.apiKey": "sk-xxx",
+    "ai.cfToken": "",
+    "ai.cfAccount": "",
+};
+
+test("导出：AI 设置整组 8 个键都进备份（换设备恢复不用重填）", () => {
+    for (const actor of [OWNER, USER]) {
+        const { own } = pickExportConfigs(AI_CONFIGS, actor);
+        assert.deepEqual(
+            Object.keys(own).sort(),
+            Object.keys(AI_CONFIGS).sort(),
+            `AI 整组一个键都不能落（${actor.role}）`
+        );
+    }
+});
+
+test("导出：AI 那组只进 own 不进 shared —— 它是账号私有数据，不是全站设置", () => {
+    const { shared, own } = pickExportConfigs(AI_CONFIGS, OWNER);
+    assert.equal(
+        Object.keys(shared).some(k => k.startsWith("ai.")),
+        false,
+        "进 shared 会被理解成全站设置，别人恢复这份备份就会写到别人头上"
+    );
+    assert.ok("ai.apiKey" in own);
+});
+
+test("导出：AI 整组跟着走，但 WebDAV / 管理员凭据仍然不进（同一份配置两个下场）", () => {
+    const { own } = pickExportConfigs({ ...AI_CONFIGS, ...FULL_CONFIGS }, OWNER);
+    const dumped = JSON.stringify(own);
+    assert.equal(dumped.includes("dav-secret"), false, "网盘口令仍不进备份");
+    assert.equal(dumped.includes("admin-secret"), false, "管理员口令仍不进备份");
+    assert.equal(dumped.includes("sk-xxx"), true, "AI 密钥按用户要求进备份");
 });
 
 test("导出：WebDAV 凭据绝不能进备份（文件会传到网盘、会发给别人）", () => {
@@ -166,20 +212,49 @@ test("导入：DB_INITIALIZED 永远不写回（写回去服务端会以为库�
 });
 
 test("导入：备份文件里的敏感键不能拿来覆盖服务端的网盘凭据", () => {
-    // 备份文件可能被别人改过 —— 拿它覆盖 webdav.* 等于让别人设置你的网盘
+    // 备份文件可能被别人改过 —— 拿它覆盖 webdav.* 等于让别人设置你的网盘。
+    // AI 那组不在此列（2026-10-24 起整组跟着备份走），但它有自己的防线：
+    // ai.endpoint 形态不对就整条跳过（见下一个用例）。
     const entries = pickImportConfigEntries(
         {
             configs: {
                 "webdav.url": "https://attacker.example.com",
                 "webdav.password": "attacker-secret",
                 "auth.password": "attacker-admin",
-                "ai.apiKey": "attacker-key",
+                "ai.apiKey": "from-backup",
                 "site.title": "T",
             },
         },
         OWNER
     );
-    assert.deepEqual(entries, [["site.title", "T"]]);
+    assert.deepEqual(entries, [
+        ["ai.apiKey", "from-backup"],
+        ["site.title", "T"],
+    ]);
+});
+
+test("导入：ai.endpoint 不是 http(s):// 就跳过（挡被改过的备份把 AI 请求导到别处）", () => {
+    // ⚠️ 边界说清：这里挡的是**形态**（无协议头 / javascript: 之类），一个
+    // 「形态合法但指向别处」的 https 端点挡不住也不该挡 —— 没法区分善恶，
+    // 那是备份文件可信度问题（完整性摘要 + 只恢复自己导出的文件）。
+    const entries = pickImportConfigEntries(
+        {
+            configs: {
+                "ai.endpoint": "evil.example.com/v1",
+                "ai.textModel": "deepseek-chat",
+            },
+        },
+        OWNER
+    );
+    assert.deepEqual(entries, [["ai.textModel", "deepseek-chat"]]);
+});
+
+test("导入：ai.endpoint 合法形态照常写回（恢复完 AI 功能直接能用）", () => {
+    const entries = pickImportConfigEntries(
+        { configs: { "ai.endpoint": "http://localhost:11434/v1" } },
+        USER
+    );
+    assert.deepEqual(entries, [["ai.endpoint", "http://localhost:11434/v1"]]);
 });
 
 test("导入：空数据返回空数组，不抛异常", () => {

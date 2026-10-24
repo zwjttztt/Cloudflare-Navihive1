@@ -15,11 +15,14 @@ import {
     WEBDAV_BACKUP_PASSWORD_KEY,
 } from "./configKeys";
 
-// 敏感配置：不参与备份文件的导入导出（管理员 / WebDAV 凭据 / AI 凭据 / 记事本备份配置）
-// AI 那组必须在这里：备份文件是会传到网盘、会发给别人的，
-// 带上一份 API 密钥等于把付费额度连同凭据一起交出去。
+// 敏感配置：不参与备份文件的导入导出（管理员 / WebDAV 凭据 / 记事本备份配置）
 // notesBackup.runs（运行记录）也在这组里：它该跟着账号走，不该进导航备份文件。
-const SECRET_CONFIG_PREFIXES = ["auth.", "webdav.", AI_CONFIG_PREFIX, NOTES_BACKUP_CONFIG_PREFIX];
+//
+// ⚠️ AI 那组（ai.*）**曾经**在这里，2026-10-24 起整组跟着备份走（用户明确要求：
+// 换设备恢复时不用把模型服务 / 端点 / 密钥重填一遍）。密钥进文件的风险靠两件事兜：
+// 备份文件可以设口令加密（不设就是明文 JSON，界面上有对应提醒），以及
+// isImportableConfigValue 对 ai.endpoint 的形态校验（见下）。
+const SECRET_CONFIG_PREFIXES = ["auth.", "webdav.", NOTES_BACKUP_CONFIG_PREFIX];
 
 /**
  * 同样不进备份文件、但必须整键匹配的几个配置。
@@ -109,6 +112,32 @@ export function isSecretConfigKey(key: string): boolean {
         SECRET_CONFIG_PREFIXES.some(prefix => key.startsWith(prefix)) ||
         SECRET_CONFIG_KEYS.includes(key)
     );
+}
+
+/**
+ * 是否是 AI 助手那一组配置（ai.*，共 8 个键，见 configKeys.ts）。
+ *
+ * 2026-10-24 起这组整组跟着备份文件走（用户要求：换设备恢复不用重填）。
+ * 它是「账号私有」数据（isPrivateUserConfigKey 已覆盖），导出时走备份文件的
+ * `configs` 通道而不是 `sharedConfigs` —— 恢复时由 scopeFor 落回导入者自己的
+ * user_configs，不会因为谁拿了这份备份就把整站或别人的 AI 配置改掉。
+ */
+export function isAiConfigKey(key: string): boolean {
+    return key.startsWith(AI_CONFIG_PREFIX);
+}
+
+/**
+ * 备份文件里的某个配置值能不能写回库。
+ *
+ * 唯一需要在这里挡的是 `ai.endpoint`：它现在跟着备份走了，而备份文件可能被
+ * 改过 —— 拿一个 `https://evil.example.com` 的端点覆盖上去，用户下次用 AI
+ * 功能时请求（连带正文内容）就发到别人服务器上去了。端点必须是 http(s)://
+ * 开头，否则整条跳过。其它 AI 键没有这个风险：模型名填错只会请求失败，
+ * 密钥填错只会 401，两者在 aiConfigProblem 里都有明确提示。
+ */
+export function isImportableConfigValue(key: string, value: string): boolean {
+    if (key === "ai.endpoint") return /^https?:\/\//i.test(value.trim());
+    return true;
 }
 
 // 管理员凭据额外连正常的配置读取都不返回，避免出现「拿到配置就等于拿到密码」。

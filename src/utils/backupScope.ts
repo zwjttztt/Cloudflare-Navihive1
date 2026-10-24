@@ -3,14 +3,22 @@
 // 从 useBackupController（560 行）里抽出来的纯计算。之所以单独放：备份文件是会
 // 传到网盘、会发给别人的，判定错了两种后果都不轻 ——
 //
-// - **带多了**：WebDAV 凭据 / AI 密钥跟着文件走 = 把别人的网盘和付费额度一起交出去；
-//   普通账号把整站外观带出去 = 恢复时把整站长什么样改掉。
+// - **带多了**：WebDAV 凭据跟着文件走 = 把别人的网盘交出去；普通账号把整站
+//   外观带出去 = 恢复时把整站长什么样改掉。
 // - **带少了**：恢复完发现主题、背景、自定义 CSS 全没了，等于白备份一次。
+//
+// 2026-10-24 起 AI 设置整组（ai.*，含密钥）**跟着备份走**（用户要求：换设备
+// 恢复不用重填模型服务 / 端点 / 密钥）。它走 `configs` 通道而不是
+// `sharedConfigs`：AI 配置是账号私有数据，恢复时由服务端 scopeFor 落回导入者
+// 自己的 user_configs。密钥进文件的风险由「备份口令加密 + 界面明示」兜底，
+// 导入侧另有 ai.endpoint 形态校验（isImportableConfigValue）。
 //
 // 这两条规则分别用在导出（写文件）和导入（写回库）两个方向上，散在 hook 里
 // 迟早有一处改了另一处没改。抽出来之后两边共用同一份判定，也才好用单测钉住。
 
 import {
+    isAiConfigKey,
+    isImportableConfigValue,
     isPerUserAppearanceKey,
     isSecretConfigKey,
     isUserScopedConfigKey,
@@ -41,8 +49,12 @@ export interface ExportConfigs {
 /**
  * 挑出备份文件里要带的配置，并按「全站 / 本人」分成两堆。
  *
- * 敏感键（auth.* / webdav.* / ai.* 与几个服务端镜像）一律不带，与身份无关 ——
- * 它们是「别人的凭据」或「可重测的临时数据」，放进文件只有坏处。
+ * 敏感键（auth.* / webdav.* / notesBackup.* 与几个服务端镜像）一律不带，
+ * 与身份无关 —— 它们是「别人的凭据」或「可重测的临时数据」。
+ *
+ * AI 那组（ai.*）是例外：整组跟着备份走（2026-10-24 用户要求），但它是账号
+ * 私有数据，所以**只进 own**，无论导出者是所有者还是普通账号 —— 进 shared
+ * 会被理解成「全站设置」，而它明明跟着账号走。
  */
 export function pickExportConfigs(
     configs: Record<string, string>,
@@ -54,7 +66,9 @@ export function pickExportConfigs(
 
     for (const [key, value] of Object.entries(configs)) {
         if (isSecretConfigKey(key)) continue;
-        if (mayExportShared) {
+        if (isAiConfigKey(key)) {
+            own[key] = value;
+        } else if (mayExportShared) {
             // 所有者那一份本来就写在全站 configs 里，不要再往 own 里抄一遍
             shared[key] = value;
         } else if (isPerUserAppearanceKey(key)) {
@@ -71,7 +85,9 @@ export function pickExportConfigs(
  * 老备份的全站设置混在 `configs` 里，新备份放在 `sharedConfigs`，两边都要过滤：
  * - `DB_INITIALIZED` 是建库标记，写回去会让服务端以为库已经建好了；
  * - 敏感键一律不写（备份文件可能被别人改过，不能拿它去覆盖网盘凭据）；
- * - 非按账号隔离的键（也就是全站外观）只有所有者能写。
+ * - 非按账号隔离的键（也就是全站外观）只有所有者能写；
+ * - 值形态不合法的不写（目前是 ai.endpoint 必须是 http(s):// —— 它跟着备份
+ *   走了，但不能让一份被改过的备份把 AI 请求导到别人的服务器上）。
  */
 export function pickImportConfigEntries(
     data: {
@@ -90,6 +106,7 @@ export function pickImportConfigEntries(
         if (key === "DB_INITIALIZED") continue;
         if (isSecretConfigKey(key)) continue;
         if (!isUserScopedConfigKey(key) && !mayWriteShared) continue;
+        if (!isImportableConfigValue(key, value)) continue;
         entries.push([key, value]);
     }
 

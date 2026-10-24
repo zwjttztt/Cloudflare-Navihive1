@@ -36,6 +36,8 @@ class MockD1 {
     groups: GroupRow[] = [];
     sites: SiteRow[] = [];
     configs = new Map<string, string>();
+    /** user_configs：账号 id -> (键 -> 值)。AI / WebDAV 等私有配置住在这里 */
+    userConfigs = new Map<number, Map<string, string>>();
     /** users 表：id -> role，用来验证「只有 owner 能改全站配置」 */
     users = new Map<number, { username: string; role: string }>();
     /** 记录导入时实际写进去的归属，用来验证「归导入者」 */
@@ -85,6 +87,13 @@ class MockD1 {
             this.written.push({ table: "sites", id, user_id: userId });
             return id;
         }
+        if (s.startsWith("INSERT INTO user_configs")) {
+            // (user_id, key, value)
+            const uid = Number(args[0]);
+            const key = String(args[1]);
+            if (!this.userConfigs.has(uid)) this.userConfigs.set(uid, new Map());
+            this.userConfigs.get(uid)!.set(key, String(args[2]));
+        }
         if (s.startsWith("INSERT INTO configs")) {
             this.configs.set(String(args[0]), String(args[1]));
         }
@@ -95,6 +104,11 @@ class MockD1 {
         const s = this.normalize(sql);
         if (s === "SELECT key, value FROM configs") {
             return [...this.configs.entries()].map(([key, value]) => ({ key, value }));
+        }
+        if (s === "SELECT key, value FROM user_configs WHERE user_id = ?") {
+            const uid = Number(args[0]);
+            const own = this.userConfigs.get(uid);
+            return own ? [...own.entries()].map(([key, value]) => ({ key, value })) : [];
         }
         // 分组 / 站点列表：导出时按账号过滤
         if (s.startsWith("SELECT id, name FROM groups")) {
@@ -217,6 +231,7 @@ class MockD1 {
         const snapshot = {
             groups: structuredClone(this.groups), sites: structuredClone(this.sites),
             configs: new Map(this.configs), written: structuredClone(this.written),
+            userConfigs: new Map([...this.userConfigs].map(([k, v]) => [k, new Map(v)])),
             nextGroupId: this.nextGroupId, nextSiteId: this.nextSiteId,
         };
         try {
@@ -239,6 +254,7 @@ class MockD1 {
             this.sites = snapshot.sites;
             this.configs = snapshot.configs;
             this.written = snapshot.written;
+            this.userConfigs = snapshot.userConfigs;
             this.nextGroupId = snapshot.nextGroupId;
             this.nextSiteId = snapshot.nextSiteId;
             throw error;
@@ -461,4 +477,83 @@ test("导出：普通账号的备份里不带全站设置，owner 的才带", as
     const userExport = await apiWith(db, 2).exportData();
     assert.equal(userExport.sharedConfigs, undefined, "普通账号导出不该带全站设置");
     assert.deepEqual(userExport.configs, {});
+});
+
+// ================= AI 设置整组跟着备份走（2026-10-24 用户要求） =================
+
+const AI_IN_OWN = {
+    "ai.enabled": "true",
+    "ai.provider": "openai-compatible",
+    "ai.endpoint": "https://api.deepseek.com",
+    "ai.textModel": "deepseek-chat",
+    "ai.embedModel": "text-embedding-3-small",
+    "ai.apiKey": "sk-owner-xxx",
+    "ai.cfToken": "cf-tok",
+    "ai.cfAccount": "cf-acc",
+};
+
+function seedUserConfigs(db: MockD1, uid: number, entries: Record<string, string>) {
+    db.userConfigs.set(uid, new Map(Object.entries(entries)));
+}
+
+test("导出：owner 的 AI 设置跟着备份走（换设备恢复不用重填模型服务 / 端点 / 密钥）", async () => {
+    const db = new MockD1();
+    db.users.set(1, { username: "owner", role: "owner" });
+    db.configs.set("site.title", "我的站");
+    seedUserConfigs(db, 1, AI_IN_OWN);
+
+    const out = await apiWith(db, 1).exportData();
+    assert.deepEqual(out.configs, AI_IN_OWN, "AI 整组进 configs（账号私有通道），一个键都不落");
+    assert.equal(
+        Object.keys(out.sharedConfigs ?? {}).some(k => k.startsWith("ai.")),
+        false,
+        "AI 不是全站设置，不能进 sharedConfigs"
+    );
+});
+
+test("导出：普通账号也只带自己的 AI 配置，不碰别人的", async () => {
+    const db = new MockD1();
+    db.users.set(1, { username: "owner", role: "owner" });
+    db.users.set(2, { username: "u2", role: "user" });
+    seedUserConfigs(db, 1, AI_IN_OWN);
+    seedUserConfigs(db, 2, { "ai.apiKey": "sk-u2-own" });
+
+    const out = await apiWith(db, 2).exportData();
+    assert.deepEqual(out.configs, { "ai.apiKey": "sk-u2-own" }, "只导出当前账号自己那份");
+});
+
+test("导入：AI 设置写回导入者自己的 user_configs，别人的不动", async () => {
+    const db = new MockD1();
+    db.users.set(1, { username: "owner", role: "owner" });
+    db.users.set(2, { username: "u2", role: "user" });
+    seedUserConfigs(db, 2, { "ai.apiKey": "sk-u2-old" });
+
+    const result = await apiWith(db, 2).importData({
+        ...backup,
+        configs: { "ai.apiKey": "sk-from-backup", "ai.endpoint": "https://api.deepseek.com" },
+    });
+    assert.equal(result.success, true);
+    assert.equal(db.userConfigs.get(2)?.get("ai.apiKey"), "sk-from-backup", "AI 密钥恢复成备份里那份");
+    assert.equal(db.userConfigs.get(2)?.get("ai.endpoint"), "https://api.deepseek.com");
+    assert.equal(db.userConfigs.get(1), undefined, "owner 的私有配置一根汗毛都不动");
+});
+
+test("导入：备份里的 ai.endpoint 形态不对就整条跳过（防被改过的备份）", async () => {
+    // 挡的是形态（这里是无协议头）；「形态合法但指向别处」的端点不在防线内 ——
+    // 那是备份文件可信度问题，靠完整性摘要和「只恢复自己导出的文件」。
+    const db = new MockD1();
+    db.users.set(2, { username: "u2", role: "user" });
+    seedUserConfigs(db, 2, { "ai.endpoint": "https://api.deepseek.com" });
+
+    const result = await apiWith(db, 2).importData({
+        ...backup,
+        configs: { "ai.endpoint": "evil.example.com/v1", "ai.apiKey": "sk-from-backup" },
+    });
+    assert.equal(result.success, true, "单条坏值不该把整次导入搞失败");
+    assert.equal(
+        db.userConfigs.get(2)?.get("ai.endpoint"),
+        "https://api.deepseek.com",
+        "形态不对的端点不能覆盖现有配置"
+    );
+    assert.equal(db.userConfigs.get(2)?.get("ai.apiKey"), "sk-from-backup", "同批的好值照常写回");
 });
