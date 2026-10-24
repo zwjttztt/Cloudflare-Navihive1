@@ -335,7 +335,10 @@ export function FolderTagSection({
                     {title}
                 </Typography>
                 <Tooltip title={`新建${title}`}>
-                    <IconButton size='small' aria-label={`新建${title}`} onClick={onCreate} sx={{ p: 0.25 }}>
+                    {/* p 用 0.375（3px）而不是 0.25（2px）：图标 18 + 2×3 = 24px，
+                        正好压住 WCAG 2.5.8 的触控底线。用 2px 时实测是 22×22，
+                        记事本一进 a11y 审计就被判 11 处不合格（2026-10-24）。 */}
+                    <IconButton size='small' aria-label={`新建${title}`} onClick={onCreate} sx={{ p: 0.375 }}>
                         <AddIcon fontSize='inherit' />
                     </IconButton>
                     </Tooltip>
@@ -349,7 +352,7 @@ export function FolderTagSection({
                             // 之前这里直接建空白笔记 —— 现在改成「先选模板」，
                             // 直接建空白的那条路还在右键菜单「在此新建笔记」。
                             onClick={e => onCreateNote(e.currentTarget)}
-                            sx={{ p: 0.25 }}
+                            sx={{ p: 0.375 }}
                         >
                             <NoteAddIcon fontSize='inherit' />
                         </IconButton>
@@ -531,7 +534,7 @@ export function FolderTagSection({
                             right: 2,
                             top: "50%",
                             mt: "-14px",
-                            p: 0.25,
+                            p: 0.375,
                             opacity: 0,
                             // ⚠️ 不能写死 background.paper：页面背景色（暖白/纯白）是算出来的，
                             // 写死就会在暖白底上留一个纯白方块（用户报「颜色不会变」）。

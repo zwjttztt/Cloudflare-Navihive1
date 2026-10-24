@@ -79,19 +79,36 @@ test("选择器必须是在 index.css 里定义过的语义 class（emotion 随�
 test("基线齐备且内容真实（全是空指纹的基线等于没有基线）", () => {
     assert.ok(fs.existsSync(BASELINE_DIR), "没有 tests/visual-baseline（先跑 npm run audit:visual -- --update）");
     const files = fs.readdirSync(BASELINE_DIR).filter(f => f.endsWith(".json"));
-    assert.ok(files.length >= 9, `基线只有 ${files.length} 个文件（3 视口 × 3 场景 = 9）`);
+    assert.ok(files.length >= 15, `基线只有 ${files.length} 个文件（3 视口 × 5 场景 = 15）`);
 
     for (const f of files) {
         const fp = JSON.parse(fs.readFileSync(path.join(BASELINE_DIR, f), "utf8"));
         assert.ok(fp.counts && typeof fp.counts.buttons === "number", `${f} 缺 counts`);
-        assert.ok(
-            fp.counts.buttons > 0 && fp.counts.cards > 0,
-            `${f} 量到 0 个按钮 / 卡片 —— 那是骨架态，基线是假的`,
-        );
+        // 所有场景的共同底线：必须有按钮。0 个按钮 = 页面停在骨架态，基线是假的。
+        assert.ok(fp.counts.buttons > 0, `${f} 量到 0 个按钮 —— 那是骨架态，基线是假的`);
+
+        /**
+         * 判据按场景分档（2026-10-24 接入记事本 / 分享页时补）。
+         *
+         * 「必须有卡片 + 至少 5 类元素」是**首页类**场景的标准，公开分享页本来就没有
+         * 卡片（只有一个品牌头 + 正文 + 一个复制按钮），拿同一条卡它就是误伤。
+         * 但底线不变：仍然要求「有按钮」，那条才是真正防骨架态的判据。
+         */
+        const homeLike = /home-|settings|notes-/.test(f);
+        if (homeLike) {
+            assert.ok(
+                fp.counts.cards > 0,
+                `${f} 量到 0 张卡片 —— 那是骨架态，基线是假的`,
+            );
+        }
         const measured = Object.values(fp.elements ?? {}).filter(
             (v): v is unknown[] => Array.isArray(v) && v.length > 0
         );
-        assert.ok(measured.length >= 5, `${f} 只采到 ${measured.length} 类元素（选择器漂了？）`);
+        const minClasses = homeLike ? 5 : 2;
+        assert.ok(
+            measured.length >= minClasses,
+            `${f} 只采到 ${measured.length} 类元素（至少要 ${minClasses} 类 —— 选择器漂了？）`
+        );
     }
 });
 

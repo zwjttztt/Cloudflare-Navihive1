@@ -343,7 +343,7 @@ export default function NotesNavPanel(props: Pick<NotesPageCtx, "accountName" | 
                             aria-label='设置'
                             data-tool='settings'
                             onClick={() => setSettingsOpen(true)}
-                            sx={{ p: 0.25 }}
+                            sx={{ p: 0.375 }}
                         >
                             <SettingsIcon fontSize='inherit' />
                         </IconButton>

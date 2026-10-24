@@ -129,6 +129,89 @@ const SITES = [
     { id: 13, group_id: 2, name: "示例三", url: "https://example.net/", icon: "", description: "示例站点三", notes: "", username: "", password: "", order_num: 0 },
 ];
 
+// ---------------- 记事本（2026-10-24 加） ----------------
+//
+// 为什么必须铺数据而不是留空：记事本的**空态**与「有内容」是两条完全不同的渲染分支
+// （空态只有一个插画 + 一句话，列表 / 分组标题 / 标签栏 / 状态栏全都不挂）。
+// 只铺空态就量，等于整类控件漏测 —— 站点审计里踩过同一个坑（「一条都没有」那档看不见）。
+//
+// 数据刻意覆盖三种渲染形态：
+//   · 置顶 / 收藏（列表项左侧的标记位）
+//   · 归入文件夹 vs 未归类（左栏两段分组标题）
+//   · 有标签 vs 无标签（标签栏与列表项的标签 chip）
+const NOTE_FOLDERS = [
+    { id: 1, parent_id: null, name: "工作", order_num: 0, icon: "folder", color: null, count: 2 },
+    { id: 2, parent_id: 1, name: "周报", order_num: 0, icon: null, color: null, count: 1 },
+];
+const NOTE_TAGS = [
+    { id: 1, name: "待办", color: "#1976d2", count: 2 },
+    { id: 2, name: "资料", color: null, count: 1 },
+];
+const NOTES = [
+    {
+        id: 1,
+        uuid: "00000000-0000-4000-8000-000000000001",
+        title: "会议纪要",
+        content: "# 会议纪要\n\n- 第一条待办\n- 第二条待办\n",
+        pinned: true,
+        starred: false,
+        rev: 3,
+        order_num: 0,
+        folder_id: 1,
+        site_id: null,
+        archived: false,
+        created_at: "2026-10-01T09:00:00.000Z",
+        updated_at: "2026-10-20T09:00:00.000Z",
+    },
+    {
+        id: 2,
+        uuid: "00000000-0000-4000-8000-000000000002",
+        title: "读书笔记",
+        content: "## 第三章\n\n摘录若干。\n",
+        pinned: false,
+        starred: true,
+        rev: 1,
+        order_num: 1,
+        folder_id: null,
+        site_id: 11,
+        archived: false,
+        created_at: "2026-10-02T09:00:00.000Z",
+        updated_at: "2026-10-19T09:00:00.000Z",
+    },
+    {
+        id: 3,
+        uuid: "00000000-0000-4000-8000-000000000003",
+        title: "随手记",
+        content: "一句话。\n",
+        pinned: false,
+        starred: false,
+        rev: 2,
+        order_num: 2,
+        folder_id: 2,
+        site_id: null,
+        archived: false,
+        created_at: "2026-10-03T09:00:00.000Z",
+        updated_at: "2026-10-18T09:00:00.000Z",
+    },
+];
+/** 笔记 id → 标签 id[]（GET /api/notes/tag-links 的形状） */
+const NOTE_TAG_LINKS = { 1: [1], 2: [1, 2], 3: [] };
+
+// ---------------- 分享页（2026-10-24 加） ----------------
+const SHARE_NOTE_TOKEN = "a".repeat(64);
+const SHARE_GROUP_TOKEN = "b".repeat(64);
+const SHARED_NOTE = {
+    title: "公开分享的笔记",
+    content: "# 公开分享\n\n这段正文出现在公开页上。\n\n- 列表项一\n- 列表项二\n",
+    updated_at: "2026-10-20T09:00:00.000Z",
+};
+/**
+ * 桩里那两个分享的 token —— 审计脚本拼公开页 URL 要用。
+ * 形如 `/s/<token>`（笔记）与 `/g/<token>`（分组），见 src/main.tsx 的路由。
+ */
+export const SHARE_TOKENS = { note: SHARE_NOTE_TOKEN, group: SHARE_GROUP_TOKEN };
+
+
 /**
  * 起本地服务（静态产物 + 只读 API 桩），返回 { url, close }。
  *
@@ -169,6 +252,91 @@ export async function startSiteServer(port = 0) {
                 res.end(JSON.stringify({ id: 0, username: "guest", role: "owner" }));
                 return;
             }
+
+            // ---- 记事本（2026-10-24）：顺序要求 —— 更具体的路径必须排在 /api/notes 之前 ----
+            if (pathname === "/api/notes/count") {
+                res.end(JSON.stringify({ count: NOTES.length }));
+                return;
+            }
+            if (pathname === "/api/notes/folders") {
+                res.end(JSON.stringify(NOTE_FOLDERS));
+                return;
+            }
+            if (pathname === "/api/notes/tags") {
+                res.end(JSON.stringify(NOTE_TAGS));
+                return;
+            }
+            if (pathname === "/api/notes/tag-links") {
+                res.end(JSON.stringify(NOTE_TAG_LINKS));
+                return;
+            }
+            if (pathname === "/api/notes/stats") {
+                res.end(JSON.stringify({ versions: 4, links: 2 }));
+                return;
+            }
+            if (pathname === "/api/notes/changes") {
+                // 增量轮询：审计只跑静态快照，回一个空变更就够了
+                res.end(JSON.stringify({ notes: [], deleted: [], cursor: "" }));
+                return;
+            }
+            if (pathname === "/api/note-orders") {
+                res.end(JSON.stringify({ success: true }));
+                return;
+            }
+            if (pathname === "/api/notes/shares") {
+                res.end(JSON.stringify([]));
+                return;
+            }
+            if (pathname === "/api/notes") {
+                // ?fields=list 时服务端会把正文截短；审计只需要「列表能渲染」，
+                // 全文照给也不会让界面变形（列表只用标题 + 摘要）。
+                res.end(JSON.stringify(NOTES));
+                return;
+            }
+            // 单条笔记（正文面板 / 附件引用会读）
+            const noteOne = /^\/api\/notes\/(\d+)$/.exec(pathname);
+            if (noteOne) {
+                const found = NOTES.find(n => n.id === Number(noteOne[1]));
+                res.end(JSON.stringify(found ?? null));
+                return;
+            }
+
+            // ---- 分享页（2026-10-24）----
+            // 公开笔记：GET 无口令时直接给正文（无口令分享就是这个形状）
+            if (pathname === `/api/note-shares/${SHARE_NOTE_TOKEN}`) {
+                res.end(JSON.stringify(SHARED_NOTE));
+                return;
+            }
+            // 公开分组：前端按 status 字段分支，ok 时读 `data.group.name` + `data.sites`
+            // ⚠️ 分组名是**嵌在 group 里**的，不是顶层 name（PublicGroupAccess 的类型形状）
+            if (pathname === `/api/group-shares/${SHARE_GROUP_TOKEN}`) {
+                res.end(
+                    JSON.stringify({
+                        status: "ok",
+                        group: { name: "常用工具" },
+                        sites: SITES.filter(s => s.group_id === 1),
+                        views: 12,
+                    })
+                );
+                return;
+            }
+            // 不存在的分享：按各自真实的契约回（笔记路 404 错误体 / 分组路 200 + not-found）
+            if (pathname.startsWith("/api/note-shares/")) {
+                res.statusCode = 404;
+                res.end(
+                    JSON.stringify({
+                        success: false,
+                        error: "分享不存在、已过期或已撤销",
+                        code: "not_found",
+                    })
+                );
+                return;
+            }
+            if (pathname.startsWith("/api/group-shares/")) {
+                res.end(JSON.stringify({ status: "not-found" }));
+                return;
+            }
+
             res.end(JSON.stringify({ success: true }));
             return;
         }

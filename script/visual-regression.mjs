@@ -26,7 +26,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
-import { DIST, ROOT, openBrowser, startSiteServer, waitRendered } from "./auditEnv.mjs";
+import { DIST, ROOT, openBrowser, startSiteServer, waitRendered, SHARE_TOKENS } from "./auditEnv.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const BASELINE_DIR = path.join(ROOT, "tests", "visual-baseline");
@@ -46,8 +46,13 @@ const VIEWPORTS = [
 ];
 
 /**
- * 场景。都是首页上的状态切换 —— 只读桩只实现了首页要用的接口，
- * 记事本 / 分享页在桩里渲染不出来，硬量只会量到骨架态（假红）。
+ * 场景。
+ *
+ * 原来只有首页三档，注释里写的原因是「只读桩只实现了首页要用的接口，
+ * 记事本 / 分享页在桩里渲染不出来，硬量只会量到骨架态（假红）」。
+ * 2026-10-24 起 auditEnv 的桩补齐了笔记 / 文件夹 / 标签 / 两个分享接口，
+ * 于是这两个页面可以真量了 —— 它们此前**从来没有视觉基线**，
+ * 也就是说「记事本布局跑了位」这件事，此前只能靠人眼看出来。
  */
 const SCENES = [
     { name: "home-light", theme: "light" },
@@ -55,6 +60,28 @@ const SCENES = [
     // 「暗色下某个 token 没覆盖」正是这类回归的典型 —— 亮色全绿、暗色一处发白。
     { name: "home-dark", theme: "dark" },
     { name: "settings", theme: "light", openSettings: true, extraSelectors: [".nav-settings-dialog"] },
+    {
+        name: "notes-light",
+        theme: "light",
+        openNotes: true,
+        // 记事本里稳定的是 `data-*` 属性（下面这几个都实测存在），不是 emotion hash。
+        // 刻意**不采编辑器正文区**（.cm-content / .cm-line）：CodeMirror 的排版随字体与
+        // 操作系统差得远，采进来就是稳定的假红（与「别采 .nav-clock」同一个理由）。
+        extraSelectors: [
+            "[data-notes-root]",
+            "[data-nav-col='1']",
+            "[data-unfiled-notes='1']",
+            "[data-nav-footer='1']",
+        ],
+    },
+    {
+        name: "share-note",
+        theme: "light",
+        urlPath: `/s/${SHARE_TOKENS.note}`,
+        // 公开页控件极少，waitRendered 的默认门槛（25 个按钮）永远等不到
+        minButtons: 1,
+        extraSelectors: ["[data-s]", "[data-share-brand='1']"],
+    },
 ];
 
 /**
@@ -227,16 +254,52 @@ async function main() {
                     mobile: vp.width < 500,
                 });
 
+                // 目标地址：分享页走自己的路由前缀（/s/<token>），其余是首页
+                const targetUrl = site.url + (scene.urlPath ?? "");
+                // 公开页的按钮数比首页少一个量级，门槛要跟着场景走，否则永远等不到
+                const minButtons = scene.minButtons ?? 8;
+
                 // 主题要在应用启动前落盘，否则读到的还是默认值（跟随系统 = 浅色）
-                await send("Page.navigate", { url: site.url });
-                await waitRendered(evaluate, { minButtons: 8, timeoutMs: 20_000 });
+                await send("Page.navigate", { url: targetUrl });
+                await waitRendered(evaluate, { minButtons, timeoutMs: 20_000 });
                 await evaluate(`(() => {
                     try { localStorage.setItem("theme", ${JSON.stringify(scene.theme)}); } catch {}
                     return true;
                 })()`);
                 // 重新加载：让主题在初始化路径上生效（与用户改设置后刷新等价）
-                await send("Page.navigate", { url: site.url });
-                await waitRendered(evaluate, { minButtons: 8, timeoutMs: 20_000 });
+                await send("Page.navigate", { url: targetUrl });
+                await waitRendered(evaluate, { minButtons, timeoutMs: 20_000 });
+
+                // 记事本：点顶栏「打开记事本」，等懒加载 chunk 落地并渲染出桩里的笔记。
+                // 等标题而不是固定 sleep —— 那块是独立 chunk，加载时间随机器波动很大。
+                if (scene.openNotes) {
+                    const opened = await evaluate(`(() => {
+                        const btn = [...document.querySelectorAll("button")]
+                            .find(b => (b.getAttribute("aria-label") || "") === "打开记事本");
+                        if (!btn) return "no-entry";
+                        btn.click();
+                        return "clicked";
+                    })()`);
+                    if (opened !== "clicked") {
+                        throw new Error(
+                            `${caseName}: 记事本入口找不到（${opened}）—— 选择器漂了，先修脚本再谈回归`
+                        );
+                    }
+                    const deadline = Date.now() + 20_000;
+                    let ready = false;
+                    while (Date.now() < deadline) {
+                        ready = await evaluate(
+                            `!!document.querySelector("[data-notes-root]") && (document.body.innerText || "").includes("会议纪要")`
+                        );
+                        if (ready) break;
+                        await sleep(300);
+                    }
+                    if (!ready) {
+                        throw new Error(
+                            `${caseName}: 记事本 20 秒内没渲染出来（停在骨架态）—— 量到的是空壳`
+                        );
+                    }
+                }
 
                 if (scene.openSettings) {
                     const opened = await evaluate(`(() => {

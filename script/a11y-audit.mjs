@@ -69,14 +69,27 @@ if (pageErrors.length) {
     done(1);
 }
 
-// ---------- 1. 可访问性：无名按钮 / 无 alt 图片 / 无标签输入 ----------
-const a11y = await evaluate(`(() => {
+// ---------- 扫描表达式（提成常量：首页与记事本要各扫一遍） ----------
+//
+// 2026-10-24 起审计覆盖**两个页面**：首页与记事本。提取常量而不是复制两份代码，
+// 是因为「首页与记事本的判据必须是同一套」—— 各写一份迟早会漂移，
+// 而漂移之后量出来的绿灯就说明不了任何事。
+
+/** 无名按钮 / 无 alt 图 / 无标签输入 / 焦点可及数量 */
+const SCAN_A11Y = `(() => {
   const q = s => [...document.querySelectorAll(s)];
   const nameOf = el => (el.getAttribute('aria-label') || el.getAttribute('title') || el.textContent || '').trim();
   const noNameBtns = q('button').filter(b => !nameOf(b)).length;
   const noAltImgs  = q('img').filter(i => !i.getAttribute('alt')).length;
   const inputsNoLabel = q('input, select, textarea').filter(i => {
       if (i.type === 'hidden') return false;
+      // ⚠️ 隐藏的输入不算：记事本有 <input type="file" style="display:none">，
+      // 由旁边的按钮调 .click() 触发。用户看不到、也 Tab 不到，
+      // 给它加 aria-label 是形式主义；判据本意是「**可见**的输入要有可访问名」。
+      // （2026-10-24 扩大到记事本时暴露的判据缺陷 —— 首页没有隐藏 file input，
+      //   所以这条一直没被触发过。）
+      const cs = getComputedStyle(i);
+      if (cs.display === 'none' || cs.visibility === 'hidden') return false;
       if (i.getAttribute('aria-label')) return false;
       if (i.id && document.querySelector('label[for="' + i.id + '"]')) return false;
       return !i.closest('label');
@@ -86,13 +99,10 @@ const a11y = await evaluate(`(() => {
   const h1 = q('h1').length;
   const land = { header: q('header').length, main: q('main').length, nav: q('nav').length };
   return { buttons: q('button').length, noNameBtns, imgs: q('img').length, noAltImgs, inputsNoLabel, focusables, negTab, h1, land };
-})()`);
-console.log("=== 可访问性 ===");
-console.log(JSON.stringify(a11y, null, 1));
+})()`;
 
-// ---------- 2. 触控目标尺寸（桌面视口 1440）----------
-// 判定线 WCAG 2.5.8 的 24px；24~31px 只提示不判失败（卡片浮层控件按用户要求收小过）
-const touch = await evaluate(`(() => {
+/** 触控目标尺寸（判 24px = WCAG 2.5.8；24~31px 只提示不判失败） */
+const SCAN_TOUCH = `(() => {
   const els = [...document.querySelectorAll('button, a[href], [role="button"], [role="option"]')];
   const small = [], warn = [];
   for (const el of els) {
@@ -112,7 +122,134 @@ const touch = await evaluate(`(() => {
       else if (r.height < 32 || r.width < 32) warn.push(rec);
   }
   return { total: els.length, tooSmall: small.length, samples: small.slice(0, 20), borderline: warn.length, warnSamples: warn.slice(0, 10) };
-})()`);
+})()`;
+
+/** 破图（等 2s 让懒加载图落地） */
+const SCAN_IMAGES = `(async () => {
+  const wait = ms => new Promise(r => setTimeout(r, ms));
+  await wait(2000);
+  const imgs = [...document.querySelectorAll('img')];
+  const bad = imgs.filter(i => i.complete && i.naturalWidth === 0);
+  return { total: imgs.length, broken: bad.length, srcs: bad.slice(0,5).map(i => i.src.slice(0, 90)) };
+})()`;
+
+/** 量当前焦点元素有没有可见的焦点指示（输入框认聚焦边框，见下面的说明） */
+const SCAN_FOCUS = `(() => {
+  const el = document.activeElement;
+  if (!el || el === document.body) return null;
+  const s = getComputedStyle(el);
+  const outlineVisible = s.outlineStyle !== 'none' && parseFloat(s.outlineWidth || '0') > 0;
+  // 输入框是例外：项目刻意不给它补外圈 outline（会与 MUI 的聚焦边框叠成
+  // 双红圈，见 useThemeController 的 MuiInputBase 注释），焦点指示是
+  // 「边框 1px 灰 → 2px 主色」。所以这里认 .Mui-focused + fieldset 加粗，
+  // 不认 outline/boxShadow —— 否则输入框永远假红。
+  let via = 'outline/boxShadow';
+  if (el.tagName === 'INPUT' && !outlineVisible && s.boxShadow === 'none') {
+    const root = el.closest('.MuiOutlinedInput-root, .MuiInputBase-root');
+    const fs = root && root.querySelector('fieldset');
+    const focused = !!root && root.classList.contains('Mui-focused');
+    const w = fs ? parseFloat(getComputedStyle(fs).borderTopWidth || '0') : 0;
+    if (focused && w >= 2) { via = 'focus-border'; }
+    return {
+      tag: el.tagName,
+      label: (el.getAttribute('aria-label') || el.textContent || '').trim().slice(0, 18),
+      outlineWidth: s.outlineWidth, outlineStyle: s.outlineStyle,
+      boxShadow: 'none',
+      visible: true, via,
+    };
+  }
+  return {
+    tag: el.tagName,
+    label: (el.getAttribute('aria-label') || el.textContent || '').trim().slice(0, 18),
+    outlineWidth: s.outlineWidth, outlineStyle: s.outlineStyle,
+    boxShadow: s.boxShadow === 'none' ? 'none' : 'has',
+    visible: outlineVisible || s.boxShadow !== 'none', via,
+  };
+})()`;
+
+/**
+ * 焦点指示由**子元素**承担的元素的兜底判定。
+ *
+ * 背景（2026-10-24 扩大审计面时发现）：记事本的两条列宽拖动条
+ * （`paneChrome.tsx` 的 ColResizeHandle）刻意把宿主元素的 outline 设成 none，
+ * 改用「聚焦时把那条 1px 发丝线变成 2px 主色」来表达焦点 —— 这是有效的焦点指示，
+ * 但只量宿主的 outline/boxShadow 是量不到的，会被判成「键盘用户找不到焦点」。
+ *
+ * 判法：只对**显式带 `data-focus-indicator="child"` 标记**的元素做这个额外探测 ——
+ * 先记子元素的计算样式，blur 后再记一次，有变化就说明指示确实由子元素承担。
+ *
+ * ⚠️ 必须是显式标记，不能让审计自己猜「凡是子元素有变化的都算」：
+ * 那会把 hover 效果、过渡动画中间帧全算进来，等于给这类判据开后门。
+ */
+const SCAN_CHILD_INDICATOR = `(async () => {
+  const el = document.activeElement;
+  if (!el || !el.hasAttribute('data-focus-indicator')) return null;
+  const child = el.firstElementChild;
+  if (!child) return null;
+  const read = () => {
+    const s = getComputedStyle(child);
+    return s.width + '|' + s.backgroundColor + '|' + s.borderTopWidth;
+  };
+  const focused = read();
+  el.blur();
+  // 过渡要跑完才有终值；两帧不够就等一会儿（transition 是 220ms）
+  await new Promise(r => setTimeout(r, 320));
+  const blurred = read();
+  el.focus();
+  await new Promise(r => setTimeout(r, 80));
+  return { focused, blurred, changed: focused !== blurred };
+})()`;
+
+/**
+ * Tab 一遍，收集每个焦点元素的可见性。
+ *
+ * ⚠️ 为什么必须发真 Tab 键（Input.dispatchKeyEvent）而不是 `el.focus()`：
+ * `el.focus()` **不触发 :focus-visible**，量出来恒为「outline 0 + boxShadow none」，
+ * 看着像全员不可见。2026-10-20 就是这么误判过一次，差点给所有 Chip 补一堆无用的焦点环。
+ */
+async function focusSweep(steps = 30) {
+    const out = [];
+    for (let i = 0; i < steps; i++) {
+        await send("Input.dispatchKeyEvent", {
+            type: "rawKeyDown",
+            key: "Tab",
+            code: "Tab",
+            windowsVirtualKeyCode: 9,
+            nativeVirtualKeyCode: 9,
+        });
+        await send("Input.dispatchKeyEvent", {
+            type: "keyUp",
+            key: "Tab",
+            code: "Tab",
+            windowsVirtualKeyCode: 9,
+            nativeVirtualKeyCode: 9,
+        });
+        await new Promise(r => setTimeout(r, 70));
+        const info = await evaluate(SCAN_FOCUS);
+        if (!info) continue;
+        // 宿主没有 outline/boxShadow 时，看看它是不是声明了「由子元素承担」
+        if (!info.visible) {
+            const childInfo = await evaluate(SCAN_CHILD_INDICATOR);
+            if (childInfo?.changed) {
+                info.visible = true;
+                info.via = "child-indicator";
+                info.childFrom = childInfo.blurred;
+                info.childTo = childInfo.focused;
+            }
+        }
+        out.push(info);
+    }
+    return out;
+}
+
+// ---------- 1. 可访问性：无名按钮 / 无 alt 图片 / 无标签输入 ----------
+const a11y = await evaluate(SCAN_A11Y);
+console.log("=== 可访问性 ===");
+console.log(JSON.stringify(a11y, null, 1));
+
+// ---------- 2. 触控目标尺寸（桌面视口 1440）----------
+// 判定线 WCAG 2.5.8 的 24px；24~31px 只提示不判失败（卡片浮层控件按用户要求收小过）
+const touch = await evaluate(SCAN_TOUCH);
 console.log("=== 触控目标（判定线 24px = WCAG 2.5.8）===");
 console.log(`   可点元素 ${touch.total} 个：低于 24px 的 ${touch.tooSmall} 个，24~31px 的 ${touch.borderline} 个`);
 for (const s of touch.samples) {
@@ -123,13 +260,7 @@ for (const s of touch.warnSamples) {
 }
 
 // ---------- 3. 破图 ----------
-const broken = await evaluate(`(async () => {
-  const wait = ms => new Promise(r => setTimeout(r, ms));
-  await wait(2000);
-  const imgs = [...document.querySelectorAll('img')];
-  const bad = imgs.filter(i => i.complete && i.naturalWidth === 0);
-  return { total: imgs.length, broken: bad.length, srcs: bad.slice(0,5).map(i => i.src.slice(0, 90)) };
-})()`);
+const broken = await evaluate(SCAN_IMAGES);
 console.log("=== 图片加载 ===");
 console.log(JSON.stringify(broken, null, 1));
 
@@ -140,59 +271,76 @@ console.log(JSON.stringify(broken, null, 1));
 // 「常用工具」outlineWidth 3px 而 outlineStyle none，等于全员不可见，纯假数据。
 // 现在改用 CDP 发真 Tab 键（Input.dispatchKeyEvent）：由浏览器按真实键盘规则
 // 决定什么时候挂 :focus-visible，量出来的才是用户看到的样子。
-const focusVis = [];
-for (let i = 0; i < 30; i++) {
-    await send("Input.dispatchKeyEvent", {
-        type: "rawKeyDown",
-        key: "Tab",
-        code: "Tab",
-        windowsVirtualKeyCode: 9,
-        nativeVirtualKeyCode: 9,
-    });
-    await send("Input.dispatchKeyEvent", {
-        type: "keyUp",
-        key: "Tab",
-        code: "Tab",
-        windowsVirtualKeyCode: 9,
-        nativeVirtualKeyCode: 9,
-    });
-    await new Promise(r => setTimeout(r, 70));
-    const info = await evaluate(`(() => {
-      const el = document.activeElement;
-      if (!el || el === document.body) return null;
-      const s = getComputedStyle(el);
-      const outlineVisible = s.outlineStyle !== 'none' && parseFloat(s.outlineWidth || '0') > 0;
-      // 输入框是例外：项目刻意不给它补外圈 outline（会与 MUI 的聚焦边框叠成
-      // 双红圈，见 useThemeController 的 MuiInputBase 注释），焦点指示是
-      // 「边框 1px 灰 → 2px 主色」。所以这里认 .Mui-focused + fieldset 加粗，
-      // 不认 outline/boxShadow —— 否则输入框永远假红。
-      let via = 'outline/boxShadow';
-      if (el.tagName === 'INPUT' && !outlineVisible && s.boxShadow === 'none') {
-        const root = el.closest('.MuiOutlinedInput-root, .MuiInputBase-root');
-        const fs = root && root.querySelector('fieldset');
-        const focused = !!root && root.classList.contains('Mui-focused');
-        const w = fs ? parseFloat(getComputedStyle(fs).borderTopWidth || '0') : 0;
-        if (focused && w >= 2) { via = 'focus-border'; }
-        return {
-          tag: el.tagName,
-          label: (el.getAttribute('aria-label') || el.textContent || '').trim().slice(0, 18),
-          outlineWidth: s.outlineWidth, outlineStyle: s.outlineStyle,
-          boxShadow: 'none',
-          visible: true, via,
-        };
-      }
-      return {
-        tag: el.tagName,
-        label: (el.getAttribute('aria-label') || el.textContent || '').trim().slice(0, 18),
-        outlineWidth: s.outlineWidth, outlineStyle: s.outlineStyle,
-        boxShadow: s.boxShadow === 'none' ? 'none' : 'has',
-        visible: outlineVisible || s.boxShadow !== 'none', via,
-      };
-    })()`);
-    if (info) focusVis.push(info);
-}
+const focusVis = await focusSweep(30);
 console.log("=== 焦点可见性（真 Tab 键，作为判据）===");
 focusVis.forEach(f => console.log("  ", f.visible ? "ok  " : "MISS", JSON.stringify(f)));
+
+// ---------- 5. 记事本（2026-10-24 加）----------
+//
+// 为什么必须单独跑一遍：记事本是**另一个路由下的另一套界面**（左栏 + 列表 + 编辑器
+// + 工具栏 + 状态栏，控件数是首页的两三倍），而且它整块是懒加载的独立 chunk。
+// 首页全绿只能说明首页没问题 —— 记事本的工具栏 / 大纲 / 右键菜单从未被任何自动审计看过。
+//
+// 前置：审计桩（script/auditEnv.mjs）已实现笔记 / 文件夹 / 标签 / tag-links，
+// 且铺了 3 条笔记（覆盖置顶、收藏、入文件夹、带标签四种渲染形态）。
+// 桩缺接口时这里会停在骨架态 —— 所以下面先断言「真的打开了」，再谈判据。
+const notesOpened = await evaluate(`(() => {
+    const btn = [...document.querySelectorAll('button')]
+        .find(b => (b.getAttribute('aria-label') || '') === '打开记事本');
+    if (!btn) return 'no-entry';
+    btn.click();
+    return 'clicked';
+})()`);
+if (notesOpened !== "clicked") {
+    console.error(
+        `记事本入口找不到（${notesOpened}）—— 选择器漂了，这一节没测到，` +
+            `审计结果不可信（宁可红也别静默跳过）`
+    );
+    site.close();
+    done(1);
+}
+// 等懒加载 chunk 落地 + 列表渲染完（不用固定 sleep 掩耳：直接轮询「有没有笔记标题」）
+{
+    const deadline = Date.now() + 20_000;
+    let ready = false;
+    while (Date.now() < deadline) {
+        ready = await evaluate(`(document.body.innerText || '').includes('会议纪要')`);
+        if (ready) break;
+        await new Promise(r => setTimeout(r, 300));
+    }
+    if (!ready) {
+        console.error(
+            "记事本 20 秒内没渲染出桩里的笔记（停在骨架态或空态）—— " +
+                "这一节没测到，审计结果不可信"
+        );
+        site.close();
+        done(1);
+    }
+}
+
+const notesA11y = await evaluate(SCAN_A11Y);
+console.log("=== 记事本：可访问性 ===");
+console.log(JSON.stringify(notesA11y, null, 1));
+
+const notesTouch = await evaluate(SCAN_TOUCH);
+console.log("=== 记事本：触控目标 ===");
+console.log(
+    `   可点元素 ${notesTouch.total} 个：低于 24px 的 ${notesTouch.tooSmall} 个，24~31px 的 ${notesTouch.borderline} 个`
+);
+for (const s of notesTouch.samples) {
+    console.log(
+        `   ${String(s.w).padStart(4)}×${String(s.h).padStart(3)}  「${s.label}」  .${s.cls}  (父 .${s.parent})`
+    );
+}
+
+const notesBroken = await evaluate(SCAN_IMAGES);
+console.log("=== 记事本：图片加载 ===");
+console.log(JSON.stringify(notesBroken, null, 1));
+
+// 记事本里的焦点扫一遍：工具栏是全新的一片控件，历史上从没被量过
+const notesFocus = await focusSweep(30);
+console.log("=== 记事本：焦点可见性 ===");
+notesFocus.forEach(f => console.log("  ", f.visible ? "ok  " : "MISS", JSON.stringify(f)));
 
 // ---------- 判定 ----------
 const failures = [];
@@ -205,6 +353,19 @@ if (broken.broken > 0) failures.push(`破图 ${broken.broken} 张`);
 const noRing = focusVis.filter(f => !f.visible);
 if (noRing.length > 0) {
     failures.push(`焦点环不可见 ${noRing.length} 个：${noRing.slice(0, 3).map(f => `${f.tag}「${f.label}」`).join(" / ")}`);
+}
+
+// 记事本：同一套判据
+if (notesA11y.noNameBtns > 0) failures.push(`记事本：无名按钮 ${notesA11y.noNameBtns} 个`);
+if (notesA11y.noAltImgs > 0) failures.push(`记事本：无 alt 图片 ${notesA11y.noAltImgs} 张`);
+if (notesA11y.inputsNoLabel > 0) failures.push(`记事本：无 label 输入 ${notesA11y.inputsNoLabel} 个`);
+if (notesTouch.tooSmall > 0) failures.push(`记事本：触控目标小于 24px 的 ${notesTouch.tooSmall} 个`);
+if (notesBroken.broken > 0) failures.push(`记事本：破图 ${notesBroken.broken} 张`);
+const notesNoRing = notesFocus.filter(f => !f.visible);
+if (notesNoRing.length > 0) {
+    failures.push(
+        `记事本：焦点环不可见 ${notesNoRing.length} 个：${notesNoRing.slice(0, 3).map(f => `${f.tag}「${f.label}」`).join(" / ")}`
+    );
 }
 
 console.log("");

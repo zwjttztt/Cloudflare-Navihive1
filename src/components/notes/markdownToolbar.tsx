@@ -788,6 +788,10 @@ export function MarkdownToolbar({
                 </IconButton>
                     </Tooltip>
                 <Tooltip title='插入网址，或引用另一篇笔记（双链 / 嵌入 / 脚注）'>
+                {/* ⚠️ width 从 16 提到 24（2026-10-24）：这是「主按钮 + 下拉箭头」
+                    拼接控件的右半，16px 宽时实测 16×28，低于 WCAG 2.5.8 的 24px 底线
+                    —— 记事本一进 a11y 审计就报了 3 处（链接与引用 / 插入图片 / 代码与图表）。
+                    视觉上箭头区略宽，但拼接形态与圆角拼接都保持不变。 */}
                 <IconButton
                     size='small'
                     aria-label='链接与引用'
@@ -796,7 +800,7 @@ export function MarkdownToolbar({
                     aria-expanded={linkAnchor ? true : undefined}
                     onMouseDown={e => e.preventDefault()}
                     onClick={e => setLinkAnchor(e.currentTarget)}
-                    sx={{ ...toolBtnSx, width: 16, borderRadius: "0 8px 8px 0", ml: "2px" }}
+                    sx={{ ...toolBtnSx, width: 24, borderRadius: "0 8px 8px 0", ml: "2px" }}
                 >
                     <ExpandMoreIcon sx={{ fontSize: 14, opacity: 0.7 }} />
                 </IconButton>
@@ -897,7 +901,7 @@ export function MarkdownToolbar({
                     aria-expanded={imageAnchor ? true : undefined}
                     onMouseDown={e => e.preventDefault()}
                     onClick={e => setImageAnchor(e.currentTarget)}
-                    sx={{ ...toolBtnSx, width: 16, borderRadius: "0 8px 8px 0", ml: "2px" }}
+                    sx={{ ...toolBtnSx, width: 24, borderRadius: "0 8px 8px 0", ml: "2px" }}
                 >
                     <ExpandMoreIcon sx={{ fontSize: 14, opacity: 0.7 }} />
                 </IconButton>
@@ -1193,7 +1197,7 @@ export function MarkdownToolbar({
                     aria-expanded={langAnchor ? true : undefined}
                     onMouseDown={e => e.preventDefault()}
                     onClick={e => setLangAnchor(e.currentTarget)}
-                    sx={{ ...toolBtnSx, width: 16, borderRadius: "0 8px 8px 0", ml: "2px" }}
+                    sx={{ ...toolBtnSx, width: 24, borderRadius: "0 8px 8px 0", ml: "2px" }}
                 >
                     <ExpandMoreIcon sx={{ fontSize: 14, opacity: 0.7 }} />
                 </IconButton>

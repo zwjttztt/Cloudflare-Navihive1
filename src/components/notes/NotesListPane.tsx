@@ -641,7 +641,7 @@ export default function NotesListPane(props: Pick<NotesPageCtx, "activeFolder" |
                                                     return next;
                                                 });
                                             }}
-                                            sx={{ p: 0.25, ml: -0.5, flexShrink: 0 }}
+                                            sx={{ p: 0.375, ml: -0.5, flexShrink: 0 }}
                                         />
                                     )}
                                     {/* ⚠️ 必须先转布尔：pinned 存的是 0/1，
@@ -718,7 +718,7 @@ export default function NotesListPane(props: Pick<NotesPageCtx, "activeFolder" |
                                             transition: menuClosing || rowActionsSuppressed === note.id ? "none" : "opacity 120ms ease",
                                             visibility: menuClosing || rowActionsSuppressed === note.id ? "hidden" : "visible",
                                             flexShrink: 0,
-                                            p: 0.25,
+                                            p: 0.375,
                                             color: "text.secondary",
                                             bgcolor: "var(--bg-base)",
                                             borderRadius: "50%",

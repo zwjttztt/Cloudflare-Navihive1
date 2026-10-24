@@ -192,6 +192,31 @@ const initOk =
     ("initialized" in probe.json || "needsSetup" in probe.json || "status" in probe.json);
 check("/api/init 的响应体形状对得上", initOk, JSON.stringify(probe.json).slice(0, 80));
 
+// ============ 5b. 公开分享 API 的 not-found 语义（2026-10-24 加）============
+//
+// 为什么要单独验这两条：公开分享是**未鉴权**入口，它们的失败形状是前端的分支依据，
+// 而且两条路的契约**刻意不一样**：
+//   · 笔记分享：404 + 错误体（PublicNotePage 按 HTTP 状态 + needPassword 分支）
+//   · 分组分享：**200** + `{status:"not-found"}`（PublicGroupPage 按 status 字段分支）
+//
+// 2026-10-24 给这两条接口令限速时，第一版顺手把分组分享的 need-password 改成 401，
+// 那会让公开分组页整页显示「加载失败」—— 所以这条断言是那次改动的线上守卫。
+// 顺带证明「分享链路在线上是通的」，不是 500。
+const bogusNoteShare = await get(`/api/note-shares/${bogusToken}`);
+check(
+    "公开笔记分享：不存在的 token 回 404（不是 500，也不是 200）",
+    bogusNoteShare.status === 404,
+    `status=${bogusNoteShare.status} · ${JSON.stringify(bogusNoteShare.json).slice(0, 60)}`
+);
+const bogusGroupShare = await get(`/api/group-shares/${bogusToken}`);
+check(
+    "公开分组分享：不存在的 token 回 **200** + status=not-found（前端按 status 字段分支，改成 401 会整页报错）",
+    bogusGroupShare.status === 200 &&
+        bogusGroupShare.json !== null &&
+        bogusGroupShare.json.status === "not-found",
+    `status=${bogusGroupShare.status} · ${JSON.stringify(bogusGroupShare.json).slice(0, 60)}`
+);
+
 // 未登录访问受保护 API 会被鉴权中间件挡成 401，路径不存在则 404 —— 两者都对，
 // 唯一不对的是「200 + 空页」（曾经出现过：反代把 500 缓存成 200 空白页，
 // 于是所有健康检查都是绿的，用户那边是白屏）。

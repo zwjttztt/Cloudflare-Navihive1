@@ -1,0 +1,59 @@
+{
+  "counts": {
+    "buttons": 1,
+    "groupPanels": 0,
+    "cards": 0,
+    "railDots": 0
+  },
+  "elements": {
+    ".nav-root": [],
+    ".nav-group-rail": [],
+    ".nav-group-panel": [],
+    ".nav-group-accent-bar": [],
+    ".nav-card-in": [],
+    ".nav-card-icon": [],
+    ".nav-card-actions": [],
+    ".nav-star-btn": [],
+    ".nav-header-compact": [],
+    ".nav-header-divider": [],
+    ".nav-settings-btn": [],
+    ".nav-tag-bar": [],
+    "[data-s]": [
+      {
+        "rect": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "style": {
+          "color": "rgb(0, 0, 0)",
+          "background": "rgba(0, 0, 0, 0)",
+          "fontSize": "16px",
+          "radius": "0px",
+          "display": "none",
+          "visibility": "visible"
+        }
+      }
+    ],
+    "[data-share-brand='1']": [
+      {
+        "rect": [
+          32,
+          32,
+          790,
+          55
+        ],
+        "style": {
+          "color": "rgb(0, 0, 0)",
+          "background": "rgba(0, 0, 0, 0)",
+          "fontSize": "16px",
+          "radius": "0px",
+          "display": "flex",
+          "visibility": "visible"
+        }
+      }
+    ]
+  },
+  "dark": false
+}

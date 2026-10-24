@@ -174,6 +174,11 @@ export function ColResizeHandle({
             aria-valuemin={20}
             aria-valuemax={80}
             tabIndex={0}
+            // 声明「这个元素的焦点指示由**子元素**承担」（聚焦时那条发丝线由 1px 变
+            // 2px 主色）。自动化审计只量宿主元素的 outline/boxShadow，量不到子元素的
+            // 视觉变化 —— 没有这个标记就会被判成「焦点环不可见」。
+            // 用显式标记而不是让审计去猜，是因为「猜」要么放过真问题、要么误报。
+            data-focus-indicator='child'
             title={`${label}（双击回到默认宽度）`}
             onPointerDown={onDrag}
             onDoubleClick={onReset}
