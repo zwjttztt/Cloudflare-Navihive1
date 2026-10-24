@@ -21,6 +21,8 @@ import {
     LOGIN_GUARD_KEY,
     RECOVER_GUARD_KEY,
     REGISTER_GUARD_KEY,
+    SHARE_GUARD_KEY,
+    shareBucket,
 } from "../worker/loginGuard";
 import { REMEMBER_TOKEN_TTL } from "../src/API/http";
 import type { RouteCtx } from "../worker/routes/types";
@@ -40,11 +42,19 @@ interface Log {
     redeems: string[];
     setUsers: Array<number | null>;
     inits: number;
+    /** 公开分享被真正读了几次（限速在锁定期间必须让它保持 0） */
+    publicShareReads: Array<{ kind: "note" | "group"; token: string; password: string | null }>;
     /**
      * 真实发生过的 configs 写入。限频是「有没有真的计上数」的唯一凭据 ——
      * 只看 HTTP 状态码看不出来（计不计数接口都照常返回），必须盯写库。
      */
     configWrites: Array<{ key: string; count: number }>;
+    /**
+     * 原始写入内容（key → 整份 JSON）。
+     * 分享口令那把锁按「IP + token」分桶，桶名不是固定的 BUCKET，
+     * configWrites 里那个 count 读的是固定桶、对它没意义 —— 要原始串才能核对。
+     */
+    configRaw: Array<{ key: string; raw: string }>;
 }
 
 function emptyLog(): Log {
@@ -57,8 +67,17 @@ function emptyLog(): Log {
         redeems: [],
         setUsers: [],
         inits: 0,
+        publicShareReads: [],
         configWrites: [],
+        configRaw: [],
     };
+}
+
+/** 取某个 guard key 最后一次写入里、指定桶的 count */
+function lastCountOf(log: Log, key: string, bucket: string): number | null {
+    const hits = log.configRaw.filter(w => w.key === key);
+    if (hits.length === 0) return null;
+    return countOfBucket(hits[hits.length - 1].raw, bucket);
 }
 
 interface Options {
@@ -74,9 +93,30 @@ interface Options {
     mustChange?: boolean;
     /**
      * 预置的限速桶内容。给 `{ until: Date.now() + 60_000 }` 表示「这个来源正在锁定期」。
-     * 键是 guard key，值是该来源桶的状态。
+     * 键是 guard key，值是该来源桶的状态（桶名固定是 BUCKET）。
      */
     guards?: Record<string, { count?: number; until?: number }>;
+    /**
+     * 多桶预置：guard key → 桶名 → 状态。
+     * 分享口令那把锁的桶名是「IP + token」，不是固定的 BUCKET，所以需要这一档。
+     */
+    guardBuckets?: Record<string, Record<string, { count?: number; until?: number }>>;
+    /** api.getPublicNote 的返回 */
+    publicNote?: Record<string, unknown>;
+    /** api.getPublicGroupShare 的返回 */
+    publicGroupShare?: Record<string, unknown>;
+}
+
+/** 从 guard store 的 JSON 里取出**指定桶**的 count */
+function countOfBucket(raw: string, bucket: string): number {
+    try {
+        const parsed = JSON.parse(raw) as {
+            buckets?: Record<string, { count?: number }>;
+        };
+        return parsed.buckets?.[bucket]?.count ?? 0;
+    } catch {
+        return 0;
+    }
 }
 
 /** 从 guard store 的 JSON 里取出本来源桶的 count（写没写进去就看它） */
@@ -93,6 +133,14 @@ function bucketCount(raw: string): number {
 
 function makeApi(log: Log, o: Options, bucket: string): NavigationAPI {
     const store = new Map<string, string>();
+    // 多桶预置（分享口令那把锁按「IP + token」分桶，桶名不固定）
+    for (const [key, buckets] of Object.entries(o.guardBuckets ?? {})) {
+        const entries: Record<string, unknown> = {};
+        for (const [name, g] of Object.entries(buckets)) {
+            entries[name] = { count: g.count ?? 0, until: g.until ?? 0, seen: Date.now() };
+        }
+        store.set(key, JSON.stringify({ version: 2, buckets: entries }));
+    }
     for (const [key, g] of Object.entries(o.guards ?? {})) {
         store.set(
             key,
@@ -110,13 +158,23 @@ function makeApi(log: Log, o: Options, bucket: string): NavigationAPI {
         setConfig: async (key: string, value: string) => {
             store.set(key, value);
             log.configWrites.push({ key, count: bucketCount(value) });
+            log.configRaw.push({ key, raw: value });
             return true;
         },
         compareAndSetConfig: async (key: string, expected: string | null, next: string) => {
             if ((store.get(key) ?? null) !== expected) return false;
             store.set(key, next);
             log.configWrites.push({ key, count: bucketCount(next) });
+            log.configRaw.push({ key, raw: next });
             return true;
+        },
+        getPublicNote: async (token: string, password?: string | null) => {
+            log.publicShareReads.push({ kind: "note", token, password: password ?? null });
+            return o.publicNote ?? { status: "need-password" };
+        },
+        getPublicGroupShare: async (token: string, password?: string | null) => {
+            log.publicShareReads.push({ kind: "group", token, password: password ?? null });
+            return o.publicGroupShare ?? { status: "need-password" };
         },
         login: async (data: { username?: string; remember?: boolean }) => {
             log.logins.push(data);
@@ -163,10 +221,32 @@ function makeApi(log: Log, o: Options, bucket: string): NavigationAPI {
 
 const BUCKET = "203.0.113.1";
 
-function makeCtx(api: NavigationAPI, request: Request, path: string, method: string): RouteCtx {
+/** 分享分支会碰 env.DB（查 note_share 的 password 用来签附件会话 Cookie） */
+function fakeEnv(): Record<string, unknown> {
+    const stmt = {
+        bind: () => stmt,
+        first: async () => ({ password: null }),
+        all: async () => ({ results: [] }),
+        run: async () => ({ success: true }),
+    };
+    return {
+        DB: {
+            prepare: () => stmt,
+            batch: async () => [],
+        },
+    };
+}
+
+function makeCtx(
+    api: NavigationAPI,
+    request: Request,
+    path: string,
+    method: string,
+    env: Record<string, unknown> = {}
+): RouteCtx {
     return {
         request,
-        env: {},
+        env,
         url: new URL(request.url),
         path,
         method,
@@ -184,7 +264,8 @@ async function call(
     path: string,
     method: string,
     body?: unknown,
-    extraHeaders?: Record<string, string>
+    extraHeaders?: Record<string, string>,
+    env: Record<string, unknown> = fakeEnv()
 ): Promise<{ res: Response | null; log: Log }> {
     const log = emptyLog();
     const api = makeApi(log, o, BUCKET);
@@ -197,7 +278,7 @@ async function call(
         },
         body: body === undefined ? undefined : JSON.stringify(body),
     });
-    const res = await handlePublicRoutes(makeCtx(api, request, path, method));
+    const res = await handlePublicRoutes(makeCtx(api, request, path, method, env));
     return { res, log };
 }
 
@@ -586,3 +667,133 @@ test("本模块认领的路径但方法不对：不认领（交给鉴权后的�
     const { res } = await call({}, "login", "GET");
     assert.equal(res, null);
 });
+
+// ==================== 分享口令限速（第七把锁的**路由接线**） ====================
+//
+// 这里测的不是 guard 本身（那在 shareGuard.test.ts 里），而是「public.ts 真的把它接上了」。
+// 分享口令是全站唯一还能被反复试的密码入口，而校验是 PBKDF2（10 万次迭代）——
+// 没限速时一条不需要任何凭据的公开端点就能被当成 CPU 放大器。
+
+const SHARE_TOKEN = "a".repeat(64);
+const SHARE_BUCKET = shareBucket(
+    new Request(`${HOST}/api/x`, { headers: { "CF-Connecting-IP": IP } }),
+    SHARE_TOKEN
+);
+
+test("分组分享：不带口令的 GET 还是 200 + need-password（公开页靠它弹框），且**不计失败**", async () => {
+    const { res, log } = await call({}, `group-shares/${SHARE_TOKEN}`, "GET");
+    assert.equal(res?.status, 200, "这一路的契约一直是 200 + status 字段，别改成 401");
+    assert.equal((await json(res!)).status, "need-password");
+    assert.deepEqual(
+        log.configWrites.filter(w => w.key === SHARE_GUARD_KEY),
+        [],
+        "访客只是打开页面（没带口令），不该被当成一次猜测去计数"
+    );
+});
+
+test("分组分享：带错口令只计一次，仍回 200 + need-password（未到阈值不锁）", async () => {
+    const { res, log } = await call({}, `group-shares/${SHARE_TOKEN}`, "POST", { password: "bad" });
+    assert.equal(res?.status, 200);
+    assert.equal((await json(res!)).status, "need-password");
+    const writes = log.configWrites.filter(w => w.key === SHARE_GUARD_KEY);
+    assert.equal(writes.length, 1, "带了口令且错了，必须计一次");
+    assert.equal(
+        lastCountOf(log, SHARE_GUARD_KEY, SHARE_BUCKET),
+        1,
+        "这个桶的计数要真的 +1（不是写了个空 store）"
+    );
+});
+
+test("分组分享：第 6 次错口令 → 429 + Retry-After", async () => {
+    const { res } = await call(
+        {
+            guardBuckets: {
+                [SHARE_GUARD_KEY]: { [SHARE_BUCKET]: { count: 5 } },
+            },
+        },
+        `group-shares/${SHARE_TOKEN}`,
+        "POST",
+        { password: "bad" }
+    );
+    assert.equal(res?.status, 429, "超过阈值必须锁");
+    assert.ok(Number(res?.headers.get("Retry-After")) > 0, "要告诉还要等多久");
+});
+
+test("分组分享：锁定期内直接 429，**连 PBKDF2 都不跑**（api 一次都没被调用）", async () => {
+    const { res, log } = await call(
+        {
+            guardBuckets: {
+                [SHARE_GUARD_KEY]: { [SHARE_BUCKET]: { count: 9, until: Date.now() + 60_000 } },
+            },
+        },
+        `group-shares/${SHARE_TOKEN}`,
+        "POST",
+        { password: "bad" }
+    );
+    assert.equal(res?.status, 429);
+    assert.deepEqual(
+        log.publicShareReads,
+        [],
+        "锁定期间不该再去跑一次口令校验 —— 那正是这条限速要省的 CPU"
+    );
+});
+
+test("笔记分享：带错口令 → 401 + needPassword，并计一次", async () => {
+    const { res, log } = await call({}, `note-shares/${SHARE_TOKEN}`, "POST", { password: "bad" });
+    assert.equal(res?.status, 401);
+    const body = await errorBody(res!);
+    assert.equal(body.code, "unauthenticated");
+    assert.equal(log.configWrites.filter(w => w.key === SHARE_GUARD_KEY).length, 1);
+});
+
+test("笔记分享：锁定期内 429，且不调 api.getPublicNote", async () => {
+    const { res, log } = await call(
+        {
+            guardBuckets: {
+                [SHARE_GUARD_KEY]: { [SHARE_BUCKET]: { count: 9, until: Date.now() + 60_000 } },
+            },
+        },
+        `note-shares/${SHARE_TOKEN}`,
+        "POST",
+        { password: "bad" }
+    );
+    assert.equal(res?.status, 429);
+    assert.deepEqual(log.publicShareReads, [], "锁定期内不该跑哈希");
+});
+
+test("笔记分享：口令对就**清零**（之前的手滑不该一直累积）", async () => {
+    const { log } = await call(
+        {
+            publicNote: { status: "ok", note: { title: "t", content: "c" }, views: 1 },
+            guardBuckets: {
+                [SHARE_GUARD_KEY]: { [SHARE_BUCKET]: { count: 3 } },
+            },
+        },
+        `note-shares/${SHARE_TOKEN}`,
+        "POST",
+        { password: "good" }
+    );
+    const writes = log.configWrites.filter(w => w.key === SHARE_GUARD_KEY);
+    assert.ok(writes.length > 0, "口令正确要写一次清零");
+    assert.equal(
+        lastCountOf(log, SHARE_GUARD_KEY, SHARE_BUCKET),
+        0,
+        "成功之后这个桶的计数必须归零"
+    );
+});
+
+test("笔记分享：带口令但分享根本不存在（not-found）时不计数（不是猜错，是链接失效）", async () => {
+    const { res, log } = await call(
+        { publicNote: { status: "not-found" } },
+        `note-shares/${SHARE_TOKEN}`,
+        "POST",
+        { password: "whatever" }
+    );
+    assert.equal(res?.status, 404);
+    assert.deepEqual(
+        log.configWrites.filter(w => w.key === SHARE_GUARD_KEY),
+        [],
+        "失效链接不该消耗访客的尝试次数"
+    );
+});
+
