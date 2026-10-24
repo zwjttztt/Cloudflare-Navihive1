@@ -1,6 +1,6 @@
 {
   "counts": {
-    "buttons": 41,
+    "buttons": 45,
     "groupPanels": 2,
     "cards": 3,
     "railDots": 0
@@ -301,9 +301,9 @@
       {
         "rect": [
           127,
-          128,
+          49,
           600,
-          643
+          802
         ],
         "style": {
           "color": "rgba(0, 0, 0, 0.87)",

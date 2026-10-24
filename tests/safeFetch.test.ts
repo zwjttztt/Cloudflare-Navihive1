@@ -9,7 +9,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { safeFetch } from "../worker/safeFetch";
+import { safeFetch, setEgressResolver } from "../worker/safeFetch";
 
 /** 一个 mock fetch：按 (URL → Response) 映射返回 */
 function makeFetcher(map: Map<string, Response | { status: number; location?: string; body?: string }>) {
@@ -271,4 +271,48 @@ test("safeFetch 重定向缺少 Location 返回 redirect 错误", async () => {
         assert.equal(r.kind, "redirect");
         assert.match(r.message, /Location/);
     }
+});
+// ==================== 出站解析复核（自托管 SSRF 闭环，2026-10-24） ====================
+
+test("setEgressResolver：注册后解析到内网 IP 的域名被拒（hostname 黑名单挡不住的 rebinding）", async () => {
+    // 模拟 server/entry.ts 注册的 resolver：evil.com 解析到 127.0.0.1
+    setEgressResolver(async hostname => hostname !== "evil.com");
+    try {
+        const { fetch: f, calls } = makeFetcher(new Map([["https://evil.com/", { status: 200, body: "x" }]]));
+        const r = await withFetch({ fetch: f }, () => safeFetch(new URL("https://evil.com/")));
+        assert.equal(r.ok, false, "解析复核说不行就不该发出请求");
+        if (!r.ok) {
+            assert.equal(r.kind, "blocked");
+            assert.match(r.message, /内网/);
+        }
+        assert.equal(calls.length, 0, "被拒的请求不该到达 fetch");
+    } finally {
+        setEgressResolver(null);
+    }
+});
+
+test("setEgressResolver：放行的域名照常发出；重定向的每一跳也都过复核", async () => {
+    const seen: string[] = [];
+    setEgressResolver(async hostname => {
+        seen.push(hostname);
+        return hostname !== "internal.example.com";
+    });
+    try {
+        const map = new Map<string, { status: number; location?: string; body?: string }>([
+            ["https://ok.example.com/1", { status: 302, location: "https://internal.example.com/2" }],
+        ]);
+        const { fetch: f } = makeFetcher(map);
+        const r = await withFetch({ fetch: f }, () => safeFetch(new URL("https://ok.example.com/1")));
+        assert.equal(r.ok, false, "第二跳解析复核不认，整条链断");
+        assert.deepEqual(seen, ["ok.example.com", "internal.example.com"], "每一跳都要复核");
+    } finally {
+        setEgressResolver(null);
+    }
+});
+
+test("setEgressResolver：注销后行为回到「只有 hostname 黑名单」", async () => {
+    setEgressResolver(null);
+    const { fetch: f } = makeFetcher(new Map([["https://example.com/", { status: 200, body: "ok" }]]));
+    const r = await withFetch({ fetch: f }, () => safeFetch(new URL("https://example.com/")));
+    assert.equal(r.ok, true, "Cloudflare 侧与测试环境不注册，行为零变化");
 });

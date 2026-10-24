@@ -65,6 +65,32 @@ function stripCredentials(
     return out;
 }
 
+/**
+ * 出站前的「解析 IP 复核」钩子（2026-10-24 全站复查行动项，自托管 SSRF 闭环）。
+ *
+ * 背景：isBlockedHost 判的是 **hostname**，挡不住「首次解析是公网、实际连接时被
+ * DNS rebinding 换回内网 IP」。Cloudflare Workers 有平台层 egress 拦截兜底，
+ * 自托管 Node 没有 —— 那一层只剩 hostname 黑名单。
+ *
+ * 为什么是注入而不是 safeFetch 自己 import node:dns：
+ *   - worker 构建/运行时没有 node:dns，动态 import 在 workerd 下会 reject；
+ *   - 单测跑在 Node 下，内置解析会让测试真去查 DNS、变慢还依赖网络。
+ * 由 server/entry.ts 启动时注册 Node 版实现（dns.lookup + 黑名单复核 + 60s 缓存），
+ * Cloudflare 侧与测试环境不注册，行为零变化。
+ *
+ * ⚠️ 这是缓解不是根治：lookup 与 fetch 内部再次解析之间仍有窗口；要根治得自己
+ * 建连接（http.request + 自定义 lookup 函数），对图标代理这类场景成本不成比例。
+ * 语义：返回 false = 拒绝这次出站（blocked）。
+ */
+export type EgressResolver = (hostname: string) => Promise<boolean>;
+
+let egressResolver: EgressResolver | null = null;
+
+/** 注册 / 注销出站解析复核（传 null 注销）。只有自托管 server 会注册。 */
+export function setEgressResolver(fn: EgressResolver | null): void {
+    egressResolver = fn;
+}
+
 export interface SafeFetchOptions {
     /** 自定义最大跳数（默认 4） */
     maxRedirects?: number;
@@ -170,6 +196,16 @@ export async function safeFetch(
             };
         }
         if (isBlockedHost(current.hostname)) {
+            return {
+                ok: false,
+                kind: "blocked",
+                status: 400,
+                message: "不允许访问内网地址",
+            };
+        }
+        // 自托管专属的第二道：把 hostname 解析出来逐 IP 复核（见 setEgressResolver 注释）。
+        // Cloudflare 侧平台层已拦，不注册就是零成本。
+        if (egressResolver && !(await egressResolver(current.hostname))) {
             return {
                 ok: false,
                 kind: "blocked",

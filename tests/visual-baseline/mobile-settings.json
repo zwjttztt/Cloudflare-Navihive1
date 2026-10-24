@@ -1,6 +1,6 @@
 {
   "counts": {
-    "buttons": 41,
+    "buttons": 45,
     "groupPanels": 2,
     "cards": 3,
     "railDots": 0
@@ -300,10 +300,10 @@
     ".nav-settings-dialog": [
       {
         "rect": [
-          32,
-          32,
-          326,
-          780
+          0,
+          68,
+          390,
+          776
         ],
         "style": {
           "color": "rgba(0, 0, 0, 0.87)",

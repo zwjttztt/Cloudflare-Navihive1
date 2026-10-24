@@ -269,9 +269,16 @@ async function main() {
                 }
 
                 const file = path.join(BASELINE_DIR, `${caseName}.json`);
-                if (UPDATE || !fs.existsSync(file)) {
+                if (UPDATE) {
                     fs.writeFileSync(file, JSON.stringify(fingerprint, null, 2) + "\n");
-                    results.push({ caseName, status: UPDATE ? "录制基线" : "新建基线" });
+                    results.push({ caseName, status: "录制基线" });
+                    continue;
+                }
+                if (!fs.existsSync(file)) {
+                    // 不静默录基线（2026-10-24）：老行为在这里 writeFileSync 后当
+                    // 「通过」，等于新用例自动获得一张免检金牌。现在记为无基线，
+                    // 由汇总段判失败，引导显式 --update。
+                    results.push({ caseName, status: "无基线" });
                     continue;
                 }
 
@@ -316,6 +323,20 @@ async function main() {
         done(1);
         return;
     }
+
+    // 没有基线的用例**算失败**（2026-10-24 全站复查行动项）。
+    // 老行为：!existsSync 时静默录一份当通过 —— 新场景/新组件第一次跑就绿，
+    // 之后再改版比对自己刚录的基线，回归检测对它静默失效。
+    const missing = results.filter(r => r.status === "无基线");
+    if (missing.length > 0) {
+        console.error(
+            `\n${missing.length} 个用例没有基线（${missing.map(r => r.caseName).join("、")}）。\n` +
+                `确认当前样子就是想要的，跑：\n  npm run audit:visual -- --update`
+        );
+        done(1);
+        return;
+    }
+
     console.log(`\n全部 ${results.length} 个用例通过。`);
     done(0);
 }

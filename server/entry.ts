@@ -17,6 +17,7 @@ import { Readable } from "node:stream";
 import { mkdir, readFile } from "node:fs/promises";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { timingSafeEqual } from "node:crypto";
+import { lookup } from "node:dns/promises";
 import path from "node:path";
 import handler from "../worker/index";
 import { runScheduledTasks } from "../worker/cron";
@@ -30,6 +31,8 @@ import {
 import { makeFileKv } from "./file-kv";
 import { parseHeaderRules, serveStatic, type HeaderRule } from "./static";
 import { isPublicHost, normalizeRemoteAddress } from "./net";
+import { setEgressResolver } from "../worker/safeFetch";
+import { isBlockedHost } from "../worker/util";
 import type { Env } from "../worker/types";
 
 // ============ CONFIG ============
@@ -54,6 +57,41 @@ const CRON_EXPR = "0 * * * *";
  * 把登录爆破限速绕过去（worker/loginGuard.ts 的 clientBucket 注释有完整说明）。
  */
 const TRUST_XFF = env("NAVIHIVE_TRUST_XFF", "1");
+
+// ============ 出站解析复核（自托管 SSRF 闭环，2026-10-24） ============
+//
+// Cloudflare Workers 有平台层 egress 拦截（RFC1918 / loopback / link-local 一律
+// 出不去），Node 没有。safeFetch 的 hostname 黑名单判不了 DNS rebinding
+// （首次解析是公网、连接时换回内网），所以这里把每个出站 hostname 真解析一遍，
+// 逐 IP 过同一套黑名单。死链巡检 / 图标代理 / AI / WebDAV 四条出站路都走
+// safeFetch，注册一次全覆盖。
+//
+// 细节：
+//   · 解析失败（NXDOMAIN 等）→ 放行，让 fetch 自己去失败，别在这里制造第二种错误；
+//   · 60s 缓存：死链巡检一次几十个 URL，同一 host 会重复解析；
+//   · 上限 500 条：防长尾域名把 Map 吹大，超了整体清空（缓存而已，没有正确性依赖）。
+// ⚠️ 仍是缓解不是根治（lookup 与 fetch 内部再解析之间有窗口）—— safeFetch.ts
+//    的 setEgressResolver 注释里有完整说明。
+const RESOLVE_TTL_MS = 60_000;
+const RESOLVE_CACHE_MAX = 500;
+const resolvedIps = new Map<string, { ips: string[]; at: number }>();
+
+setEgressResolver(async (hostname: string): Promise<boolean> => {
+    const now = Date.now();
+    const hit = resolvedIps.get(hostname);
+    if (!hit || now - hit.at > RESOLVE_TTL_MS) {
+        try {
+            const rows = await lookup(hostname, { all: true });
+            resolvedIps.set(hostname, { ips: rows.map(r => r.address), at: now });
+            if (resolvedIps.size > RESOLVE_CACHE_MAX) resolvedIps.clear();
+        } catch {
+            return true;
+        }
+    }
+    const ips = resolvedIps.get(hostname)?.ips ?? [];
+    // 一个都不过才算数：多 A 记录时只要有个内网 IP 就该拒
+    return ips.every(ip => !isBlockedHost(ip));
+});
 
 // 环境变量白名单透传。只放 worker/src 真正会读的键，避免把 PATH 之类无关变量
 // 泄进 env 对象（worker 侧只认这些名字，多给了也不会用，但白名单更好查）。
