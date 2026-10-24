@@ -6,6 +6,49 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。---
 
+## 2026-10-24 · 质量评估 P1 行动项：弹窗材质唯一真源 · 分享口令限速 · 账号与回收站写限速 · 依赖告警清零
+
+**要点**
+- **弹窗材质只剩一个真源**。`index.css` 里那条「弹窗材质基线」`.MuiDialog-paper { … }`
+  **从来没生效过**——它是纯单类选择器（0,1,0），而 emotion 的运行时 `<style>` 注入排在
+  `<link>` 之后，同特异性下后注入者赢。浏览器实测：把它改成 `99px`，computed
+  `border-radius` 纹丝不动（仍是 theme 给的 `22px`）。现在删掉这条死规则，
+  并在 `useThemeController` 的 `MuiDialog.styleOverrides.paper` 里把底色从硬编码
+  `rgba(255,255,255,0.94)` / `rgba(23,27,38,0.94)` 换成 `var(--surface-modal)`
+  （取值与旧硬编码逐位相等，**零像素回归**）。从此改 `--surface-modal` 一处，
+  32 个弹窗一起变——CDP 实测三个不同弹窗（全站设置 / 新增网站 / 卡片设置）
+  `rgba(255,255,255,0.94) → rgb(255,0,0) → 还原`，全部跟着 token 走。
+- **分享口令不再能被无限次猜**。分享口令是全站唯一还能反复试的密码入口
+  （登录 / 注册 / 找回 / 初始化四条公开路径都有限速），而它的校验是 PBKDF2-SHA256
+  （Workers 侧 10 万次迭代）——不限速既能让弱口令被爆破，也是一条**免费的 CPU 放大器**。
+  新增第七把锁：按「来源 IP + 分享 token」分桶，同一 IP 对同一分享猜错 5 次后锁
+  5 分钟起（指数退避，封顶 1 小时）；锁定期内**连哈希都不跑**，
+  口令正确则清零。公开页第一次打开（GET，压根没带口令）不算失败。
+- **账号域与回收站域补上写限速**。`account.ts` 的 9 条写路由（退出 / 邀请码 /
+  沉睡扫描 / 吊销设备 / 账号状态 / 注销 / 改凭据 / 改恢复密钥）与 `ops.ts` 的 5 条
+  回收站写路由（还原 / 永久删除 / 两个批量版 / 清空）此前**一处闸门都没有**——
+  而永久删除不可逆、清空一次能抹掉几千行，改账号凭据又是攻击者最省事的持久化手段。
+  现在与 `data.ts` 同构接入 `enforceWriteGuard`。
+- **依赖告警清零并上锁**。`react-hooks/exhaustive-deps` 从 23 条降到 **0**，
+  其中两条是真 bug：①`useNotes` 的 `runUpdate` 在冲突覆盖路径上捕获了首渲染的
+  `updateNote`（现在 `ensureFullNote` 进依赖、`updateNote` 用 ref 打破循环引用）；
+  ②`NotesOverlay` 运行时探测 `api.updateTag`，但没把它列为依赖——后端补上这个方法后
+  `useMemo` 不会重算，「设置颜色」入口永远不出现。其余 21 条是「缺 `setXxx`」与
+  「unnecessary `api`」的假阳性，已逐条带理由 disable。
+  新增 `script/lint-warnings-budget.mjs` 把预算钉死为 0，`npm run lint` 已接上。
+
+**工程**
+- 新增三条静态守卫，防止同类问题复发：
+  `tests/muiSelectorSpecificity.test.ts`（index.css / App.css 不得出现不带 `!important`
+  的纯单类 MUI 选择器；自带「@media 里的规则必须被扫到」的反向自检，避免解析器假绿）、
+  `tests/writeGuardedRoutes.test.ts`（含写方法分支的路由文件必须有闸门；
+  `account` / `ops` 还要「写分支数 == `writeGate()` 调用数」；`writeBucket` 必须传 `trustXFF`）、
+  `tests/shareGuard.test.ts`（桶粒度 / 阈值 / 锁定期不延长 / 存储故障放行，14 条）。
+- `tests/hardcodedColorGuard.test.ts` 里 `useThemeController` 的豁免 cap 从 6 降到 4
+  （两处 rgba 已改成 token），不然那条「cap 必须与实际命中数一致」的用例会红。
+
+---
+
 ## 2026-10-24 · 分享文案统一 · 开机掉登录与登录设备去重 · 备份范围写清 · AI 设置进备份 · 请求体守卫收口 · 自托管 SSRF 闭环 · 视觉回归收紧 · mock 行为对齐 · 设置弹窗拆分 · 镜像触发路径修复 · 复查行动项清账
 
 **要点**

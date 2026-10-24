@@ -11,6 +11,8 @@ import { reportError } from "../errorReport";
 import { proxyIcon, proxyIcons } from "../icon";
 import {
     bumpGuard,
+    bumpShareGuardFailure,
+    clearShareGuard,
     clientBucket,
     computeLockAfterFailure,
     INIT_BASE_LOCK_MS,
@@ -33,6 +35,8 @@ import {
     readLoginGuard,
     readRecoverGuard,
     readRegisterGuard,
+    shareBucket,
+    shareGuardLocked,
     writeLoginGuard,
     writeRecoverGuard,
 } from "../loginGuard";
@@ -121,6 +125,13 @@ export async function handlePublicRoutes(ctx: RouteCtx): Promise<Response | null
     // POST 带口令（受口令的回 need-password 让公开页弹框）。同一套公开页交互。
     if (path.startsWith("group-shares/") && (method === "GET" || method === "POST")) {
         const token = path.slice("group-shares/".length);
+        // 分享口令是全站唯一还能被反复试的密码入口（登录/注册/找回都有限速），
+        // 且校验是 PBKDF2（Workers 侧 10 万次迭代）—— 不限速就是一条免费的
+        // CPU 放大器。分桶按「IP + token」，锁定期内连哈希都不跑。
+        const sBucket = shareBucket(request, token, trustXFF);
+        const locked = await shareGuardLocked(api, sBucket);
+        if (locked) return locked;
+
         let password: string | null = null;
         if (method === "POST") {
             const body = (await readJsonBody(request)) as { password?: unknown };
@@ -130,6 +141,20 @@ export async function handlePublicRoutes(ctx: RouteCtx): Promise<Response | null
         const viewedToday = readCookie(request, shareViewCookieName("group", token)) === utcDayStamp();
         const result = await api.getPublicGroupShare(token, password, !viewedToday);
         const headers = new Headers({ "Cache-Control": "no-store", "X-Robots-Tag": "noindex, nofollow" });
+        // 口令错：只有「**带了**口令却不对」才算一次猜测失败。
+        // 公开页第一次渲染是 GET（压根没带口令），不该把访客当攻击者计数。
+        //
+        // ⚠️ 返回形状**不能动**：分组分享这一路一直是 200 + `{status:"need-password"}`，
+        // 前端 PublicGroupPage 按 `status` 字段分支；改成 401 errorResponse 会让
+        // 公开分组页直接显示「加载失败」。所以这里只加计数，不改响应。
+        if (result.status === "need-password" && password) {
+            const tooMany = await bumpShareGuardFailure(api, sBucket);
+            if (tooMany) return tooMany;
+        }
+        if (result.status === "ok" && password) {
+            // 口令对了就清零，别让之前的手滑一直累积
+            await clearShareGuard(api, sBucket);
+        }
         if (result.status === "ok" && !viewedToday) {
             // 当日戳活到 UTC 换天，过期自然重新计一次
             headers.append("Set-Cookie", `${shareViewCookieName("group", token)}=${utcDayStamp()}; HttpOnly; SameSite=Strict; Path=/api/; Max-Age=${secondsUntilUtcMidnight()}${secureCookie ? "; Secure" : ""}`);
@@ -139,6 +164,11 @@ export async function handlePublicRoutes(ctx: RouteCtx): Promise<Response | null
 
     if (path.startsWith("note-shares/") && (method === "GET" || method === "POST")) {
         const token = path.slice("note-shares/".length);
+        // 与分组分享同一套口令限速（见上面 group-shares 分支的说明）。
+        const sBucket = shareBucket(request, token, trustXFF);
+        const locked = await shareGuardLocked(api, sBucket);
+        if (locked) return locked;
+
         // POST 带访问口令（受口令保护的分享）；GET 不带（无口令分享直接返回，
         // 受口令的返回 need-password 让公开页弹出口令框）。两种都走 getPublicNote，
         // 它在口令不匹配时统一回 need-password。
@@ -157,6 +187,14 @@ export async function handlePublicRoutes(ctx: RouteCtx): Promise<Response | null
             });
         }
         if (result.status === "need-password") {
+            // 口令猜错计数：只有「带了口令却不对」才算一次猜测，
+            // 公开页第一次 GET（没带口令）不该把访客当攻击者。
+            // 触发锁定时这里的 429 会盖过下面的 401 —— 公开页拿到 429
+            // 会显示「口令尝试次数过多…」，这是对的语义。
+            if (password) {
+                const tooMany = await bumpShareGuardFailure(api, sBucket);
+                if (tooMany) return tooMany;
+            }
             // ⚠️ needPassword 留在**顶层**：公开笔记页（PublicNotePage）就是按
             // `data.error` 是不是字符串来取提示语的，迁移后它读的是新形状，
             // 所以那个页面也一并改了（同时认新旧两种形状，老服务端不受影响）。
@@ -167,6 +205,10 @@ export async function handlePublicRoutes(ctx: RouteCtx): Promise<Response | null
                     extra: { needPassword: true },
                 }
             );
+        }
+        if (password) {
+            // 口令对了：清零，别让之前的手滑一直累积
+            await clearShareGuard(api, sBucket);
         }
         const headers = new Headers({ "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "X-Robots-Tag": "noindex, nofollow" });
         if (!viewedToday) {

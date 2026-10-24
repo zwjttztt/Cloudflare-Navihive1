@@ -6,6 +6,7 @@ import {} from "../httpUtils";
 import type { RouteCtx } from "./types";
 import { ApiError, errorResponse } from "../lib/apiError";
 import { readJsonBody } from "./jsonBody";
+import { enforceWriteGuard, writeBucket } from "../loginGuard";
 
 export async function handleOpsRoutes(ctx: RouteCtx): Promise<Response | null> {
     const {
@@ -15,8 +16,22 @@ export async function handleOpsRoutes(ctx: RouteCtx): Promise<Response | null> {
         method,
         api,
         ip,
+        // ⚠️ 必须解构出来传给 writeBucket：第三参默认 false，
+        // 不传的话自托管（反代后面）所有用户共用一个桶 → 限速变成随机误伤。
+        trustXFF,
         
     } = ctx;
+
+    /**
+     * 写操作限速闸门：回收站那五条写路由（还原 / 永久删除 / 两个批量版 / 清空）。
+     *
+     * 这些是全站最危险的写操作 —— 永久删除不可逆、清空一次能抹掉几千行，
+     * 而「批量」版一条请求就能发几百个 id。裸奔时一次令牌泄露就能把整站清干净。
+     * 与 data.ts 同构：放行返回 null，撞上限速返回填好 Retry-After 的 429。
+     * 读路由（audit / stats / client-errors / recycle 列表）不过闸。
+     */
+    const writeGate = (): Promise<Response | null> =>
+        enforceWriteGuard(api, writeBucket(request, api.getCurrentUserId(), trustXFF));
 
     // 审计日志只读视图（仅 owner）。谁在何时从哪 IP 做了什么，事后能溯源。
     if (path === "audit" && method === "GET") {
@@ -73,6 +88,8 @@ export async function handleOpsRoutes(ctx: RouteCtx): Promise<Response | null> {
     }
     // 回收站：还原一条
     if (path === "recycle/restore" && method === "POST") {
+        const limited = await writeGate();
+        if (limited) return limited;
         const body = (await readJsonBody(request)) as { id?: number };
         const id = typeof body.id === "number" ? body.id : NaN;
         if (isNaN(id)) {
@@ -84,6 +101,8 @@ export async function handleOpsRoutes(ctx: RouteCtx): Promise<Response | null> {
     }
     // 回收站：永久删除一条
     if (path === "recycle/purge" && method === "POST") {
+        const limited = await writeGate();
+        if (limited) return limited;
         const body = (await readJsonBody(request)) as { id?: number };
         const id = typeof body.id === "number" ? body.id : NaN;
         if (isNaN(id)) {
@@ -96,6 +115,8 @@ export async function handleOpsRoutes(ctx: RouteCtx): Promise<Response | null> {
     // 回收站：批量还原（撤销多选删除时一次请求搞定，并带回还原出来的卡片，
     // 前端直接插回界面，不必再 bootstrap 全量重拉）
     if (path === "recycle/restore-batch" && method === "POST") {
+        const limited = await writeGate();
+        if (limited) return limited;
         const body = (await readJsonBody(request)) as { ids?: unknown };
         const ids = Array.isArray(body.ids)
             ? body.ids.filter((v): v is number => typeof v === "number" && Number.isInteger(v))
@@ -109,6 +130,8 @@ export async function handleOpsRoutes(ctx: RouteCtx): Promise<Response | null> {
     }
     // 回收站：批量永久删除（撤销后又删一次）
     if (path === "recycle/purge-batch" && method === "POST") {
+        const limited = await writeGate();
+        if (limited) return limited;
         const body = (await readJsonBody(request)) as { ids?: unknown };
         const ids = Array.isArray(body.ids)
             ? body.ids.filter((v): v is number => typeof v === "number" && Number.isInteger(v))
@@ -122,6 +145,8 @@ export async function handleOpsRoutes(ctx: RouteCtx): Promise<Response | null> {
     }
     // 回收站：清空（?kind=nav|note 同上：清空也分家，导航站清空不动笔记）
     if (path === "recycle" && method === "DELETE") {
+        const limited = await writeGate();
+        if (limited) return limited;
         const kind = url.searchParams.get("kind");
         const scope = kind === "nav" || kind === "note" ? kind : undefined;
         const ok = await api.emptyRecycleBin(scope);

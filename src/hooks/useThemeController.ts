@@ -139,19 +139,26 @@ export function useThemeController(accent: string) {
                     MuiDialog: {
                         defaultProps: { disableScrollLock: true },
                         styleOverrides: {
-                            paper: ({ theme }) => ({
+                            paper: {
+                                // token 名与取值都和 components/dialogShell.ts 的
+                                // dialogPaperTokens 保持一致（同一套玻璃面板语义 token）。
+                                // 这里是站内**全部 32 个弹窗**的材质产出方：单个弹窗用 sx
+                                // 覆盖的只是叠加，底座永远是这一份。
                                 borderRadius: "var(--card-radius)",
                                 backdropFilter: "blur(var(--glass-blur)) saturate(1.4)",
                                 WebkitBackdropFilter: "blur(var(--glass-blur)) saturate(1.4)",
                                 border: "1px solid var(--glass-panel-border)",
                                 boxShadow: "var(--glass-shadow-hover)",
-                                backgroundColor:
-                                    theme.palette.mode === "dark"
-                                        ? "rgba(23,27,38,0.94)"
-                                        : "rgba(255,255,255,0.94)",
+                                // ⚠️ 底色必须走 token，别再写回硬编码 rgba：
+                                // 之前这里是 rgba(255,255,255,0.94) / rgba(23,27,38,0.94)，
+                                // 与 --surface-modal（index.css:93 / :262）取值恰好相同，
+                                // 但改 token 改不动它 —— 于是「换肤只改一处」这个承诺
+                                // 在弹窗上是假的。改成 var() 后取值不变（零像素回归），
+                                // 且从此跟着 .dark class 走，与其它面板同一个开关。
+                                backgroundColor: "var(--surface-modal)",
                                 // 小屏别贴边
                                 "@media (max-width:600px)": { margin: 12 },
-                            }),
+                            },
                         },
                     },
                     // 移动端触控尺寸：以前写在 App.css 里用 !important 全站强压

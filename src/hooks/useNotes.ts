@@ -506,6 +506,22 @@ const SUMMARY_LIST_THRESHOLD = 200;
      */
     const writeQueue = useRef(new Map<number, Promise<void>>());
 
+    /**
+     * runUpdate 与 updateNote 之间是**互相引用**：
+     *   · updateNote 的实现是「排进写队列后再调 runUpdate」；
+     *   · runUpdate 的冲突覆盖路径又要调 updateNote（走同一套队列，不能绕开 ——
+     *     绕开就等于和排队中的那一笔并发写同一条笔记，冲突框会立刻再弹一次）。
+     *
+     * 把它俩塞进彼此的依赖数组就是循环依赖：任一身份变化都会让另一条 useCallback
+     * 重建，整条链每次渲染都变，下游 useMemo/useEffect 跟着全量重算。
+     * 所以用 ref 持有最新一版 —— 与同文件 reloadForSyncRef 同一手法。
+     *
+     * `ensureFullNote` 不需要 ref：它定义在 runUpdate 之前，直接列进依赖即可。
+     */
+    const updateNoteRef = useRef<
+        ((id: number, patch: Partial<Note>, opts?: { force?: boolean }) => Promise<boolean>) | null
+    >(null);
+
     /** 乐观更新：先把界面上改掉，失败再回滚到旧值并提示 */
     const runUpdate = useCallback(
         async (id: number, patch: Partial<Note>, opts: { force?: boolean } = {}): Promise<boolean> => {
@@ -557,7 +573,11 @@ const SUMMARY_LIST_THRESHOLD = 200;
                     setNotes(prev => prev.map(n => (n.id === id ? before : n)));
                     await onNoteConflict(
                         error.note ?? before,
-                        async () => { await updateNote(id, patch, { force: true }); }
+                        async () => {
+                            // 走 updateNote（队列）而不是直接 runUpdate：
+                            // 覆盖也要排在已经排队的那几笔后面，否则同一瞬间两条并发写。
+                            await updateNoteRef.current?.(id, patch, { force: true });
+                        }
                     );
                     return false;
                 }
@@ -568,7 +588,11 @@ const SUMMARY_LIST_THRESHOLD = 200;
             }
             return true;
         },
-        [api, onError, onNoteConflict]
+        // ensureFullNote 必须列进来：它依赖 [api, onError]，身份会变。
+        // 不列的话 runUpdate 会一直捕获首次渲染那份 —— 而它内部读的是 notesRef，
+        // 短期内看不出问题，一旦它的实现改动（比如开始读别的状态）就是过期闭包。
+        // updateNote 用 ref（见上面的说明，直接列会形成循环依赖）。
+        [api, ensureFullNote, onError, onNoteConflict]
     );
 
     /**
@@ -595,6 +619,12 @@ const SUMMARY_LIST_THRESHOLD = 200;
         },
         [runUpdate]
     );
+
+    // updateNote 每次随 runUpdate 重建时更新 ref —— runUpdate 的冲突覆盖路径
+    // 通过它调到最新这一版（见 updateNoteRef 声明的说明）。
+    useEffect(() => {
+        updateNoteRef.current = updateNote;
+    }, [updateNote]);
 
     /**
      * 置顶：走同一个 updateNote（服务端白名单里有 pinned）。

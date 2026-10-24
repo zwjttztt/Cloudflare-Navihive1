@@ -912,6 +912,7 @@ function App() {
             getConfigs: () => api.getConfigs(),
             setConfigs: (configs: Record<string, string>) => api.setConfigs(configs),
         }),
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- api 是模块级单例，列进来是为了 api 被整体替换时能重算 —— 删掉反而会掩盖替换
         [api]
     );
 
@@ -1218,6 +1219,7 @@ function App() {
                 void fetchDataRef.current({ silent: true });
             },
         }),
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- api 是模块级单例，列进来是为了 api 被整体替换时能重算 —— 删掉反而会掩盖替换
         [groups, jumpToSite, api]
     );
 
@@ -1565,6 +1567,7 @@ function App() {
                 },
             },
         }),
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- api 是模块级单例，列进来是为了 api 被整体替换时能重算 —— 删掉反而会掩盖替换
         [configs, api]
     );
 

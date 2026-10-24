@@ -630,3 +630,122 @@ export async function enforceDavGuard(
         message: "备份操作过于频繁",
     });
 }
+
+// ============ 分享口令：公开入口里唯一还能被反复试密码的地方 ============
+//
+// 登录 / 注册 / 找回 / 初始化四个公开入口都有限速，**唯独分享口令没有**：
+// `/api/note-shares/<token>` 与 `/api/group-shares/<token>` 的 POST 只要带着
+// 一个 password 字段就能无限次猜。危害有两层：
+//
+//   1) 暴力破解。分享口令通常是「发到群里的一串数字」，本身就是弱口令；
+//   2) CPU 放大。校验走的是 PBKDF2-SHA256（Workers 侧 10 万次迭代），
+//      每猜一次都是实打实的 CPU。一条**不需要任何凭据**的公开端点被当成
+//      算力放大器，比单纯破解分享内容更贵。
+//
+// 分桶粒度是 **来源 IP + 分享 token**，这是刻意的：
+//   · 只按 IP 分桶 → 一个人狂试 A 的分享，会把同一出口 IP（NAT / 公司网）
+//     下所有人在**别的**分享上的正常访问一起锁掉；
+//   · 只按 token 分桶 → 换一个分享就能从零重来，挡不住横向扫。
+//   两者都取：同一 IP 对**同一个**分享猜 5 次就锁；换分享要重新积累。
+//   正常用户不会连着试同一个分享 5 次以上，误伤面很小。
+//
+// ⚠️ 与其它五把锁的关键差异：**只有失败才计数**。
+// 别的闸门是「一次操作 = 记一次」，而这里是「一次**猜错** = 记一次」——
+// 公开页第一次渲染时的 GET（根本没带口令）不该算失败，
+// 否则一个人打开分享页看两眼就被锁了。
+// 所以这里不给 enforceGuard 那种「检查+登记」一体化接口，
+// 而是拆成「先查锁 → 失败才登记 → 成功清零」三步。
+export const SHARE_GUARD_KEY = "auth.shareGuard";
+export const SHARE_FREE_ATTEMPTS = 5;
+export const SHARE_BASE_LOCK_MS = 5 * 60_000; // 第 6 次起锁 5 分钟
+export const SHARE_MAX_LOCK_MS = 60 * 60_000; // 最多 1 小时
+export const SHARE_COUNT_RESET_MS = 15 * 60_000; // 15 分钟没动静就重新数
+
+/**
+ * 分享口令的桶：来源 IP + 分享 token 前 16 位。
+ *
+ * token 是 64 位 hex，截 16 位（64 bit）做桶名足够区分，也避免把完整 token
+ * 写进 configs 表 —— 那份记录虽然带 `auth.` 前缀不外泄，但没必要留可用的凭据。
+ */
+export function shareBucket(request: Request, token: string, trustXFF = false): string {
+    return `${clientBucket(request, trustXFF)}:s${token.slice(0, 16)}`;
+}
+
+export async function readShareGuard(
+    api: NavigationAPI,
+    bucket = "legacy"
+): Promise<LoginGuard> {
+    const store = await readGuardStore(api, SHARE_GUARD_KEY);
+    const found = store[bucket];
+    if (!found) return { count: 0, until: 0 };
+    return {
+        count: typeof found.count === "number" && found.count > 0 ? found.count : 0,
+        until: typeof found.until === "number" && found.until > 0 ? found.until : 0,
+    };
+}
+
+export async function writeShareGuard(
+    api: NavigationAPI,
+    guard: LoginGuard,
+    bucket = "legacy"
+): Promise<void> {
+    await mutateGuard(api, SHARE_GUARD_KEY, bucket, () => ({ ...guard, seen: Date.now() }));
+}
+
+/**
+ * 前置检查：还在锁定期就返回 429，**连 PBKDF2 都不跑**。
+ * 这是这条限速真正省钱的地方 —— 只在失败之后登记、却在校验之前拦住。
+ */
+export async function shareGuardLocked(
+    api: NavigationAPI,
+    bucket: string
+): Promise<Response | null> {
+    const guard = await readShareGuard(api, bucket);
+    const now = Date.now();
+    if (guard.until <= now) return null;
+    const retryAfter = Math.max(1, Math.ceil((guard.until - now) / 1000));
+    return errorResponse(
+        ApiError.rateLimited(`口令尝试次数过多，请 ${retryAfter} 秒后再试`),
+        { headers: { "Retry-After": String(retryAfter) } }
+    );
+}
+
+/**
+ * 登记一次**口令猜错**。若这次刚好触发锁定，直接返回 429（调用方 return 它）。
+ *
+ * 计数在 CAS 循环里算（bumpGuard）：外面算好再传进去，并发时后写的那份
+ * 会把前一个请求的增量盖掉，爆破就能一直续杯 —— 与登录那把锁是同一个坑。
+ */
+export async function bumpShareGuardFailure(
+    api: NavigationAPI,
+    bucket: string
+): Promise<Response | null> {
+    const bumped = await bumpGuard(api, SHARE_GUARD_KEY, bucket, prev => {
+        const now = Date.now();
+        // 已锁就不再累加计数，否则锁会越滚越长（与 enforceGuard 同一个处理）
+        if (prev.until > now) return { ...prev, seen: now };
+        const count = nextDecayedCount(prev, SHARE_COUNT_RESET_MS, now);
+        const lockMs = computeLockAfterFailure(
+            count,
+            SHARE_FREE_ATTEMPTS,
+            SHARE_BASE_LOCK_MS,
+            SHARE_MAX_LOCK_MS
+        );
+        return { count, until: lockMs > 0 ? now + lockMs : 0, seen: now };
+    });
+    // 记不上（存储不可用）→ 不锁：真正校验口令那一步自己会失败，
+    // 不该在这里把「口令错」的 401 盖成 429
+    if (!bumped) return null;
+    const now = Date.now();
+    if (bumped.until <= now) return null;
+    const retryAfter = Math.max(1, Math.ceil((bumped.until - now) / 1000));
+    return errorResponse(
+        ApiError.rateLimited(`口令尝试次数过多，请 ${retryAfter} 秒后再试`),
+        { headers: { "Retry-After": String(retryAfter) } }
+    );
+}
+
+/** 口令对了：清零，别让之前的手滑一直累积 */
+export async function clearShareGuard(api: NavigationAPI, bucket: string): Promise<void> {
+    await writeShareGuard(api, { count: 0, until: 0 }, bucket);
+}

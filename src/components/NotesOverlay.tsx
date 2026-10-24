@@ -221,6 +221,12 @@ export default function NotesOverlay({
             restoreRevision,
             getRevision,
             searchRemote,
+            // ⚠️ 上面的 onStyleTag 是「有 updateTag 才给」的（见 `typeof api.updateTag`），
+            // 所以这个能力本身也是这份 useMemo 的输入。不列的话后端补上 updateTag 后
+            // 这一份永远不重算 —— 界面里「设置颜色」入口就一直不出现，
+            // 而用户看到的是「这个方法不存在」，很难联想到是 memo 没刷新。
+            // api 是模块级单例、updateTag 是稳定的方法引用，列进来不会引起额外重渲染。
+            api.updateTag,
         ]
     );
 

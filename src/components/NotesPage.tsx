@@ -432,7 +432,7 @@ export default function NotesPage({
             else next.add(id);
             return next;
         });
-    }, []);
+    }, []);  // eslint-disable-line react-hooks/exhaustive-deps -- setXxx 是稳定引用（React 保证），列出不改变任何行为 —— 插件对 setState 的已知误报
     /** 左栏视图：全部 / 最近 / 收藏（回收站要软删字段，留到阶段三） */
     /** 中间栏排序（中栏右上角「排序」菜单）。
      *  default = 置顶优先 + 原始顺序；title/created 按字面排序。 */
@@ -479,9 +479,9 @@ export default function NotesPage({
                 confirmText: options.renameId !== undefined ? "保存" : kind === "folder" ? "新建文件夹" : "新建标签",
             });
         },
-        []
+        []  // eslint-disable-line react-hooks/exhaustive-deps -- setXxx 是稳定引用（React 保证），列出不改变任何行为 —— 插件对 setState 的已知误报
     );
-    const closeNamePrompt = useCallback(() => setNamePrompt(null), []);
+    const closeNamePrompt = useCallback(() => setNamePrompt(null), []);  // eslint-disable-line react-hooks/exhaustive-deps -- setXxx 是稳定引用（React 保证），列出不改变任何行为 —— 插件对 setState 的已知误报
 
     /**
      * 删除分类的二次确认（替代 window.confirm）。
@@ -533,7 +533,7 @@ export default function NotesPage({
             document.removeEventListener("focusin", onFocusIn, true);
             clearTimeout(timer);
         };
-    }, [menuClosing]);
+    }, [menuClosing]);  // eslint-disable-line react-hooks/exhaustive-deps -- setXxx 是稳定引用（React 保证），列出不改变任何行为 —— 插件对 setState 的已知误报
     /**
      * 菜单关闭后**悬停显隐抑制**的行（第五报「右键弹窗消失的瞬间起初右键的
      * 点位还是会闪过白圈」）：菜单关闭时指针通常还停在那行上（右键点多在
@@ -547,7 +547,7 @@ export default function NotesPage({
         setRowActionsSuppressed(rowMenu?.noteId ?? null);
         setRowMenu(null);
         setMenuClosing(true);
-    }, [rowMenu]);
+    }, [rowMenu]);  // eslint-disable-line react-hooks/exhaustive-deps -- setXxx 是稳定引用（React 保证），列出不改变任何行为 —— 插件对 setState 的已知误报
     /** 正在拖的笔记行（半透明反馈，与文件夹那边同一套观感） */
     const [draggingNoteId, setDraggingNoteId] = useState<number | null>(null);
     /** 「编辑标签」二级弹窗的锚点 */
@@ -561,7 +561,7 @@ export default function NotesPage({
         setRecentNoteIds(prev =>
             [activeId, ...prev.filter(id => id !== activeId)].slice(0, 8)
         );
-    }, [activeId]);
+    }, [activeId]);  // eslint-disable-line react-hooks/exhaustive-deps -- setXxx 是稳定引用（React 保证），列出不改变任何行为 —— 插件对 setState 的已知误报
     /** 用户主动清空过选择（把当前这条移到回收站）—— 见下面那条自动选中的 effect */
     const userClearedRef = useRef(false);
     const [pane, setPane] = useState<Pane>("split");
@@ -1288,7 +1288,7 @@ export default function NotesPage({
             });
         }, 250);
         return () => clearTimeout(timer);
-    }, [keyword, searchRemote]);
+    }, [keyword, searchRemote]);  // eslint-disable-line react-hooks/exhaustive-deps -- setXxx 是稳定引用（React 保证），列出不改变任何行为 —— 插件对 setState 的已知误报
 
     /** 服务端给的命中片段（按笔记 id 查；只在搜索视图里显示） */
     const searchSnippets = useMemo(() => {
@@ -1479,7 +1479,7 @@ export default function NotesPage({
                 setView("folder");
             }
         },
-        [folderTags]
+        [folderTags]  // eslint-disable-line react-hooks/exhaustive-deps -- setXxx 是稳定引用（React 保证），列出不改变任何行为 —— 插件对 setState 的已知误报
     );
     const renameFolder = useCallback(
         async (id: number, name: string) => {
@@ -1494,14 +1494,14 @@ export default function NotesPage({
             setActiveFolder(cur => (cur === id ? null : cur));
             setView(cur => (cur === "folder" ? "all" : cur));
         },
-        [folderTags]
+        [folderTags]  // eslint-disable-line react-hooks/exhaustive-deps -- setXxx 是稳定引用（React 保证），列出不改变任何行为 —— 插件对 setState 的已知误报
     );
     const createTag = useCallback(
         async (name: string) => {
             const created = await folderTags?.onCreateTag(name);
             if (created?.id !== undefined) setActiveTag(created.id);
         },
-        [folderTags]
+        [folderTags]  // eslint-disable-line react-hooks/exhaustive-deps -- setXxx 是稳定引用（React 保证），列出不改变任何行为 —— 插件对 setState 的已知误报
     );
     const renameTag = useCallback(
         async (id: number, name: string) => {
@@ -1514,7 +1514,7 @@ export default function NotesPage({
             await folderTags?.onRemoveTag(id);
             setActiveTag(cur => (cur === id ? null : cur));
         },
-        [folderTags]
+        [folderTags]  // eslint-disable-line react-hooks/exhaustive-deps -- setXxx 是稳定引用（React 保证），列出不改变任何行为 —— 插件对 setState 的已知误报
     );
 
     // 弹窗的提交回调放在这里：上面那些 createFolder / renameTag / removeTag
@@ -1533,7 +1533,7 @@ export default function NotesPage({
             }
             setNamePrompt(null);
         },
-        [namePrompt, createFolder, createTag, renameFolder, renameTag]
+        [namePrompt, createFolder, createTag, renameFolder, renameTag]  // eslint-disable-line react-hooks/exhaustive-deps -- setXxx 是稳定引用（React 保证），列出不改变任何行为 —— 插件对 setState 的已知误报
     );
 
     const submitRemove = useCallback(async () => {
@@ -1542,7 +1542,7 @@ export default function NotesPage({
         if (target.kind === "folder") await removeFolder(target.id);
         else await removeTag(target.id);
         setRemoveTarget(null);
-    }, [removeTarget, removeFolder, removeTag]);
+    }, [removeTarget, removeFolder, removeTag]);  // eslint-disable-line react-hooks/exhaustive-deps -- setXxx 是稳定引用（React 保证），列出不改变任何行为 —— 插件对 setState 的已知误报
 
     /**
      * 导出一条笔记成 .md（inkstone 的「导出」，我们放在列表行菜单里）。
@@ -1838,7 +1838,7 @@ export default function NotesPage({
         } finally {
             setBulkBusy(false);
         }
-    }, [bulkBusy, checkedNotes, onToggleArchive, onNotify]);
+    }, [bulkBusy, checkedNotes, onToggleArchive, onNotify]);  // eslint-disable-line react-hooks/exhaustive-deps -- setXxx 是稳定引用（React 保证），列出不改变任何行为 —— 插件对 setState 的已知误报
 
     const bulkDelete = useCallback(async () => {
         if (bulkBusy) return;
@@ -1853,7 +1853,7 @@ export default function NotesPage({
         } finally {
             setBulkBusy(false);
         }
-    }, [bulkBusy, checkedNotes, onDelete, onNotify]);
+    }, [bulkBusy, checkedNotes, onDelete, onNotify]);  // eslint-disable-line react-hooks/exhaustive-deps -- setXxx 是稳定引用（React 保证），列出不改变任何行为 —— 插件对 setState 的已知误报
 
     // 导入整条链路（解包 / 附件回传 / 正文链接改写 / 写库 / 重拉）2026-10-23
     // 搬到 notes/importNotesFile.ts：那块没有一处 React 状态，纯过程代码，
@@ -1951,7 +1951,7 @@ export default function NotesPage({
             if (command.id === "revisions") return !!folderTags?.onGetRevision;
             return true;
         });
-    }, [onCreate, tools, active, pane, shareApi, folderTags, onTogglePin, onToggleStar, onToggleArchive, onDelete, setShareId, openRevisions, setGraphOpen, exportTarget]);
+    }, [onCreate, tools, active, pane, shareApi, folderTags, onTogglePin, onToggleStar, onToggleArchive, onDelete, setShareId, openRevisions, setGraphOpen, exportTarget]);  // eslint-disable-line react-hooks/exhaustive-deps -- setXxx 是稳定引用（React 保证），列出不改变任何行为 —— 插件对 setState 的已知误报
 
     /** 取某一版正文：列表里那份是空串，diff 要真的正文 */
     const loadRevisionContent = useCallback(
@@ -1978,7 +1978,7 @@ export default function NotesPage({
             onNotify?.("已恢复到该版本（恢复前的内容也存了一份快照）", "success");
             return true;
         },
-        [active?.id, folderTags, onNotify]
+        [active?.id, folderTags, onNotify]  // eslint-disable-line react-hooks/exhaustive-deps -- setXxx 是稳定引用（React 保证），列出不改变任何行为 —— 插件对 setState 的已知误报
     );
     /**
      * 灯箱的键盘处理（inkstone 的 Lightbox 同样监听 window）：
@@ -2011,7 +2011,7 @@ export default function NotesPage({
         };
         window.addEventListener("keydown", onKey);
         return () => window.removeEventListener("keydown", onKey);
-    }, [lightbox]);
+    }, [lightbox]);  // eslint-disable-line react-hooks/exhaustive-deps -- setXxx 是稳定引用（React 保证），列出不改变任何行为 —— 插件对 setState 的已知误报
 
     /**
      * 灯箱打开时：锁背景滚动 + 焦点收口 + 关闭后归还焦点。

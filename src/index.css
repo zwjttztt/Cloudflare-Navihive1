@@ -601,18 +601,15 @@ mark.nav-hl {
     pointer-events: auto;
 }
 
-/* 弹窗材质基线：站内所有 Dialog 共用同一套圆角 / 描边 / 阴影。
-   以前每个弹窗各写一份 paper 样式，圆角从 14px 到 22px 都有，同一个「确定」
-   按钮在不同弹窗里看着像两个产品。这里给一份默认，个别弹窗仍可用 sx 覆盖。
-   背景浓度不在这里统一（有的弹窗要更实一点保证长表单可读）。 */
-.MuiDialog-paper {
-    /* token 名跟 dialogShell.ts 的 dialogPaperTokens 保持一致（同一套玻璃面板语义
-       token），别再写回 --radius-lg / --border-subtle / --shadow-3 —— 那套名字
-       将来一改就会和用外壳的弹窗分裂成两种材质 */
-    border-radius: var(--card-radius);
-    border: 1px solid var(--glass-panel-border);
-    box-shadow: var(--glass-shadow-hover);
-}
+/* ⚠️ 这里原本有一条「弹窗材质基线」`.MuiDialog-paper { border-radius… }`，2026-10-24 删掉了。
+   它是**纯单类选择器（0,1,0）**，而 emotion 的运行时 <style> 注入排在 <link>（本文件）
+   之后 —— 同特异性下后注入者赢，所以这条规则**从来没有生效过一次**：
+   浏览器实测把它改成 99px，computed border-radius 纹丝不动（仍是 22px）。
+   弹窗材质真正的产出方是 `hooks/useThemeController.ts` 的
+   `MuiDialog.styleOverrides.paper`，它统一取 `--surface-modal` 等语义 token，
+   与 `components/dialogShell.ts` 的 `dialogPaperTokens` 是同一套取值。
+   以后要改弹窗材质请改 theme，**别往这里加单类 MUI 选择器** ——
+   `tests/muiSelectorSpecificity.test.ts` 会拦。 */
 
 /* 分组工具条（添加卡片 / 排序 / 编辑）：平时安静，指到分组或键盘走进来才浮出。
    用 opacity 而不是 display —— 位置一直占着，鼠标移到分组上不会把行高挤变。

@@ -8,6 +8,7 @@ import type { AuthCredentialsInput, RecoveryKeyInput } from "../types";
 import type { NavigationAPI } from "../../src/API/navigationApi";
 import type { RouteCtx } from "./types";
 import { readJsonBody } from "./jsonBody";
+import { enforceWriteGuard, writeBucket } from "../loginGuard";
 
 /**
  * 当前登录身份（账号 id + 账号名 + 角色），取不到返回 null。
@@ -37,14 +38,31 @@ export async function handleAccountRoutes(ctx: RouteCtx): Promise<Response | nul
         method,
         api,
         ip,
+        // ⚠️ 必须解构出来传给 writeBucket：它的第三参默认 false，
+        // 不传的话自托管（反代后面）所有用户会共用 `unknown` 一个桶 ——
+        // 限速会从「防爆破」变成「随机误伤一整片人」。
+        trustXFF,
         secureCookie,
         currentJti,
         currentTokenExp,
         
     } = ctx;
 
+    /**
+     * 写操作限速闸门：本模块的九条写路由全都在**改账号本身**
+     * （退出 / 邀请码 / 沉睡扫描 / 吊销设备 / 账号状态 / 注销 / 改凭据 / 改恢复密钥）。
+     * 令牌泄露后，这些是攻击者最省事的持久化手段，成本却和一次普通读差不多。
+     *
+     * 与 data.ts 同构：放行返回 null，撞上限速返回已经填好 Retry-After 的 429。
+     * GET 一律不过闸（读不消耗写入配额，也不该因为「多刷了几次页面」就锁人）。
+     */
+    const writeGate = (): Promise<Response | null> =>
+        enforceWriteGuard(api, writeBucket(request, api.getCurrentUserId(), trustXFF));
+
     // 退出登录：把这张令牌拉黑（服务端真正失效）+ 清掉浏览器 cookie
     if (path === "logout" && method === "POST") {
+        const limited = await writeGate();
+        if (limited) return limited;
         if (currentJti) {
             await api.blacklistToken(currentJti, currentTokenExp);
         }
@@ -74,6 +92,8 @@ export async function handleAccountRoutes(ctx: RouteCtx): Promise<Response | nul
     // 只放开给 owner：邀请码是唯一的注册入口，普通账号也能随手生成的话，
     // 一个人就能不断拉人来占资源，而且互相之间不知道谁请谁，事后无从追溯。
     if (path === "auth/invite" && method === "POST") {
+        const limited = await writeGate();
+        if (limited) return limited;
         const uid = api.getCurrentUserId();
         if (uid === null) {
             return errorResponse(ApiError.badRequest("当前站点未启用登录，无法生成邀请码"));
@@ -115,6 +135,8 @@ export async function handleAccountRoutes(ctx: RouteCtx): Promise<Response | nul
      * 会把 "sweep" 当成 :id 去 parseInt，直接回「路径无效」。
      */
     if (path === "users/sweep" && method === "POST") {
+        const limited = await writeGate();
+        if (limited) return limited;
         const uid = api.getCurrentUserId();
         if (uid === null) {
             return errorResponse(ApiError.badRequest("当前站点未启用登录，无法扫描账号"));
@@ -151,6 +173,8 @@ export async function handleAccountRoutes(ctx: RouteCtx): Promise<Response | nul
 
     /** 吊销某一台设备 */
     if (path.startsWith("sessions/") && method === "DELETE") {
+        const limited = await writeGate();
+        if (limited) return limited;
         const jti = decodeURIComponent(path.slice("sessions/".length));
         const uid = api.getCurrentUserId();
         if (uid === null || !jti) {
@@ -172,6 +196,8 @@ export async function handleAccountRoutes(ctx: RouteCtx): Promise<Response | nul
      * 那种场景本来就没有「当前设备」可言。
      */
     if (path === "sessions/revoke-others" && method === "POST") {
+        const limited = await writeGate();
+        if (limited) return limited;
         const uid = api.getCurrentUserId();
         if (uid === null) {
             return errorResponse(ApiError.badRequest("当前站点未启用登录"));
@@ -192,6 +218,8 @@ export async function handleAccountRoutes(ctx: RouteCtx): Promise<Response | nul
     //   active   = 豁免沉睡治理（清停用时间 + 刷新活跃时间，否则转头又被判沉睡）
     //   disabled = 手动停用
     if (path.startsWith("users/") && method === "POST") {
+        const limited = await writeGate();
+        if (limited) return limited;
         const matched = /^users\/(\d+)\/status$/.exec(path);
         if (!matched) {
             return errorResponse(ApiError.badRequest("路径无效"));
@@ -213,6 +241,8 @@ export async function handleAccountRoutes(ctx: RouteCtx): Promise<Response | nul
 
     // 注销账号：删掉账号名下所有数据 + 账号本身
     if (path === "account" && method === "DELETE") {
+        const limited = await writeGate();
+        if (limited) return limited;
         const body = (await readJsonBody(request)) as {
             currentPassword?: string;
         };
@@ -255,6 +285,8 @@ export async function handleAccountRoutes(ctx: RouteCtx): Promise<Response | nul
 
     // 修改管理员账号密码（保存在数据库中，重新部署不会被覆盖）
     if (path === "auth/credentials" && method === "PUT") {
+        const limited = await writeGate();
+        if (limited) return limited;
         const data = await readJsonBody<AuthCredentialsInput>(request);
 
         const username = typeof data.username === "string" ? data.username.trim() : "";
@@ -287,6 +319,8 @@ export async function handleAccountRoutes(ctx: RouteCtx): Promise<Response | nul
     // 保存 / 更换恢复公钥（网页端「生成并下载私钥」时调用）
     // 必须校验当前密码：否则拿到会话的人能塞进自己的公钥，留一个改密也清不掉的后门。
     else if (path === "auth/recovery-key" && method === "PUT") {
+        const limited = await writeGate();
+        if (limited) return limited;
         const data = (await readJsonBody(request)) as RecoveryKeyInput;
         const publicKey =
             typeof data.publicKey === "string" ? data.publicKey.trim() : "";

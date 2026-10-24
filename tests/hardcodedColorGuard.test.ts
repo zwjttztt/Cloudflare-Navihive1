@@ -91,8 +91,8 @@ const EXEMPT: Record<string, { reason: string; cap: number }> = {
         cap: 19,
     },
     "src/hooks/useThemeController.ts": {
-        reason: "MUI 主题**定义源**本身：这里的字面量是产出方，不是消费方（token 就是照它写的）",
-        cap: 6,
+        reason: "MUI 主题**定义源**本身：这里的字面量是产出方，不是消费方（token 就是照它写的）。2026-10-24 弹窗底色改成 var(--surface-modal) 后从 6 降到 4",
+        cap: 4,
     },
     "src/brand.ts": {
         reason: "品牌色定义（themeColor 等），是常量源头不是样式消费",
