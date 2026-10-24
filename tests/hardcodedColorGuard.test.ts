@@ -107,7 +107,10 @@ const EXEMPT: Record<string, { reason: string; cap: number }> = {
         cap: 1,
     },
     "src/utils/notesSettings.ts": {
-        reason: "外观设置的**默认值**（默认强调色），是数据不是样式",
+        reason:
+            "存量迁移用的比较字符串（`raw === \"#b0433a\"` 把旧默认强调色视同「没设过」，" +
+            "让它跟着默认一起升级到分态的 --notes-accent）—— 是数据不是样式。" +
+            "2026-10-24 之前这里还有一处真的是「默认值」，那个值是 #b0433a，亮/暗两态都不达 AA",
         cap: 1,
     },
     "src/utils/siteAvatar.ts": {

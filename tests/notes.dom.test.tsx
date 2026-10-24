@@ -3917,7 +3917,9 @@ test("设置扩容：外观与编辑器新增项都在，且真能落盘生效",
 
     // 设置面板里每一项都有控件（外观页 → 编辑器页分两拨查）
     await act(async () => (document.querySelector("button[data-tool='settings']") as HTMLElement).click());
-    for (const key of ["bgcolor:pure", "density:compact", "previewFont:serif", "accent:#b0433a"]) {
+    // "accent:"（空值）= 「跟随主题」那一档。没有它的话，用户没挑过颜色时
+    // 8 个色点一个都不高亮，看不出当前用的是什么（2026-10-24 补）
+    for (const key of ["bgcolor:pure", "density:compact", "previewFont:serif", "accent:#b0433a", "accent:"]) {
         assert.ok(
             document.querySelector(`[data-setting='${key}']`),
             `设置面板「外观」里要有 data-setting='${key}' 这一项`

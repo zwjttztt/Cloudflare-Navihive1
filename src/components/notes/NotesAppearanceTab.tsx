@@ -19,7 +19,33 @@ export default function NotesAppearanceTab({ settings, set }: NotesAppearanceTab
     return (
                             <>
                                 <SettingRow label='强调色' description='记事本内的选中态、链接与图标颜色'>
-                                    <Box sx={{ display: "flex", gap: 0.75 }}>
+                                    <Box sx={{ display: "flex", gap: 0.75, alignItems: "center" }}>
+                                        {/* 「跟随主题」：空串 = 用 --notes-accent（亮/暗各一个达标的红棕）。
+                                            没有这个按钮的话，默认（空串）时下面 8 个色点**一个都不高亮** ——
+                                            用户看不出当前用的是哪一档。 */}
+                                        <Box
+                                            component='button'
+                                            type='button'
+                                            aria-label='强调色 跟随主题'
+                                            data-setting='accent:'
+                                            onClick={() => set("accent", "")}
+                                            sx={{
+                                                width: 22,
+                                                height: 22,
+                                                borderRadius: "50%",
+                                                cursor: "pointer",
+                                                appearance: "none",
+                                                p: 0,
+                                                // 半红半蓝，直观表达「跟着主题走」
+                                                background:
+                                                    "linear-gradient(135deg, var(--notes-accent) 50%, var(--accent) 50%)",
+                                                border:
+                                                    settings.accent === ""
+                                                        ? "2px solid var(--accent)"
+                                                        : "2px solid transparent",
+                                                outline: "1px solid var(--neutral-border)",
+                                            }}
+                                        />
                                         {FOLDER_COLORS.map(c => (
                                             <Box
                                                 key={c}

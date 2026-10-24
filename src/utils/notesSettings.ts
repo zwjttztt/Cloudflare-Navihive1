@@ -10,7 +10,17 @@
 //（字符串 "18"、null）原样带进运行时。
 
 export interface NotesUiSettings {
-    /** 强调色（十六进制）。作用域仅记事本页面：写在页面根元素的 --accent 上 */
+    /**
+     * 强调色（十六进制），作用域仅记事本页面：写在页面根元素的 --accent 上。
+     *
+     * **空串 = 跟随主题**（推荐默认）：此时注入的是 `var(--notes-accent)`，
+     * 由 index.css 按亮/暗两态各给一个达标的红棕 —— 用户在「外观 → 强调色」
+     * 里挑过之后才有具体色值。
+     *
+     * 为什么默认不是具体色值：同一个 `#b0433a` 在暖白底上只有 4.18:1、
+     * 在暗底上 3.19:1，两头都不到 WCAG AA 的 4.5 —— 而它恰好是记事本过去的默认值，
+     * 于是「默认外观」本身就是不达标的（2026-10-24 把审计扩到记事本时抓出来的）。
+     */
     accent: string;
     /** 背景色：暖白（纸感）/ 纯白（inkstone「背景色」那一项） */
     bgcolor: "warm" | "pure";
@@ -61,7 +71,8 @@ export interface NotesUiSettings {
 }
 
 export const DEFAULT_NOTES_SETTINGS: NotesUiSettings = {
-    accent: "#b0433a",
+    // 空 = 跟随主题（var(--notes-accent)），见接口注释里的对比度原因
+    accent: "",
     bgcolor: "warm",
     density: "comfortable",
     previewFont: "sans",
@@ -101,11 +112,19 @@ function sanitize(raw: unknown): NotesUiSettings {
     const pick = <T extends string>(v: unknown, allowed: readonly T[], fallback: T): T =>
         typeof v === "string" && (allowed as readonly string[]).includes(v) ? (v as T) : fallback;
     return {
-        // 强调色只认 #rgb / #rrggbb，别的（javascript: 之类）一律回落
-        accent:
-            typeof o.accent === "string" && /^#[0-9a-fA-F]{3}([0-9a-fA-F]{3})?$/.test(o.accent)
-                ? o.accent
-                : d.accent,
+        // 强调色只认 #rgb / #rrggbb 或空串（空 = 跟随主题），别的（javascript: 之类）一律回落。
+        //
+        // ⚠️ `#b0433a` 是 2026-10-24 之前的默认值，**在亮/暗两态都不达 AA**
+        // （亮 4.18:1 / 暗 3.19:1）。存量里存着这个值的用户其实从未主动挑过颜色 ——
+        // 它只是当年的默认值被写进了 localStorage。所以这里把它当作「没设过」，
+        // 让它跟着默认一起升级到分态的 --notes-accent。
+        // 用户**自己**挑的其它颜色保持原样，不做二次加工。
+        accent: (() => {
+            const raw = o.accent;
+            if (typeof raw !== "string") return d.accent;
+            if (raw === "" || raw === "#b0433a") return "";
+            return /^#[0-9a-fA-F]{3}([0-9a-fA-F]{3})?$/.test(raw) ? raw : d.accent;
+        })(),
         bgcolor: pick(o.bgcolor, ["warm", "pure"] as const, d.bgcolor),
         density: pick(o.density, ["comfortable", "compact"] as const, d.density),
         previewFont: pick(o.previewFont, ["sans", "serif"] as const, d.previewFont),

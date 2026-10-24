@@ -155,27 +155,24 @@ async function openNotesAndWait() {
 }
 
 /**
- * 记事本的对比度**已知问题预算**（2026-10-24 接入记事本时定）。
+ * 记事本对比度的预算（2026-10-24 接入记事本时先设 4，同日修完后降到 0）。
  *
- * 接入后立刻抓到 4 处不达 AA，且都不是「桩数据造成的假问题」，而是真实存在：
+ * 当时那 4 处的根因是同一个：`NotesPage.tsx` 用内联 style 把 `--accent` 覆盖成
+ * 记事本设置里的 `notesSettings.accent`，而它的默认值 `#b0433a` **在亮/暗两态
+ * 都不达 AA**（亮 4.18:1 / 暗 3.19:1）—— 也就是「默认外观本身就不达标」。
  *
- *   1) 亮色 4.18：「会议纪要」13px `#b0433a` on `#deddda`
- *      —— NotesPage.tsx:2819 用 inline style 把 `--accent` 覆盖成
- *         `notesSettings.accent`（默认 `#b0433a`），**盖掉了 index.css 里
- *         亮/暗分态的默认值**（#1976d2 / #90caf9 那两个都是达标的）。
- *   2~4) 暗色 3.19 / 2.91 / Avatar 3.31：同一个 `#b0433a` 在深底上不达标；
- *      Avatar 是「红底配深字」，正确做法是按底色亮度选黑/白字。
+ * 修法（已完成）：
+ *   ① `DEFAULT_NOTES_SETTINGS.accent` 改成空串 = 跟随主题；注入时写
+ *      `--accent: var(--notes-accent)`，由 index.css 按亮/暗分态给值
+ *      （亮 #a03c32 ≈ 4.85:1、暗 #c96e60 ≈ 5.19:1）；
+ *   ② 账号 Avatar 的文字色改成 `var(--on-accent)`（「强调色底上的字」专用 token），
+ *      不再落 MUI 默认的 `background.default`（暗色下那个是深色，压浅红底只有 3.31:1）；
+ *   ③ 存量里存着 `#b0433a` 的视同「没设过」，跟着默认一起升级。
  *
- * 为什么现在不修：正确修法要动「记事本默认强调色分态」+「文件夹/标签色板的
- * 文字色按底色亮度选」两件事，属于独立的一块工作（不是几行能改完的），
- * 塞进这轮会把「扩大审计覆盖面」这件事本身搅浑。
- *
- * 但**绝不能因此关掉判据**（那样新增的对比度问题会静默溜过去）。所以设一个存量预算：
- *   · 总数 ≤ 预算 → 通过，但把每一处明细照常打印出来（CI 日志里看得见）；
- *   · 总数 > 预算 → 失败。
- * 修完存量之后，把这个常量降到 0 —— 那一步就等于把这里改成硬判据。
+ * 预算现在钉死 0：记事本与首页同一把尺子，任何一处不达 AA 都直接失败。
+ * 以后要放宽必须改这个常量，而它就在 CI 日志的第一屏 —— 改不动声色的那种操作。
  */
-const NOTES_CONTRAST_BUDGET = 4;
+const NOTES_CONTRAST_BUDGET = 0;
 
 /** 报告一段扫描结果（首页与记事本共用同一套输出格式） */
 function report(label, res) {
@@ -256,20 +253,11 @@ if (failed > 0) {
 if (notesFailed > NOTES_CONTRAST_BUDGET) {
     console.error(
         `对比度审计失败：记事本 ${notesFailed} 处不达 WCAG AA，` +
-            `超出已知问题预算 ${NOTES_CONTRAST_BUDGET} 处 —— ` +
-            `多出来的必须修掉，不能提高预算（预算只用来标存量，不是容忍度）`
+            `预算 ${NOTES_CONTRAST_BUDGET} 处（2026-10-24 起已清零，记事本与首页同一把尺子）`
     );
     site.close();
     done(1);
 }
-if (notesFailed > 0) {
-    console.log(
-        `记事本：${notesFailed} 处不达 AA，在已知问题预算 ${NOTES_CONTRAST_BUDGET} 之内（明细见上）。` +
-            `\n  修法：① 记事本默认强调色按亮/暗分态（NotesPage.tsx:2819 的内联 --accent 盖掉了 index.css 的分态默认值）；` +
-            `\n        ② 文件夹 / 标签色板的文字色按**底色亮度**选黑/白，而不是按主题选。` +
-            `\n  修完把 NOTES_CONTRAST_BUDGET 降到 0。`
-    );
-}
-console.log(`\n对比度审计通过（首页亮/暗 0 处不合格；记事本 ${notesFailed}/${NOTES_CONTRAST_BUDGET} 处已知问题）`);
+console.log(`\n对比度审计通过（首页亮/暗 + 记事本亮/暗，各 0 处不合格）`);
 site.close();
 done(0);

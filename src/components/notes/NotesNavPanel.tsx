@@ -316,7 +316,11 @@ export default function NotesNavPanel(props: Pick<NotesPageCtx, "accountName" | 
                     <Avatar
                         data-nav-account='1'
                         alt={accountName || "未登录"}
-                        sx={{ width: 22, height: 22, fontSize: 11, bgcolor: "var(--accent)" }}
+                        // 文字色必须走 --on-accent：这是「强调色**底上**的字」专用 token，
+                        // 亮色是白、暗色是深（因为 --notes-accent 暗色档是浅红）。
+                        // 不写就会落到 MUI 默认的 background.default —— 暗色下那个是深色，
+                        // 压在浅红底上只有 3.31:1（2026-10-24 对比度审计抓到的）。
+                        sx={{ width: 22, height: 22, fontSize: 11, bgcolor: "var(--accent)", color: "var(--on-accent)" }}
                     >
                         {(accountName || "?").slice(0, 1).toUpperCase()}
                     </Avatar>
