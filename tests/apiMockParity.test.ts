@@ -155,3 +155,18 @@ test("摘要判定用 >=：恰好等于上限时也算被截断（mock 原先是
     assert.equal(needsSummary(null), false, "空/未定义不能抛");
     assert.equal(summarizeContent("y".repeat(500)).length, NOTE_SUMMARY_CHARS);
 });
+
+// ---------------- 备份范围：mock 与真实链路同一道关（2026-10-24） ----------------
+
+test("备份范围：mock 的导出导入与真实链路共用 backupScope", () => {
+    // 2026-10-24 之前 mock 的 exportData 是 {...mockConfigs} 全量吐、importData
+    // 全量收 —— 演示模式下「敏感键不进备份」这条规则形同虚设，备份范围的改动
+    // （AI 整组进备份、webdav 不进）在演示模式验证不到。现在两侧共用同一判定。
+    const mock = read("src/API/mock.ts");
+    assert.match(mock, /pickExportConfigs\(mockConfigs/, "mock 导出必须走 pickExportConfigs");
+    assert.match(mock, /pickImportConfigEntries\(/, "mock 导入必须走 pickImportConfigEntries");
+    // 真实链路两侧也都在用同一份（防将来某边又抄一份自己的）
+    const scope = read("src/utils/backupScope.ts");
+    assert.match(scope, /export function pickExportConfigs/);
+    assert.match(scope, /export function pickImportConfigEntries/);
+});

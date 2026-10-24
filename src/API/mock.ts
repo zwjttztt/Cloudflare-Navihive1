@@ -27,6 +27,7 @@ import {
     DEFAULT_TOKEN_TTL,
 } from "./http";
 import { verifyBackupIntegrity, withBackupIntegrity } from "../utils/backupIntegrity";
+import { pickExportConfigs, pickImportConfigEntries } from "../utils/backupScope";
 import type { SiteMetaSuggestion, TagSuggestion } from "../utils/aiMeta";
 import {
     IDEMPOTENCY_MAX_BODY,
@@ -1207,10 +1208,16 @@ export class MockNavigationClient {
     // 数据导出
     async exportData(): Promise<ExportData> {
         await new Promise(resolve => setTimeout(resolve, 200));
+        // 与真实链路同一道关：什么进备份文件由 utils/backupScope 判定
+        // （敏感键 auth./webdav./notesBackup. 与几个服务端镜像不带；AI 那组
+        // 2026-10-24 起跟着走）。以前这里 {...mockConfigs} 全量吐 —— 演示模式
+        // 下导出/导入规则与真实双端不一致，备份范围的改动在这里验证不到。
+        const { own, shared } = pickExportConfigs(mockConfigs, null);
         return await withBackupIntegrity({
             groups: [...mockGroups],
             sites: [...mockSites],
-            configs: {...mockConfigs},
+            configs: own,
+            sharedConfigs: shared,
             version: "1.0",
             exportDate: new Date().toISOString()
         });
@@ -1331,10 +1338,12 @@ export class MockNavigationClient {
             });
 
             // 导入配置数据（共享配置从 1.3 起放在 sharedConfigs，老的还在 configs）
-            const configEntries = [
-                ...Object.entries(data.configs || {}),
-                ...Object.entries(data.sharedConfigs || {}),
-            ];
+            // 与真实链路同一道关：备份文件里的敏感键不写回（文件可能被改过），
+            // 非全站键在单账号演示模式下都可写。以前这里全量收下。
+            const configEntries = pickImportConfigEntries(
+                { configs: data.configs, sharedConfigs: data.sharedConfigs },
+                null
+            );
             configEntries.forEach(([key, value]) => {
                 mockConfigs[key] = value;
             });
