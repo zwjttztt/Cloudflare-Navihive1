@@ -371,6 +371,34 @@ test("账号：邀请码生成成功后显示码本身，失败只显示原因",
     assert.equal(pageText().includes("A2BC3DEF"), false, "失败时不该显示任何码");
 });
 
+test("账号：登录设备的名字要能区分「自动化 / 脚本」和真机（否则看着就是重复）", () => {
+    // 2026-10-24：截图上两条都是「Chrome · Windows」，其中一条其实是
+    // HeadlessChrome（自动化）。它的 UA 里同样带 Chrome/ 和 Windows NT，
+    // 老逻辑照普通浏览器念，于是和用户的真机撞名。
+    render({
+        sessions: [
+            makeSession({
+                jti: "jti-real",
+                current: true,
+                ip: "1.2.3.4",
+                userAgent:
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.5845.97 Safari/537.36 Core/1.116.617.400 QQBrowser/20.1.7233.400",
+            }),
+            makeSession({
+                jti: "jti-headless",
+                ip: "1.2.3.4",
+                userAgent:
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36",
+            }),
+            makeSession({ jti: "jti-script", ip: "127.0.0.1", userAgent: "curl/8.18.0" }),
+        ],
+    });
+    const text = pageText();
+    assert.ok(text.includes("QQ 浏览器 · Windows"), `真机要认出 QQ 浏览器，实际：${text.slice(0, 400)}`);
+    assert.ok(text.includes("无头浏览器"), "自动化客户端不能显示成 Chrome · Windows");
+    assert.ok(text.includes("curl"), "命令行客户端原样显示");
+});
+
 test("账号：登录设备一节列出设备、标出当前这台、别的可踢", () => {
     render({
         sessions: [

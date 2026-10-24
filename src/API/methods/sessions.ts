@@ -245,6 +245,11 @@ export const sessionsImpl: SessionsApi = {
      * 漏掉的）—— 列表时按**归一化设备键**折叠（deviceKeyOf：浏览器 + 系统，
      * 不计版本号与 IP），只留最近活跃的一条；被折叠的旧行顺手拉黑 + 删行自愈
      * （当前会话那一行永不折叠）。
+     *
+     * 两档折叠（2026-10-24 补第二档）：
+     *   ① device_id 相同 → 真·同一设备，折叠 + 拉黑 + 删行（上面那段）；
+     *   ② 只是「看起来一样」（UA 家族 + 系统相同，且有一边没有 device_id，
+     *      或 IP 也相同）→ 只折叠显示，**不吊销**。见下面列的判定注释。
      */
     listSessions: async function (
         this: NavigationAPI,
@@ -286,8 +291,16 @@ export const sessionsImpl: SessionsApi = {
             const seenDevices = new Set<string>();
             const deviceKey = (row: { user_agent: string | null; device_id: string | null }): string =>
                 row.device_id ? `did:${row.device_id}` : `ua:${deviceKeyOf(row.user_agent || "")}`;
+            const uaKeyOf = (row: { user_agent: string | null }): string =>
+                deviceKeyOf(row.user_agent || "");
             const out: SessionInfo[] = [];
             const stale: Array<{ jti: string; expires_at: number }> = [];
+            /** 已经列出来的行（用来判断「后面这条是不是它的重复」） */
+            const listed: Array<{
+                user_agent: string | null;
+                device_id: string | null;
+                ip: string | null;
+            }> = [];
             const toInfo = (row: {
                 jti: string;
                 user_agent: string | null;
@@ -307,6 +320,7 @@ export const sessionsImpl: SessionsApi = {
             for (const row of rows) {
                 if (row.jti !== currentJti) continue;
                 seenDevices.add(deviceKey(row));
+                listed.push(row);
                 out.push(toInfo(row, true));
             }
             for (const row of rows) {
@@ -316,6 +330,28 @@ export const sessionsImpl: SessionsApi = {
                     stale.push({ jti: row.jti, expires_at: row.expires_at });
                     continue;
                 }
+                // 「看起来是同一台」的重复行（2026-10-24，用户第二次报「登录设备有重复」）：
+                // 界面上能区分的只有「浏览器 · 系统」和 IP，所以两天前那个没有 device_id
+                // 的老会话（老客户端 / 脚本登录留下的）会和当前设备**长得一模一样**，
+                // 明明是同一条机器却在列表里占两行。
+                // 折叠条件（满足其一即可，且必须 UA 家族 + 系统相同）：
+                //   · 任意一边没有 device_id —— 识别不了的行，只能按外观认；
+                //   · IP 也相同 —— 同一处出口 + 同一个浏览器，看着就是同一台。
+                // ⚠️ 这里**只折叠显示，不拉黑也不删行**：认不出来的行不能替用户踢掉
+                //    （误踢 = 那台机器下次打开就要重新登录）。真想清干净还有
+                //    「退出其它设备」，那一个动作是全清的。
+                if (
+                    listed.some(
+                        other =>
+                            uaKeyOf(other) === uaKeyOf(row) &&
+                            (!other.device_id ||
+                                !row.device_id ||
+                                (other.ip || "") === (row.ip || ""))
+                    )
+                ) {
+                    continue;
+                }
+                listed.push(row);
                 seenDevices.add(key);
                 out.push(toInfo(row, false));
             }

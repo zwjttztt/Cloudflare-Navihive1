@@ -57,17 +57,7 @@ function formatLastActive(ts: number | null): string {
  */
 function describeUserAgent(ua: string): string {
     if (!ua) return "未知设备";
-    const browser = /Edg\//.test(ua)
-        ? "Edge"
-        : /OPR\//.test(ua)
-          ? "Opera"
-          : /Firefox\//.test(ua)
-            ? "Firefox"
-            : /Chrome\//.test(ua)
-              ? "Chrome"
-              : /Safari\//.test(ua)
-                ? "Safari"
-                : "";
+    // 系统先算出来：下面几档「特殊客户端」也要带系统名
     const os = /Windows NT/.test(ua)
         ? "Windows"
         : /iPhone|iPad/.test(ua)
@@ -79,6 +69,34 @@ function describeUserAgent(ua: string): string {
               : /Linux/.test(ua)
                 ? "Linux"
                 : "";
+    // 自动化 / 命令行客户端（2026-10-24）：它们的 UA 里同样带 `Chrome/` 和
+    // `Windows NT`，按普通浏览器念出来就是「Chrome · Windows」—— 和用户的真机
+    // 一模一样，于是「登录设备」里看着像重复（用户第二次报的重复就是这种）。
+    // 它们本来就应该被认出来是「测试 / 脚本」而不是一台设备。
+    if (/HeadlessChrome\//.test(ua)) {
+        return os ? `无头浏览器 · ${os}（自动化）` : "无头浏览器（自动化）";
+    }
+    const scriptClient = /^curl\//i.test(ua)
+        ? "curl"
+        : /python-requests|python-urllib|aiohttp/i.test(ua)
+          ? "Python 脚本"
+          : /node-fetch|undici|axios|okhttp/i.test(ua)
+            ? "程序调用"
+            : "";
+    if (scriptClient) return `${scriptClient}（脚本）`;
+    const browser = /QQBrowser\//.test(ua)
+        ? "QQ 浏览器"
+        : /Edg\//.test(ua)
+          ? "Edge"
+          : /OPR\//.test(ua)
+            ? "Opera"
+            : /Firefox\//.test(ua)
+              ? "Firefox"
+              : /Chrome\//.test(ua)
+                ? "Chrome"
+                : /Safari\//.test(ua)
+                  ? "Safari"
+                  : "";
     if (browser && os) return `${browser} · ${os}`;
     return (browser || os || ua).slice(0, 60);
 }
@@ -532,7 +550,7 @@ export default function AccountDialog({
                         {sessions && sessions.length > 0 ? (
                             <Section
                                 title='登录设备'
-                                hint='可单独把可疑设备踢下线，其它设备不受影响。'
+                                hint='同一个浏览器只列一条（同一台机器的历史登录会合并显示）；可疑的那台可以单独踢下线，其它设备不受影响。'
                             >
                                 <Stack spacing={1}>
                                     {sessions.map(item => (

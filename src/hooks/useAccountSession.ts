@@ -36,6 +36,35 @@ import type { GroupWithSites } from "../types";
 
 type AuthApi = NavigationClient | MockNavigationClient;
 
+/**
+ * 等浏览器真的联网（最多 maxMs 毫秒）。
+ *
+ * 为什么需要它（2026-10-24，用户第二次报「电脑开机后第一次打开还是要登录」）：
+ * 开机那一刻浏览器往往先起来、网卡后连上，`fetch` 会在几十毫秒内直接抛
+ * `net::ERR_INTERNET_DISCONNECTED` —— 后面的重试再密也等不到网。
+ * `navigator.onLine === false` 时先在 `online` 事件上挂一会儿，通常网卡一
+ * 连上事件就来了，比固定 sleep 快得多，也不用猜要等多久。
+ *
+ * ⚠️ `navigator.onLine` 只表示「有没有网络接口」，有接口但连不上外网时它照样是
+ *    true —— 那种情况交给后面的重试兜。这里只解决最常见的那一半。
+ */
+async function waitForOnline(maxMs: number): Promise<void> {
+    const nav = globalThis.navigator as Navigator | undefined;
+    if (!nav || nav.onLine !== false) return;
+    if (typeof window === "undefined" || typeof window.addEventListener !== "function") return;
+    await new Promise<void>(resolve => {
+        let settled = false;
+        const finish = () => {
+            if (settled) return;
+            settled = true;
+            window.removeEventListener("online", finish);
+            resolve();
+        };
+        window.addEventListener("online", finish);
+        setTimeout(finish, maxMs);
+    });
+}
+
 type UseAccountSessionParams = {
     api: AuthApi;
     notify: (text: string, level?: NotifySeverity) => void;
@@ -399,9 +428,19 @@ export function useAccountSession({
             // 前两次静默重试（间隔 900ms，够冷启动的那一两跳缓过来），
             // 仍然拿不到才走下面的结论。真的会话失效（401）不会因为重试变好，
             // 所以这不影响「令牌过期该回登录页」那条正确路径。
+            // 冷启动先等网络：`fetch` 在断网时是**立刻**失败的，下面的重试再密也
+            // 等不到网卡连上（见 waitForOnline 的注释）
+            await waitForOnline(6000);
+
             let ok = await fetchData();
-            for (let attempt = 0; !ok && attempt < 2; attempt += 1) {
-                await new Promise(resolve => setTimeout(resolve, 900));
+            // 两次静默重试（合计约 1.8s）。
+            // ⚠️ 不要为了「开机更耐心」把这里拉长：真 401 也走这条路，而
+            //    未登录的人会对着转圈干等 —— 2 秒内必须落到登录页。
+            //    冷启动真正缺的是「等网卡连上」，那件事交给上面的 waitForOnline，
+            //    比在这里空转划算得多。
+            for (const gap of [900, 900]) {
+                if (ok) break;
+                await new Promise(resolve => setTimeout(resolve, gap));
                 ok = await fetchData({ silent: true });
             }
 
@@ -422,24 +461,28 @@ export function useAccountSession({
                         onSwitchAccount(me ? me.id : null);
                     })
                     .catch(() => setCurrentUser(null));
-            } else if (api.isLoggedIn()) {
-                // bootstrap 三次都没拿到数据，但本地标记还在 —— 说明这次失败**不是**
-                // 401（真 401 时 client 的 importError 会把标记清掉，onAuthFail 也已经
-                // 把我们送回登录页了）。多半是网络抖动 / 上游 5xx。
-                // 问一次服务端确认：它还认这张会话就保持已登录（数据交给轮询与离线队列补），
-                // 不认才回登录页。
-                const sessionAlive = await api.checkAuthStatus();
-                if (sessionAlive) {
+            } else {
+                // 标记没了也**不代表**会话没了（2026-10-24 改）。
+                //
+                // 那个 JS 可读的 navihive_session 只是「刷新后立刻知道已登录」的附属物，
+                // 真正的会话在 httpOnly 的 navihive_token 里。两者一旦不同步 ——
+                // 隐私工具只清非 HttpOnly 的那条、两条 cookie 的写入差一拍、换浏览器配置
+                // —— 老逻辑会走进「标记都没了 → 会话确实不在了」，把一个**还有效**的
+                // 会话直接按在登录页上。用户看到的就是「开机第一次又让我登录」。
+                //
+                // 但判据不能是 `checkAuthStatus`（它读的是 /api/configs，那是登录页
+                // 也读的公开端点，成功什么也说明不了）。唯一可信的判据是
+                // `/api/auth/me`：拿得到「我是谁」就是还活着，401 才回登录页。
+                const me = await api.getMe().catch(() => null);
+                if (me) {
                     setIsAuthenticated(true);
                     setIsAuthRequired(false);
+                    setCurrentUser(me);
+                    onSwitchAccount(me.id);
                 } else {
                     setIsAuthenticated(false);
                     setIsAuthRequired(true);
                 }
-            } else {
-                // 标记都没了：会话确实不在了（或者这个浏览器从没登录过）
-                setIsAuthenticated(false);
-                setIsAuthRequired(true);
             }
         } catch (error) {
             reportError(error, { source: "auth-check" });

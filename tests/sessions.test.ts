@@ -360,6 +360,65 @@ test("会话：不同设备不互相折叠（浏览器不同 / 系统不同各�
     );
 });
 
+test("会话：没有 device_id 的老行按外观折叠，但**不吊销也不删行**（第二次报重复的根因）", async () => {
+    // 2026-10-24 用户第二次报「登录设备有重复」：截图里两条都是「Chrome · Windows」，
+    // IP 还一样。查库发现其中一条 device_id 是 NULL —— 来自「登录时没带 device_id」
+    // 的客户端（老版本 / 脚本 / 隐私模式）。它认不出来，但界面上和当前设备长得一模一样。
+    const db = new SessionsD1();
+    const api = newApi(db);
+    const current = await loginDevice(api, 7, UA_CHROME_141, "1.2.3.4", "dev-current");
+    db.sessions.push({
+        jti: "no-device-ghost",
+        user_id: 7,
+        user_agent: UA_CHROME_142,
+        ip: "5.6.7.8",
+        created_at: 100,
+        last_seen_at: 200,
+        expires_at: Math.floor(Date.now() / 1000) + 3600,
+        device_id: null,
+    });
+
+    const list = await api.listSessions(7, current.jti);
+    assert.equal(list.length, 1, "看着一样的两行只列一条");
+    assert.equal(list[0].jti, current.jti, "留下的是当前这一条");
+    assert.ok(
+        !db.blacklist.some(r => r.jti === "no-device-ghost"),
+        "认不出来的行不能替用户吊销 —— 误踢等于那台机器下次要重新登录"
+    );
+    assert.ok(
+        db.sessions.some(r => r.jti === "no-device-ghost"),
+        "也不删行：它还在有效期内，下次列表还能再判断一次"
+    );
+});
+
+test("会话：两台都带 device_id 的真实设备（IP 不同）不折叠 —— 各自都能单独踢", async () => {
+    const db = new SessionsD1();
+    const api = newApi(db);
+    const pc = await loginDevice(api, 7, UA_CHROME_141, "1.2.3.4", "dev-a");
+    const other = await loginDevice(api, 7, UA_CHROME_142, "9.9.9.9", "dev-b");
+
+    const list = await api.listSessions(7, pc.jti);
+    assert.equal(list.length, 2, "两台真机都要能看见、能单独踢");
+    assert.deepEqual(list.map(s => s.jti).sort(), [pc.jti, other.jti].sort());
+});
+
+test("会话：UA 与 IP 都相同（同一浏览器换了 device_id）只列一条", async () => {
+    // 本地存储被清掉 / 换了 origin 时，同一台机器会拿到新的 device_id。
+    // 出口 IP 和浏览器都没变，界面上就是同一台 —— 只列最新那条。
+    const db = new SessionsD1();
+    const api = newApi(db);
+    const older = await loginDevice(api, 7, UA_CHROME_141, "1.2.3.4", "dev-old");
+    const newer = await loginDevice(api, 7, UA_CHROME_142, "1.2.3.4", "dev-new");
+
+    const list = await api.listSessions(7, newer.jti);
+    assert.equal(list.length, 1, "同一处出口的同一个浏览器只列一条");
+    assert.equal(list[0].jti, newer.jti, "留最新的那条");
+    assert.ok(
+        !db.blacklist.some(r => r.jti === older.jti),
+        "折叠只影响显示，不能顺手把另一条令牌拉黑"
+    );
+});
+
 test("会话：同设备去重不跨账号（A 账号的折叠清不到 B 账号的行）", async () => {
     const db = new SessionsD1();
     const api = newApi(db);

@@ -87,6 +87,11 @@ interface Options {
      * 用来验「带回来了就别再发 auth/me 与 auth/recovery-status」。
      */
     bootstrapIdentity?: boolean;
+    /**
+     * 本地那条 JS 可读的登录标记（navihive_session）在不在。
+     * 默认 true；测「标记丢了但 httpOnly 令牌还在」时传 false。
+     */
+    loggedIn?: boolean;
 }
 
 function makeApi(o: Options, log: Log): Api {
@@ -98,6 +103,10 @@ function makeApi(o: Options, log: Log): Api {
         checkAuthStatus: async () => o.sessionOk ?? true,
         getMe: async () => {
             log.getMeCalls++;
+            // 真实服务端上「不认这张会话」时 /api/auth/me 就是 401，客户端表现为抛错。
+            // 2026-10-24 起启动检查改问 auth/me（不再问公开端点 /api/configs），
+            // mock 的判据也得跟着换，否则「服务端不认会话」的场景喂不进去。
+            if (o.sessionOk === false) throw new Error("HTTP 401 认证已失效");
             return o.me ?? { id: 7, username: "admin", role: "owner" };
         },
         register: async () => o.registerResult ?? { success: true, username: "newbie" },
@@ -114,7 +123,7 @@ function makeApi(o: Options, log: Log): Api {
         },
         setRecoveryPublicKey: async () => o.recoveryKeyResult ?? { success: true },
         recoverPassword: async () => ({ success: true, message: "密码已重置" }),
-        isLoggedIn: () => true,
+        isLoggedIn: () => o.loggedIn ?? true,
         logout: () => undefined,
     } as unknown as Api;
 }
@@ -453,6 +462,21 @@ test("启动检查：重试也失败时问服务端，会话还活着就保持�
 
     assert.equal(log.fetchCalls, 3, "最多重试两次，不死循环");
     assert.equal(state().authed, true, "服务端还认这张会话 —— 标记丢不丢都不该回登录页");
+    assert.equal(state().authRequired, false);
+});
+
+test("启动检查：本地登录标记丢了也问服务端（标记只是附属物，令牌还在就不该回登录页）", async () => {
+    // 2026-10-24：用户第二次报「开机后第一次打开又是登录界面」。
+    // navihive_session 只是「刷新后立刻知道已登录」的附属物，真正的会话在
+    // httpOnly 的 navihive_token 里。两者不同步时（隐私工具只清非 HttpOnly 的、
+    // 两条 cookie 写入差一拍）老逻辑会走进「标记都没了 → 会话确实不在了」，
+    // 把还有效的会话按在登录页上。现在无论标记在不在都问一次服务端。
+    const log = emptyLog();
+    mount(<Harness log={log} o={{ fetchFailTimes: 9, sessionOk: true, loggedIn: false }} />);
+    await run(() => a().checkAuthStatus());
+    await flush();
+
+    assert.equal(state().authed, true, "服务端还认这张会话 —— 标记丢了也不算未登录");
     assert.equal(state().authRequired, false);
 });
 
