@@ -31,6 +31,7 @@ import type {
 import type { D1PreparedStatement } from "../schema";
 import { migrationState } from "./internals";
 import { newUuid } from "../../utils/uuid";
+import { countWikiLinks } from "../../utils/noteWikiLink";
 import { extractNoteTags } from "../../utils/markdownNoteTags";
 import {
     buildFtsMatch,
@@ -226,20 +227,11 @@ function ftsScopeSql(api: NavigationAPI): string {
 
 /**
  * 数出正文里 `[[目标]]` 双链出现的次数（不含 `![[嵌入]]`）。
- * 用来给数据页「双链」一格做全站计数 —— 前端只持有当前账号的笔记列表，
- * 不持有全量正文，不能像「总字数」那样在本地现算，必须后端扫一遍。
+ *
+ * 2026-10-24：实现搬到 `utils/noteWikiLink.ts` —— 迁移里的老数据回填也要用它，
+ * 而 migration.ts 不该反过来引 methods/notes.ts（那会绕成一团）。
+ * 两处**必须同一份实现**，见那里的注释。
  */
-function countWikiLinks(text: string): number {
-    const re = /\[\[([^\]\n]+)\]\]/g;
-    let m: RegExpExecArray | null;
-    let n = 0;
-    while ((m = re.exec(text)) !== null) {
-        // 前一个字符是 ! 的就是嵌入 `![[...]]`，不计入双链
-        if (m.index > 0 && text[m.index - 1] === "!") continue;
-        n += 1;
-    }
-    return n;
-}
 
 /**
  * 把正文里指向某个附件的 Markdown 链接的**显示文本**换掉（2026-10-19 附件重命名）。
@@ -480,20 +472,27 @@ export const notesImpl: NotesApi = {
     notesStats: async function (this: NavigationAPI): Promise<NoteStats> {
         await this.migrate();
         return this.withSchemaRetry(async () => {
-            // 版本历史 = note_revision 行数（按账号隔离；user_id IS ? 对单账号 null 也成立）
-            const v = await this.db
-                .prepare(`SELECT COUNT(*) AS n FROM note_revision WHERE user_id IS ?`)
+            // 两个统计合成一次往返（D1 每次往返是几十毫秒，能合就合）。
+            //
+            // ⚠️ 2026-10-24 改（P1-2 消除 O(正文总量) 的全表扫）：
+            // 「双链」原来是 `SELECT content FROM notes` 把当前账号的**全部正文**
+            // 拉回 JS 再逐条正则数 `[[…]]` —— 打开一次数据页就是几 MB 的传输
+            // 加几 MB 的正则扫描，只为得到一个两位数。
+            // 现在读的是 `link_count` 这一列（写入时算好的，见 migrateNoteLinkCount），
+            // 正文一个字都不进 Worker。
+            //
+            // COALESCE 兜的是「回填还没跑完」的行（NULL = 还没算过）。
+            // 那种情况下这个数字偏小，但不会报错 —— 刻意如此：
+            // 统计数字暂时不准，比「数据页打不开」轻得多。
+            const row = await this.db
+                .prepare(
+                    `SELECT
+                        (SELECT COUNT(*) FROM note_revision WHERE user_id IS ?1) AS versions,
+                        (SELECT COALESCE(SUM(link_count), 0) FROM notes WHERE user_id IS ?1) AS links`
+                )
                 .bind(this.currentUserId)
-                .first<{ n: number }>();
-            // 双链 = 全站正文里 [[目标]] 的出现次数（不含 ![[嵌入]]）。
-            // 按需现扫一遍正文：数据页打开才算一次，量大时也只是 O(正文总长)。
-            const rows = await this.db
-                .prepare(`SELECT content FROM notes WHERE user_id IS ?`)
-                .bind(this.currentUserId)
-                .all<{ content: string | null }>();
-            let links = 0;
-            for (const r of rows.results ?? []) links += countWikiLinks(r.content ?? "");
-            return { versions: v?.n ?? 0, links };
+                .first<{ versions: number; links: number }>();
+            return { versions: row?.versions ?? 0, links: row?.links ?? 0 };
         });
     },
     exportNotesData: async function (this: NavigationAPI): Promise<NotesImportPayload> {
@@ -712,14 +711,17 @@ export const notesImpl: NotesApi = {
                 if (p.isNew) {
                     commitStatements.push(
                         this.db.prepare(
-                            `INSERT INTO notes (id, user_id, uuid, title, content, pinned, starred, order_num, site_id, folder_id, archived)
-                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`
+                            // link_count 必须在这里一起写：导入是「绕过 updateNote 的直接落库」，
+                            // 漏了它这一批笔记的双链数永远是 NULL（统计里当 0）。
+                            `INSERT INTO notes (id, user_id, uuid, title, content, link_count, pinned, starred, order_num, site_id, folder_id, archived)
+                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`
                         ).bind(
                             p.id,
                             // user_id 只能是导入者自己 —— 文件里那个值是导出方的，
                             // 照抄会把笔记写到别人名下，而这个字段是唯一的隔离依据
                             this.currentUserId,
-                            p.uuid, p.title, p.content, p.pinned ? 1 : 0, p.starred ? 1 : 0,
+                            p.uuid, p.title, p.content, countWikiLinks(p.content ?? ""),
+                            p.pinned ? 1 : 0, p.starred ? 1 : 0,
                             p.order_num,
                             p.folderId ?? null, p.archived ? 1 : 0
                         )
@@ -729,13 +731,15 @@ export const notesImpl: NotesApi = {
                         this.db.prepare(
                             // ⚠️ rev 也要 +1：导入是一次真正的写入，不改的话客户端手里的
                             // rev 会一直对不上（下一次保存被并发守卫挡住 → 「保存不了」）
-                            `UPDATE notes SET uuid = ?, title = ?, content = ?, pinned = ?,
+                            // link_count 同理要重算：正文被整段替换了，旧计数作废。
+                            `UPDATE notes SET uuid = ?, title = ?, content = ?, link_count = ?, pinned = ?,
                              starred = ?, rev = rev + 1,
                              order_num = ?, folder_id = CASE WHEN ? THEN ? ELSE folder_id END,
                              archived = COALESCE(?, archived), updated_at = CURRENT_TIMESTAMP
                              WHERE id = ?${this.scopeSql(true)}`
                         ).bind(...this.scopeParams([
-                            p.uuid, p.title, p.content, p.pinned ? 1 : 0, p.starred ? 1 : 0,
+                            p.uuid, p.title, p.content, countWikiLinks(p.content ?? ""),
+                            p.pinned ? 1 : 0, p.starred ? 1 : 0,
                             p.order_num, p.folderId !== undefined ? 1 : 0,
                             p.folderId ?? null, p.archived === undefined ? null : p.archived ? 1 : 0,
                             p.id,
@@ -875,6 +879,8 @@ export const notesImpl: NotesApi = {
         //      它在单账号部署（uid 为 NULL）下返回空数组，两种情况都对。
         const scopeTail = this.scopeParams([]);
         const uuid = draft.uuid || newUuid();
+        // 正文只求值一次：link_count 与 content 必须来自**同一份**字符串
+        const content = draft.content || "";
         const statement = this.db
             .prepare(
                 // ⚠️⚠️ 列数必须与值数**一一对应**：阶段三收尾给列尾加了 folder_id，
@@ -883,8 +889,8 @@ export const notesImpl: NotesApi = {
                 // POST /api/notes **一律 500，新建笔记功能整个不可用**
                 // （GET /api/notes 正常，所以列表看着好好的，一点都不像坏了）。
                 // 下面的 sql 形状守卫就是盯这一类：INSERT 的列数 ≠ 顶层值数就红。
-                `INSERT INTO notes (user_id, uuid, title, content, pinned, order_num, site_id, folder_id)
-                 VALUES (?, ?, ?, ?, ?, COALESCE((
+                `INSERT INTO notes (user_id, uuid, title, content, link_count, pinned, order_num, site_id, folder_id)
+                 VALUES (?, ?, ?, ?, ?, ?, COALESCE((
                      SELECT MAX(order_num) + 1 FROM notes${this.scopeSql(false)}
                  ), 0), ?, ?)
                  RETURNING ${NOTE_FIELDS}`
@@ -893,7 +899,9 @@ export const notesImpl: NotesApi = {
                 this.currentUserId,
                 uuid,
                 draft.title || "",
-                draft.content || "",
+                content,
+                // 双链数在写入时算好 —— 数据页统计读的就是这一列（见 notesStats）
+                countWikiLinks(content),
                 draft.pinned ? 1 : 0,
                 ...scopeTail,
                 draft.site_id ?? null,
@@ -940,6 +948,10 @@ export const notesImpl: NotesApi = {
             if (patch.content !== undefined) {
                 updates.push("content = ?");
                 params.push(patch.content);
+                // 正文变了，双链数必须跟着重算 —— 否则数据页那个数字永远停在旧值。
+                // 与 content 紧挨着 push，保证 params 顺序与 updates 一一对应。
+                updates.push("link_count = ?");
+                params.push(countWikiLinks(patch.content));
             }
             if (patch.pinned !== undefined) {
                 updates.push("pinned = ?");
@@ -1423,23 +1435,52 @@ export const notesImpl: NotesApi = {
     }> {
         await this.migrate();
         return this.withSchemaRetry(async () => {
-            // 全量附件元数据（object_key 只在服务端链路里用，前端列表会被剥掉、
-            // 但 prune 本身只在 worker 侧跑，拿得到）。
+            // 一次查询直接把「没有任何正文引用」的附件挑出来。
+            //
+            // ⚠️ 2026-10-24 改（P1-2 消除 O(正文总量) 的全表扫）：
+            // 老写法是「SELECT content FROM notes 全表拉回 JS → join 成一个大字符串
+            // → 逐个 id 做 includes」。三个问题叠在一起：
+            //   ① 把当前账号的**全部正文**从 D1 传进 Worker（几百条 × 几 KB 就是几 MB）；
+            //   ② 再拼一个同等大小的字符串，峰值内存是正文总量的 2 倍；
+            //   ③ `includes` 每命中不了就从头再扫 —— O(附件数 × 正文总量)。
+            // 现在交给 SQLite 一次算完：NOT EXISTS + INSTR，内存只跟**结果集**有关
+            // （被删的附件通常是个位数），正文一个字都不进 Worker。
+            //
+            // 判据没变：正文里出现这个 id 就算「还在用」。
+            // 范围是**全部**笔记 —— 归档仍在 notes 表里，回收站不在（见下面第二条）。
+            //
+            // 关联条件用 `n.user_id IS a.user_id` 而不是 `=`：单账号部署下两边都是 NULL，
+            // `=` 对 NULL 恒为假，会把「有引用」全判成「没引用」→ **误删所有附件**。
+            // IS 在 SQLite 里对非 NULL 等价于 =，只在 NULL 上做特判，正好是我们要的。
+            //
+            // ⚠️ 第二条 NOT EXISTS 是这次补的**既存缺陷**（2026-10-24 由新增用例抓出来）：
+            // `deleteNote` 是「把整行搬进 recycle_bin.data（JSON）→ 再从 notes 删行」，
+            // 所以回收站里的笔记**正文根本不在 notes 表里**。老实现（只查 notes）因此会
+            // 把「一条带图的笔记进回收站 → 清一次附件」的图**真删掉**，用户还原笔记后
+            // 图片打不开。注释里当时写着「含回收站」，但代码并没有做到。
+            // 现在补一层：在 recycle_bin.data 这份 JSON 文本里找附件 id（id 是 uuid 字符串，
+            // 原样出现在 JSON 里，INSTR 足够且不需要解析 JSON）。
+            const scopeA = this.currentUserId === null ? "" : " AND a.user_id = ?";
             const atts = await this.db
                 .prepare(
-                    `SELECT id, size, storage, object_key FROM attachments ${this.scopeSql(false)}`
+                    `SELECT a.id, a.size, a.storage, a.object_key
+                       FROM attachments a
+                      WHERE 1 = 1${scopeA}
+                        AND NOT EXISTS (
+                              SELECT 1 FROM notes n
+                               WHERE n.user_id IS a.user_id
+                                 AND INSTR(n.content, a.id) > 0
+                        )
+                        AND NOT EXISTS (
+                              SELECT 1 FROM recycle_bin r
+                               WHERE r.kind = 'note'
+                                 AND r.owner_user_id IS a.user_id
+                                 AND INSTR(r.data, a.id) > 0
+                        )`
                 )
-                // ⚠️ scopeSql(false) 登录用户下是 "WHERE user_id = ?"，必须补 bind（同 listAttachments）
                 .bind(...this.scopeParams([]))
                 .all<{ id: string; size: number; storage: string; object_key: string }>();
-            // 正文全集（含回收站 / 归档）：还原后图片还得能用，所以判据是
-            // 「任何一篇的正文里都没出现这个 id」，不是「所属笔记已删除」。
-            const rows = await this.db
-                .prepare(`SELECT content FROM notes ${this.scopeSql(false)}`)
-                .bind(...this.scopeParams([]))
-                .all<{ content: string | null }>();
-            const corpus = (rows.results || []).map(r => r.content || "").join("\n");
-            const removed = (atts.results || []).filter(a => !corpus.includes(a.id));
+            const removed = atts.results || [];
             for (const a of removed) {
                 await this.db.batch([
                     this.db.prepare(`INSERT OR IGNORE INTO configs (key, value)

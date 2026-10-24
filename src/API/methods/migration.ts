@@ -8,6 +8,7 @@
 import type { NavigationAPI } from "../http";
 import { RECOVERY_PUBLIC_KEY_CONFIG, WEBDAV_CONFIG_PREFIX } from "../configKeys";
 import { encryptSecret, hashPassword, isHashedPassword } from "../crypto";
+import { countWikiLinks } from "../../utils/noteWikiLink";
 import type { D1PreparedStatement } from "../schema";
 import {
     ATTACHMENTS_TABLE_STATEMENTS,
@@ -71,7 +72,10 @@ import {
 // 23 = user_sessions.device_id（设备判重改客户端持久 ID，修两台 Windows+Chrome 互踢）。
 // 24 = idx_notes_site（notes(site_id) 站点↔笔记绑定反查索引，#477）。
 //     同样吃快路径，同样必须 +1 —— 否则老库上站点列表那两个相关子查询永远是全表扫。
-export const SCHEMA_VERSION = "24";
+// 25 = notes.link_count（每一行的双链条数，2026-10-24）。
+//     加列同样吃快路径，必须 +1；回填也挂在这一步（`WHERE link_count IS NULL` 分批扫，
+//     所以即使中途失败，下次迁移还会接着填）。
+export const SCHEMA_VERSION = "25";
 /** 版本号存在 configs 里的键名 */
 export const SCHEMA_VERSION_KEY = "schema.version";
 
@@ -110,6 +114,8 @@ export interface MigrationApi {
     migrateNoteShareColumns(): Promise<void>;
     /** 2026-10-09：notes 补收藏（starred）与乐观并发版本号（rev）两列 */
     migrateNoteStarRevColumns(): Promise<void>;
+    /** 2026-10-24：notes 补 link_count（双链条数），让数据页统计不再全表拉正文 */
+    migrateNoteLinkCount(): Promise<void>;
     /** 2026-10-11：group_share（公开分组分享，阶段④） */
     migrateGroupShareTable(): Promise<void>;
     /** 2026-10-13：把升级前落库的明文站点凭据一次性加密写回 */
@@ -280,6 +286,10 @@ export const migrationImpl: MigrationApi = {
 
         // 6.75) 2026-10-09：notes 补 starred（收藏）与 rev（乐观并发版本号）。
         await this.migrateNoteStarRevColumns();
+
+        // 6.76) 2026-10-24：notes 补 link_count（这一行正文里的双链条数）。
+        // 排在 notes 建表与 starred/rev 之后 —— 它只是多一列，不依赖别的表。
+        await this.migrateNoteLinkCount();
 
         // 6.8) 2026-10-09：笔记全文检索的 FTS5 虚拟表。
         // 同样必须**显式建**（快路径会跳过建表那批），且失败要能降级（见方法注释）。
@@ -564,6 +574,62 @@ export const migrationImpl: MigrationApi = {
                 await this.db.prepare("UPDATE notes SET rev = 1 WHERE rev IS NULL").run();
             } catch {
                 // 回填失败不该让站点起不来；代价只是那几行第一次保存可能报冲突
+            }
+        }
+    },
+
+    /**
+     * notes 补 `link_count` 列（2026-10-24）：这一行正文里的 `[[双链]]` 条数。
+     *
+     * 为什么要存一列：数据页的「双链」一格要的是**当前账号的全站总数**，而前端只持有
+     * 截断后的列表（`?fields=list`），本地算不了；只能后端统计。老实现是
+     * 「SELECT content FROM notes 全表拉回 JS 逐条正则」—— 打开一次数据页就把当前账号的
+     * **全部正文**从 D1 搬进 Worker：几百条笔记就是几 MB 的传输 + 几 MB 的正则扫描，
+     * 全为了一个两位数。现在改成「写入时算好、读取时 SUM 一列」：读变成 O(1)。
+     *
+     * 写入侧的三条路径（createNote / updateNote / importNotes）必须都维护这一列，
+     * 漏一处就会慢慢累出偏差 —— 所以统计口径统一走 `utils/noteWikiLink.countWikiLinks`。
+     *
+     * 老数据要回填一次（这一次确实扫全表，但只在版本升级时跑一次）：
+     *   · 哨兵用 **NULL 而不是 0** —— 「0 条双链」是合法值，不能和「还没算过」混淆；
+     *   · 分批（每批 200 条），避免一次把全部正文读进内存；
+     *   · 分页靠 `WHERE link_count IS NULL LIMIT 200`：每批填完就不再被选中，
+     *     不需要额外游标。
+     */
+    migrateNoteLinkCount: async function (this: NavigationAPI ): Promise<void> {
+        if (!(await this.hasColumn("notes", "link_count"))) {
+            try {
+                // 可空、无默认值：NULL = 还没算过（见上面哨兵的说明）
+                await this.db.exec("ALTER TABLE notes ADD COLUMN link_count INTEGER");
+            } catch {
+                // 列已存在（并发迁移）或表不存在，忽略
+            }
+        }
+        for (;;) {
+            let batch: { id: number; content: string | null }[];
+            try {
+                const rows = await this.db
+                    .prepare("SELECT id, content FROM notes WHERE link_count IS NULL LIMIT 200")
+                    .all<{ id: number; content: string | null }>();
+                batch = rows.results || [];
+            } catch {
+                // notes 表还不存在（全新库：建表语句在第 1 步，本步骤排在它后面，
+                // 但某些降级/自愈路径可能还没跑到）—— 没有行需要回填
+                return;
+            }
+            if (batch.length === 0) return;
+            try {
+                await this.db.batch(
+                    batch.map(row =>
+                        this.db
+                            .prepare("UPDATE notes SET link_count = ?1 WHERE id = ?2")
+                            .bind(countWikiLinks(row.content ?? ""), row.id)
+                    )
+                );
+            } catch {
+                // 回填失败不该让站点起不来：剩下的行下次迁移还会被选中（仍为 NULL）。
+                // 代价只是「双链」那个数字暂时偏小。
+                return;
             }
         }
     },
