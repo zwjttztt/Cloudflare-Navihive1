@@ -32,6 +32,7 @@ import { handleAiRoutes } from "./routes/ai";
 import { handleBackupRoutes } from "./routes/backup";
 import { handleConfigRoutes } from "./routes/config";
 import { handleDataRoutes } from "./routes/data";
+import { handleVaultRoutes } from "./routes/vault";
 import { enforceAuth, enforceMaintenance, type TokenSession } from "./routes/middleware";
 import { handleOpsRoutes } from "./routes/ops";
 import { handlePublicRoutes } from "./routes/public";
@@ -51,6 +52,7 @@ export const PROTECTED_ROUTES = [
     handleAccountRoutes,
     handleOpsRoutes,
     handleDataRoutes,
+    handleVaultRoutes,
     handleConfigRoutes,
     handleBackupRoutes,
     handleAiRoutes,

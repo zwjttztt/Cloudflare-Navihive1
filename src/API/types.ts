@@ -825,3 +825,43 @@ export type AiTestResponse =
           text?: AiProbeResult;
           embed?: AiProbeResult;
       };
+
+// ---- 保险库（方案 B，端到端加密，schema 26）----
+// ⚠️ 这些形状**只有密文字段**：服务端存/搬的都是 base64 密文，永远解不出明文。
+// 明文的加解密全在客户端 utils/vaultCrypto.ts 做，服务端连「条目叫什么」都不知道。
+
+/** vault_keys 一行（每用户一条）：KDF 参数 + 两份包好的 DEK。全密文/公开参数，无敏感明文。 */
+export interface VaultKeysRecord {
+    /** PBKDF2 盐（base64，可公开） */
+    kdf_salt: string;
+    kdf_iterations: number;
+    /** 用主密码包的 DEK：IV（base64）+ 密文（base64） */
+    wrapped_dek_iv: string;
+    wrapped_dek: string;
+    /** 用恢复码包的同一份 DEK */
+    wrapped_dek_recovery_iv: string;
+    wrapped_dek_recovery: string;
+    updated_at?: string;
+}
+
+/** 保存/更新 vault_keys 的入参（客户端生成 DEK 并两份包好后上传） */
+export type VaultKeysInput = Omit<VaultKeysRecord, "updated_at">;
+
+/** vault_entries 一行：整条的密文信封（标题/URL/用户名/密码/备注全在 ciphertext 里） */
+export interface VaultEntryRecord {
+    id: number;
+    ciphertext: string;
+    iv: string;
+    /** 可选关联到某张导航卡片（不参与加密，服务端可见的明文仅此一个） */
+    site_id: number | null;
+    created_at?: string;
+    updated_at?: string;
+}
+
+/** 保存/更新一条的入参；带 id = 更新，不带 = 新建 */
+export interface VaultEntryInput {
+    id?: number;
+    ciphertext: string;
+    iv: string;
+    site_id?: number | null;
+}

@@ -69,7 +69,7 @@ async function whoClaims(path: string, method: string): Promise<string[]> {
     return hits;
 }
 
-// 全部 49 个路由分支。startsWith 的那几个（users/ groups/ sites/ configs/）
+// 全部 54 个路由分支。startsWith 的那几个（users/ groups/ sites/ configs/）
 // 用一条具体路径代表 —— 前缀匹配对任意 id 都成立，测一个就够。
 const EXPECTED: Array<[string, string]> = [
     // public：不需要登录
@@ -134,6 +134,12 @@ const EXPECTED: Array<[string, string]> = [
     ["POST", "ai/suggest-tags"],
     ["POST", "ai/embed"],
     ["POST", "ai/search"],
+    // vault（方案 B 保险库：服务端只搬密文）
+    ["GET", "vault/keys"],
+    ["PUT", "vault/keys"],
+    ["GET", "vault/entries"],
+    ["POST", "vault/entries"],
+    ["DELETE", "vault/entries/1"],
 ];
 
 // 测试期间任何 fetch 都不许真的发出去：分支里若有外网调用（图标、meta、WebDAV），
@@ -142,7 +148,7 @@ const realFetch = globalThis.fetch;
 globalThis.fetch = async () => new Response("{}", { status: 200 });
 
 test("分发表里的模块数量与预期一致", () => {
-    assert.equal(TABLE.length, 7, "public + 6 个受保护路由模块");
+    assert.equal(TABLE.length, 8, "public + 7 个受保护路由模块");
     assert.deepEqual(
         TABLE.map(([name]) => name).sort(),
         [
@@ -152,12 +158,13 @@ test("分发表里的模块数量与预期一致", () => {
             "handleDataRoutes",
             "handleOpsRoutes",
             "handleAiRoutes",
+            "handleVaultRoutes",
             "public",
         ].sort(),
     );
 });
 
-test("49 个路由分支全部有人认领，且不重复", async () => {
+test("54 个路由分支全部有人认领，且不重复", async () => {
     for (const [method, path] of EXPECTED) {
         const hits = await whoClaims(path, method);
         assert.ok(
@@ -185,11 +192,12 @@ test("不存在的路径 / 方法组合落到 404（无人认领）", async () =
     }
 });
 
-test("受保护路由链的顺序：账号 → 运维 → 数据 → 配置 → 备份 → AI", () => {
+test("受保护路由链的顺序：账号 → 运维 → 数据 → 保险库 → 配置 → 备份 → AI", () => {
     assert.deepEqual(PROTECTED_ROUTES.map(fn => fn.name), [
         "handleAccountRoutes",
         "handleOpsRoutes",
         "handleDataRoutes",
+        "handleVaultRoutes",
         "handleConfigRoutes",
         "handleBackupRoutes",
         "handleAiRoutes",

@@ -42,7 +42,9 @@ import { auditImpl } from "./methods/audit";
 import { dataImpl } from "./methods/data";
 import { notesImpl } from "./methods/notes";
 import { groupSharesImpl } from "./methods/groupShares";
+import { vaultImpl } from "./methods/vault";
 import type { NotesApi } from "./methods/notes";
+import type { VaultApi } from "./methods/vault";
 import type { GroupShareApi } from "./methods/groupShares";
 import { recycleImpl } from "./methods/recycle";
 import { configImpl } from "./methods/config";
@@ -69,6 +71,7 @@ export interface NavigationAPI extends
     DataApi,
     NotesApi,
     GroupShareApi,
+    VaultApi,
     RecycleApi,
     ConfigApi,
     TransferApi,
@@ -205,7 +208,7 @@ export class NavigationAPI {
 
 // 把各域的方法体混回原型。逐个 assign 而不是一次性 Object.assign(原型, a, b, c...)：
 // 后者的重载只到三个源，而且一次性混入会让「哪个域没生效」难查。
-for (const mixin of [migrationImpl, authImpl, recoveryImpl, accountsImpl, auditImpl, dataImpl, notesImpl, groupSharesImpl, recycleImpl, configImpl, transferImpl, sessionsImpl, idempotencyImpl, aiImpl]) {
+for (const mixin of [migrationImpl, authImpl, recoveryImpl, accountsImpl, auditImpl, dataImpl, notesImpl, groupSharesImpl, vaultImpl, recycleImpl, configImpl, transferImpl, sessionsImpl, idempotencyImpl, aiImpl]) {
     Object.assign(NavigationAPI.prototype, mixin);
 }
 
