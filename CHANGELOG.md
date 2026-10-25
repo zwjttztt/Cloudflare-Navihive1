@@ -6,6 +6,14 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。---
 
+## 2026-10-25 · 修复：笔记备份导入不再丢失卡片绑定（指纹重连）
+
+**要点**
+- **（修复）真 bug**：笔记备份导入的 INSERT 把 `site_id` 硬编码为 `NULL`——任何导入（哪怕是同一台服务器的「恢复」）新建的笔记都会丢掉与站点的绑定；主备份导入端虽有 siteIdMap 重映射逻辑，但导出端不带笔记，这条链路形同虚设。
+- **（修复）导出带指纹**（改法 1）：`exportNotesData` 新增 `boundSites` 字段——只收集被笔记引用的站点 `{ id, name, url }`；导入端按「规范化 URL 唯一命中 → 名称唯一命中」在目标库重连 `site_id`，匹配不到或多处歧义一律置空（宁可断绑不错绑）；老备份文件没有 `boundSites` 同样置空，行为与从前一致。
+- **（修复）INSERT 去 NULL 硬编码**：`importNotesData` 的 plan 增加 `siteId` 计算（含 usedSites 先到先得，一站一篇约束对脏数据也成立），INSERT 的 `site_id` 由硬编码 NULL 改为 plan 值；UPDATE 路径同样带 `site_id`（CASE 保旧值）；绑定前先解绑同站已有笔记（与 updateNote/createNote 的「一站一篇」约束同一套语义）。
+- **（验证）** `tests/notesBackup.test.ts` 新增 3 条真实 SQLite 用例：①跨库按 URL 重连（目标库占位站占 id 1、改名站占 id 2，证明是指纹重连而非照抄旧 id）；②指纹匹配不到 / 老备份无指纹均置空；③一站一篇先到先得 + 本地占位被解绑。notesBackup 全套 24 条、全量 3207 条单测 / typecheck / lint / build / smoke / bundleBudget / a11y / contrast 全绿。
+
 ## 2026-10-25 · 重构：密码健康从「更多选项」独立弹窗挪进「账号与安全」
 
 **要点**

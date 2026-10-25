@@ -217,8 +217,10 @@ function makeRealD1() {
     };
     return {
         prepare: (sql: string) => wrap(db.prepare(sql)),
-        batch: async (stmts: Array<{ run: () => Promise<{ success: boolean }> }>) =>
-            Promise.all(stmts.map(s => s.run())),
+        batch: async (stmts: Array<{ all: () => Promise<{ success: boolean }> }>) =>
+            // 走 all() 而不是 run()：D1 的 batch 返回每条语句的结果集，
+            // createNote 等调用方要读 .results（run() 只有 meta，会被判「创建失败」）
+            Promise.all(stmts.map(s => s.all())),
         async exec(sql: string) {
             db.exec(sql);
         },
@@ -280,6 +282,131 @@ test("真实 SQLite：exportNotesData 形状齐全，导出 → 导入闭环能�
     assert.equal(other.notes?.length ?? 0, 0);
     assert.equal(other.folders?.length ?? 0, 0);
     api.setCurrentUser(null);
+});
+
+test("真实 SQLite：卡片绑定的笔记，指纹随备份导出、跨库按 URL 重连", async () => {
+    resetMigrationCacheForTests();
+    const dbA = makeRealD1();
+    const apiA = makeApi(dbA);
+    await apiA.migrate();
+    const groupA = await apiA.createGroup({ name: "组", order_num: 0 } as never);
+    const siteA = await apiA.createSite({
+        group_id: groupA.id,
+        name: "示例站",
+        url: "https://example.com/a",
+        icon: "",
+        description: "",
+        order_num: 0,
+    } as never);
+    await apiA.createNote({ title: "绑卡片的笔记", content: "正文", site_id: siteA.id });
+    await apiA.createNote({ title: "没绑定的笔记", content: "正文2" });
+
+    const exported = await apiA.exportNotesData();
+    assert.deepEqual(
+        (exported.boundSites ?? []).map(s => [s.id, s.name, s.url]),
+        [[siteA.id, "示例站", "https://example.com/a"]],
+        "只带被笔记引用的站点指纹"
+    );
+
+    // 模拟另一台服务器：全新库，先建一个别的站点占住 id 1 —— A 里的绑定 id 也是 1，
+    // 老行为「原样插 site_id」在这里会错绑到「占位站」头上
+    const dbB = makeRealD1();
+    const apiB = makeApi(dbB);
+    // 迁移缓存是模块级的：换新库必须重置，否则 dbB 会跳过迁移（no such table）
+    resetMigrationCacheForTests();
+    await apiB.migrate();
+    const groupB = await apiB.createGroup({ name: "组", order_num: 0 } as never);
+    await apiB.createSite({ group_id: groupB.id, name: "占位站", url: "https://b.example.com", icon: "", description: "", order_num: 0 } as never);
+    const siteB = await apiB.createSite({
+        group_id: groupB.id,
+        name: "改了名的示例站", // 名字都变了 —— 只能靠 URL 指纹对上
+        icon: "",
+        description: "",
+        url: "https://example.com/a",
+        order_num: 0,
+    } as never);
+
+    const stats = await apiB.importNotesData(exported);
+    assert.equal(stats.created, 2);
+    const notesB = await apiB.listNotes();
+    const bound = notesB.find(n => n.title === "绑卡片的笔记")!;
+    assert.equal(
+        bound.site_id,
+        siteB.id,
+        "按 URL 指纹重连到 B 库的新 id"
+    );
+    assert.notEqual(bound.site_id, siteA.id, "不能照抄 A 的旧 id（那会错绑到「占位站」）");
+    const unbound = notesB.find(n => n.title === "没绑定的笔记")!;
+    assert.equal(unbound.site_id ?? null, null, "没绑定的笔记导入后也不该凭空出现绑定");
+});
+
+test("真实 SQLite：指纹匹配不到置空（宁可断绑不错绑）；老备份没有指纹同样置空", async () => {
+    resetMigrationCacheForTests();
+    const db = makeRealD1();
+    const api = makeApi(db);
+    await api.migrate();
+    const group = await api.createGroup({ name: "组", order_num: 0 } as never);
+    await api.createSite({ group_id: group.id, name: "本地站", url: "https://local.example.com", icon: "", description: "", order_num: 0 } as never);
+
+    // 新备份：指纹指向本地不存在的站点 → 置空，不断错绑
+    const newer = await api.importNotesData({
+        kind: "navihive-notes-backup",
+        notes: [
+            { uuid: "u1", title: "t1", content: "c1", site_id: 99 } as never,
+            { uuid: "u2", title: "t2", content: "c2", site_id: null } as never,
+        ],
+        boundSites: [{ id: 99, name: "不存在的站", url: "https://ghost.example.com" }],
+    });
+    assert.equal(newer.created, 2);
+    let notes = await api.listNotes();
+    assert.equal(notes.find(n => n.title === "t1")!.site_id ?? null, null);
+    assert.equal(notes.find(n => n.title === "t2")!.site_id ?? null, null);
+
+    // 老备份：没有 boundSites 字段 → 无从判断，同样置空（老行为本来就是 NULL）
+    const older = await api.importNotesData({
+        kind: "navihive-notes-backup",
+        notes: [{ uuid: "u3", title: "t3", content: "c3", site_id: 1 } as never],
+    });
+    assert.equal(older.created, 1);
+    notes = await api.listNotes();
+    assert.equal(notes.find(n => n.title === "t3")!.site_id ?? null, null);
+});
+
+test("真实 SQLite：一站一篇 —— 同批抢同一站点先到先得，本地占位被解绑", async () => {
+    resetMigrationCacheForTests();
+    const dbA = makeRealD1();
+    const apiA = makeApi(dbA);
+    await apiA.migrate();
+    const groupA = await apiA.createGroup({ name: "组", order_num: 0 } as never);
+    const siteA = await apiA.createSite({ group_id: groupA.id, name: "站", url: "https://x.example.com", icon: "", description: "", order_num: 0 } as never);
+    await apiA.createNote({ title: "a", content: "a" });
+    await apiA.createNote({ title: "b", content: "b" });
+    // 手工把两条都指向同一站点，模拟「导出方违反约束的脏数据」
+    const exported = await apiA.exportNotesData();
+    const payload = {
+        ...exported,
+        notes: exported.notes!.map(n => ({ ...n, site_id: siteA.id })),
+        // 手工补指纹（导出时库里还没有绑定，boundSites 是空的）：模拟「导出方带指纹的脏数据」
+        boundSites: [{ id: siteA.id!, name: "站", url: "https://x.example.com" }],
+    };
+
+    const dbB = makeRealD1();
+    const apiB = makeApi(dbB);
+    // 迁移缓存是模块级的：换新库必须重置，否则 dbB 会跳过迁移（no such table）
+    resetMigrationCacheForTests();
+    await apiB.migrate();
+    const groupB = await apiB.createGroup({ name: "组", order_num: 0 } as never);
+    const siteB = await apiB.createSite({ group_id: groupB.id, name: "站", url: "https://x.example.com", icon: "", description: "", order_num: 0 } as never);
+    // 本地已有一篇绑定同站点的笔记（不在备份里）：导入后应被解绑
+    await apiB.createNote({ title: "本地占位", content: "x", site_id: siteB.id });
+
+    const stats = await apiB.importNotesData(payload);
+    assert.equal(stats.created, 2);
+    const notesB = await apiB.listNotes();
+    const bound = notesB.filter(n => n.site_id === siteB.id);
+    assert.equal(bound.length, 1, "一站一篇：全库只允许一条绑定");
+    assert.equal(bound[0].title, "a", "先到先得（按备份文件顺序）");
+    assert.ok(!notesB.some(n => n.title === "本地占位" && n.site_id === siteB.id), "本地占位被解绑");
 });
 
 test("真实 SQLite：运行记录经 configs 读写（含坏 JSON 容错）", async () => {

@@ -6,6 +6,7 @@ import type { NavigationAPI } from "../../http";
 import type { NotesApi } from "../notes";
 import type {
     Note,
+    NoteBackupSiteRef,
     NoteFolder,
     NotesChangesResult,
     NotesImportPayload,
@@ -16,6 +17,7 @@ import { newUuid } from "../../../utils/uuid";
 import { countWikiLinks } from "../../../utils/noteWikiLink";
 import { segmentCJK, FTS_CONTENT_LIMIT } from "../../../utils/ftsQuery";
 import { sqlNow } from "../../../utils/sqlTime";
+import { normalizeUrl } from "../../../utils/url";
 
 export const backupMethods: Pick<NotesApi,
     "exportNotesData" | "notesChanges" | "importNotesData"> = {
@@ -34,6 +36,28 @@ export const backupMethods: Pick<NotesApi,
         for (const [noteId, tagIds] of Object.entries(noteTags)) {
             noteTagsOut[String(noteId)] = tagIds;
         }
+        // 绑定指纹（2026-10-25）：site_id 只在导出方的库里有效，跨机导入时站点 id 会重排，
+        // 只有「名称 + URL」能跨库对上（importNotesData 按指纹重连，否则绑定全断）。
+        // 只带被笔记引用的站点，不搬全量站点表。
+        const boundIds = [
+            ...new Set(
+                notes
+                    .map(n => n.site_id)
+                    .filter((id): id is number => typeof id === "number")
+            ),
+        ];
+        const boundSites: NoteBackupSiteRef[] = [];
+        if (boundIds.length > 0) {
+            const siteRows = await this.db
+                .prepare(`SELECT id, name, url FROM sites${this.scopeSql(false)}`)
+                .bind(...this.scopeParams([]))
+                .all<{ id: number; name: string; url: string | null }>();
+            const byId = new Map((siteRows.results || []).map(r => [r.id, r]));
+            for (const id of boundIds) {
+                const row = byId.get(id);
+                if (row) boundSites.push({ id, name: row.name || "", url: row.url || "" });
+            }
+        }
         return {
             kind: "navihive-notes-backup",
             exportedAt: new Date().toISOString(),
@@ -41,6 +65,7 @@ export const backupMethods: Pick<NotesApi,
             folders,
             tags,
             noteTags: noteTagsOut,
+            boundSites,
         };
     },
     /**
@@ -175,6 +200,46 @@ export const backupMethods: Pick<NotesApi,
                 }
             }
 
+            // ── 绑定重连（2026-10-25）：site_id 只在导出方的库里有效，跨机导入时站点 id 会重排──
+            // 新版备份带 boundSites（站点指纹）：按「规范化 URL 唯一命中 → 名称唯一命中」重连，
+            // 命中不了或有歧义一律置空 —— 宁可断绑，不错绑到别的卡片上。
+            // 老备份没有指纹，无从判断，同样置空（老行为本来就是 NULL，不算回退）。
+            // 一站一篇约束与 updateNote/createNote 同源：同批抢同一站点的先到先得，
+            // 本地已占位的绑定由赋值前的「解绑同站」语句清掉（见提交循环）。
+            const siteResolve = new Map<number, number | null>();
+            const boundRefs = Array.isArray(payload.boundSites) ? payload.boundSites : [];
+            if (boundRefs.length > 0) {
+                const siteRows = await this.db
+                    .prepare(`SELECT id, name, url FROM sites${this.scopeSql(false)}`)
+                    .bind(...this.scopeParams([]))
+                    .all<{ id: number; name: string; url: string | null }>();
+                const canonicalUrl = (u: string | null | undefined) => {
+                    if (!u) return "";
+                    const r = normalizeUrl(u);
+                    return r.ok ? r.url : "";
+                };
+                const byUrl = new Map<string, number[]>();
+                const byName = new Map<string, number[]>();
+                for (const s of siteRows.results || []) {
+                    const ku = canonicalUrl(s.url);
+                    if (ku) byUrl.set(ku, [...(byUrl.get(ku) ?? []), s.id]);
+                    const kn = (s.name || "").trim();
+                    if (kn) byName.set(kn, [...(byName.get(kn) ?? []), s.id]);
+                }
+                for (const ref of boundRefs) {
+                    if (!ref || typeof ref.id !== "number" || siteResolve.has(ref.id)) continue;
+                    let resolved: number | null = null;
+                    const urlHits = byUrl.get(canonicalUrl(ref.url));
+                    if (urlHits && urlHits.length === 1) {
+                        resolved = urlHits[0];
+                    } else {
+                        const nameHits = byName.get((ref.name || "").trim());
+                        if (nameHits && nameHits.length === 1) resolved = nameHits[0];
+                    }
+                    siteResolve.set(ref.id, resolved);
+                }
+            }
+
             // ── 笔记合并：先读本地算计划（uuid 相同比 updated_at，文件较新才覆盖）──
             const localRows = await this.db
                 .prepare(`SELECT id, uuid, updated_at FROM notes${this.scopeSql(false)}`)
@@ -196,12 +261,23 @@ export const backupMethods: Pick<NotesApi,
                 starred: boolean;
                 order_num: number;
                 folderId: number | null | undefined;
+                siteId: number | null | undefined;
                 archived: boolean | undefined;
                 isNew: boolean;
             }> = [];
             for (const n of incoming) {
                 const local = localByUuid.get(n.uuid!);
                 const folderId = n.folder_id !== undefined ? folderMap.get(n.folder_id ?? 0) ?? null : undefined;
+                // 绑定：文件里没这个字段（很老的导出）→ 不动本地；有字段 → 按指纹解析
+                //（解析不了置 null）。新笔记没有「本地」可保持，置 null 就是最终态。
+                const siteId =
+                    n.site_id === undefined
+                        ? undefined
+                        : typeof n.site_id === "number"
+                          ? siteResolve.size > 0
+                                ? siteResolve.get(n.site_id) ?? null
+                                : null
+                          : null;
                 if (!local) {
                     plan.push({
                         id: ++nextNoteId,
@@ -209,7 +285,7 @@ export const backupMethods: Pick<NotesApi,
                         title: n.title, content: n.content,
                         pinned: Boolean(n.pinned), starred: Boolean(n.starred),
                         order_num: n.order_num ?? 0,
-                        folderId, archived: n.archived, isNew: true,
+                        folderId, siteId, archived: n.archived, isNew: true,
                     });
                     stats.created += 1;
                 } else if (Date.parse(n.updated_at || "") > Date.parse(local.updated_at || "")) {
@@ -220,7 +296,7 @@ export const backupMethods: Pick<NotesApi,
                         title: n.title, content: n.content,
                         pinned: Boolean(n.pinned), starred: Boolean(n.starred),
                         order_num: n.order_num ?? 0,
-                        folderId, archived: n.archived, isNew: false,
+                        folderId, siteId, archived: n.archived, isNew: false,
                     });
                     stats.updated += 1;
                 } else {
@@ -229,16 +305,37 @@ export const backupMethods: Pick<NotesApi,
                 }
             }
 
+            // 一站一篇：同批两个笔记解析到同一站点时先到先得，后者置空
+            const usedSites = new Set<number>();
+            for (const p of plan) {
+                if (typeof p.siteId === "number") {
+                    if (usedSites.has(p.siteId)) p.siteId = null;
+                    else usedSites.add(p.siteId);
+                }
+            }
+
             // ── 提交：一个 batch = 一个事务，中途失败全部回滚 ──
             const planByUuid = new Map(plan.map(p => [p.uuid, p]));
             for (const p of plan) {
+                // 一站一篇：把同站点上别的笔记先解绑（与 updateNote/createNote 同一约束）。
+                // 必须排在赋值语句前面 —— batch 内按顺序执行；对新建笔记而言此时
+                // 它自己还没入表，解绑语句只会清掉「本地占位」的别人。
+                if (typeof p.siteId === "number") {
+                    commitStatements.push(
+                        this.db
+                            .prepare(
+                                `UPDATE notes SET site_id = NULL WHERE site_id = ?${this.scopeSql(true)}`
+                            )
+                            .bind(...this.scopeParams([p.siteId]))
+                    );
+                }
                 if (p.isNew) {
                     commitStatements.push(
                         this.db.prepare(
                             // link_count 必须在这里一起写：导入是「绕过 updateNote 的直接落库」，
                             // 漏了它这一批笔记的双链数永远是 NULL（统计里当 0）。
                             `INSERT INTO notes (id, user_id, uuid, title, content, link_count, pinned, starred, order_num, site_id, folder_id, archived)
-                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`
+                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
                         ).bind(
                             p.id,
                             // user_id 只能是导入者自己 —— 文件里那个值是导出方的，
@@ -247,6 +344,7 @@ export const backupMethods: Pick<NotesApi,
                             p.uuid, p.title, p.content, countWikiLinks(p.content ?? ""),
                             p.pinned ? 1 : 0, p.starred ? 1 : 0,
                             p.order_num,
+                            p.siteId ?? null,
                             p.folderId ?? null, p.archived ? 1 : 0
                         )
                     );
@@ -259,13 +357,16 @@ export const backupMethods: Pick<NotesApi,
                             `UPDATE notes SET uuid = ?, title = ?, content = ?, link_count = ?, pinned = ?,
                              starred = ?, rev = rev + 1,
                              order_num = ?, folder_id = CASE WHEN ? THEN ? ELSE folder_id END,
+                             site_id = CASE WHEN ? THEN ? ELSE site_id END,
                              archived = COALESCE(?, archived), updated_at = CURRENT_TIMESTAMP
                              WHERE id = ?${this.scopeSql(true)}`
                         ).bind(...this.scopeParams([
                             p.uuid, p.title, p.content, countWikiLinks(p.content ?? ""),
                             p.pinned ? 1 : 0, p.starred ? 1 : 0,
                             p.order_num, p.folderId !== undefined ? 1 : 0,
-                            p.folderId ?? null, p.archived === undefined ? null : p.archived ? 1 : 0,
+                            p.folderId ?? null,
+                            p.siteId !== undefined ? 1 : 0, p.siteId ?? null,
+                            p.archived === undefined ? null : p.archived ? 1 : 0,
                             p.id,
                         ]))
                     );

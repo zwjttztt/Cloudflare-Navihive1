@@ -320,6 +320,16 @@ export interface NotesImportPayload {
     tags?: NoteTag[];
     /** 导出方笔记 id -> 标签 id 列表（JSON 的键一定是字符串）；导入时翻译到新 id */
     noteTags?: Record<string, number[]>;
+    /** 笔记绑定的站点指纹（只带被引用的站点）：site_id 跨库会重排，导入按「URL/名称」重连 */
+    boundSites?: NoteBackupSiteRef[];
+}
+
+/** 笔记备份里的站点指纹：notes.site_id 只在导出方的库里有效，只有指纹能跨库对上 */
+export interface NoteBackupSiteRef {
+    /** 导出方的站点 id（对应 notes[].site_id） */
+    id: number;
+    name: string;
+    url: string;
 }
 
 /**
