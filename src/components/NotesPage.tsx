@@ -56,17 +56,9 @@ import { getSiteIndex } from "../utils/siteIndex";
 import { readReadingPosition, writeReadingPosition } from "../utils/readingPosition";
 import type {
     Note,
-    NoteFolder,
-    NoteRevision,
-    NoteTag,
-    NotesBackupSavePatch,
-    NotesBackupState,
-    NoteSearchResult,
     NotesImportPayload,
-    WebDavErrorCode,
 } from "../API/http";
 import type { NoteImportProgress } from "../API/types";
-import type { TrashedNote } from "../hooks/useNotes";
 import {
     renderMarkdownToReact,
     seedAttachmentDimensions,
@@ -101,190 +93,11 @@ import NoteVersionHistoryDialog from "./NoteVersionHistoryDialog";
 import type { NoteEditorHandle } from "../utils/noteEditorHandle";
 import { useEditorTools, type EditorDraft } from "../hooks/useEditorTools";
 
-import NoteShareDialog, { type NoteShareApi } from "./NoteShareDialog";
+import NoteShareDialog from "./NoteShareDialog";
 import { noteExcerpt, resolveImageUpload } from "./notes/markdownToolbar";
 import { importNotesFile as runImportNotesFile } from "./notes/importNotesFile";
 import { exportAllNotesJson, exportAllNotesZip } from "./notes/exportNotes";
 
-
-export interface NotesPageProps {
-    shareApi?: NoteShareApi;
-    /**
-     * 摘要模式（?fields=list）下补全文：列表只给了开头 200 字，打开哪条就补哪条。
-     *
-     * 可选：老后端 / mock 没有 getNote 时不传，此时前端阈值也没到（列表永远带全文），
-     * 缺失即退化为老行为，不会多打请求。
-     */
-    onEnsureFullNote?: (id: number) => Promise<Note | null>;
-    /**
-     * 图片上传能力（2026-07）。
-     *
-     * ⚠️ 刻意**可选**：后端没配存储（R2 / KV 都没绑）时这个能力就不存在，
-     * 那时工具栏的「上传图片」会自动置灰、并在 tooltip 里说明原因 ——
-     * 而不是点了才报一个看不懂的错误。与 shareApi 同一个套路
-     * （NotesOverlay.tsx:137 那一行）。
-     */
-    uploadApi?: {
-        uploadAttachment(
-            file: File,
-            noteId?: number | null
-        ): Promise<{ id: string; url: string; filename: string; mime: string; size: number }>;
-        /** 附件统计 / 清理（2026-10-08 设置→数据）。可选：老部署的 api 没有这两个方法 */
-        listAttachments?(): Promise<
-            { id: string; size: number; filename: string; mime: string }[]
-        >;
-        pruneAttachments?(): Promise<{ removed: number; freedBytes: number }>;
-        /** 附件管理器里逐条删除（inkstone 的 AttachmentManager 同款） */
-        deleteAttachment?(id: string): Promise<{ ok: boolean }>;
-        /**
-         * 附件重命名（2026-10-19）。只改 filename，id / object_key 不动，
-         * 正文链接因此不会失效；服务端顺手把正文里的显示名同步掉。
-         */
-        renameAttachment?(
-            id: string,
-            filename: string
-        ): Promise<{ filename: string; updatedNotes: number }>;
-        /** 原地改写 txt / json 内容（预览弹窗的「编辑」）。 */
-        updateAttachmentContent?(id: string, text: string): Promise<{ size: number; mime: string }>;
-    };
-    /**
-     * 打开就直接跳到这条笔记（D2 双向绑定：站点设置里点「相关笔记」）。
-     *
-     * 只在本次挂载里生效一次 —— 之后用户点别的笔记完全不受它影响。
-     * 不传 = 照常打开（选中上次那条 / 列表第一条）。
-     */
-    focusNoteId?: number;
-    /**
-     * 站点侧的两个能力（#477 站点↔笔记双向绑定的**笔记那一侧**）。
-     *
-     * 站名不在记事本手里 —— 为了一个名字去拉一遍站点列表不值得，所以由 App
-     * 通过这个口子回答「这个 id 是哪个站」和「跳回导航页并定位到那张卡片」。
-     *
-     * 不传 = 状态栏不显示站点那一项（老调用方照常工作）。
-     */
-    siteLinkApi?: NotesSiteLinkApi;
-    /**
-     * 记事本备份能力（2026-10-09 照 inkstone 的 BackupSettings）。
-     *
-     * ⚠️ 与 shareApi / uploadApi 同一个套路：可选，NotesOverlay 只在 api 实例
-     * 真的有 notesBackupUpload 与 getConfig 时才传。没传时设置里的「备份」页不出现
-     * （老部署没有对应端点），而不是点了才报一个看不懂的错误。
-     */
-    backupApi?: {
-        getState(): Promise<NotesBackupState>;
-        save(patch: NotesBackupSavePatch): Promise<void>;
-        test(): Promise<{ success: boolean; message: string }>;
-        run(): Promise<{ success: boolean; message: string }>;
-        /** 列出网盘上的笔记备份文件（备份闭环的「取回」一半，2026-10-09） */
-        listRemote(): Promise<{
-            success: boolean;
-            files: { name: string; size: number; lastModified: string }[];
-            message: string;
-        }>;
-        /** 下载并解密一份网盘备份；code 用来判断「要不要口令 / 口令对不对」 */
-        fetch(filename: string, password: string): Promise<{
-            success: boolean;
-            message: string;
-            payload?: NotesImportPayload;
-            /** ZIP 备份（2026-10-11 起默认格式）：base64，交给 onImportFile 走附件回传链路 */
-            zipBase64?: string;
-            code?: WebDavErrorCode;
-        }>;
-        /** 删除网盘上的一份备份文件（最近备份的删除按钮，2026-10-10） */
-        deleteRemote?(filename: string): Promise<{ success: boolean; message: string }>;
-    };
-    /**
-     * 数据集级变更广播（2026-10-11，阶段 2）：导入 / 恢复成功后喊一声，
-     * 让其它标签页能提示刷新。可选：老调用方没传时导入照常，只是少了跨页提醒。
-     */
-    onDatasetChanged?: () => void | Promise<void>;
-    /**
-     * 最近一轮跨设备轮询发现的「被改笔记 id」（阶段①）。当前打开的笔记
-     * 命中时给一句定向提示——保存时 rev 守卫仍会拦住静默覆盖。
-     */
-    syncChangedNoteIds?: number[];
-    notes: Note[];
-    onClose: () => void;
-    /**
-     * 左下角显示的账号名（inkstone 那样的「用户名 + 头像」）。
-     *
-     * 可选：没传就只显示一个匿名的默认头像 —— 记事本自己不该依赖
-     * 登录态，知道有账号的人传进来显示 nicer，不传也不会坏。
-     */
-    accountName?: string;
-    onCreate: (draft?: Partial<Note>) => Promise<Note | null>;
-    onUpdate: (id: number, patch: Partial<Note>) => Promise<void | boolean>;
-    onDelete: (note: Note) => Promise<void>;
-    onTogglePin: (note: Note) => Promise<void>;
-    /** 收藏（2026-10-09 与置顶分离）：置顶管排序、收藏管筛选。老部署没传时这个动作不出现 */
-    onToggleStar?: (note: Note) => Promise<void>;
-    // ---------- 阶段三：回收站 + 归档 ----------
-    /** 回收站里的笔记（只含 kind='note' 的），从 useNotes 传进来 */
-    trashedNotes: TrashedNote[];
-    onLoadTrash: () => Promise<void>;
-    onRestoreTrashed: (recycleId: number) => Promise<void>;
-    onPurgeTrashed: (recycleId: number) => Promise<void>;
-    onEmptyTrash: () => Promise<void>;
-    onToggleArchive: (note: Note) => Promise<void>;
-    /**
-     * 提示条（可选）。导出成功 / 失败要有个回执 ——
-     * 「点了没反应」在下载场景里最容易被误判成功能坏了。
-     * 严重级别与 useNotify 的 NotifySeverity 保持一致（success / error / info）。
-     */
-    onNotify?: (
-        message: string,
-        severity?: "success" | "error" | "info"
-    ) => void;
-    // ---------- 阶段三收尾：文件夹 / 标签 ----------
-    /**
-     * 左栏第一列要的东西打包成一个对象传进来（不是一个一个 props）：
-     * 这一块有 8 个回调，拆成 8 个 props 会让调用方的 JSX 没法读，
-     * 而它们本来就只服务「导航列这一个区域」。
-     *
-     * 全部**可选**：老部署上没这几个方法时，导航列退化成「只有那六个视图」，
-     * 而不是把整个记事本打崩（和回收站那几个可选方法一个处理）。
-     */
-    folderTags?: {
-        folders: NoteFolder[];
-        tags: NoteTag[];
-        /** { [noteId]: tagId[] }——左栏算「每个标签几条」要用 */
-        noteTags?: Record<number, number[]>;
-        onCreateFolder: (name: string, parentId?: number | null) => Promise<NoteFolder | null>;
-        onMoveFolder?: (id: number, parentId: number | null) => Promise<void>;
-        /** 同级内前后挪一位（inkstone 的「向前/向后移动」） */
-        onReorderFolder?: (id: number, dir: -1 | 1) => Promise<void>;
-        onRenameFolder: (id: number, name: string) => Promise<void>;
-        onRemoveFolder: (id: number) => Promise<void>;
-        onCreateTag: (name: string) => Promise<NoteTag | null>;
-        onRenameTag: (id: number, name: string) => Promise<void>;
-        onRemoveTag: (id: number) => Promise<void>;
-        // 返回值故意留成 `Promise<NoteTag[] | null>` 而不是 `Promise<void>`：
-        // `Promise<T>` 不能赋给 `Promise<void>`（void 的那条宽松规则只在函数返回类型上生效，
-        // 套一层 Promise 就不认了），写 void 会让调用方的实现没法返回查到的最新清单。
-        onAssignTags: (noteId: number, tagIds: number[]) => Promise<NoteTag[] | null>;
-        /** 文件夹外观（icon / color）：交给上层走 updateFolder */
-        onStyleFolder?: (
-            id: number,
-            patch: { icon?: string | null; color?: string | null }
-        ) => Promise<void>;
-        /**
-         * 标签颜色（`note_tag.color` 这列早就有了，只是界面没用它）。
-         * 给颜色是为了「一眼扫出旋钮」：几十个标签里，靠颜色分批比逐字读名字快得多
-         * （inkstone 的 NoteList 拿 `tagColors` Map 做同一件事）。
-         */
-        onStyleTag?: (id: number, color: string | null) => Promise<void>;
-        /** 版本历史：列快照 / 恢复 */
-        onListRevisions?: (noteId: number) => Promise<NoteRevision[]>;
-        onRestoreRevision?: (noteId: number, revisionId: number) => Promise<Note | null>;
-        /** 取某一版的完整正文（列表里只给字符数，要做 diff 得单独拉一份） */
-        onGetRevision?: (noteId: number, revisionId: number) => Promise<NoteRevision | null>;
-        /**
-         * 服务端全文检索（2026-10-09）。
-         * 可选：没传 / 调用失败 → 退回本地模糊搜索（本地本来就持有全文）。
-         */
-        onSearchRemote?: (query: string, limit?: number) => Promise<NoteSearchResult | null>;
-    };
-}
 
 /**
  * 编辑区（以及左栏 / 列表 / 工具栏）的滚动条**不再本地定义**，直接吃
@@ -328,7 +141,7 @@ import NotesOverlayLayer from "./notes/NotesOverlayLayer";
 import NotesConfirmLayer from "./notes/NotesConfirmLayer";
 import NoteTemplateMenu from "./notes/NoteTemplateMenu";
 import { noteTemplateDraft, type NoteTemplateId } from "../utils/noteTemplates";
-import type { NotesPageCtx, NotesSiteLinkApi } from "./notes/notesPageCtx";
+import type { NotesPageCtx, NotesPageProps } from "./notes/notesPageCtx";
 import type { Pane } from "./notes/notesPageCtx";
 
 import { AUTO_SAVE_MS, MAX_RATIO, MIN_RATIO, SPLIT_KEY, ColResizeHandle, readPaneRatio, readSplitRatio, useColumnResize, writePaneRatio } from "./notes/paneChrome";
