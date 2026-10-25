@@ -88,7 +88,7 @@ export default function NotesSidePane(props: Pick<NotesPageCtx, "SIDE_SPLIT_KEY"
                         display: "flex",
                         flexShrink: 0,
                         border: "1px solid var(--card-border)",
-                        borderRadius: 1.5,
+                        borderRadius: "var(--notes-radius-row, 12px)",
                         overflow: "hidden",
                     }}
                 >

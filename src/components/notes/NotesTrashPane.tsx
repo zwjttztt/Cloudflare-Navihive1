@@ -48,7 +48,7 @@ export default function NotesTrashPane(props: Pick<NotesPageCtx, "onEmptyTrash" 
                             gap: 0.5,
                             px: 1.25,
                             py: 0.9,
-                            borderRadius: 1.5,
+                            borderRadius: "var(--notes-radius-row, 12px)",
                             "&:hover": { bgcolor: "var(--neutral-wash)" },
                         }}
                     >

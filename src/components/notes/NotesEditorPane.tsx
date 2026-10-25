@@ -148,7 +148,7 @@ export default function NotesEditorPane(props: Pick<NotesPageCtx, "active" | "ac
                                 display: "flex",
                                 flexShrink: 0,
                                 border: "1px solid var(--card-border)",
-                                borderRadius: 1.5,
+                                borderRadius: "var(--notes-radius-row, 12px)",
                                 overflow: "hidden",
                             }}
                         >

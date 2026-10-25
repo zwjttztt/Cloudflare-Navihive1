@@ -615,7 +615,10 @@ test("悬停时整行右移 2px，且只在真能 hover 的设备上（inkstone 
     );
     // ⚠️ 窗口要装得下**整行**：2026-10-10 往行里加了「⌘/Ctrl 点 / Shift 点」那三十行，
     // 6000 就不够了 —— 守卫自己红了而功能一点没坏（这种红比没守卫更糟），取 9000。
-    const row = src.slice(src.indexOf("data-note-id={note.id}"), src.indexOf("data-note-id={note.id}") + 9000);
+    // ⚠️ 2026-10-25：行里又加了「hover 底色反馈」二十多行（视觉对齐导航页），
+    //   translateX 被顶到 9000 之外 —— 同样是假红，这一处窗口放到 13000。
+    //   只放大这一处：窗口跨到别的行会变假绿（扫到别行的规则也算过）。
+    const row = src.slice(src.indexOf("data-note-id={note.id}"), src.indexOf("data-note-id={note.id}") + 13000);
     assert.ok(/translateX\(2px\)/.test(row), "悬停要右移 2px");
     assert.ok(
         /@media \(hover: hover\) and \(pointer: fine\)/.test(row),

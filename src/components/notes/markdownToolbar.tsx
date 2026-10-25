@@ -605,7 +605,7 @@ export function MarkdownToolbar({
         alignItems: "center",
         justifyContent: "center",
         gap: 0.25,
-        borderRadius: "8px",
+        borderRadius: "var(--notes-radius-chip, 8px)",
         color: "text.secondary",
         ...(open ? { bgcolor: "var(--neutral-hover)", color: "text.primary" } : {}),
         "&:hover": { bgcolor: "var(--neutral-hover)", color: "text.primary" },
@@ -687,7 +687,7 @@ export function MarkdownToolbar({
                     alignItems: "center",
                     justifyContent: "center",
                     gap: 0.25,
-                    borderRadius: "8px",
+                    borderRadius: "var(--notes-radius-chip, 8px)",
                     color: "text.secondary",
                     "&:hover": { bgcolor: "var(--neutral-hover)", color: "text.primary" },
                 }}
@@ -782,7 +782,7 @@ export function MarkdownToolbar({
                     data-tool='link'
                     onMouseDown={e => e.preventDefault()}
                     onClick={() => onInsert("[", "](https://)", "链接文字")}
-                    sx={{ ...toolBtnSx, borderRadius: "8px 0 0 8px" }}
+                    sx={{ ...toolBtnSx, borderRadius: "var(--notes-radius-chip, 8px) 0 0 var(--notes-radius-chip, 8px)" }}
                 >
                     <LinkIcon fontSize='small' />
                 </IconButton>
@@ -800,7 +800,7 @@ export function MarkdownToolbar({
                     aria-expanded={linkAnchor ? true : undefined}
                     onMouseDown={e => e.preventDefault()}
                     onClick={e => setLinkAnchor(e.currentTarget)}
-                    sx={{ ...toolBtnSx, width: 24, borderRadius: "0 8px 8px 0", ml: "2px" }}
+                    sx={{ ...toolBtnSx, width: 24, borderRadius: "0 var(--notes-radius-chip, 8px) var(--notes-radius-chip, 8px) 0", ml: "2px" }}
                 >
                     <ExpandMoreIcon sx={{ fontSize: 14, opacity: 0.7 }} />
                 </IconButton>
@@ -887,7 +887,7 @@ export function MarkdownToolbar({
                     data-tool='image'
                     onMouseDown={e => e.preventDefault()}
                     onClick={() => onInsert("![", "](https://)", "图片说明")}
-                    sx={{ ...toolBtnSx, borderRadius: "8px 0 0 8px" }}
+                    sx={{ ...toolBtnSx, borderRadius: "var(--notes-radius-chip, 8px) 0 0 var(--notes-radius-chip, 8px)" }}
                 >
                     <ImageIcon fontSize='small' />
                 </IconButton>
@@ -901,7 +901,7 @@ export function MarkdownToolbar({
                     aria-expanded={imageAnchor ? true : undefined}
                     onMouseDown={e => e.preventDefault()}
                     onClick={e => setImageAnchor(e.currentTarget)}
-                    sx={{ ...toolBtnSx, width: 24, borderRadius: "0 8px 8px 0", ml: "2px" }}
+                    sx={{ ...toolBtnSx, width: 24, borderRadius: "0 var(--notes-radius-chip, 8px) var(--notes-radius-chip, 8px) 0", ml: "2px" }}
                 >
                     <ExpandMoreIcon sx={{ fontSize: 14, opacity: 0.7 }} />
                 </IconButton>
@@ -1183,7 +1183,7 @@ export function MarkdownToolbar({
                     data-tool='pre'
                     onMouseDown={e => e.preventDefault()}
                     onClick={() => onInsert("```\n", "\n```", "代码")}
-                    sx={{ ...toolBtnSx, borderRadius: "8px 0 0 8px" }}
+                    sx={{ ...toolBtnSx, borderRadius: "var(--notes-radius-chip, 8px) 0 0 var(--notes-radius-chip, 8px)" }}
                 >
                     <DataObjectIcon fontSize='small' />
                 </IconButton>
@@ -1197,7 +1197,7 @@ export function MarkdownToolbar({
                     aria-expanded={langAnchor ? true : undefined}
                     onMouseDown={e => e.preventDefault()}
                     onClick={e => setLangAnchor(e.currentTarget)}
-                    sx={{ ...toolBtnSx, width: 24, borderRadius: "0 8px 8px 0", ml: "2px" }}
+                    sx={{ ...toolBtnSx, width: 24, borderRadius: "0 var(--notes-radius-chip, 8px) var(--notes-radius-chip, 8px) 0", ml: "2px" }}
                 >
                     <ExpandMoreIcon sx={{ fontSize: 14, opacity: 0.7 }} />
                 </IconButton>

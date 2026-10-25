@@ -84,7 +84,7 @@ export function SegOptions<T extends string>({
                             px: 1.25,
                             py: 0.4,
                             fontSize: 12,
-                            borderRadius: 1.5,
+                            borderRadius: "var(--notes-radius-chip, 8px)",
                             cursor: "pointer",
                             appearance: "none",
                             font: "inherit",

@@ -283,6 +283,15 @@
     /* 圆角风格 / 字号档位：由「外观」设置写入，默认圆润 + 标准 */
     --card-radius: 22px;
     --radius-lg: var(--card-radius);
+    /* ===== 记事本的圆角阶梯：**派生自 --card-radius**（2026-10-25 视觉对齐）=====
+       以前记事本把圆角写死成 12 / 10 / 8px —— 用户在「外观 → 圆角风格」里切到
+       「直角」（6px）后，导航卡变 6px、记事本还是 12px，同一站点像两个产品。
+       这里按比例派生三档，soft(22) 下分别 ≈12.1 / 7.9 / 9.9（与改造前视觉一致），
+       standard(14) → 7.7 / 5 / 6.3，sharp(6) → 3.3 / 2.2 / 2.7。
+       ⚠️ 具体用途：row = 笔记列表行；chip = 左栏行 / 工具按钮；block = 代码块/引用/内容块。 */
+    --notes-radius-row: calc(var(--card-radius) * 0.55);
+    --notes-radius-chip: calc(var(--card-radius) * 0.36);
+    --notes-radius-block: calc(var(--card-radius) * 0.45);
     --font-scale: 1;
     /* 分组强调色，默认为主色。
        只用在细线 / 小标记上（宽度由 --group-accent-width 控制），

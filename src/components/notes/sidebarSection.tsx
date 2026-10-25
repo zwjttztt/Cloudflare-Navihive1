@@ -77,7 +77,7 @@ export function NavRow({
                 px: 1.25,
                 py: 0.45,
                 width: "100%",
-                borderRadius: 1.25,
+                borderRadius: "var(--notes-radius-chip, 10px)",
                 cursor: "pointer",
                 minWidth: 0,
                 // ---- 把 <button> 的默认外观压回「一张透明的行」----
@@ -506,7 +506,7 @@ export function FolderTagSection({
                                             // 第一层就 90px 缩进，128px 左栏里文字只剩 25px。
                                             pl: `${22 + Math.min(item.depth, 4) * 12}px`,
                                             py: 0.35,
-                                            borderRadius: 1.25,
+                                            borderRadius: "var(--notes-radius-chip, 10px)",
                                             bgcolor:
                                                 activeNoteId === n.id
                                                     ? "var(--neutral-hover)"
@@ -587,7 +587,7 @@ export function FolderTagSection({
                                 px: 1.25,
                                 pl: 2.25,
                                 py: 0.35,
-                                borderRadius: 1.25,
+                                borderRadius: "var(--notes-radius-chip, 10px)",
                                 bgcolor:
                                     activeNoteId === n.id
                                         ? "color-mix(in srgb, var(--accent) 10%, transparent)"

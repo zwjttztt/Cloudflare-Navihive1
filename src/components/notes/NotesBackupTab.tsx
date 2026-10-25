@@ -231,7 +231,7 @@ export default function NotesBackupTab({ data, onNotify }: NotesBackupTabProps) 
                                             px: 1.5,
                                             py: 1,
                                             mb: 1.5,
-                                            borderRadius: 1.5,
+                                            borderRadius: "var(--notes-radius-row, 12px)",
                                             color: "error.main",
                                             bgcolor: "var(--accent-wash)",
                                         }}
@@ -397,7 +397,7 @@ export default function NotesBackupTab({ data, onNotify }: NotesBackupTabProps) 
                                                 mt: 1,
                                                 px: 1,
                                                 py: 0.75,
-                                                borderRadius: 1.5,
+                                                borderRadius: "var(--notes-radius-row, 12px)",
                                                 color: backupTestResult.success ? "success.main" : "error.main",
                                                 bgcolor: backupTestResult.success
                                                     ? "color-mix(in srgb, var(--success) 10%, transparent)"
@@ -499,7 +499,7 @@ export default function NotesBackupTab({ data, onNotify }: NotesBackupTabProps) 
                                             display: "block",
                                             px: 1.5,
                                             py: 2,
-                                            borderRadius: 1.5,
+                                            borderRadius: "var(--notes-radius-row, 12px)",
                                             textAlign: "center",
                                             bgcolor: "var(--neutral-wash)",
                                         }}
@@ -514,7 +514,7 @@ export default function NotesBackupTab({ data, onNotify }: NotesBackupTabProps) 
                                                 component='li'
                                                 data-backup-run={run.id}
                                                 sx={{
-                                                    borderRadius: 1.5,
+                                                    borderRadius: "var(--notes-radius-row, 12px)",
                                                     border: "1px solid var(--neutral-hover)",
                                                     mb: 0.5,
                                                     overflow: "hidden",
@@ -694,7 +694,7 @@ export default function NotesBackupTab({ data, onNotify }: NotesBackupTabProps) 
                                                         mt: 1,
                                                         px: 1,
                                                         py: 0.75,
-                                                        borderRadius: 1.5,
+                                                        borderRadius: "var(--notes-radius-row, 12px)",
                                                         color: "error.main",
                                                         bgcolor: "var(--accent-wash)",
                                                     }}

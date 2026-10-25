@@ -774,7 +774,7 @@ function renderBlocks(c: Cursor): ReactNode[] {
                             alignItems: "flex-start",
                             margin: `0 0 ${MD_GAP}`,
                             padding: "10px 14px",
-                            borderRadius: "var(--radius-sm, 10px)",
+                            borderRadius: "var(--notes-radius-block, 10px)",
                             // 左边 3px 语义色条 + 细描边：只统一外框（圆角/描边/内边距），
                             // 不动每类内容块自己的色相 —— 那是语义，不是装饰。
                             borderLeft: `3px solid ${palette.border}`,
@@ -1083,7 +1083,7 @@ const INLINE_CODE: React.CSSProperties = {
 const PRE_STYLE: React.CSSProperties = {
     background: MD_BLOCK_BG,
     border: `1px solid ${MD_BLOCK_BORDER}`,
-    borderRadius: "var(--radius-sm, 10px)",
+    borderRadius: "var(--notes-radius-block, 10px)",
     padding: 14,
     overflowX: "auto",
     // ⚠️ 防御 flex/网格父容器（min-width:auto 链）：不钳 100% 时 pre 会被
@@ -1136,7 +1136,7 @@ const DOTS_RULE_STYLE: React.CSSProperties = {
 const FOLD_STYLE: React.CSSProperties = {
     margin: `0 0 ${MD_GAP}`,
     padding: "10px 14px",
-    borderRadius: "var(--radius-sm, 10px)",
+    borderRadius: "var(--notes-radius-block, 10px)",
     border: `1px solid ${MD_BLOCK_BORDER}`,
     background: MD_BLOCK_BG,
 };

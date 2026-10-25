@@ -235,6 +235,14 @@ export default function NotesListPane(props: Pick<NotesPageCtx, "activeFolder" |
                         pt: 1,
                         pb: 0.5,
                         flexShrink: 0,
+                        // 头部与滚动内容的边界（2026-10-25 视觉对齐）：中栏这一栏是纯色底，
+                        // 头部和列表同色、又不在滚动层里，滚动时第一行会「凭空贴上来」，
+                        // 没有截断感。加一条 hairline 分隔，和导航页分组之间的分隔同一语言。
+                        // ⚠️ 只加线、**不动底色**：曾经试着把它「微提亮」成
+                        // color-mix(bg-base 88%, surface-raised) —— 那会把底色变成半透明，
+                        // 底下是壁纸时头部压出一层深灰，标题对比度掉到 4.35:1，
+                        // 被 audit:contrast 抓了个正着（这条线才是真正需要的）。
+                        borderBottom: "1px solid var(--card-border)",
                     }}
                 >
                     <Typography
@@ -565,7 +573,9 @@ export default function NotesListPane(props: Pick<NotesPageCtx, "activeFolder" |
                                     // 不预留的话标题会顶到按钮底下
                                     pr: 5,
                                     py: 0.9,
-                                    borderRadius: 1.5,
+                                    // 圆角跟着「外观 → 圆角风格」走（派生自 --card-radius），
+                                    // 不再写死 12px —— 否则切到直角档时导航卡变 6px、这里还是 12px
+                                    borderRadius: "var(--notes-radius-row, 12px)",
                                     cursor: "pointer",
                                     // ⚠️ 2026-10-07 去掉 3px 左边框 + 强调色：它在「选中文件夹 →
                                     // 笔记内联在左栏」时被拉成贯穿整屏的青绿色带（真机读像素：
@@ -587,6 +597,13 @@ export default function NotesListPane(props: Pick<NotesPageCtx, "activeFolder" |
                                     // 卡片模式行距放开一点：贴太紧就成了「一堆框」，
                                     // 反而比无分隔更难扫
                                     ...(uiSettings.listStyle === "card" ? { mb: 0.75 } : null),
+                                    // 卡片模式补上「影子」——导航卡是玻璃 + 双层阴影浮在壁纸上，
+                                    // 这里只有底色 + 描边的话就是一块贴纸，看着死。
+                                    // ⚠️ 刻意**不加** backdrop-filter：行背后就是中栏纯色底，
+                                    // 模糊无物可糊，下载几百行只会白付合成开销。
+                                    ...(uiSettings.listStyle === "card"
+                                        ? { boxShadow: "var(--shadow-chip, none)" }
+                                        : null),
                                     bgcolor: isActive
                                         ? "color-mix(in srgb, var(--accent) 12%, transparent)"
                                         : uiSettings.listStyle === "card"
@@ -594,7 +611,31 @@ export default function NotesListPane(props: Pick<NotesPageCtx, "activeFolder" |
                                           : "transparent",
                                     // 拖起来的那一行半透明：告诉用户「手上抓的是这条」
                                     opacity: draggingNoteId === note.id ? 0.45 : 1,
-                                    transition: "background-color 120ms ease, opacity 120ms ease, transform var(--dur-base, 220ms) var(--ease-out, ease)",
+                                    transition: "background-color 120ms ease, opacity 120ms ease, box-shadow 120ms ease, border-color 120ms ease, transform var(--dur-base, 220ms) var(--ease-out, ease)",
+                                    // hover 反馈（2026-10-25 视觉对齐）：左栏的行一直有 hover 底色
+                                    //（sidebarSection 的 Row），中栏却没有 —— 同一页面两套行为，
+                                    // 而导航卡的 hover 也会变底色。补上这一层，指针当前在哪一行才读得出来。
+                                    // ⚠️ 必须包在 @media (hover: hover) 里：触屏笔记本会把 hover 粘住，
+                                    // 变成「一大片行都亮着」（项目里踩过同类坑，见 index.css 末尾 nav-touch 反制）。
+                                    "@media (hover: hover)": {
+                                        "&:hover": {
+                                            bgcolor: isActive
+                                                ? "color-mix(in srgb, var(--accent) 16%, transparent)"
+                                                : uiSettings.listStyle === "card"
+                                                  ? "var(--surface-card-hover)"
+                                                  : "var(--neutral-hover)",
+                                            // 卡片模式 hover 升到「弹层」阴影 + 描边染强调色，
+                                            // 跟导航卡 hover 的 boxShadow / borderColor 一个语言
+                                            ...(uiSettings.listStyle === "card"
+                                                ? {
+                                                      boxShadow: "var(--shadow-pop, none)",
+                                                      borderColor: isActive
+                                                          ? "color-mix(in srgb, var(--accent) 40%, transparent)"
+                                                          : "color-mix(in srgb, var(--accent) 35%, transparent)",
+                                                  }
+                                                : null),
+                                        },
+                                    },
                                     // 菜单按钮平时藏起来，hover / 键盘聚焦才出 —— 和 inkstone 一致，
                                     // 128px 的窄列里常驻一个按钮会把标题挤没。
                                     // ⚠️ 不能用 :focus-within（2026-10-18 用户再报「右键菜单关掉
