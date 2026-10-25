@@ -14,9 +14,11 @@
 - **（工程）保险库 schema 26**：新增 `vault_keys` / `vault_entries` 两表（`migrateVaultTables` 显式建，SCHEMA_VERSION 25→26），服务端只存密文、scopeSql 隔离。`tests/vaultSchema.test.ts` 用真 SQLite 验证迁移建表 + 关键列齐全。
 
 **说明**
-- 按 `password-manager-plan-B.md` 的顺序推进：**B1 加密层 + B2 schema + B3 API/路由**已交付。
-  - B3：`src/API/methods/vault.ts`（getVaultKeys/saveVaultKeys/listVaultEntries/saveVaultEntry/deleteVaultEntry，服务端**只搬密文**）+ `worker/routes/vault.ts`（挂进 PROTECTED_ROUTES，写操作过 writeGuard 限速 + scopeSql 账号隔离）。`tests/vaultApi.test.ts` 用真 SQLite 验证 CRUD + 🔴账号隔离（换账号看不到/改不动别人的密文）。
-- `vaultCrypto` 与 vault API **尚无界面引用**，被 tree-shake 出前端包，故前端产物不变、本轮无需部署。剩余：解锁+条目 UI、恢复码生成/找回流程、备份只出密文。
+- 按 `password-manager-plan-B.md` 的顺序推进：**B1 加密层 + B2 schema + B3 API/路由 + B4 界面** 已交付，保险库**端到端可用**。
+  - B3：`src/API/methods/vault.ts`（5 方法，服务端**只搬密文**）+ `worker/routes/vault.ts`（PROTECTED_ROUTES、writeGuard 限速、scopeSql 隔离）；`tests/vaultApi.test.ts` 真 SQLite 验 CRUD + 🔴账号隔离。
+  - B4：`src/utils/vaultSession.ts`（客户端编排：建库/解锁/找回/改密/条目加解密，传输层可注入）+ `src/components/VaultDialog.tsx`（建库送**一次性恢复码**、解锁、恢复码找回、条目增改删/复制/显隐、空闲 5 分钟自动锁、**DEK 只在内存**）+ 客户端 5 方法（`clientMethods/vault.ts`，mock 对齐）+「更多选项 → 密码保险库」入口。
+  - `tests/vaultSession.test.ts`：Node 真 WebCrypto + 内存传输层跑通 建库→解锁→CRUD→错密码拒绝→🔴恢复码找回数据不丢→改密旧密码失效。
+- **B4 改了前端产物**（VaultDialog 进包），本轮**需要部署**才上线。剩余：备份/导出只出保险库密文（B6）。
 
 ---
 

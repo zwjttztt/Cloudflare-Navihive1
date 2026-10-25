@@ -39,6 +39,7 @@ import { validateFolderMove } from "../utils/folderTree";
 import { groupClientErrors } from "../utils/clientErrorGroups";
 import { REVISION_KEEP_PER_NOTE, needsSummary, summarizeContent } from "../utils/noteLimits";
 import { sqlNow } from "../utils/sqlTime";
+import type { VaultEntryInput, VaultEntryRecord, VaultKeysInput, VaultKeysRecord } from "./types";
 // 会话标记 cookie 的读写与真客户端共用同一份实现（见 transport.ts 的说明）：
 // 演示模式以前自己拼字符串、还漏了 Max-Age，和真机行为分叉且不会报错。
 import { clearSessionCookie, hasSessionCookie, setSessionCookie } from "./transport";
@@ -348,6 +349,24 @@ export class MockNavigationClient {
     // 清除认证令牌
     clearToken(): void {
         clearSessionCookie();
+    }
+
+    // ---- vault（方案 B 保险库，演示模式：无后端，回空态，仅为与真客户端同形）----
+    // 演示模式没有已建的保险库；真客户端的加解密在 VaultDialog 里做，这里只对齐方法名（apiMockParity 盯）。
+    async getVaultKeys(): Promise<VaultKeysRecord | null> {
+        return null;
+    }
+    async saveVaultKeys(_input: VaultKeysInput): Promise<boolean> {
+        return true;
+    }
+    async listVaultEntries(): Promise<VaultEntryRecord[]> {
+        return [];
+    }
+    async saveVaultEntry(input: VaultEntryInput): Promise<VaultEntryRecord> {
+        return { id: Date.now(), ciphertext: input.ciphertext, iv: input.iv, site_id: input.site_id ?? null };
+    }
+    async deleteVaultEntry(_id: number): Promise<boolean> {
+        return true;
     }
 
     // 登录API

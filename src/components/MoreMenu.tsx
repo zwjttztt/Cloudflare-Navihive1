@@ -22,6 +22,7 @@ import HistoryIcon from "@mui/icons-material/History";
 import AutoAwesomeIcon from "@mui/icons-material/AutoAwesome";
 import KeyboardIcon from "@mui/icons-material/Keyboard";
 import HealthAndSafetyIcon from "@mui/icons-material/HealthAndSafety";
+import LockIcon from "@mui/icons-material/Lock";
 
 export interface MoreMenuProps {
     anchorEl: HTMLElement | null;
@@ -42,6 +43,8 @@ export interface MoreMenuProps {
     onOpenRecycle: () => void;
     /** 打开「密码健康」（重复 / 弱口令 / 久未改 + 检索）——方案 A */
     onOpenPasswordHealth: () => void;
+    /** 打开「密码保险库」（端到端加密，方案 B） */
+    onOpenVault: () => void;
     /** 打开审计日志。仅站点所有者可用：不是所有者时整个入口不出现 */
     onOpenAudit: () => void;
     /** 当前登录者是否为站点所有者（决定「审计日志」入口是否出现） */
@@ -61,6 +64,7 @@ export default function MoreMenu({
     onLogout,
     onOpenRecycle,
     onOpenPasswordHealth,
+    onOpenVault,
     onOpenAudit,
     onOpenAccount,
     onOpenAiAssistant,
@@ -156,6 +160,18 @@ export default function MoreMenu({
                     <HealthAndSafetyIcon fontSize='small' />
                 </ListItemIcon>
                 <ListItemText>密码健康</ListItemText>
+            </MenuItem>
+            {/* 密码保险库：端到端加密，主密码独立、恢复码找回（方案 B） */}
+            <MenuItem
+                onClick={() => {
+                    onClose();
+                    onOpenVault();
+                }}
+            >
+                <ListItemIcon>
+                    <LockIcon fontSize='small' />
+                </ListItemIcon>
+                <ListItemText>密码保险库</ListItemText>
             </MenuItem>
             {/* 统计看板与审计日志同一把守卫：只给站点所有者看，后端同样会挡。
                 统计看板已并入上面的「统计」入口（标签页），这里只剩审计日志 */}

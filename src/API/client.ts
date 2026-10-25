@@ -33,6 +33,7 @@ import { authImpl } from "./clientMethods/auth";
 import { notesImpl } from "./clientMethods/notes";
 import { sitesImpl } from "./clientMethods/sites";
 import { systemImpl } from "./clientMethods/system";
+import { vaultImpl } from "./clientMethods/vault";
 
 /**
  * 各域的方法签名在这里合并回类上（interface 与 class 同名会声明合并）。
@@ -44,6 +45,7 @@ export type AuthApi = typeof authImpl;
 export type NotesClientApi = typeof notesImpl;
 export type SitesClientApi = typeof sitesImpl;
 export type SystemClientApi = typeof systemImpl;
+export type VaultClientApi = typeof vaultImpl;
 
 // class / interface 同名合并是刻意的，也是 TS 官方推荐的 mixin 写法。
 // no-unsafe-declaration-merging 防的是「拿本地 interface 去改外部（DOM / 第三方库）的
@@ -54,7 +56,8 @@ export interface NavigationClient extends
     AuthApi,
     NotesClientApi,
     SitesClientApi,
-    SystemClientApi {}
+    SystemClientApi,
+    VaultClientApi {}
 
 // eslint-disable-next-line @typescript-eslint/no-unsafe-declaration-merging
 export class NavigationClient implements ClientThis {
@@ -207,6 +210,6 @@ export class NavigationClient implements ClientThis {
 
 // 把各域的方法体混回原型。逐个 assign 而不是一次性 Object.assign(原型, a, b, c...)：
 // 后者的重载只到三个源，而且一次性混入会让「哪个域没生效」难查。
-for (const mixin of [authImpl, notesImpl, sitesImpl, systemImpl]) {
+for (const mixin of [authImpl, notesImpl, sitesImpl, systemImpl, vaultImpl]) {
     Object.assign(NavigationClient.prototype, mixin);
 }
