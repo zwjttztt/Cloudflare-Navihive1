@@ -41,8 +41,6 @@ export interface HeaderActionsSlotProps {
     onOpenStats: () => void;
     onOpenBackup: () => void;
     onOpenRecycle: () => void;
-    /** 打开「密码健康」（重复 / 弱口令 / 久未改 + 检索，方案 A） */
-    onOpenPasswordHealth: () => void;
     /** 打开「密码保险库」（端到端加密，方案 B） */
     onOpenVault: () => void;
     onOpenAudit: () => void;
@@ -72,7 +70,6 @@ export default function HeaderActionsSlot({
     onOpenStats,
     onOpenBackup,
     onOpenRecycle,
-    onOpenPasswordHealth,
     onOpenVault,
     onOpenAudit,
     isAuthenticated,
@@ -107,7 +104,6 @@ export default function HeaderActionsSlot({
                             onOpenStats={onOpenStats}
                             onOpenBackup={onOpenBackup}
                             onOpenRecycle={onOpenRecycle}
-                            onOpenPasswordHealth={onOpenPasswordHealth}
                             onOpenVault={onOpenVault}
                             onOpenAudit={onOpenAudit}
                             isAuthenticated={isAuthenticated}

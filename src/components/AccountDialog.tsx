@@ -28,6 +28,8 @@ import PersonRemoveIcon from "@mui/icons-material/PersonRemove";
 import { PasswordField } from "./PasswordField";
 import DialogCloseButton from "./DialogCloseButton";
 import type { AccountInfo, SessionInfo } from "../API/http";
+import type { Site } from "../API/types";
+import PasswordHealthPanel from "./PasswordHealthDialog";
 import {
     INACTIVE_DISABLE_DAYS_DEFAULT,
     INACTIVE_DELETE_GRACE_DAYS_DEFAULT,
@@ -111,6 +113,8 @@ export interface AccountAuthDraft {
 interface AccountDialogProps {
     open: boolean;
     onClose: () => void;
+    /** 当前账号全部站点（含解密后的 password），喂给「密码健康」面板做客户端分析（方案 A） */
+    sites: Site[];
     auth: AccountAuthDraft;
     onAuthChange: (field: keyof AccountAuthDraft, value: string) => void;
     /** 提交改账号 / 改密码（父组件负责调接口与改密后强制登出） */
@@ -238,6 +242,7 @@ function TwoCol({ children }: { children: React.ReactNode }) {
 export default function AccountDialog({
     open,
     onClose,
+    sites,
     auth,
     onAuthChange,
     onSaveAuth,
@@ -478,6 +483,16 @@ export default function AccountDialog({
                                     </Typography>
                                 ) : null}
                             </Box>
+                        </Section>
+
+                        {/* 1.5 密码健康：把各站点已存的登录凭据过一遍（重复/弱/久未改）—— 方案 A。
+                            原先是「更多选项」里的独立弹窗，归到「账号与安全」里更顺：
+                            它看的正是「我的登录凭据是否安全」，和「账号与密码」是同一件事的两面。 */}
+                        <Section
+                            title='密码健康'
+                            hint='对已存的站点登录凭据做客户端分析：重复、弱口令、久未改。不改任何数据。'
+                        >
+                            <PasswordHealthPanel sites={sites} />
                         </Section>
 
                         {/* 2. 恢复密钥：忘记密码时用它重置。私钥只在本地生成并下载 */}

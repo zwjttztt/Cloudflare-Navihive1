@@ -113,6 +113,7 @@ function Harness(o: Opts) {
         <AccountDialog
             open
             onClose={() => calls.closes++}
+            sites={[]}
             auth={auth}
             onAuthChange={(field, value) => {
                 calls.authChanges.push([field, value]);

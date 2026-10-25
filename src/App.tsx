@@ -111,7 +111,6 @@ const AuditDialog = lazy(() => import("./components/AuditDialog"));
 // 统计（访问统计 + 运营看板，一个弹窗两个标签页）：从「更多选项」进入，懒加载
 const StatsHubDialog = lazy(() => import("./components/StatsHubDialog"));
 const RecycleBinDialog = lazy(() => import("./components/RecycleBinDialog"));
-const PasswordHealthDialog = lazy(() => import("./components/PasswordHealthDialog"));
 const VaultDialog = lazy(() => import("./components/VaultDialog"));
 // 记事本：独立页面（参考 inkstone 的工作区布局）。懒加载。
 /** 记事本整块（hook + 视图）懒加载：打开之前一行代码都不进首屏 */
@@ -437,9 +436,8 @@ function App() {
     // 审计日志 / 回收站对话框状态（统计走 useAppDialogs 的 openStatsHub）
     const [openAudit, setOpenAudit] = useState(false);
     const [openRecycle, setOpenRecycle] = useState(false);
-    const [passwordHealthOpen, setPasswordHealthOpen] = useState(false);
     const [vaultOpen, setVaultOpen] = useState(false);
-    // 全部站点（含解密后的登录凭据）——喂给「密码健康」弹窗做客户端分析（方案 A）
+    // 全部站点（含解密后的登录凭据）——喂给「账号与安全」里的「密码健康」面板做客户端分析（方案 A）
     const allSitesWithCreds = useMemo(() => groups.flatMap(g => g.sites ?? []), [groups]);
 
 
@@ -1832,10 +1830,6 @@ function App() {
                                         handleMenuClose();
                                         setOpenRecycle(true);
                                     }}
-                                    onOpenPasswordHealth={() => {
-                                        handleMenuClose();
-                                        setPasswordHealthOpen(true);
-                                    }}
                                     onOpenVault={() => {
                                         handleMenuClose();
                                         setVaultOpen(true);
@@ -2022,6 +2016,7 @@ function App() {
                     <AccountDialog
                         open={openAccount}
                         onClose={() => setOpenAccount(false)}
+                        sites={allSitesWithCreds}
                         auth={{
                             username: authUsername,
                             currentPassword: authCurrentPassword,
@@ -2206,13 +2201,6 @@ function App() {
                     onNotify={(msg, severity) => notify(msg, severity || "info")}
                 />
                 </ChunkBoundary>
-
-                {/* 密码健康：重复 / 弱口令 / 久未改 + 检索（方案 A） */}
-                <PasswordHealthDialog
-                    open={passwordHealthOpen}
-                    onClose={() => setPasswordHealthOpen(false)}
-                    sites={allSitesWithCreds}
-                />
 
                 {/* 密码保险库：端到端加密（方案 B）。client 即 api，结构上满足 VaultTransport */}
                 <VaultDialog
