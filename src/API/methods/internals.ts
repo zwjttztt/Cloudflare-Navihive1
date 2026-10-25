@@ -86,6 +86,51 @@ export const ATTACHMENTS_INDEX_SQL = `CREATE INDEX IF NOT EXISTS idx_attachments
 export const ATTACHMENTS_TABLE_STATEMENTS = [ATTACHMENTS_TABLE_SQL, ATTACHMENTS_INDEX_SQL];
 
 /**
+ * 保险库（方案 B，端到端加密，schema 26）两张表。
+ *
+ * ⚠️ 服务端只存**密文**，永远解不出明文：
+ *   - `vault_keys`（每用户一行）：KDF 盐 + 迭代数 + 用主密码包的 wrapped_dek +
+ *     用恢复码包的 wrapped_dek_recovery。改主密码只是重裹 wrapped_dek 一次。
+ *   - `vault_entries`（每条一行）：整条的 ciphertext + iv（+ 可选 site_id 关联导航卡片）。
+ *     条目标题/URL/用户名/密码/备注全在 ciphertext 里，服务端连「叫什么」都不知道。
+ * 账号隔离沿用 user_id + scopeSql（单账号部署 uid 可能是 NULL，用 `IS ?` 兼容，见 data.ts）。
+ * iv / ciphertext / salt 都是 base64 文本（由客户端 utils/vaultCrypto.ts 产出）。
+ */
+const VAULT_KEYS_TABLE_SQL = `CREATE TABLE IF NOT EXISTS vault_keys (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    kdf_salt TEXT NOT NULL,
+    kdf_iterations INTEGER NOT NULL,
+    wrapped_dek_iv TEXT NOT NULL,
+    wrapped_dek TEXT NOT NULL,
+    wrapped_dek_recovery_iv TEXT NOT NULL,
+    wrapped_dek_recovery TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);`;
+
+const VAULT_ENTRIES_TABLE_SQL = `CREATE TABLE IF NOT EXISTS vault_entries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    ciphertext TEXT NOT NULL,
+    iv TEXT NOT NULL,
+    site_id INTEGER,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);`;
+
+const VAULT_KEYS_INDEX_SQL = `CREATE INDEX IF NOT EXISTS idx_vault_keys_user ON vault_keys(user_id);`;
+const VAULT_ENTRIES_INDEX_SQL = `CREATE INDEX IF NOT EXISTS idx_vault_entries_user ON vault_entries(user_id);`;
+
+/** 迁移里逐条执行的保险库 DDL（见 migrateVaultTables） */
+export const VAULT_TABLE_STATEMENTS = [
+    VAULT_KEYS_TABLE_SQL,
+    VAULT_ENTRIES_TABLE_SQL,
+    VAULT_KEYS_INDEX_SQL,
+    VAULT_ENTRIES_INDEX_SQL,
+];
+
+/**
  * 笔记全文检索的 FTS5 虚拟表（2026-10-09，照 inkstone 的 notes_fts）。
  *
  * ⚠️ 分词器必须是 unicode61 而不是 trigram：trigram 要求查询串**至少 3 个字符**，

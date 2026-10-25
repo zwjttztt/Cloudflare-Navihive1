@@ -16,6 +16,7 @@ import {
     FOLDER_TAG_TABLE_STATEMENTS,
     INDEX_STATEMENTS,
     NOTES_FTS_TABLE_SQL,
+    VAULT_TABLE_STATEMENTS,
     migrationState,
 } from "./internals";
 
@@ -75,7 +76,9 @@ import {
 // 25 = notes.link_count（每一行的双链条数，2026-10-24）。
 //     加列同样吃快路径，必须 +1；回填也挂在这一步（`WHERE link_count IS NULL` 分批扫，
 //     所以即使中途失败，下次迁移还会接着填）。
-export const SCHEMA_VERSION = "25";
+// 26 = vault_keys / vault_entries（方案 B 端到端保险库，2026-10-25）。
+//     两张新表，老库上 CREATE TABLE IF NOT EXISTS 建不出来，必须显式 migrateVaultTables。
+export const SCHEMA_VERSION = "26";
 /** 版本号存在 configs 里的键名 */
 export const SCHEMA_VERSION_KEY = "schema.version";
 
@@ -118,6 +121,8 @@ export interface MigrationApi {
     migrateNoteLinkCount(): Promise<void>;
     /** 2026-10-11：group_share（公开分组分享，阶段④） */
     migrateGroupShareTable(): Promise<void>;
+    /** 2026-10-25：保险库 vault_keys / vault_entries（方案 B 端到端加密，schema 26） */
+    migrateVaultTables(): Promise<void>;
     /** 2026-10-13：把升级前落库的明文站点凭据一次性加密写回 */
     encryptLegacySitePasswords(): Promise<void>;
     /** 2026-10-09：笔记全文检索的 FTS5 虚拟表（建不出来就降级，不阻断启动） */
@@ -307,6 +312,9 @@ export const migrationImpl: MigrationApi = {
         // 6.85) 2026-10-11：group_share（公开分组分享）。新表必须显式建
         //（快路径会跳过第 1 步的批量建表），CREATE IF NOT EXISTS 对新表足够。
         await this.migrateGroupShareTable();
+
+        // 6.88) 2026-10-25：保险库两张表（方案 B 端到端加密）。新表，显式建（快路径跳过批量建表）。
+        await this.migrateVaultTables();
 
         // 6.9) 历史明文站点凭据加密写回（安全加固，失败只记日志不影响启动）
         try {
@@ -647,6 +655,14 @@ export const migrationImpl: MigrationApi = {
         await this.db.prepare(
             "CREATE INDEX IF NOT EXISTS idx_group_share_user ON group_share(user_id)"
         ).run();
+    },
+
+    migrateVaultTables: async function (this: NavigationAPI ): Promise<void> {
+        // 两张新表 + 两个索引，逐条显式建（老库上 CREATE IF NOT EXISTS 建不出来，
+        // 与 migrateGroupShareTable 同款原因）。IF NOT EXISTS 已处理重复/并发建表。
+        for (const sql of VAULT_TABLE_STATEMENTS) {
+            await this.db.prepare(sql).run();
+        }
     },
 
     /**

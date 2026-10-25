@@ -6,6 +6,18 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。---
 
+## 2026-10-25 · 方案 B 开工：端到端加密层 + 保险库 schema（先地基）
+
+**要点**
+- **拍板 4 项决策**（写进 `docs/password-manager-scope.md`）：① 保险库主密码**独立于登录密码**；② 忘主密码用**恢复码**找回；③ **现有站点凭据不迁**进保险库（双轨，站点卡片照旧）；④ **不做自动填充**（方案 C 搁置）。
+- **（新增）加密层 `src/utils/vaultCrypto.ts`**（客户端 WebCrypto 纯函数，未接 UI）：envelope 结构——主密码/恢复码各经 PBKDF2（默认 60 万 iters，客户端跑）派生包装钥，包同一份随机 DEK；条目整体 AES-GCM（随机 IV）加密。服务端只存盐+迭代数+两份 wrapped_dek+条目密文，**永远解不出明文**。`tests/vaultCrypto.test.ts` 9 条，含🔴全链路：主密码解锁 + 忘密码靠恢复码解出同一 DEK + 找回后改密重裹；错密码/错恢复码/密文被改一律认证失败抛错（不会静默解出垃圾）。
+- **（工程）保险库 schema 26**：新增 `vault_keys` / `vault_entries` 两表（`migrateVaultTables` 显式建，SCHEMA_VERSION 25→26），服务端只存密文、scopeSql 隔离。`tests/vaultSchema.test.ts` 用真 SQLite 验证迁移建表 + 关键列齐全。
+
+**说明**
+- 按 `password-manager-plan-B.md` 的顺序，先交付**加密层 + schema**（全仓唯一「写错就永久丢数据」的部分，先测再写）。**尚未接 API/UI**：`vaultCrypto` 暂无引用、被 tree-shake 出包，本轮不改运行时、无需部署。API/路由、解锁+条目 UI、恢复码流程、备份只出密文 为后续阶段。
+
+---
+
 ## 2026-10-25 · 方案 A：密码收纳增强（生成器 + 健康检查 + 检索）
 
 **要点**
