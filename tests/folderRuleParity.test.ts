@@ -76,14 +76,14 @@ test("共享校验：ID 非法要拦（0 / 负数 / 非整数）", async () => {
 });
 
 test("真机侧与 mock 侧都走共享实现（不许再各写一份）", () => {
-    const real = read("src/API/methods/notes.ts");
+    const real = read("src/API/methods/notes/notesShared.ts");
     const mock = read("src/API/mock.ts");
-    for (const [name, src] of [["真机 notes.ts", real], ["mock.ts", mock]] as const) {
+    for (const [name, src] of [["真机 notesShared.ts", real], ["mock.ts", mock]] as const) {
         assert.match(src, /utils\/folderTree/, `${name} 要引共享模块`);
         assert.match(src, /validateFolderMove/, `${name} 要调共享校验`);
     }
     // 反向验证：不许再出现「自己手写一套 while + Set 的环路判定」
-    for (const [name, src] of [["真机 notes.ts", real], ["mock.ts", mock]] as const) {
+    for (const [name, src] of [["真机 notesShared.ts", real], ["mock.ts", mock]] as const) {
         const inlineCycle = /new Set<number>\([\s\S]{0,120}while[\s\S]{0,400}不能移入自身或子文件夹/.test(src);
         assert.equal(inlineCycle, false, `${name} 里不该再有内联的环路判定`);
     }

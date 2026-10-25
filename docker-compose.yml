@@ -19,12 +19,17 @@ services:
     image: navihive:latest
     container_name: navihive
     restart: unless-stopped
-    # 历史上加 root 是为了让容器能碰 docker.sock（sock 属 root:docker）。
-    # 2026-10-22 起**不再挂 sock**（改由 upgrader 服务持有），但这里保留 root 是有意的：
-    # 现有数据卷里的文件属主就是 root，改成 node(1000) 会让库和附件突然写不进去。
-    # 现在容器内 root 只在它自己的命名空间里有效，拿不到宿主机 root。
-    # 想收紧可改成 user: "1000:1000"，但**必须**先把卷里文件 chown 到 1000。
-    user: "${NAVIHIVE_RUN_AS:-0:0}"
+    # 默认以非 root 运行：镜像里 Dockerfile 已经 `USER node` 并把 /app chown 给 node，
+    # 这里不再用 0:0 覆盖它。容器内 node 用户 uid=1000，命名卷（navihive-data）里的
+    # 库和附件就以 1000 属主，符合最小权限原则。
+    #
+    # ⚠️ 迁移已有卷：2026-10-22 之前一直以 root 跑，卷里文件是 root 属主；直接切非 root
+    # 会写不进库 / 附件。一次性把卷属主改掉即可（容器没起的时候跑）：
+    #   docker run --rm -v navihive-data:/data alpine chown -R 1000:1000 /data
+    # 全新部署（卷还是空的）不用管 —— 命名卷首次会从镜像 /app/data 拷贝，本就是 node 属主。
+    #
+    # 仍可用 NAVIHIVE_RUN_AS 覆盖（例如宿主绑定挂载目录属主是 root、必须 root 才写得进）。
+    user: "${NAVIHIVE_RUN_AS:-node}"
 
     ports:
       # 默认只绑宿主机回环：TLS 由前面的反代终止，容器不直接面对公网。

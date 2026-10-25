@@ -38,7 +38,7 @@ test("三处规则：两侧都 import 共享模块", () => {
             ["utils/clientErrorGroups", "groupClientErrors"],
         ],
         [
-            ["src/API/methods/notes.ts", "src/API/mock.ts"],
+            ["src/API/methods/notes/notesNote.ts", "src/API/mock.ts"],
             ["utils/noteLimits", "needsSummary"],
         ],
         [

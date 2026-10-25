@@ -36,7 +36,11 @@ function findProjectDir(): string {
 
 const projectDir = findProjectDir();
 const recycleSrc = readFileSync(join(projectDir, "src", "API", "methods", "recycle.ts"), "utf-8");
-const notesSrc = readFileSync(join(projectDir, "src", "API", "methods", "notes.ts"), "utf-8");
+// #538 拆分后 deleteNote 在 notesNote.ts、listNoteTags 在 notesTag.ts、deleteFolder 在 notesFolder.ts；拼成一份再切分。
+const notesDir = join(projectDir, "src", "API", "methods", "notes");
+const notesSrc = ["notesNote.ts", "notesFolder.ts", "notesTag.ts"]
+    .map(f => readFileSync(join(notesDir, f), "utf-8"))
+    .join("\n");
 
 /** 抠出某个方法体（从 `name: async` 到下一个同缩进的 `name: async`） */
 function methodBody(src: string, name: string): string {

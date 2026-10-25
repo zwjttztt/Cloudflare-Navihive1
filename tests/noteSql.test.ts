@@ -34,10 +34,19 @@ function findProjectDir(): string {
     throw new Error("找不到项目根目录");
 }
 
-const source = readFileSync(
-    join(findProjectDir(), "src", "API", "methods", "notes.ts"),
-    "utf-8"
-);
+const notesDir = join(findProjectDir(), "src", "API", "methods", "notes");
+const readNotesFile = (f: string) => readFileSync(join(notesDir, f), "utf-8");
+// #538 拆分后，notes 域的方法体分散在 notes/ 子模块里；这些静态守卫仍要整体审视
+// notes 域的 SQL 形状，所以把相关源文件拼成一份「虚拟的 notes.ts」再跑原有的切分/正则逻辑。
+const source = [
+    "notesShared.ts",
+    "notesNote.ts",
+    "notesFolder.ts",
+    "notesTag.ts",
+    "notesAttachment.ts",
+    "notesRevision.ts",
+    "notesSearch.ts",
+].map(readNotesFile).join("\n");
 
 /** 把源码里 prepare(…) 里的 SQL 抠出来（模板字符串会保留 ${…} 占位） */
 function collectSql(): string[] {
@@ -317,10 +326,7 @@ test("阶段三收尾：notes/ 的文件夹/标签路由必须排在通用 notes
 });
 
 test("阶段三收尾：notes 编辑接口认 folder_id（漏了就是静默丢字段）", () => {
-    const notes = readFileSync(
-        join(findProjectDir(), "src", "API", "methods", "notes.ts"),
-        "utf-8"
-    );
+    const notes = source;
     const route = readFileSync(
         join(findProjectDir(), "worker", "routes", "data.ts"),
         "utf-8"

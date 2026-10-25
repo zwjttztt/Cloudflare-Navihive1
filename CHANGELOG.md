@@ -6,6 +6,19 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。---
 
+## 2026-10-25 · 大文件拆分 #538 + Docker 默认非 root + 性能多轮采样
+
+**要点**
+- **（重构）`src/API/methods/notes.ts`（2078 行）按职责拆进 `src/API/methods/notes/` 子模块**：`notesShared`（共享常量 `NOTE_FIELDS` 与防环 `validateFolderParent`）、`notesShare`、`notesBackup`、`notesNote`、`notesAttachment`、`notesFolder`、`notesTag`、`notesRevision`、`notesSearch` 九个文件。主文件只保留 `NotesApi` 接口与组合点（`...shareMethods, ...noteMethods, ...` 展开合成 `notesImpl`）；各子模块导出 `Pick<NotesApi, ...>` 的方法组，方法体保留 `this: NavigationAPI` 写法、由 `http.ts` 混回原型。**组合不改变 `this` 绑定与调用语义**，对外（`navigationApi.ts`、mock 对齐、单测）完全不变。
+- **（工程）Docker 默认不再以 root 跑**：`docker-compose.yml` 加 `user: "${NAVIHIVE_RUN_AS:-node}"`，部署容器里的 `node` 用户已就位（S5）。
+- **（性能）首屏体感审计改为多轮采样取中位数**：`script/perf-audit.mjs` 默认 3 轮（上限 9 轮）取中位数，`.github/workflows/ci.yml` 注释同步。单轮抖动（实测区间 164–4992 ms）被中位数吸收，Slow-4G + CPU 4× 下 FCP/LCP 稳定落在预算内。
+
+**工程**
+- 配套更新 5 个直接 `readFileSync` 解析 `notes.ts` 的静态守卫测试（`noteSql` / `apiMockParity` / `folderRuleParity` / `noteRecycle` / `noteRoutes`）：让它们改读拆分后的子模块，或把 `notes/` 下相关源拼成「虚拟 notes.ts」再跑原有切分/正则逻辑，保证形状守卫不失效。
+- `tsc -b` / `eslint` / 全量单测（3159）/ `vite build` / `check:budget` / `smoke` / `audit:a11y` / `audit:contrast` / `audit:perf` 全绿。
+
+---
+
 ## 2026-10-25 · P1/P2 收口：WebDAV 出站闭环、依赖清零、覆盖率补到 100%
 
 **要点**
