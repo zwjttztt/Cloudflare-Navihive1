@@ -20,6 +20,8 @@ import {
     DialogTitle,
     Divider,
     Stack,
+    Tab,
+    Tabs,
     TextField,
     Typography,
 } from "@mui/material";
@@ -273,6 +275,10 @@ export default function AccountDialog({
     const [inviteBusy, setInviteBusy] = useState(false);
     const [inviteMsg, setInviteMsg] = useState<string | null>(null);
 
+    // 顶部分页：0 = 账号信息（账号管理各项）；1 = 密码健康（方案 A 面板）。
+    // 拆成两页后，「密码健康」不再和账号管理信息堆在同一个长页里（参考「数据备份与恢复」的备份/恢复分页）。
+    const [tab, setTab] = useState(0);
+
     // 生成私钥要单独弹窗输入当前密码：不复用「账号与密码」那组输入框。
     // 否则只是想下载私钥的人被迫先填「当前密码」，再点保存会被判成「没填新密码」。
     const [recoveryPwdOpen, setRecoveryPwdOpen] = useState(false);
@@ -392,6 +398,16 @@ export default function AccountDialog({
                     {/* 原来是英文 aria-label='close'，读屏念出来是英文 —— 统一走外壳组件 */}
                     <DialogCloseButton onClose={onClose} sx={{ right: 8, top: 8 }} />
                 </DialogTitle>
+                <Divider />
+                <Tabs
+                    value={tab}
+                    onChange={(_, value: number) => setTab(value)}
+                    variant='fullWidth'
+                    sx={{ px: 2 }}
+                >
+                    <Tab label='账号信息' />
+                    <Tab label='密码健康' />
+                </Tabs>
                 <DialogContent
                     sx={{
                         px: 3,
@@ -422,6 +438,7 @@ export default function AccountDialog({
                         </DialogContentText>
                     )}
 
+                    {tab === 0 ? (
                     <Stack spacing={2} divider={<Divider />}>
                         {/* 1. 账号与密码 */}
                         <Section
@@ -483,16 +500,6 @@ export default function AccountDialog({
                                     </Typography>
                                 ) : null}
                             </Box>
-                        </Section>
-
-                        {/* 1.5 密码健康：把各站点已存的登录凭据过一遍（重复/弱/久未改）—— 方案 A。
-                            原先是「更多选项」里的独立弹窗，归到「账号与安全」里更顺：
-                            它看的正是「我的登录凭据是否安全」，和「账号与密码」是同一件事的两面。 */}
-                        <Section
-                            title='密码健康'
-                            hint='对已存的站点登录凭据做客户端分析：重复、弱口令、久未改。不改任何数据。'
-                        >
-                            <PasswordHealthPanel sites={sites} />
                         </Section>
 
                         {/* 2. 恢复密钥：忘记密码时用它重置。私钥只在本地生成并下载 */}
@@ -873,6 +880,20 @@ export default function AccountDialog({
                             </Section>
                         ) : null}
                     </Stack>
+                    ) : (
+                        <Stack spacing={2} divider={<Divider />}>
+                            {/* 密码健康：把各站点已存的登录凭据过一遍（重复/弱/久未改）—— 方案 A。
+                                2026-10-25 从「更多选项」独立弹窗挪进「账号与安全」；
+                                同日按用户要求拆成独立分页（参考「数据备份与恢复」的备份/恢复 Tab），
+                                不再和账号管理信息堆在同一长页里。 */}
+                            <Section
+                                title='密码健康'
+                                hint='对已存的站点登录凭据做客户端分析：重复、弱口令、久未改。不改任何数据。'
+                            >
+                                <PasswordHealthPanel sites={sites} />
+                            </Section>
+                        </Stack>
+                    )}
                 </DialogContent>
                 <DialogActions sx={{ px: 3, pb: 2, pt: 1 }}>
                     <Button onClick={onClose} variant='outlined'>
