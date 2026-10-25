@@ -11,6 +11,7 @@
 **要点**
 - **（重构）入口归位**：「密码健康」（把当前账号各站点已存的登录凭据过一遍，重复 / 弱口令 / 久未改 + 检索，方案 A）原本挂在「更多选项」里、紧贴「密码保险库」——两者名近易误点，但数据来源完全不同：密码健康分析的是 bootstrap 拿到的站点登录密码，而保险库（方案 B）只装用户主动存进去的条目、拿不到站点凭据。把它挪进「账号与安全」(AccountDialog) 的「账号与密码」段下方作为内嵌面板，归类更准确（看的正是「我的登录凭据是否安全」）。
 - **（重构）去掉独立 Dialog 外壳**：`PasswordHealthDialog` 改为只导出 `PasswordHealthPanel`（纯分析面板，不再自带 Dialog），由 `AccountDialog` 承载，避免「弹窗里再弹一个弹窗」；账号管理本身已是懒加载，面板随之并进 account chunk，不增加首屏体积。
+- **（重构）「账号与安全」拆成 Tab 分页**（同日追加，commit e263b30）：仿「数据备份与恢复」的顶部 Tab 写法（MUI `Tabs` fullWidth），弹窗分「账号信息 / 密码健康」两页——账号管理各段（改密、恢复密钥、登录设备、邀请码、沉睡治理、注销）留在「账号信息」，「密码健康」独占一页，不再和账号管理信息堆在同一个长页里。
 - **（清理）删除链路**：`MoreMenu` 的「密码健康」MenuItem 及 `onOpenPasswordHealth` 声明 / 透传（`MoreMenu.tsx` / `HeaderActionsSlot.tsx` / `App.tsx`）一并移除；`App.tsx` 不再单独持有 `passwordHealthOpen` 状态与懒加载，改为把全部站点 `allSitesWithCreds` 作为 `sites` 传给 `AccountDialog`。
 - **（验证）** typecheck / lint（0 err）/ 受影响 DOM 用例（moreMenu、accountDialog 全绿）/ build / bundleBudget 均通过。
 
