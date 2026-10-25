@@ -131,7 +131,10 @@ async function readImportStream(
 
 export const systemImpl = {
     async bootstrap(this: ClientThis): Promise<BootstrapData> {
-        return this.request<BootstrapResponse>("bootstrap?full=1");
+        // bootstrap 正常 1s 左右回来；跨境回源偶发抖动时给它一个比全局 30s 更紧的
+        // 上限，让失败尽快暴露、交给 useAccountSession 的两次静默重试去自愈，
+        // 而不是把骨架屏一直举着。
+        return this.request<BootstrapResponse>("bootstrap?full=1", { timeoutMs: 10_000 });
     },
     async checkMaintenance(this: ClientThis): Promise<boolean> {
         try {

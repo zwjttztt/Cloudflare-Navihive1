@@ -6,6 +6,17 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。---
 
+## 2026-10-25 · 修复：首屏骨架屏在跨境回源抖动时被长时间举起
+
+**要点**
+- **（修复）根因**：站点经 Cloudflare 反代（`cf-cache-status: DYNAMIC`，每次回源 VPS，约 1.1s 基线）跨境访问，首屏 `bootstrap?full=1` 原本有两个缺陷，合起来就是「打开网站偶发卡在骨架屏」：① `App.tsx` 已从 `firstPaintCache` 把上次快照画出来，但 `useAccountSession` 的初始 `fetchData()` 仍走**非静默**，把骨架屏重新举起——缓存「先画后取」的效果被抵消，每次打开（含二次访问）都白屏等回源；② `bootstrap` 走全局 `REQUEST_TIMEOUT_MS=30s`，再叠加 `useAccountSession` 的两次失败重试，链路偶发抖动时骨架屏最长可举约 90s 才放弃。
+- **（修复）缓存先画后取下沉到 `useSites`**：挂载即把可用快照画出来，并用 `paintedFromCacheRef` 标记「已垫底」，让那次初始 `fetchData` 自动转**静默**——二次访问直接看到上次数据、骨架屏不再出现；首次访问（无缓存）仍正常举骨架屏。非静默的 401/认证处理、后台静默刷新逻辑均不受影响。
+- **（修复）`bootstrap` 单独收紧超时到 10s**（`src/API/clientMethods/system.ts`）：正常 1s 回源，10s 已是 10 倍余量；抖动时更快暴露失败、交给既有两次静默重试自愈，而不是把骨架屏一直举着。其余非慢端点不受影响（慢端点 backup/import/export/restore/icon 仍走 0 超时）。
+- **（验证）`useSites` / `firstPaintCache` / `apiClient` / `clientErrors` / `clientSurface` / `initRace` 六套相关用例共 78 条全绿**；typecheck / lint（0 err）/ build / bundleBudget 均通过。
+
+**说明**
+- 这是跨境链路延迟的「前端韧性」修复。要进一步压低首屏延迟，根因在 Cloudflare→VPS 回源（可考虑 Argo Smart Routing / 给 `/api/init` 加短 TTL 边缘缓存），属基础设施层，不在本次代码改动内。
+
 ## 2026-10-25 · 方案 B 开工：端到端加密层 + 保险库 schema（先地基）
 
 **要点**

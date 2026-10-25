@@ -10,10 +10,11 @@
 //
 // 配置落地、链接健康 / 偏好合并等需要触碰其它 App 层状态的步骤，通过 onRemoteExtras 回调交还给 App，
 // 这样本 hook 只管「本机分组状态」，不与 configs / deadLinks / 认证态纠缠。
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { BootstrapData, Site } from "../API/http";
 import type { GroupWithSites } from "../types";
-import { writeBootstrapCache } from "../utils/firstPaintCache";
+import { hasSessionCookie } from "../API/transport";
+import { readBootstrapCache, writeBootstrapCache } from "../utils/firstPaintCache";
 import { removeSite, removeSites, upsertSite } from "../utils/siteMutations";
 
 export interface UseSitesDeps {
@@ -31,6 +32,12 @@ export function useSites(deps: UseSitesDeps) {
     const [groups, setGroups] = useState<GroupWithSites[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
+
+    // 首屏「先画后取」：上次打开的 bootstrap 快照留在 sessionStorage，挂载时先画出来，
+    // 真正的请求照常发（在 useAccountSession 里），回来后再覆盖。paintedFromCacheRef
+    // 用来告诉那次初始 fetchData「已经有缓存垫底，别再举骨架屏」——否则下面的非静默
+    // fetch 会把骨架屏重新举起来，把缓存优化的效果抵消掉（这是此前每次打开都白屏的根因）。
+    const paintedFromCacheRef = useRef(false);
 
     // 把一次 bootstrap 数据合并进本地分组状态；配置 / 偏好等交给 onRemoteExtras
     const applyRemoteData = (data: BootstrapData) => {
@@ -59,7 +66,12 @@ export function useSites(deps: UseSitesDeps) {
     };
 
     const fetchData = async ({ silent = false }: { silent?: boolean } = {}): Promise<boolean> => {
-        if (!silent) {
+        // 若本次是「缓存已垫底后的首次取数」，自动静默：骨架屏保持隐藏，不被重新举起。
+        const fromCache = paintedFromCacheRef.current;
+        paintedFromCacheRef.current = false;
+        const effectiveSilent = silent || fromCache;
+
+        if (!effectiveSilent) {
             setLoading(true);
             setError(null);
         }
@@ -72,7 +84,7 @@ export function useSites(deps: UseSitesDeps) {
             return true;
         } catch (err) {
             const message = err instanceof Error ? err.message : "未知错误";
-            if (!silent) {
+            if (!effectiveSilent) {
                 deps.onError("加载数据失败: " + message);
             }
             // 如果因为认证问题导致加载失败，处理认证状态
@@ -81,7 +93,7 @@ export function useSites(deps: UseSitesDeps) {
             }
             return false;
         } finally {
-            if (!silent) {
+            if (!effectiveSilent) {
                 setLoading(false);
             }
         }
@@ -110,6 +122,18 @@ export function useSites(deps: UseSitesDeps) {
     const upsertSitesLocally = useCallback((sites: Site[]) => {
         if (sites.length === 0) return;
         setGroups(prev => sites.reduce((acc, site) => upsertSite(acc, site), prev));
+    }, []);
+
+    // 挂载即把可用缓存画出来（仅已登录时），并标记「已垫底」让初始 fetch 走静默。
+    useEffect(() => {
+        if (!hasSessionCookie()) return;
+        const cached = readBootstrapCache();
+        if (!cached) return;
+        paintedFromCacheRef.current = true;
+        applyRemoteData(cached);
+        setLoading(false);
+        // 仅在挂载跑一次；applyRemoteData 每渲染都是新函数，进 deps 会每渲染重跑
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     return {

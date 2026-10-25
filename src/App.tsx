@@ -125,7 +125,6 @@ import {
     mergeLinkHealth,
     readDeadLinks,
 } from "./utils/linkHealth";
-import { readBootstrapCache } from "./utils/firstPaintCache";
 import {
     switchAccountBoundary,
 } from "./utils/sessionBoundary";
@@ -212,11 +211,9 @@ function App() {
         groups,
         setGroups,
         loading,
-        setLoading,
         error,
         setError,
         fetchData,
-        applyRemoteData,
         upsertSiteLocally,
         upsertSitesLocally,
         removeSiteLocally,
@@ -713,16 +710,8 @@ function App() {
     // 调用点在 collapsedIds 声明之后 —— 上传要用到它，而 hook 调用顺序只要每渲染一致即可。
 
     useEffect(() => {
-        // 先用上一次的快照把界面画出来（已登录才有意义，未登录要直接走登录页），
-        // 真正的请求照常发出，回来后再覆盖一次
-        if (api.isLoggedIn()) {
-            const cached = readBootstrapCache();
-            if (cached) {
-                applyRemoteData(cached);
-                setLoading(false);
-            }
-        }
-
+        // 首屏「先画后取」已下沉到 useSites：挂载即把可用缓存画出来，并让初始
+        // bootstrap 走静默，骨架屏不再被重新举起。这里只负责认证状态探活。
         // 检查认证状态
         checkAuthStatus();
         // 当初这里顺手重置过排序状态（setSortMode(None) / setCurrentSortingGroupId(null)）。
