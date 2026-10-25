@@ -29,6 +29,7 @@ import type { NoteRevision } from "../API/types";
 import { computeLineDiff } from "../utils/noteDiff";
 import { formatWhen, formatWhenFull } from "../utils/noteTime";
 import { DialogEmptyState } from "./DialogListRow";
+import { dialogActionsSx, dialogTitleSx } from "./dialogShell";
 
 export interface NoteVersionHistoryDialogProps {
     open: boolean;
@@ -110,7 +111,7 @@ export default function NoteVersionHistoryDialog({
             aria-label='版本历史'
             data-version-history='1'
         >
-            <DialogTitle sx={{ display: "flex", alignItems: "center", gap: 1, pr: 1 }}>
+            <DialogTitle sx={dialogTitleSx}>
                 <HistoryIcon fontSize='small' sx={{ opacity: 0.7 }} />
                 <Box sx={{ flex: 1, minWidth: 0 }}>
                     <Typography sx={{ fontSize: 15, fontWeight: 600 }}>版本历史</Typography>
@@ -286,7 +287,7 @@ export default function NoteVersionHistoryDialog({
                 )}
             </DialogContent>
 
-            <DialogActions sx={{ px: 2, py: 1.25, gap: 1 }}>
+            <DialogActions sx={dialogActionsSx}>
                 <Typography variant='caption' color='text.secondary' sx={{ flex: 1 }}>
                     恢复前，当前内容会自动存成一份新版本。
                 </Typography>

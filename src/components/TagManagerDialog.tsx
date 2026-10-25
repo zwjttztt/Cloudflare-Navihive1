@@ -83,17 +83,7 @@ export default function TagManagerDialog({
                 fullWidth
                 className='nav-tag-manager-dialog'
             >
-                <DialogTitle
-                    sx={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 1,
-                        pr: 5,
-                        py: 1.5,
-                        fontSize: 17,
-                        fontWeight: 600,
-                    }}
-                >
+                <DialogTitle sx={dialogTitleSx}>
                     <Box
                         sx={{
                             width: 30,
@@ -296,7 +286,7 @@ export default function TagManagerDialog({
                     )}
                 </DialogContent>
 
-                <DialogActions sx={{ px: 2, pb: 2, pt: 0.5 }}>
+                <DialogActions sx={dialogActionsSx}>
                     <Button size='small' variant='outlined' color='inherit' onClick={onClose}>
                         关闭
                     </Button>

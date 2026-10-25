@@ -24,9 +24,9 @@ import {
     Alert,
     Chip,
     LinearProgress,
-    useTheme,
 } from "@mui/material";
 import CloseIcon from "@mui/icons-material/Close";
+import { dialogActionsSx, dialogTitleSx } from "./dialogShell";
 
 interface BackupDialogProps {
     open: boolean;
@@ -135,7 +135,6 @@ export default function BackupDialog({
     onOpenBookmark,
     cronError = null,
 }: BackupDialogProps) {
-    const theme = useTheme();
 
     const [tab, setTab] = useState(initialTab);
     const [config, setConfig] = useState<WebDavConfig>(webdavConfig);
@@ -511,8 +510,10 @@ export default function BackupDialog({
             slotProps={{
                 paper: {
                     sx: {
-                        borderRadius: 2,
-                        backgroundColor: theme.palette.background.paper,
+                        // 2026-10-25：圆角跟「圆角风格」走；底色不再自己盖一层不透明纸 ——
+                        // 全站弹窗的玻璃底来自 theme 的 --surface-modal，这个弹窗原先单独
+                        // 设成 background.paper，于是它是唯一一个「不透明纸」弹窗。
+                        borderRadius: "var(--card-radius)",
                         m: { xs: 2, sm: "auto" },
                         // 宽度也要写死：width:auto 时 paper 会跟着内容宽度走，
                         // 结果切标签页时弹窗宽度会跳（备份页 541 / 恢复页 560 实测）
@@ -531,8 +532,8 @@ export default function BackupDialog({
                 }
             }}
         >
-            <DialogTitle sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", pb: 1 }}>
-                <Typography variant='h6' component='div' sx={{
+            <DialogTitle sx={{ ...dialogTitleSx, justifyContent: "space-between" }}>
+                <Typography component='div' sx={{
                     fontWeight: '600'
                 }}>
                     数据备份与恢复
@@ -695,9 +696,8 @@ export default function BackupDialog({
                 的「关闭」行视觉上叠在一起；一条线把两个区域明确隔开 */}
             <DialogActions
                 sx={{
-                    px: 2,
-                    pb: 1.5,
-                    pt: 1,
+                    ...dialogActionsSx,
+                    // 备份弹窗正文很长、自己会滚，操作区需要一条上边界把它「钉」在底部
                     borderTop: "1px solid",
                     borderColor: "divider",
                 }}

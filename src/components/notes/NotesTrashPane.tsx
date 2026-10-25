@@ -1,3 +1,4 @@
+import { useState } from "react";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import IconButton from "@mui/material/IconButton";
@@ -6,11 +7,19 @@ import Typography from "@mui/material/Typography";
 import DeleteForeverIcon from "@mui/icons-material/DeleteForever";
 import UndoIcon from "@mui/icons-material/Undo";
 import { formatRelative, formatWhen } from "../../utils/noteTime";
+import ConfirmDialog from "../ConfirmDialog";
 import type { NotesPageCtx } from "./notesPageCtx";
 
 
+/** 待确认的「彻底删除」目标：整站清空 / 单条 */
+type PurgeTarget = { kind: "all" } | { kind: "one"; id: number; title: string } | null;
+
 export default function NotesTrashPane(props: Pick<NotesPageCtx, "onEmptyTrash" | "onPurgeTrashed" | "onRestoreTrashed" | "trashedNotes">) {
     const { onEmptyTrash, onPurgeTrashed, onRestoreTrashed, trashedNotes } = props;
+    // 2026-10-25：彻底删除的确认从 window.confirm 换成站内 ConfirmDialog。
+    // 系统 confirm 的三个硬伤：不能标危险色、不能写「影响几项 / 不可撤销」、
+    // 也不受站内主题控制 —— 而「删了就找不回来」正是最需要说清后果的那一次点击。
+    const [purgeTarget, setPurgeTarget] = useState<PurgeTarget>(null);
     return (
         <Box sx={{ px: 0.75, pb: 1 }}>
             <Box sx={{ display: "flex", alignItems: "center", gap: 1, px: 1.25, py: 0.75 }}>
@@ -22,11 +31,7 @@ export default function NotesTrashPane(props: Pick<NotesPageCtx, "onEmptyTrash" 
                         size='small'
                         color='error'
                         data-action='empty-trash'
-                        onClick={() => {
-                            if (window.confirm(`彻底删除这 ${trashedNotes.length} 条笔记？删了就找不回来了。`)) {
-                                void onEmptyTrash();
-                            }
-                        }}
+                        onClick={() => setPurgeTarget({ kind: "all" })}
                         sx={{ fontSize: 12, py: 0.25 }}
                     >
                         清空
@@ -89,11 +94,7 @@ export default function NotesTrashPane(props: Pick<NotesPageCtx, "onEmptyTrash" 
                                 color='error'
                                 aria-label={`彻底删除 ${item.title}`}
                                 data-action='purge'
-                                onClick={() => {
-                                    if (window.confirm(`彻底删除「${item.title}」？删了就找不回来了。`)) {
-                                        void onPurgeTrashed(item.recycleId);
-                                    }
-                                }}
+                                onClick={() => setPurgeTarget({ kind: "one", id: item.recycleId, title: item.title })}
                             >
                                 <DeleteForeverIcon fontSize='small' />
                             </IconButton>
@@ -101,6 +102,30 @@ export default function NotesTrashPane(props: Pick<NotesPageCtx, "onEmptyTrash" 
                     </Box>
                 ))
             )}
+            <ConfirmDialog
+                open={purgeTarget !== null}
+                title={purgeTarget?.kind === "all" ? "清空回收站" : "彻底删除这篇笔记"}
+                description={
+                    purgeTarget?.kind === "one"
+                        ? `「${purgeTarget.title}」会被永久删除，不再占用存储。`
+                        : "回收站里的笔记会被全部永久删除，不再占用存储。"
+                }
+                impact={{
+                    object: "笔记",
+                    count: purgeTarget?.kind === "one" ? 1 : trashedNotes.length,
+                    undoable: false,
+                }}
+                confirmText={purgeTarget?.kind === "all" ? "全部删除" : "彻底删除"}
+                cancelText='取消'
+                danger
+                busyText='删除中…'
+                onConfirm={async () => {
+                    if (!purgeTarget) return;
+                    if (purgeTarget.kind === "all") await onEmptyTrash();
+                    else await onPurgeTrashed(purgeTarget.id);
+                }}
+                onClose={() => setPurgeTarget(null)}
+            />
         </Box>
     );
 }

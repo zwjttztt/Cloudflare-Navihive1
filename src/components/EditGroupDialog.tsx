@@ -15,6 +15,7 @@ import { Group } from "../API/http";
 import DialogCloseButton from "./DialogCloseButton";
 import { useNotify } from "../context/NotifyContext";
 import { copyToClipboard } from "../utils/clipboard";
+import { dialogActionsSx, dialogTitleSx } from "./dialogShell";
 
 interface EditGroupDialogProps {
     open: boolean;
@@ -119,7 +120,7 @@ const EditGroupDialog: React.FC<EditGroupDialogProps> = ({
     return (
         <Dialog open={open} onClose={onClose} maxWidth='sm' fullWidth>
             {/* pr 给右上角那枚 × 让位 */}
-            <DialogTitle sx={{ pr: 5 }}>
+            <DialogTitle sx={dialogTitleSx}>
                 {isCreate ? "新增分组" : "编辑分组"}
                 <DialogCloseButton onClose={onClose} label={isCreate ? "关闭新增分组" : "关闭编辑分组"} />
             </DialogTitle>
@@ -258,7 +259,7 @@ const EditGroupDialog: React.FC<EditGroupDialogProps> = ({
                     </Alert>
                 )}
             </DialogContent>
-            <DialogActions>
+            <DialogActions sx={dialogActionsSx}>
                 {!showDeleteConfirm ? (
                     <>
                         {!isCreate && onDelete && (

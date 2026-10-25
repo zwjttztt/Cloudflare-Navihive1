@@ -28,7 +28,7 @@ import CheckCircleIcon from "@mui/icons-material/CheckCircle";
 import { pickBulkTagSuggestions } from "../utils/tagSuggest";
 import { parseTagInput, toggleTagInInput } from "../utils/tagInput";
 import DialogCloseButton from "./DialogCloseButton";
-import { dialogPaperSx } from "./dialogShell";
+import { dialogActionsSx, dialogPaperSx, dialogTitleSx } from "./dialogShell";
 
 export interface BulkGroupOption {
     id: number;
@@ -260,7 +260,7 @@ export default function BulkActionBar({
                 anchorEl={moveAnchor}
                 open={Boolean(moveAnchor)}
                 onClose={() => setMoveAnchor(null)}
-                slotProps={{ paper: { sx: { minWidth: 180, borderRadius: "14px" } } }}
+                slotProps={{ paper: { sx: { minWidth: 180, borderRadius: "var(--header-radius, 14px)" } } }}
             >
                 {groups.map(group => (
                     <MenuItem
@@ -288,7 +288,7 @@ export default function BulkActionBar({
                 slotProps={{ paper: { sx: dialogPaperSx } }}
             >
                 {/* pr 给右上角那枚 × 让位 */}
-                <DialogTitle sx={{ fontSize: 16, fontWeight: 600, pb: 0.5, pr: 5 }}>
+                <DialogTitle sx={dialogTitleSx}>
                     给 {count} 个网站打标签
                     <DialogCloseButton onClose={() => setTagOpen(false)} label='关闭打标签弹窗' />
                 </DialogTitle>
@@ -407,7 +407,7 @@ export default function BulkActionBar({
                         </Typography>
                     </Box>
                 </DialogContent>
-                <DialogActions sx={{ px: 2, pb: 2, pt: 0.5, gap: 1 }}>
+                <DialogActions sx={dialogActionsSx}>
                     <Button size='small' color='inherit' variant='outlined' onClick={() => setTagOpen(false)}>
                         取消
                     </Button>

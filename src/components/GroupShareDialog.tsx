@@ -18,6 +18,7 @@ import Typography from "@mui/material/Typography";
 import CloseIcon from "@mui/icons-material/Close";
 import ConfirmDialog from "./ConfirmDialog";
 import type { GroupShareConfig } from "../API/types";
+import { dialogActionsSx, dialogTitleSx } from "./dialogShell";
 
 export interface GroupShareDialogProps {
     open: boolean;
@@ -129,7 +130,7 @@ export default function GroupShareDialog({
 
     return (
         <Dialog open={open} onClose={onClose} fullWidth maxWidth='sm'>
-            <DialogTitle sx={{ display: "flex", alignItems: "center", pr: 1 }}>
+            <DialogTitle sx={dialogTitleSx}>
                 <Typography variant='subtitle1' sx={{ flex: 1, fontWeight: 600 }}>
                     分享分组「{groupName}」
                 </Typography>
@@ -242,7 +243,7 @@ export default function GroupShareDialog({
                 ⚠️ loadedOnce 之前不渲染按钮：读取中就给按钮 = 点了没反应
                 （getGroupShareConfig 还没回来，create/update 都是瞎猜） */}
             {loadedOnce && (
-                <DialogActions sx={{ px: 3, pb: 2.5 }}>
+                <DialogActions sx={dialogActionsSx}>
                     {config ? (
                         <>
                             <Button color='error' data-group-share-revoke='1' disabled={busy} onClick={() => setRevokeConfirm(true)}>

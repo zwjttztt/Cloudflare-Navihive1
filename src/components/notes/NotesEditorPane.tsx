@@ -576,6 +576,23 @@ export default function NotesEditorPane(props: Pick<NotesPageCtx, "active" | "ac
                                     border: "none",
                                     borderRadius: 0,
                                     bgcolor: "transparent",
+                                    // 「单栏阅读」模式给一层纸面（2026-10-25）：
+                                    // 分屏时必须无框（两栏中间只有一根线），但**只剩预览**时
+                                    // 正文直接铺在整页暖白上，没有任何承载物 —— 与导航页
+                                    // 「内容都在玻璃卡上」的语言完全脱节。
+                                    // 所以只在 pane === "preview" 时加：淡纸面 + 细描边 + 极轻阴影，
+                                    // 980 上限居中（宽屏不拉成长条）。
+                                    ...(pane === "preview"
+                                        ? {
+                                              maxWidth: 980,
+                                              mx: "auto",
+                                              my: 2,
+                                              bgcolor: "var(--surface-raised)",
+                                              border: "1px solid var(--card-border)",
+                                              borderRadius: "var(--notes-radius-row, 12px)",
+                                              boxShadow: "var(--shadow-chip, none)",
+                                          }
+                                        : null),
                                 }}
                             >
                                 {/* 「即时渲染」只作用于**编辑区**：预览区永远是渲染后的结果，

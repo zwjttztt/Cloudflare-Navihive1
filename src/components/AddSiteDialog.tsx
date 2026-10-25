@@ -32,6 +32,7 @@ import type { Site } from "../API/types";
 import type { SiteAi } from "../context/AiContext";
 import { SECRET_IGNORE_ATTRS, secretInputSx, secretInputType } from "../utils/secretInput";
 import { generatePassword } from "../utils/passwordGenerator";
+import { dialogActionsSx, dialogTitleSx } from "./dialogShell";
 
 export interface AddSiteDialogProps {
     open: boolean;
@@ -74,18 +75,8 @@ export default function AddSiteDialog(props: AddSiteDialogProps) {
             {/* 新增站点对话框：字段顺序与「网站设置」对齐
                 （名称 → 链接 → 图标 → 描述 → 备注 → 分隔线 → 登录凭据），宽度也统一成 600px */}
             <Dialog open={open} onClose={onClose} maxWidth='sm' fullWidth>
-                <DialogTitle
-                    sx={{
-                        display: "flex",
-                        justifyContent: "space-between",
-                        alignItems: "center",
-                        gap: 1,
-                        px: 3,
-                        pt: 2,
-                        pb: 1,
-                    }}
-                >
-                    <Typography variant='h6' component='div' sx={{
+                <DialogTitle sx={{ ...dialogTitleSx, justifyContent: "space-between" }}>
+                    <Typography component='div' sx={{
                         fontWeight: '600'
                     }}>
                         新增站点
@@ -396,7 +387,7 @@ export default function AddSiteDialog(props: AddSiteDialogProps) {
                     </Stack>
                 </DialogContent>
 
-                <DialogActions sx={{ px: 3, pb: 2.5, pt: 1, gap: 1.5 }}>
+                <DialogActions sx={dialogActionsSx}>
                     <Button onClick={onClose} variant='outlined'>
                         取消
                     </Button>

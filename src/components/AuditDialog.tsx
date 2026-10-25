@@ -28,6 +28,7 @@ import BugReportIcon from "@mui/icons-material/BugReport";
 import { NavigationClient } from "../API/client";
 import DialogCloseButton from "./DialogCloseButton";
 import { DialogEmptyState, DialogListRow } from "./DialogListRow";
+import { dialogActionsSx, dialogTitleSx } from "./dialogShell";
 
 interface AuditEntry {
     id: number;
@@ -181,9 +182,9 @@ export default function AuditDialog({
     const totalErrors = errorGroups.reduce((sum, g) => sum + g.count, 0);
 
     return (
-        <Dialog open={open} onClose={onClose} maxWidth='sm' fullWidth className='nav-dialog'>
+        <Dialog open={open} onClose={onClose} maxWidth='sm' fullWidth>
             {/* pr 给右上角那枚 × 让位，不然「仅保留 N 天」会和它叠在一起 */}
-            <DialogTitle sx={{ display: "flex", alignItems: "center", gap: 1, pr: 5 }}>
+            <DialogTitle sx={dialogTitleSx}>
                 <HistoryIcon fontSize='small' />
                 审计日志
                 <Typography
@@ -378,7 +379,7 @@ export default function AuditDialog({
                     </>
                 )}
             </DialogContent>
-            <DialogActions sx={{ px: 2, py: 1.5 }}>
+            <DialogActions sx={dialogActionsSx}>
                 <Button onClick={onClose} variant='contained' disableElevation size='small'>
                     关闭
                 </Button>

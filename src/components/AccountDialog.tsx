@@ -32,6 +32,7 @@ import DialogCloseButton from "./DialogCloseButton";
 import type { AccountInfo, SessionInfo } from "../API/http";
 import type { Site } from "../API/types";
 import PasswordHealthPanel from "./PasswordHealthDialog";
+import { dialogActionsSx, dialogTitleSx } from "./dialogShell";
 import {
     INACTIVE_DISABLE_DAYS_DEFAULT,
     INACTIVE_DELETE_GRACE_DAYS_DEFAULT,
@@ -393,10 +394,10 @@ export default function AccountDialog({
                     }
                 }}
             >
-                <DialogTitle sx={{ px: 3, pt: 2, pb: 0.5 }}>
+                <DialogTitle sx={dialogTitleSx}>
                     账号与安全
                     {/* 原来是英文 aria-label='close'，读屏念出来是英文 —— 统一走外壳组件 */}
-                    <DialogCloseButton onClose={onClose} sx={{ right: 8, top: 8 }} />
+                    <DialogCloseButton onClose={onClose} />
                 </DialogTitle>
                 <Divider />
                 <Tabs
@@ -895,7 +896,7 @@ export default function AccountDialog({
                         </Stack>
                     )}
                 </DialogContent>
-                <DialogActions sx={{ px: 3, pb: 2, pt: 1 }}>
+                <DialogActions sx={dialogActionsSx}>
                     <Button onClick={onClose} variant='outlined'>
                         关闭
                     </Button>
@@ -909,7 +910,7 @@ export default function AccountDialog({
                 maxWidth='xs'
                 fullWidth
             >
-                <DialogTitle sx={{ px: 3, pt: 2, pb: 1 }}>验证身份后生成恢复私钥</DialogTitle>
+                <DialogTitle sx={dialogTitleSx}>验证身份后生成恢复私钥</DialogTitle>
                 <DialogContent sx={{ px: 3, pt: 0.5, pb: 1 }}>
                     {/* 一句说清就行：小屏上弹窗高度有限，文字一多底部按钮会被挤出可视区 */}
                     <DialogContentText variant='body2' sx={{ mb: 2 }}>
@@ -938,11 +939,9 @@ export default function AccountDialog({
                 </DialogContent>
                 <DialogActions
                     sx={{
-                        px: 3,
-                        pb: 2,
+                        ...dialogActionsSx,
                         // 小屏键盘弹起时按钮会被挤出可视区：允许换行，并把主按钮排到前面
                         flexWrap: "wrap",
-                        gap: 1,
                         "& > .MuiButton-contained": { order: { xs: 1, sm: 2 } },
                     }}
                 >

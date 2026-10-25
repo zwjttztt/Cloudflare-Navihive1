@@ -7,9 +7,10 @@
 // 不提供注销入口（App 只在 role !== "owner" 时传 onDeleteAccount），后端
 // deleteAccount 对 owner 也一律拒绝。两层都挡：只藏入口的话，脚本照样能调 API
 // 把站点唯一的 owner 删掉，站点就成了没人能管的孤儿。
-import { Dialog, DialogActions, DialogContent, DialogTitle, Button, Typography, Alert } from "@mui/material";
+import { Dialog, DialogActions, DialogContent, DialogTitle, Button, Typography, Alert, CircularProgress } from "@mui/material";
 import { PasswordField } from "./PasswordField";
 import DialogCloseButton from "./DialogCloseButton";
+import { dialogActionsSx, dialogTitleSx } from "./dialogShell";
 
 interface DeleteAccountDialogProps {
     open: boolean;
@@ -39,7 +40,7 @@ export default function DeleteAccountDialog({
             fullWidth
         >
             {/* pr 给右上角那枚 × 让位；注销提交中禁用，免得「点关闭」和「正在提交」打架 */}
-            <DialogTitle sx={{ pb: 1, pr: 5 }}>
+            <DialogTitle sx={dialogTitleSx}>
                 注销账号
                 <DialogCloseButton onClose={onClose} label='关闭注销弹窗' disabled={busy} />
             </DialogTitle>
@@ -69,10 +70,11 @@ export default function DeleteAccountDialog({
                     }}
                 />
             </DialogContent>
-            <DialogActions sx={{ px: 3, pb: 2 }}>
-                <Button onClick={onClose} variant='outlined' disabled={busy}>
-                    取消
-                </Button>
+            <DialogActions sx={dialogActionsSx}>
+                {/* 危险键靠左（全站统一，见 ConfirmDialog 的同款说明）：
+                    站点设置里「删除」在操作区最左、确认框里却在最右的话，
+                    肌肉记忆会点错 —— 一次点到删除、一次点到取消。
+                    非危险弹窗仍是「取消在左、确认在右」，这里只是对调危险键。 */}
                 <Button
                     onClick={onConfirm}
                     variant='contained'
@@ -80,8 +82,13 @@ export default function DeleteAccountDialog({
                     // 只填空格不算填过：密码校验在后端，但这里放行的话用户会以为
                     // 「按钮亮了就是填对了」，然后被一个 400 打回来
                     disabled={busy || !password.trim()}
+                    sx={{ mr: "auto" }}
+                    startIcon={busy ? <CircularProgress size={14} color='inherit' /> : undefined}
                 >
                     {busy ? "注销中…" : "确认注销"}
+                </Button>
+                <Button onClick={onClose} variant='outlined' disabled={busy}>
+                    取消
                 </Button>
             </DialogActions>
         </Dialog>

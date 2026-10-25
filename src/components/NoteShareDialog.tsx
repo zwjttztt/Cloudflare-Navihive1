@@ -20,6 +20,7 @@ import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import type { NoteImportStats, NotesImportPayload, NoteShare, NoteShareListItem, NoteStats } from "../API/types";
 import ConfirmDialog from "./ConfirmDialog";
 import DialogCloseButton from "./DialogCloseButton";
+import { dialogActionsSx, dialogTitleSx } from "./dialogShell";
 
 export interface NoteShareApi {
     getNoteShare(id: number): Promise<NoteShare | null>;
@@ -235,7 +236,7 @@ export default function NoteShareDialog({
     return (
         <Dialog open onClose={busy ? undefined : onClose} fullWidth maxWidth='sm'>
             {/* pr 给右上角那枚 × 让位；提交中禁用，免得「点关闭」和「正在提交」打架 */}
-            <DialogTitle sx={{ pr: 5 }}>
+            <DialogTitle sx={dialogTitleSx}>
                 分享笔记
                 <DialogCloseButton onClose={onClose} label='关闭分享弹窗' disabled={busy !== null} />
             </DialogTitle>
@@ -421,7 +422,7 @@ export default function NoteShareDialog({
                     </Alert>
                 )}
             </DialogContent>
-            <DialogActions sx={{ px: 2.5 }}>
+            <DialogActions sx={dialogActionsSx}>
                 {share && (
                     <Button
                         color='error'

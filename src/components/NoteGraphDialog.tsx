@@ -28,6 +28,7 @@ import TextField from "@mui/material/TextField";
 import { readActiveAccount, scopedKey } from "../utils/accountScope";
 import useMediaQuery from "@mui/material/useMediaQuery";
 import { useTheme } from "@mui/material/styles";
+import { dialogTitleSx } from "./dialogShell";
 
 function graphPreference(key: string): string | null {
     try { return localStorage.getItem(scopedKey(`notes.graph.${key}`, readActiveAccount())); }
@@ -248,16 +249,7 @@ export default function NoteGraphDialog({
             fullScreen={isNarrow}
             slotProps={{ paper: { sx: { borderRadius: isNarrow ? 0 : 3 } } }}
         >
-            <DialogTitle
-                sx={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 1,
-                    fontSize: 15,
-                    fontWeight: 600,
-                    py: 1.5,
-                }}
-            >
+            <DialogTitle sx={dialogTitleSx}>
                 <HubIcon fontSize='small' sx={{ color: "var(--accent)" }} />
                 <Box sx={{ flex: 1 }}>关系图谱</Box>
                 <Button

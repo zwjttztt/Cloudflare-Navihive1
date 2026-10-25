@@ -13,8 +13,15 @@ export enum SortMode {
 /** 顶栏里搜索框、按钮、胶囊的统一高度 */
 export const HEADER_CONTROL_H = 36;
 
-/** 顶栏里所有「一块玻璃」的圆角 */
-export const HEADER_RADIUS = "14px";
+/**
+ * 顶栏里所有「一块玻璃」的圆角。
+ *
+ * 2026-10-25：从写死的 "14px" 改成派生 token —— 用户在「外观 → 圆角风格」里
+ * 切到直角档时，卡片会变 6px，顶栏却还是 14px，同一屏两种风格。
+ * 现在跟 `--card-radius` 一起走（22 → 14.1，与改造前基本一致）；
+ * fallback 保留 14px，供导出/独立页面等没有这份 CSS 的上下文使用。
+ */
+export const HEADER_RADIUS = "var(--header-radius, 14px)";
 
 /** 搜索框 / 按钮 / 胶囊共用：高度对齐 + 圆角一致 */
 export const headerControlSx: SxProps<Theme> = {

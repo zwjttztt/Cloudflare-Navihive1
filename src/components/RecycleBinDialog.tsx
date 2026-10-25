@@ -27,6 +27,7 @@ import DeleteForeverIcon from "@mui/icons-material/DeleteForever";
 import DeleteSweepIcon from "@mui/icons-material/DeleteSweep";
 import { NavigationClient } from "../API/client";
 import ConfirmDialog from "./ConfirmDialog";
+import { dialogActionsSx, dialogTitleSx } from "./dialogShell";
 
 interface RecycleItem {
     id: number;
@@ -157,9 +158,9 @@ export default function RecycleBinDialog({
     const shown = tab === 0 ? siteItems : groupItems;
 
     return (
-        <Dialog open={open} onClose={onClose} maxWidth='sm' fullWidth className='nav-dialog'>
+        <Dialog open={open} onClose={onClose} maxWidth='sm' fullWidth>
             {/* pr 给右上角那枚 × 让位，不然「仅保留 N 天」会和它叠在一起 */}
-            <DialogTitle sx={{ display: "flex", alignItems: "center", gap: 1, pr: 5 }}>
+            <DialogTitle sx={dialogTitleSx}>
                 <RestoreFromTrashIcon fontSize='small' />
                 回收站
                 <Typography
@@ -257,7 +258,7 @@ export default function RecycleBinDialog({
                     </>
                 )}
             </DialogContent>
-            <DialogActions sx={{ px: 2, py: 1.5, gap: 1 }}>
+            <DialogActions sx={dialogActionsSx}>
                 <Button
                     color='error'
                     startIcon={<DeleteSweepIcon />}

@@ -10,6 +10,7 @@ import LastPageIcon from "@mui/icons-material/LastPage";
 import SettingsIcon from "@mui/icons-material/Settings";
 import AttachmentIcon from "@mui/icons-material/AttachFile";
 import { tagNamesOf, NavRow, FolderTagSection } from "../notes/sidebarSection";
+import { HEADER_CONTROL_H, HEADER_RADIUS } from "../../constants";
 import type { NotesPageCtx } from "./notesPageCtx";
 
 export default function NotesNavPanel(props: Pick<NotesPageCtx, "accountName" | "activeFolder" | "activeId" | "activeTag" | "askName" | "attManagerOpen" | "folderCounts" | "folderTags" | "folders" | "jumpToNote" | "keyword" | "listCollapsed" | "narrowLayout" | "noteTags" | "notes" | "notesInFolder" | "onClose" | "onCreate" | "onUpdate" | "openTemplatePicker" | "renderSearchField" | "searchRef" | "setActiveFolder" | "setActiveTag" | "setAppearanceFolderId" | "setAttManagerOpen" | "setListCollapsed" | "setMiddleHidden" | "setNavDrawerOpen" | "setRemoveTarget" | "setRowMenu" | "setSettingsOpen" | "setTagColorId" | "setView" | "startCreateInFolder" | "tagCounts" | "tags" | "uploadApi" | "view" | "viewCounts">) {
@@ -33,12 +34,28 @@ export default function NotesNavPanel(props: Pick<NotesPageCtx, "accountName" | 
                 {/* 返回箭头（2026-10-10 用户明确）：贴左侧栏最左边、箭头**朝左**（回导航站的方向）；
                     窄屏（tablet/mobile）的返回箭头仍贴**整页右上角**（顶部 44px 栏最右端），
                     不落在抽屉里。占位 Box 让标题在两种布局下都居中。 */}
+                {/* 返回导航站（2026-10-25）：跨页跳转是重动作，与导航页顶栏的玻璃控件
+                    用同一套外观（36px 方块 + --header-radius + 玻璃底）。
+                    改造前是裸小图标 —— 全站最「轻」的样式配最「重」的动作。 */}
                 {!narrowLayout ? (
                     <IconButton
                         aria-label='返回导航站'
                         onClick={onClose}
-                        size='small'
-                        sx={{ flexShrink: 0, ml: -0.5 }}
+                        sx={{
+                            flexShrink: 0,
+                            ml: -0.5,
+                            width: HEADER_CONTROL_H,
+                            height: HEADER_CONTROL_H,
+                            p: 0,
+                            borderRadius: HEADER_RADIUS,
+                            border: "1px solid var(--glass-border)",
+                            bgcolor: "var(--glass-bg-hover)",
+                            transition: "background-color 120ms ease, border-color 120ms ease",
+                            "&:hover": {
+                                borderColor: "color-mix(in srgb, var(--accent) 35%, var(--glass-border))",
+                                bgcolor: "var(--glass-bg)",
+                            },
+                        }}
                     >
                         <ArrowBackIcon fontSize='small' />
                     </IconButton>

@@ -207,6 +207,12 @@
     --scrim: rgba(0, 0, 0, 0.82);
     --on-scrim: #fff;
 
+    /* 弹窗遮罩（2026-10-25 统一）：抽屉用的 --scrim 是 82%（它盖住整页导航，
+       要让下面的内容彻底退后）；弹窗只盖一层，用 82% 会「闷得看不见底」。
+       所以是两个**语义**而不是两个随手值：抽屉 = --scrim，弹窗 = --scrim-modal。
+       theme 的 MuiBackdrop 取这一个，任何弹窗都别再自己改遮罩色。 */
+    --scrim-modal: rgba(0, 0, 0, 0.52);
+
     /* 编辑器（CodeMirror）内部高亮：选区 / 搜索命中 / 当前命中。
        .cm-* 是第三方类名，只能从外面覆盖，颜色因此必须能在主题层调 ——
        放在这里而不是组件里，暗色才能整体换档。 */
@@ -292,6 +298,11 @@
     --notes-radius-row: calc(var(--card-radius) * 0.55);
     --notes-radius-chip: calc(var(--card-radius) * 0.36);
     --notes-radius-block: calc(var(--card-radius) * 0.45);
+    /* 顶栏控件（搜索框 / 图标按钮 / 返回键）的圆角：全站一套。
+       以前它是 constants.ts 里写死的 "14px" —— 用户把圆角切成直角(6px)后，
+       卡片是 6px、顶栏还是 14px，同一屏两种风格。22 → 14.1（与改造前一致），
+       14 → 9，6 → 3.8。 */
+    --header-radius: calc(var(--card-radius) * 0.64);
     --font-scale: 1;
     /* 分组强调色，默认为主色。
        只用在细线 / 小标记上（宽度由 --group-accent-width 控制），
@@ -477,11 +488,19 @@ body {
 }
 
 /* 键盘导航时给出清晰的焦点环。用 :focus-visible 而不是 :focus，
-   这样鼠标点击不会留下一个突兀的框，只有 Tab / 方向键走位时才出现。 */
+   这样鼠标点击不会留下一个突兀的框，只有 Tab / 方向键走位时才出现。
+   ⚠️ 这里**不能**写 border-radius（2026-10-25 修）：outline 自 Chrome 94 起
+   会跟随元素自身的圆角绘制，而在这里钉一个 6px 等于「一聚焦就把元素圆角改成 6px」——
+   22px 的卡片、12px 的列表行聚焦瞬间都会「缩角」跳一下。 */
 :focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 2px;
-    border-radius: 6px;
+}
+
+/* 选中文字跟随强调色：默认是系统蓝，和红棕（或用户自选色）的强调色体系完全无关，
+   在一篇满是双链/标签的笔记里尤其突兀。mix 26% 保证在亮/暗底上都还能读。 */
+::selection {
+    background: color-mix(in srgb, var(--accent) 26%, transparent);
 }
 
 /* 「跳到网站列表」：键盘用户的第一站。
@@ -806,6 +825,26 @@ html.nav-touch .nav-group-tools {
 }
 .nav-root[data-font-scale="large"] {
     font-size: 107%;
+}
+
+/* 记事本的字号档位（2026-10-25 补）：上面那两条只作用于 .nav-root 的 font-size 百分比，
+   而记事本是全屏 fixed 层、界面字号全是写死 px —— 用户把字号调「大」时，
+   导航页变大、记事本纹丝不动，两页密度割裂。
+   这里给一个**乘数**而不是百分比：写死 px 的地方改成 calc(Npx * var(--notes-font-scale))，
+   图标/间距不受影响，只缩放文字。 */
+:root {
+    --notes-font-scale: 1;
+}
+/* ⚠️ 两个选择器都要：笔记页是 .nav-root 的**子孙**（fixed 定位不影响 DOM 继承），
+   所以祖先上的 data-font-scale 已经能把变量传下去，不必给笔记页加 props；
+   第二条是「以后有人把笔记页挂到页面外」时的兜底。 */
+.nav-root[data-font-scale="compact"],
+[data-notes-font-scale="compact"] {
+    --notes-font-scale: 0.94;
+}
+.nav-root[data-font-scale="large"],
+[data-notes-font-scale="large"] {
+    --notes-font-scale: 1.07;
 }
 
 /* 尊重「减少动态效果」偏好：关掉装饰性动画（不动功能性过渡） */

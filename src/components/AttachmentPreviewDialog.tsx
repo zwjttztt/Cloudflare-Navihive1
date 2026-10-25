@@ -44,6 +44,7 @@ import {
     dialogTitleSx,
 } from "./dialogShell";
 import type { AttachmentPreviewRequest } from "../utils/attachmentPreview";
+import ConfirmDialog from "./ConfirmDialog";
 
 /** 判断一份字节是不是「可以当文本显示」的类型 */
 function isTextMime(mime: string): boolean {
@@ -255,16 +256,25 @@ export default function AttachmentPreviewDialog({
     /**
      * 关窗。有未保存的改动先问一句 —— 弹窗是「看着看着顺手改两行」的场景，
      * 一个 Esc 就把改动丢掉太容易发生了。
-     * ⚠️ 用 window.confirm 而不是再套一层 ConfirmDialog：这里只是「要不要丢」，
-     * 不需要影响面与二次确认那一套（而且套了会出现弹窗叠弹窗）。
+     *
+     * 2026-10-25：从 window.confirm 换成站内 ConfirmDialog。
+     * 之前的顾虑是「弹窗叠弹窗」，但系统 confirm 的代价更大：它不受主题控制、
+     * 在部分 iOS/WebView 里会被拦或样式不可控，而且说不出「丢的是什么」。
+     * 这里确认层是**独立的一层**（MUI 支持多层 Dialog，遮罩会再压一层），
+     * 文案写清后果 —— 值得这一次叠加。
      */
+    const [discardOpen, setDiscardOpen] = useState(false);
     const handleClose = () => {
         if (busy) return;
-        if (dirty && !window.confirm("还有没保存的修改，确定关闭吗？")) return;
+        if (dirty) {
+            setDiscardOpen(true);
+            return;
+        }
         onClose();
     };
 
     return (
+        <>
         <Dialog
             open={Boolean(target)}
             onClose={handleClose}
@@ -557,5 +567,22 @@ export default function AttachmentPreviewDialog({
                 </Button>
             </DialogActions>
         </Dialog>
+            {/* 未保存改动的确认层：独立一层 Dialog（见 handleClose 的注释） */}
+            <ConfirmDialog
+                open={discardOpen}
+                title='放弃未保存的修改？'
+                description='关掉这个预览后，刚才改过的内容不会保留。'
+                impact={{ object: "未保存的修改", undoable: false }}
+                confirmText='放弃修改'
+                cancelText='继续编辑'
+                danger
+                onConfirm={() => {
+                    // 关掉预览本体；确认层随组件树一起卸载
+                    setDiscardOpen(false);
+                    onClose();
+                }}
+                onClose={() => setDiscardOpen(false)}
+            />
+        </>
     );
 }

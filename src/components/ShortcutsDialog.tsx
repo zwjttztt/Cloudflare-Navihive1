@@ -22,6 +22,7 @@ import {
 } from "@mui/material";
 import CloseIcon from "@mui/icons-material/Close";
 import InstallDesktopIcon from "@mui/icons-material/InstallDesktop";
+import { dialogActionsSx, dialogTitleSx } from "./dialogShell";
 
 interface Shortcut {
     keys: string[];
@@ -71,18 +72,8 @@ export default function ShortcutsDialog({ open, onClose, canInstall = false, onI
 
     return (
         <Dialog open={open} onClose={onClose} maxWidth='xs' fullWidth>
-            <DialogTitle
-                sx={{
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                    gap: 1,
-                    px: 3,
-                    pt: 2,
-                    pb: 1,
-                }}
-            >
-                <Typography variant='h6' component='div' sx={{
+            <DialogTitle sx={{ ...dialogTitleSx, justifyContent: "space-between" }}>
+                <Typography component='div' sx={{
                     fontWeight: '600'
                 }}>
                     帮助
@@ -179,7 +170,7 @@ export default function ShortcutsDialog({ open, onClose, canInstall = false, onI
                 </Table>
             </DialogContent>
 
-            <DialogActions sx={{ px: 3, pb: 2.5 }}>
+            <DialogActions sx={dialogActionsSx}>
                 {/* 安装入口：只在浏览器给了安装事件时出现（见 props 说明） */}
                 {canInstall && onInstallApp && (
                     <Button

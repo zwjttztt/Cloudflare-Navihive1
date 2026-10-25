@@ -137,7 +137,9 @@ export function useThemeController(accent: string) {
                     // 所有弹窗默认走同一套毛玻璃面板：半透明底 + 模糊 + 细边框 + 柔和投影，
                     // 单个弹窗自己写了 paper sx 的话会覆盖这里（比如确认弹窗、命令面板）
                     MuiDialog: {
-                        defaultProps: { disableScrollLock: true },
+                        defaultProps: {
+                            disableScrollLock: true,
+                        },
                         styleOverrides: {
                             paper: {
                                 // token 名与取值都和 components/dialogShell.ts 的
@@ -209,6 +211,15 @@ export function useThemeController(accent: string) {
                     MuiDivider: {
                         styleOverrides: {
                             root: { "@media (max-width:600px)": { margin: "8px 0" } },
+                        },
+                    },
+                    // 弹窗遮罩统一（2026-10-25）：以前走 MUI 默认 rgba(0,0,0,.5)，
+                    // 而笔记抽屉用的是 --scrim(82%) —— 同一产品两种遮罩深度。
+                    // 现在用语义 token 区分：抽屉 = --scrim（要盖死下面整页导航），
+                    // 弹窗 = --scrim-modal（只压一层）。任何弹窗都别再自己改遮罩色。
+                    MuiBackdrop: {
+                        styleOverrides: {
+                            root: { backgroundColor: "var(--scrim-modal)" },
                         },
                     },
                     MuiMenu: {

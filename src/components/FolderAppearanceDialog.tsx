@@ -15,6 +15,7 @@ import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 import { FOLDER_COLORS, FOLDER_ICONS } from "../utils/folderAppearance";
 import DialogCloseButton from "./DialogCloseButton";
+import { dialogActionsSx, dialogTitleSx } from "./dialogShell";
 
 export interface FolderAppearanceDialogProps {
     open: boolean;
@@ -55,10 +56,10 @@ export default function FolderAppearanceDialog({ open, folder, onSave, onClose }
             onClose={onClose}
             maxWidth='xs'
             fullWidth
-            slotProps={{ paper: { sx: { borderRadius: 2.5 } } }}
+
         >
             {/* pr 给右上角那枚 × 让位 */}
-            <DialogTitle sx={{ fontSize: 16, pb: 1, pr: 5 }}>
+            <DialogTitle sx={dialogTitleSx}>
                 文件夹外观{folder?.name ? ` · ${folder.name}` : ""}
                 <DialogCloseButton onClose={onClose} label='关闭文件夹外观' />
             </DialogTitle>
@@ -147,7 +148,7 @@ export default function FolderAppearanceDialog({ open, folder, onSave, onClose }
                     ))}
                 </Box>
             </DialogContent>
-            <DialogActions sx={{ px: 2.5, pb: 1.5 }}>
+            <DialogActions sx={dialogActionsSx}>
                 <Button onClick={onClose} size='small'>取消</Button>
                 <Button
                     onClick={() => void submit()}

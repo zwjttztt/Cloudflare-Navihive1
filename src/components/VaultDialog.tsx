@@ -38,6 +38,7 @@ import VpnKeyIcon from "@mui/icons-material/VpnKey";
 import DialogCloseButton from "./DialogCloseButton";
 import { SECRET_IGNORE_ATTRS, secretInputSx, secretInputType } from "../utils/secretInput";
 import { generatePassword } from "../utils/passwordGenerator";
+import { dialogActionsSx, dialogTitleSx } from "./dialogShell";
 import {
     changeMasterPassword,
     deleteEntry,
@@ -91,6 +92,10 @@ export default function VaultDialog({ open, onClose, client, onNotify }: VaultDi
     // 建库 / 解锁 / 找回 表单
     const [masterPw, setMasterPw] = useState("");
     const [masterPw2, setMasterPw2] = useState("");
+    // 「修改主密码」的内联表单（2026-10-25）：原先用 window.prompt 收主密码 ——
+    // prompt 的输入**不回显成掩码**，旁边有人就能看见；也不能二次确认、不能校验强度。
+    // 密码类输入一律走站内 type='password' 的表单。
+    const [changePwOpen, setChangePwOpen] = useState(false);
     const [recoverCode, setRecoverCode] = useState("");
     const [recoverNewPw, setRecoverNewPw] = useState("");
     const [showRecovery, setShowRecovery] = useState<string | null>(null);
@@ -251,9 +256,9 @@ export default function VaultDialog({ open, onClose, client, onNotify }: VaultDi
 
     return (
         <Dialog open={open} onClose={onClose} maxWidth='sm' fullWidth>
-            <DialogTitle sx={{ display: "flex", alignItems: "center", gap: 1, pr: 6 }}>
+            <DialogTitle sx={{ ...dialogTitleSx, pr: 6 }}>
                 {phase === "unlocked" ? <LockOpenIcon fontSize='small' /> : <LockIcon fontSize='small' />}
-                <Typography variant='h6' component='div' sx={{ fontWeight: 600, flex: 1 }}>{title}</Typography>
+                <Typography component='div' sx={{ fontWeight: 600, flex: 1 }}>{title}</Typography>
                 <DialogCloseButton onClose={onClose} />
             </DialogTitle>
             <Divider />
@@ -266,6 +271,68 @@ export default function VaultDialog({ open, onClose, client, onNotify }: VaultDi
                             <CircularProgress size={18} />
                             <Typography variant='body2' color='text.secondary'>读取中…</Typography>
                         </Stack>
+                    )}
+
+                    {/* ---- 修改主密码（内联表单）---- */}
+                    {phase === "unlocked" && !showRecovery && changePwOpen && (
+                        <>
+                            <Alert severity='warning'>
+                                改主密码会重裹本机这把钥匙：<b>已保存的条目不会丢</b>，
+                                但恢复码仍对应旧密钥，建议改完后重新生成一份恢复码。
+                            </Alert>
+                            <TextField
+                                fullWidth size='small' type='password' label='新主密码（至少 8 位）'
+                                value={masterPw} onChange={e => setMasterPw(e.target.value)}
+                                autoComplete='new-password'
+                                disabled={busy}
+                            />
+                            <TextField
+                                fullWidth size='small' type='password' label='再输一次新主密码'
+                                value={masterPw2} onChange={e => setMasterPw2(e.target.value)}
+                                autoComplete='new-password'
+                                disabled={busy}
+                                error={masterPw2.length > 0 && masterPw !== masterPw2}
+                                helperText={
+                                    masterPw2.length > 0 && masterPw !== masterPw2 ? "两次输入不一致" : " "
+                                }
+                            />
+                            <Stack direction='row' spacing={1}>
+                                <Button
+                                    variant='contained'
+                                    disabled={busy || masterPw.length < 8 || masterPw !== masterPw2}
+                                    startIcon={busy ? <CircularProgress size={16} /> : <VpnKeyIcon />}
+                                    onClick={async () => {
+                                        const session = sessionRef.current;
+                                        if (!session) return;
+                                        setBusy(true);
+                                        setError("");
+                                        try {
+                                            await changeMasterPassword(client, session, masterPw);
+                                            setMasterPw("");
+                                            setMasterPw2("");
+                                            setChangePwOpen(false);
+                                            onNotify?.("主密码已更新", "success");
+                                        } catch (e) {
+                                            setError(e instanceof Error ? e.message : "改密失败");
+                                        } finally {
+                                            setBusy(false);
+                                        }
+                                    }}
+                                >
+                                    确认修改
+                                </Button>
+                                <Button
+                                    disabled={busy}
+                                    onClick={() => {
+                                        setChangePwOpen(false);
+                                        setMasterPw("");
+                                        setMasterPw2("");
+                                    }}
+                                >
+                                    取消
+                                </Button>
+                            </Stack>
+                        </>
                     )}
 
                     {/* ---- 建库 ---- */}
@@ -422,16 +489,12 @@ export default function VaultDialog({ open, onClose, client, onNotify }: VaultDi
                 </Stack>
             </DialogContent>
             {phase === "unlocked" && !showRecovery && (
-                <DialogActions sx={{ px: 3, pb: 2 }}>
-                    <Button size='small' onClick={async () => {
-                        const session = sessionRef.current;
-                        if (!session) return;
-                        const np = window.prompt("输入新主密码（至少 8 位）：");
-                        if (!np || np.length < 8) { onNotify?.("已取消或太短", "info"); return; }
-                        setBusy(true);
-                        try { await changeMasterPassword(client, session, np); onNotify?.("主密码已更新", "success"); }
-                        catch (e) { onNotify?.(e instanceof Error ? e.message : "改密失败", "error"); }
-                        finally { setBusy(false); }
+                <DialogActions sx={dialogActionsSx}>
+                    <Button size='small' disabled={busy} onClick={() => {
+                        // 打开内联表单（下面 changePwOpen 那段），不再用系统 prompt
+                        setMasterPw("");
+                        setMasterPw2("");
+                        setChangePwOpen(true);
                     }}>修改主密码</Button>
                 </DialogActions>
             )}

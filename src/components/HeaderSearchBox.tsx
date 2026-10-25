@@ -20,7 +20,7 @@ import AutoAwesomeIcon from "@mui/icons-material/AutoAwesome";
 import Tooltip from "@mui/material/Tooltip";
 import CloseIcon from "@mui/icons-material/Close";
 import type { Site } from "../API/http";
-import { HEADER_CONTROL_H } from "../constants";
+import { HEADER_CONTROL_H, HEADER_RADIUS } from "../constants";
 
 /** 下拉面板里的一条结果：卡片本体 + 它所在的分组名（面板里要显示分组） */
 export interface SearchResult {
@@ -124,7 +124,7 @@ export default function HeaderSearchBox({
                     // 放在外层 FormControl 上会在圆角外面露出一块直角白底
                     "& .MuiOutlinedInput-root": {
                         height: HEADER_CONTROL_H,
-                        borderRadius: "14px",
+                        borderRadius: HEADER_RADIUS,
                         bgcolor: headerCompact
                             ? "var(--glass-bg-hover)"
                             : "var(--glass-bg)",
@@ -220,7 +220,7 @@ export default function HeaderSearchBox({
                     elevation={6}
                     sx={{
                         mt: 0.5,
-                        borderRadius: "16px",
+                        borderRadius: `calc(${HEADER_RADIUS} * 1.15)`,
                         overflow: "hidden",
                         border: "1px solid var(--glass-border)",
                         bgcolor: "var(--glass-bg-hover)",
@@ -236,7 +236,7 @@ export default function HeaderSearchBox({
                                 selected={idx === activeResult}
                                 onMouseEnter={() => setActiveResult(idx)}
                                 onClick={() => openResult(item.site)}
-                                sx={{ borderRadius: "12px", mx: 0.5 }}
+                                sx={{ borderRadius: "var(--notes-radius-row, 12px)", mx: 0.5 }}
                             >
                                 <ListItemIcon sx={{ minWidth: 32 }}>
                                     {item.site.icon ? (

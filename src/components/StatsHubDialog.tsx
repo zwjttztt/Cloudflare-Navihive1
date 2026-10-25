@@ -25,6 +25,7 @@ import InsightsIcon from "@mui/icons-material/Insights";
 import type { NavigationClient } from "../API/client";
 import VisitsPanel from "./VisitsPanel";
 import StatsPanel from "./StatsPanel";
+import { dialogActionsSx, dialogTitleSx } from "./dialogShell";
 
 export interface StatsHubDialogProps {
     open: boolean;
@@ -56,8 +57,8 @@ export default function StatsHubDialog({
     const [tab, setTab] = useState(0);
 
     return (
-        <Dialog open={open} onClose={onClose} maxWidth='sm' fullWidth className='nav-dialog' aria-label='统计'>
-            <DialogTitle sx={{ display: "flex", alignItems: "center", gap: 1, pr: 1 }}>
+        <Dialog open={open} onClose={onClose} maxWidth='sm' fullWidth aria-label='统计'>
+            <DialogTitle sx={dialogTitleSx}>
                 <InsightsIcon fontSize='small' />
                 统计
                 <Box sx={{ flex: 1 }} />
@@ -96,7 +97,7 @@ export default function StatsHubDialog({
                 )}
             </DialogContent>
 
-            <DialogActions sx={{ px: 3, pb: 2 }}>
+            <DialogActions sx={dialogActionsSx}>
                 <Button onClick={onClose} size='small'>
                     关闭
                 </Button>

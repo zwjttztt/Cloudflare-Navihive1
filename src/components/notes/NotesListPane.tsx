@@ -15,6 +15,7 @@ import CheckBoxIcon from "@mui/icons-material/CheckBox";
 import CheckBoxOutlineBlankIcon from "@mui/icons-material/CheckBoxOutlineBlank";
 import Checkbox from "@mui/material/Checkbox";
 import { tagColorIndex, tagColorVar } from "../../utils/tagPalette";
+import { HEADER_RADIUS } from "../../constants";
 import { summarize } from "../../utils/noteSummary";
 import Highlighted from "../Highlighted";
 import { formatWhen } from "../../utils/noteTime";
@@ -25,6 +26,23 @@ import { ColResizeHandle } from "../notes/paneChrome";
 import type { NotesPageCtx } from "./notesPageCtx";
 import NotesTrashPane from "./NotesTrashPane";
 
+
+/**
+ * 中栏头部的小图标按钮（多选 / 排序 / 新建 / 收起）。
+ *
+ * 材质与导航页顶栏的玻璃控件同一套（圆角走 --header-radius、hover 出玻璃底），
+ * 但尺寸**刻意收到 32px 而不是 36px**：中栏最窄能拖到 128px，
+ * 4 个 36px 按钮加间距直接装不下 —— 这是密度上的必要妥协，不是遗漏。
+ */
+const listHeaderBtnSx = {
+    width: 32,
+    height: 32,
+    p: 0,
+    borderRadius: HEADER_RADIUS,
+    border: "1px solid transparent",
+    transition: "background-color 120ms ease, border-color 120ms ease",
+    "&:hover": { bgcolor: "var(--glass-bg-hover)", borderColor: "var(--glass-border)" },
+} as const;
 
 export default function NotesListPane(props: Pick<NotesPageCtx, "activeFolder" | "activeId" | "activeTag" | "bp" | "bulkArchive" | "checked" | "checkedNotes" | "dirty" | "draggingNoteId" | "emptyArt" | "emptyCopy" | "filtered" | "highlightRanges" | "keyword" | "lazyListGroups" | "listCollapsed" | "listGroups" | "listHidden" | "listW" | "menuClosing" | "multiSelect" | "narrowLayout" | "navInner" | "navW" | "noteTags" | "notes" | "notesCommands" | "onClose" | "onEmptyTrash" | "onPurgeTrashed" | "onRestoreTrashed" | "openNote" | "openTemplatePicker" | "pinnedCount" | "renderSearchField" | "reset" | "rowActionsSuppressed" | "rowMenu" | "searchRefNarrow" | "searchSnippets" | "selectAnchorRef" | "setBulkDeleteOpen" | "setChecked" | "setDraggingNoteId" | "setListCollapsed" | "setMiddleHidden" | "setMultiSelect" | "setRowActionsSuppressed" | "setRowMenu" | "setSortAnchor" | "startDrag" | "switchTo" | "tagColorByName" | "tags" | "toggleChecked" | "trashedNotes" | "uiSettings" | "view" | "visibleIds">) {
     const { activeFolder, activeId, activeTag, bp, bulkArchive, checked, checkedNotes, dirty, draggingNoteId, emptyArt, emptyCopy, filtered, highlightRanges, keyword, lazyListGroups, listCollapsed, listGroups, listHidden, listW, menuClosing, multiSelect, narrowLayout, navInner, navW, noteTags, notes, notesCommands, onClose, onEmptyTrash, onPurgeTrashed, onRestoreTrashed, openNote, openTemplatePicker, pinnedCount, renderSearchField, reset, rowActionsSuppressed, rowMenu, searchRefNarrow, searchSnippets, selectAnchorRef, setBulkDeleteOpen, setChecked, setDraggingNoteId, setListCollapsed, setMiddleHidden, setMultiSelect, setRowActionsSuppressed, setRowMenu, setSortAnchor, startDrag, switchTo, tagColorByName, tags, toggleChecked, trashedNotes, uiSettings, view, visibleIds } = props;
@@ -273,7 +291,7 @@ export default function NotesListPane(props: Pick<NotesPageCtx, "activeFolder" |
                                 setChecked(new Set());
                             }}
                             sx={{
-                                p: 0.4,
+                                ...listHeaderBtnSx,
                                 color: multiSelect ? "var(--accent)" : "text.secondary",
                             }}
                         >
@@ -290,7 +308,7 @@ export default function NotesListPane(props: Pick<NotesPageCtx, "activeFolder" |
                             aria-label='排序'
                             data-tool='sort'
                             onClick={e => setSortAnchor(e.currentTarget)}
-                            sx={{ p: 0.4 }}
+                            sx={listHeaderBtnSx}
                         >
                             <SortIcon fontSize='inherit' />
                         </IconButton>
@@ -304,7 +322,7 @@ export default function NotesListPane(props: Pick<NotesPageCtx, "activeFolder" |
                             // 选中文件夹作为落点。「不选模板直接建」的快捷通道
                             // 在右键菜单「在此新建笔记」与命令面板里。
                             onClick={e => openTemplatePicker(e.currentTarget, activeFolder)}
-                            sx={{ p: 0.4 }}
+                            sx={listHeaderBtnSx}
                         >
                             <NoteAddIcon fontSize='inherit' />
                         </IconButton>
@@ -319,7 +337,7 @@ export default function NotesListPane(props: Pick<NotesPageCtx, "activeFolder" |
                             // tablet 关掉后左区让位给编辑区，导航走顶部 44px 栏的
                             // 「导航栏」按钮手动开（2026-10-09 用户明确：不要自动弹抽屉）。
                             onClick={() => setMiddleHidden(true)}
-                            sx={{ p: 0.4, ...(bp === "mobile" ? { display: "none" } : {}) }}
+                            sx={{ ...listHeaderBtnSx, ...(bp === "mobile" ? { display: "none" } : {}) }}
                         >
                             <CloseIcon fontSize='inherit' />
                         </IconButton>
@@ -333,7 +351,7 @@ export default function NotesListPane(props: Pick<NotesPageCtx, "activeFolder" |
                                 aria-label='返回导航站'
                                 data-tool='back-out'
                                 onClick={onClose}
-                                sx={{ p: 0.4 }}
+                                sx={listHeaderBtnSx}
                             >
                                 {/* ⚠️ 箭头**朝左**（2026-10-09 用户明确）：这里是「返回导航站」，
                                     ArrowBackIcon 本身就是朝左的，不要再 scaleX(-1) 翻成朝右。 */}
@@ -438,7 +456,7 @@ export default function NotesListPane(props: Pick<NotesPageCtx, "activeFolder" |
                                         px: 2,
                                         pt: 1.5,
                                         pb: 0.5,
-                                        fontSize: 10.5,
+                                        fontSize: "calc(10.5px * var(--notes-font-scale, 1))",
                                         fontWeight: 600,
                                         letterSpacing: "0.06em",
                                         borderRadius: "6px",
@@ -609,8 +627,14 @@ export default function NotesListPane(props: Pick<NotesPageCtx, "activeFolder" |
                                         : uiSettings.listStyle === "card"
                                           ? "var(--surface-card)"
                                           : "transparent",
-                                    // 拖起来的那一行半透明：告诉用户「手上抓的是这条」
+                                    // 拖起来的那一行：半透明 + 抬一层影子。
+                                    // 导航页拖卡片会给 translateY(-6px) 的抬升感（见 SiteCard 的
+                                    // --nav-hover-lift），列表行没有位移可给（行高是固定的），
+                                    // 所以用「影子 + 透明度」表达「手上抓着这条」。
                                     opacity: draggingNoteId === note.id ? 0.45 : 1,
+                                    ...(draggingNoteId === note.id
+                                        ? { boxShadow: "var(--shadow-pop, none)" }
+                                        : null),
                                     transition: "background-color 120ms ease, opacity 120ms ease, box-shadow 120ms ease, border-color 120ms ease, transform var(--dur-base, 220ms) var(--ease-out, ease)",
                                     // hover 反馈（2026-10-25 视觉对齐）：左栏的行一直有 hover 底色
                                     //（sidebarSection 的 Row），中栏却没有 —— 同一页面两套行为，
@@ -717,7 +741,7 @@ export default function NotesListPane(props: Pick<NotesPageCtx, "activeFolder" |
                                         // 128px 窄列里显得偏大 —— 摘要是两行、标签换行，
                                         // 一行笔记能占掉 3~4 行，列表密度明显比 inkstone 稀。
                                         sx={{
-                                            fontSize: 13,
+                                            fontSize: "calc(13px * var(--notes-font-scale, 1))",
                                             lineHeight: 1.375,
                                             // inkstone：选中用 semibold + accent 色，未选中 medium + 主色
                                             fontWeight: isActive ? 600 : 500,
@@ -791,7 +815,7 @@ export default function NotesListPane(props: Pick<NotesPageCtx, "activeFolder" |
                                         overflow: "hidden",
                                         // ⚠️ P0-1：inkstone 的摘要是 11.5px/1.5（NoteList.tsx:539），
                                         // 我们跟着走 —— 之前用 caption（12px）偏大，两行就顶满一行笔记的高度
-                                        fontSize: 11.5,
+                                        fontSize: "calc(11.5px * var(--notes-font-scale, 1))",
                                         lineHeight: 1.5,
                                         mt: 0.5,
                                     }}
@@ -829,7 +853,7 @@ export default function NotesListPane(props: Pick<NotesPageCtx, "activeFolder" |
                                                 sx={{
                                                     px: 0.75,
                                                     py: 0.1,
-                                                    fontSize: 10.5,
+                                                    fontSize: "calc(10.5px * var(--notes-font-scale, 1))",
                                                     lineHeight: 1.6,
                                                     borderRadius: 999,
                                                     ...(c

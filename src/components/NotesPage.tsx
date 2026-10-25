@@ -71,6 +71,7 @@ import { fuzzyFilter, fuzzyMatch } from "../utils/fuzzy";
 import type { NoteEmbedTarget } from "./NoteEmbedNode";
 import { useScrollLock } from "../hooks/useScrollLock";
 import { usePanelBreakpoint } from "../hooks/usePanelBreakpoint";
+import { HEADER_CONTROL_H, HEADER_RADIUS } from "../constants";
 // 笔记时间统一走这里：SQLite 的 UTC 无时区串必须按 UTC 解释，
 // 直接 `new Date(iso)` 在东八区会差 8 小时（「笔记时间不对」的根因）。
 import { extractOutline } from "../utils/noteOutline";
@@ -2288,6 +2289,25 @@ export default function NotesPage({
             fullWidth
             size='small'
             inputRef={inputRef}
+            // 外观与导航页顶栏同一套（2026-10-25）：36px 高、圆角走 --header-radius、
+            // 玻璃底 + 细描边。改造前是 MUI 默认外观（40px 高、4px 圆角、全色描边），
+            // 和顶栏那排玻璃胶囊完全是两套语言。
+            // ⚠️ 用外层 border 而不是 OutlinedInput 的 fieldset：fieldset 在 focused 时
+            // 会被 MUI 换成 2px 描边、圆角也跟着变，压不住。
+            sx={{
+                "& .MuiOutlinedInput-root": {
+                    height: HEADER_CONTROL_H,
+                    borderRadius: HEADER_RADIUS,
+                    bgcolor: "var(--glass-bg-hover)",
+                    border: "1px solid var(--glass-border)",
+                    transition: "border-color 120ms ease, background-color 120ms ease",
+                    "&:hover": {
+                        borderColor: "color-mix(in srgb, var(--accent) 35%, var(--glass-border))",
+                    },
+                    "&.Mui-focused": { borderColor: "var(--accent)" },
+                },
+                "& .MuiOutlinedInput-notchedOutline": { border: "none" },
+            }}
             value={keyword}
             onChange={e => {
                 setKeyword(e.target.value);

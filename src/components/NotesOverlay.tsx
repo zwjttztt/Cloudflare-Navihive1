@@ -100,6 +100,8 @@ export default function NotesOverlay({
     // 返回值放宽到 unknown：reload 现在把新列表回给轮询做「外部删除」感知，
     // 这里只关心「重拉完成」，不消费返回值
     const reloadRef = useRef<() => Promise<unknown>>(async () => {});
+    // 刷新页面确认（2026-10-25）：见下面 ConfirmDialog 处的说明
+    const [reloadConfirm, setReloadConfirm] = useState(false);
 
     const {
         notes,
@@ -356,7 +358,24 @@ export default function NotesOverlay({
 
     return (
         <>
-        {externalChange && <Alert severity='info' sx={{ position: "fixed", top: 8, left: "25%", zIndex: theme => theme.zIndex.modal + 1 }} action={<Button color='inherit' onClick={() => { if (window.confirm("刷新将重新加载页面，请先保存当前草稿；若其他标签页或其他设备修改了同一条笔记，保存时请先处理冲突。确定刷新吗？")) window.location.reload(); }}>刷新页面</Button>}>其他标签页或其他设备已更新笔记，请先保存草稿再刷新。</Alert>}
+        {externalChange && <Alert severity='info' sx={{ position: "fixed", top: 8, left: "25%", zIndex: theme => theme.zIndex.modal + 1 }} action={<Button color='inherit' onClick={() => setReloadConfirm(true)}>刷新页面</Button>}>其他标签页或其他设备已更新笔记，请先保存草稿再刷新。</Alert>}
+        {/* 刷新确认（2026-10-25）：从 window.confirm 换成站内 ConfirmDialog ——
+            这次刷新会重新加载整页，未保存的草稿会丢，正是最该说清后果的地方；
+            系统 confirm 在部分 iOS/WebView 里还会被拦。 */}
+        <ConfirmDialog
+            open={reloadConfirm}
+            title='刷新页面？'
+            description='刷新会重新加载整页。请先保存当前草稿；若其他标签页或其他设备改过同一条笔记，保存时请先处理冲突。'
+            impact={{ object: "未保存的草稿", undoable: false }}
+            confirmText='刷新'
+            cancelText='先不刷新'
+            danger
+            onConfirm={() => {
+                setReloadConfirm(false);
+                window.location.reload();
+            }}
+            onClose={() => setReloadConfirm(false)}
+        />
         <NotesPage
             shareApi={api.getNoteShare && api.createNoteShare && api.revokeNoteShare ? api as NotesApiLike & NoteShareApi : undefined}
             // ⚠️ 与 shareApi 同一个套路：只在这个 api 实例**真的有** uploadAttachment

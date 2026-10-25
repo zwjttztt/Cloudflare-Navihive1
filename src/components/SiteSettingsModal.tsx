@@ -46,7 +46,7 @@ import { pickExistingTags, pickRecommendedTags } from "../utils/tagSuggest";
 import { useAppConfig } from "../context/appConfigStore";
 import SiteNotesSection from "./SiteNotesSection";
 import { Section } from "./dialogSection";
-import { dialogPaperTokens } from "./dialogShell";
+import { dialogActionsSx, dialogPaperTokens, dialogTitleSx } from "./dialogShell";
 import {
     formDataKey,
     secretInputSx,
@@ -449,19 +449,10 @@ export default function SiteSettingsModal({
             maxWidth='sm'
             slotProps={{ paper: notesPaper() }}
         >
-            <DialogTitle
-                sx={{
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                    gap: 1,
-                    // 左右内边距和内容区（DialogContent 默认 24px）对齐，标题与下面字段同一竖直基准线
-                    px: 3,
-                    pt: 2,
-                    pb: 1,
-                }}
-            >
-                <Typography variant='h6' component='div' sx={{
+            {/* 2026-10-25：标题内边距统一走 dialogTitleSx（17px / py1.75 / pr5）；
+                左右仍是 DialogTitle 默认的 24px，与 DialogContent 同一竖直基准线。 */}
+            <DialogTitle sx={{ ...dialogTitleSx, justifyContent: "space-between" }}>
+                <Typography component='div' sx={{
                     fontWeight: '600'
                 }}>
                     网站设置
@@ -971,7 +962,7 @@ export default function SiteSettingsModal({
                     </Stack>
                 </DialogContent>
 
-                <DialogActions sx={{ px: 3, pb: 2.5, pt: 1, justifyContent: "space-between" }}>
+                <DialogActions sx={{ ...dialogActionsSx, justifyContent: "space-between" }}>
                     {/* sm 以上才占操作区的位置；窄屏那一个在标题行（见上） */}
                     <Button
                         onClick={handleDeleteClick}
@@ -1033,14 +1024,7 @@ export default function SiteSettingsModal({
             maxWidth='sm'
             slotProps={{ paper: settingsPaper() }}
         >
-            <DialogTitle
-                sx={{
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                    gap: 1,
-                }}
-            >
+            <DialogTitle sx={{ ...dialogTitleSx, justifyContent: "space-between" }}>
                 备注
                 <IconButton
                     aria-label='关闭'
@@ -1079,7 +1063,7 @@ export default function SiteSettingsModal({
                     autoFocus
                 />
             </DialogContent>
-            <DialogActions sx={{ px: 3, pb: 2.5, pt: 1 }}>
+            <DialogActions sx={dialogActionsSx}>
                 <Button onClick={saveNotes} variant='contained' color='primary'>
                     保存
                 </Button>

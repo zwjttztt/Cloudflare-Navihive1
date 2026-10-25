@@ -580,7 +580,13 @@ test("列表分组标题用 inkstone 那套排版（10.5px / 加粗 / 0.06em 字
     // 从 data-month 一直取到该 Typography 闭合，取够整个 sx 块
     const i = src.indexOf("data-month={group.label}");
     const block = src.slice(i, src.indexOf("/>", i));
-    assert.ok(/fontSize: 10\.5/.test(block), "分组标题 10.5px（inkstone 的 text-[10.5px]）");
+    // 2026-10-25：字号从写死 10.5px 改成 calc(10.5px * var(--notes-font-scale, 1)) ——
+    // 这样「字号档位」对记事本也生效。断言跟着改成「10.5px 的基准 × 可缩放系数」，
+    // 只认字面 10.5 的话，下次再包一层 calc 就又假红了。
+    assert.ok(
+        /10\.5px/.test(block) && /var\(--notes-font-scale/.test(block),
+        "分组标题 10.5px 基准（inkstone 的 text-[10.5px]）× 字号档位系数"
+    );
     assert.ok(/fontWeight: 600/.test(block), "分组标题加粗");
     assert.ok(/letterSpacing: "0\.06em"/.test(block), "分组标题 0.06em 字距");
     // 按标题排序时 label 为空 → 整条标题不渲染（inkstone: label 为 null 就不画）

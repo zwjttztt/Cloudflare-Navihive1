@@ -163,7 +163,7 @@ function indexChunk(): { name: string; kb: number } | null {
  * 这条链路上的首屏成本 ≈ 请求数 × 固定往返 + 字节 / 吞吐，两边都要盯（下面新增
  * 的那条「首屏 JS 块不超过 8 个」正是盯住请求数那一半）。
  */
-const FIRST_SCREEN_BUDGET_RAW_KB = 900;
+const FIRST_SCREEN_BUDGET_RAW_KB = 920;
 const FIRST_SCREEN_BUDGET_GZIP_KB = 300;
 /**
  * 实测基线（2026-10-17 P2-2 第三次分块变更）：852.4 KB 原始 / 280.1 KB gzip。
@@ -172,9 +172,17 @@ const FIRST_SCREEN_BUDGET_GZIP_KB = 300;
  * 弹窗专用的 MUI 只被动态 import，不再出现在 index.html 的 preload 列表里。
  * 首屏请求数仍为 6（JS 5 个），字节 -10%。
  * 同轮 P2-1：笔记首拉先探 count（?fields=list 摘要阀门提前生效），不影响体积。
+ *
+ * 874.2 / 286.6 —— 2026-10-25 照实更新（**不是新口径，是三轮真涨**）：
+ *   v12.6.0 笔记美化的排版语言（标题层级 / 块变量 / 标签色板 / 三档列表）＋
+ *   v12.7.0 视觉对齐（圆角派生 / hover / 卡片阴影）＋ 本轮全站一致性
+ *   （`::selection`、`--scrim-modal`、`--header-radius`、`--notes-font-scale`）。
+ *   这 21.8 KB 全是首屏真要用到的 CSS 与主题 token，没有把弹窗硬拆出去骗指标；
+ *   预算同步 900 → 920，把「离上限至少 3%」的信号重新立住（现余量 5.2%）。
+ *   ⚠️ 下次再涨请先确认是「内容涨」还是「有组件被改回同步 import」。
  */
-const FIRST_SCREEN_BASELINE_RAW_KB = 852.4;
-const FIRST_SCREEN_BASELINE_GZIP_KB = 280.1;
+const FIRST_SCREEN_BASELINE_RAW_KB = 874.2;
+const FIRST_SCREEN_BASELINE_GZIP_KB = 286.6;
 
 interface FirstScreen {
     files: { name: string; rawKb: number; gzipKb: number }[];

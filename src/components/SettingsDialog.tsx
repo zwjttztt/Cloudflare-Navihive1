@@ -44,6 +44,7 @@ import {
     INACTIVE_DELETE_GRACE_DAYS_DEFAULT,
 } from "../API/http";
 import type { FontScale, RadiusStyle } from "../context/uiPrefsStore";
+import { dialogActionsSx, dialogTitleSx } from "./dialogShell";
 
 // 内置壁纸预设：既可以是渐变（直接作为 CSS background-image），也可以留空表示不用
 const WALLPAPER_PRESETS = [
@@ -208,10 +209,10 @@ export default function SettingsDialog({
                 {/* 标题原来也叫「网站设置」，和卡片齿轮那个一模一样 —— 两个弹窗
                     作用域完全不同（这里管整个站，那个管单个网站），同名必然走错门。
                     改名「全站设置」，顶栏入口同步改（见 MoreMenu）。 */}
-                <DialogTitle sx={{ px: 3, pt: 2, pb: 0.5 }}>
+                <DialogTitle sx={dialogTitleSx}>
                     全站设置
                     {/* 原来是英文 aria-label='close'，读屏念出来是英文 —— 统一走外壳组件 */}
-                    <DialogCloseButton onClose={onClose} sx={{ right: 8, top: 8 }} />
+                    <DialogCloseButton onClose={onClose} />
                 </DialogTitle>
                 <Divider />
                 {/* 页签放 DialogContent 外面：内容滚动时页签不跟着走 */}
@@ -816,7 +817,7 @@ export default function SettingsDialog({
                     </Stack>
                     )}
                 </DialogContent>
-                <DialogActions sx={{ px: 3, pb: 3, pt: 1 }}>
+                <DialogActions sx={dialogActionsSx}>
                     <Button onClick={onClose} variant='outlined'>
                         取消
                     </Button>

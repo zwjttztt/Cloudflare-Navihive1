@@ -9,6 +9,7 @@ import { Box, Button, Dialog, DialogActions, DialogContent, DialogTitle, Typogra
 import { Kbd } from "./Kbd";
 import { EDITOR_SHORTCUTS } from "../utils/editorShortcuts";
 import DialogCloseButton from "./DialogCloseButton";
+import { dialogActionsSx, dialogTitleSx } from "./dialogShell";
 
 export interface NotesShortcutsDialogProps {
     open: boolean;
@@ -19,7 +20,7 @@ export default function NotesShortcutsDialog({ open, onClose }: NotesShortcutsDi
     return (
         <Dialog open={open} onClose={onClose} fullWidth maxWidth='sm'>
             {/* pr 给右上角那枚 × 让位 */}
-            <DialogTitle sx={{ pr: 5 }}>
+            <DialogTitle sx={dialogTitleSx}>
                 键盘快捷键
                 <DialogCloseButton onClose={onClose} label='关闭快捷键说明' />
             </DialogTitle>
@@ -32,7 +33,7 @@ export default function NotesShortcutsDialog({ open, onClose }: NotesShortcutsDi
                     </Box>
                 ))}
             </DialogContent>
-            <DialogActions><Button onClick={onClose}>关闭</Button></DialogActions>
+            <DialogActions sx={dialogActionsSx}><Button onClick={onClose}>关闭</Button></DialogActions>
         </Dialog>
     );
 }
