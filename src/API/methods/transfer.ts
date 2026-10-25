@@ -27,6 +27,10 @@ import {
     NoteFolder,
     NoteTag,
     Site,
+    VaultBackup,
+    VaultEntryRecord,
+    VaultImportResult,
+    VaultKeysRecord,
 } from "../types";
 import { sanitizeIconUrl, sanitizeLocalPrefs, stripSiteCredentials, tombstoneStamp } from "./internals";
 
@@ -178,6 +182,15 @@ export const transferImpl: TransferApi = {
             ownConfigs = stripSecretConfigs(ownConfigs);
         }
 
+        // 保险库：库里本来就是密文（KDF 参数 + 两份包好的 DEK + 条目密文信封），
+        // 直接搬进导航备份即可（整份备份文件再由 AES-GCM 加密一次），服务端不解密、不碰明文。
+        // 没有保险库（getVaultKeys 返回 null）就不写 vault 字段 —— 这样「老备份 / 没建保险库」
+        // 的导入不会动本地现有的保险库。
+        const vaultKeys = await this.getVaultKeys();
+        const vaultPayload: VaultBackup | undefined = vaultKeys
+            ? { keys: vaultKeys, entries: await this.listVaultEntries() }
+            : undefined;
+
         const payload: ExportData = {
             groups,
             // 关掉「备份含登录凭据」时把账号密码抹掉：备份文件是明文 JSON，
@@ -188,6 +201,7 @@ export const transferImpl: TransferApi = {
             ...(sharedAllowed ? { sharedConfigs: stripSecretConfigs(configs) } : {}),
             version: EXPORT_VERSION,
             exportDate: new Date().toISOString(),
+            ...(vaultPayload ? { vault: vaultPayload } : {}),
         };
 
         // 摘要只对此刻这份内容负责。前端往里补 localPrefs（星标 / 标签）之后会重算一次
@@ -323,6 +337,8 @@ export const transferImpl: TransferApi = {
             sitesSkipped: 0,
         };
         let lockAcquired = false;
+        // 保险库导入结果（仅回报 UI，不影响数据）
+        let vaultResult: VaultImportResult = { action: "none", entries: 0 };
 
         // 先验完整性：文件坏了就别开始。放在最前面是因为本函数全程「旧数据不动」，
         // 一旦开始 INSERT 再失败就得靠回滚擦屁股 —— 能在动手前拦住最省事。
@@ -874,10 +890,65 @@ export const transferImpl: TransferApi = {
             // 关联重建都不做（ note_note_tag 用的是 INSERT OR IGNORE）。
             // 覆盖模式下会多出一批删除语句，它们与写入**同一个事务**提交：
             // 要么整份备份生效，要么一个字节都不变，不存在「删完了没写进去」。
+            // ── 保险库（端到端加密，只搬密文）──
+            // 自包含密文单元：keys（KDF 参数 + 两份包好的 DEK）+ entries（全部条目密文）。
+            // 服务端解不开，备份文件整体再 AES-GCM 一次，不泄露明文、不做任何加解密。
+            // 与笔记同一套「字段缺失 = 不动本地」：备份没有 vault 字段 → 本地保险库一根汗毛都不动。
+            // 备份有 vault → 它是一把独立 DEK，和本地现有保险库（若有）大概率不是同一把钥匙，密文级无法合并：
+            //   合并模式：本地已有保险库 → 整体跳过（保留本地，否则本地条目永久解不开）；本地没有 → 整包接纳。
+            //   覆盖模式：明确还原成「备份那一刻」，整包替换（先删本地 keys+entries 再插）。
+            // 条目 site_id 指向导航卡片；导入后站点重发号（siteIdMap），必须跟着重映射，否则绑定会断；映射不到置空。
+            const incomingVault = normalized.vault;
+            const vaultStatements: D1PreparedStatement[] = [];
+            if (incomingVault) {
+                const localVaultExists = (await this.getVaultKeys()) !== null;
+                const shouldAdopt = !localVaultExists;
+                if (overwrite || shouldAdopt) {
+                    vaultStatements.push(
+                        this.db.prepare(`DELETE FROM vault_keys${this.scopeSql(false)}`).bind(...this.scopeParams([]))
+                    );
+                    vaultStatements.push(
+                        this.db.prepare(`DELETE FROM vault_entries${this.scopeSql(false)}`).bind(...this.scopeParams([]))
+                    );
+                    vaultStatements.push(
+                        this.db
+                            .prepare(
+                                `INSERT INTO vault_keys (user_id, kdf_salt, kdf_iterations, wrapped_dek_iv, wrapped_dek,
+                                   wrapped_dek_recovery_iv, wrapped_dek_recovery)
+                                 VALUES (?, ?, ?, ?, ?, ?, ?)`
+                            )
+                            .bind(
+                                this.currentUserId,
+                                incomingVault.keys.kdf_salt,
+                                incomingVault.keys.kdf_iterations,
+                                incomingVault.keys.wrapped_dek_iv,
+                                incomingVault.keys.wrapped_dek,
+                                incomingVault.keys.wrapped_dek_recovery_iv,
+                                incomingVault.keys.wrapped_dek_recovery
+                            )
+                    );
+                    let nextVaultEntryId =
+                        (await this.db.prepare("SELECT COALESCE(MAX(id),0) AS m FROM vault_entries").first<{ m: number }>())?.m || 0;
+                    nextVaultEntryId += 1;
+                    for (const entry of incomingVault.entries) {
+                        const mappedSiteId = entry.site_id != null ? siteIdMap[String(entry.site_id)] ?? null : null;
+                        vaultStatements.push(
+                            this.db
+                                .prepare(`INSERT INTO vault_entries (id, user_id, ciphertext, iv, site_id) VALUES (?, ?, ?, ?, ?)`)
+                                .bind(nextVaultEntryId++, this.currentUserId, entry.ciphertext, entry.iv, mappedSiteId)
+                        );
+                    }
+                    vaultResult = { action: overwrite ? "replaced" : "adopted", entries: incomingVault.entries.length };
+                } else {
+                    vaultResult = { action: "skipped", entries: 0 };
+                }
+            }
+
             const commitStatements: D1PreparedStatement[] = [
                 ...metadataStatements,
                 ...noteRemovalStatements,
                 ...removalStatements,
+                ...vaultStatements,
             ];
             for (const n of notePlan) {
                 // 同一个 uuid 既可能是「新建」也可能是「覆盖本地那条」——
@@ -1027,6 +1098,7 @@ export const transferImpl: TransferApi = {
                 noteStats,
                 // 卡片 / 分组的账：重复导入时这几个数应该全是 0（除了 skipped 变多）
                 stats,
+                vault: vaultResult,
             };
         } catch (error) {
             console.error("导入数据失败:", error);
@@ -1043,6 +1115,7 @@ export const transferImpl: TransferApi = {
                 // 但不给用户一个数字他会以为导入没生效。
                 noteStats,
                 stats,
+                vault: vaultResult,
             };
         } finally {
             // 仅释放本次实际取得的锁；拒绝请求也会进 finally，不能删持有者的锁。
@@ -1149,6 +1222,7 @@ export function normalizeImportData(data: ExportData | Record<string, unknown>):
         version?: string;
         exportDate?: string;
         localPrefs?: LocalPrefsBackup;
+        vault?: { keys?: VaultKeysRecord; entries?: VaultEntryRecord[] };
     };
 
     const rawGroups = Array.isArray(raw.groups) ? raw.groups : [];
@@ -1208,6 +1282,28 @@ export function normalizeImportData(data: ExportData | Record<string, unknown>):
           }))
         : undefined;
 
+    // 保险库：整包密文单元。缺字段或形状不对就当「没有」（导入时本地保险库保持不动）。
+    const rawVault = raw.vault;
+    const vault: VaultBackup | undefined =
+        rawVault && rawVault.keys && Array.isArray(rawVault.entries)
+            ? {
+                  keys: {
+                      kdf_salt: String(rawVault.keys.kdf_salt ?? ""),
+                      kdf_iterations: Number(rawVault.keys.kdf_iterations ?? 0),
+                      wrapped_dek_iv: String(rawVault.keys.wrapped_dek_iv ?? ""),
+                      wrapped_dek: String(rawVault.keys.wrapped_dek ?? ""),
+                      wrapped_dek_recovery_iv: String(rawVault.keys.wrapped_dek_recovery_iv ?? ""),
+                      wrapped_dek_recovery: String(rawVault.keys.wrapped_dek_recovery ?? ""),
+                  },
+                  entries: (rawVault.entries as (VaultEntryRecord | undefined)[]).map(e => ({
+                      id: Number(e?.id ?? 0),
+                      ciphertext: String(e?.ciphertext ?? ""),
+                      iv: String(e?.iv ?? ""),
+                      site_id: typeof e?.site_id === "number" ? e.site_id : null,
+                  })),
+              }
+            : undefined;
+
     return {
         groups,
         sites,
@@ -1237,5 +1333,6 @@ export function normalizeImportData(data: ExportData | Record<string, unknown>):
         ...(raw.localPrefs && typeof raw.localPrefs === "object"
             ? { localPrefs: sanitizeLocalPrefs(raw.localPrefs) }
             : {}),
+        ...(vault ? { vault } : {}),
     };
 }

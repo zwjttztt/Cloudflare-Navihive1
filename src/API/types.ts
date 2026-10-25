@@ -525,6 +525,11 @@ export interface ExportData {
      * 老备份没有这个字段 —— 导入时一律放行，不会因为少了它就恢复不了。
      */
     integrity?: BackupIntegrity;
+    /**
+     * 密码保险库备份（端到端加密，只搬密文）。
+     * 没有建保险库 / 老备份没有这个字段 → undefined，导入时本地保险库保持不动。
+     */
+    vault?: VaultBackup;
 }
 
 /**
@@ -575,6 +580,8 @@ export interface ImportResult {
     noteStats?: NoteImportStats;
     /** 分组 / 站点的增量统计（新增多少、复用多少、跳过多少） */
     stats?: ImportStats;
+    /** 保险库导入结果（采纳 / 替换 / 跳过 / 无） */
+    vault?: VaultImportResult;
 }
 
 /** 导入的阶段，顺序与服务端真实推进的顺序一致 */
@@ -864,4 +871,31 @@ export interface VaultEntryInput {
     ciphertext: string;
     iv: string;
     site_id?: number | null;
+}
+
+/**
+ * 保险库备份单元（端到端加密，只搬密文）。
+ *
+ * 整份是「同一把 DEK 下的密文」：keys 里是 KDF 参数 + 两份包好的 DEK，
+ * entries 里是全部条目密文信封。服务端永远解不开，导入时不与本地现有保险库做密文级合并
+ *（不同 DEK 的密文无法拼到一起，强行混只会让一部分条目永久解不开）。
+ */
+export interface VaultBackup {
+    /** KDF 参数 + 两份包好的 DEK（主密码包 / 恢复码包） */
+    keys: VaultKeysRecord;
+    /** 全部条目密文信封（标题/URL/用户名/密码/备注全在 ciphertext 里） */
+    entries: VaultEntryRecord[];
+}
+
+/** 保险库导入结果（仅用于回报 UI，不影响数据） */
+export interface VaultImportResult {
+    /**
+     * - `adopted`：合并模式且本地没有保险库，整包接纳了备份的保险库
+     * - `replaced`：覆盖模式，整包替换了本地保险库
+     * - `skipped`：合并模式且本地已有保险库，整体跳过（保留本地，不动那把钥匙）
+     * - `none`：备份不含保险库字段（老备份 / 没建），本地原样不动
+     */
+    action: "adopted" | "replaced" | "skipped" | "none";
+    /** 最终落库的条目数（skipped/none 时为 0） */
+    entries: number;
 }

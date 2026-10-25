@@ -18,7 +18,20 @@
   - B3：`src/API/methods/vault.ts`（5 方法，服务端**只搬密文**）+ `worker/routes/vault.ts`（PROTECTED_ROUTES、writeGuard 限速、scopeSql 隔离）；`tests/vaultApi.test.ts` 真 SQLite 验 CRUD + 🔴账号隔离。
   - B4：`src/utils/vaultSession.ts`（客户端编排：建库/解锁/找回/改密/条目加解密，传输层可注入）+ `src/components/VaultDialog.tsx`（建库送**一次性恢复码**、解锁、恢复码找回、条目增改删/复制/显隐、空闲 5 分钟自动锁、**DEK 只在内存**）+ 客户端 5 方法（`clientMethods/vault.ts`，mock 对齐）+「更多选项 → 密码保险库」入口。
   - `tests/vaultSession.test.ts`：Node 真 WebCrypto + 内存传输层跑通 建库→解锁→CRUD→错密码拒绝→🔴恢复码找回数据不丢→改密旧密码失效。
-- **B4 改了前端产物**（VaultDialog 进包），本轮**需要部署**才上线。剩余：备份/导出只出保险库密文（B6）。
+- **B4 改了前端产物**（VaultDialog 进包），本轮**需要部署**才上线。
+
+## 2026-10-25 · 方案 B 收尾：B6 全量备份/恢复现在带走保险库密文（可恢复导入）
+
+**要点**
+- **（新增）导航全量备份/导出现在携带保险库密文**：`exportData` 在库里已有保险库时，把 `vault_keys`（KDF 参数 + 两份包好的 DEK）+ `vault_entries`（全部条目密文信封）整包塞进同一份备份 JSON（`src/API/methods/transfer.ts`）；没建保险库 / 老备份自然不含该字段。**服务端全程只搬密文、永不解密**，与「备份文件再整体 AES-GCM 一次」的既有约定一致。
+- **（新增）保险库备份的导入语义**（与笔记同源的「字段缺失 = 不动本地」）：`importData` 在**同一个事务**里处理保险库——合并模式且本地无库→整包`adopted`；合并模式且本地已有→整体`skipped`（保留本地，否则本地条目永久解不开）；覆盖模式→整包`replaced`；备份无 `vault` 字段→本地一根汗毛都不动（`none`）。动作通过 `ImportResult.vault` 回报 UI。
+- **条目 `site_id` 跟着站点重发号重映射**，绑定不丢；映射不到置 `null`。账号隔离：导入写入的是**当前导入者**的 `user_id`，不会改写别人的保险库。
+- **（新增）`tests/vaultBackup.test.ts` 7 条**（真 `node:sqlite` + 真 WebCrypto 端到端）：导出只出密文（主密码/明文绝不入 JSON）、🔴导入到另一账号后原主密码仍能解开、合并跳过、覆盖替换且旧主密码失效、🔴老备份无 vault 不动本地、🔴site_id 重映射、🔴账号隔离。
+- **（工程）测试桩修正**：真 SQLite 适配器 `makeRealD1` 的 `run()` 必须回 `meta.rows_written`（幂等锁 `claimIdempotency` 靠它区分 acquired/busy/unavailable，否则被误判为「有别的恢复在跑」把导入拒掉）；`batch` 必须按 D1 语义走 `.all()` 而非 `.run()`，否则导出 `queryExportBundle` 的 SELECT 结果被吞掉、备份变空触发「空备份闸门」。
+
+**说明**
+- B6 与 B1–B4 串起来：保险库从**建库→使用→备份→跨账号恢复**全链路闭环，且服务端视角永远只有密文。
+- 全量验证：tsc 0 / eslint 0err / 单测 **3204** / build / budget 10 / smoke / a11y 0 / contrast 0。
 
 ---
 
