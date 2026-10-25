@@ -12,6 +12,9 @@
 - **（重构）入口归位**：「密码健康」（把当前账号各站点已存的登录凭据过一遍，重复 / 弱口令 / 久未改 + 检索，方案 A）原本挂在「更多选项」里、紧贴「密码保险库」——两者名近易误点，但数据来源完全不同：密码健康分析的是 bootstrap 拿到的站点登录密码，而保险库（方案 B）只装用户主动存进去的条目、拿不到站点凭据。把它挪进「账号与安全」(AccountDialog) 的「账号与密码」段下方作为内嵌面板，归类更准确（看的正是「我的登录凭据是否安全」）。
 - **（重构）去掉独立 Dialog 外壳**：`PasswordHealthDialog` 改为只导出 `PasswordHealthPanel`（纯分析面板，不再自带 Dialog），由 `AccountDialog` 承载，避免「弹窗里再弹一个弹窗」；账号管理本身已是懒加载，面板随之并进 account chunk，不增加首屏体积。
 - **（重构）「账号与安全」拆成 Tab 分页**（同日追加，commit e263b30）：仿「数据备份与恢复」的顶部 Tab 写法（MUI `Tabs` fullWidth），弹窗分「账号信息 / 密码健康」两页——账号管理各段（改密、恢复密钥、登录设备、邀请码、沉睡治理、注销）留在「账号信息」，「密码健康」独占一页，不再和账号管理信息堆在同一个长页里。
+- **（重构）全站设置拆成三个页签**（commit eb5eb31b）：「外观与搜索」（基本信息 / 外观 / 背景与毛玻璃 / 图标与缩略图 / 搜索）、「数据」（离线与缓存 / 数据同步 / 维护 / 数据保留）、「高级」（自定义 CSS / 版本与升级）。paper 层写死高度（备份弹窗同款做法），切页签弹窗不跳；「保存设置」按钮留在底部全局层，切页不丢草稿；「改的是整个站 / 单个网站去卡片齿轮」的作用域说明保留在页签上方。
+- **（重构）回收站按类型分页签**（同 commit）：「站点 / 分组」两页签带计数（导航站回收站只收这两类，笔记归记事本自己的回收站），行内冗余的类型标注随之去掉；「清空回收站」仍是全局动作，确认文案写明「站点与分组」。
+- **（验证）** typecheck / lint / settingsDialog + recycleBinDialog + accountDialog DOM 用例全绿（页签切换后断言已同步）/ build / bundleBudget 通过。
 - **（清理）删除链路**：`MoreMenu` 的「密码健康」MenuItem 及 `onOpenPasswordHealth` 声明 / 透传（`MoreMenu.tsx` / `HeaderActionsSlot.tsx` / `App.tsx`）一并移除；`App.tsx` 不再单独持有 `passwordHealthOpen` 状态与懒加载，改为把全部站点 `allSitesWithCreds` 作为 `sites` 传给 `AccountDialog`。
 - **（验证）** typecheck / lint（0 err）/ 受影响 DOM 用例（moreMenu、accountDialog 全绿）/ build / bundleBudget 均通过。
 
