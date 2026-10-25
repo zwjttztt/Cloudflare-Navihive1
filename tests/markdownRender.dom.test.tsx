@@ -366,3 +366,70 @@ test("seedAttachmentDimensions：已有缓存条目（运行时状态）一律�
     assert.equal(img!.getAttribute("width"), "10", "渲染用的是第一次种下的尺寸");
     resetImageCacheForTests();
 });
+
+// ---- 2026-10-25「笔记美化」：排版语言 ----
+// 这几条盯的是「改样式时最容易悄悄退化的东西」：
+// 标题层级（以前是浏览器默认：h1 2em、h5/h6 比正文还小）、
+// 块的竖向节奏（以前 8px / 0.6em / 2px 混用）、
+// 分隔符能不能表达粗细层级、以及块颜色是不是走了主题变量。
+
+test("标题层级：h1-h6 字号递减，且上间距 > 下间距", async () => {
+    const host = await renderToDom(
+        "# 一\n\n## 二\n\n### 三\n\n#### 四\n\n##### 五\n\n###### 六\n\n正文"
+    );
+    const sizes = [1, 2, 3, 4, 5, 6].map(l => {
+        const el = host.querySelector(`h${l}`) as HTMLElement;
+        assert.ok(el, `h${l} 必须出得来`);
+        return parseFloat(el.style.fontSize);
+    });
+    for (let i = 1; i < sizes.length; i++) {
+        assert.ok(sizes[i] < sizes[i - 1], `h${i + 1}(${sizes[i]}) 必须小于 h${i}(${sizes[i - 1]})`);
+    }
+    const h1 = host.querySelector("h1") as HTMLElement;
+    const top = parseFloat(h1.style.marginTop);
+    const bottom = parseFloat(h1.style.marginBottom);
+    assert.ok(top > bottom, `标题要贴着它下面的正文（上 ${top}em > 下 ${bottom}em）`);
+    assert.equal(parseFloat(h1.style.fontWeight), 600);
+});
+
+test("段落 / 列表 / 代码块共用一套竖向节奏（--md-para-gap）", async () => {
+    const host = await renderToDom("一段\n\n- 甲\n\n```\ncode\n```\n");
+    const p = host.querySelector("p") as HTMLElement;
+    const ul = host.querySelector("ul") as HTMLElement;
+    const pre = host.querySelector("pre") as HTMLElement;
+    for (const [name, el] of [["段落", p], ["列表", ul], ["代码块", pre]] as const) {
+        assert.match(
+            el.style.margin,
+            /var\(--md-para-gap/,
+            `${name}的段距必须走 --md-para-gap（紧凑密度下才能整体收窄）`
+        );
+    }
+});
+
+test("分隔符分两档：--- 是细线，*** 是居中三点", async () => {
+    const host = await renderToDom("上\n\n---\n\n中\n\n***\n\n下");
+    assert.equal(host.querySelectorAll("hr").length, 1, "--- 渲染成 hr");
+    const dots = host.querySelector("[role='separator']") as HTMLElement | null;
+    assert.ok(dots, "*** 必须走「居中三点」这一档");
+    assert.equal(dots!.textContent, "···");
+    assert.equal(dots!.style.textAlign, "center");
+});
+
+test("块的底色/描边走主题变量（暗色不用改渲染器，换一套变量即可）", async () => {
+    const host = await renderToDom("```\ncode\n```\n\n> 引用\n\n| A | B |\n| - | - |\n| 1 | 2 |\n");
+    const pre = host.querySelector("pre") as HTMLElement;
+    assert.match(pre.style.background, /var\(--md-block-bg/, "代码块底色走变量");
+    assert.match(pre.style.border, /var\(--md-block-border/, "代码块描边走变量");
+    const quote = host.querySelector("blockquote") as HTMLElement;
+    assert.match(quote.style.borderLeft, /var\(--md-quote-border/, "引用竖线走变量");
+    const th = host.querySelector("th") as HTMLElement;
+    assert.match(th.style.background, /var\(--md-table-head-bg/, "表头底色走变量");
+});
+
+test("双链是点状下划线 + 500 字重（和普通链接分开）", async () => {
+    const host = await renderToDom("看 [[另一篇]] 和 [外链](https://example.com)");
+    const wiki = host.querySelector("[data-wiki-link]") as HTMLElement;
+    assert.ok(wiki, "双链节点要出得来");
+    assert.equal(wiki.style.textDecoration, "underline dotted");
+    assert.equal(parseFloat(wiki.style.fontWeight), 500);
+});

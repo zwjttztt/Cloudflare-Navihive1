@@ -14,6 +14,7 @@ import SortIcon from "@mui/icons-material/Sort";
 import CheckBoxIcon from "@mui/icons-material/CheckBox";
 import CheckBoxOutlineBlankIcon from "@mui/icons-material/CheckBoxOutlineBlank";
 import Checkbox from "@mui/material/Checkbox";
+import { tagColorIndex, tagColorVar } from "../../utils/tagPalette";
 import { summarize } from "../../utils/noteSummary";
 import Highlighted from "../Highlighted";
 import { formatWhen } from "../../utils/noteTime";
@@ -575,10 +576,22 @@ export default function NotesListPane(props: Pick<NotesPageCtx, "activeFolder" |
                                     border: "1px solid",
                                     borderColor: isActive
                                         ? "color-mix(in srgb, var(--accent) 40%, transparent)"
-                                        : "transparent",
+                                        : uiSettings.listStyle === "card"
+                                          ? "var(--card-border)"
+                                          : "transparent",
+                                    // 「列表样式」（2026-10-25 笔记美化）：三档只差分隔表达，
+                                    // 选中态永远压过它（选中是状态，分隔是装饰）。
+                                    ...(uiSettings.listStyle === "divider"
+                                        ? { borderRadius: 0, borderBottom: "1px solid var(--card-border)" }
+                                        : null),
+                                    // 卡片模式行距放开一点：贴太紧就成了「一堆框」，
+                                    // 反而比无分隔更难扫
+                                    ...(uiSettings.listStyle === "card" ? { mb: 0.75 } : null),
                                     bgcolor: isActive
                                         ? "color-mix(in srgb, var(--accent) 12%, transparent)"
-                                        : "transparent",
+                                        : uiSettings.listStyle === "card"
+                                          ? "var(--surface-card)"
+                                          : "transparent",
                                     // 拖起来的那一行半透明：告诉用户「手上抓的是这条」
                                     opacity: draggingNoteId === note.id ? 0.45 : 1,
                                     transition: "background-color 120ms ease, opacity 120ms ease, transform var(--dur-base, 220ms) var(--ease-out, ease)",
@@ -762,11 +775,16 @@ export default function NotesListPane(props: Pick<NotesPageCtx, "activeFolder" |
                                             // 设了颜色的标签：文字与描边用本色、底色是它 12% 的薄涂 ——
                                             // 直接填满本色的話，深色标签上的深色文字会看不清。
                                             const c = tagColorByName.get(name.trim());
+                                            // 没手设颜色：按名字取一档固定色相（见 utils/tagPalette.ts）——
+                                            // 列表里三四个标签挤在一起时，一片灰底只能靠读字分辨。
+                                            const autoIdx = c ? null : tagColorIndex(name);
+                                            const auto = autoIdx === null ? null : tagColorVar(autoIdx);
                                             return (
                                             <Box
                                                 key={name}
                                                 data-note-tag={name}
                                                 data-note-tag-color={c ?? ""}
+                                                data-tag-auto={autoIdx ?? ""}
                                                 sx={{
                                                     px: 0.75,
                                                     py: 0.1,
@@ -780,11 +798,18 @@ export default function NotesListPane(props: Pick<NotesPageCtx, "activeFolder" |
                                                               color: c,
                                                               bgcolor: `color-mix(in srgb, ${c} 12%, transparent)`,
                                                           }
-                                                        : {
-                                                              border: "1px solid var(--card-border)",
-                                                              color: "text.secondary",
-                                                              bgcolor: "var(--neutral-wash)",
-                                                          }),
+                                                        : auto
+                                                          ? {
+                                                                border: "1px solid transparent",
+                                                                borderColor: `color-mix(in srgb, ${auto} 35%, transparent)`,
+                                                                color: auto,
+                                                                bgcolor: `color-mix(in srgb, ${auto} 10%, transparent)`,
+                                                            }
+                                                          : {
+                                                                border: "1px solid var(--card-border)",
+                                                                color: "text.secondary",
+                                                                bgcolor: "var(--neutral-wash)",
+                                                            }),
                                                 }}
                                             >
                                                 {name}

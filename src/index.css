@@ -251,6 +251,35 @@
        ⚠️ 改这两个值之前先跑 npm run audit:contrast，它量的是记事本的亮/暗两态。 */
     --notes-accent: #a03c32;
 
+    /* ===== 笔记正文的「块语言」（2026-10-25 笔记美化）=====
+       渲染器（src/utils/markdownToReact.tsx）里的 inline style 全部走这几个变量，
+       亮/暗各一套 —— 以前统一用 rgba(128,128,128,.14) 那种「中灰」，
+       在暖白底上发脏、在暗底上更脏（既不亮也不暗，块边界糊在正文里）。
+       ⚠️ 每个取值在渲染器里都保留了旧值兜底：导出 HTML / 分享页等
+       没有这份 CSS 的上下文里，外观退回改造前，不会变成透明块。 */
+    --md-block-bg: rgba(15, 23, 42, 0.045);
+    --md-block-border: rgba(15, 23, 42, 0.09);
+    --md-inline-code-bg: rgba(15, 23, 42, 0.06);
+    --md-table-head-bg: rgba(15, 23, 42, 0.05);
+    --md-rule: rgba(15, 23, 42, 0.16);
+    --md-quote-border: rgba(15, 23, 42, 0.28);
+    /* 段/块之间的竖向节奏（--space-3）；紧凑密度下收到 8px，见文末密度段 */
+    --md-para-gap: 12px;
+
+    /* ===== 标签自动配色（用户没给标签手设颜色时按名称取一档）=====
+       ⚠️ 亮态取的是 900 档，不是「压白底够用」的 700 档 —— 2026-10-25 实测：
+       标签会落在**灰底行**上（选中 / 勾选 / hover 后的行底约 rgb(200,199,196)），
+       而不是纯暖白。700 档在那层灰底上只有 3.7–4.5:1，琥珀那条被 audit:contrast 抓了个正着
+       （4.2 / 需 4.5）。900 档压最差底色也有 5.3:1 以上，白底上更高。
+       暗态取 300 档压深底 8:1 以上。
+       ⚠️ 手设颜色永远优先（tagColorByName），这里只补「没设过」的那部分。 */
+    --tag-1-fg: #1e3a8a;
+    --tag-2-fg: #134e4a;
+    --tag-3-fg: #78350f;
+    --tag-4-fg: #881337;
+    --tag-5-fg: #4c1d95;
+    --tag-6-fg: #14532d;
+
     /* 圆角风格 / 字号档位：由「外观」设置写入，默认圆润 + 标准 */
     --card-radius: 22px;
     --radius-lg: var(--card-radius);
@@ -322,6 +351,23 @@
     --on-accent: #0d1b2a;
     /* 记事本默认强调色（暗色档）：同一色相提亮到在深底上达标，见 :root 的说明 */
     --notes-accent: #c96e60;
+
+    /* 笔记正文块（暗色）：改成「提亮叠层」——半透明白压在深底上，
+       比中灰更亮一层、也更能表达「浮在正文之上」，块边界不再糊掉 */
+    --md-block-bg: rgba(255, 255, 255, 0.06);
+    --md-block-border: rgba(255, 255, 255, 0.1);
+    --md-inline-code-bg: rgba(255, 255, 255, 0.08);
+    --md-table-head-bg: rgba(255, 255, 255, 0.07);
+    --md-rule: rgba(255, 255, 255, 0.18);
+    --md-quote-border: rgba(255, 255, 255, 0.3);
+
+    /* 标签自动配色（暗色档）：300 档，压深底 8:1 以上 */
+    --tag-1-fg: #93c5fd;
+    --tag-2-fg: #5eead4;
+    --tag-3-fg: #fcd34d;
+    --tag-4-fg: #fda4af;
+    --tag-5-fg: #c4b5fd;
+    --tag-6-fg: #86efac;
 }
 
 /* 关闭毛玻璃（更多选项 → 特效开关）：
@@ -1359,6 +1405,11 @@ html.nav-touch .nav-star-btn[data-starred="false"] {
 }
 [data-notes-density='compact'] [data-list-header='1'] {
     padding-bottom: 2px !important;
+}
+/* 块间距（段落 / 列表 / 代码 / 引用 / 表格）跟着一起收：
+   紧凑档要的是「一屏多看到几行」，正文块之间那 12px 是最大的一笔。 */
+[data-notes-density='compact'] {
+    --md-para-gap: 8px;
 }
 
 /* ---- 行内「⋯」按钮关闭动画期间强制隐藏（2026-10-18 白圈第四报）----

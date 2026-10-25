@@ -553,7 +553,18 @@ export default function NotesEditorPane(props: Pick<NotesPageCtx, "active" | "ac
                                     // Markdown 一长就把这一层撑高、连带整页出现滚动条。
                                     minHeight: 0,
                                     overflowY: "auto",
-                                    p: 2.5,
+                                    // 左右留白跟着「内容宽度」联动（2026-10-25 笔记美化）：
+                                    // 窄档 24 / 标准 32 / 宽 48 / 满 40。以前固定 20px，
+                                    // 宽档 980 时正文贴到屏幕边，长行回来很难找行首。
+                                    py: 2.5,
+                                    px:
+                                        uiSettings.contentWidth === "narrow"
+                                            ? 3
+                                            : uiSettings.contentWidth === "standard"
+                                              ? 4
+                                              : uiSettings.contentWidth === "wide"
+                                                ? 6
+                                                : 5,
                                     // 设置面板「外观」：预览正文字号 / 行高 / 字体直接在这里生效
                                     fontSize: uiSettings.previewFontSize,
                                     lineHeight: uiSettings.lineHeight,

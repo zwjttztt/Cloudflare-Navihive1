@@ -34,6 +34,15 @@ export interface NotesUiSettings {
     lineHeight: number;
     /** 预览内容宽度档位 */
     contentWidth: "narrow" | "standard" | "wide" | "full";
+    /**
+     * 列表行样式：无线（极简）/ 分隔线（高密度）/ 卡片（强扫描）。
+     *
+     * 2026-10-25「笔记美化」：以前只有一种——透明行 + 选中态描边。
+     * 几百条笔记时相邻行的边界全靠留白，长列表里很难「一行一行看」；
+     * 卡片模式边界最清楚但 128px 窄栏会显挤，所以做成三档让用户自己选。
+     * 默认「分隔线」：变化最小、扫描性提升最明显。
+     */
+    listStyle: "plain" | "divider" | "card";
     /** 编辑器字体：等宽 / 无衬线 */
     editorFont: "mono" | "sans";
     /** 编辑器字号（px） */
@@ -79,6 +88,7 @@ export const DEFAULT_NOTES_SETTINGS: NotesUiSettings = {
     previewFontSize: 16,
     lineHeight: 1.7,
     contentWidth: "standard",
+    listStyle: "divider",
     editorFont: "mono",
     editorFontSize: 14,
     indentWidth: 2,
@@ -131,6 +141,7 @@ function sanitize(raw: unknown): NotesUiSettings {
         previewFontSize: num(o.previewFontSize, d.previewFontSize, 12, 24),
         lineHeight: num(o.lineHeight, d.lineHeight, 1.2, 2.4),
         contentWidth: pick(o.contentWidth, ["narrow", "standard", "wide", "full"] as const, d.contentWidth),
+        listStyle: pick(o.listStyle, ["plain", "divider", "card"] as const, d.listStyle),
         editorFont: pick(o.editorFont, ["mono", "sans"] as const, d.editorFont),
         editorFontSize: num(o.editorFontSize, d.editorFontSize, 12, 22),
         // 缩进宽度只认 2 / 4（其它数值回落默认，别让脏数据把编辑器搞成 3 空格）

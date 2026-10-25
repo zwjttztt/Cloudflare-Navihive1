@@ -78,3 +78,30 @@ test("其它字段的清洗不受强调色改动影响（回归）", () => {
     // 越界值回落
     assert.equal(readWith({ editorFontSize: 999 }).editorFontSize, DEFAULT_NOTES_SETTINGS.editorFontSize);
 });
+
+// ---- 「列表样式」三档（2026-10-25 笔记美化新增字段）----
+// 老用户的 localStorage 里没有 listStyle，读取必须落到默认「分隔线」；
+// 脏值（任意字符串 / 数字）一律回落，不能把它塞进 sx 的条件分支里 ——
+// 那会让三档判断全部落空，行样式变成「既不无线也不分隔也不卡片」。
+
+test("列表样式：默认「分隔线」，老数据（没有这个字段）也落到默认", () => {
+    assert.equal(DEFAULT_NOTES_SETTINGS.listStyle, "divider");
+    assert.equal(readWith({}).listStyle, "divider", "缺字段 → 默认");
+    assert.equal(readWith({ accent: "#3b82f6" }).listStyle, "divider", "有别的字段但没这个 → 默认");
+});
+
+test("列表样式：三档合法值原样保留", () => {
+    for (const v of ["plain", "divider", "card"]) {
+        assert.equal(readWith({ listStyle: v }).listStyle, v);
+    }
+});
+
+test("列表样式：脏值回落默认（不让非法值进 sx 分支）", () => {
+    for (const bad of ["grid", "", "CARD", 1, null, {}, []]) {
+        assert.equal(
+            readWith({ listStyle: bad }).listStyle,
+            DEFAULT_NOTES_SETTINGS.listStyle,
+            `${JSON.stringify(bad)} 应回落默认`
+        );
+    }
+});

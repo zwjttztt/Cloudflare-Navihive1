@@ -529,7 +529,15 @@ function renderLeaf(tok: Token, c: Cursor): ReactNode {
             return (
                 <a key={key} data-wiki-link={tok.content}
                     title={`跳到「${tok.content}」`}
-                    style={{ color: "var(--accent)", textDecoration: "underline" }}>
+                    style={{
+                        color: "var(--accent)",
+                        // 点状下划线 + 500：和普通链接（实线）分开 —— 双链是「跳到另一篇笔记」，
+                        // 不是外部链接，笔记类应用里这个区别值得用一条线表达。
+                        textDecoration: "underline dotted",
+                        textDecorationThickness: "1px",
+                        textUnderlineOffset: "3px",
+                        fontWeight: 500,
+                    }}>
                     {alias || tok.content}
                 </a>
             );
@@ -664,7 +672,7 @@ function renderBlocks(c: Cursor): ReactNode[] {
                 const inline = c.tokens[c.i];
                 c.i++; // 跳过 inline
                 out.push(
-                    <Tag key={key} {...anchor}>
+                    <Tag key={key} {...anchor} style={{ ...HEADING_BASE, ...HEADING_STYLE[Math.min(6, Math.max(1, level))] }}>
                         {renderInline(inline?.children, c)}
                     </Tag>
                 );
@@ -676,7 +684,7 @@ function renderBlocks(c: Cursor): ReactNode[] {
                 const inline = c.tokens[c.i];
                 c.i++;
                 out.push(
-                    <p key={key} {...anchor}>
+                    <p key={key} {...anchor} style={P_STYLE}>
                         {renderInline(inline?.children, c)}
                     </p>
                 );
@@ -762,12 +770,17 @@ function renderBlocks(c: Cursor): ReactNode[] {
                         data-callout={type}
                         style={{
                             display: "flex",
-                            gap: 8,
+                            gap: 10,
                             alignItems: "flex-start",
-                            margin: "0.6em 0",
-                            padding: "8px 12px",
-                            borderRadius: 6,
+                            margin: `0 0 ${MD_GAP}`,
+                            padding: "10px 14px",
+                            borderRadius: "var(--radius-sm, 10px)",
+                            // 左边 3px 语义色条 + 细描边：只统一外框（圆角/描边/内边距），
+                            // 不动每类内容块自己的色相 —— 那是语义，不是装饰。
                             borderLeft: `3px solid ${palette.border}`,
+                            border: `1px solid ${MD_BLOCK_BORDER}`,
+                            borderLeftColor: palette.border,
+                            borderLeftWidth: 3,
                             background: palette.bg,
                             color: palette.fg,
                         }}
@@ -841,10 +854,21 @@ function renderBlocks(c: Cursor): ReactNode[] {
                 c.i++;
                 break;
             }
-            case "hr":
-                out.push(<hr key={key} style={HR_STYLE} />);
+            case "hr": {
+                // `***` = 居中三点（长文分章），`---` = 细线（切小节）。
+                // 以前两者长得一模一样，作者没法用「分隔符选型」表达层级。
+                if ((tok.markup || "").includes("*")) {
+                    out.push(
+                        <div key={key} role='separator' aria-label='分隔' style={DOTS_RULE_STYLE}>
+                            <span aria-hidden>···</span>
+                        </div>
+                    );
+                } else {
+                    out.push(<hr key={key} style={HR_STYLE} />);
+                }
                 c.i++;
                 break;
+            }
             case "math_block": {
                 // 块级公式独占一块：居中 + 可横向滚动（超宽的公式不能把预览挤歪）。
                 // 设置里关掉数学公式时按普通代码文本显示。
@@ -1023,34 +1047,56 @@ function takeUntilClose(c: Cursor, openType: string, closeType: string): Token[]
     return body;
 }
 
+/* ===== 正文排版语言（2026-10-25 笔记美化）=====
+   颜色一律走 index.css 的 --md-* 变量（亮/暗各一套），并且都带旧值兜底 ——
+   导出 HTML / 分享页等没有这份 CSS 的上下文里，外观退回改造前，不会变透明块。
+   间距走 --md-para-gap（紧凑密度下 8px，舒适 12px）。 */
+const MD_GAP = "var(--md-para-gap, 12px)";
+const MD_BLOCK_BG = "var(--md-block-bg, rgba(128,128,128,0.14))";
+const MD_BLOCK_BORDER = "var(--md-block-border, transparent)";
+
+/** 标题层级：比例相对正文（em）—— 用户把字号调到 24px，层级跟着一起缩放。
+    上间距 > 下间距：标题贴着**它下面**的正文，归属关系才读得出来。 */
+const HEADING_STYLE: Record<number, React.CSSProperties> = {
+    1: { fontSize: "1.75em", margin: "0.8em 0 0.35em" },
+    2: { fontSize: "1.42em", margin: "0.85em 0 0.35em" },
+    3: { fontSize: "1.2em", margin: "0.9em 0 0.35em" },
+    4: { fontSize: "1.06em", margin: "0.9em 0 0.3em" },
+    5: { fontSize: "1em", margin: "0.9em 0 0.3em" },
+    6: { fontSize: "0.95em", margin: "0.9em 0 0.3em" },
+};
+const HEADING_BASE: React.CSSProperties = { fontWeight: 600, lineHeight: 1.35 };
+const P_STYLE: React.CSSProperties = { margin: `0 0 ${MD_GAP}` };
+
 const MARK_STYLE: React.CSSProperties = {
     background: "rgba(250, 204, 21, 0.35)",
     color: "inherit",
     padding: "0 2px",
 };
 const INLINE_CODE: React.CSSProperties = {
-    background: "rgba(128,128,128,0.18)",
-    borderRadius: 4,
+    background: "var(--md-inline-code-bg, rgba(128,128,128,0.18))",
+    borderRadius: 5,
     padding: "1px 5px",
     fontFamily: "ui-monospace, monospace",
     fontSize: "0.9em",
 };
 const PRE_STYLE: React.CSSProperties = {
-    background: "rgba(128,128,128,0.14)",
-    borderRadius: 8,
-    padding: 12,
+    background: MD_BLOCK_BG,
+    border: `1px solid ${MD_BLOCK_BORDER}`,
+    borderRadius: "var(--radius-sm, 10px)",
+    padding: 14,
     overflowX: "auto",
     // ⚠️ 防御 flex/网格父容器（min-width:auto 链）：不钳 100% 时 pre 会被
     // 超长行撑开、自身 overflow-x 永不触发（同 cm-content 的坑）。
     maxWidth: "100%",
-    margin: "8px 0",
+    margin: `0 0 ${MD_GAP}`,
 };
 const CODE_STYLE: React.CSSProperties = {
     fontFamily: "ui-monospace, monospace",
     fontSize: 13,
     lineHeight: 1.6,
 };
-const LIST_STYLE: React.CSSProperties = { margin: "8px 0", paddingLeft: 22 };
+const LIST_STYLE: React.CSSProperties = { margin: `0 0 ${MD_GAP}`, paddingLeft: 22 };
 const LI_STYLE: React.CSSProperties = { margin: "2px 0" };
 /** 内容块配色。深浅色都用半透明色，跟随主题走，不需要单独切 dark 模式。 */
 const CALLOUT_STYLE: Record<CalloutType, { border: string; bg: string; fg: string; icon: string }> = {
@@ -1064,20 +1110,35 @@ const CALLOUT_STYLE: Record<CalloutType, { border: string; bg: string; fg: strin
 };
 
 const QUOTE_STYLE: React.CSSProperties = {
-    borderLeft: "3px solid rgba(128,128,128,0.45)",
-    margin: "8px 0",
-    paddingLeft: 12,
+    borderLeft: "3px solid var(--md-quote-border, rgba(128,128,128,0.45))",
+    margin: `0 0 ${MD_GAP}`,
+    padding: "2px 0 2px 14px",
     color: "inherit",
-    opacity: 0.9,
+    opacity: 0.92,
 };
-const HR_STYLE: React.CSSProperties = { border: "none", borderTop: "1px solid rgba(128,128,128,0.3)", margin: "12px 0" };
+const HR_STYLE: React.CSSProperties = {
+    border: "none",
+    borderTop: "1px solid var(--md-rule, rgba(128,128,128,0.3))",
+    margin: "24px 0",
+};
+/** `***` 的分隔变体：居中三点。`---` 仍是上面那条细线（长文分章用点，切小节用线） */
+const DOTS_RULE_STYLE: React.CSSProperties = {
+    margin: "24px 0",
+    textAlign: "center",
+    color: "var(--md-rule, rgba(128,128,128,0.55))",
+    letterSpacing: "0.7em",
+    textIndent: "0.7em",
+    fontSize: "0.9em",
+    lineHeight: 1,
+    userSelect: "none",
+};
 /** 折叠块（`> [!FOLD]`）：原生 details，展开/收起交给浏览器 */
 const FOLD_STYLE: React.CSSProperties = {
-    margin: "0.6em 0",
-    padding: "8px 12px",
-    borderRadius: 6,
-    border: "1px solid rgba(128,128,128,0.3)",
-    background: "rgba(128,128,128,0.05)",
+    margin: `0 0 ${MD_GAP}`,
+    padding: "10px 14px",
+    borderRadius: "var(--radius-sm, 10px)",
+    border: `1px solid ${MD_BLOCK_BORDER}`,
+    background: MD_BLOCK_BG,
 };
 const FOLD_SUMMARY_STYLE: React.CSSProperties = {
     cursor: "pointer",
@@ -1123,19 +1184,19 @@ function anchorProps(tok: Token): { "data-block-id"?: string; "data-line"?: numb
 }
 const TABLE_STYLE: React.CSSProperties = {
     borderCollapse: "collapse",
-    margin: "8px 0",
+    margin: `0 0 ${MD_GAP}`,
     maxWidth: "100%",
     display: "block",
     overflowX: "auto",
 };
 const TH_STYLE: React.CSSProperties = {
-    border: "1px solid rgba(128,128,128,0.35)",
+    border: `1px solid var(--md-block-border, rgba(128,128,128,0.35))`,
     padding: "6px 10px",
     textAlign: "left",
-    background: "rgba(128,128,128,0.12)",
+    background: "var(--md-table-head-bg, rgba(128,128,128,0.12))",
 };
 const TD_STYLE: React.CSSProperties = {
-    border: "1px solid rgba(128,128,128,0.35)",
+    border: `1px solid var(--md-block-border, rgba(128,128,128,0.35))`,
     padding: "6px 10px",
 };
 const TASK_ROW: React.CSSProperties = { display: "flex", alignItems: "flex-start", gap: 6 };

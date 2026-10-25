@@ -94,6 +94,18 @@ export default function NotesAppearanceTab({ settings, set }: NotesAppearanceTab
                                         ]}
                                     />
                                 </SettingRow>
+                                <SettingRow label='列表样式' description='中栏笔记行的分隔方式：无线最轻、分隔线最密、卡片最清楚'>
+                                    <SegOptions
+                                        dataKey='listStyle'
+                                        value={settings.listStyle}
+                                        onChange={v => set("listStyle", v)}
+                                        options={[
+                                            { value: "plain", label: "无线" },
+                                            { value: "divider", label: "分隔线" },
+                                            { value: "card", label: "卡片" },
+                                        ]}
+                                    />
+                                </SettingRow>
                                 <SettingRow label='正文字体' description='预览区正文用什么字体'>
                                     <SegOptions
                                         dataKey='previewFont'

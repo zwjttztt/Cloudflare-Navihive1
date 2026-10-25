@@ -89,12 +89,19 @@ function wrapHtmlDocument(title: string, body: string): string {
   body { max-width: 820px; margin: 40px auto; padding: 0 24px;
          font: 16px/1.75 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
          color: #1f2328; }
-  h1, h2, h3 { line-height: 1.4; }
-  pre { background: #f6f8fa; padding: 12px; border-radius: 8px; overflow: auto; }
+  h1, h2, h3, h4, h5, h6 { line-height: 1.35; font-weight: 600; margin: 1.2em 0 0.4em; }
+  h1 { font-size: 1.75em; }
+  h2 { font-size: 1.42em; }
+  h3 { font-size: 1.2em; }
+  h4 { font-size: 1.06em; }
+  h5 { font-size: 1em; }
+  h6 { font-size: 0.95em; }
+  p, ul, ol, pre, blockquote, table { margin: 0 0 12px; }
+  pre { background: #f6f8fa; padding: 14px; border-radius: 10px; overflow: auto; }
   code { font-family: ui-monospace, Consolas, monospace; font-size: 0.92em; }
-  blockquote { border-left: 4px solid #d0d7de; margin: 0; padding: 0 16px; color: #57606a; }
+  blockquote { border-left: 3px solid #d0d7de; margin: 0 0 12px; padding: 2px 0 2px 14px; color: #57606a; }
   table { border-collapse: collapse; }
-  th, td { border: 1px solid #d0d7de; padding: 6px 12px; }
+  th, td { border: 1px solid #d0d7de; padding: 6px 10px; }
   img { max-width: 100%; }
   a { color: #0969da; }
 </style>
