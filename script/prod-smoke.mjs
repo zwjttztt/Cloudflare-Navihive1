@@ -22,7 +22,15 @@ const args = process.argv.slice(2).filter(a => !a.startsWith("--"));
 const JSON_ONLY = process.argv.includes("--json");
 const TOLERATE_DOWN = process.argv.includes("--tolerate-down");
 
-const url = (args[0] || process.env.NAVIHIVE_PROD_URL || "").replace(/\/+$/, "");
+// 内置的默认线上地址：入参 / NAVIHIVE_PROD_URL 都缺省时用它（对应文件头用法里的
+// 「或内置的默认地址」—— 之前注释这么写、代码却没有默认值，是个 doc/code 裂缝）。
+// 为什么值得兜这个底：2026-10-25 发现仓库变量 NAVIHIVE_PROD_URL 一直是**空的**，
+// 定时任务于是天天以 exit 2（用法错）红掉、连着 3 天从没真连过线上。配了变量是正路，
+// 但再给个默认值，将来变量被误删也只会因为「真连不上 / 断言失败」而红，而不是这种
+// 纯配置疏忽天天刷红。默认值只用于**只读**公开域，没有凭据风险。
+const DEFAULT_PROD_URL = "https://home.zwjttzt.com";
+
+const url = (args[0] || process.env.NAVIHIVE_PROD_URL || DEFAULT_PROD_URL).replace(/\/+$/, "");
 if (!url) {
     console.error("用法：node script/prod-smoke.mjs <线上地址>（或设 NAVIHIVE_PROD_URL）");
     process.exit(2);
