@@ -27,9 +27,11 @@ import AutoFixHighIcon from "@mui/icons-material/AutoFixHigh";
 import AutoAwesomeIcon from "@mui/icons-material/AutoAwesome";
 import VisibilityIcon from "@mui/icons-material/VisibilityOutlined";
 import VisibilityOffIcon from "@mui/icons-material/VisibilityOffOutlined";
+import AutorenewIcon from "@mui/icons-material/Autorenew";
 import type { Site } from "../API/types";
 import type { SiteAi } from "../context/AiContext";
 import { SECRET_IGNORE_ATTRS, secretInputSx, secretInputType } from "../utils/secretInput";
+import { generatePassword } from "../utils/passwordGenerator";
 
 export interface AddSiteDialogProps {
     open: boolean;
@@ -347,6 +349,23 @@ export default function AddSiteDialog(props: AddSiteDialogProps) {
                                             input: {
                                                 endAdornment: (
                                                     <InputAdornment position='end'>
+                                                        <Tooltip title='生成随机强密码（20 位，含大小写/数字/符号）'>
+                                                            <IconButton
+                                                                size='small'
+                                                                edge='end'
+                                                                aria-label='生成随机强密码'
+                                                                onClick={() => {
+                                                                    // 方案 A：一键生成并填入，顺手揭示方便复制。
+                                                                    // 走 onInputChange({name:'site-secret'}) 复用既有映射
+                                                                    // （site-secret → password，见 secretInput.formDataKey）。
+                                                                    const pw = generatePassword();
+                                                                    onInputChange({ target: { name: 'site-secret', value: pw } });
+                                                                    onTogglePassword(true);
+                                                                }}
+                                                            >
+                                                                <AutorenewIcon fontSize='small' />
+                                                            </IconButton>
+                                                        </Tooltip>
                                                         <IconButton
                                                             size='small'
                                                             edge='end'

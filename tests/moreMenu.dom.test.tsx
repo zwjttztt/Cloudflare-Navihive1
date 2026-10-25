@@ -42,6 +42,7 @@ function makeProps(overrides: Partial<MoreMenuProps> = {}): { props: MoreMenuPro
             isAuthenticated: true,
             onLogout: rec("onLogout"),
             onOpenRecycle: rec("onOpenRecycle"),
+            onOpenPasswordHealth: rec("onOpenPasswordHealth"),
             onOpenAudit: rec("onOpenAudit"),
             onOpenAccount: rec("onOpenAccount"),
             onOpenAiAssistant: rec("onOpenAiAssistant"),
@@ -117,6 +118,7 @@ test("点每一项：先关菜单再执行动作（反过来的话菜单会飘�
         ["统计", "onOpenStats"],
         ["备份与恢复", "onOpenBackup(0)"],
         ["回收站", "onOpenRecycle"],
+        ["密码健康", "onOpenPasswordHealth"],
         ["审计日志", "onOpenAudit"],
         ["全站设置", "onOpenConfig"],
         ["AI 设置", "onOpenAiAssistant"],
@@ -173,18 +175,18 @@ test("未登录：没有「账号与安全」和「退出登录」，但整理�
     assert.ok(!list.includes("会话"), "没有会话区就不该留一个「会话」小标题");
 });
 
-test("菜单项总数收敛：分组排序挪进显示面板后，owner 登录态共 9 项（labels() 含 4 个小标题）", t => {
+test("菜单项总数收敛：分组排序挪进显示面板后，owner 登录态共 10 项（labels() 含 4 个小标题）", t => {
     t.after(cleanup);
     const { props } = makeProps();
     mount(props);
-    // 4 个小标题 + 9 个菜单项：统计 / 备份与恢复 / 回收站 / 审计日志 /
+    // 4 个小标题 + 10 个菜单项：统计 / 备份与恢复 / 回收站 / 密码健康 / 审计日志 /
     // 网站设置 / AI 设置 / 账号与安全 / 快捷键与操作帮助 / 退出登录
-    // （「分组排序」2026-10-17 挪进 DisplayControls 的排序区）
-    // ⚠️ labels() 把分区小标题也数进来（它按 li 文本取），所以是 13 不是 9
+    // （「分组排序」2026-10-17 挪进 DisplayControls 的排序区；「密码健康」2026-10-25 方案 A 新增）
+    // ⚠️ labels() 把分区小标题也数进来（它按 li 文本取），所以是 14 不是 10
     assert.deepEqual(
         labels(),
         [
-            "整理与数据", "统计", "备份与恢复", "回收站", "审计日志",
+            "整理与数据", "统计", "备份与恢复", "回收站", "密码健康", "审计日志",
             "设置与账号", "全站设置", "AI 设置", "账号与安全",
             "帮助", "快捷键与操作帮助",
             "会话", "退出登录",

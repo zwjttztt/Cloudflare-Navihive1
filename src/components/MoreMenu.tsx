@@ -21,6 +21,7 @@ import RestoreFromTrashIcon from "@mui/icons-material/RestoreFromTrash";
 import HistoryIcon from "@mui/icons-material/History";
 import AutoAwesomeIcon from "@mui/icons-material/AutoAwesome";
 import KeyboardIcon from "@mui/icons-material/Keyboard";
+import HealthAndSafetyIcon from "@mui/icons-material/HealthAndSafety";
 
 export interface MoreMenuProps {
     anchorEl: HTMLElement | null;
@@ -39,6 +40,8 @@ export interface MoreMenuProps {
     onOpenAiAssistant: () => void;
     /** 打开回收站（还原 / 彻底删除被软删除的站点、分组） */
     onOpenRecycle: () => void;
+    /** 打开「密码健康」（重复 / 弱口令 / 久未改 + 检索）——方案 A */
+    onOpenPasswordHealth: () => void;
     /** 打开审计日志。仅站点所有者可用：不是所有者时整个入口不出现 */
     onOpenAudit: () => void;
     /** 当前登录者是否为站点所有者（决定「审计日志」入口是否出现） */
@@ -57,6 +60,7 @@ export default function MoreMenu({
     isAuthenticated,
     onLogout,
     onOpenRecycle,
+    onOpenPasswordHealth,
     onOpenAudit,
     onOpenAccount,
     onOpenAiAssistant,
@@ -140,6 +144,18 @@ export default function MoreMenu({
                     <RestoreFromTrashIcon fontSize='small' />
                 </ListItemIcon>
                 <ListItemText>回收站</ListItemText>
+            </MenuItem>
+            {/* 密码健康：把各站点已存的登录凭据过一遍（重复/弱/久未改），方案 A */}
+            <MenuItem
+                onClick={() => {
+                    onClose();
+                    onOpenPasswordHealth();
+                }}
+            >
+                <ListItemIcon>
+                    <HealthAndSafetyIcon fontSize='small' />
+                </ListItemIcon>
+                <ListItemText>密码健康</ListItemText>
             </MenuItem>
             {/* 统计看板与审计日志同一把守卫：只给站点所有者看，后端同样会挡。
                 统计看板已并入上面的「统计」入口（标签页），这里只剩审计日志 */}
