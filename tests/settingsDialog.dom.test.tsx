@@ -180,6 +180,12 @@ const inputById = (id: string) => document.querySelector<HTMLInputElement>(`#${i
 const alerts = () =>
     [...document.querySelectorAll(".MuiAlert-root")].map(el => (el.textContent ?? "").trim());
 
+/** MUI Tabs 的页签（div[role=tab]）；2026-10-25 起设置分「外观与搜索 / 数据 / 高级」三页 */
+const tabButton = (text: string) =>
+    [...document.querySelectorAll('[role="tab"]')].find(el =>
+        (el.textContent || "").includes(text)
+    );
+
 function click(el: Element) {
     act(() => {
         el.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -207,6 +213,8 @@ test("设置：站点所有者看不到「外观按账号保存」提示，数�
         false,
         "所有者不该看到这条按账号保存的说明"
     );
+    // 数据保留在「数据」页签里
+    click(tabButton("数据")!);
     assert.equal(alerts().some(t => t.includes("只有站点所有者可以修改")), false);
     // 沉睡治理两个阈值 2026-10-17（v3.1.1）恢复给所有者配置：普通账号继续被治理，
     // 所有者本人永不被治理，但这两个天数归所有者调
@@ -221,6 +229,10 @@ test("设置：非所有者会降级 —— 数据保留三项禁用，且两处
         alerts().some(t => t.includes("外观按账号保存")),
         "非所有者得说清楚改的是谁的样式"
     );
+    // 外观类字段不受影响：非所有者照样能改自己那份（默认的「外观与搜索」页）
+    assert.equal(inputById("site-title")?.disabled, false, "标题这类外观项非所有者也能改");
+    // 数据保留在「数据」页签里
+    click(tabButton("数据")!);
     assert.ok(
         alerts().some(t => t.includes("只有站点所有者可以修改")),
         "数据保留区要说明为什么改不了"
@@ -228,13 +240,13 @@ test("设置：非所有者会降级 —— 数据保留三项禁用，且两处
     for (const id of ["retention-days", "inactive-disable-days", "inactive-grace-days"]) {
         assert.equal(inputById(id)?.disabled, true, `${id} 对非所有者应该禁用`);
     }
-    // 外观类字段不受影响：非所有者照样能改自己那份
-    assert.equal(inputById("site-title")?.disabled, false, "标题这类外观项非所有者也能改");
 });
 
 test("设置：输入框改动带上配置键名（name），保存才落库靠的就是它", () => {
     render();
     setInputValue(inputById("site-title")!, "新标题");
+    // 数据保留三项在「数据」页签里
+    click(tabButton("数据")!);
     setInputValue(inputById("retention-days")!, "30");
     // 沉睡治理两个阈值（v3.1.1 恢复给所有者配置）：键名错了服务端就存到别处，
     //  cron 读的还是旧值 —— 界面看着改了、实际没生效
@@ -326,12 +338,15 @@ test("设置：保存中按钮禁用且文案变「保存中…」，防连点�
 
 test("设置：取消按钮走 onClose；不传 onRunLinkCheck 就不显示失效检测按钮", () => {
     render();
+    // 失效检测在「数据」页签的「维护」区
+    click(tabButton("数据")!);
     assert.equal(button("检测失效链接"), undefined, "没传回调时不该出现这个按钮");
     click(button("取消")!);
     assert.equal(calls.closes, 1);
 
     cleanup();
     render({ onRunLinkCheck: () => {} });
+    click(tabButton("数据")!);
     const check = button("检测失效链接")!;
     assert.ok(check, "传了回调就该显示");
     click(check);

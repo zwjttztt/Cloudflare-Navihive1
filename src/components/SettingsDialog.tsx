@@ -1,9 +1,13 @@
 // src/components/SettingsDialog.tsx
-// 全站设置弹窗。按「基本信息 / 外观 / 背景与毛玻璃 / 图标与缩略图 / 搜索 /
-// 数据同步 / 高级」分组：组与组之间用分隔线隔开，组标题左侧有一小段
-// 主色竖条，组内字段按「改动频率 + 语义」排序；短字段在宽屏并排成两列，纵向更紧凑。
-// 所有值都走「临时副本 + 点保存才落库」，所以组件本身不碰 API，只负责渲染和回调。
+// 全站设置弹窗。2026-10-25 起分三个页签（外观与搜索 / 数据 / 高级），
+// 页签内仍按「组与组分隔线 + 组标题主色竖条」排版，组内字段按「改动频率 + 语义」排序；
+// 短字段在宽屏并排成两列，纵向更紧凑。
+// 所有值都走「临时副本 + 点保存才落库」，所以组件本身不碰 API，只负责渲染和回调
+//（「保存设置」按钮在弹窗底部全局层，切页签不会丢草稿）。
+// 页签栏仿「数据备份与恢复」：放在 DialogContent 外面，内容滚动时页签不跟着走；
+// paper 层写死高度，切页签弹窗不跳。
 import type { ChangeEvent } from "react";
+import { useState } from "react";
 import { Section, SwitchRow } from "./dialogSection";
 import DialogCloseButton from "./DialogCloseButton";
 import {
@@ -21,6 +25,8 @@ import {
     FormControlLabel,
     Stack,
     Switch,
+    Tab,
+    Tabs,
     TextField,
     ToggleButton,
     ToggleButtonGroup,
@@ -176,6 +182,9 @@ export default function SettingsDialog({
     onRunLinkCheck,
     isSiteOwner = true,
 }: SettingsDialogProps) {
+    // 页签：0 = 外观与搜索（基本信息/外观/背景/图标/搜索）；1 = 数据（离线/同步/维护/保留）；
+    // 2 = 高级（自定义 CSS / 版本与升级）。
+    const [tab, setTab] = useState(0);
     return (
         <>
             <Dialog
@@ -188,6 +197,10 @@ export default function SettingsDialog({
                         sx: {
                             m: { xs: 2, sm: "auto" },
                             width: { xs: "calc(100% - 32px)", sm: "auto" },
+                            // 高度写在 paper 层：切页签时弹窗高度不跳（备份弹窗同款做法）。
+                            // 上限取 880：最高的「外观与搜索」页装得下，更矮的视口在区内滚动。
+                            height: { xs: "auto", sm: "min(880px, calc(100% - 48px))" },
+                            maxHeight: { sm: "calc(100% - 48px)" },
                         },
                     }
                 }}
@@ -200,11 +213,25 @@ export default function SettingsDialog({
                     {/* 原来是英文 aria-label='close'，读屏念出来是英文 —— 统一走外壳组件 */}
                     <DialogCloseButton onClose={onClose} sx={{ right: 8, top: 8 }} />
                 </DialogTitle>
+                <Divider />
+                {/* 页签放 DialogContent 外面：内容滚动时页签不跟着走 */}
+                <Tabs
+                    value={tab}
+                    onChange={(_, value: number) => setTab(value)}
+                    variant='fullWidth'
+                    sx={{ px: 2 }}
+                >
+                    <Tab label='外观与搜索' />
+                    <Tab label='数据' />
+                    <Tab label='高级' />
+                </Tabs>
                 <DialogContent
                     sx={{
                         px: 3,
                         pt: 1,
                         pb: 2,
+                        flex: 1,
+                        minHeight: 0,
                         // 说明文字统一收紧：默认 helperText 的行高和上间距太占地方
                         "& .MuiFormHelperText-root": { mt: 0.5, fontSize: 11.5, lineHeight: 1.5 },
                         // 滑块默认上下各留一段内边距，压掉一半换密度
@@ -226,6 +253,7 @@ export default function SettingsDialog({
                             外观按账号保存，仅影响你自己；站点所有者的设置还会作为新账号的默认外观。
                         </Alert>
                     ) : null}
+                    {tab === 0 ? (
                     <Stack spacing={2} divider={<Divider />}>
                         {/* 1. 基本信息：最常改，放最上面 */}
                         <Section title='基本信息'>
@@ -623,6 +651,9 @@ export default function SettingsDialog({
                             />
                         </Section>
 
+                    </Stack>
+                    ) : tab === 1 ? (
+                    <Stack spacing={2} divider={<Divider />}>
                         {/* 5.5 离线与缓存（图标隐私已挪进「图标与缩略图」，它管的是同一件事） */}
                         <Section
                             title='离线与缓存'
@@ -758,6 +789,9 @@ export default function SettingsDialog({
                             />
                         </Section>
 
+                    </Stack>
+                    ) : (
+                    <Stack spacing={2} divider={<Divider />}>
                         {/* 8. 高级 */}
                         <Section title='高级' hint='直接注入页面，写错可能影响显示。'>
                             <TextField
@@ -780,6 +814,7 @@ export default function SettingsDialog({
                             自包含组件（不碰本站 API、无 props），放最后 —— 低频操作。 */}
                         <VersionUpgradeSection />
                     </Stack>
+                    )}
                 </DialogContent>
                 <DialogActions sx={{ px: 3, pb: 3, pt: 1 }}>
                     <Button onClick={onClose} variant='outlined'>

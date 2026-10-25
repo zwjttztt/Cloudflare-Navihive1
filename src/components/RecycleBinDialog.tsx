@@ -1,5 +1,8 @@
 // src/components/RecycleBinDialog.tsx
 // 回收站：站点 / 分组被「删除」后先软删除到这里，可在此还原或彻底删除（不可恢复）。
+// 2026-10-25 起按类型分两个页签（站点 / 分组，带计数）：原先混在一个列表里，
+// 条目多时要整列扫。导航站回收站只收站点/分组（笔记归记事本自己的回收站，
+// 见 refresh 里的「回收站分家」注释），所以不设「笔记」页签。
 import { useCallback, useEffect, useState } from "react";
 import {
     Button,
@@ -12,6 +15,8 @@ import {
     List,
     IconButton,
     CircularProgress,
+    Tab,
+    Tabs,
     Tooltip,
     useTheme,
 } from "@mui/material";
@@ -69,6 +74,8 @@ export default function RecycleBinDialog({
     // 单项永久删除也要过一道确认：列表里还原和彻底删除两个图标挨着，
     // 手指一偏就是不可逆的删除
     const [pendingPurge, setPendingPurge] = useState<RecycleItem | null>(null);
+    // 类型页签：0 = 站点，1 = 分组。弹窗关闭即卸载（ChunkBoundary），重开自动回站点页
+    const [tab, setTab] = useState(0);
 
     const refresh = useCallback(async () => {
         setLoading(true);
@@ -143,6 +150,12 @@ export default function RecycleBinDialog({
         if (!ok) throw new Error("清空回收站失败");
     };
 
+    // 按类型拆开供页签展示；行内不再标「站点/分组」（页签已说明）。
+    // 万一服务端将来把别的 kind 发过来（目前不会），两页都不展示比混进去更明显
+    const siteItems = items.filter(i => i.kind === "site");
+    const groupItems = items.filter(i => i.kind === "group");
+    const shown = tab === 0 ? siteItems : groupItems;
+
     return (
         <Dialog open={open} onClose={onClose} maxWidth='sm' fullWidth className='nav-dialog'>
             {/* pr 给右上角那枚 × 让位，不然「仅保留 N 天」会和它叠在一起 */}
@@ -180,25 +193,32 @@ export default function RecycleBinDialog({
                         hint='删掉的分组 / 卡片会先到这里，保留期内随时可以还原'
                     />
                 ) : (
-                    <List dense sx={{ py: 0 }}>
-                        {items.map(item => (
-                            <DialogListRow
-                                key={item.id}
-                                primary={
-                                    <span>
-                                        <b>{item.name}</b>
-                                        <Typography
-                                            component='span'
-                                            variant='caption'
-                                            sx={{
-                                                color: 'text.secondary',
-                                                ml: 1
-                                            }}>
-                                            {item.kind === "group" ? "分组" : item.kind === "note" ? "笔记" : "站点"}
-                                        </Typography>
-                                    </span>
+                    <>
+                        <Tabs
+                            value={tab}
+                            onChange={(_, value: number) => setTab(value)}
+                            variant='fullWidth'
+                            sx={{ borderBottom: 1, borderColor: "divider" }}
+                        >
+                            <Tab label={`站点（${siteItems.length}）`} />
+                            <Tab label={`分组（${groupItems.length}）`} />
+                        </Tabs>
+                        {shown.length === 0 ? (
+                            <DialogEmptyState
+                                title={tab === 0 ? "没有已删除的站点" : "没有已删除的分组"}
+                                hint={
+                                    tab === 0
+                                        ? "删掉的网站卡片会出现在这个页签里"
+                                        : "删掉的分组会出现在这个页签里"
                                 }
-                                secondary={`删除于 ${formatTime(item.deletedAt)}`}
+                            />
+                        ) : (
+                            <List dense sx={{ py: 0 }}>
+                                {shown.map(item => (
+                                    <DialogListRow
+                                        key={item.id}
+                                        primary={<b>{item.name}</b>}
+                                        secondary={`删除于 ${formatTime(item.deletedAt)}`}
                                 // 还原 + 彻底删除两个按钮约 160px；不留位的话长条目名
                                 // 会被压在按钮下面（MUI 的 secondaryAction 不占流）
                                 actionsWidth={160}
@@ -232,7 +252,9 @@ export default function RecycleBinDialog({
                                 }
                             />
                         ))}
-                    </List>
+                            </List>
+                        )}
+                    </>
                 )}
             </DialogContent>
             <DialogActions sx={{ px: 2, py: 1.5, gap: 1 }}>
@@ -275,7 +297,7 @@ export default function RecycleBinDialog({
                 open={confirmClear}
                 title='清空回收站'
                 danger
-                description='将永久删除回收站里的全部条目，且无法恢复。确定继续吗？'
+                description='将永久删除回收站里的全部条目（站点与分组），且无法恢复。确定继续吗？'
                 impact={{ object: "回收站条目", count: items.length, undoable: false }}
                 confirmText='清空'
                 busyText='清空中…'

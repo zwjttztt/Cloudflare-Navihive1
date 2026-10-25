@@ -127,6 +127,12 @@ const buttonByText = (text: string): HTMLButtonElement | undefined =>
         b => (b.textContent || "").trim() === text
     );
 
+/** MUI Tabs 的页签（div[role=tab]）；2026-10-25 起列表按类型分页 */
+const tabByLabel = (text: string): HTMLElement | undefined =>
+    [...document.querySelectorAll<HTMLElement>('[role="tab"]')].find(t =>
+        (t.textContent || "").includes(text)
+    );
+
 const purgeIcon = (name: string) =>
     document.querySelector<HTMLButtonElement>(`[aria-label="彻底删除 ${name}"]`);
 
@@ -141,13 +147,19 @@ const bodyText = () => document.body.textContent || "";
 
 // ---------- 读取 ----------
 
-test("读出来就列出来，标清是站点还是分组、什么时候删的", async () => {
+test("读出来就列出来，分「站点 / 分组」两个页签、标清删除时间", async () => {
     const { client } = makeClient({ items: [ITEM_A, ITEM_B] });
     mount(client);
     await waitFor("列表出现", () => bodyText().includes("被删的站点"));
 
-    assert.ok(bodyText().includes("站点"), "要能分清删的是站点还是分组");
-    assert.ok(bodyText().includes("分组"));
+    // 页签带计数；默认落在站点页
+    assert.ok(bodyText().includes("站点（1）"), "站点页签要带计数");
+    assert.ok(bodyText().includes("被删的站点"));
+    assert.ok(bodyText().includes("删除于"));
+    // 分组在另一个页签里，切过去能看到
+    assert.ok(tabByLabel("分组（1）"), "分组页签要带计数");
+    await clickAsync(tabByLabel("分组（1）")!);
+    await waitFor("分组列表出现", () => bodyText().includes("被删的分组"));
     assert.ok(bodyText().includes("删除于"));
     cleanup();
 });
