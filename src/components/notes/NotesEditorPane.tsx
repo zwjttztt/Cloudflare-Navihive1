@@ -87,7 +87,7 @@ export default function NotesEditorPane(props: Pick<NotesPageCtx, "active" | "ac
                     {/* 标题行（2026-10-07）：右侧是**这一栏自己的**按键栏 ——
                         模式切换（编辑/分栏/预览）+「更多操作」。分屏时每栏各有一套，
                         顶栏那排只对当前笔记生效的问题就没了（inkstone 同款布局）。 */}
-                    <Box data-pane-header='main' sx={{ display: "flex", alignItems: "center", flexShrink: 0, pr: 1, height: PANE_HEADER_H }}>
+                    <Box data-pane-header='main' sx={{ display: "flex", alignItems: "center", flexShrink: 0, pr: 1, height: "var(--notes-header-h)", boxSizing: "border-box" }}>
                         <TextField
                             variant='standard'
                             value={draft?.title ?? ""}
@@ -102,6 +102,9 @@ export default function NotesEditorPane(props: Pick<NotesPageCtx, "active" | "ac
                                 px: 2,
                                 // ⚠️ 高度/字号要与侧栏**完全一致**（PANE_HEADER_H / 18px）：
                                 // 两栏并排时头部一高一低，标题与工具栏就错位（用户报）。
+                                // ⚠️ 2026-10-26：头部容器现在有共同高度（--notes-header-h），
+                                // 这里仍然用 PANE_HEADER_H —— 它表示的是**这个输入框自己的高度**
+                                // （44），不是头部高度；头部变高后由容器的 alignItems 居中。
                                 height: PANE_HEADER_H,
                                 "& .MuiInputBase-root": { fontSize: 18, fontWeight: 600 },
                                 "& .MuiInput-input": { padding: "6px 0" },
@@ -502,6 +505,22 @@ export default function NotesEditorPane(props: Pick<NotesPageCtx, "active" | "ac
                                     lineHeight: 1.75,
                                     color: "inherit",
                                     bgcolor: "transparent",
+                                    // 分屏时的承载面（2026-10-26 修正上面那条注释）：
+                                    // 「无框」这条把两种正文放在了两种承载语言上 —— 单栏预览有纸面，
+                                    // 分屏时两栏都是一片纯白，中间只挂一根线，源码栏的行号像
+                                    // 浮在白纸上。同一个正文不该因为「多开一栏」就换一套承托方式。
+                                    // 所以分屏给两栏各套一层与单栏预览同款的纸面；分隔改为**间隙**
+                                    // （中间的拖动手柄占 9px，见下面 separator）。my:1 让纸面不贴
+                                    // 工具栏与状态栏 —— 纸是要摆在桌面上的，不是铺满整张桌。
+                                    ...(finePane === "split"
+                                        ? {
+                                              my: 1,
+                                              bgcolor: "var(--surface-raised)",
+                                              border: "1px solid var(--card-border)",
+                                              borderRadius: "var(--notes-radius-block)",
+                                              boxShadow: "var(--shadow-1)",
+                                          }
+                                        : null),
                                 }}
                             >
                                 <NoteEditor
@@ -548,11 +567,14 @@ export default function NotesEditorPane(props: Pick<NotesPageCtx, "active" | "ac
                                 }}
                                 sx={{
                                     // 与 ColResizeHandle 同一套（inkstone 的 Resizer）：
-                                    // 命中区 9px + 负边距 −4px，内含 1px 发丝线，
-                                    // hover/拖动变 2px 强调色。之前这里是「透明 + hover 才出色块」，
-                                    // 静止时看不见线，和右边的分隔条长得也不一样。
+                                    // 命中区 9px，内含 1px 发丝线，hover/拖动变 2px 强调色。
+                                    // ⚠️ 2026-10-26 分屏改纸面后：两栏各自有描边了，中间再留
+                                    // 「负边距 −4px + 发丝线」就是三根线挤在 9px 里（纸边 /
+                                    // 发丝 / 纸边），脏。所以这里取消负边距 —— 这 9px 变成
+                                    // 两栏之间的**真实间隙**，命中区一点没少（仍是 9px 宽、
+                                    // alignSelf: stretch 撑满整个高度，鼠标拖得到）；中间的线
+                                    // 只在 hover / 拖动时出现，当作「这里能拖」的提示。
                                     width: 9,
-                                    mx: "-4px",
                                     flexShrink: 0,
                                     cursor: "col-resize",
                                     position: "relative",
@@ -568,7 +590,7 @@ export default function NotesEditorPane(props: Pick<NotesPageCtx, "active" | "ac
                                         // 同上：写 '1px'，别写 1（MUI 会当 100%）
                                         width: "1px",
                                         transform: "translateX(-50%)",
-                                        bgcolor: "var(--card-border)",
+                                        bgcolor: "transparent",
                                         transition:
                                             "background-color var(--dur-base, 220ms) var(--ease-out, ease), width var(--dur-base, 220ms) var(--ease-out, ease)",
                                         pointerEvents: "none",
@@ -614,6 +636,8 @@ export default function NotesEditorPane(props: Pick<NotesPageCtx, "active" | "ac
                                             ? 'Georgia, "Songti SC", "Noto Serif CJK SC", serif'
                                             : "inherit",
                                     // 同源码区：分屏无框，只有中间那根线（inkstone 同款）
+                                    // ⚠️ 2026-10-26：分屏也有纸面了（原因见源码栏那段注释），
+                                    // 所以这里的「无框」只对**编辑**态成立（编辑态整条宽度就是一张纸）。
                                     border: "none",
                                     borderRadius: 0,
                                     bgcolor: "transparent",
@@ -634,6 +658,18 @@ export default function NotesEditorPane(props: Pick<NotesPageCtx, "active" | "ac
                                               border: "1px solid var(--card-border)",
                                               borderRadius: "var(--notes-radius-row, 12px)",
                                               boxShadow: "var(--shadow-chip, none)",
+                                          }
+                                        : null),
+                                    // 分屏：与源码栏**同一套纸面**（同样的描边/圆角/阴影），
+                                    // 两栏才是「同一篇正文的两种视图」，而不是「一张纸 + 一片白」。
+                                    // 不做 maxWidth 居中：分屏本来就只分到一半宽，再收窄会把正文挤死。
+                                    ...(finePane === "split"
+                                        ? {
+                                              my: 1,
+                                              bgcolor: "var(--surface-raised)",
+                                              border: "1px solid var(--card-border)",
+                                              borderRadius: "var(--notes-radius-block)",
+                                              boxShadow: "var(--shadow-1)",
                                           }
                                         : null),
                                 }}

@@ -329,11 +329,22 @@ test("Tab 在记事本内循环，不会跑到看不见的背景里", async () =
 
 test("CodeMirror 使用 contenteditable 而非 textarea，并支持工具栏撤销重做", async () => {
     const { undo, redo } = await import("@codemirror/commands");
+    // 宽屏才有头部那排（含即时渲染开关）—— 下面要切开关验证「行号 × 即时渲染」互斥
+    setWide();
     mountPanel([note({ content: "原文" })]);
     assert.equal(document.querySelector("textarea[aria-label='笔记内容']"), null);
     const content = document.querySelector<HTMLElement>(".cm-content")!;
     assert.equal(content.getAttribute("contenteditable"), "true");
-    assert.ok(document.querySelector(".cm-lineNumbers"));
+    // ⚠️ 2026-10-26：行号槽与「即时渲染」**互斥**（见 NoteEditor 里的 gutterCompartment
+    // effect）：即时渲染把非当前段落整块换成 widget，只剩几行还有 `.cm-line`，
+    // 于是 gutter 只给这几行编号 —— 实测一篇 5 行笔记只剩「2」「5」吊在空白里。
+    // 只标一部分行比完全不标更困惑，所以即时渲染态整列不挂。默认设置正是开着即时渲染。
+    assert.equal(document.querySelector(".cm-lineNumbers"), null, "即时渲染态不该出现行号槽");
+    // 关掉即时渲染，行号要回来 —— 证明是「互斥」而不是「行号功能被删了」
+    const liveSwitch = document.querySelector<HTMLInputElement>("[data-tool='live-render'] input");
+    assert.ok(liveSwitch, "头部要有即时渲染开关（这个用例靠它验证互斥）");
+    act(() => liveSwitch!.click());
+    assert.ok(document.querySelector(".cm-lineNumbers"), "关掉即时渲染后行号槽要回来");
     const view = EditorView.findFromDOM(content)!;
     const editor = getEditor();
     act(() => editor.setSelectionRange(0, 2));
@@ -2220,9 +2231,15 @@ test("导航列要自己滚（整块一起滚会把搜索框顶出视野）", ()
     const nav = stripComments(readNotesFile("NotesNavPanel.tsx"));
     const scrollAt = nav.indexOf('overflowY: "auto"');
     assert.ok(scrollAt > 0, "导航列得住自己那一列滚（上半可滚、底部固定）");
+    // ⚠️ 2026-10-26：搜索框从「可滚区第一块」挪进了**固定头部**（三栏头部统一高度，
+    // 见 index.css 的 --notes-header-h）。原始意图不变、而且更彻底 ——
+    // 它现在压根不在滚动层里，文件夹再多也顶不走它。
+    const headerAt = nav.indexOf("data-nav-header='1'");
+    assert.ok(headerAt > 0, "左栏头部要有独立容器（高度归 --notes-header-h 管）");
     assert.ok(
-        nav.indexOf("renderSearchField(searchRef)") > scrollAt,
-        "搜索框要在可滚区里（整块一起滚会把它顶出视野）"
+        nav.indexOf("renderSearchField(searchRef)") > headerAt &&
+            nav.indexOf("renderSearchField(searchRef)") < scrollAt,
+        "搜索框要在固定头部里（不能在可滚区里被文件夹挤走）"
     );
     assert.ok(
         nav.indexOf("data-nav-footer='1'") > scrollAt,
@@ -4805,11 +4822,23 @@ test("左下角那块不写死背景色（否则「背景色」设置对它无�
     assert.ok(block.includes('bgcolor: "transparent"'), "应该改成透明，跟随页面根背景");
 });
 
-test("两栏头部用同一个高度常量（否则标题与工具栏整排错位）", () => {
-    const src = readNotesPage();
-    assert.ok(src.includes("const PANE_HEADER_H ="), "要有统一的头部高度常量");
-    const uses = (src.match(/height: PANE_HEADER_H/g) ?? []).length;
-    assert.ok(uses >= 4, `主栏与侧栏的标题行+头部容器都要用它（实际 ${uses} 处）`);
+test("三栏头部用同一个高度变量（否则标题与工具栏整排错位）", () => {
+    // ⚠️ 2026-10-26：头部高度从「各栏自己算」改成**一个 CSS 变量**（三栏并排时
+    // 第一行内容的 y 曾经是 66 / 60 / 53）。常量 PANE_HEADER_H 留着，但它现在只表示
+    // 「标题输入框自己的高度」，不再兼任头部高度 —— 所以这里钉的是变量，不是常量。
+    const css = readSrcFile("index.css");
+    assert.match(css, /--notes-header-h:\s*\d+px/, "index.css 里要有共同头部高度变量");
+    for (const file of ["NotesEditorPane.tsx", "NotesSidePane.tsx", "NotesListPane.tsx"]) {
+        const src = stripComments(readNotesFile(file));
+        assert.ok(
+            src.includes('height: "var(--notes-header-h)"'),
+            `${file} 的头部容器要走 --notes-header-h，否则三栏第一行内容又错开`
+        );
+    }
+    assert.ok(
+        notesSource().includes("const PANE_HEADER_H ="),
+        "常量仍要留着：标题输入框的高度（PANE_HEADER_H）与头部高度是两件事"
+    );
 });
 
 test("侧栏「分栏」是左右排（与主栏一致）", async () => {

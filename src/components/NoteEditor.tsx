@@ -257,6 +257,9 @@ const setFocusEffect = StateEffect.define<DecorationSet | null>();
 /** 即时渲染的开关用 Compartment 换扩展 —— 重建编辑器会丢撤销历史，不能那么干。 */
 const liveCompartment = new Compartment();
 
+/** 行号槽也走 Compartment：它要跟着「即时渲染」开/关热插拔（原因见下面的 effect）。 */
+const gutterCompartment = new Compartment();
+
 const focusField = StateField.define<DecorationSet>({
     create: () => Decoration.none,
     update(value, tr) {
@@ -476,7 +479,10 @@ export default function NoteEditor({
                     indentUnit.of(" ".repeat(indentWidth)),
                     // 行号是扩展不是样式：关掉它只能在建编辑器时决定 ——
                     // 所以设置里切这一项由调用方用 key 重建本组件（会丢撤销历史，可接受）
-                    ...(showLineNumbers ? [lineNumbers()] : []),
+                    // ⚠️ 2026-10-26：包进 gutterCompartment —— 它还要随「即时渲染」开关
+                    // 热插拔（即时渲染态不编号，原因见下面那个 effect），
+                    // 而即时渲染是随手会切的，不能因为这个就重建编辑器。
+                    gutterCompartment.of(showLineNumbers ? [lineNumbers()] : []),
                     highlightActiveLine(),
                     syntaxHighlighting(defaultHighlightStyle), EditorView.lineWrapping, theme, searchPanelTheme, completionTheme,
                     // 输入补全（utils/noteCompletion.ts）：`[[` 双链 / `#` 标签 / 围栏语言。
@@ -779,6 +785,27 @@ export default function NoteEditor({
             setLiveApplied(wantLive);
         }
     }, [wantLive, liveApplied]);
+
+    /**
+     * 行号槽 × 即时渲染：两者互斥（2026-10-26）。
+     *
+     * 为什么不是「修好编号」而是「收起编号」：即时渲染会把光标所在段落以外的段落
+     * **整块**换成 widget（NoteEditorLivePreview 里 `Decoration.replace({ block: true })`），
+     * 那些行连 `.cm-line` 都没有了，`lineNumbers()` 只可能给剩下的几行编号 ——
+     * 实测一篇 5 行的笔记在即时渲染下只剩「2」「5」两个数字挂在半屏空白里，
+     * 看着像行号坏了。只标一部分行比完全不标更让人困惑，所以即时渲染态整列不挂，
+     * 回到源码态（或在光标所在段落里）再逐行编号。
+     * 走 Compartment 热插拔：即时渲染是随手切的开关，不能为了它重建编辑器（会丢撤销历史）。
+     */
+    useEffect(() => {
+        const view = viewRef.current;
+        if (!view) return;
+        view.dispatch({
+            effects: gutterCompartment.reconfigure(
+                showLineNumbers && wantLive === 0 ? [lineNumbers()] : []
+            ),
+        });
+    }, [showLineNumbers, wantLive]);
 
     // 打字机模式：同样走 Compartment 热插拔（重建会丢撤销历史）。
     const wantTypewriter = typewriterMode ? 1 : 0;

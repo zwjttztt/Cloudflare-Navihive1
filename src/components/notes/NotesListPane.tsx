@@ -175,7 +175,10 @@ export default function NotesListPane(props: Pick<NotesPageCtx, "activeFolder" |
                     // ⚠️ 这一列**自己不再滚**：改成「上半可滚 + 底部固定」。
                     // 之前整列 overflowY:auto，归档/回收站/账号被文件夹挤到视野外。
                     overflow: "hidden",
-                    py: 1,
+                    // ⚠️ 2026-10-26：原来这里是 py:1（上下各 8px）。上内边距必须去掉 ——
+                    // 左栏头部要和中栏 / 编辑区的头部底边落在同一条线上（--notes-header-h），
+                    // 留着这 8px 就整列往下沉，三栏又错开。下留白保留，底部账号行不贴边。
+                    pb: 1,
                     // 三栏背景分层（inkstone）：导航站最沉（--bg-sunken）
                     bgcolor: "var(--bg-sunken)",
                 }}
@@ -250,8 +253,11 @@ export default function NotesListPane(props: Pick<NotesPageCtx, "activeFolder" |
                         alignItems: "center",
                         gap: 0.25,
                         px: 1.5,
-                        pt: 1,
-                        pb: 0.5,
+                        // ⚠️ 2026-10-26：高度改为三栏共用的 --notes-header-h，并去掉上下内边距
+                        // （原来 pt:1 / pb:0.5）。高度交给变量、内容靠 alignItems 居中 ——
+                        // 头部自己再算一份留白，就又变成「各长各的」，是三栏错位的根源。
+                        height: "var(--notes-header-h)",
+                        boxSizing: "border-box",
                         flexShrink: 0,
                         // 头部与滚动内容的边界（2026-10-25 视觉对齐）：中栏这一栏是纯色底，
                         // 头部和列表同色、又不在滚动层里，滚动时第一行会「凭空贴上来」，

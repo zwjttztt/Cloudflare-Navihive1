@@ -17,17 +17,36 @@ export default function NotesNavPanel(props: Pick<NotesPageCtx, "accountName" | 
     const { accountName, activeFolder, activeId, activeTag, askName, attManagerOpen, folderCounts, folderTags, folders, jumpToNote, keyword, listCollapsed, narrowLayout, noteTags, notes, notesInFolder, onClose, onUpdate, openTemplatePicker, renderSearchField, searchRef, setActiveFolder, setActiveTag, setAppearanceFolderId, setAttManagerOpen, setListCollapsed, setMiddleHidden, setNavDrawerOpen, setRemoveTarget, setRowMenu, setSettingsOpen, setTagColorId, setView, startCreateInFolder, tagCounts, tags, uploadApi, view, viewCounts } = props;
     return (
             <>
-            {/* 迷你顶栏（2026-10-10 调整）：返回箭头贴左（箭头朝左），「记事本」居中，
+            {/* 头部（2026-10-26 统一高度）：**两行都在头部里，高度由变量定死** ——
+                上行 = 返回站 / 「记事本」/ 收起列表（36px 玻璃控件那一行），
+                下行 = 搜索框（同一个 36px 规格）。
+                为什么不再「标题行 + 搜索框自然堆叠」：那样这一栏的头部高度是**内容算出来的**，
+                中栏（pt8 + 标题 + pb4 + 描边 ≈45）和编辑区（常量 44）各算各的，
+                三栏第一行内容就错开（实测 y = 66 / 60 / 53）。
+                搜索框顺手从滚动区挪进来：它是「随时都要用」的，本来就不该被文件夹推走。 */}
+            <Box
+                data-nav-header='1'
+                sx={{
+                    height: "var(--notes-header-h)",
+                    boxSizing: "border-box",
+                    flexShrink: 0,
+                    display: "flex",
+                    flexDirection: "column",
+                    minHeight: 0,
+                }}
+            >
+            {/* 上行（2026-10-10 调整）：返回箭头贴左（箭头朝左），「记事本」居中，
                 「收起笔记列表」占返回箭头原来的位置（右上角）。收起 / 展开从左下角
-                挪上来 —— 低频但它本来就是控制这一列的，放列顶比挤在账号行里更直白。 */}
+                挪上来 —— 低频但它本来就是控制这一列的，放列顶比挤在账号行里更直白。
+                ⚠️ 高度就是一个玻璃控件（HEADER_CONTROL_H），不再带上下内边距 ——
+                这一行 + 下面那行搜索框正好拼成 --notes-header-h，多一个 px 都会顶高。 */}
             <Box
                 sx={{
                     display: "flex",
                     alignItems: "center",
                     gap: 0.5,
                     px: 1,
-                    pt: 0.25,
-                    pb: 0.75,
+                    height: HEADER_CONTROL_H,
                     flexShrink: 0,
                 }}
             >
@@ -89,13 +108,17 @@ export default function NotesNavPanel(props: Pick<NotesPageCtx, "accountName" | 
                     </Tooltip>
                 )}
             </Box>
-            {/* 可滚动的上半：搜索框 + 视图导航 + 文件夹 + 标签 */}
-            <Box sx={{ flex: 1, minHeight: 0, overflowY: "auto", overflowX: "hidden" }}>
             {/* 搜索框：桌面导航列与 tablet 导航抽屉共用这一份 navInner（两者互斥挂载，
-                searchRef 不会打架）；mobile 的搜索在列表列头部（searchRefNarrow）。 */}
-            <Box sx={{ px: 1.5, pb: 1 }}>
+                searchRef 不会打架）；mobile 的搜索在列表列头部（searchRefNarrow）。
+                ⚠️ 2026-10-26：这段在**头部容器里面**（上面那个 data-nav-header），
+                flex:1 + minHeight:0 让它吃满头部剩下的高度并垂直居中 ——
+                靠自然堆叠会把头部撑高，那就白统一了。 */}
+            <Box sx={{ flex: 1, minHeight: 0, display: "flex", alignItems: "center", px: 1.5 }}>
                 {renderSearchField(searchRef)}
             </Box>
+            </Box>
+            {/* 可滚动的上半：视图导航 + 文件夹 + 标签 */}
+            <Box sx={{ flex: 1, minHeight: 0, overflowY: "auto", overflowX: "hidden" }}>
 
             {/* 左栏视图导航：inkstone 那种纵向条目 —— 一个入口一行、名字靠左、
                 条数靠右一行。
