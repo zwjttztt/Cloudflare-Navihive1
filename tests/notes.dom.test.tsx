@@ -5599,9 +5599,13 @@ test("上传被拒（413）要说人话，不能只剩「API错误: 413」", () 
 test("预览模式下不能上传文件（编辑器不挂载，插了也是静默丢失）", () => {
     const src = readNotesPage();
     // 工具栏要收到 canInsert，且预览模式下是 false
+    // ⚠️ 2026-10-26 锚点从 `pane !== "preview"` 改成 `finePane !== "preview"`：
+    // 窄屏（<768）不再分屏，pane 还停在 "split" 时**编辑器其实没挂载**（只显示预览）。
+    // 照 pane 判会给出「能插」，于是文件白传一次 —— 正是这条守卫要拦的事。
+    // 判据必须是「这一刻在显示什么」（finePane），不是「用户上次选了什么」（pane）。
     assert.ok(
-        /canInsert=\{pane !== "preview"\}/.test(src),
-        "主工具栏要按 pane 传 canInsert（预览模式下编辑器不挂载）"
+        /canInsert=\{finePane !== "preview"\}/.test(src),
+        "主工具栏要按 finePane 传 canInsert（窄屏降级后编辑器同样不挂载）"
     );
     // 上传前必须挡一道并说明原因，不能「传完了才发现没插进去」
     // ⚠️ 2026-10-18 支持 txt/json 后 handleImagePicked 改名为 handleFilePicked

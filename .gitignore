@@ -57,3 +57,6 @@ data/
 .workbuddy/
 # 单测运行器的独占锁（跑完自己删；被强杀时才残留）
 script/.unit-tests.lock
+
+# 探针截图产物（script/ui-probe.mjs 生成，不入库）
+script/ui-probe-out/

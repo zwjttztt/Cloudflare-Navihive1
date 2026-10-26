@@ -77,7 +77,16 @@ export default function RestoreTab({
     setTab, overwrite, setOverwrite, localFile, localData, localError, handleFileSelect, encryptedBytes, restorePassword, setRestorePassword, decrypting, handleDecryptBackup, handleRestoreLocal, config, remoteFiles, listLoading, loadRemoteFiles, selectedRemote, setSelectedRemote, handleRestoreRemote, handleDeleteRemote, deletingFiles, needsRemotePassword, remotePassword, setRemotePassword, remoteError, restoring, onOpenBookmark,
 }: RestoreTabProps) {
     return (
-        <Stack spacing={1.5} sx={{ mt: 0.5, flex: 1, minHeight: 0 }}>
+        /* ⚠️ 2026-10-26 修「WebDAV 恢复下方的框在缩放时与下方重叠」：
+           原来是 `flex: 1`（= 1 1 0%），**允许被压缩到 0**。矮视口（CSS 高度 <834px）
+           下弹窗内容区够不着这么高，这块就被压成 187 / 88 / 8 / 0 px，而它内部的
+           WebDAV 列表块有 minHeight: 220 压不下去 —— 于是那一块**溢出父级**，
+           被 DialogContent 的 overflow 从中间切一刀：下边框和下内边距看不见，
+           白底直接贴着底部按钮区，看起来就是「框和下方重叠」。
+           改成 `1 0 auto`（不许压缩）之后，矮视口下这里保持自己的自然高度，
+           由 DialogContent 整体滚动 —— 滚动位置对了，框的四条边都完整。
+           高视口下 flex-grow 仍然生效，框照旧撑满剩余空间，观感不变。 */
+        <Stack spacing={1.5} sx={{ mt: 0.5, flex: "1 0 auto", minHeight: 0 }}>
             {/* 默认合并导入。覆盖是这一页里唯一会删数据的选项：
                 开关默认关、开着时给红色警示，动手前预览里还要再确认一遍删除清单 */}
             <FormControlLabel

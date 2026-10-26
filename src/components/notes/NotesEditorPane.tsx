@@ -29,8 +29,29 @@ import { PANE_HEADER_H, SPLIT_KEY, STATUSBAR_H, SaveDot } from "../notes/paneChr
 import { findIndexedSite } from "../../utils/siteIndex";
 import type { NotesPageCtx } from "./notesPageCtx";
 
-export default function NotesEditorPane(props: Pick<NotesPageCtx, "active" | "activeFolderName" | "activeId" | "activeTagNames" | "backlinks" | "backlinksOpen" | "boundSite" | "boundSiteMissing" | "charCount" | "checked" | "completionSources" | "dirty" | "draft" | "folderTags" | "handleAttach" | "handleOpenEmbedNote" | "handleToggleTask" | "handleUpload" | "jumpToNote" | "jumpToOffset" | "liveRender" | "liveRenderer" | "mainShortcutActions" | "narrowLayout" | "notes" | "onClose" | "onNotify" | "onOpenBoundSite" | "onTogglePin" | "onToggleStar" | "openAttachmentFromEditor" | "openRevisions" | "outline" | "outlineActiveLine" | "outlineOpen" | "pane" | "previewFeatures" | "previewScrollRef" | "replaceDetachedUpload" | "resolveNote" | "saveState" | "savedAt" | "setActiveFolder" | "setActiveMenuAnchor" | "setActiveTag" | "setBacklinksOpen" | "setDraft" | "setExportAnchor" | "setLightbox" | "setLiveRender" | "setOutlineActiveLine" | "setOutlineOpen" | "setPane" | "setShareId" | "setSplitRatio" | "setView" | "shareApi" | "sideId" | "splitBoxRef" | "splitRatio" | "splitRatioRef" | "startSplitDrag" | "syncPreviewScroll" | "tags" | "textareaRef" | "tick" | "tools" | "uiSettings" | "uploadApi" | "uploadImageForEditor" | "view" | "wordCount" | "zenMode" | "setZenMode">) {
-    const { active, activeFolderName, activeTagNames, backlinks, backlinksOpen, boundSite, boundSiteMissing, charCount, completionSources, dirty, draft, folderTags, handleAttach, handleOpenEmbedNote, handleToggleTask, handleUpload, jumpToNote, jumpToOffset, liveRender, liveRenderer, mainShortcutActions, narrowLayout, notes, onNotify, onOpenBoundSite, onTogglePin, onToggleStar, openAttachmentFromEditor, openRevisions, outline, outlineActiveLine, outlineOpen, pane, previewFeatures, previewScrollRef, replaceDetachedUpload, resolveNote, saveState, savedAt, setActiveFolder, setActiveMenuAnchor, setActiveTag, setBacklinksOpen, setDraft, setExportAnchor, setLightbox, setLiveRender, setOutlineActiveLine, setOutlineOpen, setPane, setShareId, setSplitRatio, setView, shareApi, sideId, splitBoxRef, splitRatio, splitRatioRef, startSplitDrag, syncPreviewScroll, tags, textareaRef, tick, tools, uiSettings, uploadApi, uploadImageForEditor, view, wordCount, zenMode, setZenMode } = props;
+export default function NotesEditorPane(props: Pick<NotesPageCtx, "active" | "activeFolderName" | "activeId" | "activeTagNames" | "backlinks" | "backlinksOpen" | "boundSite" | "boundSiteMissing" | "bp" | "charCount" | "checked" | "completionSources" | "dirty" | "draft" | "folderTags" | "handleAttach" | "handleOpenEmbedNote" | "handleToggleTask" | "handleUpload" | "jumpToNote" | "jumpToOffset" | "liveRender" | "liveRenderer" | "mainShortcutActions" | "narrowLayout" | "notes" | "onClose" | "onNotify" | "onOpenBoundSite" | "onTogglePin" | "onToggleStar" | "openAttachmentFromEditor" | "openRevisions" | "outline" | "outlineActiveLine" | "outlineOpen" | "pane" | "previewFeatures" | "previewScrollRef" | "replaceDetachedUpload" | "resolveNote" | "saveState" | "savedAt" | "setActiveFolder" | "setActiveMenuAnchor" | "setActiveTag" | "setBacklinksOpen" | "setDraft" | "setExportAnchor" | "setLightbox" | "setLiveRender" | "setOutlineActiveLine" | "setOutlineOpen" | "setPane" | "setShareId" | "setSplitRatio" | "setView" | "shareApi" | "sideId" | "splitBoxRef" | "splitRatio" | "splitRatioRef" | "startSplitDrag" | "syncPreviewScroll" | "tags" | "textareaRef" | "tick" | "tools" | "uiSettings" | "uploadApi" | "uploadImageForEditor" | "view" | "wordCount" | "zenMode" | "setZenMode">) {
+    const { active, activeFolderName, activeTagNames, backlinks, backlinksOpen, boundSite, boundSiteMissing, bp, charCount, completionSources, dirty, draft, folderTags, handleAttach, handleOpenEmbedNote, handleToggleTask, handleUpload, jumpToNote, jumpToOffset, liveRender, liveRenderer, mainShortcutActions, narrowLayout, notes, onNotify, onOpenBoundSite, onTogglePin, onToggleStar, openAttachmentFromEditor, openRevisions, outline, outlineActiveLine, outlineOpen, pane, previewFeatures, previewScrollRef, replaceDetachedUpload, resolveNote, saveState, savedAt, setActiveFolder, setActiveMenuAnchor, setActiveTag, setBacklinksOpen, setDraft, setExportAnchor, setLightbox, setLiveRender, setOutlineActiveLine, setOutlineOpen, setPane, setShareId, setSplitRatio, setView, shareApi, sideId, splitBoxRef, splitRatio, splitRatioRef, startSplitDrag, syncPreviewScroll, tags, textareaRef, tick, tools, uiSettings, uploadApi, uploadImageForEditor, view, wordCount, zenMode, setZenMode } = props;
+    /**
+     * 手机宽度（<768）只有一屏：源码与预览必须**互斥**显示。
+     *
+     * 为什么：分屏是按百分比分的（splitRatio），390px 下两栏各剩 ~190px，
+     * 正文被挤成一条竖着的窄缝，看着就是「显示不全」（2026-10-26 真机 390×844 实测）。
+     * 断点本身没错（usePanelBreakpoint：1180 / 768 两条线），错的是这段以前没跟着收。
+     */
+    const canSplit = bp !== "mobile";
+    /**
+     * 渲染时降级后的「真实档位」。
+     *
+     * ⚠️ 界线（以后改这个文件先读这五行）：
+     *   - `pane` 是**用户的设置意图**（可能是上次在桌面上选的），只用于写回 / 传给
+     *     setPane / 命令面板，**不要**拿它当渲染依据；
+     *   - `finePane` 是**这一刻真的在显示什么**：布局、显隐、宽度、编辑器是否挂载
+     *     全部看它。窄屏上 `pane === "split"` 落到 `"preview"` —— 两栏同屏放不下，
+     *     先给能读的那一栏；要写字点「编辑」即可；
+     *   - 刻意**不改** `pane` 本身：它是持久化设置，回到桌面还要按它分屏。
+     *     在窄屏上就地改写成 preview，等于把用户桌面的布局习惯悄悄弄丢。
+     */
+    const finePane = pane === "split" && !canSplit ? "preview" : pane;
     return (
         <Box
             data-editor-pane='1'
@@ -158,7 +179,12 @@ export default function NotesEditorPane(props: Pick<NotesPageCtx, "active" | "ac
                                     ["split", "分栏", <VerticalSplitIcon fontSize='inherit' key='s' />],
                                     ["preview", "预览", <VisibilityIcon fontSize='inherit' key='v' />],
                                 ] as const
-                            ).map(([key, label, icon]) => (
+                            )
+                                // 窄屏（<768）分屏不可用（见 canSplit）：这一档直接从列表里滤掉。
+                                // ⚠️ 不能用 display:none 留着 —— 留个看得见却点不出效果的键，
+                                // 用户只会以为功能坏了；也别做成置灰（那是在暗示「等宽了再来」）。
+                                .filter(([key]) => key !== "split" || canSplit)
+                                .map(([key, label, icon]) => (
                                 <Tooltip key={key} title={label}>
                                     <IconButton
                                         aria-label={label}
@@ -170,9 +196,12 @@ export default function NotesEditorPane(props: Pick<NotesPageCtx, "active" | "ac
                                             height: 28,
                                             p: 0,
                                             borderRadius: 0,
-                                            color: pane === key ? "var(--accent)" : "text.secondary",
+                                            // 高亮跟着 finePane 走，不跟 pane：窄屏上 pane 可能还是
+                                            // "split"（那一档已被滤掉），照 pane 高亮会出现
+                                            // 「一个都没选中，但明明在看预览」的错觉。
+                                            color: finePane === key ? "var(--accent)" : "text.secondary",
                                             bgcolor:
-                                                pane === key
+                                                finePane === key
                                                     ? "color-mix(in srgb, var(--accent) 12%, transparent)"
                                                     : "transparent",
                                             "&:hover": { bgcolor: "var(--neutral-hover)" },
@@ -217,8 +246,14 @@ export default function NotesEditorPane(props: Pick<NotesPageCtx, "active" | "ac
                             所以只把这两个提成常驻按钮，其余仍留在「⋯」里。
                             ⚠️ 2026-10-09 用户明确：**分屏（侧边打开）时照 inkstone 收进「更多」** ——
                             半宽的两栏塞不下这排，头部只留三档 + 保存状态 + 「⋯」。
+                            ⚠️ 2026-10-26 再加一条：**手机宽度（<768）也收进「更多」**。
+                            390px 实测这排（置顶 / 收藏 / 大纲）把标题挤到只剩两三个字，
+                            输入框里 "会议纪要" 被硬切成 "会议" —— 输入框不像文本节点会出
+                            省略号，切了就只剩半截字，看着像坏了。而「⋯」菜单里
+                            `data-active-op='pin' / 'star' / 'outline'` 三项一个不少
+                            （见 NotesOverlayLayer），所以窄屏收起来**零损失**。
                             条件渲染（不是 display:none）：元素要真的从 DOM 卸掉。 */}
-                        {sideId === null && !zenMode && (
+                        {sideId === null && !zenMode && bp !== "mobile" && (
                         <Box sx={{ display: "flex", flexShrink: 0, alignItems: "center", gap: 0.25, mr: 0.5 }}>
                             <Tooltip title={active?.pinned ? "取消置顶" : "置顶"}>
                                 <span>
@@ -402,7 +437,10 @@ export default function NotesEditorPane(props: Pick<NotesPageCtx, "active" | "ac
                         onUploadImage={handleUpload}
                         onAttachFile={uploadApi ? (file, noteId) => handleAttach(file, noteId, false) : undefined}
                         // 预览模式下编辑器不挂载：上传会成功但插不进正文（见 canInsert 的说明）
-                        canInsert={pane !== "preview"}
+                        // ⚠️ 判据必须是 finePane 而不是 pane：窄屏下 pane 可能还是 "split"，
+                        // 但编辑器其实没挂载（只显示预览）—— 照 pane 判会给出「能插」，
+                        // 用户传完发现正文没变，文件白传一次。
+                        canInsert={finePane !== "preview"}
                     />
                     )}
 
@@ -428,7 +466,7 @@ export default function NotesEditorPane(props: Pick<NotesPageCtx, "active" | "ac
                             px: 2,
                         }}
                     >
-                        {pane !== "preview" && (
+                        {finePane !== "preview" && (
                             <Box
                                 sx={{
                                     // ⚠️ 两栏都用 `flex: 1 1 0`（basis 0）才会严格对半。
@@ -436,7 +474,10 @@ export default function NotesEditorPane(props: Pick<NotesPageCtx, "active" | "ac
                                     // 剩余空间再按 grow 分 —— 结果源码 667px、预览 222px，
                                     // 看着就像「预览被挤没了」。
                                     // 分栏时用 flexBasis 吃比例；单栏时独占
-                                    ...(pane === "edit"
+                                    // ⚠️ 看 finePane：窄屏把 split 降级成 preview 之后，
+                                    // 源码栏根本不渲染，这里若仍读 pane === "edit" 就会
+                                    // 落到「按 splitRatio 算宽度」那一支（凭空 50%）。
+                                    ...(finePane === "edit"
                                         ? { flex: 1 }
                                         : {
                                               flex: "0 0 auto",
@@ -487,7 +528,7 @@ export default function NotesEditorPane(props: Pick<NotesPageCtx, "active" | "ac
                                 />
                             </Box>
                         )}
-                        {pane === "split" && (
+                        {finePane === "split" && (
                             <Box
                                 role='separator'
                                 aria-orientation='vertical'
@@ -541,7 +582,7 @@ export default function NotesEditorPane(props: Pick<NotesPageCtx, "active" | "ac
                                 <span aria-hidden="true" />
                             </Box>
                         )}
-                        {pane !== "edit" && (
+                        {finePane !== "edit" && (
                             <Box
                                 ref={previewScrollRef}
                                 data-preview-scroll='1'
@@ -580,9 +621,11 @@ export default function NotesEditorPane(props: Pick<NotesPageCtx, "active" | "ac
                                     // 分屏时必须无框（两栏中间只有一根线），但**只剩预览**时
                                     // 正文直接铺在整页暖白上，没有任何承载物 —— 与导航页
                                     // 「内容都在玻璃卡上」的语言完全脱节。
-                                    // 所以只在 pane === "preview" 时加：淡纸面 + 细描边 + 极轻阴影，
+                                    // 所以只在**单栏预览**时加：淡纸面 + 细描边 + 极轻阴影，
                                     // 980 上限居中（宽屏不拉成长条）。
-                                    ...(pane === "preview"
+                                    // ⚠️ 判据是 finePane：窄屏把 split 降级成 preview 后也是
+                                    // 单栏，这一层纸面同样要加 —— 否则手机上正文直接铺在暖白底上。
+                                    ...(finePane === "preview"
                                         ? {
                                               maxWidth: 980,
                                               mx: "auto",
@@ -722,7 +765,9 @@ export default function NotesEditorPane(props: Pick<NotesPageCtx, "active" | "ac
                                         className={outlineActiveLine === item.line ? "outline-current" : undefined}
                                         onClick={() => {
                                             setOutlineActiveLine(item.line);
-                                            if (pane === "preview") previewScrollRef.current?.querySelector<HTMLElement>(`[data-line="${item.line}"]`)?.scrollIntoView({ block: "start" });
+                                            // 判据用 finePane：窄屏（pane === "split" 被降级）下
+                                            // 源码栏根本没挂载，jumpToOffset 无处可跳 —— 得滚预览。
+                                            if (finePane === "preview") previewScrollRef.current?.querySelector<HTMLElement>(`[data-line="${item.line}"]`)?.scrollIntoView({ block: "start" });
                                             else jumpToOffset(item.offset);
                                         }}
                                         sx={{
@@ -787,11 +832,19 @@ export default function NotesEditorPane(props: Pick<NotesPageCtx, "active" | "ac
 
                     {/* 状态栏：照 inkstone 的 footer —— **26px 一条**，
                         内容就六项：字数 / 字符 / 读完要几分钟 / 所在文件夹 / 标签 / 创建于。
-                        ⚠️ 两处刻意与之前不同：
+                        ⚠️ 三处刻意与之前不同：
                         ① 不再显示行号与光标位置（inkstone 也没有，行号是编辑器的东西，
                            摆在状态栏只会跟 CodeMirror 的行号槽重复）；
                         ② 保存状态搬去了标题行（inkstone 的 SaveIndicator 就在头部），
                            这里只管「这篇多长、它是谁」。
+                        ③ 窄屏（<768）只留**字数**一项（2026-10-26 真机 390×844）：
+                           六项在 390px 下必然折行 ——「17 字」被拆成竖排的 "17"/"字"、
+                           「约 1 分钟读完」独占一行、「工作」截成「工…」、右端
+                           「创建于 …」的尾巴被切出屏幕。与其让每一项都残废，不如只留
+                           一眼就要的那项；而且要**条件渲染**不是 display:none ——
+                           卸掉才不参与 flex 计算，也就不可能再把这一行撑开。
+                        ⚠️ 「只留字数」不等于「看不到存没存」：保存状态是头部那颗 SaveDot
+                           （标题行右侧那处 `<SaveDot>`，常驻），窄屏甚至专注模式下都还在。
                         ⚠️ 专注模式（A9）下整条不渲染：「只留正文」就只剩标题 + 正文 + 保存点。 */}
                     {!zenMode && (
                     <Box
@@ -807,9 +860,21 @@ export default function NotesEditorPane(props: Pick<NotesPageCtx, "active" | "ac
                             fontSize: 11,
                             color: "text.disabled",
                             overflow: "hidden",
+                            // 只有 26px 高：宁可挤掉尾巴也不许折行 ——
+                            // 一折行第二行就是被 height 裁掉的下半截字（用户报的就是这个）。
+                            flexWrap: "nowrap",
+                            minWidth: 0,
+                            whiteSpace: "nowrap",
                         }}
                     >
-                        <span>{wordCount} 字</span>
+                        {/* 字数自家再 nowrap 一次：数字与单位之间是可折行点，
+                            窄屏一折就变成竖排的 "17" / "字"（真机实测）。flexShrink:0
+                            保证它先于别的项拿满自己那点宽度，不被压成省略号。 */}
+                        <span style={{ whiteSpace: "nowrap", flexShrink: 0 }}>{wordCount} 字</span>
+                        {/* 窄屏只剩上面那项：其余都是「桌面上有地方才值得看」的信息，
+                            390px 上挤进来只会互相挤坏（见上面 ③）。 */}
+                        {bp !== "mobile" && (
+                        <>
                         <span>{charCount} 字符</span>
                         <span>约 {Math.max(1, Math.ceil(wordCount / 400))} 分钟读完</span>
                         {/* 所在文件夹：相当于一个位置指示 —— 这篇是从哪儿打开的。
@@ -873,9 +938,13 @@ export default function NotesEditorPane(props: Pick<NotesPageCtx, "active" | "ac
                                 ))}
                             </Box>
                         )}
-                        <Box sx={{ flex: 1 }} />
-                        {/* 右端：创建时间。解析不出就不显示 —— 宁可少一项，也别给「Invalid Date」。 */}
-                        {active.created_at && formatWhenFull(active.created_at) && (
+                        </>
+                        )}
+                        <Box sx={{ flex: 1, minWidth: 0 }} />
+                        {/* 右端：创建时间。解析不出就不显示 —— 宁可少一项，也别给「Invalid Date」。
+                            窄屏不渲染：390px 下这段「创建于 2026年10月1日 17:00」根本放不下，
+                            硬留的结果就是尾巴被 overflow:hidden 切掉（真机实测）。 */}
+                        {bp !== "mobile" && active.created_at && formatWhenFull(active.created_at) && (
                             <span data-note-created style={{ whiteSpace: "nowrap" }}>
                                 创建于 {formatWhenFull(active.created_at)}
                             </span>

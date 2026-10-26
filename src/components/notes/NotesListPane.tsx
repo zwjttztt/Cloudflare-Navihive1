@@ -609,8 +609,21 @@ export default function NotesListPane(props: Pick<NotesPageCtx, "activeFolder" |
                                           : "transparent",
                                     // 「列表样式」（2026-10-25 笔记美化）：三档只差分隔表达，
                                     // 选中态永远压过它（选中是状态，分隔是装饰）。
+                                    // ⚠️ 2026-10-26 修：底边这条 border 是**完整简写**，会把上面
+                                    // borderColor 设的底边颜色一起覆盖掉 —— 于是选中行上/左/右是
+                                    // 强调色、底边掉回 --card-border（8% 的灰，压在强调色底纹上
+                                    // 几乎看不见），读起来就是「选中框断了一条边」。
+                                    // 选中行必须在这里显式再给一次强调色；--card-border 只留给
+                                    // 没选中的行当分隔线。
                                     ...(uiSettings.listStyle === "divider"
-                                        ? { borderRadius: 0, borderBottom: "1px solid var(--card-border)" }
+                                        ? {
+                                              borderRadius: 0,
+                                              borderBottom: `1px solid ${
+                                                  isActive
+                                                      ? "color-mix(in srgb, var(--accent) 40%, transparent)"
+                                                      : "var(--card-border)"
+                                              }`,
+                                          }
                                         : null),
                                     // 卡片模式行距放开一点：贴太紧就成了「一堆框」，
                                     // 反而比无分隔更难扫
