@@ -139,7 +139,11 @@ export default function CommandPalette({ open, onClose, commands }: CommandPalet
                     fullWidth
                     size='small'
                     variant='outlined'
-                    sx={{ "& .MuiOutlinedInput-root": { borderRadius: "14px" } }}
+                    // 输入框跟顶栏控件同一档圆角（--header-radius）：
+                    // 写死 14px 时，外面纸面跟着圆角档位变、里面这条还是 14px，换档就「外圆内方」。
+                    sx={{
+                        "& .MuiOutlinedInput-root": { borderRadius: "var(--header-radius)" },
+                    }}
                     slotProps={{
                         input: {
                             startAdornment: (

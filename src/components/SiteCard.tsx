@@ -559,7 +559,10 @@ const SiteCard = memo(function SiteCard({
                     color: selected ? "var(--accent)" : "text.disabled",
                     bgcolor: selected ? "background.paper" : "var(--neutral-hover)",
                     boxShadow: selected ? "var(--shadow-chip)" : "none",
-                    transition: "all .18s cubic-bezier(.22,.61,.36,1)",
+                    // 不写 all：all 会把 backdrop-filter / box-shadow 一起补间，
+                    // 主题切换时每张卡片都多起一层合成。这里只补真正会变的那三项。
+                    transition:
+                        "color .18s cubic-bezier(.22,.61,.36,1), background-color .18s cubic-bezier(.22,.61,.36,1), box-shadow .18s cubic-bezier(.22,.61,.36,1)",
                 }}
             >
                 {selected ? (
@@ -627,6 +630,14 @@ const SiteCard = memo(function SiteCard({
     // 卡片本体做成真实的 <a>：左键普通新标签，中键由浏览器原生后台打开（不切走当前页）
     // 兜底：库里的链接理论上都在保存/导入时规范化过了，但历史数据或手动改库可能混进奇怪的值，
     // 出 href 前再确认一次是 http(s)，否则干脆不给链接（宁可不能点，也不能点一下执行脚本）
+    // ⚠️ 这里**不能**再写 tabIndex: -1。
+    //
+    // 以前外层 div 挂着 tabIndex={0} 当作键盘停靠点，为了不出现「每张卡 Tab 两次」，
+    // 就把里面这个真链接的 tabIndex 压成 -1 —— 代价是 Tab 停在一个**没有 role、
+    // 读屏什么都不念**的 div 上，键盘用户听到的是一声空白，得再按一次才知道是哪张卡。
+    //
+    // 现在掉过来：这里是真的 <a href>，天生可聚焦、读屏会念出站点名，键盘停靠点交给它；
+    // 外层降到 -1（见下面 cardContent），只在方向键导航时被程序聚焦。
     const linkProps = site.url && canOpenSite(site.url)
         ? {
               component: "a" as const,
@@ -634,7 +645,6 @@ const SiteCard = memo(function SiteCard({
               target: "_blank",
               // noreferrer 顺手也加上：外链不该带上本站地址
               rel: "noopener noreferrer",
-              tabIndex: -1,
           }
         : {};
 
@@ -679,6 +689,28 @@ const SiteCard = memo(function SiteCard({
         );
     };
 
+    // 复制账号 / 复制密码两枚按钮的命中区：视觉仍是 26px（小屏 32px），
+    // 用透明伪元素把**竖直**方向的可点范围补到 44px（index.css 里 .nav-card-actions
+    // 那段既有手法的同一个值）。
+    // ⚠️ 横向刻意不往外扩：这两枚按钮是紧挨着的（gap 0），横向也补到 44px 的话，
+    // 后面那枚的伪元素会盖住前面那枚的一半 —— 点「复制账号」的右半边会复制出密码。
+    // 横向 26px 本身已过 WCAG 2.5.8 的 24px 底线，够用；竖直方向才是真正难点的那一维。
+    const quickCopyBtnSx = {
+        minWidth: { xs: 32, sm: 26 },
+        minHeight: { xs: 32, sm: 26 },
+        p: 0,
+        position: "relative" as const,
+        "&::after": {
+            content: '""',
+            position: "absolute",
+            top: "50%",
+            left: 0,
+            width: "100%",
+            height: "var(--touch-min)",
+            transform: "translateY(-50%)",
+        },
+    };
+
     // 悬停快捷操作条：复制账号 / 复制密码
     // （打开动作已交给卡片本体：左键普通新标签，中键后台打开）
     // always=true 时（列表视图）常显，否则悬停才浮出
@@ -721,7 +753,7 @@ const SiteCard = memo(function SiteCard({
                         size='small'
                         aria-label='复制账号'
                         onClick={e => handleQuickCopy(e, "账号", site.username)}
-                        sx={{ minWidth: { xs: 32, sm: 26 }, minHeight: { xs: 32, sm: 26 }, p: 0 }}
+                        sx={{ ...quickCopyBtnSx }}
                     >
                         <PersonIcon sx={{ fontSize: 16 }} />
                     </IconButton>
@@ -733,7 +765,7 @@ const SiteCard = memo(function SiteCard({
                         size='small'
                         aria-label='复制密码'
                         onClick={e => handleQuickCopy(e, "密码", site.password)}
-                        sx={{ minWidth: { xs: 32, sm: 26 }, minHeight: { xs: 32, sm: 26 }, p: 0 }}
+                        sx={{ ...quickCopyBtnSx }}
                     >
                         <KeyIcon sx={{ fontSize: 16 }} />
                     </IconButton>
@@ -779,10 +811,17 @@ const SiteCard = memo(function SiteCard({
             data-nav-card={isEditMode ? undefined : "true"}
             data-dragging={isDragging ? "true" : "false"}
             data-site-id={site.id}
-            tabIndex={isEditMode ? undefined : 0}
             data-hover-lift={isEditMode || selectMode ? undefined : ""}
             data-select-mode={selectMode ? "true" : "false"}
             data-selected={selected ? "true" : "false"}
+            // 原来的 tabIndex={0} 是键盘用户的唯一停靠点，但它没有任何 role，
+            // 读屏停在上面什么都不念。停靠点改由里面那个真 <a>（会念出站点名）承担，
+            // 这里降到 -1：不进 Tab 序列，但 `utils/cardFocus.ts` 的方向键导航
+            // 是靠 `[data-nav-card]` 上的 .focus() 走位的，-1 才能继续被程序聚焦
+            // （整个拿掉会让方向键在卡片网格里彻底失效）。
+            tabIndex={isEditMode ? undefined : -1}
+            // 键盘事件从里面那个 <a> 冒泡上来照样接得到（ContextMenu / 多选勾选）；
+            // 焦点环由 index.css 的 `.nav-card-in:has(:focus-visible)` 画在外壳上。
             onKeyDown={handleKeyDown}
             onClick={handleShellClick}
             onAuxClick={handleAuxClick}

@@ -47,7 +47,13 @@ export const SiteCardTitle = memo(function SiteCardTitle({
                 title={name}
                 sx={{
                     fontWeight: 'medium',
-                    fontSize: { xs: "0.875rem", sm: "1rem" },
+                    // rem 只认根字号，不吃 .nav-root 上那条 font-size: 94% / 107%，
+                    // 所以这里显式乘上字号档位变量（与笔记页的 --notes-font-scale 同一档值）。
+                    // 兜底 1：卡片被单独渲染（单测 / 脱离 .nav-root 的场景）时不至于算成 0。
+                    fontSize: {
+                        xs: "calc(0.875rem * var(--font-scale, 1))",
+                        sm: "calc(1rem * var(--font-scale, 1))",
+                    },
                     transition: "color .2s ease"
                 }}>
                 <Highlighted text={name} query={highlight} />

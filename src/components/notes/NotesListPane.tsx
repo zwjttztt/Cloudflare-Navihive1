@@ -619,8 +619,12 @@ export default function NotesListPane(props: Pick<NotesPageCtx, "activeFolder" |
                                     // 这里只有底色 + 描边的话就是一块贴纸，看着死。
                                     // ⚠️ 刻意**不加** backdrop-filter：行背后就是中栏纯色底，
                                     // 模糊无物可糊，下载几百行只会白付合成开销。
+                                    // ⚠️ V7（2026-10-25）：静置用 --glass-shadow，与导航页卡片
+                                    //（SiteCard.tsx 的 cardSx）同一个 token —— 之前这里是
+                                    // --shadow-chip（1px 4px），比导航卡的 --shadow-2
+                                    //（4px 16px）薄一档，同一产品里「卡片」两种厚度。
                                     ...(uiSettings.listStyle === "card"
-                                        ? { boxShadow: "var(--shadow-chip, none)" }
+                                        ? { boxShadow: "var(--glass-shadow, none)" }
                                         : null),
                                     bgcolor: isActive
                                         ? "color-mix(in srgb, var(--accent) 12%, transparent)"
@@ -650,9 +654,11 @@ export default function NotesListPane(props: Pick<NotesPageCtx, "activeFolder" |
                                                   : "var(--neutral-hover)",
                                             // 卡片模式 hover 升到「弹层」阴影 + 描边染强调色，
                                             // 跟导航卡 hover 的 boxShadow / borderColor 一个语言
+                                            // 同上：hover 也换成导航卡那一档（--shadow-3），
+                                            // 原来 --shadow-pop（2px 10px）比导航卡 hover 薄。
                                             ...(uiSettings.listStyle === "card"
                                                 ? {
-                                                      boxShadow: "var(--shadow-pop, none)",
+                                                      boxShadow: "var(--glass-shadow-hover, none)",
                                                       borderColor: isActive
                                                           ? "color-mix(in srgb, var(--accent) 40%, transparent)"
                                                           : "color-mix(in srgb, var(--accent) 35%, transparent)",
@@ -678,6 +684,23 @@ export default function NotesListPane(props: Pick<NotesPageCtx, "activeFolder" |
                                     },
                                     "&:has(.note-row-actions:focus-visible) .note-row-actions": {
                                         opacity: 1,
+                                    },
+                                    // ⚠️ 触屏兜底（2026-10-25 V1）：上面两条都靠 hover，
+                                    // 而手机 / 平板**没有 hover** —— 那两条规则永远不命中，
+                                    // 「⋯」的 opacity 一直是最初的 0，改名 / 置顶 / 删除
+                                    // 在触屏上等于没有入口。这里让它在触屏上常显。
+                                    //
+                                    // ⚠️⚠️ 判据**不用** `@media (hover: none)`（左栏
+                                    // sidebarSection.tsx:544 是旧写法，别照抄）：
+                                    // 无头浏览器 / 没有输入设备的容器里 Chrome 会把自己报成
+                                    // hover:none，桌面端被误判成触屏 → 浮层常显，
+                                    // 「鼠标不在卡片上时浮层是隐形的」那条冒烟直接挂
+                                    //（index.css:1096 与 utils/device.ts 都记着这个坑）。
+                                    // 走项目统一的 `.nav-touch`：由 main.tsx 启动时按
+                                    //「无 hover + 真有触摸点」两条同时成立才挂到 <html> 上。
+                                    "html.nav-touch & .note-row-actions": {
+                                        opacity: 1,
+                                        pointerEvents: "auto",
                                     },
                                     "&:hover": { bgcolor: "var(--neutral-wash)" },
                                     // inkstone 的「悬停时整行右移 2px」——

@@ -313,6 +313,16 @@ export function useNotes({ api, onError, onNotify, onNoteConflict, firstDelayMs 
     const [notes, setNotes] = useState<Note[]>(swrHit?.notes ?? []);
     const [loaded, setLoaded] = useState(Boolean(swrHit));
     /**
+     * 首拉「有没有出结果」（成功或失败都算出结果）—— 列表侧拿它渲染骨架屏。
+     *
+     * ⚠️ 为什么不直接用 `!loaded`：失败那条路不置 `loaded`（见 reload 的 catch，
+     * 一旦置了就会把空列表写进 SWR 缓存，把好数据顶掉），于是失败时
+     * `loaded` 永远是 false —— 骨架屏会一直转下去，用户看到的是「卡住」而不是
+     * 「没数据」。所以单独记一个「首轮已结束」，它只在**真的拿不到任何数据**
+     * 时才是 false。
+     */
+    const [firstLoadSettled, setFirstLoadSettled] = useState(Boolean(swrHit));
+    /**
      * 最近一轮轮询发现的「被其他设备改过的笔记 id」（新的在前，最多 50）。
      * 上层（NotesPage）用它判断「当前打开的这篇是否被改」，给针对性提示。
      */
@@ -349,6 +359,22 @@ export function useNotes({ api, onError, onNotify, onNoteConflict, firstDelayMs 
     /**
  * 列表走摘要的条数阈值：超过这个数，`?fields=list` 才真的省流量。
  * 阈值以下开了反而更慢 —— 点开笔记要多一次全文请求（见 API 那段注释）。
+ *
+ * ⚠️⚠️ 为什么**不能**把默认值改成「一律开摘要」（2026-10-25 评估后决定不改）：
+ * 列表那条 `content` 现在被五条路径当「全文」用，切到摘要（正文只剩开头
+ * NOTE_SUMMARY_CHARS=200 字 + content_truncated 标记）会让它们静默出错：
+ *   1. NotesPage.tsx:1067 `searchableText` —— 本地模糊搜索的检索串是
+ *      「标题 + 正文 + 标签名」。它是服务端 FTS5 不可用时的**唯一兜底**，
+ *      截断后 200 字以外的词一概搜不到（不是变慢，是搜不到）。
+ *   2. NotesPage.tsx:1246 `completionSources` —— `[[` 笔记补全卡片上的
+ *      `noteExcerpt(n.content)` 预览会退化成同一句开头。
+ *   3. NotesPage.tsx:1593 `attachmentRefCounts` —— 附件「引用 N 次」靠扫正文
+ *      里的 `/api/notes/attachments/<id>`，截断后引用数偏小 → 「维护」里会
+ *      把**正在用**的附件判成未引用并清掉（不可逆）。
+ *   4. NotesPage.tsx:2207 `noteWordTotal` —— 设置→数据的总字数会少算。
+ *   5. NotesPage.tsx:1715/1724 反查 / 出链 —— 双向链接是靠扫正文算的。
+ * 要默认开摘要，得先给这五处各补一条「按需取全文」的路（并按笔记 id 缓存），
+ * 那是独立的一件事；在它落地前保持「首拉全文」。
  */
 const SUMMARY_LIST_THRESHOLD = 200;
 
@@ -391,11 +417,16 @@ const SUMMARY_LIST_THRESHOLD = 200;
             seedRevs(next);
             setNotes(next);
             setLoaded(true);
+            setFirstLoadSettled(true);
             setExternalChange(false);
             // 返回新列表：轮询用它做「外部删除」感知（reload 原有调用方都不用返回值，无破坏）
             return next;
         } catch (error) {
             reportError(error, { source: "notes-list" });
+            // 失败也算「首轮有结果了」：不然列表的骨架屏会一直转（见 firstLoadSettled）。
+            // ⚠️ 这里**不能**置 loaded —— loaded 是 SWR 回写缓存的闸门，置了会把
+            // 空列表当成有效数据缓存掉，把上一次的好数据顶掉。
+            setFirstLoadSettled(true);
             // SWR 命中时列表已经可见（旧数据），「加载失败」的提示反而误导 ——
             // 后续轮询 / 手动刷新会再试。只有真的一无所有时才弹。
             if (notesRef.current.length === 0) {
@@ -787,38 +818,55 @@ const SUMMARY_LIST_THRESHOLD = 200;
     // ---------- 阶段三收尾：文件夹 / 标签 ----------
 
     /**
-     * 拉文件夹 + 标签两份清单。
+     * 拉文件夹 + 标签 + 标签关联三份清单。
      *
      * 放在同一个 callback 里、一次 mount 只调一次：这两份是小清单（几十条），
      * 分开两个 effect 会让首屏多两次 setState，没必要。
+     *
+     * ⚠️ 三条**并发**（2026-10-25）：原来写成 `await folders` → `await tags` →
+     * `await noteTags` 的串行，而这三份数据之间没有任何依赖 —— 打开记事本就
+     * 白白多付 2 个串行 RTT（自托管链路 1~3 秒/RTT ≈ 多等 2~6 秒）。
      */
     const loadMeta = useCallback(async () => {
-        if (typeof api.listFolders === "function") {
-            try {
-                const list = await api.listFolders();
-                setFolders(Array.isArray(list) ? list : []);
-            } catch (error) {
-                reportError(error, { source: "notes-folders-list" });
+        const hasFolders = typeof api.listFolders === "function";
+        const hasTags = typeof api.listTags === "function";
+        const hasLinks = typeof api.listNoteTags === "function";
+        // ⚠️ 用 allSettled 而不是 all：错误语义必须和串行时**完全一致** ——
+        // 串行时「tags 挂了」只会把 tags 降级成 []，folders / noteTags 照常落地。
+        // 换成 all 的话任一 rejected 会让另外两条**已经拿到**的结果一起被丢掉，
+        // 一个坏接口就把整个左栏打空；反过来也不能「全成功才算成功」，那是把
+        // 「某个失败」粉饰成「全部成功」。
+        const [folderRes, tagRes, linkRes] = await Promise.allSettled([
+            hasFolders ? api.listFolders!() : null,
+            hasTags ? api.listTags!() : null,
+            hasLinks ? api.listNoteTags!() : null,
+        ] as const);
+        // 老部署 / 老 mock 没有某个方法时**保持原值不动**（SWR 命中时那是有数据的），
+        // 不能顺手清成 [] —— 那是把「接口不存在」当成「接口返回了空」。
+        if (hasFolders) {
+            if (folderRes.status === "fulfilled") {
+                setFolders(Array.isArray(folderRes.value) ? folderRes.value : []);
+            } else {
+                reportError(folderRes.reason, { source: "notes-folders-list" });
                 setFolders([]);
             }
         }
-        if (typeof api.listTags === "function") {
-            try {
-                const list = await api.listTags();
-                setTags(Array.isArray(list) ? list : []);
-            } catch (error) {
-                reportError(error, { source: "notes-tags-list" });
+        if (hasTags) {
+            if (tagRes.status === "fulfilled") {
+                setTags(Array.isArray(tagRes.value) ? tagRes.value : []);
+            } else {
+                reportError(tagRes.reason, { source: "notes-tags-list" });
                 setTags([]);
             }
         }
-        if (typeof api.listNoteTags === "function") {
-            try {
-                const links = await api.listNoteTags();
+        if (hasLinks) {
+            if (linkRes.status === "fulfilled") {
                 // 必须是对象（Record）才敢用：null / 数组都可能被后端意外返回，
                 // 而下面 `noteTags[noteId]` 的写法对 null 会直接抛。
+                const links = linkRes.value;
                 setNoteTags(links && typeof links === "object" ? links : {});
-            } catch (error) {
-                reportError(error, { source: "notes-tag-links" });
+            } else {
+                reportError(linkRes.reason, { source: "notes-tag-links" });
                 setNoteTags({});
             }
         }
@@ -1178,6 +1226,12 @@ const SUMMARY_LIST_THRESHOLD = 200;
     return {
         notes,
         loaded,
+        /**
+         * 首拉进行中（列表侧用它渲染骨架屏）。只新增、不动 `loaded` 的语义：
+         * 它是「有没有来自服务端的数据」，这个是「首轮请求有没有出结果」。
+         * SWR 命中缓存时直接是 false（列表立刻可见，不需要骨架屏）。
+         */
+        loading: !firstLoadSettled,
         externalChange,
         reload,
         ensureFullNote,

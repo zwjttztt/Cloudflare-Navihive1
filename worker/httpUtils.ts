@@ -5,13 +5,29 @@
 // 受保护路由三处同时 import。单独放一份之后谁要用谁拿，不再互相拖着。
 
 import { securityHeaders } from "./util";
+// 会话 cookie 的名字与前端（src/API/transport.ts）共用一份，定义在 shared/ 下：
+// 两边引用同一个常量，就不会再出现「改了前端忘了服务端」的静默掉线。
+import { SESSION_COOKIE } from "../shared/sessionCookie";
+
+export { SESSION_COOKIE };
 
 // ============ 会话 cookie ============
 // 令牌放 httpOnly cookie，JS 读不到 —— XSS 偷不走令牌（这是 localStorage 存令牌的最大问题）。
 // 另设一个**非** httpOnly 的 navihive_session 只用来给前端判断「是否已登录」，
 // 它不含任何凭据，泄露也无意义。
 export const TOKEN_COOKIE = "navihive_token";
-export const SESSION_COOKIE = "navihive_session";
+
+/**
+ * 由**自托管 Node 入口**注入的客户端真实地址（server/entry.ts 的 proxyToWorker）。
+ *
+ * 为什么需要一条专用头：worker 侧取 IP 只认 `CF-Connecting-IP`（Cloudflare 边缘注入，
+ * 伪造不了）与 `X-Forwarded-For`（要 `NAVIHIVE_TRUST_XFF=1` 才认）。自托管时前面没有
+ * Cloudflare，`CF-Connecting-IP` 是客户端想写什么就写什么；不信任 XFF 时又不能拿 XFF
+ * 顶上（它同样来自客户端）—— 限速分桶会被无限绕过。
+ * 所以入口把 socket 对端地址写进这条头，**一律覆盖**、客户端带过来的不算数。
+ * Workers 部署下没人写这条头，且 `CF-Connecting-IP` 优先级更高 → 行为零变化。
+ */
+export const REAL_IP_HEADER = "x-navihive-client-ip";
 
 /**
  * Worker 返回的纯文本响应统一带上安全头。
@@ -19,7 +35,15 @@ export const SESSION_COOKIE = "navihive_session";
  */
 export const TEXT_HEADERS = () => securityHeaders({ "Content-Type": "text/plain; charset=utf-8" });
 
-/** 取客户端 IP（审计日志 / 登录设备显示用） */
+/**
+ * 取客户端 IP（审计日志 / 登录设备显示用）。
+ *
+ * 优先级：CF-Connecting-IP（Cloudflare 边缘注入）→ X-Forwarded-For（代理链首段）
+ * → 自托管入口注入的真实地址 → unknown。
+ * 前两条都可能被客户端伪造（自托管部署下没有 Cloudflare 在前面），
+ * 那条「入口注入」的是最后一档：由 server/entry.ts 从 socket 对端地址写进来，
+ * 客户端带的一律被它盖掉；Workers 部署下这条头不存在。
+ */
 export function clientIp(request: Request): string {
     const cf = request.headers.get("CF-Connecting-IP");
     if (cf) return cf;
@@ -30,6 +54,9 @@ export function clientIp(request: Request): string {
         const first = xff.split(",")[0].trim();
         if (first) return first;
     }
+    // 自托管：入口用 socket 对端地址补的那一档（没人伪造得了）
+    const real = request.headers.get(REAL_IP_HEADER);
+    if (real) return real.trim().slice(0, 64);
     return "unknown";
 }
 
@@ -68,6 +95,12 @@ export function readBearerToken(request: Request): string | null {
  * 直接丢弃（非安全通道不允许写入 Secure cookie），表现为：
  * 登录接口返回 200、前端也写了登录标记，但令牌根本没存上，
  * 下一个请求 401 → 界面立刻弹回登录页。
+ *
+ * ⚠️ CF-Visitor 与 CF-Connecting-IP 一样，**只有在 Cloudflare 边缘后面才可信**。
+ * 自托管部署下客户端随手就能带上它（把自己声明成 http 就能骗我们去掉 Secure）——
+ * 那道口子不在本函数里堵，而在入口：server/entry.ts 转发给 worker 之前会把
+ * CF-Visitor / CF-Connecting-IP 一律删掉。这里保持无条件读是为了不动 Workers 的行为：
+ * 那边这个头由平台注入，且 url.protocol 恒为 https（丢了它反而会误判）。
  *
  * 取值优先级：
  * 1. CF-Visitor —— Cloudflare 在边缘注入的客户端真实 scheme，客户端伪造不了；

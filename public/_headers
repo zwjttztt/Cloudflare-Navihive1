@@ -11,6 +11,17 @@
   #   不留这条整个界面会裸奔（去掉后所有组件失去样式）。
   # - script 不需要 'unsafe-inline'：入口是 <script type="module" src>，没有内联脚本。
   # - img / connect 放开 https:：图标 API 和 WebDAV 备份都是用户自己配的第三方 https 地址。
+  #   ⚠️ 这一条**刻意保留 https: 通配**，不做域名白名单（2026-10-26 复核结论）：
+  #   站点图标、favicon 抓取、WebDAV 备份目标、AI 端点、媒体外链，全部是**用户运行时
+  #   自己填的任意域名**（卡片图标 URL 是导入/手填进来的，WebDAV 地址可以是任何一家
+  #   网盘）。换成白名单 = 要么先把这些功能砍掉，要么逼用户在 CSP 里填域名 ——
+  #   而这份 _headers 是部署期静态文件，用户改不动。收益那头也很薄：
+  #   img-src 的外带只能带一个像素请求的 Referer/URL（本页已有 form-action 'self'
+  #   挡表单，script-src 不含内联与第三方，真正的 XSS 外带根本走不通），
+  #   connect-src 放开 https: 的代价只有在「已经存在注入点」时才兑现，
+  #   而堵这个的正确位置是消灭注入点，不是拿 CSP 兜底。
+  #   真要收敛，得先做出「用户可配的 CSP 域名白名单」（配置面 + 前端 + 部署三处联动），
+  #   那是个独立改动，不该夹在安全修复里一起上。
   # - object-src 'none' + base-uri 'self' 挡插件和 <base> 劫持；form-action 'self' 挡表单外投。
   # - require-trusted-types-for 'script'：把 innerHTML / outerHTML / insertAdjacentHTML /
   #   document.write / eval 这些 DOM XSS sink 全部封死——赋值字符串直接抛异常，

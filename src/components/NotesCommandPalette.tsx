@@ -273,7 +273,7 @@ export default function NotesCommandPalette({
                     fullWidth
                     size='small'
                     variant='outlined'
-                    sx={{ "& .MuiOutlinedInput-root": { borderRadius: "14px" } }}
+                    sx={{ "& .MuiOutlinedInput-root": { borderRadius: "var(--header-radius, 14px)" } }}
                     slotProps={{
                         input: {
                             startAdornment: (

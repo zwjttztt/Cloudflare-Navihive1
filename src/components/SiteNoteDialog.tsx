@@ -27,15 +27,12 @@ import {
     DialogActions,
     DialogContent,
     DialogTitle,
-    IconButton,
     List,
     ListItemButton,
     Stack,
     TextField,
-    Tooltip,
     Typography,
 } from "@mui/material";
-import CloseIcon from "@mui/icons-material/Close";
 import DescriptionOutlinedIcon from "@mui/icons-material/DescriptionOutlined";
 import EditIcon from "@mui/icons-material/Edit";
 import LinkOffIcon from "@mui/icons-material/LinkOff";
@@ -50,6 +47,7 @@ import {
     type AttachmentPreviewRequest,
 } from "../utils/attachmentPreview";
 import AttachmentPreviewDialog from "./AttachmentPreviewDialog";
+import DialogCloseButton from "./DialogCloseButton";
 import { prefetchChunk } from "../utils/lazyPrefetch";
 import { dialogChunks } from "../utils/dialogChunks";
 import {
@@ -232,16 +230,9 @@ export default function SiteNoteDialog({ site, onClose }: Props) {
                 >
                     {titleText}
                 </Box>
-                <Tooltip title='关闭'>
-                    <IconButton
-                        size='small'
-                        aria-label='关闭'
-                        onClick={onClose}
-                        sx={{ position: "absolute", right: 12, top: 12 }}
-                    >
-                        <CloseIcon fontSize='small' />
-                    </IconButton>
-                </Tooltip>
+                {/* 换成全站统一的右上角「×」：这里原先手写的那份位置 / Tooltip /
+                    aria-label 与 DialogCloseButton 一模一样，直接换成共用组件 */}
+                <DialogCloseButton onClose={onClose} />
             </DialogTitle>
             <DialogContent sx={dialogContentSx}>
                 <Typography variant='caption' component='div' color='text.secondary' sx={{ mb: 1.25 }}>

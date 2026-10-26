@@ -363,6 +363,12 @@ export const INDEX_STATEMENTS = [
     // 都要 `USE TEMP B-TREE FOR LAST 2 TERMS OF ORDER BY`（EXPLAIN 实测）。
     // 补上 id 尾列后整个排序都能走索引序，免去临时 B 树。旧索引保留不删（保守）。
     `CREATE INDEX IF NOT EXISTS idx_notes_user_order ON notes(user_id, pinned, order_num, id);`,
+    // 笔记变更轮询（2026-10-26，性能）：notes/changes 每 2 分钟一次
+    // `SELECT COUNT(*) FROM notes WHERE updated_at >= ?1 AND user_id IS ?2`
+    // （见 notesBackup.ts）。上面那两条都带前导的等值/排序列（pinned、archived、folder_id），
+    // 顶不上「按 updated_at 做范围扫」这个形状 —— 于是那个 COUNT 每次都把该用户
+    // 的**全部**笔记扫一遍。补一条纯 (user_id, updated_at) 让它走索引范围。
+    `CREATE INDEX IF NOT EXISTS idx_notes_user_updated ON notes(user_id, updated_at);`,
     `CREATE INDEX IF NOT EXISTS idx_notes_archived ON notes(user_id, archived, updated_at);`,
     `CREATE INDEX IF NOT EXISTS idx_notes_uuid ON notes(user_id, uuid);`,
     // 文件夹视图：WHERE folder_id = ? ORDER BY updated_at，两个条件都得能走索引
@@ -371,6 +377,13 @@ export const INDEX_STATEMENTS = [
     // （见 data.ts 的 SITE_SELECT_WITH_NOTE）。没有这条索引时那两个相关子查询
     // 会退化成「每张卡片一次笔记全表扫」—— 卡片一多，首页就跟着慢。
     `CREATE INDEX IF NOT EXISTS idx_notes_site ON notes(site_id);`,
+    // 站点↔笔记的「最近更新」探测（2026-10-26，性能）：data.ts 的站点列表要按
+    // `WHERE site_id = ? ... ORDER BY updated_at DESC, id DESC LIMIT 1` 取绑定的那篇笔记。
+    // 只有 (site_id) 的话，每条命中都要再排序一次（200 张卡 = 200 次排序）。
+    // 补上后两列就能直接按索引序取第一条，排序全省。
+    // ⚠️ 旧的 idx_notes_site 保留不删：还有别处只按 site_id 反查、不需要排序，
+    //   留着那条单列索引对它们更省（索引越窄，一次探测读的页越少）。
+    `CREATE INDEX IF NOT EXISTS idx_notes_site_recent ON notes(site_id, updated_at DESC, id DESC);`,
     // 文件夹 / 标签清单：列表查询都带 user_id 过滤
     `CREATE INDEX IF NOT EXISTS idx_note_folder_user ON note_folder(user_id, order_num);`,
     `CREATE INDEX IF NOT EXISTS idx_note_tag_user ON note_tag(user_id, name);`,

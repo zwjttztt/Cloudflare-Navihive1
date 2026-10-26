@@ -75,6 +75,8 @@ test("保险库：migrate() 在真实 SQLite 里建出 vault_keys / vault_entrie
     }
 });
 
-test("保险库：SCHEMA_VERSION 已升到 26（新表吃快路径，不升号老库永远建不出来）", () => {
-    assert.equal(SCHEMA_VERSION, "26");
+test("保险库：SCHEMA_VERSION 已升到 27（新表吃快路径，不升号老库永远建不出来）", () => {
+    // 2026-10-25：迁移改成「已执行 step 集合」后版本串升到 27，
+    // 为的是让老库跑一遍并拿到新增的两条索引（idx_notes_user_updated / idx_notes_site_recent）。
+    assert.equal(SCHEMA_VERSION, "27");
 });

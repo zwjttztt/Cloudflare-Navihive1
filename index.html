@@ -27,6 +27,19 @@
     <title>Navihive 导航站</title>
 
     <!--
+      骨架阶段同步一次「已存的外观设置」（主题 + 圆角），见 public/boot-theme.js。
+
+      ⚠️ 刻意写成**外链**而不是内联：全站 CSP 是 `script-src 'self'`
+      （public/_headers，没有 'unsafe-inline'），内联脚本在 Pages 部署下会被拦掉，
+      而本地 dev 正常 —— 这种只在上线后失效的问题最难查。
+
+      这段只干三件事（读两个 localStorage 键 + 两个赋值），几百字节、不发请求，
+      同步跑完就在首帧之前。React 挂载后会把 --card-radius 写到 .nav-root
+      （比 <html> 更具体的元素），两边不打架。
+    -->
+    <script src="/boot-theme.js"></script>
+
+    <!--
       启动骨架（纯 CSS，无 JS / 无外链）。
 
       为什么必须有这一段：`<div id="root">` 原本是空的，而真正的骨架屏
@@ -62,6 +75,20 @@
           --bs-line: #262e39;
           --bs-brand: #90caf9;
         }
+      }
+      /* 用户存过 light/dark 时以它为准：这两条选择器比上面的 #boot-skeleton 具体，
+         会盖过 @media 那条（存的是 system 时 head 里那段脚本不写属性，继续跟系统）。 */
+      html[data-boot-theme="dark"] #boot-skeleton {
+        --bs-bg: #12161c;
+        --bs-surface: #1b212a;
+        --bs-line: #262e39;
+        --bs-brand: #90caf9;
+      }
+      html[data-boot-theme="light"] #boot-skeleton {
+        --bs-bg: #f7f8fa;
+        --bs-surface: #ffffff;
+        --bs-line: #e8ecf1;
+        --bs-brand: #1976d2;
       }
       #boot-skeleton .bs-bar {
         height: 56px;
@@ -116,7 +143,10 @@
       #boot-skeleton .bs-card > i {
         display: block;
         height: 104px;
-        border-radius: 12px;
+        /* 跟真实卡片同一个变量（head 里的 boot-theme.js 会先把用户存的圆角档位
+           种到 <html> 上），兜底 22px 与默认「圆润」档一致 ——
+           写死 12px 时 React 挂载瞬间整屏「圆角张开」。 */
+        border-radius: var(--card-radius, 22px);
         background: var(--bs-surface);
       }
       #boot-skeleton .bs-shimmer {

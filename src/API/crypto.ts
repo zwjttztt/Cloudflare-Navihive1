@@ -91,8 +91,14 @@ export async function verifyJwt(
         return { valid: false };
     }
 
+    // ⚠️ exp 是**必需**声明，不是可选项。
+    // 旧写法 `typeof exp === "number" && exp < now` 对「根本没有 exp」是放行 ——
+    // 一枚不带 exp 的令牌等于永不过期，签发出去就再也收不回来（改密那条路只 bump
+    // tokenVersion，而它覆盖不到「没有 tv 声明的老令牌」，被清除的账号更是连版本都没有）。
+    // 所以这里反过来问：不是 number（缺失 / 字符串 / NaN）一律拒绝，是数字才比时间。
+    // 放在 tokenVersion 那段**之前**：两者互不干扰，先过时间这一关再问版本。
     const exp = payload.exp;
-    if (typeof exp === "number" && exp < Math.floor(Date.now() / 1000)) {
+    if (typeof exp !== "number" || !Number.isFinite(exp) || exp < Math.floor(Date.now() / 1000)) {
         return { valid: false };
     }
 
@@ -312,6 +318,13 @@ const KEY_SALTS: Record<typeof KEY_ID_LEGACY | typeof KEY_ID_DATA, Uint8Array> =
 };
 
 export interface Keyring {
+    /**
+     * 「不落密文」模式：加密直接返回明文（见 encryptSecret），解密照旧（认 enc$ 前缀）。
+     *
+     * 只在 AUTH_ENABLED=false 且一把密钥都没配时打开 —— 那种部署里密钥只能是仓库里
+     * 公开的常量，用它「加密」等于把明文换个写法，还不如不装；见 navigationApi.ts。
+     */
+    readonly plaintext: boolean;
     /** 新**文本**密文一律用它加密（salted 编号） */
     readonly writeKeyId: KeyId;
     /**
@@ -336,6 +349,11 @@ export function createKeyring(opts: {
     dataKey?: string;
     /** AUTH_SECRET：旧密钥，同时也是未配置新密钥时的回退（可选） */
     legacySecret?: string;
+    /**
+     * 打开「不落密文」：加密变成直通，不写出 enc$ 前缀。
+     * 解密不受影响（老密文照样解得开），所以之后配上密钥就能平滑切回真加密。
+     */
+    plaintext?: boolean;
 }): Keyring {
     const dataKey = opts.dataKey ?? "";
     const legacySecret = opts.legacySecret ?? "";
@@ -357,6 +375,7 @@ export function createKeyring(opts: {
     const ids = [...new Set(all)].filter(id => secrets.has(id));
     const fixedIds = ids.filter(id => !isSaltedKeyId(id));
     return {
+        plaintext: opts.plaintext === true,
         writeKeyId,
         bytesKeyId,
         ids,
@@ -413,6 +432,11 @@ function parseEnc(cipher: string): { keyId: KeyId; payload: string } | null {
 export async function encryptSecret(plain: string, src: SecretSource): Promise<string> {
     if (!plain) return "";
     const ring = resolveKeyring(src);
+    // 「不落密文」：直接把明文交回去，不写 enc$ 前缀。
+    // 这里的取舍见 navigationApi.ts 里 plaintext 那个开关 —— 没有密钥时，
+    // 「用公开常量演一遍加密」只会让人误以为数据在保护之下；存明文至少是诚实的，
+    // 而且读回来（decryptSecretDeep 认不出 enc$ 就原样返回）不需要任何改动。
+    if (ring.plaintext) return plain;
     const keyId = ring.writeKeyId;
     const salted = isSaltedKeyId(keyId);
     // 每条密文一个新盐（salted 编号）：断掉「固定盐 → 可预计算」这条路

@@ -28,6 +28,7 @@ import {
     AiSuggestResponse,
     AiTestResponse,
 } from "../http";
+import { IDEMPOTENCY_HEADER } from "../httpConstants";
 import type {
     AiEmbedResponse,
     AiSearchResponse,
@@ -238,7 +239,7 @@ export const systemImpl = {
     async importData(this: ClientThis, data: ExportData, opts?: ImportOptions): Promise<ImportResult> {
         const headers: Record<string, string> = { "Content-Type": "application/json" };
         if (this.idempotencyKey) {
-            headers["Idempotency-Key"] = this.idempotencyKey;
+            headers[IDEMPOTENCY_HEADER] = this.idempotencyKey;
             this.idempotencyKey = null;
         }
         if (opts?.onProgress) headers["Accept"] = IMPORT_PROGRESS_MEDIA;

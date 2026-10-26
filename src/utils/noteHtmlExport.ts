@@ -130,6 +130,21 @@ export async function exportNoteAsHtml(title: string, content: string): Promise<
  * 为什么不用 window.open + document.write：弹出窗口会被拦截器吃掉，
  * 而且 document.write 本身就是 Trusted Types 盯的 sink；iframe.src 走 blob URL
  * 是导航而不是注入，两条约束都不碰。
+ *
+ * ⚠️ iframe 必须带 sandbox（S12）：blob URL 继承创建者的源，于是这个 iframe
+ * **与本站同源** —— 笔记内容里的 <script> / 自动提交的表单 / 指向外站的 img
+ * 都能以本站身份跑起来（读同源数据、带着本站 cookie 出网）。
+ * 取值是**最小可用组合**而不是 `sandbox=""`：
+ *   - `allow-same-origin`：必须留。没有它 iframe 是透明源，父页面访问
+ *     contentDocument / contentWindow 会被当成跨域直接抛 SecurityError，
+ *     下面那段「等图片 decode 完再打印」和 contentWindow.print() 全废；
+ *   - `allow-modals`：打印对话框本身是模态的，沙箱里不给这条 print() 打不开；
+ *   - 刻意**不给** `allow-scripts`：这才是这次要挡的东西 —— 笔记里就算夹了
+ *     <script>，在沙箱里也是死的，既碰不到 DOM 也发不出请求（同源也白搭）；
+ *   - 刻意**不给** `allow-forms` / `allow-popups` / `allow-top-navigation`：
+ *     表单提交、window.open、顶栏跳转一律失效，堵掉「导出一份笔记点开就外带数据」。
+ * 用 setAttribute 而不是 `frame.sandbox = "..."`：DOM 里 sandbox 是 DOMTokenList，
+ * 直接赋字符串过不了类型检查。
  */
 export async function printNoteAsPdf(title: string, content: string): Promise<void> {
     const body = await renderNoteHtmlBody(content);
@@ -144,6 +159,8 @@ export async function printNoteAsPdf(title: string, content: string): Promise<vo
     frame.style.height = "0";
     frame.style.border = "0";
     frame.style.visibility = "hidden";
+    // 装进同源 iframe 的内容必须有边界（理由见函数头那段）
+    frame.setAttribute("sandbox", "allow-same-origin allow-modals");
     frame.src = url;
     frame.addEventListener("load", async () => {
         try {

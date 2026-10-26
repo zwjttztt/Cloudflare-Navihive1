@@ -33,6 +33,7 @@ import { parseHeaderRules, serveStatic, type HeaderRule } from "./static";
 import { isPublicHost, normalizeRemoteAddress } from "./net";
 import { setEgressResolver } from "../worker/safeFetch";
 import { isBlockedHost } from "../worker/util";
+import { REAL_IP_HEADER } from "../worker/httpUtils";
 import type { Env } from "../worker/types";
 
 // ============ CONFIG ============
@@ -67,9 +68,17 @@ const TRUST_XFF = env("NAVIHIVE_TRUST_XFF", "1");
 // safeFetch，注册一次全覆盖。
 //
 // 细节：
-//   · 解析失败（NXDOMAIN 等）→ 放行，让 fetch 自己去失败，别在这里制造第二种错误；
+//   · ⚠️ 解析失败（NXDOMAIN / DNS 超时 / 解析库异常）→ **拒绝**（fail-closed）。
+//     原来是「放行，让 fetch 自己去失败」，但 DNS 恰恰是攻击者能操纵的那一环 ——
+//     rebinding 就是让解析结果在「校验」与「连接」之间翻转。查不到结果时
+//     「你随便去连吧」等于把这道复核整个交出去，宁可拦下正常的打错字域名，
+//     也不能让攻击者靠制造解析失败（DNS 干扰 / 特殊域名）绕过复核；
 //   · 60s 缓存：死链巡检一次几十个 URL，同一 host 会重复解析；
-//   · 上限 500 条：防长尾域名把 Map 吹大，超了整体清空（缓存而已，没有正确性依赖）。
+//   · 上限 500 条：防长尾域名把 Map 吹大，超了整体清空（清空后本次结果直接用返回值，
+//     不会因为它被清掉就误判成不可解析）。
+//     ⚠️ 用户 opt-in 的内网 WebDAV（webdav.allowPrivateNetwork）不经过这里 ——
+//     worker/webdav/transport.ts 在开了那个开关时会跳过解析复核，所以把这里改严
+//     不会把 NAS 备份一起挡掉。
 // ⚠️ 仍是缓解不是根治（lookup 与 fetch 内部再解析之间有窗口）—— safeFetch.ts
 //    的 setEgressResolver 注释里有完整说明。
 const RESOLVE_TTL_MS = 60_000;
@@ -79,16 +88,20 @@ const resolvedIps = new Map<string, { ips: string[]; at: number }>();
 setEgressResolver(async (hostname: string): Promise<boolean> => {
     const now = Date.now();
     const hit = resolvedIps.get(hostname);
-    if (!hit || now - hit.at > RESOLVE_TTL_MS) {
+    let ips: string[] | null = hit && now - hit.at <= RESOLVE_TTL_MS ? hit.ips : null;
+    if (ips === null) {
         try {
             const rows = await lookup(hostname, { all: true });
-            resolvedIps.set(hostname, { ips: rows.map(r => r.address), at: now });
+            ips = rows.map(r => r.address);
+            resolvedIps.set(hostname, { ips, at: now });
             if (resolvedIps.size > RESOLVE_CACHE_MAX) resolvedIps.clear();
         } catch {
-            return true;
+            // fail-closed：查不出 IP 就当不通过（理由见上面那段）
+            return false;
         }
     }
-    const ips = resolvedIps.get(hostname)?.ips ?? [];
+    // 一条 IP 都没解析出来（缓存被清空的那一瞬）也按不通过：宁可误拒，不误放行
+    if (ips.length === 0) return false;
     // 一个都不过才算数：多 A 记录时只要有个内网 IP 就该拒
     return ips.every(ip => !isBlockedHost(ip));
 });
@@ -188,12 +201,6 @@ function toHeaders(req: IncomingMessage): Headers {
 async function proxyToWorker(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const method = req.method ?? "GET";
     const trustXFF = serverEnv.NAVIHIVE_TRUST_XFF === "1";
-    // 用反代给的 scheme 拼 URL：requestIsSecure() 在没有 CF-Visitor 时只认
-    // X-Forwarded-Proto，且要求 trustXFF 为真 —— 两者齐了 cookie 才会带 Secure。
-    // 不信任 XFF 时一律按 http 拼，客户端改头也骗不到我们。
-    const forwarded = firstHeaderValue(req.headers["x-forwarded-proto"]);
-    const proto = trustXFF && (forwarded === "https" || forwarded === "http") ? forwarded : "http";
-    const url = new URL(req.url ?? "/", `${proto}://${req.headers.host ?? "localhost"}`);
 
     const headers = new Headers();
     for (const [name, value] of Object.entries(req.headers)) {
@@ -201,6 +208,34 @@ async function proxyToWorker(req: IncomingMessage, res: ServerResponse): Promise
         // Node 已经把重复头用 ", " 拼好了（set-cookie 除外，请求里没有意义）
         headers.set(name, Array.isArray(value) ? value.join(", ") : String(value));
     }
+
+    // ============ 客户端能伪造的「平台头 / 代理头」在入口这一层处理掉 ============
+    //
+    // 自托管前面没有 Cloudflare，而 worker 侧（httpUtils.clientIp、loginGuard.clientBucket、
+    // httpUtils.requestIsSecure）以及 icon / csp / errorReport / public 路由都**无条件信任**
+    // CF-Connecting-IP 与 CF-Visitor。客户端随手带上这两个头就能：
+    //   - 每猜一次密码换一个限速桶 → 登录爆破限速被无限绕过；
+    //   - 把自己声明成 http → 骗我们去掉 cookie 的 Secure。
+    // 那几个函数必须保持原样（Workers 部署下这两个头由平台注入，且 requestIsSecure
+    // 丢了 CF-Visitor 反而会误判成 https），所以在入口删掉最干净 —— 一次删掉也就
+    // 覆盖了所有直接读它们的地方，不用逐个文件去改。
+    //
+    // 这正是 NAVIHIVE_TRUST_XFF 这个开关该起作用的地方：只有明确声明「前面挡着
+    // 一层会老实填头的可信反代」时才保留 X-Forwarded-*，否则一律删掉，
+    // 真实地址由下面的 socket 对端提供。
+    headers.delete("cf-connecting-ip");
+    headers.delete("cf-visitor");
+    if (!trustXFF) {
+        headers.delete("x-forwarded-for");
+        headers.delete("x-forwarded-proto");
+    }
+
+    // 用反代给的 scheme 拼 URL：requestIsSecure() 在没有 CF-Visitor 时只认
+    // X-Forwarded-Proto，且要求 trustXFF 为真 —— 两者齐了 cookie 才会带 Secure。
+    // 不信任 XFF 时上面的删除已经生效，一律按 http 拼，客户端改头也骗不到我们。
+    const forwarded = trustXFF ? firstHeaderValue(req.headers["x-forwarded-proto"]) : undefined;
+    const proto = forwarded === "https" || forwarded === "http" ? forwarded : "http";
+    const url = new URL(req.url ?? "/", `${proto}://${req.headers.host ?? "localhost"}`);
 
     // 客户端真实 IP：worker 侧只认 CF-Connecting-IP 与 X-Forwarded-For 两个头
     // （worker/httpUtils.ts clientIp、worker/loginGuard.ts clientBucket）。
@@ -215,6 +250,11 @@ async function proxyToWorker(req: IncomingMessage, res: ServerResponse): Promise
         const remote = req.socket.remoteAddress;
         if (remote) headers.set("x-forwarded-for", normalizeRemoteAddress(remote));
     }
+    // 上面那两个头都可能被伪造，所以真实地址**另外**走一条专用头：
+    // 一律覆盖写入，客户端带过来的值根本到不了 worker（worker 侧在 CF-* / XFF
+    // 都不可用或不可信时才读它）。Workers 部署下没人写这条头。
+    const remoteAddress = req.socket.remoteAddress;
+    if (remoteAddress) headers.set(REAL_IP_HEADER, normalizeRemoteAddress(remoteAddress));
 
     const hasBody = method !== "GET" && method !== "HEAD";
     const request = new Request(url, {

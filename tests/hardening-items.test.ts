@@ -24,6 +24,9 @@ import { isBodyTooLarge, MAX_REQUEST_BODY_BYTES } from "../worker/util";
 import { RETENTION_DAYS_MAX } from "../src/API/http";
 import { NavigationAPI } from "../src/API/navigationApi";
 import { validateSite } from "../worker/validate";
+// 2026-10-25：令牌的 exp 现在是**必需**声明（缺 exp 一律判无效，
+// 否则等于签发永不过期的令牌）。这里给「应该验过」的用例补一个未来时间戳。
+const FUTURE_EXP = Math.floor(Date.now() / 1000) + 3600;
 
 function b64url(obj: unknown): string {
     return Buffer.from(JSON.stringify(obj)).toString("base64url");
@@ -119,7 +122,7 @@ test("Item4：verifyJwt 拒绝非 HS256 算法（如 RS256）", async () => {
 });
 
 test("Item4：正常 HS256/JWT 头仍验签通过", async () => {
-    const token = await signJwt({ username: "admin", tv: 1 }, "secret");
+    const token = await signJwt({ username: "admin", tv: 1, exp: FUTURE_EXP }, "secret");
     const r = await verifyJwt(token, "secret", { tokenVersion: 1 });
     assert.equal(r.valid, true);
 });

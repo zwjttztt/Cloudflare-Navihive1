@@ -38,6 +38,8 @@ export interface Env {
      * 不配 = 完全沿用 AUTH_SECRET，行为与升级前逐字节一致。
      */
     DATA_ENCRYPTION_KEY?: string;
+    /** 显式允许站点密码明文落库（默认不开）。见 navigationApi.ts 里 plaintext 那个开关的说明 */
+    ALLOW_PLAINTEXT_SECRETS?: string;
     /** 独立的 JWT 签名密钥。不配则回退 AUTH_SECRET。 */
     JWT_SECRET?: string;
     /**

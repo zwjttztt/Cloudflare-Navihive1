@@ -6,9 +6,10 @@
 // （监听端口、开数据库、跑迁移）——单测要的只是这段纯逻辑。
 
 import { createReadStream } from "node:fs";
-import { stat } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
+import { createGzip, gzipSync, constants as zlibConstants } from "node:zlib";
 import path from "node:path";
-import type { ServerResponse } from "node:http";
+import type { IncomingHttpHeaders, ServerResponse } from "node:http";
 import { isSpaRoute, looksLikeAsset } from "../shared/spaRoutes";
 
 export interface HeaderRule {
@@ -85,6 +86,97 @@ export function isInside(root: string, target: string): boolean {
     return rel !== ".." && !rel.startsWith(".." + path.sep) && !path.isAbsolute(rel);
 }
 
+// ============ 压缩与条件请求（P3：自托管不再全靠反代的 gzip on） ============
+//
+// 以前这里直接 createReadStream 裸传，既没有 Content-Encoding 也没有 ETag，
+// 首屏那几百 KB 全靠反代压；反代没开（Docker 直接暴露端口、本机调试）就是裸传。
+
+/**
+ * 哪些 Content-Type 值得压：文本类。
+ *
+ * **不压**的那一半更重要：图片（png/jpg/webp/avif/gif）、字体（woff2/ttf）、
+ * 音视频这些格式内部已经压过了，再 gzip 一遍几乎压不动，白烧一次 CPU；
+ * `application/octet-stream` 保守起见也不压（里面可能是 zip / 已是压缩包）。
+ */
+function isCompressible(contentType: string): boolean {
+    const mime = contentType.split(";")[0].trim().toLowerCase();
+    if (mime.startsWith("text/")) return true;
+    return (
+        mime === "application/javascript" ||
+        mime === "application/json" ||
+        mime === "application/xml" ||
+        mime === "application/manifest+json" ||
+        mime === "application/x-javascript" ||
+        mime === "image/svg+xml"
+    );
+}
+
+/** 客户端是否接受 gzip：按 token 逐个看，**认 q 值**（`gzip;q=0` 是不接受） */
+export function acceptsGzip(headers?: IncomingHttpHeaders): boolean {
+    const raw = headers?.["accept-encoding"];
+    if (raw === undefined) return false;
+    const value = Array.isArray(raw) ? raw.join(",") : raw;
+    let best = 0;
+    for (const part of value.split(",")) {
+        const [token, ...params] = part.trim().split(";");
+        if (token.trim().toLowerCase() !== "gzip") continue;
+        const q = params.map(p => p.trim()).find(p => p.startsWith("q="));
+        const weight = q ? Number(q.slice(2)) : 1;
+        if (Number.isFinite(weight) && weight > best) best = weight;
+    }
+    return best > 0;
+}
+
+/**
+ * 带内容 hash 的构建产物（`assets/index-DkWk3ZQk.js`）：内容永不改变，
+ * 压一次就能一直用；没带 hash 的（index.html）每次都要现压。
+ */
+function isHashedAsset(filePath: string): boolean {
+    return /-[A-Za-z0-9_]{8,}\.[A-Za-z0-9]+$/.test(path.basename(filePath));
+}
+
+/** 压缩缓存条数上限：构建产物就那么多个，超了按插入顺序丢最早的 */
+const GZIP_CACHE_LIMIT = 200;
+/** key = 路径 + size + mtime：任一变了（重新构建、换版本）缓存自动失效 */
+const gzipCache = new Map<string, Buffer>();
+
+function rememberGzip(key: string, body: Buffer): void {
+    if (gzipCache.size >= GZIP_CACHE_LIMIT) {
+        const oldest = gzipCache.keys().next();
+        if (!oldest.done) gzipCache.delete(oldest.value);
+    }
+    gzipCache.set(key, body);
+}
+
+/**
+ * 弱 ETag。
+ *
+ * 没复用 worker/util.ts 的 `weakEtag`：那个函数吃的是**正文字符串**，而这里
+ * 是不缓冲地流式直出（index.html 也走流式），为了算哈希把整个文件读进内存不划算。
+ * size + mtime 已经足以判断「内容有没有变」，且是弱 ETag（W/ 前缀），
+ * 允许「字节不完全相同但语义等价」—— 压缩前后共用同一个值正是它的用途。
+ */
+function weakEtagFor(size: number, mtimeMs: number): string {
+    return `W/"${size.toString(36)}-${Math.floor(mtimeMs).toString(36)}"`;
+}
+
+/** If-None-Match 的弱比较：两边都剥掉 W/ 与引号再比，`*` 也算命中 */
+export function ifNoneMatchHits(header: string | string[] | undefined, etag: string): boolean {
+    if (header === undefined) return false;
+    const value = Array.isArray(header) ? header.join(",") : header;
+    const strip = (v: string): string => v.trim().replace(/^W\//, "").replace(/^"|"$/g, "");
+    const wanted = strip(etag);
+    return value.split(",").some(v => v.trim() === "*" || strip(v) === wanted);
+}
+
+/** 把 Accept-Encoding 追加进 Vary（保留规则里可能已有的值） */
+function addVary(headers: Record<string, string>): void {
+    const existing = headers["Vary"];
+    headers["Vary"] = existing
+        ? `${existing}, Accept-Encoding`
+        : "Accept-Encoding";
+}
+
 /**
  * 未命中的路径是否「像静态资源」：最后一节带扩展名（.js / .css / .png / .woff2 …）就算。
  *
@@ -146,8 +238,15 @@ export async function serveStatic(
     rules: HeaderRule[],
     pathname: string,
     method: string,
-    res: ServerResponse
+    res: ServerResponse,
+    /**
+     * 请求头。不传就退回 `res.req.headers`（Node 在 ServerResponse 上留的反向引用）——
+     * 这样 `server/entry.ts` 那个既有的 5 参调用点不用改，压缩立刻生效；
+     * 想显式传的调用方（以及未来的单测）也可以直接给。
+     */
+    reqHeaders?: IncomingHttpHeaders
 ): Promise<boolean> {
+    const headersIn = reqHeaders ?? res.req?.headers;
     let decoded: string;
     try {
         decoded = decodeURIComponent(pathname);
@@ -190,11 +289,82 @@ export async function serveStatic(
     }
 
     const ext = path.extname(filePath).toLowerCase();
+    const contentType = MIME_TYPES[ext] ?? "application/octet-stream";
     const headers: Record<string, string> = {
-        "Content-Type": MIME_TYPES[ext] ?? "application/octet-stream",
+        "Content-Type": contentType,
         "Content-Length": String(info.size),
     };
     applyHeaderRules(rules, pathname, headers);
+
+    // 带 hash 的构建产物自己就有 immutable 强缓存，再给 ETag 是白搭；
+    // 没带 hash 的（index.html、/s/<token> 落到的那份）才靠 ETag 让条件请求成立。
+    const hashed = isHashedAsset(filePath);
+    const etag = hashed ? undefined : weakEtagFor(info.size, info.mtimeMs);
+    if (etag) headers["ETag"] = etag;
+
+    if (etag && ifNoneMatchHits(headersIn?.["if-none-match"], etag)) {
+        // 304：不带正文，也不带 Content-Length（否则严格些的客户端会等一个永远不来的 body）
+        const notModified = { ...headers };
+        delete notModified["Content-Length"];
+        delete notModified["Content-Encoding"];
+        res.writeHead(304, notModified);
+        res.end();
+        return true;
+    }
+
+    const canGzip =
+        acceptsGzip(headersIn) && isCompressible(contentType) && !headers["Content-Encoding"];
+
+    if (canGzip) {
+        addVary(headers);
+        headers["Content-Encoding"] = "gzip";
+    }
+
+    if (canGzip && hashed) {
+        // 内容不变 → 压一次缓存起来（用最高压缩比，反正只压一次）
+        const cacheKey = `${filePath}|${info.size}|${Math.round(info.mtimeMs)}`;
+        let body = gzipCache.get(cacheKey);
+        if (!body) {
+            try {
+                body = gzipSync(await readFile(filePath), { level: zlibConstants.Z_BEST_COMPRESSION });
+                rememberGzip(cacheKey, body);
+            } catch (error) {
+                console.error(`静态资源压缩失败，退回不压缩直出 ${filePath}:`, error);
+                body = undefined;
+            }
+        }
+        if (body) {
+            headers["Content-Length"] = String(body.length);
+            res.writeHead(200, headers);
+            if (method === "HEAD") res.end();
+            else res.end(body);
+            return true;
+        }
+        // 压失败就把压缩相关的头撤掉，走下面那条不压缩的路
+        delete headers["Content-Encoding"];
+        headers["Content-Length"] = String(info.size);
+        if (headers["Vary"] === "Accept-Encoding") delete headers["Vary"];
+    }
+
+    if (canGzip && !hashed) {
+        // 流式压：不缓冲整个文件，代价是拿不到压缩后的长度（交给 chunked）
+        delete headers["Content-Length"];
+        res.writeHead(200, headers);
+        if (method === "HEAD") {
+            res.end();
+            return true;
+        }
+        const source = createReadStream(filePath);
+        const gzip = createGzip();
+        const fail = (error: Error): void => {
+            console.error(`静态资源读取/压缩失败 ${filePath}:`, error);
+            res.destroy();
+        };
+        source.on("error", fail);
+        gzip.on("error", fail);
+        source.pipe(gzip).pipe(res);
+        return true;
+    }
 
     res.writeHead(200, headers);
     if (method === "HEAD") {

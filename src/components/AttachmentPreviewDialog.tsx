@@ -30,6 +30,7 @@ import {
     Tooltip,
     Typography,
     CircularProgress,
+    Skeleton,
 } from "@mui/material";
 import CloseIcon from "@mui/icons-material/Close";
 import ContentCopyIcon from "@mui/icons-material/ContentCopy";
@@ -101,6 +102,8 @@ export default function AttachmentPreviewDialog({
     /** 服务端当前那份内容：用来判断「有没有改动」，也用来「撤销」 */
     const [saved, setSaved] = useState("");
     const [imageUrl, setImageUrl] = useState<string | null>(null);
+    /** 图片解码完成没有：没完成就先显示骨架，容器高度不跟着变（F4） */
+    const [imageLoaded, setImageLoaded] = useState(false);
     const [editing, setEditing] = useState(false);
     const [busy, setBusy] = useState(false);
     const [renaming, setRenaming] = useState(false);
@@ -124,6 +127,7 @@ export default function AttachmentPreviewDialog({
         setText("");
         setSaved("");
         setImageUrl(null);
+        setImageLoaded(false);
         setEditing(false);
         setRenaming(false);
         setFilename(target?.filename ?? "");
@@ -409,12 +413,40 @@ export default function AttachmentPreviewDialog({
                             bgcolor: "var(--neutral-wash)",
                             borderRadius: 2,
                             p: 1,
+                            // ⚠️ F4（2026-10-25）：以前只给 <img> 一个 maxHeight，浏览器在
+                            // 图解码完成前不知道它多高，容器是 0 高；解码完成那一帧直接
+                            // 顶到 60vh，弹窗正文整体往下跳一下。现在容器自己先按 4:3
+                            // 占住位置（上限 60vh、保底 160px），图片在里面 contain ——
+                            // 加载中 / 加载后高度完全一致。
+                            position: "relative",
+                            aspectRatio: "4 / 3",
+                            maxHeight: "60vh",
+                            minHeight: 160,
+                            overflow: "hidden",
                         }}
                     >
+                        {/* 骨架底：占位阶段不是一片空白，看得出「这里有张图在加载」 */}
+                        {!imageLoaded && (
+                            <Skeleton
+                                variant='rounded'
+                                data-att-image-skeleton='1'
+                                sx={{ position: "absolute", inset: 0 }}
+                            />
+                        )}
                         <img
                             src={imageUrl}
                             alt={filename || "附件图片"}
-                            style={{ maxWidth: "100%", maxHeight: "60vh", objectFit: "contain" }}
+                            onLoad={() => setImageLoaded(true)}
+                            style={{
+                                width: "100%",
+                                height: "100%",
+                                maxWidth: "100%",
+                                maxHeight: "60vh",
+                                objectFit: "contain",
+                                // 解码完成才淡入，避免看到「从中间撑开」的那一下
+                                opacity: imageLoaded ? 1 : 0,
+                                transition: "opacity 120ms ease",
+                            }}
                         />
                     </Box>
                 )}

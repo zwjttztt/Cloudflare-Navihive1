@@ -14,7 +14,6 @@ import {
     DialogContent,
     DialogActions,
     Button,
-    IconButton,
     Typography,
     Box,
     Stack,
@@ -25,7 +24,7 @@ import {
     Chip,
     LinearProgress,
 } from "@mui/material";
-import CloseIcon from "@mui/icons-material/Close";
+import DialogCloseButton from "./DialogCloseButton";
 import { dialogActionsSx, dialogTitleSx } from "./dialogShell";
 
 interface BackupDialogProps {
@@ -538,9 +537,8 @@ export default function BackupDialog({
                 }}>
                     数据备份与恢复
                 </Typography>
-                <IconButton edge='end' color='inherit' onClick={onClose} aria-label='关闭' size='small'>
-                    <CloseIcon />
-                </IconButton>
+                {/* 换成全站统一的右上角「×」（位置 / Tooltip / aria-label="关闭" 统一） */}
+                <DialogCloseButton onClose={onClose} />
             </DialogTitle>
 
             <Divider />

@@ -22,7 +22,6 @@ import {
     Tooltip,
     Typography,
 } from "@mui/material";
-import CloseIcon from "@mui/icons-material/Close";
 import AutoFixHighIcon from "@mui/icons-material/AutoFixHigh";
 import AutoAwesomeIcon from "@mui/icons-material/AutoAwesome";
 import VisibilityIcon from "@mui/icons-material/VisibilityOutlined";
@@ -30,6 +29,7 @@ import VisibilityOffIcon from "@mui/icons-material/VisibilityOffOutlined";
 import AutorenewIcon from "@mui/icons-material/Autorenew";
 import type { Site } from "../API/types";
 import type { SiteAi } from "../context/AiContext";
+import DialogCloseButton from "./DialogCloseButton";
 import { SECRET_IGNORE_ATTRS, secretInputSx, secretInputType } from "../utils/secretInput";
 import { generatePassword } from "../utils/passwordGenerator";
 import { dialogActionsSx, dialogTitleSx } from "./dialogShell";
@@ -75,20 +75,15 @@ export default function AddSiteDialog(props: AddSiteDialogProps) {
             {/* 新增站点对话框：字段顺序与「网站设置」对齐
                 （名称 → 链接 → 图标 → 描述 → 备注 → 分隔线 → 登录凭据），宽度也统一成 600px */}
             <Dialog open={open} onClose={onClose} maxWidth='sm' fullWidth>
-                <DialogTitle sx={{ ...dialogTitleSx, justifyContent: "space-between" }}>
+                <DialogTitle sx={dialogTitleSx}>
                     <Typography component='div' sx={{
                         fontWeight: '600'
                     }}>
                         新增站点
                     </Typography>
-                    <IconButton
-                        color='inherit'
-                        onClick={onClose}
-                        aria-label='关闭'
-                        size='small'
-                    >
-                        <CloseIcon />
-                    </IconButton>
+                    {/* 换成全站统一的右上角「×」：位置（right/top 12）、Tooltip、
+                        aria-label="关闭" 与另外十几个弹窗一致 */}
+                    <DialogCloseButton onClose={onClose} />
                 </DialogTitle>
 
                 <Divider />

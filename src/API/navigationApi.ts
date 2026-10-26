@@ -54,6 +54,12 @@ import { idempotencyImpl } from "./methods/idempotency";
 import { aiImpl } from "./methods/ai";
 
 /**
+ * 「没开鉴权 + 一把密钥都没配 → 明文落库」这条告警每 isolate 只喊一次。
+ * API 实例是每请求 new 一个，不加这个闩会变成每请求一条日志。
+ */
+let guestPlaintextWarned = false;
+
+/**
  * 各域的方法签名在这里合并回类上（interface 与 class 同名会声明合并）。
  * 顺序无关，列出来是为了让 IDE 能跳到对应文件。
  */
@@ -187,14 +193,54 @@ export class NavigationAPI {
             this.secret = "";
             this.secretConfigured = false;
         } else {
+            // AUTH_ENABLED=false：站点本来就对所有人开放，这里只用它签发一枚
+            // guest 令牌维持会话（generateToken 必须要有一把 HMAC 密钥）。
+            // ⚠️ 这串**只用于签发 guest 令牌**，绝不再当数据加密密钥用 —— 见下面。
             this.secret = "默认密钥，建议在生产环境中设置";
             this.secretConfigured = false;
         }
         // 数据加密：DATA_ENCRYPTION_KEY 优先，缺失时整环只有 AUTH_SECRET 一把（= 旧行为）
+        //
+        // 「不落密文」只在一个场景打开：没开鉴权 **且** 一把密钥都没配。
+        // 那种部署里密钥只能是上面那串公开常量（它写在仓库里，谁都能读到），
+        // 拿它「加密」站点密码只是把明文换个写法 —— 库被拖走照样一算就出来，
+        // 反而让人以为数据在保护之下。明文至少是诚实的：
+        //   · 存进 sites.password 的就是明文（不带 enc$ 前缀），
+        //     decryptSecretDeep 认不出前缀就原样返回，读写两侧都不用改；
+        //   · 之后配上 DATA_ENCRYPTION_KEY（或开鉴权配 AUTH_SECRET）就能切回真加密，
+        //     老数据照样解得开（明文按明文读），不用停机迁移。
+        // 为什么不选另一种（启动时强制要求密钥）：AUTH_ENABLED=false 是文档里
+        // 写明的部署形态（本地 demo / 纯静态用法），为它把站点起不来是拿可用性换
+        // 一个本来就不存在的安全边界 —— 那种模式下谁能写库，谁就能读库。
+        //
+        // ⚠️ 但**默认绝不能自动转明文**（2026-10-25 修正）：自动降级意味着
+        // 「忘了配密钥」这个错误会静默通过，而明文会跟着备份文件一起被导出、
+        // 上传到网盘 —— 那比「弱密钥加密」更糟（后者至少防住了拖库即读）。
+        // 所以明文必须显式 opt-in：只有明确设置 ALLOW_PLAINTEXT_SECRETS=1 才走。
+        // 「未启用鉴权 + 没配密钥」这种默认形态仍然加密，只是启动时喊一句警告。
+        const plaintextSecrets = env.ALLOW_PLAINTEXT_SECRETS === "1";
         this.keyring = createKeyring({
             dataKey: env.DATA_ENCRYPTION_KEY,
             legacySecret: this.secret,
+            plaintext: plaintextSecrets,
         });
+        if (!plaintextSecrets && !this.authEnabled && !this.secretConfigured && !env.DATA_ENCRYPTION_KEY && !guestPlaintextWarned) {
+            guestPlaintextWarned = true;
+            console.warn(
+                "⚠️ 未启用鉴权且未配置 AUTH_SECRET / DATA_ENCRYPTION_KEY：" +
+                    "站点密码仍会加密落库，但用的是仓库里公开的常量（防拖库、不防知情者）。" +
+                    "需要真加密请配置 DATA_ENCRYPTION_KEY（openssl rand -hex 32）。"
+            );
+        }
+        if (plaintextSecrets && !guestPlaintextWarned) {
+            // API 实例是每请求 new 一个，只在这里喊一次（每 isolate 一条）
+            guestPlaintextWarned = true;
+            console.warn(
+                "⚠️ 未启用鉴权且未配置 AUTH_SECRET / DATA_ENCRYPTION_KEY：" +
+                    "站点密码将按明文落库（不再用仓库里公开的常量做假加密）。" +
+                    "需要静态加密请配置 DATA_ENCRYPTION_KEY（openssl rand -hex 32）。"
+            );
+        }
         // JWT：JWT_SECRET 优先，回退 AUTH_SECRET；JWT_SECRET_OLD 只在验签时兜底
         this.jwtSecret = env.JWT_SECRET || this.secret;
         const oldKey = env.JWT_SECRET_OLD || "";

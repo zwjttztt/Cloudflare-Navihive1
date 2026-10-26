@@ -25,6 +25,9 @@ import {
     verifyJwt,
     verifyJwtAny,
 } from "../src/API/crypto";
+// 2026-10-25：令牌的 exp 现在是**必需**声明（缺 exp 一律判无效，
+// 否则等于签发永不过期的令牌）。这里给「应该验过」的用例补一个未来时间戳。
+const FUTURE_EXP = Math.floor(Date.now() / 1000) + 3600;
 
 const OLD_SECRET = "legacy-auth-secret";
 const NEW_SECRET = "fresh-data-encryption-key";
@@ -157,13 +160,13 @@ test("密文声明的 keyId 在环里不存在时返回空串，不抛异常", a
 
 // ================= JWT 拆分与平滑轮换 =================
 test("verifyJwtAny：新密钥签发的令牌正常验过", async () => {
-    const token = await signJwt({ username: "admin", tv: 1 }, "jwt-new");
+    const token = await signJwt({ username: "admin", tv: 1, exp: FUTURE_EXP }, "jwt-new");
     const r = await verifyJwtAny(token, ["jwt-new", "jwt-old"], { tokenVersion: 1 });
     assert.equal(r.valid, true);
 });
 
 test("verifyJwtAny：旧密钥签发的令牌在过渡期仍能验过（平滑轮换）", async () => {
-    const token = await signJwt({ username: "admin", tv: 2 }, "jwt-old");
+    const token = await signJwt({ username: "admin", tv: 2, exp: FUTURE_EXP }, "jwt-old");
     const r = await verifyJwtAny(token, ["jwt-new", "jwt-old"], { tokenVersion: 2 });
     assert.equal(r.valid, true, "过渡期旧令牌不该当场掉线");
     // 过渡结束（删掉旧值）后必须验不过 —— 旧密钥不再有放行能力
@@ -178,7 +181,7 @@ test("verifyJwtAny：不在名单里的密钥一律拒绝；空名单无效", as
 });
 
 test("verifyJwt 仍只认单把密钥（拆分没有削弱原来的严格性）", async () => {
-    const token = await signJwt({ username: "admin" }, OLD_SECRET);
+    const token = await signJwt({ username: "admin", exp: FUTURE_EXP }, OLD_SECRET);
     assert.equal((await verifyJwt(token, NEW_SECRET, {})).valid, false);
     assert.equal((await verifyJwt(token, OLD_SECRET, {})).valid, true);
 });

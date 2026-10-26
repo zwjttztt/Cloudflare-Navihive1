@@ -195,13 +195,112 @@ export function normalizeIpLiteral(hostname: string): string {
     return hostname;
 }
 
+/** 两个 16 位组拼回点分十进制（用于嵌在 IPv6 里的 IPv4） */
+function v4FromWords(hi: number, lo: number): string {
+    return `${(hi >> 8) & 255}.${hi & 255}.${(lo >> 8) & 255}.${lo & 255}`;
+}
+
+/**
+ * 把 8 个 16 位组压成 RFC 5952 的标准写法：小写、去前导零、最长的一段零缩成 `::`。
+ */
+function compressIpv6(words: number[]): string {
+    let bestStart = -1;
+    let bestLen = 0;
+    let start = -1;
+    for (let i = 0; i <= words.length; i += 1) {
+        const zero = i < words.length && words[i] === 0;
+        if (zero) {
+            if (start < 0) start = i;
+        } else if (start >= 0) {
+            if (i - start > bestLen) {
+                bestLen = i - start;
+                bestStart = start;
+            }
+            start = -1;
+        }
+    }
+    const hex = words.map((w) => w.toString(16));
+    if (bestLen < 2) return hex.join(":");
+    return `${hex.slice(0, bestStart).join(":")}::${hex.slice(bestStart + bestLen).join(":")}`;
+}
+
+/**
+ * IPv6 字面量 → 标准形式。不是合法 IPv6 返回 null（调用方一律按「解析失败」处理）。
+ *
+ * 展开这一步是必须的：下面的黑名单正则只认 `::1` 这种压缩过的写法，而
+ * `0:0:0:0:0:0:0:1`、`0000:0000:0000:0000:0000:0000:0000:0001` 与它是同一个地址 ——
+ * 不展开的话，黑名单就成了「只认一种拼写」的筛子，换个写法就漏过去。
+ */
+function canonicalizeIpv6(input: string): string | null {
+    const h = input.toLowerCase();
+    if (!/^[0-9a-f:.]+$/.test(h)) return null;
+    const halves = h.split("::");
+    if (halves.length > 2) return null;
+    const left = halves[0] ? halves[0].split(":") : [];
+    const right = halves.length > 1 && halves[1] ? halves[1].split(":") : [];
+
+    // 末尾那个 16 位组可能是 IPv4（::ffff:127.0.0.1 这种），折算成两个 16 位组
+    if (right.length > 0 && right[right.length - 1].includes(".")) {
+        const v4 = right.pop() as string;
+        const octets = v4.split(".");
+        if (octets.length !== 4) return null;
+        const nums: number[] = [];
+        for (const octet of octets) {
+            if (!/^\d{1,3}$/.test(octet)) return null;
+            const n = Number(octet);
+            if (n > 255) return null;
+            nums.push(n);
+        }
+        right.push((((nums[0] << 8) | nums[1]) & 0xffff).toString(16));
+        right.push((((nums[2] << 8) | nums[3]) & 0xffff).toString(16));
+    }
+
+    const words: number[] = [];
+    for (const group of [...left, ...right]) {
+        if (!/^[0-9a-f]{1,4}$/.test(group)) return null;
+        words.push(parseInt(group, 16));
+    }
+    const missing = 8 - words.length;
+    if (missing < 0) return null;
+    // 没有 "::" 时必须正好 8 组（否则就不是合法 IPv6）
+    if (halves.length === 1 && missing !== 0) return null;
+
+    const all =
+        halves.length === 1
+            ? words
+            : [
+                  ...words.slice(0, left.length),
+                  ...new Array<number>(missing).fill(0),
+                  ...words.slice(left.length),
+              ];
+
+    // 嵌着 IPv4 的两种前缀，还原成 `::ffff:a.b.c.d` 让下面现成的 IPv4 正则照旧命中：
+    //   · IPv4-mapped ::ffff:0:0/96（常见写法写成 ::ffff:7f00:1 也能认出来）
+    //   · NAT64 64:ff9b::/96
+    const isMapped =
+        all[0] === 0 && all[1] === 0 && all[2] === 0 && all[3] === 0 && all[4] === 0 && all[5] === 0xffff;
+    const isNat64 =
+        all[0] === 0x64 && all[1] === 0xff9b && all[2] === 0 && all[3] === 0 && all[4] === 0 && all[5] === 0;
+    if (isMapped || isNat64) return `::ffff:${v4FromWords(all[6], all[7])}`;
+    return compressIpv6(all);
+}
+
 export function isBlockedHost(hostname: string): boolean {
     const host = hostname.toLowerCase();
     // 主机名本身就是 IP 字面量时，括号包裹的 IPv6 形如 `[::1]`，先剥括号
     const bare = host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
     // 归一化 IP 字面量（十进制 / 八进制 / 十六进制 / 省略写法）后再判黑名单，
     // 否则 2130706433 / 0x7f000001 / 0177.0.0.1 这类能绕过内网拦截
-    const h = normalizeIpLiteral(bare);
+    let h = normalizeIpLiteral(bare);
+    // IPv6 同理：`0:0:0:0:0:0:0:1`、`::ffff:7f00:1`、`64:ff9b::7f00:1` 与
+    // `::1` / `::ffff:127.0.0.1` 是同一个地址，判定前先展开成标准形式并还原嵌着的 IPv4。
+    // ⚠️ 展开不出来一律**视为私网**（fail-closed）：黑名单是安全边界，
+    // 「看不懂就放行」等于把边界交给输入方决定。
+    if (h.includes(":")) {
+        const canon = canonicalizeIpv6(h);
+        if (!canon) return true;
+        h = canon;
+    }
     return (
         h === "localhost" ||
         h === "::1" ||

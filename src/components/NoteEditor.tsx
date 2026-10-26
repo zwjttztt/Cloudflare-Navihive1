@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useImperativeHandle, useState, type Ref } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useImperativeHandle, useState, type Ref } from "react";
 import { EditorState, StateEffect, StateField, Transaction } from "@codemirror/state";
 import { EditorView, keymap, lineNumbers, highlightActiveLine, placeholder, Decoration, type DecorationSet } from "@codemirror/view";
 import { markdown } from "@codemirror/lang-markdown";
@@ -334,6 +334,19 @@ export interface NoteEditorProps {
     onOpenAttachmentLink?: (id: string) => void;
 }
 
+/**
+ * 正文回传给上层的合并窗口（毫秒）。见组件里 `emit` 那段注释 ——
+ * 这是「手感」与「不丢字」的折中：短于一次按键间隔没意义，长于人的停顿
+ * 就会让「打完字立刻切走」这一段悬着，所以配了失焦 / 切后台 / 卸载 / ⌘S 四个 flush。
+ */
+const CHANGE_COALESCE_MS = 150;
+
+/**
+ * 走「合并窗口」的用户事件：只有键入与退格。
+ * 粘贴（input.paste）刻意不在其中 —— 它是一次性大块变更，延迟只会让人以为没生效。
+ */
+const TYPING_USER_EVENTS = ["input.type", "delete.backward", "delete.forward"] as const;
+
 export default function NoteEditor({
     value,
     onChange,
@@ -356,6 +369,67 @@ export default function NoteEditor({
     const host = useRef<HTMLDivElement>(null);
     const viewRef = useRef<EditorView | null>(null);
     const changeRef = useRef(onChange);
+    /**
+     * 正文回传的**合并窗口**（2026-10-25）。
+     *
+     * 原来 `updateListener` 里每次 docChanged 都 `doc.toString()` —— 长笔记上一次
+     * 就是几万字符的全量拷贝，紧接着往上抛一次 `setDraft`，面板树跟着整棵重渲染。
+     * 打字时每敲一个字都来一遍，这就是「发涩」的直接来源。
+     * 现在合并成「150ms 内只留最后一次全文，静下来再统一上抛一次」。
+     *
+     * ⚠️ 合并**必须**配 flush，否则就是丢用户输入。四个时机一律立刻落地：
+     *   1. 编辑器失焦（打完字点列表 / 切面板）；
+     *   2. 页面切到后台（visibilitychange → hidden）；
+     *   3. 卸载 —— 切笔记时组件 key 变了就是卸载，最后那 150ms 靠它补上；
+     *   4. ⌘/Ctrl+S 手动保存：监听挂在 window 的**捕获**阶段，保证跑在自动保存
+     *      那个冒泡监听**之前**，否则存下去的是合并窗口里还没抛上去的旧草稿。
+     *
+     * ⚠️ 依赖数组是空的，且这是诚实的：push / flush 只读 ref（`changeRef`、
+     * `pendingRef`、`timerRef`），不读任何会变的 props/state —— 没有陈旧闭包。
+     */
+    const emit = useMemo(() => {
+        const pendingRef: { text: string | null } = { text: null };
+        const timerRef: { id: ReturnType<typeof setTimeout> | null } = { id: null };
+        const flush = () => {
+            if (timerRef.id !== null) {
+                clearTimeout(timerRef.id);
+                timerRef.id = null;
+            }
+            const text = pendingRef.text;
+            if (text === null) return;
+            pendingRef.text = null;
+            changeRef.current(text);
+        };
+        return {
+            push(text: string) {
+                pendingRef.text = text;
+                if (timerRef.id !== null) return;
+                timerRef.id = setTimeout(() => {
+                    timerRef.id = null;
+                    const t = pendingRef.text;
+                    pendingRef.text = null;
+                    if (t !== null) changeRef.current(t);
+                }, CHANGE_COALESCE_MS);
+            },
+            /**
+             * 立刻上抛（不进合并窗口）。
+             *
+             * 粘贴、上传完成替换占位符、程序化 dispatch 都属于**一次性大块变更**：
+             * 它们之后通常没有下一笔，等 150ms 只会让用户觉得"粘完了没反应"，
+             * 也让"粘贴后正文应立刻是 X"这类断言失去意义。只有连续键入才需要合并。
+             */
+            pushImmediate(text: string) {
+                if (timerRef.id !== null) {
+                    clearTimeout(timerRef.id);
+                    timerRef.id = null;
+                }
+                pendingRef.text = null;
+                changeRef.current(text);
+            },
+            flush,
+        };
+    }, []);
+
     // 补全数据源走 ref：笔记列表每次增删改都会换一个新函数，
     // 进 extensions 依赖的话，随便编辑一条笔记都要重建编辑器（撤销历史全丢）。
     const completionRef = useRef(completionSources);
@@ -562,7 +636,16 @@ export default function NoteEditor({
                     }),
                     EditorView.updateListener.of(update => {
                         if (update.docChanged) {
-                            changeRef.current(update.state.doc.toString());
+                            // ⚠️ 只有**连续键入**才走 150ms 合并窗口（见 emit.push）：
+                            // 一个字一个字敲是唯一「高频且可以延迟一点点」的来源。
+                            // 粘贴（input.paste）、上传替换、程序化 dispatch 都走 pushImmediate，
+                            // 否则粘完要等 150ms 才更新字数 / 大纲 / 引用计数。
+                            const typing = update.transactions.some(tr =>
+                                TYPING_USER_EVENTS.some(ev => tr.isUserEvent(ev))
+                            );
+                            const text = update.state.doc.toString();
+                            if (typing) emit.push(text);
+                            else emit.pushImmediate(text);
                             // 正文变了 → 专注模式的「当前段落」可能换了一段，重算淡化
                             if (focusRef.current) focusRebuildRef.current?.();
                         }
@@ -578,8 +661,16 @@ export default function NoteEditor({
             const max = el.scrollHeight - el.clientHeight;
             scrollRef.current?.(max > 0 ? el.scrollTop / max : 0);
         };
+        // 失焦立刻落地合并窗口里的内容（打完字点列表 / 切面板不该等 150ms）。
+        // ⚠️ 挂 contentDOM 而不是外层 div：blur 不冒泡。
+        const onBlur = () => emit.flush();
+        view.contentDOM.addEventListener("blur", onBlur);
         view.scrollDOM.addEventListener("scroll", onScroll);
         return () => {
+            // ⚠️ 卸载前把合并窗口里的内容吐出去 —— 切笔记时最后那 150ms 靠这一下，
+            // 否则用户刚敲的字会凭空消失（组件 key 变了就是卸载，没有第二次机会）。
+            emit.flush();
+            view.contentDOM.removeEventListener("blur", onBlur);
             view.scrollDOM.removeEventListener("scroll", onScroll);
             view.destroy();
             viewRef.current = null;
@@ -587,6 +678,29 @@ export default function NoteEditor({
         // 组件由笔记 id + 行号/拼写/缩进开关做 key；输入期间不重建编辑器或丢撤销历史。
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [showLineNumbers, spellcheck, indentWidth]);
+
+    /**
+     * 合并窗口的两个「全局」flush 时机（失焦和卸载已在上面的 effect 里处理）。
+     *
+     * ⚠️ ⌘/Ctrl+S 这一条挂在 window 的**捕获**阶段：自动保存那个手动保存监听
+     * （useNoteAutoSave）是冒泡阶段注册的，捕获先跑 —— 否则它读到的 draft 还是
+     * 合并窗口里没抛上去的旧值，用户按了 ⌘S 却存的是上一版。
+     */
+    useEffect(() => {
+        const onVisibility = () => {
+            if (document.visibilityState === "hidden") emit.flush();
+        };
+        const onKeyCapture = (e: KeyboardEvent) => {
+            if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") emit.flush();
+        };
+        window.addEventListener("keydown", onKeyCapture, true);
+        document.addEventListener("visibilitychange", onVisibility);
+        return () => {
+            window.removeEventListener("keydown", onKeyCapture, true);
+            document.removeEventListener("visibilitychange", onVisibility);
+        };
+    }, [emit]);
+
     /**
      * 专注模式：把当前段落之外的行淡化。
      * 实现成 ViewPlugin（每次 doc/selection 变化重算装饰），另有一个 effect 在开关

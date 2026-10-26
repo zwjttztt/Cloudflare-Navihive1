@@ -105,8 +105,14 @@ test("弹窗纸面圆角不许写死（会脱离「圆角风格」设置）", ()
         const tags = src.matchAll(/<Dialog[\s\S]{0,1200}?>/g);
         for (const m of tags) {
             if (!/paper:\s*\{/.test(m[0])) continue;
-            const lit = m[0].match(/borderRadius:\s*(\d+(?:\.\d+)?|"\d+(?:\.\d+)?px")/);
-            if (lit) offenders.push(`${path.relative(ROOT, file)} → ${lit[0]}`);
+            // ⚠️ 2026-10-25 补：只匹配「数字 / px 字面量」漏掉了三元写法 ——
+            // NoteGraphDialog 曾用 `borderRadius: isNarrow ? 0 : 3` 悄悄绕过这条守卫，
+            // 于是它在切圆角档时纹丝不动。现在只要 paper 里出现 borderRadius 且
+            // 值里没有 var()，一律算写死。
+            const lit = m[0].match(/borderRadius:\s*([^,}\n]+)/);
+            if (lit && !/var\(/.test(lit[1])) {
+                offenders.push(`${path.relative(ROOT, file)} → borderRadius: ${lit[1].trim()}`);
+            }
         }
     }
     assert.deepEqual(offenders, [], "弹窗圆角由 theme 的 --card-radius 统一产出，单个弹窗别再覆盖");

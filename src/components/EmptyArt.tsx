@@ -167,7 +167,12 @@ export function EmptyState({
                 {title}
             </Box>
             {description && (
-                <Box sx={{ mt: 0.75, maxWidth: 290, fontSize: 12, lineHeight: 1.7, color: "text.disabled" }}>
+                // ⚠️ V3（2026-10-25）：说明文字原来是 text.disabled（亮色下约 2.85:1，
+                // 不达 WCAG AA 的 4.5:1）。空态这一句恰恰是「用户什么都没找到时唯一
+                // 能读到的话」，最不该看不清 —— 提到 text.secondary（≈4.6:1）。
+                //（同文件里另一处 text.disabled 是插画 SVG 的 currentColor，
+                //  它是装饰图形不是文字，按 WCAG 1.4.11 的 3:1 判，保持原样。）
+                <Box sx={{ mt: 0.75, maxWidth: 290, fontSize: 12, lineHeight: 1.7, color: "text.secondary" }}>
                     {description}
                 </Box>
             )}

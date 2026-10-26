@@ -10,7 +10,6 @@ import {
     DialogContent,
     DialogActions,
     Button,
-    IconButton,
     Typography,
     Table,
     TableBody,
@@ -20,8 +19,8 @@ import {
     useMediaQuery,
     useTheme,
 } from "@mui/material";
-import CloseIcon from "@mui/icons-material/Close";
 import InstallDesktopIcon from "@mui/icons-material/InstallDesktop";
+import DialogCloseButton from "./DialogCloseButton";
 import { dialogActionsSx, dialogTitleSx } from "./dialogShell";
 
 interface Shortcut {
@@ -78,9 +77,8 @@ export default function ShortcutsDialog({ open, onClose, canInstall = false, onI
                 }}>
                     帮助
                 </Typography>
-                <IconButton color='inherit' onClick={onClose} aria-label='关闭' size='small'>
-                    <CloseIcon />
-                </IconButton>
+                {/* 换成全站统一的右上角「×」（位置 / Tooltip / aria-label="关闭" 统一） */}
+                <DialogCloseButton onClose={onClose} />
             </DialogTitle>
 
             <DialogContent sx={{ pt: "12px !important", pb: 1, px: 3 }}>

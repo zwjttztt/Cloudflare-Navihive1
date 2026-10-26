@@ -18,6 +18,7 @@
 // ⚠️ 别在 clientMethods/*.ts 里 import 本文件的值（会成环），只 import 类型。
 
 import { DEFAULT_TOKEN_TTL } from "./http";
+import { IDEMPOTENCY_HEADER } from "./httpConstants";
 import { NoteConflictError } from "../utils/noteConflict";
 import { API_ERROR_CODES, ApiError, parseApiError } from "./apiError";
 import {
@@ -112,7 +113,7 @@ export class NavigationClient implements ClientThis {
 
         // 幂等 ID 只在重放时挂上，发完立刻清掉（options 里显式带头的以显式为准）
         if (this.idempotencyKey) {
-            headers["Idempotency-Key"] = this.idempotencyKey;
+            headers[IDEMPOTENCY_HEADER] = this.idempotencyKey;
             this.idempotencyKey = null;
         }
 

@@ -2,6 +2,7 @@
 
 import type { NavigationAPI } from "../src/API/navigationApi";
 import { ApiError, errorResponse } from "./lib/apiError";
+import { REAL_IP_HEADER } from "./httpUtils";
 
 // ============ 登录失败限速 ============
 // 连续输错会越等越久，避免密码被无限次猜。
@@ -44,6 +45,12 @@ type GuardStore = Record<string, GuardState>;
  * 才把 `NAVIHIVE_TRUST_XFF=1` 打开、显式允许读 XFF 首段。
  * 不信任且又拿不到真实 IP 时所有来源共用一个 `unknown` 桶 —— 最多只是限速粒度变粗，
  * 不会失守。
+ *
+ * ⚠️ 自托管（Node 直连、前面没有 Cloudflare）时前两条**都是客户端自己填的**：
+ * 请求头里塞一个 `CF-Connecting-IP: 随机值`，每猜一次换一个就能无限换桶，
+ * 登录爆破限速等于没有。所以最后一档读 `REAL_IP_HEADER`：那是 server/entry.ts
+ * 从 socket 对端地址写进去的，且一律覆盖客户端带过来的值，伪造不了。
+ * Workers 部署下 CF-Connecting-IP 永远命中第一档，这条链路不受影响。
  */
 export function clientBucket(request: Request, trustXForwardedFor = false): string {
     const cf = request.headers.get("CF-Connecting-IP");
@@ -52,6 +59,8 @@ export function clientBucket(request: Request, trustXForwardedFor = false): stri
         const xff = (request.headers.get("X-Forwarded-For") || "").split(",")[0].trim();
         if (xff) return xff.slice(0, 64);
     }
+    const real = request.headers.get(REAL_IP_HEADER);
+    if (real) return real.trim().slice(0, 64);
     return "unknown";
 }
 
@@ -748,4 +757,68 @@ export async function bumpShareGuardFailure(
 /** 口令对了：清零，别让之前的手滑一直累积 */
 export async function clearShareGuard(api: NavigationAPI, bucket: string): Promise<void> {
     await writeShareGuard(api, { count: 0, until: 0 }, bucket);
+}
+
+// ============ 校验当前密码：改密 / 注销前的那道身份复核 ============
+//
+// 「拿着会话改密码」这条链路上真正的门槛是**当前密码**那一问：拿到会话（或设备没锁屏）
+// 的人想把主人锁在门外，必须先过这一问，而它此前一条独立限速都没有 ——
+// 登录那把锁管的是「还没拿到会话的人」，管不到这里。
+//
+// 分桶刻意按**账号**而不是来源 IP：攻击者是从会话里来的，换 IP / 换 UA 成本为零，
+// 按 IP 分桶等于没锁；按账号则无论从哪台机器来都记在同一个人身上。
+//
+// ⚠️ 与分享口令那把锁相反：**连正确的也计数**。猜对同样要跑一次 PBKDF2
+// （十万次迭代，是全站最贵的一档 CPU），只记失败的话「1 次对 + 4 次错」循环
+// 就能一直把算力吃满。代价是 10 分钟内连改 6 次密码会被锁 —— 那本来也不是正常用法。
+export const VERIFY_PW_GUARD_KEY = "auth.verifyPasswordGuard";
+export const VERIFY_PW_FREE_ATTEMPTS = 5;
+export const VERIFY_PW_BASE_LOCK_MS = 10 * 60_000; // 第 6 次起锁 10 分钟
+export const VERIFY_PW_MAX_LOCK_MS = 10 * 60_000; // 封顶也是 10 分钟：不叠指数退避，10 分钟足够
+export const VERIFY_PW_COUNT_RESET_MS = 10 * 60_000; // 10 分钟没动静就重新数
+
+/** 按账号分桶（拿不到账号时归到 anon，与写操作锁的口径一致） */
+export function credentialBucket(uid: number | null): string {
+    return `u${uid ?? "anon"}`;
+}
+
+export interface GuardDecision {
+    /** true = 已被限流，这次不该再往下走 */
+    limited: boolean;
+    /** 还要等多少秒才解锁（未限流时是 0），给调用方写提示语 */
+    retryAfter: number;
+}
+
+/**
+ * 检查并登记一次「校验当前密码」。
+ *
+ * 走的是登录锁那套 D1 CAS 计数（bumpGuard），不是内存计数器：
+ * Workers 多实例各有各的内存，内存计数在冷启动 / 换实例时归零，
+ * 对着它猜密码等于限速形同虚设（rateLimit.ts 那个内存滑动窗口是为
+ * 「高频低价值」的公开端点准备的，这里不能用）。
+ *
+ * 存储不可用时（bumpGuard 返回 null）**放行**：真正校验密码那一步自己会失败，
+ * 不该在这里把「密码不对」的 401 盖成 429。
+ */
+export async function enforceCredentialGuard(
+    api: NavigationAPI,
+    bucket: string
+): Promise<GuardDecision> {
+    const bumped = await bumpGuard(api, VERIFY_PW_GUARD_KEY, bucket, prev => {
+        const now = Date.now();
+        // 还在锁定期就只续「见到过」，不动计数 —— 否则锁会越滚越长
+        if (prev.until > now) return { ...prev, seen: now };
+        const count = nextDecayedCount(prev, VERIFY_PW_COUNT_RESET_MS, now);
+        const lockMs = computeLockAfterFailure(
+            count,
+            VERIFY_PW_FREE_ATTEMPTS,
+            VERIFY_PW_BASE_LOCK_MS,
+            VERIFY_PW_MAX_LOCK_MS
+        );
+        return { count, until: lockMs > 0 ? now + lockMs : 0, seen: now };
+    });
+    if (!bumped) return { limited: false, retryAfter: 0 };
+    const now = Date.now();
+    if (bumped.until <= now) return { limited: false, retryAfter: 0 };
+    return { limited: true, retryAfter: Math.max(1, Math.ceil((bumped.until - now) / 1000)) };
 }

@@ -41,10 +41,15 @@ export const dialogPaperSx: SxProps<Theme> = {
  * 收在这里共用。
  */
 export const commandPalettePaperSx: SxProps<Theme> = {
-    borderRadius: "18px",
+    // 比普通弹窗再小一档（0.82 —— soft 22 → 18，与改造前的 18px 一致；
+    // standard 14 → 11.5，sharp 6 → 4.9）。写死 18px 时切到「直角」档会出现
+    // 「弹窗是方的、里面的搜索框还是圆的」。
+    borderRadius: "calc(var(--card-radius) * 0.82)",
     overflow: "hidden",
     bgcolor: "var(--glass-bg-hover)",
     border: "1px solid var(--glass-border)",
+    // 模糊值保留写死：命令面板刻意比普通弹窗更模糊（浮在内容上方读完即走），
+    // 它跟圆角档位无关，不需要跟着 --card-radius 变。
     backdropFilter: "blur(18px) saturate(1.5)",
     WebkitBackdropFilter: "blur(18px) saturate(1.5)",
     mt: "8vh",

@@ -18,6 +18,22 @@ const APP_SHELL = [
 ];
 const PRECACHE_MANIFEST = "/precache-manifest.json";
 
+/**
+ * 不进预缓存的「核心壳」条目：katex 的 CSS（约 30 KB）。
+ *
+ * vite 的清单插件把**所有** .css 都算进 core（CSS 没有 chunk 图可走），于是
+ * 只有渲染数学公式时才用得上的 katex CSS 也被 install 时预下载了 ——
+ * 不读数学内容的用户每次装新版都要为它付一次流量。
+ *
+ * 它改成跟 katex 的 JS 块一样「用到时才缓存」：MathNode 里的 `import("katex")`
+ * 触发时会顺带把这条 CSS 以 <link> 插进来，走下面的 fetch 处理
+ * （destination === "style"）→ 缓存 miss → 取回来顺手存进 Cache Storage，
+ * 之后再打开任何公式都是本地命中。
+ *
+ * ⚠️ 只过滤 CSS，别把 katex 的 JS 块也拦了：那个块本来就在 lazy 里，不归这条管。
+ */
+const EXCLUDED_FROM_PRECACHE = /\/assets\/katex-[^/]*\.css$/i;
+
 // ---- 缓存治理上限 ----
 /** 缓存里最多留多少个条目：长期 hash 资源 + 跨域图标会一直堆，不设上限就是无底洞 */
 const MAX_ENTRIES = 300;
@@ -164,7 +180,11 @@ self.addEventListener("install", event => {
                 Promise.all([caches.open(name), readManifest()]).then(([cache, manifest]) => {
                     const { core } = normalizeManifest(manifest);
                     // 只预缓存核心壳；懒加载块等用户真的点开那个功能再缓存
-                    const targets = [...APP_SHELL, ...core];
+                    // （katex CSS 例外地在这里被剔除，见 EXCLUDED_FROM_PRECACHE）
+                    const targets = [
+                        ...APP_SHELL,
+                        ...core.filter(url => !EXCLUDED_FROM_PRECACHE.test(url)),
+                    ];
                     return cache
                         .addAll(targets)
                         .catch(() => {

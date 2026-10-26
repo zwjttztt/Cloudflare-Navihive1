@@ -573,11 +573,11 @@ export default function NotesPage({
     // 「即时渲染」存进设置（跨会话保留，两栏共用同一个值）；标题行那颗开关只改设置。
     // ⚠️ 必须声明在 uiSettings 之后 —— 它是从设置派生出来的。
     const liveRender = uiSettings.liveRender;
-    const setLiveRender = (updater: boolean | ((v: boolean) => boolean)) =>
+    const setLiveRender = useCallback((updater: boolean | ((v: boolean) => boolean)) =>
         setUiSettings(cur => ({
             ...cur,
             liveRender: typeof updater === "function" ? updater(cur.liveRender) : updater,
-        }));
+        })), [setUiSettings]);
     // 侧边栏的「即时渲染」独立于主栏（2026-10-18 用户报「在侧边打开时两个
     // 笔记的即时渲染不要同步打开和关闭」）：初值跟主设置，之后各管各 ——
     // 主栏那颗开关仍写全局设置（设置面板可改、跨会话保留），侧边这颗只动
@@ -1605,9 +1605,14 @@ export default function NotesPage({
     // 整库导出（JSON / ZIP 含附件）2026-10-23 搬到 notes/exportNotes.ts：
     // 拼 payload、取附件、打 zip、触发下载，全程不碰 React 状态。
     // 这里只保留「把当前数据递进去」这层壳。
-    const exportDeps = { notes, folderTags, uploadApi, onNotify };
-    const exportAllData = () => exportAllNotesJson(exportDeps);
-    const exportAllZip = async () => exportAllNotesZip(exportDeps);
+    const exportAllData = useCallback(
+        () => exportAllNotesJson({ notes, folderTags, uploadApi, onNotify }),
+        [notes, folderTags, uploadApi, onNotify]
+    );
+    const exportAllZip = useCallback(
+        async () => exportAllNotesZip({ notes, folderTags, uploadApi, onNotify }),
+        [notes, folderTags, uploadApi, onNotify]
+    );
 
     /**
      * 导入文件：JSON（老格式）或 zip（含附件）。
@@ -1915,10 +1920,14 @@ export default function NotesPage({
         try {
             return (await onUpdate(active.id, { title: draft.title, content: draft.content })) !== false;
         } catch {
-            onNotify?.("保存失败，已保留当前草稿，请重试", "error");
+            // ⚠️ 这里**不再**自己弹提示（2026-10-25）：保存失败的通知统一交给
+            // 下面的 `onSaveError`。两处都弹的话，一次失败会连着冒 3~4 条
+            // 一模一样的通知（这一条 + useNotes 内部的「保存笔记失败」+
+            // 自动保存放弃时的那条），用户只会觉得记事本在刷屏。
+            // 返回 false 的语义不变：自动保存那边照旧记一次失败、照旧重试。
             return false;
         }
-    }, [active, draft, onUpdate, onNotify]);
+    }, [active, draft, onUpdate]);
 
     // ============ 自动保存（2026-10-22 抽到 notes/useNoteAutoSave）============
     // ⚠️ dirty 与 save 都不搬进去：dirty 还被「关闭前的未保存确认」用，
@@ -1931,6 +1940,10 @@ export default function NotesPage({
         noteId: active?.id,
         autosaveMs,
         save,
+        // 自动保存「连续失败到上限、已停止重试」时**报一次**（2026-10-25 接通）。
+        // 之前这个入参没接，失败只体现在 saveState 的灰点上 —— 状态是对的，
+        // 但用户看不到任何提示，关掉记事本就丢了内容。
+        onSaveError: msg => onNotify?.(msg, "error"),
     });
 
 
@@ -2082,7 +2095,7 @@ export default function NotesPage({
      * 拖分隔条。监听挂在 **window** 上而不是分隔条自己身上：指针在拖动中移出
      * 那 4px 宽的条就会丢失 mousemove，光靠元素上的事件会「拖到一半卡住」。
      */
-    const startSplitDrag = (e: React.PointerEvent) => {
+    const startSplitDrag = useCallback((e: React.PointerEvent) => {
         e.preventDefault();
         const box = splitBoxRef.current;
         if (!box) return;
@@ -2123,10 +2136,10 @@ export default function NotesPage({
         document.body.style.userSelect = "none";
         window.addEventListener("pointermove", onMove);
         window.addEventListener("pointerup", onUp);
-    };
+    }, [setSplitRatio]);
 
     /** 侧栏「分栏」那条缝的拖动：与主栏 startSplitDrag 同款，只是量的是 sideSplitBoxRef。 */
-    const startSideSplitDrag = (e: React.PointerEvent) => {
+    const startSideSplitDrag = useCallback((e: React.PointerEvent) => {
         e.preventDefault();
         const box = sideSplitBoxRef.current;
         if (!box) return;
@@ -2159,7 +2172,7 @@ export default function NotesPage({
         document.body.style.cursor = "col-resize";
         window.addEventListener("pointermove", onMove);
         window.addEventListener("pointerup", onUp);
-    };
+    }, [setSideSplitRatio]);
 
     /**
      * Ctrl/Cmd + / 插入隐藏注释 —— inkstone 的「笔记工具」菜单里给这项标了这个快捷键，
@@ -2281,7 +2294,7 @@ export default function NotesPage({
      * 原因：同一个 ref 被两个 <input> 争抢 + 条件渲染让两者互换角色，
      * React 每次 commit 都在「解绑 A / 绑上 B」之间来回，永远收敛不了。
      */
-    const renderSearchField = (inputRef: React.RefObject<HTMLInputElement | null>) => (
+    const renderSearchField = useCallback((inputRef: React.RefObject<HTMLInputElement | null>) => (
         // 用 TextField + InputAdornment：之前是自己画的绝对定位图标，
         // 那个放大镜飘在框外面右下方，对不齐也很难看。
         <>
@@ -2372,7 +2385,7 @@ export default function NotesPage({
             </Typography>
         ) : null}
         </>
-    );
+    ), [keyword, setKeyword, setView, setActiveFolder, setActiveTag, setMiddleHidden, remoteSearch]);
 
     /** 导航列内容（2026-10-08 抽出）：桌面导航列与 tablet 导航抽屉共用同一份 JSX。
      *  两者互斥挂载（桌面列 !narrowLayout 才挂、抽屉仅 tablet 开），
@@ -2386,7 +2399,17 @@ export default function NotesPage({
      * 所以先组装不含它的 paneBase，造出 navInner，再合成最终的 paneCtx ——
      * 顺序反了就会变成「自己引用自己」。
      */
-    const paneBase = {
+    // ⚠️ useMemo（2026-10-25）：这里本来是每次渲染新建的对象字面量，而它要被
+    // spread 给五个面板 —— 身份每渲染变一次，消费它的整棵子树就得跟着重渲染
+    // （打字时每敲一个字六棵面板全跑一遍，手感发涩的组成部分）。
+    // 依赖数组按下面用到的字段**原样列全**、顺序与对象一致（方便对着审计）：
+    // 漏一个就是陈旧闭包 —— 那比多渲染几次难查得多，也危险得多。
+    //
+    // ⚠️ 但 memo 只是**必要条件**：真正让它生效还得给 NotesListPane /
+    // NotesEditorPane / NotesNavPanel / NotesSidePane / NotesOverlayLayer /
+    // NotesConfirmLayer 套上 React.memo —— 普通函数组件不看 props 身份，
+    // 父组件重渲染它们照样跟着跑。那六个文件不归这块改，见交付说明。
+    const paneBase = useMemo(() => ({
         SIDE_SPLIT_KEY,
         bindSiteNoteId,
         setBindSiteNoteId,
@@ -2602,9 +2625,226 @@ export default function NotesPage({
         wordCount,
         zenMode,
         setZenMode,
-    };
-    const navInner = <NotesNavPanel {...paneBase} />;
-    const paneCtx: NotesPageCtx = { ...paneBase, navInner };
+    }), [
+        SIDE_SPLIT_KEY,
+        bindSiteNoteId,
+        setBindSiteNoteId,
+        accountName,
+        active,
+        activeFolder,
+        activeFolderName,
+        activeId,
+        activeMenuAnchor,
+        activeTag,
+        activeTagNames,
+        appearanceFolderId,
+        askName,
+        attManagerOpen,
+        attachmentRefCounts,
+        backlinks,
+        backlinksOpen,
+        backupApi,
+        boundSite,
+        boundSiteMissing,
+        bp,
+        bulkArchive,
+        bulkDelete,
+        bulkDeleteOpen,
+        charCount,
+        checked,
+        checkedNotes,
+        closeNamePrompt,
+        closeRemove,
+        closeRowMenu,
+        closeSide,
+        completionSources,
+        copyText,
+        dirty,
+        draft,
+        draggingNoteId,
+        emptyArt,
+        emptyCopy,
+        exportAllData,
+        exportAllZip,
+        exportAnchor,
+        exportHtmlOne,
+        exportOne,
+        exportPdfOne,
+        exportPick,
+        exportTarget,
+        filtered,
+        folderCounts,
+        folderTags,
+        folders,
+        handleAttach,
+        handleOpenEmbedNote,
+        handleSideToggleTask,
+        handleToggleTask,
+        handleUpload,
+        highlightRanges,
+        importNotesFile,
+        jumpToNote,
+        jumpToOffset,
+        keyword,
+        lazyListGroups,
+        listCollapsed,
+        listGroups,
+        listHidden,
+        listW,
+        liveRender,
+        liveRenderer,
+        mainShortcutActions,
+        menuClosing,
+        moveDrawerNoteId,
+        multiSelect,
+        namePrompt,
+        narrowLayout,
+        navW,
+        noteLink,
+        noteTags,
+        noteWordTotal,
+        notes,
+        notesCommands,
+        notesInFolder,
+        onClose,
+        onCreate,
+        onDatasetChanged,
+        onDelete,
+        onEmptyTrash,
+        onNotify,
+        onOpenBoundSite,
+        onPurgeTrashed,
+        onRestoreTrashed,
+        onToggleArchive,
+        onTogglePin,
+        onToggleStar,
+        onUpdate,
+        openAttachmentFromEditor,
+        openInSide,
+        openNote,
+        openRevisions,
+        outgoingLinks,
+        outline,
+        outlineActiveLine,
+        outlineOpen,
+        pane,
+        pinnedCount,
+        previewFeatures,
+        previewScrollRef,
+        removeTarget,
+        renderSearchField,
+        replaceDetachedUpload,
+        reset,
+        resolveNote,
+        rowActionsSuppressed,
+        rowMenu,
+        save,
+        saveState,
+        savedAt,
+        searchRef,
+        searchRefNarrow,
+        searchSnippets,
+        selectAnchorRef,
+        setActiveFolder,
+        setActiveId,
+        setActiveMenuAnchor,
+        setActiveTag,
+        setAppearanceFolderId,
+        setAttManagerOpen,
+        setBacklinkAnchor,
+        setBacklinksOpen,
+        setBulkDeleteOpen,
+        setChecked,
+        setDraft,
+        setDraggingNoteId,
+        setExportAnchor,
+        setExportPick,
+        setGraphOpen,
+        setLightbox,
+        setListCollapsed,
+        setLiveRender,
+        setMiddleHidden,
+        setMobileDetail,
+        setMoveDrawerNoteId,
+        setMultiSelect,
+        setNavDrawerOpen,
+        setOutlineActiveLine,
+        setOutlineOpen,
+        setPane,
+        setRemoveTarget,
+        setRowActionsSuppressed,
+        setRowMenu,
+        setSettingsOpen,
+        setShareId,
+        setSideDraft,
+        setSideLiveRender,
+        setSideMode,
+        setSideSplitRatio,
+        setSortAnchor,
+        setSortKey,
+        setSplitRatio,
+        setTagColorId,
+        setTagPick,
+        setUiSettings,
+        setView,
+        settingsOpen,
+        shareApi,
+        siteLinkApi,
+        sideDirty,
+        sideDraft,
+        sideId,
+        sideLiveRender,
+        sideMode,
+        sideNote,
+        sideRef,
+        sideSaveState,
+        sideSavedAt,
+        sideShortcutActions,
+        sideSplitBoxRef,
+        sideSplitRatio,
+        sideSplitRatioRef,
+        sideTick,
+        sideTools,
+        sortAnchor,
+        sortKey,
+        splitBoxRef,
+        splitRatio,
+        splitRatioRef,
+        startCreateInFolder,
+        openTemplatePicker,
+        startDrag,
+        startSideSplitDrag,
+        startSplitDrag,
+        submitNamePrompt,
+        submitRemove,
+        switchTo,
+        syncPreviewScroll,
+        tagColorByName,
+        tagColorId,
+        tagCounts,
+        tagPick,
+        tags,
+        textareaRef,
+        tick,
+        toggleChecked,
+        tools,
+        trashedNotes,
+        uiSettings,
+        uploadApi,
+        uploadFileForSideEditor,
+        uploadImageForEditor,
+        userClearedRef,
+        view,
+        viewCounts,
+        visibleIds,
+        wordCount,
+        zenMode,
+        setZenMode,
+    ]);
+    // ⚠️ 这两个同样要 memo：JSX 字面量 / 对象展开每次渲染都是新引用，
+    // 不 memo 的话上面那份 paneBase 的 memo 等于白做（合出来的 paneCtx 照样每渲染一变）。
+    const navInner = useMemo(() => <NotesNavPanel {...paneBase} />, [paneBase]);
+    const paneCtx: NotesPageCtx = useMemo(() => ({ ...paneBase, navInner }), [paneBase, navInner]);
 
     return (
         // 附件预览弹窗的控制器（2026-10-19）：正文渲染层（markdownToReact）隔着好几层，

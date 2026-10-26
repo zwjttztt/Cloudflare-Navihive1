@@ -127,7 +127,11 @@ import {
 import {
     switchAccountBoundary,
 } from "./utils/sessionBoundary";
-import { domCardEnv, focusCardByDirection as focusCardByDirectionImpl } from "./utils/cardFocus";
+import {
+    domCardEnv,
+    focusCardByDirection as focusCardByDirectionImpl,
+    NAV_CARD_SELECTOR,
+} from "./utils/cardFocus";
 import { clearAddSiteParam, readAddSitePrefill } from "./utils/addSiteDeepLink";
 import { setSiteIndex } from "./utils/siteIndex";
 import {
@@ -1456,8 +1460,16 @@ function App() {
     }, [groups, activeGroupId]);
 
     // 方向键在卡片之间移动焦点（按几何位置找同行/同列的邻居）
-    const focusCardByDirection = (dir: "left" | "right" | "up" | "down") =>
-        focusCardByDirectionImpl(dir, domCardEnv());
+    const focusCardByDirection = (dir: "left" | "right" | "up" | "down") => {
+        const env = domCardEnv();
+        // V4 之后 Tab 停在卡片里那个真 <a> 上（外壳 div 的 data-nav-card 降到
+        // tabIndex={-1}，只留给方向键的程序聚焦），activeElement 因此**不带**
+        // data-nav-card 了 —— 不往回找一层的话，`focusCardByDirection` 会把它当成
+        // 「当前没有卡片被聚焦」，一按方向键焦点就甩回第一张卡。
+        const active = env.active as HTMLElement | null;
+        const card = active?.closest?.(NAV_CARD_SELECTOR) as HTMLElement | null;
+        return focusCardByDirectionImpl(dir, { cards: env.cards, active: card ?? env.active });
+    };
 
     // 全局键盘（「/」聚焦搜索框 / Ctrl+Z 撤销 / 1~9 打开第 N 条 / 「?」说明表 / 方向键导航）
     // 与「点面板外收起」整套搬到 hooks/useGlobalShortcuts —— 那 100 多行里有 6 条守卫
@@ -1695,7 +1707,10 @@ function App() {
                     minHeight: "100vh",
                     bgcolor: hasBackgroundImage ? "transparent" : "background.default",
                     color: "text.primary",
-                    transition: "all 0.3s ease-in-out",
+                    // 不写 all：根节点上挂 all，主题切换时会把整棵子树里所有能补间的属性
+                    // （backdrop-filter / box-shadow / transform…）一起拉进过渡，代价很高。
+                    // 这一层自己会变的只有底色与文字色。
+                    transition: "background-color 0.3s ease-in-out, color 0.3s ease-in-out",
                     position: "relative",
                     zIndex: 1,
                 }}

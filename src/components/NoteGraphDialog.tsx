@@ -247,7 +247,11 @@ export default function NoteGraphDialog({
             // 小屏整屏：375 下 md 纸面只有 301 宽，节点文字会叠在一起。
             // 关系图是全场唯一确实需要整屏的弹窗（docs/dialogs-audit-2026-10-23.md B5）。
             fullScreen={isNarrow}
-            slotProps={{ paper: { sx: { borderRadius: isNarrow ? 0 : 3 } } }}
+            // ⚠️ 这里以前还写了 `slotProps={{ paper: { sx: { borderRadius: isNarrow ? 0 : 3 } } }}`
+            // （3×14 = 写死 42px），把全站弹窗材质（useThemeController 里
+            // MuiDialog.styleOverrides.paper 的 var(--card-radius)）盖掉了 ——
+            // 用户在「外观 → 圆角风格」里切到标准/直角时，32 个弹窗里唯独它纹丝不动。
+            // 删掉覆盖后吃全局材质；小屏整屏由 fullScreen 负责，整屏时圆角自然为 0。
         >
             <DialogTitle sx={dialogTitleSx}>
                 <HubIcon fontSize='small' sx={{ color: "var(--accent)" }} />

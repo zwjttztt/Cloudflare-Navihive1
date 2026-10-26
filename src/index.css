@@ -751,10 +751,15 @@ html.nav-touch .nav-group-tools {
 }
 
 /* 键盘导航：卡片聚焦时给出清晰的焦点环 */
-[data-nav-card]:focus-visible {
+[data-nav-card]:focus-visible,
+/* V4：外壳 div 不再挂 tabIndex（它没有 role，读屏不念东西），停靠点挪到了里面那个
+   <a> 上 —— 焦点环还得画在整个卡片外面，所以用 :has() 往回找。
+   用 :has(:focus-visible) 而不是 :focus-within：后者鼠标点一下也会亮，
+   点过的卡片会一直挂着焦点环（与 .nav-card-actions 那处同一个坑）。 */
+.nav-card-in:has(:focus-visible) {
     outline: 2px solid var(--accent);
     outline-offset: 3px;
-    border-radius: 20px;
+    border-radius: var(--card-radius);
 }
 
 /* 拖拽排序：被拖起的卡片变成半透明虚线「幽灵」，原位置留一个占位框 */
@@ -838,13 +843,19 @@ html.nav-touch .nav-group-tools {
 /* ⚠️ 两个选择器都要：笔记页是 .nav-root 的**子孙**（fixed 定位不影响 DOM 继承），
    所以祖先上的 data-font-scale 已经能把变量传下去，不必给笔记页加 props；
    第二条是「以后有人把笔记页挂到页面外」时的兜底。 */
+/* --font-scale 是导航侧（卡片等写死 rem 的地方）的同一个乘数：
+   :root 里那个 `--font-scale: 1` 一直没人给值，于是卡片标题写 0.875rem / 1rem，
+   rem 只认根字号、不吃 .nav-root 的 94% / 107%，用户调「大字号」时
+   笔记页标题变了、导航页标题纹丝不动。这里把它和笔记侧的乘数一起给值。 */
 .nav-root[data-font-scale="compact"],
 [data-notes-font-scale="compact"] {
     --notes-font-scale: 0.94;
+    --font-scale: 0.94;
 }
 .nav-root[data-font-scale="large"],
 [data-notes-font-scale="large"] {
     --notes-font-scale: 1.07;
+    --font-scale: 1.07;
 }
 
 /* 尊重「减少动态效果」偏好：关掉装饰性动画（不动功能性过渡） */

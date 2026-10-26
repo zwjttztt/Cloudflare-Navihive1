@@ -137,6 +137,11 @@ test("迁移回填：老库（link_count = NULL）升级后一次填对，且不
     // 模拟老库：这一列刚加上、全是 NULL；版本号也退回上一档
     await db.prepare("UPDATE notes SET link_count = NULL").run();
     await db.prepare("DELETE FROM configs WHERE key = ?").bind(SCHEMA_VERSION_KEY).run();
+    // 2026-10-25：迁移机制从「全局单号」改成「已执行 step 集合」（见 methods/migration.ts）。
+    // 模拟老库必须**两个键都删** —— 只删版本号的话，step 集合还在，
+    // 所有步骤会被当成「已跑过」全部跳过，回填压根不会发生，
+    // 这条用例就会变成假绿（而下面那条「不覆盖已有值」本来就已经是假绿了）。
+    await db.prepare("DELETE FROM configs WHERE key = ?").bind("schema.steps").run();
     resetMigrationCacheForTests();
     await api.migrate();
 
@@ -160,6 +165,11 @@ test("回填只挑 NULL 的行：已经算过的值不会被重扫覆盖", async
     // 人为把一个值改成一个「明显不是重算能得出的数」，再看回填会不会碰它
     await db.prepare("UPDATE notes SET link_count = 999 WHERE id = ?").bind(a.id).run();
     await db.prepare("DELETE FROM configs WHERE key = ?").bind(SCHEMA_VERSION_KEY).run();
+    // 2026-10-25：迁移机制从「全局单号」改成「已执行 step 集合」（见 methods/migration.ts）。
+    // 模拟老库必须**两个键都删** —— 只删版本号的话，step 集合还在，
+    // 所有步骤会被当成「已跑过」全部跳过，回填压根不会发生，
+    // 这条用例就会变成假绿（而下面那条「不覆盖已有值」本来就已经是假绿了）。
+    await db.prepare("DELETE FROM configs WHERE key = ?").bind("schema.steps").run();
     resetMigrationCacheForTests();
     await api.migrate();
 

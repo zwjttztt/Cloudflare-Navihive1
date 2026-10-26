@@ -26,6 +26,11 @@ import {
  * 只要往 runMigrations 里加了新步骤（补列 / 建索引 / 搬数据…），就把这个号 +1 ——
  * 否则「读版本号对得上就跳过迁移」那条快路径会认为都跑过了，新步骤永远不会执行。
  * 快路径省掉的是查询，不是正确性；这个号就是它唯一的保险丝。
+ *
+ * ⚠️ 这段是 2026-10-26 之前的做法：靠人记住 +1，忘了就出事
+ * （tests/noteFolderTagRealSql.test.ts:296 与 noteStarRevRealSql.test.ts:36 各记过一次）。
+ * 现在闸门比的是下面那个**派生**出来的 MIGRATION_VERSION，加步骤 / 加索引会自动顶号；
+ * 这个字面量只剩「可读的历史刻度」与测试锚点两个用途。
  */
 /**
  * 结构版本号。**往 CREATE_STATEMENTS 里加了新表，就必须把这里 +1** ——
@@ -78,9 +83,22 @@ import {
 //     所以即使中途失败，下次迁移还会接着填）。
 // 26 = vault_keys / vault_entries（方案 B 端到端保险库，2026-10-25）。
 //     两张新表，老库上 CREATE TABLE IF NOT EXISTS 建不出来，必须显式 migrateVaultTables。
-export const SCHEMA_VERSION = "26";
+// 27 = 两条 notes 索引（2026-10-26，服务端性能）：
+//     · idx_notes_user_updated(user_id, updated_at) —— 笔记变更轮询那个
+//       `SELECT COUNT(*) FROM notes WHERE updated_at >= ? AND user_id IS ?`
+//       每 2 分钟一次，原本只能对该用户的全部笔记做一次扫（见 notesBackup.ts）；
+//     · idx_notes_site_recent(site_id, updated_at DESC, id DESC) —— 站点列表那个
+//       「绑定的那篇笔记」相关子查询不用再每站点排一次序（见 data.ts）。
+//     索引步骤同样吃快路径：版本号不 +1 的话老库永远建不上（同 19 / 22 / 24 的先例）。
+//
+// ⚠️ 从 27 起，「什么时候该升号」不再靠人记住 —— 见下面 MIGRATION_VERSION 的说明：
+// 往 MIGRATION_STEPS 加一条步骤、或往 INDEX_STATEMENTS 加一条索引，落库的版本串会
+// 自动往前走一格。手工改这个字面量，只在「搬数据但没新增步骤」这类情况下才还需要。
+export const SCHEMA_VERSION = "27";
 /** 版本号存在 configs 里的键名 */
 export const SCHEMA_VERSION_KEY = "schema.version";
+/** 「已执行过的迁移步骤」集合存在 configs 里的键名（值是 JSON 字符串数组） */
+export const MIGRATION_STEPS_KEY = "schema.steps";
 
 /** 首次建 owner 这把锁的存活时间：正常 bootstrap 几毫秒就完事，30 秒足够兜住崩掉的进程 */
 export const OWNER_BOOTSTRAP_LOCK_TTL_MS = 30_000;
@@ -94,6 +112,139 @@ export const OWNER_BOOTSTRAP_RETRY_MS = 120;
  */
 export const OWNER_BOOTSTRAP_LOCK_WAIT_MS = 10_000;
 
+/**
+ * 一条迁移步骤。
+ *
+ * 以前 runMigrations 是一段直叙代码 + 一个全局版本号：版本对得上就整段跳过，
+ * 于是「补列代码写了、忘了升号」= 这一步在已部署的库上永远不执行
+ * （tests/noteFolderTagRealSql.test.ts:296 记的就是这一次）。改成步骤表之后：
+ *   - 每一步有个**稳定**的 stepId（上线后不许改，改了等于让老库把它重跑一遍）；
+ *   - 每跑成功一步就把它记进「已执行集合」，下次启动只跑集合里没有的那些；
+ *   - 失败的 step **不进集合**，于是一次 D1 抖动不会把整条升级链吞掉。
+ */
+export interface MigrationStep {
+    /** 稳定的步骤标识 */
+    id: string;
+    run(api: NavigationAPI): Promise<void>;
+}
+
+/**
+ * 迁移步骤总表：**顺序即依赖顺序**（建表在前、补列居中、索引在后 —— 索引依赖
+ * migrateOwnerColumns 补出来的 user_id 列，见 internals.ts 里 INDEX_STATEMENTS 的注释）。
+ *
+ * ⚠️ 加新步骤只要往这个数组里加一项即可，**不用**再惦记 SCHEMA_VERSION ——
+ * 闸门用的 MIGRATION_VERSION 会自动跟着往前走（见下面它的定义）。
+ */
+export const MIGRATION_STEPS: readonly MigrationStep[] = [
+    {
+        id: "core-tables",
+        run: async api => {
+            // 合并成一次 batch，只花一次 D1 往返（原来是 3 次 exec 串行）
+            try {
+                await api.db.batch(CREATE_STATEMENTS.map(sql => api.db.prepare(sql)));
+            } catch (error) {
+                // batch 失败时退回逐条执行，保证结构一定可用
+                console.error("批量建表失败，回退逐条执行:", error);
+                for (const sql of CREATE_STATEMENTS) {
+                    try {
+                        await api.db.exec(sql);
+                    } catch {
+                        // 忽略
+                    }
+                }
+            }
+        },
+    },
+    {
+        // 旧库补齐站点凭据字段：先读表结构，确实缺列时才发 ALTER
+        id: "sites-credential-columns",
+        run: async api => {
+            const missingColumns = await api.findMissingSiteColumns();
+            if (missingColumns.length === 0) return;
+            try {
+                await api.db.batch(
+                    missingColumns.map(column => api.db.prepare(`ALTER TABLE sites ADD COLUMN ${column} TEXT`))
+                );
+            } catch {
+                // 部分列已存在会让整批失败，逐条补一次即可
+                for (const column of missingColumns) {
+                    try {
+                        await api.db.exec(`ALTER TABLE sites ADD COLUMN ${column} TEXT`);
+                    } catch {
+                        // 列已存在，忽略
+                    }
+                }
+            }
+        },
+    },
+    // 多账号：分组 / 站点挂上归属账号，再把老数据收归首个账号名下
+    { id: "owner-columns", run: api => api.migrateOwnerColumns() },
+    // 沉睡账号治理：users 表补上「最后活跃 / 状态 / 停用时间」三列
+    { id: "users-inactive-columns", run: api => api.migrateInactiveColumns() },
+    // 账号各自的令牌版本：见 bumpTokenVersion 的注释
+    { id: "users-token-version", run: api => api.migrateAccountSecurityColumns() },
+    { id: "sessions-device-id", run: api => api.migrateSessionDeviceColumn() },
+    { id: "notes-archived-folder", run: api => api.migrateNoteColumns() },
+    { id: "folder-tag-tables", run: api => api.migrateFolderTagTables() },
+    { id: "attachments-table", run: api => api.migrateAttachmentsTable() },
+    { id: "note-share-columns", run: api => api.migrateNoteShareColumns() },
+    { id: "notes-starred-rev", run: api => api.migrateNoteStarRevColumns() },
+    { id: "notes-link-count", run: api => api.migrateNoteLinkCount() },
+    {
+        id: "attachments-dimensions",
+        run: async api => {
+            for (const column of ["width", "height"]) {
+                if (!(await api.hasColumn("attachments", column))) {
+                    try {
+                        await api.db.prepare(`ALTER TABLE attachments ADD COLUMN ${column} INTEGER`).run();
+                    } catch (error) {
+                        if (!(await api.hasColumn("attachments", column))) throw error;
+                    }
+                }
+            }
+        },
+    },
+    { id: "notes-fts", run: api => api.migrateNotesFtsTable() },
+    { id: "group-share-table", run: api => api.migrateGroupShareTable() },
+    { id: "vault-tables", run: api => api.migrateVaultTables() },
+    {
+        // 安全加固，失败只记日志不影响启动
+        id: "encrypt-legacy-site-passwords",
+        run: async api => {
+            try {
+                await api.encryptLegacySitePasswords();
+            } catch (error) {
+                console.error("历史站点凭据加密失败（已忽略，下次迁移会重试）:", error);
+            }
+        },
+    },
+    // 索引排在最后：它依赖上面补出来的 user_id 列
+    { id: "indexes", run: api => api.createIndexes() },
+];
+
+/** 27 号这一版登记的步骤条数（加步骤时**不用**改这个数，见 MIGRATION_VERSION） */
+const STEPS_AT_V27 = 18;
+/** 27 号这一版 INDEX_STATEMENTS 的条数（加索引时**不用**改这个数） */
+const INDEXES_AT_V27 = 24;
+/**
+ * 自 27 号以来新增的「结构变更」条数：多一条迁移步骤、或多一条索引都算一格。
+ *
+ * 它大于 0 时闸门用的版本串就变成 `27+N`，于是**老库必然被判定为需要迁移** ——
+ * 「补列写了却忘了升号」这类事故（见 tests/noteFolderTagRealSql.test.ts:296）
+ * 在结构上就不可能再发生：升号是算出来的，不是记出来的。
+ */
+const SCHEMA_DELTA =
+    MIGRATION_STEPS.length - STEPS_AT_V27 + (INDEX_STATEMENTS.length - INDEXES_AT_V27);
+/**
+ * 真正落库、也真正拿来比对的版本串。
+ *
+ * ⚠️ 在当前这份代码里它必须**正好等于** SCHEMA_VERSION（也就是 delta 为 0）。
+ * 不为 0 的话要么 STEPS_AT_V27 没跟上 MIGRATION_STEPS 的实际条数，要么
+ * INDEXES_AT_V27 没跟上 INDEX_STATEMENTS 的实际条数 ——
+ * tests/migrationVersion.test.ts 第一条（写回的版本串要等于 SCHEMA_VERSION）会立刻红。
+ */
+export const MIGRATION_VERSION = SCHEMA_DELTA > 0 ? `${SCHEMA_VERSION}+${SCHEMA_DELTA}` : SCHEMA_VERSION;
+
 export interface MigrationApi {
     initDB(): Promise<{ success: boolean; alreadyInitialized: boolean }>;
     migrate(): Promise<void>;
@@ -101,6 +252,10 @@ export interface MigrationApi {
     migrateIfNeeded(): Promise<void>;
     readSchemaVersion(): Promise<string | null>;
     writeSchemaVersion(version: string): Promise<void>;
+    /** 读「已执行过的迁移步骤」集合；读不到 / 解析不出来一律当空集合 */
+    readMigrationSteps(): Promise<string[]>;
+    /** 写回「已执行过的迁移步骤」集合（整份覆盖） */
+    writeMigrationSteps(ids: string[]): Promise<void>;
     runMigrations(): Promise<void>;
     createIndexes(): Promise<void>;
     migrateAccountSecurityColumns(): Promise<void>;
@@ -163,8 +318,10 @@ export const migrationImpl: MigrationApi = {
      *
      * 迁移里建表 / 补列 / 建索引加起来二十多条语句，而每个 isolate 冷启动都要走一遍。
      * 部署频繁、流量稀疏的时候，「建一遍早就好好的表」会变成冷启动的主要成本。
-     * 所以这里先读一次结构版本号：对得上就说明这套迁移已经跑过了，直接放行。
-     * 版本号随迁移步骤一起改（见 SCHEMA_VERSION），加了新步骤就会自动重跑一次。
+     * 所以这里先读一次版本串：对得上就说明这套迁移已经跑过了，直接放行。
+     *
+     * ⚠️ 比的是 **MIGRATION_VERSION** 而不是 SCHEMA_VERSION：前者由步骤表与索引清单
+     * 派生（加一条步骤 / 一条索引就自动前进一格），不需要谁记得去 +1。
      */
     migrate: async function (this: NavigationAPI ): Promise<void> {
         if (!migrationState.promise) {
@@ -178,14 +335,14 @@ export const migrationImpl: MigrationApi = {
     },
 
     migrateIfNeeded: async function (this: NavigationAPI ): Promise<void> {
-        // 版本号读不到（库是空的、configs 表还没建、D1 抖动）一律按「需要迁移」处理：
+        // 版本串读不到（库是空的、configs 表还没建、D1 抖动）一律按「需要迁移」处理：
         // 宁可多跑一次全量建表，也不能因为一次读失败就让站点缺表。
-        if ((await this.readSchemaVersion()) === SCHEMA_VERSION) {
+        if ((await this.readSchemaVersion()) === MIGRATION_VERSION) {
             this.dbReady = true;
             return;
         }
         await this.runMigrations();
-        await this.writeSchemaVersion(SCHEMA_VERSION);
+        await this.writeSchemaVersion(MIGRATION_VERSION);
     },
 
     /** 读结构版本号；读不到返回 null */
@@ -216,119 +373,88 @@ export const migrationImpl: MigrationApi = {
             console.error("写入结构版本号失败（下次冷启动会重跑一次迁移）:", error);
         }
     },
+    /**
+     * 读「已执行过的迁移步骤」集合。
+     *
+     * 存在 configs 的 `schema.steps` 里（一个 JSON 字符串数组）。复用现成的 configs 表
+     * 而不是新建一张表：这张表早就在备份 / 导出里了，多一个键没有额外代价；
+     * 而新建一张表本身又会引出「快路径会不会把它跳过去」这个新风险。
+     *
+     * 读不到 / JSON 坏了 / 类型不对，一律按**空集合**处理：宁可把跑过的步骤再跑一遍
+     * （每一步自身都是幂等的），也不能因为一条脏记录就把该补的列永久跳过。
+     */
+    readMigrationSteps: async function (this: NavigationAPI ): Promise<string[]> {
+        try {
+            const row = await this.db
+                .prepare("SELECT value FROM configs WHERE key = ?")
+                .bind(MIGRATION_STEPS_KEY)
+                .first<{ value: string }>();
+            if (typeof row?.value !== "string" || !row.value) return [];
+            const parsed: unknown = JSON.parse(row.value);
+            if (!Array.isArray(parsed)) return [];
+            return parsed.filter((id): id is string => typeof id === "string");
+        } catch {
+            return [];
+        }
+    },
+
+    /** 写回「已执行过的迁移步骤」集合（整份覆盖）。写不进去只是下次多跑几步，不影响功能 */
+    writeMigrationSteps: async function (this: NavigationAPI, ids: string[]): Promise<void> {
+        try {
+            await this.db
+                .prepare(
+                    `INSERT INTO configs (key, value, updated_at)
+                     VALUES (?, ?, CURRENT_TIMESTAMP)
+                     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP`
+                )
+                .bind(MIGRATION_STEPS_KEY, JSON.stringify(ids))
+                .run();
+        } catch (error) {
+            console.error("写入迁移步骤集合失败（下次冷启动会重跑这几步）:", error);
+        }
+    },
+
+    /**
+     * 跑迁移：**只跑「已执行集合」里没有的那些步骤**，而不是一段从头到尾的直叙代码。
+     *
+     * 每一步「为什么要跑、为什么必须显式跑」的理由写在 MIGRATION_STEPS 与对应
+     * migrateXxx 方法的注释里，这里只管调度。三条语义保证：
+     *   - **幂等**：跑成功一步就立刻把它加进集合，重复启动时它被跳过。就算记录没写进去，
+     *     每一步自身也是幂等的（CREATE IF NOT EXISTS / hasColumn + ALTER / 按数据状态
+     *     兜底的回填），重跑一遍等于什么都没做。
+     *   - **升级路径不变**：始终按 MIGRATION_STEPS 的数组顺序跑（建表 → 补列 → 索引），
+     *     老库从任何历史版本一路补到最新走的都是同一条路径。
+     *   - **失败可重试**：失败的步骤**不进集合**，所以下一次冷启动只重跑那几步，
+     *     不必把整条链再走一遍。
+     */
     runMigrations: async function (this: NavigationAPI ): Promise<void> {
-        // 1) 建表：合并成一次 batch，只花一次 D1 往返（原来是 3 次 exec 串行）
-        try {
-            await this.db.batch(CREATE_STATEMENTS.map(sql => this.db.prepare(sql)));
-        } catch (error) {
-            // batch 失败时退回逐条执行，保证结构一定可用
-            console.error("批量建表失败，回退逐条执行:", error);
-            for (const sql of CREATE_STATEMENTS) {
-                try {
-                    await this.db.exec(sql);
-                } catch {
-                    // 忽略
-                }
-            }
-        }
-
-        // 2) 旧库补齐站点凭据字段：先读表结构，确实缺列时才发 ALTER
-        const missingColumns = await this.findMissingSiteColumns();
-        if (missingColumns.length > 0) {
+        const done = new Set(await this.readMigrationSteps());
+        const failed: string[] = [];
+        for (const step of MIGRATION_STEPS) {
+            if (done.has(step.id)) continue;
             try {
-                await this.db.batch(
-                    missingColumns.map(column => this.db.prepare(`ALTER TABLE sites ADD COLUMN ${column} TEXT`))
-                );
-            } catch {
-                // 部分列已存在会让整批失败，逐条补一次即可
-                for (const column of missingColumns) {
-                    try {
-                        await this.db.exec(`ALTER TABLE sites ADD COLUMN ${column} TEXT`);
-                    } catch {
-                        // 列已存在，忽略
-                    }
-                }
+                await step.run(this);
+                done.add(step.id);
+            } catch (error) {
+                // 单独一步挂了不挡着其它步骤继续补（索引挂了不该挡住补列）；
+                // 但**不把它记进集合** —— 下次冷启动要再试一次。
+                console.error(`迁移步骤 ${step.id} 执行失败（下次冷启动会重试）:`, error);
+                failed.push(step.id);
             }
         }
+        // 成功的先落库：即便下面抛错，重试时也只要补失败的那几步
+        await this.writeMigrationSteps([...done]);
 
-        // 3) 多账号：分组 / 站点挂上归属账号，再把老数据收归首个账号名下
-        await this.migrateOwnerColumns();
-
-        // 4) 沉睡账号治理：users 表补上「最后活跃 / 状态 / 停用时间」三列
-        await this.migrateInactiveColumns();
-
-        // 5) 账号各自的令牌版本：见 bumpTokenVersion 的注释
-        await this.migrateAccountSecurityColumns();
-
-        // 5.5) user_sessions 补 device_id：设备判重从归一化 UA 改成客户端持久 ID
-        //      （2026-10-22，修「两台 Windows+Chrome 互踢下线」）
-        await this.migrateSessionDeviceColumn();
-
-        // 6) 阶段三：notes 补 archived 列（老库必须 ALTER 才会有，见 migrateNoteColumns）
-        await this.migrateNoteColumns();
-
-        // 6.5) 阶段三收尾：文件夹 / 标签三张新表 + note_folder.parent_id 补列。
-        // 光靠上面第 1 步的 batch 建表不够 —— 已经部署过的实例上 notes 表早就在了，
-        // CREATE TABLE IF NOT EXISTS 对**已存在的表**不会补列；同理那三张新表在那批
-        // 实例上从来没被建过，而「版本号读得到就整段跳过迁移」的快路径会连建表都跳过
-        //（见 migrateIfNeeded），于是新表永远不存在、对应接口一律 500。所以这里再显式建一次。
-        // ⚠️ 必须走 migrateFolderTagTables（它建完表后还会 ALTER 补 parent_id），
-        // 不能只在这里循环 FOLDER_TAG_TABLE_STATEMENTS 建表 —— 那样 parent_id 永远不会被补，
-        // 老库上 note_folder 没有 parent_id 列 → createFolder(INSERT parent_id) /
-        // deleteFolder(UPDATE note_folder SET parent_id = NULL) 全 500。
-        //（2026-10-06 线上就是这俩接口 500，根因就是 migrateFolderTagTables 定义却没接进来）
-        await this.migrateFolderTagTables();
-
-        // 6.6) 2026-07：图片附件的元数据表（binary 在 R2/KV，不在 D1）。
-        // 同样必须**显式建**，不能指望第 1 步的批量建表 —— 已经部署过的实例上
-        // 版本号读得到就整段跳过迁移（见 migrateIfNeeded），新表永远建不出来。
-        await this.migrateAttachmentsTable();
-
-        // 6.7) 2026-10-09：分享表补「访问口令」与「浏览次数」两列。
-        // 老库上 note_share 早就建好了，CREATE TABLE IF NOT EXISTS 不会补列，
-        // 必须显式 ALTER（见 migrateNoteShareColumns）。
-        await this.migrateNoteShareColumns();
-
-        // 6.75) 2026-10-09：notes 补 starred（收藏）与 rev（乐观并发版本号）。
-        await this.migrateNoteStarRevColumns();
-
-        // 6.76) 2026-10-24：notes 补 link_count（这一行正文里的双链条数）。
-        // 排在 notes 建表与 starred/rev 之后 —— 它只是多一列，不依赖别的表。
-        await this.migrateNoteLinkCount();
-
-        // 6.8) 2026-10-09：笔记全文检索的 FTS5 虚拟表。
-        // 同样必须**显式建**（快路径会跳过建表那批），且失败要能降级（见方法注释）。
-        for (const column of ["width", "height"]) {
-            if (!(await this.hasColumn("attachments", column))) {
-                try {
-                    await this.db.prepare(`ALTER TABLE attachments ADD COLUMN ${column} INTEGER`).run();
-                } catch (error) {
-                    if (!(await this.hasColumn("attachments", column))) throw error;
-                }
-            }
-        }
-        await this.migrateNotesFtsTable();
-
-        // 6.85) 2026-10-11：group_share（公开分组分享）。新表必须显式建
-        //（快路径会跳过第 1 步的批量建表），CREATE IF NOT EXISTS 对新表足够。
-        await this.migrateGroupShareTable();
-
-        // 6.88) 2026-10-25：保险库两张表（方案 B 端到端加密）。新表，显式建（快路径跳过批量建表）。
-        await this.migrateVaultTables();
-
-        // 6.9) 历史明文站点凭据加密写回（安全加固，失败只记日志不影响启动）
-        try {
-            await this.encryptLegacySitePasswords();
-        } catch (error) {
-            console.error("历史站点凭据加密失败（已忽略，下次迁移会重试）:", error);
-        }
-
-        // 7) 索引：排在最后，因为它依赖上面补出来的 user_id 列（见 INDEX_STATEMENTS 注释）
-        await this.createIndexes();
-
-        // 所有迁移步骤跑完，说明表结构已就绪：之后的查询出错就按「异常」处理（fail-closed），
+        // 结构已尽力补齐：之后的查询出错按「异常」处理（fail-closed），
         // 而不是「库还没建好」（fail-open）。
         this.dbReady = true;
+
+        if (failed.length > 0) {
+            // 往上抛是为了让 migrate() 清掉缓存的 promise —— 否则这一个 isolate 里
+            // 失败的步骤再也没机会重试了。代价是本次请求拿到的结构可能不完整，
+            // 但 withSchemaRetry 会在「no such column/table」时再兜一次。
+            throw new Error(`迁移步骤未全部完成: ${failed.join(", ")}`);
+        }
     },
 
     /**

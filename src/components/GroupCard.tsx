@@ -345,7 +345,10 @@ const GroupCard: React.FC<GroupCardProps> = ({
                                 border: "1.5px dashed",
                                 borderColor: isGroupOver ? "primary.main" : "transparent",
                                 bgcolor: isGroupOver ? "action.hover" : "transparent",
-                                transition: "all 0.2s ease",
+                                // 不写 all：拖拽放置区只有一个 hover 态，
+                                // 真正会变的就这三项（all 会把 box-shadow 之外的一大堆属性一起补间）。
+                                transition:
+                                    "background-color 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease",
                                 // 拖拽经过时给出明确的放置提示
                                 boxShadow: isGroupOver
                                     ? "0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent)"

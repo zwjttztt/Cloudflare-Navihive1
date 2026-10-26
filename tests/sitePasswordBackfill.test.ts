@@ -44,7 +44,11 @@ async function legacySite(db: ReturnType<typeof makeRealD1>, password: string, n
 
 /** 把 schema 版本退回去再重置缓存 = 模拟「老库升级上来」的迁移流程 */
 async function replayMigration(api: ReturnType<typeof makeRealApi>) {
+    // ⚠️ 必须同时清空「已执行步骤」集合：现在的迁移闸门按步骤集合跳过已跑过的步骤，
+    // 光退 schema.version 不够 —— 不然第一轮 migrate 已经把所有步骤记进集合，
+    // 这一轮会整批跳过、明文永远不被加密（见 MIGRATION_STEPS / runMigrations）。
     await api.writeSchemaVersion("19");
+    await api.writeMigrationSteps([]);
     resetMigrationCacheForTests();
     await api.migrate();
 }

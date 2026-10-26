@@ -61,7 +61,21 @@ export interface ConfigWriter {
 
 export const REQUEST_TIMEOUT_MS = 30_000;
 
-export const SESSION_COOKIE = "navihive_session";
+/**
+ * 前端可读的那条「已登录」标记 cookie 的名字。
+ *
+ * ⚠️ **全站唯一定义点**在 shared/sessionCookie.ts，这里只是再导出：
+ * 服务端下发 / 清除 cookie 的 worker/httpUtils.ts 引的是同一个常量。
+ * 以前两处各写一个 "navihive_session" 字符串，改了前端忘了服务端（或反过来）就会：
+ * 登录接口 200、前端也写了标记，但服务端那条令牌 cookie 的名字对不上 →
+ * 下一个请求 401 → 界面刚登录成功就闪回登录页，而且是**全站静默掉线**。
+ *
+ * （不直接让 worker 引本文件是因为这里有 DOM 全局、worker 那侧没有 DOM lib，
+ * 详见 shared/sessionCookie.ts 顶上那段。）
+ */
+import { SESSION_COOKIE } from "../../shared/sessionCookie";
+// 再导出一份：下面几个函数自己也要用，同时保留原本从这里取这个名字的路径
+export { SESSION_COOKIE };
 
 /**
  * 本地登录标记要不要带 Secure —— 必须和服务端那条 httpOnly 令牌 cookie 保持一致。

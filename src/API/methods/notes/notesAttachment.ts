@@ -97,7 +97,14 @@ export const attachmentMethods: Pick<NotesApi,
                        AND (s.expires_at IS NULL OR s.expires_at > ?2)
                        AND (s.user_id IS NULL OR EXISTS (
                             SELECT 1 FROM users u
-                             WHERE u.id = s.user_id AND COALESCE(u.status, 'active') = 'active'))`
+                             WHERE u.id = s.user_id AND COALESCE(u.status, 'active') = 'active'))
+                       -- 附件必须属于「分享它的那个人」：光靠 note_id 撑起来的唯一性
+                       -- 挡不住「自己建一条分享、里面贴别人的附件 id」——
+                       -- 笔记内容是用户自己写的，想贴谁的附件 uuid 都行，
+                       -- 少了这一条就能把别人库里的图原样拉出来。
+                       -- ⚠️ 两侧都是 NULL 时（升级前、或未启用鉴权时建的数据）照旧放行：
+                       -- 那时 note_id 已经是唯一约束，加上这条件只会让老分享的图全裂。
+                       AND (s.user_id IS NULL OR a.user_id IS NULL OR a.user_id = s.user_id)`
                 )
                 .bind(id, Date.now())
                 .first<Record<string, unknown>>();

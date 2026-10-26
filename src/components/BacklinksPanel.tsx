@@ -86,7 +86,23 @@ export default function BacklinksPanel({
                         aria-label='收起反向链接面板'
                         data-backlinks-close='1'
                         onClick={onClose}
-                        sx={{ width: 22, height: 22, color: "text.disabled" }}
+                        sx={{
+                            width: 22,
+                            height: 22,
+                            color: "text.disabled",
+                            // WCAG 2.5.8 的触控下限是 24×24，这枚只有 22×22：
+                            // 视觉尺寸不动（标题行是按 22px 排的），照 index.css 里
+                            // .nav-card-actions 那段既有手法，用透明伪元素把可点范围补到 44px。
+                            position: "relative",
+                            "&::after": {
+                                content: '""',
+                                position: "absolute",
+                                inset: "50% 0 auto 50%",
+                                width: "var(--touch-min)",
+                                height: "var(--touch-min)",
+                                transform: "translate(-50%, -50%)",
+                            },
+                        }}
                     >
                         <CloseIcon sx={{ fontSize: 14 }} />
                     </IconButton>

@@ -9,14 +9,13 @@ import Dialog from "@mui/material/Dialog";
 import DialogActions from "@mui/material/DialogActions";
 import DialogTitle from "@mui/material/DialogTitle";
 import Divider from "@mui/material/Divider";
-import IconButton from "@mui/material/IconButton";
 import Stack from "@mui/material/Stack";
 import MenuItem from "@mui/material/MenuItem";
 import Select from "@mui/material/Select";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
-import CloseIcon from "@mui/icons-material/Close";
 import ConfirmDialog from "./ConfirmDialog";
+import DialogCloseButton from "./DialogCloseButton";
 import type { GroupShareConfig } from "../API/types";
 import { dialogActionsSx, dialogTitleSx } from "./dialogShell";
 
@@ -134,9 +133,8 @@ export default function GroupShareDialog({
                 <Typography variant='subtitle1' sx={{ flex: 1, fontWeight: 600 }}>
                     分享分组「{groupName}」
                 </Typography>
-                <IconButton size='small' aria-label='关闭' onClick={onClose}>
-                    <CloseIcon fontSize='small' />
-                </IconButton>
+                {/* 换成全站统一的右上角「×」（位置 / Tooltip / aria-label="关闭" 统一） */}
+                <DialogCloseButton onClose={onClose} />
             </DialogTitle>
             <Box sx={{ px: 3, pb: 2.5, pt: 1 }} data-group-share='1'>
                 {!loadedOnce ? (

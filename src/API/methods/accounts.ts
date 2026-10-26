@@ -12,6 +12,34 @@ import { D1PreparedStatement } from "../schema";
 import { STARTER_GROUPS } from "../starterData";
 import { AccountInfo, AccountSessionState, InviteInfo, LoginRequest, LoginResponse, RegisterResult, UserRecord, computeInactiveTimeline } from "../types";
 import { randomInviteCode } from "./internals";
+// 改密 / 注销前的「校验当前密码」要独立于登录那把锁再限一次流。
+// 这里的 src → worker 引用看着逆着分层（平时是 worker 引 src），但它是**有意的**：
+// 那把锁必须落在 D1 上（跨实例才有效），而它的实现与登录锁共用同一套 CAS 计数，
+// 单独再抄一份迟早会在某一把上漏掉「计数要在 CAS 循环里算」这条。
+import { credentialBucket, enforceCredentialGuard } from "../../../worker/loginGuard";
+
+/** 新密码的最短长度。注册与改密共用（见 validateNewPassword） */
+const MIN_PASSWORD_LENGTH = 6;
+
+/**
+ * 新密码的准入规则。**注册与改密共用这一份** ——
+ *
+ * 以前两处各自为政：注册只问「有没有 6 位」，改密连问都不问
+ * （`if (password)` 就写库）—— 于是改密能把密码设成 1 位，或者干脆设成账号名。
+ * 门槛取注册那条线的口径（≥6 位）：把改密补到与注册一致，是这次要修的不一致；
+ * 再往上抬到 12 位（validatePasswordStrength 那条）是另一件事，会连注册一起改，
+ * 动到的是「用户现在能设什么密码」，不该夹在这次安全修复里一起上。
+ */
+function validateNewPassword(password: string, username: string): { ok: boolean; message: string } {
+    if (!password || password.length < MIN_PASSWORD_LENGTH) {
+        return { ok: false, message: `密码至少 ${MIN_PASSWORD_LENGTH} 位` };
+    }
+    // 密码 = 账号名是最省事的那种弱口令，撞库脚本第一个试的就是它
+    if (username && password.toLowerCase() === username.toLowerCase()) {
+        return { ok: false, message: "密码不能与账号名相同" };
+    }
+    return { ok: true, message: "" };
+}
 
 export interface AccountsApi {
     login(loginRequest: LoginRequest): Promise<LoginResponse>;
@@ -590,8 +618,18 @@ export const accountsImpl: AccountsApi = {
         }
     },
 
-    /** 校验某个账号的密码是否正确（注销账号这类高危操作前再确认一次身份） */
+    /**
+     * 校验某个账号的密码是否正确（注销账号这类高危操作前再确认一次身份）。
+     *
+     * ⚠️ 前面那道节流是**这条链路唯一的限速**：调用方是「已登录」的
+     * （DELETE /account 与 PUT /auth/credentials），登录那把锁根本管不到，
+     * 而这里是全站最贵的一次哈希（PBKDF2 十万次迭代）+ 唯一一道门禁。
+     * 被顶到锁上时返回 false —— 调用方按「密码不对」处理，
+     * 但一次 PBKDF2 都不会跑（节流在算哈希之前，这才是它真正省钱的地方）。
+     */
     verifyPasswordOfUser: async function (this: NavigationAPI, userId: number, plain: string): Promise<boolean> {
+        const gate = await enforceCredentialGuard(this, credentialBucket(userId));
+        if (gate.limited) return false;
         const user = await this.findUserByIdWithHash(userId);
         if (!user) return false;
         return verifyPassword(plain, user.passwordHash);
@@ -627,8 +665,10 @@ export const accountsImpl: AccountsApi = {
         if (!/^[^/\s]+$/.test(name)) {
             return { success: false, message: "账号名不能包含空格或斜杠" };
         }
-        if (!password || password.length < 6) {
-            return { success: false, message: "密码至少 6 位" };
+        // 与改密共用同一份强度校验（见 validateNewPassword）
+        const passwordCheck = validateNewPassword(password, name);
+        if (!passwordCheck.ok) {
+            return { success: false, message: passwordCheck.message };
         }
 
         const invite = await this.checkInvite((inviteCode || "").trim().toUpperCase());
@@ -821,10 +861,23 @@ export const accountsImpl: AccountsApi = {
     ): Promise<{ success: boolean; message: string }> {
         const uid = this.currentUserId;
 
+        // 与 verifyPasswordOfUser 同一把锁：改密这条链路上「当前密码」那一问是唯一
+        // 门槛（拿到会话的人得先过它才能把主人锁在门外），所以必须先过节流。
+        // 被顶到锁上时直接退回，连 PBKDF2 都不跑。
+        const gate = await enforceCredentialGuard(this, credentialBucket(uid));
+        if (gate.limited) {
+            return { success: false, message: `操作过于频繁，请 ${gate.retryAfter} 秒后再试` };
+        }
+
         if (uid === null) {
             const current = await this.getAuthCredentials();
             if (!(await verifyPassword(currentPassword, current.password))) {
                 return { success: false, message: "当前密码不正确" };
+            }
+            // 新密码也要过与注册同一份强度校验（顺序上先确认是本人，再挑新密码的毛病）
+            if (password) {
+                const check = validateNewPassword(password, username || current.username);
+                if (!check.ok) return { success: false, message: check.message };
             }
             const ok = await this.updateAuthCredentials(
                 username || current.username,
@@ -849,7 +902,14 @@ export const accountsImpl: AccountsApi = {
                 .run();
             if (!ok.success) return { success: false, message: "保存新账号名失败" };
         }
-        if (password) await this.setUserPassword(uid, password);
+        if (password) {
+            // 改密与注册同一份强度校验：以前这里只有 `if (password)`，
+            // 1 位密码、与账号名相同的密码都能直接写进去。
+            // 改名一起提交时，按**新的**账号名判（新旧两个名字都不能当密码）。
+            const check = validateNewPassword(password, username || user.username);
+            if (!check.ok) return { success: false, message: check.message };
+            await this.setUserPassword(uid, password);
+        }
 
         // 作废 configs 里那份旧凭据：只要它还留着，部署时的种子账号名 + 种子密码
         // 就始终是一条绕过多账号体系、直 admin 的旁路（详见 login 里的回落注释）

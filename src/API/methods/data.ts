@@ -38,24 +38,47 @@ function recycleIdOf(result: { meta?: unknown } | undefined): number | undefined
  * 站点列表 / 单条的 SELECT：顺带带出「绑定的那篇笔记」（#477 站点↔笔记双向绑定）。
  *
  * 绑定关系存在 `notes.site_id` 上（一个站点最多一篇，约束由 updateNote 收口），
- * 所以这里用两个相关子查询取「最近更新的那条」：
- *   - **不用 LEFT JOIN**：万一库里有多条指向同一站点（历史导入、手工改库、约束上线
- *     之前的数据），JOIN 会让同一张卡片在列表里出现多行 —— 比没标题严重得多；
+ * 所以要取「最近更新的那条」：
+ *   - **不用 LEFT JOIN notes ON site_id**：万一库里有多条指向同一站点（历史导入、
+ *     手工改库、约束上线之前的数据），按 site_id 去 JOIN 会让同一张卡片在列表里
+ *     出现多行 —— 比没标题严重得多。这里的 JOIN 不在这个禁区里，见下面第二条；
  *   - 子查询必须带 `ORDER BY ... LIMIT 1` 才有确定结果，否则「显示哪条的标题」
  *     取决于扫描顺序，同一份数据两次请求能给出不同答案；
- *   - `n.user_id IS s.user_id`：单账号部署两边都是 NULL，写 `= ` 会永远不成立
+ *   - `n2.user_id IS s.user_id`：单账号部署两边都是 NULL，写 `= ` 会永远不成立
  *     （和 note_revision 那条 `IS ?` 是同一个坑）。
  *
- * 走 idx_notes_site(site_id)，每次是一条索引探测 —— 几十张卡的开销可忽略。
+ * **一次探测拿到两个字段（2026-10-26，性能）**：原来是 note_id / note_title
+ * 两个**一模一样**的相关子查询各跑一遍，200 张卡就是 400 次索引探测 + 400 次排序。
+ * 现在只用一个标量子查询取出那条笔记的 **id**，再用它把那一行 JOIN 回来，
+ * 一次拿到 id 与 title —— 探测次数减半，排序全省。
+ *
+ * ⚠️ 为什么这个 JOIN 不会 fan-out：ON 条件是 `n.nid = <标量子查询>`，而它对应的
+ * `notes.id` 是 INTEGER PRIMARY KEY（唯一），所以每个站点**最多匹配一行** ——
+ * 即使库里真有多条指向同一站点的脏数据，也只会取到「最近更新的那条」，
+ * 卡片不会重复出现。这正是上面那条「不用 LEFT JOIN」警告要防的事，换个 ON 条件就绕开了。
+ *
+ * ⚠️ 为什么 JOIN 的是 `(SELECT id AS nid, title AS ntitle FROM notes)` 而不是 `notes`：
+ * sites 与 notes **都有 `user_id` 列、也都有 `id` 列**。直接 JOIN notes 的话，
+ * 后面由 `scopeSql()` 追加的 `WHERE user_id = ?` 与 `querySite` 的 `WHERE id = ?`
+ * 会变成 ambiguous column name，整个站点列表直接 500（实测）。把 JOIN 源收成
+ * 只投影两列、并且**改名**（nid / ntitle），这两列就不在外层作用域里了，
+ * 未限定的 `user_id` / `id` 仍然唯一指向 sites。
+ *
+ * 走 idx_notes_site_recent(site_id, updated_at DESC, id DESC)：
+ * EXPLAIN 实测是 `SEARCH n2 USING INDEX idx_notes_site_recent (site_id=?)`，
+ * 探测直接按索引序取第一条，不用再排一次序。
  */
 const SITE_SELECT_WITH_NOTE = `SELECT
         s.id, s.group_id, s.name, s.url, s.icon, s.description, s.notes, s.username, s.password,
         s.order_num, s.created_at, s.updated_at,
-        (SELECT n.id FROM notes n WHERE n.site_id = s.id AND n.user_id IS s.user_id
-            ORDER BY n.updated_at DESC, n.id DESC LIMIT 1) AS note_id,
-        (SELECT n.title FROM notes n WHERE n.site_id = s.id AND n.user_id IS s.user_id
-            ORDER BY n.updated_at DESC, n.id DESC LIMIT 1) AS note_title
-    FROM sites s`;
+        n.nid AS note_id,
+        n.ntitle AS note_title
+    FROM sites s
+    LEFT JOIN (SELECT id AS nid, title AS ntitle FROM notes) n ON n.nid = (
+        SELECT n2.id FROM notes n2
+        WHERE n2.site_id = s.id AND n2.user_id IS s.user_id
+        ORDER BY n2.updated_at DESC, n2.id DESC LIMIT 1
+    )`;
 
 export interface DataApi {
     getGroups(): Promise<Group[]>;

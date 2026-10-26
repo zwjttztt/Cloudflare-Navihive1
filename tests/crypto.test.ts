@@ -20,11 +20,14 @@ import {
     validatePasswordStrength,
     constantTimeEqual,
 } from "../src/API/crypto";
+// 2026-10-25：令牌的 exp 现在是**必需**声明（缺 exp 一律判无效，
+// 否则等于签发永不过期的令牌）。这里给「应该验过」的用例补一个未来时间戳。
+const FUTURE_EXP = Math.floor(Date.now() / 1000) + 3600;
 
 const SECRET = "test-secret-key";
 
 test("signJwt/verifyJwt 正常往返且带令牌版本", async () => {
-    const token = await signJwt({ username: "admin", tv: 3 }, SECRET);
+    const token = await signJwt({ username: "admin", tv: 3, exp: FUTURE_EXP }, SECRET);
     const r = await verifyJwt(token, SECRET, { tokenVersion: 3 });
     assert.equal(r.valid, true);
     assert.equal((r.payload as { username: string }).username, "admin");

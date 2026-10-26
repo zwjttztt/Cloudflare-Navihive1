@@ -15,6 +15,12 @@
 
 import type { NavigationAPI } from "../src/API/http";
 import { ApiError, errorResponse } from "./lib/apiError";
+// 头名的唯一定义处在 src/API/httpConstants.ts（前端 client 也引它）。
+// 这里**再导出**一份是为了不破坏既有的 import 路径（worker 侧与测试都从这里引），
+// 而不是把字符串再抄一遍 —— 抄一份就又是那个「改一处忘一处」的漂移面。
+import { IDEMPOTENCY_HEADER } from "../src/API/httpConstants";
+
+export { IDEMPOTENCY_HEADER };
 
 /** 幂等 ID 的长度上限：UUID 是 36 字符，放宽到 128 够任何合理生成器，同时挡掉超长垃圾 */
 const MAX_OP_ID_LEN = 128;
@@ -22,7 +28,6 @@ const MAX_OP_ID_LEN = 128;
 /** 只认这几种字符：ID 会进 SQL 参数与存储键，别让它带上奇怪的东西 */
 const OP_ID_PATTERN = /^[A-Za-z0-9_-]{8,128}$/;
 
-export const IDEMPOTENCY_HEADER = "Idempotency-Key";
 
 /**
  * 从请求头里取幂等 ID。不合法 / 缺失一律返回 null（= 这次不启用幂等）。
