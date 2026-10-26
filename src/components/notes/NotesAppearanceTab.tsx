@@ -36,12 +36,13 @@ export default function NotesAppearanceTab({ settings, set }: NotesAppearanceTab
                                                 cursor: "pointer",
                                                 appearance: "none",
                                                 p: 0,
-                                                // 半红半蓝，直观表达「跟着主题走」
+                                                // 半红半蓝，直观表达「跟着主题走」：
+                                                // 红 = 记号（--notes-accent），蓝 = 操作（--accent-op，P1-4 方案 B）
                                                 background:
-                                                    "linear-gradient(135deg, var(--notes-accent) 50%, var(--accent) 50%)",
+                                                    "linear-gradient(135deg, var(--notes-accent) 50%, var(--accent-op) 50%)",
                                                 border:
                                                     settings.accent === ""
-                                                        ? "2px solid var(--accent)"
+                                                        ? "2px solid var(--accent-op)"
                                                         : "2px solid transparent",
                                                 outline: "1px solid var(--neutral-border)",
                                             }}
@@ -63,7 +64,7 @@ export default function NotesAppearanceTab({ settings, set }: NotesAppearanceTab
                                                     bgcolor: c,
                                                     border:
                                                         settings.accent === c
-                                                            ? "2px solid var(--accent)"
+                                                            ? "2px solid var(--accent-op)"
                                                             : "2px solid transparent",
                                                     outline: "1px solid var(--neutral-border)",
                                                 }}

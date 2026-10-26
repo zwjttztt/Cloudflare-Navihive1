@@ -1749,7 +1749,7 @@ function App() {
                     <SiteListHeader
                         siteName={configs["site.name"]}
                         headerCompact={headerCompact}
-                        clock={<HeaderClock />}
+                        clock={<HeaderClock compact={headerCompact} />}
                         actions={
                             <>
                                 {sortMode === SortMode.None && (

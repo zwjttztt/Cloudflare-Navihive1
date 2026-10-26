@@ -17,7 +17,11 @@ import MenuItem from "@mui/material/MenuItem";
 import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 import DataObjectIcon from "@mui/icons-material/DataObject";
+import AddIcon from "@mui/icons-material/Add";
 import AttachFileIcon from "@mui/icons-material/AttachFile";
+import HorizontalRuleIcon from "@mui/icons-material/HorizontalRule";
+import PolylineIcon from "@mui/icons-material/Polyline";
+import TranslateIcon from "@mui/icons-material/Translate";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import FormatColorTextIcon from "@mui/icons-material/FormatColorText";
 import FormatListBulletedIcon from "@mui/icons-material/FormatListBulleted";
@@ -252,6 +256,16 @@ const TOOL_GROUPS: { name: string; tools: ToolSpec[] }[] = [
 ];
 
 /**
+ * 窄屏（`narrow`）第一行只留这 6 个图标按钮：加粗 / 斜体 / 删除线 + 无序 / 有序 / 任务。
+ * 加上「标题层级」「链接」正好 8 个 —— 都是**写字时就地要用**的。
+ *
+ * 为什么不按整组留：强调组里的「高亮」、列表组里的「引用」都是一天用不了两次的，
+ * 留在第一行只会把 390px 的工具栏从 1 行顶成 3 行（P2-1 的原始问题）。
+ * 它们收进「插入」下拉后仍是两次点击可达，功能一个不丢。
+ */
+const NARROW_INLINE_KEYS = new Set(["bold", "italic", "strike", "ul", "ol", "task"]);
+
+/**
  * 代码块语言下拉（阶段四第 12 条）。
  *
  * 预览层（markdown-it）本来就会把 ```js 渲染成 `<code class="language-js">`
@@ -396,6 +410,7 @@ export function MarkdownToolbar({
     onInsertFold,
     onInsertTabs,
     onInsertDivider,
+    narrow,
 }: {
     onInsert: (before: string, after: string, placeholder: string) => void;
     /** 行首前缀的开关：引用 `> `、列表 `- `（再点一次摘掉） */
@@ -468,12 +483,28 @@ export function MarkdownToolbar({
      * 主工具栏在预览模式下要传 false：先挡住并说明，别让人白传一次。
      */
     canInsert?: boolean;
+    /**
+     * 窄屏（手机）模式：第一行只留 8 个高频入口，其余收进「插入」下拉。
+     *
+     * ⚠️ 只影响**这一排按钮渲染什么**，不影响任何按钮的行为 ——
+     * 宽屏（不传 / false）必须是原来那套全量铺开，既有单测和视觉都按那个写的。
+     * 断点由调用方算好传进来（NotesEditorPane 的 `bp === "mobile"`），
+     * 这里**不再**自己 useMediaQuery：同一件事两个来源，早晚会不一致。
+     */
+    narrow?: boolean;
 }) {
     const canInsertOk = canInsert !== false;
     const [headingAnchor, setHeadingAnchor] = useState<HTMLElement | null>(null);
     const [linkAnchor, setLinkAnchor] = useState<HTMLElement | null>(null);
     const [imageAnchor, setImageAnchor] = useState<HTMLElement | null>(null);
     const [insertAnchor, setInsertAnchor] = useState<HTMLElement | null>(null);
+    /**
+     * 窄屏「插入」下拉的锚点。
+     * 与上面那个 `insertAnchor`（「笔记工具」菜单）分开：窄屏下「笔记工具」
+     * 那颗按钮不渲染，但它的菜单还在（从「插入」里第二次点开），
+     * 两个菜单共用同一个 state 就会互相顶掉。
+     */
+    const [moreAnchor, setMoreAnchor] = useState<HTMLElement | null>(null);
     const [blockAnchor, setBlockAnchor] = useState<HTMLElement | null>(null);
     const [langAnchor, setLangAnchor] = useState<HTMLElement | null>(null);
     /**
@@ -613,6 +644,31 @@ export function MarkdownToolbar({
     /** 分组之间的竖线（inkstone 的 Divider：mx-1、16px 高、1px 宽） */
     const divider = <Divider orientation='vertical' flexItem sx={{ mx: 0.5, my: 0.5 }} />;
 
+    /**
+     * 窄屏「插入」下拉里的一项：左图标、右名称。
+     *
+     * ⚠️ `data-tool` 沿用那颗按钮**原来的键**（table / formula / image…）：
+     * 冒烟脚本、a11y 审计、单测都按它定位。收进下拉改的是「入口在哪」，
+     * 不是「这个功能叫什么」—— 键名跟着布局变等于把它们全打瞎。
+     */
+    const insertItem = (tool: string, icon: ReactNode, label: string, action: () => void) => (
+        <MenuItem
+            key={tool}
+            data-tool={tool}
+            sx={menuRowSx}
+            onClick={() => {
+                // 先关菜单再执行：否则窄屏上菜单正好盖住刚插进去的那一行
+                setMoreAnchor(null);
+                action();
+            }}
+        >
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                {icon}
+                <span>{label}</span>
+            </span>
+        </MenuItem>
+    );
+
     return (
         <>
         {/* 隐藏的文件选择框。
@@ -663,6 +719,9 @@ export function MarkdownToolbar({
                 // overflowY 也变成 auto，横滚动条一出现就把 40px 撑出**竖向滚动**，
                 // 工具栏还会盖住标题。改成**换行铺开**：窄栏下自动折成两三行，
                 // 高度自适应（编辑器是 flex:1 会自己让空间），永远不出现滚动条。
+                // 2026-10-26（P2-1）：手机端不再靠这条兜底 —— `narrow` 下第一行只留
+                // 8 个高频入口（约 317px），压根到不了换行那一步；flexWrap 留着是给
+                // **宽屏分屏**（半屏仍要能折行）用的，别当成「手机端问题已解决」。
                 minHeight: 36,
                 flexShrink: 0,
                 borderBottom: "1px solid var(--card-border)",
@@ -733,10 +792,16 @@ export function MarkdownToolbar({
                 这样「这个键是干什么的」不用去记 —— 但**只在真的有绑定时**才显示，
                 高亮这类没绑定的就只写名称，不显示一个按了没反应的键。 */}
             <Box sx={{ display: "flex", alignItems: "center", gap: 0.25 }}>
-                {TOOL_GROUPS.map((group, gi) => (
+                {TOOL_GROUPS.map((group, gi) => {
+                    // 窄屏只留 NARROW_INLINE_KEYS 那 6 个（两组各剩 3 个）。
+                    // ⚠️ 过滤在**渲染时**做，TOOL_GROUPS 本身不动 ——「有哪些工具」
+                    // 仍然只有一份定义，加新按钮时不用记两处。
+                    const tools = narrow ? group.tools.filter(t => NARROW_INLINE_KEYS.has(t.key)) : group.tools;
+                    if (tools.length === 0) return null;
+                    return (
                     <Fragment key={group.name}>
                         {gi > 0 && <Divider orientation='vertical' flexItem sx={{ mx: 0.5, my: 0.5 }} />}
-                        {group.tools.map(tool => {
+                        {tools.map(tool => {
                             const combo = comboFor(tool.shortcutId ?? "");
                             return (
                                 <Tooltip
@@ -766,7 +831,8 @@ export function MarkdownToolbar({
                             );
                         })}
                     </Fragment>
-                ))}
+                    );
+                })}
             </Box>
 
             {divider}
@@ -774,6 +840,23 @@ export function MarkdownToolbar({
             {/* ② 链接与引用（inkstone 的 reference 菜单）：**图标直接插链接**，
                 小箭头才开下拉 —— 想插最常见的普通链接不用点两次。
                 data-tool='link' 挂在主按钮上，老的用例按它找按钮不丢。 */}
+            {narrow ? (
+                /* 窄屏：只留「直接插链接」这一颗 28px 宽的图标。
+                   「链接与引用」菜单（双链 / 嵌入 / 块引用 / 脚注）收进「插入」下拉 ——
+                   它一天用不了一次，却要额外占掉箭头那 26px（P2-1）。 */
+                <Tooltip title='插入网址'>
+                    <IconButton
+                        size='small'
+                        aria-label='链接'
+                        data-tool='link'
+                        onMouseDown={e => e.preventDefault()}
+                        onClick={() => onInsert("[", "](https://)", "链接文字")}
+                        sx={toolBtnSx}
+                    >
+                        <LinkIcon fontSize='small' />
+                    </IconButton>
+                </Tooltip>
+            ) : (
             <Box sx={{ display: "inline-flex", alignItems: "center", flexShrink: 0 }}>
                 <Tooltip title='插入网址'>
                 <IconButton
@@ -806,6 +889,7 @@ export function MarkdownToolbar({
                 </IconButton>
                     </Tooltip>
             </Box>
+            )}
             <Menu
                 open={Boolean(linkAnchor)}
                 anchorEl={linkAnchor}
@@ -876,9 +960,71 @@ export function MarkdownToolbar({
                 </Tooltip>
             </Menu>
 
+            {/* ⑧ 窄屏的「插入」：低频入口全部收在这一颗里。
+                ⚠️ 上面那些按钮在窄屏下用 `{!narrow && …}` 整块不渲染，但它们的
+                **Menu 照旧挂着** —— 下拉里同名的一项只要把 anchor 指过来
+                （`setTableAnchor(moreAnchor)`），原来的菜单就原地开出来。
+                菜单内容永远只有一份，不会出现「手机上一套、桌面上另一套」。
+
+                宽度账（390 宽的屏，工具栏左右各 px:1 = 16）：
+                  标题层级 28 │ 分隔线 1+8 │ 强调 3×28 │ 组内分隔线 1+8 │ 列表 3×28
+                  │ 链接 28 │ 分隔线 1+8 │ 插入 28
+                合计 28+9+84+9+84+28+9+28 = 279，加组内 6 个 gap(2px) = 12 → 291，
+                再加根容器 5 个 gap(2px) = 10 → 301，加左右内边距 16 = **317px**。
+                390 宽下 1 行、余量 73px；分屏到 320 也仍是 1 行（余量 3px）。
+                再窄会折成 2 行 —— 验收要的就是 ≤2 行，可以接受，但**不要**为此
+                退回 overflowX:auto（见根容器那段注释：会连带出竖向滚动条）。 */}
+            {narrow && (
+                <>
+                    <Divider orientation='vertical' flexItem sx={{ mx: 0.5, my: 0.5 }} />
+                    <Tooltip title='插入其他格式：代码、表格、公式、图片、内容块…'>
+                        <IconButton
+                            size='small'
+                            aria-label='插入'
+                            data-tool='insert-more'
+                            aria-haspopup='menu'
+                            aria-expanded={moreAnchor ? true : undefined}
+                            onMouseDown={e => e.preventDefault()}
+                            onClick={e => setMoreAnchor(e.currentTarget)}
+                            sx={toolBtnSx}
+                        >
+                            <AddIcon fontSize='small' />
+                        </IconButton>
+                    </Tooltip>
+                    <Menu
+                        open={Boolean(moreAnchor)}
+                        anchorEl={moreAnchor}
+                        onClose={() => setMoreAnchor(null)}
+                    >
+                        {/* 行内：写字时顺手会用，但比「加粗 / 列表」低频一档 */}
+                        {insertItem("code", <CodeIcon sx={{ fontSize: 18 }} />, "行内代码", () => onInsert("`", "`", "code"))}
+                        {insertItem("highlight", <FormatColorTextIcon sx={{ fontSize: 18 }} />, "高亮", () => onInsert("==", "==", "高亮"))}
+                        {insertItem("quote", <FormatQuoteIcon sx={{ fontSize: 18 }} />, "引用", () => onLinePrefix("> "))}
+                        <Divider />
+                        {/* 块级：插的是一段结构 */}
+                        {insertItem("pre", <DataObjectIcon sx={{ fontSize: 18 }} />, "代码块", () => onInsert("```\n", "\n```", "代码"))}
+                        {insertItem("code-menu", <PolylineIcon sx={{ fontSize: 18 }} />, "代码与图表", () => setLangAnchor(moreAnchor))}
+                        {insertItem("code-lang-menu", <TranslateIcon sx={{ fontSize: 18 }} />, "代码语言", () => setCodeLangAnchor(moreAnchor))}
+                        {insertItem("divider", <HorizontalRuleIcon sx={{ fontSize: 18 }} />, "分隔线", () => onInsertDivider())}
+                        <Divider />
+                        {/* 对象：插进来的是「东西」而不是语法 */}
+                        {insertItem("table", <TableRowsIcon sx={{ fontSize: 18 }} />, "表格", () => setTableAnchor(moreAnchor))}
+                        {insertItem("formula", <CalculateIcon sx={{ fontSize: 18 }} />, "公式", () => setFormulaAnchor(moreAnchor))}
+                        {insertItem("image", <ImageIcon sx={{ fontSize: 18 }} />, "图片", () => setImageAnchor(moreAnchor))}
+                        {onAttachFile && insertItem("attach", <AttachFileIcon sx={{ fontSize: 18 }} />, "添加附件", () => attachInputRef.current?.click())}
+                        <Divider />
+                        {/* 原本就是下拉的几组：点进去还是原来那个菜单 */}
+                        {insertItem("link-menu", <LinkIcon sx={{ fontSize: 18 }} />, "链接与引用", () => setLinkAnchor(moreAnchor))}
+                        {insertItem("note", <SubjectIcon sx={{ fontSize: 18 }} />, "笔记工具", () => setInsertAnchor(moreAnchor))}
+                        {insertItem("callout", <ViewStreamIcon sx={{ fontSize: 18 }} />, "内容块", () => setBlockAnchor(moreAnchor))}
+                    </Menu>
+                </>
+            )}
+
             {/* ③ 图片（inkstone 的 image 菜单）：同样是「主按钮 + 箭头」。
                 2026-10-08 起本地上传已接上（KV 落地），下面的 Tooltip 别再写
                 「还没开放」—— 用户会照着提示以为是坏的（真发生过）。 */}
+            {!narrow && (
             <Box sx={{ display: "inline-flex", alignItems: "center", flexShrink: 0 }}>
                 <Tooltip title='插入图片：点图标直接传本地图，点箭头选网络图片'>
                 <IconButton
@@ -907,11 +1053,13 @@ export function MarkdownToolbar({
                 </IconButton>
                     </Tooltip>
             </Box>
+            )}
 
             {/* 添加附件（2026-10-18 用户报「工具栏上加上添加附件按键可以选择 txt 或 json」）：
                 走真附件接口，并由宿主把下载链接插入目标笔记正文。
-                没配存储（onAttachFile 缺席）时按钮整个不渲染。 */}
-            {onAttachFile && (
+                没配存储（onAttachFile 缺席）时按钮整个不渲染。
+                窄屏同理收进「插入」下拉（见上面 ⑧）。 */}
+            {!narrow && onAttachFile && (
                 <Tooltip title={canInsertOk ? '添加附件：上传 txt / json 并在笔记中插入下载链接' : '请切换到编辑或分栏模式添加附件'}>
                     <span>
                         <IconButton
@@ -972,10 +1120,12 @@ export function MarkdownToolbar({
                 </MenuItem>
             </Menu>
 
-            <Divider orientation='vertical' flexItem sx={{ mx: 0.25, my: 0.5 }} />
+            {!narrow && <Divider orientation='vertical' flexItem sx={{ mx: 0.25, my: 0.5 }} />}
 
             {/* ④ 笔记工具（inkstone 的 note 菜单）：标签 / 块 ID / 笔记属性 / 隐藏注释。
-                从文字按钮「插入」改成图标 + 箭头，和左右两组的视觉重量对齐。 */}
+                从文字按钮「插入」改成图标 + 箭头，和左右两组的视觉重量对齐。
+                窄屏收进「插入」下拉，但下面的 Menu 照旧留着（下拉里要用）。 */}
+            {!narrow && (
             <Tooltip title='不太常用但有用的语法：标签、块 ID、笔记属性、隐藏注释'>
             <Button
                 size='small'
@@ -991,6 +1141,7 @@ export function MarkdownToolbar({
                 <ExpandMoreIcon sx={{ fontSize: 13, opacity: 0.6 }} />
             </Button>
             </Tooltip>
+            )}
             <Menu
                 open={Boolean(insertAnchor)}
                 anchorEl={insertAnchor}
@@ -1057,6 +1208,7 @@ export function MarkdownToolbar({
                 它和下面这个图标版都叫 aria-label='块'、都开同一个 blockAnchor 菜单，
                 真机上就是两个按钮干同一件事（读屏也会念两遍「块」）。
                 inkstone 那边只有图标 + ChevronDown 一个（EditorToolbar.tsx:121）。 */}
+            {!narrow && (
             <Tooltip title='成块的语法：提示框、折叠内容、标签页、分隔线'>
             <Button
                 size='small'
@@ -1072,6 +1224,7 @@ export function MarkdownToolbar({
                 <ExpandMoreIcon sx={{ fontSize: 13, opacity: 0.6 }} />
             </Button>
             </Tooltip>
+            )}
             <Menu
                 open={Boolean(blockAnchor)}
                 anchorEl={blockAnchor}
@@ -1164,7 +1317,7 @@ export function MarkdownToolbar({
                 </Tooltip>
             </Menu>
 
-            {divider}
+            {!narrow && divider}
 
             {/* ⚠️ 引用按钮不在这里 —— 它已经并进下面的 TOOL_GROUPS「列表」组
                 （inkstone 也是把引用和无序/有序/任务列表放一组的）。
@@ -1174,7 +1327,9 @@ export function MarkdownToolbar({
                 箭头里是 inkstone 那 3 项（代码块 / 增强代码块 / Mermaid 图表）。
                 ⚠️ 2026-10-07 菜单名从「代码块语言」改成 inkstone 的 zh-CN 原文
                 「代码与图表」—— 原来那个名字是按「这菜单里能选语言」起的，
-                拆出独立的语言按钮后它就不贴切了。 */}
+                拆出独立的语言按钮后它就不贴切了。
+                窄屏收进「插入」下拉（Menu 照旧留在下面）。 */}
+            {!narrow && (
             <Box sx={{ display: "inline-flex", alignItems: "center", flexShrink: 0 }}>
                 <Tooltip title='插入代码块'>
                 <IconButton
@@ -1203,6 +1358,7 @@ export function MarkdownToolbar({
                 </IconButton>
                     </Tooltip>
             </Box>
+            )}
             <Menu
                 open={Boolean(langAnchor)}
                 anchorEl={langAnchor}
@@ -1245,7 +1401,8 @@ export function MarkdownToolbar({
             </Menu>
 
             {/* 代码语言（inkstone 没有这个入口，我们保留 —— 标语言是真需求）。
-                独立成一个按钮，避免把上面那个菜单撑成 19 项。 */}
+                独立成一个按钮，避免把上面那个菜单撑成 19 项。窄屏收进「插入」。 */}
+            {!narrow && (
             <Tooltip title='给已有的代码块标语言（js / python / sql…）'>
             <IconButton
                 size='small'
@@ -1260,6 +1417,7 @@ export function MarkdownToolbar({
                 <CodeIcon fontSize='small' />
             </IconButton>
             </Tooltip>
+            )}
             <Menu
                 open={Boolean(codeLangAnchor)}
                 anchorEl={codeLangAnchor}
@@ -1279,7 +1437,8 @@ export function MarkdownToolbar({
                 ))}
             </Menu>
 
-            {/* 公式下拉 */}
+            {/* 公式下拉（窄屏收进「插入」，Menu 照旧留着） */}
+            {!narrow && (
             <Tooltip title='插入公式：行内 $…$ 或单独一段的 $$…$$'>
                 <IconButton
                     size='small'
@@ -1299,6 +1458,7 @@ export function MarkdownToolbar({
                     <CalculateIcon fontSize='small' />
                 </IconButton>
             </Tooltip>
+            )}
             <Menu
                 open={Boolean(formulaAnchor)}
                 anchorEl={formulaAnchor}
@@ -1328,7 +1488,8 @@ export function MarkdownToolbar({
                 </MenuItem>
             </Menu>
 
-            {/* 表格下拉 */}
+            {/* 表格下拉（窄屏收进「插入」，Menu 照旧留着） */}
+            {!narrow && (
             <Tooltip title='插入表格，或给已有表格增删行列'>
                 <IconButton
                     size='small'
@@ -1348,6 +1509,7 @@ export function MarkdownToolbar({
                     <TableRowsIcon fontSize='small' />
                 </IconButton>
             </Tooltip>
+            )}
             <Menu
                 open={Boolean(tableAnchor)}
                 anchorEl={tableAnchor}

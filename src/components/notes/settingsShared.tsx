@@ -88,9 +88,12 @@ export function SegOptions<T extends string>({
                             cursor: "pointer",
                             appearance: "none",
                             font: "inherit",
-                            border: active ? "1px solid var(--accent)" : "1px solid var(--neutral-border)",
+                            // 设置项是**操作件**（P1-4 方案 B）：可点 → 操作色。
+                            // 这一层在弹窗里、portal 到 body，本来就不吃记事本根节点的红棕；
+                            // 写 --accent-op 是把「操作」这件事显式写死，别再靠 DOM 位置侥幸。
+                            border: active ? "1px solid var(--accent-op)" : "1px solid var(--neutral-border)",
                             bgcolor: active ? "var(--accent-wash)" : "transparent",
-                            color: active ? "var(--accent)" : "text.secondary",
+                            color: active ? "var(--accent-op)" : "text.secondary",
                         }}
                     >
                         {opt.label}

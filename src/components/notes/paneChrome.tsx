@@ -231,10 +231,12 @@ export function ColResizeHandle({
                         "background-color var(--dur-base, 220ms) var(--ease-out, ease), width var(--dur-base, 220ms) var(--ease-out, ease)",
                     pointerEvents: "none",
                 },
-                // hover / 键盘聚焦 / 拖动中：线加粗并变强调色（inkstone 同款）
+                // hover / 键盘聚焦 / 拖动中：线加粗并变**操作色**（inkstone 同款）
+                // P1-4 方案 B：这是「拖得动」的操作反馈，不是记号 —— 所以用 --accent-op，
+                // 不跟着记事本根节点的红棕走。
                 "&:hover > span, &:focus-visible > span, &[data-dragging='1'] > span": {
                     width: "2px",
-                    bgcolor: "var(--accent)",
+                    bgcolor: "var(--accent-op)",
                 },
             }}
         >

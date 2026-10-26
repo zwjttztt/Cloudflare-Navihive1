@@ -7,7 +7,12 @@ const WEEK = ["周日", "周一", "周二", "周三", "周四", "周五", "周�
 
 const two = (n: number) => String(n).padStart(2, "0");
 
-export default function HeaderClock() {
+export interface HeaderClockProps {
+    /** 滚动进入紧凑模式后只留时间：宽度让给站名，日期不是随时要看的信息 */
+    compact?: boolean;
+}
+
+export default function HeaderClock({ compact = false }: HeaderClockProps) {
     const [now, setNow] = useState(() => new Date());
 
     useEffect(() => {
@@ -28,24 +33,38 @@ export default function HeaderClock() {
     return (
         <Box
             className='nav-clock'
+            // aria-label 与 title 说同一件事，但 title 给鼠标用户看完整时间，也让缩写（compact）不至于丢信息
             aria-label={`当前时间 ${time} ${date} ${week}`}
+            title={`${time} ${date} ${week}`}
             // 现在待在品牌行右侧，不再和工具栏挤一行，所以 600px 起就能显示
             sx={{ display: { xs: "none", sm: "flex" }, flexShrink: 0 }}
         >
-            {/* 行高必须显式给死：MUI 默认行高会撑到 39px，比工具栏还高，日期那行会被裁掉 */}
+            {/* 单行元信息：时间用正文色、日期用次要色 —— 时钟不是操作，不该占用代表交互的 accent 蓝，
+                也不该比站名更抢眼。字号压到 13/12，跟 H1 拉开层级，读作「标题右端的注脚」 */}
             <Typography
-                className='nav-clock-time'
-                sx={{ fontSize: 17, lineHeight: 1.15 }}
+                className='nav-clock-meta'
+                sx={{ fontSize: 13, fontWeight: 500, color: "text.primary" }}
             >
                 {time}
             </Typography>
-            <Typography
-                className='nav-clock-date'
-                sx={{ fontSize: 11, lineHeight: 1.15, color: "text.secondary" }}
-                noWrap
-            >
-                {date} {week}
-            </Typography>
+            {!compact && (
+                <>
+                    <Typography
+                        className='nav-clock-meta'
+                        aria-hidden='true'
+                        sx={{ color: "text.disabled", mx: 0.75 }}
+                    >
+                        ·
+                    </Typography>
+                    <Typography
+                        className='nav-clock-meta'
+                        sx={{ fontSize: 12, color: "text.secondary" }}
+                        noWrap
+                    >
+                        {date} {week}
+                    </Typography>
+                </>
+            )}
         </Box>
     );
 }

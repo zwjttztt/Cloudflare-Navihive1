@@ -44,6 +44,16 @@ const listHeaderBtnSx = {
     "&:hover": { bgcolor: "var(--glass-bg-hover)", borderColor: "var(--glass-border)" },
 } as const;
 
+/**
+ * 一行笔记最多平铺几个标签徽章（P2-3），超出的折成「+N」。
+ *
+ * 2 是三栏布局下**量出来**的数：中栏通常只有 200–280px，两个 10.5px 的徽章
+ * 加间隙就吃掉大半行宽，第三个一挤就换行 —— 行高 97 → 120px，
+ * 指针扫过列表时整列的节奏被打断（比「少显示一个标签」难看得多）。
+ * 数字不丢：折起来的那部分写成 +N，鼠标停上去给出全名。
+ */
+const LIST_TAG_VISIBLE = 2;
+
 export default function NotesListPane(props: Pick<NotesPageCtx, "activeFolder" | "activeId" | "activeTag" | "bp" | "bulkArchive" | "checked" | "checkedNotes" | "dirty" | "draggingNoteId" | "emptyArt" | "emptyCopy" | "filtered" | "highlightRanges" | "keyword" | "lazyListGroups" | "listCollapsed" | "listGroups" | "listHidden" | "listW" | "menuClosing" | "multiSelect" | "narrowLayout" | "navInner" | "navW" | "noteTags" | "notes" | "notesCommands" | "onClose" | "onEmptyTrash" | "onPurgeTrashed" | "onRestoreTrashed" | "openNote" | "openTemplatePicker" | "pinnedCount" | "renderSearchField" | "reset" | "rowActionsSuppressed" | "rowMenu" | "searchRefNarrow" | "searchSnippets" | "selectAnchorRef" | "setBulkDeleteOpen" | "setChecked" | "setDraggingNoteId" | "setListCollapsed" | "setMiddleHidden" | "setMultiSelect" | "setRowActionsSuppressed" | "setRowMenu" | "setSortAnchor" | "startDrag" | "switchTo" | "tagColorByName" | "tags" | "toggleChecked" | "trashedNotes" | "uiSettings" | "view" | "visibleIds">) {
     const { activeFolder, activeId, activeTag, bp, bulkArchive, checked, checkedNotes, dirty, draggingNoteId, emptyArt, emptyCopy, filtered, highlightRanges, keyword, lazyListGroups, listCollapsed, listGroups, listHidden, listW, menuClosing, multiSelect, narrowLayout, navInner, navW, noteTags, notes, notesCommands, onClose, onEmptyTrash, onPurgeTrashed, onRestoreTrashed, openNote, openTemplatePicker, pinnedCount, renderSearchField, reset, rowActionsSuppressed, rowMenu, searchRefNarrow, searchSnippets, selectAnchorRef, setBulkDeleteOpen, setChecked, setDraggingNoteId, setListCollapsed, setMiddleHidden, setMultiSelect, setRowActionsSuppressed, setRowMenu, setSortAnchor, startDrag, switchTo, tagColorByName, tags, toggleChecked, trashedNotes, uiSettings, view, visibleIds } = props;
     return (
@@ -298,7 +308,9 @@ export default function NotesListPane(props: Pick<NotesPageCtx, "activeFolder" |
                             }}
                             sx={{
                                 ...listHeaderBtnSx,
-                                color: multiSelect ? "var(--accent)" : "text.secondary",
+                                // 多选是工具栏上的**按钮**，激活态用操作色（P1-4 方案 B）：
+                                // 「点它会发生事」是蓝；红棕留给下面的选中行
+                                color: multiSelect ? "var(--accent-op)" : "text.secondary",
                             }}
                         >
                             {multiSelect ? (
@@ -876,9 +888,27 @@ export default function NotesListPane(props: Pick<NotesPageCtx, "activeFolder" |
                                     精确时刻仍然拿得到：整行的 title 上有。 */}
                                 {/* 标签小徽章：让「这条笔记打了哪些标签」在列表里直接看得见，
                                     不用点进去看。左栏那个标签视图才有意义也靠它。 */}
-                                {tagNamesOf(note, noteTags, tags).length > 0 && (
-                                    <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.5, mt: 0.5 }}>
-                                        {tagNamesOf(note, noteTags, tags).map(name => {
+                                {(() => {
+                                    const names = tagNamesOf(note, noteTags, tags);
+                                    if (names.length === 0) return null;
+                                    // P2-3：只平铺前两个，其余折成「+N」。原来 flexWrap:'wrap'
+                                    // 时第三个徽章会把整行顶到第二行（行高 97 → 120px），
+                                    // 指针扫过列表时整列的节奏就断了 —— 宁可少摊一个，也不许换行。
+                                    const shown = names.slice(0, LIST_TAG_VISIBLE);
+                                    const hidden = names.slice(LIST_TAG_VISIBLE);
+                                    return (
+                                    <Box
+                                        sx={{
+                                            display: "flex",
+                                            // ⚠️ nowrap 是这条验收的核心：裁掉可以，换行不行
+                                            flexWrap: "nowrap",
+                                            gap: 0.5,
+                                            mt: 0.5,
+                                            minWidth: 0,
+                                            overflow: "hidden",
+                                        }}
+                                    >
+                                        {shown.map(name => {
                                             // 设了颜色的标签：文字与描边用本色、底色是它 12% 的薄涂 ——
                                             // 直接填满本色的話，深色标签上的深色文字会看不清。
                                             const c = tagColorByName.get(name.trim());
@@ -898,6 +928,9 @@ export default function NotesListPane(props: Pick<NotesPageCtx, "activeFolder" |
                                                     fontSize: "calc(10.5px * var(--notes-font-scale, 1))",
                                                     lineHeight: 1.6,
                                                     borderRadius: 999,
+                                                    // 不许被挤扁：徽章自己先保形，宽度不够交给外层裁
+                                                    flexShrink: 0,
+                                                    whiteSpace: "nowrap",
                                                     ...(c
                                                         ? {
                                                               border: "1px solid transparent",
@@ -923,8 +956,35 @@ export default function NotesListPane(props: Pick<NotesPageCtx, "activeFolder" |
                                             </Box>
                                             );
                                         })}
+                                        {hidden.length > 0 && (
+                                            <Box
+                                                // ⚠️ 刻意**不带** data-note-tag：那个属性是「真标签」的记号，
+                                                // 守卫与统计按它数标签，把「+2」算进去等于多出两个标签。
+                                                data-note-tag-more={hidden.length}
+                                                // 折起来的名字不能丢：title 给**全部**标签，
+                                                // 数字只回答「还有几个」，名字才是信息本身。
+                                                title={`全部标签：${names.join("、")}`}
+                                                sx={{
+                                                    px: 0.75,
+                                                    py: 0.1,
+                                                    fontSize: "calc(10.5px * var(--notes-font-scale, 1))",
+                                                    lineHeight: 1.6,
+                                                    borderRadius: 999,
+                                                    flexShrink: 0,
+                                                    whiteSpace: "nowrap",
+                                                    // 和「没设颜色」的徽章同一档中性底：
+                                                    // 它是「还有多少」的计数，不该被当成一个有色彩的标签读。
+                                                    border: "1px solid var(--card-border)",
+                                                    color: "text.secondary",
+                                                    bgcolor: "var(--neutral-wash)",
+                                                }}
+                                            >
+                                                +{hidden.length}
+                                            </Box>
+                                        )}
                                     </Box>
-                                )}
+                                    );
+                                })()}
                             </Box>
                         );
                     })}

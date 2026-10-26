@@ -277,7 +277,11 @@ test("分隔条照 inkstone：命中区 9px + 负边距 −4px + 内含 1px 线"
     assert.ok(handle.includes("& > span"), "线要用真 span 画（::after 量不到宽度，测不了）");
     assert.ok(handle.includes('left: "50%"'), "线要居中");
     // inkstone：静止 1px、hover/拖动 2px 强调色，没有发光也没有阴影
-    assert.ok(handle.includes("var(--accent)"), "hover/拖动变强调色");
+    // ⚠️ 2026-10-26（P1-4 方案 B）：把手的 hover/拖动色从 --accent 改为 --accent-op。
+    // 语义没变（仍然是「hover/拖动变强调色」），换的是**哪一种**强调色：
+    // --accent 在记事本里是红棕（记号：选中/标签/双链），把手是**可拖动的东西**，
+    // 属「命令」一类，所以走操作色（蓝）。断言的意图原封不动。
+    assert.ok(handle.includes("var(--accent-op)"), "hover/拖动变操作色（拖得动）");
     assert.ok(
         !/boxShadow|filter:|gradient/.test(handle),
         "不要加发光/阴影/渐变 —— inkstone 那种「只有一根细线」反而更好看"

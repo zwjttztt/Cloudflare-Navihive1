@@ -265,7 +265,11 @@ export default function HeaderSearchBox({
                             <Box
                                 sx={{
                                     display: "flex",
-                                    alignItems: "center",
+                                    // baseline 而不是 center（P1-1 同类问题）：「最近搜索」是
+                                    // 12px 的 caption，右边「清空」是个 ≥30px 的小按钮 ——
+                                    // 用 center 是拿小字盒子的中心去对按钮盒子的中心，
+                                    // 小字会看着偏高。两者都是文字，按基线对齐才是一条线。
+                                    alignItems: "baseline",
                                     px: 1.5,
                                     pt: 1.25,
                                     pb: 0,

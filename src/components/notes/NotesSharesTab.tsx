@@ -154,7 +154,9 @@ export default function NotesSharesTab({ shareApi, onNotify, onOpenNote, onClose
                                                             p: 0,
                                                             cursor: "pointer",
                                                             textAlign: "left",
-                                                            "&:hover": { color: "var(--accent)" },
+                                                            // 标题是**可点的**（点了跳回那篇笔记的编辑器）→ 操作色
+                                                            // （P1-4 方案 B）
+                                                            "&:hover": { color: "var(--accent-op)" },
                                                         }}
                                                     >
                                                         {item.title || "（无标题）"}

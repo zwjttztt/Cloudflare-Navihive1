@@ -254,8 +254,31 @@
          暗色 #c96e60 压 #161616 ≈ 5.19:1（配 --on-accent 的深字 ≈ 4.87:1）
        记事本根节点注入的是 `--accent: var(--notes-accent)`，于是它跟着主题切换，
        而用户显式挑的颜色仍然直接覆盖 --accent（尊重用户选择，不再做二次加工）。
-       ⚠️ 改这两个值之前先跑 npm run audit:contrast，它量的是记事本的亮/暗两态。 */
+       ⚠️ 改这两个值之前先跑 npm run audit:contrast，它量的是记事本的亮/暗两态。
+       ⚠️ 它现在只表示「记号」（选中/标签/双链/置顶星标）；「可点的东西」走 --accent-op，见下面那条。 */
     --notes-accent: #a03c32;
+
+    /* 操作色（P1-4 方案 B，2026-10-26）：**蓝 = 操作**，与「红棕 = 记号」分工。
+       为什么要有这个变量：记事本根节点把 --accent 改写成了红棕（见 NotesPage 的
+       `"--accent": uiSettings.accent || "var(--notes-accent)"`），于是「点一下会发生事」
+       的东西也全变成红棕了 —— 拖动条、焦点圈、开关、链接、多选按钮。
+       红棕是**记号**（你在哪一篇、哪个标签、哪条双链），不该兼任「这是可点的」。
+       这里不写 var(--accent)：那个值在记事本里已经被覆盖成红棕；也不写 var(--notes-accent)。
+       取值就是导航页的蓝 —— 全站只有一种「操作色」，跨页才读作同一个产品。
+       ⚠️ 用户在外观里挑了自定义强调色时，那个颜色只覆盖 --accent（记号），
+       操作色恒定是这个蓝，不受影响。
+
+       ===== 分工怎么判（P1-4 方案 B 的落地口径）=====
+       一句话：**「关于这篇笔记的身份与状态」→ 红棕；「命令」→ 蓝。**
+       · 红棕（--accent）：选中的笔记行 / 左栏选中的视图 / 标签 chip / [[双链]] /
+         置顶·星标 / 大纲里的当前行 / 「编辑·分栏·预览」段控件的当前档
+         —— 段控件留着红棕是**有意的**：它说的是「这篇笔记现在以什么形态呈现」，
+         属于笔记状态，和列表选中行是同一个语义族；而且设置弹窗里那些档位按钮
+         是「关于整个应用的偏好」，走蓝，两边各自成体系，不会并排比。
+       · 蓝（--accent-op）：焦点环 / 拖拽落点 / 尺寸手柄 / 多选按钮 /
+         面板开合按钮 / 退出专注 / 设置里的开关与档位。
+       交接给未来的自己：**点它会发生事 → 蓝；它只是告诉你「你在哪 / 这是什么」→ 红棕。** */
+    --accent-op: #1976d2;
 
     /* ===== 笔记正文的「块语言」（2026-10-25 笔记美化）=====
        渲染器（src/utils/markdownToReact.tsx）里的 inline style 全部走这几个变量，
@@ -298,6 +321,16 @@
     --notes-radius-row: calc(var(--card-radius) * 0.55);
     --notes-radius-chip: calc(var(--card-radius) * 0.36);
     --notes-radius-block: calc(var(--card-radius) * 0.45);
+    /* ===== 记事本的字号阶梯（P1-2，2026-10-26）：**三档**，别再散着写 =====
+       导航/标题类 12px·600 —— 分组标题、面板标题；
+       元数据类 11px —— 状态栏、分组计数、空状态说明；
+       正文 14px（走 --notes-font-scale 自动缩放，见 .nav-root[data-font-scale]）。
+       为什么补 12 这一档：原来只有 18 / 14 / 11，分组标题和状态栏挤在同一个 11px 上 ——
+       一个是指路的、一个是注脚，却一样大一样淡，于是整页看着「没有层级」。
+       ⚠️ 这两档**故意不吃 --notes-font-scale**：11px 再乘 0.94 就是 10.3px，直接没法读；
+       随档位缩放的只有正文（14px），元数据/导航这两档固定。 */
+    --notes-meta-font: 11px;
+    --notes-label-font: 12px;
     /* 记事本三栏的**共同头部高度**（2026-10-26）。
        为什么需要：三栏头部原来各长各的（编辑区常量 PANE_HEADER_H=44、左栏标题行 44 +
        搜索框 36 自然堆叠、中栏 pt8 + 标题 + pb4 + 描边 ≈45），实测三栏第一行内容的 y
@@ -382,6 +415,9 @@
     --on-accent: #0d1b2a;
     /* 记事本默认强调色（暗色档）：同一色相提亮到在深底上达标，见 :root 的说明 */
     --notes-accent: #c96e60;
+
+    /* 操作色（暗态）：与导航页暗态的 --accent 同值，见 :root 里的说明 */
+    --accent-op: #90caf9;
 
     /* 笔记正文块（暗色）：改成「提亮叠层」——半透明白压在深底上，
        比中灰更亮一层、也更能表达「浮在正文之上」，块边界不再糊掉 */
@@ -504,7 +540,12 @@ body {
    会跟随元素自身的圆角绘制，而在这里钉一个 6px 等于「一聚焦就把元素圆角改成 6px」——
    22px 的卡片、12px 的列表行聚焦瞬间都会「缩角」跳一下。 */
 :focus-visible {
-    outline: 2px solid var(--accent);
+    /* ⚠️ 用 --accent-op 而不是 --accent（P1-4 方案 B，2026-10-26）：
+       焦点环回答的是「键盘现在能操作这里吗」—— 这是**命令**，必须是操作色。
+       以前写 --accent，在记事本里会被根节点覆盖成红棕（记号色），
+       于是全记事本所有没自带焦点圈的元素都套了一圈「记号色」的框，语义是错的。
+       导航页里两个变量同值（都是蓝），所以这条改动在导航页**零视觉变化**。 */
+    outline: 2px solid var(--accent-op);
     outline-offset: 2px;
 }
 
@@ -945,14 +986,17 @@ html.nav-touch .nav-group-tools {
 
 /* 头部时钟：等宽数字避免秒数跳动时宽度抖动 */
 .nav-clock {
+    /* P1-1（2026-10-26）：从「两行堆叠 + 固定 36px」改为**单行**元信息块。
+       它现在待在品牌行里跟站名共享一条基线（SiteListHeader 的 alignItems: baseline），
+       两行堆叠时块的光学中心被迫对齐单行标题的中心，看上去就浮在标题右上方。
+       原来那个 height: 36px 是为「和工具栏控件同高」，它已经不在工具栏里了。 */
     display: flex;
-    flex-direction: column;
-    justify-content: center;
-    align-items: flex-end;
-    /* 和工具栏其它控件同高，整行才能对齐 */
-    height: 36px;
+    flex-direction: row;
+    align-items: baseline;
+    gap: 6px;
     line-height: 1.15;
     user-select: none;
+    white-space: nowrap;
 }
 .nav-clock-time {
     font-variant-numeric: tabular-nums;
@@ -960,6 +1004,13 @@ html.nav-touch .nav-group-tools {
     letter-spacing: 0.02em;
     font-weight: 600;
     color: var(--accent);
+}
+/* 头部时钟（P1-1，2026-10-26）：单行元信息块。
+   数字等宽，秒数跳动时不会把日期推得左右晃。 */
+.nav-clock-meta {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum";
+    letter-spacing: 0.01em;
 }
 
 /* 顶部工具栏里的竖向分隔线：把「搜索 / 操作 / 显示 / 状态」分成几块 */

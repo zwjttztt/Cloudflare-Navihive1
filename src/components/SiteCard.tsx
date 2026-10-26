@@ -321,7 +321,6 @@ const SiteCard = memo(function SiteCard({
             description={site.description}
             highlight={highlight}
             compact={metrics.compactDescription}
-            withThumb={useThumb}
         />
     );
 

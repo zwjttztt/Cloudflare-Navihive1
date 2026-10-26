@@ -15,8 +15,8 @@ import { MarkdownPreview, MarkdownToolbar } from "../notes/markdownToolbar";
 import { PANE_HEADER_H, STATUSBAR_H, SaveDot } from "../notes/paneChrome";
 import type { NotesPageCtx } from "./notesPageCtx";
 
-export default function NotesSidePane(props: Pick<NotesPageCtx, "SIDE_SPLIT_KEY" | "activeId" | "checked" | "closeSide" | "completionSources" | "dirty" | "handleAttach" | "handleOpenEmbedNote" | "handleSideToggleTask" | "handleUpload" | "liveRender" | "liveRenderer" | "narrowLayout" | "onNotify" | "openAttachmentFromEditor" | "pane" | "previewFeatures" | "replaceDetachedUpload" | "resolveNote" | "savedAt" | "setRowMenu" | "setSideDraft" | "setSideLiveRender" | "setSideMode" | "setSideSplitRatio" | "sideDirty" | "sideDraft" | "sideLiveRender" | "sideMode" | "sideNote" | "sideRef" | "sideSaveState" | "sideSavedAt" | "sideShortcutActions" | "sideSplitBoxRef" | "sideSplitRatio" | "sideSplitRatioRef" | "sideTick" | "sideTools" | "startSideSplitDrag" | "uiSettings" | "uploadApi" | "uploadFileForSideEditor">) {
-    const { SIDE_SPLIT_KEY, closeSide, completionSources, handleAttach, handleOpenEmbedNote, handleSideToggleTask, handleUpload, liveRenderer, narrowLayout, onNotify, openAttachmentFromEditor, previewFeatures, replaceDetachedUpload, resolveNote, setRowMenu, setSideDraft, setSideLiveRender, setSideMode, setSideSplitRatio, sideDirty, sideDraft, sideLiveRender, sideMode, sideNote, sideRef, sideSaveState, sideSavedAt, sideShortcutActions, sideSplitBoxRef, sideSplitRatio, sideSplitRatioRef, sideTick, sideTools, startSideSplitDrag, uiSettings, uploadApi, uploadFileForSideEditor } = props;
+export default function NotesSidePane(props: Pick<NotesPageCtx, "SIDE_SPLIT_KEY" | "activeId" | "bp" | "checked" | "closeSide" | "completionSources" | "dirty" | "handleAttach" | "handleOpenEmbedNote" | "handleSideToggleTask" | "handleUpload" | "liveRender" | "liveRenderer" | "narrowLayout" | "onNotify" | "openAttachmentFromEditor" | "pane" | "previewFeatures" | "replaceDetachedUpload" | "resolveNote" | "savedAt" | "setRowMenu" | "setSideDraft" | "setSideLiveRender" | "setSideMode" | "setSideSplitRatio" | "sideDirty" | "sideDraft" | "sideLiveRender" | "sideMode" | "sideNote" | "sideRef" | "sideSaveState" | "sideSavedAt" | "sideShortcutActions" | "sideSplitBoxRef" | "sideSplitRatio" | "sideSplitRatioRef" | "sideTick" | "sideTools" | "startSideSplitDrag" | "uiSettings" | "uploadApi" | "uploadFileForSideEditor">) {
+    const { SIDE_SPLIT_KEY, bp, closeSide, completionSources, handleAttach, handleOpenEmbedNote, handleSideToggleTask, handleUpload, liveRenderer, narrowLayout, onNotify, openAttachmentFromEditor, previewFeatures, replaceDetachedUpload, resolveNote, setRowMenu, setSideDraft, setSideLiveRender, setSideMode, setSideSplitRatio, sideDirty, sideDraft, sideLiveRender, sideMode, sideNote, sideRef, sideSaveState, sideSavedAt, sideShortcutActions, sideSplitBoxRef, sideSplitRatio, sideSplitRatioRef, sideTick, sideTools, startSideSplitDrag, uiSettings, uploadApi, uploadFileForSideEditor } = props;
 
     // 调用方只在「侧边真有一条笔记」时才挂载本组件；这里再挡一道，
     // 既让下面的 sideNote 收窄成非空，也保证万一被单独渲染时不会炸。
@@ -188,6 +188,9 @@ export default function NotesSidePane(props: Pick<NotesPageCtx, "SIDE_SPLIT_KEY"
                     activeId={sideNote?.id ?? null}
                     onUploadImage={handleUpload}
                     onAttachFile={uploadApi ? (file, noteId) => handleAttach(file, noteId, true) : undefined}
+                    // P2-1：手机端侧边编辑器也是窄宽，同样收成「8 个高频 + 插入」，
+                    // 否则侧栏（比主栏更窄）能折出四五行。
+                    narrow={bp === "mobile"}
                 />
             )}
             <Box
@@ -299,9 +302,11 @@ export default function NotesSidePane(props: Pick<NotesPageCtx, "SIDE_SPLIT_KEY"
                                         "background-color var(--dur-base, 220ms) var(--ease-out, ease), width var(--dur-base, 220ms) var(--ease-out, ease)",
                                     pointerEvents: "none",
                                 },
+                                // 侧栏分栏手柄：hover/拖动变**操作色**（P1-4 方案 B，
+                                // 与 paneChrome 的主分隔条同一语义），不吃记事本的红棕
                                 "&:hover > span, &:active > span": {
                                     width: "2px",
-                                    bgcolor: "var(--accent)",
+                                    bgcolor: "var(--accent-op)",
                                 },
                             }}
                         >
@@ -352,8 +357,11 @@ export default function NotesSidePane(props: Pick<NotesPageCtx, "SIDE_SPLIT_KEY"
                     height: STATUSBAR_H,
                     flexShrink: 0,
                     borderTop: "1px solid var(--card-border)",
-                    fontSize: 11,
-                    color: "text.disabled",
+                    fontSize: "var(--notes-meta-font, 11px)",
+                    // 与主栏状态栏同一个理由（P2-2，2026-10-26）：11px 保持不动（元数据档），
+                    // 只把 disabled 提到 secondary —— 两栏脚下并排，颜色必须一致，
+                    // 否则它们的「淡」会被看成两种不同状态。11px 再淡一档就读不清了。
+                    color: "text.secondary",
                     overflow: "hidden",
                 }}
             >

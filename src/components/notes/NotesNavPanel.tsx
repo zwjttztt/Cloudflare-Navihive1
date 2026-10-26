@@ -71,7 +71,9 @@ export default function NotesNavPanel(props: Pick<NotesPageCtx, "accountName" | 
                             bgcolor: "var(--glass-bg-hover)",
                             transition: "background-color 120ms ease, border-color 120ms ease",
                             "&:hover": {
-                                borderColor: "color-mix(in srgb, var(--accent) 35%, var(--glass-border))",
+                                // 返回按钮的 hover 描边是**操作反馈** → 操作色（P1-4 方案 B）；
+                                // 同一行的账号头像（下面 Avatar）是身份记号，仍走 --accent
+                                borderColor: "color-mix(in srgb, var(--accent-op) 35%, var(--glass-border))",
                                 bgcolor: "var(--glass-bg)",
                             },
                         }}

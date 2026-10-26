@@ -11,10 +11,7 @@ import Box from "@mui/material/Box";
 import IconButton from "@mui/material/IconButton";
 import Menu from "@mui/material/Menu";
 import MenuItem from "@mui/material/MenuItem";
-import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
-import AddIcon from "@mui/icons-material/Add";
-import NoteAddIcon from "@mui/icons-material/NoteAddOutlined";
 import MoreVertIcon from "@mui/icons-material/MoreVert";
 import { isFolderColor, FOLDER_ICONS } from "../../utils/folderAppearance";
 import type { Note, NoteTag } from "../../API/http";
@@ -70,6 +67,12 @@ export function NavRow({
             onClick={onClick}
             // 「界面密度：紧凑」靠这个类名收紧上下留白（规则在 index.css）
             className='note-dense-row'
+            // 行级锚点（P1-5）：右侧计数、「⋯」这类**二次信息**靠它做「悬停/选中/聚焦才浮出」。
+            // 之前文件里没有可用的钩子（只有 data-folder-id，那是给测试定位用的），
+            // 所以在这里补一个语义中性的 data-nav-row；data-active 只表达「当前选中」，
+            // 供 CSS 在**选中行**上把计数常显（选中时用户本来就要看「这里面几条」）。
+            data-nav-row='1'
+            data-active={selected ? '1' : undefined}
             sx={{
                 display: "flex",
                 alignItems: "center",
@@ -91,7 +94,9 @@ export function NavRow({
                 color: selected ? "text.primary" : "text.secondary",
                 transition: "background-color 120ms ease",
                 "&:hover": { bgcolor: "var(--neutral-hover)" },
-                "&:focus-visible": { outline: "2px solid var(--accent)", outlineOffset: 1 },
+                // 焦点圈用**操作色**（P1-4 方案 B）：焦点说的是「键盘现在能操作这里」，
+                // 是操作性反馈，不是「你正在看哪一篇」的记号 —— 所以不吃记事本的红棕。
+                "&:focus-visible": { outline: "2px solid var(--accent-op)", outlineOffset: 1 },
             }}
             {...rest}
         >
@@ -99,7 +104,19 @@ export function NavRow({
                 <Box
                     component='span'
                     aria-hidden
-                    sx={{ display: "inline-flex", flexShrink: 0, color: iconColor ?? "inherit" }}
+                    // P1-5：图标统一收进 16px 宽的定宽容器里居中放 14px 字形。
+                    // 定宽的理由是**对齐**：文件夹图标字形比实心圆点宽，标签节和文件夹节
+                    // 混在一条竖线上时，不固定容器宽度，深一层级的名称左边缘就会跟着抖；
+                    // 14px 则是「比 11/12px 的元数据大一档、又不到 16px 抢正文」的折中。
+                    sx={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        width: 16,
+                        height: 16,
+                        flexShrink: 0,
+                        color: iconColor ?? "inherit",
+                    }}
                 >
                     {icon}
                 </Box>
@@ -118,9 +135,32 @@ export function NavRow({
             >
                 {label}
             </Typography>
+            {/* 右侧计数是**元数据**：它只回答「这里面有几条」，不指路，所以**不跟着**
+                分组标题提到 12/600 —— 让数字和标题一样重，等于把注脚提到了标题的高度。
+                颜色从 disabled 提到 secondary（P2-2）：11px 的字本来就薄，再配一档淡灰
+                就落进「看得见但看不清」的灰区；secondary 只是拉回正常可读，不是提级。 */}
             <Typography
                 variant='caption'
-                sx={{ fontSize: 11, color: "text.disabled", flexShrink: 0 }}
+                sx={{
+                    fontSize: "var(--notes-meta-font, 11px)",
+                    color: "text.secondary",
+                    flexShrink: 0,
+                    // P1-5：静置不显示。左栏 128–260px 里一屏常驻 8 个以上的数字，
+                    // 扫目录时最先撞见的是「几条」而不是「叫什么」——读起来像报表。
+                    // 计数是**确认性**的二次信息：悬停 / 选中 / 键盘聚焦才浮出来。
+                    //
+                    // ⚠️ 用 opacity 不用 visibility/display：opacity:0 的元素仍在
+                    // 无障碍树里，行按钮的可访问名（名称 + 条数）不变；
+                    // 换成 display:none 就等于把数字从读屏里一起藏掉了。
+                    opacity: 0,
+                    transition: "opacity var(--dur-fast, 130ms) var(--ease-out, ease)",
+                    '[data-nav-row]:hover &, [data-nav-row][data-active="1"] &, [data-nav-row]:focus-visible &':
+                        { opacity: 1 },
+                    // 触屏没有 hover —— 上面三条永远不命中，计数就彻底看不到了。
+                    // 判据走项目统一的 `.nav-touch`（无 hover + 真有触摸点才挂），
+                    // **不要**用 @media (hover: none)：无头浏览器会把自己报成 hover:none。
+                    "html.nav-touch &": { opacity: 1 },
+                }}
             >
                 {count > 0 ? count : ""}
             </Typography>
@@ -313,6 +353,19 @@ export function FolderTagSection({
      * 所以 DOM 用例只能断言「菜单能打开」，位置必须真机量坐标。
      */
     const [anchorEl, setAnchorEl] = useState<MenuAnchor | null>(null);
+    /**
+     * 分组标题右侧「⋯」的菜单（P1-5-b）：新建文件夹 / 新建标签、新建笔记。
+     *
+     * 这两颗按钮原来**常驻**在小节标题右边，加上下面每行的「⋯」，一屏光图标就有
+     * 四个以上在跟名称抢注意力。收进一个「⋯」之后，标题行静置只剩「分组名」。
+     *
+     * ⚠️ 刻意**不复用**上面那组 anchorEl / menuId：那是「某个条目的重命名/删除」，
+     * 和「这一节的新建」是两个作用域；共用一份 state 会出现
+     * 「点小节 ⋯ 却弹出上一个文件夹的菜单」这种串台，而且两者的关闭时机也不同。
+     * 锚点存的是**按钮元素**：模板选择菜单要以它为锚，菜单项自己被点掉之后
+     * currentTarget 就没法再用了。
+     */
+    const [groupMenuAnchor, setGroupMenuAnchor] = useState<HTMLElement | null>(null);
     const treeItems = useMemo(() => {
         const output: (typeof items[number] & { depth: number })[] = [];
         const visited = new Set<number>();
@@ -329,36 +382,80 @@ export function FolderTagSection({
     return (
         <Box sx={{ px: 0.75, pb: 1 }}>
             <Box
+                // 分组标题行的锚点：右侧「⋯」靠它做「悬停才显」（P1-5-b）。
+                // 标题行本身不是按钮，没有 :focus-visible 可用，所以键盘可达性靠
+                // 按钮自己的 &:focus-visible（下面那条规则里）。
+                data-nav-group-row='1'
                 sx={{ display: "flex", alignItems: "center", px: 0.5, pb: 0.5, pt: 0.5 }}
             >
-                <Typography variant='caption' sx={{ flex: 1, fontSize: 11, color: "text.disabled" }}>
+                {/* 分组标题是**导航**：它先告诉用户「下面这堆是什么」，再才是里面的条目。
+                    原来它和右侧计数、状态栏一样都是 11px + text.disabled —— 一屏里
+                    指路的和注脚同字号同灰度，整页看着「没有层级」（P1-2，2026-10-26）。
+                    现在提到 12px·600（不是 13/14：再大就和条目正文抢戏了）。 */}
+                <Typography
+                    variant='caption'
+                    sx={{ flex: 1, fontSize: "var(--notes-label-font, 12px)", fontWeight: 600, color: "text.secondary" }}
+                >
                     {title}
                 </Typography>
-                <Tooltip title={`新建${title}`}>
-                    {/* p 用 0.375（3px）而不是 0.25（2px）：图标 18 + 2×3 = 24px，
-                        正好压住 WCAG 2.5.8 的触控底线。用 2px 时实测是 22×22，
-                        记事本一进 a11y 审计就被判 11 处不合格（2026-10-24）。 */}
-                    <IconButton size='small' aria-label={`新建${title}`} onClick={onCreate} sx={{ p: 0.375 }}>
-                        <AddIcon fontSize='inherit' />
-                    </IconButton>
-                    </Tooltip>
-                {onCreateNote && (
-                    <Tooltip title='新建笔记'>
-                        <IconButton
-                            size='small'
-                            aria-label='新建笔记'
-                            data-tool='nav-new-note'
-                            // B3：anchor 交给上层弹模板选择（空白 / 日报 / 会议 / 读书）。
-                            // 之前这里直接建空白笔记 —— 现在改成「先选模板」，
-                            // 直接建空白的那条路还在右键菜单「在此新建笔记」。
-                            onClick={e => onCreateNote(e.currentTarget)}
-                            sx={{ p: 0.375 }}
-                        >
-                            <NoteAddIcon fontSize='inherit' />
-                        </IconButton>
-                    </Tooltip>
-                )}
+                {/* P1-5-b：原来这里是**两颗常驻** IconButton（+ 新建文件夹 / 新建笔记）。
+                    两枚图标并排在 128px 的标题行右侧，标题本身反而被挤短 ——
+                    而且「新建笔记」和下面每行的「⋯」看起来是同一类东西，实际作用域完全不同。
+                    收成一颗「⋯」：新建是**这一节**的低频动作，进菜单不丢功能，静置不抢视线。
+                    p 用 0.375（3px）而不是 0.25（2px）：图标 18 + 2×3 = 24px，
+                    正好压住 WCAG 2.5.8 的触控底线（2026-10-24 a11y 审计那条结论仍然成立）。 */}
+                <IconButton
+                    size='small'
+                    aria-label={`${title} 的操作`}
+                    aria-haspopup='menu'
+                    aria-expanded={groupMenuAnchor !== null}
+                    data-tool='nav-group-menu'
+                    onClick={e => setGroupMenuAnchor(e.currentTarget)}
+                    sx={{
+                        p: 0.375,
+                        // 和右侧计数同一套「静置隐形、悬停/聚焦浮出」的规则；
+                        // 菜单开着时强制可见 —— 否则指针移进浮层的一瞬间按钮先消失了。
+                        opacity: groupMenuAnchor !== null ? 1 : 0,
+                        transition: "opacity var(--dur-fast, 130ms) var(--ease-out, ease)",
+                        '[data-nav-group-row]:hover &, &:focus-visible': { opacity: 1 },
+                        // 触屏没有 hover：这颗是「新建」的唯一入口，必须常显，否则功能等于被藏掉
+                        "html.nav-touch &": { opacity: 1 },
+                    }}
+                >
+                    <MoreVertIcon fontSize='inherit' />
+                </IconButton>
             </Box>
+            {/* 分组「⋯」的菜单。和下面「条目菜单」是两套独立 state，互不干扰。 */}
+            <Menu
+                open={groupMenuAnchor !== null}
+                anchorEl={groupMenuAnchor}
+                onClose={() => setGroupMenuAnchor(null)}
+                slotProps={{ paper: { sx: { minWidth: 140 } } }}
+            >
+                <MenuItem
+                    data-tool='nav-new-item'
+                    onClick={() => {
+                        setGroupMenuAnchor(null);
+                        onCreate();
+                    }}
+                >
+                    新建{title}
+                </MenuItem>
+                {onCreateNote && (
+                    <MenuItem
+                        // ⚠️ data-tool 从原来那颗常驻按钮**搬到这里**：模板选择菜单的锚点
+                        // 仍是标题行这颗「⋯」，所以点完菜单项再弹模板菜单，位置还在原处。
+                        data-tool='nav-new-note'
+                        onClick={() => {
+                            const anchor = groupMenuAnchor;
+                            setGroupMenuAnchor(null);
+                            if (anchor) onCreateNote(anchor);
+                        }}
+                    >
+                        新建笔记
+                    </MenuItem>
+                )}
+            </Menu>
             {treeItems.map(item => (
                 <Box
                     key={item.id}
@@ -376,7 +473,7 @@ export function FolderTagSection({
                             dropTarget === item.id
                                 ? "var(--neutral-hairline)"
                                 : "transparent",
-                        outline: dropTarget === item.id ? "1px dashed var(--accent)" : "none",
+                        outline: dropTarget === item.id ? "1px dashed var(--accent-op)" : "none",
                         outlineOffset: -1,
                         transition: "background-color 100ms ease",
                         opacity: dragging === item.id ? 0.45 : 1,
@@ -550,9 +647,12 @@ export function FolderTagSection({
             ))}
             {unfiledNotes && unfiledNotes.length > 0 && (
                 <Box data-unfiled-notes='1' sx={{ pb: 0.5 }}>
+                    {/* 「未归类」是**二级分组标题**：它下面挂的是一串笔记，语义上和小节标题
+                        完全同级，所以跟着走 12px·600 —— 不能按 11px 元数据档处理，
+                        否则它就成了「一串笔记」上面一行更淡的注脚，分组的效果反而消失。 */}
                     <Typography
                         variant='caption'
-                        sx={{ display: "block", px: 1.25, pt: 0.5, pb: 0.25, fontSize: 11, color: "text.disabled" }}
+                        sx={{ display: "block", px: 1.25, pt: 0.5, pb: 0.25, fontSize: "var(--notes-label-font, 12px)", fontWeight: 600, color: "text.secondary" }}
                     >
                         未归类
                     </Typography>
@@ -595,8 +695,9 @@ export function FolderTagSection({
                                 color:
                                     activeNoteId === n.id ? "text.primary" : "text.secondary",
                                 "&:hover": { bgcolor: "var(--neutral-hover)" },
+                                // 同 NavRow：焦点圈走操作色，选中底（上面那条）保持红棕记号
                                 "&:focus-visible": {
-                                    outline: "2px solid var(--accent)",
+                                    outline: "2px solid var(--accent-op)",
                                     outlineOffset: 1,
                                 },
                             }}
@@ -617,8 +718,11 @@ export function FolderTagSection({
                     ))}
                 </Box>
             )}
+            {/* 空状态是**元数据**不是导航（P1-2）：11px 保持，颜色从 disabled 提到
+                secondary —— text.disabled 在 11px 上落进「看得见但看不清」的灰区，
+                而空状态恰恰是用户最需要读懂的一句话（「这里为什么是空的」）。 */}
             {items.length === 0 && (
-                <Typography variant='caption' sx={{ display: "block", px: 1, fontSize: 11, color: "text.disabled" }}>
+                <Typography variant='caption' sx={{ display: "block", px: 1, fontSize: "var(--notes-meta-font, 11px)", color: "text.secondary" }}>
                     还没有{title}
                 </Typography>
             )}

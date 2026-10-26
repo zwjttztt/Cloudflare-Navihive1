@@ -460,20 +460,35 @@ test("工具栏补齐 inkstone 式下拉：链接 / 图片 / 笔记工具 / 块"
     }
 });
 
-test("新建笔记按钮在左栏文件夹标题右侧与中间栏右上角（顶栏那个移除）", () => {
+test("新建笔记入口在左栏文件夹小节的「⋯」菜单里 + 中间栏右上角（顶栏那个移除）", () => {
     setWide();
     mountPanel([note({ id: 1, title: "甲", content: "" })]);
-    const newBtns = [...document.querySelectorAll('button[aria-label="新建笔记"]')];
-    // 两处：左栏文件夹标题右侧（和新建文件夹并排）+ 中间栏右上角（inkstone 同样两处）
-    assert.equal(newBtns.length, 2, "顶栏新建笔记已移除，只剩左栏一处 + 中间栏一处");
-    const inNav = newBtns.find(b => b.closest('[data-nav-col="1"]'));
-    assert.ok(inNav, "要有一个新建笔记按钮在左栏导航列（文件夹标题右侧）");
-    const inListHeader = newBtns.find(b => b.closest("[data-list-header='1']"));
-    assert.ok(inListHeader, "要有一个新建笔记按钮在中间栏头部右侧");
+    // P1-5-b（2026-10-26）：左栏那颗**常驻**的「新建笔记」图标收进了分组标题右侧的
+    // 「⋯」菜单 —— 静置时标题行只留分组名，不再有两枚图标并排。
+    // 断言的意图不变（左栏仍要有新建入口、顶栏那个仍然要没有），只是入口下了一层：
+    // 先开菜单，再认菜单项。
+    const listNew = document.querySelector("[data-tool='list-new-note']");
+    assert.ok(listNew, "中间栏右上角要有新建笔记");
+    assert.ok(listNew!.closest("[data-list-header='1']"), "中间栏那颗要在中栏头部行里");
+
+    const groupBtn = document.querySelector(
+        "[data-nav-col='1'] button[aria-label='文件夹 的操作']"
+    ) as HTMLElement | null;
+    assert.ok(groupBtn, "左栏文件夹小节标题右侧要有「⋯」（新建入口都收在这里）");
+    assert.equal(groupBtn!.getAttribute("data-tool"), "nav-group-menu", "「⋯」要能被 data-tool 定位到");
+    assert.equal(groupBtn!.getAttribute("aria-haspopup"), "menu", "「⋯」要标明自己开的是菜单");
+    act(() => groupBtn!.click());
+    // ⚠️ 菜单走 Portal 挂到 body，不在 data-nav-col 里面，按 data-tool 全局找
+    assert.ok(document.querySelector("[data-tool='nav-new-note']"), "「⋯」菜单里要有「新建笔记」");
+    // 左栏那颗**常驻**的真的没了。
+    // ⚠️ 必须限定在左栏（data-nav-col）里找：中栏头部也有一颗「新建笔记」
+    // （data-tool='list-new-note'，就是上面第一行断言要求存在的那颗），
+    // 全局计数会把它算进来，于是「0 个」永远不成立 —— 断言的是「左栏不再常驻」，
+    // 不是「全站只剩一个新建入口」。
     assert.equal(
-        inListHeader!.getAttribute("data-tool"),
-        "list-new-note",
-        "中间栏那颗要能被 data-tool='list-new-note' 定位到"
+        document.querySelectorAll("[data-nav-col='1'] button[aria-label='新建笔记']").length,
+        0,
+        "左栏常驻的「新建笔记」图标按钮已经收进「⋯」菜单，栏内不该再有"
     );
 });
 
@@ -1968,9 +1983,18 @@ test("点内联笔记能打开它；文件夹视图里新建笔记会落进该�
     assert.equal(getEditor().value, "x", "点内联笔记要切到那条笔记");
 
     // 新建笔记 → 先弹模板选择（B3，2026-10-22），选「空白笔记」才真建，
-    // 且 folder_id 落在当前选中的文件夹上
-    const newBtn = document.querySelector('button[aria-label="新建笔记"]') as HTMLElement;
-    assert.ok(newBtn, "左栏文件夹那节要有新建笔记");
+    // 且 folder_id 落在当前选中的文件夹上。
+    // P1-5-b（2026-10-26）起入口下了一层：小节标题右侧的「⋯」→「新建笔记」。
+    // 落点判据（folder_id = 当前选中文件夹）不变，选的仍是同一颗入口的后代。
+    const groupBtn = document.querySelector(
+        "button[aria-label='文件夹 的操作']"
+    ) as HTMLElement;
+    assert.ok(groupBtn, "左栏文件夹那节要有「⋯」");
+    await act(async () => {
+        groupBtn.click();
+    });
+    const newBtn = document.querySelector("[data-tool='nav-new-note']") as HTMLElement;
+    assert.ok(newBtn, "「⋯」菜单里要有新建笔记");
     await act(async () => {
         newBtn.click();
     });

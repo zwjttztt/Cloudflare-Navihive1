@@ -12,7 +12,8 @@ export interface SiteListHeaderProps {
     siteName: string;
     /** 向下滚动后是否进入紧凑模式（改字号与间距） */
     headerCompact: boolean;
-    /** 第一层右侧：时钟。窄屏自己隐藏，这里只管位置 */
+    /** 第一层右侧：时钟。窄屏自己隐藏，这里只管位置。
+     *  compact 也由 App 直接传进 HeaderClock，这里不关心。 */
     clock?: ReactNode;
     /** 第二层：搜索框 + 显示控制 + 新增 + 更多选项，由 App 透传 */
     actions: ReactNode;
@@ -42,7 +43,10 @@ export default function SiteListHeader({
             <Box
                 sx={{
                     display: "flex",
-                    alignItems: "center",
+                    // H1（24–32px）和时钟（13px）字号差了 20px：只有 baseline 才读作
+                    // 「同一行文字的两端」。center 对齐是拿小块的盒子中心去对标题中心，
+                    // 视觉上时钟会浮到站名右上方。
+                    alignItems: "baseline",
                     justifyContent: "space-between",
                     gap: 2,
                     minWidth: 0,

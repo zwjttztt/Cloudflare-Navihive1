@@ -234,7 +234,8 @@ export default function NotesEditorPane(props: Pick<NotesPageCtx, "active" | "ac
                                     onClick={() => setZenMode(false)}
                                     sx={{
                                         width: 28, height: 28, flexShrink: 0, mr: 0.5,
-                                        color: "var(--accent)",
+                                        // 「退出专注模式」是**按钮**（P1-4 方案 B）：可点 → 操作色
+                                        color: "var(--accent-op)",
                                     }}
                                 >
                                     <FullscreenExitIcon fontSize='small' />
@@ -308,7 +309,8 @@ export default function NotesEditorPane(props: Pick<NotesPageCtx, "active" | "ac
                                     }}
                                     sx={{
                                         width: 28, height: 28,
-                                        color: outlineOpen ? "var(--accent)" : "text.secondary",
+                                        // 大纲开合是**开关按钮**：可点 → 操作色（P1-4 方案 B）
+                                        color: outlineOpen ? "var(--accent-op)" : "text.secondary",
                                     }}
                                 >
                                     <ListIcon fontSize='small' />
@@ -337,7 +339,8 @@ export default function NotesEditorPane(props: Pick<NotesPageCtx, "active" | "ac
                                         onClick={() => setBacklinksOpen(o => !o)}
                                         sx={{
                                             width: 28, height: 28,
-                                            color: backlinksOpen ? "var(--accent)" : "text.secondary",
+                                            // 反向链接面板开合同样是**开关按钮** → 操作色
+                                            color: backlinksOpen ? "var(--accent-op)" : "text.secondary",
                                         }}
                                     >
                                         <LinkIcon fontSize='small' />
@@ -444,6 +447,10 @@ export default function NotesEditorPane(props: Pick<NotesPageCtx, "active" | "ac
                         // 但编辑器其实没挂载（只显示预览）—— 照 pane 判会给出「能插」，
                         // 用户传完发现正文没变，文件白传一次。
                         canInsert={finePane !== "preview"}
+                        // P2-1（2026-10-26）：手机端工具栏曾占 3 行（190px / 844px 屏高），
+                        // 因为二十多个按钮在 390px 下自动折行。窄屏判定复用这里已有的
+                        // `bp` —— 工具栏自己**不做** media query，免得两处断点对不上。
+                        narrow={bp === "mobile"}
                     />
                     )}
 
@@ -595,9 +602,10 @@ export default function NotesEditorPane(props: Pick<NotesPageCtx, "active" | "ac
                                             "background-color var(--dur-base, 220ms) var(--ease-out, ease), width var(--dur-base, 220ms) var(--ease-out, ease)",
                                         pointerEvents: "none",
                                     },
+                                    // 两篇笔记之间的分隔手柄：hover/拖动 → 操作色（P1-4 方案 B）
                                     "&:hover > span, &:active > span": {
                                         width: "2px",
-                                        bgcolor: "var(--accent)",
+                                        bgcolor: "var(--accent-op)",
                                     },
                                 }}
                             >
@@ -775,9 +783,13 @@ export default function NotesEditorPane(props: Pick<NotesPageCtx, "active" | "ac
                                 display: narrowLayout ? "none" : "block",
                             }}
                         >
+                            {/* 「大纲」是**面板标题**（导航：它声明这一列是什么），不是注脚。
+                                原来它和状态栏、分组计数同是 11px + text.disabled，
+                                于是这个标题比它下面的条目还淡 —— 面板看不出从哪儿起。
+                                走导航档 12px·600（P1-2，2026-10-26）。 */}
                             <Typography
                                 variant='caption'
-                                sx={{ display: "block", px: 1, pb: 0.5, fontSize: 11, color: "text.disabled" }}
+                                sx={{ display: "block", px: 1, pb: 0.5, fontSize: "var(--notes-label-font, 12px)", fontWeight: 600, color: "text.secondary" }}
                             >
                                 大纲
                             </Typography>
@@ -893,8 +905,12 @@ export default function NotesEditorPane(props: Pick<NotesPageCtx, "active" | "ac
                             height: STATUSBAR_H,
                             flexShrink: 0,
                             borderTop: "1px solid var(--card-border)",
-                            fontSize: 11,
-                            color: "text.disabled",
+                            fontSize: "var(--notes-meta-font, 11px)",
+                            // 状态栏是**元数据**，11px 不动；只把颜色从 disabled 提到 secondary
+                            // （P2-2，2026-10-26）：11px 本来就只有正文的 4/5 高，再用一档更淡的灰，
+                            // 实际落进「看得见但看不清」的灰区 —— 能过 AA 不等于读着不费劲。
+                            // 这行每天都扫一眼，给到 secondary 是把它拉回正常可读，**不是提级**。
+                            color: "text.secondary",
                             overflow: "hidden",
                             // 只有 26px 高：宁可挤掉尾巴也不许折行 ——
                             // 一折行第二行就是被 height 裁掉的下半截字（用户报的就是这个）。
@@ -939,7 +955,9 @@ export default function NotesEditorPane(props: Pick<NotesPageCtx, "active" | "ac
                                     background: "none",
                                     p: 0,
                                     font: "inherit",
-                                    color: "var(--accent)",
+                                    // 状态栏里的站点名是**按钮**（点了打开卡片）→ 操作色；
+                                    // 同一行的 #标签 是记号，保持红棕（见下面那个 span）
+                                    color: "var(--accent-op)",
                                     cursor: "pointer",
                                     maxWidth: 160,
                                     overflow: "hidden",

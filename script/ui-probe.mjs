@@ -737,9 +737,202 @@ if (errs.length) {
     console.log("\n页面控制台无报错。");
 }
 
+// ---------------- 6. P1/P2 本轮改动的三处几何（2026-10-26） ----------------
+// 这三处全是「CSS 写对了但没有量过」的高危项：头部基线、卡片密度、窄屏工具栏行数。
+// 它们不会让单测变红（单测没有布局），所以必须靠真机量。
+console.log("\n=== E. P1/P2 改动几何（头部基线 / 卡片密度 / 窄屏工具栏） ===");
+const p1Fails = [];
+
+await setViewport(1440, 950, false);
+await goto(site.url + "/?t=" + Date.now());
+await waitFor("导航页卡片渲染", `(document.querySelectorAll('[data-site-id]').length) > 0`, 25_000);
+
+// E-1 头部：站名与时钟共享一条基线（P1-1）
+const headerGeom = await evaluate(`(() => {
+  const clock = document.querySelector('.nav-clock');
+  const h1 = document.querySelector('h1');
+  const row = clock ? clock.parentElement : null;
+  const r = el => { const b = el.getBoundingClientRect(); return { top: b.top, bottom: b.bottom, w: b.width, h: b.height }; };
+  return {
+    hasClock: !!clock,
+    alignItems: row ? getComputedStyle(row).alignItems : null,
+    flexDirection: clock ? getComputedStyle(clock).flexDirection : null,
+    clockH: clock ? +clock.getBoundingClientRect().height.toFixed(1) : null,
+    h1: h1 ? r(h1) : null,
+    clock: clock ? r(clock) : null,
+    text: clock ? (clock.textContent || '').trim().slice(0, 40) : null,
+  };
+})()`);
+console.log(
+    `  头部：alignItems=${headerGeom.alignItems}（要 baseline）｜时钟 flexDirection=${headerGeom.flexDirection}（要 row）｜` +
+        `时钟盒高 ${headerGeom.clockH}px（单行应 ≈16，两行 ≈32）`
+);
+console.log(`    站名 ${headerGeom.h1 ? `top=${n1(headerGeom.h1.top)} bottom=${n1(headerGeom.h1.bottom)}` : "—"}｜时钟「${headerGeom.text}」${headerGeom.clock ? `top=${n1(headerGeom.clock.top)} bottom=${n1(headerGeom.clock.bottom)}` : ""}`);
+if (headerGeom.alignItems !== "baseline") p1Fails.push(`头部第一层 alignItems 不是 baseline（实为 ${headerGeom.alignItems}）—— 时钟又会浮在站名上方`);
+if (headerGeom.flexDirection !== "row") p1Fails.push(`时钟仍是 ${headerGeom.flexDirection} 堆叠—— 要单行元信息块`);
+if (headerGeom.clockH !== null && headerGeom.clockH > 24) p1Fails.push(`时钟盒高 ${headerGeom.clockH}px，说明还是两行`);
+
+// E-2 卡片密度（P1-3）：少卡片的分组不该「缩在左边」，也不该有一张卡铺满整行
+const cardGeom = await evaluate(`(() => {
+  const grids = new Map();
+  for (const c of [...document.querySelectorAll('[data-site-id]')]) {
+    const cell = c.parentElement;
+    const grid = cell ? cell.parentElement : null;
+    if (!grid) continue;
+    if (!grids.has(grid)) grids.set(grid, []);
+    grids.get(grid).push(Math.round(cell.getBoundingClientRect().width));
+  }
+  return {
+    groups: [...grids.values()],
+    gridWidths: [...grids.keys()].map(g => Math.round(g.getBoundingClientRect().width)),
+  };
+})()`);
+const allCardW = cardGeom.groups.flat();
+const wMin = allCardW.length ? Math.min(...allCardW) : null;
+const wMax = allCardW.length ? Math.max(...allCardW) : null;
+console.log("\n表 E-1：卡片网格（每个分组一行；宽度 = 格子宽，单位 px）");
+table(
+    ["分组 #", "网格宽", "卡片数", "各卡宽度", "最宽/最窄（全站）"],
+    cardGeom.groups.map((ws, i) => [
+        i + 1,
+        cardGeom.gridWidths[i],
+        ws.length,
+        ws.join(" / "),
+        wMin && wMax ? `${wMax} / ${wMin} = ${(wMax / wMin).toFixed(2)}×` : "—",
+    ])
+);
+if (wMin && wMax && wMax / wMin > 2.2) {
+    p1Fails.push(`卡片最宽 ${wMax}px 与最窄 ${wMin}px 差 ${(wMax / wMin).toFixed(2)}×（应 ≤2.2 才算「同一档密度」）`);
+}
+
+// E-3 窄屏工具栏行数（P2-1）：390 下必须 ≤2 行、≤120px
+await setViewport(390, 844, true);
+await goto(site.url + "/?t=" + Date.now());
+await waitFor("记事本入口", `[...document.querySelectorAll('button')].some(b => (b.getAttribute('aria-label') || '') === '打开记事本')`, 25_000);
+// 先进记事本，等编辑区真的挂载（模式键是它挂载完成的信号）
+const notesOpened = await evaluate(`(() => {
+  const open = [...document.querySelectorAll('button')].find(b => (b.getAttribute('aria-label') || '') === '打开记事本');
+  if (!open) return 'no-entry';
+  open.click();
+  return 'clicked';
+})()`);
+if (notesOpened !== "clicked") {
+    p1Fails.push(`窄屏工具栏量不到：记事本入口点不开（${notesOpened}）`);
+} else {
+await waitFor("笔记列表渲染", `(document.body.innerText || '').includes('会议纪要')`, 25_000);
+await sleep(400);
+// ⚠️ 必须先**选中一条笔记**：没选中时编辑区整块是 display:none，
+// 于是模式键和工具栏的盒子都是 0（第一次量的时候就栽在这：模式键在 DOM 里但 h=0）。
+const rowPicked = await evaluate(`(() => {
+  const rows = [...document.querySelectorAll('[data-note-list] [data-note-id]')];
+  if (!rows.length) return 'no-rows';
+  rows[0].click();
+  return 'picked';
+})()`);
+if (rowPicked !== "picked") {
+    p1Fails.push(`窄屏工具栏量不到：笔记列表没有可选行（${rowPicked}）`);
+}
+await waitFor("记事本编辑区挂载", `!!document.querySelector("[data-pane-modes='1']")`, 25_000);
+await sleep(700);
+const toolbarGeom = await evaluate(`(async () => {
+  // ⚠️ 窄屏下页面里**同时挂载着两份**编辑区（主栏 + 侧栏），侧栏那份是 display:none。
+  // 直接 querySelector / find 会抓到隐藏的那份，量出来全是 0 —— 0 还会让「行数≤2」
+  // 假通过。所以下面所有 pick 都只认**真的有尺寸**的元素。
+  const visible = el => el.getBoundingClientRect().height > 0 && el.getBoundingClientRect().width > 0;
+  const pick = label => [...document.querySelectorAll("[data-pane-modes='1'] button")]
+    .filter(visible)
+    .find(b => b.getAttribute('aria-label') === label);
+  // 轮询等「编辑」键可见：记事本浮层是带过渡进场的，刚挂载那会儿元素在 DOM 里
+  // 但盒子还是 0 —— 一次性 pick 会误判成「没有这个键」。
+  let edit = null;
+  for (let i = 0; i < 20 && !edit; i++) {
+    edit = pick('编辑') || null;
+    if (!edit) await new Promise(r => setTimeout(r, 300));
+  }
+  if (!edit) {
+    const seen = [...document.querySelectorAll("[data-pane-modes='1'] button")]
+      .map(b => b.getAttribute('aria-label') + '(h=' + Math.round(b.getBoundingClientRect().height) + ')');
+    return { ok: false, why: 'no-edit-btn', seen: seen.slice(0, 10) };
+  }
+  edit.click();
+  await new Promise(r => setTimeout(r, 600));
+  // 编辑区是异步挂载的（CodeMirror + 工具栏都晚一拍），量早了会拿到 height=0 ——
+  // 而 height=0 会让下面的「行数 ≤2 / 高 ≤120」全部假通过。所以这里**轮询等高**：
+  // 要么量到非 0，要么明确报「量不到」，绝不能拿 0 当「没有超标」。
+  let bar = null;
+  for (let i = 0; i < 20; i++) {
+    // 只挑**可见**的那份工具栏（见上面 pick 那里的说明）
+    bar = [...document.querySelectorAll('[aria-label="Markdown 格式"]')].find(visible);
+    if (bar) break;
+    await new Promise(r => setTimeout(r, 300));
+  }
+  if (!bar) return { ok: false, why: 'no-toolbar' };
+  const bb = bar.getBoundingClientRect();
+  if (bb.height <= 0) {
+    // 高 0 但有按钮 = 某个祖先被藏起来了（自身的 display 仍是 flex，所以光看自己查不出来）
+    const all = [...document.querySelectorAll('[aria-label="Markdown 格式"]')];
+    const chain = [];
+    let n = bar;
+    while (n && n !== document.body && chain.length < 12) {
+      const cs = getComputedStyle(n);
+      const r = n.getBoundingClientRect();
+      let cls = '';
+      if (typeof n.className === 'string' && n.className.trim()) {
+        cls = '.' + n.className.split(' ').filter(Boolean).slice(0, 2).join('.');
+      }
+      chain.push(n.tagName.toLowerCase() + cls + '[d=' + cs.display + ',h=' + Math.round(r.height) + ',w=' + Math.round(r.width) + ']');
+      n = n.parentElement;
+    }
+    return { ok: false, why: 'toolbar-zero-height', count: all.length, heights: all.map(e => Math.round(e.getBoundingClientRect().height)), chain };
+  }
+  const w = (bar.parentElement ? bar.parentElement.getBoundingClientRect().width : 0);
+  // 行数 = 直接子元素的 top 值去重。
+  // ⚠️ 只算**有高度**的子元素（≥16px）：那些竖分隔线 Divider 有上下内缩，
+  // 它的 top 比按钮低几个 px，不滤掉就会被误判成额外的一行（实测把 1 行算成 2 行）。
+  // 容差取 8px 而不是 4px：同一行内 28px 按钮与 24px 按钮的 top 本来就差一点。
+  const tops = [...bar.children]
+    .map(c => c.getBoundingClientRect())
+    .filter(r => r.top > 0 && r.height >= 16)
+    .map(r => r.top);
+  const rows = [];
+  for (const t of tops) if (!rows.some(r => Math.abs(r - t) < 8)) rows.push(t);
+  return {
+    ok: true,
+    h: +bb.height.toFixed(1),
+    paneW: +w.toFixed(1),
+    rows: rows.length,
+    buttons: [...bar.querySelectorAll('button')].length,
+    labels: [...bar.querySelectorAll('button')].map(b => b.getAttribute('aria-label')).filter(Boolean).slice(0, 14),
+  };
+})()`);
+if (!toolbarGeom.ok) {
+    p1Fails.push(`窄屏工具栏量不到：${toolbarGeom.why}`);
+    if (toolbarGeom.chain) {
+        console.log(`    匹配到 ${toolbarGeom.count} 个工具栏，高度 [${(toolbarGeom.heights || []).join(", ")}]`);
+        console.log("    祖先链（由近及远）：");
+        for (const c of toolbarGeom.chain) console.log("      " + c);
+    }
+    if (toolbarGeom.seen) console.log("    模式键候选：" + toolbarGeom.seen.join(" / "));
+} else {
+    console.log(
+        `\n  窄屏工具栏 @390：高 ${toolbarGeom.h}px｜占用 ${toolbarGeom.rows} 行｜常驻按钮 ${toolbarGeom.buttons} 个`
+    );
+    console.log(`    第一行可见：[${toolbarGeom.labels.join(" / ")}]`);
+    if (toolbarGeom.rows > 2) p1Fails.push(`窄屏工具栏占 ${toolbarGeom.rows} 行（应 ≤2）`);
+    if (toolbarGeom.h > 120) p1Fails.push(`窄屏工具栏高 ${toolbarGeom.h}px（应 ≤120）`);
+}
+}
+
+if (p1Fails.length) {
+    console.log("\n✗ P1/P2 几何断言未通过：");
+    for (const f of p1Fails) console.log("  - " + f);
+} else {
+    console.log("\n✓ P1/P2 几何断言通过：头部共享基线 / 卡片密度同档 / 窄屏工具栏 ≤2 行");
+}
+
 console.log("\n=== 截图清单（绝对路径） ===");
 for (const f of shots) console.log("  " + f);
 
 site.close();
 // 断言挂了就以非 0 退出：探针要能当门禁用，不能只打印一行字却仍然绿
-done(notesMobileFails.length ? 1 : 0);
+done(notesMobileFails.length + p1Fails.length ? 1 : 0);

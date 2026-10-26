@@ -73,9 +73,13 @@ export default function BacklinksPanel({
             }}
         >
             <Box sx={{ display: "flex", alignItems: "center", px: 1, pb: 0.5 }}>
+                {/* 这是**面板标题**不是注脚（P1-2）：和「大纲」面板标题同一结构，
+                    所以走同一档 —— 导航/标题 12px·600·secondary。
+                    原来 11px + text.disabled 让它看起来比正文里的注脚还轻，
+                    但它其实是这个面板唯一的指路文字。 */}
                 <Typography
                     variant='caption'
-                    sx={{ flex: 1, fontSize: 11, color: "text.disabled" }}
+                    sx={{ flex: 1, fontSize: "var(--notes-label-font, 12px)", fontWeight: 600, color: "text.secondary" }}
                 >
                     {/* 数量角标直接写进标题：inkstone 的 badge 同款信息，实现更省 */}
                     反向链接（{items.length}）
