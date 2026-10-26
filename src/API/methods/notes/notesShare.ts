@@ -117,7 +117,10 @@ export const shareMethods: Pick<NotesApi,
     notesStats: async function (this: NavigationAPI): Promise<NoteStats> {
         await this.migrate();
         return this.withSchemaRetry(async () => {
-            // 两个统计合成一次往返（D1 每次往返是几十毫秒，能合就合）。
+            // 三个统计合成一次往返（D1 每次往返是几十毫秒，能合就合）。
+            //
+            // words（PR1 新增）同理走 SQL：`length(replace(…))` 把空格 / 换行 / 制表符
+            // 去掉再求和，正文一个字都不传回来。口径与前端原来的「非空白字符数」一致。
             //
             // ⚠️ 2026-10-24 改（P1-2 消除 O(正文总量) 的全表扫）：
             // 「双链」原来是 `SELECT content FROM notes` 把当前账号的**全部正文**
@@ -133,11 +136,17 @@ export const shareMethods: Pick<NotesApi,
                 .prepare(
                     `SELECT
                         (SELECT COUNT(*) FROM note_revision WHERE user_id IS ?1) AS versions,
-                        (SELECT COALESCE(SUM(link_count), 0) FROM notes WHERE user_id IS ?1) AS links`
+                        (SELECT COALESCE(SUM(link_count), 0) FROM notes WHERE user_id IS ?1) AS links,
+                        (SELECT COALESCE(SUM(length(replace(replace(replace(content, ' ', ''), char(10), ''), char(9), ''))), 0)
+                           FROM notes WHERE user_id IS ?1) AS words`
                 )
                 .bind(this.currentUserId)
-                .first<{ versions: number; links: number }>();
-            return { versions: row?.versions ?? 0, links: row?.links ?? 0 };
+                .first<{ versions: number; links: number; words: number }>();
+            return {
+                versions: row?.versions ?? 0,
+                links: row?.links ?? 0,
+                words: row?.words ?? 0,
+            };
         });
     },
 };

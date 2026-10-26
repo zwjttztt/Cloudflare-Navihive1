@@ -169,6 +169,7 @@ export default function NotesPage({
     onNotify,
     folderTags,
     onEnsureFullNote,
+    onLoadFullNotes,
     focusNoteId,
     siteLinkApi,
 }: NotesPageProps) {
@@ -730,8 +731,19 @@ export default function NotesPage({
                     (side ? setSideDraft : setDraft)(d => d ? { ...d, content } : d);
                 } else {
                     // 上传期间切换笔记，绝不把附件写到新打开的笔记。
-                    const original = current.notes.find(note => note.id === noteId);
-                    if (!original || await current.onUpdate(noteId, { content: original.content + link }) === false) {
+                    // ⚠️ 列表里的正文可能只是摘要（开头 200 字）：拿它拼链接写回去，
+                    // 等于把这条笔记的尾巴整段砍掉。所以先补全文再拼；补不全就放弃写入，
+                    // 附件本身已经存下来了，用户能在附件管理器里找回。
+                    let original = current.notes.find(note => note.id === noteId) ?? null;
+                    if (original?.content_truncated) {
+                        const hydrated = await onEnsureFullNote?.(noteId);
+                        if (hydrated && !hydrated.content_truncated) original = hydrated;
+                    }
+                    if (
+                        !original ||
+                        original.content_truncated ||
+                        await current.onUpdate(noteId, { content: (original.content ?? "") + link }) === false
+                    ) {
                         throw new Error("附件已上传，但原笔记回写失败，请在附件管理器找回");
                     }
                 }
@@ -740,7 +752,7 @@ export default function NotesPage({
                 onNotify?.(error instanceof Error ? error.message : "附件上传失败", "error");
             }
         },
-        [handleUpload, onNotify]
+        [handleUpload, onNotify, onEnsureFullNote]
     );
 
     /**
@@ -1011,9 +1023,26 @@ export default function NotesPage({
     }, [view, onLoadTrash]);
 
     // 选中的笔记变了就把草稿换成它的内容（没在编辑时才换，避免打字被冲掉）
+    // 摘要态（正文只有开头 200 字）绝不能灌进草稿：一保存就把整篇砍成一段。
+    // 补全后 content_truncated 变 false，依赖变化会再跑一次，那时才是真全文。
+    // ⚠️ 这段空窗期的草稿必须显式清掉，不能留着上一条的：dirty 是「草稿 ≠ active」，
+    // 留着旧草稿就会被判成有改动，而失焦/切标签页是**立刻落盘**的 —— 上一条的正文
+    // 会被写进刚点开的这条。清空后 dirty 为假，等真全文回来再灌。
+    // ⚠️ 读 active 走 ref：依赖只该认「换了哪条」和「这条补全完没有」这两个信号。
+    // 直接把 active 写进依赖数组不行 —— notes 每刷新一次 active 就换新对象，effect
+    // 会跟着重跑，把用户正在打的字冲成库里那份（原来那条 eslint-disable 就是挡这个的；
+    // 换成 ref 之后依赖就齐了，注释可以删掉）。同款写法见上面 attachmentTargets。
+    const activeForSeedRef = useRef(active);
+    activeForSeedRef.current = active;
     useEffect(() => {
-        if (active) setDraft({ title: active.title || "", content: active.content || "" });
-    }, [active?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+        const cur = activeForSeedRef.current;
+        if (!cur) return;
+        if (cur.content_truncated) {
+            setDraft(null);
+            return;
+        }
+        setDraft({ title: cur.title || "", content: cur.content || "" });
+    }, [active?.id, active?.content_truncated]);
 
     /**
      * 阅读位置记忆（inkstone 的 reading-position.ts）。
@@ -1061,6 +1090,12 @@ export default function NotesPage({
      * 一条笔记参与搜索的文本：标题 + 正文 + 标签名。
      * 标签名必须算进来 —— 用户记不清正文里有没有那个词，但记得「我给标了『合同』的
      * 那几条」，标签常常是唯一能想起来的线索。
+     *
+     * ⚠️ 已知边界（摘要档）：列表里每条的 `content` 只有开头 200 字，所以这条兜底
+     * 路径只能匹配到「标题 + 前 200 字 + 标签名」，正文深处的词搜不到。
+     * 这是有意的取舍：边搜边补全文等于给每次输入打几百个请求。
+     * 服务端搜索（folderTags.onSearchRemote / FTS5）走的是库里的全文索引，不受此限；
+     * 只有它不可用（老部署 / 索引没建）时才会落到这条本地兜底上。
      */
     const searchableText = useCallback(
         (n: Note) =>
@@ -1367,16 +1402,21 @@ export default function NotesPage({
      * 见 active 定义处的注释。两入口口径不同是有意的。
      */
     const exportOne = useCallback(
-        (note: Note) => {
+        async (note: Note) => {
             try {
-                const name = exportNoteAsMarkdown(note.title, note.content);
+                // 摘要档下 note.content 只有前 200 字：先补全文再导，否则导出的是残篇。
+                // 补不到（接口失败 / 没接这个能力）就退回入参，宁可导残篇也不能什么都不给。
+                const full = (note.content_truncated && typeof note.id === "number"
+                    ? await onEnsureFullNote?.(note.id)
+                    : null) ?? note;
+                const name = exportNoteAsMarkdown(full.title, full.content);
                 onNotify?.(`已导出「${name}」`, "success");
             } catch (error) {
                 reportError(error, { source: "note-export" });
                 onNotify?.("导出失败：" + (error instanceof Error ? error.message : "未知错误"), "error");
             }
         },
-        [onNotify]
+        [onNotify, onEnsureFullNote]
     );
 
     // ---------- 笔记右键菜单的各个动作（inkstone 的完整菜单） ----------
@@ -1530,15 +1570,20 @@ export default function NotesPage({
 
     /** 导出 HTML（markdown-it 渲染成离线可看的单文件） */
     const exportHtmlOne = useCallback(
-        (note: Note) => {
-            void exportNoteAsHtml(note.title, note.content)
-                .then(name => onNotify?.(`已导出「${name}」`, "success"))
-                .catch(error => {
-                    reportError(error, { source: "note-export-html" });
-                    onNotify?.("导出失败：" + (error instanceof Error ? error.message : "未知错误"), "error");
-                });
+        async (note: Note) => {
+            try {
+                // 同 exportOne：摘要态先补全文，否则导出的单文件只有 200 字
+                const full = (note.content_truncated && typeof note.id === "number"
+                    ? await onEnsureFullNote?.(note.id)
+                    : null) ?? note;
+                const name = await exportNoteAsHtml(full.title, full.content);
+                onNotify?.(`已导出「${name}」`, "success");
+            } catch (error) {
+                reportError(error, { source: "note-export-html" });
+                onNotify?.("导出失败：" + (error instanceof Error ? error.message : "未知错误"), "error");
+            }
         },
-        [onNotify]
+        [onNotify, onEnsureFullNote]
     );
 
     /** 导出 PDF：调起系统打印（目的地选「另存为 PDF」） */
@@ -1605,14 +1650,18 @@ export default function NotesPage({
     // 整库导出（JSON / ZIP 含附件）2026-10-23 搬到 notes/exportNotes.ts：
     // 拼 payload、取附件、打 zip、触发下载，全程不碰 React 状态。
     // 这里只保留「把当前数据递进去」这层壳。
-    const exportAllData = useCallback(
-        () => exportAllNotesJson({ notes, folderTags, uploadApi, onNotify }),
-        [notes, folderTags, uploadApi, onNotify]
-    );
-    const exportAllZip = useCallback(
-        async () => exportAllNotesZip({ notes, folderTags, uploadApi, onNotify }),
-        [notes, folderTags, uploadApi, onNotify]
-    );
+    //
+    // 备份必须带全文：摘要档下直接倒 notes 会把每篇都截成 200 字，用户以为备份好了。
+    // 先 await 一次全量补全（补完 onLoadFullNotes 会把新列表回给调用方），再喂给导出函数；
+    // 拿不到这个能力时才退回当前 notes。
+    const exportAllData = useCallback(async () => {
+        const full = onLoadFullNotes ? await onLoadFullNotes() : notes;
+        exportAllNotesJson({ notes: full, folderTags, uploadApi, onNotify });
+    }, [notes, onLoadFullNotes, folderTags, uploadApi, onNotify]);
+    const exportAllZip = useCallback(async () => {
+        const full = onLoadFullNotes ? await onLoadFullNotes() : notes;
+        await exportAllNotesZip({ notes: full, folderTags, uploadApi, onNotify });
+    }, [notes, onLoadFullNotes, folderTags, uploadApi, onNotify]);
 
     /**
      * 导入文件：JSON（老格式）或 zip（含附件）。
@@ -1697,13 +1746,19 @@ export default function NotesPage({
     );
 
     const exportPdfOne = useCallback(
-        (note: Note) => {
-            void printNoteAsPdf(note.title, note.content).catch(error => {
+        async (note: Note) => {
+            try {
+                // 同 exportOne：打印的是摘要态的话，PDF 里就只有开头 200 字
+                const full = (note.content_truncated && typeof note.id === "number"
+                    ? await onEnsureFullNote?.(note.id)
+                    : null) ?? note;
+                await printNoteAsPdf(full.title, full.content);
+            } catch (error) {
                 reportError(error, { source: "note-export-pdf" });
                 onNotify?.("打印失败：" + (error instanceof Error ? error.message : "未知错误"), "error");
-            });
+            }
         },
-        [onNotify]
+        [onNotify, onEnsureFullNote]
     );
 
     // ---------- 反向链接（inkstone 顶栏那个「反向链接」）----------
@@ -1711,6 +1766,17 @@ export default function NotesPage({
     // 纯前端算：客户端本来就持有全部笔记，一次遍历即可，**不新增任何表**。
     // 判据与渲染层的 `[[双链]]` 规则共用 utils/noteWikiLink，两处不会跑偏。
     const [backlinkAnchor, setBacklinkAnchor] = useState<HTMLElement | null>(null);
+    /**
+     * 反链 / 出链 / 关系图都是**扫全部笔记正文**算出来的，摘要档下会静默少算
+     * （尾巴里的 `[[双链]]` 扫不到，反链列表凭空少几条，用户不会知道是漏了）。
+     * 所以三个入口（行菜单的反链浮层、右侧常驻反链面板、「关系图谱」弹窗）
+     * 任意一个一打开，就先一次性补全 —— 补完 notes 就是全文，判断条件为假，不会再补第二次。
+     */
+    useEffect(() => {
+        if (!backlinkAnchor && !backlinksOpen && !graphOpen) return;
+        if (!onLoadFullNotes || !notes.some(n => n.content_truncated)) return;
+        void onLoadFullNotes();
+    }, [backlinkAnchor, backlinksOpen, graphOpen, notes, onLoadFullNotes]);
     /** 有草稿时按草稿算：正在写的内容不该被「库里那份」盖住 */
     const backlinks = useMemo(() => {
         if (!active || active.id === undefined) return [];

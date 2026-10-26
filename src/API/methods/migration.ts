@@ -8,7 +8,7 @@
 import type { NavigationAPI } from "../http";
 import { RECOVERY_PUBLIC_KEY_CONFIG, WEBDAV_CONFIG_PREFIX } from "../configKeys";
 import { encryptSecret, hashPassword, isHashedPassword } from "../crypto";
-import { countWikiLinks } from "../../utils/noteWikiLink";
+import { countWikiLinks } from "../../utils/noteWikiLinkCount";
 import type { D1PreparedStatement } from "../schema";
 import {
     ATTACHMENTS_TABLE_STATEMENTS,

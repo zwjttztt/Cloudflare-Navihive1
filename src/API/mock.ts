@@ -38,6 +38,8 @@ import type { OpsStats } from "./methods/audit";
 import { validateFolderMove } from "../utils/folderTree";
 import { groupClientErrors } from "../utils/clientErrorGroups";
 import { REVISION_KEEP_PER_NOTE, needsSummary, summarizeContent } from "../utils/noteLimits";
+// 双链计数与真机共用同一份实现（真机在 notesNote.ts 的写路径里用它算 link_count）
+import { countWikiLinks } from "../utils/noteWikiLinkCount";
 import { sqlNow } from "../utils/sqlTime";
 import type { VaultEntryInput, VaultEntryRecord, VaultKeysInput, VaultKeysRecord } from "./types";
 // 会话标记 cookie 的读写与真客户端共用同一份实现（见 transport.ts 的说明）：
@@ -200,6 +202,8 @@ const mockNotes: Note[] = [
         pinned: true,
         order_num: 0,
         site_id: null,
+        // 示例正文里没有 [[双链]]，与真机写入时算出来的值一致（见 countWikiLinks）
+        link_count: 0,
         // 演示数据刻意留一条**在文件夹里**的笔记（2026-10-07）：
         // 否则「选中文件夹 → 笔记内联在左栏 → 内联笔记右键」这条路径在演示模式
         // 里根本走不到，文件夹树看起来永远是空的。
@@ -213,6 +217,7 @@ const mockNotes: Note[] = [
         pinned: false,
         order_num: 1,
         site_id: null,
+        link_count: 0,
         folder_id: null,
     },
 ];
@@ -552,6 +557,8 @@ export class MockNavigationClient {
             uuid: draft.uuid || `m1-${Date.now().toString(36)}`,
             title: draft.title || "",
             content: draft.content || "",
+            // 与真机 createNote 同一步：写入时就把双链数算好（数据页统计读它）
+            link_count: countWikiLinks(draft.content || ""),
             pinned: draft.pinned || false,
             order_num: Math.max(0, ...mockNotes.map(n => n.order_num || 0)) + 1,
             site_id: draft.site_id ?? null,
@@ -575,6 +582,8 @@ export class MockNavigationClient {
             await this.pushRevision(id, note.title, note.content);
         }
         Object.assign(note, patch, { updated_at: new Date().toISOString() });
+        // 正文变了要跟着重算，否则这个数字会停在旧值（真机在 updateNote 里做同一件事）
+        if (patch.content !== undefined) note.link_count = countWikiLinks(note.content);
         if (patch.content !== undefined) await syncMockInlineTags(note);
         return note;
     }
@@ -625,7 +634,10 @@ export class MockNavigationClient {
                 links += 1;
             }
         }
-        return { versions: 0, links };
+        // words：与真机 SQL 同一个口径 —— 去掉空格 / 换行 / 制表符后的字符数
+        let words = 0;
+        for (const n of mockNotes) words += n.content.replace(/[ \n\t]/g, "").length;
+        return { versions: 0, links, words };
     }
 
     // 演示模式的分组分享：内存 Map，一个分组一份（真实实现是 group_share 表）
@@ -779,7 +791,11 @@ export class MockNavigationClient {
 
     async listAttachments(): Promise<NoteAttachment[]> {
         await new Promise(resolve => setTimeout(resolve, 80));
-        return mockAttachments.map(a => ({ ...a }));
+        // ref_count 与真机同一个判据：正文里出现 `/api/notes/attachments/<id>` 就算引用
+        return mockAttachments.map(a => ({
+            ...a,
+            ref_count: mockNotes.filter(n => n.content.includes(`/api/notes/attachments/${a.id}`)).length,
+        }));
     }
 
     async deleteAttachment(id: string): Promise<{ ok: boolean }> {

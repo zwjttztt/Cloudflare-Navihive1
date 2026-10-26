@@ -81,30 +81,11 @@ export function extractWikiLinks(source: string): string[] {
 }
 
 /**
- * 数出正文里 `[[目标]]` 双链**出现的次数**（不去重，不含 `![[嵌入]]`）。
- *
- * 与 extractWikiLinks 的区别（两个都要，别互相替代）：
- *   · extractWikiLinks 走完整 markdown-it 解析 → 拿到**去重**后的目标名，
- *     用来建反向链接；代价是每次都要实例化解析器，且拿不到出现次数。
- *   · 这里只用一条正则 → 拿到**出现次数**，用来给数据页的「双链」一格做统计。
- *     它不解析语法（代码块里的 `[[x]]` 也会算），这是刻意的：那个数字表达的是
- *     「这篇正文里写了多少个双链」，而不是「渲染后有多少个链接」。
- *
- * ⚠️ 两处调用方：`API/methods/notes.ts`（写入时算 link_count）与
- * `API/methods/migration.ts`（老数据回填）。**必须同一份实现** ——
- * 各写一份的话，回填出来的数和之后新增的数会来自两套规则，总数永远对不上。
+ * 数出正文里 `[[目标]]` 双链**出现的次数**。实现搬到 noteWikiLinkCount.ts 了
+ * —— 那边不 import markdown-it，mock（会进首屏）引用它不会把渲染器拖进来。
+ * 这里 re-export，老调用方与「同一份实现」的约束都不受影响。
  */
-export function countWikiLinks(text: string): number {
-    const re = /\[\[([^\]\n]+)\]\]/g;
-    let m: RegExpExecArray | null;
-    let n = 0;
-    while ((m = re.exec(text)) !== null) {
-        // 前一个字符是 ! 的就是嵌入 `![[...]]`，不计入双链
-        if (m.index > 0 && text[m.index - 1] === "!") continue;
-        n += 1;
-    }
-    return n;
-}
+export { countWikiLinks } from "./noteWikiLinkCount";
 
 /**
  * 复用 markdownNoteTags 的 `#标签` 规则。

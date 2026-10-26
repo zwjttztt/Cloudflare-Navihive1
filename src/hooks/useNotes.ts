@@ -81,7 +81,9 @@ export interface TrashedNote {
 /** 本域用到的后端方法，单测里可以塞假实现 */
 export type NotesApiLike = {
     listNotes(opts?: { summary?: boolean }): Promise<Note[]>;
-    /** 笔记总数（2026-10-17 性能排查）。可选：老部署没有 notes/count 时前端跳过探测 */
+    /** 笔记总数（2026-10-17 性能排查）。可选：老部署没有 notes/count。
+     *  ⚠️ useNotes 里已经不再用它探摘要阈值了（摘要现在是默认档，见 summaryRef），
+     *  但老部署的 api 对象确实可能没有这个方法，所以保持可选。 */
     countNotes?(): Promise<number>;
     getNote(id: number): Promise<Note | null>;
     createNote(draft: Partial<Note>): Promise<Note>;
@@ -352,31 +354,21 @@ export function useNotes({ api, onError, onNotify, onNoteConflict, firstDelayMs 
      * 所以服务端一回就把新 rev 记在这里，下一笔**同步**就能读到。
      */
     const revById = useRef(new Map<number, number>());
-    /** 列表是否走摘要（?fields=list）：见 reload 里的注释。SWR 命中时沿用缓存的那档 */
-    const summaryRef = useRef(swrHit?.summary ?? false);
-    /** 首拉前的 count 探测只做一次：老部署 404 / 网络抖动也不再反复试 */
-    const countProbedRef = useRef(false);
     /**
- * 列表走摘要的条数阈值：超过这个数，`?fields=list` 才真的省流量。
- * 阈值以下开了反而更慢 —— 点开笔记要多一次全文请求（见 API 那段注释）。
- *
- * ⚠️⚠️ 为什么**不能**把默认值改成「一律开摘要」（2026-10-25 评估后决定不改）：
- * 列表那条 `content` 现在被五条路径当「全文」用，切到摘要（正文只剩开头
- * NOTE_SUMMARY_CHARS=200 字 + content_truncated 标记）会让它们静默出错：
- *   1. NotesPage.tsx:1067 `searchableText` —— 本地模糊搜索的检索串是
- *      「标题 + 正文 + 标签名」。它是服务端 FTS5 不可用时的**唯一兜底**，
- *      截断后 200 字以外的词一概搜不到（不是变慢，是搜不到）。
- *   2. NotesPage.tsx:1246 `completionSources` —— `[[` 笔记补全卡片上的
- *      `noteExcerpt(n.content)` 预览会退化成同一句开头。
- *   3. NotesPage.tsx:1593 `attachmentRefCounts` —— 附件「引用 N 次」靠扫正文
- *      里的 `/api/notes/attachments/<id>`，截断后引用数偏小 → 「维护」里会
- *      把**正在用**的附件判成未引用并清掉（不可逆）。
- *   4. NotesPage.tsx:2207 `noteWordTotal` —— 设置→数据的总字数会少算。
- *   5. NotesPage.tsx:1715/1724 反查 / 出链 —— 双向链接是靠扫正文算的。
- * 要默认开摘要，得先给这五处各补一条「按需取全文」的路（并按笔记 id 缓存），
- * 那是独立的一件事；在它落地前保持「首拉全文」。
- */
-const SUMMARY_LIST_THRESHOLD = 200;
+     * 列表是否走摘要（?fields=list）。**现在永远是 true**：摘要就是默认档，
+     * 正文只回开头 NOTE_SUMMARY_CHARS=200 字 + content_truncated 标记。
+     *
+     * 历史脉络：这里曾经挂过一个 SUMMARY_LIST_THRESHOLD 阈值开关（首拉前先探
+     * countNotes，条数超过 200 才敢开摘要），因为列表的 content 一度被五条路径
+     * 当「全文」用 —— 本地模糊搜索的检索串、`[[` 补全的预览、附件「引用 N 次」
+     * 的正文扫描、设置→数据的总字数、反查/出链。那五条现在都改成「按需补全」：
+     * 单条走 ensureFullNote，要看全量的走 loadFullNotes，阈值因此不再需要。
+     *
+     * ⚠️ 别再退回「首拉全文」：笔记上万条时首屏要多拖几 MB，而用户往往只点开
+     * 其中一两条。摘要 + 按需补全才是省流量的正解。
+     * 这个 ref 仍兼作 SWR 缓存里的 summary 字段（命中缓存时沿用那一档）。
+     */
+    const summaryRef = useRef(swrHit?.summary ?? false);
 
 /** 拉列表 / 重建状态时把 rev 的底账重铺一遍 */
     const seedRevs = useCallback((list: Note[]) => {
@@ -398,22 +390,11 @@ const SUMMARY_LIST_THRESHOLD = 200;
 
     const reload = useCallback(async () => {
         try {
-            // 摘要阀门：笔记多到列表体积成了负担时才走 ?fields=list（只回开头 200 字）。
-            // 判断依据是**上一次**拉到的条数；首拉改由 count 端点先探（2026-10-17 性能排查）：
-            // 万条级时「首屏永远拉全文」会白拖几 MB，而 count 实测 ~1ms。
-            // 老部署没有 notes/count（404）或 mock 没实现 countNotes 时退回旧行为 ——
-            // 探测只做一次，失败也标记已探（后续仍按拉到的条数切档）。
-            if (api.countNotes && !countProbedRef.current) {
-                countProbedRef.current = true;
-                try {
-                    if ((await api.countNotes()) > SUMMARY_LIST_THRESHOLD) summaryRef.current = true;
-                } catch {
-                    // 404 / 抖动：保持全文首拉
-                }
-            }
-            const list = await api.listNotes({ summary: summaryRef.current });
+            // 摘要永远是默认档（见上面 summaryRef 的说明）：列表只回正文开头，
+            // 需要全文的地方各自走 ensureFullNote（单条）/ loadFullNotes（全量）补。
+            const list = await api.listNotes({ summary: true });
             const next = Array.isArray(list) ? list : [];
-            summaryRef.current = next.length > SUMMARY_LIST_THRESHOLD;
+            summaryRef.current = true;
             seedRevs(next);
             setNotes(next);
             setLoaded(true);
@@ -459,6 +440,43 @@ const SUMMARY_LIST_THRESHOLD = 200;
         },
         [api, onError]
     );
+
+    /**
+     * 一次把所有「摘要态」的笔记补成全文，返回补全后的完整列表。
+     *
+     * 给「要看全量正文」的功能用：整库导出（JSON / ZIP）、反向链接与关系图、总字数兜底。
+     * 未截断的笔记一条请求都不发；并发 6 路，几百篇也不会把浏览器连接池打满。
+     * 补完顺手把结果写回 notes 状态 —— 之后这些笔记在列表里就是全文了，不必再补第二次。
+     */
+    const loadFullNotes = useCallback(async (): Promise<Note[]> => {
+        const current = notesRef.current;
+        const pending = current.filter(n => n.content_truncated && typeof n.id === "number");
+        if (pending.length === 0) return current;
+        const hydrated = new Map<number, Note>();
+        const queue = [...pending];
+        const lane = async () => {
+            for (;;) {
+                const item = queue.shift();
+                if (!item || typeof item.id !== "number") return;
+                try {
+                    const full = await api.getNote(item.id);
+                    if (full) hydrated.set(item.id, full);
+                } catch (error) {
+                    reportError(error, { source: "note-full-all" });
+                }
+            }
+        };
+        await Promise.all(Array.from({ length: Math.min(6, pending.length) }, lane));
+        if (hydrated.size === 0) return current;
+        const next = current.map(n =>
+            typeof n.id === "number" ? hydrated.get(n.id) ?? n : n
+        );
+        for (const n of next) {
+            if (typeof n.id === "number" && typeof n.rev === "number") revById.current.set(n.id, n.rev);
+        }
+        setNotes(next);
+        return next;
+    }, [api]);
 
     // 首屏拉一次：笔记条数要显示在顶栏按钮上，不能等用户点开面板才加载
     useEffect(() => {
@@ -1235,6 +1253,7 @@ const SUMMARY_LIST_THRESHOLD = 200;
         externalChange,
         reload,
         ensureFullNote,
+        loadFullNotes,
         /**
          * 数据集级变更广播（2026-10-11）：导入 / 恢复这类不走单个 create/update
          * 方法的路径成功后手动喊一声，让其它标签页能提示刷新。跨标签页基础

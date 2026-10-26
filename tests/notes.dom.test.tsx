@@ -1051,26 +1051,7 @@ test("useNotes：首屏就拉一次列表（顶栏按钮要显示条数）", asy
     assert.equal(calls, 1, "列表要在挂载时就拉，不能等用户点开面板");
 });
 
-test("useNotes：首拉前先探 count，超过阈值直接走摘要（2026-10-17 性能排查）", async () => {
-    const listArgs: Array<{ summary?: boolean } | undefined> = [];
-    await mountHook({
-        countNotes: async () => 501,
-        listNotes: async (opts?: { summary?: boolean }) => {
-            listArgs.push(opts);
-            return [];
-        },
-    });
-    // count 探测给「effect → reload → listNotes」这条链多加了几跳微任务，
-    // mountHook 里那一轮 flush 不够，这里再确定性冲几轮（纯微任务，无定时器）
-    for (let i = 0; i < 5 && listArgs.length === 0; i += 1) {
-        await act(async () => {
-            await Promise.resolve();
-        });
-    }
-    assert.deepEqual(listArgs[0], { summary: true }, "count>200 时首拉就该带 summary，不该先白拉一遍全文");
-});
-
-test("useNotes：没有 countNotes（老部署 / 老 mock）时首拉照旧走全文", async () => {
+test("useNotes：首拉一律走摘要（?fields=list），不再靠 count 探阈值", async () => {
     const listArgs: Array<{ summary?: boolean } | undefined> = [];
     await mountHook({
         listNotes: async (opts?: { summary?: boolean }) => {
@@ -1078,34 +1059,71 @@ test("useNotes：没有 countNotes（老部署 / 老 mock）时首拉照旧走�
             return [];
         },
     });
-    assert.deepEqual(listArgs[0], { summary: false }, "没有 count 端点时要优雅退回旧行为");
+    assert.deepEqual(
+        listArgs[0],
+        { summary: true },
+        "摘要现在是默认档，首拉就该带 summary"
+    );
 });
 
-test("useNotes：count 探测失败（老部署 404）不炸首拉也不弹加载失败", async () => {
+test("useNotes：没有 countNotes 端点也照样走摘要", async () => {
     const listArgs: Array<{ summary?: boolean } | undefined> = [];
+    await mountHook({
+        listNotes: async (opts?: { summary?: boolean }) => {
+            listArgs.push(opts);
+            return [];
+        },
+    });
+    assert.deepEqual(
+        listArgs[0],
+        { summary: true },
+        "摘要已经是无条件默认档，与有没有 count 端点无关"
+    );
+});
+
+test("useNotes：首拉摘要不会因为列表为空就报加载失败", async () => {
     const errors: string[] = [];
+    const listArgs: Array<{ summary?: boolean } | undefined> = [];
     await mountHook(
         {
-            countNotes: async () => {
-                throw new Error("404");
-            },
             listNotes: async (opts?: { summary?: boolean }) => {
                 listArgs.push(opts);
-                return [note()];
+                return [];
             },
         },
         message => errors.push(message)
     );
-    for (let i = 0; i < 5 && listArgs.length === 0; i += 1) {
-        await act(async () => {
-            await Promise.resolve();
-        });
-    }
-    assert.deepEqual(listArgs[0], { summary: false }, "探测失败要保持全文首拉");
+    assert.deepEqual(listArgs[0], { summary: true });
     assert.ok(
         !errors.some(e => e.includes("加载记事本失败")),
-        "count 404 是兼容性探测，不能当「加载记事本失败」弹给用户"
+        "空列表是正常状态（新用户 / 全删光），不能弹「加载记事本失败」"
     );
+});
+
+test("useNotes：loadFullNotes 只补截断的那几条，补完列表里就是全文", async () => {
+    const head = "摘".repeat(200);
+    const body = `${head}·后半段正文`;
+    const asked: number[] = [];
+    const seen = await mountHook({
+        listNotes: async () => [
+            note({ id: 1, title: "长文", content: head, content_truncated: true }),
+            note({ id: 2, title: "短文", content: "短" }),
+        ],
+        getNote: async (id: number) => {
+            asked.push(id);
+            return note({ id, title: "长文", content: body });
+        },
+    });
+    let result: Note[] = [];
+    await act(async () => {
+        result = await seen.at(-1)!.loadFullNotes();
+    });
+    assert.deepEqual(asked, [1], "只有截断的那条要发请求，短文一条都不该发");
+    const hydrated = result.find(n => n.id === 1)!;
+    assert.equal(hydrated.content, body, "补全后正文要是全文");
+    assert.ok(!hydrated.content_truncated, "补全后不能再留 content_truncated 标记");
+    assert.equal(result.find(n => n.id === 2)!.content, "短", "没截断的那条原样返回");
+    assert.equal(seen.at(-1)!.notes.find(n => n.id === 1)!.content, body, "补完要写回 notes 状态");
 });
 
 test("useNotes：删除失败要把笔记放回列表", async () => {

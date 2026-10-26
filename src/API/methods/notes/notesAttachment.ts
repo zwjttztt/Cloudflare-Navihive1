@@ -41,18 +41,36 @@ export const attachmentMethods: Pick<NotesApi,
         return this.withSchemaRetry(async () => {
             // ⚠️ 不 SELECT object_key：暴露它等于泄漏存储布局（key 里带 user_id），
             // 前端也没有理由知道。
+            //
+            // ref_count（PR1 新增，只读）：有多少条笔记的正文引用了这张图。
+            // 判据与 pruneAttachments 的 NOT EXISTS 同源 —— 正文里出现
+            // `/api/notes/attachments/<id>`（uploader 插的就是这个 URL）就算「在用」。
+            // 比 prune 的裸 `INSTR(content, a.id)` 更严一点（防止 id 前缀撞车），
+            // 所以只会少算、不会多算：ref_count = 0 时 prune 也不一定会删（回收站那条
+            // NOT EXISTS 还没算进来），前端别把它当成「可安全删除」的结论。
+            //
+            // ⚠️ 账号隔离照 notesFolder.ts 的计数子查询那样：子查询里用 scopeSql(true)
+            // （生成 ` AND user_id = ?`），外层 FROM 用 scopeSql(false)（生成 WHERE），
+            // 所以 bind 要**两次** scopeParams —— 子查询那个占位符在前面，外层的在后面。
+            // 写成 `n.user_id IS a.user_id` 虽然也能跑，但那样单账号部署（uid=NULL）
+            // 与登录态会走两条不同路径，不如跟同一目录里的既有写法对齐。
             const result = await this.db
                 .prepare(
-                    `SELECT id, note_id, filename, mime, size, width, height, storage, created_at
-                     FROM attachments
+                    `SELECT a.id, a.note_id, a.filename, a.mime, a.size, a.width, a.height, a.storage, a.created_at,
+                            (SELECT COUNT(*) FROM notes n
+                              WHERE INSTR(n.content, '/api/notes/attachments/' || a.id) > 0${this.scopeSql(true)}
+                            ) AS ref_count
+                     FROM attachments a
                      ${this.scopeSql(false)}
-                     ORDER BY created_at DESC
+                     ORDER BY a.created_at DESC
                      LIMIT 200`
                 )
                 // ⚠️ scopeSql(false) 在登录用户下会追加 "WHERE user_id = ?"：
                 // 不 bind 的话 D1 直接抛 wrong number of bindings → 接口 500。
                 // 附件方法是全库唯一直接 .bind(id) 的重灾区（2026-10-09 线上取图 500 的真因）。
-                .bind(...this.scopeParams([]))
+                // 现在多了一个子查询的 scopeSql(true)，所以是**两次** scopeParams：
+                // 顺序 = SQL 里 ? 的出现顺序（子查询在前，外层 WHERE 在后）。
+                .bind(...this.scopeParams([]), ...this.scopeParams([]))
                 // 纯读用 all()（D1 的 run()/all() 都带 results，但真 SQLite 适配器只有 all() 给行）
                 .all();
             return result.results as unknown as NoteAttachment[];

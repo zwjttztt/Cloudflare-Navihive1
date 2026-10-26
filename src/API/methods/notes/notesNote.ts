@@ -12,7 +12,7 @@ import type { AuditEntry } from "../data";
 import type { D1PreparedStatement } from "../../schema";
 import { auditStatement } from "../data";
 import { newUuid } from "../../../utils/uuid";
-import { countWikiLinks } from "../../../utils/noteWikiLink";
+import { countWikiLinks } from "../../../utils/noteWikiLinkCount";
 import { extractNoteTags } from "../../../utils/markdownNoteTags";
 import { NOTE_SUMMARY_CHARS, REVISION_KEEP_PER_NOTE, needsSummary } from "../../../utils/noteLimits";
 import { segmentCJK, FTS_CONTENT_LIMIT } from "../../../utils/ftsQuery";

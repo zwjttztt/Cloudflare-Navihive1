@@ -94,7 +94,7 @@ export const notesImpl = {
     },
     async notesStats(this: ClientThis): Promise<NoteStats> {
         const res = await this.request<Partial<NoteStats>>("notes/stats");
-        return { versions: res?.versions ?? 0, links: res?.links ?? 0 };
+        return { versions: res?.versions ?? 0, links: res?.links ?? 0, words: res?.words ?? 0 };
     },
     async notesChanges(this: ClientThis, since?: string): Promise<NotesChangesResult> {
         const params = since ? `?since=${encodeURIComponent(since)}` : "";

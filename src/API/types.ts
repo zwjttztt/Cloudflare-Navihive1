@@ -93,6 +93,12 @@ export interface Note {
     archived?: boolean;
     /** 阶段三收尾：归入哪个文件夹。NULL = 未归类 */
     folder_id?: number | null;
+    /**
+     * 这一行正文里的 `[[双链]]` 条数（2026-10-24 起由写入侧算好落库，见 countWikiLinks）。
+     * NULL = 老数据还没被迁移回填过 —— 调用方按「未知」处理，别当成 0。
+     * PR1 只是为了「列表/详情不用为了这个数字再读一遍正文」而把它读出来。
+     */
+    link_count?: number | null;
     created_at?: string;
     updated_at?: string;
 }
@@ -140,6 +146,11 @@ export interface NoteAttachment {
     /** 只在服务端用；列给前端时会被剥掉（暴露它等于泄漏存储布局） */
     object_key?: string;
     created_at: number;
+    /**
+     * 有多少条笔记的正文引用了这个附件（PR1 只读字段）。
+     * 0 = 没有任何正文提到它（pruneAttachments 会按同一套判据清理）。
+     */
+    ref_count?: number | null;
 }
 
 /**
@@ -181,6 +192,11 @@ export interface NoteStats {
     versions: number;
     /** 全站 `[[双链]]` 引用出现次数（不含 `![[嵌入]]`） */
     links: number;
+    /**
+     * 全部笔记正文的**非空白字符数**（去掉空格 / 换行 / 制表符后求和）。
+     * 由 SQL 一次算完，正文不进 Worker —— 老实现是前端把每条笔记读回来再数字数。
+     */
+    words: number;
 }
 
 /** 服务端全文检索命中的一条（2026-10-09，FTS5 + LIKE 回退） */

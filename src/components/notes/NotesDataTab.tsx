@@ -152,7 +152,11 @@ export default function NotesDataTab({ data, shareApi = null, onNotify }: NotesD
                                             ["文件夹", data.stats.folders],
                                             ["标签", data.stats.tags],
                                             ["双链", noteStats ? noteStats.links : null],
-                                            ["总字数", data.stats.words],
+                                            // 服务端 stats.words 是在库里数的（正文不出库）；data.stats.words 是前端扫
+                                            // notes.content 算的，摘要档下只有前 200 字，会明显偏小 —— 仅作老部署兜底。
+                                            // ⚠️ 用 `??` 不是三元：老部署的 stats 返回体里没有
+                                            // words（字段是新加的），三元会拿到 undefined 显示空白。
+                                            ["总字数", noteStats?.words ?? data.stats.words],
                                             ["版本历史", noteStats ? noteStats.versions : null],
                                             ["附件", attStats ? attStats.count : null],
                                             ["回收站", data.stats.trashed],

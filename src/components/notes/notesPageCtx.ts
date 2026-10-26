@@ -313,10 +313,15 @@ export interface NotesPageProps {
     /**
      * 摘要模式（?fields=list）下补全文：列表只给了开头 200 字，打开哪条就补哪条。
      *
-     * 可选：老后端 / mock 没有 getNote 时不传，此时前端阈值也没到（列表永远带全文），
+     * 可选：老后端 / mock 没有 getNote 时不传，此时列表里的笔记会一直停在摘要态，
      * 缺失即退化为老行为，不会多打请求。
      */
     onEnsureFullNote?: (id: number) => Promise<Note | null>;
+    /**
+     * 一次把所有摘要态笔记补成全文，返回补全后的列表（无截断的会原样返回）。
+     * 整库导出 / 反链 / 关系图这类要看全量正文的功能在动手前先 await 一次。
+     */
+    onLoadFullNotes?: () => Promise<Note[]>;
     /**
      * 图片上传能力（2026-07）。
      *

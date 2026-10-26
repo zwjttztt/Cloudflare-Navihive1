@@ -108,6 +108,7 @@ export default function NotesOverlay({
         externalChange,
         reload,
         ensureFullNote,
+        loadFullNotes,
         trash,
         loadTrash,
         restoreTrashed,
@@ -431,6 +432,7 @@ export default function NotesOverlay({
             onNotify={onNotify}
             folderTags={folderTags}
             onEnsureFullNote={ensureFullNote}
+            onLoadFullNotes={loadFullNotes}
         />
 
         {/* 乐观并发冲突：必须挂在根层（Modal 塞进条件块会被一起卸掉） */}

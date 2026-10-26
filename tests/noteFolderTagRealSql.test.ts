@@ -155,7 +155,7 @@ test("真实 SQLite：notesStats 全站计数（版本历史 = 快照数，双�
 
     // 初始为 0
     const empty = await api.notesStats();
-    assert.deepEqual(empty, { versions: 0, links: 0 });
+    assert.deepEqual(empty, { versions: 0, links: 0, words: 0 });
 
     const a = await api.createNote({ title: "甲", content: "见 [[乙]] 与 [[丙]]，嵌入不算 [[...]]".replace("[[...]]", "![[嵌入块]]") });
     const b = await api.createNote({ title: "乙", content: "没有链接的正文" });
@@ -169,11 +169,18 @@ test("真实 SQLite：notesStats 全站计数（版本历史 = 快照数，双�
     // 双链扫的是**当前正文**（不是历史快照）：甲现文 [[乙]]+[[丙]] = 2，乙 = 0 → 共 2
     assert.equal(stats.links, 2, "双链按当前正文出现次数计（不含 ![[嵌入]]）");
     assert.equal(stats.versions, 2, "版本历史 = 快照行数（创建不算，更新两次 = 2）");
+    // 总字数（PR1）：全部正文去掉空格 / 换行 / 制表符后的字符数，由 SQL 一次算完
+    const nonBlank = (s: string) => s.replace(/[ \n\t]/g, "").length;
+    assert.equal(
+        stats.words,
+        nonBlank("见 [[乙]] 与 [[丙]]（再改）") + nonBlank("没有链接的正文"),
+        "总字数口径 = 非空白字符数（含标点与 [[ ]] 本身）"
+    );
 
     // 账号隔离：另一个账号看不到这批计数
     api.setCurrentUser(777);
     const other = await api.notesStats();
-    assert.deepEqual(other, { versions: 0, links: 0 }, "别的账号必须看到全 0");
+    assert.deepEqual(other, { versions: 0, links: 0, words: 0 }, "别的账号必须看到全 0");
 });
 
 test("真实 SQLite：importNotesData 按 uuid 合并（较新者胜）+ 文件夹/标签重映射", async () => {
@@ -372,6 +379,9 @@ test("真实 SQLite：附件四方法在登录态（uid≠null）下 bind 数量
     // 1) listAttachments：scopeSql(false) 的 WHERE user_id = ? 必须补 bind
     const listed = await api.listAttachments();
     assert.equal(listed.length, 2, "listAttachments 在登录态下失败（疑似 bind 数量不匹配 → 线上 500）");
+    // ref_count（PR1）：att-1 被正文引用 1 次，att-orphan 没被任何正文提到 → 0
+    assert.equal(listed.find(a => a.id === "att-1")?.ref_count, 1, "被引用的附件 ref_count 应为 1");
+    assert.equal(listed.find(a => a.id === "att-orphan")?.ref_count, 0, "没人引用的附件 ref_count 应为 0");
 
     // 2) getAttachment：scopeSql(true) 追加的占位符必须 scopeParams 补上
     const found = await api.getAttachment("att-1");

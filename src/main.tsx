@@ -169,6 +169,7 @@ function swScriptUrl(): unknown {
         return tt.createPolicy("navihive-sw", { createScriptURL: (url: string) => url }).createScriptURL(SW_URL);
     } catch {
         // 策略名被占用 / CSP 不允许建策略：回退成字符串，最坏只是没有 TT 保护
+        console.warn("Trusted Types 策略创建失败，Service Worker 将不注册（离线能力失效）");
         return SW_URL;
     }
 }

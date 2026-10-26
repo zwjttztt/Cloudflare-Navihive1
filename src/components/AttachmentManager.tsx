@@ -13,7 +13,7 @@
 //     在部分部署下 401 —— 与预览里的 NoteImage 同一套三态语义）；
 //   - 分页在**前端切片**（listAttachments 一次回元数据全量，行很小；「加载更多 /
 //     已显示 N 个」的交互与 inkstone 的游标分页完全一致）。
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Drawer from "@mui/material/Drawer";
@@ -32,6 +32,11 @@ export interface AttachmentManagerFile {
     height?: number | null;
     filename: string;
     mime: string;
+    /**
+     * 服务端算好的「被多少条笔记引用」（笔记正文不出库，用 SQL 的 INSTR 数的）。
+     * 老部署没有这个字段，会回 undefined —— 那时退回调用方传进来的 countRefs 本地扫。
+     */
+    ref_count?: number | null;
 }
 
 export interface AttachmentManagerApi {
@@ -220,6 +225,19 @@ export default function AttachmentManager({
     const [deleteTarget, setDeleteTarget] = useState<AttachmentManagerFile | null>(null);
     const [confirmPrune, setConfirmPrune] = useState(false);
 
+    /**
+     * 这张附件被多少条笔记引用。
+     *
+     * ⚠️ 服务端优先：列表现在是摘要档（正文只有开头 200 字），本地扫 notes.content
+     * 会**少算** —— 尾巴里的引用数不到，正在用的附件会被显示成「未引用」，
+     * 用户照着清理就真删了。所以只要有 ref_count 就信它，本地扫只给老部署兜底。
+     */
+    const refsOf = useCallback(
+        (file: AttachmentManagerFile): number =>
+            typeof file.ref_count === "number" ? file.ref_count : countRefs ? countRefs(file.id) : 0,
+        [countRefs]
+    );
+
     // 每次打开都重拉（inkstone 同款：open 变化触发 reload）
     useEffect(() => {
         if (!open) return;
@@ -280,6 +298,13 @@ export default function AttachmentManager({
         }
     };
 
+    /**
+     * 批量清理未引用附件（删除动作，不可撤销 —— 只在这里调服务端 prune）。
+     *
+     * 判据与服务端 `ref_count` 同源：服务端数的是**库里的全文**，只会多算不会少算，
+     * 所以卡片上显示的「未引用」与它清掉的那批是同一口径 —— 宁可不删，不误删。
+     * 前端绝不自己用 notes.content 判一遍再按自己的结论删（摘要档下会漏算）。
+     */
     const doPrune = async () => {
         setBusy(true);
         try {
@@ -354,7 +379,7 @@ export default function AttachmentManager({
                     ) : (
                         <Box sx={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 1 }}>
                             {shown.map(file => {
-                                const refs = countRefs ? countRefs(file.id) : 0;
+                                const refs = refsOf(file);
                                 return (
                                     <Box
                                         key={file.id}

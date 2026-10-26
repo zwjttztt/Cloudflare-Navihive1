@@ -11,7 +11,7 @@ import { validateFolderMove } from "../../../utils/folderTree";
 
 /** notes 表全字段（写操作的 RETURNING、读操作的 SELECT 都用它） */
 export const NOTE_FIELDS =
-    "id, uuid, title, content, pinned, starred, rev, order_num, site_id, archived, folder_id, created_at, updated_at";
+    "id, uuid, title, content, pinned, starred, rev, order_num, site_id, archived, folder_id, link_count, created_at, updated_at";
 
 /**
  * 校验「把笔记/文件夹移到 parent 下」是否合法（防环 + 越权按「查不到」处理，不泄露存在性）。
