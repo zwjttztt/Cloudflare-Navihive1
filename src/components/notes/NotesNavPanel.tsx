@@ -10,7 +10,7 @@ import LastPageIcon from "@mui/icons-material/LastPage";
 import SettingsIcon from "@mui/icons-material/Settings";
 import AttachmentIcon from "@mui/icons-material/AttachFile";
 import { tagNamesOf, NavRow, FolderTagSection } from "../notes/sidebarSection";
-import { HEADER_CONTROL_H, HEADER_RADIUS, NOTES_NAV_CTRL_H } from "../../constants";
+import { HEADER_RADIUS, NOTES_NAV_CTRL_H } from "../../constants";
 import type { NotesPageCtx } from "./notesPageCtx";
 
 export default function NotesNavPanel(props: Pick<NotesPageCtx, "accountName" | "activeFolder" | "activeId" | "activeTag" | "askName" | "attManagerOpen" | "folderCounts" | "folderTags" | "folders" | "jumpToNote" | "keyword" | "listCollapsed" | "narrowLayout" | "noteTags" | "notes" | "notesInFolder" | "onClose" | "onCreate" | "onUpdate" | "openTemplatePicker" | "renderSearchField" | "searchRef" | "setActiveFolder" | "setActiveTag" | "setAppearanceFolderId" | "setAttManagerOpen" | "setListCollapsed" | "setMiddleHidden" | "setNavDrawerOpen" | "setRemoveTarget" | "setRowMenu" | "setSettingsOpen" | "setTagColorId" | "setView" | "startCreateInFolder" | "tagCounts" | "tags" | "uploadApi" | "view" | "viewCounts">) {
@@ -38,7 +38,7 @@ export default function NotesNavPanel(props: Pick<NotesPageCtx, "accountName" | 
             {/* 上行（2026-10-10 调整）：返回箭头贴左（箭头朝左），「记事本」居中，
                 「收起笔记列表」占返回箭头原来的位置（右上角）。收起 / 展开从左下角
                 挪上来 —— 低频但它本来就是控制这一列的，放列顶比挤在账号行里更直白。
-                ⚠️ 高度就是一个玻璃控件（HEADER_CONTROL_H），不再带上下内边距 ——
+                ⚠️ 高度就是一个玻璃控件（NOTES_NAV_CTRL_H=30），不再带上下内边距 ——
                 这一行 + 下面那行搜索框正好拼成 --notes-header-h，多一个 px 都会顶高。 */}
             <Box
                 sx={{
@@ -46,11 +46,11 @@ export default function NotesNavPanel(props: Pick<NotesPageCtx, "accountName" | 
                     alignItems: "center",
                     gap: 0.5,
                     px: 1,
-                    height: HEADER_CONTROL_H,
+                    height: NOTES_NAV_CTRL_H,
                     flexShrink: 0,
-                    // 标题行与下方搜索框之间加一道发丝线：两行实体控件叠在 72px 头部里，
+                    // 标题行与下方搜索框之间加一道分隔线：两行实体控件叠在 60px 头部里，
                     // 没有分隔会糊成一块（用户报「标题行 + 搜索框挤在一起」）。
-                    // border-box 让 1px 落在 36px 内，不顶高头部、不破坏三栏对齐。
+                    // border-box 让 1px 落在 30px 行内，不顶高头部、不破坏三栏对齐。
                     boxSizing: "border-box",
                     // 用 --neutral-border（30% 灰）而不是 --neutral-hairline（18%）：
                     // 左栏是浅底，18% 灰线几乎看不见，标题行和搜索框就糊成一块；
