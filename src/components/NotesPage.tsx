@@ -2417,7 +2417,12 @@ export default function NotesPage({
                 setActiveTag(null);
                 setMiddleHidden(false);
             }}
-            placeholder='搜索标题与内容'
+            // 2026-10-27（参考 inkstone）：占位符从「搜索标题与内容」缩成「搜索」。
+            // 这个字段在三处复用，其中左栏是**可调宽**的（默认 128，最小 104）——
+            // 七字占位符在 128px 下连着 ⌘K 胶囊只剩一半，实测被切成「搜」+ 半个「索」，
+            // 看起来像渲染坏了。占位符缩到两字后 104px 也不会被切。
+            // 语义信息不丢：aria-label 仍是「搜索笔记」，屏幕阅读器读得到。
+            placeholder='搜索'
             slotProps={{
                 input: {
                     "aria-label": "搜索笔记",
@@ -2443,7 +2448,19 @@ export default function NotesPage({
                                     borderRadius: 0.75,
                                     border: "1px solid var(--neutral-hairline)",
                                     bgcolor: "var(--glass-bg-hover)",
-                                    color: "text.disabled",
+                                    // ⚠️ 不能用 text.disabled（38% 黑）：这枚胶囊现在是**白底**，
+                                    // 38% 黑压在白底上实测淡到读不出（截图放大后是一团白），
+                                    // 快捷键提示就白挂了。用 text.secondary（60% 黑）。
+                                    color: "text.secondary",
+                                    // ⚠️ 2026-10-27：窄列里这枚提示要**自动隐身**。
+                                    // 算过账：字段宽 112（128 列减左右各 8）－ 内部左右各 14
+                                    // 的内填充 － 放大镜 20+8 － 本胶囊 26.6+8 ⇒ 输入区只剩
+                                    // 19px；16px 字号下连一个字都放不下，占位符被切成半个字。
+                                    // 列宽 ≥ 148 时输入区还有 41px 以上，才值得挂这枚提示。
+                                    // 容器名 notesnav 只在桌面左栏声明（NotesListPane 的
+                                    // data-nav-col）—— tablet 抽屉 / 手机列表里没有这个容器，
+                                    // 提示照常显示，不受影响。
+                                    "@container notesnav (max-width: 147px)": { display: "none" },
                                 }}
                             >
                                 ⌘K

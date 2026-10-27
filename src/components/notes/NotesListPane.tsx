@@ -191,6 +191,13 @@ export default function NotesListPane(props: Pick<NotesPageCtx, "activeFolder" |
                     pb: 1,
                     // 三栏背景分层（inkstone）：导航站最沉（--bg-sunken）
                     bgcolor: "var(--bg-sunken)",
+                    // ⚠️ 2026-10-27：这一列是**可调宽**的（104~260，默认 128），
+                    // 而里面的搜索框是三处复用的同一个组件。搜索框右侧那枚 ⌘K 提示
+                    // 在 128px 下要吃掉 34px —— 实测输入区只剩 19px，占位符被切成半个字。
+                    // 用**命名容器**把宽度暴露给 CSS，让搜索框里的提示在窄列自动隐身
+                    // （声明了就只对这条列生效；tablet 抽屉里那份没有这个容器，提示照常显示）。
+                    containerType: "inline-size",
+                    containerName: "notesnav",
                 }}
             >
             {navInner}

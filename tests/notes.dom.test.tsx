@@ -5241,7 +5241,35 @@ test("三栏不能靠写死的像素宽度 + MUI 的 md（用户报：缩放后�
     );
 });
 
+test("左栏搜索框：窄列里 ⌘K 提示自动隐身（否则占位符被切成半个字）", () => {
+    // 2026-10-27 用户报「左上角最左栏上方太拥挤」，实测追到的真因：
+    // 左栏默认 128px → 搜索框字段 112px，减掉 MUI outlined 内部左右各 14 内填充、
+    // 放大镜 20+8、⌘K 胶囊 26.6+8 ⇒ **输入区只剩 19.4px**，16px 字号下连一个字都
+    // 放不下，占位符被裁成「搜」+ 半个字（截图放大后一眼可见）。
+    // 修法不是硬缩内填充（那会把放大镜贴到描边上），而是让提示在窄列**自动隐身**：
+    // 左栏声明成命名容器，搜索框里的提示按容器宽度自己收起来。
+    const src = readNotesPage();
+    const navCol = src.slice(src.indexOf("data-nav-col='1'"), src.indexOf("data-nav-col='1'") + 1600);
+    assert.ok(
+        /containerName:\s*"notesnav"/.test(navCol) && /containerType:\s*"inline-size"/.test(navCol),
+        "导航列要声明命名容器 notesnav（inline-size）—— 它是可调宽的，宽度得让 CSS 读得到"
+    );
+    // ⚠️ 必须是**命名**容器：tablet 抽屉 / 手机列表里也挂着同一个搜索框组件，
+    // 匿名容器会让那里跟着某个祖先的宽度乱收，命名后只对这条列生效。
+    const page = src.slice(src.indexOf("endAdornment:"), src.indexOf("endAdornment:") + 1600);
+    assert.ok(
+        /"@container notesnav \(max-width: 147px\)":\s*\{\s*display:\s*"none"\s*\}/.test(page),
+        "⌘K 提示要在 notesnav 容器 ≤147px 时 display:none（147 = 输入区刚好够两个字的临界列宽）"
+    );
+    // 占位符不许再是长的：七字文案在 128px 列里永远放不下（守卫跟着一起改，别只改文案）
+    assert.ok(
+        src.includes("placeholder='搜索'"),
+        "占位符用「搜索」两字 —— 长文案在 104px 最窄列里必然被裁"
+    );
+});
+
 test("导航列与左栏容器都不再画右边框（否则和发丝线叠成 2px 粗线）", () => {
+
     const src = readNotesPage();
     // ⚠️ 用户报「记事本编辑栏和目录栏当中的分割线太粗了」。真机逐层量出来：
     //   nav|list   边界：1 条线（正常）

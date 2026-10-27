@@ -482,6 +482,49 @@ const defaultShot = await shoot("notes-selected.png");
 await shoot("notes-selected-divider.png", defaultShot);
 await shoot("notes-1440.png", defaultShot);
 
+// ---------------- 3b. P3：左栏搜索框在默认列宽下放得下占位符吗（2026-10-27） ----------------
+// 用户报「左上角最左栏上方太拥挤」。实测真因不是「白框太大」，而是搜索框内部被挤爆：
+// 左栏默认 128 → 字段 112，减掉 MUI 内部左右各 14 内填充、放大镜 20+8、⌘K 胶囊 26.6+8
+// ⇒ 输入区只剩 19.4px，16px 字号下连一个字都放不下，占位符被裁成半个字。
+// 修法：窄列里让 ⌘K 提示按容器查询自动隐身。这条断言就是把「放得下」钉死。
+const p3Fails = [];
+const navSearch = await evaluate(`(() => {
+  const col = document.querySelector('[data-nav-col]');
+  const header = document.querySelector('[data-nav-header]');
+  const field = header && header.querySelector('.MuiOutlinedInput-root');
+  if (!field) return { error: 'no-field' };
+  const kbd = field.querySelector('kbd');
+  const input = field.querySelector('input');
+  const w = el => +el.getBoundingClientRect().width.toFixed(1);
+  const cv = document.createElement('canvas').getContext('2d');
+  const cs = getComputedStyle(input);
+  cv.font = cs.fontSize + ' ' + cs.fontFamily;
+  return {
+    colW: col ? w(col) : null,
+    fieldW: w(field),
+    inputW: w(input),
+    placeholder: input.getAttribute('placeholder'),
+    placeholderPx: +cv.measureText(input.getAttribute('placeholder') || '').width.toFixed(1),
+    kbdDisplay: kbd ? getComputedStyle(kbd).display : 'no-kbd',
+  };
+})()`);
+if (navSearch.error) {
+    p3Fails.push(`左栏搜索框量不到：${navSearch.error}`);
+} else {
+    console.log(
+        `\n  左栏搜索框 @${navSearch.colW}：字段 ${navSearch.fieldW}px｜输入区 ${navSearch.inputW}px｜` +
+            `占位符「${navSearch.placeholder}」${navSearch.placeholderPx}px｜⌘K ${navSearch.kbdDisplay}`
+    );
+    if (navSearch.inputW < navSearch.placeholderPx) {
+        p3Fails.push(
+            `占位符放不下：输入区 ${navSearch.inputW}px < 占位符 ${navSearch.placeholderPx}px（用户报的「被切成半个字」就是这个）`
+        );
+    }
+    if (navSearch.kbdDisplay !== "none") {
+        p3Fails.push(`默认列宽下 ⌘K 提示还占着 ${navSearch.fieldW}px 字段里的位置（应 display:none）`);
+    }
+}
+
 // 首行（会议纪要）是「置顶」分组里唯一一条，它下方紧接的是「本月」分组标题，
 // 不是另一行笔记。为了量「它下面那一行」，再选一次同组相邻的读书笔记做对照。
 const adjClicked = await evaluate(`(() => {
@@ -923,6 +966,13 @@ if (!toolbarGeom.ok) {
 }
 }
 
+if (p3Fails.length) {
+    console.log("\n✗ P3 左栏搜索框断言未通过：");
+    for (const f of p3Fails) console.log("  - " + f);
+} else {
+    console.log("\n✓ P3 左栏搜索框断言通过：默认列宽下占位符放得下、⌘K 提示自动隐身");
+}
+
 if (p1Fails.length) {
     console.log("\n✗ P1/P2 几何断言未通过：");
     for (const f of p1Fails) console.log("  - " + f);
@@ -935,4 +985,4 @@ for (const f of shots) console.log("  " + f);
 
 site.close();
 // 断言挂了就以非 0 退出：探针要能当门禁用，不能只打印一行字却仍然绿
-done(notesMobileFails.length + p1Fails.length ? 1 : 0);
+done(notesMobileFails.length + p1Fails.length + p3Fails.length ? 1 : 0);
