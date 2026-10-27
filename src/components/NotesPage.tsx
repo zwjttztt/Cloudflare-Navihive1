@@ -2379,7 +2379,13 @@ export default function NotesPage({
                     // 小一档，用户反馈「白框太大」）；tablet 顶栏 / mobile 列表不设变量，回落到 36。
                     height: `var(--notes-search-h, ${HEADER_CONTROL_H}px)`,
                     borderRadius: HEADER_RADIUS,
-                    bgcolor: "var(--glass-bg-hover)",
+                    // 2026-10-27（参考 inkstone 左栏）：底色从「白胶囊」改成**透明**。
+                    // 左栏是浅底，一块白填充加上描边，在 30px 行高里是这一列最重的元素 ——
+                    // 和旁边返回箭头、下面选中行叠在一起就是「拥挤」。inkstone 那块搜索框
+                    // 只有描边、没有填充，轻一档但仍然是「框」。
+                    // ⚠️ 描边仍是 --neutral-border（30% 灰）：v16.0.2 踩过「描边看不见
+                    // 就不像输入框」，别退回 --glass-border。
+                    bgcolor: "transparent",
                     // 不能用 --glass-border（亮色是 rgba(255,255,255,0.6) 白底白边、
                     // 暗色是 0.12 白，都几乎看不见）—— 左栏是纯浅底，白边会让搜索框
                     // 糊成一根灰条、没有「输入框」的形。改用 --neutral-border（30% 灰），
@@ -2421,6 +2427,9 @@ export default function NotesPage({
                         </InputAdornment>
                     ),
                     // 阶段二：搜索框右侧挂个 ⌘K 提示（⌘/Ctrl+K 会聚焦它）
+                    // 2026-10-27（参考 inkstone）：字段本身变成透明底之后，这枚提示反过来
+                    // 做成**白底小胶囊** —— inkstone 那块搜索框里也是「字段是平的、快捷键
+                    // 是浮起来的白片」。原来的「描边 + 透明」在透明字段上会看不见。
                     endAdornment: (
                         <InputAdornment position='end'>
                             <Box
@@ -2429,10 +2438,11 @@ export default function NotesPage({
                                 sx={{
                                     fontSize: 10,
                                     lineHeight: 1.4,
-                                    px: 0.5,
+                                    px: 0.6,
                                     py: 0.1,
                                     borderRadius: 0.75,
-                                    border: "1px solid var(--neutral-border)",
+                                    border: "1px solid var(--neutral-hairline)",
+                                    bgcolor: "var(--glass-bg-hover)",
                                     color: "text.disabled",
                                 }}
                             >

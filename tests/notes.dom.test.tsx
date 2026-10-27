@@ -922,11 +922,29 @@ test("顶栏：返回箭头贴最左（朝左），「记事本」居中，收�
         !backIcon.includes("scaleX(-1)"),
         "返回箭头不能再镜像 —— 要直接朝左指着导航站"
     );
-    // 标题要居中：flex:1 的标题行必须带 textAlign: "center"
+    // 标题**靠左**（2026-10-27 改，参考 inkstone 左栏）：原来要求 textAlign:"center"。
+    // 居中会让标题和它上下的两条左边界都对不齐 —— 返回箭头在 8px、搜索框在 8px、
+    // 标题却飘在列中间，用户报的就是这块「拥挤 / 乱」。inkstone 左栏第一行也是
+    // 紧贴左侧的 app 名，不居中。所以判据反过来：必须靠左，且不许再居中。
     const titleSx = head.slice(Math.max(0, titleAt - 400), collapseAt);
     assert.ok(
-        /textAlign:\s*"center"/.test(titleSx),
-        "「记事本」标题要居中"
+        /textAlign:\s*"left"/.test(titleSx),
+        "「记事本」标题要**靠左**（与返回箭头、搜索框同一条左边界）"
+    );
+    assert.ok(
+        !/textAlign:\s*"center"/.test(titleSx),
+        "标题不要再居中 —— 居中就和上下两条边界对不齐了（2026-10-27 用户反馈「太拥挤」）"
+    );
+    // 返回键不许再是一块「白底玻璃方块」（2026-10-27 改，参考 inkstone）：
+    // 白方块 + 白搜索胶囊 + 选中行三块实色堆在 90px 里，正是「拥挤」的来源。
+    const backBlock = head.slice(0, 2600);
+    assert.ok(
+        !backBlock.includes("var(--glass-bg-hover)"),
+        "返回键不要再用玻璃白底（那是「三个白框」里最大的那块）"
+    );
+    assert.ok(
+        /width:\s*2[0-9],/.test(backBlock),
+        "返回键要缩成 24px 级的小图标按钮"
     );
 });
 

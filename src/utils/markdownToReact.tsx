@@ -763,10 +763,21 @@ function renderBlocks(c: Cursor): ReactNode[] {
                     break;
                 }
                 if (type === "COPY") {
-                    // 可复制块：外壳 + 右上角常驻复制按钮，正文照旧走通用渲染
+                    // 可复制块：外壳 + 首行右上角常驻复制胶囊，正文照旧走通用渲染。
+                    //
+                    // ⚠️ 这里要把外层的 blockquote 包装**摘掉**：内容块的正文本来就包在
+                    // 引用块里，其它类型刻意保留那根左侧竖线（当作「这是一块内容」的标记），
+                    // 但 COPY 走的是极简路线 —— 灰底、边框都去掉了，再留一根 3px 灰竖线
+                    // 就整个退回「引用块」的样子（实测截图里就是这么回来的）。
+                    // 只摘最外层那一对，嵌套在里面的引用照常渲染。
+                    const body = inner.length > 1
+                        && inner[0].type === "blockquote_open"
+                        && inner[inner.length - 1].type === "blockquote_close"
+                        ? inner.slice(1, -1)
+                        : inner;
                     out.push(
                         <CopyBlock key={key}>
-                            {renderBlocks(child(inner, c))}
+                            {renderBlocks(child(body, c))}
                         </CopyBlock>
                     );
                     break;
@@ -1162,7 +1173,13 @@ function blockTextOf(el: HTMLElement): string {
 }
 
 /**
- * `> [!COPY]` 可复制块：右上角**常驻**一颗复制按钮。
+ * `> [!COPY]` 可复制块：首行右上角**常驻**一颗复制胶囊。
+ *
+ * ⚠️ 2026-10-27 改版（用户报「预览窗里的复制块太难看」）：**去掉全部块壳**。
+ * 原来它是 8% 灰底 + 1px 描边 + 左侧 3px 灰竖线 + 圆角 —— 那正是「引用块」的
+ * 视觉语言，读者第一眼会当成引用；再加上 `padding-right: 74px` 把**每一行**都
+ * 削掉一截，右边留下一条死区。现在：无底色、无边框、无竖线，只有一个 float 胶囊，
+ * 正文从第二行起铺满整宽。要认「这块到哪结束」，靠胶囊 + 段落本身的间距就够了。
  *
  * 为什么按钮不挂在「选中那几个字的右边」：即时渲染是**块级**的
  * （`NoteEditorLivePreview` 按空行把整段替换成一个组件），一行文字在源码里
@@ -1195,45 +1212,50 @@ function CopyBlock({ children }: { children: ReactNode }) {
         <div
             data-callout='COPY'
             style={{
-                position: "relative",
+                // flow-root：胶囊是 float，容器要自己包住它，
+                // 否则下外边距会和后面的段落折叠在一起
+                display: "flow-root",
                 margin: `0 0 ${MD_GAP}`,
-                // 右边多留一截：常驻按钮压在右上角，长句不会铺到它底下
-                padding: "10px 74px 10px 14px",
-                borderRadius: "var(--notes-radius-block, 10px)",
-                border: `1px solid ${MD_BLOCK_BORDER}`,
-                borderLeft: `3px solid ${NEUTRAL_CALLOUT.border}`,
-                background: NEUTRAL_CALLOUT.bg,
-                color: NEUTRAL_CALLOUT.fg,
             }}
         >
-            <div ref={bodyRef}>{children}</div>
+            {/* ⚠️ 胶囊必须排在正文**前面**（DOM 顺序）才能浮在首行右上角。
+                float 而不是 absolute：absolute + 容器 padding-right 会把**每一行**
+                都削掉一截（V16.1.0 的 `padding: "10px 74px 10px 14px"` 就是这么来的，
+                用户截图里右侧那条空白带）。float 只让**碰到它的那几行**绕开，
+                第二行起正文自动回到满宽。 */}
             <button
                 type='button'
                 data-copy-op='copy-block'
                 aria-label={copied ? "已复制" : "复制这一块"}
                 onClick={handleCopy}
                 style={{
-                    position: "absolute",
-                    top: 8,
-                    right: 8,
+                    float: "right",
+                    margin: "2px 0 6px 10px",
                     height: 22,
-                    padding: "0 8px",
+                    padding: "0 9px",
                     display: "inline-flex",
                     alignItems: "center",
+                    gap: 4,
                     fontFamily: "inherit",
                     // 用 em 不用 px：笔记页有「字号档位」，写死 px 的话
                     // 用户调大字号时这颗按钮不跟着涨，还是小的
                     fontSize: "0.8em",
                     lineHeight: 1,
                     color: "inherit",
-                    background: "transparent",
-                    border: `1px solid ${MD_BLOCK_BORDER}`,
-                    borderRadius: 6,
+                    // 底与描边都用既有 token：不新增色值字面量（hardcodedColorGuard 按次数计 cap）
+                    background: MD_BLOCK_BG,
+                    border: "1px solid var(--neutral-border)",
+                    borderRadius: 11,
                     cursor: "pointer",
                 }}
             >
+                <svg width='11' height='11' viewBox='0 0 12 12' aria-hidden='true'>
+                    <rect x='1' y='1' width='7' height='7' rx='1.5' fill='none' stroke='currentColor' strokeWidth='1.2' />
+                    <path d='M4 9.5h5.5a1 1 0 0 0 1-1V4' fill='none' stroke='currentColor' strokeWidth='1.2' strokeLinecap='round' />
+                </svg>
                 {copied ? "已复制" : "复制"}
             </button>
+            <div ref={bodyRef}>{children}</div>
         </div>
     );
 }

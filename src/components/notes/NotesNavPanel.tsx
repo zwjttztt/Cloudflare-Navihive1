@@ -9,8 +9,14 @@ import FirstPageIcon from "@mui/icons-material/FirstPage";
 import LastPageIcon from "@mui/icons-material/LastPage";
 import SettingsIcon from "@mui/icons-material/Settings";
 import AttachmentIcon from "@mui/icons-material/AttachFile";
+// 视图行的前置图标（2026-10-27，参考 inkstone 左栏）：纯文字的行堆在一起，
+// 眼睛没有落脚点，四种视图看起来像四行一样的东西。图标给了每行一个身份。
+import DescriptionIcon from "@mui/icons-material/Description";
+import HistoryIcon from "@mui/icons-material/History";
+import StarBorderIcon from "@mui/icons-material/StarBorder";
+import InboxIcon from "@mui/icons-material/Inbox";
 import { tagNamesOf, NavRow, FolderTagSection } from "../notes/sidebarSection";
-import { HEADER_RADIUS, NOTES_NAV_CTRL_H } from "../../constants";
+import { NOTES_NAV_CTRL_H } from "../../constants";
 import type { NotesPageCtx } from "./notesPageCtx";
 
 export default function NotesNavPanel(props: Pick<NotesPageCtx, "accountName" | "activeFolder" | "activeId" | "activeTag" | "askName" | "attManagerOpen" | "folderCounts" | "folderTags" | "folders" | "jumpToNote" | "keyword" | "listCollapsed" | "narrowLayout" | "noteTags" | "notes" | "notesInFolder" | "onClose" | "onCreate" | "onUpdate" | "openTemplatePicker" | "renderSearchField" | "searchRef" | "setActiveFolder" | "setActiveTag" | "setAppearanceFolderId" | "setAttManagerOpen" | "setListCollapsed" | "setMiddleHidden" | "setNavDrawerOpen" | "setRemoveTarget" | "setRowMenu" | "setSettingsOpen" | "setTagColorId" | "setView" | "startCreateInFolder" | "tagCounts" | "tags" | "uploadApi" | "view" | "viewCounts">) {
@@ -24,6 +30,13 @@ export default function NotesNavPanel(props: Pick<NotesPageCtx, "accountName" | 
                 中栏（pt8 + 标题 + pb4 + 描边 ≈45）和编辑区（常量 44）各算各的，
                 三栏第一行内容就错开（实测 y = 66 / 60 / 53）。
                 搜索框顺手从滚动区挪进来：它是「随时都要用」的，本来就不该被文件夹推走。 */}
+            {/* 上行（2026-10-10 调整）：返回箭头贴左（箭头朝左），标题靠左，收起列表在右。
+                ⚠️ 高度就是一个玻璃控件（NOTES_NAV_CTRL_H=30），不再带上下内边距 ——
+                这一行 + 下面那行搜索框正好拼成 --notes-header-h，多一个 px 都会顶高。
+                ⚠️ 2026-10-27：试过把「返回 + 搜索 + 收起」并成一行、真省 30px，
+                在左栏默认 128px（NAV_COL_W，可拖到 104~260）下**搜索框只剩 66px**，
+                占位符挤成两个字 —— 这一列是可调宽的，不能按宽栏假设排版，方案退回两行。
+                真正治「拥挤」的是下面几条：去白底、标题靠左变轻、三条左边界统一到 8px。 */}
             <Box
                 data-nav-header='1'
                 sx={{
@@ -35,16 +48,11 @@ export default function NotesNavPanel(props: Pick<NotesPageCtx, "accountName" | 
                     minHeight: 0,
                 }}
             >
-            {/* 上行（2026-10-10 调整）：返回箭头贴左（箭头朝左），「记事本」居中，
-                「收起笔记列表」占返回箭头原来的位置（右上角）。收起 / 展开从左下角
-                挪上来 —— 低频但它本来就是控制这一列的，放列顶比挤在账号行里更直白。
-                ⚠️ 高度就是一个玻璃控件（NOTES_NAV_CTRL_H=30），不再带上下内边距 ——
-                这一行 + 下面那行搜索框正好拼成 --notes-header-h，多一个 px 都会顶高。 */}
             <Box
                 sx={{
                     display: "flex",
                     alignItems: "center",
-                    gap: 0.5,
+                    gap: 0.75,
                     px: 1,
                     height: NOTES_NAV_CTRL_H,
                     flexShrink: 0,
@@ -53,50 +61,37 @@ export default function NotesNavPanel(props: Pick<NotesPageCtx, "accountName" | 
                     // border-box 让 1px 落在 30px 行内，不顶高头部、不破坏三栏对齐。
                     boxSizing: "border-box",
                     // 用 --neutral-border（30% 灰）而不是 --neutral-hairline（18%）：
-                    // 左栏是浅底，18% 灰线几乎看不见，标题行和搜索框就糊成一块；
-                    // 30% 灰在亮/暗两套主题里都读得出，是「看得见的分隔」而不是「若有若无的线」。
+                    // 左栏是浅底，18% 灰线几乎看不见；30% 灰亮/暗两套主题里都读得出。
                     borderBottom: "1px solid var(--neutral-border)",
                 }}
             >
-                {/* 返回箭头（2026-10-10 用户明确）：贴左侧栏最左边、箭头**朝左**（回导航站的方向）；
-                    窄屏（tablet/mobile）的返回箭头仍贴**整页右上角**（顶部 44px 栏最右端），
-                    不落在抽屉里。占位 Box 让标题在两种布局下都居中。 */}
-                {/* 返回导航站（2026-10-25）：跨页跳转是重动作，与导航页顶栏的玻璃控件
-                    用同一套外观（36px 方块 + --header-radius + 玻璃底）。
-                    改造前是裸小图标 —— 全站最「轻」的样式配最「重」的动作。 */}
-                {!narrowLayout ? (
+                {/* 返回导航站（2026-10-27 去底）：原来是个 30px 玻璃方块 + --header-radius，
+                    是这一列最重的一块白 —— 和右边的白搜索胶囊、下面的粉色选中行三块实色
+                    堆在 90px 里，正是用户说的「太拥挤」。现在缩成 24px 行内图标按钮
+                    （hover 才出淡底），左边界与搜索框、导航行统一在 8px。 */}
+                {!narrowLayout && (
                     <IconButton
                         aria-label='返回导航站'
                         onClick={onClose}
                         sx={{
                             flexShrink: 0,
-                            ml: -0.5,
-                            // 比顶栏小一档（30）：左栏只有 ~230px 宽，36px 的白方块在这里太占地方
-                            // （用户反馈「两个白框都太大了」）。行高仍是 36，控件在行内居中。
-                            width: NOTES_NAV_CTRL_H,
-                            height: NOTES_NAV_CTRL_H,
+                            width: 24,
+                            height: 24,
                             p: 0,
-                            borderRadius: HEADER_RADIUS,
-                            border: "1px solid var(--glass-border)",
-                            bgcolor: "var(--glass-bg-hover)",
-                            transition: "background-color 120ms ease, border-color 120ms ease",
-                            "&:hover": {
-                                // 返回按钮的 hover 描边是**操作反馈** → 操作色（P1-4 方案 B）；
-                                // 同一行的账号头像（下面 Avatar）是身份记号，仍走 --accent
-                                borderColor: "color-mix(in srgb, var(--accent-op) 35%, var(--glass-border))",
-                                bgcolor: "var(--glass-bg)",
-                            },
+                            color: "text.secondary",
+                            "&:hover": { bgcolor: "var(--neutral-hover)", color: "text.primary" },
                         }}
                     >
                         <ArrowBackIcon fontSize='small' />
                     </IconButton>
-                ) : (
-                    <Box aria-hidden='true' sx={{ width: 30, flexShrink: 0 }} />
                 )}
+                {/* 标题（2026-10-27）：不再 14px 加粗**居中** —— 居中会让它和上下两条
+                    左边界都对不齐，越看越乱。改成紧贴返回箭头、主色 14px/500 的
+                    「品牌行」写法（inkstone 左栏第一行就是 app 名，不居中）。 */}
                 <Typography
                     variant='subtitle2'
                     component='div'
-                    sx={{ fontWeight: 600, flex: 1, textAlign: "center", fontSize: 14, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                    sx={{ fontWeight: 500, flex: 1, textAlign: "left", fontSize: 14, color: "text.primary", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
                 >
                     记事本
                 </Typography>
@@ -124,7 +119,8 @@ export default function NotesNavPanel(props: Pick<NotesPageCtx, "accountName" | 
                 searchRef 不会打架）；mobile 的搜索在列表列头部（searchRefNarrow）。
                 ⚠️ 2026-10-26：这段在**头部容器里面**（上面那个 data-nav-header），
                 flex:1 + minHeight:0 让它吃满头部剩下的高度并垂直居中 ——
-                靠自然堆叠会把头部撑高，那就白统一了。 */}
+                靠自然堆叠会把头部撑高，那就白统一了。
+                ⚠️ 2026-10-27：左右内边距 12→8，与上面标题行、下面导航行统一左边界。 */}
             {/* --notes-search-h：让这里的搜索框吃 30px（比顶栏小一档，用户反馈「白框太大」）；
                 其它位置（tablet 顶栏 / mobile 列表）不设这个变量、回落到 36。
                 ⚠️ 下面这行调用的**文本别改**（tests/notes.dom.test.tsx 用它的字面量
@@ -135,7 +131,7 @@ export default function NotesNavPanel(props: Pick<NotesPageCtx, "accountName" | 
                     minHeight: 0,
                     display: "flex",
                     alignItems: "center",
-                    px: 1.5,
+                    px: 1,
                     "--notes-search-h": `${NOTES_NAV_CTRL_H}px`,
                 }}
             >
@@ -153,19 +149,23 @@ export default function NotesNavPanel(props: Pick<NotesPageCtx, "accountName" | 
                 ⚠️ 归档 / 回收站也不在这一组里：它们是低频入口，压在导航列表中间
                 会把「全部 / 最近 / 收藏」这些高频的挤开。挪到左下角单独一组
                 （与 inkstone 一致），见本列底部。 */}
-            <Stack sx={{ px: 0.75, gap: 0.25, pb: 1 }}>
+            {/* 左边界统一到 8px（2026-10-27）：头部控件组、搜索框、这几行视图
+                原来分别是 6 / 12 / 8，三条竖线对不齐 —— 视觉上的「乱」有一半来自这里。
+                现在三者都是 px:1。 */}
+            <Stack sx={{ px: 1, gap: 0.25, pb: 1 }}>
                 {(
                     [
-                        ["all", "全部", viewCounts.all],
-                        ["recent", "最近", viewCounts.recent],
-                        ["starred", "收藏", viewCounts.starred],
-                        ["uncategorized", "未归类", viewCounts.uncategorized],
+                        ["all", "全部", viewCounts.all, <DescriptionIcon key='i' sx={{ fontSize: 15 }} />],
+                        ["recent", "最近", viewCounts.recent, <HistoryIcon key='i' sx={{ fontSize: 15 }} />],
+                        ["starred", "收藏", viewCounts.starred, <StarBorderIcon key='i' sx={{ fontSize: 15 }} />],
+                        ["uncategorized", "未归类", viewCounts.uncategorized, <InboxIcon key='i' sx={{ fontSize: 15 }} />],
                     ] as const
-                ).map(([key, label, count]) => (
+                ).map(([key, label, count, icon]) => (
                     <NavRow
                         key={key}
                         label={label}
                         count={count}
+                        icon={icon}
                         selected={view === key}
                         onClick={() => {
                             setView(key);
