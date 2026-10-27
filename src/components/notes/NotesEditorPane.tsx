@@ -87,7 +87,11 @@ export default function NotesEditorPane(props: Pick<NotesPageCtx, "active" | "ac
                     {/* 标题行（2026-10-07）：右侧是**这一栏自己的**按键栏 ——
                         模式切换（编辑/分栏/预览）+「更多操作」。分屏时每栏各有一套，
                         顶栏那排只对当前笔记生效的问题就没了（inkstone 同款布局）。 */}
-                    <Box data-pane-header='main' sx={{ display: "flex", alignItems: "center", flexShrink: 0, pr: 1, height: "var(--notes-header-h)", boxSizing: "border-box" }}>
+                    {/* ⚠️ 2026-10-27：这一行的高度是「头部总高 − 工具栏高」——
+                        头部带从今天起**把下面的工具栏算在内**（78 = 42 + 36），
+                        工具栏的底边才是三栏共同那条线。所以这里不能再直接吃
+                        --notes-header-h（那样 78 + 36 = 114，工具栏又掉下去 36px）。 */}
+                    <Box data-pane-header='main' sx={{ display: "flex", alignItems: "center", flexShrink: 0, pr: 1, height: "calc(var(--notes-header-h) - var(--notes-toolbar-h, 36px))", boxSizing: "border-box" }}>
                         <TextField
                             variant='standard'
                             value={draft?.title ?? ""}

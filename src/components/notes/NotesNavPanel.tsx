@@ -31,8 +31,10 @@ export default function NotesNavPanel(props: Pick<NotesPageCtx, "accountName" | 
                 三栏第一行内容就错开（实测 y = 66 / 60 / 53）。
                 搜索框顺手从滚动区挪进来：它是「随时都要用」的，本来就不该被文件夹推走。 */}
             {/* 上行（2026-10-10 调整）：返回箭头贴左（箭头朝左），标题靠左，收起列表在右。
-                ⚠️ 高度就是一个玻璃控件（NOTES_NAV_CTRL_H=30），不再带上下内边距 ——
-                这一行 + 下面那行搜索框正好拼成 --notes-header-h，多一个 px 都会顶高。
+                ⚠️ 高度 = --notes-header-h（78）− 搜索框（30）= 48，两行拼起来正好是头部高度，
+                多一个 px 都会顶高。2026-10-27 之前是 30（头部 60），因为头部要为
+                「搜索框下边 = 编辑区工具栏下边」这条线让出 18px，这 18px 给了标题行 ——
+                搜索框**没有**变厚，还是 30。
                 ⚠️ 2026-10-27：试过把「返回 + 搜索 + 收起」并成一行、真省 30px，
                 在左栏默认 128px（NAV_COL_W，可拖到 104~260）下**搜索框只剩 66px**，
                 占位符挤成两个字 —— 这一列是可调宽的，不能按宽栏假设排版，方案退回两行。
@@ -46,6 +48,9 @@ export default function NotesNavPanel(props: Pick<NotesPageCtx, "accountName" | 
                     display: "flex",
                     flexDirection: "column",
                     minHeight: 0,
+                    // 搜索框高度（30）在这里声明：标题行要按它做减法，两行加起来正好是
+                    // --notes-header-h（48 + 30 = 78）。写死在两个地方就会各漂各的。
+                    "--notes-search-h": `${NOTES_NAV_CTRL_H}px`,
                 }}
             >
             <Box
@@ -54,11 +59,15 @@ export default function NotesNavPanel(props: Pick<NotesPageCtx, "accountName" | 
                     alignItems: "center",
                     gap: 0.75,
                     px: 1,
-                    height: NOTES_NAV_CTRL_H,
+                    // ⚠️ 2026-10-27：标题行从 30 让到 48 —— 头部带 60→78 多出来的 18px
+                    // 全给这一行，搜索框仍然是 30（撑到 48 的话那只白框会比工具栏还厚，
+                    // 又是「白框太大」的老问题）。这样搜索框下边正好落在 78，
+                    // 和编辑区工具栏下边同一条线；「记事本」随行居中，下移 9px。
+                    height: `calc(var(--notes-header-h) - ${NOTES_NAV_CTRL_H}px)`,
                     flexShrink: 0,
-                    // 标题行与下方搜索框之间加一道分隔线：两行实体控件叠在 60px 头部里，
+                    // 标题行与下方搜索框之间加一道分隔线：两行实体控件叠在头部里，
                     // 没有分隔会糊成一块（用户报「标题行 + 搜索框挤在一起」）。
-                    // border-box 让 1px 落在 30px 行内，不顶高头部、不破坏三栏对齐。
+                    // border-box 让 1px 落在行内，不顶高头部、不破坏三栏对齐。
                     boxSizing: "border-box",
                     // 用 --neutral-border（30% 灰）而不是 --neutral-hairline（18%）：
                     // 左栏是浅底，18% 灰线几乎看不见；30% 灰亮/暗两套主题里都读得出。
@@ -121,7 +130,9 @@ export default function NotesNavPanel(props: Pick<NotesPageCtx, "accountName" | 
                 flex:1 + minHeight:0 让它吃满头部剩下的高度并垂直居中 ——
                 靠自然堆叠会把头部撑高，那就白统一了。
                 ⚠️ 2026-10-27：左右内边距 12→8，与上面标题行、下面导航行统一左边界。 */}
-            {/* --notes-search-h：让这里的搜索框吃 30px（比顶栏小一档，用户反馈「白框太大」）；
+            {/* --notes-search-h 在上面的 data-nav-header 上声明（30）：标题行按它做减法，
+                两行加起来正好是 --notes-header-h。搜索框本身仍是 30 —— 头部带变高不等于
+                把控件也撑厚（用户 2026-10-27 画线要的是「下边对齐那条线」，不是「框变大」）。
                 其它位置（tablet 顶栏 / mobile 列表）不设这个变量、回落到 36。
                 ⚠️ 下面这行调用的**文本别改**（tests/notes.dom.test.tsx 用它的字面量
                 和「3 处调用」的计数当守卫）—— 要调尺寸就改这个变量，别给调用加参数。 */}
@@ -132,7 +143,6 @@ export default function NotesNavPanel(props: Pick<NotesPageCtx, "accountName" | 
                     display: "flex",
                     alignItems: "center",
                     px: 1,
-                    "--notes-search-h": `${NOTES_NAV_CTRL_H}px`,
                 }}
             >
                 {renderSearchField(searchRef)}

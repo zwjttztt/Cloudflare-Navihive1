@@ -50,8 +50,11 @@ export default function NotesSidePane(props: Pick<NotesPageCtx, "SIDE_SPLIT_KEY"
             {/* 头部（2026-10-07）：inkstone 每栏右上角都有自己的按键栏 ——
                 标题 + 编辑/预览 + 更多操作（作用于**侧边这条**）+ 关闭。
                 ⚠️ 2026-10-26：高度改用三栏共用的 --notes-header-h —— 侧栏和主栏
-                并排（分屏打开侧边笔记）时两条头部必须等高，否则底下的正文起始线错位。 */}
-            <Box data-pane-header='side' sx={{ display: "flex", alignItems: "center", gap: 0.25, pr: 0.75, flexShrink: 0, height: "var(--notes-header-h)", boxSizing: "border-box" }}>
+                并排（分屏打开侧边笔记）时两条头部必须等高，否则底下的正文起始线错位。
+                ⚠️ 2026-10-27：仍然要减掉工具栏高度 —— 头部带把下面的格式工具栏算在内
+                （78 = 42 + 36），工具栏底边才是三栏共同那条线。主栏同改，两栏别单独动，
+                否则分屏时一边标题高一边低（2026-10-26 已经踩过一次）。 */}
+            <Box data-pane-header='side' sx={{ display: "flex", alignItems: "center", gap: 0.25, pr: 0.75, flexShrink: 0, height: "calc(var(--notes-header-h) - var(--notes-toolbar-h, 36px))", boxSizing: "border-box" }}>
                 <TextField
                     variant='standard'
                     value={sideDraft?.title ?? ""}

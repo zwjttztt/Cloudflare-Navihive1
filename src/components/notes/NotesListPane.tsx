@@ -276,6 +276,12 @@ export default function NotesListPane(props: Pick<NotesPageCtx, "activeFolder" |
                         height: "var(--notes-header-h)",
                         boxSizing: "border-box",
                         flexShrink: 0,
+                        // ⚠️ 2026-10-27：头部带 60 → 78（跟编辑区工具栏下边线对齐）之后，
+                        // 纯靠 alignItems:center 会把「全文搜索」连同三个图标一起往下带 9px。
+                        // 用户明确「这两个标题不用统一」= 别动它们的位置，所以这里补一段
+                        // 下内边距把内容**压回原来那条线上**：(78 − 20) / 2 = 29 ≈ 原来的 29.5。
+                        // 下面那 32px 留白不是 bug —— 中栏没有工具栏，这条带子本来就只有一行字。
+                        pb: 2.5,
                         // 头部与滚动内容的边界（2026-10-25 视觉对齐）：中栏这一栏是纯色底，
                         // 头部和列表同色、又不在滚动层里，滚动时第一行会「凭空贴上来」，
                         // 没有截断感。加一条 hairline 分隔，和导航页分组之间的分隔同一语言。

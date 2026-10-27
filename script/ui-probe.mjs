@@ -525,6 +525,47 @@ if (navSearch.error) {
     }
 }
 
+// ---------- P4：三栏头部那条线（2026-10-27 用户画线指定） ----------
+// 用户在截图上用红框圈搜索框、用黄线标出编辑区工具栏的下边，要求「搜索框下方和工具栏
+// 下方的线对齐」「各让一半」→ 两边都挪到 78。所以这里量四条底边：
+//   左栏头部底边 / 中栏头部底边 / 左栏搜索框底边 / 编辑区工具栏底边 —— 必须同高。
+// ⚠️ 这条只有真浏览器能量：jsdom 不算布局，`calc(var(--notes-header-h) - var(--notes-toolbar-h))`
+// 在单测里永远是 0，静态守卫只能钉源码写法，钉不住「真的对齐了吗」。
+const p4Fails = [];
+const bands = await evaluate(`(() => {
+  const R = el => { if (!el) return null; const b = el.getBoundingClientRect(); return { t:+b.top.toFixed(1), b:+b.bottom.toFixed(1), h:+b.height.toFixed(1) }; };
+  const out = {};
+  out.navHeader = R(document.querySelector('[data-nav-header]'));
+  out.listHeader = R(document.querySelector('[data-list-header]'));
+  out.search = R(document.querySelector('[data-nav-header] .MuiOutlinedInput-root'));
+  // 工具栏：计算后的 minHeight 就是 --notes-toolbar-h（36px），宽 > 200、带下边框
+  for (const el of document.querySelectorAll('div')) {
+    const cs = getComputedStyle(el);
+    if (cs.minHeight !== '36px' || cs.borderBottomWidth === '0px') continue;
+    const b = el.getBoundingClientRect();
+    if (b.width > 200 && b.height >= 30 && b.top > 20) { out.toolbar = R(el); break; }
+  }
+  return out;
+})()`);
+const bandKeys = ["navHeader", "listHeader", "search", "toolbar"];
+const bandVals = bandKeys.map(k => bands[k] || null);
+if (bandVals.some(v => !v)) {
+    p4Fails.push(`头部那条线量不全：${bandKeys.map((k, i) => k + "=" + (bandVals[i] ? bandVals[i].b : "null")).join(" / ")}`);
+} else {
+    const target = bands.search.b;
+    console.log(
+        `\n  三栏头部线：左栏头 ${bands.navHeader.b}｜中栏头 ${bands.listHeader.b}｜搜索框底 ${bands.search.b}（搜索框 ${bands.search.h}px 高）｜工具栏底 ${bands.toolbar.b}`
+    );
+    for (const k of bandKeys) {
+        if (Math.abs(bands[k].b - target) > 1.5) {
+            p4Fails.push(`${k} 底边 ${bands[k].b} 和搜索框底边 ${target} 差 ${(bands[k].b - target).toFixed(1)}px（三栏头部要一条线）`);
+        }
+    }
+    if (bands.search.h > 34) {
+        p4Fails.push(`搜索框被撑到 ${bands.search.h}px 高（应保持 30 —— 头部变高不等于把控件撑厚）`);
+    }
+}
+
 // 首行（会议纪要）是「置顶」分组里唯一一条，它下方紧接的是「本月」分组标题，
 // 不是另一行笔记。为了量「它下面那一行」，再选一次同组相邻的读书笔记做对照。
 const adjClicked = await evaluate(`(() => {
@@ -966,6 +1007,13 @@ if (!toolbarGeom.ok) {
 }
 }
 
+if (p4Fails.length) {
+    console.log("\n✗ P4 三栏头部线断言未通过：");
+    for (const f of p4Fails) console.log("  - " + f);
+} else {
+    console.log("\n✓ P4 三栏头部线断言通过：左栏搜索框底边 = 编辑区工具栏底边 = 三栏头部底边");
+}
+
 if (p3Fails.length) {
     console.log("\n✗ P3 左栏搜索框断言未通过：");
     for (const f of p3Fails) console.log("  - " + f);
@@ -985,4 +1033,4 @@ for (const f of shots) console.log("  " + f);
 
 site.close();
 // 断言挂了就以非 0 退出：探针要能当门禁用，不能只打印一行字却仍然绿
-done(notesMobileFails.length + p1Fails.length + p3Fails.length ? 1 : 0);
+done(notesMobileFails.length + p1Fails.length + p3Fails.length + p4Fails.length ? 1 : 0);

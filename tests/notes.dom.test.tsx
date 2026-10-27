@@ -4891,13 +4891,31 @@ test("三栏头部用同一个高度变量（否则标题与工具栏整排错�
     // 「标题输入框自己的高度」，不再兼任头部高度 —— 所以这里钉的是变量，不是常量。
     const css = readSrcFile("index.css");
     assert.match(css, /--notes-header-h:\s*\d+px/, "index.css 里要有共同头部高度变量");
-    for (const file of ["NotesEditorPane.tsx", "NotesSidePane.tsx", "NotesListPane.tsx"]) {
+    // ⚠️ 2026-10-27：编辑区 / 侧栏的头部带**把下面的格式工具栏算在内**（78 = 42 + 36），
+    // 它们的标题行高度改成 calc(头部总高 − 工具栏高)，工具栏底边才是三栏共同那条线。
+    // 所以这两栏钉的是 calc 形式，中栏钉的还是直接的变量。
+    for (const file of ["NotesEditorPane.tsx", "NotesSidePane.tsx"]) {
         const src = stripComments(readNotesFile(file));
         assert.ok(
-            src.includes('height: "var(--notes-header-h)"'),
-            `${file} 的头部容器要走 --notes-header-h，否则三栏第一行内容又错开`
+            /height:\s*"calc\(var\(--notes-header-h\)\s*-\s*var\(--notes-toolbar-h/.test(src),
+            `${file} 的标题行要写 calc(var(--notes-header-h) - var(--notes-toolbar-h)) —— 头部带含工具栏`
         );
     }
+    {
+        const src = stripComments(readNotesFile("NotesListPane.tsx"));
+        assert.ok(
+            src.includes('height: "var(--notes-header-h)"'),
+            "NotesListPane 的头部容器要走 --notes-header-h，否则三栏第一行内容又错开"
+        );
+    }
+    // 工具栏高度必须和标题行算式用同一个变量：写死 36 的话两边会各漂各的。
+    assert.match(css, /--notes-toolbar-h:\s*\d+px/, "index.css 里要有工具栏高度变量");
+    assert.ok(
+        stripComments(readNotesFile("markdownToolbar.tsx")).includes(
+            'minHeight: "var(--notes-toolbar-h'
+        ),
+        "工具栏的 minHeight 要吃 --notes-toolbar-h —— 标题行是按它做减法的"
+    );
     assert.ok(
         notesSource().includes("const PANE_HEADER_H ="),
         "常量仍要留着：标题输入框的高度（PANE_HEADER_H）与头部高度是两件事"

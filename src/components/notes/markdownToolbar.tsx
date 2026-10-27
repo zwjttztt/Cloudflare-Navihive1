@@ -726,7 +726,10 @@ export function MarkdownToolbar({
                 // 2026-10-26（P2-1）：手机端不再靠这条兜底 —— `narrow` 下第一行只留
                 // 8 个高频入口（约 317px），压根到不了换行那一步；flexWrap 留着是给
                 // **宽屏分屏**（半屏仍要能折行）用的，别当成「手机端问题已解决」。
-                minHeight: 36,
+                // ⚠️ 2026-10-27：高度改吃 --notes-toolbar-h —— 编辑区 / 侧栏的标题行高度
+                // 是 calc(头部总高 − 这个值)，两边必须同一个数，否则工具栏底边会脱离
+                // 三栏共同那条线。左栏搜索框的下边也落在同一条线上（用户画线指定）。
+                minHeight: "var(--notes-toolbar-h, 36px)",
                 flexShrink: 0,
                 borderBottom: "1px solid var(--card-border)",
             }}
