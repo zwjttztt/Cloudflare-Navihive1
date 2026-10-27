@@ -2378,7 +2378,11 @@ export default function NotesPage({
                     height: HEADER_CONTROL_H,
                     borderRadius: HEADER_RADIUS,
                     bgcolor: "var(--glass-bg-hover)",
-                    border: "1px solid var(--glass-border)",
+                    // 不能用 --glass-border（亮色是 rgba(255,255,255,0.6) 白底白边、
+                    // 暗色是 0.12 白，都几乎看不见）—— 左栏是纯浅底，白边会让搜索框
+                    // 糊成一根灰条、没有「输入框」的形。改用 --neutral-border（30% 灰），
+                    // 正好是 MUI 默认 outlined 输入框的描边强度，亮/暗都读得出。
+                    border: "1px solid var(--neutral-border)",
                     transition: "border-color 120ms ease, background-color 120ms ease",
                     "&:hover": {
                         borderColor: "color-mix(in srgb, var(--accent) 35%, var(--glass-border))",

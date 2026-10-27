@@ -52,7 +52,10 @@ export default function NotesNavPanel(props: Pick<NotesPageCtx, "accountName" | 
                     // 没有分隔会糊成一块（用户报「标题行 + 搜索框挤在一起」）。
                     // border-box 让 1px 落在 36px 内，不顶高头部、不破坏三栏对齐。
                     boxSizing: "border-box",
-                    borderBottom: "1px solid var(--neutral-hairline)",
+                    // 用 --neutral-border（30% 灰）而不是 --neutral-hairline（18%）：
+                    // 左栏是浅底，18% 灰线几乎看不见，标题行和搜索框就糊成一块；
+                    // 30% 灰在亮/暗两套主题里都读得出，是「看得见的分隔」而不是「若有若无的线」。
+                    borderBottom: "1px solid var(--neutral-border)",
                 }}
             >
                 {/* 返回箭头（2026-10-10 用户明确）：贴左侧栏最左边、箭头**朝左**（回导航站的方向）；
