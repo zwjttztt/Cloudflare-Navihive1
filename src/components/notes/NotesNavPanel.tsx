@@ -10,7 +10,7 @@ import LastPageIcon from "@mui/icons-material/LastPage";
 import SettingsIcon from "@mui/icons-material/Settings";
 import AttachmentIcon from "@mui/icons-material/AttachFile";
 import { tagNamesOf, NavRow, FolderTagSection } from "../notes/sidebarSection";
-import { HEADER_CONTROL_H, HEADER_RADIUS } from "../../constants";
+import { HEADER_CONTROL_H, HEADER_RADIUS, NOTES_NAV_CTRL_H } from "../../constants";
 import type { NotesPageCtx } from "./notesPageCtx";
 
 export default function NotesNavPanel(props: Pick<NotesPageCtx, "accountName" | "activeFolder" | "activeId" | "activeTag" | "askName" | "attManagerOpen" | "folderCounts" | "folderTags" | "folders" | "jumpToNote" | "keyword" | "listCollapsed" | "narrowLayout" | "noteTags" | "notes" | "notesInFolder" | "onClose" | "onCreate" | "onUpdate" | "openTemplatePicker" | "renderSearchField" | "searchRef" | "setActiveFolder" | "setActiveTag" | "setAppearanceFolderId" | "setAttManagerOpen" | "setListCollapsed" | "setMiddleHidden" | "setNavDrawerOpen" | "setRemoveTarget" | "setRowMenu" | "setSettingsOpen" | "setTagColorId" | "setView" | "startCreateInFolder" | "tagCounts" | "tags" | "uploadApi" | "view" | "viewCounts">) {
@@ -71,8 +71,10 @@ export default function NotesNavPanel(props: Pick<NotesPageCtx, "accountName" | 
                         sx={{
                             flexShrink: 0,
                             ml: -0.5,
-                            width: HEADER_CONTROL_H,
-                            height: HEADER_CONTROL_H,
+                            // 比顶栏小一档（30）：左栏只有 ~230px 宽，36px 的白方块在这里太占地方
+                            // （用户反馈「两个白框都太大了」）。行高仍是 36，控件在行内居中。
+                            width: NOTES_NAV_CTRL_H,
+                            height: NOTES_NAV_CTRL_H,
                             p: 0,
                             borderRadius: HEADER_RADIUS,
                             border: "1px solid var(--glass-border)",
@@ -123,7 +125,20 @@ export default function NotesNavPanel(props: Pick<NotesPageCtx, "accountName" | 
                 ⚠️ 2026-10-26：这段在**头部容器里面**（上面那个 data-nav-header），
                 flex:1 + minHeight:0 让它吃满头部剩下的高度并垂直居中 ——
                 靠自然堆叠会把头部撑高，那就白统一了。 */}
-            <Box sx={{ flex: 1, minHeight: 0, display: "flex", alignItems: "center", px: 1.5 }}>
+            {/* --notes-search-h：让这里的搜索框吃 30px（比顶栏小一档，用户反馈「白框太大」）；
+                其它位置（tablet 顶栏 / mobile 列表）不设这个变量、回落到 36。
+                ⚠️ 下面这行调用的**文本别改**（tests/notes.dom.test.tsx 用它的字面量
+                和「3 处调用」的计数当守卫）—— 要调尺寸就改这个变量，别给调用加参数。 */}
+            <Box
+                sx={{
+                    flex: 1,
+                    minHeight: 0,
+                    display: "flex",
+                    alignItems: "center",
+                    px: 1.5,
+                    "--notes-search-h": `${NOTES_NAV_CTRL_H}px`,
+                }}
+            >
                 {renderSearchField(searchRef)}
             </Box>
             </Box>

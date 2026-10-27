@@ -2375,7 +2375,9 @@ export default function NotesPage({
             // 会被 MUI 换成 2px 描边、圆角也跟着变，压不住。
             sx={{
                 "& .MuiOutlinedInput-root": {
-                    height: HEADER_CONTROL_H,
+                    // 高度走变量：导航列那份由 NotesNavPanel 传 --notes-search-h（30，比顶栏
+                    // 小一档，用户反馈「白框太大」）；tablet 顶栏 / mobile 列表不设变量，回落到 36。
+                    height: `var(--notes-search-h, ${HEADER_CONTROL_H}px)`,
                     borderRadius: HEADER_RADIUS,
                     bgcolor: "var(--glass-bg-hover)",
                     // 不能用 --glass-border（亮色是 rgba(255,255,255,0.6) 白底白边、
