@@ -181,6 +181,24 @@ export function buildFoldSource(title: string, placeholder = "折叠内容"): st
     return `> [!FOLD] ${head}\n> ${placeholder}\n`;
 }
 
+/**
+ * 造一个「可复制块」：`> [!COPY]` 独占一行，正文每行加 `> ` 前缀。
+ *
+ * ⚠️ 标记**必须独占一行**，不能写成 `> [!COPY] 正文`。后者在正文以 `1. ` / `## `
+ * 开头时会被 markdown-it 先切成列表/标题，callout 的 takeMarker 只看
+ * 「首段首行的 inline」，那时首段已经不是那句话了 → 摘不到标记，
+ * 整块退化成普通引用，`[!COPY]` 原样漏在正文里。
+ *
+ * 空行写成单独一个 `>`：块引用里空行是「段落分隔」而不是「块结束」，
+ * 多段内容才不会把引用块切断。
+ */
+export function buildCopyBlockSource(body: string, placeholder = "要复制的内容"): string {
+    const lines = body.replace(/\r\n/g, "\n").replace(/\n+$/, "").split("\n");
+    const use = body.trim() ? lines : [placeholder];
+    const quoted = use.map(line => (line.trim() === "" ? ">" : `> ${line}`)).join("\n");
+    return `> [!COPY]\n${quoted}\n`;
+}
+
 /** 造一条隐藏注释 */
 export function buildHiddenComment(text = "隐藏注释"): string {
     return `%%${text}%%`;

@@ -17,7 +17,7 @@
 import { useCallback, useRef } from "react";
 import type { RefObject } from "react";
 import type { NoteEditorHandle } from "../utils/noteEditorHandle";
-import { withBlockId, buildTabSource, buildFoldSource } from "../utils/noteBlocks";
+import { withBlockId, buildTabSource, buildFoldSource, buildCopyBlockSource } from "../utils/noteBlocks";
 import { buildFrontMatter, type FrontMatterEntry } from "../utils/noteFrontMatter";
 import {
     addColumnRight,
@@ -625,6 +625,46 @@ export function useEditorTools(
         insertBlock("fold", buildFoldSource(""));
     }, [insertBlock]);
 
+    /**
+     * 把**选中的正文**包成一个可复制块（`> [!COPY]`）：渲染出来右上角常驻复制按钮。
+     *
+     * 没选中就取当前行 —— 和 onInsertBlockId 的行为一致（不选中也能用，
+     * 否则用户点一下按钮什么都不发生，会以为按钮坏了）。
+     *
+     * 前后各补一个空行：即时渲染是**按空行切块**的，不补的话新块会和
+     * 相邻段落粘成一块，`> [!COPY]` 就退化成普通引用。
+     */
+    const onInsertCopyBlock = useCallback(() => {
+        undoableInsert("copyblock", value => {
+            const el = textareaRef.current;
+            const selStart = el?.selectionStart ?? 0;
+            const selEnd = el?.selectionEnd ?? selStart;
+            let from = selStart;
+            let to = selEnd;
+            if (from === to) {
+                from = value.lastIndexOf("\n", Math.max(0, from - 1)) + 1;
+                const nl = value.indexOf("\n", to);
+                to = nl < 0 ? value.length : nl;
+            }
+            if (!value.slice(from, to).trim()) return null;
+            const snippet = buildCopyBlockSource(value.slice(from, to));
+            const before = value.slice(0, from);
+            const after = value.slice(to);
+            const lead = before.length === 0 || before.endsWith("\n\n")
+                ? ""
+                : (before.endsWith("\n") ? "\n" : "\n\n");
+            const trail = after.length > 0 && !after.startsWith("\n") ? "\n" : "";
+            const at = before.length + lead.length;
+            return {
+                next: before + lead + snippet + trail + after,
+                at,
+                snippet,
+                caret: at + snippet.length,
+                selEnd: at + snippet.length,
+            };
+        });
+    }, [undoableInsert, textareaRef]);
+
     /** 插入标签页容器 `:::tabs … :::` */
     const onInsertTabs = useCallback(() => {
         insertBlock("tabs", buildTabSource());
@@ -669,6 +709,7 @@ export function useEditorTools(
         onInsertWikiLink,
         onInsertHiddenComment,
         onInsertFold,
+        onInsertCopyBlock,
         onInsertTabs,
         onInsertDivider,
         jumpToOffset,

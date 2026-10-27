@@ -433,3 +433,58 @@ test("双链是点状下划线 + 500 字重（和普通链接分开）", async (
     assert.equal(wiki.style.textDecoration, "underline dotted");
     assert.equal(parseFloat(wiki.style.fontWeight), 500);
 });
+
+// 可复制块（`> [!COPY]`）：块右上角一颗**常驻**复制按钮。
+// 这一组盯的是「真点一下有没有东西进剪贴板」—— 只断言按钮存在是假通过。
+test("COPY 块：复制按钮常驻可见，点一下把整块纯文本写进剪贴板", async () => {
+    const host = await renderToDom("> [!COPY]\n> 第一行\n>\n> 第二行");
+
+    const block = host.querySelector('[data-callout="COPY"]');
+    assert.ok(block, "没渲染出 COPY 块");
+
+    const btn = block!.querySelector<HTMLButtonElement>('[data-copy-op="copy-block"]');
+    assert.ok(btn, "没渲染出复制按钮");
+
+    // 「常驻」是明确定过的：悬停才显形在触屏上永远点不到
+    const cs = window.getComputedStyle(btn!);
+    assert.notEqual(cs.display, "none", "按钮不许藏起来");
+    assert.equal(cs.opacity === "" ? "1" : cs.opacity, "1", "按钮不许靠透明藏起来");
+
+    const written: string[] = [];
+    const prevClipboard = navigator.clipboard;
+    const hadClipboard = Boolean(prevClipboard);
+    Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: { writeText: async (t: string) => { written.push(t); } },
+    });
+    const prevSecure = Object.getOwnPropertyDescriptor(window, "isSecureContext");
+    Object.defineProperty(window, "isSecureContext", { configurable: true, value: true });
+    try {
+        await act(async () => {
+            btn!.click();
+            await new Promise(r => setTimeout(r, 0));
+        });
+        assert.equal(written.length, 1, "点一次只该往剪贴板写一次");
+        assert.equal(
+            written[0],
+            "第一行\n\n第二行",
+            "复制的是**渲染后的纯文本**；带上 `>` 就成了让人自己再删一遍的源码"
+        );
+        assert.equal(btn!.textContent, "已复制", "点完必须当场给反馈，否则用户不知道成没成");
+    } finally {
+        if (hadClipboard) {
+            Object.defineProperty(navigator, "clipboard", {
+                configurable: true,
+                value: prevClipboard,
+            });
+        } else {
+            delete (navigator as unknown as { clipboard?: unknown }).clipboard;
+        }
+        if (prevSecure) Object.defineProperty(window, "isSecureContext", prevSecure);
+    }
+});
+
+test("普通引用块不冒出复制按钮（别把 `>` 引用当成可复制块）", async () => {
+    const host = await renderToDom("> 只是一句引用");
+    assert.equal(host.querySelector('[data-copy-op="copy-block"]'), null);
+});

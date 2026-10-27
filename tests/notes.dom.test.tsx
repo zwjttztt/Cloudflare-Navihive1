@@ -580,6 +580,27 @@ test("选中一段字点粗体后，选区还在（不能一按就没了）", ()
     assert.equal(ta.selectionEnd, 6, "刚包上的 `这篇笔记`(4 字)要整体还在选中态");
 });
 
+test("工具栏「复制块」：选中一段字后包成 `> [!COPY]`（渲染出来右侧才有复制按钮）", () => {
+    mountPanel([note({ id: 1, title: "甲", content: "" })]);
+    const ta = getEditor();
+    const copyBlock = document.querySelector('button[data-tool="copyblock"]') as HTMLElement;
+    assert.ok(copyBlock, "工具栏要有「复制块」按钮");
+    act(() => {
+        ta.focus();
+        ta.value = "要复制的一句话\n后面还有一段";
+        ta.setSelectionRange(0, 7);
+    });
+    act(() => copyBlock.click());
+    // ⚠️ 标记必须**独占一行**：写成 `> [!COPY] 要复制的一句话` 时，正文以 `1. ` /
+    // `## ` 开头的会被 markdown-it 先切成列表/标题，标记就摘不掉了。
+    // 也要有换行隔开后面的段落 —— 即时渲染按空行切块，粘在一起会退化成普通引用。
+    assert.equal(
+        ta.value,
+        "> [!COPY]\n> 要复制的一句话\n\n后面还有一段",
+        "实际 " + JSON.stringify(ta.value)
+    );
+});
+
 test("阶段二：列表按时间分组，分组标题挂在条目上面", () => {
     mountPanel([
         note({ id: 1, title: "早的", content: "a", updated_at: "2026-09-03T10:00:00Z" }),

@@ -181,6 +181,7 @@ export default function NotesSidePane(props: Pick<NotesPageCtx, "SIDE_SPLIT_KEY"
                     onInsertTag={sideTools.onInsertTag}
                     onInsertWikiLink={sideTools.onInsertWikiLink}
                     onInsertHiddenComment={sideTools.onInsertHiddenComment}
+                    onInsertCopyBlock={sideTools.onInsertCopyBlock}
                     onInsertFold={sideTools.onInsertFold}
                     onInsertTabs={sideTools.onInsertTabs}
                     onInsertDivider={sideTools.onInsertDivider}

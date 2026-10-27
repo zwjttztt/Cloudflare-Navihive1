@@ -16,6 +16,14 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { parseCalloutType, registerCallout } from "../src/utils/markdownCallout";
+import { buildCopyBlockSource } from "../src/utils/noteBlocks";
+
+/** 要连 token 结构一起看时用它（比如「空段落有没有被摘掉」） */
+function parseTokens(src: string) {
+    const md = new MarkdownIt({ html: false, linkify: true });
+    registerCallout(md);
+    return md.parse(src, {});
+}
 
 /** 单测会被复制到 script/tmp-tests/ 下再跑，逐级向上找真身 */
 function findProjectDir(): string {
@@ -137,4 +145,45 @@ test("守卫：渲染层取内容前必须先前进游标（否则无限递归�
         "c.i++ 必须排在 takeUntilClose **之前** —— 否则会读到自己的 open，" +
             "深度永远不归零，预览区直接栈溢出白屏"
     );
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// COPY（可复制块）
+//
+// 这块的坑全在「标记独占一行」上：`> [!COPY]` 自己是一个段落，
+// 摘掉标记后剩空串 → 渲染出来块顶部会多一段 MD_GAP 的空白。
+// 工具栏造的源码永远是这种形状（见 buildCopyBlockSource），所以必须钉住。
+// ─────────────────────────────────────────────────────────────────────────────
+
+test("COPY：标记独占一行也认得出，空的首段被整个摘掉", () => {
+    const tokens = parseTokens("> [!COPY]\n> 1. 甲\n> 2. 乙\n");
+    const callout = tokens.find(t => t.type === "callout_open");
+    assert.ok(callout, "标记独占一行时必须仍然认成 callout");
+    assert.equal(callout!.meta?.callout, "COPY");
+    const emptyInline = tokens.filter(t => t.type === "inline" && String(t.content).trim() === "");
+    assert.equal(
+        emptyInline.length,
+        0,
+        "摘完标记留下的空段落必须连 token 一起摘掉，否则块顶部多一口气"
+    );
+});
+
+test("COPY：首行是标题时，标记也摘得掉、标题照常是标题", () => {
+    const tokens = parseTokens("> [!COPY]\n> ## 小节\n> 正文一句\n");
+    const callout = tokens.find(t => t.type === "callout_open");
+    assert.ok(callout, "首行是标题时也必须认成 callout");
+    assert.equal(callout!.meta?.callout, "COPY");
+    assert.ok(tokens.some(t => t.type === "heading_open"), "标题要在块里照常渲染成标题");
+    // 标记没漏进正文（漏了的话正文里会出现 `[!COPY]` 这几个字）
+    const leaked = tokens.some(
+        t => t.type === "inline" && String(t.content).includes("[!COPY]")
+    );
+    assert.equal(leaked, false, "标记不许漏进正文");
+});
+
+test("COPY：工具栏造的源码能被解析成 COPY 块（造与解必须闭环）", () => {
+    const src = buildCopyBlockSource("1. 甲\n2. 乙");
+    assert.equal(parse(src).callouts.join(","), "COPY");
+    // 顺带钉住形状：标记独占一行，正文每行都带 `> `
+    assert.equal(src.startsWith("> [!COPY]\n> "), true, "标记必须独占一行");
 });

@@ -29,8 +29,15 @@ import type Token from "markdown-it/lib/token.mjs";
  * `FOLD` 是折叠内容：语法同为 `> [!FOLD] 标题`，但渲染成 `<details>`
  * —— 可展开收起。放进这个枚举而不是另写一套块规则，是因为折叠块的**解析**
  * （首段首行摘标记、包一层）与内容块完全一致，只有渲染层的表现不同。
+ *
+ * `COPY` 是「可复制块」：语法 `> [!COPY]`（**标记独占一行**），渲染出来右上角
+ * 常驻一颗复制按钮，点一下把整块的纯文本送进剪贴板。
+ * 它进这个枚举而不另造语法，理由同上：解析层零改动，只在渲染层分叉。
+ * ⚠️ 也正因为共用解析，「标记 + 正文同一行」的写法对 COPY 是不可靠的：
+ * 正文以 `1. ` / `## ` 开头时 markdown-it 会先切成列表/标题，
+ * 首段首行的 inline 就不是那句话了，`takeMarker` 摘不到标记 → 退化成普通引用。
  */
-export const CALLOUT_TYPES = ["NOTE", "TIP", "IMPORTANT", "WARNING", "QUOTE", "FOLD"] as const;
+export const CALLOUT_TYPES = ["NOTE", "TIP", "IMPORTANT", "WARNING", "QUOTE", "FOLD", "COPY"] as const;
 export type CalloutType = (typeof CALLOUT_TYPES)[number];
 
 /** 折叠块（`> [!FOLD]`）：标题之外的正文默认收起来 */
@@ -60,6 +67,45 @@ interface Marker {
     type: CalloutType;
     /** 只有 FOLD 会用到：`> [!FOLD] 标题` 里「标题」那几个字 */
     title: string;
+    /**
+     * 摘掉标记后首段是不是**彻底空了**。
+     *
+     * 只在「标记独占一行、下一行直接是列表/标题」时发生（`> [!COPY]` 换行后接
+     * `> 1. xxx`）—— 那时 `[!COPY]` 自己是一个段落，摘完标记剩空串，
+     * 渲染出来块顶部会多出一段 MD_GAP 的空白。调用方据此把这三个 token 一起丢掉。
+     */
+    emptyHead?: boolean;
+}
+
+/**
+ * 把一个 inline token 的 children 拼回「人看到的文字」（软换行算一个 `\n`）。
+ *
+ * ⚠️ 不能只看 `children[0].content`：markdown-it 的 inline 解析会把段内换行
+ * 拆成独立的 `softbreak` 子节点，所以 `> [!COPY]\n> 第一行` 的 children 是
+ * `[text "[!COPY]", softbreak, text "第一行"]` —— 只看第一个 text 会以为
+ * 摘完标记「整段空了」，进而把**带着正文的**段落删掉（踩过：正文凭空消失）。
+ */
+function inlineText(inline: Token): string {
+    return (inline.children ?? [])
+        .map(ch => (ch.type === "softbreak" || ch.type === "hardbreak" ? "\n" : (ch.content ?? "")))
+        .join("");
+}
+
+/** 摘完标记后，把紧跟着的软换行/空白文本节点去掉（否则段首会多一个空行） */
+function dropLeadingBreaks(inline: Token): void {
+    const kids = inline.children ?? [];
+    while (kids.length > 0) {
+        const first = kids[0];
+        if (first.type === "softbreak" || first.type === "hardbreak") {
+            kids.shift();
+            continue;
+        }
+        if (first.type === "text" && first.content.trim() === "") {
+            kids.shift();
+            continue;
+        }
+        break;
+    }
 }
 
 /** 首段首行开头是不是 `[!TYPE]`；是则摘掉标记并返回类型与标题 */
@@ -86,10 +132,15 @@ function takeMarker(tokens: Token[]): Marker | null {
         const title = (nl < 0 ? rest : rest.slice(0, nl)).trim();
         const consumed = (nl < 0 ? rest : rest.slice(0, nl)).length;
         head.content = rest.slice(consumed);
-        return { type, title };
+        dropLeadingBreaks(firstInline);
+        return { type, title, emptyHead: inlineText(firstInline).trim() === "" };
     }
     head.content = rest;
-    return { type, title: "" };
+    dropLeadingBreaks(firstInline);
+    // 非折叠类型没有标题概念：标记后面那截就是正文。
+    // 「标记独占一行且下一行直接是列表/标题」（`> [!COPY]` 换行接 `> 1. 甲`）时，
+    // 整段真的空了 —— 标出来让调用方把这三个 token 一起丢掉。
+    return { type, title: "", emptyHead: inlineText(firstInline).trim() === "" };
 }
 
 
@@ -115,6 +166,17 @@ export function registerCallout(md: MarkdownIt): void {
             if (close < 0) continue;
             const marker = takeMarker(tokens.slice(i + 1, close));
             if (!marker) continue;
+            // 标记独占一行时，摘完标记会剩一个空段落 → 连 token 一起摘掉。
+            // 只在「open / inline / close」正好是这三兄弟时才动手，别的一概不碰。
+            if (
+                marker.emptyHead
+                && tokens[i + 1]?.type === "paragraph_open"
+                && tokens[i + 2]?.type === "inline"
+                && tokens[i + 3]?.type === "paragraph_close"
+            ) {
+                tokens.splice(i + 1, 3);
+                close -= 3;
+            }
             const meta = { callout: marker.type, foldTitle: marker.title };
 
             tokens[i].meta = { ...(tokens[i].meta ?? {}), ...meta };

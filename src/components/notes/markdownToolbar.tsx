@@ -19,6 +19,7 @@ import Typography from "@mui/material/Typography";
 import DataObjectIcon from "@mui/icons-material/DataObject";
 import AddIcon from "@mui/icons-material/Add";
 import AttachFileIcon from "@mui/icons-material/AttachFile";
+import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import HorizontalRuleIcon from "@mui/icons-material/HorizontalRule";
 import PolylineIcon from "@mui/icons-material/Polyline";
 import TranslateIcon from "@mui/icons-material/Translate";
@@ -402,6 +403,7 @@ export function MarkdownToolbar({
     onInsertTag,
     onInsertWikiLink,
     onInsertHiddenComment,
+    onInsertCopyBlock,
     onNotify,
     activeId,
     onUploadImage,
@@ -451,6 +453,8 @@ export function MarkdownToolbar({
     onInsertHiddenComment: () => void;
     /** 插入折叠块 `> [!FOLD] 标题` */
     onInsertFold: () => void;
+    /** 把选中内容包成可复制块 `> [!COPY]`（渲染后右侧常驻复制按钮） */
+    onInsertCopyBlock: () => void;
     /** 插入标签页容器 `:::tabs … :::` */
     onInsertTabs: () => void;
     /** 插入分隔线 `---` */
@@ -1017,6 +1021,7 @@ export function MarkdownToolbar({
                         {insertItem("link-menu", <LinkIcon sx={{ fontSize: 18 }} />, "链接与引用", () => setLinkAnchor(moreAnchor))}
                         {insertItem("note", <SubjectIcon sx={{ fontSize: 18 }} />, "笔记工具", () => setInsertAnchor(moreAnchor))}
                         {insertItem("callout", <ViewStreamIcon sx={{ fontSize: 18 }} />, "内容块", () => setBlockAnchor(moreAnchor))}
+                        {insertItem("copyblock", <ContentCopyIcon sx={{ fontSize: 18 }} />, "复制块", () => onInsertCopyBlock())}
                     </Menu>
                 </>
             )}
@@ -1223,6 +1228,26 @@ export function MarkdownToolbar({
                 <ViewStreamIcon sx={{ fontSize: 15 }} />
                 <ExpandMoreIcon sx={{ fontSize: 13, opacity: 0.6 }} />
             </Button>
+            </Tooltip>
+            )}
+
+            {/* 复制块：把选中内容包成 `> [!COPY]`，渲染后块右上角**常驻**一颗复制按钮。
+                为什么常驻而不是悬停显形：悬停那版在触屏（含被 nav-touch 判成触屏的
+                笔记本）上永远点不到 —— 和「卡片浮层常显」那次踩的是同一个坑。
+                为什么不挂在「选中文字右边」：即时渲染是块级的，一行文字在源码里
+                没有自己的 DOM 节点，按钮只能挂在渲染出来的块上。 */}
+            {!narrow && (
+            <Tooltip title='复制块：把选中的内容包成带复制按钮的块'>
+            <IconButton
+                size='small'
+                aria-label='复制块'
+                data-tool='copyblock'
+                onMouseDown={e => e.preventDefault()}
+                onClick={() => onInsertCopyBlock()}
+                sx={toolBtnSx}
+            >
+                <ContentCopyIcon fontSize='small' />
+            </IconButton>
             </Tooltip>
             )}
             <Menu

@@ -435,6 +435,7 @@ export default function NotesEditorPane(props: Pick<NotesPageCtx, "active" | "ac
                         onInsertTag={tools.onInsertTag}
                         onInsertWikiLink={tools.onInsertWikiLink}
                         onInsertHiddenComment={tools.onInsertHiddenComment}
+                        onInsertCopyBlock={tools.onInsertCopyBlock}
                         onInsertFold={tools.onInsertFold}
                         onInsertTabs={tools.onInsertTabs}
                         onInsertDivider={tools.onInsertDivider}

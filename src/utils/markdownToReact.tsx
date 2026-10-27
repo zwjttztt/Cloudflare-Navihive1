@@ -23,10 +23,11 @@
 import type MarkdownIt from "markdown-it";
 import type { Options as MarkdownItOptions } from "markdown-it";
 import type Token from "markdown-it/lib/token.mjs";
-import { useEffect, useState, type ChangeEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ChangeEvent, type ReactNode } from "react";
 import { MathNode } from "./MathNode";
 import { MermaidNode } from "./MermaidNode";
 import AttachmentLink from "./AttachmentLink";
+import { copyToClipboard } from "./clipboard";
 import { registerMath } from "./markdownMath";
 import { registerMark } from "./markdownMark";
 import footnote from "markdown-it-footnote";
@@ -761,6 +762,15 @@ function renderBlocks(c: Cursor): ReactNode[] {
                     );
                     break;
                 }
+                if (type === "COPY") {
+                    // 可复制块：外壳 + 右上角常驻复制按钮，正文照旧走通用渲染
+                    out.push(
+                        <CopyBlock key={key}>
+                            {renderBlocks(child(inner, c))}
+                        </CopyBlock>
+                    );
+                    break;
+                }
                 out.push(
                     // ⚠️ 用原生 div/span + inline style：这个文件全程不引 MUI
                     // （见文件头「为什么不用 renderer」的同款理由），
@@ -1098,16 +1108,135 @@ const CODE_STYLE: React.CSSProperties = {
 };
 const LIST_STYLE: React.CSSProperties = { margin: `0 0 ${MD_GAP}`, paddingLeft: 22 };
 const LI_STYLE: React.CSSProperties = { margin: "2px 0" };
+/**
+ * 中性色板：`QUOTE` 与 `COPY` 共用。
+ *
+ * 两者都不是**语义**色（红黄蓝绿那套在说「这是警告/这是技巧」），只是排版提示，
+ * 所以跟着正文走的中性灰才对。提成一个常量也是为了让「同一个色值只写一次」——
+ * `tests/hardcodedColorGuard.test.ts` 是按**出现次数**钉 cap 的，复制粘贴一份
+ * 同样的 rgba 就会顶破 16 那条线。
+ */
+const NEUTRAL_CALLOUT = {
+    border: "rgba(128,128,128,0.6)",
+    bg: "rgba(128,128,128,0.08)",
+    fg: "inherit",
+    icon: "❝",
+};
 /** 内容块配色。深浅色都用半透明色，跟随主题走，不需要单独切 dark 模式。 */
 const CALLOUT_STYLE: Record<CalloutType, { border: string; bg: string; fg: string; icon: string }> = {
     NOTE: { border: "#3b82f6", bg: "rgba(59,130,246,0.10)", fg: "inherit", icon: "ℹ" },
     TIP: { border: "#10b981", bg: "rgba(16,185,129,0.10)", fg: "inherit", icon: "💡" },
     IMPORTANT: { border: "#8b5cf6", bg: "rgba(139,92,246,0.10)", fg: "inherit", icon: "❗" },
     WARNING: { border: "#f59e0b", bg: "rgba(245,158,11,0.12)", fg: "inherit", icon: "⚠" },
-    QUOTE: { border: "rgba(128,128,128,0.6)", bg: "rgba(128,128,128,0.08)", fg: "inherit", icon: "❝" },
+    QUOTE: NEUTRAL_CALLOUT,
+    // COPY 不要左侧图标：右上角那颗按钮本身就是「这块能复制」的提示，
+    // 再加个图标会和按钮抢注意力，也白占一列 10px 的 gap。
+    COPY: { ...NEUTRAL_CALLOUT, icon: "" },
     // FOLD 走 <details> 分支，palette 不会被读到；放这里只为满足类型完整性
     FOLD: { border: "rgba(128,128,128,0.6)", bg: "transparent", fg: "inherit", icon: "▸" },
 };
+
+/** 块级标签：只有它们之间才补换行，`<strong>` 这类行内标签之间不能补 */
+const BLOCK_TAGS = new Set([
+    "P", "DIV", "UL", "OL", "LI", "H1", "H2", "H3", "H4", "H5", "H6",
+    "PRE", "TABLE", "THEAD", "TBODY", "TR", "BLOCKQUOTE", "DETAILS", "SUMMARY", "HR",
+]);
+/** 列表项/表格行：彼此之间一个换行就够，不要空行 */
+const TIGHT_TAGS = new Set(["LI", "TR"]);
+
+/**
+ * 取一个渲染好的块的**纯文本**（复制用）。
+ *
+ * 浏览器里 `innerText` 最准（按块级元素补换行、跳过隐藏内容）；jsdom 没实现它，
+ * 回落时手工在**块级**子节点之间补换行 —— 两条路径结果一致，单测才不会
+ * 因为「单测环境和真机不一样」而变成一条永远绿的假用例。
+ */
+function blockTextOf(el: HTMLElement): string {
+    if (typeof el.innerText === "string" && el.innerText) return el.innerText;
+    const kids = Array.from(el.children) as HTMLElement[];
+    if (kids.length > 0 && kids.every(k => BLOCK_TAGS.has(k.tagName))) {
+        const sep = kids.every(k => TIGHT_TAGS.has(k.tagName)) ? "\n" : "\n\n";
+        return kids.map(blockTextOf).join(sep);
+    }
+    return el.textContent ?? "";
+}
+
+/**
+ * `> [!COPY]` 可复制块：右上角**常驻**一颗复制按钮。
+ *
+ * 为什么按钮不挂在「选中那几个字的右边」：即时渲染是**块级**的
+ * （`NoteEditorLivePreview` 按空行把整段替换成一个组件），一行文字在源码里
+ * 没有自己的 DOM 节点 —— 能挂按钮的只有「渲染出来的块」和「工具栏」。
+ *
+ * 为什么常驻而不是悬停显形：悬停那版在触屏上永远点不到（含被 nav-touch
+ * 判成触屏的笔记本），和「卡片浮层常显」那次是同一个坑。
+ *
+ * 复制的是**渲染后的纯文本**（`innerText`），不是 markdown 源码：用户选中的是
+ * 「看到的这句话」，粘出去不该带 `**` 和 `#`。jsdom 没有实现 innerText，
+ * 那里回落到 textContent —— 单测走的就是这条分支。
+ */
+function CopyBlock({ children }: { children: ReactNode }) {
+    const bodyRef = useRef<HTMLDivElement | null>(null);
+    const [copied, setCopied] = useState(false);
+    const timerRef = useRef<number | null>(null);
+    useEffect(() => () => {
+        if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+    }, []);
+    const handleCopy = () => {
+        const raw = bodyRef.current ? blockTextOf(bodyRef.current) : "";
+        void copyToClipboard(raw.replace(/\n{3,}/g, "\n\n").trim()).then(ok => {
+            if (!ok) return;
+            setCopied(true);
+            if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+            timerRef.current = window.setTimeout(() => setCopied(false), 1200);
+        });
+    };
+    return (
+        <div
+            data-callout='COPY'
+            style={{
+                position: "relative",
+                margin: `0 0 ${MD_GAP}`,
+                // 右边多留一截：常驻按钮压在右上角，长句不会铺到它底下
+                padding: "10px 74px 10px 14px",
+                borderRadius: "var(--notes-radius-block, 10px)",
+                border: `1px solid ${MD_BLOCK_BORDER}`,
+                borderLeft: `3px solid ${NEUTRAL_CALLOUT.border}`,
+                background: NEUTRAL_CALLOUT.bg,
+                color: NEUTRAL_CALLOUT.fg,
+            }}
+        >
+            <div ref={bodyRef}>{children}</div>
+            <button
+                type='button'
+                data-copy-op='copy-block'
+                aria-label={copied ? "已复制" : "复制这一块"}
+                onClick={handleCopy}
+                style={{
+                    position: "absolute",
+                    top: 8,
+                    right: 8,
+                    height: 22,
+                    padding: "0 8px",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    fontFamily: "inherit",
+                    // 用 em 不用 px：笔记页有「字号档位」，写死 px 的话
+                    // 用户调大字号时这颗按钮不跟着涨，还是小的
+                    fontSize: "0.8em",
+                    lineHeight: 1,
+                    color: "inherit",
+                    background: "transparent",
+                    border: `1px solid ${MD_BLOCK_BORDER}`,
+                    borderRadius: 6,
+                    cursor: "pointer",
+                }}
+            >
+                {copied ? "已复制" : "复制"}
+            </button>
+        </div>
+    );
+}
 
 const QUOTE_STYLE: React.CSSProperties = {
     borderLeft: "3px solid var(--md-quote-border, rgba(128,128,128,0.45))",
