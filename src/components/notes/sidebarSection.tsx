@@ -90,7 +90,10 @@ export function NavRow({
                 font: "inherit",
                 textAlign: "left",
                 // inkstone 的选中态是「淡淡的强调色底」：比灰色底多一层「这是你正在看的」的指向
-                bgcolor: selected ? "color-mix(in srgb, var(--accent) 10%, transparent)" : "transparent",
+                // 选中态：左侧加一道强调色条（记号色=红棕，与「你正在看哪一篇」的语义一致），
+                // 比单纯 10% 淡底更直白，解决「选中态不突出」。
+                bgcolor: selected ? "color-mix(in srgb, var(--accent) 14%, transparent)" : "transparent",
+                boxShadow: selected ? "inset 3px 0 0 var(--accent)" : "none",
                 color: selected ? "text.primary" : "text.secondary",
                 transition: "background-color 120ms ease",
                 "&:hover": { bgcolor: "var(--neutral-hover)" },

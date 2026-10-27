@@ -74,14 +74,17 @@ export const SiteCardTitle = memo(function SiteCardTitle({
 export interface SiteCardDescriptionProps {
     description?: string;
     highlight?: string;
-    /** 紧凑密度：描述只给一行 */
+    /** 紧凑密度：少显示一行 */
     compact?: boolean;
+    /** 开了缩略图：描述区要给它让出空间 */
+    withThumb?: boolean;
 }
 
 export const SiteCardDescription = memo(function SiteCardDescription({
     description,
     highlight,
     compact = false,
+    withThumb = false,
 }: SiteCardDescriptionProps) {
     return (
         <Typography
@@ -89,20 +92,9 @@ export const SiteCardDescription = memo(function SiteCardDescription({
             sx={{
                 color: 'text.secondary',
                 display: "-webkit-box",
-                // 两行而不是三行（P1-3，2026-10-26）：三行在 25% 列宽下经常只装得下「半行中文」，
-                // 视觉上就是被切了一刀；一句描述的信息量两行足够，卡片也因此统一矮一档 ——
-                // 「1 张卡」和「8 张卡」两种分组的密度才落在同一个档里。
-                // 紧凑档按 densityMetrics 里的定义（单行）压成一行。
-                WebkitLineClamp: compact ? 1 : 2,
+                WebkitLineClamp: compact ? 2 : withThumb ? 2 : 3,
                 WebkitBoxOrient: "vertical",
                 overflow: "hidden",
-                // 下面两条才是「省略号」的保障：line-clamp 只在**行末**补省略号，
-                // 它管不住行内放不下的长串 —— 中文没有空格、URL 更是连成一坨，
-                // 不显式允许断词就会横向溢出，再被卡片外壳的 overflow:hidden 硬切在边上
-                // （这就是「到边就断、没有省略号」的来源）。
-                textOverflow: "ellipsis",
-                wordBreak: "break-word",
-                // 撑满剩下的高度：同一行的卡片才会等高，卡片底边齐平
                 flexGrow: 1,
                 fontSize: { xs: "0.75rem", sm: "0.875rem" }
             }}>

@@ -23,15 +23,10 @@ import {
     arrayMove,
     SortableContext,
     sortableKeyboardCoordinates,
-    // 网格 / 换行布局要用 rect 策略：horizontalList 只算水平位移，
-    // 在换行网格里拖到第二行会算错落点（P1-3，2026-10-26）
-    rectSortingStrategy,
+    horizontalListSortingStrategy,
 } from "@dnd-kit/sortable";
 // 引入Material UI组件
 import { Paper, Typography, Button, Box, IconButton, Tooltip, Collapse } from "@mui/material";
-// 只是给 cardListSx 标个类型：grid / flex 两种形态的对象字面量直接喂给 sx，
-// 联合类型里会冒出 `gridTemplateColumns?: undefined`，SxProps 的索引签名不收 undefined
-import type { SxProps, Theme } from "@mui/material";
 import SortIcon from "@mui/icons-material/Sort";
 import SaveIcon from "@mui/icons-material/Save";
 import AddIcon from "@mui/icons-material/Add";
@@ -52,34 +47,9 @@ import { moveSiteByStep } from "../utils/sortable";
 import ShareIcon from "@mui/icons-material/Share";
 import { enqueueMountTask } from "../utils/mountQueue";
 
-// 卡片网格的下限宽度（P1-3，2026-10-26）：替代原来的固定列数 { 50% / 33.33% / 25% / 20% }。
-// 固定列数的问题是**空的也占着**——分组里只有 2 张卡时，两块只吃 40% 宽，右边 60% 空着，
-// 「1 张卡」和「8 张卡」两种分组的视觉密度差太远。
-//
-// ⚠️ 是 auto-fit 不是 auto-fill：auto-fill 会把「这一行最多能放几列」全部生成出来，
-// 没卡片的轨道照样占着 1fr —— 2 张卡还是各 20%，右边那 60% 的空档一分没少，等于没改。
-// auto-fit 会把**空轨道折叠掉**，剩下的列重新分 1fr，卡片少的时候才真的「变宽填满」。
-const CARD_MIN_W = 240;
-
-//
-// ⚠️ 上限不是 1fr 而是一个固定值（480 = 下限的两倍），这是**实测出来的**第二处修正：
-// 纯 `1fr` 时「只有一个站点的分组」那张卡会吃掉整行 —— 1440 下实测 845px 宽，
-// 跟 8 张卡那档（约 281px）差了 3 倍，正是这次要消灭的密度落差。
-// 给了上限之后：1 张卡 = 480px（右边留白）、2 张卡仍各 422px 填满、3 张及以上各 281px，
-// 最宽与最窄只差 1.7 倍，落在一档里。
-const CARD_MAX_W = 480;
-
-// 小屏不能直接吃 CARD_MIN_W：360px 的屏减掉面板内边距只剩 328px，240 的下限会掉成**一列**，
-// 而 xs 原本就是 50%（双列）—— 小卡双列是导航站的常规形态，一列看着笨重。
-// 所以 xs / sm 各给一个更小的下限，md 起才用 CARD_MIN_W。
-//
-// 普通渲染 / 单组编辑 / 跨组排序三种分支必须共用这份模板：一份列宽换三种写法的话，
-// 一点「编辑排序」列数就变（900px 段 3→2 列、1536px 段 5→4 列），整屏卡片会跳一下。
-const CARD_GRID_COLUMNS = {
-    xs: "repeat(auto-fit, minmax(140px, 1fr))",
-    sm: "repeat(auto-fit, minmax(200px, 1fr))",
-    md: `repeat(auto-fit, minmax(${CARD_MIN_W}px, ${CARD_MAX_W}px))`,
-} as const;
+/** 卡片视图的列宽：普通渲染 / 单组编辑 / 跨组排序三种分支必须用同一个值，
+ *  否则一点「编辑排序」列数就变了（900px 段 3→2 列、1536px 段 5→4 列），整屏卡片会跳一下。 */
+const CARD_VIEW_WIDTH = { xs: "50%", sm: "33.33%", md: "25%", lg: "25%", xl: "20%" } as const;
 
 // 虚拟「最近访问」分组的 id（本地统计出来，不存在于数据库）
 const RECENT_GROUP_ID = -1;
@@ -342,37 +312,17 @@ const GroupCard: React.FC<GroupCardProps> = ({
     // 判断是否为当前正在编辑的分组
     const isCurrentEditingGroup = sortMode === "SiteSort" && currentSortingGroupId === group.id;
 
-    // 卡片外层容器：列表一行一个；图标墙是固定列宽的 flex，仍按列数给百分比；
-    // 卡片视图的宽度交给网格自己算（CARD_GRID_COLUMNS）—— 这里再给 width 会把格子撑破。
+    // 卡片外层容器宽度：列表一行一个，图标墙排得更密，紧凑密度只收内边距
     const cardBoxSx = {
         width:
-            viewMode === "wall"
-                ? { xs: "33.33%", sm: "25%", md: "16.66%", lg: "12.5%", xl: "10%" }
-                : viewMode === "list"
-                  ? "100%"
-                  : undefined,
+            viewMode === "list"
+                ? "100%"
+                : viewMode === "wall"
+                  ? { xs: "33.33%", sm: "25%", md: "16.66%", lg: "12.5%", xl: "10%" }
+                  : CARD_VIEW_WIDTH,
         padding: metrics.cellPadding, // 内部间距，更均匀的分布
         boxSizing: "border-box" as const, // 确保padding不影响宽度计算
-        // 网格项必须能收缩：标题是 noWrap 的，min-width:auto 会把
-        // minmax(240px, 1fr) 的格子顶宽，长标题就横向撑破整行
-        minWidth: 0,
     };
-
-    // 卡片视图铺网格；列表一行一个（block），图标墙本来就是按百分比列宽的 flex，各自保留原样。
-    // 间距仍由子项的 padding 出：容器负边距把网格往外撑 cellPadding，子项 padding 再补回来，
-    // 最左 / 最右仍与面板内边距对齐（和原来 flex + margin: gridGap 是同一套抵消手法）。
-    const cardListSx: SxProps<Theme> =
-        viewMode === "card"
-            ? {
-                  display: "grid",
-                  gridTemplateColumns: CARD_GRID_COLUMNS,
-                  margin: -metrics.cellPadding,
-              }
-            : {
-                  display: viewMode === "list" ? "block" : "flex",
-                  flexWrap: "wrap",
-                  margin: gridGap,
-              };
 
     // 渲染站点卡片区域
     const renderSites = () => {
@@ -383,13 +333,13 @@ const GroupCard: React.FC<GroupCardProps> = ({
                 <Box ref={setGroupDropRef} sx={{ width: "100%" }}>
                     <SortableContext
                         items={group.sites.map((site, idx) => `site-${site.id || idx}`)}
-                        strategy={rectSortingStrategy}
+                        strategy={horizontalListSortingStrategy}
                     >
                         <Box
                             sx={{
-                                display: "grid",
-                                gridTemplateColumns: CARD_GRID_COLUMNS,
-                                margin: -metrics.cellPadding, // 抵消子项padding，确保边缘对齐
+                                display: "flex",
+                                flexWrap: "wrap",
+                                margin: -1, // 抵消内部padding，确保边缘对齐
                                 minHeight: 72,
                                 borderRadius: 3,
                                 border: "1.5px dashed",
@@ -409,11 +359,11 @@ const GroupCard: React.FC<GroupCardProps> = ({
                                 <Box
                                     key={site.id || idx}
                                     sx={{
-                                        // 宽度交给上面的网格（CARD_GRID_COLUMNS）：跨组排序和普通模式
-                                        // 用的是同一份模板，点「编辑排序」时卡片不会整体跳一下
+                                        // 列宽必须和普通模式保持一致（GroupCard 顶部的 cardItemSx）：
+                                        // 否则一点「编辑排序」列数就变（3→2 列 / 5→4 列），卡片会整体跳一下
+                                        width: CARD_VIEW_WIDTH,
                                         padding: metrics.cellPadding, // 内部间距，更均匀的分布
                                         boxSizing: "border-box", // 确保padding不影响宽度计算
-                                        minWidth: 0, // 长标题别把格子顶宽
                                     }}
                                 >
                                     <SiteCard
@@ -428,8 +378,7 @@ const GroupCard: React.FC<GroupCardProps> = ({
                             {group.sites.length === 0 && (
                                 <Box
                                     sx={{
-                                        // 网格里要横跨所有列，否则这句提示会被挤进第一格
-                                        gridColumn: "1 / -1",
+                                        width: '100%',
                                         display: 'flex',
                                         justifyContent: 'center',
                                         alignItems: 'center',
@@ -466,24 +415,23 @@ const GroupCard: React.FC<GroupCardProps> = ({
                 >
                     <SortableContext
                         items={sitesToRender.map(site => `site-${site.id}`)}
-                        strategy={rectSortingStrategy}
+                        strategy={horizontalListSortingStrategy}
                     >
                         <Box sx={{ width: "100%" }}>
                             <Box
                                 sx={{
-                                    display: "grid",
-                                    gridTemplateColumns: CARD_GRID_COLUMNS,
-                                    margin: -metrics.cellPadding, // 抵消子项padding，确保边缘对齐
+                                    display: "flex",
+                                    flexWrap: "wrap",
+                                    margin: -1, // 抵消内部padding，确保边缘对齐
                                 }}
                             >
                                 {sitesToRender.map((site, idx) => (
                                     <Box
                                         key={site.id || idx}
                                         sx={{
-                                            // 宽度由网格给，这里只留内边距（见 CARD_GRID_COLUMNS 注释）
+                                            width: CARD_VIEW_WIDTH,
                                             padding: metrics.cellPadding, // 内部间距，更均匀的分布
                                             boxSizing: "border-box", // 确保padding不影响宽度计算
-                                            minWidth: 0, // 长标题别把格子顶宽
                                         }}
                                     >
                                         <SiteCard
@@ -582,7 +530,13 @@ const GroupCard: React.FC<GroupCardProps> = ({
         // 这里保持原顺序平铺，不再分「今天 / 昨天 / 更早」小节
         if (group.id === RECENT_GROUP_ID) {
             return (
-                <Box sx={cardListSx}>
+                <Box
+                    sx={{
+                        display: viewMode === "list" ? "block" : "flex",
+                        flexWrap: "wrap",
+                        margin: gridGap,
+                    }}
+                >
                     {sitesToRender.map(site => (
                         <Box key={site.id} sx={cardBoxSx}>
                             <SiteCard
@@ -606,7 +560,13 @@ const GroupCard: React.FC<GroupCardProps> = ({
         const hasMore = sitesToRender.length > visibleCount;
 
         return (
-            <Box sx={cardListSx}>
+            <Box
+                sx={{
+                    display: viewMode === "list" ? "block" : "flex",
+                    flexWrap: "wrap",
+                    margin: gridGap, // 抵消内部padding，确保边缘对齐
+                }}
+            >
                 {visibleSites.map((site, idx) => (
                     <Box key={site.id} sx={cardBoxSx}>
                         <SiteCard
@@ -626,8 +586,6 @@ const GroupCard: React.FC<GroupCardProps> = ({
                     <Box
                         ref={sentinelRef}
                         sx={{
-                            // 网格里要横跨所有列，否则这句提示会被挤进第一格
-                            gridColumn: "1 / -1",
                             width: "100%",
                             py: 1.5,
                             textAlign: "center",

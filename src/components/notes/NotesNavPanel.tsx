@@ -48,6 +48,11 @@ export default function NotesNavPanel(props: Pick<NotesPageCtx, "accountName" | 
                     px: 1,
                     height: HEADER_CONTROL_H,
                     flexShrink: 0,
+                    // 标题行与下方搜索框之间加一道发丝线：两行实体控件叠在 72px 头部里，
+                    // 没有分隔会糊成一块（用户报「标题行 + 搜索框挤在一起」）。
+                    // border-box 让 1px 落在 36px 内，不顶高头部、不破坏三栏对齐。
+                    boxSizing: "border-box",
+                    borderBottom: "1px solid var(--neutral-hairline)",
                 }}
             >
                 {/* 返回箭头（2026-10-10 用户明确）：贴左侧栏最左边、箭头**朝左**（回导航站的方向）；
