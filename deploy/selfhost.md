@@ -56,10 +56,17 @@ npm run smoke:selfhost http://127.0.0.1:8787
 > Experimental 1.1，启动会打一条 ExperimentalWarning（`start:selfhost` 已带
 > `--disable-warning` 静音）；**Node 24.15+ 起是 Release candidate 1.2，不再打那条警告**。
 >
-> **本项目只支持 Node 24**（2026-10-28 定）：`.nvmrc` / CI 的 `node-version` /
-> `package.json` 的 `engines` / 生产镜像（`Dockerfile` 两个 stage）四者都是 24 ——
-> 只有「测试跑的运行时」和「生产跑的运行时」是同一个，「本地绿、线上炸」这个口子才算关上。
-> 22 上大概率也能跑起来，但**没有任何测试覆盖它**，不再作为受支持的组合。
+> **版本现状（2026-10-28，读这段时先确认它还没过期）**：生产镜像是 24（`Dockerfile`
+> 两个 stage 都是 `node:24-slim`），而 **CI / `.nvmrc` / `engines` 仍是 22**。也就是说
+> 「测试跑的运行时」和「生产跑的运行时」**还不是同一个** —— 这是已知缺口，不是笔误。
+>
+> 方向是 24（生产已经是）：只有两边一致，「本地绿、线上炸」这个口子才算关上。
+> 2026-10-28 试过一次性把 CI / `.nvmrc` / `engines` / `@types/node` 全部翻到 24，
+> **CI 红了**：`markdownRender.dom` 的「图片：结论进缓存后不再重复请求」在 Node 24 上
+> 缓存不命中（期望 `blob:stub-1`，实际回到原始 URL），本机只有 Node 22 无法复现/调试。
+> 于是把这一项从那批里剥离、回退到 22，留待拿到 Node 24 环境后单独处理。
+> ⚠️ 动手前先查 `git log` 看是否已解决；解决时记得 `@types/node` 主版本必须与
+> `ci.yml` 的 `node-version` 同改（`tests/toolchainPin.test.ts` 硬性要求，分批必红）。
 
 ---
 
