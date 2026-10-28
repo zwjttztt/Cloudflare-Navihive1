@@ -47,9 +47,14 @@ const LABELS: Record<string, string> = {
     "data-import": "导入数据",
     "data_import": "导入数据",
     "data.import": "导入数据",
+    // 运维 / 升级（server/entry.ts 的 POST /api/system/upgrade，判定在 server/upgradeAudit.ts）
+    // 这条是「谁在什么时候把生产容器换掉了」的唯一记录：2026-10-28 v17.0.0 发布后
+    // 升级器重建了容器，而审计表里一条都没有 —— 从此每次升级受理 / 提交失败 / 越权尝试都留痕。
+    "system-upgrade": "网页触发升级",
+    "system-upgrade.failed": "升级提交失败",
+    "system-upgrade.denied": "越权尝试升级",
     // 观测
-    "client-error": "前端错误上报",
-    // 服务端未处理异常（worker/index.ts 的入口 catch 落的）。detail 里带 rid，
+    "client-error": "前端错误上报",    // 服务端未处理异常（worker/index.ts 的入口 catch 落的）。detail 里带 rid，
     // 与前端上报的 requestId 是同一个值，可以对起来看。
     "server-error": "服务端错误",
 };

@@ -168,8 +168,10 @@ export type NotesApiLike = {
     /** 备份页的配置读写（notesBackup.* 是账号私有配置，与导航页 webdav.* 同一机制） */
     getConfig?(key: string): Promise<string | null>;
     setConfig?(key: string, value: string): Promise<boolean>;
-    /** 跨设备变更轮询（2026-10-11）。可选：老部署没有 notes/changes 时不轮询 */
-    notesChanges?(since?: string): Promise<NotesChangesResult>;
+    /** 跨设备变更轮询（2026-10-11）。可选：老部署没有 notes/changes 时不轮询。
+     *  `fingerprint`（2026-10-28）：上一轮的快照指纹，服务端据此跳过重复快照。
+     *  ⚠️ 第二个参数是可选的：只实现 `(since)` 的老 mock / 老后端照样能赋值，行为退化成全量轮询。 */
+    notesChanges?(since?: string, fingerprint?: string): Promise<NotesChangesResult>;
 };
 
 type UseNotesParams = {
@@ -239,13 +241,30 @@ export function useNotes({ api, onError, onNotify, onNoteConflict, firstDelayMs 
                     if (isLeader) {
                         broadcastRef.current?.postMessage({ type: "sync-heartbeat", tabId });
                         const since = loadNotesSyncCursor();
-                        const r = await api.notesChanges!(since || undefined);
+                        // 带上上一轮拿到的快照指纹：服务端发现快照没变就只回
+                        // `{unchanged:true}`，不再把文件夹/标签/标签关联整份倒一遍
+                        // （2026-10-28）。老后端会忽略这个参数、照旧回全量，不影响。
+                        const r = await api.notesChanges!(since || undefined, lastSyncFingerprintRef.current ?? undefined);
                         if (r?.success && r.now && !stopped) {
-                            const shape = JSON.stringify([r.folders, r.tags, r.noteTags]);
-                            const structural =
-                                lastSyncShapeRef.current !== null &&
-                                shape !== lastSyncShapeRef.current;
-                            lastSyncShapeRef.current = shape;
+                            // ⚠️ 指纹要先落下来再判变更：下一轮就靠它。
+                            // 服务端没回指纹（老后端）时保持 null —— 那样下一轮仍然传 undefined，
+                            // 永远走全量分支，行为与改造前完全一致。
+                            if (typeof r.fingerprint === "string" && r.fingerprint.length > 0) {
+                                lastSyncFingerprintRef.current = r.fingerprint;
+                            }
+                            // unchanged = 服务端明确说「快照与上一轮相同」，此时
+                            // folders/tags/noteTags 是**空数组而不是真的空了**，
+                            // 绝不能拿它去更新形状基线（否则下一轮会把「空 → 满」当成结构性变更，
+                            // 每个账号每隔一轮就白刷一次列表）。
+                            const unchanged = r.unchanged === true;
+                            let structural = false;
+                            if (!unchanged) {
+                                const shape = JSON.stringify([r.folders, r.tags, r.noteTags]);
+                                structural =
+                                    lastSyncShapeRef.current !== null &&
+                                    shape !== lastSyncShapeRef.current;
+                                lastSyncShapeRef.current = shape;
+                            }
                             // since 为空 = 首次轮询，只建立基线不触发刷新
                             const shouldReload = Boolean(since) && (r.notesChanged > 0 || structural);
                             saveNotesSyncCursor(r.now);
@@ -336,6 +355,18 @@ export function useNotes({ api, onError, onNotify, onNoteConflict, firstDelayMs 
     const lastHeartbeatRef = useRef(0);
     /** 上一轮轮询的文件夹/标签快照（JSON 字符串），用来发现结构性变更 */
     const lastSyncShapeRef = useRef<string | null>(null);
+    /**
+     * 上一轮轮询拿到的**快照指纹**（2026-10-28）。
+     *
+     * 每轮把它原样带回去，服务端因此能判断「快照变了没有」：没变就只回
+     * `{unchanged:true}`，省掉文件夹/标签/标签关联那几十 KB 的死数据，
+     * 客户端也省掉一次 `JSON.stringify` 比对。
+     *
+     * 放 ref（不是 state）：它每轮都变，进 state 会让整棵树重渲染一遍，
+     * 而除了「下一轮带回去」没有任何地方要读它。
+     * 不持久化：刷新/重开记事本后第一次轮询重新取一份全量 —— 正好是基线的重建时机。
+     */
+    const lastSyncFingerprintRef = useRef<string | null>(null);
     /** 阶段三：回收站里的笔记（懒加载，进「回收站」视图时才拉） */
     const [trash, setTrash] = useState<TrashedNote[]>([]);
     /** 阶段三收尾：笔记文件夹 / 标签（左栏第一列要用，所以状态放在这里而不是组件里） */

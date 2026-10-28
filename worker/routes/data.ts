@@ -31,6 +31,20 @@ import type { RouteCtx } from "./types";
 import { readJsonArray, readJsonBody, readJsonValue } from "./jsonBody";
 
 /**
+ * 解析可选的**正整数** query 参数（`?limit=` / `?offset=`）。
+ *
+ * 返回 null = 「没传 / 传坏了，按没传处理」。这条约定是刻意的：
+ * 分页参数是可选阀门，解析失败时**宁可多回几条**，也不能因为一个手抖的
+ * `?limit=abc` 就静默回一个空列表（那种 bug 长得和「笔记全没了」一模一样）。
+ * `0` 同样算「没传」—— `LIMIT 0` 会白给一个空数组，比报错更难查。
+ */
+function parsePositiveInt(raw: string | null): number | null {
+    if (raw === null) return null;
+    const n = Number(raw);
+    return Number.isInteger(n) && n > 0 ? n : null;
+}
+
+/**
  * 图片上传（2026-07）。
  *
  * 请求体是**原始二进制**（前端 `fetch(url, {method:"POST", body: file, headers})`），
@@ -526,15 +540,21 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
         if (!api.notesFtsReady) throw ApiError.serviceUnavailable("当前数据库不支持全文索引，搜索已使用备用模式");
         const notes = await api.listNotes();
         // 每条只重建读取后未被其他请求改写的版本，不能用旧快照覆盖并发保存的新索引。
+        //
+        // ⚠️ 定位一律走 **rowid**（2026-10-28）：notes_fts 的 note_id 是 UNINDEXED 列，
+        // `WHERE note_id = ?` 在 fts5 上只能整表扫（1 万条 1.14ms/次 vs rowid 0.007ms，
+        // EQP 从 `INDEX 0:` 变 `INDEX 0:=`）。契约是「fts 行的 rowid 恒等于 notes.id」，
+        // 见 internals.ts NOTES_FTS_TABLE_SQL。孤儿清理那段改用 rowid 之后语义完全等价
+        // （迁移步骤 notes-fts-rowid 已经把老库按新契约重建过）。
         const statements = [ctx.env.DB.prepare(
-            "DELETE FROM notes_fts WHERE user_id IS ? AND NOT EXISTS (SELECT 1 FROM notes n WHERE n.id = notes_fts.note_id AND n.user_id IS notes_fts.user_id)"
+            "DELETE FROM notes_fts WHERE user_id IS ? AND NOT EXISTS (SELECT 1 FROM notes n WHERE n.id = notes_fts.rowid AND n.user_id IS notes_fts.user_id)"
         ).bind(api.currentUserId)];
         for (const note of notes) {
             statements.push(ctx.env.DB.prepare(
-                "DELETE FROM notes_fts WHERE user_id IS ? AND note_id = ? AND EXISTS (SELECT 1 FROM notes WHERE id = ? AND user_id IS ? AND rev IS ?)"
+                "DELETE FROM notes_fts WHERE user_id IS ? AND rowid = ? AND EXISTS (SELECT 1 FROM notes WHERE id = ? AND user_id IS ? AND rev IS ?)"
             ).bind(api.currentUserId, note.id, note.id, api.currentUserId, note.rev ?? null));
             statements.push(ctx.env.DB.prepare(
-                "INSERT INTO notes_fts (note_id, user_id, title, body) SELECT id, user_id, ?, ? FROM notes WHERE id = ? AND user_id IS ? AND rev IS ?"
+                "INSERT INTO notes_fts (rowid, note_id, user_id, title, body) SELECT id, id, user_id, ?, ? FROM notes WHERE id = ? AND user_id IS ? AND rev IS ?"
             ).bind(segmentCJK(note.title ?? ""), segmentCJK((note.content ?? "").slice(0, FTS_CONTENT_LIMIT)), note.id, api.currentUserId, note.rev ?? null));
         }
         // D1 batch 保证同一条删除与插入原子化；控制单批大小，避免大型笔记库超限。
@@ -548,8 +568,13 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
         // 跨设备变更轮询（2026-10-11）：自 since 以来的变更计数 + 文件夹/标签快照。
         // 只读、轻量（不回正文），客户端发现变更后自己走 reload()。
         // no-store：轮询响应带游标，缓存了会让其它设备永远看不见变更。
+        //
+        // ?fp=（2026-10-28）：客户端上一轮拿到的快照指纹。与本轮相同 → 服务端只回
+        // `{unchanged:true, fingerprint}`，三个快照字段回空（省掉每轮几十 KB 的死数据）。
+        // 不带 fp 就是老行为：永远回全量快照。
         const since = ctx.url.searchParams.get("since") || undefined;
-        return Response.json(await api.notesChanges(since || undefined), {
+        const fp = ctx.url.searchParams.get("fp") || undefined;
+        return Response.json(await api.notesChanges(since || undefined, fp || undefined), {
             headers: { "Cache-Control": "no-store" },
         });
     } else if (path === "notes/search" && method === "POST") {
@@ -622,7 +647,16 @@ async function dispatchDataRoutes(ctx: RouteCtx): Promise<Response | null> {
         // 前端**现在默认不开**：几十条笔记时列表带正文才 2 KB，开了反而让
         // 每次点开笔记多一次往返。这是给「笔记涨到几百条」那天准备的阀门。
         const summary = url.searchParams.get("fields") === "list";
-        const notes = await api.listNotes({ summary });
+        // 分页（2026-10-28）：两个参数都是**可选**，不带就是原来的全量列表 ——
+        // 导出 / 备份 / 重建索引都靠「不带参数 = 全都要」这条语义，别给默认值。
+        // 解析失败（非数字 / 负数 / 0）一律当没传：宁可多回几条，也不要静默回空列表。
+        const limit = parsePositiveInt(url.searchParams.get("limit"));
+        const offset = parsePositiveInt(url.searchParams.get("offset"));
+        const notes = await api.listNotes({
+            summary,
+            ...(limit === null ? {} : { limit }),
+            ...(offset === null ? {} : { offset }),
+        });
         return Response.json(notes);
     } else if (path === "notes/count" && method === "GET") {
         return Response.json({ count: await api.countNotes() });

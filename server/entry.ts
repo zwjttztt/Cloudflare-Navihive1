@@ -30,6 +30,8 @@ import {
 } from "./slowQuery";
 import { makeFileKv } from "./file-kv";
 import { parseHeaderRules, serveStatic, type HeaderRule } from "./static";
+import { recordUpgradeAudit, type UpgradeOutcome } from "./upgradeAudit";
+import { NavigationAPI } from "../src/API/navigationApi";
 import { isPublicHost, normalizeRemoteAddress } from "./net";
 import { setEgressResolver } from "../worker/safeFetch";
 import { isBlockedHost } from "../worker/util";
@@ -898,6 +900,24 @@ function accessIp(req: IncomingMessage): string {
     return normalizeRemoteAddress(forwarded || req.socket?.remoteAddress || "");
 }
 
+/**
+ * 升级审计的唯一落库口。
+ *
+ * 直接 `new NavigationAPI(serverEnv)` 再调 writeAudit —— 与 worker/index.ts 的
+ * recordServerError 同一个骨架：审计只有这一个写入口，自托管侧也**不该**为它新开一个
+ * HTTP 端点（那等于把「往审计表写任意一行」暴露成一个 API）。
+ *
+ * ⚠️ 「记不记、记成什么」全在 ./upgradeAudit 的纯函数里判定，这里只负责落库：
+ * 那部分没有容器也能被用例逐格钉住，而这里的 docker / spool 分支没法脱离真容器测。
+ * ⚠️ 失败一律吞在 recordUpgradeAudit 里：这个端点是「先响应再升级」，
+ * 审计写失败绝不允许反过来把「升级已提交」这个响应搞挂。
+ */
+async function writeUpgradeAudit(outcome: UpgradeOutcome, ip: string): Promise<void> {
+    await recordUpgradeAudit(outcome, ip, (action, actor, auditIp, detail) =>
+        new NavigationAPI(serverEnv).writeAudit(action, actor, auditIp, detail)
+    );
+}
+
 const server = createServer((req, res) => {
     const started = Date.now();
     const method = req.method ?? "GET";
@@ -981,15 +1001,28 @@ const server = createServer((req, res) => {
             // （restart 不重新解析 :latest 标签，就是「升级完版本号不变」的根因）。
             //
             // 两道闸：① owner only（复用 worker 的 auth/me）；② docker.sock 可访问。
+            // ③ 闸门的每一次判定都落审计（动作名 system-upgrade / .failed / .denied，
+            //    判定与文案在 ./upgradeAudit.ts）—— 2026-10-28 的教训：容器被换掉、
+            //    镜像也对，但 audit_log 一条没有，「谁在什么时候换的生产」事后无从查起。
             // ⚠️ 执行顺序：**先响应再升级** —— 动的是这个容器自己，命令跑起来后
             // 本进程随时会被杀，响应发不出去用户就什么都看不到。1.5s 后再动手。
             if (pathname === "/api/system/upgrade" && method === "POST") {
+                // 审计与访问日志同一个 IP 口径（TRUST_XFF 时取 XFF 首段，否则只认 socket 对端）
+                const upgradeIp = accessIp(req);
                 const meRes = await handler.fetch(
                     new Request("http://internal/api/auth/me", { method: "GET", headers: toHeaders(req) }),
                     serverEnv
                 );
-                const me = meRes.ok ? ((await meRes.json()) as { role?: string }) : null;
+                const me = meRes.ok
+                    ? ((await meRes.json()) as { role?: string; username?: string })
+                    : null;
                 if (!me || me.role !== "owner") {
+                    // 已登录的非 owner = 一次越权尝试，留痕（actor 是那个账号，才追得下去）；
+                    // 连身份都拿不到（盲扫 / 令牌过期）不记 —— 理由见 server/upgradeAudit.ts。
+                    await writeUpgradeAudit(
+                        me ? { kind: "denied", username: me.username || "", role: me.role || "" } : { kind: "anonymous" },
+                        upgradeIp
+                    );
                     res.writeHead(403, { "Content-Type": "application/json; charset=utf-8" });
                     res.end(JSON.stringify({ ok: false, error: "只有站点所有者可以执行升级" }));
                     return;
@@ -998,6 +1031,14 @@ const server = createServer((req, res) => {
                     // 交给升级器：本进程只写请求文件，绝不碰 daemon
                     try {
                         requestUpgradeViaSpool("owner");
+                        // ⚠️ 审计在**响应之前**落库，且等它写完：宿主上的升级器可能下一秒
+                        // 就把本容器换掉，写在响应之后（不 await）会留一个「升级成功但审计丢了」
+                        // 的窗口 —— 那正是这次事故的形状（容器换了，表里查不到）。
+                        // 一次 SQLite 插入是毫秒级，客户端感知不到这点延迟。
+                        await writeUpgradeAudit(
+                            { kind: "accepted", trigger: "spool", image: UPGRADE_IMAGE },
+                            upgradeIp
+                        );
                         res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
                         res.end(
                             JSON.stringify({
@@ -1009,12 +1050,22 @@ const server = createServer((req, res) => {
                     } catch (error) {
                         const message = error instanceof Error ? error.message : String(error);
                         console.error("[upgrade] 提交 spool 请求失败:", message);
+                        // 提交都没成功也要留痕：否则用户报「点了升级没反应」时，审计里
+                        // 一条对应记录都没有，只剩会被轮转掉的 console 日志。
+                        await writeUpgradeAudit(
+                            { kind: "submit-failed", image: UPGRADE_IMAGE, message },
+                            upgradeIp
+                        );
                         res.writeHead(500, { "Content-Type": "application/json; charset=utf-8" });
                         res.end(JSON.stringify({ ok: false, error: `提交升级请求失败：${message}` }));
                     }
                     return;
                 }
                 if (!dockerAvailable()) {
+                    // 501 是部署形态的静态事实（没 spool 目录、也没挂 docker.sock），
+                    // 不是一次变更 —— 判定函数会返回「不记」，这里仍显式走一遍，
+                    // 让「升级被拒时到底记不记」只在一处决定（server/upgradeAudit.ts）。
+                    await writeUpgradeAudit({ kind: "unsupported", image: UPGRADE_IMAGE }, upgradeIp);
                     res.writeHead(501, { "Content-Type": "application/json; charset=utf-8" });
                     res.end(
                         JSON.stringify({
@@ -1028,6 +1079,9 @@ const server = createServer((req, res) => {
                     return;
                 }
                 const image = UPGRADE_IMAGE;
+                // 同样在响应之前落库：这条路径虽然要等 1.5s 才动手，但写在这里能让
+                // 「受理」与「开始执行」在审计里保持先后一致，也不依赖 timer 一定跑到。
+                await writeUpgradeAudit({ kind: "accepted", trigger: "docker-api", image }, upgradeIp);
                 upgradeStatus.phase = "pulling";
                 upgradeStatus.image = image;
                 upgradeStatus.error = "";

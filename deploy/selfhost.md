@@ -51,8 +51,15 @@ npm run smoke:selfhost http://127.0.0.1:8787
 
 > 想用 Docker？直接跳到**第四节 B**（`docker compose up -d --build` 一把起）。
 
-> ⚠️ `node:sqlite` 在 Node 22.5+ 才可用，且启动会打一条 ExperimentalWarning
-> （`start:selfhost` 已带 `--disable-warning` 静音）。生产建议 **Node 24 LTS**。
+> ⚠️ `node:sqlite` 在 Node 22.5+ 就可用（`--experimental-sqlite` 只在 22.5–22.12 与
+> 23.0–23.3 需要，v22.13.0 / v23.4.0 起不再需要）。状态按版本不同：Node 22 是
+> Experimental 1.1，启动会打一条 ExperimentalWarning（`start:selfhost` 已带
+> `--disable-warning` 静音）；**Node 24.15+ 起是 Release candidate 1.2，不再打那条警告**。
+>
+> **本项目只支持 Node 24**（2026-10-28 定）：`.nvmrc` / CI 的 `node-version` /
+> `package.json` 的 `engines` / 生产镜像（`Dockerfile` 两个 stage）四者都是 24 ——
+> 只有「测试跑的运行时」和「生产跑的运行时」是同一个，「本地绿、线上炸」这个口子才算关上。
+> 22 上大概率也能跑起来，但**没有任何测试覆盖它**，不再作为受支持的组合。
 
 ---
 
@@ -345,7 +352,16 @@ Dockerfile 已经 `USER node` 并把 `/app` chown 给 node；命名卷 `navihive
   单用户站点的静态吞吐 Node 绰绰有余。**压缩不用在这里补**：2026-10-22 起
   `server/static.ts` 自己给静态资源做 gzip（`Vary: Accept-Encoding`，已压缩格式跳过，
   见该文件「压缩与条件请求」一节）。Nginx 那层的 `gzip on` 现在还留着，主要收益在
-  `/api/*` 的 JSON —— 反代响应默认要 `gzip_proxied any` 才会压，这一项没配就等于没压。
+  `/api/*` 的 JSON。
+  ⚠️ **2026-10-28 复核：上面这句原先写的是「反代响应默认要 `gzip_proxied any` 才会压，
+  这一项没配就等于没压」—— 那句是错的，已删。** `gzip_proxied` 只对**带 `Via` 请求头**的
+  请求生效（nginx 文档原文：*"The fact that the request is proxied is determined by the
+  presence of the 'Via' request header field"*），而浏览器 → 反代这条链上没有一跳会加 `Via`；
+  真正让 JS/JSON 被压的是 `gzip_types` 里的 `application/json`
+  （nginx 默认**只**压 `text/html`）。线上实测也印证：`nginx.conf` 里根本没有
+  `gzip_proxied`，而 `curl -H 'Accept-Encoding: gzip' /assets/react-*.js` 回的是
+  `content-encoding: gzip` —— 反代这层一直在压。详见 `deploy/nginx/README.md` 的
+  「两份站点配置的 gzip 差异」一节。
 - `proxy_set_header X-Forwarded-Proto $scheme` **必须有**：cookie 的 `Secure` 属性靠它判断。
 - `client_max_body_size 30m`：附件单文件上限 25MB，小了会在 Nginx 这层先挂。
 - `/api/webdav/` 超时放到 600s：备份上传封顶 10 分钟。

@@ -62,3 +62,9 @@ script/.unit-tests.lock
 
 # 探针截图产物（script/ui-probe.mjs 生成，不入库）
 script/ui-probe-out/
+
+# 覆盖率产物（script/coverage.mjs 生成）
+# ⚠️ 为什么必须忽略：里面有 c8 收上来的 **V8 原始数据**（coverage/tmp/），跑一次全量能到
+#    400MB~1GB，375 个 json —— 一个 `git add -A` 就能把近千个文件、46 万行塞进暂存区。
+#    lcov.info / coverage-summary.json 要看重跑一次即可，产物本身不必入库。
+coverage/

@@ -23,7 +23,14 @@ import { dirname, resolve } from "node:path";
 import { projectDir as findProjectDir } from "./helpers/notesSource";
 import { sqlNow, sqlNowMs, toSqlTime, toSqlTimeLoose, sqlDay } from "../src/utils/sqlTime";
 import { CLIENT_ERROR_MAX_PATHS, groupClientErrors } from "../src/utils/clientErrorGroups";
-import { NOTE_SUMMARY_CHARS, REVISION_KEEP_PER_NOTE, needsSummary, summarizeContent } from "../src/utils/noteLimits";
+import {
+    NOTE_LIST_MAX_LIMIT,
+    NOTE_SUMMARY_CHARS,
+    REVISION_KEEP_PER_NOTE,
+    needsSummary,
+    summarizeContent,
+} from "../src/utils/noteLimits";
+import { notesSnapshotFingerprint } from "../src/API/methods/notes/notesShared";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const projectDir = () => findProjectDir(here);
@@ -169,4 +176,50 @@ test("备份范围：mock 的导出导入与真实链路共用 backupScope", () 
     const scope = read("src/utils/backupScope.ts");
     assert.match(scope, /export function pickExportConfigs/);
     assert.match(scope, /export function pickImportConfigEntries/);
+});
+
+// ---------------- 2026-10-28 批次二：分页规则与轮询指纹 ----------------
+
+test("分页规则只有一份：mock 与真机都 import NOTE_LIST_MAX_LIMIT，不许各写一个数", () => {
+    const real = read("src/API/methods/notes/notesNote.ts");
+    const mock = read("src/API/mock.ts");
+    for (const [file, src] of [
+        ["methods/notes/notesNote.ts", real],
+        ["mock.ts", mock],
+    ] as const) {
+        assert.match(src, /NOTE_LIST_MAX_LIMIT/, `${file} 要用共享的每页上限常量`);
+        assert.match(src, /noteLimits/, `${file} 要从 utils/noteLimits 引，别自己写 500`);
+    }
+    assert.equal(NOTE_LIST_MAX_LIMIT, 500);
+    // 反向验证：不许出现「自己写死一个 500 当上限」的写法
+    assert.equal(/Math\.min\([^)]*,\s*500\s*\)/.test(real), false, "真机不该硬编码 500");
+    assert.equal(/Math\.min\([^)]*,\s*500\s*\)/.test(mock), false, "mock 不该硬编码 500");
+});
+
+test("列表排序的 id 兜底列：mock 与真机必须一致（分页靠它定序）", () => {
+    // 真机 SQL：ORDER BY pinned DESC, order_num, id
+    // mock 原先只到 order_num —— 同 order_num 的两条在两边可能排出不同顺序，
+    // 分页一旦顺序不确定就会重复/漏条目，而本地演示看不出来。
+    const real = read("src/API/methods/notes/notesNote.ts");
+    const mock = read("src/API/mock.ts");
+    assert.match(real, /ORDER BY pinned DESC, order_num, id/, "真机排序要保持 id 兜底（覆盖索引也照这个建的）");
+    assert.match(mock, /\(a\.id \?\? 0\) - \(b\.id \?\? 0\)/, "mock 排序也要有 id 兜底");
+});
+
+test("轮询指纹只有一份实现：mock 与真机都调 notesSnapshotFingerprint", () => {
+    const real = read("src/API/methods/notes/notesBackup.ts");
+    const mock = read("src/API/mock.ts");
+    for (const [file, src] of [
+        ["methods/notes/notesBackup.ts", real],
+        ["mock.ts", mock],
+    ] as const) {
+        assert.match(src, /notesSnapshotFingerprint/, `${file} 必须用共享的指纹实现`);
+    }
+    // 行为：同一份快照算出来的指纹一致，且是定长十六进制（能直接进日志/URL）
+    const fp = notesSnapshotFingerprint(
+        [{ id: 1, parent_id: null, name: "工作", order_num: 0, icon: null, color: null }],
+        [{ id: 2, name: "待办", color: null }],
+        { 7: [2] }
+    );
+    assert.match(fp, /^[0-9a-f]{8}$/);
 });

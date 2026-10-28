@@ -45,7 +45,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
 
       # 仓库已提交 package-lock.json，用 ci 保证依赖树与锁定版本完全一致。
       #

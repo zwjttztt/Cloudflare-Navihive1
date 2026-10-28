@@ -1204,6 +1204,129 @@ export const transferImpl: TransferApi = {
 // 导入不再保留备份里的 id（改由数据库重新发号并回传映射）。
 export const EXPORT_VERSION = "1.4";
 
+/**
+ * 把备份里的 `version` 解析成数字段（`"1.10"` → `[1, 10]`）。
+ *
+ * ⚠️ 必须按**段**比数字，不能按字符串比：字符串比较里 `"1.10" < "1.9"`，
+ * 那会让 1.10 导出的备份在只认到 1.9 的旧版本上大摇大摆地导进来 ——
+ * 正好是这个闸门要挡的那类事故。
+ *
+ * 解析不了（缺字段 / 手改成 "test" / "1.4-beta"）返回 null，由调用方按
+ * 「未知版本」处理，**不当成错误**：存量老备份里什么写法都有，一条解析不了
+ * 就拒绝导入等于把用户的数据锁死在文件里。
+ */
+export function parseBackupVersion(value: unknown): number[] | null {
+    if (typeof value !== "string" && typeof value !== "number") return null;
+    const text = String(value).trim();
+    if (!/^\d+(?:\.\d+)*$/.test(text)) return null;
+    const parts = text.split(".").map(Number);
+    return parts.every(n => Number.isSafeInteger(n) && n >= 0) ? parts : null;
+}
+
+/**
+ * 按数字段比较两个版本号：a 比 b 新返回 1，旧返回 -1，相同返回 0。
+ * 任意一边解析不了就返回 0 —— 「不认识的版本」不构成拒绝导入的理由。
+ */
+export function compareBackupVersion(a: unknown, b: unknown): number {
+    const left = parseBackupVersion(a);
+    const right = parseBackupVersion(b);
+    if (!left || !right) return 0;
+    const len = Math.max(left.length, right.length);
+    for (let i = 0; i < len; i++) {
+        const x = left[i] ?? 0;
+        const y = right[i] ?? 0;
+        if (x !== y) return x > y ? 1 : -1;
+    }
+    return 0;
+}
+
+export type BackupVersionStatus = "current" | "older" | "newer" | "unknown";
+
+export interface BackupVersionCheck {
+    /** false = 不许导入（只有「备份比当前版本新」这一种情况） */
+    ok: boolean;
+    status: BackupVersionStatus;
+    /** 备份自称的版本；缺字段时等于当前支持的版本 */
+    backupVersion: string;
+    supportedVersion: string;
+    /** 给用户看的一句话：ok=false 时是拒绝原因，否则是兼容提示 */
+    message?: string;
+}
+
+/**
+ * 备份版本闸门。
+ *
+ * 为什么需要它：导入侧过去是 `version: raw.version || EXPORT_VERSION` —— 读进来
+ * 就丢，一个字都不校验。于是「新版导出的备份在老版本上导入」时，老代码不认识
+ * 新字段，静默丢掉，用户看到的却是「恢复成功」。
+ *
+ * 三种结论：
+ *   - 比当前版本**新** → 拒绝（说清是哪个版本、支持到哪个版本、该怎么升级）
+ *   - 比当前版本**旧** → 放行，但给一句兼容提示（旧备份没有的设置项保持现状）
+ *   - 缺版本号 / 解析不了 → 放行，按兼容模式导入（不能把存量用户堵死）
+ */
+export function checkBackupVersion(rawVersion: unknown): BackupVersionCheck {
+    const supportedVersion = EXPORT_VERSION;
+    const raw = typeof rawVersion === "string" ? rawVersion.trim() : "";
+    const backupVersion = raw || supportedVersion;
+    const parsed = parseBackupVersion(raw);
+
+    if (!parsed) {
+        return {
+            ok: true,
+            status: "unknown",
+            backupVersion,
+            supportedVersion,
+            message: raw
+                ? `备份的版本号「${raw}」无法识别，已按兼容模式导入`
+                : "这份备份没有版本号（很旧的备份），已按兼容模式导入",
+        };
+    }
+
+    const cmp = compareBackupVersion(parsed.join("."), supportedVersion);
+    if (cmp > 0) {
+        return {
+            ok: false,
+            status: "newer",
+            backupVersion,
+            supportedVersion,
+            message:
+                `这份备份来自更新的版本（${backupVersion}），` +
+                `当前版本只支持到 ${supportedVersion}，请先升级再导入。` +
+                `强行导入会静默丢掉这份备份里新版本才有的内容。`,
+        };
+    }
+    if (cmp < 0) {
+        return {
+            ok: true,
+            status: "older",
+            backupVersion,
+            supportedVersion,
+            message:
+                `这份备份来自较旧的版本（${backupVersion}），已按兼容模式导入；` +
+                `旧备份里没有的设置项会保持当前值不变`,
+        };
+    }
+    return { ok: true, status: "current", backupVersion, supportedVersion };
+}
+
+/** 「备份比当前版本新」时 normalizeImportData 抛出的错误，调用方据此给用户准确文案。 */
+export class BackupVersionError extends Error {
+    readonly code = "BACKUP_VERSION_TOO_NEW" as const;
+    readonly backupVersion: string;
+    readonly supportedVersion: string;
+
+    constructor(check: BackupVersionCheck) {
+        super(
+            check.message ||
+                `备份版本（${check.backupVersion}）高于当前支持的版本（${check.supportedVersion}），请先升级再导入`
+        );
+        this.name = "BackupVersionError";
+        this.backupVersion = check.backupVersion;
+        this.supportedVersion = check.supportedVersion;
+    }
+}
+
 // 兼容多种备份格式：
 // 1) 标准格式 { groups, sites, configs }
 // 2) 旧格式   { groups: [{ ...group, sites: [...] }], configs }
@@ -1224,6 +1347,14 @@ export function normalizeImportData(data: ExportData | Record<string, unknown>):
         localPrefs?: LocalPrefsBackup;
         vault?: { keys?: VaultKeysRecord; entries?: VaultEntryRecord[] };
     };
+
+    // ── 版本闸门（必须在动任何数据之前）──
+    //
+    // 「比当前版本新的备份」一律拒绝：老代码不认识新字段，会静默丢掉一部分内容，
+    // 而用户看到的是「恢复成功」—— 数据缺失比报错难查得多。反过来，更旧 / 没有
+    // 版本号的备份继续放行（存量用户的文件必须能导回来），只留一句兼容提示。
+    const versionCheck = checkBackupVersion(raw.version);
+    if (!versionCheck.ok) throw new BackupVersionError(versionCheck);
 
     const rawGroups = Array.isArray(raw.groups) ? raw.groups : [];
     const groups: Group[] = [];
@@ -1327,7 +1458,11 @@ export function normalizeImportData(data: ExportData | Record<string, unknown>):
         ...(raw.sharedConfigs && typeof raw.sharedConfigs === "object"
             ? { sharedConfigs: raw.sharedConfigs }
             : {}),
-        version: raw.version || EXPORT_VERSION,
+        // 版本号如实回传（缺字段的老备份才补成当前版本），并带上闸门给的兼容提示。
+        // versionNotice 只在本机用（UI 可以拿它提示「这份备份来自旧版本」），
+        // 不会写回文件、也不进请求体。
+        version: versionCheck.backupVersion,
+        ...(versionCheck.message ? { versionNotice: versionCheck.message } : {}),
         exportDate: raw.exportDate || new Date().toISOString(),
         // 星标 / 标签这类本机偏好原样透传，交给前端写回 localStorage
         ...(raw.localPrefs && typeof raw.localPrefs === "object"

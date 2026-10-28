@@ -52,8 +52,29 @@ export const notesImpl = {
             body: JSON.stringify({ days, password: password === undefined ? undefined : (password ?? null) }),
         });
     },
-    async listNotes(this: ClientThis, opts?: { summary?: boolean }): Promise<Note[]> {
-        return this.request<Note[]>(opts?.summary ? "notes?fields=list" : "notes");
+    /**
+     * 列笔记。
+     *
+     * `limit` / `offset`（2026-10-28）会作为 `?limit=&offset=` 传给服务端；
+     * **两个都不传时 URL 与改造前逐字一致**（`notes` 或 `notes?fields=list`）——
+     * 这一条很关键：老后端不认这两个参数，但我们也不发，所以老部署零影响。
+     */
+    async listNotes(
+        this: ClientThis,
+        opts?: { summary?: boolean; limit?: number; offset?: number }
+    ): Promise<Note[]> {
+        const params = new URLSearchParams();
+        if (opts?.summary) params.set("fields", "list");
+        // 非正整数与「没传」等价（与服务端 parsePositiveInt 同一口径），
+        // 免得 `limit: 0` 在 URL 上变成一个 LIMIT 0（白给空列表）
+        if (typeof opts?.limit === "number" && Number.isInteger(opts.limit) && opts.limit > 0) {
+            params.set("limit", String(opts.limit));
+        }
+        if (typeof opts?.offset === "number" && Number.isInteger(opts.offset) && opts.offset > 0) {
+            params.set("offset", String(opts.offset));
+        }
+        const query = params.toString();
+        return this.request<Note[]>(query ? `notes?${query}` : "notes");
     },
     async getNote(this: ClientThis, id: number): Promise<Note | null> {
         return this.request<Note | null>(`notes/${id}`);
@@ -96,9 +117,20 @@ export const notesImpl = {
         const res = await this.request<Partial<NoteStats>>("notes/stats");
         return { versions: res?.versions ?? 0, links: res?.links ?? 0, words: res?.words ?? 0 };
     },
-    async notesChanges(this: ClientThis, since?: string): Promise<NotesChangesResult> {
-        const params = since ? `?since=${encodeURIComponent(since)}` : "";
-        return this.request<NotesChangesResult>(`notes/changes${params}`);
+    /**
+     * 跨设备变更轮询。
+     *
+     * `fingerprint`（2026-10-28）是上一轮响应里的 `fingerprint`，原样带回去：
+     * 服务端发现快照没变就只回 `{ unchanged: true, fingerprint }`，
+     * 不再把文件夹/标签/标签关联整份倒一遍（上千条笔记时那是几十 KB 的死数据）。
+     * 不传（首次轮询 / 老后端）就是原来的全量行为。
+     */
+    async notesChanges(this: ClientThis, since?: string, fingerprint?: string): Promise<NotesChangesResult> {
+        const params = new URLSearchParams();
+        if (since) params.set("since", since);
+        if (fingerprint) params.set("fp", fingerprint);
+        const query = params.toString();
+        return this.request<NotesChangesResult>(`notes/changes${query ? `?${query}` : ""}`);
     },
     async importNotes(this: ClientThis, payload: NotesImportPayload): Promise<NoteImportStats> {
         return this.request<NoteImportStats>("notes/import", {

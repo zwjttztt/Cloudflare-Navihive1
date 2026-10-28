@@ -141,6 +141,27 @@ export const VAULT_TABLE_STATEMENTS = [
  * ⚠️ note_id / user_id 是 UNINDEXED：它们只用来定位，不参与全文匹配，
  * 否则数字也会被当成 token 塞进索引。
  *
+ * ⚠️⚠️ **定位一行只准用 `rowid`，不准用 `note_id`**（2026-10-28，性能）。
+ *
+ * `UNINDEXED` 的含义是「不进全文倒排索引」—— 它**不是**普通 SQL 索引。
+ * 于是 `DELETE FROM notes_fts WHERE note_id = ?` 在 fts5 上没有可用的约束，
+ * 只能整表扫一遍虚拟表（EXPLAIN QUERY PLAN 实测 `SCAN notes_fts VIRTUAL TABLE INDEX 0:`），
+ * 而每保存一次笔记都要跑一次这条 DELETE（先删后插是 fts5 的「更新」写法）。
+ *
+ * 实测（真 node:sqlite，保存一条笔记 = DELETE + INSERT，各测 3 次取中位数）：
+ *   · 3000 条：`WHERE note_id` 0.368 ms/save → `WHERE rowid` 0.010 ms/save（36×）
+ *   · 1 万条：`WHERE note_id` 1.136 ms/save → `WHERE rowid` 0.007 ms/save（162×）
+ * 关键是**增长形状**：note_id 那个随行数线性涨（全表扫），rowid 是常数（树的定值查找，
+ * EQP 从 `INDEX 0:` 变成 `INDEX 0:=`）。
+ *
+ * 所以本表的写入契约是：**fts 行的 rowid 恒等于 notes.id**（notes.id 是全局主键，
+ * 天然唯一，多账号也不会撞）。写入一律
+ *   `INSERT INTO notes_fts (rowid, note_id, user_id, title, body) VALUES (?, ?, ?, ?, ?)`
+ *   `DELETE FROM notes_fts WHERE rowid = ?`
+ * `note_id` 这一列**保留**：搜索那条 `notes_fts JOIN notes` 仍按它关联，语义更直白；
+ * 它只是不再承担「定位单行」的职责。老库的 rowid 是 fts5 自动分配的（与 notes.id 无关），
+ * 由迁移步骤 `notes-fts-rowid` 按新契约整表重建。
+ *
  * ⚠️ 建表失败不能让站点起不来（D1 某些版本/配置下可能没有 FTS5 模块），
  * 所以这张表走独立的 try/catch（见 migrateNotesFtsTable），
  * 建不出来就降级成 LIKE 搜索。
@@ -152,6 +173,43 @@ export const NOTES_FTS_TABLE_SQL = `CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts
     body,
     tokenize = "unicode61 remove_diacritics 2"
 );`;
+
+/**
+ * 把 notes_fts 整表重建成「rowid 等于 notes.id」的形态（迁移步骤 `notes-fts-rowid`）。
+ *
+ * 老库的 rowid 是 fts5 自动分配的（1,2,3…），与新写入路径约定（rowid = notes.id）不一致；
+ * 不重建的话，`DELETE FROM notes_fts WHERE rowid = <notes.id>` 会**删不到旧行**，
+ * 紧接着的 INSERT 又插一条新的 —— 索引里同一篇笔记攒出多行，搜索会重复返回。
+ *
+ * 两个刻意的写法：
+ *   1. **内容从 notes_fts 自己搬**（`f.title` / `f.body`），不从 notes 取。
+ *      索引里存的是已 segmentCJK 的文本（汉字两侧带空格），而 notes 里是原始中文；
+ *      SQL 里调不到 segmentCJK，直接搬原文会让**全部老笔记的中文两字词搜索失效**，
+ *      而且一声不响（只是 MATCH 返回 0 行）。
+ *   2. `JOIN notes` 顺手丢掉孤儿行（笔记已删、索引行还在 —— 点进去 404）。
+ *      user_id 也从 notes 取，纠正任何历史错配。
+ *   3. `INSERT OR REPLACE`：万一老索引里已经有同 note_id 的重复行，这里是「最后一条赢」
+ *      而不是撞 rowid 唯一约束把整步弄挂。
+ *
+ * ⚠️ 写成**一条多语句 exec** 而不是 batch([prepare…])：batch 是先全部 prepare 再执行，
+ * 而 node:sqlite / 自托管适配器的 prepare 会立刻编译 SQL —— 「同批里先建表再写新表」
+ * 会在 prepare 阶段就报 `no such table`。exec 按文本顺序执行，没有这个陷阱。
+ *
+ * ⚠️ 中转表用**普通表**（不是 TEMP）：D1 的每批语句可能是不同连接，TEMP 表活不过去。
+ */
+export const NOTES_FTS_ROWID_REBUILD_SQL = `
+CREATE TABLE IF NOT EXISTS notes_fts_rebuild (
+    rowid_ INTEGER, note_id INTEGER, user_id INTEGER, title, body
+);
+DELETE FROM notes_fts_rebuild;
+INSERT INTO notes_fts_rebuild (rowid_, note_id, user_id, title, body)
+    SELECT f.note_id, f.note_id, n.user_id, f.title, f.body
+      FROM notes_fts f JOIN notes n ON n.id = f.note_id;
+DELETE FROM notes_fts;
+INSERT OR REPLACE INTO notes_fts (rowid, note_id, user_id, title, body)
+    SELECT rowid_, note_id, user_id, title, body FROM notes_fts_rebuild;
+DROP TABLE notes_fts_rebuild;
+`;
 
 /** 迁移里逐条执行的「新表」DDL（见 runMigrations 第 6.5 步） */
 export const FOLDER_TAG_TABLE_STATEMENTS = [

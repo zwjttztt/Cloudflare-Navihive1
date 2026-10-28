@@ -220,6 +220,36 @@ Worker 侧 2026-10-14 已改成按 `Sec-Fetch-Site` 判定（不再看 Host）�
 | 输错几次密码后自己也登不上 | 源站侧限速退化成一个桶 —— **必须在 Nginx 层配 `limit_req`**（见 sites 配置） |
 | 静态资源每次都 MISS | `proxy_cache_path` 目录没建，或 `/assets/` 没 include 缓存指令 |
 | 站点偶尔 502，过一会又好了 | upstream 只在启动时解析，IP 变了 —— 配每日 reload timer |
+| `/api/*` 的 JSON 没被压缩 | `gzip_types` 里漏了 `application/json`（nginx 默认**只**压 `text/html`）。**不是** `gzip_proxied` 的问题，见下节 |
+
+### 两份站点配置的 gzip 差异：`gzip_proxied any` 只有自托管那份有
+
+`navihive.conf`（方案 A）**刻意不写** `gzip_proxied any`，`navihive-selfhost.conf`（方案 B）写了。
+这不是遗漏，别「顺手补齐」。两个方向的误判都在这条链上不成立：
+
+1. **「上游已经被 Cloudflare 压好了，再加一层是白烧 CPU」—— 反了。**
+   `snippets/navi-proxy.conf` 里有 `proxy_set_header Accept-Encoding ""`：本机回源时
+   **明确不要压缩**，CF 回的是 identity。也就是说压缩责任 100% 在本机这一层，
+   方案 A 的 `gzip on` + `gzip_types` 是**真在干活**的，不是冗余。
+2. **「不写 `gzip_proxied any` 就压不到反代响应」—— 也不对。**
+   nginx 文档原文：*"The fact that the request is proxied is determined by the presence of
+   the 'Via' request header field."* 这个指令只对**带 `Via` 请求头**的请求生效。
+   浏览器 → CF 边缘 → 本机这条链上没有一跳会加 `Via`，所以那一行在这里不改变任何行为。
+   （方案 B 那份留着它，护的是「VPS 前面再套一层代理」的情形 —— 那层通常会加 `Via`。）
+3. **真正让 API 的 JSON 被压的是 `gzip_types` 里的 `application/json`**
+   （nginx 默认只压 `text/html`，列得再全也压不到 JSON 的老说法就是这么来的）。
+   两份配置都列了它 —— 改压缩相关的东西，先看那一行。
+
+> 2026-10-28 复核：`docs/engineering-review-2026-10-28.md` 里「自托管 API 响应从未压缩，
+> 因为全仓 `gzip_proxied` 0 次」这条归因是错的（批次一之前自托管那份配置就有
+> `gzip on` + `gzip_types … application/json`，见 `git show b8bfd22` 的 diff：
+> 唯一的功能性新增就是 `gzip_proxied any` 这一行）。
+> 线上也验了：生产实际加载的 `nginx.conf`（kPanel 管的那份，**不是**本目录这两份模板）
+> 没有 `gzip_proxied`，但 `gzip_types` 里早有 `application/json`，`/assets/react-*.js`
+> 的响应带 `content-encoding: gzip` —— 反代这一层一直在压，批次一那行既没修什么也没进生产。
+> 要验压缩有没有生效，别看指令清单，看响应：
+> `curl -sI -H 'Accept-Encoding: gzip' https://<host>/api/init | grep -i content-encoding`。
+
 
 ### 「API错误: 403」专节：写操作全被 CSRF 拦下
 

@@ -14,7 +14,12 @@ import { auditStatement } from "../data";
 import { newUuid } from "../../../utils/uuid";
 import { countWikiLinks } from "../../../utils/noteWikiLinkCount";
 import { extractNoteTags } from "../../../utils/markdownNoteTags";
-import { NOTE_SUMMARY_CHARS, REVISION_KEEP_PER_NOTE, needsSummary } from "../../../utils/noteLimits";
+import {
+    NOTE_LIST_MAX_LIMIT,
+    NOTE_SUMMARY_CHARS,
+    REVISION_KEEP_PER_NOTE,
+    needsSummary,
+} from "../../../utils/noteLimits";
 import { segmentCJK, FTS_CONTENT_LIMIT } from "../../../utils/ftsQuery";
 import { NoteConflictError } from "../../../utils/noteConflict";
 import { NOTE_FIELDS, validateFolderParent } from "./notesShared";
@@ -77,9 +82,42 @@ function releaseSiteBindingStatement(
 export const noteMethods: Pick<NotesApi,
     "listNotes" | "getNote" | "createNote" | "updateNote" |
     "deleteNote" | "updateNoteOrder" | "countNotes"> = {
-    listNotes: async function (this: NavigationAPI, opts?: { summary?: boolean }): Promise<Note[]> {
+    /**
+     * 列笔记。**不传 limit 就是全部**（这是刻意保留的默认，见下）。
+     *
+     * 分页参数（2026-10-28，`?limit=&offset=`）：
+     *   - `limit`   一页条数，夹在 [1, NOTE_LIST_MAX_LIMIT]；
+     *   - `offset`  跳过多少条；给了 offset 但没给 limit 时按「从 offset 拉到尾」处理
+     *               （SQLite 的 `LIMIT -1 OFFSET ?`），语义上等于「不要头上那几条」。
+     *
+     * ⚠️ **不传 limit 时行为一个字节都没变**（仍然 `SELECT ... ORDER BY` 全量）。
+     * 这不是偷懒：`exportNotesData`（整库导出）、`notes/reindex`（重建全文索引）
+     * 和备份都要**完整**列表，给它们加个默认上限就是静默丢数据。
+     * 需要限流的调用方自己传 limit —— 别把默认值改成常数。
+     *
+     * ⚠️ 排序必须**逐字保持** `pinned DESC, order_num, id`：internals.ts 的
+     * `idx_notes_user_order`（user_id, pinned, order_num, id）就是照这个形状建的
+     * （2026-10-17 排查，补上 id 尾列才消掉 TEMP B-TREE）。改了排序等于让那条
+     * 覆盖索引失效，万条级每次列表都要重新排序 —— 而 LIMIT 恰恰最依赖「排序能走索引」：
+     * 排序走不了索引时，`LIMIT 50` 仍要把全部行排一遍才算得出前 50 条。
+     */
+    listNotes: async function (
+        this: NavigationAPI,
+        opts?: { summary?: boolean; limit?: number; offset?: number }
+    ): Promise<Note[]> {
         await this.migrate();
         const summary = opts?.summary === true;
+        // 夹取：非有限数 / 0 / 负数一律当「没传」，避免 `LIMIT 0` 静默返回空列表
+        const rawLimit = opts?.limit;
+        const limit =
+            typeof rawLimit === "number" && Number.isFinite(rawLimit) && rawLimit >= 1
+                ? Math.min(Math.floor(rawLimit), NOTE_LIST_MAX_LIMIT)
+                : null;
+        const rawOffset = opts?.offset;
+        const offset =
+            typeof rawOffset === "number" && Number.isFinite(rawOffset) && rawOffset > 0
+                ? Math.floor(rawOffset)
+                : 0;
         return this.withSchemaRetry(async () => {
             // 摘要模式：正文换成开头 200 字符（够列表卡片显示一行预览），
             // 并打上截断标记，好让调用方知道「这条的正文不是全文」。
@@ -92,11 +130,23 @@ export const noteMethods: Pick<NotesApi,
                       `substr(content, 1, ${NOTE_SUMMARY_CHARS}) AS content`
                   )
                 : NOTE_FIELDS;
+            // `LIMIT -1 OFFSET ?` = 「从 offset 一路到末尾」；SQLite 不接受只有 OFFSET
+            // 的写法，必须配一个 LIMIT（-1 是官方约定的「不限」）。
+            const paging =
+                limit === null
+                    ? offset > 0
+                        ? " LIMIT -1 OFFSET ?"
+                        : ""
+                    : offset > 0
+                      ? " LIMIT ? OFFSET ?"
+                      : " LIMIT ?";
+            const pagingParams: number[] =
+                limit === null ? (offset > 0 ? [offset] : []) : offset > 0 ? [limit, offset] : [limit];
             const result = await this.db
                 .prepare(
-                    `SELECT ${fields} FROM notes${this.scopeSql(false)} ORDER BY pinned DESC, order_num, id`
+                    `SELECT ${fields} FROM notes${this.scopeSql(false)} ORDER BY pinned DESC, order_num, id${paging}`
                 )
-                .bind(...this.scopeParams([]))
+                .bind(...this.scopeParams([]), ...pagingParams)
                 .all<Note>();
             const rows = result.results || [];
             if (!summary) return rows;
@@ -321,13 +371,17 @@ export const noteMethods: Pick<NotesApi,
                         .bind(id, this.currentUserId, id, this.currentUserId, REVISION_KEEP_PER_NOTE),
                 ];
                 if (typeof row.id === "number" && titleOrContentTouched && this.notesFtsReady) {
+                    // ⚠️ 按 rowid 定位（不是 note_id）：note_id 是 UNINDEXED 列，
+                    // `WHERE note_id = ?` 会整表扫 fts5 虚拟表，而保存笔记是最高频的
+                    // 写入路径（见 internals.ts NOTES_FTS_TABLE_SQL 的实测）。
                     followup.push(
-                        this.db.prepare("DELETE FROM notes_fts WHERE note_id = ?").bind(row.id),
+                        this.db.prepare("DELETE FROM notes_fts WHERE rowid = ?").bind(row.id),
                         this.db
                             .prepare(
-                                "INSERT INTO notes_fts (note_id, user_id, title, body) VALUES (?, ?, ?, ?)"
+                                "INSERT INTO notes_fts (rowid, note_id, user_id, title, body) VALUES (?, ?, ?, ?, ?)"
                             )
                             .bind(
+                                row.id,
                                 row.id,
                                 this.currentUserId,
                                 segmentCJK(row.title ?? ""),
@@ -414,7 +468,7 @@ export const noteMethods: Pick<NotesApi,
             );
             if (this.notesFtsReady) {
                 statements.push(
-                    this.db.prepare("DELETE FROM notes_fts WHERE note_id = ?").bind(id)
+                    this.db.prepare("DELETE FROM notes_fts WHERE rowid = ?").bind(id)
                 );
             }
             // 删除墓碑（2026-10-11）：软删除对 notes 表是物理删行，只看 updated_at 的

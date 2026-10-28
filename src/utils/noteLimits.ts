@@ -31,3 +31,17 @@ export function needsSummary(content: string | null | undefined): boolean {
 export function summarizeContent(content: string | null | undefined): string {
     return (content ?? "").slice(0, NOTE_SUMMARY_CHARS);
 }
+
+/**
+ * `listNotes` 一页最多回多少条（2026-10-28，分页阀门）。
+ *
+ * 500 的依据：一屏最多几十条，「加载更多」一次一页；500 已远超任何一屏，
+ * 同时把「一次拉上万条」这种误用挡住。
+ *
+ * ⚠️ 放在这里而不是 methods/notes/notesNote.ts：**mock 也要用它**，
+ * 而 mock（客户端）不能 import 服务端方法文件（会把 worker 那套依赖拖进前端包）。
+ * 规则值和 NOTE_SUMMARY_CHARS 同理 —— 只定义一次，两边 import。
+ * ⚠️ 不传 limit 时服务端仍然回**全部**（导出/备份/重建索引依赖这一点），
+ * 这个常量只是「传了 limit 时的上限」，不是默认值。
+ */
+export const NOTE_LIST_MAX_LIMIT = 500;

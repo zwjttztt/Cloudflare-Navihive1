@@ -16,6 +16,7 @@ import {
     FOLDER_TAG_TABLE_STATEMENTS,
     INDEX_STATEMENTS,
     NOTES_FTS_TABLE_SQL,
+    NOTES_FTS_ROWID_REBUILD_SQL,
     VAULT_TABLE_STATEMENTS,
     migrationState,
 } from "./internals";
@@ -90,11 +91,14 @@ import {
 //     · idx_notes_site_recent(site_id, updated_at DESC, id DESC) —— 站点列表那个
 //       「绑定的那篇笔记」相关子查询不用再每站点排一次序（见 data.ts）。
 //     索引步骤同样吃快路径：版本号不 +1 的话老库永远建不上（同 19 / 22 / 24 的先例）。
+// 28 = notes_fts 的 rowid 契约（2026-10-28，性能）：fts 行的 rowid 恒等于 notes.id，
+//     写入路径全部改按 rowid 定位。老库的 rowid 是 fts5 自动分配的，必须靠
+//     `notes-fts-rowid` 这一步整表重建 —— 而步骤表同样吃快路径，所以版本号必须跟着走到 28。
 //
 // ⚠️ 从 27 起，「什么时候该升号」不再靠人记住 —— 见下面 MIGRATION_VERSION 的说明：
 // 往 MIGRATION_STEPS 加一条步骤、或往 INDEX_STATEMENTS 加一条索引，落库的版本串会
 // 自动往前走一格。手工改这个字面量，只在「搬数据但没新增步骤」这类情况下才还需要。
-export const SCHEMA_VERSION = "27";
+export const SCHEMA_VERSION = "28";
 /** 版本号存在 configs 里的键名 */
 export const SCHEMA_VERSION_KEY = "schema.version";
 /** 「已执行过的迁移步骤」集合存在 configs 里的键名（值是 JSON 字符串数组） */
@@ -205,6 +209,57 @@ export const MIGRATION_STEPS: readonly MigrationStep[] = [
         },
     },
     { id: "notes-fts", run: api => api.migrateNotesFtsTable() },
+    /**
+     * 老库的 notes_fts 按新契约重建：**rowid 必须等于 notes.id**（28 号，2026-10-28）。
+     *
+     * 为什么必须单独一步：`CREATE VIRTUAL TABLE IF NOT EXISTS` 对已存在的表什么都不做，
+     * 而老库里 fts 行的 rowid 是 fts5 自动分配的（1,2,3…，与 notes.id 无关）。
+     * 代码改成 `DELETE FROM notes_fts WHERE rowid = ?` 之后，老库上这个 ? 传的是
+     * notes.id —— 两边对不上就会「删不掉旧行、再插一条新行」，索引越积越脏，
+     * 搜索还会把同一篇笔记返回两次。所以这一步不是可选优化，是**语义前提**。
+     *
+     * ⚠️ 内容从 **notes_fts 自己**（`f.body` / `f.title`）复制，不从 `notes` 取：
+     * 索引里存的是**已经 segmentCJK 过的**文本（每个汉字两侧带空格），而
+     * `notes.title/content` 是原始中文。SQL 里调不到 segmentCJK，直接
+     * `SELECT title, body FROM notes` 会把全库的中文索引退化成「一整句一个 token」——
+     * 表现是升级之后 **所有老笔记的两字词搜索全部失效**，而且不报错。
+     * 这正是这个仓库吃过的那类「不报错但不工作」的坑，所以宁可从索引里搬。
+     *
+     * ⚠️ 顺手清掉孤儿行：`JOIN notes` 之后，没有对应笔记的 fts 行不再搬过去
+     * （以前删笔记时若索引写失败就会留下这种行，点进搜索结果会 404）。
+     * user_id 也从 notes 取，纠正任何历史错配。
+     *
+     * 走「整表重建」而不是逐条 INSERT：1 万条笔记逐条跑就是 1 万条语句，
+     * 而这里是一条 exec（多条语句按序执行，一次往返）。
+     *
+     * ⚠️ 这里用 `exec` 而不是 `batch([prepare(...), ...])`：batch 里的语句是**先全部
+     * prepare、再执行**，而 node:sqlite / 自托管适配器的 `prepare()` 会立刻编译 SQL ——
+     * 于是「同一批里先建表、再往新表里写」会在 prepare 阶段就报 `no such table`。
+     * （实测踩到：`Error: no such table: notes_fts_rebuild`，整步被 catch 吞掉、
+     * rowid 一个都没重建，而日志只有一行 console.error。）
+     * exec 按**文本顺序**执行，不存在这个陷阱。
+     *
+     * ⚠️ FTS5 不可用的实例（D1 某些配置没有该模块）上这一步必须**软失败**：
+     * 建不出来时搜索本来就降级成 LIKE，不能因为这一步把整条迁移链卡死
+     * （失败会被记成「未完成」并让 migrate() 抛错，于是每次冷启动都在重试）。
+     */
+    {
+        id: "notes-fts-rowid",
+        run: async api => {
+            try {
+                await api.db.exec(NOTES_FTS_ROWID_REBUILD_SQL);
+                // 这一步能跑通就说明 notes_fts 是**真的可用**（建表 + 读写都过了）。
+                // 顺手把就绪开关点亮：老库上 `notes-fts` 那一步早已记进「已执行集合」，
+                // 不会重跑，而 ftsReady 只有 migrateNotesFtsTable 会置 true —— 不补这一句，
+                // 升级后的第一个 isolate 仍然会把搜索降级成 LIKE。
+                // ⚠️ 这只是**部分**修复：之后的冷启动仍会走版本快路径、仍然拿不到这个开关，
+                // 见回传报告里记的那条 pre-existing bug。
+                migrationState.ftsReady = true;
+            } catch (error) {
+                console.error("重建全文索引的 rowid 失败（搜索仍可用，索引可能不完整）:", error);
+            }
+        },
+    },
     { id: "group-share-table", run: api => api.migrateGroupShareTable() },
     { id: "vault-tables", run: api => api.migrateVaultTables() },
     {
@@ -222,10 +277,10 @@ export const MIGRATION_STEPS: readonly MigrationStep[] = [
     { id: "indexes", run: api => api.createIndexes() },
 ];
 
-/** 27 号这一版登记的步骤条数（加步骤时**不用**改这个数，见 MIGRATION_VERSION） */
-const STEPS_AT_V27 = 18;
-/** 27 号这一版 INDEX_STATEMENTS 的条数（加索引时**不用**改这个数） */
-const INDEXES_AT_V27 = 24;
+/** 28 号这一版登记的步骤条数（加步骤时**不用**改这个数，见 MIGRATION_VERSION） */
+const STEPS_AT_V28 = 19;
+/** 28 号这一版 INDEX_STATEMENTS 的条数（加索引时**不用**改这个数） */
+const INDEXES_AT_V28 = 24;
 /**
  * 自 27 号以来新增的「结构变更」条数：多一条迁移步骤、或多一条索引都算一格。
  *
@@ -234,7 +289,7 @@ const INDEXES_AT_V27 = 24;
  * 在结构上就不可能再发生：升号是算出来的，不是记出来的。
  */
 const SCHEMA_DELTA =
-    MIGRATION_STEPS.length - STEPS_AT_V27 + (INDEX_STATEMENTS.length - INDEXES_AT_V27);
+    MIGRATION_STEPS.length - STEPS_AT_V28 + (INDEX_STATEMENTS.length - INDEXES_AT_V28);
 /**
  * 真正落库、也真正拿来比对的版本串。
  *

@@ -122,13 +122,30 @@ npm run ci 打印「✅ 覆盖率分层门禁通过」
 | 笔记列表全程无分页              | 1 万条摘要档 = **8.47 MB** 一次下发                     | 中   | P1  |
 | 每次保存笔记全表扫 FTS          | 3k 条时 **76.5 ms**，外推 1 万条约 250 ms              | 中   | P1  |
 | 跨设备轮询恒定回传全量 `noteTags` | 1 万条 **151.7 KB/次**，0 变更也发                     | 中   | P1  |
-| 自托管 API 响应从未压缩         | `gzip_proxied` 全目录 **0 次**，nginx 该项默认 `off`    | 中   | P1  |
+| ~~自托管 API 响应从未压缩~~ **归因不成立（2026-10-28 复核，见下方说明）** | ~~`gzip_proxied` 全目录 0 次~~ → 线上 `nginx.conf` 的 `gzip_types` 早就含 `application/json`、且**没有** `gzip_proxied`；`curl -H 'Accept-Encoding: gzip' /assets/react-*.js` 实回 `content-encoding: gzip`。批次一加的那一行既没修什么、也没进生产 | — | **作废** |
 | 预览每次按键全量重解析 Markdown   | 100 KB 长文 **13.9 ms/键**，手机折算 40–70 ms          | 中   | P1  |
 | 本地模糊搜索每次按键扫全量          | 1 万条 **8–12 ms**，每次重建约 2 MB 字符串                | 低-中 | P2  |
 | 两个常驻轮询不看页面可见性          | 常开标签页 **2,160 请求/天**                           | 低   | P2  |
 | 首屏余量只剩 4.8% / 4.4%     | 876.0 KB raw / 287.0 KB gzip，预算 920/300，门槛 ≥3% | 低   | P2  |
 | KaTeX 三套字体格式全量进产物      | 59 文件 1.02 MB，其中 **817 KB 现代浏览器永不下载**          | 低   | P3  |
 | 自托管只有 gzip 无 brotli    | 实测可再省 **47.1 KB / 16.4%**                      | 低   | P2  |
+
+> **2026-10-28 复核：批次一实现后实测发现「自托管 API 响应从未压缩」这个归因不成立，该行作废。**
+> 原依据是「全仓 `grep gzip_proxied` = 0 次」—— 但那只是**仓库里两份模板**的计数，既没看生产实际
+> 加载的 `nginx.conf`（kPanel 管的那份），也把「没有这个指令」直接等同于「没有压缩」。
+> 复核到的三件事：
+> ① 线上 `nginx.conf` 里 `gzip on` + `gzip_types … application/json`（还有 `gzip_static on`），
+> **没有** `gzip_proxied` —— 而 `/assets/react-*.js` 实测回 `content-encoding: gzip`，说明一直在压；
+> ② 语义层面：`gzip_proxied` 只对**带 `Via` 请求头**的请求生效（原文引用见本节第 2 条），
+> 默认 `off` 并不等于「所有反代响应都不压」；
+> ③ `git show b8bfd22 -- deploy/nginx/sites-available/navihive-selfhost.conf`：批次一唯一的功能性
+> 新增就是 `gzip_proxied any` 这一行，`gzip on` / `gzip_vary` / `gzip_min_length` /
+> `gzip_types … application/json` 在批次一之前就已经在文件里。
+>
+> 结论：那一行**既没修掉什么，也没进生产**（生产跑的不是仓库里这两份模板）。
+> 已把「为什么」写进 `deploy/nginx/sites-available/navihive.conf`、`navihive-selfhost.conf` 的注释，
+> `deploy/nginx/README.md` 新增「两份站点配置的 gzip 差异」一节，`deploy/selfhost.md` 对应段同时更正 ——
+> 目的只有一个：下次别有人「顺手补齐」，也别有人照着旧结论重新推一遍。
 
 **做得好的（逐项核对过）**：后端没有 N+1；列表排序完全命中覆盖索引 `idx_notes_user_order`；SQLite 连接参数逐个有理由（WAL / `busy_timeout` 5000 / `synchronous=NORMAL` / 外键开）；静态资源缓存策略正确；前端运行时缓存全部有界（`imageCache` LRU 64、`objectUrlCache` 引用计数、`firstPaintCache` 2000 上限）；零外链字体。
 
@@ -140,7 +157,17 @@ npm run ci 打印「✅ 覆盖率分层门禁通过」
    DELETE FROM notes_fts WHERE rowid = ?     -- 走 rowid 定位，不再 SCAN
    ```
    同一 benchmark 实测 **76.50 ms → 4.63 ms（16.5×）**，`MATCH` 查询不受影响。需要一次迁移重建索引表（表小，一次性成本可接受）。
-2. **nginx 加一行** `gzip_proxied any;`。这一行直接消掉自托管 `/api/*` 的整段未压缩带宽。顺手改掉 `navihive-selfhost.conf:59` 那句已过时的注释（「Node 侧不压缩」—— 2026-10-22 起 `server/static.ts` 已经自己压静态了，这句话会让运维重复排查）。
+2. ~~**nginx 加一行** `gzip_proxied any;`~~ —— **2026-10-28 复核后作废：前提不成立，`/api/*` 本来就一直在压。**
+   保留这个位置只为记下「结论失效」这件事，不静默删。三条依据：
+   ① `gzip_proxied` 只对**带 `Via` 请求头**的请求生效（nginx 文档原文：*"The fact that the
+   request is proxied is determined by the presence of the 'Via' request header field"*），
+   浏览器 → 反代这条链上没有一跳会加 `Via`，所以这行加不加都不改变行为；
+   ② 真正让 JSON 被压的是 `gzip_types` 里的 `application/json`（nginx 默认**只**压
+   `text/html`），而线上 `nginx.conf` 早已列了它；
+   ③ 实测：`curl -H 'Accept-Encoding: gzip' https://<host>/assets/react-*.js` →
+   `content-encoding: gzip`。
+   连带一条**仍然成立、且已完成**的项：`navihive-selfhost.conf` 那句「Node 侧不压缩」的过时注释
+   （2026-10-22 起 `server/static.ts` 已经自己压静态了，那句话会让运维重复排查）已在批次一改掉。
 3. **列表加分页**。`GET /api/notes?limit=&cursor=` 做 keyset 分页（正好命中已有索引），首屏只取 200 条；`exportNotes` 同步改成流式分页，避免 1 万条正文（约 50 MB）一次进内存。
 4. **轮询带指纹**。`/api/notes/changes` 只在 `notesChanged>0` 或「文件夹/标签指纹变了」时才带全量列表；并把 5 条串行查询合成一个 `db.batch`。
 5. **预览用 `useDeferredValue` + 150ms debounce**。范式现成 —— `useSiteSearch.ts:95` 已经这么干了。
@@ -499,7 +526,7 @@ npm run ci 打印「✅ 覆盖率分层门禁通过」
 
 ### 批次二：提效（约 3 天，10 项高性价比 P1）
 
-`npm i -D c8`（一行换真覆盖率）→ FTS rowid 改造（实测 16.5×）+ 一次迁移 → nginx `gzip_proxied any`（一行）→ 笔记列表分页 → 轮询带指纹 → 备份版本闸门 + 3 条用例 → `NotesBackupTab` 补测试 → 附件上传超时修正 → 预览 `useDeferredValue` → 三处 Node 版本对齐 + `engines`。
+`npm i -D c8`（一行换真覆盖率）→ FTS rowid 改造（实测 16.5×）+ 一次迁移 → ~~nginx `gzip_proxied any`（一行）~~（2026-10-28 复核：归因不成立，已作废，见 3.1）→ 笔记列表分页 → 轮询带指纹 → 备份版本闸门 + 3 条用例 → `NotesBackupTab` 补测试 → 附件上传超时修正 → 预览 `useDeferredValue` → 三处 Node 版本对齐 + `engines`。
 
 ### 批次三：偿还（约 1 周，结构性）
 
@@ -515,7 +542,7 @@ npm run ci 打印「✅ 覆盖率分层门禁通过」
 |---|---|
 | `notes_fts` 的 `note_id` 是 `UNINDEXED`，同步走 `DELETE ... WHERE note_id` | 读 `internals.ts:149` + `notesSearch.ts:39` |
 | `listNotes` 的 SQL 无 `LIMIT` | 读 `notesNote.ts:98` |
-| nginx `gzip_proxied` 全目录 0 次 | `grep -rn gzip_proxied deploy/nginx/ \| wc -l` = 0 |
+| ~~nginx `gzip_proxied` 全目录 0 次~~ → **该证据推不出「API 未压缩」（2026-10-28 复核）** | 当时的 `grep -rn gzip_proxied deploy/nginx/ \| wc -l` 只数了**仓库里两份模板**，没看生产实际加载的 `nginx.conf`（kPanel 管的那份）。复核：生产 `nginx.conf` 没有 `gzip_proxied`，但 `gzip_types` 含 `application/json`，`/assets/react-*.js` 实测 `content-encoding: gzip` —— 反代这层一直在压 |
 | `console` 分布 61/23/13 | 逐目录 grep 计数，与成员报告逐项吻合 |
 | 请求 ID 全仓零命中 | `grep x-request-id\|requestId` 排除 `requestIdleCallback` 后为空 |
 | `unit-tests.mjs:295` 无超时参数 | 读源码 |

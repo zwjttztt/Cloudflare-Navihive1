@@ -62,6 +62,49 @@ export interface NavigationClient extends
     SystemClientApi,
     VaultClientApi {}
 
+/**
+ * 附件上传的专用超时（2026-10-28）。
+ *
+ * 为什么不能吃默认的 30 秒：单文件上限 25MB（worker/attachments.ts 的
+ * ATTACHMENT_MAX_BYTES），25MB / 30s ≈ 830KB/s —— 也就是说**默认超时要求
+ * 用户至少 830KB/s 的上行**。手机 4G 上行普遍 200~500KB/s，弱网更差，
+ * 于是「传一张 8MB 的截图」必然超时。而超时报出来的是一句
+ * 「请求超时（30 秒无响应）」—— 用户会以为是服务器挂了，其实是本地带宽不够。
+ *
+ * 240 秒的依据：25MB / 240s ≈ 107KB/s，覆盖到 2G/边缘信号的上行；
+ * 又不至于「无限等」—— 卡死的连接最终还能自己断开，不会永久占着上传队列。
+ *
+ * ⚠️ 只给**传文件本体**的那个端点，不要塞进下面的 slow 正则：
+ * `notes/attachments/list`（列元数据）、`notes/attachments/<id>`（删除）、
+ * 都只是几百字节的 JSON 往返，给它们 4 分钟等一个卡死的请求毫无意义 ——
+ * 真卡住了应该 30 秒就让用户重试。这正是「别简单地把 attachment 塞进正则」的理由。
+ */
+export const ATTACHMENT_UPLOAD_TIMEOUT_MS = 240_000;
+
+/**
+ * 这个端点的请求该等多久（0 = 不设超时）。抽成纯函数是为了能单测 ——
+ * 超时值本身藏在 AbortSignal 里，跑真请求是验不出来的。
+ *
+ * 判定分两类，理由各不相同：
+ *
+ * 1. **搬整份数据的慢端点**（不设超时）：走 `upload|download|backup|import|export|
+ *    restore|icon` 这一组词。它们的共同点是「耗时由数据量决定，客户端无法预估」——
+ *    整库备份上传、ZIP 导出下载、图标代理取远端图，谁都不知道要几秒。
+ * 2. **大请求体的单文件上传**（给一个与体量匹配的定值，见
+ *    ATTACHMENT_UPLOAD_TIMEOUT_MS）：只有 `POST notes/attachments` 这一个端点。
+ *
+ * 调用方显式传 timeoutMs 永远优先（它自己知道这一次要多久）。
+ */
+export function timeoutForEndpoint(endpoint: string, explicit?: number): number {
+    if (typeof explicit === "number") return explicit;
+    // 附件本体上传：POST notes/attachments?filename=…（query 直接跟在路径后面）
+    if (/^notes\/attachments(\?|$)/.test(endpoint)) return ATTACHMENT_UPLOAD_TIMEOUT_MS;
+    // 上传 / 下载 / 备份恢复这类端点天然慢，不吃默认超时
+    return /upload|download|backup|import|export|restore|icon/i.test(endpoint)
+        ? 0
+        : REQUEST_TIMEOUT_MS;
+}
+
 // eslint-disable-next-line @typescript-eslint/no-unsafe-declaration-merging
 export class NavigationClient implements ClientThis {
     /** 不对外：域方法体在别的文件，跨文件访问 private 成员 TS 不允许（与 NavigationAPI 同样的取舍） */
@@ -119,9 +162,9 @@ export class NavigationClient implements ClientThis {
             this.idempotencyKey = null;
         }
 
-        // 上传 / 下载 / 备份恢复这类端点天然慢，不吃默认超时
-        const slow = /upload|download|backup|import|export|restore|icon/i.test(endpoint);
-        const timeoutMs = options.timeoutMs ?? (slow ? 0 : REQUEST_TIMEOUT_MS);
+        // 超时分级见 timeoutForEndpoint（为什么附件上传要单独一档、为什么
+        // `notes/attachments/list` 不能跟着一起放宽，都写在那里）
+        const timeoutMs = timeoutForEndpoint(endpoint, options.timeoutMs);
         // 调用方显式给的 signal 优先（它自己知道要不要取消）；否则用超时 signal
         const signal = options.signal ?? (timeoutMs > 0 ? AbortSignal.timeout(timeoutMs) : undefined);
         const { signal: _ignored, timeoutMs: _ignored2, ...rest } = options;

@@ -36,8 +36,10 @@ import {
 } from "./methods/idempotency";
 import type { OpsStats } from "./methods/audit";
 import { validateFolderMove } from "../utils/folderTree";
+// 轮询快照指纹与真机共用同一份实现（真机在 methods/notes/notesBackup.ts 用它）
+import { notesSnapshotFingerprint } from "./methods/notes/notesShared";
 import { groupClientErrors } from "../utils/clientErrorGroups";
-import { REVISION_KEEP_PER_NOTE, needsSummary, summarizeContent } from "../utils/noteLimits";
+import { NOTE_LIST_MAX_LIMIT, REVISION_KEEP_PER_NOTE, needsSummary, summarizeContent } from "../utils/noteLimits";
 // 双链计数与真机共用同一份实现（真机在 notesNote.ts 的写路径里用它算 link_count）
 import { countWikiLinks } from "../utils/noteWikiLinkCount";
 import { sqlNow } from "../utils/sqlTime";
@@ -527,11 +529,34 @@ export class MockNavigationClient {
         throw new Error("演示模式不支持公开分享，请连接真实账号");
     }
 
-    async listNotes(opts?: { summary?: boolean }): Promise<Note[]> {
+    async listNotes(opts?: { summary?: boolean; limit?: number; offset?: number }): Promise<Note[]> {
         await new Promise(resolve => setTimeout(resolve, 200));
-        const list = [...mockNotes].sort(
-            (a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) || (a.order_num || 0) - (b.order_num || 0)
+        const sorted = [...mockNotes].sort(
+            // ⚠️ 尾列 `id` 不能省：真实侧是 `ORDER BY pinned DESC, order_num, id`，
+            // 少了它，同一 order_num 的两条笔记在两边可能排出不同顺序 ——
+            // 分页一旦顺序不确定，翻页就会重复/漏条目。
+            (a, b) =>
+                (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) ||
+                (a.order_num || 0) - (b.order_num || 0) ||
+                (a.id ?? 0) - (b.id ?? 0)
         );
+        // 分页（2026-10-28）：夹取口径与真实侧**逐条对齐**
+        // （src/API/methods/notes/notesNote.ts 的 listNotes）——
+        // 非正整数 = 没传、上限 NOTE_LIST_MAX_LIMIT、只给 offset 时拉到尾。
+        const rawLimit = opts?.limit;
+        const limit =
+            typeof rawLimit === "number" && Number.isFinite(rawLimit) && rawLimit >= 1
+                ? Math.min(Math.floor(rawLimit), NOTE_LIST_MAX_LIMIT)
+                : null;
+        const rawOffset = opts?.offset;
+        const offset =
+            typeof rawOffset === "number" && Number.isFinite(rawOffset) && rawOffset > 0
+                ? Math.floor(rawOffset)
+                : 0;
+        const list =
+            limit === null && offset === 0
+                ? sorted
+                : sorted.slice(offset, limit === null ? undefined : offset + limit);
         // 与真实服务端的 ?fields=list 对齐：截短正文并打标记，
         // 这样演示模式下也能看出「摘要条目长什么样」。
         if (opts?.summary !== true) return list;
@@ -680,9 +705,27 @@ export class MockNavigationClient {
      * 演示模式的变更轮询：演示数据只有一个浏览器会话，永远「没有变更」，
      * 只回快照让客户端初始化游标（形状与真实实现一致，前端不用区分）。
      */
-    async notesChanges(since?: string): Promise<import("./types").NotesChangesResult> {
+    async notesChanges(since?: string, fingerprint?: string): Promise<import("./types").NotesChangesResult> {
         await new Promise(resolve => setTimeout(resolve, 100));
         void since;
+        // 演示模式的快照恒为空（mock 没有跨设备概念），所以指纹是个常数 ——
+        // 用**同一把尺子**（notesSnapshotFingerprint）而不是自己编一个常量，
+        // 这样真机与 mock 的指纹形状、截断长度、判等语义完全一致。
+        const current = notesSnapshotFingerprint([], [], {});
+        // 与真实现同一条件：调用方带回来的指纹与本轮相同 → 只回 unchanged。
+        if (typeof fingerprint === "string" && fingerprint.length > 0 && fingerprint === current) {
+            return {
+                success: true,
+                now: sqlNow(),
+                notesChanged: 0,
+                changedNoteIds: [],
+                folders: [],
+                tags: [],
+                noteTags: {},
+                unchanged: true,
+                fingerprint: current,
+            };
+        }
         return {
             success: true,
             now: sqlNow(),
@@ -691,6 +734,8 @@ export class MockNavigationClient {
             folders: [],
             tags: [],
             noteTags: {},
+            unchanged: false,
+            fingerprint: current,
         };
     }
 

@@ -35,13 +35,20 @@ export const searchMethods: Pick<NotesApi,
         try {
             // FTS5 表没有主键约束，更新就是「先删后插」两步。
             // 同一个 batch 里跑，一次往返。
+            //
+            // ⚠️ 定位**必须**用 rowid 而不是 note_id（2026-10-28，性能）：
+            // note_id 是 UNINDEXED 列 —— 它不是普通索引，`WHERE note_id = ?` 只能
+            // 整表扫（1 万条时 1.14ms/次，而 rowid 0.007ms）。理由与实测见
+            // internals.ts 里 NOTES_FTS_TABLE_SQL 的注释。
             await this.db.batch([
-                this.db.prepare("DELETE FROM notes_fts WHERE note_id = ?").bind(noteId),
+                this.db.prepare("DELETE FROM notes_fts WHERE rowid = ?").bind(noteId),
                 this.db
                     .prepare(
-                        "INSERT INTO notes_fts (note_id, user_id, title, body) VALUES (?, ?, ?, ?)"
+                        "INSERT INTO notes_fts (rowid, note_id, user_id, title, body) VALUES (?, ?, ?, ?, ?)"
                     )
                     .bind(
+                        // rowid 与 note_id 同一个值：契约是「fts 行的 rowid 恒等于 notes.id」
+                        noteId,
                         noteId,
                         this.currentUserId,
                         segmentCJK(title || ""),
@@ -58,7 +65,7 @@ export const searchMethods: Pick<NotesApi,
         if (!this.notesFtsReady) return;
         try {
             await this.db
-                .prepare("DELETE FROM notes_fts WHERE note_id = ?")
+                .prepare("DELETE FROM notes_fts WHERE rowid = ?")
                 .bind(noteId)
                 .run();
         } catch (error) {
@@ -84,6 +91,12 @@ export const searchMethods: Pick<NotesApi,
                 if (match) {
                     const rows = await this.db
                         .prepare(
+                            // ⚠️ 这里的 JOIN 条件继续用 `note_id` 列（不是 rowid）：
+                            // 两者现在恒等，但 note_id 是**有名字的列**，读起来就是
+                            // 「fts 行 ↔ 笔记」这层意思；rowid 只用来定位单行
+                            // （见 internals.ts NOTES_FTS_TABLE_SQL 的契约说明）。
+                            // bm25 的列权重个数必须与建表的列数一致（4 列：note_id/
+                            // user_id/title/body），加列要同步改这里。
                             `SELECT n.id AS id, n.title AS title, n.content AS content,
                                     n.updated_at AS updated_at,
                                     bm25(notes_fts, 0.0, 0.0, 10.0, 1.0) AS score

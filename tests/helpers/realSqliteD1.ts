@@ -16,7 +16,12 @@
 //      导入/恢复在替身上被误判成「上一次恢复还没结束」（真库上是好的）；
 //   2) batch() 只是 Promise.all → 没有事务，所以「失败整批回滚」在替身上
 //      根本验不出来（真 D1 与自托管适配器都是整批一个事务）。
-// 这两条已补上，改动替身时先想清楚它替的是哪一边的真实行为。
+//   3) run() 只调 stmt.run() → 把 SELECT / 带 RETURNING 的行的查询结果丢了，
+//      而 D1 的 batch 会把每条语句的行回在对应 D1Result.results 里。于是
+//      「batch 里塞 SELECT 取计数」的写法（notesChanges 的 notesChanged）在替身上
+//      永远拿到 0，测试假绿到另一头。已对齐：会返回行的语句走 all() 取行 + 连
+//      接级 changes() 补 meta，与 server/sqlite-d1.ts 的 runSync 逐字一致。
+// 这三条已补上，改动替身时先想清楚它替的是哪一边的真实行为。
 
 import { DatabaseSync, type StatementSync, type SQLInputValue } from "node:sqlite";
 import { NavigationAPI } from "../../src/API/navigationApi";
@@ -29,7 +34,17 @@ export function makeRealD1() {
     db.exec("PRAGMA foreign_keys = ON");
     // 与自托管适配器对齐：批内外键检查推迟到提交那一刻（见 server/sqlite-d1.ts）
     const deferral = db.prepare("PRAGMA defer_foreign_keys = ON");
-    const wrap = (stmt: StatementSync) => {
+    // 连接级 changes() / last_insert_rowid()，给 run() 在「会返回行」的语句后补 meta 用
+    // （与 server/sqlite-d1.ts 的 readMeta 同一套；node:sqlite 的 stmt.run() 只回
+    // changes/lastInsertRowid，不会把 SELECT/RETURNING 的行带出来，所以行得另走 all()）。
+    const changesStmt = db.prepare("SELECT changes() AS c, last_insert_rowid() AS r");
+    // 会返回行的语句：SELECT / WITH（CTE）/ VALUES，外加上带 RETURNING 的写语句。
+    // 与 server/sqlite-d1.ts 的 RETURNS_ROWS_RE / RETURNING_RE 同口径 —— D1 的 batch
+    // 会把每条语句的行回在对应 D1Result.results 里，只调 run() 不取行的话，
+    // 「首页 bootstrap 拿到 0 分组」「notesChanges 的计数永远 0」这类无声错就会在替身上发生。
+    const RETURNS_ROWS_RE = /^\s*(select|with|values)\b/i;
+    const RETURNING_RE = /\breturning\b/i;
+    const wrap = (sql: string, stmt: StatementSync) => {
         let bound: SQLInputValue[] = [];
         const prepared = {
             bind(...args: unknown[]) {
@@ -50,6 +65,18 @@ export function makeRealD1() {
                 return Promise.resolve((row ?? null) as T | null);
             },
             run() {
+                // 与 server/sqlite-d1.ts 的 runSync 对齐：会返回行的语句必须走 all() 取行，
+                // 再读连接级 changes()/last_insert_rowid() 补 meta；否则 batch 里塞 SELECT
+                // 取计数的写法在替身上拿不到行（notesChanges 的 notesChanged 永远 0）。
+                if (RETURNS_ROWS_RE.test(sql) || RETURNING_RE.test(sql)) {
+                    const rows = stmt.all(...bound) as Record<string, unknown>[];
+                    const m = changesStmt.get() as { c: number; r: number };
+                    return Promise.resolve({
+                        results: rows,
+                        success: true as const,
+                        meta: { changes: m.c, rows_written: m.c, last_row_id: Number(m.r) },
+                    });
+                }
                 const r = stmt.run(...bound);
                 return Promise.resolve({
                     success: true as const,
@@ -67,7 +94,7 @@ export function makeRealD1() {
         return prepared;
     };
     return {
-        prepare: (sql: string) => wrap(db.prepare(sql)),
+        prepare: (sql: string) => wrap(sql, db.prepare(sql)),
         /**
          * ⚠️ 真 D1 的 batch 是一个事务：要么整批生效、要么一个字节都不变。
          * 替身必须照做 —— 「导入失败后旧数据一条不少」这类断言靠的就是这个语义，

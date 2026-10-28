@@ -80,7 +80,14 @@ export interface NotesApi {
      * 现在默认不开：笔记才几十条时，列表里带正文只要 2 KB，
      * 开了反而让**每次点开笔记多一次往返**。
      */
-    listNotes(opts?: { summary?: boolean }): Promise<Note[]>;
+    /**
+     * 列笔记。
+     *
+     * `limit` / `offset`（2026-10-28）是可选的**分页阀门**：不传就是全部，
+     * 传了按 `pinned DESC, order_num, id` 切一段（排序与覆盖索引绑定，别改）。
+     * 导出 / 重建索引这类需要完整列表的调用方**不要**传 limit。
+     */
+    listNotes(opts?: { summary?: boolean; limit?: number; offset?: number }): Promise<Note[]>;
     getNote(id: number): Promise<Note | null>;
     createNote(draft: Partial<Note>): Promise<Note>;
     updateNote(id: number, patch: Partial<Note>): Promise<Note | null>;
@@ -169,8 +176,11 @@ export interface NotesApi {
     /**
      * 自上次游标以来的变更信号 + 文件夹/标签全量快照。
      * 只回计数与轻量结构，**不回笔记正文** —— 客户端发现变更后走既有 reload() 整表重拉。
+     *
+     * `fingerprint` 是调用方上一轮拿到的指纹（`result.fingerprint`）：与本轮快照算出来的
+     * 相同时只回 `{ unchanged: true }`，快照字段全空（2026-10-28，省掉每轮几十 KB 的死数据）。
      */
-    notesChanges(since?: string): Promise<NotesChangesResult>;
+    notesChanges(since?: string, fingerprint?: string): Promise<NotesChangesResult>;
 
     // ---- 版本历史（inkstone 顶栏「版本历史」）----
     /** 存一个快照（updateNote 内部调用；对外暴露是为了测试与批量导入） */

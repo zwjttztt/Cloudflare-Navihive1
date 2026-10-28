@@ -18,6 +18,7 @@ import { countWikiLinks } from "../../../utils/noteWikiLink";
 import { segmentCJK, FTS_CONTENT_LIMIT } from "../../../utils/ftsQuery";
 import { sqlNow } from "../../../utils/sqlTime";
 import { normalizeUrl } from "../../../utils/url";
+import { notesSnapshotFingerprint } from "./notesShared";
 
 export const backupMethods: Pick<NotesApi,
     "exportNotesData" | "notesChanges" | "importNotesData"> = {
@@ -78,23 +79,60 @@ export const backupMethods: Pick<NotesApi,
      * 文件夹/标签没有可靠的 per-row 时间戳，直接全量快照让客户端比对
      * （这两张表就几十行，比补列 + 回填便宜得多，也不会漏改色/改名）。
      * 首次轮询（since 为空）只初始化游标，不报变更。
+     *
+     * 变更指纹（2026-10-28，省流量）：`fingerprint` 是**调用方上一轮拿到的指纹**。
+     * 本轮快照算出来的指纹与它相同 → 只回 `{ unchanged: true, fingerprint }`，
+     * 三个快照字段回空数组。指纹怎么算、为什么不能用「便宜的近似量」见
+     * notesShared.ts 的 notesSnapshotFingerprint 注释。
+     * 不传 fingerprint（首次轮询 / 老客户端 / 老 mock）→ 永远走全量，行为与改造前一致。
      */
-    notesChanges: async function (this: NavigationAPI, since?: string): Promise<NotesChangesResult> {
+    notesChanges: async function (
+        this: NavigationAPI,
+        since?: string,
+        fingerprint?: string
+    ): Promise<NotesChangesResult> {
         await this.migrate();
         return this.withSchemaRetry(async () => {
-            const nowRow = await this.db
-                .prepare("SELECT strftime('%Y-%m-%d %H:%M:%S', 'now') AS now")
-                .first<{ now: string }>();
-            const now = nowRow?.now || sqlNow();
+            // ── 笔记侧的三条查询合成**一次往返**（2026-10-28）──
+            // 原来是 now → 计数 → 变更 id 三步串行（D1 每条语句一次往返）。
+            // 轮询本身是后台流量，一串行就是几十毫秒白等；合成 batch 之后只有一次。
+            //
+            // ⚠️ 顺序不能动：`strftime('now')` 必须**排在最前面**执行。游标是「本轮读到哪儿」，
+            // 先算时间再读计数，万一有变更落在两者之间，它会被**下一轮**重复看见（多报一次，无害）；
+            // 顺序反过来的话，那条变更这一轮没数到、下一轮又被更晚的游标挡住 —— 直接**漏掉**。
+            //
+            // ⚠️ 墓碑计数**不进这个 batch**：它在老库上可能整张表都不存在（迁移没跑到），
+            // 进了 batch 会一条语句失败拖垮整批，连「有笔记被改过」都读不出来。
+            // 它自己带 try/catch，缺表时只是「感知不到彻底删除」，不影响其它信号。
+            const notesStatements = [
+                this.db.prepare("SELECT strftime('%Y-%m-%d %H:%M:%S', 'now') AS now"),
+            ];
+            if (since) {
+                notesStatements.push(
+                    this.db
+                        .prepare(
+                            // 变更笔记 id（有界 50）：客户端用它判断「当前打开的这篇是否被改」，
+                            // 给出针对性提示，而不是只有一句全局的「列表已刷新」。
+                            // 无条件带上（即便这一轮没变更）：走 idx_notes_user_updated 的范围扫，
+                            // 命中 0 行时几乎没有代价，换来的是「不用先知道计数再发第二次」。
+                            "SELECT id FROM notes WHERE updated_at >= ?1 AND user_id IS ?2 ORDER BY updated_at DESC LIMIT 50"
+                        )
+                        .bind(since, this.currentUserId),
+                    this.db
+                        .prepare(
+                            "SELECT COUNT(*) AS n FROM notes WHERE updated_at >= ?1 AND user_id IS ?2"
+                        )
+                        .bind(since, this.currentUserId)
+                );
+            }
+            const notesResults = await this.db.batch(notesStatements);
+            const now =
+                (notesResults[0]?.results?.[0] as { now?: string } | undefined)?.now || sqlNow();
             let notesChanged = 0;
             let changedNoteIds: number[] = [];
             if (since) {
-                const updated = await this.db
-                    .prepare(
-                        "SELECT COUNT(*) AS n FROM notes WHERE updated_at >= ?1 AND user_id IS ?2"
-                    )
-                    .bind(since, this.currentUserId)
-                    .first<{ n: number }>();
+                const idRows = (notesResults[1]?.results ?? []) as { id: number }[];
+                const updated = (notesResults[2]?.results?.[0] as { n?: number } | undefined)?.n ?? 0;
                 let purged = 0;
                 try {
                     const row = await this.db
@@ -108,25 +146,42 @@ export const backupMethods: Pick<NotesApi,
                     // 墓碑表缺失（迁移还没跑到）只影响「彻底删除」的感知，不算致命
                     console.error("读取笔记墓碑失败:", error);
                 }
-                notesChanged = (updated?.n ?? 0) + purged;
-                // 变更笔记 id（有界 50）：客户端用它判断「当前打开的这篇是否被改」，
-                // 给出针对性提示，而不是只有一句全局的「列表已刷新」。
-                if (notesChanged > 0) {
-                    const idRows = await this.db
-                        .prepare(
-                            "SELECT id FROM notes WHERE updated_at >= ?1 AND user_id IS ?2 ORDER BY updated_at DESC LIMIT 50"
-                        )
-                        .bind(since, this.currentUserId)
-                        .all<{ id: number }>();
-                    changedNoteIds = (idRows.results || []).map(r => r.id);
-                }
+                notesChanged = updated + purged;
+                // 没变更时 ids 一定是空的（同一个 WHERE），不必再判一次计数
+                if (notesChanged > 0) changedNoteIds = idRows.map(r => r.id);
             }
             const [folders, tags, noteTags] = await Promise.all([
                 this.listFolders(),
                 this.listTags(),
                 this.listNoteTags(),
             ]);
-            return { success: true, now, notesChanged, changedNoteIds, folders, tags, noteTags };
+            const currentFingerprint = notesSnapshotFingerprint(folders, tags, noteTags);
+            // ⚠️ 只有「调用方确实带来过指纹、且与本轮相同」才敢回空快照。
+            // 调用方没带（首次 / 老客户端）时必须回全量 —— 否则它手里根本没有快照基线。
+            if (typeof fingerprint === "string" && fingerprint.length > 0 && fingerprint === currentFingerprint) {
+                return {
+                    success: true,
+                    now,
+                    notesChanged,
+                    changedNoteIds,
+                    folders: [],
+                    tags: [],
+                    noteTags: {},
+                    unchanged: true,
+                    fingerprint: currentFingerprint,
+                };
+            }
+            return {
+                success: true,
+                now,
+                notesChanged,
+                changedNoteIds,
+                folders,
+                tags,
+                noteTags,
+                unchanged: false,
+                fingerprint: currentFingerprint,
+            };
         });
     },
     importNotesData: async function (this: NavigationAPI, payload: NotesImportPayload): Promise<NoteImportStats> {
@@ -424,13 +479,17 @@ export const backupMethods: Pick<NotesApi,
                 try {
                     const ftsStatements: D1PreparedStatement[] = [];
                     for (const p of plan) {
+                        // ⚠️ 按 rowid 定位（不是 note_id）：见 internals.ts
+                        // NOTES_FTS_TABLE_SQL 的契约与实测（note_id 是 UNINDEXED，
+                        // `WHERE note_id = ?` 只能整表扫）。
                         ftsStatements.push(
-                            this.db.prepare("DELETE FROM notes_fts WHERE note_id = ?").bind(p.id),
+                            this.db.prepare("DELETE FROM notes_fts WHERE rowid = ?").bind(p.id),
                             this.db
                                 .prepare(
-                                    "INSERT INTO notes_fts (note_id, user_id, title, body) VALUES (?, ?, ?, ?)"
+                                    "INSERT INTO notes_fts (rowid, note_id, user_id, title, body) VALUES (?, ?, ?, ?, ?)"
                                 )
                                 .bind(
+                                    p.id,
                                     p.id,
                                     this.currentUserId,
                                     segmentCJK(p.title || ""),

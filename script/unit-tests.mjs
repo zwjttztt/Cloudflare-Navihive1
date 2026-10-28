@@ -247,6 +247,14 @@ fs.rmSync(OUT_DIR, { recursive: true, force: true });
 // 覆盖率模式（由 script/coverage.mjs 打开）：多生成一份 sourcemap，并保留打包产物。
 // 两个动作必须一起做 —— c8 是在**本进程退出之后**才去读 bundle 与 .map 做重映射的，
 // 只开 sourcemap 却把产物删了，看到的还是打包产物的覆盖率。
+//
+// ⚠️ 必须是 **inline** 而不是 external（2026-10-28 实测）：本项目打包时带了
+// `outExtension: { ".js": ".mjs" }`，配 `sourcemap: "external"` 时 esbuild **不会**
+// 往 bundle 末尾写 `//# sourceMappingURL=xxx.mjs.map` 注释（实测产物里该字符串出现 0 次，
+// 尽管同目录 .map 确实生成了）。c8 认 sourcemap 全靠那条注释，找不到就不做重映射 ——
+// 于是 V8 覆盖率整份记在 `script/tmp-tests/**` 的 bundle 上，再被 coverage.mjs 的
+// `--exclude script/**` 排除干净，最后只剩 `--all` 列出的 src 空壳：386 个文件、98620 行、
+// **covered 全 0**。inline 把 map 嵌进注释里，注释必然存在，c8 才重映射得回去。
 const coverageMode = !!process.env.NAVIHIVE_COVERAGE;
 
 const shared = {
@@ -279,7 +287,7 @@ const shared = {
         "__NAVIHIVE_BUILD_VERSION__": '"test-build-0001"',
         "__NAVIHIVE_APP_VERSION__": '"v9.9.9+test"',
     },
-    ...(coverageMode ? { sourcemap: "external" } : {}),
+    ...(coverageMode ? { sourcemap: "inline" } : {}),
 };
 
 const builds = [];

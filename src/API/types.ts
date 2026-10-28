@@ -451,6 +451,20 @@ export interface NotesChangesResult {
     folders: NoteFolder[];
     tags: NoteTag[];
     noteTags: Record<number, number[]>;
+    /**
+     * 本轮快照与调用方上一轮拿到的**完全相同**（2026-10-28）。
+     *
+     * 为 true 时 folders / tags / noteTags 一律是空数组/空对象 —— **不是**「真的空了」，
+     * 而是「没变，沿用你手里那份」。客户端据此跳过形状比对与 reload。
+     * 不传 fingerprint 调用时恒为 false（老客户端 / 首次轮询走全量）。
+     */
+    unchanged?: boolean;
+    /**
+     * 本轮快照的指纹。客户端下一轮把它原样带回来（`notesChanges(since, fingerprint)`），
+     * 服务端就能判断「快照有没有变」。算法与「为什么不能用便宜的近似量」见
+     * src/API/methods/notes/notesShared.ts 的 notesSnapshotFingerprint。
+     */
+    fingerprint?: string;
 }
 
 // WebDAV 备份配置
@@ -543,6 +557,12 @@ export interface ExportData {
      */
     sharedConfigs?: Record<string, string>;
     version: string;
+    /**
+     * 导入时由 `normalizeImportData` 的版本闸门写入的一句话提示
+     * （「这份备份来自较旧的版本」「没有版本号，按兼容模式导入」）。
+     * 只在本机显示用：导出时不写、也不进请求体。
+     */
+    versionNotice?: string;
     exportDate: string;
     /** 本机偏好（星标 / 标签），老备份文件里没有这个字段 */
     localPrefs?: LocalPrefsBackup;

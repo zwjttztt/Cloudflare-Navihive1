@@ -60,6 +60,27 @@ export function noteExcerpt(content: string): string {
  *
  * 渲染是**异步**的：markdown-it 走动态 import（必须 lazy，否则进首屏）。
  * 所以先渲染一个占位，解析完再替换 —— 免得每次输入都闪一下。
+ *
+ * ⚠️ 这里**刻意不加 `useDeferredValue`**（2026-10-28 评估过，结论是不该加，别再"顺手优化"）：
+ *
+ *   1. **上游已经合并过了**。正文回传走 `NoteEditor` 的 `emit`，它在
+ *      `updateListener` 里把 docChanged 合并成「150ms 内只留最后一次全文」再上抛
+ *      `onChange` → `setDraft`（见 NoteEditor.tsx 里 emit 的注释）。所以这里的
+ *      `source` **本来就不是每次按键都变**，一秒最多约 6.7 次。再叠一层
+ *      `useDeferredValue` 只是把同一份工作往后挪几十毫秒，合并率没变 ——
+ *      纯延迟，不减少任何计算。
+ *   2. **真正贵的那段延迟不了**。开销在 markdown-it 的 parse + 造 React 元素树，
+ *      它跑在 `useEffect` 里 `await loadParser()` 之后的**同步续段**。
+ *      `useDeferredValue` 只能推迟 React 的 render，而这里 render 本身是空的
+ *      （一个 Box 包着已算好的 node）。它既不能把那段同步解析切时间片，
+ *      也不能在更"新"的源到来时把它掐掉 —— 掐不掉，所以省不下一次解析。
+ *   3. 输入手感靠的是「编辑器自己跟手」：CodeMirror 的文本更新与这里无关，
+ *      预览慢只会让右栏晚一点刷新，不会卡住打字。
+ *
+ * 想让长文预览更快的话，正确的方向是**降低解析成本**（缓存 token / 只重解析改动
+ * 的段落）或**延长合并窗口**，而不是在这里加一层延迟。要动先量：拿一篇 5 万字
+ * 的笔记，在 Performance 面板里看 `renderMarkdownToReact` 的耗时是不是真的到了
+ * 一帧以上，再决定。
  */
 export function MarkdownPreview({
     source,
