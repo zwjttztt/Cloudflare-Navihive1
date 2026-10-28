@@ -49,6 +49,9 @@ const LABELS: Record<string, string> = {
     "data.import": "导入数据",
     // 观测
     "client-error": "前端错误上报",
+    // 服务端未处理异常（worker/index.ts 的入口 catch 落的）。detail 里带 rid，
+    // 与前端上报的 requestId 是同一个值，可以对起来看。
+    "server-error": "服务端错误",
 };
 
 /** 动作名 -> 中文标签；没登记过的原样返回（新动作上线忘加表也不会显示成空） */

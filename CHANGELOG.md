@@ -6,6 +6,86 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。
 
+## 2026-10-28 · 工程：批次一，14 项 P0 止血（17.0.0）
+
+从零重审项目（性能 / 可维护性 / 可测试性 / 兼容性 / 依赖 / 数据 / 日志 / 可访问性 / 文档 /
+部署运维 / 容错，见 `docs/engineering-review-2026-10-28.md`）后列出的 14 项 P0，这一批全部清掉。
+**没有新功能，全是「已经处于风险状态、一旦触发就是数据丢失 / 权限暴露 / 上线失控」的东西。**
+
+**要点（用户能感觉到的只有第二条，其余是「别再出事」）**
+
+- **（修复）任意接口的 401 都会把用户送回登录页，不再只是 bootstrap 那一条路。** 原来令牌过期后，
+  用户点任何按钮都只弹同一句 toast、界面停在原地 —— 看起来就是卡死。现在分三层：
+  ① `worker/routes/middleware.ts` 那 **4 处纯文本 401** 全改成统一 envelope（`{error:{code,message}}`）。
+  它们以前回 text/plain，客户端 `response.json()` 直接抛 → `parseApiError` 拿到 null → 错误码退化，
+  前端于是只能靠 `message.includes("认证")` 猜 —— 改一个字的文案，判据就整体静默失效。
+  ② `client.ts` 在**任何** 401 上广播 `navihive:unauthorized`（无载荷；`throw` 之前发，否则监听器永远收不到）。
+  ③ `App.tsx` 用一个 `handleAuthFailure` 统一处置，bootstrap 的 `onAuthFail` 与广播共用它，
+  靠 `authRequiredRef` 幂等 —— 并发 401 不会重复 `logout()` 再打出一条必然失败的请求。
+  连带把 `useSites` / `useAccountSession` / `authFlow` 里 **5 处 `message.includes(...)`** 换成
+  `isAuthError()`（判 `code`，`status === 401` 只作老形状的兜底）。
+- **（修复）站点列表与登录页不再「一张脏卡片打掉整站」。** 全站原来只有根上一个 `ErrorBoundary`，
+  而 `SiteListBody` 与 `LoginScreen` 都在它下方且中间没有边界 —— 一条 `site.tags` 不是数组就能
+  让整页变成错误页，用户连「去记事本」这个自救入口都点不到。新增 `RenderBoundary`
+  （纯 DOM + 内联样式，不引 MUI）分别包住这两处；它只包住出问题的那一块，头部 / 搜索栏照常可用。
+  **不复用 `ChunkBoundary`**：它的文案是给「chunk 没下载下来」写的，对渲染期异常会把人往网络问题上带。
+- **（修复）`docker-publish` 不再把 CI 红的提交发成生产镜像。** 原来它是 `on: push: branches:[main]`，
+  **完全不看 CI 结论**，而生产（VPS 的 kPanel / compose）拉的正是它产出的 `:latest` ——
+  同一个仓库里 `deploy.yml` 的门禁写得极严，唯独通生产这条洞开着。现在改成
+  `workflow_run`（只认 `conclusion === success` 且跑的是 `main`，且发布**CI 验证过的那个 sha**，
+  不是「那一刻的 main」）+ `workflow_dispatch`（必须填 `ci_run_id`，机器再查一次结论）。
+  门禁脚本与 `deploy.yml` 逐字同源，只换措辞。另加工作流级 `concurrency`（`cancel-in-progress: false`），
+  避免相邻两次 CI 同时往 `:latest` 上盖。**去掉 paths 白名单不会增加构建量** ——
+  `bump-version.mjs` 每次都改 `package.json`，它本来就在白名单里。
+- **（工程）单测运行器的两个假红源头都堵了。** ① 加 `--test-timeout`：默认 Infinity 时一条永不
+  resolve 的用例会把整个 CI job 挂到 `timeout-minutes`，日志里只剩一句 `job cancelled`，查不出是哪条。
+  ⚠️ 但它**也管文件级那条**（node 把每个文件包成一个顶层 subtest，时长算整个文件），所以值不能小 ——
+  实测最慢的 `notes.dom.test.tsx`（6802 行 / 226 例）单跑 **120 秒**，一开始写 60000 就把这个健康文件
+  当挂死砍了，连带 115 条用例报 cancelled、看起来像大面积失败。定稿 600000（10 分钟，CI job 是 15 分钟），
+  余量 5 倍。② 锁文件加 PID 活性探测：`SIGKILL` / OOM / CI 强杀都会把锁留在盘上，原来只照文件报
+  「已有运行器在跑」，说的与事实相反、只能人工去删。现在拿不到锁先 `process.kill(pid, 0)` 探活，
+  死锁自动回收（`EPERM` 算活着），活锁照旧拦。两个分支都实测过。
+- **（新增）服务端异常终于留下了可追的痕迹。** 以前 500 只打一行没有上下文的
+  `console.error("[api] 未处理的错误:", err)`，不落库、没有请求 ID，日志轮转后就永久丢失。
+  现在 `shared/requestId.ts` 定义唯一头名，`server/entry.ts` 在入口生成并注入（一律覆盖客户端带的值，
+  否则伪造同一个 rid 就能把两条请求的日志串起来）、`worker/index.ts` 没有则自生成并**校验白名单字符**
+  （防日志注入），响应头回写，`errorReporter` 从 `ApiError.requestId` 带出去 ——
+  用户截图里的那句报错与 `audit_log` 里同 rid 的 `server-error` 从此能对上。
+  访问日志改成响应结束时打一行 JSON（原来在转发**之前**打，只能证明「请求进来了」，没有状态码也没有耗时），
+  只记 pathname 不记 fullUrl（query 里可能是分享口令）；`server-error` 落库按端点节流（10 秒 20 条），
+  **不落 stack**（体积 + 容器内路径 + 局部变量值）。
+- **（文档）`deploy/selfhost.md` 大修。** ① `:191-250` 原来自相矛盾地教人挂 `docker.sock` + `user:"0:0"`，
+  与 `docker-compose.yml:72` 的现方案**完全相反**，照做等于主动交出宿主机 root —— 重写成「为什么不挂」
+  + spool → upgrader 容器流程 + 三条备选路线 + 残留风险（写 spool 卷 ≈ 能换运行镜像）。
+  ② 第七节改成「备 / 验 / 恢」三段，并补上**恢复演练状态**（见下）。③ 新增第八节升级与回滚
+  （`NAVIHIVE_IMAGE` 指到 `<sha>` tag 是唯一的回滚旋钮；「只回退代码不回退库」的有效期与判定 SQL）。
+  ④ 新增第九节账号与密钥（三个脚本的分工）＋ 自托管改密码的实测命令。⑤ 顺手脱敏、修掉过期的 gzip 注释。
+- **（文档）新增 `docs/README.md` 与 `docs/deploy/release.md`。** 前者是 41 份 markdown 的三列索引，
+  并且明确点出四份运维手册**互相有矛盾**、要先认形态（当前生产 = `selfhost.md`）；后者是发布流程
+  （本机 → GitHub → GHCR → VPS）五步 + 「pull 前后比对 digest」的纪律 ——
+  这套知识原来只存在于不进仓库的本地笔记里，换个人接手等于从零开始。
+- **（文档）README 第 0 步补 `.dev.vars`。** 不建就 `npm run dev` 全站 503（这是有意的），
+  而 503 的文案「请在部署环境里设置 AUTH_SECRET」会把人往 Cloudflare 后台带。新人第 2 分钟就撞这个。
+- **（工程）包管理器不再事实上混用。** `pnpm-workspace.yaml` 在、`pnpm-lock.yaml` 不存在且被 gitignore ——
+  `pnpm install` 会装出一棵**没有任何锁约束**的树，而且永远查不出来。删掉 workspace 文件、
+  显式声明 `packageManager: npm@10.9.7`，`.gitignore` 里加注释说明为什么不再忽略 lock。
+- **（安全）公开仓库地址脱敏 16 个文件。** 真实域名与 VPS 公网 IP 出现在 CHANGELOG、运维手册与历史报告里。
+  统一成 `<your-host>` / `<cf-host>` / `<vps-ip>` / `<origin-host>` / `<webdav-host>`。
+  **刻意不改的**：`ghcr.io/zwjttztt/navihive`（镜像地址要人能 pull）、
+  `script/prod-smoke.mjs:31` 的 `DEFAULT_PROD_URL`（要泄露的是 IP 不是域名，域名本来就是给人访问的；
+  改它会弄坏一个每天要用的脚本，而且没有任何测试会红）。⚠️ git 历史里仍有旧值，
+  改历史要 force push 会废掉所有克隆 —— **优先做的是缩小暴露面（换端口 / Cloudflare IP 白名单），不是重写历史**。
+- **（工程）首屏预算 256 → 258 KB。** `RenderBoundary` 必须常驻（得在卡片崩掉那一刻已经在树上），
+  用不了「改成 lazy」那一刀。实测 245.26 KB，抬完余量 5.2%。同时把「真要腾空间该砍哪里」写进注释：
+  把 `RenderBoundary` 与根上的 `ErrorBoundary` 合并成同一个组件、用 prop 区分整页 / 局部两种呈现。
+- **（验证）全绿**：typecheck / lint（0 err，22 个既有 warning）/ **3258 条单测**（基线 3248，新增 10）/
+  build / `check:budget`（10/10）/ `audit:a11y`（0 项）/ `audit:contrast`（首页亮暗 + 记事本亮暗各 0 处）/
+  `smoke`（含批量删除撤销）/ ui-probe（P1/P2 + P3 + P4 + 390×844）。
+- **（验证）恢复演练（命令级，2026-10-28）**：用 `node:sqlite` 造一个 WAL 模式的合成库
+  （`-wal` 里真堆着 1.06 MB 未落盘数据），按第七节三段跑完，**11 项断言全过** ——
+  其中「WAL 里未 checkpoint 的数据也在快照里」是「不能直接 `cp`」那个论断的实证
+  （快照 16 KB，却拿到了全部行）。**真实库演练仍未做**，那件事只能在另一台机器上、留出一小时来做。
+
 ## 2026-10-28 · 修复：复制键改成可读胶囊 + 图标并进站点名称行 + 关闭键提示错位（16.5.0）
 
 **要点**
@@ -121,7 +201,7 @@
 
 **要点**
 - **（修复）左上角两个白框太大**：记事本左栏的「返回站」按钮与搜索框沿用顶栏的 36px 规格，放进约 230px 宽、还叠着文件夹树的左栏显得笨重（用户报「两个白框都太大了」）。新增 `NOTES_NAV_CTRL_H = 30`，两者各缩到 30px（在 36px 行内居中）。⚠️ 只动这两个控件：`HEADER_CONTROL_H(36)` 不动（否则导航页顶栏一起缩）、`--notes-header-h(72)` 也不动（缩的是控件不是行高，三栏头部对齐不受影响）。搜索框高度走 `--notes-search-h` 变量，仅导航列那份设 30，tablet 顶栏 / mobile 列表仍回落 36。
-- **（核验）HTTP → HTTPS 跳转已生效，无需改动**：实测 `http://home.zwjttzt.com/` → **301** → `https://home.zwjttzt.com/` → **200**；根路径 / 深层路径带 query / 无尾斜杠 / IPv6 全部 301，Cloudflare 边缘与 nginx 源站（`if ($scheme = http) { return 301 … }`）双层均已生效。浏览器若仍走 HTTP，多半是本地缓存了旧响应，硬刷新 / 无痕窗口即可。
+- **（核验）HTTP → HTTPS 跳转已生效，无需改动**：实测 `http://<your-host>/` → **301** → `https://<your-host>/` → **200**；根路径 / 深层路径带 query / 无尾斜杠 / IPv6 全部 301，Cloudflare 边缘与 nginx 源站（`if ($scheme = http) { return 301 … }`）双层均已生效。浏览器若仍走 HTTP，多半是本地缓存了旧响应，硬刷新 / 无痕窗口即可。
 - **（验证）** typecheck / lint（0 err，21 个既有 warning 预算通过）/ 3235 条单测 / build / `check:budget` / `audit:a11y` / `audit:contrast` 全绿；截图核对亮/暗两态：返回站 30×30、搜索框 30px 高，布局仍居中、三栏头部对齐未变。
 
 ## 2026-10-27 · 修复：记事本左上角再强化（标题分隔 / 搜索框描边 / 选中态）（16.0.2）
@@ -955,7 +1035,7 @@ favicon / 缺失资产 404 / 分享路由 / 未知路径 404 / `/api/init` 形�
 每天 01:00 UTC 定时跑 + 可手动触发，地址走仓库变量。只读是硬约束，有守卫钉着。
 `audit:perf` 的数值以前只打印在日志里，现在写进 `$GITHUB_STEP_SUMMARY`（不降级门禁）。
 
-线上实测（`https://home.zwjttzt.com`）：15/16，唯一失败「未知无扩展名路径 404」——
+线上实测（`https://<your-host>`）：15/16，唯一失败「未知无扩展名路径 404」——
 线上跑的还是旧版，正是 ① 要修的那条，随本次部署生效。
 
 ## 2026-10-22（十七）· 性能：首访体感 —— HTML 加 stale-while-revalidate
@@ -2150,7 +2230,7 @@ smoke + 双审计全绿；两环境对照 e2e 复测 `/s/` 两环境均 200、�
 
 ## 2026-10-18（日）· 修复：公开分享页在 Cloudflare(Pages) 形态下 404（两环境首次对照测试发现）
 
-**背景**：对 home.zwjttzt.com（VPS 自托管 / SQLite）与 myhp.zwjttzt.com（Cloudflare / D1）
+**背景**：对 <your-host>（VPS 自托管 / SQLite）与 <cf-host>（Cloudflare / D1）
 做逐项对照测试时发现：**home 上 `/s/<token>` 与 `/sg/<token>` 回 index.html（200），myhp 上一律 404**。
 进一步探明 myhp 是 **Pages 形态的静态托管**——它不读 wrangler.jsonc 的
 `assets.not_found_handling`（那是 Workers 的配置），且所有无扩展名路径（` /random-no-ext-xyz`
@@ -2470,7 +2550,7 @@ preload 列表里。③ 笔记首拉：原来「首屏永远拉全文、下一�
 
 ## 2026-10-16（六）· 修复：AI 弹窗反复闪加载条 / 笔记网盘恢复失败（用户实测反馈）
 
-**要点**：用户在新部署的 https://home.zwjttzt.com 上实测反馈的两条，都不是「看着别扭」，
+**要点**：用户在新部署的 https://<your-host> 上实测反馈的两条，都不是「看着别扭」，
 而是真的影响使用：一个把背景页面的一次滚动放大成上百次配置请求，一个让备份只能出不进。
 
 - **AI 助手弹窗滚动到底/顶会冒加载条**（`App.tsx` / `AiAssistantDialog.tsx`）：
@@ -2726,7 +2806,7 @@ onAuthFail 接线改动」都可能把登录页吃掉，本地还不报错。
 
 - VPS 上 `docker-proxy` 把 `0.0.0.0:8787` 直接暴露——知道 IP 的人能用裸 HTTP 访问应用。
   部署目录 compose 的端口映射改为 `127.0.0.1:8787:8787`。
-- ⚠️ **发卡陷阱**：该站 Nginx 上游原来写的是 VPS **公网 IP**（`server 131.186.58.86:8787`，
+- ⚠️ **发卡陷阱**：该站 Nginx 上游原来写的是 VPS **公网 IP**（`server <vps-ip>:8787`，
   面板类工具的默认习惯），只改绑定会全站 502。上游一并改成 `127.0.0.1:8787` 后才恢复。
   验证：`ss` 只剩回环监听、`https://<域名>/` 200、空体 DELETE 探针 401（修复保持）。
 - 仓库的 `docker-compose.yml` 本来就只绑回环且有守卫测试（`tests/dockerDeploy.test.ts`），
@@ -3074,7 +3154,7 @@ Host 改写（已落 `proxy_set_header Origin "";`），但用户反馈**反代�
 于是 Worker 眼里 `request.url` 的主机名永远和浏览器看到的不一样：
 
 ```
-浏览器  Origin: https://myhp.zwjttzt.com
+浏览器  Origin: https://<cf-host>
 Worker   request.url = https://<WORKERS_DEV_HOST>/api/sites/1   ← Host 被改写过
 ```
 
@@ -3119,7 +3199,7 @@ audit:a11y / audit:contrast 全过。
 
 ## 2026-10-14 · 工程：VPS 反代方案落地件 + 修掉反代下的写操作 403
 
-起因：`myhp.zwjttzt.com` 实测命中 Cloudflare 欧洲节点（MAN/MAD），RTT≈300ms、
+起因：`<cf-host>` 实测命中 Cloudflare 欧洲节点（MAN/MAD），RTT≈300ms、
 带宽仅 53 KB/s，首屏 4.5s。给出四档加速方案，选定「方案 A：VPS 反向代理」
 （回源仍走 Cloudflare Worker + D1，数据不动、可秒级回滚）。
 

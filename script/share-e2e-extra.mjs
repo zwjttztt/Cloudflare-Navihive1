@@ -11,7 +11,7 @@
 // 跑在**自托管 server/**（Node + SQLite）上而不是 workerd：
 //   - server/ 打包的就是同一套 worker 路由（routes/*.ts 共享），测的是同一份逻辑；
 //   - Windows 本地 workerd 起不来（access violation），这条通道本地 CI 两边都能跑；
-//   - 顺带覆盖 home.zwjttzt.com 实际部署形态（自托管）的链路。
+//   - 顺带覆盖 <your-host> 实际部署形态（自托管）的链路。
 //
 // 需要 dist-server/（npm run build:server），package.json 的 e2e:share-extra 已串联。
 

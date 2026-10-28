@@ -72,8 +72,20 @@
    wrangler secret put AUTH_SECRET      # 令牌签名 + 数据落库加密（可拆成 JWT_SECRET / DATA_ENCRYPTION_KEY，见下）
    ```
 
-3. 初始化数据库：Cloudflare 控制台 → D1 → `navigation-db` → SQL 控制台，粘贴运行根目录的 `init_table.sql`（可删掉示例数据段再跑）。
-4. 部署完成得到 `https://<worker名>.<你的子域>.workers.dev`，首次登录后**立即改密码**，并给备份设独立口令。
+3. **改绑定（手动部署必做）**：`wrangler.jsonc` 里的 `d1_databases[0].database_id` 与
+   `kv_namespaces[0].id` 目前填的是**作者本人的实例**。不换的话，要么部署失败，要么把自己的数据写进别人的库
+   （表现为 500 或一直空数据）。自己建一份再把 ID 填回去：
+
+   ```bash
+   wrangler d1 create navigation-db        # 输出里的 database_id → d1_databases[0].database_id
+   wrangler kv namespace create FILES_KV   # 输出里的 id → kv_namespaces[0].id
+   ```
+
+   用第 1 步的一键部署按钮可以**跳过本步** —— 按钮会自动创建 D1 / KV 并把 ID 写进配置。
+   （D1 的 ID 是公开标识符、不是密钥，写进 Git 不泄露数据，见 `wrangler.jsonc:39-42` 的注释。）
+
+4. 初始化数据库：Cloudflare 控制台 → D1 → `navigation-db` → SQL 控制台，粘贴运行根目录的 `init_table.sql`（可删掉示例数据段再跑）。
+5. 部署完成得到 `https://<worker名>.<你的子域>.workers.dev`，首次登录后**立即改密码**，并给备份设独立口令。
 
 > ⚠️ **用 Workers Builds（连接 GitHub 自动部署）时，`wrangler.jsonc` 的 `name` 必须与 Cloudflare dashboard 上的 Worker 名完全一致**，否则部署失败（`validate that the Worker name matches...`，code 10013）。secret 是按 Worker 存的，换名要重配。
 >
@@ -100,9 +112,27 @@ docker compose up -d --build
 
 ### 忘记密码？
 
-1. **上传恢复私钥重置（推荐）**：登录页 →「忘记密码」→ 上传此前在「账号与安全 → 恢复密钥」生成的私钥文件。账号名可留空（服务端拿公钥逐个验签）。私钥只在本机签名、从不上传。
-2. **命令行**：`node scripts/recovery-token.mjs sign --username admin --password '新密码'`，把令牌粘进登录页。
-3. **改库兜底**：`node scripts/reset-admin-password.mjs --password '新密码'`（走本机 wrangler 登录态）。
+1. **上传恢复私钥重置（推荐，两种形态都能用）**：登录页 →「忘记密码」→ 上传此前在「账号与安全 → 恢复密钥」生成的私钥文件。账号名可留空（服务端拿公钥逐个验签）。私钥只在本机签名、从不上传。
+2. **命令行签重置令牌（两种形态都能用）**：`node scripts/recovery-token.mjs sign --username admin --password '新密码'`，把打印出的令牌粘进登录页。前提是服务端配了 `AUTH_RECOVERY_PUBLIC_KEY`，或者在「账号与安全」里生成过恢复密钥（公钥已入库）。
+3. **直接改库（只适用于 Cloudflare 部署）**：`node scripts/reset-admin-password.mjs --password '新密码'`。它执行的是 `wrangler d1 execute <库名>`，改的是**云端 D1** 里 `configs` 表的 `auth.password` / `auth.username`，需要本机有 wrangler 登录态。
+
+> ⚠️ **自托管（Docker / systemd）下第 3 条完全无效，而且它会骗你说成功了。**
+> 自托管的库是容器卷里的 SQLite 文件（`/app/data/navihive.db`），`wrangler d1 execute` 连不到它。
+> 但只要本机 wrangler 还登着 Cloudflare 账号，脚本就会照常打印「✅ 管理员密码已重置」——
+> 你机器上的库一个字节都没变（更糟的情形：它真去改了云端那份早就没人用的旧 D1）。
+> 于是你拿新密码登不进去，还会去怀疑别的地方。
+>
+> 自托管的正确顺序：
+> ① 还登得进去 → 直接在站内「账号与安全」里改密码；
+> ② 登不进去、手上有恢复私钥 → 走上面第 1 或第 2 条（恢复令牌这条路自托管同样有效）；
+> ③ 两条都不成立 → 只能手工改库，**目前没有官方脚本做这件事**。值必须是
+> `pbkdf2$<迭代次数>$<salt>$<hash>`（PBKDF2-SHA256、16 字节盐、32 字节输出、base64url 无填充，
+> 见 `src/API/crypto.ts:228-249`），写错的表现是「密码明明对，就是登不进」。改之前先停服、先备份库文件。
+> 细节见 [`deploy/selfhost.md`](deploy/selfhost.md) 第九节。
+
+> ⚠️ 用 `reset-admin-password.mjs` 会把 `auth.tokenVersion` +1：**所有已签发的登录会话立即全部失效**，
+> 每台设备都得重新登录，旧密码也同时作废。这是有意的设计（改密 = 吊销旧令牌），
+> 但如果你的脚本里还留着别的设备的自动化流程，它们会在这一秒一起掉线。
 
 > 设计取舍：不提供任何「共享重置码」这类可被暴力猜解的公开入口。
 
@@ -116,8 +146,26 @@ docker compose up -d --build
 | `JWT_SECRET_OLD` | 轮换 `JWT_SECRET` 期间的旧值（只验签，过渡后删除） | 不启用 |
 
 - 密文自带 keyId（`enc$1$...` = 新钥，`enc$...` = 旧钥），新旧同时可读，换钥无需停机迁移；
-- **备份文件用你自设的「备份密码」加密，与 `AUTH_SECRET` 解耦**——轮换服务端密钥不影响已有备份；
+- ⚠️ **备份默认不加密**：不设「备份密码」时，服务端把**原始 zip 直接上传到你的网盘**
+  （`worker/notesBackup.ts:393` 是 `password ? await encryptBackup(zip, password) : zip`），
+  里面含全部笔记、附件，以及站点账号密码。只有设了备份密码才会先加密再上传，
+  且它与 `AUTH_SECRET` 解耦 —— 轮换服务端密钥不影响已有备份。**建议务必设置备份密码。**
 - `NAVIHIVE_TRUST_XFF`：本地 `wrangler dev` 时默认不信任 X-Forwarded-For（防伪造绕过限速），仅当确认反代会覆盖 XFF 时设 `1`。
+
+### 自托管（Docker / Node）专用变量
+
+这几个不写进 `wrangler.jsonc`，只在自托管形态生效；默认值都是从代码里读出来的（不是猜的）。
+
+| 变量 | 默认值 | 作用 | 什么时候该改 |
+| --- | --- | --- | --- |
+| `NAVIHIVE_IMAGE` | `ghcr.io/zwjttztt/navihive:latest` | 网页一键升级时拉取的目标镜像（应用容器与 upgrader 各读一次，两边必须一致） | ⚠️ **这是回滚到旧版本的唯一旋钮**：把它指到 GHCR 上的 `<sha>` tag（如 `ghcr.io/zwjttztt/navihive:<commit-sha>`）再点升级，就退回那一版；平时不用动 |
+| `NAVIHIVE_UPGRADE_SPOOL` | 空（不启用） | 升级请求目录。设了就进入 spool 模式：应用容器只往这个共享卷写请求文件，由独立的 upgrader 容器执行 `docker compose up`，**应用容器零 Docker daemon 权限** | `docker-compose.yml` 已固定设成 `/spool`；只有自己另写 compose（或纯 `docker run`）时才需要手填，不填则网页升级不可用 |
+| `NAVIHIVE_SLOW_QUERY_MS` | `50` | 慢查询阈值（毫秒），≥ 阈值的 SQL 打一条摘要日志（字面量已脱敏、不记绑定值） | 排障时临时调低看更多；嫌日志吵就调高；**设 0 或负数 = 关闭打点**（不是「全记」） |
+| `NAVIHIVE_COMPOSE_DIR` | 空（读容器标签 `com.docker.compose.project.working_dir`） | upgrader 要 bind 的 compose 目录绝对路径 | 只在容器标签被写歪（见到 `/compose`）或纯 `docker run` 启动时兜底用；正常 compose 部署别设 |
+| `NAVIHIVE_DOCKER_SOCK` | `/var/run/docker.sock` | Docker socket 路径（仅应用容器走 unix socket 时需要） | 宿主 sock 不在默认位置（如 rootless docker）时才改 |
+| `NAVIHIVE_UPGRADE_DIR` | — | **已废弃，代码不再读取**。它要求用户手填 compose 目录，是早期网页升级一律 501 的根因，现由容器标签 + `NAVIHIVE_COMPOSE_DIR` 取代 | 不用设；看到旧文档让你设它，说明那份文档过期了 |
+
+完整清单（端口 / 路径 / 定时任务 / 限速 / 会话等全部 `NAVIHIVE_*`）见 [`deploy/selfhost.md`](deploy/selfhost.md) 第三节。
 
 ## 🛠️ 技术栈
 
@@ -127,15 +175,45 @@ docker compose up -d --build
 
 ## 🧪 本地开发
 
+### 第 0 步：先建 `.dev.vars`（不建就打开页面 503）
+
+`wrangler.jsonc` 里 `AUTH_ENABLED` 是 `"true"`，`worker/index.ts` 又在 `fetch` 最前面检查
+`AUTH_SECRET`：缺了它一律 503，**连静态资源都进不去**（`assets.run_worker_first: true`，
+请求根本到不了前端，所以看到的是白屏而不是登录页）。一条命令生成（Git Bash / macOS / Linux 通用）：
+
 ```bash
-npm ci            # 安装依赖（Node 22+）
-npm run dev       # 本地开发（Vite）
+printf 'AUTH_SECRET=%s\nAUTH_USERNAME=root\nAUTH_PASSWORD=dev-only-change-me\n' "$(openssl rand -hex 32)" > .dev.vars
+```
+
+`AUTH_USERNAME` / `AUTH_PASSWORD` 是**空库时唯一能登进去的账号**（不写这两行，本地库就是一座空城，登录页没有可用凭据）；
+写进去之后首次登录会被强制改密，改完以库里为准，之后再改 `.dev.vars` 里的密码不会影响已生效的账号 —— 想重来就删 `.wrangler/state`。
+没有 `openssl`（少见）时用 `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"` 生成那串值。
+
+> ⚠️ **不建 `.dev.vars` 时 `npm run dev` 会全站 503，这是有意的，不是 bug。**
+> 缺密钥时「凭据加密」等价于明文（站点密码、WebDAV 口令都能被反推），所以宁可拒绝启动也不降级。
+> 503 文案写的「请在部署环境里设置 AUTH_SECRET 后重新部署」在本地指的就是这个 `.dev.vars` —— 别去 Cloudflare 后台找。
+>
+> `.dev.vars` 已被 `.gitignore` 的 `.dev.vars*` 覆盖，不会误提交；要加更多本地变量直接往里追加。
+
+### 然后再跑命令
+
+```bash
+npm ci            # 安装依赖（Node 22+）。本项目只用 npm，不要用 pnpm / yarn
+npm run dev       # 本地开发（Vite + workerd，自动读上面的 .dev.vars）
 npm test          # 全量单测 / DOM 测试
 npm run build     # 构建（tsc -b + vite build）
 npm run smoke     # 真实浏览器冒烟（CDP）
 npm run e2e       # API 端到端
 npm run audit:a11y && npm run audit:contrast   # 可访问性 / 对比度审计
 ```
+
+> 本地 D1 是空库也没关系：每个请求进来都会先跑一次 `api.migrate()` 补齐表结构（同一 isolate 内只跑一次），
+> 不需要手动执行 `init_table.sql` —— 那个脚本只给线上 D1 用。数据落在 `.wrangler/state/`，想清空就删这个目录。
+>
+> ⚠️ 为什么强调**只用 npm**：仓库提交的锁文件是 `package-lock.json`，`pnpm-lock.yaml` 从来没有进过版本库。
+> 用 pnpm / yarn 装出来的依赖树没有任何锁文件约束（`^` 范围当天全取最新），而 `node_modules` 不会出现在 diff 里，
+> 这种偏差事后完全查不出来 —— 出问题的人复现不了 CI 的环境。锁文件因此**故意不被 gitignore**：
+> 真有人用 pnpm，多出来的 `pnpm-lock.yaml` 会立刻在 `git status` 里露出来。
 
 > 仓库的合入门禁：`tsc -b --force` + ESLint + 全量测试 + build + smoke + e2e + 双审计全绿才允许推送；CHANGELOG 随版本更新（`script/bump-version.mjs` 按变更规模自动跳 patch/minor/major）。
 

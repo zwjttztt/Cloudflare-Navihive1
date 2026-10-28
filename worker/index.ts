@@ -16,8 +16,14 @@
  *     图标与上报是浏览器 <img> / report-only 发的，压根带不上 Authorization。
  *   - 受保护路由必须在鉴权中间件**之后**，且排在「强制改密」闸门之后。
  */
-import { ApiError, errorResponse } from "./lib/apiError";
+import { API_ERROR_CODES, ApiError, errorResponse } from "./lib/apiError";
 import { BodyLimitError, readBoundedBytes } from "./util";
+import { createMemoryLimiter } from "./rateLimit";
+import {
+    REQUEST_ID_HEADER,
+    REQUEST_ID_LEN,
+    REQUEST_ID_PATTERN,
+} from "../shared/requestId";
 import { ATTACHMENT_MAX_BYTES } from "./attachments";
 import { NavigationAPI } from "../src/API/navigationApi";
 import { runScheduledTasks } from "./cron";
@@ -58,7 +64,73 @@ export const PROTECTED_ROUTES = [
     handleAiRoutes,
 ];
 
-async function handleRequest(request: Request, env: Env): Promise<Response> {
+/**
+ * 服务端错误落库的节流（按 pathname 分桶，10 秒 20 条）。
+ *
+ * 为什么需要：一个坏掉的部署（迁移失败、D1 配额耗尽、驱动异常）会让**每个**请求
+ * 都 500 —— 不节流就是每个请求往 audit_log 写一行，审计表被自己刷爆，还有写入配额。
+ * 这与 client-error 上报同一个顾虑（见 worker/errorReport.ts 的限流段），
+ * 只是那边按 IP 分桶、这边按端点分桶：某个端点炸了不该吃掉别的端点的配额。
+ * 内存窗口跨实例不共享，但服务端错误本来就是「所有人同时中招」，够用了。
+ */
+const serverErrorLimiter = createMemoryLimiter({ windowMs: 10_000, max: 20, maxKeys: 500 });
+
+/**
+ * 取 / 生成本次请求的 rid。
+ *
+ * 自托管侧由 server/entry.ts 在入口生成并注入 x-request-id；Cloudflare 侧没有中间层
+ * 可以注头，由这里自生成 —— 平台日志里的 cf-ray 与本值并存，两者能对上同一次请求。
+ *
+ * ⚠️ 头是客户端也能写的，所以先过白名单字符与长度：否则一个带换行的值就能把伪造的
+ * 一整条日志塞进日志文件（日志注入），审计里也会混进伪造的 rid。
+ */
+function requestRid(request: Request): string {
+    const incoming = request.headers.get(REQUEST_ID_HEADER);
+    if (incoming && REQUEST_ID_PATTERN.test(incoming)) return incoming;
+    return crypto.randomUUID().slice(0, REQUEST_ID_LEN);
+}
+
+/**
+ * 服务端未处理错误落一条审计：action = "server-error"，detail 是一小段 JSON
+ * （method / path / code / message / rid）。
+ *
+ * 谁能看到：owner 在「审计流水」对话框与 GET /api/audit 里能直接看到这个动作名
+ * （getAuditLog 不按 action 过滤，只要 actionLabel 里有映射就是中文标签）。
+ * **不在** GET /api/ops/client-errors 里 —— 那条视图是写死 `action = 'client-error'`
+ * 的聚合（按 source + message 归并），服务端错误的字段形状与它不同，硬塞进去
+ * 会让归并结果出现空来源的空行。要按 rid 串起两边，用审计流水 / 日志即可。
+ *
+ * ⚠️ **不落 stack**：体积大，且可能含容器内路径与局部变量值；stack 只留在 console，
+ * 靠 rid 把两边对上（同样是为了不把内部结构写进长期保留的表）。
+ * ⚠️ 落库失败不能影响响应 —— 整段 try/catch，失败只 warn。
+ * ⚠️ 不先 migrate()：能走到这里的 500 有一类正是「迁移本身失败」，
+ * 再迁一次只会把同一个异常再抛一遍。写入失败由 writeAudit 自己吞掉。
+ */
+async function recordServerError(
+    env: Env,
+    rid: string,
+    request: Request,
+    pathname: string,
+    error: unknown
+): Promise<void> {
+    if (!serverErrorLimiter.allow(pathname)) return;
+    try {
+        const detail = JSON.stringify({
+            method: request.method,
+            path: pathname,
+            code: API_ERROR_CODES.internal,
+            message: (error instanceof Error ? error.message : String(error)).slice(0, 200),
+            rid,
+        });
+        const api = new NavigationAPI(env);
+        // actor 用 "system"：这不是某个用户做的动作，是服务端自己出错（与 cron 事件同一条链）
+        await api.writeAudit("server-error", "system", clientIp(request), detail);
+    } catch (logError) {
+        console.warn("[api] server-error 落库失败", rid, logError);
+    }
+}
+
+async function handleRequest(request: Request, env: Env, rid: string): Promise<Response> {
     const url = new URL(request.url);
 
     // 自托管时是否信任 X-Forwarded-For 作为限速分桶依据（仅当 Worker 位于可信反代之后、
@@ -232,9 +304,20 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
             return errorResponse(ApiError.badRequest("请求体不是合法的 JSON"));
         }
         // 统一错误出口：路由里抛的 ApiError 按 code/status 翻译成结构化 JSON；
-        // 未预料的错误在 errorResponse 里打日志 + 回 500，**不把堆栈/内部细节透给客户端**
+        // 未预料的错误在 errorResponse 里回 500，**不把堆栈/内部细节透给客户端**
         // （以前回纯文本，客户端解析不出结构化错误，只能显示一句笼统的话）。
-        return errorResponse(error);
+        //
+        // ⚠️ 意外错误（= 5xx）的日志与落库**必须在这里**做，不能塞进 errorResponse：
+        // 那是个纯函数，拿不到 env.DB，也拿不到 method / path / ip。
+        // 以前它只打一行「[api] 未处理的错误: …」，线上报「某个操作 500」时
+        // 根本不知道是哪个请求、哪个地址、哪个账号 —— 现在这一行带 rid + method + path，
+        // 并且按 rid 落一条审计，能和客户端上报里的 requestId 对上同一次请求。
+        if (!(error instanceof ApiError)) {
+            console.error("[api]", rid, request.method, url.pathname, error);
+            await recordServerError(env, rid, request, url.pathname, error);
+        }
+        // logged: true —— 上面已经带上下文打过了，别再让统一出口重复打一行没有上下文的
+        return errorResponse(error, { logged: true });
     }
 }
 
@@ -262,11 +345,13 @@ export function missingAuthSecret(
 
 export default {
     async fetch(request: Request, env: Env): Promise<Response> {
+        // 一次请求一个 rid：日志、审计、响应头、浏览器上报共用同一个值。
+        const rid = requestRid(request);
         if (missingAuthSecret(env)) {
             // 走统一错误出口（errorCodeMigration 那条守卫：worker/ 下不许裸写 Response.json({error})）。
             // 用 serviceUnavailable 而不是新造一个码：客户端只显示 message，
             // 503 也已经在前端的兜底分支里，没必要为一次性配置错误扩散错误码表。
-            return withSecurityHeaders(
+            const denied = withSecurityHeaders(
                 errorResponse(
                     ApiError.serviceUnavailable(
                         "站点鉴权已开启，但没有配置 AUTH_SECRET。" +
@@ -276,8 +361,16 @@ export default {
                     { headers: { "Cache-Control": "no-store" } }
                 )
             );
+            denied.headers.set(REQUEST_ID_HEADER, rid);
+            return denied;
         }
-        return withSecurityHeaders(await handleRequest(request, env));
+        const response = withSecurityHeaders(await handleRequest(request, env, rid));
+        // ⚠️ 所有响应都回写 rid（不只是 500）：路由 / 中间件直接抛出的 4xx 也走各自的
+        // errorResponse，那些出口没有 rid 可带。统一在这里补，前端 errorReporter 才能
+        // 把「用户看到的这句报错」和日志 / 审计里的同一行对上。
+        // withSecurityHeaders 返回的是**重建过的可变副本**（见它的注释），set 不会踩 immutable。
+        response.headers.set(REQUEST_ID_HEADER, rid);
+        return response;
     },
     /**
      * 定时任务（wrangler.jsonc 的 triggers.crons 触发；免费版账号全账号只有 5 个

@@ -134,6 +134,22 @@ function send(body: string): void {
 }
 
 /**
+ * 从错误对象上取服务端回写的请求 ID。
+ *
+ * 为什么用 duck typing 而不是 `instanceof ApiError`：
+ *   · 这个出口收到的东西很杂 —— ErrorBoundary 的 render 错误、window.onerror 的任意值、
+ *     将来可能挂上 rid 的其它错误类（比如 NoteConflictError）；
+ *   · 只要对象上挂着 requestId 字符串就用，不为拿一个字段引入 src/API 的依赖。
+ */
+function readRequestId(error: unknown): string {
+    if (typeof error === "object" && error !== null) {
+        const value = (error as { requestId?: unknown }).requestId;
+        if (typeof value === "string") return cleanStr(value, 64);
+    }
+    return "";
+}
+
+/**
  * 上报一个错误。三个来源都是同一个入口：
  *   - App.tsx 的 try/catch 末尾
  *   - ErrorBoundary.componentDidCatch
@@ -159,6 +175,10 @@ export function reportError(
         }
     }
 
+    // 服务端回写的 rid（见 shared/requestId.ts）：后端日志与 audit_log 里同一行有它。
+    // 拿不到（请求没到服务端 / 老部署）就不带这个字段 —— 不占位、不留空串。
+    const requestId = readRequestId(error);
+
     const body = JSON.stringify({
         name: norm.name,
         message: norm.message,
@@ -168,6 +188,7 @@ export function reportError(
             typeof window !== "undefined" && window.location
                 ? cleanStr(window.location.pathname, 256)
                 : "",
+        ...(requestId ? { requestId } : {}),
         timestamp: new Date().toISOString(),
         context: sanitize(options.context || {}),
     });
@@ -183,6 +204,8 @@ export function reportError(
                 typeof window !== "undefined" && window.location
                     ? cleanStr(window.location.pathname, 256)
                     : "",
+            // rid 只有 8 个字符，截断版更要留着 —— 它是「去日志里查哪一行」的唯一线索
+            ...(requestId ? { requestId } : {}),
             timestamp: new Date().toISOString(),
         });
     }

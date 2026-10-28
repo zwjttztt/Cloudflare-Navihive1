@@ -20,6 +20,10 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { useAccountSession } from "../src/hooks/useAccountSession";
 import type { AccountInfo, SessionInfo } from "../src/API/http";
+// ⚠️ mock 抛的必须是**真的 ApiError**：认证失败的判据是 code/status，不是文案
+// （见 src/API/apiError.ts 的 isAuthError）。拿 new Error("... (HTTP 403)") 糊过去
+// 会让用例测到一个真实客户端的 API 根本不会产生的形状。
+import { API_ERROR_CODES, ApiError } from "../src/API/apiError";
 
 type Params = Parameters<typeof useAccountSession>[0];
 type Api = Params["api"];
@@ -106,7 +110,13 @@ function makeApi(o: Options, log: Log): Api {
             // 真实服务端上「不认这张会话」时 /api/auth/me 就是 401，客户端表现为抛错。
             // 2026-10-24 起启动检查改问 auth/me（不再问公开端点 /api/configs），
             // mock 的判据也得跟着换，否则「服务端不认会话」的场景喂不进去。
-            if (o.sessionOk === false) throw new Error("HTTP 401 认证已失效");
+            if (o.sessionOk === false) {
+                throw new ApiError({
+                    status: 401,
+                    code: API_ERROR_CODES.unauthenticated,
+                    message: "认证已失效",
+                });
+            }
             return o.me ?? { id: 7, username: "admin", role: "owner" };
         },
         register: async () => o.registerResult ?? { success: true, username: "newbie" },
@@ -415,7 +425,15 @@ test("启动检查：403（账号被停用）要退回登录页，并把服务�
     mount(
         <Harness
             log={log}
-            o={{ fetchError: new Error("账号已停用，可用恢复密钥找回 (HTTP 403)") }}
+            o={{
+                // 真实客户端抛的就是这个形状（status 403 + code forbidden，
+                // 文案末尾还带着 client.ts 拼的 (HTTP 403) 后缀 —— 那个后缀要被剥掉）
+                fetchError: new ApiError({
+                    status: 403,
+                    code: API_ERROR_CODES.forbidden,
+                    message: "账号已停用，可用恢复密钥找回 (HTTP 403)",
+                }),
+            }}
         />
     );
     await run(() => a().checkAuthStatus());

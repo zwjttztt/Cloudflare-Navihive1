@@ -3,7 +3,7 @@
 评估对象：`zwjttztt/Cloudflare-Navihive1` main（v4.3.2）。
 方法：**实测优先**——本地起自托管服务跑全站体检 / 无障碍 / 对比度审计，统计构建产物与源码规模，
 读关键源码与配置核对安全项；不采信「应该没问题」的推断。
-线上快照：`https://home.zwjttzt.com`，容器 healthy，跑 v4.3.2。
+线上快照：`https://<your-host>`，容器 healthy，跑 v4.3.2。
 
 ---
 

@@ -61,7 +61,7 @@
 | 影响 | ① 登录接口拿不到 XFF → 应用层的失败限速仍是全场一个桶（nginx 那层 `limit_req` 按 `$binary_remote_addr` 是好的，但它是硬限、挡不住这一条）；② 这三个 location 的响应 cookie 少了 `Secure`。 |
 | 根因 | nginx 的继承规则是「当前级别一条 `proxy_set_header` 都没有，才继承上级」。写在 `location /` 里的那几行只对 `location /` 生效，平级 location 不会继承兄弟块。 |
 | 改动 | `deploy/nginx/sites-available/navihive-selfhost.conf`：四行 `proxy_set_header` 与 `proxy_http_version 1.1` 提到 `server` 级；`location /` 只留本块特有的 `proxy_buffering off`（不能一起提上去 —— `/assets/` 开着 `proxy_cache`，缓冲必须留着）。 |
-| 验证 | 配置已提交；生产机（131.186.58.86）上的 `/home/web/conf.d/home.zwjttzt.com.conf` 按同一条规则核对后同步修正。 |
+| 验证 | 配置已提交；生产机（<vps-ip>）上的 `/home/web/conf.d/<your-host>.conf` 按同一条规则核对后同步修正。 |
 
 ### P2-6 · 启动自检缺两条「跑错了但不报错」的提醒（体验性 · 仅自托管）
 

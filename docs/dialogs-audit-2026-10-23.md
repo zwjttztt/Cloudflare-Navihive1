@@ -14,7 +14,7 @@
 | 源码扫描 | **32 个文件 / 37 处 `<Dialog>`** | 逐个抓 `<Dialog>` 起始标签（花括号配平，避免被 `onClose={() => …}` 里的 `>` 截断），统计 `maxWidth` / `fullWidth` / `fullScreen` / `scroll` / `slotProps.paper` / 是否使用公共外壳 |
 | 外壳与 token 对照 | 3 处外壳定义 | `dialogShell.ts`、`SiteSettingsModal.settingsPaper()`、`NotesSettingsDialog` 内联 paper，逐条比对圆角/材质/边框/阴影/内边距 |
 | 响应式规则溯源 | `index.css` + 构建产物 | 找到包裹「小屏底部面板」的媒体查询，并在**构建后的 CSS** 里确认规则确实存在 |
-| **线上实测**（今天） | 375×800，真 Chrome + CDP | 打开线上 `home.zwjttzt.com`，量 `.MuiDialog-paper` 的 `getComputedStyle`：`margin` / `maxHeight` / 容器 `alignItems` / 圆角 / 毛玻璃 / 操作区 sticky 与内边距 |
+| **线上实测**（今天） | 375×800，真 Chrome + CDP | 打开线上 `<your-host>`，量 `.MuiDialog-paper` 的 `getComputedStyle`：`margin` / `maxHeight` / 容器 `alignItems` / 圆角 / 毛玻璃 / 操作区 sticky 与内边距 |
 | 历史实测数据 | 19 个弹窗 × 1440/1024/768/375 | 直接引用 `Claw/harness/out/audit-{1440,375}.json`（2026-10-16 采集），**只用于说明尺寸分布**，凡涉及外观的结论一律以今天的实测或源码为准 |
 
 **明确区分**：文中标「实测」的是今天/上一轮真浏览器量到的数；标「推断」的是读代码得出的结论。

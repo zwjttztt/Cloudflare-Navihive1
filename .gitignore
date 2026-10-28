@@ -26,8 +26,10 @@ dist-ssr
 # wrangler files
 .wrangler
 .dev.vars*
-pnpm-lock.yaml
-npm-lock.yaml
+# ⚠️ 锁文件**故意不忽略**（早期这里有两行 pnpm-lock.yaml / npm-lock.yaml，已删）：
+# 忽略它反而更危险 —— 万一有人真用 pnpm，pnpm install 会装出一棵没有锁文件约束的
+# 依赖树（^ 范围全取最新），node_modules 被软链结构覆盖，而这件事既不会出现在
+# git status 里、也不会被 code review 看见。不忽略，至少能看见。
 # 沙箱内 tsc 编译单测的临时产物目录
 .tmp-check
 # 单测打包（esbuild）的临时产物目录

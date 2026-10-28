@@ -128,6 +128,43 @@ test("令牌验签不过：401 提示重新登录", async () => {
     assert.ok((await res.text()).includes("重新登录"));
 });
 
+// 为什么单独钉这一条：这四条 401 原来是**纯文本**，客户端 request() 里
+// `response.json()` 直接抛 → errorPayload = null → parseApiError 拿到 null → code 退化成
+// 兜底值。前端因此只能 `message.includes("认证")` 判错，文案一改就静默失效（界面从此
+// 只会弹一句 toast，永远不回登录页）。文案是给人看的，code 才是给程序看的 ——
+// 两边都必须保留，缺一个就有下游要瞎猜。
+test("四条 401 全部走统一 envelope：code=unauthenticated + 原中文文案", async () => {
+    const cases: Array<{ name: string; res: Promise<{ res: Response | null }>; message: string }> = [
+        { name: "既没 cookie 也没 Authorization", res: call({}), message: "请先登录" },
+        {
+            name: "Authorization 不是 Bearer",
+            res: call({}, "groups", { headers: { Authorization: "Basic abc" } }),
+            message: "无效的认证信息",
+        },
+        {
+            name: "令牌验签不过",
+            res: call({ verify: { valid: false } }, "groups", { headers: cookieHeader("expired") }),
+            message: "认证已过期或无效，请重新登录",
+        },
+        {
+            name: "遗留令牌（缺 uid）且库里已有账号",
+            res: call(
+                { verify: { valid: true, payload: { jti: "old", exp: 1 } }, hasAnyUser: true },
+                "groups",
+                { headers: cookieHeader("legacy") }
+            ),
+            message: "登录状态已过期，请重新登录",
+        },
+    ];
+    for (const c of cases) {
+        const { res } = await c.res;
+        assert.equal(res?.status, 401, c.name);
+        const body = await errorBody(res!);
+        assert.equal(body.code, "unauthenticated", `${c.name}：401 必须带 unauthenticated`);
+        assert.equal(body.message, c.message, `${c.name}：中文文案要原样保留（前端有兜底在用）`);
+    }
+});
+
 test("正常令牌：绑上 uid、记下 jti/exp、刷新活跃时间，然后放行", async () => {
     const { res, log, session } = await call({}, "groups", { headers: cookieHeader("good") });
     assert.equal(res, null);

@@ -158,6 +158,11 @@ export interface ErrorReport {
     path?: string;
     /** 发生时刻（ISO 字符串） */
     timestamp?: string;
+    /**
+     * 服务端回写的请求 ID（前端从 x-request-id 响应头读到、挂在 ApiError 上再上报，
+     * 见 shared/requestId.ts）。老客户端不带这个字段，所以可选。
+     */
+    requestId?: string;
     /** 任意附加上下文（已 sanitize） */
     context?: Record<string, unknown>;
 }
@@ -208,6 +213,10 @@ export async function reportError(request: Request, env: Env): Promise<Response>
             path: cleanStr(sanitized?.path, 256) || "",
             name: cleanStr(sanitized?.name, 128) || "",
             message: cleanStr(sanitized?.message, 512) || "",
+            // rid 是与 server-error 那条审计的**连接键**：用户截图里的报错 → 这个值 →
+            // audit_log 里同 rid 的 server-error（含 method / path / code）。
+            // 老客户端不带就留空串，不影响归并（groupClientErrors 只看 source/message/path）。
+            rid: cleanStr(sanitized?.requestId, 64) || "",
         });
         await api.writeAudit("client-error", "anonymous", ip, detail);
     } catch {

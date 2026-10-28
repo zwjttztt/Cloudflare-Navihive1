@@ -167,22 +167,65 @@ if (pureEntries.length === 0 && domEntries.length === 0) {
  * 并行跑，就能稳定复现。用 O_EXCL 建文件拿锁：内核保证只有一个进程建得成。
  */
 const LOCK_FILE = path.join(HERE, ".unit-tests.lock");
-try {
-    fs.writeFileSync(LOCK_FILE, `${process.pid}\n`, { flag: "wx" });
-} catch {
+const takeLock = () => {
+    try {
+        fs.writeFileSync(LOCK_FILE, `${process.pid}\n`, { flag: "wx" });
+        return true;
+    } catch {
+        return false;
+    }
+};
+
+if (!takeLock()) {
     let holder = "";
+    let readable = false;
     try {
         holder = fs.readFileSync(LOCK_FILE, "utf8").trim();
+        readable = true;
     } catch {
         /* 锁文件刚好被对方删了：算并发，照样退出 */
     }
-    console.error(
-        `已有单测运行器在跑${holder ? `（pid ${holder}）` : ""}：` +
-            `两份运行器共用 ${path.relative(ROOT, OUT_DIR)}，并发会互相删产物、` +
-            `报出一堆并不存在的失败。等它跑完再试。\n` +
-            `如果确认没有别的运行器（上次是被强杀的），删掉 ${path.relative(ROOT, LOCK_FILE)} 再来。`
+    // ⚠️ 锁文件可能是**死的**：SIGINT/SIGTERM 有 handler 会放锁，SIGKILL 抓不到 ——
+    // kill -9、OOM killer、IDE 的停止按钮、任务管理器的结束进程、CI 的
+    // timeout-minutes 强杀，全都会把锁留在盘上。此时如果只照着锁文件报
+    // 「已有运行器在跑」，说的与事实正好相反，下一次运行会被一句假话挡住，
+    // 只能人工去删文件（项目历史上真实发生过）。
+    // 所以拿不到锁时先做一次活性探测：那个 pid 还在不在？
+    const pid = Number(holder);
+    let alive = false;
+    if (readable && Number.isInteger(pid) && pid > 0) {
+        try {
+            // 信号 0 不真发信号，只做存在性检查：成功 = 活着
+            process.kill(pid, 0);
+            alive = true;
+        } catch (err) {
+            // ESRCH = 进程已不存在（僵死锁）；EPERM = 存在但无权发信号（也算活着）
+            alive = err.code === "EPERM";
+        }
+    }
+    const giveUp = () => {
+        console.error(
+            `已有单测运行器在跑${holder ? `（pid ${holder}）` : ""}：` +
+                `两份运行器共用 ${path.relative(ROOT, OUT_DIR)}，并发会互相删产物、` +
+                `报出一堆并不存在的失败。等它跑完再试。\n` +
+                `如果确认没有别的运行器（上次是被强杀的），删掉 ${path.relative(ROOT, LOCK_FILE)} 再来。`
+        );
+        process.exit(1);
+    };
+
+    // 读不到内容（刚被放锁）或持有者确实活着：走原来的报错
+    if (!readable || alive) giveUp();
+
+    console.warn(
+        `发现僵死锁（pid ${holder || "未知"} 已不存在），已自动回收 ${path.relative(ROOT, LOCK_FILE)}`
     );
-    process.exit(1);
+    try {
+        fs.rmSync(LOCK_FILE, { force: true });
+    } catch {
+        /* 删不掉就交给下面的重抢失败分支报错 */
+    }
+    // 竞态：删掉的一瞬间另一个运行器可能正好抢到锁，那就真的回到「已有运行器在跑」
+    if (!takeLock()) giveUp();
 }
 const releaseLock = () => {
     try {
@@ -292,10 +335,32 @@ for (const group of ["pure", "dom"]) {
 
 // --test-force-exit 是必需的：jsdom 用了 pretendToBeVisual，会一直跑 rAF 循环，
 // 测例跑完事件循环也空不下来（碰到 FileReader 这类异步更明显），不加就永远不退。
-const child = spawn(process.execPath, ["--test", "--test-force-exit", ...bundles], {
-    stdio: "inherit",
-    cwd: ROOT,
-});
+const child = spawn(
+    process.execPath,
+    [
+        "--test",
+        "--test-force-exit",
+        // ⚠️ 默认 --test-timeout 是 Infinity：一条永不 resolve 的用例会让整个 CI job
+        // 一直挂到 timeout-minutes 兜底，日志里只剩「job cancelled」，查不出是哪条。
+        //
+        // ⚠️ 但它**不是**「单条用例的上限」，而是把**文件级那条**也一起管住（node 把每个
+        // 文件包成一个顶层 subtest，时长算的是整个文件）。所以这个值必须大于「最慢的那个
+        // 文件跑完的时长」，否则健康的文件会被当成挂死杀掉 —— 2026-10-28 用 60000 就踩了：
+        // notes.dom.test.tsx（6802 行 / 226 例）单跑 120s、全过，被砍在 60003ms，
+        // 整个文件的 115 条用例连带报 cancelled，看起来像 7 条失败 + 一堆用例消失。
+        //
+        // 10 分钟的依据：CI job 的 timeout-minutes 是 15，留 5 分钟足够把这条失败报出来
+        // （带文件名与 duration_ms），而不是等到 job 被砍只剩 cancelled。实测最慢文件
+        // 120s，这里有 5 倍余量 —— 想在 CI 上误伤它基本不可能。
+        // ⚠️ 别再往下调。要收紧就先拆 notes.dom.test.tsx；把数字调小只是把假红换个位置。
+        "--test-timeout=600000",
+        // ⚠️ 不设时 node 按核数起进程：16 核开发机上会同时跑 15 个 jsdom 进程，
+        // 每个都加载一份 React/MUI，本地和 CI 的调度压力完全不可比。钉成 4 让两边一致。
+        "--test-concurrency=4",
+        ...bundles,
+    ],
+    { stdio: "inherit", cwd: ROOT }
+);
 child.on("exit", code => {
     if (!coverageMode) fs.rmSync(OUT_DIR, { recursive: true, force: true });
     releaseLock();

@@ -31,11 +31,11 @@
 
 ```
 Failed to fetch dynamically imported module:
-  https://myhp.zwjttzt.com/assets/SettingsDialog-ColO2hPS.js
+  https://<cf-host>/assets/SettingsDialog-ColO2hPS.js
 ```
 
-用户访问的是自定义域名 `myhp.zwjttzt.com`。先确认了它和 `workers.dev` 是**同一份部署**
-（Cloudflare `workers/domains` 里 `myhp.zwjttzt.com → cloudflare-navihive1 / production`），
+用户访问的是自定义域名 `<cf-host>`。先确认了它和 `workers.dev` 是**同一份部署**
+（Cloudflare `workers/domains` 里 `<cf-host> → cloudflare-navihive1 / production`），
 所以线上只有一份产物、入口是 `index-BlRrkSqB.js`；而用户拿到的是 `index-DZHdqiVB.js`
 —— 一个**旧版本的外壳**。
 
@@ -74,7 +74,7 @@ Failed to fetch dynamically imported module:
 ### 你现在要做的
 
 你浏览器里那份缓存还是旧的，自愈代码在**新**产物里，所以还差一步：
-在 `myhp.zwjttzt.com` 上按一次 **Ctrl+F5**（硬刷新），或者在站点设置里清一次该站点数据。
+在 `<cf-host>` 上按一次 **Ctrl+F5**（硬刷新），或者在站点设置里清一次该站点数据。
 之后这个域名就会落到最新版，再遇到同类情况会自己重载。
 
 ---

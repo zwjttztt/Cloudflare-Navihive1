@@ -121,6 +121,25 @@ export function purgeLegacyToken(): void {
 }
 
 /**
+ * 401 的全局广播事件名（命名跟 utils/collapse.ts 的 `navihive:collapsed-changed` 一致）。
+ *
+ * 为什么需要它：401 不只发生在 bootstrap 上。令牌过期之后，用户点任何按钮拿到的
+ * 都是一条 401，而原来「回登录页」只接在 bootstrap 那一条链路上 —— 于是界面上
+ * 只会一次次弹出同一句 toast，永远停在原地。
+ *
+ * 为什么不在 client 里直接跳登录页：client 是纯传输层，它不该知道「登录页」「设置弹窗」
+ * 这些 UI 概念。这里只广播一个**无载荷**的事件（Event 而不是 CustomEvent —— 没有
+ * 明细要传，服务端的文案和 code 已经裹在抛出的 ApiError 里了），由 App 统一处置。
+ */
+export const UNAUTHORIZED_EVENT = "navihive:unauthorized";
+
+/** 广播一次「会话不可用了」。SSR / 测试环境没有 window 时安静跳过 */
+export function notifyUnauthorized(): void {
+    if (typeof window === "undefined") return;
+    window.dispatchEvent(new Event(UNAUTHORIZED_EVENT));
+}
+
+/**
  * 裸 fetch 出口统一取错误文案。
  *
  * 登录 / 注册 / 恢复 / 邀请码 / 注销账号 / 导入这几个端点不走 `request()`

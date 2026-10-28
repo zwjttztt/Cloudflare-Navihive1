@@ -1,6 +1,6 @@
 # 方案 A 落地手册：VPS 反向代理
 
-把 `myhp.zwjttzt.com` 的访问从「家宽直连 Cloudflare 欧洲节点（~300ms）」
+把 `<cf-host>` 的访问从「家宽直连 Cloudflare 欧洲节点（~300ms）」
 改成「家宽 → 东京 VPS（50–90ms）→ CF 日本边缘（2–10ms）」。
 **不改一行业务代码，不迁数据，回滚只需改一条 DNS。**
 
@@ -32,12 +32,12 @@ curl -sI https://cloudflare-navihive1.xxxxx.workers.dev/ | head -3
 如果 workers.dev 不可用，就在 Cloudflare 上再加一个自定义域专门当源站：
 
 1. `cloudflare-navihive1` → **Settings → Domains & Routes → Add → Custom domain**
-   填 `origin.zwjttzt.com`（**保持橙色云开启**）
-2. 用它当源站：把配置文件里两处 `<WORKERS_DEV_HOST>` 都换成 `origin.zwjttzt.com`
-3. 这样不会死循环 —— 因为只有 `myhp.zwjttzt.com` 的 DNS 指向 VPS，
-   `origin.zwjttzt.com` 仍然由 Cloudflare 代理
+   填 `<origin-host>`（**保持橙色云开启**）
+2. 用它当源站：把配置文件里两处 `<WORKERS_DEV_HOST>` 都换成 `<origin-host>`
+3. 这样不会死循环 —— 因为只有 `<cf-host>` 的 DNS 指向 VPS，
+   `<origin-host>` 仍然由 Cloudflare 代理
 
-> 为什么不能直接用 `myhp.zwjttzt.com` 当源站：一旦它的 DNS 指向 VPS，
+> 为什么不能直接用 `<cf-host>` 当源站：一旦它的 DNS 指向 VPS，
 > Nginx 带着这个 Host 回源就会解析回 VPS 自己 → 无限循环 → 502。
 
 ---
@@ -53,7 +53,7 @@ Oracle 东京免费机（2 OCPU / 12GB / 10TB 月出网）配置绰绰有余，�
   → 开完立刻把账号升级成 **Pay As You Go**（仍在免费额度内，账单 $0），回收策略不再适用。
 - **Home region 注册时锁定、永久不可改**；A1 常 "Out of host capacity"，要重试或换 AD。
 
-记下公网 IP，下面用 `<VPS_IP>` 代称。
+记下公网 IP，下面用 `<vps-ip>` 代称。
 
 ---
 
@@ -79,7 +79,7 @@ sudo iptables -I INPUT 6 -m state --state NEW -p tcp --dport 443 -j ACCEPT
 sudo netfilter-persistent save
 ```
 
-验证：`curl -sS -o /dev/null -w "%{http_code}\n" http://<VPS_IP>/` 应该返回 Nginx 的响应码。
+验证：`curl -sS -o /dev/null -w "%{http_code}\n" http://<vps-ip>/` 应该返回 Nginx 的响应码。
 
 ---
 
@@ -88,8 +88,8 @@ sudo netfilter-persistent save
 从本目录拷到 VPS（路径要对应）：
 
 ```bash
-scp snippets/navi-proxy.conf            root@<VPS_IP>:/etc/nginx/snippets/
-scp sites-available/navihive.conf       root@<VPS_IP>:/etc/nginx/sites-available/
+scp snippets/navi-proxy.conf            root@<vps-ip>:/etc/nginx/snippets/
+scp sites-available/navihive.conf       root@<vps-ip>:/etc/nginx/sites-available/
 ```
 
 然后在 VPS 上把 `<WORKERS_DEV_HOST>` 替换成步骤 0 拿到的地址（**两处都要改**）：
@@ -116,7 +116,7 @@ sudo nginx -t && sudo systemctl reload nginx
 **在不动 DNS 的前提下验证反代通路**（这一步能提前发现源站地址写错）：
 
 ```bash
-curl -sI --resolve myhp.zwjttzt.com:80:<VPS_IP> http://myhp.zwjttzt.com/
+curl -sI --resolve <cf-host>:80:<vps-ip> http://<cf-host>/
 # 期望：200 OK（不是 502）
 # 502 = 源站地址写错 / 防火墙没开 / Host 死循环，先别切 DNS
 ```
@@ -125,14 +125,14 @@ curl -sI --resolve myhp.zwjttzt.com:80:<VPS_IP> http://myhp.zwjttzt.com/
 
 ## 步骤 6：切 DNS 并签证书
 
-1. Cloudflare DNS：`myhp.zwjttzt.com` 的 A 记录改成 `<VPS_IP>`，**点掉橙色云（DNS only）**。
+1. Cloudflare DNS：`<cf-host>` 的 A 记录改成 `<vps-ip>`，**点掉橙色云（DNS only）**。
    - Cloudflare 上 Worker 的自定义域路由**保留不动** —— 它不影响，且方便回滚。
    - TTL 建议 300s。
-2. 等解析生效：`dig +short myhp.zwjttzt.com` 应该返回 `<VPS_IP>`。
+2. 等解析生效：`dig +short <cf-host>` 应该返回 `<vps-ip>`。
 3. 签证书：
 
 ```bash
-sudo certbot --nginx -d myhp.zwjttzt.com
+sudo certbot --nginx -d <cf-host>
 ```
 
 certbot 会自动改写配置加上 443。

@@ -34,7 +34,8 @@ test("入口在交给路由之前就拦下，且返回 503（不是 500/200）",
     // 静态守卫：这条闸必须在 handleRequest **之前**，否则业务代码已经跑过一半了。
     const src = readFileSync(join(projectDir(), "worker/index.ts"), "utf-8");
     const guardAt = src.indexOf("missingAuthSecret(env)");
-    const routeAt = src.indexOf("handleRequest(request, env)");
+    // 调用点带上了 rid 参数（"handleRequest(request, env, rid)"），所以只匹配前缀
+    const routeAt = src.indexOf("handleRequest(request, env");
     assert.ok(guardAt > 0, "入口必须调用 missingAuthSecret");
     assert.ok(routeAt > 0, "找不到 handleRequest 调用点，守卫要跟着改");
     assert.ok(guardAt < routeAt, "闸必须在路由之前，不能反过来");

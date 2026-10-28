@@ -12,11 +12,11 @@
 ```bash
 # 1) VPS 的公网 IP 变了没有？域名还指不指着它
 curl -s ifconfig.me          # VPS 上执行，记下 IP
-dig +short home.zwjttzt.com  # 任意机器执行，对比上面那个 IP
+dig +short <your-host>  # 任意机器执行，对比上面那个 IP
 ```
 
 - **一致** → 跳过域名解析，Cloudflare 那边不用动。
-- **不一致** → 去 Cloudflare DNS 把 `home.zwjttzt.com` 的 A 记录改成新 IP
+- **不一致** → 去 Cloudflare DNS 把 `<your-host>` 的 A 记录改成新 IP
   （代理状态保持「已代理」小橙云不变）。改完等 1~2 分钟再继续。
 
 另外确认这台 VPS 上 kPanel 已经装好、Docker 正常：
@@ -87,17 +87,17 @@ curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8787/api/init   # 应�
 
 ## 3. kPanel 网站反代 + 证书（域名指对 IP 的情况下）
 
-1. kPanel → 网站 → 新建站点：域名 `home.zwjttzt.com`，类型选**反向代理**，
+1. kPanel → 网站 → 新建站点：域名 `<your-host>`，类型选**反向代理**，
    目标 `http://127.0.0.1:8787`。
 2. SSL：
    - **有 Cloudflare 源站证书**（CF → SSL/TLS → Origin Server → Create Certificate，
-     勾选 `*.zwjttzt.com` + `zwjttzt.com`，有效期 15 年）→ 把证书/私钥粘进 kPanel 对应位置；
+     勾选 `*.<your-host>` + `<your-host>`，有效期 15 年）→ 把证书/私钥粘进 kPanel 对应位置；
    - 没有的话用 kPanel 的 Let's Encrypt 申请：先把 CF 的代理**临时关掉**（灰云），
      签发成功后再开回橙云。
 3. 验证公网：
 
 ```bash
-curl -s -o /dev/null -w '%{http_code}\n' https://home.zwjttzt.com/api/init   # 200
+curl -s -o /dev/null -w '%{http_code}\n' https://<your-host>/api/init   # 200
 ```
 
 > nginx 侧不用手写配置：kPanel 生成的站点配置就是反代到 8787，静态资源由容器里的
@@ -111,7 +111,7 @@ curl -s -o /dev/null -w '%{http_code}\n' https://home.zwjttzt.com/api/init   # 2
 
 ### 4.1 从 Cloudflare 站导出（重要：用你平时那台浏览器）
 
-1. 浏览器打开 `https://home.zwjttzt.com`，登录。
+1. 浏览器打开 `https://<your-host>`，登录。
 2. 顶栏「更多选项」→「备份与恢复」→ 确认在**备份**页：
    - 「备份含站点账号密码」开关**打开**（否则搬过去的卡片没有账号密码）；
    - 如果设过「用密码加密备份文件」，记住那个口令，恢复时要输。
@@ -124,7 +124,7 @@ curl -s -o /dev/null -w '%{http_code}\n' https://home.zwjttzt.com/api/init   # 2
 
 ### 4.2 导入新 VPS
 
-1. 浏览器打开 `https://home.zwjttzt.com`（此时已指向新 VPS），
+1. 浏览器打开 `https://<your-host>`（此时已指向新 VPS），
    用第 2 步设的账号密码登录，按提示改密码。
 2. 「更多选项」→「备份与恢复」→ 切到「**恢复 / 导入**」页 →
    选 4.1 下载的那个文件 →「开始恢复」→ 出差异预览 → 确认导入。

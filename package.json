@@ -1,8 +1,9 @@
 {
   "name": "navihive",
   "private": true,
-  "version": "16.5.0",
+  "version": "17.0.0",
   "type": "module",
+  "packageManager": "npm@10.9.7",
   "scripts": {
     "dev": "vite",
     "typecheck": "tsc -b",

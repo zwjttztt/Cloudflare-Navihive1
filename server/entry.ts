@@ -16,7 +16,7 @@ import { request as httpRequest, type RequestOptions } from "node:http";
 import { Readable } from "node:stream";
 import { mkdir, readFile } from "node:fs/promises";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { timingSafeEqual } from "node:crypto";
+import { timingSafeEqual, randomUUID } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import path from "node:path";
 import handler from "../worker/index";
@@ -34,6 +34,7 @@ import { isPublicHost, normalizeRemoteAddress } from "./net";
 import { setEgressResolver } from "../worker/safeFetch";
 import { isBlockedHost } from "../worker/util";
 import { REAL_IP_HEADER } from "../worker/httpUtils";
+import { REQUEST_ID_HEADER, REQUEST_ID_LEN } from "../shared/requestId";
 import type { Env } from "../worker/types";
 
 // ============ CONFIG ============
@@ -198,7 +199,7 @@ function toHeaders(req: IncomingMessage): Headers {
     return headers;
 }
 
-async function proxyToWorker(req: IncomingMessage, res: ServerResponse): Promise<void> {
+async function proxyToWorker(req: IncomingMessage, res: ServerResponse, rid: string): Promise<void> {
     const method = req.method ?? "GET";
     const trustXFF = serverEnv.NAVIHIVE_TRUST_XFF === "1";
 
@@ -255,6 +256,11 @@ async function proxyToWorker(req: IncomingMessage, res: ServerResponse): Promise
     // 都不可用或不可信时才读它）。Workers 部署下没人写这条头。
     const remoteAddress = req.socket.remoteAddress;
     if (remoteAddress) headers.set(REAL_IP_HEADER, normalizeRemoteAddress(remoteAddress));
+
+    // 请求 ID：由 createServer 入口生成后一路带下来（结构化访问日志用的是同一个值）。
+    // ⚠️ 一律覆盖客户端带过来的值 —— 否则伪造一个和别人相同的 rid，就能把两条请求的
+    // 日志 / 审计串成一条，反过来也查不清。Workers 部署下这条头由 worker 自己生成。
+    headers.set(REQUEST_ID_HEADER, rid);
 
     const hasBody = method !== "GET" && method !== "HEAD";
     const request = new Request(url, {
@@ -882,21 +888,73 @@ async function cleanupUpgraderContainer(): Promise<void> {
 }
 
 
+/**
+ * 访问日志里的客户端地址，与 worker 侧同口径：
+ * 信任反代（NAVIHIVE_TRUST_XFF=1）时取 XFF 首段，否则只认 socket 对端
+ * （XFF 是客户端能随便写的，直接暴露到公网时拿它当来源等于自欺）。
+ */
+function accessIp(req: IncomingMessage): string {
+    const forwarded = TRUST_XFF === "1" ? firstHeaderValue(req.headers["x-forwarded-for"]) : undefined;
+    return normalizeRemoteAddress(forwarded || req.socket?.remoteAddress || "");
+}
+
 const server = createServer((req, res) => {
     const started = Date.now();
+    const method = req.method ?? "GET";
+    // rid 在入口生成：这一条请求在「浏览器 → Nginx → Node → Worker」全程共用它。
+    // Cloudflare 那条链没有本进程可以注头，由 worker/index.ts 在没有这个头时自生成。
+    const rid = randomUUID().slice(0, REQUEST_ID_LEN);
+    // 解析失败（畸形请求行）就当根路径：访问日志不该在入口把自己炸掉。
+    let pathname = "/";
+    try {
+        pathname = new URL(req.url ?? "/", "http://placeholder").pathname;
+    } catch {
+        /* 保持 "/" */
+    }
+    const isApi = pathname === "/api" || pathname.startsWith("/api/");
 
-    const finish = (): void => {
+    // 响应头也回写 rid：浏览器端 errorReporter 从响应头读它，才能把「用户看到的这句
+    // 报错」和这份日志 / 审计里的同一行对上。⚠️ 必须在 writeHead 之前设 ——
+    // writeHead 会把 setHeader 设过的头合并进去（同名时 writeHead 的参数优先，
+    // 而 worker 回的就是同一个值，不打架）。
+    // 只给 API 加：静态资源没人读这个头，而反代可能缓存静态响应 ——
+    // 那会把「第一次请求的 rid」缓存下来发给所有人，反而是个错误线索。
+    if (isApi) res.setHeader(REQUEST_ID_HEADER, rid);
+
+    // 访问日志挪到**响应结束**才打：原来是在 proxyToWorker 之前打，只能证明
+    // 「请求进来了」，既没有状态码也没有耗时 —— 99% 的请求就这一行，等于没记。
+    res.on("finish", () => {
         const ms = Date.now() - started;
-        if (ms > 1000) console.warn(`慢请求 ${req.method} ${new URL(req.url ?? "/", "http://x").pathname} ${res.statusCode} ${ms}ms`);
-    };
-    res.on("finish", finish);
+        const slow = ms > 1000;
+        if (!isApi) {
+            // 静态资源不逐条记（一跳一条太吵、对排障没用），但慢的要留一条 ——
+            // 那正是要看的一类（首屏慢往往卡在某个 chunk 上）。
+            if (slow) console.warn(`慢请求 ${method} ${pathname} ${res.statusCode} ${ms}ms`);
+            return;
+        }
+        // 一行 JSON = 一条请求：grep / jq / 采样都方便。
+        // ⚠️ p 只记 pathname，**不记 fullUrl**：query 里可能带分享口令 / token，
+        // 日志是明文落盘的（比客户端上报更危险）。ua 截 60 字符同理 ——
+        // compose 的 json-file 只留 30MB×3，每行都比原来长，增量得控住。
+        // ⚠️ 慢请求不再单独 warn，改成这一行里带 slow:true：否则同一请求两行日志，
+        // 而且 warn 那行没有 rid，反而查不到是哪个请求。
+        console.log(
+            JSON.stringify({
+                t: new Date().toISOString(),
+                rid,
+                m: method,
+                p: pathname,
+                s: res.statusCode,
+                ms,
+                ip: accessIp(req),
+                ua: String(req.headers["user-agent"] || "").slice(0, 60),
+                ...(slow ? { slow: true } : {}),
+            })
+        );
+    });
 
     void (async () => {
         try {
-            const pathname = new URL(req.url ?? "/", "http://placeholder").pathname;
-            const method = req.method ?? "GET";
-            const isApi = pathname === "/api" || pathname.startsWith("/api/");
-
             // POST /__cron：给外部定时器（systemd timer / crontab）用的触发口
             if (pathname === "/__cron" && method === "POST") {
                 if (!cronTokenOk(req)) {
@@ -1094,11 +1152,14 @@ const server = createServer((req, res) => {
                 if (await serveStatic(STATIC_DIR, headerRules, pathname, method, res)) return;
             }
 
-            // 只记 API 的访问日志：静态资源一跳一条太吵，而且对排障没用
-            if (isApi) console.log(`${method} ${pathname}`);
-            await proxyToWorker(req, res);
+            // 访问日志在 res.on("finish") 里打（见 createServer 开头）：这里只负责转发，
+            // 并把同一个 rid 带进 worker
+            await proxyToWorker(req, res, rid);
         } catch (error) {
-            console.error("请求处理异常:", error);
+            // ⚠️ 原来这里只有 console.error("请求处理异常:", error)：pathname / method
+            // 声明在 try 里面，catch 拿不到，日志里只剩一个裸异常 —— 不知道是哪个请求。
+            // 现在把 rid / method / pathname 一起带上，和访问日志、worker 侧那条 500 对得上。
+            console.error("[server]", rid, method, pathname, error);
             if (!res.headersSent) {
                 res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" }).end("Internal Error");
             } else {

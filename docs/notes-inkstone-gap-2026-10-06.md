@@ -1,8 +1,8 @@
 # 记事本对照 inkstone 的差距清单 + 全面排查报告
 
 - 日期：2026-10-06
-- 对照物：`https://note.zwjttzt.com`（inkstone，用户的另一套笔记）
-- 被查物：`https://myhp.zwjttzt.com` 记事本（`src/components/NotesPage.tsx` 等）
+- 对照物：`https://<notes-host>`（inkstone，用户的另一套笔记）
+- 被查物：`https://<cf-host>` 记事本（`src/components/NotesPage.tsx` 等）
 - 方法：inkstone 侧用 CDP 真机登录后清点导航项 / 顶栏按钮 / 状态栏 / 编辑器形态；
   本项目侧逐文件读代码 + 线上接口实测（`GET/POST /api/notes` 等）+ 浏览器实测。
 

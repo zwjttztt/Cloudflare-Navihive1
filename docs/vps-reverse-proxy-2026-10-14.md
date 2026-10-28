@@ -94,17 +94,17 @@ upstream navi_origin {
 
 server {
     listen 80;
-    server_name myhp.zwjttzt.com;
+    server_name <cf-host>;
     return 301 https://$host$request_uri;
 }
 
 server {
     listen 443 ssl;
     http2 on;                       # Nginx ≥ 1.25.1；老版本写 listen 443 ssl http2
-    server_name myhp.zwjttzt.com;
+    server_name <cf-host>;
 
-    ssl_certificate     /etc/letsencrypt/live/myhp.zwjttzt.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/myhp.zwjttzt.com/privkey.pem;
+    ssl_certificate     /etc/letsencrypt/live/<cf-host>/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/<cf-host>/privkey.pem;
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_session_cache shared:SSL:10m;
     ssl_session_timeout 1d;
@@ -176,17 +176,17 @@ server {
 ### 坑 1：回源 Host 写错 = 死循环（最常见）
 
 ```
-错误：proxy_set_header Host myhp.zwjttzt.com;
+错误：proxy_set_header Host <cf-host>;
 ```
 
-`myhp.zwjttzt.com` 是 Cloudflare 上绑定的 Worker 自定义域。一旦你把它的 DNS 指向 VPS，
+`<cf-host>` 是 Cloudflare 上绑定的 Worker 自定义域。一旦你把它的 DNS 指向 VPS，
 Nginx 带着这个 Host 回源 → 解析回 VPS 自己 → 无限循环 → 502。
 
 **必须用 Worker 自带的 `*.workers.dev` 地址作为源站**（它不依赖你的 DNS）。
 
 ### 坑 2：Cloudflare 侧的 DNS 要关掉橙色云
 
-在 Cloudflare DNS 里把 `myhp.zwjttzt.com` 的 A 记录改成 VPS IP，并**点掉代理（变灰云 DNS only）**。
+在 Cloudflare DNS 里把 `<cf-host>` 的 A 记录改成 VPS IP，并**点掉代理（变灰云 DNS only）**。
 否则 CF 仍然接管解析与代理，你的 A 记录改了也不生效。
 
 Worker 的自定义域路由**保留不动** —— 它不影响，且方便回滚（把 A 记录改回 CF 即可）。
@@ -246,7 +246,7 @@ Worker 的自定义域路由**保留不动** —— 它不影响，且方便回�
    `curl -w "TTFB:%{time_starttransfer} Total:%{time_total}"` 对比前后。
    没变快就不要切。
 2. 装 Nginx，套用第三节配置（先不切 DNS）。
-3. 用 `curl --resolve myhp.zwjttzt.com:443:<VPS_IP>` 验证：登录、CRUD、附件上传、导入进度条、WebDAV。
+3. 用 `curl --resolve <cf-host>:443:<VPS_IP>` 验证：登录、CRUD、附件上传、导入进度条、WebDAV。
 4. `certbot --nginx` 签证书（80 端口先放行）。
 5. 改 DNS：CF 上 A 记录 → VPS IP，**关橙色云**。TTL 建议 300s 便于回滚。
 6. 观察 24 小时（`X-Cache-Status` 是否 HIT、`limit_req` 有没有误伤）。

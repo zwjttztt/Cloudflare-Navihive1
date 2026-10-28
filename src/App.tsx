@@ -13,6 +13,7 @@ import {
 } from "react";
 import { NavigationClient } from "./API/client";
 import { MockNavigationClient } from "./API/mock";
+import { UNAUTHORIZED_EVENT } from "./API/transport";
 import {
     BootstrapData,
     BACKUP_CREDENTIALS_CONFIG,
@@ -181,6 +182,10 @@ import {
     CssBaseline,
 } from "@mui/material";
 import ChunkBoundary from "./components/ChunkBoundary";
+// 局部渲染兜底：拦在「站点列表 / 登录页」这一层，别让一张卡片崩了整页变成错误页
+// （见 components/RenderBoundary.tsx 头注）。刻意不用 ChunkBoundary：它的文案是给
+// 「chunk 没下载下来」写的，对渲染期异常是误导。
+import RenderBoundary from "./components/RenderBoundary";
 // 顶部提示条：懒加载 + 有提示才挂载（Snackbar 那套不进首屏关键路径，
 // 见 docs/site-audit-2026-10-15.md P1）；读屏播报区是常驻的 AriaLiveRegion
 const SnackbarHost = lazy(() => import("./components/SnackbarHost"));
@@ -225,12 +230,9 @@ function App() {
         api,
         onRemoteExtras: applyRemoteExtras,
         onError: (msg) => handleError(msg),
-        onAuthFail: () => {
-            // 只有登录过的人才需要吊销会话；没登录过的那次 401 本来就是正常答复
-            if (hadSessionRef.current) api.logout();
-            setIsAuthRequired(true);
-            setIsAuthenticatedTracked(false);
-        },
+        // 与 401 广播走同一个处置口（见下面 handleAuthFailure）：两条路各自调一遍，
+        // 但它是幂等的，重复进入只会命中第一行的 return。
+        onAuthFail: handleAuthFailure,
     });
 
     // bootstrap 里「分组」之外的落地：配置、链接健康、星标 / 标签跨端合并。
@@ -379,6 +381,43 @@ function App() {
         if (value !== false) hadSessionRef.current = true;
         setIsAuthenticated(value);
     };
+
+    // 「界面已经停在登录页了吗」的同步镜像。
+    // 给 401 的处置函数当幂等判据用：并发 401 会连发多个事件，而那个函数是用
+    // 空依赖注册的监听器，闭包里读不到最新的 isAuthRequired —— 只能读 ref。
+    const authRequiredRef = useRef(false);
+    useEffect(() => {
+        authRequiredRef.current = isAuthRequired;
+    }, [isAuthRequired]);
+
+    /**
+     * 认证失败的**唯一**处置口：bootstrap 加载失败（useSites 的 onAuthFail）与
+     * 任意接口的 401 广播（见下面的监听器）都走这里。
+     *
+     * 为什么要有它（2026-10-28）：原来「回登录页」只挂在 bootstrap 这一条链路上，
+     * 令牌过期之后点任何按钮都只弹同一句 toast，界面永远停在原地，用户以为卡死了。
+     * 现在 client 在任何 401 上都会广播 navihive:unauthorized，由这里统一收口。
+     *
+     * 幂等：已经在登录页就什么都不做 —— 否则并发 401 会重复 setState，
+     * 还会重复发 logout（那条请求带着已失效的令牌，必然又是一条 401）。
+     */
+    function handleAuthFailure() {
+        if (authRequiredRef.current) return;
+        authRequiredRef.current = true;
+        // 只有登录过的人才需要吊销会话；没登录过的那次 401 本来就是正常答复
+        if (hadSessionRef.current) api.logout();
+        setIsAuthRequired(true);
+        setIsAuthenticatedTracked(false);
+    }
+
+    // 401 的统一触发点：client 是纯传输层，不该知道「登录页」是什么，只广播事件。
+    // 挂一次就够 —— handleAuthFailure 读的都是 ref，不需要因为状态变化重新注册。
+    useEffect(() => {
+        window.addEventListener(UNAUTHORIZED_EVENT, handleAuthFailure);
+        return () => window.removeEventListener(UNAUTHORIZED_EVENT, handleAuthFailure);
+        // 只在挂载时注册：handleAuthFailure 每次渲染都是新函数，进 deps 会反复摘挂监听器
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
 
 
     // 配置域：设置弹窗 / 管理员凭据 / WebDAV 备份配置的整套状态，
@@ -1610,23 +1649,31 @@ function App() {
     }, [groups, iconPrivacy, configs]);
 
     // 如果正在检查认证状态，显示加载界面
+    // ⚠️ 登录页两处渲染都要包 RenderBoundary：这两条路径都是直接 return 的「整屏」，
+    //    一旦崩了没有别的边界兜着（根边界会把整页换成错误页，用户连重试都点不到）。
     if (isAuthChecking) {
-        return <LoginScreen theme={theme} checking />;
+        return (
+            <RenderBoundary label="登录页">
+                <LoginScreen theme={theme} checking />
+            </RenderBoundary>
+        );
     }
 
     // 如果需要认证但未认证，显示登录界面
     if (isAuthRequired && !isAuthenticated) {
         return (
-            <LoginScreen
-                theme={theme}
-                brandName={brandTitle(configs["site.title"])}
-                onLogin={handleLogin}
-                loading={loginLoading}
-                error={loginError}
-                onRecover={handleRecover}
-                recoverConfigured={recoveryConfigured}
-                onRegister={handleRegister}
-            />
+            <RenderBoundary label="登录页">
+                <LoginScreen
+                    theme={theme}
+                    brandName={brandTitle(configs["site.title"])}
+                    onLogin={handleLogin}
+                    loading={loginLoading}
+                    error={loginError}
+                    onRecover={handleRecover}
+                    recoverConfigured={recoveryConfigured}
+                    onRegister={handleRegister}
+                />
+            </RenderBoundary>
         );
     }
 
@@ -1914,42 +1961,47 @@ function App() {
                     )}
 
                     {!loading && !error && (
-                        <SiteListBody
-                            sortMode={sortMode}
-                            sensors={sensors}
-                            onGroupDragEnd={handleDragEnd}
-                            groups={groups}
-                            onNudgeGroup={nudgeGroup}
-                            onSiteDragStart={handleSiteDragStart}
-                            onSiteDragOver={handleSiteSortDragOver}
-                            onSiteDragEnd={handleSiteSortDragEnd}
-                            onSiteDragCancel={handleSiteDragCancel}
-                            draggingSite={draggingSite}
-                            darkMode={darkMode}
-                            onSiteUpdate={handleSiteUpdate}
-                            onSiteDelete={handleSiteDelete}
-                            onSaveSiteOrder={handleSaveSiteOrder}
-                            onStartSiteSort={startSiteSort}
-                            onAddSite={handleOpenAddSite}
-                            onGroupUpdate={handleGroupUpdate}
-                            onShareGroup={handleShareGroup}
-                            onGroupDelete={handleGroupDelete}
-                            displayedGroups={displayedGroups}
-                            density={density}
-                            reduceEntryAnimation={reduceEntryAnimation}
-                            currentSortingGroupId={currentSortingGroupId}
-                            configs={configs}
-                            onGroupAccentChange={handleGroupAccentChange}
-                            selectMode={multiSelect}
-                            selectedIds={selectedIds}
-                            onToggleSelect={toggleSelect}
-                            query={query}
-                            activeTags={activeTags}
-                            starFilter={starFilter}
-                            deadOnly={deadOnly}
-                            onClearSearch={() => setSearchQuery("")}
-                            onClearFilters={clearAllFilters}
-                        />
+                        // ⚠️ 必须常驻（不能传 when 之类的条件）：它得在**卡片渲染崩掉的那一刻**
+                        // 已经在树上，才接得住异常。包在这一层而不是更外层，是因为外层还有
+                        // 头部 / 搜索栏不该跟着一起消失 —— 用户的「去记事本」入口就在头部。
+                        <RenderBoundary label="站点列表" onReset={async () => { await fetchData(); }}>
+                            <SiteListBody
+                                sortMode={sortMode}
+                                sensors={sensors}
+                                onGroupDragEnd={handleDragEnd}
+                                groups={groups}
+                                onNudgeGroup={nudgeGroup}
+                                onSiteDragStart={handleSiteDragStart}
+                                onSiteDragOver={handleSiteSortDragOver}
+                                onSiteDragEnd={handleSiteSortDragEnd}
+                                onSiteDragCancel={handleSiteDragCancel}
+                                draggingSite={draggingSite}
+                                darkMode={darkMode}
+                                onSiteUpdate={handleSiteUpdate}
+                                onSiteDelete={handleSiteDelete}
+                                onSaveSiteOrder={handleSaveSiteOrder}
+                                onStartSiteSort={startSiteSort}
+                                onAddSite={handleOpenAddSite}
+                                onGroupUpdate={handleGroupUpdate}
+                                onShareGroup={handleShareGroup}
+                                onGroupDelete={handleGroupDelete}
+                                displayedGroups={displayedGroups}
+                                density={density}
+                                reduceEntryAnimation={reduceEntryAnimation}
+                                currentSortingGroupId={currentSortingGroupId}
+                                configs={configs}
+                                onGroupAccentChange={handleGroupAccentChange}
+                                selectMode={multiSelect}
+                                selectedIds={selectedIds}
+                                onToggleSelect={toggleSelect}
+                                query={query}
+                                activeTags={activeTags}
+                                starFilter={starFilter}
+                                deadOnly={deadOnly}
+                                onClearSearch={() => setSearchQuery("")}
+                                onClearFilters={clearAllFilters}
+                            />
+                        </RenderBoundary>
                     )}
 
                     {/* 新增分组对话框（与「编辑分组」共用同一套样式与尺寸）

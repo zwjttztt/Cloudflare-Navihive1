@@ -7,9 +7,16 @@
 // 返回 null = 放行；返回 Response = 就地拦截（401 / 403）。
 // 放行时把当前令牌的 jti / exp 写回 session，退出登录与注销账号要用它拉黑。
 
+// ⚠️ 这里的 401 一律走 errorResponse（`{error:{code,message}}`），**不许**回纯文本。
+//
+// 为什么：客户端 request() 对非 2xx 是 `response.json()`，纯文本会抛 → errorPayload = null
+// → parseApiError 拿到 null → ApiError 的 code 退化成兜底值。前端因此只能拿 message
+// 去 includes("认证") 判错（src/utils/authFlow.ts 原来就是这么写的），
+// 也就只能认「服务端文案恰好以认证开头」这一种情况：换一句文案、或者换一门外语，判据就整体失效。
+// 本文件下面那些 403 早就是 envelope 了；401 补齐之后，前端才可能真的按 code 分流。
 import { ApiError, errorResponse } from "../lib/apiError";
 import { MAINTENANCE_ENABLED_KEY } from "../../shared/maintenance";
-import {TEXT_HEADERS, TOKEN_COOKIE, isSameOrigin, readCookie} from "../httpUtils";
+import {TOKEN_COOKIE, isSameOrigin, readCookie} from "../httpUtils";
 import { securityHeaders } from "../util";
 import type { RouteCtx } from "./types";
 
@@ -35,9 +42,8 @@ export async function enforceAuth(ctx: RouteCtx, session: TokenSession): Promise
         if (authHeader) {
             const [authType, raw] = authHeader.split(" ");
             if (authType !== "Bearer" || !raw) {
-                return new Response("无效的认证信息", {
-                    status: 401,
-                    headers: TEXT_HEADERS(),
+                return errorResponse(ApiError.unauthenticated("无效的认证信息"), {
+                    headers: securityHeaders(),
                 });
             }
             token = raw;
@@ -45,8 +51,9 @@ export async function enforceAuth(ctx: RouteCtx, session: TokenSession): Promise
     }
 
     if (!token) {
-        return new Response("请先登录", {
-            status: 401,
+        // ⚠️ WWW-Authenticate 必须留着：脚本 / curl 客户端靠它知道该用哪种认证方式。
+        // 这一条是唯一带它的 401，别「统一」掉。
+        return errorResponse(ApiError.unauthenticated("请先登录"), {
             headers: {
                 "WWW-Authenticate": "Bearer",
             },
@@ -55,9 +62,8 @@ export async function enforceAuth(ctx: RouteCtx, session: TokenSession): Promise
 
     const verifyResult = await api.verifyToken(token);
     if (!verifyResult.valid) {
-        return new Response("认证已过期或无效，请重新登录", {
-            status: 401,
-            headers: TEXT_HEADERS(),
+        return errorResponse(ApiError.unauthenticated("认证已过期或无效，请重新登录"), {
+            headers: securityHeaders(),
         });
     }
     session.jti =
@@ -91,11 +97,8 @@ export async function enforceAuth(ctx: RouteCtx, session: TokenSession): Promise
             }
         }
     } else if (await api.hasAnyUser()) {
-        return new Response("登录状态已过期，请重新登录", {
-            status: 401,
-            headers: securityHeaders({
-                "Content-Type": "text/plain; charset=utf-8",
-            }),
+        return errorResponse(ApiError.unauthenticated("登录状态已过期，请重新登录"), {
+            headers: securityHeaders(),
         });
     } else {
         api.setCurrentUser(null);

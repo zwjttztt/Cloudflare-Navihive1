@@ -1,6 +1,6 @@
 # 记事本（NotesPage）后续改造方案 —— 对标 inkstone
 
-> 数据全部来自 2026-10-05 在真实 Chrome 里对 `note.zwjttzt.com` 的实测
+> 数据全部来自 2026-10-05 在真实 Chrome 里对 `<notes-host>` 的实测
 > （视口 1360×700），不是看截图估的。实测脚本：`harness/ink-cols.mjs` / `harness/ink-probe.mjs`。
 
 ## 一、先回答「右边是否显示不全」
@@ -76,8 +76,8 @@
 
 不许再靠猜。改完用 `harness/ink-*` / `harness/verify-*` 那套在真实 Chrome 里量：
 
-- `node harness/ink-login.mjs https://note.zwjttzt.com harness/ink-cols.mjs harness/ink.png`（抄 inkstone）
-- `W=1360 H=700 node harness/drive.mjs https://myhp.zwjttzt.com harness/verify-toggle.mjs harness/x.png`（验自己）
+- `node harness/ink-login.mjs https://<notes-host> harness/ink-cols.mjs harness/ink.png`（抄 inkstone）
+- `W=1360 H=700 node harness/drive.mjs https://<cf-host> harness/verify-toggle.mjs harness/x.png`（验自己）
 
 关键判据（见 `harness/browser-layout-measure` 那套方法）：
 滚动条看 `innerWidth - documentElement.clientWidth`，**不要**看 `scrollHeight - clientHeight`

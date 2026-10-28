@@ -28,6 +28,7 @@ import { deviceIdField } from "../../utils/deviceId";
 import { reportError } from "../../utils/errorReporter";
 import { rawError, setSessionCookie } from "../transport";
 import type { ClientThis } from "../transport";
+import { isAuthError } from "../apiError";
 
 export const authImpl = {
     async login(this: ClientThis, username: string, password: string, remember = false): Promise<LoginResponse> {
@@ -247,12 +248,11 @@ export const authImpl = {
         } catch (error) {
             // 不往外打日志：离线 / 网络抖动时这里每次启动都会走一遍，
             // 控制台噪声会把真正的问题淹掉。是否失效只看下面的错误类型判定。
-            // 特定处理401错误
-            if (error instanceof Error) {
-                if (error.message.includes("认证") || error.message.includes("API错误: 401")) {
-                    this.clearToken();
-                    return false;
-                }
+            // 判据是 ApiError 的 code（不是 message 文案）—— getConfigs 走 request()，
+            // 抛出来的必然是这个客户端自己的 ApiError，能拿到实例。
+            if (isAuthError(error)) {
+                this.clearToken();
+                return false;
             }
 
             // 其他错误不影响认证状态，本地有登录标记就认为已认证

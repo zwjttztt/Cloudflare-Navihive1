@@ -14,6 +14,9 @@ import { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { useSites, type UseSitesDeps } from "../src/hooks/useSites";
 import type { BootstrapData, Site } from "../src/API/http";
+// 认证失败的判据是 ApiError 的 code / status（见 src/API/apiError.ts 的 isAuthError），
+// mock 抛的必须是真 ApiError —— 拿 new Error("认证已过期") 喂进去测的是注释，不是代码。
+import { API_ERROR_CODES, ApiError } from "../src/API/apiError";
 
 let root: Root | null = null;
 let host: HTMLDivElement | null = null;
@@ -166,20 +169,28 @@ test("普通失败：给错误提示，但不踢回登录页", async t => {
     assert.equal(text("loading"), "false", "失败了也要把 loading 收掉，否则一直转圈");
 });
 
-test("认证失败（401 / 含「认证」）：除提示外还要把登录态置为需要登录", async t => {
+test("认证失败（401）：除提示外还要把登录态置为需要登录", async t => {
     t.after(cleanup);
-    for (const message of ["认证已过期", "HTTP 401"]) {
+    const cases = [
+        // 迁移后的正常形状：code 是 unauthenticated
+        new ApiError({ status: 401, code: API_ERROR_CODES.unauthenticated, message: "认证已过期" }),
+        // 老形状（body 不是 JSON / 只有 {message}）：解析不出 code，靠 HTTP 401 兜底
+        new ApiError({ status: 401, code: "unknown", message: "API错误: 401" }),
+        // 账号被停用（403 forbidden）：同样要回登录页，否则用户对着空白页无路可走
+        new ApiError({ status: 403, code: API_ERROR_CODES.forbidden, message: "账号已停用" }),
+    ];
+    for (const err of cases) {
         const log: Log = { errors: [], authFail: 0, extras: [] };
         cleanup();
         mount(
             makeDeps(log, {
                 bootstrap: async () => {
-                    throw new Error(message);
+                    throw err;
                 },
             })
         );
         await run(() => api!.fetchData());
-        assert.equal(log.authFail, 1, `「${message}」应触发一次 onAuthFail`);
+        assert.equal(log.authFail, 1, `「${err.code}」应触发一次 onAuthFail`);
     }
 });
 

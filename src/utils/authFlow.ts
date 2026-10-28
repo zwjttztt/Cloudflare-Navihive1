@@ -12,7 +12,7 @@ import {
     INACTIVE_DISABLE_DAYS_DEFAULT,
     INACTIVE_DELETE_GRACE_DAYS_DEFAULT,
 } from "../API/http";
-import { parseApiError } from "../API/apiError";
+import { parseApiError, isAuthError } from "../API/apiError";
 
 /**
  * 沉睡治理阈值：读不到（没配过 / 配成了乱七八糟的值）就回落到服务端默认。
@@ -52,17 +52,20 @@ const DISABLED_SUFFIX = /\s*\(HTTP 403\)$/;
 /**
  * 判断一次认证失败要不要把人踢回登录页。
  *
- * 只有两类算：令牌失效 / 未登录（服务端报「认证」开头的错）、账号被停用（403）。
+ * 只有两类算：令牌失效 / 未登录（401 unauthenticated）、账号被停用（403 forbidden）。
  * 其余（比如网络抖一下）保持原状 —— 一次偶发失败就把人踢出去，比让他多刷一次更糟。
+ *
+ * ⚠️ 判据是 ApiError 的 code/status，**不是** message 文案（见 isAuthError 的注释）。
+ * 调用方传进来的必须是 request() 抛出的原始错误对象 —— 传一条 message 字符串过来就
+ * 什么都认不出了（这里也刻意不再为字符串兜底：那种兜底只能靠 includes 猜）。
  */
 export function classifyAuthFailure(error: unknown): AuthFailure {
-    if (!(error instanceof Error)) return { backToLogin: false };
-    const message = error.message;
-    if (message.includes("HTTP 403")) {
-        return { backToLogin: true, message: message.replace(DISABLED_SUFFIX, "") };
+    if (!isAuthError(error)) return { backToLogin: false };
+    // 账号被停用（403）时服务端那句话必须原样转述 —— 里面写着怎么用恢复密钥找回
+    if (error.status === 403) {
+        return { backToLogin: true, message: error.message.replace(DISABLED_SUFFIX, "") };
     }
-    if (message.includes("认证")) return { backToLogin: true };
-    return { backToLogin: false };
+    return { backToLogin: true };
 }
 
 /**

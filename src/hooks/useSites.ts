@@ -14,6 +14,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { BootstrapData, Site } from "../API/http";
 import type { GroupWithSites } from "../types";
 import { hasSessionCookie } from "../API/transport";
+import { isAuthError } from "../API/apiError";
 import { readBootstrapCache, writeBootstrapCache } from "../utils/firstPaintCache";
 import { removeSite, removeSites, upsertSite } from "../utils/siteMutations";
 
@@ -87,8 +88,11 @@ export function useSites(deps: UseSitesDeps) {
             if (!effectiveSilent) {
                 deps.onError("加载数据失败: " + message);
             }
-            // 如果因为认证问题导致加载失败，处理认证状态
-            if (message.includes("认证") || message.includes("401")) {
+            // 如果因为认证问题导致加载失败，处理认证状态。
+            // 判据用 ApiError 的 code / HTTP 401，不再拿 message 去 includes —— 这条
+            // 原来是「界面永不回登录页」的根源：文案一改（或服务端回了非 JSON 的 401），
+            // 这里就静默不触发 onAuthFail，用户点什么都只弹同一句 toast。
+            if (isAuthError(err)) {
                 deps.onAuthFail();
             }
             return false;

@@ -101,6 +101,14 @@ export class ApiError extends Error {
 export interface ErrorResponseOptions {
     headers?: HeadersInit;
     extra?: Record<string, unknown>;
+    /**
+     * 调用方已经带上下文打过日志了（目前只有 worker/index.ts 的入口 catch）。
+     *
+     * 兜底分支默认会打一行 `[api] 未处理的错误: …` —— 那行**没有** method / path / rid，
+     * 入口 catch 打的那行有。两行都打等于同一次故障两条日志，而且短的那条更容易被
+     * 当成全部信息（日志按时间读，先看到的往往是它）。所以由调用方声明「已打过」。
+     */
+    logged?: boolean;
 }
 
 /** 按统一形状造响应体：{ error: { code, message[, details] }, ...extra } */
@@ -119,6 +127,10 @@ function errorBody(code: ApiErrorCode, message: string, details?: unknown, extra
  * 统一错误响应。认得出 ApiError 就按它的 code/status 回；
  * 认不出（没预料到的异常）打一行日志 + 回 500 internal ——
  * **不把堆栈/内部细节透给客户端**，那是给攻击者的线索。
+ *
+ * ⚠️ 这里**不落库、也不加 x-request-id 头**：本函数是纯函数，拿不到 env.DB，
+ * 也拿不到 request / route 信息。落库与 rid 回写在 worker/index.ts 的入口 catch
+ * 与 fetch 出口（那里有 env、有 request）。
  */
 export function errorResponse(err: unknown, options?: ErrorResponseOptions): Response {
     const init = { status: 500, ...(options?.headers ? { headers: options.headers } : {}) };
@@ -128,7 +140,8 @@ export function errorResponse(err: unknown, options?: ErrorResponseOptions): Res
             { ...init, status: err.status }
         );
     }
-    console.error("[api] 未处理的错误:", err);
+    // options.logged：调用方（入口 catch）已经带着 rid / method / path 打过日志了
+    if (!options?.logged) console.error("[api] 未处理的错误:", err);
     return Response.json(
         errorBody(API_ERROR_CODES.internal, "服务器内部错误", undefined, options?.extra),
         init

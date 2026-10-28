@@ -4,20 +4,27 @@
 # ghcr.io/zwjttztt/navihive:latest，这条流水线是镜像的唯一生产端。
 # 本地或测试机不再需要手动 build + push。
 #
-# 触发：
-#   - workflow_dispatch：Actions 页手动点 Run workflow
-#   - push 到 main 且改动了镜像相关文件（Dockerfile / 服务端与 worker 源码 / 依赖清单）
-#     —— 镜像里打包的就是这些文件，它们变了镜像就必须重发，否则新服务器
-#     拉到的一直是旧版本。
+# 触发（两条路，都要过同一道 CI 门禁）：
+#   - workflow_run：CI 跑完自动触发，只有 conclusion=success **且跑的是 main** 才发布；
+#     发布的正是 CI 验证过的那个 commit（checkout 用 gate 输出的 sha），不是「那一刻
+#     main 的 HEAD」。
+#   - workflow_dispatch：Actions 页手动点 Run workflow，**必须填 ci_run_id**（那场 CI
+#     的运行 ID），本流水线自己去查它；结论不是 success / 分支不是 main / 不是 CI 这个
+#     workflow —— 一律不发布。
 #
-#     ⚠️ 2026-10-24 修正：原来这里只有 src/API/**，注释声称「前端 src/（非
-#     API 部分）不进镜像」——**错的**：Dockerfile 的 builder 跑 vite build，
-#     dist/client（含全部前端）整体打进镜像；纯前端批次（只改 src/components
-#     之类）因此不上 VPS（实测：设置弹窗拆分批次后，VPS 前端落后一个 commit）。
-#     收成 src/** 并补 index.html / vite.config.ts / public/**。
+# ⚠️ 2026-10-28 修正：原来这里是 `on: push: branches:[main] paths:[...]`，**不看 CI
+#     结论** —— 而生产（VPS 的 kPanel / compose）拉的正是这条流水线产出的 :latest。
+#     同一个仓库里 deploy.yml 的门禁写得极严（workflow_run.conclusion == success、
+#     必须是 main、手动触发还得填 ci_run_id 且机器再查一次结论），唯独通生产这条洞
+#     开着。现在两条发布链路共用同一套判断。
 #
-# ⚠️ 本文件自身的改动**不会**触发构建（paths 里没有 .github/workflows/**）：
-#    改完要么手动 dispatch，要么随下一次源码改动一起生效。
+# ⚠️ 去掉 paths 白名单**不会**增加任何构建量：bump-version.mjs 每次推送都会改
+#     package.json（工作区干净也照样跳 patch），而 package.json 本来就在原来的 paths
+#     里 —— 也就是说现状下每次推送本来就重建镜像。换成 workflow_run 换到的是「CI 红
+#     不发布」，构建次数一次没多。
+#
+# ⚠️ 镜像构建现在由「CI 完成后」驱动：改本文件自身也要等下一次 CI 跑完才生效
+#     （以前 paths 里没有 .github/workflows/**，改完根本不触发，这条限制已经消失）。
 #
 # ============================================================================
 # 2026-10-22：从「QEMU 模拟 arm64」改成「两个平台各自原生构建 + 合并 manifest」
@@ -44,28 +51,101 @@ name: docker-publish
 
 on:
   workflow_dispatch:
-  push:
+    inputs:
+      ci_run_id:
+        description: "必填：要发布的 CI 运行 ID（必须 conclusion=success 且分支为 main）"
+        type: string
+        required: true
+  workflow_run:
+    # 这里必须是 CI workflow 的 **name**（ci.yml 顶上的 `name: CI`），不是文件名
+    workflows: ["CI"]
+    types: [completed]
     branches: [main]
-    paths:
-      - "Dockerfile"
-      - ".dockerignore"
-      - "server/**"
-      - "worker/**"
-      - "src/**"
-      - "shared/**"
-      - "index.html"
-      - "vite.config.ts"
-      - "public/**"
-      - "package.json"
-      - "package-lock.json"
 
+# contents: read 用于 checkout；packages: write 用于推 ghcr.io；
+# ⚠️ actions: read 不能省 —— workflow_dispatch 那条路要靠 `gh run view` 去查 ci_run_id
+# 的结论，没有这个 scope 查不到（deploy.yml 里同样的门禁也带着它）。
 permissions:
   contents: read
+  actions: read
   packages: write
 
+# 镜像发布串行：两次 CI 结论紧邻完成时，两场发布会并行推 :latest，谁后跑完谁生效，
+# 线上到底停在哪一份不可预测 —— 与「不看 CI 结论」是同一类错误（上线结果不可预测）。
+# ⚠️ group 用固定名而不是按 github.ref 分组：镜像是全局资源，不同 ref 也不该并行。
+# ⚠️ cancel-in-progress 必须为 false：发布被中途取消会留下 push-by-digest 的孤儿
+# digest，而 :latest 已经指的是哪一份也无法保证。部署线（deploy.yml）同样这么设。
+concurrency:
+  group: docker-publish
+  cancel-in-progress: false
+
 jobs:
+  # 门禁：红着的 main 不许产出生产镜像。
+  # 这段 run 脚本与 deploy.yml 的门禁是同一份判断（只把「不部署」的措辞换成「不发布
+  # 镜像」）—— 两条发布链路口径不一致，就等于在其中一条上留了个后门。
+  gate:
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.gate.outputs.sha }}
+    steps:
+      # 门禁独立成一步，红的时候 Actions 页面上一眼能看到「是门禁拦下的」
+      - name: 门禁：确认 CI 结论为 success，并取到要发布的 commit
+        id: gate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          # workflow_run 触发时才有值；workflow_dispatch 时全为空串
+          RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          RUN_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+          INPUT_RUN_ID: ${{ inputs.ci_run_id }}
+        run: |
+          set -euo pipefail
+
+          if [ -n "$RUN_CONCLUSION" ]; then
+            echo "触发方式：CI 运行 $RUN_ID 完成，结论 $RUN_CONCLUSION"
+            if [ "$RUN_BRANCH" != "main" ]; then
+              echo "::error::CI 跑的分支是 $RUN_BRANCH，不是 main —— 不发布镜像"
+              exit 1
+            fi
+            if [ "$RUN_CONCLUSION" != "success" ]; then
+              echo "::error::CI 结论是 $RUN_CONCLUSION —— 不发布镜像。CI 红着的 commit 不许进生产镜像。"
+              exit 1
+            fi
+            sha="$RUN_SHA"
+          else
+            echo "触发方式：手动（workflow_dispatch）"
+            if [ -z "$INPUT_RUN_ID" ]; then
+              echo "::error::没填 ci_run_id —— 手动发布也必须先有一场成功的 CI，填它的运行 ID。"
+              exit 1
+            fi
+            json=$(gh run view "$INPUT_RUN_ID" --repo "$REPO" --json conclusion,headBranch,headSha,workflowName)
+            echo "查到 CI 运行 $INPUT_RUN_ID：$json"
+            wf=$(echo "$json" | jq -r .workflowName)
+            branch=$(echo "$json" | jq -r .headBranch)
+            conclusion=$(echo "$json" | jq -r .conclusion)
+            sha=$(echo "$json" | jq -r .headSha)
+            if [ "$wf" != "CI" ]; then
+              echo "::error::$INPUT_RUN_ID 是 $wf 的运行，不是 CI —— 不发布镜像"
+              exit 1
+            fi
+            if [ "$branch" != "main" ]; then
+              echo "::error::CI($INPUT_RUN_ID) 跑的分支是 $branch，不是 main —— 不发布镜像"
+              exit 1
+            fi
+            if [ "$conclusion" != "success" ]; then
+              echo "::error::CI($INPUT_RUN_ID) 结论是 $conclusion —— 不发布镜像"
+              exit 1
+            fi
+          fi
+
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "::notice::允许发布镜像 $sha（CI 已通过）"
+
   # 每个平台各自原生构建，只按 digest 推送（不打 tag —— 单平台的 tag 会被另一个覆盖）
   build:
+    needs: gate
     strategy:
       fail-fast: false
       matrix:
@@ -77,6 +157,10 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # ⚠️ 必须用门禁吐出来的 sha：workflow_run 触发时 github.sha 是 main 的
+          # 当前 HEAD（甚至可能是那次 workflow 文件所在 commit），不是 CI 验过的那个
+          ref: ${{ needs.gate.outputs.sha }}
 
       - uses: docker/setup-buildx-action@v3
 
@@ -111,7 +195,7 @@ jobs:
 
   # 合并成一个 multi-arch manifest，才打 latest 与 sha 两个 tag
   merge:
-    needs: build
+    needs: [gate, build]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@v4
@@ -135,7 +219,7 @@ jobs:
         run: |
           docker buildx imagetools create \
             --tag ghcr.io/zwjttztt/navihive:latest \
-            --tag ghcr.io/zwjttztt/navihive:${{ github.sha }} \
+            --tag ghcr.io/zwjttztt/navihive:${{ needs.gate.outputs.sha }} \
             $(printf 'ghcr.io/zwjttztt/navihive@%s ' $(cat *))
 
       - name: 核对结果（两个平台都在才算成功）

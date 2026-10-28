@@ -19,12 +19,14 @@
 
 import { DEFAULT_TOKEN_TTL } from "./http";
 import { IDEMPOTENCY_HEADER } from "./httpConstants";
+import { REQUEST_ID_HEADER } from "../../shared/requestId";
 import { NoteConflictError } from "../utils/noteConflict";
 import { API_ERROR_CODES, ApiError, parseApiError } from "./apiError";
 import {
     clearSessionCookie,
     conflictNoteFrom,
     hasSessionCookie,
+    notifyUnauthorized,
     purgeLegacyToken,
     REQUEST_TIMEOUT_MS,
     setSessionCookie,
@@ -153,6 +155,15 @@ export class NavigationClient implements ClientThis {
             return response.json();
         }
 
+        // 服务端回写的请求 ID：挂到抛出的 ApiError 上，errorReporter 上报时带出去 ——
+        // 这一条把「用户看到的报错」和「服务端日志 / audit_log 里的 server-error」
+        // 串起来（头名见 shared/requestId.ts，worker 与自托管入口都回写它）。
+        // ⚠️ `?.` 不是防御性冗余：`fetch` 一定给 Response，但**替身**不一定 ——
+        // 单测里那些 `{ ok: false, status: 401, json: async () => … }` 的假响应没有
+        // headers，直读会在这里抛 TypeError，把 7 条「错误文案」用例全变成
+        // 「Cannot read properties of undefined」。（真踩过：2026-10-28 这一批）
+        const requestId = response.headers?.get(REQUEST_ID_HEADER) || undefined;
+
         // 非 2xx：优先解析服务端返回的 message/error，让用户看到具体原因（如「密码强度不足」）
         let errorPayload: unknown;
         try {
@@ -166,11 +177,17 @@ export class NavigationClient implements ClientThis {
 
         if (response.status === 401) {
             this.clearToken();
+            // 401 不只发生在 bootstrap 上：任何接口拿到 401 都该把用户带回登录页。
+            // client 是纯传输层，不该直接知道 UI 状态，所以只广播事件，由 App 统一处置
+            // （见 App.tsx 的 handleAuthFailure）。广播必须在 throw 之前：监听器是同步的，
+            // 放到 throw 之后就永远执行不到了。
+            notifyUnauthorized();
             throw new ApiError({
                 code: parsed?.code || API_ERROR_CODES.unauthenticated,
                 message: reason ? `认证失败：${reason}` : "认证已过期或无效，请重新登录",
                 status: 401,
                 ...(parsed?.details === undefined ? {} : { details: parsed.details }),
+                ...(requestId ? { requestId } : {}),
             });
         }
 
@@ -194,6 +211,7 @@ export class NavigationClient implements ClientThis {
                     ? `${reason}（内容过大，服务器拒收）`
                     : "内容太大，服务器拒收（HTTP 413）",
                 status: 413,
+                ...(requestId ? { requestId } : {}),
             });
         }
 
@@ -204,6 +222,7 @@ export class NavigationClient implements ClientThis {
             message: reason ? `${reason} (HTTP ${response.status})` : `API错误: ${response.status}`,
             status: response.status,
             ...(parsed?.details === undefined ? {} : { details: parsed.details }),
+            ...(requestId ? { requestId } : {}),
         });
     }
 

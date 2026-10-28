@@ -489,8 +489,10 @@ export function useAccountSession({
             // 令牌失效 / 账号已注销：退回登录页；
             // 账号被停用（403）也是一个道理 —— 停在这里只会看到一片空白，
             // 把服务端那句「可以怎么用恢复密钥找回」原样带过去。
-            if (error instanceof Error && (error.message.includes("认证") || error.message.includes("HTTP 403"))) {
-                const failure = classifyAuthFailure(error);
+            // 分类只做一次：classifyAuthFailure 内部就是 isAuthError 的判据
+            // （ApiError 的 code，不再拿 message 做 includes 匹配）。
+            const failure = classifyAuthFailure(error);
+            if (failure.backToLogin) {
                 setIsAuthenticated(false);
                 setIsAuthRequired(true);
                 if (failure.message) onDataError(failure.message);

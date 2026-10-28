@@ -1,7 +1,7 @@
 # NaviHive 自托管迁移方案（方案 B：整站搬到 VPS）
 
 日期：2026-10-14
-背景：站点部署在 Cloudflare Workers，`myhp.zwjttzt.com` 实测命中欧洲节点（CF-RAY 尾缀 `MAN` / `MAD`），
+背景：站点部署在 Cloudflare Workers，`<cf-host>` 实测命中欧洲节点（CF-RAY 尾缀 `MAN` / `MAD`），
 IPv4 TTFB 0.92–2.22s、主 JS 下载速率仅 53 KB/s。瓶颈在「家宽 → CF 边缘」的跨境段，不在应用代码。
 本文评估并给出「整站迁出 Workers / D1、落到 VPS 自托管」的落地路径。
 
@@ -343,10 +343,10 @@ curl -fsS -X POST http://127.0.0.1:8787/__cron
 ```nginx
 server {
     listen 443 ssl http2;
-    server_name myhp.zwjttzt.com;
+    server_name <cf-host>;
 
-    ssl_certificate     /etc/letsencrypt/live/myhp.zwjttzt.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/myhp.zwjttzt.com/privkey.pem;
+    ssl_certificate     /etc/letsencrypt/live/<cf-host>/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/<cf-host>/privkey.pem;
 
     gzip on;
     gzip_types text/css application/javascript application/json image/svg+xml;
