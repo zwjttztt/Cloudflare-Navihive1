@@ -116,7 +116,14 @@
 /sw.js
   Cache-Control: public, max-age=0, must-revalidate
 
-# 图标与清单：很少变，长缓存（内容稳定，immutable 让浏览器不再回源校验）
+# 图标与清单：长缓存（immutable = 一年内绝不回源校验）。
+#
+# ⚠️ 这三条只在「URL 是内容指纹」时才安全。图标的 URL 是 index.html 里的
+# `/favicon.svg?v=<发布版本>`（构建期由 vite.config.ts 的 versionedIcons 替换），
+# 所以换图后 URL 跟着版本变、浏览器自然重取 —— 别把那个 `?v=` 删了，
+# 也别把图标的 href 写死：2026-10-28 换 logo 时 URL 没变，
+# 一年 immutable + 浏览器自己的 favicon 缓存（键是 URL，不看 Cache-Control）
+# 两层叠加，用户那边看起来就是「logo 没变」。
 /favicon.svg
   Cache-Control: public, max-age=31536000, immutable
 

@@ -22,6 +22,18 @@ function readProjectFile(rel: string): string {
     throw new Error(`找不到 ${rel}`);
 }
 
+/** 二进制版：favicon.ico 要按字节读（ICO 头 + PNG 负载） */
+function readProjectFileBytes(rel: string): Buffer {
+    for (let dir = here, i = 0; i < 6; i++) {
+        try {
+            return readFileSync(resolve(dir, rel));
+        } catch {
+            dir = dirname(dir);
+        }
+    }
+    throw new Error(`找不到 ${rel}`);
+}
+
 const html = readProjectFile("index.html");
 const manifest = JSON.parse(readProjectFile("public/manifest.webmanifest"));
 
@@ -54,8 +66,42 @@ test("index.html 的标题与分享卡片也来自同一份品牌信息", () => 
     );
 });
 
-test("brandTitle：改过标题就用改过的，空值回落到品牌全名", () => {
-    assert.equal(brandTitle("老张的书签"), "老张的书签");
+// 2026-10-28：换 logo 后用户看到的还是旧图 —— 因为 index.html 里图标链接的
+// URL 没变，浏览器的 favicon 缓存（键是 URL，不看 Cache-Control）就一直喂旧图。
+// 这条守卫把「链接必须带版本占位符」「构建期必须真替换」两件事钉在一起：
+// 只加占位符不注册插件 = 线上出现一个字面量 `__ICON_V__` 的死链。
+test("图标链接带版本占位符，且构建期真的会被替换（否则换 logo 用户看不到）", () => {
+    for (const href of ["/favicon.svg", "/favicon.ico", "/icons/apple-touch-icon.png"]) {
+        assert.ok(
+            html.includes(`href="${href}?v=__ICON_V__"`),
+            `${href} 的链接必须带 ?v=__ICON_V__：不加版本号，浏览器会一直用缓存里的旧图标`
+        );
+    }
+
+    const viteConfig = readProjectFile("vite.config.ts");
+    assert.ok(
+        viteConfig.includes("__ICON_V__"),
+        "vite.config.ts 里要有一个把 __ICON_V__ 换成版本号的 transformIndexHtml 插件"
+    );
+    assert.ok(
+        /plugins:\s*\[[^\]]*versionedIcons\(\)/.test(viteConfig),
+        "versionedIcons() 必须注册进 plugins 数组（写了函数不注册等于没写）"
+    );
+
+    // .ico 是 SVG 不支持时的兜底，最容易被换 logo 时漏掉（2026-10-28 就漏过一次：
+    // 文件还停在 2026-09-26 的旧图）。这里只钉「它至少是个多尺寸真 ICO」，
+    // 图形内容交给设计侧肉眼确认；换图时跑 npm run icons:ico（script/gen-favicon-ico.mjs）。
+    const ico = readProjectFileBytes("public/favicon.ico");
+    assert.equal(ico.readUInt16LE(2), 1, "favicon.ico 头里 type 必须是 1（icon）");
+    assert.ok(ico.readUInt16LE(4) >= 4, "favicon.ico 里至少要有 4 个尺寸档");
+    assert.equal(
+        ico.subarray(ico.readUInt32LE(6 + 12), ico.readUInt32LE(6 + 12) + 8).toString("hex"),
+        "89504e470d0a1a0a",
+        "favicon.ico 的负载必须是 PNG（换图时用 script 里的 sharp 流程重建过）"
+    );
+});
+
+test("brandTitle：改过标题就用改过的，空值回落到品牌全名", () => {    assert.equal(brandTitle("老张的书签"), "老张的书签");
     assert.equal(brandTitle("  "), BRAND.fullName, "全空白也要回落");
     assert.equal(brandTitle(""), BRAND.fullName);
     assert.equal(brandTitle(null), BRAND.fullName);

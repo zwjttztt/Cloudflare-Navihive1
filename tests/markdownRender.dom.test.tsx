@@ -452,7 +452,11 @@ test("COPY 块：复制按钮绝对定位（不挤正文）+ 图标-only，点�
     // ② 图标-only：不再有「复制」两个字（用户 2026-10-28 要求）。
     assert.equal((btn!.textContent ?? "").trim(), "", "复制按钮只留图标、不带文字");
     assert.ok(btn!.querySelector("svg"), "按钮里要有图标");
-    // ③ 图标-only 不能丢可访问名。
+    // ③ 颜色 / 底色必须留给样式表：内联样式优先级更高，写死就把 index.css 里的
+    //    :hover 底色和 [data-copied] 强调色全压掉了（2026-10-28 踩过）。
+    assert.equal(btn!.style.getPropertyValue("background"), "", "底色交给 index.css，别写内联值");
+    assert.equal(btn!.style.getPropertyValue("color"), "", "颜色交给 index.css，别写内联值");
+    // ④ 图标-only 不能丢可访问名。
     assert.ok((btn!.getAttribute("aria-label") ?? "").length > 0, "图标按钮必须有 aria-label");
 
     const written: string[] = [];
@@ -493,3 +497,66 @@ test("普通引用块不冒出复制按钮（别把 `>` 引用当成可复制块
     const host = await renderToDom("> 只是一句引用");
     assert.equal(host.querySelector('[data-copy-op="copy-block"]'), null);
 });
+
+// 静态守卫（2026-10-28）：复制按钮必须**一眼看得见**。
+// 上一版在 `@media (hover: hover) and (pointer: fine)` 里写了静止 `opacity: 0`，
+// 结果在鼠标环境里它就是隐形的 —— 用户反馈「复制按键看不见」。
+// 这条守卫盯三件事：
+//   ① 任何 .md-copy-btn 规则都不许把它整条藏起来（opacity 精确等于 0）；
+//   ② 静止态要有可见的不透明度；
+//   ③ 悬停 / 聚焦要能更明显（否则等于没有反馈）。
+// 只看源码不渲染 DOM 的原因：jsdom 不跑媒体查询里的层叠，算出来的样式测不到这个坑。
+test("复制按钮的样式：静止态可见、永不被藏成 opacity: 0", () => {
+    const css = readFileSync(join(findProjectDir(), "src", "index.css"), "utf-8")
+        // 只剥 CSS 块注释：注释里写着「静止 opacity: 0」这种说明文字，
+        // 不剥就变成永远红的假警报。
+        .replace(/\/\*[\s\S]*?\*\//g, "");
+
+    // 顶层规则：选择器 + 声明体（嵌套块如 @media 里含花括号，不会被这条匹配到）
+    const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map(m => ({
+        selector: m[1].trim(),
+        body: m[2],
+    }));
+    const copyRules = rules.filter(r => r.selector.includes(".md-copy-btn"));
+    assert.ok(copyRules.length >= 2, `index.css 里找不到 .md-copy-btn 的规则（找到 ${copyRules.length} 条）`);
+
+    /** 规则体里声明的 opacity 值（没写就是 undefined） */
+    const opacityOf = (body: string): number | undefined => {
+        const hit = /(?:^|;)\s*opacity\s*:\s*([^;]+)/.exec(`;${body}`);
+        return hit ? Number.parseFloat(hit[1]) : undefined;
+    };
+
+    for (const rule of copyRules) {
+        const opacity = opacityOf(rule.body);
+        if (opacity === undefined) continue;
+        assert.notEqual(
+            opacity,
+            0,
+            `${rule.selector} 把复制按钮设成完全透明了 —— 鼠标环境里用户根本看不见这个按钮` +
+                "（2026-10-28 已踩过：静止 opacity: 0 + 悬停才显形 = 隐形机关）"
+        );
+    }
+
+    const rest = copyRules.find(r => r.selector === ".md-copy-btn");
+    assert.ok(rest, "要有一条针对 .md-copy-btn 本体（静止态）的规则");
+    const restOpacity = opacityOf(rest!.body);
+    assert.ok(
+        restOpacity === undefined || restOpacity >= 0.4,
+        `复制按钮静止态不透明度只有 ${restOpacity}，太淡了（要 >= 0.4）`
+    );
+    assert.match(rest!.body, /color\s*:\s*inherit/, "图标颜色要跟随正文（别让 <button> 的默认色盖上来）");
+
+    assert.ok(
+        copyRules.some(r => r.selector.includes(":hover") && opacityOf(r.body) === 1),
+        "悬停时要把不透明度提到 1（否则「看得见」和「能点」没有区分）"
+    );
+    assert.ok(
+        copyRules.some(r => r.selector.includes(':focus-visible')),
+        "键盘聚焦必须有可见样式（只有鼠标反馈等于没法用键盘）"
+    );
+    assert.ok(
+        copyRules.some(r => r.selector.includes('data-copied="1"')),
+        "复制成功的瞬间要有专门配色（data-copied 那 1.2 秒的反馈不能只靠换图标）"
+    );
+});
+

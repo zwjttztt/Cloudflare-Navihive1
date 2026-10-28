@@ -5,9 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#1976d2" />
     <meta name="description" content="个人导航站，整理和分享您喜爱的网站链接" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <link rel="alternate icon" href="/favicon.ico" />
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <!--
+      三个图标链接都带 `?v=__ICON_V__`（构建时替换成发布版本号，见 vite.config.ts
+      的 versionedIcons）。不带的话浏览器会一直用自己那份 favicon 缓存：
+      16.3.0 换了 logo 图，标签页却还是旧的蓝圆图 —— 用户的结论就是「logo 没变」。
+    -->
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=__ICON_V__" />
+    <link rel="alternate icon" href="/favicon.ico?v=__ICON_V__" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png?v=__ICON_V__" />
     <link rel="manifest" href="/manifest.webmanifest" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="mobile-web-app-capable" content="yes" />

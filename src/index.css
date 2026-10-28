@@ -1655,13 +1655,22 @@ html.dark .cm-editor .cm-content {
 
 /* 可复制块右上角的复制按钮（2026-10-28，方案 A：绝对定位 + 只留图标）。
    ① 定位/尺寸写在组件内联样式里（脱离文档流，永不挤压正文）；
-   ② 这里只管「显隐」：默认 0.45 半透明，hover / 聚焦才完全显形；
-   ③ 只有**真能悬停**的环境才允许默认 0 隐藏 —— 触屏（hover: none）保持 0.45 常显，
-      否则就像「卡片浮层悬停才出」那次一样，触屏上永远点不到。
+      颜色 / 悬停底色 / 不透明度**只能在这里写** —— 内联样式优先级高于样式表，
+      组件上一版把 background/color 写成内联值，结果 :hover 底色与「已复制」配色
+      全被压掉（改了没反应那种）。
+   ② 常显：静止态就是 0.62 半透明，hover / 聚焦才完全显形。
+   🔴 绝对不许再写成「静止 opacity: 0，悬停才显形」—— 2026-10-28 用户反馈
+      「复制按键看不见」就是这条媒体查询干的（鼠标环境默认不可见 = 用户根本不知道
+      那里有按钮）。宁可稍微显眼，也不要做成隐形机关。
    ⚠️ 不用 JS 判触屏：nav-touch 会把触屏笔记本误判，媒体查询才是准的。 */
 .md-copy-btn {
-    opacity: 0.45;
-    transition: opacity var(--dur-fast) ease, background-color var(--dur-fast) ease;
+    opacity: 0.62;
+    color: inherit;
+    background: transparent;
+    transition:
+        opacity var(--dur-fast) ease,
+        background-color var(--dur-fast) ease,
+        color var(--dur-fast) ease;
 }
 
 .md-copy-btn:hover,
@@ -1670,17 +1679,13 @@ html.dark .cm-editor .cm-content {
     background: var(--neutral-hover);
 }
 
+/* 点完的 1.2 秒：变强调色 + 全不透明。对勾本身很小，不光靠形状传信号。 */
+.md-copy-btn[data-copied="1"] {
+    opacity: 1;
+    color: var(--accent);
+}
+
 .md-copy-btn:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 1px;
-}
-
-@media (hover: hover) and (pointer: fine) {
-    .md-copy-btn {
-        opacity: 0;
-    }
-    .md-copy-host:hover .md-copy-btn,
-    .md-copy-btn:focus-visible {
-        opacity: 1;
-    }
 }

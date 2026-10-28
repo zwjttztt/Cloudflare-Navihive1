@@ -62,6 +62,28 @@ const BUILD_TIME = (() => {
     );
 })();
 
+/**
+ * 给 index.html 里的图标链接带上发布版本号（`?v=16.3.1`），让浏览器真的换掉标签页图标。
+ *
+ * 为什么必须有这一步：浏览器对 favicon 的缓存**不看你给的 Cache-Control**，
+ * 它自己在本地存一份长期记录（Chrome 存在 Favicons 库里，键是图标 URL）。
+ * 16.3.0 换 logo 时只换了文件内容、URL 没动，于是标签页上还是旧的蓝圆图，
+ * 用户看到的结论就是「logo 没变」。URL 一变，缓存键跟着变，想不换都难 ——
+ * 而每次发布会 bump package.json 的版本（script/bump-version.mjs），
+ * 正好一次发布一个新 URL，不多不少。
+ *
+ * 替身值也覆盖 public/favicon.ico（2026-09-26 那版旧图，换 logo 时漏了它，
+ * 已用 sharp 按新图重建过）。
+ */
+function versionedIcons(): Plugin {
+    return {
+        name: "navihive-versioned-icons",
+        transformIndexHtml(html) {
+            return html.replaceAll("__ICON_V__", PKG_VERSION);
+        },
+    };
+}
+
 function precacheManifest(): Plugin {
     return {
         name: "navihive-precache-manifest",
@@ -341,7 +363,7 @@ const FIRST_SCREEN_MUI = scanFirstScreenMui();
 
 // https://vite.dev/config/
 export default defineConfig({
-  plugins: [react(), cloudflare(), precacheManifest()],
+  plugins: [react(), cloudflare(), versionedIcons(), precacheManifest()],
   environments: {
     client: { build: { rollupOptions: { input: { index: "index.html", mermaidSandbox: "mermaid-sandbox.html" } } } },
   },

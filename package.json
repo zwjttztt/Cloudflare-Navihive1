@@ -1,7 +1,7 @@
 {
   "name": "navihive",
   "private": true,
-  "version": "16.3.0",
+  "version": "16.4.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -9,6 +9,7 @@
     "build": "tsc -b && vite build",
     "sync:brand": "node script/sync-brand.mjs",
     "check:brand": "node script/sync-brand.mjs --check",
+    "icons:ico": "node script/gen-favicon-ico.mjs",
     "test": "node script/unit-tests.mjs",
     "check:budget": "node script/unit-tests.mjs bundleBudget",
     "smoke": "node script/ci-smoke.mjs",

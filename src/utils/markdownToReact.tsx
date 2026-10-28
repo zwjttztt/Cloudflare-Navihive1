@@ -1180,9 +1180,11 @@ function blockTextOf(el: HTMLElement): string {
  * 正文被迫绕排，看起来就是「文字排序被打乱」；DOM 顺序也是按钮在正文前，
  * 读屏 / 焦点顺序同样别扭。现在：
  *   ① `position: absolute` 脱离文档流 → 对正文**零影响**；
- *   ② 只留图标（13px），默认半透明，hover / 聚焦才完全显形（触屏常显，见 CSS）；
+ *   ② 只留图标（13px），**常显**半透明，hover / 聚焦才完全显形；
  *   ③ 按钮排在正文**之后**（DOM 顺序先内容后操作）。
- * 显隐 / hover 媒体查询写在 index.css 的 `.md-copy-btn`（内联样式写不了 @media）。
+ * 颜色 / 底色 / 不透明度都写在 index.css 的 `.md-copy-btn`（内联值优先级更高，
+ * 写在这儿会把 :hover 与「已复制」的配色压掉）。⚠️ 别再做成「静止完全透明、
+ * 悬停才显形」——用户 2026-10-28 反馈「复制按键看不见」就是这么来的。
  *
  * 为什么按钮不挂在「选中那几个字的右边」：即时渲染是**块级**的
  * （`NoteEditorLivePreview` 按空行把整段替换成一个组件），一行文字在源码里
@@ -1242,8 +1244,9 @@ function CopyBlock({ children }: { children: ReactNode }) {
                     justifyContent: "center",
                     padding: 0,
                     border: "none",
-                    background: "transparent",
-                    color: "inherit",
+                    // ⚠️ background / color **不写内联值**：内联优先级高于样式表，
+                    // 上一版写成内联 `background: transparent` + `color: inherit`，
+                    // 把 index.css 里的 :hover 底色与 [data-copied] 强调色全压掉了。
                     borderRadius: 6,
                     fontFamily: "inherit",
                     lineHeight: 1,
