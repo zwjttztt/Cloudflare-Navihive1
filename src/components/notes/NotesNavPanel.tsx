@@ -59,19 +59,15 @@ export default function NotesNavPanel(props: Pick<NotesPageCtx, "accountName" | 
                     alignItems: "center",
                     gap: 0.75,
                     px: 1,
-                    // ⚠️ 2026-10-27：标题行从 30 让到 48 —— 头部带 60→78 多出来的 18px
-                    // 全给这一行，搜索框仍然是 30（撑到 48 的话那只白框会比工具栏还厚，
-                    // 又是「白框太大」的老问题）。这样搜索框下边正好落在 78，
-                    // 和编辑区工具栏下边同一条线；「记事本」随行居中，下移 9px。
-                    height: `calc(var(--notes-header-h) - ${NOTES_NAV_CTRL_H}px)`,
+                    // ⚠️ 2026-10-27（后续）：用户明确「三栏上方不用对齐」，且左栏没有
+                    // 格式工具栏，所以这一行不再套用编辑区的「头部 − 工具栏」算式（那是
+                    // 为了让左栏标题行底边和编辑区工具栏底边撞在同一条 78 线上）。
+                    // 这里直接按「头部总高 − 搜索框（30）− 12px 间隙」算 = 36：把搜索框
+                    // 那条带子往上提，搜索框整体随之上移一点点（用户要的「稍微往上」），
+                    // 同时标题行底部的分隔线已去掉（用户要的「去掉搜索框上的线」）。
+                    height: `calc(var(--notes-header-h) - var(--notes-search-h) - 12px)`,
                     flexShrink: 0,
-                    // 标题行与下方搜索框之间加一道分隔线：两行实体控件叠在头部里，
-                    // 没有分隔会糊成一块（用户报「标题行 + 搜索框挤在一起」）。
-                    // border-box 让 1px 落在行内，不顶高头部、不破坏三栏对齐。
                     boxSizing: "border-box",
-                    // 用 --neutral-border（30% 灰）而不是 --neutral-hairline（18%）：
-                    // 左栏是浅底，18% 灰线几乎看不见；30% 灰亮/暗两套主题里都读得出。
-                    borderBottom: "1px solid var(--neutral-border)",
                 }}
             >
                 {/* 返回导航站（2026-10-27 去底）：原来是个 30px 玻璃方块 + --header-radius，

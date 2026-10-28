@@ -525,12 +525,12 @@ if (navSearch.error) {
     }
 }
 
-// ---------- P4：三栏头部那条线（2026-10-27 用户画线指定） ----------
-// 用户在截图上用红框圈搜索框、用黄线标出编辑区工具栏的下边，要求「搜索框下方和工具栏
-// 下方的线对齐」「各让一半」→ 两边都挪到 78。所以这里量四条底边：
-//   左栏头部底边 / 中栏头部底边 / 左栏搜索框底边 / 编辑区工具栏底边 —— 必须同高。
-// ⚠️ 这条只有真浏览器能量：jsdom 不算布局，`calc(var(--notes-header-h) - var(--notes-toolbar-h))`
-// 在单测里永远是 0，静态守卫只能钉源码写法，钉不住「真的对齐了吗」。
+// ---------- P4：中栏分割线上移 + 左栏搜索框（2026-10-27 后续） ----------
+// 用户最新要求：① 左栏搜索框上移一点点、并去掉它上面的分隔线；② 中栏「所有笔记 /
+// 全文搜索」下方的分割线上移（原来贴在 78，下方空太多）；③ 三栏上方**不用**对齐。
+// 所以这条不再钉「四底边同高」，改成钉三件事：中栏分割线确实上移了、
+// 搜索框没被撑厚（仍 30）、搜索框仍包在左栏头部内（没溢出）。
+// ⚠️ 这条只有真浏览器能量：jsdom 不算布局，calc() 在单测里永远是 0。
 const p4Fails = [];
 const bands = await evaluate(`(() => {
   const R = el => { if (!el) return null; const b = el.getBoundingClientRect(); return { t:+b.top.toFixed(1), b:+b.bottom.toFixed(1), h:+b.height.toFixed(1) }; };
@@ -538,31 +538,34 @@ const bands = await evaluate(`(() => {
   out.navHeader = R(document.querySelector('[data-nav-header]'));
   out.listHeader = R(document.querySelector('[data-list-header]'));
   out.search = R(document.querySelector('[data-nav-header] .MuiOutlinedInput-root'));
-  // 工具栏：计算后的 minHeight 就是 --notes-toolbar-h（36px），宽 > 200、带下边框
-  for (const el of document.querySelectorAll('div')) {
-    const cs = getComputedStyle(el);
-    if (cs.minHeight !== '36px' || cs.borderBottomWidth === '0px') continue;
-    const b = el.getBoundingClientRect();
-    if (b.width > 200 && b.height >= 30 && b.top > 20) { out.toolbar = R(el); break; }
-  }
   return out;
 })()`);
-const bandKeys = ["navHeader", "listHeader", "search", "toolbar"];
+const bandKeys = ["navHeader", "listHeader", "search"];
 const bandVals = bandKeys.map(k => bands[k] || null);
 if (bandVals.some(v => !v)) {
-    p4Fails.push(`头部那条线量不全：${bandKeys.map((k, i) => k + "=" + (bandVals[i] ? bandVals[i].b : "null")).join(" / ")}`);
+    p4Fails.push(`头部测量量不全：${bandKeys.map((k, i) => k + "=" + (bandVals[i] ? bandVals[i].b : "null")).join(" / ")}`);
 } else {
-    const target = bands.search.b;
     console.log(
-        `\n  三栏头部线：左栏头 ${bands.navHeader.b}｜中栏头 ${bands.listHeader.b}｜搜索框底 ${bands.search.b}（搜索框 ${bands.search.h}px 高）｜工具栏底 ${bands.toolbar.b}`
+        `\n  中栏分割线 listHeader.b=${bands.listHeader.b}（≤66 即已上移）｜左栏头 ${bands.navHeader.b}｜` +
+            `搜索框 ${bands.search.h}px 高、顶 ${bands.search.t} / 底 ${bands.search.b}`
     );
-    for (const k of bandKeys) {
-        if (Math.abs(bands[k].b - target) > 1.5) {
-            p4Fails.push(`${k} 底边 ${bands[k].b} 和搜索框底边 ${target} 差 ${(bands[k].b - target).toFixed(1)}px（三栏头部要一条线）`);
-        }
+    // ① 中栏分割线要上移：不能还贴在 78
+    if (bands.listHeader.b > 66) {
+        p4Fails.push(`中栏分割线还在 ${bands.listHeader.b}（应 ≤66，已上移自 78）`);
     }
+    if (bands.listHeader.b < 50) {
+        p4Fails.push(`中栏分割线 ${bands.listHeader.b} 太矮（应 ≥50，别把标题挤没）`);
+    }
+    // ② 搜索框高度保持 30，没被撑厚
     if (bands.search.h > 34) {
         p4Fails.push(`搜索框被撑到 ${bands.search.h}px 高（应保持 30 —— 头部变高不等于把控件撑厚）`);
+    }
+    // ③ 搜索框仍包在左栏头部内（底边不越过头部底边，顶边不低于头部顶边）
+    if (bands.search.b > bands.navHeader.b + 1.5) {
+        p4Fails.push(`左栏搜索框底 ${bands.search.b} 越过左栏头部底 ${bands.navHeader.b}（搜索框溢出了）`);
+    }
+    if (bands.search.t < bands.navHeader.t - 1.5) {
+        p4Fails.push(`左栏搜索框顶 ${bands.search.t} 高于左栏头部顶 ${bands.navHeader.t}（搜索框溢出了）`);
     }
 }
 
@@ -1008,10 +1011,10 @@ if (!toolbarGeom.ok) {
 }
 
 if (p4Fails.length) {
-    console.log("\n✗ P4 三栏头部线断言未通过：");
+    console.log("\n✗ P4 断言未通过：");
     for (const f of p4Fails) console.log("  - " + f);
 } else {
-    console.log("\n✓ P4 三栏头部线断言通过：左栏搜索框底边 = 编辑区工具栏底边 = 三栏头部底边");
+    console.log("\n✓ P4 断言通过：中栏分割线上移（≤66）、左栏搜索框保持 30px 高且仍在头部内");
 }
 
 if (p3Fails.length) {

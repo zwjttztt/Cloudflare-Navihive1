@@ -4892,8 +4892,9 @@ test("三栏头部用同一个高度变量（否则标题与工具栏整排错�
     const css = readSrcFile("index.css");
     assert.match(css, /--notes-header-h:\s*\d+px/, "index.css 里要有共同头部高度变量");
     // ⚠️ 2026-10-27：编辑区 / 侧栏的头部带**把下面的格式工具栏算在内**（78 = 42 + 36），
-    // 它们的标题行高度改成 calc(头部总高 − 工具栏高)，工具栏底边才是三栏共同那条线。
-    // 所以这两栏钉的是 calc 形式，中栏钉的还是直接的变量。
+    // 它们的标题行高度写成 calc(头部总高 − 工具栏高)。中栏没有工具栏，且用户后续要求
+    // 把中栏分割线上移、三栏上方不必对齐，所以中栏改成 calc(头部总高 − 18px) = 60。
+    // 三栏都仍从 --notes-header-h 派生，只是减的数不同。
     for (const file of ["NotesEditorPane.tsx", "NotesSidePane.tsx"]) {
         const src = stripComments(readNotesFile(file));
         assert.ok(
@@ -4904,8 +4905,8 @@ test("三栏头部用同一个高度变量（否则标题与工具栏整排错�
     {
         const src = stripComments(readNotesFile("NotesListPane.tsx"));
         assert.ok(
-            src.includes('height: "var(--notes-header-h)"'),
-            "NotesListPane 的头部容器要走 --notes-header-h，否则三栏第一行内容又错开"
+            src.includes('height: "calc(var(--notes-header-h) - 18px)"'),
+            "NotesListPane 的头部容器要减 18px（=60），把中栏分割线上移；别再吃满 78"
         );
     }
     // 工具栏高度必须和标题行算式用同一个变量：写死 36 的话两边会各漂各的。
