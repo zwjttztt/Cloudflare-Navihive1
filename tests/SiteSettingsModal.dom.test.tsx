@@ -169,12 +169,60 @@ test("SiteSettingsModal：站点没图标时，打开就按图标 API 模板自�
         />
     );
 
-    const iconInput = inputByLabel("图标 URL");
-    assert.ok(iconInput, "应能找到「图标 URL」输入框");
+    // 2026-10-28：「图标」区块并进「网站名称」那一行，图标地址改成点左侧图标才展开
+    const editBtn = document.querySelector<HTMLElement>('[aria-label="修改图标"]');
+    assert.ok(editBtn, "名称框左侧要有图标预览（点它展开图标地址）");
+    click(editBtn!);
+
+    const iconInput = inputByLabel("图标地址（可选，留空用站名首字）");
+    assert.ok(iconInput, "应能找到「图标地址」输入框");
     assert.equal(
         iconInput!.value,
         "https://ico.example/www.example.com",
         `应把 {domain} 换成真实域名，实际 ${iconInput!.value}`
+    );
+});
+
+test("SiteSettingsModal：不再有独立的「图标」区块，「获取图标」只在小面板里", t => {
+    t.after(cleanup);
+    mount(
+        <SiteSettingsModal
+            site={makeSite({ icon: "https://already/set.png" })}
+            onUpdate={() => {}}
+            onDelete={() => {}}
+            onClose={() => {}}
+        />
+    );
+
+    // 段落标题里不该再有「图标」这一组（基本信息 / 分组与标签 / 描述与备注 / 登录凭据 / 相关笔记）
+    const sectionTitles = [...document.querySelectorAll(".MuiTypography-subtitle2")].map(
+        el => (el.textContent || "").trim()
+    );
+    assert.equal(
+        sectionTitles.includes("图标"),
+        false,
+        `「图标」这一组应该已经被并进名称行，实际分组：${JSON.stringify(sectionTitles)}`
+    );
+
+    // 默认收起：名称行里没有「获取图标」，也没有图标地址框
+    assert.equal(
+        document.querySelector('[aria-label="根据网站链接获取图标URL"]'),
+        null,
+        "获取图标按钮不许回到名称行（会和链接行的 AI ✨ 挤成两个魔法按钮）"
+    );
+    assert.equal(inputByLabel("图标地址（可选，留空用站名首字）"), null, "图标地址默认不该常驻一行");
+
+    // 展开后才有
+    click(document.querySelector<HTMLElement>('[aria-label="修改图标"]')!);
+    const fetchBtn = document.querySelector<HTMLElement>(
+        '[aria-label="根据网站链接获取图标URL"]'
+    );
+    assert.ok(fetchBtn, "小面板里要有「一键获取图标」");
+    assert.ok(
+        inputByLabel("图标地址（可选，留空用站名首字）")!
+            .closest(".MuiInputBase-root")!
+            .contains(fetchBtn),
+        "它必须长在「图标地址」那一格里面"
     );
 });
 

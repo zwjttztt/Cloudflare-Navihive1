@@ -152,3 +152,29 @@ test("弹窗遮罩走 --scrim-modal（与抽屉的 --scrim 分离）", () => {
         "MuiBackdrop 必须取 --scrim-modal，否则各弹窗遮罩深度又会各写一套"
     );
 });
+
+test("关闭按钮的绝对定位必须在 Tooltip 的直接子元素上", () => {
+    // 起因（2026-10-28 用户报「鼠标放到关闭按键时，文字提示位置错误」）：
+    // Tooltip 的锚点是它的**直接子元素**。定位原先写在里面的 IconButton 上，
+    // 外层 span 是 inline 静态元素，唯一的子元素又被抽出文档流 → span 塌成 0×0
+    // 并停在文档流原处（标题文字右边），提示就跑到离按钮几百像素的地方。
+    // 所以：定位必须落在 Tooltip 的直接子元素（那层 Box）上，IconButton 保持静态。
+    const src = stripComments(
+        readFileSync(path.join(ROOT, "src/components/DialogCloseButton.tsx"), "utf8")
+    );
+
+    const anchor = /<Tooltip[\s\S]*?<Box([\s\S]*?)>/.exec(src);
+    assert.ok(anchor, "Tooltip 的直接子元素应该是那层 Box —— 它就是提示的锚点");
+    assert.match(
+        anchor![1],
+        /position:\s*"absolute"/,
+        "绝对定位要写在 Tooltip 的直接子元素上，否则提示会锚到塌陷的空盒子上"
+    );
+
+    const iconButton = /<IconButton([\s\S]*?)>/.exec(src);
+    assert.ok(iconButton, "关闭按钮里应该有 IconButton");
+    assert.ok(
+        !/position:\s*"absolute"/.test(iconButton![1]),
+        "定位不许写回 IconButton —— 那样 Tooltip 的锚点（外层 span）会塌成 0×0"
+    );
+});

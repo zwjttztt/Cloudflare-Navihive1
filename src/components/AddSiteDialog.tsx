@@ -1,12 +1,15 @@
 // src/components/AddSiteDialog.tsx
 // 新增站点弹窗 —— 原本内联在 App.tsx 里（330 多行），抽出来单独维护。
-// 字段顺序与「网站设置」保持一致：名称 → 链接 → 图标 → 描述 → 备注 → 登录凭据。
+// 字段顺序与「网站设置」保持一致：名称（含图标预览 + 一键获取）→ 链接 → 描述 → 备注 → 登录凭据。
+// 「图标地址」不再是常驻的一行：点名称左边的图标才展开（2026-10-28 合并）。
 //
 // 这个组件只管渲染：所有状态与提交逻辑仍由 App 通过 useSiteCreator 持有并通过 props 下发，
 // 所以抽出来是纯搬移，行为不变。
 
 import type { Dispatch, SetStateAction } from "react";
+import { useState } from "react";
 import {
+    Avatar,
     Box,
     Button,
     CircularProgress,
@@ -22,7 +25,6 @@ import {
     Tooltip,
     Typography,
 } from "@mui/material";
-import AutoFixHighIcon from "@mui/icons-material/AutoFixHigh";
 import AutoAwesomeIcon from "@mui/icons-material/AutoAwesome";
 import VisibilityIcon from "@mui/icons-material/VisibilityOutlined";
 import VisibilityOffIcon from "@mui/icons-material/VisibilityOffOutlined";
@@ -70,10 +72,20 @@ export default function AddSiteDialog(props: AddSiteDialogProps) {
         onAiComplete,
     } = props;
 
+    // 「图标地址」输入框是否展开（2026-10-28：图标并进站点名称那一行之后，
+    // 手动改地址改成点左侧图标按需展开）。纯 UI 状态，留在本地就够，
+    // 不必往 App 的 useSiteCreator 里塞。
+    const [iconEditing, setIconEditing] = useState(false);
+    // 哪个地址加载失败了 —— 存字符串而不是布尔：换了新地址自动就能重试预览
+    const [brokenIcon, setBrokenIcon] = useState("");
+    const previewIcon = site.icon && site.icon !== brokenIcon ? site.icon : "";
+    // 站名首字兜底图标（没图 / 加载失败时显示）
+    const fallbackIcon = (site.name || "").trim().charAt(0).toUpperCase() || "A";
+
     return (
         <>
             {/* 新增站点对话框：字段顺序与「网站设置」对齐
-                （名称 → 链接 → 图标 → 描述 → 备注 → 分隔线 → 登录凭据），宽度也统一成 600px */}
+                （名称〔含图标〕→ 链接 → 描述 → 备注 → 分隔线 → 登录凭据），宽度也统一成 600px */}
             <Dialog open={open} onClose={onClose} maxWidth='sm' fullWidth>
                 <DialogTitle sx={dialogTitleSx}>
                     <Typography component='div' sx={{
@@ -121,6 +133,84 @@ export default function AddSiteDialog(props: AddSiteDialogProps) {
                                 placeholder='给它起个名字'
                                 value={site.name}
                                 onChange={onInputChange}
+                                /* 图标预览贴框内左侧、一键获取在框内右侧（与「网站设置」
+                                   同一套摆放）。点左侧图标展开「图标地址」。 */
+                                slotProps={{
+                                    inputLabel: { shrink: true },
+                                    input: {
+                                        startAdornment: (
+                                            <InputAdornment position='start'>
+                                                <Tooltip
+                                                    title={
+                                                        iconEditing
+                                                            ? "收起图标地址"
+                                                            : "图标地址（点一下可手动改）"
+                                                    }
+                                                >
+                                                    <IconButton
+                                                        size='small'
+                                                        edge='start'
+                                                        aria-label='修改图标'
+                                                        aria-expanded={iconEditing}
+                                                        onClick={() =>
+                                                            setIconEditing(v => !v)
+                                                        }
+                                                        sx={{ p: 0.25, mr: 0.25 }}
+                                                    >
+                                                        {previewIcon ? (
+                                                            <Avatar
+                                                                src={previewIcon}
+                                                                alt=''
+                                                                variant='rounded'
+                                                                sx={{
+                                                                    width: 26,
+                                                                    height: 26,
+                                                                    borderRadius: 1,
+                                                                    fontSize: 13,
+                                                                    // 底色 + 兜底字常挂：远程图标没到 / 拉不到时
+                                                                    // 这一格不能是个白洞
+                                                                    bgcolor: "primary.light",
+                                                                    color: "primary.main",
+                                                                    border: "1px solid",
+                                                                    borderColor: "primary.main",
+                                                                }}
+                                                                slotProps={{
+                                                                    img: {
+                                                                        onError: () =>
+                                                                            setBrokenIcon(
+                                                                                site.icon || ""
+                                                                            ),
+                                                                        style: {
+                                                                            objectFit: "cover",
+                                                                        },
+                                                                    },
+                                                                }}
+                                                            >
+                                                                {fallbackIcon}
+                                                            </Avatar>
+                                                        ) : (
+                                                            <Avatar
+                                                                variant='rounded'
+                                                                sx={{
+                                                                    width: 26,
+                                                                    height: 26,
+                                                                    borderRadius: 1,
+                                                                    fontSize: 13,
+                                                                    bgcolor: "primary.light",
+                                                                    color: "primary.main",
+                                                                    border: "1px solid",
+                                                                    borderColor: "primary.main",
+                                                                }}
+                                                            >
+                                                                {fallbackIcon}
+                                                            </Avatar>
+                                                        )}
+                                                    </IconButton>
+                                                </Tooltip>
+                                            </InputAdornment>
+                                        ),
+                                    },
+                                }}
                             />
                         </Box>
                             <Box sx={{ flex: 1 }}>
@@ -191,41 +281,46 @@ export default function AddSiteDialog(props: AddSiteDialogProps) {
                             </Typography>
                         ) : null}
 
-                        {/* 图标 URL：紧跟站点 URL（它由链接推导而来），魔棒按钮放进输入框内，不再悬在外面 */}
-                        <TextField
-                            id='site-icon'
-                            name='icon'
-                            label='图标URL'
-                            fullWidth
-                            size='small'
-                            type='url'
-                            variant='outlined'
-                            placeholder='填好站点URL后自动生成'
-                            value={site.icon}
-                            onChange={onInputChange}
-                            slotProps={{
-                                input: {
-                                    endAdornment: (
-                                        <InputAdornment position='end'>
-                                            <Tooltip title='根据网站链接一键获取图标URL'>
-                                                <span>
-                                                    <IconButton
-                                                        size='small'
-                                                        edge='end'
-                                                        onClick={onFetchIcon}
-                                                        disabled={!site.url}
-                                                        aria-label='根据网站链接获取图标URL'
-                                                    >
-                                                        <AutoFixHighIcon fontSize='small' />
-                                                    </IconButton>
-                                                </span>
-                                            </Tooltip>
-                                        </InputAdornment>
-                                    ),
-                                },
-
-                                inputLabel: { shrink: true }
-                            }} />
+                        {/* 图标地址：并进上面那一行之后不再常驻 —— 点站点名称左侧的图标
+                            才展开。留空就用站点首字当图标，所以它不是必填项。
+                            「一键获取图标」也在这一格里（用户 2026-10-28 特意要求挪进来：
+                            放名称行右边会和链接行的 AI ✨ 挤成两个魔法按钮，容易点错）。 */}
+                        {iconEditing ? (
+                            <TextField
+                                id='site-icon'
+                                name='icon'
+                                label='图标地址（可选，留空用站名首字）'
+                                fullWidth
+                                size='small'
+                                type='url'
+                                variant='outlined'
+                                placeholder='填好站点URL后自动生成'
+                                value={site.icon}
+                                onChange={onInputChange}
+                                slotProps={{
+                                    inputLabel: { shrink: true },
+                                    input: {
+                                        endAdornment: (
+                                            <InputAdornment position='end'>
+                                                <Tooltip title='根据网站链接一键获取图标URL'>
+                                                    <span>
+                                                        <IconButton
+                                                            size='small'
+                                                            edge='end'
+                                                            aria-label='根据网站链接获取图标URL'
+                                                            disabled={!site.url}
+                                                            onClick={onFetchIcon}
+                                                        >
+                                                            <AutorenewIcon fontSize='small' />
+                                                        </IconButton>
+                                                    </span>
+                                                </Tooltip>
+                                            </InputAdornment>
+                                        ),
+                                    },
+                                }}
+                            />
+                        ) : null}
 
                         {/* 站点描述 + 备注：两块说明文字挨在一起 */}
                         <TextField

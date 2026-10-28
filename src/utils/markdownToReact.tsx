@@ -1173,18 +1173,17 @@ function blockTextOf(el: HTMLElement): string {
 }
 
 /**
- * `> [!COPY]` 可复制块：右上角一颗**绝对定位**的图标按钮。
+ * `> [!COPY]` 可复制块：右上角一颗**绝对定位**的「复制」胶囊。
  *
- * ⚠️ 2026-10-28 改版（方案 A，用户报「复制键影响文字排序」）：
- * 旧版把胶囊 `float: right` 放在正文**前面** —— float 会占掉首行约 70px，
- * 正文被迫绕排，看起来就是「文字排序被打乱」；DOM 顺序也是按钮在正文前，
- * 读屏 / 焦点顺序同样别扭。现在：
- *   ① `position: absolute` 脱离文档流 → 对正文**零影响**；
- *   ② 只留图标（13px），**常显**半透明，hover / 聚焦才完全显形；
- *   ③ 按钮排在正文**之后**（DOM 顺序先内容后操作）。
- * 颜色 / 底色 / 不透明度都写在 index.css 的 `.md-copy-btn`（内联值优先级更高，
- * 写在这儿会把 :hover 与「已复制」的配色压掉）。⚠️ 别再做成「静止完全透明、
- * 悬停才显形」——用户 2026-10-28 反馈「复制按键看不见」就是这么来的。
+ * ⚠️ 2026-10-28 改了三版，别再往回走：
+ *   ① 最早 `float: right` 放在正文**前面** —— 占掉首行约 70px、正文绕排，
+ *      用户报「复制键影响文字排序」；
+ *   ② 改绝对定位 + 只留 13px 图标 + 半透明 —— 不挤正文了，但用户连着两次报
+ *      「看不见 / 看不清」（那颗灰线图标在中文正文里根本不像个按钮）；
+ *   ③ 现在：**图标 + 「复制」两字**的浅底胶囊，常显不透明；块顶部留 28px
+ *      操作带给它，所以长首行也不会被盖住。
+ * 颜色 / 边框 / 尺寸写在 index.css 的 `.md-copy-btn`（内联值优先级更高，写在这儿
+ * 会把 :hover 与「已复制」的配色压掉）。内联只负责 position / top / right。
  *
  * 为什么按钮不挂在「选中那几个字的右边」：即时渲染是**块级**的
  * （`NoteEditorLivePreview` 按空行把整段替换成一个组件），一行文字在源码里
@@ -1220,6 +1219,9 @@ function CopyBlock({ children }: { children: ReactNode }) {
                 position: "relative",
                 display: "flow-root",
                 margin: `0 0 ${MD_GAP}`,
+                // 顶部让出 28px 给胶囊按钮（它绝对定位在 top:0）—— 这是「不挤正文」
+                // 又不「盖住首行」的唯一办法：只往下推，不参与行内排版。
+                paddingTop: 28,
             }}
         >
             {/* 正文先渲染，按钮在后 —— 读屏 / Tab 顺序是「先内容后操作」。 */}
@@ -1229,28 +1231,14 @@ function CopyBlock({ children }: { children: ReactNode }) {
                 data-copy-op='copy-block'
                 data-copied={copied ? "1" : undefined}
                 aria-label={copied ? "已复制" : "复制这一块"}
-                title={copied ? "已复制" : "复制这一块"}
                 onClick={handleCopy}
                 className='md-copy-btn'
                 style={{
-                    // 关键：绝对定位，脱离文档流 —— 不再像 float 那样挤掉首行
+                    // 只留定位：绝对定位 → 脱离文档流，永不像 float 那样挤首行。
+                    // 尺寸 / 底色 / 描边 / 字号全在 index.css（内联会压掉 :hover）。
                     position: "absolute",
-                    top: 2,
-                    right: 0,
-                    width: 26,
-                    height: 26,
-                    display: "inline-flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    padding: 0,
-                    border: "none",
-                    // ⚠️ background / color **不写内联值**：内联优先级高于样式表，
-                    // 上一版写成内联 `background: transparent` + `color: inherit`，
-                    // 把 index.css 里的 :hover 底色与 [data-copied] 强调色全压掉了。
-                    borderRadius: 6,
-                    fontFamily: "inherit",
-                    lineHeight: 1,
-                    cursor: "pointer",
+                    top: 0,
+                    right: 12,
                 }}
             >
                 {copied ? (
@@ -1263,6 +1251,7 @@ function CopyBlock({ children }: { children: ReactNode }) {
                         <path d='M4 9.5h5.5a1 1 0 0 0 1-1V4' fill='none' stroke='currentColor' strokeWidth='1.2' strokeLinecap='round' />
                     </svg>
                 )}
+                <span>{copied ? "已复制" : "复制"}</span>
             </button>
         </div>
     );

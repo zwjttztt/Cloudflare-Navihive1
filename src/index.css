@@ -1653,36 +1653,47 @@ html.dark .cm-editor .cm-content {
     }
 }
 
-/* 可复制块右上角的复制按钮（2026-10-28，方案 A：绝对定位 + 只留图标）。
-   ① 定位/尺寸写在组件内联样式里（脱离文档流，永不挤压正文）；
-      颜色 / 悬停底色 / 不透明度**只能在这里写** —— 内联样式优先级高于样式表，
-      组件上一版把 background/color 写成内联值，结果 :hover 底色与「已复制」配色
-      全被压掉（改了没反应那种）。
-   ② 常显：静止态就是 0.62 半透明，hover / 聚焦才完全显形。
-   🔴 绝对不许再写成「静止 opacity: 0，悬停才显形」—— 2026-10-28 用户反馈
-      「复制按键看不见」就是这条媒体查询干的（鼠标环境默认不可见 = 用户根本不知道
-      那里有按钮）。宁可稍微显眼，也不要做成隐形机关。
-   ⚠️ 不用 JS 判触屏：nav-touch 会把触屏笔记本误判，媒体查询才是准的。 */
+/* 可复制块右上角的复制胶囊（2026-10-28 第三版，方案 A）。
+   演进史：`float: right` 挤掉首行 70px（用户报「影响文字排序」）→ 绝对定位 + 只留
+   图标 + 半透明（用户两次报「看不见 / 看不清」）→ 现在这颗「图标 + 复制」浅底胶囊。
+   🔴 两个都别再回头：① 不要再用 float 参与行内排版；② 不要再做成图标-only 或
+      靠 opacity 淡化 —— 13px 的灰线图标在中文正文里根本不像个按钮，问题不在深浅。
+   ⚠️ 颜色 / 底色 / 边框 / 尺寸只能写在这里：组件内联只留 position / top / right。
+      内联样式优先级高于样式表，写同名属性会把 :hover 与 [data-copied] 的配色压掉
+      （第一版就是这么「改了没反应」的）。
+   ⚠️ 按钮浮在正文上方 28px 的操作带里（组件用 paddingTop 让位），不参与行内排版，
+      所以长首行也不会被它盖住。 */
 .md-copy-btn {
-    opacity: 0.62;
-    color: inherit;
-    background: transparent;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    height: 24px;
+    padding: 0 9px;
+    border: 1px solid var(--neutral-hairline);
+    border-radius: 12px;
+    background: var(--md-inline-code-bg);
+    color: var(--text-secondary);
+    font-family: inherit;
+    font-size: 12px;
+    line-height: 1;
+    cursor: pointer;
     transition:
-        opacity var(--dur-fast) ease,
+        color var(--dur-fast) ease,
         background-color var(--dur-fast) ease,
-        color var(--dur-fast) ease;
+        border-color var(--dur-fast) ease;
 }
 
 .md-copy-btn:hover,
 .md-copy-btn:focus-visible {
-    opacity: 1;
+    color: var(--text-primary);
     background: var(--neutral-hover);
+    border-color: var(--neutral-border);
 }
 
-/* 点完的 1.2 秒：变强调色 + 全不透明。对勾本身很小，不光靠形状传信号。 */
+/* 复制成功的 1.2 秒：整颗胶囊变强调色边框 + 强调色文字 */
 .md-copy-btn[data-copied="1"] {
-    opacity: 1;
     color: var(--accent);
+    border-color: var(--accent);
 }
 
 .md-copy-btn:focus-visible {

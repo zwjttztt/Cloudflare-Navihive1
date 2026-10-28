@@ -90,14 +90,39 @@ const byId = (id: string) => document.querySelector<HTMLInputElement>(`#${id}`);
 
 // ---------- 字段顺序 ----------
 
-test("字段顺序是 名称 → 链接 → 图标 → 描述 → 备注 → 凭据", () => {
+test("字段顺序是 名称（含图标）→ 链接 → 描述 → 备注 → 凭据", () => {
     render();
-    const order = ["site-name", "site-url", "site-icon", "site-description", "site-notes", "site-username", "site-password"];
+    const order = ["site-name", "site-url", "site-description", "site-notes", "site-username", "site-password"];
     const found = order.filter(id => byId(id));
     assert.deepEqual(
         found,
         order,
         "顺序和「网站设置」保持一致，改乱了用户会填错地方（这是注释里写明的约定）"
+    );
+});
+
+test("「图标地址」不再常驻一行：点名称左边的图标才展开（2026-10-28 合并）", () => {
+    render();
+    assert.equal(byId("site-icon"), null, "默认不该有独立的「图标地址」输入框");
+    assert.ok(
+        byId("site-name")!.closest(".MuiInputBase-root")!.querySelector('[aria-label="修改图标"]'),
+        "图标预览要在站点名称框的左侧（点它展开图标地址）"
+    );
+    // 点左侧图标 → 展开地址框
+    const edit = byLabel("修改图标")!;
+    assert.equal(edit.getAttribute("aria-expanded"), "false");
+    act(() => edit.click());
+    assert.ok(byId("site-icon"), "点一下要能展开「图标地址」，手动填地址的能力不能丢");
+    assert.equal(byLabel("修改图标")!.getAttribute("aria-expanded"), "true");
+});
+
+test("图标预览用站名首字兜底（没图标时不是空白框）", () => {
+    render({ site: { name: "豆包", icon: "" } });
+    const edit = byLabel("修改图标")!;
+    assert.equal(
+        (edit.textContent || "").trim(),
+        "豆",
+        "没图标时显示站名首字，别让左侧空着"
     );
 });
 
@@ -152,10 +177,18 @@ test("AI 消息在失败时也要渲染出来（不能静默吞掉原因）", ()
 
 // ---------- 抓取图标 ----------
 
-test("图标框旁边只有一个「获取图标」按钮", () => {
+test("「获取图标」按钮只有一枚，而且在图标地址小面板里", () => {
     render();
+    // 2026-10-28 用户要求：别放名称行（会和链接行的 AI ✨ 挤成两个魔法按钮）
+    assert.equal(byLabel("根据网站链接获取图标URL"), null, "名称行不许再有获取图标按钮");
+    act(() => byLabel("修改图标")!.click());
+
     const fetchBtns = [...document.querySelectorAll<HTMLElement>('[aria-label="根据网站链接获取图标URL"]')];
-    assert.equal(fetchBtns.length, 1);
+    assert.equal(fetchBtns.length, 1, "展开小面板后只有一枚");
+    assert.ok(
+        byId("site-icon")!.closest(".MuiInputBase-root")!.contains(fetchBtns[0]),
+        "它必须长在「图标地址」那一格里面"
+    );
     // 钉住一次产品决策：URL 框旁边**曾经**还有个「抓取网站标题和描述」按钮，
     // 用户明确要求去掉了。它要是哪天被加回来，这条会红。
     const allLabels = [...document.querySelectorAll<HTMLElement>("[aria-label]")].map(el =>
@@ -170,6 +203,7 @@ test("图标框旁边只有一个「获取图标」按钮", () => {
 
 test("没填链接时「获取图标」按钮禁用", () => {
     render({ site: { url: "" } });
+    act(() => byLabel("修改图标")!.click());
     assert.equal(byLabel("根据网站链接获取图标URL")!.hasAttribute("disabled"), true);
 });
 

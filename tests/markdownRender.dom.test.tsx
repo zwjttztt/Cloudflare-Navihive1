@@ -437,7 +437,7 @@ test("双链是点状下划线 + 500 字重（和普通链接分开）", async (
 // 可复制块（`> [!COPY]`）：块右上角一颗**绝对定位的图标**按钮（2026-10-28 方案 A）。
 // 这一组盯两件事：① 按钮不再参与正文排版（旧版 float 会挤掉首行 ~70px）；
 // ② 真点一下有没有东西进剪贴板 —— 只断言按钮存在是假通过。
-test("COPY 块：复制按钮绝对定位（不挤正文）+ 图标-only，点一下把整块纯文本写进剪贴板", async () => {
+test("COPY 块：复制胶囊绝对定位（不挤正文）+ 带「复制」两字，点一下把整块纯文本写进剪贴板", async () => {
     const host = await renderToDom("> [!COPY]\n> 第一行\n>\n> 第二行");
 
     const block = host.querySelector('[data-callout="COPY"]');
@@ -449,14 +449,21 @@ test("COPY 块：复制按钮绝对定位（不挤正文）+ 图标-only，点�
     // ① 绝对定位、不再 float：这是「不影响文字排序」的根。
     assert.equal(btn!.style.getPropertyValue("position"), "absolute", "按钮必须绝对定位（float 会挤掉首行）");
     assert.equal(btn!.style.getPropertyValue("float"), "", "不许再用 float 参与排版");
-    // ② 图标-only：不再有「复制」两个字（用户 2026-10-28 要求）。
-    assert.equal((btn!.textContent ?? "").trim(), "", "复制按钮只留图标、不带文字");
-    assert.ok(btn!.querySelector("svg"), "按钮里要有图标");
+    assert.equal(btn!.style.getPropertyValue("right"), "12px", "按钮要往正文里缩 12px，别贴窗口右边缘");
+    // ② 图标 + 文字：只留图标那版用户两次报「看不清」，第 ③ 版加回「复制」两字。
+    assert.equal((btn!.textContent ?? "").trim(), "复制", "胶囊上要有「复制」两个字");
+    assert.ok(btn!.querySelector("svg"), "图标也留着（文字 + 图标双保险）");
     // ③ 颜色 / 底色必须留给样式表：内联样式优先级更高，写死就把 index.css 里的
     //    :hover 底色和 [data-copied] 强调色全压掉了（2026-10-28 踩过）。
     assert.equal(btn!.style.getPropertyValue("background"), "", "底色交给 index.css，别写内联值");
     assert.equal(btn!.style.getPropertyValue("color"), "", "颜色交给 index.css，别写内联值");
-    // ④ 图标-only 不能丢可访问名。
+    // ④ 按钮浮在块顶部预留的 28px 操作带里 —— 不做这件事，长首行会被胶囊盖住。
+    assert.equal(
+        (block as HTMLElement).style.getPropertyValue("padding-top"),
+        "28px",
+        "块顶部必须给胶囊留出操作带，否则它会压在首行文字上"
+    );
+    // ⑤ 不能丢可访问名。
     assert.ok((btn!.getAttribute("aria-label") ?? "").length > 0, "图标按钮必须有 aria-label");
 
     const written: string[] = [];
@@ -480,6 +487,7 @@ test("COPY 块：复制按钮绝对定位（不挤正文）+ 图标-only，点�
             "复制的是**渲染后的纯文本**；带上 `>` 就成了让人自己再删一遍的源码"
         );
         assert.equal(btn!.getAttribute("data-copied"), "1", "点完必须当场给反馈（图标换成对勾）");
+        assert.equal((btn!.textContent ?? "").trim(), "已复制", "点完文字也要跟着变，不能只换图标");
     } finally {
         if (hadClipboard) {
             Object.defineProperty(navigator, "clipboard", {
@@ -542,13 +550,24 @@ test("复制按钮的样式：静止态可见、永不被藏成 opacity: 0", () 
     const restOpacity = opacityOf(rest!.body);
     assert.ok(
         restOpacity === undefined || restOpacity >= 0.4,
-        `复制按钮静止态不透明度只有 ${restOpacity}，太淡了（要 >= 0.4）`
+        `复制按钮静止态不透明度只有 ${restOpacity}，太淡了（要 >= 0.4，最好干脆不设）`
     );
-    assert.match(rest!.body, /color\s*:\s*inherit/, "图标颜色要跟随正文（别让 <button> 的默认色盖上来）");
+    // 第 ③ 版定稿：它是「浅底 + 描边的胶囊」，靠**形**让人认出是按钮，
+    // 不靠颜色深浅。所以静止态必须同时有底色、描边和明确的文字色 —— 缺一样就退回
+    // 「一颗灰线图标糊在正文里」那种看不清的状态。
+    assert.match(rest!.body, /border\s*:\s*1px\s+solid/, "胶囊要有 1px 描边（否则在正文里没有边界）");
+    assert.match(rest!.body, /background\s*:/, "胶囊要有浅底");
+    assert.match(rest!.body, /color\s*:/, "文字色要显式给（别让 <button> 的默认色盖上来）");
+    assert.match(rest!.body, /font-size\s*:/, "12px 的字号要写死在这里，否则胶囊会跟正文字号走");
 
-    assert.ok(
-        copyRules.some(r => r.selector.includes(":hover") && opacityOf(r.body) === 1),
-        "悬停时要把不透明度提到 1（否则「看得见」和「能点」没有区分）"
+    // 悬停要有可见变化：第 ③ 版不再用 opacity，改成换底色 / 描边 / 文字色，
+    // 所以这里只要求「改了其中至少一样」，不钉具体属性。
+    const hover = copyRules.find(r => r.selector.includes(":hover"));
+    assert.ok(hover, "必须有 :hover 规则（点了才知道能点）");
+    assert.match(
+        hover!.body,
+        /(background|border|color)\s*:/,
+        "悬停时底色 / 描边 / 文字色至少要变一样"
     );
     assert.ok(
         copyRules.some(r => r.selector.includes(':focus-visible')),

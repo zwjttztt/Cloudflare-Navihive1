@@ -36,7 +36,7 @@ import CancelIcon from "@mui/icons-material/Cancel";
 import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import VisibilityIcon from "@mui/icons-material/VisibilityOutlined";
 import VisibilityOffIcon from "@mui/icons-material/VisibilityOffOutlined";
-import AutoFixHighIcon from "@mui/icons-material/AutoFixHigh";
+import AutorenewIcon from "@mui/icons-material/Autorenew";
 import AutoAwesomeIcon from "@mui/icons-material/AutoAwesome";
 import FullscreenIcon from "@mui/icons-material/Fullscreen";
 import { useSiteAi } from "../context/AiContext";
@@ -229,6 +229,9 @@ export default function SiteSettingsModal({
     const [iconPreview, setIconPreview] = useState<string | null>(
         site.icon || resolveIconApiUrl(iconApi, site.url || "") || null
     );
+    // 「图标地址」输入框是否展开。图标预览并进「网站名称」那行之后，手动改地址
+    // 变成按需展开（点左侧图标）—— 默认收起，否则又回到「多一行」的老样子。
+    const [iconEditing, setIconEditing] = useState(false);
 
     // 密码是否明文显示
     // AI 补全走 context：卡片是 memo 的，把助手当 prop 一层层传下去会让所有卡片重渲染
@@ -305,6 +308,9 @@ export default function SiteSettingsModal({
 
         setFormData(prev => ({ ...prev, icon: resolved }));
         setIconPreview(resolved);
+        // 小面板可能已经被收起（比如用户先手动填了再点按钮），这里保持它展开，
+        // 否则点了按钮看不到到底拿到了什么，只能靠猜
+        setIconEditing(true);
         setIconFetchMessage("已获取图标URL");
         window.setTimeout(() => setIconFetchMessage(""), 2000);
     };
@@ -366,30 +372,27 @@ export default function SiteSettingsModal({
         setIconPreview(autoIcon || null);
     };
 
-    // 处理图标上传或URL输入
-    const handleIconChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-        const { value } = e.target;
+    // 图标地址的统一写入口：手动输入、一键获取、清空都走这里。
+    // 只有一份预览状态要维护，三处各写一遍迟早不一致。
+    const applyIconValue = (value: string) => {
         setFormData(prev => ({ ...prev, icon: value }));
 
-        // 检查URL是否是有效的图片URL
-        const isValidImageUrl = (url: string): boolean => {
-            // 检查URL格式
+        // 只把「看起来像图片地址」的值喂给预览：favicon 服务类的地址常常没有扩展名，
+        // 所以不做扩展名判断；真加载不出来时 onError 会把预览清掉。
+        const looksLikeImage = (() => {
             try {
-                new URL(url);
-                // 只要是 http(s) 或 data:image 就允许预览
-                // （favicon 服务类的地址常常没有文件扩展名，加载失败时 onError 会自动清掉预览）
-                return /^https?:\/\//i.test(url) || /^data:image\//i.test(url);
+                new URL(value);
+                return /^https?:\/\//i.test(value) || /^data:image\//i.test(value);
             } catch {
                 return false;
             }
-        };
+        })();
+        setIconPreview(value && looksLikeImage ? value : null);
+    };
 
-        // 仅当输入看起来像有效的图片URL时才设置预览
-        if (value && isValidImageUrl(value)) {
-            setIconPreview(value);
-        } else {
-            setIconPreview(null);
-        }
+    // 图标地址输入框的 onChange
+    const handleIconChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+        applyIconValue(e.target.value);
     };
 
     // 处理图标加载错误
@@ -539,7 +542,12 @@ export default function SiteSettingsModal({
                         字段，只有「登录凭据」一个小标题，找东西全靠逐行扫读 */}
                     <Stack spacing={2}>
                         <Section title='基本信息'>
-                        {/* 网站名称 */}
+                        {/* 网站名称：**图标预览贴在框内左侧**、**一键获取图标在框内右侧**
+                            （2026-10-28 用户要求：原来单独一块「图标」收进这一行）。
+                            手动改图标地址的能力没丢 —— 点左侧图标展开一行输入框，
+                            默认收起（大多数站点靠「链接 → 自动生成」就够了，常驻是浪费）。
+                            ⚠️ 有前置图标时 label 会压到图标上，所以强制 shrink。 */}
+                        <Box>
                         <TextField
                             id='name'
                             name='name'
@@ -551,7 +559,121 @@ export default function SiteSettingsModal({
                             placeholder='输入网站名称'
                             variant='outlined'
                             size='small'
+                            slotProps={{
+                                inputLabel: { shrink: true },
+                                input: {
+                                    startAdornment: (
+                                        <InputAdornment position='start'>
+                                            <Tooltip
+                                                title={
+                                                    iconEditing
+                                                        ? "收起图标地址"
+                                                        : "图标地址（点一下可手动改）"
+                                                }
+                                            >
+                                                <IconButton
+                                                    size='small'
+                                                    edge='start'
+                                                    aria-label='修改图标'
+                                                    aria-expanded={iconEditing}
+                                                    onClick={() => setIconEditing(v => !v)}
+                                                    sx={{ p: 0.25, mr: 0.25 }}
+                                                >
+                                                    {iconPreview ? (
+                                                        <Avatar
+                                                            src={iconPreview}
+                                                            alt={formData.name || "图标预览"}
+                                                            variant='rounded'
+                                                            sx={{
+                                                                width: 26,
+                                                                height: 26,
+                                                                borderRadius: 1,
+                                                                fontSize: 13,
+                                                                // 底色 / 兜底字一直挂着：远程图标还没到、或者
+                                                                // 干脆拉不到时，这一格不能是个白洞
+                                                                bgcolor: "primary.light",
+                                                                color: "primary.main",
+                                                                border: "1px solid",
+                                                                borderColor: "primary.main",
+                                                            }}
+                                                            slotProps={{
+                                                                img: {
+                                                                    onError: handleIconError,
+                                                                    style: { objectFit: "cover" },
+                                                                },
+                                                            }}
+                                                        >
+                                                            {fallbackIcon}
+                                                        </Avatar>
+                                                    ) : (
+                                                        <Avatar
+                                                            variant='rounded'
+                                                            sx={{
+                                                                width: 26,
+                                                                height: 26,
+                                                                borderRadius: 1,
+                                                                fontSize: 13,
+                                                                bgcolor: "primary.light",
+                                                                color: "primary.main",
+                                                                border: "1px solid",
+                                                                borderColor: "primary.main",
+                                                            }}
+                                                        >
+                                                            {fallbackIcon}
+                                                        </Avatar>
+                                                    )}
+                                                </IconButton>
+                                            </Tooltip>
+                                        </InputAdornment>
+                                    ),
+                                },
+                            }}
                         />
+                        {/* 「图标地址」小面板：点名称左边的图标才展开。
+                            「一键获取图标」放在**这一格**里（用户 2026-10-28 要求）——
+                            放名称行右边会和链接行的 AI ✨ 挤成两个魔法按钮，容易点错。 */}
+                        {iconEditing ? (
+                            <TextField
+                                id='icon'
+                                name='icon'
+                                label='图标地址（可选，留空用站名首字）'
+                                fullWidth
+                                size='small'
+                                value={formData.icon || ""}
+                                onChange={handleIconChange}
+                                placeholder='https://example.com/icon.png'
+                                sx={{ mt: 1 }}
+                                slotProps={{
+                                    inputLabel: { shrink: true },
+                                    input: {
+                                        endAdornment: (
+                                            <InputAdornment position='end'>
+                                                <Tooltip
+                                                    title={
+                                                        iconFetchMessage ||
+                                                        "根据网站链接一键获取图标URL"
+                                                    }
+                                                    open={iconFetchMessage ? true : undefined}
+                                                >
+                                                    <span>
+                                                        <IconButton
+                                                            size='small'
+                                                            edge='end'
+                                                            onClick={handleFetchIcon}
+                                                            disabled={!formData.url}
+                                                            aria-label='根据网站链接获取图标URL'
+                                                        >
+                                                            <AutorenewIcon fontSize='small' />
+                                                        </IconButton>
+                                                    </span>
+                                                </Tooltip>
+                                            </InputAdornment>
+                                        ),
+                                    },
+                                }}
+                            />
+                        ) : null}
+                        </Box>
 
                         {/* 网站链接：AI 补全按钮在框右侧（要先把链接发给模型，所以按钮放这） */}
                         <TextField
@@ -617,81 +739,8 @@ export default function SiteSettingsModal({
 
                         </Section>
 
-                        {/* 网站图标：原来的「图标 URL」小标题直接做成输入框的浮动 label，省一整行 */}
-                        <Section title='图标'>
-                        <Box sx={{ display: "flex", gap: 1.25, alignItems: "center" }}>
-                            {iconPreview ? (
-                                <Avatar
-                                    src={iconPreview}
-                                    alt={formData.name || "Icon Preview"}
-                                    sx={{ width: 34, height: 34, borderRadius: 1.5, flexShrink: 0 }}
-                                    variant='rounded'
-                                    slotProps={{
-                                        img: {
-                                            onError: handleIconError,
-                                            style: { objectFit: "cover" },
-                                        }
-                                    }}
-                                />
-                            ) : (
-                                <Avatar
-                                    sx={{
-                                        width: 34,
-                                        height: 34,
-                                        borderRadius: 1.5,
-                                        flexShrink: 0,
-                                        bgcolor: "primary.light",
-                                        color: "primary.main",
-                                        border: "1px solid",
-                                        borderColor: "primary.main",
-                                    }}
-                                    variant='rounded'
-                                >
-                                    {fallbackIcon}
-                                </Avatar>
-                            )}
-
-                            <TextField
-                                id='icon'
-                                name='icon'
-                                label='图标 URL'
-                                fullWidth
-                                value={formData.icon || ""}
-                                onChange={handleIconChange}
-                                placeholder='https://example.com/icon.png'
-                                variant='outlined'
-                                size='small'
-                                slotProps={{
-                                    input: {
-                                        endAdornment: (
-                                            <InputAdornment position='end'>
-                                                <Tooltip
-                                                    title={
-                                                        iconFetchMessage ||
-                                                        "根据网站链接一键获取图标URL"
-                                                    }
-                                                    open={iconFetchMessage ? true : undefined}
-                                                >
-                                                    <span>
-                                                        <IconButton
-                                                            size='small'
-                                                            edge='end'
-                                                            onClick={handleFetchIcon}
-                                                            disabled={!formData.url}
-                                                            aria-label='根据网站链接获取图标URL'
-                                                        >
-                                                            <AutoFixHighIcon fontSize='small' />
-                                                        </IconButton>
-                                                    </span>
-                                                </Tooltip>
-                                            </InputAdornment>
-                                        ),
-                                    },
-
-                                    inputLabel: { shrink: true }
-                                }} />
-                        </Box>
-                        </Section>
+                        {/* 「图标」区块已经并进上面那一行（图标预览在框内左侧、一键获取在
+                            框内右侧），这里不再单列 —— 少一个分组标题、弹窗矮约 60px。 */}
 
                         <Section title='分组与标签'>
                         {/* 分组选择 */}
