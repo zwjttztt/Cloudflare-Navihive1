@@ -1173,20 +1173,20 @@ function blockTextOf(el: HTMLElement): string {
 }
 
 /**
- * `> [!COPY]` 可复制块：首行右上角**常驻**一颗复制胶囊。
+ * `> [!COPY]` 可复制块：右上角一颗**绝对定位**的图标按钮。
  *
- * ⚠️ 2026-10-27 改版（用户报「预览窗里的复制块太难看」）：**去掉全部块壳**。
- * 原来它是 8% 灰底 + 1px 描边 + 左侧 3px 灰竖线 + 圆角 —— 那正是「引用块」的
- * 视觉语言，读者第一眼会当成引用；再加上 `padding-right: 74px` 把**每一行**都
- * 削掉一截，右边留下一条死区。现在：无底色、无边框、无竖线，只有一个 float 胶囊，
- * 正文从第二行起铺满整宽。要认「这块到哪结束」，靠胶囊 + 段落本身的间距就够了。
+ * ⚠️ 2026-10-28 改版（方案 A，用户报「复制键影响文字排序」）：
+ * 旧版把胶囊 `float: right` 放在正文**前面** —— float 会占掉首行约 70px，
+ * 正文被迫绕排，看起来就是「文字排序被打乱」；DOM 顺序也是按钮在正文前，
+ * 读屏 / 焦点顺序同样别扭。现在：
+ *   ① `position: absolute` 脱离文档流 → 对正文**零影响**；
+ *   ② 只留图标（13px），默认半透明，hover / 聚焦才完全显形（触屏常显，见 CSS）；
+ *   ③ 按钮排在正文**之后**（DOM 顺序先内容后操作）。
+ * 显隐 / hover 媒体查询写在 index.css 的 `.md-copy-btn`（内联样式写不了 @media）。
  *
  * 为什么按钮不挂在「选中那几个字的右边」：即时渲染是**块级**的
  * （`NoteEditorLivePreview` 按空行把整段替换成一个组件），一行文字在源码里
  * 没有自己的 DOM 节点 —— 能挂按钮的只有「渲染出来的块」和「工具栏」。
- *
- * 为什么常驻而不是悬停显形：悬停那版在触屏上永远点不到（含被 nav-touch
- * 判成触屏的笔记本），和「卡片浮层常显」那次是同一个坑。
  *
  * 复制的是**渲染后的纯文本**（`innerText`），不是 markdown 源码：用户选中的是
  * 「看到的这句话」，粘出去不该带 `**` 和 `#`。jsdom 没有实现 innerText，
@@ -1211,51 +1211,56 @@ function CopyBlock({ children }: { children: ReactNode }) {
     return (
         <div
             data-callout='COPY'
+            className='md-copy-host'
             style={{
-                // flow-root：胶囊是 float，容器要自己包住它，
-                // 否则下外边距会和后面的段落折叠在一起
+                // relative：让按钮能绝对定位到本块右上角；
+                // flow-root：自己包住子元素，下外边距不和后面的段落折叠。
+                position: "relative",
                 display: "flow-root",
                 margin: `0 0 ${MD_GAP}`,
             }}
         >
-            {/* ⚠️ 胶囊必须排在正文**前面**（DOM 顺序）才能浮在首行右上角。
-                float 而不是 absolute：absolute + 容器 padding-right 会把**每一行**
-                都削掉一截（V16.1.0 的 `padding: "10px 74px 10px 14px"` 就是这么来的，
-                用户截图里右侧那条空白带）。float 只让**碰到它的那几行**绕开，
-                第二行起正文自动回到满宽。 */}
+            {/* 正文先渲染，按钮在后 —— 读屏 / Tab 顺序是「先内容后操作」。 */}
+            <div ref={bodyRef}>{children}</div>
             <button
                 type='button'
                 data-copy-op='copy-block'
+                data-copied={copied ? "1" : undefined}
                 aria-label={copied ? "已复制" : "复制这一块"}
+                title={copied ? "已复制" : "复制这一块"}
                 onClick={handleCopy}
+                className='md-copy-btn'
                 style={{
-                    float: "right",
-                    margin: "2px 0 6px 10px",
-                    height: 22,
-                    padding: "0 9px",
+                    // 关键：绝对定位，脱离文档流 —— 不再像 float 那样挤掉首行
+                    position: "absolute",
+                    top: 2,
+                    right: 0,
+                    width: 26,
+                    height: 26,
                     display: "inline-flex",
                     alignItems: "center",
-                    gap: 4,
-                    fontFamily: "inherit",
-                    // 用 em 不用 px：笔记页有「字号档位」，写死 px 的话
-                    // 用户调大字号时这颗按钮不跟着涨，还是小的
-                    fontSize: "0.8em",
-                    lineHeight: 1,
+                    justifyContent: "center",
+                    padding: 0,
+                    border: "none",
+                    background: "transparent",
                     color: "inherit",
-                    // 底与描边都用既有 token：不新增色值字面量（hardcodedColorGuard 按次数计 cap）
-                    background: MD_BLOCK_BG,
-                    border: "1px solid var(--neutral-border)",
-                    borderRadius: 11,
+                    borderRadius: 6,
+                    fontFamily: "inherit",
+                    lineHeight: 1,
                     cursor: "pointer",
                 }}
             >
-                <svg width='11' height='11' viewBox='0 0 12 12' aria-hidden='true'>
-                    <rect x='1' y='1' width='7' height='7' rx='1.5' fill='none' stroke='currentColor' strokeWidth='1.2' />
-                    <path d='M4 9.5h5.5a1 1 0 0 0 1-1V4' fill='none' stroke='currentColor' strokeWidth='1.2' strokeLinecap='round' />
-                </svg>
-                {copied ? "已复制" : "复制"}
+                {copied ? (
+                    <svg width='13' height='13' viewBox='0 0 12 12' aria-hidden='true'>
+                        <path d='M2 6.4 4.8 9.2 10 3.2' fill='none' stroke='currentColor' strokeWidth='1.7' strokeLinecap='round' strokeLinejoin='round' />
+                    </svg>
+                ) : (
+                    <svg width='13' height='13' viewBox='0 0 12 12' aria-hidden='true'>
+                        <rect x='1' y='1' width='7' height='7' rx='1.5' fill='none' stroke='currentColor' strokeWidth='1.2' />
+                        <path d='M4 9.5h5.5a1 1 0 0 0 1-1V4' fill='none' stroke='currentColor' strokeWidth='1.2' strokeLinecap='round' />
+                    </svg>
+                )}
             </button>
-            <div ref={bodyRef}>{children}</div>
         </div>
     );
 }

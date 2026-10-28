@@ -434,9 +434,10 @@ test("双链是点状下划线 + 500 字重（和普通链接分开）", async (
     assert.equal(parseFloat(wiki.style.fontWeight), 500);
 });
 
-// 可复制块（`> [!COPY]`）：块右上角一颗**常驻**复制按钮。
-// 这一组盯的是「真点一下有没有东西进剪贴板」—— 只断言按钮存在是假通过。
-test("COPY 块：复制按钮常驻可见，点一下把整块纯文本写进剪贴板", async () => {
+// 可复制块（`> [!COPY]`）：块右上角一颗**绝对定位的图标**按钮（2026-10-28 方案 A）。
+// 这一组盯两件事：① 按钮不再参与正文排版（旧版 float 会挤掉首行 ~70px）；
+// ② 真点一下有没有东西进剪贴板 —— 只断言按钮存在是假通过。
+test("COPY 块：复制按钮绝对定位（不挤正文）+ 图标-only，点一下把整块纯文本写进剪贴板", async () => {
     const host = await renderToDom("> [!COPY]\n> 第一行\n>\n> 第二行");
 
     const block = host.querySelector('[data-callout="COPY"]');
@@ -445,10 +446,14 @@ test("COPY 块：复制按钮常驻可见，点一下把整块纯文本写进剪
     const btn = block!.querySelector<HTMLButtonElement>('[data-copy-op="copy-block"]');
     assert.ok(btn, "没渲染出复制按钮");
 
-    // 「常驻」是明确定过的：悬停才显形在触屏上永远点不到
-    const cs = window.getComputedStyle(btn!);
-    assert.notEqual(cs.display, "none", "按钮不许藏起来");
-    assert.equal(cs.opacity === "" ? "1" : cs.opacity, "1", "按钮不许靠透明藏起来");
+    // ① 绝对定位、不再 float：这是「不影响文字排序」的根。
+    assert.equal(btn!.style.getPropertyValue("position"), "absolute", "按钮必须绝对定位（float 会挤掉首行）");
+    assert.equal(btn!.style.getPropertyValue("float"), "", "不许再用 float 参与排版");
+    // ② 图标-only：不再有「复制」两个字（用户 2026-10-28 要求）。
+    assert.equal((btn!.textContent ?? "").trim(), "", "复制按钮只留图标、不带文字");
+    assert.ok(btn!.querySelector("svg"), "按钮里要有图标");
+    // ③ 图标-only 不能丢可访问名。
+    assert.ok((btn!.getAttribute("aria-label") ?? "").length > 0, "图标按钮必须有 aria-label");
 
     const written: string[] = [];
     const prevClipboard = navigator.clipboard;
@@ -470,7 +475,7 @@ test("COPY 块：复制按钮常驻可见，点一下把整块纯文本写进剪
             "第一行\n\n第二行",
             "复制的是**渲染后的纯文本**；带上 `>` 就成了让人自己再删一遍的源码"
         );
-        assert.equal(btn!.textContent, "已复制", "点完必须当场给反馈，否则用户不知道成没成");
+        assert.equal(btn!.getAttribute("data-copied"), "1", "点完必须当场给反馈（图标换成对勾）");
     } finally {
         if (hadClipboard) {
             Object.defineProperty(navigator, "clipboard", {
