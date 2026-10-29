@@ -10,6 +10,7 @@ import { isAuthConfigKey, isEncryptedConfigKey, isPerUserAppearanceKey, isPrivat
 import { decryptSecretDeep, encryptSecret } from "../crypto";
 import { D1PreparedStatement } from "../schema";
 import { Config } from "../types";
+import { logger } from "../../../shared/logger";
 
 export interface ConfigApi {
     getConfigs(): Promise<Record<string, string>>;
@@ -136,7 +137,7 @@ export const configImpl: ConfigApi = {
                 .run();
             return result.success;
         } catch (error) {
-            console.error("设置账号配置失败:", error);
+            logger.error("设置账号配置失败:", { err: error, component: "config" })
             return false;
         }
     },
@@ -210,7 +211,7 @@ export const configImpl: ConfigApi = {
     },
     setConfig: async function (this: NavigationAPI, key: string, value: string): Promise<boolean> {
         if (!(await this.canWriteConfigKey(key))) {
-            console.warn(`拒绝非所有者改写全站配置: ${key}`);
+            logger.warn(`拒绝非所有者改写全站配置: ${key}`, { component: "config" })
             return false;
         }
         const uid = await this.scopeFor(key);
@@ -233,7 +234,7 @@ export const configImpl: ConfigApi = {
 
             return result.success;
         } catch (error) {
-            console.error("设置配置失败:", error);
+            logger.error("设置配置失败:", { err: error, component: "config" })
             return false;
         }
     },
@@ -247,7 +248,7 @@ export const configImpl: ConfigApi = {
         // 加密键存的是密文（IV 随机，同一明文两次加密结果不同），比对不了 → 不支持
         if (isEncryptedConfigKey(key)) return false;
         if (!(await this.canWriteConfigKey(key))) {
-            console.warn(`拒绝非所有者改写全站配置: ${key}`);
+            logger.warn(`拒绝非所有者改写全站配置: ${key}`, { component: "config" })
             return false;
         }
         // 按账号隔离的键落在 user_configs，且 getValue 可能回落到全站那份，
@@ -276,7 +277,7 @@ export const configImpl: ConfigApi = {
                 .run();
             return affectedRows(result) === 1;
         } catch (error) {
-            console.error("条件更新配置失败:", error);
+            logger.error("条件更新配置失败:", { err: error, component: "config" })
             return false;
         }
     },
@@ -302,7 +303,7 @@ export const configImpl: ConfigApi = {
                 .run();
             return result.success;
         } catch (error) {
-            console.error("写入系统配置失败:", error);
+            logger.error("写入系统配置失败:", { err: error, component: "config" })
             return false;
         }
     },
@@ -316,7 +317,7 @@ export const configImpl: ConfigApi = {
                 .run();
             return result.success;
         } catch (error) {
-            console.error("删除系统配置失败:", error);
+            logger.error("删除系统配置失败:", { err: error, component: "config" })
             return false;
         }
     },
@@ -346,7 +347,7 @@ export const configImpl: ConfigApi = {
             // 别写下半句才失败 —— 那会留下「改了一半」的状态。
             for (const [key] of shared) {
                 if (!(await this.canWriteConfigKey(key))) {
-                    console.warn(`拒绝非所有者批量改写全站配置: ${key}`);
+                    logger.warn(`拒绝非所有者批量改写全站配置: ${key}`, { component: "config" })
                     return false;
                 }
             }
@@ -381,13 +382,13 @@ export const configImpl: ConfigApi = {
 
             return ok;
         } catch (error) {
-            console.error("批量设置配置失败:", error);
+            logger.error("批量设置配置失败:", { err: error, component: "config" })
             return false;
         }
     },
     deleteConfig: async function (this: NavigationAPI, key: string): Promise<boolean> {
         if (!(await this.canWriteConfigKey(key))) {
-            console.warn(`拒绝非所有者删除全站配置: ${key}`);
+            logger.warn(`拒绝非所有者删除全站配置: ${key}`, { component: "config" })
             return false;
         }
         const uid = await this.scopeFor(key);

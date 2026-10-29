@@ -24,6 +24,7 @@ import DescriptionIcon from "@mui/icons-material/Description";
 import AutoAwesomeIcon from "@mui/icons-material/AutoAwesome";
 import type { SxProps, Theme } from "@mui/material/styles";
 import ConfirmDialog from "./ConfirmDialog";
+import { fmtBytes } from "../utils/format";
 
 export interface AttachmentManagerFile {
     id: string;
@@ -56,12 +57,6 @@ const FILTERS: { value: FilterKind; label: string }[] = [
 
 /** 一页显示多少条：与列表接口解耦的前端分页（见文件头注释） */
 const PAGE_SIZE = 50;
-
-function fmtBytes(bytes: number): string {
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
 
 /**
  * 卡片缩略图：带凭据 fetch 附件字节转 objectURL（失败给虚线占位，不静默空白）。
@@ -257,7 +252,7 @@ export default function AttachmentManager({
         return () => {
             live = false;
         };
-        // eslint-disable-next-line react-hooks/exhaustive-deps
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅在 open 变化时重跑；内部异步逻辑用 live 标志防重复拉取
     }, [open]);
 
     const isImage = (f: AttachmentManagerFile) => f.mime.startsWith("image/");
@@ -275,7 +270,7 @@ export default function AttachmentManager({
             default:
                 return files;
         }
-        // eslint-disable-next-line react-hooks/exhaustive-deps
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅依赖 files / filter；isImage / isDocument 是稳定纯函数
     }, [files, filter]);
 
     const shown = filtered.slice(0, visible);

@@ -20,6 +20,7 @@ import {
     VAULT_TABLE_STATEMENTS,
     migrationState,
 } from "./internals";
+import { logger } from "../../../shared/logger";
 
 /**
  * 表结构版本号，**只进不退**。
@@ -148,7 +149,7 @@ export const MIGRATION_STEPS: readonly MigrationStep[] = [
                 await api.db.batch(CREATE_STATEMENTS.map(sql => api.db.prepare(sql)));
             } catch (error) {
                 // batch 失败时退回逐条执行，保证结构一定可用
-                console.error("批量建表失败，回退逐条执行:", error);
+                logger.error("批量建表失败，回退逐条执行:", { err: error, component: "migration" })
                 for (const sql of CREATE_STATEMENTS) {
                     try {
                         await api.db.exec(sql);
@@ -256,7 +257,7 @@ export const MIGRATION_STEPS: readonly MigrationStep[] = [
                 // 见回传报告里记的那条 pre-existing bug。
                 migrationState.ftsReady = true;
             } catch (error) {
-                console.error("重建全文索引的 rowid 失败（搜索仍可用，索引可能不完整）:", error);
+                logger.error("重建全文索引的 rowid 失败（搜索仍可用，索引可能不完整）:", { err: error, component: "migration" })
             }
         },
     },
@@ -269,7 +270,7 @@ export const MIGRATION_STEPS: readonly MigrationStep[] = [
             try {
                 await api.encryptLegacySitePasswords();
             } catch (error) {
-                console.error("历史站点凭据加密失败（已忽略，下次迁移会重试）:", error);
+                logger.error("历史站点凭据加密失败（已忽略，下次迁移会重试）:", { err: error, component: "migration" })
             }
         },
     },
@@ -381,7 +382,7 @@ export const migrationImpl: MigrationApi = {
     migrate: async function (this: NavigationAPI ): Promise<void> {
         if (!migrationState.promise) {
             migrationState.promise = this.migrateIfNeeded().catch(error => {
-                console.error("数据库迁移失败:", error);
+                logger.error("数据库迁移失败:", { err: error, component: "migration" })
                 // 失败后清空缓存，允许下一个请求重试，避免一次偶发错误导致表结构永久缺失
                 migrationState.promise = null;
             });
@@ -425,7 +426,7 @@ export const migrationImpl: MigrationApi = {
                 .bind(SCHEMA_VERSION_KEY, version)
                 .run();
         } catch (error) {
-            console.error("写入结构版本号失败（下次冷启动会重跑一次迁移）:", error);
+            logger.error("写入结构版本号失败（下次冷启动会重跑一次迁移）:", { err: error, component: "migration" })
         }
     },
     /**
@@ -465,7 +466,7 @@ export const migrationImpl: MigrationApi = {
                 .bind(MIGRATION_STEPS_KEY, JSON.stringify(ids))
                 .run();
         } catch (error) {
-            console.error("写入迁移步骤集合失败（下次冷启动会重跑这几步）:", error);
+            logger.error("写入迁移步骤集合失败（下次冷启动会重跑这几步）:", { err: error, component: "migration" })
         }
     },
 
@@ -493,7 +494,7 @@ export const migrationImpl: MigrationApi = {
             } catch (error) {
                 // 单独一步挂了不挡着其它步骤继续补（索引挂了不该挡住补列）；
                 // 但**不把它记进集合** —— 下次冷启动要再试一次。
-                console.error(`迁移步骤 ${step.id} 执行失败（下次冷启动会重试）:`, error);
+                logger.error(`迁移步骤 ${step.id} 执行失败（下次冷启动会重试）:`, { err: error, component: "migration" })
                 failed.push(step.id);
             }
         }
@@ -521,13 +522,13 @@ export const migrationImpl: MigrationApi = {
         try {
             await this.db.batch(statements.map(sql => this.db.prepare(sql)));
         } catch (error) {
-            console.error("批量建索引失败，回退逐条执行:", error);
+            logger.error("批量建索引失败，回退逐条执行:", { err: error, component: "migration" })
             for (const sql of statements) {
                 try {
                     await this.db.exec(sql);
                 } catch (indexError) {
                     // 索引缺失只是查询变慢，不影响功能，不阻断启动
-                    console.error("创建索引失败（已忽略）:", sql, indexError);
+                    logger.error("创建索引失败（已忽略）:", { err: indexError, extra: [sql], component: "migration" })
                 }
             }
         }
@@ -732,7 +733,7 @@ export const migrationImpl: MigrationApi = {
             migrationState.ftsReady = true;
         } catch (error) {
             migrationState.ftsReady = false;
-            console.error("全文检索表不可用，搜索将退回 LIKE：", error);
+            logger.error("全文检索表不可用，搜索将退回 LIKE：", { err: error, component: "migration" })
         }
     },
 
@@ -863,7 +864,7 @@ export const migrationImpl: MigrationApi = {
     encryptLegacySitePasswords: async function (this: NavigationAPI ): Promise<void> {
         const probe = await encryptSecret("probe", this.keyring);
         if (!probe) {
-            console.warn("跳过历史站点凭据加密：加密密钥不可用（宁可留明文，也不能写空）");
+            logger.warn("跳过历史站点凭据加密：加密密钥不可用（宁可留明文，也不能写空）", { component: "migration" })
             return;
         }
         const BATCH = 200;
@@ -962,7 +963,7 @@ export const migrationImpl: MigrationApi = {
                 .run();
             if (updated.success) await this.deleteConfig(RECOVERY_PUBLIC_KEY_CONFIG);
         } catch (error) {
-            console.error("迁移恢复公钥失败:", error);
+            logger.error("迁移恢复公钥失败:", { err: error, component: "migration" })
         }
     },
 
@@ -1011,7 +1012,7 @@ export const migrationImpl: MigrationApi = {
                 }
             }
         } catch (error) {
-            console.error("迁移 WebDAV 配置失败:", error);
+            logger.error("迁移 WebDAV 配置失败:", { err: error, component: "migration" })
         }
     },
     hasColumn: async function (this: NavigationAPI, table: string, column: string): Promise<boolean> {
@@ -1101,7 +1102,7 @@ export const migrationImpl: MigrationApi = {
         } catch (error) {
             // 并发撞 UNIQUE 也落到这里：owner 已经存在，下一次请求会读到它，
             // 本次返回 null 让调用方跳过回填即可，不会留下第二个 owner。
-            console.error("迁移首个账号失败:", error);
+            logger.error("迁移首个账号失败:", { err: error, component: "migration" })
             return null;
         }
     },
@@ -1132,7 +1133,7 @@ export const migrationImpl: MigrationApi = {
             if (!/no such (column|table)/i.test(message)) {
                 throw error;
             }
-            console.warn("检测到数据库结构异常，重新执行迁移后重试:", message);
+            logger.warn("检测到数据库结构异常，重新执行迁移后重试:", { err: message, component: "migration" })
             migrationState.promise = null;
             await this.migrate();
             return await run();

@@ -26,6 +26,7 @@ import { DialogEmptyState, DialogListRow } from "./DialogListRow";
 import DeleteForeverIcon from "@mui/icons-material/DeleteForever";
 import DeleteSweepIcon from "@mui/icons-material/DeleteSweep";
 import { NavigationClient } from "../API/client";
+import { fmtDateTime } from "../utils/format";
 import ConfirmDialog from "./ConfirmDialog";
 import { dialogActionsSx, dialogTitleSx } from "./dialogShell";
 
@@ -49,11 +50,6 @@ interface RecycleBinDialogProps {
     onNotify?: (msg: string, severity?: "success" | "info" | "error") => void;
     /** 网站设置里配的保留天数；没传就用后端默认值，不再把 7 天写死在界面上 */
     retentionDays?: number;
-}
-
-function formatTime(tsSeconds: number): string {
-    if (!tsSeconds) return "—";
-    return new Date(tsSeconds * 1000).toLocaleString("zh-CN", { hour12: false });
 }
 
 export default function RecycleBinDialog({
@@ -219,7 +215,7 @@ export default function RecycleBinDialog({
                                     <DialogListRow
                                         key={item.id}
                                         primary={<b>{item.name}</b>}
-                                        secondary={`删除于 ${formatTime(item.deletedAt)}`}
+                                        secondary={`删除于 ${item.deletedAt ? fmtDateTime(item.deletedAt * 1000) : "—"}`}
                                 // 还原 + 彻底删除两个按钮约 160px；不留位的话长条目名
                                 // 会被压在按钮下面（MUI 的 secondaryAction 不占流）
                                 actionsWidth={160}

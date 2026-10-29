@@ -7,6 +7,7 @@
 
 import Box from "@mui/material/Box";
 import Typography from "@mui/material/Typography";
+import { fmtBytes as fmtBytesImpl, fmtDateTime } from "../../utils/format";
 
 export function SettingRow({
     label,
@@ -41,20 +42,15 @@ export function SettingRow({
 }
 
 /** 附件字节数 → 人类可读（数据页「附件占用」用） */
-/** 时间戳 →「2026-10-08 14:30」。兼容数字与字符串（D1 里两种都可能出现） */
-export function fmtTime(value: number | string | null | undefined): string {
-    if (value === null || value === undefined || value === "") return "";
-    const ts = typeof value === "number" ? value : Date.parse(String(value));
-    if (!Number.isFinite(ts)) return "";
-    const d = new Date(ts);
-    const p = (n: number) => String(n).padStart(2, "0");
-    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+export function fmtBytes(n: number): string {
+    return fmtBytesImpl(n);
 }
 
-export function fmtBytes(n: number): string {
-    if (n >= 1048576) return `${(n / 1048576).toFixed(1)} MB`;
-    if (n >= 1024) return `${Math.round(n / 1024)} KB`;
-    return `${n} B`;
+/** 时间戳 →「2026-10-08 14:30」。兼容数字与字符串（D1 里两种都可能出现）。
+ *  空 / 非法值返回 ""；复用 format.ts 的共享解析器，顺手修掉 Safari 的空格时间串坑。 */
+export function fmtTime(value: number | string | null | undefined): string {
+    if (value == null) return "";
+    return fmtDateTime(value, { style: "compact", fallback: "" });
 }
 
 /** 一组互斥的小段选择（暖纸/纯白 那种样式）：选中项描强调色 */

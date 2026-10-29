@@ -17,6 +17,7 @@ import { randomInviteCode } from "./internals";
 // 那把锁必须落在 D1 上（跨实例才有效），而它的实现与登录锁共用同一套 CAS 计数，
 // 单独再抄一份迟早会在某一把上漏掉「计数要在 CAS 循环里算」这条。
 import { credentialBucket, enforceCredentialGuard } from "../../../worker/loginGuard";
+import { logger } from "../../../shared/logger";
 
 /** 新密码的最短长度。注册与改密共用（见 validateNewPassword） */
 const MIN_PASSWORD_LENGTH = 6;
@@ -240,7 +241,7 @@ export const accountsImpl: AccountsApi = {
             await this.deleteConfig(AUTH_PASSWORD_KEY);
             this.anyUserCache = true; // 走到这一步 users 表里肯定有账号
         } catch (error) {
-            console.error("清理旧管理员凭据失败:", error);
+            logger.error("清理旧管理员凭据失败:", { err: error, component: "accounts" })
         }
     },
 
@@ -376,7 +377,7 @@ export const accountsImpl: AccountsApi = {
                 try {
                     state = await readState();
                 } catch (error) {
-                    console.error(`账号状态查询失败（uid=${uid}）：`, error);
+                    logger.error(`账号状态查询失败（uid=${uid}）：`, { err: error, component: "accounts" })
                     state = this.failOpenOnError ? "active" : "missing";
                     fromError = true;
                 }
@@ -579,7 +580,7 @@ export const accountsImpl: AccountsApi = {
                 await this.writeAudit("auth.inactive.delete", String(id), "", "停用宽限期满，已清除");
             }
         } catch (error) {
-            console.error("沉睡账号扫描失败:", error);
+            logger.error("沉睡账号扫描失败:", { err: error, component: "accounts" })
         }
 
         return { disabled, deleted };
@@ -689,7 +690,7 @@ export const accountsImpl: AccountsApi = {
                 .first<UserRecord>();
             created = row ?? null;
         } catch (error) {
-            console.error("创建账号失败:", error);
+            logger.error("创建账号失败:", { err: error, component: "accounts" })
             return { success: false, message: "创建账号失败，请重试" };
         }
         if (!created) return { success: false, message: "创建账号失败，请重试" };
@@ -760,7 +761,7 @@ export const accountsImpl: AccountsApi = {
 
             if (statements.length > 0) await this.db.batch(statements);
         } catch (error) {
-            console.error("写入新账号默认数据失败:", error);
+            logger.error("写入新账号默认数据失败:", { err: error, component: "accounts" })
         }
     },
 
@@ -838,7 +839,7 @@ export const accountsImpl: AccountsApi = {
                 this.db.prepare("DELETE FROM users WHERE id = ?").bind(userId),
             ]);
         } catch (error) {
-            console.error("注销账号失败:", error);
+            logger.error("注销账号失败:", { err: error, component: "accounts" })
             return { success: false, message: "注销账号失败，请重试" };
         }
 

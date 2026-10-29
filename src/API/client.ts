@@ -105,7 +105,7 @@ export function timeoutForEndpoint(endpoint: string, explicit?: number): number 
         : REQUEST_TIMEOUT_MS;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-unsafe-declaration-merging
+// eslint-disable-next-line @typescript-eslint/no-unsafe-declaration-merging -- 同名 class/interface 合并是刻意的 mixin 写法，两个声明都在本仓库内、受我们控制
 export class NavigationClient implements ClientThis {
     /** 不对外：域方法体在别的文件，跨文件访问 private 成员 TS 不允许（与 NavigationAPI 同样的取舍） */
     baseUrl: string;

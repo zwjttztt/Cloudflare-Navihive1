@@ -343,7 +343,9 @@ for (const group of ["pure", "dom"]) {
 
 // --test-force-exit 是必需的：jsdom 用了 pretendToBeVisual，会一直跑 rAF 循环，
 // 测例跑完事件循环也空不下来（碰到 FileReader 这类异步更明显），不加就永远不退。
-const child = spawn(
+let child;
+try {
+    child = spawn(
     process.execPath,
     [
         "--test",
@@ -365,10 +367,17 @@ const child = spawn(
         // ⚠️ 不设时 node 按核数起进程：16 核开发机上会同时跑 15 个 jsdom 进程，
         // 每个都加载一份 React/MUI，本地和 CI 的调度压力完全不可比。钉成 4 让两边一致。
         "--test-concurrency=4",
-        ...bundles,
+        // cwd 固定为 ROOT：相对路径指向同一产物，避免 Windows 命令行长度上限。
+        ...bundles.map(bundle => path.relative(ROOT, bundle)),
     ],
     { stdio: "inherit", cwd: ROOT }
-);
+    );
+} catch (error) {
+    // spawn 也可能同步抛 ENAMETOOLONG，此时没有 child 可监听 error。
+    releaseLock();
+    console.error("启动单测子进程失败:", error);
+    process.exit(1);
+}
 child.on("exit", code => {
     if (!coverageMode) fs.rmSync(OUT_DIR, { recursive: true, force: true });
     releaseLock();

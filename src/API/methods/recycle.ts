@@ -11,6 +11,7 @@ import { RETENTION_DAYS, RETENTION_DAYS_KEY, RETENTION_DAYS_MAX, RETENTION_DAYS_
 import { D1PreparedStatement } from "../schema";
 import { RecycleBatchRestoreResult, Site } from "../types";
 import { GROUP_RESTORE_COLUMNS, SITE_RESTORE_COLUMNS } from "./internals";
+import { logger } from "../../../shared/logger";
 
 export interface RecycleApi {
     pushToRecycle(kind: string, data: string): Promise<number | undefined>;
@@ -151,7 +152,7 @@ export const recycleImpl: RecycleApi = {
                 return { id: r.id, kind, name, deletedAt: r.deleted_at };
             });
         } catch (error) {
-            console.error("读取回收站失败:", error);
+            logger.error("读取回收站失败:", { err: error, component: "recycle" })
             return [];
         }
     },
@@ -351,7 +352,7 @@ export const recycleImpl: RecycleApi = {
                     .run();
             } catch (error) {
                 // 墓碑写不进去只影响其它设备对这次删除的感知，不阻断删除本身
-                console.error("写入笔记墓碑失败:", error);
+                logger.error("写入笔记墓碑失败:", { err: error, component: "recycle" })
             }
         }
     },
@@ -577,7 +578,7 @@ export const recycleImpl: RecycleApi = {
                 .run();
             return Number((r.meta as { changes?: number } | undefined)?.changes ?? 0);
         } catch (error) {
-            console.error("清理回收站失败:", error);
+            logger.error("清理回收站失败:", { err: error, component: "recycle" })
             return 0;
         }
     },
@@ -620,7 +621,7 @@ export const recycleImpl: RecycleApi = {
                 .bind(nowSec - days * 24 * 3600)
                 .run();
         } catch (error) {
-            console.error("清理笔记墓碑失败:", error);
+            logger.error("清理笔记墓碑失败:", { err: error, component: "recycle" })
         }
 
         // 站点删除墓碑（2026-10-13，卡片侧增量同步用）：同上，按保留期清
@@ -632,7 +633,7 @@ export const recycleImpl: RecycleApi = {
                 .bind(nowSec - days * 24 * 3600)
                 .run();
         } catch (error) {
-            console.error("清理站点墓碑失败:", error);
+            logger.error("清理站点墓碑失败:", { err: error, component: "recycle" })
         }
 
         try {
@@ -642,7 +643,7 @@ export const recycleImpl: RecycleApi = {
                 .run();
             counts.blacklist = Number((r.meta as { changes?: number } | undefined)?.changes ?? 0);
         } catch (error) {
-            console.error("清理令牌黑名单失败:", error);
+            logger.error("清理令牌黑名单失败:", { err: error, component: "recycle" })
         }
 
         // 登录会话：令牌过期后这行就没用了（验签必挂），留着只会让设备列表越堆越长
@@ -653,7 +654,7 @@ export const recycleImpl: RecycleApi = {
                 .run();
             counts.sessions = Number((r.meta as { changes?: number } | undefined)?.changes ?? 0);
         } catch (error) {
-            console.error("清理登录会话失败:", error);
+            logger.error("清理登录会话失败:", { err: error, component: "recycle" })
         }
 
         try {
@@ -665,7 +666,7 @@ export const recycleImpl: RecycleApi = {
                 .run();
             counts.invites = Number((r.meta as { changes?: number } | undefined)?.changes ?? 0);
         } catch (error) {
-            console.error("清理邀请码失败:", error);
+            logger.error("清理邀请码失败:", { err: error, component: "recycle" })
         }
 
         // 恢复令牌的 jti 标记是 configs 里一行一个 key，只能按前缀挑出来逐个删
@@ -689,7 +690,7 @@ export const recycleImpl: RecycleApi = {
             }
             return removed;
         } catch (error) {
-            console.error("清理恢复令牌标记失败:", error);
+            logger.error("清理恢复令牌标记失败:", { err: error, component: "recycle" })
             return 0;
         }
     },

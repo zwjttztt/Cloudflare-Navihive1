@@ -20,16 +20,11 @@ import { NavigationClient } from "../API/client";
 import type { OpsStats } from "../API/methods/audit";
 import { actionLabel } from "../utils/auditActionLabels";
 import { dailySummary, deltaText, shareOf, weekOverWeek } from "../utils/statsInsights";
+import { fmtBytes } from "../utils/format";
 
 /** UTC 时间戳 -> YYYY-MM-DD（健康快照里的 at 是毫秒时间戳，不用 Intl，CI small-icu 也稳） */
 function dayOf(at: number): string {
     return new Date(at).toISOString().slice(0, 10);
-}
-
-function humanBytes(n: number): string {
-    if (n >= 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
-    if (n >= 1024) return `${(n / 1024).toFixed(0)} KB`;
-    return `${n} B`;
 }
 
 /** 近 30 天柱状图：一根柱一天，悬停出「日期：次数」提示 */
@@ -167,7 +162,7 @@ export default function StatsPanel({ client }: { client: NavigationClient }) {
                         <Chip size='small' label={`笔记 ${stats.counts.notes}`} />
                         <Chip
                             size='small'
-                            label={`附件 ${stats.counts.attachments}（${humanBytes(stats.counts.attachmentBytes)}）`}
+                            label={`附件 ${stats.counts.attachments}（${fmtBytes(stats.counts.attachmentBytes)}）`}
                         />
                     </Box>
 

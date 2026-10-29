@@ -44,7 +44,7 @@ const URL_KEYS = new Set(["url", "href", "location", "src"]);
 /** 同步清洗字符串 */
 export function cleanStr(value: unknown, maxLen = 2000): string {
     if (typeof value !== "string") return "";
-    // eslint-disable-next-line no-control-regex
+    // eslint-disable-next-line no-control-regex -- 正则就是要匹配/清除控制字符，非误写
     return value.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, "").slice(0, maxLen);
 }
 

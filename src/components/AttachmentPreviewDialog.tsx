@@ -46,18 +46,12 @@ import {
 } from "./dialogShell";
 import type { AttachmentPreviewRequest } from "../utils/attachmentPreview";
 import ConfirmDialog from "./ConfirmDialog";
+import { fmtBytes } from "../utils/format";
 
 /** 判断一份字节是不是「可以当文本显示」的类型 */
 function isTextMime(mime: string): boolean {
     const m = mime.toLowerCase();
     return m.startsWith("text/") || m.includes("json") || m.includes("xml");
-}
-
-/** 字节数 → 人类可读（与附件管理器同一套口径） */
-function fmtBytes(bytes: number): string {
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 /**
@@ -182,7 +176,7 @@ export default function AttachmentPreviewDialog({
             live = false;
             if (objectUrl) URL.revokeObjectURL(objectUrl);
         };
-        // eslint-disable-next-line react-hooks/exhaustive-deps
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅依赖 id；objectUrl 在清理逻辑里按引用回收
     }, [id]);
 
     const isImage = mime.startsWith("image/");

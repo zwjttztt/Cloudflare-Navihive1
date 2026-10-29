@@ -145,7 +145,7 @@ const EXEMPT: Record<string, { reason: string; cap: number }> = {
         reason: "同上：分组强调色的可选色板",
         cap: 8,
     },
-    "src/components/NotesPage.tsx": {
+    "src/components/notes/NotesPageShell.tsx": {
         reason: "两处刻意的实底色：①「暖白」纸感背景（用户可选的外观预设，深色模式下本就不成立）；②抽屉纸面必须实底色（--bg-sunken 近透明，做浮层会「透明虚化」，有注释钉着）",
         cap: 3,
     },

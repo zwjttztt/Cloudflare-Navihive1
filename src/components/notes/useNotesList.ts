@@ -1,3 +1,8 @@
+import { useCallback, useEffect, useRef } from "react";
+import { fuzzyFilter, fuzzyMatch } from "../../utils/fuzzy";
+import type { NotesPageProps } from "./notesPageCtx";
+import { tagNamesOf } from "./sidebarSection";
+import type { useNotesFilters } from "./useNotesFilters";
 // src/components/notes/useNotesList.ts
 // 记事本的「列表派生链」（2026-10-22 从 NotesPage 抽出，第六步，也是最后一块）。
 //
@@ -13,11 +18,10 @@
 //    （`filtered` 在搜索视图下只要笔记本体，不要高亮区间）。
 import { useMemo } from "react";
 import type { Note } from "../../API/types";
-import { fuzzyFilter } from "../../utils/fuzzy";
 import { groupLabel } from "../../utils/noteTime";
 import { shouldVirtualize } from "../../utils/virtualWindow";
-import { tagOf } from "./sidebarSection";
 import type { NoteView } from "./notesPageCtx";
+import { tagOf } from "./sidebarSection";
 import type { NoteSortKey } from "./useNotesFilters";
 
 export interface NotesListDeps {
@@ -78,12 +82,12 @@ export function useNotesList(deps: NotesListDeps) {
         const bySort =
             view === "recent"
                 ? [...byView].sort(
-                      (a, b) =>
-                          (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) ||
-                          String(b.updated_at || b.created_at || "").localeCompare(
-                              String(a.updated_at || a.created_at || "")
-                          )
-                  )
+                    (a, b) =>
+                        (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) ||
+                        String(b.updated_at || b.created_at || "").localeCompare(
+                            String(a.updated_at || a.created_at || "")
+                        )
+                )
                 : byView;
         const kw = keyword.trim();
         const matched = kw
@@ -181,4 +185,151 @@ export function useNotesList(deps: NotesListDeps) {
     );
 
     return { filtered, lazyListGroups, sorted, listGroups, visibleIds };
+}
+
+/**
+ * 列表空状态：插画 + 一句话（照 inkstone 的 9 种场景配置）。
+ * ⚠️ 之前只有「还没有笔记 / 没有匹配的笔记」两句，六种情况共用，
+ * 用户看到空白不知道是「没写」还是「筛掉了」—— 这两件事的下一步完全相反。
+ */
+export type EmptyArt =
+    | "notes"
+    | "search"
+    | "starred"
+    | "archive"
+    | "folder"
+    | "tag"
+    | "trash";
+
+export interface NotesEmptyCopy {
+    title: string;
+    desc: string;
+}
+
+export interface NotesEmptyStateDeps {
+    view: NoteView;
+    activeFolder: number | null;
+    activeTag: number | null;
+    notesLength: number;
+}
+
+export function useNotesEmptyState(deps: NotesEmptyStateDeps): { emptyArt: EmptyArt; emptyCopy: NotesEmptyCopy } {
+    const { view, activeFolder, activeTag, notesLength } = deps;
+    const { art: emptyArt, ...emptyCopy } = useMemo((): {
+        art: "notes" | "search" | "starred" | "archive" | "folder" | "tag" | "trash";
+        title: string;
+        desc: string;
+    } => {
+        if (view === "search") {
+            return { art: "search", title: "没有匹配的笔记", desc: "换个词再搜一次，或者清掉筛选条件。" };
+        }
+        if (view === "starred") {
+            return { art: "starred", title: "还没有收藏", desc: "在笔记上右键就能收藏，收藏过的会出现在这里。" };
+        }
+        if (view === "archived") {
+            return { art: "archive", title: "归档里是空的", desc: "把暂时不看的笔记归档，它就不会出现在列表里了。" };
+        }
+        if (view === "trash") {
+            return { art: "trash", title: "回收站是空的", desc: "删掉的笔记会先放到这里，随时能还原。" };
+        }
+        if (activeFolder !== null) {
+            return { art: "folder", title: "这个文件夹还是空的", desc: "把笔记拖进来，或者直接在这个文件夹里新建一条。" };
+        }
+        if (activeTag !== null) {
+            return { art: "tag", title: "没有带这个标签的笔记", desc: "在笔记里写 #这个标签，它就会自动归到这里。" };
+        }
+        if (notesLength === 0) {
+            return { art: "notes", title: "还没有笔记", desc: "点「新建笔记」写第一条。" };
+        }
+        return { art: "notes", title: "这里没有要显示的笔记", desc: "换个筛选条件看看。" };
+    }, [view, activeFolder, activeTag, notesLength]);
+    return { emptyArt, emptyCopy };
+}
+
+/** Remote search preserves its epoch and debounce; local matching remains the fallback. */
+export function useNotesSearch({ notes, noteTags, tags, keyword, remoteSearch, setRemoteSearch, folderTags }: Pick<ReturnType<typeof useNotesFilters>, "keyword" | "remoteSearch" | "setRemoteSearch"> & Pick<NotesPageProps, "notes" | "folderTags"> & { noteTags: Record<number, number[]>; tags: NonNullable<NotesPageProps["folderTags"]>["tags"] }) {
+    const searchableText = useCallback(
+        (n: Note) =>
+            `${n.title || ""} ${n.content || ""} ${tagNamesOf(n, noteTags, tags).join(" ")}`,
+        [noteTags, tags]
+    );
+
+    const searchEpoch = useRef(0);
+
+    const searchRemote = folderTags?.onSearchRemote;
+
+    useEffect(() => {
+        const kw = keyword.trim();
+        if (!searchRemote || !kw) {
+            setRemoteSearch(null);
+            return;
+        }
+        const epoch = ++searchEpoch.current;
+        // 打一个 250ms 的防抖：搜索框每敲一个字都打一次接口太浪费
+        const timer = setTimeout(() => {
+            void searchRemote(kw, 100).then(res => {
+                if (epoch !== searchEpoch.current) return; // 过期结果直接丢
+                setRemoteSearch(
+                    res && Array.isArray(res.results)
+                        ? { keyword: kw, hits: res.results, mode: res.mode }
+                        : null
+                );
+            }).catch(() => {
+                if (epoch !== searchEpoch.current) return;
+                setRemoteSearch(null); // 失败就退回本地搜，不弹错误
+            });
+        }, 250);
+        return () => clearTimeout(timer);
+    }, [keyword, searchRemote, setRemoteSearch]);
+
+    const searchSnippets = useMemo(() => {
+        const map = new Map<number, string>();
+        if (remoteSearch && remoteSearch.keyword === keyword.trim()) {
+            for (const hit of remoteSearch.hits) {
+                if (hit.snippet) map.set(hit.id, hit.snippet);
+            }
+        }
+        return map;
+    }, [remoteSearch, keyword]);
+
+    const searchHits = useMemo(() => {
+        const kw = keyword.trim();
+        if (!kw) return [];
+        // 服务端有结果就按它的相关度排（bm25：标题命中权重更高）。
+        // 高亮区间仍然本地算 —— fuzzyMatch 是纯函数，同一份标题两边结果一致。
+        if (remoteSearch && remoteSearch.keyword === kw && remoteSearch.hits.length > 0) {
+            const byId = new Map<number, Note>();
+            for (const n of notes) if (n.id !== undefined) byId.set(n.id, n);
+            const out: { note: Note; ranges: [number, number][] }[] = [];
+            for (const hit of remoteSearch.hits) {
+                const note = byId.get(hit.id);
+                if (!note) continue; // 索引里可能残留已删的
+                const match = fuzzyMatch(note.title || "", kw);
+                out.push({ note, ranges: match?.ranges ?? [] });
+            }
+            if (out.length > 0) return out;
+        }
+        return fuzzyFilter(notes, kw, searchableText, 300).map(({ item, match }) => ({
+            note: item,
+            // ⚠️ 区间要裁到标题长度内：模糊匹配是在「标题 + 正文」上跑的，
+            // 落在正文里的区间拿去标标题会标到别处去（inkstone 同样只标标题）。
+            ranges: match.ranges.filter(([start]) => start < (item.title || "").length),
+        }));
+    }, [notes, keyword, searchableText, remoteSearch]);
+
+    const highlightRanges = useMemo(() => {
+        const map = new Map<number, [number, number][]>();
+        for (const hit of searchHits) {
+            if (hit.note.id !== undefined && hit.ranges.length) map.set(hit.note.id, hit.ranges);
+        }
+        if (!keyword.trim()) return map;
+        // 非搜索视图里也在列表顶部过滤（见 filtered），那里同样要能高亮
+        for (const n of notes) {
+            if (n.id === undefined || map.has(n.id)) continue;
+            const match = fuzzyMatch(`${n.title || ""}`, keyword.trim());
+            if (match && match.ranges.length) map.set(n.id, match.ranges);
+        }
+        return map;
+    }, [searchHits, notes, keyword]);
+    return { searchableText, searchHits, searchSnippets, highlightRanges };
 }

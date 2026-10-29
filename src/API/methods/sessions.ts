@@ -14,6 +14,7 @@
 import type { NavigationAPI } from "../http";
 import { peekJwtClaim } from "../crypto";
 import type { SessionInfo } from "../types";
+import { logger } from "../../../shared/logger";
 
 /** last_seen 的刷新限频：同一个会话 1 小时内只写一次，避免每个请求都往 D1 落一行 */
 const SESSION_TOUCH_INTERVAL_SEC = 60 * 60;
@@ -211,7 +212,7 @@ export const sessionsImpl: SessionsApi = {
                 }
             }
         } catch (error) {
-            console.error("登记登录会话失败:", error);
+            logger.error("登记登录会话失败:", { err: error, component: "sessions" })
         }
     },
 

@@ -21,6 +21,7 @@ import type { NoteImportStats, NotesImportPayload, NoteShare, NoteShareListItem,
 import ConfirmDialog from "./ConfirmDialog";
 import DialogCloseButton from "./DialogCloseButton";
 import { dialogActionsSx, dialogTitleSx } from "./dialogShell";
+import { fmtDateTime } from "../utils/format";
 
 export interface NoteShareApi {
     getNoteShare(id: number): Promise<NoteShare | null>;
@@ -54,9 +55,7 @@ const EXPIRY_OPTIONS: { value: ExpiryKey; label: string; days: number | null }[]
 ];
 
 function fullTime(ts: number): string {
-    const d = new Date(ts);
-    const p = (n: number) => String(n).padStart(2, "0");
-    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+    return fmtDateTime(ts, { style: "compact" });
 }
 
 /**

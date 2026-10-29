@@ -9,6 +9,7 @@ import type { Note, NoteSearchResult } from "../../types";
 import { migrationState } from "../internals";
 import { buildFtsMatch, escapeLike, FTS_CONTENT_LIMIT, makeSnippet, segmentCJK } from "../../../utils/ftsQuery";
 import { NOTE_FIELDS } from "./notesShared";
+import { logger } from "../../../../shared/logger";
 
 /**
  * 全文检索那条 JOIN 查询里的账号隔离片段。
@@ -57,7 +58,7 @@ export const searchMethods: Pick<NotesApi,
             ]);
         } catch (error) {
             // 索引写不进去只影响搜索速度，绝不能让「保存笔记」失败
-            console.error("写全文索引失败:", error);
+            logger.error("写全文索引失败:", { err: error, component: "notesSearch" })
         }
     },
 
@@ -69,7 +70,7 @@ export const searchMethods: Pick<NotesApi,
                 .bind(noteId)
                 .run();
         } catch (error) {
-            console.error("删全文索引失败:", error);
+            logger.error("删全文索引失败:", { err: error, component: "notesSearch" })
         }
     },
 
@@ -128,7 +129,7 @@ export const searchMethods: Pick<NotesApi,
             } catch (error) {
                 // 到这里说明索引虽然建起来了、但真查询时炸了（D1 版本/磁盘格式差异）：
                 // 直接把开关关掉，之后的搜索都走 LIKE，别每次请求都炸一遍。
-                console.error("全文检索失败，改用 LIKE:", error);
+                logger.error("全文检索失败，改用 LIKE:", { err: error, component: "notesSearch" })
                 migrationState.ftsReady = false;
             }
         }

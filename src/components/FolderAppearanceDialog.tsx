@@ -38,7 +38,7 @@ export default function FolderAppearanceDialog({ open, folder, onSave, onClose }
             setColor(folder.color ?? null);
             setSaving(false);
         }
-    }, [folder?.id, open]); // eslint-disable-line react-hooks/exhaustive-deps
+    }, [folder?.id, open]); // eslint-disable-line react-hooks/exhaustive-deps -- 仅在 folder?.id / open 变化时重置表单
 
     const submit = async () => {
         setSaving(true);

@@ -19,6 +19,7 @@ import {
     DragEndEvent,
     useDroppable,
 } from "@dnd-kit/core";
+import { dndAccessibility } from "./dndA11y";
 import {
     arrayMove,
     SortableContext,
@@ -407,11 +408,18 @@ const GroupCard: React.FC<GroupCardProps> = ({
 
         // 如果是编辑模式，使用DndContext包装
         if (isCurrentEditingGroup) {
+            // 读屏播报用的「id → 中文名」映射：除了站点，也把本分组投放区加进去，
+            // 拖到分组末尾时播报「移动到 <分组名> 的位置」而不是冷冰冰的 group-xxx。
+            const dndItems = [
+                { id: `group-${group.id}`, label: group.name },
+                ...sitesToRender.map((site, index) => ({ id: `site-${site.id || index}`, label: site.name })),
+            ];
             return (
                 <DndContext
                     sensors={sensors}
                     collisionDetection={closestCenter}
                     onDragEnd={handleSiteDragEnd}
+                    accessibility={dndAccessibility(dndItems)}
                 >
                     <SortableContext
                         items={sitesToRender.map(site => `site-${site.id}`)}

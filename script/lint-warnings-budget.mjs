@@ -22,6 +22,8 @@
 
 import { spawnSync } from "node:child_process";
 import path from "node:path";
+import fs from "node:fs";
+import tseslint from "typescript-eslint";
 import { fileURLToPath } from "node:url";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -100,6 +102,82 @@ if (over.length > 0) {
             "  // eslint-disable-next-line react-hooks/exhaustive-deps -- 为什么这条是假阳性\n" +
             "理由在 diff 里可见，将来 review 时能重新判断 —— 直接静默关掉整条规则是不允许的。"
     );
+    process.exit(1);
+}
+
+// ---- 第二道门禁：eslint-disable 必须带理由 ----
+// 静默关掉一条规则等于把「为什么关」这件事藏起来，将来 review 也看不到。
+// 允许两种写法：① 行内 `-- 理由`；② 紧邻上一行是一条 `//` 注释（理由写在那行）。
+// 从现有 TypeScript/TSX 解析器获取真实注释，避免字符串、模板和 JSX 文本误报。
+// 只把注释开头的完整指令当作配置；规则列表必须符合 ESLint 规则名语法。
+export function findUnreasonedDisables(source, fileName) {
+    const { ast } = tseslint.parser.parseForESLint(source, {
+        filePath: fileName,
+        jsx: fileName.endsWith(".tsx"),
+        comment: true,
+        loc: true,
+        range: true,
+    });
+    const comments = ast.comments ?? [];
+    const issues = [];
+    for (const comment of comments) {
+        const match = /^\s*eslint-disable(?:-next-line|-line)?(?=\s|$)([\s\S]*)$/.exec(comment.value);
+        if (!match) continue;
+        const payload = match[1].trim();
+        // Match ESLint's whitespace-delimited justification separator; a rule
+        // such as plugin/foo--bar contains no justification separator.
+        const separator = /\s-{2,}(?:\s|$)/u.exec(` ${payload}`);
+        const splitAt = separator ? Math.max(0, separator.index - 1) : -1;
+        const rules = (splitAt < 0 ? payload : payload.slice(0, splitAt)).trim();
+        // ESLint's parseListConfig removes matching quotes and ignores empty
+        // comma-separated entries, including leading/trailing/repeated commas.
+        const ruleNames = rules.split(",")
+            .map(rule => rule.trim().replace(/^(['"])(.*)\1$/u, "$2"))
+            .filter(rule => rule.length > 0);
+        if (rules && ruleNames.some(rule => !/^[\w@./-]+$/u.test(rule))) continue;
+        const reasonAt = separator ? separator.index + separator[0].length - 1 : -1;
+        const hasInlineReason = reasonAt >= 0 && /\S/.test(payload.slice(reasonAt));
+        const hasPreviousComment = comments.some(previous =>
+            previous.type === "Line" &&
+            previous.loc.end.line === comment.loc.start.line - 1 &&
+            previous.value.trim().length > 0 &&
+            !/^\s*eslint-(?:disable|enable)\b/.test(previous.value)
+        );
+        if (!hasInlineReason && !hasPreviousComment) {
+            issues.push({ line: comment.loc.start.line, rule: rules || "(all rules)" });
+        }
+    }
+    return issues;
+}
+
+const disableIssues = [];
+(function scanDisableReasons() {
+    const walk = (dir) => {
+        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+            const full = path.join(dir, entry.name);
+            if (entry.isDirectory()) {
+                if (entry.name === "node_modules" || entry.name === "dist" || entry.name === "coverage") continue;
+                walk(full);
+            } else if (entry.isFile() && /\.(ts|tsx)$/.test(entry.name)) {
+                const source = fs.readFileSync(full, "utf8");
+                for (const issue of findUnreasonedDisables(source, full)) {
+                    disableIssues.push({
+                        file: path.relative(ROOT, full).split(path.sep).join("/"),
+                        ...issue,
+                    });
+                }
+            }
+        }
+    };
+    walk(path.join(ROOT, "src"));
+})();
+
+if (disableIssues.length > 0) {
+    console.error("以下 eslint-disable 缺少理由（要么行内加 `-- 理由`，要么紧邻上一行写 `//` 注释）：");
+    for (const d of disableIssues) {
+        console.error(`  · ${d.file}:${d.line} — ${d.rule}`);
+    }
+    console.error("\n理由在 diff 里可见，将来 review 时能重新判断 —— 静默关掉整条规则是不允许的。");
     process.exit(1);
 }
 

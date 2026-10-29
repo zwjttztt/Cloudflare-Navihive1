@@ -74,7 +74,7 @@ const EditGroupDialog: React.FC<EditGroupDialogProps> = ({
         setShowDeleteConfirm(false);
         setDeleteConfirmText("");
         setCopiedTick(false);
-        // eslint-disable-next-line react-hooks/exhaustive-deps
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅在 open / groupId / isCreate 变化时重置表单
     }, [open, groupId, isCreate]);
 
     const handleSave = () => {

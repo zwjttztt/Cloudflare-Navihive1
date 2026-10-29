@@ -8,6 +8,7 @@
 import type { NavigationAPI } from "../http";
 import { deriveDeadLinks } from "../../utils/linkKey";
 import { groupClientErrors } from "../../utils/clientErrorGroups";
+import { logger } from "../../../shared/logger";
 
 /** 前端错误上报按「来源 + 错误信息」聚合后的一组 */
 export interface ClientErrorGroup {
@@ -74,7 +75,7 @@ export const auditImpl: AuditApi = {
                 .bind(action, actor || "", ip || "", detail || "")
                 .run();
         } catch (error) {
-            console.error("写入审计日志失败:", error);
+            logger.error("写入审计日志失败:", { err: error, component: "audit" })
         }
     },
 
@@ -106,7 +107,7 @@ export const auditImpl: AuditApi = {
             }>();
             return result.results || [];
         } catch (error) {
-            console.error("读取审计日志失败:", error);
+            logger.error("读取审计日志失败:", { err: error, component: "audit" })
             return [];
         }
     },
@@ -130,7 +131,7 @@ export const auditImpl: AuditApi = {
                 .all<{ detail: string; created_at: string }>();
             rows = result.results || [];
         } catch (error) {
-            console.error("读取前端错误上报失败:", error);
+            logger.error("读取前端错误上报失败:", { err: error, component: "audit" })
             return [];
         }
 
@@ -150,7 +151,7 @@ export const auditImpl: AuditApi = {
                 .run();
             return Number((r.meta as { changes?: number } | undefined)?.changes ?? 0);
         } catch (error) {
-            console.error("清理审计日志失败:", error);
+            logger.error("清理审计日志失败:", { err: error, component: "audit" })
             return 0;
         }
     },
@@ -197,7 +198,7 @@ export const auditImpl: AuditApi = {
             stats.counts.attachments = Number(att?.n ?? 0);
             stats.counts.attachmentBytes = Number(att?.bytes ?? 0);
         } catch (error) {
-            console.error("统计内容计数失败:", error);
+            logger.error("统计内容计数失败:", { err: error, component: "audit" })
         }
 
         // —— 近 30 天审计活跃 + Top 动作（audit_log 全站共用，不按账号拆）——
@@ -229,7 +230,7 @@ export const auditImpl: AuditApi = {
                 count: Number(r.count),
             }));
         } catch (error) {
-            console.error("统计审计活跃失败:", error);
+            logger.error("统计审计活跃失败:", { err: error, component: "audit" })
         }
 
         // —— 分享浏览 Top：两条 JOIN 各取 8，合并后重排再截 8 ——
@@ -268,7 +269,7 @@ export const auditImpl: AuditApi = {
                 .sort((a, b) => b.views - a.views)
                 .slice(0, 8);
         } catch (error) {
-            console.error("统计分享浏览失败:", error);
+            logger.error("统计分享浏览失败:", { err: error, component: "audit" })
         }
 
         // —— 链接健康：user_configs 里的 link.health 快照（开启同步才有）——
@@ -302,7 +303,7 @@ export const auditImpl: AuditApi = {
                 }
             }
         } catch (error) {
-            console.error("读取链接健康快照失败:", error);
+            logger.error("读取链接健康快照失败:", { err: error, component: "audit" })
         }
 
         return stats;

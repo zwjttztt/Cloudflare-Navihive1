@@ -23,6 +23,7 @@ import {
 import { segmentCJK, FTS_CONTENT_LIMIT } from "../../../utils/ftsQuery";
 import { NoteConflictError } from "../../../utils/noteConflict";
 import { NOTE_FIELDS, validateFolderParent } from "./notesShared";
+import { logger } from "../../../../shared/logger";
 
 /**
  * 每条笔记的自动标签：从正文里挑出 `[[标签]]` / `#标签` 形式的标签名，
@@ -392,7 +393,7 @@ export const noteMethods: Pick<NotesApi,
                 try {
                     await this.db.batch(followup);
                 } catch (error) {
-                    console.error("保存版本快照/全文索引失败:", error);
+                    logger.error("保存版本快照/全文索引失败:", { err: error, component: "notesNote" })
                 }
             } else if (row && typeof row.id === "number" && titleOrContentTouched) {
                 // 内容/标题动了但没快照可存（理论上到不了这里）：索引仍要同步。

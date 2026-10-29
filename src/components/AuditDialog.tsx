@@ -7,6 +7,7 @@
 //      上报落库时是一小段 JSON，直接在流水里翻没人看得懂，所以单开一个视图。
 import { useCallback, useEffect, useRef, useState } from "react";
 import { actionLabel } from "../utils/auditActionLabels";
+import { fmtDateTime } from "../utils/format";
 import {
     Button,
     Dialog,
@@ -62,13 +63,6 @@ const DEFAULT_RETENTION_DAYS = 7;
 const PAGE_SIZE = 50;
 
 type AuditTab = "log" | "errors";
-
-function formatTime(iso: string): string {
-    // D1 返回形如 2024-01-01 12:00:00（本地时区）
-    const t = new Date(iso.replace(" ", "T") + (iso.includes("Z") ? "" : ""));
-    if (Number.isNaN(t.getTime())) return iso;
-    return t.toLocaleString("zh-CN", { hour12: false });
-}
 
 export default function AuditDialog({
     open,
@@ -282,7 +276,7 @@ export default function AuditDialog({
                                         secondary={
                                             <span>
                                                 {row.detail ? `${row.detail} · ` : ""}
-                                                {formatTime(row.created_at)}
+                                                {fmtDateTime(row.created_at)}
                                             </span>
                                         }
                                         actions={
@@ -361,7 +355,7 @@ export default function AuditDialog({
                                     }
                                     secondary={
                                         <span>
-                                            {group.message} · 最近 {formatTime(group.lastAt)}
+                                            {group.message} · 最近 {fmtDateTime(group.lastAt)}
                                         </span>
                                     }
                                     actions={

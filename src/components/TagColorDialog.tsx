@@ -43,7 +43,7 @@ export default function TagColorDialog({ open, tag, onSave, onClose }: TagColorD
             setColor(isFolderColor(tag.color) ? tag.color : null);
             setSaving(false);
         }
-    }, [tag?.id, open]); // eslint-disable-line react-hooks/exhaustive-deps
+    }, [tag?.id, open]); // eslint-disable-line react-hooks/exhaustive-deps -- 仅在 tag?.id / open 变化时重置表单
 
     const submit = async () => {
         setSaving(true);

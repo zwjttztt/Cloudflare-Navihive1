@@ -8,6 +8,7 @@
 import type { NavigationAPI } from "../http";
 import { AUTH_PASSWORD_KEY, AUTH_USERNAME_KEY, DEFAULT_TOKEN_TTL, MUST_CHANGE_PASSWORD_KEY, TOKEN_VERSION_KEY } from "../configKeys";
 import { hashPassword, peekJwtClaim, signJwt, verifyJwtAny, verifyPassword } from "../crypto";
+import { logger } from "../../../shared/logger";
 
 export interface AuthApi {
     getAuthCredentials(): Promise<{ username: string; password: string }>;
@@ -44,7 +45,7 @@ export const authImpl: AuthApi = {
         try {
             return await this.withSchemaRetry(() => this.readAuthCredentials());
         } catch (error) {
-            console.error("读取管理员凭据失败，回退到环境变量:", error);
+            logger.error("读取管理员凭据失败，回退到环境变量:", { err: error, component: "auth" })
             return { username: this.seedUsername, password: this.seedPassword };
         }
     },
@@ -96,7 +97,7 @@ export const authImpl: AuthApi = {
                 .bind(jti, exp, now, exp)
                 .run();
         } catch (error) {
-            console.error("拉黑令牌失败:", error);
+            logger.error("拉黑令牌失败:", { err: error, component: "auth" })
         }
     },
     isTokenBlacklisted: async function (this: NavigationAPI, jti: string): Promise<boolean> {
@@ -146,7 +147,7 @@ export const authImpl: AuthApi = {
                 .first<{ role: string | null }>();
             return row?.role ?? null;
         } catch (error) {
-            console.error("读取账号角色失败:", error);
+            logger.error("读取账号角色失败:", { err: error, component: "auth" })
             return null;
         }
     },
@@ -207,7 +208,7 @@ export const authImpl: AuthApi = {
                 .run();
         } catch (error) {
             // 按账号 bump 失败时必须兜底 bump 全站版本 —— 宁可多踢一次，也不能让旧令牌继续有效
-            console.error("按账号递增令牌版本失败，退回全局:", error);
+            logger.error("按账号递增令牌版本失败，退回全局:", { err: error, component: "auth" })
             const g = (await this.getTokenVersion(null)) + 1;
             this.tokenVersionCache = g;
             await this.setConfig(TOKEN_VERSION_KEY, String(g));

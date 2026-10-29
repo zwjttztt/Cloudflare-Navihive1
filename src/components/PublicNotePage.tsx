@@ -93,7 +93,7 @@ export default function PublicNotePage({ token }: { token: string }) {
             }
             appliedTitle.current = null;
         };
-        // eslint-disable-next-line react-hooks/exhaustive-deps
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅依赖 token；标题还原逻辑用闭包捕获，不应随渲染重跑
     }, [token]);
 
     const submitPw = async (e: React.FormEvent) => {

@@ -26,6 +26,7 @@ import {
 } from "@mui/material";
 import DialogCloseButton from "./DialogCloseButton";
 import { dialogActionsSx, dialogTitleSx } from "./dialogShell";
+import { fmtDateTime } from "../utils/format";
 
 interface BackupDialogProps {
     open: boolean;
@@ -85,13 +86,6 @@ interface BackupDialogProps {
     cronError?: { task: string; message: string; at?: string } | null;
 }
 
-
-/** 定时任务失败的时间：解析不出来就原样显示，别因为一行留痕把整个弹窗搞崩 */
-function formatCronErrorTime(iso: string): string {
-    const date = new Date(iso);
-    if (Number.isNaN(date.getTime())) return iso;
-    return date.toLocaleString("zh-CN", { hour12: false });
-}
 
 /** 导入各阶段的中文名。阶段本身由服务端推进，这里只负责说人话 */
 const IMPORT_STAGE_LABEL: Record<ImportProgress["stage"], string> = {
@@ -220,7 +214,7 @@ export default function BackupDialog({
             setShowWebdavBackupPassword(false);
             setOverwrite(false);
         }
-        // eslint-disable-next-line react-hooks/exhaustive-deps
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅当 open / initialTab 变化时重跑；不跟随外部 webdavConfig，避免表单被清空
     }, [open, initialTab]);
 
     const handleConfigChange = (field: keyof WebDavConfig) => (
@@ -578,7 +572,7 @@ export default function BackupDialog({
                         }}>
                             {cronError.task === "backup" ? "每周自动备份" : "死链巡检"}未成功
                             {cronError.at
-                                ? `（${formatCronErrorTime(cronError.at)}）`
+                                ? `（${fmtDateTime(cronError.at)}）`
                                 : ""}
                         </Typography>
                         <Typography variant='caption' sx={{

@@ -8,6 +8,7 @@
 import type { NavigationAPI } from "../http";
 import { AUTH_PASSWORD_KEY, AUTH_USERNAME_KEY, RECOVERY_PUBLIC_KEY_CONFIG } from "../configKeys";
 import { RecoveryPayload, isHashedPassword, isValidRecoveryPublicKey, peekRecoveryTokenUsername, verifyPassword, verifyRecoveryToken } from "../crypto";
+import { logger } from "../../../shared/logger";
 
 export interface RecoveryApi {
     getRecoveryPublicKey(): Promise<string>;
@@ -69,7 +70,7 @@ export const recoveryImpl: RecoveryApi = {
                 .run();
             return result.success;
         } catch (error) {
-            console.error("保存恢复公钥失败:", error);
+            logger.error("保存恢复公钥失败:", { err: error, component: "recovery" })
             return false;
         }
     },

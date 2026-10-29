@@ -85,7 +85,7 @@ export interface NavigationAPI extends
     IdempotencyApi,
     AiApi {}
 
-// eslint-disable-next-line @typescript-eslint/no-unsafe-declaration-merging
+// eslint-disable-next-line @typescript-eslint/no-unsafe-declaration-merging -- 同名 class/interface 合并是刻意的 mixin 写法，两个声明都在本仓库内、受我们控制
 export class NavigationAPI {
     db: D1Database;
     authEnabled: boolean;

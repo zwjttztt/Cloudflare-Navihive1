@@ -33,6 +33,7 @@ import {
     VaultKeysRecord,
 } from "../types";
 import { sanitizeIconUrl, sanitizeLocalPrefs, stripSiteCredentials, tombstoneStamp } from "./internals";
+import { logger } from "../../../shared/logger";
 
 /**
  * 恢复锁的存活时间。
@@ -408,680 +409,74 @@ export const transferImpl: TransferApi = {
                 };
             }
 
-            // ── 现有数据索引（只读）──
-            //
-            // 增量导入全靠这张表认「是不是同一条」。只读不写，所以这一段永远不会
-            // 伤到库里的东西：认出来就更新/跳过，认不出来才新建。
-            // 多账号部署下 scopeSql 会把结果限在当前账号内 —— A 的分组不会拿来跟 B 的撞。
-            const existingGroupRows = await this.db
-                .prepare(`SELECT id, name FROM groups${this.scopeSql(false)}`)
-                .bind(...this.scopeParams([]))
-                .all<{ id: number; name: string }>();
-            const existingSiteRows = await this.db
-                .prepare(
-                    `SELECT id, group_id, name, url, updated_at FROM sites${this.scopeSql(
-                        false
-                    )}`
-                )
-                .bind(...this.scopeParams([]))
-                .all<{ id: number; group_id: number; name: string; url: string; updated_at?: string }>();
+            // ── 阶段编排 ──
+            // importData 现在只是「事务外壳」：校验 → 抢锁 → 归一化 → 跑 5 个阶段 →
+            // 把同一批语句塞进**一个 D1 batch（= 一个事务）**提交。所有「写什么」的
+            // 决策都在 planMerge 里算清，writeGroups / writeSites / writeConfigs /
+            // rebuildIndexes 只负责把对应实体的语句追加进同一个提交列表；顺序严格沿用
+            // 原实现以保证外键安全（分组在站点前、笔记在分组前、配置最后）。
+            const ctx: ImportContext = {
+                api: this,
+                data,
+                opts,
+                report,
+                mode,
+                overwrite,
+                normalized,
+                groupIdMap,
+                siteIdMap,
+                stats,
+                noteStats,
+                vaultResult,
+                groupIdByName: new Map(),
+                siteIdByKey: new Map(),
+                siteUpdatedAt: new Map(),
+                matchedGroupIds: new Set(),
+                incomingSiteKeys: new Set(),
+                folderMap: new Map(),
+                tagMap: new Map(),
+                groupPlan: [],
+                sitePlan: [],
+                siteUpdatePlan: [],
+                configPlan: [],
+                notePlan: [],
+                existingNoteIds: new Set(),
+                metadataStatements: [],
+                noteRemovalStatements: [],
+                removalStatements: [],
+                vaultStatements: [],
+                noteStatements: [],
+                noteTagLinkStatements: [],
+            };
+            // 阶段一：只读现有数据、按 id 预分配、决定每个实体的新建/更新/跳过/删除，
+            // 并把所有 SQL 语句预先构造好（事务里不再有 await）。
+            await planMerge(ctx);
+            vaultResult = ctx.vaultResult;
 
-            /** 名称 -> 分组 id。同名的老行取 id 最小的那条（历史脏数据可能存在）。 */
-            const groupIdByName = new Map<string, number>();
-            for (const row of existingGroupRows.results || []) {
-                const name = String(row.name ?? "").trim();
-                if (name && !groupIdByName.has(name)) groupIdByName.set(name, row.id);
-            }
-            /** `${groupId}|u:${urlKey}`（无链接则 `n:${name}`） -> 站点 id */
-            const siteIdByKey = new Map<string, number>();
-            /** 已有站点的时间戳：比对新旧时用 */
-            const siteUpdatedAt = new Map<number, number>();
-            for (const row of existingSiteRows.results || []) {
-                const key = siteMatchKey(row.group_id, row.url, row.name);
-                if (!siteIdByKey.has(key)) siteIdByKey.set(key, row.id);
-                siteUpdatedAt.set(row.id, Date.parse(row.updated_at || "") || 0);
-            }
-
-            // ── 预分配 id：让所有写入能塞进同一个事务 ──
-            //
-            // 站点要靠分组的 id 才能落库，所以过去只能「先插分组拿 id，再插站点」——
-            // 两步之间没有任何事务保护。现在先把 id 算出来（当前 MAX(id) 之后的一段
-            // 连续号），所有写入互不依赖，整批进**同一个 D1 batch**（= 一个事务）。
-            let nextNoteId = 0;
-            const groupBase = await this.nextIdBase("groups");
-            const siteBase = await this.nextIdBase("sites");
-            nextNoteId = await this.nextIdBase("notes");
-
-            // 第一阶段：把要写什么算清楚（加密、权限判定这些含 await 的都在这里做完），
-            // 第二阶段只负责往 batch 里塞纯 SQL —— 保证事务里没有「等待」。
-            const groupPlan: GroupPlan[] = [];
-            /**
-             * 本次认出来的已有分组 id（覆盖模式下这些分组保命）。
-             *
-             * 另外单独记一份 incomingSiteKeys：两张表一起才能算出
-             * 「本地有、而备份里没有」的那些行 —— 光看名字会漏掉「卡片被搬走了」。
-             */
-            const matchedGroupIds = new Set<number>();
-            const incomingSiteKeys = new Set<string>();
-            let nextGroupId = groupBase + 1;
-            for (const group of normalized.groups) {
-                const name = String(group.name ?? "").trim();
-                const existingId = name ? groupIdByName.get(name) : undefined;
-                if (existingId !== undefined) {
-                    matchedGroupIds.add(existingId);
-                    // 同名分组已经存在：认出来就复用，不顺手改它的排序 / 名字 ——
-                    // 用户在本地调过的顺序不该被一份备份悄悄覆盖掉
-                    if (group.id !== undefined) groupIdMap[String(group.id)] = existingId;
-                    stats.groupsMatched += 1;
-                    continue;
-                }
-                const id = nextGroupId++;
-                groupPlan.push({ id, name: group.name, order_num: group.order_num || 0 });
-                // 同一份备份里出现两个同名分组时只建一个：没有这行，
-                // 第二次循环会因为 map 里查不到又接着往下排一个 id
-                if (name) groupIdByName.set(name, id);
-                if (group.id !== undefined) groupIdMap[String(group.id)] = id;
-                stats.groupsCreated += 1;
-            }
-
-            // 站点指向了备份里不存在的分组（手改过 / 老格式）时兜一个分组出来装它们，
-            // sites.group_id 是 NOT NULL，没有归属就写不进去。
-            // ⚠️ 同样先按名字找现成的：反复导入会一趟造一个「导入的站点」，
-            // 那就是「重复导入长出新数据」最典型的一条。
-            const needsOrphanGroup = normalized.sites.some(site => {
-                const mapped = site.group_id !== undefined && site.group_id !== null
-                    ? groupIdMap[String(site.group_id)]
-                    : undefined;
-                return typeof mapped !== "number";
-            });
-            let orphanGroupId: number | null = null;
-            if (needsOrphanGroup) {
-                const existingId = groupIdByName.get(ORPHAN_GROUP_NAME);
-                if (existingId !== undefined) {
-                    orphanGroupId = existingId;
-                    // 兜底分组被复用 = 这次它装了东西，覆盖模式下不能把它删掉
-                    matchedGroupIds.add(existingId);
-                } else {
-                    orphanGroupId = nextGroupId++;
-                    groupPlan.push({ id: orphanGroupId, name: ORPHAN_GROUP_NAME, order_num: 999999 });
-                    groupIdByName.set(ORPHAN_GROUP_NAME, orphanGroupId);
-                    stats.groupsCreated += 1;
-                }
-            }
-
-            let nextSiteId = siteBase + 1;
-            // 「本次准备新建的行」：备份内部自己重复的条目也要在这一轮认出来，
-            // 否则同一份文件里两个同链接卡片会各占一个新 id（也会把它当成「已存在」去 UPDATE 一条还没插进去的行）。
-            const plannedSiteIds = new Set<number>();
-            const siteDraft: SitePlan[] = [];
-            /** 命中已有行、且备份里那条更新才走 UPDATE */
-            const siteUpdateDraft: SitePlan[] = [];
-            for (const site of normalized.sites) {
-                const mapped = site.group_id !== undefined && site.group_id !== null
-                    ? groupIdMap[String(site.group_id)]
-                    : undefined;
-                const groupId = typeof mapped === "number" ? mapped : orphanGroupId;
-                if (typeof groupId !== "number") {
-                    throw new Error(`站点「${site.name}」找不到所属分组`);
-                }
-                const key = siteMatchKey(groupId, site.url, site.name);
-                // 记进「备份里有哪几张卡」：覆盖模式删除时用得上。
-                // 放在匹配之前 —— 重复的、要新建的、要去更新的，全都要算进这张清单，
-                // 否则「备份里明明有」的卡片会被当成没有而删掉。
-                incomingSiteKeys.add(key);
-                const existingId = siteIdByKey.get(key);
-
-                if (existingId !== undefined && !plannedSiteIds.has(existingId)) {
-                    // 认出是同一张卡：不新建，只决定要不要用备份里这份覆盖内容
-                    if (site.id !== undefined) siteIdMap[String(site.id)] = existingId;
-                    const localTime = siteUpdatedAt.get(existingId) ?? 0;
-                    const incomingTime = Date.parse(site.updated_at || "") || 0;
-                    if (incomingTime > localTime) {
-                        siteUpdateDraft.push({
-                            id: existingId,
-                            groupId,
-                            name: site.name,
-                            url: site.url,
-                            icon: site.icon || "",
-                            description: site.description || "",
-                            notes: site.notes || "",
-                            username: site.username || "",
-                            password: site.password || "",
-                            order_num: site.order_num || 0,
-                        });
-                        stats.sitesUpdated += 1;
-                    } else {
-                        // 本地更新（或两边都算不出时间）：保守保留本地，一个数写回 stats 让人看得见
-                        stats.sitesSkipped += 1;
-                    }
-                    continue;
-                }
-                if (existingId !== undefined) {
-                    // 这份备份里自己重复了：指向同一个新建 id，不写第二遍
-                    if (site.id !== undefined) siteIdMap[String(site.id)] = existingId;
-                    stats.sitesSkipped += 1;
-                    continue;
-                }
-
-                const id = nextSiteId++;
-                plannedSiteIds.add(id);
-                siteDraft.push({
-                    id,
-                    groupId,
-                    name: site.name,
-                    url: site.url,
-                    icon: site.icon || "",
-                    description: site.description || "",
-                    notes: site.notes || "",
-                    username: site.username || "",
-                    password: site.password || "",
-                    order_num: site.order_num || 0,
-                });
-                siteIdByKey.set(key, id);
-                if (site.id !== undefined) siteIdMap[String(site.id)] = id;
-                stats.sitesCreated += 1;
-            }
-
-            // ── 覆盖模式：算出「本地有、备份里没有」的那些行 ──
-            //
-            // 只删这一类，不是「先清空再重建」。两种做法差别很大：
-            //   - 认得出是同一条的卡片**保住 id**：本机星标 / 标签、访问统计不会因为
-            //     一次恢复全部掉线（老的做法是给每一行重新发号，代价是这些全没了）；
-            //   - 卡片内容仍然按 merge 那套「谁新谁赢」，不硬灌旧的：
-            //     备份里没带登录凭据时（导出开关关着）覆盖进去也不会把本地存的账号密码清空。
-            //
-            // 合并模式下这两段恒为空，整个 importData 依旧没有任何 DELETE。
-            const removalStatements: D1PreparedStatement[] = [];
-            if (overwrite) {
-                const staleSiteIds: number[] = [];
-                const staleGroupIds: number[] = [];
-                for (const row of existingSiteRows.results || []) {
-                    // 分组都被删了的话，它下面的卡片不必单独判断 —— 整个分组一起走
-                    if (matchedGroupIds.has(row.group_id)) {
-                        const key = siteMatchKey(row.group_id, row.url, row.name);
-                        if (incomingSiteKeys.has(key)) continue;
-                    }
-                    staleSiteIds.push(row.id);
-                }
-                for (const row of existingGroupRows.results || []) {
-                    if (matchedGroupIds.has(row.id)) continue;
-                    staleGroupIds.push(row.id);
-                }
-
-                // 删卡片前先留墓碑：其它设备靠 /api/sites/changes 才知道少了哪几张，
-                // 否则它们本地那几张会一直留着，谁都看不出已经被删了
-                for (const id of staleSiteIds) {
-                    removalStatements.push(
-                        this.db
-                            .prepare("INSERT INTO site_tombstone (user_id, site_id, deleted_at) VALUES (?, ?, ?)")
-                            .bind(this.currentUserId, id, tombstoneStamp())
-                    );
-                }
-                // ⚠️ 先删卡片再删分组：sites.group_id 有外键（ON DELETE CASCADE 在
-                // 外键开关没打开的环境里不生效），顺序反了会在事务提交时撞外键约束，
-                // 整批回滚 —— 表现为「覆盖导入总是失败」。
-                for (const id of staleSiteIds) {
-                    removalStatements.push(
-                        this.db
-                            .prepare(`DELETE FROM sites WHERE id = ?${this.scopeSql(true)}`)
-                            .bind(...this.scopeParams([id]))
-                    );
-                }
-                for (const id of staleGroupIds) {
-                    removalStatements.push(
-                        this.db
-                            .prepare(`DELETE FROM groups WHERE id = ?${this.scopeSql(true)}`)
-                            .bind(...this.scopeParams([id]))
-                    );
-                }
-
-                stats.groupsRemoved = staleGroupIds.length;
-                stats.sitesRemoved = staleSiteIds.length;
-            }
-
-            // 密码加密放在计划阶段之后、SQL 之前：几千条逐个 await 会把这一段拖成串行
-            // 流水线，而加密是纯本地计算，压成一小批一小批并发跑最划算（限并发 16）。
-            const encryptedTotal = siteDraft.length + siteUpdateDraft.length;
-            if (encryptedTotal > 0) report("encrypt", 0, encryptedTotal);
-            const sitePlan = await this.encryptSitePasswords(siteDraft, (done, _total) =>
-                report("encrypt", done, encryptedTotal)
-            );
-            const siteUpdatePlan = await this.encryptSitePasswords(siteUpdateDraft, (done, _total) =>
-                report("encrypt", siteDraft.length + done, encryptedTotal)
-            );
-
-            // 导入配置数据。
-            // 老备份的全站设置混在 configs 里，新备份放在 sharedConfigs，两边同规则：
-            // 共享键只有站点所有者（或单账号部署）能写，普通账号恢复时不改全站外观。
-            const mayWriteShared = await this.canManageSharedConfigs();
-            const configEntries: [string, string][] = [
-                ...Object.entries(normalized.configs || {}),
-                ...Object.entries(normalized.sharedConfigs || {}),
+            // 笔记与保险的写入语句在 planMerge 里一并构造（它们的合并/覆盖判定
+            // 与规划不可分割），这里按原实现的「外键安全」顺序先就位，
+            // 之后才是分组 / 站点 / 配置 / 索引阶段。
+            const commit: D1PreparedStatement[] = [
+                ...ctx.metadataStatements,
+                ...ctx.noteRemovalStatements,
+                ...ctx.removalStatements,
+                ...ctx.vaultStatements,
+                ...ctx.noteStatements,
+                ...ctx.noteTagLinkStatements,
             ];
-            const configPlan: { key: string; value: string; uid: number | null }[] = [];
-            for (const [key, value] of configEntries) {
-                if (key === "DB_INITIALIZED") {
-                    // 跳过数据库初始化标志
-                    continue;
-                }
-                if (isSecretConfigKey(key)) {
-                    // 恢复备份不覆盖管理员账号密码和 WebDAV 凭据。
-                    // （AI 那组不在此列：2026-10-24 起整组跟着备份走。）
-                    continue;
-                }
-                // 值形态校验：ai.endpoint 必须是 http(s):// —— 备份文件可能被改过，
-                // 不挡的话下次用 AI 功能时请求就发到别人服务器上去了
-                if (!isImportableConfigValue(key, value)) {
-                    continue;
-                }
-                if (!isUserScopedConfigKey(key) && !mayWriteShared) {
-                    continue;
-                }
-                if (typeof value !== "string" || key.length > 200 || value.length > 256 * 1024) {
-                    throw new Error("备份配置格式无效或过大");
-                }
-                configPlan.push({ key, value, uid: await this.scopeFor(key) });
-            }
-
-            // ── 记事本 ──
-            //
-            // 两种情形，靠字段是否存在区分：
-            //   ① 备份里没有 notes 字段（老备份 / 用户关了「备份含记事本」）
-            //      → **本地笔记一根汗毛都不动**。清空是不可逆的，宁可什么都不做。
-            //   ② 有 notes 字段（默认路径）
-            //      → 按 uuid 识别同一条：本地没有就插入；有就比 updated_at，
-            //        文件里较新才覆盖，本地较新就跳过（保留本地）。
-            //
-            // ⚠️ 没有第三种了：以前还有一个「清空本地笔记再重灌」的 replace 模式，
-            // 它与「导入不许删任何已有数据」直接冲突 —— 导入到一半失败、
-            // 或用户挑错文件，本地写的笔记就没了。增量导入只做加法和就地更新。
-            //
-            // 关键：这一段只做**读**（要本地现有笔记），读到的结果用来算计划；
-            // 真正的 INSERT / UPDATE 都在下面的第二阶段塞进同一个事务。
-            const incomingNotes = normalized.notes;
-
-            // 元数据只在笔记备份存在时恢复；老文件缺分类字段不清空本地分类。
-            const folderMap = new Map<number, number>();
-            const tagMap = new Map<number, number>();
-            const metadataStatements: D1PreparedStatement[] = [];
-            if (incomingNotes) {
-                if (normalized.noteFolders) {
-                    const local = await this.db.prepare(`SELECT id, name, parent_id FROM note_folder${this.scopeSql(false)}`)
-                        .bind(...this.scopeParams([])).all<{ id: number; name: string; parent_id: number | null }>();
-                    const max = await this.db.prepare("SELECT COALESCE(MAX(id), 0) AS m FROM note_folder").first<{ m: number }>();
-                    let next = max?.m || 0;
-                    const byPath = new Map((local.results || []).map(f => [JSON.stringify([f.parent_id ?? null, f.name]), f.id]));
-                    const visiting = new Set<number>();
-                    const source = new Map(normalized.noteFolders.map(f => [f.id, f]));
-                    const add = (folder: NoteFolder): number => {
-                        if (folder.id !== undefined && folderMap.has(folder.id)) return folderMap.get(folder.id)!;
-                        if (folder.id !== undefined && visiting.has(folder.id)) throw new Error("备份文件夹层级存在循环");
-                        if (folder.id !== undefined) visiting.add(folder.id);
-                        const parent = folder.parent_id ? source.get(folder.parent_id) : undefined;
-                        const parentId = parent ? add(parent) : null;
-                        const key = JSON.stringify([parentId, folder.name]);
-                        let id = byPath.get(key);
-                        if (id === undefined) {
-                            id = ++next;
-                            byPath.set(key, id);
-                            metadataStatements.push(this.db.prepare("INSERT INTO note_folder (id, user_id, name, order_num, parent_id) VALUES (?, ?, ?, ?, ?)")
-                                .bind(id, this.currentUserId, folder.name, folder.order_num ?? 0, parentId));
-                        }
-                        if (folder.id !== undefined) { folderMap.set(folder.id, id); visiting.delete(folder.id); }
-                        return id;
-                    };
-                    normalized.noteFolders.forEach(add);
-                }
-                for (const [table, rows, map] of [
-                    ["note_tag", normalized.noteTags, tagMap],
-                ] as const) {
-                    if (!rows) continue;
-                    const local = await this.db.prepare(`SELECT id, name FROM ${table}${this.scopeSql(false)}`)
-                        .bind(...this.scopeParams([])).all<{ id: number; name: string }>();
-                    const byName = new Map((local.results || []).map(r => [r.name, r.id]));
-                    const max = await this.db.prepare(`SELECT COALESCE(MAX(id), 0) AS m FROM ${table}`)
-                        .first<{ m: number }>();
-                    let next = max?.m || 0;
-                    for (const row of rows) {
-                        let id = byName.get(row.name);
-                        if (id === undefined) {
-                            id = ++next;
-                            byName.set(row.name, id);
-                            metadataStatements.push(this.db.prepare("INSERT INTO note_tag (id, user_id, name, color) VALUES (?, ?, ?, ?)")
-                                .bind(id, this.currentUserId, row.name, row.color ?? null));
-                        }
-                        if (typeof row.id === "number") map.set(row.id, id);
-                    }
-                }
-            }
-            const notePlan: Array<{
-                id: number;
-                uuid: string;
-                title: string;
-                content: string;
-                pinned: boolean;
-                order_num: number;
-                site_id: number | null;
-                folder_id?: number | null;
-                archived?: boolean;
-            }> = [];
-            const importedMetadata = (n: Note) => ({
-                folder_id: n.folder_id !== undefined ? folderMap.get(n.folder_id ?? 0) ?? null : undefined,
-                archived: n.archived,
-            });
-            /** 本地已存在、需要就地覆盖的笔记 id（区别于新分配的 nextNoteId 段） */
-            const existingNoteIds = new Set<number>();
-            /** 覆盖模式要删的本地笔记 id（合并模式恒为空，一条都不动） */
-            const staleNoteIds: number[] = [];
-            const staleNoteTagLinks: number[] = [];
-
-            if (incomingNotes) {
-                // 合并：先读本地现有的，按 uuid 认同一条
-                const localRows = await this.db
-                    .prepare(
-                        `SELECT id, uuid, title, content, pinned, order_num, site_id, updated_at FROM notes${this.scopeSql(
-                            false
-                        )}`
-                    )
-                    .bind(...this.scopeParams([]))
-                    .all<Note>();
-                const localByUuid = new Map<string, Note>();
-                for (const row of localRows.results || []) {
-                    // 没有 uuid 的老笔记不进索引：它没法参与去重，插进来的都会被当成新的
-                    if (row.uuid) localByUuid.set(row.uuid, row);
-                }
-
-                for (const n of incomingNotes) {
-                    const local = n.uuid ? localByUuid.get(n.uuid) : undefined;
-                    if (!local) {
-                        const id = ++nextNoteId;
-                        notePlan.push({
-                            id,
-                            uuid: n.uuid!,
-                            title: n.title,
-                            content: n.content,
-                            pinned: Boolean(n.pinned),
-                            order_num: n.order_num ?? 0,
-                            site_id: n.site_id != null ? siteIdMap[String(n.site_id)] ?? null : null,
-                        ...importedMetadata(n),
-                        });
-                        noteStats.created += 1;
-                        continue;
-                    }
-                    // 同一条笔记：比谁新。updated_at 缺失或解析不出来时，
-                    // 保守起见判「本地较新」→ 跳过，不冒险覆盖用户正在用的那份
-                    const localTime = Date.parse(local.updated_at || "") || 0;
-                    const incomingTime = Date.parse(n.updated_at || "") || 0;
-                    if (incomingTime > localTime) {
-                        // 覆盖写回原 id —— 新建一条再删旧的，等于把 updated_at 弄丢了
-                        notePlan.push({
-                            id: local.id!,
-                            uuid: n.uuid!,
-                            title: n.title,
-                            content: n.content,
-                            pinned: Boolean(n.pinned),
-                            order_num: n.order_num ?? 0,
-                            site_id: n.site_id != null ? siteIdMap[String(n.site_id)] ?? null : null,
-                        ...importedMetadata(n),
-                        });
-                        existingNoteIds.add(local.id!);
-                        noteStats.updated += 1;
-                    } else {
-                        noteStats.skipped += 1;
-                    }
-                }
-                // 覆盖模式：本地有、而这份备份里没有的笔记也要清掉。
-                //
-                // 仍然是「只删备份里没有的」，与卡片同一口径 —— 认得出是同一条的
-                // 按 merge 那套比新旧（上面那段），认不出的才删。
-                // 没有 uuid 的老笔记无法参与去重，覆盖模式下会被一起清掉：
-                // 无从判断它是不是备份里那一条，留在库里就成了孤儿。
-                if (overwrite) {
-                    const incomingUuids = new Set(
-                        incomingNotes.map(n => n.uuid).filter((u): u is string => !!u)
-                    );
-                    for (const row of localRows.results || []) {
-                        if (row.uuid && incomingUuids.has(row.uuid)) continue;
-                        if (typeof row.id !== "number") continue;
-                        staleNoteIds.push(row.id);
-                        // 标签关联跟着走：留下一批指向已删笔记的关联，
-                        // 其它设备同步时会拿到引用不存在的行
-                        staleNoteTagLinks.push(row.id);
-                    }
-                    noteStats.removed = staleNoteIds.length;
-                } else {
-                    // 本地多出来的笔记原样保留：removed 恒为 0
-                    noteStats.removed = 0;
-                }
-            }
-
-            // 覆盖模式要删的笔记：先掐掉标签关联，再删笔记本身。
-            // 分块（每块 90 个 id）是给绑定参数上限留余量 —— D1 一条语句最多 100 个参数，
-            // 一次删几百条笔记拼成一整条 IN(...) 会直接被拒。
-            const noteRemovalStatements: D1PreparedStatement[] = [];
-            for (let offset = 0; offset < staleNoteTagLinks.length; offset += 90) {
-                const chunk = staleNoteTagLinks.slice(offset, offset + 90);
-                noteRemovalStatements.push(
-                    this.db
-                        .prepare(
-                            `DELETE FROM note_note_tag WHERE note_id IN (${chunk
-                                .map(() => "?")
-                                .join(",")})`
-                        )
-                        .bind(...chunk)
-                );
-            }
-            for (let offset = 0; offset < staleNoteIds.length; offset += 90) {
-                const chunk = staleNoteIds.slice(offset, offset + 90);
-                noteRemovalStatements.push(
-                    this.db
-                        .prepare(
-                            `DELETE FROM notes WHERE id IN (${chunk
-                                .map(() => "?")
-                                .join(",")})${this.scopeSql(true)}`
-                        )
-                        .bind(...this.scopeParams(chunk))
-                );
-            }
-
-            // ── 第二阶段：整批提交（一个 D1 事务 = 原子切换）──
-            //
-            // 合并模式下这里只有 INSERT / UPDATE，没有任何 DELETE —— 连「先删后插」的
-            // 关联重建都不做（ note_note_tag 用的是 INSERT OR IGNORE）。
-            // 覆盖模式下会多出一批删除语句，它们与写入**同一个事务**提交：
-            // 要么整份备份生效，要么一个字节都不变，不存在「删完了没写进去」。
-            // ── 保险库（端到端加密，只搬密文）──
-            // 自包含密文单元：keys（KDF 参数 + 两份包好的 DEK）+ entries（全部条目密文）。
-            // 服务端解不开，备份文件整体再 AES-GCM 一次，不泄露明文、不做任何加解密。
-            // 与笔记同一套「字段缺失 = 不动本地」：备份没有 vault 字段 → 本地保险库一根汗毛都不动。
-            // 备份有 vault → 它是一把独立 DEK，和本地现有保险库（若有）大概率不是同一把钥匙，密文级无法合并：
-            //   合并模式：本地已有保险库 → 整体跳过（保留本地，否则本地条目永久解不开）；本地没有 → 整包接纳。
-            //   覆盖模式：明确还原成「备份那一刻」，整包替换（先删本地 keys+entries 再插）。
-            // 条目 site_id 指向导航卡片；导入后站点重发号（siteIdMap），必须跟着重映射，否则绑定会断；映射不到置空。
-            const incomingVault = normalized.vault;
-            const vaultStatements: D1PreparedStatement[] = [];
-            if (incomingVault) {
-                const localVaultExists = (await this.getVaultKeys()) !== null;
-                const shouldAdopt = !localVaultExists;
-                if (overwrite || shouldAdopt) {
-                    vaultStatements.push(
-                        this.db.prepare(`DELETE FROM vault_keys${this.scopeSql(false)}`).bind(...this.scopeParams([]))
-                    );
-                    vaultStatements.push(
-                        this.db.prepare(`DELETE FROM vault_entries${this.scopeSql(false)}`).bind(...this.scopeParams([]))
-                    );
-                    vaultStatements.push(
-                        this.db
-                            .prepare(
-                                `INSERT INTO vault_keys (user_id, kdf_salt, kdf_iterations, wrapped_dek_iv, wrapped_dek,
-                                   wrapped_dek_recovery_iv, wrapped_dek_recovery)
-                                 VALUES (?, ?, ?, ?, ?, ?, ?)`
-                            )
-                            .bind(
-                                this.currentUserId,
-                                incomingVault.keys.kdf_salt,
-                                incomingVault.keys.kdf_iterations,
-                                incomingVault.keys.wrapped_dek_iv,
-                                incomingVault.keys.wrapped_dek,
-                                incomingVault.keys.wrapped_dek_recovery_iv,
-                                incomingVault.keys.wrapped_dek_recovery
-                            )
-                    );
-                    let nextVaultEntryId =
-                        (await this.db.prepare("SELECT COALESCE(MAX(id),0) AS m FROM vault_entries").first<{ m: number }>())?.m || 0;
-                    nextVaultEntryId += 1;
-                    for (const entry of incomingVault.entries) {
-                        const mappedSiteId = entry.site_id != null ? siteIdMap[String(entry.site_id)] ?? null : null;
-                        vaultStatements.push(
-                            this.db
-                                .prepare(`INSERT INTO vault_entries (id, user_id, ciphertext, iv, site_id) VALUES (?, ?, ?, ?, ?)`)
-                                .bind(nextVaultEntryId++, this.currentUserId, entry.ciphertext, entry.iv, mappedSiteId)
-                        );
-                    }
-                    vaultResult = { action: overwrite ? "replaced" : "adopted", entries: incomingVault.entries.length };
-                } else {
-                    vaultResult = { action: "skipped", entries: 0 };
-                }
-            }
-
-            const commitStatements: D1PreparedStatement[] = [
-                ...metadataStatements,
-                ...noteRemovalStatements,
-                ...removalStatements,
-                ...vaultStatements,
-            ];
-            for (const n of notePlan) {
-                // 同一个 uuid 既可能是「新建」也可能是「覆盖本地那条」——
-                // 用 ON CONFLICT 的话需要 uuid 上有唯一索引，而老库里可能有重复
-                // （uuid 是后加的列）。所以这里分两句：id 是新分配的就 INSERT，
-                // 是本地已有 id 的（merge 覆盖）就 UPDATE。
-                const isExisting = existingNoteIds.has(n.id);
-                if (isExisting) {
-                    commitStatements.push(
-                        this.db
-                            .prepare(
-                                `UPDATE notes SET uuid = ?, title = ?, content = ?, pinned = ?,
-                                 order_num = ?, site_id = ?, folder_id = CASE WHEN ? THEN ? ELSE folder_id END,
-                                 archived = COALESCE(?, archived), updated_at = CURRENT_TIMESTAMP
-                                 WHERE id = ?${this.scopeSql(true)}`
-                            )
-                            .bind(...this.scopeParams([
-                                n.uuid, n.title, n.content, n.pinned ? 1 : 0,
-                                n.order_num, n.site_id, n.folder_id !== undefined ? 1 : 0,
-                                n.folder_id ?? null, n.archived === undefined ? null : n.archived ? 1 : 0,
-                                n.id,
-                            ]))
-                    );
-                } else {
-                    commitStatements.push(
-                        this.db
-                            .prepare(
-                                `INSERT INTO notes (id, user_id, uuid, title, content, pinned, order_num, site_id, folder_id, archived)
-                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-                            )
-                            .bind(
-                                n.id,
-                                // user_id 只能是**导入者自己** —— 文件里那个值是导出方的，
-                                // 照抄会把笔记写到别人名下，而这个字段是唯一的隔离依据
-                                this.currentUserId,
-                                n.uuid,
-                                n.title,
-                                n.content,
-                                n.pinned ? 1 : 0,
-                                n.order_num,
-                                n.site_id,
-                                n.folder_id ?? null,
-                                n.archived ? 1 : 0
-                            )
-                    );
-                }
-            }
-
-            if (incomingNotes && normalized.noteTagLinks !== undefined) {
-                for (const n of notePlan) {
-                    // ⚠️ 这里刻意**不删**旧的关联：那条 DELETE 是给「覆盖式恢复」擦屁股用的，
-                    // 增量语义下删掉用户自己勾过的标签就是丢数据。INSERT OR IGNORE 只补缺的，
-                    // 重复导入同一份备份也因此是幂等的。
-                    const ids = new Set(normalized.noteTagLinks.filter(l => l.note_uuid === n.uuid)
-                        .map(l => tagMap.get(l.tag_id)).filter((id): id is number => id !== undefined));
-                    for (const tagId of ids) {
-                        commitStatements.push(this.db.prepare("INSERT OR IGNORE INTO note_note_tag (note_id, tag_id) VALUES (?, ?)")
-                            .bind(n.id, tagId));
-                    }
-                }
-            }
-
-            for (const g of groupPlan) {
-                commitStatements.push(
-                    this.db
-                        .prepare("INSERT INTO groups (id, name, order_num, user_id) VALUES (?, ?, ?, ?)")
-                        .bind(g.id, g.name, g.order_num, this.currentUserId)
-                );
-            }
-            for (const s of sitePlan) {
-                commitStatements.push(
-                    this.db
-                        .prepare(
-                            `INSERT INTO sites (id, group_id, name, url, icon, description, notes, username, password, order_num, user_id)
-                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-                        )
-                        .bind(
-                            s.id,
-                            s.groupId,
-                            s.name,
-                            s.url,
-                            s.icon,
-                            s.description,
-                            s.notes,
-                            s.username,
-                            s.password,
-                            s.order_num,
-                            this.currentUserId
-                        )
-                );
-            }
-            // 站点「就地更新」：落在备份里那条较新的已存在卡片上（不换 id，星标 / 标签不丢）。
-            // 走 MAT 更新而不是「删了重建」—— 重建会把 id 换了，本地星标与访问统计全跟着失效。
-            for (const s of siteUpdatePlan) {
-                commitStatements.push(
-                    this.db
-                        .prepare(
-                            `UPDATE sites SET group_id = ?, name = ?, url = ?, icon = ?,
-                             description = ?, notes = ?, username = ?, password = ?,
-                             order_num = ?, updated_at = CURRENT_TIMESTAMP
-                             WHERE id = ?${this.scopeSql(true)}`
-                        )
-                        .bind(...this.scopeParams([
-                            s.groupId, s.name, s.url, s.icon,
-                            s.description, s.notes, s.username, s.password,
-                            s.order_num, s.id,
-                        ]))
-                );
-            }
-            for (const c of configPlan) {
-                // ⚠️ 末尾的 WHERE excluded.value <> '' 是有意为之：
-                // 备份里「没设置过」的配置是空串（如 site.iconApi: ""），
-                // 增量导入不能拿一个空值把现有配置清掉 —— 那是「清空数据」的一种形态。
-                // 反过来，这份备份里确实没写的 key 根本不会走到这里，现有配置照样不受影响。
-                commitStatements.push(
-                    c.uid === null
-                        ? this.db
-                              .prepare("INSERT INTO configs (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=CURRENT_TIMESTAMP WHERE excluded.value <> ''")
-                              .bind(c.key, c.value)
-                        : this.db
-                              .prepare("INSERT INTO user_configs (user_id, key, value, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP) ON CONFLICT(user_id, key) DO UPDATE SET value=excluded.value, updated_at=CURRENT_TIMESTAMP WHERE excluded.value <> ''")
-                              .bind(c.uid, c.key, c.value)
-                );
-            }
+            writeGroups(ctx, commit);
+            writeSites(ctx, commit);
+            writeConfigs(ctx, commit);
+            rebuildIndexes(ctx, commit);
 
             // 提交必须只有一个事务：把「新建 + 已有记录就地更新 + 关联」一次性落库。
-            const total = commitStatements.length;
+            const total = commit.length;
             report("write", 0, total);
             // 超出服务端容量时整批失败（数据库自动回滚），不再分块 ——
             // 分块会让「前 90 条写进去、后面失败」变成可能，而现在要做到的是
             // 「要么全成、要么一个字节都没动」。
-            if (commitStatements.length > 0) {
-                const committed = await this.db.batch(commitStatements);
+            if (commit.length > 0) {
+                const committed = await this.db.batch(commit);
                 if (committed.some(result => !result.success)) {
                     throw new Error("导入事务提交失败");
                 }
@@ -1101,7 +496,7 @@ export const transferImpl: TransferApi = {
                 vault: vaultResult,
             };
         } catch (error) {
-            console.error("导入数据失败:", error);
+            logger.error("导入数据失败:", { err: error, component: "transfer", action: "importData" });
             // 所有写入都在**同一个 batch（= 一个事务）**里，失败由数据库整批回滚，
             // 不存在「写了一半」的中间态，也就不必（且不准）事后按 id 去补偿删除 ——
             // 那种删除本身还会误伤并发写进来的行。
@@ -1124,6 +519,7 @@ export const transferImpl: TransferApi = {
             }
         }
     },
+
 
     /**
      * 批量加密站点密码（备份里是明文，写回 D1 前必须加密）。
@@ -1192,12 +588,788 @@ export const transferImpl: TransferApi = {
                     .filter((id): id is number => typeof id === "number")
             );
         } catch (error) {
-            console.error("校验分组归属失败:", error);
+            logger.error("校验分组归属失败:", { err: error, component: "transfer" })
             return new Set();
         }
     },
 
 };
+
+// ───────────────────────────────────────────────────────────────────────────
+// importData 的阶段拆分（item 2）
+//
+// 上面 importData 只做「事务外壳」：校验 / 抢锁 / 归一化 / 提交 / 收尾。真正
+// 「写什么」的决策全部抽到下面 5 个阶段函数里，彼此通过 ImportContext 显式传
+// state，不再依赖旧单体的闭包变量。5 个阶段：
+//   1. planMerge      只读现有数据 + 预分配 id + 决定每个实体的新建/更新/跳过/
+//                     删除，并把所有 SQL 语句预先构造好（事务里不再有 await）。
+//   2. writeGroups    把分组写入语句追加进提交列表。
+//   3. writeSites     把站点（含就地更新）写入语句追加进提交列表。
+//   4. writeConfigs   把配置写入语句追加进提交列表。
+//   5. rebuildIndexes 重建派生索引（当前实现不维护独立 FTS，故为空占位阶段）。
+// 笔记与保险库的语句同样在 planMerge 里构造 —— 它们的合并/覆盖判定与规划不可
+// 分割，无法脱离规划单独成「阶段」，但落库仍由外壳统一塞进同一个事务。
+// ───────────────────────────────────────────────────────────────────────────
+
+/** importData 各阶段共享的上下文：用显式传参代替旧单体的闭包变量。 */
+interface ImportContext {
+    api: NavigationAPI;
+    data: ExportData;
+    opts?: ImportOptions;
+    report: (stage: ImportStage, done: number, total: number) => void;
+    mode: ImportMode;
+    overwrite: boolean;
+    normalized: ExportData;
+    // 返回所需的映射与统计（与外壳里的同名局部变量是同一引用，阶段内直接改写）
+    groupIdMap: Record<string, number>;
+    siteIdMap: Record<string, number>;
+    stats: ImportStats;
+    noteStats: NoteImportStats;
+    vaultResult: VaultImportResult;
+    // 现有数据索引（只读）
+    groupIdByName: Map<string, number>;
+    siteIdByKey: Map<string, number>;
+    siteUpdatedAt: Map<number, number>;
+    // 覆盖模式用的中间集合
+    matchedGroupIds: Set<number>;
+    incomingSiteKeys: Set<string>;
+    folderMap: Map<number, number>;
+    tagMap: Map<number, number>;
+    // 各实体的写入计划
+    groupPlan: GroupPlan[];
+    sitePlan: SitePlan[];
+    siteUpdatePlan: SitePlan[];
+    configPlan: Array<{ key: string; value: string; uid: number | null }>;
+    notePlan: NotePlanRow[];
+    existingNoteIds: Set<number>;
+    // 预先构造好的语句数组（保持原提交顺序）
+    metadataStatements: D1PreparedStatement[];
+    noteRemovalStatements: D1PreparedStatement[];
+    removalStatements: D1PreparedStatement[];
+    vaultStatements: D1PreparedStatement[];
+    noteStatements: D1PreparedStatement[];
+    noteTagLinkStatements: D1PreparedStatement[];
+}
+
+/** 一条待写入的笔记（不论新建还是就地覆盖，形状一致）。 */
+interface NotePlanRow {
+    id: number;
+    uuid: string;
+    title: string;
+    content: string;
+    pinned: boolean;
+    order_num: number;
+    site_id: number | null;
+    folder_id?: number | null;
+    archived?: boolean;
+}
+
+/**
+ * 阶段一：规划合并 / 覆盖。
+ * 只读现有数据、按 id 预分配、决定每个分组 / 站点 / 配置 / 笔记 / 保险库的
+ * 新建 / 更新 / 跳过 / 删除，并把所有 SQL 语句预先构造好（事务里不再有 await）。
+ */
+async function planMerge(ctx: ImportContext): Promise<void> {
+    const api = ctx.api;
+    const { report, overwrite, normalized } = ctx;
+    const groupIdMap = ctx.groupIdMap;
+    const siteIdMap = ctx.siteIdMap;
+
+    // ── 现有数据索引（只读）──
+    //
+    // 增量导入全靠这张表认「是不是同一条」。只读不写，所以这一段永远不会
+    // 伤到库里的东西：认出来就更新/跳过，认不出来才新建。
+    // 多账号部署下 scopeSql 会把结果限在当前账号内 —— A 的分组不会拿来跟 B 的撞。
+    const existingGroupRows = await api.db
+        .prepare(`SELECT id, name FROM groups${api.scopeSql(false)}`)
+        .bind(...api.scopeParams([]))
+        .all<{ id: number; name: string }>();
+    const existingSiteRows = await api.db
+        .prepare(
+            `SELECT id, group_id, name, url, updated_at FROM sites${api.scopeSql(
+                false
+            )}`
+        )
+        .bind(...api.scopeParams([]))
+        .all<{ id: number; group_id: number; name: string; url: string; updated_at?: string }>();
+
+    /** 名称 -> 分组 id。同名的老行取 id 最小的那条（历史脏数据可能存在）。 */
+    for (const row of existingGroupRows.results || []) {
+        const name = String(row.name ?? "").trim();
+        if (name && !ctx.groupIdByName.has(name)) ctx.groupIdByName.set(name, row.id);
+    }
+    /** `${groupId}|u:${urlKey}`（无链接则 `n:${name}`） -> 站点 id */
+    for (const row of existingSiteRows.results || []) {
+        const key = siteMatchKey(row.group_id, row.url, row.name);
+        if (!ctx.siteIdByKey.has(key)) ctx.siteIdByKey.set(key, row.id);
+        ctx.siteUpdatedAt.set(row.id, Date.parse(row.updated_at || "") || 0);
+    }
+
+    // ── 预分配 id：让所有写入能塞进同一个事务 ──
+    //
+    // 站点要靠分组的 id 才能落库，所以过去只能「先插分组拿 id，再插站点」——
+    // 两步之间没有任何事务保护。现在先把 id 算出来（当前 MAX(id) 之后的一段
+    // 连续号），所有写入互不依赖，整批进**同一个 D1 batch**（= 一个事务）。
+    const groupBase = await api.nextIdBase("groups");
+    const siteBase = await api.nextIdBase("sites");
+    let nextNoteId = await api.nextIdBase("notes");
+
+    // 第一阶段：把要写什么算清楚（加密、权限判定这些含 await 的都在这里做完），
+    // 第二阶段只负责往 batch 里塞纯 SQL —— 保证事务里没有「等待」。
+    const groupPlan: GroupPlan[] = [];
+    /**
+     * 本次认出来的已有分组 id（覆盖模式下这些分组保命）。
+     *
+     * 另外单独记一份 incomingSiteKeys：两张表一起才能算出
+     * 「本地有、而备份里没有」的那些行 —— 光看名字会漏掉「卡片被搬走了」。
+     */
+    const matchedGroupIds = ctx.matchedGroupIds;
+    const incomingSiteKeys = ctx.incomingSiteKeys;
+    let nextGroupId = groupBase + 1;
+    for (const group of normalized.groups) {
+        const name = String(group.name ?? "").trim();
+        const existingId = name ? ctx.groupIdByName.get(name) : undefined;
+        if (existingId !== undefined) {
+            matchedGroupIds.add(existingId);
+            // 同名分组已经存在：认出来就复用，不顺手改它的排序 / 名字 ——
+            // 用户在本地调过的顺序不该被一份备份悄悄覆盖掉
+            if (group.id !== undefined) groupIdMap[String(group.id)] = existingId;
+            ctx.stats.groupsMatched += 1;
+            continue;
+        }
+        const id = nextGroupId++;
+        groupPlan.push({ id, name: group.name, order_num: group.order_num || 0 });
+        // 同一份备份里出现两个同名分组时只建一个：没有这行，
+        // 第二次循环会因为 map 里查不到又接着往下排一个 id
+        if (name) ctx.groupIdByName.set(name, id);
+        if (group.id !== undefined) groupIdMap[String(group.id)] = id;
+        ctx.stats.groupsCreated += 1;
+    }
+
+    // 站点指向了备份里不存在的分组（手改过 / 老格式）时兜一个分组出来装它们，
+    // sites.group_id 是 NOT NULL，没有归属就写不进去。
+    // ⚠️ 同样先按名字找现成的：反复导入会一趟造一个「导入的站点」，
+    // 那就是「重复导入长出新数据」最典型的一条。
+    const needsOrphanGroup = normalized.sites.some(site => {
+        const mapped = site.group_id !== undefined && site.group_id !== null
+            ? groupIdMap[String(site.group_id)]
+            : undefined;
+        return typeof mapped !== "number";
+    });
+    let orphanGroupId: number | null = null;
+    if (needsOrphanGroup) {
+        const existingId = ctx.groupIdByName.get(ORPHAN_GROUP_NAME);
+        if (existingId !== undefined) {
+            orphanGroupId = existingId;
+            // 兜底分组被复用 = 这次它装了东西，覆盖模式下不能把它删掉
+            matchedGroupIds.add(existingId);
+        } else {
+            orphanGroupId = nextGroupId;
+            groupPlan.push({ id: orphanGroupId, name: ORPHAN_GROUP_NAME, order_num: 999999 });
+            ctx.groupIdByName.set(ORPHAN_GROUP_NAME, orphanGroupId);
+            ctx.stats.groupsCreated += 1;
+        }
+    }
+
+    ctx.groupPlan = groupPlan;
+
+    let nextSiteId = siteBase + 1;
+    // 「本次准备新建的行」：备份内部自己重复的条目也要在这一轮认出来，
+    // 否则同一份文件里两个同链接卡片会各占一个新 id（也会把它当成「已存在」去 UPDATE 一条还没插进去的行）。
+    const plannedSiteIds = new Set<number>();
+    const siteDraft: SitePlan[] = [];
+    /** 命中已有行、且备份里那条更新才走 UPDATE */
+    const siteUpdateDraft: SitePlan[] = [];
+    for (const site of normalized.sites) {
+        const mapped = site.group_id !== undefined && site.group_id !== null
+            ? groupIdMap[String(site.group_id)]
+            : undefined;
+        const groupId = typeof mapped === "number" ? mapped : orphanGroupId;
+        if (typeof groupId !== "number") {
+            throw new Error(`站点「${site.name}」找不到所属分组`);
+        }
+        const key = siteMatchKey(groupId, site.url, site.name);
+        // 记进「备份里有哪几张卡」：覆盖模式删除时用得上。
+        // 放在匹配之前 —— 重复的、要新建的、要去更新的，全都要算进这张清单，
+        // 否则「备份里明明有」的卡片会被当成没有而删掉。
+        incomingSiteKeys.add(key);
+        const existingId = ctx.siteIdByKey.get(key);
+
+        if (existingId !== undefined && !plannedSiteIds.has(existingId)) {
+            // 认出是同一张卡：不新建，只决定要不要用备份里这份覆盖内容
+            if (site.id !== undefined) siteIdMap[String(site.id)] = existingId;
+            const localTime = ctx.siteUpdatedAt.get(existingId) ?? 0;
+            const incomingTime = Date.parse(site.updated_at || "") || 0;
+            if (incomingTime > localTime) {
+                siteUpdateDraft.push({
+                    id: existingId,
+                    groupId,
+                    name: site.name,
+                    url: site.url,
+                    icon: site.icon || "",
+                    description: site.description || "",
+                    notes: site.notes || "",
+                    username: site.username || "",
+                    password: site.password || "",
+                    order_num: site.order_num || 0,
+                });
+                ctx.stats.sitesUpdated += 1;
+            } else {
+                // 本地更新（或两边都算不出时间）：保守保留本地，一个数写回 stats 让人看得见
+                ctx.stats.sitesSkipped += 1;
+            }
+            continue;
+        }
+        if (existingId !== undefined) {
+            // 这份备份里自己重复了：指向同一个新建 id，不写第二遍
+            if (site.id !== undefined) siteIdMap[String(site.id)] = existingId;
+            ctx.stats.sitesSkipped += 1;
+            continue;
+        }
+
+        const id = nextSiteId++;
+        plannedSiteIds.add(id);
+        siteDraft.push({
+            id,
+            groupId,
+            name: site.name,
+            url: site.url,
+            icon: site.icon || "",
+            description: site.description || "",
+            notes: site.notes || "",
+            username: site.username || "",
+            password: site.password || "",
+            order_num: site.order_num || 0,
+        });
+        ctx.siteIdByKey.set(key, id);
+        if (site.id !== undefined) siteIdMap[String(site.id)] = id;
+        ctx.stats.sitesCreated += 1;
+    }
+
+    // ── 覆盖模式：算出「本地有、备份里没有」的那些行 ──
+    //
+    // 只删这一类，不是「先清空再重建」。两种做法差别很大：
+    //   - 认得出是同一条的卡片**保住 id**：本机星标 / 标签、访问统计不会因为
+    //     一次恢复全部掉线（老的做法是给每一行重新发号，代价是这些全没了）；
+    //   - 卡片内容仍然按 merge 那套「谁新谁赢」，不硬灌旧的：
+    //     备份里没带登录凭据时（导出开关关着）覆盖进去也不会把本地存的账号密码清空。
+    //
+    // 合并模式下这两段恒为空，整个 importData 依旧没有任何 DELETE。
+    const removalStatements: D1PreparedStatement[] = [];
+    if (overwrite) {
+        const staleSiteIds: number[] = [];
+        const staleGroupIds: number[] = [];
+        for (const row of existingSiteRows.results || []) {
+            // 分组都被删了的话，它下面的卡片不必单独判断 —— 整个分组一起走
+            if (matchedGroupIds.has(row.group_id)) {
+                const key = siteMatchKey(row.group_id, row.url, row.name);
+                if (incomingSiteKeys.has(key)) continue;
+            }
+            staleSiteIds.push(row.id);
+        }
+        for (const row of existingGroupRows.results || []) {
+            if (matchedGroupIds.has(row.id)) continue;
+            staleGroupIds.push(row.id);
+        }
+
+        // 删卡片前先留墓碑：其它设备靠 /api/sites/changes 才知道少了哪几张，
+        // 否则它们本地那几张会一直留着，谁都看不出已经被删了
+        for (const id of staleSiteIds) {
+            removalStatements.push(
+                api.db
+                    .prepare("INSERT INTO site_tombstone (user_id, site_id, deleted_at) VALUES (?, ?, ?)")
+                    .bind(api.currentUserId, id, tombstoneStamp())
+            );
+        }
+        // ⚠️ 先删卡片再删分组：sites.group_id 有外键（ON DELETE CASCADE 在
+        // 外键开关没打开的环境里不生效），顺序反了会在事务提交时撞外键约束，
+        // 整批回滚 —— 表现为「覆盖导入总是失败」。
+        for (const id of staleSiteIds) {
+            removalStatements.push(
+                api.db
+                    .prepare(`DELETE FROM sites WHERE id = ?${api.scopeSql(true)}`)
+                    .bind(...api.scopeParams([id]))
+            );
+        }
+        for (const id of staleGroupIds) {
+            removalStatements.push(
+                api.db
+                    .prepare(`DELETE FROM groups WHERE id = ?${api.scopeSql(true)}`)
+                    .bind(...api.scopeParams([id]))
+            );
+        }
+
+        ctx.stats.groupsRemoved = staleGroupIds.length;
+        ctx.stats.sitesRemoved = staleSiteIds.length;
+    }
+    ctx.removalStatements = removalStatements;
+
+    // 密码加密放在计划阶段之后、SQL 之前：几千条逐个 await 会把这一段拖成串行
+    // 流水线，而加密是纯本地计算，压成一小批一小批并发跑最划算（限并发 16）。
+    const encryptedTotal = siteDraft.length + siteUpdateDraft.length;
+    if (encryptedTotal > 0) report("encrypt", 0, encryptedTotal);
+    const sitePlan = await api.encryptSitePasswords(siteDraft, (done, _total) =>
+        report("encrypt", done, encryptedTotal)
+    );
+    const siteUpdatePlan = await api.encryptSitePasswords(siteUpdateDraft, (done, _total) =>
+        report("encrypt", siteDraft.length + done, encryptedTotal)
+    );
+    ctx.sitePlan = sitePlan;
+    ctx.siteUpdatePlan = siteUpdatePlan;
+
+    // 导入配置数据。
+    // 老备份的全站设置混在 configs 里，新备份放在 sharedConfigs，两边同规则：
+    // 共享键只有站点所有者（或单账号部署）能写，普通账号恢复时不改全站外观。
+    const mayWriteShared = await api.canManageSharedConfigs();
+    const configEntries: [string, string][] = [
+        ...Object.entries(normalized.configs || {}),
+        ...Object.entries(normalized.sharedConfigs || {}),
+    ];
+    const configPlan: { key: string; value: string; uid: number | null }[] = [];
+    for (const [key, value] of configEntries) {
+        if (key === "DB_INITIALIZED") {
+            // 跳过数据库初始化标志
+            continue;
+        }
+        if (isSecretConfigKey(key)) {
+            // 恢复备份不覆盖管理员账号密码和 WebDAV 凭据。
+            // （AI 那组不在此列：2026-10-24 起整组跟着备份走。）
+            continue;
+        }
+        // 值形态校验：ai.endpoint 必须是 http(s):// —— 备份文件可能被改过，
+        // 不挡的话下次用 AI 功能时请求就发到别人服务器上去了
+        if (!isImportableConfigValue(key, value)) {
+            continue;
+        }
+        if (!isUserScopedConfigKey(key) && !mayWriteShared) {
+            continue;
+        }
+        if (typeof value !== "string" || key.length > 200 || value.length > 256 * 1024) {
+            throw new Error("备份配置格式无效或过大");
+        }
+        configPlan.push({ key, value, uid: await api.scopeFor(key) });
+    }
+    ctx.configPlan = configPlan;
+
+    // ── 记事本 ──
+    //
+    // 两种情形，靠字段是否存在区分：
+    //   ① 备份里没有 notes 字段（老备份 / 用户关了「备份含记事本」）
+    //      → **本地笔记一根汗毛都不动**。清空是不可逆的，宁可什么都不做。
+    //   ② 有 notes 字段（默认路径）
+    //      → 按 uuid 识别同一条：本地没有就插入；有就比 updated_at，
+    //        文件里较新才覆盖，本地较新就跳过（保留本地）。
+    //
+    // ⚠️ 没有第三种了：以前还有一个「清空本地笔记再重灌」的 replace 模式，
+    // 它与「导入不许删任何已有数据」直接冲突 —— 导入到一半失败、
+    // 或用户挑错文件，本地写的笔记就没了。增量导入只做加法和就地更新。
+    //
+    // 关键：这一段只做**读**（要本地现有笔记），读到的结果用来算计划；
+    // 真正的 INSERT / UPDATE 都在下面的第二阶段塞进同一个事务。
+    const incomingNotes = normalized.notes;
+
+    // 元数据只在笔记备份存在时恢复；老文件缺分类字段不清空本地分类。
+    const folderMap = new Map<number, number>();
+    const tagMap = new Map<number, number>();
+    const metadataStatements: D1PreparedStatement[] = [];
+    if (incomingNotes) {
+        if (normalized.noteFolders) {
+            const local = await api.db.prepare(`SELECT id, name, parent_id FROM note_folder${api.scopeSql(false)}`)
+                .bind(...api.scopeParams([])).all<{ id: number; name: string; parent_id: number | null }>();
+            const max = await api.db.prepare("SELECT COALESCE(MAX(id), 0) AS m FROM note_folder").first<{ m: number }>();
+            let next = max?.m || 0;
+            const byPath = new Map((local.results || []).map(f => [JSON.stringify([f.parent_id ?? null, f.name]), f.id]));
+            const visiting = new Set<number>();
+            const source = new Map(normalized.noteFolders.map(f => [f.id, f]));
+            const add = (folder: NoteFolder): number => {
+                if (folder.id !== undefined && folderMap.has(folder.id)) return folderMap.get(folder.id)!;
+                if (folder.id !== undefined && visiting.has(folder.id)) throw new Error("备份文件夹层级存在循环");
+                if (folder.id !== undefined) visiting.add(folder.id);
+                const parent = folder.parent_id ? source.get(folder.parent_id) : undefined;
+                const parentId = parent ? add(parent) : null;
+                const key = JSON.stringify([parentId, folder.name]);
+                let id = byPath.get(key);
+                if (id === undefined) {
+                    id = ++next;
+                    byPath.set(key, id);
+                    metadataStatements.push(api.db.prepare("INSERT INTO note_folder (id, user_id, name, order_num, parent_id) VALUES (?, ?, ?, ?, ?)")
+                        .bind(id, api.currentUserId, folder.name, folder.order_num ?? 0, parentId));
+                }
+                if (folder.id !== undefined) { folderMap.set(folder.id, id); visiting.delete(folder.id); }
+                return id;
+            };
+            normalized.noteFolders.forEach(add);
+        }
+        for (const [table, rows, map] of [
+            ["note_tag", normalized.noteTags, tagMap],
+        ] as const) {
+            if (!rows) continue;
+            const local = await api.db.prepare(`SELECT id, name FROM ${table}${api.scopeSql(false)}`)
+                .bind(...api.scopeParams([])).all<{ id: number; name: string }>();
+            const byName = new Map((local.results || []).map(r => [r.name, r.id]));
+            const max = await api.db.prepare(`SELECT COALESCE(MAX(id), 0) AS m FROM ${table}`)
+                .first<{ m: number }>();
+            let next = max?.m || 0;
+            for (const row of rows) {
+                let id = byName.get(row.name);
+                if (id === undefined) {
+                    id = ++next;
+                    byName.set(row.name, id);
+                    metadataStatements.push(api.db.prepare("INSERT INTO note_tag (id, user_id, name, color) VALUES (?, ?, ?, ?)")
+                        .bind(id, api.currentUserId, row.name, row.color ?? null));
+                }
+                if (typeof row.id === "number") map.set(row.id, id);
+            }
+        }
+    }
+    ctx.folderMap = folderMap;
+    ctx.tagMap = tagMap;
+    ctx.metadataStatements = metadataStatements;
+
+    const notePlan: NotePlanRow[] = [];
+    /** 本地已存在、需要就地覆盖的笔记 id（区别于新分配的 nextNoteId 段） */
+    const existingNoteIds = new Set<number>();
+    /** 覆盖模式要删的本地笔记 id（合并模式恒为空，一条都不动） */
+    const staleNoteIds: number[] = [];
+    const staleNoteTagLinks: number[] = [];
+
+    const importedMetadata = (n: Note) => ({
+        folder_id: n.folder_id !== undefined ? folderMap.get(n.folder_id ?? 0) ?? null : undefined,
+        archived: n.archived,
+    });
+
+    if (incomingNotes) {
+        // 合并：先读本地现有的，按 uuid 认同一条
+        const localRows = await api.db
+            .prepare(
+                `SELECT id, uuid, title, content, pinned, order_num, site_id, updated_at FROM notes${api.scopeSql(
+                    false
+                )}`
+            )
+            .bind(...api.scopeParams([]))
+            .all<Note>();
+        const localByUuid = new Map<string, Note>();
+        for (const row of localRows.results || []) {
+            // 没有 uuid 的老笔记不进索引：它没法参与去重，插进来的都会被当成新的
+            if (row.uuid) localByUuid.set(row.uuid, row);
+        }
+
+        for (const n of incomingNotes) {
+            const local = n.uuid ? localByUuid.get(n.uuid) : undefined;
+            if (!local) {
+                const id = ++nextNoteId;
+                notePlan.push({
+                    id,
+                    uuid: n.uuid!,
+                    title: n.title,
+                    content: n.content,
+                    pinned: Boolean(n.pinned),
+                    order_num: n.order_num ?? 0,
+                    site_id: n.site_id != null ? siteIdMap[String(n.site_id)] ?? null : null,
+                    ...importedMetadata(n),
+                });
+                ctx.noteStats.created += 1;
+                continue;
+            }
+            // 同一条笔记：比谁新。updated_at 缺失或解析不出来时，
+            // 保守起见判「本地较新」→ 跳过，不冒险覆盖用户正在用的那份
+            const localTime = Date.parse(local.updated_at || "") || 0;
+            const incomingTime = Date.parse(n.updated_at || "") || 0;
+            if (incomingTime > localTime) {
+                // 覆盖写回原 id —— 新建一条再删旧的，等于把 updated_at 弄丢了
+                notePlan.push({
+                    id: local.id!,
+                    uuid: n.uuid!,
+                    title: n.title,
+                    content: n.content,
+                    pinned: Boolean(n.pinned),
+                    order_num: n.order_num ?? 0,
+                    site_id: n.site_id != null ? siteIdMap[String(n.site_id)] ?? null : null,
+                    ...importedMetadata(n),
+                });
+                existingNoteIds.add(local.id!);
+                ctx.noteStats.updated += 1;
+            } else {
+                ctx.noteStats.skipped += 1;
+            }
+        }
+        // 覆盖模式：本地有、而这份备份里没有的笔记也要清掉。
+        //
+        // 仍然是「只删备份里没有的」，与卡片同一口径 —— 认得出是同一条的
+        // 按 merge 那套比新旧（上面那段），认不出的才删。
+        // 没有 uuid 的老笔记无法参与去重，覆盖模式下会被一起清掉：
+        // 无从判断它是不是备份里那一条，留在库里就成了孤儿。
+        if (overwrite) {
+            const incomingUuids = new Set(
+                incomingNotes.map(n => n.uuid).filter((u): u is string => !!u)
+            );
+            for (const row of localRows.results || []) {
+                if (row.uuid && incomingUuids.has(row.uuid)) continue;
+                if (typeof row.id !== "number") continue;
+                staleNoteIds.push(row.id);
+                // 标签关联跟着走：留下一批指向已删笔记的关联，
+                // 其它设备同步时会拿到引用不存在的行
+                staleNoteTagLinks.push(row.id);
+            }
+            ctx.noteStats.removed = staleNoteIds.length;
+        } else {
+            // 本地多出来的笔记原样保留：removed 恒为 0
+            ctx.noteStats.removed = 0;
+        }
+    }
+    ctx.notePlan = notePlan;
+    ctx.existingNoteIds = existingNoteIds;
+
+    // 覆盖模式要删的笔记：先掐掉标签关联，再删笔记本身。
+    // 分块（每块 90 个 id）是给绑定参数上限留余量 —— D1 一条语句最多 100 个参数，
+    // 一次删几百条笔记拼成一整条 IN(...) 会直接被拒。
+    const noteRemovalStatements: D1PreparedStatement[] = [];
+    for (let offset = 0; offset < staleNoteTagLinks.length; offset += 90) {
+        const chunk = staleNoteTagLinks.slice(offset, offset + 90);
+        noteRemovalStatements.push(
+            api.db
+                .prepare(
+                    `DELETE FROM note_note_tag WHERE note_id IN (${chunk
+                        .map(() => "?")
+                        .join(",")})`
+                )
+                .bind(...chunk)
+        );
+    }
+    for (let offset = 0; offset < staleNoteIds.length; offset += 90) {
+        const chunk = staleNoteIds.slice(offset, offset + 90);
+        noteRemovalStatements.push(
+            api.db
+                .prepare(
+                    `DELETE FROM notes WHERE id IN (${chunk
+                        .map(() => "?")
+                        .join(",")})${api.scopeSql(true)}`
+                )
+                .bind(...api.scopeParams(chunk))
+        );
+    }
+    ctx.noteRemovalStatements = noteRemovalStatements;
+
+    // ── 保险库（端到端加密，只搬密文）──
+    // 自包含密文单元：keys（KDF 参数 + 两份包好的 DEK）+ entries（全部条目密文）。
+    // 服务端解不开，备份文件整体再 AES-GCM 一次，不泄露明文、不做任何加解密。
+    // 与笔记同一套「字段缺失 = 不动本地」：备份没有 vault 字段 → 本地保险库一根汗毛都不动。
+    // 备份有 vault → 它是一把独立 DEK，和本地现有保险库（若有）大概率不是同一把钥匙，密文级无法合并：
+    //   合并模式：本地已有保险库 → 整体跳过（保留本地，否则本地条目永久解不开）；本地没有 → 整包接纳。
+    //   覆盖模式：明确还原成「备份那一刻」，整包替换（先删本地 keys+entries 再插）。
+    // 条目 site_id 指向导航卡片；导入后站点重发号（siteIdMap），必须跟着重映射，否则绑定会断；映射不到置空。
+    const incomingVault = normalized.vault;
+    const vaultStatements: D1PreparedStatement[] = [];
+    if (incomingVault) {
+        const localVaultExists = (await api.getVaultKeys()) !== null;
+        const shouldAdopt = !localVaultExists;
+        if (overwrite || shouldAdopt) {
+            vaultStatements.push(
+                api.db.prepare(`DELETE FROM vault_keys${api.scopeSql(false)}`).bind(...api.scopeParams([]))
+            );
+            vaultStatements.push(
+                api.db.prepare(`DELETE FROM vault_entries${api.scopeSql(false)}`).bind(...api.scopeParams([]))
+            );
+            vaultStatements.push(
+                api.db
+                    .prepare(
+                        `INSERT INTO vault_keys (user_id, kdf_salt, kdf_iterations, wrapped_dek_iv, wrapped_dek,
+                           wrapped_dek_recovery_iv, wrapped_dek_recovery)
+                         VALUES (?, ?, ?, ?, ?, ?, ?)`
+                    )
+                    .bind(
+                        api.currentUserId,
+                        incomingVault.keys.kdf_salt,
+                        incomingVault.keys.kdf_iterations,
+                        incomingVault.keys.wrapped_dek_iv,
+                        incomingVault.keys.wrapped_dek,
+                        incomingVault.keys.wrapped_dek_recovery_iv,
+                        incomingVault.keys.wrapped_dek_recovery
+                    )
+            );
+            let nextVaultEntryId =
+                (await api.db.prepare("SELECT COALESCE(MAX(id),0) AS m FROM vault_entries").first<{ m: number }>())?.m || 0;
+            nextVaultEntryId += 1;
+            for (const entry of incomingVault.entries) {
+                const mappedSiteId = entry.site_id != null ? siteIdMap[String(entry.site_id)] ?? null : null;
+                vaultStatements.push(
+                    api.db
+                        .prepare(`INSERT INTO vault_entries (id, user_id, ciphertext, iv, site_id) VALUES (?, ?, ?, ?, ?)`)
+                        .bind(nextVaultEntryId++, api.currentUserId, entry.ciphertext, entry.iv, mappedSiteId)
+                );
+            }
+            Object.assign(ctx.vaultResult, { action: overwrite ? "replaced" : "adopted", entries: incomingVault.entries.length });
+        } else {
+            Object.assign(ctx.vaultResult, { action: "skipped", entries: 0 });
+        }
+    }
+    ctx.vaultStatements = vaultStatements;
+
+    // 笔记的 UPDATE/INSERT 语句（识别同一条走 UPDATE 保住 id，新 uuid 走 INSERT），
+    // 以及 note → tag 的关联重建。与原实现一致：关联用 INSERT OR IGNORE，
+    // 增量语义下不删旧关联，重复导入同一份备份因此幂等。
+    const noteStatements: D1PreparedStatement[] = [];
+    for (const n of notePlan) {
+        // 同一个 uuid 既可能是「新建」也可能是「覆盖本地那条」——
+        // 用 ON CONFLICT 的话需要 uuid 上有唯一索引，而老库里可能有重复
+        // （uuid 是后加的列）。所以这里分两句：id 是新分配的就 INSERT，
+        // 是本地已有 id 的（merge 覆盖）就 UPDATE。
+        const isExisting = existingNoteIds.has(n.id);
+        if (isExisting) {
+            noteStatements.push(
+                api.db
+                    .prepare(
+                        `UPDATE notes SET uuid = ?, title = ?, content = ?, pinned = ?,
+                         order_num = ?, site_id = ?, folder_id = CASE WHEN ? THEN ? ELSE folder_id END,
+                         archived = COALESCE(?, archived), updated_at = CURRENT_TIMESTAMP
+                         WHERE id = ?${api.scopeSql(true)}`
+                    )
+                    .bind(...api.scopeParams([
+                        n.uuid, n.title, n.content, n.pinned ? 1 : 0,
+                        n.order_num, n.site_id, n.folder_id !== undefined ? 1 : 0,
+                        n.folder_id ?? null, n.archived === undefined ? null : n.archived ? 1 : 0,
+                        n.id,
+                    ]))
+            );
+        } else {
+            noteStatements.push(
+                api.db
+                    .prepare(
+                        `INSERT INTO notes (id, user_id, uuid, title, content, pinned, order_num, site_id, folder_id, archived)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+                    )
+                    .bind(
+                        n.id,
+                        // user_id 只能是**导入者自己** —— 文件里那个值是导出方的，
+                        // 照抄会把笔记写到别人名下，而这个字段是唯一的隔离依据
+                        api.currentUserId,
+                        n.uuid,
+                        n.title,
+                        n.content,
+                        n.pinned ? 1 : 0,
+                        n.order_num,
+                        n.site_id,
+                        n.folder_id ?? null,
+                        n.archived ? 1 : 0
+                    )
+            );
+        }
+    }
+    const noteTagLinkStatements: D1PreparedStatement[] = [];
+    if (incomingNotes && normalized.noteTagLinks !== undefined) {
+        for (const n of notePlan) {
+            // ⚠️ 这里刻意**不删**旧的关联：那条 DELETE 是给「覆盖式恢复」擦屁股用的，
+            // 增量语义下删掉用户自己勾过的标签就是丢数据。INSERT OR IGNORE 只补缺的，
+            // 重复导入同一份备份也因此是幂等的。
+            const ids = new Set(normalized.noteTagLinks.filter(l => l.note_uuid === n.uuid)
+                .map(l => tagMap.get(l.tag_id)).filter((id): id is number => id !== undefined));
+            for (const tagId of ids) {
+                noteTagLinkStatements.push(api.db.prepare("INSERT OR IGNORE INTO note_note_tag (note_id, tag_id) VALUES (?, ?)")
+                    .bind(n.id, tagId));
+            }
+        }
+    }
+    ctx.noteStatements = noteStatements;
+    ctx.noteTagLinkStatements = noteTagLinkStatements;
+}
+
+/**
+ * 阶段二：把分组写入语句追加进提交列表。
+ * 分组必须排在站点之前（sites.group_id 外键），顺序由外壳统一控制。
+ */
+function writeGroups(ctx: ImportContext, commit: D1PreparedStatement[]): void {
+    const api = ctx.api;
+    for (const g of ctx.groupPlan) {
+        commit.push(
+            api.db
+                .prepare("INSERT INTO groups (id, name, order_num, user_id) VALUES (?, ?, ?, ?)")
+                .bind(g.id, g.name, g.order_num, api.currentUserId)
+        );
+    }
+}
+
+/**
+ * 阶段三：把站点写入语句追加进提交列表。
+ * 包含「新建」（INSERT）与「就地更新」（UPDATE，保住 id 不丢星标/标签）。
+ */
+function writeSites(ctx: ImportContext, commit: D1PreparedStatement[]): void {
+    const api = ctx.api;
+    for (const s of ctx.sitePlan) {
+        commit.push(
+            api.db
+                .prepare(
+                    `INSERT INTO sites (id, group_id, name, url, icon, description, notes, username, password, order_num, user_id)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+                )
+                .bind(
+                    s.id,
+                    s.groupId,
+                    s.name,
+                    s.url,
+                    s.icon,
+                    s.description,
+                    s.notes,
+                    s.username,
+                    s.password,
+                    s.order_num,
+                    api.currentUserId
+                )
+        );
+    }
+    // 站点「就地更新」：落在备份里那条较新的已存在卡片上（不换 id，星标 / 标签不丢）。
+    // 走 MAT 更新而不是「删了重建」—— 重建会把 id 换了，本地星标与访问统计全跟着失效。
+    for (const s of ctx.siteUpdatePlan) {
+        commit.push(
+            api.db
+                .prepare(
+                    `UPDATE sites SET group_id = ?, name = ?, url = ?, icon = ?,
+                     description = ?, notes = ?, username = ?, password = ?,
+                     order_num = ?, updated_at = CURRENT_TIMESTAMP
+                     WHERE id = ?${api.scopeSql(true)}`
+                )
+                .bind(...api.scopeParams([
+                    s.groupId, s.name, s.url, s.icon,
+                    s.description, s.notes, s.username, s.password,
+                    s.order_num, s.id,
+                ]))
+        );
+    }
+}
+
+/**
+ * 阶段四：把配置写入语句追加进提交列表。
+ * ⚠️ 末尾的 WHERE excluded.value <> '' 是有意为之：
+ * 备份里「没设置过」的配置是空串（如 site.iconApi: ""），
+ * 增量导入不能拿一个空值把现有配置清掉 —— 那是「清空数据」的一种形态。
+ * 反过来，这份备份里确实没写的 key 根本不会走到这里，现有配置照样不受影响。
+ */
+function writeConfigs(ctx: ImportContext, commit: D1PreparedStatement[]): void {
+    const api = ctx.api;
+    for (const c of ctx.configPlan) {
+        commit.push(
+            c.uid === null
+                ? api.db
+                      .prepare("INSERT INTO configs (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=CURRENT_TIMESTAMP WHERE excluded.value <> ''")
+                      .bind(c.key, c.value)
+                : api.db
+                      .prepare("INSERT INTO user_configs (user_id, key, value, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP) ON CONFLICT(user_id, key) DO UPDATE SET value=excluded.value, updated_at=CURRENT_TIMESTAMP WHERE excluded.value <> ''")
+                      .bind(c.uid, c.key, c.value)
+        );
+    }
+}
+
+/**
+ * 阶段五：重建派生索引（FTS / 视图等）。
+ *
+ * 当前 importData 不维护独立的全文检索或派生索引表 —— 站内搜索走其它机制，
+ * 站点/分组/笔记的写入即最终状态，没有「写入后再 rebuild」这一步。
+ * 因此这是一个**空占位阶段**：保留「事后重建」的扩展点，但不改变任何运行时行为，
+ * 也不引入原实现没有的语句或产物。
+ */
+function rebuildIndexes(_ctx: ImportContext, _commit: D1PreparedStatement[]): void {
+    // 故意为空：见上方说明。
+}
+
 
 // 备份文件格式版本号。
 // 1.3：全站共享配置从 configs 拆到 sharedConfigs（且只有所有者导出时才带），

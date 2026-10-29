@@ -22,6 +22,7 @@ import GroupCard from "./GroupCard";
 import SiteCard from "./SiteCard";
 import SiteListEmptyState from "./SiteListEmptyState";
 import { groupAccent } from "../utils/groupColor";
+import { dndAccessibility } from "./dndA11y";
 
 export interface SiteListBodyProps {
     sortMode: SortMode;
@@ -111,6 +112,13 @@ export default function SiteListBody({
     onClearSearch,
     onClearFilters,
 }: SiteListBodyProps) {
+    // 读屏播报用的「id → 中文名」映射：分组排序模式用分组名，站点排序模式用站点名。
+    const groupDndItems = groups.map(group => ({ id: group.id.toString(), label: group.name }));
+    const siteDndItems = groups.flatMap(group => [
+        { id: `group-${group.id}`, label: group.name },
+        ...group.sites.map((site, index) => ({ id: `site-${site.id || index}`, label: site.name })),
+    ]);
+
     return (
         <Box
             sx={{
@@ -123,6 +131,7 @@ export default function SiteListBody({
                     sensors={sensors}
                     collisionDetection={closestCenter}
                     onDragEnd={onGroupDragEnd}
+                    accessibility={dndAccessibility(groupDndItems)}
                 >
                     <SortableContext
                         items={groups.map(group => group.id.toString())}
@@ -157,6 +166,7 @@ export default function SiteListBody({
                     onDragOver={onSiteDragOver}
                     onDragEnd={onSiteDragEnd}
                     onDragCancel={onSiteDragCancel}
+                    accessibility={dndAccessibility(siteDndItems)}
                 >
                     <Stack spacing={5}>
                         {groups.map(group => (

@@ -11,6 +11,7 @@ import { decryptSecretDeep, encryptSecret } from "../crypto";
 import { BootstrapData, Config, Group, Site, SiteBatchDeleteResult, SiteOrderUpdateResult } from "../types";
 import type { D1PreparedStatement } from "../schema";
 import { tombstoneStamp } from "./internals";
+import { logger } from "../../../shared/logger";
 
 /** 随删除事务一起落库的审计条目（不传就不写审计） */
 export interface AuditEntry {
@@ -285,7 +286,7 @@ export const dataImpl: DataApi = {
             return { deleted: [...new Set(deleted)], since: cursor };
         } catch (error) {
             // 表不存在（老库还没迁上来）不该让同步端点 500：退化成「没有删除」
-            console.error("读取站点删除墓碑失败:", error);
+            logger.error("读取站点删除墓碑失败:", { err: error, component: "data" })
             return { deleted: [], since: cursor };
         }
     },
@@ -727,12 +728,12 @@ export const dataImpl: DataApi = {
             }
 
             if (failed.length > 0) {
-                console.warn(`批量更新站点排序：${failed.length} 条未生效（id: ${failed.join(",")}）`);
+                logger.warn(`批量更新站点排序：${failed.length} 条未生效（id: ${failed.join(",")}）`, { component: "data" })
             }
             return { success: failed.length === 0, updated, failed };
         } catch (error) {
             // 整批挂了：本批和后面还没提交的都算失败，已提交的按已生效的算
-            console.error("批量更新站点排序失败:", error);
+            logger.error("批量更新站点排序失败:", { err: error, component: "data" })
             const rest = siteOrders.slice(updated.length + failed.length).map(item => item.id);
             return { success: false, updated, failed: [...failed, ...rest] };
         }

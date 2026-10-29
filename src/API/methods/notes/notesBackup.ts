@@ -19,6 +19,7 @@ import { segmentCJK, FTS_CONTENT_LIMIT } from "../../../utils/ftsQuery";
 import { sqlNow } from "../../../utils/sqlTime";
 import { normalizeUrl } from "../../../utils/url";
 import { notesSnapshotFingerprint } from "./notesShared";
+import { logger } from "../../../../shared/logger";
 
 export const backupMethods: Pick<NotesApi,
     "exportNotesData" | "notesChanges" | "importNotesData"> = {
@@ -144,7 +145,7 @@ export const backupMethods: Pick<NotesApi,
                     purged = row?.n ?? 0;
                 } catch (error) {
                     // 墓碑表缺失（迁移还没跑到）只影响「彻底删除」的感知，不算致命
-                    console.error("读取笔记墓碑失败:", error);
+                    logger.error("读取笔记墓碑失败:", { err: error, component: "notesBackup" })
                 }
                 notesChanged = updated + purged;
                 // 没变更时 ids 一定是空的（同一个 WHERE），不必再判一次计数
@@ -465,7 +466,7 @@ export const backupMethods: Pick<NotesApi,
                         await this.db.batch(commitStatements.slice(i, i + COMMIT_CHUNK));
                     }
                 } catch (error) {
-                    console.error("导入提交失败（部分已写入）:", error);
+                    logger.error("导入提交失败（部分已写入）:", { err: error, component: "notesBackup" })
                     stats.warning =
                         "部分数据未能写入，重新导入即可续传（相同笔记按「文件较新才覆盖」去重，不会重复建）";
                     return stats;
@@ -503,7 +504,7 @@ export const backupMethods: Pick<NotesApi,
                         await this.db.batch(ftsStatements.slice(i, i + FTS_CHUNK));
                     }
                 } catch (error) {
-                    console.error("导入后重建全文索引失败:", error);
+                    logger.error("导入后重建全文索引失败:", { err: error, component: "notesBackup" })
                 }
             }
             return stats;
