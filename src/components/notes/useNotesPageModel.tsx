@@ -12,6 +12,7 @@ import { HEADER_CONTROL_H, HEADER_RADIUS } from "../../constants";
 import { type EditorDraft } from "../../hooks/useEditorTools";
 import { usePanelBreakpoint } from "../../hooks/usePanelBreakpoint";
 import { useScrollLock } from "../../hooks/useScrollLock";
+import { decideDraftSeed } from "./seedDraft";
 import { type AttachmentPreviewRequest } from "../../utils/attachmentPreview";
 import {
     seedAttachmentDimensions
@@ -327,14 +328,27 @@ export function useNotesPageModel({
 
     activeForSeedRef.current = active;
 
+    // 当前草稿「属于哪条笔记」。用来区分两种 content_truncated：
+    //   · 刚切到一条还没补全的笔记 → 必须把草稿清掉（否则 dirty 会把上一条的正文写过去）；
+    //   · 同一条笔记保存后、列表刷新回读成摘要态 → **绝不能清**，草稿里就是用户刚打的字。
+    // 2026-10-29 线上反馈「笔记写到一半会变成空的」正是后者：PUT 成功 → 列表刷新 →
+    // 这一行 content_truncated 变 true → 整篇草稿被清成 null，编辑器空白、字数归零，
+    // 而库里其实存得好好的（只是列表一直给摘要，补全文的时机又晚于这次清空）。
+    const seededNoteIdRef = useRef<number | null>(null);
+    // 草稿的镜像：种子 effect 里要判断「手上有没有正在编辑的草稿」，
+    // 但 draft 不能进依赖数组（每敲一个字就重跑，等于每次输入都去抢一次 seed）
+    const draftRef = useRef(draft);
+
+    draftRef.current = draft;
+
     useEffect(() => {
         const cur = activeForSeedRef.current;
         if (!cur) return;
-        if (cur.content_truncated) {
-            setDraft(null);
-            return;
-        }
-        setDraft({ title: cur.title || "", content: cur.content || "" });
+        const decision = decideDraftSeed(cur, seededNoteIdRef.current, draftRef.current);
+        if (decision.kind === "clear") setDraft(null);
+        else if (decision.kind === "set") setDraft(decision.draft);
+        // keep 时没有状态变化，只把「这份草稿属于哪条笔记」记下来供下次判断
+        seededNoteIdRef.current = cur.id ?? null;
     }, [active?.id, active?.content_truncated]);
 
     const readPosAccount = accountName ?? "";
@@ -662,9 +676,13 @@ export function useNotesPageModel({
         return () => { cancelAnimationFrame(raf); scroller.removeEventListener("scroll", update); };
     }, [outlineOpen, outline, pane]);
 
+    // ⚠️ 摘要态（content_truncated）下不比：列表给的是开头一段摘要，跟草稿比永远「不相等」，
+    // dirty 就会一直为真 → 自动保存每隔几秒往服务端写一次同一条笔记（写完又刷新回摘要态，循环）。
+    // 真正的改动不会因此丢掉：补全文回来后 active 变回全文，dirty 会重新算对并照常落盘。
     const dirty =
         !!active &&
         !!draft &&
+        !active.content_truncated &&
         (draft.title !== (active.title || "") || draft.content !== (active.content || ""));
 
     const save = useCallback(async () => {
