@@ -74,7 +74,8 @@ permissions:
 # 线上到底停在哪一份不可预测 —— 与「不看 CI 结论」是同一类错误（上线结果不可预测）。
 # ⚠️ group 用固定名而不是按 github.ref 分组：镜像是全局资源，不同 ref 也不该并行。
 # ⚠️ cancel-in-progress 必须为 false：发布被中途取消会留下 push-by-digest 的孤儿
-# digest，而 :latest 已经指的是哪一份也无法保证。部署线（deploy.yml）同样这么设。
+# digest，而 :latest 已经指的是哪一份也无法保证。deploy.yml（已降级为手动应急入口，
+# 见其文件头）同样这么设 —— 那条线不自动跑了，但一旦被手动用起来，约束还是一样。
 concurrency:
   group: docker-publish
   cancel-in-progress: false
@@ -82,7 +83,8 @@ concurrency:
 jobs:
   # 门禁：红着的 main 不许产出生产镜像。
   # 这段 run 脚本与 deploy.yml 的门禁是同一份判断（只把「不部署」的措辞换成「不发布
-  # 镜像」）—— 两条发布链路口径不一致，就等于在其中一条上留了个后门。
+  # 镜像」）。deploy.yml 现在只是手动应急入口，但**判断口径必须一致** —— 哪天出事故
+  # 用它兜底时，两个入口放行的标准不一样，就等于在应急通道上留了个后门。
   gate:
     runs-on: ubuntu-latest
     outputs:

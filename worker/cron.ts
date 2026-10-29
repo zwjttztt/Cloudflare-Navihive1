@@ -492,8 +492,9 @@ export async function runRetentionCleanup(api: SchedulerDB): Promise<void> {
  *     是否满 6.5 天」判定（shouldRunNavBackup，在 backupOneAccount 里按账号判）——
  *     2026-10-29 之前用的是「UTC 周一 02:00-02:59」的墙上时钟窗口，错过不补跑，
  *     线上真的漏了一整周（详见 cronLogic.ts 那段注释）；
- *   - 其它表达式（验证脚本的通配 "* * * * *"、历史上配过的每周触发器）：同样全量
- *     照跑 —— cron-e2e 每次触发都必须真的跑一遍导航备份。
+ *   - 与触发表式无关：哪条 cron 进来都逐账号检查一遍「距上次成功是否满 6.5 天」，
+ *     到点才传。cron-e2e 不再靠通配表达式绕过判定 —— 那条旁路本身就是「错过窗口
+ *     不补跑」看不见的原因 —— 改成把 webdav.lastAutoBackupAt 往回拨 8 天来模拟。
  * cronExpr 缺省（验证脚本直调）同理。
  */
 export const HOURLY_CRON = "0 * * * *";

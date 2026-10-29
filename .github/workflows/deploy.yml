@@ -1,44 +1,40 @@
-# 部署流水线 —— 只有「CI 全绿」的 commit 才允许发布到 Cloudflare Workers。
+# 部署流水线（**手动应急入口**）—— Cloudflare Workers 的常态部署不在这里。
 #
-# 为什么要单独一份：Workers Builds（Cloudflare 侧的 GitHub 自动构建）在 2026-10-02 起
-# 报 "The build token selected for this build has been deleted or rolled"，
-# 也就是它存的构建令牌失效了，推送不再自动部署。那条要在 Cloudflare Dashboard 里修，
-# 仓库这边改不了。这份流水线让部署重新掌握在自己手里，不依赖那个令牌。
+# 常态路径：生产由 Cloudflare Workers Builds 构建并部署（Dashboard 里连着 GitHub，
+# push 即构建部署）。所以这份流水线**不再自动触发**，只在需要人工兜底时手动跑一次。
 #
-# 触发方式（两种，都要过同一道 CI 门禁）：
+# 为什么删掉 workflow_run 自动触发（2026-10-29）：
+#   那条自动线从加进来那天起就不可能成功。仓库里没有 CLOUDFLARE_API_TOKEN
+#   （2026-10-29 实测 `/actions/secrets` 返回空列表），于是最后一步
+#   `npx wrangler deploy` 必然失败 —— 每次推送都产出一条**注定红灯**的流水线。
+#   Deploy 已经连红 15 次以上没人发现。长期红灯会训练所有人对红色脱敏，那才是真正
+#   危险的地方：本次 P0 评审里另外三处「静默失效」是同一类病 —— 检查一直在跑，
+#   但从来没人真的看。与其留一条永远红的假门禁，不如明确降级成手动入口。
 #
-#  1) CI 跑完自动触发（workflow_run）
-#     · 只在结论为 success **且跑的是 main** 时才部署；
-#     · 部署的正是 CI 验证过的那个 commit（checkout 用 workflow_run.head_sha），
-#       不是「那一刻 main 的 HEAD」—— 否则 CI 绿了之后又有人推了一次，
-#       发布出去的就是没人验证过的那个 commit。
-#     以前这条链路既不跑测试也不看 CI 结论，一个 CI 红的 commit 可以被发布上线，
-#     这正是本次要补的洞。
+# 为什么保留手动入口、而不是整份删掉：
+#   2026-10-02 Cloudflare Workers Builds 的构建令牌失效过一次
+#   （"The build token selected for this build has been deleted or rolled"），
+#   当时唯一的补救手段就是手动 `npx wrangler deploy`。删掉这份文件等于把那次事故的
+#   应急通道一起删掉。留着的成本是零（不触发就不耗 CI 分钟），收益是出事时手里
+#   还有一把钥匙。
 #
-#  2) workflow_dispatch（手动，紧急入口）
-#     ⚠️ **不设后门**：手动触发时必须填 `ci_run_id`（那场 CI 运行的 ID），
-#     本流水线自己去查那次运行的结论，不是 success / 不是 main / 不是 CI 这个
-#     workflow —— 一律不部署。
-#     为什么不是「手动就放行」：手动触发时 `github.event.workflow_run` 是空的，
-#     拿不到任何 CI 结论，放行等于把刚补上的门禁又开一个洞，而且是最容易被
-#     顺手点开的那个洞。为什么不是「什么都不填也放行」：同上。
-#     为什么不是「填个布尔量勾确认」：布尔量只表示「操作者声称 CI 是绿的」，
-#     机器查一次结论的成本只有几秒，却能让手动发布和自动发布真正过同一道判断。
+# ⚠️ 用它之前必须先补 secret：CLOUDFLARE_API_TOKEN 不存在的话，手动跑同样死在
+#    最后一步（Settings → Secrets and variables → Actions）。
 #
-#  3) push 到 main：**刻意不接**。2026-10-02 13:52 起原本就停用了
-#     （仓库的 CLOUDFLARE_API_TOKEN secret 被清过），也不打算恢复 —— push 触发
-#     天生等不到 CI 结论，与上面的门禁冲突。要自动发布就走 1)。
+# 手动 ≠ 免检：触发时必须填 `ci_run_id`（那场 CI 运行的 ID），本流水线自己去查那次
+#   运行的结论 —— 结论不是 success / 分支不是 main / 不是 CI 这个 workflow，一律不
+#   部署。为什么不是「什么都不填也放行」：手动触发时拿不到任何 CI 结论，放行等于把
+#   刚补上的门禁又开一个洞，而且是最容易被顺手点开的那个。为什么不改成「勾一个布尔
+#   量确认」：布尔量只表示「操作者声称 CI 是绿的」，而机器查一次结论只要几秒。
 #
-# ⚠️ 部署前务必确认 CLOUDFLARE_API_TOKEN 这个 secret 存在
-#    （Settings → Secrets → Actions），否则最后一步必然失败。
+# 事实说明（2026-10-29 确认）：Cloudflare 这条线**目前没有 CI 门禁**。Workers
+#   Builds 是 push 即构建部署，不等 CI —— 实测 0ae2c189 那次 CI 是红的，Cloudflare
+#   上已经把它自动部署上去了。真要给这条线装门禁，只能在 Dashboard 里把 Workers
+#   Builds 的构建命令改成带测试的命令（如 `npm ci && npm run build && node
+#   script/unit-tests.mjs`），仓库这边改不了。
 name: Deploy
 
 on:
-  workflow_run:
-    # 这里必须是 CI workflow 的 **name**（ci.yml 顶上的 `name: CI`），不是文件名
-    workflows: ["CI"]
-    types: [completed]
-    branches: [main]
   workflow_dispatch:
     inputs:
       ci_run_id:
@@ -49,7 +45,7 @@ on:
         required: false
         default: ""
 
-# 默认令牌只有 contents: read；查 CI 运行结论需要 actions: read
+# 默认令牌只有 contents: read；手动门禁要靠 `gh run view` 查 CI 结论，需要 actions: read
 permissions:
   contents: read
   actions: read
@@ -65,55 +61,42 @@ jobs:
     steps:
       # 门禁本身独立成一步，红的时候 Actions 页面上一眼能看到「是门禁拦下的」，
       # 而不是让人去猜是构建挂了还是部署挂了。
-      - name: 门禁：确认 CI 结论为 success，并取到要发布的 commit
+      #
+      # 只剩手动触发这一条路（workflow_run 已于 2026-10-29 删除），所以这里**不做
+      # 自动/手动分支判断**：一条路径、一种判断，评审的时候一眼看得完。原来那段
+      # `if [ -n "$RUN_CONCLUSION" ]` 现在是永远为假的死分支，留着它只会让下一个人
+      # 以为自动触发还在。
+      - name: 门禁：查 ci_run_id 那场 CI 的结论，并取到要发布的 commit
         id: gate
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
-          # workflow_run 触发时才有值；workflow_dispatch 时全为空串
-          RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
-          RUN_BRANCH: ${{ github.event.workflow_run.head_branch }}
-          RUN_ID: ${{ github.event.workflow_run.id }}
-          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
           INPUT_RUN_ID: ${{ inputs.ci_run_id }}
         run: |
           set -euo pipefail
 
-          if [ -n "$RUN_CONCLUSION" ]; then
-            echo "触发方式：CI 运行 $RUN_ID 完成，结论 $RUN_CONCLUSION"
-            if [ "$RUN_BRANCH" != "main" ]; then
-              echo "::error::CI 跑的分支是 $RUN_BRANCH，不是 main —— 不部署"
-              exit 1
-            fi
-            if [ "$RUN_CONCLUSION" != "success" ]; then
-              echo "::error::CI 结论是 $RUN_CONCLUSION —— 不部署。CI 红着的 commit 不许上线。"
-              exit 1
-            fi
-            sha="$RUN_SHA"
-          else
-            echo "触发方式：手动（workflow_dispatch）"
-            if [ -z "$INPUT_RUN_ID" ]; then
-              echo "::error::没填 ci_run_id —— 手动发布也必须先有一场成功的 CI，填它的运行 ID。"
-              exit 1
-            fi
-            json=$(gh run view "$INPUT_RUN_ID" --repo "$REPO" --json conclusion,headBranch,headSha,workflowName)
-            echo "查到 CI 运行 $INPUT_RUN_ID：$json"
-            wf=$(echo "$json" | jq -r .workflowName)
-            branch=$(echo "$json" | jq -r .headBranch)
-            conclusion=$(echo "$json" | jq -r .conclusion)
-            sha=$(echo "$json" | jq -r .headSha)
-            if [ "$wf" != "CI" ]; then
-              echo "::error::$INPUT_RUN_ID 是 $wf 的运行，不是 CI —— 不部署"
-              exit 1
-            fi
-            if [ "$branch" != "main" ]; then
-              echo "::error::CI($INPUT_RUN_ID) 跑的分支是 $branch，不是 main —— 不部署"
-              exit 1
-            fi
-            if [ "$conclusion" != "success" ]; then
-              echo "::error::CI($INPUT_RUN_ID) 结论是 $conclusion —— 不部署"
-              exit 1
-            fi
+          echo "触发方式：手动（workflow_dispatch）"
+          if [ -z "$INPUT_RUN_ID" ]; then
+            echo "::error::没填 ci_run_id —— 手动发布也必须先有一场成功的 CI，填它的运行 ID。"
+            exit 1
+          fi
+          json=$(gh run view "$INPUT_RUN_ID" --repo "$REPO" --json conclusion,headBranch,headSha,workflowName)
+          echo "查到 CI 运行 $INPUT_RUN_ID：$json"
+          wf=$(echo "$json" | jq -r .workflowName)
+          branch=$(echo "$json" | jq -r .headBranch)
+          conclusion=$(echo "$json" | jq -r .conclusion)
+          sha=$(echo "$json" | jq -r .headSha)
+          if [ "$wf" != "CI" ]; then
+            echo "::error::$INPUT_RUN_ID 是 $wf 的运行，不是 CI —— 不部署"
+            exit 1
+          fi
+          if [ "$branch" != "main" ]; then
+            echo "::error::CI($INPUT_RUN_ID) 跑的分支是 $branch，不是 main —— 不部署"
+            exit 1
+          fi
+          if [ "$conclusion" != "success" ]; then
+            echo "::error::CI($INPUT_RUN_ID) 结论是 $conclusion —— 不部署"
+            exit 1
           fi
 
           echo "sha=$sha" >> "$GITHUB_OUTPUT"

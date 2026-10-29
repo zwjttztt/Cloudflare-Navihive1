@@ -6,6 +6,14 @@
 // 「定时任务真的会调起备份、真的会滚动清理自己那一份、真的不动手动备份」
 // 这三件事全靠人肉记着。
 //
+// ⚠️ 到点判定（2026-10-29 改）：导航页自动备份现在按「距上次**成功**的自动备份
+// 满 6.5 天」才跑（worker/cronLogic.ts 的 shouldRunNavBackup），**不再是**墙上
+// 时钟窗口。所以本脚本不能靠「多触发几次」拿多份备份 —— 同一秒里连触发多次，
+// 后几次本来就该跳过。要它再备一次，必须把 `webdav.lastAutoBackupAt` 往回拨
+// （见下面的 backdate）。原来能连触发连备份，靠的是 isNavBackupDue 里
+// `cronExpr !== HOURLY_CRON` 的放行旁路，那条旁路是给测试开的洞，
+// 也正是「错过窗口不补跑」这个线上 bug 一直看不见的原因。
+//
 // 用法：npm run e2e:cron   （需要先 npm run build）
 
 import fs from "node:fs";
@@ -159,6 +167,41 @@ const waitFor = async (predicate, label, timeoutMs = 30_000) => {
     return false;
 };
 
+/** GET /api/configs/:key 的形状是 `{ key, value }`；老版本曾把值包在 data 里，两种都认 */
+const configValue = res => {
+    const raw = res.json?.value ?? res.json?.data?.value ?? "";
+    return typeof raw === "string" ? raw : "";
+};
+
+/**
+ * 轮询等某个配置项变成非空。
+ *
+ * 为什么不能紧跟「上传成功」直接读一次：`setConfig` 是在 PUT 之后才写的，
+ * 而上传断言一通过我们就立刻发 GET，读到的可能是空。轮询把这段窗口吃掉，
+ * 避免 e2e 因为时序偶发假红（e2e 假红比没有 e2e 更糟：没人会再信它）。
+ */
+const waitConfigValue = async (key, timeoutMs = 15_000) => {
+    const deadline = Date.now() + timeoutMs;
+    let value = "";
+    while (Date.now() < deadline) {
+        value = configValue(await call(`configs/${key}`));
+        if (value) return value;
+        await new Promise(r => setTimeout(r, 200));
+    }
+    return value;
+};
+
+// 把「上次成功的自动备份时间」拨到 N 天前。
+// 为什么必须这么干：到点判定现在是「距上次成功满 6.5 天就跑」，同一秒里连触发
+// 多次，后几次本来就该跳过。以前每次触发都能备份，靠的是 isNavBackupDue 里
+// `cronExpr !== HOURLY_CRON` 的放行 —— 那条旁路是给测试开的，也正是「错过窗口
+// 不补跑」这个线上 bug 一直看不见的原因。生产代码不再留测试后门，改成测试自己拨时间。
+const backdate = async days => {
+    const at = new Date(Date.now() - days * 86400_000).toISOString();
+    const res = await call("configs/webdav.lastAutoBackupAt", "PUT", { value: at });
+    check(`把上次自动备份时间拨到 ${days} 天前`, res.status < 400, `status=${res.status}`);
+};
+
 // 自动备份只留最新一份（跑完就把上一份删了），所以**不能**用「网盘上有几个
 // auto 文件」判断跑没跑 —— 它永远是 1。数 PUT 次数才对。
 const autoPuts = () =>
@@ -189,15 +232,52 @@ check(
     `实际 ${JSON.stringify(lastAuto.json)?.slice(0, 120)}`
 );
 
-// ---------------- 第二次：滚动清理自己那一份 ----------------
+// P0 修复的核心：旧代码只写 webdav.lastBackupAt（手动备份也会刷它），
+// 所以「自动备份停了」在界面上完全看不出来。现在必须单独留一份自动备份的时间。
+const autoAtValue = await waitConfigValue("webdav.lastAutoBackupAt");
+const writtenAt = Date.parse(autoAtValue);
+check(
+    "库里记下了这次自动备份的时间（界面靠它判断自动备份是否过期）",
+    Number.isFinite(writtenAt) && Math.abs(Date.now() - writtenAt) < 5 * 60_000,
+    `实际 ${JSON.stringify(autoAtValue)?.slice(0, 120)}`
+);
 
+// ---------------- 第二次：6.5 天没到，不该再备份 ----------------
+//
+// 这是新语义的核心。用反证守它：再触发一次，等 6 秒（第一次 PUT 是触发后 <1 秒
+// 发出的，6 秒足够排除「只是慢」），PUT 次数必须还是 1。
+// 光看 PUT 次数不够 —— 万一备份跑了、但在上传之前就挂了，次数同样不会涨。
+// 所以再比一次 lastAutoBackupAt 有没有被改写：这个键**只在成功之后**才写，
+// 没变就说明这一轮没有产生新的成功记录。两条合起来才能排除「又跑了一遍」。
+const beforeSkip = autoAtValue;
 await trigger();
-const secondArrived = await waitFor(() => autoPuts().length >= 2, "第二次自动备份上传");
-check("再触发一次会再传一份", secondArrived, autoFiles().join(" | "));
+await new Promise(r => setTimeout(r, 6_000));
+check(
+    "6.5 天没到再触发不会重复备份（不再是每次触发一份）",
+    autoPuts().length === 1,
+    `PUT 次数 ${autoPuts().length}`
+);
+const afterSkip = await call("configs/webdav.lastAutoBackupAt");
+check(
+    "跳过的触发没有改写「上次自动备份时间」（没有产生新的成功记录）",
+    configValue(afterSkip) === beforeSkip,
+    `前 ${beforeSkip} / 后 ${configValue(afterSkip)}`
+);
+
+// ---------------- 第三次：满 6.5 天，补上一份并滚动清理 ----------------
+
+await backdate(8);
+await trigger();
+const secondArrived = await waitFor(() => autoPuts().length >= 2, "满 6.5 天后的自动备份上传");
+check(
+    "距上次满 6.5 天再触发会补上一份（错过窗口不再永久丢失）",
+    secondArrived,
+    autoFiles().join(" | ")
+);
 
 const deletes = dav.requests.filter(r => r.startsWith("DELETE"));
 check(
-    "第二次备份后把上一份自动备份删掉了（自动备份只留最新一份）",
+    "补备份后把上一份自动备份删掉了（自动备份只留最新一份）",
     deletes.some(r => r.includes(firstName)),
     `DELETE 记录：${deletes.join(" | ") || "（没有 DELETE）"}`
 );
@@ -208,6 +288,10 @@ const manual = await call("webdav/upload", "POST", {});
 const manualName = manual.json?.data?.filename ?? "";
 check("上传一份手动备份", manual.json?.success === true && manualName.startsWith("navihive-backup-"), manualName);
 
+// 先回拨时间：上一次自动备份刚发生，不拨的话这次触发会被「6.5 天没到」正确跳过，
+// 后面两条断言就变成在测空气了。手动备份不会改写 lastAutoBackupAt（这正是 P0 修的东西），
+// 所以这里拨的是自动备份的时间轴，与手动那份无关。
+await backdate(8);
 await trigger();
 await waitFor(() => autoPuts().length >= 3, "第三次自动备份上传", 30_000);
 
@@ -227,14 +311,17 @@ check(
 // pruneAutoBackups 有两条路：
 //   - 库里有 webdav.lastAutoBackup 记录 → 直接删那一份（快路径，**不做文件名判断**）；
 //   - 没记录（老库升级 / 记录被清过）→ 列目录，靠 isAutoBackupFileName 挑。
-// 上面三次触发全走的快路径，也就是说「手动备份不会被删」这条规则真正生效的
+// 上面几次真备份全走的快路径，也就是说「手动备份不会被删」这条规则真正生效的
 // 那段代码一次都没跑到 —— 把记录清掉再触发一次，才是这条规则的真覆盖。
 // 用 DELETE 而不是 PUT 空串：PUT 会被 validateConfig 按「配置值不能为空」挡下（400），
 // 只有真删掉记录，stored["webdav.lastAutoBackup"] 才会是 undefined。
 const cleared = await call("configs/webdav.lastAutoBackup", "DELETE");
 check("删掉 lastAutoBackup 记录，逼出列目录兜底分支", cleared.status < 400, `status=${cleared.status}`);
 
+// 顺序不能动：先删记录（逼出兜底分支）→ 再回拨时间（让这次真的跑）→ 最后触发。
+// 少任何一步都会静默变成「触发了但跳过」，断言跟着白绿。
 const beforeFallback = autoPuts().length;
+await backdate(8);
 await trigger();
 await waitFor(() => autoPuts().length >= beforeFallback + 1, "第四次自动备份上传", 30_000);
 
