@@ -26,8 +26,9 @@ type UseSiteSettingsParams = {
     onMenuClose: () => void;
     /** 改完管理员凭据后服务端会把令牌版本 +1，当前令牌立刻失效 —— 踢回登录页 */
     onLogout: () => void;
-    /** 数据层错误提示：踢回登录页后要说明「为什么被踢」 */
-    onDataError: (message: string) => void;
+    // ⚠️ 这里原来有个 onDataError（App 传 useSites 的 setError）：改完凭据要提示
+    // 「为什么被踢回登录页」，但那句提示一旦写进 error，整个站点列表会被换成一块
+    // 没有任何文字的空白。2026-10-29 起流程提示统一走 notify，error 只留「加载失败」。
 
     configs: Record<string, string>;
     setConfigs: Dispatch<SetStateAction<Record<string, string>>>;
@@ -57,7 +58,6 @@ export function useSiteSettings({
     onError,
     onMenuClose,
     onLogout,
-    onDataError,
     configs,
     setConfigs,
     tempConfigs,
@@ -138,7 +138,8 @@ export function useSiteSettings({
             setOpenAccount(false);
             clearRememberedLogin(); // 「记住登录」里存的是旧账号密码，留着只会误导
             onLogout();
-            onDataError("账号或密码已更新，请使用新凭据重新登录");
+            // 走提示通道：这是「为什么被踢」的说明，不是站点数据加载失败
+            notify("账号或密码已更新，请使用新凭据重新登录", "info");
         } catch (error) {
             reportError(error, { source: "site-credentials-save" });
             onError("保存账号密码失败: " + (error as Error).message);

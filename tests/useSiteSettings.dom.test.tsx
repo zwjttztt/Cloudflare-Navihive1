@@ -22,7 +22,6 @@ type Log = {
     notify: Array<{ text: string; level?: string }>;
     errors: string[];
     logout: number;
-    dataError: string[];
     menuClose: number;
     setConfigsCalls: Array<Record<string, string>>;
     updateAuthCalls: Array<{ username: string; password: string; currentPassword: string }>;
@@ -67,7 +66,6 @@ function Harness({
         onError: msg => void log.errors.push(msg),
         onMenuClose: () => void log.menuClose++,
         onLogout: () => void log.logout++,
-        onDataError: msg => void log.dataError.push(msg),
         configs,
         setConfigs,
         tempConfigs,
@@ -140,8 +138,7 @@ function makeApi(overrides: Partial<SettingsApi> = {}) {
         notify: [],
         errors: [],
         logout: 0,
-        dataError: [],
-        menuClose: 0,
+            menuClose: 0,
         setConfigsCalls: [],
         updateAuthCalls: [],
         openConfig: false,
@@ -288,9 +285,10 @@ test("保存凭据成功：清掉「记住登录」并踢回登录页，且说�
         currentPassword: "oldpass",
     });
     assert.equal(log.logout, 1, "改完凭据服务端令牌版本 +1，必须踢回登录页");
+    // 走提示通道（原来是写进数据层 error，那会把整个站点列表换成一片空白）
     assert.ok(
-        log.dataError.some(m => m.includes("重新登录")),
-        `要说明为什么被踢，实际 ${JSON.stringify(log.dataError)}`
+        log.notify.some(n => n.text.includes("重新登录")),
+        `要说明为什么被踢，实际 ${JSON.stringify(log.notify)}`
     );
     assert.equal(
         localStorage.getItem("navihive:rememberedLogin"),

@@ -38,8 +38,14 @@ interface BackupDialogProps {
     autoBackup?: boolean;
     /** 上一次备份的时间（ISO 字符串） */
     lastBackupAt?: string;
-    /** 上次备份详情 JSON（webdav.lastBackupInfo）：体积 + 耗时 + 自动/手动 */
+    /** 上次备份详情 JSON（webdav.lastBackupInfo）：体积 + 耗时 + 自动/手动 + 是否加密 */
     lastBackupInfo?: string;
+    /**
+     * 最近一次**自动**备份成功的时间（webdav.lastAutoBackupAt，ISO）。
+     * 与 lastBackupAt 分开：后者只记「最后一次」，手动备份也会覆盖它 ——
+     * 只看它无法判断定时备份是不是已经死了。
+     */
+    lastAutoBackupAt?: string;
     onToggleAutoBackup?: (enabled: boolean) => Promise<void>;
     onBuildExportData: () => ExportData;
     /** 传了口令就用它加密备份文件再下载，不传则下载明文 JSON（兼容老备份） */
@@ -116,6 +122,7 @@ export default function BackupDialog({
     autoBackup = true,
     lastBackupAt = "",
     lastBackupInfo = "",
+    lastAutoBackupAt = "",
     onToggleAutoBackup,
     onBuildExportData,
     onDownloadLocal,
@@ -597,6 +604,7 @@ export default function BackupDialog({
                         onToggleAutoBackup={onToggleAutoBackup}
                         lastBackupAt={lastBackupAt}
                         lastBackupInfo={lastBackupInfo}
+                        lastAutoBackupAt={lastAutoBackupAt}
                         remoteFiles={remoteFiles}
                         includeCredentials={includeCredentials}
                         onIncludeCredentialsChange={onIncludeCredentialsChange}

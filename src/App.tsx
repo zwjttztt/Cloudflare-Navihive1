@@ -147,6 +147,11 @@ import {
 } from "./appDefaults";
 import { setUndoAccountUid } from "./utils/undoPersist";
 import SiteListBody from "./components/SiteListBody";
+// 加载失败面板：**必须静态引入**，不能 lazy —— 它出现的场合恰恰是「请求没成功」，
+// 这时候再去下载一个 chunk，等于让错误提示也跟着转圈（而且那个 chunk 一样可能下不来）。
+// 体积上它很便宜：一个容器 + 两行字 + 一个按钮，纯 DOM + 共用的面板样式
+// （见 components/panelStyles.ts），不吃额外的 MUI 组件。
+import SiteListErrorState from "./components/SiteListErrorState";
 // 标签筛选栏只在「有用过的标签 / 检出失效链接 / 正在按星标筛」时才出现，
 // 首屏绝大多数时候渲染它也是白占体积 —— 走 lazy，块按需下载。
 const TagBar = lazy(() => import("./components/TagBar"));
@@ -220,7 +225,6 @@ function App() {
         setGroups,
         loading,
         error,
-        setError,
         fetchData,
         upsertSiteLocally,
         upsertSitesLocally,
@@ -234,6 +238,16 @@ function App() {
         // 但它是幂等的，重复进入只会命中第一行的 return。
         onAuthFail: handleAuthFailure,
     });
+
+    /**
+     * 错误面板上的「重试」：重新走一次 bootstrap。
+     *
+     * 不传 silent —— 重试就该把骨架屏举起来，让用户看到「在取」；
+     * 成功时 useSites 会顺手把 error 清掉，面板自己退场。
+     */
+    const handleRetryLoad = () => {
+        void fetchData();
+    };
 
     // bootstrap 里「分组」之外的落地：配置、链接健康、星标 / 标签跨端合并。
     // 用函数声明（会被提升），这样上面 useSites 调用时就能引用它，而它内部用到的
@@ -727,7 +741,6 @@ function App() {
         notify,
         onError: handleError,
         onMenuClose: handleMenuClose,
-        onDataError: setError,
         fetchData,
         onCloseSnackbar: handleCloseSnackbar,
         onSwitchAccount: switchAccount,
@@ -1157,7 +1170,6 @@ function App() {
         onError: handleError,
         onMenuClose: handleMenuClose,
         onLogout: handleLogout,
-        onDataError: setError,
         configs,
         setConfigs,
         tempConfigs,
@@ -1954,13 +1966,19 @@ function App() {
                         onBuildSemanticIndex={() => void buildSemanticIndex(true)}
                     />
 
-                    {loading && (
+                    {/* 三态，顺序是 error → loading → 列表。
+                        ⚠️ error 必须排在最前面：它是「真的加载失败」的唯一信号
+                        （见 useSites 的 catch）。排在 loading 之后的话，重试时
+                        loading 与 error 会同时为真，错误面板和骨架屏一起画出来。
+                        以前这里是 `!loading && !error`，而 error 恒为 null ——
+                        失败后 groups 为空，用户看到的是「还没有任何分组」。 */}
+                    {error ? (
+                        <SiteListErrorState message={error} onRetry={handleRetryLoad} />
+                    ) : loading ? (
                         <ChunkBoundary>
                             <SiteListSkeleton />
                         </ChunkBoundary>
-                    )}
-
-                    {!loading && !error && (
+                    ) : (
                         // ⚠️ 必须常驻（不能传 when 之类的条件）：它得在**卡片渲染崩掉的那一刻**
                         // 已经在树上，才接得住异常。包在这一层而不是更外层，是因为外层还有
                         // 头部 / 搜索栏不该跟着一起消失 —— 用户的「去记事本」入口就在头部。
@@ -2204,6 +2222,10 @@ function App() {
                         autoBackup={configs[`${WEBDAV_CONFIG_PREFIX}autoBackup`] !== "false"}
                         lastBackupAt={configs[`${WEBDAV_CONFIG_PREFIX}lastBackupAt`] || ""}
                         lastBackupInfo={configs[`${WEBDAV_CONFIG_PREFIX}lastBackupInfo`] || ""}
+                        // 「最近一次**自动**备份成功」的时间：定时任务写、界面读。
+                        // 单独一个键是因为 lastBackupAt 会被手动备份覆盖 ——
+                        // 只看它的话，自动备份死了也看不出来（线上真实踩过）。
+                        lastAutoBackupAt={configs[`${WEBDAV_CONFIG_PREFIX}lastAutoBackupAt`] || ""}
                         onToggleAutoBackup={handleToggleAutoBackup}
                         onBuildExportData={buildExportData}
                         onDownloadLocal={handleDownloadLocal}

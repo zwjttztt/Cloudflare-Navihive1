@@ -66,6 +66,18 @@ export function useSites(deps: UseSitesDeps) {
         deps.onRemoteExtras(data);
     };
 
+    /**
+     * 取一次 bootstrap。
+     *
+     * `error` 只有**一个**语义：真的加载失败了（见下面 catch）。以前它恒为 null，
+     * 于是 App 里 `!loading && !error` 这道守卫变成死条件 —— bootstrap 失败后
+     * groups 为空，用户看到的是「还没有任何分组」，会以为自己几百个网站没了。
+     * 现在失败就写 error，由 App 渲染错误面板（带重试）。
+     *
+     * 反向的坑也一并堵上：别的流程提示（注销 / 登出 / 改密码）**不再往这里写**
+     * （原来 App 把 setError 当 onDataError 传给两个 hook，那些提示会让整个站点列表
+     * 消失且页面上一个字都没有）。流程提示走 notify。
+     */
     const fetchData = async ({ silent = false }: { silent?: boolean } = {}): Promise<boolean> => {
         // 若本次是「缓存已垫底后的首次取数」，自动静默：骨架屏保持隐藏，不被重新举起。
         const fromCache = paintedFromCacheRef.current;
@@ -82,11 +94,18 @@ export function useSites(deps: UseSitesDeps) {
             applyRemoteData(data);
             // 留一份快照，下次打开先用它渲染，不等这个请求回来
             writeBootstrapCache(data);
+            // 成功即清掉上一次的失败：重试成功后错误面板必须自己退场，
+            // 否则用户会盯着「加载失败」看一份刷好的数据
+            setError(null);
             return true;
         } catch (err) {
             const message = err instanceof Error ? err.message : "未知错误";
             if (!effectiveSilent) {
                 deps.onError("加载数据失败: " + message);
+                // 整页错误：让 App 渲染错误面板（而不是空数据）。
+                // silent（缓存已垫底后的静默刷新）**不吃这条** —— 那时页面上
+                // 有旧数据可看，把整页换成错误面板是倒退，只弹 toast 就够。
+                setError(message);
             }
             // 如果因为认证问题导致加载失败，处理认证状态。
             // 判据用 ApiError 的 code / HTTP 401，不再拿 message 去 includes —— 这条

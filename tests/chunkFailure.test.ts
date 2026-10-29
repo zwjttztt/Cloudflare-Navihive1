@@ -17,18 +17,26 @@ test("离线 + 块没取到：说清楚为什么打不开，且不给重试", ()
     assert.match(text.hint, /联网/);
 });
 
-test("在线 + 块没取到：给重试，并指向「站点刚更新」这个真原因", () => {
+test("在线 + 块没取到：给按钮，并指向「站点刚更新」这个真原因", () => {
     const text = describeChunkFailure(false, true);
     assert.equal(text.retryable, true);
     assert.match(text.hint, /更新|刷新/);
     assert.doesNotMatch(text.hint, /检查网络/, "在线时不该叫人去查网络");
+    // 2026-10-29：按钮的动作是「刷页面」，文案必须跟着改。
+    // React.lazy 把失败的 import promise 永久缓存，说「重试会重新取一次」是骗人的
+    // —— 用户点一次、看到一模一样的错误，再点一次还是那个错误。
+    assert.match(text.hint, /刷新/, `要说明按钮会刷新页面，实际：${text.hint}`);
+    assert.doesNotMatch(text.hint, /重试/, `不该再许诺「重试」，实际：${text.hint}`);
 });
 
-test("不是块加载失败（弹窗自己渲染出错）：仍然给重试，但不说成网络问题", () => {
+test("不是块加载失败（弹窗自己渲染出错）：仍然给按钮，但不说成网络问题", () => {
     const text = describeChunkFailure(false, false);
     assert.equal(text.retryable, true);
     assert.doesNotMatch(text.hint, /联网|网络/);
-    // 离线 + 业务逻辑报错：这时也还是可以重试的（代码已经在本地）
+    // 同样只能靠刷新：重挂子树对「渲染期已经抛过的那棵树」也一样救不回来
+    assert.match(text.hint, /刷新/, `要说明按钮会刷新页面，实际：${text.hint}`);
+    assert.doesNotMatch(text.hint, /重试/, "不该再许诺「重试」");
+    // 离线 + 业务逻辑报错：这时也还是可以点的（代码已经在本地）
     assert.equal(describeChunkFailure(true, false).retryable, true);
 });
 

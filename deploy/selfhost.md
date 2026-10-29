@@ -971,3 +971,143 @@ ss -tln | grep 8787        # 应只剩 127.0.0.1:8787
 - 服务按最小权限跑：systemd 段已给 `ProtectSystem=strict` + `ReadWritePaths`；
   Docker 镜像以 `node` 用户运行，只挂 `/app/data`，它只需要读代码目录、写 `data/`。
 - 数据库文件含密码哈希与加密凭据，备份按敏感数据对待（加密存放、传输用 TLS）。
+
+---
+
+## 十四、外部拨测与 5xx 告警
+
+### 为什么还需要它
+
+镜像里已经有一条 HEALTHCHECK（打容器内的 `127.0.0.1:8787/api/init`），但它能回答的问题
+只有一个：**容器里的 Node 进程还活着吗**。它和服务在同一个网络命名空间里，压根不经过
+DNS、Cloudflare、宿主反代、证书这几层 —— 也就是说下面这些事它全都看不见：
+
+- 宿主网络断了 / 网卡换了 IP；
+- Nginx 上游指错（就是第十一节那个「发卡」陷阱）；
+- 证书过期，443 直接握手失败；
+- 域名解析被改坏。
+
+而这几种故障的共同点是：**用户先知道，你后知道**。所以需要一条从机器外面打进来的拨测。
+
+### 脚本
+
+`script/uptime-check.mjs`，纯 Node（只用 `node:` 内置模块），不需要装任何东西。
+
+它做三件事：
+
+1. `GET /` —— 要求 200 **且**响应体里有 `id="root"`。
+   为什么要查挂载点：反代指错目录时 Nginx 的欢迎页也是 200，只判状态码会得到一条假绿。
+2. `GET /api/init` —— 要求 200（这条过了才说明后端与数据库都活着）。
+3. 可选 `--container navihive` —— 用 `docker logs --since <N>m` 翻最近 N 分钟的访问日志，
+   统计 `5xx` 的条数与占比，超过阈值（默认 5 条或 5%）算失败。
+   **抓不到日志（没装 docker / 容器名不对 / 日志不是 JSON）只跳过并说明，不判失败** ——
+   拨测自己误报一次，运维就会永久忽略它的告警。
+
+#### 这一条统计的是什么（以及它统计不到什么）
+
+日志是自托管 server 自己在 `res.on("finish")` 里打的一行 JSON（`server/entry.ts`），
+状态码字段是 `s`：
+
+```json
+{"t":"2026-10-29T13:06:47.575Z","rid":"5956a934","m":"GET","p":"/api/init","s":200,"ms":11,"ip":"127.0.0.1","ua":"node"}
+```
+
+脚本的做法是「找到行内第一个 `{` → 整行 `JSON.parse` → 取 `s` / `status` / `statusCode` /
+`status_code`」，所以 `docker logs -t` 那种时间戳前缀也不影响解析。
+
+**三个必须知道的局限**（不知道就会误判「5xx 一直是 0，说明后端很健康」）：
+
+- **只覆盖 API 请求**。静态资源（`/assets/*.js`、图片、HTML 外壳）**不逐条记**，
+  只有慢请求才单独打一条**纯文本**：`慢请求 GET /path 200 1234ms`。
+  这些纯文本行解析不出状态码，只会计入「未计入分母的行数」，不会稀释 5xx 占比。
+- **只存在于自托管（Docker / VPS）这条形态**。Cloudflare Workers 侧没有等价的访问日志，
+  那条形态要看 Cloudflare Dashboard 的 Analytics / Logpush。
+- 应用自己打的 JSON 日志（比如 `{"level":"error","msg":"db busy"}`）**没有状态码字段**，
+  同样不计入分母 —— 输出里会补一句「另有 N 行日志不是可解析的访问日志，未计入分母」，
+  看到这句先别慌，它不一定说明有问题。
+
+所以这一条能回答的是「**API 有没有在返 5xx**」；「页面能不能打开」由上面那两条探测负责。
+
+退出码：`0` 全通过 / `1` 有失败 / `2` 参数写错了（用法错误和站点故障必须能分开看）。
+
+### 先手动跑一次
+
+```bash
+cd /opt/navihive        # 换成你自己的部署目录
+node script/uptime-check.mjs --base https://<your-host>
+# 再带上容器日志那条
+node script/uptime-check.mjs --base https://<your-host> --container navihive
+```
+
+预期输出（健康时）：
+
+```
+[NavHive] 拨测通过 https://<your-host>
+- GET / 200，42ms
+- GET /api/init 200，6ms
+时间：2026-10-29T12:00:00.000Z
+```
+
+带上容器日志那条时，健康时的输出长这样（第三行是 5xx 统计，**不该是「跳过」**）：
+
+```
+[NavHive] 拨测通过 https://<your-host>
+- GET / 200，42ms
+- GET /api/init 200，6ms
+- 容器 navihive 最近 15 分钟：250 条请求，5xx 0 条（0.0%）
+时间：2026-10-29T12:00:00.000Z
+```
+
+自检「报警路径」是否通：故意打一个不存在的端口，应该拿到**退出码 1** 而不是一堆堆栈：
+
+```bash
+node script/uptime-check.mjs --base http://127.0.0.1:1 ; echo "exit=$?"
+# exit=1
+```
+
+### 每 5 分钟跑一次（crontab）
+
+```bash
+crontab -e
+```
+
+```cron
+# NaviHive 外部拨测：每 5 分钟一次，失败就 POST 到 ALERT_WEBHOOK
+*/5 * * * * cd /opt/navihive && ALERT_WEBHOOK='https://<your-webhook>' /usr/bin/node script/uptime-check.mjs --base https://<your-host> --container navihive >> /var/log/navihive-uptime.log 2>&1
+```
+
+几个坑，照抄时注意：
+
+- **路径要写全**：cron 的 `PATH` 很短，`node` 很可能不在里面（写 `/usr/bin/node` 或用
+  `command -v node` 查到的绝对路径）。
+- **`cd` 不能省**：脚本自身不依赖 cwd，但 `--container` 之外的东西（比如以后加的本地检查）
+  会以 cwd 为基准；统一 `cd` 到部署目录最省事。
+- **要读 `docker logs` 就得有权限**：把该用户加进 `docker` 组（或改用 root 的 crontab）。
+  没有权限时会走「跳过 5xx 统计」那条路，不会报红 —— 但你会一直看不到 5xx 指标。
+- **`>>` 到日志文件**：通过时的输出也有用（它记了耗时，能看出「越来越慢」这种趋势）。
+  用 logrotate 或 `journalctl` 收着，别让这个文件无限长。
+- 想改频率就改 `*/5`，别低于每 1 分钟：拨测本身也是流量，且告警会变得很吵。
+
+### `ALERT_WEBHOOK` 怎么填
+
+失败时脚本会往这个地址 `POST` 一段 JSON：
+
+```json
+{
+  "text": "[NavHive] 拨测失败 https://<your-host>\n✗ GET / 期望 200，实际 连不上（ECONNREFUSED）…",
+  "base": "https://<your-host>",
+  "failures": ["GET / 期望 200，实际 连不上（ECONNREFUSED）"],
+  "at": "2026-10-29T12:00:00.000Z"
+}
+```
+
+- **Slack Incoming Webhook**：直接填，`text` 就是它认的字段。
+- **自建 / n8n / 企业微信中转**：直接填，按 `text` 取正文即可。
+- **飞书自定义机器人**：它要求 `{"msg_type":"text","content":{"text":"…"}}` 这层壳，
+  而脚本发的是通用的 `{text}`。所以飞书要么在前面挂一层转换（n8n / 一个 20 行的云函数），
+  要么改用 Slack 或自建 webhook。
+- **留空**：只打 stdout/stderr。cron 默认会把输出发邮件给 crontab 的主人 —— 这也是一种告警，
+  适合还没搭告警通道的时候先用着。
+
+> ⚠️ 别把 webhook 地址写进仓库：它是凭据（谁拿到谁就能往你的群里发消息）。
+> 跑在 crontab 里时直接写在那一行，或放进 `EnvironmentFile` 之类的地方。

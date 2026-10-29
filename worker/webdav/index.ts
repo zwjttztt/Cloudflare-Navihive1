@@ -78,6 +78,13 @@ export async function runWebDavBackup(
         await api.setConfig("webdav.lastBackupAt", new Date().toISOString());
         if (mode === "auto") {
             await api.setConfig("webdav.lastAutoBackup", filename);
+            // 「最近一次**自动**备份成功」的时间戳，单独记一份。
+            //
+            // 为什么不能靠 lastBackupAt：它是「最后一次备份」的时间，手动备份也会覆盖它。
+            // 线上就出现过这个假象 —— 10-26 手动备份把 lastBackupAt 刷成了正常值，
+            // 而自动备份其实从 10-19 起就再没成功过，界面上完全看不出来。
+            // 定时任务的到点判定（shouldRunNavBackup）也只认这个键。
+            await api.setConfig("webdav.lastAutoBackupAt", new Date().toISOString());
         }
         // 备份详情：体积 + 耗时 + 自动/手动。前端「上次备份」那行从只显示时间
         // 变成能看出「这次备份到底多大、花了多久」—— 体积异常增大（附件变多）
@@ -90,6 +97,13 @@ export async function runWebDavBackup(
                 mode,
                 durationMs: Date.now() - startedAt,
                 at: new Date().toISOString(),
+                // 这一份**实际**有没有加密，是既成事实，必须留给界面。
+                //
+                // 为什么只能记事实、不能靠配置判：客户端读不到 webdav.backupPassword
+                // （bootstrap 用 isPrivateUserConfigKey 把它过滤了，见 worker/routes/data.ts），
+                // 所以「当前设没设口令」在前端根本无从判断。而这个字段回答的是
+                // 另一个更要紧的问题：网盘上躺着的那一份，是不是明文。
+                encrypted: Boolean(password),
             })
         );
     } catch (error) {

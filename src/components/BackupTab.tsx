@@ -12,7 +12,7 @@
 
 import type { ChangeEvent, Dispatch, RefObject, SetStateAction } from "react";
 import type { WebDavConfig, WebDavFile } from "../API/http";
-import { formatSize, formatTime } from "../utils/backupFormat";
+import { AUTO_BACKUP_STALE_DAYS, daysSince, formatSize, formatTime } from "../utils/backupFormat";
 // 口令类输入框统一走「text + CSS 遮蔽」：type=password 会被浏览器当成登录表单
 // 自动填充（还连带把顶栏搜索框当用户名框），见 utils/secretInput.ts 的结论。
 import { SECRET_IGNORE_ATTRS, secretInputSx, secretInputType } from "../utils/secretInput";
@@ -52,9 +52,11 @@ export interface BackupTabProps {
     /** 是否开启每周自动备份 */
     autoBackup: boolean;
     onToggleAutoBackup?: (enabled: boolean) => Promise<void>;
-    /** 上一次备份的时间（ISO 字符串） */
+    /** 上一次备份的时间（ISO 字符串）。⚠️ 手动备份也会刷新它，不能用来判断定时备份的死活 */
     lastBackupAt: string;
     lastBackupInfo?: string;
+    /** 最近一次**自动**备份成功的时间（ISO）；没有记录时为空串 */
+    lastAutoBackupAt: string;
     remoteFiles: WebDavFile[];
     /** 备份文件里是否带网站的账号密码 */
     includeCredentials: boolean;
@@ -82,29 +84,91 @@ export interface BackupTabProps {
  * 或者某次写入被截断，JSON.parse 会抛 —— 而这里在渲染路径上，抛出去就是整个
  * 备份对话框打不开。所以解析失败一律退化成「不知道详情」，只显示时间。
  */
-function parseLastBackupInfo(raw: string): { size: number; durationMs: number; mode: string } | null {
+function parseLastBackupInfo(raw: string): {
+    size: number;
+    durationMs: number;
+    mode: string;
+    /**
+     * 那一份备份**实际**有没有加密：true / false / null（老记录没有这个字段 = 不知道）。
+     *
+     * 这是整个界面上唯一可信的加密状态来源：客户端读不到 webdav.backupPassword
+     * （bootstrap 按 isPrivateUserConfigKey 把它过滤掉了），所以「当前配没配口令」
+     * 前端无从判断；而「网盘上躺着的那份是不是明文」是历史事实，只有它能回答。
+     * null 与 false 必须分开 —— 老记录猜成「未加密」会凭空造出一条假的警示。
+     */
+    encrypted: boolean | null;
+} | null {
     if (!raw) return null;
     try {
         const parsed = JSON.parse(raw) as {
             size?: unknown;
             durationMs?: unknown;
             mode?: unknown;
+            encrypted?: unknown;
         };
         const size = typeof parsed.size === "number" && parsed.size > 0 ? parsed.size : 0;
         const durationMs =
             typeof parsed.durationMs === "number" && parsed.durationMs > 0 ? parsed.durationMs : 0;
         const mode = typeof parsed.mode === "string" ? parsed.mode : "";
+        const encrypted = typeof parsed.encrypted === "boolean" ? parsed.encrypted : null;
         if (!size && !durationMs) return null;
-        return { size, durationMs, mode };
+        return { size, durationMs, mode, encrypted };
     } catch {
         return null;
     }
 }
 
 export default function BackupTab({
-    config, setConfig, handleConfigChange, testing, testResult, handleTest, uploading, handleUpload, webdavActionsRef, autoBackup, onToggleAutoBackup, lastBackupAt, lastBackupInfo, remoteFiles, includeCredentials, onIncludeCredentialsChange, encryptLocal, setEncryptLocal, backupPassword, setBackupPassword, backupPasswordConfirm, setBackupPasswordConfirm, showBackupPassword, setShowBackupPassword, showPassword, setShowPassword, showWebdavBackupPassword, setShowWebdavBackupPassword, onDownloadLocal, onNotify,
+    config, setConfig, handleConfigChange, testing, testResult, handleTest, uploading, handleUpload, webdavActionsRef, autoBackup, onToggleAutoBackup, lastBackupAt, lastBackupInfo, lastAutoBackupAt, remoteFiles, includeCredentials, onIncludeCredentialsChange, encryptLocal, setEncryptLocal, backupPassword, setBackupPassword, backupPasswordConfirm, setBackupPasswordConfirm, showBackupPassword, setShowBackupPassword, showPassword, setShowPassword, showWebdavBackupPassword, setShowWebdavBackupPassword, onDownloadLocal, onNotify,
 }: BackupTabProps) {
     const lastInfo = parseLastBackupInfo(lastBackupInfo ?? "");
+
+    // ---- 「上次备份」那几行的原料 ----
+    //
+    // 老库（升级前）没有 webdav.lastAutoBackupAt，但 lastBackupInfo.mode === "auto"
+    // 说明最后一次备份就是自动备份 —— 拿 lastBackupAt 兜底，免得升级后第一眼
+    // 看到「还没有自动备份记录」，那会让人以为定时备份从来没跑过。
+    const autoAt = lastAutoBackupAt || (lastInfo?.mode === "auto" ? lastBackupAt : "");
+    const autoDays = autoAt ? daysSince(autoAt, Date.now()) : null;
+    // 体积 / 耗时说的是「那一次备份」，所以要挂到它所属的那一行（自动 or 手动）上，
+    // 混在一句里会出现「最近一次自动备份……（手动那次的体积）」这种错配
+    const detail = lastInfo
+        ? `，${formatSize(lastInfo.size)}${
+              lastInfo.durationMs ? `，耗时 ${(lastInfo.durationMs / 1000).toFixed(1)} 秒` : ""
+          }`
+        : "";
+    const autoLine = autoAt
+        ? `最近一次自动备份：${formatTime(autoAt)}${
+              autoDays === null ? "" : autoDays === 0 ? "（今天）" : `（${autoDays} 天前）`
+          }${lastInfo?.mode === "auto" ? detail : ""}`
+        : "还没有自动备份记录";
+    // 只有 lastBackupInfo 说明那一次是手动，才谈得上「最近一次手动备份」：
+    // lastBackupAt 只记最后一次（可能是自动也可能是手动），没有 mode 就无法判断，
+    // 硬凑一句只会是错的（会让用户以为手动备份时间比实际更近）
+    const manualLine =
+        lastInfo?.mode === "manual" && lastBackupAt
+            ? `最近一次手动备份：${formatTime(lastBackupAt)}${detail}`
+            : "";
+    // 第三种情况：lastBackupInfo 缺失 / 损坏 / mode 认不出（老库、写入被截断）。
+    // 这时分不清那一次是自动还是手动，但**时间仍然是有用的信息** ——
+    // 直接不显示等于把「上次备份是什么时候」这条丢掉了，所以给一句老实的话说清楚。
+    const unknownKind = lastInfo?.mode === "auto" || lastInfo?.mode === "manual";
+    const unknownLine =
+        !unknownKind && lastBackupAt
+            ? `最近一次备份：${formatTime(lastBackupAt)}（无法判断是自动还是手动）`
+            : "";
+    // 加密状态只跟着「最后一次备份」那一行走（它描述的就是那一份文件）
+    const encryptionNote =
+        lastInfo?.encrypted === null || lastInfo?.encrypted === undefined
+            ? ""
+            : lastInfo.encrypted
+              ? "，已加密"
+              : "，未加密";
+    // 定时备份开着的账户，超过 8 天没成功就是该有人去看网盘配置了。
+    // 这个提示存在的理由：线上就出现过「自动备份静默死了两周、界面一切正常」——
+    // 因为 lastBackupAt 被手动备份刷成了新时间。
+    const autoStale = autoBackup && autoDays !== null && autoDays > AUTO_BACKUP_STALE_DAYS;
+
     return (
         <Stack spacing={0.75} sx={{ mt: 0.5, flex: 1, minHeight: 0 }}>
             <Box>
@@ -450,8 +514,28 @@ export default function BackupTab({
                             display: 'block',
                             mt: -0.5
                         }}>
-                        设了就用它加密上传（恢复时要填同一个密码，无法找回）；留空则明文上传。
-                        手动 / 每周自动 / 远端恢复共用，与服务端的 AUTH_SECRET 无关。
+                        设了就用它加密上传（恢复时要填同一个密码，无法找回）。
+                        手动 / 自动 / 远端恢复共用，与服务端的 AUTH_SECRET 无关。
+                    </Typography>
+                    {/* 留空的后果必须**常驻**说清楚（2026-10-29 补）。
+                        此前这里只有一句「留空则明文上传」，没人知道明文里到底是什么 ——
+                        而实测线上 backupPassword 就是没配的，网盘上那一份是**明文 gzip**：
+                        里面有站点的账号密码（受「含账号密码」开关控制）**和 AI 密钥**
+                        （走 ownConfigs 那条独立通道，完全不受那个开关影响）。
+                        ⚠️ 不要试图按「当前有没有设口令」来决定这句显不显示：客户端读不到
+                        webdav.backupPassword（bootstrap 按 isPrivateUserConfigKey 过滤掉了），
+                        判断不出来。所以这句一律常驻，加密与否看上一段的 lastBackupInfo.encrypted。 */}
+                    <Typography
+                        variant='caption'
+                        className='nav-backup-encrypt-warning'
+                        sx={{
+                            display: 'block',
+                            mt: -0.25,
+                            color: 'warning.main'
+                        }}>
+                        留空 = 备份文件不加密。文件里有
+                        {includeCredentials ? "站点账号密码（当前设置下会导出）与 " : ""}
+                        AI 密钥，会以可读形式存在网盘上。
                     </Typography>
 
                     <Box>
@@ -501,19 +585,84 @@ export default function BackupTab({
                                 color: 'text.secondary',
                                 display: 'block'
                             }}>
-                            每周一上午 10:00 自动备份，会替换掉上一次的自动备份；手动备份不会被删除。
-                            {lastBackupAt
-                                ? ` 上次备份：${formatTime(lastBackupAt)}${
-                                      lastInfo
-                                          ? `（${lastInfo.mode === "auto" ? "自动" : "手动"}，${formatSize(lastInfo.size)}${
-                                                lastInfo.durationMs
-                                                    ? `，耗时 ${(lastInfo.durationMs / 1000).toFixed(1)} 秒`
-                                                    : ""
-                                            }）`
-                                          : ""
-                                  }`
-                                : " 还没有备份记录。"}
+                            {/* 2026-10-29 措辞改了：到点判定不再是「周一 10:00 那一小时」，
+                                而是「距上次成功满 6.5 天」（每小时检查一次，错过会顺延补上）。
+                                老文案写死了那个钟点，改完判定后它就是错的。 */}
+                            按「距上次成功满 6.5 天」自动上传一次（每小时检查，错过了会在下一小时补上），
+                            会替换掉上一次的自动备份；手动备份不会被删除。
                         </Typography>
+                        {/* 「自动」与「手动」分两行：
+                            以前只有一句「上次备份」，而 lastBackupAt 只记最后一次 ——
+                            手动备份会把自动备份的失败完全盖住（线上就漏了整整一周）。
+                            字体用 body2 而不是 caption：这是这一页最该被看见的一块信息。 */}
+                        <Typography
+                            variant='body2'
+                            className='nav-backup-last-auto'
+                            sx={{
+                                display: 'block',
+                                mt: 0.25,
+                                color: 'text.secondary'
+                            }}>
+                            {autoLine}
+                            {lastInfo?.mode === "auto" && encryptionNote ? (
+                                <Box
+                                    component='span'
+                                    sx={{
+                                        color: lastInfo.encrypted ? "text.secondary" : "warning.main",
+                                        fontWeight: lastInfo.encrypted ? 400 : 600
+                                    }}>
+                                    {encryptionNote}
+                                </Box>
+                            ) : null}
+                        </Typography>
+                        {unknownLine && (
+                            <Typography
+                                variant='body2'
+                                className='nav-backup-last-unknown'
+                                sx={{
+                                    display: 'block',
+                                    color: 'text.secondary'
+                                }}>
+                                {unknownLine}
+                            </Typography>
+                        )}
+                        {manualLine && (
+                            <Typography
+                                variant='body2'
+                                className='nav-backup-last-manual'
+                                sx={{
+                                    display: 'block',
+                                    color: 'text.secondary'
+                                }}>
+                                {manualLine}
+                                {encryptionNote ? (
+                                    <Box
+                                        component='span'
+                                        sx={{
+                                            color: lastInfo?.encrypted
+                                                ? "text.secondary"
+                                                : "warning.main",
+                                            fontWeight: lastInfo?.encrypted ? 400 : 600
+                                        }}>
+                                        {encryptionNote}
+                                    </Box>
+                                ) : null}
+                            </Typography>
+                        )}
+                        {/* 定时备份开着、却超过 8 天没有成功：这行必须显眼，
+                            它正是「自动备份静默死了」唯一会在界面上露头的地方 */}
+                        {autoStale && (
+                            <Typography
+                                variant='body2'
+                                className='nav-backup-auto-stale'
+                                sx={{
+                                    display: 'block',
+                                    color: 'warning.main',
+                                    fontWeight: 600
+                                }}>
+                                自动备份已 {autoDays} 天没有成功，请检查网盘配置
+                            </Typography>
+                        )}
                     </Box>
 
                     <Stack

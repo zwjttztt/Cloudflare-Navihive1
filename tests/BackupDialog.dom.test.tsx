@@ -33,6 +33,11 @@ interface Handlers {
     onIncludeCredentialsChange?: (enabled: boolean) => void;
     includeCredentials?: boolean;
     initialTab?: number;
+    // ---- 备份页（tab 0）要看的「上次备份」状态 ----
+    autoBackup?: boolean;
+    lastBackupAt?: string;
+    lastBackupInfo?: string;
+    lastAutoBackupAt?: string;
 }
 
 // 兜底清理：这个文件的用例过去全都用 initialTab={1}（「恢复」页），
@@ -61,6 +66,10 @@ function mount(handlers: Handlers = {}) {
                 onClose={() => {}}
                 includeCredentials={handlers.includeCredentials ?? true}
                 onIncludeCredentialsChange={handlers.onIncludeCredentialsChange ?? (() => {})}
+                autoBackup={handlers.autoBackup ?? true}
+                lastBackupAt={handlers.lastBackupAt ?? ""}
+                lastBackupInfo={handlers.lastBackupInfo ?? ""}
+                lastAutoBackupAt={handlers.lastAutoBackupAt ?? ""}
             />
         );
     });
@@ -334,7 +343,15 @@ test("「备份」页不再有「备份包含记事本」开关（导航备份�
 // 老库没这个键、写入被截断都会让 JSON.parse 抛 —— 而这是在渲染路径上，
 // 抛出去整个备份对话框打不开。所以两条都要锁：正常时显示出来，坏值时安静退化。
 
-function mountBackupTab(handlers: { lastBackupAt?: string; lastBackupInfo?: string } = {}) {
+function mountBackupTab(
+    handlers: {
+        lastBackupAt?: string;
+        lastBackupInfo?: string;
+        lastAutoBackupAt?: string;
+        autoBackup?: boolean;
+        includeCredentials?: boolean;
+    } = {}
+) {
     host = document.createElement("div");
     document.body.appendChild(host);
     root = createRoot(host);
@@ -351,18 +368,28 @@ function mountBackupTab(handlers: { lastBackupAt?: string; lastBackupInfo?: stri
                 onImportData={async () => {}}
                 onNotify={() => {}}
                 onClose={() => {}}
-                includeCredentials
+                includeCredentials={handlers.includeCredentials ?? true}
                 onIncludeCredentialsChange={() => {}}
+                autoBackup={handlers.autoBackup ?? true}
                 lastBackupAt={handlers.lastBackupAt ?? ""}
                 lastBackupInfo={handlers.lastBackupInfo ?? ""}
+                lastAutoBackupAt={handlers.lastAutoBackupAt ?? ""}
             />
         );
     });
 }
 
-test("备份页展示上次备份的体积与耗时", () => {
+// 「上次备份」那一块 2026-10-29 拆成两行（自动 / 手动）——为什么必须拆：
+//   `webdav.lastBackupAt` 只记「最后一次」，手动备份会把它刷成新时间。
+//   于是「自动备份整整一周没跑」在界面上完全看不出来：时间那行是正常的。
+//   线上就靠这个假象把一次静默失效藏了两周。
+
+const daysAgo = (n: number) => new Date(Date.now() - n * 86_400_000).toISOString();
+
+test("备份页展示上次自动备份的体积与耗时", () => {
     mountBackupTab({
         lastBackupAt: "2026-10-12T10:00:00.000Z",
+        lastAutoBackupAt: "2026-10-12T10:00:00.000Z",
         lastBackupInfo: JSON.stringify({
             filename: "navihive-backup-auto-2026-10-12.json.gz",
             size: 5 * 1024 * 1024,
@@ -371,24 +398,171 @@ test("备份页展示上次备份的体积与耗时", () => {
         }),
     });
     const text = document.body.textContent || "";
-    assert.ok(text.includes("上次备份"), "该显示「上次备份」");
-    assert.ok(text.includes("自动"), "该标明是自动备份");
+    assert.ok(text.includes("最近一次自动备份"), `该有「最近一次自动备份」这一行，实际：${text.slice(0, 400)}`);
     assert.ok(text.includes("5.00 MB"), `该显示体积，实际：${text.slice(0, 400)}`);
     assert.ok(text.includes("42.0 秒"), "该显示耗时");
+    assert.ok(
+        !text.includes("最近一次手动备份"),
+        "最后一次是自动备份时，就不该编一句「最近一次手动备份」出来（那个时间我们并不知道）"
+    );
 });
 
-test("lastBackupInfo 是坏 JSON 时安静退化，只显示时间（不能把对话框搞崩）", () => {
+test("lastBackupInfo 是坏 JSON 时安静退化：不崩、不显示体积，但时间还在", () => {
     mountBackupTab({
         lastBackupAt: "2026-10-12T10:00:00.000Z",
         // 老库没这个键 / 写入被截断都会得到这种值
         lastBackupInfo: '{"filename":"x.json.gz","size":12',
     });
     const text = document.body.textContent || "";
-    assert.ok(text.includes("上次备份"), "时间照常显示");
+    assert.ok(text.includes("最近一次备份"), `分不清自动还是手动时也要把时间显示出来，实际：${text.slice(0, 400)}`);
     assert.ok(!text.includes("MB"), "解析失败就不该硬显示体积");
 });
 
 test("没有备份记录时显示引导文案", () => {
     mountBackupTab({});
-    assert.ok((document.body.textContent || "").includes("还没有备份记录"));
+    assert.ok(
+        (document.body.textContent || "").includes("还没有自动备份记录"),
+        `该说清「还没有自动备份记录」，实际：${document.body.textContent?.slice(0, 300)}`
+    );
+});
+
+test("自动备份超过 8 天没成功：用警示色给出「请检查网盘配置」", () => {
+    // 这就是线上那次事故的形态：lastBackupAt 被手动备份刷成 1 天前，
+    // 而自动备份其实 30 天没成功了。只看 lastBackupAt 会得到「一切正常」。
+    mountBackupTab({
+        lastBackupAt: daysAgo(1),
+        lastBackupInfo: JSON.stringify({
+            filename: "navihive-backup-2026-10-28.json.gz",
+            size: 1024,
+            mode: "manual",
+            durationMs: 1000,
+            encrypted: true,
+        }),
+        lastAutoBackupAt: daysAgo(30),
+    });
+    const text = document.body.textContent || "";
+    assert.ok(
+        text.includes("自动备份已 30 天没有成功，请检查网盘配置"),
+        `该有那句警示，实际：${text.slice(0, 400)}`
+    );
+    assert.ok(text.includes("最近一次手动备份"), "手动那行也该在（最后一次确实是手动）");
+    const warning = document.querySelector(".nav-backup-auto-stale");
+    assert.ok(warning, "警示那行要有独立节点，才谈得上用警示色");
+});
+
+test("自动备份 2 天前成功：不报「没有成功」，只显示「2 天前」", () => {
+    mountBackupTab({
+        lastAutoBackupAt: daysAgo(2),
+        lastBackupInfo: JSON.stringify({
+            filename: "navihive-backup-auto-x.json.gz",
+            size: 1024,
+            mode: "auto",
+            durationMs: 1000,
+            encrypted: true,
+        }),
+    });
+    const text = document.body.textContent || "";
+    assert.ok(text.includes("（2 天前）"), `要显示「2 天前」，实际：${text.slice(0, 400)}`);
+    assert.ok(!text.includes("没有成功"), "正常的自动备份不该报警");
+});
+
+test("自动备份开关关着：就算很久没备份也不报警（用户自己选的）", () => {
+    mountBackupTab({ autoBackup: false, lastAutoBackupAt: daysAgo(30) });
+    assert.ok(
+        !(document.body.textContent || "").includes("没有成功"),
+        "关掉自动备份的用户不该被「自动备份已 N 天没有成功」骚扰"
+    );
+});
+
+test("上次备份详情里的 encrypted 字段：true 显示「已加密」，false 显示「未加密」", () => {
+    mountBackupTab({
+        lastAutoBackupAt: daysAgo(1),
+        lastBackupInfo: JSON.stringify({
+            filename: "navihive-backup-auto-x.json.gz",
+            size: 1024,
+            mode: "auto",
+            durationMs: 1000,
+            encrypted: true,
+        }),
+    });
+    assert.ok((document.body.textContent || "").includes("已加密"), "加密过就要说出来");
+
+    cleanup();
+    mountBackupTab({
+        lastAutoBackupAt: daysAgo(1),
+        lastBackupInfo: JSON.stringify({
+            filename: "navihive-backup-auto-x.json.gz",
+            size: 1024,
+            mode: "auto",
+            durationMs: 1000,
+            encrypted: false,
+        }),
+    });
+    const text = document.body.textContent || "";
+    assert.ok(text.includes("未加密"), "明文 gzip 必须明说 —— 这是这次要暴露的事实");
+});
+
+test("加密状态不知道时不瞎猜（老记录没有 encrypted 字段）", () => {
+    mountBackupTab({
+        lastAutoBackupAt: daysAgo(1),
+        lastBackupInfo: JSON.stringify({
+            filename: "navihive-backup-auto-x.json.gz",
+            size: 1024,
+            mode: "auto",
+            durationMs: 1000,
+        }),
+    });
+    const text = document.body.textContent || "";
+    assert.ok(!text.includes("已加密"), "老记录没这个字段，不能凭空说它加密了");
+    // 「未加密」这三个字可能出现在常驻说明里（「留空 = 备份文件不加密」不含这三个字），
+    // 所以这里只检查「，未加密」这个后缀形态
+    assert.ok(!text.includes("，未加密"), "老记录也不能瞎猜成未加密");
+});
+
+test("备份口令框下面常驻说明「留空 = 不加密，里面有账号密码和 AI 密钥」", () => {
+    mountBackupTab({});
+    const text = document.body.textContent || "";
+    assert.ok(text.includes("留空 = 备份文件不加密"), `要有这句常驻说明，实际：${text.slice(0, 400)}`);
+    assert.ok(text.includes("AI 密钥"), "一定要点明 AI 密钥 —— 它不受「含账号密码」开关控制");
+    assert.ok(text.includes("站点账号密码"), "含账号密码开着时要说明文件里有站点密码");
+    // 关掉「含账号密码」后措辞也要跟着变，不能继续声称文件里有站点密码
+    cleanup();
+    mountBackupTab({ includeCredentials: false });
+    const text2 = document.body.textContent || "";
+    assert.ok(!text2.includes("站点账号密码"), `关掉后不该再说有站点密码，实际：${text2.slice(0, 400)}`);
+    assert.ok(text2.includes("AI 密钥"), "AI 密钥仍然在文件里（那条通道不受开关控制）");
+});
+
+test("最后一次是自动备份时，不编造「最近一次手动备份」这一行", () => {
+    mountBackupTab({
+        lastBackupAt: daysAgo(2),
+        lastAutoBackupAt: daysAgo(2),
+        lastBackupInfo: JSON.stringify({
+            filename: "navihive-backup-auto-x.json.gz",
+            size: 1024,
+            mode: "auto",
+            durationMs: 1000,
+        }),
+    });
+    assert.ok(
+        !(document.body.textContent || "").includes("最近一次手动备份"),
+        "lastBackupAt 只记最后一次，那一次是自动备份 —— 手动那次的时间我们并不知道"
+    );
+});
+
+test("老库升级：没有 lastAutoBackupAt 但最后那次是自动备份，用 lastBackupAt 兜底显示", () => {
+    mountBackupTab({
+        lastBackupAt: daysAgo(2),
+        lastBackupInfo: JSON.stringify({
+            filename: "navihive-backup-auto-x.json.gz",
+            size: 1024,
+            mode: "auto",
+            durationMs: 1000,
+        }),
+    });
+    const text = document.body.textContent || "";
+    assert.ok(
+        text.includes("最近一次自动备份") && text.includes("（2 天前）"),
+        `升级后不该显示「还没有自动备份记录」，实际：${text.slice(0, 400)}`
+    );
 });

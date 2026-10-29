@@ -31,6 +31,8 @@ import {
     selectSweepCandidates,
     applyProbeResult,
     trimSnapshot,
+    shouldRunNavBackup,
+    NAV_BACKUP_INTERVAL_MS,
     type LinkHealthSnapshot,
     type SweepSite,
 } from "./cronLogic";
@@ -183,9 +185,42 @@ async function backupOneAccount(api: SchedulerDB, uid: number | null): Promise<s
         const stored = await withD1Retry(() => readAllConfigs(nav as unknown as NavigationAPI));
         if (stored["webdav.autoBackup"] === "false") return null;
 
+        // 顺序（2026-10-29 调）：先问「配没配网盘」，再问「到没到点」。
+        //
+        // 反过来的话，对「配过 WebDAV、备份过、后来把 url 清掉」的账号，每小时打的是
+        // 「距上次自动备份不到 6.5 天」—— 而真实原因是「没配网盘」，排障时看到的是错的原因。
+        // `configFromStored` 只是把 stored 里那几行拼成对象（纯函数），提前算不影响任何东西。
+        //
+        // ⚠️ 注意这里 return null 时**故意不写** `webdav.lastAutoBackupAt`：
+        // 没配网盘就等于「这一轮没备份过」，不能记账。写了假时间的话，用户配好网盘之后
+        // 反而要再等 6.5 天才会上传第一次。保持不写 → 下一小时仍然返回 true → 立刻补上。
+        // 别把这里「优化」成写一个 now() 让日志好看。
         const config = configFromStored(stored);
         if (!config.url) {
             console.log(`定时备份跳过：${label} 尚未配置 WebDAV`);
+            return null;
+        }
+
+        // 到点判定（2026-10-29 改）：看「距上次**成功**的自动备份多久了」，
+        // 不再是「现在是不是 UTC 周一 02:00-02:59」那个一小时窗口。
+        //
+        // 为什么必须改：窗口判定错过不补跑。线上实测最后一次自动备份停在 10-19，
+        // 10-26 整周没有任何产出 —— 而界面上「上次备份」被 10-26 的手动备份刷成了
+        // 正常值，自动备份死了都看不出来。改成时间差不变量后，任何触发频率下都会自愈：
+        // 晚一小时就下一小时补，晚一天就明天补。
+        //
+        // 存量兼容：`webdav.lastAutoBackupAt` 是这次新加的键，老库没有 ——
+        // shouldRunNavBackup 会回退去解析 `webdav.lastAutoBackup` 的文件名。
+        if (
+            !shouldRunNavBackup(
+                stored["webdav.lastAutoBackupAt"],
+                Date.now(),
+                stored["webdav.lastAutoBackup"]
+            )
+        ) {
+            console.log(
+                `定时备份跳过：${label} 距上次自动备份不到 ${NAV_BACKUP_INTERVAL_MS / 86400_000} 天`
+            );
             return null;
         }
 
@@ -453,26 +488,32 @@ export async function runRetentionCleanup(api: SchedulerDB): Promise<void> {
  * 触发器**（wrangler.jsonc 的 "0 * * * *"），所有任务共用，各认各的到点判定：
  *   - 记事本备份调度：每次触发都检查，到没到点由各账号的频率配置 + 上次自动备份
  *     时间判定（shouldRunNotesBackup）；
- *   - 导航页每周备份：在每小时触发器下按「UTC 周一 02 点」的墙上时钟窗口判定
- *     （isNavBackupWindow）—— 与原来的每周触发器同一场（北京时间周一 10 点），
- *     只是判定从「Cloudflare 挑时间」搬到了「代码挑时间」；
- *   - 其它表达式（验证脚本的通配 "* * * * *"、历史上配过的每周触发器）：保持老
- *     行为，全量任务照跑 —— cron-e2e 每次触发都必须真的跑一遍导航备份。
- * cronExpr 缺省（验证脚本直调）同理：全量照跑。
+ *   - 导航页自动备份：同样每次触发都检查，到没到点由「距上次**成功**的自动备份
+ *     是否满 6.5 天」判定（shouldRunNavBackup，在 backupOneAccount 里按账号判）——
+ *     2026-10-29 之前用的是「UTC 周一 02:00-02:59」的墙上时钟窗口，错过不补跑，
+ *     线上真的漏了一整周（详见 cronLogic.ts 那段注释）；
+ *   - 其它表达式（验证脚本的通配 "* * * * *"、历史上配过的每周触发器）：同样全量
+ *     照跑 —— cron-e2e 每次触发都必须真的跑一遍导航备份。
+ * cronExpr 缺省（验证脚本直调）同理。
  */
 export const HOURLY_CRON = "0 * * * *";
-/** 导航页每周备份的窗口：UTC 周一 02:00-02:59（北京时间周一 10 点那一场） */
-export function isNavBackupWindow(now: Date = new Date()): boolean {
-    return now.getUTCDay() === 1 && now.getUTCHours() === 2;
-}
 /**
- * 这次触发要不要跑导航页每周备份。
- * 抽成纯函数是为了能单测钉死 cron-e2e 的那类场景：e2e 用通配表达式
- * "* * * * *" 触发，如果这里把它当成「不是每周触发器」跳过，备份一次都不跑，
- * 六条断言全在测空气（2026-10-09 CI 实际发生过的红）。
+ * 这次触发要不要**进入**导航页备份的检查。
+ *
+ * 语义在 2026-10-29 变了：真正的「到没到点」已经改成按上次成功时间算
+ * （shouldRunNavBackup，在 backupOneAccount 里逐账号判），与触发频率无关，
+ * 所以任何触发表达式都该进入检查。
+ *
+ * 保留这个函数（而不是把 runScheduledTasks 里的 if 删掉）有两个原因：
+ *   1. runScheduledTasks 那段里「先探账号数、再按账号数放宽 withDeadline 上限」的
+ *      逻辑是挂在它上面的，留一个显式的开关点比把那段摊成无条件执行更清楚；
+ *   2. 「哪种触发频率下要检查备份」这件事继续只有一个决定点 —— 以后真要按表达式
+ *      区分，改这里就够，不用再在 runScheduledTasks 里找。
+ *
+ * `_cronExpr` 仍从 ScheduledController 透传进来，只是当前不参与判定。
  */
-export function isNavBackupDue(cronExpr: string | undefined, now: Date = new Date()): boolean {
-    return cronExpr === undefined || cronExpr !== HOURLY_CRON || isNavBackupWindow(now);
+export function isNavBackupDue(_cronExpr: string | undefined): boolean {
+    return true;
 }
 /**
  * 备份任务的耗时上限，按账号数放宽。

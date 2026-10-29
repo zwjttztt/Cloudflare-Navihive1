@@ -23,3 +23,27 @@ export function formatSize(bytes: number): string {
 export function formatTime(value: string): string {
     return fmtDateTime(value, { style: "compact" });
 }
+
+/**
+ * 自动备份多久没成功就算「不对劲」：8 天。
+ *
+ * 为什么是 8 而不是 7：定时任务是「距上次成功 ≥ 6.5 天才跑」，每小时检查一次。
+ * 正常情况下最长间隔约 6.5 天 + 1 小时；给到 8 天才报警，是为了不把「刚好晚了一小时」
+ * 这种噪声也报成故障 —— 天天喊的警告等于没有警告。
+ */
+export const AUTO_BACKUP_STALE_DAYS = 8;
+
+/**
+ * 距某个时间点过了多少**天**（向下取整）。解析不出来返回 null。
+ *
+ * 只给「N 天前」这种粗粒度文案用，所以按整天取整、负数夹到 0
+ * （时间戳在未来时显示「今天」，不显示「-3 天前」）。
+ */
+export function daysSince(value: string, nowMs: number): number | null {
+    if (!value) return null;
+    const at = Date.parse(value);
+    if (!Number.isFinite(at)) return null;
+    const diff = nowMs - at;
+    if (diff <= 0) return 0;
+    return Math.floor(diff / 86_400_000);
+}

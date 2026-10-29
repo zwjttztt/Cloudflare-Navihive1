@@ -28,7 +28,8 @@ import {
 import type { NotesBackupRun } from "../src/API/types";
 import { NavigationAPI } from "../src/API/navigationApi";
 import { resetMigrationCacheForTests } from "../src/API/http";
-import { isNavBackupDue, isNavBackupWindow } from "../worker/cron";
+import { isNavBackupDue } from "../worker/cron";
+import { NAV_BACKUP_INTERVAL_MS, shouldRunNavBackup } from "../worker/cronLogic";
 
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
@@ -163,30 +164,84 @@ test("配置回落：url/账号/密码取 webdav.*，目录与口令才认 notes
     assert.equal(empty.path, "navihive-notes-backup");
 });
 
-// ============ 纯逻辑：导航每周备份的窗口（每小时触发器下的墙上时钟判定） ============
+// ============ 纯逻辑：导航自动备份的到点判定（按上次成功时间，不是墙上时钟窗口） ============
+//
+// 背景（2026-10-29）：这条判定原来是「UTC 周一 02:00-02:59 这一小时」的窗口，
+// 错过不补跑。线上实测最后一次自动备份停在 10-19，10-26 整周没有任何产出 ——
+// 而界面上「上次备份」被 10-26 的手动备份刷成了正常值，自动备份死了都看不出来。
+// 所以下面这组用例全部围绕「时间差」而不是「星期几几点」。
 
-test("导航每周备份窗口：UTC 周一 02 点那一场才跑（= 北京时间周一 10 点）", () => {
-    // 2026-10-05 是周一
-    assert.ok(isNavBackupWindow(new Date("2026-10-05T02:30:00Z")));
-    assert.ok(isNavBackupWindow(new Date("2026-10-05T02:59:00Z")));
-    // 同是周一但不在 02 点档
-    assert.ok(!isNavBackupWindow(new Date("2026-10-05T03:00:00Z")));
-    assert.ok(!isNavBackupWindow(new Date("2026-10-05T01:59:00Z")));
-    // 02 点但不是周一（2026-10-06 是周二）
-    assert.ok(!isNavBackupWindow(new Date("2026-10-06T02:00:00Z")));
+/** 2026-10-19T02:00:00.005Z —— 线上最后一次自动备份那一刻 */
+const LAST_AUTO_MS = Date.UTC(2026, 9, 19, 2, 0, 0, 5);
+const LAST_AUTO_NAME = "navihive-backup-auto-20261019-020000-005.json.gz";
+
+test("导航自动备份：满 6.5 天就跑（刚好等于阈值也算到点）", () => {
+    const at = new Date(LAST_AUTO_MS).toISOString();
+    assert.equal(NAV_BACKUP_INTERVAL_MS, 6.5 * DAY, "阈值改成别的值就得同步这里");
+    assert.ok(
+        shouldRunNavBackup(at, LAST_AUTO_MS + NAV_BACKUP_INTERVAL_MS),
+        "刚好满 6.5 天必须跑 —— 差一毫秒不跑还可以理解，卡在边界上不跑就是漏备份"
+    );
 });
 
-test("导航备份到点判定：e2e 通配表达式必须照跑（2026-10-09 CI 六连红的真因）", () => {
-    // 缺省（验证脚本直调）→ 跑
+test("导航自动备份：差 1 毫秒就不跑（否则每小时触发会每小时都传一份）", () => {
+    const at = new Date(LAST_AUTO_MS).toISOString();
+    assert.ok(!shouldRunNavBackup(at, LAST_AUTO_MS + NAV_BACKUP_INTERVAL_MS - 1));
+    // 常见情形：一小时前刚备份过
+    assert.ok(!shouldRunNavBackup(at, LAST_AUTO_MS + HOUR));
+});
+
+test("导航自动备份：从来没备份过就跑（配了自动备份的人不该等 6.5 天）", () => {
+    const now = Date.UTC(2026, 9, 29, 12, 0, 0);
+    assert.ok(shouldRunNavBackup(null, now));
+    assert.ok(shouldRunNavBackup(undefined, now));
+    assert.ok(shouldRunNavBackup("", now));
+    // 带一个同样没有的旧文件名参数，行为不变
+    assert.ok(shouldRunNavBackup(null, now, null));
+    assert.ok(shouldRunNavBackup(null, now, ""));
+});
+
+test("存量兼容：没有 lastAutoBackupAt 时从自动备份文件名里解析时间", () => {
+    // 该键是 2026-10-29 新加的，老库里没有 —— 但文件名一直带着 UTC 精确时间
+    const justAfter = LAST_AUTO_MS + 2 * HOUR;
+    assert.ok(
+        !shouldRunNavBackup(null, justAfter, LAST_AUTO_NAME),
+        `文件名里的时间要能读出来（${LAST_AUTO_NAME}），否则升级后第一件事就是多传一份`
+    );
+    assert.ok(shouldRunNavBackup(null, LAST_AUTO_MS + NAV_BACKUP_INTERVAL_MS, LAST_AUTO_NAME));
+});
+
+test("文件名坏掉 / 认不出：当作「从没备份过」，宁可多备一次也不能永久不备", () => {
+    const now = Date.UTC(2026, 9, 29, 12, 0, 0);
+    for (const bad of [
+        "navihive-backup-auto-2026-10-19-1.json.gz", // 分隔符不对（宽松解析会把它猜成某个时间）
+        "navihive-backup-20261019-020000-005.json.gz", // 手动备份的前缀，不是自动备份
+        "随便一个名字.json.gz",
+        "navihive-backup-auto-.json.gz",
+    ]) {
+        assert.ok(shouldRunNavBackup(null, now, bad), `认不出的文件名（${bad}）该当作没备份过`);
+    }
+    // 时间戳是脏字符串（不是 ISO、也不是文件名）同理
+    assert.ok(shouldRunNavBackup("not-a-date", now, undefined));
+});
+
+test("时间戳落在未来（改过系统时间 / 文件名被改）：不能信它，照样跑", () => {
+    const now = Date.UTC(2026, 9, 29, 12, 0, 0);
+    const future = new Date(now + 30 * DAY).toISOString();
+    assert.ok(
+        shouldRunNavBackup(future, now),
+        "若相信未来的时间戳，「还差 N 天才到点」会永远成立 —— 备份就此静默"
+    );
+});
+
+test("触发表达式不再参与到点判定：任何频率都进入检查（e2e 的通配表达式必须照跑）", () => {
+    // 真正的到点判定已经搬到 shouldRunNavBackup（按上次成功时间），
+    // 与触发频率无关；cron-e2e 用 "* * * * *" 触发时必须真的跑一遍备份，
+    // 否则那六条断言全在测空气（2026-10-09 CI 实际发生过的红）。
     assert.ok(isNavBackupDue(undefined));
-    // cron-e2e 用通配表达式触发 → 必须跑，否则备份一次都不执行、断言全在测空气
     assert.ok(isNavBackupDue("* * * * *"));
-    // 历史上的每周触发器 → 跑
+    assert.ok(isNavBackupDue("0 * * * *"));
     assert.ok(isNavBackupDue("0 2 * * 1"));
-    // 唯一的每小时触发器：只在 UTC 周一 02 点档跑（2026-10-05 是周一）
-    assert.ok(isNavBackupDue("0 * * * *", new Date("2026-10-05T02:30:00Z")));
-    assert.ok(!isNavBackupDue("0 * * * *", new Date("2026-10-05T03:00:00Z")));
-    assert.ok(!isNavBackupDue("0 * * * *", new Date("2026-10-06T02:00:00Z")));
 });
 
 // ============ 真实 SQLite：导出形状与导入闭环 ============

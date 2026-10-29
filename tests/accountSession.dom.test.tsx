@@ -30,7 +30,6 @@ type Api = Params["api"];
 
 interface Log {
     errors: string[];
-    dataErrors: string[];
     notifies: string[];
     fetchCalls: number;
     switchedAccount: Array<number | null>;
@@ -49,7 +48,6 @@ interface Log {
 function emptyLog(): Log {
     return {
         errors: [],
-        dataErrors: [],
         notifies: [],
         fetchCalls: 0,
         switchedAccount: [],
@@ -154,7 +152,6 @@ function Harness({ log, o }: { log: Log; o: Options }) {
         notify: (text, level) => log.notifies.push(`${level ?? "info"}:${text}`),
         onError: m => log.errors.push(m),
         onMenuClose: () => log.menuClosed++,
-        onDataError: m => log.dataErrors.push(m),
         fetchData: async ({ silent }: { silent?: boolean } = {}) => {
             log.fetchCalls++;
             if (o.bootstrapIdentity) {
@@ -317,7 +314,11 @@ test("登出：清数据、收菜单、退出多选、并把上一个人的痕�
     assert.equal(log.clearHistory, 1);
     assert.equal(log.resetCollapsed, 1);
     assert.deepEqual(log.prefsAccount, [null]);
-    assert.ok(log.dataErrors.some(m => m.includes("已退出登录")));
+    // 走提示通道（原来是往数据层 error 里写，那会把整个站点列表换成一片空白）
+    assert.ok(
+        log.notifies.some(n => n.includes("已退出登录")),
+        `登出要有一句说明，实际 ${JSON.stringify(log.notifies)}`
+    );
 });
 
 test("登出会清掉邀请码与恢复密钥状态（换个账号登录不该看到上一个人的）", async () => {
@@ -379,7 +380,11 @@ test("注销账号成功：回到登录页、清空数据、清掉记住的登�
     assert.equal(state().authed, false);
     assert.equal(state().authRequired, true);
     assert.ok(log.groups.some(g => Array.isArray(g) && g.length === 0));
-    assert.ok(log.dataErrors.some(m => m.includes("账号已注销")));
+    // 注销是**成功**流程，不能写进「加载失败」（否则列表会被换成错误面板）
+    assert.ok(
+        log.notifies.some(n => n.includes("账号已注销")),
+        `注销完成要有提示，实际 ${JSON.stringify(log.notifies)}`
+    );
     assert.equal(a().deleteAccountOpen, false);
     assert.equal(a().deleteAccountPassword, "");
 });
@@ -442,8 +447,8 @@ test("启动检查：403（账号被停用）要退回登录页，并把服务�
     assert.equal(state().authed, false);
     assert.equal(state().authRequired, true);
     assert.deepEqual(
-        log.dataErrors,
-        ["账号已停用，可用恢复密钥找回"],
+        log.notifies,
+        ["error:账号已停用，可用恢复密钥找回"],
         "要把「能怎么找回」原样送到登录页，否则用户看到的是一片空白"
     );
 });
@@ -454,7 +459,12 @@ test("启动检查：网络抖动之类的错误不把人踢出登录页", async
     await run(() => a().checkAuthStatus());
     await flush();
 
-    assert.deepEqual(log.dataErrors, []);
+    // 网络抖动不是「被踢」：不该有任何把人赶回登录页的说明
+    assert.deepEqual(
+        log.notifies.filter(n => /停用|找回|登录/.test(n)),
+        [],
+        `网络抖动不该提示重新登录，实际 ${JSON.stringify(log.notifies)}`
+    );
     assert.equal(a().isAuthChecking, false);
 });
 

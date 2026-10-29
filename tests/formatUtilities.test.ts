@@ -1,7 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { fmtBytes, fmtDateTime, fmtRelative } from "../src/utils/format";
-import { formatSize, formatTime } from "../src/utils/backupFormat";
+import {
+    AUTO_BACKUP_STALE_DAYS,
+    daysSince,
+    formatSize,
+    formatTime,
+} from "../src/utils/backupFormat";
 
 for (const [bytes, expected] of [
     [0, "0 B"], [1023, "1023 B"], [1024, "1 KB"],
@@ -50,3 +55,23 @@ for (const [seconds, expected] of [
         assert.equal(fmtRelative(now.getTime() - seconds * 1000, { now }), expected);
     });
 }
+
+// ---- 「上次自动备份是几天前」：备份页那两行文案的原料 ----
+
+test("daysSince：按整天向下取整，解析不出来返回 null", () => {
+    const now = Date.UTC(2026, 9, 29, 12, 0, 0);
+    const day = 86_400_000;
+    assert.equal(daysSince(new Date(now - 2 * day).toISOString(), now), 2);
+    // 差 1 毫秒不满 3 天：显示「2 天前」比「3 天前」诚实
+    assert.equal(daysSince(new Date(now - 3 * day + 1).toISOString(), now), 2);
+    assert.equal(daysSince(new Date(now).toISOString(), now), 0);
+    // 时间戳在未来（机器时钟被改过）：夹到 0，不显示「-3 天前」
+    assert.equal(daysSince(new Date(now + 3 * day).toISOString(), now), 0);
+    assert.equal(daysSince("", now), null);
+    assert.equal(daysSince("not-a-date", now), null);
+});
+
+test("AUTO_BACKUP_STALE_DAYS 是 8：比 6.5 天的间隔多留一天半，避免「晚一小时」就报警", () => {
+    assert.equal(AUTO_BACKUP_STALE_DAYS, 8);
+    assert.ok(AUTO_BACKUP_STALE_DAYS > 6.5, "报警阈值必须大于备份间隔，否则正常节奏也会报警");
+});

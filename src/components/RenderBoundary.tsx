@@ -17,8 +17,13 @@
 // ChunkBoundary 同一条技术路线：纯 DOM + 内联样式。
 // 颜色一律取 index.css 的 CSS 变量（tests/hardcodedColorGuard.test.ts 是棘轮守卫，
 // 新文件里出现任何颜色字面量都会直接红），这样亮暗两套主题都跟得上。
+//
+// ⚠️ 面板样式在 `panelStyles.ts`，与 `SiteListErrorState.tsx`（加载失败那块）**同源**。
+//    改字号 / 按钮 / 文字色请改那个共用文件；这里只保留两处**语义上不同**的覆盖：
+//    中性色描边 + 内凹底色（「渲染崩了」是中性故障），而加载失败那块是警示色虚线。
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import { reportError } from "../utils/errorReporter";
+import { PANEL_BODY, PANEL_BOX, PANEL_BUTTON, PANEL_TITLE } from "./panelStyles";
 
 interface Props {
     /** 这段界面叫什么（只用于兜底文案与上报），比如「站点列表」「登录页」 */
@@ -78,35 +83,18 @@ export default class RenderBoundary extends Component<Props, State> {
             <div
                 role="alert"
                 style={{
-                    margin: 12,
-                    padding: "12px 14px",
-                    borderRadius: 10,
+                    ...PANEL_BOX,
+                    // 与 SiteListErrorState 的唯一视觉差异：中性描边 + 内凹底色。
+                    // 「界面渲染时抛了异常」是个中性故障（代码问题），不是警示状态。
                     border: "1px solid var(--neutral-hairline)",
                     background: "var(--surface-inset)",
-                    color: "var(--text-primary)",
-                    fontSize: 14,
-                    lineHeight: 1.7,
                 }}
             >
-                <div style={{ fontWeight: 600, marginBottom: 4 }}>
-                    {this.props.label}这块出了点问题
-                </div>
-                <div style={{ color: "var(--text-secondary)" }}>
+                <div style={PANEL_TITLE}>{this.props.label}这块出了点问题</div>
+                <div style={PANEL_BODY}>
                     界面渲染时抛了个异常，已经被拦在这里，其他部分照常可用，数据也没有写入服务器。
                 </div>
-                <button
-                    onClick={this.retry}
-                    style={{
-                        marginTop: 10,
-                        padding: "6px 14px",
-                        fontSize: 14,
-                        borderRadius: 8,
-                        border: "1px solid var(--neutral-border)",
-                        background: "var(--accent)",
-                        color: "var(--on-accent)",
-                        cursor: "pointer",
-                    }}
-                >
+                <button type="button" onClick={this.retry} style={PANEL_BUTTON}>
                     重试
                 </button>
             </div>

@@ -144,3 +144,78 @@ export function trimSnapshot(
     };
     return { v: 1, dead: trim(snapshot.dead), probe: trim(snapshot.probe), white: snapshot.white };
 }
+
+// ============ 导航页每周自动备份的到点判定 ============
+//
+// 为什么单独放一段、还写成纯函数：这条判定原来是一个「每周一 02:00-02:59（UTC）
+// 这一小时」的**墙上时钟窗口**，错过不补跑。线上实测的后果是：
+//
+//   最后一次自动备份停在 2026-10-19；10-26 那一周没有任何产出。
+//   而界面上「上次备份」看起来是正常的 —— 因为 10-26 用户手动点了一次备份，
+//   `webdav.lastBackupAt` 被刷成了当天，自动备份的死活完全看不出来。
+//
+// 也就是说：触发器差一分钟、容器重启、部署赶上那一小时，这一周的备份就静默消失，
+// 没有任何补偿。改成「距离上次**成功**的自动备份 ≥ 6.5 天就跑」之后，任何触发频率
+// 下都能自愈：晚了一小时就下一小时补，晚了一整天就明天补。
+
+/** 自动备份的间隔：一周（7 天）留出半天的余量，避免「刚好 7 天」被时钟抖动永远卡住 */
+export const NAV_BACKUP_INTERVAL_MS = 6.5 * 86400_000;
+
+/**
+ * 从自动备份文件名里解析出它的 UTC 时间戳（毫秒）。解析不出来返回 null。
+ *
+ * 存量兼容用：老库里没有 `webdav.lastAutoBackupAt` 这个键（这个键是 2026-10-29 才加的），
+ * 但文件名一直带着精确时间 —— `navihive-backup-auto-20261019-020000-005.json.gz`
+ * 里的 `20261019-020000-005` 就是 `2026-10-19T02:00:00.005Z`（UTC，末段是毫秒）。
+ *
+ * 为什么不宽松匹配（比如随便找 8 位数字）：文件名是用户网盘里能看见、也能被别的
+ * 工具改写的东西，宽松解析会把 `navihive-backup-auto-2026-10-19-1.json.gz` 这种
+ * 猜成某个时间，进而算出错误的「还有几天才到点」。
+ */
+export function parseAutoBackupFileTime(filename: string | null | undefined): number | null {
+    if (!filename || typeof filename !== "string") return null;
+    const m = /^navihive-backup-auto-(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})-(\d{3})\.json\.gz$/.exec(
+        filename
+    );
+    if (!m) return null;
+    const [, y, mo, d, h, mi, s, ms] = m;
+    const stamp = Date.UTC(
+        Number(y),
+        Number(mo) - 1,
+        Number(d),
+        Number(h),
+        Number(mi),
+        Number(s),
+        Number(ms)
+    );
+    return Number.isFinite(stamp) ? stamp : null;
+}
+
+/**
+ * 这次触发要不要跑导航页的自动备份。
+ *
+ * 判据是「距离上次**成功**的自动备份多久了」，不再是墙上时钟窗口：
+ *   - 从来没备份过（两种记录都没有）→ 跑；
+ *   - `lastAutoAt` 有值 → 用它（首选，它是成功时刻的权威记录）；
+ *   - `lastAutoAt` 缺失 / 坏掉 → 回退解析 `lastAutoBackupFile` 的文件名（存量兼容）；
+ *   - 两样都拿不到可用时间 → 跑（宁可多备份一次，也不能因为读不懂时间就永远不备份）；
+ *   - 距上次 < 6.5 天 → 跳过（每小时触发时这是常态）。
+ *
+ * @param lastAutoAt `webdav.lastAutoBackupAt`（ISO 字符串，可能为 null / 空 / 脏数据）
+ * @param nowMs 当前时间（毫秒），由调用方传，纯函数才好测
+ * @param lastAutoBackupFile `webdav.lastAutoBackup`（文件名），仅在上面那个缺失时用来兜底
+ */
+export function shouldRunNavBackup(
+    lastAutoAt: string | null | undefined,
+    nowMs: number,
+    lastAutoBackupFile?: string | null
+): boolean {
+    const stored = lastAutoAt ? Date.parse(lastAutoAt) : NaN;
+    const last = Number.isFinite(stored) ? stored : parseAutoBackupFileTime(lastAutoBackupFile);
+    // 从没备份过 / 读不出时间：配了就跑，别让一个坏字段把备份永久关掉
+    if (last === null || !Number.isFinite(last)) return true;
+    // 时间戳落在未来（改过系统时间、网盘里的文件名被人动过）：不能信它，
+    // 否则「还差 N 天才到点」会一直成立，备份永久静默 —— 正是这次要修的那类 bug
+    if (last > nowMs + 86400_000) return true;
+    return nowMs - last >= NAV_BACKUP_INTERVAL_MS;
+}

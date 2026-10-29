@@ -14,7 +14,13 @@ export type ChunkFailureText = {
     title: string;
     /** 接下来该做什么 */
     hint: string;
-    /** 还要不要给「重试」按钮 */
+    /**
+     * 还要不要给那个按钮。
+     *
+     * ⚠️ 按钮的动作已经从「重试」改成「刷新页面」（2026-10-29）：`React.lazy` 把
+     * 失败的 `import()` promise 永久缓存住，重挂子树只会把同一个错误再抛一遍。
+     * 所以下面所有 `retryable: true` 的 hint 都必须说「刷新」，不能再说「重试一次」。
+     */
     retryable: boolean;
 };
 
@@ -26,7 +32,7 @@ export function describeChunkFailure(offline: boolean, looksLikeChunkError: bool
     if (!looksLikeChunkError) {
         return {
             title: "这个功能没能打开",
-            hint: "界面里出了个问题，站点数据没有受影响。可以重试一次；一直不行就重新加载页面。",
+            hint: "界面里出了个问题，站点数据没有受影响。点下面的按钮会刷新页面后重新加载。",
             retryable: true,
         };
     }
@@ -41,7 +47,7 @@ export function describeChunkFailure(offline: boolean, looksLikeChunkError: bool
     }
     return {
         title: "这个功能没能加载出来",
-        hint: "多半是站点刚更新、你打开的还是上一版页面。点重试会重新取一次；不行的话刷新页面即可。",
+        hint: "多半是站点刚更新、你打开的还是上一版页面。点下面的按钮会清掉缓存、刷新页面后重新加载。",
         retryable: true,
     };
 }

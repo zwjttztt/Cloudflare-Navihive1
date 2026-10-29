@@ -72,8 +72,10 @@ type UseAccountSessionParams = {
     onError: (message: string) => void;
     /** 登出前先收起「更多选项」菜单，否则菜单会失去锚点跑到左上角 */
     onMenuClose: () => void;
-    /** 数据层错误提示（被踢回登录页时要说明原因） */
-    onDataError: (message: string) => void;
+    // ⚠️ 这里原来有个 onDataError（App 传的是 useSites 的 setError）。2026-10-29 拆掉：
+    // 它既装「流程提示」（已注销 / 已登出 / 被踢回登录页），而同一个 error 又被 App
+    // 当作「站点列表加载失败」的判据 —— 注销时会把整个列表换成一片空白且不带任何文字。
+    // 现在流程提示一律走 notify，error 只剩「真的加载失败」一个语义。
     /** 重新拉一次全量数据（silent=true 时不显示全屏 loading、不弹错误提示） */
     fetchData: (opts?: { silent?: boolean }) => Promise<unknown>;
     /** 登录 / 注册成功后把可能还开着的提示条收掉 */
@@ -106,7 +108,6 @@ export function useAccountSession({
     notify,
     onError,
     onMenuClose,
-    onDataError,
     fetchData,
     onCloseSnackbar,
     onSwitchAccount,
@@ -382,7 +383,9 @@ export function useAccountSession({
                 setIsAuthRequired(true);
                 setCurrentUser(null);
                 clearBootstrapCache();
-                onDataError(result.message || "账号已注销");
+                // 走提示通道（不是数据层 error）：账号确实注销成功了，
+                // 这时把站点列表判成「加载失败」反而更糟
+                notify(result.message || "账号已注销", "success");
             }
             return result;
         } catch (error) {
@@ -495,7 +498,8 @@ export function useAccountSession({
             if (failure.backToLogin) {
                 setIsAuthenticated(false);
                 setIsAuthRequired(true);
-                if (failure.message) onDataError(failure.message);
+                // 走提示通道：这是「为什么被踢回登录页」的说明，不是站点数据加载失败
+                if (failure.message) notify(failure.message, "error");
             }
         } finally {
             setIsAuthChecking(false);
@@ -659,8 +663,8 @@ export function useAccountSession({
         // 不在这里清掉，重登后还会停在「批量多选」态。退出时连勾选一并清空。
         onExitMultiSelect();
 
-        // 显示提示信息
-        onDataError("已退出登录，请重新登录");
+        // 显示提示信息（走提示通道：登出是正常流程，不是站点数据加载失败）
+        notify("已退出登录，请重新登录", "info");
     };
     return {
         isAuthChecking,

@@ -55,10 +55,21 @@ jobs:
       - name: 安装依赖
         run: npm ci
 
-      # 依赖漏洞巡检：只报 high/critical，且不阻断流水线
-      # （历史依赖经常有修不动的间接告警，硬失败只会让人习惯性忽略 CI）。
-      # 真正要修的项由 Dependabot 每周开 PR 跟进（.github/dependabot.yml）。
-      - name: 依赖安全巡检
+      # 依赖漏洞扫描，两段分工（2026-10-29 改）：
+      #
+      # 1) 第一段是**门禁**：只看生产依赖（--omit=dev），有 high/critical 就直接红。
+      #    以前这里只有一句 `npm audit --audit-level=high || true` —— 永远绿，
+      #    等于没有扫描：真出了 high 漏洞，CI 也照样放行，没人会去看日志。
+      #    为什么要 --omit=dev：devDependencies 全是构建 / 测试工具，不进产物、
+      #    不进镜像；对它们的告警硬失败只会逼人习惯性忽略 CI（而这正是上一版的病）。
+      #    ⚠️ 改这条之前必须本地确认它是 0 漏洞，否则一提交 CI 立刻红。
+      # 2) 第二段是**只报告**：全量（含 dev）审计继续跑，但不拦截 ——
+      #    间接依赖的告警常常一时修不动，交给 Dependabot 每周开 PR 跟进
+      #    （.github/dependabot.yml），而不是卡住每一次合并。
+      - name: 依赖安全门禁（生产依赖，high/critical 即失败）
+        run: npm audit --audit-level=high --omit=dev
+
+      - name: 依赖安全巡检（全量，仅报告）
         run: npm audit --audit-level=high || true
 
       - name: 类型检查
