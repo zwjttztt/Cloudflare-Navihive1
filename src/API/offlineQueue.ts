@@ -111,6 +111,45 @@ export const MAX_FAILED_KEPT = 50;
 export const MAX_PAYLOAD_BYTES = 256 * 1024;
 
 /**
+ * 待同步队列的**总**字节上限（1 MB）。
+ *
+ * 为什么单条上限还不够：E-3 只管住「一条操作有多大」，管不住「一共排了多少条」。
+ * 10 条 250 KB 的批量建站刚好各条都合规，加起来 2.5 MB —— localStorage 每源只有
+ * ~5 MB，再算上失败清单与临时 id 映射，写进去就超了。而 writeJson 是尽力而为的
+ * （catch 掉配额异常），于是**整批队列在用户眼里凭空消失**：角标归零、编辑全丢，
+ * 控制台一声不响。这正是本文件开头说的「静默丢」最难看的一面。
+ *
+ * 所以入队前先算「现有总量 + 本条」，超了就当面抛 OfflineQueueFullError 且不入队 ——
+ * 明确拒绝一次，远比静默丢掉全部已排队操作好。
+ *
+ * ⚠️ 为什么是 O(n) 逐条重算而不是维护一个累计字节数：队列条数本来就很少（1 MB / 单条
+ * 几百字节 ≈ 上千条是理论值，实际正常使用个位数），内存里的数组求和比「增量计数与
+ * 各种出队路径（drop / takeAll / requeue / retryFailed）保持同步」可靠得多 ——
+ * 增量计数漏更新一处就会算错，而算错的方向可能是「明明满了却继续塞」。
+ *
+ * ⚠️ 口径必须说清：这是**args 序列化字节的上限，不是盘上字节的硬上限**。
+ * 闸门只累加 `estimatePayloadBytes(op.args)`，而落盘的是整条记录 ——
+ * 每条还带 kind / ts / uid / opId / state 这些信封字段，实测约 **123 B/条**。
+ * QA 用 102 条小操作实测：闸门口径 1046206 B（占 1 MB 的 99.8%），
+ * 盘上实际 1058753 B（**101.0%**），溢出约 **1.2%**。
+ * 也就是说「闸门放行」并不等于「盘上一定装得下」—— 剩下的余量靠的是
+ * localStorage 的 ~5 MB 配额远大于 1 MB（差了 4 MB，1.2% 的溢出吃不出问题）。
+ * 真要改成盘上硬上限，就得把信封开销也计进来（还得预知 opId 长度），
+ * 换来的只是数字更整齐 —— 不值得。**别照着这个常量去断言盘上字节数。**
+ */
+export const MAX_QUEUE_BYTES = 1024 * 1024;
+
+/**
+ * 失败清单的总字节上限（1 MB）。
+ *
+ * 单靠 MAX_FAILED_KEPT=50 是不够的：50 × 256 KB = 12.5 MB，是 localStorage 配额的
+ * 2.5 倍。真要撞上（比如离线反复重试同一批批量建站），失败清单会把配额吃光，
+ * 之后连待同步队列都写不进去 —— 那批操作才是用户真正的编辑，它们不该被
+ * 「已经失败的记录」挤掉。所以两条闸门并存：条数管噪声，字节管配额。
+ */
+export const MAX_FAILED_BYTES = 1024 * 1024;
+
+/**
  * 一条操作超出入队载荷上限。
  *
  * 刻意**不**继承 OfflineQueuedError：那条错误的意思是「已经帮你存下来、联网会自动
@@ -132,18 +171,79 @@ export class QueuePayloadTooLargeError extends Error {
 }
 
 /**
+ * 待同步队列已经排满（总字节超过 MAX_QUEUE_BYTES），本条**没有**入队。
+ *
+ * 与 QueuePayloadTooLargeError 同一立场：不继承 OfflineQueuedError。那条的意思是
+ * 「帮你存下来了，联网自动同步」，这条的意思是「存不下了，请联网先把现有的发出去」。
+ * 混成一条的话界面会说「已暂存」，而用户的这次编辑其实当场就没了。
+ *
+ * message 直接给用户看（上层只负责把它塞进提示里），所以要写清「存不下」和「怎么办」。
+ * 展示 MB 而不是字节 —— 「1048576 字节」没人算得出来。
+ *
+ * ⚠️ 刻意**不**写「已占用 X / 上限 Y」这组对比：超限 1 个字节时两个数按 MB 取整
+ * 都会显示成 1，用户读到「已占用 1 MB / 上限 1 MB」却说满了，是自相矛盾。
+ * 这不是精度问题（1.0000009 修到几位都还是 1.0 / 1.0），是那组对比本身不该出现。
+ * 只报上限 + 一句「怎么办」就够了。
+ */
+export class OfflineQueueFullError extends Error {
+    constructor(
+        /** 本条要入队的载荷估算字节数 */
+        public readonly size: number,
+        /** 含本条在内的队列总字节数（超了上限的那个值）—— 不进文案，留给日志与断言用 */
+        public readonly total: number,
+        public readonly limit: number = MAX_QUEUE_BYTES
+    ) {
+        super(`离线待办已达上限（${formatMb(limit)}），请联网后再试`);
+        this.name = "OfflineQueueFullError";
+    }
+}
+
+/**
+ * 这次操作的内容**无法序列化成 JSON**（循环引用 / BigInt 之类），因此没法离线暂存。
+ *
+ * 为什么必须有这条错误，而不是像以前那样「估成 0 字节放过去」：
+ * 队列最终要 JSON.stringify 落进 localStorage。估成 0 的话两道闸门都当它免费放行，
+ * 随后 writeJson 里的 stringify 抛错又被 catch 吞掉 —— 结果是**内存里有、盘上没有**。
+ * 更糟的是这条坏记录会让整个会话的落盘一起失效（序列化整份数组时在同一条上抛），
+ * 于此后每一笔正常编辑都「排队成功、刷新后全丢」，而界面一切正常。
+ * 这正是本轮要消灭的「静默丢」最坏的一种，所以宁可在入队这一刻明确拒绝。
+ *
+ * 同样**不**继承 OfflineQueuedError：它是「没存」，不是「已暂存」。
+ */
+export class OfflineQueueUnserializableError extends Error {
+    constructor(public readonly kind: string = "unknown") {
+        super("该操作无法离线暂存（内容含无法序列化的数据），请联网后重试");
+        this.name = "OfflineQueueUnserializableError";
+    }
+}
+
+/** 把字节数换成给用户看的 MB 文案（1 MB 上限要显示成「1 MB」而不是「0.95 MB」） */
+function formatMb(bytes: number): string {
+    const mb = bytes / (1024 * 1024);
+    const rounded = mb >= 1 ? Math.round(mb * 10) / 10 : Math.ceil(mb * 10) / 10;
+    return `${rounded} MB`;
+}
+
+/**
  * 估算一次操作序列化后的字节数（UTF-8）。
  *
  * 用 TextEncoder 而不是 `json.length`：中文标题约占 3 字节/字，
  * 按字符数算会把 90 KB 的批量建站当成 30 KB，闸门就形同虚设。
- * 序列化失败（循环引用 / BigInt）返回 0 —— 本轮不做过度防御，交给上层真实报错。
+ *
+ * 序列化失败（循环引用 / BigInt）返回 **Infinity**，不是 0 —— 这个值必须让闸门**拒绝**。
+ * 返回 0 的话两道闸门都当它免费放行，接着 writeJson 里那次 stringify 同样抛错、
+ * 同样被 catch 吞掉，于是那条记录「内存里有、盘上没有」，还会让**整份数组**之后
+ * 都序列化失败（同一个坏条目）—— 之后每一笔正常编辑都排队成功、刷新后全丢。
+ * 用 MAX_PAYLOAD_BYTES + 1 做哨兵也不行：那样错误会走「过大」那条文案，
+ * 对用户说「操作太大」，而真实原因是内容压根没法序列化。Infinity 能同时满足
+ * 「必被拒绝」「不冒充体积」两点，并由调用方先做有限性检查给出正确的错误。
  */
 export function estimatePayloadBytes(args: unknown[]): number {
     let json: string;
     try {
         json = JSON.stringify(args) ?? "";
     } catch {
-        return 0;
+        return Number.POSITIVE_INFINITY;
     }
     return new TextEncoder().encode(json).byteLength;
 }
@@ -304,6 +404,16 @@ export function translateTempIds(args: unknown[], map: Record<string, number> = 
 
 // ---------------- 入队 / 出队 ----------------
 /**
+ * 一组操作参数的总字节数（O(n) 求和，见 MAX_QUEUE_BYTES 的注释为什么不做增量计数）。
+ *
+ * 求和遇到不可序列化项（Infinity）时结果是 Infinity，比较 `total > MAX_QUEUE_BYTES`
+ * 仍然成立 —— 也就是「放不进去」，方向是对的，不需要额外处理。
+ */
+function totalPayloadBytes(items: ReadonlyArray<{ args: unknown[] }>): number {
+    return items.reduce((sum, item) => sum + estimatePayloadBytes(item.args), 0);
+}
+
+/**
  * 离线时把一次失败的操作存进队列。
  *
  * 带上入队时的账号：重放前会比对，账号对不上就不重放 ——
@@ -317,8 +427,19 @@ export function enqueueMutation(kind: string, args: unknown[]): PendingMutation 
     // 超限就当面拒绝，不入队：一条 4 MB 的备份进队列后，后面的操作会因为写不进
     // localStorage 配额而静默消失（writeJson 是尽力而为）—— 那比明确报错糟得多。
     const size = estimatePayloadBytes(args);
+    // ⚠️ 顺序不能反：不可序列化时 size 是 Infinity，先拿到下面那条会打印出
+    // 「约 Infinity KB」，用户完全看不懂；而且真正的原因（内容没法序列化）也被盖住了。
+    if (!Number.isFinite(size)) {
+        throw new OfflineQueueUnserializableError(kind);
+    }
     if (size > MAX_PAYLOAD_BYTES) {
         throw new QueuePayloadTooLargeError(kind, size);
+    }
+    // 第二道闸门看**总量**：每条都合规、加起来超配额同样会静默丢掉整个队列。
+    // 判据用「现有 + 本条 > 上限」而不是「≥」：正好塞满 1 MB 是合法的，不该拒。
+    const total = totalPayloadBytes(queue) + size;
+    if (total > MAX_QUEUE_BYTES) {
+        throw new OfflineQueueFullError(size, total);
     }
     // 新建类操作需要占位 id：离线时拿不到服务端发号，界面得先有个 id 才能继续操作
     // （在刚建的分组下加站点、编辑刚建的卡片）。更新 / 删除都用已有的真实 id。
@@ -398,6 +519,21 @@ function pushFailed(op: PendingMutation, reason: string): void {
     });
     // 只留最近这些条：再多的历史对排错没帮助，还会把 localStorage 撑爆
     if (failed.length > MAX_FAILED_KEPT) failed = failed.slice(-MAX_FAILED_KEPT);
+    // 条数上限兜不住字节：50 × 256 KB = 12.5 MB，是配额的 2.5 倍。按**最旧的先丢**裁到
+    // 字节上限内 —— 用户要救的是最近那次编辑，最旧的失败项排错价值也最低。
+    // 保底留 1 条（进不来循环）：失败清单的全部意义就是「让用户看见」，清空等于把
+    // 「你没同步成功」这件事一起藏起来。单条已受 MAX_PAYLOAD_BYTES（256 KB）限制，
+    // 一条撑满 1 MB 需要 4 倍，物理上不会发生。
+    let failedBytes = totalPayloadBytes(failed);
+    while (failed.length > 1 && failedBytes > MAX_FAILED_BYTES) {
+        const dropped = failed.shift();
+        if (!dropped) break;
+        const droppedBytes = estimatePayloadBytes(dropped.args);
+        // 不可序列化的条目理论上进不来（enqueueMutation 的有限性闸门已经拦掉），
+        // 这里只做兜底：Infinity 一旦参与减法会得到 -Infinity，循环随即退出、
+        // 裁剪静默失效 —— 正是这个文件反复在修的那种「看着没事，其实防线没了」。
+        if (Number.isFinite(droppedBytes)) failedBytes -= droppedBytes;
+    }
     writeJson(failedStorageKey, failed);
     // ⚠️ 必须在这里通知：重放路径是「先 drop(op) 再 pushFailed(op)」，
     // drop 里那次通知发出去时这条还没进失败清单，订阅者（OfflineBanner、顶栏角标）
@@ -644,9 +780,10 @@ let wrapped = false;
  * OfflineQueuedError（让上层显示温和提示），服务端自身的错误（5xx / 参数错）则原样抛出、
  * 不入队。幂等，多次调用只在第一次生效。
  *
- * ⚠️ 还多一种出口：载荷超过 MAX_PAYLOAD_BYTES 时 enqueueMutation 抛
- * QueuePayloadTooLargeError，它会**原样穿出这一层**（不包装成 OfflineQueuedError）——
- * 因为那条错误代表「已暂存」，而这里什么都没存。调用方按需要单独提示。
+ * ⚠️ 还多两种出口：载荷超过 MAX_PAYLOAD_BYTES（QueuePayloadTooLargeError）、
+ * 或队列总字节超过 MAX_QUEUE_BYTES（OfflineQueueFullError）时，enqueueMutation 抛的错会
+ * **原样穿出这一层**（不包装成 OfflineQueuedError）—— 因为那条错误代表「已暂存」，
+ * 而这两条都表示什么都**没存**，调用方要单独提示。
  */
 export function wrapMutations(api: MutationApi): void {
     if (wrapped) return;

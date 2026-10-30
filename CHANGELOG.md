@@ -6,6 +6,90 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。
 
+## 2026-10-30 · 修复 + 工程：离线队列不再静默丢 / 保留策略真库用例 / Q-3 豁免分批（21.1.0）
+
+21.0.0 把 P3 六项的骨架立起来之后，这一轮补的是骨架下面的洞：离线队列从「写不进就静默丢」
+改成「超限就显式拒绝」，保留策略补上真库用例，Q-3 的 63 条豁免按季度分批到期。零新依赖，
+7 文件 / 777 行。
+
+### 一、离线队列：总字节闸门 + 不可序列化载荷显式拒绝
+
+**问题**：以前只有单条载荷上限（256 KB），队列整体没有上限；更要紧的是 `writeJson` 吞掉
+localStorage 配额异常，**写不进就静默丢**。
+
+**做法**：
+- 新增总字节闸门 `MAX_QUEUE_BYTES = 1 MB`：`enqueueMutation` 在单条检查之后再算总量，超限抛
+  `OfflineQueueFullError`，文案直接展示给用户。
+- 失败清单同样加 `MAX_FAILED_BYTES = 1 MB`，按最旧先丢裁到上限（`while (failed.length > 1 && …)`，
+  保底留 1 条）。
+- **QA 挖出的真缺陷**：`estimatePayloadBytes` 的 `catch { return 0 }` 让不可序列化载荷（循环引用）
+  被判成 **0 字节**——两道闸门都当它免费放行，`writeJson` 再把 stringify 的错吞掉，结果
+  **内存有、盘上无**，而且**一条就能毒化整个会话**（之后正常操作也写不进盘，刷新全丢）。
+  修法：catch 改成 `Number.POSITIVE_INFINITY`，`enqueueMutation` **先判 `Number.isFinite` 再判单条上限**，
+  非有限值抛新的 `OfflineQueueUnserializableError`。
+  - **为什么用 Infinity 不用 `MAX_PAYLOAD_BYTES + 1`**：后者会落到「载荷过大」的文案，对用户说错原因。
+  - **为什么顺序不能反**：先判上限会让 `QueuePayloadTooLargeError` 打印出 `Infinity KB`。
+- `pushFailed` 裁剪时先取 `droppedBytes`、判 `isFinite` 再减——否则 `failedBytes` 变 `-Infinity`，
+  裁剪循环立刻退出，防线静默失效（正是这轮在修的那类缺陷）。
+
+**口径诚实**：`MAX_QUEUE_BYTES` 是「args 序列化字节上限」，**不是盘上硬上限**。实测每条信封开销
+约 123 B（kind/ts/uid/opId/state），102 条时闸门口径占 99.8% 而盘上 101.0%，极端条目数下溢出约 1.2%。
+余量靠的是 5 MB 配额远大于 1 MB——不要照这个常量去断言盘上字节数。
+
+**测试**：`tests/offlineQueue.test.ts` +3 条，核心是**反毒化断言**——拒绝一条循环引用之后，
+再入一条正常载荷必须成功**且盘上真的多一条**（断言顺序特意先盘上后内存：反过来报错只会说
+「内存多了 1 条」，而真正致命的是盘上没动）。`tests/siteCreator.dom.test.tsx` +1 条覆盖用户可见文案链路。
+
+**红绿验证**：把 catch 临时改回 `return 0`，3 条新用例全红，反毒化那条报的正是
+`盘上也必须真的多一条 —— 否则刷新就丢 / 0 !== 1`。改回 Infinity 后全绿。
+
+### 二、保留策略补真库用例（D-16）
+
+**问题**：FakeD1 不执行 SQL，两个 purge 函数的语义差异测不出来。
+
+**做法**：新建 `tests/retentionRealDb.test.ts`，用 `node:sqlite` 真库跑 4 条：无参清过期 /
+`purgeExpiredIdempotency(7)` 反证删 0 条 / `purgeExpiredAudit(7)` 走 `datetime('now','-N days')` /
+`cleanupExpiredRows().idempotency === 2`。
+
+**D-16 的真相**：`purgeExpiredIdempotency(now = Date.now())` 的入参是**毫秒时间戳**
+（`expires_at` 是 INTEGER 毫秒），不是天数。传 `7` 的后果不是「误删未过期键」，而是
+**一条都删不掉**——永久静默空转。真库实测：2 过期 + 2 未过期，无参删 2 留 2，传 `7` 删 0 留 4；
+`typeof(expires_at)` = `integer`、13 位毫秒。对比 `purgeExpiredAudit(days)` 走
+`datetime('now','-N days')`，`created_at` 是 TIMESTAMP 文本。
+
+**变异测试**：把 `recycle.ts` 的调用改回 `purgeExpiredIdempotency(days)` → 4 条里 1 条红，正是
+「D-16 接线」那条；把 `expires_at <= ?` 翻成 `>= ?` → 3 条红。证明用例不是空壳。
+
+### 三、Q-3 豁免按季度分批到期
+
+**问题**：63 条 `noUncheckedIndexedAccess` 豁免的 `due` 全是 `2026-12-31`，到期那天集体爆掉，
+等于给未来埋了一颗定时炸弹。
+
+**做法**：按文件路径排序切成 21/21/21 三批，`due` 分别为 `2026-12-31` / `2027-03-31` / `2027-06-30`，
+`reason` 标注批次；`path` / `owner` 不动，基线 `maxEntries: 63` 不动。守卫实测仍是
+「严格层 366 处 / 63 文件；豁免 63 条」。
+
+**负向验证**：临时删掉 `worker/util.ts` 那一条 → 守卫变红并准确点名「这些文件在严格层报错，
+但不在清单里：worker/util.ts」，366/63 不变、清单 62。证明守卫不是空壳。
+
+### 四、首屏预算刻度 264 → 266 KB
+
+`index` chunk 实测 251.49 → 251.77 KB，264 的余量只剩 **4.98%**（差 0.06 KB 跌破 5%），
+而上一版 5.20% 本来就贴线。入队闸门必须跑在「离线写失败那一刻」，物理上没法 lazy，属于躲不掉的字节。
+抬到 266 后余量 5.35%。
+
+**盯一下**：真实首屏（含 modulepreload 与 css）gzip 余量已降到 **3.54%**（289.7 / 300 KB，剩 1.56 KB），
+下一轮任何首屏增长都会先撞这条，且会以「gzip 余量 < 3%」的形式发作，不太好归因。
+
+### 五、下一轮挂账
+
+- `script/coverage.mjs`：抢锁失败时内层 runner 不给数据，c8 把覆盖率算成 **0.0%**，报出来像
+  「覆盖率崩塌」。应改成「内层 runner 非零退出 → 直接中止并转述锁冲突」，绝不基于空数据算地板。
+  仓库已有 `unitRunnerLockGuard` 用例，有现成落点。
+- `tests/bundleBudget.test.ts` 的 `BASELINE_KB` 仍 250.01，是预算推导时的历史锚点，本轮刻意不动
+  （每轮跟着改会抹掉漂移信号；「当前实测 vs 预算」那条检查用的是实测值，没有假绿）。
+- 「合并 RenderBoundary 与根 ErrorBoundary」约 1.3 KB，可作预算紧张时的刀。
+
 ## 2026-10-30 · 工程 + 修复：P3 六项持续项 —— 覆盖率分层 / Q-3 棘轮 / 离线载荷上限 / 保留策略 / 扩展契约 / Safari 守卫（21.0.0）
 
 评审报告 §18 的 P3 六项（T-01–T-06）。这一档原本是「持续项」（优先级最低），所以取舍是

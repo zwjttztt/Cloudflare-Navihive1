@@ -10,6 +10,11 @@ import assert from "node:assert/strict";
 import { act, useEffect, useRef, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { useSiteCreator, type CreatorApi } from "../src/hooks/useSiteCreator";
+import {
+    MAX_QUEUE_BYTES,
+    OfflineQueueFullError,
+    OfflineQueueUnserializableError,
+} from "../src/API/offlineQueue";
 import type { GroupWithSites } from "../src/types";
 import type { Group, Site } from "../src/API/http";
 
@@ -281,3 +286,46 @@ test("一键生成图标：没填网址时提示，填了才写图标", async ()
     assert.ok(log.notes.includes("success:已根据站点链接生成图标URL"));
     cleanup();
 });
+
+test("离线没存下的那几种错误：给用户的必须是 error.message 原文，不能套「创建失败」", async () => {
+    // 这条盯的是用户可见链路上最容易写错的一句：offlineQueue 抛出的 message 本身就是
+    // 给用户看的完整文案（说清「没保存」和「怎么办」），再套一层
+    // 「创建站点失败: …」会把它埋进技术噪音里。三个分支共用同一段 instanceof + onError，
+    // 这里钉两条（队列满 / 内容无法序列化）就足以证明分支接上了。
+    const cases = [
+        new OfflineQueueFullError(1000, MAX_QUEUE_BYTES + 1),
+        new OfflineQueueUnserializableError("createSite"),
+    ];
+    for (const err of cases) {
+        const log: Log = {
+            createSite: [],
+            createGroup: [],
+            upserted: [],
+            errors: [],
+            notes: [],
+            duplicateCalls: 0,
+        };
+        const api: CreatorApi = {
+            createGroup: async input => ({ ...input, id: 99 }) as Group,
+            createSite: async () => {
+                throw err;
+            },
+        };
+        mount(<Harness api={api} log={log} menuCloser={noop} guard />);
+        await run(() => c().handleOpenAddSite(1));
+        await fill("百度", "https://baidu.com");
+        await run(() => c().handleCreateSite());
+        await tick();
+
+        assert.equal(log.errors.length, 1, `${err.name}：应当只有一条提示`);
+        assert.equal(log.errors[0], err.message, "原样展示给用户，别改写、别拼接");
+        assert.ok(
+            !log.errors[0].startsWith("创建站点失败"),
+            "套上兜底文案等于把「没保存」这条关键信息淹掉"
+        );
+        // 没存下来就不该有本地乐观插入，否则界面会显示一张服务端并不存在的卡片
+        assert.deepEqual(log.upserted, [], `${err.name}：没入队就不能乐观插入卡片`);
+        cleanup();
+    }
+});
+
