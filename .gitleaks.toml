@@ -25,6 +25,8 @@ paths = [
     '''src/API/mock\.ts''',
     # 单测脚本的产物目录（script/tmp-tests），内容是从 tests/ 拷出来的
     '''script/tmp-tests/''',
+    # D1 限制常量 + 严格模式开关的环境变量名（NAVIHIVE_STRICT_D1 等）：都是常量名，不是凭据
+    '''src/API/d1Limits\.ts$''',
 ]
 
 # 值本身带着这些字样的，一律不算密钥
