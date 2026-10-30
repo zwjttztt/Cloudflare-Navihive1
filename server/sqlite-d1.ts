@@ -24,7 +24,163 @@
 
 import { DatabaseSync, type SQLInputValue, type StatementSync } from "node:sqlite";
 import type { D1Database, D1PreparedStatement, D1Result } from "../src/API/schema";
+import {
+    D1_MAX_BATCH_STATEMENTS,
+    D1_MAX_BOUND_PARAMS,
+    D1_MAX_SQL_LENGTH_BYTES,
+    D1_STRICT_ENV_KEY,
+} from "../src/API/d1Limits";
 import { recordSlowQuery, slowQueryEnabled, slowQueryThresholdMs } from "./slowQuery";
+
+// ---------------------------------------------------------------------------
+// 严格模式（2026-10-30）：让「本机跑得飞起、上线必炸」这类缺陷在本机就炸出来
+// ---------------------------------------------------------------------------
+//
+// 为什么需要它：本机 SQLite 的变量上限是 32766、单进程也没有语句数上限，而 D1 的
+// 硬限制（单条 SQL 100 个绑定参数、100 KB 语句长度）**在本机永远测不出来**。评审里
+// 已经因为它漏掉了 4 处同源缺陷（`IN (?×500)`、无上限 batch 等）。与其逐条修完继续漏，
+// 不如让模拟层在违反时主动报错 —— 这正是本文件存在的理由（把 D1 的契约补齐）。
+//
+// 默认关，靠环境变量开：`NAVIHIVE_STRICT_D1=1`。
+// 为什么不默认开：现有测试里有一批就是要拿大批量语句喂进去（覆盖迁移 / 恢复路径），
+// 默认开会把它们一次全打红，掩盖真正要找的问题；先用开关把现有套件稳住，
+// 再让 CI 的 e2e 步骤带开关跑（那时红 = 真抓到了）。
+//
+// 违反时**抛错**而不是 console.warn：这一整轮评审的教训就是「检查一直在跑但没人看」
+// —— 警告会被淹没，只有让请求失败才会有人来修。
+
+/** 严格模式查出来的违规类型；测试与日志靠它分辨是哪一类 */
+export type StrictD1ViolationKind =
+    | "bound-params"
+    | "sql-length"
+    | "batch-size"
+    | "named-parameter"
+    | "returning-in-exec"
+    | "returning-in-literal";
+
+export class StrictD1Violation extends Error {
+    readonly kind: StrictD1ViolationKind;
+    /** 出问题的那条 SQL 的形状（`?` 已折叠成 `?×N`），用来一眼认出调用形态 */
+    readonly shape: string;
+
+    constructor(kind: StrictD1ViolationKind, message: string, shape = "") {
+        // 形状拼进 message：日志里通常只留 error.message，挂在单独字段上没人看得到
+        super(shape ? `${message}\n  出问题的 SQL：${shape}` : message);
+        this.name = "StrictD1Violation";
+        this.kind = kind;
+        this.shape = shape;
+    }
+}
+
+/**
+ * 开关是否打开。每次现读环境变量（不缓存）：单测要在同一进程里来回切。
+ * 这个进程一定是 Node —— 本文件只在自托管侧被 import（server/entry.ts），
+ * Worker 产物里没有它，所以这里读 process.env 是安全的。
+ */
+export function d1StrictEnabled(): boolean {
+    const raw = process.env[D1_STRICT_ENV_KEY] ?? "";
+    return raw === "1" || raw.trim().toLowerCase() === "true";
+}
+
+/** SQL 里的 `'...'` 字面量（含 SQL 里用两个单引号转义的那种） */
+const STRING_LITERAL_RE = /'(?:[^']|'')*'/g;
+
+/** SQLite 支持而 D1 不支持的命名参数：`:name` / `@name` / `$name`（`?NNN` 不算） */
+const NAMED_PARAM_RE = /[:@$][A-Za-z_][A-Za-z0-9_]*/;
+
+/**
+ * 把 ?? , ?? , ?? 折叠成 ??×N，让报错里能一眼看出「这是一条 IN (几百个 id)」。
+ * 原始 SQL 可能有 100 KB，全打进错误信息既读不了也污染日志。
+ */
+function sqlShape(sql: string): string {
+    const collapsed = sql
+        .replace(/\?(\s*,\s*\?)+/g, match => {
+            const count = (match.match(/\?/g) || []).length;
+            return `?×${count}`;
+        })
+        .replace(/\s+/g, " ")
+        .trim();
+    return collapsed.length > 200 ? `${collapsed.slice(0, 200)}…（共 ${collapsed.length} 字符）` : collapsed;
+}
+
+/** 命名参数检查要先剥掉字符串字面量：`'a:b'` 不是参数占位符 */
+function hasNamedParameter(sql: string): boolean {
+    const stripped = sql.replace(STRING_LITERAL_RE, "''");
+    return NAMED_PARAM_RE.test(stripped);
+}
+
+/**
+ * RETURNING 落在字符串字面量里：适配器的「这条语句会不会返回行」是**按正则**判的
+ * （RETURNING_RE），`INSERT INTO t (v) VALUES ('returning')` 会把它骗到 ——
+ * 于是本该走 run() 的写语句走了 all()，`results` 变成空数组。线上（真 D1）不吃这套正则，
+ * 行为就分叉了。严格模式下直接拦下，逼写 SQL 的人换个说法。
+ */
+function returningInsideLiteral(sql: string): boolean {
+    for (const match of sql.matchAll(STRING_LITERAL_RE)) {
+        if (RETURNING_RE.test(match[0])) return true;
+    }
+    return false;
+}
+
+/** 单条语句的严格检查。绑定位数在执行时才已知，所以在 run/first/all 的入口查 */
+function checkStatement(sql: string, bound: number): void {
+    if (!d1StrictEnabled()) return;
+    if (bound > D1_MAX_BOUND_PARAMS) {
+        throw new StrictD1Violation(
+            "bound-params",
+            `这条 SQL 绑了 ${bound} 个参数，D1 单条语句上限是 ${D1_MAX_BOUND_PARAMS} 个` +
+                `（本机 SQLite 上限 32766，所以本机永远试不出来）。按 ${D1_MAX_BOUND_PARAMS} 切批再发。`,
+            sqlShape(sql)
+        );
+    }
+    const bytes = Buffer.byteLength(sql, "utf8");
+    if (bytes > D1_MAX_SQL_LENGTH_BYTES) {
+        throw new StrictD1Violation(
+            "sql-length",
+            `这条 SQL 有 ${bytes} 字节，D1 单条语句上限 ${D1_MAX_SQL_LENGTH_BYTES} 字节` +
+                `（10 万个 ? 撑爆的不只是参数数，还有语句长度）。`,
+            sqlShape(sql)
+        );
+    }
+    if (hasNamedParameter(sql)) {
+        throw new StrictD1Violation(
+            "named-parameter",
+            "D1 的 bind() 只支持 ? 与 ?NNN，不支持 :name / @name / $name" +
+                "（SQLite 支持，所以本机照样能跑、上线才失败）。改成 ? 按顺序 bind。",
+            sqlShape(sql)
+        );
+    }
+    if (returningInsideLiteral(sql)) {
+        throw new StrictD1Violation(
+            "returning-in-literal",
+            "returning 出现在字符串字面量里：适配器判断「会不会返回行」靠的是正则，会被它骗到" +
+                "（行被吞掉，只有 meta.changes 是对的）。换个列名或换个字面量说法。",
+            sqlShape(sql)
+        );
+    }
+}
+
+/** exec() 的严格检查：它没有绑定、也不回行，所以 RETURNING 写在这里等于白写 */
+function checkExec(sql: string): void {
+    if (!d1StrictEnabled()) return;
+    const bytes = Buffer.byteLength(sql, "utf8");
+    if (bytes > D1_MAX_SQL_LENGTH_BYTES) {
+        throw new StrictD1Violation(
+            "sql-length",
+            `exec 的 SQL 有 ${bytes} 字节，超过 D1 单条语句上限 ${D1_MAX_SQL_LENGTH_BYTES} 字节。`,
+            sqlShape(sql)
+        );
+    }
+    if (RETURNING_RE.test(sql)) {
+        throw new StrictD1Violation(
+            "returning-in-exec",
+            "exec() 不接受绑定、也不回行（D1 与 node:sqlite 都是），RETURNING 写在这里永远拿不到行。" +
+                "要拿行就走 prepare().run()/all()，或者进 batch()。",
+            sqlShape(sql)
+        );
+    }
+}
+
 
 /**
  * 慢查询计时（C5，2026-10-22）。
@@ -163,6 +319,7 @@ export function makeSqliteD1(file: string, options: SqliteD1Options = {}): Sqlit
     };
 
     const firstSync = <T>(sql: string, stmt: StatementSync, bound: SQLInputValue[], column?: string): T | null => {
+        checkStatement(sql, bound.length);
         const started = slowQueryEnabled() ? performance.now() : 0;
         const row = stmt.get(...bound) as Record<string, unknown> | undefined;
         noteIfSlow(sql, bound.length, row === undefined ? 0 : 1, performance.now() - started);
@@ -184,6 +341,7 @@ export function makeSqliteD1(file: string, options: SqliteD1Options = {}): Sqlit
         //   - data.ts 的 queryBootstrap 把「分组 + 站点」两条 SELECT 塞进 batch 读 .results，
         //     走 run() 的话首页就是空的（且一声不响）。
         // 其余（不带 RETURNING 的 INSERT/UPDATE/DELETE）走 run()，meta 现成，省两次 helper 查询。
+        checkStatement(sql, bound.length);
         const started = slowQueryEnabled() ? performance.now() : 0;
         if (RETURNING_RE.test(sql) || RETURNS_ROWS_RE.test(sql)) {
             // 会返回行：all() 拿行，meta 用连接级的 changes()/last_insert_rowid() 补。
@@ -221,6 +379,7 @@ export function makeSqliteD1(file: string, options: SqliteD1Options = {}): Sqlit
             },
             all<T = unknown>() {
                 return asPromise(() => {
+                    checkStatement(sql, bound.length);
                     // ⚠️ node:sqlite 回的行是 null-prototype 对象（plainRow 里说明了），
                     // 另外无 RETURNING 的写语句走 all() 返回 [] 而不是抛错，与 D1 一致。
                     const started = slowQueryEnabled() ? performance.now() : 0;
@@ -234,6 +393,16 @@ export function makeSqliteD1(file: string, options: SqliteD1Options = {}): Sqlit
     };
 
     const batch = async <T = unknown>(statements: D1PreparedStatement[]): Promise<D1Result<T>[]> => {
+        // 一个 batch 里的语句数：官方文档没给数字，这条是本仓的工程保守值（不是平台限制）。
+        // 触发它 → 多半是某个批量路径忘了分批；真有理由就调 D1_MAX_BATCH_STATEMENTS 连同注释一起改。
+        if (d1StrictEnabled() && statements.length > D1_MAX_BATCH_STATEMENTS) {
+            throw new StrictD1Violation(
+                "batch-size",
+                `这个 batch 有 ${statements.length} 条语句，超过本仓设定的保守上限 ${D1_MAX_BATCH_STATEMENTS} 条` +
+                    `（⚠️ D1 官方文档没有给出 batch 语句数上限，这是本仓值，不是平台限制）。` +
+                    `一次性塞这么多通常意味着忘了分批。`
+            );
+        }
         // 真 D1 的 batch 是「一次往返 + 一个事务」：要么全成，要么全滚。
         const name = `nh_batch_${++savepointSeq}`;
         const nested = txDepth > 0;
@@ -275,6 +444,7 @@ export function makeSqliteD1(file: string, options: SqliteD1Options = {}): Sqlit
     return {
         prepare: (sql: string) => wrap(sql, db.prepare(sql)),
         async exec(sql: string): Promise<D1Result & { count: number; duration: number }> {
+            checkExec(sql);
             const started = performance.now();
             // node:sqlite 的 exec 支持多条语句（migration.ts 的批量建表回退路径靠这个），
             // 语句里的 SELECT 结果会被丢弃、不抛错。

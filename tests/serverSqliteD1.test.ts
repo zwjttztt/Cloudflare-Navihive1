@@ -292,3 +292,144 @@ test("close() 之后不能再 prepare（进程退出前靠它 checkpoint WAL）"
     assert.throws(() => db.prepare("SELECT 1"), /not open/i);
     cleanup();
 });
+
+// ---------------------------------------------------------------------------
+// 严格模式（2026-10-30，P1 第 7 项）
+// ---------------------------------------------------------------------------
+//
+// 本机 SQLite 的绑定变量上限是 32766、也没有语句数上限，而 D1 是 **100 个参数 /
+// 100 KB 语句**。于是 `IN (?×500)` 这种写法在本机跑得飞起、到线上必炸。
+// 这一组用例钉的是「违反 D1 限制时适配器必须抛错」—— 让缺陷在本机就暴露，
+// 而不是等上线。默认关（靠 NAVIHIVE_STRICT_D1=1 打开），所以现有套件不受影响。
+function withStrict<T>(on: boolean, fn: () => Promise<T>): Promise<T> {
+    const before = process.env.NAVIHIVE_STRICT_D1;
+    if (on) process.env.NAVIHIVE_STRICT_D1 = "1";
+    else delete process.env.NAVIHIVE_STRICT_D1;
+    return Promise.resolve()
+        .then(fn)
+        .finally(() => {
+            if (before === undefined) delete process.env.NAVIHIVE_STRICT_D1;
+            else process.env.NAVIHIVE_STRICT_D1 = before;
+        });
+}
+
+/** 一条带 N 个 `?` 的 SQL + N 个绑定值：专用来顶参数上限 */
+function sqlWithParams(count: number): { sql: string; args: number[] } {
+    return {
+        sql: `SELECT 1 WHERE 1 IN (${Array(count).fill("?").join(", ")})`,
+        args: Array.from({ length: count }, (_, i) => i),
+    };
+}
+
+test("严格模式默认关：101 个绑定参数照样执行（现有套件不受影响）", async () => {
+    const { db, cleanup } = tempDb();
+    try {
+        await seed(db);
+        const { sql, args } = sqlWithParams(101);
+        const r = await withStrict(false, () => db.prepare(sql).bind(...args).all());
+        assert.equal(r.success, true, "默认不查：SQLite 上限 32766，本来也跑得过去");
+    } finally {
+        cleanup();
+    }
+});
+
+test("严格模式开：超过 100 个绑定参数直接抛错，且报错里能看出是哪种 SQL", async () => {
+    const { db, cleanup } = tempDb();
+    try {
+        await seed(db);
+        const { sql, args } = sqlWithParams(101);
+        await assert.rejects(
+            () => withStrict(true, () => db.prepare(sql).bind(...args).all()),
+            (error: unknown) => {
+                assert.ok(error instanceof Error, "要抛 Error");
+                assert.match(error.message, /101 个参数/);
+                assert.match(error.message, /100/);
+                // 报错里要能一眼认出调用形态：`?×101` 折叠后仍在消息里
+                assert.match(error.message, /\?×101/);
+                return true;
+            }
+        );
+    } finally {
+        cleanup();
+    }
+});
+
+test("严格模式开：正好 100 个参数是允许的（边界不能差一个）", async () => {
+    const { db, cleanup } = tempDb();
+    try {
+        await seed(db);
+        const { sql, args } = sqlWithParams(100);
+        const r = await withStrict(true, () => db.prepare(sql).bind(...args).all());
+        assert.equal(r.success, true);
+    } finally {
+        cleanup();
+    }
+});
+
+test("严格模式开：D1 不支持的命名参数（:name）被拦下", async () => {
+    const { db, cleanup } = tempDb();
+    try {
+        await seed(db);
+        await assert.rejects(
+            () =>
+                withStrict(true, () =>
+                    db.prepare("SELECT id FROM t WHERE v = :name").bind("x").all()
+                ),
+            /:name|命名参数|只支持/
+        );
+        // 字符串字面量里的 :name 不该被当成参数（避免误报）
+        const ok = await withStrict(true, () =>
+            db.prepare("INSERT INTO t (v) VALUES (?)").bind("a:b @c $d").run()
+        );
+        assert.equal(ok.success, true);
+    } finally {
+        cleanup();
+    }
+});
+
+test("严格模式开：returning 落在字符串字面量里要拦下（正则会被它骗到）", async () => {
+    const { db, cleanup } = tempDb();
+    try {
+        await seed(db);
+        await assert.rejects(
+            () =>
+                withStrict(true, () =>
+                    db.prepare("INSERT INTO t (v) VALUES ('returning 的字面量')").run()
+                ),
+            /returning|字面量/
+        );
+    } finally {
+        cleanup();
+    }
+});
+
+test("严格模式开：exec() 里写 RETURNING 要拦下（那个行永远拿不到）", async () => {
+    const { db, cleanup } = tempDb();
+    try {
+        await seed(db);
+        await assert.rejects(
+            () => withStrict(true, () => db.exec("DELETE FROM t RETURNING id")),
+            /RETURNING|exec/
+        );
+    } finally {
+        cleanup();
+    }
+});
+
+test("严格模式开：一个 batch 超过保守上限（1000 条）要拦下", async () => {
+    const { db, cleanup } = tempDb();
+    try {
+        await seed(db);
+        const many = Array.from({ length: 1001 }, () =>
+            db.prepare("INSERT INTO t (v) VALUES (?)").bind("x")
+        );
+        await assert.rejects(() => withStrict(true, () => db.batch(many)), /1001 条语句/);
+        // 1000 条正好在限内：真的执行完
+        const ok = await withStrict(true, () =>
+            db.batch(Array.from({ length: 1000 }, () => db.prepare("INSERT INTO t (v) VALUES (?)").bind("y")))
+        );
+        assert.equal(ok.length, 1000);
+    } finally {
+        cleanup();
+    }
+});

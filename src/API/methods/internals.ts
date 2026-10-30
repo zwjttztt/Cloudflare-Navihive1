@@ -196,6 +196,14 @@ export const NOTES_FTS_TABLE_SQL = `CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts
  * 会在 prepare 阶段就报 `no such table`。exec 按文本顺序执行，没有这个陷阱。
  *
  * ⚠️ 中转表用**普通表**（不是 TEMP）：D1 的每批语句可能是不同连接，TEMP 表活不过去。
+ *
+ * ⚠️ 顺序必须是「先建新、再删旧」（D-14，2026-10-29）：
+ * 上一版是 `DELETE FROM notes_fts` 之后才 INSERT，而 exec 中途失败（D1 抖动、磁盘满、
+ * 单行超限）会留下**行数对不上、内容却是空的**索引 —— 它比「没有索引」更危险：
+ * `notes_fts` 存在、`MATCH` 也不报错，只是永远 0 行，搜索于是返回空结果。
+ * 现在先把重建结果 `INSERT OR REPLACE` 回 notes_fts（旧行此时还在，最坏情况是短暂
+ * 有几行 rowid 漂移的旧行，绝不会是空的），成功之后才按「这次没被覆盖到的 rowid」
+ * 删掉旧行与孤儿行。任一步失败，索引都停在**非空**的状态。
  */
 export const NOTES_FTS_ROWID_REBUILD_SQL = `
 CREATE TABLE IF NOT EXISTS notes_fts_rebuild (
@@ -205,9 +213,10 @@ DELETE FROM notes_fts_rebuild;
 INSERT INTO notes_fts_rebuild (rowid_, note_id, user_id, title, body)
     SELECT f.note_id, f.note_id, n.user_id, f.title, f.body
       FROM notes_fts f JOIN notes n ON n.id = f.note_id;
-DELETE FROM notes_fts;
 INSERT OR REPLACE INTO notes_fts (rowid, note_id, user_id, title, body)
     SELECT rowid_, note_id, user_id, title, body FROM notes_fts_rebuild;
+DELETE FROM notes_fts
+ WHERE rowid NOT IN (SELECT rowid_ FROM notes_fts_rebuild WHERE rowid_ IS NOT NULL);
 DROP TABLE notes_fts_rebuild;
 `;
 

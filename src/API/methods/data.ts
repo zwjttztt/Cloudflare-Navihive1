@@ -10,6 +10,7 @@ import { isAuthConfigKey, isEncryptedConfigKey, isPrivateUserConfigKey } from ".
 import { decryptSecretDeep, encryptSecret } from "../crypto";
 import { BootstrapData, Config, Group, Site, SiteBatchDeleteResult, SiteOrderUpdateResult } from "../types";
 import type { D1PreparedStatement } from "../schema";
+import { chunkByParamBudget } from "../d1Limits";
 import { tombstoneStamp } from "./internals";
 import { logger } from "../../../shared/logger";
 
@@ -497,9 +498,23 @@ export const dataImpl: DataApi = {
     /**
      * 批量删除站点：一次请求搬完，替代「前端 for 循环逐个 DELETE」。
      *
-     * 往返优化：回收站写入按 200 条/批 chunk（D1 单次 batch 有语句数上限，
-     * 500 张卡的上限下不能一口气塞 500 条 INSERT），全部进站后一个 batch 删真身 + 审计。
-     * 以前是 N 条并发 INSERT，中途失败会留下「部分进站部分硬删」的混合态。
+     * ⚠️ 2026-10-30 重写（P1 第 12 项）。以前这段有两个会留半截状态的毛病：
+     *
+     *  1) 一条 SQL 塞 500 个 id：`SELECT ... WHERE id IN (?×500)`。本机 SQLite 的
+     *     变量上限是 32766，跑得飞起；D1 的上限是 **100 个绑定参数**，一到线上整条失败。
+     *     现在按 `chunkByParamBudget` 切批（并预留 scopeSql 追加的那个 user_id 参数）。
+     *  2) 「写回收站」与「删真身」分属两个 batch，中间崩一次就留下「回收站里有、
+     *     站点还在」——用户看到的是卡片没删掉、回收站却多了一堆条目，且无从解释。
+     *     现在每批一次 batch，回收站 / 墓碑 / 删除 / 审计在同一个事务里。
+     *
+     * 顺序：**墓碑写在删真身之前**。同一批里顺序不影响原子性，但这个顺序表达的是
+     * 「先留痕、再动手」—— 反过来的话，任何一次拆分提交（将来有人为了别的理由拆）
+     * 都会留下「墓碑已删、卡片还在」的幽灵卡片：其它设备已经被告知这张卡没了，
+     * 本机却还在显示它。
+     *
+     * ⚠️ 跨批仍然做不到原子：D1 没有跨 batch 的事务。批 1 成功、批 3 失败时，
+     * 批 1 那部分已经删掉了。这是 D1 能给的最好结果（对比以前的「回收站有、站点还在」，
+     * 后者是既删不掉也说不清的状态）。
      */
     deleteSites: async function (
         this: NavigationAPI,
@@ -511,76 +526,92 @@ export const dataImpl: DataApi = {
         if (unique.length === 0) return { items: [], failed: [] };
 
         return this.withSchemaRetry(async () => {
-            const inList = unique.map(() => "?").join(", ");
-            const rows = await this.db
-                .prepare(`SELECT * FROM sites WHERE id IN (${inList})${this.scopeSql(true)}`)
-                .bind(...this.scopeParams(unique))
-                .all<Record<string, unknown>>();
+            // scopeSql 会追加 `user_id = ?`，切批时必须把这个参数的位置留出来
+            const scopeReserve = this.currentUserId === null ? 0 : 1;
+            const chunks = chunkByParamBudget(unique, scopeReserve);
 
-            const found = new Map<number, Record<string, unknown>>();
-            for (const row of rows.results || []) {
-                const id = Number(row.id);
-                if (Number.isFinite(id)) found.set(id, row);
-            }
-
+            // ---- 阶段①：只读，认出哪些 id 真的存在，并按批备好语句 ----
+            // 先全部读完再统一提交：读与写本来就不是一个事务（D1 的 batch 只装语句，
+            // 没法「先 SELECT 再按结果 INSERT」），所以提前读不会额外损失原子性。
+            const planned: Array<{
+                ids: number[];
+                recycle: D1PreparedStatement[];
+                tombstones: D1PreparedStatement[];
+                del: D1PreparedStatement;
+            }> = [];
             const failed: number[] = [];
-            const orderedIds: number[] = [];
-            const recycleStatements: D1PreparedStatement[] = [];
-            for (const id of unique) {
-                const row = found.get(id);
-                if (!row) {
-                    failed.push(id);
-                    continue;
+
+            for (const chunk of chunks) {
+                const inList = chunk.map(() => "?").join(", ");
+                const rows = await this.db
+                    .prepare(`SELECT * FROM sites WHERE id IN (${inList})${this.scopeSql(true)}`)
+                    .bind(...this.scopeParams(chunk))
+                    .all<Record<string, unknown>>();
+
+                const found = new Map<number, Record<string, unknown>>();
+                for (const row of rows.results || []) {
+                    const id = Number(row.id);
+                    if (Number.isFinite(id)) found.set(id, row);
                 }
-                orderedIds.push(id);
-                recycleStatements.push(
-                    this.db
-                        .prepare(
-                            "INSERT INTO recycle_bin (kind, owner_user_id, data, deleted_at) VALUES (?, ?, ?, ?)"
-                        )
-                        .bind("site", this.currentUserId, JSON.stringify(row), Math.floor(Date.now() / 1000))
-                );
-            }
-            if (orderedIds.length === 0) return { items: [], failed };
 
-            // 只有真的进了回收站的才删真身：写回收站失败就当成「没删」，
-            // 免得多选删除把卡片变成硬删除（回收站里没有，找不回来）
-            const RECYCLE_CHUNK = 200;
-            const recycleIds: (number | undefined)[] = new Array(orderedIds.length).fill(undefined);
-            for (let i = 0; i < recycleStatements.length; i += RECYCLE_CHUNK) {
-                const results = await this.db.batch(recycleStatements.slice(i, i + RECYCLE_CHUNK));
-                results.forEach((r, j) => {
-                    recycleIds[i + j] = recycleIdOf(r);
-                });
-            }
-
-            const okIndex = recycleIds
-                .map((rid, i) => (rid !== undefined ? i : -1))
-                .filter(i => i >= 0);
-            if (okIndex.length > 0) {
-                const okIds = okIndex.map(i => orderedIds[i]);
-                const delList = okIds.map(() => "?").join(", ");
-                const tail: D1PreparedStatement[] = [
-                    this.db
-                        .prepare(`DELETE FROM sites WHERE id IN (${delList})${this.scopeSql(true)}`)
-                        .bind(...this.scopeParams(okIds)),
-                ];
-                // 墓碑：批量删除的每一张都要留一条，其它设备才知道少了哪些
-                for (const id of okIds) {
-                    tail.push(
+                const okIds: number[] = [];
+                const recycle: D1PreparedStatement[] = [];
+                const tombstones: D1PreparedStatement[] = [];
+                const stamp = tombstoneStamp();
+                for (const id of chunk) {
+                    const row = found.get(id);
+                    if (!row) {
+                        failed.push(id);
+                        continue;
+                    }
+                    okIds.push(id);
+                    recycle.push(
+                        this.db
+                            .prepare(
+                                "INSERT INTO recycle_bin (kind, owner_user_id, data, deleted_at) VALUES (?, ?, ?, ?)"
+                            )
+                            .bind("site", this.currentUserId, JSON.stringify(row), Math.floor(Date.now() / 1000))
+                    );
+                    // 墓碑：批量删除的每一张都要留一条，其它设备才知道少了哪些
+                    tombstones.push(
                         this.db
                             .prepare(
                                 "INSERT INTO site_tombstone (user_id, site_id, deleted_at) VALUES (?, ?, ?)"
                             )
-                            .bind(this.currentUserId, id, tombstoneStamp())
+                            .bind(this.currentUserId, id, stamp)
                     );
                 }
-                const auditStmt = auditStatement(this, audit);
-                if (auditStmt) tail.push(auditStmt);
-                await this.db.batch(tail);
+                if (okIds.length === 0) continue;
+
+                const delList = okIds.map(() => "?").join(", ");
+                planned.push({
+                    ids: okIds,
+                    recycle,
+                    tombstones,
+                    del: this.db
+                        .prepare(`DELETE FROM sites WHERE id IN (${delList})${this.scopeSql(true)}`)
+                        .bind(...this.scopeParams(okIds)),
+                });
+            }
+            if (planned.length === 0) return { items: [], failed };
+
+            // ---- 阶段②：每批一次 batch（= 一个事务）----
+            const items: Array<{ id: number; recycleId?: number }> = [];
+            for (let i = 0; i < planned.length; i++) {
+                const step = planned[i];
+                const statements: D1PreparedStatement[] = [...step.recycle, ...step.tombstones, step.del];
+                // 审计只写一条，挂在最后一批上（一次调用一条审计，与以前一致）
+                if (i === planned.length - 1) {
+                    const auditStmt = auditStatement(this, audit);
+                    if (auditStmt) statements.push(auditStmt);
+                }
+                const results = await this.db.batch(statements);
+                // results 前 k 条就是回收站 INSERT，按位置取回 recycleId
+                step.ids.forEach((id, j) => {
+                    items.push({ id, recycleId: recycleIdOf(results[j]) });
+                });
             }
 
-            const items = orderedIds.map((id, i) => ({ id, recycleId: recycleIds[i] }));
             return {
                 items,
                 failed: [

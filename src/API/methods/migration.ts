@@ -9,6 +9,7 @@ import type { NavigationAPI } from "../http";
 import { RECOVERY_PUBLIC_KEY_CONFIG, WEBDAV_CONFIG_PREFIX } from "../configKeys";
 import { encryptSecret, hashPassword, isHashedPassword } from "../crypto";
 import { countWikiLinks } from "../../utils/noteWikiLinkCount";
+import { FTS_CONTENT_LIMIT, segmentCJK } from "../../utils/ftsQuery";
 import type { D1PreparedStatement } from "../schema";
 import {
     ATTACHMENTS_TABLE_STATEMENTS,
@@ -249,13 +250,12 @@ export const MIGRATION_STEPS: readonly MigrationStep[] = [
         run: async api => {
             try {
                 await api.db.exec(NOTES_FTS_ROWID_REBUILD_SQL);
-                // 这一步能跑通就说明 notes_fts 是**真的可用**（建表 + 读写都过了）。
-                // 顺手把就绪开关点亮：老库上 `notes-fts` 那一步早已记进「已执行集合」，
-                // 不会重跑，而 ftsReady 只有 migrateNotesFtsTable 会置 true —— 不补这一句，
-                // 升级后的第一个 isolate 仍然会把搜索降级成 LIKE。
-                // ⚠️ 这只是**部分**修复：之后的冷启动仍会走版本快路径、仍然拿不到这个开关，
-                // 见回传报告里记的那条 pre-existing bug。
-                migrationState.ftsReady = true;
+                // ⚠️ 这里**不再**点亮 ftsReady（2026-10-29）。
+                // 老写法是「这一步跑通了就置 true」，可它证明的只是「重建语句没抛错」——
+                // D-14 那个中间态（先 DELETE 后 INSERT，中途失败）留下的正是
+                // 「语句跑完了、索引却是空的」，而开关已经被点成 true 了。
+                // 就绪与否一律由 ensureNotesFtsReady 的**行数探测**来定：
+                // 它对快路径和全量迁移两条路用的是同一把尺子。
             } catch (error) {
                 logger.error("重建全文索引的 rowid 失败（搜索仍可用，索引可能不完整）:", { err: error, component: "migration" })
             }
@@ -300,6 +300,209 @@ const SCHEMA_DELTA =
  * tests/migrationVersion.test.ts 第一条（写回的版本串要等于 SCHEMA_VERSION）会立刻红。
  */
 export const MIGRATION_VERSION = SCHEMA_DELTA > 0 ? `${SCHEMA_VERSION}+${SCHEMA_DELTA}` : SCHEMA_VERSION;
+
+/**
+ * 一次探测里补多少行索引（补的是「notes 里有、索引里没有」的那批）。
+ * 与 link_count 的回填同款：分批是为了不把整库正文一次读进 Worker 内存。
+ */
+const NOTES_FTS_REPAIR_BATCH = 200;
+/**
+ * 一次冷启动最多补多少行。
+ *
+ * 上限不是保守，是**诚实**：补不完就在这次启动里停在「行数仍对不上」，
+ * 于是 `notesFtsIndexTrustworthy` 为假、搜索走 LIKE —— 用户搜得到东西（慢一点）；
+ * 下一次冷启动接着补。没有上限的话，一个大库的启动会被这一步拖到超时，
+ * 而超时同样是「索引没补完」，区别只是用户得多等几十秒。
+ */
+const NOTES_FTS_REPAIR_MAX_ROWS = 5000;
+
+/** 一次探测读出来的两侧行数；null = 读不出来（表不存在 / 查询炸了） */
+export interface NotesFtsCounts {
+    fts: number;
+    notes: number;
+}
+
+/**
+ * 读「索引行数 vs 笔记行数」，一条查询拿两个数。
+ *
+ * 这是判断索引可不可信的**唯一**判据：FTS5 的失败方式几乎全是「不报错但不工作」
+ * （空索引、rowid 漂移、分词被抹平），只有行数对不上是看得见的信号。
+ * 两个 COUNT 放在同一条语句里，冷启动只多花一次往返。
+ */
+export async function readNotesFtsCounts(api: NavigationAPI): Promise<NotesFtsCounts | null> {
+    try {
+        const row = await api.db
+            .prepare(
+                `SELECT (SELECT COUNT(*) FROM notes_fts) AS fts_count,
+                        (SELECT COUNT(*) FROM notes) AS notes_count`
+            )
+            .first<{ fts_count: number; notes_count: number }>();
+        const fts = Number(row?.fts_count);
+        const notes = Number(row?.notes_count);
+        // 读不到行（替身库 / 驱动返回 undefined）时别把 NaN 当成 0 —— 那会让
+        // 「0 == 0」看起来像是「索引齐的」，正是这次要堵的那个谎。
+        if (!Number.isFinite(fts) || !Number.isFinite(notes)) return null;
+        return { fts, notes };
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * 这个索引现在**可不可信**（行数与 notes 对得上）。
+ *
+ * ⚠️ 只在「FTS 查询 0 命中」这种少数路径上才调它 —— 它不是给每次搜索加的税，
+ * 而是回答「这 0 行是『真没这个内容』还是『索引是空的』」这两个截然不同的答案。
+ * 正常的命中路径一次都不跑它。
+ */
+export async function notesFtsIndexTrustworthy(api: NavigationAPI): Promise<boolean> {
+    const counts = await readNotesFtsCounts(api);
+    if (!counts) return false;
+    return counts.fts === counts.notes;
+}
+
+/** FTS5 的 CREATE 是**懒失败**的：真正 MATCH 时才炸。这里先探一次把失败提前。 */
+async function probeNotesFtsMatch(api: NavigationAPI): Promise<void> {
+    await api.db
+        .prepare("SELECT note_id FROM notes_fts WHERE notes_fts MATCH ? LIMIT 1")
+        .bind("\"a\"")
+        .all();
+}
+
+/** 补上「notes 里有、索引里没有」的那批行（从 notes 取原文，写入侧重新分好词） */
+async function backfillMissingFtsRows(api: NavigationAPI): Promise<void> {
+    let processed = 0;
+    while (processed < NOTES_FTS_REPAIR_MAX_ROWS) {
+        let missing: { id: number; user_id: number | null; title: string | null; content: string | null }[];
+        try {
+            const rows = await api.db
+                .prepare(
+                    // ⚠️ `NOT IN (SELECT rowid FROM notes_fts)` 而不是「全表重来一遍」：
+                    // 每批只挑**还缺的**那些，所以中途失败也留下了进度，
+                    // 下次冷启动接着补，不会把同一批正文反复搬。
+                    `SELECT n.id AS id, n.user_id AS user_id, n.title AS title, n.content AS content
+                       FROM notes n
+                      WHERE n.id NOT IN (SELECT rowid FROM notes_fts)
+                      ORDER BY n.id
+                      LIMIT ?`
+                )
+                .bind(NOTES_FTS_REPAIR_BATCH)
+                .all<{ id: number; user_id: number | null; title: string | null; content: string | null }>();
+            missing = rows.results || [];
+        } catch (error) {
+            logger.error("读取待补索引的笔记失败（下次冷启动会重试）:", { err: error, component: "migration" })
+            return;
+        }
+        if (missing.length === 0) return;
+        try {
+            await api.db.batch(
+                missing.map(row =>
+                    api.db
+                        .prepare(
+                            // 与 syncNoteFts 同一条写入契约：rowid 恒等于 notes.id。
+                            // 内容要**现分词**（segmentCJK）：notes 里存的是原始中文，
+                            // 直接搬会让两字词搜索全部失效（见 NOTES_FTS_ROWID_REBUILD_SQL）。
+                            "INSERT OR REPLACE INTO notes_fts (rowid, note_id, user_id, title, body) VALUES (?, ?, ?, ?, ?)"
+                        )
+                        .bind(
+                            row.id,
+                            row.id,
+                            row.user_id ?? null,
+                            segmentCJK(row.title || ""),
+                            segmentCJK((row.content || "").slice(0, FTS_CONTENT_LIMIT))
+                        )
+                )
+            );
+        } catch (error) {
+            logger.error("补齐全文索引失败（下次冷启动会重试）:", { err: error, component: "migration" })
+            return;
+        }
+        processed += missing.length;
+        if (missing.length < NOTES_FTS_REPAIR_BATCH) return;
+    }
+}
+
+/** 删掉孤儿索引行（笔记已经没了、索引行还在 —— 点进搜索结果会 404） */
+async function dropOrphanFtsRows(api: NavigationAPI): Promise<void> {
+    try {
+        await api.db
+            .prepare(
+                // 只在「索引比笔记多」时才发：正常库上一次 DELETE 都不跑。
+                // ⚠️ 是按 rowid 精确删多余的那些，不是 `DELETE FROM notes_fts` 清空重来 ——
+                // 后者一旦在这句之后失败，索引就空了（见 D-14）。
+                "DELETE FROM notes_fts WHERE rowid NOT IN (SELECT id FROM notes)"
+            )
+            .run();
+    } catch (error) {
+        logger.error("清理孤儿索引行失败（下次冷启动会重试）:", { err: error, component: "migration" })
+    }
+}
+
+/**
+ * 让索引的行数追上笔记：缺的补、多的删，之后按**探测结果**设置 ftsReady。
+ *
+ * 全程不抛：这一步只是加速件，任何失败都只能是「搜索慢一点」，不能变成启动失败。
+ */
+async function reconcileNotesFtsIndex(api: NavigationAPI): Promise<void> {
+    const before = await readNotesFtsCounts(api);
+    if (!before) {
+        // 行数都读不出来 = 连「索引齐不齐」都没法判断。这时候说「可用」就是撒谎，
+        // 一律按不可用处理：搜索走 LIKE，结果至少有。
+        migrationState.ftsReady = false;
+        return;
+    }
+    if (before.fts === before.notes) {
+        migrationState.ftsReady = true;
+        return;
+    }
+    if (before.fts < before.notes) await backfillMissingFtsRows(api);
+    const afterBackfill = await readNotesFtsCounts(api);
+    if (afterBackfill && afterBackfill.fts > afterBackfill.notes) await dropOrphanFtsRows(api);
+
+    const after = await readNotesFtsCounts(api);
+    migrationState.ftsReady = after !== null && after.fts === after.notes;
+    if (!migrationState.ftsReady) {
+        logger.warn("全文索引的行数与笔记对不上，本次冷启动按不可用处理（搜索走 LIKE，下次启动继续补）:", { component: "migration" })
+    }
+}
+
+/**
+ * 启动时**真探一次**全文索引：表在不在、MATCH 跑不跑得动、行数对不对得上。
+ *
+ * 为什么必须有一个独立函数：`migrationState.ftsReady` 原先只在两个**迁移步骤**里
+ * 被点亮（`notes-fts` / `notes-fts-rowid`），而步骤跑过一次就记进 `schema.steps`
+ * —— 于是走版本快路径的每一次正常启动里，它都是初始值 false：
+ * 索引写不进（syncNoteFts 直接 return）、搜索永远在 LIKE 全表扫，且一声不响。
+ *
+ * 所以不能再用「有没有跑过迁移步骤」当判据，只能看**当前这一刻索引的真实状态**。
+ * 代价是每次冷启动多两条读查询（一条 MATCH 探活、一条取两侧行数），
+ * 换来的是「说可用就真的可用」。
+ *
+ * ⚠️ 全程不抛：它是加速件，失败只能是降级，不能让 migrate() 把整条链判成失败。
+ */
+export async function ensureNotesFtsReady(api: NavigationAPI): Promise<void> {
+    try {
+        try {
+            await probeNotesFtsMatch(api);
+        } catch {
+            // 表不存在（老库建不出来 / 被误删）或 FTS5 在这套 SQLite 上不可用。
+            // 建一次再探；建不出来就**明确降级**，绝不把「没探过」当成「可用」。
+            try {
+                await api.db.exec(NOTES_FTS_TABLE_SQL);
+                await probeNotesFtsMatch(api);
+            } catch (error) {
+                migrationState.ftsReady = false;
+                logger.error("全文检索表不可用，搜索将退回 LIKE：", { err: error, component: "migration" })
+                return;
+            }
+        }
+        await reconcileNotesFtsIndex(api);
+    } catch (error) {
+        // 兜底：任何没想到的异常都只能让搜索降级，不能让启动失败
+        migrationState.ftsReady = false;
+        logger.error("探测全文索引失败，搜索将退回 LIKE：", { err: error, component: "migration" })
+    }
+}
 
 export interface MigrationApi {
     initDB(): Promise<{ success: boolean; alreadyInitialized: boolean }>;
@@ -378,6 +581,11 @@ export const migrationImpl: MigrationApi = {
      *
      * ⚠️ 比的是 **MIGRATION_VERSION** 而不是 SCHEMA_VERSION：前者由步骤表与索引清单
      * 派生（加一条步骤 / 一条索引就自动前进一格），不需要谁记得去 +1。
+     *
+     * ⚠️ 快路径上**必须**再探一次全文索引（ensureNotesFtsReady）：版本串相同只能说明
+     * 「这套迁移步骤跑过」，说明不了「notes_fts 现在有几行」。而 ftsReady 原先只在
+     * 迁移步骤里被点亮 —— 步骤进了已完成集合就不再跑，于是每个正常启动的 isolate
+     * 里它恒为 false：索引不写、搜索全表扫，控制台一声不响。
      */
     migrate: async function (this: NavigationAPI ): Promise<void> {
         if (!migrationState.promise) {
@@ -394,11 +602,17 @@ export const migrationImpl: MigrationApi = {
         // 版本串读不到（库是空的、configs 表还没建、D1 抖动）一律按「需要迁移」处理：
         // 宁可多跑一次全量建表，也不能因为一次读失败就让站点缺表。
         if ((await this.readSchemaVersion()) === MIGRATION_VERSION) {
+            // ⚠️ 版本对得上 ≠ 索引没问题。这里是**正常启动**的路径（线上 99% 的
+            // 冷启动都落在这里），ftsReady 必须来自一次真实探测，而不是「步骤跑过没跑过」。
+            await ensureNotesFtsReady(this);
             this.dbReady = true;
             return;
         }
         await this.runMigrations();
         await this.writeSchemaVersion(MIGRATION_VERSION);
+        // 全量迁移里那两个步骤也会点 ftsReady，但它们点的是「步骤跑成功了」，
+        // 不是「索引现在是齐的」。这里统一再探一次，让两条路径的判据一致。
+        await ensureNotesFtsReady(this);
     },
 
     /** 读结构版本号；读不到返回 null */
@@ -730,6 +944,9 @@ export const migrationImpl: MigrationApi = {
                 .prepare("SELECT note_id FROM notes_fts WHERE notes_fts MATCH ? LIMIT 1")
                 .bind("\"a\"")
                 .all();
+            // 表建出来了、MATCH 也真的跑过 = 虚拟表可用。
+            // ⚠️ 这只是「表可用」，**不是**「索引是齐的」—— 行数对不对得上由
+            // ensureNotesFtsReady 在迁移收尾时统一探（它同样会覆盖这里的 true）。
             migrationState.ftsReady = true;
         } catch (error) {
             migrationState.ftsReady = false;

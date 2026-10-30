@@ -130,9 +130,26 @@ services:
             continue
           fi
           docker tag "$$IMAGE" navihive:latest 2>/dev/null || true
+          # 升级前给当前（旧）镜像打回滚锚点：recreate 之后 latest 已是新镜像，旧镜像只剩这一份 ImageID
+          PREV_ID=$$(docker inspect --format='{{.Image}}' navihive 2>/dev/null || true)
+          if [ -n "$$PREV_ID" ]; then docker tag "$$PREV_ID" navihive:previous 2>/dev/null || true; fi
           printf '{"phase":"recreating","image":"","error":"","startedAt":%s,"finishedAt":0}' "$$started" > /spool/state.json
           echo "[upgrader] 重建 navihive"
           if docker compose -f docker-compose.yml -p navihive up -d --force-recreate --no-deps navihive; then
+            # ---- 健康门禁：重建后新容器必须 healthy，否则回滚 previous ----
+            GUARD_OK=""
+            for _i in $$(seq 1 40); do
+              ST=$$(docker inspect --format='{{.State.Health.Status}}' navihive 2>/dev/null || echo starting)
+              if [ "$$ST" = "healthy" ]; then GUARD_OK=1; break; fi
+              if [ "$$ST" = "unhealthy" ]; then break; fi
+              sleep 3
+            done
+            if [ -z "$$GUARD_OK" ]; then
+              echo "[upgrader] 新容器未在限期内 healthy（最后状态：$$ST），回滚到 navihive:previous"
+              docker tag navihive:previous navihive:latest 2>/dev/null || true
+              docker compose -f docker-compose.yml -p navihive up -d --force-recreate --no-deps navihive
+              echo "[upgrader] 已回滚"
+            fi
             printf '{"phase":"done","image":"","error":"","startedAt":%s,"finishedAt":%s}' "$$started" "$$(date +%s)000" > /spool/state.json
             echo "[upgrader] 完成"
           else

@@ -1,14 +1,39 @@
 // service worker：只做「离线可用 + 静态资源加速」，绝不缓存 API 数据。
 // 策略：
-//   - 页面导航：网络优先，离线时回退到缓存的首页（保证断网也能打开壳）
+//   - 页面导航 / HTML：**网络优先**，且**完全绕开浏览器 HTTP 缓存**（见 shellRequest）。
+//     只有网络失败（离线 / 源站挂了）时才回落到 Cache Storage 里的外壳。
 //   - 核心静态资源（core）：install 时预缓存 —— 只有首屏真正要用的那些
 //   - 懒加载块（lazy）：**用到时才缓存**，不在后台偷偷下载（离线增强需用户显式开启）
 //   - /api/*：一律走网络，不缓存，避免看到过期数据
 //
 // 缓存名带构建版本：新版本一上线旧缓存整体作废，不再出现「改了代码用户还看旧的」。
 // 版本从 precache-manifest.json 里读（vite 构建时写入），读不到就退回固定名。
+//
+// ⚠️ 外壳（HTML）为什么必须「绕开 HTTP 缓存」（2026-10-29，线上「界面一直不动」的真因）：
+//   `/` 与 `/index.html` 在 _headers 里带 `max-age=60, stale-while-revalidate=60`，
+//   CF 边缘还有 2 分钟 TTL。只写 `fetch(req)` 的话，「网络优先」取的是**浏览器 HTTP
+//   缓存里的那份**，发版后那两三分钟里拿回的仍是旧外壳 —— 而它引用的 chunk 名已经被
+//   新版删掉了：chunk 404 → 主模块不执行 → React 从不挂载 → 内联骨架 #boot-skeleton
+//   永久停留。public/boot-guard.js 能在 15 秒后清缓存 + 注销 SW + reload 救回来，
+//   但那是**症状级兜底**：每次发版都可能让一部分用户先空屏 15 秒。
+//   把外壳这条路径收紧成「一定回源」之后，boot-guard.js 才降回它本该在的位置
+//   —— 最后一道防线，而不是主路径。
+//
+// ⚠️ 为什么是 `"reload"` 而不是 `"no-cache"`（两者都能「不拿旧外壳」，但确定性不同）：
+//   · 缺省        → 直接命中 HTTP 缓存：max-age 60 秒 + SWR 60 秒 + CF 边缘 2 分钟，
+//                   发版后这段窗口里喂的全是旧外壳。这就是要修的东西。
+//   · "no-cache"  → 语义是「可以用缓存，但必须回源校验，校验通过才用」。
+//                   问题在于 `stale-while-revalidate` 允许缓存**先把旧的吐出来**再后台刷新：
+//                   请求指令是 `max-age=0` 时各家缓存对「要不要先吐旧的」实现并不一致，
+//                   浏览器 / CDN 任一层选择「先吐旧的」就又回到空屏那条路上。
+//   · "reload"    → 跳过 HTTP 缓存的**读取**，一定回源。代价是每次导航都要下完整的
+//                   index.html（几 KB，没有 304 可省），换来的是「拿到的必然是这一版」。
+//   选它就是因为第 10 项唯一的目的（不再出现发版后 15 秒空屏）容不下「大概会校验」。
+//   大件不受影响：chunk / CSS 是构建期内容指纹 + immutable，仍走下面的缓存优先。
 const CACHE_PREFIX = "navihive-";
-const FALLBACK_CACHE = `${CACHE_PREFIX}shell-v4`;
+// v5：外壳的取法从「默认 HTTP 缓存」改成「回源校验」（见上面的说明）。换号是为了让
+// 老客户端 activate 时把 v4 那份可能已经在引用已删 chunk 的外壳一起清掉。
+const FALLBACK_CACHE = `${CACHE_PREFIX}shell-v5`;
 const APP_SHELL = [
     "/",
     "/index.html",
@@ -84,6 +109,114 @@ function normalizeManifest(manifest) {
 
 const isIconRequest = req =>
     req.destination === "image" || /\.(png|jpe?g|gif|webp|avif|svg|ico)(\?|$)/i.test(req.url);
+
+/**
+ * 是不是「外壳」请求：页面导航，或者任何以文档身份取回来的 HTML。
+ *
+ * 只判 `mode === "navigate"` 会漏掉 `destination === "document"` 的那一路
+ * （预取、iframe、以及某些浏览器对 /index.html 的直接请求）—— 它们下面是静态资源
+ * 那条「缓存优先」的分支，而 HTML 绝不能走缓存优先。所以两个条件都收进来，
+ * 并且这一支排在静态资源**之前**。
+ */
+const isHtmlNavigation = req =>
+    req.mode === "navigate" || req.destination === "document" || req.destination === "iframe";
+
+/**
+ * 外壳（HTML）那一次网络请求：**必须从 URL 重建，不能从原请求继承**。
+ *
+ * ⚠️ 这是整个第 10 项最容易写成「单测全绿、线上照挂」的一行。
+ * `new Request(req, { cache: ... })` 与 `fetch(req, { cache: ... })` 在 **req.mode 是
+ * "navigate"** 时会在 Chrome 上**直接抛**：
+ *   TypeError: Failed to execute 'fetch' on 'ServiceWorkerGlobalScope':
+ *   Cannot construct a Request with a Request whose mode is 'navigate' and a non-empty RequestInit
+ * （Fetch 规范：navigate 是浏览器导航专用的 mode，脚本不能拿它配非空 init 造新请求。）
+ * 而页面导航恰恰**就是** navigate —— 于是每次进站都抛出去了：
+ * `respondWith` 根本没被调用，浏览器按「SW 没拦截」处理，外壳既不回源也不入缓存，
+ * 离线能力一起丢；控制台每导航抛一次，页面看着却是好的。
+ *
+ * 从 `req.url` 重建就没有 navigate 这个 mode 了（新请求是普通的 cors），`cache: "reload"`
+ * 才生效。带上原 headers 是为了保住 `Accept: text/html,...`（内容协商）；
+ * forbidden headers 会被构造函数静默丢掉，不用管。
+ */
+function shellRequest(req) {
+    try {
+        return new Request(req.url, {
+            cache: "reload",
+            method: "GET",
+            headers: req.headers,
+        });
+    } catch {
+        // 极端环境连从 URL 构造都失败：退回原请求。最坏只是没有回源校验，
+        // 绝不能让「导航」本身失败 —— 那比拿到旧外壳更糟（直接打不开）。
+        return req;
+    }
+}
+
+/**
+ * 离线兜底：把缓存里的外壳取回来。
+ *
+ * ⚠️ 只在**当前版本**那一个缓存里找，不用 `caches.match()`（它会遍历同源**全部**
+ * Cache Storage，命中顺序不保证）。跨缓存捞的后果正是这次要修的那个：
+ * `FALLBACK_CACHE` 是常量，当 `precache-manifest.json` 读不到时它跨版本复用 ——
+ * 那份缓存里可能就躺着上一版的外壳，引用着已经被删掉的 chunk。
+ * 本版本缓存里那份是 install 时预缓存 / 上次导航时写进去的，一定是这一版的。
+ *
+ * 无论如何都不回 undefined（respondWith 收到 undefined 会直接把这次导航判成失败，
+ * 连错误页都不给）。
+ */
+async function readCachedShell(cache) {
+    try {
+        const cached = await cache.match("/");
+        if (cached) return cached;
+        const byFileName = await cache.match("/index.html");
+        return byFileName || Response.error();
+    } catch {
+        return Response.error();
+    }
+}
+
+/**
+ * 外壳（HTML）：**先走网络，网络失败才回落到缓存**。
+ *
+ * 两条实现上的讲究，改的时候别顺手改回去：
+ *
+ * 1. 缓存句柄与外壳请求**同时**发起。写成 `await resolveCacheName()` 再去 fetch，
+ *    等于给每次导航多加一次 precache-manifest.json 的往返 —— 离线回落要用缓存名，
+ *    但没必要让它挡在网络请求前面。
+ * 2. 写缓存走 `event.waitUntil`，不能在返回响应前 await：SW 随时可能被回收，
+ *    而 put 的成败不该让用户多等。
+ *
+ * ⚠️ 缓存键统一是 `"/"`：SPA 下任何路由拿回来的都是同一份 index.html，
+ * 离线时也只有「首页」这一个形态可回。缓存名本身带版本，换版即整体作废，
+ * 所以不需要额外的失效逻辑（也不会滑到「永远命中旧网」那一头）。
+ */
+async function serveShell(event, req) {
+    const cachePromise = resolveCacheName()
+        .then(name => caches.open(name))
+        .catch(() => null);
+    const netPromise = fetch(shellRequest(req));
+
+    let res;
+    try {
+        res = await netPromise;
+    } catch {
+        // 网络失败（离线 / 源站挂了）→ 用缓存里的外壳把页面撑起来
+        const cache = await cachePromise;
+        return cache ? await readCachedShell(cache) : Response.error();
+    }
+
+    // 只缓存「真的是页面」的响应：错误页 / 重定向到登录页的
+    // SPA fallback 之外的东西不该被当壳存下来
+    if (res && res.ok && (res.headers.get("content-type") || "").includes("text/html")) {
+        const copy = res.clone();
+        event.waitUntil(
+            cachePromise
+                .then(cache => (cache ? putWithTimestamp(cache, "/", copy) : undefined))
+                .catch(() => {})
+        );
+    }
+    return res;
+}
 
 /**
  * 缓存整理：条目数超限 / 跨域图标超龄时回收最旧的。
@@ -263,28 +396,9 @@ self.addEventListener("fetch", event => {
         return;
     }
 
-    // 页面导航：网络优先，失败时用缓存里的首页兜底
-    if (req.mode === "navigate") {
-        event.respondWith(
-            fetch(req)
-                .then(res => {
-                    // 只缓存「真的是页面」的响应：错误页 / 重定向到登录页的
-                    // SPA fallback 之外的东西不该被当壳存下来
-                    if (res && res.ok && (res.headers.get("content-type") || "").includes("text/html")) {
-                        const copy = res.clone();
-                        event.waitUntil(
-                            resolveCacheName()
-                                .then(name => caches.open(name))
-                                .then(cache => putWithTimestamp(cache, "/", copy))
-                                .catch(() => {})
-                        );
-                    }
-                    return res;
-                })
-                .catch(() =>
-                    caches.match("/").then(cached => cached || caches.match("/index.html"))
-                )
-        );
+    // 页面导航 / HTML：网络优先，离线时才用缓存里的外壳兜底
+    if (isHtmlNavigation(req)) {
+        event.respondWith(serveShell(event, req));
         return;
     }
 

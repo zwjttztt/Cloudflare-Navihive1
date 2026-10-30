@@ -6,6 +6,105 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。
 
+## 2026-10-30 · 工程 + 修复：P1 收口 —— D1 严格模式 / 全文索引 / 升级健康门禁 / SW 外壳 / 视觉回归（19.4.0）
+
+两件事互相联动，所以一起做：**先让模拟层在违反 D1 限制时主动报错**，再用它回头修数据层的缺陷
+—— 而不是逐条修完继续漏。
+
+### 一、D1 严格模式（`server/sqlite-d1.ts`）
+
+**现象**：本机 SQLite 的绑定变量上限是 32766、也没有语句数上限，而 D1 的上限是**单条 SQL 100 个
+绑定参数 / 100 KB 语句长度**。所以 `IN (?×500)` 这种写法在本机跑得飞起、到线上必炸 —— 评审里已经
+因为它漏掉了 4 处同源缺陷。
+
+**根因**：差异只在上线那一刻才存在，本机没有任何东西会报。这与本轮 P0 那三处是同一类病：
+检查一直在跑，但它能检查的东西里根本没有失败的那一项。
+
+**改法**：
+- 数字写进代码里（`src/API/d1Limits.ts`），不再只活在注释里 —— 只有能被 import 的数字才会被单测钉住。
+  取值逐条标注来源：`D1_MAX_BOUND_PARAMS = 100`、`D1_MAX_SQL_LENGTH_BYTES = 100_000` 取自
+  <https://developers.cloudflare.com/d1/platform/limits/>（2026-10-30 校验）；
+  **`D1_MAX_BATCH_STATEMENTS = 1000` 未能核实** —— 官方文档只说「单条语句的限制适用于 batch 内
+  每条语句」并举例 2000 条的 batch 能跑，**没有给 batch 语句数上限的数字**，所以这是本仓的工程
+  保守值而非平台限制，已在常量注释里写明。
+- 另加一条文档可核实的差异：D1 的 `bind()` 只支持 `?` 与 `?NNN`，不支持 SQLite 认的
+  `:name` / `@name` / `$name`（取自 prepared-statements 页）。
+- 违反时**抛错**而不是 `console.warn`：警告会被淹没，这一整轮评审的教训就是「检查一直在跑但没人看」。
+  报错里带上折叠过的 SQL 形状（`?×101`），一眼能认出是哪种调用形态。
+- 默认关，靠 `NAVIHIVE_STRICT_D1=1` 打开；CI 的 e2e 步骤带上它跑。
+  ⚠️ 只有跑在自托管 `server/` 上的步骤真的走这套检查（走 workerd 的那几条用 D1 模拟器，
+  读不到这个适配器）—— 这一点写在 ci.yml 的注释里了，免得以后以为它守着所有路径。
+
+### 二、批量删除的分批与原子性（`data.ts` / `recycle.ts` / `transfer.ts`）
+
+**现象**：一次最多删 500 张卡，但实现把 500 个 id 拼进**一条** `IN (?×500)`；而同一份仓库里
+`transfer.ts` 那边是正确分批的 —— 两种写法并存，因为本机谁也炸不了。
+
+**改法**：
+- 按 `chunkByParamBudget` 切批（预留 `scopeSql` 追加的那个 `user_id` 参数，边界上差一个就是
+  「线上失败 / 本机全绿」）。实测：改动前的实现在 250 个 id 时一条 SQL 绑 **250 个参数**、
+  500 个 id 时绑 **500 个**；改动后最坏一条 ≤ 100。
+- 每批**一次 batch**：`[回收站 INSERT×k, 墓碑 INSERT×k, DELETE, 审计]` 同一个事务。
+  以前「写回收站」是一个 batch、「删真身 + 墓碑 + 审计」是另一个，中间崩一次就留下
+  「回收站里有、站点还在」—— 用户看到的是卡片没删掉、回收站却多了一堆条目，且无从解释。
+  **实测（把改动前的实现换回来跑同一条用例）**：删真身失败后，回收站留下 3 条、墓碑留下 3 条；
+  现在是一条都不留。
+- 顺序改成「先写墓碑、再删真身」：同一批里顺序不影响原子性，但表达的是「先留痕、再动手」——
+  反过来的话，任何一次拆分提交都会留下「墓碑已删、卡片还在」的幽灵卡片。
+- 还原路径的 `INSERT OR REPLACE INTO sites`：这个 id 已被一张**活着的**卡片占用时改为不指定 id，
+  让 SQLite 另分配一个。以前会被整行顶掉，现象就是「删两次只能恢复一次」。
+- 备份恢复（D-8）按语句数上限切批。**这条要明说代价**：D1 **没有跨 batch 的事务**，所以
+  「要么全成、要么一个字节都没动」只在装得下单个 batch 时成立；装不下时原子性降级到「每批」，
+  报错里会写清「共 N 批，第几批没过、前面已写入多少条，重跑可收敛」（导入是幂等的）。
+  ⚠️ 跨批原子性是 D1 给不到的，不是没做。
+
+### 三、全文索引启动真实探测（#8，根治「索引永久不启用」）
+
+**现象**：评审发现线上 `notes` 4 行 / `notes_fts` **0 行** —— 全文索引建了但一行没写，所有搜索永远走 LIKE 全表扫（性能问题，结果仍对；但埋着「索引真空时 0 命中直接返回空、不退 LIKE」的真漏洞）。
+
+**根因**：`migrationState.ftsReady = true` 只在迁移**步骤**里点亮；正常冷启动走的是版本快路径（已是最新版本直接 return），那一步被整段跳过 → `notesFtsReady` 恒为 false，所有 FTS 写入被 `if (!this.notesFtsReady) return` 静默跳过。**没有任何一条自动检查会失败**，只能人肉从零重审才看得见。
+
+**改法**：
+- 每次冷启动**真实探测**：先 `probeNotesFtsMatch` 探活（实际跑一次 MATCH），再据实补建 / 补齐索引，最后把 `ftsReady` 设成「行数对得上才是真的 ready」。`ensureNotesFtsReady` 全程不抛，失败降级为 LIKE 而非崩。
+- `NOTES_FTS_ROWID_REBUILD_SQL` 从「先 DELETE 后 INSERT」改成「先 INSERT OR REPLACE 新行、再按 rowid 删旧行」—— 中途失败不再留空索引。
+- 0 命中分支按「索引可不可信（行数是否对得上）」决定退不退 LIKE，而非「命中数是否 0」：正常空搜索不再每次多付一次全表扫，索引真空时仍退 LIKE 不漏结果。
+- 配套 `tests/notesFtsProbeRealSql.test.ts` **6 条真 SQLite 用例**（FakeD1 不执行 SQL，测不出这类失效；改用 Node 自带的 `node:sqlite` 真库）。
+
+### 四、Service Worker 外壳网络优先（#10，根治发版后 15 秒空屏）
+
+**现象**：发版后用户打开站点会空屏最长 15 秒，直到 SW 自己超时。
+
+**根因**：SW 外壳（壳 HTML / 引导脚本）走 cache-first，新版本上线后旧壳还被缓存着、又引用了已被删除的旧 chunk → 主模块脚本 404 → JS 没跑 → 首屏死骨架不消失。`/api/bootstrap` 一次都不发，从服务端日志就能判定「JS 压根没跑」。
+
+**改法**：外壳改为**网络优先**（network-first），发版后立刻拿到新壳、新 chunk 引用也对得上；仍保留 boot-guard 兜底（15s 骨架仍在 → 清 Cache + 注销 SW + reload 一次）。
+
+### 五、升级健康门禁 + 失败自动回滚（#9）
+
+**现象**：原来网页「一键升级」只有「拉镜像 → 重建 → 报告 done」，没确认新容器真能服务。compose 重建成功、容器却起不来（镜像坏 / 迁移卡死 / 配置错）时站点直接停摆，要人半夜手动回滚。
+
+**改法**：两条升级路径（spool 模式的 `docker-compose.yml` upgrader + sock 模式的 `entry.ts` `upgraderCommand` 起一次性 helper 容器）现在都在 `compose up` 之后多一段：
+1. 重建**前**：`docker inspect` 拿当前（旧）镜像 ImageID，打 `navihive:previous` 锚点（recreate 之后 latest 已是新镜像，旧镜像只剩这一份）；
+2. 重建**后**：轮询 `docker inspect` 的 `Health.Status`（≤40×3s=120s）—— Dockerfile 自带 HEALTHCHECK 探 `/api/init`，不依赖容器里有没有 curl/wget；
+3. 明确 `unhealthy` 或超时（一直 starting）就 `docker tag previous` + `compose` 回滚到旧镜像。
+
+决策抽成纯函数 `shouldRollback`（`upgradeHealth.ts`）由单测逐格钉死；两条路径的脚本由 `tests/systemUpgradeGuard.test.ts` 钉住相同锚点 tag / 探活字段 / 回滚命令。**本机无 daemon，端到端行为无法本地验证**，靠单测 + 守卫保证两路径一致、且不会因一侧改了回滚命令而另一侧没跟上。
+
+### 六、视觉回归指纹法（#11，故意排除在 CI 外）
+
+**做法**：`script/visual-regression.mjs` 用**布局 / 计算样式指纹**而非像素截图比对（基线 15 份，覆盖 desktop/narrow/mobile × home-light/dark / settings / notes / share-note）。
+
+**为什么排除在 `npm run ci` 外**：CI 跑器的字体与本地不一致，像素截图必然假红；指纹法对字体不敏感，但为彻底避开「CI 偶发红」仍只作为**本地 / 人工复核**工具，由 `tests/visualRegressionGuard.test.ts` 守基线文件齐全（15 份）。
+
+### 七、门禁
+
+`tsc -b --force` 0 error / `eslint` 0 error（25 warning，全是既有 react-refresh）/
+单测 **3482 用例、3481 通过、0 失败、1 跳过** / `build` 成功。
+本批发新增门禁用例：FTS 真 SQLite 探活（`notesFtsProbeRealSql`，6 条）、升级健康门禁守卫
+（`systemUpgradeGuard`，14 条）、视觉回归基线守卫（`visualRegressionGuard`，5 条）；
+FTS 用例跑在 Node 自带的 `node:sqlite` 真库上（FakeD1 不执行 SQL，测不出这类失效）。
+`npm run e2e:share-extra` 在 `NAVIHIVE_STRICT_D1=1` 下 46/46 通过 —— 它没走到批量删除路径，
+所以这条只说明分享那条链干净，不代表全库干净。
+
 ## 2026-10-29 · 修复：六项 P0 —— 三处静默失效 + 三个兜底缺口（19.2.0）
 
 来源是一次**不引用任何既有结论的从零重审**。六项里有三处是同一类毛病：**代码在跑、界面在显示、

@@ -7,6 +7,7 @@
 
 import type { NavigationAPI } from "../http";
 import type { D1PreparedStatement } from "../schema";
+import { chunkStatements } from "../d1Limits";
 import { computeBackupIntegrity, verifyBackupIntegrity } from "../../utils/backupIntegrity";
 import { normalizeUrl, urlIdentityKey } from "../../utils/url";
 import { isAuthConfigKey, isAiConfigKey, isImportableConfigValue, isPerUserAppearanceKey, isSecretConfigKey, isUserScopedConfigKey, stripSecretConfigs } from "../configGuards";
@@ -472,13 +473,31 @@ export const transferImpl: TransferApi = {
             // 提交必须只有一个事务：把「新建 + 已有记录就地更新 + 关联」一次性落库。
             const total = commit.length;
             report("write", 0, total);
-            // 超出服务端容量时整批失败（数据库自动回滚），不再分块 ——
-            // 分块会让「前 90 条写进去、后面失败」变成可能，而现在要做到的是
-            // 「要么全成、要么一个字节都没动」。
+            // 一个 batch = 一个事务。D1 **没有跨 batch 的事务**，所以这里只能二选一：
+            //   · 装得下（≤ D1_MAX_BATCH_STATEMENTS）→ 一个 batch 提交，
+            //     保住「要么全成、要么一个字节都没动」；
+            //   · 装不下 → 必须分批，原子性降级到「每批」。
+            // 以前是「永不分批」，于是大备份一旦超容量就是整批失败（倒是干净），
+            // 但更大的问题是它把「没有上限」当成了既成事实 —— 现在按上限切，
+            // 并且在真的分批时把话说清楚：导入是幂等的（重复导入只会让 skipped 变多，
+            // 不会重复建卡，见 stats 注释），失败后重跑同一份备份即可收敛。
             if (commit.length > 0) {
-                const committed = await this.db.batch(commit);
-                if (committed.some(result => !result.success)) {
-                    throw new Error("导入事务提交失败");
+                const chunks = chunkStatements(commit);
+                let written = 0;
+                for (let i = 0; i < chunks.length; i++) {
+                    const chunk = chunks[i];
+                    const committed = await this.db.batch(chunk);
+                    if (committed.some(result => !result.success)) {
+                        throw new Error(
+                            chunks.length === 1
+                                ? "导入事务提交失败"
+                                : `导入事务提交失败：共 ${chunks.length} 批，第 ${i + 1} 批没过` +
+                                      `（前面 ${written} 条已写入）。D1 没有跨批事务，这次只做了一半；` +
+                                      "重跑同一份备份即可收敛（重复导入不会重复建卡）。"
+                        );
+                    }
+                    written += chunk.length;
+                    report("write", written, total);
                 }
                 report("write", total, total);
             }

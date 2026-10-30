@@ -90,7 +90,7 @@ test("首次冷启动：版本读不到 → 跑完整迁移，并把版本号写
     assert.equal(api.dbReady, true);
 });
 
-test("第二次冷启动（版本号对得上）：迁移只花一条查询", async () => {
+test("第二次冷启动（版本号对得上）：一条建表/补列语句都不发", async () => {
     // 上一个用例跑完的那份库，直接当成「已经迁移好的线上库」
     resetMigrationCacheForTests();
     const db = new CountingD1();
@@ -99,10 +99,23 @@ test("第二次冷启动（版本号对得上）：迁移只花一条查询", as
 
     await api.migrate();
 
-    assert.equal(
-        db.statements.length,
-        1,
-        `版本对得上时不该再发建表/补列语句，实际发了 ${db.statements.length} 条：\n  ${db.statements.join("\n  ")}`
+    // ⚠️ 这里不再断言「恰好 1 条」（2026-10-30）。
+    // 快路径上多了一次**全文索引探测**：一条 MATCH 探活 + 一条取两侧行数。
+    // 它不是可以省的 —— ftsReady 原先只在迁移步骤里点亮，而步骤进了已完成集合
+    // 就不再跑，于是每个正常启动的 isolate 里它恒为 false（索引不写、搜索全表扫）。
+    // 用两条读查询换「说可用就真的可用」，比省这两条划算得多。
+    // 真正要守住的是：**一次写语句都不许发**（建表/补列/建索引才是冷启动的大头）。
+    const writes = db.statements.filter(s =>
+        /^(CREATE|ALTER|DROP|INSERT|UPDATE|DELETE|REPLACE)\b/i.test(s)
+    );
+    assert.deepEqual(
+        writes,
+        [],
+        `版本对得上时不该再发建表/补列/建索引语句，实际发了：\n  ${writes.join("\n  ")}`
+    );
+    assert.ok(
+        db.statements.length <= 3,
+        `快路径只允许「读版本 + 探索引」这三条读查询，实际发了 ${db.statements.length} 条：\n  ${db.statements.join("\n  ")}`
     );
     assert.match(db.statements[0], /SELECT value FROM configs/);
     assert.equal(api.dbReady, true, "跳过迁移也要把 dbReady 置上（否则鉴权会一直 fail-open）");

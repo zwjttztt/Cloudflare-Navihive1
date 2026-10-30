@@ -31,6 +31,7 @@ import {
 import { makeFileKv } from "./file-kv";
 import { parseHeaderRules, serveStatic, type HeaderRule } from "./static";
 import { recordUpgradeAudit, type UpgradeOutcome } from "./upgradeAudit";
+import { tagPreviousBeforeRecreate, healthGuardAfterRecreate } from "./upgradeHealth";
 import { NavigationAPI } from "../src/API/navigationApi";
 import { isPublicHost, normalizeRemoteAddress } from "./net";
 import { setEgressResolver } from "../worker/safeFetch";
@@ -612,6 +613,8 @@ function upgraderCommand(info: ComposeInfo): string {
     // 只认落在工作目录里的配置文件
     const inside = info.files.filter(f => f.startsWith(base)).map(f => `${dir}/${f.slice(base.length)}`);
     const project = info.project;
+    // 健康门禁回滚用的第一个 compose 文件（bare 路径；无 -f 前缀）
+    const firstFile = inside[0] || `${dir}/docker-compose.yml`;
     return [
         `CFG="${inside.map(f => `-f ${f}`).join(" ")}"`,
         'if [ -z "$CFG" ]; then',
@@ -622,6 +625,9 @@ function upgraderCommand(info: ComposeInfo): string {
         `if [ -z "$CFG" ]; then echo "[upgrader] 在 ${dir} 里找不到 compose 配置文件（挂载目录不对？）"; exit 21; fi`,
         'if [ ! -x /usr/bin/docker ]; then echo "[upgrader] 宿主机 docker CLI 不可用：/usr/bin/docker 没挂进来"; exit 22; fi',
         `cd "${dir}"`,
+        // 升级前先把当前（旧）镜像记成回滚锚点：recreate 之后 latest 就是新镜像，
+        // 旧镜像只剩正在跑的这一份 ImageID，必须现在 inspect 下来 tag 住。
+        tagPreviousBeforeRecreate(UPGRADE_CONTAINER),
         // 往宿主机的 compose 目录记一笔：重建会把容器自身的日志一起换掉，
         // 出问题时这份文件是最后一份现场
         `LOG="${dir}/.navihive-upgrade.log"`,
@@ -636,8 +642,10 @@ function upgraderCommand(info: ComposeInfo): string {
         '  echo "[upgrader] 重建失败：docker compose 返回非 0 退出码"',
         "  exit 1",
         "fi",
+        // 重建成功 ≠ 新容器能服务：探活，不健康就回滚 previous（#9 健康门禁）
+        healthGuardAfterRecreate(UPGRADE_CONTAINER, project, firstFile),
         `echo "[upgrader] $(date -u +%FT%TZ) 成功" >> "$LOG"`,
-        'echo "[upgrader] 完成：容器已按新镜像重建"',
+        'echo "[upgrader] 完成：容器已按新镜像重建（健康门禁已通过）"',
     ].join("\n");
 }
 

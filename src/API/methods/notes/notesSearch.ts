@@ -7,6 +7,7 @@ import type { NavigationAPI } from "../../http";
 import type { NotesApi } from "../notes";
 import type { Note, NoteSearchResult } from "../../types";
 import { migrationState } from "../internals";
+import { notesFtsIndexTrustworthy } from "../migration";
 import { buildFtsMatch, escapeLike, FTS_CONTENT_LIMIT, makeSnippet, segmentCJK } from "../../../utils/ftsQuery";
 import { NOTE_FIELDS } from "./notesShared";
 import { logger } from "../../../../shared/logger";
@@ -123,8 +124,23 @@ export const searchMethods: Pick<NotesApi,
                             })),
                         };
                     }
-                    // 一条没中：真没这个内容（不是索引坏了），不用再退 LIKE 扫一遍
-                    return { mode: "fts", results: [] };
+                    /**
+                     * 一条没中：两种可能，必须分开对待。
+                     *
+                     * ① 索引可信（行数与 notes 对得上）→ 真没这个内容，直接返回空。
+                     *    正常的「搜了个不存在的词」走的就是这条，一次 LIKE 全表扫都不付。
+                     * ② 索引不可信（最典型的形态是**空索引**：notes 有 4 行、notes_fts 0 行）
+                     *    → 这 0 行**不是答案**，是索引坏了。直接返回空等于让用户什么都搜不到，
+                     *    而且界面上看不出「搜索坏了」和「真没有」的区别。
+                     *
+                     * ⚠️ 判据是「索引可不可信」，不是「命中数是不是 0」——
+                     * 后者会把每一次正常的空搜索都变成一次额外的全表扫。
+                     * 这一条查询只在 0 命中时才跑，代价是一次 COUNT，远小于一次 LIKE 扫。
+                     */
+                    if (await notesFtsIndexTrustworthy(this)) {
+                        return { mode: "fts", results: [] };
+                    }
+                    logger.warn("全文索引行数与笔记对不上，本次查询退回 LIKE（索引可能还没补齐）:", { component: "notesSearch" })
                 }
             } catch (error) {
                 // 到这里说明索引虽然建起来了、但真查询时炸了（D1 版本/磁盘格式差异）：

@@ -106,6 +106,16 @@ jobs:
       # 必须先改密」「改密会使当前令牌失效」「/api/init 不返回数据」这类契约，
       # 只有真打一遍接口才会暴露。必须排在构建之后：脚本跑的是 dist 里的产物。
       - name: 后端 API 端到端
+        # NAVIHIVE_STRICT_D1=1：打开 server/sqlite-d1.ts 的「D1 严格模式」。
+        # 本机 SQLite 的变量上限是 32766、也没有语句数上限，D1 的限制（单条 SQL
+        # 100 个绑定参数 / 100 KB 语句长度）本机会被悄悄吞掉，评审里已经因为这
+        # 个漏掉 4 处同源缺陷。打开后违反就**抛错**，于是「本机全绿、上线必炸」
+        # 在 CI 里就红。
+        # ⚠️ 只有跑在自托管 server/（Node + SQLite）上的步骤真的会走这套检查
+        # （e2e:share-extra / probe:edge）；走 workerd 的那几条用的是 D1 模拟器，
+        # 读不到这个适配器 —— 所以这一开就红的话，一定是自托管路径真有问题。
+        env:
+          NAVIHIVE_STRICT_D1: "1"
         run: npm run e2e
 
       # 分享功能的端到端：起一个 wrangler dev（本地 D1），建一条带口令的笔记分享和
@@ -115,6 +125,16 @@ jobs:
       # 分享是「线上从未实测、且以前零 e2e 覆盖」的成片功能，而它坏了是静默的：
       # 链接打不开，只是别人收不到内容。
       - name: 分享功能端到端
+        # NAVIHIVE_STRICT_D1=1：打开 server/sqlite-d1.ts 的「D1 严格模式」。
+        # 本机 SQLite 的变量上限是 32766、也没有语句数上限，D1 的限制（单条 SQL
+        # 100 个绑定参数 / 100 KB 语句长度）本机会被悄悄吞掉，评审里已经因为这
+        # 个漏掉 4 处同源缺陷。打开后违反就**抛错**，于是「本机全绿、上线必炸」
+        # 在 CI 里就红。
+        # ⚠️ 只有跑在自托管 server/（Node + SQLite）上的步骤真的会走这套检查
+        # （e2e:share-extra / probe:edge）；走 workerd 的那几条用的是 D1 模拟器，
+        # 读不到这个适配器 —— 所以这一开就红的话，一定是自托管路径真有问题。
+        env:
+          NAVIHIVE_STRICT_D1: "1"
         run: npm run e2e:share
 
       # 分享补充面端到端：跑在自托管 server/（Node + SQLite）上，与上一条互补 ——
@@ -124,6 +144,16 @@ jobs:
       # 分组分享的口令流程与字段脱敏（sites 只回 name/url/description/icon）。
       # 另外它也是 home 部署形态（自托管）自己的链路验证。
       - name: 分享补充面端到端
+        # NAVIHIVE_STRICT_D1=1：打开 server/sqlite-d1.ts 的「D1 严格模式」。
+        # 本机 SQLite 的变量上限是 32766、也没有语句数上限，D1 的限制（单条 SQL
+        # 100 个绑定参数 / 100 KB 语句长度）本机会被悄悄吞掉，评审里已经因为这
+        # 个漏掉 4 处同源缺陷。打开后违反就**抛错**，于是「本机全绿、上线必炸」
+        # 在 CI 里就红。
+        # ⚠️ 只有跑在自托管 server/（Node + SQLite）上的步骤真的会走这套检查
+        # （e2e:share-extra / probe:edge）；走 workerd 的那几条用的是 D1 模拟器，
+        # 读不到这个适配器 —— 所以这一开就红的话，一定是自托管路径真有问题。
+        env:
+          NAVIHIVE_STRICT_D1: "1"
         run: npm run e2e:share-extra
 
       # 接口边界探针：往自托管服务打一批畸形 / 超限 / 异常输入，**只找 5xx**。
@@ -133,6 +163,16 @@ jobs:
       # 修完由 tests/jsonBodyGuard.test.ts 静态钉住「不许再裸解析」，
       # 这条则是**运行时**那半：它才能证明「真的不 500 了」。
       - name: 接口边界探针（只找 5xx）
+        # NAVIHIVE_STRICT_D1=1：打开 server/sqlite-d1.ts 的「D1 严格模式」。
+        # 本机 SQLite 的变量上限是 32766、也没有语句数上限，D1 的限制（单条 SQL
+        # 100 个绑定参数 / 100 KB 语句长度）本机会被悄悄吞掉，评审里已经因为这
+        # 个漏掉 4 处同源缺陷。打开后违反就**抛错**，于是「本机全绿、上线必炸」
+        # 在 CI 里就红。
+        # ⚠️ 只有跑在自托管 server/（Node + SQLite）上的步骤真的会走这套检查
+        # （e2e:share-extra / probe:edge）；走 workerd 的那几条用的是 D1 模拟器，
+        # 读不到这个适配器 —— 所以这一开就红的话，一定是自托管路径真有问题。
+        env:
+          NAVIHIVE_STRICT_D1: "1"
         run: npm run probe:edge
 
       # 定时备份（cron）的端到端：用 --test-scheduled 把 scheduled handler 挂到
@@ -142,6 +182,16 @@ jobs:
       # 纯逻辑单测（cronLogic）盯着，从没端到端跑过 —— 而它一旦坏了是静默的：
       # 备份默默不写，发现时已经没有可恢复的数据。
       - name: 定时任务端到端
+        # NAVIHIVE_STRICT_D1=1：打开 server/sqlite-d1.ts 的「D1 严格模式」。
+        # 本机 SQLite 的变量上限是 32766、也没有语句数上限，D1 的限制（单条 SQL
+        # 100 个绑定参数 / 100 KB 语句长度）本机会被悄悄吞掉，评审里已经因为这
+        # 个漏掉 4 处同源缺陷。打开后违反就**抛错**，于是「本机全绿、上线必炸」
+        # 在 CI 里就红。
+        # ⚠️ 只有跑在自托管 server/（Node + SQLite）上的步骤真的会走这套检查
+        # （e2e:share-extra / probe:edge）；走 workerd 的那几条用的是 D1 模拟器，
+        # 读不到这个适配器 —— 所以这一开就红的话，一定是自托管路径真有问题。
+        env:
+          NAVIHIVE_STRICT_D1: "1"
         run: npm run e2e:cron
 
       # WebDAV 备份的端到端：本地起一个 mock WebDAV 服务，让 worker 真的
@@ -151,6 +201,16 @@ jobs:
       # gzip 流的组装与解压、Basic 凭据的 UTF-8 编码、PROPFIND 的 XML 形态、
       # 以及「没开内网豁免时指向内网必须被挡下且根本没发出请求」。
       - name: WebDAV 备份端到端
+        # NAVIHIVE_STRICT_D1=1：打开 server/sqlite-d1.ts 的「D1 严格模式」。
+        # 本机 SQLite 的变量上限是 32766、也没有语句数上限，D1 的限制（单条 SQL
+        # 100 个绑定参数 / 100 KB 语句长度）本机会被悄悄吞掉，评审里已经因为这
+        # 个漏掉 4 处同源缺陷。打开后违反就**抛错**，于是「本机全绿、上线必炸」
+        # 在 CI 里就红。
+        # ⚠️ 只有跑在自托管 server/（Node + SQLite）上的步骤真的会走这套检查
+        # （e2e:share-extra / probe:edge）；走 workerd 的那几条用的是 D1 模拟器，
+        # 读不到这个适配器 —— 所以这一开就红的话，一定是自托管路径真有问题。
+        env:
+          NAVIHIVE_STRICT_D1: "1"
         run: npm run e2e:webdav
 
       # ubuntu-latest 预装了 google-chrome，ci-smoke.mjs 会自己找到它；

@@ -11,7 +11,42 @@ import { RETENTION_DAYS, RETENTION_DAYS_KEY, RETENTION_DAYS_MAX, RETENTION_DAYS_
 import { D1PreparedStatement } from "../schema";
 import { RecycleBatchRestoreResult, Site } from "../types";
 import { GROUP_RESTORE_COLUMNS, SITE_RESTORE_COLUMNS } from "./internals";
+import { chunkByParamBudget, chunkStatements } from "../d1Limits";
 import { logger } from "../../../shared/logger";
+
+/**
+ * 表里**已经占用**的 id（还原时用来判断「这个 id 还空着吗」）。
+ *
+ * 为什么需要它（D-21，2026-10-30）：还原用的是 `INSERT OR REPLACE INTO sites`，
+ * 而 OR REPLACE 是按**主键冲突**替换整行。于是「删了两次、两次的 id 恰好一样」
+ * （删 → 回收站 A；又建一张卡正好复用同一个 id → 再删 → 回收站 B）时，
+ * 连着还原 A 和 B，第二次会把第一次刚还原出来的卡片**静默顶掉** ——
+ * 用户看到的现象就是「删两次只能恢复一次」。
+ * 现在还原前先问一句这个 id 还空着吗，被占了就让 SQLite 另分配一个 id，两张卡都在。
+ *
+ * 调用方传入的 id 列表也要切批：同样是 D1 单条语句 100 个绑定参数的上限。
+ */
+async function occupiedIds(
+    db: { prepare: (sql: string) => D1PreparedStatement },
+    table: "sites" | "groups",
+    ids: number[]
+): Promise<Set<number>> {
+    const out = new Set<number>();
+    const wanted = [...new Set(ids.filter(id => Number.isInteger(id)))];
+    if (wanted.length === 0) return out;
+    for (const chunk of chunkByParamBudget(wanted, 0)) {
+        const list = chunk.map(() => "?").join(", ");
+        const result = await db
+            .prepare(`SELECT id FROM ${table} WHERE id IN (${list})`)
+            .bind(...chunk)
+            .all<{ id: number }>();
+        for (const row of result.results || []) {
+            const id = Number(row?.id);
+            if (Number.isFinite(id)) out.add(id);
+        }
+    }
+    return out;
+}
 
 export interface RecycleApi {
     pushToRecycle(kind: string, data: string): Promise<number | undefined>;
@@ -46,7 +81,9 @@ export interface RecycleApi {
     buildReinsert(
         table: "sites" | "groups",
         row: Record<string, unknown>,
-        fallbackColumns: string[]
+        fallbackColumns: string[],
+        /** 已被活行占用的 id；传入时，命中冲突的还原会改用新 id（D-21） */
+        occupied?: Set<number>
     ): Promise<D1PreparedStatement | null>;
     reinsertSite(site: Record<string, unknown>): Promise<void>;
     reinsertSitesBatch(rows: Record<string, unknown>[]): Promise<void>;
@@ -458,7 +495,9 @@ export const recycleImpl: RecycleApi = {
         row: Record<string, unknown>,
         fallbackColumns: string[]
     ): Promise<void> {
-        const statement = await this.buildReinsert(table, row, fallbackColumns);
+        // 单条还原也要问一句 id 空不空：见 occupiedIds 的注释（D-21）
+        const occupied = await occupiedIds(this.db, table, [Number(row?.id)]);
+        const statement = await this.buildReinsert(table, row, fallbackColumns, occupied);
         if (statement) await statement.run();
     },
 
@@ -470,7 +509,8 @@ export const recycleImpl: RecycleApi = {
         this: NavigationAPI,
         table: "sites" | "groups",
         row: Record<string, unknown>,
-        fallbackColumns: string[]
+        fallbackColumns: string[],
+        occupied?: Set<number>
     ): Promise<D1PreparedStatement | null> {
         const known = await this.tableColumns(table);
         let data = row;
@@ -485,6 +525,13 @@ export const recycleImpl: RecycleApi = {
 
         let cols = Object.keys(data).filter(c => /^[A-Za-z_][A-Za-z0-9_]*$/.test(c));
         cols = known ? cols.filter(c => known.has(c)) : cols.filter(c => fallbackColumns.includes(c));
+
+        // D-21：这个 id 已经被一张活着的卡片占了 → 不指定 id，让 SQLite 另分配一个。
+        // 否则 INSERT OR REPLACE 会把那张活卡片整行替换掉（「删两次只能恢复一次」）。
+        const wantedId = Number(data.id);
+        if (occupied instanceof Set && Number.isInteger(wantedId) && occupied.has(wantedId)) {
+            cols = cols.filter(c => c !== "id");
+        }
         if (cols.length === 0) return null;
 
         const placeholders = cols.map(() => "?").join(", ");
@@ -503,12 +550,22 @@ export const recycleImpl: RecycleApi = {
      */
     reinsertSitesBatch: async function (this: NavigationAPI, rows: Record<string, unknown>[]): Promise<void> {
         if (rows.length === 0) return;
+        // 一次问清这批 id 里哪些已经被占了（切批的 SELECT，不是逐条问）
+        const occupied = await occupiedIds(
+            this.db,
+            "sites",
+            rows.map(row => Number(row?.id))
+        );
         const built = await Promise.all(
-            rows.map(row => this.buildReinsert("sites", row, SITE_RESTORE_COLUMNS))
+            rows.map(row => this.buildReinsert("sites", row, SITE_RESTORE_COLUMNS, occupied))
         );
         const statements = built.filter((s): s is D1PreparedStatement => s !== null);
         if (statements.length === 0) return;
-        await this.db.batch(statements);
+        // 一个 batch 装不下就分批发：D1 没有跨 batch 的事务，但还原是幂等的
+        // （重复还原只会让 skipped 变多，不会重复建卡），分批发失败重跑即可收敛。
+        for (const chunk of chunkStatements(statements)) {
+            await this.db.batch(chunk);
+        }
     },
 
     /** 把回收站里的原始行（DB 列名）转成前端的 Site 形状，交给界面直接渲染 */
