@@ -45,6 +45,7 @@ import { useAccountSession } from "./hooks/useAccountSession";
 import { usePwaInstall } from "./hooks/usePwaInstall";
 import { useHistoryStack } from "./hooks/useHistoryStack";
 import { useNotify } from "./hooks/useNotify";
+import { useNewSiteAiAssist } from "./hooks/useNewSiteAiAssist";
 import { useSites } from "./hooks/useSites";
 import { useSiteSync } from "./hooks/useSiteSync";
 import { useMultiSelect } from "./hooks/useMultiSelect";
@@ -1081,76 +1082,23 @@ function App() {
         onMenuClose: handleMenuClose,
     });
 
-    // 新增站点弹窗的 AI 补全：只填名称与描述，成功不说话，失败才提示（与编辑站点同款）
-    const [aiBusyNew, setAiBusyNew] = useState(false);
-    const aiNewRequestId = useRef(0);
-    const aiNewTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-    useEffect(() => {
-        // 包括创建成功后的关闭、URL 改写和卸载；旧请求不能污染下一张表单。
-        aiNewRequestId.current += 1;
-        clearTimeout(aiNewTimer.current);
-        setAiBusyNew(false);
-        setAiMessageNew("");
-        setAiMessageErrorNew(false);
-        return () => {
-            aiNewRequestId.current += 1;
-            clearTimeout(aiNewTimer.current);
-        };
-    }, [openAddSite, newSite.url]);
-    const [aiMessageNew, setAiMessageNew] = useState("");
-    const [aiMessageErrorNew, setAiMessageErrorNew] = useState(false);
-
-    const handleCloseAddSiteWithAiReset = () => {
-        aiNewRequestId.current += 1;
-        setAiBusyNew(false);
-        setAiMessageNew("");
-        setAiMessageErrorNew(false);
-        handleCloseAddSite();
-    };
-
-    const handleAiCompleteNew = async () => {
-        if (!siteAi?.enabled || !newSite.url || aiBusyNew) return;
-        const requestId = ++aiNewRequestId.current;
-        setAiBusyNew(true);
-        setAiMessageNew("");
-        setAiMessageErrorNew(false);
-        const timeout = new Promise<never>((_resolve, reject) => {
-            aiNewTimer.current = setTimeout(() => reject(new Error("AI 补全超时，请检查网络或稍后重试")), 30_000);
-        });
-        try {
-            const groupNames = groups.map(g => g.name);
-            const res = await Promise.race([
-                siteAi.siteMeta(newSite.url, {
-                    name: newSite.name || undefined,
-                    groups: groupNames,
-                    tags: allTags,
-                }),
-                timeout,
-            ]);
-            if (requestId !== aiNewRequestId.current) return;
-            if (!res.ok) {
-                setAiMessageNew(res.message);
-                setAiMessageErrorNew(true);
-                return;
-            }
-            const { name, description } = res.data;
-            setNewSite(prev => ({
-                ...prev,
-                name: name || prev.name,
-                description: description || prev.description,
-            }));
-        } catch (error) {
-            if (requestId === aiNewRequestId.current) {
-                setAiMessageNew(error instanceof Error ? error.message : "AI 补全失败，请重试");
-                setAiMessageErrorNew(true);
-            }
-        } finally {
-            if (requestId === aiNewRequestId.current) {
-                clearTimeout(aiNewTimer.current);
-                setAiBusyNew(false);
-            }
-        }
-    };
+    // 新增站点弹窗的 AI 补全（超时 + 请求号防串台）整套搬到 hooks/useNewSiteAiAssist.ts。
+    // 引用点名字保持不变，下面的 JSX 一行都不用改。
+    const {
+        aiBusy: aiBusyNew,
+        aiMessage: aiMessageNew,
+        aiMessageError: aiMessageErrorNew,
+        handleAiComplete: handleAiCompleteNew,
+        handleCloseAddSiteWithAiReset,
+    } = useNewSiteAiAssist({
+        siteAi,
+        newSite,
+        setNewSite,
+        groupNames: groups.map(g => g.name),
+        allTags,
+        openAddSite,
+        closeAddSite: handleCloseAddSite,
+    });
 
     // 「网站设置」与管理员凭据的写逻辑：整段搬到 hooks/useSiteSettings.ts
     // （打开弹窗的初始化、临时配置编辑、凭据提交、整批保存）

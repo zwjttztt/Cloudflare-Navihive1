@@ -40,8 +40,17 @@ export function useSites(deps: UseSitesDeps) {
     // fetch 会把骨架屏重新举起来，把缓存优化的效果抵消掉（这是此前每次打开都白屏的根因）。
     const paintedFromCacheRef = useRef(false);
 
-    // 把一次 bootstrap 数据合并进本地分组状态；配置 / 偏好等交给 onRemoteExtras
-    const applyRemoteData = (data: BootstrapData) => {
+    // 最新 deps 的 ref（P2-13）：让 applyRemoteData / fetchData 保持**稳定引用**
+    // （空依赖 useCallback），又总能读到最新的 api 与回调。否则每次渲染都生成新的
+    // fetchData，下游把它放进 useMemo/useCallback 依赖时全部失效。
+    const depsRef = useRef(deps);
+    useEffect(() => {
+        depsRef.current = deps;
+    });
+
+    // 把一次 bootstrap 数据合并进本地分组状态；配置 / 偏好等交给 onRemoteExtras。
+    // 空依赖 useCallback + depsRef：引用稳定，下游 memo 不再因它每次重建而失效（P2-13）。
+    const applyRemoteData = useCallback((data: BootstrapData) => {
         const sitesByGroup = new Map<number, Site[]>();
         for (const site of data.sites || []) {
             const list = sitesByGroup.get(site.group_id);
@@ -63,8 +72,8 @@ export function useSites(deps: UseSitesDeps) {
             }));
 
         setGroups(nextGroups);
-        deps.onRemoteExtras(data);
-    };
+        depsRef.current.onRemoteExtras(data);
+    }, []);
 
     /**
      * 取一次 bootstrap。
@@ -78,7 +87,7 @@ export function useSites(deps: UseSitesDeps) {
      * （原来 App 把 setError 当 onDataError 传给两个 hook，那些提示会让整个站点列表
      * 消失且页面上一个字都没有）。流程提示走 notify。
      */
-    const fetchData = async ({ silent = false }: { silent?: boolean } = {}): Promise<boolean> => {
+    const fetchData = useCallback(async ({ silent = false }: { silent?: boolean } = {}): Promise<boolean> => {
         // 若本次是「缓存已垫底后的首次取数」，自动静默：骨架屏保持隐藏，不被重新举起。
         const fromCache = paintedFromCacheRef.current;
         paintedFromCacheRef.current = false;
@@ -90,7 +99,7 @@ export function useSites(deps: UseSitesDeps) {
         }
 
         try {
-            const data = await deps.api.bootstrap();
+            const data = await depsRef.current.api.bootstrap();
             applyRemoteData(data);
             // 留一份快照，下次打开先用它渲染，不等这个请求回来
             writeBootstrapCache(data);
@@ -101,7 +110,7 @@ export function useSites(deps: UseSitesDeps) {
         } catch (err) {
             const message = err instanceof Error ? err.message : "未知错误";
             if (!effectiveSilent) {
-                deps.onError("加载数据失败: " + message);
+                depsRef.current.onError("加载数据失败: " + message);
                 // 整页错误：让 App 渲染错误面板（而不是空数据）。
                 // silent（缓存已垫底后的静默刷新）**不吃这条** —— 那时页面上
                 // 有旧数据可看，把整页换成错误面板是倒退，只弹 toast 就够。
@@ -112,7 +121,7 @@ export function useSites(deps: UseSitesDeps) {
             // 原来是「界面永不回登录页」的根源：文案一改（或服务端回了非 JSON 的 401），
             // 这里就静默不触发 onAuthFail，用户点什么都只弹同一句 toast。
             if (isAuthError(err)) {
-                deps.onAuthFail();
+                depsRef.current.onAuthFail();
             }
             return false;
         } finally {
@@ -120,7 +129,7 @@ export function useSites(deps: UseSitesDeps) {
                 setLoading(false);
             }
         }
-    };
+    }, [applyRemoteData]);
 
     // ---- 本地写：只动本机分组状态，网络部分由调用方负责（乐观更新 + 失败回滚都在 App） ----
     // 用 functional update 保证并发调用不会互相覆盖；纯计算在 utils/siteMutations.ts，
@@ -155,9 +164,8 @@ export function useSites(deps: UseSitesDeps) {
         paintedFromCacheRef.current = true;
         applyRemoteData(cached);
         setLoading(false);
-        // 仅在挂载跑一次；applyRemoteData 每渲染都是新函数，进 deps 会每渲染重跑
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []);
+        // 仅在挂载跑一次：applyRemoteData 现在是稳定引用（空依赖 useCallback），进 deps 不会重跑
+    }, [applyRemoteData]);
 
     return {
         groups,

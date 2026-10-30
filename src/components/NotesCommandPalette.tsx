@@ -261,7 +261,9 @@ export default function NotesCommandPalette({
             className='notes-command-palette'
             // 纸面与另一个命令面板共用一份（dialogShell.commandPalettePaperSx）：
             // 之前两边各抄一遍，改一处忘一处就会漂成两种浮层
-            slotProps={{ paper: { sx: commandPalettePaperSx } }}
+            // aria-label 挂 paper 而不是 <Dialog>：role="dialog" 在 paper 插槽上，
+            // 详见 CommandPalette 同名处的注释。
+            slotProps={{ paper: { "aria-label": "记事本命令面板", sx: commandPalettePaperSx } }}
         >
             <Box sx={{ px: 2, pt: 2, pb: 1 }}>
                 <TextField

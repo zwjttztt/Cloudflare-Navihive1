@@ -57,11 +57,12 @@ const CRON_TOKEN = process.env.NAVIHIVE_CRON_TOKEN ?? "";
 const CRON_EXPR = "0 * * * *";
 /**
  * 是否信任 X-Forwarded-For / X-Forwarded-Proto。
- * 默认开：自托管的标准形态是前面挡一层 Nginx，由它老实填这两个头。
- * 直接把端口暴露到公网时必须设成 "0" —— 否则客户端随手改 XFF 就能换一个限速桶，
+ * 默认**关**（"0"）：裸跑 / 端口直接暴露公网时，客户端随手改 XFF 就能换一个限速桶，
  * 把登录爆破限速绕过去（worker/loginGuard.ts 的 clientBucket 注释有完整说明）。
+ * 前面确实挡了一层 Nginx（由它老实覆盖这两个头）时才设 "1" —— docker-compose.yml
+ * 已显式写死 1，所以走 compose 的标准自托管部署不受影响（P2-19）。
  */
-const TRUST_XFF = env("NAVIHIVE_TRUST_XFF", "1");
+const TRUST_XFF = env("NAVIHIVE_TRUST_XFF", "0");
 
 // ============ 出站解析复核（自托管 SSRF 闭环，2026-10-24） ============
 //

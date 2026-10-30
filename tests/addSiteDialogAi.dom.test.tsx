@@ -2,12 +2,15 @@
 // 新增站点弹窗的 AI 补全生命周期（2026-10-19 用户报「补全 game.maj-soul.com/1/
 // 长时间无反应，关闭窗口重新打开时按钮还在转」）。
 //
-// 这条链路在 App.tsx 里（useSiteCreator + handleAiCompleteNew），jsdom 里没法
-// 整棵 App 树渲染，所以这里分两层钉住：
-//   1. 本文件：真实渲染 AddSiteDialog + 一个**复刻 App 重置逻辑**的 harness，
+// 这条链路 2026-10-30 起在 src/hooks/useNewSiteAiAssist.ts（P2-17 从 App.tsx 下沉），
+// App 只负责把 hook 的返回值接到 AddSiteDialog 上。jsdom 里没法整棵 App 树渲染，
+// 所以这里分两层钉住：
+//   1. 本文件：真实渲染 AddSiteDialog + 一个**复刻产品重置逻辑**的 harness，
 //      验证「忙 → 关闭 → 重开」不残留转圈、且忙时不能重复发起请求；
-//   2. 静态守卫（同文件末尾）：盯 App.tsx 里那几个关键点真的在
-//      （请求序号、timer 清理、关闭/换 URL 时重置），harness 与产品实现不会漂移。
+//   2. 静态守卫（同文件末尾）：盯 hook 里那几个关键点真的在
+//      （请求序号、timer 清理、关闭/换 URL 时重置），harness 与产品实现不会漂移；
+//      外加一条接线守卫：App.tsx 必须真的调用这个 hook（否则逻辑搬走了但没接上，
+//      两条静态守卫都会绿，产品却什么都不做）。
 import { test, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { useEffect, useRef, useState } from "react";
@@ -228,19 +231,22 @@ function projectDir(): string {
     throw new Error("找不到项目根目录");
 }
 
-test("App.tsx：新增站点的 AI 请求必须有序号、超时兜底与关闭重置", () => {
-    const src = stripComments(readFileSync(resolve(projectDir(), "src", "App.tsx"), "utf8"));
-    assert.match(src, /aiNewRequestId/, "要有一个请求序号 ref（旧结果不得回写）");
+test("hooks/useNewSiteAiAssist.ts：AI 请求必须有序号、超时兜底与关闭重置", () => {
+    const src = stripComments(
+        readFileSync(resolve(projectDir(), "src", "hooks", "useNewSiteAiAssist.ts"), "utf8"),
+    );
+    assert.match(src, /const requestId = useRef\(0\)/, "要有一个请求序号 ref（旧结果不得回写）");
+    assert.match(src, /id !== requestId\.current/, "响应对不上号时必须整条丢弃");
     assert.match(
         src,
         /Promise\.race\(\[[\s\S]{0,400}siteAi\.siteMeta\(/,
         "siteMeta 必须与超时 Promise 赛跑，不能无限等",
     );
-    assert.match(src, /aiNewTimer/, "超时定时器要能被清理（否则每次都是一颗新雷）");
-    assert.match(src, /clearTimeout\(aiNewTimer\.current\)/, "finally / 关闭路径都要清定时器");
+    assert.match(src, /const timer = useRef</, "超时定时器要能被清理（否则每次都是一颗新雷）");
+    assert.match(src, /clearTimeout\(timer\.current\)/, "finally / 关闭路径都要清定时器");
     assert.match(
         src,
-        /handleCloseAddSiteWithAiReset[\s\S]{0,600}setAiBusyNew\(false\)/,
+        /handleCloseAddSiteWithAiReset[\s\S]{0,600}setAiBusy\(false\)/,
         "关闭时必须把 busy 复位（用户报「重开还在转」的根因）",
     );
     assert.match(
@@ -248,4 +254,15 @@ test("App.tsx：新增站点的 AI 请求必须有序号、超时兜底与关闭
         /\[openAddSite, newSite\.url\]/,
         "打开状态或 URL 变化时也要整体重置（换站点不能带上一次的忙态）",
     );
+});
+
+test("App.tsx：真的接上了 useNewSiteAiAssist，且把补全动作给了新增弹窗", () => {
+    const src = stripComments(readFileSync(resolve(projectDir(), "src", "App.tsx"), "utf8"));
+    assert.match(src, /=\s*useNewSiteAiAssist\(\{/, "逻辑搬走后必须真的调用（否则两条静态守卫都会绿而产品无效）");
+    assert.match(
+        src,
+        /handleAiComplete:\s*handleAiCompleteNew/,
+        "返回值要接回原来的引用名，新增弹窗的 onAiComplete 才拿得到",
+    );
+    assert.match(src, /onAiComplete=\{handleAiCompleteNew\}/, "AddSiteDialog 上要真挂上补全回调");
 });

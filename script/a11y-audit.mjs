@@ -275,6 +275,167 @@ const focusVis = await focusSweep(30);
 console.log("=== 焦点可见性（真 Tab 键，作为判据）===");
 focusVis.forEach(f => console.log("  ", f.visible ? "ok  " : "MISS", JSON.stringify(f)));
 
+// ---------- 4.5 弹窗（2026-10-30 加）----------
+//
+// 为什么必须有这一节（F-7 / Y-3）：弹窗是**另一套焦点规则** —— 焦点陷阱、关闭后
+// 归位、aria-modal。而首页与记事本那两遍扫描都是在「没有弹窗」的 DOM 上做的，
+// 弹窗里那批控件从来没被任何自动审计看过。首页全绿推不出弹窗没问题。
+//
+// 入口选 Ctrl+K（命令面板），不点「更多选项 → 设置」：
+//   ① 菜单是两步操作，选择器还会随菜单项文案漂移（文案一改就静默漏测）；
+//   ② 快捷键是产品合同的一部分，用它当入口顺带把快捷键本身也验了。
+//
+// 判据三条：
+//   ① 弹窗有可访问名 + aria-modal="true"，内部无「无名按钮」、无 <24px 可点元素；
+//   ② 焦点陷阱：连按 Tab 12 次，焦点始终不出弹窗（出了就是键盘用户被丢回背景页）；
+//   ③ 焦点归位：Esc 关掉后焦点回到打开前的那个元素（不是掉回 body）。
+
+/** 弹窗状态 + 弹窗内部按同一套尺寸/命名判据量一遍 */
+const SCAN_DIALOG = `(() => {
+  const dlg = document.querySelector('[role="dialog"]');
+  if (!dlg) return { open: false };
+  const nameOf = el => (el.getAttribute('aria-label') || el.getAttribute('title') || el.textContent || '').trim();
+  const byId = id => (id && document.getElementById(id) && document.getElementById(id).textContent || '').trim();
+  const labelled = ((dlg.getAttribute('aria-label') || '').trim()
+      || byId(dlg.getAttribute('aria-labelledby'))).slice(0, 40);
+  const btns = [...dlg.querySelectorAll('button')];
+  const noNameBtns = btns.filter(b => !nameOf(b)).length;
+  // 弹窗里 24px 以下的控件：判据与首页一致（WCAG 2.5.8）。隐藏元素不算。
+  const tiny = [...dlg.querySelectorAll('button, a[href], [role="button"], [role="option"]')].filter(el => {
+      const r = el.getBoundingClientRect();
+      if (r.width === 0 || r.height === 0) return false;
+      const s = getComputedStyle(el);
+      if (s.visibility === 'hidden' || s.pointerEvents === 'none') return false;
+      return r.width < 24 || r.height < 24;
+  }).length;
+  return {
+      open: true,
+      ariaModal: dlg.getAttribute('aria-modal') === 'true',
+      labelled,
+      buttons: btns.length,
+      noNameBtns,
+      tiny,
+  };
+})()`;
+
+/** 焦点是否还在弹窗里（陷阱判据的每次取样） */
+const SCAN_FOCUS_IN_DIALOG = `(() => {
+  const dlg = document.querySelector('[role="dialog"]');
+  if (!dlg) return 'no-dialog';
+  const el = document.activeElement;
+  if (!el || el === document.body) return 'body';
+  return dlg.contains(el) ? 'inside' : 'outside:' + el.tagName;
+})()`;
+
+/** 记下打开前的焦点（用 window 上的引用做跨次比较，DOM 节点不能序列化过 CDP） */
+const focusBefore = await evaluate(`(() => {
+  // 刻意先真聚焦一颗稳定按钮：若此刻焦点是 body，MUI 的「归位」也只能回到 body，
+  // 那样这条判据就永远成立 —— 等于没验。先有个具体元素，归位才有意义。
+  const btn = [...document.querySelectorAll('button')]
+      .find(b => (b.getAttribute('aria-label') || '') === '打开记事本');
+  if (btn) btn.focus();
+  window.__a11yFocusBefore = document.activeElement;
+  return (window.__a11yFocusBefore.getAttribute && (window.__a11yFocusBefore.getAttribute('aria-label') || window.__a11yFocusBefore.tagName)) || 'unknown';
+})()`);
+
+// Ctrl+K：modifiers=2 是 Ctrl。rawKeyDown 足够触发 React 的 onKeyDown（不需要 text）
+await send("Input.dispatchKeyEvent", {
+    type: "rawKeyDown",
+    key: "k",
+    code: "KeyK",
+    windowsVirtualKeyCode: 75,
+    nativeVirtualKeyCode: 75,
+    modifiers: 2,
+});
+await send("Input.dispatchKeyEvent", {
+    type: "keyUp",
+    key: "k",
+    code: "KeyK",
+    windowsVirtualKeyCode: 75,
+    nativeVirtualKeyCode: 75,
+    modifiers: 2,
+});
+
+// 命令面板是懒加载 chunk，落地有延迟 —— 轮询而不是固定 sleep
+let dialog = { open: false };
+{
+    const deadline = Date.now() + 15_000;
+    while (Date.now() < deadline) {
+        dialog = await evaluate(SCAN_DIALOG);
+        if (dialog.open) break;
+        await new Promise(r => setTimeout(r, 250));
+    }
+}
+if (!dialog.open) {
+    // 快捷键打不开命令面板 = 键盘用户彻底够不到这个功能。宁可红也别静默跳过。
+    console.error("Ctrl+K 之后 15 秒内没有出现 [role=\"dialog\"] —— 这一节没测到，审计结果不可信");
+    site.close();
+    done(1);
+}
+console.log("=== 弹窗（命令面板）：可访问性 ===");
+console.log(JSON.stringify(dialog, null, 1));
+
+// 焦点陷阱：连按 Tab，每按一次取一次样
+const trapSamples = [];
+for (let i = 0; i < 12; i++) {
+    await send("Input.dispatchKeyEvent", {
+        type: "rawKeyDown",
+        key: "Tab",
+        code: "Tab",
+        windowsVirtualKeyCode: 9,
+        nativeVirtualKeyCode: 9,
+    });
+    await send("Input.dispatchKeyEvent", {
+        type: "keyUp",
+        key: "Tab",
+        code: "Tab",
+        windowsVirtualKeyCode: 9,
+        nativeVirtualKeyCode: 9,
+    });
+    await new Promise(r => setTimeout(r, 70));
+    trapSamples.push(await evaluate(SCAN_FOCUS_IN_DIALOG));
+}
+const escaped = trapSamples.filter(s => s !== "inside");
+console.log("=== 弹窗：焦点陷阱（Tab 12 次）===");
+console.log(`   取样 ${trapSamples.length} 次，逃出弹窗 ${escaped.length} 次${escaped.length ? "：" + escaped.join(" / ") : ""}`);
+
+// Esc 关闭 + 焦点归位
+await send("Input.dispatchKeyEvent", {
+    type: "rawKeyDown",
+    key: "Escape",
+    code: "Escape",
+    windowsVirtualKeyCode: 27,
+    nativeVirtualKeyCode: 27,
+});
+await send("Input.dispatchKeyEvent", {
+    type: "keyUp",
+    key: "Escape",
+    code: "Escape",
+    windowsVirtualKeyCode: 27,
+    nativeVirtualKeyCode: 27,
+});
+let closed = false;
+{
+    const deadline = Date.now() + 8_000;
+    while (Date.now() < deadline) {
+        const still = await evaluate(`!!document.querySelector('[role="dialog"]')`);
+        if (!still) {
+            closed = true;
+            break;
+        }
+        await new Promise(r => setTimeout(r, 200));
+    }
+}
+// 退场 Fade 播完才卸载，焦点归位也在那之后 —— 等一会儿再量，否则量到的是过渡中间态
+await new Promise(r => setTimeout(r, 400));
+const restored = await evaluate(`(() => {
+  const now = document.activeElement;
+  if (!now || now === document.body) return 'body';
+  return now === window.__a11yFocusBefore ? 'restored' : 'moved:' + (now.getAttribute('aria-label') || now.tagName);
+})()`);
+console.log("=== 弹窗：Esc 关闭与焦点归位 ===");
+console.log(`   关闭 ${closed ? "ok" : "MISS（Esc 关不掉）"}；焦点 ${restored}（打开前是「${focusBefore}」）`);
+
 // ---------- 5. 记事本（2026-10-24 加）----------
 //
 // 为什么必须单独跑一遍：记事本是**另一个路由下的另一套界面**（左栏 + 列表 + 编辑器
@@ -354,6 +515,17 @@ const noRing = focusVis.filter(f => !f.visible);
 if (noRing.length > 0) {
     failures.push(`焦点环不可见 ${noRing.length} 个：${noRing.slice(0, 3).map(f => `${f.tag}「${f.label}」`).join(" / ")}`);
 }
+
+// 弹窗（命令面板）：可访问名 / aria-modal / 内部控件 / 焦点陷阱 / 焦点归位
+if (!dialog.ariaModal) failures.push("弹窗：缺 aria-modal=\"true\"");
+if (!dialog.labelled) failures.push("弹窗：没有可访问名（aria-label / aria-labelledby 都空）");
+if (dialog.noNameBtns > 0) failures.push(`弹窗：无名按钮 ${dialog.noNameBtns} 个`);
+if (dialog.tiny > 0) failures.push(`弹窗：触控目标小于 24px 的 ${dialog.tiny} 个`);
+if (escaped.length > 0) {
+    failures.push(`弹窗：焦点陷阱失效，Tab 逃出 ${escaped.length} 次（${escaped.slice(0, 3).join(" / ")}）`);
+}
+if (!closed) failures.push("弹窗：Esc 关不掉");
+else if (restored !== "restored") failures.push(`弹窗：关闭后焦点没归位（${restored}）`);
 
 // 记事本：同一套判据
 if (notesA11y.noNameBtns > 0) failures.push(`记事本：无名按钮 ${notesA11y.noNameBtns} 个`);

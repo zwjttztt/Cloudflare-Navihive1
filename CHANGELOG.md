@@ -6,6 +6,130 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。
 
+## 2026-10-30 · 工程 + 修复：P2 收口 —— 弹窗可访问性审计 / 命令面板可访问名 / App.tsx 下沉 / 两篇活文档（20.0.0）
+
+评审报告 §18 的 P2 八项（#13–#20）。其中 #16 本轮复核后确认「早已成立」，#15 的「≤600 KB」
+实测**不可达**并如实报告；真正新增能力的是 #18 的弹窗审计 —— 它一上线就量出两个真缺陷。
+
+### 一、弹窗可访问性审计（#18，新增能力 + 修一个真缺陷）
+
+**为什么必须有这一节**：首页与记事本那两遍扫描都是在「没有弹窗」的 DOM 上做的。弹窗是**另一套
+焦点规则**（焦点陷阱 / 关闭后归位 / `aria-modal`），里面那批控件从来没被任何自动审计看过 ——
+首页全绿推不出弹窗没问题。
+
+**入口选 `Ctrl+K` 而不是点「更多选项 → 设置」**：菜单是两步操作、选择器还会随菜单项文案漂移
+（文案一改就静默漏测）；快捷键是产品合同的一部分，用它当入口顺带把快捷键本身也验了。
+
+**判据三条**（`script/a11y-audit.mjs` §4.5）：
+- 弹窗有可访问名 + `aria-modal="true"`，内部无无名按钮、无 <24px 可点元素；
+- 焦点陷阱：连按 Tab 12 次，焦点始终不出弹窗；
+- Esc 关闭 + 关闭后焦点回到**打开前那个元素**（不是掉回 `body`）。
+
+**量出来的真缺陷**：两个命令面板的 `[role="dialog"]` **没有可访问名**。根因是 MUI Dialog 把
+`role="dialog"` / `aria-modal` / `aria-labelledby` 全放在 **paper 插槽**上，而 `{...other}` 是往父级
+Modal 根（`role="presentation"`）铺的 —— 直接写 `<Dialog aria-label>` 会落在**错误的元素**上，
+读屏软件念出来只有「对话框」，没有名字。改法：`slotProps={{ paper: { "aria-label": "命令面板" } }}`
+（`CommandPalette.tsx` / `NotesCommandPalette.tsx` 各一处）。
+
+**实测结果**：焦点陷阱 Tab 12 次 **0 次逃出**；Esc 关闭 ok、焦点 `restored`（回到「打开记事本」）；
+修完 `audit:a11y` 0 项不合格。另加 `tests/dialogFocus.dom.test.tsx` 三条 DOM 守卫（打开后焦点进弹窗
+且 `aria-modal="true"` / 连按 6 次 Tab 不出弹窗 / 关闭后归位），把同一套判据钉在单测里 ——
+审计脚本要 build + 起浏览器才跑，单测里那三条是更早的一道闸。
+
+### 二、`App.tsx` 下沉（#17，2440 → 2388 行）
+
+先纠正一个前提：评审点名的两块**在之前批次已经搬走了** —— 站点列表交互在 `useSiteActions` /
+`useBulkActions` / `useSiteSearch`，命令面板在 `OverlayHost`。本轮搬的是唯一还在内联的有状态块：
+「新增站点弹窗的 AI 补全」（70 行）→ `src/hooks/useNewSiteAiAssist.ts`。
+
+搬出来不是为了行数好看，是这段的正确性靠三个**易漏**的细节，散在 2400 行里改一次就容易顺手改坏：
+① 请求序号（弹窗关掉又重开、URL 改一次又改回来，晚到的响应会往**新表单**里写旧结果）；
+② 30 秒超时与真响应赛跑（AI 供应商卡住时弹窗会永远转圈）；
+③ 重置时机是 `openAddSite + newSite.url`（换 URL 时旧补全结果对新 URL 就是错的）。
+
+配套：`tests/addSiteDialogAi.dom.test.tsx` 的静态守卫改指新 hook，**并新增一条接线守卫** ——
+断言 `App.tsx` 真的调用了这个 hook、且把返回值接回原来的引用名。原因是「逻辑搬走了但没接上」
+这种错，两条静态守卫都会绿，产品却什么都不做。
+
+### 三、首屏体积核查（#15）—— 结论：**600 KB 目标不可达**，如实报告
+
+实测（本机构建，2026-10-30）：**883.0 KB / gzip 289.7 KB / 6 个文件**
+
+| 文件 | 未压缩 | gzip | 说明 |
+|---|---|---|---|
+| `mui-core` | 328.8 KB | 101.6 KB | 首屏静态闭包里的 **59 个** MUI 组件 |
+| `index` | 250.5 KB | 82.3 KB | 业务代码（App + hooks + components） |
+| `react` | 201.9 KB | 62.6 KB | react + react-dom + scheduler（框架地板） |
+| `vendor` | 75.3 KB | 35.8 KB | dnd-kit 等第三方 |
+| `index.css` | 23.3 KB | 5.8 KB | — |
+| `preload-helper` | 3.2 KB | 1.5 KB | Vite 运行时 |
+
+**「MUI 按需」在构建层面已经生效**：`vite.config.ts` 的 `scanFirstScreenMui()` 做源码级闭包扫描，
+只把首屏**真用到**的 MUI 归进 `mui-core`，弹窗专用的交回 rolldown 自然分包。所以那 328.8 KB
+不是「全量 MUI 被拖进来」，而是「首屏真的用了 59 个组件」这个事实。
+
+**为什么 600 KB 不可达**：react(201.9) + mui-core(328.8) = **530.7 KB** 是框架地板，占首屏 60%。
+要压到 600 KB，需要把 mui-core 砍到 ~48 KB —— 只剩 Box/Typography/Button 三件套，等于重写首屏
+组件库。review 里另外记着一条同向结论：摘掉 dnd-kit/utilities 实测 **0 收益**（已回退）。
+
+**可选的后续大刀**（都不在本批，需要专项）：① dnd-kit 整体出首屏（−75.3 KB → 807 KB），代价是
+牵动四处、且切换排序模式会整列表重挂载；② 把只服务弹窗的 MUI（Dialog 系 / Select / Slider / Switch）
+逐个改 lazy 边界，预估 30–60 KB。要不要做，取决于「首屏 raw 883 KB / gzip 290 KB」是否真的值得付
+这些风险 —— gzip 290 KB 对这类 SPA 属于正常量级，本批的判断是**先不付**。
+
+### 四、elk / mermaid 二级懒加载（#16）—— 复核确认：早已成立
+
+`elkjs` **不在** `package.json` 里 —— 它是 mermaid 自带的布局引擎。产物侧已核实：`elk-*.js`
+是独立的 1.46 MB 块（gzip 455.7 KB），**不出现在 `index.html` 首屏清单**，也**不是 `mermaidSandbox`
+入口的静态依赖**（走 `__vite__mapDeps` 动态依赖表）。所以打开页面、渲染普通 `flowchart`（dagre）
+都不会下它，只有图表真用了 elk 布局才按需拉取。
+
+这条由 `tests/elkChunkGuard.test.ts`（2026-10-22 补）钉住 —— 一旦有人改成静态 import，1.46 MB 会
+立刻回到沙箱入口路径上，而**体积预算拦不住它**（沙箱不在首屏清单里）。本批只把它写进了
+`docs/architecture.md` §6，避免下次再当成待办重查一遍。
+
+### 五、`useSites` 回调稳定化（#13）
+
+`applyRemoteData` / `fetchData` 改 `useCallback`，用 `depsRef`（空依赖 + 最新 deps 引用）解掉
+「回调引用每次渲染都变 → 挂载 effect 反复重跑」的老问题。挂载 effect 的依赖从 `[]` + `eslint-disable`
+改成 `[applyRemoteData]` —— 不再靠注释豁免，靠引用真的稳定。
+
+### 六、`build.target` 与 `browserslist` 显式化（#14）
+
+`vite.config.ts` 的 `build` 段加 `target: "es2022"`，`package.json` 加 `browserslist`
+（chrome/edge/firefox ≥111、safari ≥16.4）。原因是这两个默认值都会随工具链升级漂移，
+而漂移的表现是「产物在体积或兼容性上突变」，很难在 code review 里看出来。
+
+### 七、`TRUST_XFF` 默认改 0（#19）
+
+`server/entry.ts` 的 `NAVIHIVE_TRUST_XFF` 默认值 `"1"` → `"0"`。自托管 compose **已显式写 1**，
+所以标准部署行为不变；只有「绕过 compose 自己起服务、又直接暴露公网端口」的部署才受影响 ——
+那种情况原本会因为无条件信任 `X-Forwarded-For` 而让限流/审计拿到伪造 IP。`deploy/selfhost.md`
+的环境变量表与「不要把 8787 直接暴露公网」一节同步改了口径。
+
+### 八、两篇活文档（#20）
+
+新增 `docs/architecture.md`（265 行）与 `docs/api.md`（256 行，122 个端点）：
+部署拓扑（Mermaid flowchart，Cloudflare 与自托管两条链路并列）、目录职责、一次请求的时序
+（sequenceDiagram）、数据表与迁移机制、前端分层、构建分包策略、部署与升级；API 按资源分组的
+端点表（方法 / 路径 / 用途 / 鉴权 / 处理文件）。
+
+**关于「历史快照移 `docs/archive/`」这一步，本批没做**：`docs/` 下 43 份文档里有 33 份带日期快照，
+逐一比对引用后 **可安全归档的为 0** —— 全部被 README / 其它文档 / 代码注释引用，整批移动会断链。
+要归档得先改引用，那是另一件事；在那之前，两篇活文档作为入口，旧快照就地保留。
+
+### 门禁
+
+版本 `19.4.0 → 20.0.0`：按 `bump-version.mjs` 的机械规则，本批 **14 文件 / 1282 行**越过了
+1200 行线升`major` —— 涨的主要是两篇新文档（521 行），不是 API 破坏性变更。
+
+tsc `-b --force` 0 错 / eslint 0 error（25 warning，`react-hooks/exhaustive-deps` 0/0）/
+单测 3486 项 3485 pass 0 fail 1 skip（新增 4 条）/ build 通过 / 体积预算 10 项通过
+（首屏 883.0 KB 距预算 920 KB 余 4.2%）/ 冒烟通过 / `audit:a11y` 0 项不合格（含新增弹窗节）/
+`audit:contrast` 0 项（亮/暗 × 首页/记事本四遍）。
+⚠️ `npm audit` 本轮**没跑成**：registry 的审计端点连返 502（`upstream connect failed`），
+本地试了两次都一样 —— 所以这里**不写「0 漏洞」**。CI 里那条硬门禁会照跑，以 CI 结果为准。
+
 ## 2026-10-30 · 工程 + 修复：P1 收口 —— D1 严格模式 / 全文索引 / 升级健康门禁 / SW 外壳 / 视觉回归（19.4.0）
 
 两件事互相联动，所以一起做：**先让模拟层在违反 D1 限制时主动报错**，再用它回头修数据层的缺陷

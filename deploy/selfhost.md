@@ -83,7 +83,7 @@ npm run smoke:selfhost http://127.0.0.1:8787
 | `NAVIHIVE_DB` | `./data/navihive.db` | SQLite 库文件路径（目录会自动建） |
 | `NAVIHIVE_FILES` | `./data/files` | 附件根目录 |
 | `NAVIHIVE_STATIC_DIR` | `./dist/client` | 构建产物目录 |
-| `NAVIHIVE_TRUST_XFF` | `1` | 是否信任 `X-Forwarded-For`（限速分桶用）。**挡 Nginx 时保持 1**；端口直接暴露公网必须设 `0`，否则改个请求头就能换限速桶、绕开爆破防护 |
+| `NAVIHIVE_TRUST_XFF` | `0` | 是否信任 `X-Forwarded-For`（限速分桶用）。**默认 0（安全）**：端口直接暴露公网时保持 0，否则改个请求头就能换限速桶、绕开爆破防护。前面确实挡了 Nginx（由它覆盖 XFF）才设 `1` —— `docker-compose.yml` 默认已写 1 |
 | `NAVIHIVE_CRON` | `1` | 进程内每小时跑一次定时任务。多副本部署必须设 `0`（否则每个副本各跑一遍），改用 `POST /__cron` |
 | `NAVIHIVE_CRON_TOKEN` | 空 | `POST /__cron` 的 bearer token。**不配 = 该端点 404** |
 
@@ -963,7 +963,7 @@ ss -tln | grep 8787        # 应只剩 127.0.0.1:8787
 ## 十三、安全须知
 
 - **不要把 8787 直接暴露公网**。默认只听 `127.0.0.1` 是故意的；真要不挡 Nginx，
-  必须 `NAVIHIVE_TRUST_XFF=0`（否则改 `X-Forwarded-For` 就能换限速桶）。
+  保持 `NAVIHIVE_TRUST_XFF=0`（**这已是默认值**，别改成 1，否则改 `X-Forwarded-For` 就能换限速桶）。
   Docker 接法同理：compose 的端口映射默认只绑 `127.0.0.1`，改直连前先想清楚这条。
 - `AUTH_ENABLED` 不是 `true` 时全站无需登录即可读写，只适合内网调试。
 - 密钥文件（`/etc/navihive/env` 或 Docker 的 `.env`）权限 600，别进 git

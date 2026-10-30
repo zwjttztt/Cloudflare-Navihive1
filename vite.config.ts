@@ -377,6 +377,9 @@ export default defineConfig({
     __NAVIHIVE_BUILD_TIME__: JSON.stringify(BUILD_TIME),
   },
   build: {
+    // 显式声明语法目标（P2-14）：不让 Vite/rolldown 升级时默认值悄悄漂移，
+    // 导致产物在体积或兼容性上突变。es2022 与 package.json 的 browserslist 对齐。
+    target: "es2022",
     // 分包：react / mui 各自成块，其余依赖归 vendor。
     // 改业务代码时用户不用重新下载体积最大、最稳定的 MUI 那块。
     rollupOptions: {
