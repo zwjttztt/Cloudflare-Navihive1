@@ -23,6 +23,7 @@ import { signJwt, verifyJwt } from "../src/API/crypto";
 import { isBodyTooLarge, MAX_REQUEST_BODY_BYTES } from "../worker/util";
 import { RETENTION_DAYS_MAX } from "../src/API/http";
 import { NavigationAPI } from "../src/API/navigationApi";
+import { AUDIT_PURGE_THROTTLE_MS, resetAuditPurgeThrottle } from "../src/API/methods/audit";
 import { validateSite } from "../worker/validate";
 // 2026-10-25：令牌的 exp 现在是**必需**声明（缺 exp 一律判无效，
 // 否则等于签发永不过期的令牌）。这里给「应该验过」的用例补一个未来时间戳。
@@ -425,6 +426,10 @@ class InMemoryD1 {
 }
 
 function newApi(db: InMemoryD1): NavigationAPI {
+    // 审计读路径的清理节流（D-20）是**模块级**状态：同一个测试进程里它会跨用例存活，
+    // 不重置的话「第一条用例清完之后」，后面所有「读一次就该清掉过期行」的用例
+    // 都会看到别人留下的时间戳而静默不清理 —— 表现为莫名其妙的断言失败。
+    resetAuditPurgeThrottle();
     return new NavigationAPI({ DB: db } as never);
 }
 
@@ -707,6 +712,31 @@ test("保留期：cleanupExpiredRows 同时清审计与回收站并各自计数"
     const counts = await api.cleanupExpiredRows();
     assert.equal(counts.audit, 1, "审计清掉 1 条");
     assert.equal(counts.recycle, 1, "回收站清掉 1 条");
+    // D-16：幂等键以前**没人清理**（purgeExpiredIdempotency 实现了却零调用点），
+    // 这里钉住「周清会带上它」，否则那张表会随时间线性增长。计数值必须是数字而非 undefined，
+    // 因为 worker/cron.ts 拿它累加「本轮共清了多少行」。
+    assert.equal(typeof counts.idempotency, "number", "周清必须回报幂等键清理条数");
+    assert.equal(counts.idempotency, 0, "桩库里没有过期幂等键，应为 0");
+});
+
+test("D-20：连续两次 getAuditLog 只触发一次 purgeExpiredAudit（读不再放大成写）", async () => {
+    const db = new InMemoryD1();
+    const api = newApi(db);
+    // 用实例上的同名属性盖住原型方法：getAuditLog 里的 `this.purgeExpiredAudit(...)`
+    // 会走这里，于是能数出真实调用次数（不去改生产代码的可见性）
+    const original = api.purgeExpiredAudit.bind(api);
+    let purged = 0;
+    const patched = api as unknown as Record<string, unknown>;
+    patched.purgeExpiredAudit = async (days: number) => {
+        purged += 1;
+        return await original(days);
+    };
+
+    await api.getAuditLog({ limit: 10 });
+    await api.getAuditLog({ limit: 10 });
+    await api.getAuditLog({ limit: 10 });
+
+    assert.equal(purged, 1, `节流窗口 ${AUDIT_PURGE_THROTTLE_MS} ms 内只该清一次，实测 ${purged} 次`);
 });
 
 test("保留期可按配置调整：改成 30 天后，8 天前的记录不再被清掉", async () => {

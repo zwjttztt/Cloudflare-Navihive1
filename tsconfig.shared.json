@@ -1,0 +1,17 @@
+{
+  // Q-3（`noUncheckedIndexedAccess`）的**先行层**：只覆盖 shared/。
+  //
+  // 为什么先从这里开：shared/ 是前后端共用的契约层（错误码、Cookie 名、Spa 路由…），
+  // 6 个文件、零相对 import —— 也就是「按构造即干净」的唯一现成范围，
+  // 开启该 flag 后 0 报错，可以立刻进 CI 当门禁，而不是等全量 357 处修完。
+  //
+  // ⚠️ 它不通过 `exclude` 来「只检查一部分」：TS 的 exclude 只管根文件选择，
+  // 被 import 的文件照样进程序。这里能真正只覆盖 shared 是靠 `include: ["shared"]`
+  // 加上「shared 内部零相对 import」这个前提 —— 后者由 tests/q3StrictIsolation.test.ts 守着。
+  "extends": "./tsconfig.app.json",
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.shared.tsbuildinfo",
+    "noUncheckedIndexedAccess": true
+  },
+  "include": ["shared"]
+}

@@ -15,6 +15,9 @@
 		},
 		{
 			"path": "./tsconfig.tests.json"
+		},
+		{
+			"path": "./tsconfig.shared.json"
 		}
 	],
 	"compilerOptions": {

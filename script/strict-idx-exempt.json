@@ -1,0 +1,382 @@
+{
+    "entries": [
+        {
+            "path": "src/API/crypto.ts",
+            "reason": "待收敛",
+            "owner": "tbd",
+            "due": "2026-12-31"
+        },
+        {
+            "path": "src/API/methods/accounts.ts",
+            "reason": "待收敛",
+            "owner": "tbd",
+            "due": "2026-12-31"
+        },
+        {
+            "path": "src/API/methods/auth.ts",
+            "reason": "待收敛",
+            "owner": "tbd",
+            "due": "2026-12-31"
+        },
+        {
+            "path": "src/API/methods/data.ts",
+            "reason": "待收敛",
+            "owner": "tbd",
+            "due": "2026-12-31"
+        },
+        {
+            "path": "src/API/methods/notes/notesBackup.ts",
+            "reason": "待收敛",
+            "owner": "tbd",
+            "due": "2026-12-31"
+        },
+        {
+            "path": "src/API/methods/notes/notesFolder.ts",
+            "reason": "待收敛",
+            "owner": "tbd",
+            "due": "2026-12-31"
+        },
+        {
+            "path": "src/API/methods/notes/notesNote.ts",
+            "reason": "待收敛",
+            "owner": "tbd",
+            "due": "2026-12-31"
+        },
+        {
+            "path": "src/API/methods/notes/notesTag.ts",
+            "reason": "待收敛",
+            "owner": "tbd",
+            "due": "2026-12-31"
+        },
+        {
+            "path": "src/API/methods/transfer.ts",
+            "reason": "待收敛",
+            "owner": "tbd",
+            "due": "2026-12-31"
+        },
+        {
+            "path": "src/API/methods/vault.ts",
+            "reason": "待收敛",
+            "owner": "tbd",
+            "due": "2026-12-31"
+        },
+        {
+            "path": "src/API/mock.ts",
+            "reason": "待收敛",
+            "owner": "tbd",
+            "due": "2026-12-31"
+        },
+        {
+            "path": "src/App.tsx",
+            "reason": "待收敛",
+            "owner": "tbd",
+            "due": "2026-12-31"
+        },
+        {
+            "path": "src/components/NoteEditor.tsx",
+            "reason": "待收敛",
+            "owner": "tbd",
+            "due": "2026-12-31"
+        },
+        {
+            "path": "src/components/NoteEditorLivePreview.ts",
+            "reason": "待收敛",
+            "owner": "tbd",
+            "due": "2026-12-31"
+        },
+        {
+            "path": "src/components/NoteEmbedNode.tsx",
+            "reason": "待收敛",
+            "owner": "tbd",
+            "due": "2026-12-31"
+        },
+        {
+            "path": "src/components/NoteGraphDialog.tsx",
+            "reason": "待收敛",
+            "owner": "tbd",
+            "due": "2026-12-31"
+        },
+        {
+            "path": "src/components/NoteVersionHistoryDialog.tsx",
+            "reason": "待收敛",
+            "owner": "tbd",
+            "due": "2026-12-31"
+        },
+        {
+            "path": "src/components/VersionUpgradeSection.tsx",
+            "reason": "待收敛",
+            "owner": "tbd",
+            "due": "2026-12-31"
+        },
+        {
+            "path": "src/components/notes/importNotesFile.ts",
+            "reason": "待收敛",
+            "owner": "tbd",
+            "due": "2026-12-31"
+        },
+        {
+            "path": "src/components/notes/sidebarSection.tsx",
+            "reason": "待收敛",
+            "owner": "tbd",
+            "due": "2026-12-31"
+        },
+        {
+            "path": "src/components/notes/useNotesPageModel.tsx",
+            "reason": "待收敛",
+            "owner": "tbd",
+            "due": "2026-12-31"
+        },
+        {
+            "path": "src/hooks/useEditorTools.ts",
+            "reason": "待收敛",
+            "owner": "tbd",
+            "due": "2026-12-31"
+        },
+        {
+            "path": "src/hooks/useGroupActions.ts",
+            "reason": "待收敛",
+            "owner": "tbd",
+            "due": "2026-12-31"
+        },
+        {
+            "path": "src/hooks/useSiteIcon.ts",
+            "reason": "待收敛",
+            "owner": "tbd",
+            "due": "2026-12-31"
+        },
+        {
+            "path": "src/hooks/useSiteSearch.ts",
+            "reason": "待收敛",
+            "owner": "tbd",
+            "due": "2026-12-31"
+        },
+        {
+            "path": "src/hooks/useSortController.ts",
+            "reason": "待收敛",
+            "owner": "tbd",
+            "due": "2026-12-31"
+        },
+        {
+            "path": "src/hooks/useTagOpsActions.ts",
+            "reason": "待收敛",
+            "owner": "tbd",
+            "due": "2026-12-31"
+        },
+        {
+            "path": "src/utils/aiMeta.ts",
+            "reason": "待收敛",
+            "owner": "tbd",
+            "due": "2026-12-31"
+        },
+        {
+            "path": "src/utils/bulkOps.ts",
+            "reason": "待收敛",
+            "owner": "tbd",
+            "due": "2026-12-31"
+        },
+        {
+            "path": "src/utils/cardFocus.ts",
+            "reason": "待收敛",
+            "owner": "tbd",
+            "due": "2026-12-31"
+        },
+        {
+            "path": "src/utils/fuzzy.ts",
+            "reason": "待收敛",
+            "owner": "tbd",
+            "due": "2026-12-31"
+        },
+        {
+            "path": "src/utils/groupColor.ts",
+            "reason": "待收敛",
+            "owner": "tbd",
+            "due": "2026-12-31"
+        },
+        {
+            "path": "src/utils/htmlToMarkdown.ts",
+            "reason": "待收敛",
+            "owner": "tbd",
+            "due": "2026-12-31"
+        },
+        {
+            "path": "src/utils/lazyPrefetch.ts",
+            "reason": "待收敛",
+            "owner": "tbd",
+            "due": "2026-12-31"
+        },
+        {
+            "path": "src/utils/linkHealth.ts",
+            "reason": "待收敛",
+            "owner": "tbd",
+            "due": "2026-12-31"
+        },
+        {
+            "path": "src/utils/markdownCallout.ts",
+            "reason": "待收敛",
+            "owner": "tbd",
+            "due": "2026-12-31"
+        },
+        {
+            "path": "src/utils/markdownMark.ts",
+            "reason": "待收敛",
+            "owner": "tbd",
+            "due": "2026-12-31"
+        },
+        {
+            "path": "src/utils/markdownMath.ts",
+            "reason": "待收敛",
+            "owner": "tbd",
+            "due": "2026-12-31"
+        },
+        {
+            "path": "src/utils/markdownNoteBlocks.ts",
+            "reason": "待收敛",
+            "owner": "tbd",
+            "due": "2026-12-31"
+        },
+        {
+            "path": "src/utils/markdownNoteTags.ts",
+            "reason": "待收敛",
+            "owner": "tbd",
+            "due": "2026-12-31"
+        },
+        {
+            "path": "src/utils/markdownTable.ts",
+            "reason": "待收敛",
+            "owner": "tbd",
+            "due": "2026-12-31"
+        },
+        {
+            "path": "src/utils/markdownToReact.tsx",
+            "reason": "待收敛",
+            "owner": "tbd",
+            "due": "2026-12-31"
+        },
+        {
+            "path": "src/utils/noteBlocks.ts",
+            "reason": "待收敛",
+            "owner": "tbd",
+            "due": "2026-12-31"
+        },
+        {
+            "path": "src/utils/noteDiff.ts",
+            "reason": "待收敛",
+            "owner": "tbd",
+            "due": "2026-12-31"
+        },
+        {
+            "path": "src/utils/noteFrontMatter.ts",
+            "reason": "待收敛",
+            "owner": "tbd",
+            "due": "2026-12-31"
+        },
+        {
+            "path": "src/utils/noteOutline.ts",
+            "reason": "待收敛",
+            "owner": "tbd",
+            "due": "2026-12-31"
+        },
+        {
+            "path": "src/utils/noteTasks.ts",
+            "reason": "待收敛",
+            "owner": "tbd",
+            "due": "2026-12-31"
+        },
+        {
+            "path": "src/utils/noteWikiLink.ts",
+            "reason": "待收敛",
+            "owner": "tbd",
+            "due": "2026-12-31"
+        },
+        {
+            "path": "src/utils/passwordGenerator.ts",
+            "reason": "待收敛",
+            "owner": "tbd",
+            "due": "2026-12-31"
+        },
+        {
+            "path": "src/utils/recoveryKey.ts",
+            "reason": "待收敛",
+            "owner": "tbd",
+            "due": "2026-12-31"
+        },
+        {
+            "path": "src/utils/siteAvatar.ts",
+            "reason": "待收敛",
+            "owner": "tbd",
+            "due": "2026-12-31"
+        },
+        {
+            "path": "src/utils/siteMatch.ts",
+            "reason": "待收敛",
+            "owner": "tbd",
+            "due": "2026-12-31"
+        },
+        {
+            "path": "src/utils/siteMutations.ts",
+            "reason": "待收敛",
+            "owner": "tbd",
+            "due": "2026-12-31"
+        },
+        {
+            "path": "src/utils/sortable.ts",
+            "reason": "待收敛",
+            "owner": "tbd",
+            "due": "2026-12-31"
+        },
+        {
+            "path": "src/utils/syncScroll.ts",
+            "reason": "待收敛",
+            "owner": "tbd",
+            "due": "2026-12-31"
+        },
+        {
+            "path": "src/utils/tagTree.ts",
+            "reason": "待收敛",
+            "owner": "tbd",
+            "due": "2026-12-31"
+        },
+        {
+            "path": "src/utils/time.ts",
+            "reason": "待收敛",
+            "owner": "tbd",
+            "due": "2026-12-31"
+        },
+        {
+            "path": "src/utils/url.ts",
+            "reason": "待收敛",
+            "owner": "tbd",
+            "due": "2026-12-31"
+        },
+        {
+            "path": "src/utils/uuid.ts",
+            "reason": "待收敛",
+            "owner": "tbd",
+            "due": "2026-12-31"
+        },
+        {
+            "path": "src/utils/zip.ts",
+            "reason": "待收敛",
+            "owner": "tbd",
+            "due": "2026-12-31"
+        },
+        {
+            "path": "worker/httpUtils.ts",
+            "reason": "待收敛",
+            "owner": "tbd",
+            "due": "2026-12-31"
+        },
+        {
+            "path": "worker/loginGuard.ts",
+            "reason": "待收敛",
+            "owner": "tbd",
+            "due": "2026-12-31"
+        },
+        {
+            "path": "worker/util.ts",
+            "reason": "待收敛",
+            "owner": "tbd",
+            "due": "2026-12-31"
+        }
+    ]
+}

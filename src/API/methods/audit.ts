@@ -10,6 +10,40 @@ import { deriveDeadLinks } from "../../utils/linkKey";
 import { groupClientErrors } from "../../utils/clientErrorGroups";
 import { logger } from "../../../shared/logger";
 
+/**
+ * 审计日志「读路径清理」的节流窗口：6 小时。
+ *
+ * 为什么要有节流（D-20）：`getAuditLog` 原本**每读一次就 DELETE 一次**过期行。
+ * `audit_log` 上有 `idx_audit_log_created_at`，范围删本身不慢，问题是写放大 ——
+ * D1 上每条 DELETE 都算一次写入，而这是被「打开审计面板」这个读操作触发的。
+ *
+ * 取 6 小时的理由：它远小于 7 天保留期，节流窗口内最多多留 6 小时的过期行
+ * （周清本来就可能多留 7 天），滞留上界完全可控；同时把写频率从「每次读」
+ * 降到「每进程每 6 小时一次」，日常使用基本为零。
+ *
+ * ⚠️ 不选「干脆删掉读路径清理、全交给周清」：那样过期条目最长会多挂 7 天，
+ * 等于把注释里写的「最长多挂好几天」变成既成事实；也不选「挪到写路径」——
+ * 那要改每一个 writeAudit 调用点，改动面大得多且更容易漏。
+ */
+export const AUDIT_PURGE_THROTTLE_MS = 6 * 3600 * 1000;
+
+/**
+ * 上一次真正清理的时间（模块级：冷却要跨请求生效，挂在实例上就等于每次请求都清）。
+ *
+ * 之所以按进程算：worker 的 api 是**每请求新建**的，实例级状态活不过一次请求；
+ * 自托管侧同理（每请求 new）。模块级才是唯一能跨请求累积的位置。
+ */
+let lastAuditPurgeAt = 0;
+
+/**
+ * 重置节流窗口。**只给测试用** ——
+ * 模块级状态在同一个测试进程里跨用例存活，若不重置，第一条用例清完之后
+ * 后面所有「读一次就该清掉过期行」的用例都会看到别人留下的时间戳而静默失效。
+ */
+export function resetAuditPurgeThrottle(): void {
+    lastAuditPurgeAt = 0;
+}
+
 /** 前端错误上报按「来源 + 错误信息」聚合后的一组 */
 export interface ClientErrorGroup {
     /** 聚合键（source + 消息前 120 字符），前端当 key 用 */
@@ -84,8 +118,13 @@ export const auditImpl: AuditApi = {
         Array<{ id: number; action: string; actor: string; ip: string; detail: string; created_at: string }>
     > {
         await this.migrate();
-        // 每次打开都先清一遍：定时任务每周才跑一次，光靠它的话过期条目最长能多挂好几天
-        await this.purgeExpiredAudit(await this.getRetentionDays());
+        // 过期清理加节流：这里原本是「每读一次就 DELETE 一次」，把读放大成了写
+        //（D1 每次写都算配额）。窗口 6h 远小于 7 天保留期，滞留上界仍是「周清最多晚 7 天」。
+        const now = Date.now();
+        if (now - lastAuditPurgeAt > AUDIT_PURGE_THROTTLE_MS) {
+            lastAuditPurgeAt = now;
+            await this.purgeExpiredAudit(await this.getRetentionDays());
+        }
         const limit = Math.min(Math.max(opts.limit ?? 50, 1), 200);
         const offset = Math.max(opts.offset ?? 0, 0);
         let query = "SELECT id, action, actor, ip, detail, created_at FROM audit_log";

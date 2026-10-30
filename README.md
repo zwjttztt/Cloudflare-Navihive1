@@ -172,6 +172,9 @@ docker compose up -d --build
 - **前端**：React 19 · TypeScript · Material UI 9 · DND Kit · CodeMirror 6 · Vite（rolldown）
 - **后端**：Cloudflare Workers + D1 + KV（云形态）/ Node + SQLite + 文件 KV（自托管形态，`server/` 同一份路由代码）
 - **测试**：node:test + esbuild 单测 / DOM 测试（jsdom）· CDP 真机探针 · a11y / 对比度双审计 · 冒烟
+- **浏览器基线**：chrome >= 111 · edge >= 111 · firefox >= 111 · safari >= 16.4（与 `browserslist` 一致；
+  CI 只有 Chromium，WebKit 差异靠 `tests/safariApiGuard.test.ts` 的静态守卫兜底，详见
+  [`docs/architecture.md` §5.1](docs/architecture.md)）
 
 ## 🧪 本地开发
 

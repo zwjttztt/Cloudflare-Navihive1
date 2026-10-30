@@ -101,6 +101,8 @@ export interface RecycleApi {
         invites: number;
         recoveryJti: number;
         sessions: number;
+        /** 过期的幂等键（D-16）：这张表以前只增不减，因为清理函数一直没人调 */
+        idempotency: number;
     }>;
     deleteExpiredRecoveryMarks(nowSec: number): Promise<number>;
     deleteRowsByIds(
@@ -660,12 +662,19 @@ export const recycleImpl: RecycleApi = {
         invites: number;
         recoveryJti: number;
         sessions: number;
+        idempotency: number;
     }> {
-        const counts = { audit: 0, recycle: 0, blacklist: 0, invites: 0, recoveryJti: 0, sessions: 0 };
+        const counts = { audit: 0, recycle: 0, blacklist: 0, invites: 0, recoveryJti: 0, sessions: 0, idempotency: 0 };
         const nowSec = Math.floor(Date.now() / 1000);
         const days = await this.getRetentionDays();
 
         counts.audit = await this.purgeExpiredAudit(days);
+        // D-16：幂等键表（idempotency_keys）也有 expires_at，且 purgeExpiredIdempotency
+        // 早就实现好了、也早就进了契约测试 —— 只是**生产环境一直没人调**，
+        // 于是重启后残留的键会一直躺在表里（键里带着请求摘要，只增不减最占地方）。
+        // 这里只做接线：不新增清理函数，也不改它的判据（expires_at <= now）。
+        // 注意入参是 Date.now() 的毫秒时间戳，**不是**保留期天数 —— 与 audit/recycle 不同。
+        counts.idempotency = await this.purgeExpiredIdempotency();
         counts.recycle = await this.purgeExpiredRecycle(days, nowSec);
 
         // 笔记删除墓碑（2026-10-11）同样按保留期清：它的唯一使命是让其它设备的

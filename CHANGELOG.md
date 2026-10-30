@@ -6,6 +6,102 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。
 
+## 2026-10-30 · 工程 + 修复：P3 六项持续项 —— 覆盖率分层 / Q-3 棘轮 / 离线载荷上限 / 保留策略 / 扩展契约 / Safari 守卫（21.0.0）
+
+评审报告 §18 的 P3 六项（T-01–T-06）。这一档原本是「持续项」（优先级最低），所以取舍是
+**只做机械可绿、收益确定、不破既有门禁的那部分**；任何「全量翻修 / 新增重依赖 / 传染同步路径」
+都单列专项（见文末）。零新依赖。
+
+### 一、覆盖率门槛分层（T-2）
+
+**问题**：函数覆盖率地板长期停在 66%，而实测是 69.2%——地板比实测低 3 个点，等于没在防回退。
+
+**做法**：① 先补 `tests/mockClientSurface.test.ts`（把 `MockNavigationClient` 原型上 133 个方法
+逐个真调一遍，演示模式那批函数以前只覆盖 27 个）→ 全局函数覆盖 **69.2% → 72.8%**；
+② **再**把 `MIN_L2.functions` 从 66 抬到 **70**（顺序不能反，先抬就当场红）；
+③ 新增 `MIN_L2_BY_DIR` 按目录的函数覆盖地板：utils 90 / API-methods 91 / worker 87 / server 88 / shared 84。
+
+**为什么地板取「实测 − 约 2pt」而不是 floor(实测)**：QA 独立复核算过，取 floor(实测) 会让
+API/methods(93.23) / worker(89.18) / shared(86.67) 三个目录**一个函数都掉不得**——以后任何无关改动
+往 worker 添一个没覆盖的分支函数就红，而那不是回归。地板是**防回归**，不是追单个函数的波动；
+天天假红的门禁等于没有门禁。
+
+### 二、Q-3 `noUncheckedIndexedAccess` 骨架 + 棘轮守卫
+
+**先纠正一个方案级错误**：原方案想用「独立 tsconfig + exclude 豁免文件」做分层——**不可能**。
+TS 的 `exclude` 只影响根文件选择，被 import 的豁免文件仍然进程序、照样报错（实测：`worker/httpUtils.ts`
+等 3 个文件就是被 src 的 import 闭包拉进来才报的）。
+
+**做法**：
+- `tsconfig.shared.json`：`shared/` 先开该 flag（6 文件 / 194 行 / 零相对 import，按构造即干净，**0 报错**），
+  加进根 `tsconfig.json` 的 references。
+- `tsconfig.strict-idx.json`：全 `src` 开 flag，**不靠 exclude**。
+- `script/strict-idx-guard.mjs`：跑严格层 tsc，解析**真实报错文件集合**，断言「每个报错文件都登记在
+  `script/strict-idx-exempt.json` 里」；清单外出现即失败 → **新文件默认进严格层，不靠人记**。
+- 单调性：豁免清单只能 shrink——条目数不得超过 `script/.strict-idx-baseline`，`due` 过期未清即失败。
+- 已接进 CI（`npm run check:strict-idx`，`.github/workflows/ci.yml`）。
+
+**当前基线**：严格层 366 处 / 63 个文件，豁免 63 条（due 2026-12-31）。全量放开专项另立项。
+
+### 三、离线队列载荷上限（E-3，降级版）
+
+**先修前提**：评审说「大段笔记离线编辑可能触配额」——**不成立**。队列只收 12 个 mutation，笔记编辑
+从不入队。真实溢出只有两条：`importData` 整份备份、带 `data:` 图标的批量建站。
+
+**做法**：单条载荷超过 `MAX_PAYLOAD_BYTES = 256 KB` 就抛 `QueuePayloadTooLargeError` 且**不入队**，
+调用方（新建分组 / 新建站点）直接展示「该操作过大无法离线保存，请联网后重试」。
+体积按 `TextEncoder` 的 **UTF-8 字节**算，不按字符数（中文标题不会被低估）。
+全量迁 IndexedDB 单独立项（要改 3 处同步读 + 33 条既有用例前提，收益只在 >5MB 时兑现）。
+
+### 四、数据保留策略（D-16 / D-20）
+
+- **D-16**：`purgeExpiredIdempotency` 其实早就写好、还有单测，只是**生产零调用点**。接进既有周清
+  `cleanupExpiredRows()`，返回计数加 `idempotency`。⚠️ 接线时发现一个真坑：该函数入参是**毫秒时间戳
+  now**（`expires_at <= ?`），传 `days=7` 会一条都删不掉（清理永久静默空转），必须无参调用。
+- **D-20**：`getAuditLog` 原来**每读一次就 purge 一次**（读被放大成写）。改成模块级 6h 节流
+  （远小于 7 天保留期，滞留可控），并导出 `resetAuditPurgeThrottle()` 供用例重置模块级状态。
+
+### 五、扩展契约测试 + 标注实验性（F-2）
+
+**为什么值得做**：`extension/` 与主站的编解码（base64url、URL 归一化）从来没有测试钉住，
+漂移的表现是「点扩展没反应」，而扩展不在 CI、用户也不会报。
+
+- 新增 `tests/extensionDeepLink.test.ts`：用 `vm` **真加载** `extension/popup.js`（不是把逻辑抄进测试），
+  断言 `encodePayload` ↔ `readAddSitePrefill`、`normalizeSite` ↔ `normalizeUrl` 双向一致。
+- **抓到一个真 bug**：`popup.js` 的 `normalizeSite` 会把 `file:///etc/passwd` 补成
+  `https://file///etc/passwd`（主站会拒），`//example.com` 也会变四斜杠。已按主站判据对齐
+  （非 http(s) 显式协议直接拒、抹开头多余斜杠、去默认端口、无 host 拒）。
+- `extension/README.md` + `manifest.json` 标注「实验性」。
+
+### 六、Safari 静态兼容性守卫（T-4，降级版）
+
+**为什么不做真机 WebKit**：全链路是自研 CDP + 本机 Chrome，加 Playwright WebKit 要新依赖 + 独立
+CI job（15min 单 job 会被挤爆），而收益可由「不引入超基线 API」的静态守卫以近零成本覆盖大部分。
+
+- 新增 `tests/safariApiGuard.test.ts`：10 条超基线 API 清单（`toSorted` / `Object.groupBy` /
+  `Array.fromAsync` / `URL.canParse` / `Promise.withResolvers` …），出现必须伴随特性探测或行内豁免。
+  ⚠️ 方案原稿把 `AbortSignal.any` 与 `.timeout` 并成一条会误报——仓库里 3 处都是 `.timeout`
+  （Safari 16，在基线内），只留 `.any`。
+- `docs/architecture.md` 新增 §5.1 浏览器最低支持基线（chrome/edge/firefox ≥111、safari ≥16.4）。
+- 真机 WebKit 列专项（需 `playwright` devDep + 独立 job）。
+
+### 验证
+
+八道门禁全绿：`tsc -b --force` / `lint`（0 error，22 既有 warning）/ 单测 **3512 项 3511 pass** /
+`build` / `check:budget` 10/10 / `check:coverage`（行 88.2%、分支 87.7%、函数 72.8%）/
+`tsc -p tsconfig.shared.json` 0 错 / `check:strict-idx`。
+
+QA 独立验证专门打了负向用例，证明这些守卫不是空壳：豁免清单置空 → 逐个点名 63 个文件；
+清单涨 1 条 → 单调性红；新文件漏判空 → 红并点名；`[].toSorted()` → Safari 守卫红且行号准确；
+`getGroups` 返回 undefined → mock 执行面用例红。D-16 另用 `node:sqlite` 真库验证「删过期、留未过期」
+（FakeD1 不执行 SQL，桩库证明不了这件事）。
+
+### 未做（单列专项，不在本轮）
+
+- E-3 全量迁 IndexedDB（复用 `iconCache.ts` 的 `openDb` 范式）。
+- Q-3 全量 src 放开（357 处，2–3 人日，豁免清单逐条毕业到 0）。
+- T-4 真机 WebKit CI job。
+
 ## 2026-10-30 · 工程 + 修复：P2 收口 —— 弹窗可访问性审计 / 命令面板可访问名 / App.tsx 下沉 / 两篇活文档（20.0.0）
 
 评审报告 §18 的 P2 八项（#13–#20）。其中 #16 本轮复核后确认「早已成立」，#15 的「≤600 KB」

@@ -466,12 +466,14 @@ export async function runRetentionCleanup(api: SchedulerDB): Promise<void> {
     if (typeof nav.cleanupExpiredRows !== "function") return;
     const result = await nav.cleanupExpiredRows();
     const total =
-        result.audit + result.recycle + result.blacklist + result.invites + result.recoveryJti + (result.sessions ?? 0);
+        result.audit + result.recycle + result.blacklist + result.invites + result.recoveryJti +
+        (result.sessions ?? 0) + (result.idempotency ?? 0);
     if (total > 0) {
         console.log(
             `过期数据清理完成：审计 ${result.audit} 条、回收站 ${result.recycle} 条、` +
                 `黑名单 ${result.blacklist} 条、邀请码 ${result.invites} 条、` +
-                `恢复标记 ${result.recoveryJti} 条、过期会话 ${result.sessions ?? 0} 条`
+                `恢复标记 ${result.recoveryJti} 条、过期会话 ${result.sessions ?? 0} 条、` +
+                `过期幂等键 ${result.idempotency ?? 0} 条`
         );
     }
 }

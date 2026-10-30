@@ -92,6 +92,62 @@ export const BACKOFF_MAX_MS = 60_000;
 /** 失败列表最多留多少条：再多就是噪声了，丢最旧的 */
 export const MAX_FAILED_KEPT = 50;
 
+/**
+ * 单条操作的载荷上限（序列化后的字节数）。
+ *
+ * 为什么要有这道闸门（E-3 降级版）：队列存在 localStorage，浏览器给每个源 ~5 MB。
+ * 这个仓库里真正会撑爆它的只有两条路 —— `importData`（整份备份文件，可达数 MB）
+ * 和「批量建站并带上 data: URL 图标」。其余 10 个 mutation 的载荷都是几百字节。
+ * 队列里塞进一条 4 MB 的备份后，后面所有操作都会因为写不进配额而**静默丢失**
+ * （writeJson 是尽力而为），比当面拒绝一条更糟。所以宁可在入队这一刻明确拒绝。
+ *
+ * 256 KB 的取值：既大到普通操作绝不会碰到（12 个 mutation 里最大的批量建站也只有
+ * 几十 KB），又小到即使排满 10 条离 5 MB 配额还有一半余量。
+ *
+ * ⚠️ 不把 localStorage 换成 IndexedDB：那要改 3 处「启动即同步可读」的语义
+ * （顶栏角标、账号分片、失败清单），还会让 30+ 条既有用例从同步内存改成异步注入，
+ * 收益仅在队列 >5 MB 时兑现 —— 换个上限就是同样的效果，改动面却只有几十行。
+ */
+export const MAX_PAYLOAD_BYTES = 256 * 1024;
+
+/**
+ * 一条操作超出入队载荷上限。
+ *
+ * 刻意**不**继承 OfflineQueuedError：那条错误的意思是「已经帮你存下来、联网会自动
+ * 同步」，而这条的意思是「根本没存，请联网重试」。混成一条会让界面骗用户
+ * 「已暂存」，然后在重放时发现队列里什么都没有。
+ */
+export class QueuePayloadTooLargeError extends Error {
+    constructor(
+        public readonly kind: string,
+        public readonly size: number,
+        public readonly limit: number = MAX_PAYLOAD_BYTES
+    ) {
+        super(
+            `该操作过大无法离线保存，请联网后重试（约 ${Math.ceil(size / 1024)} KB，` +
+                `上限 ${Math.floor(limit / 1024)} KB）`
+        );
+        this.name = "QueuePayloadTooLargeError";
+    }
+}
+
+/**
+ * 估算一次操作序列化后的字节数（UTF-8）。
+ *
+ * 用 TextEncoder 而不是 `json.length`：中文标题约占 3 字节/字，
+ * 按字符数算会把 90 KB 的批量建站当成 30 KB，闸门就形同虚设。
+ * 序列化失败（循环引用 / BigInt）返回 0 —— 本轮不做过度防御，交给上层真实报错。
+ */
+export function estimatePayloadBytes(args: unknown[]): number {
+    let json: string;
+    try {
+        json = JSON.stringify(args) ?? "";
+    } catch {
+        return 0;
+    }
+    return new TextEncoder().encode(json).byteLength;
+}
+
 /** 第 n 次重试要等多久（带抖动，指数上限 60s） */
 export function backoffDelayMs(attempts: number): number {
     const n = Math.max(0, attempts - 1);
@@ -258,6 +314,12 @@ export function translateTempIds(args: unknown[], map: Record<string, number> = 
  * 显示出来，用户才能在它下面继续加站点。
  */
 export function enqueueMutation(kind: string, args: unknown[]): PendingMutation {
+    // 超限就当面拒绝，不入队：一条 4 MB 的备份进队列后，后面的操作会因为写不进
+    // localStorage 配额而静默消失（writeJson 是尽力而为）—— 那比明确报错糟得多。
+    const size = estimatePayloadBytes(args);
+    if (size > MAX_PAYLOAD_BYTES) {
+        throw new QueuePayloadTooLargeError(kind, size);
+    }
     // 新建类操作需要占位 id：离线时拿不到服务端发号，界面得先有个 id 才能继续操作
     // （在刚建的分组下加站点、编辑刚建的卡片）。更新 / 删除都用已有的真实 id。
     const needsTempId = kind === "createGroup" || kind === "createSite";
@@ -581,6 +643,10 @@ let wrapped = false;
  * 给 api 的 mutation 方法包一层离线保护：离线 / 网络错时把操作存进队列并抛
  * OfflineQueuedError（让上层显示温和提示），服务端自身的错误（5xx / 参数错）则原样抛出、
  * 不入队。幂等，多次调用只在第一次生效。
+ *
+ * ⚠️ 还多一种出口：载荷超过 MAX_PAYLOAD_BYTES 时 enqueueMutation 抛
+ * QueuePayloadTooLargeError，它会**原样穿出这一层**（不包装成 OfflineQueuedError）——
+ * 因为那条错误代表「已暂存」，而这里什么都没存。调用方按需要单独提示。
  */
 export function wrapMutations(api: MutationApi): void {
     if (wrapped) return;

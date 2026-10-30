@@ -8,7 +8,7 @@ import { applySiteInputChange, emptySiteDraft, nextSiteOrderNum } from "../utils
 import { resolveIconApiUrl } from "../utils/iconApi";
 import { normalizeFailureText, normalizeUrl } from "../utils/url";
 import { reportError } from "../utils/errorReporter";
-import { OfflineQueuedError } from "../API/offlineQueue";
+import { OfflineQueuedError, QueuePayloadTooLargeError } from "../API/offlineQueue";
 import type { GroupWithSites } from "../types";
 import type { NotifySeverity } from "./useNotify";
 
@@ -96,6 +96,12 @@ export function useSiteCreator({
                     ]);
                     setOpenAddGroup(false);
                     onNotify("网络已断开：分组已暂存本地，联网后自动创建", "info");
+                    return;
+                }
+                // 载荷超限：**没有**进队列，所以不能说「已暂存」。
+                // error.message 本身就是给用户看的文案（含体积与上限），别再套一层「创建失败」。
+                if (error instanceof QueuePayloadTooLargeError) {
+                    onError(error.message);
                     return;
                 }
                 reportError(error, { source: "group-create" });
@@ -191,6 +197,12 @@ export function useSiteCreator({
                     upsertSiteLocally({ ...siteToCreate, id: error.tempId } as Site);
                     setOpenAddSite(false);
                     onNotify("网络已断开：卡片已暂存本地，联网后自动创建", "info");
+                    return;
+                }
+                // 带 data:URL 图标的批量建站是真实会撞上限的那条路（见 MAX_PAYLOAD_BYTES）：
+                // 说清「没保存」比笼统的「创建站点失败」有用。
+                if (error instanceof QueuePayloadTooLargeError) {
+                    onError(error.message);
                     return;
                 }
                 reportError(error, { source: "site-create" });

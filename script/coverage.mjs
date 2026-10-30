@@ -247,9 +247,38 @@ if (breaches.length) {
 // 改成 inline sourcemap 之后才第一次量到真东西（详见 unit-tests.mjs 的注释）。
 // 在这之前，唯一在跑的第 1 层是 100% —— 那个数字只说明「文件被 import 过」。
 const MIN_L2 = {
-    lines: 85, // 实测 87.0%
-    branches: 85, // 实测 87.1%
-    functions: 66, // 实测 68.9%
+    lines: 85, // 实测 88.2%
+    branches: 85, // 实测 87.7%
+    // 实测 72.8%（2629/3610 函数）。从 66 抬到 70 靠的是 tests/mockClientSurface.test.ts：
+    // 它把 MockNavigationClient 原型上每个方法都真调一遍（演示模式那 133 个函数以前只覆盖
+    // 27 个）。抬之前是 69.2% —— **先补测试再抬地板**，不然改完当场红。
+    functions: 70,
+};
+
+/**
+ * 按目录的函数覆盖地板（防回退，不是目标值）。
+ *
+ * 为什么只给这几个目录设：它们是纯函数 / 服务端逻辑，函数覆盖天然高，锁住能防回退；
+ * `src/components`（57%）与 `src/context`（54%）是 React 组件与 context，
+ * 大量箭头回调与事件处理器**按设计**就不会全被跑到，一刀切会逼出一堆无意义用例。
+ *
+ * ⚠️ 每个数字取「floor(实测) − 2」而不是 floor(实测)：QA 独立复核发现，取 floor(实测)
+ * 会让 API/methods(93.23) / worker(89.18) / shared(86.67) 三个目录**一个函数都掉不得** ——
+ * 以后任何无关改动往 worker 添一个没覆盖的分支函数就红，而那不是回归，只是新代码。
+ * 本文件第 2 层总地板（MIN_L2）本来就是「实测往下留约 2 个百分点」，这里沿用同一口径：
+ * 地板是**防回归**（拦住整块删测试那种级别的撤退），不是追单个函数的波动。
+ * 代价是比实测低 2pt —— 收益是它不会因为无关改动天天红（红了没看 = 门禁等于没有）。
+ * 地板必须 ≤ 实测，否则门禁立刻红（本轮方案里原本写的「一律 90」就是这么踩坑的 ——
+ * worker 实测 89.2%、shared 实测 86.7%，锁 90 当场失败）。
+ */
+const MIN_L2_BY_DIR = {
+    "src/utils": 90, // 实测 91.8%（698/760），留 1.8pt
+    "src/API/methods": 91, // 实测 93.2%（248/266），留 2.2pt
+    worker: 87, // 实测 89.2%（173/194），留 2.2pt
+    // server 取 88：本轮实测 90.8%，但上一轮是 88.9%，run 间差两个点
+    // （server/entry.ts 是否进 c8 统计会变）。地板要能扛住这种波动，取更低值。
+    server: 88, // 实测 90.8%（59/65），上一轮 88.9%，留 2.8pt
+    shared: 84, // 实测 86.7%（13/15），留 2.7pt
 };
 
 const COV_DIR = path.join(ROOT, "coverage");
@@ -451,13 +480,38 @@ function reportLayer2() {
             breaches2.push(`${key} ${pct.toFixed(1)}% < 地板 ${MIN_L2[key]}%`);
         }
     }
+
+    // 目录分层地板：全局 70% 掩盖不了「某个纯函数目录掉回 60%」——
+    // 全局数字被 1400 个组件函数摊平，掉 10 个只动 0.3 个点，但那个目录自己已经烂了一半。
+    // byDir 的键就是 `path.dirname`，与上面「行覆盖率最低的 5 个目录」用的是同一份聚合。
+    const dirFloor = Object.entries(MIN_L2_BY_DIR);
+    if (dirFloor.length > 0) {
+        console.log("\n函数覆盖分层地板（只盯纯函数 / 服务端目录）：");
+        for (const [dir, min] of dirFloor) {
+            const s = byDir.get(dir);
+            if (!s) {
+                // 目录整个消失（改名 / 被删）也要报：否则「把文件挪走」就成了绕过门禁的办法
+                breaches2.push(`${dir} 不在覆盖率汇总里（目录改名或被删？地板无人可守）`);
+                continue;
+            }
+            const pct = ratio(s.functions);
+            if (pct === null) continue;
+            const ok = pct >= min;
+            if (!ok) breaches2.push(`${dir} 函数覆盖 ${pct.toFixed(1)}% < 地板 ${min}%`);
+            console.log(
+                `  ${dir.padEnd(18)} ${fmtPct(pct).padStart(7)} | 地板 ${String(min).padStart(3)}%` +
+                    `${ok ? "" : "  ❌"}`
+            );
+        }
+    }
+
     if (breaches2.length > 0) {
         console.log("\n❌ 第 2 层跌破防回归地板：");
         for (const b of breaches2) console.log("  - " + b);
     } else {
         console.log(
-            `\n✅ 第 2 层没跌破地板（行 ${MIN_L2.lines}% / 分支 ${MIN_L2.branches}% / 函数 ${MIN_L2.functions}%）。` +
-                `地板是「别更差」，不是「够好了」。`
+            `\n✅ 第 2 层没跌破地板（行 ${MIN_L2.lines}% / 分支 ${MIN_L2.branches}% / 函数 ${MIN_L2.functions}%）` +
+                `，各纯函数目录也都在自己的地板上。地板是「别更差」，不是「够好了」。`
         );
     }
     return { failed: breaches2.length > 0 };

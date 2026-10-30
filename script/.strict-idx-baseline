@@ -1,0 +1,5 @@
+{
+    "maxEntries": 63,
+    "updatedAt": "2026-10-30",
+    "note": "script/strict-idx-exempt.json 的条目上限。只许往下调；往上调等于承认严格层又漏进来一个不干净的文件，必须在提交信息里写理由。初值 63 = 2026-10-30 首次跑严格层时的真实分布（src 60 个文件 + 3 个被 src import 进来的 worker 文件：httpUtils / loginGuard / util）。"
+}

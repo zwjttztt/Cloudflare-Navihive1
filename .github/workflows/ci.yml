@@ -75,6 +75,13 @@ jobs:
       - name: 类型检查
         run: npm run typecheck
 
+      # 严格下标守卫（Q-3 棘轮）：跑 tsconfig.strict-idx.json（noUncheckedIndexedAccess
+      # 全开、include 覆盖全部 src），断言所有报错文件都登记在 script/strict-idx-exempt.json。
+      # 「新文件默认进严格层」靠这条机械保证 —— 新写的文件只要漏判空下标就红，不靠人记；
+      # 豁免清单只能 shrink（条目数不得超过 script/.strict-idx-baseline、due 过期即红）。
+      - name: 严格下标守卫（Q-3 棘轮）
+        run: npm run check:strict-idx
+
       # 只让 error 失败（warning 如 exhaustive-deps / fast-refresh 留着看，不阻断）。
       # --max-warnings 设成 0 会因为 MUI 的正常写法天天红，没人会真去修。
       - name: 代码规范

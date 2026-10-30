@@ -31,15 +31,36 @@ function encodePayload(prefill) {
     return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
-/** 站点地址补全成可用的 https 前缀，并去掉结尾斜杠 */
+/**
+ * 站点地址补全成可用的 https 前缀，并去掉结尾斜杠。
+ *
+ * ⚠️ 判据必须与主站 src/utils/url.ts 的 normalizeUrl **逐条对齐**：
+ * 这里存的「站点地址」会被拼成深链打开，两边归一化结果不一致时，
+ * 用户会得到「https://file///etc/passwd」这种既打不开、又看不出错在哪的地址。
+ * 差异由 tests/extensionDeepLink.test.ts 逐个用例钉住（含危险协议）。
+ */
 function normalizeSite(input) {
     const raw = (input || "").trim();
     if (!raw) return "";
-    const withScheme = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+    // 显式写了别的协议（file: / javascript: / data: …）直接拒绝，
+    // 不要硬补 https:// —— 补出来的是个假地址，比空值更难排查
+    const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(raw);
+    if (scheme && !/^https?:$/i.test(`${scheme[1]}:`)) return "";
+    // 没写协议就补 https，先抹掉开头多余的斜杠（//example.com 是协议相对地址）
+    const withScheme = scheme ? raw : `https://${raw.replace(/^\/+/, "")}`;
     try {
         const url = new URL(withScheme);
         if (url.protocol !== "http:" && url.protocol !== "https:") return "";
-        return url.toString().replace(/\/+$/, "");
+        if (!url.hostname) return "";
+        // 默认端口去掉：http://a.com:80 与 http://a.com 是同一个地址
+        if (
+            (url.protocol === "http:" && url.port === "80") ||
+            (url.protocol === "https:" && url.port === "443")
+        ) {
+            url.port = "";
+        }
+        if (url.pathname === "/" && !url.search && !url.hash) return `${url.protocol}//${url.host}`;
+        return url.href.replace(/\/+$/, "");
     } catch {
         return "";
     }

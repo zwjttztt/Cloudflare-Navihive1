@@ -198,6 +198,27 @@ App.tsx（编排，2388 行）
 - **Mock 是同形的第二实现**：`src/API/mock.ts` 实现同一套接口，`tests/clientSurface.test.ts` 在运行时逐方法比对。这保证了演示模式与真后端不会漂移。
 - **离线队列在 API 层，不在 UI 层**：`src/API/offlineQueue.ts` 只存「方法名 + 参数」，重放时挂上同一条 `Idempotency-Key`，服务端 `idempotency_keys` 认出重复。
 
+### 5.1 浏览器最低支持基线
+
+与 `package.json` 的 `browserslist` **同一份真话**（改一处就要改另一处，`tests/safariApiGuard.test.ts` 会对两条都做断言）：
+
+| 浏览器 | 最低版本 |
+| --- | --- |
+| Chrome | chrome >= 111 |
+| Edge | edge >= 111 |
+| Firefox | firefox >= 111 |
+| Safari | safari >= 16.4 |
+
+**验证方式与它的边界**：CI 里的浏览器环节（`smoke` / `a11y` / `contrast` / `perf` / `visual`）全部是
+**自研 CDP 驱动本机 Chrome**，没有 Playwright，也**没有真机 Safari / WebKit 验证**。
+WebKit 的差异靠静态守卫兜底：`tests/safariApiGuard.test.ts` 扫 `src/ worker/ server/ shared/`，
+把「超出上表基线」的 API（`toSorted` / `Object.groupBy` / `Array.fromAsync` / `URL.canParse` /
+`Promise.withResolvers` / `popover` / `requestIdleCallback` …）列成清单，**出现即要求伴随特性探测**，
+否则 CI 红。所以在写这类调用时，要么换成基线内写法，要么写 `typeof x === "function"` 探测 + 降级分支。
+
+尚未覆盖的部分（真机 WebKit 专项）：真实 Safari 的触摸/滚动行为、`-webkit-` 前缀的渲染差异、
+iOS 上的存储配额表现 —— 这些只能靠真机，静态扫描管不到。
+
 ---
 
 ## 6. 构建与分包

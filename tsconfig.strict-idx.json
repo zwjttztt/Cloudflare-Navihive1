@@ -1,0 +1,15 @@
+{
+  // Q-3（`noUncheckedIndexedAccess`）的**严格层**：整份 src 都按「下标访问可能是 undefined」检查。
+  //
+  // 为什么不靠 `exclude` 排掉豁免文件：TS 的 `exclude` 只影响「哪些文件被当根文件加载」，
+  // 被 src 内其它文件 import 的豁免文件照样进程序、照样报错。所以这里**不排除任何文件**，
+  // 由 script/strict-idx-guard.mjs 跑一遍本配置，再把「报错的文件」与
+  // script/strict-idx-exempt.json 的清单比对 —— 清单外的文件报错即失败。
+  // 这样「新文件默认进严格层」才是机械保证，而不是一句约定。
+  "extends": "./tsconfig.app.json",
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.strict-idx.tsbuildinfo",
+    "noUncheckedIndexedAccess": true
+  },
+  "include": ["src"]
+}

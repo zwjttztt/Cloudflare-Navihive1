@@ -16,6 +16,9 @@ import {
     wrapMutations,
     setAccountUid,
     OfflineQueuedError,
+    QueuePayloadTooLargeError,
+    MAX_PAYLOAD_BYTES,
+    estimatePayloadBytes,
     type MutationApi,
 } from "../src/API/offlineQueue";
 
@@ -173,4 +176,69 @@ test("wrapMutations：网络错入队并抛 OfflineQueuedError；服务端错原
         (e: unknown) => e instanceof Error && !(e instanceof OfflineQueuedError) && e.message.includes("500")
     );
     assert.equal(pendingCount(), 1); // 没新增
+
+    // ⚠️ 必须在**同一个** wrapMutations 作用域里做这条断言：wrapMutations 是模块级幂等
+    // （第二次调用直接 return），另起一个 api 对象再 wrap 是无效的，测出来的会是裸函数。
+    const huge = "z".repeat(MAX_PAYLOAD_BYTES + 1);
+    await assert.rejects(
+        () => api.createSite({ name: huge }),
+        (e: unknown) => e instanceof QueuePayloadTooLargeError && !(e instanceof OfflineQueuedError),
+        "超限时队列根本没存，界面不能说「已暂存、联网自动同步」"
+    );
+    assert.equal(pendingCount(), 1, "被拒绝的那条不能进队列");
+});
+
+// ---------------- E-3：单条载荷上限 ----------------
+//
+// 队列存 localStorage（每源 ~5 MB）。真正会撑爆它的只有 `importData`（整份备份）
+// 和「批量建站带 data:URL 图标」两条路。一条 4 MB 的备份进队列后，**后续所有操作
+// 都会因为写不进配额而静默消失** —— 所以宁可在入队这一刻明确拒绝。
+
+test("载荷超限：抛 QueuePayloadTooLargeError，且队列长度不变（没入队）", () => {
+    reset();
+    // 一份「够大」的备份：单个字符串超过上限即可，不必真造 MB 级数据
+    const huge = "x".repeat(MAX_PAYLOAD_BYTES + 1024);
+    assert.throws(
+        () => enqueueMutation("importData", [{ sites: [{ name: huge }] }]),
+        (e: unknown) => e instanceof QueuePayloadTooLargeError,
+        "超限必须抛可识别的错误，而不是让它进队列"
+    );
+    assert.equal(pendingCount(), 0, "被拒绝的操作绝不能留在队列里");
+
+    // 失败清单也不能收：它同样写 localStorage，收下等于换个地方撑爆配额
+    assert.equal(failedMutations().length, 0);
+});
+
+test("载荷超限的错误名与文案稳定（界面靠 name 识别，文案要能直接展示给用户）", () => {
+    reset();
+    const huge = "y".repeat(MAX_PAYLOAD_BYTES + 1);
+    try {
+        enqueueMutation("importData", [huge]);
+        assert.fail("应当抛错");
+    } catch (error) {
+        assert.ok(error instanceof QueuePayloadTooLargeError);
+        assert.equal(error.name, "QueuePayloadTooLargeError");
+        assert.equal(error.kind, "importData");
+        assert.ok(error.size > MAX_PAYLOAD_BYTES, "要带上真实体积，用来给用户解释为什么不让存");
+        // 文案必须说清「没保存」和「怎么办」：混成 OfflineQueuedError 的「已暂存」会骗人
+        assert.match(error.message, /无法离线保存/);
+        assert.match(error.message, /联网后重试/);
+        assert.ok(!(error instanceof OfflineQueuedError), "它是「没存」，不是「已存」");
+    }
+});
+
+test("普通大小的操作照旧入队（闸门不能误杀正常载荷）", () => {
+    reset();
+    const normalSite = { name: "普通卡片", url: "https://example.com", description: "a".repeat(2000) };
+    enqueueMutation("createSite", [normalSite]);
+    enqueueMutation("deleteSite", [1]);
+    assert.equal(pendingCount(), 2, "几 KB 的操作必须照常排队");
+});
+
+test("体积按 UTF-8 字节算：中文标题不能被按字符数低估", () => {
+    const cjk = "中".repeat(1000);
+    // 1000 个汉字 = 3000 字节（JSON 里的引号另算），若按 .length 只有 1002
+    const bytes = estimatePayloadBytes([cjk]);
+    assert.ok(bytes >= 3000, `中文应按 UTF-8 字节计（实测 ${bytes}）`);
+    assert.ok(bytes > cjk.length * 2, "字符数与字节数必须能区分开，否则闸门对中文形同虚设");
 });
