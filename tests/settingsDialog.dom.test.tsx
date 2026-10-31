@@ -10,7 +10,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import SettingsDialog from "../src/components/SettingsDialog";
+import {
+    ConfigPanel as ConfigPanelBody,
+} from "../src/components/SettingsDialog";
 import type { FontScale, RadiusStyle } from "../src/context/uiPrefsStore";
 
 if (typeof globalThis.localStorage === "undefined") {
@@ -60,6 +62,8 @@ type Opts = {
     radius?: RadiusStyle;
     fontScale?: FontScale;
     configs?: Record<string, string>;
+    /** B1 摊平模式：传了就只渲染对应段（无 Tabs、无 Dialog 外壳） */
+    section?: "appearance" | "data" | "advanced";
 };
 
 let root: Root | null = null;
@@ -97,9 +101,13 @@ function Harness(o: Opts) {
     const [, setMaskOpacity] = useState(0.3);
     const [glassBlur, setGlassBlur] = useState(8);
     configs = state;
+    // withDialog：独立弹窗模式（不传 section）自带 Dialog 外壳；摊平模式只输出内容体。
+    // 两者都是业务本体 ConfigPanelBody，行为与原默认导出一致。
     return (
-        <SettingsDialog
-            open
+        <ConfigPanelBody
+            open={!o.section}
+            withDialog={!o.section}
+            section={o.section}
             onClose={() => calls.closes++}
             onSave={() => calls.saves++}
             tempConfigs={state}
@@ -364,4 +372,36 @@ test("设置：圆角 / 字号切换回调对应档位；再点已选中的档�
     // 这条就是盯那个护栏：回调不该收到 null
     click(byLabel("锐利圆角")!);
     assert.deepEqual(calls.radius, ["sharp"], "点已选中的档位不该再回调一次");
+});
+
+test("摊平模式（B1）：section=data 只渲染数据段，无页签栏、说明不重复", () => {
+    render({ section: "data" });
+    assert.equal(document.querySelector('[role="tab"]'), null, "摊平模式不渲染页签栏");
+    assert.ok(inputById("retention-days"), "数据保留直接可见（不用再点页签）");
+    assert.equal(inputById("site-title"), null, "外观段的字段不该出现在数据段");
+    assert.ok(
+        !alerts().some(t => t.includes("外观按账号保存")),
+        "顶部说明只随第一段（外观）出现，数据段不重复一份"
+    );
+    assert.ok(button("保存设置"), "保存按钮仍在 —— 三段共用同一份草稿");
+});
+
+test("摊平模式（B1）：section=appearance 顶部说明与表单齐全", () => {
+    render({ section: "appearance" });
+    assert.ok(inputById("site-title"), "基本信息在第一段直接可见");
+    assert.ok(
+        (document.body.textContent || "").includes("这里改的是"),
+        "作用域说明随第一段出现"
+    );
+    assert.ok(
+        (document.body.textContent || "").includes("需点「保存设置」"),
+        "草稿语义的说明也随第一段出现"
+    );
+});
+
+test("摊平模式（B1）：section=advanced 只渲染高级段", () => {
+    render({ section: "advanced" });
+    assert.ok(inputById("site-custom-css"), "自定义 CSS 直接可见");
+    assert.equal(inputById("retention-days"), null, "数据段字段不该串场");
+    assert.equal(document.querySelector('[role="tab"]'), null, "不渲染页签栏");
 });

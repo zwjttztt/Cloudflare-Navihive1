@@ -47,7 +47,6 @@ import type { VaultCenterPanelProps } from "./navigationCenter/panels/VaultPanel
 import type { AiCenterPanelProps } from "./navigationCenter/panels/AiPanel";
 import type { ConfigCenterPanelProps } from "./navigationCenter/panels/ConfigPanel";
 import type { AccountCenterPanelProps } from "./navigationCenter/panels/AccountPanel";
-
 // ---- 九个面板：全部按需加载，且**只有被选中那一个会真的下载** ----
 // 与 App.tsx 里那些 lazy 弹窗不同，这里是「中心之内再分一层」：
 // 打开中心只下外壳块，切到哪个面板才下哪一块（首屏预算经不起九个一起下）。
@@ -55,7 +54,18 @@ const StatsPanel = lazy(() => import("./navigationCenter/panels/StatsPanel"));
 const BackupPanel = lazy(() => import("./navigationCenter/panels/BackupPanel"));
 const RecyclePanel = lazy(() => import("./navigationCenter/panels/RecyclePanel"));
 const AuditPanel = lazy(() => import("./navigationCenter/panels/AuditPanel"));
-const ConfigPanel = lazy(() => import("./navigationCenter/panels/ConfigPanel"));
+// 全站设置的三段（B1 摊平）共用**同一个**懒加载 chunk：三个入口指向同一个
+// 模块，打包器只出一块；业务体是大块，拆三个文件会把它复制三份。
+const loadConfigChunk = () => import("./navigationCenter/panels/ConfigPanel");
+const ConfigAppearancePanel = lazy(() =>
+    loadConfigChunk().then(m => ({ default: m.ConfigAppearancePanel }))
+);
+const ConfigDataPanel = lazy(() =>
+    loadConfigChunk().then(m => ({ default: m.ConfigDataPanel }))
+);
+const ConfigAdvancedPanel = lazy(() =>
+    loadConfigChunk().then(m => ({ default: m.ConfigAdvancedPanel }))
+);
 const AiPanel = lazy(() => import("./navigationCenter/panels/AiPanel"));
 const VaultPanel = lazy(() => import("./navigationCenter/panels/VaultPanel"));
 const AccountPanel = lazy(() => import("./navigationCenter/panels/AccountPanel"));
@@ -194,7 +204,10 @@ export default function NavigationCenterDialog({
         if (active === "backup") return <BackupPanel {...backup} />;
         if (active === "recycle") return <RecyclePanel {...recycle} />;
         if (active === "audit") return <AuditPanel {...audit} />;
-        if (active === "config") return <ConfigPanel {...config} />;
+        // 全站设置三段（B1）：同一份 props（同一份草稿），业务体内部按 section 分叉
+        if (active === "config-appearance") return <ConfigAppearancePanel {...config} />;
+        if (active === "config-data") return <ConfigDataPanel {...config} />;
+        if (active === "config-advanced") return <ConfigAdvancedPanel {...config} />;
         if (active === "account") return <AccountPanel {...account} />;
         if (active === "shortcuts") return <ShortcutsPanel {...shortcuts} />;
         if (active === "vault") return <VaultPanel {...vault} />;

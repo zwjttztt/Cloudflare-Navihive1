@@ -16,10 +16,17 @@
 //   从而停掉页面滚动。
 //
 // 关键约束 —— 只碰 documentElement（html），绝不碰 document.body：
-//   - index.css 已在 html 上声明 scrollbar-gutter: stable，始终预留滚动条宽度；
-//   - 设 html{overflow:hidden} 后 html 不再是滚动容器、stable 槽位塌缩，我们补的
-//     paddingRight = bar 恰好补回这段宽度 → 净零位移，不会触发 900px 断点重排。
 //   - 笔记页的 lightbox 仍锁 document.body（另一个元素），两者互不污染各自记录的 prev。
+//
+// 宽度与白边的账（v23.3.1 修正，来自用户实测两张截图）：
+//   index.css 在 html 上声明了 scrollbar-gutter: stable，而 overflow:hidden 后 html
+//   仍是滚动容器，**stable 槽位继续预留**（只是刻度没了）。如果再像传统做法那样
+//   补 padding-right，就成了「空槽 + padding」双份白边：遮罩旁多出一条白条，
+//   且内容整体左移一个滚动条宽（「导航站」三个字开合弹层前后会跳）。
+//   所以上锁时要同时把 html 的 scrollbar-gutter 临时改成 auto（不再预留槽位），
+//   再 overflow:hidden + padding-right = 滚动条宽：内容宽度前后逐位相等
+//   （不位移、不撞 900px 断点重排），空槽也不再存在，遮罩铺满整个视口。
+//   解锁时三项（overflow / padding / gutter）全部原样还原。
 //
 // 所有权规则（防「永久锁死」回归）：html 的 overflow 还有另一位所有者 ——
 //   记事本页面（NotesPageShell 是 position:fixed 的普通 div，**不是** MUI Modal，
@@ -53,8 +60,9 @@ export function useOverlayScrollLock(): void {
         // sync / applyUnlock 读写，不需要跨渲染持久。
         const lockedRef = { current: false };
         // 上锁瞬间记录的内联样式，用于解锁后原样还原（绝不无脑写 ""，
-        // 以免抹掉别处改过的 html 内联样式）。
-        const prevRef = { overflow: "", paddingRight: "" };
+        // 以免抹掉别处改过的 html 内联样式）。gutter 走 setProperty，免得依赖
+        // TS lib.dom 里 scrollbarGutter 映射的可用性。
+        const prevRef = { overflow: "", paddingRight: "", gutter: "" };
         // false = 上锁时 html 已被别的所有者（记事本 useScrollLock）锁着，
         // 我们只跟随；解锁时不碰 overflow，所有权归原主。
         let ownsOverflow = false;
@@ -65,18 +73,23 @@ export function useOverlayScrollLock(): void {
                 root.style.overflow = prevRef.overflow;
             }
             root.style.paddingRight = prevRef.paddingRight;
+            root.style.setProperty("scrollbar-gutter", prevRef.gutter);
             lockedRef.current = false;
         };
 
         const sync = () => {
             const present = hasOverlay();
             if (present && !lockedRef.current) {
-                // 滚动条宽度；jsdom 下 innerWidth 与 clientWidth 恒等，bar=0，不补 padding。
+                // 滚动条宽度必须在改样式**之前**量（改完就没有滚动条可量了）；
+                // jsdom 下 innerWidth 与 clientWidth 恒等，bar=0，不补 padding。
                 const bar = window.innerWidth - root.clientWidth;
                 prevRef.overflow = root.style.overflow;
                 prevRef.paddingRight = root.style.paddingRight;
+                prevRef.gutter = root.style.getPropertyValue("scrollbar-gutter");
                 // 已是 hidden 说明别的所有者在锁：只跟随不接管（见头部所有权规则）。
                 ownsOverflow = root.style.overflow !== "hidden";
+                // 先把 stable 槽位收掉再锁，padding 只补一次 —— 见头部「宽度与白边的账」
+                root.style.setProperty("scrollbar-gutter", "auto");
                 root.style.overflow = "hidden";
                 if (bar > 0) {
                     root.style.paddingRight = `${bar}px`;

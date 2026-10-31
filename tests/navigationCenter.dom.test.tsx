@@ -193,7 +193,7 @@ test("role=dialog 的 paper 有可解析的 aria-labelledby，且指向非空标
     assert.equal((title!.textContent || "").trim(), "设置", "标题要能说出弹窗叫什么");
 });
 
-test("owner 登录态：九个导航项 + 底部退出登录，顺序照注册表", async t => {
+test("owner 登录态：十一个导航项 + 底部退出登录，顺序照注册表", async t => {
     t.after(cleanup);
     const { props } = makeProps();
     await mount(props);
@@ -204,14 +204,16 @@ test("owner 登录态：九个导航项 + 底部退出登录，顺序照注册�
             "backup",
             "recycle",
             "audit",
-            "config",
+            "config-appearance",
+            "config-data",
+            "config-advanced",
             "ai",
             "vault",
             "account",
             "shortcuts",
             "logout",
         ],
-        "条目顺序应与 model.ts 的注册表一致（改名 / 增删先改这里）"
+        "条目顺序应与 model.ts 的注册表一致（B1 后全站设置摊成三条；改名 / 增删先改这里）"
     );
 });
 
@@ -231,7 +233,7 @@ test("未登录：没有「账号与安全」和「退出登录」，其余照�
     const list = navItems();
     assert.ok(!list.includes("account"), `实际 ${list.join("/")}`);
     assert.ok(!list.includes("logout"), `实际 ${list.join("/")}`);
-    assert.ok(list.includes("config"), "全站设置跟登录无关，未登录也要在");
+    assert.ok(list.includes("config-appearance"), "外观与搜索跟登录无关，未登录也要在");
 });
 
 test("退出登录：点一下只弹确认，不直接退出", async t => {
@@ -303,12 +305,12 @@ test("隐藏当前选中项时自动回退到第一个可见项（不留空面�
     );
 });
 
-test("全站设置 / 账号与安全：在中心内联，不再弹出第二层 Dialog", async t => {
+test("全站设置三段 / 账号与安全：在中心内联，不再弹出第二层 Dialog", async t => {
     t.after(cleanup);
     const { props } = makeProps();
     await mount(props);
 
-    for (const id of ["config", "account"]) {
+    for (const id of ["config-appearance", "config-data", "config-advanced", "account"]) {
         await click(document.querySelector<HTMLElement>(`[data-workspace-nav="${id}"]`));
         // 面板是第二层 lazy，给它几拍把块 resolve 掉
         for (let i = 0; i < 3; i++) {
@@ -321,6 +323,38 @@ test("全站设置 / 账号与安全：在中心内联，不再弹出第二层 D
             dialogs.length,
             1,
             `选中 ${id} 后只应存在中心这一个 dialog（面板必须内联），实际 ${dialogs.length} 个`
+        );
+    }
+});
+
+test("全站设置三段：点哪条渲染哪段，中心内不再有二级 Tab", async t => {
+    t.after(cleanup);
+    // B1 之前「全站设置」面板内部还有三张 Tab（外观与搜索 / 数据 / 高级）——
+    // 左栏是第一层目录、面板里又藏一层 Tab，目录里看不见的就找不到。
+    // 摊平之后：点左栏哪条就渲染哪段，且中心内不许再出现 [role=tab]。
+    const { props } = makeProps();
+    await mount(props);
+
+    const expectContent: Array<[string, string]> = [
+        ["config-appearance", "获取图标API URL"],
+        ["config-data", "审计与回收站保留"],
+        ["config-advanced", "自定义CSS"],
+    ];
+    for (const [id, marker] of expectContent) {
+        await click(document.querySelector<HTMLElement>(`[data-workspace-nav="${id}"]`)!);
+        for (let i = 0; i < 3; i++) {
+            await act(async () => {
+                await new Promise(r => setTimeout(r, 0));
+            });
+        }
+        assert.ok(
+            (document.body.textContent || "").includes(marker),
+            `选中 ${id} 后应看到本段内容（找「${marker}」）`
+        );
+        assert.equal(
+            document.querySelector('[role="tab"]'),
+            null,
+            "摊平后中心内不许再有二级 Tab（那层藏东西的目录已删）"
         );
     }
 });

@@ -102,6 +102,11 @@ test("弹层打开时锁 html overflow，全部关闭后还原（不留永久锁
     );
     await flushObserver();
     assert.equal(htmlOverflow(), "hidden", "弹层打开时 html overflow 应为 hidden");
+    assert.equal(
+        document.documentElement.style.getPropertyValue("scrollbar-gutter"),
+        "auto",
+        "stable 槽位必须同时收掉，否则空槽 + padding 双份白边（用户实测的白条回归线）"
+    );
 
     // 3. 弹层 A 关闭（整棵卸载）：必须还原成上锁前的值，**不能留成 hidden**
     rerender(
@@ -112,6 +117,11 @@ test("弹层打开时锁 html overflow，全部关闭后还原（不留永久锁
     await flushObserver();
     assert.equal(htmlOverflow(), "", "弹层全部关闭后 overflow 必须还原（永久锁死回归线）");
     assert.equal(htmlPaddingRight(), "", "padding 补偿也要一并还原");
+    assert.equal(
+        document.documentElement.style.getPropertyValue("scrollbar-gutter"),
+        "",
+        "scrollbar-gutter 也要还原成样式表里的 stable"
+    );
 });
 
 test("嵌套弹层：关掉内层不解锁，最后一个关掉才还原", async t => {
@@ -244,4 +254,5 @@ test("与其他锁共存后一起卸载，不得把 html 永久锁死（prev 污
         "所有者与弹层一起卸载后不得残留 hidden —— 这是永久锁死回归线"
     );
     assert.equal(htmlPaddingRight(), "");
+    assert.equal(document.documentElement.style.getPropertyValue("scrollbar-gutter"), "");
 });

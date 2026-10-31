@@ -131,11 +131,20 @@ interface SettingsDialogProps {
     isSiteOwner?: boolean;
 }
 
+/** 三个摊平后的左栏面板各自管哪一段（B1，2026-10-31）。不传 = 独立弹窗模式，保留三张 Tab。 */
+export type ConfigSection = "appearance" | "data" | "advanced";
+
 /** 导航中心嵌入版配置面板 Props：在 SettingsDialogProps 基础上增加 withDialog 开关。 */
 export interface ConfigPanelProps extends SettingsDialogProps {
     /** true 时自带 Dialog 外壳（标题栏 + 取消/保存），用于独立弹窗入口；
      *  false / 省略时只输出内容体（Tabs + 表单 + 保存按钮），交给导航中心统一包壳。 */
     withDialog?: boolean;
+    /**
+     * 只渲染其中一段（B1：全站设置三张 Tab 摊平成左栏三条）。
+     * 传入后 Tabs 栏不再渲染，顶部说明只在第一段（appearance）出现 ——
+     * 三段共用同一份草稿（tempConfigs 在 App），切面板不丢改动。
+     */
+    section?: ConfigSection;
 }
 
 // Section / SwitchRow 已搬到 ./dialogSection（AI 助手弹窗要用同一套排版，
@@ -190,25 +199,32 @@ export function ConfigPanel({
     onSyncPrefsChange,
     onRunLinkCheck,
     isSiteOwner = true,
+    section,
 }: ConfigPanelProps) {
     // 页签：0 = 外观与搜索（基本信息/外观/背景/图标/搜索）；1 = 数据（离线/同步/维护/保留）；
     // 2 = 高级（自定义 CSS / 版本与升级）。
     const [tab, setTab] = useState(0);
+    // 独立弹窗模式（不传 section）保留三张 Tab；中心模式按 section 只渲染一段。
+    const showTabs = !section;
+    const active: ConfigSection = section ?? (tab === 0 ? "appearance" : tab === 1 ? "data" : "advanced");
     // 页签 + 表单内容：两种模式（独立弹窗 / 导航中心嵌入）共用同一份 JSX。
     // Tabs / DialogContent 作为独立 MUI 组件，不依赖 Dialog 父级也能正常渲染。
     const tabsAndContent = (
         <>
-            {/* 页签放 DialogContent 外面：内容滚动时页签不跟着走 */}
-                <Tabs
-                    value={tab}
-                    onChange={(_, value: number) => setTab(value)}
-                    variant='fullWidth'
-                    sx={{ px: 2 }}
-                >
-                    <Tab label='外观与搜索' />
-                    <Tab label='数据' />
-                    <Tab label='高级' />
-                </Tabs>
+            {/* 页签放 DialogContent 外面：内容滚动时页签不跟着走。
+                中心模式（section）不渲染页签栏 —— 分段导航交给左栏（B1）。 */}
+                {showTabs ? (
+                    <Tabs
+                        value={tab}
+                        onChange={(_, value: number) => setTab(value)}
+                        variant='fullWidth'
+                        sx={{ px: 2 }}
+                    >
+                        <Tab label='外观与搜索' />
+                        <Tab label='数据' />
+                        <Tab label='高级' />
+                    </Tabs>
+                ) : null}
                 <DialogContent
                     sx={{
                         px: 3,
@@ -222,6 +238,11 @@ export function ConfigPanel({
                         "& .MuiSlider-root": { py: 0.75 },
                     }}
                 >
+                    {/* 顶部说明与身份提示：独立模式每张 Tab 都显示（原行为不变）；
+                        中心模式只在第一段（外观与搜索）出现 —— 摊平成三个面板后，
+                        这两段话跟着每段跑只会变成三份重复。 */}
+                    {(showTabs || active === "appearance") && (
+                        <>
                     {/* 作用域说明：改完发现不对的人，多半是进错门了 —— 一句话把
                         「这里管什么 / 单个网站去哪儿改」说清楚，比让用户试错便宜 */}
                     <DialogContentText sx={{ mb: 0.75, fontSize: 13.5 }}>
@@ -237,7 +258,9 @@ export function ConfigPanel({
                             外观按账号保存，仅影响你自己；站点所有者的设置还会作为新账号的默认外观。
                         </Alert>
                     ) : null}
-                    {tab === 0 ? (
+                        </>
+                    )}
+                    {active === "appearance" ? (
                     <Stack spacing={2.5}>
                         {/* 1. 基本信息：最常改，放最上面 */}
                         <Section title='基本信息'>
@@ -636,7 +659,7 @@ export function ConfigPanel({
                         </Section>
 
                     </Stack>
-                    ) : tab === 1 ? (
+                    ) : active === "data" ? (
                     <Stack spacing={2.5}>
                         {/* 5.5 离线与缓存（图标隐私已挪进「图标与缩略图」，它管的是同一件事） */}
                         {/* hint 删于 2026-10-31：开关的 caption 已经写明

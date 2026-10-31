@@ -862,6 +862,77 @@ for (const vp of VIEWPORTS) {
 }
 await send("Emulation.clearDeviceMetricsOverride");
 
+// 9) 设置中心左栏滚动比预算（B4）+ 打开前后零位移（滚动锁回归线）。
+//    「一屏能看全的目录」开始需要滚动就失去了意义（23.1.0 的设计承诺）；
+//    B1 把全站设置三张 Tab 摊成左栏三条（9→11）后，这条预算就是承重墙。
+//    零位移：打开中心会锁背景滚动（overflow:hidden + scrollbar-gutter 收掉 +
+//    等宽 padding），documentElement.clientWidth 前后必须逐位相等 ——
+//    不等就是「导航站标题跳位」或「右侧白条」那类回归（2026-10-31 用户实测过两种）。
+for (const vp of [{ w: 1440, h: 950 }, { w: 420, h: 780 }]) {
+    await send("Emulation.setDeviceMetricsOverride", {
+        width: vp.w,
+        height: vp.h,
+        deviceScaleFactor: 1,
+        mobile: false,
+    });
+    await send("Page.reload", { ignoreCache: false });
+    await sleep(2500);
+    const center = await evaluate(`(async () => {
+      const wait = ms => new Promise(r => setTimeout(r, ms));
+      const vis = el => {
+        if (!el) return false;
+        const s = getComputedStyle(el);
+        const r = el.getBoundingClientRect();
+        return s.display !== 'none' && s.visibility !== 'hidden' && r.width > 0 && r.height > 0;
+      };
+      const btn = [...document.querySelectorAll('button,[role="button"]')]
+          .filter(vis)
+          .find(b => (b.textContent || '').trim() === '设置'
+                  || (b.getAttribute('aria-label') || '').trim() === '设置');
+      if (!btn) return { error: 'no-center-button' };
+      const beforeWidth = document.documentElement.clientWidth;
+      btn.click();
+      for (let i = 0; i < 80 && !document.querySelector('[data-workspace-nav]'); i++) await wait(100);
+      const items = [...document.querySelectorAll('[data-workspace-nav]')];
+      if (!items.length) return { error: 'no-nav-items', beforeWidth };
+      const scroller = document.querySelector('nav[aria-label="设置分组"] > div');
+      if (!scroller) return { error: 'no-nav-scroller', beforeWidth };
+      return {
+        count: items.length,
+        scrollH: scroller.scrollHeight,
+        clientH: scroller.clientHeight,
+        beforeWidth,
+        afterWidth: document.documentElement.clientWidth,
+        ids: items.map(el => el.getAttribute('data-workspace-nav')).join(','),
+      };
+    })()`);
+    const ids = typeof center.ids === "string" ? center.ids.split(",") : [];
+    check(
+        `${vp.w}px：设置中心打开，全站设置三条在左栏（B1）`,
+        !center.error &&
+            ids.includes("config-appearance") &&
+            ids.includes("config-data") &&
+            ids.includes("config-advanced"),
+        center.error ? center.error : `${center.count} 条`
+    );
+    check(
+        `${vp.w}px：设置中心左栏一屏看全（B4 滚动比 ≤ 1）`,
+        !!center.clientH && center.scrollH <= center.clientH,
+        `scroll ${center.scrollH}/${center.clientH}`
+    );
+    check(
+        `${vp.w}px：打开设置中心内容零位移（滚动锁不改内容宽度）`,
+        center.afterWidth === center.beforeWidth,
+        `before=${center.beforeWidth} after=${center.afterWidth}`
+    );
+    // 关掉中心再测下一档（× 是唯一常驻出口；Esc 在某些焦点态下会被面板先吃掉）
+    await evaluate(
+        `(() => { const b = document.querySelector('[data-dialog-close]'); if (b) b.click(); })()`
+    );
+    await sleep(600);
+}
+await send("Emulation.clearDeviceMetricsOverride");
+
 // ---------------- 用户流程：批量删除 → 撤销 ----------------
 // 这条是拿真实回归换来的：曾经「点删除 → 确认」之后还会再弹一道看不见的确认，
 // 于是删不掉任何卡片、也没有任何提示，看起来就是按钮失灵。

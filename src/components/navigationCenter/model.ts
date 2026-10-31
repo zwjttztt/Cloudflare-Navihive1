@@ -19,7 +19,9 @@ import InsightsIcon from "@mui/icons-material/Insights";
 import SettingsBackupRestoreIcon from "@mui/icons-material/SettingsBackupRestore";
 import RestoreFromTrashIcon from "@mui/icons-material/RestoreFromTrash";
 import HistoryIcon from "@mui/icons-material/History";
-import SettingsIcon from "@mui/icons-material/Settings";
+import PaletteIcon from "@mui/icons-material/Palette";
+import StorageIcon from "@mui/icons-material/Storage";
+import TuneIcon from "@mui/icons-material/Tune";
 import AutoAwesomeIcon from "@mui/icons-material/AutoAwesome";
 import LockIcon from "@mui/icons-material/Lock";
 import ManageAccountsIcon from "@mui/icons-material/ManageAccounts";
@@ -35,7 +37,9 @@ export type NavCenterId =
     | "backup"
     | "recycle"
     | "audit"
-    | "config"
+    | "config-appearance"
+    | "config-data"
+    | "config-advanced"
     | "ai"
     | "vault"
     | "account"
@@ -106,11 +110,29 @@ export const NAV_CENTER_GROUPS: NavCenterGroup[] = [
         id: "system",
         title: "系统与工具",
         items: [
+            // 全站设置原是一个面板内三张 Tab（外观与搜索 / 数据 / 高级），
+            // 2026-10-31（B1）摊平成左栏三条：一个「一屏能看全的目录」里，
+            // 二级 Tab 是第二层藏东西的地方，目录里看不见就找不到。
+            // 三条共用同一个懒加载 chunk（见 panels/ConfigPanel.tsx）。
             {
-                id: "config",
-                label: "全站设置",
-                description: "站点标题、外观、背景与管理员凭据。",
-                icon: SettingsIcon,
+                id: "config-appearance",
+                label: "外观与搜索",
+                description: "站点名称、主色、圆角字号、背景壁纸、图标与拼音搜索。",
+                icon: PaletteIcon,
+                audience: "always",
+            },
+            {
+                id: "config-data",
+                label: "数据与同步",
+                description: "离线缓存、跨设备同步、失效链接检测与数据保留策略。",
+                icon: StorageIcon,
+                audience: "always",
+            },
+            {
+                id: "config-advanced",
+                label: "高级",
+                description: "自定义 CSS 与版本升级。",
+                icon: TuneIcon,
                 audience: "always",
             },
             {
