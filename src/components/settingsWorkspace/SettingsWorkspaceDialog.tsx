@@ -9,9 +9,10 @@
 // 窄屏两步式导航都只在这里写一遍。
 //
 // 三条硬规则：
-//   1. **关闭只有一个出口** `requestClose`：右上角 × / Esc / 点遮罩 / 底栏
-//      「完成」全部走它，有未保存草稿时它先弹站内确认（不用 window.confirm ——
-//      tests/dialogConsistency.test.ts 盯着这个）。
+//   1. **关闭只有一个出口** `requestClose`：右上角 × / Esc / 点遮罩 全部走它，
+//      有未保存草稿时它先弹站内确认（不用 window.confirm ——
+//      tests/dialogConsistency.test.ts 盯着这个）。底栏「完成」已于 2026-10-31
+//      撤掉：中心里的面板改完即生效，那个按钮实质是第二个关闭按钮。
 //   2. **aria-labelledby 只能写在 slotProps.paper 上**：MUI 把 role=dialog /
 //      aria-modal 放在 **paper 插槽**，写在 <Dialog> 顶层的 aria-* 会随
 //      `{...other}` 落到父级 Modal 根，读屏拿不到弹窗名字
@@ -59,7 +60,18 @@ export interface SettingsWorkspaceDialogProps {
     dirty?: boolean;
     /** 确认弹窗里那句「要丢掉什么」的说明 */
     dirtyHint?: string;
-    /** 左栏宽度（桌面，px）。底部危险区条目多的中心可以调宽一点 */
+    /**
+     * 左栏宽度（桌面，px）。底部危险区条目多的中心可以调宽一点。
+     *
+     * 208 → **192**（2026-10-31，比原计划宽 16px，原因见下）。
+     *
+     * 账算过一遍（1440×950 实测）：左栏宽 W 之后，条目可用文字宽 =
+     * W − 16（左栏 py 之外的 px:1）− 24（条目 px:1.5）− 18（图标）− 10（gap 1.25）。
+     * 最长条目是「快捷键与操作帮助」8 个汉字，13.5px/字 = 108px：
+     *   · W=176 → 可用 108px，**正好等于** 108 —— 实测真的折成了两行（行高 49 而非 36）；
+     *   · W=192 → 可用 124px，留 16px 余量，不再依赖字体度量恰好对齐。
+     * 176 省下的那 16px 换来一条折行的导航项，不值。
+     */
     navWidth?: number;
     /** 桌面纸面高度（CSS 长度字符串） */
     height?: string;
@@ -74,7 +86,7 @@ export default function SettingsWorkspaceDialog({
     actions,
     dirty = false,
     dirtyHint = "这个面板里有改动还没保存，现在关闭会丢掉它们。",
-    navWidth = 208,
+    navWidth = 192,
     height = "min(720px, calc(100dvh - 48px))",
 }: SettingsWorkspaceDialogProps) {
     // useId 而不是写死字符串：同一个中心可能被同时挂两份（桌面 / 移动入口），
@@ -147,8 +159,13 @@ export default function SettingsWorkspaceDialog({
                     display: "flex",
                     alignItems: "center",
                     gap: 1,
-                    minHeight: 56,
-                    py: 1.5,
+                    // 48（原 56）：这一行现在只是「窗口标签」，不再和面板主标题
+                    // 抢层级，压到 48 才配得上它降下来的字号（13/600）
+                    minHeight: 48,
+                    // py 1.5 → 0.5：窄屏第二步那颗「全部选项」minHeight 44，
+                    // 48-44 只剩 4px，上下各给 4px（0.5）刚好不裁切 ——
+                    // 留 12px（1.5）的话这一行会被顶到 68px，白占 20px 正文高度
+                    py: 0.5,
                     pl: fullScreen ? 2 : 3,
                     // 右侧给关闭按钮留位（它 absolute 在 right:12，宽约 30）
                     pr: 7,
@@ -165,11 +182,21 @@ export default function SettingsWorkspaceDialog({
                         全部选项
                     </Button>
                 )}
+                {/* 「设置」两个字是**窗口标签**，不是内容标题 —— 它下面那一行
+                    （面板主标题 17/600）才是这一屏唯一的标题。同字号同字重会让
+                    第一眼看到两层同级标题在打架，所以这里降到 13 + text.secondary，
+                    字重保留 600（小一号但仍是「标签」，不会读成说明文字）。 */}
                 <Typography
                     id={titleId}
                     component='h2'
                     noWrap
-                    sx={{ flex: 1, minWidth: 0, fontSize: 17, fontWeight: 600 }}
+                    sx={{
+                        flex: 1,
+                        minWidth: 0,
+                        fontSize: 13,
+                        fontWeight: 600,
+                        color: "text.secondary",
+                    }}
                 >
                     {title}
                 </Typography>
@@ -188,16 +215,19 @@ export default function SettingsWorkspaceDialog({
                             display: "flex",
                             flexDirection: "column",
                             overflow: "hidden",
-                            py: 2,
+                            py: 1.5,
                             px: 1,
-                            bgcolor: "var(--neutral-wash)",
+                            // 底色去掉（2026-10-31）：左栏原本是「浅灰底 + 右缝描边」，
+                            // 底色与纸面只差 alpha 0.05，看不出层次，反而让右栏正文
+                            // 显得像被贴上去的一块。现在只留右缝那一条 1px 结构线。
                             borderRight: fullScreen
                                 ? "none"
                                 : "1px solid var(--neutral-hover)",
                         }}
                     >
                         <WorkspaceNavSignalContext.Provider
-                            value={{ onNavigate: () => setMobileStep("panel") }}
+                            // compact 由外壳算：只有这里知道是不是 fullScreen
+                            value={{ onNavigate: () => setMobileStep("panel"), compact: !fullScreen }}
                         >
                             {nav}
                         </WorkspaceNavSignalContext.Provider>
@@ -229,7 +259,9 @@ export default function SettingsWorkspaceDialog({
                         px: fullScreen ? 2 : 3,
                         pt: 1.5,
                         pb: fullScreen ? "calc(12px + env(safe-area-inset-bottom, 0px))" : 1.5,
-                        borderTop: "1px solid var(--neutral-hover)",
+                        // 上描边去掉（2026-10-31）：底栏与正文之间本来就有留白，
+                        // 再加一条线就成了第 5 种分割手段。窄屏靠安全区留白本身
+                        // 分隔即可，不画线。
                     }}
                 >
                     {actions}

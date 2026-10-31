@@ -239,9 +239,16 @@ const measureRowsExpr = style => `(() => {
 //   · **正文滚动容器**：`SettingsWorkspacePanel` 正文那个 Box，带
 //     `[data-workspace-panel-body="1"]`（面板标题固定、只有正文滚，见该组件注释）。
 //     原来用的是 `.MuiDialogContent-root`。
-//   · **底部操作栏**：`SettingsWorkspaceDialog` 的底栏（flexShrink:0 + borderTop）。
-//     它没有自己的标记，所以从底栏里那颗「完成」按钮往上取 parentElement 当参照 ——
-//     原来用的是 `.MuiDialogActions-root`。
+//   · **滚动容器**：⚠️ 这一项当天复查才查清。`[data-workspace-panel-body]` 是
+//     SettingsWorkspacePanel 的**直通容器**（display:block，唯一子元素 height:100%），
+//     它自己**永远不滚**（scrollHeight 恒等于 clientHeight）。真正会滚的是面板内部
+//     的那一层（备份面板 = BackupDialog 里 ref=scrollRef 的 Box）。只看面板正文会得出
+//     「内容越界 67.9px 且滚不动」的**假结论** —— 我上一轮就是这么误判的。
+//     现在取 box 的**最内层**可滚祖先当滚动容器；判据也从「有没有越过下沿」改成
+//     「滚到底能不能看全」（长页面一打开超出可视区是正常的，看不到才是 bug）。
+//   · **可视下沿**：中心原本有一条底栏（flexShrink:0 + borderTop + 一颗「完成」按钮），
+//     参照物是从那颗按钮往上取 parentElement —— 原来用的是 `.MuiDialogActions-root`。
+//     **2026-10-31 底栏撤掉了**，所以这里退化成滚动容器的下沿 —— 越过它就得滚。
 //   · **纸面**：中心仍然是 MUI Dialog，`[role="dialog"]` 就是那张 paper。
 // 量的是「一打开」的几何（不预滚动）：表 B-1 回答「内容有没有超出可视区」，
 // 表 B-2 再滚到底回答「滚下去能不能看全」—— 两张表刻意不是同一个指标。
@@ -250,19 +257,44 @@ const measureDialogExpr = `(() => {
   const rectOf = el => { const r = el.getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height, top: r.top, bottom: r.bottom, left: r.left, right: r.right }; };
   const paper = document.querySelector('[role="dialog"]');
   const content = document.querySelector('[data-workspace-panel-body="1"]');
+  // 底栏已经撤掉：有底栏时取它的上沿，没有时取正文可视区的下沿。
+  // 两者含义一致 —— 「框越过这里，用户就得滚才能看全」。
   const doneBtn = [...(paper ? paper.querySelectorAll('button') : [])].find(b => (b.textContent || '').trim() === '完成');
-  const actions = doneBtn ? doneBtn.parentElement : null;
-  if (!paper || !content || !actions) return { error: 'workspace-missing', paper: !!paper, content: !!content, actions: !!actions };
+  const bar = doneBtn ? doneBtn.parentElement : null;
+  if (!paper || !content) return { error: 'workspace-missing', paper: !!paper, content: !!content };
+  const contentLiveRect = content.getBoundingClientRect();
   const heading = [...content.querySelectorAll('.MuiTypography-root')].find(el => (el.textContent || '').trim() === '从 WebDAV 恢复');
   let section = null, box = null;
   if (heading) {
     section = heading.parentElement ? heading.parentElement.parentElement : null;
     if (section) box = [...section.children].find(el => el !== heading.parentElement) || null;
   }
+  // 真正的滚动容器 = box 的**最内层**可滚祖先。
+  // 面板正文那层是直通容器（display:block + 子元素 height:100%），它不滚；
+  // 只看它会把「滚一下就能看到」误判成「看不到」。
+  const findScroller = start => {
+    let p = start ? start.parentElement : null;
+    while (p && p !== document.body) {
+      const st = getComputedStyle(p);
+      if (st.overflowY === 'auto' || st.overflowY === 'scroll') return p;
+      p = p.parentElement;
+    }
+    return null;
+  };
+  const scroller = findScroller(box);
+  const scrollerRect = scroller ? scroller.getBoundingClientRect() : null;
+  const barRect = bar ? bar.getBoundingClientRect() : null;
+  // 可视下沿：有底栏取底栏上沿，否则取滚动容器下沿（回落到面板正文下沿只是兜底）
+  const clipTop = barRect ? barRect.top : (scrollerRect ? scrollerRect.bottom : contentLiveRect.bottom);
+  const clipSrc = barRect || scrollerRect || contentLiveRect;
+  const clipRect = {
+    x: clipSrc.x, y: clipTop, w: clipSrc.width, h: 0,
+    top: clipTop, bottom: clipTop, left: clipSrc.left, right: clipSrc.right,
+  };
   const cs = getComputedStyle(content);
   const boxCs = box ? getComputedStyle(box) : null;
   const secCs = section ? getComputedStyle(section) : null;
-  const actCs = getComputedStyle(actions);
+  const actCs = bar ? getComputedStyle(bar) : null;
   const paintProbe = y => {
     const el = document.elementFromPoint(innerWidth / 2, y);
     if (!el) return null;
@@ -292,12 +324,25 @@ const measureDialogExpr = `(() => {
       borderBottomWidth: px(boxCs.borderBottomWidth),
     }) : null,
     section: section ? Object.assign(rectOf(section), { minHeight: secCs.minHeight, flex: secCs.flex, overflow: secCs.overflow }) : null,
-    actions: Object.assign(rectOf(actions), { borderTopWidth: px(actCs.borderTopWidth), position: actCs.position }),
+    scroller: scroller
+      ? Object.assign(rectOf(scroller), {
+          scrollHeight: scroller.scrollHeight,
+          clientHeight: scroller.clientHeight,
+          canScroll: scroller.scrollHeight - scroller.clientHeight,
+          overflowY: getComputedStyle(scroller).overflowY,
+          minHeight: getComputedStyle(scroller).minHeight,
+        })
+      : null,
+    actions: Object.assign(rectOf({ getBoundingClientRect: () => clipRect }), {
+      borderTopWidth: actCs ? px(actCs.borderTopWidth) : 0,
+      position: actCs ? actCs.position : 'none（无底栏）',
+      hasBar: !!bar,
+    }),
     // 绘制判据：内容区下沿内侧 / 按钮区上沿内侧，实际被哪个元素画到
     probes: {
       contentBottomMinus2: paintProbe(contentRect.bottom - 2),
-      actionsTopPlus2: paintProbe(rectOf(actions).top + 2),
-      actionsTopPlus12: paintProbe(rectOf(actions).top + 12),
+      actionsTopPlus2: paintProbe(clipTop + 2),
+      actionsTopPlus12: paintProbe(clipTop + 12),
     },
     bodyScrollHeight: document.documentElement.scrollHeight,
   };
@@ -386,25 +431,51 @@ for (const h of HEIGHTS) {
       const c = document.querySelector('[data-workspace-panel-body="1"]');
       const paper = document.querySelector('[role="dialog"]');
       if (!c) return null;
-      c.scrollTop = c.scrollHeight;
-      await new Promise(r => setTimeout(r, 250));
       const heading = [...c.querySelectorAll('.MuiTypography-root')].find(el => (el.textContent || '').trim() === '从 WebDAV 恢复');
       const section = heading && heading.parentElement ? heading.parentElement.parentElement : null;
       const box = section ? [...section.children].find(el => el !== heading.parentElement) || null : null;
-      // 底栏同样靠「完成」按钮反查（中心没有 .MuiDialogActions-root）
+      // 滚的是**真正的滚动容器**（box 的最内层可滚祖先），不是面板正文 ——
+      // 面板正文那层 scrollHeight 恒等于 clientHeight，滚它等于没滚（上一轮就栽在这儿）。
+      const findScroller = start => {
+        let p = start ? start.parentElement : null;
+        while (p && p !== document.body) {
+          const st = getComputedStyle(p);
+          if (st.overflowY === 'auto' || st.overflowY === 'scroll') return p;
+          p = p.parentElement;
+        }
+        return null;
+      };
+      const sc = findScroller(box) || c;
+      sc.scrollTop = sc.scrollHeight;
+      await new Promise(r => setTimeout(r, 350));
       const doneBtn = [...(paper ? paper.querySelectorAll('button') : [])].find(b => (b.textContent || '').trim() === '完成');
-      const actions = doneBtn ? doneBtn.parentElement : null;
+      const bar = doneBtn ? doneBtn.parentElement : null;
       const r = box ? box.getBoundingClientRect() : null;
-      const a = actions ? actions.getBoundingClientRect() : null;
-      return { scrollTop: c.scrollTop, scrollHeight: c.scrollHeight, clientHeight: c.clientHeight, boxBottom: r ? +r.bottom.toFixed(1) : null, actionsTop: a ? +a.top.toFixed(1) : null };
+      const sr = sc.getBoundingClientRect();
+      const clipTop = bar ? bar.getBoundingClientRect().top : sr.bottom;
+      // 唯一算得上的判据：滚到底之后，这个框是不是完整落在滚动容器的可视区里
+      const fullyVisible = !!(r && r.top >= sr.top - 0.5 && r.bottom <= sr.bottom + 0.5);
+      return {
+        scrollerClientHeight: sc.clientHeight,
+        scrollerScrollHeight: sc.scrollHeight,
+        scrollTop: sc.scrollTop,
+        maxScroll: sc.scrollHeight - sc.clientHeight,
+        boxTop: r ? +r.top.toFixed(1) : null,
+        boxBottom: r ? +r.bottom.toFixed(1) : null,
+        scrollerTop: +sr.top.toFixed(1),
+        scrollerBottom: +sr.bottom.toFixed(1),
+        actionsTop: +clipTop.toFixed(1),
+        fullyVisible,
+        hasBar: !!bar,
+      };
     })()`);
     // 恢复顶部再截图，保证截图是「用户一打开看到的样子」
     await evaluate(`(() => { const c = document.querySelector('[data-workspace-panel-body="1"]'); if (c) c.scrollTop = 0; })()`);
     await sleep(250);
     await shoot(`backup-restore-h${h}.png`);
 
+    // 「越过下沿」= 框底 − 滚动容器下沿（没有底栏时 actions.top 就是这个下沿）
     const overlap = m.box ? +(m.box.bottom - m.actions.top).toFixed(1) : null;
-    const beyondContent = m.box ? +(m.box.bottom - m.content.bottom).toFixed(1) : null;
     const beyondPaper = m.box ? +(m.box.bottom - m.paper.bottom).toFixed(1) : null;
 
     dialogRows.push([
@@ -412,12 +483,13 @@ for (const h of HEIGHTS) {
         boxText(m.paper),
         `${n1(m.content.h)} / ${m.content.scrollHeight} / ${m.content.clientHeight}`,
         m.content.overflowY,
+        m.scroller ? `${n1(m.scroller.h)} / ${m.scroller.scrollHeight} / ${m.scroller.clientHeight}` : "（没有可滚容器）",
         boxText(m.box),
         m.box ? n1(m.box.minHeight ? parseFloat(m.box.minHeight) : 0) : "—",
         n1(m.actions.top),
         overlap > 0 ? `+${overlap.toFixed(1)}` : overlap.toFixed(1),
-        beyondContent > 0 ? `+${beyondContent.toFixed(1)}` : beyondContent.toFixed(1),
         beyondPaper > 0 ? `+${beyondPaper.toFixed(1)}` : beyondPaper.toFixed(1),
+        scrolled ? (scrolled.fullyVisible ? "✅ 是" : "❌ 否") : "—",
     ]);
     dialogExtra.push({
         h,
@@ -430,41 +502,41 @@ for (const h of HEIGHTS) {
         boxMinHeight: m.box ? m.box.minHeight : null,
         boxFlex: m.box ? m.box.flex : null,
         sectionH: m.section ? m.section.h : null,
+        scrollerCanScroll: m.scroller ? m.scroller.canScroll : null,
+        scrollerOverflowY: m.scroller ? m.scroller.overflowY : null,
         probes: m.probes,
         scrolled,
         actionsPosition: m.actions.position,
     });
 }
 
-console.log("表 B-1：视口高度 × 面板几何（**一打开**，单位 px；重叠量 > 0 即框底边越过底栏顶边）");
+console.log("表 B-1：视口高度 × 面板几何（**一打开**，单位 px；越界量 > 0 = 框底在滚动容器下沿之外，滚一下才看得到 —— 长页面是正常的）");
 table(
-    ["视口高", "paper top~bottom (h)", "content h / scrollH / clientH", "overflowY", "WebDAV 框 top~bottom (h)", "框 minH", "底栏顶（一打开）", "与底栏重叠（一打开）", "跑出 content 底", "跑出 paper 底"],
+    ["视口高", "paper top~bottom (h)", "面板正文 h / scrollH / clientH", "panel-body overflowY", "滚动容器 h / scrollH / clientH", "WebDAV 框 top~bottom (h)", "框 minH", "滚动容器下沿", "越过下沿（一打开）", "跑出 paper 底", "滚到底看全"],
     dialogRows
 );
 
-console.log("\n表 B-2：内容区滚动能力与命中判据（**滚到底**）");
+console.log("\n表 B-2：滚动能力与可达性（**滚到底**）。唯一算数的判据是最右那列");
 table(
-    ["视口高", "内容可滚动量", "框高", "框 flex", "框 min-height", "滚到底后 box.bottom", "滚到底后底栏顶", "content 底内侧命中", "底栏顶+2 命中"],
+    ["视口高", "面板正文可滚量", "真正滚动容器可滚量", "滚动容器 overflowY", "框高", "框 min-height", "滚到底后 box.bottom", "滚动容器下沿", "滚到底看全"],
     dialogExtra.map(d => [
         String(d.h),
         d.scrollable > 0 ? `${d.scrollable}` : "0（不可滚）",
+        d.scrollerCanScroll === null ? "—" : d.scrollerCanScroll > 0 ? `${d.scrollerCanScroll}` : "0（不可滚）",
+        String(d.scrollerOverflowY ?? "—"),
         n1(d.boxH),
-        String(d.boxFlex),
         String(d.boxMinHeight),
         d.scrolled ? n1(d.scrolled.boxBottom) : "—",
-        d.scrolled ? n1(d.scrolled.actionsTop) : "—",
-        String(d.probes.contentBottomMinus2 || "—"),
-        String(d.probes.actionsTopPlus2 || "—"),
+        d.scrolled ? n1(d.scrolled.scrollerBottom) : "—",
+        d.scrolled ? (d.scrolled.fullyVisible ? "✅ 是" : "❌ 否") : "—",
     ])
 );
 
-// 关掉中心（右上角 × 或底栏「完成」），回到导航页
+// 关掉中心（只剩右上角 ×／Esc／遮罩这三条出口，底栏「完成」2026-10-31 撤掉了）
 const closed = await evaluate(`(async () => {
   const paper = document.querySelector('[role="dialog"]');
   if (!paper) return 'no-dialog';
-  const doneBtn = [...paper.querySelectorAll('button')].find(b => (b.textContent || '').trim() === '完成');
-  const closeBtn = [...paper.querySelectorAll('button')].find(b => (b.getAttribute('aria-label') || '') === '关闭');
-  const btn = closeBtn || doneBtn;
+  const btn = [...paper.querySelectorAll('button')].find(b => (b.getAttribute('aria-label') || '') === '关闭');
   if (!btn) return 'no-close-button';
   btn.click();
   await new Promise(r => setTimeout(r, 500));

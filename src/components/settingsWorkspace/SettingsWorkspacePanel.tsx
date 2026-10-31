@@ -5,9 +5,12 @@
 //   面板标题与说明**固定**，只有正文那一段滚 ——
 //   滚长表单时「我现在改的是哪一项」这几个字得一直在视野里。
 //
-// 尺寸照规格（2026-10-29）：标题 17/600、说明 12 / 行高 1.5 / text.secondary
-// （外壳总标题也是 17，两级标题同字号会让层级含糊，靠字重与说明行区分）、
-// 正文桌面 24px、窄屏 16px。
+// 尺寸（2026-10-31 视觉收敛后）：标题 **17/600**、说明 12 / 行高 1.5 /
+// text.secondary、正文桌面 24px、窄屏 16px。
+//
+// 外壳那个「设置」已经从 17 降到 13 + text.secondary（它是窗口标签），
+// 所以这一行现在是整屏**唯一的主标题**，不再有「两层同级标题打架」的问题 ——
+// 面板内也不要再出现与它同字号（17）的行。
 import type { ReactNode } from "react";
 import Box from "@mui/material/Box";
 import Typography from "@mui/material/Typography";
@@ -31,7 +34,9 @@ export default function SettingsWorkspacePanel({
 }: SettingsWorkspacePanelProps) {
     return (
         <Box sx={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
-            <Box sx={{ flexShrink: 0, px: { xs: 2, sm: 3 }, pt: { xs: 1.5, sm: 2 }, pb: 1 }}>
+            {/* 头部内边距压紧（2026-10-31）：外层顶栏从 56 降到 48、左栏少了三个
+                分组标题，正文的起点还能再往上提 8px —— 省下来的高度直接给正文 */}
+            <Box sx={{ flexShrink: 0, px: { xs: 2, sm: 3 }, pt: { xs: 1.5, sm: 1.5 }, pb: 0.5 }}>
                 <Typography component='h3' sx={{ fontSize: 17, fontWeight: 600 }}>
                     {title}
                 </Typography>
@@ -69,7 +74,9 @@ export default function SettingsWorkspacePanel({
                         gap: 1,
                         px: { xs: 2, sm: 3 },
                         py: 1.5,
-                        borderTop: "1px solid var(--neutral-hover)",
+                        // 上描边去掉（2026-10-31）：这一行与正文之间已经有 12px 留白，
+                        // 再加一条线就是「面板里第 5 种分隔手段」——
+                        // 与 SettingsWorkspaceDialog 底栏同一处改动
                     }}
                 >
                     {actions}

@@ -13,11 +13,11 @@ import {
     Box,
     Chip,
     CircularProgress,
-    Divider,
     Typography,
 } from "@mui/material";
 import { NavigationClient } from "../API/client";
 import type { OpsStats } from "../API/methods/audit";
+import { SectionHeading } from "./dialogSection";
 import { actionLabel } from "../utils/auditActionLabels";
 import { dailySummary, deltaText, shareOf, weekOverWeek } from "../utils/statsInsights";
 import { fmtBytes } from "../utils/format";
@@ -86,13 +86,11 @@ function BarRow({ label, value, max, hint }: { label: string; value: number; max
     );
 }
 
-function SectionTitle({ children }: { children: React.ReactNode }) {
-    return (
-        <Typography variant='subtitle2' sx={{ mt: 2, mb: 1 }}>
-            {children}
-        </Typography>
-    );
-}
+// 小节标题走共用排版件（2026-10-31 收敛）：这里原来自己写了一份无竖条的
+// SectionTitle，与设置中心其它屏的「竖条 + 标题」不是一套，同屏切换就能看出差别。
+// 正文是多块并列（Chip 行、柱状图、条件分支），包不进一个 Stack，所以只用标题行；
+// 各小节之间的垂直留白靠 sx 补，不动共用件的视觉。
+const sectionGap = { mt: 2, mb: 1 };
 
 export default function StatsPanel({ client }: { client: NavigationClient }) {
     const [stats, setStats] = useState<OpsStats | null>(null);
@@ -155,7 +153,7 @@ export default function StatsPanel({ client }: { client: NavigationClient }) {
             )}
             {!loading && !error && stats && (
                 <>
-                    <SectionTitle>内容概览</SectionTitle>
+                    <SectionHeading title='内容概览' sx={sectionGap} />
                     <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1 }}>
                         <Chip size='small' label={`站点 ${stats.counts.sites}`} />
                         <Chip size='small' label={`分组 ${stats.counts.groups}`} />
@@ -166,7 +164,7 @@ export default function StatsPanel({ client }: { client: NavigationClient }) {
                         />
                     </Box>
 
-                    <SectionTitle>审计活跃（近 30 天）</SectionTitle>
+                    <SectionHeading title='审计活跃（近 30 天）' sx={sectionGap} />
                     {stats.auditDaily.some(d => d.count > 0) ? (
                         <DailyBars data={stats.auditDaily} />
                     ) : (
@@ -211,7 +209,7 @@ export default function StatsPanel({ client }: { client: NavigationClient }) {
                         </Typography>
                     )}
 
-                    <SectionTitle>高频动作（右侧为该动作占比）</SectionTitle>
+                    <SectionHeading title='高频动作（右侧为该动作占比）' sx={sectionGap} />
                     {stats.auditTopActions.length > 0 ? (
                         stats.auditTopActions.map(a => (
                             <BarRow
@@ -228,8 +226,7 @@ export default function StatsPanel({ client }: { client: NavigationClient }) {
                         </Typography>
                     )}
 
-                    <Divider sx={{ mt: 2 }} />
-                    <SectionTitle>分享浏览 Top</SectionTitle>
+                    <SectionHeading title='分享浏览 Top' sx={sectionGap} />
                     {stats.shareTop.length > 0 ? (
                         stats.shareTop.map((s, i) => (
                             <BarRow
@@ -245,8 +242,7 @@ export default function StatsPanel({ client }: { client: NavigationClient }) {
                         </Typography>
                     )}
 
-                    <Divider sx={{ mt: 2 }} />
-                    <SectionTitle>链接健康</SectionTitle>
+                    <SectionHeading title='链接健康' sx={sectionGap} />
                     {stats.health.total > 0 ? (
                         <>
                             <Box sx={{ display: "flex", gap: 1, mb: 1 }}>

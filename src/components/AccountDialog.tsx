@@ -29,6 +29,7 @@ import VpnKeyIcon from "@mui/icons-material/VpnKey";
 import PersonRemoveIcon from "@mui/icons-material/PersonRemove";
 import { PasswordField } from "./PasswordField";
 import DialogCloseButton from "./DialogCloseButton";
+import { Section } from "./dialogSection";
 import type { AccountInfo, SessionInfo } from "../API/http";
 import type { Site } from "../API/types";
 import PasswordHealthPanel from "./PasswordHealthDialog";
@@ -187,53 +188,10 @@ export interface AccountPanelProps extends AccountDialogProps {
     withDialog?: boolean;
 }
 
-/** 分组：左侧一小段主色竖条 + 组标题，可选一行组说明 */
-function Section({
-    title,
-    hint,
-    children,
-}: {
-    title: string;
-    hint?: string;
-    children: React.ReactNode;
-}) {
-    return (
-        <Box>
-            <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-                <Box
-                    sx={{
-                        width: 3,
-                        height: 14,
-                        borderRadius: 0.5,
-                        bgcolor: "primary.main",
-                        opacity: 0.75,
-                        flex: "none",
-                    }}
-                />
-                <Typography variant='subtitle2' sx={{
-                    fontWeight: '600'
-                }}>
-                    {title}
-                </Typography>
-            </Box>
-            {hint ? (
-                <Typography
-                    variant='caption'
-                    sx={{
-                        color: 'text.secondary',
-                        display: "block",
-                        mt: 0.25,
-                        ml: "11px"
-                    }}>
-                    {hint}
-                </Typography>
-            ) : null}
-            <Stack spacing={1.25} sx={{ mt: 1.25 }}>
-                {children}
-            </Stack>
-        </Box>
-    );
-}
+// ⚠️ 这里原来有一份与 components/dialogSection.tsx **逐字重复**的 Section。
+// 2026-10-31 收敛成一份：四套并行的小节排版件（这里 / dialogSection / StatsPanel /
+// PasswordHealthDialog）只差竖条与留白，同屏出现就是「小标题长得不一样」。
+// 守卫：tests/dialogSectionUniqueness.test.ts
 
 /** 窄屏堆叠、宽屏并排的两列栅格 */
 function TwoCol({ children }: { children: React.ReactNode }) {
@@ -431,7 +389,9 @@ export function AccountPanel({
                 )}
 
                 {tab === 0 ? (
-                <Stack spacing={2} divider={<Divider />}>
+                // 小节之间用留白分隔（20px），不画线：一条线 + 一点留白会让
+                // 一屏里出现七八条横线，看着像表格而不是表单（2026-10-31）
+                <Stack spacing={2.5}>
                     {/* 1. 账号与密码 */}
                     <Section
                         title='账号与密码'
@@ -873,7 +833,7 @@ export function AccountPanel({
                     ) : null}
                 </Stack>
                 ) : (
-                    <Stack spacing={2} divider={<Divider />}>
+                    <Stack spacing={2.5}>
                         {/* 密码健康：把各站点已存的登录凭据过一遍（重复/弱/久未改）—— 方案 A。
                             2026-10-25 从「设置」独立弹窗挪进「账号与安全」；
                             同日按用户要求拆成独立分页（参考「数据备份与恢复」的备份/恢复 Tab），

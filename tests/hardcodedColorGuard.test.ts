@@ -211,6 +211,7 @@ test("新增的 token 必须在亮暗两套主题里都有定义（否则暗色�
         "--logo-plate",
         "--logo-plate-border",
         "--accent-wash",
+        "--accent-on-wash",
         "--scrim",
         "--on-scrim",
         "--on-accent",
@@ -247,6 +248,9 @@ test("新增的 token 必须在亮暗两套主题里都有定义（否则暗色�
         "--logo-plate",
         "--logo-plate-border",
         "--on-accent",
+        // 淡底上的文字色：亮色是 #1565c0、暗色跟随 --accent-op，
+        // 两态必须分开给值（亮色那个深蓝压暗底约 2.4:1，等于看不见）
+        "--accent-on-wash",
     ]) {
         assert.ok(
             new RegExp(`^\\s*${name}\\s*:`, "m").test(darkBlock),

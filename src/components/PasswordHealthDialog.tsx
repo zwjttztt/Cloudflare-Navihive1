@@ -17,7 +17,6 @@ import { useMemo, useState } from "react";
 import {
     Box,
     Chip,
-    Divider,
     InputAdornment,
     Stack,
     TextField,
@@ -29,6 +28,7 @@ import VpnKeyIcon from "@mui/icons-material/VpnKey";
 import WarningAmberIcon from "@mui/icons-material/WarningAmber";
 import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import type { Site } from "../API/types";
+import { Section } from "./dialogSection";
 import { analyzeCredentials, type CredentialEntry, type HealthReport } from "../utils/passwordHealth";
 
 export interface PasswordHealthPanelProps {
@@ -53,17 +53,6 @@ function scoreColor(score: number): "error" | "warning" | "success" {
     if (score <= 1) return "error";
     if (score === 2) return "warning";
     return "success";
-}
-
-function SectionTitle({ icon, children }: { icon?: React.ReactNode; children: React.ReactNode }) {
-    return (
-        <Stack direction='row' spacing={1} sx={{ mt: 0.5, alignItems: "center" }}>
-            {icon}
-            <Typography variant='subtitle2' sx={{ fontWeight: 700 }}>
-                {children}
-            </Typography>
-        </Stack>
-    );
 }
 
 /**
@@ -148,19 +137,14 @@ export default function PasswordHealthPanel({ sites }: PasswordHealthPanelProps)
                 </Box>
             )}
 
-            <Divider />
-
             {/* ① 重复密码 */}
-            <Box>
-                <SectionTitle icon={<ContentCopyIcon fontSize='small' color='action' />}>
-                    重复密码
-                </SectionTitle>
+            <Section title='重复密码' icon={<ContentCopyIcon fontSize='small' color='action' />}>
                 {report.duplicates.length === 0 ? (
-                    <Typography variant='body2' color='text.secondary' sx={{ mt: 0.5 }}>
+                    <Typography variant='body2' color='text.secondary'>
                         没有一码多用，很好。
                     </Typography>
                 ) : (
-                    <Stack spacing={1} sx={{ mt: 0.5 }}>
+                    <Stack spacing={1}>
                         {report.duplicates.map((g, i) => (
                             <Box key={i} sx={{ p: 1, borderRadius: 1, bgcolor: "action.hover" }}>
                                 <Stack direction='row' spacing={1} sx={{ alignItems: "center", flexWrap: "wrap" }}>
@@ -183,19 +167,16 @@ export default function PasswordHealthPanel({ sites }: PasswordHealthPanelProps)
                         ))}
                     </Stack>
                 )}
-            </Box>
+            </Section>
 
             {/* ② 弱口令 */}
-            <Box>
-                <SectionTitle icon={<WarningAmberIcon fontSize='small' color='action' />}>
-                    弱口令
-                </SectionTitle>
+            <Section title='弱口令' icon={<WarningAmberIcon fontSize='small' color='action' />}>
                 {report.weak.length === 0 ? (
-                    <Typography variant='body2' color='text.secondary' sx={{ mt: 0.5 }}>
+                    <Typography variant='body2' color='text.secondary'>
                         没有检测到弱口令。
                     </Typography>
                 ) : (
-                    <Stack spacing={0.75} sx={{ mt: 0.5 }}>
+                    <Stack spacing={0.75}>
                         {report.weak.map(w => (
                             <Stack key={w.id} spacing={0.25}>
                                 <Stack direction='row' spacing={1} sx={{ alignItems: "center" }}>
@@ -217,17 +198,16 @@ export default function PasswordHealthPanel({ sites }: PasswordHealthPanelProps)
                         ))}
                     </Stack>
                 )}
-            </Box>
+            </Section>
 
             {/* ③ 久未改 */}
-            <Box>
-                <SectionTitle>久未改（超过 {report.staleDays} 天）</SectionTitle>
+            <Section title={`久未改（超过 ${report.staleDays} 天）`}>
                 {report.stale.length === 0 ? (
-                    <Typography variant='body2' color='text.secondary' sx={{ mt: 0.5 }}>
+                    <Typography variant='body2' color='text.secondary'>
                         没有长期未改动的密码。
                     </Typography>
                 ) : (
-                    <Stack spacing={0.5} sx={{ mt: 0.5 }}>
+                    <Stack spacing={0.5}>
                         {report.stale.map(s => (
                             <Stack key={s.id} direction='row' spacing={1} sx={{ alignItems: "center" }}>
                                 <Typography variant='body2' sx={{ fontWeight: 600 }}>
@@ -238,7 +218,7 @@ export default function PasswordHealthPanel({ sites }: PasswordHealthPanelProps)
                         ))}
                     </Stack>
                 )}
-            </Box>
+            </Section>
 
             <Typography variant='caption' color='text.secondary'>
                 提示：改密码请进对应卡片的「网站设置」；新设密码可顺手点输入框里的

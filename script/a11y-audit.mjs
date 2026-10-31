@@ -12,6 +12,15 @@
 // 焦点可见性也是判据（用 CDP 发真 Tab 键触发 :focus-visible，见第 4 节）。
 //   - 滚动帧耗时 / 堆内存：CI 机器性能差异太大，钉死阈值只会偶发假红。
 //
+// 覆盖面（2026-10-31 起三段）：首页 → 记事本 → **设置中心**。
+// 加第三段的理由：中心是另一个 Modal 外壳 + 左栏导航（`Box component="button"`，
+// 行高随视口在 36/44 之间切），前面的「弹窗」一节只看命令面板（Ctrl+K），
+// 中心那一整套从没被量过 —— 行高从 44 压到 36 那次，判据只能靠人肉确认。
+//
+// ⚠️ 每一段都 **fail-closed**：入口找不到 / 界面没渲染出来 → 报红并写明「没测到」，
+//    绝不静默跳过。一条会悄悄不跑的审计比没有审计更糟：它的绿灯会被当成
+//    「量过了且没问题」。
+//
 // 用法：npm run audit:a11y（需要先 npm run build；CHROME_PATH 可指定浏览器）
 
 import { DIST, ROOT, openBrowser, startSiteServer, waitRendered } from "./auditEnv.mjs";
@@ -101,9 +110,18 @@ const SCAN_A11Y = `(() => {
   return { buttons: q('button').length, noNameBtns, imgs: q('img').length, noAltImgs, inputsNoLabel, focusables, negTab, h1, land };
 })()`;
 
-/** 触控目标尺寸（判 24px = WCAG 2.5.8；24~31px 只提示不判失败） */
-const SCAN_TOUCH = `(() => {
-  const els = [...document.querySelectorAll('button, a[href], [role="button"], [role="option"]')];
+/**
+ * 触控目标尺寸（判 24px = WCAG 2.5.8；24~31px 只提示不判失败）。
+ *
+ * 提成函数而不是一个常量，是为了让「设置中心」那一段能**限定在弹窗里**扫：
+ * 中心打开时首页的按钮仍在 DOM 里（只是被 Modal 盖住），整页扫会把两套界面
+ * 混成一个数，「中心里 11 个」这种结论就说不出来了。
+ * 判据只有一份实现 —— 各写一遍迟早漂移，漂移之后的绿灯说明不了任何事。
+ */
+const scanTouch = scopeSelector => `(() => {
+  const root = ${scopeSelector ? `document.querySelector(${JSON.stringify(scopeSelector)}) || null` : "document"};
+  if (!root) return { total: 0, tooSmall: 0, samples: [], borderline: 0, warnSamples: [], missing: true };
+  const els = [...root.querySelectorAll('button, a[href], [role="button"], [role="option"]')];
   const small = [], warn = [];
   for (const el of els) {
       const r = el.getBoundingClientRect();
@@ -249,7 +267,7 @@ console.log(JSON.stringify(a11y, null, 1));
 
 // ---------- 2. 触控目标尺寸（桌面视口 1440）----------
 // 判定线 WCAG 2.5.8 的 24px；24~31px 只提示不判失败（卡片浮层控件按用户要求收小过）
-const touch = await evaluate(SCAN_TOUCH);
+const touch = await evaluate(scanTouch());
 console.log("=== 触控目标（判定线 24px = WCAG 2.5.8）===");
 console.log(`   可点元素 ${touch.total} 个：低于 24px 的 ${touch.tooSmall} 个，24~31px 的 ${touch.borderline} 个`);
 for (const s of touch.samples) {
@@ -483,7 +501,7 @@ const notesA11y = await evaluate(SCAN_A11Y);
 console.log("=== 记事本：可访问性 ===");
 console.log(JSON.stringify(notesA11y, null, 1));
 
-const notesTouch = await evaluate(SCAN_TOUCH);
+const notesTouch = await evaluate(scanTouch());
 console.log("=== 记事本：触控目标 ===");
 console.log(
     `   可点元素 ${notesTouch.total} 个：低于 24px 的 ${notesTouch.tooSmall} 个，24~31px 的 ${notesTouch.borderline} 个`
@@ -502,6 +520,83 @@ console.log(JSON.stringify(notesBroken, null, 1));
 const notesFocus = await focusSweep(30);
 console.log("=== 记事本：焦点可见性 ===");
 notesFocus.forEach(f => console.log("  ", f.visible ? "ok  " : "MISS", JSON.stringify(f)));
+
+// ---------- 设置中心：触控目标（2026-10-31 加）----------
+//
+// 为什么单独一段：设置中心是**又一个 Modal 外壳**（左栏分组导航 + 右栏面板），
+// 左栏那 9 条是 `Box component="button"` 而不是 MUI List，行高还随视口在 36 / 44
+// 之间切（桌面紧凑 36、窄屏触控 44）—— 前面的「弹窗」一节只看命令面板（Ctrl+K），
+// 这一整套从来没被任何自动审计量过。行高从 44 压到 36 那次，判据只能靠人肉确认，
+// 这就是补它的理由。
+//
+// ⚠️ **fail-closed**：打不开中心、或左栏没渲染出来，一律报红并写明「没测到」。
+//    静默跳过等于把「没量过」印成「量过且没问题」，比没有审计更糟。
+await evaluate(`location.href = ${JSON.stringify(site.url)}`);
+await waitRendered(evaluate, { minButtons: 8, timeoutMs: 20_000 });
+
+const centerOpened = await evaluate(`(() => {
+    // 选择器必须精确：「显示设置」/「网站设置」都含「设置」二字，includes 会点错；
+    // 窄屏下顶栏那颗是 display:none，能点的其实是底栏那颗，所以要跳过不可见节点。
+    const vis = el => {
+        const s = getComputedStyle(el);
+        const r = el.getBoundingClientRect();
+        return s.display !== 'none' && s.visibility !== 'hidden' && r.width > 0 && r.height > 0;
+    };
+    const btn = [...document.querySelectorAll('button,[role="button"]')].filter(vis)
+        .find(b => (b.textContent || '').trim() === '设置'
+                || (b.getAttribute('aria-label') || '').trim() === '设置');
+    if (!btn) return 'no-center-button';
+    btn.click();
+    return 'clicked';
+})()`);
+if (centerOpened !== "clicked") {
+    console.error(
+        `设置中心打不开（${centerOpened}）—— 顶栏「设置」选择器漂了，这一节没测到，` +
+            "审计结果不可信（宁可红也别静默跳过）"
+    );
+    site.close();
+    done(1);
+}
+// 中心外壳与九个面板是两级 lazy；左栏条目数才是「真的渲染出来了」的判据
+const CENTER_MIN_NAV = 8;
+{
+    const deadline = Date.now() + 20_000;
+    let navCount = 0;
+    while (Date.now() < deadline) {
+        navCount = await evaluate(`document.querySelectorAll('[data-workspace-nav]').length`);
+        if (navCount >= CENTER_MIN_NAV) break;
+        await new Promise(r => setTimeout(r, 250));
+    }
+    if (!(navCount >= CENTER_MIN_NAV)) {
+        console.error(
+            `设置中心左栏没渲染出来（[data-workspace-nav] ${navCount} 条，` +
+                `至少要 ${CENTER_MIN_NAV} 条）—— 这一节没测到，审计结果不可信`
+        );
+        site.close();
+        done(1);
+    }
+}
+
+// 只扫弹窗内部：中心打开时首页的按钮还在 DOM 里（被 Modal 盖住），整页扫会把
+// 两套界面混成一个数，「中心里到底几个」就说不出来了
+const centerTouch = await evaluate(scanTouch('[role="dialog"]'));
+if (centerTouch.missing) {
+    console.error("设置中心没有 [role=\"dialog\"] 外壳 —— 这一节没测到，审计结果不可信");
+    site.close();
+    done(1);
+}
+console.log("=== 设置中心：触控目标 ===");
+console.log(
+    `   可点元素 ${centerTouch.total} 个：低于 24px 的 ${centerTouch.tooSmall} 个，24~31px 的 ${centerTouch.borderline} 个`
+);
+for (const s of centerTouch.samples) {
+    console.log(
+        `   ${String(s.w).padStart(4)}×${String(s.h).padStart(3)}  「${s.label}」  .${s.cls}  (父 .${s.parent})`
+    );
+}
+for (const s of centerTouch.warnSamples) {
+    console.log(`   ~ ${String(s.w).padStart(4)}×${String(s.h).padStart(3)}  「${s.label}」  .${s.cls}`);
+}
 
 // ---------- 判定 ----------
 const failures = [];
@@ -538,6 +633,11 @@ if (notesNoRing.length > 0) {
     failures.push(
         `记事本：焦点环不可见 ${notesNoRing.length} 个：${notesNoRing.slice(0, 3).map(f => `${f.tag}「${f.label}」`).join(" / ")}`
     );
+}
+
+// 设置中心：同一把尺子（< 24px 就是 WCAG 2.5.8 违规；24~31px 只提示）
+if (centerTouch.tooSmall > 0) {
+    failures.push(`设置中心：触控目标小于 24px 的 ${centerTouch.tooSmall} 个`);
 }
 
 console.log("");

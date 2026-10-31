@@ -9,7 +9,9 @@
 //   2. **出现条件**：审计日志只给 owner、账号与安全 / 退出登录只在登录后。
 //      少一个判断不会崩，只是「普通账号点进去看到一句 403」或「没登录也有退出登录」；
 //   3. **退出登录要二次确认**：原来菜单里点一下就退，没有回头的机会；
-//   4. **关闭只有一个出口**：× 与底栏「完成」走同一个回调。
+//   4. **关闭只有一个出口**：× 与 Esc 走同一个回调。
+//      （底栏那颗「完成」2026-10-31 撤掉了 —— 它不是保存，是第二个关闭按钮，
+//      却占掉一整条 44px + 一条描边；关闭出口仍有 × / Esc / 点遮罩三个。）
 //   5. **面板必须内联**：「全站设置」「账号与安全」在中心右栏直接渲染业务体，
 //      不许再套一层 Dialog。转发层要是拿了默认导出（`withDialog` 被硬写成 true），
 //      页面上就会叠出第二个 role=dialog —— 手点才看得出来，单测必须钉住。
@@ -154,6 +156,18 @@ const navItems = () =>
         el => el.dataset.workspaceNav ?? ""
     );
 
+/** 按 Esc：MUI 把 keydown 绑在 Modal 根节点上（不是 document），得往弹窗里派发再冒泡 */
+async function pressEscape() {
+    const dialog =
+        document.querySelector<HTMLElement>('[role="dialog"]') ??
+        document.querySelector<HTMLElement>(".MuiDialog-root") ??
+        document;
+    await act(async () => {
+        dialog.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+        await new Promise(r => setTimeout(r, 0));
+    });
+}
+
 async function click(el: HTMLElement | null) {
     assert.ok(el, "要点的元素不存在");
     await act(async () => {
@@ -246,7 +260,7 @@ test("退出登录：点一下只弹确认，不直接退出", async t => {
     assert.deepEqual(log, ["onClose", "onLogout"], "确认后才退出，且先收起中心");
 });
 
-test("关闭只有一个出口：× 与底栏「完成」都走 onClose", async t => {
+test("关闭只有一个出口：× 与 Esc 都走 onClose", async t => {
     t.after(cleanup);
     const { props, log } = makeProps();
     await mount(props);
@@ -255,8 +269,16 @@ test("关闭只有一个出口：× 与底栏「完成」都走 onClose", async 
     assert.deepEqual(log, ["onClose"], "右上角 × 走 onClose");
 
     log.length = 0;
-    await click(document.querySelector<HTMLElement>("[data-nav-center-done='1']"));
-    assert.deepEqual(log, ["onClose"], "底栏「完成」走同一个 onClose");
+    await pressEscape();
+    assert.deepEqual(log, ["onClose"], "Esc 走同一个 onClose");
+
+    // 反证：底栏那颗「完成」已经不在了 —— 它要是在，上面的「只有一个出口」
+    // 就是假的（多一个实质相同的出口，还白占 44px）
+    assert.equal(
+        document.querySelector("[data-nav-center-done='1']"),
+        null,
+        "底栏「完成」按钮已撤掉，不该再出现"
+    );
 });
 
 test("隐藏当前选中项时自动回退到第一个可见项（不留空面板）", async t => {

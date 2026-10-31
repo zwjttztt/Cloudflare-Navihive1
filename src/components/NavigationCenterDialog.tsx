@@ -21,7 +21,6 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import Box from "@mui/material/Box";
-import Button from "@mui/material/Button";
 import ChunkBoundary from "./ChunkBoundary";
 import ConfirmDialogGate from "./ConfirmDialogGate";
 import SettingsWorkspaceDialog from "./settingsWorkspace/SettingsWorkspaceDialog";
@@ -64,7 +63,7 @@ const ShortcutsPanel = lazy(() => import("./navigationCenter/panels/ShortcutsPan
 
 export interface NavigationCenterDialogProps {
     open: boolean;
-    /** 关闭中心（× / Esc / 遮罩 / 底栏完成都走这一条） */
+    /** 关闭中心（× / Esc / 遮罩都走这一条） */
     onClose: () => void;
     /**
      * 打开时默认选中哪个面板。
@@ -223,17 +222,11 @@ export default function NavigationCenterDialog({
                         }}
                     />
                 }
-                actions={
-                    <Button
-                        variant='contained'
-                        size='small'
-                        onClick={onClose}
-                        data-nav-center-done='1'
-                        sx={{ minHeight: 44 }}
-                    >
-                        完成
-                    </Button>
-                }
+                // 不传 actions（2026-10-31）：这一屏里绝大多数改动是即时的，
+                // 没有「保存」语义，那颗「完成」实质是第二个关闭按钮 ——
+                // 却占掉一整条 44px + 一条描边。关闭出口仍有三个：右上角 ×、
+                // Esc、点遮罩；窄屏第二步另有「全部选项」返回。
+                // 外壳的 actions 仍是可选属性，别的中心将来要用还能传。
             >
                 <SettingsWorkspacePanel
                     title={activeItem?.label ?? "设置"}

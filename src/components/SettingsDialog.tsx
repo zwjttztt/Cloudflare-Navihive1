@@ -238,7 +238,7 @@ export function ConfigPanel({
                         </Alert>
                     ) : null}
                     {tab === 0 ? (
-                    <Stack spacing={2} divider={<Divider />}>
+                    <Stack spacing={2.5}>
                         {/* 1. 基本信息：最常改，放最上面 */}
                         <Section title='基本信息'>
                             <TwoCol>
@@ -564,10 +564,10 @@ export function ConfigPanel({
                         </Section>
 
                         {/* 4. 图标与缩略图：两个 URL 模板，规则相似，并排放 */}
-                        <Section
-                            title='图标与缩略图'
-                            hint='支持占位符，留空用默认值。'
-                        >
+                        {/* hint 删于 2026-10-31：两个字段的 helperText 已逐字讲了
+                            占位符与「留空」语义，段落级再说一遍只是多一段字
+                            （见下方 {domain} 与 {url}/{domain}/{origin} 两处） */}
+                        <Section title='图标与缩略图'>
                             <TwoCol>
                                 <TextField
                                     margin='dense'
@@ -637,12 +637,12 @@ export function ConfigPanel({
 
                     </Stack>
                     ) : tab === 1 ? (
-                    <Stack spacing={2} divider={<Divider />}>
+                    <Stack spacing={2.5}>
                         {/* 5.5 离线与缓存（图标隐私已挪进「图标与缩略图」，它管的是同一件事） */}
-                        <Section
-                            title='离线与缓存'
-                            hint='默认按需加载，首屏更快、更省流量。'
-                        >
+                        {/* hint 删于 2026-10-31：开关的 caption 已经写明
+                            「预下载全部功能代码…首次多下载约几百 KB」，
+                            段落级只多一句「默认按需加载」 */}
+                        <Section title='离线与缓存'>
                             <SwitchRow
                                 checked={offlineFull}
                                 onChange={onOfflineFullChange}
@@ -653,16 +653,16 @@ export function ConfigPanel({
                         </Section>
 
                         {/* 6. 数据同步：两项都是可选，默认关（关着的时候数据只在本机，不上传） */}
-                        <Section
-                            title='数据同步'
-                            hint='关闭时数据只存本机；打开后写入服务端，可跨设备查看。'
-                        >
+                        {/* hint 删于 2026-10-31：原本那句「关闭时数据只存本机；
+                            打开后写入服务端，可跨设备查看」讲的是**数据去哪儿**，
+                            删掉不能凭空消失 —— 已挪进下面第一个开关的 caption */}
+                        <Section title='数据同步'>
                             <SwitchRow
                                 checked={syncHealth}
                                 onChange={onSyncHealthChange}
                                 label='失效检测结果'
                                 ariaLabel='同步失效检测结果'
-                                caption='同步失效链接的白名单，换设备不用重测。'
+                                caption='同步失效链接的白名单，换设备不用重测。关着时这些结果只存本机。'
                             />
                             <SwitchRow
                                 checked={syncPrefs}
@@ -707,10 +707,9 @@ export function ConfigPanel({
                             都是全站共享配置 —— 服务端只认站点所有者，这里同步禁用并说明原因。
                             沉睡治理两个阈值（v3.1.1 按用户要求恢复给所有者配置）：普通账号
                             仍会被自动停用/清除，所有者本人永不被治理，但阈值归所有者调。 */}
-                        <Section
-                            title='数据保留'
-                            hint='设定审计日志、回收站与沉睡账号的保留天数。'
-                        >
+                        {/* hint 删于 2026-10-31：三个字段的 helperText 各自写了
+                            范围与后果，这一段只是把下面三个标签再复述一遍 */}
+                        <Section title='数据保留'>
                             {!isSiteOwner ? (
                                 <Alert severity='info' sx={{ mb: 1 }}>
                                     这几项是全站设置，只有站点所有者可以修改；保存时服务端也会拒绝。
@@ -775,9 +774,11 @@ export function ConfigPanel({
 
                     </Stack>
                     ) : (
-                    <Stack spacing={2} divider={<Divider />}>
+                    <Stack spacing={2.5}>
                         {/* 8. 高级 */}
-                        <Section title='高级' hint='直接注入页面，写错可能影响显示。'>
+                        {/* hint 删于 2026-10-31：那句「直接注入页面，写错可能影响显示」
+                            属于**删了会误操作**的信息，所以没删 —— 降成字段 helperText */}
+                        <Section title='高级'>
                             <TextField
                                 margin='dense'
                                 size='small'
@@ -792,6 +793,7 @@ export function ConfigPanel({
                                 value={tempConfigs["site.customCss"]}
                                 onChange={onConfigInputChange}
                                 placeholder={'/* 自定义样式 */\nbody { }'}
+                                helperText='直接注入页面，写错可能影响显示。'
                             />
                         </Section>
                         {/* 9. 版本与升级：显示当前运行版本 + 检查 GitHub 最新版本。
