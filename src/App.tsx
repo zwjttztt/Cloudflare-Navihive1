@@ -55,6 +55,7 @@ import { useAiAssistant, useSiteAiMeta } from "./hooks/useAiAssistant";
 import { AiContext } from "./context/AiContext";
 import { useAppDialogs } from "./hooks/useAppDialogs";
 import { useThemeController } from "./hooks/useThemeController";
+import { useOverlayScrollLock } from "./hooks/useOverlayScrollLock";
 import { useSortController } from "./hooks/useSortController";
 import { useSiteCreator } from "./hooks/useSiteCreator";
 import { useBookmarkImport } from "./hooks/useBookmarkImport";
@@ -473,6 +474,10 @@ function App() {
 
     // 创建Material UI主题（放在 configs 之后，才能读到自定义主色）
     const { themeMode, setThemeMode, darkMode, toggleTheme, theme } = useThemeController(accent);
+
+    // 全站弹层背景滚动锁：observer 跟随 App 生命周期常驻，统一管理所有弹层的 html
+    // overflow 锁定 / 还原（避免背景在任意弹层打开时还能被滚轮滚动）。
+    useOverlayScrollLock();
 
     // 配置传感器，支持鼠标、触摸和键盘操作
     const sensors = useSensors(

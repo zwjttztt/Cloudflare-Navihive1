@@ -6,6 +6,18 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。
 
+## 2026-10-31 · 修复：弹层打开时背景页面不再跟着滚（23.3.0）
+
+用户报「打开设置弹窗滚动滚轮外面的页面还是会上下移动」。排查发现不是设置弹窗一个的问题——全站所有弹层（32+ 个弹窗、抽屉、菜单、气泡）都没锁背景滚动，一处根因、一次性修齐。
+
+1. **根因**：本站滚动容器是 viewport（`html` 的 overflow 传播到 viewport），而 `useThemeController` 出于「锁滚动收走滚动条会引发 10px 宽度抖动、撞 900px 断点让顶栏重排」的老问题，把 MUI 全部弹层组件的 `disableScrollLock` 一刀切设成了 `true`——滚动锁彻底关死。且 MUI 内置锁只碰 `body`，对这种「html 传播到 viewport」的滚动本来就锁不住，所以即便打开它也救不了。
+
+2. **修法**：新增 App 顶层常驻的 `useOverlayScrollLock`——一个 MutationObserver 盯着 body，只要出现任意 `.MuiModal-root / .MuiDrawer-root / .MuiPopover-root / .MuiMenu-root`（tooltip 除外），就对 `html` 做「`overflow:hidden` + 等宽 padding 补偿」，最后一个弹层关掉才还原。宽度零变化：`index.css` 的 `scrollbar-gutter: stable` 始终预留滚动条槽位，锁定瞬间槽位塌缩、padding 恰好补回，净零位移——**不会**重蹈 900px 断点重排的覆辙，老的 `disableScrollLock` 决策可以继续保留。
+
+3. **所有权规则（防永久锁死）**：`html` 的 overflow 另有一位所有者——记事本页面（`NotesPageShell` 是 `position:fixed` 的普通 div，不是 MUI Modal，observer 看不见它）靠自带的 `useScrollLock` 锁 html+body，保持原样不动。全局锁上锁瞬间若发现 overflow 已是 `hidden`，就只跟随不接管：解锁时不写回，还原权归原主。否则会把记事本记录的 prev 污染成 `hidden`——记事本先卸载、observer 随后解锁的那一拍就会把 `hidden` 写回，整站永久锁死。这条回归线由新测试钉死（`tests/overlayScrollLock.dom.test.tsx`，含嵌套弹层「最后一个关掉才还原」与「与自有锁共存」两条）。
+
+4. **覆盖面**：设置中心、全部导航站弹窗、笔记站内所有 Dialog/Drawer/Menu/Popover、移动端 fullScreen 弹窗——打开期间背景一律不可滚，关闭后立即还原。`disableScrollLock:true` 保留（MUI 不去碰 body，避免与 lightbox 的 body 锁相互污染）。
+
 ## 2026-10-31 · 修复：笔记暗色选中强调色对比度达标（23.2.1）
 
 QA 把 `audit:contrast` 的暗色扫描修对后（之前主题漂移、实际量的是亮色，整段假绿），门禁从假绿变真红，抓出一处真实缺陷。
