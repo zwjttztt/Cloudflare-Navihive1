@@ -879,8 +879,27 @@ async function dockerEnsureRunning(): Promise<void> {
  * （升级失败时另一条路径已经在 runUpgraderContainer 里删过了）。
  * 只管带 `com.navihive.upgrader=1` 标签、且**不在运行**的容器：
  * 删正在跑的那个会把升级现场弄丢，而删别人的容器是绝对不行的。
+ *
+ * ⚠️ 只在 docker-api 模式下有意义：spool 模式的收尾归宿主上的 upgrader 服务，
+ * 本进程在那儿根本不会创建 helper 容器（见函数体内第一段注释）。
  */
 async function cleanupUpgraderContainer(): Promise<void> {
+    // spool 模式直接收工（2026-10-31 修）：本进程在 spool 模式下**从不创建** helper 容器 ——
+    // 带 `com.navihive.upgrader=1` 标签的只可能来自下面那条 Docker API 路径
+    // （runUpgraderContainer 创建时贴的 Labels）。spool 的收尾归宿主上的 upgrader 服务
+    // （docker-compose.yml 的 `upgrader`，长驻轮询 /spool/request，自己 rm 请求文件），
+    // 而它连标签都没有，就算连得上 daemon 也筛不出来。
+    //
+    // 为什么不能靠 `dockerAvailable()` 兜：它在 spool 模式下**恒为 true** —— 那是
+    // 「这个部署形态支不支持网页升级」的判据，不是「本进程连不连得上 daemon」的判据。
+    // 沿用它就会去连 compose 故意没挂进来的 /var/run/docker.sock，健康启动也刷一条
+    // `connect ENOENT /var/run/docker.sock` 的 warn —— 看起来像故障，实际只是走错了通道。
+    //
+    // 也不顺手清 /spool 里的文件：`request` 是「待执行命令」（升级器读走立刻 rm，
+    // 我们删掉等于静默取消一次升级）、`state.json` 是升级器写的进度（删了会让
+    // GET /api/system/upgrade 在升级中途退回 idle）、`request.tmp` 还可能与并发的
+    // 写入抢 rename。这三样都不归本进程管。
+    if (spoolEnabled()) return;
     if (!dockerAvailable()) return;
     try {
         const filters = encodeURIComponent(JSON.stringify({ label: ["com.navihive.upgrader=1"] }));

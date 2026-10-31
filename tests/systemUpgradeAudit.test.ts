@@ -269,3 +269,42 @@ test("entry.ts：审计写在响应之前（容器随时会被换掉，不能留
     assert.match(block, /await writeUpgradeAudit\(/, "审计必须 await 完再响应");
     assert.doesNotMatch(block, /void writeUpgradeAudit\(/, "审计不能 fire-and-forget");
 });
+
+// ============ 八、启动家务：spool 模式不许去连 docker.sock（2026-10-31 生产假警报） ============
+//
+// 现象：23.0.0 在 spool 形态（compose 故意不挂 /var/run/docker.sock）下，健康启动会打
+//   `[upgrade] 清理 helper 容器失败（不影响运行）: Error: connect ENOENT /var/run/docker.sock`
+// 根因：cleanupUpgraderContainer 只判 `dockerAvailable()`，而它在 spool 模式下**恒为 true**
+//   （那是「支不支持网页升级」的判据，不是「连不连得上 daemon」的判据），于是走进了
+//   这条模式根本不该用的 Docker API 通道。
+//
+// 这里钉的是**结构事实**，不是文案：spool 判定必须出现在函数体最前面、且排在 Docker API
+// 调用之前。谁把 early return 挪到后面（或删掉），这条立刻红 —— 否则下次又是「健康启动刷
+// 一条看起来像故障的 warn」，而没有任何东西会报错。
+
+test("entry.ts：cleanupUpgraderContainer 在 spool 模式下直接收工（不许去连没挂进来的 docker.sock）", () => {
+    // 换行统一成 LF：仓库里这份源码是 CRLF（Windows 检出），不归一化就切不出函数体
+    const src = readSrc("server/entry.ts").replace(/\r\n/g, "\n");
+
+    const at = src.indexOf("async function cleanupUpgraderContainer(");
+    assert.ok(at > 0, "找不到 cleanupUpgraderContainer（改名了？这条守卫要跟着走）");
+
+    // 函数体：顶层函数以行首 `}` 收尾，按它切最稳（不依赖缩进与后续函数名）
+    const end = src.indexOf("\n}\n", at);
+    assert.ok(end > at, "切不出 cleanupUpgraderContainer 的函数体");
+    const body = src.slice(at, end);
+
+    const spoolAt = body.indexOf("if (spoolEnabled()) return;");
+    const dockerAt = body.indexOf("dockerApi(");
+
+    assert.ok(spoolAt > 0, "spool 模式下必须先 early return —— 少了它，健康启动就会去打一条 ENOENT warn");
+    assert.ok(dockerAt > spoolAt, "spool 判定必须排在 dockerApi 调用之前（顺序反了 = 等于没修）");
+
+    // 反向确认：这条守卫不是因为「函数被删空」才通过的 —— docker-api 模式的收尾还得在
+    assert.match(body, /com\.navihive\.upgrader=1/, "仍要按标签筛，别把 docker-api 模式的收尾一起删掉");
+    assert.ok(
+        body.indexOf("if (!dockerAvailable()) return;") > spoolAt,
+        "dockerAvailable() 不能挡在 spool 判定前面：它在 spool 模式下恒为 true，挡不住任何东西"
+    );
+});
+

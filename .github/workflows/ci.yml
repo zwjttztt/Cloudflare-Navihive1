@@ -1,9 +1,36 @@
-# 持续集成：类型检查 → 纯函数单测 → 构建 → 浏览器冒烟。
+# 持续集成：四个并行 job + 一个汇总判定。
+#
+# 2026-10-31 拆分，依据是 CI #41159720927 的**实测逐步骤耗时**（拆分前是单 job 26 步串行，整场 712s）：
+#   覆盖率分层门禁 278s｜纯函数单测 154s｜npm ci 49s｜浏览器冒烟 38s｜构建 35s｜类型检查 31s｜
+#   代码规范 29s｜视觉回归 19s｜可访问性审计 14s｜严格下标守卫 13s｜首屏体感审计 11s｜
+#   定时任务 e2e 9s｜对比度审计 6s｜gitleaks 4s｜其余（六条 e2e / 探针 / 依赖巡检 / 体积预算）各 1~3s。
+#
+# 结论有点反直觉：**时间大头不是 e2e**（七条 e2e 加起来只有 21s），而是覆盖率与单测这两支
+# 长杆 —— 两者相加占整场 61%。所以拆分依据是「这条检查需不需要构建产物、彼此有没有依赖」，
+# 不是「按功能把 e2e 摊开」：把 2s 的活挪到别的 runner 上，省下来的只是 runner 启动时间。
+#
+#   ① lint_and_types  静态检查（密钥 / 依赖漏洞 / 类型 / 严格下标 / 代码规范）   ~130s
+#   ② unit            纯函数单测                                            ~205s
+#   ③ coverage        覆盖率两层门禁（拆分后的关键路径）                       ~330s
+#   ④ build_and_e2e   需要构建产物的一切（构建 → 体积 → 六条 e2e → 五条审计）   ~195s
+#   ⑤ verify          只汇总判定，不跑检查（**沿用原 job 名**，别改）
+#
+# job id 一律用下划线：`needs.<id>.<prop>` 里的连字符在 GitHub Actions 表达式里
+# 有被当成减号解析的风险，一旦不被接受就是整份工作流解析失败、一个 job 都不跑。
+# 可读性由各 job 的中文 `name:` 承担（Actions 页面显示的是 name，不是 id）。
+#
+# 拆分不改语义：26 个步骤一步不少，命令 / env / continue-on-error 全部照抄。特别注意：
+#   · gitleaks 仍在 npm ci **之前**（理由见那一步的注释）；
+#   · NAVIHIVE_STRICT_D1 仍**逐步骤**声明，不提到 job 级 —— 提到 job 级会让本来没声明它的
+#     步骤（构建 / 冒烟 / 各审计）也吃上这个开关，那就是语义变化；
+#   · 视觉回归仍 continue-on-error: true（观察期不卡门）；
+#   · coverage 那边的锁与清理逻辑一行没动：拆并行后各 job 在不同 runner 上，script/tmp-tests
+#     本来就不会互删，但那是「顺便消失的问题」，不构成删掉防御逻辑的理由。
 #
 # 冒烟用的是 script/ci-smoke.mjs —— 零依赖、只需要一个已装好的 Chrome，
 # 所以直接借 ubuntu runner 自带的 google-chrome，不用装 playwright/puppeteer。
 #
-# 本地等价命令：npm run ci
+# 本地等价命令：npm run ci（本地仍是单进程串行，步骤顺序与这里的分组不完全相同）
 name: CI
 
 on:
@@ -12,15 +39,19 @@ on:
   pull_request:
   workflow_dispatch:
 
-# 同一分支上的新提交把旧的跑批取消掉，省 runner
+# 同一分支上的新提交把旧的跑批取消掉，省 runner。
+# 工作流级：拆分后四个 job 会被一起取消（这正是想要的 —— 半个跑批留在那儿没有意义）
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  verify:
+  # 为什么这些步骤归到一组：全是「只读源码、不需要构建产物、彼此也没有依赖」的静态检查。
+  # 合在一组省三次 runner 启动；拆开也压不出并行收益 —— 这里面最慢的一步也才 31s。
+  lint_and_types:
+    name: 静态检查（类型 / 规范 / 依赖安全 / 密钥扫描）
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 8
 
     steps:
       - uses: actions/checkout@v4
@@ -43,9 +74,13 @@ jobs:
             --source /repo --config /repo/.gitleaks.toml \
             --no-git --redact -v
 
+      # ⚠️ 这一步必须待在 gitleaks **之后**（理由见上）。
+      # cache: 'npm' 缓存的是 ~/.npm（不是 node_modules），恢复动作就发生在这一步 ——
+      # 仍然晚于密钥扫描，所以「扫描范围 = 提交进来的文件」这条不变量没被破坏。
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: 'npm'
 
       # 仓库已提交 package-lock.json，用 ci 保证依赖树与锁定版本完全一致。
       #
@@ -87,8 +122,51 @@ jobs:
       - name: 代码规范
         run: npm run lint
 
+  # 为什么单独一组：纯函数单测 154s，与构建完全无关 —— `npm run test` 在 dist 不存在时会让
+  # bundleBudget 用例**主动跳过**，这与拆分前「test 排在 build 之前」的顺序等价（语义没变）。
+  # 真正的首屏体积硬门禁在 build_and_e2e 的 check:budget（见那一步的注释）。
+  # 不和 coverage 串在一起排队：那一组要 278s，串行等于让单测陪跑。
+  unit:
+    name: 单元测试
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      # 同 lint_and_types：ci 保依赖树与锁定版本一致；不加 --legacy-peer-deps（那会静默跳过
+      # 以后真正的 peer 冲突 —— 详见那一组同名步骤的长注释）。
+      - name: 安装依赖
+        run: npm ci
+
       - name: 纯函数单测
         run: npm run test
+
+  # 为什么单独一组：278s 是整条流水线最长的一步，拆分后它就是**关键路径** ——
+  # 只有让它独占一台 runner，其它检查才不用排队等它。它同样不依赖构建产物。
+  # ⚠️ coverage.mjs / unit-tests.mjs 里的锁与 tmp-tests 清理逻辑保持原样：拆并行后各 job
+  #    在独立 runner 上，互删问题确实不存在了，但那不是「可以删防御」的理由。
+  coverage:
+    name: 覆盖率分层门禁
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      # 同 lint_and_types（ci 保依赖树一致 / 不加 --legacy-peer-deps）。
+      - name: 安装依赖
+        run: npm ci
 
       # 覆盖率分层门禁（零依赖，不依赖构建产物）：
       # 按层统计「哪个源文件从未被任何用例间接引入」，并对每个层设文件触及率下限。
@@ -97,14 +175,34 @@ jobs:
       - name: 覆盖率分层门禁
         run: npm run check:coverage
 
+  # 为什么这些步骤归到一组：它们**都依赖构建产物**（dist/ 或 dist-server/），
+  # 且彼此有严格顺序 —— 构建必须在体积门禁与所有 e2e 之前，各审计必须在构建之后。
+  # 这组里最慢的是冒烟 38s 与构建 35s，再拆开收益只有个位数秒，反而多三次 runner 启动。
+  build_and_e2e:
+    name: 构建 + 端到端 + 浏览器审计
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      # 同 lint_and_types（ci 保依赖树一致 / 不加 --legacy-peer-deps）。
+      - name: 安装依赖
+        run: npm ci
+
       - name: 构建
         run: npm run build
 
       # 首屏体积预算（**必须排在构建之后**）：
-      # `npm run test` 那一步跑在构建之前，而 bundleBudget 用例在 dist 不存在时是
-      # 主动跳过的 —— 也就是说这条守卫在 CI 里从来没真正生效过，只在本机「先 build
-      # 再 test」时才量得到。这里单独再跑一次，才是真正的硬门禁：谁把一个懒加载
-      # 组件改回同步 import，这一步就红，而不是等用户觉得首屏变慢。
+      # 另一个 job 里的 `npm run test` 跑在构建之前（那边根本没有 dist），而 bundleBudget
+      # 用例在 dist 不存在时是主动跳过的 —— 也就是说那条守卫在 CI 里从来没真正生效过，
+      # 只在本机「先 build 再 test」时才量得到。这里单独再跑一次，才是真正的硬门禁：
+      # 谁把一个懒加载组件改回同步 import，这一步就红，而不是等用户觉得首屏变慢。
       - name: 首屏体积预算
         run: npm run check:budget
 
@@ -264,3 +362,46 @@ jobs:
           path: |
             dist/
           retention-days: 5
+
+  # 汇总判定。**沿用原 job 名**：拆分前它就是那个唯一的 job，可能有人按这个名字看状态、
+  # 配分支保护规则 —— 改名等于让那些地方静默失效。
+  # 它不跑任何检查：四个并行 job 跑在不同 runner 上，「这条流水线到底过没过」需要一个
+  # 唯一的结论点，这里就是。
+  # ⚠️ if: always() 不能去掉：没有它，只要有一个上游 job 失败，这个 job 会被**跳过**，
+  #    而「跳过」在工作流级结论里不是 failure —— docker-publish.yml 读的正是工作流级
+  #    conclusion，跳过会让「门禁没通过」变成一盏绿灯。同理下面不放过 success 以外的任何值：
+  #    skipped 意味着那道门禁根本没跑。
+  verify:
+    name: 门禁汇总
+    needs: [lint_and_types, unit, coverage, build_and_e2e]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+
+    steps:
+      - name: 汇总四个并行 job 的结论
+        env:
+          R_LINT: ${{ needs.lint_and_types.result }}
+          R_UNIT: ${{ needs.unit.result }}
+          R_COV: ${{ needs.coverage.result }}
+          R_BUILD: ${{ needs.build_and_e2e.result }}
+        run: |
+          echo "各并行 job 结论："
+          printf '  %-16s %s\n' "lint_and_types" "$R_LINT"
+          printf '  %-16s %s\n' "unit" "$R_UNIT"
+          printf '  %-16s %s\n' "coverage" "$R_COV"
+          printf '  %-16s %s\n' "build_and_e2e" "$R_BUILD"
+
+          failed=""
+          for pair in "lint_and_types:$R_LINT" "unit:$R_UNIT" "coverage:$R_COV" "build_and_e2e:$R_BUILD"; do
+            name="${pair%%:*}"
+            result="${pair#*:}"
+            # success 以外的任何值都算没通过：failure / cancelled / skipped 一个都不能放过
+            if [ "$result" != "success" ]; then failed="$failed $name($result)"; fi
+          done
+
+          if [ -n "$failed" ]; then
+            echo "::error::门禁未通过:$failed"
+            exit 1
+          fi
+          echo "四个并行 job 全部 success"

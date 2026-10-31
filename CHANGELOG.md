@@ -6,6 +6,87 @@
 分类沿用提交前缀：`安全` / `新增` / `修复` / `重构` / `性能` / `工程`。
 只看「这次上线会有什么不一样」的话，读每段的**要点**即可。
 
+## 2026-10-31 · 工程 + 修复：CI 拆四个并行 job / spool 模式启动不再打假警报（23.0.1）
+
+两件本来不相干的事凑一版：一件是把变慢的 CI 拆开，一件是把「看着像故障、其实只是走错了
+通道」的启动告警堵掉。
+
+### 一、CI 拆成四个并行 job + 一个汇总
+
+拆之前是单 job 串 26 步，一整场 712s。把逐步骤耗时（CI #41159720927）摊开看：覆盖率分层
+门禁 278s、纯函数单测 154s —— 两者合计 **61%**；而七条 e2e 加起来只有 21s。所以该拆的是
+「长杆」，不是「看起来最重的东西」：把 2s 的活挪到另一台 runner 上，省下来的只有 runner
+启动时间而已。
+
+现在四个 job 各管一摊，彼此没有依赖、跑在不同 runner 上：
+
+- `lint_and_types`（~130s）静态检查：gitleaks / 依赖漏洞 / 类型 / 严格下标 / 代码规范 ——
+  全是「只读源码、不需要构建产物」的活，最慢一步也才 31s，拆开压不出并行收益，
+  合在一组反而省三次 runner 启动；
+- `unit`（~205s）纯函数单测：`npm run test` 在 dist 不存在时会让 bundleBudget 用例主动
+  跳过，这与拆分前「test 排在 build 之前」的顺序等价（语义没变），真正的体积硬门禁在
+  `build_and_e2e` 的 `check:budget`；不和 coverage 串在一起排队 —— 那边要 278s，
+  串行等于让单测陪跑；
+- `coverage`（~330s）覆盖率两层门禁：278s 的**关键路径**，只有让它独占一台 runner，
+  其它检查才不用排队等它；
+- `build_and_e2e`（~195s）需要构建产物的一切：构建 → 体积预算 → 六条 e2e → 五条审计 ——
+  彼此有严格顺序（构建必须在体积门禁与所有 e2e 之前），再拆收益只有个位数秒，
+  反而多三次 runner 启动。
+
+外加 `verify` 只做判定、不跑任何检查：四个 job 分散在四台机器上，「这条流水线到底过没过」
+需要一个唯一的结论点，这里就是。它的 id **沿用原 job 名** —— 可能有人按这个名字看状态、
+配分支保护规则，改名等于让那些地方静默失效。
+
+两个不显眼但必须这么做的地方：
+
+- `verify` 必须 `if: always()` 且「非 success 即失败」。没有 `always()` 时，上游任一 job
+  一挂它就被**跳过**，而「跳过」在工作流级 conclusion 里不是 failure ——
+  `docker-publish.yml` 读的正是工作流级 conclusion，跳过就等于门禁变绿灯。同理不能只拦
+  `failure`：`cancelled` / `skipped` 都意味着那道门禁根本没跑。
+- **job id 一律用下划线**（`lint_and_types` / `build_and_e2e`）。`needs.<id>.<prop>` 里的
+  连字符在 GitHub Actions 表达式里有被当成减号解析的风险，一旦不被接受就是整份工作流解析
+  失败、一个 job 都不跑 —— 而这个仓库的 `.github/workflows/` 下没有先例可借，不留这个赌。
+  Actions 页面上的可读性交给各 job 的中文 `name:`（页面显示的是 name，不是 id）。
+- npm 缓存第一次跑可能不生效：四个 job 同时冷启动，各家都可能 miss 再各自 save 一次，
+  第二次起才谈得上命中。
+
+步骤一步没少，命令 / env / `continue-on-error` 全部照抄。两处刻意没动：
+`NAVIHIVE_STRICT_D1` 仍**逐步骤**声明（提到 job 级会让本来没声明它的构建 / 冒烟 / 各审计
+也吃上这个开关，那就是语义变化）；视觉回归仍 `continue-on-error: true`（观察期不卡门）。
+`coverage.mjs` / `unit-tests.mjs` 里的锁与清理逻辑也一行没改：拆并行后各 job 在独立 runner
+上、`script/tmp-tests` 本来就不会互删，但那是「顺便消失的问题」，不构成删掉防御的理由。
+
+### 二、spool 模式启动不再打「清理 helper 容器失败」的假警报
+
+现象：23.0.0 在 spool 形态下健康启动会刷一条
+`[upgrade] 清理 helper 容器失败（不影响运行）: Error: connect ENOENT /var/run/docker.sock`
+—— 看起来像故障，实际只是走错了通道。
+
+根因：`cleanupUpgraderContainer()` 只判 `dockerAvailable()`，而它在 spool 模式下**恒为
+true** —— 那是「这个部署形态支不支持网页升级」的判据，不是「本进程连不连得上 daemon」的
+判据。而主容器**故意不挂** `/var/run/docker.sock`（一键升级由宿主上的 `navihive-upgrader`
+长驻 sidecar 消费 `/spool` 任务）。于是清理函数顺着 Docker API 通道去连一个根本没挂进来的
+socket，健康启动也报 ENOENT。
+
+修法：函数体最前面 `if (spoolEnabled()) return;` —— spool 模式下本进程**从不创建** helper
+容器，带 `com.navihive.upgrader=1` 标签的只可能来自下面那条 Docker API 路径
+（`runUpgraderContainer` 创建时贴的 Labels）；spool 的收尾归宿主上的 upgrader 服务，
+而它连标签都没有，就算连得上 daemon 也筛不出来。
+
+为什么不顺手把 `/spool` 目录清掉：`request` 是**待执行命令**（删了 = 静默取消一次升级）、
+`state.json` 是 upgrader 写的进度（删了会让 `GET /api/system/upgrade` 在升级中途退回
+idle）、`request.tmp` 还可能与并发的写入抢 rename。这三样都不归本进程管。
+
+函数 doc 里写明「只在 docker-api 模式下有意义」，并加了一条源码守卫钉住**结构事实**：
+spool 判定必须在函数体最前面、且排在所有 Docker API 调用之前 —— 谁把 early return 挪到
+后面或删掉，`tests/systemUpgradeAudit.test.ts` 立刻红。少了这条守卫，下次又会是「健康
+启动刷一条看起来像故障的 warn」，而没有任何东西会报错。
+
+版本号从 23.0.0 跳到 **23.0.1**：按 `script/bump-version-lib.mjs` 的机械阈值，本轮落在
+3 个文件上（`ci.yml` / `package.json` / `CHANGELOG.md`，patch 线是 5 文件 / 200 行），
+末位动。第二件（spool 修复，2 个文件）此前已单独提交、只是没记进日志，这一版一并补上；
+五个文件仍在 patch 线内，档位不变。
+
 ## 2026-10-31 · 修复 + 重构：入口更名「设置」/ 面板不再叠层 / 退出登录钉底（23.0.0）
 
 上一轮把「更多选项」下拉菜单收成了统一中心，但入口名还叫「更多选项」——菜单已经没了，
